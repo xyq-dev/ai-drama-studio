@@ -14,10 +14,10 @@
   "dependencies": {
     "@ai-drama/contracts": "workspace:*",
     "@ai-drama/database": "workspace:*",
+    "@ai-drama/health": "workspace:*",
     "@nestjs/common": "catalog:",
     "@nestjs/core": "catalog:",
     "@nestjs/platform-express": "catalog:",
-    "ioredis": "6.0.0",
     "reflect-metadata": "catalog:",
     "rxjs": "catalog:",
     "zod": "catalog:"
