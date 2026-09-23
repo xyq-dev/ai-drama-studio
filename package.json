@@ -1,0 +1,31 @@
+{
+  "name": "ai-drama-studio",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.17.0",
+  "engines": {
+    "node": ">=24.21.0 <25",
+    "pnpm": "10.17.0"
+  },
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "verify": "pnpm lint && pnpm typecheck && pnpm test && pnpm build",
+    "clean": "turbo run clean",
+    "infra:config": "docker compose -f infra/compose.yaml --env-file .env.example config",
+    "infra:up": "docker compose -f infra/compose.yaml --env-file .env.example up -d",
+    "infra:down": "docker compose -f infra/compose.yaml --env-file .env.example down",
+    "infra:logs": "docker compose -f infra/compose.yaml --env-file .env.example logs"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "eslint": "10.11.0",
+    "prettier": "3.9.8",
+    "turbo": "2.11.3",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.70.1"
+  }
+}
