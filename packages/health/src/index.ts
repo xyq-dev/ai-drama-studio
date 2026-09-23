@@ -30,58 +30,92 @@ function createRedisClient(options: RedisHealthProbeOptions): RedisProbeClient {
 }
 
 export class RedisHealthProbe {
-  private readonly client: RedisProbeClient;
-  private readonly timeoutMs: number;
+  private client: RedisProbeClient | undefined;
+  private readonly options: RedisHealthProbeOptions;
+  private readonly clientFactory: RedisClientFactory;
   private closed = false;
   private activeCheck: Promise<"ok" | "down"> | undefined;
 
   constructor(options: RedisHealthProbeOptions, clientFactory: RedisClientFactory = createRedisClient) {
-    this.timeoutMs = options.timeoutMs;
-    this.client = clientFactory(options);
-    this.client.on("error", () => undefined);
+    this.options = options;
+    this.clientFactory = clientFactory;
   }
 
   check(): Promise<"ok" | "down"> {
     if (this.closed) return Promise.resolve("down");
-    this.activeCheck ??= this.runCheck().finally(() => {
+    if (this.activeCheck) return this.activeCheck;
+
+    const check = this.runCheck();
+    this.activeCheck = check.finally(() => {
       this.activeCheck = undefined;
     });
     return this.activeCheck;
   }
 
+  private getOrCreateClient(): RedisProbeClient {
+    if (!this.client) {
+      const client = this.clientFactory(this.options);
+      client.on("error", () => undefined);
+      this.client = client;
+    }
+    return this.client;
+  }
+
   private async runCheck(): Promise<"ok" | "down"> {
+    const client = this.getOrCreateClient();
     let timer: NodeJS.Timeout | undefined;
     const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new Error("Redis health check timed out")), this.timeoutMs);
+      timer = setTimeout(() => reject(new Error("Redis health check timed out")), this.options.timeoutMs);
     });
 
     try {
-      const result = await Promise.race([this.connectAndPing(), timeout]);
-      return result === "PONG" ? "ok" : "down";
+      const result = await Promise.race([this.connectAndPing(client), timeout]);
+      if (result === "PONG") return "ok";
+
+      this.discardClient(client);
+      return "down";
     } catch {
-      // End an in-flight connection attempt so the next check starts from a clean,
-      // reconnectable state instead of inheriting a permanently ended client.
-      this.client.disconnect(false);
+      this.discardClient(client);
       return "down";
     } finally {
       if (timer) clearTimeout(timer);
     }
   }
 
-  private async connectAndPing(): Promise<string> {
-    if (this.client.status === "wait" || this.client.status === "end") {
-      await this.client.connect();
+  private async connectAndPing(client: RedisProbeClient): Promise<string> {
+    if (client.status === "wait" || client.status === "end") {
+      await client.connect();
     }
-    return this.client.ping();
+    return client.ping();
+  }
+
+  private discardClient(client: RedisProbeClient): void {
+    if (this.client === client) {
+      this.client = undefined;
+    }
+    try {
+      client.disconnect(false);
+    } catch {
+      // Health checks must never surface Redis shutdown errors.
+    }
   }
 
   async shutdown(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+
+    const client = this.client;
+    this.client = undefined;
+    if (!client) return;
+
     try {
-      await this.client.quit();
+      await client.quit();
     } catch {
-      this.client.disconnect(false);
+      try {
+        client.disconnect(false);
+      } catch {
+        // Shutdown is best-effort and must remain safe.
+      }
     }
   }
 }
