@@ -14,7 +14,7 @@
 
 ## STALE 传播与复用
 
-上游新版本被选为当前版本时，系统从显式来源边向下遍历，把仍引用旧版本的非历史派生对象标为 `STALE`，记录 `stale_reason` 和 `stale_from_ref`。标记是事务性的、幂等的、范围限定到 Project；不会删除资产、取消已完成 job 或改写成本。审核批准的是某版本而非逻辑实体，新的修订默认 `DRAFT`。
+上游新版本被选为当前版本时，系统从显式来源边向下遍历，把仍引用旧版本的非历史派生对象标为 `STALE`，记录 `stale_reason` 和 `stale_from_ref`。标记是事务性的、幂等的、范围限定到 Project；不会删除资产、取消已完成 job 或改写成本。审核批准的是某版本而非逻辑实体，新的修订默认 `DRAFT`；STALE 只令历史批准失去当前可用资格，绝不覆盖历史 `reviewed_by/reviewed_at/review_note` 或删除审核事件。
 
 可复用条件：资产输入来源都与当前选定版本匹配、资产 `ACTIVE`、审核要求仍满足、输出规格匹配、无策略/Provider 约束冲突且 `inputHash` 相同。视觉无关的元数据（项目标题、标签）不传播 STALE。审核、脚本、角色外貌、场景语义、镜头内容/时长/运镜、音频文本和合成顺序均会按来源边传播；最终导出永不复用 STALE 输入。
 
@@ -51,12 +51,12 @@ transaction:
     edge = queue.pop()
     if dependent is already STALE: continue
     set dependent.status = STALE; record stale_reason and stale_from_edge_id
-    invalidate approval only if that approval covered the changed content
-    append committed domain event record
+    mark current approval unusable only if it covered changed content; retain historical review metadata
+    append committed DomainEvent record
     queue += dependencies where source = dependent
   commit
 ```
 
-实现使用同一事务内的递归 SQL 或有界批量图遍历，并限制在 `(workspace_id, project_id)`，使用已访问集合与行锁。若超过配置的批次上限，事务创建持久化 `STALE_RECALCULATION` WorkflowRun 并将根标记为传播未完成；导出和生成门槛拒绝该根，直至后续事务完成。任何失败回滚当前指针改动，不能留下静默的部分传播。并发编辑使用聚合 `version`/`If-Match` 条件更新，只能从新读取的状态重试。重算具幂等性：它从不可变引用重建依赖，只补写必要的 `STALE`，不会在未重新验证全部输入与审核门前自动激活对象。
+实现使用同一事务内的递归 SQL 或有界批量图遍历，并限制在 `(workspace_id, project_id)`，使用已访问集合与行锁。若超过配置的批次上限，事务创建持久化 `STALE_RECALCULATION` WorkflowRun 并将根标记为传播未完成；导出和生成门槛拒绝该根，直至后续事务完成。任何失败回滚当前指针改动，不能留下静默的部分传播。当前指针变更、失效标记和对应 DomainEvent 必须同事务提交。并发编辑使用聚合 `version`/`If-Match` 条件更新，只能从新读取的状态重试。重算具幂等性：它从不可变引用重建依赖，只补写必要的 `STALE`，不会在未重新验证全部输入与审核门前自动激活对象。
 
 具体边界：剧本对白变更只沿涉及该对白的 Scene/ShotRevision、其配音、字幕、视频、合成和导出边传播；角色参考图只在它仍被新镜头版本显式引用时复用，角色外貌变更只影响引用旧 `CharacterRevision` 的镜头图片/视频及下游合成/导出；单镜头运镜仅影响该镜头图片/视频，音频/字幕仅在台词、时长或音频输入改变时失效，随后使包含该镜头的合成/导出失效。未引用的角色、镜头或资产不失效。

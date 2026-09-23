@@ -4,14 +4,14 @@
 
 | 项目 | 定义 |
 | --- | --- |
-| 目标 | 建立可启动的最小骨架：模块化单体、单工作区边界、PostgreSQL、Redis、MinIO、事务 outbox、SSE 与 Mock Provider。 |
-| 工作范围 | 仅 `pnpm + Turborepo`，`apps/web`、`apps/api`、`apps/worker`、`services/media-worker`、`services/comfyui-adapter`（后二者仅空壳/健康检查），及 `packages/contracts`、`packages/database`、`packages/domain`、`packages/providers`；Mock GenerationJob 成功/失败/取消/恢复闭环、健康检查和基础测试。 |
+| 目标 | 建立可启动的最小骨架：模块化单体、单工作区边界、PostgreSQL、Redis、MinIO、带 dispatch sequence 的事务 outbox、DomainEvent SSE 重放与 Mock Provider。 |
+| 工作范围 | 仅 `pnpm + Turborepo`，`apps/web`、`apps/api`、`apps/worker`、`services/media-worker`、`services/comfyui-adapter`（后二者仅空壳/健康检查），及 `packages/contracts`、`packages/database`、`packages/domain`、`packages/providers`；Mock GenerationJob 成功/失败/取消/恢复闭环、IdempotencyRecord、DomainEvent、健康检查和基础测试。 |
 | 禁止范围 | 真实 LLM/图片/视频生成、ComfyUI 实际部署、完整创作 UI、三集生产、真实媒体合成、支付、协作、多租户、云部署和自动发布。 |
 | 依赖 | PostgreSQL、Redis、MinIO/S3 开发凭据、运行时密钥注入方案。 |
-| 数据库变化 | 只实现支撑 Mock 闭环的最小 Workspace/Project、Asset、WorkflowRun、GenerationJob、JobAttempt、DispatchOutbox、ProviderConfiguration、回调去重与成本记录骨架；不实现故事、剧本、角色、场景或镜头生产数据模型。 |
-| API | 健康检查、最小 Projects、Mock jobs/runs 查询和取消、SSE、Mock capabilities；不提供真实生成或三集创作 API。 |
-| 测试 | 事务约束、幂等、重复投递、Worker 崩溃恢复、SSE 重连、工作区过滤。 |
-| 验收标准 | Mock job 可到达成功/失败/取消并保留完整审计；PostgreSQL 是恢复依据。 |
+| 数据库变化 | 只实现支撑 Mock 闭环的最小 Workspace/Project、WorkflowRun、GenerationJob（含 `dispatch_seq,row_version,next_run_at,lease_owner,lease_until,is_critical,progress_weight`）、JobAttempt、GenerationJobDependency、DispatchOutbox、DomainEvent、IdempotencyRecord、ProviderConfiguration、ProviderEvent 与成本记录骨架；UploadSession 仅保留后续模型契约，M1 不提供用户上传接口，MinIO 仅健康检查。不得实现故事、剧本、角色、场景或镜头生产数据模型。 |
+| API | 健康检查、最小 Projects、Mock jobs/runs 查询和取消、SSE 重放、Mock capabilities；不提供用户上传、真实生成或三集创作 API。 |
+| 测试 | 事务约束、通用 API 幂等、重复/旧 dispatch 消息、Worker 崩溃恢复、DomainEvent SSE 重放与 `EVENT_CURSOR_EXPIRED`、工作区过滤。 |
+| 验收标准 | 单 Job WorkflowRun 的 Mock job 可到达成功/失败/取消并保留完整审计；Schema/契约已支持后续 Job DAG；自动重试产生新的 Attempt 和 dispatch sequence；SSE 从 DomainEvent 重放；PostgreSQL 是恢复依据。 |
 | 风险 | 把队列状态当真相；以 outbox、租约和恢复测试控制。 |
 | 进入 M2 条件 | 验收通过，数据模型和错误码冻结为可兼容演进。 |
 

@@ -9,6 +9,8 @@ flowchart LR
   A --> P[(PostgreSQL)]
   P --> D[Dispatch Outbox Dispatcher]
   D --> R
+  P --> E[DomainEvent replay source]
+  E --> A
   A --> O[(S3-compatible Object Storage\nMinIO local)]
   A --> R[(Redis)]
   R --> Q[BullMQ queues]
@@ -39,9 +41,9 @@ PostgreSQL 是业务状态、审计、幂等记录和恢复依据的唯一可信
 
 ## 同步与异步流
 
-同步 API 只完成验证和短事务：创建/编辑修订、创建 `WorkflowRun` 与 `GenerationJob`、写入 outbox、返回资源或 `202 Accepted`。事务提交后由 outbox dispatcher 把 job id 放入 BullMQ。Worker 再以条件更新租约领取任务，读取不可变输入快照，写入 `JobAttempt`，调用 Provider，并将结果、资产、成本和最终状态在数据库事务中落盘。
+同步 API 只完成验证和短事务：创建/编辑修订、创建 `WorkflowRun` 与 `GenerationJob`、写入 outbox、返回资源或 `202 Accepted`。每次 Job 在同一事务进入 `QUEUED` 时递增 `dispatch_seq` 并写入一个新的 DispatchOutbox；事务提交后 dispatcher 仅以 `{jobId}:{dispatchSeq}` 把该调度信号放入 BullMQ，不决定业务状态。Worker 只在 Job 仍为 `QUEUED` 且消息 `dispatchSeq` 等于当前 `dispatch_seq` 时，以条件更新取得租约，读取不可变输入快照，写入 `JobAttempt`，调用 Provider，并将结果、资产、成本和最终状态在数据库事务中落盘。
 
-长时 Provider 采用 submit/query/cancel。回调进入 API 时先验签、按 `(provider_configuration_id, provider_request_id, event_id)` 去重，再由事务更新对应 attempt/job；轮询是回调的兜底。API 通过 SSE 发送数据库已提交事件，客户端断线后用资源查询轮询恢复。
+长时 Provider 采用 submit/query/cancel。回调进入 API 时先验签，poll 和 callback 均写入 ProviderEvent，以 `(provider_configuration_id, provider_request_id, normalized_event_key)` 去重，再由事务更新对应 attempt/job；轮询是回调的兜底。所有状态变更在同一事务追加 DomainEvent，SSE 只读取该表并支持 `Last-Event-ID` 保留窗口重放；客户端按 event id 去重，窗口外以资源查询轮询恢复。
 
 ## 部署拓扑
 
@@ -54,7 +56,7 @@ PostgreSQL 是业务状态、审计、幂等记录和恢复依据的唯一可信
 - 非秘密配置（队列名、超时、公共对象存储域名、功能开关）经环境变量或配置文件注入并校验。
 - Provider API Key、回调签名密钥、S3 凭据只能由运行时密钥注入；不进入浏览器、数据库明文、日志、任务输入快照或 Git。
 - 对象键按 `workspace/project/asset-kind/asset-id/revision` 分区，使用随机对象名；数据库保存内部 `storageKey`、存储提供方、哈希、大小、MIME、保留策略和来源，而非永久 URL。
-- 上传走 API 签发的短期、受限预签名 URL；下载通过授权后的短期 URL。Worker 写入临时 key，校验哈希后原子标记 Asset 可用。
+- 上传先创建独立 UploadSession 并由 API 签发短期、受限预签名 URL；它不是 Asset。完成端点读取对象元数据并校验 MIME、大小、SHA-256 和权限，再在同一事务创建最终 Asset、将会话标为 `COMPLETED` 并写入 DomainEvent。下载通过授权后的短期 URL。
 
 ## 错误、可观测性与安全
 
@@ -64,10 +66,10 @@ API 返回稳定错误码、可安全展示的摘要及 `traceId`，绝不把 Pr
 
 ## 审查后数据库一致性基线（本节优先）
 
-唯一采用 transactional outbox：API 在同一 PostgreSQL 事务中创建/变更 `GenerationJob`、必要的领域状态和 `DispatchOutbox`；提交后 dispatcher 以幂等 outbox id 投递 BullMQ，并仅在成功后填写 `dispatched_at`。扫描器重投未分发或超出调度宽限的记录。不得在事务内直接向 BullMQ 投递，也不得以 BullMQ 是否存在消息判断 job 是否存在。
+唯一采用 transactional outbox：API 在同一 PostgreSQL 事务中创建/变更 `GenerationJob`、必要的领域状态、DomainEvent 和 DispatchOutbox；每次进入 `QUEUED` 都递增 Job 的 `dispatch_seq` 并插入新的 outbox 行。dispatcher 以 `{jobId}:{dispatchSeq}` 幂等投递 BullMQ，并仅在成功后填写 `dispatched_at`；唯一约束为 `(job_id, dispatch_seq)`，不复用或清空旧行。扫描器重投未分发或超出调度宽限的记录。不得在事务内直接向 BullMQ 投递，也不得以 BullMQ 是否存在消息判断 job 是否存在。
 
-Worker 收到消息后，必须以条件更新从数据库领取执行租约；重复消息、Redis 丢失和 Worker 重启均可安全处理。租约过期时，reconciler 对已有 `provider_request_id` 的 attempt 先 `query`，无远程请求的才依幂等键重新调度。每一次状态、成本、资产或进度事件都在数据库提交后写入可重放的领域事件记录，SSE 只发布这些已提交记录；这不是第二套队列或第二个 Outbox。
+Worker 收到消息后，必须确认 Job 为 `QUEUED` 且消息 `dispatchSeq` 等于 Job 当前 `dispatch_seq`，再以条件更新从数据库领取执行租约；旧消息只安全退出。重复消息、Redis 丢失和 Worker 重启均可安全处理。租约过期时，reconciler 对已有 `provider_request_id` 的 attempt 先 `query`，无远程请求的才按同一 Job 的下一 dispatch sequence 重新调度。每一次状态、成本、资产或进度事件都在数据库提交后写入可重放的 DomainEvent；SSE 只发布这些已提交记录。DomainEvent 不是 BullMQ 队列，也不是 DispatchOutbox。
 
-对象存储中的临时上传/Provider 下载对象先对应 `Asset.status=ACTIVE` 以外的上传阶段记录；校验内容 SHA-256、MIME 和限额后才创建或激活最终 Asset。下载永远由授权 API 签发短期 URL；清理器只在数据库引用和保留期检查后删除孤儿对象，业务软删除不会立即物理删除文件。
+对象存储中的用户上传临时对象只由 UploadSession 跟踪；上传失败、过期或未完成绝不创建 Asset。Provider 下载对象使用受控内部暂存，在完成校验后才创建最终 Asset。下载永远由授权 API 签发短期 URL；清理器只在数据库引用、UploadSession 状态和保留期检查后删除孤儿对象，业务软删除不会立即物理删除文件。
 
 数据库与 Redis 凭据同样只由运行时密钥注入，且各服务使用最小权限账户；签名 URL 绑定对象键、HTTP 方法、大小/MIME 条件和短 TTL。上传的文件名不能参与对象键或 FFmpeg 命令，API/媒体服务拒绝路径分隔符、任意本地路径与未允许 MIME/尺寸。Provider/媒体下载只允许已配置 Provider 的 allowlist 域名和受控对象引用，不跟随任意用户 URL，防止 SSRF。Python 服务以参数数组调用固定 FFmpeg 二进制和受控临时目录，绝不拼接用户 shell 字符串；ComfyUI 仅可由 Adapter 所在网络访问。Prompt、原始响应、错误和日志均按敏感字段脱敏并受访问控制。

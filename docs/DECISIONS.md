@@ -26,7 +26,7 @@
 
 ## ADR-007：V1 使用人工审核点
 
-**状态：已接受。** 故事/剧本、角色、分镜和成片均需要人类批准。尤其视频生成前必须有分镜审核；此约束控制成本、内容质量和错误扩散，不能由“任务成功”替代。
+**状态：已接受。** V1 只有三个审核阶段：剧本门槛；视频生成前门槛（角色设定及选定参考图、以及 ShotRevision 分镜均已批准）；成片导出门槛。角色参考图和分镜预览可在最终相应审核前生成，但视频生成和导出不能绕过门槛；此约束控制成本、内容质量和错误扩散，不能由“任务成功”替代。
 
 ## ADR-008：先采用 Mock Provider
 
@@ -34,7 +34,7 @@
 
 ## ADR-009：事务 Outbox 是唯一队列一致性方案
 
-**状态：已接受。** Core 在同一 PostgreSQL 事务写入 GenerationJob、领域变化和 DispatchOutbox；独立 dispatcher 在提交后以 outbox id 幂等投递 BullMQ，成功后才标记已投递，并扫描补投。Worker 通过数据库条件更新和租约取得执行权。这个方案处理投递失败、事务回滚、重复消息、Redis 丢失与 Worker 重启；不得并列采用“直接投递后补偿”方案。
+**状态：已接受。** Core 每次令 GenerationJob 进入 `QUEUED` 时，在同一 PostgreSQL 事务递增 `dispatch_seq`、写入领域变化、DomainEvent 和新的 DispatchOutbox。唯一键为 `(job_id, dispatch_seq)`；dispatcher 使用 `{jobId}:{dispatchSeq}` 幂等投递 BullMQ，成功后才标记已投递，并扫描补投。dispatcher 不决定业务状态。Worker 仅在 Job 仍为 `QUEUED` 且消息 sequence 等于当前 sequence 时通过条件更新和租约取得执行权，旧消息退出。这个方案处理投递失败、事务回滚、重复消息、Redis 丢失与 Worker 重启；不得并列采用“直接投递后补偿”方案。
 
 ## ADR-010：版本指针与依赖边是唯一事实来源
 
@@ -42,4 +42,8 @@
 
 ## ADR-011：重试使用 Attempt，手动 retry 创建新 Job
 
-**状态：已接受。** 一个 JobAttempt 对应一次 Provider submit；自动可重试故障令同一非终态 GenerationJob 回到 QUEUED 并创建下一个 Attempt。终态 Job 永不重开，用户手动 retry 创建新的 GenerationJob。ProviderEvent 的唯一键吸收 callback/poll 重复，所有状态更新使用乐观并发控制与租约。
+**状态：已接受。** 一个 JobAttempt 对应一次 Provider submit 或本地执行器正式执行；query、poll、callback 只创建 ProviderEvent。自动可重试故障令同一非终态 GenerationJob 回到 QUEUED、产生下一个 dispatch sequence/outbox 并创建下一个 Attempt。终态 Job 永不重开；手动 retry 仅对可重试 FAILED/CANCELED Job 创建新的局部 WorkflowRun 和新的 GenerationJob。ProviderEvent 的 `(provider_configuration_id, provider_request_id, normalized_event_key)` 唯一键吸收 callback/poll 重复，所有状态更新使用乐观并发控制与租约。
+
+## ADR-012：DomainEvent 与 API 幂等是独立持久化事实
+
+**状态：已接受。** 每个用户可见状态变化在其业务事务内追加 DomainEvent；SSE 只读取 DomainEvent，按可排序 id 重放，并在保留期外返回 `EVENT_CURSOR_EXPIRED`。DomainEvent 不是任务队列，不执行工作。所有要求 Idempotency-Key 的 API 写入使用 IdempotencyRecord；相同 key 与请求返回原结果，不同请求返回 `IDEMPOTENCY_KEY_REUSED`。GenerationJob inputHash 只用于生成输入复用，不能替代 API 幂等。
