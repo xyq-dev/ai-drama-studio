@@ -1,10 +1,16 @@
 {
-  "name": "@ai-drama/api",
+  "name": "@ai-drama/health",
   "version": "0.1.0",
   "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
   "scripts": {
-    "dev": "tsx watch src/main.ts",
-    "start": "node dist/main.js",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src",
@@ -12,22 +18,11 @@
     "clean": "node --eval \"require('node:fs').rmSync('dist',{recursive:true,force:true})\""
   },
   "dependencies": {
-    "@ai-drama/contracts": "workspace:*",
-    "@ai-drama/database": "workspace:*",
-    "@ai-drama/health": "workspace:*",
-    "@aws-sdk/client-s3": "3.1138.0",
-    "@nestjs/common": "catalog:",
-    "@nestjs/core": "catalog:",
-    "@nestjs/platform-express": "catalog:",
-    "reflect-metadata": "catalog:",
-    "rxjs": "catalog:",
-    "zod": "catalog:"
+    "ioredis": "6.0.0"
   },
   "devDependencies": {
-    "@nestjs/testing": "catalog:",
     "@types/node": "catalog:",
     "eslint": "catalog:",
-    "tsx": "catalog:",
     "typescript": "catalog:",
     "typescript-eslint": "catalog:",
     "vite": "catalog:",
