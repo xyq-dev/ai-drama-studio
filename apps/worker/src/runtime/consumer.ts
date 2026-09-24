@@ -1,6 +1,15 @@
+import { createHash } from "node:crypto";
 import type { JobPersistenceService, RuntimeStore } from "@ai-drama/database";
 import { MOCK_OUTCOMES, MockProvider, type MockOutcome } from "@ai-drama/providers";
 import type { QueueMessage } from "./bullmq-queue";
+
+function retryAt(jobId: string, attemptNo: number): Date {
+  const baseMs = Math.min(15 * 60_000, 30_000 * 2 ** Math.max(0, attemptNo - 1));
+  const digest = createHash("sha256").update(`${jobId}:${attemptNo}`).digest();
+  const jitterRatio = digest.readUInt32BE(0) / 0xffffffff;
+  const jitterMs = Math.floor(baseMs * 0.2 * jitterRatio);
+  return new Date(Date.now() + baseMs + jitterMs);
+}
 
 function readOutcome(snapshot: unknown): MockOutcome {
   if (snapshot && typeof snapshot === "object" && "outcome" in snapshot) {
@@ -90,6 +99,7 @@ export class MockJobConsumer {
         errorCode: result.errorCode,
         errorMessage: result.errorMessage,
         retryable: result.retryable,
+        nextRunAt: result.retryable ? retryAt(message.jobId, acquired.attemptNo) : undefined,
       });
       return "processed";
     }
