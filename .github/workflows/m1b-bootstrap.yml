@@ -11,6 +11,7 @@ permissions:
 
 jobs:
   apply-and-validate:
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     services:
@@ -45,6 +46,7 @@ jobs:
           cat .m1b-bootstrap/patch.b64.* | base64 --decode > /tmp/m1b-patch.tar.gz
           tar -xzf /tmp/m1b-patch.tar.gz -C .
           rm -f packages/database/migrations/0001_m1b_job_core.sql
+          rm -f .github/workflows/m1b-integration.yml
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
@@ -89,7 +91,7 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf .m1b-bootstrap
-          rm -f .github/workflows/m1b-bootstrap.yml
+          git restore --source=HEAD -- .github/workflows/m1b-bootstrap.yml
           git add -A
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
