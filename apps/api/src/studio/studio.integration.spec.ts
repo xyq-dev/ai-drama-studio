@@ -214,7 +214,8 @@ describe("M1-C API and SSE integration", () => {
     const cursor = ids[0];
     expect(cursor).toBeTruthy();
     const replay = await readSse(`${base}/api/v1/events`, { "last-event-id": cursor ?? "0" });
-    expect(replay.text.includes(`id: ${cursor ?? ""}`)).toBe(false);
+    const replayIds = [...replay.text.matchAll(/^id: (\d+)$/gm)].map((match) => match[1] ?? "");
+    expect(replayIds).not.toContain(cursor);
     const reconnect = await readSse(`${base}/api/v1/events`, { "last-event-id": cursor ?? "0" });
     expect(reconnect.status).toBe(200);
     await sql("UPDATE domain_event SET retention_until = now() - interval '1 day' WHERE id = $1", [cursor]);
