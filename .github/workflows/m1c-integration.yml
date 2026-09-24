@@ -44,6 +44,7 @@ jobs:
     env:
       DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/ai_drama_m1c
       REDIS_URL: redis://127.0.0.1:6379
+      APP_WORKSPACE_ID: 11111111-1111-4111-8111-111111111111
 
     steps:
       - name: Check out repository
@@ -81,6 +82,9 @@ jobs:
 
       - name: Run M1-B PostgreSQL integration
         run: pnpm --filter @ai-drama/database integration
+
+      - name: Provision configured M1 workspace
+        run: pnpm --filter @ai-drama/database workspace:provision
 
       - name: Run M1-C Worker and BullMQ integration
         run: pnpm --filter @ai-drama/worker integration
