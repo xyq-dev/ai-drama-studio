@@ -222,9 +222,10 @@ describe("M1-C Redis and BullMQ integration", () => {
     const delayed = await queueOutcome(workspaceId, projectId, "delayed");
     await consumer.handle(delayed);
     expect(await jobState(delayed.jobId)).toBe("WAITING_EXTERNAL");
-    await sql("UPDATE generation_job SET state = 'RUNNING', lease_until = now() - interval '1 minute' WHERE id = $1", [
-      delayed.jobId,
-    ]);
+    await sql(
+      "UPDATE generation_job SET state = 'RUNNING', lease_owner = 'expired-worker', lease_until = now() - interval '1 minute' WHERE id = $1",
+      [delayed.jobId],
+    );
     const seqBefore = await sql<{ dispatch_seq: number }>(
       "SELECT dispatch_seq FROM generation_job WHERE id = $1",
       [delayed.jobId],
