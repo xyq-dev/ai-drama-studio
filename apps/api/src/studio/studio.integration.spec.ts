@@ -131,6 +131,64 @@ describe("M1-C API and SSE integration", () => {
     expect(rejected.status).toBe(400);
   });
 
+  it("replays cancel and manual retry mutations without duplicating business writes", async () => {
+    const projectResponse = await fetch(`${base}/api/v1/projects`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": "project-mutations" },
+      body: JSON.stringify({ title: "Mutations" }),
+    });
+    const project = (await projectResponse.json()) as { id: string };
+    const workflowResponse = await fetch(`${base}/api/v1/projects/${project.id}/workflows/mock`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": "mock-mutations" },
+      body: JSON.stringify({ outcome: "success" }),
+    });
+    const original = (await workflowResponse.json()) as { workflowRunId: string; jobId: string };
+
+    const cancel = await fetch(`${base}/api/v1/generation-jobs/${original.jobId}/cancel`, {
+      method: "POST",
+      headers: { "idempotency-key": "cancel-mutation" },
+    });
+    const canceled = (await cancel.json()) as { jobId: string; state: string };
+    expect(cancel.status).toBe(200);
+    expect(canceled).toMatchObject({ jobId: original.jobId, state: "CANCELED" });
+
+    const cancelReplay = await fetch(`${base}/api/v1/generation-jobs/${original.jobId}/cancel`, {
+      method: "POST",
+      headers: { "idempotency-key": "cancel-mutation" },
+    });
+    expect(cancelReplay.status).toBe(200);
+    expect(await cancelReplay.json()).toEqual(canceled);
+
+    const canceledEvents = await sql<{ count: number }>(
+      "SELECT COUNT(*)::int AS count FROM domain_event WHERE aggregate_id = $1 AND event_type = 'job.canceled'",
+      [original.jobId],
+    );
+    expect(canceledEvents.rows[0]?.count).toBe(1);
+
+    const retry = await fetch(`${base}/api/v1/generation-jobs/${original.jobId}/retry`, {
+      method: "POST",
+      headers: { "idempotency-key": "retry-mutation" },
+    });
+    const retried = (await retry.json()) as { workflowRunId: string; jobId: string; dispatchSeq: number };
+    expect(retry.status).toBe(202);
+    expect(retried.jobId).not.toBe(original.jobId);
+    expect(retried.workflowRunId).not.toBe(original.workflowRunId);
+
+    const retryReplay = await fetch(`${base}/api/v1/generation-jobs/${original.jobId}/retry`, {
+      method: "POST",
+      headers: { "idempotency-key": "retry-mutation" },
+    });
+    expect(retryReplay.status).toBe(202);
+    expect(await retryReplay.json()).toEqual(retried);
+
+    const retryRuns = await sql<{ count: number }>(
+      "SELECT COUNT(*)::int AS count FROM workflow_run WHERE project_id = $1",
+      [project.id],
+    );
+    expect(retryRuns.rows[0]?.count).toBe(2);
+  });
+
   it("replays DomainEvents, supports reconnect, and expires an old cursor", async () => {
     const project = await fetch(`${base}/api/v1/projects`, {
       method: "POST",
