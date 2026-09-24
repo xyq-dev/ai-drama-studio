@@ -350,6 +350,115 @@ async function queueJobTx(
   return queued;
 }
 
+
+async function cancelJobTx(
+  client: PoolClient,
+  input: { workspaceId: string; jobId: string; traceId: string },
+): Promise<JobState> {
+  const job = await loadJobForUpdate(client, input.workspaceId, input.jobId);
+  if (TERMINAL_STATES.has(job.state)) {
+    throw new PersistenceError("JOB_TERMINAL", "Job is already terminal");
+  }
+
+  if (job.state === "PENDING" || job.state === "QUEUED") {
+    await client.query(
+      `UPDATE generation_job
+          SET state = 'CANCELED', row_version = row_version + 1,
+              lease_owner = NULL, lease_until = NULL, updated_at = now(), completed_at = now()
+        WHERE id = $1 AND workspace_id = $2 AND row_version = $3`,
+      [job.id, job.workspace_id, job.row_version],
+    );
+    await appendDomainEvent(client, job, "job.canceled", input.traceId, {
+      jobId: job.id,
+      state: "CANCELED",
+    });
+    await refreshWorkflowStatus(client, job.workflow_run_id);
+    return "CANCELED";
+  }
+
+  await client.query(
+    `UPDATE generation_job
+        SET cancel_requested_at = COALESCE(cancel_requested_at, now()),
+            row_version = row_version + 1, updated_at = now()
+      WHERE id = $1 AND workspace_id = $2 AND row_version = $3`,
+    [job.id, job.workspace_id, job.row_version],
+  );
+  await appendDomainEvent(client, job, "job.cancel_requested", input.traceId, {
+    jobId: job.id,
+    state: job.state,
+  });
+  return job.state;
+}
+
+async function manualRetryTx(
+  client: PoolClient,
+  input: ManualRetryInput,
+): Promise<CreatedWorkflowJob & { dispatchSeq: number }> {
+  if (!input.retryable) {
+    throw new PersistenceError("JOB_NOT_RETRYABLE", "This terminal job is not retryable");
+  }
+
+  const oldJob = await loadJobForUpdate(client, input.workspaceId, input.jobId);
+  if (oldJob.state !== "FAILED" && oldJob.state !== "CANCELED") {
+    throw new PersistenceError("JOB_NOT_RETRYABLE", "Manual retry requires FAILED or CANCELED job");
+  }
+  const source = await client.query<WorkflowSourceRow>(
+    "SELECT type, input_snapshot FROM workflow_run WHERE id = $1 AND workspace_id = $2",
+    [oldJob.workflow_run_id, oldJob.workspace_id],
+  );
+  const oldWorkflow = requireRow(source.rows[0], "WORKFLOW_NOT_FOUND", "Source workflow run not found");
+  const created = await createWorkflowJobTx(client, {
+    workspaceId: oldJob.workspace_id,
+    projectId: oldJob.project_id,
+    type: oldWorkflow.type,
+    requestedBy: input.requestedBy,
+    kind: oldJob.kind,
+    inputHash: oldJob.input_hash,
+    inputSnapshot: oldJob.input_snapshot,
+    isCritical: oldJob.is_critical,
+    progressWeight: oldJob.progress_weight,
+    traceId: input.traceId,
+  });
+  const newJob = await loadJobForUpdate(client, oldJob.workspace_id, created.jobId);
+  const queued = await queueJobTx(client, newJob, input.traceId, null, 0);
+  return { ...created, dispatchSeq: queued.dispatch_seq };
+}
+
+async function cancelWorkflowRunTx(
+  client: PoolClient,
+  input: { workspaceId: string; workflowRunId: string; traceId: string },
+): Promise<{ workflowRunId: string; status: string }> {
+  const result = await client.query<{ id: string; state: JobState } & QueryResultRow>(
+    `SELECT id, state
+       FROM generation_job
+      WHERE workflow_run_id = $1 AND workspace_id = $2
+      ORDER BY id
+      FOR UPDATE`,
+    [input.workflowRunId, input.workspaceId],
+  );
+  if (result.rows.length === 0) {
+    throw new PersistenceError("WORKFLOW_NOT_FOUND", "Workflow run not found");
+  }
+  if (result.rows.every((row) => TERMINAL_STATES.has(row.state))) {
+    throw new PersistenceError("RUN_TERMINAL", "Workflow run is already terminal");
+  }
+  for (const row of result.rows) {
+    if (!TERMINAL_STATES.has(row.state)) {
+      await cancelJobTx(client, {
+        workspaceId: input.workspaceId,
+        jobId: row.id,
+        traceId: input.traceId,
+      });
+    }
+  }
+  const workflow = await client.query<{ status: string } & QueryResultRow>(
+    "SELECT status FROM workflow_run WHERE id = $1 AND workspace_id = $2",
+    [input.workflowRunId, input.workspaceId],
+  );
+  const status = requireRow(workflow.rows[0], "WORKFLOW_NOT_FOUND", "Workflow run not found").status;
+  return { workflowRunId: input.workflowRunId, status };
+}
+
 export class JobPersistenceService {
   constructor(
     private readonly pool: DatabasePool,
@@ -437,6 +546,48 @@ export class JobPersistenceService {
       const job = await loadJobForUpdate(client, input.workspaceId, input.jobId);
       const queued = await queueJobTx(client, job, input.traceId, input.availableAt ?? null, 0);
       return { dispatchSeq: queued.dispatch_seq };
+    });
+  }
+
+  async redispatchQueuedJob(input: {
+    workspaceId: string;
+    jobId: string;
+    dispatchSeq: number;
+    traceId: string;
+  }): Promise<{ dispatchSeq: number } | null> {
+    return withTransaction(this.pool, async (client) => {
+      const job = await loadJobForUpdate(client, input.workspaceId, input.jobId);
+      if (job.state !== "QUEUED" || job.dispatch_seq !== input.dispatchSeq) {
+        return null;
+      }
+      const result = await client.query<JobRow>(
+        `UPDATE generation_job
+            SET dispatch_seq = dispatch_seq + 1,
+                row_version = row_version + 1,
+                updated_at = now()
+          WHERE id = $1 AND workspace_id = $2 AND state = 'QUEUED'
+            AND dispatch_seq = $3 AND row_version = $4
+          RETURNING id, workspace_id, project_id, workflow_run_id, kind, state, input_hash,
+                    input_snapshot, dispatch_seq, row_version, retry_count, is_critical,
+                    progress_weight, lease_until`,
+        [job.id, job.workspace_id, input.dispatchSeq, job.row_version],
+      );
+      const redispatched = result.rows[0];
+      if (!redispatched) return null;
+      await client.query(
+        `INSERT INTO dispatch_outbox (workspace_id, job_id, dispatch_seq, available_at)
+         VALUES ($1, $2, $3, now())`,
+        [redispatched.workspace_id, redispatched.id, redispatched.dispatch_seq],
+      );
+      await appendDomainEvent(client, redispatched, "job.queued", input.traceId, {
+        jobId: redispatched.id,
+        workflowRunId: redispatched.workflow_run_id,
+        kind: redispatched.kind,
+        state: "QUEUED",
+        dispatchSeq: redispatched.dispatch_seq,
+        reason: "ORPHAN_RECOVERY",
+      });
+      return { dispatchSeq: redispatched.dispatch_seq };
     });
   }
 
@@ -595,7 +746,7 @@ export class JobPersistenceService {
         `UPDATE job_attempt
             SET finished_at = COALESCE(finished_at, now()), error_json = $3::jsonb
           WHERE id = $1 AND generation_job_id = $2`,
-        [attempt.id, job.id, JSON.stringify({ code: input.errorCode, message: input.errorMessage })],
+        [attempt.id, job.id, JSON.stringify({ code: input.errorCode, message: input.errorMessage, retryable: input.retryable })],
       );
 
       const attempts = await client.query<{ count: number } & QueryResultRow>(
@@ -630,44 +781,15 @@ export class JobPersistenceService {
   }
 
   async cancelJob(input: { workspaceId: string; jobId: string; traceId: string }): Promise<JobState> {
-    return withTransaction(this.pool, async (client) => {
-      const job = await loadJobForUpdate(client, input.workspaceId, input.jobId);
-      if (TERMINAL_STATES.has(job.state)) {
-        throw new PersistenceError("JOB_TERMINAL", "Job is already terminal");
-      }
-
-      if (job.state === "PENDING" || job.state === "QUEUED") {
-        await client.query(
-          `UPDATE generation_job
-              SET state = 'CANCELED', row_version = row_version + 1,
-                  lease_owner = NULL, lease_until = NULL, updated_at = now(), completed_at = now()
-            WHERE id = $1 AND workspace_id = $2 AND row_version = $3`,
-          [job.id, job.workspace_id, job.row_version],
-        );
-        await appendDomainEvent(client, job, "job.canceled", input.traceId, {
-          jobId: job.id,
-          state: "CANCELED",
-        });
-        await refreshWorkflowStatus(client, job.workflow_run_id);
-        return "CANCELED";
-      }
-
-      await client.query(
-        `UPDATE generation_job
-            SET cancel_requested_at = COALESCE(cancel_requested_at, now()),
-                row_version = row_version + 1, updated_at = now()
-          WHERE id = $1 AND workspace_id = $2 AND row_version = $3`,
-        [job.id, job.workspace_id, job.row_version],
-      );
-      await appendDomainEvent(client, job, "job.cancel_requested", input.traceId, {
-        jobId: job.id,
-        state: job.state,
-      });
-      return job.state;
-    });
+    return withTransaction(this.pool, (client) => cancelJobTx(client, input));
   }
 
-  async confirmCancellation(input: { workspaceId: string; jobId: string; traceId: string }): Promise<void> {
+  async confirmCancellation(input: {
+    workspaceId: string;
+    jobId: string;
+    attemptId: string;
+    traceId: string;
+  }): Promise<void> {
     await withTransaction(this.pool, async (client) => {
       const job = await loadJobForUpdate(client, input.workspaceId, input.jobId);
       if (TERMINAL_STATES.has(job.state)) {
@@ -677,14 +799,14 @@ export class JobPersistenceService {
         throw new PersistenceError("JOB_INVALID_TRANSITION", `Cannot confirm cancellation from ${job.state}`);
       }
 
+      const attempt = await loadLatestAttemptForUpdate(client, job.id);
+      requireCurrentAttempt(attempt, input.attemptId);
       await client.query(
         `UPDATE job_attempt
             SET finished_at = COALESCE(finished_at, now()),
                 error_json = COALESCE(error_json, '{"code":"CANCELED"}'::jsonb)
-          WHERE id = (
-            SELECT id FROM job_attempt WHERE generation_job_id = $1 ORDER BY attempt_no DESC LIMIT 1
-          )`,
-        [job.id],
+          WHERE id = $1 AND generation_job_id = $2`,
+        [attempt.id, job.id],
       );
       await client.query(
         `UPDATE generation_job
@@ -771,36 +893,7 @@ export class JobPersistenceService {
   }
 
   async manualRetry(input: ManualRetryInput): Promise<CreatedWorkflowJob & { dispatchSeq: number }> {
-    if (!input.retryable) {
-      throw new PersistenceError("JOB_NOT_RETRYABLE", "This terminal job is not retryable");
-    }
-
-    return withTransaction(this.pool, async (client) => {
-      const oldJob = await loadJobForUpdate(client, input.workspaceId, input.jobId);
-      if (oldJob.state !== "FAILED" && oldJob.state !== "CANCELED") {
-        throw new PersistenceError("JOB_NOT_RETRYABLE", "Manual retry requires FAILED or CANCELED job");
-      }
-      const source = await client.query<WorkflowSourceRow>(
-        "SELECT type, input_snapshot FROM workflow_run WHERE id = $1 AND workspace_id = $2",
-        [oldJob.workflow_run_id, oldJob.workspace_id],
-      );
-      const oldWorkflow = requireRow(source.rows[0], "WORKFLOW_NOT_FOUND", "Source workflow run not found");
-      const created = await createWorkflowJobTx(client, {
-        workspaceId: oldJob.workspace_id,
-        projectId: oldJob.project_id,
-        type: oldWorkflow.type,
-        requestedBy: input.requestedBy,
-        kind: oldJob.kind,
-        inputHash: oldJob.input_hash,
-        inputSnapshot: oldJob.input_snapshot,
-        isCritical: oldJob.is_critical,
-        progressWeight: oldJob.progress_weight,
-        traceId: input.traceId,
-      });
-      const newJob = await loadJobForUpdate(client, oldJob.workspace_id, created.jobId);
-      const queued = await queueJobTx(client, newJob, input.traceId, null, 0);
-      return { ...created, dispatchSeq: queued.dispatch_seq };
-    });
+    return withTransaction(this.pool, (client) => manualRetryTx(client, input));
   }
 
   async recordProviderEvent(input: ProviderEventInput): Promise<boolean> {
@@ -842,6 +935,30 @@ export class JobPersistenceService {
     });
   }
 
+  async cancelJobIdempotent(
+    scope: IdempotencyScope,
+    input: { workspaceId: string; jobId: string; traceId: string },
+  ): Promise<{ replayed: boolean; status: number; body: { jobId: string; state: JobState } }> {
+    return this.runIdempotent(scope, 200, async (client) => ({
+      jobId: input.jobId,
+      state: await cancelJobTx(client, input),
+    }));
+  }
+
+  async manualRetryIdempotent(
+    scope: IdempotencyScope,
+    input: ManualRetryInput,
+  ): Promise<{ replayed: boolean; status: number; body: CreatedWorkflowJob & { dispatchSeq: number } }> {
+    return this.runIdempotent(scope, 202, (client) => manualRetryTx(client, input));
+  }
+
+  async cancelWorkflowRunIdempotent(
+    scope: IdempotencyScope,
+    input: { workspaceId: string; workflowRunId: string; traceId: string },
+  ): Promise<{ replayed: boolean; status: number; body: { workflowRunId: string; status: string } }> {
+    return this.runIdempotent(scope, 200, (client) => cancelWorkflowRunTx(client, input));
+  }
+
   async markWaitingExternal(input: {
     workspaceId: string;
     jobId: string;
@@ -866,9 +983,14 @@ export class JobPersistenceService {
       );
       await client.query(
         `UPDATE generation_job
-            SET state = 'WAITING_EXTERNAL', row_version = row_version + 1, updated_at = now()
+            SET state = 'WAITING_EXTERNAL',
+                next_run_at = $4::timestamptz,
+                lease_owner = NULL,
+                lease_until = NULL,
+                row_version = row_version + 1,
+                updated_at = now()
           WHERE id = $1 AND workspace_id = $2 AND row_version = $3 AND state = 'RUNNING'`,
-        [job.id, job.workspace_id, job.row_version],
+        [job.id, job.workspace_id, job.row_version, input.nextPollAt],
       );
       await appendDomainEvent(client, job, "job.waiting_external", input.traceId, {
         jobId: job.id,
@@ -880,25 +1002,6 @@ export class JobPersistenceService {
   }
 
   async cancelWorkflowRun(input: { workspaceId: string; workflowRunId: string; traceId: string }): Promise<void> {
-    const jobs = await this.pool.connect();
-    let ids: string[];
-    try {
-      const result = await jobs.query<{ id: string; state: JobState } & QueryResultRow>(
-        `SELECT id, state FROM generation_job WHERE workflow_run_id = $1 AND workspace_id = $2`,
-        [input.workflowRunId, input.workspaceId],
-      );
-      if (result.rows.length === 0) {
-        throw new PersistenceError("WORKFLOW_NOT_FOUND", "Workflow run not found");
-      }
-      if (result.rows.every((row) => TERMINAL_STATES.has(row.state))) {
-        throw new PersistenceError("RUN_TERMINAL", "Workflow run is already terminal");
-      }
-      ids = result.rows.filter((row) => !TERMINAL_STATES.has(row.state)).map((row) => row.id);
-    } finally {
-      jobs.release();
-    }
-    for (const jobId of ids) {
-      await this.cancelJob({ workspaceId: input.workspaceId, jobId, traceId: input.traceId });
-    }
+    await withTransaction(this.pool, (client) => cancelWorkflowRunTx(client, input));
   }
 }
