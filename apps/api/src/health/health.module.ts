@@ -13,6 +13,7 @@ export class HealthModule {
     return {
       module: HealthModule,
       controllers: [HealthController],
+      exports: [API_ENV],
       providers: [
         { provide: API_ENV, useValue: env },
         PostgresHealth,

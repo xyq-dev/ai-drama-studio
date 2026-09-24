@@ -6,6 +6,7 @@ import { AppModule } from "./app.module";
 import { EnvValidationError, loadWorkerEnv } from "./config/env";
 import { findRepoRoot, readEnvFile } from "./config/env-file";
 import { SafeExceptionFilter } from "./http/safe-exception.filter";
+import { startQueueRuntime } from "./runtime/start-runtime";
 import { WORKER_BOOT_LOGS } from "./version";
 
 async function bootstrap(): Promise<void> {
@@ -15,11 +16,18 @@ async function bootstrap(): Promise<void> {
   }
   const root = findRepoRoot(__dirname);
   const env = loadWorkerEnv(process.env, readEnvFile(join(root, ".env")));
-  const app = await NestFactory.create(AppModule.register(env), {
+  const runtime = await startQueueRuntime({ databaseUrl: env.DATABASE_URL, redisUrl: env.REDIS_URL });
+  const app = await NestFactory.create(AppModule.register(env, runtime.status), {
     logger: ["error", "warn", "log"],
   });
   app.enableShutdownHooks();
   app.useGlobalFilters(new SafeExceptionFilter());
+  process.once("SIGTERM", () => {
+    void runtime.shutdown();
+  });
+  process.once("SIGINT", () => {
+    void runtime.shutdown();
+  });
   await app.listen(env.WORKER_HEALTH_PORT, env.BIND_HOST);
   logger.log(`worker health listening on ${env.BIND_HOST}:${String(env.WORKER_HEALTH_PORT)}`);
 }

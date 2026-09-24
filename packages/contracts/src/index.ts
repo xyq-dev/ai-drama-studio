@@ -46,15 +46,18 @@ export const workerLiveResponseSchema = z.object({
   status: z.literal("ok"),
   version: z.string(),
   timestamp: z.string(),
-  queueConsumer: z.literal("disabled"),
 });
 export type WorkerLiveResponse = z.infer<typeof workerLiveResponseSchema>;
 
-export const workerReadyResponseSchema = workerLiveResponseSchema.extend({
+export const workerReadyResponseSchema = z.object({
+  service: z.literal(SERVICE_NAME.worker),
   status: z.enum(["ok", "degraded"]),
+  version: z.string(),
+  timestamp: z.string(),
   dependencies: z.object({
     postgres: dependencyHealthSchema,
     redis: dependencyHealthSchema,
+    queue: dependencyHealthSchema,
   }),
 });
 export type WorkerReadyResponse = z.infer<typeof workerReadyResponseSchema>;

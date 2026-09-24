@@ -17,6 +17,18 @@ export {
   type ProviderEventInput,
   type QueueJobInput,
 } from "./job-service";
+export {
+  RuntimeStore,
+  insertProject,
+  requestHash,
+  type DomainEventView,
+  type ExecutionContext,
+  type ExpiredLeaseRow,
+  type JobView,
+  type OutboxDispatchRow,
+  type ProjectRecord,
+  type WorkflowView,
+} from "./runtime-store";
 
 export interface PostgresPoolOptions {
   connectionString: string;

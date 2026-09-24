@@ -1,7 +1,7 @@
 import { Inject, Injectable } from "@nestjs/common";
 import { SERVICE_NAME, type WorkerLiveResponse, type WorkerReadyResponse } from "@ai-drama/contracts";
 import { SERVICE_VERSION } from "../version";
-import { POSTGRES_PROBE, REDIS_PROBE } from "./tokens";
+import { POSTGRES_PROBE, QUEUE_PROBE, REDIS_PROBE } from "./tokens";
 
 export interface DependencyProbe {
   check(): Promise<"ok" | "down">;
@@ -12,6 +12,7 @@ export class HealthService {
   constructor(
     @Inject(POSTGRES_PROBE) private readonly postgres: DependencyProbe,
     @Inject(REDIS_PROBE) private readonly redis: DependencyProbe,
+    @Inject(QUEUE_PROBE) private readonly queue: DependencyProbe,
   ) {}
 
   live(): WorkerLiveResponse {
@@ -20,21 +21,25 @@ export class HealthService {
       status: "ok",
       version: SERVICE_VERSION,
       timestamp: new Date().toISOString(),
-      queueConsumer: "disabled",
     };
   }
 
   async ready(): Promise<WorkerReadyResponse> {
-    const [postgres, redis] = await Promise.all([this.postgres.check(), this.redis.check()]);
+    const [postgres, redis, queue] = await Promise.all([
+      this.postgres.check(),
+      this.redis.check(),
+      this.queue.check(),
+    ]);
+    const ready = postgres === "ok" && redis === "ok" && queue === "ok";
     return {
       service: SERVICE_NAME.worker,
-      status: postgres === "ok" && redis === "ok" ? "ok" : "degraded",
+      status: ready ? "ok" : "degraded",
       version: SERVICE_VERSION,
       timestamp: new Date().toISOString(),
-      queueConsumer: "disabled",
       dependencies: {
         postgres: { status: postgres },
         redis: { status: redis },
+        queue: { status: queue },
       },
     };
   }
