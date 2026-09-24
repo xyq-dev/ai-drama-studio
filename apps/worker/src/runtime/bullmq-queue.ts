@@ -45,7 +45,10 @@ export class BullMqQueue implements JobEnqueuer {
   }
 
   async hasDispatch(jobId: string, dispatchSeq: number): Promise<boolean> {
-    return (await this.queue.getJob(dispatchJobId(jobId, dispatchSeq))) !== undefined;
+    const job = await this.queue.getJob(dispatchJobId(jobId, dispatchSeq));
+    if (!job) return false;
+    const state = await job.getState();
+    return state !== "failed" && state !== "completed" && state !== "unknown";
   }
 
   async close(): Promise<void> {
