@@ -1,0 +1,101 @@
+name: M1-B bootstrap apply
+
+on:
+  push:
+    branches:
+      - codex/implement-github-issue-#7
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ai_drama_m1b
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d ai_drama_m1b"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/ai_drama_m1b
+
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+        with:
+          ref: codex/implement-github-issue-#7
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Apply reviewed M1-B source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .m1b-bootstrap/patch.b64.* | base64 --decode > /tmp/m1b-patch.tar.gz
+          tar -xzf /tmp/m1b-patch.tar.gz -C .
+          rm -f packages/database/migrations/0001_m1b_job_core.sql
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.0
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.21.0
+          cache: pnpm
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: services/media-worker/pyproject.toml
+
+      - name: Resolve dependencies and lockfile
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Validate and generate Prisma
+        run: |
+          pnpm --filter @ai-drama/database prisma:validate
+          pnpm --filter @ai-drama/database prisma:generate
+
+      - name: Run live PostgreSQL integration suite
+        run: pnpm --filter @ai-drama/database integration
+
+      - name: Verify JavaScript workspace
+        run: pnpm verify
+
+      - name: Test Python media worker
+        run: |
+          python -m pip install -e "services/media-worker[dev]"
+          pytest services/media-worker/tests
+
+      - name: Commit validated implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .m1b-bootstrap
+          rm -f .github/workflows/m1b-bootstrap.yml
+          git add -A
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --cached --quiet; then
+            echo "No implementation changes to commit"
+            exit 1
+          fi
+          git commit -m "feat: complete M1-B durable persistence"
+          git push origin HEAD:codex/implement-github-issue-#7
