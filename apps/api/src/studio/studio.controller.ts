@@ -130,10 +130,18 @@ export class EventsController {
     @Res() response: SseResponse,
     @Headers("last-event-id") lastEventHeader?: string,
   ): Promise<void> {
+    let closed = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    request.on("close", () => {
+      closed = true;
+      if (timer) clearTimeout(timer);
+    });
+
     const cursor = lastEventHeader && lastEventHeader.length > 0 ? lastEventHeader : "0";
     try {
       if (cursor !== "0") await this.store.assertCursor(this.studio.workspace, cursor);
     } catch (error) {
+      if (closed) return;
       if (error instanceof PersistenceError) {
         response.status(error.code === "EVENT_CURSOR_EXPIRED" ? 409 : 400).json({
           error: { code: error.code, message: error.message, traceId: "sse" },
@@ -142,17 +150,18 @@ export class EventsController {
       }
       throw error;
     }
+    if (closed) return;
+
     response.status(200);
     response.setHeader("Content-Type", "text/event-stream");
     response.setHeader("Cache-Control", "no-cache");
     response.setHeader("Connection", "keep-alive");
-    const seen = new Set<string>();
     let current = cursor;
     const send = async (): Promise<void> => {
       const events = await this.store.listEventsAfter(this.studio.workspace, current, 100);
+      if (closed) return;
       for (const event of events) {
-        if (seen.has(event.eventId) || BigInt(event.eventId) <= BigInt(current)) continue;
-        seen.add(event.eventId);
+        if (BigInt(event.eventId) <= BigInt(current)) continue;
         current = event.eventId;
         response.write(`id: ${event.eventId}\n`);
         response.write(`event: ${event.eventType}\n`);
@@ -166,12 +175,14 @@ export class EventsController {
         );
       }
     };
+    const schedule = (): void => {
+      if (closed) return;
+      timer = setTimeout(() => {
+        void send().finally(schedule);
+      }, 250);
+    };
+
     await send();
-    const timer = setInterval(() => {
-      void send().catch(() => undefined);
-    }, 250);
-    request.on("close", () => {
-      clearInterval(timer);
-    });
+    schedule();
   }
 }
