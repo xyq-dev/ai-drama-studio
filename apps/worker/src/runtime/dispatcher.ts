@@ -12,7 +12,7 @@ export interface JobEnqueuer {
 }
 
 export function dispatchJobId(jobId: string, dispatchSeq: number): string {
-  return `${jobId}:${dispatchSeq}`;
+  return `${jobId}__${dispatchSeq}`;
 }
 
 export class OutboxDispatcher {
@@ -23,11 +23,6 @@ export class OutboxDispatcher {
 
   async dispatchOnce(limit = 50): Promise<number> {
     const rows = await this.store.listUndispatched(limit);
-    return this.enqueueRows(rows);
-  }
-
-  async redispatchOrphans(graceMs: number, limit = 50): Promise<number> {
-    const rows = await this.store.listOrphanQueued(graceMs, limit);
     return this.enqueueRows(rows);
   }
 
