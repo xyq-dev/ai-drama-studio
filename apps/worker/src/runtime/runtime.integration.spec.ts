@@ -204,6 +204,25 @@ describe("M1-C Redis and BullMQ integration", () => {
     expect(await jobState(created.jobId)).toBe("FAILED");
   });
 
+  it("does not replace a healthy queued BullMQ job merely because it is old", async () => {
+    const { workspaceId, projectId } = await seed();
+    const created = await queueOutcome(workspaceId, projectId, "success");
+    await dispatcher.dispatchOnce();
+    await sql(
+      "UPDATE dispatch_outbox SET dispatched_at = now() - interval '1 minute' WHERE job_id = $1 AND dispatch_seq = $2",
+      [created.jobId, created.dispatchSeq],
+    );
+
+    await reconciler.reconcileOnce();
+
+    const job = await sql<{ dispatch_seq: number; state: string }>(
+      "SELECT dispatch_seq, state FROM generation_job WHERE id = $1",
+      [created.jobId],
+    );
+    expect(job.rows[0]).toMatchObject({ dispatch_seq: 1, state: "QUEUED" });
+    expect(await queue.queue.getJob(dispatchJobId(created.jobId, 1))).toBeTruthy();
+  });
+
   it("recovers an expired lease and a lost Redis message without a blind provider submit", async () => {
     const { workspaceId, projectId } = await seed();
     const lost = await queueOutcome(workspaceId, projectId, "success");
