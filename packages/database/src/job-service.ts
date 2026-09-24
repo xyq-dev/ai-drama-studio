@@ -829,4 +829,76 @@ export class JobPersistenceService {
       client.release();
     }
   }
+
+  async createAndQueueWorkflowJob(
+    scope: IdempotencyScope,
+    input: CreateWorkflowJobInput,
+  ): Promise<{ replayed: boolean; status: number; body: CreatedWorkflowJob & { dispatchSeq: number } }> {
+    return this.runIdempotent(scope, 202, async (client) => {
+      const created = await createWorkflowJobTx(client, input);
+      const job = await loadJobForUpdate(client, input.workspaceId, created.jobId);
+      const queued = await queueJobTx(client, job, input.traceId, null, 0);
+      return { ...created, dispatchSeq: queued.dispatch_seq };
+    });
+  }
+
+  async markWaitingExternal(input: {
+    workspaceId: string;
+    jobId: string;
+    attemptId: string;
+    providerConfigurationId: string;
+    providerRequestId: string;
+    traceId: string;
+    nextPollAt: string;
+  }): Promise<void> {
+    await withTransaction(this.pool, async (client) => {
+      const job = await loadJobForUpdate(client, input.workspaceId, input.jobId);
+      if (job.state !== "RUNNING") {
+        throw new PersistenceError("JOB_INVALID_TRANSITION", `Cannot wait from ${job.state}`);
+      }
+      const attempt = await loadLatestAttemptForUpdate(client, job.id);
+      requireCurrentAttempt(attempt, input.attemptId);
+      await client.query(
+        `UPDATE job_attempt
+            SET provider_configuration_id = $3, provider_request_id = $4
+          WHERE id = $1 AND workspace_id = $2 AND provider_request_id IS NULL`,
+        [input.attemptId, input.workspaceId, input.providerConfigurationId, input.providerRequestId],
+      );
+      await client.query(
+        `UPDATE generation_job
+            SET state = 'WAITING_EXTERNAL', row_version = row_version + 1, updated_at = now()
+          WHERE id = $1 AND workspace_id = $2 AND row_version = $3 AND state = 'RUNNING'`,
+        [job.id, job.workspace_id, job.row_version],
+      );
+      await appendDomainEvent(client, job, "job.waiting_external", input.traceId, {
+        jobId: job.id,
+        providerRequestId: input.providerRequestId,
+        nextPollAt: input.nextPollAt,
+        state: "WAITING_EXTERNAL",
+      });
+    });
+  }
+
+  async cancelWorkflowRun(input: { workspaceId: string; workflowRunId: string; traceId: string }): Promise<void> {
+    const jobs = await this.pool.connect();
+    let ids: string[];
+    try {
+      const result = await jobs.query<{ id: string; state: JobState } & QueryResultRow>(
+        `SELECT id, state FROM generation_job WHERE workflow_run_id = $1 AND workspace_id = $2`,
+        [input.workflowRunId, input.workspaceId],
+      );
+      if (result.rows.length === 0) {
+        throw new PersistenceError("WORKFLOW_NOT_FOUND", "Workflow run not found");
+      }
+      if (result.rows.every((row) => TERMINAL_STATES.has(row.state))) {
+        throw new PersistenceError("RUN_TERMINAL", "Workflow run is already terminal");
+      }
+      ids = result.rows.filter((row) => !TERMINAL_STATES.has(row.state)).map((row) => row.id);
+    } finally {
+      jobs.release();
+    }
+    for (const jobId of ids) {
+      await this.cancelJob({ workspaceId: input.workspaceId, jobId, traceId: input.traceId });
+    }
+  }
 }

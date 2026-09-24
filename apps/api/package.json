@@ -9,6 +9,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src",
     "test": "vitest run",
+    "integration": "vitest run --config vitest.integration.config.ts",
     "clean": "node --eval \"require('node:fs').rmSync('dist',{recursive:true,force:true})\""
   },
   "dependencies": {

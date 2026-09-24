@@ -1,6 +1,6 @@
 # AI Drama Studio
 
-AI Drama Studio 是一个面向短剧创作的本地优先工作台。当前仓库处于 **M1-B persistence/job core**：在 M1-A 平台骨架上加入了 Prisma 数据模型、可审计 PostgreSQL Migration、可恢复的 GenerationJob/WorkflowRun 持久化服务、事务 outbox/DomainEvent、租约、重试与 API 幂等核心。真实模型、队列消费者和创作 UI 仍未实现，AI 短剧生成还不能使用。
+AI Drama Studio 是一个面向短剧创作的本地优先工作台。当前仓库包含 M1 persistence/job core，以及 Mock Provider、BullMQ outbox dispatcher、Worker consumer、最小项目/工作流 API 和 DomainEvent SSE。真实模型供应商和创作 UI 仍未实现。
 
 ## 目录
 
@@ -84,7 +84,7 @@ corepack pnpm --filter @ai-drama/comfyui-adapter dev
 corepack pnpm --filter @ai-drama/web dev
 ```
 
-Worker 启动日志仍会写明 `worker skeleton` 和 `queue consumer disabled in M1-A`。M1-B 已实现持久化/状态编排核心，但尚未把 BullMQ dispatcher/consumer 接入 Worker 进程。
+Worker 启动日志写明 `worker runtime` 和 `queue consumer enabled`。PostgreSQL 仍是业务状态真相；BullMQ 只投递 `{jobId}:{dispatchSeq}`。
 
 ## 数据库 Schema 与 Migration
 

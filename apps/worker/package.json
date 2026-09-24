@@ -9,12 +9,16 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src",
     "test": "vitest run",
+    "integration": "vitest run --config vitest.integration.config.ts",
     "clean": "node --eval \"require('node:fs').rmSync('dist',{recursive:true,force:true})\""
   },
   "dependencies": {
     "@ai-drama/contracts": "workspace:*",
     "@ai-drama/database": "workspace:*",
     "@ai-drama/health": "workspace:*",
+    "@ai-drama/providers": "workspace:*",
+    "bullmq": "5.58.5",
+    "ioredis": "6.0.0",
     "@nestjs/common": "catalog:",
     "@nestjs/core": "catalog:",
     "@nestjs/platform-express": "catalog:",
