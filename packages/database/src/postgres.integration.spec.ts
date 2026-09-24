@@ -276,6 +276,45 @@ describe("M1-B PostgreSQL integration", () => {
     expect(recovered.rows[0]).toMatchObject({ state: "QUEUED", dispatch_seq: 2, retry_count: 1 });
   });
 
+  it("keeps a requested cancellation terminal when a late success arrives", async () => {
+    const { workspaceId, projectId } = await seedWorkspaceProject("cancel-success-race");
+    const { jobId } = await createJob(workspaceId, projectId, "cancel-success-race");
+    await service.queueJob({ workspaceId, jobId, traceId: "trace-cancel-race-q" });
+    const attempt = await service.acquireQueuedJob({
+      workspaceId,
+      jobId,
+      dispatchSeq: 1,
+      leaseOwner: "cancel-race-worker",
+      leaseMs: 30_000,
+      traceId: "trace-cancel-race-a",
+    });
+    if (!attempt) throw new Error("cancel race attempt not acquired");
+
+    await expect(
+      service.cancelJob({ workspaceId, jobId, traceId: "trace-cancel-race-request" }),
+    ).resolves.toBe("RUNNING");
+    await service.succeedJob({
+      workspaceId,
+      jobId,
+      attemptId: attempt.attemptId,
+      traceId: "trace-cancel-race-late-success",
+      responseSnapshot: { late: true },
+    });
+
+    const job = await pool.query<{ state: string } & QueryResultRow>(
+      "SELECT state FROM generation_job WHERE id = $1",
+      [jobId],
+    );
+    expect(job.rows[0]?.state).toBe("CANCELED");
+    const events = await pool.query<{ event_type: string } & QueryResultRow>(
+      "SELECT event_type FROM domain_event WHERE aggregate_id = $1 ORDER BY id",
+      [jobId],
+    );
+    expect(events.rows.map((row) => row.event_type)).toContain("job.cancel_requested");
+    expect(events.rows.map((row) => row.event_type)).toContain("job.canceled");
+    expect(events.rows.map((row) => row.event_type)).not.toContain("job.succeeded");
+  });
+
   it("serializes workflow derivation across concurrent sibling completions", async () => {
     const { workspaceId, projectId } = await seedWorkspaceProject("workflow-concurrency");
     const first = await createJob(workspaceId, projectId, "workflow-concurrency-1");
