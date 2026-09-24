@@ -79,7 +79,7 @@ async function queueOutcome(workspaceId: string, projectId: string, outcome: str
     traceId: `trace-${outcome}`,
   });
   const queued = await jobs.queueJob({ workspaceId, jobId: created.jobId, traceId: `trace-${outcome}` });
-  return { ...created, dispatchSeq: queued.dispatchSeq };
+  return { workspaceId, ...created, dispatchSeq: queued.dispatchSeq };
 }
 
 async function jobState(jobId: string): Promise<string> {
