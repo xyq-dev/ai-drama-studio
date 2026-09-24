@@ -3,6 +3,15 @@ import { PersistenceError, RuntimeStore } from "@ai-drama/database";
 import { RUNTIME_STORE, STUDIO_SERVICE } from "./tokens";
 import { StudioService, createTraceId, type StudioContext } from "./studio.service";
 
+const UUID_PARAM_PIPE = {
+  transform(value: string): string {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)) {
+      throw new PersistenceError("VALIDATION_ERROR", "Route parameter must be a UUID");
+    }
+    return value;
+  },
+};
+
 interface StatusResponse {
   status(code: number): void;
 }
@@ -12,6 +21,8 @@ interface SseResponse {
   json(body: unknown): void;
   setHeader(name: string, value: string): void;
   write(chunk: string): void;
+  flushHeaders(): void;
+  end(): void;
 }
 
 interface SseRequest {
@@ -38,13 +49,13 @@ export class StudioController {
   }
 
   @Get("projects/:projectId")
-  getProject(@Param("projectId") projectId: string) {
+  getProject(@Param("projectId", UUID_PARAM_PIPE) projectId: string) {
     return this.studio.getProject(projectId);
   }
 
   @Post("projects/:projectId/workflows/mock")
   createMockWorkflow(
-    @Param("projectId") projectId: string,
+    @Param("projectId", UUID_PARAM_PIPE) projectId: string,
     @Body() body: unknown,
     @Res({ passthrough: true }) response: StatusResponse,
     @Headers("idempotency-key") idempotencyKey?: string,
@@ -57,18 +68,18 @@ export class StudioController {
   }
 
   @Get("projects/:projectId/workflow-runs")
-  listWorkflows(@Param("projectId") projectId: string) {
+  listWorkflows(@Param("projectId", UUID_PARAM_PIPE) projectId: string) {
     return this.studio.listWorkflows(projectId);
   }
 
   @Get("generation-jobs/:jobId")
-  getJob(@Param("jobId") jobId: string) {
+  getJob(@Param("jobId", UUID_PARAM_PIPE) jobId: string) {
     return this.studio.getJob(jobId);
   }
 
   @Post("generation-jobs/:jobId/cancel")
   cancelJob(
-    @Param("jobId") jobId: string,
+    @Param("jobId", UUID_PARAM_PIPE) jobId: string,
     @Res({ passthrough: true }) response: StatusResponse,
     @Headers("idempotency-key") idempotencyKey?: string,
     @Headers("x-trace-id") traceHeader?: string,
@@ -78,7 +89,7 @@ export class StudioController {
 
   @Post("generation-jobs/:jobId/retry")
   retryJob(
-    @Param("jobId") jobId: string,
+    @Param("jobId", UUID_PARAM_PIPE) jobId: string,
     @Res({ passthrough: true }) response: StatusResponse,
     @Headers("idempotency-key") idempotencyKey?: string,
     @Headers("x-trace-id") traceHeader?: string,
@@ -87,13 +98,13 @@ export class StudioController {
   }
 
   @Get("workflow-runs/:runId")
-  getWorkflow(@Param("runId") runId: string) {
+  getWorkflow(@Param("runId", UUID_PARAM_PIPE) runId: string) {
     return this.studio.getWorkflow(runId);
   }
 
   @Post("workflow-runs/:runId/cancel")
   cancelWorkflow(
-    @Param("runId") runId: string,
+    @Param("runId", UUID_PARAM_PIPE) runId: string,
     @Res({ passthrough: true }) response: StatusResponse,
     @Headers("idempotency-key") idempotencyKey?: string,
     @Headers("x-trace-id") traceHeader?: string,
@@ -156,6 +167,8 @@ export class EventsController {
     response.setHeader("Content-Type", "text/event-stream");
     response.setHeader("Cache-Control", "no-cache");
     response.setHeader("Connection", "keep-alive");
+    response.flushHeaders();
+
     let current = cursor;
     const send = async (): Promise<void> => {
       const events = await this.store.listEventsAfter(this.studio.workspace, current, 100);
@@ -175,14 +188,25 @@ export class EventsController {
         );
       }
     };
+    const stop = (): void => {
+      if (closed) return;
+      closed = true;
+      if (timer) clearTimeout(timer);
+      response.end();
+    };
     const schedule = (): void => {
       if (closed) return;
       timer = setTimeout(() => {
-        void send().finally(schedule);
+        void send().then(schedule).catch(stop);
       }, 250);
     };
 
-    await send();
+    try {
+      await send();
+    } catch {
+      stop();
+      return;
+    }
     schedule();
   }
 }
