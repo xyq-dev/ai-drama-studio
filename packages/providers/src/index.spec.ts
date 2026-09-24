@@ -7,9 +7,10 @@ describe("MockProvider", () => {
     const first = provider.submit({ clientRequestKey: "job:1", outcome: "success" });
     const second = provider.submit({ clientRequestKey: "job:1", outcome: "success" });
     expect(first.kind).toBe("succeeded");
-    expect(first.providerRequestId).toBe("mock:job:1");
+    expect(first.providerRequestId).toBe("mock|success|job:1");
     expect(second.providerRequestId).toBe(first.providerRequestId);
     expect(provider.inspect(first.providerRequestId)).toBe("SUCCEEDED");
+    expect(new MockProvider().inspect(first.providerRequestId)).toBe("SUCCEEDED");
   });
 
   it("records retryable, terminal, canceled, and delayed requests", () => {
@@ -25,6 +26,7 @@ describe("MockProvider", () => {
     expect(provider.inspect(delayed.providerRequestId)).toBe("ACTIVE");
     provider.completeDelayed(delayed.providerRequestId);
     expect(provider.inspect(delayed.providerRequestId)).toBe("SUCCEEDED");
+    expect(new MockProvider().inspect(delayed.providerRequestId)).toBe("SUCCEEDED");
     expect(provider.inspect("missing")).toBe("UNKNOWN");
   });
 });
