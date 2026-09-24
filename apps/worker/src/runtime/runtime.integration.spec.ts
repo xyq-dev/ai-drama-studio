@@ -12,7 +12,7 @@ import {
 import { MockProvider } from "@ai-drama/providers";
 import { BullMqQueue } from "./bullmq-queue";
 import { MockJobConsumer } from "./consumer";
-import { OutboxDispatcher } from "./dispatcher";
+import { OutboxDispatcher, dispatchJobId } from "./dispatcher";
 import { RuntimeReconciler } from "./reconciler";
 import { startQueueRuntime } from "./start-runtime";
 
@@ -127,8 +127,8 @@ describe("M1-C Redis and BullMQ integration", () => {
       [created.jobId],
     );
     expect(after.rows[0]?.dispatched_at).toBeTruthy();
-    const bullJob = await queue.queue.getJob(`${created.jobId}:${String(created.dispatchSeq)}`);
-    expect(bullJob?.id).toBe(`${created.jobId}:${String(created.dispatchSeq)}`);
+    const bullJob = await queue.queue.getJob(dispatchJobId(created.jobId, created.dispatchSeq));
+    expect(bullJob?.id).toBe(dispatchJobId(created.jobId, created.dispatchSeq));
   });
 
   it("treats a repeated enqueue of the same dispatch id as safe", async () => {
@@ -211,7 +211,12 @@ describe("M1-C Redis and BullMQ integration", () => {
     await queue.queue.obliterate({ force: true });
     expect(await jobState(lost.jobId)).toBe("QUEUED");
     await reconciler.reconcileOnce();
-    const restored = await queue.queue.getJob(`${lost.jobId}:1`);
+    const redispatched = await sql<{ dispatch_seq: number }>(
+      "SELECT dispatch_seq FROM generation_job WHERE id = $1",
+      [lost.jobId],
+    );
+    expect(redispatched.rows[0]?.dispatch_seq).toBe(2);
+    const restored = await queue.queue.getJob(dispatchJobId(lost.jobId, 2));
     expect(restored).toBeTruthy();
 
     const delayed = await queueOutcome(workspaceId, projectId, "delayed");
@@ -230,10 +235,57 @@ describe("M1-C Redis and BullMQ integration", () => {
       [delayed.jobId],
     );
     expect(seqAfter.rows[0]?.dispatch_seq).toBe(seqBefore.rows[0]?.dispatch_seq);
-    provider.completeDelayed(`mock:${delayed.jobId}:1`);
-    await sql("UPDATE generation_job SET state = 'WAITING_EXTERNAL' WHERE id = $1", [delayed.jobId]);
-    await reconciler.reconcileOnce();
+    const restartedProvider = new MockProvider();
+    const restartedReconciler = new RuntimeReconciler(jobs, store, restartedProvider, dispatcher, 0);
+    await restartedReconciler.reconcileOnce();
     expect(await jobState(delayed.jobId)).toBe("SUCCEEDED");
+  });
+
+  it("rejects cancellation from a superseded attempt", async () => {
+    const { workspaceId, projectId, providerId } = await seed();
+    const created = await queueOutcome(workspaceId, projectId, "success");
+    const first = await jobs.acquireQueuedJob({
+      workspaceId,
+      jobId: created.jobId,
+      dispatchSeq: 1,
+      leaseOwner: "cancel-worker-1",
+      leaseMs: 1_000,
+      traceId: "cancel-attempt-1",
+      providerConfigurationId: providerId,
+    });
+    if (!first) throw new Error("first cancellation attempt not acquired");
+    await sql("UPDATE generation_job SET lease_until = now() - interval '1 second' WHERE id = $1", [created.jobId]);
+    await expect(
+      jobs.recoverExpiredLease({ workspaceId, jobId: created.jobId, traceId: "cancel-recover" }),
+    ).resolves.toBe("requeued");
+    const second = await jobs.acquireQueuedJob({
+      workspaceId,
+      jobId: created.jobId,
+      dispatchSeq: 2,
+      leaseOwner: "cancel-worker-2",
+      leaseMs: 1_000,
+      traceId: "cancel-attempt-2",
+      providerConfigurationId: providerId,
+    });
+    if (!second) throw new Error("second cancellation attempt not acquired");
+
+    await expect(
+      jobs.confirmCancellation({
+        workspaceId,
+        jobId: created.jobId,
+        attemptId: first.attemptId,
+        traceId: "stale-cancel",
+      }),
+    ).rejects.toMatchObject({ code: "ATTEMPT_SUPERSEDED" });
+    expect(await jobState(created.jobId)).toBe("RUNNING");
+
+    await jobs.confirmCancellation({
+      workspaceId,
+      jobId: created.jobId,
+      attemptId: second.attemptId,
+      traceId: "current-cancel",
+    });
+    expect(await jobState(created.jobId)).toBe("CANCELED");
   });
 
   it("honors the persisted provider max_attempts", async () => {
