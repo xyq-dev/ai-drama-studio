@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Redis } from "ioredis";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -74,7 +74,7 @@ async function queueOutcome(workspaceId: string, projectId: string, outcome: str
     type: "MOCK_GENERATION",
     requestedBy: "integration",
     kind: "MOCK",
-    inputHash: outcome,
+    inputHash: createHash("sha256").update(outcome).digest("hex"),
     inputSnapshot: { outcome },
     traceId: `trace-${outcome}`,
   });
