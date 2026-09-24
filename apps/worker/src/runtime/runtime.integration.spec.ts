@@ -186,6 +186,15 @@ describe("M1-C Redis and BullMQ integration", () => {
     );
     expect(attempts.rows[0]?.attempt_no).toBe(1);
     expect(attempts.rows[0]?.dispatch_seq).toBe(2);
+    const retrySchedule = await sql<{ available_at: Date; next_run_at: Date | null }>(
+      `SELECT o.available_at, j.next_run_at
+         FROM dispatch_outbox o
+         JOIN generation_job j ON j.id = o.job_id
+        WHERE o.job_id = $1 AND o.dispatch_seq = 2`,
+      [retryable.jobId],
+    );
+    expect(retrySchedule.rows[0]?.next_run_at).toBeTruthy();
+    expect(retrySchedule.rows[0]?.available_at.getTime()).toBeGreaterThan(Date.now() + 25_000);
   });
 
   it("keeps automatic retry on the same job and manual retry on a new workflow", async () => {
