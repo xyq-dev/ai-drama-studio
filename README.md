@@ -6,14 +6,14 @@ AI Drama Studio 是一个面向短剧创作的本地优先工作台。当前仓�
 
 ```text
 apps/web                 Next.js 状态页
-apps/api                 NestJS Core API 健康检查
-apps/worker              NestJS Worker 空壳，不消费队列
+apps/api                 NestJS Core API：健康检查 + M1 项目/Mock 工作流/SSE
+apps/worker              NestJS Worker：BullMQ consumer / outbox dispatcher / reconciler
 services/media-worker    Python FastAPI 健康检查
 services/comfyui-adapter ComfyUI Adapter stub
 packages/contracts       健康检查共享类型
 packages/database        Prisma + PostgreSQL M1-B persistence/job core
 packages/domain          Job 状态机与 WorkflowRun 汇总规则
-packages/providers       包边界，无 Provider 实现
+packages/providers       M1 deterministic Mock Provider
 infra/compose.yaml       PostgreSQL、Redis、MinIO
 docs/                    已冻结的 V1 架构文档
 ```
@@ -84,7 +84,7 @@ corepack pnpm --filter @ai-drama/comfyui-adapter dev
 corepack pnpm --filter @ai-drama/web dev
 ```
 
-Worker 启动日志写明 `worker runtime` 和 `queue consumer enabled`。PostgreSQL 仍是业务状态真相；BullMQ 只投递 `{jobId}:{dispatchSeq}`。
+Worker 启动日志写明 `worker runtime` 和 `queue consumer enabled`。PostgreSQL 仍是业务状态真相；BullMQ payload 保留 `jobId + dispatchSeq`，自定义 queue job ID 使用不含冒号的 `${jobId}__${dispatchSeq}` 编码。
 
 ## 数据库 Schema 与 Migration
 
@@ -94,7 +94,10 @@ M1-B Prisma Schema 位于 `packages/database/prisma/schema.prisma`，Migration �
 corepack pnpm --filter @ai-drama/database prisma:validate
 corepack pnpm --filter @ai-drama/database prisma:generate
 corepack pnpm --filter @ai-drama/database migrate
+corepack pnpm --filter @ai-drama/database workspace:provision
 ```
+
+首次初始化数据库时，必须在 Migration 后执行 `workspace:provision`。该命令读取服务端配置的 `APP_WORKSPACE_ID`（以及可选 `APP_WORKSPACE_NAME`），只创建该固定 Workspace；已存在但非 `ACTIVE` 时会失败，不会从名称或“第一条记录”推断 Workspace。
 
 自定义 Migration runner 使用单个 PostgreSQL `PoolClient` 持有 advisory lock，并在该同一会话上执行每个事务；已应用 migration 的 SHA-256 会记录并校验。数据库特有 CHECK、partial index、复合 FK 与 outbox 约束保留在 SQL Migration 中。
 
@@ -158,8 +161,7 @@ M1-B GitHub Actions 还会在隔离 PostgreSQL 16 上执行 Prisma validate/gene
 
 ## 本阶段明确没有实现
 
-- BullMQ dispatcher/consumer/reconciler 的进程接线与 SSE API
-- Mock Provider 或真实 AI Provider
+- 真实 AI Provider
 - ComfyUI Workflow 调用
 - FFmpeg 合成
 - Story/Script/Character/Scene/Shot 等 M2 生产模型
