@@ -10,7 +10,7 @@ import {
   type PostgresPool,
 } from "@ai-drama/database";
 import { MockProvider } from "@ai-drama/providers";
-import { BullMqQueue } from "./bullmq-queue";
+import { BullMqQueue, startBullWorker } from "./bullmq-queue";
 import { MockJobConsumer } from "./consumer";
 import { OutboxDispatcher, dispatchJobId } from "./dispatcher";
 import { RuntimeReconciler } from "./reconciler";
@@ -230,6 +230,42 @@ describe("M1-C Redis and BullMQ integration", () => {
     );
     expect(job.rows[0]).toMatchObject({ dispatch_seq: 1, state: "QUEUED" });
     expect(await queue.queue.getJob(dispatchJobId(created.jobId, 1))).toBeTruthy();
+  });
+
+  it("redispatches a retained failed BullMQ message with a new dispatch generation", async () => {
+    const { workspaceId, projectId } = await seed();
+    const created = await queueOutcome(workspaceId, projectId, "success");
+    await dispatcher.dispatchOnce();
+
+    const failingWorker = startBullWorker(
+      { url: redisUrl, maxRetriesPerRequest: null },
+      prefix,
+      async () => {
+        throw new Error("forced BullMQ handler failure");
+      },
+    );
+    try {
+      const deadline = Date.now() + 5_000;
+      let state = "unknown";
+      while (Date.now() < deadline) {
+        const queued = await queue.queue.getJob(dispatchJobId(created.jobId, created.dispatchSeq));
+        state = queued ? await queued.getState() : "missing";
+        if (state === "failed") break;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(state).toBe("failed");
+    } finally {
+      await failingWorker.close();
+    }
+
+    await reconciler.reconcileOnce();
+
+    const recovered = await sql<{ state: string; dispatch_seq: number }>(
+      "SELECT state, dispatch_seq FROM generation_job WHERE id = $1",
+      [created.jobId],
+    );
+    expect(recovered.rows[0]).toMatchObject({ state: "QUEUED", dispatch_seq: 2 });
+    expect(await queue.queue.getJob(dispatchJobId(created.jobId, 2))).toBeTruthy();
   });
 
   it("recovers an expired lease and a lost Redis message without a blind provider submit", async () => {
