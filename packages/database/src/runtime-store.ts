@@ -16,6 +16,7 @@ export interface ExpiredLeaseRow {
   attemptId: string;
   providerConfigurationId: string | null;
   providerRequestId: string | null;
+  cancelRequested: boolean;
 }
 
 export interface ExecutionContext {
@@ -244,7 +245,7 @@ export class RuntimeStore {
     try {
       const result = await client.query<QueryResultRow>(
         `SELECT j.workspace_id, j.id AS job_id, ja.id AS attempt_id,
-                ja.provider_configuration_id, ja.provider_request_id
+                ja.provider_configuration_id, ja.provider_request_id, j.cancel_requested_at
            FROM generation_job j
            JOIN LATERAL (
              SELECT id, provider_configuration_id, provider_request_id
@@ -271,7 +272,7 @@ export class RuntimeStore {
     try {
       const result = await client.query<QueryResultRow>(
         `SELECT j.workspace_id, j.id AS job_id, ja.id AS attempt_id,
-                ja.provider_configuration_id, ja.provider_request_id
+                ja.provider_configuration_id, ja.provider_request_id, j.cancel_requested_at
            FROM generation_job j
            JOIN LATERAL (
              SELECT id, provider_configuration_id, provider_request_id
@@ -340,35 +341,7 @@ export class RuntimeStore {
   async getWorkflow(workspaceId: string, workflowRunId: string): Promise<WorkflowView> {
     const client = await this.pool.connect();
     try {
-      const workflow = await client.query<QueryResultRow>(
-        `SELECT id, workspace_id, project_id, type, status, created_at
-           FROM workflow_run WHERE id = $1 AND workspace_id = $2`,
-        [workflowRunId, workspaceId],
-      );
-      const row = workflow.rows[0];
-      if (!row) throw new PersistenceError("NOT_FOUND", "Workflow run not found");
-      const jobs = await this.queryJobs(
-        `SELECT ${JOB_COLUMNS}
-           FROM generation_job j
-           LEFT JOIN LATERAL (
-             SELECT id, attempt_no, provider_request_id
-               FROM job_attempt WHERE generation_job_id = j.id
-              ORDER BY attempt_no DESC LIMIT 1
-           ) ja ON true
-          WHERE j.workflow_run_id = $1 AND j.workspace_id = $2
-          ORDER BY j.created_at, j.id`,
-        [workflowRunId, workspaceId],
-        client,
-      );
-      return {
-        id: String(row.id),
-        workspaceId: String(row.workspace_id),
-        projectId: String(row.project_id),
-        type: String(row.type),
-        status: String(row.status),
-        createdAt: iso(row.created_at as Date),
-        jobs,
-      };
+      return await this.getWorkflowWithClient(client, workspaceId, workflowRunId);
     } finally {
       client.release();
     }
@@ -385,12 +358,48 @@ export class RuntimeStore {
       );
       const views: WorkflowView[] = [];
       for (const run of runs.rows) {
-        views.push(await this.getWorkflow(workspaceId, String(run.id)));
+        views.push(await this.getWorkflowWithClient(client, workspaceId, String(run.id)));
       }
       return views;
     } finally {
       client.release();
     }
+  }
+
+  private async getWorkflowWithClient(
+    client: PoolClient,
+    workspaceId: string,
+    workflowRunId: string,
+  ): Promise<WorkflowView> {
+    const workflow = await client.query<QueryResultRow>(
+      `SELECT id, workspace_id, project_id, type, status, created_at
+         FROM workflow_run WHERE id = $1 AND workspace_id = $2`,
+      [workflowRunId, workspaceId],
+    );
+    const row = workflow.rows[0];
+    if (!row) throw new PersistenceError("NOT_FOUND", "Workflow run not found");
+    const jobs = await this.queryJobs(
+      `SELECT ${JOB_COLUMNS}
+         FROM generation_job j
+         LEFT JOIN LATERAL (
+           SELECT id, attempt_no, provider_request_id
+             FROM job_attempt WHERE generation_job_id = j.id
+            ORDER BY attempt_no DESC LIMIT 1
+         ) ja ON true
+        WHERE j.workflow_run_id = $1 AND j.workspace_id = $2
+        ORDER BY j.created_at, j.id`,
+      [workflowRunId, workspaceId],
+      client,
+    );
+    return {
+      id: String(row.id),
+      workspaceId: String(row.workspace_id),
+      projectId: String(row.project_id),
+      type: String(row.type),
+      status: String(row.status),
+      createdAt: iso(row.created_at as Date),
+      jobs,
+    };
   }
 
   async assertCursor(workspaceId: string, lastEventId: string): Promise<void> {
@@ -507,6 +516,7 @@ function mapLease(row: QueryResultRow): ExpiredLeaseRow {
     attemptId: String(row.attempt_id),
     providerConfigurationId: row.provider_configuration_id ? String(row.provider_configuration_id) : null,
     providerRequestId: row.provider_request_id ? String(row.provider_request_id) : null,
+    cancelRequested: row.cancel_requested_at !== null,
   };
 }
 
