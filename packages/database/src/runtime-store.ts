@@ -102,23 +102,25 @@ export class RuntimeStore {
   async ensureMockProvider(workspaceId: string, maxAttempts = 3): Promise<string> {
     const client = await this.pool.connect();
     try {
+      const created = await client.query<{ id: string } & QueryResultRow>(
+        `INSERT INTO provider_configuration
+          (workspace_id, provider_key, capability, default_timeout_ms, max_attempts)
+         VALUES ($1, 'mock', 'mock.generate', 30000, $2)
+         ON CONFLICT (workspace_id, provider_key, capability) DO NOTHING
+         RETURNING id`,
+        [workspaceId, maxAttempts],
+      );
+      const insertedId = created.rows[0]?.id;
+      if (insertedId) return insertedId;
+
       const existing = await client.query<{ id: string } & QueryResultRow>(
         `SELECT id FROM provider_configuration
           WHERE workspace_id = $1 AND provider_key = 'mock' AND capability = 'mock.generate'`,
         [workspaceId],
       );
-      const found = existing.rows[0]?.id;
-      if (found) return found;
-      const created = await client.query<{ id: string } & QueryResultRow>(
-        `INSERT INTO provider_configuration
-          (workspace_id, provider_key, capability, default_timeout_ms, max_attempts)
-         VALUES ($1, 'mock', 'mock.generate', 30000, $2)
-         RETURNING id`,
-        [workspaceId, maxAttempts],
-      );
-      const id = created.rows[0]?.id;
-      if (!id) throw new PersistenceError("PROVIDER_CONFIG_INVALID", "Mock provider configuration was not created");
-      return id;
+      const existingId = existing.rows[0]?.id;
+      if (!existingId) throw new PersistenceError("PROVIDER_CONFIG_INVALID", "Mock provider configuration was not created");
+      return existingId;
     } finally {
       client.release();
     }
@@ -202,9 +204,10 @@ export class RuntimeStore {
           AND j.dispatch_seq = o.dispatch_seq
           AND o.dispatched_at IS NOT NULL
           AND o.dispatched_at <= $1
+          AND (j.next_run_at IS NULL OR j.next_run_at <= $3)
         ORDER BY o.dispatched_at
         LIMIT $2`,
-      [cutoff, limit],
+      [cutoff, limit, now],
     );
   }
 
@@ -250,7 +253,9 @@ export class RuntimeStore {
               ORDER BY attempt_no DESC
               LIMIT 1
            ) ja ON true
-          WHERE j.state = 'WAITING_EXTERNAL' AND ja.provider_request_id IS NOT NULL
+          WHERE j.state = 'WAITING_EXTERNAL'
+            AND ja.provider_request_id IS NOT NULL
+            AND (j.next_run_at IS NULL OR j.next_run_at <= now())
           ORDER BY j.updated_at
           LIMIT $1`,
         [limit],
