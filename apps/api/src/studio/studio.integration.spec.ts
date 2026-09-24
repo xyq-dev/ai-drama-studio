@@ -189,6 +189,11 @@ describe("M1-C API and SSE integration", () => {
     expect(retryRuns.rows[0]?.count).toBe(2);
   });
 
+  it("rejects malformed UUID route parameters without reaching PostgreSQL", async () => {
+    const response = await fetch(`${base}/api/v1/projects/not-a-uuid`);
+    expect(response.status).toBe(400);
+  });
+
   it("replays DomainEvents, supports reconnect, and expires an old cursor", async () => {
     const project = await fetch(`${base}/api/v1/projects`, {
       method: "POST",
