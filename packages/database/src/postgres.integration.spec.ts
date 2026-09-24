@@ -691,6 +691,21 @@ describe("M1-B PostgreSQL integration", () => {
       [workspaceId],
     );
     expect(reservation.rows[0]?.count).toBe(0);
+
+    const expiredScope = {
+      ...scope,
+      key: "key-expired",
+      requestHash: hash("expired-request-1"),
+      expiresAt: new Date(Date.now() - 1_000),
+    };
+    const expiredFirst = await service.createWorkflowJobIdempotent(expiredScope, input);
+    const expiredSecond = await service.createWorkflowJobIdempotent(
+      { ...expiredScope, requestHash: hash("expired-request-2"), expiresAt: new Date(Date.now() + 60_000) },
+      input,
+    );
+    expect(expiredFirst.replayed).toBe(false);
+    expect(expiredSecond.replayed).toBe(false);
+    expect(expiredSecond.body.jobId).not.toBe(expiredFirst.body.jobId);
   });
 
   it("deduplicates provider events and binds each event to the exact attempt/request lineage", async () => {
@@ -778,7 +793,7 @@ describe("M1-B PostgreSQL integration", () => {
 
   it("persists DomainEvents with job state changes", async () => {
     const { workspaceId, projectId } = await seedWorkspaceProject("events");
-    const { jobId } = await createJob(workspaceId, projectId, "events");
+    const { workflowRunId, jobId } = await createJob(workspaceId, projectId, "events");
     await service.queueJob({ workspaceId, jobId, traceId: "trace-events-queue" });
     const eventsAttempt = await service.acquireQueuedJob({
       workspaceId,
@@ -806,5 +821,12 @@ describe("M1-B PostgreSQL integration", () => {
       "job.started",
       "job.succeeded",
     ]);
+
+    const workflowEvents = await pool.query<{ event_type: string; payload_json: { status?: string } } & QueryResultRow>(
+      "SELECT event_type, payload_json FROM domain_event WHERE aggregate_id = $1 ORDER BY id",
+      [workflowRunId],
+    );
+    expect(workflowEvents.rows.map((row) => row.event_type)).toEqual(["workflow.updated", "workflow.updated"]);
+    expect(workflowEvents.rows.map((row) => row.payload_json.status)).toEqual(["RUNNING", "SUCCEEDED"]);
   });
 });
