@@ -22,30 +22,24 @@ export type MockSubmitResult =
   | { kind: "canceled"; providerRequestId: string }
   | { kind: "waiting"; providerRequestId: string; nextPollAt: string };
 
-interface StoredRequest {
-  state: Exclude<MockRequestState, "UNKNOWN">;
-  outcome: MockOutcome;
-}
-
 export class MockProvider {
-  private readonly requests = new Map<string, StoredRequest>();
+  private readonly firstDelayedPollPending = new Set<string>();
 
-  requestIdFor(clientRequestKey: string): string {
-    return `mock:${clientRequestKey}`;
+  requestIdFor(clientRequestKey: string, outcome: MockOutcome = "success"): string {
+    return `mock|${outcome}|${clientRequestKey}`;
   }
 
   submit(input: MockSubmitInput): MockSubmitResult {
-    const providerRequestId = this.requestIdFor(input.clientRequestKey);
-    if (input.outcome === "cancel" || input.cancelRequested) {
-      this.requests.set(providerRequestId, { state: "CANCELED", outcome: input.outcome });
+    const effectiveOutcome: MockOutcome = input.cancelRequested ? "cancel" : input.outcome;
+    const providerRequestId = this.requestIdFor(input.clientRequestKey, effectiveOutcome);
+
+    if (effectiveOutcome === "cancel") {
       return { kind: "canceled", providerRequestId };
     }
-    if (input.outcome === "success") {
-      this.requests.set(providerRequestId, { state: "SUCCEEDED", outcome: input.outcome });
+    if (effectiveOutcome === "success") {
       return { kind: "succeeded", providerRequestId, output: { outcome: "success" } };
     }
-    if (input.outcome === "retryable_failure") {
-      this.requests.set(providerRequestId, { state: "FAILED", outcome: input.outcome });
+    if (effectiveOutcome === "retryable_failure") {
       return {
         kind: "failed",
         providerRequestId,
@@ -54,8 +48,7 @@ export class MockProvider {
         errorMessage: "Mock provider requested a retry",
       };
     }
-    if (input.outcome === "terminal_failure") {
-      this.requests.set(providerRequestId, { state: "FAILED", outcome: input.outcome });
+    if (effectiveOutcome === "terminal_failure") {
       return {
         kind: "failed",
         providerRequestId,
@@ -64,27 +57,40 @@ export class MockProvider {
         errorMessage: "Mock provider failed terminally",
       };
     }
-    this.requests.set(providerRequestId, { state: "ACTIVE", outcome: "delayed" });
+
+    this.firstDelayedPollPending.add(providerRequestId);
     return {
       kind: "waiting",
       providerRequestId,
-      nextPollAt: new Date(Date.now() + 60_000).toISOString(),
+      nextPollAt: new Date().toISOString(),
     };
   }
 
   inspect(providerRequestId: string): MockRequestState {
-    return this.requests.get(providerRequestId)?.state ?? "UNKNOWN";
+    const outcome = parseRequestOutcome(providerRequestId);
+    if (!outcome) return "UNKNOWN";
+    if (outcome === "success") return "SUCCEEDED";
+    if (outcome === "retryable_failure" || outcome === "terminal_failure") return "FAILED";
+    if (outcome === "cancel") return "CANCELED";
+    if (this.firstDelayedPollPending.delete(providerRequestId)) return "ACTIVE";
+    return "SUCCEEDED";
   }
 
   completeDelayed(providerRequestId: string): void {
-    const current = this.requests.get(providerRequestId);
-    if (!current || current.state !== "ACTIVE") {
+    if (parseRequestOutcome(providerRequestId) !== "delayed") {
       throw new Error("Delayed mock request is not active");
     }
-    this.requests.set(providerRequestId, { ...current, state: "SUCCEEDED" });
+    this.firstDelayedPollPending.delete(providerRequestId);
   }
 
   capabilities(): { providerKey: "mock"; capability: "mock.generate"; outcomes: readonly MockOutcome[] } {
     return { providerKey: "mock", capability: "mock.generate", outcomes: MOCK_OUTCOMES };
   }
+}
+
+function parseRequestOutcome(providerRequestId: string): MockOutcome | null {
+  for (const outcome of MOCK_OUTCOMES) {
+    if (providerRequestId.startsWith(`mock|${outcome}|`)) return outcome;
+  }
+  return null;
 }
