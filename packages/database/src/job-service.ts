@@ -14,6 +14,15 @@ export interface DatabasePool {
   connect(): Promise<PoolClient>;
 }
 
+export type ProviderRequestState = "ACTIVE" | "SUCCEEDED" | "FAILED" | "UNKNOWN";
+
+export interface ProviderRequestInspector {
+  inspect(input: {
+    providerConfigurationId: string;
+    providerRequestId: string;
+  }): Promise<ProviderRequestState>;
+}
+
 export interface CreateWorkflowJobInput {
   workspaceId: string;
   projectId: string;
@@ -113,6 +122,14 @@ interface WorkflowSourceRow extends QueryResultRow {
   input_snapshot: unknown;
 }
 
+interface JobAttemptRow extends QueryResultRow {
+  id: string;
+  attempt_no: number;
+  provider_configuration_id: string | null;
+  provider_request_id: string | null;
+  max_attempts: number | null;
+}
+
 const TERMINAL_STATES = new Set<JobState>(["SUCCEEDED", "FAILED", "CANCELED"]);
 
 function requireRow<T>(row: T | undefined, code: string, message: string): T {
@@ -152,6 +169,29 @@ async function loadJobForUpdate(client: PoolClient, workspaceId: string, jobId: 
   return requireRow(result.rows[0], "JOB_NOT_FOUND", "Generation job not found");
 }
 
+async function loadLatestAttemptForUpdate(client: PoolClient, jobId: string): Promise<JobAttemptRow> {
+  const result = await client.query<JobAttemptRow>(
+    `SELECT ja.id, ja.attempt_no, ja.provider_configuration_id, ja.provider_request_id,
+            pc.max_attempts
+       FROM job_attempt ja
+       LEFT JOIN provider_configuration pc
+         ON pc.id = ja.provider_configuration_id
+        AND pc.workspace_id = ja.workspace_id
+      WHERE ja.generation_job_id = $1
+      ORDER BY ja.attempt_no DESC
+      LIMIT 1
+      FOR UPDATE OF ja`,
+    [jobId],
+  );
+  return requireRow(result.rows[0], "ATTEMPT_NOT_FOUND", "Job attempt not found");
+}
+
+function requireCurrentAttempt(attempt: JobAttemptRow, expectedAttemptId: string): void {
+  if (attempt.id !== expectedAttemptId) {
+    throw new PersistenceError("ATTEMPT_SUPERSEDED", "Attempt was superseded by a newer worker execution");
+  }
+}
+
 async function appendDomainEvent(
   client: PoolClient,
   job: Pick<JobRow, "workspace_id" | "project_id" | "id">,
@@ -187,6 +227,12 @@ function deriveWorkflowStatus(rows: Array<{ state: JobState; is_critical: boolea
 }
 
 async function refreshWorkflowStatus(client: PoolClient, workflowRunId: string): Promise<void> {
+  const workflow = await client.query<{ id: string } & QueryResultRow>(
+    "SELECT id FROM workflow_run WHERE id = $1 FOR UPDATE",
+    [workflowRunId],
+  );
+  requireRow(workflow.rows[0], "WORKFLOW_NOT_FOUND", "Workflow run not found");
+
   const jobs = await client.query<{ state: JobState; is_critical: boolean } & QueryResultRow>(
     "SELECT state, is_critical FROM generation_job WHERE workflow_run_id = $1 ORDER BY created_at, id",
     [workflowRunId],
@@ -305,7 +351,10 @@ async function queueJobTx(
 }
 
 export class JobPersistenceService {
-  constructor(private readonly pool: DatabasePool) {}
+  constructor(
+    private readonly pool: DatabasePool,
+    private readonly providerRequestInspector?: ProviderRequestInspector,
+  ) {}
 
   async createWorkflowJob(input: CreateWorkflowJobInput): Promise<CreatedWorkflowJob> {
     return withTransaction(this.pool, (client) => createWorkflowJobTx(client, input));
@@ -483,6 +532,7 @@ export class JobPersistenceService {
   async succeedJob(input: {
     workspaceId: string;
     jobId: string;
+    attemptId: string;
     traceId: string;
     responseSnapshot?: unknown;
   }): Promise<void> {
@@ -495,13 +545,14 @@ export class JobPersistenceService {
         throw new PersistenceError("JOB_INVALID_TRANSITION", `Cannot succeed job from ${job.state}`);
       }
 
+      const attempt = await loadLatestAttemptForUpdate(client, job.id);
+      requireCurrentAttempt(attempt, input.attemptId);
+
       await client.query(
         `UPDATE job_attempt
-            SET finished_at = COALESCE(finished_at, now()), response_snapshot = COALESCE($2::jsonb, response_snapshot)
-          WHERE id = (
-            SELECT id FROM job_attempt WHERE generation_job_id = $1 ORDER BY attempt_no DESC LIMIT 1
-          )`,
-        [job.id, input.responseSnapshot === undefined ? null : JSON.stringify(input.responseSnapshot)],
+            SET finished_at = COALESCE(finished_at, now()), response_snapshot = COALESCE($3::jsonb, response_snapshot)
+          WHERE id = $1 AND generation_job_id = $2`,
+        [attempt.id, job.id, input.responseSnapshot === undefined ? null : JSON.stringify(input.responseSnapshot)],
       );
       await client.query(
         `UPDATE generation_job
@@ -525,7 +576,7 @@ export class JobPersistenceService {
     errorCode: string;
     errorMessage: string;
     retryable: boolean;
-    maxAttempts?: number;
+    attemptId: string;
     nextRunAt?: Date;
   }): Promise<"requeued" | "failed"> {
     return withTransaction(this.pool, async (client) => {
@@ -537,13 +588,14 @@ export class JobPersistenceService {
         throw new PersistenceError("JOB_INVALID_TRANSITION", `Cannot fail job from ${job.state}`);
       }
 
+      const attempt = await loadLatestAttemptForUpdate(client, job.id);
+      requireCurrentAttempt(attempt, input.attemptId);
+
       await client.query(
         `UPDATE job_attempt
-            SET finished_at = COALESCE(finished_at, now()), error_json = $2::jsonb
-          WHERE id = (
-            SELECT id FROM job_attempt WHERE generation_job_id = $1 ORDER BY attempt_no DESC LIMIT 1
-          )`,
-        [job.id, JSON.stringify({ code: input.errorCode, message: input.errorMessage })],
+            SET finished_at = COALESCE(finished_at, now()), error_json = $3::jsonb
+          WHERE id = $1 AND generation_job_id = $2`,
+        [attempt.id, job.id, JSON.stringify({ code: input.errorCode, message: input.errorMessage })],
       );
 
       const attempts = await client.query<{ count: number } & QueryResultRow>(
@@ -551,7 +603,7 @@ export class JobPersistenceService {
         [job.id],
       );
       const attemptCount = requireRow(attempts.rows[0], "ATTEMPT_COUNT_FAILED", "Could not count job attempts").count;
-      const maxAttempts = input.maxAttempts ?? 3;
+      const maxAttempts = attempt.max_attempts ?? 3;
 
       if (input.retryable && attemptCount < maxAttempts) {
         await queueJobTx(client, job, input.traceId, input.nextRunAt ?? null, 1);
@@ -653,29 +705,46 @@ export class JobPersistenceService {
     workspaceId: string;
     jobId: string;
     traceId: string;
-    maxAttempts?: number;
-  }): Promise<"requeued" | "failed" | null> {
+  }): Promise<"requeued" | "failed" | "deferred" | null> {
     return withTransaction(this.pool, async (client) => {
       const job = await loadJobForUpdate(client, input.workspaceId, input.jobId);
       if (job.state !== "RUNNING" || job.lease_until === null || job.lease_until.getTime() > Date.now()) {
         return null;
       }
 
+      const attempt = await loadLatestAttemptForUpdate(client, job.id);
+
+      if (attempt.provider_request_id !== null) {
+        if (attempt.provider_configuration_id === null) {
+          throw new PersistenceError(
+            "ATTEMPT_PROVIDER_CONFIGURATION_MISSING",
+            "Persisted provider request is missing its provider configuration",
+          );
+        }
+        const providerState = this.providerRequestInspector
+          ? await this.providerRequestInspector.inspect({
+              providerConfigurationId: attempt.provider_configuration_id,
+              providerRequestId: attempt.provider_request_id,
+            })
+          : "UNKNOWN";
+        if (providerState !== "FAILED") {
+          return "deferred";
+        }
+      }
+
       await client.query(
         `UPDATE job_attempt
             SET finished_at = COALESCE(finished_at, now()),
                 error_json = COALESCE(error_json, '{"code":"LEASE_EXPIRED"}'::jsonb)
-          WHERE id = (
-            SELECT id FROM job_attempt WHERE generation_job_id = $1 ORDER BY attempt_no DESC LIMIT 1
-          )`,
-        [job.id],
+          WHERE id = $1 AND generation_job_id = $2`,
+        [attempt.id, job.id],
       );
       const attempts = await client.query<{ count: number } & QueryResultRow>(
         "SELECT COUNT(*)::int AS count FROM job_attempt WHERE generation_job_id = $1",
         [job.id],
       );
       const attemptCount = requireRow(attempts.rows[0], "ATTEMPT_COUNT_FAILED", "Could not count job attempts").count;
-      const maxAttempts = input.maxAttempts ?? 3;
+      const maxAttempts = attempt.max_attempts ?? 3;
 
       if (attemptCount < maxAttempts) {
         await queueJobTx(client, job, input.traceId, null, 1);

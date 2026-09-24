@@ -53,6 +53,25 @@ async function createJob(
   });
 }
 
+async function waitForWorkflowLockWaiters(minimum: number): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const waiting = await pool.query<{ count: number } & QueryResultRow>(
+      `SELECT COUNT(*)::int AS count
+         FROM pg_stat_activity
+        WHERE datname = current_database()
+          AND pid <> pg_backend_pid()
+          AND wait_event_type = 'Lock'
+          AND query ILIKE '%workflow_run%'`,
+    );
+    if ((waiting.rows[0]?.count ?? 0) >= minimum) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("Timed out waiting for workflow lock contention");
+}
+
 beforeAll(async () => {
   await pool.query("DROP SCHEMA public CASCADE; CREATE SCHEMA public");
   await runMigrations(pool);
@@ -167,6 +186,7 @@ describe("M1-B PostgreSQL integration", () => {
       traceId: "trace-start-1",
     });
     expect(firstAttempt?.attemptNo).toBe(1);
+    if (!firstAttempt) throw new Error("first attempt not acquired");
 
     await expect(
       service.acquireQueuedJob({
@@ -187,6 +207,7 @@ describe("M1-B PostgreSQL integration", () => {
         errorCode: "PROVIDER_5XX",
         errorMessage: "temporary",
         retryable: true,
+        attemptId: firstAttempt.attemptId,
       }),
     ).resolves.toBe("requeued");
 
@@ -255,11 +276,267 @@ describe("M1-B PostgreSQL integration", () => {
     expect(recovered.rows[0]).toMatchObject({ state: "QUEUED", dispatch_seq: 2, retry_count: 1 });
   });
 
+  it("serializes workflow derivation across concurrent sibling completions", async () => {
+    const { workspaceId, projectId } = await seedWorkspaceProject("workflow-concurrency");
+    const first = await createJob(workspaceId, projectId, "workflow-concurrency-1");
+    const secondInsert = await pool.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO generation_job
+        (workspace_id, project_id, workflow_run_id, kind, input_hash, input_snapshot)
+       VALUES ($1, $2, $3, 'MOCK', $4, $5::jsonb)
+       RETURNING id`,
+      [
+        workspaceId,
+        projectId,
+        first.workflowRunId,
+        hash("workflow-concurrency-2"),
+        JSON.stringify({ label: "workflow-concurrency-2" }),
+      ],
+    );
+    const secondJobId = secondInsert.rows[0]?.id;
+    if (!secondJobId) throw new Error("second sibling job insert failed");
+
+    await service.queueJob({ workspaceId, jobId: first.jobId, traceId: "trace-concurrent-q1" });
+    await service.queueJob({ workspaceId, jobId: secondJobId, traceId: "trace-concurrent-q2" });
+    const firstAttempt = await service.acquireQueuedJob({
+      workspaceId,
+      jobId: first.jobId,
+      dispatchSeq: 1,
+      leaseOwner: "concurrent-worker-1",
+      leaseMs: 30_000,
+      traceId: "trace-concurrent-a1",
+    });
+    const secondAttempt = await service.acquireQueuedJob({
+      workspaceId,
+      jobId: secondJobId,
+      dispatchSeq: 1,
+      leaseOwner: "concurrent-worker-2",
+      leaseMs: 30_000,
+      traceId: "trace-concurrent-a2",
+    });
+    if (!firstAttempt || !secondAttempt) throw new Error("concurrent attempts not acquired");
+
+    const blocker = await pool.connect();
+    await blocker.query("BEGIN");
+    await blocker.query("SELECT id FROM workflow_run WHERE id = $1 FOR UPDATE", [first.workflowRunId]);
+    const firstCompletion = service.succeedJob({
+      workspaceId,
+      jobId: first.jobId,
+      attemptId: firstAttempt.attemptId,
+      traceId: "trace-concurrent-s1",
+    });
+    const secondCompletion = service.succeedJob({
+      workspaceId,
+      jobId: secondJobId,
+      attemptId: secondAttempt.attemptId,
+      traceId: "trace-concurrent-s2",
+    });
+    try {
+      await waitForWorkflowLockWaiters(2);
+    } finally {
+      await blocker.query("COMMIT");
+      blocker.release();
+    }
+    await Promise.all([firstCompletion, secondCompletion]);
+
+    const workflow = await pool.query<{ status: string } & QueryResultRow>(
+      "SELECT status FROM workflow_run WHERE id = $1",
+      [first.workflowRunId],
+    );
+    expect(workflow.rows[0]?.status).toBe("SUCCEEDED");
+  });
+
+  it("rejects terminal updates from superseded attempts", async () => {
+    const { workspaceId, projectId } = await seedWorkspaceProject("superseded-attempt");
+    const { jobId } = await createJob(workspaceId, projectId, "superseded-attempt");
+    await service.queueJob({ workspaceId, jobId, traceId: "trace-superseded-q1" });
+    const firstAttempt = await service.acquireQueuedJob({
+      workspaceId,
+      jobId,
+      dispatchSeq: 1,
+      leaseOwner: "superseded-worker-1",
+      leaseMs: 30_000,
+      traceId: "trace-superseded-a1",
+    });
+    if (!firstAttempt) throw new Error("first superseded attempt not acquired");
+
+    await pool.query("UPDATE generation_job SET lease_until = now() - interval '1 second' WHERE id = $1", [jobId]);
+    await expect(service.recoverExpiredLease({ workspaceId, jobId, traceId: "trace-superseded-recover" })).resolves.toBe(
+      "requeued",
+    );
+    const secondAttempt = await service.acquireQueuedJob({
+      workspaceId,
+      jobId,
+      dispatchSeq: 2,
+      leaseOwner: "superseded-worker-2",
+      leaseMs: 30_000,
+      traceId: "trace-superseded-a2",
+    });
+    if (!secondAttempt) throw new Error("second superseded attempt not acquired");
+
+    await expect(
+      service.succeedJob({
+        workspaceId,
+        jobId,
+        attemptId: firstAttempt.attemptId,
+        traceId: "trace-stale-success",
+      }),
+    ).rejects.toMatchObject({ code: "ATTEMPT_SUPERSEDED" });
+    await expect(
+      service.failJob({
+        workspaceId,
+        jobId,
+        attemptId: firstAttempt.attemptId,
+        traceId: "trace-stale-failure",
+        errorCode: "STALE_WORKER",
+        errorMessage: "stale result",
+        retryable: true,
+      }),
+    ).rejects.toMatchObject({ code: "ATTEMPT_SUPERSEDED" });
+
+    const current = await pool.query<{ state: string } & QueryResultRow>(
+      "SELECT state FROM generation_job WHERE id = $1",
+      [jobId],
+    );
+    expect(current.rows[0]?.state).toBe("RUNNING");
+  });
+
+  it("reconciles persisted provider requests before expired-lease redispatch", async () => {
+    const { workspaceId, projectId } = await seedWorkspaceProject("provider-recovery");
+    const provider = await pool.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO provider_configuration
+        (workspace_id, provider_key, capability, default_timeout_ms)
+       VALUES ($1, 'mock-recovery', 'text', 30000)
+       RETURNING id`,
+      [workspaceId],
+    );
+    const providerConfigurationId = provider.rows[0]?.id;
+    if (!providerConfigurationId) throw new Error("provider recovery config insert failed");
+
+    const { jobId } = await createJob(workspaceId, projectId, "provider-recovery");
+    await service.queueJob({ workspaceId, jobId, traceId: "trace-provider-recovery-q" });
+    const attempt = await service.acquireQueuedJob({
+      workspaceId,
+      jobId,
+      dispatchSeq: 1,
+      leaseOwner: "provider-recovery-worker",
+      leaseMs: 30_000,
+      traceId: "trace-provider-recovery-a",
+      providerConfigurationId,
+    });
+    if (!attempt) throw new Error("provider recovery attempt not acquired");
+    await service.attachProviderRequest({
+      workspaceId,
+      attemptId: attempt.attemptId,
+      providerConfigurationId,
+      providerRequestId: "provider-request-active",
+    });
+    await pool.query("UPDATE generation_job SET lease_until = now() - interval '1 second' WHERE id = $1", [jobId]);
+
+    const inspections: Array<{ providerConfigurationId: string; providerRequestId: string }> = [];
+    const activeInspector = new JobPersistenceService(pool, {
+      inspect: async (input) => {
+        inspections.push(input);
+        return "ACTIVE";
+      },
+    });
+    await expect(
+      activeInspector.recoverExpiredLease({ workspaceId, jobId, traceId: "trace-provider-recovery-active" }),
+    ).resolves.toBe("deferred");
+    expect(inspections).toEqual([{ providerConfigurationId, providerRequestId: "provider-request-active" }]);
+
+    const deferred = await pool.query<{ state: string; dispatch_seq: number } & QueryResultRow>(
+      "SELECT state, dispatch_seq FROM generation_job WHERE id = $1",
+      [jobId],
+    );
+    expect(deferred.rows[0]).toMatchObject({ state: "RUNNING", dispatch_seq: 1 });
+
+    const failedInspector = new JobPersistenceService(pool, {
+      inspect: async () => "FAILED",
+    });
+    await expect(
+      failedInspector.recoverExpiredLease({ workspaceId, jobId, traceId: "trace-provider-recovery-failed" }),
+    ).resolves.toBe("requeued");
+    const recovered = await pool.query<{ state: string; dispatch_seq: number } & QueryResultRow>(
+      "SELECT state, dispatch_seq FROM generation_job WHERE id = $1",
+      [jobId],
+    );
+    expect(recovered.rows[0]).toMatchObject({ state: "QUEUED", dispatch_seq: 2 });
+  });
+
+  it("enforces persisted provider retry ceilings for failures and lease recovery", async () => {
+    const { workspaceId, projectId } = await seedWorkspaceProject("retry-ceiling");
+    const provider = await pool.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO provider_configuration
+        (workspace_id, provider_key, capability, default_timeout_ms, max_attempts)
+       VALUES ($1, 'mock-ceiling', 'text', 30000, 1)
+       RETURNING id`,
+      [workspaceId],
+    );
+    const providerConfigurationId = provider.rows[0]?.id;
+    if (!providerConfigurationId) throw new Error("retry ceiling config insert failed");
+
+    const failureJob = await createJob(workspaceId, projectId, "retry-ceiling-failure");
+    await service.queueJob({ workspaceId, jobId: failureJob.jobId, traceId: "trace-ceiling-failure-q" });
+    const failureAttempt = await service.acquireQueuedJob({
+      workspaceId,
+      jobId: failureJob.jobId,
+      dispatchSeq: 1,
+      leaseOwner: "ceiling-failure-worker",
+      leaseMs: 30_000,
+      traceId: "trace-ceiling-failure-a",
+      providerConfigurationId,
+    });
+    if (!failureAttempt) throw new Error("retry ceiling failure attempt not acquired");
+    await expect(
+      service.failJob({
+        workspaceId,
+        jobId: failureJob.jobId,
+        attemptId: failureAttempt.attemptId,
+        traceId: "trace-ceiling-failure",
+        errorCode: "RETRYABLE",
+        errorMessage: "must respect persisted ceiling",
+        retryable: true,
+      }),
+    ).resolves.toBe("failed");
+
+    const recoveryJob = await createJob(workspaceId, projectId, "retry-ceiling-recovery");
+    await service.queueJob({ workspaceId, jobId: recoveryJob.jobId, traceId: "trace-ceiling-recovery-q" });
+    await service.acquireQueuedJob({
+      workspaceId,
+      jobId: recoveryJob.jobId,
+      dispatchSeq: 1,
+      leaseOwner: "ceiling-recovery-worker",
+      leaseMs: 30_000,
+      traceId: "trace-ceiling-recovery-a",
+      providerConfigurationId,
+    });
+    await pool.query("UPDATE generation_job SET lease_until = now() - interval '1 second' WHERE id = $1", [
+      recoveryJob.jobId,
+    ]);
+    await expect(
+      service.recoverExpiredLease({
+        workspaceId,
+        jobId: recoveryJob.jobId,
+        traceId: "trace-ceiling-recovery",
+      }),
+    ).resolves.toBe("failed");
+
+    const jobs = await pool.query<{ id: string; state: string; dispatch_seq: number; retry_count: number } & QueryResultRow>(
+      `SELECT id, state, dispatch_seq, retry_count
+         FROM generation_job
+        WHERE id = ANY($1::uuid[])`,
+      [[failureJob.jobId, recoveryJob.jobId]],
+    );
+    for (const row of jobs.rows) {
+      expect(row).toMatchObject({ state: "FAILED", dispatch_seq: 1, retry_count: 0 });
+    }
+  });
+
   it("keeps terminal jobs immutable", async () => {
     const { workspaceId, projectId } = await seedWorkspaceProject("terminal");
     const { jobId } = await createJob(workspaceId, projectId, "terminal");
     await service.queueJob({ workspaceId, jobId, traceId: "trace-terminal-queue" });
-    await service.acquireQueuedJob({
+    const terminalAttempt = await service.acquireQueuedJob({
       workspaceId,
       jobId,
       dispatchSeq: 1,
@@ -267,7 +544,13 @@ describe("M1-B PostgreSQL integration", () => {
       leaseMs: 30_000,
       traceId: "trace-terminal-start",
     });
-    await service.succeedJob({ workspaceId, jobId, traceId: "trace-terminal-success" });
+    if (!terminalAttempt) throw new Error("terminal attempt not acquired");
+    await service.succeedJob({
+      workspaceId,
+      jobId,
+      attemptId: terminalAttempt.attemptId,
+      traceId: "trace-terminal-success",
+    });
 
     await expect(service.queueJob({ workspaceId, jobId, traceId: "trace-reopen" })).rejects.toMatchObject({
       code: "JOB_TERMINAL",
@@ -281,7 +564,7 @@ describe("M1-B PostgreSQL integration", () => {
     const { workspaceId, projectId } = await seedWorkspaceProject("manual-retry");
     const original = await createJob(workspaceId, projectId, "manual-retry");
     await service.queueJob({ workspaceId, jobId: original.jobId, traceId: "trace-manual-queue" });
-    await service.acquireQueuedJob({
+    const manualAttempt = await service.acquireQueuedJob({
       workspaceId,
       jobId: original.jobId,
       dispatchSeq: 1,
@@ -289,6 +572,7 @@ describe("M1-B PostgreSQL integration", () => {
       leaseMs: 30_000,
       traceId: "trace-manual-start",
     });
+    if (!manualAttempt) throw new Error("manual retry source attempt not acquired");
     await service.failJob({
       workspaceId,
       jobId: original.jobId,
@@ -296,6 +580,7 @@ describe("M1-B PostgreSQL integration", () => {
       errorCode: "PERMANENT_FOR_ATTEMPT",
       errorMessage: "manual retry required",
       retryable: false,
+      attemptId: manualAttempt.attemptId,
     });
 
     const retried = await service.manualRetry({
@@ -456,7 +741,7 @@ describe("M1-B PostgreSQL integration", () => {
     const { workspaceId, projectId } = await seedWorkspaceProject("events");
     const { jobId } = await createJob(workspaceId, projectId, "events");
     await service.queueJob({ workspaceId, jobId, traceId: "trace-events-queue" });
-    await service.acquireQueuedJob({
+    const eventsAttempt = await service.acquireQueuedJob({
       workspaceId,
       jobId,
       dispatchSeq: 1,
@@ -464,7 +749,13 @@ describe("M1-B PostgreSQL integration", () => {
       leaseMs: 30_000,
       traceId: "trace-events-start",
     });
-    await service.succeedJob({ workspaceId, jobId, traceId: "trace-events-success" });
+    if (!eventsAttempt) throw new Error("events attempt not acquired");
+    await service.succeedJob({
+      workspaceId,
+      jobId,
+      attemptId: eventsAttempt.attemptId,
+      traceId: "trace-events-success",
+    });
 
     const events = await pool.query<{ event_type: string } & QueryResultRow>(
       "SELECT event_type FROM domain_event WHERE aggregate_id = $1 ORDER BY id",
