@@ -1,4 +1,5 @@
 import { Pool } from "pg";
+export { runMigrations, type MigrationClient, type MigrationPool, type MigrationResult } from "./migrations";
 
 export interface PostgresPoolOptions {
   connectionString: string;
@@ -12,6 +13,7 @@ export interface PostgresQueryClient {
 }
 
 export interface PostgresPool extends PostgresQueryClient {
+  connect(): Promise<import("pg").PoolClient>;
   end(): Promise<void>;
   totalCount: number;
 }

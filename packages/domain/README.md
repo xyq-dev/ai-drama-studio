@@ -1,5 +1,5 @@
 # @ai-drama/domain
 
-M1-A package boundary only.
-
-This package exports a shared error type. It does not implement domain entities, the GenerationJob state machine, review gates, or STALE propagation. Those belong to a later milestone.
+The M1-B domain core owns the documented `GenerationJob` transition graph and derives
+`WorkflowRun` status from its child jobs. It remains independent of NestJS, PostgreSQL,
+Redis, and provider SDKs so API and Worker code use the same rules.
