@@ -22,13 +22,26 @@ describe("GenerationJob state machine", () => {
     );
   });
 
-  it("derives run status from criticality and terminal children", () => {
+  it("preserves canceled workflow outcomes before critical-failure evaluation", () => {
+    expect(deriveWorkflowRunState([{ state: "CANCELED", isCritical: true }])).toBe("CANCELED");
+    expect(
+      deriveWorkflowRunState([
+        { state: "SUCCEEDED", isCritical: true },
+        { state: "CANCELED", isCritical: true },
+      ]),
+    ).toBe("CANCELED");
+  });
+
+  it("derives failed and partial outcomes from terminal children", () => {
     expect(deriveWorkflowRunState([])).toBe("PENDING");
     expect(deriveWorkflowRunState([{ state: "RUNNING", isCritical: true }])).toBe("RUNNING");
     expect(deriveWorkflowRunState([{ state: "FAILED", isCritical: true }])).toBe("FAILED");
-    expect(deriveWorkflowRunState([
-      { state: "SUCCEEDED", isCritical: true }, { state: "FAILED", isCritical: false },
-    ])).toBe("PARTIAL_FAILED");
+    expect(
+      deriveWorkflowRunState([
+        { state: "SUCCEEDED", isCritical: true },
+        { state: "FAILED", isCritical: false },
+      ]),
+    ).toBe("PARTIAL_FAILED");
     expect(deriveWorkflowRunState([{ state: "SUCCEEDED", isCritical: true }])).toBe("SUCCEEDED");
   });
 });

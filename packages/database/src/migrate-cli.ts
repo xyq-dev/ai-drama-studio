@@ -1,9 +1,10 @@
 import { createPostgresPool } from "./index";
 import { runMigrations } from "./migrations";
-import type { MigrationClient } from "./migrations";
 
 const databaseUrl = process.env.DATABASE_URL;
-if (!databaseUrl) throw new Error("DATABASE_URL is required");
+if (!databaseUrl) {
+  throw new Error("DATABASE_URL is required");
+}
 
 const pool = createPostgresPool({
   connectionString: databaseUrl,
@@ -14,7 +15,7 @@ const pool = createPostgresPool({
 
 async function main(): Promise<void> {
   try {
-    const result = await runMigrations(pool as MigrationClient);
+    const result = await runMigrations(pool);
     process.stdout.write(`Applied ${result.applied.length} migration(s).\n`);
   } finally {
     await pool.end();
