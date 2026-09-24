@@ -45,7 +45,18 @@ export class MockJobConsumer {
     const traceId = `worker:${acquired.attemptId}`;
 
     if (result.kind === "canceled") {
-      await this.jobs.confirmCancellation({ workspaceId: message.workspaceId, jobId: message.jobId, traceId });
+      await this.jobs.attachProviderRequest({
+        workspaceId: message.workspaceId,
+        attemptId: acquired.attemptId,
+        providerConfigurationId: before.providerConfigurationId,
+        providerRequestId: result.providerRequestId,
+      });
+      await this.jobs.confirmCancellation({
+        workspaceId: message.workspaceId,
+        jobId: message.jobId,
+        attemptId: acquired.attemptId,
+        traceId,
+      });
       return "processed";
     }
     if (result.kind === "succeeded") {
