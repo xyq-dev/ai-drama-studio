@@ -76,6 +76,9 @@ jobs:
           pnpm --filter @ai-drama/database prisma:validate
           pnpm --filter @ai-drama/database prisma:generate
 
+      - name: Build JavaScript workspace for cross-package integration imports
+        run: pnpm build
+
       - name: Run M1-B PostgreSQL integration
         run: pnpm --filter @ai-drama/database integration
 
