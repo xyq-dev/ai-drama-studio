@@ -227,18 +227,22 @@ function deriveWorkflowStatus(rows: Array<{ state: JobState; is_critical: boolea
   return "SUCCEEDED";
 }
 
-async function refreshWorkflowStatus(client: PoolClient, workflowRunId: string): Promise<void> {
-  const workflow = await client.query<{ id: string } & QueryResultRow>(
-    "SELECT id FROM workflow_run WHERE id = $1 FOR UPDATE",
+async function refreshWorkflowStatus(client: PoolClient, workflowRunId: string, traceId: string): Promise<void> {
+  const workflow = await client.query<
+    { id: string; workspace_id: string; project_id: string; status: string } & QueryResultRow
+  >(
+    "SELECT id, workspace_id, project_id, status FROM workflow_run WHERE id = $1 FOR UPDATE",
     [workflowRunId],
   );
-  requireRow(workflow.rows[0], "WORKFLOW_NOT_FOUND", "Workflow run not found");
+  const current = requireRow(workflow.rows[0], "WORKFLOW_NOT_FOUND", "Workflow run not found");
 
   const jobs = await client.query<{ state: JobState; is_critical: boolean } & QueryResultRow>(
     "SELECT state, is_critical FROM generation_job WHERE workflow_run_id = $1 ORDER BY created_at, id",
     [workflowRunId],
   );
   const status = deriveWorkflowStatus(jobs.rows);
+  if (status === current.status) return;
+
   const terminal = ["SUCCEEDED", "PARTIAL_FAILED", "FAILED", "CANCELED"].includes(status);
   await client.query(
     `UPDATE workflow_run
@@ -248,6 +252,18 @@ async function refreshWorkflowStatus(client: PoolClient, workflowRunId: string):
             completed_at = CASE WHEN $3::boolean THEN COALESCE(completed_at, now()) ELSE NULL END
       WHERE id = $1`,
     [workflowRunId, status, terminal],
+  );
+  await client.query(
+    `INSERT INTO domain_event
+      (workspace_id, project_id, aggregate_type, aggregate_id, event_type, payload_json, trace_id)
+     VALUES ($1, $2, 'WorkflowRun', $3, 'workflow.updated', $4::jsonb, $5)`,
+    [
+      current.workspace_id,
+      current.project_id,
+      current.id,
+      JSON.stringify({ workflowRunId: current.id, status }),
+      traceId,
+    ],
   );
 }
 
@@ -342,12 +358,30 @@ async function queueJobTx(
     state: "QUEUED",
     dispatchSeq: queued.dispatch_seq,
   });
-  await client.query(
+  const workflowStarted = await client.query<
+    { id: string; workspace_id: string; project_id: string } & QueryResultRow
+  >(
     `UPDATE workflow_run
         SET status = 'RUNNING', row_version = row_version + 1, updated_at = now(), completed_at = NULL
-      WHERE id = $1 AND status = 'PENDING'`,
+      WHERE id = $1 AND status = 'PENDING'
+      RETURNING id, workspace_id, project_id`,
     [queued.workflow_run_id],
   );
+  const started = workflowStarted.rows[0];
+  if (started) {
+    await client.query(
+      `INSERT INTO domain_event
+        (workspace_id, project_id, aggregate_type, aggregate_id, event_type, payload_json, trace_id)
+       VALUES ($1, $2, 'WorkflowRun', $3, 'workflow.updated', $4::jsonb, $5)`,
+      [
+        started.workspace_id,
+        started.project_id,
+        started.id,
+        JSON.stringify({ workflowRunId: started.id, status: "RUNNING" }),
+        traceId,
+      ],
+    );
+  }
   return queued;
 }
 
@@ -373,7 +407,7 @@ async function cancelJobTx(
       jobId: job.id,
       state: "CANCELED",
     });
-    await refreshWorkflowStatus(client, job.workflow_run_id);
+    await refreshWorkflowStatus(client, job.workflow_run_id, input.traceId);
     return "CANCELED";
   }
 
@@ -417,7 +451,7 @@ async function finalizeCancellationTx(
     jobId: job.id,
     state: "CANCELED",
   });
-  await refreshWorkflowStatus(client, job.workflow_run_id);
+  await refreshWorkflowStatus(client, job.workflow_run_id, traceId);
 }
 
 async function manualRetryTx(
@@ -513,6 +547,12 @@ export class JobPersistenceService {
   ): Promise<{ replayed: boolean; status: number; body: T }> {
     return withTransaction(this.pool, async (client) => {
       const expiresAt = scope.expiresAt ?? new Date(Date.now() + 24 * 60 * 60 * 1000);
+      await client.query(
+        `DELETE FROM idempotency_record
+          WHERE workspace_id = $1 AND actor_id = $2 AND http_method = $3
+            AND route_key = $4 AND idempotency_key = $5 AND expires_at <= now()`,
+        [scope.workspaceId, scope.actorId, scope.httpMethod, scope.routeKey, scope.key],
+      );
       const inserted = await client.query<{ id: string } & QueryResultRow>(
         `INSERT INTO idempotency_record
           (workspace_id, actor_id, http_method, route_key, idempotency_key, request_hash, expires_at)
@@ -750,7 +790,7 @@ export class JobPersistenceService {
         jobId: job.id,
         state: "SUCCEEDED",
       });
-      await refreshWorkflowStatus(client, job.workflow_run_id);
+      await refreshWorkflowStatus(client, job.workflow_run_id, input.traceId);
     });
   }
 
@@ -813,7 +853,7 @@ export class JobPersistenceService {
         error: { code: input.errorCode, message: input.errorMessage },
         retryable: input.retryable,
       });
-      await refreshWorkflowStatus(client, job.workflow_run_id);
+      await refreshWorkflowStatus(client, job.workflow_run_id, input.traceId);
       return "failed";
     });
   }
@@ -905,7 +945,7 @@ export class JobPersistenceService {
         error: { code: "LEASE_EXPIRED", message: "Worker lease expired" },
         retryable: true,
       });
-      await refreshWorkflowStatus(client, job.workflow_run_id);
+      await refreshWorkflowStatus(client, job.workflow_run_id, input.traceId);
       return "failed";
     });
   }
