@@ -73,23 +73,29 @@ export class StudioService {
   }
 
   async cancelJob(jobId: string, context: StudioContext) {
-    return this.jobs.runIdempotent(this.scope(context, "POST", `/generation-jobs/${jobId}/cancel`, {}), 200, async () => {
-      const state = await this.jobs.cancelJob({ workspaceId: this.workspaceId, jobId, traceId: context.traceId });
-      return { jobId, state };
-    });
+    return this.jobs.cancelJobIdempotent(
+      this.scope(context, "POST", `/generation-jobs/${jobId}/cancel`, {}),
+      { workspaceId: this.workspaceId, jobId, traceId: context.traceId },
+    );
   }
 
   async retryJob(jobId: string, context: StudioContext) {
-    return this.jobs.runIdempotent(this.scope(context, "POST", `/generation-jobs/${jobId}/retry`, {}), 202, async () => {
-      const created = await this.jobs.manualRetry({
+    const job = await this.store.getJob(this.workspaceId, jobId);
+    const retryable =
+      job.state === "CANCELED" ||
+      (job.state === "FAILED" &&
+        job.errorCode !== null &&
+        new Set(["MOCK_RETRYABLE", "MOCK_EXTERNAL_FAILED", "LEASE_EXPIRED"]).has(job.errorCode));
+    return this.jobs.manualRetryIdempotent(
+      this.scope(context, "POST", `/generation-jobs/${jobId}/retry`, {}),
+      {
         workspaceId: this.workspaceId,
         jobId,
         requestedBy: context.actorId,
         traceId: context.traceId,
-        retryable: true,
-      });
-      return created;
-    });
+        retryable,
+      },
+    );
   }
 
   async getWorkflow(workflowRunId: string) {
@@ -102,17 +108,9 @@ export class StudioService {
   }
 
   async cancelWorkflow(workflowRunId: string, context: StudioContext) {
-    return this.jobs.runIdempotent(
+    return this.jobs.cancelWorkflowRunIdempotent(
       this.scope(context, "POST", `/workflow-runs/${workflowRunId}/cancel`, {}),
-      200,
-      async () => {
-        await this.jobs.cancelWorkflowRun({
-          workspaceId: this.workspaceId,
-          workflowRunId,
-          traceId: context.traceId,
-        });
-        return this.store.getWorkflow(this.workspaceId, workflowRunId);
-      },
+      { workspaceId: this.workspaceId, workflowRunId, traceId: context.traceId },
     );
   }
 
