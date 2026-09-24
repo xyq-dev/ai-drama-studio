@@ -34,6 +34,15 @@ export class RuntimeReconciler {
   private async recoverExpiredLeases(): Promise<void> {
     const rows = await this.store.listExpiredRunning(50);
     for (const row of rows) {
+      if (row.cancelRequested) {
+        await this.jobs.confirmCancellation({
+          workspaceId: row.workspaceId,
+          jobId: row.jobId,
+          attemptId: row.attemptId,
+          traceId: `reconcile-cancel:${row.jobId}`,
+        });
+        continue;
+      }
       if (row.providerRequestId) {
         const inspected = this.provider.inspect(row.providerRequestId);
         if (inspected === "SUCCEEDED") {
@@ -70,6 +79,15 @@ export class RuntimeReconciler {
   private async completeWaitingExternal(): Promise<void> {
     const rows = await this.store.listWaitingExternal(50);
     for (const row of rows) {
+      if (row.cancelRequested) {
+        await this.jobs.confirmCancellation({
+          workspaceId: row.workspaceId,
+          jobId: row.jobId,
+          attemptId: row.attemptId,
+          traceId: `reconcile-wait-cancel:${row.jobId}`,
+        });
+        continue;
+      }
       if (!row.providerRequestId) continue;
       const inspected = this.provider.inspect(row.providerRequestId);
       if (inspected === "SUCCEEDED") {
