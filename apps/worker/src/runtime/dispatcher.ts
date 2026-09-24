@@ -9,6 +9,7 @@ export interface DispatchMessage {
 
 export interface JobEnqueuer {
   enqueue(message: DispatchMessage): Promise<"enqueued" | "duplicate">;
+  hasDispatch(jobId: string, dispatchSeq: number): Promise<boolean>;
 }
 
 export function dispatchJobId(jobId: string, dispatchSeq: number): string {
@@ -24,6 +25,10 @@ export class OutboxDispatcher {
   async dispatchOnce(limit = 50): Promise<number> {
     const rows = await this.store.listUndispatched(limit);
     return this.enqueueRows(rows);
+  }
+
+  async hasDispatch(jobId: string, dispatchSeq: number): Promise<boolean> {
+    return this.queue.hasDispatch(jobId, dispatchSeq);
   }
 
   private async enqueueRows(rows: readonly OutboxDispatchRow[]): Promise<number> {
