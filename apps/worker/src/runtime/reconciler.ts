@@ -22,6 +22,9 @@ export class RuntimeReconciler {
   private async redispatchQueuedOrphans(): Promise<void> {
     const rows = await this.store.listOrphanQueued(this.orphanGraceMs, 50);
     for (const row of rows) {
+      if (await this.dispatcher.hasDispatch(row.jobId, row.dispatchSeq)) {
+        continue;
+      }
       await this.jobs.redispatchQueuedJob({
         workspaceId: row.workspaceId,
         jobId: row.jobId,
