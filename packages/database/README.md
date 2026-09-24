@@ -1,5 +1,9 @@
 # @ai-drama/database
 
-M1-A only creates a PostgreSQL pool, runs `SELECT 1`, applies timeouts, and closes the pool.
+M1-B adds the minimal PostgreSQL persistence model for workspace-scoped projects,
+workflow/job recovery, attempts, transactional dispatch outbox, replayable domain
+events, idempotency, provider event deduplication, and cost audit facts.
 
-This package does not open a connection when it is imported. Applications create and close the pool in their own lifecycle. It does not contain Prisma, an ORM, a schema, migrations, or domain repositories.
+This package does not open a connection when imported. Applications create and close
+the pool in their lifecycle. Apply versioned migrations with `DATABASE_URL=... pnpm
+--filter @ai-drama/database migrate`; applied SQL is checksummed and cannot be edited.

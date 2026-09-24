@@ -11,6 +11,7 @@
     }
   },
   "scripts": {
+    "migrate": "tsx src/migrate-cli.ts",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src",
@@ -24,6 +25,7 @@
     "@types/node": "catalog:",
     "@types/pg": "8.23.1",
     "eslint": "catalog:",
+    "tsx": "catalog:",
     "typescript": "catalog:",
     "typescript-eslint": "catalog:",
     "vite": "catalog:",

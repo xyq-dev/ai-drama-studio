@@ -1,4 +1,5 @@
 import { Pool } from "pg";
+export { runMigrations, type MigrationClient, type MigrationResult } from "./migrations";
 
 export interface PostgresPoolOptions {
   connectionString: string;
