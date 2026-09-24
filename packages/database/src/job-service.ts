@@ -109,6 +109,7 @@ interface JobRow extends QueryResultRow {
   is_critical: boolean;
   progress_weight: number;
   lease_until: Date | null;
+  cancel_requested_at: Date | null;
 }
 
 interface IdempotencyRow extends QueryResultRow {
@@ -160,7 +161,7 @@ async function loadJobForUpdate(client: PoolClient, workspaceId: string, jobId: 
   const result = await client.query<JobRow>(
     `SELECT id, workspace_id, project_id, workflow_run_id, kind, state, input_hash,
             input_snapshot, dispatch_seq, row_version, retry_count, is_critical,
-            progress_weight, lease_until
+            progress_weight, lease_until, cancel_requested_at
        FROM generation_job
       WHERE id = $1 AND workspace_id = $2
       FOR UPDATE`,
@@ -388,6 +389,35 @@ async function cancelJobTx(
     state: job.state,
   });
   return job.state;
+}
+
+async function finalizeCancellationTx(
+  client: PoolClient,
+  job: JobRow,
+  expectedAttemptId: string,
+  traceId: string,
+): Promise<void> {
+  const attempt = await loadLatestAttemptForUpdate(client, job.id);
+  requireCurrentAttempt(attempt, expectedAttemptId);
+  await client.query(
+    `UPDATE job_attempt
+        SET finished_at = COALESCE(finished_at, now()),
+            error_json = COALESCE(error_json, '{"code":"CANCELED"}'::jsonb)
+      WHERE id = $1 AND generation_job_id = $2`,
+    [attempt.id, job.id],
+  );
+  await client.query(
+    `UPDATE generation_job
+        SET state = 'CANCELED', lease_owner = NULL, lease_until = NULL,
+            row_version = row_version + 1, updated_at = now(), completed_at = now()
+      WHERE id = $1 AND workspace_id = $2 AND row_version = $3`,
+    [job.id, job.workspace_id, job.row_version],
+  );
+  await appendDomainEvent(client, job, "job.canceled", traceId, {
+    jobId: job.id,
+    state: "CANCELED",
+  });
+  await refreshWorkflowStatus(client, job.workflow_run_id);
 }
 
 async function manualRetryTx(
@@ -695,6 +725,10 @@ export class JobPersistenceService {
       if (job.state !== "RUNNING" && job.state !== "WAITING_EXTERNAL") {
         throw new PersistenceError("JOB_INVALID_TRANSITION", `Cannot succeed job from ${job.state}`);
       }
+      if (job.cancel_requested_at !== null) {
+        await finalizeCancellationTx(client, job, input.attemptId, input.traceId);
+        return;
+      }
 
       const attempt = await loadLatestAttemptForUpdate(client, job.id);
       requireCurrentAttempt(attempt, input.attemptId);
@@ -729,7 +763,7 @@ export class JobPersistenceService {
     retryable: boolean;
     attemptId: string;
     nextRunAt?: Date;
-  }): Promise<"requeued" | "failed"> {
+  }): Promise<"requeued" | "failed" | "canceled"> {
     return withTransaction(this.pool, async (client) => {
       const job = await loadJobForUpdate(client, input.workspaceId, input.jobId);
       if (TERMINAL_STATES.has(job.state)) {
@@ -737,6 +771,10 @@ export class JobPersistenceService {
       }
       if (job.state !== "RUNNING" && job.state !== "WAITING_EXTERNAL") {
         throw new PersistenceError("JOB_INVALID_TRANSITION", `Cannot fail job from ${job.state}`);
+      }
+      if (job.cancel_requested_at !== null) {
+        await finalizeCancellationTx(client, job, input.attemptId, input.traceId);
+        return "canceled";
       }
 
       const attempt = await loadLatestAttemptForUpdate(client, job.id);
@@ -799,27 +837,7 @@ export class JobPersistenceService {
         throw new PersistenceError("JOB_INVALID_TRANSITION", `Cannot confirm cancellation from ${job.state}`);
       }
 
-      const attempt = await loadLatestAttemptForUpdate(client, job.id);
-      requireCurrentAttempt(attempt, input.attemptId);
-      await client.query(
-        `UPDATE job_attempt
-            SET finished_at = COALESCE(finished_at, now()),
-                error_json = COALESCE(error_json, '{"code":"CANCELED"}'::jsonb)
-          WHERE id = $1 AND generation_job_id = $2`,
-        [attempt.id, job.id],
-      );
-      await client.query(
-        `UPDATE generation_job
-            SET state = 'CANCELED', lease_owner = NULL, lease_until = NULL,
-                row_version = row_version + 1, updated_at = now(), completed_at = now()
-          WHERE id = $1 AND workspace_id = $2 AND row_version = $3`,
-        [job.id, job.workspace_id, job.row_version],
-      );
-      await appendDomainEvent(client, job, "job.canceled", input.traceId, {
-        jobId: job.id,
-        state: "CANCELED",
-      });
-      await refreshWorkflowStatus(client, job.workflow_run_id);
+      await finalizeCancellationTx(client, job, input.attemptId, input.traceId);
     });
   }
 
