@@ -289,6 +289,21 @@ describe("M1-C Redis and BullMQ integration", () => {
     expect(await jobState(created.jobId)).toBe("CANCELED");
   });
 
+  it("honors a cancellation requested while waiting on an external mock request", async () => {
+    const { workspaceId, projectId } = await seed();
+    const delayed = await queueOutcome(workspaceId, projectId, "delayed");
+    await consumer.handle(delayed);
+    expect(await jobState(delayed.jobId)).toBe("WAITING_EXTERNAL");
+
+    await jobs.cancelJob({
+      workspaceId,
+      jobId: delayed.jobId,
+      traceId: "cancel-waiting-external",
+    });
+    await reconciler.reconcileOnce();
+    expect(await jobState(delayed.jobId)).toBe("CANCELED");
+  });
+
   it("honors the persisted provider max_attempts", async () => {
     const { workspaceId, projectId, providerId } = await seed();
     await sql("UPDATE provider_configuration SET max_attempts = 1 WHERE id = $1", [providerId]);
