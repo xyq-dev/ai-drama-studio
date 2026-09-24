@@ -9,6 +9,7 @@ const valid = {
   S3_BUCKET: "ai-drama-dev",
   S3_ACCESS_KEY_ID: "ai-drama-dev",
   S3_SECRET_ACCESS_KEY: "another-secret-value",
+  APP_WORKSPACE_ID: "11111111-1111-4111-8111-111111111111",
 };
 
 describe("loadApiEnv", () => {

@@ -35,16 +35,16 @@ describe("health contracts", () => {
     expect(parseReadyHealthResponse({ status: "ok" })).toBeUndefined();
   });
 
-  it("keeps worker and adapter payloads inside the M1-A skeleton", () => {
+  it("requires worker readiness to report postgres, redis, and queue", () => {
     const worker = workerReadyResponseSchema.parse({
       service: "worker",
       status: "ok",
       version: "0.1.0",
       timestamp: "2026-09-23T00:00:00.000Z",
-      queueConsumer: "disabled",
       dependencies: {
         postgres: { status: "ok" },
         redis: { status: "ok" },
+        queue: { status: "ok" },
       },
     });
     const adapter = adapterHealthResponseSchema.parse({
@@ -61,7 +61,7 @@ describe("health contracts", () => {
       ffmpegRequired: false,
       timestamp: "2026-09-23T00:00:00.000Z",
     });
-    expect(worker.queueConsumer).toBe("disabled");
+    expect(worker.dependencies.queue.status).toBe("ok");
     expect(adapter.mode).toBe("stub");
     expect(media.ffmpegRequired).toBe(false);
   });

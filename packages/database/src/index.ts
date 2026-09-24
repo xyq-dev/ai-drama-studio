@@ -1,4 +1,34 @@
-import { Pool } from "pg";
+import { Pool, type PoolClient } from "pg";
+
+export {
+  runMigrations,
+  type MigrationClient,
+  type MigrationPool,
+  type MigrationResult,
+} from "./migrations";
+export {
+  JobPersistenceService,
+  PersistenceError,
+  type AcquiredJob,
+  type CreateWorkflowJobInput,
+  type CreatedWorkflowJob,
+  type IdempotencyScope,
+  type ManualRetryInput,
+  type ProviderEventInput,
+  type QueueJobInput,
+} from "./job-service";
+export {
+  RuntimeStore,
+  insertProject,
+  requestHash,
+  type DomainEventView,
+  type ExecutionContext,
+  type ExpiredLeaseRow,
+  type JobView,
+  type OutboxDispatchRow,
+  type ProjectRecord,
+  type WorkflowView,
+} from "./runtime-store";
 
 export interface PostgresPoolOptions {
   connectionString: string;
@@ -8,10 +38,11 @@ export interface PostgresPoolOptions {
 }
 
 export interface PostgresQueryClient {
-  query(sql: string): Promise<unknown>;
+  query(sql: string, values?: unknown[]): Promise<unknown>;
 }
 
 export interface PostgresPool extends PostgresQueryClient {
+  connect(): Promise<PoolClient>;
   end(): Promise<void>;
   totalCount: number;
 }

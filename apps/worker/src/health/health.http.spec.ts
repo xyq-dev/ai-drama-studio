@@ -27,17 +27,16 @@ describe("worker health routes", () => {
               status: "ok",
               version: "0.1.0",
               timestamp: "2026-09-23T00:00:00.000Z",
-              queueConsumer: "disabled",
             }),
             ready: async () => ({
               service: "worker",
               status: "degraded",
               version: "0.1.0",
               timestamp: "2026-09-23T00:00:00.000Z",
-              queueConsumer: "disabled",
               dependencies: {
                 postgres: { status: "down" },
                 redis: { status: "down" },
+                queue: { status: "down" },
               },
             }),
           },
@@ -53,7 +52,8 @@ describe("worker health routes", () => {
     const ready = await fetch(`${base}/health/ready`);
     expect(ready.status).toBe(503);
     const body: unknown = await ready.json();
-    expect(JSON.stringify(body)).toContain("queueConsumer");
+    expect(JSON.stringify(body)).toContain("\"queue\"");
+    expect(JSON.stringify(body)).not.toContain("queueConsumer");
     expect(JSON.stringify(body)).not.toContain("secret");
   });
 });
