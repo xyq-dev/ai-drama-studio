@@ -1,8 +1,6 @@
 # AI Drama Studio
 
-AI Drama Studio 是一个面向短剧创作的本地优先工作台。当前仓库处于 **M1-A Platform Skeleton**：可以安装、构建、测试，并检查 Web、Core API、Worker、ComfyUI Adapter 和 Media Worker 是否在运行。
-
-当前没有真实模型，没有 Job 状态机，没有数据库业务 Schema，没有 Migration。这里只有平台骨架和健康检查。AI 短剧生成还不能使用。
+AI Drama Studio 是一个面向短剧创作的本地优先工作台。当前仓库处于 **M1-B persistence/job core**：在 M1-A 平台骨架上加入了 Prisma 数据模型、可审计 PostgreSQL Migration、可恢复的 GenerationJob/WorkflowRun 持久化服务、事务 outbox/DomainEvent、租约、重试与 API 幂等核心。真实模型、队列消费者和创作 UI 仍未实现，AI 短剧生成还不能使用。
 
 ## 目录
 
@@ -13,8 +11,8 @@ apps/worker              NestJS Worker 空壳，不消费队列
 services/media-worker    Python FastAPI 健康检查
 services/comfyui-adapter ComfyUI Adapter stub
 packages/contracts       健康检查共享类型
-packages/database        PostgreSQL 连接与 SELECT 1
-packages/domain          包边界，无领域实体
+packages/database        Prisma + PostgreSQL M1-B persistence/job core
+packages/domain          Job 状态机与 WorkflowRun 汇总规则
 packages/providers       包边界，无 Provider 实现
 infra/compose.yaml       PostgreSQL、Redis、MinIO
 docs/                    已冻结的 V1 架构文档
@@ -86,7 +84,25 @@ corepack pnpm --filter @ai-drama/comfyui-adapter dev
 corepack pnpm --filter @ai-drama/web dev
 ```
 
-Worker 启动日志会写明 `worker skeleton` 和 `queue consumer disabled in M1-A`。这不是可用的 Job 系统。
+Worker 启动日志仍会写明 `worker skeleton` 和 `queue consumer disabled in M1-A`。M1-B 已实现持久化/状态编排核心，但尚未把 BullMQ dispatcher/consumer 接入 Worker 进程。
+
+## 数据库 Schema 与 Migration
+
+M1-B Prisma Schema 位于 `packages/database/prisma/schema.prisma`，Migration 位于 `packages/database/prisma/migrations/`。在 PostgreSQL 启动后可执行：
+
+```sh
+corepack pnpm --filter @ai-drama/database prisma:validate
+corepack pnpm --filter @ai-drama/database prisma:generate
+corepack pnpm --filter @ai-drama/database migrate
+```
+
+自定义 Migration runner 使用单个 PostgreSQL `PoolClient` 持有 advisory lock，并在该同一会话上执行每个事务；已应用 migration 的 SHA-256 会记录并校验。数据库特有 CHECK、partial index、复合 FK 与 outbox 约束保留在 SQL Migration 中。
+
+真实 PostgreSQL 集成测试会重置目标数据库的 `public` schema，只能指向隔离测试库：
+
+```sh
+DATABASE_URL=postgresql://... corepack pnpm --filter @ai-drama/database integration
+```
 
 ## Python Media Worker
 
@@ -117,7 +133,7 @@ corepack pnpm infra:logs
 corepack pnpm infra:down
 ```
 
-Compose 项目名是 `ai-drama-studio`。它只启动 PostgreSQL、Redis、MinIO 和一次性的 Bucket 初始化。它不部署 ComfyUI，不下载模型，也不执行 Migration。
+Compose 项目名是 `ai-drama-studio`。它只启动 PostgreSQL、Redis、MinIO 和一次性的 Bucket 初始化。它不部署 ComfyUI，不下载模型，也不自动执行 Migration。
 
 ## 健康检查
 
@@ -138,12 +154,13 @@ corepack pnpm test
 services/media-worker/.venv/Scripts/python -m pytest services/media-worker/tests
 ```
 
+M1-B GitHub Actions 还会在隔离 PostgreSQL 16 上执行 Prisma validate/generate、真实数据库集成测试、`pnpm verify` 和既有 Python 测试。
+
 ## 本阶段明确没有实现
 
-- Prisma Schema、Migration、业务表
-- GenerationJob、DispatchOutbox、DomainEvent、IdempotencyRecord
-- BullMQ 消费、自动重试、SSE
+- BullMQ dispatcher/consumer/reconciler 的进程接线与 SSE API
 - Mock Provider 或真实 AI Provider
 - ComfyUI Workflow 调用
 - FFmpeg 合成
+- Story/Script/Character/Scene/Shot 等 M2 生产模型
 - 登录、项目、剧本、角色、分镜等产品页面
