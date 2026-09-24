@@ -4,9 +4,12 @@ on:
   push:
     branches:
       - feat/m1c-runtime-mock-loop
+      - feat/m1b-persistence-job-core
+      - main
   pull_request:
     branches:
       - feat/m1b-persistence-job-core
+      - main
   workflow_dispatch:
 
 permissions:
