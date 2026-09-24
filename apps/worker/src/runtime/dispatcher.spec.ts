@@ -24,7 +24,10 @@ describe("OutboxDispatcher", () => {
 
   it("marks dispatched only after enqueue succeeds", async () => {
     const store = memoryStore([row]) as RuntimeStore & { dispatched: string[] };
-    const queue: JobEnqueuer = { enqueue: async () => "enqueued" };
+    const queue: JobEnqueuer = {
+      enqueue: async () => "enqueued",
+      hasDispatch: async () => true,
+    };
     const count = await new OutboxDispatcher(store, queue).dispatchOnce();
     expect(count).toBe(1);
     expect(store.dispatched).toEqual(["out-1"]);
@@ -36,6 +39,7 @@ describe("OutboxDispatcher", () => {
       enqueue: async () => {
         throw new Error("redis down");
       },
+      hasDispatch: async () => false,
     };
     const count = await new OutboxDispatcher(store, queue).dispatchOnce();
     expect(count).toBe(0);
@@ -45,7 +49,10 @@ describe("OutboxDispatcher", () => {
 
   it("treats a duplicate enqueue as delivered and still marks dispatched", async () => {
     const store = memoryStore([row]) as RuntimeStore & { dispatched: string[] };
-    const queue: JobEnqueuer = { enqueue: async () => "duplicate" };
+    const queue: JobEnqueuer = {
+      enqueue: async () => "duplicate",
+      hasDispatch: async () => true,
+    };
     await new OutboxDispatcher(store, queue).dispatchOnce();
     expect(store.dispatched).toEqual(["out-1"]);
   });
