@@ -55,6 +55,7 @@ async function approveStory(
     table: "story_revision",
     revisionId,
     workspaceId,
+    expectedVersion,
     expectedReviewVersion: 1,
     to: "IN_REVIEW",
   });
@@ -254,6 +255,7 @@ describe("M2 text chain schema", () => {
         table: "story_revision",
         revisionId: created.revisionId,
         workspaceId,
+        expectedVersion: created.rowVersion,
         expectedReviewVersion: 4,
         to: "IN_REVIEW",
       }),
@@ -263,6 +265,7 @@ describe("M2 text chain schema", () => {
         table: "story_revision",
         revisionId: created.revisionId,
         workspaceId,
+        expectedVersion: created.rowVersion,
         expectedReviewVersion: 1,
         to: "APPROVED",
         reviewedBy: "editor",
@@ -339,6 +342,7 @@ describe("M2 text chain schema", () => {
       table: "script_revision",
       revisionId: pending.revisionId,
       workspaceId: graph.workspaceId,
+      expectedVersion: pending.rowVersion,
       expectedReviewVersion: 1,
       to: "IN_REVIEW",
     });
@@ -497,6 +501,7 @@ describe("STALE propagation", () => {
       table: "script_revision",
       revisionId: replacement.revisionId,
       workspaceId: graph.workspaceId,
+      expectedVersion: replacement.rowVersion,
       expectedReviewVersion: 1,
       to: "IN_REVIEW",
     });
@@ -605,6 +610,7 @@ describe("aggregate approval gates", () => {
       table: "character_revision",
       revisionId: graph.characterRevisionId,
       workspaceId: graph.workspaceId,
+      expectedVersion: 1,
       expectedReviewVersion: 1,
       to: "IN_REVIEW",
     });
@@ -630,6 +636,7 @@ describe("aggregate approval gates", () => {
       table: "location_revision",
       revisionId: graph.locationRevisionId,
       workspaceId: graph.workspaceId,
+      expectedVersion: 1,
       expectedReviewVersion: 1,
       to: "IN_REVIEW",
     });
@@ -646,6 +653,7 @@ describe("aggregate approval gates", () => {
       table: "scene_revision",
       revisionId: graph.sceneRevisionId,
       workspaceId: graph.workspaceId,
+      expectedVersion: 1,
       expectedReviewVersion: 1,
       to: "IN_REVIEW",
     });
@@ -662,6 +670,7 @@ describe("aggregate approval gates", () => {
       table: "shot_revision",
       revisionId: graph.shotRevisionId,
       workspaceId: graph.workspaceId,
+      expectedVersion: 1,
       expectedReviewVersion: 1,
       to: "IN_REVIEW",
     });
@@ -789,6 +798,7 @@ async function buildChain(): Promise<ChainGraph> {
     table: "script_revision",
     revisionId: script.revisionId,
     workspaceId,
+    expectedVersion: script.rowVersion,
     expectedReviewVersion: 1,
     to: "IN_REVIEW",
   });
@@ -1026,6 +1036,7 @@ describe("shared revision stale propagation", () => {
       table: "script_revision",
       revisionId: replacement.revisionId,
       workspaceId: graph.workspaceId,
+      expectedVersion: replacement.rowVersion,
       expectedReviewVersion: 1,
       to: "IN_REVIEW",
     });
@@ -1059,6 +1070,7 @@ describe("review domain events", () => {
         table: "story_revision",
         revisionId: created.revisionId,
         workspaceId,
+        expectedVersion: created.rowVersion,
         expectedReviewVersion: 9,
         to: "IN_REVIEW",
       }),
@@ -1070,6 +1082,7 @@ describe("review domain events", () => {
       table: "story_revision",
       revisionId: created.revisionId,
       workspaceId,
+      expectedVersion: created.rowVersion,
       expectedReviewVersion: 1,
       to: "IN_REVIEW",
     });
@@ -1077,6 +1090,7 @@ describe("review domain events", () => {
       table: "story_revision",
       revisionId: created.revisionId,
       workspaceId,
+      expectedVersion: created.rowVersion,
       expectedReviewVersion: 2,
       to: "REJECTED",
       reviewedBy: "editor",
@@ -1086,6 +1100,7 @@ describe("review domain events", () => {
         table: "story_revision",
         revisionId: created.revisionId,
         workspaceId,
+        expectedVersion: created.rowVersion,
         expectedReviewVersion: 3,
         to: "IN_REVIEW",
       }),
@@ -1113,5 +1128,118 @@ describe("review domain events", () => {
       const data = event.data as { revisionId?: string; reviewStatus?: string };
       return data.revisionId === created.revisionId && data.reviewStatus === "IN_REVIEW";
     })).toHaveLength(1);
+  });
+});
+
+describe("script lock order", () => {
+  it("lets approveScript and createScriptRevision contend without a deadlock", async () => {
+    const graph = await buildChain();
+    const current = await chain.createScriptRevision({
+      workspaceId: graph.workspaceId,
+      projectId: graph.projectId,
+      episodeId: graph.episode2Id,
+      sourceStoryRevisionId: graph.storyRevisionId,
+      content: { schema: "m2.script.revision.v1", episode: 2, contend: 1 },
+      createdBy: "author",
+      expectedVersion: graph.episode2Version,
+    });
+    await chain.transitionReview({
+      table: "script_revision",
+      revisionId: current.revisionId,
+      workspaceId: graph.workspaceId,
+      expectedVersion: current.rowVersion,
+      expectedReviewVersion: 1,
+      to: "IN_REVIEW",
+    });
+    const results = await Promise.allSettled([
+      chain.approveScript({
+        workspaceId: graph.workspaceId,
+        episodeId: graph.episode2Id,
+        revisionId: current.revisionId,
+        expectedVersion: current.rowVersion,
+        expectedReviewVersion: 2,
+        reviewedBy: "editor",
+      }),
+      chain.createScriptRevision({
+        workspaceId: graph.workspaceId,
+        projectId: graph.projectId,
+        episodeId: graph.episode2Id,
+        sourceStoryRevisionId: graph.storyRevisionId,
+        content: { schema: "m2.script.revision.v1", episode: 2, contend: 2 },
+        createdBy: "author",
+        expectedVersion: current.rowVersion,
+      }),
+    ]);
+    const rejected = results.filter((result) => result.status === "rejected");
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]).toMatchObject({
+      status: "rejected",
+      reason: expect.objectContaining({ code: "REVISION_CONFLICT" }),
+    });
+    expect(String((rejected[0] as PromiseRejectedResult).reason)).not.toMatch(/deadlock/i);
+  });
+});
+
+describe("review aggregate versions", () => {
+  it("rejects a historical revision and a stale aggregate version", async () => {
+    const { workspaceId, projectId } = await seedProject();
+    const first = await chain.createStoryRevision({
+      workspaceId,
+      projectId,
+      content: { schema: "m2.story.revision.v1", premise: "first" },
+      createdBy: "author",
+      expectedVersion: 1,
+    });
+    await chain.transitionReview({
+      table: "story_revision",
+      revisionId: first.revisionId,
+      workspaceId,
+      expectedVersion: first.rowVersion,
+      expectedReviewVersion: 1,
+      to: "IN_REVIEW",
+    });
+    const second = await chain.createStoryRevision({
+      workspaceId,
+      projectId,
+      content: { schema: "m2.story.revision.v1", premise: "second" },
+      createdBy: "author",
+      expectedVersion: first.rowVersion,
+    });
+    await expect(
+      chain.transitionReview({
+        table: "story_revision",
+        revisionId: first.revisionId,
+        workspaceId,
+        expectedVersion: second.rowVersion,
+        expectedReviewVersion: 2,
+        to: "REJECTED",
+        reviewedBy: "editor",
+      }),
+    ).rejects.toMatchObject({ code: "REVISION_CONFLICT" });
+    await expect(
+      chain.transitionReview({
+        table: "story_revision",
+        revisionId: second.revisionId,
+        workspaceId,
+        expectedVersion: first.rowVersion,
+        expectedReviewVersion: 1,
+        to: "IN_REVIEW",
+      }),
+    ).rejects.toMatchObject({ code: "REVISION_CONFLICT" });
+    const status = await pool.query<{ id: string; review_status: string } & QueryResultRow>(
+      "SELECT id, review_status FROM story_revision WHERE project_id = $1",
+      [projectId],
+    );
+    const byId = Object.fromEntries(status.rows.map((row) => [row.id, row.review_status]));
+    expect(byId[first.revisionId]).toBe("IN_REVIEW");
+    expect(byId[second.revisionId]).toBe("DRAFT");
+    const listed = await events.listEventsAfter(workspaceId, "0", 20);
+    expect(
+      listed.filter((event) => {
+        const data = event.data as { revisionId?: string; reviewStatus?: string };
+        return event.eventType === "revision.review" && data.reviewStatus === "REJECTED";
+      }),
+    ).toHaveLength(0);
   });
 });

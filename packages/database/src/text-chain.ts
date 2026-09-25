@@ -127,7 +127,10 @@ export class TextChainService {
     if (input.to === "APPROVED") {
       throw new PersistenceError("REVIEW_GATE_REQUIRED", "Approval must use the aggregate-specific review gate");
     }
-    return withTransaction(this.pool, async (client) => applyReview(client, input));
+    return withTransaction(this.pool, async (client) => {
+      await lockParentForReview(client, input);
+      return applyReview(client, input);
+    });
   }
 
   async approveStory(input: {
@@ -164,6 +167,7 @@ export class TextChainService {
         table: "story_revision",
         revisionId: input.revisionId,
         workspaceId: input.workspaceId,
+        expectedVersion: input.expectedVersion,
         expectedReviewVersion: input.expectedReviewVersion,
         to: "APPROVED",
         reviewedBy: input.reviewedBy,
@@ -208,8 +212,19 @@ export class TextChainService {
   }): Promise<RevisionCreated> {
     const contentHash = canonicalInputHash(input.content);
     return withTransaction(this.pool, async (client) => {
-      await lockProject(client, input.projectId, input.workspaceId);
       await lockAggregateForRevision(client, "episode", input.episodeId, input.workspaceId, input.expectedVersion);
+      await lockProject(client, input.projectId, input.workspaceId);
+      const currentScript = await client.query<{ current_script_revision_id: string | null } & QueryResultRow>(
+        "SELECT current_script_revision_id FROM episode WHERE id = $1 AND workspace_id = $2",
+        [input.episodeId, input.workspaceId],
+      );
+      const currentScriptId = currentScript.rows[0]?.current_script_revision_id;
+      if (currentScriptId) {
+        await client.query("SELECT id FROM script_revision WHERE id = $1 AND workspace_id = $2 FOR UPDATE", [
+          currentScriptId,
+          input.workspaceId,
+        ]);
+      }
       const source = await client.query<
         {
           current_script_revision_id: string | null;
@@ -294,6 +309,7 @@ export class TextChainService {
     reviewedBy: string;
   }): Promise<void> {
     await withTransaction(this.pool, async (client) => {
+      await lockAggregateForRevision(client, "episode", input.episodeId, input.workspaceId, input.expectedVersion);
       const source = await client.query<
         {
           freshness_status: string;
@@ -348,6 +364,7 @@ export class TextChainService {
         table: "script_revision",
         revisionId: input.revisionId,
         workspaceId: input.workspaceId,
+        expectedVersion: input.expectedVersion,
         expectedReviewVersion: input.expectedReviewVersion,
         to: "APPROVED",
         reviewedBy: input.reviewedBy,
@@ -529,10 +546,75 @@ interface ReviewTransition {
   table: "story_revision" | "script_revision" | "character_revision" | "location_revision" | "scene_revision" | "shot_revision";
   revisionId: string;
   workspaceId: string;
+  expectedVersion: number;
   expectedReviewVersion: number;
   to: ReviewStatus;
   reviewedBy?: string;
   reviewNote?: string | null;
+}
+
+const reviewParents = {
+  story_revision: {
+    parentTable: "project",
+    parentColumn: "project_id",
+    versionColumn: "version",
+    currentColumn: "current_story_revision_id",
+  },
+  script_revision: {
+    parentTable: "episode",
+    parentColumn: "episode_id",
+    versionColumn: "row_version",
+    currentColumn: "current_script_revision_id",
+  },
+  character_revision: {
+    parentTable: "character",
+    parentColumn: "character_id",
+    versionColumn: "row_version",
+    currentColumn: "current_revision_id",
+  },
+  location_revision: {
+    parentTable: "location",
+    parentColumn: "location_id",
+    versionColumn: "row_version",
+    currentColumn: "current_revision_id",
+  },
+  scene_revision: {
+    parentTable: "scene",
+    parentColumn: "scene_id",
+    versionColumn: "row_version",
+    currentColumn: "current_revision_id",
+  },
+  shot_revision: {
+    parentTable: "shot",
+    parentColumn: "shot_id",
+    versionColumn: "row_version",
+    currentColumn: "current_revision_id",
+  },
+} as const;
+
+async function lockParentForReview(client: PoolClient, input: ReviewTransition): Promise<void> {
+  const parent = reviewParents[input.table];
+  const located = await client.query<{ parent_id: string } & QueryResultRow>(
+    `SELECT ${parent.parentColumn} AS parent_id FROM ${input.table} WHERE id = $1 AND workspace_id = $2`,
+    [input.revisionId, input.workspaceId],
+  );
+  const parentId = located.rows[0]?.parent_id;
+  if (!parentId) throw new PersistenceError("NOT_FOUND", "Revision not found");
+  const locked = await client.query<{ aggregate_version: number; current_revision_id: string | null } & QueryResultRow>(
+    `SELECT ${parent.versionColumn} AS aggregate_version, ${parent.currentColumn} AS current_revision_id
+       FROM ${parent.parentTable}
+      WHERE id = $1 AND workspace_id = $2
+      FOR UPDATE`,
+    [parentId, input.workspaceId],
+  );
+  const row = locked.rows[0];
+  if (!row) throw new PersistenceError("NOT_FOUND", "Aggregate not found");
+  if (row.aggregate_version !== input.expectedVersion) {
+    throw new PersistenceError("REVISION_CONFLICT", "Aggregate version did not match");
+  }
+  if (row.current_revision_id !== input.revisionId) {
+    throw new PersistenceError("REVISION_CONFLICT", "Only the current revision can change review state");
+  }
 }
 
 async function applyReview(client: PoolClient, input: ReviewTransition): Promise<number> {
@@ -544,8 +626,8 @@ async function applyReview(client: PoolClient, input: ReviewTransition): Promise
   );
   const row = current.rows[0];
   if (!row) throw new PersistenceError("NOT_FOUND", "Revision not found");
-  if (input.to === "APPROVED" && row.freshness_status !== "CURRENT") {
-    throw new PersistenceError("SOURCE_STALE", "Stale revision cannot be approved");
+  if (row.freshness_status !== "CURRENT") {
+    throw new PersistenceError("SOURCE_STALE", "Stale revision cannot change review state");
   }
   assertReviewTransition(row.review_status, input.to);
   const reviewed = input.to === "APPROVED" || input.to === "REJECTED";
@@ -653,6 +735,7 @@ async function finishApproval(
     table: revisionTable,
     revisionId: input.revisionId,
     workspaceId: input.workspaceId,
+    expectedVersion: input.expectedVersion,
     expectedReviewVersion: input.expectedReviewVersion,
     to: "APPROVED",
     reviewedBy: input.reviewedBy,
