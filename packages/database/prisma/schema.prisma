@@ -438,6 +438,7 @@ model SceneRevision {
   @@unique([sceneId, revisionNo])
   @@unique([id, sceneId, workspaceId])
   @@unique([id, projectId, workspaceId])
+  @@unique([id, sceneId, projectId, workspaceId])
   @@map("scene_revision")
 }
 
