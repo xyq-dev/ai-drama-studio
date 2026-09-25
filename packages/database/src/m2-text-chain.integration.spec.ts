@@ -51,7 +51,7 @@ async function approveStory(
   revisionId: string,
   expectedVersion: number,
 ): Promise<void> {
-  await chain.transitionReview({
+  const review = await chain.transitionReview({
     table: "story_revision",
     revisionId,
     workspaceId,
@@ -63,7 +63,7 @@ async function approveStory(
     workspaceId,
     projectId,
     revisionId,
-    expectedVersion,
+    expectedVersion: review.rowVersion,
     expectedReviewVersion: 2,
     reviewedBy: "editor",
   });
@@ -325,6 +325,106 @@ describe("M2 text chain schema", () => {
         [graph.shotRevisionId, graph.characterRevisionId],
       ),
     ).rejects.toThrow(/provenance is immutable/i);
+
+    await pool.query(
+      "UPDATE character_revision SET review_status = 'IN_REVIEW', review_version = review_version + 1 WHERE id = $1",
+      [graph.unlinkedCharacterRevisionId],
+    );
+    await expect(
+      pool.query(
+        `INSERT INTO character_revision_script_source
+          (workspace_id, project_id, character_revision_id, script_revision_id)
+         VALUES ($1, $2, $3, $4)`,
+        [graph.workspaceId, graph.projectId, graph.unlinkedCharacterRevisionId, graph.scriptRevisionId],
+      ),
+    ).rejects.toThrow(/provenance is frozen after draft/i);
+
+    const unlinkedLocationRevisionId = await insertEntityRevision(
+      "location",
+      graph.workspaceId,
+      graph.projectId,
+      graph.scriptRevisionId,
+      false,
+    );
+    await pool.query(
+      "UPDATE location_revision SET review_status = 'IN_REVIEW', review_version = review_version + 1 WHERE id = $1",
+      [unlinkedLocationRevisionId],
+    );
+    await expect(
+      pool.query(
+        `INSERT INTO location_revision_script_source
+          (workspace_id, project_id, location_revision_id, script_revision_id)
+         VALUES ($1, $2, $3, $4)`,
+        [graph.workspaceId, graph.projectId, unlinkedLocationRevisionId, graph.scriptRevisionId],
+      ),
+    ).rejects.toThrow(/provenance is frozen after draft/i);
+
+    await pool.query(
+      "UPDATE shot_revision SET review_status = 'IN_REVIEW', review_version = review_version + 1 WHERE id = $1",
+      [graph.shotRevisionId],
+    );
+    await expect(
+      pool.query(
+        `INSERT INTO shot_character_reference
+          (workspace_id, project_id, shot_revision_id, character_revision_id, role)
+         VALUES ($1, $2, $3, $4, 'late')`,
+        [graph.workspaceId, graph.projectId, graph.shotRevisionId, graph.characterRevisionId],
+      ),
+    ).rejects.toThrow(/provenance is frozen after draft/i);
+  });
+
+  it("enforces unique ordinals across current scene and shot siblings", async () => {
+    const graph = await buildChain();
+
+    await pool.query("UPDATE scene SET current_revision_id = $1 WHERE id = $2", [
+      graph.sceneRevisionId,
+      graph.sceneId,
+    ]);
+    const siblingScene = await pool.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO scene (workspace_id, project_id, episode_id)
+       VALUES ($1, $2, $3) RETURNING id`,
+      [graph.workspaceId, graph.projectId, graph.episode2Id],
+    );
+    const siblingSceneId = siblingScene.rows[0]?.id;
+    if (!siblingSceneId) throw new Error("sibling scene missing");
+    const siblingSceneRevision = await pool.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO scene_revision
+        (workspace_id, project_id, episode_id, scene_id, revision_no, source_script_revision_id,
+         ordinal, heading, summary, content_hash, created_by)
+       VALUES ($1,$2,$3,$4,1,$5,1,'INT. DUPLICATE','duplicate',$6,'author') RETURNING id`,
+      [graph.workspaceId, graph.projectId, graph.episode2Id, siblingSceneId, graph.scriptRevisionId, hash],
+    );
+    await expect(
+      pool.query("UPDATE scene SET current_revision_id = $1 WHERE id = $2", [
+        siblingSceneRevision.rows[0]?.id,
+        siblingSceneId,
+      ]),
+    ).rejects.toThrow(/current scene ordinal must be unique/i);
+
+    await pool.query("UPDATE shot SET current_revision_id = $1 WHERE id = $2", [
+      graph.shotRevisionId,
+      graph.shotId,
+    ]);
+    const siblingShot = await pool.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO shot (workspace_id, project_id, episode_id, scene_id)
+       VALUES ($1, $2, $3, $4) RETURNING id`,
+      [graph.workspaceId, graph.projectId, graph.episode2Id, graph.sceneId],
+    );
+    const siblingShotId = siblingShot.rows[0]?.id;
+    if (!siblingShotId) throw new Error("sibling shot missing");
+    const siblingShotRevision = await pool.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO shot_revision
+        (workspace_id, project_id, scene_id, shot_id, revision_no, source_scene_revision_id,
+         ordinal, shot_type, camera, action, prompt_text, content_hash, created_by)
+       VALUES ($1,$2,$3,$4,1,$5,1,'wide','static','duplicate','duplicate',$6,'author') RETURNING id`,
+      [graph.workspaceId, graph.projectId, graph.sceneId, siblingShotId, graph.sceneRevisionId, hash],
+    );
+    await expect(
+      pool.query("UPDATE shot SET current_revision_id = $1 WHERE id = $2", [
+        siblingShotRevision.rows[0]?.id,
+        siblingShotId,
+      ]),
+    ).rejects.toThrow(/current shot ordinal must be unique/i);
   });
 
   it("rejects approval when a script becomes stale before review completes", async () => {
@@ -338,7 +438,7 @@ describe("M2 text chain schema", () => {
       createdBy: "author",
       expectedVersion: graph.episode2Version,
     });
-    await chain.transitionReview({
+    const pendingReview = await chain.transitionReview({
       table: "script_revision",
       revisionId: pending.revisionId,
       workspaceId: graph.workspaceId,
@@ -366,7 +466,7 @@ describe("M2 text chain schema", () => {
         workspaceId: graph.workspaceId,
         episodeId: graph.episode2Id,
         revisionId: pending.revisionId,
-        expectedVersion: pending.rowVersion,
+        expectedVersion: pendingReview.rowVersion,
         expectedReviewVersion: 2,
         reviewedBy: "editor",
       }),
@@ -497,7 +597,7 @@ describe("STALE propagation", () => {
       stale_from_ref: `script_revision:${graph.scriptRevisionId}`,
     });
 
-    await chain.transitionReview({
+    const replacementReview = await chain.transitionReview({
       table: "script_revision",
       revisionId: replacement.revisionId,
       workspaceId: graph.workspaceId,
@@ -509,7 +609,7 @@ describe("STALE propagation", () => {
       workspaceId: graph.workspaceId,
       episodeId: graph.episode2Id,
       revisionId: replacement.revisionId,
-      expectedVersion: replacement.rowVersion,
+      expectedVersion: replacementReview.rowVersion,
       expectedReviewVersion: 2,
       reviewedBy: "editor",
     });
@@ -606,7 +706,7 @@ describe("aggregate approval gates", () => {
     await pool.query("UPDATE scene SET current_revision_id = $1 WHERE id = $2", [graph.sceneRevisionId, graph.sceneId]);
     await pool.query("UPDATE shot SET current_revision_id = $1 WHERE id = $2", [graph.shotRevisionId, graph.shotId]);
 
-    await chain.transitionReview({
+    const characterReview = await chain.transitionReview({
       table: "character_revision",
       revisionId: graph.characterRevisionId,
       workspaceId: graph.workspaceId,
@@ -623,7 +723,7 @@ describe("aggregate approval gates", () => {
         )
       ).rows[0]!.character_id,
       revisionId: graph.characterRevisionId,
-      expectedVersion: 1,
+      expectedVersion: characterReview.rowVersion,
       expectedReviewVersion: 2,
       reviewedBy: "editor",
     });
@@ -632,7 +732,7 @@ describe("aggregate approval gates", () => {
       "SELECT location_id FROM location_revision WHERE id = $1",
       [graph.locationRevisionId],
     );
-    await chain.transitionReview({
+    const locationReview = await chain.transitionReview({
       table: "location_revision",
       revisionId: graph.locationRevisionId,
       workspaceId: graph.workspaceId,
@@ -644,12 +744,12 @@ describe("aggregate approval gates", () => {
       workspaceId: graph.workspaceId,
       parentId: locationParent.rows[0]!.location_id,
       revisionId: graph.locationRevisionId,
-      expectedVersion: 1,
+      expectedVersion: locationReview.rowVersion,
       expectedReviewVersion: 2,
       reviewedBy: "editor",
     });
 
-    await chain.transitionReview({
+    const sceneReview = await chain.transitionReview({
       table: "scene_revision",
       revisionId: graph.sceneRevisionId,
       workspaceId: graph.workspaceId,
@@ -661,12 +761,12 @@ describe("aggregate approval gates", () => {
       workspaceId: graph.workspaceId,
       parentId: graph.sceneId,
       revisionId: graph.sceneRevisionId,
-      expectedVersion: 1,
+      expectedVersion: sceneReview.rowVersion,
       expectedReviewVersion: 2,
       reviewedBy: "editor",
     });
 
-    await chain.transitionReview({
+    const shotReview = await chain.transitionReview({
       table: "shot_revision",
       revisionId: graph.shotRevisionId,
       workspaceId: graph.workspaceId,
@@ -678,7 +778,7 @@ describe("aggregate approval gates", () => {
       workspaceId: graph.workspaceId,
       parentId: graph.shotId,
       revisionId: graph.shotRevisionId,
-      expectedVersion: 1,
+      expectedVersion: shotReview.rowVersion,
       expectedReviewVersion: 2,
       reviewedBy: "editor",
     });
@@ -794,7 +894,7 @@ async function buildChain(): Promise<ChainGraph> {
     createdBy: "author",
     expectedVersion: episode2Version,
   });
-  await chain.transitionReview({
+  const scriptReview = await chain.transitionReview({
     table: "script_revision",
     revisionId: script.revisionId,
     workspaceId,
@@ -806,7 +906,7 @@ async function buildChain(): Promise<ChainGraph> {
     workspaceId,
     episodeId: episode2Id,
     revisionId: script.revisionId,
-    expectedVersion: script.rowVersion,
+    expectedVersion: scriptReview.rowVersion,
     expectedReviewVersion: 2,
     reviewedBy: "editor",
   });
@@ -1032,7 +1132,7 @@ describe("shared revision stale propagation", () => {
 
     const before = await events.listEventsAfter(graph.workspaceId, "0", 100);
     const staleBefore = before.filter((event) => event.eventType === "revision.stale");
-    await chain.transitionReview({
+    const repeatedReview = await chain.transitionReview({
       table: "script_revision",
       revisionId: replacement.revisionId,
       workspaceId: graph.workspaceId,
@@ -1044,7 +1144,7 @@ describe("shared revision stale propagation", () => {
       workspaceId: graph.workspaceId,
       episodeId: graph.episode2Id,
       revisionId: replacement.revisionId,
-      expectedVersion: replacement.rowVersion,
+      expectedVersion: repeatedReview.rowVersion,
       expectedReviewVersion: 2,
       reviewedBy: "editor",
     });
@@ -1078,7 +1178,7 @@ describe("review domain events", () => {
     const failed = await events.listEventsAfter(workspaceId, "0", 20);
     expect(failed.filter((event) => event.eventType === "revision.review")).toHaveLength(0);
 
-    await chain.transitionReview({
+    const inReview = await chain.transitionReview({
       table: "story_revision",
       revisionId: created.revisionId,
       workspaceId,
@@ -1086,11 +1186,11 @@ describe("review domain events", () => {
       expectedReviewVersion: 1,
       to: "IN_REVIEW",
     });
-    await chain.transitionReview({
+    const rejectedReview = await chain.transitionReview({
       table: "story_revision",
       revisionId: created.revisionId,
       workspaceId,
-      expectedVersion: created.rowVersion,
+      expectedVersion: inReview.rowVersion,
       expectedReviewVersion: 2,
       to: "REJECTED",
       reviewedBy: "editor",
@@ -1100,7 +1200,7 @@ describe("review domain events", () => {
         table: "story_revision",
         revisionId: created.revisionId,
         workspaceId,
-        expectedVersion: created.rowVersion,
+        expectedVersion: rejectedReview.rowVersion,
         expectedReviewVersion: 3,
         to: "IN_REVIEW",
       }),
@@ -1111,7 +1211,7 @@ describe("review domain events", () => {
       projectId,
       content: { schema: "m2.story.revision.v1", premise: "approved events" },
       createdBy: "author",
-      expectedVersion: created.rowVersion,
+      expectedVersion: rejectedReview.rowVersion,
     });
     await approveStory(workspaceId, projectId, approved.revisionId, approved.rowVersion);
     const listed = await events.listEventsAfter(workspaceId, "0", 20);
@@ -1143,11 +1243,11 @@ describe("script lock order", () => {
       createdBy: "author",
       expectedVersion: graph.episode2Version,
     });
-    await chain.transitionReview({
+    const currentReview = await chain.transitionReview({
       table: "script_revision",
       revisionId: current.revisionId,
       workspaceId: graph.workspaceId,
-      expectedVersion: current.rowVersion,
+      expectedVersion: currentReview.rowVersion,
       expectedReviewVersion: 1,
       to: "IN_REVIEW",
     });
@@ -1156,7 +1256,7 @@ describe("script lock order", () => {
         workspaceId: graph.workspaceId,
         episodeId: graph.episode2Id,
         revisionId: current.revisionId,
-        expectedVersion: current.rowVersion,
+        expectedVersion: currentReview.rowVersion,
         expectedReviewVersion: 2,
         reviewedBy: "editor",
       }),
@@ -1167,7 +1267,7 @@ describe("script lock order", () => {
         sourceStoryRevisionId: graph.storyRevisionId,
         content: { schema: "m2.script.revision.v1", episode: 2, contend: 2 },
         createdBy: "author",
-        expectedVersion: current.rowVersion,
+        expectedVersion: currentReview.rowVersion,
       }),
     ]);
     const rejected = results.filter((result) => result.status === "rejected");
@@ -1191,7 +1291,7 @@ describe("review aggregate versions", () => {
       createdBy: "author",
       expectedVersion: 1,
     });
-    await chain.transitionReview({
+    const firstReview = await chain.transitionReview({
       table: "story_revision",
       revisionId: first.revisionId,
       workspaceId,
@@ -1199,12 +1299,16 @@ describe("review aggregate versions", () => {
       expectedReviewVersion: 1,
       to: "IN_REVIEW",
     });
+    expect(firstReview).toMatchObject({
+      reviewVersion: 2,
+      rowVersion: first.rowVersion + 1,
+    });
     const second = await chain.createStoryRevision({
       workspaceId,
       projectId,
       content: { schema: "m2.story.revision.v1", premise: "second" },
       createdBy: "author",
-      expectedVersion: first.rowVersion,
+      expectedVersion: firstReview.rowVersion,
     });
     await expect(
       chain.transitionReview({
@@ -1222,7 +1326,7 @@ describe("review aggregate versions", () => {
         table: "story_revision",
         revisionId: second.revisionId,
         workspaceId,
-        expectedVersion: first.rowVersion,
+        expectedVersion: firstReview.rowVersion,
         expectedReviewVersion: 1,
         to: "IN_REVIEW",
       }),

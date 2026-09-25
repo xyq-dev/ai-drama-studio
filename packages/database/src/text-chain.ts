@@ -14,6 +14,11 @@ export interface RevisionCreated {
   rowVersion: number;
 }
 
+export interface ReviewTransitioned {
+  reviewVersion: number;
+  rowVersion: number;
+}
+
 async function withTransaction<T>(pool: DatabasePool, work: (client: PoolClient) => Promise<T>): Promise<T> {
   const client = await pool.connect();
   try {
@@ -123,13 +128,15 @@ export class TextChainService {
     });
   }
 
-  async transitionReview(input: ReviewTransition): Promise<number> {
+  async transitionReview(input: ReviewTransition): Promise<ReviewTransitioned> {
     if (input.to === "APPROVED") {
       throw new PersistenceError("REVIEW_GATE_REQUIRED", "Approval must use the aggregate-specific review gate");
     }
     return withTransaction(this.pool, async (client) => {
-      await lockParentForReview(client, input);
-      return applyReview(client, input);
+      const parentId = await lockParentForReview(client, input);
+      const reviewVersion = await applyReview(client, input);
+      const rowVersion = await bumpReviewParentVersion(client, input, parentId);
+      return { reviewVersion, rowVersion };
     });
   }
 
@@ -592,7 +599,7 @@ const reviewParents = {
   },
 } as const;
 
-async function lockParentForReview(client: PoolClient, input: ReviewTransition): Promise<void> {
+async function lockParentForReview(client: PoolClient, input: ReviewTransition): Promise<string> {
   const parent = reviewParents[input.table];
   const located = await client.query<{ parent_id: string } & QueryResultRow>(
     `SELECT ${parent.parentColumn} AS parent_id FROM ${input.table} WHERE id = $1 AND workspace_id = $2`,
@@ -615,6 +622,31 @@ async function lockParentForReview(client: PoolClient, input: ReviewTransition):
   if (row.current_revision_id !== input.revisionId) {
     throw new PersistenceError("REVISION_CONFLICT", "Only the current revision can change review state");
   }
+  return parentId;
+}
+
+async function bumpReviewParentVersion(
+  client: PoolClient,
+  input: ReviewTransition,
+  parentId: string,
+): Promise<number> {
+  const parent = reviewParents[input.table];
+  const updated = await client.query<{ aggregate_version: number } & QueryResultRow>(
+    `UPDATE ${parent.parentTable}
+        SET ${parent.versionColumn} = ${parent.versionColumn} + 1,
+            updated_at = now()
+      WHERE id = $1
+        AND workspace_id = $2
+        AND ${parent.versionColumn} = $3
+        AND ${parent.currentColumn} = $4
+      RETURNING ${parent.versionColumn} AS aggregate_version`,
+    [parentId, input.workspaceId, input.expectedVersion, input.revisionId],
+  );
+  const row = updated.rows[0];
+  if (!row) {
+    throw new PersistenceError("REVISION_CONFLICT", "Aggregate version changed during review transition");
+  }
+  return row.aggregate_version;
 }
 
 async function applyReview(client: PoolClient, input: ReviewTransition): Promise<number> {

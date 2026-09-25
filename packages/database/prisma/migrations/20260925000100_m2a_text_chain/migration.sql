@@ -392,6 +392,102 @@ ALTER TABLE shot
   FOREIGN KEY (approved_revision_id, id, workspace_id)
   REFERENCES shot_revision (id, shot_id, workspace_id);
 
+CREATE FUNCTION m2_enforce_scene_current_ordinal_unique() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+  selected_ordinal integer;
+BEGIN
+  IF NEW.current_revision_id IS NULL OR NEW.archived_at IS NOT NULL THEN
+    RETURN NEW;
+  END IF;
+
+  PERFORM pg_advisory_xact_lock(
+    hashtextextended('m2-scene-ordinal:' || NEW.workspace_id::text || ':' || NEW.episode_id::text, 0)
+  );
+
+  SELECT ordinal
+    INTO selected_ordinal
+    FROM scene_revision
+   WHERE id = NEW.current_revision_id
+     AND scene_id = NEW.id
+     AND workspace_id = NEW.workspace_id;
+
+  IF selected_ordinal IS NULL THEN
+    RETURN NEW;
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+      FROM scene sibling
+      JOIN scene_revision current_revision
+        ON current_revision.id = sibling.current_revision_id
+       AND current_revision.scene_id = sibling.id
+       AND current_revision.workspace_id = sibling.workspace_id
+     WHERE sibling.workspace_id = NEW.workspace_id
+       AND sibling.project_id = NEW.project_id
+       AND sibling.episode_id = NEW.episode_id
+       AND sibling.id <> NEW.id
+       AND sibling.archived_at IS NULL
+       AND current_revision.ordinal = selected_ordinal
+  ) THEN
+    RAISE EXCEPTION 'current scene ordinal must be unique within episode';
+  END IF;
+
+  RETURN NEW;
+END $$;
+
+CREATE TRIGGER scene_current_ordinal_unique
+  BEFORE INSERT OR UPDATE OF current_revision_id, episode_id, archived_at ON scene
+  FOR EACH ROW EXECUTE FUNCTION m2_enforce_scene_current_ordinal_unique();
+
+CREATE FUNCTION m2_enforce_shot_current_ordinal_unique() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+  selected_ordinal integer;
+BEGIN
+  IF NEW.current_revision_id IS NULL OR NEW.archived_at IS NOT NULL THEN
+    RETURN NEW;
+  END IF;
+
+  PERFORM pg_advisory_xact_lock(
+    hashtextextended('m2-shot-ordinal:' || NEW.workspace_id::text || ':' || NEW.scene_id::text, 0)
+  );
+
+  SELECT ordinal
+    INTO selected_ordinal
+    FROM shot_revision
+   WHERE id = NEW.current_revision_id
+     AND shot_id = NEW.id
+     AND workspace_id = NEW.workspace_id;
+
+  IF selected_ordinal IS NULL THEN
+    RETURN NEW;
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+      FROM shot sibling
+      JOIN shot_revision current_revision
+        ON current_revision.id = sibling.current_revision_id
+       AND current_revision.shot_id = sibling.id
+       AND current_revision.workspace_id = sibling.workspace_id
+     WHERE sibling.workspace_id = NEW.workspace_id
+       AND sibling.project_id = NEW.project_id
+       AND sibling.scene_id = NEW.scene_id
+       AND sibling.id <> NEW.id
+       AND sibling.archived_at IS NULL
+       AND current_revision.ordinal = selected_ordinal
+  ) THEN
+    RAISE EXCEPTION 'current shot ordinal must be unique within scene';
+  END IF;
+
+  RETURN NEW;
+END $$;
+
+CREATE TRIGGER shot_current_ordinal_unique
+  BEFORE INSERT OR UPDATE OF current_revision_id, scene_id, archived_at ON shot
+  FOR EACH ROW EXECUTE FUNCTION m2_enforce_shot_current_ordinal_unique();
+
 CREATE TABLE shot_character_reference (
   workspace_id uuid NOT NULL,
   project_id uuid NOT NULL,
@@ -409,6 +505,57 @@ CREATE FUNCTION m2_reject_provenance_mutation() RETURNS trigger
 LANGUAGE plpgsql AS 'BEGIN
   RAISE EXCEPTION ''revision provenance is immutable'';
 END';
+
+CREATE FUNCTION m2_reject_provenance_insert_after_draft() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+  revision_review_status text;
+  revision_freshness_status text;
+BEGIN
+  IF TG_TABLE_NAME = 'character_revision_script_source' THEN
+    SELECT review_status, freshness_status
+      INTO revision_review_status, revision_freshness_status
+      FROM character_revision
+     WHERE id = NEW.character_revision_id
+       AND workspace_id = NEW.workspace_id;
+  ELSIF TG_TABLE_NAME = 'location_revision_script_source' THEN
+    SELECT review_status, freshness_status
+      INTO revision_review_status, revision_freshness_status
+      FROM location_revision
+     WHERE id = NEW.location_revision_id
+       AND workspace_id = NEW.workspace_id;
+  ELSIF TG_TABLE_NAME = 'shot_character_reference' THEN
+    SELECT review_status, freshness_status
+      INTO revision_review_status, revision_freshness_status
+      FROM shot_revision
+     WHERE id = NEW.shot_revision_id
+       AND workspace_id = NEW.workspace_id;
+  ELSE
+    RAISE EXCEPTION 'unsupported provenance table %', TG_TABLE_NAME;
+  END IF;
+
+  IF revision_review_status IS NULL THEN
+    RAISE EXCEPTION 'provenance revision not found';
+  END IF;
+
+  IF revision_review_status <> 'DRAFT' OR revision_freshness_status <> 'CURRENT' THEN
+    RAISE EXCEPTION 'revision provenance is frozen after draft';
+  END IF;
+
+  RETURN NEW;
+END $$;
+
+CREATE TRIGGER character_revision_script_source_draft_only
+  BEFORE INSERT ON character_revision_script_source
+  FOR EACH ROW EXECUTE FUNCTION m2_reject_provenance_insert_after_draft();
+
+CREATE TRIGGER location_revision_script_source_draft_only
+  BEFORE INSERT ON location_revision_script_source
+  FOR EACH ROW EXECUTE FUNCTION m2_reject_provenance_insert_after_draft();
+
+CREATE TRIGGER shot_character_reference_draft_only
+  BEFORE INSERT ON shot_character_reference
+  FOR EACH ROW EXECUTE FUNCTION m2_reject_provenance_insert_after_draft();
 
 CREATE TRIGGER character_revision_script_source_immutable
   BEFORE UPDATE OR DELETE ON character_revision_script_source
