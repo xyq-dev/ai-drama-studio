@@ -511,6 +511,7 @@ LANGUAGE plpgsql AS $$
 DECLARE
   revision_review_status text;
   revision_freshness_status text;
+  source_freshness_status text;
 BEGIN
   IF TG_TABLE_NAME = 'character_revision_script_source' THEN
     SELECT review_status, freshness_status
@@ -519,6 +520,14 @@ BEGIN
      WHERE id = NEW.character_revision_id
        AND workspace_id = NEW.workspace_id
      FOR UPDATE;
+
+    SELECT freshness_status
+      INTO source_freshness_status
+      FROM script_revision
+     WHERE id = NEW.script_revision_id
+       AND project_id = NEW.project_id
+       AND workspace_id = NEW.workspace_id
+     FOR SHARE;
   ELSIF TG_TABLE_NAME = 'location_revision_script_source' THEN
     SELECT review_status, freshness_status
       INTO revision_review_status, revision_freshness_status
@@ -526,6 +535,14 @@ BEGIN
      WHERE id = NEW.location_revision_id
        AND workspace_id = NEW.workspace_id
      FOR UPDATE;
+
+    SELECT freshness_status
+      INTO source_freshness_status
+      FROM script_revision
+     WHERE id = NEW.script_revision_id
+       AND project_id = NEW.project_id
+       AND workspace_id = NEW.workspace_id
+     FOR SHARE;
   ELSIF TG_TABLE_NAME = 'shot_character_reference' THEN
     SELECT review_status, freshness_status
       INTO revision_review_status, revision_freshness_status
@@ -533,12 +550,28 @@ BEGIN
      WHERE id = NEW.shot_revision_id
        AND workspace_id = NEW.workspace_id
      FOR UPDATE;
+
+    SELECT freshness_status
+      INTO source_freshness_status
+      FROM character_revision
+     WHERE id = NEW.character_revision_id
+       AND project_id = NEW.project_id
+       AND workspace_id = NEW.workspace_id
+     FOR SHARE;
   ELSE
     RAISE EXCEPTION 'unsupported provenance table %', TG_TABLE_NAME;
   END IF;
 
   IF revision_review_status IS NULL THEN
     RAISE EXCEPTION 'provenance revision not found';
+  END IF;
+
+  IF source_freshness_status IS NULL THEN
+    RAISE EXCEPTION 'provenance source revision not found';
+  END IF;
+
+  IF source_freshness_status <> 'CURRENT' THEN
+    RAISE EXCEPTION 'revision provenance source is stale';
   END IF;
 
   IF revision_review_status <> 'DRAFT' OR revision_freshness_status <> 'CURRENT' THEN
