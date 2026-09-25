@@ -431,13 +431,28 @@ BEGIN
   RETURN NEW;
 END $$;
 
-CREATE FUNCTION m2_reject_entity_revision_content_update() RETURNS trigger
+CREATE FUNCTION m2_reject_character_revision_content_update() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
   IF NEW.workspace_id IS DISTINCT FROM OLD.workspace_id
      OR NEW.project_id IS DISTINCT FROM OLD.project_id
-     OR (TG_TABLE_NAME = 'character_revision' AND NEW.character_id IS DISTINCT FROM OLD.character_id)
-     OR (TG_TABLE_NAME = 'location_revision' AND NEW.location_id IS DISTINCT FROM OLD.location_id)
+     OR NEW.character_id IS DISTINCT FROM OLD.character_id
+     OR NEW.revision_no IS DISTINCT FROM OLD.revision_no
+     OR NEW.content_json IS DISTINCT FROM OLD.content_json
+     OR NEW.content_hash IS DISTINCT FROM OLD.content_hash
+     OR NEW.created_by IS DISTINCT FROM OLD.created_by
+     OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+    RAISE EXCEPTION 'revision content is immutable';
+  END IF;
+  RETURN NEW;
+END $$;
+
+CREATE FUNCTION m2_reject_location_revision_content_update() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.workspace_id IS DISTINCT FROM OLD.workspace_id
+     OR NEW.project_id IS DISTINCT FROM OLD.project_id
+     OR NEW.location_id IS DISTINCT FROM OLD.location_id
      OR NEW.revision_no IS DISTINCT FROM OLD.revision_no
      OR NEW.content_json IS DISTINCT FROM OLD.content_json
      OR NEW.content_hash IS DISTINCT FROM OLD.content_hash
@@ -510,14 +525,14 @@ CREATE TRIGGER script_revision_no_delete
 
 CREATE TRIGGER character_revision_content_immutable
   BEFORE UPDATE ON character_revision
-  FOR EACH ROW EXECUTE FUNCTION m2_reject_entity_revision_content_update();
+  FOR EACH ROW EXECUTE FUNCTION m2_reject_character_revision_content_update();
 CREATE TRIGGER character_revision_no_delete
   BEFORE DELETE ON character_revision
   FOR EACH ROW EXECUTE FUNCTION m2_reject_revision_delete();
 
 CREATE TRIGGER location_revision_content_immutable
   BEFORE UPDATE ON location_revision
-  FOR EACH ROW EXECUTE FUNCTION m2_reject_entity_revision_content_update();
+  FOR EACH ROW EXECUTE FUNCTION m2_reject_character_revision_content_update();
 CREATE TRIGGER location_revision_no_delete
   BEFORE DELETE ON location_revision
   FOR EACH ROW EXECUTE FUNCTION m2_reject_revision_delete();
