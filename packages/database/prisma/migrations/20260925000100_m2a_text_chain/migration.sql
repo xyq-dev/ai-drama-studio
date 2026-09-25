@@ -406,10 +406,9 @@ CREATE TABLE shot_character_reference (
 );
 
 CREATE FUNCTION m2_reject_provenance_mutation() RETURNS trigger
-LANGUAGE plpgsql AS $
-BEGIN
-  RAISE EXCEPTION 'revision provenance is immutable';
-END $;
+LANGUAGE plpgsql AS 'BEGIN
+  RAISE EXCEPTION ''revision provenance is immutable'';
+END';
 
 CREATE TRIGGER character_revision_script_source_immutable
   BEFORE UPDATE OR DELETE ON character_revision_script_source
