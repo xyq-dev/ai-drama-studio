@@ -363,6 +363,24 @@ CREATE TABLE shot_character_reference (
     REFERENCES character_revision (id, project_id, workspace_id)
 );
 
+CREATE FUNCTION m2_reject_provenance_mutation() RETURNS trigger
+LANGUAGE plpgsql AS $
+BEGIN
+  RAISE EXCEPTION 'revision provenance is immutable';
+END $;
+
+CREATE TRIGGER character_revision_script_source_immutable
+  BEFORE UPDATE OR DELETE ON character_revision_script_source
+  FOR EACH ROW EXECUTE FUNCTION m2_reject_provenance_mutation();
+
+CREATE TRIGGER location_revision_script_source_immutable
+  BEFORE UPDATE OR DELETE ON location_revision_script_source
+  FOR EACH ROW EXECUTE FUNCTION m2_reject_provenance_mutation();
+
+CREATE TRIGGER shot_character_reference_immutable
+  BEFORE UPDATE OR DELETE ON shot_character_reference
+  FOR EACH ROW EXECUTE FUNCTION m2_reject_provenance_mutation();
+
 CREATE FUNCTION m2_reject_revision_delete() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
