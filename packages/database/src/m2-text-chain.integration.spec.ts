@@ -357,6 +357,34 @@ describe("M2 text chain schema", () => {
     ).rejects.toMatchObject({ code: "SOURCE_STALE" });
   });
 
+  it("blocks new scripts from an approved story that is no longer current", async () => {
+    const graph = await buildChain();
+    const replacementStory = await chain.createStoryRevision({
+      workspaceId: graph.workspaceId,
+      projectId: graph.projectId,
+      content: { schema: "m2.story.revision.v1", premise: "draft current source" },
+      createdBy: "author",
+      expectedVersion: graph.projectVersion,
+    });
+    expect(replacementStory.revisionId).toBeTruthy();
+
+    const episode = await pool.query<{ row_version: number } & QueryResultRow>(
+      "SELECT row_version FROM episode WHERE id = $1",
+      [graph.episode2Id],
+    );
+    await expect(
+      chain.createScriptRevision({
+        workspaceId: graph.workspaceId,
+        projectId: graph.projectId,
+        episodeId: graph.episode2Id,
+        sourceStoryRevisionId: graph.storyRevisionId,
+        content: { schema: "m2.script.revision.v1", episode: 2, invalidSource: true },
+        createdBy: "author",
+        expectedVersion: episode.rows[0]?.row_version ?? 0,
+      }),
+    ).rejects.toMatchObject({ code: "REVIEW_REQUIRED" });
+  });
+
 describe("STALE propagation", () => {
   it("stales the whole chain derived from a replaced approved story", async () => {
     const graph = await buildChain();
@@ -367,6 +395,18 @@ describe("STALE propagation", () => {
       createdBy: "author",
       expectedVersion: graph.projectVersion,
     });
+    const immediate = await pool.query<
+      { freshness_status: string; stale_reason: string | null; stale_from_ref: string | null } & QueryResultRow
+    >(
+      "SELECT freshness_status, stale_reason, stale_from_ref FROM script_revision WHERE id = $1",
+      [graph.scriptRevisionId],
+    );
+    expect(immediate.rows[0]).toMatchObject({
+      freshness_status: "STALE",
+      stale_reason: "SOURCE_STORY_REPLACED",
+      stale_from_ref: `story_revision:${graph.storyRevisionId}`,
+    });
+
     await approveStory(graph.workspaceId, graph.projectId, next.revisionId, next.rowVersion);
     const freshness = await pool.query<{ kind: string; freshness_status: string } & QueryResultRow>(
       `SELECT 'script' AS kind, freshness_status FROM script_revision WHERE id = $1
@@ -429,6 +469,18 @@ describe("STALE propagation", () => {
       createdBy: "author",
       expectedVersion: graph.episode2Version,
     });
+    const immediateDownstream = await pool.query<
+      { freshness_status: string; stale_reason: string | null; stale_from_ref: string | null } & QueryResultRow
+    >(
+      "SELECT freshness_status, stale_reason, stale_from_ref FROM scene_revision WHERE id = $1",
+      [graph.sceneRevisionId],
+    );
+    expect(immediateDownstream.rows[0]).toMatchObject({
+      freshness_status: "STALE",
+      stale_reason: "SOURCE_SCRIPT_REPLACED",
+      stale_from_ref: `script_revision:${graph.scriptRevisionId}`,
+    });
+
     await chain.transitionReview({
       table: "script_revision",
       revisionId: replacement.revisionId,
