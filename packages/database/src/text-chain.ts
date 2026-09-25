@@ -38,15 +38,16 @@ async function lockAggregateForRevision(
   workspaceId: string,
   expectedVersion: number,
 ): Promise<void> {
-  const result = await client.query<{ row_version: number } & QueryResultRow>(
-    `SELECT row_version FROM ${table}
+  const versionColumn = table === "project" ? "version" : "row_version";
+  const result = await client.query<{ aggregate_version: number } & QueryResultRow>(
+    `SELECT ${versionColumn} AS aggregate_version FROM ${table}
       WHERE id = $1 AND workspace_id = $2
       FOR UPDATE`,
     [id, workspaceId],
   );
   const row = result.rows[0];
   if (!row) throw new PersistenceError("NOT_FOUND", "Aggregate not found");
-  if (row.row_version !== expectedVersion) {
+  if (row.aggregate_version !== expectedVersion) {
     throw new PersistenceError("REVISION_CONFLICT", "Aggregate version did not match");
   }
 }
@@ -60,17 +61,17 @@ async function bumpPointer(
   column: string,
   revisionId: string,
 ): Promise<number> {
-  const versionColumn = table === "project" ? "row_version" : "row_version";
-  const result = await client.query<{ row_version: number } & QueryResultRow>(
+  const versionColumn = table === "project" ? "version" : "row_version";
+  const result = await client.query<{ aggregate_version: number } & QueryResultRow>(
     `UPDATE ${table}
         SET ${column} = $4, ${versionColumn} = ${versionColumn} + 1, updated_at = now()
       WHERE id = $1 AND workspace_id = $2 AND ${versionColumn} = $3
-      RETURNING ${versionColumn}`,
+      RETURNING ${versionColumn} AS aggregate_version`,
     [id, workspaceId, expectedVersion, revisionId],
   );
   const row = result.rows[0];
   if (!row) throw new PersistenceError("REVISION_CONFLICT", "Aggregate version did not match");
-  return row.row_version;
+  return row.aggregate_version;
 }
 
 export class TextChainService {
@@ -140,18 +141,18 @@ export class TextChainService {
     await withTransaction(this.pool, async (client) => {
       const project = await client.query<
         {
-          row_version: number;
+          version: number;
           current_story_revision_id: string | null;
           approved_story_revision_id: string | null;
         } & QueryResultRow
       >(
-        `SELECT row_version, current_story_revision_id, approved_story_revision_id
+        `SELECT version, current_story_revision_id, approved_story_revision_id
            FROM project WHERE id = $1 AND workspace_id = $2 FOR UPDATE`,
         [input.projectId, input.workspaceId],
       );
       const projectRow = project.rows[0];
       if (!projectRow) throw new PersistenceError("NOT_FOUND", "Project not found");
-      if (projectRow.row_version !== input.expectedVersion) {
+      if (projectRow.version !== input.expectedVersion) {
         throw new PersistenceError("REVISION_CONFLICT", "Aggregate version did not match");
       }
       if (projectRow.current_story_revision_id !== input.revisionId) {
