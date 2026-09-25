@@ -348,13 +348,6 @@ describe("M2 text chain schema", () => {
       createdBy: "author",
       expectedVersion: graph.projectVersion,
     });
-    await chain.transitionReview({
-      table: "story_revision",
-      revisionId: replacementStory.revisionId,
-      workspaceId: graph.workspaceId,
-      expectedReviewVersion: 1,
-      to: "IN_REVIEW",
-    });
     await approveStory(
       graph.workspaceId,
       graph.projectId,
