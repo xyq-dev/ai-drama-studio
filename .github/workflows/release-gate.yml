@@ -197,7 +197,15 @@ jobs:
             git push origin "$RELEASE_TAG"
           fi
 
+          git fetch origin "+refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG" --force
+          REMOTE_TAG_SHA="$(git rev-list -n 1 "refs/tags/$RELEASE_TAG")"
+          if [[ "$REMOTE_TAG_SHA" != "$TARGET_SHA" ]]; then
+            echo "Remote tag moved during validation; refusing to publish release" >&2
+            exit 1
+          fi
+
           gh release create "$RELEASE_TAG" \
+            --verify-tag \
             --target "$TARGET_SHA" \
             --title "$RELEASE_TAG" \
             --generate-notes
