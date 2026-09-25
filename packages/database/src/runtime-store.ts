@@ -80,6 +80,25 @@ function iso(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
 }
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const ISO_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/;
+
+function parseProjectCursor(cursor: string): [string, string] {
+  const parts = cursor.split("|");
+  if (parts.length !== 2) {
+    throw new PersistenceError("VALIDATION_ERROR", "Project cursor is invalid");
+  }
+  const [createdAt, id] = parts;
+  if (!createdAt || !id || !ISO_TIMESTAMP_PATTERN.test(createdAt) || !UUID_PATTERN.test(id)) {
+    throw new PersistenceError("VALIDATION_ERROR", "Project cursor is invalid");
+  }
+  const parsed = Date.parse(createdAt);
+  if (!Number.isFinite(parsed)) {
+    throw new PersistenceError("VALIDATION_ERROR", "Project cursor is invalid");
+  }
+  return [createdAt, id];
+}
+
 export class RuntimeStore {
   constructor(private readonly pool: DatabasePool) {}
 
@@ -146,8 +165,7 @@ export class RuntimeStore {
       const params: unknown[] = [workspaceId, limit + 1];
       let cursorSql = "";
       if (cursor) {
-        const [createdAt, id] = cursor.split("|");
-        if (!createdAt || !id) throw new PersistenceError("VALIDATION_ERROR", "Project cursor is invalid");
+        const [createdAt, id] = parseProjectCursor(cursor);
         params.push(createdAt, id);
         cursorSql = `AND (created_at, id) < ($3::timestamptz, $4::uuid)`;
       }
