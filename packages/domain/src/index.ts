@@ -1,12 +1,6 @@
-export class DomainError extends Error {
-  readonly code: string;
+import { DomainError } from "./errors";
 
-  constructor(code: string, message: string) {
-    super(message);
-    this.name = "DomainError";
-    this.code = code;
-  }
-}
+export { DomainError };
 
 export const GENERATION_JOB_STATES = [
   "PENDING",
@@ -77,3 +71,15 @@ export function deriveWorkflowRunState(jobs: readonly WorkflowJobSummary[]): Wor
   }
   return "SUCCEEDED";
 }
+
+export {
+  FRESHNESS_STATUSES,
+  PRODUCTION_EPISODE_NUMBERS,
+  REVIEW_STATUSES,
+  assertProductionEpisodeSet,
+  assertReviewTransition,
+  canonicalInputHash,
+  canonicalJson,
+  type FreshnessStatus,
+  type ReviewStatus,
+} from "./text-chain";

@@ -22,8 +22,10 @@ model Project {
   title       String
   premise     String    @default("")
   status      String    @default("ACTIVE")
-  version     Int       @default(1)
-  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  version                 Int       @default(1)
+  currentStoryRevisionId  String?   @map("current_story_revision_id") @db.Uuid
+  approvedStoryRevisionId String?   @map("approved_story_revision_id") @db.Uuid
+  createdAt               DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt   DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
   archivedAt  DateTime? @map("archived_at") @db.Timestamptz(6)
 
@@ -220,4 +222,295 @@ model CostLedger {
 
   @@index([generationJobId, occurredAt])
   @@map("cost_ledger")
+}
+
+model StoryRevision {
+  id                   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspaceId          String    @map("workspace_id") @db.Uuid
+  projectId            String    @map("project_id") @db.Uuid
+  revisionNo           Int       @map("revision_no")
+  contentJson          Json      @map("content_json") @db.JsonB
+  contentHash          String    @map("content_hash")
+  reviewStatus         String    @default("DRAFT") @map("review_status")
+  freshnessStatus      String    @default("CURRENT") @map("freshness_status")
+  staleReason           String?   @map("stale_reason")
+  staleFromRef          String?   @map("stale_from_ref")
+  reviewVersion        Int       @default(1) @map("review_version")
+  reviewedBy           String?   @map("reviewed_by")
+  reviewedAt           DateTime? @map("reviewed_at") @db.Timestamptz(6)
+  reviewNote           String?   @map("review_note")
+  reviewedContentHash  String?   @map("reviewed_content_hash")
+  createdBy            String    @map("created_by")
+  createdAt            DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([projectId, revisionNo])
+  @@unique([id, projectId, workspaceId])
+  @@map("story_revision")
+}
+
+model Episode {
+  id                       String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspaceId              String    @map("workspace_id") @db.Uuid
+  projectId                String    @map("project_id") @db.Uuid
+  episodeNo                Int       @map("episode_no") @db.SmallInt
+  title                    String
+  rowVersion               Int       @default(1) @map("row_version")
+  currentScriptRevisionId  String?   @map("current_script_revision_id") @db.Uuid
+  approvedScriptRevisionId String?   @map("approved_script_revision_id") @db.Uuid
+  createdAt                DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([projectId, episodeNo])
+  @@unique([id, workspaceId])
+  @@unique([id, projectId, workspaceId])
+  @@unique([id, projectId, episodeNo, workspaceId])
+  @@map("episode")
+}
+
+model ScriptRevision {
+  id                   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspaceId          String    @map("workspace_id") @db.Uuid
+  projectId            String    @map("project_id") @db.Uuid
+  episodeId            String    @map("episode_id") @db.Uuid
+  revisionNo           Int       @map("revision_no")
+  sourceStoryRevisionId String   @map("source_story_revision_id") @db.Uuid
+  contentJson          Json      @map("content_json") @db.JsonB
+  contentHash          String    @map("content_hash")
+  reviewStatus         String    @default("DRAFT") @map("review_status")
+  freshnessStatus      String    @default("CURRENT") @map("freshness_status")
+  staleReason           String?   @map("stale_reason")
+  staleFromRef          String?   @map("stale_from_ref")
+  reviewVersion        Int       @default(1) @map("review_version")
+  reviewedBy           String?   @map("reviewed_by")
+  reviewedAt           DateTime? @map("reviewed_at") @db.Timestamptz(6)
+  reviewNote           String?   @map("review_note")
+  reviewedContentHash  String?   @map("reviewed_content_hash")
+  createdBy            String    @map("created_by")
+  createdAt            DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([episodeId, revisionNo])
+  @@unique([id, episodeId, workspaceId])
+  @@unique([id, projectId, workspaceId])
+  @@unique([id, episodeId, projectId, workspaceId])
+  @@map("script_revision")
+}
+
+model Character {
+  id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspaceId        String    @map("workspace_id") @db.Uuid
+  projectId          String    @map("project_id") @db.Uuid
+  name               String
+  rowVersion         Int       @default(1) @map("row_version")
+  currentRevisionId  String?   @map("current_revision_id") @db.Uuid
+  approvedRevisionId String?   @map("approved_revision_id") @db.Uuid
+  archivedAt         DateTime? @map("archived_at") @db.Timestamptz(6)
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([id, workspaceId])
+  @@unique([id, projectId, workspaceId])
+  @@map("character")
+}
+
+model CharacterRevision {
+  id                   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspaceId          String    @map("workspace_id") @db.Uuid
+  projectId            String    @map("project_id") @db.Uuid
+  characterId          String    @map("character_id") @db.Uuid
+  revisionNo           Int       @map("revision_no")
+  contentJson          Json      @map("content_json") @db.JsonB
+  contentHash          String    @map("content_hash")
+  reviewStatus         String    @default("DRAFT") @map("review_status")
+  freshnessStatus      String    @default("CURRENT") @map("freshness_status")
+  staleReason           String?   @map("stale_reason")
+  staleFromRef          String?   @map("stale_from_ref")
+  reviewVersion        Int       @default(1) @map("review_version")
+  reviewedBy           String?   @map("reviewed_by")
+  reviewedAt           DateTime? @map("reviewed_at") @db.Timestamptz(6)
+  reviewNote           String?   @map("review_note")
+  reviewedContentHash  String?   @map("reviewed_content_hash")
+  createdBy            String    @map("created_by")
+  createdAt            DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([characterId, revisionNo])
+  @@unique([id, characterId, workspaceId])
+  @@unique([id, projectId, workspaceId])
+  @@map("character_revision")
+}
+
+model CharacterRevisionScriptSource {
+  workspaceId         String @map("workspace_id") @db.Uuid
+  projectId           String @map("project_id") @db.Uuid
+  characterRevisionId String @map("character_revision_id") @db.Uuid
+  scriptRevisionId    String @map("script_revision_id") @db.Uuid
+
+  @@id([characterRevisionId, scriptRevisionId])
+  @@map("character_revision_script_source")
+}
+
+model Location {
+  id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspaceId        String    @map("workspace_id") @db.Uuid
+  projectId          String    @map("project_id") @db.Uuid
+  name               String
+  rowVersion         Int       @default(1) @map("row_version")
+  currentRevisionId  String?   @map("current_revision_id") @db.Uuid
+  approvedRevisionId String?   @map("approved_revision_id") @db.Uuid
+  archivedAt         DateTime? @map("archived_at") @db.Timestamptz(6)
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([id, workspaceId])
+  @@unique([id, projectId, workspaceId])
+  @@map("location")
+}
+
+model LocationRevision {
+  id                   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspaceId          String    @map("workspace_id") @db.Uuid
+  projectId            String    @map("project_id") @db.Uuid
+  locationId           String    @map("location_id") @db.Uuid
+  revisionNo           Int       @map("revision_no")
+  contentJson          Json      @map("content_json") @db.JsonB
+  contentHash          String    @map("content_hash")
+  reviewStatus         String    @default("DRAFT") @map("review_status")
+  freshnessStatus      String    @default("CURRENT") @map("freshness_status")
+  staleReason           String?   @map("stale_reason")
+  staleFromRef          String?   @map("stale_from_ref")
+  reviewVersion        Int       @default(1) @map("review_version")
+  reviewedBy           String?   @map("reviewed_by")
+  reviewedAt           DateTime? @map("reviewed_at") @db.Timestamptz(6)
+  reviewNote           String?   @map("review_note")
+  reviewedContentHash  String?   @map("reviewed_content_hash")
+  createdBy            String    @map("created_by")
+  createdAt            DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([locationId, revisionNo])
+  @@unique([id, locationId, workspaceId])
+  @@unique([id, projectId, workspaceId])
+  @@map("location_revision")
+}
+
+model LocationRevisionScriptSource {
+  workspaceId        String @map("workspace_id") @db.Uuid
+  projectId          String @map("project_id") @db.Uuid
+  locationRevisionId String @map("location_revision_id") @db.Uuid
+  scriptRevisionId   String @map("script_revision_id") @db.Uuid
+
+  @@id([locationRevisionId, scriptRevisionId])
+  @@map("location_revision_script_source")
+}
+
+model Scene {
+  id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspaceId        String    @map("workspace_id") @db.Uuid
+  projectId          String    @map("project_id") @db.Uuid
+  episodeId          String    @map("episode_id") @db.Uuid
+  rowVersion         Int       @default(1) @map("row_version")
+  currentRevisionId  String?   @map("current_revision_id") @db.Uuid
+  approvedRevisionId String?   @map("approved_revision_id") @db.Uuid
+  archivedAt         DateTime? @map("archived_at") @db.Timestamptz(6)
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([id, workspaceId])
+  @@unique([id, episodeId, projectId, workspaceId])
+  @@map("scene")
+}
+
+model SceneRevision {
+  id                    String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspaceId           String    @map("workspace_id") @db.Uuid
+  projectId             String    @map("project_id") @db.Uuid
+  episodeId             String    @map("episode_id") @db.Uuid
+  sceneId               String    @map("scene_id") @db.Uuid
+  revisionNo            Int       @map("revision_no")
+  sourceScriptRevisionId String   @map("source_script_revision_id") @db.Uuid
+  locationRevisionId    String?   @map("location_revision_id") @db.Uuid
+  ordinal               Int
+  heading               String
+  timeOfDay             String?   @map("time_of_day")
+  summary               String
+  contentHash           String    @map("content_hash")
+  reviewStatus          String    @default("DRAFT") @map("review_status")
+  freshnessStatus       String    @default("CURRENT") @map("freshness_status")
+  staleReason           String?   @map("stale_reason")
+  staleFromRef          String?   @map("stale_from_ref")
+  reviewVersion         Int       @default(1) @map("review_version")
+  reviewedBy            String?   @map("reviewed_by")
+  reviewedAt            DateTime? @map("reviewed_at") @db.Timestamptz(6)
+  reviewNote            String?   @map("review_note")
+  reviewedContentHash   String?   @map("reviewed_content_hash")
+  createdBy             String    @map("created_by")
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([sceneId, revisionNo])
+  @@unique([id, sceneId, workspaceId])
+  @@unique([id, projectId, workspaceId])
+  @@unique([id, sceneId, projectId, workspaceId])
+  @@map("scene_revision")
+}
+
+model Shot {
+  id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspaceId        String    @map("workspace_id") @db.Uuid
+  projectId          String    @map("project_id") @db.Uuid
+  episodeId          String    @map("episode_id") @db.Uuid
+  sceneId            String    @map("scene_id") @db.Uuid
+  rowVersion         Int       @default(1) @map("row_version")
+  currentRevisionId  String?   @map("current_revision_id") @db.Uuid
+  approvedRevisionId String?   @map("approved_revision_id") @db.Uuid
+  archivedAt         DateTime? @map("archived_at") @db.Timestamptz(6)
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([id, workspaceId])
+  @@unique([id, sceneId, workspaceId])
+  @@unique([id, projectId, workspaceId])
+  @@map("shot")
+}
+
+model ShotRevision {
+  id                   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspaceId          String    @map("workspace_id") @db.Uuid
+  projectId            String    @map("project_id") @db.Uuid
+  sceneId              String    @map("scene_id") @db.Uuid
+  shotId               String    @map("shot_id") @db.Uuid
+  revisionNo           Int       @map("revision_no")
+  sourceSceneRevisionId String   @map("source_scene_revision_id") @db.Uuid
+  ordinal              Int
+  shotType             String    @map("shot_type")
+  camera               String
+  action               String
+  dialogue             String?
+  durationHint         String?   @map("duration_hint")
+  promptText           String    @map("prompt_text")
+  contentHash          String    @map("content_hash")
+  reviewStatus         String    @default("DRAFT") @map("review_status")
+  freshnessStatus      String    @default("CURRENT") @map("freshness_status")
+  staleReason           String?   @map("stale_reason")
+  staleFromRef          String?   @map("stale_from_ref")
+  reviewVersion        Int       @default(1) @map("review_version")
+  reviewedBy           String?   @map("reviewed_by")
+  reviewedAt           DateTime? @map("reviewed_at") @db.Timestamptz(6)
+  reviewNote           String?   @map("review_note")
+  reviewedContentHash  String?   @map("reviewed_content_hash")
+  createdBy            String    @map("created_by")
+  createdAt            DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([shotId, revisionNo])
+  @@unique([id, shotId, workspaceId])
+  @@unique([id, projectId, workspaceId])
+  @@map("shot_revision")
+}
+
+model ShotCharacterReference {
+  workspaceId         String @map("workspace_id") @db.Uuid
+  projectId           String @map("project_id") @db.Uuid
+  shotRevisionId      String @map("shot_revision_id") @db.Uuid
+  characterRevisionId String @map("character_revision_id") @db.Uuid
+  role                String
+
+  @@id([shotRevisionId, characterRevisionId])
+  @@map("shot_character_reference")
 }
