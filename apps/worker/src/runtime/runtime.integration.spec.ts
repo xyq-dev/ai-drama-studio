@@ -82,6 +82,50 @@ async function queueOutcome(workspaceId: string, projectId: string, outcome: str
   return { workspaceId, ...created, dispatchSeq: queued.dispatchSeq };
 }
 
+async function prepareWaitingObservation(
+  workspaceId: string,
+  projectId: string,
+  providerId: string,
+  status: "ACTIVE" | "SUCCEEDED" | "FAILED" | "CANCELED",
+): Promise<{ jobId: string; attemptId: string; providerRequestId: string }> {
+  const created = await queueOutcome(workspaceId, projectId, "success");
+  const acquired = await jobs.acquireQueuedJob({
+    workspaceId,
+    jobId: created.jobId,
+    dispatchSeq: created.dispatchSeq,
+    leaseOwner: `poll-${status.toLowerCase()}`,
+    leaseMs: 1_000,
+    traceId: `poll-${status.toLowerCase()}`,
+    providerConfigurationId: providerId,
+  });
+  if (!acquired) throw new Error(`could not acquire ${status} poll job`);
+
+  const clientRequestKey = `poll-${status.toLowerCase()}-${randomUUID()}`;
+  let providerRequestId: string;
+  if (status === "ACTIVE") {
+    const submitted = provider.submit({ clientRequestKey, outcome: "delayed" });
+    if (submitted.kind !== "waiting") throw new Error("delayed provider request was not waiting");
+    providerRequestId = submitted.providerRequestId;
+  } else if (status === "SUCCEEDED") {
+    providerRequestId = provider.requestIdFor(clientRequestKey, "success");
+  } else if (status === "FAILED") {
+    providerRequestId = provider.requestIdFor(clientRequestKey, "retryable_failure");
+  } else {
+    providerRequestId = provider.requestIdFor(clientRequestKey, "cancel");
+  }
+
+  await jobs.markWaitingExternal({
+    workspaceId,
+    jobId: created.jobId,
+    attemptId: acquired.attemptId,
+    providerConfigurationId: providerId,
+    providerRequestId,
+    traceId: `poll-${status.toLowerCase()}`,
+    nextPollAt: new Date(0).toISOString(),
+  });
+  return { jobId: created.jobId, attemptId: acquired.attemptId, providerRequestId };
+}
+
 async function jobState(jobId: string): Promise<string> {
   const result = await sql<{ state: string }>(
     "SELECT state FROM generation_job WHERE id = $1",
@@ -268,6 +312,62 @@ describe("M1-C Redis and BullMQ integration", () => {
     expect(await queue.queue.getJob(dispatchJobId(created.jobId, 2))).toBeTruthy();
   });
 
+  it("persists deterministic POLL provider events before applying reconciler observations", async () => {
+    const { workspaceId, projectId, providerId } = await seed();
+    const observations = await Promise.all(
+      (["ACTIVE", "SUCCEEDED", "FAILED", "CANCELED"] as const).map((status) =>
+        prepareWaitingObservation(workspaceId, projectId, providerId, status).then((prepared) => ({
+          status,
+          ...prepared,
+        })),
+      ),
+    );
+
+    await reconciler.reconcileOnce();
+
+    const events = await sql<{
+      job_attempt_id: string;
+      provider_request_id: string;
+      source: string;
+      normalized_event_key: string;
+      external_status: string;
+    }>(
+      `SELECT job_attempt_id, provider_request_id, source, normalized_event_key, external_status
+         FROM provider_event
+        WHERE workspace_id = $1
+        ORDER BY external_status`,
+      [workspaceId],
+    );
+
+    for (const observation of observations) {
+      expect(events.rows).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            job_attempt_id: observation.attemptId,
+            provider_request_id: observation.providerRequestId,
+            source: "POLL",
+            normalized_event_key: `poll:${observation.status.toLowerCase()}`,
+            external_status: observation.status,
+          }),
+        ]),
+      );
+    }
+
+    await reconciler.reconcileOnce();
+    const duplicates = await sql<{ count: number }>(
+      `SELECT COUNT(*)::int AS count
+         FROM (
+           SELECT provider_request_id, normalized_event_key
+             FROM provider_event
+            WHERE workspace_id = $1
+            GROUP BY provider_request_id, normalized_event_key
+           HAVING COUNT(*) > 1
+         ) duplicate_keys`,
+      [workspaceId],
+    );
+    expect(duplicates.rows[0]?.count).toBe(0);
+  });
+
   it("recovers an expired lease and a lost Redis message without a blind provider submit", async () => {
     const { workspaceId, projectId } = await seed();
     const lost = await queueOutcome(workspaceId, projectId, "success");
@@ -295,6 +395,15 @@ describe("M1-C Redis and BullMQ integration", () => {
       [delayed.jobId],
     );
     await reconciler.reconcileOnce();
+    const pollAudit = await sql<{ count: number }>(
+      `SELECT COUNT(*)::int AS count
+         FROM provider_event pe
+         JOIN job_attempt ja ON ja.id = pe.job_attempt_id
+        WHERE ja.generation_job_id = $1
+          AND pe.source = 'POLL'`,
+      [delayed.jobId],
+    );
+    expect(pollAudit.rows[0]?.count).toBeGreaterThan(0);
     const seqAfter = await sql<{ dispatch_seq: number }>(
       "SELECT dispatch_seq FROM generation_job WHERE id = $1",
       [delayed.jobId],

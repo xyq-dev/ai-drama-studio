@@ -1,4 +1,4 @@
-import type { JobPersistenceService, RuntimeStore } from "@ai-drama/database";
+import type { ExpiredLeaseRow, JobPersistenceService, RuntimeStore } from "@ai-drama/database";
 import type { MockProvider } from "@ai-drama/providers";
 import type { OutboxDispatcher } from "./dispatcher";
 
@@ -47,7 +47,7 @@ export class RuntimeReconciler {
         continue;
       }
       if (row.providerRequestId) {
-        const inspected = this.provider.inspect(row.providerRequestId);
+        const inspected = await this.inspectAndRecord(row);
         if (inspected === "SUCCEEDED") {
           await this.jobs.succeedJob({
             workspaceId: row.workspaceId,
@@ -79,6 +79,23 @@ export class RuntimeReconciler {
     }
   }
 
+  private async inspectAndRecord(row: ExpiredLeaseRow): Promise<ReturnType<MockProvider["inspect"]>> {
+    if (!row.providerRequestId || !row.providerConfigurationId) {
+      throw new Error("Persisted provider request is missing its provider configuration");
+    }
+    const inspected = this.provider.inspect(row.providerRequestId);
+    await this.jobs.recordProviderEvent({
+      workspaceId: row.workspaceId,
+      providerConfigurationId: row.providerConfigurationId,
+      jobAttemptId: row.attemptId,
+      providerRequestId: row.providerRequestId,
+      source: "POLL",
+      normalizedEventKey: `poll:${inspected.toLowerCase()}`,
+      externalStatus: inspected,
+    });
+    return inspected;
+  }
+
   private async completeWaitingExternal(): Promise<void> {
     const rows = await this.store.listWaitingExternal(50);
     for (const row of rows) {
@@ -92,7 +109,7 @@ export class RuntimeReconciler {
         continue;
       }
       if (!row.providerRequestId) continue;
-      const inspected = this.provider.inspect(row.providerRequestId);
+      const inspected = await this.inspectAndRecord(row);
       if (inspected === "SUCCEEDED") {
         await this.jobs.succeedJob({
           workspaceId: row.workspaceId,
