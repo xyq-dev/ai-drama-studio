@@ -73,7 +73,7 @@ jobs:
       - name: Check out rollback release
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.release_tag }}
+          ref: refs/tags/${{ inputs.release_tag }}
           fetch-depth: 0
 
       - name: Validate GitHub Release
@@ -83,7 +83,7 @@ jobs:
 
           RELEASE_JSON="$(gh release view "$RELEASE_TAG" \
             --repo "${{ github.repository }}" \
-            --json isDraft,isPrerelease,tagName)"
+            --json isDraft,isPrerelease,tagName,targetCommitish)"
 
           if [[ "$(jq -r '.isDraft' <<<"$RELEASE_JSON")" == "true" ]]; then
             echo "Rollback target must not be a draft release" >&2
@@ -96,6 +96,19 @@ jobs:
           fi
 
           TARGET_SHA="$(git rev-parse HEAD)"
+          TAG_SHA="$(git rev-list -n 1 "refs/tags/$RELEASE_TAG")"
+          RELEASE_TAG_NAME="$(jq -r '.tagName' <<<"$RELEASE_JSON")"
+
+          if [[ "$RELEASE_TAG_NAME" != "$RELEASE_TAG" ]]; then
+            echo "GitHub Release tag does not match requested rollback tag" >&2
+            exit 1
+          fi
+
+          if [[ "$TARGET_SHA" != "$TAG_SHA" ]]; then
+            echo "Checked-out rollback commit does not match the requested Git tag" >&2
+            exit 1
+          fi
+
           echo "TARGET_SHA=$TARGET_SHA" >> "$GITHUB_ENV"
 
       - name: Set up pnpm
