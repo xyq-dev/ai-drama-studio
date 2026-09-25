@@ -512,66 +512,115 @@ DECLARE
   revision_review_status text;
   revision_freshness_status text;
   source_freshness_status text;
+  source_parent_id uuid;
+  source_current_revision_id uuid;
+  source_revision_id uuid;
 BEGIN
-  IF TG_TABLE_NAME = 'character_revision_script_source' THEN
-    SELECT review_status, freshness_status
-      INTO revision_review_status, revision_freshness_status
-      FROM character_revision
-     WHERE id = NEW.character_revision_id
+  IF TG_TABLE_NAME = 'character_revision_script_source'
+     OR TG_TABLE_NAME = 'location_revision_script_source' THEN
+    source_revision_id := NEW.script_revision_id;
+
+    SELECT episode_id
+      INTO source_parent_id
+      FROM script_revision
+     WHERE id = source_revision_id
+       AND project_id = NEW.project_id
+       AND workspace_id = NEW.workspace_id;
+
+    IF source_parent_id IS NULL THEN
+      RAISE EXCEPTION 'provenance source revision not found';
+    END IF;
+
+    SELECT current_script_revision_id
+      INTO source_current_revision_id
+      FROM episode
+     WHERE id = source_parent_id
+       AND project_id = NEW.project_id
        AND workspace_id = NEW.workspace_id
-     FOR UPDATE;
+     FOR SHARE;
 
     SELECT freshness_status
       INTO source_freshness_status
       FROM script_revision
-     WHERE id = NEW.script_revision_id
+     WHERE id = source_revision_id
+       AND episode_id = source_parent_id
        AND project_id = NEW.project_id
        AND workspace_id = NEW.workspace_id
      FOR SHARE;
-  ELSIF TG_TABLE_NAME = 'location_revision_script_source' THEN
-    SELECT review_status, freshness_status
-      INTO revision_review_status, revision_freshness_status
-      FROM location_revision
-     WHERE id = NEW.location_revision_id
-       AND workspace_id = NEW.workspace_id
-     FOR UPDATE;
 
-    SELECT freshness_status
-      INTO source_freshness_status
-      FROM script_revision
-     WHERE id = NEW.script_revision_id
-       AND project_id = NEW.project_id
-       AND workspace_id = NEW.workspace_id
-     FOR SHARE;
+    IF TG_TABLE_NAME = 'character_revision_script_source' THEN
+      SELECT review_status, freshness_status
+        INTO revision_review_status, revision_freshness_status
+        FROM character_revision
+       WHERE id = NEW.character_revision_id
+         AND project_id = NEW.project_id
+         AND workspace_id = NEW.workspace_id
+       FOR UPDATE;
+    ELSE
+      SELECT review_status, freshness_status
+        INTO revision_review_status, revision_freshness_status
+        FROM location_revision
+       WHERE id = NEW.location_revision_id
+         AND project_id = NEW.project_id
+         AND workspace_id = NEW.workspace_id
+       FOR UPDATE;
+    END IF;
   ELSIF TG_TABLE_NAME = 'shot_character_reference' THEN
+    source_revision_id := NEW.character_revision_id;
+
+    SELECT character_id
+      INTO source_parent_id
+      FROM character_revision
+     WHERE id = source_revision_id
+       AND project_id = NEW.project_id
+       AND workspace_id = NEW.workspace_id;
+
+    IF source_parent_id IS NULL THEN
+      RAISE EXCEPTION 'provenance source revision not found';
+    END IF;
+
+    SELECT current_revision_id
+      INTO source_current_revision_id
+      FROM character
+     WHERE id = source_parent_id
+       AND project_id = NEW.project_id
+       AND workspace_id = NEW.workspace_id
+     FOR SHARE;
+
+    SELECT freshness_status
+      INTO source_freshness_status
+      FROM character_revision
+     WHERE id = source_revision_id
+       AND character_id = source_parent_id
+       AND project_id = NEW.project_id
+       AND workspace_id = NEW.workspace_id
+     FOR SHARE;
+
     SELECT review_status, freshness_status
       INTO revision_review_status, revision_freshness_status
       FROM shot_revision
      WHERE id = NEW.shot_revision_id
-       AND workspace_id = NEW.workspace_id
-     FOR UPDATE;
-
-    SELECT freshness_status
-      INTO source_freshness_status
-      FROM character_revision
-     WHERE id = NEW.character_revision_id
        AND project_id = NEW.project_id
        AND workspace_id = NEW.workspace_id
-     FOR SHARE;
+     FOR UPDATE;
   ELSE
     RAISE EXCEPTION 'unsupported provenance table %', TG_TABLE_NAME;
-  END IF;
-
-  IF revision_review_status IS NULL THEN
-    RAISE EXCEPTION 'provenance revision not found';
   END IF;
 
   IF source_freshness_status IS NULL THEN
     RAISE EXCEPTION 'provenance source revision not found';
   END IF;
 
+  IF source_current_revision_id IS DISTINCT FROM source_revision_id THEN
+    RAISE EXCEPTION 'revision provenance source is not current';
+  END IF;
+
   IF source_freshness_status <> 'CURRENT' THEN
     RAISE EXCEPTION 'revision provenance source is stale';
+  END IF;
+
+  IF revision_review_status IS NULL THEN
+    RAISE EXCEPTION 'provenance revision not found';
   END IF;
 
   IF revision_review_status <> 'DRAFT' OR revision_freshness_status <> 'CURRENT' THEN
