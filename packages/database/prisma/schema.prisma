@@ -23,7 +23,6 @@ model Project {
   premise     String    @default("")
   status      String    @default("ACTIVE")
   version                 Int       @default(1)
-  rowVersion              Int       @default(1) @map("row_version")
   currentStoryRevisionId  String?   @map("current_story_revision_id") @db.Uuid
   approvedStoryRevisionId String?   @map("approved_story_revision_id") @db.Uuid
   createdAt               DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
