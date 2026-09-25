@@ -395,6 +395,15 @@ describe("M1-C Redis and BullMQ integration", () => {
       [delayed.jobId],
     );
     await reconciler.reconcileOnce();
+    const pollAudit = await sql<{ count: number }>(
+      `SELECT COUNT(*)::int AS count
+         FROM provider_event pe
+         JOIN job_attempt ja ON ja.id = pe.job_attempt_id
+        WHERE ja.generation_job_id = $1
+          AND pe.source = 'POLL'`,
+      [delayed.jobId],
+    );
+    expect(pollAudit.rows[0]?.count).toBeGreaterThan(0);
     const seqAfter = await sql<{ dispatch_seq: number }>(
       "SELECT dispatch_seq FROM generation_job WHERE id = $1",
       [delayed.jobId],
