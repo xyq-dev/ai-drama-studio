@@ -354,14 +354,18 @@ describe("M1-C Redis and BullMQ integration", () => {
     }
 
     await reconciler.reconcileOnce();
-    const deduped = await sql<{ external_status: string; count: number }>(
-      `SELECT external_status, COUNT(*)::int AS count
-         FROM provider_event
-        WHERE workspace_id = $1
-        GROUP BY external_status`,
+    const duplicates = await sql<{ count: number }>(
+      `SELECT COUNT(*)::int AS count
+         FROM (
+           SELECT provider_request_id, normalized_event_key
+             FROM provider_event
+            WHERE workspace_id = $1
+            GROUP BY provider_request_id, normalized_event_key
+           HAVING COUNT(*) > 1
+         ) duplicate_keys`,
       [workspaceId],
     );
-    expect(deduped.rows.every((row) => row.count === 1)).toBe(true);
+    expect(duplicates.rows[0]?.count).toBe(0);
   });
 
   it("recovers an expired lease and a lost Redis message without a blind provider submit", async () => {
