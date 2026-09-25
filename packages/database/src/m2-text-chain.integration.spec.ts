@@ -888,3 +888,230 @@ async function insertEntityRevision(
   }
   return revisionId;
 }
+
+describe("shared revision stale propagation", () => {
+  it("continues from a stale location and character without repeating events", async () => {
+    const graph = await buildChain();
+    const episode1 = await pool.query<{ id: string; row_version: number } & QueryResultRow>(
+      "SELECT id, row_version FROM episode WHERE project_id = $1 AND episode_no = 1",
+      [graph.projectId],
+    );
+    const episode1Id = episode1.rows[0]?.id;
+    const episode1Version = episode1.rows[0]?.row_version;
+    if (!episode1Id || !episode1Version) throw new Error("episode 1 missing");
+    const otherScript = await chain.createScriptRevision({
+      workspaceId: graph.workspaceId,
+      projectId: graph.projectId,
+      episodeId: episode1Id,
+      sourceStoryRevisionId: graph.storyRevisionId,
+      content: { schema: "m2.script.revision.v1", episode: 1, shared: true },
+      createdBy: "author",
+      expectedVersion: episode1Version,
+    });
+    const locatedScene = await pool.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO scene (workspace_id, project_id, episode_id) VALUES ($1, $2, $3) RETURNING id`,
+      [graph.workspaceId, graph.projectId, episode1Id],
+    );
+    const locatedSceneId = locatedScene.rows[0]?.id;
+    if (!locatedSceneId) throw new Error("located scene missing");
+    const locatedSceneRevision = await pool.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO scene_revision
+        (workspace_id, project_id, episode_id, scene_id, revision_no, source_script_revision_id,
+         location_revision_id, ordinal, heading, summary, content_hash, created_by)
+       VALUES ($1,$2,$3,$4,1,$5,$6,1,'EXT. YARD','yard',$7,'author') RETURNING id`,
+      [graph.workspaceId, graph.projectId, episode1Id, locatedSceneId, otherScript.revisionId, graph.locationRevisionId, hash],
+    );
+    const locatedSceneRevisionId = locatedSceneRevision.rows[0]?.id;
+    if (!locatedSceneRevisionId) throw new Error("located scene revision missing");
+    const locatedShot = await pool.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO shot (workspace_id, project_id, episode_id, scene_id) VALUES ($1,$2,$3,$4) RETURNING id`,
+      [graph.workspaceId, graph.projectId, episode1Id, locatedSceneId],
+    );
+    const locatedShotId = locatedShot.rows[0]?.id;
+    if (!locatedShotId) throw new Error("located shot missing");
+    const locatedShotRevision = await pool.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO shot_revision
+        (workspace_id, project_id, scene_id, shot_id, revision_no, source_scene_revision_id,
+         ordinal, shot_type, camera, action, prompt_text, content_hash, created_by)
+       VALUES ($1,$2,$3,$4,1,$5,1,'wide','static','walk','yard',$6,'author') RETURNING id`,
+      [graph.workspaceId, graph.projectId, locatedSceneId, locatedShotId, locatedSceneRevisionId, hash],
+    );
+    const locatedShotRevisionId = locatedShotRevision.rows[0]?.id;
+    if (!locatedShotRevisionId) throw new Error("located shot revision missing");
+
+    const castScene = await pool.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO scene (workspace_id, project_id, episode_id) VALUES ($1, $2, $3) RETURNING id`,
+      [graph.workspaceId, graph.projectId, episode1Id],
+    );
+    const castSceneId = castScene.rows[0]?.id;
+    if (!castSceneId) throw new Error("cast scene missing");
+    const castSceneRevision = await pool.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO scene_revision
+        (workspace_id, project_id, episode_id, scene_id, revision_no, source_script_revision_id,
+         ordinal, heading, summary, content_hash, created_by)
+       VALUES ($1,$2,$3,$4,1,$5,1,'INT. HALL','hall',$6,'author') RETURNING id`,
+      [graph.workspaceId, graph.projectId, episode1Id, castSceneId, otherScript.revisionId, hash],
+    );
+    const castSceneRevisionId = castSceneRevision.rows[0]?.id;
+    if (!castSceneRevisionId) throw new Error("cast scene revision missing");
+    const castShot = await pool.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO shot (workspace_id, project_id, episode_id, scene_id) VALUES ($1,$2,$3,$4) RETURNING id`,
+      [graph.workspaceId, graph.projectId, episode1Id, castSceneId],
+    );
+    const castShotId = castShot.rows[0]?.id;
+    if (!castShotId) throw new Error("cast shot missing");
+    const castShotRevision = await pool.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO shot_revision
+        (workspace_id, project_id, scene_id, shot_id, revision_no, source_scene_revision_id,
+         ordinal, shot_type, camera, action, prompt_text, content_hash, created_by)
+       VALUES ($1,$2,$3,$4,1,$5,1,'close','static','speak','hall',$6,'author') RETURNING id`,
+      [graph.workspaceId, graph.projectId, castSceneId, castShotId, castSceneRevisionId, hash],
+    );
+    const castShotRevisionId = castShotRevision.rows[0]?.id;
+    if (!castShotRevisionId) throw new Error("cast shot revision missing");
+    await pool.query(
+      `INSERT INTO shot_character_reference
+        (workspace_id, project_id, shot_revision_id, character_revision_id, role)
+       VALUES ($1, $2, $3, $4, 'lead')`,
+      [graph.workspaceId, graph.projectId, castShotRevisionId, graph.characterRevisionId],
+    );
+    const controlShot = await pool.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO shot (workspace_id, project_id, episode_id, scene_id) VALUES ($1,$2,$3,$4) RETURNING id`,
+      [graph.workspaceId, graph.projectId, episode1Id, castSceneId],
+    );
+    const controlShotId = controlShot.rows[0]?.id;
+    if (!controlShotId) throw new Error("control shot missing");
+    const controlShotRevision = await pool.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO shot_revision
+        (workspace_id, project_id, scene_id, shot_id, revision_no, source_scene_revision_id,
+         ordinal, shot_type, camera, action, prompt_text, content_hash, created_by)
+       VALUES ($1,$2,$3,$4,1,$5,2,'wide','static','wait','control',$6,'author') RETURNING id`,
+      [graph.workspaceId, graph.projectId, castSceneId, controlShotId, castSceneRevisionId, hash],
+    );
+    const controlShotRevisionId = controlShotRevision.rows[0]?.id;
+    if (!controlShotRevisionId) throw new Error("control shot revision missing");
+
+    const replacement = await chain.createScriptRevision({
+      workspaceId: graph.workspaceId,
+      projectId: graph.projectId,
+      episodeId: graph.episode2Id,
+      sourceStoryRevisionId: graph.storyRevisionId,
+      content: { schema: "m2.script.revision.v1", episode: 2, shared: true },
+      createdBy: "author",
+      expectedVersion: graph.episode2Version,
+    });
+    const freshness = await pool.query<{ id: string; freshness_status: string } & QueryResultRow>(
+      `SELECT id, freshness_status FROM scene_revision WHERE id = ANY($1::uuid[])
+       UNION ALL
+       SELECT id, freshness_status FROM shot_revision WHERE id = ANY($2::uuid[])
+       UNION ALL
+       SELECT id, freshness_status FROM script_revision WHERE id = $3`,
+      [
+        [locatedSceneRevisionId, castSceneRevisionId],
+        [locatedShotRevisionId, castShotRevisionId, controlShotRevisionId],
+        otherScript.revisionId,
+      ],
+    );
+    const status = Object.fromEntries(freshness.rows.map((row) => [row.id, row.freshness_status]));
+    expect(status[locatedSceneRevisionId]).toBe("STALE");
+    expect(status[locatedShotRevisionId]).toBe("STALE");
+    expect(status[castShotRevisionId]).toBe("STALE");
+    expect(status[castSceneRevisionId]).toBe("CURRENT");
+    expect(status[controlShotRevisionId]).toBe("CURRENT");
+    expect(status[otherScript.revisionId]).toBe("CURRENT");
+
+    const before = await events.listEventsAfter(graph.workspaceId, "0", 100);
+    const staleBefore = before.filter((event) => event.eventType === "revision.stale");
+    await chain.transitionReview({
+      table: "script_revision",
+      revisionId: replacement.revisionId,
+      workspaceId: graph.workspaceId,
+      expectedReviewVersion: 1,
+      to: "IN_REVIEW",
+    });
+    await chain.approveScript({
+      workspaceId: graph.workspaceId,
+      episodeId: graph.episode2Id,
+      revisionId: replacement.revisionId,
+      expectedVersion: replacement.rowVersion,
+      expectedReviewVersion: 2,
+      reviewedBy: "editor",
+    });
+    const after = await events.listEventsAfter(graph.workspaceId, "0", 100);
+    const staleAfter = after.filter((event) => event.eventType === "revision.stale");
+    expect(staleAfter).toHaveLength(staleBefore.length);
+    expect(new Set(staleAfter.map((event) => JSON.stringify(event.data))).size).toBe(staleAfter.length);
+  });
+});
+
+describe("review domain events", () => {
+  it("records review transitions once and omits events when the transaction fails", async () => {
+    const { workspaceId, projectId } = await seedProject();
+    const created = await chain.createStoryRevision({
+      workspaceId,
+      projectId,
+      content: { schema: "m2.story.revision.v1", premise: "review events" },
+      createdBy: "author",
+      expectedVersion: 1,
+    });
+    await expect(
+      chain.transitionReview({
+        table: "story_revision",
+        revisionId: created.revisionId,
+        workspaceId,
+        expectedReviewVersion: 9,
+        to: "IN_REVIEW",
+      }),
+    ).rejects.toMatchObject({ code: "REVISION_CONFLICT" });
+    const failed = await events.listEventsAfter(workspaceId, "0", 20);
+    expect(failed.filter((event) => event.eventType === "revision.review")).toHaveLength(0);
+
+    await chain.transitionReview({
+      table: "story_revision",
+      revisionId: created.revisionId,
+      workspaceId,
+      expectedReviewVersion: 1,
+      to: "IN_REVIEW",
+    });
+    await chain.transitionReview({
+      table: "story_revision",
+      revisionId: created.revisionId,
+      workspaceId,
+      expectedReviewVersion: 2,
+      to: "REJECTED",
+      reviewedBy: "editor",
+    });
+    await expect(
+      chain.transitionReview({
+        table: "story_revision",
+        revisionId: created.revisionId,
+        workspaceId,
+        expectedReviewVersion: 3,
+        to: "IN_REVIEW",
+      }),
+    ).rejects.toMatchObject({ code: "REVIEW_INVALID_TRANSITION" });
+
+    const approved = await chain.createStoryRevision({
+      workspaceId,
+      projectId,
+      content: { schema: "m2.story.revision.v1", premise: "approved events" },
+      createdBy: "author",
+      expectedVersion: created.rowVersion,
+    });
+    await approveStory(workspaceId, projectId, approved.revisionId, approved.rowVersion);
+    const listed = await events.listEventsAfter(workspaceId, "0", 20);
+    const reviews = listed.filter((event) => event.eventType === "revision.review");
+    expect(reviews.map((event) => event.data)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ revisionId: created.revisionId, reviewStatus: "IN_REVIEW" }),
+        expect.objectContaining({ revisionId: created.revisionId, reviewStatus: "REJECTED" }),
+        expect.objectContaining({ revisionId: approved.revisionId, reviewStatus: "IN_REVIEW" }),
+        expect.objectContaining({ revisionId: approved.revisionId, reviewStatus: "APPROVED" }),
+      ]),
+    );
+    expect(reviews.filter((event) => {
+      const data = event.data as { revisionId?: string; reviewStatus?: string };
+      return data.revisionId === created.revisionId && data.reviewStatus === "IN_REVIEW";
+    })).toHaveLength(1);
+  });
+});

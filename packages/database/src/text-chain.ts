@@ -537,9 +537,9 @@ interface ReviewTransition {
 
 async function applyReview(client: PoolClient, input: ReviewTransition): Promise<number> {
   const current = await client.query<
-    { review_status: ReviewStatus; freshness_status: string } & QueryResultRow
+    { review_status: ReviewStatus; freshness_status: string; project_id: string } & QueryResultRow
   >(
-    `SELECT review_status, freshness_status FROM ${input.table} WHERE id = $1 AND workspace_id = $2 FOR UPDATE`,
+    `SELECT review_status, freshness_status, project_id FROM ${input.table} WHERE id = $1 AND workspace_id = $2 FOR UPDATE`,
     [input.revisionId, input.workspaceId],
   );
   const row = current.rows[0];
@@ -571,6 +571,26 @@ async function applyReview(client: PoolClient, input: ReviewTransition): Promise
   );
   const version = updated.rows[0]?.review_version;
   if (!version) throw new PersistenceError("REVISION_CONFLICT", "Review version did not match");
+  const aggregateType = input.table
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join("");
+  await client.query(
+    `INSERT INTO domain_event
+      (workspace_id, project_id, aggregate_type, aggregate_id, event_type, payload_json, trace_id)
+     VALUES ($1, $2, $3, $4, 'revision.review', $5::jsonb, 'm2-text-chain')`,
+    [
+      input.workspaceId,
+      row.project_id,
+      aggregateType,
+      input.revisionId,
+      JSON.stringify({
+        revisionId: input.revisionId,
+        reviewStatus: input.to,
+        reviewVersion: version,
+      }),
+    ],
+  );
   return version;
 }
 
@@ -797,6 +817,20 @@ async function staleFromStory(client: PoolClient, workspaceId: string, storyRevi
     reason,
     staleFromRef,
   );
+  await staleSharedDescendants(
+    client,
+    reason,
+    staleFromRef,
+    [workspaceId, storyRevisionId],
+    `SELECT location_revision_id FROM location_revision_script_source
+      WHERE workspace_id = $1 AND script_revision_id IN (
+        SELECT id FROM script_revision WHERE workspace_id = $1 AND source_story_revision_id = $2
+      )`,
+    `SELECT character_revision_id FROM character_revision_script_source
+      WHERE workspace_id = $1 AND script_revision_id IN (
+        SELECT id FROM script_revision WHERE workspace_id = $1 AND source_story_revision_id = $2
+      )`,
+  );
 }
 
 async function staleFromScript(client: PoolClient, workspaceId: string, scriptRevisionId: string): Promise<void> {
@@ -835,6 +869,57 @@ async function staleFromScript(client: PoolClient, workspaceId: string, scriptRe
     `SELECT location_revision_id FROM location_revision_script_source
       WHERE workspace_id = $1 AND script_revision_id = $2`,
     [workspaceId, scriptRevisionId],
+    reason,
+    staleFromRef,
+  );
+  await staleSharedDescendants(
+    client,
+    reason,
+    staleFromRef,
+    [workspaceId, scriptRevisionId],
+    `SELECT location_revision_id FROM location_revision_script_source
+      WHERE workspace_id = $1 AND script_revision_id = $2`,
+    `SELECT character_revision_id FROM character_revision_script_source
+      WHERE workspace_id = $1 AND script_revision_id = $2`,
+  );
+}
+
+async function staleSharedDescendants(
+  client: PoolClient,
+  reason: string,
+  staleFromRef: string,
+  params: unknown[],
+  locationIdsSql: string,
+  characterIdsSql: string,
+): Promise<void> {
+  await markStale(
+    client,
+    "scene_revision",
+    `SELECT id FROM scene_revision
+      WHERE workspace_id = $1 AND location_revision_id IN (${locationIdsSql})`,
+    params,
+    reason,
+    staleFromRef,
+  );
+  await markStale(
+    client,
+    "shot_revision",
+    `SELECT shot_revision.id FROM shot_revision
+       JOIN scene_revision ON scene_revision.id = shot_revision.source_scene_revision_id
+        AND scene_revision.workspace_id = shot_revision.workspace_id
+        AND scene_revision.project_id = shot_revision.project_id
+      WHERE shot_revision.workspace_id = $1
+        AND scene_revision.location_revision_id IN (${locationIdsSql})`,
+    params,
+    reason,
+    staleFromRef,
+  );
+  await markStale(
+    client,
+    "shot_revision",
+    `SELECT shot_revision_id FROM shot_character_reference
+      WHERE workspace_id = $1 AND character_revision_id IN (${characterIdsSql})`,
+    params,
     reason,
     staleFromRef,
   );
