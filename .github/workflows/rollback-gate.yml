@@ -80,7 +80,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          gh release view "$RELEASE_TAG" --repo "${{ github.repository }}" >/tmp/release.txt
+
+          RELEASE_JSON="$(gh release view "$RELEASE_TAG" \
+            --repo "${{ github.repository }}" \
+            --json isDraft,isPrerelease,tagName)"
+
+          if [[ "$(jq -r '.isDraft' <<<"$RELEASE_JSON")" == "true" ]]; then
+            echo "Rollback target must not be a draft release" >&2
+            exit 1
+          fi
+
+          if [[ "$(jq -r '.isPrerelease' <<<"$RELEASE_JSON")" == "true" ]]; then
+            echo "Rollback target must not be a prerelease" >&2
+            exit 1
+          fi
+
           TARGET_SHA="$(git rev-parse HEAD)"
           echo "TARGET_SHA=$TARGET_SHA" >> "$GITHUB_ENV"
 
@@ -138,18 +152,22 @@ jobs:
         shell: bash
         run: |
           mkdir -p .rollback
-          cat > .rollback/rollback-manifest.json <<EOF
-          {
-            "repository": "${{ github.repository }}",
-            "releaseTag": "$RELEASE_TAG",
-            "commitSha": "$TARGET_SHA",
-            "incidentRef": "$INCIDENT_REF",
-            "workflowRun": "${{ github.run_id }}",
-            "rollbackTargetValidated": true,
-            "productionDeploymentExecuted": false,
-            "databaseRollbackExecuted": false
-          }
-          EOF
+          jq -n \
+            --arg repository "${{ github.repository }}" \
+            --arg releaseTag "$RELEASE_TAG" \
+            --arg commitSha "$TARGET_SHA" \
+            --arg incidentRef "$INCIDENT_REF" \
+            --arg workflowRun "${{ github.run_id }}" \
+            '{
+              repository: $repository,
+              releaseTag: $releaseTag,
+              commitSha: $commitSha,
+              incidentRef: $incidentRef,
+              workflowRun: $workflowRun,
+              rollbackTargetValidated: true,
+              productionDeploymentExecuted: false,
+              databaseRollbackExecuted: false
+            }' > .rollback/rollback-manifest.json
 
       - name: Upload rollback manifest
         uses: actions/upload-artifact@v4
@@ -164,9 +182,9 @@ jobs:
           {
             echo "## Rollback target validated"
             echo
-            echo "- Release: `$RELEASE_TAG`"
-            echo "- Commit: `$TARGET_SHA`"
-            echo "- Incident: `${INCIDENT_REF:-not-provided}`"
+            printf -- '- Release: `%s`\n' "$RELEASE_TAG"
+            printf -- '- Commit: `%s`\n' "$TARGET_SHA"
+            printf -- '- Incident: `%s`\n' "${INCIDENT_REF:-not-provided}"
             echo "- Production deployment executed: **no**"
             echo "- Database rollback executed: **no**"
             echo
