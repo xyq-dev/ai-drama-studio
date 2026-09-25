@@ -168,6 +168,50 @@ describe("M2 text chain schema", () => {
     expect(pointer.rows[0]?.current_story_revision_id).toBe(story.revisionId);
   });
 
+  it("rejects a ShotRevision sourced from another scene in the same project", async () => {
+    const graph = await buildChain();
+    const otherScene = await pool.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO scene (workspace_id, project_id, episode_id)
+       VALUES ($1, $2, $3) RETURNING id`,
+      [graph.workspaceId, graph.projectId, graph.episode2Id],
+    );
+    const otherSceneId = otherScene.rows[0]?.id;
+    if (!otherSceneId) throw new Error("other scene missing");
+    const otherSceneRevision = await pool.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO scene_revision
+        (workspace_id, project_id, episode_id, scene_id, revision_no, source_script_revision_id,
+         ordinal, heading, summary, content_hash, created_by)
+       VALUES ($1,$2,$3,$4,1,$5,2,'INT. OTHER','other',$6,'author') RETURNING id`,
+      [
+        graph.workspaceId,
+        graph.projectId,
+        graph.episode2Id,
+        otherSceneId,
+        graph.scriptRevisionId,
+        hash,
+      ],
+    );
+    const otherSceneRevisionId = otherSceneRevision.rows[0]?.id;
+    if (!otherSceneRevisionId) throw new Error("other scene revision missing");
+
+    await expect(
+      pool.query(
+        `INSERT INTO shot_revision
+          (workspace_id, project_id, scene_id, shot_id, revision_no, source_scene_revision_id,
+           ordinal, shot_type, camera, action, prompt_text, content_hash, created_by)
+         VALUES ($1,$2,$3,$4,2,$5,1,'close','static','bad provenance','bad',$6,'author')`,
+        [
+          graph.workspaceId,
+          graph.projectId,
+          graph.sceneId,
+          graph.shotId,
+          otherSceneRevisionId,
+          hash,
+        ],
+      ),
+    ).rejects.toThrow(/foreign key/i);
+  });
+
   it("conflicts when the expected aggregate or review version is stale", async () => {
     const { workspaceId, projectId } = await seedProject();
     await expect(
