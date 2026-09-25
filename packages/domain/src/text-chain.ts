@@ -69,15 +69,33 @@ function assertCanonicalValue(value: unknown): void {
   }
 }
 
+function normalizeCanonicalString(value: string): string {
+  return value.replace(/\r\n?/g, "\n").normalize("NFC");
+}
+
 function serializeCanonical(value: unknown): string {
   if (Array.isArray(value)) {
     return `[${value.map((item) => serializeCanonical(item)).join(",")}]`;
   }
   if (value && typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>).sort(([left], [right]) =>
-      left.localeCompare(right),
-    );
-    return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${serializeCanonical(item)}`).join(",")}}`;
+    const normalizedEntries = Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+      normalizeCanonicalString(key),
+      item,
+    ] as const);
+    const seen = new Set<string>();
+    for (const [key] of normalizedEntries) {
+      if (seen.has(key)) {
+        throw new DomainError("CANONICAL_INPUT_DUPLICATE_KEY", "Canonical input contains equivalent normalized keys");
+      }
+      seen.add(key);
+    }
+    normalizedEntries.sort(([left], [right]) => left.localeCompare(right));
+    return `{${normalizedEntries
+      .map(([key, item]) => `${JSON.stringify(key)}:${serializeCanonical(item)}`)
+      .join(",")}}`;
+  }
+  if (typeof value === "string") {
+    return JSON.stringify(normalizeCanonicalString(value));
   }
   return JSON.stringify(value) ?? "null";
 }
