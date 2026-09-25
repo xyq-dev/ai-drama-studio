@@ -1,0 +1,188 @@
+name: Release Gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "SemVer release tag, e.g. v0.1.0"
+        required: true
+        type: string
+      target_sha:
+        description: "Exact main HEAD commit SHA to release"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-gate
+  cancel-in-progress: false
+
+jobs:
+  validate-and-release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ai_drama_release_gate
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d ai_drama_release_gate"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/ai_drama_release_gate
+      REDIS_URL: redis://127.0.0.1:6379
+      APP_WORKSPACE_ID: 11111111-1111-4111-8111-111111111111
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      TARGET_SHA: ${{ inputs.target_sha }}
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Check out release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target_sha }}
+          fetch-depth: 0
+
+      - name: Validate release target
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main --force
+
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "release_tag must be SemVer-like (vMAJOR.MINOR.PATCH)" >&2
+            exit 1
+          fi
+
+          CHECKED_OUT_SHA="$(git rev-parse HEAD)"
+          MAIN_SHA="$(git rev-parse origin/main)"
+
+          if [[ "$CHECKED_OUT_SHA" != "$TARGET_SHA" ]]; then
+            echo "Checked-out SHA does not match target_sha" >&2
+            exit 1
+          fi
+
+          if [[ "$TARGET_SHA" != "$MAIN_SHA" ]]; then
+            echo "Release target must equal current main HEAD" >&2
+            exit 1
+          fi
+
+          if git rev-parse "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release tag already exists: $RELEASE_TAG" >&2
+            exit 1
+          fi
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.0
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.21.0
+          cache: pnpm
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: services/media-worker/pyproject.toml
+
+      - name: Install JavaScript dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate and generate Prisma
+        run: |
+          pnpm --filter @ai-drama/database prisma:validate
+          pnpm --filter @ai-drama/database prisma:generate
+
+      - name: Build workspace
+        run: pnpm build
+
+      - name: Run PostgreSQL integration
+        run: pnpm --filter @ai-drama/database integration
+
+      - name: Provision configured workspace
+        run: pnpm --filter @ai-drama/database workspace:provision
+
+      - name: Run Worker integration
+        run: pnpm --filter @ai-drama/worker integration
+
+      - name: Run API integration
+        run: pnpm --filter @ai-drama/api integration
+
+      - name: Verify JavaScript workspace
+        run: pnpm verify
+
+      - name: Test Python media worker
+        run: |
+          python -m pip install -e "services/media-worker[dev]"
+          pytest services/media-worker/tests
+
+      - name: Build release manifest
+        shell: bash
+        run: |
+          mkdir -p .release
+          cat > .release/release-manifest.json <<EOF
+          {
+            "repository": "${{ github.repository }}",
+            "releaseTag": "$RELEASE_TAG",
+            "commitSha": "$TARGET_SHA",
+            "workflowRun": "${{ github.run_id }}",
+            "deploymentExecuted": false
+          }
+          EOF
+
+      - name: Upload release manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-manifest-${{ inputs.release_tag }}
+          path: .release/release-manifest.json
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$RELEASE_TAG" "$TARGET_SHA" -m "Release $RELEASE_TAG"
+          git push origin "$RELEASE_TAG"
+          gh release create "$RELEASE_TAG"             --target "$TARGET_SHA"             --title "$RELEASE_TAG"             --generate-notes
+
+      - name: Publish workflow summary
+        shell: bash
+        run: |
+          {
+            echo "## Release Gate passed"
+            echo
+            echo "- Tag: `$RELEASE_TAG`"
+            echo "- Commit: `$TARGET_SHA`"
+            echo "- GitHub Release created: yes"
+            echo "- Production deployment executed: **no**"
+            echo
+            echo "Production deployment remains blocked until a deployment adapter/workflow is explicitly configured."
+          } >> "$GITHUB_STEP_SUMMARY"
