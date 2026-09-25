@@ -69,8 +69,8 @@ jobs:
           set -euo pipefail
           git fetch origin main --force
 
-          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
-            echo "release_tag must be SemVer-like (vMAJOR.MINOR.PATCH)" >&2
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "release_tag must be a stable SemVer tag (vMAJOR.MINOR.PATCH)" >&2
             exit 1
           fi
 
@@ -181,6 +181,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
+          git fetch origin main --force
+          CURRENT_MAIN_SHA="$(git rev-parse origin/main)"
+          if [[ "$CURRENT_MAIN_SHA" != "$TARGET_SHA" ]]; then
+            echo "main moved during validation; refusing to release stale commit" >&2
+            exit 1
+          fi
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
