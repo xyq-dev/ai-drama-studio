@@ -427,6 +427,49 @@ describe("M2 text chain schema", () => {
     ).rejects.toThrow(/current shot ordinal must be unique/i);
   });
 
+  it("serializes provenance insertion against a concurrent review transition", async () => {
+    const graph = await buildChain();
+    const character = await pool.query<{ character_id: string } & QueryResultRow>(
+      "SELECT character_id FROM character_revision WHERE id = $1",
+      [graph.unlinkedCharacterRevisionId],
+    );
+    const characterId = character.rows[0]?.character_id;
+    if (!characterId) throw new Error("character parent missing");
+    await pool.query("UPDATE character SET current_revision_id = $1 WHERE id = $2", [
+      graph.unlinkedCharacterRevisionId,
+      characterId,
+    ]);
+
+    const holder = await pool.connect();
+    try {
+      await holder.query("BEGIN");
+      await holder.query(
+        "UPDATE character_revision SET review_status = 'IN_REVIEW', review_version = review_version + 1 WHERE id = $1",
+        [graph.unlinkedCharacterRevisionId],
+      );
+
+      const insertAttempt = pool.query(
+        `INSERT INTO character_revision_script_source
+          (workspace_id, project_id, character_revision_id, script_revision_id)
+         VALUES ($1, $2, $3, $4)`,
+        [graph.workspaceId, graph.projectId, graph.unlinkedCharacterRevisionId, graph.scriptRevisionId],
+      );
+
+      await waitForLockContaining("character_revision");
+      await holder.query("COMMIT");
+      await expect(insertAttempt).rejects.toThrow(/provenance is frozen after draft/i);
+
+      const edges = await pool.query<{ count: number } & QueryResultRow>(
+        "SELECT COUNT(*)::int AS count FROM character_revision_script_source WHERE character_revision_id = $1",
+        [graph.unlinkedCharacterRevisionId],
+      );
+      expect(edges.rows[0]?.count).toBe(0);
+    } finally {
+      await holder.query("ROLLBACK").catch(() => undefined);
+      holder.release();
+    }
+  });
+
   it("rejects approval when a script becomes stale before review completes", async () => {
     const graph = await buildChain();
     const pending = await chain.createScriptRevision({
@@ -678,9 +721,20 @@ describe("STALE propagation", () => {
       content: { schema: "m2.story.revision.v1", premise: "evented rewrite" },
       createdBy: "author",
       expectedVersion: graph.projectVersion,
+      traceId: "trace-story-rewrite",
     });
     const listed = await events.listEventsAfter(graph.workspaceId, "0", 50);
+    const currentChanged = listed.filter((event) => event.eventType === "revision.current_changed");
+    expect(currentChanged).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          traceId: "trace-story-rewrite",
+          data: expect.objectContaining({ rowVersion: graph.projectVersion + 1 }),
+        }),
+      ]),
+    );
     const stale = listed.filter((event) => event.eventType === "revision.stale");
+    expect(stale.filter((event) => event.traceId === "trace-story-rewrite").length).toBeGreaterThan(0);
     expect(stale.map((event) => event.data)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -691,6 +745,25 @@ describe("STALE propagation", () => {
         }),
       ]),
     );
+  });
+
+  it("emits a current-revision event even when there are no stale descendants", async () => {
+    const { workspaceId, projectId } = await seedProject();
+    const created = await chain.createStoryRevision({
+      workspaceId,
+      projectId,
+      content: { schema: "m2.story.revision.v1", premise: "first event" },
+      createdBy: "author",
+      expectedVersion: 1,
+      traceId: "trace-first-story",
+    });
+    const listed = await events.listEventsAfter(workspaceId, "0", 20);
+    const current = listed.filter((event) => event.eventType === "revision.current_changed");
+    expect(current).toHaveLength(1);
+    expect(current[0]).toMatchObject({
+      traceId: "trace-first-story",
+      data: { revisionId: created.revisionId, rowVersion: created.rowVersion },
+    });
   });
 });
 
@@ -792,6 +865,66 @@ describe("aggregate approval gates", () => {
     );
     expect(approved.rows.map((row) => row.kind).sort()).toEqual(["character", "location", "scene", "shot"]);
   });
+
+  it("rejects shot approval when a referenced character revision is not current and approved", async () => {
+    const graph = await buildChain();
+
+    await pool.query("UPDATE scene SET current_revision_id = $1 WHERE id = $2", [
+      graph.sceneRevisionId,
+      graph.sceneId,
+    ]);
+    const sceneReview = await chain.transitionReview({
+      table: "scene_revision",
+      revisionId: graph.sceneRevisionId,
+      workspaceId: graph.workspaceId,
+      expectedVersion: 1,
+      expectedReviewVersion: 1,
+      to: "IN_REVIEW",
+    });
+    await chain.approveScene({
+      workspaceId: graph.workspaceId,
+      parentId: graph.sceneId,
+      revisionId: graph.sceneRevisionId,
+      expectedVersion: sceneReview.rowVersion,
+      expectedReviewVersion: 2,
+      reviewedBy: "editor",
+    });
+
+    await pool.query("UPDATE shot SET current_revision_id = $1 WHERE id = $2", [
+      graph.shotRevisionId,
+      graph.shotId,
+    ]);
+    await pool.query(
+      `INSERT INTO shot_character_reference
+        (workspace_id, project_id, shot_revision_id, character_revision_id, role)
+       VALUES ($1, $2, $3, $4, 'lead')`,
+      [graph.workspaceId, graph.projectId, graph.shotRevisionId, graph.unlinkedCharacterRevisionId],
+    );
+    const shotReview = await chain.transitionReview({
+      table: "shot_revision",
+      revisionId: graph.shotRevisionId,
+      workspaceId: graph.workspaceId,
+      expectedVersion: 1,
+      expectedReviewVersion: 1,
+      to: "IN_REVIEW",
+    });
+    await expect(
+      chain.approveShot({
+        workspaceId: graph.workspaceId,
+        parentId: graph.shotId,
+        revisionId: graph.shotRevisionId,
+        expectedVersion: shotReview.rowVersion,
+        expectedReviewVersion: 2,
+        reviewedBy: "editor",
+      }),
+    ).rejects.toMatchObject({ code: "REVIEW_REQUIRED" });
+
+    const approved = await pool.query<{ approved_revision_id: string | null } & QueryResultRow>(
+      "SELECT approved_revision_id FROM shot WHERE id = $1",
+      [graph.shotId],
+    );
+    expect(approved.rows[0]?.approved_revision_id).toBeNull();
+  });
 });
 
 describe("story and script concurrency", () => {
@@ -833,6 +966,24 @@ describe("story and script concurrency", () => {
     }
   });
 });
+
+async function waitForLockContaining(pattern: string): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const waiting = await pool.query<{ count: number } & QueryResultRow>(
+      `SELECT COUNT(*)::int AS count
+         FROM pg_stat_activity
+        WHERE datname = current_database()
+          AND pid <> pg_backend_pid()
+          AND wait_event_type = 'Lock'
+          AND query ILIKE $1`,
+      [`%${pattern}%`],
+    );
+    if ((waiting.rows[0]?.count ?? 0) >= 1) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`Timed out waiting for lock containing ${pattern}`);
+}
 
 async function waitForProjectLock(): Promise<void> {
   const deadline = Date.now() + 5_000;
@@ -1185,6 +1336,7 @@ describe("review domain events", () => {
       expectedVersion: created.rowVersion,
       expectedReviewVersion: 1,
       to: "IN_REVIEW",
+      traceId: "trace-review-in",
     });
     const rejectedReview = await chain.transitionReview({
       table: "story_revision",
@@ -1194,6 +1346,7 @@ describe("review domain events", () => {
       expectedReviewVersion: 2,
       to: "REJECTED",
       reviewedBy: "editor",
+      traceId: "trace-review-reject",
     });
     await expect(
       chain.transitionReview({
@@ -1222,6 +1375,12 @@ describe("review domain events", () => {
         expect.objectContaining({ revisionId: created.revisionId, reviewStatus: "REJECTED" }),
         expect.objectContaining({ revisionId: approved.revisionId, reviewStatus: "IN_REVIEW" }),
         expect.objectContaining({ revisionId: approved.revisionId, reviewStatus: "APPROVED" }),
+      ]),
+    );
+    expect(reviews).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ traceId: "trace-review-in" }),
+        expect.objectContaining({ traceId: "trace-review-reject" }),
       ]),
     );
     expect(reviews.filter((event) => {
