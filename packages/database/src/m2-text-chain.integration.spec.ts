@@ -427,6 +427,63 @@ describe("M2 text chain schema", () => {
     ).rejects.toThrow(/current shot ordinal must be unique/i);
   });
 
+  it("rejects new provenance edges whose source revision is already stale", async () => {
+    const graph = await buildChain();
+
+    await pool.query(
+      `UPDATE script_revision
+          SET freshness_status = 'STALE',
+              stale_reason = 'TEST_STALE_SOURCE',
+              stale_from_ref = 'test:story',
+              review_version = review_version + 1
+        WHERE id = $1`,
+      [graph.scriptRevisionId],
+    );
+
+    await expect(
+      pool.query(
+        `INSERT INTO character_revision_script_source
+          (workspace_id, project_id, character_revision_id, script_revision_id)
+         VALUES ($1, $2, $3, $4)`,
+        [graph.workspaceId, graph.projectId, graph.unlinkedCharacterRevisionId, graph.scriptRevisionId],
+      ),
+    ).rejects.toThrow(/provenance source is stale/i);
+
+    const unlinkedLocationRevisionId = await insertEntityRevision(
+      "location",
+      graph.workspaceId,
+      graph.projectId,
+      graph.scriptRevisionId,
+      false,
+    );
+    await expect(
+      pool.query(
+        `INSERT INTO location_revision_script_source
+          (workspace_id, project_id, location_revision_id, script_revision_id)
+         VALUES ($1, $2, $3, $4)`,
+        [graph.workspaceId, graph.projectId, unlinkedLocationRevisionId, graph.scriptRevisionId],
+      ),
+    ).rejects.toThrow(/provenance source is stale/i);
+
+    await pool.query(
+      `UPDATE character_revision
+          SET freshness_status = 'STALE',
+              stale_reason = 'TEST_STALE_CHARACTER',
+              stale_from_ref = 'test:script',
+              review_version = review_version + 1
+        WHERE id = $1`,
+      [graph.unlinkedCharacterRevisionId],
+    );
+    await expect(
+      pool.query(
+        `INSERT INTO shot_character_reference
+          (workspace_id, project_id, shot_revision_id, character_revision_id, role)
+         VALUES ($1, $2, $3, $4, 'late')`,
+        [graph.workspaceId, graph.projectId, graph.shotRevisionId, graph.unlinkedCharacterRevisionId],
+      ),
+    ).rejects.toThrow(/provenance source is stale/i);
+  });
+
   it("serializes provenance insertion against a concurrent review transition", async () => {
     const graph = await buildChain();
     const character = await pool.query<{ character_id: string } & QueryResultRow>(
