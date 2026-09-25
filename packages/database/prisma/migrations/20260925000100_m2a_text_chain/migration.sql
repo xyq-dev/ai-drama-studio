@@ -1,7 +1,7 @@
 ALTER TABLE project
-  ADD COLUMN row_version integer NOT NULL DEFAULT 1 CHECK (row_version > 0),
   ADD COLUMN current_story_revision_id uuid,
-  ADD COLUMN approved_story_revision_id uuid;
+  ADD COLUMN approved_story_revision_id uuid,
+  ADD CONSTRAINT project_version_positive CHECK (version > 0);
 
 CREATE TABLE story_revision (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
