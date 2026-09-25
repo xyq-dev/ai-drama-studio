@@ -117,6 +117,23 @@ describe("M2 text chain schema", () => {
     );
   });
 
+  it("rejects unexplained STALE transitions at the database boundary", async () => {
+    const { workspaceId, projectId } = await seedProject();
+    const created = await chain.createStoryRevision({
+      workspaceId,
+      projectId,
+      content: { schema: "m2.story.revision.v1", premise: "auditable stale" },
+      createdBy: "author",
+      expectedVersion: 1,
+    });
+    await expect(
+      pool.query(
+        "UPDATE story_revision SET freshness_status = 'STALE', review_version = review_version + 1 WHERE id = $1",
+        [created.revisionId],
+      ),
+    ).rejects.toThrow(/check/i);
+  });
+
   it("constrains episode numbers to 1..3 and ensures that set on first story approval", async () => {
     const { workspaceId, projectId } = await seedProject();
     await expect(
