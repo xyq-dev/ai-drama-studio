@@ -1247,7 +1247,7 @@ describe("script lock order", () => {
       table: "script_revision",
       revisionId: current.revisionId,
       workspaceId: graph.workspaceId,
-      expectedVersion: currentReview.rowVersion,
+      expectedVersion: current.rowVersion,
       expectedReviewVersion: 1,
       to: "IN_REVIEW",
     });
