@@ -265,6 +265,7 @@ CREATE TABLE scene_revision (
   UNIQUE (scene_id, revision_no),
   UNIQUE (id, scene_id, workspace_id),
   UNIQUE (id, project_id, workspace_id),
+  UNIQUE (id, scene_id, project_id, workspace_id),
   FOREIGN KEY (scene_id, episode_id, project_id, workspace_id) REFERENCES scene (id, episode_id, project_id, workspace_id),
   FOREIGN KEY (source_script_revision_id, episode_id, project_id, workspace_id)
     REFERENCES script_revision (id, episode_id, project_id, workspace_id),
@@ -332,8 +333,8 @@ CREATE TABLE shot_revision (
   UNIQUE (id, shot_id, workspace_id),
   UNIQUE (id, project_id, workspace_id),
   FOREIGN KEY (shot_id, scene_id, workspace_id) REFERENCES shot (id, scene_id, workspace_id),
-  FOREIGN KEY (source_scene_revision_id, project_id, workspace_id)
-    REFERENCES scene_revision (id, project_id, workspace_id),
+  FOREIGN KEY (source_scene_revision_id, scene_id, project_id, workspace_id)
+    REFERENCES scene_revision (id, scene_id, project_id, workspace_id),
   CHECK (review_status <> 'STALE'),
   CHECK (
     review_status NOT IN ('APPROVED', 'REJECTED')
