@@ -3,6 +3,7 @@ import {
   JobPersistenceService,
   PersistenceError,
   RuntimeStore,
+  TextChainService,
   insertProject,
   requestHash,
   type IdempotencyScope,
@@ -19,6 +20,10 @@ const mockWorkflowSchema = z.object({
   label: z.string().max(200).default("mock"),
 });
 
+const storyRevisionBodySchema = z.object({
+  content: z.record(z.string(), z.unknown()),
+});
+
 export interface StudioContext {
   actorId: string;
   traceId: string;
@@ -29,6 +34,7 @@ export class StudioService {
   constructor(
     private readonly jobs: JobPersistenceService,
     private readonly store: RuntimeStore,
+    private readonly textChain: TextChainService,
     private readonly workspaceId: string,
   ) {}
 
@@ -49,6 +55,48 @@ export class StudioService {
 
   async getProject(projectId: string) {
     return this.store.getProject(this.workspaceId, projectId);
+  }
+
+  async createStoryRevision(
+    projectId: string,
+    body: unknown,
+    ifMatch: string | undefined,
+    context: StudioContext,
+  ) {
+    await this.store.getProject(this.workspaceId, projectId);
+    const input = parse(storyRevisionBodySchema, rejectClientWorkspace(body));
+    const expectedVersion = parseAggregateVersion(ifMatch);
+    const request = { content: input.content, expectedVersion };
+    try {
+      return await this.jobs.runIdempotent(
+        this.scope(context, "POST", `/projects/${projectId}/stories`, request),
+        201,
+        (client) =>
+          this.textChain.createStoryRevisionInTransaction(client, {
+            workspaceId: this.workspaceId,
+            projectId,
+            content: input.content,
+            createdBy: context.actorId,
+            expectedVersion,
+            traceId: context.traceId,
+          }),
+      );
+    } catch (error) {
+      if (isCanonicalContentError(error)) {
+        throw new PersistenceError("INVALID_STORY", "Story content is invalid");
+      }
+      throw error;
+    }
+  }
+
+  async listStoryRevisions(projectId: string, cursor?: string) {
+    await this.store.getProject(this.workspaceId, projectId);
+    return this.textChain.listStoryRevisions(this.workspaceId, projectId, cursor);
+  }
+
+  async listEpisodes(projectId: string) {
+    await this.store.getProject(this.workspaceId, projectId);
+    return { items: await this.textChain.listEpisodes(this.workspaceId, projectId) };
   }
 
   async createMockWorkflow(projectId: string, body: unknown, context: StudioContext) {
@@ -148,6 +196,27 @@ function parse<T>(schema: z.ZodType<T>, body: unknown): T {
   const parsed = schema.safeParse(body);
   if (!parsed.success) throw new PersistenceError("VALIDATION_ERROR", "Request body is invalid");
   return parsed.data;
+}
+
+function parseAggregateVersion(value: string | undefined): number {
+  if (!value) {
+    throw new PersistenceError("VALIDATION_ERROR", "If-Match aggregate version is required");
+  }
+  const match = /^"?([1-9][0-9]*)"?$/.exec(value.trim());
+  if (!match) {
+    throw new PersistenceError("VALIDATION_ERROR", "If-Match must contain a positive aggregate version");
+  }
+  return Number(match[1]);
+}
+
+function isCanonicalContentError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as { name?: unknown; code?: unknown };
+  return (
+    candidate.name === "DomainError" &&
+    typeof candidate.code === "string" &&
+    candidate.code.startsWith("CANONICAL_")
+  );
 }
 
 export function createTraceId(header: string | undefined): string {
