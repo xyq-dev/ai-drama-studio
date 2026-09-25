@@ -532,7 +532,7 @@ CREATE TRIGGER character_revision_no_delete
 
 CREATE TRIGGER location_revision_content_immutable
   BEFORE UPDATE ON location_revision
-  FOR EACH ROW EXECUTE FUNCTION m2_reject_character_revision_content_update();
+  FOR EACH ROW EXECUTE FUNCTION m2_reject_location_revision_content_update();
 CREATE TRIGGER location_revision_no_delete
   BEFORE DELETE ON location_revision
   FOR EACH ROW EXECUTE FUNCTION m2_reject_revision_delete();
