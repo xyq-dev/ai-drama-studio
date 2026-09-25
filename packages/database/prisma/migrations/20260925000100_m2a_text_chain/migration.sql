@@ -517,19 +517,22 @@ BEGIN
       INTO revision_review_status, revision_freshness_status
       FROM character_revision
      WHERE id = NEW.character_revision_id
-       AND workspace_id = NEW.workspace_id;
+       AND workspace_id = NEW.workspace_id
+     FOR UPDATE;
   ELSIF TG_TABLE_NAME = 'location_revision_script_source' THEN
     SELECT review_status, freshness_status
       INTO revision_review_status, revision_freshness_status
       FROM location_revision
      WHERE id = NEW.location_revision_id
-       AND workspace_id = NEW.workspace_id;
+       AND workspace_id = NEW.workspace_id
+     FOR UPDATE;
   ELSIF TG_TABLE_NAME = 'shot_character_reference' THEN
     SELECT review_status, freshness_status
       INTO revision_review_status, revision_freshness_status
       FROM shot_revision
      WHERE id = NEW.shot_revision_id
-       AND workspace_id = NEW.workspace_id;
+       AND workspace_id = NEW.workspace_id
+     FOR UPDATE;
   ELSE
     RAISE EXCEPTION 'unsupported provenance table %', TG_TABLE_NAME;
   END IF;
