@@ -109,7 +109,7 @@ export class RuntimeReconciler {
         continue;
       }
       if (!row.providerRequestId) continue;
-      const inspected = this.provider.inspect(row.providerRequestId);
+      const inspected = await this.inspectAndRecord(row);
       if (inspected === "SUCCEEDED") {
         await this.jobs.succeedJob({
           workspaceId: row.workspaceId,
