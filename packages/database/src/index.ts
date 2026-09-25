@@ -29,6 +29,7 @@ export {
   type ProjectRecord,
   type WorkflowView,
 } from "./runtime-store";
+export { TextChainService, type RevisionCreated } from "./text-chain";
 
 export interface PostgresPoolOptions {
   connectionString: string;
