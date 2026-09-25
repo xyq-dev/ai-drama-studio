@@ -19,6 +19,41 @@ export interface ReviewTransitioned {
   rowVersion: number;
 }
 
+export interface StoryRevisionView {
+  id: string;
+  projectId: string;
+  revisionNo: number;
+  content: unknown;
+  contentHash: string;
+  reviewStatus: string;
+  freshnessStatus: string;
+  staleReason: string | null;
+  staleFromRef: string | null;
+  reviewVersion: number;
+  reviewedBy: string | null;
+  reviewedAt: string | null;
+  reviewNote: string | null;
+  createdBy: string;
+  createdAt: string;
+}
+
+export interface StoryRevisionPage {
+  items: StoryRevisionView[];
+  nextCursor: string | null;
+}
+
+export interface EpisodeSummary {
+  id: string;
+  projectId: string;
+  episodeNo: number;
+  title: string;
+  rowVersion: number;
+  currentScriptRevisionId: string | null;
+  approvedScriptRevisionId: string | null;
+  currentScriptReviewStatus: string | null;
+  currentScriptFreshnessStatus: string | null;
+}
+
 async function withTransaction<T>(pool: DatabasePool, work: (client: PoolClient) => Promise<T>): Promise<T> {
   const client = await pool.connect();
   try {
@@ -90,54 +125,168 @@ export class TextChainService {
     expectedVersion: number;
     traceId?: string;
   }): Promise<RevisionCreated> {
+    return withTransaction(this.pool, (client) => this.createStoryRevisionInTransaction(client, input));
+  }
+
+  async createStoryRevisionInTransaction(
+    client: PoolClient,
+    input: {
+      workspaceId: string;
+      projectId: string;
+      content: unknown;
+      createdBy: string;
+      expectedVersion: number;
+      traceId?: string;
+    },
+  ): Promise<RevisionCreated> {
     const contentHash = canonicalInputHash(input.content);
-    return withTransaction(this.pool, async (client) => {
-      await lockAggregateForRevision(client, "project", input.projectId, input.workspaceId, input.expectedVersion);
-      const previousCurrent = await client.query<{ current_story_revision_id: string | null } & QueryResultRow>(
-        "SELECT current_story_revision_id FROM project WHERE id = $1 AND workspace_id = $2",
-        [input.projectId, input.workspaceId],
-      );
-      const previousCurrentId = previousCurrent.rows[0]?.current_story_revision_id ?? null;
-      const next = await client.query<{ revision_no: number } & QueryResultRow>(
-        `SELECT COALESCE(MAX(revision_no), 0)::int + 1 AS revision_no
-           FROM story_revision WHERE project_id = $1 AND workspace_id = $2`,
-        [input.projectId, input.workspaceId],
-      );
-      const revisionNo = next.rows[0]?.revision_no ?? 1;
-      const inserted = await client.query<{ id: string } & QueryResultRow>(
-        `INSERT INTO story_revision
-          (workspace_id, project_id, revision_no, content_json, content_hash, created_by)
-         VALUES ($1, $2, $3, $4::jsonb, $5, $6)
-         RETURNING id`,
-        [input.workspaceId, input.projectId, revisionNo, JSON.stringify(input.content), contentHash, input.createdBy],
-      );
-      const revisionId = inserted.rows[0]?.id;
-      if (!revisionId) throw new PersistenceError("REVISION_CREATE_FAILED", "Story revision was not created");
-      const rowVersion = await bumpPointer(
-        client,
-        "project",
-        input.projectId,
-        input.workspaceId,
-        input.expectedVersion,
-        "current_story_revision_id",
-        revisionId,
-      );
-      const traceId = input.traceId ?? "m2-text-chain";
-      await emitCurrentRevisionEvent(
-        client,
-        input.workspaceId,
-        input.projectId,
-        "Project",
-        input.projectId,
-        revisionId,
-        rowVersion,
-        traceId,
-      );
-      if (previousCurrentId && previousCurrentId !== revisionId) {
-        await staleFromStory(client, input.workspaceId, previousCurrentId, traceId);
+    await lockAggregateForRevision(client, "project", input.projectId, input.workspaceId, input.expectedVersion);
+    const previousCurrent = await client.query<{ current_story_revision_id: string | null } & QueryResultRow>(
+      "SELECT current_story_revision_id FROM project WHERE id = $1 AND workspace_id = $2",
+      [input.projectId, input.workspaceId],
+    );
+    const previousCurrentId = previousCurrent.rows[0]?.current_story_revision_id ?? null;
+    const next = await client.query<{ revision_no: number } & QueryResultRow>(
+      `SELECT COALESCE(MAX(revision_no), 0)::int + 1 AS revision_no
+         FROM story_revision WHERE project_id = $1 AND workspace_id = $2`,
+      [input.projectId, input.workspaceId],
+    );
+    const revisionNo = next.rows[0]?.revision_no ?? 1;
+    const inserted = await client.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO story_revision
+        (workspace_id, project_id, revision_no, content_json, content_hash, created_by)
+       VALUES ($1, $2, $3, $4::jsonb, $5, $6)
+       RETURNING id`,
+      [input.workspaceId, input.projectId, revisionNo, JSON.stringify(input.content), contentHash, input.createdBy],
+    );
+    const revisionId = inserted.rows[0]?.id;
+    if (!revisionId) throw new PersistenceError("REVISION_CREATE_FAILED", "Story revision was not created");
+    const rowVersion = await bumpPointer(
+      client,
+      "project",
+      input.projectId,
+      input.workspaceId,
+      input.expectedVersion,
+      "current_story_revision_id",
+      revisionId,
+    );
+    const traceId = input.traceId ?? "m2-text-chain";
+    await emitCurrentRevisionEvent(
+      client,
+      input.workspaceId,
+      input.projectId,
+      "Project",
+      input.projectId,
+      revisionId,
+      rowVersion,
+      traceId,
+    );
+    if (previousCurrentId && previousCurrentId !== revisionId) {
+      await staleFromStory(client, input.workspaceId, previousCurrentId, traceId);
+    }
+    return { revisionId, revisionNo, contentHash, rowVersion };
+  }
+
+  async listStoryRevisions(
+    workspaceId: string,
+    projectId: string,
+    cursor?: string,
+    limit = 20,
+  ): Promise<StoryRevisionPage> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      throw new PersistenceError("VALIDATION_ERROR", "Story revision page size is invalid");
+    }
+    let cursorRevisionNo: number | null = null;
+    if (cursor !== undefined) {
+      if (!/^[1-9][0-9]*$/.test(cursor)) {
+        throw new PersistenceError("VALIDATION_ERROR", "Story revision cursor is invalid");
       }
-      return { revisionId, revisionNo, contentHash, rowVersion };
-    });
+      cursorRevisionNo = Number(cursor);
+      if (!Number.isSafeInteger(cursorRevisionNo)) {
+        throw new PersistenceError("VALIDATION_ERROR", "Story revision cursor is invalid");
+      }
+    }
+
+    const client = await this.pool.connect();
+    try {
+      const params: unknown[] = [workspaceId, projectId, limit + 1];
+      let cursorSql = "";
+      if (cursorRevisionNo !== null) {
+        params.push(cursorRevisionNo);
+        cursorSql = "AND revision_no < $4";
+      }
+      const result = await client.query<QueryResultRow>(
+        `SELECT id, project_id, revision_no, content_json, content_hash,
+                review_status, freshness_status, stale_reason, stale_from_ref,
+                review_version, reviewed_by, reviewed_at, review_note,
+                created_by, created_at
+           FROM story_revision
+          WHERE workspace_id = $1 AND project_id = $2 ${cursorSql}
+          ORDER BY revision_no DESC
+          LIMIT $3`,
+        params,
+      );
+      const items = result.rows.slice(0, limit).map((row) => ({
+        id: String(row.id),
+        projectId: String(row.project_id),
+        revisionNo: Number(row.revision_no),
+        content: row.content_json,
+        contentHash: String(row.content_hash),
+        reviewStatus: String(row.review_status),
+        freshnessStatus: String(row.freshness_status),
+        staleReason: row.stale_reason === null ? null : String(row.stale_reason),
+        staleFromRef: row.stale_from_ref === null ? null : String(row.stale_from_ref),
+        reviewVersion: Number(row.review_version),
+        reviewedBy: row.reviewed_by === null ? null : String(row.reviewed_by),
+        reviewedAt: row.reviewed_at === null ? null : new Date(row.reviewed_at as Date | string).toISOString(),
+        reviewNote: row.review_note === null ? null : String(row.review_note),
+        createdBy: String(row.created_by),
+        createdAt: new Date(row.created_at as Date | string).toISOString(),
+      }));
+      const last = items.at(-1);
+      return {
+        items,
+        nextCursor: result.rows.length > limit && last ? String(last.revisionNo) : null,
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  async listEpisodes(workspaceId: string, projectId: string): Promise<EpisodeSummary[]> {
+    const client = await this.pool.connect();
+    try {
+      const result = await client.query<QueryResultRow>(
+        `SELECT e.id, e.project_id, e.episode_no, e.title, e.row_version,
+                e.current_script_revision_id, e.approved_script_revision_id,
+                sr.review_status AS current_script_review_status,
+                sr.freshness_status AS current_script_freshness_status
+           FROM episode e
+           LEFT JOIN script_revision sr
+             ON sr.id = e.current_script_revision_id
+            AND sr.workspace_id = e.workspace_id
+          WHERE e.workspace_id = $1 AND e.project_id = $2
+          ORDER BY e.episode_no`,
+        [workspaceId, projectId],
+      );
+      return result.rows.map((row) => ({
+        id: String(row.id),
+        projectId: String(row.project_id),
+        episodeNo: Number(row.episode_no),
+        title: String(row.title),
+        rowVersion: Number(row.row_version),
+        currentScriptRevisionId:
+          row.current_script_revision_id === null ? null : String(row.current_script_revision_id),
+        approvedScriptRevisionId:
+          row.approved_script_revision_id === null ? null : String(row.approved_script_revision_id),
+        currentScriptReviewStatus:
+          row.current_script_review_status === null ? null : String(row.current_script_review_status),
+        currentScriptFreshnessStatus:
+          row.current_script_freshness_status === null ? null : String(row.current_script_freshness_status),
+      }));
+    } finally {
+      client.release();
+    }
   }
 
   async transitionReview(input: ReviewTransition): Promise<ReviewTransitioned> {
