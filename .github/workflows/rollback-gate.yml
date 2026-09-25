@@ -161,6 +161,28 @@ jobs:
           python -m pip install -e "services/media-worker[dev]"
           pytest services/media-worker/tests
 
+      - name: Revalidate rollback tag after test suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin "+refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG" --force
+          REMOTE_TAG_SHA="$(git rev-list -n 1 "refs/tags/$RELEASE_TAG")"
+
+          if [[ "$REMOTE_TAG_SHA" != "$TARGET_SHA" ]]; then
+            echo "Rollback tag moved during validation; refusing to mark it validated" >&2
+            exit 1
+          fi
+
+          RELEASE_JSON="$(gh release view "$RELEASE_TAG" \
+            --repo "${{ github.repository }}" \
+            --json isDraft,isPrerelease,tagName)"
+
+          if [[ "$(jq -r '.isDraft' <<<"$RELEASE_JSON")" == "true" ]] || \
+             [[ "$(jq -r '.isPrerelease' <<<"$RELEASE_JSON")" == "true" ]]; then
+            echo "Rollback target stopped being a stable published release" >&2
+            exit 1
+          fi
+
       - name: Build rollback manifest
         shell: bash
         run: |
