@@ -194,6 +194,21 @@ describe("M1-C API and SSE integration", () => {
     expect(response.status).toBe(400);
   });
 
+  it("rejects malformed project cursors before PostgreSQL casts", async () => {
+    const malformed = [
+      "not-a-date|not-a-uuid",
+      "2026-99-99T00:00:00.000Z|11111111-1111-4111-8111-111111111111",
+      "2026-09-25T00:00:00.000Z|not-a-uuid",
+      "2026-09-25T00:00:00.000Z|11111111-1111-4111-8111-111111111111|extra",
+    ];
+    for (const cursor of malformed) {
+      const response = await fetch(`${base}/api/v1/projects?cursor=${encodeURIComponent(cursor)}`);
+      expect(response.status).toBe(400);
+      const body = (await response.json()) as { error: { code: string } };
+      expect(body.error.code).toBe("VALIDATION_ERROR");
+    }
+  });
+
   it("replays DomainEvents, supports reconnect, and expires an old cursor", async () => {
     const project = await fetch(`${base}/api/v1/projects`, {
       method: "POST",
