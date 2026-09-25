@@ -76,7 +76,7 @@ describe("M2 text chain schema", () => {
     );
     const column = await pool.query(
       `SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'project' AND column_name = 'row_version'`,
+        WHERE table_name = 'project' AND column_name = 'current_story_revision_id'`,
     );
     expect(column.rowCount).toBe(1);
   });
@@ -646,7 +646,7 @@ async function buildChain(): Promise<ChainGraph> {
   const unlinked = await insertEntityRevision("character", workspaceId, projectId, script.revisionId, false);
   const location = await insertEntityRevision("location", workspaceId, projectId, script.revisionId, true);
   const versions = await pool.query<{ project_version: number; episode_version: number } & QueryResultRow>(
-    `SELECT project.row_version AS project_version, episode.row_version AS episode_version
+    `SELECT project.version AS project_version, episode.row_version AS episode_version
        FROM project JOIN episode ON episode.project_id = project.id
       WHERE project.id = $1 AND episode.id = $2`,
     [projectId, episode2Id],
