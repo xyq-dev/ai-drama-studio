@@ -88,6 +88,7 @@ export class TextChainService {
     content: unknown;
     createdBy: string;
     expectedVersion: number;
+    traceId?: string;
   }): Promise<RevisionCreated> {
     const contentHash = canonicalInputHash(input.content);
     return withTransaction(this.pool, async (client) => {
@@ -121,8 +122,19 @@ export class TextChainService {
         "current_story_revision_id",
         revisionId,
       );
+      const traceId = input.traceId ?? "m2-text-chain";
+      await emitCurrentRevisionEvent(
+        client,
+        input.workspaceId,
+        input.projectId,
+        "Project",
+        input.projectId,
+        revisionId,
+        rowVersion,
+        traceId,
+      );
       if (previousCurrentId && previousCurrentId !== revisionId) {
-        await staleFromStory(client, input.workspaceId, previousCurrentId);
+        await staleFromStory(client, input.workspaceId, previousCurrentId, traceId);
       }
       return { revisionId, revisionNo, contentHash, rowVersion };
     });
@@ -147,6 +159,7 @@ export class TextChainService {
     expectedVersion: number;
     expectedReviewVersion: number;
     reviewedBy: string;
+    traceId?: string;
   }): Promise<void> {
     await withTransaction(this.pool, async (client) => {
       const project = await client.query<
@@ -178,6 +191,7 @@ export class TextChainService {
         expectedReviewVersion: input.expectedReviewVersion,
         to: "APPROVED",
         reviewedBy: input.reviewedBy,
+        traceId: input.traceId,
       });
       await bumpPointer(
         client,
@@ -190,7 +204,7 @@ export class TextChainService {
       );
       await ensureEpisodes(client, input.workspaceId, input.projectId);
       if (previousId && previousId !== input.revisionId) {
-        await staleFromStory(client, input.workspaceId, previousId);
+        await staleFromStory(client, input.workspaceId, previousId, input.traceId ?? "m2-text-chain");
       }
     });
   }
@@ -216,6 +230,7 @@ export class TextChainService {
     content: unknown;
     createdBy: string;
     expectedVersion: number;
+    traceId?: string;
   }): Promise<RevisionCreated> {
     const contentHash = canonicalInputHash(input.content);
     return withTransaction(this.pool, async (client) => {
@@ -300,8 +315,19 @@ export class TextChainService {
         "current_script_revision_id",
         revisionId,
       );
+      const traceId = input.traceId ?? "m2-text-chain";
+      await emitCurrentRevisionEvent(
+        client,
+        input.workspaceId,
+        input.projectId,
+        "Episode",
+        input.episodeId,
+        revisionId,
+        rowVersion,
+        traceId,
+      );
       if (previousCurrentId && previousCurrentId !== revisionId) {
-        await staleFromScript(client, input.workspaceId, previousCurrentId);
+        await staleFromScript(client, input.workspaceId, previousCurrentId, traceId);
       }
       return { revisionId, revisionNo, contentHash, rowVersion };
     });
@@ -314,6 +340,7 @@ export class TextChainService {
     expectedVersion: number;
     expectedReviewVersion: number;
     reviewedBy: string;
+    traceId?: string;
   }): Promise<void> {
     await withTransaction(this.pool, async (client) => {
       await lockAggregateForRevision(client, "episode", input.episodeId, input.workspaceId, input.expectedVersion);
@@ -375,6 +402,7 @@ export class TextChainService {
         expectedReviewVersion: input.expectedReviewVersion,
         to: "APPROVED",
         reviewedBy: input.reviewedBy,
+        traceId: input.traceId,
       });
       const previous = await client.query<{ approved_script_revision_id: string | null } & QueryResultRow>(
         `SELECT approved_script_revision_id FROM episode WHERE id = $1 AND workspace_id = $2 FOR UPDATE`,
@@ -391,7 +419,7 @@ export class TextChainService {
         input.revisionId,
       );
       if (previousId && previousId !== input.revisionId) {
-        await staleFromScript(client, input.workspaceId, previousId);
+        await staleFromScript(client, input.workspaceId, previousId, input.traceId ?? "m2-text-chain");
       }
     });
   }
@@ -471,6 +499,35 @@ export class TextChainService {
       if (source.rows[0]?.ok !== true) {
         throw new PersistenceError("REVIEW_REQUIRED", "Shot source must be the current approved scene revision");
       }
+      const characterDependencies = await client.query<
+        { character_revision_id: string; ok: boolean } & QueryResultRow
+      >(
+        `SELECT refs.character_revision_id,
+                (
+                  character.current_revision_id = character_revision.id
+                  AND character.approved_revision_id = character_revision.id
+                  AND character_revision.review_status = 'APPROVED'
+                  AND character_revision.freshness_status = 'CURRENT'
+                ) AS ok
+           FROM shot_character_reference refs
+           JOIN character_revision
+             ON character_revision.id = refs.character_revision_id
+            AND character_revision.workspace_id = refs.workspace_id
+            AND character_revision.project_id = refs.project_id
+           JOIN character
+             ON character.id = character_revision.character_id
+            AND character.workspace_id = character_revision.workspace_id
+          WHERE refs.shot_revision_id = $1
+            AND refs.workspace_id = $2
+          FOR SHARE OF character_revision, character`,
+        [input.revisionId, input.workspaceId],
+      );
+      if (characterDependencies.rows.some((row) => row.ok !== true)) {
+        throw new PersistenceError(
+          "REVIEW_REQUIRED",
+          "Shot character references must be current approved character revisions",
+        );
+      }
       await finishApproval(client, input, "shot", "shot_revision");
     });
   }
@@ -490,6 +547,7 @@ export class TextChainService {
     promptText: string;
     createdBy: string;
     expectedVersion: number;
+    traceId?: string;
   }): Promise<RevisionCreated> {
     const contentHash = canonicalInputHash({
       schema: "m2.shot.revision.v1",
@@ -544,6 +602,16 @@ export class TextChainService {
         "current_revision_id",
         revisionId,
       );
+      await emitCurrentRevisionEvent(
+        client,
+        input.workspaceId,
+        input.projectId,
+        "Shot",
+        input.shotId,
+        revisionId,
+        rowVersion,
+        input.traceId ?? "m2-text-chain",
+      );
       return { revisionId, revisionNo, contentHash, rowVersion };
     });
   }
@@ -558,6 +626,7 @@ interface ReviewTransition {
   to: ReviewStatus;
   reviewedBy?: string;
   reviewNote?: string | null;
+  traceId?: string;
 }
 
 const reviewParents = {
@@ -692,7 +761,7 @@ async function applyReview(client: PoolClient, input: ReviewTransition): Promise
   await client.query(
     `INSERT INTO domain_event
       (workspace_id, project_id, aggregate_type, aggregate_id, event_type, payload_json, trace_id)
-     VALUES ($1, $2, $3, $4, 'revision.review', $5::jsonb, 'm2-text-chain')`,
+     VALUES ($1, $2, $3, $4, 'revision.review', $5::jsonb, $6)`,
     [
       input.workspaceId,
       row.project_id,
@@ -703,6 +772,7 @@ async function applyReview(client: PoolClient, input: ReviewTransition): Promise
         reviewStatus: input.to,
         reviewVersion: version,
       }),
+      input.traceId ?? "m2-text-chain",
     ],
   );
   return version;
@@ -715,6 +785,7 @@ interface AggregateApproval {
   expectedVersion: number;
   expectedReviewVersion: number;
   reviewedBy: string;
+  traceId?: string;
 }
 
 async function lockProject(client: PoolClient, projectId: string, workspaceId: string): Promise<void> {
@@ -771,6 +842,7 @@ async function finishApproval(
     expectedReviewVersion: input.expectedReviewVersion,
     to: "APPROVED",
     reviewedBy: input.reviewedBy,
+    traceId: input.traceId,
   });
   await bumpPointer(
     client,
@@ -818,6 +890,31 @@ async function approveEntityRevision(
   });
 }
 
+async function emitCurrentRevisionEvent(
+  client: PoolClient,
+  workspaceId: string,
+  projectId: string,
+  aggregateType: string,
+  aggregateId: string,
+  revisionId: string,
+  rowVersion: number,
+  traceId: string,
+): Promise<void> {
+  await client.query(
+    `INSERT INTO domain_event
+      (workspace_id, project_id, aggregate_type, aggregate_id, event_type, payload_json, trace_id)
+     VALUES ($1, $2, $3, $4, 'revision.current_changed', $5::jsonb, $6)`,
+    [
+      workspaceId,
+      projectId,
+      aggregateType,
+      aggregateId,
+      JSON.stringify({ revisionId, rowVersion }),
+      traceId,
+    ],
+  );
+}
+
 async function ensureEpisodes(client: PoolClient, workspaceId: string, projectId: string): Promise<void> {
   await client.query(
     `INSERT INTO episode (workspace_id, project_id, episode_no, title)
@@ -840,6 +937,7 @@ async function markStale(
   params: unknown[],
   reason: string,
   staleFromRef: string,
+  traceId: string,
 ): Promise<void> {
   const reasonParam = params.length + 1;
   const refParam = params.length + 2;
@@ -861,7 +959,7 @@ async function markStale(
     await client.query(
       `INSERT INTO domain_event
         (workspace_id, project_id, aggregate_type, aggregate_id, event_type, payload_json, trace_id)
-       VALUES ($1, $2, $3, $4, 'revision.stale', $5::jsonb, 'm2-text-chain')`,
+       VALUES ($1, $2, $3, $4, 'revision.stale', $5::jsonb, $6)`,
       [
         params[0],
         row.project_id,
@@ -873,12 +971,18 @@ async function markStale(
           staleReason: reason,
           staleFromRef,
         }),
+        traceId,
       ],
     );
   }
 }
 
-async function staleFromStory(client: PoolClient, workspaceId: string, storyRevisionId: string): Promise<void> {
+async function staleFromStory(
+  client: PoolClient,
+  workspaceId: string,
+  storyRevisionId: string,
+  traceId: string,
+): Promise<void> {
   const reason = "SOURCE_STORY_REPLACED";
   const staleFromRef = `story_revision:${storyRevisionId}`;
   await markStale(
@@ -888,6 +992,7 @@ async function staleFromStory(client: PoolClient, workspaceId: string, storyRevi
     [workspaceId, storyRevisionId],
     reason,
     staleFromRef,
+    traceId,
   );
   await markStale(
     client,
@@ -898,6 +1003,7 @@ async function staleFromStory(client: PoolClient, workspaceId: string, storyRevi
     [workspaceId, storyRevisionId],
     reason,
     staleFromRef,
+    traceId,
   );
   await markStale(
     client,
@@ -909,6 +1015,7 @@ async function staleFromStory(client: PoolClient, workspaceId: string, storyRevi
     [workspaceId, storyRevisionId],
     reason,
     staleFromRef,
+    traceId,
   );
   await markStale(
     client,
@@ -920,6 +1027,7 @@ async function staleFromStory(client: PoolClient, workspaceId: string, storyRevi
     [workspaceId, storyRevisionId],
     reason,
     staleFromRef,
+    traceId,
   );
   await markStale(
     client,
@@ -931,6 +1039,7 @@ async function staleFromStory(client: PoolClient, workspaceId: string, storyRevi
     [workspaceId, storyRevisionId],
     reason,
     staleFromRef,
+    traceId,
   );
   await staleSharedDescendants(
     client,
@@ -945,10 +1054,16 @@ async function staleFromStory(client: PoolClient, workspaceId: string, storyRevi
       WHERE workspace_id = $1 AND script_revision_id IN (
         SELECT id FROM script_revision WHERE workspace_id = $1 AND source_story_revision_id = $2
       )`,
+    traceId,
   );
 }
 
-async function staleFromScript(client: PoolClient, workspaceId: string, scriptRevisionId: string): Promise<void> {
+async function staleFromScript(
+  client: PoolClient,
+  workspaceId: string,
+  scriptRevisionId: string,
+  traceId: string,
+): Promise<void> {
   const reason = "SOURCE_SCRIPT_REPLACED";
   const staleFromRef = `script_revision:${scriptRevisionId}`;
   await markStale(
@@ -958,6 +1073,7 @@ async function staleFromScript(client: PoolClient, workspaceId: string, scriptRe
     [workspaceId, scriptRevisionId],
     reason,
     staleFromRef,
+    traceId,
   );
   await markStale(
     client,
@@ -968,6 +1084,7 @@ async function staleFromScript(client: PoolClient, workspaceId: string, scriptRe
     [workspaceId, scriptRevisionId],
     reason,
     staleFromRef,
+    traceId,
   );
   await markStale(
     client,
@@ -977,6 +1094,7 @@ async function staleFromScript(client: PoolClient, workspaceId: string, scriptRe
     [workspaceId, scriptRevisionId],
     reason,
     staleFromRef,
+    traceId,
   );
   await markStale(
     client,
@@ -986,6 +1104,7 @@ async function staleFromScript(client: PoolClient, workspaceId: string, scriptRe
     [workspaceId, scriptRevisionId],
     reason,
     staleFromRef,
+    traceId,
   );
   await staleSharedDescendants(
     client,
@@ -996,6 +1115,7 @@ async function staleFromScript(client: PoolClient, workspaceId: string, scriptRe
       WHERE workspace_id = $1 AND script_revision_id = $2`,
     `SELECT character_revision_id FROM character_revision_script_source
       WHERE workspace_id = $1 AND script_revision_id = $2`,
+    traceId,
   );
 }
 
@@ -1006,6 +1126,7 @@ async function staleSharedDescendants(
   params: unknown[],
   locationIdsSql: string,
   characterIdsSql: string,
+  traceId: string,
 ): Promise<void> {
   await markStale(
     client,
@@ -1015,6 +1136,7 @@ async function staleSharedDescendants(
     params,
     reason,
     staleFromRef,
+    traceId,
   );
   await markStale(
     client,
@@ -1028,6 +1150,7 @@ async function staleSharedDescendants(
     params,
     reason,
     staleFromRef,
+    traceId,
   );
   await markStale(
     client,
@@ -1037,5 +1160,6 @@ async function staleSharedDescendants(
     params,
     reason,
     staleFromRef,
+    traceId,
   );
 }
