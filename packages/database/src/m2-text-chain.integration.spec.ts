@@ -3,6 +3,7 @@ import { Pool, type QueryResultRow } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { PersistenceError } from "./job-service";
 import { runMigrations } from "./migrations";
+import { RuntimeStore } from "./runtime-store";
 import { TextChainService } from "./text-chain";
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -10,8 +11,9 @@ if (!databaseUrl) {
   throw new Error("DATABASE_URL is required for PostgreSQL integration tests");
 }
 
-const pool = new Pool({ connectionString: databaseUrl, max: 4 });
+const pool = new Pool({ connectionString: databaseUrl, max: 6 });
 const chain = new TextChainService(pool);
+const events = new RuntimeStore(pool);
 const hash = "ab".repeat(32);
 
 beforeAll(async () => {
@@ -562,7 +564,183 @@ describe("STALE propagation", () => {
     );
     expect(freshness.rows.every((row) => row.freshness_status === "CURRENT")).toBe(true);
   });
+
+  it("writes a domain event in the same transaction as current-pointer stale", async () => {
+    const graph = await buildChain();
+    await chain.createStoryRevision({
+      workspaceId: graph.workspaceId,
+      projectId: graph.projectId,
+      content: { schema: "m2.story.revision.v1", premise: "evented rewrite" },
+      createdBy: "author",
+      expectedVersion: graph.projectVersion,
+    });
+    const listed = await events.listEventsAfter(graph.workspaceId, "0", 50);
+    const stale = listed.filter((event) => event.eventType === "revision.stale");
+    expect(stale.map((event) => event.data)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          revisionId: graph.scriptRevisionId,
+          freshnessStatus: "STALE",
+          staleReason: "SOURCE_STORY_REPLACED",
+          staleFromRef: `story_revision:${graph.storyRevisionId}`,
+        }),
+      ]),
+    );
+  });
 });
+
+describe("aggregate approval gates", () => {
+  it("approves character, location, scene, and shot through their own gates", async () => {
+    const graph = await buildChain();
+    await pool.query("UPDATE character SET current_revision_id = $1 WHERE id = (SELECT character_id FROM character_revision WHERE id = $1)", [
+      graph.characterRevisionId,
+    ]);
+    await pool.query("UPDATE location SET current_revision_id = $1 WHERE id = (SELECT location_id FROM location_revision WHERE id = $1)", [
+      graph.locationRevisionId,
+    ]);
+    await pool.query("UPDATE scene SET current_revision_id = $1 WHERE id = $2", [graph.sceneRevisionId, graph.sceneId]);
+    await pool.query("UPDATE shot SET current_revision_id = $1 WHERE id = $2", [graph.shotRevisionId, graph.shotId]);
+
+    await chain.transitionReview({
+      table: "character_revision",
+      revisionId: graph.characterRevisionId,
+      workspaceId: graph.workspaceId,
+      expectedReviewVersion: 1,
+      to: "IN_REVIEW",
+    });
+    await chain.approveCharacter({
+      workspaceId: graph.workspaceId,
+      parentId: (
+        await pool.query<{ character_id: string } & QueryResultRow>(
+          "SELECT character_id FROM character_revision WHERE id = $1",
+          [graph.characterRevisionId],
+        )
+      ).rows[0]!.character_id,
+      revisionId: graph.characterRevisionId,
+      expectedVersion: 1,
+      expectedReviewVersion: 2,
+      reviewedBy: "editor",
+    });
+
+    const locationParent = await pool.query<{ location_id: string } & QueryResultRow>(
+      "SELECT location_id FROM location_revision WHERE id = $1",
+      [graph.locationRevisionId],
+    );
+    await chain.transitionReview({
+      table: "location_revision",
+      revisionId: graph.locationRevisionId,
+      workspaceId: graph.workspaceId,
+      expectedReviewVersion: 1,
+      to: "IN_REVIEW",
+    });
+    await chain.approveLocation({
+      workspaceId: graph.workspaceId,
+      parentId: locationParent.rows[0]!.location_id,
+      revisionId: graph.locationRevisionId,
+      expectedVersion: 1,
+      expectedReviewVersion: 2,
+      reviewedBy: "editor",
+    });
+
+    await chain.transitionReview({
+      table: "scene_revision",
+      revisionId: graph.sceneRevisionId,
+      workspaceId: graph.workspaceId,
+      expectedReviewVersion: 1,
+      to: "IN_REVIEW",
+    });
+    await chain.approveScene({
+      workspaceId: graph.workspaceId,
+      parentId: graph.sceneId,
+      revisionId: graph.sceneRevisionId,
+      expectedVersion: 1,
+      expectedReviewVersion: 2,
+      reviewedBy: "editor",
+    });
+
+    await chain.transitionReview({
+      table: "shot_revision",
+      revisionId: graph.shotRevisionId,
+      workspaceId: graph.workspaceId,
+      expectedReviewVersion: 1,
+      to: "IN_REVIEW",
+    });
+    await chain.approveShot({
+      workspaceId: graph.workspaceId,
+      parentId: graph.shotId,
+      revisionId: graph.shotRevisionId,
+      expectedVersion: 1,
+      expectedReviewVersion: 2,
+      reviewedBy: "editor",
+    });
+
+    const approved = await pool.query<{ kind: string } & QueryResultRow>(
+      `SELECT 'character' AS kind FROM character WHERE approved_revision_id = $1
+       UNION ALL SELECT 'location' FROM location WHERE approved_revision_id = $2
+       UNION ALL SELECT 'scene' FROM scene WHERE approved_revision_id = $3
+       UNION ALL SELECT 'shot' FROM shot WHERE approved_revision_id = $4`,
+      [graph.characterRevisionId, graph.locationRevisionId, graph.sceneRevisionId, graph.shotRevisionId],
+    );
+    expect(approved.rows.map((row) => row.kind).sort()).toEqual(["character", "location", "scene", "shot"]);
+  });
+});
+
+describe("story and script concurrency", () => {
+  it("rejects a script whose source story stops being current while the project lock is held", async () => {
+    const graph = await buildChain();
+    const replacement = await pool.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO story_revision
+        (workspace_id, project_id, revision_no, content_json, content_hash, created_by)
+       VALUES ($1, $2, 2, '{"schema":"m2.story.revision.v1"}', $3, 'author')
+       RETURNING id`,
+      [graph.workspaceId, graph.projectId, hash],
+    );
+    const replacementId = replacement.rows[0]?.id;
+    if (!replacementId) throw new Error("replacement story missing");
+
+    const holder = await pool.connect();
+    try {
+      await holder.query("BEGIN");
+      await holder.query("SELECT id FROM project WHERE id = $1 FOR UPDATE", [graph.projectId]);
+      const attempt = chain.createScriptRevision({
+        workspaceId: graph.workspaceId,
+        projectId: graph.projectId,
+        episodeId: graph.episode2Id,
+        sourceStoryRevisionId: graph.storyRevisionId,
+        content: { schema: "m2.script.revision.v1", episode: 2, raced: true },
+        createdBy: "author",
+        expectedVersion: graph.episode2Version,
+      });
+      await waitForProjectLock();
+      await holder.query(
+        "UPDATE project SET current_story_revision_id = $2, version = version + 1 WHERE id = $1",
+        [graph.projectId, replacementId],
+      );
+      await holder.query("COMMIT");
+      await expect(attempt).rejects.toMatchObject({ code: "REVIEW_REQUIRED" });
+    } finally {
+      await holder.query("ROLLBACK").catch(() => undefined);
+      holder.release();
+    }
+  });
+});
+
+async function waitForProjectLock(): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const waiting = await pool.query<{ count: number } & QueryResultRow>(
+      `SELECT COUNT(*)::int AS count
+         FROM pg_stat_activity
+        WHERE datname = current_database()
+          AND pid <> pg_backend_pid()
+          AND wait_event_type = 'Lock'
+          AND query ILIKE '%project%'`,
+    );
+    if ((waiting.rows[0]?.count ?? 0) >= 1) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("Timed out waiting for the project lock");
+}
 
 interface ChainGraph {
   workspaceId: string;

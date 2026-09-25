@@ -208,6 +208,7 @@ export class TextChainService {
   }): Promise<RevisionCreated> {
     const contentHash = canonicalInputHash(input.content);
     return withTransaction(this.pool, async (client) => {
+      await lockProject(client, input.projectId, input.workspaceId);
       await lockAggregateForRevision(client, "episode", input.episodeId, input.workspaceId, input.expectedVersion);
       const source = await client.query<
         {
@@ -371,6 +372,85 @@ export class TextChainService {
     });
   }
 
+  async approveCharacter(input: AggregateApproval): Promise<void> {
+    await approveEntityRevision(this.pool, { ...input, parentTable: "character", revisionTable: "character_revision" });
+  }
+
+  async approveLocation(input: AggregateApproval): Promise<void> {
+    await approveEntityRevision(this.pool, { ...input, parentTable: "location", revisionTable: "location_revision" });
+  }
+
+  async approveScene(input: AggregateApproval): Promise<void> {
+    await withTransaction(this.pool, async (client) => {
+      const parentId = await lockCurrentRevision(client, {
+        parentTable: "scene",
+        revisionTable: "scene_revision",
+        parentId: input.parentId,
+        revisionId: input.revisionId,
+        workspaceId: input.workspaceId,
+        expectedVersion: input.expectedVersion,
+      });
+      const source = await client.query<{ ok: boolean } & QueryResultRow>(
+        `SELECT (
+            e.current_script_revision_id = sr.source_script_revision_id
+            AND e.approved_script_revision_id = sr.source_script_revision_id
+            AND script.review_status = 'APPROVED'
+            AND script.freshness_status = 'CURRENT'
+            AND (
+              sr.location_revision_id IS NULL
+              OR (
+                loc.current_revision_id = sr.location_revision_id
+                AND loc.approved_revision_id = sr.location_revision_id
+                AND location_revision.review_status = 'APPROVED'
+                AND location_revision.freshness_status = 'CURRENT'
+              )
+            )
+          ) AS ok
+           FROM scene_revision sr
+           JOIN episode e ON e.id = sr.episode_id AND e.workspace_id = sr.workspace_id
+           JOIN script_revision script ON script.id = sr.source_script_revision_id
+           LEFT JOIN location_revision ON location_revision.id = sr.location_revision_id
+           LEFT JOIN location loc ON loc.id = location_revision.location_id
+          WHERE sr.id = $1 AND sr.scene_id = $2 AND sr.workspace_id = $3`,
+        [input.revisionId, parentId, input.workspaceId],
+      );
+      if (source.rows[0]?.ok !== true) {
+        throw new PersistenceError("REVIEW_REQUIRED", "Scene source must be the current approved script revision");
+      }
+      await finishApproval(client, input, "scene", "scene_revision");
+    });
+  }
+
+  async approveShot(input: AggregateApproval): Promise<void> {
+    await withTransaction(this.pool, async (client) => {
+      const parentId = await lockCurrentRevision(client, {
+        parentTable: "shot",
+        revisionTable: "shot_revision",
+        parentId: input.parentId,
+        revisionId: input.revisionId,
+        workspaceId: input.workspaceId,
+        expectedVersion: input.expectedVersion,
+      });
+      const source = await client.query<{ ok: boolean } & QueryResultRow>(
+        `SELECT (
+            scene.current_revision_id = shot_revision.source_scene_revision_id
+            AND scene.approved_revision_id = shot_revision.source_scene_revision_id
+            AND scene_revision.review_status = 'APPROVED'
+            AND scene_revision.freshness_status = 'CURRENT'
+          ) AS ok
+           FROM shot_revision
+           JOIN scene ON scene.id = shot_revision.scene_id AND scene.workspace_id = shot_revision.workspace_id
+           JOIN scene_revision ON scene_revision.id = shot_revision.source_scene_revision_id
+          WHERE shot_revision.id = $1 AND shot_revision.shot_id = $2 AND shot_revision.workspace_id = $3`,
+        [input.revisionId, parentId, input.workspaceId],
+      );
+      if (source.rows[0]?.ok !== true) {
+        throw new PersistenceError("REVIEW_REQUIRED", "Shot source must be the current approved scene revision");
+      }
+      await finishApproval(client, input, "shot", "shot_revision");
+    });
+  }
+
   async createShotRevision(input: {
     workspaceId: string;
     projectId: string;
@@ -494,6 +574,115 @@ async function applyReview(client: PoolClient, input: ReviewTransition): Promise
   return version;
 }
 
+interface AggregateApproval {
+  workspaceId: string;
+  parentId: string;
+  revisionId: string;
+  expectedVersion: number;
+  expectedReviewVersion: number;
+  reviewedBy: string;
+}
+
+async function lockProject(client: PoolClient, projectId: string, workspaceId: string): Promise<void> {
+  const locked = await client.query(
+    "SELECT id FROM project WHERE id = $1 AND workspace_id = $2 FOR UPDATE",
+    [projectId, workspaceId],
+  );
+  if (!locked.rows[0]) throw new PersistenceError("NOT_FOUND", "Project not found");
+}
+
+async function lockCurrentRevision(
+  client: PoolClient,
+  input: {
+    parentTable: "character" | "location" | "scene" | "shot";
+    revisionTable: "character_revision" | "location_revision" | "scene_revision" | "shot_revision";
+    parentId: string;
+    revisionId: string;
+    workspaceId: string;
+    expectedVersion: number;
+  },
+): Promise<string> {
+  const parent = await client.query<{ row_version: number; current_revision_id: string | null } & QueryResultRow>(
+    `SELECT row_version, current_revision_id FROM ${input.parentTable}
+      WHERE id = $1 AND workspace_id = $2 FOR UPDATE`,
+    [input.parentId, input.workspaceId],
+  );
+  const row = parent.rows[0];
+  if (!row) throw new PersistenceError("NOT_FOUND", "Aggregate not found");
+  if (row.row_version !== input.expectedVersion) {
+    throw new PersistenceError("REVISION_CONFLICT", "Aggregate version did not match");
+  }
+  if (row.current_revision_id !== input.revisionId) {
+    throw new PersistenceError("REVISION_CONFLICT", "Only the current revision can be approved");
+  }
+  const owned = await client.query(
+    `SELECT id FROM ${input.revisionTable} WHERE id = $1 AND workspace_id = $2 FOR UPDATE`,
+    [input.revisionId, input.workspaceId],
+  );
+  if (!owned.rows[0]) throw new PersistenceError("NOT_FOUND", "Revision not found");
+  return input.parentId;
+}
+
+async function finishApproval(
+  client: PoolClient,
+  input: AggregateApproval,
+  parentTable: "character" | "location" | "scene" | "shot",
+  revisionTable: ReviewTransition["table"],
+): Promise<void> {
+  await applyReview(client, {
+    table: revisionTable,
+    revisionId: input.revisionId,
+    workspaceId: input.workspaceId,
+    expectedReviewVersion: input.expectedReviewVersion,
+    to: "APPROVED",
+    reviewedBy: input.reviewedBy,
+  });
+  await bumpPointer(
+    client,
+    parentTable,
+    input.parentId,
+    input.workspaceId,
+    input.expectedVersion,
+    "approved_revision_id",
+    input.revisionId,
+  );
+}
+
+async function approveEntityRevision(
+  pool: DatabasePool,
+  input: AggregateApproval & {
+    parentTable: "character" | "location";
+    revisionTable: "character_revision" | "location_revision";
+  },
+): Promise<void> {
+  const edgeTable =
+    input.parentTable === "character" ? "character_revision_script_source" : "location_revision_script_source";
+  const edgeColumn = input.parentTable === "character" ? "character_revision_id" : "location_revision_id";
+  await withTransaction(pool, async (client) => {
+    await lockCurrentRevision(client, input);
+    const invalid = await client.query(
+      `SELECT 1
+         FROM ${edgeTable} edge
+         JOIN script_revision sr ON sr.id = edge.script_revision_id
+         JOIN episode e ON e.id = sr.episode_id AND e.workspace_id = sr.workspace_id
+        WHERE edge.${edgeColumn} = $1
+          AND edge.workspace_id = $2
+          AND (
+            e.current_script_revision_id IS DISTINCT FROM sr.id
+            OR e.approved_script_revision_id IS DISTINCT FROM sr.id
+            OR sr.review_status <> 'APPROVED'
+            OR sr.freshness_status <> 'CURRENT'
+          )
+        LIMIT 1`,
+      [input.revisionId, input.workspaceId],
+    );
+    if (invalid.rows[0]) {
+      throw new PersistenceError("REVIEW_REQUIRED", "Entity source must be a current approved script revision");
+    }
+    await finishApproval(client, input, input.parentTable, input.revisionTable);
+  });
+}
+
 async function ensureEpisodes(client: PoolClient, workspaceId: string, projectId: string): Promise<void> {
   await client.query(
     `INSERT INTO episode (workspace_id, project_id, episode_no, title)
@@ -519,15 +708,39 @@ async function markStale(
 ): Promise<void> {
   const reasonParam = params.length + 1;
   const refParam = params.length + 2;
-  await client.query(
+  const updated = await client.query<{ id: string; project_id: string } & QueryResultRow>(
     `UPDATE ${table}
         SET freshness_status = 'STALE',
             review_version = review_version + 1,
             stale_reason = COALESCE(stale_reason, $${reasonParam}),
             stale_from_ref = COALESCE(stale_from_ref, $${refParam})
-      WHERE workspace_id = $1 AND freshness_status = 'CURRENT' AND id IN (${idsSql})`,
+      WHERE workspace_id = $1 AND freshness_status = 'CURRENT' AND id IN (${idsSql})
+      RETURNING id, project_id`,
     [...params, reason, staleFromRef],
   );
+  const aggregateType = table
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join("");
+  for (const row of updated.rows) {
+    await client.query(
+      `INSERT INTO domain_event
+        (workspace_id, project_id, aggregate_type, aggregate_id, event_type, payload_json, trace_id)
+       VALUES ($1, $2, $3, $4, 'revision.stale', $5::jsonb, 'm2-text-chain')`,
+      [
+        params[0],
+        row.project_id,
+        aggregateType,
+        row.id,
+        JSON.stringify({
+          revisionId: row.id,
+          freshnessStatus: "STALE",
+          staleReason: reason,
+          staleFromRef,
+        }),
+      ],
+    );
+  }
 }
 
 async function staleFromStory(client: PoolClient, workspaceId: string, storyRevisionId: string): Promise<void> {
