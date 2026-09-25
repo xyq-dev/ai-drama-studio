@@ -31,6 +31,26 @@ async function withTransaction<T>(pool: DatabasePool, work: (client: PoolClient)
   }
 }
 
+async function lockAggregateForRevision(
+  client: PoolClient,
+  table: "project" | "episode" | "shot",
+  id: string,
+  workspaceId: string,
+  expectedVersion: number,
+): Promise<void> {
+  const result = await client.query<{ row_version: number } & QueryResultRow>(
+    `SELECT row_version FROM ${table}
+      WHERE id = $1 AND workspace_id = $2
+      FOR UPDATE`,
+    [id, workspaceId],
+  );
+  const row = result.rows[0];
+  if (!row) throw new PersistenceError("NOT_FOUND", "Aggregate not found");
+  if (row.row_version !== expectedVersion) {
+    throw new PersistenceError("REVISION_CONFLICT", "Aggregate version did not match");
+  }
+}
+
 async function bumpPointer(
   client: PoolClient,
   table: "project" | "episode" | "character" | "location" | "scene" | "shot",
@@ -65,6 +85,7 @@ export class TextChainService {
   }): Promise<RevisionCreated> {
     const contentHash = canonicalInputHash(input.content);
     return withTransaction(this.pool, async (client) => {
+      await lockAggregateForRevision(client, "project", input.projectId, input.workspaceId, input.expectedVersion);
       const next = await client.query<{ revision_no: number } & QueryResultRow>(
         `SELECT COALESCE(MAX(revision_no), 0)::int + 1 AS revision_no
            FROM story_revision WHERE project_id = $1 AND workspace_id = $2`,
@@ -94,6 +115,9 @@ export class TextChainService {
   }
 
   async transitionReview(input: ReviewTransition): Promise<number> {
+    if (input.to === "APPROVED") {
+      throw new PersistenceError("REVIEW_GATE_REQUIRED", "Approval must use the aggregate-specific review gate");
+    }
     return withTransaction(this.pool, async (client) => applyReview(client, input));
   }
 
@@ -159,6 +183,7 @@ export class TextChainService {
   }): Promise<RevisionCreated> {
     const contentHash = canonicalInputHash(input.content);
     return withTransaction(this.pool, async (client) => {
+      await lockAggregateForRevision(client, "episode", input.episodeId, input.workspaceId, input.expectedVersion);
       const next = await client.query<{ revision_no: number } & QueryResultRow>(
         `SELECT COALESCE(MAX(revision_no), 0)::int + 1 AS revision_no FROM script_revision WHERE episode_id = $1`,
         [input.episodeId],
@@ -204,6 +229,48 @@ export class TextChainService {
     reviewedBy: string;
   }): Promise<void> {
     await withTransaction(this.pool, async (client) => {
+      const source = await client.query<
+        {
+          freshness_status: string;
+          source_story_revision_id: string;
+          approved_story_revision_id: string | null;
+          source_review_status: string;
+          source_freshness_status: string;
+        } & QueryResultRow
+      >(
+        `SELECT sr.freshness_status, sr.source_story_revision_id,
+                p.approved_story_revision_id,
+                source.review_status AS source_review_status,
+                source.freshness_status AS source_freshness_status
+           FROM script_revision sr
+           JOIN episode e
+             ON e.id = sr.episode_id
+            AND e.workspace_id = sr.workspace_id
+            AND e.project_id = sr.project_id
+           JOIN project p
+             ON p.id = sr.project_id
+            AND p.workspace_id = sr.workspace_id
+           JOIN story_revision source
+             ON source.id = sr.source_story_revision_id
+            AND source.project_id = sr.project_id
+            AND source.workspace_id = sr.workspace_id
+          WHERE sr.id = $1 AND sr.episode_id = $2 AND sr.workspace_id = $3
+          FOR UPDATE OF sr`,
+        [input.revisionId, input.episodeId, input.workspaceId],
+      );
+      const sourceRow = source.rows[0];
+      if (!sourceRow) throw new PersistenceError("NOT_FOUND", "Script revision not found");
+      if (sourceRow.freshness_status !== "CURRENT") {
+        throw new PersistenceError("SOURCE_STALE", "Stale script revision cannot be approved");
+      }
+      if (
+        sourceRow.approved_story_revision_id !== sourceRow.source_story_revision_id ||
+        sourceRow.source_review_status !== "APPROVED" ||
+        sourceRow.source_freshness_status !== "CURRENT"
+      ) {
+        throw new PersistenceError("REVIEW_REQUIRED", "Script source must be the current approved story revision");
+      }
+
       await applyReview(client, {
         table: "script_revision",
         revisionId: input.revisionId,
@@ -260,6 +327,7 @@ export class TextChainService {
       promptText: input.promptText,
     });
     return withTransaction(this.pool, async (client) => {
+      await lockAggregateForRevision(client, "shot", input.shotId, input.workspaceId, input.expectedVersion);
       const next = await client.query<{ revision_no: number } & QueryResultRow>(
         `SELECT COALESCE(MAX(revision_no), 0)::int + 1 AS revision_no FROM shot_revision WHERE shot_id = $1`,
         [input.shotId],
@@ -316,12 +384,17 @@ interface ReviewTransition {
 }
 
 async function applyReview(client: PoolClient, input: ReviewTransition): Promise<number> {
-  const current = await client.query<{ review_status: ReviewStatus } & QueryResultRow>(
-    `SELECT review_status FROM ${input.table} WHERE id = $1 AND workspace_id = $2 FOR UPDATE`,
+  const current = await client.query<
+    { review_status: ReviewStatus; freshness_status: string } & QueryResultRow
+  >(
+    `SELECT review_status, freshness_status FROM ${input.table} WHERE id = $1 AND workspace_id = $2 FOR UPDATE`,
     [input.revisionId, input.workspaceId],
   );
   const row = current.rows[0];
   if (!row) throw new PersistenceError("NOT_FOUND", "Revision not found");
+  if (input.to === "APPROVED" && row.freshness_status !== "CURRENT") {
+    throw new PersistenceError("SOURCE_STALE", "Stale revision cannot be approved");
+  }
   assertReviewTransition(row.review_status, input.to);
   const reviewed = input.to === "APPROVED" || input.to === "REJECTED";
   const updated = await client.query<{ review_version: number } & QueryResultRow>(
