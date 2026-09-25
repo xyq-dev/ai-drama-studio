@@ -86,6 +86,11 @@ export class TextChainService {
     const contentHash = canonicalInputHash(input.content);
     return withTransaction(this.pool, async (client) => {
       await lockAggregateForRevision(client, "project", input.projectId, input.workspaceId, input.expectedVersion);
+      const previousCurrent = await client.query<{ current_story_revision_id: string | null } & QueryResultRow>(
+        "SELECT current_story_revision_id FROM project WHERE id = $1 AND workspace_id = $2",
+        [input.projectId, input.workspaceId],
+      );
+      const previousCurrentId = previousCurrent.rows[0]?.current_story_revision_id ?? null;
       const next = await client.query<{ revision_no: number } & QueryResultRow>(
         `SELECT COALESCE(MAX(revision_no), 0)::int + 1 AS revision_no
            FROM story_revision WHERE project_id = $1 AND workspace_id = $2`,
@@ -110,6 +115,9 @@ export class TextChainService {
         "current_story_revision_id",
         revisionId,
       );
+      if (previousCurrentId && previousCurrentId !== revisionId) {
+        await staleFromStory(client, input.workspaceId, previousCurrentId);
+      }
       return { revisionId, revisionNo, contentHash, rowVersion };
     });
   }
@@ -130,6 +138,27 @@ export class TextChainService {
     reviewedBy: string;
   }): Promise<void> {
     await withTransaction(this.pool, async (client) => {
+      const project = await client.query<
+        {
+          row_version: number;
+          current_story_revision_id: string | null;
+          approved_story_revision_id: string | null;
+        } & QueryResultRow
+      >(
+        `SELECT row_version, current_story_revision_id, approved_story_revision_id
+           FROM project WHERE id = $1 AND workspace_id = $2 FOR UPDATE`,
+        [input.projectId, input.workspaceId],
+      );
+      const projectRow = project.rows[0];
+      if (!projectRow) throw new PersistenceError("NOT_FOUND", "Project not found");
+      if (projectRow.row_version !== input.expectedVersion) {
+        throw new PersistenceError("REVISION_CONFLICT", "Aggregate version did not match");
+      }
+      if (projectRow.current_story_revision_id !== input.revisionId) {
+        throw new PersistenceError("REVISION_CONFLICT", "Only the current story revision can be approved");
+      }
+      const previousId = projectRow.approved_story_revision_id;
+
       await applyReview(client, {
         table: "story_revision",
         revisionId: input.revisionId,
@@ -138,11 +167,6 @@ export class TextChainService {
         to: "APPROVED",
         reviewedBy: input.reviewedBy,
       });
-      const previous = await client.query<{ approved_story_revision_id: string | null } & QueryResultRow>(
-        `SELECT approved_story_revision_id FROM project WHERE id = $1 AND workspace_id = $2 FOR UPDATE`,
-        [input.projectId, input.workspaceId],
-      );
-      const previousId = previous.rows[0]?.approved_story_revision_id ?? null;
       await bumpPointer(
         client,
         "project",
@@ -184,6 +208,42 @@ export class TextChainService {
     const contentHash = canonicalInputHash(input.content);
     return withTransaction(this.pool, async (client) => {
       await lockAggregateForRevision(client, "episode", input.episodeId, input.workspaceId, input.expectedVersion);
+      const source = await client.query<
+        {
+          current_script_revision_id: string | null;
+          current_story_revision_id: string | null;
+          approved_story_revision_id: string | null;
+          review_status: string;
+          freshness_status: string;
+        } & QueryResultRow
+      >(
+        `SELECT e.current_script_revision_id,
+                p.current_story_revision_id,
+                p.approved_story_revision_id,
+                sr.review_status,
+                sr.freshness_status
+           FROM episode e
+           JOIN project p
+             ON p.id = e.project_id
+            AND p.workspace_id = e.workspace_id
+           JOIN story_revision sr
+             ON sr.id = $4
+            AND sr.project_id = e.project_id
+            AND sr.workspace_id = e.workspace_id
+          WHERE e.id = $1 AND e.workspace_id = $2 AND e.project_id = $3`,
+        [input.episodeId, input.workspaceId, input.projectId, input.sourceStoryRevisionId],
+      );
+      const sourceRow = source.rows[0];
+      if (!sourceRow) throw new PersistenceError("NOT_FOUND", "Episode or source story revision not found");
+      if (
+        sourceRow.current_story_revision_id !== input.sourceStoryRevisionId ||
+        sourceRow.approved_story_revision_id !== input.sourceStoryRevisionId ||
+        sourceRow.review_status !== "APPROVED" ||
+        sourceRow.freshness_status !== "CURRENT"
+      ) {
+        throw new PersistenceError("REVIEW_REQUIRED", "Scripts require the current approved story revision");
+      }
+      const previousCurrentId = sourceRow.current_script_revision_id;
       const next = await client.query<{ revision_no: number } & QueryResultRow>(
         `SELECT COALESCE(MAX(revision_no), 0)::int + 1 AS revision_no FROM script_revision WHERE episode_id = $1`,
         [input.episodeId],
@@ -216,6 +276,9 @@ export class TextChainService {
         "current_script_revision_id",
         revisionId,
       );
+      if (previousCurrentId && previousCurrentId !== revisionId) {
+        await staleFromScript(client, input.workspaceId, previousCurrentId);
+      }
       return { revisionId, revisionNo, contentHash, rowVersion };
     });
   }
@@ -233,12 +296,16 @@ export class TextChainService {
         {
           freshness_status: string;
           source_story_revision_id: string;
+          current_script_revision_id: string | null;
+          current_story_revision_id: string | null;
           approved_story_revision_id: string | null;
           source_review_status: string;
           source_freshness_status: string;
         } & QueryResultRow
       >(
         `SELECT sr.freshness_status, sr.source_story_revision_id,
+                e.current_script_revision_id,
+                p.current_story_revision_id,
                 p.approved_story_revision_id,
                 source.review_status AS source_review_status,
                 source.freshness_status AS source_freshness_status
@@ -260,10 +327,14 @@ export class TextChainService {
       );
       const sourceRow = source.rows[0];
       if (!sourceRow) throw new PersistenceError("NOT_FOUND", "Script revision not found");
+      if (sourceRow.current_script_revision_id !== input.revisionId) {
+        throw new PersistenceError("REVISION_CONFLICT", "Only the current script revision can be approved");
+      }
       if (sourceRow.freshness_status !== "CURRENT") {
         throw new PersistenceError("SOURCE_STALE", "Stale script revision cannot be approved");
       }
       if (
+        sourceRow.current_story_revision_id !== sourceRow.source_story_revision_id ||
         sourceRow.approved_story_revision_id !== sourceRow.source_story_revision_id ||
         sourceRow.source_review_status !== "APPROVED" ||
         sourceRow.source_freshness_status !== "CURRENT"
@@ -437,21 +508,37 @@ async function ensureEpisodes(client: PoolClient, workspaceId: string, projectId
   assertProductionEpisodeSet(rows.rows.map((row) => row.episode_no));
 }
 
-async function markStale(client: PoolClient, table: string, idsSql: string, params: unknown[]): Promise<void> {
+async function markStale(
+  client: PoolClient,
+  table: string,
+  idsSql: string,
+  params: unknown[],
+  reason: string,
+  staleFromRef: string,
+): Promise<void> {
+  const reasonParam = params.length + 1;
+  const refParam = params.length + 2;
   await client.query(
     `UPDATE ${table}
-        SET freshness_status = 'STALE', review_version = review_version + 1
+        SET freshness_status = 'STALE',
+            review_version = review_version + 1,
+            stale_reason = COALESCE(stale_reason, $${reasonParam}),
+            stale_from_ref = COALESCE(stale_from_ref, $${refParam})
       WHERE workspace_id = $1 AND freshness_status = 'CURRENT' AND id IN (${idsSql})`,
-    params,
+    [...params, reason, staleFromRef],
   );
 }
 
 async function staleFromStory(client: PoolClient, workspaceId: string, storyRevisionId: string): Promise<void> {
+  const reason = "SOURCE_STORY_REPLACED";
+  const staleFromRef = `story_revision:${storyRevisionId}`;
   await markStale(
     client,
     "script_revision",
     `SELECT id FROM script_revision WHERE workspace_id = $1 AND source_story_revision_id = $2`,
     [workspaceId, storyRevisionId],
+    reason,
+    staleFromRef,
   );
   await markStale(
     client,
@@ -460,6 +547,8 @@ async function staleFromStory(client: PoolClient, workspaceId: string, storyRevi
        JOIN script_revision ON script_revision.id = scene_revision.source_script_revision_id
       WHERE script_revision.workspace_id = $1 AND script_revision.source_story_revision_id = $2`,
     [workspaceId, storyRevisionId],
+    reason,
+    staleFromRef,
   );
   await markStale(
     client,
@@ -469,6 +558,8 @@ async function staleFromStory(client: PoolClient, workspaceId: string, storyRevi
        JOIN script_revision ON script_revision.id = scene_revision.source_script_revision_id
       WHERE script_revision.workspace_id = $1 AND script_revision.source_story_revision_id = $2`,
     [workspaceId, storyRevisionId],
+    reason,
+    staleFromRef,
   );
   await markStale(
     client,
@@ -478,6 +569,8 @@ async function staleFromStory(client: PoolClient, workspaceId: string, storyRevi
         SELECT id FROM script_revision WHERE workspace_id = $1 AND source_story_revision_id = $2
       )`,
     [workspaceId, storyRevisionId],
+    reason,
+    staleFromRef,
   );
   await markStale(
     client,
@@ -487,15 +580,21 @@ async function staleFromStory(client: PoolClient, workspaceId: string, storyRevi
         SELECT id FROM script_revision WHERE workspace_id = $1 AND source_story_revision_id = $2
       )`,
     [workspaceId, storyRevisionId],
+    reason,
+    staleFromRef,
   );
 }
 
 async function staleFromScript(client: PoolClient, workspaceId: string, scriptRevisionId: string): Promise<void> {
+  const reason = "SOURCE_SCRIPT_REPLACED";
+  const staleFromRef = `script_revision:${scriptRevisionId}`;
   await markStale(
     client,
     "scene_revision",
     `SELECT id FROM scene_revision WHERE workspace_id = $1 AND source_script_revision_id = $2`,
     [workspaceId, scriptRevisionId],
+    reason,
+    staleFromRef,
   );
   await markStale(
     client,
@@ -504,6 +603,8 @@ async function staleFromScript(client: PoolClient, workspaceId: string, scriptRe
        JOIN scene_revision ON scene_revision.id = shot_revision.source_scene_revision_id
       WHERE scene_revision.workspace_id = $1 AND scene_revision.source_script_revision_id = $2`,
     [workspaceId, scriptRevisionId],
+    reason,
+    staleFromRef,
   );
   await markStale(
     client,
@@ -511,6 +612,8 @@ async function staleFromScript(client: PoolClient, workspaceId: string, scriptRe
     `SELECT character_revision_id FROM character_revision_script_source
       WHERE workspace_id = $1 AND script_revision_id = $2`,
     [workspaceId, scriptRevisionId],
+    reason,
+    staleFromRef,
   );
   await markStale(
     client,
@@ -518,5 +621,7 @@ async function staleFromScript(client: PoolClient, workspaceId: string, scriptRe
     `SELECT location_revision_id FROM location_revision_script_source
       WHERE workspace_id = $1 AND script_revision_id = $2`,
     [workspaceId, scriptRevisionId],
+    reason,
+    staleFromRef,
   );
 }
