@@ -248,9 +248,114 @@ describe("M2 text chain schema", () => {
         to: "APPROVED",
         reviewedBy: "editor",
       }),
-    ).rejects.toMatchObject({ code: "REVIEW_INVALID_TRANSITION" });
+    ).rejects.toMatchObject({ code: "REVIEW_GATE_REQUIRED" });
   });
 });
+
+  it("serializes concurrent revision creation into an explicit revision conflict", async () => {
+    const { workspaceId, projectId } = await seedProject();
+    const results = await Promise.allSettled([
+      chain.createStoryRevision({
+        workspaceId,
+        projectId,
+        content: { schema: "m2.story.revision.v1", premise: "first contender" },
+        createdBy: "author-a",
+        expectedVersion: 1,
+      }),
+      chain.createStoryRevision({
+        workspaceId,
+        projectId,
+        content: { schema: "m2.story.revision.v1", premise: "second contender" },
+        createdBy: "author-b",
+        expectedVersion: 1,
+      }),
+    ]);
+    const fulfilled = results.filter((result) => result.status === "fulfilled");
+    const rejected = results.filter((result) => result.status === "rejected") as PromiseRejectedResult[];
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]?.reason).toMatchObject({ code: "REVISION_CONFLICT" });
+    const rows = await pool.query<{ count: number } & QueryResultRow>(
+      "SELECT COUNT(*)::int AS count FROM story_revision WHERE project_id = $1",
+      [projectId],
+    );
+    expect(rows.rows[0]?.count).toBe(1);
+  });
+
+  it("keeps typed revision provenance append-only", async () => {
+    const graph = await buildChain();
+    await expect(
+      pool.query(
+        "DELETE FROM character_revision_script_source WHERE character_revision_id = $1 AND script_revision_id = $2",
+        [graph.characterRevisionId, graph.scriptRevisionId],
+      ),
+    ).rejects.toThrow(/provenance is immutable/i);
+
+    await pool.query(
+      `INSERT INTO shot_character_reference
+        (workspace_id, project_id, shot_revision_id, character_revision_id, role)
+       VALUES ($1, $2, $3, $4, 'lead')`,
+      [graph.workspaceId, graph.projectId, graph.shotRevisionId, graph.characterRevisionId],
+    );
+    await expect(
+      pool.query(
+        "UPDATE shot_character_reference SET role = 'background' WHERE shot_revision_id = $1 AND character_revision_id = $2",
+        [graph.shotRevisionId, graph.characterRevisionId],
+      ),
+    ).rejects.toThrow(/provenance is immutable/i);
+  });
+
+  it("rejects approval when a script becomes stale before review completes", async () => {
+    const graph = await buildChain();
+    const pending = await chain.createScriptRevision({
+      workspaceId: graph.workspaceId,
+      projectId: graph.projectId,
+      episodeId: graph.episode2Id,
+      sourceStoryRevisionId: graph.storyRevisionId,
+      content: { schema: "m2.script.revision.v1", episode: 2, pending: true },
+      createdBy: "author",
+      expectedVersion: graph.episode2Version,
+    });
+    await chain.transitionReview({
+      table: "script_revision",
+      revisionId: pending.revisionId,
+      workspaceId: graph.workspaceId,
+      expectedReviewVersion: 1,
+      to: "IN_REVIEW",
+    });
+
+    const replacementStory = await chain.createStoryRevision({
+      workspaceId: graph.workspaceId,
+      projectId: graph.projectId,
+      content: { schema: "m2.story.revision.v1", premise: "new approved source" },
+      createdBy: "author",
+      expectedVersion: graph.projectVersion,
+    });
+    await chain.transitionReview({
+      table: "story_revision",
+      revisionId: replacementStory.revisionId,
+      workspaceId: graph.workspaceId,
+      expectedReviewVersion: 1,
+      to: "IN_REVIEW",
+    });
+    await approveStory(
+      graph.workspaceId,
+      graph.projectId,
+      replacementStory.revisionId,
+      replacementStory.rowVersion,
+    );
+
+    await expect(
+      chain.approveScript({
+        workspaceId: graph.workspaceId,
+        episodeId: graph.episode2Id,
+        revisionId: pending.revisionId,
+        expectedVersion: pending.rowVersion,
+        expectedReviewVersion: 2,
+        reviewedBy: "editor",
+      }),
+    ).rejects.toMatchObject({ code: "SOURCE_STALE" });
+  });
 
 describe("STALE propagation", () => {
   it("stales the whole chain derived from a replaced approved story", async () => {
