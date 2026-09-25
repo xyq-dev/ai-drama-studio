@@ -26,6 +26,11 @@ CREATE TABLE story_revision (
   FOREIGN KEY (project_id, workspace_id) REFERENCES project (id, workspace_id),
   CHECK (review_status <> 'STALE'),
   CHECK (
+    (freshness_status = 'CURRENT' AND stale_reason IS NULL AND stale_from_ref IS NULL)
+    OR
+    (freshness_status = 'STALE' AND stale_reason IS NOT NULL AND stale_from_ref IS NOT NULL)
+  ),
+  CHECK (
     review_status NOT IN ('APPROVED', 'REJECTED')
     OR (reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL AND reviewed_content_hash IS NOT NULL)
   )
@@ -85,6 +90,11 @@ CREATE TABLE script_revision (
   FOREIGN KEY (source_story_revision_id, project_id, workspace_id) REFERENCES story_revision (id, project_id, workspace_id),
   CHECK (review_status <> 'STALE'),
   CHECK (
+    (freshness_status = 'CURRENT' AND stale_reason IS NULL AND stale_from_ref IS NULL)
+    OR
+    (freshness_status = 'STALE' AND stale_reason IS NOT NULL AND stale_from_ref IS NOT NULL)
+  ),
+  CHECK (
     review_status NOT IN ('APPROVED', 'REJECTED')
     OR (reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL AND reviewed_content_hash IS NOT NULL)
   )
@@ -139,6 +149,11 @@ CREATE TABLE character_revision (
   UNIQUE (id, project_id, workspace_id),
   FOREIGN KEY (character_id, project_id, workspace_id) REFERENCES character (id, project_id, workspace_id),
   CHECK (review_status <> 'STALE'),
+  CHECK (
+    (freshness_status = 'CURRENT' AND stale_reason IS NULL AND stale_from_ref IS NULL)
+    OR
+    (freshness_status = 'STALE' AND stale_reason IS NOT NULL AND stale_from_ref IS NOT NULL)
+  ),
   CHECK (
     review_status NOT IN ('APPROVED', 'REJECTED')
     OR (reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL AND reviewed_content_hash IS NOT NULL)
@@ -205,6 +220,11 @@ CREATE TABLE location_revision (
   UNIQUE (id, project_id, workspace_id),
   FOREIGN KEY (location_id, project_id, workspace_id) REFERENCES location (id, project_id, workspace_id),
   CHECK (review_status <> 'STALE'),
+  CHECK (
+    (freshness_status = 'CURRENT' AND stale_reason IS NULL AND stale_from_ref IS NULL)
+    OR
+    (freshness_status = 'STALE' AND stale_reason IS NOT NULL AND stale_from_ref IS NOT NULL)
+  ),
   CHECK (
     review_status NOT IN ('APPROVED', 'REJECTED')
     OR (reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL AND reviewed_content_hash IS NOT NULL)
@@ -283,6 +303,11 @@ CREATE TABLE scene_revision (
     REFERENCES location_revision (id, project_id, workspace_id),
   CHECK (review_status <> 'STALE'),
   CHECK (
+    (freshness_status = 'CURRENT' AND stale_reason IS NULL AND stale_from_ref IS NULL)
+    OR
+    (freshness_status = 'STALE' AND stale_reason IS NOT NULL AND stale_from_ref IS NOT NULL)
+  ),
+  CHECK (
     review_status NOT IN ('APPROVED', 'REJECTED')
     OR (reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL AND reviewed_content_hash IS NOT NULL)
   )
@@ -348,6 +373,11 @@ CREATE TABLE shot_revision (
   FOREIGN KEY (source_scene_revision_id, scene_id, project_id, workspace_id)
     REFERENCES scene_revision (id, scene_id, project_id, workspace_id),
   CHECK (review_status <> 'STALE'),
+  CHECK (
+    (freshness_status = 'CURRENT' AND stale_reason IS NULL AND stale_from_ref IS NULL)
+    OR
+    (freshness_status = 'STALE' AND stale_reason IS NOT NULL AND stale_from_ref IS NOT NULL)
+  ),
   CHECK (
     review_status NOT IN ('APPROVED', 'REJECTED')
     OR (reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL AND reviewed_content_hash IS NOT NULL)
