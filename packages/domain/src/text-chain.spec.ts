@@ -49,6 +49,15 @@ describe("canonical input hash", () => {
     );
   });
 
+  it("normalizes Unicode and line endings before hashing", () => {
+    expect(
+      canonicalInputHash({ schema: "m2.text.v1", text: "caf\u00e9\r\nline2\rline3" }),
+    ).toBe(
+      canonicalInputHash({ schema: "m2.text.v1", text: "cafe\u0301\nline2\nline3" }),
+    );
+    expect(canonicalJson({ text: "e\u0301\r\n" })).toBe('{"text":"é\\n"}');
+  });
+
   it("rejects lifecycle and clock fields", () => {
     expect(() => canonicalInputHash({ schema: "m2.story.revision.v1", created_at: "now" })).toThrowError(
       expect.objectContaining({ code: "CANONICAL_INPUT_FORBIDDEN" }),
