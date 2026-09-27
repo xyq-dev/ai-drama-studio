@@ -501,6 +501,27 @@ CREATE TABLE shot_character_reference (
     REFERENCES character_revision (id, project_id, workspace_id)
 );
 
+CREATE INDEX script_revision_source_story_idx
+  ON script_revision (workspace_id, source_story_revision_id);
+
+CREATE INDEX character_revision_script_source_script_idx
+  ON character_revision_script_source (workspace_id, script_revision_id);
+
+CREATE INDEX location_revision_script_source_script_idx
+  ON location_revision_script_source (workspace_id, script_revision_id);
+
+CREATE INDEX scene_revision_source_script_idx
+  ON scene_revision (workspace_id, source_script_revision_id);
+
+CREATE INDEX scene_revision_location_idx
+  ON scene_revision (workspace_id, location_revision_id);
+
+CREATE INDEX shot_revision_source_scene_idx
+  ON shot_revision (workspace_id, source_scene_revision_id);
+
+CREATE INDEX shot_character_reference_character_idx
+  ON shot_character_reference (workspace_id, character_revision_id);
+
 CREATE FUNCTION m2_reject_provenance_mutation() RETURNS trigger
 LANGUAGE plpgsql AS 'BEGIN
   RAISE EXCEPTION ''revision provenance is immutable'';

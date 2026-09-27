@@ -82,6 +82,24 @@ describe("M2 text chain schema", () => {
         WHERE table_name = 'project' AND column_name = 'current_story_revision_id'`,
     );
     expect(column.rowCount).toBe(1);
+
+    const expectedIndexes = [
+      "script_revision_source_story_idx",
+      "character_revision_script_source_script_idx",
+      "location_revision_script_source_script_idx",
+      "scene_revision_source_script_idx",
+      "scene_revision_location_idx",
+      "shot_revision_source_scene_idx",
+      "shot_character_reference_character_idx",
+    ];
+    const indexes = await pool.query<{ indexname: string } & QueryResultRow>(
+      `SELECT indexname
+         FROM pg_indexes
+        WHERE schemaname = 'public'
+          AND indexname = ANY($1::text[])`,
+      [expectedIndexes],
+    );
+    expect(indexes.rows.map((row) => row.indexname).sort()).toEqual([...expectedIndexes].sort());
   });
 
   it("rejects a story revision that crosses workspace or project", async () => {

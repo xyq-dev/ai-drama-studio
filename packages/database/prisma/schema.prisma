@@ -292,6 +292,7 @@ model ScriptRevision {
   @@unique([id, episodeId, workspaceId])
   @@unique([id, projectId, workspaceId])
   @@unique([id, episodeId, projectId, workspaceId])
+  @@index([workspaceId, sourceStoryRevisionId])
   @@map("script_revision")
 }
 
@@ -345,6 +346,7 @@ model CharacterRevisionScriptSource {
   scriptRevisionId    String @map("script_revision_id") @db.Uuid
 
   @@id([characterRevisionId, scriptRevisionId])
+  @@index([workspaceId, scriptRevisionId])
   @@map("character_revision_script_source")
 }
 
@@ -398,6 +400,7 @@ model LocationRevisionScriptSource {
   scriptRevisionId   String @map("script_revision_id") @db.Uuid
 
   @@id([locationRevisionId, scriptRevisionId])
+  @@index([workspaceId, scriptRevisionId])
   @@map("location_revision_script_source")
 }
 
@@ -448,6 +451,8 @@ model SceneRevision {
   @@unique([id, sceneId, workspaceId])
   @@unique([id, projectId, workspaceId])
   @@unique([id, sceneId, projectId, workspaceId])
+  @@index([workspaceId, sourceScriptRevisionId])
+  @@index([workspaceId, locationRevisionId])
   @@map("scene_revision")
 }
 
@@ -501,6 +506,7 @@ model ShotRevision {
   @@unique([shotId, revisionNo])
   @@unique([id, shotId, workspaceId])
   @@unique([id, projectId, workspaceId])
+  @@index([workspaceId, sourceSceneRevisionId])
   @@map("shot_revision")
 }
 
@@ -512,5 +518,6 @@ model ShotCharacterReference {
   role                String
 
   @@id([shotRevisionId, characterRevisionId])
+  @@index([workspaceId, characterRevisionId])
   @@map("shot_character_reference")
 }
