@@ -202,7 +202,7 @@ export class TextChainService {
         throw new PersistenceError("VALIDATION_ERROR", "Story revision cursor is invalid");
       }
       cursorRevisionNo = Number(cursor);
-      if (!Number.isSafeInteger(cursorRevisionNo)) {
+      if (!Number.isSafeInteger(cursorRevisionNo) || cursorRevisionNo > 2_147_483_647) {
         throw new PersistenceError("VALIDATION_ERROR", "Story revision cursor is invalid");
       }
     }
