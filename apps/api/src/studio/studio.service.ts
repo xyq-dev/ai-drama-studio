@@ -206,7 +206,11 @@ function parseAggregateVersion(value: string | undefined): number {
   if (!match) {
     throw new PersistenceError("VALIDATION_ERROR", "If-Match must contain a positive aggregate version");
   }
-  return Number(match[1]);
+  const parsed = Number(match[1]);
+  if (!Number.isSafeInteger(parsed) || parsed > 2_147_483_647) {
+    throw new PersistenceError("VALIDATION_ERROR", "If-Match aggregate version is out of range");
+  }
+  return parsed;
 }
 
 function isCanonicalContentError(error: unknown): boolean {

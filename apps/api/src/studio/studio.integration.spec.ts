@@ -300,6 +300,19 @@ describe("M1-C API and SSE integration", () => {
     });
     expect(missingEtag.status).toBe(400);
 
+    const outOfRangeEtag = await fetch(`${base}/api/v1/projects/${project.id}/stories`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "m2c-story-out-of-range-etag",
+        "if-match": "2147483648",
+      },
+      body,
+    });
+    expect(outOfRangeEtag.status).toBe(400);
+    const outOfRangeBody = (await outOfRangeEtag.json()) as { error: { code: string } };
+    expect(outOfRangeBody.error.code).toBe("VALIDATION_ERROR");
+
     const historyResponse = await fetch(`${base}/api/v1/projects/${project.id}/stories`);
     expect(historyResponse.status).toBe(200);
     const history = (await historyResponse.json()) as {
