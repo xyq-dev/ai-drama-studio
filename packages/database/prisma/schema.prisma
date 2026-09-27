@@ -521,3 +521,18 @@ model ShotCharacterReference {
   @@index([workspaceId, characterRevisionId])
   @@map("shot_character_reference")
 }
+
+model StaleRecalculation {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspaceId  String   @map("workspace_id") @db.Uuid
+  projectId    String   @map("project_id") @db.Uuid
+  staleFromRef String   @map("stale_from_ref")
+  reason       String
+  status       String   @default("PENDING")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([workspaceId, projectId, staleFromRef])
+  @@index([workspaceId, status, createdAt])
+  @@map("stale_recalculation")
+}

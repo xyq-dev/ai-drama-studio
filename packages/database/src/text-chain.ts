@@ -930,6 +930,25 @@ async function ensureEpisodes(client: PoolClient, workspaceId: string, projectId
   assertProductionEpisodeSet(rows.rows.map((row) => row.episode_no));
 }
 
+const STALE_SYNC_LIMIT = 200;
+
+async function enqueueStaleRecalculation(
+  client: PoolClient,
+  workspaceId: string,
+  projectId: string,
+  reason: string,
+  staleFromRef: string,
+): Promise<void> {
+  await client.query(
+    `INSERT INTO stale_recalculation
+      (workspace_id, project_id, stale_from_ref, reason, status)
+     VALUES ($1, $2, $3, $4, 'PENDING')
+     ON CONFLICT (workspace_id, project_id, stale_from_ref)
+     DO UPDATE SET reason = EXCLUDED.reason, status = 'PENDING', updated_at = now()`,
+    [workspaceId, projectId, staleFromRef, reason],
+  );
+}
+
 async function markStale(
   client: PoolClient,
   table: string,
@@ -941,38 +960,66 @@ async function markStale(
 ): Promise<void> {
   const reasonParam = params.length + 1;
   const refParam = params.length + 2;
-  const updated = await client.query<{ id: string; project_id: string } & QueryResultRow>(
-    `UPDATE ${table}
-        SET freshness_status = 'STALE',
-            review_version = review_version + 1,
-            stale_reason = COALESCE(stale_reason, $${reasonParam}),
-            stale_from_ref = COALESCE(stale_from_ref, $${refParam})
-      WHERE workspace_id = $1 AND freshness_status = 'CURRENT' AND id IN (${idsSql})
-      RETURNING id, project_id`,
-    [...params, reason, staleFromRef],
-  );
+  const traceParam = params.length + 3;
+  const aggregateTypeParam = params.length + 4;
   const aggregateType = table
     .split("_")
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join("");
-  for (const row of updated.rows) {
-    await client.query(
-      `INSERT INTO domain_event
-        (workspace_id, project_id, aggregate_type, aggregate_id, event_type, payload_json, trace_id)
-       VALUES ($1, $2, $3, $4, 'revision.stale', $5::jsonb, $6)`,
-      [
-        params[0],
-        row.project_id,
-        aggregateType,
-        row.id,
-        JSON.stringify({
-          revisionId: row.id,
-          freshnessStatus: "STALE",
-          staleReason: reason,
-          staleFromRef,
-        }),
-        traceId,
-      ],
+  const updated = await client.query<
+    { updated_count: number; has_more: boolean; project_id: string | null } & QueryResultRow
+  >(
+    `WITH candidates AS (
+       SELECT id
+         FROM (${idsSql}) AS source_ids
+        ORDER BY id
+        LIMIT ${STALE_SYNC_LIMIT + 1}
+     ),
+     selected AS (
+       SELECT id FROM candidates ORDER BY id LIMIT ${STALE_SYNC_LIMIT}
+     ),
+     updated AS (
+       UPDATE ${table}
+          SET freshness_status = 'STALE',
+              review_version = review_version + 1,
+              stale_reason = COALESCE(stale_reason, $${reasonParam}),
+              stale_from_ref = COALESCE(stale_from_ref, $${refParam})
+        WHERE workspace_id = $1
+          AND freshness_status = 'CURRENT'
+          AND id IN (SELECT id FROM selected)
+       RETURNING id, project_id
+     ),
+     inserted_events AS (
+       INSERT INTO domain_event
+         (workspace_id, project_id, aggregate_type, aggregate_id, event_type, payload_json, trace_id)
+       SELECT $1,
+              project_id,
+              $${aggregateTypeParam},
+              id,
+              'revision.stale',
+              jsonb_build_object(
+                'revisionId', id,
+                'freshnessStatus', 'STALE',
+                'staleReason', $${reasonParam},
+                'staleFromRef', $${refParam}
+              ),
+              $${traceParam}
+         FROM updated
+       RETURNING 1
+     )
+     SELECT (SELECT COUNT(*)::int FROM updated) AS updated_count,
+            (SELECT COUNT(*) FROM candidates) > ${STALE_SYNC_LIMIT} AS has_more,
+            (SELECT MIN(project_id)::text FROM updated) AS project_id`,
+    [...params, reason, staleFromRef, traceId, aggregateType],
+  );
+  const result = updated.rows[0];
+  if (result?.has_more && result.project_id) {
+    await enqueueStaleRecalculation(
+      client,
+      String(params[0]),
+      result.project_id,
+      reason,
+      staleFromRef,
     );
   }
 }

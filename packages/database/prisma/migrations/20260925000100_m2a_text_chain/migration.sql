@@ -522,6 +522,23 @@ CREATE INDEX shot_revision_source_scene_idx
 CREATE INDEX shot_character_reference_character_idx
   ON shot_character_reference (workspace_id, character_revision_id);
 
+CREATE TABLE stale_recalculation (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id uuid NOT NULL,
+  project_id uuid NOT NULL,
+  stale_from_ref text NOT NULL,
+  reason text NOT NULL,
+  status text NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'RUNNING', 'DONE')),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (workspace_id, project_id, stale_from_ref),
+  FOREIGN KEY (project_id, workspace_id) REFERENCES project (id, workspace_id)
+);
+
+CREATE INDEX stale_recalculation_pending_idx
+  ON stale_recalculation (workspace_id, status, created_at)
+  WHERE status = 'PENDING';
+
 CREATE FUNCTION m2_reject_provenance_mutation() RETURNS trigger
 LANGUAGE plpgsql AS 'BEGIN
   RAISE EXCEPTION ''revision provenance is immutable'';

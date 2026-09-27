@@ -1389,6 +1389,84 @@ describe("shared revision stale propagation", () => {
   });
 });
 
+describe("bounded stale propagation", () => {
+  it("caps synchronous propagation and persists continuation work", async () => {
+    const { workspaceId, projectId } = await seedProject();
+    const story = await chain.createStoryRevision({
+      workspaceId,
+      projectId,
+      content: { schema: "m2.story.revision.v1", premise: "large graph" },
+      createdBy: "author",
+      expectedVersion: 1,
+    });
+    await approveStory(workspaceId, projectId, story.revisionId, story.rowVersion);
+
+    const episode = await pool.query<{ id: string } & QueryResultRow>(
+      "SELECT id FROM episode WHERE project_id = $1 AND episode_no = 1",
+      [projectId],
+    );
+    const episodeId = episode.rows[0]?.id;
+    if (!episodeId) throw new Error("episode missing");
+
+    for (let revisionNo = 1; revisionNo <= 205; revisionNo += 1) {
+      await pool.query(
+        `INSERT INTO script_revision
+          (workspace_id, project_id, episode_id, revision_no, source_story_revision_id,
+           content_json, content_hash, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, 'author')`,
+        [
+          workspaceId,
+          projectId,
+          episodeId,
+          revisionNo,
+          story.revisionId,
+          JSON.stringify({ schema: "m2.script.revision.v1", revisionNo }),
+          hash,
+        ],
+      );
+    }
+
+    const version = await pool.query<{ version: number } & QueryResultRow>(
+      "SELECT version FROM project WHERE id = $1",
+      [projectId],
+    );
+    await chain.createStoryRevision({
+      workspaceId,
+      projectId,
+      content: { schema: "m2.story.revision.v1", premise: "replacement" },
+      createdBy: "author",
+      expectedVersion: version.rows[0]?.version ?? 0,
+    });
+
+    const counts = await pool.query<{ freshness_status: string; count: number } & QueryResultRow>(
+      `SELECT freshness_status, COUNT(*)::int AS count
+         FROM script_revision
+        WHERE project_id = $1 AND source_story_revision_id = $2
+        GROUP BY freshness_status`,
+      [projectId, story.revisionId],
+    );
+    const byStatus = Object.fromEntries(counts.rows.map((row) => [row.freshness_status, row.count]));
+    expect(byStatus.STALE).toBe(200);
+    expect(byStatus.CURRENT).toBe(5);
+
+    const continuation = await pool.query<
+      { stale_from_ref: string; reason: string; status: string } & QueryResultRow
+    >(
+      `SELECT stale_from_ref, reason, status
+         FROM stale_recalculation
+        WHERE workspace_id = $1 AND project_id = $2`,
+      [workspaceId, projectId],
+    );
+    expect(continuation.rows).toEqual([
+      {
+        stale_from_ref: `story_revision:${story.revisionId}`,
+        reason: "SOURCE_STORY_REPLACED",
+        status: "PENDING",
+      },
+    ]);
+  });
+});
+
 describe("review domain events", () => {
   it("records review transitions once and omits events when the transaction fails", async () => {
     const { workspaceId, projectId } = await seedProject();
