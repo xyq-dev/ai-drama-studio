@@ -971,7 +971,7 @@ async function markStale(
   >(
     `WITH candidates AS (
        SELECT id
-         FROM (${idsSql}) AS source_ids
+         FROM (${idsSql}) AS source_ids(id)
         ORDER BY id
         LIMIT ${STALE_SYNC_LIMIT + 1}
      ),
