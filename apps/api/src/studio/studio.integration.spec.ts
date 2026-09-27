@@ -411,6 +411,13 @@ describe("M1-C API and SSE integration", () => {
     expect(invalidCursor.status).toBe(400);
     const invalidBody = (await invalidCursor.json()) as { error: { code: string } };
     expect(invalidBody.error.code).toBe("VALIDATION_ERROR");
+
+    const outOfRangeCursor = await fetch(
+      `${base}/api/v1/projects/${project.id}/stories?cursor=2147483648`,
+    );
+    expect(outOfRangeCursor.status).toBe(400);
+    const outOfRangeCursorBody = (await outOfRangeCursor.json()) as { error: { code: string } };
+    expect(outOfRangeCursorBody.error.code).toBe("VALIDATION_ERROR");
   });
 
 });
