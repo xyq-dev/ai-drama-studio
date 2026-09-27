@@ -75,6 +75,7 @@ export class RuntimeReconciler {
         workspaceId: row.workspaceId,
         jobId: row.jobId,
         traceId: `reconcile:${row.jobId}`,
+        observedProviderState: row.providerRequestId ? "FAILED" : undefined,
       });
     }
   }
