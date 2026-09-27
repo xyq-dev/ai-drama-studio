@@ -1196,6 +1196,14 @@ async function insertEntityRevision(
   );
   const revisionId = revision.rows[0]?.id;
   if (!revisionId) throw new Error(`${kind} revision missing`);
+
+  await pool.query(
+    `UPDATE ${kind}
+        SET current_revision_id = $1
+      WHERE id = $2 AND workspace_id = $3`,
+    [revisionId, entityId, workspaceId],
+  );
+
   if (linked) {
     await pool.query(
       `INSERT INTO ${kind}_revision_script_source
