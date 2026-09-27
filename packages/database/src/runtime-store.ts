@@ -146,8 +146,18 @@ export class RuntimeStore {
       const params: unknown[] = [workspaceId, limit + 1];
       let cursorSql = "";
       if (cursor) {
-        const [createdAt, id] = cursor.split("|");
-        if (!createdAt || !id) throw new PersistenceError("VALIDATION_ERROR", "Project cursor is invalid");
+        const [createdAt, id, extra] = cursor.split("|");
+        if (!createdAt || !id || extra !== undefined) {
+          throw new PersistenceError("VALIDATION_ERROR", "Project cursor is invalid");
+        }
+        const parsedDate = new Date(createdAt);
+        const isCanonicalIso =
+          !Number.isNaN(parsedDate.getTime()) &&
+          parsedDate.toISOString() === createdAt;
+        const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id);
+        if (!isCanonicalIso || !isUuid) {
+          throw new PersistenceError("VALIDATION_ERROR", "Project cursor is invalid");
+        }
         params.push(createdAt, id);
         cursorSql = `AND (created_at, id) < ($3::timestamptz, $4::uuid)`;
       }
