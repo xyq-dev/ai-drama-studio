@@ -87,16 +87,16 @@ jobs:
             exit 1
           fi
 
+          if gh release view "$RELEASE_TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "GitHub Release already exists for $RELEASE_TAG" >&2
+            exit 1
+          fi
+
           if git show-ref --tags --verify --quiet "refs/tags/$RELEASE_TAG"; then
             TAG_SHA="$(git rev-list -n 1 "$RELEASE_TAG")"
 
             if [[ "$TAG_SHA" != "$TARGET_SHA" ]]; then
               echo "Existing tag $RELEASE_TAG points to $TAG_SHA instead of $TARGET_SHA" >&2
-              exit 1
-            fi
-
-            if gh release view "$RELEASE_TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-              echo "GitHub Release already exists for $RELEASE_TAG" >&2
               exit 1
             fi
 
