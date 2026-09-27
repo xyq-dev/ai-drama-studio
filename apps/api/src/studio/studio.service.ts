@@ -65,6 +65,9 @@ export class StudioService {
   ) {
     await this.store.getProject(this.workspaceId, projectId);
     const input = parse(storyRevisionBodySchema, rejectClientWorkspace(body));
+    if (!containsOnlyFiniteJsonNumbers(input.content)) {
+      throw new PersistenceError("INVALID_STORY", "Story content contains a non-finite number");
+    }
     const expectedVersion = parseAggregateVersion(ifMatch);
     const request = { content: input.content, expectedVersion };
     try {
@@ -211,6 +214,15 @@ function parseAggregateVersion(value: string | undefined): number {
     throw new PersistenceError("VALIDATION_ERROR", "If-Match aggregate version is out of range");
   }
   return parsed;
+}
+
+function containsOnlyFiniteJsonNumbers(value: unknown): boolean {
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every((item) => containsOnlyFiniteJsonNumbers(item));
+  if (value && typeof value === "object") {
+    return Object.values(value as Record<string, unknown>).every((item) => containsOnlyFiniteJsonNumbers(item));
+  }
+  return true;
 }
 
 function isCanonicalContentError(error: unknown): boolean {
