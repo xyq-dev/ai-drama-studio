@@ -357,6 +357,34 @@ describe("M1-C API and SSE integration", () => {
     expect(body.error.code).toBe("INVALID_STORY");
   });
 
+  it("rejects non-finite numbers in story content without coercing them to null", async () => {
+    const projectResponse = await fetch(`${base}/api/v1/projects`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": "m2c-finite-project" },
+      body: JSON.stringify({ title: "Finite numbers" }),
+    });
+    const project = (await projectResponse.json()) as { id: string; version: number };
+
+    const invalid = await fetch(`${base}/api/v1/projects/${project.id}/stories`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "m2c-non-finite-story",
+        "if-match": String(project.version),
+      },
+      body: '{"content":{"budget":1e400}}',
+    });
+    expect(invalid.status).toBe(400);
+    const body = (await invalid.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("INVALID_STORY");
+
+    const count = await sql<{ count: number }>(
+      "SELECT COUNT(*)::int AS count FROM story_revision WHERE project_id = $1",
+      [project.id],
+    );
+    expect(count.rows[0]?.count).toBe(0);
+  });
+
   it("paginates story revision history with a stable bounded cursor", async () => {
     const projectResponse = await fetch(`${base}/api/v1/projects`, {
       method: "POST",
