@@ -885,6 +885,7 @@ export class JobPersistenceService {
     workspaceId: string;
     jobId: string;
     traceId: string;
+    observedProviderState?: ProviderRequestState;
   }): Promise<"requeued" | "failed" | "deferred" | null> {
     return withTransaction(this.pool, async (client) => {
       const job = await loadJobForUpdate(client, input.workspaceId, input.jobId);
@@ -901,12 +902,14 @@ export class JobPersistenceService {
             "Persisted provider request is missing its provider configuration",
           );
         }
-        const providerState = this.providerRequestInspector
-          ? await this.providerRequestInspector.inspect({
-              providerConfigurationId: attempt.provider_configuration_id,
-              providerRequestId: attempt.provider_request_id,
-            })
-          : "UNKNOWN";
+        const providerState =
+          input.observedProviderState ??
+          (this.providerRequestInspector
+            ? await this.providerRequestInspector.inspect({
+                providerConfigurationId: attempt.provider_configuration_id,
+                providerRequestId: attempt.provider_request_id,
+              })
+            : "UNKNOWN");
         if (providerState !== "FAILED") {
           return "deferred";
         }

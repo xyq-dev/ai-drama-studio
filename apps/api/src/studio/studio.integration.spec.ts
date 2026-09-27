@@ -194,6 +194,29 @@ describe("M1-C API and SSE integration", () => {
     expect(response.status).toBe(400);
   });
 
+  it("rejects malformed project cursors before PostgreSQL casts", async () => {
+    const malformedTimestamp = await fetch(
+      `${base}/api/v1/projects?cursor=${encodeURIComponent("not-a-date|11111111-1111-4111-8111-111111111111")}`,
+    );
+    expect(malformedTimestamp.status).toBe(400);
+    const timestampBody = (await malformedTimestamp.json()) as { error: { code: string } };
+    expect(timestampBody.error.code).toBe("VALIDATION_ERROR");
+
+    const malformedUuid = await fetch(
+      `${base}/api/v1/projects?cursor=${encodeURIComponent("2026-09-27T00:00:00.000Z|not-a-uuid")}`,
+    );
+    expect(malformedUuid.status).toBe(400);
+    const uuidBody = (await malformedUuid.json()) as { error: { code: string } };
+    expect(uuidBody.error.code).toBe("VALIDATION_ERROR");
+
+    const outOfRangeTimestamp = await fetch(
+      `${base}/api/v1/projects?cursor=${encodeURIComponent("-010000-01-01T00:00:00.000Z|11111111-1111-4111-8111-111111111111")}`,
+    );
+    expect(outOfRangeTimestamp.status).toBe(400);
+    const outOfRangeTimestampBody = (await outOfRangeTimestamp.json()) as { error: { code: string } };
+    expect(outOfRangeTimestampBody.error.code).toBe("VALIDATION_ERROR");
+  });
+
   it("replays DomainEvents, supports reconnect, and expires an old cursor", async () => {
     const project = await fetch(`${base}/api/v1/projects`, {
       method: "POST",

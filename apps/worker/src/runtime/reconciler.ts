@@ -47,7 +47,7 @@ export class RuntimeReconciler {
         continue;
       }
       if (row.providerRequestId) {
-        const inspected = this.provider.inspect(row.providerRequestId);
+        const inspected = await this.inspectAndAudit(row);
         if (inspected === "SUCCEEDED") {
           await this.jobs.succeedJob({
             workspaceId: row.workspaceId,
@@ -75,8 +75,35 @@ export class RuntimeReconciler {
         workspaceId: row.workspaceId,
         jobId: row.jobId,
         traceId: `reconcile:${row.jobId}`,
+        observedProviderState: row.providerRequestId ? "FAILED" : undefined,
       });
     }
+  }
+
+  private async inspectAndAudit(row: {
+    workspaceId: string;
+    attemptId: string;
+    providerConfigurationId: string | null;
+    providerRequestId: string | null;
+  }): Promise<ReturnType<MockProvider["inspect"]>> {
+    if (!row.providerRequestId) {
+      throw new Error("Provider request id is required for reconciliation polling");
+    }
+    if (!row.providerConfigurationId) {
+      throw new Error("Provider configuration id is required for reconciliation polling");
+    }
+
+    const inspected = this.provider.inspect(row.providerRequestId);
+    await this.jobs.recordProviderEvent({
+      workspaceId: row.workspaceId,
+      providerConfigurationId: row.providerConfigurationId,
+      jobAttemptId: row.attemptId,
+      providerRequestId: row.providerRequestId,
+      source: "POLL",
+      normalizedEventKey: `poll:${row.providerRequestId}:${inspected}`,
+      externalStatus: inspected,
+    });
+    return inspected;
   }
 
   private async completeWaitingExternal(): Promise<void> {
@@ -92,7 +119,7 @@ export class RuntimeReconciler {
         continue;
       }
       if (!row.providerRequestId) continue;
-      const inspected = this.provider.inspect(row.providerRequestId);
+      const inspected = await this.inspectAndAudit(row);
       if (inspected === "SUCCEEDED") {
         await this.jobs.succeedJob({
           workspaceId: row.workspaceId,

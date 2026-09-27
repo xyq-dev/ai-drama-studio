@@ -306,6 +306,61 @@ describe("M1-C Redis and BullMQ integration", () => {
     expect(await jobState(delayed.jobId)).toBe("SUCCEEDED");
   });
 
+  it("persists deterministic POLL provider events before applying inspected outcomes", async () => {
+    const { workspaceId, projectId } = await seed();
+
+    const activeThenSucceeded = await queueOutcome(workspaceId, projectId, "delayed");
+    await consumer.handle(activeThenSucceeded);
+    await reconciler.reconcileOnce();
+    expect(await jobState(activeThenSucceeded.jobId)).toBe("WAITING_EXTERNAL");
+    await reconciler.reconcileOnce();
+    expect(await jobState(activeThenSucceeded.jobId)).toBe("SUCCEEDED");
+
+    const failed = await queueOutcome(workspaceId, projectId, "delayed");
+    await consumer.handle(failed);
+    const failedRequestId = provider.requestIdFor(`audit-failed-${failed.jobId}`, "terminal_failure");
+    await sql(
+      "UPDATE job_attempt SET provider_request_id = $1 WHERE generation_job_id = $2",
+      [failedRequestId, failed.jobId],
+    );
+    await reconciler.reconcileOnce();
+
+    const canceled = await queueOutcome(workspaceId, projectId, "delayed");
+    await consumer.handle(canceled);
+    const canceledRequestId = provider.requestIdFor(`audit-canceled-${canceled.jobId}`, "cancel");
+    await sql(
+      "UPDATE job_attempt SET provider_request_id = $1 WHERE generation_job_id = $2",
+      [canceledRequestId, canceled.jobId],
+    );
+    await reconciler.reconcileOnce();
+    expect(await jobState(canceled.jobId)).toBe("CANCELED");
+
+    const events = await sql<{
+      provider_request_id: string;
+      source: string;
+      normalized_event_key: string;
+      external_status: string;
+    }>(
+      `SELECT provider_request_id, source, normalized_event_key, external_status
+         FROM provider_event
+        WHERE source = 'POLL'
+        ORDER BY provider_request_id, external_status`,
+    );
+
+    expect(events.rows.map((row) => row.external_status)).toEqual(
+      expect.arrayContaining(["ACTIVE", "SUCCEEDED", "FAILED", "CANCELED"]),
+    );
+    for (const row of events.rows) {
+      expect(row.source).toBe("POLL");
+      expect(row.normalized_event_key).toBe(
+        `poll:${row.provider_request_id}:${row.external_status}`,
+      );
+    }
+
+    const uniqueKeys = new Set(events.rows.map((row) => row.normalized_event_key));
+    expect(uniqueKeys.size).toBe(events.rows.length);
+  });
+
   it("rejects cancellation from a superseded attempt", async () => {
     const { workspaceId, projectId, providerId } = await seed();
     const created = await queueOutcome(workspaceId, projectId, "success");
