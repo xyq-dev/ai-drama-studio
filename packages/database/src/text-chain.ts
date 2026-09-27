@@ -1009,7 +1009,7 @@ async function markStale(
      )
      SELECT (SELECT COUNT(*)::int FROM updated) AS updated_count,
             (SELECT COUNT(*) FROM candidates) > ${STALE_SYNC_LIMIT} AS has_more,
-            (SELECT MIN(project_id)::text FROM updated) AS project_id`,
+            (SELECT project_id::text FROM updated LIMIT 1) AS project_id`,
     [...params, reason, staleFromRef, traceId, aggregateType],
   );
   const result = updated.rows[0];
