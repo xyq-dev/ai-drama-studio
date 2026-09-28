@@ -53,6 +53,12 @@ export class MediaAssetStore {
     try {
       await client.query("BEGIN");
       try {
+        const replay = await loadExactReplayOrConflict(client, input);
+        if (replay) {
+          await client.query("COMMIT");
+          return replay;
+        }
+
         if (input.sourceShotRevisionId) {
           await assertUsableShotWithClient(
             client,
@@ -233,6 +239,67 @@ async function assertUsableShotWithClient(
   }
 }
 
+async function loadExactReplayOrConflict(
+  client: PoolClient,
+  input: CreateMediaAssetInput,
+): Promise<MediaAssetRecord | null> {
+  const exact = await client.query<QueryResultRow>(
+    `SELECT id, project_id, kind, object_key, mime_type, checksum_sha256,
+            source_shot_revision_id, provider_request_id, created_at
+       FROM asset
+      WHERE workspace_id = $1
+        AND storage_provider = $2
+        AND object_key = $3
+        AND project_id = $4
+        AND kind = $5
+        AND mime_type = $6
+        AND byte_size = $7
+        AND checksum_sha256 = $8
+        AND width IS NOT DISTINCT FROM $9::integer
+        AND height IS NOT DISTINCT FROM $10::integer
+        AND duration_ms IS NOT DISTINCT FROM $11::bigint
+        AND source_job_attempt_id = $12
+        AND source_shot_revision_id IS NOT DISTINCT FROM $13::uuid
+        AND provider_configuration_id = $14
+        AND provider_request_id = $15
+        AND metadata_json = $16::jsonb`,
+    [
+      input.workspaceId,
+      input.storageProvider,
+      input.objectKey,
+      input.projectId,
+      input.kind,
+      input.mimeType,
+      input.byteSize,
+      input.checksumSha256,
+      input.width ?? null,
+      input.height ?? null,
+      input.durationMs ?? null,
+      input.sourceJobAttemptId,
+      input.sourceShotRevisionId ?? null,
+      input.providerConfigurationId,
+      input.providerRequestId,
+      JSON.stringify(input.metadata ?? {}),
+    ],
+  );
+  const row = exact.rows[0];
+  if (row) return mapAsset(row);
+
+  const conflicting = await client.query(
+    `SELECT 1
+       FROM asset
+      WHERE workspace_id = $1
+        AND storage_provider = $2
+        AND object_key = $3
+      LIMIT 1`,
+    [input.workspaceId, input.storageProvider, input.objectKey],
+  );
+  if (conflicting.rows[0]) {
+    throw new PersistenceError("ASSET_CONFLICT", "Asset object key is already bound to different content or metadata");
+  }
+  return null;
+}
+
 async function insertAsset(
   client: PoolClient,
   input: CreateMediaAssetInput,
@@ -297,33 +364,11 @@ async function insertAsset(
   );
   const row = result.rows[0];
   if (!row) {
-    const existing = await client.query<QueryResultRow>(
-      `SELECT id, project_id, kind, object_key, mime_type, checksum_sha256,
-              source_job_attempt_id, source_shot_revision_id,
-              provider_configuration_id, provider_request_id, created_at
-         FROM asset
-        WHERE workspace_id = $1
-          AND storage_provider = $2
-          AND object_key = $3`,
-      [input.workspaceId, input.storageProvider, input.objectKey],
-    );
-    const replay = existing.rows[0];
+    const replay = await loadExactReplayOrConflict(client, input);
     if (!replay) {
       throw new PersistenceError("ASSET_CREATE_FAILED", "Asset was not created");
     }
-    if (
-      String(replay.project_id) !== input.projectId ||
-      String(replay.kind) !== input.kind ||
-      String(replay.source_job_attempt_id) !== input.sourceJobAttemptId ||
-      (replay.source_shot_revision_id === null ? null : String(replay.source_shot_revision_id)) !==
-        (input.sourceShotRevisionId ?? null) ||
-      String(replay.provider_configuration_id) !== input.providerConfigurationId ||
-      String(replay.provider_request_id) !== input.providerRequestId ||
-      String(replay.checksum_sha256) !== input.checksumSha256
-    ) {
-      throw new PersistenceError("ASSET_CONFLICT", "Asset object key is already bound to different content");
-    }
-    return mapAsset(replay);
+    return replay;
   }
   return mapAsset(row);
 }
