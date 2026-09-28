@@ -347,4 +347,46 @@ describe("M3-A media asset schema", () => {
       ),
     ).rejects.toThrow(/matching lineage/i);
   });
+
+  it("rejects a cost whose provider request belongs to another attempt in the same workspace", async () => {
+    const seeded = await seedMediaAttempt("cost-request-source");
+    const secondAttempt = await pool.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO job_attempt
+        (workspace_id, generation_job_id, attempt_no, provider_configuration_id,
+         provider_request_id, provider_client_request_key, request_snapshot)
+       VALUES ($1,$2,2,$3,'mock-media|image.generate|cost-request-other',
+               'client-cost-request-other','{}'::jsonb) RETURNING id`,
+      [seeded.workspaceId, seeded.generationJobId, seeded.providerConfigurationId],
+    );
+    const secondAttemptId = secondAttempt.rows[0]?.id;
+    if (!secondAttemptId) throw new Error("second attempt missing");
+
+    await expect(
+      pool.query(
+        `INSERT INTO cost_ledger
+          (workspace_id, project_id, generation_job_id, job_attempt_id,
+           idempotency_key, provider_configuration_id, provider_request_id,
+           currency, amount_decimal, kind, basis, provider, model)
+         VALUES ($1,$2,$3,$4,'cost:wrong-request',$5,$6,
+                 'USD',0.01,'ACTUAL','PROVIDER_REPORTED','mock-media','mock')`,
+        [seeded.workspaceId, seeded.projectId, seeded.generationJobId,
+          seeded.jobAttemptId, seeded.providerConfigurationId,
+          "mock-media|image.generate|cost-request-other"],
+      ),
+    ).rejects.toThrow(/foreign key/i);
+
+    await expect(
+      pool.query(
+        `INSERT INTO cost_ledger
+          (workspace_id, project_id, generation_job_id, job_attempt_id,
+           idempotency_key, provider_configuration_id, provider_request_id,
+           currency, amount_decimal, kind, basis, provider, model)
+         VALUES ($1,$2,$3,$4,'cost:correct-request',$5,$6,
+                 'USD',0.01,'ACTUAL','PROVIDER_REPORTED','mock-media','mock')`,
+        [seeded.workspaceId, seeded.projectId, seeded.generationJobId,
+          secondAttemptId, seeded.providerConfigurationId,
+          "mock-media|image.generate|cost-request-other"],
+      ),
+    ).resolves.toBeTruthy();
+  });
 });
