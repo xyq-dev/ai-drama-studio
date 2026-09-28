@@ -80,6 +80,23 @@ async function seedApprovedShot() {
   const storyRevisionId = story.rows[0]?.id;
   if (!storyRevisionId) throw new Error("story missing");
 
+  await pool.query(
+    `UPDATE story_revision
+        SET review_status = 'APPROVED',
+            reviewed_by = 'editor',
+            reviewed_at = now(),
+            reviewed_content_hash = content_hash
+      WHERE id = $1`,
+    [storyRevisionId],
+  );
+  await pool.query(
+    `UPDATE project
+        SET current_story_revision_id = $1,
+            approved_story_revision_id = $1
+      WHERE id = $2`,
+    [storyRevisionId, projectId],
+  );
+
   const episode = await pool.query<{ id: string } & QueryResultRow>(
     `INSERT INTO episode (workspace_id, project_id, episode_no, title)
      VALUES ($1,$2,1,'Episode 1') RETURNING id`,
@@ -98,6 +115,23 @@ async function seedApprovedShot() {
   );
   const scriptRevisionId = script.rows[0]?.id;
   if (!scriptRevisionId) throw new Error("script missing");
+
+  await pool.query(
+    `UPDATE script_revision
+        SET review_status = 'APPROVED',
+            reviewed_by = 'editor',
+            reviewed_at = now(),
+            reviewed_content_hash = content_hash
+      WHERE id = $1`,
+    [scriptRevisionId],
+  );
+  await pool.query(
+    `UPDATE episode
+        SET current_script_revision_id = $1,
+            approved_script_revision_id = $1
+      WHERE id = $2`,
+    [scriptRevisionId, episodeId],
+  );
 
   const scene = await pool.query<{ id: string } & QueryResultRow>(
     `INSERT INTO scene (workspace_id, project_id, episode_id)
@@ -180,10 +214,10 @@ async function seedApprovedShot() {
 
   const job = await pool.query<{ id: string } & QueryResultRow>(
     `INSERT INTO generation_job
-      (workspace_id, project_id, workflow_run_id, kind, input_hash, input_snapshot)
-     VALUES ($1,$2,$3,'MEDIA_IMAGE',$4,'{}'::jsonb)
+      (workspace_id, project_id, workflow_run_id, source_shot_revision_id, kind, input_hash, input_snapshot)
+     VALUES ($1,$2,$3,$4,'MEDIA_IMAGE',$5,'{}'::jsonb)
      RETURNING id`,
-    [workspaceId, projectId, workflowRunId, hash],
+    [workspaceId, projectId, workflowRunId, shotRevisionId, hash],
   );
   const generationJobId = job.rows[0]?.id;
   if (!generationJobId) throw new Error("job missing");
@@ -333,6 +367,7 @@ describe("M3-B media asset store", () => {
     const otherJobId = otherJob.rows[0]?.id;
     if (!otherJobId) throw new Error("other job missing");
 
+    const otherProviderRequestId = `${seeded.providerRequestId}|other-project`;
     const otherAttempt = await pool.query<{ id: string } & QueryResultRow>(
       `INSERT INTO job_attempt
         (workspace_id, generation_job_id, attempt_no, provider_configuration_id,
@@ -343,7 +378,7 @@ describe("M3-B media asset store", () => {
         seeded.workspaceId,
         otherJobId,
         seeded.providerConfigurationId,
-        seeded.providerRequestId,
+        otherProviderRequestId,
       ],
     );
     const otherAttemptId = otherAttempt.rows[0]?.id;
@@ -361,6 +396,64 @@ describe("M3-B media asset store", () => {
         checksumSha256: hash,
         sourceJobAttemptId: otherAttemptId,
         sourceShotRevisionId: seeded.shotRevisionId,
+        providerConfigurationId: seeded.providerConfigurationId,
+        providerRequestId: otherProviderRequestId,
+      }),
+    ).rejects.toMatchObject({ code: "ASSET_LINEAGE_INVALID" });
+  });
+
+  it("rejects an attempt bound to a different approved shot in the same project", async () => {
+    const seeded = await seedApprovedShot();
+
+    const otherShot = await pool.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO shot (workspace_id, project_id, episode_id, scene_id)
+       SELECT workspace_id, project_id, episode_id, scene_id
+         FROM shot
+        WHERE id = (SELECT shot_id FROM shot_revision WHERE id = $1)
+       RETURNING id`,
+      [seeded.shotRevisionId],
+    );
+    const otherShotId = otherShot.rows[0]?.id;
+    if (!otherShotId) throw new Error("other shot missing");
+
+    const source = await pool.query<{ scene_id: string; source_scene_revision_id: string } & QueryResultRow>(
+      "SELECT scene_id, source_scene_revision_id FROM shot_revision WHERE id = $1",
+      [seeded.shotRevisionId],
+    );
+    const sceneId = source.rows[0]?.scene_id;
+    const sourceSceneRevisionId = source.rows[0]?.source_scene_revision_id;
+    if (!sceneId || !sourceSceneRevisionId) throw new Error("shot source missing");
+
+    const otherRevision = await pool.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO shot_revision
+        (workspace_id, project_id, scene_id, shot_id, revision_no,
+         source_scene_revision_id, ordinal, shot_type, camera, action,
+         prompt_text, content_hash, review_status, reviewed_by, reviewed_at,
+         reviewed_content_hash, created_by)
+       VALUES ($1,$2,$3,$4,1,$5,2,'close','static','look',
+               'other',$6,'APPROVED','editor',now(),$6,'test')
+       RETURNING id`,
+      [seeded.workspaceId, seeded.projectId, sceneId, otherShotId, sourceSceneRevisionId, hash],
+    );
+    const otherRevisionId = otherRevision.rows[0]?.id;
+    if (!otherRevisionId) throw new Error("other shot revision missing");
+    await pool.query(
+      "UPDATE shot SET current_revision_id = $1, approved_revision_id = $1 WHERE id = $2",
+      [otherRevisionId, otherShotId],
+    );
+
+    await expect(
+      store.createAsset({
+        workspaceId: seeded.workspaceId,
+        projectId: seeded.projectId,
+        kind: "IMAGE",
+        storageProvider: "minio",
+        objectKey: "shots/cross-shot.png",
+        mimeType: "image/png",
+        byteSize: 1,
+        checksumSha256: hash,
+        sourceJobAttemptId: seeded.jobAttemptId,
+        sourceShotRevisionId: otherRevisionId,
         providerConfigurationId: seeded.providerConfigurationId,
         providerRequestId: seeded.providerRequestId,
       }),
