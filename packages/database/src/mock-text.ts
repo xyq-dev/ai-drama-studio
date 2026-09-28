@@ -94,12 +94,11 @@ export class MockTextService {
     if (pending.rows[0]) throw new PersistenceError("SOURCE_STALE", "Project dependency propagation is incomplete");
     const scenes = await client.query<{
       id: string; episode_id: string; row_version: number; revision_id: string;
-      review_status: string; freshness_status: string; source_script_revision_id: string;
+      review_status: string; freshness_status: string;
       script_usable: boolean;
     } & QueryResultRow>(
       `SELECT scene.id, scene.episode_id, scene.row_version,
               revision.id AS revision_id, revision.review_status, revision.freshness_status,
-              revision.source_script_revision_id,
               m2_script_source_is_usable(revision.workspace_id, revision.project_id,
                 'scene_revision', revision.id, revision.source_script_revision_id) AS script_usable
          FROM scene JOIN scene_revision revision ON revision.id = scene.current_revision_id
@@ -110,7 +109,7 @@ export class MockTextService {
     if (scenes.rows.length !== 3 || episodes.some((episode) => {
       const scene = scenes.rows.find((row) => row.episode_id === episode.episodeId);
       return !scene || scene.review_status !== "APPROVED" || scene.freshness_status !== "CURRENT" ||
-        scene.source_script_revision_id !== episode.scriptRevisionId || scene.script_usable !== true;
+        scene.script_usable !== true;
     })) {
       throw new PersistenceError("REVIEW_REQUIRED", "Each episode needs a current approved Scene at ordinal 1");
     }

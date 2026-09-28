@@ -244,6 +244,39 @@ describe("Mock three episode Scene workflow", () => {
 });
 
 describe("Mock three episode Shot workflow", () => {
+  it("accepts an approved Scene whose earlier Script source still matches the current Script", async () => {
+    const source = await approvedThreeScenes();
+    const scene = source.snapshot.scenes[0]!;
+    const original = await sql<{ content_json: unknown; source_story_revision_id: string }>(
+      `SELECT script.content_json, script.source_story_revision_id
+         FROM scene_revision revision JOIN script_revision script
+           ON script.id = revision.source_script_revision_id
+        WHERE revision.id = $1`, [scene.sceneRevisionId],
+    );
+    const episode = (await chain.listEpisodes(source.workspaceId, source.projectId))
+      .find((item) => item.id === scene.episodeId)!;
+    const next = await chain.createScriptRevision({
+      workspaceId: source.workspaceId, projectId: source.projectId,
+      episodeId: scene.episodeId, sourceStoryRevisionId: original.rows[0]!.source_story_revision_id,
+      content: original.rows[0]!.content_json, createdBy: "author", expectedVersion: episode.rowVersion,
+    });
+    const review = await chain.transitionReview({ table: "script_revision", workspaceId: source.workspaceId,
+      revisionId: next.revisionId, expectedVersion: next.rowVersion,
+      expectedReviewVersion: 1, to: "IN_REVIEW" });
+    await chain.approveScript({ workspaceId: source.workspaceId, episodeId: scene.episodeId,
+      revisionId: next.revisionId, expectedVersion: review.rowVersion,
+      expectedReviewVersion: review.reviewVersion, reviewedBy: "editor" });
+    const sourceStatus = await sql<{ freshness_status: string }>(
+      "SELECT freshness_status FROM scene_revision WHERE id = $1", [scene.sceneRevisionId],
+    );
+    expect(sourceStatus.rows[0]?.freshness_status).toBe("CURRENT");
+    await completeMockJob(jobs, mockText, source.execution, source.attempt.attemptId,
+      "compatible-script", { outcome: "success" });
+    const completed = await store.getJob(source.workspaceId, source.created.jobId);
+    expect(completed.state, `${completed.errorCode}: ${completed.errorMessage}`).toBe("SUCCEEDED");
+    expect((await sql("SELECT id FROM shot_revision WHERE project_id = $1", [source.projectId])).rowCount).toBe(3);
+  });
+
   it("atomically creates three DRAFT Shots with lineage and rejects duplicate completion", async () => {
     const source = await approvedThreeScenes();
     await completeMockJob(jobs, mockText, source.execution, source.attempt.attemptId,
