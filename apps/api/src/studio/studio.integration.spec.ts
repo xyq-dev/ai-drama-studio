@@ -583,7 +583,7 @@ describe("M1-C API and SSE integration", () => {
     const invalidStoryTransitionBody = (await invalidStoryTransition.json()) as {
       error: { code: string };
     };
-    expect(invalidStoryTransitionBody.error.code).toBe("REVIEW_INVALID_TRANSITION");
+    expect(invalidStoryTransitionBody.error.code).toBe("REVIEW_CONFLICT");
 
     const storyInReview = await fetch(
       `${base}/api/v1/projects/${project.id}/stories/${story.revisionId}/review`,
@@ -601,6 +601,22 @@ describe("M1-C API and SSE integration", () => {
     expect(storyInReview.status).toBe(200);
     const inReview = (await storyInReview.json()) as { reviewVersion: number; rowVersion: number };
     expect(inReview).toEqual({ reviewVersion: 2, rowVersion: 3 });
+
+    const staleReviewVersion = await fetch(
+      `${base}/api/v1/projects/${project.id}/stories/${story.revisionId}/review`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "m2c-story-review-stale-review-version",
+          "if-match": String(inReview.rowVersion),
+        },
+        body: JSON.stringify({ to: "REJECTED", expectedReviewVersion: 1 }),
+      },
+    );
+    expect(staleReviewVersion.status).toBe(409);
+    const staleReviewBody = (await staleReviewVersion.json()) as { error: { code: string } };
+    expect(staleReviewBody.error.code).toBe("REVIEW_CONFLICT");
 
     const storyInReviewReplay = await fetch(
       `${base}/api/v1/projects/${project.id}/stories/${story.revisionId}/review`,
