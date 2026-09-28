@@ -80,6 +80,50 @@ describe("MockMediaAdapter", () => {
     expect(resolved.uri).toMatch(/^data:image\/png;base64,/);
   });
 
+  it.each([
+    ["image.generate", "image/png"],
+    ["video.generate", "video/mp4"],
+    ["audio.tts", "audio/wav"],
+    ["audio.music", "audio/wav"],
+    ["subtitle.generate", "text/vtt"],
+    ["media.compose_input_validate", "application/json"],
+  ] as const)("returns a valid %s fixture for %s", async (capability, mimeType) => {
+    const adapter = new MockMediaAdapter();
+    const submitted = await adapter.submit({
+      ...baseInput,
+      capability,
+      clientRequestKey: `fixture:${capability}`,
+      inputSnapshot: {},
+    });
+    if (submitted.kind !== "succeeded") throw new Error("expected mock success");
+    const output = submitted.outputs[0];
+    const resolved = await adapter.resolveOutput(output);
+    const polled = await adapter.inspect(submitted.providerRequestId);
+    if (polled.state !== "SUCCEEDED") throw new Error("expected mock poll success");
+    expect(await adapter.resolveOutput(polled.outputs[0])).toEqual(resolved);
+
+    const prefix = `data:${mimeType};base64,`;
+    expect(resolved.uri.startsWith(prefix)).toBe(true);
+    const bytes = Buffer.from(resolved.uri.slice(prefix.length), "base64");
+    expect(bytes.length).toBeGreaterThan(0);
+    if (mimeType === "image/png") {
+      expect(bytes.subarray(0, 8).toString("hex")).toBe("89504e470d0a1a0a");
+      expect(bytes.readUInt32BE(16)).toBe(1);
+    } else if (mimeType === "video/mp4") {
+      expect(bytes.toString("ascii", 4, 8)).toBe("ftyp");
+      expect(bytes.includes(Buffer.from("moov"))).toBe(true);
+      expect(bytes.includes(Buffer.from("mdat"))).toBe(true);
+    } else if (mimeType === "audio/wav") {
+      expect(bytes.toString("ascii", 0, 4)).toBe("RIFF");
+      expect(bytes.toString("ascii", 8, 12)).toBe("WAVE");
+      expect(bytes.readUInt32LE(4)).toBe(bytes.length - 8);
+    } else if (mimeType === "application/json") {
+      expect(JSON.parse(bytes.toString("utf8"))).toMatchObject({ valid: true });
+    } else {
+      expect(bytes.toString("utf8")).toMatch(/^WEBVTT\n\n00:00:00\.000 --> 00:00:00\.100/);
+    }
+  });
+
   it("normalizes delayed polls with distinct observation identities and accounting", async () => {
     const adapter = new MockMediaAdapter();
     const delayed = await adapter.submit({
