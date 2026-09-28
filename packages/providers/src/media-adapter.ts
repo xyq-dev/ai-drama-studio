@@ -67,20 +67,25 @@ interface MediaProviderObservationBase {
   normalizedEventKey: string;
   responseHash: string;
   observedAt: string;
-  outputs?: MediaProviderOutput[];
   accounting?: MediaAccountingEnvelope;
   metadata?: Record<string, unknown>;
 }
 
 export type MediaProviderObservation =
   | (MediaProviderObservationBase & {
+      state: "SUCCEEDED";
+      outputs: [MediaProviderOutput, ...MediaProviderOutput[]];
+    })
+  | (MediaProviderObservationBase & {
       state: "FAILED";
+      outputs?: never;
       retryable: boolean;
       errorCode: string;
       errorMessage: string;
     })
   | (MediaProviderObservationBase & {
-      state: Exclude<MediaProviderState, "FAILED">;
+      state: Exclude<MediaProviderState, "SUCCEEDED" | "FAILED">;
+      outputs?: never;
     });
 
 type MediaSubmitWithRequest = {
