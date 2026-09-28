@@ -110,13 +110,23 @@ async function seedApprovedShot() {
   const sceneRevision = await pool.query<{ id: string } & QueryResultRow>(
     `INSERT INTO scene_revision
       (workspace_id, project_id, episode_id, scene_id, revision_no,
-       source_script_revision_id, ordinal, heading, summary, content_hash, created_by)
-     VALUES ($1,$2,$3,$4,1,$5,1,'INT. ROOM','room',$6,'test')
+       source_script_revision_id, ordinal, heading, summary, content_hash,
+       review_status, reviewed_by, reviewed_at, reviewed_content_hash, created_by)
+     VALUES ($1,$2,$3,$4,1,$5,1,'INT. ROOM','room',$6,
+             'APPROVED','editor',now(),$6,'test')
      RETURNING id`,
     [workspaceId, projectId, episodeId, sceneId, scriptRevisionId, hash],
   );
   const sceneRevisionId = sceneRevision.rows[0]?.id;
   if (!sceneRevisionId) throw new Error("scene revision missing");
+
+  await pool.query(
+    `UPDATE scene
+        SET current_revision_id = $1,
+            approved_revision_id = $1
+      WHERE id = $2`,
+    [sceneRevisionId, sceneId],
+  );
 
   const shot = await pool.query<{ id: string } & QueryResultRow>(
     `INSERT INTO shot (workspace_id, project_id, episode_id, scene_id)
@@ -196,6 +206,7 @@ async function seedApprovedShot() {
     shotRevisionId,
     providerConfigurationId,
     providerRequestId,
+    generationJobId,
     jobAttemptId,
   };
 }
@@ -232,6 +243,34 @@ describe("M3-B media asset store", () => {
     );
     expect(listed).toHaveLength(1);
     expect(listed[0]?.id).toBe(first.id);
+  });
+
+  it("blocks asset creation while project stale recalculation is pending", async () => {
+    const seeded = await seedApprovedShot();
+    await pool.query(
+      `INSERT INTO stale_recalculation
+        (workspace_id, project_id, stale_from_ref, reason, status)
+       VALUES ($1, $2, 'story_revision:11111111-1111-4111-8111-111111111111',
+               'SOURCE_STORY_REPLACED', 'PENDING')`,
+      [seeded.workspaceId, seeded.projectId],
+    );
+
+    await expect(
+      store.createAsset({
+        workspaceId: seeded.workspaceId,
+        projectId: seeded.projectId,
+        kind: "IMAGE",
+        storageProvider: "minio",
+        objectKey: "shots/pending-stale.png",
+        mimeType: "image/png",
+        byteSize: 1,
+        checksumSha256: hash,
+        sourceJobAttemptId: seeded.jobAttemptId,
+        sourceShotRevisionId: seeded.shotRevisionId,
+        providerConfigurationId: seeded.providerConfigurationId,
+        providerRequestId: seeded.providerRequestId,
+      }),
+    ).rejects.toMatchObject({ code: "STALE_RECALCULATION_PENDING" });
   });
 
   it("rejects a shot after it becomes stale", async () => {
@@ -283,6 +322,26 @@ describe("M3-B media asset store", () => {
     await store.createAsset(base);
     await expect(
       store.createAsset({ ...base, checksumSha256: "cd".repeat(32) }),
+    ).rejects.toMatchObject({ code: "ASSET_CONFLICT" });
+
+    const secondAttempt = await pool.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO job_attempt
+        (workspace_id, generation_job_id, attempt_no, provider_configuration_id,
+         provider_request_id, provider_client_request_key, request_snapshot)
+       VALUES ($1,$2,2,$3,$4,'m3b-shot-second','{}'::jsonb)
+       RETURNING id`,
+      [
+        seeded.workspaceId,
+        seeded.generationJobId,
+        seeded.providerConfigurationId,
+        seeded.providerRequestId,
+      ],
+    );
+    const secondAttemptId = secondAttempt.rows[0]?.id;
+    if (!secondAttemptId) throw new Error("second attempt missing");
+
+    await expect(
+      store.createAsset({ ...base, sourceJobAttemptId: secondAttemptId }),
     ).rejects.toMatchObject({ code: "ASSET_CONFLICT" });
   });
 });
