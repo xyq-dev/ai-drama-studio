@@ -34,6 +34,8 @@ export {
   type EpisodeSummary,
   type RevisionCreated,
   type ReviewTransitioned,
+  type ScriptRevisionPage,
+  type ScriptRevisionView,
   type StoryRevisionPage,
   type StoryRevisionView,
 } from "./text-chain";

@@ -60,6 +60,26 @@ export interface EpisodeSummary {
   currentScriptFreshnessStatus: string | null;
 }
 
+export interface ScriptRevisionView {
+  id: string;
+  episodeId: string;
+  projectId: string;
+  revisionNo: number;
+  sourceStoryRevisionId: string;
+  content: unknown;
+  contentHash: string;
+  reviewStatus: string;
+  freshnessStatus: string;
+  reviewVersion: number;
+  createdBy: string;
+  createdAt: string;
+}
+
+export interface ScriptRevisionPage {
+  items: ScriptRevisionView[];
+  nextCursor: string | null;
+}
+
 async function withTransaction<T>(
   pool: DatabasePool,
   work: (client: PoolClient) => Promise<T>,
@@ -366,6 +386,35 @@ export class TextChainService {
     }
   }
 
+  async requireEpisode(
+    workspaceId: string,
+    projectId: string | undefined,
+    episodeId: string,
+  ): Promise<{ id: string; projectId: string; rowVersion: number }> {
+    const client = await this.pool.connect();
+    try {
+      const params: unknown[] = [workspaceId, episodeId];
+      let projectSql = "";
+      if (projectId) {
+        params.push(projectId);
+        projectSql = "AND project_id = $3";
+      }
+      const result = await client.query<
+        { id: string; project_id: string; row_version: number } & QueryResultRow
+      >(
+        `SELECT id, project_id, row_version
+           FROM episode
+          WHERE workspace_id = $1 AND id = $2 ${projectSql}`,
+        params,
+      );
+      const row = result.rows[0];
+      if (!row) throw new PersistenceError("NOT_FOUND", "Episode not found");
+      return { id: row.id, projectId: row.project_id, rowVersion: row.row_version };
+    } finally {
+      client.release();
+    }
+  }
+
   async listEpisodes(workspaceId: string, projectId: string): Promise<EpisodeSummary[]> {
     const client = await this.pool.connect();
     try {
@@ -546,133 +595,219 @@ export class TextChainService {
     expectedVersion: number;
     traceId?: string;
   }): Promise<RevisionCreated> {
+    return withTransaction(this.pool, (client) => this.createScriptRevisionInTransaction(client, input));
+  }
+
+  async createScriptRevisionInTransaction(
+    client: PoolClient,
+    input: {
+      workspaceId: string;
+      projectId: string;
+      episodeId: string;
+      sourceStoryRevisionId: string;
+      content: unknown;
+      createdBy: string;
+      expectedVersion: number;
+      traceId?: string;
+    },
+  ): Promise<RevisionCreated> {
     const contentHash = canonicalInputHash(input.content);
-    return withTransaction(this.pool, async (client) => {
-      await lockAggregateForRevision(
-        client,
-        "episode",
-        input.episodeId,
-        input.workspaceId,
-        input.expectedVersion,
+    await lockAggregateForRevision(
+      client,
+      "episode",
+      input.episodeId,
+      input.workspaceId,
+      input.expectedVersion,
+    );
+    const currentScript = await client.query<
+      { current_script_revision_id: string | null } & QueryResultRow
+    >("SELECT current_script_revision_id FROM episode WHERE id = $1 AND workspace_id = $2", [
+      input.episodeId,
+      input.workspaceId,
+    ]);
+    const currentScriptId = currentScript.rows[0]?.current_script_revision_id;
+    if (currentScriptId) {
+      await client.query(
+        "SELECT id FROM script_revision WHERE id = $1 AND workspace_id = $2 FOR UPDATE",
+        [currentScriptId, input.workspaceId],
       );
-      const currentScript = await client.query<
-        { current_script_revision_id: string | null } & QueryResultRow
-      >("SELECT current_script_revision_id FROM episode WHERE id = $1 AND workspace_id = $2", [
-        input.episodeId,
-        input.workspaceId,
-      ]);
-      const currentScriptId = currentScript.rows[0]?.current_script_revision_id;
-      if (currentScriptId) {
-        await client.query(
-          "SELECT id FROM script_revision WHERE id = $1 AND workspace_id = $2 FOR UPDATE",
-          [currentScriptId, input.workspaceId],
-        );
-      }
-      const source = await client.query<
-        {
-          current_script_revision_id: string | null;
-          current_story_revision_id: string | null;
-          approved_story_revision_id: string | null;
-          review_status: string;
-          freshness_status: string;
-        } & QueryResultRow
-      >(
-        `SELECT e.current_script_revision_id,
-                p.current_story_revision_id,
-                p.approved_story_revision_id,
-                sr.review_status,
-                sr.freshness_status
-           FROM episode e
-           JOIN project p
-             ON p.id = e.project_id
-            AND p.workspace_id = e.workspace_id
-           JOIN story_revision sr
-             ON sr.id = $4
-            AND sr.project_id = e.project_id
-            AND sr.workspace_id = e.workspace_id
-          WHERE e.id = $1 AND e.workspace_id = $2 AND e.project_id = $3`,
-        [input.episodeId, input.workspaceId, input.projectId, input.sourceStoryRevisionId],
+    }
+
+    const source = await client.query<
+      {
+        current_script_revision_id: string | null;
+        current_story_revision_id: string | null;
+        approved_story_revision_id: string | null;
+        review_status: string;
+        freshness_status: string;
+      } & QueryResultRow
+    >(
+      `SELECT e.current_script_revision_id,
+              p.current_story_revision_id,
+              p.approved_story_revision_id,
+              sr.review_status,
+              sr.freshness_status
+         FROM episode e
+         JOIN project p
+           ON p.id = e.project_id
+          AND p.workspace_id = e.workspace_id
+         JOIN story_revision sr
+           ON sr.id = $4
+          AND sr.project_id = e.project_id
+          AND sr.workspace_id = e.workspace_id
+        WHERE e.id = $1 AND e.workspace_id = $2 AND e.project_id = $3`,
+      [input.episodeId, input.workspaceId, input.projectId, input.sourceStoryRevisionId],
+    );
+    const sourceRow = source.rows[0];
+    if (!sourceRow) {
+      throw new PersistenceError("NOT_FOUND", "Episode or source story revision not found");
+    }
+    if (
+      sourceRow.current_story_revision_id !== input.sourceStoryRevisionId ||
+      sourceRow.approved_story_revision_id !== input.sourceStoryRevisionId ||
+      sourceRow.review_status !== "APPROVED" ||
+      sourceRow.freshness_status !== "CURRENT"
+    ) {
+      throw new PersistenceError(
+        "REVIEW_REQUIRED",
+        "Scripts require the current approved story revision",
       );
-      const sourceRow = source.rows[0];
-      if (!sourceRow)
-        throw new PersistenceError("NOT_FOUND", "Episode or source story revision not found");
-      if (
-        sourceRow.current_story_revision_id !== input.sourceStoryRevisionId ||
-        sourceRow.approved_story_revision_id !== input.sourceStoryRevisionId ||
-        sourceRow.review_status !== "APPROVED" ||
-        sourceRow.freshness_status !== "CURRENT"
-      ) {
-        throw new PersistenceError(
-          "REVIEW_REQUIRED",
-          "Scripts require the current approved story revision",
-        );
-      }
-      const previousCurrentId = sourceRow.current_script_revision_id;
-      const next = await client.query<{ revision_no: number } & QueryResultRow>(
-        `SELECT COALESCE(MAX(revision_no), 0)::int + 1 AS revision_no FROM script_revision WHERE episode_id = $1`,
-        [input.episodeId],
-      );
-      const revisionNo = next.rows[0]?.revision_no ?? 1;
-      const inserted = await client.query<{ id: string } & QueryResultRow>(
-        `INSERT INTO script_revision
-          (workspace_id, project_id, episode_id, revision_no, source_story_revision_id, content_json, content_hash, created_by)
-         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)
-         RETURNING id`,
-        [
-          input.workspaceId,
-          input.projectId,
-          input.episodeId,
-          revisionNo,
-          input.sourceStoryRevisionId,
-          JSON.stringify(input.content),
-          contentHash,
-          input.createdBy,
-        ],
-      );
-      const revisionId = inserted.rows[0]?.id;
-      if (!revisionId)
-        throw new PersistenceError("REVISION_CREATE_FAILED", "Script revision was not created");
-      if (previousCurrentId) {
-        await client.query(
-          `INSERT INTO script_revision_replacement
-            (workspace_id, project_id, episode_id, previous_script_revision_id, new_script_revision_id)
-           VALUES ($1, $2, $3, $4, $5)`,
-          [input.workspaceId, input.projectId, input.episodeId, previousCurrentId, revisionId],
-        );
-      }
-      const rowVersion = await bumpPointer(
-        client,
-        "episode",
-        input.episodeId,
-        input.workspaceId,
-        input.expectedVersion,
-        "current_script_revision_id",
-        revisionId,
-      );
-      const traceId = input.traceId ?? "m2-text-chain";
-      await emitCurrentRevisionEvent(
-        client,
+    }
+
+    const previousCurrentId = sourceRow.current_script_revision_id;
+    const next = await client.query<{ revision_no: number } & QueryResultRow>(
+      "SELECT COALESCE(MAX(revision_no), 0)::int + 1 AS revision_no FROM script_revision WHERE episode_id = $1",
+      [input.episodeId],
+    );
+    const revisionNo = next.rows[0]?.revision_no ?? 1;
+    const inserted = await client.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO script_revision
+        (workspace_id, project_id, episode_id, revision_no, source_story_revision_id, content_json, content_hash, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)
+       RETURNING id`,
+      [
         input.workspaceId,
         input.projectId,
-        "Episode",
         input.episodeId,
-        revisionId,
-        rowVersion,
-        traceId,
+        revisionNo,
+        input.sourceStoryRevisionId,
+        JSON.stringify(input.content),
+        contentHash,
+        input.createdBy,
+      ],
+    );
+    const revisionId = inserted.rows[0]?.id;
+    if (!revisionId) {
+      throw new PersistenceError("REVISION_CREATE_FAILED", "Script revision was not created");
+    }
+
+    if (previousCurrentId) {
+      await client.query(
+        `INSERT INTO script_revision_replacement
+          (workspace_id, project_id, episode_id, previous_script_revision_id, new_script_revision_id)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [input.workspaceId, input.projectId, input.episodeId, previousCurrentId, revisionId],
       );
-      if (previousCurrentId && previousCurrentId !== revisionId) {
-        if (await staleFromScript(client, input.workspaceId, previousCurrentId, traceId)) {
-          await enqueueStaleRecalculation(
-            client,
-            input.workspaceId,
-            input.projectId,
-            "SOURCE_SCRIPT_REPLACED",
-            `script_revision:${previousCurrentId}`,
-          );
-        }
+    }
+
+    const rowVersion = await bumpPointer(
+      client,
+      "episode",
+      input.episodeId,
+      input.workspaceId,
+      input.expectedVersion,
+      "current_script_revision_id",
+      revisionId,
+    );
+    const traceId = input.traceId ?? "m2-text-chain";
+    await emitCurrentRevisionEvent(
+      client,
+      input.workspaceId,
+      input.projectId,
+      "Episode",
+      input.episodeId,
+      revisionId,
+      rowVersion,
+      traceId,
+    );
+    if (previousCurrentId && previousCurrentId !== revisionId) {
+      if (await staleFromScript(client, input.workspaceId, previousCurrentId, traceId)) {
+        await enqueueStaleRecalculation(
+          client,
+          input.workspaceId,
+          input.projectId,
+          "SOURCE_SCRIPT_REPLACED",
+          `script_revision:${previousCurrentId}`,
+        );
       }
-      return { revisionId, revisionNo, contentHash, rowVersion };
-    });
+    }
+    return { revisionId, revisionNo, contentHash, rowVersion };
+  }
+
+  async listScriptRevisions(
+    workspaceId: string,
+    projectId: string,
+    episodeId: string,
+    cursor?: string,
+    limit = 20,
+  ): Promise<ScriptRevisionPage> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      throw new PersistenceError("VALIDATION_ERROR", "Script revision page size is invalid");
+    }
+    let cursorRevisionNo: number | null = null;
+    if (cursor !== undefined) {
+      if (!/^[1-9][0-9]*$/.test(cursor)) {
+        throw new PersistenceError("VALIDATION_ERROR", "Script revision cursor is invalid");
+      }
+      cursorRevisionNo = Number(cursor);
+      if (!Number.isSafeInteger(cursorRevisionNo) || cursorRevisionNo > 2_147_483_647) {
+        throw new PersistenceError("VALIDATION_ERROR", "Script revision cursor is invalid");
+      }
+    }
+
+    const client = await this.pool.connect();
+    try {
+      const params: unknown[] = [workspaceId, projectId, episodeId, limit + 1];
+      let cursorSql = "";
+      if (cursorRevisionNo !== null) {
+        params.push(cursorRevisionNo);
+        cursorSql = "AND revision_no < $5";
+      }
+      const result = await client.query<QueryResultRow>(
+        `SELECT id, episode_id, project_id, revision_no, source_story_revision_id,
+                content_json, content_hash, review_status, freshness_status,
+                review_version, created_by, created_at
+           FROM script_revision
+          WHERE workspace_id = $1
+            AND project_id = $2
+            AND episode_id = $3
+            ${cursorSql}
+          ORDER BY revision_no DESC
+          LIMIT $4`,
+        params,
+      );
+      const items = result.rows.slice(0, limit).map((row) => ({
+        id: String(row.id),
+        episodeId: String(row.episode_id),
+        projectId: String(row.project_id),
+        revisionNo: Number(row.revision_no),
+        sourceStoryRevisionId: String(row.source_story_revision_id),
+        content: row.content_json,
+        contentHash: String(row.content_hash),
+        reviewStatus: String(row.review_status),
+        freshnessStatus: String(row.freshness_status),
+        reviewVersion: Number(row.review_version),
+        createdBy: String(row.created_by),
+        createdAt: new Date(row.created_at as Date | string).toISOString(),
+      }));
+      const last = items.at(-1);
+      return {
+        items,
+        nextCursor: result.rows.length > limit && last ? String(last.revisionNo) : null,
+      };
+    } finally {
+      client.release();
+    }
   }
 
   async approveScript(input: {
