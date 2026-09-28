@@ -472,11 +472,11 @@ describe("M1-C API and SSE integration", () => {
     if (!episodeId || !episodeVersion) throw new Error("episode missing");
 
     const body = JSON.stringify({
-      sourceStoryRevisionId: story.revisionId,
+      storyRevisionId: story.revisionId,
       content: { schema: "m2.script.revision.v1", episode: 1, scenes: [] },
     });
     const first = await fetch(
-      `${base}/api/v1/projects/${project.id}/episodes/${episodeId}/scripts`,
+      `${base}/api/v1/episodes/${episodeId}/scripts`,
       {
         method: "POST",
         headers: {
@@ -497,7 +497,7 @@ describe("M1-C API and SSE integration", () => {
     expect(created.rowVersion).toBe(2);
 
     const replay = await fetch(
-      `${base}/api/v1/projects/${project.id}/episodes/${episodeId}/scripts`,
+      `${base}/api/v1/episodes/${episodeId}/scripts`,
       {
         method: "POST",
         headers: {
@@ -512,7 +512,7 @@ describe("M1-C API and SSE integration", () => {
     expect(await replay.json()).toEqual(created);
 
     const listed = await fetch(
-      `${base}/api/v1/projects/${project.id}/episodes/${episodeId}/scripts`,
+      `${base}/api/v1/episodes/${episodeId}/scripts`,
     );
     expect(listed.status).toBe(200);
     const history = (await listed.json()) as {
@@ -522,8 +522,21 @@ describe("M1-C API and SSE integration", () => {
     expect(history.items[0]).toMatchObject({
       id: created.revisionId,
       revisionNo: 1,
-      sourceStoryRevisionId: story.revisionId,
+      storyRevisionId: story.revisionId,
     });
+  });
+
+  it("returns 404 for script history when the nested episode does not exist", async () => {
+    const projectResponse = await fetch(`${base}/api/v1/projects`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": "m2c-missing-episode-project" },
+      body: JSON.stringify({ title: "Missing episode" }),
+    });
+    const project = (await projectResponse.json()) as { id: string };
+    const response = await fetch(
+      `${base}/api/v1/projects/${project.id}/episodes/11111111-1111-4111-8111-111111111111/scripts`,
+    );
+    expect(response.status).toBe(404);
   });
 
 });
