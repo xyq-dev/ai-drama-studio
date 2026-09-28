@@ -99,7 +99,7 @@ type MediaSubmitWithoutRequiredRequest = {
 };
 
 export type MediaSubmitResult =
-  | (MediaSubmitWithRequest & { kind: "succeeded"; outputs: MediaProviderOutput[] })
+  | (MediaSubmitWithRequest & { kind: "succeeded"; outputs: [MediaProviderOutput, ...MediaProviderOutput[]] })
   | (MediaSubmitWithRequest & { kind: "waiting"; nextPollAt: string })
   | (MediaSubmitWithoutRequiredRequest & {
       kind: "failed";
