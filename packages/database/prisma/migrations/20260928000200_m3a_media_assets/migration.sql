@@ -35,6 +35,9 @@ CREATE INDEX asset_project_kind_created_idx
 CREATE INDEX asset_shot_revision_idx
   ON asset (workspace_id, source_shot_revision_id, created_at DESC);
 
+CREATE INDEX asset_content_lookup_idx
+  ON asset (workspace_id, project_id, checksum_sha256, kind);
+
 CREATE OR REPLACE FUNCTION m3_reject_asset_mutation() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
