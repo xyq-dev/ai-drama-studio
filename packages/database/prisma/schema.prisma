@@ -626,3 +626,22 @@ model AssetDependency {
   @@index([workspaceId, projectId, sourceAssetId])
   @@map("asset_dependency")
 }
+
+/// Immutable edge to one typed source revision in the dependent asset's project.
+model AssetRevisionDependency {
+  id                  String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspaceId         String   @map("workspace_id") @db.Uuid
+  projectId           String   @map("project_id") @db.Uuid
+  dependentAssetId    String   @map("dependent_asset_id") @db.Uuid
+  shotRevisionId      String?  @map("shot_revision_id") @db.Uuid
+  sceneRevisionId     String?  @map("scene_revision_id") @db.Uuid
+  characterRevisionId String?  @map("character_revision_id") @db.Uuid
+  locationRevisionId  String?  @map("location_revision_id") @db.Uuid
+  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([workspaceId, projectId, shotRevisionId])
+  @@index([workspaceId, projectId, sceneRevisionId])
+  @@index([workspaceId, projectId, characterRevisionId])
+  @@index([workspaceId, projectId, locationRevisionId])
+  @@map("asset_revision_dependency")
+}
