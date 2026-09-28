@@ -522,7 +522,7 @@ describe("M1-C API and SSE integration", () => {
     expect(history.items[0]).toMatchObject({
       id: created.revisionId,
       revisionNo: 1,
-      storyRevisionId: story.revisionId,
+      sourceStoryRevisionId: story.revisionId,
     });
   });
 
