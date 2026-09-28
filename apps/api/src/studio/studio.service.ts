@@ -65,8 +65,8 @@ export class StudioService {
   ) {
     await this.store.getProject(this.workspaceId, projectId);
     const input = parse(storyRevisionBodySchema, rejectClientWorkspace(body));
-    if (!containsOnlyFiniteJsonNumbers(input.content)) {
-      throw new PersistenceError("INVALID_STORY", "Story content contains a non-finite number");
+    if (!containsOnlyFiniteJsonValues(input.content)) {
+      throw new PersistenceError("INVALID_STORY", "Story content contains a value PostgreSQL jsonb cannot store");
     }
     const expectedVersion = parseAggregateVersion(ifMatch);
     const request = { content: input.content, expectedVersion };
@@ -216,11 +216,29 @@ function parseAggregateVersion(value: string | undefined): number {
   return parsed;
 }
 
-function containsOnlyFiniteJsonNumbers(value: unknown): boolean {
+function containsOnlyFiniteJsonValues(value: unknown): boolean {
   if (typeof value === "number") return Number.isFinite(value);
-  if (Array.isArray(value)) return value.every((item) => containsOnlyFiniteJsonNumbers(item));
+  if (typeof value === "string") return isPostgresJsonString(value);
+  if (Array.isArray(value)) return value.every((item) => containsOnlyFiniteJsonValues(item));
   if (value && typeof value === "object") {
-    return Object.values(value as Record<string, unknown>).every((item) => containsOnlyFiniteJsonNumbers(item));
+    return Object.values(value as Record<string, unknown>).every((item) => containsOnlyFiniteJsonValues(item));
+  }
+  return true;
+}
+
+function isPostgresJsonString(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit === 0) return false;
+
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (next < 0xdc00 || next > 0xdfff) return false;
+      index += 1;
+      continue;
+    }
+
+    if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) return false;
   }
   return true;
 }
