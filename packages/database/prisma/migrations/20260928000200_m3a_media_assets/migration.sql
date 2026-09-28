@@ -11,11 +11,12 @@ CREATE TABLE asset (
   width integer CHECK (width IS NULL OR width > 0),
   height integer CHECK (height IS NULL OR height > 0),
   duration_ms bigint CHECK (duration_ms IS NULL OR duration_ms > 0),
-  source_job_attempt_id uuid NOT NULL,
-  source_generation_job_id uuid NOT NULL,
+  source_kind text NOT NULL DEFAULT 'PROVIDER',
+  source_job_attempt_id uuid,
+  source_generation_job_id uuid,
   source_shot_revision_id uuid,
-  provider_configuration_id uuid NOT NULL,
-  provider_request_id text NOT NULL,
+  provider_configuration_id uuid,
+  provider_request_id text,
   metadata_json jsonb NOT NULL DEFAULT '{}'::jsonb,
   created_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (storage_provider, object_key),
@@ -31,8 +32,36 @@ CREATE TABLE asset (
     REFERENCES generation_job(id, project_id, workspace_id),
   FOREIGN KEY (source_shot_revision_id, project_id, workspace_id)
     REFERENCES shot_revision(id, project_id, workspace_id),
-  CHECK ((width IS NULL) = (height IS NULL))
+  CHECK ((width IS NULL) = (height IS NULL)),
+  CONSTRAINT asset_source_kind_check CHECK (
+    (source_kind = 'PROVIDER' AND source_job_attempt_id IS NOT NULL
+      AND source_generation_job_id IS NOT NULL
+      AND provider_configuration_id IS NOT NULL AND provider_request_id IS NOT NULL)
+    OR (source_kind = 'LOCAL_JOB' AND source_job_attempt_id IS NOT NULL
+      AND source_generation_job_id IS NOT NULL
+      AND provider_configuration_id IS NULL AND provider_request_id IS NULL)
+    OR (source_kind = 'UPLOAD' AND source_job_attempt_id IS NULL
+      AND source_generation_job_id IS NULL
+      AND provider_configuration_id IS NULL AND provider_request_id IS NULL)
+  )
 );
+
+CREATE TABLE asset_dependency (
+  workspace_id uuid NOT NULL,
+  project_id uuid NOT NULL,
+  dependent_asset_id uuid NOT NULL,
+  source_asset_id uuid NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (dependent_asset_id, source_asset_id),
+  CONSTRAINT asset_dependency_not_self CHECK (dependent_asset_id <> source_asset_id),
+  FOREIGN KEY (dependent_asset_id, project_id, workspace_id)
+    REFERENCES asset(id, project_id, workspace_id),
+  FOREIGN KEY (source_asset_id, project_id, workspace_id)
+    REFERENCES asset(id, project_id, workspace_id)
+);
+
+CREATE INDEX asset_dependency_source_idx
+  ON asset_dependency (workspace_id, project_id, source_asset_id);
 
 CREATE INDEX asset_project_kind_created_idx
   ON asset (workspace_id, project_id, kind, created_at DESC);
@@ -51,6 +80,10 @@ END $$;
 
 CREATE TRIGGER asset_immutable
 BEFORE UPDATE OR DELETE ON asset
+FOR EACH ROW EXECUTE FUNCTION m3_reject_asset_mutation();
+
+CREATE TRIGGER asset_dependency_immutable
+BEFORE UPDATE OR DELETE ON asset_dependency
 FOR EACH ROW EXECUTE FUNCTION m3_reject_asset_mutation();
 
 ALTER TABLE cost_ledger
@@ -122,3 +155,15 @@ END $$;
 CREATE TRIGGER cost_ledger_supersession_valid
 BEFORE INSERT OR UPDATE OF supersedes_cost_id ON cost_ledger
 FOR EACH ROW EXECUTE FUNCTION m3_validate_cost_supersession();
+
+-- Supersession checks the estimate at insertion time. Keep both sides of that
+-- relationship immutable so a later edit or deletion cannot invalidate it.
+CREATE OR REPLACE FUNCTION m3_reject_cost_ledger_mutation() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'cost_ledger entries are immutable';
+END $$;
+
+CREATE TRIGGER cost_ledger_immutable
+BEFORE UPDATE OR DELETE ON cost_ledger
+FOR EACH ROW EXECUTE FUNCTION m3_reject_cost_ledger_mutation();
