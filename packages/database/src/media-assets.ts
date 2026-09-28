@@ -410,11 +410,11 @@ async function insertAsset(
             AND ((edge.consumer_type = 'shot_revision' AND edge.consumer_revision_id = source.shot_id)
               OR (edge.consumer_type = 'scene_revision' AND edge.consumer_revision_id = source.scene_id))
        )
-       SELECT $2, $3, $1, shot_id, NULL, NULL FROM source
+       SELECT $2::uuid, $3::uuid, $1::uuid, shot_id, NULL::uuid, NULL::uuid FROM source
        UNION ALL
-       SELECT $2, $3, $1, NULL, scene_id, NULL FROM source
+       SELECT $2::uuid, $3::uuid, $1::uuid, NULL::uuid, scene_id, NULL::uuid FROM source
        UNION ALL
-       SELECT $2, $3, $1, NULL, NULL, script_revision_id FROM script_sources`,
+       SELECT $2::uuid, $3::uuid, $1::uuid, NULL::uuid, NULL::uuid, script_revision_id FROM script_sources`,
       [row.id, input.workspaceId, input.projectId, input.sourceShotRevisionId],
     );
   }
