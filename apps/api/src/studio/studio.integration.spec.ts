@@ -247,4 +247,184 @@ describe("M1-C API and SSE integration", () => {
     const error = (await expired.json()) as { error: { code: string } };
     expect(error.error.code).toBe("EVENT_CURSOR_EXPIRED");
   });
+  it("creates story revisions idempotently and exposes story history plus episodes", async () => {
+    const projectResponse = await fetch(`${base}/api/v1/projects`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": "m2c-project" },
+      body: JSON.stringify({ title: "M2-C API", premise: "text chain" }),
+    });
+    expect(projectResponse.status).toBe(201);
+    const project = (await projectResponse.json()) as { id: string; version: number };
+    const body = JSON.stringify({
+      content: { schema: "m2.story.revision.v1", premise: "three episode story" },
+    });
+
+    const first = await fetch(`${base}/api/v1/projects/${project.id}/stories`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "m2c-story-1",
+        "if-match": String(project.version),
+      },
+      body,
+    });
+    expect(first.status).toBe(201);
+    const created = (await first.json()) as {
+      revisionId: string;
+      revisionNo: number;
+      rowVersion: number;
+      contentHash: string;
+    };
+    expect(created.revisionNo).toBe(1);
+    expect(created.rowVersion).toBe(2);
+
+    const replay = await fetch(`${base}/api/v1/projects/${project.id}/stories`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "m2c-story-1",
+        "if-match": String(project.version),
+      },
+      body,
+    });
+    expect(replay.status).toBe(201);
+    expect(await replay.json()).toEqual(created);
+
+    const staleVersion = await fetch(`${base}/api/v1/projects/${project.id}/stories`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "m2c-story-stale-version",
+        "if-match": String(project.version),
+      },
+      body: JSON.stringify({ content: { schema: "m2.story.revision.v1", premise: "must conflict" } }),
+    });
+    expect(staleVersion.status).toBe(409);
+
+    const missingEtag = await fetch(`${base}/api/v1/projects/${project.id}/stories`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "m2c-story-missing-etag",
+      },
+      body,
+    });
+    expect(missingEtag.status).toBe(400);
+
+    const outOfRangeEtag = await fetch(`${base}/api/v1/projects/${project.id}/stories`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "m2c-story-out-of-range-etag",
+        "if-match": "2147483648",
+      },
+      body,
+    });
+    expect(outOfRangeEtag.status).toBe(400);
+
+    const historyResponse = await fetch(`${base}/api/v1/projects/${project.id}/stories`);
+    expect(historyResponse.status).toBe(200);
+    const history = (await historyResponse.json()) as {
+      items: Array<{ id: string; revisionNo: number; reviewStatus: string; freshnessStatus: string }>;
+      nextCursor: string | null;
+    };
+    expect(history.items).toHaveLength(1);
+    expect(history.items[0]).toMatchObject({
+      id: created.revisionId,
+      revisionNo: 1,
+      reviewStatus: "DRAFT",
+      freshnessStatus: "CURRENT",
+    });
+
+    const episodesResponse = await fetch(`${base}/api/v1/projects/${project.id}/episodes`);
+    expect(episodesResponse.status).toBe(200);
+    const episodes = (await episodesResponse.json()) as { items: unknown[] };
+    expect(episodes.items).toEqual([]);
+  });
+
+  it("rejects invalid and non-finite story content", async () => {
+    const projectResponse = await fetch(`${base}/api/v1/projects`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": "m2c-invalid-project" },
+      body: JSON.stringify({ title: "Invalid story" }),
+    });
+    const project = (await projectResponse.json()) as { id: string; version: number };
+
+    const forbidden = await fetch(`${base}/api/v1/projects/${project.id}/stories`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "m2c-invalid-story",
+        "if-match": String(project.version),
+      },
+      body: JSON.stringify({ content: { rowVersion: 2 } }),
+    });
+    expect(forbidden.status).toBe(400);
+
+    const nonFinite = await fetch(`${base}/api/v1/projects/${project.id}/stories`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "m2c-non-finite-story",
+        "if-match": String(project.version),
+      },
+      body: '{"content":{"budget":1e400}}',
+    });
+    expect(nonFinite.status).toBe(400);
+    const body = (await nonFinite.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("INVALID_STORY");
+  });
+
+  it("paginates story revision history with a bounded cursor", async () => {
+    const projectResponse = await fetch(`${base}/api/v1/projects`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": "m2c-page-project" },
+      body: JSON.stringify({ title: "History paging" }),
+    });
+    const project = (await projectResponse.json()) as { id: string; version: number };
+    let version = project.version;
+
+    for (let revision = 1; revision <= 21; revision += 1) {
+      const response = await fetch(`${base}/api/v1/projects/${project.id}/stories`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": `m2c-page-story-${revision}`,
+          "if-match": String(version),
+        },
+        body: JSON.stringify({ content: { schema: "m2.story.revision.v1", revision } }),
+      });
+      expect(response.status).toBe(201);
+      const created = (await response.json()) as { rowVersion: number };
+      version = created.rowVersion;
+    }
+
+    const firstResponse = await fetch(`${base}/api/v1/projects/${project.id}/stories`);
+    const first = (await firstResponse.json()) as {
+      items: Array<{ revisionNo: number }>;
+      nextCursor: string | null;
+    };
+    expect(first.items).toHaveLength(20);
+    expect(first.nextCursor).toBe("2");
+
+    const secondResponse = await fetch(
+      `${base}/api/v1/projects/${project.id}/stories?cursor=${encodeURIComponent(first.nextCursor ?? "")}`,
+    );
+    const second = (await secondResponse.json()) as {
+      items: Array<{ revisionNo: number }>;
+      nextCursor: string | null;
+    };
+    expect(second.items.map((item) => item.revisionNo)).toEqual([1]);
+
+    const invalidCursor = await fetch(
+      `${base}/api/v1/projects/${project.id}/stories?cursor=not-a-revision`,
+    );
+    expect(invalidCursor.status).toBe(400);
+
+    const outOfRangeCursor = await fetch(
+      `${base}/api/v1/projects/${project.id}/stories?cursor=2147483648`,
+    );
+    expect(outOfRangeCursor.status).toBe(400);
+  });
+
 });
