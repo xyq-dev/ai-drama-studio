@@ -16,6 +16,7 @@ beforeAll(async () => {
 beforeEach(async () => {
   await pool.query(`
     TRUNCATE TABLE
+      asset_dependency,
       asset,
       provider_event,
       cost_ledger,
@@ -98,6 +99,64 @@ async function seedMediaAttempt(label = "primary") {
 }
 
 describe("M3-A media asset schema", () => {
+  it("accepts upload and local-job assets without a provider request", async () => {
+    const seeded = await seedMediaAttempt("non-provider");
+    const upload = await pool.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO asset (workspace_id, project_id, kind, storage_provider, object_key,
+        mime_type, byte_size, checksum_sha256, source_kind)
+       VALUES ($1,$2,'IMAGE','minio','manual/source.png','image/png',1,$3,'UPLOAD') RETURNING id`,
+      [seeded.workspaceId, seeded.projectId, hash],
+    );
+    const local = await pool.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO asset (workspace_id, project_id, kind, storage_provider, object_key,
+        mime_type, byte_size, checksum_sha256, source_kind, source_job_attempt_id, source_generation_job_id)
+       VALUES ($1,$2,'IMAGE','minio','local/result.png','image/png',1,$3,'LOCAL_JOB',$4,$5) RETURNING id`,
+      [seeded.workspaceId, seeded.projectId, hash, seeded.jobAttemptId, seeded.generationJobId],
+    );
+    expect(upload.rows[0]?.id).toBeTruthy();
+    expect(local.rows[0]?.id).toBeTruthy();
+    await expect(pool.query(
+      `INSERT INTO asset (workspace_id, project_id, kind, storage_provider, object_key,
+        mime_type, byte_size, checksum_sha256, source_kind)
+       VALUES ($1,$2,'IMAGE','minio','manual/invalid.png','image/png',1,$3,'PROVIDER')`,
+      [seeded.workspaceId, seeded.projectId, hash],
+    )).rejects.toThrow(/asset_source_kind_check/i);
+  });
+
+  it("keeps exact asset dependencies immutable and within one project", async () => {
+    const seeded = await seedMediaAttempt("dependency");
+    const makeAsset = async (key: string, projectId = seeded.projectId) => {
+      const result = await pool.query<{ id: string } & QueryResultRow>(
+        `INSERT INTO asset (workspace_id, project_id, kind, storage_provider, object_key,
+          mime_type, byte_size, checksum_sha256, source_kind)
+         VALUES ($1,$2,'IMAGE','minio',$3,'image/png',1,$4,'UPLOAD') RETURNING id`,
+        [seeded.workspaceId, projectId, key, hash],
+      );
+      if (!result.rows[0]?.id) throw new Error("asset missing");
+      return result.rows[0].id;
+    };
+    const source = await makeAsset("dependency/source.png");
+    const dependent = await makeAsset("dependency/generated.png");
+    const otherProject = await pool.query<{ id: string } & QueryResultRow>(
+      "INSERT INTO project (workspace_id, title) VALUES ($1, 'other-dependency-project') RETURNING id",
+      [seeded.workspaceId],
+    );
+    const alien = await makeAsset("dependency/alien.png", otherProject.rows[0]?.id);
+    await pool.query(
+      `INSERT INTO asset_dependency (workspace_id, project_id, dependent_asset_id, source_asset_id)
+       VALUES ($1,$2,$3,$4)`,
+      [seeded.workspaceId, seeded.projectId, dependent, source],
+    );
+    await expect(pool.query(
+      `INSERT INTO asset_dependency (workspace_id, project_id, dependent_asset_id, source_asset_id)
+       VALUES ($1,$2,$3,$4)`,
+      [seeded.workspaceId, seeded.projectId, dependent, alien],
+    )).rejects.toThrow(/foreign key/i);
+    await expect(pool.query(
+      "DELETE FROM asset_dependency WHERE dependent_asset_id = $1", [dependent],
+    )).rejects.toThrow(/immutable/i);
+  });
+
   it("stores immutable assets bound to the exact provider attempt", async () => {
     const seeded = await seedMediaAttempt();
 
@@ -346,6 +405,51 @@ describe("M3-A media asset schema", () => {
         ],
       ),
     ).rejects.toThrow(/matching lineage/i);
+  });
+
+  it("keeps both sides of a cost supersession immutable", async () => {
+    const seeded = await seedMediaAttempt("immutable-cost");
+    const estimate = await pool.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO cost_ledger
+        (workspace_id, project_id, generation_job_id, job_attempt_id,
+         idempotency_key, provider_configuration_id, provider_request_id,
+         currency, amount_decimal, kind, basis, provider, model)
+       VALUES ($1,$2,$3,$4,'immutable:estimate',$5,$6,
+               'USD',0.10,'ESTIMATED','LOCALLY_CALCULATED','mock-media','mock') RETURNING id`,
+      [seeded.workspaceId, seeded.projectId, seeded.generationJobId, seeded.jobAttemptId,
+        seeded.providerConfigurationId, seeded.providerRequestId],
+    );
+    const estimateId = estimate.rows[0]?.id;
+    if (!estimateId) throw new Error("estimate missing");
+
+    const actual = await pool.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO cost_ledger
+        (workspace_id, project_id, generation_job_id, job_attempt_id,
+         idempotency_key, provider_configuration_id, provider_request_id, supersedes_cost_id,
+         currency, amount_decimal, kind, basis, provider, model)
+       VALUES ($1,$2,$3,$4,'immutable:actual',$5,$6,$7,
+               'USD',0.08,'ACTUAL','PROVIDER_REPORTED','mock-media','mock') RETURNING id`,
+      [seeded.workspaceId, seeded.projectId, seeded.generationJobId, seeded.jobAttemptId,
+        seeded.providerConfigurationId, seeded.providerRequestId, estimateId],
+    );
+    const actualId = actual.rows[0]?.id;
+    if (!actualId) throw new Error("actual missing");
+
+    for (const [id, statement] of [
+      [estimateId, "UPDATE cost_ledger SET kind = 'ACTUAL' WHERE id = $1"],
+      [estimateId, "UPDATE cost_ledger SET model = 'changed' WHERE id = $1"],
+      [actualId, "UPDATE cost_ledger SET supersedes_cost_id = NULL WHERE id = $1"],
+      [estimateId, "DELETE FROM cost_ledger WHERE id = $1"],
+      [actualId, "DELETE FROM cost_ledger WHERE id = $1"],
+    ]) {
+      await expect(pool.query(statement, [id])).rejects.toThrow(/cost_ledger entries are immutable/i);
+    }
+
+    const stillLinked = await pool.query<{ kind: string; supersedes_cost_id: string | null } & QueryResultRow>(
+      "SELECT kind, supersedes_cost_id FROM cost_ledger WHERE id = $1",
+      [actualId],
+    );
+    expect(stillLinked.rows[0]).toMatchObject({ kind: "ACTUAL", supersedes_cost_id: estimateId });
   });
 
   it("rejects a cost whose provider request belongs to another attempt in the same workspace", async () => {
