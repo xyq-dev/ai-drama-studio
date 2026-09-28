@@ -172,7 +172,8 @@ describe("Mock three episode Scene workflow", () => {
     expect(revisions.rows.map((row) => row.episode_no)).toEqual([1, 2, 3]);
     expect(revisions.rows.every((row, index) => row.review_status === "DRAFT" &&
       row.source_script_revision_id === source.snapshot.episodes[index]?.scriptRevisionId)).toBe(true);
-    expect((await store.getJob(source.workspaceId, source.created.jobId)).state).toBe("SUCCEEDED");
+    const completed = await store.getJob(source.workspaceId, source.created.jobId);
+    expect(completed.state, `${completed.errorCode}: ${completed.errorMessage}`).toBe("SUCCEEDED");
     const response = await sql<{ response_snapshot: { sceneRevisionIds: string[] } }>(
       "SELECT response_snapshot FROM job_attempt WHERE generation_job_id = $1",
       [source.created.jobId],
@@ -259,7 +260,8 @@ describe("Mock three episode Shot workflow", () => {
       "SELECT response_snapshot FROM job_attempt WHERE generation_job_id = $1", [source.created.jobId],
     );
     expect(response.rows[0]?.response_snapshot.shotRevisionIds).toHaveLength(3);
-    expect((await store.getJob(source.workspaceId, source.created.jobId)).state).toBe("SUCCEEDED");
+    const completed = await store.getJob(source.workspaceId, source.created.jobId);
+    expect(completed.state, `${completed.errorCode}: ${completed.errorMessage}`).toBe("SUCCEEDED");
     await expect(completeMockJob(jobs, mockText, source.execution, source.attempt.attemptId,
       "shot-duplicate", {})).rejects.toMatchObject({ code: "JOB_TERMINAL" });
     expect((await sql("SELECT id FROM shot_revision WHERE project_id = $1", [source.projectId])).rowCount).toBe(3);

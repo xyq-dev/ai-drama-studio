@@ -127,7 +127,12 @@ export class MockTextService {
       throw new PersistenceError("VALIDATION_ERROR", "Invalid Mock Shot snapshot");
     }
     const current = await this.currentShotSources(client, workspaceId, snapshot.projectId);
-    if (JSON.stringify(current) !== JSON.stringify(snapshot.scenes)) {
+    if (current.length !== snapshot.scenes.length || current.some((scene, index) => {
+      const frozen = snapshot.scenes[index];
+      return !frozen || scene.episodeId !== frozen.episodeId || scene.episodeNo !== frozen.episodeNo ||
+        scene.sceneId !== frozen.sceneId || scene.sceneVersion !== frozen.sceneVersion ||
+        scene.sceneRevisionId !== frozen.sceneRevisionId;
+    })) {
       throw new PersistenceError("REVISION_CONFLICT", "Mock Shot sources changed since queueing");
     }
     const occupied = await client.query(
@@ -160,7 +165,12 @@ export class MockTextService {
       throw new PersistenceError("VALIDATION_ERROR", "Invalid Mock Scene snapshot");
     }
     const current = await this.currentSources(client, workspaceId, snapshot.projectId);
-    if (JSON.stringify(current) !== JSON.stringify(snapshot.episodes)) {
+    if (current.length !== snapshot.episodes.length || current.some((episode, index) => {
+      const frozen = snapshot.episodes[index];
+      return !frozen || episode.episodeId !== frozen.episodeId ||
+        episode.episodeNo !== frozen.episodeNo || episode.episodeVersion !== frozen.episodeVersion ||
+        episode.scriptRevisionId !== frozen.scriptRevisionId;
+    })) {
       throw new PersistenceError("REVISION_CONFLICT", "Mock Scene sources changed since queueing");
     }
     const occupied = await client.query<{ episode_id: string } & QueryResultRow>(
