@@ -198,7 +198,7 @@ describe("M3-A media asset schema", () => {
     )).rejects.toThrow(/immutable/i);
   });
 
-  it("binds derived assets to exact shot, scene, character and location revisions in their project", async () => {
+  it("binds derived assets to exact script, shot, scene, character and location revisions in their project", async () => {
     const seeded = await seedMediaAttempt("revision-dependency");
     const { workspaceId, projectId } = seeded;
     const insertId = async (sql: string, params: unknown[]) => {
@@ -275,6 +275,7 @@ describe("M3-A media asset schema", () => {
     );
 
     const revisions = [
+      ["script_revision_id", scriptRevisionId],
       ["shot_revision_id", shotRevisionId],
       ["scene_revision_id", sceneRevisionId],
       ["character_revision_id", characterRevisionId],
