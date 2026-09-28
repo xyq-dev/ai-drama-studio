@@ -303,6 +303,134 @@ describe("M3-B media asset store", () => {
     ).rejects.toMatchObject({ code: "REVIEW_REQUIRED" });
   });
 
+  it("rejects asset lineage from a different project in the same workspace", async () => {
+    const seeded = await seedApprovedShot();
+
+    const otherProject = await pool.query<{ id: string } & QueryResultRow>(
+      "INSERT INTO project (workspace_id, title) VALUES ($1, 'other-project') RETURNING id",
+      [seeded.workspaceId],
+    );
+    const otherProjectId = otherProject.rows[0]?.id;
+    if (!otherProjectId) throw new Error("other project missing");
+
+    const otherWorkflow = await pool.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO workflow_run
+        (workspace_id, project_id, type, requested_by, input_snapshot)
+       VALUES ($1,$2,'MEDIA_IMAGE','test','{}'::jsonb)
+       RETURNING id`,
+      [seeded.workspaceId, otherProjectId],
+    );
+    const otherWorkflowId = otherWorkflow.rows[0]?.id;
+    if (!otherWorkflowId) throw new Error("other workflow missing");
+
+    const otherJob = await pool.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO generation_job
+        (workspace_id, project_id, workflow_run_id, kind, input_hash, input_snapshot)
+       VALUES ($1,$2,$3,'MEDIA_IMAGE',$4,'{}'::jsonb)
+       RETURNING id`,
+      [seeded.workspaceId, otherProjectId, otherWorkflowId, hash],
+    );
+    const otherJobId = otherJob.rows[0]?.id;
+    if (!otherJobId) throw new Error("other job missing");
+
+    const otherAttempt = await pool.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO job_attempt
+        (workspace_id, generation_job_id, attempt_no, provider_configuration_id,
+         provider_request_id, provider_client_request_key, request_snapshot)
+       VALUES ($1,$2,1,$3,$4,'m3b-cross-project','{}'::jsonb)
+       RETURNING id`,
+      [
+        seeded.workspaceId,
+        otherJobId,
+        seeded.providerConfigurationId,
+        seeded.providerRequestId,
+      ],
+    );
+    const otherAttemptId = otherAttempt.rows[0]?.id;
+    if (!otherAttemptId) throw new Error("other attempt missing");
+
+    await expect(
+      store.createAsset({
+        workspaceId: seeded.workspaceId,
+        projectId: seeded.projectId,
+        kind: "IMAGE",
+        storageProvider: "minio",
+        objectKey: "shots/cross-project.png",
+        mimeType: "image/png",
+        byteSize: 1,
+        checksumSha256: hash,
+        sourceJobAttemptId: otherAttemptId,
+        sourceShotRevisionId: seeded.shotRevisionId,
+        providerConfigurationId: seeded.providerConfigurationId,
+        providerRequestId: seeded.providerRequestId,
+      }),
+    ).rejects.toMatchObject({ code: "ASSET_LINEAGE_INVALID" });
+  });
+
+  it("rejects a shot whose selected script dependency is not approved", async () => {
+    const seeded = await seedApprovedShot();
+    const source = await pool.query<{ script_revision_id: string; episode_id: string } & QueryResultRow>(
+      `SELECT source.script_revision_id, script.episode_id
+         FROM script_revision_consumer_source source
+         JOIN script_revision script ON script.id = source.script_revision_id
+        WHERE source.consumer_type = 'shot_revision'
+          AND source.consumer_revision_id = $1
+        LIMIT 1`,
+      [seeded.shotRevisionId],
+    );
+    const sourceScriptId = source.rows[0]?.script_revision_id;
+    const episodeId = source.rows[0]?.episode_id;
+    if (!sourceScriptId || !episodeId) throw new Error("shot script source missing");
+
+    const sourceStory = await pool.query<{ source_story_revision_id: string; revision_no: number } & QueryResultRow>(
+      `SELECT source_story_revision_id, revision_no FROM script_revision WHERE id = $1`,
+      [sourceScriptId],
+    );
+    const sourceStoryRevisionId = sourceStory.rows[0]?.source_story_revision_id;
+    const sourceRevisionNo = sourceStory.rows[0]?.revision_no;
+    if (!sourceStoryRevisionId || !sourceRevisionNo) throw new Error("source script data missing");
+
+    const replacement = await pool.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO script_revision
+        (workspace_id, project_id, episode_id, revision_no, source_story_revision_id,
+         content_json, content_hash, created_by)
+       VALUES ($1,$2,$3,$4,$5,'{}'::jsonb,$6,'test')
+       RETURNING id`,
+      [
+        seeded.workspaceId,
+        seeded.projectId,
+        episodeId,
+        sourceRevisionNo + 1,
+        sourceStoryRevisionId,
+        hash,
+      ],
+    );
+    const replacementId = replacement.rows[0]?.id;
+    if (!replacementId) throw new Error("replacement script missing");
+
+    await pool.query(
+      `UPDATE episode SET current_script_revision_id = $1 WHERE id = $2`,
+      [replacementId, episodeId],
+    );
+
+    await expect(
+      store.createAsset({
+        workspaceId: seeded.workspaceId,
+        projectId: seeded.projectId,
+        kind: "IMAGE",
+        storageProvider: "minio",
+        objectKey: "shots/unapproved-script.png",
+        mimeType: "image/png",
+        byteSize: 1,
+        checksumSha256: hash,
+        sourceJobAttemptId: seeded.jobAttemptId,
+        sourceShotRevisionId: seeded.shotRevisionId,
+        providerConfigurationId: seeded.providerConfigurationId,
+        providerRequestId: seeded.providerRequestId,
+      }),
+    ).rejects.toMatchObject({ code: "REVIEW_REQUIRED" });
+  });
+
   it("rejects conflicting replay content for the same storage object key", async () => {
     const seeded = await seedApprovedShot();
     const base = {
