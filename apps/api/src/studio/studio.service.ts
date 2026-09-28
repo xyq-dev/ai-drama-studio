@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   JobPersistenceService,
+  MediaAssetStore,
   MockTextService,
   PersistenceError,
   RuntimeStore,
@@ -71,6 +72,8 @@ const shotBodySchema = z.object({
   promptText: z.string().max(8000),
 });
 
+const generateImageBodySchema = z.object({ seed: z.string().max(200).optional() }).strict();
+
 const textEntityBodySchema = z.object({
   projectId: z.string().uuid().optional(),
   name: z.string().trim().min(1).max(200).optional(),
@@ -91,6 +94,8 @@ export class StudioService {
     private readonly textChain: TextChainService,
     private readonly workspaceId: string,
     private readonly mockText?: MockTextService,
+    private readonly mediaAssets?: MediaAssetStore,
+    private readonly mockImageEnabled = false,
   ) {}
 
   get workspace(): string {
@@ -565,6 +570,34 @@ export class StudioService {
     });
   }
 
+  async generateShotImage(shotRevisionId: string, body: unknown, context: StudioContext) {
+    const input = parse(generateImageBodySchema, rejectClientWorkspace(body));
+    if (!this.mockImageEnabled) {
+      throw new PersistenceError("CONFIGURATION_ERROR", "Mock image worker storage is not enabled");
+    }
+    if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
+    return this.jobs.createAndQueueWorkflowJob(
+      this.scope(context, "POST", `/shot-revisions/${shotRevisionId}/generate-image`, input),
+      async (client) => {
+        const { projectId } = await this.mediaAssets!.prepareShotGenerationInTransaction(
+          client, this.workspaceId, shotRevisionId,
+        );
+        const snapshot = { schema: "m3.mock.image.v1", shotRevisionId,
+          seed: input.seed ?? null, outcome: "success" };
+        return { workspaceId: this.workspaceId, projectId, sourceShotRevisionId: shotRevisionId,
+          type: "MEDIA_IMAGE", requestedBy: context.actorId, kind: "MEDIA_IMAGE",
+          inputHash: createHash("sha256").update(JSON.stringify(snapshot)).digest("hex"),
+          inputSnapshot: snapshot, traceId: context.traceId };
+      },
+    );
+  }
+
+  async listShotAssets(shotRevisionId: string) {
+    if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
+    const { projectId } = await this.mediaAssets.requireShotScope(this.workspaceId, shotRevisionId);
+    return { items: await this.mediaAssets.listShotAssets(this.workspaceId, projectId, shotRevisionId) };
+  }
+
   async createMockSceneWorkflow(projectId: string, context: StudioContext) {
     await this.store.getProject(this.workspaceId, projectId);
     if (!this.mockText) throw new PersistenceError("CONFIGURATION_ERROR", "Mock text service unavailable");
@@ -616,6 +649,9 @@ export class StudioService {
 
   async retryJob(jobId: string, context: StudioContext) {
     const job = await this.store.getJob(this.workspaceId, jobId);
+    if (job.kind === "MEDIA_IMAGE") {
+      throw new PersistenceError("JOB_NOT_RETRYABLE", "Media image retry is unavailable until shot lineage is preserved");
+    }
     const retryable =
       job.state === "CANCELED" ||
       (job.state === "FAILED" &&

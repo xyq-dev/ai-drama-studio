@@ -75,6 +75,8 @@ function env(): ReturnType<typeof loadApiEnv> {
     S3_ACCESS_KEY_ID: "test",
     S3_SECRET_ACCESS_KEY: "test",
     APP_WORKSPACE_ID,
+    M3_MOCK_IMAGE_ENABLED: "true",
+    MOCK_OBJECT_DIR: "/tmp/m3-api-mock-objects",
   });
 }
 
@@ -1096,6 +1098,12 @@ describe("M1-C API and SSE integration", () => {
     });
     expect(shotResponse.status).toBe(201);
     const shot = (await shotResponse.json()) as { entityId: string; revisionId: string; rowVersion: number };
+    const imagePath = `/shot-revisions/${shot.revisionId}/generate-image`;
+    const unapprovedImage = await fetch(`${base}/api/v1${imagePath}`, {
+      method: "POST", headers: { "content-type": "application/json", "idempotency-key": "m3-image-unapproved" },
+      body: JSON.stringify({ seed: "first" }),
+    });
+    expect(unapprovedImage.status).toBe(400);
     const history = await fetch(
       `${base}/api/v1${shotBase}/${shot.entityId}/revisions`,
     );
@@ -1129,5 +1137,79 @@ describe("M1-C API and SSE integration", () => {
       }, body: JSON.stringify({ to: "APPROVED", expectedReviewVersion: shotReview.reviewVersion }),
     });
     expect(shotApproved.status).toBe(200);
+    await sql(`INSERT INTO provider_configuration
+      (workspace_id, provider_key, capability, default_timeout_ms)
+      VALUES ($1,'mock-media','image.generate',30000)`, [APP_WORKSPACE_ID]);
+    const generate = await fetch(`${base}/api/v1${imagePath}`, {
+      method: "POST", headers: { "content-type": "application/json", "idempotency-key": "m3-image-create" },
+      body: JSON.stringify({ seed: "first" }),
+    });
+    expect(generate.status).toBe(202);
+    const createdImage = (await generate.json()) as { jobId: string; workflowRunId: string; dispatchSeq: number };
+    const replay = await fetch(`${base}/api/v1/shot-revisions/${shot.revisionId.toUpperCase()}/generate-image`, {
+      method: "POST", headers: { "content-type": "application/json", "idempotency-key": "m3-image-create" },
+      body: JSON.stringify({ seed: "first" }),
+    });
+    expect(replay.status).toBe(202);
+    expect(await replay.json()).toEqual(createdImage);
+    const conflicting = await fetch(`${base}/api/v1${imagePath}`, {
+      method: "POST", headers: { "content-type": "application/json", "idempotency-key": "m3-image-create" },
+      body: JSON.stringify({ seed: "different" }),
+    });
+    expect(conflicting.status).toBe(409);
+    const queued = await sql<{ project_id: string; source_shot_revision_id: string; state: string }>(
+      "SELECT project_id, source_shot_revision_id, state FROM generation_job WHERE id = $1",
+      [createdImage.jobId],
+    );
+    expect(queued.rows[0]).toMatchObject({ project_id: source.projectId,
+      source_shot_revision_id: shot.revisionId, state: "QUEUED" });
+    const cancelImage = await fetch(`${base}/api/v1/generation-jobs/${createdImage.jobId}/cancel`, {
+      method: "POST", headers: { "idempotency-key": "m3-image-cancel" },
+    });
+    expect(cancelImage.status).toBe(200);
+    const retryImage = await fetch(`${base}/api/v1/generation-jobs/${createdImage.jobId}/retry`, {
+      method: "POST", headers: { "idempotency-key": "m3-image-retry-blocked" },
+    });
+    expect(retryImage.status).toBe(409);
+    const mediaJobs = await sql<{ count: number }>(
+      "SELECT count(*)::int AS count FROM generation_job WHERE source_shot_revision_id = $1",
+      [shot.revisionId],
+    );
+    expect(mediaJobs.rows[0]?.count).toBe(1);
+    const emptyAssets = await fetch(`${base}/api/v1/shot-revisions/${shot.revisionId}/assets`);
+    expect(emptyAssets.status).toBe(200);
+    expect(await emptyAssets.json()).toEqual({ items: [] });
+    const siblingShot = (await sql<{ id: string }>(
+      `INSERT INTO shot (workspace_id, project_id, episode_id, scene_id)
+       VALUES ($1,$2,$3,$4) RETURNING id`,
+      [APP_WORKSPACE_ID, source.projectId, source.episodeId, scene.entityId],
+    )).rows[0]!;
+    const siblingRevision = (await sql<{ id: string }>(
+      `INSERT INTO shot_revision
+       (workspace_id, project_id, scene_id, shot_id, revision_no,
+        source_scene_revision_id, ordinal, shot_type, camera, action, prompt_text,
+        content_hash, created_by)
+       VALUES ($1,$2,$3,$4,1,$5,2,'WIDE','static','run','other',$6,'test') RETURNING id`,
+      [APP_WORKSPACE_ID, source.projectId, scene.entityId, siblingShot.id,
+        scene.revisionId, "cd".repeat(32)],
+    )).rows[0]!;
+    await sql(`INSERT INTO asset
+      (workspace_id, project_id, kind, storage_provider, object_key, mime_type,
+       byte_size, checksum_sha256, source_kind, source_shot_revision_id)
+      VALUES ($1,$2,'IMAGE','mock-test','shot-primary.png','image/png',1,$3,'UPLOAD',$4)`,
+    [APP_WORKSPACE_ID, source.projectId, "ab".repeat(32), shot.revisionId]);
+    await sql(`INSERT INTO asset
+      (workspace_id, project_id, kind, storage_provider, object_key, mime_type,
+       byte_size, checksum_sha256, source_kind, source_shot_revision_id)
+      VALUES ($1,$2,'IMAGE','mock-test','shot-sibling.png','image/png',1,$3,'UPLOAD',$4)`,
+    [APP_WORKSPACE_ID, source.projectId, "cd".repeat(32), siblingRevision.id]);
+    const listed = await fetch(`${base}/api/v1/shot-revisions/${shot.revisionId}/assets`);
+    expect(listed.status).toBe(200);
+    const listedBody = (await listed.json()) as {
+      items: Array<{ objectKey: string; providerRequestId: string | null }>;
+    };
+    expect(listedBody.items).toMatchObject([{ objectKey: "shot-primary.png", providerRequestId: null }]);
+    const unknownAssets = await fetch(`${base}/api/v1/shot-revisions/00000000-0000-4000-8000-000000000000/assets`);
+    expect(unknownAssets.status).toBe(404);
   });
 });

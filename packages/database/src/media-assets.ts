@@ -28,12 +28,47 @@ export interface MediaAssetRecord {
   mimeType: string;
   checksumSha256: string;
   sourceShotRevisionId: string | null;
-  providerRequestId: string;
+  providerRequestId: string | null;
   createdAt: string;
 }
 
 export class MediaAssetStore {
   constructor(private readonly pool: DatabasePool) {}
+
+  async requireShotScope(workspaceId: string, shotRevisionId: string): Promise<{ projectId: string }> {
+    const client = await this.pool.connect();
+    try {
+      const result = await client.query<{ project_id: string } & QueryResultRow>(
+        "SELECT project_id FROM shot_revision WHERE id = $1 AND workspace_id = $2",
+        [shotRevisionId, workspaceId],
+      );
+      const projectId = result.rows[0]?.project_id;
+      if (!projectId) throw new PersistenceError("NOT_FOUND", "Shot revision not found");
+      return { projectId };
+    } finally {
+      client.release();
+    }
+  }
+
+  async prepareShotGenerationInTransaction(
+    client: PoolClient, workspaceId: string, shotRevisionId: string,
+  ): Promise<{ projectId: string }> {
+    const result = await client.query<{ project_id: string } & QueryResultRow>(
+      "SELECT project_id FROM shot_revision WHERE id = $1 AND workspace_id = $2",
+      [shotRevisionId, workspaceId],
+    );
+    const projectId = result.rows[0]?.project_id;
+    if (!projectId) throw new PersistenceError("NOT_FOUND", "Shot revision not found");
+    await assertUsableShotWithClient(client, workspaceId, projectId, shotRevisionId, true);
+    const provider = await client.query(
+      `SELECT id FROM provider_configuration
+        WHERE workspace_id = $1 AND provider_key = 'mock-media'
+          AND capability = 'image.generate' AND enabled LIMIT 1`,
+      [workspaceId],
+    );
+    if (!provider.rows[0]) throw new PersistenceError("PROVIDER_CONFIG_INVALID", "Mock image provider is unavailable");
+    return { projectId };
+  }
 
   async completeAttemptWithAsset(
     jobs: JobPersistenceService,
@@ -453,7 +488,7 @@ function mapAsset(row: QueryResultRow): MediaAssetRecord {
     checksumSha256: String(row.checksum_sha256),
     sourceShotRevisionId:
       row.source_shot_revision_id === null ? null : String(row.source_shot_revision_id),
-    providerRequestId: String(row.provider_request_id),
+    providerRequestId: row.provider_request_id == null ? null : String(row.provider_request_id),
     createdAt: new Date(row.created_at as Date | string).toISOString(),
   };
 }

@@ -422,6 +422,23 @@ export class StudioController {
     );
   }
 
+  @Post("shot-revisions/:revisionId/generate-image")
+  generateShotImage(
+    @Param("revisionId", UUID_PARAM_PIPE) revisionId: string,
+    @Body() body: unknown,
+    @Res({ passthrough: true }) response: StatusResponse,
+    @Headers("idempotency-key") key?: string,
+    @Headers("x-trace-id") trace?: string,
+  ) {
+    return this.send(response,
+      this.studio.generateShotImage(revisionId, body, this.context(key, trace)));
+  }
+
+  @Get("shot-revisions/:revisionId/assets")
+  listShotAssets(@Param("revisionId", UUID_PARAM_PIPE) revisionId: string) {
+    return this.studio.listShotAssets(revisionId);
+  }
+
   @Post("projects/:projectId/workflows/mock-scenes")
   createMockScenes(
     @Param("projectId", UUID_PARAM_PIPE) projectId: string,
