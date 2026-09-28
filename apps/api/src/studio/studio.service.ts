@@ -3,6 +3,7 @@ import {
   JobPersistenceService,
   PersistenceError,
   RuntimeStore,
+  TextChainService,
   insertProject,
   requestHash,
   type IdempotencyScope,
@@ -19,6 +20,33 @@ const mockWorkflowSchema = z.object({
   label: z.string().max(200).default("mock"),
 });
 
+const storyRevisionBodySchema = z.object({
+  content: z.record(z.string(), z.unknown()),
+});
+
+const scriptRevisionBodySchema = z.object({
+  storyRevisionId: z.string().uuid().optional(),
+  sourceStoryRevisionId: z.string().uuid().optional(),
+  content: z.record(z.string(), z.unknown()),
+}).superRefine((value, context) => {
+  if (!value.storyRevisionId && !value.sourceStoryRevisionId) {
+    context.addIssue({ code: "custom", message: "storyRevisionId is required" });
+  }
+  if (
+    value.storyRevisionId &&
+    value.sourceStoryRevisionId &&
+    value.storyRevisionId !== value.sourceStoryRevisionId
+  ) {
+    context.addIssue({ code: "custom", message: "story revision fields must match" });
+  }
+});
+
+const reviewBodySchema = z.object({
+  to: z.enum(["IN_REVIEW", "REJECTED", "APPROVED"]),
+  expectedReviewVersion: z.number().int().min(1).max(2_147_483_647),
+  reviewNote: z.string().max(4000).nullable().optional(),
+});
+
 export interface StudioContext {
   actorId: string;
   traceId: string;
@@ -29,6 +57,7 @@ export class StudioService {
   constructor(
     private readonly jobs: JobPersistenceService,
     private readonly store: RuntimeStore,
+    private readonly textChain: TextChainService,
     private readonly workspaceId: string,
   ) {}
 
@@ -49,6 +78,279 @@ export class StudioService {
 
   async getProject(projectId: string) {
     return this.store.getProject(this.workspaceId, projectId);
+  }
+
+  async createStoryRevision(
+    projectId: string,
+    body: unknown,
+    ifMatch: string | undefined,
+    context: StudioContext,
+  ) {
+    await this.store.getProject(this.workspaceId, projectId);
+    const input = parse(storyRevisionBodySchema, rejectClientWorkspace(body));
+    if (!containsOnlyFiniteJsonValues(input.content)) {
+      throw new PersistenceError("INVALID_STORY", "Story content contains a value PostgreSQL jsonb cannot store");
+    }
+    const expectedVersion = parseAggregateVersion(ifMatch);
+    const request = { content: input.content, expectedVersion };
+    try {
+      return await this.jobs.runIdempotent(
+        this.scope(context, "POST", `/projects/${projectId}/stories`, request),
+        201,
+        (client) =>
+          this.textChain.createStoryRevisionInTransaction(client, {
+            workspaceId: this.workspaceId,
+            projectId,
+            content: input.content,
+            createdBy: context.actorId,
+            expectedVersion,
+            traceId: context.traceId,
+          }),
+      );
+    } catch (error) {
+      if (isCanonicalContentError(error)) {
+        throw new PersistenceError("INVALID_STORY", "Story content is invalid");
+      }
+      throw error;
+    }
+  }
+
+  async listStoryRevisions(projectId: string, cursor?: string) {
+    await this.store.getProject(this.workspaceId, projectId);
+    return this.textChain.listStoryRevisions(this.workspaceId, projectId, cursor);
+  }
+
+  async listEpisodes(projectId: string) {
+    await this.store.getProject(this.workspaceId, projectId);
+    return { items: await this.textChain.listEpisodes(this.workspaceId, projectId) };
+  }
+
+  async createScriptRevision(
+    projectId: string,
+    episodeId: string,
+    body: unknown,
+    ifMatch: string | undefined,
+    context: StudioContext,
+  ) {
+    await this.store.getProject(this.workspaceId, projectId);
+    const episode = await this.textChain.requireEpisode(this.workspaceId, projectId, episodeId);
+    const input = parse(scriptRevisionBodySchema, rejectClientWorkspace(body));
+    if (!containsOnlyFiniteJsonValues(input.content)) {
+      throw new PersistenceError("INVALID_SCRIPT", "Script content contains a non-finite number");
+    }
+    const expectedVersion = parseAggregateVersion(ifMatch);
+    const sourceStoryRevisionId = (input.storyRevisionId ?? input.sourceStoryRevisionId)?.toLowerCase();
+    if (!sourceStoryRevisionId) {
+      throw new PersistenceError("VALIDATION_ERROR", "storyRevisionId is required");
+    }
+    const request = {
+      storyRevisionId: sourceStoryRevisionId,
+      content: input.content,
+      expectedVersion,
+    };
+    try {
+      return await this.jobs.runIdempotent(
+        this.scope(
+          context,
+          "POST",
+          `/episodes/${episode.id}/scripts`,
+          request,
+        ),
+        201,
+        (client) =>
+          this.textChain.createScriptRevisionInTransaction(client, {
+            workspaceId: this.workspaceId,
+            projectId,
+            episodeId: episode.id,
+            sourceStoryRevisionId,
+            content: input.content,
+            createdBy: context.actorId,
+            expectedVersion,
+            traceId: context.traceId,
+          }),
+      );
+    } catch (error) {
+      if (error instanceof PersistenceError && error.code === "REVIEW_REQUIRED") {
+        throw new PersistenceError("SOURCE_STORY_REQUIRED", error.message);
+      }
+      if (isCanonicalContentError(error)) {
+        throw new PersistenceError("INVALID_SCRIPT", "Script content is invalid");
+      }
+      throw error;
+    }
+  }
+
+  async listScriptRevisions(projectId: string, episodeId: string, cursor?: string) {
+    await this.store.getProject(this.workspaceId, projectId);
+    await this.textChain.requireEpisode(this.workspaceId, projectId, episodeId);
+    return this.textChain.listScriptRevisions(this.workspaceId, projectId, episodeId, cursor);
+  }
+
+  async reviewStoryRevision(
+    projectId: string,
+    revisionId: string,
+    body: unknown,
+    ifMatch: string | undefined,
+    context: StudioContext,
+  ) {
+    await this.store.getProject(this.workspaceId, projectId);
+    const input = parse(reviewBodySchema, rejectClientWorkspace(body));
+    const expectedVersion = parseAggregateVersion(ifMatch);
+    const request = { ...input, expectedVersion };
+    try {
+      return await this.jobs.runIdempotent(
+        this.scope(context, "POST", `/projects/${projectId}/stories/${revisionId}/review`, request),
+        200,
+        async (client) => {
+        const revision = await this.textChain.requireStoryRevisionInTransaction(
+          client,
+          this.workspaceId,
+          revisionId,
+        );
+        if (revision.projectId !== projectId) {
+          throw new PersistenceError("NOT_FOUND", "Story revision not found in project");
+        }
+        if (input.to === "APPROVED") {
+          return this.textChain.approveStoryInTransaction(client, {
+            workspaceId: this.workspaceId,
+            projectId,
+            revisionId,
+            expectedVersion,
+            expectedReviewVersion: input.expectedReviewVersion,
+            reviewedBy: context.actorId,
+            reviewNote: input.reviewNote ?? null,
+            traceId: context.traceId,
+          });
+        }
+        return this.textChain.transitionReviewInTransaction(client, {
+          table: "story_revision",
+          revisionId,
+          workspaceId: this.workspaceId,
+          expectedVersion,
+          expectedReviewVersion: input.expectedReviewVersion,
+          to: input.to,
+          reviewedBy: input.to === "REJECTED" ? context.actorId : undefined,
+          reviewNote: input.reviewNote ?? null,
+          traceId: context.traceId,
+        });
+        },
+      );
+    } catch (error) {
+      throwReviewTransitionError(error);
+    }
+  }
+
+  async reviewScriptRevisionById(
+    revisionId: string,
+    body: unknown,
+    ifMatch: string | undefined,
+    context: StudioContext,
+  ) {
+    const revision = await this.textChain.requireScriptRevision(this.workspaceId, revisionId);
+    return this.reviewScriptRevisionWithRoute(
+      revision.projectId,
+      revision.episodeId,
+      revisionId,
+      body,
+      ifMatch,
+      context,
+      `/script-revisions/${revisionId}/review`,
+    );
+  }
+
+  async reviewScriptRevision(
+    projectId: string,
+    episodeId: string,
+    revisionId: string,
+    body: unknown,
+    ifMatch: string | undefined,
+    context: StudioContext,
+  ) {
+    return this.reviewScriptRevisionWithRoute(
+      projectId,
+      episodeId,
+      revisionId,
+      body,
+      ifMatch,
+      context,
+      `/projects/${projectId}/episodes/${episodeId}/scripts/${revisionId}/review`,
+    );
+  }
+
+  private async reviewScriptRevisionWithRoute(
+    projectId: string,
+    episodeId: string,
+    revisionId: string,
+    body: unknown,
+    ifMatch: string | undefined,
+    context: StudioContext,
+    routeKey: string,
+  ) {
+    await this.store.getProject(this.workspaceId, projectId);
+    const input = parse(reviewBodySchema, rejectClientWorkspace(body));
+    const expectedVersion = parseAggregateVersion(ifMatch);
+    const request = { ...input, expectedVersion };
+    try {
+      return await this.jobs.runIdempotent(
+        this.scope(context, "POST", routeKey, request),
+        200,
+        async (client) => {
+        const revision = await this.textChain.requireScriptRevisionInTransaction(
+          client,
+          this.workspaceId,
+          revisionId,
+        );
+        if (revision.projectId !== projectId || revision.episodeId !== episodeId) {
+          throw new PersistenceError("NOT_FOUND", "Script revision not found in route scope");
+        }
+        if (input.to === "APPROVED") {
+          return this.textChain.approveScriptInTransaction(client, {
+            workspaceId: this.workspaceId,
+            episodeId,
+            revisionId,
+            expectedVersion,
+            expectedReviewVersion: input.expectedReviewVersion,
+            reviewedBy: context.actorId,
+            reviewNote: input.reviewNote ?? null,
+            traceId: context.traceId,
+          });
+        }
+        return this.textChain.transitionReviewInTransaction(client, {
+          table: "script_revision",
+          revisionId,
+          workspaceId: this.workspaceId,
+          expectedVersion,
+          expectedReviewVersion: input.expectedReviewVersion,
+          to: input.to,
+          reviewedBy: input.to === "REJECTED" ? context.actorId : undefined,
+          reviewNote: input.reviewNote ?? null,
+          traceId: context.traceId,
+        });
+        },
+      );
+    } catch (error) {
+      throwReviewTransitionError(error);
+    }
+  }
+
+  async listScriptRevisionsByEpisode(episodeId: string, cursor?: string) {
+    const episode = await this.textChain.requireEpisode(this.workspaceId, undefined, episodeId);
+    return this.textChain.listScriptRevisions(
+      this.workspaceId,
+      episode.projectId,
+      episodeId,
+      cursor,
+    );
+  }
+
+  async createScriptRevisionByEpisode(
+    episodeId: string,
+    body: unknown,
+    ifMatch: string | undefined,
+    context: StudioContext,
+  ) {
+    const episode = await this.textChain.requireEpisode(this.workspaceId, undefined, episodeId);
+    return this.createScriptRevision(episode.projectId, episodeId, body, ifMatch, context);
   }
 
   async createMockWorkflow(projectId: string, body: unknown, context: StudioContext) {
@@ -148,6 +450,77 @@ function parse<T>(schema: z.ZodType<T>, body: unknown): T {
   const parsed = schema.safeParse(body);
   if (!parsed.success) throw new PersistenceError("VALIDATION_ERROR", "Request body is invalid");
   return parsed.data;
+}
+
+function parseAggregateVersion(value: string | undefined): number {
+  if (!value) {
+    throw new PersistenceError("VALIDATION_ERROR", "If-Match aggregate version is required");
+  }
+  const match = /^"?([1-9][0-9]*)"?$/.exec(value.trim());
+  if (!match) {
+    throw new PersistenceError("VALIDATION_ERROR", "If-Match must contain a positive aggregate version");
+  }
+  const parsed = Number(match[1]);
+  if (!Number.isSafeInteger(parsed) || parsed > 2_147_483_647) {
+    throw new PersistenceError("VALIDATION_ERROR", "If-Match aggregate version is out of range");
+  }
+  return parsed;
+}
+
+function containsOnlyFiniteJsonValues(value: unknown): boolean {
+  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value === "string") return isPostgresJsonString(value);
+  if (Array.isArray(value)) return value.every((item) => containsOnlyFiniteJsonValues(item));
+  if (value && typeof value === "object") {
+    return Object.entries(value as Record<string, unknown>).every(
+      ([key, item]) => isPostgresJsonString(key) && containsOnlyFiniteJsonValues(item),
+    );
+  }
+  return true;
+}
+
+function isPostgresJsonString(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit === 0) return false;
+
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (Number.isNaN(next) || next < 0xdc00 || next > 0xdfff) return false;
+      index += 1;
+      continue;
+    }
+
+    if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) return false;
+  }
+  return true;
+}
+
+function throwReviewTransitionError(error: unknown): never {
+  if (error && typeof error === "object") {
+    const candidate = error as { name?: unknown; code?: unknown; message?: unknown };
+    const isInvalidTransition =
+      candidate.name === "DomainError" && candidate.code === "REVIEW_INVALID_TRANSITION";
+    const isReviewVersionConflict =
+      candidate.name === "PersistenceError" && candidate.code === "REVISION_CONFLICT";
+    if (isInvalidTransition || isReviewVersionConflict) {
+      throw new PersistenceError(
+        "REVIEW_CONFLICT",
+        typeof candidate.message === "string" ? candidate.message : "Review state changed",
+      );
+    }
+  }
+  throw error;
+}
+
+function isCanonicalContentError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as { name?: unknown; code?: unknown };
+  return (
+    candidate.name === "DomainError" &&
+    typeof candidate.code === "string" &&
+    candidate.code.startsWith("CANONICAL_")
+  );
 }
 
 export function createTraceId(header: string | undefined): string {

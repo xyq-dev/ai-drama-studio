@@ -270,6 +270,37 @@ describe("M3-B media asset store", () => {
     const replay = await store.createAsset(input);
     expect(replay).toEqual(first);
 
+    const lineage = await pool.query<{ source_generation_job_id: string } & QueryResultRow>(
+      "SELECT source_generation_job_id FROM asset WHERE id = $1",
+      [first.id],
+    );
+    expect(lineage.rows[0]?.source_generation_job_id).toBe(seeded.generationJobId);
+
+    const dependencies = await pool.query<{
+      shot_revision_id: string | null;
+      scene_revision_id: string | null;
+      script_revision_id: string | null;
+    } & QueryResultRow>(
+      `SELECT shot_revision_id, scene_revision_id, script_revision_id
+         FROM asset_revision_dependency WHERE dependent_asset_id = $1`,
+      [first.id],
+    );
+    const source = await pool.query<{
+      source_scene_revision_id: string;
+      source_script_revision_id: string;
+    } & QueryResultRow>(
+      `SELECT shot.source_scene_revision_id, scene.source_script_revision_id
+         FROM shot_revision shot JOIN scene_revision scene
+           ON scene.id = shot.source_scene_revision_id WHERE shot.id = $1`,
+      [seeded.shotRevisionId],
+    );
+    expect(dependencies.rows).toHaveLength(3);
+    expect(dependencies.rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ shot_revision_id: seeded.shotRevisionId }),
+      expect.objectContaining({ scene_revision_id: source.rows[0]?.source_scene_revision_id }),
+      expect.objectContaining({ script_revision_id: source.rows[0]?.source_script_revision_id }),
+    ]));
+
     const listed = await store.listShotAssets(
       seeded.workspaceId,
       seeded.projectId,
@@ -522,6 +553,36 @@ describe("M3-B media asset store", () => {
         providerRequestId: seeded.providerRequestId,
       }),
     ).rejects.toMatchObject({ code: "REVIEW_REQUIRED" });
+  });
+
+  it("rejects an approved shot when its scene script source is stale", async () => {
+    const seeded = await seedApprovedShot();
+    await pool.query(
+      `UPDATE script_revision SET freshness_status = 'STALE',
+          stale_reason = 'TEST', stale_from_ref = 'story_revision:11111111-1111-4111-8111-111111111111'
+        WHERE id = (
+          SELECT scene_revision.source_script_revision_id
+            FROM shot_revision JOIN scene_revision
+              ON scene_revision.id = shot_revision.source_scene_revision_id
+           WHERE shot_revision.id = $1
+        )`,
+      [seeded.shotRevisionId],
+    );
+
+    await expect(store.createAsset({
+      workspaceId: seeded.workspaceId,
+      projectId: seeded.projectId,
+      kind: "IMAGE",
+      storageProvider: "minio",
+      objectKey: "shots/stale-scene-script.png",
+      mimeType: "image/png",
+      byteSize: 1,
+      checksumSha256: hash,
+      sourceJobAttemptId: seeded.jobAttemptId,
+      sourceShotRevisionId: seeded.shotRevisionId,
+      providerConfigurationId: seeded.providerConfigurationId,
+      providerRequestId: seeded.providerRequestId,
+    })).rejects.toMatchObject({ code: "REVIEW_REQUIRED" });
   });
 
   it("replays an existing asset after its source shot becomes stale", async () => {

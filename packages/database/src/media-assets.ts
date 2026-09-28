@@ -111,31 +111,30 @@ async function assertUsableShotWithClient(
   shotRevisionId: string,
   lockRows: boolean,
 ): Promise<void> {
-  const project = await client.query<{ has_pending_stale: boolean } & QueryResultRow>(
-    `SELECT EXISTS (
-        SELECT 1
-          FROM stale_recalculation work
-         WHERE work.workspace_id = project.workspace_id
-           AND work.project_id = project.id
-           AND work.status IN ('PENDING', 'RUNNING')
-      ) AS has_pending_stale
-       FROM project
-      WHERE id = $1 AND workspace_id = $2
-      ${lockRows ? "FOR SHARE OF project" : ""}`,
+  const project = await client.query(
+    `SELECT id FROM project WHERE id = $1 AND workspace_id = $2
+      ${lockRows ? "FOR UPDATE" : ""}`,
     [projectId, workspaceId],
   );
-  const projectRow = project.rows[0];
-  if (!projectRow) {
+  if (!project.rows[0]) {
     throw new PersistenceError("NOT_FOUND", "Project not found");
   }
-  if (projectRow.has_pending_stale) {
+  // Read after acquiring the project lock. Pointer changes and stale propagation
+  // use this same lock; a pre-lock subquery can observe an obsolete snapshot.
+  const pending = await client.query(
+    `SELECT 1 FROM stale_recalculation
+      WHERE workspace_id = $1 AND project_id = $2 AND status IN ('PENDING', 'RUNNING')
+      LIMIT 1`,
+    [workspaceId, projectId],
+  );
+  if (pending.rows[0]) {
     throw new PersistenceError(
       "STALE_RECALCULATION_PENDING",
       "Media generation is blocked until stale propagation completes",
     );
   }
 
-  const shotGate = await client.query<{ ok: boolean } & QueryResultRow>(
+  const shotGate = await client.query<{ ok: boolean; source_scene_revision_id: string } & QueryResultRow>(
     `SELECT (
         shot.current_revision_id = revision.id
         AND shot.approved_revision_id = revision.id
@@ -145,7 +144,7 @@ async function assertUsableShotWithClient(
         AND scene.approved_revision_id = revision.source_scene_revision_id
         AND scene_revision.review_status = 'APPROVED'
         AND scene_revision.freshness_status = 'CURRENT'
-      ) AS ok
+      ) AS ok, revision.source_scene_revision_id
        FROM shot_revision revision
        JOIN shot
          ON shot.id = revision.shot_id
@@ -170,6 +169,25 @@ async function assertUsableShotWithClient(
       "REVIEW_REQUIRED",
       "Media generation requires the current approved non-stale shot and scene revisions",
     );
+  }
+
+  // A shot may retain an approved scene pointer while the scene's script source
+  // has changed; check that upstream dependency before creating a new asset.
+  const sceneScript = await client.query<{ script_revision_id: string } & QueryResultRow>(
+    `SELECT script_revision_id FROM script_revision_consumer_source
+      WHERE workspace_id = $1 AND project_id = $2
+        AND consumer_type = 'scene_revision' AND consumer_revision_id = $3`,
+    [workspaceId, projectId, shotGate.rows[0].source_scene_revision_id],
+  );
+  if (sceneScript.rows.length !== 1) {
+    throw new PersistenceError("REVIEW_REQUIRED", "Media generation requires a valid scene script source");
+  }
+  const sceneScriptUsable = await client.query<{ ok: boolean } & QueryResultRow>(
+    `SELECT m2_script_source_is_usable($1, $2, 'scene_revision', $3, $4) AS ok`,
+    [workspaceId, projectId, shotGate.rows[0].source_scene_revision_id, sceneScript.rows[0]!.script_revision_id],
+  );
+  if (sceneScriptUsable.rows[0]?.ok !== true) {
+    throw new PersistenceError("REVIEW_REQUIRED", "Media generation requires a usable scene script source");
   }
 
   const invalidCharacters = await client.query(
@@ -304,8 +322,8 @@ async function insertAsset(
   client: PoolClient,
   input: CreateMediaAssetInput,
 ): Promise<MediaAssetRecord> {
-  const lineage = await client.query(
-    `SELECT 1
+  const lineage = await client.query<{ generation_job_id: string } & QueryResultRow>(
+    `SELECT job.id AS generation_job_id
        FROM job_attempt attempt
        JOIN generation_job job
          ON job.id = attempt.generation_job_id
@@ -326,7 +344,8 @@ async function insertAsset(
       input.sourceShotRevisionId ?? null,
     ],
   );
-  if (!lineage.rows[0]) {
+  const generationJobId = lineage.rows[0]?.generation_job_id;
+  if (!generationJobId) {
     throw new PersistenceError(
       "ASSET_LINEAGE_INVALID",
       "Asset source attempt does not belong to the requested project/provider/shot lineage",
@@ -337,9 +356,9 @@ async function insertAsset(
     `INSERT INTO asset
       (workspace_id, project_id, kind, storage_provider, object_key, mime_type,
        byte_size, checksum_sha256, width, height, duration_ms,
-       source_job_attempt_id, source_shot_revision_id,
+       source_job_attempt_id, source_generation_job_id, source_shot_revision_id,
        provider_configuration_id, provider_request_id, metadata_json)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::jsonb)
      ON CONFLICT (storage_provider, object_key) DO NOTHING
      RETURNING id, project_id, kind, object_key, mime_type, checksum_sha256,
                source_shot_revision_id, provider_request_id, created_at`,
@@ -356,6 +375,7 @@ async function insertAsset(
       input.height ?? null,
       input.durationMs ?? null,
       input.sourceJobAttemptId,
+      generationJobId,
       input.sourceShotRevisionId ?? null,
       input.providerConfigurationId,
       input.providerRequestId,
@@ -369,6 +389,34 @@ async function insertAsset(
       throw new PersistenceError("ASSET_CREATE_FAILED", "Asset was not created");
     }
     return replay;
+  }
+  if (input.sourceShotRevisionId) {
+    await client.query(
+      `INSERT INTO asset_revision_dependency
+        (workspace_id, project_id, dependent_asset_id,
+         shot_revision_id, scene_revision_id, script_revision_id)
+       WITH source AS (
+         SELECT shot.id AS shot_id, scene.id AS scene_id
+           FROM shot_revision shot
+           JOIN scene_revision scene
+             ON scene.id = shot.source_scene_revision_id
+            AND scene.workspace_id = shot.workspace_id
+            AND scene.project_id = shot.project_id
+          WHERE shot.id = $4 AND shot.workspace_id = $2 AND shot.project_id = $3
+       ), script_sources AS (
+         SELECT DISTINCT edge.script_revision_id
+           FROM script_revision_consumer_source edge, source
+          WHERE edge.workspace_id = $2 AND edge.project_id = $3
+            AND ((edge.consumer_type = 'shot_revision' AND edge.consumer_revision_id = source.shot_id)
+              OR (edge.consumer_type = 'scene_revision' AND edge.consumer_revision_id = source.scene_id))
+       )
+       SELECT $2, $3, $1, shot_id, NULL, NULL FROM source
+       UNION ALL
+       SELECT $2, $3, $1, NULL, scene_id, NULL FROM source
+       UNION ALL
+       SELECT $2, $3, $1, NULL, NULL, script_revision_id FROM script_sources`,
+      [row.id, input.workspaceId, input.projectId, input.sourceShotRevisionId],
+    );
   }
   return mapAsset(row);
 }

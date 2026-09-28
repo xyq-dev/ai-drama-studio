@@ -210,10 +210,12 @@ model CostLedger {
   workspaceId       String   @map("workspace_id") @db.Uuid
   projectId         String   @map("project_id") @db.Uuid
   generationJobId   String   @map("generation_job_id") @db.Uuid
-  jobAttemptId      String?  @map("job_attempt_id") @db.Uuid
-  idempotencyKey    String?  @map("idempotency_key")
-  providerRequestId String?  @map("provider_request_id")
+  jobAttemptId             String?  @map("job_attempt_id") @db.Uuid
+  idempotencyKey            String?  @map("idempotency_key")
+  providerConfigurationId   String?  @map("provider_configuration_id") @db.Uuid
+  providerRequestId         String?  @map("provider_request_id")
   supersedesCostId  String?  @map("supersedes_cost_id") @db.Uuid
+  supersedesEstimateKey String? @map("supersedes_estimate_key")
   currency          String   @db.Char(3)
   amountDecimal     Decimal  @map("amount_decimal") @db.Decimal(20, 8)
   kind              String
@@ -588,11 +590,20 @@ model Asset {
   width                   Int?
   height                  Int?
   durationMs              BigInt?  @map("duration_ms")
-  sourceJobAttemptId      String   @map("source_job_attempt_id") @db.Uuid
+  sourceKind              String   @default("PROVIDER") @map("source_kind")
+  sourceJobAttemptId      String?  @map("source_job_attempt_id") @db.Uuid
+  sourceGenerationJobId   String?  @map("source_generation_job_id") @db.Uuid
   sourceShotRevisionId    String?  @map("source_shot_revision_id") @db.Uuid
-  providerConfigurationId String   @map("provider_configuration_id") @db.Uuid
-  providerRequestId       String   @map("provider_request_id")
+  providerConfigurationId String?  @map("provider_configuration_id") @db.Uuid
+  providerRequestId       String?  @map("provider_request_id")
   metadataJson            Json     @default("{}") @map("metadata_json") @db.JsonB
+  status                  String   @default("ACTIVE")
+  reviewStatus            String   @default("DRAFT") @map("review_status")
+  reviewedBy              String?  @map("reviewed_by")
+  reviewedAt              DateTime? @map("reviewed_at") @db.Timestamptz(6)
+  reviewNote              String?  @map("review_note")
+  reviewedContentHash     String?  @map("reviewed_content_hash")
+  rowVersion              Int      @default(1) @map("row_version")
   createdAt               DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   @@unique([storageProvider, objectKey])
@@ -600,5 +611,41 @@ model Asset {
   @@unique([id, projectId, workspaceId])
   @@index([workspaceId, projectId, kind, createdAt])
   @@index([workspaceId, sourceShotRevisionId, createdAt])
+  @@index([workspaceId, projectId, checksumSha256, kind])
+  @@index([workspaceId, projectId, status])
   @@map("asset")
+}
+
+/// Immutable, project-scoped edge from a derived asset to an exact input asset.
+model AssetDependency {
+  workspaceId      String   @map("workspace_id") @db.Uuid
+  projectId        String   @map("project_id") @db.Uuid
+  dependentAssetId String   @map("dependent_asset_id") @db.Uuid
+  sourceAssetId    String   @map("source_asset_id") @db.Uuid
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@id([dependentAssetId, sourceAssetId])
+  @@index([workspaceId, projectId, sourceAssetId])
+  @@map("asset_dependency")
+}
+
+/// Immutable edge to one typed source revision in the dependent asset's project.
+model AssetRevisionDependency {
+  id                  String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspaceId         String   @map("workspace_id") @db.Uuid
+  projectId           String   @map("project_id") @db.Uuid
+  dependentAssetId    String   @map("dependent_asset_id") @db.Uuid
+  shotRevisionId      String?  @map("shot_revision_id") @db.Uuid
+  sceneRevisionId     String?  @map("scene_revision_id") @db.Uuid
+  scriptRevisionId    String?  @map("script_revision_id") @db.Uuid
+  characterRevisionId String?  @map("character_revision_id") @db.Uuid
+  locationRevisionId  String?  @map("location_revision_id") @db.Uuid
+  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([workspaceId, projectId, shotRevisionId])
+  @@index([workspaceId, projectId, sceneRevisionId])
+  @@index([workspaceId, projectId, scriptRevisionId])
+  @@index([workspaceId, projectId, characterRevisionId])
+  @@index([workspaceId, projectId, locationRevisionId])
+  @@map("asset_revision_dependency")
 }
