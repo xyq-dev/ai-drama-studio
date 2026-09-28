@@ -25,8 +25,20 @@ const storyRevisionBodySchema = z.object({
 });
 
 const scriptRevisionBodySchema = z.object({
-  sourceStoryRevisionId: z.string().uuid(),
+  storyRevisionId: z.string().uuid().optional(),
+  sourceStoryRevisionId: z.string().uuid().optional(),
   content: z.record(z.string(), z.unknown()),
+}).superRefine((value, context) => {
+  if (!value.storyRevisionId && !value.sourceStoryRevisionId) {
+    context.addIssue({ code: "custom", message: "storyRevisionId is required" });
+  }
+  if (
+    value.storyRevisionId &&
+    value.sourceStoryRevisionId &&
+    value.storyRevisionId !== value.sourceStoryRevisionId
+  ) {
+    context.addIssue({ code: "custom", message: "story revision fields must match" });
+  }
 });
 
 const reviewBodySchema = z.object({
@@ -76,8 +88,8 @@ export class StudioService {
   ) {
     await this.store.getProject(this.workspaceId, projectId);
     const input = parse(storyRevisionBodySchema, rejectClientWorkspace(body));
-    if (!containsOnlyFiniteJsonNumbers(input.content)) {
-      throw new PersistenceError("INVALID_STORY", "Story content contains a non-finite number");
+    if (!containsOnlyFiniteJsonValues(input.content)) {
+      throw new PersistenceError("INVALID_STORY", "Story content contains a value PostgreSQL jsonb cannot store");
     }
     const expectedVersion = parseAggregateVersion(ifMatch);
     const request = { content: input.content, expectedVersion };
@@ -121,13 +133,18 @@ export class StudioService {
     context: StudioContext,
   ) {
     await this.store.getProject(this.workspaceId, projectId);
+    const episode = await this.textChain.requireEpisode(this.workspaceId, projectId, episodeId);
     const input = parse(scriptRevisionBodySchema, rejectClientWorkspace(body));
-    if (!containsOnlyFiniteJsonNumbers(input.content)) {
+    if (!containsOnlyFiniteJsonValues(input.content)) {
       throw new PersistenceError("INVALID_SCRIPT", "Script content contains a non-finite number");
     }
     const expectedVersion = parseAggregateVersion(ifMatch);
+    const sourceStoryRevisionId = (input.storyRevisionId ?? input.sourceStoryRevisionId)?.toLowerCase();
+    if (!sourceStoryRevisionId) {
+      throw new PersistenceError("VALIDATION_ERROR", "storyRevisionId is required");
+    }
     const request = {
-      sourceStoryRevisionId: input.sourceStoryRevisionId,
+      storyRevisionId: sourceStoryRevisionId,
       content: input.content,
       expectedVersion,
     };
@@ -136,7 +153,7 @@ export class StudioService {
         this.scope(
           context,
           "POST",
-          `/projects/${projectId}/episodes/${episodeId}/scripts`,
+          `/episodes/${episode.id}/scripts`,
           request,
         ),
         201,
@@ -144,8 +161,8 @@ export class StudioService {
           this.textChain.createScriptRevisionInTransaction(client, {
             workspaceId: this.workspaceId,
             projectId,
-            episodeId,
-            sourceStoryRevisionId: input.sourceStoryRevisionId,
+            episodeId: episode.id,
+            sourceStoryRevisionId,
             content: input.content,
             createdBy: context.actorId,
             expectedVersion,
@@ -153,6 +170,9 @@ export class StudioService {
           }),
       );
     } catch (error) {
+      if (error instanceof PersistenceError && error.code === "REVIEW_REQUIRED") {
+        throw new PersistenceError("SOURCE_STORY_REQUIRED", error.message);
+      }
       if (isCanonicalContentError(error)) {
         throw new PersistenceError("INVALID_SCRIPT", "Script content is invalid");
       }
@@ -162,6 +182,7 @@ export class StudioService {
 
   async listScriptRevisions(projectId: string, episodeId: string, cursor?: string) {
     await this.store.getProject(this.workspaceId, projectId);
+    await this.textChain.requireEpisode(this.workspaceId, projectId, episodeId);
     return this.textChain.listScriptRevisions(this.workspaceId, projectId, episodeId, cursor);
   }
 
@@ -312,6 +333,26 @@ export class StudioService {
     }
   }
 
+  async listScriptRevisionsByEpisode(episodeId: string, cursor?: string) {
+    const episode = await this.textChain.requireEpisode(this.workspaceId, undefined, episodeId);
+    return this.textChain.listScriptRevisions(
+      this.workspaceId,
+      episode.projectId,
+      episodeId,
+      cursor,
+    );
+  }
+
+  async createScriptRevisionByEpisode(
+    episodeId: string,
+    body: unknown,
+    ifMatch: string | undefined,
+    context: StudioContext,
+  ) {
+    const episode = await this.textChain.requireEpisode(this.workspaceId, undefined, episodeId);
+    return this.createScriptRevision(episode.projectId, episodeId, body, ifMatch, context);
+  }
+
   async createMockWorkflow(projectId: string, body: unknown, context: StudioContext) {
     await this.store.getProject(this.workspaceId, projectId);
     const input = parse(mockWorkflowSchema, rejectClientWorkspace(body));
@@ -426,11 +467,31 @@ function parseAggregateVersion(value: string | undefined): number {
   return parsed;
 }
 
-function containsOnlyFiniteJsonNumbers(value: unknown): boolean {
+function containsOnlyFiniteJsonValues(value: unknown): boolean {
   if (typeof value === "number") return Number.isFinite(value);
-  if (Array.isArray(value)) return value.every((item) => containsOnlyFiniteJsonNumbers(item));
+  if (typeof value === "string") return isPostgresJsonString(value);
+  if (Array.isArray(value)) return value.every((item) => containsOnlyFiniteJsonValues(item));
   if (value && typeof value === "object") {
-    return Object.values(value as Record<string, unknown>).every((item) => containsOnlyFiniteJsonNumbers(item));
+    return Object.entries(value as Record<string, unknown>).every(
+      ([key, item]) => isPostgresJsonString(key) && containsOnlyFiniteJsonValues(item),
+    );
+  }
+  return true;
+}
+
+function isPostgresJsonString(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit === 0) return false;
+
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (Number.isNaN(next) || next < 0xdc00 || next > 0xdfff) return false;
+      index += 1;
+      continue;
+    }
+
+    if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) return false;
   }
   return true;
 }

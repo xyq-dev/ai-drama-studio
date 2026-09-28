@@ -373,6 +373,51 @@ describe("M1-C API and SSE integration", () => {
     expect(nonFinite.status).toBe(400);
     const body = (await nonFinite.json()) as { error: { code: string } };
     expect(body.error.code).toBe("INVALID_STORY");
+
+    const nulString = await fetch(`${base}/api/v1/projects/${project.id}/stories`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "m2c-nul-story",
+        "if-match": String(project.version),
+      },
+      body: '{"content":{"text":"\\u0000"}}',
+    });
+    expect(nulString.status).toBe(400);
+    const nulBody = (await nulString.json()) as { error: { code: string } };
+    expect(nulBody.error.code).toBe("INVALID_STORY");
+
+    const loneSurrogate = await fetch(`${base}/api/v1/projects/${project.id}/stories`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "m2c-surrogate-story",
+        "if-match": String(project.version),
+      },
+      body: '{"content":{"text":"\\ud800"}}',
+    });
+    expect(loneSurrogate.status).toBe(400);
+    const surrogateBody = (await loneSurrogate.json()) as { error: { code: string } };
+    expect(surrogateBody.error.code).toBe("INVALID_STORY");
+
+    const invalidKey = await fetch(`${base}/api/v1/projects/${project.id}/stories`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "m2c-invalid-key-story",
+        "if-match": String(project.version),
+      },
+      body: '{"content":{"\\u0000":"x"}}',
+    });
+    expect(invalidKey.status).toBe(400);
+    const invalidKeyBody = (await invalidKey.json()) as { error: { code: string } };
+    expect(invalidKeyBody.error.code).toBe("INVALID_STORY");
+
+    const count = await sql<{ count: number }>(
+      "SELECT COUNT(*)::int AS count FROM story_revision WHERE project_id = $1",
+      [project.id],
+    );
+    expect(count.rows[0]?.count).toBe(0);
   });
 
   it("paginates story revision history with a bounded cursor", async () => {
@@ -447,6 +492,33 @@ describe("M1-C API and SSE integration", () => {
     expect(storyResponse.status).toBe(201);
     const story = (await storyResponse.json()) as { revisionId: string; rowVersion: number };
 
+    const episode = await sql<{ id: string; row_version: number }>(
+      `INSERT INTO episode (workspace_id, project_id, episode_no, title)
+       VALUES ($1, $2, 1, 'Episode 1')
+       RETURNING id, row_version`,
+      [APP_WORKSPACE_ID, project.id],
+    );
+    const episodeId = episode.rows[0]?.id;
+    const episodeVersion = episode.rows[0]?.row_version;
+    if (!episodeId || !episodeVersion) throw new Error("episode missing");
+
+    const body = JSON.stringify({
+      storyRevisionId: story.revisionId.toUpperCase(),
+      content: { schema: "m2.script.revision.v1", episode: 1, scenes: [] },
+    });
+    const unapprovedSource = await fetch(`${base}/api/v1/episodes/${episodeId}/scripts`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "m2c-script-unapproved-source",
+        "if-match": String(episodeVersion),
+      },
+      body,
+    });
+    expect(unapprovedSource.status).toBe(400);
+    const sourceError = (await unapprovedSource.json()) as { error: { code: string } };
+    expect(sourceError.error.code).toBe("SOURCE_STORY_REQUIRED");
+
     await sql(
       `UPDATE story_revision
           SET review_status = 'APPROVED',
@@ -461,22 +533,8 @@ describe("M1-C API and SSE integration", () => {
       "UPDATE project SET approved_story_revision_id = $1 WHERE id = $2",
       [story.revisionId, project.id],
     );
-    const episode = await sql<{ id: string; row_version: number }>(
-      `INSERT INTO episode (workspace_id, project_id, episode_no, title)
-       VALUES ($1, $2, 1, 'Episode 1')
-       RETURNING id, row_version`,
-      [APP_WORKSPACE_ID, project.id],
-    );
-    const episodeId = episode.rows[0]?.id;
-    const episodeVersion = episode.rows[0]?.row_version;
-    if (!episodeId || !episodeVersion) throw new Error("episode missing");
-
-    const body = JSON.stringify({
-      sourceStoryRevisionId: story.revisionId,
-      content: { schema: "m2.script.revision.v1", episode: 1, scenes: [] },
-    });
     const first = await fetch(
-      `${base}/api/v1/projects/${project.id}/episodes/${episodeId}/scripts`,
+      `${base}/api/v1/episodes/${episodeId.toUpperCase()}/scripts`,
       {
         method: "POST",
         headers: {
@@ -497,7 +555,7 @@ describe("M1-C API and SSE integration", () => {
     expect(created.rowVersion).toBe(2);
 
     const replay = await fetch(
-      `${base}/api/v1/projects/${project.id}/episodes/${episodeId}/scripts`,
+      `${base}/api/v1/episodes/${episodeId}/scripts`,
       {
         method: "POST",
         headers: {
@@ -511,8 +569,28 @@ describe("M1-C API and SSE integration", () => {
     expect(replay.status).toBe(201);
     expect(await replay.json()).toEqual(created);
 
+    const otherProjectResponse = await fetch(`${base}/api/v1/projects`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": "m2c-script-other-project" },
+      body: JSON.stringify({ title: "Other project" }),
+    });
+    const otherProject = (await otherProjectResponse.json()) as { id: string };
+    const wrongNestedReplay = await fetch(
+      `${base}/api/v1/projects/${otherProject.id}/episodes/${episodeId}/scripts`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "m2c-script-1",
+          "if-match": String(episodeVersion),
+        },
+        body,
+      },
+    );
+    expect(wrongNestedReplay.status).toBe(404);
+
     const listed = await fetch(
-      `${base}/api/v1/projects/${project.id}/episodes/${episodeId}/scripts`,
+      `${base}/api/v1/episodes/${episodeId}/scripts`,
     );
     expect(listed.status).toBe(200);
     const history = (await listed.json()) as {
@@ -524,6 +602,25 @@ describe("M1-C API and SSE integration", () => {
       revisionNo: 1,
       sourceStoryRevisionId: story.revisionId,
     });
+
+    const uppercaseNested = await fetch(
+      `${base}/api/v1/projects/${project.id}/episodes/${episodeId.toUpperCase()}/scripts`,
+    );
+    expect(uppercaseNested.status).toBe(200);
+
+  });
+
+  it("returns 404 for script history when the nested episode does not exist", async () => {
+    const projectResponse = await fetch(`${base}/api/v1/projects`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": "m2c-missing-episode-project" },
+      body: JSON.stringify({ title: "Missing episode" }),
+    });
+    const project = (await projectResponse.json()) as { id: string };
+    const response = await fetch(
+      `${base}/api/v1/projects/${project.id}/episodes/11111111-1111-4111-8111-111111111111/scripts`,
+    );
+    expect(response.status).toBe(404);
   });
 
   it("reviews and approves story plus script revisions through idempotent API gates", async () => {
@@ -586,7 +683,7 @@ describe("M1-C API and SSE integration", () => {
     expect(invalidStoryTransitionBody.error.code).toBe("REVIEW_CONFLICT");
 
     const storyInReview = await fetch(
-      `${base}/api/v1/projects/${project.id}/stories/${story.revisionId}/review`,
+      `${base}/api/v1/projects/${project.id.toUpperCase()}/stories/${story.revisionId.toUpperCase()}/review`,
       {
         method: "POST",
         headers: {
@@ -696,7 +793,7 @@ describe("M1-C API and SSE integration", () => {
     expect(wrongScriptScope.status).toBe(404);
 
     const scriptInReview = await fetch(
-      `${base}/api/v1/projects/${project.id}/episodes/${episode.id}/scripts/${script.revisionId}/review`,
+      `${base}/api/v1/projects/${project.id.toUpperCase()}/episodes/${episode.id.toUpperCase()}/scripts/${script.revisionId.toUpperCase()}/review`,
       {
         method: "POST",
         headers: {

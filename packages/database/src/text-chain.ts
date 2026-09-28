@@ -386,6 +386,35 @@ export class TextChainService {
     }
   }
 
+  async requireEpisode(
+    workspaceId: string,
+    projectId: string | undefined,
+    episodeId: string,
+  ): Promise<{ id: string; projectId: string; rowVersion: number }> {
+    const client = await this.pool.connect();
+    try {
+      const params: unknown[] = [workspaceId, episodeId];
+      let projectSql = "";
+      if (projectId) {
+        params.push(projectId);
+        projectSql = "AND project_id = $3";
+      }
+      const result = await client.query<
+        { id: string; project_id: string; row_version: number } & QueryResultRow
+      >(
+        `SELECT id, project_id, row_version
+           FROM episode
+          WHERE workspace_id = $1 AND id = $2 ${projectSql}`,
+        params,
+      );
+      const row = result.rows[0];
+      if (!row) throw new PersistenceError("NOT_FOUND", "Episode not found");
+      return { id: row.id, projectId: row.project_id, rowVersion: row.row_version };
+    } finally {
+      client.release();
+    }
+  }
+
   async listEpisodes(workspaceId: string, projectId: string): Promise<EpisodeSummary[]> {
     const client = await this.pool.connect();
     try {
