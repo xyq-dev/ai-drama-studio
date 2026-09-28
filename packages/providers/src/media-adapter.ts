@@ -48,7 +48,7 @@ export interface MediaCostLine {
   kind: MediaCostKind;
   currency: string;
   amountDecimal: string;
-  basis: string;
+  basis: "PROVIDER_REPORTED" | "LOCALLY_CALCULATED";
   unitType?: string;
   unitQuantity?: string;
   unitPriceSnapshot?: string;
@@ -63,8 +63,7 @@ export interface MediaAccountingEnvelope {
   costs: MediaCostLine[];
 }
 
-export interface MediaProviderObservation {
-  state: MediaProviderState;
+interface MediaProviderObservationBase {
   normalizedEventKey: string;
   responseHash: string;
   observedAt: string;
@@ -72,6 +71,17 @@ export interface MediaProviderObservation {
   accounting?: MediaAccountingEnvelope;
   metadata?: Record<string, unknown>;
 }
+
+export type MediaProviderObservation =
+  | (MediaProviderObservationBase & {
+      state: "FAILED";
+      retryable: boolean;
+      errorCode: string;
+      errorMessage: string;
+    })
+  | (MediaProviderObservationBase & {
+      state: Exclude<MediaProviderState, "FAILED">;
+    });
 
 type MediaSubmitWithRequest = {
   providerRequestId: string;
