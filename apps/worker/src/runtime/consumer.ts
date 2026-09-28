@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
-import type { JobPersistenceService, RuntimeStore } from "@ai-drama/database";
+import type { JobPersistenceService, MockTextService, RuntimeStore } from "@ai-drama/database";
 import { MOCK_OUTCOMES, MockProvider, type MockOutcome } from "@ai-drama/providers";
 import type { QueueMessage } from "./bullmq-queue";
+import { completeMockJob } from "./mock-text-completion";
 
 function retryAt(jobId: string, attemptNo: number): Date {
   const baseMs = Math.min(15 * 60_000, 30_000 * 2 ** Math.max(0, attemptNo - 1));
@@ -28,6 +29,7 @@ export class MockJobConsumer {
     private readonly provider: MockProvider,
     private readonly leaseOwner: string,
     private readonly leaseMs: number,
+    private readonly mockText?: MockTextService,
   ) {}
 
   async handle(message: QueueMessage): Promise<"processed" | "ignored"> {
@@ -75,13 +77,8 @@ export class MockJobConsumer {
         providerConfigurationId: before.providerConfigurationId,
         providerRequestId: result.providerRequestId,
       });
-      await this.jobs.succeedJob({
-        workspaceId: message.workspaceId,
-        jobId: message.jobId,
-        attemptId: acquired.attemptId,
-        traceId,
-        responseSnapshot: result.output,
-      });
+      if (!current) throw new Error("Acquired job execution context disappeared");
+      await completeMockJob(this.jobs, this.mockText, current, acquired.attemptId, traceId, result.output);
       return "processed";
     }
     if (result.kind === "failed") {

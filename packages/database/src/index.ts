@@ -43,6 +43,7 @@ export {
   type ShotRevisionInput,
 } from "./text-chain";
 export { type ScriptDependencyBinding, type ScriptDependencyConsumer } from "./script-dependencies";
+export { MockTextService, type MockSceneSnapshot, type MockSceneSource } from "./mock-text";
 
 export interface PostgresPoolOptions {
   connectionString: string;

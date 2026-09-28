@@ -221,7 +221,7 @@ describe("M1-C Redis and BullMQ integration", () => {
         dispatchIntervalMs: 60_000, reconcileIntervalMs: 60_000 });
       const runtimeQueue = new BullMqQueue({ url: redisUrl, maxRetriesPerRequest: null }, "ai-drama");
       try {
-        await runtimeQueue.enqueue({ workspaceId: seeded.workspaceId,
+        await runtimeQueue.enqueue({ outboxId: randomUUID(), workspaceId: seeded.workspaceId,
           jobId: created.jobId, dispatchSeq: queued.dispatchSeq });
         const dispatchId = dispatchJobId(created.jobId, queued.dispatchSeq);
         let state = "waiting";
@@ -263,7 +263,7 @@ describe("M1-C Redis and BullMQ integration", () => {
       const dispatched = await sql<{ dispatch_seq: number }>(
         "SELECT dispatch_seq FROM generation_job WHERE id = $1", [created.jobId],
       );
-      await runtimeQueue.enqueue({ workspaceId, jobId: created.jobId,
+      await runtimeQueue.enqueue({ outboxId: randomUUID(), workspaceId, jobId: created.jobId,
         dispatchSeq: dispatched.rows[0]?.dispatch_seq ?? -1 });
       const jobId = dispatchJobId(created.jobId, dispatched.rows[0]?.dispatch_seq ?? -1);
       let state = "waiting";

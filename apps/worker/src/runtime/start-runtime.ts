@@ -1,5 +1,6 @@
 import {
   JobPersistenceService,
+  MockTextService,
   MediaAssetStore,
   RuntimeStore,
   TextChainService,
@@ -58,17 +59,18 @@ export async function startQueueRuntime(options: {
     inspect: ({ providerRequestId }) => Promise.resolve(inspectState(provider.inspect(providerRequestId))),
   });
   const store = new RuntimeStore(pool);
+  const mockText = new MockTextService(pool);
   const connection = { url: options.redisUrl, maxRetriesPerRequest: null };
   const prefix = "ai-drama";
   const queue = new BullMqQueue(connection, prefix);
   const dispatcher = new OutboxDispatcher(store, queue);
-  const consumer = new MockJobConsumer(jobs, store, provider, `worker:${process.pid}`, options.leaseMs ?? 30_000);
+  const consumer = new MockJobConsumer(jobs, store, provider, `worker:${process.pid}`, options.leaseMs ?? 30_000, mockText);
   const assets = new MediaAssetStore(pool);
   const mockMedia = new MockMediaAdapter();
   const objects = options.mockObjectDir ? new LocalMockObjects(options.mockObjectDir) : null;
   const mediaRecovery = objects ? new MockMediaRecovery(jobs, assets, store, mockMedia, objects) : null;
   const reconciler = new RuntimeReconciler(jobs, store, provider, dispatcher,
-    options.orphanGraceMs ?? 30_000, mediaRecovery ? () => mediaRecovery.reconcileOnce() : undefined);
+    options.orphanGraceMs ?? 30_000, mediaRecovery ? () => mediaRecovery.reconcileOnce() : undefined, mockText);
   const status: QueueRuntimeStatus = { running: false };
   const worker = startBullWorker(
     { url: options.redisUrl, maxRetriesPerRequest: null },

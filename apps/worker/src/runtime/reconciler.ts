@@ -1,6 +1,7 @@
-import type { JobPersistenceService, RuntimeStore } from "@ai-drama/database";
+import type { JobPersistenceService, MockTextService, RuntimeStore } from "@ai-drama/database";
 import type { MockProvider } from "@ai-drama/providers";
 import type { OutboxDispatcher } from "./dispatcher";
+import { completeMockJob } from "./mock-text-completion";
 
 export class RuntimeReconciler {
   constructor(
@@ -10,6 +11,7 @@ export class RuntimeReconciler {
     private readonly dispatcher: OutboxDispatcher,
     private readonly orphanGraceMs: number,
     private readonly recoverMockMedia?: () => Promise<void>,
+    private readonly mockText?: MockTextService,
   ) {}
 
   async reconcileOnce(): Promise<void> {
@@ -51,13 +53,10 @@ export class RuntimeReconciler {
       if (row.providerRequestId) {
         const inspected = await this.inspectAndAudit(row);
         if (inspected === "SUCCEEDED") {
-          await this.jobs.succeedJob({
-            workspaceId: row.workspaceId,
-            jobId: row.jobId,
-            attemptId: row.attemptId,
-            traceId: `reconcile:${row.jobId}`,
-            responseSnapshot: { recovered: true },
-          });
+          const execution = await this.store.loadExecution(row.workspaceId, row.jobId);
+          if (!execution) continue;
+          await completeMockJob(this.jobs, this.mockText, execution, row.attemptId,
+            `reconcile:${row.jobId}`, { recovered: true });
           continue;
         }
         if (inspected === "CANCELED") {
@@ -123,13 +122,10 @@ export class RuntimeReconciler {
       if (!row.providerRequestId) continue;
       const inspected = await this.inspectAndAudit(row);
       if (inspected === "SUCCEEDED") {
-        await this.jobs.succeedJob({
-          workspaceId: row.workspaceId,
-          jobId: row.jobId,
-          attemptId: row.attemptId,
-          traceId: `reconcile-wait:${row.jobId}`,
-          responseSnapshot: { recovered: true },
-        });
+        const execution = await this.store.loadExecution(row.workspaceId, row.jobId);
+        if (!execution) continue;
+        await completeMockJob(this.jobs, this.mockText, execution, row.attemptId,
+          `reconcile-wait:${row.jobId}`, { recovered: true });
       } else if (inspected === "FAILED") {
         await this.jobs.failJob({
           workspaceId: row.workspaceId,

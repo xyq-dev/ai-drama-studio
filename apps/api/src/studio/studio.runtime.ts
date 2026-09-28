@@ -1,6 +1,7 @@
 import { Injectable, type OnModuleDestroy } from "@nestjs/common";
 import {
   JobPersistenceService,
+  MockTextService,
   RuntimeStore,
   TextChainService,
   closePostgresPool,
@@ -35,7 +36,7 @@ export class StudioRuntime implements OnModuleDestroy {
     const workspaceId = await store.requireActiveWorkspace(env.APP_WORKSPACE_ID);
     const jobs = new JobPersistenceService(pool);
     const textChain = new TextChainService(pool);
-    return new StudioRuntime(pool, new StudioService(jobs, store, textChain, workspaceId), store);
+    return new StudioRuntime(pool, new StudioService(jobs, store, textChain, workspaceId, new MockTextService(pool)), store);
   }
 
   async onModuleDestroy(): Promise<void> {
