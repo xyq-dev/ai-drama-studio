@@ -99,6 +99,40 @@ export interface TextEntityCreated extends RevisionCreated {
   entityId: string;
 }
 
+export interface SceneRevisionInput {
+  workspaceId: string;
+  projectId: string;
+  episodeId: string;
+  sceneId?: string;
+  sourceScriptRevisionId: string;
+  locationRevisionId?: string | null;
+  ordinal: number;
+  heading: string;
+  timeOfDay?: string | null;
+  summary: string;
+  createdBy: string;
+  expectedVersion: number;
+  traceId?: string;
+}
+
+export interface ShotRevisionInput {
+  workspaceId: string;
+  projectId: string;
+  sceneId: string;
+  shotId?: string;
+  sourceSceneRevisionId: string;
+  ordinal: number;
+  shotType: string;
+  camera: string;
+  action: string;
+  dialogue?: string | null;
+  durationHint?: string | null;
+  promptText: string;
+  createdBy: string;
+  expectedVersion: number;
+  traceId?: string;
+}
+
 async function withTransaction<T>(
   pool: DatabasePool,
   work: (client: PoolClient) => Promise<T>,
@@ -346,6 +380,407 @@ export class TextChainService {
       reviewedBy: input.to === "REJECTED" ? input.reviewedBy : undefined,
       reviewNote: input.reviewNote, traceId: input.traceId,
     });
+  }
+
+  async createSceneRevisionInTransaction(
+    client: PoolClient, input: SceneRevisionInput,
+  ): Promise<TextEntityCreated> {
+    await lockProject(client, input.projectId, input.workspaceId);
+    let sceneId = input.sceneId;
+    let revisionNo = 1;
+    let previousCurrentId: string | null = null;
+    if (sceneId) {
+      const parent = await client.query<{
+        row_version: number; current_revision_id: string | null;
+      } & QueryResultRow>(
+        `SELECT row_version, current_revision_id FROM scene
+          WHERE id = $1 AND workspace_id = $2 AND project_id = $3
+            AND episode_id = $4 AND archived_at IS NULL FOR UPDATE`,
+        [sceneId, input.workspaceId, input.projectId, input.episodeId],
+      );
+      if (!parent.rows[0]) throw new PersistenceError("NOT_FOUND", "Scene not found");
+      if (parent.rows[0].row_version !== input.expectedVersion) {
+        throw new PersistenceError("REVISION_CONFLICT", "Scene version did not match");
+      }
+      previousCurrentId = parent.rows[0].current_revision_id;
+      revisionNo = (await client.query<{ revision_no: number } & QueryResultRow>(
+        "SELECT COALESCE(MAX(revision_no),0)::int + 1 AS revision_no FROM scene_revision WHERE scene_id = $1",
+        [sceneId],
+      )).rows[0]?.revision_no ?? 1;
+    } else {
+      const parent = await client.query<{ row_version: number } & QueryResultRow>(
+        `SELECT row_version FROM episode WHERE id = $1 AND workspace_id = $2 AND project_id = $3
+          FOR UPDATE`,
+        [input.episodeId, input.workspaceId, input.projectId],
+      );
+      if (!parent.rows[0]) throw new PersistenceError("NOT_FOUND", "Episode not found");
+      if (parent.rows[0].row_version !== input.expectedVersion) {
+        throw new PersistenceError("REVISION_CONFLICT", "Episode version did not match");
+      }
+    }
+    const source = await client.query(
+      `SELECT 1 FROM script_revision script
+         JOIN episode ON episode.id = script.episode_id
+          AND episode.workspace_id = script.workspace_id
+          AND episode.project_id = script.project_id
+        WHERE script.id = $1 AND script.workspace_id = $2 AND script.project_id = $3
+          AND script.episode_id = $4
+          AND episode.current_script_revision_id = script.id
+          AND episode.approved_script_revision_id = script.id
+          AND script.review_status = 'APPROVED' AND script.freshness_status = 'CURRENT'
+        FOR SHARE OF script`,
+      [input.sourceScriptRevisionId, input.workspaceId, input.projectId, input.episodeId],
+    );
+    if (!source.rows[0]) {
+      throw new PersistenceError("SCRIPT_REVIEW_REQUIRED", "Scene requires the current approved script");
+    }
+    if (input.locationRevisionId) {
+      const location = await client.query(
+        `SELECT 1 FROM location_revision revision
+           JOIN location ON location.id = revision.location_id
+            AND location.workspace_id = revision.workspace_id
+            AND location.project_id = revision.project_id
+          WHERE revision.id = $1 AND revision.workspace_id = $2 AND revision.project_id = $3
+            AND revision.review_status = 'APPROVED' AND revision.freshness_status = 'CURRENT'
+            AND location.current_revision_id = revision.id
+            AND location.approved_revision_id = revision.id
+          FOR SHARE OF location, revision`,
+        [input.locationRevisionId, input.workspaceId, input.projectId],
+      );
+      if (!location.rows[0]) {
+        throw new PersistenceError("REVIEW_REQUIRED", "Scene location must be current and approved");
+      }
+    }
+    if (!sceneId) {
+      sceneId = (await client.query<{ id: string } & QueryResultRow>(
+        `INSERT INTO scene (workspace_id, project_id, episode_id) VALUES ($1,$2,$3) RETURNING id`,
+        [input.workspaceId, input.projectId, input.episodeId],
+      )).rows[0]?.id;
+      if (!sceneId) throw new PersistenceError("REVISION_CREATE_FAILED", "Scene was not created");
+      await client.query(
+        "UPDATE episode SET row_version = row_version + 1, updated_at = now() WHERE id = $1",
+        [input.episodeId],
+      );
+    }
+    const contentHash = canonicalInputHash({
+      schema: "m2.scene.revision.v1",
+      sourceScriptRevisionId: input.sourceScriptRevisionId,
+      locationRevisionId: input.locationRevisionId ?? null,
+      ordinal: input.ordinal, heading: input.heading,
+      timeOfDay: input.timeOfDay ?? null, summary: input.summary,
+    });
+    const revisionId = (await client.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO scene_revision
+        (workspace_id, project_id, episode_id, scene_id, revision_no,
+         source_script_revision_id, location_revision_id, ordinal, heading,
+         time_of_day, summary, content_hash, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
+      [input.workspaceId, input.projectId, input.episodeId, sceneId, revisionNo,
+        input.sourceScriptRevisionId, input.locationRevisionId ?? null,
+        input.ordinal, input.heading, input.timeOfDay ?? null, input.summary,
+        contentHash, input.createdBy],
+    )).rows[0]?.id;
+    if (!revisionId) throw new PersistenceError("REVISION_CREATE_FAILED", "Scene revision was not created");
+    const rowVersion = await bumpPointer(
+      client, "scene", sceneId, input.workspaceId,
+      input.sceneId ? input.expectedVersion : 1, "current_revision_id", revisionId,
+    );
+    await emitCurrentRevisionEvent(
+      client, input.workspaceId, input.projectId, "Scene", sceneId, revisionId,
+      rowVersion, input.traceId ?? "m2-text-chain",
+    );
+    if (previousCurrentId) {
+      if (await staleFromTextEntity(
+        client, "scene", input.workspaceId, previousCurrentId, input.traceId ?? "m2-text-chain",
+      )) {
+        await enqueueStaleRecalculation(
+          client, input.workspaceId, input.projectId, "SOURCE_SCENE_REPLACED",
+          `scene_revision:${previousCurrentId}`,
+        );
+      }
+    }
+    return { entityId: sceneId, revisionId, revisionNo, contentHash, rowVersion };
+  }
+
+  async listSceneRevisions(
+    workspaceId: string, projectId: string, episodeId: string, sceneId: string,
+  ) {
+    const client = await this.pool.connect();
+    try {
+      const parent = await client.query(
+        `SELECT 1 FROM scene WHERE id = $1 AND workspace_id = $2
+           AND project_id = $3 AND episode_id = $4`,
+        [sceneId, workspaceId, projectId, episodeId],
+      );
+      if (!parent.rows[0]) throw new PersistenceError("NOT_FOUND", "Scene not found");
+      const result = await client.query<QueryResultRow>(
+        `SELECT id, revision_no, source_script_revision_id, location_revision_id,
+                ordinal, heading, time_of_day, summary, content_hash,
+                review_status, freshness_status, review_version, created_at
+           FROM scene_revision WHERE scene_id = $1 AND workspace_id = $2
+           ORDER BY revision_no DESC`,
+        [sceneId, workspaceId],
+      );
+      return { items: result.rows.map((row) => ({
+        id: String(row.id), revisionNo: Number(row.revision_no),
+        sourceScriptRevisionId: String(row.source_script_revision_id),
+        locationRevisionId: row.location_revision_id === null ? null : String(row.location_revision_id),
+        ordinal: Number(row.ordinal), heading: String(row.heading),
+        timeOfDay: row.time_of_day === null ? null : String(row.time_of_day),
+        summary: String(row.summary), contentHash: String(row.content_hash),
+        reviewStatus: String(row.review_status), freshnessStatus: String(row.freshness_status),
+        reviewVersion: Number(row.review_version),
+        createdAt: new Date(row.created_at as Date).toISOString(),
+      })) };
+    } finally {
+      client.release();
+    }
+  }
+
+  async createShotScopedInTransaction(
+    client: PoolClient, input: ShotRevisionInput,
+  ): Promise<TextEntityCreated> {
+    await lockProject(client, input.projectId, input.workspaceId);
+    let shotId = input.shotId;
+    let revisionNo = 1;
+    let previousCurrentId: string | null = null;
+    const scene = await client.query<{ episode_id: string; row_version: number } & QueryResultRow>(
+      `SELECT episode_id, row_version FROM scene
+        WHERE id = $1 AND project_id = $2 AND workspace_id = $3 AND archived_at IS NULL FOR UPDATE`,
+      [input.sceneId, input.projectId, input.workspaceId],
+    );
+    if (!scene.rows[0]) throw new PersistenceError("NOT_FOUND", "Scene not found");
+    if (shotId) {
+      const parent = await client.query<{
+        row_version: number; current_revision_id: string | null;
+      } & QueryResultRow>(
+        `SELECT row_version, current_revision_id FROM shot
+          WHERE id = $1 AND project_id = $2 AND workspace_id = $3
+            AND scene_id = $4 AND archived_at IS NULL FOR UPDATE`,
+        [shotId, input.projectId, input.workspaceId, input.sceneId],
+      );
+      if (!parent.rows[0]) throw new PersistenceError("NOT_FOUND", "Shot not found");
+      if (parent.rows[0].row_version !== input.expectedVersion) {
+        throw new PersistenceError("REVISION_CONFLICT", "Shot version did not match");
+      }
+      previousCurrentId = parent.rows[0].current_revision_id;
+      revisionNo = (await client.query<{ revision_no: number } & QueryResultRow>(
+        "SELECT COALESCE(MAX(revision_no),0)::int + 1 AS revision_no FROM shot_revision WHERE shot_id = $1",
+        [shotId],
+      )).rows[0]?.revision_no ?? 1;
+    } else if (scene.rows[0].row_version !== input.expectedVersion) {
+      throw new PersistenceError("REVISION_CONFLICT", "Scene version did not match");
+    }
+    const source = await client.query(
+      `SELECT 1 FROM scene_revision revision
+         JOIN scene ON scene.id = revision.scene_id
+          AND scene.project_id = revision.project_id AND scene.workspace_id = revision.workspace_id
+        WHERE revision.id = $1 AND revision.scene_id = $2
+          AND revision.project_id = $3 AND revision.workspace_id = $4
+          AND scene.current_revision_id = revision.id AND scene.approved_revision_id = revision.id
+          AND revision.review_status = 'APPROVED' AND revision.freshness_status = 'CURRENT'
+        FOR SHARE OF revision`,
+      [input.sourceSceneRevisionId, input.sceneId, input.projectId, input.workspaceId],
+    );
+    if (!source.rows[0]) {
+      throw new PersistenceError("REVIEW_REQUIRED", "Shot requires the current approved scene");
+    }
+    if (!shotId) {
+      shotId = (await client.query<{ id: string } & QueryResultRow>(
+        `INSERT INTO shot (workspace_id, project_id, episode_id, scene_id)
+          VALUES ($1,$2,$3,$4) RETURNING id`,
+        [input.workspaceId, input.projectId, scene.rows[0].episode_id, input.sceneId],
+      )).rows[0]?.id;
+      if (!shotId) throw new PersistenceError("REVISION_CREATE_FAILED", "Shot was not created");
+      await client.query(
+        "UPDATE scene SET row_version = row_version + 1, updated_at = now() WHERE id = $1",
+        [input.sceneId],
+      );
+    }
+    const contentHash = canonicalInputHash({
+      schema: "m2.shot.revision.v1",
+      sourceSceneRevisionId: input.sourceSceneRevisionId,
+      ordinal: input.ordinal, shotType: input.shotType, camera: input.camera,
+      action: input.action, dialogue: input.dialogue ?? null,
+      durationHint: input.durationHint ?? null, promptText: input.promptText,
+    });
+    const revisionId = (await client.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO shot_revision
+        (workspace_id, project_id, scene_id, shot_id, revision_no, source_scene_revision_id,
+         ordinal, shot_type, camera, action, dialogue, duration_hint, prompt_text, content_hash, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`,
+      [input.workspaceId, input.projectId, input.sceneId, shotId, revisionNo,
+        input.sourceSceneRevisionId, input.ordinal, input.shotType, input.camera,
+        input.action, input.dialogue ?? null, input.durationHint ?? null,
+        input.promptText, contentHash, input.createdBy],
+    )).rows[0]?.id;
+    if (!revisionId) throw new PersistenceError("REVISION_CREATE_FAILED", "Shot revision was not created");
+    const rowVersion = await bumpPointer(
+      client, "shot", shotId, input.workspaceId,
+      input.shotId ? input.expectedVersion : 1, "current_revision_id", revisionId,
+    );
+    await emitCurrentRevisionEvent(
+      client, input.workspaceId, input.projectId, "Shot", shotId, revisionId,
+      rowVersion, input.traceId ?? "m2-text-chain",
+    );
+    if (previousCurrentId) {
+      if (await staleFromTextEntity(
+        client, "shot", input.workspaceId, previousCurrentId, input.traceId ?? "m2-text-chain",
+      )) {
+        await enqueueStaleRecalculation(
+          client, input.workspaceId, input.projectId, "SOURCE_SHOT_REPLACED",
+          `shot_revision:${previousCurrentId}`,
+        );
+      }
+    }
+    return { entityId: shotId, revisionId, revisionNo, contentHash, rowVersion };
+  }
+
+  async listShotRevisions(
+    workspaceId: string, projectId: string, sceneId: string, shotId: string,
+  ) {
+    const client = await this.pool.connect();
+    try {
+      const parent = await client.query(
+        `SELECT 1 FROM shot WHERE id = $1 AND workspace_id = $2
+          AND project_id = $3 AND scene_id = $4`,
+        [shotId, workspaceId, projectId, sceneId],
+      );
+      if (!parent.rows[0]) throw new PersistenceError("NOT_FOUND", "Shot not found");
+      const result = await client.query<QueryResultRow>(
+        `SELECT id, revision_no, source_scene_revision_id, ordinal, shot_type, camera,
+                action, dialogue, duration_hint, prompt_text, content_hash, review_status,
+                freshness_status, review_version, created_at
+           FROM shot_revision WHERE shot_id = $1 AND workspace_id = $2
+           ORDER BY revision_no DESC`,
+        [shotId, workspaceId],
+      );
+      return { items: result.rows.map((row) => ({
+        id: String(row.id), revisionNo: Number(row.revision_no),
+        sourceSceneRevisionId: String(row.source_scene_revision_id),
+        ordinal: Number(row.ordinal), shotType: String(row.shot_type),
+        camera: String(row.camera), action: String(row.action),
+        dialogue: row.dialogue === null ? null : String(row.dialogue),
+        durationHint: row.duration_hint === null ? null : String(row.duration_hint),
+        promptText: String(row.prompt_text), contentHash: String(row.content_hash),
+        reviewStatus: String(row.review_status), freshnessStatus: String(row.freshness_status),
+        reviewVersion: Number(row.review_version),
+        createdAt: new Date(row.created_at as Date).toISOString(),
+      })) };
+    } finally {
+      client.release();
+    }
+  }
+
+  async reviewSceneShotInTransaction(
+    client: PoolClient,
+    input: {
+      kind: "scene" | "shot"; workspaceId: string; projectId: string;
+      episodeId: string; sceneId: string; shotId?: string; revisionId: string;
+      expectedVersion: number; expectedReviewVersion: number; to: ReviewStatus;
+      reviewedBy: string; reviewNote?: string | null; traceId?: string;
+    },
+  ): Promise<ReviewTransitioned> {
+    const parentId = input.kind === "scene" ? input.sceneId : input.shotId;
+    if (!parentId) throw new PersistenceError("NOT_FOUND", "Shot not found");
+    const routeScope = await client.query(
+      input.kind === "scene"
+        ? `SELECT 1 FROM scene WHERE id = $1 AND workspace_id = $2
+            AND project_id = $3 AND episode_id = $4`
+        : `SELECT 1 FROM shot WHERE id = $1 AND workspace_id = $2
+            AND project_id = $3 AND episode_id = $4 AND scene_id = $5`,
+      input.kind === "scene"
+        ? [parentId, input.workspaceId, input.projectId, input.episodeId]
+        : [parentId, input.workspaceId, input.projectId, input.episodeId, input.sceneId],
+    );
+    if (!routeScope.rows[0]) throw new PersistenceError("NOT_FOUND", "Revision not found in route scope");
+    const owned = await client.query(
+      `SELECT 1 FROM ${input.kind}_revision
+        WHERE id = $1 AND ${input.kind}_id = $2 AND project_id = $3 AND workspace_id = $4`,
+      [input.revisionId, parentId, input.projectId, input.workspaceId],
+    );
+    if (!owned.rows[0]) throw new PersistenceError("NOT_FOUND", "Revision not found in route scope");
+    if (input.to !== "APPROVED") {
+      return this.transitionReviewInTransaction(client, {
+        table: `${input.kind}_revision`, workspaceId: input.workspaceId,
+        revisionId: input.revisionId, expectedVersion: input.expectedVersion,
+        expectedReviewVersion: input.expectedReviewVersion, to: input.to,
+        reviewedBy: input.to === "REJECTED" ? input.reviewedBy : undefined,
+        reviewNote: input.reviewNote, traceId: input.traceId,
+      });
+    }
+    await lockCurrentRevision(client, {
+      parentTable: input.kind, revisionTable: `${input.kind}_revision`,
+      parentId, revisionId: input.revisionId, workspaceId: input.workspaceId,
+      expectedVersion: input.expectedVersion,
+    });
+    if (input.kind === "scene") {
+      const gate = await client.query<{ ok: boolean } & QueryResultRow>(
+        `SELECT (
+          m2_script_source_is_usable(r.workspace_id, r.project_id, 'scene_revision', r.id, r.source_script_revision_id)
+          AND (r.location_revision_id IS NULL OR
+            (location.current_revision_id = r.location_revision_id
+             AND location.approved_revision_id = r.location_revision_id
+             AND location_revision.review_status = 'APPROVED'
+             AND location_revision.freshness_status = 'CURRENT'))
+        ) AS ok FROM scene_revision r
+          LEFT JOIN location_revision ON location_revision.id = r.location_revision_id
+          LEFT JOIN location ON location.id = location_revision.location_id
+         WHERE r.id = $1 AND r.scene_id = $2 AND r.workspace_id = $3`,
+        [input.revisionId, parentId, input.workspaceId],
+      );
+      if (gate.rows[0]?.ok !== true) {
+        throw new PersistenceError("REVIEW_REQUIRED", "Scene source must remain approved and fresh");
+      }
+    } else {
+      const gate = await client.query<{ ok: boolean } & QueryResultRow>(
+        `SELECT (scene.current_revision_id = r.source_scene_revision_id
+          AND scene.approved_revision_id = r.source_scene_revision_id
+          AND scene_revision.review_status = 'APPROVED'
+          AND scene_revision.freshness_status = 'CURRENT'
+          AND r.freshness_status = 'CURRENT') AS ok
+         FROM shot_revision r
+          JOIN scene ON scene.id = r.scene_id AND scene.workspace_id = r.workspace_id
+          JOIN scene_revision ON scene_revision.id = r.source_scene_revision_id
+         WHERE r.id = $1 AND r.shot_id = $2 AND r.workspace_id = $3`,
+        [input.revisionId, parentId, input.workspaceId],
+      );
+      if (gate.rows[0]?.ok !== true) {
+        throw new PersistenceError("REVIEW_REQUIRED", "Shot source must remain approved and fresh");
+      }
+      const invalid = await client.query(
+        `SELECT 1 FROM script_revision_consumer_source edge
+          WHERE edge.workspace_id = $1 AND edge.consumer_type = 'shot_revision'
+            AND edge.consumer_revision_id = $2
+            AND m2_script_source_is_usable(edge.workspace_id, edge.project_id,
+              edge.consumer_type, edge.consumer_revision_id, edge.script_revision_id) IS NOT TRUE
+          LIMIT 1`,
+        [input.workspaceId, input.revisionId],
+      );
+      if (invalid.rows[0]) {
+        throw new PersistenceError("REVIEW_REQUIRED", "Shot script inputs are no longer usable");
+      }
+      const invalidCharacters = await client.query(
+        `SELECT 1 FROM shot_character_reference refs
+          JOIN character_revision revision ON revision.id = refs.character_revision_id
+          JOIN character ON character.id = revision.character_id
+          WHERE refs.shot_revision_id = $1 AND refs.workspace_id = $2
+            AND (character.current_revision_id IS DISTINCT FROM revision.id
+              OR character.approved_revision_id IS DISTINCT FROM revision.id
+              OR revision.review_status <> 'APPROVED' OR revision.freshness_status <> 'CURRENT')
+          LIMIT 1 FOR SHARE OF revision, character`,
+        [input.revisionId, input.workspaceId],
+      );
+      if (invalidCharacters.rows[0]) {
+        throw new PersistenceError("REVIEW_REQUIRED", "Shot character references are no longer usable");
+      }
+    }
+    await finishApproval(client, {
+      workspaceId: input.workspaceId, parentId, revisionId: input.revisionId,
+      expectedVersion: input.expectedVersion, expectedReviewVersion: input.expectedReviewVersion,
+      reviewedBy: input.reviewedBy, reviewNote: input.reviewNote, traceId: input.traceId,
+    }, input.kind, `${input.kind}_revision`);
+    return { reviewVersion: input.expectedReviewVersion + 1, rowVersion: input.expectedVersion + 1 };
   }
 
   async bindScriptSourceDependencies(
@@ -813,7 +1248,7 @@ export class TextChainService {
           : root.table === "script_revision"
             ? await staleFromScript(client, scope.workspace_id, root.id, traceId)
             : await staleFromTextEntity(
-              client, root.table === "character_revision" ? "character" : "location",
+              client, root.table.replace("_revision", "") as StaleEntityKind,
               scope.workspace_id, root.id, traceId,
             );
       await client.query(
@@ -1855,18 +2290,18 @@ async function ensureEpisodes(
 const STALE_SYNC_LIMIT = 200;
 
 function parseStaleRoot(ref: string): {
-  table: "story_revision" | "script_revision" | "character_revision" | "location_revision";
+  table: "story_revision" | "script_revision" | "character_revision" | "location_revision" | "scene_revision" | "shot_revision";
   id: string;
 } {
   const matched =
-    /^(story_revision|script_revision|character_revision|location_revision):([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(
+    /^(story_revision|script_revision|character_revision|location_revision|scene_revision|shot_revision):([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(
       ref,
     );
   if (!matched || !matched[2]) {
     throw new PersistenceError("INVALID_STALE_ROOT", "Unsupported stale propagation root");
   }
   return {
-    table: matched[1] as "story_revision" | "script_revision" | "character_revision" | "location_revision",
+    table: matched[1] as "story_revision" | "script_revision" | "character_revision" | "location_revision" | "scene_revision" | "shot_revision",
     id: matched[2],
   };
 }
@@ -2092,9 +2527,11 @@ async function staleFromScript(
   return hasMore;
 }
 
+type StaleEntityKind = TextEntityKind | "scene" | "shot";
+
 async function staleFromTextEntity(
   client: PoolClient,
-  kind: TextEntityKind,
+  kind: StaleEntityKind,
   workspaceId: string,
   revisionId: string,
   traceId: string,
@@ -2108,7 +2545,11 @@ async function staleFromTextEntity(
   const shotIds = kind === "location"
     ? `SELECT id FROM shot_revision WHERE workspace_id = $1
          AND source_scene_revision_id IN (${sceneIds})`
-    : `SELECT shot_revision_id FROM shot_character_reference
+    : kind === "scene"
+      ? `SELECT id FROM shot_revision WHERE workspace_id = $1 AND source_scene_revision_id = $2`
+      : kind === "shot"
+        ? `SELECT id FROM shot_revision WHERE workspace_id = $1 AND id = $2`
+        : `SELECT shot_revision_id FROM shot_character_reference
         WHERE workspace_id = $1 AND character_revision_id = $2`;
   let hasMore = false;
   if (kind === "location") {
@@ -2116,9 +2557,11 @@ async function staleFromTextEntity(
       client, "scene_revision", sceneIds, params, reason, staleFromRef, traceId,
     )) || hasMore;
   }
-  hasMore = (await markStale(
-    client, "shot_revision", shotIds, params, reason, staleFromRef, traceId,
-  )) || hasMore;
+  if (kind !== "shot") {
+    hasMore = (await markStale(
+      client, "shot_revision", shotIds, params, reason, staleFromRef, traceId,
+    )) || hasMore;
+  }
   hasMore = (await markTextEntityAssetsStale(
     client, kind, params, sceneIds, shotIds, staleFromRef, traceId,
   )) || hasMore;
@@ -2127,7 +2570,7 @@ async function staleFromTextEntity(
 
 async function markTextEntityAssetsStale(
   client: PoolClient,
-  kind: TextEntityKind,
+  kind: StaleEntityKind,
   params: [string, string],
   sceneIds: string,
   shotIds: string,

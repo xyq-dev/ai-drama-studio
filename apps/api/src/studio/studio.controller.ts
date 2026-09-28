@@ -81,6 +81,114 @@ export class StudioController {
     return this.studio.listEpisodes(projectId);
   }
 
+  @Post("projects/:projectId/episodes/:episodeId/scenes")
+  createScene(
+    @Param("projectId", UUID_PARAM_PIPE) projectId: string,
+    @Param("episodeId", UUID_PARAM_PIPE) episodeId: string, @Body() body: unknown,
+    @Res({ passthrough: true }) response: StatusResponse,
+    @Headers("if-match") ifMatch?: string, @Headers("idempotency-key") key?: string,
+    @Headers("x-trace-id") trace?: string,
+  ) {
+    return this.send(response, this.studio.createSceneRevision(
+      projectId, episodeId, undefined, body, ifMatch, this.context(key, trace),
+    ));
+  }
+
+  @Post("projects/:projectId/episodes/:episodeId/scenes/:sceneId/revisions")
+  reviseScene(
+    @Param("projectId", UUID_PARAM_PIPE) projectId: string,
+    @Param("episodeId", UUID_PARAM_PIPE) episodeId: string,
+    @Param("sceneId", UUID_PARAM_PIPE) sceneId: string, @Body() body: unknown,
+    @Res({ passthrough: true }) response: StatusResponse,
+    @Headers("if-match") ifMatch?: string, @Headers("idempotency-key") key?: string,
+    @Headers("x-trace-id") trace?: string,
+  ) {
+    return this.send(response, this.studio.createSceneRevision(
+      projectId, episodeId, sceneId, body, ifMatch, this.context(key, trace),
+    ));
+  }
+
+  @Get("projects/:projectId/episodes/:episodeId/scenes/:sceneId/revisions")
+  sceneHistory(
+    @Param("projectId", UUID_PARAM_PIPE) projectId: string,
+    @Param("episodeId", UUID_PARAM_PIPE) episodeId: string,
+    @Param("sceneId", UUID_PARAM_PIPE) sceneId: string,
+  ) {
+    return this.studio.listSceneRevisions(projectId, episodeId, sceneId);
+  }
+
+  @Post("projects/:projectId/episodes/:episodeId/scenes/:sceneId/revisions/:revisionId/review")
+  reviewScene(
+    @Param("projectId", UUID_PARAM_PIPE) projectId: string,
+    @Param("episodeId", UUID_PARAM_PIPE) episodeId: string,
+    @Param("sceneId", UUID_PARAM_PIPE) sceneId: string,
+    @Param("revisionId", UUID_PARAM_PIPE) revisionId: string, @Body() body: unknown,
+    @Res({ passthrough: true }) response: StatusResponse,
+    @Headers("if-match") ifMatch?: string, @Headers("idempotency-key") key?: string,
+    @Headers("x-trace-id") trace?: string,
+  ) {
+    return this.send(response, this.studio.reviewSceneShot(
+      "scene", projectId, episodeId, sceneId, undefined, revisionId,
+      body, ifMatch, this.context(key, trace),
+    ));
+  }
+
+  @Post("projects/:projectId/episodes/:episodeId/scenes/:sceneId/shots")
+  createShot(
+    @Param("projectId", UUID_PARAM_PIPE) projectId: string,
+    @Param("episodeId", UUID_PARAM_PIPE) episodeId: string,
+    @Param("sceneId", UUID_PARAM_PIPE) sceneId: string, @Body() body: unknown,
+    @Res({ passthrough: true }) response: StatusResponse,
+    @Headers("if-match") ifMatch?: string, @Headers("idempotency-key") key?: string,
+    @Headers("x-trace-id") trace?: string,
+  ) {
+    return this.send(response, this.studio.createShotRevision(
+      projectId, episodeId, sceneId, undefined, body, ifMatch, this.context(key, trace),
+    ));
+  }
+
+  @Post("projects/:projectId/episodes/:episodeId/scenes/:sceneId/shots/:shotId/revisions")
+  reviseShot(
+    @Param("projectId", UUID_PARAM_PIPE) projectId: string,
+    @Param("episodeId", UUID_PARAM_PIPE) episodeId: string,
+    @Param("sceneId", UUID_PARAM_PIPE) sceneId: string,
+    @Param("shotId", UUID_PARAM_PIPE) shotId: string, @Body() body: unknown,
+    @Res({ passthrough: true }) response: StatusResponse,
+    @Headers("if-match") ifMatch?: string, @Headers("idempotency-key") key?: string,
+    @Headers("x-trace-id") trace?: string,
+  ) {
+    return this.send(response, this.studio.createShotRevision(
+      projectId, episodeId, sceneId, shotId, body, ifMatch, this.context(key, trace),
+    ));
+  }
+
+  @Get("projects/:projectId/episodes/:episodeId/scenes/:sceneId/shots/:shotId/revisions")
+  shotHistory(
+    @Param("projectId", UUID_PARAM_PIPE) projectId: string,
+    @Param("episodeId", UUID_PARAM_PIPE) episodeId: string,
+    @Param("sceneId", UUID_PARAM_PIPE) sceneId: string,
+    @Param("shotId", UUID_PARAM_PIPE) shotId: string,
+  ) {
+    return this.studio.listShotRevisions(projectId, episodeId, sceneId, shotId);
+  }
+
+  @Post("projects/:projectId/episodes/:episodeId/scenes/:sceneId/shots/:shotId/revisions/:revisionId/review")
+  reviewShot(
+    @Param("projectId", UUID_PARAM_PIPE) projectId: string,
+    @Param("episodeId", UUID_PARAM_PIPE) episodeId: string,
+    @Param("sceneId", UUID_PARAM_PIPE) sceneId: string,
+    @Param("shotId", UUID_PARAM_PIPE) shotId: string,
+    @Param("revisionId", UUID_PARAM_PIPE) revisionId: string, @Body() body: unknown,
+    @Res({ passthrough: true }) response: StatusResponse,
+    @Headers("if-match") ifMatch?: string, @Headers("idempotency-key") key?: string,
+    @Headers("x-trace-id") trace?: string,
+  ) {
+    return this.send(response, this.studio.reviewSceneShot(
+      "shot", projectId, episodeId, sceneId, shotId, revisionId,
+      body, ifMatch, this.context(key, trace),
+    ));
+  }
+
   @Post("projects/:projectId/characters")
   createCharacter(
     @Param("projectId", UUID_PARAM_PIPE) projectId: string, @Body() body: unknown,
