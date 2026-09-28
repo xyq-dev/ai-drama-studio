@@ -16,6 +16,7 @@ beforeAll(async () => {
 beforeEach(async () => {
   await pool.query(`
     TRUNCATE TABLE
+      asset_revision_dependency,
       asset_dependency,
       asset,
       provider_event,
@@ -195,6 +196,134 @@ describe("M3-A media asset schema", () => {
     await expect(pool.query(
       "DELETE FROM asset_dependency WHERE dependent_asset_id = $1", [dependent],
     )).rejects.toThrow(/immutable/i);
+  });
+
+  it("binds derived assets to exact shot, scene, character and location revisions in their project", async () => {
+    const seeded = await seedMediaAttempt("revision-dependency");
+    const { workspaceId, projectId } = seeded;
+    const insertId = async (sql: string, params: unknown[]) => {
+      const result = await pool.query<{ id: string } & QueryResultRow>(sql, params);
+      const id = result.rows[0]?.id;
+      if (!id) throw new Error("revision dependency fixture missing id");
+      return id;
+    };
+    const assetId = await insertId(
+      `INSERT INTO asset (workspace_id, project_id, kind, storage_provider, object_key,
+        mime_type, byte_size, checksum_sha256, source_kind)
+       VALUES ($1,$2,'IMAGE','minio','revision-dependency/result.png','image/png',1,$3,'UPLOAD') RETURNING id`,
+      [workspaceId, projectId, hash],
+    );
+    const characterId = await insertId(
+      "INSERT INTO character (workspace_id, project_id, name) VALUES ($1,$2,'lead') RETURNING id",
+      [workspaceId, projectId],
+    );
+    const characterRevisionId = await insertId(
+      `INSERT INTO character_revision
+        (workspace_id, project_id, character_id, revision_no, content_json, content_hash, created_by)
+       VALUES ($1,$2,$3,1,'{}'::jsonb,$4,'test') RETURNING id`,
+      [workspaceId, projectId, characterId, hash],
+    );
+    const locationId = await insertId(
+      "INSERT INTO location (workspace_id, project_id, name) VALUES ($1,$2,'court') RETURNING id",
+      [workspaceId, projectId],
+    );
+    const locationRevisionId = await insertId(
+      `INSERT INTO location_revision
+        (workspace_id, project_id, location_id, revision_no, content_json, content_hash, created_by)
+       VALUES ($1,$2,$3,1,'{}'::jsonb,$4,'test') RETURNING id`,
+      [workspaceId, projectId, locationId, hash],
+    );
+    const storyRevisionId = await insertId(
+      `INSERT INTO story_revision
+        (workspace_id, project_id, revision_no, content_json, content_hash, created_by)
+       VALUES ($1,$2,1,'{}'::jsonb,$3,'test') RETURNING id`,
+      [workspaceId, projectId, hash],
+    );
+    const episodeId = await insertId(
+      "INSERT INTO episode (workspace_id, project_id, episode_no, title) VALUES ($1,$2,1,'pilot') RETURNING id",
+      [workspaceId, projectId],
+    );
+    const scriptRevisionId = await insertId(
+      `INSERT INTO script_revision
+        (workspace_id, project_id, episode_id, revision_no, source_story_revision_id,
+         content_json, content_hash, created_by)
+       VALUES ($1,$2,$3,1,$4,'{}'::jsonb,$5,'test') RETURNING id`,
+      [workspaceId, projectId, episodeId, storyRevisionId, hash],
+    );
+    const sceneId = await insertId(
+      "INSERT INTO scene (workspace_id, project_id, episode_id) VALUES ($1,$2,$3) RETURNING id",
+      [workspaceId, projectId, episodeId],
+    );
+    const sceneRevisionId = await insertId(
+      `INSERT INTO scene_revision
+        (workspace_id, project_id, episode_id, scene_id, revision_no,
+         source_script_revision_id, ordinal, heading, summary, content_hash, created_by)
+       VALUES ($1,$2,$3,$4,1,$5,1,'Court','Opening',$6,'test') RETURNING id`,
+      [workspaceId, projectId, episodeId, sceneId, scriptRevisionId, hash],
+    );
+    const shotId = await insertId(
+      "INSERT INTO shot (workspace_id, project_id, episode_id, scene_id) VALUES ($1,$2,$3,$4) RETURNING id",
+      [workspaceId, projectId, episodeId, sceneId],
+    );
+    const shotRevisionId = await insertId(
+      `INSERT INTO shot_revision
+        (workspace_id, project_id, scene_id, shot_id, revision_no,
+         source_scene_revision_id, ordinal, shot_type, camera, action, prompt_text,
+         content_hash, created_by)
+       VALUES ($1,$2,$3,$4,1,$5,1,'WIDE','STATIC','Opening','court',$6,'test') RETURNING id`,
+      [workspaceId, projectId, sceneId, shotId, sceneRevisionId, hash],
+    );
+
+    const revisions = [
+      ["shot_revision_id", shotRevisionId],
+      ["scene_revision_id", sceneRevisionId],
+      ["character_revision_id", characterRevisionId],
+      ["location_revision_id", locationRevisionId],
+    ] as const;
+    for (const [column, revisionId] of revisions) {
+      const edge = await pool.query<{ id: string } & QueryResultRow>(
+        `INSERT INTO asset_revision_dependency
+          (workspace_id, project_id, dependent_asset_id, ${column})
+         VALUES ($1,$2,$3,$4) RETURNING id`,
+        [workspaceId, projectId, assetId, revisionId],
+      );
+      await expect(pool.query(
+        `INSERT INTO asset_revision_dependency
+          (workspace_id, project_id, dependent_asset_id, ${column}) VALUES ($1,$2,$3,$4)`,
+        [workspaceId, projectId, assetId, revisionId],
+      )).rejects.toThrow(/duplicate key/i);
+      await expect(pool.query(
+        "DELETE FROM asset_revision_dependency WHERE id = $1", [edge.rows[0]?.id],
+      )).rejects.toThrow(/immutable/i);
+    }
+    await expect(pool.query(
+      `INSERT INTO asset_revision_dependency (workspace_id, project_id, dependent_asset_id)
+       VALUES ($1,$2,$3)`, [workspaceId, projectId, assetId],
+    )).rejects.toThrow(/asset_revision_dependency_one_source/i);
+    await expect(pool.query(
+      `INSERT INTO asset_revision_dependency
+        (workspace_id, project_id, dependent_asset_id, shot_revision_id, scene_revision_id)
+       VALUES ($1,$2,$3,$4,$5)`,
+      [workspaceId, projectId, assetId, shotRevisionId, sceneRevisionId],
+    )).rejects.toThrow(/asset_revision_dependency_one_source/i);
+
+    const otherProjectId = await insertId(
+      "INSERT INTO project (workspace_id, title) VALUES ($1,'other-revision-project') RETURNING id",
+      [workspaceId],
+    );
+    const otherAssetId = await insertId(
+      `INSERT INTO asset (workspace_id, project_id, kind, storage_provider, object_key,
+        mime_type, byte_size, checksum_sha256, source_kind)
+       VALUES ($1,$2,'IMAGE','minio','revision-dependency/other.png','image/png',1,$3,'UPLOAD') RETURNING id`,
+      [workspaceId, otherProjectId, hash],
+    );
+    for (const [column, revisionId] of revisions) {
+      await expect(pool.query(
+        `INSERT INTO asset_revision_dependency
+          (workspace_id, project_id, dependent_asset_id, ${column}) VALUES ($1,$2,$3,$4)`,
+        [workspaceId, otherProjectId, otherAssetId, revisionId],
+      )).rejects.toThrow(/foreign key/i);
+    }
   });
 
   it("stores immutable assets bound to the exact provider attempt", async () => {
