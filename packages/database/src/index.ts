@@ -39,6 +39,8 @@ export {
   type StoryRevisionPage,
   type StoryRevisionView,
   type TextEntityKind,
+  type SceneRevisionInput,
+  type ShotRevisionInput,
 } from "./text-chain";
 export { type ScriptDependencyBinding, type ScriptDependencyConsumer } from "./script-dependencies";
 

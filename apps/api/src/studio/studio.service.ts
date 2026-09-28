@@ -48,6 +48,26 @@ const reviewBodySchema = z.object({
   reviewNote: z.string().max(4000).nullable().optional(),
 });
 
+const sceneBodySchema = z.object({
+  sourceScriptRevisionId: z.string().uuid(),
+  locationRevisionId: z.string().uuid().nullable().optional(),
+  ordinal: z.number().int().min(1).max(2_147_483_647),
+  heading: z.string().min(1).max(400),
+  timeOfDay: z.string().max(100).nullable().optional(),
+  summary: z.string().max(4000),
+});
+
+const shotBodySchema = z.object({
+  sourceSceneRevisionId: z.string().uuid(),
+  ordinal: z.number().int().min(1).max(2_147_483_647),
+  shotType: z.string().min(1).max(100),
+  camera: z.string().max(1000),
+  action: z.string().max(4000),
+  dialogue: z.string().max(4000).nullable().optional(),
+  durationHint: z.string().max(200).nullable().optional(),
+  promptText: z.string().max(8000),
+});
+
 const textEntityBodySchema = z.object({
   projectId: z.string().uuid().optional(),
   name: z.string().trim().min(1).max(200).optional(),
@@ -200,6 +220,95 @@ export class StudioService {
           expectedVersion, expectedReviewVersion: input.expectedReviewVersion,
           to: input.to, reviewedBy: context.actorId, reviewNote: input.reviewNote,
           traceId: context.traceId,
+        }),
+      );
+    } catch (error) {
+      throwReviewTransitionError(error);
+    }
+  }
+
+  async createSceneRevision(
+    projectId: string, episodeId: string, sceneId: string | undefined,
+    body: unknown, ifMatch: string | undefined, context: StudioContext,
+  ) {
+    await this.store.getProject(this.workspaceId, projectId);
+    await this.textChain.requireEpisode(this.workspaceId, projectId, episodeId);
+    if (sceneId) {
+      await this.textChain.listSceneRevisions(this.workspaceId, projectId, episodeId, sceneId);
+    }
+    const input = parse(sceneBodySchema, rejectClientWorkspace(body));
+    const expectedVersion = parseAggregateVersion(ifMatch);
+    const request = {
+      ...input,
+      sourceScriptRevisionId: input.sourceScriptRevisionId.toLowerCase(),
+      locationRevisionId: input.locationRevisionId?.toLowerCase() ?? null,
+      expectedVersion,
+    };
+    const route = sceneId
+      ? `/projects/${projectId}/episodes/${episodeId}/scenes/${sceneId}/revisions`
+      : `/projects/${projectId}/episodes/${episodeId}/scenes`;
+    return this.jobs.runIdempotent(this.scope(context, "POST", route, request), 201,
+      (client) => this.textChain.createSceneRevisionInTransaction(client, {
+        ...request, workspaceId: this.workspaceId, projectId, episodeId, sceneId,
+        createdBy: context.actorId, traceId: context.traceId,
+      }));
+  }
+
+  async listSceneRevisions(projectId: string, episodeId: string, sceneId: string) {
+    await this.store.getProject(this.workspaceId, projectId);
+    return this.textChain.listSceneRevisions(this.workspaceId, projectId, episodeId, sceneId);
+  }
+
+  async createShotRevision(
+    projectId: string, episodeId: string, sceneId: string, shotId: string | undefined,
+    body: unknown, ifMatch: string | undefined, context: StudioContext,
+  ) {
+    await this.store.getProject(this.workspaceId, projectId);
+    await this.textChain.listSceneRevisions(this.workspaceId, projectId, episodeId, sceneId);
+    if (shotId) await this.textChain.listShotRevisions(this.workspaceId, projectId, sceneId, shotId);
+    const input = parse(shotBodySchema, rejectClientWorkspace(body));
+    const expectedVersion = parseAggregateVersion(ifMatch);
+    const request = {
+      ...input, sourceSceneRevisionId: input.sourceSceneRevisionId.toLowerCase(),
+      dialogue: input.dialogue ?? null, durationHint: input.durationHint ?? null,
+      expectedVersion,
+    };
+    const route = shotId
+      ? `/projects/${projectId}/episodes/${episodeId}/scenes/${sceneId}/shots/${shotId}/revisions`
+      : `/projects/${projectId}/episodes/${episodeId}/scenes/${sceneId}/shots`;
+    return this.jobs.runIdempotent(this.scope(context, "POST", route, request), 201,
+      (client) => this.textChain.createShotScopedInTransaction(client, {
+        ...request, workspaceId: this.workspaceId, projectId, sceneId, shotId,
+        createdBy: context.actorId, traceId: context.traceId,
+      }));
+  }
+
+  async listShotRevisions(projectId: string, episodeId: string, sceneId: string, shotId: string) {
+    await this.store.getProject(this.workspaceId, projectId);
+    await this.textChain.listSceneRevisions(this.workspaceId, projectId, episodeId, sceneId);
+    return this.textChain.listShotRevisions(this.workspaceId, projectId, sceneId, shotId);
+  }
+
+  async reviewSceneShot(
+    kind: "scene" | "shot", projectId: string, episodeId: string,
+    sceneId: string, shotId: string | undefined, revisionId: string,
+    body: unknown, ifMatch: string | undefined, context: StudioContext,
+  ) {
+    await this.store.getProject(this.workspaceId, projectId);
+    await this.textChain.listSceneRevisions(this.workspaceId, projectId, episodeId, sceneId);
+    if (shotId) await this.textChain.listShotRevisions(this.workspaceId, projectId, sceneId, shotId);
+    const input = parse(reviewBodySchema, rejectClientWorkspace(body));
+    const expectedVersion = parseAggregateVersion(ifMatch);
+    const route = kind === "scene"
+      ? `/projects/${projectId}/episodes/${episodeId}/scenes/${sceneId}/revisions/${revisionId}/review`
+      : `/projects/${projectId}/episodes/${episodeId}/scenes/${sceneId}/shots/${shotId}/revisions/${revisionId}/review`;
+    try {
+      return await this.jobs.runIdempotent(
+        this.scope(context, "POST", route, { ...input, expectedVersion }), 200,
+        (client) => this.textChain.reviewSceneShotInTransaction(client, {
+          kind, workspaceId: this.workspaceId, projectId, episodeId, sceneId, shotId, revisionId,
+          expectedVersion, expectedReviewVersion: input.expectedReviewVersion, to: input.to,
+          reviewedBy: context.actorId, reviewNote: input.reviewNote, traceId: context.traceId,
         }),
       );
     } catch (error) {

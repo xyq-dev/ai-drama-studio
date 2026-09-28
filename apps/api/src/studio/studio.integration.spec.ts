@@ -22,7 +22,7 @@ const pool: PostgresPool = createPostgresPool({
 });
 
 async function seedApprovedScriptForTextEntity(label: string): Promise<{
-  projectId: string; scriptRevisionId: string;
+  projectId: string; episodeId: string; scriptRevisionId: string;
 }> {
   const project = (await sql<{ id: string }>(
     "INSERT INTO project (workspace_id, title) VALUES ($1, $2) RETURNING id",
@@ -56,7 +56,7 @@ async function seedApprovedScriptForTextEntity(label: string): Promise<{
     "UPDATE episode SET current_script_revision_id = $1, approved_script_revision_id = $1 WHERE id = $2",
     [script.id, episode.id],
   );
-  return { projectId: project.id, scriptRevisionId: script.id };
+  return { projectId: project.id, episodeId: episode.id, scriptRevisionId: script.id };
 }
 
 async function sql<T>(text: string, values: unknown[] = []): Promise<{ rows: T[] }> {
@@ -1033,4 +1033,101 @@ describe("M1-C API and SSE integration", () => {
       expect(wrongReviewScope.status).toBe(404);
     });
   }
+
+  it("runs the project-scoped Scene to Shot text API with replay and review gates", async () => {
+    const source = await seedApprovedScriptForTextEntity("scene-shot-http");
+    const other = await seedApprovedScriptForTextEntity("scene-shot-other");
+    const scenes = `/projects/${source.projectId}/episodes/${source.episodeId}/scenes`;
+    const sceneBody = JSON.stringify({
+      sourceScriptRevisionId: source.scriptRevisionId.toUpperCase(),
+      ordinal: 1, heading: "Opening", summary: "On the court",
+    });
+    const createScene = await fetch(`${base}/api/v1${scenes}`, {
+      method: "POST", headers: {
+        "content-type": "application/json", "if-match": "1", "idempotency-key": "m2-scene-create",
+      }, body: sceneBody,
+    });
+    expect(createScene.status).toBe(201);
+    const scene = (await createScene.json()) as { entityId: string; revisionId: string; rowVersion: number };
+    const sceneReplay = await fetch(
+      `${base}/api/v1/projects/${source.projectId.toUpperCase()}/episodes/${source.episodeId.toUpperCase()}/scenes`,
+      {
+        method: "POST", headers: {
+          "content-type": "application/json", "if-match": "1", "idempotency-key": "m2-scene-create",
+        }, body: JSON.stringify({
+          sourceScriptRevisionId: source.scriptRevisionId,
+          ordinal: 1, heading: "Opening", summary: "On the court",
+        }),
+      },
+    );
+    expect(sceneReplay.status).toBe(201);
+    expect(await sceneReplay.json()).toEqual(scene);
+    const wrongScene = await fetch(
+      `${base}/api/v1/projects/${other.projectId}/episodes/${source.episodeId}/scenes/${scene.entityId}/revisions`,
+    );
+    expect(wrongScene.status).toBe(404);
+    const reviewScenePath = `${scenes}/${scene.entityId}/revisions/${scene.revisionId}/review`;
+    const sceneInReview = await fetch(`${base}/api/v1${reviewScenePath}`, {
+      method: "POST", headers: {
+        "content-type": "application/json", "if-match": String(scene.rowVersion),
+        "idempotency-key": "m2-scene-review-in",
+      }, body: JSON.stringify({ to: "IN_REVIEW", expectedReviewVersion: 1 }),
+    });
+    expect(sceneInReview.status).toBe(200);
+    const sceneReview = (await sceneInReview.json()) as { rowVersion: number; reviewVersion: number };
+    const sceneApproved = await fetch(`${base}/api/v1${reviewScenePath}`, {
+      method: "POST", headers: {
+        "content-type": "application/json", "if-match": String(sceneReview.rowVersion),
+        "idempotency-key": "m2-scene-review-approved",
+      }, body: JSON.stringify({ to: "APPROVED", expectedReviewVersion: sceneReview.reviewVersion }),
+    });
+    expect(sceneApproved.status).toBe(200);
+    const approvedScene = (await sceneApproved.json()) as { rowVersion: number };
+    const shotBody = JSON.stringify({
+      sourceSceneRevisionId: scene.revisionId, ordinal: 1, shotType: "WIDE",
+      camera: "static", action: "run", promptText: "court",
+    });
+    const shotBase = `${scenes}/${scene.entityId}/shots`;
+    const shotResponse = await fetch(`${base}/api/v1${shotBase}`, {
+      method: "POST", headers: {
+        "content-type": "application/json", "if-match": String(approvedScene.rowVersion),
+        "idempotency-key": "m2-shot-create",
+      }, body: shotBody,
+    });
+    expect(shotResponse.status).toBe(201);
+    const shot = (await shotResponse.json()) as { entityId: string; revisionId: string; rowVersion: number };
+    const history = await fetch(
+      `${base}/api/v1${shotBase}/${shot.entityId}/revisions`,
+    );
+    expect(history.status).toBe(200);
+    expect((await history.json()) as { items: unknown[] }).toMatchObject({
+      items: [{ id: shot.revisionId, sourceSceneRevisionId: scene.revisionId }],
+    });
+    const wrongReview = await fetch(
+      `${base}/api/v1/projects/${other.projectId}/episodes/${source.episodeId}/scenes/${scene.entityId}/shots/${shot.entityId}/revisions/${shot.revisionId}/review`,
+      {
+        method: "POST", headers: {
+          "content-type": "application/json", "if-match": String(shot.rowVersion),
+          "idempotency-key": "m2-shot-review-in",
+        }, body: JSON.stringify({ to: "IN_REVIEW", expectedReviewVersion: 1 }),
+      },
+    );
+    expect(wrongReview.status).toBe(404);
+    const reviewShotPath = `${shotBase}/${shot.entityId}/revisions/${shot.revisionId}/review`;
+    const shotInReview = await fetch(`${base}/api/v1${reviewShotPath}`, {
+      method: "POST", headers: {
+        "content-type": "application/json", "if-match": String(shot.rowVersion),
+        "idempotency-key": "m2-shot-review-in",
+      }, body: JSON.stringify({ to: "IN_REVIEW", expectedReviewVersion: 1 }),
+    });
+    expect(shotInReview.status).toBe(200);
+    const shotReview = (await shotInReview.json()) as { rowVersion: number; reviewVersion: number };
+    const shotApproved = await fetch(`${base}/api/v1${reviewShotPath}`, {
+      method: "POST", headers: {
+        "content-type": "application/json", "if-match": String(shotReview.rowVersion),
+        "idempotency-key": "m2-shot-review-approved",
+      }, body: JSON.stringify({ to: "APPROVED", expectedReviewVersion: shotReview.reviewVersion }),
+    });
+    expect(shotApproved.status).toBe(200);
+  });
 });
