@@ -29,6 +29,12 @@ const scriptRevisionBodySchema = z.object({
   content: z.record(z.string(), z.unknown()),
 });
 
+const reviewBodySchema = z.object({
+  to: z.enum(["IN_REVIEW", "REJECTED", "APPROVED"]),
+  expectedReviewVersion: z.number().int().min(1).max(2_147_483_647),
+  reviewNote: z.string().max(4000).nullable().optional(),
+});
+
 export interface StudioContext {
   actorId: string;
   traceId: string;
@@ -157,6 +163,94 @@ export class StudioService {
   async listScriptRevisions(projectId: string, episodeId: string, cursor?: string) {
     await this.store.getProject(this.workspaceId, projectId);
     return this.textChain.listScriptRevisions(this.workspaceId, projectId, episodeId, cursor);
+  }
+
+  async reviewStoryRevision(
+    projectId: string,
+    revisionId: string,
+    body: unknown,
+    ifMatch: string | undefined,
+    context: StudioContext,
+  ) {
+    await this.store.getProject(this.workspaceId, projectId);
+    const input = parse(reviewBodySchema, rejectClientWorkspace(body));
+    const expectedVersion = parseAggregateVersion(ifMatch);
+    const request = { ...input, expectedVersion };
+    return this.jobs.runIdempotent(
+      this.scope(context, "POST", `/projects/${projectId}/stories/${revisionId}/review`, request),
+      200,
+      async (client) => {
+        if (input.to === "APPROVED") {
+          return this.textChain.approveStoryInTransaction(client, {
+            workspaceId: this.workspaceId,
+            projectId,
+            revisionId,
+            expectedVersion,
+            expectedReviewVersion: input.expectedReviewVersion,
+            reviewedBy: context.actorId,
+            traceId: context.traceId,
+          });
+        }
+        return this.textChain.transitionReviewInTransaction(client, {
+          table: "story_revision",
+          revisionId,
+          workspaceId: this.workspaceId,
+          expectedVersion,
+          expectedReviewVersion: input.expectedReviewVersion,
+          to: input.to,
+          reviewedBy: input.to === "REJECTED" ? context.actorId : undefined,
+          reviewNote: input.reviewNote ?? null,
+          traceId: context.traceId,
+        });
+      },
+    );
+  }
+
+  async reviewScriptRevision(
+    projectId: string,
+    episodeId: string,
+    revisionId: string,
+    body: unknown,
+    ifMatch: string | undefined,
+    context: StudioContext,
+  ) {
+    await this.store.getProject(this.workspaceId, projectId);
+    const input = parse(reviewBodySchema, rejectClientWorkspace(body));
+    const expectedVersion = parseAggregateVersion(ifMatch);
+    const request = { ...input, expectedVersion };
+    return this.jobs.runIdempotent(
+      this.scope(
+        context,
+        "POST",
+        `/projects/${projectId}/episodes/${episodeId}/scripts/${revisionId}/review`,
+        request,
+      ),
+      200,
+      async (client) => {
+        if (input.to === "APPROVED") {
+          return this.textChain.approveScriptInTransaction(client, {
+            workspaceId: this.workspaceId,
+            episodeId,
+            revisionId,
+            expectedVersion,
+            expectedReviewVersion: input.expectedReviewVersion,
+            reviewedBy: context.actorId,
+            traceId: context.traceId,
+          });
+        }
+        return this.textChain.transitionReviewInTransaction(client, {
+          table: "script_revision",
+          revisionId,
+          workspaceId: this.workspaceId,
+          expectedVersion,
+          expectedReviewVersion: input.expectedReviewVersion,
+          to: input.to,
+          reviewedBy: input.to === "REJECTED" ? context.actorId : undefined,
+          reviewNote: input.reviewNote ?? null,
+          traceId: context.traceId,
+        });
+      },
+    );
   }
 
   async createMockWorkflow(projectId: string, body: unknown, context: StudioContext) {
