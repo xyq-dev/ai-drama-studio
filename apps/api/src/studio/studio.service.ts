@@ -176,6 +176,16 @@ export class StudioService {
     return this.textChain.listScriptRevisions(this.workspaceId, projectId, episodeId, cursor);
   }
 
+  async listScriptRevisionsByEpisode(episodeId: string, cursor?: string) {
+    const episode = await this.textChain.requireEpisode(this.workspaceId, undefined, episodeId);
+    return this.textChain.listScriptRevisions(
+      this.workspaceId,
+      episode.projectId,
+      episodeId,
+      cursor,
+    );
+  }
+
   async createScriptRevisionByEpisode(
     episodeId: string,
     body: unknown,
