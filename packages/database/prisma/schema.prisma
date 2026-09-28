@@ -635,12 +635,14 @@ model AssetRevisionDependency {
   dependentAssetId    String   @map("dependent_asset_id") @db.Uuid
   shotRevisionId      String?  @map("shot_revision_id") @db.Uuid
   sceneRevisionId     String?  @map("scene_revision_id") @db.Uuid
+  scriptRevisionId    String?  @map("script_revision_id") @db.Uuid
   characterRevisionId String?  @map("character_revision_id") @db.Uuid
   locationRevisionId  String?  @map("location_revision_id") @db.Uuid
   createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   @@index([workspaceId, projectId, shotRevisionId])
   @@index([workspaceId, projectId, sceneRevisionId])
+  @@index([workspaceId, projectId, scriptRevisionId])
   @@index([workspaceId, projectId, characterRevisionId])
   @@index([workspaceId, projectId, locationRevisionId])
   @@map("asset_revision_dependency")
