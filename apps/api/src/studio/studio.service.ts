@@ -146,7 +146,7 @@ export class StudioService {
         this.scope(
           context,
           "POST",
-          `/projects/${projectId}/episodes/${episodeId}/scripts`,
+          `/episodes/${episodeId}/scripts`,
           request,
         ),
         201,
