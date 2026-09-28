@@ -536,3 +536,35 @@ model StaleRecalculation {
   @@index([workspaceId, status, createdAt])
   @@map("stale_recalculation")
 }
+
+model ScriptSourceDependency {
+  id                    String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspaceId           String   @map("workspace_id") @db.Uuid
+  projectId             String   @map("project_id") @db.Uuid
+  scriptRevisionId      String   @map("script_revision_id") @db.Uuid
+  consumerType          String   @map("consumer_type")
+  consumerRevisionId    String   @map("consumer_revision_id") @db.Uuid
+  sceneRevisionId       String?  @map("scene_revision_id") @db.Uuid
+  shotRevisionId        String?  @map("shot_revision_id") @db.Uuid
+  characterRevisionId   String?  @map("character_revision_id") @db.Uuid
+  locationRevisionId    String?  @map("location_revision_id") @db.Uuid
+  sourcePath            String[] @map("source_path")
+  sourceValue           Json     @map("source_value") @db.JsonB
+  sourceValueHash       String   @map("source_value_hash")
+  createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([consumerType, consumerRevisionId, scriptRevisionId, sourcePath], map: "script_source_dependency_consumer_path_key")
+  @@index([workspaceId, projectId, scriptRevisionId], map: "script_source_dependency_source_idx")
+  @@map("script_source_dependency")
+}
+
+model ScriptRevisionReplacement {
+  previousScriptRevisionId String   @id @map("previous_script_revision_id") @db.Uuid
+  newScriptRevisionId      String   @unique @map("new_script_revision_id") @db.Uuid
+  workspaceId              String   @map("workspace_id") @db.Uuid
+  projectId                String   @map("project_id") @db.Uuid
+  episodeId                String   @map("episode_id") @db.Uuid
+  createdAt                DateTime @default(dbgenerated("clock_timestamp()")) @map("created_at") @db.Timestamptz(6)
+
+  @@map("script_revision_replacement")
+}

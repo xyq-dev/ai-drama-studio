@@ -6,6 +6,12 @@ import {
 } from "@ai-drama/domain";
 import type { PoolClient, QueryResultRow } from "pg";
 import { PersistenceError, type DatabasePool } from "./job-service";
+import {
+  affectedScriptConsumerIds,
+  insertScriptDependencies,
+  validateScriptDependencyBinding,
+  type ScriptDependencyBinding,
+} from "./script-dependencies";
 
 export interface RevisionCreated {
   revisionId: string;
@@ -19,7 +25,10 @@ export interface ReviewTransitioned {
   rowVersion: number;
 }
 
-async function withTransaction<T>(pool: DatabasePool, work: (client: PoolClient) => Promise<T>): Promise<T> {
+async function withTransaction<T>(
+  pool: DatabasePool,
+  work: (client: PoolClient) => Promise<T>,
+): Promise<T> {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -83,6 +92,84 @@ async function bumpPointer(
 export class TextChainService {
   constructor(private readonly pool: DatabasePool) {}
 
+  async bindScriptSourceDependencies(
+    input: ScriptDependencyBinding,
+  ): Promise<{ rowVersion: number }> {
+    validateScriptDependencyBinding(input);
+    return withTransaction(this.pool, async (client) => {
+      const parentTable = input.consumerType.replace("_revision", "") as
+        "scene" | "shot" | "character" | "location";
+      const located = await client.query(
+        `SELECT id FROM ${input.consumerType} WHERE id = $1 AND workspace_id = $2 AND project_id = $3 AND ${parentTable}_id = $4`,
+        [input.revisionId, input.workspaceId, input.projectId, input.parentId],
+      );
+      if (!located.rows[0])
+        throw new PersistenceError(
+          "INVALID_SOURCE_REFERENCE",
+          "Script consumer does not belong to this project and parent",
+        );
+      await lockProject(client, input.projectId, input.workspaceId);
+      // Match the source -> consumer lock order enforced by provenance insertion triggers.
+      const source = await client.query(
+        `SELECT episode.id FROM episode JOIN script_revision source
+           ON source.episode_id = episode.id AND source.workspace_id = episode.workspace_id
+          WHERE source.id = $1 AND source.workspace_id = $2 AND source.project_id = $3
+            AND episode.current_script_revision_id = source.id AND source.freshness_status = 'CURRENT'
+          FOR SHARE OF episode, source`,
+        [input.sourceScriptRevisionId, input.workspaceId, input.projectId],
+      );
+      if (!source.rows[0])
+        throw new PersistenceError("INVALID_SOURCE_REFERENCE", "Script source is not current");
+      await lockCurrentRevision(client, {
+        parentTable,
+        revisionTable: input.consumerType,
+        parentId: input.parentId,
+        revisionId: input.revisionId,
+        workspaceId: input.workspaceId,
+        expectedVersion: input.expectedVersion,
+      });
+      const owned = await client.query(
+        `SELECT id FROM ${input.consumerType} WHERE id = $1 AND workspace_id = $2 AND project_id = $3
+           AND review_status = 'DRAFT' AND freshness_status = 'CURRENT'`,
+        [input.revisionId, input.workspaceId, input.projectId],
+      );
+      if (!owned.rows[0])
+        throw new PersistenceError(
+          "INVALID_SOURCE_REFERENCE",
+          "Only a fresh draft can bind script inputs",
+        );
+      await insertScriptDependencies(client, input);
+      const rowVersion = await bumpPointer(
+        client,
+        parentTable,
+        input.parentId,
+        input.workspaceId,
+        input.expectedVersion,
+        "current_revision_id",
+        input.revisionId,
+      );
+      await client.query(
+        `INSERT INTO domain_event
+          (workspace_id, project_id, aggregate_type, aggregate_id, event_type, payload_json, trace_id)
+         VALUES ($1, $2, $3, $4, 'revision.script_dependencies_bound', $5::jsonb, $6)`,
+        [
+          input.workspaceId,
+          input.projectId,
+          input.consumerType,
+          input.revisionId,
+          JSON.stringify({
+            revisionId: input.revisionId,
+            sourceScriptRevisionId: input.sourceScriptRevisionId,
+            sourcePaths: input.sourcePaths,
+            rowVersion,
+          }),
+          input.traceId ?? "m2-text-chain",
+        ],
+      );
+      return { rowVersion };
+    });
+  }
+
   async createStoryRevision(input: {
     workspaceId: string;
     projectId: string;
@@ -93,11 +180,19 @@ export class TextChainService {
   }): Promise<RevisionCreated> {
     const contentHash = canonicalInputHash(input.content);
     return withTransaction(this.pool, async (client) => {
-      await lockAggregateForRevision(client, "project", input.projectId, input.workspaceId, input.expectedVersion);
-      const previousCurrent = await client.query<{ current_story_revision_id: string | null } & QueryResultRow>(
-        "SELECT current_story_revision_id FROM project WHERE id = $1 AND workspace_id = $2",
-        [input.projectId, input.workspaceId],
+      await lockAggregateForRevision(
+        client,
+        "project",
+        input.projectId,
+        input.workspaceId,
+        input.expectedVersion,
       );
+      const previousCurrent = await client.query<
+        { current_story_revision_id: string | null } & QueryResultRow
+      >("SELECT current_story_revision_id FROM project WHERE id = $1 AND workspace_id = $2", [
+        input.projectId,
+        input.workspaceId,
+      ]);
       const previousCurrentId = previousCurrent.rows[0]?.current_story_revision_id ?? null;
       const next = await client.query<{ revision_no: number } & QueryResultRow>(
         `SELECT COALESCE(MAX(revision_no), 0)::int + 1 AS revision_no
@@ -110,10 +205,18 @@ export class TextChainService {
           (workspace_id, project_id, revision_no, content_json, content_hash, created_by)
          VALUES ($1, $2, $3, $4::jsonb, $5, $6)
          RETURNING id`,
-        [input.workspaceId, input.projectId, revisionNo, JSON.stringify(input.content), contentHash, input.createdBy],
+        [
+          input.workspaceId,
+          input.projectId,
+          revisionNo,
+          JSON.stringify(input.content),
+          contentHash,
+          input.createdBy,
+        ],
       );
       const revisionId = inserted.rows[0]?.id;
-      if (!revisionId) throw new PersistenceError("REVISION_CREATE_FAILED", "Story revision was not created");
+      if (!revisionId)
+        throw new PersistenceError("REVISION_CREATE_FAILED", "Story revision was not created");
       const rowVersion = await bumpPointer(
         client,
         "project",
@@ -151,7 +254,10 @@ export class TextChainService {
 
   async transitionReview(input: ReviewTransition): Promise<ReviewTransitioned> {
     if (input.to === "APPROVED") {
-      throw new PersistenceError("REVIEW_GATE_REQUIRED", "Approval must use the aggregate-specific review gate");
+      throw new PersistenceError(
+        "REVIEW_GATE_REQUIRED",
+        "Approval must use the aggregate-specific review gate",
+      );
     }
     return withTransaction(this.pool, async (client) => {
       const parentId = await lockParentForReview(client, input);
@@ -189,7 +295,10 @@ export class TextChainService {
         throw new PersistenceError("REVISION_CONFLICT", "Aggregate version did not match");
       }
       if (projectRow.current_story_revision_id !== input.revisionId) {
-        throw new PersistenceError("REVISION_CONFLICT", "Only the current story revision can be approved");
+        throw new PersistenceError(
+          "REVISION_CONFLICT",
+          "Only the current story revision can be approved",
+        );
       }
 
       await applyReview(client, {
@@ -249,16 +358,17 @@ export class TextChainService {
         `SELECT id FROM ${root.table} WHERE id = $1 AND project_id = $2 AND workspace_id = $3`,
         [root.id, scope.id, scope.workspace_id],
       );
-      if (!owned.rows[0]) throw new PersistenceError("NOT_FOUND", "Stale propagation root not found");
+      if (!owned.rows[0])
+        throw new PersistenceError("NOT_FOUND", "Stale propagation root not found");
       const traceId = `stale-recalculation:${work.id}`;
       const hasMore =
         root.table === "story_revision"
           ? await staleFromStory(client, scope.workspace_id, root.id, traceId)
           : await staleFromScript(client, scope.workspace_id, root.id, traceId);
-      await client.query(`UPDATE stale_recalculation SET status = $2, updated_at = now() WHERE id = $1`, [
-        work.id,
-        hasMore ? "PENDING" : "DONE",
-      ]);
+      await client.query(
+        `UPDATE stale_recalculation SET status = $2, updated_at = now() WHERE id = $1`,
+        [work.id, hasMore ? "PENDING" : "DONE"],
+      );
       return true;
     });
   }
@@ -288,17 +398,25 @@ export class TextChainService {
   }): Promise<RevisionCreated> {
     const contentHash = canonicalInputHash(input.content);
     return withTransaction(this.pool, async (client) => {
-      await lockAggregateForRevision(client, "episode", input.episodeId, input.workspaceId, input.expectedVersion);
-      const currentScript = await client.query<{ current_script_revision_id: string | null } & QueryResultRow>(
-        "SELECT current_script_revision_id FROM episode WHERE id = $1 AND workspace_id = $2",
-        [input.episodeId, input.workspaceId],
+      await lockAggregateForRevision(
+        client,
+        "episode",
+        input.episodeId,
+        input.workspaceId,
+        input.expectedVersion,
       );
+      const currentScript = await client.query<
+        { current_script_revision_id: string | null } & QueryResultRow
+      >("SELECT current_script_revision_id FROM episode WHERE id = $1 AND workspace_id = $2", [
+        input.episodeId,
+        input.workspaceId,
+      ]);
       const currentScriptId = currentScript.rows[0]?.current_script_revision_id;
       if (currentScriptId) {
-        await client.query("SELECT id FROM script_revision WHERE id = $1 AND workspace_id = $2 FOR UPDATE", [
-          currentScriptId,
-          input.workspaceId,
-        ]);
+        await client.query(
+          "SELECT id FROM script_revision WHERE id = $1 AND workspace_id = $2 FOR UPDATE",
+          [currentScriptId, input.workspaceId],
+        );
       }
       const source = await client.query<
         {
@@ -326,14 +444,18 @@ export class TextChainService {
         [input.episodeId, input.workspaceId, input.projectId, input.sourceStoryRevisionId],
       );
       const sourceRow = source.rows[0];
-      if (!sourceRow) throw new PersistenceError("NOT_FOUND", "Episode or source story revision not found");
+      if (!sourceRow)
+        throw new PersistenceError("NOT_FOUND", "Episode or source story revision not found");
       if (
         sourceRow.current_story_revision_id !== input.sourceStoryRevisionId ||
         sourceRow.approved_story_revision_id !== input.sourceStoryRevisionId ||
         sourceRow.review_status !== "APPROVED" ||
         sourceRow.freshness_status !== "CURRENT"
       ) {
-        throw new PersistenceError("REVIEW_REQUIRED", "Scripts require the current approved story revision");
+        throw new PersistenceError(
+          "REVIEW_REQUIRED",
+          "Scripts require the current approved story revision",
+        );
       }
       const previousCurrentId = sourceRow.current_script_revision_id;
       const next = await client.query<{ revision_no: number } & QueryResultRow>(
@@ -358,7 +480,16 @@ export class TextChainService {
         ],
       );
       const revisionId = inserted.rows[0]?.id;
-      if (!revisionId) throw new PersistenceError("REVISION_CREATE_FAILED", "Script revision was not created");
+      if (!revisionId)
+        throw new PersistenceError("REVISION_CREATE_FAILED", "Script revision was not created");
+      if (previousCurrentId) {
+        await client.query(
+          `INSERT INTO script_revision_replacement
+            (workspace_id, project_id, episode_id, previous_script_revision_id, new_script_revision_id)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [input.workspaceId, input.projectId, input.episodeId, previousCurrentId, revisionId],
+        );
+      }
       const rowVersion = await bumpPointer(
         client,
         "episode",
@@ -404,7 +535,13 @@ export class TextChainService {
     traceId?: string;
   }): Promise<void> {
     await withTransaction(this.pool, async (client) => {
-      await lockAggregateForRevision(client, "episode", input.episodeId, input.workspaceId, input.expectedVersion);
+      await lockAggregateForRevision(
+        client,
+        "episode",
+        input.episodeId,
+        input.workspaceId,
+        input.expectedVersion,
+      );
       const source = await client.query<
         {
           freshness_status: string;
@@ -441,7 +578,10 @@ export class TextChainService {
       const sourceRow = source.rows[0];
       if (!sourceRow) throw new PersistenceError("NOT_FOUND", "Script revision not found");
       if (sourceRow.current_script_revision_id !== input.revisionId) {
-        throw new PersistenceError("REVISION_CONFLICT", "Only the current script revision can be approved");
+        throw new PersistenceError(
+          "REVISION_CONFLICT",
+          "Only the current script revision can be approved",
+        );
       }
       if (sourceRow.freshness_status !== "CURRENT") {
         throw new PersistenceError("SOURCE_STALE", "Stale script revision cannot be approved");
@@ -452,7 +592,10 @@ export class TextChainService {
         sourceRow.source_review_status !== "APPROVED" ||
         sourceRow.source_freshness_status !== "CURRENT"
       ) {
-        throw new PersistenceError("REVIEW_REQUIRED", "Script source must be the current approved story revision");
+        throw new PersistenceError(
+          "REVIEW_REQUIRED",
+          "Script source must be the current approved story revision",
+        );
       }
 
       await applyReview(client, {
@@ -474,15 +617,25 @@ export class TextChainService {
         "approved_script_revision_id",
         input.revisionId,
       );
+      // Selecting the revision already persisted and propagated the exact change. Approval must
+      // not broaden that set, or unchanged descendants would lose their reusable approval.
     });
   }
 
   async approveCharacter(input: AggregateApproval): Promise<void> {
-    await approveEntityRevision(this.pool, { ...input, parentTable: "character", revisionTable: "character_revision" });
+    await approveEntityRevision(this.pool, {
+      ...input,
+      parentTable: "character",
+      revisionTable: "character_revision",
+    });
   }
 
   async approveLocation(input: AggregateApproval): Promise<void> {
-    await approveEntityRevision(this.pool, { ...input, parentTable: "location", revisionTable: "location_revision" });
+    await approveEntityRevision(this.pool, {
+      ...input,
+      parentTable: "location",
+      revisionTable: "location_revision",
+    });
   }
 
   async approveScene(input: AggregateApproval): Promise<void> {
@@ -497,10 +650,7 @@ export class TextChainService {
       });
       const source = await client.query<{ ok: boolean } & QueryResultRow>(
         `SELECT (
-            e.current_script_revision_id = sr.source_script_revision_id
-            AND e.approved_script_revision_id = sr.source_script_revision_id
-            AND script.review_status = 'APPROVED'
-            AND script.freshness_status = 'CURRENT'
+            m2_script_source_is_usable(sr.workspace_id, sr.project_id, 'scene_revision', sr.id, sr.source_script_revision_id)
             AND (
               sr.location_revision_id IS NULL
               OR (
@@ -520,7 +670,10 @@ export class TextChainService {
         [input.revisionId, parentId, input.workspaceId],
       );
       if (source.rows[0]?.ok !== true) {
-        throw new PersistenceError("REVIEW_REQUIRED", "Scene source must be the current approved script revision");
+        throw new PersistenceError(
+          "REVIEW_REQUIRED",
+          "Scene source must be the current approved script revision",
+        );
       }
       await finishApproval(client, input, "scene", "scene_revision");
     });
@@ -550,9 +703,27 @@ export class TextChainService {
         [input.revisionId, parentId, input.workspaceId],
       );
       if (source.rows[0]?.ok !== true) {
-        throw new PersistenceError("REVIEW_REQUIRED", "Shot source must be the current approved scene revision");
+        throw new PersistenceError(
+          "REVIEW_REQUIRED",
+          "Shot source must be the current approved scene revision",
+        );
       }
-      const characterDependencies = await client.query<{ character_revision_id: string; ok: boolean } & QueryResultRow>(
+      const invalidScript = await client.query(
+        `SELECT 1 FROM script_revision_consumer_source edge
+          WHERE edge.workspace_id = $1 AND edge.consumer_type = 'shot_revision' AND edge.consumer_revision_id = $2
+            AND m2_script_source_is_usable(edge.workspace_id, edge.project_id, edge.consumer_type,
+                  edge.consumer_revision_id, edge.script_revision_id) IS NOT TRUE LIMIT 1`,
+        [input.workspaceId, input.revisionId],
+      );
+      if (invalidScript.rows[0]) {
+        throw new PersistenceError(
+          "REVIEW_REQUIRED",
+          "Shot script inputs must match the current approved script",
+        );
+      }
+      const characterDependencies = await client.query<
+        { character_revision_id: string; ok: boolean } & QueryResultRow
+      >(
         `SELECT refs.character_revision_id,
                 (
                   character.current_revision_id = character_revision.id
@@ -612,7 +783,13 @@ export class TextChainService {
       promptText: input.promptText,
     });
     return withTransaction(this.pool, async (client) => {
-      await lockAggregateForRevision(client, "shot", input.shotId, input.workspaceId, input.expectedVersion);
+      await lockAggregateForRevision(
+        client,
+        "shot",
+        input.shotId,
+        input.workspaceId,
+        input.expectedVersion,
+      );
       const source = await client.query<
         { freshness_status: string; current_revision_id: string | null } & QueryResultRow
       >(
@@ -626,14 +803,24 @@ export class TextChainService {
                 AND project_id = scene.project_id AND workspace_id = scene.workspace_id
             )
           FOR UPDATE OF scene FOR SHARE OF revision`,
-        [input.sourceSceneRevisionId, input.sceneId, input.projectId, input.workspaceId, input.shotId],
+        [
+          input.sourceSceneRevisionId,
+          input.sceneId,
+          input.projectId,
+          input.workspaceId,
+          input.shotId,
+        ],
       );
-      if (!source.rows[0]) throw new PersistenceError("NOT_FOUND", "Source scene revision not found");
+      if (!source.rows[0])
+        throw new PersistenceError("NOT_FOUND", "Source scene revision not found");
       if (
         source.rows[0].freshness_status !== "CURRENT" ||
         source.rows[0].current_revision_id !== input.sourceSceneRevisionId
       ) {
-        throw new PersistenceError("SOURCE_STALE", "Shots require the current fresh scene revision");
+        throw new PersistenceError(
+          "SOURCE_STALE",
+          "Shots require the current fresh scene revision",
+        );
       }
       const next = await client.query<{ revision_no: number } & QueryResultRow>(
         `SELECT COALESCE(MAX(revision_no), 0)::int + 1 AS revision_no FROM shot_revision WHERE shot_id = $1`,
@@ -665,7 +852,8 @@ export class TextChainService {
         ],
       );
       const revisionId = inserted.rows[0]?.id;
-      if (!revisionId) throw new PersistenceError("REVISION_CREATE_FAILED", "Shot revision was not created");
+      if (!revisionId)
+        throw new PersistenceError("REVISION_CREATE_FAILED", "Shot revision was not created");
       const rowVersion = await bumpPointer(
         client,
         "shot",
@@ -761,7 +949,9 @@ async function lockParentForReview(client: PoolClient, input: ReviewTransition):
   );
   const parentId = located.rows[0]?.parent_id;
   if (!parentId) throw new PersistenceError("NOT_FOUND", "Revision not found");
-  const locked = await client.query<{ aggregate_version: number; current_revision_id: string | null } & QueryResultRow>(
+  const locked = await client.query<
+    { aggregate_version: number; current_revision_id: string | null } & QueryResultRow
+  >(
     `SELECT ${parent.versionColumn} AS aggregate_version, ${parent.currentColumn} AS current_revision_id
        FROM ${parent.parentTable}
       WHERE id = $1 AND workspace_id = $2
@@ -774,12 +964,19 @@ async function lockParentForReview(client: PoolClient, input: ReviewTransition):
     throw new PersistenceError("REVISION_CONFLICT", "Aggregate version did not match");
   }
   if (row.current_revision_id !== input.revisionId) {
-    throw new PersistenceError("REVISION_CONFLICT", "Only the current revision can change review state");
+    throw new PersistenceError(
+      "REVISION_CONFLICT",
+      "Only the current revision can change review state",
+    );
   }
   return parentId;
 }
 
-async function bumpReviewParentVersion(client: PoolClient, input: ReviewTransition, parentId: string): Promise<number> {
+async function bumpReviewParentVersion(
+  client: PoolClient,
+  input: ReviewTransition,
+  parentId: string,
+): Promise<number> {
   const parent = reviewParents[input.table];
   const updated = await client.query<{ aggregate_version: number } & QueryResultRow>(
     `UPDATE ${parent.parentTable}
@@ -794,7 +991,10 @@ async function bumpReviewParentVersion(client: PoolClient, input: ReviewTransiti
   );
   const row = updated.rows[0];
   if (!row) {
-    throw new PersistenceError("REVISION_CONFLICT", "Aggregate version changed during review transition");
+    throw new PersistenceError(
+      "REVISION_CONFLICT",
+      "Aggregate version changed during review transition",
+    );
   }
   return row.aggregate_version;
 }
@@ -869,11 +1069,15 @@ interface AggregateApproval {
   traceId?: string;
 }
 
-async function lockProject(client: PoolClient, projectId: string, workspaceId: string): Promise<void> {
-  const locked = await client.query("SELECT id FROM project WHERE id = $1 AND workspace_id = $2 FOR UPDATE", [
-    projectId,
-    workspaceId,
-  ]);
+async function lockProject(
+  client: PoolClient,
+  projectId: string,
+  workspaceId: string,
+): Promise<void> {
+  const locked = await client.query(
+    "SELECT id FROM project WHERE id = $1 AND workspace_id = $2 FOR UPDATE",
+    [projectId, workspaceId],
+  );
   if (!locked.rows[0]) throw new PersistenceError("NOT_FOUND", "Project not found");
   const pending = await client.query(
     `SELECT 1 FROM stale_recalculation
@@ -916,7 +1120,9 @@ async function lockCurrentRevision(
   },
 ): Promise<string> {
   await lockProjectForAggregate(client, input.parentTable, input.parentId, input.workspaceId);
-  const parent = await client.query<{ row_version: number; current_revision_id: string | null } & QueryResultRow>(
+  const parent = await client.query<
+    { row_version: number; current_revision_id: string | null } & QueryResultRow
+  >(
     `SELECT row_version, current_revision_id FROM ${input.parentTable}
       WHERE id = $1 AND workspace_id = $2 FOR UPDATE`,
     [input.parentId, input.workspaceId],
@@ -972,8 +1178,11 @@ async function approveEntityRevision(
   },
 ): Promise<void> {
   const edgeTable =
-    input.parentTable === "character" ? "character_revision_script_source" : "location_revision_script_source";
-  const edgeColumn = input.parentTable === "character" ? "character_revision_id" : "location_revision_id";
+    input.parentTable === "character"
+      ? "character_revision_script_source"
+      : "location_revision_script_source";
+  const edgeColumn =
+    input.parentTable === "character" ? "character_revision_id" : "location_revision_id";
   await withTransaction(pool, async (client) => {
     await lockCurrentRevision(client, input);
     const invalid = await client.query(
@@ -983,17 +1192,16 @@ async function approveEntityRevision(
          JOIN episode e ON e.id = sr.episode_id AND e.workspace_id = sr.workspace_id
         WHERE edge.${edgeColumn} = $1
           AND edge.workspace_id = $2
-          AND (
-            e.current_script_revision_id IS DISTINCT FROM sr.id
-            OR e.approved_script_revision_id IS DISTINCT FROM sr.id
-            OR sr.review_status <> 'APPROVED'
-            OR sr.freshness_status <> 'CURRENT'
-          )
+          AND m2_script_source_is_usable(edge.workspace_id, edge.project_id, '${input.revisionTable}',
+                edge.${edgeColumn}, edge.script_revision_id) IS NOT TRUE
         LIMIT 1`,
       [input.revisionId, input.workspaceId],
     );
     if (invalid.rows[0]) {
-      throw new PersistenceError("REVIEW_REQUIRED", "Entity source must be a current approved script revision");
+      throw new PersistenceError(
+        "REVIEW_REQUIRED",
+        "Entity source must be a current approved script revision",
+      );
     }
     await finishApproval(client, input, input.parentTable, input.revisionTable);
   });
@@ -1013,11 +1221,22 @@ async function emitCurrentRevisionEvent(
     `INSERT INTO domain_event
       (workspace_id, project_id, aggregate_type, aggregate_id, event_type, payload_json, trace_id)
      VALUES ($1, $2, $3, $4, 'revision.current_changed', $5::jsonb, $6)`,
-    [workspaceId, projectId, aggregateType, aggregateId, JSON.stringify({ revisionId, rowVersion }), traceId],
+    [
+      workspaceId,
+      projectId,
+      aggregateType,
+      aggregateId,
+      JSON.stringify({ revisionId, rowVersion }),
+      traceId,
+    ],
   );
 }
 
-async function ensureEpisodes(client: PoolClient, workspaceId: string, projectId: string): Promise<void> {
+async function ensureEpisodes(
+  client: PoolClient,
+  workspaceId: string,
+  projectId: string,
+): Promise<void> {
   await client.query(
     `INSERT INTO episode (workspace_id, project_id, episode_no, title)
      SELECT $1, $2, episode_no, 'Episode ' || episode_no::text
@@ -1036,7 +1255,9 @@ const STALE_SYNC_LIMIT = 200;
 
 function parseStaleRoot(ref: string): { table: "story_revision" | "script_revision"; id: string } {
   const matched =
-    /^(story_revision|script_revision):([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(ref);
+    /^(story_revision|script_revision):([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(
+      ref,
+    );
   if (!matched || !matched[2]) {
     throw new PersistenceError("INVALID_STALE_ROOT", "Unsupported stale propagation root");
   }
@@ -1224,65 +1445,43 @@ async function staleFromScript(
   scriptRevisionId: string,
   traceId: string,
 ): Promise<boolean> {
-  let hasMore = false;
   const reason = "SOURCE_SCRIPT_REPLACED";
   const staleFromRef = `script_revision:${scriptRevisionId}`;
-  hasMore =
-    (await markStale(
-      client,
-      "scene_revision",
-      `SELECT id FROM scene_revision WHERE workspace_id = $1 AND source_script_revision_id = $2`,
-      [workspaceId, scriptRevisionId],
-      reason,
-      staleFromRef,
-      traceId,
-    )) || hasMore;
-  hasMore =
-    (await markStale(
-      client,
-      "shot_revision",
-      `SELECT shot_revision.id FROM shot_revision
-       JOIN scene_revision ON scene_revision.id = shot_revision.source_scene_revision_id
-      WHERE scene_revision.workspace_id = $1 AND scene_revision.source_script_revision_id = $2`,
-      [workspaceId, scriptRevisionId],
-      reason,
-      staleFromRef,
-      traceId,
-    )) || hasMore;
-  hasMore =
-    (await markStale(
-      client,
-      "character_revision",
-      `SELECT character_revision_id FROM character_revision_script_source
-      WHERE workspace_id = $1 AND script_revision_id = $2`,
-      [workspaceId, scriptRevisionId],
-      reason,
-      staleFromRef,
-      traceId,
-    )) || hasMore;
-  hasMore =
-    (await markStale(
-      client,
-      "location_revision",
-      `SELECT location_revision_id FROM location_revision_script_source
-      WHERE workspace_id = $1 AND script_revision_id = $2`,
-      [workspaceId, scriptRevisionId],
-      reason,
-      staleFromRef,
-      traceId,
-    )) || hasMore;
-  hasMore =
-    (await staleSharedDescendants(
-      client,
-      reason,
-      staleFromRef,
-      [workspaceId, scriptRevisionId],
-      `SELECT location_revision_id FROM location_revision_script_source
-      WHERE workspace_id = $1 AND script_revision_id = $2`,
-      `SELECT character_revision_id FROM character_revision_script_source
-      WHERE workspace_id = $1 AND script_revision_id = $2`,
-      traceId,
-    )) || hasMore;
+  const params = [workspaceId, scriptRevisionId];
+  const characterIds = affectedScriptConsumerIds("character_revision");
+  const locationIds = affectedScriptConsumerIds("location_revision");
+  const directSceneIds = affectedScriptConsumerIds("scene_revision");
+  const directShotIds = affectedScriptConsumerIds("shot_revision");
+  const existedAtReplacement = `AND revision.created_at <= COALESCE(
+    (SELECT created_at FROM script_revision_replacement WHERE previous_script_revision_id = $2
+      AND workspace_id = $1), 'infinity'::timestamptz)`;
+  const sceneIds = `${directSceneIds}
+    UNION
+    SELECT revision.id FROM scene_revision revision
+     WHERE revision.workspace_id = $1 AND revision.location_revision_id IN (${locationIds})
+       ${existedAtReplacement}`;
+  const shotIds = `${directShotIds}
+    UNION
+    SELECT revision.id FROM shot_revision revision
+     WHERE revision.workspace_id = $1 AND revision.source_scene_revision_id IN (${sceneIds})
+       ${existedAtReplacement}
+    UNION
+    SELECT revision.id FROM shot_revision revision
+      JOIN shot_character_reference reference ON reference.shot_revision_id = revision.id
+       AND reference.workspace_id = revision.workspace_id AND reference.project_id = revision.project_id
+     WHERE revision.workspace_id = $1 AND reference.character_revision_id IN (${characterIds})
+       ${existedAtReplacement}`;
+  let hasMore = false;
+  // Do not short-circuit: every class must run even when an earlier batch has a continuation.
+  for (const [table, ids] of [
+    ["character_revision", characterIds],
+    ["location_revision", locationIds],
+    ["scene_revision", sceneIds],
+    ["shot_revision", shotIds],
+  ] as const) {
+    const remaining = await markStale(client, table, ids, params, reason, staleFromRef, traceId);
+    hasMore = remaining || hasMore;
+  }
   return hasMore;
 }
 
