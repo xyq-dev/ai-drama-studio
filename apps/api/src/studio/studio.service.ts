@@ -213,13 +213,14 @@ export class StudioService {
     context: StudioContext,
   ) {
     const revision = await this.textChain.requireScriptRevision(this.workspaceId, revisionId);
-    return this.reviewScriptRevision(
+    return this.reviewScriptRevisionWithRoute(
       revision.projectId,
       revision.episodeId,
       revisionId,
       body,
       ifMatch,
       context,
+      `/script-revisions/${revisionId}/review`,
     );
   }
 
@@ -231,17 +232,32 @@ export class StudioService {
     ifMatch: string | undefined,
     context: StudioContext,
   ) {
+    return this.reviewScriptRevisionWithRoute(
+      projectId,
+      episodeId,
+      revisionId,
+      body,
+      ifMatch,
+      context,
+      `/projects/${projectId}/episodes/${episodeId}/scripts/${revisionId}/review`,
+    );
+  }
+
+  private async reviewScriptRevisionWithRoute(
+    projectId: string,
+    episodeId: string,
+    revisionId: string,
+    body: unknown,
+    ifMatch: string | undefined,
+    context: StudioContext,
+    routeKey: string,
+  ) {
     await this.store.getProject(this.workspaceId, projectId);
     const input = parse(reviewBodySchema, rejectClientWorkspace(body));
     const expectedVersion = parseAggregateVersion(ifMatch);
     const request = { ...input, expectedVersion };
     return this.jobs.runIdempotent(
-      this.scope(
-        context,
-        "POST",
-        `/projects/${projectId}/episodes/${episodeId}/scripts/${revisionId}/review`,
-        request,
-      ),
+      this.scope(context, "POST", routeKey, request),
       200,
       async (client) => {
         if (input.to === "APPROVED") {
