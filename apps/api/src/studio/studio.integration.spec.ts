@@ -1205,8 +1205,10 @@ describe("M1-C API and SSE integration", () => {
     [APP_WORKSPACE_ID, source.projectId, "cd".repeat(32), siblingRevision.id]);
     const listed = await fetch(`${base}/api/v1/shot-revisions/${shot.revisionId}/assets`);
     expect(listed.status).toBe(200);
-    const listedBody = (await listed.json()) as { items: Array<{ objectKey: string }> };
-    expect(listedBody.items.map((item) => item.objectKey)).toEqual(["shot-primary.png"]);
+    const listedBody = (await listed.json()) as {
+      items: Array<{ objectKey: string; providerRequestId: string | null }>;
+    };
+    expect(listedBody.items).toMatchObject([{ objectKey: "shot-primary.png", providerRequestId: null }]);
     const unknownAssets = await fetch(`${base}/api/v1/shot-revisions/00000000-0000-4000-8000-000000000000/assets`);
     expect(unknownAssets.status).toBe(404);
   });

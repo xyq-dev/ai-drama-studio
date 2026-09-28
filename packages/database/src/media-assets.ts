@@ -28,7 +28,7 @@ export interface MediaAssetRecord {
   mimeType: string;
   checksumSha256: string;
   sourceShotRevisionId: string | null;
-  providerRequestId: string;
+  providerRequestId: string | null;
   createdAt: string;
 }
 
@@ -488,7 +488,7 @@ function mapAsset(row: QueryResultRow): MediaAssetRecord {
     checksumSha256: String(row.checksum_sha256),
     sourceShotRevisionId:
       row.source_shot_revision_id === null ? null : String(row.source_shot_revision_id),
-    providerRequestId: String(row.provider_request_id),
+    providerRequestId: row.provider_request_id == null ? null : String(row.provider_request_id),
     createdAt: new Date(row.created_at as Date | string).toISOString(),
   };
 }
