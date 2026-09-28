@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - feat/m2c-text-api-mainline
+      - feat/m2c-text-api-completion
+      - feat/m2c-review-api
   pull_request:
     branches:
       - main
