@@ -116,4 +116,137 @@ describe.each(["character", "location"] as const)("M2 %s API persistence slice",
       expectedVersion: second.rowVersion,
     }))).rejects.toMatchObject({ code: "SCRIPT_REVIEW_REQUIRED" });
   });
+
+  it("atomically stales dependent revisions and assets while preserving unrelated inputs", async () => {
+    const { workspaceId, projectId, episodeId, script } = await setup();
+    const review = await chain.transitionReview({
+      table: "script_revision", workspaceId, revisionId: script.revisionId,
+      expectedVersion: script.rowVersion, expectedReviewVersion: 1, to: "IN_REVIEW",
+    });
+    await chain.approveScript({
+      workspaceId, episodeId, revisionId: script.revisionId,
+      expectedVersion: review.rowVersion, expectedReviewVersion: 2, reviewedBy: "editor",
+    });
+    const projectVersion = (await pool.query<{ version: number } & QueryResultRow>(
+      "SELECT version FROM project WHERE id = $1", [projectId],
+    )).rows[0]!.version;
+    const input = {
+      kind, workspaceId, projectId, name: "Source", sourceScriptRevisionId: script.revisionId,
+      content: { description: "original" }, createdBy: "author", expectedVersion: projectVersion,
+    };
+    const first = await transaction((client) => chain.createTextEntityRevisionInTransaction(client, input));
+    const inReview = await transaction((client) => chain.reviewTextEntityInTransaction(client, {
+      kind, workspaceId, projectId, entityId: first.entityId, revisionId: first.revisionId,
+      expectedVersion: first.rowVersion, expectedReviewVersion: 1, to: "IN_REVIEW", reviewedBy: "editor",
+    }));
+    const approved = await transaction((client) => chain.reviewTextEntityInTransaction(client, {
+      kind, workspaceId, projectId, entityId: first.entityId, revisionId: first.revisionId,
+      expectedVersion: inReview.rowVersion, expectedReviewVersion: inReview.reviewVersion,
+      to: "APPROVED", reviewedBy: "editor",
+    }));
+    const hash = "cd".repeat(32);
+    const sceneId = (await pool.query<{ id: string } & QueryResultRow>(
+      "INSERT INTO scene (workspace_id, project_id, episode_id) VALUES ($1,$2,$3) RETURNING id",
+      [workspaceId, projectId, episodeId],
+    )).rows[0]!.id;
+    const sceneRevisionId = (await pool.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO scene_revision
+        (workspace_id, project_id, episode_id, scene_id, revision_no, source_script_revision_id,
+         location_revision_id, ordinal, heading, summary, content_hash, created_by)
+       VALUES ($1,$2,$3,$4,1,$5,$6,1,'opening','opening',$7,'author') RETURNING id`,
+      [workspaceId, projectId, episodeId, sceneId, script.revisionId,
+        kind === "location" ? first.revisionId : null, hash],
+    )).rows[0]!.id;
+    await pool.query("UPDATE scene SET current_revision_id = $1 WHERE id = $2", [sceneRevisionId, sceneId]);
+    const shotId = (await pool.query<{ id: string } & QueryResultRow>(
+      "INSERT INTO shot (workspace_id, project_id, episode_id, scene_id) VALUES ($1,$2,$3,$4) RETURNING id",
+      [workspaceId, projectId, episodeId, sceneId],
+    )).rows[0]!.id;
+    const shotRevisionId = (await pool.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO shot_revision
+        (workspace_id, project_id, scene_id, shot_id, revision_no, source_scene_revision_id,
+         ordinal, shot_type, camera, action, prompt_text, content_hash, created_by)
+       VALUES ($1,$2,$3,$4,1,$5,1,'WIDE','static','action','prompt',$6,'author') RETURNING id`,
+      [workspaceId, projectId, sceneId, shotId, sceneRevisionId, hash],
+    )).rows[0]!.id;
+    await pool.query("UPDATE shot SET current_revision_id = $1 WHERE id = $2", [shotRevisionId, shotId]);
+    if (kind === "character") {
+      await pool.query(
+        `INSERT INTO shot_character_reference
+          (workspace_id, project_id, shot_revision_id, character_revision_id, role)
+         VALUES ($1,$2,$3,$4,'lead')`,
+        [workspaceId, projectId, shotRevisionId, first.revisionId],
+      );
+    }
+    const assets = await pool.query<{ id: string; object_key: string } & QueryResultRow>(
+      `INSERT INTO asset
+        (workspace_id, project_id, kind, storage_provider, object_key, mime_type,
+         byte_size, checksum_sha256, source_kind)
+       SELECT $1, $2, 'IMAGE', 'test', 'entity-stale-' || $3 || '-' || n,
+              'image/png', 1, $4, 'UPLOAD'
+         FROM generate_series(1, 204) n
+       RETURNING id, object_key`,
+      [workspaceId, projectId, kind, hash],
+    );
+    const directId = assets.rows.find((asset) => asset.object_key.endsWith("-1"))!.id;
+    const unaffectedId = assets.rows.find((asset) => asset.object_key.endsWith("-204"))!.id;
+    const revisionColumn = kind === "location" ? "location_revision_id" : "character_revision_id";
+    await pool.query(
+      `INSERT INTO asset_revision_dependency
+        (workspace_id, project_id, dependent_asset_id, ${revisionColumn})
+       VALUES ($1,$2,$3,$4)`,
+      [workspaceId, projectId, directId, first.revisionId],
+    );
+    // A second path via the stale shot must join the same dependency closure.
+    const shotAssetId = assets.rows.find((asset) => asset.object_key.endsWith("-2"))!.id;
+    await pool.query(
+      `INSERT INTO asset_revision_dependency
+        (workspace_id, project_id, dependent_asset_id, shot_revision_id)
+       VALUES ($1,$2,$3,$4)`,
+      [workspaceId, projectId, shotAssetId, shotRevisionId],
+    );
+    for (const asset of assets.rows.slice(2, 203)) {
+      await pool.query(
+        `INSERT INTO asset_dependency
+          (workspace_id, project_id, dependent_asset_id, source_asset_id)
+         VALUES ($1,$2,$3,$4)`,
+        [workspaceId, projectId, asset.id, directId],
+      );
+    }
+    const replacement = await transaction((client) => chain.createTextEntityRevisionInTransaction(client, {
+      ...input, entityId: first.entityId, expectedVersion: approved.rowVersion,
+      content: { description: "replacement" },
+    }));
+    expect(replacement.revisionNo).toBe(2);
+    const scene = await pool.query<{ freshness_status: string } & QueryResultRow>(
+      "SELECT freshness_status FROM scene_revision WHERE id = $1", [sceneRevisionId],
+    );
+    const shot = await pool.query<{ freshness_status: string } & QueryResultRow>(
+      "SELECT freshness_status FROM shot_revision WHERE id = $1", [shotRevisionId],
+    );
+    expect(scene.rows[0]!.freshness_status).toBe(kind === "location" ? "STALE" : "CURRENT");
+    expect(shot.rows[0]!.freshness_status).toBe("STALE");
+    const initial = await pool.query<{ count: number } & QueryResultRow>(
+      "SELECT COUNT(*)::int AS count FROM asset WHERE project_id = $1 AND status = 'STALE'", [projectId],
+    );
+    expect(initial.rows[0]!.count).toBe(200);
+    const queued = await pool.query<{ status: string } & QueryResultRow>(
+      "SELECT status FROM stale_recalculation WHERE stale_from_ref = $1",
+      [`${kind}_revision:${first.revisionId}`],
+    );
+    expect(queued.rows[0]!.status).toBe("PENDING");
+    expect(await chain.continueStaleRecalculation()).toBe(true);
+    const after = await pool.query<{ count: number } & QueryResultRow>(
+      "SELECT COUNT(*)::int AS count FROM asset WHERE project_id = $1 AND status = 'STALE'", [projectId],
+    );
+    expect(after.rows[0]!.count).toBe(203);
+    const untouched = await pool.query<{ status: string } & QueryResultRow>(
+      "SELECT status FROM asset WHERE id = $1", [unaffectedId],
+    );
+    expect(untouched.rows[0]!.status).toBe("ACTIVE");
+    const oldReview = await pool.query<{ review_status: string; reviewed_by: string } & QueryResultRow>(
+      `SELECT review_status, reviewed_by FROM ${kind}_revision WHERE id = $1`, [first.revisionId],
+    );
+    expect(oldReview.rows[0]).toMatchObject({ review_status: "APPROVED", reviewed_by: "editor" });
+  });
 });

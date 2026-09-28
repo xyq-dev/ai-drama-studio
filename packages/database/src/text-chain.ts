@@ -189,14 +189,18 @@ export class TextChainService {
     let entityId = input.entityId;
     let revisionNo = 1;
     let parentVersion: number | undefined;
+    let previousCurrentId: string | null = null;
     if (entityId) {
-      const parent = await client.query<{ row_version: number } & QueryResultRow>(
-        `SELECT row_version FROM ${kind}
+      const parent = await client.query<{
+        row_version: number; current_revision_id: string | null;
+      } & QueryResultRow>(
+        `SELECT row_version, current_revision_id FROM ${kind}
           WHERE id = $1 AND project_id = $2 AND workspace_id = $3 AND archived_at IS NULL FOR UPDATE`,
         [entityId, projectId, workspaceId],
       );
       if (!parent.rows[0]) throw new PersistenceError("NOT_FOUND", "Entity not found");
       parentVersion = parent.rows[0].row_version;
+      previousCurrentId = parent.rows[0].current_revision_id;
     }
     const source = await client.query(
       `SELECT sr.id FROM script_revision sr
@@ -266,6 +270,15 @@ export class TextChainService {
       client, workspaceId, projectId, kind === "character" ? "Character" : "Location",
       entityId, revisionId, rowVersion, input.traceId ?? "m2-text-chain",
     );
+    if (previousCurrentId) {
+      const traceId = input.traceId ?? "m2-text-chain";
+      if (await staleFromTextEntity(client, kind, workspaceId, previousCurrentId, traceId)) {
+        await enqueueStaleRecalculation(
+          client, workspaceId, projectId, `SOURCE_${kind.toUpperCase()}_REPLACED`,
+          `${kind}_revision:${previousCurrentId}`,
+        );
+      }
+    }
     return { entityId, revisionId, revisionNo, contentHash, rowVersion };
   }
 
@@ -797,7 +810,12 @@ export class TextChainService {
       const hasMore =
         root.table === "story_revision"
           ? await staleFromStory(client, scope.workspace_id, root.id, traceId)
-          : await staleFromScript(client, scope.workspace_id, root.id, traceId);
+          : root.table === "script_revision"
+            ? await staleFromScript(client, scope.workspace_id, root.id, traceId)
+            : await staleFromTextEntity(
+              client, root.table === "character_revision" ? "character" : "location",
+              scope.workspace_id, root.id, traceId,
+            );
       await client.query(
         `UPDATE stale_recalculation SET status = $2, updated_at = now() WHERE id = $1`,
         [work.id, hasMore ? "PENDING" : "DONE"],
@@ -1836,15 +1854,21 @@ async function ensureEpisodes(
 
 const STALE_SYNC_LIMIT = 200;
 
-function parseStaleRoot(ref: string): { table: "story_revision" | "script_revision"; id: string } {
+function parseStaleRoot(ref: string): {
+  table: "story_revision" | "script_revision" | "character_revision" | "location_revision";
+  id: string;
+} {
   const matched =
-    /^(story_revision|script_revision):([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(
+    /^(story_revision|script_revision|character_revision|location_revision):([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(
       ref,
     );
   if (!matched || !matched[2]) {
     throw new PersistenceError("INVALID_STALE_ROOT", "Unsupported stale propagation root");
   }
-  return { table: matched[1] as "story_revision" | "script_revision", id: matched[2] };
+  return {
+    table: matched[1] as "story_revision" | "script_revision" | "character_revision" | "location_revision",
+    id: matched[2],
+  };
 }
 
 async function enqueueStaleRecalculation(
@@ -2066,6 +2090,101 @@ async function staleFromScript(
     hasMore = remaining || hasMore;
   }
   return hasMore;
+}
+
+async function staleFromTextEntity(
+  client: PoolClient,
+  kind: TextEntityKind,
+  workspaceId: string,
+  revisionId: string,
+  traceId: string,
+): Promise<boolean> {
+  const reason = `SOURCE_${kind.toUpperCase()}_REPLACED`;
+  const staleFromRef = `${kind}_revision:${revisionId}`;
+  const params: [string, string] = [workspaceId, revisionId];
+  const sceneIds = kind === "location"
+    ? `SELECT id FROM scene_revision WHERE workspace_id = $1 AND location_revision_id = $2`
+    : `SELECT id FROM scene_revision WHERE FALSE`;
+  const shotIds = kind === "location"
+    ? `SELECT id FROM shot_revision WHERE workspace_id = $1
+         AND source_scene_revision_id IN (${sceneIds})`
+    : `SELECT shot_revision_id FROM shot_character_reference
+        WHERE workspace_id = $1 AND character_revision_id = $2`;
+  let hasMore = false;
+  if (kind === "location") {
+    hasMore = (await markStale(
+      client, "scene_revision", sceneIds, params, reason, staleFromRef, traceId,
+    )) || hasMore;
+  }
+  hasMore = (await markStale(
+    client, "shot_revision", shotIds, params, reason, staleFromRef, traceId,
+  )) || hasMore;
+  hasMore = (await markTextEntityAssetsStale(
+    client, kind, params, sceneIds, shotIds, staleFromRef, traceId,
+  )) || hasMore;
+  return hasMore;
+}
+
+async function markTextEntityAssetsStale(
+  client: PoolClient,
+  kind: TextEntityKind,
+  params: [string, string],
+  sceneIds: string,
+  shotIds: string,
+  staleFromRef: string,
+  traceId: string,
+): Promise<boolean> {
+  const revisionColumn = `${kind}_revision_id`;
+  const updated = await client.query<{ has_more: boolean } & QueryResultRow>(
+    `WITH RECURSIVE direct(id) AS (
+       SELECT edge.dependent_asset_id FROM asset_revision_dependency edge
+        WHERE edge.workspace_id = $1
+          AND edge.project_id = (
+            SELECT project_id FROM ${kind}_revision WHERE id = $2 AND workspace_id = $1
+          )
+          AND (
+            edge.${revisionColumn} = $2
+            OR edge.scene_revision_id IN (${sceneIds})
+            OR edge.shot_revision_id IN (${shotIds})
+          )
+       UNION
+       SELECT id FROM asset WHERE workspace_id = $1
+         AND source_shot_revision_id IN (${shotIds})
+     ),
+     affected(id) AS (
+       SELECT id FROM direct
+       UNION
+       SELECT edge.dependent_asset_id FROM asset_dependency edge
+        JOIN affected source ON source.id = edge.source_asset_id
+       WHERE edge.workspace_id = $1
+     ),
+     candidates AS (
+       SELECT asset.id FROM asset JOIN affected ON affected.id = asset.id
+        WHERE asset.workspace_id = $1 AND asset.status = 'ACTIVE'
+          AND asset.project_id = (
+            SELECT project_id FROM ${kind}_revision WHERE id = $2 AND workspace_id = $1
+          )
+        ORDER BY asset.id LIMIT ${STALE_SYNC_LIMIT + 1}
+     ),
+     selected AS (
+       SELECT id FROM candidates ORDER BY id LIMIT ${STALE_SYNC_LIMIT}
+     ),
+     changed AS (
+       UPDATE asset SET status = 'STALE', row_version = row_version + 1
+        WHERE id IN (SELECT id FROM selected) AND workspace_id = $1 AND status = 'ACTIVE'
+       RETURNING id, project_id
+     ),
+     events AS (
+       INSERT INTO domain_event
+         (workspace_id, project_id, aggregate_type, aggregate_id, event_type, payload_json, trace_id)
+       SELECT $1, project_id, 'Asset', id, 'asset.stale',
+              jsonb_build_object('assetId', id, 'staleFromRef', $3), $4
+         FROM changed RETURNING 1
+     )
+     SELECT (SELECT COUNT(*) FROM candidates) > ${STALE_SYNC_LIMIT} AS has_more`,
+    [...params, staleFromRef, traceId],
+  );
+  return updated.rows[0]?.has_more === true;
 }
 
 async function staleSharedDescendants(
