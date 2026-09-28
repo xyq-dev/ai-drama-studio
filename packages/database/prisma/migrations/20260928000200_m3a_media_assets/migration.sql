@@ -77,6 +77,56 @@ CREATE TABLE asset_dependency (
 CREATE INDEX asset_dependency_source_idx
   ON asset_dependency (workspace_id, project_id, source_asset_id);
 
+-- Each edge points to exactly one typed, immutable source revision. All five
+-- composite FKs share project and workspace, preventing cross-project lineage.
+CREATE TABLE asset_revision_dependency (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id uuid NOT NULL,
+  project_id uuid NOT NULL,
+  dependent_asset_id uuid NOT NULL,
+  shot_revision_id uuid,
+  scene_revision_id uuid,
+  character_revision_id uuid,
+  location_revision_id uuid,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT asset_revision_dependency_one_source CHECK (
+    num_nonnulls(shot_revision_id, scene_revision_id,
+                 character_revision_id, location_revision_id) = 1
+  ),
+  FOREIGN KEY (dependent_asset_id, project_id, workspace_id)
+    REFERENCES asset(id, project_id, workspace_id),
+  FOREIGN KEY (shot_revision_id, project_id, workspace_id)
+    REFERENCES shot_revision(id, project_id, workspace_id),
+  FOREIGN KEY (scene_revision_id, project_id, workspace_id)
+    REFERENCES scene_revision(id, project_id, workspace_id),
+  FOREIGN KEY (character_revision_id, project_id, workspace_id)
+    REFERENCES character_revision(id, project_id, workspace_id),
+  FOREIGN KEY (location_revision_id, project_id, workspace_id)
+    REFERENCES location_revision(id, project_id, workspace_id)
+);
+
+CREATE UNIQUE INDEX asset_revision_dependency_shot_key
+  ON asset_revision_dependency (dependent_asset_id, shot_revision_id)
+  WHERE shot_revision_id IS NOT NULL;
+CREATE UNIQUE INDEX asset_revision_dependency_scene_key
+  ON asset_revision_dependency (dependent_asset_id, scene_revision_id)
+  WHERE scene_revision_id IS NOT NULL;
+CREATE UNIQUE INDEX asset_revision_dependency_character_key
+  ON asset_revision_dependency (dependent_asset_id, character_revision_id)
+  WHERE character_revision_id IS NOT NULL;
+CREATE UNIQUE INDEX asset_revision_dependency_location_key
+  ON asset_revision_dependency (dependent_asset_id, location_revision_id)
+  WHERE location_revision_id IS NOT NULL;
+
+CREATE INDEX asset_revision_dependency_shot_source_idx
+  ON asset_revision_dependency (workspace_id, project_id, shot_revision_id);
+CREATE INDEX asset_revision_dependency_scene_source_idx
+  ON asset_revision_dependency (workspace_id, project_id, scene_revision_id);
+CREATE INDEX asset_revision_dependency_character_source_idx
+  ON asset_revision_dependency (workspace_id, project_id, character_revision_id);
+CREATE INDEX asset_revision_dependency_location_source_idx
+  ON asset_revision_dependency (workspace_id, project_id, location_revision_id);
+
 CREATE INDEX asset_project_kind_created_idx
   ON asset (workspace_id, project_id, kind, created_at DESC);
 
@@ -148,6 +198,10 @@ FOR EACH ROW EXECUTE FUNCTION m3_guard_asset_lifecycle();
 
 CREATE TRIGGER asset_dependency_immutable
 BEFORE UPDATE OR DELETE ON asset_dependency
+FOR EACH ROW EXECUTE FUNCTION m3_reject_asset_mutation();
+
+CREATE TRIGGER asset_revision_dependency_immutable
+BEFORE UPDATE OR DELETE ON asset_revision_dependency
 FOR EACH ROW EXECUTE FUNCTION m3_reject_asset_mutation();
 
 ALTER TABLE cost_ledger
