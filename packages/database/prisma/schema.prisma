@@ -599,5 +599,6 @@ model Asset {
   @@unique([id, projectId, workspaceId])
   @@index([workspaceId, projectId, kind, createdAt])
   @@index([workspaceId, sourceShotRevisionId, createdAt])
+  @@index([workspaceId, projectId, checksumSha256, kind])
   @@map("asset")
 }
