@@ -472,7 +472,7 @@ describe("M1-C API and SSE integration", () => {
     if (!episodeId || !episodeVersion) throw new Error("episode missing");
 
     const body = JSON.stringify({
-      storyRevisionId: story.revisionId,
+      sourceStoryRevisionId: story.revisionId,
       content: { schema: "m2.script.revision.v1", episode: 1, scenes: [] },
     });
     const first = await fetch(
