@@ -2178,7 +2178,7 @@ async function markTextEntityAssetsStale(
        INSERT INTO domain_event
          (workspace_id, project_id, aggregate_type, aggregate_id, event_type, payload_json, trace_id)
        SELECT $1, project_id, 'Asset', id, 'asset.stale',
-              jsonb_build_object('assetId', id, 'staleFromRef', $3), $4
+              jsonb_build_object('assetId', id, 'staleFromRef', $3::text), $4
          FROM changed RETURNING 1
      )
      SELECT (SELECT COUNT(*) FROM candidates) > ${STALE_SYNC_LIMIT} AS has_more`,
