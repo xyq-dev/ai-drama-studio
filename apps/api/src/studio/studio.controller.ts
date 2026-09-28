@@ -112,6 +112,52 @@ export class StudioController {
     return this.studio.listScriptRevisions(projectId, episodeId, cursor);
   }
 
+  @Post("projects/:projectId/stories/:revisionId/review")
+  reviewStoryRevision(
+    @Param("projectId", UUID_PARAM_PIPE) projectId: string,
+    @Param("revisionId", UUID_PARAM_PIPE) revisionId: string,
+    @Body() body: unknown,
+    @Res({ passthrough: true }) response: StatusResponse,
+    @Headers("if-match") ifMatch?: string,
+    @Headers("idempotency-key") idempotencyKey?: string,
+    @Headers("x-trace-id") traceHeader?: string,
+  ) {
+    return this.send(
+      response,
+      this.studio.reviewStoryRevision(
+        projectId,
+        revisionId,
+        body,
+        ifMatch,
+        this.context(idempotencyKey, traceHeader),
+      ),
+    );
+  }
+
+  @Post("projects/:projectId/episodes/:episodeId/scripts/:revisionId/review")
+  reviewScriptRevision(
+    @Param("projectId", UUID_PARAM_PIPE) projectId: string,
+    @Param("episodeId", UUID_PARAM_PIPE) episodeId: string,
+    @Param("revisionId", UUID_PARAM_PIPE) revisionId: string,
+    @Body() body: unknown,
+    @Res({ passthrough: true }) response: StatusResponse,
+    @Headers("if-match") ifMatch?: string,
+    @Headers("idempotency-key") idempotencyKey?: string,
+    @Headers("x-trace-id") traceHeader?: string,
+  ) {
+    return this.send(
+      response,
+      this.studio.reviewScriptRevision(
+        projectId,
+        episodeId,
+        revisionId,
+        body,
+        ifMatch,
+        this.context(idempotencyKey, traceHeader),
+      ),
+    );
+  }
+
   @Post("projects/:projectId/workflows/mock")
   createMockWorkflow(
     @Param("projectId", UUID_PARAM_PIPE) projectId: string,
