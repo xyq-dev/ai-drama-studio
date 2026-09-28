@@ -526,4 +526,147 @@ describe("M1-C API and SSE integration", () => {
     });
   });
 
+  it("reviews and approves story plus script revisions through idempotent API gates", async () => {
+    const projectResponse = await fetch(`${base}/api/v1/projects`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": "m2c-review-project" },
+      body: JSON.stringify({ title: "Review API" }),
+    });
+    const project = (await projectResponse.json()) as { id: string; version: number };
+
+    const storyResponse = await fetch(`${base}/api/v1/projects/${project.id}/stories`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "m2c-review-story",
+        "if-match": String(project.version),
+      },
+      body: JSON.stringify({ content: { schema: "m2.story.revision.v1", premise: "review me" } }),
+    });
+    const story = (await storyResponse.json()) as { revisionId: string; rowVersion: number };
+    expect(storyResponse.status).toBe(201);
+
+    const storyInReview = await fetch(
+      `${base}/api/v1/projects/${project.id}/stories/${story.revisionId}/review`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "m2c-story-review-in",
+          "if-match": String(story.rowVersion),
+          "x-trace-id": "trace-story-review-in",
+        },
+        body: JSON.stringify({ to: "IN_REVIEW", expectedReviewVersion: 1 }),
+      },
+    );
+    expect(storyInReview.status).toBe(200);
+    const inReview = (await storyInReview.json()) as { reviewVersion: number; rowVersion: number };
+    expect(inReview).toEqual({ reviewVersion: 2, rowVersion: 3 });
+
+    const storyInReviewReplay = await fetch(
+      `${base}/api/v1/projects/${project.id}/stories/${story.revisionId}/review`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "m2c-story-review-in",
+          "if-match": String(story.rowVersion),
+          "x-trace-id": "trace-story-review-in",
+        },
+        body: JSON.stringify({ to: "IN_REVIEW", expectedReviewVersion: 1 }),
+      },
+    );
+    expect(storyInReviewReplay.status).toBe(200);
+    expect(await storyInReviewReplay.json()).toEqual(inReview);
+
+    const storyApproved = await fetch(
+      `${base}/api/v1/projects/${project.id}/stories/${story.revisionId}/review`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "m2c-story-review-approved",
+          "if-match": String(inReview.rowVersion),
+          "x-trace-id": "trace-story-review-approved",
+        },
+        body: JSON.stringify({ to: "APPROVED", expectedReviewVersion: inReview.reviewVersion }),
+      },
+    );
+    expect(storyApproved.status).toBe(200);
+    const approvedStory = (await storyApproved.json()) as { reviewVersion: number; rowVersion: number };
+    expect(approvedStory).toEqual({ reviewVersion: 3, rowVersion: 4 });
+
+    const episodesResponse = await fetch(`${base}/api/v1/projects/${project.id}/episodes`);
+    const episodes = (await episodesResponse.json()) as {
+      items: Array<{ id: string; episodeNo: number; rowVersion: number }>;
+    };
+    expect(episodes.items.map((episode) => episode.episodeNo)).toEqual([1, 2, 3]);
+    const episode = episodes.items[0];
+    if (!episode) throw new Error("episode missing");
+
+    const scriptResponse = await fetch(
+      `${base}/api/v1/projects/${project.id}/episodes/${episode.id}/scripts`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "m2c-review-script",
+          "if-match": String(episode.rowVersion),
+        },
+        body: JSON.stringify({
+          sourceStoryRevisionId: story.revisionId,
+          content: { schema: "m2.script.revision.v1", episode: 1, scenes: [] },
+        }),
+      },
+    );
+    expect(scriptResponse.status).toBe(201);
+    const script = (await scriptResponse.json()) as { revisionId: string; rowVersion: number };
+
+    const scriptInReview = await fetch(
+      `${base}/api/v1/projects/${project.id}/episodes/${episode.id}/scripts/${script.revisionId}/review`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "m2c-script-review-in",
+          "if-match": String(script.rowVersion),
+          "x-trace-id": "trace-script-review-in",
+        },
+        body: JSON.stringify({ to: "IN_REVIEW", expectedReviewVersion: 1 }),
+      },
+    );
+    expect(scriptInReview.status).toBe(200);
+    const scriptReview = (await scriptInReview.json()) as { reviewVersion: number; rowVersion: number };
+    expect(scriptReview).toEqual({ reviewVersion: 2, rowVersion: 3 });
+
+    const scriptApproved = await fetch(
+      `${base}/api/v1/projects/${project.id}/episodes/${episode.id}/scripts/${script.revisionId}/review`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "m2c-script-review-approved",
+          "if-match": String(scriptReview.rowVersion),
+          "x-trace-id": "trace-script-review-approved",
+        },
+        body: JSON.stringify({ to: "APPROVED", expectedReviewVersion: scriptReview.reviewVersion }),
+      },
+    );
+    expect(scriptApproved.status).toBe(200);
+    expect(await scriptApproved.json()).toEqual({ reviewVersion: 3, rowVersion: 4 });
+
+    const events = await sql<{ trace_id: string; event_type: string }>(
+      `SELECT trace_id, event_type
+         FROM domain_event
+        WHERE aggregate_id = $1
+          AND event_type = 'revision.review'
+        ORDER BY id`,
+      [script.revisionId],
+    );
+    expect(events.rows.map((row) => row.trace_id)).toEqual([
+      "trace-script-review-in",
+      "trace-script-review-approved",
+    ]);
+  });
+
 });
