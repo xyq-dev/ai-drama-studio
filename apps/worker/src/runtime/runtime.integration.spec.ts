@@ -1,4 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Redis } from "ioredis";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -10,11 +13,15 @@ import {
   type PostgresPool,
 } from "@ai-drama/database";
 import { MockProvider } from "@ai-drama/providers";
+import { MockMediaAdapter } from "@ai-drama/providers";
+import { MediaAssetStore } from "@ai-drama/database";
 import { BullMqQueue, startBullWorker } from "./bullmq-queue";
 import { MockJobConsumer } from "./consumer";
 import { OutboxDispatcher, dispatchJobId } from "./dispatcher";
 import { RuntimeReconciler } from "./reconciler";
 import { startQueueRuntime } from "./start-runtime";
+import { MockMediaRecovery } from "./mock-media-recovery";
+import { LocalMockObjects } from "./local-mock-objects";
 
 const databaseUrl = process.env.DATABASE_URL;
 const redisUrl = process.env.REDIS_URL;
@@ -67,6 +74,61 @@ async function seed(): Promise<{ workspaceId: string; projectId: string; provide
   return { workspaceId, projectId, providerId };
 }
 
+async function seedApprovedMediaShot(): Promise<{
+  workspaceId: string; projectId: string; shotRevisionId: string; mediaProviderId: string;
+}> {
+  const { workspaceId, projectId } = await seed();
+  const checksum = "ab".repeat(32);
+  const insertId = async (query: string, values: unknown[]) => {
+    const result = await sql<{ id: string }>(query, values);
+    if (!result.rows[0]?.id) throw new Error("fixture insert failed");
+    return result.rows[0].id;
+  };
+  const story = await insertId(
+    `INSERT INTO story_revision (workspace_id, project_id, revision_no, content_json,
+       content_hash, created_by) VALUES ($1,$2,1,'{}'::jsonb,$3,'test') RETURNING id`,
+    [workspaceId, projectId, checksum]);
+  await sql(`UPDATE story_revision SET review_status = 'APPROVED', reviewed_by = 'test',
+    reviewed_at = now(), reviewed_content_hash = content_hash WHERE id = $1`, [story]);
+  await sql(`UPDATE project SET current_story_revision_id = $1,
+    approved_story_revision_id = $1 WHERE id = $2`, [story, projectId]);
+  const episode = await insertId(`INSERT INTO episode (workspace_id, project_id, episode_no, title)
+    VALUES ($1,$2,1,'test') RETURNING id`, [workspaceId, projectId]);
+  const script = await insertId(`INSERT INTO script_revision (workspace_id, project_id, episode_id,
+    revision_no, source_story_revision_id, content_json, content_hash, created_by)
+    VALUES ($1,$2,$3,1,$4,'{}'::jsonb,$5,'test') RETURNING id`,
+  [workspaceId, projectId, episode, story, checksum]);
+  await sql(`UPDATE script_revision SET review_status = 'APPROVED', reviewed_by = 'test',
+    reviewed_at = now(), reviewed_content_hash = content_hash WHERE id = $1`, [script]);
+  await sql(`UPDATE episode SET current_script_revision_id = $1,
+    approved_script_revision_id = $1 WHERE id = $2`, [script, episode]);
+  const scene = await insertId(`INSERT INTO scene (workspace_id, project_id, episode_id)
+    VALUES ($1,$2,$3) RETURNING id`, [workspaceId, projectId, episode]);
+  const sceneRevision = await insertId(`INSERT INTO scene_revision
+    (workspace_id, project_id, episode_id, scene_id, revision_no, source_script_revision_id,
+     ordinal, heading, summary, content_hash, review_status, reviewed_by, reviewed_at,
+     reviewed_content_hash, created_by)
+    VALUES ($1,$2,$3,$4,1,$5,1,'INT. ROOM','room',$6,'APPROVED','test',now(),$6,'test')
+    RETURNING id`, [workspaceId, projectId, episode, scene, script, checksum]);
+  await sql(`UPDATE scene SET current_revision_id = $1, approved_revision_id = $1 WHERE id = $2`,
+    [sceneRevision, scene]);
+  const shot = await insertId(`INSERT INTO shot (workspace_id, project_id, episode_id, scene_id)
+    VALUES ($1,$2,$3,$4) RETURNING id`, [workspaceId, projectId, episode, scene]);
+  const shotRevisionId = await insertId(`INSERT INTO shot_revision
+    (workspace_id, project_id, scene_id, shot_id, revision_no, source_scene_revision_id,
+     ordinal, shot_type, camera, action, prompt_text, content_hash, review_status,
+     reviewed_by, reviewed_at, reviewed_content_hash, created_by)
+    VALUES ($1,$2,$3,$4,1,$5,1,'close','static','look','prompt',$6,
+      'APPROVED','test',now(),$6,'test') RETURNING id`,
+  [workspaceId, projectId, scene, shot, sceneRevision, checksum]);
+  await sql(`UPDATE shot SET current_revision_id = $1, approved_revision_id = $1 WHERE id = $2`,
+    [shotRevisionId, shot]);
+  const mediaProviderId = await insertId(`INSERT INTO provider_configuration
+    (workspace_id, provider_key, capability, default_timeout_ms)
+    VALUES ($1,'mock-media','image.generate',30000) RETURNING id`, [workspaceId]);
+  return { workspaceId, projectId, shotRevisionId, mediaProviderId };
+}
+
 async function queueOutcome(workspaceId: string, projectId: string, outcome: string) {
   const created = await jobs.createWorkflowJob({
     workspaceId,
@@ -113,6 +175,110 @@ afterAll(async () => {
 });
 
 describe("M1-C Redis and BullMQ integration", () => {
+  it("recovers an attached Mock request after crash and ignores duplicate Redis delivery", async () => {
+    const seeded = await seedApprovedMediaShot();
+    const created = await jobs.createWorkflowJob({ workspaceId: seeded.workspaceId,
+      projectId: seeded.projectId, sourceShotRevisionId: seeded.shotRevisionId,
+      type: "MEDIA_IMAGE", requestedBy: "test", kind: "MEDIA_IMAGE",
+      inputHash: "ab".repeat(32), inputSnapshot: {}, traceId: "media-crash" });
+    const queued = await jobs.queueJob({ workspaceId: seeded.workspaceId,
+      jobId: created.jobId, traceId: "media-queued" });
+    const acquired = await jobs.acquireQueuedJob({ workspaceId: seeded.workspaceId,
+      jobId: created.jobId, dispatchSeq: queued.dispatchSeq,
+      leaseOwner: "crashed-media-worker", leaseMs: 1000, traceId: "media-acquired",
+      providerConfigurationId: seeded.mediaProviderId });
+    if (!acquired) throw new Error("fixture attempt missing");
+    const providerRequestId = `mock-media|image.generate|${created.jobId}:1`;
+    await jobs.attachProviderRequest({ workspaceId: seeded.workspaceId,
+      attemptId: acquired.attemptId, providerConfigurationId: seeded.mediaProviderId,
+      providerRequestId });
+    await sql("UPDATE generation_job SET lease_until = now() - interval '1 second' WHERE id = $1", [created.jobId]);
+    const sibling = await jobs.createWorkflowJob({ workspaceId: seeded.workspaceId,
+      projectId: seeded.projectId, type: "MEDIA_IMAGE", requestedBy: "test", kind: "MEDIA_IMAGE",
+      inputHash: "cd".repeat(32), inputSnapshot: {}, traceId: "invalid-sibling" });
+    const siblingQueue = await jobs.queueJob({ workspaceId: seeded.workspaceId,
+      jobId: sibling.jobId, traceId: "invalid-sibling-queued" });
+    const siblingAttempt = await jobs.acquireQueuedJob({ workspaceId: seeded.workspaceId, jobId: sibling.jobId,
+      dispatchSeq: siblingQueue.dispatchSeq, leaseOwner: "crashed-sibling", leaseMs: 1000,
+      traceId: "invalid-sibling-acquired", providerConfigurationId: seeded.mediaProviderId });
+    if (!siblingAttempt) throw new Error("sibling attempt missing");
+    await jobs.attachProviderRequest({ workspaceId: seeded.workspaceId,
+      attemptId: siblingAttempt.attemptId, providerConfigurationId: seeded.mediaProviderId,
+      providerRequestId: `mock-media|image.generate|${sibling.jobId}:1` });
+    await sql("UPDATE generation_job SET lease_until = now() - interval '2 seconds' WHERE id = $1", [sibling.jobId]);
+    const directory = await mkdtemp(join(tmpdir(), "m3-recover-"));
+    try {
+      const recovery = new MockMediaRecovery(jobs, new MediaAssetStore(pool), store,
+        new MockMediaAdapter(), new LocalMockObjects(directory));
+      await recovery.reconcileOnce();
+      expect(await jobState(created.jobId)).toBe("SUCCEEDED");
+      expect(await jobState(sibling.jobId)).toBe("FAILED");
+      const assets = await sql<{ count: number }>(
+        "SELECT count(*)::int AS count FROM asset WHERE source_job_attempt_id = $1", [acquired.attemptId]);
+      expect(assets.rows[0]?.count).toBe(1);
+
+      const runtime = await startQueueRuntime({ databaseUrl, redisUrl, mockObjectDir: directory,
+        dispatchIntervalMs: 60_000, reconcileIntervalMs: 60_000 });
+      const runtimeQueue = new BullMqQueue({ url: redisUrl, maxRetriesPerRequest: null }, "ai-drama");
+      try {
+        await runtimeQueue.enqueue({ workspaceId: seeded.workspaceId,
+          jobId: created.jobId, dispatchSeq: queued.dispatchSeq });
+        const dispatchId = dispatchJobId(created.jobId, queued.dispatchSeq);
+        let state = "waiting";
+        for (let i = 0; i < 80 && state !== "completed"; i++) {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+          state = await (await runtimeQueue.queue.getJob(dispatchId))?.getState() ?? "missing";
+        }
+        expect(state).toBe("completed");
+        const same = await sql<{ count: number }>(
+          "SELECT count(*)::int AS count FROM asset WHERE source_job_attempt_id = $1", [acquired.attemptId]);
+        expect(same.rows[0]?.count).toBe(1);
+      } finally {
+        await runtime.shutdown();
+        await runtimeQueue.close();
+      }
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("requeues an expired unsent media attempt then fails explicitly without Mock storage", async () => {
+    const { workspaceId, projectId, providerId } = await seed();
+    const created = await jobs.createWorkflowJob({ workspaceId, projectId, type: "MEDIA_IMAGE",
+      requestedBy: "test", kind: "MEDIA_IMAGE", inputHash: "ab".repeat(32),
+      inputSnapshot: {}, traceId: "media-expired" });
+    const queued = await jobs.queueJob({ workspaceId, jobId: created.jobId, traceId: "media-queued" });
+    await jobs.acquireQueuedJob({ workspaceId, jobId: created.jobId,
+      dispatchSeq: queued.dispatchSeq, leaseOwner: "crashed-media-worker", leaseMs: 1000,
+      traceId: "media-acquired", providerConfigurationId: providerId });
+    await sql("UPDATE generation_job SET lease_until = now() - interval '1 second' WHERE id = $1", [created.jobId]);
+    const recovery = new MockMediaRecovery(jobs, new MediaAssetStore(pool), store,
+      new MockMediaAdapter(), new LocalMockObjects("/tmp/m3-unused-recovery"));
+    await recovery.reconcileOnce();
+    expect(await jobState(created.jobId)).toBe("QUEUED");
+    const runtime = await startQueueRuntime({ databaseUrl, redisUrl,
+      dispatchIntervalMs: 60_000, reconcileIntervalMs: 60_000 });
+    const runtimeQueue = new BullMqQueue({ url: redisUrl, maxRetriesPerRequest: null }, "ai-drama");
+    try {
+      const dispatched = await sql<{ dispatch_seq: number }>(
+        "SELECT dispatch_seq FROM generation_job WHERE id = $1", [created.jobId],
+      );
+      await runtimeQueue.enqueue({ workspaceId, jobId: created.jobId,
+        dispatchSeq: dispatched.rows[0]?.dispatch_seq ?? -1 });
+      const jobId = dispatchJobId(created.jobId, dispatched.rows[0]?.dispatch_seq ?? -1);
+      let state = "waiting";
+      for (let i = 0; i < 80 && state !== "completed"; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        state = await (await runtimeQueue.queue.getJob(jobId))?.getState() ?? "missing";
+      }
+      expect(state).toBe("completed");
+      expect(await jobState(created.jobId)).toBe("FAILED");
+    } finally {
+      await runtime.shutdown();
+      await runtimeQueue.close();
+    }
+  });
+
   it("marks the outbox dispatched only after BullMQ accepts the job id", async () => {
     const { workspaceId, projectId } = await seed();
     const created = await queueOutcome(workspaceId, projectId, "success");

@@ -7,6 +7,7 @@ const workerEnvSchema = z.object({
   DATABASE_URL: z.string().min(1),
   REDIS_URL: z.string().min(1),
   HEALTH_CHECK_TIMEOUT_MS: z.coerce.number().int().min(100).max(10_000).default(2000),
+  MOCK_OBJECT_DIR: z.string().min(1).optional(),
 });
 
 export class EnvValidationError extends Error {
@@ -26,6 +27,7 @@ export interface WorkerEnv {
   DATABASE_URL: string;
   REDIS_URL: string;
   HEALTH_CHECK_TIMEOUT_MS: number;
+  MOCK_OBJECT_DIR?: string;
 }
 
 const WORKER_KEYS = [
@@ -35,6 +37,7 @@ const WORKER_KEYS = [
   "DATABASE_URL",
   "REDIS_URL",
   "HEALTH_CHECK_TIMEOUT_MS",
+  "MOCK_OBJECT_DIR",
 ] as const;
 
 function assertProtocol(field: string, value: string, protocols: readonly string[]): void {

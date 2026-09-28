@@ -9,6 +9,7 @@ export class RuntimeReconciler {
     private readonly provider: MockProvider,
     private readonly dispatcher: OutboxDispatcher,
     private readonly orphanGraceMs: number,
+    private readonly recoverMockMedia?: () => Promise<void>,
   ) {}
 
   async reconcileOnce(): Promise<void> {
@@ -16,6 +17,7 @@ export class RuntimeReconciler {
     await this.redispatchQueuedOrphans();
     await this.dispatcher.dispatchOnce();
     await this.recoverExpiredLeases();
+    await this.recoverMockMedia?.();
     await this.completeWaitingExternal();
   }
 
