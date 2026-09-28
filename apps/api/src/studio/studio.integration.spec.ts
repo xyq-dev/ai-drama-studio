@@ -400,6 +400,19 @@ describe("M1-C API and SSE integration", () => {
     const surrogateBody = (await loneSurrogate.json()) as { error: { code: string } };
     expect(surrogateBody.error.code).toBe("INVALID_STORY");
 
+    const invalidKey = await fetch(`${base}/api/v1/projects/${project.id}/stories`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "m2c-invalid-key-story",
+        "if-match": String(project.version),
+      },
+      body: '{"content":{"\\u0000":"x"}}',
+    });
+    expect(invalidKey.status).toBe(400);
+    const invalidKeyBody = (await invalidKey.json()) as { error: { code: string } };
+    expect(invalidKeyBody.error.code).toBe("INVALID_STORY");
+
     const count = await sql<{ count: number }>(
       "SELECT COUNT(*)::int AS count FROM story_revision WHERE project_id = $1",
       [project.id],
