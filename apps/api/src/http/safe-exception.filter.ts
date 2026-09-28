@@ -36,6 +36,7 @@ function httpStatus(code: string): number {
     code === "IDEMPOTENCY_KEY_REUSED" ||
     code === "IDEMPOTENCY_IN_PROGRESS" ||
     code === "REVISION_CONFLICT" ||
+    code === "REVIEW_INVALID_TRANSITION" ||
     code === "EVENT_CURSOR_EXPIRED" ||
     code === "JOB_TERMINAL" ||
     code === "RUN_TERMINAL" ||
