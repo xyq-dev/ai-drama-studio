@@ -206,6 +206,23 @@ export class StudioService {
     );
   }
 
+  async reviewScriptRevisionById(
+    revisionId: string,
+    body: unknown,
+    ifMatch: string | undefined,
+    context: StudioContext,
+  ) {
+    const revision = await this.textChain.requireScriptRevision(this.workspaceId, revisionId);
+    return this.reviewScriptRevision(
+      revision.projectId,
+      revision.episodeId,
+      revisionId,
+      body,
+      ifMatch,
+      context,
+    );
+  }
+
   async reviewScriptRevision(
     projectId: string,
     episodeId: string,
