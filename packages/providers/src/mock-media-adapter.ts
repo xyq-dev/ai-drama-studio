@@ -13,7 +13,6 @@ import type {
 export class MockMediaAdapter implements MediaProviderAdapter {
   readonly providerKey = "mock-media";
   private readonly pending = new Set<string>();
-  private readonly pollCounts = new Map<string, number>();
 
   capabilities(): readonly MediaCapability[] {
     return [
@@ -56,7 +55,6 @@ export class MockMediaAdapter implements MediaProviderAdapter {
     }
     if (outcome === "delayed") {
       this.pending.add(providerRequestId);
-      this.pollCounts.set(providerRequestId, 0);
       return {
         kind: "waiting",
         providerRequestId,
@@ -74,9 +72,6 @@ export class MockMediaAdapter implements MediaProviderAdapter {
   }
 
   async inspect(providerRequestId: string): Promise<MediaProviderObservation> {
-    const pollNo = (this.pollCounts.get(providerRequestId) ?? 0) + 1;
-    this.pollCounts.set(providerRequestId, pollNo);
-
     let state: MediaProviderObservation["state"] = "UNKNOWN";
     let outputs: MediaProviderOutput[] | undefined;
     if (this.pending.delete(providerRequestId)) {
@@ -86,24 +81,30 @@ export class MockMediaAdapter implements MediaProviderAdapter {
       outputs = [mockOutputFromRequestId(providerRequestId)];
     }
 
-    const normalizedEventKey = `poll:${providerRequestId}:${pollNo}`;
+    const accounting =
+      state === "ACTIVE"
+        ? estimatedAccounting(providerRequestId)
+        : state === "SUCCEEDED"
+          ? actualAccounting(providerRequestId, true)
+          : undefined;
+    const canonicalObservation = {
+      providerRequestId,
+      state,
+      outputs,
+      accounting,
+    };
     const responseHash = createHash("sha256")
-      .update(JSON.stringify({ providerRequestId, pollNo, state }))
+      .update(JSON.stringify(canonicalObservation))
       .digest("hex");
 
     return {
       state,
-      normalizedEventKey,
+      normalizedEventKey: `poll:${responseHash}`,
       responseHash,
       observedAt: new Date().toISOString(),
       outputs,
-      accounting:
-        state === "ACTIVE"
-          ? estimatedAccounting(providerRequestId)
-          : state === "UNKNOWN"
-            ? undefined
-            : actualAccounting(providerRequestId),
-      metadata: { pollNo },
+      accounting,
+      metadata: { source: "mock" },
     };
   }
 
@@ -160,13 +161,17 @@ function estimatedAccounting(providerRequestId: string): MediaAccountingEnvelope
   return accounting(providerRequestId, "ESTIMATED");
 }
 
-function actualAccounting(providerRequestId: string): MediaAccountingEnvelope {
-  return accounting(providerRequestId, "ACTUAL");
+function actualAccounting(
+  providerRequestId: string,
+  supersedeEstimate = false,
+): MediaAccountingEnvelope {
+  return accounting(providerRequestId, "ACTUAL", supersedeEstimate);
 }
 
 function accounting(
   providerRequestId: string,
   kind: "ESTIMATED" | "ACTUAL",
+  supersedeEstimate = false,
 ): MediaAccountingEnvelope {
   return {
     provider: "mock-media",
@@ -183,6 +188,10 @@ function accounting(
         unitQuantity: "1.00000000",
         unitPriceSnapshot: "0.00000000",
         component: "request",
+        supersedesEstimateKey:
+          kind === "ACTUAL" && supersedeEstimate
+            ? `${providerRequestId}:request:estimated`
+            : undefined,
       },
     ],
   };
