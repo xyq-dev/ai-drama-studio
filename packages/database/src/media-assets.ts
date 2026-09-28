@@ -105,28 +105,95 @@ async function assertUsableShotWithClient(
   shotRevisionId: string,
   lockRows: boolean,
 ): Promise<void> {
-  const result = await client.query<{ ok: boolean } & QueryResultRow>(
+  const project = await client.query<{ has_pending_stale: boolean } & QueryResultRow>(
+    `SELECT EXISTS (
+        SELECT 1
+          FROM stale_recalculation work
+         WHERE work.workspace_id = project.workspace_id
+           AND work.project_id = project.id
+           AND work.status IN ('PENDING', 'RUNNING')
+      ) AS has_pending_stale
+       FROM project
+      WHERE id = $1 AND workspace_id = $2
+      ${lockRows ? "FOR SHARE OF project" : ""}`,
+    [projectId, workspaceId],
+  );
+  const projectRow = project.rows[0];
+  if (!projectRow) {
+    throw new PersistenceError("NOT_FOUND", "Project not found");
+  }
+  if (projectRow.has_pending_stale) {
+    throw new PersistenceError(
+      "STALE_RECALCULATION_PENDING",
+      "Media generation is blocked until stale propagation completes",
+    );
+  }
+
+  const shotGate = await client.query<{ ok: boolean } & QueryResultRow>(
     `SELECT (
         shot.current_revision_id = revision.id
         AND shot.approved_revision_id = revision.id
         AND revision.review_status = 'APPROVED'
         AND revision.freshness_status = 'CURRENT'
+        AND scene.current_revision_id = revision.source_scene_revision_id
+        AND scene.approved_revision_id = revision.source_scene_revision_id
+        AND scene_revision.review_status = 'APPROVED'
+        AND scene_revision.freshness_status = 'CURRENT'
       ) AS ok
        FROM shot_revision revision
        JOIN shot
          ON shot.id = revision.shot_id
         AND shot.workspace_id = revision.workspace_id
         AND shot.project_id = revision.project_id
+       JOIN scene_revision
+         ON scene_revision.id = revision.source_scene_revision_id
+        AND scene_revision.workspace_id = revision.workspace_id
+        AND scene_revision.project_id = revision.project_id
+       JOIN scene
+         ON scene.id = scene_revision.scene_id
+        AND scene.workspace_id = scene_revision.workspace_id
+        AND scene.project_id = scene_revision.project_id
       WHERE revision.id = $1
         AND revision.workspace_id = $2
         AND revision.project_id = $3
-      ${lockRows ? "FOR SHARE OF shot, revision" : ""}`,
+      ${lockRows ? "FOR SHARE OF shot, revision, scene, scene_revision" : ""}`,
     [shotRevisionId, workspaceId, projectId],
   );
-  if (result.rows[0]?.ok !== true) {
+  if (shotGate.rows[0]?.ok !== true) {
     throw new PersistenceError(
       "REVIEW_REQUIRED",
-      "Media generation requires the current approved non-stale shot revision",
+      "Media generation requires the current approved non-stale shot and scene revisions",
+    );
+  }
+
+  const invalidCharacters = await client.query(
+    `SELECT 1
+       FROM shot_character_reference refs
+       JOIN character_revision revision
+         ON revision.id = refs.character_revision_id
+        AND revision.workspace_id = refs.workspace_id
+        AND revision.project_id = refs.project_id
+       JOIN character
+         ON character.id = revision.character_id
+        AND character.workspace_id = revision.workspace_id
+        AND character.project_id = revision.project_id
+      WHERE refs.shot_revision_id = $1
+        AND refs.workspace_id = $2
+        AND refs.project_id = $3
+        AND (
+          character.current_revision_id IS DISTINCT FROM revision.id
+          OR character.approved_revision_id IS DISTINCT FROM revision.id
+          OR revision.review_status <> 'APPROVED'
+          OR revision.freshness_status <> 'CURRENT'
+        )
+      LIMIT 1
+      ${lockRows ? "FOR SHARE OF character, revision" : ""}`,
+    [shotRevisionId, workspaceId, projectId],
+  );
+  if (invalidCharacters.rows[0]) {
+    throw new PersistenceError(
+      "REVIEW_REQUIRED",
+      "Media generation requires current approved non-stale character revisions",
     );
   }
 }
@@ -168,7 +235,8 @@ async function insertAsset(
   if (!row) {
     const existing = await client.query<QueryResultRow>(
       `SELECT id, project_id, kind, object_key, mime_type, checksum_sha256,
-              source_shot_revision_id, provider_request_id, created_at
+              source_job_attempt_id, source_shot_revision_id,
+              provider_configuration_id, provider_request_id, created_at
          FROM asset
         WHERE workspace_id = $1
           AND storage_provider = $2
@@ -181,6 +249,11 @@ async function insertAsset(
     }
     if (
       String(replay.project_id) !== input.projectId ||
+      String(replay.kind) !== input.kind ||
+      String(replay.source_job_attempt_id) !== input.sourceJobAttemptId ||
+      (replay.source_shot_revision_id === null ? null : String(replay.source_shot_revision_id)) !==
+        (input.sourceShotRevisionId ?? null) ||
+      String(replay.provider_configuration_id) !== input.providerConfigurationId ||
       String(replay.provider_request_id) !== input.providerRequestId ||
       String(replay.checksum_sha256) !== input.checksumSha256
     ) {
