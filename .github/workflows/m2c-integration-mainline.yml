@@ -88,6 +88,9 @@ jobs:
       - name: Run API integration
         run: pnpm --filter @ai-drama/api integration
 
+      - name: Run M2 worker and HTTP-to-worker integration
+        run: pnpm --filter @ai-drama/worker integration
+
       - name: Verify JavaScript workspace
         run: pnpm verify
 
