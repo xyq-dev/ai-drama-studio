@@ -81,6 +81,14 @@ export class StudioController {
     return this.studio.listEpisodes(projectId);
   }
 
+  @Get("episodes/:episodeId/scripts")
+  listScriptRevisionsByEpisode(
+    @Param("episodeId", UUID_PARAM_PIPE) episodeId: string,
+    @Query("cursor") cursor?: string,
+  ) {
+    return this.studio.listScriptRevisionsByEpisode(episodeId, cursor);
+  }
+
   @Post("episodes/:episodeId/scripts")
   createScriptRevisionByEpisode(
     @Param("episodeId", UUID_PARAM_PIPE) episodeId: string,
