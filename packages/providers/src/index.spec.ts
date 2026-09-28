@@ -160,3 +160,29 @@ describe("MockMediaAdapter", () => {
     expect(canceled.accounting?.costs[0]?.kind).toBe("ACTUAL");
   });
 });
+
+
+describe("MediaProviderObservation contract", () => {
+  it("requires non-empty outputs for successful media observations", async () => {
+    const adapter = new MockMediaAdapter();
+    const delayed = await adapter.submit({
+      workspaceId: "11111111-1111-4111-8111-111111111111",
+      projectId: "22222222-2222-4222-8222-222222222222",
+      generationJobId: "44444444-4444-4444-8444-444444444444",
+      jobAttemptId: "55555555-5555-4555-8555-555555555555",
+      providerConfigurationId: "66666666-6666-4666-8666-666666666666",
+      clientRequestKey: "observation-success",
+      inputHash: "ab".repeat(32),
+      inputSnapshot: { outcome: "delayed" },
+      traceId: "trace-observation",
+      capability: "image.generate",
+    });
+    expect(delayed.kind).toBe("waiting");
+    if (delayed.kind !== "waiting") throw new Error("expected waiting result");
+    await adapter.inspect(delayed.providerRequestId);
+    const success = await adapter.inspect(delayed.providerRequestId);
+    expect(success.state).toBe("SUCCEEDED");
+    if (success.state !== "SUCCEEDED") throw new Error("expected successful observation");
+    expect(success.outputs.length).toBeGreaterThan(0);
+  });
+});
