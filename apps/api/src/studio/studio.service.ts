@@ -127,16 +127,13 @@ export class StudioService {
     context: StudioContext,
   ) {
     await this.store.getProject(this.workspaceId, projectId);
-    const episodes = await this.textChain.listEpisodes(this.workspaceId, projectId);
-    if (!episodes.some((episode) => episode.id === episodeId)) {
-      throw new PersistenceError("NOT_FOUND", "Episode not found");
-    }
+    const episode = await this.textChain.requireEpisode(this.workspaceId, projectId, episodeId);
     const input = parse(scriptRevisionBodySchema, rejectClientWorkspace(body));
     if (!containsOnlyFiniteJsonNumbers(input.content)) {
       throw new PersistenceError("INVALID_SCRIPT", "Script content contains a non-finite number");
     }
     const expectedVersion = parseAggregateVersion(ifMatch);
-    const sourceStoryRevisionId = input.storyRevisionId ?? input.sourceStoryRevisionId;
+    const sourceStoryRevisionId = (input.storyRevisionId ?? input.sourceStoryRevisionId)?.toLowerCase();
     if (!sourceStoryRevisionId) {
       throw new PersistenceError("VALIDATION_ERROR", "storyRevisionId is required");
     }
@@ -150,7 +147,7 @@ export class StudioService {
         this.scope(
           context,
           "POST",
-          `/episodes/${episodeId}/scripts`,
+          `/episodes/${episode.id}/scripts`,
           request,
         ),
         201,
@@ -158,7 +155,7 @@ export class StudioService {
           this.textChain.createScriptRevisionInTransaction(client, {
             workspaceId: this.workspaceId,
             projectId,
-            episodeId,
+            episodeId: episode.id,
             sourceStoryRevisionId,
             content: input.content,
             createdBy: context.actorId,
@@ -167,6 +164,9 @@ export class StudioService {
           }),
       );
     } catch (error) {
+      if (error instanceof PersistenceError && error.code === "REVIEW_REQUIRED") {
+        throw new PersistenceError("SOURCE_STORY_REQUIRED", error.message);
+      }
       if (isCanonicalContentError(error)) {
         throw new PersistenceError("INVALID_SCRIPT", "Script content is invalid");
       }
