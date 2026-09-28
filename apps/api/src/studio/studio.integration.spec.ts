@@ -373,6 +373,38 @@ describe("M1-C API and SSE integration", () => {
     expect(nonFinite.status).toBe(400);
     const body = (await nonFinite.json()) as { error: { code: string } };
     expect(body.error.code).toBe("INVALID_STORY");
+
+    const nulString = await fetch(`${base}/api/v1/projects/${project.id}/stories`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "m2c-nul-story",
+        "if-match": String(project.version),
+      },
+      body: '{"content":{"text":"\\u0000"}}',
+    });
+    expect(nulString.status).toBe(400);
+    const nulBody = (await nulString.json()) as { error: { code: string } };
+    expect(nulBody.error.code).toBe("INVALID_STORY");
+
+    const loneSurrogate = await fetch(`${base}/api/v1/projects/${project.id}/stories`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "m2c-surrogate-story",
+        "if-match": String(project.version),
+      },
+      body: '{"content":{"text":"\\ud800"}}',
+    });
+    expect(loneSurrogate.status).toBe(400);
+    const surrogateBody = (await loneSurrogate.json()) as { error: { code: string } };
+    expect(surrogateBody.error.code).toBe("INVALID_STORY");
+
+    const count = await sql<{ count: number }>(
+      "SELECT COUNT(*)::int AS count FROM story_revision WHERE project_id = $1",
+      [project.id],
+    );
+    expect(count.rows[0]?.count).toBe(0);
   });
 
   it("paginates story revision history with a bounded cursor", async () => {
