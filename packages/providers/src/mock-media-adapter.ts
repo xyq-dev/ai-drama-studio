@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { mockMediaFixture } from "./mock-media-fixtures";
 import type {
   MediaAccountingEnvelope,
   MediaCapability,
@@ -117,7 +118,8 @@ export class MockMediaAdapter implements MediaProviderAdapter {
       return { uri: output.retrieval.uri, expiresAt: output.retrieval.expiresAt };
     }
     const mimeType = output.mimeTypeHint ?? "application/octet-stream";
-    return { uri: `data:${mimeType};base64,AA==` };
+    const bytes = mockMediaFixture(mimeType);
+    return { uri: `data:${mimeType};base64,${bytes.toString("base64")}` };
   }
 }
 
