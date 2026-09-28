@@ -81,6 +81,26 @@ export class StudioController {
     return this.studio.listEpisodes(projectId);
   }
 
+  @Post("episodes/:episodeId/scripts")
+  createScriptRevisionByEpisode(
+    @Param("episodeId", UUID_PARAM_PIPE) episodeId: string,
+    @Body() body: unknown,
+    @Res({ passthrough: true }) response: StatusResponse,
+    @Headers("if-match") ifMatch?: string,
+    @Headers("idempotency-key") idempotencyKey?: string,
+    @Headers("x-trace-id") traceHeader?: string,
+  ) {
+    return this.send(
+      response,
+      this.studio.createScriptRevisionByEpisode(
+        episodeId,
+        body,
+        ifMatch,
+        this.context(idempotencyKey, traceHeader),
+      ),
+    );
+  }
+
   @Post("projects/:projectId/episodes/:episodeId/scripts")
   createScriptRevision(
     @Param("projectId", UUID_PARAM_PIPE) projectId: string,
