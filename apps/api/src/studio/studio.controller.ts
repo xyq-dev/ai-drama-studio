@@ -53,6 +53,34 @@ export class StudioController {
     return this.studio.getProject(projectId);
   }
 
+  @Post("projects/:projectId/stories")
+  createStoryRevision(
+    @Param("projectId", UUID_PARAM_PIPE) projectId: string,
+    @Body() body: unknown,
+    @Res({ passthrough: true }) response: StatusResponse,
+    @Headers("if-match") ifMatch?: string,
+    @Headers("idempotency-key") idempotencyKey?: string,
+    @Headers("x-trace-id") traceHeader?: string,
+  ) {
+    return this.send(
+      response,
+      this.studio.createStoryRevision(projectId, body, ifMatch, this.context(idempotencyKey, traceHeader)),
+    );
+  }
+
+  @Get("projects/:projectId/stories")
+  listStoryRevisions(
+    @Param("projectId", UUID_PARAM_PIPE) projectId: string,
+    @Query("cursor") cursor?: string,
+  ) {
+    return this.studio.listStoryRevisions(projectId, cursor);
+  }
+
+  @Get("projects/:projectId/episodes")
+  listEpisodes(@Param("projectId", UUID_PARAM_PIPE) projectId: string) {
+    return this.studio.listEpisodes(projectId);
+  }
+
   @Post("projects/:projectId/workflows/mock")
   createMockWorkflow(
     @Param("projectId", UUID_PARAM_PIPE) projectId: string,
