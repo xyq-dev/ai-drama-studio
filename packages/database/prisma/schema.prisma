@@ -587,11 +587,12 @@ model Asset {
   width                   Int?
   height                  Int?
   durationMs              BigInt?  @map("duration_ms")
-  sourceJobAttemptId      String   @map("source_job_attempt_id") @db.Uuid
-  sourceGenerationJobId   String   @map("source_generation_job_id") @db.Uuid
+  sourceKind              String   @default("PROVIDER") @map("source_kind")
+  sourceJobAttemptId      String?  @map("source_job_attempt_id") @db.Uuid
+  sourceGenerationJobId   String?  @map("source_generation_job_id") @db.Uuid
   sourceShotRevisionId    String?  @map("source_shot_revision_id") @db.Uuid
-  providerConfigurationId String   @map("provider_configuration_id") @db.Uuid
-  providerRequestId       String   @map("provider_request_id")
+  providerConfigurationId String?  @map("provider_configuration_id") @db.Uuid
+  providerRequestId       String?  @map("provider_request_id")
   metadataJson            Json     @default("{}") @map("metadata_json") @db.JsonB
   createdAt               DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
@@ -602,4 +603,17 @@ model Asset {
   @@index([workspaceId, sourceShotRevisionId, createdAt])
   @@index([workspaceId, projectId, checksumSha256, kind])
   @@map("asset")
+}
+
+/// Immutable, project-scoped edge from a derived asset to an exact input asset.
+model AssetDependency {
+  workspaceId      String   @map("workspace_id") @db.Uuid
+  projectId        String   @map("project_id") @db.Uuid
+  dependentAssetId String   @map("dependent_asset_id") @db.Uuid
+  sourceAssetId    String   @map("source_asset_id") @db.Uuid
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@id([dependentAssetId, sourceAssetId])
+  @@index([workspaceId, projectId, sourceAssetId])
+  @@map("asset_dependency")
 }
