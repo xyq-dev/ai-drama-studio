@@ -154,12 +154,31 @@ describe("M3-A media asset schema", () => {
   it("deduplicates costs and only lets actual costs supersede matching estimates", async () => {
     const seeded = await seedMediaAttempt("cost");
 
+    await expect(
+      pool.query(
+        `INSERT INTO cost_ledger
+          (workspace_id, project_id, generation_job_id, job_attempt_id,
+           provider_configuration_id, provider_request_id, currency, amount_decimal,
+           kind, basis, provider, model)
+         VALUES ($1,$2,$3,$4,$5,$6,'USD',0.01,'ACTUAL',
+                 'PROVIDER_REPORTED','mock-media','mock')`,
+        [
+          seeded.workspaceId,
+          seeded.projectId,
+          seeded.generationJobId,
+          seeded.jobAttemptId,
+          seeded.providerConfigurationId,
+          seeded.providerRequestId,
+        ],
+      ),
+    ).rejects.toThrow(/cost_ledger_provider_lineage_check/i);
+
     const estimate = await pool.query<{ id: string } & QueryResultRow>(
       `INSERT INTO cost_ledger
         (workspace_id, project_id, generation_job_id, job_attempt_id,
-         idempotency_key, provider_request_id, currency, amount_decimal,
+         idempotency_key, provider_configuration_id, provider_request_id, currency, amount_decimal,
          kind, basis, provider, model)
-       VALUES ($1,$2,$3,$4,'cost:estimate',$5,'USD',0.10,'ESTIMATED',
+       VALUES ($1,$2,$3,$4,'cost:estimate',$5,$6,'USD',0.10,'ESTIMATED',
                'LOCALLY_CALCULATED','mock-media','mock')
        RETURNING id`,
       [
@@ -167,6 +186,7 @@ describe("M3-A media asset schema", () => {
         seeded.projectId,
         seeded.generationJobId,
         seeded.jobAttemptId,
+        seeded.providerConfigurationId,
         seeded.providerRequestId,
       ],
     );
@@ -179,7 +199,7 @@ describe("M3-A media asset schema", () => {
           (workspace_id, project_id, generation_job_id, job_attempt_id,
            idempotency_key, provider_request_id, currency, amount_decimal,
            kind, basis, provider, model)
-         VALUES ($1,$2,$3,$4,'cost:estimate',$5,'USD',0.10,'ESTIMATED',
+         VALUES ($1,$2,$3,$4,'cost:estimate',$5,$6,'USD',0.10,'ESTIMATED',
                  'LOCALLY_CALCULATED','mock-media','mock')`,
         [
           seeded.workspaceId,
@@ -195,15 +215,16 @@ describe("M3-A media asset schema", () => {
       pool.query(
         `INSERT INTO cost_ledger
           (workspace_id, project_id, generation_job_id, job_attempt_id,
-           idempotency_key, provider_request_id, supersedes_cost_id,
+           idempotency_key, provider_configuration_id, provider_request_id, supersedes_cost_id,
            currency, amount_decimal, kind, basis, provider, model)
-         VALUES ($1,$2,$3,$4,'cost:actual',$5,$6,'USD',0.08,'ACTUAL',
+         VALUES ($1,$2,$3,$4,'cost:actual',$5,$6,$7,'USD',0.08,'ACTUAL',
                  'PROVIDER_REPORTED','mock-media','mock')`,
         [
           seeded.workspaceId,
           seeded.projectId,
           seeded.generationJobId,
           seeded.jobAttemptId,
+          seeded.providerConfigurationId,
           seeded.providerRequestId,
           estimateId,
         ],
@@ -215,15 +236,16 @@ describe("M3-A media asset schema", () => {
       pool.query(
         `INSERT INTO cost_ledger
           (workspace_id, project_id, generation_job_id, job_attempt_id,
-           idempotency_key, provider_request_id, supersedes_cost_id,
+           idempotency_key, provider_configuration_id, provider_request_id, supersedes_cost_id,
            currency, amount_decimal, kind, basis, provider, model)
-         VALUES ($1,$2,$3,$4,'cost:bad',$5,$6,'USD',0.09,'ACTUAL',
+         VALUES ($1,$2,$3,$4,'cost:bad',$5,$6,$7,'USD',0.09,'ACTUAL',
                  'PROVIDER_REPORTED','mock-media','mock')`,
         [
           other.workspaceId,
           other.projectId,
           other.generationJobId,
           other.jobAttemptId,
+          other.providerConfigurationId,
           other.providerRequestId,
           estimateId,
         ],

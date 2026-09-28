@@ -47,10 +47,25 @@ FOR EACH ROW EXECUTE FUNCTION m3_reject_asset_mutation();
 
 ALTER TABLE cost_ledger
   ADD COLUMN idempotency_key text,
+  ADD COLUMN provider_configuration_id uuid,
   ADD COLUMN provider_request_id text,
   ADD COLUMN supersedes_cost_id uuid,
   ADD CONSTRAINT cost_ledger_supersedes_fk
-    FOREIGN KEY (supersedes_cost_id) REFERENCES cost_ledger(id);
+    FOREIGN KEY (supersedes_cost_id) REFERENCES cost_ledger(id),
+  ADD CONSTRAINT cost_ledger_provider_attempt_fk
+    FOREIGN KEY (job_attempt_id, provider_configuration_id, provider_request_id, workspace_id)
+    REFERENCES job_attempt(id, provider_configuration_id, provider_request_id, workspace_id),
+  ADD CONSTRAINT cost_ledger_provider_lineage_check
+    CHECK (
+      (provider_request_id IS NULL AND provider_configuration_id IS NULL)
+      OR
+      (
+        provider_request_id IS NOT NULL
+        AND provider_configuration_id IS NOT NULL
+        AND job_attempt_id IS NOT NULL
+        AND idempotency_key IS NOT NULL
+      )
+    );
 
 CREATE UNIQUE INDEX cost_ledger_idempotency_idx
   ON cost_ledger (workspace_id, idempotency_key)

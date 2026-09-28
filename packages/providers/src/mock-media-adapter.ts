@@ -79,7 +79,9 @@ function mockAsset(input: MediaGenerationRequest, providerRequestId: string): Me
           ? "SUBTITLE"
           : input.capability === "audio.music"
             ? "MUSIC"
-            : "AUDIO";
+            : input.capability === "media.compose_input_validate"
+              ? "COMPOSITE"
+              : "AUDIO";
   return {
     kind,
     objectKey: `mock/${digest}`,
@@ -90,7 +92,9 @@ function mockAsset(input: MediaGenerationRequest, providerRequestId: string): Me
           ? "video/mp4"
           : kind === "SUBTITLE"
             ? "text/vtt"
-            : "audio/wav",
+            : kind === "COMPOSITE"
+              ? "application/json"
+              : "audio/wav",
     checksumSha256: digest,
     byteSize: 1,
     metadata: { providerRequestId },

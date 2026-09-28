@@ -208,9 +208,10 @@ model CostLedger {
   workspaceId       String   @map("workspace_id") @db.Uuid
   projectId         String   @map("project_id") @db.Uuid
   generationJobId   String   @map("generation_job_id") @db.Uuid
-  jobAttemptId      String?  @map("job_attempt_id") @db.Uuid
-  idempotencyKey    String?  @map("idempotency_key")
-  providerRequestId String?  @map("provider_request_id")
+  jobAttemptId             String?  @map("job_attempt_id") @db.Uuid
+  idempotencyKey            String?  @map("idempotency_key")
+  providerConfigurationId   String?  @map("provider_configuration_id") @db.Uuid
+  providerRequestId         String?  @map("provider_request_id")
   supersedesCostId  String?  @map("supersedes_cost_id") @db.Uuid
   currency          String   @db.Char(3)
   amountDecimal     Decimal  @map("amount_decimal") @db.Decimal(20, 8)
