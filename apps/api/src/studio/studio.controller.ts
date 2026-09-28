@@ -8,7 +8,7 @@ const UUID_PARAM_PIPE = {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)) {
       throw new PersistenceError("VALIDATION_ERROR", "Route parameter must be a UUID");
     }
-    return value;
+    return value.toLowerCase();
   },
 };
 
@@ -138,6 +138,72 @@ export class StudioController {
     @Query("cursor") cursor?: string,
   ) {
     return this.studio.listScriptRevisions(projectId, episodeId, cursor);
+  }
+
+  @Post("projects/:projectId/stories/:revisionId/review")
+  reviewStoryRevision(
+    @Param("projectId", UUID_PARAM_PIPE) projectId: string,
+    @Param("revisionId", UUID_PARAM_PIPE) revisionId: string,
+    @Body() body: unknown,
+    @Res({ passthrough: true }) response: StatusResponse,
+    @Headers("if-match") ifMatch?: string,
+    @Headers("idempotency-key") idempotencyKey?: string,
+    @Headers("x-trace-id") traceHeader?: string,
+  ) {
+    return this.send(
+      response,
+      this.studio.reviewStoryRevision(
+        projectId,
+        revisionId,
+        body,
+        ifMatch,
+        this.context(idempotencyKey, traceHeader),
+      ),
+    );
+  }
+
+  @Post("script-revisions/:revisionId/review")
+  reviewScriptRevisionById(
+    @Param("revisionId", UUID_PARAM_PIPE) revisionId: string,
+    @Body() body: unknown,
+    @Res({ passthrough: true }) response: StatusResponse,
+    @Headers("if-match") ifMatch?: string,
+    @Headers("idempotency-key") idempotencyKey?: string,
+    @Headers("x-trace-id") traceHeader?: string,
+  ) {
+    return this.send(
+      response,
+      this.studio.reviewScriptRevisionById(
+        revisionId,
+        body,
+        ifMatch,
+        this.context(idempotencyKey, traceHeader),
+      ),
+    );
+  }
+
+  @Post("projects/:projectId/episodes/:episodeId/scripts/:revisionId/review")
+  reviewScriptRevision(
+    @Param("projectId", UUID_PARAM_PIPE) projectId: string,
+    @Param("episodeId", UUID_PARAM_PIPE) episodeId: string,
+    @Param("revisionId", UUID_PARAM_PIPE) revisionId: string,
+    @Body() body: unknown,
+    @Res({ passthrough: true }) response: StatusResponse,
+    @Headers("if-match") ifMatch?: string,
+    @Headers("idempotency-key") idempotencyKey?: string,
+    @Headers("x-trace-id") traceHeader?: string,
+  ) {
+    return this.send(
+      response,
+      this.studio.reviewScriptRevision(
+        projectId,
+        episodeId,
+        revisionId,
+        body,
+        ifMatch,
+        this.context(idempotencyKey, traceHeader),
+      ),
+    );
   }
 
   @Post("projects/:projectId/workflows/mock")

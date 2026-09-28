@@ -452,18 +452,23 @@ export class TextChainService {
   }
 
   async transitionReview(input: ReviewTransition): Promise<ReviewTransitioned> {
+    return withTransaction(this.pool, (client) => this.transitionReviewInTransaction(client, input));
+  }
+
+  async transitionReviewInTransaction(
+    client: PoolClient,
+    input: ReviewTransition,
+  ): Promise<ReviewTransitioned> {
     if (input.to === "APPROVED") {
       throw new PersistenceError(
         "REVIEW_GATE_REQUIRED",
         "Approval must use the aggregate-specific review gate",
       );
     }
-    return withTransaction(this.pool, async (client) => {
-      const parentId = await lockParentForReview(client, input);
-      const reviewVersion = await applyReview(client, input);
-      const rowVersion = await bumpReviewParentVersion(client, input, parentId);
-      return { reviewVersion, rowVersion };
-    });
+    const parentId = await lockParentForReview(client, input);
+    const reviewVersion = await applyReview(client, input);
+    const rowVersion = await bumpReviewParentVersion(client, input, parentId);
+    return { reviewVersion, rowVersion };
   }
 
   async approveStory(input: {
@@ -473,54 +478,95 @@ export class TextChainService {
     expectedVersion: number;
     expectedReviewVersion: number;
     reviewedBy: string;
+    reviewNote?: string | null;
     traceId?: string;
   }): Promise<void> {
     await withTransaction(this.pool, async (client) => {
-      await lockProject(client, input.projectId, input.workspaceId);
-      const project = await client.query<
-        {
-          version: number;
-          current_story_revision_id: string | null;
-          approved_story_revision_id: string | null;
-        } & QueryResultRow
-      >(
-        `SELECT version, current_story_revision_id, approved_story_revision_id
-           FROM project WHERE id = $1 AND workspace_id = $2 FOR UPDATE`,
-        [input.projectId, input.workspaceId],
-      );
-      const projectRow = project.rows[0];
-      if (!projectRow) throw new PersistenceError("NOT_FOUND", "Project not found");
-      if (projectRow.version !== input.expectedVersion) {
-        throw new PersistenceError("REVISION_CONFLICT", "Aggregate version did not match");
-      }
-      if (projectRow.current_story_revision_id !== input.revisionId) {
-        throw new PersistenceError(
-          "REVISION_CONFLICT",
-          "Only the current story revision can be approved",
-        );
-      }
-
-      await applyReview(client, {
-        table: "story_revision",
-        revisionId: input.revisionId,
-        workspaceId: input.workspaceId,
-        expectedVersion: input.expectedVersion,
-        expectedReviewVersion: input.expectedReviewVersion,
-        to: "APPROVED",
-        reviewedBy: input.reviewedBy,
-        traceId: input.traceId,
-      });
-      await bumpPointer(
-        client,
-        "project",
-        input.projectId,
-        input.workspaceId,
-        input.expectedVersion,
-        "approved_story_revision_id",
-        input.revisionId,
-      );
-      await ensureEpisodes(client, input.workspaceId, input.projectId);
+      await this.approveStoryInTransaction(client, input);
     });
+  }
+
+  async approveStoryInTransaction(
+    client: PoolClient,
+    input: {
+      workspaceId: string;
+      projectId: string;
+      revisionId: string;
+      expectedVersion: number;
+      expectedReviewVersion: number;
+      reviewedBy: string;
+      reviewNote?: string | null;
+      traceId?: string;
+    },
+  ): Promise<ReviewTransitioned> {
+    await lockProject(client, input.projectId, input.workspaceId);
+    const project = await client.query<
+      {
+        version: number;
+        current_story_revision_id: string | null;
+        approved_story_revision_id: string | null;
+      } & QueryResultRow
+    >(
+      `SELECT version, current_story_revision_id, approved_story_revision_id
+         FROM project WHERE id = $1 AND workspace_id = $2 FOR UPDATE`,
+      [input.projectId, input.workspaceId],
+    );
+    const projectRow = project.rows[0];
+    if (!projectRow) throw new PersistenceError("NOT_FOUND", "Project not found");
+    if (projectRow.version !== input.expectedVersion) {
+      throw new PersistenceError("REVISION_CONFLICT", "Aggregate version did not match");
+    }
+    if (projectRow.current_story_revision_id !== input.revisionId) {
+      throw new PersistenceError(
+        "REVISION_CONFLICT",
+        "Only the current story revision can be approved",
+      );
+    }
+
+    const reviewVersion = await applyReview(client, {
+      table: "story_revision",
+      revisionId: input.revisionId,
+      workspaceId: input.workspaceId,
+      expectedVersion: input.expectedVersion,
+      expectedReviewVersion: input.expectedReviewVersion,
+      to: "APPROVED",
+      reviewedBy: input.reviewedBy,
+      reviewNote: input.reviewNote ?? null,
+      traceId: input.traceId,
+    });
+    const rowVersion = await bumpPointer(
+      client,
+      "project",
+      input.projectId,
+      input.workspaceId,
+      input.expectedVersion,
+      "approved_story_revision_id",
+      input.revisionId,
+    );
+    await ensureEpisodes(client, input.workspaceId, input.projectId);
+    return { reviewVersion, rowVersion };
+  }
+
+  async requireStoryRevisionInTransaction(
+    client: PoolClient,
+    workspaceId: string,
+    revisionId: string,
+  ): Promise<{ id: string; projectId: string; reviewVersion: number }> {
+    const result = await client.query<
+      { id: string; project_id: string; review_version: number } & QueryResultRow
+    >(
+      `SELECT id, project_id, review_version
+         FROM story_revision
+        WHERE workspace_id = $1 AND id = $2`,
+      [workspaceId, revisionId],
+    );
+    const row = result.rows[0];
+    if (!row) throw new PersistenceError("NOT_FOUND", "Story revision not found");
+    return {
+      id: row.id,
+      projectId: row.project_id,
+      reviewVersion: row.review_version,
+    };
   }
 
   async continueStaleRecalculation(): Promise<boolean> {
@@ -744,6 +790,41 @@ export class TextChainService {
     return { revisionId, revisionNo, contentHash, rowVersion };
   }
 
+  async requireScriptRevision(
+    workspaceId: string,
+    revisionId: string,
+  ): Promise<{ id: string; projectId: string; episodeId: string; reviewVersion: number }> {
+    const client = await this.pool.connect();
+    try {
+      return await this.requireScriptRevisionInTransaction(client, workspaceId, revisionId);
+    } finally {
+      client.release();
+    }
+  }
+
+  async requireScriptRevisionInTransaction(
+    client: PoolClient,
+    workspaceId: string,
+    revisionId: string,
+  ): Promise<{ id: string; projectId: string; episodeId: string; reviewVersion: number }> {
+    const result = await client.query<
+      { id: string; project_id: string; episode_id: string; review_version: number } & QueryResultRow
+    >(
+      `SELECT id, project_id, episode_id, review_version
+         FROM script_revision
+        WHERE workspace_id = $1 AND id = $2`,
+      [workspaceId, revisionId],
+    );
+    const row = result.rows[0];
+    if (!row) throw new PersistenceError("NOT_FOUND", "Script revision not found");
+    return {
+      id: row.id,
+      projectId: row.project_id,
+      episodeId: row.episode_id,
+      reviewVersion: row.review_version,
+    };
+  }
+
   async listScriptRevisions(
     workspaceId: string,
     projectId: string,
@@ -817,94 +898,111 @@ export class TextChainService {
     expectedVersion: number;
     expectedReviewVersion: number;
     reviewedBy: string;
+    reviewNote?: string | null;
     traceId?: string;
   }): Promise<void> {
     await withTransaction(this.pool, async (client) => {
-      await lockAggregateForRevision(
-        client,
-        "episode",
-        input.episodeId,
-        input.workspaceId,
-        input.expectedVersion,
-      );
-      const source = await client.query<
-        {
-          freshness_status: string;
-          source_story_revision_id: string;
-          current_script_revision_id: string | null;
-          current_story_revision_id: string | null;
-          approved_story_revision_id: string | null;
-          source_review_status: string;
-          source_freshness_status: string;
-        } & QueryResultRow
-      >(
-        `SELECT sr.freshness_status, sr.source_story_revision_id,
-                e.current_script_revision_id,
-                p.current_story_revision_id,
-                p.approved_story_revision_id,
-                source.review_status AS source_review_status,
-                source.freshness_status AS source_freshness_status
-           FROM script_revision sr
-           JOIN episode e
-             ON e.id = sr.episode_id
-            AND e.workspace_id = sr.workspace_id
-            AND e.project_id = sr.project_id
-           JOIN project p
-             ON p.id = sr.project_id
-            AND p.workspace_id = sr.workspace_id
-           JOIN story_revision source
-             ON source.id = sr.source_story_revision_id
-            AND source.project_id = sr.project_id
-            AND source.workspace_id = sr.workspace_id
-          WHERE sr.id = $1 AND sr.episode_id = $2 AND sr.workspace_id = $3
-          FOR UPDATE OF sr`,
-        [input.revisionId, input.episodeId, input.workspaceId],
-      );
-      const sourceRow = source.rows[0];
-      if (!sourceRow) throw new PersistenceError("NOT_FOUND", "Script revision not found");
-      if (sourceRow.current_script_revision_id !== input.revisionId) {
-        throw new PersistenceError(
-          "REVISION_CONFLICT",
-          "Only the current script revision can be approved",
-        );
-      }
-      if (sourceRow.freshness_status !== "CURRENT") {
-        throw new PersistenceError("SOURCE_STALE", "Stale script revision cannot be approved");
-      }
-      if (
-        sourceRow.current_story_revision_id !== sourceRow.source_story_revision_id ||
-        sourceRow.approved_story_revision_id !== sourceRow.source_story_revision_id ||
-        sourceRow.source_review_status !== "APPROVED" ||
-        sourceRow.source_freshness_status !== "CURRENT"
-      ) {
-        throw new PersistenceError(
-          "REVIEW_REQUIRED",
-          "Script source must be the current approved story revision",
-        );
-      }
-
-      await applyReview(client, {
-        table: "script_revision",
-        revisionId: input.revisionId,
-        workspaceId: input.workspaceId,
-        expectedVersion: input.expectedVersion,
-        expectedReviewVersion: input.expectedReviewVersion,
-        to: "APPROVED",
-        reviewedBy: input.reviewedBy,
-        traceId: input.traceId,
-      });
-      await bumpPointer(
-        client,
-        "episode",
-        input.episodeId,
-        input.workspaceId,
-        input.expectedVersion,
-        "approved_script_revision_id",
-        input.revisionId,
-      );
-      // Selecting the revision already persisted and propagated the exact change. Approval must
-      // not broaden that set, or unchanged descendants would lose their reusable approval.
+      await this.approveScriptInTransaction(client, input);
     });
+  }
+
+  async approveScriptInTransaction(
+    client: PoolClient,
+    input: {
+      workspaceId: string;
+      episodeId: string;
+      revisionId: string;
+      expectedVersion: number;
+      expectedReviewVersion: number;
+      reviewedBy: string;
+      reviewNote?: string | null;
+      traceId?: string;
+    },
+  ): Promise<ReviewTransitioned> {
+    await lockAggregateForRevision(
+      client,
+      "episode",
+      input.episodeId,
+      input.workspaceId,
+      input.expectedVersion,
+    );
+    const source = await client.query<
+      {
+        freshness_status: string;
+        source_story_revision_id: string;
+        current_script_revision_id: string | null;
+        current_story_revision_id: string | null;
+        approved_story_revision_id: string | null;
+        source_review_status: string;
+        source_freshness_status: string;
+      } & QueryResultRow
+    >(
+      `SELECT sr.freshness_status, sr.source_story_revision_id,
+              e.current_script_revision_id,
+              p.current_story_revision_id,
+              p.approved_story_revision_id,
+              source.review_status AS source_review_status,
+              source.freshness_status AS source_freshness_status
+         FROM script_revision sr
+         JOIN episode e
+           ON e.id = sr.episode_id
+          AND e.workspace_id = sr.workspace_id
+          AND e.project_id = sr.project_id
+         JOIN project p
+           ON p.id = sr.project_id
+          AND p.workspace_id = sr.workspace_id
+         JOIN story_revision source
+           ON source.id = sr.source_story_revision_id
+          AND source.project_id = sr.project_id
+          AND source.workspace_id = sr.workspace_id
+        WHERE sr.id = $1 AND sr.episode_id = $2 AND sr.workspace_id = $3
+        FOR UPDATE OF sr`,
+      [input.revisionId, input.episodeId, input.workspaceId],
+    );
+    const sourceRow = source.rows[0];
+    if (!sourceRow) throw new PersistenceError("NOT_FOUND", "Script revision not found");
+    if (sourceRow.current_script_revision_id !== input.revisionId) {
+      throw new PersistenceError(
+        "REVISION_CONFLICT",
+        "Only the current script revision can be approved",
+      );
+    }
+    if (sourceRow.freshness_status !== "CURRENT") {
+      throw new PersistenceError("SOURCE_STALE", "Stale script revision cannot be approved");
+    }
+    if (
+      sourceRow.current_story_revision_id !== sourceRow.source_story_revision_id ||
+      sourceRow.approved_story_revision_id !== sourceRow.source_story_revision_id ||
+      sourceRow.source_review_status !== "APPROVED" ||
+      sourceRow.source_freshness_status !== "CURRENT"
+    ) {
+      throw new PersistenceError(
+        "REVIEW_REQUIRED",
+        "Script source must be the current approved story revision",
+      );
+    }
+
+    const reviewVersion = await applyReview(client, {
+      table: "script_revision",
+      revisionId: input.revisionId,
+      workspaceId: input.workspaceId,
+      expectedVersion: input.expectedVersion,
+      expectedReviewVersion: input.expectedReviewVersion,
+      to: "APPROVED",
+      reviewedBy: input.reviewedBy,
+      reviewNote: input.reviewNote ?? null,
+      traceId: input.traceId,
+    });
+    const rowVersion = await bumpPointer(
+      client,
+      "episode",
+      input.episodeId,
+      input.workspaceId,
+      input.expectedVersion,
+      "approved_script_revision_id",
+      input.revisionId,
+    );
+    return { reviewVersion, rowVersion };
   }
 
   async approveCharacter(input: AggregateApproval): Promise<void> {

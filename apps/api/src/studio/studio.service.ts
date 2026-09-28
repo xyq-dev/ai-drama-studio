@@ -41,6 +41,12 @@ const scriptRevisionBodySchema = z.object({
   }
 });
 
+const reviewBodySchema = z.object({
+  to: z.enum(["IN_REVIEW", "REJECTED", "APPROVED"]),
+  expectedReviewVersion: z.number().int().min(1).max(2_147_483_647),
+  reviewNote: z.string().max(4000).nullable().optional(),
+});
+
 export interface StudioContext {
   actorId: string;
   traceId: string;
@@ -178,6 +184,153 @@ export class StudioService {
     await this.store.getProject(this.workspaceId, projectId);
     await this.textChain.requireEpisode(this.workspaceId, projectId, episodeId);
     return this.textChain.listScriptRevisions(this.workspaceId, projectId, episodeId, cursor);
+  }
+
+  async reviewStoryRevision(
+    projectId: string,
+    revisionId: string,
+    body: unknown,
+    ifMatch: string | undefined,
+    context: StudioContext,
+  ) {
+    await this.store.getProject(this.workspaceId, projectId);
+    const input = parse(reviewBodySchema, rejectClientWorkspace(body));
+    const expectedVersion = parseAggregateVersion(ifMatch);
+    const request = { ...input, expectedVersion };
+    try {
+      return await this.jobs.runIdempotent(
+        this.scope(context, "POST", `/projects/${projectId}/stories/${revisionId}/review`, request),
+        200,
+        async (client) => {
+        const revision = await this.textChain.requireStoryRevisionInTransaction(
+          client,
+          this.workspaceId,
+          revisionId,
+        );
+        if (revision.projectId !== projectId) {
+          throw new PersistenceError("NOT_FOUND", "Story revision not found in project");
+        }
+        if (input.to === "APPROVED") {
+          return this.textChain.approveStoryInTransaction(client, {
+            workspaceId: this.workspaceId,
+            projectId,
+            revisionId,
+            expectedVersion,
+            expectedReviewVersion: input.expectedReviewVersion,
+            reviewedBy: context.actorId,
+            reviewNote: input.reviewNote ?? null,
+            traceId: context.traceId,
+          });
+        }
+        return this.textChain.transitionReviewInTransaction(client, {
+          table: "story_revision",
+          revisionId,
+          workspaceId: this.workspaceId,
+          expectedVersion,
+          expectedReviewVersion: input.expectedReviewVersion,
+          to: input.to,
+          reviewedBy: input.to === "REJECTED" ? context.actorId : undefined,
+          reviewNote: input.reviewNote ?? null,
+          traceId: context.traceId,
+        });
+        },
+      );
+    } catch (error) {
+      throwReviewTransitionError(error);
+    }
+  }
+
+  async reviewScriptRevisionById(
+    revisionId: string,
+    body: unknown,
+    ifMatch: string | undefined,
+    context: StudioContext,
+  ) {
+    const revision = await this.textChain.requireScriptRevision(this.workspaceId, revisionId);
+    return this.reviewScriptRevisionWithRoute(
+      revision.projectId,
+      revision.episodeId,
+      revisionId,
+      body,
+      ifMatch,
+      context,
+      `/script-revisions/${revisionId}/review`,
+    );
+  }
+
+  async reviewScriptRevision(
+    projectId: string,
+    episodeId: string,
+    revisionId: string,
+    body: unknown,
+    ifMatch: string | undefined,
+    context: StudioContext,
+  ) {
+    return this.reviewScriptRevisionWithRoute(
+      projectId,
+      episodeId,
+      revisionId,
+      body,
+      ifMatch,
+      context,
+      `/projects/${projectId}/episodes/${episodeId}/scripts/${revisionId}/review`,
+    );
+  }
+
+  private async reviewScriptRevisionWithRoute(
+    projectId: string,
+    episodeId: string,
+    revisionId: string,
+    body: unknown,
+    ifMatch: string | undefined,
+    context: StudioContext,
+    routeKey: string,
+  ) {
+    await this.store.getProject(this.workspaceId, projectId);
+    const input = parse(reviewBodySchema, rejectClientWorkspace(body));
+    const expectedVersion = parseAggregateVersion(ifMatch);
+    const request = { ...input, expectedVersion };
+    try {
+      return await this.jobs.runIdempotent(
+        this.scope(context, "POST", routeKey, request),
+        200,
+        async (client) => {
+        const revision = await this.textChain.requireScriptRevisionInTransaction(
+          client,
+          this.workspaceId,
+          revisionId,
+        );
+        if (revision.projectId !== projectId || revision.episodeId !== episodeId) {
+          throw new PersistenceError("NOT_FOUND", "Script revision not found in route scope");
+        }
+        if (input.to === "APPROVED") {
+          return this.textChain.approveScriptInTransaction(client, {
+            workspaceId: this.workspaceId,
+            episodeId,
+            revisionId,
+            expectedVersion,
+            expectedReviewVersion: input.expectedReviewVersion,
+            reviewedBy: context.actorId,
+            reviewNote: input.reviewNote ?? null,
+            traceId: context.traceId,
+          });
+        }
+        return this.textChain.transitionReviewInTransaction(client, {
+          table: "script_revision",
+          revisionId,
+          workspaceId: this.workspaceId,
+          expectedVersion,
+          expectedReviewVersion: input.expectedReviewVersion,
+          to: input.to,
+          reviewedBy: input.to === "REJECTED" ? context.actorId : undefined,
+          reviewNote: input.reviewNote ?? null,
+          traceId: context.traceId,
+        });
+        },
+      );
+    } catch (error) {
+      throwReviewTransitionError(error);
+    }
   }
 
   async listScriptRevisionsByEpisode(episodeId: string, cursor?: string) {
@@ -341,6 +494,23 @@ function isPostgresJsonString(value: string): boolean {
     if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) return false;
   }
   return true;
+}
+
+function throwReviewTransitionError(error: unknown): never {
+  if (error && typeof error === "object") {
+    const candidate = error as { name?: unknown; code?: unknown; message?: unknown };
+    const isInvalidTransition =
+      candidate.name === "DomainError" && candidate.code === "REVIEW_INVALID_TRANSITION";
+    const isReviewVersionConflict =
+      candidate.name === "PersistenceError" && candidate.code === "REVISION_CONFLICT";
+    if (isInvalidTransition || isReviewVersionConflict) {
+      throw new PersistenceError(
+        "REVIEW_CONFLICT",
+        typeof candidate.message === "string" ? candidate.message : "Review state changed",
+      );
+    }
+  }
+  throw error;
 }
 
 function isCanonicalContentError(error: unknown): boolean {
