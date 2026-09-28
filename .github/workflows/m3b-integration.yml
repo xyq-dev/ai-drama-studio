@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - feat/m3b-image-vertical-slice
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
