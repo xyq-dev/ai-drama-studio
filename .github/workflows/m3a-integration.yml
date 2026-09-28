@@ -59,10 +59,8 @@ jobs:
           pnpm --filter @ai-drama/database prisma:validate
           pnpm --filter @ai-drama/database prisma:generate
 
-      - name: Build providers and database
-        run: |
-          pnpm --filter @ai-drama/providers build
-          pnpm --filter @ai-drama/database build
+      - name: Build JavaScript workspace
+        run: pnpm build
 
       - name: Run provider contract tests
         run: pnpm --filter @ai-drama/providers test
