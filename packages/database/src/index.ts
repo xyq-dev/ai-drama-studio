@@ -29,6 +29,8 @@ export {
   type ProjectRecord,
   type WorkflowView,
 } from "./runtime-store";
+export { TextChainService, type RevisionCreated } from "./text-chain";
+export { type ScriptDependencyBinding, type ScriptDependencyConsumer } from "./script-dependencies";
 
 export interface PostgresPoolOptions {
   connectionString: string;

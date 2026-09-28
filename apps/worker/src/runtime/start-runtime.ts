@@ -1,9 +1,17 @@
-import { JobPersistenceService, RuntimeStore, createPostgresPool, closePostgresPool, type PostgresPool } from "@ai-drama/database";
+import {
+  JobPersistenceService,
+  RuntimeStore,
+  TextChainService,
+  createPostgresPool,
+  closePostgresPool,
+  type PostgresPool,
+} from "@ai-drama/database";
 import { MockProvider, type MockRequestState } from "@ai-drama/providers";
 import { BullMqQueue, startBullWorker, type QueueMessage } from "./bullmq-queue";
 import { MockJobConsumer } from "./consumer";
 import { OutboxDispatcher } from "./dispatcher";
 import { RuntimeReconciler } from "./reconciler";
+import { startStaleRecalculationPolling } from "./stale-recalculation";
 
 export interface QueueRuntimeStatus {
   running: boolean;
@@ -28,6 +36,7 @@ export async function startQueueRuntime(options: {
   orphanGraceMs?: number;
   dispatchIntervalMs?: number;
   reconcileIntervalMs?: number;
+  staleRecalculationIntervalMs?: number;
 }): Promise<RuntimeHandle> {
   const pool: PostgresPool = createPostgresPool({
     connectionString: options.databaseUrl,
@@ -47,11 +56,19 @@ export async function startQueueRuntime(options: {
   const consumer = new MockJobConsumer(jobs, store, provider, `worker:${process.pid}`, options.leaseMs ?? 30_000);
   const reconciler = new RuntimeReconciler(jobs, store, provider, dispatcher, options.orphanGraceMs ?? 30_000);
   const status: QueueRuntimeStatus = { running: false };
-  const worker = startBullWorker({ url: options.redisUrl, maxRetriesPerRequest: null }, prefix, async (message: QueueMessage) => {
-    await consumer.handle(message);
-  });
+  const worker = startBullWorker(
+    { url: options.redisUrl, maxRetriesPerRequest: null },
+    prefix,
+    async (message: QueueMessage) => {
+      await consumer.handle(message);
+    },
+  );
   worker.on("error", () => undefined);
   status.running = true;
+  const staleRecalculation = startStaleRecalculationPolling(
+    new TextChainService(pool),
+    options.staleRecalculationIntervalMs,
+  );
   const dispatchTimer = setInterval(() => {
     void dispatcher.dispatchOnce().catch(() => undefined);
   }, options.dispatchIntervalMs ?? 1000);
@@ -64,6 +81,7 @@ export async function startQueueRuntime(options: {
       status.running = false;
       clearInterval(dispatchTimer);
       clearInterval(reconcileTimer);
+      await staleRecalculation.shutdown();
       await worker.close();
       await queue.close();
       await closePostgresPool(pool);
