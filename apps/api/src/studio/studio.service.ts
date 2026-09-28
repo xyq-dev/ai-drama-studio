@@ -9,6 +9,7 @@ import {
   requestHash,
   type IdempotencyScope,
   type MockSceneSnapshot,
+  type MockShotSnapshot,
   type TextEntityKind,
 } from "@ai-drama/database";
 import { z } from "zod";
@@ -577,6 +578,25 @@ export class StudioService {
         };
         return { workspaceId: this.workspaceId, projectId, type: "MOCK_TEXT_SCENES",
           requestedBy: context.actorId, kind: "MOCK_TEXT_SCENES",
+          inputHash: createHash("sha256").update(JSON.stringify(snapshot)).digest("hex"),
+          inputSnapshot: snapshot, traceId: context.traceId };
+      },
+    );
+  }
+
+  async createMockShotWorkflow(projectId: string, context: StudioContext) {
+    await this.store.getProject(this.workspaceId, projectId);
+    if (!this.mockText) throw new PersistenceError("CONFIGURATION_ERROR", "Mock text service unavailable");
+    await this.store.ensureMockProvider(this.workspaceId);
+    return this.jobs.createAndQueueWorkflowJob(
+      this.scope(context, "POST", `/projects/${projectId}/workflows/mock-shots`, {}),
+      async (tx) => {
+        const snapshot: MockShotSnapshot = {
+          schema: "m2.mock.shots.v1", projectId, requestedBy: context.actorId,
+          outcome: "success", scenes: await this.mockText!.currentShotSources(tx, this.workspaceId, projectId),
+        };
+        return { workspaceId: this.workspaceId, projectId, type: "MOCK_TEXT_SHOTS",
+          requestedBy: context.actorId, kind: "MOCK_TEXT_SHOTS",
           inputHash: createHash("sha256").update(JSON.stringify(snapshot)).digest("hex"),
           inputSnapshot: snapshot, traceId: context.traceId };
       },

@@ -433,6 +433,17 @@ export class StudioController {
       this.studio.createMockSceneWorkflow(projectId, this.context(idempotencyKey, traceHeader)));
   }
 
+  @Post("projects/:projectId/workflows/mock-shots")
+  createMockShots(
+    @Param("projectId", UUID_PARAM_PIPE) projectId: string,
+    @Res({ passthrough: true }) response: StatusResponse,
+    @Headers("idempotency-key") idempotencyKey?: string,
+    @Headers("x-trace-id") traceHeader?: string,
+  ) {
+    return this.send(response,
+      this.studio.createMockShotWorkflow(projectId, this.context(idempotencyKey, traceHeader)));
+  }
+
   @Get("projects/:projectId/workflow-runs")
   listWorkflows(@Param("projectId", UUID_PARAM_PIPE) projectId: string) {
     return this.studio.listWorkflows(projectId);
