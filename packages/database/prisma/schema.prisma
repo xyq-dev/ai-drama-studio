@@ -213,6 +213,7 @@ model CostLedger {
   providerConfigurationId   String?  @map("provider_configuration_id") @db.Uuid
   providerRequestId         String?  @map("provider_request_id")
   supersedesCostId  String?  @map("supersedes_cost_id") @db.Uuid
+  supersedesEstimateKey String? @map("supersedes_estimate_key")
   currency          String   @db.Char(3)
   amountDecimal     Decimal  @map("amount_decimal") @db.Decimal(20, 8)
   kind              String
@@ -594,6 +595,13 @@ model Asset {
   providerConfigurationId String?  @map("provider_configuration_id") @db.Uuid
   providerRequestId       String?  @map("provider_request_id")
   metadataJson            Json     @default("{}") @map("metadata_json") @db.JsonB
+  status                  String   @default("ACTIVE")
+  reviewStatus            String   @default("DRAFT") @map("review_status")
+  reviewedBy              String?  @map("reviewed_by")
+  reviewedAt              DateTime? @map("reviewed_at") @db.Timestamptz(6)
+  reviewNote              String?  @map("review_note")
+  reviewedContentHash     String?  @map("reviewed_content_hash")
+  rowVersion              Int      @default(1) @map("row_version")
   createdAt               DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   @@unique([storageProvider, objectKey])
@@ -602,6 +610,7 @@ model Asset {
   @@index([workspaceId, projectId, kind, createdAt])
   @@index([workspaceId, sourceShotRevisionId, createdAt])
   @@index([workspaceId, projectId, checksumSha256, kind])
+  @@index([workspaceId, projectId, status])
   @@map("asset")
 }
 
