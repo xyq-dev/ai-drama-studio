@@ -104,6 +104,14 @@ describe("MockMediaAdapter", () => {
       retrieval: { kind: "HANDLE" },
       mimeTypeHint: "video/mp4",
     });
+
+    const estimatedKey = delayed.accounting?.costs[0]?.idempotencyKey;
+    expect(secondPoll.accounting?.costs[0]?.supersedesEstimateKey).toBe(estimatedKey);
+
+    const restartedPoll = await new MockMediaAdapter().inspect(delayed.providerRequestId);
+    expect(restartedPoll.state).toBe("SUCCEEDED");
+    expect(restartedPoll.normalizedEventKey).toBe(secondPoll.normalizedEventKey);
+    expect(restartedPoll.responseHash).toBe(secondPoll.responseHash);
   });
 
   it("carries actual accounting for retryable, terminal and canceled outcomes", async () => {
