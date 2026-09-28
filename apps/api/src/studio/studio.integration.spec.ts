@@ -447,6 +447,33 @@ describe("M1-C API and SSE integration", () => {
     expect(storyResponse.status).toBe(201);
     const story = (await storyResponse.json()) as { revisionId: string; rowVersion: number };
 
+    const episode = await sql<{ id: string; row_version: number }>(
+      `INSERT INTO episode (workspace_id, project_id, episode_no, title)
+       VALUES ($1, $2, 1, 'Episode 1')
+       RETURNING id, row_version`,
+      [APP_WORKSPACE_ID, project.id],
+    );
+    const episodeId = episode.rows[0]?.id;
+    const episodeVersion = episode.rows[0]?.row_version;
+    if (!episodeId || !episodeVersion) throw new Error("episode missing");
+
+    const body = JSON.stringify({
+      storyRevisionId: story.revisionId.toUpperCase(),
+      content: { schema: "m2.script.revision.v1", episode: 1, scenes: [] },
+    });
+    const unapprovedSource = await fetch(`${base}/api/v1/episodes/${episodeId}/scripts`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "m2c-script-unapproved-source",
+        "if-match": String(episodeVersion),
+      },
+      body,
+    });
+    expect(unapprovedSource.status).toBe(400);
+    const sourceError = (await unapprovedSource.json()) as { error: { code: string } };
+    expect(sourceError.error.code).toBe("SOURCE_STORY_REQUIRED");
+
     await sql(
       `UPDATE story_revision
           SET review_status = 'APPROVED',
@@ -461,22 +488,8 @@ describe("M1-C API and SSE integration", () => {
       "UPDATE project SET approved_story_revision_id = $1 WHERE id = $2",
       [story.revisionId, project.id],
     );
-    const episode = await sql<{ id: string; row_version: number }>(
-      `INSERT INTO episode (workspace_id, project_id, episode_no, title)
-       VALUES ($1, $2, 1, 'Episode 1')
-       RETURNING id, row_version`,
-      [APP_WORKSPACE_ID, project.id],
-    );
-    const episodeId = episode.rows[0]?.id;
-    const episodeVersion = episode.rows[0]?.row_version;
-    if (!episodeId || !episodeVersion) throw new Error("episode missing");
-
-    const body = JSON.stringify({
-      sourceStoryRevisionId: story.revisionId,
-      content: { schema: "m2.script.revision.v1", episode: 1, scenes: [] },
-    });
     const first = await fetch(
-      `${base}/api/v1/episodes/${episodeId}/scripts`,
+      `${base}/api/v1/episodes/${episodeId.toUpperCase()}/scripts`,
       {
         method: "POST",
         headers: {
@@ -544,6 +557,12 @@ describe("M1-C API and SSE integration", () => {
       revisionNo: 1,
       sourceStoryRevisionId: story.revisionId,
     });
+
+    const uppercaseNested = await fetch(
+      `${base}/api/v1/projects/${project.id}/episodes/${episodeId.toUpperCase()}/scripts`,
+    );
+    expect(uppercaseNested.status).toBe(200);
+
   });
 
   it("returns 404 for script history when the nested episode does not exist", async () => {
