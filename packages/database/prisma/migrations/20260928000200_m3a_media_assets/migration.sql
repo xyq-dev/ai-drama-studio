@@ -33,8 +33,7 @@ CREATE INDEX asset_project_kind_created_idx
   ON asset (workspace_id, project_id, kind, created_at DESC);
 
 CREATE INDEX asset_shot_revision_idx
-  ON asset (workspace_id, source_shot_revision_id, created_at DESC)
-  WHERE source_shot_revision_id IS NOT NULL;
+  ON asset (workspace_id, source_shot_revision_id, created_at DESC);
 
 CREATE OR REPLACE FUNCTION m3_reject_asset_mutation() RETURNS trigger
 LANGUAGE plpgsql AS $$
@@ -58,8 +57,7 @@ CREATE UNIQUE INDEX cost_ledger_idempotency_idx
   WHERE idempotency_key IS NOT NULL;
 
 CREATE INDEX cost_ledger_provider_request_idx
-  ON cost_ledger (workspace_id, provider_request_id)
-  WHERE provider_request_id IS NOT NULL;
+  ON cost_ledger (workspace_id, provider_request_id);
 
 CREATE OR REPLACE FUNCTION m3_validate_cost_supersession() RETURNS trigger
 LANGUAGE plpgsql AS $$
