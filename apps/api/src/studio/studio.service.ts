@@ -235,7 +235,7 @@ function isPostgresJsonString(value: string): boolean {
 
     if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
       const next = value.charCodeAt(index + 1);
-      if (next < 0xdc00 || next > 0xdfff) return false;
+      if (Number.isNaN(next) || next < 0xdc00 || next > 0xdfff) return false;
       index += 1;
       continue;
     }
