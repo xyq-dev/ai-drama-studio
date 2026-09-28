@@ -42,41 +42,33 @@ export class MediaAssetStore {
   ): Promise<void> {
     const client = await this.pool.connect();
     try {
-      const result = await client.query<{ ok: boolean } & QueryResultRow>(
-        `SELECT (
-            shot.current_revision_id = revision.id
-            AND shot.approved_revision_id = revision.id
-            AND revision.review_status = 'APPROVED'
-            AND revision.freshness_status = 'CURRENT'
-          ) AS ok
-           FROM shot_revision revision
-           JOIN shot
-             ON shot.id = revision.shot_id
-            AND shot.workspace_id = revision.workspace_id
-            AND shot.project_id = revision.project_id
-          WHERE revision.id = $1
-            AND revision.workspace_id = $2
-            AND revision.project_id = $3`,
-        [shotRevisionId, workspaceId, projectId],
-      );
-      if (result.rows[0]?.ok !== true) {
-        throw new PersistenceError(
-          "REVIEW_REQUIRED",
-          "Media generation requires the current approved non-stale shot revision",
-        );
-      }
+      await assertUsableShotWithClient(client, workspaceId, projectId, shotRevisionId, false);
     } finally {
       client.release();
     }
   }
 
   async createAsset(input: CreateMediaAssetInput): Promise<MediaAssetRecord> {
-    if (input.sourceShotRevisionId) {
-      await this.assertUsableShot(input.workspaceId, input.projectId, input.sourceShotRevisionId);
-    }
     const client = await this.pool.connect();
     try {
-      return await insertAsset(client, input);
+      await client.query("BEGIN");
+      try {
+        if (input.sourceShotRevisionId) {
+          await assertUsableShotWithClient(
+            client,
+            input.workspaceId,
+            input.projectId,
+            input.sourceShotRevisionId,
+            true,
+          );
+        }
+        const created = await insertAsset(client, input);
+        await client.query("COMMIT");
+        return created;
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      }
     } finally {
       client.release();
     }
@@ -103,6 +95,39 @@ export class MediaAssetStore {
     } finally {
       client.release();
     }
+  }
+}
+
+async function assertUsableShotWithClient(
+  client: PoolClient,
+  workspaceId: string,
+  projectId: string,
+  shotRevisionId: string,
+  lockRows: boolean,
+): Promise<void> {
+  const result = await client.query<{ ok: boolean } & QueryResultRow>(
+    `SELECT (
+        shot.current_revision_id = revision.id
+        AND shot.approved_revision_id = revision.id
+        AND revision.review_status = 'APPROVED'
+        AND revision.freshness_status = 'CURRENT'
+      ) AS ok
+       FROM shot_revision revision
+       JOIN shot
+         ON shot.id = revision.shot_id
+        AND shot.workspace_id = revision.workspace_id
+        AND shot.project_id = revision.project_id
+      WHERE revision.id = $1
+        AND revision.workspace_id = $2
+        AND revision.project_id = $3
+      ${lockRows ? "FOR SHARE OF shot, revision" : ""}`,
+    [shotRevisionId, workspaceId, projectId],
+  );
+  if (result.rows[0]?.ok !== true) {
+    throw new PersistenceError(
+      "REVIEW_REQUIRED",
+      "Media generation requires the current approved non-stale shot revision",
+    );
   }
 }
 
