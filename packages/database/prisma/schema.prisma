@@ -74,6 +74,7 @@ model GenerationJob {
   workspaceId       String    @map("workspace_id") @db.Uuid
   projectId         String    @map("project_id") @db.Uuid
   workflowRunId     String    @map("workflow_run_id") @db.Uuid
+  sourceShotRevisionId String? @map("source_shot_revision_id") @db.Uuid
   kind              String
   state             String    @default("PENDING")
   inputHash         String    @map("input_hash")
@@ -99,6 +100,7 @@ model GenerationJob {
   @@unique([id, projectId, workspaceId])
   @@index([state, nextRunAt])
   @@index([leaseUntil])
+  @@index([workspaceId, sourceShotRevisionId])
   @@map("generation_job")
 }
 

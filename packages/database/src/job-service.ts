@@ -26,6 +26,7 @@ export interface ProviderRequestInspector {
 export interface CreateWorkflowJobInput {
   workspaceId: string;
   projectId: string;
+  sourceShotRevisionId?: string;
   type: string;
   requestedBy: string;
   kind: string;
@@ -282,13 +283,14 @@ async function createWorkflowJobTx(
 
   const job = await client.query<{ id: string } & QueryResultRow>(
     `INSERT INTO generation_job
-      (workspace_id, project_id, workflow_run_id, kind, input_hash, input_snapshot, is_critical, progress_weight)
-     VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)
+      (workspace_id, project_id, workflow_run_id, source_shot_revision_id, kind, input_hash, input_snapshot, is_critical, progress_weight)
+     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9)
      RETURNING id`,
     [
       input.workspaceId,
       input.projectId,
       workflowRunId,
+      input.sourceShotRevisionId ?? null,
       input.kind,
       input.inputHash,
       JSON.stringify(input.inputSnapshot),

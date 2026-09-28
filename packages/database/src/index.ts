@@ -98,3 +98,9 @@ export async function checkPostgres(
 export async function closePostgresPool(pool: PostgresPool): Promise<void> {
   await pool.end();
 }
+
+export {
+  MediaAssetStore,
+  type CreateMediaAssetInput,
+  type MediaAssetRecord,
+} from "./media-assets";
