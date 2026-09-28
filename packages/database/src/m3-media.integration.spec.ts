@@ -99,6 +99,46 @@ async function seedMediaAttempt(label = "primary") {
 }
 
 describe("M3-A media asset schema", () => {
+  it("protects content and permits only forward status and one review decision", async () => {
+    const seeded = await seedMediaAttempt("lifecycle");
+    const result = await pool.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO asset (workspace_id, project_id, kind, storage_provider, object_key,
+         mime_type, byte_size, checksum_sha256, source_kind)
+       VALUES ($1,$2,'COMPOSITE','minio','final/cut.mp4','video/mp4',1,$3,'UPLOAD') RETURNING id`,
+      [seeded.workspaceId, seeded.projectId, hash],
+    );
+    const id = result.rows[0]?.id;
+    if (!id) throw new Error("asset missing");
+    await expect(pool.query(
+      "UPDATE asset SET status = 'STALE', row_version = 2, object_key = 'final/replaced.mp4' WHERE id = $1",
+      [id],
+    )).rejects.toThrow(/asset records are immutable/i);
+    await expect(pool.query(
+      "UPDATE asset SET status = 'STALE', row_version = 4 WHERE id = $1", [id],
+    )).rejects.toThrow(/row_version/i);
+    await pool.query(
+      `UPDATE asset SET review_status = 'APPROVED', reviewed_by = 'reviewer',
+         reviewed_at = now(), reviewed_content_hash = $2, row_version = 2 WHERE id = $1`,
+      [id, hash],
+    );
+    await expect(pool.query(
+      `UPDATE asset SET review_status = 'REJECTED', review_note = 'changed mind',
+         row_version = 3 WHERE id = $1`,
+      [id],
+    )).rejects.toThrow(/invalid asset review transition/i);
+    await pool.query("UPDATE asset SET status = 'STALE', row_version = 3 WHERE id = $1", [id]);
+    await expect(pool.query(
+      "UPDATE asset SET status = 'ACTIVE', row_version = 4 WHERE id = $1", [id],
+    )).rejects.toThrow(/invalid asset status transition/i);
+    await expect(pool.query(
+      `UPDATE asset SET review_status = 'REJECTED', row_version = 4 WHERE id = $1`, [id],
+    )).rejects.toThrow(/invalid asset review transition/i);
+    const state = await pool.query<{ status: string; review_status: string } & QueryResultRow>(
+      "SELECT status, review_status FROM asset WHERE id = $1", [id],
+    );
+    expect(state.rows[0]).toMatchObject({ status: "STALE", review_status: "APPROVED" });
+  });
+
   it("accepts upload and local-job assets without a provider request", async () => {
     const seeded = await seedMediaAttempt("non-provider");
     const upload = await pool.query<{ id: string } & QueryResultRow>(
@@ -405,6 +445,69 @@ describe("M3-A media asset schema", () => {
         ],
       ),
     ).rejects.toThrow(/matching lineage/i);
+  });
+
+  it("resolves multiple actual cost components by explicit estimate keys", async () => {
+    const seeded = await seedMediaAttempt("multiple-costs");
+    const ids: Record<string, string> = {};
+    for (const component of ["render", "storage"]) {
+      const estimate = await pool.query<{ id: string } & QueryResultRow>(
+        `INSERT INTO cost_ledger
+          (workspace_id, project_id, generation_job_id, job_attempt_id,
+           provider_configuration_id, provider_request_id, idempotency_key,
+           currency, amount_decimal, kind, basis, provider, model)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,'USD',0.10,'ESTIMATED',
+                 'LOCALLY_CALCULATED','mock-media','mock') RETURNING id`,
+        [seeded.workspaceId, seeded.projectId, seeded.generationJobId, seeded.jobAttemptId,
+          seeded.providerConfigurationId, seeded.providerRequestId, `estimate:${component}`],
+      );
+      const id = estimate.rows[0]?.id;
+      if (!id) throw new Error("estimate missing");
+      ids[component] = id;
+    }
+
+    for (const component of ["storage", "render"]) {
+      const actual = await pool.query<{ supersedes_cost_id: string; supersedes_estimate_key: string } & QueryResultRow>(
+        `INSERT INTO cost_ledger
+          (workspace_id, project_id, generation_job_id, job_attempt_id,
+           provider_configuration_id, provider_request_id, idempotency_key, supersedes_estimate_key,
+           currency, amount_decimal, kind, basis, provider, model)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'USD',0.08,'ACTUAL',
+                 'PROVIDER_REPORTED','mock-media','mock')
+         RETURNING supersedes_cost_id, supersedes_estimate_key`,
+        [seeded.workspaceId, seeded.projectId, seeded.generationJobId, seeded.jobAttemptId,
+          seeded.providerConfigurationId, seeded.providerRequestId,
+          `actual:${component}`, `estimate:${component}`],
+      );
+      expect(actual.rows[0]).toMatchObject({
+        supersedes_cost_id: ids[component],
+        supersedes_estimate_key: `estimate:${component}`,
+      });
+    }
+
+    await expect(pool.query(
+      `INSERT INTO cost_ledger
+        (workspace_id, project_id, generation_job_id, job_attempt_id,
+         provider_configuration_id, provider_request_id, idempotency_key, supersedes_estimate_key,
+         currency, amount_decimal, kind, basis, provider, model)
+       VALUES ($1,$2,$3,$4,$5,$6,'actual:wrong','estimate:missing',
+               'USD',0.08,'ACTUAL','PROVIDER_REPORTED','mock-media','mock')`,
+      [seeded.workspaceId, seeded.projectId, seeded.generationJobId, seeded.jobAttemptId,
+        seeded.providerConfigurationId, seeded.providerRequestId],
+    )).rejects.toThrow(/superseded estimate key not found/i);
+
+    await expect(pool.query(
+      `INSERT INTO cost_ledger
+        (workspace_id, project_id, generation_job_id, job_attempt_id,
+         provider_configuration_id, provider_request_id, idempotency_key,
+         supersedes_estimate_key, supersedes_cost_id,
+         currency, amount_decimal, kind, basis, provider, model)
+       VALUES ($1,$2,$3,$4,$5,$6,'actual:mismatched-id',
+               'estimate:render',$7,'USD',0.08,'ACTUAL',
+               'PROVIDER_REPORTED','mock-media','mock')`,
+      [seeded.workspaceId, seeded.projectId, seeded.generationJobId, seeded.jobAttemptId,
+        seeded.providerConfigurationId, seeded.providerRequestId, ids.storage],
+    )).rejects.toThrow(/superseded estimate key does not match cost id/i);
   });
 
   it("keeps both sides of a cost supersession immutable", async () => {
