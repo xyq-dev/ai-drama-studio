@@ -1,5 +1,5 @@
 import type { PoolClient, QueryResultRow } from "pg";
-import { PersistenceError, type DatabasePool } from "./job-service";
+import { PersistenceError, type DatabasePool, type JobPersistenceService } from "./job-service";
 
 export interface CreateMediaAssetInput {
   workspaceId: string;
@@ -34,6 +34,28 @@ export interface MediaAssetRecord {
 
 export class MediaAssetStore {
   constructor(private readonly pool: DatabasePool) {}
+
+  async completeAttemptWithAsset(
+    jobs: JobPersistenceService,
+    input: CreateMediaAssetInput & { generationJobId: string; traceId: string },
+  ): Promise<MediaAssetRecord | null> {
+    return jobs.succeedJobWithArtifact({
+      workspaceId: input.workspaceId,
+      jobId: input.generationJobId,
+      attemptId: input.sourceJobAttemptId,
+      traceId: input.traceId,
+      persistArtifact: async (client) => {
+        const replay = await loadExactReplayOrConflict(client, input);
+        if (replay) return replay;
+        if (input.sourceShotRevisionId) {
+          await assertUsableShotWithClient(
+            client, input.workspaceId, input.projectId, input.sourceShotRevisionId, true,
+          );
+        }
+        return insertAsset(client, input);
+      },
+    });
+  }
 
   async assertUsableShot(
     workspaceId: string,

@@ -1,6 +1,7 @@
 import { Pool, type QueryResultRow } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { MediaAssetStore } from "./media-assets";
+import { JobPersistenceService } from "./job-service";
 import { runMigrations } from "./migrations";
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -8,6 +9,7 @@ if (!databaseUrl) throw new Error("DATABASE_URL is required for PostgreSQL integ
 
 const pool = new Pool({ connectionString: databaseUrl, max: 4 });
 const store = new MediaAssetStore(pool);
+const jobs = new JobPersistenceService(pool);
 const hash = "ab".repeat(32);
 
 beforeAll(async () => {
@@ -246,6 +248,97 @@ async function seedApprovedShot() {
 }
 
 describe("M3-B media asset store", () => {
+  it("commits the approved-shot Asset, attempt, job and workflow together", async () => {
+    const seeded = await seedApprovedShot();
+    await pool.query(
+      "UPDATE generation_job SET state = 'RUNNING' WHERE id = $1", [seeded.generationJobId],
+    );
+    const asset = await store.completeAttemptWithAsset(jobs, {
+      workspaceId: seeded.workspaceId,
+      projectId: seeded.projectId,
+      generationJobId: seeded.generationJobId,
+      traceId: "mock-media-success",
+      kind: "IMAGE",
+      storageProvider: "minio",
+      objectKey: "shots/atomic-frame.png",
+      mimeType: "image/png",
+      byteSize: 1,
+      checksumSha256: hash,
+      width: 1,
+      height: 1,
+      sourceJobAttemptId: seeded.jobAttemptId,
+      sourceShotRevisionId: seeded.shotRevisionId,
+      providerConfigurationId: seeded.providerConfigurationId,
+      providerRequestId: seeded.providerRequestId,
+    });
+    expect(asset?.id).toBeTruthy();
+    const result = await pool.query<{
+      state: string; status: string; finished_at: Date | null; output_ids: string[];
+    } & QueryResultRow>(
+      `SELECT job.state, workflow.status, attempt.finished_at,
+              ARRAY(SELECT jsonb_array_elements_text(attempt.response_snapshot->'outputAssetIds')) AS output_ids
+         FROM generation_job job
+         JOIN workflow_run workflow ON workflow.id = job.workflow_run_id
+         JOIN job_attempt attempt ON attempt.generation_job_id = job.id
+        WHERE job.id = $1`, [seeded.generationJobId],
+    );
+    expect(result.rows[0]).toMatchObject({ state: "SUCCEEDED", status: "SUCCEEDED", output_ids: [asset?.id] });
+    expect(result.rows[0]?.finished_at).toBeTruthy();
+  });
+
+  it("rolls back Asset insertion if job completion fails", async () => {
+    const seeded = await seedApprovedShot();
+    await expect(store.completeAttemptWithAsset(jobs, {
+      workspaceId: seeded.workspaceId,
+      projectId: seeded.projectId,
+      generationJobId: seeded.generationJobId,
+      traceId: "mock-media-invalid-state",
+      kind: "IMAGE",
+      storageProvider: "minio",
+      objectKey: "shots/should-not-exist.png",
+      mimeType: "image/png",
+      byteSize: 1,
+      checksumSha256: hash,
+      sourceJobAttemptId: seeded.jobAttemptId,
+      sourceShotRevisionId: seeded.shotRevisionId,
+      providerConfigurationId: seeded.providerConfigurationId,
+      providerRequestId: seeded.providerRequestId,
+    })).rejects.toThrow(/Cannot succeed job from PENDING/);
+    const count = await pool.query<{ count: number } & QueryResultRow>(
+      "SELECT count(*)::int AS count FROM asset WHERE object_key = 'shots/should-not-exist.png'",
+    );
+    expect(count.rows[0]?.count).toBe(0);
+  });
+
+  it("does not create an Asset after cancellation was requested", async () => {
+    const seeded = await seedApprovedShot();
+    await pool.query(
+      "UPDATE generation_job SET state = 'RUNNING', cancel_requested_at = now() WHERE id = $1",
+      [seeded.generationJobId],
+    );
+    const asset = await store.completeAttemptWithAsset(jobs, {
+      workspaceId: seeded.workspaceId,
+      projectId: seeded.projectId,
+      generationJobId: seeded.generationJobId,
+      traceId: "mock-media-canceled",
+      kind: "IMAGE",
+      storageProvider: "minio",
+      objectKey: "shots/canceled.png",
+      mimeType: "image/png",
+      byteSize: 1,
+      checksumSha256: hash,
+      sourceJobAttemptId: seeded.jobAttemptId,
+      sourceShotRevisionId: seeded.shotRevisionId,
+      providerConfigurationId: seeded.providerConfigurationId,
+      providerRequestId: seeded.providerRequestId,
+    });
+    expect(asset).toBeNull();
+    const count = await pool.query<{ count: number } & QueryResultRow>(
+      "SELECT count(*)::int AS count FROM asset WHERE object_key = 'shots/canceled.png'",
+    );
+    expect(count.rows[0]?.count).toBe(0);
+  });
+
   it("accepts approved current shots and replays an identical asset safely", async () => {
     const seeded = await seedApprovedShot();
     const input = {

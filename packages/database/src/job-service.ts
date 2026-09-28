@@ -759,7 +759,19 @@ export class JobPersistenceService {
     traceId: string;
     responseSnapshot?: unknown;
   }): Promise<void> {
-    await withTransaction(this.pool, async (client) => {
+    await this.succeedJobWithArtifact(input);
+  }
+
+  /** Persist an output and complete its attempt/job in the same database transaction. */
+  async succeedJobWithArtifact<T extends { id: string }>(input: {
+    workspaceId: string;
+    jobId: string;
+    attemptId: string;
+    traceId: string;
+    persistArtifact?: (client: PoolClient) => Promise<T>;
+    responseSnapshot?: unknown;
+  }): Promise<T | null> {
+    return withTransaction(this.pool, async (client) => {
       const job = await loadJobForUpdate(client, input.workspaceId, input.jobId);
       if (TERMINAL_STATES.has(job.state)) {
         throw new PersistenceError("JOB_TERMINAL", "Terminal jobs cannot reopen");
@@ -769,17 +781,20 @@ export class JobPersistenceService {
       }
       if (job.cancel_requested_at !== null) {
         await finalizeCancellationTx(client, job, input.attemptId, input.traceId);
-        return;
+        return null;
       }
 
       const attempt = await loadLatestAttemptForUpdate(client, job.id);
       requireCurrentAttempt(attempt, input.attemptId);
 
+      const artifact = input.persistArtifact ? await input.persistArtifact(client) : null;
+      const responseSnapshot = artifact ? { outputAssetIds: [artifact.id] } : input.responseSnapshot;
+
       await client.query(
         `UPDATE job_attempt
             SET finished_at = COALESCE(finished_at, now()), response_snapshot = COALESCE($3::jsonb, response_snapshot)
           WHERE id = $1 AND generation_job_id = $2`,
-        [attempt.id, job.id, input.responseSnapshot === undefined ? null : JSON.stringify(input.responseSnapshot)],
+        [attempt.id, job.id, responseSnapshot === undefined ? null : JSON.stringify(responseSnapshot)],
       );
       await client.query(
         `UPDATE generation_job
@@ -793,6 +808,7 @@ export class JobPersistenceService {
         state: "SUCCEEDED",
       });
       await refreshWorkflowStatus(client, job.workflow_run_id, input.traceId);
+      return artifact;
     });
   }
 
