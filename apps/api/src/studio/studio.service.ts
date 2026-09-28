@@ -180,6 +180,14 @@ export class StudioService {
       this.scope(context, "POST", `/projects/${projectId}/stories/${revisionId}/review`, request),
       200,
       async (client) => {
+        const revision = await this.textChain.requireStoryRevisionInTransaction(
+          client,
+          this.workspaceId,
+          revisionId,
+        );
+        if (revision.projectId !== projectId) {
+          throw new PersistenceError("NOT_FOUND", "Story revision not found in project");
+        }
         if (input.to === "APPROVED") {
           return this.textChain.approveStoryInTransaction(client, {
             workspaceId: this.workspaceId,
@@ -188,6 +196,7 @@ export class StudioService {
             expectedVersion,
             expectedReviewVersion: input.expectedReviewVersion,
             reviewedBy: context.actorId,
+            reviewNote: input.reviewNote ?? null,
             traceId: context.traceId,
           });
         }
@@ -260,6 +269,14 @@ export class StudioService {
       this.scope(context, "POST", routeKey, request),
       200,
       async (client) => {
+        const revision = await this.textChain.requireScriptRevisionInTransaction(
+          client,
+          this.workspaceId,
+          revisionId,
+        );
+        if (revision.projectId !== projectId || revision.episodeId !== episodeId) {
+          throw new PersistenceError("NOT_FOUND", "Script revision not found in route scope");
+        }
         if (input.to === "APPROVED") {
           return this.textChain.approveScriptInTransaction(client, {
             workspaceId: this.workspaceId,
@@ -268,6 +285,7 @@ export class StudioService {
             expectedVersion,
             expectedReviewVersion: input.expectedReviewVersion,
             reviewedBy: context.actorId,
+            reviewNote: input.reviewNote ?? null,
             traceId: context.traceId,
           });
         }
