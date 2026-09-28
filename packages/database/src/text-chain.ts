@@ -186,6 +186,18 @@ export class TextChainService {
     const edgeTable = `${kind}_revision_script_source`;
     const entityColumn = `${kind}_id`;
     await lockProject(client, projectId, workspaceId);
+    let entityId = input.entityId;
+    let revisionNo = 1;
+    let parentVersion: number | undefined;
+    if (entityId) {
+      const parent = await client.query<{ row_version: number } & QueryResultRow>(
+        `SELECT row_version FROM ${kind}
+          WHERE id = $1 AND project_id = $2 AND workspace_id = $3 AND archived_at IS NULL FOR UPDATE`,
+        [entityId, projectId, workspaceId],
+      );
+      if (!parent.rows[0]) throw new PersistenceError("NOT_FOUND", "Entity not found");
+      parentVersion = parent.rows[0].row_version;
+    }
     const source = await client.query(
       `SELECT sr.id FROM script_revision sr
          JOIN episode e ON e.id = sr.episode_id AND e.workspace_id = sr.workspace_id
@@ -199,16 +211,8 @@ export class TextChainService {
     if (!source.rows[0]) {
       throw new PersistenceError("SCRIPT_REVIEW_REQUIRED", "Source script must be current and approved");
     }
-    let entityId = input.entityId;
-    let revisionNo = 1;
     if (entityId) {
-      const parent = await client.query<{ row_version: number } & QueryResultRow>(
-        `SELECT row_version FROM ${kind}
-          WHERE id = $1 AND project_id = $2 AND workspace_id = $3 AND archived_at IS NULL FOR UPDATE`,
-        [entityId, projectId, workspaceId],
-      );
-      if (!parent.rows[0]) throw new PersistenceError("NOT_FOUND", "Entity not found");
-      if (parent.rows[0].row_version !== input.expectedVersion) {
+      if (parentVersion !== input.expectedVersion) {
         throw new PersistenceError("REVISION_CONFLICT", "Aggregate version did not match");
       }
       const next = await client.query<{ revision_no: number } & QueryResultRow>(
