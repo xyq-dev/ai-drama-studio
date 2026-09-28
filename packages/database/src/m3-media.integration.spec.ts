@@ -104,15 +104,16 @@ describe("M3-A media asset schema", () => {
     const asset = await pool.query<{ id: string } & QueryResultRow>(
       `INSERT INTO asset
         (workspace_id, project_id, kind, storage_provider, object_key, mime_type,
-         byte_size, checksum_sha256, source_job_attempt_id,
+         byte_size, checksum_sha256, source_job_attempt_id, source_generation_job_id,
          provider_configuration_id, provider_request_id, metadata_json)
-       VALUES ($1,$2,'IMAGE','minio','assets/frame.png','image/png',1,$3,$4,$5,$6,'{}'::jsonb)
+       VALUES ($1,$2,'IMAGE','minio','assets/frame.png','image/png',1,$3,$4,$5,$6,$7,'{}'::jsonb)
        RETURNING id`,
       [
         seeded.workspaceId,
         seeded.projectId,
         hash,
         seeded.jobAttemptId,
+        seeded.generationJobId,
         seeded.providerConfigurationId,
         seeded.providerRequestId,
       ],
@@ -136,17 +137,65 @@ describe("M3-A media asset schema", () => {
       pool.query(
         `INSERT INTO asset
           (workspace_id, project_id, kind, storage_provider, object_key, mime_type,
-           byte_size, checksum_sha256, source_job_attempt_id,
+           byte_size, checksum_sha256, source_job_attempt_id, source_generation_job_id,
            provider_configuration_id, provider_request_id, metadata_json)
-         VALUES ($1,$2,'IMAGE','minio','assets/bad.png','image/png',1,$3,$4,$5,$6,'{}'::jsonb)`,
+         VALUES ($1,$2,'IMAGE','minio','assets/bad.png','image/png',1,$3,$4,$5,$6,$7,'{}'::jsonb)`,
         [
           first.workspaceId,
           first.projectId,
           hash,
           first.jobAttemptId,
+          first.generationJobId,
           second.providerConfigurationId,
           first.providerRequestId,
         ],
+      ),
+    ).rejects.toThrow(/foreign key/i);
+  });
+
+  it("rejects a source attempt from another project in the same workspace", async () => {
+    const source = await seedMediaAttempt("cross-project-source");
+    const otherProject = await pool.query<{ id: string } & QueryResultRow>(
+      "INSERT INTO project (workspace_id, title) VALUES ($1, 'other-project') RETURNING id",
+      [source.workspaceId],
+    );
+    const otherProjectId = otherProject.rows[0]?.id;
+    if (!otherProjectId) throw new Error("other project missing");
+
+    await expect(
+      pool.query(
+        `INSERT INTO asset
+          (workspace_id, project_id, kind, storage_provider, object_key, mime_type,
+           byte_size, checksum_sha256, source_job_attempt_id, source_generation_job_id,
+           provider_configuration_id, provider_request_id)
+         VALUES ($1,$2,'IMAGE','minio','assets/cross-project.png','image/png',1,$3,$4,$5,$6,$7)`,
+        [source.workspaceId, otherProjectId, hash, source.jobAttemptId,
+          source.generationJobId, source.providerConfigurationId, source.providerRequestId],
+      ),
+    ).rejects.toThrow(/foreign key/i);
+
+    const otherJob = await pool.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO workflow_run
+        (workspace_id, project_id, type, requested_by, input_snapshot)
+       VALUES ($1,$2,'MEDIA_IMAGE','test','{}'::jsonb) RETURNING id`,
+      [source.workspaceId, otherProjectId],
+    );
+    const otherWorkflowId = otherJob.rows[0]?.id;
+    const otherGenerationJob = await pool.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO generation_job
+        (workspace_id, project_id, workflow_run_id, kind, input_hash, input_snapshot)
+       VALUES ($1,$2,$3,'MEDIA_IMAGE',$4,'{}'::jsonb) RETURNING id`,
+      [source.workspaceId, otherProjectId, otherWorkflowId, hash],
+    );
+    await expect(
+      pool.query(
+        `INSERT INTO asset
+          (workspace_id, project_id, kind, storage_provider, object_key, mime_type,
+           byte_size, checksum_sha256, source_job_attempt_id, source_generation_job_id,
+           provider_configuration_id, provider_request_id)
+         VALUES ($1,$2,'IMAGE','minio','assets/wrong-job.png','image/png',1,$3,$4,$5,$6,$7)`,
+        [source.workspaceId, otherProjectId, hash, source.jobAttemptId,
+          otherGenerationJob.rows[0]?.id, source.providerConfigurationId, source.providerRequestId],
       ),
     ).rejects.toThrow(/foreign key/i);
   });
