@@ -197,7 +197,7 @@ describe("M3-A media asset schema", () => {
       pool.query(
         `INSERT INTO cost_ledger
           (workspace_id, project_id, generation_job_id, job_attempt_id,
-           idempotency_key, provider_request_id, currency, amount_decimal,
+           idempotency_key, provider_configuration_id, provider_request_id, currency, amount_decimal,
            kind, basis, provider, model)
          VALUES ($1,$2,$3,$4,'cost:estimate',$5,$6,'USD',0.10,'ESTIMATED',
                  'LOCALLY_CALCULATED','mock-media','mock')`,
