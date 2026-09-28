@@ -30,6 +30,18 @@ export interface ExecutionContext {
   maxAttempts: number;
 }
 
+export interface MockImageExecution {
+  workspaceId: string;
+  jobId: string;
+  projectId: string;
+  shotRevisionId: string | null;
+  providerConfigurationId: string | null;
+  inputHash: string;
+  inputSnapshot: unknown;
+  state: string;
+  cancelRequested: boolean;
+}
+
 export interface ProjectRecord {
   id: string;
   workspaceId: string;
@@ -265,7 +277,7 @@ export class RuntimeStore {
               ORDER BY attempt_no DESC
               LIMIT 1
            ) ja ON true
-          WHERE j.state = 'WAITING_EXTERNAL'
+          WHERE j.state = 'WAITING_EXTERNAL' AND j.kind <> 'MEDIA_IMAGE'
             AND ja.provider_request_id IS NOT NULL
             AND (j.next_run_at IS NULL OR j.next_run_at <= now())
           ORDER BY j.updated_at
@@ -292,12 +304,62 @@ export class RuntimeStore {
               ORDER BY attempt_no DESC
               LIMIT 1
            ) ja ON true
-          WHERE j.state = 'RUNNING' AND j.lease_until IS NOT NULL AND j.lease_until <= $1
+          WHERE j.state = 'RUNNING' AND j.kind <> 'MEDIA_IMAGE'
+            AND j.lease_until IS NOT NULL AND j.lease_until <= $1
           ORDER BY j.lease_until
           LIMIT $2`,
         [now, limit],
       );
       return result.rows.map(mapLease);
+    } finally {
+      client.release();
+    }
+  }
+
+  async listExpiredMockImages(limit: number, now = new Date()): Promise<ExpiredLeaseRow[]> {
+    const client = await this.pool.connect();
+    try {
+      const result = await client.query<QueryResultRow>(
+        `SELECT j.workspace_id, j.id AS job_id, ja.id AS attempt_id,
+                ja.provider_configuration_id, ja.provider_request_id, j.cancel_requested_at
+           FROM generation_job j
+           JOIN LATERAL (
+             SELECT id, provider_configuration_id, provider_request_id FROM job_attempt
+              WHERE generation_job_id = j.id ORDER BY attempt_no DESC LIMIT 1
+           ) ja ON true
+          WHERE j.kind = 'MEDIA_IMAGE' AND j.state = 'RUNNING'
+            AND j.lease_until IS NOT NULL AND j.lease_until <= $1
+          ORDER BY j.lease_until LIMIT $2`,
+        [now, limit],
+      );
+      return result.rows.map(mapLease);
+    } finally {
+      client.release();
+    }
+  }
+
+  async loadMockImageExecution(workspaceId: string, jobId: string): Promise<MockImageExecution | null> {
+    const client = await this.pool.connect();
+    try {
+      const result = await client.query<QueryResultRow>(
+        `SELECT j.id, j.workspace_id, j.project_id, j.source_shot_revision_id,
+                j.input_hash, j.input_snapshot, j.state, j.cancel_requested_at,
+                pc.id AS provider_configuration_id
+           FROM generation_job j
+           LEFT JOIN provider_configuration pc ON pc.workspace_id = j.workspace_id
+             AND pc.provider_key = 'mock-media' AND pc.capability = 'image.generate' AND pc.enabled
+          WHERE j.id = $1 AND j.workspace_id = $2 AND j.kind = 'MEDIA_IMAGE'`,
+        [jobId, workspaceId],
+      );
+      const row = result.rows[0];
+      if (!row) return null;
+      return {
+        workspaceId: String(row.workspace_id), jobId: String(row.id), projectId: String(row.project_id),
+        shotRevisionId: row.source_shot_revision_id === null ? null : String(row.source_shot_revision_id),
+        providerConfigurationId: row.provider_configuration_id === null ? null : String(row.provider_configuration_id),
+        inputHash: String(row.input_hash), inputSnapshot: row.input_snapshot,
+        state: String(row.state), cancelRequested: row.cancel_requested_at !== null,
+      };
     } finally {
       client.release();
     }

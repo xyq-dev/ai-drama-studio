@@ -16,7 +16,10 @@ async function bootstrap(): Promise<void> {
   }
   const root = findRepoRoot(__dirname);
   const env = loadWorkerEnv(process.env, readEnvFile(join(root, ".env")));
-  const runtime = await startQueueRuntime({ databaseUrl: env.DATABASE_URL, redisUrl: env.REDIS_URL });
+  const runtime = await startQueueRuntime({
+    databaseUrl: env.DATABASE_URL, redisUrl: env.REDIS_URL,
+    mockObjectDir: env.NODE_ENV === "production" ? undefined : env.MOCK_OBJECT_DIR,
+  });
   const app = await NestFactory.create(AppModule.register(env, runtime.status), {
     logger: ["error", "warn", "log"],
   });
