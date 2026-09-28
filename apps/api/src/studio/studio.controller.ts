@@ -134,6 +134,26 @@ export class StudioController {
     );
   }
 
+  @Post("script-revisions/:revisionId/review")
+  reviewScriptRevisionById(
+    @Param("revisionId", UUID_PARAM_PIPE) revisionId: string,
+    @Body() body: unknown,
+    @Res({ passthrough: true }) response: StatusResponse,
+    @Headers("if-match") ifMatch?: string,
+    @Headers("idempotency-key") idempotencyKey?: string,
+    @Headers("x-trace-id") traceHeader?: string,
+  ) {
+    return this.send(
+      response,
+      this.studio.reviewScriptRevisionById(
+        revisionId,
+        body,
+        ifMatch,
+        this.context(idempotencyKey, traceHeader),
+      ),
+    );
+  }
+
   @Post("projects/:projectId/episodes/:episodeId/scripts/:revisionId/review")
   reviewScriptRevision(
     @Param("projectId", UUID_PARAM_PIPE) projectId: string,
