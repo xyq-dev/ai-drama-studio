@@ -248,6 +248,7 @@ async function insertAsset(
         AND attempt.provider_configuration_id = $3
         AND attempt.provider_request_id = $4
         AND job.project_id = $5
+        AND job.source_shot_revision_id IS NOT DISTINCT FROM $6::uuid
       FOR SHARE OF attempt, job`,
     [
       input.sourceJobAttemptId,
@@ -255,12 +256,13 @@ async function insertAsset(
       input.providerConfigurationId,
       input.providerRequestId,
       input.projectId,
+      input.sourceShotRevisionId ?? null,
     ],
   );
   if (!lineage.rows[0]) {
     throw new PersistenceError(
       "ASSET_LINEAGE_INVALID",
-      "Asset source attempt does not belong to the requested project/provider lineage",
+      "Asset source attempt does not belong to the requested project/provider/shot lineage",
     );
   }
 
