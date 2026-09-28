@@ -438,10 +438,14 @@ function containsOnlyFiniteJsonNumbers(value: unknown): boolean {
 function throwReviewTransitionError(error: unknown): never {
   if (error && typeof error === "object") {
     const candidate = error as { name?: unknown; code?: unknown; message?: unknown };
-    if (candidate.name === "DomainError" && candidate.code === "REVIEW_INVALID_TRANSITION") {
+    const isInvalidTransition =
+      candidate.name === "DomainError" && candidate.code === "REVIEW_INVALID_TRANSITION";
+    const isReviewVersionConflict =
+      candidate.name === "PersistenceError" && candidate.code === "REVISION_CONFLICT";
+    if (isInvalidTransition || isReviewVersionConflict) {
       throw new PersistenceError(
-        "REVIEW_INVALID_TRANSITION",
-        typeof candidate.message === "string" ? candidate.message : "Review transition is invalid",
+        "REVIEW_CONFLICT",
+        typeof candidate.message === "string" ? candidate.message : "Review state changed",
       );
     }
   }
