@@ -52,7 +52,8 @@ export interface MediaCostLine {
   unitType?: string;
   unitQuantity?: string;
   unitPriceSnapshot?: string;
-  component?: string;
+  component: string;
+  supersedesEstimateKey?: string;
 }
 
 export interface MediaAccountingEnvelope {
@@ -72,21 +73,26 @@ export interface MediaProviderObservation {
   metadata?: Record<string, unknown>;
 }
 
-type MediaSubmitBase = {
+type MediaSubmitWithRequest = {
   providerRequestId: string;
   accounting?: MediaAccountingEnvelope;
 };
 
+type MediaSubmitWithoutRequiredRequest = {
+  providerRequestId?: string;
+  accounting?: MediaAccountingEnvelope;
+};
+
 export type MediaSubmitResult =
-  | (MediaSubmitBase & { kind: "succeeded"; outputs: MediaProviderOutput[] })
-  | (MediaSubmitBase & { kind: "waiting"; nextPollAt: string })
-  | (MediaSubmitBase & {
+  | (MediaSubmitWithRequest & { kind: "succeeded"; outputs: MediaProviderOutput[] })
+  | (MediaSubmitWithRequest & { kind: "waiting"; nextPollAt: string })
+  | (MediaSubmitWithoutRequiredRequest & {
       kind: "failed";
       retryable: boolean;
       errorCode: string;
       errorMessage: string;
     })
-  | (MediaSubmitBase & { kind: "canceled" });
+  | (MediaSubmitWithoutRequiredRequest & { kind: "canceled" });
 
 /** @deprecated Provider outputs are not durable Assets until Core validates and stores them. */
 export type MediaAssetDescriptor = MediaProviderOutput;
