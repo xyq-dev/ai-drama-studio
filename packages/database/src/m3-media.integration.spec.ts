@@ -206,6 +206,7 @@ describe("M3-A media asset schema", () => {
           seeded.projectId,
           seeded.generationJobId,
           seeded.jobAttemptId,
+          seeded.providerConfigurationId,
           seeded.providerRequestId,
         ],
       ),
