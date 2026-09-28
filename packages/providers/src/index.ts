@@ -9,12 +9,19 @@ export {
 
 export {
   MEDIA_CAPABILITIES,
+  type MediaAccountingEnvelope,
   type MediaAssetDescriptor,
   type MediaAssetKind,
   type MediaCapability,
+  type MediaCostKind,
+  type MediaCostLine,
   type MediaGenerationRequest,
+  type MediaOutputReference,
   type MediaProviderAdapter,
+  type MediaProviderObservation,
+  type MediaProviderOutput,
   type MediaProviderState,
+  type MediaResolvedOutput,
   type MediaSubmitResult,
 } from "./media-adapter";
 export { MockMediaAdapter } from "./mock-media-adapter";
