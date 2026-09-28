@@ -67,9 +67,13 @@ ALTER TABLE cost_ledger
       )
     );
 
-CREATE UNIQUE INDEX cost_ledger_idempotency_idx
+CREATE UNIQUE INDEX cost_ledger_provider_idempotency_idx
+  ON cost_ledger (workspace_id, provider_configuration_id, idempotency_key)
+  WHERE provider_configuration_id IS NOT NULL AND idempotency_key IS NOT NULL;
+
+CREATE UNIQUE INDEX cost_ledger_internal_idempotency_idx
   ON cost_ledger (workspace_id, idempotency_key)
-  WHERE idempotency_key IS NOT NULL;
+  WHERE provider_configuration_id IS NULL AND idempotency_key IS NOT NULL;
 
 CREATE INDEX cost_ledger_provider_request_idx
   ON cost_ledger (workspace_id, provider_request_id);
