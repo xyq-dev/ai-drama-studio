@@ -736,6 +736,33 @@ export class TextChainService {
     return { revisionId, revisionNo, contentHash, rowVersion };
   }
 
+  async requireScriptRevision(
+    workspaceId: string,
+    revisionId: string,
+  ): Promise<{ id: string; projectId: string; episodeId: string; reviewVersion: number }> {
+    const client = await this.pool.connect();
+    try {
+      const result = await client.query<
+        { id: string; project_id: string; episode_id: string; review_version: number } & QueryResultRow
+      >(
+        `SELECT id, project_id, episode_id, review_version
+           FROM script_revision
+          WHERE workspace_id = $1 AND id = $2`,
+        [workspaceId, revisionId],
+      );
+      const row = result.rows[0];
+      if (!row) throw new PersistenceError("NOT_FOUND", "Script revision not found");
+      return {
+        id: row.id,
+        projectId: row.project_id,
+        episodeId: row.episode_id,
+        reviewVersion: row.review_version,
+      };
+    } finally {
+      client.release();
+    }
+  }
+
   async listScriptRevisions(
     workspaceId: string,
     projectId: string,
