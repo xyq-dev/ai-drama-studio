@@ -588,6 +588,7 @@ model Asset {
   height                  Int?
   durationMs              BigInt?  @map("duration_ms")
   sourceJobAttemptId      String   @map("source_job_attempt_id") @db.Uuid
+  sourceGenerationJobId   String   @map("source_generation_job_id") @db.Uuid
   sourceShotRevisionId    String?  @map("source_shot_revision_id") @db.Uuid
   providerConfigurationId String   @map("provider_configuration_id") @db.Uuid
   providerRequestId       String   @map("provider_request_id")
