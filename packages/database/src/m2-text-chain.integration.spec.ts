@@ -1151,6 +1151,7 @@ async function buildChain(): Promise<ChainGraph> {
   );
   const sceneRevisionId = sceneRevision.rows[0]?.id;
   if (!sceneRevisionId) throw new Error("scene revision missing");
+  await pool.query("UPDATE scene SET current_revision_id = $2 WHERE id = $1", [sceneId, sceneRevisionId]);
   const shot = await pool.query<{ id: string } & QueryResultRow>(
     `INSERT INTO shot (workspace_id, project_id, episode_id, scene_id) VALUES ($1,$2,$3,$4) RETURNING id`,
     [workspaceId, projectId, episode2Id, sceneId],

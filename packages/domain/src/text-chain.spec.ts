@@ -65,4 +65,26 @@ describe("canonical input hash", () => {
     expect(() => canonicalInputHash({ review_version: 1 })).toThrow(DomainError);
     expect(() => canonicalInputHash({ rowVersion: 2 })).toThrow(DomainError);
   });
+
+  it("sorts keys by UTF-8 bytes independently of the host locale", () => {
+    expect(canonicalJson({ "é": 1, a: 2, Z: 3, "!": 4, "𐀀": 5, "\uE000": 6 })).toBe(
+      '{"!":4,"Z":3,"a":2,"é":1,"\uE000":6,"𐀀":5}',
+    );
+  });
+
+  it.each([
+    undefined, { a: undefined }, [undefined], new Array(1), new Date("2026-01-01"),
+    new Map([["a", 1]]), Number.NaN, Number.POSITIVE_INFINITY, BigInt(1), Symbol("a"),
+    { value: () => 1 }, { [Symbol("key")]: 1 }, { get value() { return 1; } },
+  ])("rejects values that cannot be persisted as the same JSON input: %s", (input) => {
+    expect(() => canonicalInputHash(input)).toThrowError(expect.objectContaining({ code: "CANONICAL_INPUT_INVALID" }));
+  });
+
+  it("rejects cycles while allowing repeated plain JSON values", () => {
+    const cyclic: { self?: unknown } = {};
+    cyclic.self = cyclic;
+    expect(() => canonicalInputHash(cyclic)).toThrowError(expect.objectContaining({ code: "CANONICAL_INPUT_INVALID" }));
+    const shared = { line: "hello" };
+    expect(canonicalJson({ a: shared, b: shared })).toBe('{"a":{"line":"hello"},"b":{"line":"hello"}}');
+  });
 });

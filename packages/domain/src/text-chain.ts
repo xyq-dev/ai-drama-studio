@@ -54,18 +54,40 @@ export function canonicalInputHash(value: unknown): string {
   return createHash("sha256").update(canonicalJson(value)).digest("hex");
 }
 
-function assertCanonicalValue(value: unknown): void {
-  if (Array.isArray(value)) {
-    for (const item of value) assertCanonicalValue(item);
-    return;
+function assertCanonicalValue(value: unknown, ancestors = new Set<object>()): void {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return;
+  if (typeof value === "number" && Number.isFinite(value)) return;
+  if (typeof value !== "object" || value === null) {
+    throw new DomainError("CANONICAL_INPUT_INVALID", "Canonical input must contain only JSON values");
   }
-  if (value && typeof value === "object") {
-    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+  const array = Array.isArray(value);
+  if (!array && Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) {
+    throw new DomainError("CANONICAL_INPUT_INVALID", "Canonical input objects must be plain JSON objects");
+  }
+  if (ancestors.has(value)) {
+    throw new DomainError("CANONICAL_INPUT_INVALID", "Canonical input cannot contain cycles");
+  }
+  if (Object.getOwnPropertySymbols(value).length > 0) {
+    throw new DomainError("CANONICAL_INPUT_INVALID", "Canonical input cannot contain symbol keys");
+  }
+  ancestors.add(value);
+  try {
+    if (array) {
+      for (const item of value) assertCanonicalValue(item, ancestors);
+      return;
+    }
+    for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(value))) {
+      if (!descriptor.enumerable) continue;
+      if (descriptor.get || descriptor.set) {
+        throw new DomainError("CANONICAL_INPUT_INVALID", "Canonical input cannot contain accessors");
+      }
       if (forbiddenCanonicalKeys.has(key)) {
         throw new DomainError("CANONICAL_INPUT_FORBIDDEN", `Canonical input cannot include ${key}`);
       }
-      assertCanonicalValue(item);
+      assertCanonicalValue(descriptor.value, ancestors);
     }
+  } finally {
+    ancestors.delete(value);
   }
 }
 
@@ -89,7 +111,9 @@ function serializeCanonical(value: unknown): string {
       }
       seen.add(key);
     }
-    normalizedEntries.sort(([left], [right]) => left.localeCompare(right));
+    normalizedEntries.sort(([left], [right]) =>
+      Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8")) || (left < right ? -1 : left > right ? 1 : 0),
+    );
     return `{${normalizedEntries
       .map(([key, item]) => `${JSON.stringify(key)}:${serializeCanonical(item)}`)
       .join(",")}}`;
