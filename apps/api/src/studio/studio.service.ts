@@ -24,6 +24,11 @@ const storyRevisionBodySchema = z.object({
   content: z.record(z.string(), z.unknown()),
 });
 
+const scriptRevisionBodySchema = z.object({
+  sourceStoryRevisionId: z.string().uuid(),
+  content: z.record(z.string(), z.unknown()),
+});
+
 export interface StudioContext {
   actorId: string;
   traceId: string;
@@ -100,6 +105,58 @@ export class StudioService {
   async listEpisodes(projectId: string) {
     await this.store.getProject(this.workspaceId, projectId);
     return { items: await this.textChain.listEpisodes(this.workspaceId, projectId) };
+  }
+
+  async createScriptRevision(
+    projectId: string,
+    episodeId: string,
+    body: unknown,
+    ifMatch: string | undefined,
+    context: StudioContext,
+  ) {
+    await this.store.getProject(this.workspaceId, projectId);
+    const input = parse(scriptRevisionBodySchema, rejectClientWorkspace(body));
+    if (!containsOnlyFiniteJsonNumbers(input.content)) {
+      throw new PersistenceError("INVALID_SCRIPT", "Script content contains a non-finite number");
+    }
+    const expectedVersion = parseAggregateVersion(ifMatch);
+    const request = {
+      sourceStoryRevisionId: input.sourceStoryRevisionId,
+      content: input.content,
+      expectedVersion,
+    };
+    try {
+      return await this.jobs.runIdempotent(
+        this.scope(
+          context,
+          "POST",
+          `/projects/${projectId}/episodes/${episodeId}/scripts`,
+          request,
+        ),
+        201,
+        (client) =>
+          this.textChain.createScriptRevisionInTransaction(client, {
+            workspaceId: this.workspaceId,
+            projectId,
+            episodeId,
+            sourceStoryRevisionId: input.sourceStoryRevisionId,
+            content: input.content,
+            createdBy: context.actorId,
+            expectedVersion,
+            traceId: context.traceId,
+          }),
+      );
+    } catch (error) {
+      if (isCanonicalContentError(error)) {
+        throw new PersistenceError("INVALID_SCRIPT", "Script content is invalid");
+      }
+      throw error;
+    }
+  }
+
+  async listScriptRevisions(projectId: string, episodeId: string, cursor?: string) {
+    await this.store.getProject(this.workspaceId, projectId);
+    return this.textChain.listScriptRevisions(this.workspaceId, projectId, episodeId, cursor);
   }
 
   async createMockWorkflow(projectId: string, body: unknown, context: StudioContext) {
