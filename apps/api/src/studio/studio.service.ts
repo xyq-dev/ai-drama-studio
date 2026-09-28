@@ -176,10 +176,11 @@ export class StudioService {
     const input = parse(reviewBodySchema, rejectClientWorkspace(body));
     const expectedVersion = parseAggregateVersion(ifMatch);
     const request = { ...input, expectedVersion };
-    return this.jobs.runIdempotent(
-      this.scope(context, "POST", `/projects/${projectId}/stories/${revisionId}/review`, request),
-      200,
-      async (client) => {
+    try {
+      return await this.jobs.runIdempotent(
+        this.scope(context, "POST", `/projects/${projectId}/stories/${revisionId}/review`, request),
+        200,
+        async (client) => {
         const revision = await this.textChain.requireStoryRevisionInTransaction(
           client,
           this.workspaceId,
@@ -211,8 +212,11 @@ export class StudioService {
           reviewNote: input.reviewNote ?? null,
           traceId: context.traceId,
         });
-      },
-    );
+        },
+      );
+    } catch (error) {
+      throwReviewTransitionError(error);
+    }
   }
 
   async reviewScriptRevisionById(
@@ -265,10 +269,11 @@ export class StudioService {
     const input = parse(reviewBodySchema, rejectClientWorkspace(body));
     const expectedVersion = parseAggregateVersion(ifMatch);
     const request = { ...input, expectedVersion };
-    return this.jobs.runIdempotent(
-      this.scope(context, "POST", routeKey, request),
-      200,
-      async (client) => {
+    try {
+      return await this.jobs.runIdempotent(
+        this.scope(context, "POST", routeKey, request),
+        200,
+        async (client) => {
         const revision = await this.textChain.requireScriptRevisionInTransaction(
           client,
           this.workspaceId,
@@ -300,8 +305,11 @@ export class StudioService {
           reviewNote: input.reviewNote ?? null,
           traceId: context.traceId,
         });
-      },
-    );
+        },
+      );
+    } catch (error) {
+      throwReviewTransitionError(error);
+    }
   }
 
   async createMockWorkflow(projectId: string, body: unknown, context: StudioContext) {
@@ -425,6 +433,19 @@ function containsOnlyFiniteJsonNumbers(value: unknown): boolean {
     return Object.values(value as Record<string, unknown>).every((item) => containsOnlyFiniteJsonNumbers(item));
   }
   return true;
+}
+
+function throwReviewTransitionError(error: unknown): never {
+  if (error && typeof error === "object") {
+    const candidate = error as { name?: unknown; code?: unknown; message?: unknown };
+    if (candidate.name === "DomainError" && candidate.code === "REVIEW_INVALID_TRANSITION") {
+      throw new PersistenceError(
+        "REVIEW_INVALID_TRANSITION",
+        typeof candidate.message === "string" ? candidate.message : "Review transition is invalid",
+      );
+    }
+  }
+  throw error;
 }
 
 function isCanonicalContentError(error: unknown): boolean {
