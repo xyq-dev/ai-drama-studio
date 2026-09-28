@@ -39,6 +39,14 @@ Script revision 与 Episode 版本，返回 `202` 的 WorkflowRun/Job。Worker �
 若任一集已存在 current Scene ordinal 1，新 Job 以 `MOCK_SCENE_SLOT_OCCUPIED` 终态失败，
 不覆盖已有草稿，也不会部分创建其他集 Scene。
 
+M2 Mock Shot 切片提供 `POST /projects/:projectId/workflows/mock-shots`（空 JSON、
+`Idempotency-Key` 必需）。每集须有 ordinal 1 的 current、approved、CURRENT Scene，
+来源 Script 也须可用，且项目不能有待完成的 STALE 传播。入队事务冻结三集 Scene revision
+与 Scene 版本；Worker 正常/恢复完成时重验来源并在一个事务中创建三集 Shot DRAFT 与
+完成 Job，attempt 的 `response_snapshot.shotRevisionIds` 返回三个修订 ID。若 Scene
+来源变化，整批失败；若当前 Shot ordinal 1 已占用，以 `MOCK_SHOT_SLOT_OCCUPIED`
+终态失败且不覆盖已有 Shot。其他 Scene/Shot 仍按项目作用域文本 API 人工编辑与审核。
+
 M2-C 文本切片采用项目作用域路径。下表中的 extract、reference-images、
 旧的无项目作用域 Scenes/Shots 路由、generate、set-current 和媒体生成端点仍是规划合同，
 尚未由该切片实现。
