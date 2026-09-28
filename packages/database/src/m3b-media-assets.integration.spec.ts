@@ -524,6 +524,40 @@ describe("M3-B media asset store", () => {
     ).rejects.toMatchObject({ code: "REVIEW_REQUIRED" });
   });
 
+  it("replays an existing asset after its source shot becomes stale", async () => {
+    const seeded = await seedApprovedShot();
+    const input = {
+      workspaceId: seeded.workspaceId,
+      projectId: seeded.projectId,
+      kind: "IMAGE" as const,
+      storageProvider: "minio",
+      objectKey: "shots/stale-replay.png",
+      mimeType: "image/png",
+      byteSize: 1,
+      checksumSha256: hash,
+      width: 1024,
+      height: 1792,
+      sourceJobAttemptId: seeded.jobAttemptId,
+      sourceShotRevisionId: seeded.shotRevisionId,
+      providerConfigurationId: seeded.providerConfigurationId,
+      providerRequestId: seeded.providerRequestId,
+      metadata: { source: "mock" },
+    };
+    const first = await store.createAsset(input);
+
+    await pool.query(
+      `UPDATE shot_revision
+          SET freshness_status = 'STALE',
+              stale_reason = 'TEST_AFTER_COMMIT',
+              stale_from_ref = 'script_revision:11111111-1111-4111-8111-111111111111',
+              review_version = review_version + 1
+        WHERE id = $1`,
+      [seeded.shotRevisionId],
+    );
+
+    await expect(store.createAsset(input)).resolves.toEqual(first);
+  });
+
   it("rejects conflicting replay content for the same storage object key", async () => {
     const seeded = await seedApprovedShot();
     const base = {
@@ -539,12 +573,23 @@ describe("M3-B media asset store", () => {
       sourceShotRevisionId: seeded.shotRevisionId,
       providerConfigurationId: seeded.providerConfigurationId,
       providerRequestId: seeded.providerRequestId,
+      metadata: { source: "mock", version: 1 },
     };
     await store.createAsset(base);
     await expect(
       store.createAsset({ ...base, checksumSha256: "cd".repeat(32) }),
     ).rejects.toMatchObject({ code: "ASSET_CONFLICT" });
+    await expect(
+      store.createAsset({ ...base, mimeType: "image/jpeg" }),
+    ).rejects.toMatchObject({ code: "ASSET_CONFLICT" });
+    await expect(
+      store.createAsset({ ...base, byteSize: 2 }),
+    ).rejects.toMatchObject({ code: "ASSET_CONFLICT" });
+    await expect(
+      store.createAsset({ ...base, metadata: { source: "mock", version: 2 } }),
+    ).rejects.toMatchObject({ code: "ASSET_CONFLICT" });
 
+    const secondProviderRequestId = `${seeded.providerRequestId}|second-attempt`;
     const secondAttempt = await pool.query<{ id: string } & QueryResultRow>(
       `INSERT INTO job_attempt
         (workspace_id, generation_job_id, attempt_no, provider_configuration_id,
@@ -555,14 +600,18 @@ describe("M3-B media asset store", () => {
         seeded.workspaceId,
         seeded.generationJobId,
         seeded.providerConfigurationId,
-        seeded.providerRequestId,
+        secondProviderRequestId,
       ],
     );
     const secondAttemptId = secondAttempt.rows[0]?.id;
     if (!secondAttemptId) throw new Error("second attempt missing");
 
     await expect(
-      store.createAsset({ ...base, sourceJobAttemptId: secondAttemptId }),
+      store.createAsset({
+        ...base,
+        sourceJobAttemptId: secondAttemptId,
+        providerRequestId: secondProviderRequestId,
+      }),
     ).rejects.toMatchObject({ code: "ASSET_CONFLICT" });
   });
 });
