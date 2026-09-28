@@ -83,7 +83,7 @@ export class StudioService {
     await this.store.getProject(this.workspaceId, projectId);
     const input = parse(storyRevisionBodySchema, rejectClientWorkspace(body));
     if (!containsOnlyFiniteJsonValues(input.content)) {
-      throw new PersistenceError("INVALID_STORY", "Story content contains a non-finite number");
+      throw new PersistenceError("INVALID_STORY", "Story content contains a value PostgreSQL jsonb cannot store");
     }
     const expectedVersion = parseAggregateVersion(ifMatch);
     const request = { content: input.content, expectedVersion };
@@ -330,12 +330,14 @@ function isPostgresJsonString(value: string): boolean {
   for (let index = 0; index < value.length; index += 1) {
     const codeUnit = value.charCodeAt(index);
     if (codeUnit === 0) return false;
+
     if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
       const next = value.charCodeAt(index + 1);
       if (Number.isNaN(next) || next < 0xdc00 || next > 0xdfff) return false;
       index += 1;
       continue;
     }
+
     if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) return false;
   }
   return true;
