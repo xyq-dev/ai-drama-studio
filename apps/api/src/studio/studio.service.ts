@@ -127,6 +127,10 @@ export class StudioService {
     context: StudioContext,
   ) {
     await this.store.getProject(this.workspaceId, projectId);
+    const episodes = await this.textChain.listEpisodes(this.workspaceId, projectId);
+    if (!episodes.some((episode) => episode.id === episodeId)) {
+      throw new PersistenceError("NOT_FOUND", "Episode not found");
+    }
     const input = parse(scriptRevisionBodySchema, rejectClientWorkspace(body));
     if (!containsOnlyFiniteJsonNumbers(input.content)) {
       throw new PersistenceError("INVALID_SCRIPT", "Script content contains a non-finite number");
