@@ -1,16 +1,19 @@
 import { createHash } from "node:crypto";
 import type {
-  MediaAssetDescriptor,
+  MediaAccountingEnvelope,
   MediaCapability,
   MediaGenerationRequest,
   MediaProviderAdapter,
-  MediaProviderState,
+  MediaProviderObservation,
+  MediaProviderOutput,
+  MediaResolvedOutput,
   MediaSubmitResult,
 } from "./media-adapter";
 
 export class MockMediaAdapter implements MediaProviderAdapter {
   readonly providerKey = "mock-media";
   private readonly pending = new Set<string>();
+  private readonly pollCounts = new Map<string, number>();
 
   capabilities(): readonly MediaCapability[] {
     return [
@@ -29,7 +32,7 @@ export class MockMediaAdapter implements MediaProviderAdapter {
     const outcome = snapshot?.outcome ?? "success";
 
     if (outcome === "cancel") {
-      return { kind: "canceled", providerRequestId };
+      return { kind: "canceled", providerRequestId, accounting: actualAccounting(providerRequestId) };
     }
     if (outcome === "retryable_failure") {
       return {
@@ -38,6 +41,7 @@ export class MockMediaAdapter implements MediaProviderAdapter {
         retryable: true,
         errorCode: "MOCK_MEDIA_RETRYABLE",
         errorMessage: "Mock media adapter requested a retry",
+        accounting: actualAccounting(providerRequestId),
       };
     }
     if (outcome === "terminal_failure") {
@@ -47,45 +51,98 @@ export class MockMediaAdapter implements MediaProviderAdapter {
         retryable: false,
         errorCode: "MOCK_MEDIA_TERMINAL",
         errorMessage: "Mock media adapter failed terminally",
+        accounting: actualAccounting(providerRequestId),
       };
     }
     if (outcome === "delayed") {
       this.pending.add(providerRequestId);
-      return { kind: "waiting", providerRequestId, nextPollAt: new Date().toISOString() };
+      this.pollCounts.set(providerRequestId, 0);
+      return {
+        kind: "waiting",
+        providerRequestId,
+        nextPollAt: new Date().toISOString(),
+        accounting: estimatedAccounting(providerRequestId),
+      };
     }
 
     return {
       kind: "succeeded",
       providerRequestId,
-      assets: [mockAsset(input, providerRequestId)],
+      outputs: [mockOutput(input, providerRequestId)],
+      accounting: actualAccounting(providerRequestId),
     };
   }
 
-  async inspect(providerRequestId: string): Promise<MediaProviderState> {
-    if (this.pending.delete(providerRequestId)) return "ACTIVE";
-    if (providerRequestId.startsWith("mock-media|")) return "SUCCEEDED";
-    return "UNKNOWN";
+  async inspect(providerRequestId: string): Promise<MediaProviderObservation> {
+    const pollNo = (this.pollCounts.get(providerRequestId) ?? 0) + 1;
+    this.pollCounts.set(providerRequestId, pollNo);
+
+    let state: MediaProviderObservation["state"] = "UNKNOWN";
+    let outputs: MediaProviderOutput[] | undefined;
+    if (this.pending.delete(providerRequestId)) {
+      state = "ACTIVE";
+    } else if (providerRequestId.startsWith("mock-media|")) {
+      state = "SUCCEEDED";
+      outputs = [mockOutputFromRequestId(providerRequestId)];
+    }
+
+    const normalizedEventKey = `poll:${providerRequestId}:${pollNo}`;
+    const responseHash = createHash("sha256")
+      .update(JSON.stringify({ providerRequestId, pollNo, state }))
+      .digest("hex");
+
+    return {
+      state,
+      normalizedEventKey,
+      responseHash,
+      observedAt: new Date().toISOString(),
+      outputs,
+      accounting:
+        state === "ACTIVE"
+          ? estimatedAccounting(providerRequestId)
+          : state === "UNKNOWN"
+            ? undefined
+            : actualAccounting(providerRequestId),
+      metadata: { pollNo },
+    };
+  }
+
+  async resolveOutput(output: MediaProviderOutput): Promise<MediaResolvedOutput> {
+    if (output.retrieval.kind === "URI") {
+      return { uri: output.retrieval.uri, expiresAt: output.retrieval.expiresAt };
+    }
+    const mimeType = output.mimeTypeHint ?? "application/octet-stream";
+    return { uri: `data:${mimeType};base64,AA==` };
   }
 }
 
-function mockAsset(input: MediaGenerationRequest, providerRequestId: string): MediaAssetDescriptor {
+function mockOutput(input: MediaGenerationRequest, providerRequestId: string): MediaProviderOutput {
+  return outputFor(input.capability, providerRequestId);
+}
+
+function mockOutputFromRequestId(providerRequestId: string): MediaProviderOutput {
+  const capability = providerRequestId.split("|")[1] as MediaCapability | undefined;
+  return outputFor(capability ?? "image.generate", providerRequestId);
+}
+
+function outputFor(capability: MediaCapability, providerRequestId: string): MediaProviderOutput {
   const digest = createHash("sha256").update(providerRequestId).digest("hex");
   const kind =
-    input.capability === "image.generate"
+    capability === "image.generate"
       ? "IMAGE"
-      : input.capability === "video.generate"
+      : capability === "video.generate"
         ? "VIDEO"
-        : input.capability === "subtitle.generate"
+        : capability === "subtitle.generate"
           ? "SUBTITLE"
-          : input.capability === "audio.music"
+          : capability === "audio.music"
             ? "MUSIC"
-            : input.capability === "media.compose_input_validate"
+            : capability === "media.compose_input_validate"
               ? "COMPOSITE"
               : "AUDIO";
   return {
     kind,
-    objectKey: `mock/${digest}`,
-    mimeType:
+    retrieval: { kind: "HANDLE", handle: `mock-output:${digest}` },
+    mimeTypeHint:
       kind === "IMAGE"
         ? "image/png"
         : kind === "VIDEO"
@@ -95,8 +152,38 @@ function mockAsset(input: MediaGenerationRequest, providerRequestId: string): Me
             : kind === "COMPOSITE"
               ? "application/json"
               : "audio/wav",
-    checksumSha256: digest,
-    byteSize: 1,
     metadata: { providerRequestId },
+  };
+}
+
+function estimatedAccounting(providerRequestId: string): MediaAccountingEnvelope {
+  return accounting(providerRequestId, "ESTIMATED");
+}
+
+function actualAccounting(providerRequestId: string): MediaAccountingEnvelope {
+  return accounting(providerRequestId, "ACTUAL");
+}
+
+function accounting(
+  providerRequestId: string,
+  kind: "ESTIMATED" | "ACTUAL",
+): MediaAccountingEnvelope {
+  return {
+    provider: "mock-media",
+    model: "mock-v1",
+    usage: { requests: 1 },
+    costs: [
+      {
+        idempotencyKey: `${providerRequestId}:request:${kind.toLowerCase()}`,
+        kind,
+        currency: "USD",
+        amountDecimal: "0.00000000",
+        basis: "REQUEST",
+        unitType: "request",
+        unitQuantity: "1.00000000",
+        unitPriceSnapshot: "0.00000000",
+        component: "request",
+      },
+    ],
   };
 }
