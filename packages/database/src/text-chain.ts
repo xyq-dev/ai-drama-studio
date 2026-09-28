@@ -449,6 +449,7 @@ export class TextChainService {
     expectedVersion: number;
     expectedReviewVersion: number;
     reviewedBy: string;
+    reviewNote?: string | null;
     traceId?: string;
   }): Promise<void> {
     await withTransaction(this.pool, async (client) => {
@@ -465,6 +466,7 @@ export class TextChainService {
       expectedVersion: number;
       expectedReviewVersion: number;
       reviewedBy: string;
+      reviewNote?: string | null;
       traceId?: string;
     },
   ): Promise<ReviewTransitioned> {
@@ -500,6 +502,7 @@ export class TextChainService {
       expectedReviewVersion: input.expectedReviewVersion,
       to: "APPROVED",
       reviewedBy: input.reviewedBy,
+      reviewNote: input.reviewNote ?? null,
       traceId: input.traceId,
     });
     const rowVersion = await bumpPointer(
@@ -513,6 +516,28 @@ export class TextChainService {
     );
     await ensureEpisodes(client, input.workspaceId, input.projectId);
     return { reviewVersion, rowVersion };
+  }
+
+  async requireStoryRevisionInTransaction(
+    client: PoolClient,
+    workspaceId: string,
+    revisionId: string,
+  ): Promise<{ id: string; projectId: string; reviewVersion: number }> {
+    const result = await client.query<
+      { id: string; project_id: string; review_version: number } & QueryResultRow
+    >(
+      `SELECT id, project_id, review_version
+         FROM story_revision
+        WHERE workspace_id = $1 AND id = $2`,
+      [workspaceId, revisionId],
+    );
+    const row = result.rows[0];
+    if (!row) throw new PersistenceError("NOT_FOUND", "Story revision not found");
+    return {
+      id: row.id,
+      projectId: row.project_id,
+      reviewVersion: row.review_version,
+    };
   }
 
   async continueStaleRecalculation(): Promise<boolean> {
@@ -742,25 +767,33 @@ export class TextChainService {
   ): Promise<{ id: string; projectId: string; episodeId: string; reviewVersion: number }> {
     const client = await this.pool.connect();
     try {
-      const result = await client.query<
-        { id: string; project_id: string; episode_id: string; review_version: number } & QueryResultRow
-      >(
-        `SELECT id, project_id, episode_id, review_version
-           FROM script_revision
-          WHERE workspace_id = $1 AND id = $2`,
-        [workspaceId, revisionId],
-      );
-      const row = result.rows[0];
-      if (!row) throw new PersistenceError("NOT_FOUND", "Script revision not found");
-      return {
-        id: row.id,
-        projectId: row.project_id,
-        episodeId: row.episode_id,
-        reviewVersion: row.review_version,
-      };
+      return await this.requireScriptRevisionInTransaction(client, workspaceId, revisionId);
     } finally {
       client.release();
     }
+  }
+
+  async requireScriptRevisionInTransaction(
+    client: PoolClient,
+    workspaceId: string,
+    revisionId: string,
+  ): Promise<{ id: string; projectId: string; episodeId: string; reviewVersion: number }> {
+    const result = await client.query<
+      { id: string; project_id: string; episode_id: string; review_version: number } & QueryResultRow
+    >(
+      `SELECT id, project_id, episode_id, review_version
+         FROM script_revision
+        WHERE workspace_id = $1 AND id = $2`,
+      [workspaceId, revisionId],
+    );
+    const row = result.rows[0];
+    if (!row) throw new PersistenceError("NOT_FOUND", "Script revision not found");
+    return {
+      id: row.id,
+      projectId: row.project_id,
+      episodeId: row.episode_id,
+      reviewVersion: row.review_version,
+    };
   }
 
   async listScriptRevisions(
@@ -836,6 +869,7 @@ export class TextChainService {
     expectedVersion: number;
     expectedReviewVersion: number;
     reviewedBy: string;
+    reviewNote?: string | null;
     traceId?: string;
   }): Promise<void> {
     await withTransaction(this.pool, async (client) => {
@@ -852,6 +886,7 @@ export class TextChainService {
       expectedVersion: number;
       expectedReviewVersion: number;
       reviewedBy: string;
+      reviewNote?: string | null;
       traceId?: string;
     },
   ): Promise<ReviewTransitioned> {
@@ -926,6 +961,7 @@ export class TextChainService {
       expectedReviewVersion: input.expectedReviewVersion,
       to: "APPROVED",
       reviewedBy: input.reviewedBy,
+      reviewNote: input.reviewNote ?? null,
       traceId: input.traceId,
     });
     const rowVersion = await bumpPointer(
