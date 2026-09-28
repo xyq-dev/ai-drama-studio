@@ -72,38 +72,42 @@ export class MockMediaAdapter implements MediaProviderAdapter {
   }
 
   async inspect(providerRequestId: string): Promise<MediaProviderObservation> {
-    let state: MediaProviderObservation["state"] = "UNKNOWN";
-    let outputs: MediaProviderOutput[] | undefined;
     if (this.pending.delete(providerRequestId)) {
-      state = "ACTIVE";
-    } else if (providerRequestId.startsWith("mock-media|")) {
-      state = "SUCCEEDED";
-      outputs = [mockOutputFromRequestId(providerRequestId)];
+      const accounting = estimatedAccounting(providerRequestId);
+      const responseHash = observationHash(providerRequestId, "ACTIVE", undefined, accounting);
+      return {
+        state: "ACTIVE",
+        normalizedEventKey: `poll:${responseHash}`,
+        responseHash,
+        observedAt: new Date().toISOString(),
+        accounting,
+        metadata: { source: "mock" },
+      };
     }
 
-    const accounting =
-      state === "ACTIVE"
-        ? estimatedAccounting(providerRequestId)
-        : state === "SUCCEEDED"
-          ? actualAccounting(providerRequestId, true)
-          : undefined;
-    const canonicalObservation = {
-      providerRequestId,
-      state,
-      outputs,
-      accounting,
-    };
-    const responseHash = createHash("sha256")
-      .update(JSON.stringify(canonicalObservation))
-      .digest("hex");
+    if (providerRequestId.startsWith("mock-media|")) {
+      const outputs: [MediaProviderOutput, ...MediaProviderOutput[]] = [
+        mockOutputFromRequestId(providerRequestId),
+      ];
+      const accounting = actualAccounting(providerRequestId, true);
+      const responseHash = observationHash(providerRequestId, "SUCCEEDED", outputs, accounting);
+      return {
+        state: "SUCCEEDED",
+        normalizedEventKey: `poll:${responseHash}`,
+        responseHash,
+        observedAt: new Date().toISOString(),
+        outputs,
+        accounting,
+        metadata: { source: "mock" },
+      };
+    }
 
+    const responseHash = observationHash(providerRequestId, "UNKNOWN");
     return {
-      state,
+      state: "UNKNOWN",
       normalizedEventKey: `poll:${responseHash}`,
       responseHash,
       observedAt: new Date().toISOString(),
-      outputs,
-      accounting,
       metadata: { source: "mock" },
     };
   }
@@ -115,6 +119,17 @@ export class MockMediaAdapter implements MediaProviderAdapter {
     const mimeType = output.mimeTypeHint ?? "application/octet-stream";
     return { uri: `data:${mimeType};base64,AA==` };
   }
+}
+
+function observationHash(
+  providerRequestId: string,
+  state: MediaProviderObservation["state"],
+  outputs?: MediaProviderOutput[],
+  accounting?: MediaAccountingEnvelope,
+): string {
+  return createHash("sha256")
+    .update(JSON.stringify({ providerRequestId, state, outputs, accounting }))
+    .digest("hex");
 }
 
 function mockOutput(input: MediaGenerationRequest, providerRequestId: string): MediaProviderOutput {
