@@ -1,12 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   JobPersistenceService,
+  MockTextService,
   PersistenceError,
   RuntimeStore,
   TextChainService,
   insertProject,
   requestHash,
   type IdempotencyScope,
+  type MockSceneSnapshot,
   type TextEntityKind,
 } from "@ai-drama/database";
 import { z } from "zod";
@@ -87,6 +89,7 @@ export class StudioService {
     private readonly store: RuntimeStore,
     private readonly textChain: TextChainService,
     private readonly workspaceId: string,
+    private readonly mockText?: MockTextService,
   ) {}
 
   get workspace(): string {
@@ -559,6 +562,25 @@ export class StudioService {
       inputSnapshot: snapshot,
       traceId: context.traceId,
     });
+  }
+
+  async createMockSceneWorkflow(projectId: string, context: StudioContext) {
+    await this.store.getProject(this.workspaceId, projectId);
+    if (!this.mockText) throw new PersistenceError("CONFIGURATION_ERROR", "Mock text service unavailable");
+    await this.store.ensureMockProvider(this.workspaceId);
+    return this.jobs.createAndQueueWorkflowJob(
+      this.scope(context, "POST", `/projects/${projectId}/workflows/mock-scenes`, {}),
+      async (tx) => {
+        const snapshot: MockSceneSnapshot = {
+          schema: "m2.mock.scenes.v1", projectId, requestedBy: context.actorId,
+          outcome: "success", episodes: await this.mockText!.currentSources(tx, this.workspaceId, projectId),
+        };
+        return { workspaceId: this.workspaceId, projectId, type: "MOCK_TEXT_SCENES",
+          requestedBy: context.actorId, kind: "MOCK_TEXT_SCENES",
+          inputHash: createHash("sha256").update(JSON.stringify(snapshot)).digest("hex"),
+          inputSnapshot: snapshot, traceId: context.traceId };
+      },
+    );
   }
 
   async getJob(jobId: string) {

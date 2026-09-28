@@ -30,6 +30,15 @@
 
 ## Characters, Scenes, Shots
 
+M2 Mock 文本切片另提供 `POST /projects/:projectId/workflows/mock-scenes`（空 JSON、
+`Idempotency-Key` 必需）。要求项目三集当前 Script 均已审核且 CURRENT；创建时冻结三集
+Script revision 与 Episode 版本，返回 `202` 的 WorkflowRun/Job。Worker 在同一事务内
+为每集创建一个来源精确的 Scene DRAFT 并完成 Job；Job attempt 的
+`response_snapshot.sceneRevisionIds` 返回三个新修订 ID。来源改变时整批不落库且 Job 失败；
+正常消费及恢复路径共用事务落库。Shot 草稿须等 Scene 审核通过，本切片尚未自动生成。
+若任一集已存在 current Scene ordinal 1，新 Job 以 `MOCK_SCENE_SLOT_OCCUPIED` 终态失败，
+不覆盖已有草稿，也不会部分创建其他集 Scene。
+
 M2-C 文本切片采用项目作用域路径。下表中的 extract、reference-images、
 旧的无项目作用域 Scenes/Shots 路由、generate、set-current 和媒体生成端点仍是规划合同，
 尚未由该切片实现。

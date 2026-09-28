@@ -24,6 +24,7 @@ export interface ExecutionContext {
   workspaceId: string;
   workflowRunId: string;
   state: string;
+  kind: string;
   inputSnapshot: unknown;
   cancelRequested: boolean;
   providerConfigurationId: string | null;
@@ -369,7 +370,7 @@ export class RuntimeStore {
     const client = await this.pool.connect();
     try {
       const result = await client.query<QueryResultRow>(
-        `SELECT j.id, j.workspace_id, j.workflow_run_id, j.state, j.input_snapshot, j.cancel_requested_at,
+        `SELECT j.id, j.workspace_id, j.workflow_run_id, j.state, j.kind, j.input_snapshot, j.cancel_requested_at,
                 pc.id AS provider_configuration_id, pc.max_attempts
            FROM generation_job j
            LEFT JOIN provider_configuration pc
@@ -384,6 +385,7 @@ export class RuntimeStore {
         workspaceId: String(row.workspace_id),
         workflowRunId: String(row.workflow_run_id),
         state: String(row.state),
+        kind: String(row.kind),
         inputSnapshot: row.input_snapshot,
         cancelRequested: row.cancel_requested_at !== null,
         providerConfigurationId: row.provider_configuration_id ? String(row.provider_configuration_id) : null,

@@ -769,6 +769,7 @@ export class JobPersistenceService {
     attemptId: string;
     traceId: string;
     persistArtifact?: (client: PoolClient) => Promise<T>;
+    artifactResponse?: (artifact: T) => unknown;
     responseSnapshot?: unknown;
   }): Promise<T | null> {
     return withTransaction(this.pool, async (client) => {
@@ -788,7 +789,9 @@ export class JobPersistenceService {
       requireCurrentAttempt(attempt, input.attemptId);
 
       const artifact = input.persistArtifact ? await input.persistArtifact(client) : null;
-      const responseSnapshot = artifact ? { outputAssetIds: [artifact.id] } : input.responseSnapshot;
+      const responseSnapshot = artifact
+        ? input.artifactResponse?.(artifact) ?? { outputAssetIds: [artifact.id] }
+        : input.responseSnapshot;
 
       await client.query(
         `UPDATE job_attempt
@@ -1004,12 +1007,13 @@ export class JobPersistenceService {
 
   async createAndQueueWorkflowJob(
     scope: IdempotencyScope,
-    input: CreateWorkflowJobInput,
+    input: CreateWorkflowJobInput | ((client: PoolClient) => Promise<CreateWorkflowJobInput>),
   ): Promise<{ replayed: boolean; status: number; body: CreatedWorkflowJob & { dispatchSeq: number } }> {
     return this.runIdempotent(scope, 202, async (client) => {
-      const created = await createWorkflowJobTx(client, input);
-      const job = await loadJobForUpdate(client, input.workspaceId, created.jobId);
-      const queued = await queueJobTx(client, job, input.traceId, null, 0);
+      const resolved = typeof input === "function" ? await input(client) : input;
+      const created = await createWorkflowJobTx(client, resolved);
+      const job = await loadJobForUpdate(client, resolved.workspaceId, created.jobId);
+      const queued = await queueJobTx(client, job, resolved.traceId, null, 0);
       return { ...created, dispatchSeq: queued.dispatch_seq };
     });
   }
