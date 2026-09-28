@@ -86,11 +86,12 @@ CREATE TABLE asset_revision_dependency (
   dependent_asset_id uuid NOT NULL,
   shot_revision_id uuid,
   scene_revision_id uuid,
+  script_revision_id uuid,
   character_revision_id uuid,
   location_revision_id uuid,
   created_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT asset_revision_dependency_one_source CHECK (
-    num_nonnulls(shot_revision_id, scene_revision_id,
+    num_nonnulls(shot_revision_id, scene_revision_id, script_revision_id,
                  character_revision_id, location_revision_id) = 1
   ),
   FOREIGN KEY (dependent_asset_id, project_id, workspace_id)
@@ -99,6 +100,8 @@ CREATE TABLE asset_revision_dependency (
     REFERENCES shot_revision(id, project_id, workspace_id),
   FOREIGN KEY (scene_revision_id, project_id, workspace_id)
     REFERENCES scene_revision(id, project_id, workspace_id),
+  FOREIGN KEY (script_revision_id, project_id, workspace_id)
+    REFERENCES script_revision(id, project_id, workspace_id),
   FOREIGN KEY (character_revision_id, project_id, workspace_id)
     REFERENCES character_revision(id, project_id, workspace_id),
   FOREIGN KEY (location_revision_id, project_id, workspace_id)
@@ -111,6 +114,9 @@ CREATE UNIQUE INDEX asset_revision_dependency_shot_key
 CREATE UNIQUE INDEX asset_revision_dependency_scene_key
   ON asset_revision_dependency (dependent_asset_id, scene_revision_id)
   WHERE scene_revision_id IS NOT NULL;
+CREATE UNIQUE INDEX asset_revision_dependency_script_key
+  ON asset_revision_dependency (dependent_asset_id, script_revision_id)
+  WHERE script_revision_id IS NOT NULL;
 CREATE UNIQUE INDEX asset_revision_dependency_character_key
   ON asset_revision_dependency (dependent_asset_id, character_revision_id)
   WHERE character_revision_id IS NOT NULL;
@@ -122,6 +128,8 @@ CREATE INDEX asset_revision_dependency_shot_source_idx
   ON asset_revision_dependency (workspace_id, project_id, shot_revision_id);
 CREATE INDEX asset_revision_dependency_scene_source_idx
   ON asset_revision_dependency (workspace_id, project_id, scene_revision_id);
+CREATE INDEX asset_revision_dependency_script_source_idx
+  ON asset_revision_dependency (workspace_id, project_id, script_revision_id);
 CREATE INDEX asset_revision_dependency_character_source_idx
   ON asset_revision_dependency (workspace_id, project_id, character_revision_id);
 CREATE INDEX asset_revision_dependency_location_source_idx
