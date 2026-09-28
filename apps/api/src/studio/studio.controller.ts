@@ -81,6 +81,33 @@ export class StudioController {
     return this.studio.listEpisodes(projectId);
   }
 
+  @Get("projects/:projectId/characters")
+  listCharacters(@Param("projectId", UUID_PARAM_PIPE) projectId: string,
+    @Query("cursor") cursor?: string, @Query("limit") limit?: string) {
+    return this.studio.listTextEntities("character", projectId, cursor, limit);
+  }
+
+  @Get("projects/:projectId/locations")
+  listLocations(@Param("projectId", UUID_PARAM_PIPE) projectId: string,
+    @Query("cursor") cursor?: string, @Query("limit") limit?: string) {
+    return this.studio.listTextEntities("location", projectId, cursor, limit);
+  }
+
+  @Get("projects/:projectId/episodes/:episodeId/scenes")
+  listScenes(@Param("projectId", UUID_PARAM_PIPE) projectId: string,
+    @Param("episodeId", UUID_PARAM_PIPE) episodeId: string,
+    @Query("cursor") cursor?: string, @Query("limit") limit?: string) {
+    return this.studio.listScenes(projectId, episodeId, cursor, limit);
+  }
+
+  @Get("projects/:projectId/episodes/:episodeId/scenes/:sceneId/shots")
+  listShots(@Param("projectId", UUID_PARAM_PIPE) projectId: string,
+    @Param("episodeId", UUID_PARAM_PIPE) episodeId: string,
+    @Param("sceneId", UUID_PARAM_PIPE) sceneId: string,
+    @Query("cursor") cursor?: string, @Query("limit") limit?: string) {
+    return this.studio.listShots(projectId, episodeId, sceneId, cursor, limit);
+  }
+
   @Post("projects/:projectId/episodes/:episodeId/scenes")
   createScene(
     @Param("projectId", UUID_PARAM_PIPE) projectId: string,

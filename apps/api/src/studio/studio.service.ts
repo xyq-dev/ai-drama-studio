@@ -162,6 +162,27 @@ export class StudioService {
     return { items: await this.textChain.listEpisodes(this.workspaceId, projectId) };
   }
 
+  async listTextEntities(kind: TextEntityKind, projectId: string, cursor?: string, limit?: string) {
+    await this.store.getProject(this.workspaceId, projectId);
+    return this.textChain.listTextEntities(kind, this.workspaceId, projectId, cursor, parsePageLimit(limit));
+  }
+
+  async listScenes(projectId: string, episodeId: string, cursor?: string, limit?: string) {
+    await this.store.getProject(this.workspaceId, projectId);
+    return this.textChain.listScenes(
+      this.workspaceId, projectId, episodeId, cursor, parsePageLimit(limit),
+    );
+  }
+
+  async listShots(
+    projectId: string, episodeId: string, sceneId: string, cursor?: string, limit?: string,
+  ) {
+    await this.store.getProject(this.workspaceId, projectId);
+    return this.textChain.listShots(
+      this.workspaceId, projectId, episodeId, sceneId, cursor, parsePageLimit(limit),
+    );
+  }
+
   async createTextEntity(
     kind: TextEntityKind, projectId: string, entityId: string | undefined,
     body: unknown, ifMatch: string | undefined, context: StudioContext,
@@ -734,6 +755,18 @@ function parseAggregateVersion(value: string | undefined): number {
     throw new PersistenceError("VALIDATION_ERROR", "If-Match aggregate version is out of range");
   }
   return parsed;
+}
+
+function parsePageLimit(value: string | undefined): number {
+  if (value === undefined) return 20;
+  if (!/^[1-9][0-9]*$/.test(value)) {
+    throw new PersistenceError("VALIDATION_ERROR", "limit must be an integer between 1 and 100");
+  }
+  const limit = Number(value);
+  if (!Number.isSafeInteger(limit) || limit > 100) {
+    throw new PersistenceError("VALIDATION_ERROR", "limit must be an integer between 1 and 100");
+  }
+  return limit;
 }
 
 function containsOnlyFiniteJsonValues(value: unknown): boolean {

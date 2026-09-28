@@ -2,16 +2,15 @@ import "reflect-metadata";
 import type { INestApplication } from "@nestjs/common";
 import { Test } from "@nestjs/testing";
 import { afterAll, beforeAll, expect, it } from "vitest";
-import {
-  createPostgresPool, JobPersistenceService, MockTextService, runMigrations,
-  RuntimeStore, TextChainService,
-} from "@ai-drama/database";
+import { createPostgresPool, JobPersistenceService, MockTextService, runMigrations,
+  RuntimeStore } from "@ai-drama/database";
 import { MockProvider } from "@ai-drama/providers";
 import { AppModule } from "../../../api/src/app.module";
 import { loadApiEnv } from "../../../api/src/config/env";
 import { SafeExceptionFilter } from "../../../api/src/http/safe-exception.filter";
+import { BullMqQueue, startBullWorker } from "./bullmq-queue";
 import { MockJobConsumer } from "./consumer";
-import { OutboxDispatcher, type DispatchMessage, type JobEnqueuer } from "./dispatcher";
+import { OutboxDispatcher } from "./dispatcher";
 
 const workspaceId = "11111111-1111-4111-8111-111111111111";
 const databaseUrl = process.env.DATABASE_URL;
@@ -19,20 +18,22 @@ const redisUrl = process.env.REDIS_URL;
 if (!databaseUrl || !redisUrl) throw new Error("DATABASE_URL and REDIS_URL are required for isolated integration tests");
 const pool = createPostgresPool({ connectionString: databaseUrl, connectionTimeoutMs: 2000,
   statementTimeoutMs: 10000, queryTimeoutMs: 10000 });
-function sql<T>(query: string, values: unknown[] = []): Promise<{ rows: T[] }> {
-  return pool.query(query, values) as Promise<{ rows: T[] }>;
-}
-const chain = new TextChainService(pool);
 const jobs = new JobPersistenceService(pool);
 const store = new RuntimeStore(pool);
+const prefix = `m2-http-${process.pid}`;
+const connection = { url: redisUrl, maxRetriesPerRequest: null as null };
+const queue = new BullMqQueue(connection, prefix);
+const consumer = new MockJobConsumer(jobs, store, new MockProvider(), "m2-http-worker", 10000,
+  new MockTextService(pool));
+const worker = startBullWorker(connection, prefix, async (message) => { await consumer.handle(message); });
 let app: INestApplication;
 let base: string;
+let keyNo = 0;
 
 beforeAll(async () => {
-  // CI gives this test an isolated database; never point DATABASE_URL at shared data.
   await pool.query("DROP SCHEMA public CASCADE; CREATE SCHEMA public");
   await runMigrations(pool);
-  await pool.query("INSERT INTO workspace (id, name, status) VALUES ($1, 'm2-http-worker', 'ACTIVE')", [workspaceId]);
+  await pool.query("INSERT INTO workspace (id,name,status) VALUES ($1,'m2-http-worker','ACTIVE')", [workspaceId]);
   const env = loadApiEnv({ DATABASE_URL: databaseUrl, REDIS_URL: redisUrl,
     S3_ENDPOINT: "http://127.0.0.1:59000", S3_REGION: "us-east-1", S3_BUCKET: "test",
     S3_ACCESS_KEY_ID: "test", S3_SECRET_ACCESS_KEY: "test", APP_WORKSPACE_ID: workspaceId });
@@ -44,104 +45,152 @@ beforeAll(async () => {
   await app.listen(0, "127.0.0.1");
   base = await app.getUrl();
 });
-afterAll(async () => { if (app) await app.close(); await pool.end(); });
+afterAll(async () => { if (app) await app.close(); await worker.close(); await queue.close(); await pool.end(); });
 
-async function approveScene(projectId: string, episodeId: string, sceneId: string,
-  revisionId: string, version: number) {
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-    const review = await chain.reviewSceneShotInTransaction(client, {
-      kind: "scene", workspaceId, projectId, episodeId, sceneId, revisionId,
-      expectedVersion: version, expectedReviewVersion: 1, to: "IN_REVIEW", reviewedBy: "editor",
-    });
-    await chain.reviewSceneShotInTransaction(client, {
-      kind: "scene", workspaceId, projectId, episodeId, sceneId, revisionId,
-      expectedVersion: review.rowVersion, expectedReviewVersion: review.reviewVersion,
-      to: "APPROVED", reviewedBy: "editor",
-    });
-    await client.query("COMMIT");
-  } catch (error) { await client.query("ROLLBACK"); throw error; }
-  finally { client.release(); }
+async function post<T>(path: string, body: unknown, version?: number): Promise<T> {
+  const response = await fetch(`${base}/api/v1${path}`, { method: "POST", headers: {
+    "content-type": "application/json", "idempotency-key": `m2-e2e-${++keyNo}`,
+    ...(version === undefined ? {} : { "if-match": String(version) }),
+  }, body: JSON.stringify(body) });
+  expect(response.status, `${path}: ${await response.clone().text()}`).toBeLessThan(300);
+  return response.json() as Promise<T>;
+}
+async function get<T>(path: string): Promise<T> {
+  const response = await fetch(`${base}/api/v1${path}`);
+  expect(response.status, `${path}: ${await response.clone().text()}`).toBe(200);
+  return response.json() as Promise<T>;
+}
+async function review(path: string, version: number, reviewVersion = 1) {
+  const first = await post<{ rowVersion: number; reviewVersion: number }>(path,
+    { to: "IN_REVIEW", expectedReviewVersion: reviewVersion }, version);
+  return post<{ rowVersion: number; reviewVersion: number }>(path,
+    { to: "APPROVED", expectedReviewVersion: first.reviewVersion }, first.rowVersion);
+}
+async function runWorkflow(projectId: string, kind: "scenes" | "shots") {
+  const path = `/projects/${projectId}/workflows/mock-${kind}`;
+  const headers = { "content-type": "application/json", "idempotency-key": `m2-workflow-${kind}` };
+  const first = await fetch(`${base}/api/v1${path}`, { method: "POST", headers, body: "{}" });
+  expect(first.status).toBe(202);
+  const created = (await first.json()) as { jobId: string; workflowRunId: string };
+  const replay = await fetch(`${base}/api/v1${path}`, { method: "POST", headers, body: "{}" });
+  expect(replay.status).toBe(202);
+  expect(await replay.json()).toEqual(created);
+  const dispatcher = new OutboxDispatcher(store, queue);
+  expect(await dispatcher.dispatchOnce()).toBe(1);
+  for (let index = 0; index < 100; index += 1) {
+    const job = await get<{ state: string; errorCode?: string }>(`/generation-jobs/${created.jobId}`);
+    if (job.state === "SUCCEEDED") return;
+    if (["FAILED", "CANCELLED"].includes(job.state)) throw new Error(`${kind} job ${job.state}: ${job.errorCode}`);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`${kind} job timed out`);
 }
 
-it("queues Mock Scenes and Shots by HTTP and commits each three-episode batch through the worker", async () => {
-  const project = await sql<{ id: string }>(
-    "INSERT INTO project (workspace_id, title) VALUES ($1, 'http-to-worker') RETURNING id", [workspaceId]);
-  const projectId = project.rows[0]!.id;
-  const story = await chain.createStoryRevision({ workspaceId, projectId,
-    content: { premise: "three chapters" }, createdBy: "author", expectedVersion: 1 });
-  const storyReview = await chain.transitionReview({ table: "story_revision", workspaceId,
-    revisionId: story.revisionId, expectedVersion: story.rowVersion,
-    expectedReviewVersion: 1, to: "IN_REVIEW" });
-  await chain.approveStory({ workspaceId, projectId, revisionId: story.revisionId,
-    expectedVersion: storyReview.rowVersion, expectedReviewVersion: 2, reviewedBy: "editor" });
-  const episodes = await chain.listEpisodes(workspaceId, projectId);
-  expect(episodes).toHaveLength(3);
+type Aggregate = { entityId: string; projectId: string; episodeId?: string; sceneId?: string;
+  rowVersion: number; currentRevisionId: string; approvedRevisionId: string | null;
+  currentRevision: { reviewVersion: number; reviewStatus: string; freshnessStatus: string } };
+
+it("completes the three-episode Mock chain through public HTTP and real BullMQ", async () => {
+  const project = await post<{ id: string; version: number }>("/projects", { title: "API-only M2" });
+  const story = await post<{ revisionId: string; rowVersion: number }>(`/projects/${project.id}/stories`,
+    { content: { premise: "three episodes" } }, project.version);
+  await review(`/projects/${project.id}/stories/${story.revisionId}/review`, story.rowVersion);
+  let episodes = (await get<{ items: Array<{ id: string; episodeNo: number; rowVersion: number }> }>(
+    `/projects/${project.id}/episodes`)).items;
+  expect(episodes.map((item) => item.episodeNo)).toEqual([1, 2, 3]);
   for (const episode of episodes) {
-    const script = await chain.createScriptRevision({ workspaceId, projectId,
-      episodeId: episode.id, sourceStoryRevisionId: story.revisionId,
-      content: { episode: episode.episodeNo }, createdBy: "author", expectedVersion: episode.rowVersion });
-    const review = await chain.transitionReview({ table: "script_revision", workspaceId,
-      revisionId: script.revisionId, expectedVersion: script.rowVersion,
-      expectedReviewVersion: 1, to: "IN_REVIEW" });
-    await chain.approveScript({ workspaceId, episodeId: episode.id, revisionId: script.revisionId,
-      expectedVersion: review.rowVersion, expectedReviewVersion: 2, reviewedBy: "editor" });
+    const script = await post<{ revisionId: string; rowVersion: number }>(
+      `/projects/${project.id}/episodes/${episode.id}/scripts`,
+      { storyRevisionId: story.revisionId, content: { episode: episode.episodeNo } }, episode.rowVersion);
+    await review(`/projects/${project.id}/episodes/${episode.id}/scripts/${script.revisionId}/review`, script.rowVersion);
+  }
+  episodes = (await get<{ items: typeof episodes }>(`/projects/${project.id}/episodes`)).items;
+  const sourceScriptId = (await get<{ items: Array<{ id: string }> }>(
+    `/projects/${project.id}/episodes/${episodes[0]!.id}/scripts`)).items[0]!.id;
+  const refreshedProject = await get<{ version: number }>(`/projects/${project.id}`);
+  await post(`/projects/${project.id}/characters`,
+    { name: "Hero", sourceScriptRevisionId: sourceScriptId, content: { role: "lead" } }, refreshedProject.version);
+  const afterCharacter = await get<{ version: number }>(`/projects/${project.id}`);
+  await post(`/projects/${project.id}/locations`,
+    { name: "Studio", sourceScriptRevisionId: sourceScriptId, content: { kind: "interior" } }, afterCharacter.version);
+
+  await runWorkflow(project.id, "scenes");
+  const scenes: Aggregate[] = [];
+  for (const episode of episodes) {
+    const page = await get<{ items: Aggregate[] }>(`/projects/${project.id}/episodes/${episode.id}/scenes`);
+    expect(page.items).toHaveLength(1);
+    const scene = page.items[0]!;
+    await review(`/projects/${project.id}/episodes/${episode.id}/scenes/${scene.entityId}/revisions/${scene.currentRevisionId}/review`,
+      scene.rowVersion, scene.currentRevision.reviewVersion);
+    scenes.push(scene);
+  }
+  await runWorkflow(project.id, "shots");
+  const shots: Aggregate[] = [];
+  for (let index = 0; index < episodes.length; index += 1) {
+    const page = await get<{ items: Aggregate[] }>(
+      `/projects/${project.id}/episodes/${episodes[index]!.id}/scenes/${scenes[index]!.entityId}/shots`);
+    expect(page.items).toHaveLength(1);
+    const shot = page.items[0]!;
+    await review(`/projects/${project.id}/episodes/${episodes[index]!.id}/scenes/${scenes[index]!.entityId}/shots/${shot.entityId}/revisions/${shot.currentRevisionId}/review`,
+      shot.rowVersion, shot.currentRevision.reviewVersion);
+    shots.push(shot);
   }
 
-  const messages: DispatchMessage[] = [];
-  const queue: JobEnqueuer = {
-    async enqueue(message) { messages.push(message); return "enqueued"; },
-    async hasDispatch(jobId, dispatchSeq) {
-      return messages.some((message) => message.jobId === jobId && message.dispatchSeq === dispatchSeq);
-    },
-  };
-  const dispatcher = new OutboxDispatcher(store, queue);
-  const consumer = new MockJobConsumer(jobs, store, new MockProvider(), "m2-http-worker", 10000,
-    new MockTextService(pool));
-  async function runWorkflow(kind: "scenes" | "shots") {
-    const url = `${base}/api/v1/projects/${projectId}/workflows/mock-${kind}`;
-    const headers = { "content-type": "application/json", "idempotency-key": `m2-http-${kind}` };
-    const queued = await fetch(url, { method: "POST", headers, body: "{}" });
-    expect(queued.status).toBe(202);
-    const created = (await queued.json()) as { jobId: string; workflowRunId: string };
-    const replay = await fetch(url, { method: "POST", headers, body: "{}" });
-    expect(replay.status).toBe(202);
-    expect(await replay.json()).toEqual(created);
-    expect(await dispatcher.dispatchOnce()).toBe(1);
-    const message = messages.pop();
-    expect(message?.jobId).toBe(created.jobId);
-    expect(await consumer.handle(message!)).toBe("processed");
-    const job = await store.getJob(workspaceId, created.jobId);
-    expect(job.state, `${job.errorCode}: ${job.errorMessage}`).toBe("SUCCEEDED");
-    const attempt = await sql<{ response_snapshot: Record<string, string[]> }>(
-      "SELECT response_snapshot FROM job_attempt WHERE generation_job_id = $1", [created.jobId]);
-    expect(attempt.rows[0]?.response_snapshot[`${kind === "scenes" ? "scene" : "shot"}RevisionIds`])
-      .toHaveLength(3);
-    expect(await consumer.handle(message!)).toBe("ignored");
+  // Simulate a refresh: retain only project id, then rediscover all four entity classes and versions.
+  const characters = (await get<{ items: Aggregate[] }>(`/projects/${project.id}/characters`)).items;
+  const locations = (await get<{ items: Aggregate[] }>(`/projects/${project.id}/locations`)).items;
+  expect(characters).toHaveLength(1);
+  expect(locations).toHaveLength(1);
+  await review(`/projects/${project.id}/characters/${characters[0]!.entityId}/revisions/${characters[0]!.currentRevisionId}/review`,
+    characters[0]!.rowVersion, characters[0]!.currentRevision.reviewVersion);
+  await review(`/projects/${project.id}/locations/${locations[0]!.entityId}/revisions/${locations[0]!.currentRevisionId}/review`,
+    locations[0]!.rowVersion, locations[0]!.currentRevision.reviewVersion);
+  episodes = (await get<{ items: typeof episodes }>(`/projects/${project.id}/episodes`)).items;
+  const rediscoveredScenes = await Promise.all(episodes.map(async (episode) =>
+    (await get<{ items: Aggregate[] }>(`/projects/${project.id}/episodes/${episode.id}/scenes`)).items[0]!));
+  const rediscoveredShots = await Promise.all(episodes.map(async (episode, index) =>
+    (await get<{ items: Aggregate[] }>(`/projects/${project.id}/episodes/${episode.id}/scenes/${rediscoveredScenes[index]!.entityId}/shots`)).items[0]!));
+
+  const scriptIds = await Promise.all(episodes.map(async (episode) =>
+    (await get<{ items: Array<{ id: string }> }>(`/projects/${project.id}/episodes/${episode.id}/scripts`)).items[0]!.id));
+  for (let index = 0; index < episodes.length; index += 1) {
+    const sceneHistory = await get<{ items: Array<{ sourceScriptRevisionId: string }> }>(
+      `/projects/${project.id}/episodes/${episodes[index]!.id}/scenes/${rediscoveredScenes[index]!.entityId}/revisions`);
+    expect(sceneHistory.items[0]!.sourceScriptRevisionId).toBe(scriptIds[index]);
+    const shotHistory = await get<{ items: Array<{ sourceSceneRevisionId: string }> }>(
+      `/projects/${project.id}/episodes/${episodes[index]!.id}/scenes/${rediscoveredScenes[index]!.entityId}/shots/${rediscoveredShots[index]!.entityId}/revisions`);
+    expect(shotHistory.items[0]!.sourceSceneRevisionId).toBe(rediscoveredScenes[index]!.currentRevisionId);
   }
 
-  await runWorkflow("scenes");
-  const scenes = await sql<{ id: string; episode_id: string; revision_id: string;
-    row_version: number; source_script_revision_id: string; review_status: string }>(
-    `SELECT s.id, s.episode_id, s.current_revision_id AS revision_id, s.row_version,
-            r.source_script_revision_id, r.review_status
-       FROM scene s JOIN scene_revision r ON r.id = s.current_revision_id
-      WHERE s.project_id = $1 ORDER BY s.episode_id`, [projectId]);
-  expect(scenes.rows).toHaveLength(3);
-  const sourceScripts = (await chain.listEpisodes(workspaceId, projectId))
-    .map((episode) => episode.currentScriptRevisionId);
-  expect(scenes.rows.map((scene) => scene.source_script_revision_id).sort()).toEqual(sourceScripts.sort());
-  expect(scenes.rows.every((scene) => scene.review_status === "DRAFT")).toBe(true);
-  for (const scene of scenes.rows) {
-    await approveScene(projectId, scene.episode_id, scene.id, scene.revision_id, scene.row_version);
-  }
+  const sibling = await post<{ entityId: string; revisionId: string; rowVersion: number }>(
+    `/projects/${project.id}/episodes/${episodes[1]!.id}/scenes/${rediscoveredScenes[1]!.entityId}/shots`,
+    { sourceSceneRevisionId: rediscoveredScenes[1]!.currentRevisionId, ordinal: 2,
+      shotType: "WIDE", camera: "fixed", action: "sibling", promptText: "sibling" },
+    rediscoveredScenes[1]!.rowVersion);
 
-  await runWorkflow("shots");
-  const shots = await sql<{ source_scene_revision_id: string; review_status: string }>(
-    "SELECT source_scene_revision_id, review_status FROM shot_revision WHERE project_id = $1", [projectId]);
-  expect(shots.rows).toHaveLength(3);
-  expect(shots.rows.map((shot) => shot.source_scene_revision_id).sort()).toEqual(
-    scenes.rows.map((scene) => scene.revision_id).sort());
-  expect(shots.rows.every((shot) => shot.review_status === "DRAFT")).toBe(true);
+  const target = rediscoveredShots[1]!;
+  const historyPath = `/projects/${project.id}/episodes/${episodes[1]!.id}/scenes/${rediscoveredScenes[1]!.entityId}/shots/${target.entityId}/revisions`;
+  const before = await get<{ aggregate: { rowVersion: number }; items: Array<{ id: string; sourceSceneRevisionId: string }> }>(historyPath);
+  const revisionPath = `/projects/${project.id}/episodes/${episodes[1]!.id}/scenes/${rediscoveredScenes[1]!.entityId}/shots/${target.entityId}/revisions`;
+  const body = { sourceSceneRevisionId: before.items[0]!.sourceSceneRevisionId, ordinal: 1,
+    shotType: "CLOSE", camera: "locked", action: "changed only in episode two", promptText: "changed" };
+  const conflict = await fetch(`${base}/api/v1${revisionPath}`, { method: "POST", headers: {
+    "content-type": "application/json", "idempotency-key": `m2-e2e-${++keyNo}`, "if-match": String(target.rowVersion - 1),
+  }, body: JSON.stringify(body) });
+  expect(conflict.status).toBe(409);
+  const refreshed = await get<{ aggregate: { rowVersion: number } }>(historyPath);
+  await post(revisionPath, body, refreshed.aggregate.rowVersion);
+  const after = await get<{ aggregate: { rowVersion: number }; items: Array<{ reviewStatus: string }> }>(historyPath);
+  expect(after.items[0]!.reviewStatus).toBe("DRAFT");
+  expect(after.aggregate.rowVersion).toBe(refreshed.aggregate.rowVersion + 1);
+  const siblingAfter = await get<{ aggregate: { rowVersion: number; currentRevisionId: string } }>(
+    `/projects/${project.id}/episodes/${episodes[1]!.id}/scenes/${rediscoveredScenes[1]!.entityId}/shots/${sibling.entityId}/revisions`);
+  expect(siblingAfter.aggregate).toMatchObject({ rowVersion: sibling.rowVersion, currentRevisionId: sibling.revisionId });
+  for (const index of [0, 2]) {
+    const sibling = await get<{ items: Aggregate[] }>(
+      `/projects/${project.id}/episodes/${episodes[index]!.id}/scenes/${rediscoveredScenes[index]!.entityId}/shots`);
+    expect(sibling.items[0]!.currentRevisionId).toBe(rediscoveredShots[index]!.currentRevisionId);
+  }
+  const rows = await pool.query<{ count: number }>("SELECT count(*)::int AS count FROM shot_revision WHERE shot_id=$1", [target.entityId]);
+  expect(rows.rows[0]!.count).toBe(2);
 });
