@@ -792,6 +792,22 @@ describe("M1-C API and SSE integration", () => {
     );
     expect(wrongScriptScope.status).toBe(404);
 
+    const otherEpisode = episodes.items[1];
+    if (!otherEpisode) throw new Error("second episode missing");
+    const wrongEpisodeScope = await fetch(
+      `${base}/api/v1/projects/${project.id}/episodes/${otherEpisode.id}/scripts/${script.revisionId}/review`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "m2c-script-review-wrong-episode",
+          "if-match": String(script.rowVersion),
+        },
+        body: JSON.stringify({ to: "IN_REVIEW", expectedReviewVersion: 1 }),
+      },
+    );
+    expect(wrongEpisodeScope.status).toBe(404);
+
     const scriptInReview = await fetch(
       `${base}/api/v1/projects/${project.id.toUpperCase()}/episodes/${episode.id.toUpperCase()}/scripts/${script.revisionId.toUpperCase()}/review`,
       {
