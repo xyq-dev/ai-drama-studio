@@ -34,6 +34,8 @@ function httpStatus(code: string): number {
   if (code === "NOT_FOUND" || code === "JOB_NOT_FOUND" || code === "WORKFLOW_NOT_FOUND") return 404;
   if (
     code === "IDEMPOTENCY_KEY_REUSED" ||
+    code === "IDEMPOTENCY_IN_PROGRESS" ||
+    code === "REVISION_CONFLICT" ||
     code === "EVENT_CURSOR_EXPIRED" ||
     code === "JOB_TERMINAL" ||
     code === "RUN_TERMINAL" ||
