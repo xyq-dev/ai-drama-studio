@@ -7,6 +7,7 @@ import {
   insertProject,
   requestHash,
   type IdempotencyScope,
+  type TextEntityKind,
 } from "@ai-drama/database";
 import { z } from "zod";
 
@@ -45,6 +46,13 @@ const reviewBodySchema = z.object({
   to: z.enum(["IN_REVIEW", "REJECTED", "APPROVED"]),
   expectedReviewVersion: z.number().int().min(1).max(2_147_483_647),
   reviewNote: z.string().max(4000).nullable().optional(),
+});
+
+const textEntityBodySchema = z.object({
+  projectId: z.string().uuid().optional(),
+  name: z.string().trim().min(1).max(200).optional(),
+  sourceScriptRevisionId: z.string().uuid(),
+  content: z.record(z.string(), z.unknown()),
 });
 
 export interface StudioContext {
@@ -123,6 +131,80 @@ export class StudioService {
   async listEpisodes(projectId: string) {
     await this.store.getProject(this.workspaceId, projectId);
     return { items: await this.textChain.listEpisodes(this.workspaceId, projectId) };
+  }
+
+  async createTextEntity(
+    kind: TextEntityKind, projectId: string, entityId: string | undefined,
+    body: unknown, ifMatch: string | undefined, context: StudioContext,
+  ) {
+    await this.store.getProject(this.workspaceId, projectId);
+    const input = parse(textEntityBodySchema, rejectClientWorkspace(body));
+    if (input.projectId && input.projectId.toLowerCase() !== projectId) {
+      throw new PersistenceError("VALIDATION_ERROR", "Project does not match route");
+    }
+    if (!entityId && !input.name) {
+      throw new PersistenceError("VALIDATION_ERROR", "Name is required");
+    }
+    if (!containsOnlyFiniteJsonValues(input.content)) {
+      throw new PersistenceError("VALIDATION_ERROR", "Entity content is invalid");
+    }
+    const expectedVersion = parseAggregateVersion(ifMatch);
+    const sourceScriptRevisionId = input.sourceScriptRevisionId.toLowerCase();
+    const route = entityId
+      ? `/projects/${projectId}/${kind}s/${entityId}/revisions`
+      : `/projects/${projectId}/${kind}s`;
+    try {
+      return await this.jobs.runIdempotent(
+        this.scope(context, "POST", route, {
+          name: entityId ? undefined : input.name, sourceScriptRevisionId, content: input.content, expectedVersion,
+        }),
+        201,
+        (client) => this.textChain.createTextEntityRevisionInTransaction(client, {
+          kind, workspaceId: this.workspaceId, projectId, entityId, name: input.name,
+          sourceScriptRevisionId, content: input.content, createdBy: context.actorId,
+          expectedVersion, traceId: context.traceId,
+        }),
+      );
+    } catch (error) {
+      if (isCanonicalContentError(error)) {
+        throw new PersistenceError("VALIDATION_ERROR", "Entity content is invalid");
+      }
+      if (kind === "character" && error && typeof error === "object" &&
+          "constraint" in error && error.constraint === "character_active_name_idx") {
+        throw new PersistenceError("DUPLICATE_CHARACTER_NAME", "Name already exists in project");
+      }
+      throw error;
+    }
+  }
+
+  async listTextEntityRevisions(kind: TextEntityKind, projectId: string, entityId: string) {
+    await this.store.getProject(this.workspaceId, projectId);
+    return this.textChain.listTextEntityRevisions(kind, this.workspaceId, projectId, entityId);
+  }
+
+  async reviewTextEntity(
+    kind: TextEntityKind, projectId: string, entityId: string, revisionId: string,
+    body: unknown, ifMatch: string | undefined, context: StudioContext,
+  ) {
+    await this.store.getProject(this.workspaceId, projectId);
+    const input = parse(reviewBodySchema, rejectClientWorkspace(body));
+    const expectedVersion = parseAggregateVersion(ifMatch);
+    try {
+      return await this.jobs.runIdempotent(
+        this.scope(context, "POST", `/projects/${projectId}/${kind}s/${entityId}/revisions/${revisionId}/review`, {
+          ...input, expectedVersion,
+        }),
+        200,
+        (client) => this.textChain.reviewTextEntityInTransaction(client, {
+          kind, workspaceId: this.workspaceId, projectId, entityId, revisionId,
+          expectedVersion, expectedReviewVersion: input.expectedReviewVersion,
+          to: input.to, reviewedBy: context.actorId, reviewNote: input.reviewNote,
+          traceId: context.traceId,
+        }),
+      );
+    } catch (error) {
+      throwReviewTransitionError(error);
+    }
   }
 
   async createScriptRevision(

@@ -21,6 +21,44 @@ const pool: PostgresPool = createPostgresPool({
   queryTimeoutMs: 10_000,
 });
 
+async function seedApprovedScriptForTextEntity(label: string): Promise<{
+  projectId: string; scriptRevisionId: string;
+}> {
+  const project = (await sql<{ id: string }>(
+    "INSERT INTO project (workspace_id, title) VALUES ($1, $2) RETURNING id",
+    [APP_WORKSPACE_ID, label],
+  )).rows[0]!;
+  const hash = "ab".repeat(32);
+  const story = (await sql<{ id: string }>(
+    `INSERT INTO story_revision
+      (workspace_id, project_id, revision_no, content_json, content_hash, review_status,
+       reviewed_by, reviewed_at, reviewed_content_hash, created_by)
+      VALUES ($1,$2,1,'{"premise":"seed"}'::jsonb,$3,'APPROVED','editor',now(),$3,'author') RETURNING id`,
+    [APP_WORKSPACE_ID, project.id, hash],
+  )).rows[0]!;
+  await sql(
+    "UPDATE project SET current_story_revision_id = $1, approved_story_revision_id = $1 WHERE id = $2",
+    [story.id, project.id],
+  );
+  const episode = (await sql<{ id: string }>(
+    "INSERT INTO episode (workspace_id, project_id, episode_no, title) VALUES ($1,$2,1,'Episode 1') RETURNING id",
+    [APP_WORKSPACE_ID, project.id],
+  )).rows[0]!;
+  const script = (await sql<{ id: string }>(
+    `INSERT INTO script_revision
+      (workspace_id, project_id, episode_id, revision_no, source_story_revision_id,
+       content_json, content_hash, review_status, reviewed_by, reviewed_at, reviewed_content_hash, created_by)
+      VALUES ($1,$2,$3,1,$4,'{"scenes":[]}'::jsonb,$5,'APPROVED','editor',now(),$5,'author')
+      RETURNING id`,
+    [APP_WORKSPACE_ID, project.id, episode.id, story.id, hash],
+  )).rows[0]!;
+  await sql(
+    "UPDATE episode SET current_script_revision_id = $1, approved_script_revision_id = $1 WHERE id = $2",
+    [script.id, episode.id],
+  );
+  return { projectId: project.id, scriptRevisionId: script.id };
+}
+
 async function sql<T>(text: string, values: unknown[] = []): Promise<{ rows: T[] }> {
   return pool.query(text, values) as Promise<{ rows: T[] }>;
 }
@@ -870,4 +908,129 @@ describe("M1-C API and SSE integration", () => {
     });
   });
 
+  for (const kind of ["character", "location"] as const) {
+    it(`scopes ${kind} revision and review idempotency to the project, including uppercase UUIDs`, async () => {
+      const firstProject = await seedApprovedScriptForTextEntity(`${kind}-first`);
+      const secondProject = await seedApprovedScriptForTextEntity(`${kind}-second`);
+      const plural = `${kind}s`;
+      const createKey = `m2-entity-${kind}-create-shared`;
+      const firstBody = JSON.stringify({
+        name: "First", sourceScriptRevisionId: firstProject.scriptRevisionId.toUpperCase(),
+        content: { role: "lead" },
+      });
+      const firstCreate = await fetch(
+        `${base}/api/v1/projects/${firstProject.projectId.toUpperCase()}/${plural}`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json", "idempotency-key": createKey, "if-match": "1" },
+          body: firstBody,
+        },
+      );
+      expect(firstCreate.status).toBe(201);
+      const first = (await firstCreate.json()) as { entityId: string; revisionId: string; rowVersion: number };
+      const createReplay = await fetch(
+        `${base}/api/v1/projects/${firstProject.projectId}/${plural}`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json", "idempotency-key": createKey, "if-match": "1" },
+          body: JSON.stringify({
+            name: "First", sourceScriptRevisionId: firstProject.scriptRevisionId,
+            content: { role: "lead" },
+          }),
+        },
+      );
+      expect(createReplay.status).toBe(201);
+      expect(await createReplay.json()).toEqual(first);
+      const secondCreate = await fetch(
+        `${base}/api/v1/projects/${secondProject.projectId}/${plural}`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json", "idempotency-key": createKey, "if-match": "1" },
+          body: JSON.stringify({
+            name: "Second", sourceScriptRevisionId: secondProject.scriptRevisionId,
+            content: { role: "lead" },
+          }),
+        },
+      );
+      expect(secondCreate.status).toBe(201);
+      const second = (await secondCreate.json()) as { entityId: string };
+      expect(second.entityId).not.toBe(first.entityId);
+
+      const revisionKey = `m2-entity-${kind}-revision-shared`;
+      const revisionBody = JSON.stringify({
+        sourceScriptRevisionId: firstProject.scriptRevisionId, content: { role: "support" },
+      });
+      const revisionPath = `/${plural}/${first.entityId}/revisions`;
+      const revise = await fetch(
+        `${base}/api/v1/projects/${firstProject.projectId.toUpperCase()}${revisionPath.replace(first.entityId, first.entityId.toUpperCase())}`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json", "idempotency-key": revisionKey,
+            "if-match": String(first.rowVersion) },
+          body: revisionBody,
+        },
+      );
+      expect(revise.status).toBe(201);
+      const revision = (await revise.json()) as { revisionId: string; rowVersion: number };
+      const reviseReplay = await fetch(
+        `${base}/api/v1/projects/${firstProject.projectId}${revisionPath}`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json", "idempotency-key": revisionKey,
+            "if-match": String(first.rowVersion) },
+          body: revisionBody,
+        },
+      );
+      expect(reviseReplay.status).toBe(201);
+      expect(await reviseReplay.json()).toEqual(revision);
+      const wrongRevisionScope = await fetch(
+        `${base}/api/v1/projects/${secondProject.projectId}${revisionPath}`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json", "idempotency-key": revisionKey,
+            "if-match": String(first.rowVersion) },
+          body: revisionBody,
+        },
+      );
+      expect(wrongRevisionScope.status).toBe(404);
+
+      const reviewKey = `m2-entity-${kind}-review-shared`;
+      const reviewPath = `${revisionPath}/${revision.revisionId}/review`;
+      const reviewBody = JSON.stringify({ to: "IN_REVIEW", expectedReviewVersion: 1 });
+      const review = await fetch(
+        `${base}/api/v1/projects/${firstProject.projectId.toUpperCase()}${reviewPath
+          .replace(first.entityId, first.entityId.toUpperCase())
+          .replace(revision.revisionId, revision.revisionId.toUpperCase())}`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json", "idempotency-key": reviewKey,
+            "if-match": String(revision.rowVersion) },
+          body: reviewBody,
+        },
+      );
+      expect(review.status).toBe(200);
+      const reviewed = await review.json();
+      const reviewReplay = await fetch(
+        `${base}/api/v1/projects/${firstProject.projectId}${reviewPath}`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json", "idempotency-key": reviewKey,
+            "if-match": String(revision.rowVersion) },
+          body: reviewBody,
+        },
+      );
+      expect(reviewReplay.status).toBe(200);
+      expect(await reviewReplay.json()).toEqual(reviewed);
+      const wrongReviewScope = await fetch(
+        `${base}/api/v1/projects/${secondProject.projectId}${reviewPath}`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json", "idempotency-key": reviewKey,
+            "if-match": String(revision.rowVersion) },
+          body: reviewBody,
+        },
+      );
+      expect(wrongReviewScope.status).toBe(404);
+    });
+  }
 });

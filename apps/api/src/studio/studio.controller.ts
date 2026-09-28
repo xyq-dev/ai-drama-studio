@@ -81,6 +81,100 @@ export class StudioController {
     return this.studio.listEpisodes(projectId);
   }
 
+  @Post("projects/:projectId/characters")
+  createCharacter(
+    @Param("projectId", UUID_PARAM_PIPE) projectId: string, @Body() body: unknown,
+    @Res({ passthrough: true }) response: StatusResponse,
+    @Headers("if-match") ifMatch?: string, @Headers("idempotency-key") key?: string,
+    @Headers("x-trace-id") trace?: string,
+  ) {
+    return this.send(response, this.studio.createTextEntity(
+      "character", projectId, undefined, body, ifMatch, this.context(key, trace),
+    ));
+  }
+
+  @Post("projects/:projectId/locations")
+  createLocation(
+    @Param("projectId", UUID_PARAM_PIPE) projectId: string, @Body() body: unknown,
+    @Res({ passthrough: true }) response: StatusResponse,
+    @Headers("if-match") ifMatch?: string, @Headers("idempotency-key") key?: string,
+    @Headers("x-trace-id") trace?: string,
+  ) {
+    return this.send(response, this.studio.createTextEntity(
+      "location", projectId, undefined, body, ifMatch, this.context(key, trace),
+    ));
+  }
+
+  @Post("projects/:projectId/characters/:entityId/revisions")
+  reviseCharacter(
+    @Param("projectId", UUID_PARAM_PIPE) projectId: string,
+    @Param("entityId", UUID_PARAM_PIPE) entityId: string, @Body() body: unknown,
+    @Res({ passthrough: true }) response: StatusResponse,
+    @Headers("if-match") ifMatch?: string, @Headers("idempotency-key") key?: string,
+    @Headers("x-trace-id") trace?: string,
+  ) {
+    return this.send(response, this.studio.createTextEntity(
+      "character", projectId, entityId, body, ifMatch, this.context(key, trace),
+    ));
+  }
+
+  @Post("projects/:projectId/locations/:entityId/revisions")
+  reviseLocation(
+    @Param("projectId", UUID_PARAM_PIPE) projectId: string,
+    @Param("entityId", UUID_PARAM_PIPE) entityId: string, @Body() body: unknown,
+    @Res({ passthrough: true }) response: StatusResponse,
+    @Headers("if-match") ifMatch?: string, @Headers("idempotency-key") key?: string,
+    @Headers("x-trace-id") trace?: string,
+  ) {
+    return this.send(response, this.studio.createTextEntity(
+      "location", projectId, entityId, body, ifMatch, this.context(key, trace),
+    ));
+  }
+
+  @Get("projects/:projectId/characters/:entityId/revisions")
+  characterHistory(
+    @Param("projectId", UUID_PARAM_PIPE) projectId: string,
+    @Param("entityId", UUID_PARAM_PIPE) entityId: string,
+  ) {
+    return this.studio.listTextEntityRevisions("character", projectId, entityId);
+  }
+
+  @Get("projects/:projectId/locations/:entityId/revisions")
+  locationHistory(
+    @Param("projectId", UUID_PARAM_PIPE) projectId: string,
+    @Param("entityId", UUID_PARAM_PIPE) entityId: string,
+  ) {
+    return this.studio.listTextEntityRevisions("location", projectId, entityId);
+  }
+
+  @Post("projects/:projectId/characters/:entityId/revisions/:revisionId/review")
+  reviewCharacter(
+    @Param("projectId", UUID_PARAM_PIPE) projectId: string,
+    @Param("entityId", UUID_PARAM_PIPE) entityId: string,
+    @Param("revisionId", UUID_PARAM_PIPE) revisionId: string, @Body() body: unknown,
+    @Res({ passthrough: true }) response: StatusResponse,
+    @Headers("if-match") ifMatch?: string, @Headers("idempotency-key") key?: string,
+    @Headers("x-trace-id") trace?: string,
+  ) {
+    return this.send(response, this.studio.reviewTextEntity(
+      "character", projectId, entityId, revisionId, body, ifMatch, this.context(key, trace),
+    ));
+  }
+
+  @Post("projects/:projectId/locations/:entityId/revisions/:revisionId/review")
+  reviewLocation(
+    @Param("projectId", UUID_PARAM_PIPE) projectId: string,
+    @Param("entityId", UUID_PARAM_PIPE) entityId: string,
+    @Param("revisionId", UUID_PARAM_PIPE) revisionId: string, @Body() body: unknown,
+    @Res({ passthrough: true }) response: StatusResponse,
+    @Headers("if-match") ifMatch?: string, @Headers("idempotency-key") key?: string,
+    @Headers("x-trace-id") trace?: string,
+  ) {
+    return this.send(response, this.studio.reviewTextEntity(
+      "location", projectId, entityId, revisionId, body, ifMatch, this.context(key, trace),
+    ));
+  }
+
   @Get("episodes/:episodeId/scripts")
   listScriptRevisionsByEpisode(
     @Param("episodeId", UUID_PARAM_PIPE) episodeId: string,

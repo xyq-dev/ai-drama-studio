@@ -80,6 +80,25 @@ export interface ScriptRevisionPage {
   nextCursor: string | null;
 }
 
+export type TextEntityKind = "character" | "location";
+
+export interface TextEntityRevisionView {
+  id: string;
+  entityId: string;
+  revisionNo: number;
+  content: unknown;
+  contentHash: string;
+  sourceScriptRevisionId: string;
+  reviewStatus: string;
+  freshnessStatus: string;
+  reviewVersion: number;
+  createdAt: string;
+}
+
+export interface TextEntityCreated extends RevisionCreated {
+  entityId: string;
+}
+
 async function withTransaction<T>(
   pool: DatabasePool,
   work: (client: PoolClient) => Promise<T>,
@@ -146,6 +165,171 @@ async function bumpPointer(
 
 export class TextChainService {
   constructor(private readonly pool: DatabasePool) {}
+
+  async createTextEntityRevisionInTransaction(
+    client: PoolClient,
+    input: {
+      kind: TextEntityKind;
+      workspaceId: string;
+      projectId: string;
+      entityId?: string;
+      name?: string;
+      sourceScriptRevisionId: string;
+      content: Record<string, unknown>;
+      createdBy: string;
+      expectedVersion: number;
+      traceId?: string;
+    },
+  ): Promise<TextEntityCreated> {
+    const { kind, workspaceId, projectId } = input;
+    const revisionTable = `${kind}_revision`;
+    const edgeTable = `${kind}_revision_script_source`;
+    const entityColumn = `${kind}_id`;
+    await lockProject(client, projectId, workspaceId);
+    const source = await client.query(
+      `SELECT sr.id FROM script_revision sr
+         JOIN episode e ON e.id = sr.episode_id AND e.workspace_id = sr.workspace_id
+        WHERE sr.id = $1 AND sr.project_id = $2 AND sr.workspace_id = $3
+          AND e.current_script_revision_id = sr.id
+          AND e.approved_script_revision_id = sr.id
+          AND sr.review_status = 'APPROVED' AND sr.freshness_status = 'CURRENT'
+        FOR SHARE OF sr, e`,
+      [input.sourceScriptRevisionId, projectId, workspaceId],
+    );
+    if (!source.rows[0]) {
+      throw new PersistenceError("SCRIPT_REVIEW_REQUIRED", "Source script must be current and approved");
+    }
+    let entityId = input.entityId;
+    let revisionNo = 1;
+    if (entityId) {
+      const parent = await client.query<{ row_version: number } & QueryResultRow>(
+        `SELECT row_version FROM ${kind}
+          WHERE id = $1 AND project_id = $2 AND workspace_id = $3 AND archived_at IS NULL FOR UPDATE`,
+        [entityId, projectId, workspaceId],
+      );
+      if (!parent.rows[0]) throw new PersistenceError("NOT_FOUND", "Entity not found");
+      if (parent.rows[0].row_version !== input.expectedVersion) {
+        throw new PersistenceError("REVISION_CONFLICT", "Aggregate version did not match");
+      }
+      const next = await client.query<{ revision_no: number } & QueryResultRow>(
+        `SELECT COALESCE(MAX(revision_no), 0)::int + 1 AS revision_no FROM ${revisionTable}
+          WHERE ${entityColumn} = $1`,
+        [entityId],
+      );
+      revisionNo = next.rows[0]?.revision_no ?? 1;
+    } else {
+      const version = await client.query<{ version: number } & QueryResultRow>(
+        "SELECT version FROM project WHERE id = $1 AND workspace_id = $2 FOR UPDATE",
+        [projectId, workspaceId],
+      );
+      if (version.rows[0]?.version !== input.expectedVersion) {
+        throw new PersistenceError("REVISION_CONFLICT", "Project version did not match");
+      }
+      const parent = await client.query<{ id: string } & QueryResultRow>(
+        `INSERT INTO ${kind} (workspace_id, project_id, name) VALUES ($1,$2,$3) RETURNING id`,
+        [workspaceId, projectId, input.name],
+      );
+      entityId = parent.rows[0]?.id;
+      if (!entityId) throw new PersistenceError("REVISION_CREATE_FAILED", "Entity was not created");
+      await client.query("UPDATE project SET version = version + 1, updated_at = now() WHERE id = $1 AND workspace_id = $2", [
+        projectId, workspaceId,
+      ]);
+    }
+    const contentHash = canonicalInputHash({
+      schema: `m2.${kind}.revision.v1`,
+      sourceScriptRevisionId: input.sourceScriptRevisionId,
+      content: input.content,
+    });
+    const created = await client.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO ${revisionTable}
+        (workspace_id, project_id, ${entityColumn}, revision_no, content_json, content_hash, created_by)
+       VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7) RETURNING id`,
+      [workspaceId, projectId, entityId, revisionNo, JSON.stringify(input.content), contentHash, input.createdBy],
+    );
+    const revisionId = created.rows[0]?.id;
+    if (!revisionId) throw new PersistenceError("REVISION_CREATE_FAILED", "Revision was not created");
+    await client.query(
+      `INSERT INTO ${edgeTable}
+        (workspace_id, project_id, ${entityColumn.replace("_id", "_revision_id")}, script_revision_id)
+       VALUES ($1,$2,$3,$4)`,
+      [workspaceId, projectId, revisionId, input.sourceScriptRevisionId],
+    );
+    const rowVersion = await bumpPointer(
+      client, kind, entityId, workspaceId, input.entityId ? input.expectedVersion : 1,
+      "current_revision_id", revisionId,
+    );
+    await emitCurrentRevisionEvent(
+      client, workspaceId, projectId, kind === "character" ? "Character" : "Location",
+      entityId, revisionId, rowVersion, input.traceId ?? "m2-text-chain",
+    );
+    return { entityId, revisionId, revisionNo, contentHash, rowVersion };
+  }
+
+  async listTextEntityRevisions(
+    kind: TextEntityKind, workspaceId: string, projectId: string, entityId: string,
+  ): Promise<{ items: TextEntityRevisionView[] }> {
+    const client = await this.pool.connect();
+    try {
+      const parent = await client.query(
+        `SELECT 1 FROM ${kind} WHERE id = $1 AND project_id = $2 AND workspace_id = $3`,
+        [entityId, projectId, workspaceId],
+      );
+      if (!parent.rows[0]) throw new PersistenceError("NOT_FOUND", "Entity not found");
+      const rows = await client.query<QueryResultRow>(
+        `SELECT r.id, r.revision_no, r.content_json, r.content_hash, r.review_status,
+                r.freshness_status, r.review_version, r.created_at, edge.script_revision_id
+           FROM ${kind} parent
+           JOIN ${kind}_revision r ON r.${kind}_id = parent.id
+           JOIN ${kind}_revision_script_source edge ON edge.${kind}_revision_id = r.id
+          WHERE parent.id = $1 AND parent.project_id = $2 AND parent.workspace_id = $3
+          ORDER BY r.revision_no DESC`,
+        [entityId, projectId, workspaceId],
+      );
+      return { items: rows.rows.map((row) => ({
+        id: String(row.id), entityId, revisionNo: Number(row.revision_no),
+        content: row.content_json, contentHash: String(row.content_hash),
+        sourceScriptRevisionId: String(row.script_revision_id),
+        reviewStatus: String(row.review_status), freshnessStatus: String(row.freshness_status),
+        reviewVersion: Number(row.review_version), createdAt: new Date(row.created_at as Date).toISOString(),
+      })) };
+    } finally {
+      client.release();
+    }
+  }
+
+  async reviewTextEntityInTransaction(
+    client: PoolClient,
+    input: {
+      kind: TextEntityKind; workspaceId: string; projectId: string; entityId: string;
+      revisionId: string; expectedVersion: number; expectedReviewVersion: number;
+      to: ReviewStatus; reviewedBy: string; reviewNote?: string | null; traceId?: string;
+    },
+  ): Promise<ReviewTransitioned> {
+    const { kind } = input;
+    const scoped = await client.query(
+      `SELECT 1 FROM ${kind}_revision r JOIN ${kind} parent ON parent.id = r.${kind}_id
+        WHERE r.id = $1 AND parent.id = $2 AND parent.project_id = $3 AND parent.workspace_id = $4`,
+      [input.revisionId, input.entityId, input.projectId, input.workspaceId],
+    );
+    if (!scoped.rows[0]) throw new PersistenceError("NOT_FOUND", "Revision not found in project");
+    if (input.to === "APPROVED") {
+      await approveEntityRevisionInTransaction(client, {
+        workspaceId: input.workspaceId, parentId: input.entityId,
+        revisionId: input.revisionId, expectedVersion: input.expectedVersion,
+        expectedReviewVersion: input.expectedReviewVersion, reviewedBy: input.reviewedBy,
+        reviewNote: input.reviewNote, traceId: input.traceId,
+        parentTable: kind, revisionTable: `${kind}_revision`,
+      });
+      return { reviewVersion: input.expectedReviewVersion + 1, rowVersion: input.expectedVersion + 1 };
+    }
+    return this.transitionReviewInTransaction(client, {
+      table: `${kind}_revision`, revisionId: input.revisionId,
+      workspaceId: input.workspaceId, expectedVersion: input.expectedVersion,
+      expectedReviewVersion: input.expectedReviewVersion, to: input.to,
+      reviewedBy: input.to === "REJECTED" ? input.reviewedBy : undefined,
+      reviewNote: input.reviewNote, traceId: input.traceId,
+    });
+  }
 
   async bindScriptSourceDependencies(
     input: ScriptDependencyBinding,
@@ -1449,6 +1633,7 @@ interface AggregateApproval {
   expectedVersion: number;
   expectedReviewVersion: number;
   reviewedBy: string;
+  reviewNote?: string | null;
   traceId?: string;
 }
 
@@ -1540,6 +1725,7 @@ async function finishApproval(
     expectedReviewVersion: input.expectedReviewVersion,
     to: "APPROVED",
     reviewedBy: input.reviewedBy,
+    reviewNote: input.reviewNote,
     traceId: input.traceId,
   });
   await bumpPointer(
@@ -1560,34 +1746,44 @@ async function approveEntityRevision(
     revisionTable: "character_revision" | "location_revision";
   },
 ): Promise<void> {
+  await withTransaction(pool, (client) => approveEntityRevisionInTransaction(client, input));
+}
+
+async function approveEntityRevisionInTransaction(
+  client: PoolClient,
+  input: AggregateApproval & {
+    parentTable: "character" | "location";
+    revisionTable: "character_revision" | "location_revision";
+  },
+): Promise<void> {
   const edgeTable =
     input.parentTable === "character"
       ? "character_revision_script_source"
       : "location_revision_script_source";
   const edgeColumn =
     input.parentTable === "character" ? "character_revision_id" : "location_revision_id";
-  await withTransaction(pool, async (client) => {
     await lockCurrentRevision(client, input);
     const invalid = await client.query(
       `SELECT 1
          FROM ${edgeTable} edge
          JOIN script_revision sr ON sr.id = edge.script_revision_id
          JOIN episode e ON e.id = sr.episode_id AND e.workspace_id = sr.workspace_id
-        WHERE edge.${edgeColumn} = $1
-          AND edge.workspace_id = $2
+        WHERE edge.${edgeColumn} = $1 AND edge.workspace_id = $2
           AND m2_script_source_is_usable(edge.workspace_id, edge.project_id, '${input.revisionTable}',
-                edge.${edgeColumn}, edge.script_revision_id) IS NOT TRUE
-        LIMIT 1`,
+                edge.${edgeColumn}, edge.script_revision_id) IS NOT TRUE LIMIT 1`,
       [input.revisionId, input.workspaceId],
     );
-    if (invalid.rows[0]) {
+    const sourceCount = await client.query(
+      `SELECT 1 FROM ${edgeTable} WHERE ${edgeColumn} = $1 AND workspace_id = $2 LIMIT 1`,
+      [input.revisionId, input.workspaceId],
+    );
+    if (invalid.rows[0] || !sourceCount.rows[0]) {
       throw new PersistenceError(
         "REVIEW_REQUIRED",
         "Entity source must be a current approved script revision",
       );
     }
     await finishApproval(client, input, input.parentTable, input.revisionTable);
-  });
 }
 
 async function emitCurrentRevisionEvent(
