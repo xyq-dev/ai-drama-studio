@@ -23,6 +23,7 @@
     "workspace:provision": "tsx src/provision-workspace-cli.ts"
   },
   "dependencies": {
+    "@ai-drama/domain": "workspace:*",
     "@prisma/client": "6.19.0",
     "pg": "8.23.0"
   },
