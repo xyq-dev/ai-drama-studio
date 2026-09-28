@@ -35,6 +35,41 @@ export interface MediaAssetRecord {
 export class MediaAssetStore {
   constructor(private readonly pool: DatabasePool) {}
 
+  async requireShotScope(workspaceId: string, shotRevisionId: string): Promise<{ projectId: string }> {
+    const client = await this.pool.connect();
+    try {
+      const result = await client.query<{ project_id: string } & QueryResultRow>(
+        "SELECT project_id FROM shot_revision WHERE id = $1 AND workspace_id = $2",
+        [shotRevisionId, workspaceId],
+      );
+      const projectId = result.rows[0]?.project_id;
+      if (!projectId) throw new PersistenceError("NOT_FOUND", "Shot revision not found");
+      return { projectId };
+    } finally {
+      client.release();
+    }
+  }
+
+  async prepareShotGenerationInTransaction(
+    client: PoolClient, workspaceId: string, shotRevisionId: string,
+  ): Promise<{ projectId: string }> {
+    const result = await client.query<{ project_id: string } & QueryResultRow>(
+      "SELECT project_id FROM shot_revision WHERE id = $1 AND workspace_id = $2",
+      [shotRevisionId, workspaceId],
+    );
+    const projectId = result.rows[0]?.project_id;
+    if (!projectId) throw new PersistenceError("NOT_FOUND", "Shot revision not found");
+    await assertUsableShotWithClient(client, workspaceId, projectId, shotRevisionId, true);
+    const provider = await client.query(
+      `SELECT id FROM provider_configuration
+        WHERE workspace_id = $1 AND provider_key = 'mock-media'
+          AND capability = 'image.generate' AND enabled LIMIT 1`,
+      [workspaceId],
+    );
+    if (!provider.rows[0]) throw new PersistenceError("PROVIDER_CONFIG_INVALID", "Mock image provider is unavailable");
+    return { projectId };
+  }
+
   async completeAttemptWithAsset(
     jobs: JobPersistenceService,
     input: CreateMediaAssetInput & { generationJobId: string; traceId: string },

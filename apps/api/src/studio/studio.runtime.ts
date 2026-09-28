@@ -1,6 +1,8 @@
 import { Injectable, type OnModuleDestroy } from "@nestjs/common";
+import { isAbsolute } from "node:path";
 import {
   JobPersistenceService,
+  MediaAssetStore,
   MockTextService,
   RuntimeStore,
   TextChainService,
@@ -36,7 +38,10 @@ export class StudioRuntime implements OnModuleDestroy {
     const workspaceId = await store.requireActiveWorkspace(env.APP_WORKSPACE_ID);
     const jobs = new JobPersistenceService(pool);
     const textChain = new TextChainService(pool);
-    return new StudioRuntime(pool, new StudioService(jobs, store, textChain, workspaceId, new MockTextService(pool)), store);
+    return new StudioRuntime(pool,
+      new StudioService(jobs, store, textChain, workspaceId, new MockTextService(pool), new MediaAssetStore(pool),
+        env.NODE_ENV !== "production" && env.M3_MOCK_IMAGE_ENABLED &&
+        Boolean(env.MOCK_OBJECT_DIR && isAbsolute(env.MOCK_OBJECT_DIR))), store);
   }
 
   async onModuleDestroy(): Promise<void> {

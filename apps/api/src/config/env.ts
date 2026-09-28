@@ -14,6 +14,8 @@ const apiEnvSchema = z.object({
   S3_FORCE_PATH_STYLE: z.enum(["true", "false"]).default("true"),
   HEALTH_CHECK_TIMEOUT_MS: z.coerce.number().int().min(100).max(10_000).default(2000),
   APP_WORKSPACE_ID: z.string().uuid(),
+  M3_MOCK_IMAGE_ENABLED: z.enum(["true", "false"]).default("false"),
+  MOCK_OBJECT_DIR: z.string().min(1).optional(),
 });
 
 export class EnvValidationError extends Error {
@@ -40,6 +42,8 @@ export interface ApiEnv {
   S3_FORCE_PATH_STYLE: boolean;
   HEALTH_CHECK_TIMEOUT_MS: number;
   APP_WORKSPACE_ID: string;
+  M3_MOCK_IMAGE_ENABLED: boolean;
+  MOCK_OBJECT_DIR?: string;
 }
 
 const API_KEYS = [
@@ -56,6 +60,8 @@ const API_KEYS = [
   "S3_FORCE_PATH_STYLE",
   "HEALTH_CHECK_TIMEOUT_MS",
   "APP_WORKSPACE_ID",
+  "M3_MOCK_IMAGE_ENABLED",
+  "MOCK_OBJECT_DIR",
 ] as const;
 
 function pickEnv(
@@ -100,5 +106,6 @@ export function loadApiEnv(
   return {
     ...parsed.data,
     S3_FORCE_PATH_STYLE: parsed.data.S3_FORCE_PATH_STYLE === "true",
+    M3_MOCK_IMAGE_ENABLED: parsed.data.M3_MOCK_IMAGE_ENABLED === "true",
   };
 }
