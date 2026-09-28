@@ -114,6 +114,24 @@ describe("MockMediaAdapter", () => {
     expect(restartedPoll.responseHash).toBe(secondPoll.responseHash);
   });
 
+  it("requires normalized failure details on failed provider observations", () => {
+    const failedObservation = {
+      state: "FAILED" as const,
+      normalizedEventKey: "poll:failed",
+      responseHash: "ab".repeat(32),
+      observedAt: new Date(0).toISOString(),
+      retryable: true,
+      errorCode: "MOCK_MEDIA_FAILED",
+      errorMessage: "failed",
+    };
+    expect(failedObservation).toMatchObject({
+      state: "FAILED",
+      retryable: true,
+      errorCode: "MOCK_MEDIA_FAILED",
+      errorMessage: "failed",
+    });
+  });
+
   it("carries actual accounting for retryable, terminal and canceled outcomes", async () => {
     const adapter = new MockMediaAdapter();
     const retryable = await adapter.submit({
