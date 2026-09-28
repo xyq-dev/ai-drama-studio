@@ -221,7 +221,9 @@ function containsOnlyFiniteJsonValues(value: unknown): boolean {
   if (typeof value === "string") return isPostgresJsonString(value);
   if (Array.isArray(value)) return value.every((item) => containsOnlyFiniteJsonValues(item));
   if (value && typeof value === "object") {
-    return Object.values(value as Record<string, unknown>).every((item) => containsOnlyFiniteJsonValues(item));
+    return Object.entries(value as Record<string, unknown>).every(
+      ([key, item]) => isPostgresJsonString(key) && containsOnlyFiniteJsonValues(item),
+    );
   }
   return true;
 }
