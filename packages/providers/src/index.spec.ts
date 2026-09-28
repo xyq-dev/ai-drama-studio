@@ -72,7 +72,7 @@ describe("MockMediaAdapter", () => {
     expect(first.accounting?.costs[0]).toMatchObject({
       kind: "ACTUAL",
       currency: "USD",
-      basis: "REQUEST",
+      basis: "PROVIDER_REPORTED",
     });
 
     const resolved = await adapter.resolveOutput(first.outputs[0]!);
