@@ -38,6 +38,7 @@ export {
   type ScriptRevisionView,
   type StoryRevisionPage,
   type StoryRevisionView,
+  type TextEntityKind,
 } from "./text-chain";
 export { type ScriptDependencyBinding, type ScriptDependencyConsumer } from "./script-dependencies";
 

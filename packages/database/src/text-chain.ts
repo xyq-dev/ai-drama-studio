@@ -80,6 +80,25 @@ export interface ScriptRevisionPage {
   nextCursor: string | null;
 }
 
+export type TextEntityKind = "character" | "location";
+
+export interface TextEntityRevisionView {
+  id: string;
+  entityId: string;
+  revisionNo: number;
+  content: unknown;
+  contentHash: string;
+  sourceScriptRevisionId: string;
+  reviewStatus: string;
+  freshnessStatus: string;
+  reviewVersion: number;
+  createdAt: string;
+}
+
+export interface TextEntityCreated extends RevisionCreated {
+  entityId: string;
+}
+
 async function withTransaction<T>(
   pool: DatabasePool,
   work: (client: PoolClient) => Promise<T>,
@@ -146,6 +165,188 @@ async function bumpPointer(
 
 export class TextChainService {
   constructor(private readonly pool: DatabasePool) {}
+
+  async createTextEntityRevisionInTransaction(
+    client: PoolClient,
+    input: {
+      kind: TextEntityKind;
+      workspaceId: string;
+      projectId: string;
+      entityId?: string;
+      name?: string;
+      sourceScriptRevisionId: string;
+      content: Record<string, unknown>;
+      createdBy: string;
+      expectedVersion: number;
+      traceId?: string;
+    },
+  ): Promise<TextEntityCreated> {
+    const { kind, workspaceId, projectId } = input;
+    const revisionTable = `${kind}_revision`;
+    const edgeTable = `${kind}_revision_script_source`;
+    const entityColumn = `${kind}_id`;
+    await lockProject(client, projectId, workspaceId);
+    let entityId = input.entityId;
+    let revisionNo = 1;
+    let parentVersion: number | undefined;
+    let previousCurrentId: string | null = null;
+    if (entityId) {
+      const parent = await client.query<{
+        row_version: number; current_revision_id: string | null;
+      } & QueryResultRow>(
+        `SELECT row_version, current_revision_id FROM ${kind}
+          WHERE id = $1 AND project_id = $2 AND workspace_id = $3 AND archived_at IS NULL FOR UPDATE`,
+        [entityId, projectId, workspaceId],
+      );
+      if (!parent.rows[0]) throw new PersistenceError("NOT_FOUND", "Entity not found");
+      parentVersion = parent.rows[0].row_version;
+      previousCurrentId = parent.rows[0].current_revision_id;
+    }
+    const source = await client.query(
+      `SELECT sr.id FROM script_revision sr
+         JOIN episode e ON e.id = sr.episode_id AND e.workspace_id = sr.workspace_id
+        WHERE sr.id = $1 AND sr.project_id = $2 AND sr.workspace_id = $3
+          AND e.current_script_revision_id = sr.id
+          AND e.approved_script_revision_id = sr.id
+          AND sr.review_status = 'APPROVED' AND sr.freshness_status = 'CURRENT'
+        FOR SHARE OF sr, e`,
+      [input.sourceScriptRevisionId, projectId, workspaceId],
+    );
+    if (!source.rows[0]) {
+      throw new PersistenceError("SCRIPT_REVIEW_REQUIRED", "Source script must be current and approved");
+    }
+    if (entityId) {
+      if (parentVersion !== input.expectedVersion) {
+        throw new PersistenceError("REVISION_CONFLICT", "Aggregate version did not match");
+      }
+      const next = await client.query<{ revision_no: number } & QueryResultRow>(
+        `SELECT COALESCE(MAX(revision_no), 0)::int + 1 AS revision_no FROM ${revisionTable}
+          WHERE ${entityColumn} = $1`,
+        [entityId],
+      );
+      revisionNo = next.rows[0]?.revision_no ?? 1;
+    } else {
+      const version = await client.query<{ version: number } & QueryResultRow>(
+        "SELECT version FROM project WHERE id = $1 AND workspace_id = $2 FOR UPDATE",
+        [projectId, workspaceId],
+      );
+      if (version.rows[0]?.version !== input.expectedVersion) {
+        throw new PersistenceError("REVISION_CONFLICT", "Project version did not match");
+      }
+      const parent = await client.query<{ id: string } & QueryResultRow>(
+        `INSERT INTO ${kind} (workspace_id, project_id, name) VALUES ($1,$2,$3) RETURNING id`,
+        [workspaceId, projectId, input.name],
+      );
+      entityId = parent.rows[0]?.id;
+      if (!entityId) throw new PersistenceError("REVISION_CREATE_FAILED", "Entity was not created");
+      await client.query("UPDATE project SET version = version + 1, updated_at = now() WHERE id = $1 AND workspace_id = $2", [
+        projectId, workspaceId,
+      ]);
+    }
+    const contentHash = canonicalInputHash({
+      schema: `m2.${kind}.revision.v1`,
+      sourceScriptRevisionId: input.sourceScriptRevisionId,
+      content: input.content,
+    });
+    const created = await client.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO ${revisionTable}
+        (workspace_id, project_id, ${entityColumn}, revision_no, content_json, content_hash, created_by)
+       VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7) RETURNING id`,
+      [workspaceId, projectId, entityId, revisionNo, JSON.stringify(input.content), contentHash, input.createdBy],
+    );
+    const revisionId = created.rows[0]?.id;
+    if (!revisionId) throw new PersistenceError("REVISION_CREATE_FAILED", "Revision was not created");
+    await client.query(
+      `INSERT INTO ${edgeTable}
+        (workspace_id, project_id, ${entityColumn.replace("_id", "_revision_id")}, script_revision_id)
+       VALUES ($1,$2,$3,$4)`,
+      [workspaceId, projectId, revisionId, input.sourceScriptRevisionId],
+    );
+    const rowVersion = await bumpPointer(
+      client, kind, entityId, workspaceId, input.entityId ? input.expectedVersion : 1,
+      "current_revision_id", revisionId,
+    );
+    await emitCurrentRevisionEvent(
+      client, workspaceId, projectId, kind === "character" ? "Character" : "Location",
+      entityId, revisionId, rowVersion, input.traceId ?? "m2-text-chain",
+    );
+    if (previousCurrentId) {
+      const traceId = input.traceId ?? "m2-text-chain";
+      if (await staleFromTextEntity(client, kind, workspaceId, previousCurrentId, traceId)) {
+        await enqueueStaleRecalculation(
+          client, workspaceId, projectId, `SOURCE_${kind.toUpperCase()}_REPLACED`,
+          `${kind}_revision:${previousCurrentId}`,
+        );
+      }
+    }
+    return { entityId, revisionId, revisionNo, contentHash, rowVersion };
+  }
+
+  async listTextEntityRevisions(
+    kind: TextEntityKind, workspaceId: string, projectId: string, entityId: string,
+  ): Promise<{ items: TextEntityRevisionView[] }> {
+    const client = await this.pool.connect();
+    try {
+      const parent = await client.query(
+        `SELECT 1 FROM ${kind} WHERE id = $1 AND project_id = $2 AND workspace_id = $3`,
+        [entityId, projectId, workspaceId],
+      );
+      if (!parent.rows[0]) throw new PersistenceError("NOT_FOUND", "Entity not found");
+      const rows = await client.query<QueryResultRow>(
+        `SELECT r.id, r.revision_no, r.content_json, r.content_hash, r.review_status,
+                r.freshness_status, r.review_version, r.created_at, edge.script_revision_id
+           FROM ${kind} parent
+           JOIN ${kind}_revision r ON r.${kind}_id = parent.id
+           JOIN ${kind}_revision_script_source edge ON edge.${kind}_revision_id = r.id
+          WHERE parent.id = $1 AND parent.project_id = $2 AND parent.workspace_id = $3
+          ORDER BY r.revision_no DESC`,
+        [entityId, projectId, workspaceId],
+      );
+      return { items: rows.rows.map((row) => ({
+        id: String(row.id), entityId, revisionNo: Number(row.revision_no),
+        content: row.content_json, contentHash: String(row.content_hash),
+        sourceScriptRevisionId: String(row.script_revision_id),
+        reviewStatus: String(row.review_status), freshnessStatus: String(row.freshness_status),
+        reviewVersion: Number(row.review_version), createdAt: new Date(row.created_at as Date).toISOString(),
+      })) };
+    } finally {
+      client.release();
+    }
+  }
+
+  async reviewTextEntityInTransaction(
+    client: PoolClient,
+    input: {
+      kind: TextEntityKind; workspaceId: string; projectId: string; entityId: string;
+      revisionId: string; expectedVersion: number; expectedReviewVersion: number;
+      to: ReviewStatus; reviewedBy: string; reviewNote?: string | null; traceId?: string;
+    },
+  ): Promise<ReviewTransitioned> {
+    const { kind } = input;
+    const scoped = await client.query(
+      `SELECT 1 FROM ${kind}_revision r JOIN ${kind} parent ON parent.id = r.${kind}_id
+        WHERE r.id = $1 AND parent.id = $2 AND parent.project_id = $3 AND parent.workspace_id = $4`,
+      [input.revisionId, input.entityId, input.projectId, input.workspaceId],
+    );
+    if (!scoped.rows[0]) throw new PersistenceError("NOT_FOUND", "Revision not found in project");
+    if (input.to === "APPROVED") {
+      await approveEntityRevisionInTransaction(client, {
+        workspaceId: input.workspaceId, parentId: input.entityId,
+        revisionId: input.revisionId, expectedVersion: input.expectedVersion,
+        expectedReviewVersion: input.expectedReviewVersion, reviewedBy: input.reviewedBy,
+        reviewNote: input.reviewNote, traceId: input.traceId,
+        parentTable: kind, revisionTable: `${kind}_revision`,
+      });
+      return { reviewVersion: input.expectedReviewVersion + 1, rowVersion: input.expectedVersion + 1 };
+    }
+    return this.transitionReviewInTransaction(client, {
+      table: `${kind}_revision`, revisionId: input.revisionId,
+      workspaceId: input.workspaceId, expectedVersion: input.expectedVersion,
+      expectedReviewVersion: input.expectedReviewVersion, to: input.to,
+      reviewedBy: input.to === "REJECTED" ? input.reviewedBy : undefined,
+      reviewNote: input.reviewNote, traceId: input.traceId,
+    });
+  }
 
   async bindScriptSourceDependencies(
     input: ScriptDependencyBinding,
@@ -609,7 +810,12 @@ export class TextChainService {
       const hasMore =
         root.table === "story_revision"
           ? await staleFromStory(client, scope.workspace_id, root.id, traceId)
-          : await staleFromScript(client, scope.workspace_id, root.id, traceId);
+          : root.table === "script_revision"
+            ? await staleFromScript(client, scope.workspace_id, root.id, traceId)
+            : await staleFromTextEntity(
+              client, root.table === "character_revision" ? "character" : "location",
+              scope.workspace_id, root.id, traceId,
+            );
       await client.query(
         `UPDATE stale_recalculation SET status = $2, updated_at = now() WHERE id = $1`,
         [work.id, hasMore ? "PENDING" : "DONE"],
@@ -1449,6 +1655,7 @@ interface AggregateApproval {
   expectedVersion: number;
   expectedReviewVersion: number;
   reviewedBy: string;
+  reviewNote?: string | null;
   traceId?: string;
 }
 
@@ -1540,6 +1747,7 @@ async function finishApproval(
     expectedReviewVersion: input.expectedReviewVersion,
     to: "APPROVED",
     reviewedBy: input.reviewedBy,
+    reviewNote: input.reviewNote,
     traceId: input.traceId,
   });
   await bumpPointer(
@@ -1560,34 +1768,44 @@ async function approveEntityRevision(
     revisionTable: "character_revision" | "location_revision";
   },
 ): Promise<void> {
+  await withTransaction(pool, (client) => approveEntityRevisionInTransaction(client, input));
+}
+
+async function approveEntityRevisionInTransaction(
+  client: PoolClient,
+  input: AggregateApproval & {
+    parentTable: "character" | "location";
+    revisionTable: "character_revision" | "location_revision";
+  },
+): Promise<void> {
   const edgeTable =
     input.parentTable === "character"
       ? "character_revision_script_source"
       : "location_revision_script_source";
   const edgeColumn =
     input.parentTable === "character" ? "character_revision_id" : "location_revision_id";
-  await withTransaction(pool, async (client) => {
     await lockCurrentRevision(client, input);
     const invalid = await client.query(
       `SELECT 1
          FROM ${edgeTable} edge
          JOIN script_revision sr ON sr.id = edge.script_revision_id
          JOIN episode e ON e.id = sr.episode_id AND e.workspace_id = sr.workspace_id
-        WHERE edge.${edgeColumn} = $1
-          AND edge.workspace_id = $2
+        WHERE edge.${edgeColumn} = $1 AND edge.workspace_id = $2
           AND m2_script_source_is_usable(edge.workspace_id, edge.project_id, '${input.revisionTable}',
-                edge.${edgeColumn}, edge.script_revision_id) IS NOT TRUE
-        LIMIT 1`,
+                edge.${edgeColumn}, edge.script_revision_id) IS NOT TRUE LIMIT 1`,
       [input.revisionId, input.workspaceId],
     );
-    if (invalid.rows[0]) {
+    const sourceCount = await client.query(
+      `SELECT 1 FROM ${edgeTable} WHERE ${edgeColumn} = $1 AND workspace_id = $2 LIMIT 1`,
+      [input.revisionId, input.workspaceId],
+    );
+    if (invalid.rows[0] || !sourceCount.rows[0]) {
       throw new PersistenceError(
         "REVIEW_REQUIRED",
         "Entity source must be a current approved script revision",
       );
     }
     await finishApproval(client, input, input.parentTable, input.revisionTable);
-  });
 }
 
 async function emitCurrentRevisionEvent(
@@ -1636,15 +1854,21 @@ async function ensureEpisodes(
 
 const STALE_SYNC_LIMIT = 200;
 
-function parseStaleRoot(ref: string): { table: "story_revision" | "script_revision"; id: string } {
+function parseStaleRoot(ref: string): {
+  table: "story_revision" | "script_revision" | "character_revision" | "location_revision";
+  id: string;
+} {
   const matched =
-    /^(story_revision|script_revision):([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(
+    /^(story_revision|script_revision|character_revision|location_revision):([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(
       ref,
     );
   if (!matched || !matched[2]) {
     throw new PersistenceError("INVALID_STALE_ROOT", "Unsupported stale propagation root");
   }
-  return { table: matched[1] as "story_revision" | "script_revision", id: matched[2] };
+  return {
+    table: matched[1] as "story_revision" | "script_revision" | "character_revision" | "location_revision",
+    id: matched[2],
+  };
 }
 
 async function enqueueStaleRecalculation(
@@ -1866,6 +2090,101 @@ async function staleFromScript(
     hasMore = remaining || hasMore;
   }
   return hasMore;
+}
+
+async function staleFromTextEntity(
+  client: PoolClient,
+  kind: TextEntityKind,
+  workspaceId: string,
+  revisionId: string,
+  traceId: string,
+): Promise<boolean> {
+  const reason = `SOURCE_${kind.toUpperCase()}_REPLACED`;
+  const staleFromRef = `${kind}_revision:${revisionId}`;
+  const params: [string, string] = [workspaceId, revisionId];
+  const sceneIds = kind === "location"
+    ? `SELECT id FROM scene_revision WHERE workspace_id = $1 AND location_revision_id = $2`
+    : `SELECT id FROM scene_revision WHERE FALSE`;
+  const shotIds = kind === "location"
+    ? `SELECT id FROM shot_revision WHERE workspace_id = $1
+         AND source_scene_revision_id IN (${sceneIds})`
+    : `SELECT shot_revision_id FROM shot_character_reference
+        WHERE workspace_id = $1 AND character_revision_id = $2`;
+  let hasMore = false;
+  if (kind === "location") {
+    hasMore = (await markStale(
+      client, "scene_revision", sceneIds, params, reason, staleFromRef, traceId,
+    )) || hasMore;
+  }
+  hasMore = (await markStale(
+    client, "shot_revision", shotIds, params, reason, staleFromRef, traceId,
+  )) || hasMore;
+  hasMore = (await markTextEntityAssetsStale(
+    client, kind, params, sceneIds, shotIds, staleFromRef, traceId,
+  )) || hasMore;
+  return hasMore;
+}
+
+async function markTextEntityAssetsStale(
+  client: PoolClient,
+  kind: TextEntityKind,
+  params: [string, string],
+  sceneIds: string,
+  shotIds: string,
+  staleFromRef: string,
+  traceId: string,
+): Promise<boolean> {
+  const revisionColumn = `${kind}_revision_id`;
+  const updated = await client.query<{ has_more: boolean } & QueryResultRow>(
+    `WITH RECURSIVE direct(id) AS (
+       SELECT edge.dependent_asset_id FROM asset_revision_dependency edge
+        WHERE edge.workspace_id = $1
+          AND edge.project_id = (
+            SELECT project_id FROM ${kind}_revision WHERE id = $2 AND workspace_id = $1
+          )
+          AND (
+            edge.${revisionColumn} = $2
+            OR edge.scene_revision_id IN (${sceneIds})
+            OR edge.shot_revision_id IN (${shotIds})
+          )
+       UNION
+       SELECT id FROM asset WHERE workspace_id = $1
+         AND source_shot_revision_id IN (${shotIds})
+     ),
+     affected(id) AS (
+       SELECT id FROM direct
+       UNION
+       SELECT edge.dependent_asset_id FROM asset_dependency edge
+        JOIN affected source ON source.id = edge.source_asset_id
+       WHERE edge.workspace_id = $1
+     ),
+     candidates AS (
+       SELECT asset.id FROM asset JOIN affected ON affected.id = asset.id
+        WHERE asset.workspace_id = $1 AND asset.status = 'ACTIVE'
+          AND asset.project_id = (
+            SELECT project_id FROM ${kind}_revision WHERE id = $2 AND workspace_id = $1
+          )
+        ORDER BY asset.id LIMIT ${STALE_SYNC_LIMIT + 1}
+     ),
+     selected AS (
+       SELECT id FROM candidates ORDER BY id LIMIT ${STALE_SYNC_LIMIT}
+     ),
+     changed AS (
+       UPDATE asset SET status = 'STALE', row_version = row_version + 1
+        WHERE id IN (SELECT id FROM selected) AND workspace_id = $1 AND status = 'ACTIVE'
+       RETURNING id, project_id
+     ),
+     events AS (
+       INSERT INTO domain_event
+         (workspace_id, project_id, aggregate_type, aggregate_id, event_type, payload_json, trace_id)
+       SELECT $1, project_id, 'Asset', id, 'asset.stale',
+              jsonb_build_object('assetId', id, 'staleFromRef', $3::text), $4
+         FROM changed RETURNING 1
+     )
+     SELECT (SELECT COUNT(*) FROM candidates) > ${STALE_SYNC_LIMIT} AS has_more`,
+    [...params, staleFromRef, traceId],
+  );
+  return updated.rows[0]?.has_more === true;
 }
 
 async function staleSharedDescendants(

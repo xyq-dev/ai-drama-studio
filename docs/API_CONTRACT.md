@@ -30,13 +30,25 @@
 
 ## Characters, Scenes, Shots
 
+M2-C 当前角色/场地文本切片采用项目作用域路径。下表中的 extract、reference-images、
+scenes、shots、set-current 和媒体生成端点仍是规划合同，尚未由该切片实现。
+当前实现的创建请求要求 `Idempotency-Key` 和 `If-Match`（首版匹配 Project.version，
+后续修订匹配角色/场地 rowVersion），`sourceScriptRevisionId` 必须指向本项目当前已审核剧本。
+审核请求还要求 `expectedReviewVersion`；历史 GET 返回该实体全部修订，暂未分页。
+
 | Method / Path | 用途、输入、输出 | 权限 / 幂等 / 特有错误 |
 | --- | --- | --- |
 | `POST /projects/:projectId/characters/extract` | 从批准剧本提取角色；返回 workflow | Owner；key；`SCRIPT_REVIEW_REQUIRED` |
-| `POST /characters` | 创建稳定角色与首个 revision | Owner；key；`DUPLICATE_CHARACTER_NAME` |
-| `POST /characters/:characterId/revisions` | 新角色设定 `{appearance,persona,voice,...}` | Owner；key；`INVALID_CHARACTER_REFERENCE` |
+| `POST /projects/:projectId/characters` | 创建角色首版 `{name,sourceScriptRevisionId,content}`；返回 entityId/revisionId | Owner；key、If-Match；`SCRIPT_REVIEW_REQUIRED`,`DUPLICATE_CHARACTER_NAME` |
+| `POST /projects/:projectId/characters/:characterId/revisions` | 创建角色新修订 `{sourceScriptRevisionId,content}` | Owner；key、If-Match；`SCRIPT_REVIEW_REQUIRED`,`REVISION_CONFLICT` |
+| `GET /projects/:projectId/characters/:characterId/revisions` | 查询修订历史及精确来源剧本 | Owner；安全 GET；无 |
+| `POST /projects/:projectId/characters/:characterId/revisions/:revisionId/review` | `DRAFT → IN_REVIEW → APPROVED/REJECTED` | Owner；key、If-Match；`REVIEW_CONFLICT` |
+| `POST /projects/:projectId/locations` | 创建场地首版 `{name,sourceScriptRevisionId,content}` | Owner；key、If-Match；`SCRIPT_REVIEW_REQUIRED` |
+| `POST /projects/:projectId/locations/:locationId/revisions` | 创建场地新修订 `{sourceScriptRevisionId,content}` | Owner；key、If-Match；`REVISION_CONFLICT` |
+| `GET /projects/:projectId/locations/:locationId/revisions` | 查询场地修订历史及来源 | Owner；安全 GET；无 |
+| `POST /projects/:projectId/locations/:locationId/revisions/:revisionId/review` | 审核场地版本 | Owner；key、If-Match；`REVIEW_CONFLICT` |
 | `POST /character-revisions/:id/reference-images/generate` | 生成角色参考图工作流；只要求来源剧本已审核、revision 非 STALE 和输入有效 | Owner；key；`SCRIPT_REVIEW_REQUIRED`,`SOURCE_STALE` |
-| `POST /character-revisions/:id/review` | 审核角色版本及参考图 | Owner；key；`REVIEW_CONFLICT` |
+| `POST /character-revisions/:id/review` | 规划：审核角色参考图（当前仅实现项目作用域文本审核路由） | Owner；key；`REVIEW_CONFLICT` |
 | `GET /episodes/:episodeId/scenes` | 获取场景和排序 | Owner；安全 GET；无 |
 | `POST /episodes/:episodeId/scenes/generate` | 由剧本生成场景/镜头草稿 | Owner；key；`SCRIPT_REVIEW_REQUIRED` |
 | `POST /scenes/:sceneId/revisions` | 创建场景结构/排序 revision；返回新有效快照 | Owner；key、If-Match；`SCENE_HAS_ACTIVE_JOB` |
