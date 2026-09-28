@@ -25,8 +25,20 @@ const storyRevisionBodySchema = z.object({
 });
 
 const scriptRevisionBodySchema = z.object({
-  sourceStoryRevisionId: z.string().uuid(),
+  storyRevisionId: z.string().uuid().optional(),
+  sourceStoryRevisionId: z.string().uuid().optional(),
   content: z.record(z.string(), z.unknown()),
+}).superRefine((value, context) => {
+  if (!value.storyRevisionId && !value.sourceStoryRevisionId) {
+    context.addIssue({ code: "custom", message: "storyRevisionId is required" });
+  }
+  if (
+    value.storyRevisionId &&
+    value.sourceStoryRevisionId &&
+    value.storyRevisionId !== value.sourceStoryRevisionId
+  ) {
+    context.addIssue({ code: "custom", message: "story revision fields must match" });
+  }
 });
 
 export interface StudioContext {
@@ -120,8 +132,12 @@ export class StudioService {
       throw new PersistenceError("INVALID_SCRIPT", "Script content contains a non-finite number");
     }
     const expectedVersion = parseAggregateVersion(ifMatch);
+    const sourceStoryRevisionId = input.storyRevisionId ?? input.sourceStoryRevisionId;
+    if (!sourceStoryRevisionId) {
+      throw new PersistenceError("VALIDATION_ERROR", "storyRevisionId is required");
+    }
     const request = {
-      sourceStoryRevisionId: input.sourceStoryRevisionId,
+      storyRevisionId: sourceStoryRevisionId,
       content: input.content,
       expectedVersion,
     };
@@ -139,7 +155,7 @@ export class StudioService {
             workspaceId: this.workspaceId,
             projectId,
             episodeId,
-            sourceStoryRevisionId: input.sourceStoryRevisionId,
+            sourceStoryRevisionId,
             content: input.content,
             createdBy: context.actorId,
             expectedVersion,
@@ -156,7 +172,18 @@ export class StudioService {
 
   async listScriptRevisions(projectId: string, episodeId: string, cursor?: string) {
     await this.store.getProject(this.workspaceId, projectId);
+    await this.textChain.requireEpisode(this.workspaceId, projectId, episodeId);
     return this.textChain.listScriptRevisions(this.workspaceId, projectId, episodeId, cursor);
+  }
+
+  async createScriptRevisionByEpisode(
+    episodeId: string,
+    body: unknown,
+    ifMatch: string | undefined,
+    context: StudioContext,
+  ) {
+    const episode = await this.textChain.requireEpisode(this.workspaceId, undefined, episodeId);
+    return this.createScriptRevision(episode.projectId, episodeId, body, ifMatch, context);
   }
 
   async createMockWorkflow(projectId: string, body: unknown, context: StudioContext) {
