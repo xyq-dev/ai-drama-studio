@@ -511,6 +511,26 @@ describe("M1-C API and SSE integration", () => {
     expect(replay.status).toBe(201);
     expect(await replay.json()).toEqual(created);
 
+    const otherProjectResponse = await fetch(`${base}/api/v1/projects`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": "m2c-script-other-project" },
+      body: JSON.stringify({ title: "Other project" }),
+    });
+    const otherProject = (await otherProjectResponse.json()) as { id: string };
+    const wrongNestedReplay = await fetch(
+      `${base}/api/v1/projects/${otherProject.id}/episodes/${episodeId}/scripts`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "m2c-script-1",
+          "if-match": String(episodeVersion),
+        },
+        body,
+      },
+    );
+    expect(wrongNestedReplay.status).toBe(404);
+
     const listed = await fetch(
       `${base}/api/v1/episodes/${episodeId}/scripts`,
     );
