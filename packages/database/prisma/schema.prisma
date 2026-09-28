@@ -209,6 +209,9 @@ model CostLedger {
   projectId         String   @map("project_id") @db.Uuid
   generationJobId   String   @map("generation_job_id") @db.Uuid
   jobAttemptId      String?  @map("job_attempt_id") @db.Uuid
+  idempotencyKey    String?  @map("idempotency_key")
+  providerRequestId String?  @map("provider_request_id")
+  supersedesCostId  String?  @map("supersedes_cost_id") @db.Uuid
   currency          String   @db.Char(3)
   amountDecimal     Decimal  @map("amount_decimal") @db.Decimal(20, 8)
   kind              String
@@ -221,6 +224,7 @@ model CostLedger {
   occurredAt        DateTime @default(now()) @map("occurred_at") @db.Timestamptz(6)
 
   @@index([generationJobId, occurredAt])
+  @@index([workspaceId, providerRequestId])
   @@map("cost_ledger")
 }
 
@@ -567,4 +571,32 @@ model ScriptRevisionReplacement {
   createdAt                DateTime @default(dbgenerated("clock_timestamp()")) @map("created_at") @db.Timestamptz(6)
 
   @@map("script_revision_replacement")
+}
+
+model Asset {
+  id                      String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspaceId             String   @map("workspace_id") @db.Uuid
+  projectId               String   @map("project_id") @db.Uuid
+  kind                    String
+  storageProvider         String   @map("storage_provider")
+  objectKey               String   @map("object_key")
+  mimeType                String   @map("mime_type")
+  byteSize                BigInt   @map("byte_size")
+  checksumSha256          String   @map("checksum_sha256")
+  width                   Int?
+  height                  Int?
+  durationMs              BigInt?  @map("duration_ms")
+  sourceJobAttemptId      String   @map("source_job_attempt_id") @db.Uuid
+  sourceShotRevisionId    String?  @map("source_shot_revision_id") @db.Uuid
+  providerConfigurationId String   @map("provider_configuration_id") @db.Uuid
+  providerRequestId       String   @map("provider_request_id")
+  metadataJson            Json     @default("{}") @map("metadata_json") @db.JsonB
+  createdAt               DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([storageProvider, objectKey])
+  @@unique([id, workspaceId])
+  @@unique([id, projectId, workspaceId])
+  @@index([workspaceId, projectId, kind, createdAt])
+  @@index([workspaceId, sourceShotRevisionId, createdAt])
+  @@map("asset")
 }
