@@ -567,6 +567,24 @@ describe("M1-C API and SSE integration", () => {
     );
     expect(wrongStoryScope.status).toBe(404);
 
+    const invalidStoryTransition = await fetch(
+      `${base}/api/v1/projects/${project.id}/stories/${story.revisionId}/review`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "m2c-story-review-invalid-transition",
+          "if-match": String(story.rowVersion),
+        },
+        body: JSON.stringify({ to: "REJECTED", expectedReviewVersion: 1 }),
+      },
+    );
+    expect(invalidStoryTransition.status).toBe(409);
+    const invalidStoryTransitionBody = (await invalidStoryTransition.json()) as {
+      error: { code: string };
+    };
+    expect(invalidStoryTransitionBody.error.code).toBe("REVIEW_INVALID_TRANSITION");
+
     const storyInReview = await fetch(
       `${base}/api/v1/projects/${project.id}/stories/${story.revisionId}/review`,
       {
