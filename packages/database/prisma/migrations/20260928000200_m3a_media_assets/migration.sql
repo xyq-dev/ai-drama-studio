@@ -12,6 +12,7 @@ CREATE TABLE asset (
   height integer CHECK (height IS NULL OR height > 0),
   duration_ms bigint CHECK (duration_ms IS NULL OR duration_ms > 0),
   source_job_attempt_id uuid NOT NULL,
+  source_generation_job_id uuid NOT NULL,
   source_shot_revision_id uuid,
   provider_configuration_id uuid NOT NULL,
   provider_request_id text NOT NULL,
@@ -24,6 +25,10 @@ CREATE TABLE asset (
     REFERENCES project(id, workspace_id),
   FOREIGN KEY (source_job_attempt_id, provider_configuration_id, provider_request_id, workspace_id)
     REFERENCES job_attempt(id, provider_configuration_id, provider_request_id, workspace_id),
+  FOREIGN KEY (source_job_attempt_id, source_generation_job_id, workspace_id)
+    REFERENCES job_attempt(id, generation_job_id, workspace_id),
+  FOREIGN KEY (source_generation_job_id, project_id, workspace_id)
+    REFERENCES generation_job(id, project_id, workspace_id),
   FOREIGN KEY (source_shot_revision_id, project_id, workspace_id)
     REFERENCES shot_revision(id, project_id, workspace_id),
   CHECK ((width IS NULL) = (height IS NULL))
