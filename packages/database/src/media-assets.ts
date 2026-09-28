@@ -196,12 +196,74 @@ async function assertUsableShotWithClient(
       "Media generation requires current approved non-stale character revisions",
     );
   }
+
+  const scriptSources = await client.query<
+    { script_revision_id: string; episode_id: string; current_script_revision_id: string | null } & QueryResultRow
+  >(
+    `SELECT source.script_revision_id,
+            script.episode_id,
+            episode.current_script_revision_id
+       FROM script_revision_consumer_source source
+       JOIN script_revision script
+         ON script.id = source.script_revision_id
+        AND script.workspace_id = source.workspace_id
+        AND script.project_id = source.project_id
+       JOIN episode
+         ON episode.id = script.episode_id
+        AND episode.workspace_id = script.workspace_id
+        AND episode.project_id = script.project_id
+      WHERE source.workspace_id = $1
+        AND source.project_id = $2
+        AND source.consumer_type = 'shot_revision'
+        AND source.consumer_revision_id = $3
+      ${lockRows ? "FOR SHARE OF script, episode" : ""}`,
+    [workspaceId, projectId, shotRevisionId],
+  );
+  for (const source of scriptSources.rows) {
+    const usable = await client.query<{ ok: boolean } & QueryResultRow>(
+      `SELECT m2_script_source_is_usable($1, $2, 'shot_revision', $3, $4) AS ok`,
+      [workspaceId, projectId, shotRevisionId, source.script_revision_id],
+    );
+    if (usable.rows[0]?.ok !== true) {
+      throw new PersistenceError(
+        "REVIEW_REQUIRED",
+        "Media generation requires usable approved script dependencies",
+      );
+    }
+  }
 }
 
 async function insertAsset(
   client: PoolClient,
   input: CreateMediaAssetInput,
 ): Promise<MediaAssetRecord> {
+  const lineage = await client.query(
+    `SELECT 1
+       FROM job_attempt attempt
+       JOIN generation_job job
+         ON job.id = attempt.generation_job_id
+        AND job.workspace_id = attempt.workspace_id
+      WHERE attempt.id = $1
+        AND attempt.workspace_id = $2
+        AND attempt.provider_configuration_id = $3
+        AND attempt.provider_request_id = $4
+        AND job.project_id = $5
+      FOR SHARE OF attempt, job`,
+    [
+      input.sourceJobAttemptId,
+      input.workspaceId,
+      input.providerConfigurationId,
+      input.providerRequestId,
+      input.projectId,
+    ],
+  );
+  if (!lineage.rows[0]) {
+    throw new PersistenceError(
+      "ASSET_LINEAGE_INVALID",
+      "Asset source attempt does not belong to the requested project/provider lineage",
+    );
+  }
+
   const result = await client.query<QueryResultRow>(
     `INSERT INTO asset
       (workspace_id, project_id, kind, storage_provider, object_key, mime_type,
