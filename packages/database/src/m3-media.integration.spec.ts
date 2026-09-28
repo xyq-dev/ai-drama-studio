@@ -212,6 +212,51 @@ describe("M3-A media asset schema", () => {
       ),
     ).rejects.toThrow(/duplicate key/i);
 
+    const secondProvider = await pool.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO provider_configuration
+        (workspace_id, provider_key, capability, default_timeout_ms)
+       VALUES ($1, 'mock-media-secondary', 'image.generate', 30000)
+       RETURNING id`,
+      [seeded.workspaceId],
+    );
+    const secondProviderId = secondProvider.rows[0]?.id;
+    if (!secondProviderId) throw new Error("second provider missing");
+
+    const secondAttempt = await pool.query<{ id: string } & QueryResultRow>(
+      `INSERT INTO job_attempt
+        (workspace_id, generation_job_id, attempt_no, provider_configuration_id,
+         provider_request_id, provider_client_request_key, request_snapshot)
+       VALUES ($1,$2,2,$3,$4,'m3-cost-second-provider','{}'::jsonb)
+       RETURNING id`,
+      [
+        seeded.workspaceId,
+        seeded.generationJobId,
+        secondProviderId,
+        seeded.providerRequestId,
+      ],
+    );
+    const secondAttemptId = secondAttempt.rows[0]?.id;
+    if (!secondAttemptId) throw new Error("second provider attempt missing");
+
+    await expect(
+      pool.query(
+        `INSERT INTO cost_ledger
+          (workspace_id, project_id, generation_job_id, job_attempt_id,
+           idempotency_key, provider_configuration_id, provider_request_id, currency, amount_decimal,
+           kind, basis, provider, model)
+         VALUES ($1,$2,$3,$4,'cost:estimate',$5,$6,'USD',0.10,'ESTIMATED',
+                 'LOCALLY_CALCULATED','mock-media-secondary','mock')`,
+        [
+          seeded.workspaceId,
+          seeded.projectId,
+          seeded.generationJobId,
+          secondAttemptId,
+          secondProviderId,
+          seeded.providerRequestId,
+        ],
+      ),
+    ).resolves.toBeTruthy();
+
     await expect(
       pool.query(
         `INSERT INTO cost_ledger
