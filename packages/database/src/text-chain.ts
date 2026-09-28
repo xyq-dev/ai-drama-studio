@@ -82,6 +82,31 @@ export interface ScriptRevisionPage {
 
 export type TextEntityKind = "character" | "location";
 
+export interface CurrentRevisionSummary {
+  reviewVersion: number;
+  reviewStatus: string;
+  freshnessStatus: string;
+}
+
+export interface TextAggregatePointers {
+  entityId: string;
+  projectId: string;
+  episodeId?: string;
+  sceneId?: string;
+  rowVersion: number;
+  currentRevisionId: string | null;
+  approvedRevisionId: string | null;
+}
+
+export interface TextAggregateSummary extends TextAggregatePointers {
+  currentRevision: CurrentRevisionSummary | null;
+}
+
+export interface TextAggregatePage {
+  items: TextAggregateSummary[];
+  nextCursor: string | null;
+}
+
 export interface TextEntityRevisionView {
   id: string;
   entityId: string;
@@ -131,6 +156,99 @@ export interface ShotRevisionInput {
   createdBy: string;
   expectedVersion: number;
   traceId?: string;
+}
+
+function validatePageLimit(limit: number): void {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+    throw new PersistenceError("VALIDATION_ERROR", "Collection page size must be between 1 and 100");
+  }
+}
+
+type CursorScope = Record<string, string> & { kind: string };
+function isValidTimestampCursor(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.(\d{6})Z$/.exec(value);
+  if (!match) return false;
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const second = Number(secondText);
+  if (year < 1 || month < 1 || month > 12 || hour > 23 || minute > 59 || second > 59) return false;
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return day >= 1 && day <= days[month - 1]!;
+}
+
+function isValidScopedSort(value: string): boolean {
+  const match = /^([01]):([0-9]+)$/.exec(value);
+  if (!match) return false;
+  const group = Number(match[1]);
+  const ordinal = Number(match[2]);
+  return Number.isSafeInteger(ordinal) && ordinal <= 2_147_483_647 &&
+    ((group === 0 && ordinal >= 1) || (group === 1 && ordinal === 0));
+}
+
+function decodeCollectionCursor(cursor: string | undefined, scope: CursorScope) {
+  if (cursor === undefined) return undefined;
+  try {
+    const value = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as Record<string, unknown>;
+    if (value.v !== 1 || typeof value.sort !== "string" ||
+        typeof value.id !== "string" ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.id) ||
+        Object.entries(scope).some(([key, expected]) => value[key] !== expected) ||
+        ((scope.kind === "scene" || scope.kind === "shot") && !isValidScopedSort(value.sort)) ||
+        ((scope.kind === "character" || scope.kind === "location") &&
+          !isValidTimestampCursor(value.sort))) {
+      throw new Error("invalid");
+    }
+    return { sort: value.sort, id: value.id };
+  } catch {
+    throw new PersistenceError("VALIDATION_ERROR", "Collection cursor is invalid for this scope");
+  }
+}
+
+function mapAggregate(
+  row: QueryResultRow, entityId: string, projectId: string,
+  episodeId?: string, sceneId?: string,
+): TextAggregateSummary {
+  return {
+    entityId, projectId, ...(episodeId ? { episodeId } : {}), ...(sceneId ? { sceneId } : {}),
+    rowVersion: Number(row.row_version),
+    currentRevisionId: row.current_revision_id === null ? null : String(row.current_revision_id),
+    approvedRevisionId: row.approved_revision_id === null ? null : String(row.approved_revision_id),
+    currentRevision: row.current_revision_id === null || row.review_version === undefined ? null : {
+      reviewVersion: Number(row.review_version), reviewStatus: String(row.review_status),
+      freshnessStatus: String(row.freshness_status),
+    },
+  };
+}
+
+function mapAggregatePointers(
+  row: QueryResultRow, entityId: string, projectId: string,
+  episodeId?: string, sceneId?: string,
+): TextAggregatePointers {
+  const { currentRevision: _currentRevision, ...pointers } =
+    mapAggregate(row, entityId, projectId, episodeId, sceneId);
+  return pointers;
+}
+
+function collectionPage(
+  rows: QueryResultRow[], limit: number, scope: CursorScope,
+): TextAggregatePage {
+  const page = rows.slice(0, limit);
+  const items = page.map((row) => mapAggregate(
+    row, String(row.id), String(scope.projectId),
+    scope.episodeId, scope.sceneId,
+  ));
+  const last = page.at(-1);
+  const nextCursor = rows.length > limit && last ? Buffer.from(JSON.stringify({
+    v: 1, ...scope,
+    sort: String(last.cursor_sort),
+    id: String(last.id),
+  })).toString("base64url") : null;
+  return { items, nextCursor };
 }
 
 async function withTransaction<T>(
@@ -199,6 +317,103 @@ async function bumpPointer(
 
 export class TextChainService {
   constructor(private readonly pool: DatabasePool) {}
+
+  async listTextEntities(
+    kind: TextEntityKind, workspaceId: string, projectId: string, cursor?: string, limit = 20,
+  ): Promise<TextAggregatePage> {
+    validatePageLimit(limit);
+    const after = decodeCollectionCursor(cursor, { kind, workspaceId, projectId });
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+      const project = await client.query(
+        "SELECT 1 FROM project WHERE id = $1 AND workspace_id = $2",
+        [projectId, workspaceId],
+      );
+      if (!project.rows[0]) throw new PersistenceError("NOT_FOUND", "Project not found");
+      const values: unknown[] = [workspaceId, projectId, limit + 1];
+      let afterSql = "";
+      if (after) {
+        values.push(after.sort, after.id);
+        afterSql = "AND (parent.created_at, parent.id) > ($4::timestamptz, $5::uuid)";
+      }
+      const result = await client.query<QueryResultRow>(
+        `SELECT parent.id, parent.row_version, parent.current_revision_id,
+                parent.approved_revision_id,
+                to_char(parent.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_sort,
+                revision.review_version,
+                revision.review_status, revision.freshness_status
+           FROM ${kind} parent
+           LEFT JOIN ${kind}_revision revision ON revision.id = parent.current_revision_id
+          WHERE parent.workspace_id = $1 AND parent.project_id = $2
+            AND parent.archived_at IS NULL ${afterSql}
+          ORDER BY parent.created_at, parent.id LIMIT $3`, values,
+      );
+      await client.query("COMMIT");
+      return collectionPage(result.rows, limit, { kind, workspaceId, projectId });
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally { client.release(); }
+  }
+
+  async listScenes(
+    workspaceId: string, projectId: string, episodeId: string, cursor?: string, limit = 20,
+  ): Promise<TextAggregatePage> {
+    return this.listScopedAggregates("scene", workspaceId, projectId, episodeId, undefined, cursor, limit);
+  }
+
+  async listShots(
+    workspaceId: string, projectId: string, episodeId: string, sceneId: string,
+    cursor?: string, limit = 20,
+  ): Promise<TextAggregatePage> {
+    return this.listScopedAggregates("shot", workspaceId, projectId, episodeId, sceneId, cursor, limit);
+  }
+
+  private async listScopedAggregates(
+    kind: "scene" | "shot", workspaceId: string, projectId: string, episodeId: string,
+    sceneId: string | undefined, cursor: string | undefined, limit: number,
+  ): Promise<TextAggregatePage> {
+    validatePageLimit(limit);
+    const scope = { kind, workspaceId, projectId, episodeId, ...(sceneId ? { sceneId } : {}) };
+    const after = decodeCollectionCursor(cursor, scope);
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+      const parent = await client.query(
+        sceneId
+          ? `SELECT 1 FROM scene WHERE id=$1 AND workspace_id=$2 AND project_id=$3 AND episode_id=$4`
+          : `SELECT 1 FROM episode WHERE id=$1 AND workspace_id=$2 AND project_id=$3`,
+        sceneId ? [sceneId, workspaceId, projectId, episodeId] : [episodeId, workspaceId, projectId],
+      );
+      if (!parent.rows[0]) throw new PersistenceError("NOT_FOUND", `${sceneId ? "Scene" : "Episode"} not found`);
+      const values: unknown[] = [workspaceId, projectId, episodeId, limit + 1];
+      let scopeSql = "";
+      if (sceneId) { values.push(sceneId); scopeSql = "AND parent.scene_id = $5"; }
+      let afterSql = "";
+      if (after) {
+        const [group, ordinal] = after.sort.split(":").map(Number);
+        values.push(group, ordinal, after.id);
+        const n = values.length;
+        afterSql = `AND ((revision.id IS NULL)::int, COALESCE(revision.ordinal, 0), parent.id)
+          > ($${n - 2}::int, $${n - 1}::int, $${n}::uuid)`;
+      }
+      const result = await client.query<QueryResultRow>(
+        `SELECT parent.id, parent.row_version, parent.current_revision_id, parent.approved_revision_id,
+                parent.episode_id, ${kind === "shot" ? "parent.scene_id," : ""}
+                revision.ordinal, revision.review_version, revision.review_status, revision.freshness_status,
+                concat((revision.id IS NULL)::int, ':', COALESCE(revision.ordinal, 0)) AS cursor_sort
+           FROM ${kind} parent
+           LEFT JOIN ${kind}_revision revision ON revision.id = parent.current_revision_id
+          WHERE parent.workspace_id=$1 AND parent.project_id=$2 AND parent.episode_id=$3
+            AND parent.archived_at IS NULL ${scopeSql} ${afterSql}
+          ORDER BY (revision.id IS NULL)::int, COALESCE(revision.ordinal, 0), parent.id LIMIT $4`, values,
+      );
+      await client.query("COMMIT");
+      return collectionPage(result.rows, limit, scope);
+    } catch (error) { await client.query("ROLLBACK"); throw error; }
+    finally { client.release(); }
+  }
 
   async createTextEntityRevisionInTransaction(
     client: PoolClient,
@@ -318,11 +533,13 @@ export class TextChainService {
 
   async listTextEntityRevisions(
     kind: TextEntityKind, workspaceId: string, projectId: string, entityId: string,
-  ): Promise<{ items: TextEntityRevisionView[] }> {
+  ): Promise<{ aggregate: TextAggregatePointers; items: TextEntityRevisionView[] }> {
     const client = await this.pool.connect();
     try {
-      const parent = await client.query(
-        `SELECT 1 FROM ${kind} WHERE id = $1 AND project_id = $2 AND workspace_id = $3`,
+      await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+      const parent = await client.query<QueryResultRow>(
+        `SELECT row_version, current_revision_id, approved_revision_id FROM ${kind}
+          WHERE id = $1 AND project_id = $2 AND workspace_id = $3`,
         [entityId, projectId, workspaceId],
       );
       if (!parent.rows[0]) throw new PersistenceError("NOT_FOUND", "Entity not found");
@@ -336,14 +553,16 @@ export class TextChainService {
           ORDER BY r.revision_no DESC`,
         [entityId, projectId, workspaceId],
       );
-      return { items: rows.rows.map((row) => ({
+      await client.query("COMMIT");
+      const aggregate = mapAggregatePointers(parent.rows[0]!, entityId, projectId);
+      return { aggregate, items: rows.rows.map((row) => ({
         id: String(row.id), entityId, revisionNo: Number(row.revision_no),
         content: row.content_json, contentHash: String(row.content_hash),
         sourceScriptRevisionId: String(row.script_revision_id),
         reviewStatus: String(row.review_status), freshnessStatus: String(row.freshness_status),
         reviewVersion: Number(row.review_version), createdAt: new Date(row.created_at as Date).toISOString(),
       })) };
-    } finally {
+    } catch (error) { await client.query("ROLLBACK"); throw error; } finally {
       client.release();
     }
   }
@@ -507,8 +726,9 @@ export class TextChainService {
   ) {
     const client = await this.pool.connect();
     try {
-      const parent = await client.query(
-        `SELECT 1 FROM scene WHERE id = $1 AND workspace_id = $2
+      await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+      const parent = await client.query<QueryResultRow>(
+        `SELECT row_version, current_revision_id, approved_revision_id FROM scene WHERE id = $1 AND workspace_id = $2
            AND project_id = $3 AND episode_id = $4`,
         [sceneId, workspaceId, projectId, episodeId],
       );
@@ -521,7 +741,8 @@ export class TextChainService {
            ORDER BY revision_no DESC`,
         [sceneId, workspaceId],
       );
-      return { items: result.rows.map((row) => ({
+      await client.query("COMMIT");
+      return { aggregate: mapAggregatePointers(parent.rows[0]!, sceneId, projectId, episodeId), items: result.rows.map((row) => ({
         id: String(row.id), revisionNo: Number(row.revision_no),
         sourceScriptRevisionId: String(row.source_script_revision_id),
         locationRevisionId: row.location_revision_id === null ? null : String(row.location_revision_id),
@@ -532,7 +753,7 @@ export class TextChainService {
         reviewVersion: Number(row.review_version),
         createdAt: new Date(row.created_at as Date).toISOString(),
       })) };
-    } finally {
+    } catch (error) { await client.query("ROLLBACK"); throw error; } finally {
       client.release();
     }
   }
@@ -641,8 +862,9 @@ export class TextChainService {
   ) {
     const client = await this.pool.connect();
     try {
-      const parent = await client.query(
-        `SELECT 1 FROM shot WHERE id = $1 AND workspace_id = $2
+      await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+      const parent = await client.query<QueryResultRow>(
+        `SELECT row_version, current_revision_id, approved_revision_id, episode_id FROM shot WHERE id = $1 AND workspace_id = $2
           AND project_id = $3 AND scene_id = $4`,
         [shotId, workspaceId, projectId, sceneId],
       );
@@ -655,7 +877,8 @@ export class TextChainService {
            ORDER BY revision_no DESC`,
         [shotId, workspaceId],
       );
-      return { items: result.rows.map((row) => ({
+      await client.query("COMMIT");
+      return { aggregate: mapAggregatePointers(parent.rows[0]!, shotId, projectId, String(parent.rows[0]!.episode_id), sceneId), items: result.rows.map((row) => ({
         id: String(row.id), revisionNo: Number(row.revision_no),
         sourceSceneRevisionId: String(row.source_scene_revision_id),
         ordinal: Number(row.ordinal), shotType: String(row.shot_type),
@@ -667,7 +890,7 @@ export class TextChainService {
         reviewVersion: Number(row.review_version),
         createdAt: new Date(row.created_at as Date).toISOString(),
       })) };
-    } finally {
+    } catch (error) { await client.query("ROLLBACK"); throw error; } finally {
       client.release();
     }
   }

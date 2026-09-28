@@ -1,6 +1,10 @@
 # AI Drama Studio
 
-AI Drama Studio 是一个面向短剧创作的本地优先工作台。当前仓库包含 M1 persistence/job core，以及 Mock Provider、BullMQ outbox dispatcher、Worker consumer、最小项目/工作流 API 和 DomainEvent SSE。真实模型供应商和创作 UI 仍未实现。
+AI Drama Studio 是一个面向短剧创作的本地优先工作台。当前仓库包含 M1 persistence/job core，以及 M2 文本版本链、Mock Provider、BullMQ outbox dispatcher、Worker consumer、项目/工作流 API 和 DomainEvent SSE。公开 API 可分页发现 Character、Location、Scene、Shot，并从历史响应恢复 aggregate 并发版本。真实模型供应商和创作 UI 仍未实现。
+
+文本集合 GET 使用 `limit`（默认 20、最大 100）及不透明 `cursor` 并返回 `nextCursor`；
+revision 历史的 `aggregate` 提供 entity/父 scope、`rowVersion` 和 current/approved 指针。
+Mock 图片切片是确定性测试路径，不代表真实媒体 Provider 或真实媒体生成流程已完成。
 
 ## 目录
 

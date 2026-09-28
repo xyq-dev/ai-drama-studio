@@ -39,6 +39,9 @@ export {
   type StoryRevisionPage,
   type StoryRevisionView,
   type TextEntityKind,
+  type TextAggregatePage,
+  type TextAggregatePointers,
+  type TextAggregateSummary,
   type SceneRevisionInput,
   type ShotRevisionInput,
 } from "./text-chain";

@@ -1213,3 +1213,313 @@ describe("M1-C API and SSE integration", () => {
     expect(unknownAssets.status).toBe(404);
   });
 });
+
+describe("M2 aggregate discovery HTTP", () => {
+  it("discovers current entities, binds cursors to scope, and returns history aggregate versions", async () => {
+    const first = await seedApprovedScriptForTextEntity("discovery-a");
+    const second = await seedApprovedScriptForTextEntity("discovery-b");
+    const created = await fetch(`${base}/api/v1/projects/${first.projectId}/characters`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": "discover-character", "if-match": "1" },
+      body: JSON.stringify({ name: "Hero", sourceScriptRevisionId: first.scriptRevisionId, content: { role: "lead" } }),
+    });
+    expect(created.status).toBe(201);
+    const entity = (await created.json()) as { entityId: string; revisionId: string; rowVersion: number };
+
+    const pageResponse = await fetch(`${base}/api/v1/projects/${first.projectId}/characters?limit=1`);
+    expect(pageResponse.status).toBe(200);
+    const page = (await pageResponse.json()) as { items: Array<Record<string, unknown>>; nextCursor: string | null };
+    expect(page.items).toEqual([expect.objectContaining({
+      entityId: entity.entityId, projectId: first.projectId, rowVersion: entity.rowVersion,
+      currentRevisionId: entity.revisionId, approvedRevisionId: null,
+      currentRevision: { reviewVersion: 1, reviewStatus: "DRAFT", freshnessStatus: "CURRENT" },
+    })]);
+
+    const historyResponse = await fetch(
+      `${base}/api/v1/projects/${first.projectId}/characters/${entity.entityId}/revisions`,
+    );
+    expect(historyResponse.status).toBe(200);
+    expect(await historyResponse.json()).toEqual(expect.objectContaining({
+      aggregate: expect.objectContaining({ entityId: entity.entityId, projectId: first.projectId,
+        rowVersion: entity.rowVersion, currentRevisionId: entity.revisionId, approvedRevisionId: null }),
+      items: [expect.objectContaining({ id: entity.revisionId })],
+    }));
+
+    const empty = await fetch(`${base}/api/v1/projects/${second.projectId}/characters`);
+    expect(empty.status).toBe(200);
+    expect(await empty.json()).toEqual({ items: [], nextCursor: null });
+    const invalid = await fetch(`${base}/api/v1/projects/${first.projectId}/characters?cursor=invalid`);
+    expect(invalid.status).toBe(400);
+    const versions = await sql<{ row_version: number }>("SELECT row_version FROM character WHERE id=$1", [entity.entityId]);
+    expect(versions.rows[0]?.row_version).toBe(entity.rowVersion);
+  });
+});
+
+describe("M2 collection keyset boundaries", () => {
+  function cursor(value: Record<string, unknown>): string {
+    return Buffer.from(JSON.stringify({ v: 1, ...value })).toString("base64url");
+  }
+
+  it("rejects semantic timestamp and ordinal cursor errors as validation errors", async () => {
+    const source = await seedApprovedScriptForTextEntity("invalid-cursors");
+    const id = "30000000-0000-4000-8000-000000000001";
+    for (const sort of ["0000-01-01T00:00:00.000000Z", "2026-13-01T00:00:00.000000Z", "2026-02-30T00:00:00.000000Z",
+      "2025-02-29T00:00:00.000000Z", "2026-01-01T24:00:00.000000Z"]) {
+      const value = cursor({ kind: "character", workspaceId: APP_WORKSPACE_ID,
+        projectId: source.projectId, sort, id });
+      const response = await fetch(`${base}/api/v1/projects/${source.projectId}/characters?cursor=${value}`);
+      expect(response.status, `${sort}: ${await response.clone().text()}`).toBe(400);
+      expect(await response.json()).toMatchObject({ error: { code: "VALIDATION_ERROR" } });
+    }
+    for (const sort of ["0001-01-01T00:00:00.000000Z", "2024-02-29T23:59:59.999999Z"]) {
+      const value = cursor({ kind: "character", workspaceId: APP_WORKSPACE_ID,
+        projectId: source.projectId, sort, id });
+      const response = await fetch(`${base}/api/v1/projects/${source.projectId}/characters?cursor=${value}`);
+      expect(response.status, `${sort}: ${await response.clone().text()}`).toBe(200);
+    }
+    for (const sort of ["0:0", "0:2147483648", "0:999999999999999999999", "1:1"]) {
+      const value = cursor({ kind: "scene", workspaceId: APP_WORKSPACE_ID,
+        projectId: source.projectId, episodeId: source.episodeId, sort, id });
+      const response = await fetch(
+        `${base}/api/v1/projects/${source.projectId}/episodes/${source.episodeId}/scenes?cursor=${value}`,
+      );
+      expect(response.status, `${sort}: ${await response.clone().text()}`).toBe(400);
+      expect(await response.json()).toMatchObject({ error: { code: "VALIDATION_ERROR" } });
+    }
+  });
+
+  it("preserves timestamptz microseconds and terminates without duplicate entities", async () => {
+    const source = await seedApprovedScriptForTextEntity("microsecond-cursors");
+    const ids = [
+      "10000000-0000-4000-8000-000000000001",
+      "10000000-0000-4000-8000-000000000002",
+      "10000000-0000-4000-8000-000000000003",
+    ];
+    await sql(`INSERT INTO character (id,workspace_id,project_id,name,created_at) VALUES
+      ($1,$4,$5,'a','2026-09-28 12:00:00.123456+00'),
+      ($2,$4,$5,'b','2026-09-28 12:00:00.123789+00'),
+      ($3,$4,$5,'c','2026-09-28 12:00:00.123789+00')`,
+    [...ids, APP_WORKSPACE_ID, source.projectId]);
+    const found: string[] = [];
+    let cursor: string | null = null;
+    let pages = 0;
+    do {
+      expect(++pages).toBeLessThanOrEqual(4);
+      const response = await fetch(`${base}/api/v1/projects/${source.projectId}/characters?limit=1${
+        cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+      expect(response.status).toBe(200);
+      const page = (await response.json()) as { items: Array<{ entityId: string }>; nextCursor: string | null };
+      found.push(...page.items.map((item) => item.entityId));
+      cursor = page.nextCursor;
+    } while (cursor);
+    expect(found).toEqual(ids);
+    expect(new Set(found).size).toBe(ids.length);
+  });
+
+  it("paginates current and revision-less scenes with a null-safe stable order", async () => {
+    const source = await seedApprovedScriptForTextEntity("null-current-scenes");
+    const ids = [
+      "20000000-0000-4000-8000-000000000001",
+      "20000000-0000-4000-8000-000000000002",
+      "20000000-0000-4000-8000-000000000003",
+    ];
+    await sql(`INSERT INTO scene (id,workspace_id,project_id,episode_id) VALUES
+      ($1,$4,$5,$6),($2,$4,$5,$6),($3,$4,$5,$6)`,
+    [...ids, APP_WORKSPACE_ID, source.projectId, source.episodeId]);
+    const revision = (await sql<{ id: string }>(`INSERT INTO scene_revision
+      (workspace_id,project_id,episode_id,scene_id,revision_no,source_script_revision_id,
+       ordinal,heading,summary,content_hash,created_by)
+      VALUES ($1,$2,$3,$4,1,$5,7,'current','current',$6,'test') RETURNING id`,
+    [APP_WORKSPACE_ID, source.projectId, source.episodeId, ids[1], source.scriptRevisionId, "ef".repeat(32)])).rows[0]!;
+    await sql("UPDATE scene SET current_revision_id=$1,row_version=2 WHERE id=$2", [revision.id, ids[1]]);
+    const found: Array<{ entityId: string; currentRevision: unknown }> = [];
+    let cursor: string | null = null;
+    let pages = 0;
+    do {
+      expect(++pages).toBeLessThanOrEqual(4);
+      const response = await fetch(`${base}/api/v1/projects/${source.projectId}/episodes/${source.episodeId}/scenes?limit=1${
+        cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+      expect(response.status).toBe(200);
+      const page = (await response.json()) as { items: typeof found; nextCursor: string | null };
+      found.push(...page.items);
+      cursor = page.nextCursor;
+    } while (cursor);
+    expect(found.map((item) => item.entityId)).toEqual([ids[1], ids[0], ids[2]]);
+    expect(found.map((item) => item.currentRevision)).toEqual([
+      { reviewVersion: 1, reviewStatus: "DRAFT", freshnessStatus: "CURRENT" }, null, null,
+    ]);
+  });
+});
+
+describe("M2 collection scope and archive boundaries", () => {
+  it("enforces project/workspace/episode/scene cursor scopes and preserves archived history", async () => {
+    const source = await seedApprovedScriptForTextEntity("scope-owner");
+    const other = await seedApprovedScriptForTextEntity("scope-other-project");
+    const hiddenWorkspace = "44444444-4444-4444-8444-444444444444";
+    await sql("INSERT INTO workspace (id,name,status) VALUES ($1,'hidden','ACTIVE')", [hiddenWorkspace]);
+    const hiddenProject = (await sql<{ id: string }>(
+      "INSERT INTO project (workspace_id,title) VALUES ($1,'hidden') RETURNING id", [hiddenWorkspace])).rows[0]!;
+    expect((await fetch(`${base}/api/v1/projects/${hiddenProject.id}/characters`)).status).toBe(404);
+
+    const empty = await fetch(`${base}/api/v1/projects/${source.projectId}/locations`);
+    expect(empty.status).toBe(200);
+    expect(await empty.json()).toEqual({ items: [], nextCursor: null });
+    const created = await fetch(`${base}/api/v1/projects/${source.projectId}/characters`, {
+      method: "POST", headers: { "content-type": "application/json", "idempotency-key": "archive-character",
+        "if-match": "1" },
+      body: JSON.stringify({ name: "Archived", sourceScriptRevisionId: source.scriptRevisionId, content: { role: "old" } }),
+    });
+    expect(created.status).toBe(201);
+    const entity = (await created.json()) as { entityId: string; revisionId: string };
+    await sql("UPDATE character SET archived_at=now() WHERE id=$1", [entity.entityId]);
+    expect(await (await fetch(`${base}/api/v1/projects/${source.projectId}/characters`)).json())
+      .toEqual({ items: [], nextCursor: null });
+    const history = await fetch(
+      `${base}/api/v1/projects/${source.projectId}/characters/${entity.entityId}/revisions`,
+    );
+    expect(history.status).toBe(200);
+    expect(await history.json()).toMatchObject({ aggregate: { entityId: entity.entityId },
+      items: [{ id: entity.revisionId }] });
+    expect((await fetch(`${base}/api/v1/projects/${other.projectId}/characters/${entity.entityId}/revisions`)).status)
+      .toBe(404);
+
+    const episode2 = (await sql<{ id: string }>(
+      "INSERT INTO episode (workspace_id,project_id,episode_no,title) VALUES ($1,$2,2,'other') RETURNING id",
+      [APP_WORKSPACE_ID, source.projectId])).rows[0]!;
+    const scene = (await sql<{ id: string }>(
+      "INSERT INTO scene (workspace_id,project_id,episode_id) VALUES ($1,$2,$3) RETURNING id",
+      [APP_WORKSPACE_ID, source.projectId, source.episodeId])).rows[0]!;
+    expect((await fetch(`${base}/api/v1/projects/${source.projectId}/episodes/${episode2.id}/scenes/${scene.id}/revisions`)).status)
+      .toBe(404);
+    const shot = (await sql<{ id: string }>(
+      "INSERT INTO shot (workspace_id,project_id,episode_id,scene_id) VALUES ($1,$2,$3,$4) RETURNING id",
+      [APP_WORKSPACE_ID, source.projectId, source.episodeId, scene.id])).rows[0]!;
+    const otherScene = (await sql<{ id: string }>(
+      "INSERT INTO scene (workspace_id,project_id,episode_id) VALUES ($1,$2,$3) RETURNING id",
+      [APP_WORKSPACE_ID, source.projectId, source.episodeId])).rows[0]!;
+    expect((await fetch(`${base}/api/v1/projects/${source.projectId}/episodes/${source.episodeId}/scenes/${otherScene.id}/shots/${shot.id}/revisions`)).status)
+      .toBe(404);
+
+    const id = "30000000-0000-4000-8000-000000000002";
+    const crossProject = Buffer.from(JSON.stringify({ v: 1, kind: "character", workspaceId: APP_WORKSPACE_ID,
+      projectId: source.projectId, sort: "2026-09-28T12:00:00.000000Z", id })).toString("base64url");
+    expect((await fetch(`${base}/api/v1/projects/${other.projectId}/characters?cursor=${crossProject}`)).status).toBe(400);
+    expect((await fetch(`${base}/api/v1/projects/${source.projectId}/locations?cursor=${crossProject}`)).status).toBe(400);
+    const scoped = Buffer.from(JSON.stringify({ v: 1, kind: "scene", workspaceId: APP_WORKSPACE_ID,
+      projectId: source.projectId, episodeId: source.episodeId, sort: "1:0", id })).toString("base64url");
+    expect((await fetch(`${base}/api/v1/projects/${source.projectId}/episodes/${episode2.id}/scenes?cursor=${scoped}`)).status)
+      .toBe(400);
+    const shotCursor = Buffer.from(JSON.stringify({ v: 1, kind: "shot", workspaceId: APP_WORKSPACE_ID,
+      projectId: source.projectId, episodeId: source.episodeId, sceneId: scene.id, sort: "1:0", id })).toString("base64url");
+    expect((await fetch(`${base}/api/v1/projects/${source.projectId}/episodes/${source.episodeId}/scenes/${otherScene.id}/shots?cursor=${shotCursor}`)).status)
+      .toBe(400);
+  });
+
+  it("paginates mixed current and revision-less shots with limit one", async () => {
+    const source = await seedApprovedScriptForTextEntity("null-current-shots");
+    const scene = (await sql<{ id: string }>(
+      "INSERT INTO scene (workspace_id,project_id,episode_id) VALUES ($1,$2,$3) RETURNING id",
+      [APP_WORKSPACE_ID, source.projectId, source.episodeId])).rows[0]!;
+    const sceneRevision = (await sql<{ id: string }>(`INSERT INTO scene_revision
+      (workspace_id,project_id,episode_id,scene_id,revision_no,source_script_revision_id,ordinal,heading,summary,content_hash,created_by)
+      VALUES ($1,$2,$3,$4,1,$5,1,'scene','scene',$6,'test') RETURNING id`,
+    [APP_WORKSPACE_ID, source.projectId, source.episodeId, scene.id, source.scriptRevisionId, "aa".repeat(32)])).rows[0]!;
+    await sql("UPDATE scene SET current_revision_id=$1 WHERE id=$2", [sceneRevision.id, scene.id]);
+    const ids = ["50000000-0000-4000-8000-000000000001", "50000000-0000-4000-8000-000000000002",
+      "50000000-0000-4000-8000-000000000003"];
+    await sql(`INSERT INTO shot (id,workspace_id,project_id,episode_id,scene_id) VALUES
+      ($1,$4,$5,$6,$7),($2,$4,$5,$6,$7),($3,$4,$5,$6,$7)`,
+    [...ids, APP_WORKSPACE_ID, source.projectId, source.episodeId, scene.id]);
+    const revision = (await sql<{ id: string }>(`INSERT INTO shot_revision
+      (workspace_id,project_id,scene_id,shot_id,revision_no,source_scene_revision_id,ordinal,shot_type,camera,action,prompt_text,content_hash,created_by)
+      VALUES ($1,$2,$3,$4,1,$5,9,'WIDE','fixed','action','prompt',$6,'test') RETURNING id`,
+    [APP_WORKSPACE_ID, source.projectId, scene.id, ids[1], sceneRevision.id, "bb".repeat(32)])).rows[0]!;
+    await sql("UPDATE shot SET current_revision_id=$1 WHERE id=$2", [revision.id, ids[1]]);
+    const found: Array<{ entityId: string; currentRevision: unknown }> = [];
+    let next: string | null = null;
+    for (let pageNo = 0; pageNo < 4; pageNo += 1) {
+      const response = await fetch(`${base}/api/v1/projects/${source.projectId}/episodes/${source.episodeId}/scenes/${scene.id}/shots?limit=1${next ? `&cursor=${next}` : ""}`);
+      const page = (await response.json()) as { items: typeof found; nextCursor: string | null };
+      found.push(...page.items); next = page.nextCursor;
+      if (!next) break;
+    }
+    expect(next).toBeNull();
+    expect(found.map((item) => item.entityId)).toEqual([ids[1], ids[0], ids[2]]);
+    expect(found.map((item) => item.currentRevision)).toEqual([
+      { reviewVersion: 1, reviewStatus: "DRAFT", freshnessStatus: "CURRENT" }, null, null,
+    ]);
+  });
+});
+
+describe("M2 collection route isolation matrix", () => {
+  it("checks every new collection route and rejects replayed real cursors across scopes", async () => {
+    const source = await seedApprovedScriptForTextEntity("matrix-source");
+    const other = await seedApprovedScriptForTextEntity("matrix-other");
+    const hiddenWorkspace = "66666666-6666-4666-8666-666666666666";
+    await sql("INSERT INTO workspace (id,name,status) VALUES ($1,'matrix-hidden','ACTIVE')", [hiddenWorkspace]);
+    const hiddenProject = (await sql<{ id: string }>(
+      "INSERT INTO project (workspace_id,title) VALUES ($1,'hidden') RETURNING id", [hiddenWorkspace])).rows[0]!;
+    const hiddenEpisode = (await sql<{ id: string }>(
+      "INSERT INTO episode (workspace_id,project_id,episode_no,title) VALUES ($1,$2,1,'hidden') RETURNING id",
+      [hiddenWorkspace, hiddenProject.id])).rows[0]!;
+    const hiddenScene = (await sql<{ id: string }>(
+      "INSERT INTO scene (workspace_id,project_id,episode_id) VALUES ($1,$2,$3) RETURNING id",
+      [hiddenWorkspace, hiddenProject.id, hiddenEpisode.id])).rows[0]!;
+    const hiddenPaths = [
+      `/projects/${hiddenProject.id}/characters`, `/projects/${hiddenProject.id}/locations`,
+      `/projects/${hiddenProject.id}/episodes/${hiddenEpisode.id}/scenes`,
+      `/projects/${hiddenProject.id}/episodes/${hiddenEpisode.id}/scenes/${hiddenScene.id}/shots`,
+    ];
+    for (const path of hiddenPaths) expect((await fetch(`${base}/api/v1${path}`)).status).toBe(404);
+
+    for (const kind of ["characters", "locations"]) {
+      const response = await fetch(`${base}/api/v1/projects/${other.projectId}/${kind}`);
+      expect(response.status).toBe(200); expect(await response.json()).toEqual({ items: [], nextCursor: null });
+    }
+    const emptyScenes = await fetch(`${base}/api/v1/projects/${other.projectId}/episodes/${other.episodeId}/scenes`);
+    expect(await emptyScenes.json()).toEqual({ items: [], nextCursor: null });
+    const otherScene = (await sql<{ id: string }>(
+      "INSERT INTO scene (workspace_id,project_id,episode_id) VALUES ($1,$2,$3) RETURNING id",
+      [APP_WORKSPACE_ID, other.projectId, other.episodeId])).rows[0]!;
+    const emptyShots = await fetch(
+      `${base}/api/v1/projects/${other.projectId}/episodes/${other.episodeId}/scenes/${otherScene.id}/shots`,
+    );
+    expect(await emptyShots.json()).toEqual({ items: [], nextCursor: null });
+
+    expect((await fetch(`${base}/api/v1/projects/${source.projectId}/episodes/${other.episodeId}/scenes`)).status).toBe(404);
+    expect((await fetch(`${base}/api/v1/projects/${other.projectId}/episodes/${source.episodeId}/scenes`)).status).toBe(404);
+    const sourceScene = (await sql<{ id: string }>(
+      "INSERT INTO scene (workspace_id,project_id,episode_id) VALUES ($1,$2,$3) RETURNING id",
+      [APP_WORKSPACE_ID, source.projectId, source.episodeId])).rows[0]!;
+    const sourceScene2 = (await sql<{ id: string }>(
+      "INSERT INTO scene (workspace_id,project_id,episode_id) VALUES ($1,$2,$3) RETURNING id",
+      [APP_WORKSPACE_ID, source.projectId, source.episodeId])).rows[0]!;
+    expect((await fetch(`${base}/api/v1/projects/${source.projectId}/episodes/${other.episodeId}/scenes/${sourceScene.id}/shots`)).status).toBe(404);
+    expect((await fetch(`${base}/api/v1/projects/${source.projectId}/episodes/${source.episodeId}/scenes/${otherScene.id}/shots`)).status).toBe(404);
+    expect((await fetch(`${base}/api/v1/projects/${other.projectId}/episodes/${other.episodeId}/scenes/${sourceScene.id}/shots`)).status).toBe(404);
+
+    await sql(`INSERT INTO character (workspace_id,project_id,name,created_at) VALUES
+      ($1,$2,'matrix-a','2026-09-28 12:00:00.000001+00'),($1,$2,'matrix-b','2026-09-28 12:00:00.000002+00')`,
+    [APP_WORKSPACE_ID, source.projectId]);
+    const characterPage = await fetch(`${base}/api/v1/projects/${source.projectId}/characters?limit=1`);
+    const characterCursor = ((await characterPage.json()) as { nextCursor: string }).nextCursor;
+    expect(characterCursor).toBeTruthy();
+    expect((await fetch(`${base}/api/v1/projects/${other.projectId}/characters?cursor=${characterCursor}`)).status).toBe(400);
+    expect((await fetch(`${base}/api/v1/projects/${source.projectId}/locations?cursor=${characterCursor}`)).status).toBe(400);
+
+    const scenePage = await fetch(`${base}/api/v1/projects/${source.projectId}/episodes/${source.episodeId}/scenes?limit=1`);
+    const sceneCursor = ((await scenePage.json()) as { nextCursor: string }).nextCursor;
+    expect(sceneCursor).toBeTruthy();
+    expect((await fetch(`${base}/api/v1/projects/${other.projectId}/episodes/${other.episodeId}/scenes?cursor=${sceneCursor}`)).status).toBe(400);
+
+    await sql(`INSERT INTO shot (workspace_id,project_id,episode_id,scene_id) VALUES
+      ($1,$2,$3,$4),($1,$2,$3,$4)`, [APP_WORKSPACE_ID, source.projectId, source.episodeId, sourceScene.id]);
+    const shotPage = await fetch(
+      `${base}/api/v1/projects/${source.projectId}/episodes/${source.episodeId}/scenes/${sourceScene.id}/shots?limit=1`,
+    );
+    const shotCursor = ((await shotPage.json()) as { nextCursor: string }).nextCursor;
+    expect(shotCursor).toBeTruthy();
+    expect((await fetch(`${base}/api/v1/projects/${source.projectId}/episodes/${source.episodeId}/scenes/${sourceScene2.id}/shots?cursor=${shotCursor}`)).status).toBe(400);
+    expect((await fetch(`${base}/api/v1/projects/${other.projectId}/episodes/${other.episodeId}/scenes/${otherScene.id}/shots?cursor=${shotCursor}`)).status).toBe(400);
+  });
+});

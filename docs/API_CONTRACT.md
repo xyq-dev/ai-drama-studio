@@ -35,7 +35,8 @@ M2 Mock 文本切片另提供 `POST /projects/:projectId/workflows/mock-scenes`�
 Script revision 与 Episode 版本，返回 `202` 的 WorkflowRun/Job。Worker 在同一事务内
 为每集创建一个来源精确的 Scene DRAFT 并完成 Job；Job attempt 的
 `response_snapshot.sceneRevisionIds` 返回三个新修订 ID。来源改变时整批不落库且 Job 失败；
-正常消费及恢复路径共用事务落库。Shot 草稿须等 Scene 审核通过，本切片尚未自动生成。
+正常消费及恢复路径共用事务落库。Scene 工作流不直接生成 Shot；Scene 审核通过后由
+`POST /projects/:projectId/workflows/mock-shots` 触发 Mock Shot 草稿生成。
 若任一集已存在 current Scene ordinal 1，新 Job 以 `MOCK_SCENE_SLOT_OCCUPIED` 终态失败，
 不覆盖已有草稿，也不会部分创建其他集 Scene。
 
@@ -56,32 +57,40 @@ M2-C 文本切片采用项目作用域路径。下表中的 extract、reference-
 Scene/Shot 文本切片也使用项目与所属 Episode/Scene 的完整路径：新 Scene 的
 `If-Match` 匹配 Episode.rowVersion，新 Shot 匹配 Scene.rowVersion，后续修订匹配各自
 rowVersion；Scene 来源剧本和 Shot 来源场景均要求当前、已审核、非 STALE。
+四个文本 aggregate 集合 GET 接受可选 `limit`（默认 20，范围 1..100）和不透明
+`cursor`，响应为 `{items,nextCursor}`，其中 `nextCursor:null` 表示结束。cursor 绑定
+workspace、project 及完整 episode/scene scope。revision 历史保留 `items` 并增加
+`aggregate:{entityId,projectId,episodeId?,sceneId?,rowVersion,currentRevisionId,approvedRevisionId}`。
 
 | Method / Path | 用途、输入、输出 | 权限 / 幂等 / 特有错误 |
 | --- | --- | --- |
 | `POST /projects/:projectId/characters/extract` | 从批准剧本提取角色；返回 workflow | Owner；key；`SCRIPT_REVIEW_REQUIRED` |
 | `POST /projects/:projectId/characters` | 创建角色首版 `{name,sourceScriptRevisionId,content}`；返回 entityId/revisionId | Owner；key、If-Match；`SCRIPT_REVIEW_REQUIRED`,`DUPLICATE_CHARACTER_NAME` |
+| `GET /projects/:projectId/characters` | 当前未归档角色集合与当前 revision 摘要 | Owner；安全 GET；cursor 分页 |
 | `POST /projects/:projectId/characters/:characterId/revisions` | 创建角色新修订 `{sourceScriptRevisionId,content}` | Owner；key、If-Match；`SCRIPT_REVIEW_REQUIRED`,`REVISION_CONFLICT` |
 | `GET /projects/:projectId/characters/:characterId/revisions` | 查询修订历史及精确来源剧本 | Owner；安全 GET；无 |
 | `POST /projects/:projectId/characters/:characterId/revisions/:revisionId/review` | `DRAFT → IN_REVIEW → APPROVED/REJECTED` | Owner；key、If-Match；`REVIEW_CONFLICT` |
 | `POST /projects/:projectId/locations` | 创建场地首版 `{name,sourceScriptRevisionId,content}` | Owner；key、If-Match；`SCRIPT_REVIEW_REQUIRED` |
+| `GET /projects/:projectId/locations` | 当前未归档场地集合与当前 revision 摘要 | Owner；安全 GET；cursor 分页 |
 | `POST /projects/:projectId/locations/:locationId/revisions` | 创建场地新修订 `{sourceScriptRevisionId,content}` | Owner；key、If-Match；`REVISION_CONFLICT` |
 | `GET /projects/:projectId/locations/:locationId/revisions` | 查询场地修订历史及来源 | Owner；安全 GET；无 |
 | `POST /projects/:projectId/locations/:locationId/revisions/:revisionId/review` | 审核场地版本 | Owner；key、If-Match；`REVIEW_CONFLICT` |
 | `POST /character-revisions/:id/reference-images/generate` | 生成角色参考图工作流；只要求来源剧本已审核、revision 非 STALE 和输入有效 | Owner；key；`SCRIPT_REVIEW_REQUIRED`,`SOURCE_STALE` |
 | `POST /character-revisions/:id/review` | 规划：审核角色参考图（当前仅实现项目作用域文本审核路由） | Owner；key；`REVIEW_CONFLICT` |
 | `POST /projects/:projectId/episodes/:episodeId/scenes` | 创建 Scene 首版 `{sourceScriptRevisionId,locationRevisionId?,ordinal,heading,timeOfDay?,summary}` | Owner；key、If-Match；`SCRIPT_REVIEW_REQUIRED` |
+| `GET /projects/:projectId/episodes/:episodeId/scenes` | 当前未归档 Scene 集合，按 `(ordinal,id)` 排序 | Owner；安全 GET；cursor 分页 |
 | `POST /projects/:projectId/episodes/:episodeId/scenes/:sceneId/revisions` | 创建 Scene 新修订，并失效旧版下游 | Owner；key、If-Match；`REVISION_CONFLICT` |
 | `GET /projects/:projectId/episodes/:episodeId/scenes/:sceneId/revisions` | Scene 修订历史与精确来源 | Owner；安全 GET；无 |
 | `POST /projects/:projectId/episodes/:episodeId/scenes/:sceneId/revisions/:revisionId/review` | 审核 Scene 文本版本 | Owner；key、If-Match；`REVIEW_CONFLICT` |
 | `POST /projects/:projectId/episodes/:episodeId/scenes/:sceneId/shots` | 从已审核 Scene 创建 Shot 首版 | Owner；key、If-Match；`REVIEW_REQUIRED` |
+| `GET /projects/:projectId/episodes/:episodeId/scenes/:sceneId/shots` | 当前未归档 Shot 集合，按 `(ordinal,id)` 排序 | Owner；安全 GET；cursor 分页 |
 | `POST /projects/:projectId/episodes/:episodeId/scenes/:sceneId/shots/:shotId/revisions` | Shot 新修订并失效旧版素材 | Owner；key、If-Match；`REVISION_CONFLICT` |
 | `GET /projects/:projectId/episodes/:episodeId/scenes/:sceneId/shots/:shotId/revisions` | Shot 修订历史与精确场景来源 | Owner；安全 GET；无 |
 | `POST /projects/:projectId/episodes/:episodeId/scenes/:sceneId/shots/:shotId/revisions/:revisionId/review` | 审核 Shot 文本版本 | Owner；key、If-Match；`REVIEW_CONFLICT` |
-| `GET /episodes/:episodeId/scenes` | 获取场景和排序 | Owner；安全 GET；无 |
+| `GET /episodes/:episodeId/scenes` | 规划中的非项目作用域兼容路径；当前请使用上述项目作用域路径 | Owner；安全 GET；无 |
 | `POST /episodes/:episodeId/scenes/generate` | 由剧本生成场景/镜头草稿 | Owner；key；`SCRIPT_REVIEW_REQUIRED` |
 | `POST /scenes/:sceneId/revisions` | 创建场景结构/排序 revision；返回新有效快照 | Owner；key、If-Match；`SCENE_HAS_ACTIVE_JOB` |
-| `GET /scenes/:sceneId/shots` | 返回镜头与当前 revision | Owner；安全 GET；无 |
+| `GET /scenes/:sceneId/shots` | 规划中的非项目作用域兼容路径；当前请使用上述项目作用域路径 | Owner；安全 GET；无 |
 | `POST /shots/:shotId/revisions` | 创建镜头修订 `{duration,camera,action,dialogue,...}` | Owner；key；`INVALID_SOURCE_REFERENCE` |
 | `POST /shot-revisions/:id/review` | 审核镜头分镜版本 | Owner；key；`REVIEW_CONFLICT` |
 | `POST /shot-revisions/:id/generate-image` | 图像生成 workflow | Owner；key；`SOURCE_STALE` |
