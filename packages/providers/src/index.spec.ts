@@ -59,6 +59,7 @@ describe("MockMediaAdapter", () => {
     if (first.kind !== "succeeded") throw new Error("expected mock media success");
 
     expect(first.providerRequestId).toBe("mock-media|image.generate|shot:1:image");
+    expect(first.outputs).toHaveLength(1);
     expect(first.outputs[0]).toMatchObject({
       kind: "IMAGE",
       retrieval: { kind: "HANDLE" },
