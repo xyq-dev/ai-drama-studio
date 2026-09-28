@@ -183,7 +183,7 @@ function accounting(
         kind,
         currency: "USD",
         amountDecimal: "0.00000000",
-        basis: "REQUEST",
+        basis: "PROVIDER_REPORTED",
         unitType: "request",
         unitQuantity: "1.00000000",
         unitPriceSnapshot: "0.00000000",
