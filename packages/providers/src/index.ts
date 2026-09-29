@@ -25,3 +25,5 @@ export {
   type MediaSubmitResult,
 } from "./media-adapter";
 export { MockMediaAdapter } from "./mock-media-adapter";
+export { MockTextAdapter } from "./mock-text-adapter";
+export type { TextGenerationAdapter } from "@ai-drama/contracts";

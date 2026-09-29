@@ -282,6 +282,9 @@ importers:
 
   packages/database:
     dependencies:
+      '@ai-drama/contracts':
+        specifier: workspace:*
+        version: link:../contracts
       '@ai-drama/domain':
         specifier: workspace:*
         version: link:../domain
@@ -367,6 +370,10 @@ importers:
         version: 5.0.1(@types/node@26.6.2)(vite@8.3.0(@types/node@26.6.2)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15))
 
   packages/providers:
+    dependencies:
+      '@ai-drama/contracts':
+        specifier: workspace:*
+        version: link:../contracts
     devDependencies:
       '@types/node':
         specifier: 'catalog:'

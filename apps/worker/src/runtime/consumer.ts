@@ -1,16 +1,9 @@
-import { createHash } from "node:crypto";
 import type { JobPersistenceService, MockTextService, RuntimeStore } from "@ai-drama/database";
-import { MOCK_OUTCOMES, MockProvider, type MockOutcome } from "@ai-drama/providers";
+import { MOCK_OUTCOMES, MockTextAdapter, type MockOutcome, type MockProvider,
+  type TextGenerationAdapter } from "@ai-drama/providers";
 import type { QueueMessage } from "./bullmq-queue";
 import { completeMockJob } from "./mock-text-completion";
-
-function retryAt(jobId: string, attemptNo: number): Date {
-  const baseMs = Math.min(15 * 60_000, 30_000 * 2 ** Math.max(0, attemptNo - 1));
-  const digest = createHash("sha256").update(`${jobId}:${attemptNo}`).digest();
-  const jitterRatio = digest.readUInt32BE(0) / 0xffffffff;
-  const jitterMs = Math.floor(baseMs * 0.2 * jitterRatio);
-  return new Date(Date.now() + baseMs + jitterMs);
-}
+import { retryAt } from "./retry";
 
 function readOutcome(snapshot: unknown): MockOutcome {
   if (snapshot && typeof snapshot === "object" && "outcome" in snapshot) {
@@ -30,6 +23,7 @@ export class MockJobConsumer {
     private readonly leaseOwner: string,
     private readonly leaseMs: number,
     private readonly mockText?: MockTextService,
+    private readonly textAdapter: TextGenerationAdapter = new MockTextAdapter(),
   ) {}
 
   async handle(message: QueueMessage): Promise<"processed" | "ignored"> {
@@ -77,8 +71,10 @@ export class MockJobConsumer {
         providerConfigurationId: before.providerConfigurationId,
         providerRequestId: result.providerRequestId,
       });
-      if (!current) throw new Error("Acquired job execution context disappeared");
-      await completeMockJob(this.jobs, this.mockText, current, acquired.attemptId, traceId, result.output);
+      const attached = await this.store.loadExecution(message.workspaceId, message.jobId);
+      if (!attached) throw new Error("Acquired job execution context disappeared");
+      await completeMockJob(this.jobs, this.mockText, attached, acquired.attemptId, traceId,
+        result.output, this.textAdapter);
       return "processed";
     }
     if (result.kind === "failed") {

@@ -35,6 +35,12 @@ export interface MusicProvider extends AsyncProvider<MusicRequest, MediaOutput> 
 export interface RenderProvider extends AsyncProvider<RenderRequest, MediaOutput> {}
 ```
 
+## M2 文本 Adapter 已实现边界
+
+M2 Scene/Shot 生成使用 `TextGenerationAdapter.generate(request, context)` 同步边界。请求携带冻结快照所引用的完整、不可变 Script/Scene 内容及项目、分集、来源修订和版本身份，Adapter 不读取数据库。输出是厂商无关的三项 Scene 或 Shot 结构化批次；数据库将其视为不可信输入，严格拒绝未知字段、数量/重复/缺失、项目/分集/来源/ordinal 错配和超过既有 API 上限的字段，然后在 Job 成功事务内整批保存。
+
+现有 `m2.mock.scenes.v1` / `m2.mock.shots.v1` 入队快照保持不变。文本调用身份由已持久化的 `providerRequestId`、Job `inputHash` 和 Adapter `providerKey` 组成；旧 Mock request id 仍按 `mock|success|jobId:attemptNo` 回放。仅 `REPLAY_SAFE_SYNC`（确定性或由该身份提供可靠幂等保证）的 Adapter 可进入此路径。正常完成和恢复共用请求构造、协议结果校验及原子保存路径。规范化不可重试错误进入失败终态，可重试错误沿用既有 Attempt 上限与退避；`UNKNOWN` 和非协议异常保持非终态，不猜测结果。此接口**不宣称支持远程异步文本任务**；接入该类厂商前必须设计可持久化、可核验的输出 envelope。
+
 ## Adapter 类型
 
 - **Mock Provider**：确定性、无外部网络；按 inputHash 生成可预测的状态/测试资产引用，支持故障脚本和回调重复测试，不能伪装真实成本。

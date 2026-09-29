@@ -1,4 +1,6 @@
 import { assertProductionEpisodeSet } from "@ai-drama/domain";
+import { sceneBatchOutputSchema, shotBatchOutputSchema, type SceneBatchOutput,
+  type ShotBatchOutput, type TextGenerationRequest } from "@ai-drama/contracts";
 import type { PoolClient, QueryResultRow } from "pg";
 import { PersistenceError, type DatabasePool } from "./job-service";
 import { TextChainService } from "./text-chain";
@@ -45,6 +47,59 @@ export class MockTextService {
     const client = await this.pool.connect();
     try {
       return await this.currentSources(client, workspaceId, projectId);
+    } finally {
+      client.release();
+    }
+  }
+
+  async buildGenerationRequest(workspaceId: string,
+    snapshot: MockSceneSnapshot | MockShotSnapshot): Promise<TextGenerationRequest> {
+    if (!snapshot || typeof snapshot !== "object" || snapshot.outcome !== "success" ||
+        typeof snapshot.projectId !== "string") {
+      throw new PersistenceError("VALIDATION_ERROR", "Invalid frozen text snapshot");
+    }
+    if (snapshot.schema === "m2.mock.scenes.v1" &&
+        (!Array.isArray(snapshot.episodes) || snapshot.episodes.length !== 3)) {
+      throw new PersistenceError("VALIDATION_ERROR", "Invalid frozen Scene snapshot");
+    }
+    if (snapshot.schema === "m2.mock.shots.v1" &&
+        (!Array.isArray(snapshot.scenes) || snapshot.scenes.length !== 3)) {
+      throw new PersistenceError("VALIDATION_ERROR", "Invalid frozen Shot snapshot");
+    }
+    if (snapshot.schema !== "m2.mock.scenes.v1" && snapshot.schema !== "m2.mock.shots.v1") {
+      throw new PersistenceError("VALIDATION_ERROR", "Unsupported frozen text snapshot schema");
+    }
+    const client = await this.pool.connect();
+    try {
+      if (snapshot.schema === "m2.mock.scenes.v1") {
+        const rows = await client.query<{ id: string; content_json: unknown } & QueryResultRow>(
+          `SELECT id, content_json FROM script_revision
+            WHERE workspace_id = $1 AND project_id = $2 AND id = ANY($3::uuid[])`,
+          [workspaceId, snapshot.projectId, snapshot.episodes.map((source) => source.scriptRevisionId)],
+        );
+        if (rows.rows.length !== snapshot.episodes.length) {
+          throw new PersistenceError("REVISION_CONFLICT", "Frozen Script sources are unavailable");
+        }
+        return { schema: "m2.text.request.v1", kind: "SCENES", projectId: snapshot.projectId,
+          sources: snapshot.episodes.map((source) => ({ ...source,
+            scriptContent: rows.rows.find((row) => row.id === source.scriptRevisionId)!.content_json })) };
+      }
+      const rows = await client.query<{
+        id: string; heading: string; time_of_day: string | null; summary: string;
+      } & QueryResultRow>(
+        `SELECT id, heading, time_of_day, summary FROM scene_revision
+          WHERE workspace_id = $1 AND project_id = $2 AND id = ANY($3::uuid[])`,
+        [workspaceId, snapshot.projectId, snapshot.scenes.map((source) => source.sceneRevisionId)],
+      );
+      if (rows.rows.length !== snapshot.scenes.length) {
+        throw new PersistenceError("REVISION_CONFLICT", "Frozen Scene sources are unavailable");
+      }
+      return { schema: "m2.text.request.v1", kind: "SHOTS", projectId: snapshot.projectId,
+        sources: snapshot.scenes.map((source) => {
+          const row = rows.rows.find((item) => item.id === source.sceneRevisionId)!;
+          return { ...source, sceneContent: { heading: row.heading,
+            timeOfDay: row.time_of_day, summary: row.summary } };
+        }) };
     } finally {
       client.release();
     }
@@ -120,11 +175,21 @@ export class MockTextService {
     });
   }
 
-  async persistShots(client: PoolClient, workspaceId: string, snapshot: MockShotSnapshot, traceId: string) {
+  async persistShots(client: PoolClient, workspaceId: string, snapshot: MockShotSnapshot,
+    output: ShotBatchOutput, traceId: string) {
     if (!snapshot || snapshot.schema !== "m2.mock.shots.v1" || snapshot.outcome !== "success" ||
         !Array.isArray(snapshot.scenes) || snapshot.scenes.length !== 3) {
       throw new PersistenceError("VALIDATION_ERROR", "Invalid Mock Shot snapshot");
     }
+    const parsed = shotBatchOutputSchema.safeParse(output);
+    if (!parsed.success) throw new PersistenceError("VALIDATION_ERROR", "Invalid Shot Adapter output");
+    const byScene = new Map(parsed.data.shots.map((shot) => [shot.sceneId, shot]));
+    if (byScene.size !== snapshot.scenes.length || snapshot.scenes.some((source) => {
+      const shot = byScene.get(source.sceneId);
+      return !shot || shot.projectId !== snapshot.projectId || shot.episodeId !== source.episodeId ||
+        shot.episodeNo !== source.episodeNo || shot.sourceSceneRevisionId !== source.sceneRevisionId ||
+        shot.ordinal !== 1;
+    })) throw new PersistenceError("VALIDATION_ERROR", "Shot Adapter output does not match frozen sources");
     const current = await this.currentShotSources(client, workspaceId, snapshot.projectId);
     if (current.length !== snapshot.scenes.length || current.some((scene, index) => {
       const frozen = snapshot.scenes[index];
@@ -146,23 +211,33 @@ export class MockTextService {
     }
     const shots = [];
     for (const scene of current) {
+      const generated = byScene.get(scene.sceneId)!;
       shots.push(await this.chain.createShotScopedInTransaction(client, {
         workspaceId, projectId: snapshot.projectId, sceneId: scene.sceneId,
         sourceSceneRevisionId: scene.sceneRevisionId, ordinal: 1,
-        shotType: "WIDE", camera: "static",
-        action: `Opening beat for episode ${scene.episodeNo}.`,
-        promptText: `Mock storyboard frame based on approved Scene revision ${scene.sceneRevisionId}.`,
+        shotType: generated.shotType, camera: generated.camera, action: generated.action,
+        dialogue: generated.dialogue, durationHint: generated.durationHint,
+        promptText: generated.promptText,
         createdBy: snapshot.requestedBy, expectedVersion: scene.sceneVersion, traceId,
       }));
     }
     return { id: shots[0]!.revisionId, shotRevisionIds: shots.map((shot) => shot.revisionId) };
   }
 
-  async persistScenes(client: PoolClient, workspaceId: string, snapshot: MockSceneSnapshot, traceId: string) {
+  async persistScenes(client: PoolClient, workspaceId: string, snapshot: MockSceneSnapshot,
+    output: SceneBatchOutput, traceId: string) {
     if (snapshot.schema !== "m2.mock.scenes.v1" || snapshot.outcome !== "success" ||
         !Array.isArray(snapshot.episodes) || snapshot.episodes.length !== 3) {
       throw new PersistenceError("VALIDATION_ERROR", "Invalid Mock Scene snapshot");
     }
+    const parsed = sceneBatchOutputSchema.safeParse(output);
+    if (!parsed.success) throw new PersistenceError("VALIDATION_ERROR", "Invalid Scene Adapter output");
+    const byEpisode = new Map(parsed.data.scenes.map((scene) => [scene.episodeId, scene]));
+    if (byEpisode.size !== snapshot.episodes.length || snapshot.episodes.some((source) => {
+      const scene = byEpisode.get(source.episodeId);
+      return !scene || scene.projectId !== snapshot.projectId || scene.episodeNo !== source.episodeNo ||
+        scene.sourceScriptRevisionId !== source.scriptRevisionId || scene.ordinal !== 1;
+    })) throw new PersistenceError("VALIDATION_ERROR", "Scene Adapter output does not match frozen sources");
     const current = await this.currentSources(client, workspaceId, snapshot.projectId);
     if (current.length !== snapshot.episodes.length || current.some((episode, index) => {
       const frozen = snapshot.episodes[index];
@@ -187,11 +262,12 @@ export class MockTextService {
     }
     const scenes = [];
     for (const episode of snapshot.episodes) {
+      const generated = byEpisode.get(episode.episodeId)!;
       scenes.push(await this.chain.createSceneRevisionInTransaction(client, {
         workspaceId, projectId: snapshot.projectId, episodeId: episode.episodeId,
         sourceScriptRevisionId: episode.scriptRevisionId,
-        ordinal: 1, heading: `Episode ${episode.episodeNo} · Opening`,
-        summary: `Mock draft based on approved Script revision ${episode.scriptRevisionId}.`,
+        ordinal: generated.ordinal, heading: generated.heading,
+        timeOfDay: generated.timeOfDay, summary: generated.summary,
         createdBy: snapshot.requestedBy, expectedVersion: episode.episodeVersion, traceId,
       }));
     }
