@@ -1,5 +1,5 @@
 import type { JobPersistenceService, MockTextService, RuntimeStore } from "@ai-drama/database";
-import type { MockProvider } from "@ai-drama/providers";
+import { MockTextAdapter, type MockProvider, type TextGenerationAdapter } from "@ai-drama/providers";
 import type { OutboxDispatcher } from "./dispatcher";
 import { completeMockJob } from "./mock-text-completion";
 
@@ -12,6 +12,7 @@ export class RuntimeReconciler {
     private readonly orphanGraceMs: number,
     private readonly recoverMockMedia?: () => Promise<void>,
     private readonly mockText?: MockTextService,
+    private readonly textAdapter: TextGenerationAdapter = new MockTextAdapter(),
   ) {}
 
   async reconcileOnce(): Promise<void> {
@@ -56,7 +57,7 @@ export class RuntimeReconciler {
           const execution = await this.store.loadExecution(row.workspaceId, row.jobId);
           if (!execution) continue;
           await completeMockJob(this.jobs, this.mockText, execution, row.attemptId,
-            `reconcile:${row.jobId}`, { recovered: true });
+            `reconcile:${row.jobId}`, { recovered: true }, this.textAdapter);
           continue;
         }
         if (inspected === "CANCELED") {
@@ -125,7 +126,7 @@ export class RuntimeReconciler {
         const execution = await this.store.loadExecution(row.workspaceId, row.jobId);
         if (!execution) continue;
         await completeMockJob(this.jobs, this.mockText, execution, row.attemptId,
-          `reconcile-wait:${row.jobId}`, { recovered: true });
+          `reconcile-wait:${row.jobId}`, { recovered: true }, this.textAdapter);
       } else if (inspected === "FAILED") {
         await this.jobs.failJob({
           workspaceId: row.workspaceId,

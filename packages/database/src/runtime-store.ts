@@ -25,10 +25,13 @@ export interface ExecutionContext {
   workflowRunId: string;
   state: string;
   kind: string;
+  inputHash: string;
   inputSnapshot: unknown;
   cancelRequested: boolean;
   providerConfigurationId: string | null;
   maxAttempts: number;
+  attemptNo: number | null;
+  providerRequestId: string | null;
 }
 
 export interface MockImageExecution {
@@ -370,9 +373,12 @@ export class RuntimeStore {
     const client = await this.pool.connect();
     try {
       const result = await client.query<QueryResultRow>(
-        `SELECT j.id, j.workspace_id, j.workflow_run_id, j.state, j.kind, j.input_snapshot, j.cancel_requested_at,
-                pc.id AS provider_configuration_id, pc.max_attempts
+        `SELECT j.id, j.workspace_id, j.workflow_run_id, j.state, j.kind, j.input_hash, j.input_snapshot, j.cancel_requested_at,
+                pc.id AS provider_configuration_id, pc.max_attempts,
+                latest.attempt_no, latest.provider_request_id
            FROM generation_job j
+           LEFT JOIN LATERAL (SELECT attempt_no, provider_request_id FROM job_attempt
+             WHERE generation_job_id = j.id ORDER BY attempt_no DESC LIMIT 1) latest ON true
            LEFT JOIN provider_configuration pc
              ON pc.workspace_id = j.workspace_id AND pc.provider_key = 'mock' AND pc.capability = 'mock.generate'
           WHERE j.id = $1 AND j.workspace_id = $2`,
@@ -386,10 +392,13 @@ export class RuntimeStore {
         workflowRunId: String(row.workflow_run_id),
         state: String(row.state),
         kind: String(row.kind),
+        inputHash: String(row.input_hash),
         inputSnapshot: row.input_snapshot,
         cancelRequested: row.cancel_requested_at !== null,
         providerConfigurationId: row.provider_configuration_id ? String(row.provider_configuration_id) : null,
         maxAttempts: Number(row.max_attempts ?? 3),
+        attemptNo: row.attempt_no === null ? null : Number(row.attempt_no),
+        providerRequestId: row.provider_request_id === null ? null : String(row.provider_request_id),
       };
     } finally {
       client.release();

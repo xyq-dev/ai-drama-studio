@@ -8,7 +8,7 @@ import {
   closePostgresPool,
   type PostgresPool,
 } from "@ai-drama/database";
-import { MockMediaAdapter, MockProvider, type MockRequestState } from "@ai-drama/providers";
+import { MockMediaAdapter, MockProvider, MockTextAdapter, type MockRequestState } from "@ai-drama/providers";
 import { isAbsolute } from "node:path";
 import { BullMqQueue, startBullWorker, type QueueMessage } from "./bullmq-queue";
 import { MockJobConsumer } from "./consumer";
@@ -60,17 +60,20 @@ export async function startQueueRuntime(options: {
   });
   const store = new RuntimeStore(pool);
   const mockText = new MockTextService(pool);
+  const textAdapter = new MockTextAdapter();
   const connection = { url: options.redisUrl, maxRetriesPerRequest: null };
   const prefix = "ai-drama";
   const queue = new BullMqQueue(connection, prefix);
   const dispatcher = new OutboxDispatcher(store, queue);
-  const consumer = new MockJobConsumer(jobs, store, provider, `worker:${process.pid}`, options.leaseMs ?? 30_000, mockText);
+  const consumer = new MockJobConsumer(jobs, store, provider, `worker:${process.pid}`,
+    options.leaseMs ?? 30_000, mockText, textAdapter);
   const assets = new MediaAssetStore(pool);
   const mockMedia = new MockMediaAdapter();
   const objects = options.mockObjectDir ? new LocalMockObjects(options.mockObjectDir) : null;
   const mediaRecovery = objects ? new MockMediaRecovery(jobs, assets, store, mockMedia, objects) : null;
   const reconciler = new RuntimeReconciler(jobs, store, provider, dispatcher,
-    options.orphanGraceMs ?? 30_000, mediaRecovery ? () => mediaRecovery.reconcileOnce() : undefined, mockText);
+    options.orphanGraceMs ?? 30_000, mediaRecovery ? () => mediaRecovery.reconcileOnce() : undefined,
+    mockText, textAdapter);
   const status: QueueRuntimeStatus = { running: false };
   const worker = startBullWorker(
     { url: options.redisUrl, maxRetriesPerRequest: null },

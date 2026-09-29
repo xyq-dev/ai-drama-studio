@@ -1,5 +1,8 @@
 # AI Drama Studio
 
+M2 文本 Scene/Shot 生成已通过厂商无关的同步 Adapter 边界运行；契约、恢复限制和验收证据见
+[`docs/M2_TEXT_ADAPTER_ACCEPTANCE.md`](docs/M2_TEXT_ADAPTER_ACCEPTANCE.md)。
+
 AI Drama Studio 是一个面向短剧创作的本地优先工作台。当前仓库包含 M1 persistence/job core，以及 M2 文本版本链、Mock Provider、BullMQ outbox dispatcher、Worker consumer、项目/工作流 API 和 DomainEvent SSE。公开 API 可分页发现 Character、Location、Scene、Shot，并从历史响应恢复 aggregate 并发版本。真实模型供应商和创作 UI 仍未实现。
 
 文本集合 GET 使用 `limit`（默认 20、最大 100）及不透明 `cursor` 并返回 `nextCursor`；

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MockMediaAdapter, MockProvider } from "./index";
+import { MockMediaAdapter, MockProvider, MockTextAdapter } from "./index";
 
 describe("MockProvider", () => {
   it("returns deterministic request ids and the requested outcome", () => {
@@ -28,6 +28,23 @@ describe("MockProvider", () => {
     expect(provider.inspect(delayed.providerRequestId)).toBe("SUCCEEDED");
     expect(new MockProvider().inspect(delayed.providerRequestId)).toBe("SUCCEEDED");
     expect(provider.inspect("missing")).toBe("UNKNOWN");
+  });
+});
+
+describe("MockTextAdapter", () => {
+  it("is replay-safe and returns deterministic structured output from complete frozen content", async () => {
+    const adapter = new MockTextAdapter();
+    const request = { schema: "m2.text.request.v1" as const, kind: "SCENES" as const,
+      projectId: "22222222-2222-4222-8222-222222222222", sources: [1, 2, 3].map((episodeNo) => ({
+        episodeId: `${episodeNo}1111111-1111-4111-8111-111111111111`, episodeNo,
+        episodeVersion: 1, scriptRevisionId: `${episodeNo}2222222-2222-4222-8222-222222222222`,
+        scriptContent: { episodeNo, line: `frozen-${episodeNo}` },
+      })) };
+    const context = { requestId: "mock|success|job:1", idempotencyKey: "hash", providerKey: "mock-text" };
+    expect(adapter.replayPolicy).toBe("REPLAY_SAFE_SYNC");
+    expect(await adapter.generate(request, context)).toEqual(await adapter.generate(request, context));
+    expect((await adapter.generate(request, context))).toMatchObject({ kind: "succeeded",
+      output: { schema: "m2.text.scenes.output.v1", scenes: [{ episodeNo: 1 }, { episodeNo: 2 }, { episodeNo: 3 }] } });
   });
 });
 

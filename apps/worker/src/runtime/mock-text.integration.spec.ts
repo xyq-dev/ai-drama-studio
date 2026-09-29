@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { MockProvider } from "@ai-drama/providers";
+import { MockProvider, MockTextAdapter } from "@ai-drama/providers";
+import type { TextGenerationAdapter } from "@ai-drama/contracts";
 import {
   JobPersistenceService, MockTextService, RuntimeStore, TextChainService, runMigrations, createPostgresPool, requestHash,
   type MockSceneSnapshot, type MockShotSnapshot,
@@ -9,6 +10,7 @@ import { completeMockJob } from "./mock-text-completion";
 import { BullMqQueue, startBullWorker } from "./bullmq-queue";
 import { MockJobConsumer } from "./consumer";
 import { OutboxDispatcher } from "./dispatcher";
+import { RuntimeReconciler } from "./reconciler";
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) throw new Error("DATABASE_URL is required for isolated PostgreSQL integration tests");
@@ -160,6 +162,175 @@ async function queueShotAnother(workspaceId: string, projectId: string) {
 }
 
 describe("Mock three episode Scene workflow", () => {
+  it("replays the persisted identity and frozen content through a restarted RuntimeReconciler", async () => {
+    const source = await approvedThreeScripts();
+    await sql("DELETE FROM job_attempt WHERE generation_job_id=$1", [source.created.jobId]);
+    await sql(`UPDATE generation_job SET state='QUEUED', lease_owner=NULL, lease_until=NULL WHERE id=$1`,
+      [source.created.jobId]);
+    const calls: Array<{ request: unknown; context: unknown; output: unknown }> = [];
+    const crashing: TextGenerationAdapter = { providerKey: "replay-test", replayPolicy: "REPLAY_SAFE_SYNC",
+      generate: async (request, context) => {
+        const result = await new MockTextAdapter().generate(request, context);
+        calls.push({ request, context, output: result });
+        throw new Error("simulated crash before success transaction");
+      } };
+    const provider = new MockProvider();
+    await new MockJobConsumer(jobs, store, provider, "crashing-worker", 1, mockText, crashing)
+      .handle({ workspaceId: source.workspaceId, jobId: source.created.jobId, dispatchSeq: 1 });
+    expect((await store.getJob(source.workspaceId, source.created.jobId)).state).toBe("RUNNING");
+    expect((await sql("SELECT id FROM scene_revision WHERE project_id=$1", [source.projectId])).rowCount).toBe(0);
+    await sql("UPDATE generation_job SET lease_until=now()-interval '1 minute' WHERE id=$1", [source.created.jobId]);
+    const recovered: TextGenerationAdapter = { providerKey: "replay-test", replayPolicy: "REPLAY_SAFE_SYNC",
+      generate: async (request, context) => {
+        const result = await new MockTextAdapter().generate(request, context);
+        calls.push({ request, context, output: result });
+        return result;
+      } };
+    const dispatcher = { dispatchOnce: async () => 0, hasDispatch: async () => true } as unknown as OutboxDispatcher;
+    const reconciler = new RuntimeReconciler(jobs, store, new MockProvider(), dispatcher, 0,
+      undefined, mockText, recovered);
+    await reconciler.reconcileOnce();
+    expect((await store.getJob(source.workspaceId, source.created.jobId)).state).toBe("SUCCEEDED");
+    expect((await sql("SELECT id FROM scene_revision WHERE project_id=$1", [source.projectId])).rowCount).toBe(3);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]).toEqual(calls[0]);
+    expect(calls[0]!.context).toMatchObject({ providerKey: "replay-test",
+      requestId: `mock|success|${source.created.jobId}:1`, idempotencyKey: source.execution.inputHash });
+    expect(calls[0]!.request).toMatchObject({ kind: "SCENES", sources: [
+      { scriptContent: { episode: 1 } }, { scriptContent: { episode: 2 } }, { scriptContent: { episode: 3 } },
+    ] });
+    const attempt = await sql<{ provider_request_id: string }>(
+      "SELECT provider_request_id FROM job_attempt WHERE generation_job_id=$1", [source.created.jobId]);
+    expect(attempt.rows[0]!.provider_request_id).toBe(`mock|success|${source.created.jobId}:1`);
+    const persisted = await sql<{ heading: string; summary: string }>(
+      "SELECT heading, summary FROM scene_revision WHERE project_id=$1 ORDER BY heading", [source.projectId]);
+    const generated = calls[0]!.output as { output: { scenes: Array<{ heading: string; summary: string }> } };
+    expect(persisted.rows).toEqual(generated.output.scenes.map(({ heading, summary }) => ({ heading, summary })));
+    await reconciler.reconcileOnce();
+    expect(calls).toHaveLength(2);
+    expect((await sql("SELECT id FROM scene_revision WHERE project_id=$1", [source.projectId])).rowCount).toBe(3);
+  });
+
+  it("keeps the persisted request identity and writes nothing when inspection is UNKNOWN", async () => {
+    const source = await approvedThreeScripts();
+    await sql("DELETE FROM job_attempt WHERE generation_job_id=$1", [source.created.jobId]);
+    await sql(`UPDATE generation_job SET state='QUEUED', lease_owner=NULL, lease_until=NULL WHERE id=$1`,
+      [source.created.jobId]);
+    let adapterCalls = 0;
+    const pending: TextGenerationAdapter = { providerKey: "unknown-test", replayPolicy: "REPLAY_SAFE_SYNC",
+      generate: async () => { adapterCalls += 1; return { kind: "unknown" }; } };
+    await new MockJobConsumer(jobs, store, new MockProvider(), "unknown-worker", 1, mockText, pending)
+      .handle({ workspaceId: source.workspaceId, jobId: source.created.jobId, dispatchSeq: 1 });
+    const requestId = `mock|success|${source.created.jobId}:1`;
+    await sql("UPDATE generation_job SET lease_until=now()-interval '1 minute' WHERE id=$1", [source.created.jobId]);
+    const unknownProvider = { inspect: () => "UNKNOWN" } as unknown as MockProvider;
+    const dispatcher = { dispatchOnce: async () => 0, hasDispatch: async () => true } as unknown as OutboxDispatcher;
+    await new RuntimeReconciler(jobs, store, unknownProvider, dispatcher, 0, undefined, mockText, pending)
+      .reconcileOnce();
+    expect(adapterCalls).toBe(1);
+    expect((await store.getJob(source.workspaceId, source.created.jobId)).state).toBe("RUNNING");
+    expect((await sql("SELECT id FROM scene_revision WHERE project_id=$1", [source.projectId])).rowCount).toBe(0);
+    const attempt = await sql<{ provider_request_id: string }>(
+      "SELECT provider_request_id FROM job_attempt WHERE generation_job_id=$1", [source.created.jobId]);
+    expect(attempt.rows[0]!.provider_request_id).toBe(requestId);
+  });
+
+  it.each([
+    ["source mismatch", (items: Array<Record<string, unknown>>) => { items[2]!.sourceScriptRevisionId = randomUUID(); }],
+    ["project mismatch", (items: Array<Record<string, unknown>>) => { items[1]!.projectId = randomUUID(); }],
+    ["episode mismatch", (items: Array<Record<string, unknown>>) => { items[1]!.episodeNo = 3; }],
+    ["duplicate", (items: Array<Record<string, unknown>>) => { items[2]!.episodeId = items[0]!.episodeId; }],
+    ["missing", (items: Array<Record<string, unknown>>) => { items.pop(); }],
+    ["field type", (items: Array<Record<string, unknown>>) => { items[0]!.ordinal = "1"; }],
+    ["field length", (items: Array<Record<string, unknown>>) => { items[0]!.heading = "x".repeat(401); }],
+    ["unknown field", (items: Array<Record<string, unknown>>) => { items[0]!.vendorIdentity = "bad"; }],
+  ])("atomically rejects Scene output with %s", async (_label, mutate) => {
+    const source = await approvedThreeScripts();
+    const adapter: TextGenerationAdapter = { providerKey: "invalid-scenes", replayPolicy: "REPLAY_SAFE_SYNC",
+      generate: async (request, context) => {
+        const valid = await new MockTextAdapter().generate(request, context);
+        if (valid.kind !== "succeeded" || valid.output.schema !== "m2.text.scenes.output.v1") return valid;
+        const scenes = structuredClone(valid.output.scenes) as unknown as Array<Record<string, unknown>>;
+        mutate(scenes);
+        return { kind: "succeeded", output: { schema: "m2.text.scenes.output.v1", scenes } as never };
+      } };
+    await completeMockJob(jobs, mockText, source.execution, source.attempt.attemptId, "invalid-scenes", {}, adapter);
+    expect(await store.getJob(source.workspaceId, source.created.jobId)).toMatchObject({
+      state: "FAILED", errorCode: "VALIDATION_ERROR" });
+    expect((await sql("SELECT id FROM scene WHERE project_id=$1", [source.projectId])).rowCount).toBe(0);
+    expect((await sql("SELECT id FROM scene_revision WHERE project_id=$1", [source.projectId])).rowCount).toBe(0);
+  });
+
+  it.each([
+    ["thrown AUTH", "throw", { code: "AUTH", message: "denied", retryable: false }, "FAILED"],
+    ["thrown TEMPORARY", "throw", { code: "TEMPORARY", message: "later", retryable: true }, "QUEUED"],
+    ["thrown UNKNOWN retryable", "throw", { code: "UNKNOWN", message: "uncertain", retryable: true }, "RUNNING"],
+    ["thrown UNKNOWN terminal", "throw", { code: "UNKNOWN", message: "uncertain", retryable: false }, "RUNNING"],
+    ["returned UNKNOWN retryable", "return", { code: "UNKNOWN", message: "uncertain", retryable: true }, "RUNNING"],
+    ["returned UNKNOWN terminal", "return", { code: "UNKNOWN", message: "uncertain", retryable: false }, "RUNNING"],
+    ["thrown CANCELED", "throw", { code: "CANCELED", message: "canceled", retryable: false }, "CANCELED"],
+    ["returned CANCELED", "return", { code: "CANCELED", message: "canceled", retryable: false }, "CANCELED"],
+  ] as const)("normalizes a %s Adapter error", async (_label, mode, error, expectedState) => {
+    const source = await approvedThreeScripts();
+    const adapter: TextGenerationAdapter = { providerKey: "error-adapter", replayPolicy: "REPLAY_SAFE_SYNC",
+      generate: () => mode === "throw" ? Promise.reject(error) :
+        Promise.resolve({ kind: "failed", error }) };
+    await completeMockJob(jobs, mockText, source.execution, source.attempt.attemptId, "adapter-error", {}, adapter);
+    expect((await store.getJob(source.workspaceId, source.created.jobId)).state).toBe(expectedState);
+    expect((await sql("SELECT id FROM scene_revision WHERE project_id=$1", [source.projectId])).rowCount).toBe(0);
+  });
+
+  it.each([
+    ["throw", "RATE_LIMITED"],
+    ["return", "QUOTA"],
+  ] as const)("persists the %s %s cooldown and rejects premature delivery", async (mode, code) => {
+    const source = await approvedThreeScripts();
+    const retryAfterMs = 300_000;
+    const error = { code, message: "provider cooldown", retryable: true, retryAfterMs };
+    const adapter: TextGenerationAdapter = { providerKey: "cooldown-adapter", replayPolicy: "REPLAY_SAFE_SYNC",
+      generate: () => mode === "throw" ? Promise.reject(error) :
+        Promise.resolve({ kind: "failed", error }) };
+    const before = Date.now();
+    await completeMockJob(jobs, mockText, source.execution, source.attempt.attemptId, "cooldown", {}, adapter);
+    const after = Date.now();
+    const scheduled = (await sql<{ next_run_at: Date; available_at: Date; dispatch_seq: number }>(
+      `SELECT j.next_run_at, o.available_at, j.dispatch_seq FROM generation_job j
+         JOIN dispatch_outbox o ON o.job_id=j.id AND o.dispatch_seq=j.dispatch_seq
+        WHERE j.id=$1`, [source.created.jobId])).rows[0]!;
+    expect((await store.getJob(source.workspaceId, source.created.jobId)).state).toBe("QUEUED");
+    expect(scheduled.next_run_at.getTime()).toBeGreaterThanOrEqual(before + retryAfterMs);
+    expect(scheduled.next_run_at.getTime()).toBeLessThanOrEqual(after + retryAfterMs);
+    expect(scheduled.available_at).toEqual(scheduled.next_run_at);
+    expect(scheduled.dispatch_seq).toBe(source.created.dispatchSeq + 1);
+    expect(await jobs.acquireQueuedJob({ workspaceId: source.workspaceId, jobId: source.created.jobId,
+      dispatchSeq: scheduled.dispatch_seq, leaseOwner: "too-early", leaseMs: 10_000, traceId: "too-early" })).toBeNull();
+    expect((await sql("SELECT id FROM job_attempt WHERE generation_job_id=$1", [source.created.jobId])).rowCount).toBe(1);
+    expect((await sql("SELECT id FROM scene_revision WHERE project_id=$1", [source.projectId])).rowCount).toBe(0);
+  });
+
+  it("atomically rejects duplicate and source-mismatched Adapter output", async () => {
+    const source = await approvedThreeScripts();
+    const invalid: TextGenerationAdapter = {
+      providerKey: "invalid-test",
+      replayPolicy: "REPLAY_SAFE_SYNC",
+      generate: async (request) => {
+        if (request.kind !== "SCENES") throw new Error("unexpected request");
+        const item = request.sources[0]!;
+        return { kind: "succeeded", output: { schema: "m2.text.scenes.output.v1", scenes: request.sources.map((_source, index) => ({
+          projectId: request.projectId, episodeId: item.episodeId, episodeNo: index + 1,
+          sourceScriptRevisionId: index === 2 ? randomUUID() : item.scriptRevisionId,
+          ordinal: 1, heading: "untrusted", summary: "must not persist",
+        })) } };
+      },
+    };
+    await completeMockJob(jobs, mockText, source.execution, source.attempt.attemptId,
+      "invalid-adapter", {}, invalid);
+    expect(await store.getJob(source.workspaceId, source.created.jobId)).toMatchObject({
+      state: "FAILED", errorCode: "VALIDATION_ERROR",
+    });
+    expect((await sql("SELECT id FROM scene_revision WHERE project_id = $1", [source.projectId])).rowCount).toBe(0);
+  });
+
   it("commits three DRAFT revisions and job success atomically, rejecting duplicate completion", async () => {
     const source = await approvedThreeScripts();
     await completeMockJob(jobs, mockText, source.execution, source.attempt.attemptId,
@@ -244,6 +415,29 @@ describe("Mock three episode Scene workflow", () => {
 });
 
 describe("Mock three episode Shot workflow", () => {
+  it.each([
+    ["source mismatch", (items: Array<Record<string, unknown>>) => { items[2]!.sourceSceneRevisionId = randomUUID(); }],
+    ["scene mismatch", (items: Array<Record<string, unknown>>) => { items[1]!.sceneId = randomUUID(); }],
+    ["duplicate", (items: Array<Record<string, unknown>>) => { items[2]!.sceneId = items[0]!.sceneId; }],
+    ["unknown field", (items: Array<Record<string, unknown>>) => { items[0]!.vendorShotId = "bad"; }],
+    ["field length", (items: Array<Record<string, unknown>>) => { items[0]!.promptText = "x".repeat(8001); }],
+  ])("atomically rejects Shot output with %s", async (_label, mutate) => {
+    const source = await approvedThreeScenes();
+    const adapter: TextGenerationAdapter = { providerKey: "invalid-shots", replayPolicy: "REPLAY_SAFE_SYNC",
+      generate: async (request, context) => {
+        const valid = await new MockTextAdapter().generate(request, context);
+        if (valid.kind !== "succeeded" || valid.output.schema !== "m2.text.shots.output.v1") return valid;
+        const shots = structuredClone(valid.output.shots) as unknown as Array<Record<string, unknown>>;
+        mutate(shots);
+        return { kind: "succeeded", output: { schema: "m2.text.shots.output.v1", shots } as never };
+      } };
+    await completeMockJob(jobs, mockText, source.execution, source.attempt.attemptId, "invalid-shots", {}, adapter);
+    expect(await store.getJob(source.workspaceId, source.created.jobId)).toMatchObject({
+      state: "FAILED", errorCode: "VALIDATION_ERROR" });
+    expect((await sql("SELECT id FROM shot WHERE project_id=$1", [source.projectId])).rowCount).toBe(0);
+    expect((await sql("SELECT id FROM shot_revision WHERE project_id=$1", [source.projectId])).rowCount).toBe(0);
+  });
+
   it("accepts an approved Scene whose earlier Script source still matches the current Script", async () => {
     const source = await approvedThreeScenes();
     const scene = source.snapshot.scenes[0]!;

@@ -5,6 +5,7 @@ import { afterAll, beforeAll, expect, it } from "vitest";
 import { createPostgresPool, JobPersistenceService, MockTextService, runMigrations,
   RuntimeStore } from "@ai-drama/database";
 import { MockProvider } from "@ai-drama/providers";
+import type { TextGenerationAdapter, TextGenerationRequest } from "@ai-drama/contracts";
 import { AppModule } from "../../../api/src/app.module";
 import { loadApiEnv } from "../../../api/src/config/env";
 import { SafeExceptionFilter } from "../../../api/src/http/safe-exception.filter";
@@ -23,8 +24,26 @@ const store = new RuntimeStore(pool);
 const prefix = `m2-http-${process.pid}`;
 const connection = { url: redisUrl, maxRetriesPerRequest: null as null };
 const queue = new BullMqQueue(connection, prefix);
+class DistinctTextAdapter implements TextGenerationAdapter {
+  readonly providerKey = "integration-distinct";
+  readonly replayPolicy = "REPLAY_SAFE_SYNC";
+  async generate(request: TextGenerationRequest) {
+    if (request.kind === "SCENES") return { kind: "succeeded" as const,
+      output: { schema: "m2.text.scenes.output.v1" as const,
+      scenes: request.sources.map((source) => ({ projectId: request.projectId,
+        episodeId: source.episodeId, episodeNo: source.episodeNo,
+        sourceScriptRevisionId: source.scriptRevisionId, ordinal: 1,
+        heading: `Adapter scene ${source.episodeNo}`, summary: `Distinct scene ${source.episodeNo}` })) } };
+    return { kind: "succeeded" as const, output: { schema: "m2.text.shots.output.v1" as const,
+      shots: request.sources.map((source) => ({ projectId: request.projectId,
+        episodeId: source.episodeId, episodeNo: source.episodeNo, sceneId: source.sceneId,
+        sourceSceneRevisionId: source.sceneRevisionId, ordinal: 1, shotType: "CLOSE",
+        camera: "adapter-camera", action: `Distinct action ${source.episodeNo}`,
+        promptText: `Distinct prompt ${source.episodeNo}` })) } };
+  }
+}
 const consumer = new MockJobConsumer(jobs, store, new MockProvider(), "m2-http-worker", 10000,
-  new MockTextService(pool));
+  new MockTextService(pool), new DistinctTextAdapter());
 const worker = startBullWorker(connection, prefix, async (message) => { await consumer.handle(message); });
 let app: INestApplication;
 let base: string;
@@ -154,12 +173,17 @@ it("completes the three-episode Mock chain through public HTTP and real BullMQ",
   const scriptIds = await Promise.all(episodes.map(async (episode) =>
     (await get<{ items: Array<{ id: string }> }>(`/projects/${project.id}/episodes/${episode.id}/scripts`)).items[0]!.id));
   for (let index = 0; index < episodes.length; index += 1) {
-    const sceneHistory = await get<{ items: Array<{ sourceScriptRevisionId: string }> }>(
+    const sceneHistory = await get<{ items: Array<{ sourceScriptRevisionId: string; heading: string; summary: string }> }>(
       `/projects/${project.id}/episodes/${episodes[index]!.id}/scenes/${rediscoveredScenes[index]!.entityId}/revisions`);
     expect(sceneHistory.items[0]!.sourceScriptRevisionId).toBe(scriptIds[index]);
-    const shotHistory = await get<{ items: Array<{ sourceSceneRevisionId: string }> }>(
+    expect(sceneHistory.items[0]).toMatchObject({ heading: `Adapter scene ${index + 1}`,
+      summary: `Distinct scene ${index + 1}` });
+    const shotHistory = await get<{ items: Array<{ sourceSceneRevisionId: string; camera: string;
+      action: string; promptText: string }> }>(
       `/projects/${project.id}/episodes/${episodes[index]!.id}/scenes/${rediscoveredScenes[index]!.entityId}/shots/${rediscoveredShots[index]!.entityId}/revisions`);
     expect(shotHistory.items[0]!.sourceSceneRevisionId).toBe(rediscoveredScenes[index]!.currentRevisionId);
+    expect(shotHistory.items[0]).toMatchObject({ camera: "adapter-camera",
+      action: `Distinct action ${index + 1}`, promptText: `Distinct prompt ${index + 1}` });
   }
 
   const sibling = await post<{ entityId: string; revisionId: string; rowVersion: number }>(
