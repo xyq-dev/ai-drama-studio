@@ -88,5 +88,6 @@ async function failFromAdapter(jobs: JobPersistenceService, execution: Execution
   await jobs.failJob({ workspaceId: execution.workspaceId, jobId: execution.jobId,
     attemptId, traceId, errorCode: `TEXT_PROVIDER_${error.code}`, errorMessage: error.message,
     retryable: error.retryable,
-    nextRunAt: error.retryable ? retryAt(execution.jobId, execution.attemptNo ?? 1) : undefined });
+    nextRunAt: error.retryable
+      ? retryAt(execution.jobId, execution.attemptNo ?? 1, error.retryAfterMs) : undefined });
 }

@@ -280,6 +280,34 @@ describe("Mock three episode Scene workflow", () => {
     expect((await sql("SELECT id FROM scene_revision WHERE project_id=$1", [source.projectId])).rowCount).toBe(0);
   });
 
+  it.each([
+    ["throw", "RATE_LIMITED"],
+    ["return", "QUOTA"],
+  ] as const)("persists the %s %s cooldown and rejects premature delivery", async (mode, code) => {
+    const source = await approvedThreeScripts();
+    const retryAfterMs = 300_000;
+    const error = { code, message: "provider cooldown", retryable: true, retryAfterMs };
+    const adapter: TextGenerationAdapter = { providerKey: "cooldown-adapter", replayPolicy: "REPLAY_SAFE_SYNC",
+      generate: () => mode === "throw" ? Promise.reject(error) :
+        Promise.resolve({ kind: "failed", error }) };
+    const before = Date.now();
+    await completeMockJob(jobs, mockText, source.execution, source.attempt.attemptId, "cooldown", {}, adapter);
+    const after = Date.now();
+    const scheduled = (await sql<{ next_run_at: Date; available_at: Date; dispatch_seq: number }>(
+      `SELECT j.next_run_at, o.available_at, j.dispatch_seq FROM generation_job j
+         JOIN dispatch_outbox o ON o.job_id=j.id AND o.dispatch_seq=j.dispatch_seq
+        WHERE j.id=$1`, [source.created.jobId])).rows[0]!;
+    expect((await store.getJob(source.workspaceId, source.created.jobId)).state).toBe("QUEUED");
+    expect(scheduled.next_run_at.getTime()).toBeGreaterThanOrEqual(before + retryAfterMs);
+    expect(scheduled.next_run_at.getTime()).toBeLessThanOrEqual(after + retryAfterMs);
+    expect(scheduled.available_at).toEqual(scheduled.next_run_at);
+    expect(scheduled.dispatch_seq).toBe(source.created.dispatchSeq + 1);
+    expect(await jobs.acquireQueuedJob({ workspaceId: source.workspaceId, jobId: source.created.jobId,
+      dispatchSeq: scheduled.dispatch_seq, leaseOwner: "too-early", leaseMs: 10_000, traceId: "too-early" })).toBeNull();
+    expect((await sql("SELECT id FROM job_attempt WHERE generation_job_id=$1", [source.created.jobId])).rowCount).toBe(1);
+    expect((await sql("SELECT id FROM scene_revision WHERE project_id=$1", [source.projectId])).rowCount).toBe(0);
+  });
+
   it("atomically rejects duplicate and source-mismatched Adapter output", async () => {
     const source = await approvedThreeScripts();
     const invalid: TextGenerationAdapter = {
