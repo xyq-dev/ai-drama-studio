@@ -9,7 +9,6 @@ import {
   applyPage,
   applyTextContent,
   clearActiveDraft,
-  clearDraft,
   confirmConflictDraft,
   currentStoryRevision,
   describeRevision,
@@ -21,6 +20,7 @@ import {
   parseContentObject,
   readActiveDraftKey,
   readDraft,
+  releaseSubmittedDraft,
   rememberActiveDraft,
   reviewActions,
   reviewRequest,
@@ -204,7 +204,9 @@ export function Workbench({ projectId }: { projectId: string }) {
   const [sideOpen, setSideOpen] = useState(false);
   const [tasksOpen, setTasksOpen] = useState(false);
   const [saveState, setSaveState] = useState("尚未修改");
+  const [refreshEpoch, setRefreshEpoch] = useState(0);
   const baseToken = useRef(0);
+  const workflowStatus = useRef(new Map<string, string>());
 
   const reloadBase = useCallback(async () => {
     const request = ++baseToken.current;
@@ -217,12 +219,16 @@ export function Workbench({ projectId }: { projectId: string }) {
       client.get<WorkflowRun[]>(`/projects/${projectId}/workflow-runs`),
     ]);
     if (!shouldApplyLoad(request, baseToken.current)) return;
+    const textRuns = runs.filter((run) => TEXT_WORKFLOW_TYPES.has(run.type));
+    for (const run of textRuns) {
+      if (!workflowStatus.current.has(run.id)) workflowStatus.current.set(run.id, run.status);
+    }
     setProject(nextProject);
     setEpisodes(episodePage.items);
     setStories(applyPage(null, { scope: projectId, items: storyPage.items, nextCursor: storyPage.nextCursor, append: false }));
     setCharacters(applyPage(null, { scope: projectId, items: characterPage.items, nextCursor: characterPage.nextCursor, append: false }));
     setLocations(applyPage(null, { scope: projectId, items: locationPage.items, nextCursor: locationPage.nextCursor, append: false }));
-    setWorkflows(runs.filter((run) => TEXT_WORKFLOW_TYPES.has(run.type)));
+    setWorkflows(textRuns);
   }, [projectId]);
 
   useEffect(() => {
@@ -255,13 +261,26 @@ export function Workbench({ projectId }: { projectId: string }) {
       const request = baseToken.current;
       void client.get<WorkflowRun[]>(`/projects/${projectId}/workflow-runs`).then((runs) => {
         if (!shouldApplyLoad(request, baseToken.current)) return;
-        setWorkflows(runs.filter((run) => TEXT_WORKFLOW_TYPES.has(run.type)));
+        const text = runs.filter((run) => TEXT_WORKFLOW_TYPES.has(run.type));
+        let finished = false;
+        for (const run of text) {
+          const previous = workflowStatus.current.get(run.id);
+          if (previous && shouldPoll(previous, false) && !shouldPoll(run.status, false)) finished = true;
+          workflowStatus.current.set(run.id, run.status);
+        }
+        setWorkflows(text);
+        if (finished) {
+          setRefreshEpoch((value) => value + 1);
+          void reloadBase().catch(() => undefined);
+        }
       }).catch(() => undefined);
       timer = setTimeout(tick, 2000);
     };
     timer = setTimeout(tick, 2000);
     const onVisible = () => {
-      if (document.visibilityState === "visible") void reloadBase().catch(() => undefined);
+      if (document.visibilityState !== "visible") return;
+      setRefreshEpoch((value) => value + 1);
+      void reloadBase().catch(() => undefined);
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => {
@@ -354,6 +373,7 @@ export function Workbench({ projectId }: { projectId: string }) {
               projectVersion={project.version}
               episode={episodes.find((item) => item.episodeNo === focus.episodeNo) ?? null}
               storyCurrent={storyCurrent}
+              refreshEpoch={refreshEpoch}
               onSaved={reloadBase}
               onStatus={setSaveState}
               onOpenScene={(sceneId) => setFocus({ kind: "scene", episodeNo: focus.episodeNo, sceneId })}
@@ -376,6 +396,7 @@ export function Workbench({ projectId }: { projectId: string }) {
               episode={episodes.find((item) => item.episodeNo === focus.episodeNo) ?? null}
               sceneId={focus.sceneId}
               shotId={focus.kind === "shot" ? focus.shotId : null}
+              refreshEpoch={refreshEpoch}
               locations={locations?.items ?? []}
               onSaved={reloadBase}
               onStatus={setSaveState}
@@ -419,7 +440,13 @@ function StoryPane(props: {
           content={current?.content ?? EMPTY_CONTENT}
           empty={describeRevision(current ? { id: current.id } : null) === "empty"}
           ifMatch={aggregateVersion("story", { projectVersion: props.project.version })}
-          reloadIfMatch={async () => (await client.get<ProjectRecord>(`/projects/${props.project.id}`)).version}
+          readConflict={async () => {
+            const [nextProject, page] = await Promise.all([
+              client.get<ProjectRecord>(`/projects/${props.project.id}`),
+              client.get<{ items: StoryRevision[] }>(`/projects/${props.project.id}/stories`),
+            ]);
+            return { ifMatch: nextProject.version, server: currentStoryRevision(page.items)?.content ?? { text: "" } };
+          }}
         onStatus={props.onStatus}
         onSubmit={async (content, draft) => {
           await client.write({
@@ -460,6 +487,7 @@ function ScriptPane(props: {
   projectVersion: number;
   episode: EpisodeRecord | null;
   storyCurrent: StoryRevision | null;
+  refreshEpoch: number;
   onSaved: () => Promise<void>;
   onStatus: (value: string) => void;
   onOpenScene: (sceneId: string) => void;
@@ -482,7 +510,7 @@ function ScriptPane(props: {
     if (!shouldApplyLoad(request, loadToken.current)) return;
     setScripts(applyPage(null, { scope, items: scriptPage.items, nextCursor: scriptPage.nextCursor, append: false }));
     setScenes(applyPage(null, { scope, items: scenePage.items, nextCursor: scenePage.nextCursor, append: false }));
-  }, [props.episode, props.projectId]);
+  }, [props.episode, props.projectId, props.refreshEpoch]);
 
   useEffect(() => {
     setScripts(null);
@@ -517,9 +545,15 @@ function ScriptPane(props: {
           content={current?.content ?? EMPTY_CONTENT}
           empty={current === null}
           ifMatch={aggregateVersion("script", { episodeRowVersion: episode.rowVersion })}
-          reloadIfMatch={async () => {
-            const page = await client.get<{ items: EpisodeRecord[] }>(`/projects/${props.projectId}/episodes`);
-            return page.items.find((item) => item.id === episodeId)?.rowVersion ?? episode.rowVersion;
+          readConflict={async () => {
+            const [page, scriptsPage] = await Promise.all([
+              client.get<{ items: EpisodeRecord[] }>(`/projects/${props.projectId}/episodes`),
+              client.get<{ items: ScriptRevision[] }>(`/projects/${props.projectId}/episodes/${episodeId}/scripts`),
+            ]);
+            const nextEpisode = page.items.find((item) => item.id === episodeId);
+            const nextScript = scriptsPage.items.find((item) => item.id === nextEpisode?.currentScriptRevisionId);
+            if (!nextEpisode) throw new Error("episode missing");
+            return { ifMatch: nextEpisode.rowVersion, server: nextScript?.content ?? { text: "" } };
           }}
           extra={currentNotLoaded ? "当前剧本不在已加载页，请先加载更多版本，不会按序号另建一版。" : source.usable ? null : `来源不可用：${source.reason}`}
           onStatus={props.onStatus}
@@ -627,11 +661,18 @@ function SceneList(props: {
   useEffect(() => {
     const draft = readDraft(window.sessionStorage, storageKey);
     const payload = draft?.payload;
-    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return;
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+      setOrdinal("1");
+      setHeading("");
+      setSummary("");
+      setTimeOfDay("");
+      return;
+    }
     const record = payload as Record<string, unknown>;
-    if (typeof record.heading === "string") setHeading(record.heading);
-    if (typeof record.summary === "string") setSummary(record.summary);
-    if (typeof record.ordinal === "number") setOrdinal(String(record.ordinal));
+    setHeading(typeof record.heading === "string" ? record.heading : "");
+    setSummary(typeof record.summary === "string" ? record.summary : "");
+    setTimeOfDay(typeof record.timeOfDay === "string" ? record.timeOfDay : "");
+    setOrdinal(typeof record.ordinal === "number" ? String(record.ordinal) : "1");
   }, [storageKey]);
 
   function remember(next: { ordinal: string; heading: string; summary: string; timeOfDay: string }) {
@@ -666,7 +707,12 @@ function SceneList(props: {
         idempotencyKey: draft.idempotencyKey,
         ifMatch: props.episode.rowVersion,
       });
-      clearDraft(window.sessionStorage, storageKey);
+      if (releaseSubmittedDraft(window.sessionStorage, storageKey, draft)) {
+        setOrdinal("1");
+        setHeading("");
+        setSummary("");
+        setTimeOfDay("");
+      }
       props.onStatus("已保存");
       await props.onReload();
       props.onOpen(created.body.entityId);
@@ -712,6 +758,57 @@ function SceneList(props: {
   );
 }
 
+interface SourceChoice {
+  id: string;
+  label: string;
+  usable: boolean;
+  reason: string;
+}
+
+interface SeenBaseline {
+  ifMatch: number;
+  server: unknown;
+}
+
+interface EditorDraft {
+  mode: "text" | "json";
+  text: string;
+  raw: string;
+  parsed: Record<string, unknown> | null;
+  sourceId: string | null;
+}
+
+function editorDraftFrom(payload: unknown, fallback: unknown, sourceId: string | null): EditorDraft {
+  if (payload && typeof payload === "object" && !Array.isArray(payload) && "mode" in payload) {
+    const record = payload as Partial<EditorDraft>;
+    return {
+      mode: record.mode === "json" ? "json" : "text",
+      text: typeof record.text === "string" ? record.text : "",
+      raw: typeof record.raw === "string" ? record.raw : "",
+      parsed: record.parsed && typeof record.parsed === "object" && !Array.isArray(record.parsed) ? record.parsed : null,
+      sourceId: typeof record.sourceId === "string" ? record.sourceId : sourceId,
+    };
+  }
+  const parsed = payload && typeof payload === "object" && !Array.isArray(payload)
+    ? payload as Record<string, unknown>
+    : (fallback && typeof fallback === "object" && !Array.isArray(fallback) ? { ...(fallback as Record<string, unknown>) } : { text: "" });
+  return {
+    mode: isSimpleContent(parsed) ? "text" : "json",
+    text: textOf(parsed),
+    raw: JSON.stringify(parsed, null, 2),
+    parsed,
+    sourceId,
+  };
+}
+
+function contentFromDraft(draft: EditorDraft, fallback: unknown): Record<string, unknown> {
+  if (draft.mode === "json") {
+    if (!draft.parsed) throw new Error("JSON 尚未完成");
+    return draft.parsed;
+  }
+  return applyTextContent(draft.parsed ?? fallback, draft.text);
+}
+
 function ContentEditor(props: {
   title: string;
   projectId: string;
@@ -721,78 +818,114 @@ function ContentEditor(props: {
   empty: boolean;
   ifMatch: number;
   extra?: string | null;
-  reloadIfMatch: () => Promise<number>;
+  sources?: SourceChoice[];
+  initialSourceId?: string | null;
+  readConflict: () => Promise<SeenBaseline>;
   onStatus: (value: string) => void;
-  onSubmit: (content: Record<string, unknown>, draft: { idempotencyKey: string; ifMatch: number | null }) => Promise<void>;
+  onSubmit: (content: Record<string, unknown>, draft: { idempotencyKey: string; ifMatch: number | null }, sourceId: string | null) => Promise<void>;
   onSaved: () => Promise<void>;
 }) {
+  const scope = `${props.projectId}:${props.entityKey}:${props.baseRevisionId ?? "new"}`;
   const [storageKey, setStorageKey] = useState(() => draftStorageKey(props.projectId, props.entityKey, props.baseRevisionId));
-  const [advanced, setAdvanced] = useState(!isSimpleContent(props.content));
-  const [text, setText] = useState(textOf(props.content));
-  const [raw, setRaw] = useState(() => JSON.stringify(props.content ?? { text: "" }, null, 2));
+  const initial = editorDraftFrom(null, props.content, props.initialSourceId ?? null);
+  const [advanced, setAdvanced] = useState(initial.mode === "json");
+  const [text, setText] = useState(initial.text);
+  const [raw, setRaw] = useState(initial.raw);
+  const [parsed, setParsed] = useState<Record<string, unknown> | null>(initial.parsed);
+  const [sourceId, setSourceId] = useState<string | null>(initial.sourceId);
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState<string | null>(null);
-  const draftScope = useRef("");
+  const [seen, setSeen] = useState<SeenBaseline | null>(null);
+  const scopeRef = useRef("");
   const complex = !isSimpleContent(props.content);
   const contentStamp = stableJson(props.content);
+  const selectedSource = props.sources?.find((item) => item.id === sourceId) ?? null;
+  const sourceBlocked = Boolean(props.sources) && !selectedSource?.usable;
 
-  useEffect(() => {
-    const active = readActiveDraftKey(window.sessionStorage, props.projectId, props.entityKey);
-    const key = active ?? draftStorageKey(props.projectId, props.entityKey, props.baseRevisionId);
-    setStorageKey(key);
-    const draft = readDraft(window.sessionStorage, key);
-    const source = draft?.payload ?? props.content;
-    setAdvanced(!isSimpleContent(source));
-    setText(textOf(source));
-    setRaw(JSON.stringify(source ?? { text: "" }, null, 2));
-    const scope = `${props.projectId}:${props.entityKey}:${props.baseRevisionId}`;
-    const switched = draftScope.current !== scope;
-    draftScope.current = scope;
-    if (switched) setConflict(draft && draft.ifMatch !== props.ifMatch ? "服务端基线已变化，草稿仍保留" : null);
-    else if (draft && draft.ifMatch !== props.ifMatch) setConflict("服务端基线已变化，草稿仍保留");
-    else if (!draft) setConflict(null);
-  }, [contentStamp, props.baseRevisionId, props.entityKey, props.ifMatch, props.projectId]);
-
-  function payload(): Record<string, unknown> {
-    if (advanced) return parseContentObject(raw);
-    return applyTextContent(props.content, text);
+  function currentDraft(next?: Partial<EditorDraft>): EditorDraft {
+    return {
+      mode: next?.mode ?? (advanced ? "json" : "text"),
+      text: next?.text ?? text,
+      raw: next?.raw ?? raw,
+      parsed: next?.parsed === undefined ? parsed : next.parsed,
+      sourceId: next?.sourceId === undefined ? sourceId : next.sourceId,
+    };
   }
 
-  function remember(nextPayload: unknown) {
-    const draft = nextDraft(readDraft(window.sessionStorage, storageKey), nextPayload, props.ifMatch, () => crypto.randomUUID());
+  function remember(next: EditorDraft) {
+    const draft = nextDraft(readDraft(window.sessionStorage, storageKey), next, props.ifMatch, () => crypto.randomUUID());
     writeDraft(window.sessionStorage, storageKey, draft);
     rememberActiveDraft(window.sessionStorage, props.projectId, props.entityKey, storageKey);
     props.onStatus("未保存");
   }
 
+  useEffect(() => {
+    const active = readActiveDraftKey(window.sessionStorage, props.projectId, props.entityKey);
+    const key = active ?? draftStorageKey(props.projectId, props.entityKey, props.baseRevisionId);
+    setStorageKey(key);
+    const stored = readDraft(window.sessionStorage, key);
+    const draft = editorDraftFrom(stored?.payload, props.content, props.initialSourceId ?? null);
+    setAdvanced(draft.mode === "json");
+    setText(draft.text);
+    setRaw(draft.raw);
+    setParsed(draft.parsed);
+    setSourceId(draft.sourceId);
+    const identity = `${props.projectId}:${props.entityKey}`;
+    if (scopeRef.current !== identity) {
+      scopeRef.current = identity;
+      setConflict(null);
+      setSeen(null);
+      setError(null);
+    }
+  }, [contentStamp, props.baseRevisionId, props.content, props.entityKey, props.initialSourceId, props.projectId, scope]);
+
+  async function beginConflict(message: string) {
+    setConflict(message);
+    props.onStatus("版本冲突，草稿保留");
+    try {
+      setSeen(await props.readConflict());
+    } catch {
+      setSeen(null);
+      setConflict(`${message} 未能读取新基线，草稿保留。`);
+    }
+  }
+
   async function save(force: boolean) {
+    if (!force && conflict) return;
+    if (sourceBlocked) {
+      setError(selectedSource ? selectedSource.reason : "没有已批准且 CURRENT 的来源");
+      return;
+    }
+    const snapshot = currentDraft();
     let body: Record<string, unknown>;
     try {
-      body = payload();
+      body = contentFromDraft(snapshot, props.content);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "JSON 无效");
       return;
     }
-    const ifMatch = force ? await props.reloadIfMatch() : props.ifMatch;
+    const ifMatch = force ? seen?.ifMatch : props.ifMatch;
+    if (ifMatch === undefined || ifMatch === null) return;
     const existing = readDraft(window.sessionStorage, storageKey);
     const draft = force
-      ? confirmConflictDraft(existing ?? nextDraft(null, body, ifMatch, () => crypto.randomUUID()), ifMatch, () => crypto.randomUUID())
-      : nextDraft(existing, body, ifMatch, () => crypto.randomUUID());
+      ? confirmConflictDraft(existing ?? nextDraft(null, snapshot, ifMatch, () => crypto.randomUUID()), ifMatch, () => crypto.randomUUID())
+      : nextDraft(existing, snapshot, ifMatch, () => crypto.randomUUID());
     writeDraft(window.sessionStorage, storageKey, draft);
     rememberActiveDraft(window.sessionStorage, props.projectId, props.entityKey, storageKey);
     props.onStatus("保存中");
     try {
-      await props.onSubmit(body, draft);
-      clearDraft(window.sessionStorage, storageKey);
-      clearActiveDraft(window.sessionStorage, props.projectId, props.entityKey);
+      await props.onSubmit(body, draft, snapshot.sourceId);
+      if (releaseSubmittedDraft(window.sessionStorage, storageKey, draft)) {
+        clearActiveDraft(window.sessionStorage, props.projectId, props.entityKey);
+      }
       setConflict(null);
+      setSeen(null);
+      setError(null);
       props.onStatus("已保存");
       await props.onSaved();
     } catch (caught) {
       if (caught instanceof ApiError && caught.status === 409) {
-        setConflict(`${caught.code}：${caught.detail}`);
-        props.onStatus("版本冲突，草稿保留");
-        await props.onSaved().catch(() => undefined);
+        await beginConflict(`${caught.code}：${caught.detail}`);
         return;
       }
       setError(caught instanceof ApiError ? `${caught.code}：${caught.detail}` : "保存失败，草稿保留");
@@ -800,35 +933,98 @@ function ContentEditor(props: {
     }
   }
 
-  const serverDiff = conflict ? diffJson(props.content, readDraft(window.sessionStorage, storageKey)?.payload ?? props.content) : [];
+  let serverDiff: ReturnType<typeof diffJson> = [];
+  if (seen) {
+    try {
+      serverDiff = diffJson(seen.server, contentFromDraft(currentDraft(), props.content));
+    } catch {
+      serverDiff = [];
+    }
+  }
 
   return (
     <form className="rounded-lg bg-white p-4" onSubmit={(event) => { event.preventDefault(); void save(false); }}>
       <h2 className="font-medium">{props.title}</h2>
       {props.empty ? <p className="mt-2 text-sm">尚无版本。保存将创建第一版。</p> : null}
       {props.extra ? <p className="mt-2 text-sm">{props.extra}</p> : null}
+      {props.sources ? (
+        <>
+          <label className="mt-3 block text-sm" htmlFor="editor-source">来源</label>
+          <select id="editor-source" className="mt-1 w-full rounded border px-2 py-1" value={sourceId ?? ""} onChange={(event) => {
+            const nextSource = event.target.value || null;
+            setSourceId(nextSource);
+            remember(currentDraft({ sourceId: nextSource }));
+          }}>
+            <option value="">选择已批准且 CURRENT 的来源</option>
+            {props.sources.map((item) => (
+              <option key={item.id} value={item.id} disabled={!item.usable}>{item.label}{item.usable ? "" : ` ${item.reason}`}</option>
+            ))}
+          </select>
+        </>
+      ) : null}
       {complex || advanced ? (
         <>
           <label className="mt-3 block text-sm" htmlFor={`${storageKey}-json`}>高级 JSON</label>
-          <textarea id={`${storageKey}-json`} className={`${BODY_FIELD} font-mono text-sm`} rows={12} value={raw} onChange={(event) => { setRaw(event.target.value); try { remember(parseContentObject(event.target.value)); } catch { props.onStatus("JSON 尚未完成"); } }} />
+          <textarea id={`${storageKey}-json`} className={`${BODY_FIELD} font-mono text-sm`} rows={12} value={raw} onChange={(event) => {
+            const nextRaw = event.target.value;
+            setRaw(nextRaw);
+            try {
+              const next = parseContentObject(nextRaw);
+              setParsed(next);
+              setText(textOf(next));
+              remember(currentDraft({ mode: "json", raw: nextRaw, text: textOf(next), parsed: next }));
+            } catch {
+              setParsed(null);
+              remember(currentDraft({ mode: "json", raw: nextRaw, parsed: null }));
+              props.onStatus("JSON 尚未完成");
+            }
+          }} />
         </>
       ) : (
         <>
           <label className="mt-3 block text-sm" htmlFor={`${storageKey}-text`}>正文</label>
-          <textarea id={`${storageKey}-text`} className={BODY_FIELD} rows={12} value={text} onChange={(event) => { setText(event.target.value); remember(applyTextContent(props.content, event.target.value)); }} />
+          <textarea id={`${storageKey}-text`} className={BODY_FIELD} rows={12} value={text} onChange={(event) => {
+            const nextText = event.target.value;
+            const next = applyTextContent(parsed ?? props.content, nextText);
+            setText(nextText);
+            setParsed(next);
+            setRaw(JSON.stringify(next, null, 2));
+            remember(currentDraft({ mode: "text", text: nextText, raw: JSON.stringify(next, null, 2), parsed: next }));
+          }} />
         </>
       )}
       {complex ? <p className="mt-2 text-sm">已有字段会原样保留，不会改成纯文本。</p> : (
-        <button className="mt-2 text-sm underline" type="button" onClick={() => setAdvanced((value) => !value)}>{advanced ? "返回正文" : "高级 JSON"}</button>
+        <button className="mt-2 text-sm underline" type="button" onClick={() => {
+          if (advanced) {
+            try {
+              const next = parseContentObject(raw);
+              setParsed(next);
+              setText(textOf(next));
+              setRaw(JSON.stringify(next, null, 2));
+              setAdvanced(false);
+              remember(currentDraft({ mode: "text", text: textOf(next), raw: JSON.stringify(next, null, 2), parsed: next }));
+            } catch {
+              setError("JSON 尚未完成，不能返回正文");
+            }
+            return;
+          }
+          const next = applyTextContent(parsed ?? props.content, text);
+          const nextRaw = JSON.stringify(next, null, 2);
+          setParsed(next);
+          setRaw(nextRaw);
+          setAdvanced(true);
+          remember(currentDraft({ mode: "json", text: textOf(next), raw: nextRaw, parsed: next }));
+        }}>{advanced ? "返回正文" : "高级 JSON"}</button>
       )}
-      <button className="mt-3 rounded bg-red-700 px-4 py-2 text-white" type="submit">保存新版本</button>
+      <button className="mt-3 rounded bg-red-700 px-4 py-2 text-white disabled:opacity-50" type="submit" disabled={Boolean(conflict) || sourceBlocked}>保存新版本</button>
+      {sourceBlocked ? <p className="mt-2 text-sm">{selectedSource?.reason || "来源需要是当前、已批准且 CURRENT。"}</p> : null}
       {error ? <p className="mt-2 text-sm" role="alert">{error}</p> : null}
       {conflict ? (
         <div className="mt-3 rounded border border-neutral-300 p-3" role="alert">
           <p>{conflict}</p>
-          <p className="mt-1 text-sm">草稿已保留。确认后才会用新的基线和新的幂等键提交。</p>
-          <DiffList rows={serverDiff} />
-          <button className="mt-2 rounded border px-3 py-1" type="button" onClick={() => void save(true)}>确认后重新提交</button>
+          <p className="mt-1 text-sm">{seen ? `已看到的并发版本 ${seen.ifMatch}。确认后只按这个版本和新的幂等键提交。` : "草稿已保留。还没有可读的新基线，不能确认提交。"}</p>
+          {seen ? <DiffList rows={serverDiff} /> : null}
+          <button className="mt-2 rounded border px-3 py-1 disabled:opacity-50" type="button" disabled={!seen} onClick={() => void save(true)}>确认后重新提交</button>
         </div>
       ) : null}
     </form>
@@ -846,6 +1042,9 @@ function EntityPane(props: {
 }) {
   const [selected, setSelected] = useState<string | null>(null);
   const [history, setHistory] = useState<{ aggregate: Aggregate; items: EntityRevision[] } | null>(null);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [historyToken, setHistoryToken] = useState(0);
+  const historyRequest = useRef(0);
   const sources = props.episodes.flatMap((episode) => {
     const usable = sourceUsable({
       reviewStatus: episode.currentScriptReviewStatus,
@@ -859,16 +1058,28 @@ function EntityPane(props: {
   const usableSource = sources.find((source) => source.usable) ?? null;
 
   useEffect(() => {
-    if (!selected) {
-      setHistory(null);
-      return;
-    }
-    let cancelled = false;
-    void client.get<{ aggregate: Aggregate; items: EntityRevision[] }>(`/projects/${props.project.id}/${props.kind}s/${selected}/revisions`).then((next) => {
-      if (!cancelled) setHistory(next);
-    });
-    return () => { cancelled = true; };
+    setSelected(null);
+  }, [props.kind, props.project.id]);
+
+  useEffect(() => {
+    setHistory(null);
+    setHistoryError(null);
   }, [props.kind, props.project.id, selected]);
+
+  useEffect(() => {
+    if (!selected) return;
+    const request = ++historyRequest.current;
+    const entityId = selected;
+    void client.get<{ aggregate: Aggregate; items: EntityRevision[] }>(`/projects/${props.project.id}/${props.kind}s/${entityId}/revisions`).then((next) => {
+      if (request !== historyRequest.current) return;
+      setHistory(next);
+      setHistoryError(null);
+    }).catch((caught: unknown) => {
+      if (request !== historyRequest.current) return;
+      setHistory(null);
+      setHistoryError(caught instanceof ApiError ? caught.detail : "版本加载失败");
+    });
+  }, [historyToken, props.kind, props.project.id, selected]);
 
   const current = history?.items.find((item) => item.id === history.aggregate.currentRevisionId) ?? null;
 
@@ -889,7 +1100,9 @@ function EntityPane(props: {
           </ul>
           {props.page?.nextCursor ? <button className="mt-2 text-sm underline" type="button" onClick={props.onMore}>加载更多</button> : null}
         </section>
-        {selected && history && current ? (
+        {historyError ? <p role="alert">{historyError}</p> : null}
+        {selected && !history && !historyError ? <p className="text-sm">正在加载版本</p> : null}
+        {selected && history?.aggregate.entityId === selected && current ? (
           <ContentEditor
             title="当前版本"
             projectId={props.project.id}
@@ -898,20 +1111,28 @@ function EntityPane(props: {
             content={current.content}
             empty={false}
             ifMatch={aggregateVersion(props.kind, { entityRowVersion: history.aggregate.rowVersion })}
-            reloadIfMatch={async () => {
-              const next = await client.get<{ aggregate: Aggregate }>(`/projects/${props.project.id}/${props.kind}s/${selected}/revisions`);
-              return next.aggregate.rowVersion;
+            sources={sources}
+            initialSourceId={current.sourceScriptRevisionId}
+            readConflict={async () => {
+              const next = await client.get<{ aggregate: Aggregate; items: EntityRevision[] }>(`/projects/${props.project.id}/${props.kind}s/${selected}/revisions`);
+              const latest = next.items.find((item) => item.id === next.aggregate.currentRevisionId);
+              if (!latest) throw new Error("current revision missing");
+              return { ifMatch: next.aggregate.rowVersion, server: latest.content };
             }}
             onStatus={props.onStatus}
-            onSubmit={async (content, draft) => {
+            onSubmit={async (content, draft, sourceId) => {
+              if (!sourceId) throw new ApiError(400, "SOURCE_UNAVAILABLE", "没有已批准且 CURRENT 的来源");
               await client.write({
                 path: `/projects/${props.project.id}/${props.kind}s/${selected}/revisions`,
-                body: { sourceScriptRevisionId: current.sourceScriptRevisionId, content },
+                body: { sourceScriptRevisionId: sourceId, content },
                 idempotencyKey: draft.idempotencyKey,
                 ifMatch: draft.ifMatch ?? undefined,
               });
             }}
-            onSaved={props.onSaved}
+            onSaved={async () => {
+              await props.onSaved();
+              setHistoryToken((value) => value + 1);
+            }}
           />
         ) : null}
         <NewEntityForm
@@ -922,7 +1143,7 @@ function EntityPane(props: {
           onSaved={props.onSaved}
         />
       </div>
-      {history ? (
+      {history?.aggregate.entityId === selected ? (
         <RevisionColumn
           items={history.items.map((item) => ({
             id: item.id,
@@ -940,7 +1161,10 @@ function EntityPane(props: {
           onMore={() => undefined}
           ifMatch={history.aggregate.rowVersion}
           reviewPath={(revisionId) => `/projects/${props.project.id}/${props.kind}s/${history.aggregate.entityId}/revisions/${revisionId}/review`}
-          onSaved={props.onSaved}
+          onSaved={async () => {
+            await props.onSaved();
+            setHistoryToken((value) => value + 1);
+          }}
         />
       ) : <p className="text-sm">选择一个对象后显示版本。</p>}
     </div>
@@ -958,12 +1182,20 @@ function NewEntityForm(props: {
   const [name, setName] = useState("");
   const [text, setText] = useState("");
   const [error, setError] = useState<string | null>(null);
+  function remember(nextName: string, nextText: string) {
+    const body = { name: nextName, sourceScriptRevisionId: props.source?.id ?? null, content: applyTextContent({}, nextText) };
+    writeDraft(window.sessionStorage, storageKey, nextDraft(readDraft(window.sessionStorage, storageKey), body, props.project.version, () => crypto.randomUUID()));
+  }
   useEffect(() => {
     const draft = readDraft(window.sessionStorage, storageKey);
     const payload = draft?.payload;
-    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return;
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+      setName("");
+      setText("");
+      return;
+    }
     const record = payload as { name?: unknown; content?: unknown };
-    if (typeof record.name === "string") setName(record.name);
+    setName(typeof record.name === "string" ? record.name : "");
     setText(textOf(record.content));
   }, [storageKey]);
 
@@ -983,7 +1215,10 @@ function NewEntityForm(props: {
         idempotencyKey: draft.idempotencyKey,
         ifMatch: aggregateVersion(props.kind === "character" ? "character-create" : "location-create", { projectVersion: props.project.version }),
       });
-      clearDraft(window.sessionStorage, storageKey);
+      if (releaseSubmittedDraft(window.sessionStorage, storageKey, draft)) {
+        setName("");
+        setText("");
+      }
       props.onStatus("已保存");
       await props.onSaved();
     } catch (caught) {
@@ -996,9 +1231,9 @@ function NewEntityForm(props: {
     <form className="rounded-lg bg-white p-4" onSubmit={(event) => { event.preventDefault(); void save(); }}>
       <h2 className="font-medium">新建{props.kind === "character" ? "角色" : "场地"}</h2>
       <label className="mt-2 block text-sm" htmlFor="entity-name">名称</label>
-      <input id="entity-name" className="w-full rounded border px-2 py-1" maxLength={LIMITS.name} value={name} onChange={(event) => setName(event.target.value)} required />
+      <input id="entity-name" className="w-full rounded border px-2 py-1" maxLength={LIMITS.name} value={name} onChange={(event) => { setName(event.target.value); remember(event.target.value, text); }} required />
       <label className="mt-2 block text-sm" htmlFor="entity-text">正文</label>
-      <textarea id="entity-text" className="w-full rounded border px-2 py-1" rows={6} value={text} onChange={(event) => setText(event.target.value)} />
+      <textarea id="entity-text" className="w-full rounded border px-2 py-1" rows={6} value={text} onChange={(event) => { setText(event.target.value); remember(name, event.target.value); }} />
       <p className="mt-2 text-sm">来源：{props.source ? props.source.label : "没有可用来源"}</p>
       <button className="mt-3 rounded bg-red-700 px-3 py-2 text-white disabled:opacity-50" disabled={!props.source} type="submit">保存新版本</button>
       {error ? <p role="alert">{error}</p> : null}
@@ -1011,6 +1246,7 @@ function ScenePane(props: {
   episode: EpisodeRecord | null;
   sceneId: string;
   shotId: string | null;
+  refreshEpoch: number;
   locations: Aggregate[];
   onSaved: () => Promise<void>;
   onStatus: (value: string) => void;
@@ -1026,31 +1262,39 @@ function ScenePane(props: {
     if (!props.episode) return;
     const request = ++loadToken.current;
     const episode = props.episode;
-    const scene = await client.get<{ aggregate: Aggregate; items: SceneRevision[] }>(
-      `/projects/${props.projectId}/episodes/${episode.id}/scenes/${props.sceneId}/revisions`,
-    );
-    const shotPage = await client.get<{ items: Aggregate[]; nextCursor: string | null }>(
-      `/projects/${props.projectId}/episodes/${episode.id}/scenes/${props.sceneId}/shots`,
-    );
-    if (!shouldApplyLoad(request, loadToken.current)) return;
-    setHistory(scene);
-    setShots(applyPage(null, {
-      scope: props.sceneId,
-      items: shotPage.items,
-      nextCursor: shotPage.nextCursor,
-      append: false,
-    }));
-    if (props.shotId) {
-      const nextShot = await client.get<{ aggregate: Aggregate; items: ShotRevision[] }>(`/projects/${props.projectId}/episodes/${episode.id}/scenes/${props.sceneId}/shots/${props.shotId}/revisions`);
+    try {
+      const scene = await client.get<{ aggregate: Aggregate; items: SceneRevision[] }>(
+        `/projects/${props.projectId}/episodes/${episode.id}/scenes/${props.sceneId}/revisions`,
+      );
+      const shotPage = await client.get<{ items: Aggregate[]; nextCursor: string | null }>(
+        `/projects/${props.projectId}/episodes/${episode.id}/scenes/${props.sceneId}/shots`,
+      );
       if (!shouldApplyLoad(request, loadToken.current)) return;
-      setShotHistory(nextShot);
-    } else {
+      setHistory(scene);
+      setShots(applyPage(null, {
+        scope: props.sceneId,
+        items: shotPage.items,
+        nextCursor: shotPage.nextCursor,
+        append: false,
+      }));
+      if (props.shotId) {
+        const nextShot = await client.get<{ aggregate: Aggregate; items: ShotRevision[] }>(`/projects/${props.projectId}/episodes/${episode.id}/scenes/${props.sceneId}/shots/${props.shotId}/revisions`);
+        if (!shouldApplyLoad(request, loadToken.current)) return;
+        setShotHistory(nextShot);
+      } else {
+        setShotHistory(null);
+      }
+      setError(null);
+    } catch (caught) {
+      if (!shouldApplyLoad(request, loadToken.current)) return;
+      setHistory(null);
       setShotHistory(null);
+      setError(caught instanceof ApiError ? caught.detail : "场景加载失败");
     }
-  }, [props.episode, props.projectId, props.sceneId, props.shotId]);
+  }, [props.episode, props.projectId, props.refreshEpoch, props.sceneId, props.shotId]);
 
   useEffect(() => {
-    void load().catch((caught: unknown) => setError(caught instanceof ApiError ? caught.detail : "场景加载失败"));
+    void load();
   }, [load]);
 
   async function moreShots() {
@@ -1069,8 +1313,21 @@ function ScenePane(props: {
   }
 
   if (!props.episode) return <p>缺少集数。</p>;
-  const current = history?.items.find((item) => item.id === history.aggregate.currentRevisionId) ?? null;
-  const shotCurrent = shotHistory?.items.find((item) => item.id === shotHistory.aggregate.currentRevisionId) ?? null;
+  const visibleHistory = history?.aggregate.entityId === props.sceneId ? history : null;
+  const current = visibleHistory?.items.find((item) => item.id === visibleHistory.aggregate.currentRevisionId) ?? null;
+  const visibleShot = props.shotId && shotHistory?.aggregate.entityId === props.shotId ? shotHistory : null;
+  const shotCurrent = visibleShot ? visibleShot.items.find((item) => item.id === visibleShot.aggregate.currentRevisionId) ?? null : null;
+  const sceneSources = (visibleHistory?.items ?? []).map((item) => ({
+    id: item.id,
+    label: `第 ${item.revisionNo} 版`,
+    ...sourceUsable({
+      reviewStatus: item.reviewStatus,
+      freshnessStatus: item.freshnessStatus,
+      currentId: visibleHistory?.aggregate.currentRevisionId ?? null,
+      approvedId: visibleHistory?.aggregate.approvedRevisionId ?? null,
+      revisionId: item.id,
+    }),
+  }));
   const locationChoices = props.locations.flatMap((location) => {
     const usable = sourceUsable({
       reviewStatus: location.currentRevision?.reviewStatus ?? null,
@@ -1085,12 +1342,12 @@ function ScenePane(props: {
   return (
     <div className="space-y-4">
       {error ? <p role="alert">{error}</p> : null}
-      {history && current ? (
+      {visibleHistory && current ? (
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]">
           <SceneForm
             projectId={props.projectId}
             episode={props.episode}
-            scene={history.aggregate}
+            scene={visibleHistory.aggregate}
             current={current}
             locations={locationChoices}
             onStatus={props.onStatus}
@@ -1105,7 +1362,7 @@ function ScenePane(props: {
             onSaved={async () => { await props.onSaved(); await load(); }}
           />
           <RevisionColumn
-            items={history.items.map((item) => ({
+            items={visibleHistory.items.map((item) => ({
               id: item.id,
               revisionNo: item.revisionNo,
               reviewStatus: item.reviewStatus,
@@ -1116,10 +1373,10 @@ function ScenePane(props: {
               staleReason: null,
               body: item,
             }))}
-            currentId={history.aggregate.currentRevisionId}
+            currentId={visibleHistory.aggregate.currentRevisionId}
             nextCursor={null}
             onMore={() => undefined}
-            ifMatch={history.aggregate.rowVersion}
+            ifMatch={visibleHistory.aggregate.rowVersion}
             reviewPath={(revisionId) => `/projects/${props.projectId}/episodes/${props.episode?.id}/scenes/${props.sceneId}/revisions/${revisionId}/review`}
             onSaved={async () => { await props.onSaved(); await load(); }}
           />
@@ -1138,9 +1395,9 @@ function ScenePane(props: {
         {shots?.nextCursor ? (
           <button className="mt-2 text-sm underline" type="button" onClick={() => void moreShots()}>加载更多镜头</button>
         ) : null}
-        {current && history ? (
+        {current && visibleHistory ? (
           <ShotCreateForm
-            scene={history.aggregate}
+            scene={visibleHistory.aggregate}
             source={current}
             projectId={props.projectId}
             episodeId={props.episode.id}
@@ -1150,16 +1407,18 @@ function ScenePane(props: {
           />
         ) : null}
       </section>
-      {props.shotId && shotHistory && shotCurrent ? (
+      {props.shotId && visibleShot && shotCurrent ? (
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]">
           <ShotForm
-            shot={shotHistory.aggregate}
+            shot={visibleShot.aggregate}
             current={shotCurrent}
+            sources={sceneSources}
             projectId={props.projectId}
-            reloadIfMatch={async () => (await client.get<{ aggregate: Aggregate }>(`/projects/${props.projectId}/episodes/${props.episode?.id}/scenes/${props.sceneId}/shots/${props.shotId}/revisions`)).aggregate.rowVersion}
-            loadLatest={async () => {
+            readConflict={async () => {
               const fresh = await client.get<{ aggregate: Aggregate; items: ShotRevision[] }>(`/projects/${props.projectId}/episodes/${props.episode?.id}/scenes/${props.sceneId}/shots/${props.shotId}/revisions`);
-              return fresh.items.find((item) => item.id === fresh.aggregate.currentRevisionId) ?? null;
+              const latest = fresh.items.find((item) => item.id === fresh.aggregate.currentRevisionId);
+              if (!latest) throw new Error("current shot missing");
+              return { ifMatch: fresh.aggregate.rowVersion, server: latest };
             }}
             onStatus={props.onStatus}
             onSubmit={async (body, key, ifMatch) => {
@@ -1173,7 +1432,7 @@ function ScenePane(props: {
             onSaved={async () => { await props.onSaved(); await load(); }}
           />
           <RevisionColumn
-            items={shotHistory.items.map((item) => ({
+            items={visibleShot.items.map((item) => ({
               id: item.id,
               revisionNo: item.revisionNo,
               reviewStatus: item.reviewStatus,
@@ -1184,10 +1443,10 @@ function ScenePane(props: {
               staleReason: null,
               body: item,
             }))}
-            currentId={shotHistory.aggregate.currentRevisionId}
+            currentId={visibleShot.aggregate.currentRevisionId}
             nextCursor={null}
             onMore={() => undefined}
-            ifMatch={shotHistory.aggregate.rowVersion}
+            ifMatch={visibleShot.aggregate.rowVersion}
             reviewPath={(revisionId) => `/projects/${props.projectId}/episodes/${props.episode?.id}/scenes/${props.sceneId}/shots/${props.shotId}/revisions/${revisionId}/review`}
             onSaved={async () => { await props.onSaved(); await load(); }}
           />
@@ -1216,6 +1475,7 @@ function SceneForm(props: {
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState<string | null>(null);
   const [serverScene, setServerScene] = useState<SceneRevision | null>(null);
+  const [seenVersion, setSeenVersion] = useState<number | null>(null);
   const scriptUsable = sourceUsable({
     reviewStatus: props.episode.currentScriptReviewStatus,
     freshnessStatus: props.episode.currentScriptFreshnessStatus,
@@ -1235,11 +1495,47 @@ function SceneForm(props: {
     };
   }
 
+  function remember(next = body()) {
+    const draft = nextDraft(readDraft(window.sessionStorage, storageKey), next, props.scene.rowVersion, () => crypto.randomUUID());
+    writeDraft(window.sessionStorage, storageKey, draft);
+    rememberActiveDraft(window.sessionStorage, props.projectId, `scene:${props.scene.entityId}`, storageKey);
+    props.onStatus("未保存");
+    return draft;
+  }
+
+  useEffect(() => {
+    const payload = readDraft(window.sessionStorage, storageKey)?.payload;
+    const record = payload && typeof payload === "object" && !Array.isArray(payload) ? payload as Record<string, unknown> : null;
+    setHeading(typeof record?.heading === "string" ? record.heading : props.current.heading);
+    setSummary(typeof record?.summary === "string" ? record.summary : props.current.summary);
+    setTimeOfDay(typeof record?.timeOfDay === "string" ? record.timeOfDay : (props.current.timeOfDay ?? ""));
+    setOrdinal(typeof record?.ordinal === "number" ? String(record.ordinal) : String(props.current.ordinal));
+    setLocationId(typeof record?.locationRevisionId === "string" ? record.locationRevisionId : (props.current.locationRevisionId ?? ""));
+  }, [storageKey]);
+
+  async function beginConflict(message: string) {
+    setConflict(message);
+    props.onStatus("版本冲突，草稿保留");
+    try {
+      const fresh = await client.get<{ aggregate: Aggregate; items: SceneRevision[] }>(
+        `/projects/${props.projectId}/episodes/${props.episode.id}/scenes/${props.scene.entityId}/revisions`,
+      );
+      const latest = fresh.items.find((item) => item.id === fresh.aggregate.currentRevisionId) ?? null;
+      if (!latest) throw new Error("current scene missing");
+      setServerScene(latest);
+      setSeenVersion(fresh.aggregate.rowVersion);
+    } catch {
+      setServerScene(null);
+      setSeenVersion(null);
+      setConflict(`${message} 未能读取新基线，草稿保留。`);
+    }
+  }
+
   async function save(force: boolean) {
+    if (!force && conflict) return;
     const nextBody = body();
-    const ifMatch = force
-      ? (await client.get<{ aggregate: Aggregate }>(`/projects/${props.projectId}/episodes/${props.episode.id}/scenes/${props.scene.entityId}/revisions`)).aggregate.rowVersion
-      : props.scene.rowVersion;
+    const ifMatch = force ? seenVersion : props.scene.rowVersion;
+    if (ifMatch === null) return;
     const existing = readDraft(window.sessionStorage, storageKey);
     const draft = force
       ? confirmConflictDraft(existing ?? nextDraft(null, nextBody, ifMatch, () => crypto.randomUUID()), ifMatch, () => crypto.randomUUID())
@@ -1249,19 +1545,17 @@ function SceneForm(props: {
     props.onStatus("保存中");
     try {
       await props.onSubmit(nextBody, draft.idempotencyKey, ifMatch);
-      clearDraft(window.sessionStorage, storageKey);
-      clearActiveDraft(window.sessionStorage, props.projectId, `scene:${props.scene.entityId}`);
+      if (releaseSubmittedDraft(window.sessionStorage, storageKey, draft)) {
+        clearActiveDraft(window.sessionStorage, props.projectId, `scene:${props.scene.entityId}`);
+      }
       setConflict(null);
+      setSeenVersion(null);
+      setServerScene(null);
       props.onStatus("已保存");
       await props.onSaved();
     } catch (caught) {
       if (caught instanceof ApiError && caught.status === 409) {
-        const fresh = await client.get<{ aggregate: Aggregate; items: SceneRevision[] }>(
-          `/projects/${props.projectId}/episodes/${props.episode.id}/scenes/${props.scene.entityId}/revisions`,
-        ).catch(() => null);
-        setServerScene(fresh?.items.find((item) => item.id === fresh.aggregate.currentRevisionId) ?? null);
-        setConflict(caught.detail);
-        props.onStatus("版本冲突，草稿保留");
+        await beginConflict(caught.detail);
         return;
       }
       setError(caught instanceof ApiError ? caught.detail : "保存失败，草稿保留");
@@ -1281,28 +1575,29 @@ function SceneForm(props: {
     <form className="rounded-lg bg-white p-4" onSubmit={(event) => { event.preventDefault(); void save(false); }}>
       <h2 className="font-medium">{props.current.heading}</h2>
       <label className="mt-2 block" htmlFor="edit-heading">标题</label>
-      <input id="edit-heading" className="w-full rounded border px-2 py-1" maxLength={LIMITS.heading} value={heading} onChange={(event) => setHeading(event.target.value)} />
+      <input id="edit-heading" className="w-full rounded border px-2 py-1" maxLength={LIMITS.heading} value={heading} onChange={(event) => { setHeading(event.target.value); remember({ ...body(), heading: event.target.value }); }} />
       <label className="mt-2 block" htmlFor="edit-ordinal">序号</label>
-      <input id="edit-ordinal" className="w-full rounded border px-2 py-1" value={ordinal} onChange={(event) => setOrdinal(event.target.value)} />
+      <input id="edit-ordinal" className="w-full rounded border px-2 py-1" value={ordinal} onChange={(event) => { setOrdinal(event.target.value); remember({ ...body(), ordinal: Number(event.target.value) }); }} />
       <label className="mt-2 block" htmlFor="edit-time">时间</label>
-      <input id="edit-time" className="w-full rounded border px-2 py-1" maxLength={LIMITS.timeOfDay} value={timeOfDay} onChange={(event) => setTimeOfDay(event.target.value)} />
+      <input id="edit-time" className="w-full rounded border px-2 py-1" maxLength={LIMITS.timeOfDay} value={timeOfDay} onChange={(event) => { setTimeOfDay(event.target.value); remember({ ...body(), timeOfDay: event.target.value.trim().length > 0 ? event.target.value : null }); }} />
       <label className="mt-2 block" htmlFor="edit-summary">摘要</label>
-      <textarea id="edit-summary" className={BODY_FIELD} maxLength={LIMITS.summary} value={summary} onChange={(event) => setSummary(event.target.value)} />
+      <textarea id="edit-summary" className={BODY_FIELD} maxLength={LIMITS.summary} value={summary} onChange={(event) => { setSummary(event.target.value); remember({ ...body(), summary: event.target.value }); }} />
       <label className="mt-2 block" htmlFor="edit-location">场地</label>
-      <select id="edit-location" className="w-full rounded border px-2 py-1" value={locationId} onChange={(event) => setLocationId(event.target.value)}>
+      <select id="edit-location" className="w-full rounded border px-2 py-1" value={locationId} onChange={(event) => { setLocationId(event.target.value); remember({ ...body(), locationRevisionId: event.target.value.length > 0 ? event.target.value : null }); }}>
         <option value="">不引用场地</option>
         {props.locations.map((location) => (
           <option key={location.id} value={location.id} disabled={!location.usable}>{location.label} {location.usable ? "" : location.reason}</option>
         ))}
       </select>
       {!scriptUsable.usable ? <p className="mt-2 text-sm">来源剧本不可用：{scriptUsable.reason}</p> : <p className="mt-2 text-sm">来源剧本 {props.episode.currentScriptRevisionId}</p>}
-      <button className="mt-3 rounded bg-red-700 px-3 py-2 text-white" type="submit" disabled={!scriptUsable.usable}>保存新版本</button>
+      <button className="mt-3 rounded bg-red-700 px-3 py-2 text-white disabled:opacity-50" type="submit" disabled={!scriptUsable.usable || Boolean(conflict)}>保存新版本</button>
       {error ? <p role="alert">{error}</p> : null}
       {conflict ? (
         <div role="alert">
-          <p>{conflict} 草稿保留。确认后才会按新基线提交。</p>
-          <DiffList rows={sceneDiff} />
-          <button type="button" onClick={() => void save(true)}>确认后重新提交</button>
+          <p>{conflict} 草稿保留。</p>
+          <p className="text-sm">{seenVersion !== null ? `已看到的并发版本 ${seenVersion}。确认后只按这个版本提交。` : "还没有可读的新基线，不能确认提交。"}</p>
+          {serverScene ? <DiffList rows={sceneDiff} /> : null}
+          <button type="button" disabled={seenVersion === null} onClick={() => void save(true)}>确认后重新提交</button>
         </div>
       ) : null}
     </form>
@@ -1334,6 +1629,30 @@ function ShotCreateForm(props: {
   const [promptText, setPromptText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const storageKey = draftStorageKey(props.projectId, `shot-new:${props.sceneId}`, null);
+  function remember(next: { ordinal: string; shotType: string; camera: string; action: string; dialogue: string; durationHint: string; promptText: string }) {
+    const body = {
+      sourceSceneRevisionId: props.source.id,
+      ordinal: Number(next.ordinal),
+      shotType: next.shotType,
+      camera: next.camera,
+      action: next.action,
+      dialogue: next.dialogue.trim().length > 0 ? next.dialogue : null,
+      durationHint: next.durationHint.trim().length > 0 ? next.durationHint : null,
+      promptText: next.promptText,
+    };
+    writeDraft(window.sessionStorage, storageKey, nextDraft(readDraft(window.sessionStorage, storageKey), body, props.scene.rowVersion, () => crypto.randomUUID()));
+  }
+  useEffect(() => {
+    const payload = readDraft(window.sessionStorage, storageKey)?.payload;
+    const record = payload && typeof payload === "object" && !Array.isArray(payload) ? payload as Record<string, unknown> : null;
+    setOrdinal(typeof record?.ordinal === "number" ? String(record.ordinal) : "1");
+    setShotType(typeof record?.shotType === "string" ? record.shotType : "中景");
+    setCamera(typeof record?.camera === "string" ? record.camera : "");
+    setAction(typeof record?.action === "string" ? record.action : "");
+    setDialogue(typeof record?.dialogue === "string" ? record.dialogue : "");
+    setDurationHint(typeof record?.durationHint === "string" ? record.durationHint : "");
+    setPromptText(typeof record?.promptText === "string" ? record.promptText : "");
+  }, [storageKey]);
 
   async function save() {
     const body = {
@@ -1356,7 +1675,15 @@ function ShotCreateForm(props: {
         idempotencyKey: draft.idempotencyKey,
         ifMatch: aggregateVersion("shot-create", { entityRowVersion: props.scene.rowVersion }),
       });
-      clearDraft(window.sessionStorage, storageKey);
+      if (releaseSubmittedDraft(window.sessionStorage, storageKey, draft)) {
+        setOrdinal("1");
+        setShotType("中景");
+        setCamera("");
+        setAction("");
+        setDialogue("");
+        setDurationHint("");
+        setPromptText("");
+      }
       props.onStatus("已保存");
       await props.onSaved();
     } catch (caught) {
@@ -1372,19 +1699,19 @@ function ShotCreateForm(props: {
       <h3 className="font-medium">新建镜头</h3>
       {!usable.usable ? <p className="text-sm">来源场景不可用：{usable.reason}</p> : null}
       <label htmlFor="new-shot-ordinal">序号</label>
-      <input id="new-shot-ordinal" className="rounded border px-2 py-1" value={ordinal} onChange={(event) => setOrdinal(event.target.value)} />
+      <input id="new-shot-ordinal" className="rounded border px-2 py-1" value={ordinal} onChange={(event) => { setOrdinal(event.target.value); remember({ ordinal: event.target.value, shotType, camera, action, dialogue, durationHint, promptText }); }} />
       <label htmlFor="new-shot-type">景别</label>
-      <input id="new-shot-type" className="rounded border px-2 py-1" maxLength={LIMITS.shotType} value={shotType} onChange={(event) => setShotType(event.target.value)} />
+      <input id="new-shot-type" className="rounded border px-2 py-1" maxLength={LIMITS.shotType} value={shotType} onChange={(event) => { setShotType(event.target.value); remember({ ordinal, shotType: event.target.value, camera, action, dialogue, durationHint, promptText }); }} />
       <label htmlFor="new-shot-camera">镜头</label>
-      <input id="new-shot-camera" className="rounded border px-2 py-1" maxLength={LIMITS.camera} value={camera} onChange={(event) => setCamera(event.target.value)} />
+      <input id="new-shot-camera" className="rounded border px-2 py-1" maxLength={LIMITS.camera} value={camera} onChange={(event) => { setCamera(event.target.value); remember({ ordinal, shotType, camera: event.target.value, action, dialogue, durationHint, promptText }); }} />
       <label htmlFor="new-shot-action">动作</label>
-      <textarea id="new-shot-action" className={BODY_FIELD} maxLength={LIMITS.action} value={action} onChange={(event) => setAction(event.target.value)} />
+      <textarea id="new-shot-action" className={BODY_FIELD} maxLength={LIMITS.action} value={action} onChange={(event) => { setAction(event.target.value); remember({ ordinal, shotType, camera, action: event.target.value, dialogue, durationHint, promptText }); }} />
       <label htmlFor="new-shot-dialogue">对白</label>
-      <textarea id="new-shot-dialogue" className={BODY_FIELD} maxLength={LIMITS.dialogue} value={dialogue} onChange={(event) => setDialogue(event.target.value)} />
+      <textarea id="new-shot-dialogue" className={BODY_FIELD} maxLength={LIMITS.dialogue} value={dialogue} onChange={(event) => { setDialogue(event.target.value); remember({ ordinal, shotType, camera, action, dialogue: event.target.value, durationHint, promptText }); }} />
       <label htmlFor="new-shot-duration">时长提示</label>
-      <input id="new-shot-duration" className="rounded border px-2 py-1" maxLength={LIMITS.durationHint} value={durationHint} onChange={(event) => setDurationHint(event.target.value)} />
+      <input id="new-shot-duration" className="rounded border px-2 py-1" maxLength={LIMITS.durationHint} value={durationHint} onChange={(event) => { setDurationHint(event.target.value); remember({ ordinal, shotType, camera, action, dialogue, durationHint: event.target.value, promptText }); }} />
       <label htmlFor="new-shot-prompt">提示词</label>
-      <textarea id="new-shot-prompt" className={BODY_FIELD} maxLength={LIMITS.promptText} value={promptText} onChange={(event) => setPromptText(event.target.value)} />
+      <textarea id="new-shot-prompt" className={BODY_FIELD} maxLength={LIMITS.promptText} value={promptText} onChange={(event) => { setPromptText(event.target.value); remember({ ordinal, shotType, camera, action, dialogue, durationHint, promptText: event.target.value }); }} />
       <button className="w-fit rounded bg-red-700 px-3 py-2 text-white disabled:opacity-50" type="submit" disabled={!usable.usable}>保存新版本</button>
       {error ? <p role="alert">{error}</p> : null}
     </form>
@@ -1394,14 +1721,15 @@ function ShotCreateForm(props: {
 function ShotForm(props: {
   shot: Aggregate;
   current: ShotRevision;
+  sources: SourceChoice[];
   projectId: string;
-  reloadIfMatch: () => Promise<number>;
-  loadLatest: () => Promise<ShotRevision | null>;
+  readConflict: () => Promise<{ ifMatch: number; server: ShotRevision }>;
   onStatus: (value: string) => void;
   onSubmit: (body: unknown, key: string, ifMatch: number) => Promise<void>;
   onSaved: () => Promise<void>;
 }) {
   const storageKey = draftStorageKey(props.projectId, `shot:${props.shot.entityId}`, props.current.id);
+  const initialSource = props.sources.find((item) => item.id === props.current.sourceSceneRevisionId && item.usable)?.id ?? "";
   const [shotType, setShotType] = useState(props.current.shotType);
   const [camera, setCamera] = useState(props.current.camera);
   const [action, setAction] = useState(props.current.action);
@@ -1409,13 +1737,16 @@ function ShotForm(props: {
   const [durationHint, setDurationHint] = useState(props.current.durationHint ?? "");
   const [promptText, setPromptText] = useState(props.current.promptText);
   const [ordinal, setOrdinal] = useState(String(props.current.ordinal));
+  const [sourceId, setSourceId] = useState(initialSource);
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState<string | null>(null);
   const [serverShot, setServerShot] = useState<ShotRevision | null>(null);
+  const [seenVersion, setSeenVersion] = useState<number | null>(null);
+  const selectedSource = props.sources.find((item) => item.id === sourceId) ?? null;
 
-  function body() {
+  function body(nextSource = sourceId) {
     return {
-      sourceSceneRevisionId: props.current.sourceSceneRevisionId,
+      sourceSceneRevisionId: nextSource,
       ordinal: Number(ordinal),
       shotType,
       camera,
@@ -1426,9 +1757,51 @@ function ShotForm(props: {
     };
   }
 
+  function remember(next = body()) {
+    const draft = nextDraft(readDraft(window.sessionStorage, storageKey), next, props.shot.rowVersion, () => crypto.randomUUID());
+    writeDraft(window.sessionStorage, storageKey, draft);
+    rememberActiveDraft(window.sessionStorage, props.projectId, `shot:${props.shot.entityId}`, storageKey);
+    props.onStatus("未保存");
+  }
+
+  useEffect(() => {
+    const payload = readDraft(window.sessionStorage, storageKey)?.payload;
+    const record = payload && typeof payload === "object" && !Array.isArray(payload) ? payload as Record<string, unknown> : null;
+    setShotType(typeof record?.shotType === "string" ? record.shotType : props.current.shotType);
+    setCamera(typeof record?.camera === "string" ? record.camera : props.current.camera);
+    setAction(typeof record?.action === "string" ? record.action : props.current.action);
+    setDialogue(typeof record?.dialogue === "string" ? record.dialogue : (props.current.dialogue ?? ""));
+    setDurationHint(typeof record?.durationHint === "string" ? record.durationHint : (props.current.durationHint ?? ""));
+    setPromptText(typeof record?.promptText === "string" ? record.promptText : props.current.promptText);
+    setOrdinal(typeof record?.ordinal === "number" ? String(record.ordinal) : String(props.current.ordinal));
+    const storedSource = typeof record?.sourceSceneRevisionId === "string" ? record.sourceSceneRevisionId : props.current.sourceSceneRevisionId;
+    const usable = props.sources.find((item) => item.id === storedSource && item.usable);
+    setSourceId(usable?.id ?? "");
+  }, [storageKey]);
+
+  async function beginConflict(message: string) {
+    setConflict(message);
+    props.onStatus("版本冲突，草稿保留");
+    try {
+      const snap = await props.readConflict();
+      setServerShot(snap.server);
+      setSeenVersion(snap.ifMatch);
+    } catch {
+      setServerShot(null);
+      setSeenVersion(null);
+      setConflict(`${message} 未能读取新基线，草稿保留。`);
+    }
+  }
+
   async function save(force: boolean) {
+    if (!force && conflict) return;
+    if (!selectedSource?.usable) {
+      setError(selectedSource?.reason || "来源需要是当前、已批准且 CURRENT。");
+      return;
+    }
     const nextBody = body();
-    const ifMatch = force ? await props.reloadIfMatch() : props.shot.rowVersion;
+    const ifMatch = force ? seenVersion : props.shot.rowVersion;
+    if (ifMatch === null) return;
     const existing = readDraft(window.sessionStorage, storageKey);
     const draft = force
       ? confirmConflictDraft(existing ?? nextDraft(null, nextBody, ifMatch, () => crypto.randomUUID()), ifMatch, () => crypto.randomUUID())
@@ -1436,17 +1809,18 @@ function ShotForm(props: {
     writeDraft(window.sessionStorage, storageKey, draft);
     rememberActiveDraft(window.sessionStorage, props.projectId, `shot:${props.shot.entityId}`, storageKey);
     try {
-      await props.onSubmit(nextBody, draft.idempotencyKey, draft.ifMatch ?? props.shot.rowVersion);
-      clearDraft(window.sessionStorage, storageKey);
-      clearActiveDraft(window.sessionStorage, props.projectId, `shot:${props.shot.entityId}`);
+      await props.onSubmit(nextBody, draft.idempotencyKey, ifMatch);
+      if (releaseSubmittedDraft(window.sessionStorage, storageKey, draft)) {
+        clearActiveDraft(window.sessionStorage, props.projectId, `shot:${props.shot.entityId}`);
+      }
       setConflict(null);
+      setSeenVersion(null);
+      setServerShot(null);
       props.onStatus("已保存");
       await props.onSaved();
     } catch (caught) {
       if (caught instanceof ApiError && caught.status === 409) {
-        setServerShot(await props.loadLatest().catch(() => null));
-        setConflict(caught.detail);
-        props.onStatus("版本冲突，草稿保留");
+        await beginConflict(caught.detail);
         return;
       }
       setError(caught instanceof ApiError ? caught.detail : "保存失败，草稿保留");
@@ -1458,27 +1832,35 @@ function ShotForm(props: {
     <form className="rounded-lg bg-white p-4" onSubmit={(event) => { event.preventDefault(); void save(false); }}>
       <h2 className="font-medium">镜头 {props.current.ordinal}</h2>
       <label htmlFor="shot-type">景别</label>
-      <input id="shot-type" className="w-full rounded border px-2 py-1" maxLength={LIMITS.shotType} value={shotType} onChange={(event) => setShotType(event.target.value)} />
+      <input id="shot-type" className="w-full rounded border px-2 py-1" maxLength={LIMITS.shotType} value={shotType} onChange={(event) => { setShotType(event.target.value); remember({ ...body(), shotType: event.target.value }); }} />
       <label htmlFor="shot-camera">镜头</label>
-      <input id="shot-camera" className="w-full rounded border px-2 py-1" maxLength={LIMITS.camera} value={camera} onChange={(event) => setCamera(event.target.value)} />
+      <input id="shot-camera" className="w-full rounded border px-2 py-1" maxLength={LIMITS.camera} value={camera} onChange={(event) => { setCamera(event.target.value); remember({ ...body(), camera: event.target.value }); }} />
       <label htmlFor="shot-action">动作</label>
-      <textarea id="shot-action" className={BODY_FIELD} maxLength={LIMITS.action} value={action} onChange={(event) => setAction(event.target.value)} />
+      <textarea id="shot-action" className={BODY_FIELD} maxLength={LIMITS.action} value={action} onChange={(event) => { setAction(event.target.value); remember({ ...body(), action: event.target.value }); }} />
       <label htmlFor="shot-dialogue">对白</label>
-      <textarea id="shot-dialogue" className={BODY_FIELD} maxLength={LIMITS.dialogue} value={dialogue} onChange={(event) => setDialogue(event.target.value)} />
+      <textarea id="shot-dialogue" className={BODY_FIELD} maxLength={LIMITS.dialogue} value={dialogue} onChange={(event) => { setDialogue(event.target.value); remember({ ...body(), dialogue: event.target.value.trim().length > 0 ? event.target.value : null }); }} />
       <label htmlFor="shot-duration">时长提示</label>
-      <input id="shot-duration" className="w-full rounded border px-2 py-1" maxLength={LIMITS.durationHint} value={durationHint} onChange={(event) => setDurationHint(event.target.value)} />
+      <input id="shot-duration" className="w-full rounded border px-2 py-1" maxLength={LIMITS.durationHint} value={durationHint} onChange={(event) => { setDurationHint(event.target.value); remember({ ...body(), durationHint: event.target.value.trim().length > 0 ? event.target.value : null }); }} />
       <label htmlFor="shot-prompt">提示词</label>
-      <textarea id="shot-prompt" className={BODY_FIELD} maxLength={LIMITS.promptText} value={promptText} onChange={(event) => setPromptText(event.target.value)} />
+      <textarea id="shot-prompt" className={BODY_FIELD} maxLength={LIMITS.promptText} value={promptText} onChange={(event) => { setPromptText(event.target.value); remember({ ...body(), promptText: event.target.value }); }} />
       <label htmlFor="shot-ordinal">序号</label>
-      <input id="shot-ordinal" className="w-full rounded border px-2 py-1" value={ordinal} onChange={(event) => setOrdinal(event.target.value)} />
-      <p className="mt-2 text-sm">来源场景 {props.current.sourceSceneRevisionId}</p>
-      <button className="mt-3 rounded bg-red-700 px-3 py-2 text-white" type="submit">保存新版本</button>
+      <input id="shot-ordinal" className="w-full rounded border px-2 py-1" value={ordinal} onChange={(event) => { setOrdinal(event.target.value); remember({ ...body(), ordinal: Number(event.target.value) }); }} />
+      <label className="mt-2 block" htmlFor="shot-source">来源场景</label>
+      <select id="shot-source" className="w-full rounded border px-2 py-1" value={sourceId} onChange={(event) => { setSourceId(event.target.value); remember(body(event.target.value)); }}>
+        <option value="">选择已批准且 CURRENT 的场景版本</option>
+        {props.sources.map((item) => (
+          <option key={item.id} value={item.id} disabled={!item.usable}>{item.label}{item.usable ? "" : ` ${item.reason}`}</option>
+        ))}
+      </select>
+      <button className="mt-3 rounded bg-red-700 px-3 py-2 text-white disabled:opacity-50" type="submit" disabled={Boolean(conflict) || !selectedSource?.usable}>保存新版本</button>
+      {!selectedSource?.usable ? <p className="mt-2 text-sm">{selectedSource?.reason || "来源需要是当前、已批准且 CURRENT。"}</p> : null}
       {error ? <p role="alert">{error}</p> : null}
       {conflict ? (
         <div role="alert">
           <p>{conflict} 草稿保留。</p>
-          <DiffList rows={serverShot ? diffJson(serverShot, readDraft(window.sessionStorage, storageKey)?.payload ?? body()) : []} />
-          <button type="button" onClick={() => void save(true)}>确认后重新提交</button>
+          <p className="text-sm">{seenVersion !== null ? `已看到的并发版本 ${seenVersion}。确认后只按这个版本提交。` : "还没有可读的新基线，不能确认提交。"}</p>
+          {serverShot ? <DiffList rows={diffJson(serverShot, readDraft(window.sessionStorage, storageKey)?.payload ?? body())} /> : null}
+          <button type="button" disabled={seenVersion === null} onClick={() => void save(true)}>确认后重新提交</button>
         </div>
       ) : null}
     </form>

@@ -24,12 +24,12 @@ type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
 export class StudioClient {
   constructor(
-    private readonly fetchImpl: FetchLike = fetch,
+    private readonly fetchImpl?: FetchLike,
     private readonly prefix = "/api/v1",
   ) {}
 
   async get<T>(path: string): Promise<T> {
-    const response = await this.fetchImpl(`${this.prefix}${path}`, {
+    const response = await this.request(`${this.prefix}${path}`, {
       method: "GET",
       headers: { Accept: "application/json" },
     });
@@ -43,13 +43,18 @@ export class StudioClient {
       "Idempotency-Key": request.idempotencyKey,
     };
     if (request.ifMatch !== undefined) headers["If-Match"] = String(request.ifMatch);
-    const response = await this.fetchImpl(`${this.prefix}${request.path}`, {
+    const response = await this.request(`${this.prefix}${request.path}`, {
       method: "POST",
       headers,
       body: JSON.stringify(stripWorkspace(request.body)),
     });
     const body = await parseBody<T>(response);
     return { status: response.status, body };
+  }
+
+  private request(input: string, init?: RequestInit): Promise<Response> {
+    const fetchImpl = this.fetchImpl ?? globalThis.fetch.bind(globalThis);
+    return fetchImpl(input, init);
   }
 }
 

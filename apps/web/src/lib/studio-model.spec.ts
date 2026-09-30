@@ -12,6 +12,7 @@ import {
   draftStorageKey,
   nextDraft,
   readDraft,
+  releaseSubmittedDraft,
   reviewActions,
   reviewRequest,
   shouldPoll,
@@ -69,8 +70,13 @@ describe("studio model", () => {
     expect(confirmed.idempotencyKey).toBe("key-3");
     expect(confirmed.ifMatch).toBe(4);
     expect(confirmed.payload).toEqual(edited.payload);
+    const retried = confirmConflictDraft(confirmed, 4, () => "key-4");
+    expect(retried.idempotencyKey).toBe("key-3");
+    expect(releaseSubmittedDraft(storage, key, { ...first, fingerprint: "changed" })).toBe(false);
     clearDraft(storage, "other");
     expect(readDraft(storage, key)?.idempotencyKey).toBe("key-1");
+    expect(releaseSubmittedDraft(storage, key, readDraft(storage, key)!)).toBe(true);
+    expect(readDraft(storage, key)).toBeNull();
   });
 
   it("resets pagination when the scope changes and describes a null revision", () => {

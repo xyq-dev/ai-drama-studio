@@ -287,7 +287,7 @@ export function confirmConflictDraft(
   nextIfMatch: number | null,
   createKey: () => string,
 ): DraftRecord {
-  return nextDraft(null, draft.payload, nextIfMatch, createKey);
+  return nextDraft(draft, draft.payload, nextIfMatch, createKey);
 }
 
 export interface PageState<T> {
@@ -366,6 +366,13 @@ export function writeDraft(storage: JsonStorage, key: string, draft: DraftRecord
 
 export function clearDraft(storage: JsonStorage, key: string): void {
   storage.removeItem(key);
+}
+
+export function releaseSubmittedDraft(storage: JsonStorage, key: string, submitted: DraftRecord): boolean {
+  const latest = readDraft(storage, key);
+  if (latest && latest.fingerprint !== submitted.fingerprint) return false;
+  clearDraft(storage, key);
+  return true;
 }
 
 export function activeDraftPointer(projectId: string, entityKey: string): string {
