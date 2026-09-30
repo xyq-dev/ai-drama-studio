@@ -6,6 +6,7 @@ import {
   TextChainService,
   createPostgresPool,
   closePostgresPool,
+  isMockMediaJobKind,
   type PostgresPool,
 } from "@ai-drama/database";
 import { MockMediaAdapter, MockProvider, MockTextAdapter, type MockRequestState } from "@ai-drama/providers";
@@ -16,6 +17,7 @@ import { OutboxDispatcher } from "./dispatcher";
 import { RuntimeReconciler } from "./reconciler";
 import { startStaleRecalculationPolling } from "./stale-recalculation";
 import { LocalMockObjects } from "./local-mock-objects";
+import { runMockAvJob } from "./mock-av-generation";
 import { runMockImageJob } from "./mock-image-generation";
 import { MockMediaRecovery } from "./mock-media-recovery";
 
@@ -44,6 +46,8 @@ export async function startQueueRuntime(options: {
   reconcileIntervalMs?: number;
   staleRecalculationIntervalMs?: number;
   mockObjectDir?: string;
+  mockImageEnabled?: boolean;
+  mockAvEnabled?: boolean;
 }): Promise<RuntimeHandle> {
   if (options.mockObjectDir && (process.env.NODE_ENV === "production" || !isAbsolute(options.mockObjectDir))) {
     throw new Error("Mock media requires an absolute local directory and is forbidden in production");
@@ -79,10 +83,12 @@ export async function startQueueRuntime(options: {
     { url: options.redisUrl, maxRetriesPerRequest: null },
     prefix,
     async (message: QueueMessage) => {
-      const media = await store.loadMockImageExecution(message.workspaceId, message.jobId);
+      const media = await store.loadMockMediaExecution(message.workspaceId, message.jobId);
       if (media) {
         if (media.state === "SUCCEEDED" || media.state === "FAILED" || media.state === "CANCELED") return;
-        if (!objects || !media.shotRevisionId || !media.providerConfigurationId) {
+        const enabled = media.kind === "MEDIA_IMAGE" ? options.mockImageEnabled === true
+          : (media.kind === "MEDIA_VIDEO" || media.kind === "MEDIA_TTS") && options.mockAvEnabled === true;
+        if (!enabled || !objects || !media.shotRevisionId || !media.providerConfigurationId || !isMockMediaJobKind(media.kind)) {
           if (media.state !== "QUEUED") {
             throw new Error("Mock media configuration missing for an already active attempt");
           }
@@ -107,13 +113,26 @@ export async function startQueueRuntime(options: {
         if (media.state === "RUNNING" || media.state === "WAITING_EXTERNAL") {
           throw new Error("Mock media attempt is in progress; lease recovery must finish before redelivery");
         }
-        await runMockImageJob({ workspaceId: message.workspaceId, projectId: media.projectId,
-          shotRevisionId: media.shotRevisionId, jobId: message.jobId,
-          dispatchSeq: message.dispatchSeq, providerConfigurationId: media.providerConfigurationId,
-          inputHash: media.inputHash, inputSnapshot: media.inputSnapshot,
-          traceId: `worker:mock-image:${message.jobId}` },
-        { jobs, assets, adapter: mockMedia, objects });
+        const traceId = `worker:mock-media:${message.jobId}`;
+        if (media.kind === "MEDIA_IMAGE") {
+          await runMockImageJob({ workspaceId: message.workspaceId, projectId: media.projectId,
+            shotRevisionId: media.shotRevisionId, jobId: message.jobId,
+            dispatchSeq: message.dispatchSeq, providerConfigurationId: media.providerConfigurationId,
+            inputHash: media.inputHash, inputSnapshot: media.inputSnapshot, traceId },
+          { jobs, assets, adapter: mockMedia, objects });
+        } else {
+          await runMockAvJob({ workspaceId: message.workspaceId, projectId: media.projectId,
+            shotRevisionId: media.shotRevisionId, jobId: message.jobId,
+            dispatchSeq: message.dispatchSeq, providerConfigurationId: media.providerConfigurationId,
+            inputHash: media.inputHash, inputSnapshot: media.inputSnapshot, traceId,
+            capability: media.kind === "MEDIA_VIDEO" ? "video.generate" : "audio.tts" },
+          { jobs, assets, adapter: mockMedia, objects });
+        }
         return;
+      }
+      const execution = await store.loadExecution(message.workspaceId, message.jobId);
+      if (execution && isMockMediaJobKind(execution.kind)) {
+        throw new Error("Media job missed the mock media route");
       }
       await consumer.handle(message);
     },

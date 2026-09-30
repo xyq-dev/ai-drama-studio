@@ -1,5 +1,6 @@
 import type { PoolClient, QueryResultRow } from "pg";
 import { PersistenceError, type DatabasePool, type JobPersistenceService } from "./job-service";
+import { recordProviderActualCost, type ProviderActualCostInput } from "./mock-media-cost";
 
 export interface CreateMediaAssetInput {
   workspaceId: string;
@@ -37,11 +38,12 @@ export interface MediaAssetRecord {
   sourceGenerationJobId: string | null;
   sourceShotRevisionId: string | null;
   providerRequestId: string | null;
+  durationMs: number | null;
   createdAt: string;
 }
 
 const ASSET_COLUMNS = `id, project_id, kind, storage_provider, object_key, mime_type,
-                byte_size, checksum_sha256, width, height, status, review_status,
+                byte_size, checksum_sha256, width, height, duration_ms, status, review_status,
                 source_job_attempt_id, source_generation_job_id, source_shot_revision_id,
                 provider_request_id, created_at`;
 
@@ -64,8 +66,11 @@ export class MediaAssetStore {
   }
 
   async prepareShotGenerationInTransaction(
-    client: PoolClient, workspaceId: string, shotRevisionId: string,
-  ): Promise<{ projectId: string }> {
+    client: PoolClient,
+    workspaceId: string,
+    shotRevisionId: string,
+    capability = "image.generate",
+  ): Promise<{ projectId: string; promptText: string; dialogue: string | null }> {
     const result = await client.query<{ project_id: string } & QueryResultRow>(
       "SELECT project_id FROM shot_revision WHERE id = $1 AND workspace_id = $2",
       [shotRevisionId, workspaceId],
@@ -76,16 +81,34 @@ export class MediaAssetStore {
     const provider = await client.query(
       `SELECT id FROM provider_configuration
         WHERE workspace_id = $1 AND provider_key = 'mock-media'
-          AND capability = 'image.generate' AND enabled LIMIT 1`,
-      [workspaceId],
+          AND capability = $2 AND enabled LIMIT 1`,
+      [workspaceId, capability],
     );
-    if (!provider.rows[0]) throw new PersistenceError("PROVIDER_CONFIG_INVALID", "Mock image provider is unavailable");
-    return { projectId };
+    if (!provider.rows[0]) {
+      throw new PersistenceError("PROVIDER_CONFIG_INVALID", "Mock media provider is unavailable");
+    }
+    const source = await client.query<{ prompt_text: string; dialogue: string | null } & QueryResultRow>(
+      `SELECT prompt_text, dialogue
+         FROM shot_revision
+        WHERE id = $1 AND workspace_id = $2 AND project_id = $3`,
+      [shotRevisionId, workspaceId, projectId],
+    );
+    const row = source.rows[0];
+    if (!row) throw new PersistenceError("NOT_FOUND", "Shot revision not found");
+    return {
+      projectId,
+      promptText: String(row.prompt_text),
+      dialogue: row.dialogue === null ? null : String(row.dialogue),
+    };
   }
 
   async completeAttemptWithAsset(
     jobs: JobPersistenceService,
-    input: CreateMediaAssetInput & { generationJobId: string; traceId: string },
+    input: CreateMediaAssetInput & {
+      generationJobId: string;
+      traceId: string;
+      actualCost?: ProviderActualCostInput;
+    },
   ): Promise<MediaAssetRecord | null> {
     return jobs.succeedJobWithArtifact({
       workspaceId: input.workspaceId,
@@ -94,13 +117,16 @@ export class MediaAssetStore {
       traceId: input.traceId,
       persistArtifact: async (client) => {
         const replay = await loadExactReplayOrConflict(client, input);
-        if (replay) return replay;
-        if (input.sourceShotRevisionId) {
-          await assertUsableShotWithClient(
-            client, input.workspaceId, input.projectId, input.sourceShotRevisionId, true,
-          );
-        }
-        return insertAsset(client, input);
+        const asset = replay ?? await (async () => {
+          if (input.sourceShotRevisionId) {
+            await assertUsableShotWithClient(
+              client, input.workspaceId, input.projectId, input.sourceShotRevisionId, true,
+            );
+          }
+          return insertAsset(client, input);
+        })();
+        if (input.actualCost) await recordProviderActualCost(client, input.actualCost);
+        return asset;
       },
     });
   }
@@ -524,6 +550,7 @@ function mapAsset(row: QueryResultRow): MediaAssetRecord {
     sourceShotRevisionId:
       row.source_shot_revision_id === null ? null : String(row.source_shot_revision_id),
     providerRequestId: row.provider_request_id == null ? null : String(row.provider_request_id),
+    durationMs: row.duration_ms === null || row.duration_ms === undefined ? null : Number(row.duration_ms),
     createdAt: new Date(row.created_at as Date | string).toISOString(),
   };
 }

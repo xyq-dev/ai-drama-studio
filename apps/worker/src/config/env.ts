@@ -8,6 +8,8 @@ const workerEnvSchema = z.object({
   REDIS_URL: z.string().min(1),
   HEALTH_CHECK_TIMEOUT_MS: z.coerce.number().int().min(100).max(10_000).default(2000),
   MOCK_OBJECT_DIR: z.string().min(1).optional(),
+  M3_MOCK_IMAGE_ENABLED: z.enum(["true", "false"]).default("false"),
+  M3_MOCK_AV_ENABLED: z.enum(["true", "false"]).default("false"),
 });
 
 export class EnvValidationError extends Error {
@@ -28,6 +30,8 @@ export interface WorkerEnv {
   REDIS_URL: string;
   HEALTH_CHECK_TIMEOUT_MS: number;
   MOCK_OBJECT_DIR?: string;
+  M3_MOCK_IMAGE_ENABLED: boolean;
+  M3_MOCK_AV_ENABLED: boolean;
 }
 
 const WORKER_KEYS = [
@@ -38,6 +42,8 @@ const WORKER_KEYS = [
   "REDIS_URL",
   "HEALTH_CHECK_TIMEOUT_MS",
   "MOCK_OBJECT_DIR",
+  "M3_MOCK_IMAGE_ENABLED",
+  "M3_MOCK_AV_ENABLED",
 ] as const;
 
 function assertProtocol(field: string, value: string, protocols: readonly string[]): void {
@@ -71,5 +77,9 @@ export function loadWorkerEnv(
   }
   assertProtocol("DATABASE_URL", parsed.data.DATABASE_URL, ["postgresql:", "postgres:"]);
   assertProtocol("REDIS_URL", parsed.data.REDIS_URL, ["redis:", "rediss:"]);
-  return parsed.data;
+  return {
+    ...parsed.data,
+    M3_MOCK_IMAGE_ENABLED: parsed.data.M3_MOCK_IMAGE_ENABLED === "true",
+    M3_MOCK_AV_ENABLED: parsed.data.M3_MOCK_AV_ENABLED === "true",
+  };
 }

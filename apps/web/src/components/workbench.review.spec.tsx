@@ -38,6 +38,8 @@ interface Sim {
   withLocation: boolean;
   sceneStale: boolean;
   sceneStaleReads: number;
+  blankPrompt: boolean;
+  blankDialogue: boolean;
   imageReady: boolean;
   imageHistory: boolean;
   imageFailures: number;
@@ -81,6 +83,8 @@ function createSim(): Sim {
     withLocation: false,
     sceneStale: false,
     sceneStaleReads: 0,
+    blankPrompt: false,
+    blankDialogue: false,
     imageReady: false,
     imageHistory: false,
     imageFailures: 0,
@@ -187,6 +191,8 @@ function createSim(): Sim {
     if (existing) return existing;
     const source = sim.shotUsesOldSource && id === SHOT_A ? "scene-rev-old" : "scene-rev-new";
     const current = shotRevision(id, id === SHOT_B ? "动作二" : "动作一", source);
+    if (sim.blankPrompt) current.promptText = "";
+    if (sim.blankDialogue) current.dialogue = null;
     const created = { row: 4, currentId: current.id, items: [current] };
     shotStates.set(id, created);
     return created;
@@ -425,6 +431,9 @@ function createSim(): Sim {
       assetReads += 1;
       if (sim.failAssetRead === assetReads) return fail(500, "ASSET_REFRESH_FAILED", "图片刷新失败");
       return json({ items: sim.imageAssets[revisionId] ?? [] });
+    }
+    if (/\/shot-revisions\/[^/]+\/generate-(video|tts)$/.test(path) && method === "POST") {
+      return json({ workflowRunId: "av-run", jobId: "av-job" }, 202);
     }
     if (/\/shot-revisions\/[^/]+\/generate-image$/.test(path) && method === "POST") {
       if (sim.imagePostGate) await sim.imagePostGate;
@@ -1400,5 +1409,45 @@ describe("workbench review interactions against a simulated API", () => {
     fireEvent.click(screen.getByRole("button", { name: "重新查询" }));
     await waitFor(() => expect(screen.queryByText(/图片列表刷新失败/)).toBeNull());
     expect(sim.calls.filter((call) => call.url.endsWith("/generate-image"))).toHaveLength(0);
+  });
+
+  it("disables video and speech until the saved approved text exists", async () => {
+    const sim = createSim();
+    sim.imageReady = true;
+    sim.blankPrompt = true;
+    sim.blankDialogue = true;
+    install(sim);
+    renderAt(`focus=shot&episode=1&scene=scene-1&shot=${SHOT_A}`);
+    expect(await screen.findByRole("button", { name: "生成 Mock 视频（先保存并审核提示词）" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "生成 Mock 配音（先保存并审核对白）" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "生成 Mock 图片" })).toBeTruthy();
+  });
+
+  it("keeps an accepted video request independent of image keys and shows decode failure", async () => {
+    const sim = createSim();
+    sim.imageReady = true;
+    const revisionId = `${SHOT_A}-rev`;
+    sim.imageAssets[revisionId] = [{
+      ...imageRecord(revisionId, "ACTIVE", "dddddddd-dddd-4ddd-8ddd-dddddddddddd"),
+      kind: "VIDEO",
+      mimeType: "video/mp4",
+      width: 16,
+      height: 16,
+      durationMs: 1000,
+    }];
+    install(sim);
+    renderAt(`focus=shot&episode=1&scene=scene-1&shot=${SHOT_A}`);
+    fireEvent.click(await screen.findByRole("button", { name: "生成 Mock 视频" }));
+    expect(await screen.findByText(/结果以任务和视频列表为准。这不是生成成功/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "生成 Mock 图片" }));
+    await waitFor(() => expect(sim.calls.filter((call) => call.url.endsWith("/generate-image"))).toHaveLength(1));
+    const videoPost = sim.calls.find((call) => call.url.endsWith("/generate-video"));
+    const imagePost = sim.calls.find((call) => call.url.endsWith("/generate-image"));
+    expect(videoPost?.key).toBeTruthy();
+    expect(videoPost?.key).not.toBe(imagePost?.key);
+    const video = document.querySelector("video");
+    if (!video) throw new Error("video element missing");
+    fireEvent.error(video);
+    expect(await screen.findByText("读取或解码失败")).toBeTruthy();
   });
 });

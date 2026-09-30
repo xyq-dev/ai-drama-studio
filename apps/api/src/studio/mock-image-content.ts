@@ -35,21 +35,36 @@ export async function readBoundedMockPng(
   objectKey: string,
   expected: { byteSize: number; checksumSha256: string },
 ): Promise<Buffer> {
-  if (!isAbsolute(root) || !MOCK_IMAGE_KEY.test(objectKey)) {
-    throw new PersistenceError("ASSET_CONTENT_INVALID", "Asset content is not a stored mock image");
+  const bytes = await readBoundedMockObject(root, objectKey, expected, {
+    keyPattern: MOCK_IMAGE_KEY,
+    minimumBytes: PNG_SIGNATURE.length,
+    invalidMessage: "Asset content is not a stored mock image",
+  });
+  assertPngBytes(bytes);
+  return bytes;
+}
+
+export async function readBoundedMockObject(
+  root: string,
+  objectKey: string,
+  expected: { byteSize: number; checksumSha256: string },
+  rules: { keyPattern: RegExp; minimumBytes: number; invalidMessage: string },
+): Promise<Buffer> {
+  if (!isAbsolute(root) || !rules.keyPattern.test(objectKey)) {
+    throw new PersistenceError("ASSET_CONTENT_INVALID", rules.invalidMessage);
   }
   let rootReal: string;
   try {
     rootReal = await realpath(root);
   } catch {
-    throw new PersistenceError("CONFIGURATION_ERROR", "Mock image storage is not configured");
+    throw new PersistenceError("CONFIGURATION_ERROR", "Mock object storage is not configured");
   }
   const segments = objectKey.split("/");
   let current = rootReal;
   let info: Awaited<ReturnType<typeof lstat>> | null = null;
   for (const segment of segments) {
     if (segment.length === 0 || segment === "." || segment === "..") {
-      throw new PersistenceError("ASSET_CONTENT_INVALID", "Asset content is not a stored mock image");
+      throw new PersistenceError("ASSET_CONTENT_INVALID", rules.invalidMessage);
     }
     const next = join(current, segment);
     try {
@@ -58,7 +73,7 @@ export async function readBoundedMockPng(
       throw new PersistenceError("NOT_FOUND", "Asset content is unavailable");
     }
     if (info.isSymbolicLink()) {
-      throw new PersistenceError("ASSET_CONTENT_INVALID", "Asset content is not a stored mock image");
+      throw new PersistenceError("ASSET_CONTENT_INVALID", rules.invalidMessage);
     }
     let resolved: string;
     try {
@@ -67,16 +82,16 @@ export async function readBoundedMockPng(
       throw new PersistenceError("NOT_FOUND", "Asset content is unavailable");
     }
     if (!isInside(rootReal, resolved)) {
-      throw new PersistenceError("ASSET_CONTENT_INVALID", "Asset content is not a stored mock image");
+      throw new PersistenceError("ASSET_CONTENT_INVALID", rules.invalidMessage);
     }
     current = resolved;
   }
   if (!info?.isFile()) {
-    throw new PersistenceError("ASSET_CONTENT_INVALID", "Asset content is not a stored mock image");
+    throw new PersistenceError("ASSET_CONTENT_INVALID", rules.invalidMessage);
   }
   if (
     !Number.isSafeInteger(expected.byteSize) ||
-    expected.byteSize < PNG_SIGNATURE.length ||
+    expected.byteSize < rules.minimumBytes ||
     expected.byteSize > MAX_MOCK_PNG_BYTES ||
     info.size > MAX_MOCK_PNG_BYTES ||
     info.size !== expected.byteSize
@@ -100,7 +115,6 @@ export async function readBoundedMockPng(
   if (checksum !== expected.checksumSha256) {
     throw new PersistenceError("ASSET_CONTENT_INVALID", "Asset content does not match its record");
   }
-  assertPngBytes(bytes);
   return bytes;
 }
 

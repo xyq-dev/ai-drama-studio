@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Headers, Inject, Param, Post, Query, Req, Res, StreamableFile } from "@nestjs/common";
+import { Body, Controller, Get, Head, Headers, Inject, Param, Post, Query, Req, Res, StreamableFile } from "@nestjs/common";
 import { PersistenceError, RuntimeStore } from "@ai-drama/database";
 import { RUNTIME_STORE, STUDIO_SERVICE } from "./tokens";
 import { StudioService, createTraceId, type StudioContext } from "./studio.service";
@@ -16,7 +16,12 @@ interface StatusResponse {
   status(code: number): void;
 }
 
+interface ContentRequest {
+  method: string;
+}
+
 interface ContentResponse {
+  status(code: number): void;
   setHeader(name: string, value: string): void;
 }
 
@@ -465,21 +470,50 @@ export class StudioController {
       this.studio.generateShotImage(revisionId, body, this.context(key, trace)));
   }
 
+  @Post("shot-revisions/:revisionId/generate-video")
+  generateShotVideo(
+    @Param("revisionId", UUID_PARAM_PIPE) revisionId: string,
+    @Body() body: unknown,
+    @Res({ passthrough: true }) response: StatusResponse,
+    @Headers("idempotency-key") key?: string,
+    @Headers("x-trace-id") trace?: string,
+  ) {
+    return this.send(response,
+      this.studio.generateShotVideo(revisionId, body, this.context(key, trace)));
+  }
+
+  @Post("shot-revisions/:revisionId/generate-tts")
+  generateShotTts(
+    @Param("revisionId", UUID_PARAM_PIPE) revisionId: string,
+    @Body() body: unknown,
+    @Res({ passthrough: true }) response: StatusResponse,
+    @Headers("idempotency-key") key?: string,
+    @Headers("x-trace-id") trace?: string,
+  ) {
+    return this.send(response,
+      this.studio.generateShotTts(revisionId, body, this.context(key, trace)));
+  }
+
   @Get("shot-revisions/:revisionId/assets")
   listShotAssets(@Param("revisionId", UUID_PARAM_PIPE) revisionId: string) {
     return this.studio.listShotAssets(revisionId);
   }
 
   @Get("assets/:assetId/content")
+  @Head("assets/:assetId/content")
   async readAssetContent(
     @Param("assetId", UUID_PARAM_PIPE) assetId: string,
+    @Req() request: ContentRequest,
     @Res({ passthrough: true }) response: ContentResponse,
   ) {
-    const bytes = await this.studio.readMockImageContent(assetId);
-    response.setHeader("Content-Type", "image/png");
+    const payload = await this.studio.readMockAssetContent(assetId);
+    response.status(200);
+    response.setHeader("Content-Type", payload.mimeType);
+    response.setHeader("Content-Length", String(payload.bytes.length));
     response.setHeader("X-Content-Type-Options", "nosniff");
     response.setHeader("Cache-Control", "private, no-store");
-    return new StreamableFile(bytes);
+    if (request.method === "HEAD") return undefined;
+    return new StreamableFile(payload.bytes);
   }
 
   @Post("projects/:projectId/workflows/mock-scenes")

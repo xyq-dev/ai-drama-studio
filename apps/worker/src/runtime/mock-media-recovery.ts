@@ -1,5 +1,7 @@
 import type { JobPersistenceService, MediaAssetStore, RuntimeStore } from "@ai-drama/database";
+import { isMockMediaJobKind } from "@ai-drama/database";
 import type { MediaProviderAdapter } from "@ai-drama/providers";
+import { recoverMockAvAttempt } from "./mock-av-generation";
 import { recoverMockImageAttempt, type MockImageObjectStore } from "./mock-image-generation";
 
 export class MockMediaRecovery {
@@ -13,9 +15,9 @@ export class MockMediaRecovery {
 
   async reconcileOnce(): Promise<void> {
     const errors: unknown[] = [];
-    for (const row of await this.store.listExpiredMockImages(50)) {
+    for (const row of await this.store.listExpiredMockMedia(50)) {
       try {
-      const execution = await this.store.loadMockImageExecution(row.workspaceId, row.jobId);
+      const execution = await this.store.loadMockMediaExecution(row.workspaceId, row.jobId);
       if (!execution || execution.state !== "RUNNING") continue;
       if (execution.cancelRequested) {
         await this.jobs.confirmCancellation({ workspaceId: row.workspaceId, jobId: row.jobId,
@@ -35,13 +37,27 @@ export class MockMediaRecovery {
           errorMessage: "Mock media source or provider configuration is invalid", retryable: false });
         continue;
       }
-      const outcome = await recoverMockImageAttempt({
+      if (!isMockMediaJobKind(execution.kind)) {
+        await this.jobs.failJob({ workspaceId: row.workspaceId, jobId: row.jobId,
+          attemptId: row.attemptId, traceId: `mock-media:invalid-kind:${row.jobId}`,
+          errorCode: "MOCK_MEDIA_ROUTE_INVALID",
+          errorMessage: "Mock media kind is not on the fixed route list", retryable: false });
+        continue;
+      }
+      const shared = {
         workspaceId: row.workspaceId, projectId: execution.projectId,
         shotRevisionId: execution.shotRevisionId, jobId: row.jobId,
         providerConfigurationId: row.providerConfigurationId,
         traceId: `mock-media:recover:${row.jobId}`,
         attemptId: row.attemptId, providerRequestId: row.providerRequestId,
-      }, { jobs: this.jobs, assets: this.assets, adapter: this.adapter, objects: this.objects });
+      };
+      const outcome = execution.kind === "MEDIA_IMAGE"
+        ? await recoverMockImageAttempt(shared, { jobs: this.jobs, assets: this.assets, adapter: this.adapter, objects: this.objects })
+        : await recoverMockAvAttempt({
+          ...shared,
+          capability: execution.kind === "MEDIA_VIDEO" ? "video.generate" : "audio.tts",
+          inputSnapshot: execution.inputSnapshot,
+        }, { jobs: this.jobs, assets: this.assets, adapter: this.adapter, objects: this.objects });
       if (outcome === "ACTIVE") continue;
       if (outcome === "CANCELED") {
         await this.jobs.confirmCancellation({ workspaceId: row.workspaceId, jobId: row.jobId,
@@ -53,11 +69,15 @@ export class MockMediaRecovery {
           errorMessage: `Mock provider inspection returned ${outcome}`, retryable: false });
       }
       } catch (error) {
-        if (error instanceof Error && /requires exactly one image output|must be inline PNG|not a PNG|dimensions are invalid/.test(error.message)) {
+        const message = error instanceof Error ? error.message : "";
+        const imageInvalid = /requires exactly one image output|must be inline PNG|not a PNG|dimensions are invalid/.test(message);
+        const avInvalid = /canonical fixture|not a synchronous|accounting/.test(message);
+        if (imageInvalid || avInvalid) {
           try {
             await this.jobs.failJob({ workspaceId: row.workspaceId, jobId: row.jobId,
               attemptId: row.attemptId, traceId: `mock-media:invalid-output:${row.jobId}`,
-              errorCode: "MOCK_IMAGE_OUTPUT_INVALID", errorMessage: error.message, retryable: false });
+              errorCode: avInvalid ? "MOCK_AV_OUTPUT_INVALID" : "MOCK_IMAGE_OUTPUT_INVALID",
+              errorMessage: message, retryable: false });
           } catch (failure) { errors.push(failure); }
         } else {
           errors.push(error);

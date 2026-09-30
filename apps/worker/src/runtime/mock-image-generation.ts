@@ -3,7 +3,12 @@ import type { JobPersistenceService, MediaAssetStore, MediaAssetRecord } from "@
 import type { MediaProviderAdapter, MediaGenerationRequest, MediaProviderOutput } from "@ai-drama/providers";
 
 export interface MockImageObjectStore {
-  put(input: { key: string; bytes: Buffer; mimeType: "image/png"; checksumSha256: string }): Promise<void>;
+  put(input: {
+    key: string;
+    bytes: Buffer;
+    mimeType: "image/png" | "video/mp4" | "audio/wav";
+    checksumSha256: string;
+  }): Promise<void>;
 }
 
 export interface MockImageJob {

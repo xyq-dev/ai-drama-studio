@@ -95,6 +95,9 @@ importers:
       '@ai-drama/health':
         specifier: workspace:*
         version: link:../../packages/health
+      '@ai-drama/providers':
+        specifier: workspace:*
+        version: link:../../packages/providers
       '@aws-sdk/client-s3':
         specifier: 3.1138.0
         version: 3.1138.0

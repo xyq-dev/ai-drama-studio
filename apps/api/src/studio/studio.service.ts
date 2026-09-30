@@ -5,6 +5,7 @@ import {
   MockTextService,
   PersistenceError,
   RuntimeStore,
+  isMockMediaJobKind,
   TextChainService,
   insertProject,
   requestHash,
@@ -14,6 +15,7 @@ import {
   type TextEntityKind,
 } from "@ai-drama/database";
 import { z } from "zod";
+import { assertReadableMockAv, readBoundedMockAv } from "./mock-av-content";
 import { assertReadableMockImage, readBoundedMockPng } from "./mock-image-content";
 
 const projectBodySchema = z.object({
@@ -98,6 +100,7 @@ export class StudioService {
     private readonly mediaAssets?: MediaAssetStore,
     private readonly mockImageEnabled = false,
     private readonly mockObjectDir: string | null = null,
+    private readonly mockAvEnabled = false,
   ) {}
 
   get workspace(): string {
@@ -615,23 +618,47 @@ export class StudioService {
     );
   }
 
+  async generateShotVideo(shotRevisionId: string, body: unknown, context: StudioContext) {
+    return this.queueMockAv(shotRevisionId, body, context, "MEDIA_VIDEO");
+  }
+
+  async generateShotTts(shotRevisionId: string, body: unknown, context: StudioContext) {
+    return this.queueMockAv(shotRevisionId, body, context, "MEDIA_TTS");
+  }
+
   async listShotAssets(shotRevisionId: string) {
     if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
     const { projectId } = await this.mediaAssets.requireShotScope(this.workspaceId, shotRevisionId);
     return { items: await this.mediaAssets.listShotAssets(this.workspaceId, projectId, shotRevisionId) };
   }
 
-  async readMockImageContent(assetId: string): Promise<Buffer> {
-    if (!this.mockImageEnabled || !this.mockObjectDir) {
-      throw new PersistenceError("CONFIGURATION_ERROR", "Mock image content is not enabled");
-    }
+  async readMockAssetContent(assetId: string): Promise<{ mimeType: string; bytes: Buffer }> {
     if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
+    if (!this.mockObjectDir) {
+      throw new PersistenceError("CONFIGURATION_ERROR", "Mock object storage is not configured");
+    }
     const asset = await this.mediaAssets.getWorkspaceAsset(this.workspaceId, assetId);
-    assertReadableMockImage(asset);
-    return readBoundedMockPng(this.mockObjectDir, asset.objectKey, {
-      byteSize: asset.byteSize,
-      checksumSha256: asset.checksumSha256,
-    });
+    if (asset.kind === "IMAGE") {
+      if (!this.mockImageEnabled) {
+        throw new PersistenceError("CONFIGURATION_ERROR", "Mock image content is not enabled");
+      }
+      assertReadableMockImage(asset);
+      return {
+        mimeType: "image/png",
+        bytes: await readBoundedMockPng(this.mockObjectDir, asset.objectKey, {
+          byteSize: asset.byteSize,
+          checksumSha256: asset.checksumSha256,
+        }),
+      };
+    }
+    if (asset.kind === "VIDEO" || asset.kind === "AUDIO") {
+      if (!this.mockAvEnabled) {
+        throw new PersistenceError("CONFIGURATION_ERROR", "Mock video and speech content is not enabled");
+      }
+      assertReadableMockAv(asset);
+      return { mimeType: asset.mimeType, bytes: await readBoundedMockAv(this.mockObjectDir, asset) };
+    }
+    throw new PersistenceError("ASSET_CONTENT_INVALID", "Asset content is not a stored mock recording");
   }
 
   async createMockSceneWorkflow(projectId: string, context: StudioContext) {
@@ -685,8 +712,8 @@ export class StudioService {
 
   async retryJob(jobId: string, context: StudioContext) {
     const job = await this.store.getJob(this.workspaceId, jobId);
-    if (job.kind === "MEDIA_IMAGE") {
-      throw new PersistenceError("JOB_NOT_RETRYABLE", "Media image retry is unavailable until shot lineage is preserved");
+    if (isMockMediaJobKind(job.kind)) {
+      throw new PersistenceError("JOB_NOT_RETRYABLE", "Media retry is unavailable; generate again with a new idempotency key");
     }
     const retryable =
       job.state === "CANCELED" ||
@@ -727,6 +754,59 @@ export class StudioService {
       capability: "mock.generate",
       outcomes: ["success", "retryable_failure", "terminal_failure", "cancel", "delayed"],
     };
+  }
+
+  private queueMockAv(
+    shotRevisionId: string,
+    body: unknown,
+    context: StudioContext,
+    kind: "MEDIA_VIDEO" | "MEDIA_TTS",
+  ) {
+    const input = parse(generateImageBodySchema, rejectClientWorkspace(body));
+    if (!this.mockAvEnabled) {
+      throw new PersistenceError("CONFIGURATION_ERROR", "Mock video and speech worker storage is not enabled");
+    }
+    if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
+    const route = kind === "MEDIA_VIDEO" ? "generate-video" : "generate-tts";
+    const capability = kind === "MEDIA_VIDEO" ? "video.generate" : "audio.tts";
+    return this.jobs.createAndQueueWorkflowJob(
+      this.scope(context, "POST", `/shot-revisions/${shotRevisionId}/${route}`, input),
+      async (client) => {
+        const source = await this.mediaAssets!.prepareShotGenerationInTransaction(
+          client, this.workspaceId, shotRevisionId, capability,
+        );
+        const sourceText = kind === "MEDIA_VIDEO" ? source.promptText.trim() : (source.dialogue ?? "").trim();
+        if (sourceText.length === 0) {
+          throw new PersistenceError(
+            "VALIDATION_ERROR",
+            kind === "MEDIA_VIDEO"
+              ? "Saved prompt text is required before mock video"
+              : "Saved dialogue is required before mock speech",
+          );
+        }
+        const snapshot = {
+          schema: kind === "MEDIA_VIDEO" ? "m3.mock.video.v1" : "m3.mock.tts.v1",
+          shotRevisionId,
+          seed: input.seed ?? null,
+          outcome: "success",
+          executionMode: "sync",
+          capability,
+          sourceText,
+          sourceHash: createHash("sha256").update(sourceText).digest("hex"),
+        };
+        return {
+          workspaceId: this.workspaceId,
+          projectId: source.projectId,
+          sourceShotRevisionId: shotRevisionId,
+          type: kind,
+          requestedBy: context.actorId,
+          kind,
+          inputHash: createHash("sha256").update(JSON.stringify(snapshot)).digest("hex"),
+          inputSnapshot: snapshot,
+          traceId: context.traceId,
+        };
+      },
+    );
   }
 
   private scope(context: StudioContext, method: string, routeKey: string, body: unknown): IdempotencyScope {

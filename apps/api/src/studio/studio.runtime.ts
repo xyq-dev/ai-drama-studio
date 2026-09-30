@@ -38,11 +38,13 @@ export class StudioRuntime implements OnModuleDestroy {
     const workspaceId = await store.requireActiveWorkspace(env.APP_WORKSPACE_ID);
     const jobs = new JobPersistenceService(pool);
     const textChain = new TextChainService(pool);
-    const mockImageEnabled = env.NODE_ENV !== "production" && env.M3_MOCK_IMAGE_ENABLED &&
-      Boolean(env.MOCK_OBJECT_DIR && isAbsolute(env.MOCK_OBJECT_DIR));
+    const absoluteDir = env.MOCK_OBJECT_DIR && isAbsolute(env.MOCK_OBJECT_DIR) ? env.MOCK_OBJECT_DIR : null;
+    const nonProduction = env.NODE_ENV !== "production";
+    const mockImageEnabled = nonProduction && env.M3_MOCK_IMAGE_ENABLED && Boolean(absoluteDir);
+    const mockAvEnabled = nonProduction && env.M3_MOCK_AV_ENABLED && Boolean(absoluteDir);
     return new StudioRuntime(pool,
       new StudioService(jobs, store, textChain, workspaceId, new MockTextService(pool), new MediaAssetStore(pool),
-        mockImageEnabled, mockImageEnabled ? env.MOCK_OBJECT_DIR ?? null : null), store);
+        mockImageEnabled, absoluteDir, mockAvEnabled), store);
   }
 
   async onModuleDestroy(): Promise<void> {

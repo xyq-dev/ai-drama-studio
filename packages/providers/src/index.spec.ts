@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { MockMediaAdapter, MockProvider, MockTextAdapter } from "./index";
 
@@ -128,12 +129,19 @@ describe("MockMediaAdapter", () => {
       expect(bytes.readUInt32BE(16)).toBe(1);
     } else if (mimeType === "video/mp4") {
       expect(bytes.toString("ascii", 4, 8)).toBe("ftyp");
+      expect(bytes.includes(Buffer.from("avc1"))).toBe(true);
       expect(bytes.includes(Buffer.from("moov"))).toBe(true);
       expect(bytes.includes(Buffer.from("mdat"))).toBe(true);
+      expect(bytes.length).toBe(1552);
+      expect(createHash("sha256").update(bytes).digest("hex"))
+        .toBe("6cbb357d0c5429c415430d0596dfc04417b9fa967eeb34e55186b0a3a9f590e3");
     } else if (mimeType === "audio/wav") {
       expect(bytes.toString("ascii", 0, 4)).toBe("RIFF");
       expect(bytes.toString("ascii", 8, 12)).toBe("WAVE");
       expect(bytes.readUInt32LE(4)).toBe(bytes.length - 8);
+      expect(bytes.length).toBe(1644);
+      expect(createHash("sha256").update(bytes).digest("hex"))
+        .toBe("c726d333dd159a31423f3480dbb1c5c4a9dfcd30efe1f7e12ade390dc92e8908");
     } else if (mimeType === "application/json") {
       expect(JSON.parse(bytes.toString("utf8"))).toMatchObject({ valid: true });
     } else {
@@ -174,6 +182,23 @@ describe("MockMediaAdapter", () => {
     expect(restartedPoll.state).toBe("SUCCEEDED");
     expect(restartedPoll.normalizedEventKey).toBe(secondPoll.normalizedEventKey);
     expect(restartedPoll.responseHash).toBe(secondPoll.responseHash);
+  });
+
+  it("keeps synchronous inspect accounting equivalent to submit without an estimate", async () => {
+    const adapter = new MockMediaAdapter();
+    const submitted = await adapter.submit({
+      ...baseInput,
+      clientRequestKey: "sync-video",
+      inputSnapshot: { outcome: "success", executionMode: "sync" },
+      capability: "video.generate",
+    });
+    if (submitted.kind !== "succeeded") throw new Error("expected sync success");
+    expect(submitted.providerRequestId).toBe("mock-media|sync|video.generate|sync-video");
+    expect(submitted.accounting?.costs[0]?.supersedesEstimateKey).toBeUndefined();
+    const inspected = await new MockMediaAdapter().inspect(submitted.providerRequestId);
+    expect(inspected.state).toBe("SUCCEEDED");
+    expect(inspected.accounting).toEqual(submitted.accounting);
+    expect(await adapter.inspect("mock-media|not-a-capability|x")).toMatchObject({ state: "UNKNOWN" });
   });
 
   it("requires normalized failure details on failed provider observations", () => {

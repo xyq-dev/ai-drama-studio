@@ -1,4 +1,4 @@
-import { JobPersistenceService, MockTextService, PersistenceError,
+import { JobPersistenceService, MockTextService, PersistenceError, isMockMediaJobKind,
   type ExecutionContext, type MockSceneSnapshot, type MockShotSnapshot } from "@ai-drama/database";
 import { MockTextAdapter, type TextGenerationAdapter } from "@ai-drama/providers";
 import { textAdapterResultSchema, textProviderErrorSchema,
@@ -10,6 +10,12 @@ export async function completeMockJob(
   execution: ExecutionContext, attemptId: string, traceId: string, responseSnapshot: unknown,
   textAdapter: TextGenerationAdapter = new MockTextAdapter(),
 ): Promise<"completed" | "pending"> {
+  if (isMockMediaJobKind(execution.kind)) {
+    await jobs.failJob({ workspaceId: execution.workspaceId, jobId: execution.jobId, attemptId, traceId,
+      errorCode: "MOCK_MEDIA_ROUTE_INVALID",
+      errorMessage: "Media jobs cannot complete through the text consumer", retryable: false });
+    return "completed";
+  }
   if (execution.kind !== "MOCK_TEXT_SCENES" && execution.kind !== "MOCK_TEXT_SHOTS") {
     await jobs.succeedJob({ workspaceId: execution.workspaceId, jobId: execution.jobId,
       attemptId, traceId, responseSnapshot });

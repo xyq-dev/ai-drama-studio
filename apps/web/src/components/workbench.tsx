@@ -46,8 +46,10 @@ function taskStatusLabel(state: string): string {
   return `进行中 ${state}`;
 }
 
+const MEDIA_WORKFLOW_TYPES = new Set(["MEDIA_IMAGE", "MEDIA_VIDEO", "MEDIA_TTS"]);
+
 function trackedWorkflow(run: { type: string }): boolean {
-  return TEXT_WORKFLOW_TYPES.has(run.type) || run.type === "MEDIA_IMAGE";
+  return TEXT_WORKFLOW_TYPES.has(run.type) || MEDIA_WORKFLOW_TYPES.has(run.type);
 }
 
 function noteWorkflowTransitions(
@@ -60,9 +62,10 @@ function noteWorkflowTransitions(
     const previous = known.get(run.id);
     const terminal = !shouldPoll(run.status, false);
     const becameTerminal = previous !== undefined && shouldPoll(previous, false) && terminal;
-    const firstTerminalMedia = previous === undefined && run.type === "MEDIA_IMAGE" && terminal;
-    if ((becameTerminal || firstTerminalMedia) && run.type === "MEDIA_IMAGE") mediaBecameTerminal = true;
-    if (becameTerminal && run.type !== "MEDIA_IMAGE") textBecameTerminal = true;
+    const media = MEDIA_WORKFLOW_TYPES.has(run.type);
+    const firstTerminalMedia = previous === undefined && media && terminal;
+    if ((becameTerminal || firstTerminalMedia) && media) mediaBecameTerminal = true;
+    if (becameTerminal && !media) textBecameTerminal = true;
     known.set(run.id, run.status);
   }
   return { mediaBecameTerminal, textBecameTerminal };
@@ -1408,6 +1411,18 @@ function ScenePane(props: {
     : sourceScene?.usable
       ? { usable: true, reason: "" }
       : { usable: false, reason: sourceScene?.reason ?? "来源场景不可用" };
+  const savedPrompt = shotCurrent?.promptText.trim() ?? "";
+  const savedDialogue = shotCurrent?.dialogue?.trim() ?? "";
+  const videoGate = !imageGate.usable
+    ? imageGate
+    : savedPrompt.length > 0
+      ? { usable: true, reason: "" }
+      : { usable: false, reason: "先保存并审核提示词" };
+  const speechGate = !imageGate.usable
+    ? imageGate
+    : savedDialogue.length > 0
+      ? { usable: true, reason: "" }
+      : { usable: false, reason: "先保存并审核对白" };
   const locationChoices = props.locations.flatMap((location) => {
     const usable = sourceUsable({
       reviewStatus: location.currentRevision?.reviewStatus ?? null,
@@ -1517,6 +1532,10 @@ function ScenePane(props: {
             historyKey={visibleShot.items.map((item) => item.id).join("|")}
             usable={imageGate.usable}
             reason={imageGate.reason}
+            videoUsable={videoGate.usable}
+            videoReason={videoGate.reason}
+            speechUsable={speechGate.usable}
+            speechReason={speechGate.reason}
             imageEpoch={props.imageEpoch}
             onAccepted={props.onSaved}
           />
@@ -2150,20 +2169,32 @@ function ShotImagePanel(props: {
   historyKey: string;
   usable: boolean;
   reason: string;
+  videoUsable: boolean;
+  videoReason: string;
+  speechUsable: boolean;
+  speechReason: string;
   imageEpoch: number;
   onAccepted: () => Promise<void>;
 }) {
   const [seed, setSeed] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [videoSeed, setVideoSeed] = useState("");
+  const [speechSeed, setSpeechSeed] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [videoNotice, setVideoNotice] = useState<string | null>(null);
+  const [speechNotice, setSpeechNotice] = useState<string | null>(null);
   const [listError, setListError] = useState<string | null>(null);
   const [acceptError, setAcceptError] = useState<string | null>(null);
+  const [videoAcceptError, setVideoAcceptError] = useState<string | null>(null);
+  const [speechAcceptError, setSpeechAcceptError] = useState<string | null>(null);
   const [currentAssets, setCurrentAssets] = useState<ShotAsset[]>([]);
   const [historyAssets, setHistoryAssets] = useState<ShotAsset[]>([]);
   const [previewErrors, setPreviewErrors] = useState<Record<string, boolean>>({});
   const [assetRevision, setAssetRevision] = useState(props.currentRevisionId);
   const [listAttempt, setListAttempt] = useState(0);
   const pending = useRef<{ fingerprint: string; key: string } | null>(null);
+  const pendingVideo = useRef<{ fingerprint: string; key: string } | null>(null);
+  const pendingSpeech = useRef<{ fingerprint: string; key: string } | null>(null);
   const requestToken = useRef(0);
   if (assetRevision !== props.currentRevisionId) {
     setAssetRevision(props.currentRevisionId);
@@ -2172,6 +2203,11 @@ function ShotImagePanel(props: {
     setPreviewErrors({});
     setListError(null);
     setAcceptError(null);
+    setVideoAcceptError(null);
+    setSpeechAcceptError(null);
+    pending.current = null;
+    pendingVideo.current = null;
+    pendingSpeech.current = null;
   }
 
   useEffect(() => {
@@ -2206,69 +2242,132 @@ function ShotImagePanel(props: {
     try {
       await props.onAccepted();
       setAcceptError(null);
+      setVideoAcceptError(null);
+      setSpeechAcceptError(null);
     } catch {
       setAcceptError("刷新失败，可以重新查询。已受理的结果仍然有效。");
     }
   }
 
-  async function generate() {
-    if (!props.usable || busy) return;
-    const fingerprint = `${props.currentRevisionId}|${seed}`;
-    const key = pending.current?.fingerprint === fingerprint ? pending.current.key : crypto.randomUUID();
-    pending.current = { fingerprint, key };
-    setBusy(true);
-    setNotice(null);
+  async function submitMedia(channel: "image" | "video" | "speech") {
+    const usable = channel === "image" ? props.usable : channel === "video" ? props.videoUsable : props.speechUsable;
+    if (!usable || busy) return;
+    const value = channel === "image" ? seed : channel === "video" ? videoSeed : speechSeed;
+    const slot = channel === "image" ? pending : channel === "video" ? pendingVideo : pendingSpeech;
+    const fingerprint = `${channel}|${props.currentRevisionId}|${value}`;
+    const key = slot.current?.fingerprint === fingerprint ? slot.current.key : crypto.randomUUID();
+    slot.current = { fingerprint, key };
+    setBusy(channel);
+    if (channel === "image") setNotice(null);
+    if (channel === "video") setVideoNotice(null);
+    if (channel === "speech") setSpeechNotice(null);
     setListError(null);
-    setAcceptError(null);
+    if (channel === "image") setAcceptError(null);
+    if (channel === "video") setVideoAcceptError(null);
+    if (channel === "speech") setSpeechAcceptError(null);
+    const path = channel === "image" ? "generate-image" : channel === "video" ? "generate-video" : "generate-tts";
+    const accepted = channel === "image"
+      ? "已受理，结果以任务和图片列表为准。这不是生成成功。"
+      : channel === "video"
+        ? "已受理，结果以任务和视频列表为准。这不是生成成功。"
+        : "已受理，结果以任务和配音列表为准。这不是生成成功。";
     try {
       const result = await client.write<{ workflowRunId: string }>({
-        path: `/shot-revisions/${props.currentRevisionId}/generate-image`,
-        body: seed.trim().length > 0 ? { seed: seed.trim() } : {},
+        path: `/shot-revisions/${props.currentRevisionId}/${path}`,
+        body: value.trim().length > 0 ? { seed: value.trim() } : {},
         idempotencyKey: key,
       });
-      pending.current = null;
-      setNotice(result.status === 202
-        ? "已受理，结果以任务和图片列表为准。这不是生成成功。"
-        : `已返回 ${result.status}，结果以随后的查询为准。`);
+      slot.current = null;
+      const text = result.status === 202 ? accepted : `已返回 ${result.status}，结果以随后的查询为准。`;
+      if (channel === "image") setNotice(text);
+      if (channel === "video") setVideoNotice(text);
+      if (channel === "speech") setSpeechNotice(text);
     } catch (caught) {
-      setNotice(caught instanceof ApiError
+      const text = caught instanceof ApiError
         ? `${caught.code}：${caught.detail}。再次提交将复用同一幂等键。`
-        : "提交失败，再次提交将复用同一幂等键。");
-      setBusy(false);
+        : "提交失败，再次提交将复用同一幂等键。";
+      if (channel === "image") setNotice(text);
+      if (channel === "video") setVideoNotice(text);
+      if (channel === "speech") setSpeechNotice(text);
+      setBusy(null);
       return;
     }
-    setBusy(false);
+    setBusy(null);
     try {
       await props.onAccepted();
     } catch {
-      setAcceptError("刷新失败，可以重新查询。已受理的结果仍然有效。");
+      const text = "刷新失败，可以重新查询。已受理的结果仍然有效。";
+      if (channel === "image") setAcceptError(text);
+      if (channel === "video") setVideoAcceptError(text);
+      if (channel === "speech") setSpeechAcceptError(text);
     }
   }
 
+  const previewError = (id: string) => setPreviewErrors((current) => ({ ...current, [id]: true }));
+  const imageCurrent = currentAssets.filter((asset) => asset.kind === "IMAGE");
+  const imageHistory = historyAssets.filter((asset) => asset.kind === "IMAGE");
+  const videoCurrent = currentAssets.filter((asset) => asset.kind === "VIDEO");
+  const videoHistory = historyAssets.filter((asset) => asset.kind === "VIDEO");
+  const speechCurrent = currentAssets.filter((asset) => asset.kind === "AUDIO");
+  const speechHistory = historyAssets.filter((asset) => asset.kind === "AUDIO");
+
   return (
-    <section className="min-w-0 rounded-lg bg-white p-4">
-      <h2 className="font-medium">Mock 图片</h2>
-      <p className="mt-2 text-sm [overflow-wrap:anywhere]">确定性 1×1 Mock 测试图。seed 只写入快照，不改变像素。这不是真实 AI 图片，也不会写入 MinIO。</p>
-      <label className="mt-2 block text-sm" htmlFor="mock-image-seed">seed（可选）</label>
-      <input id="mock-image-seed" className="w-full rounded border px-2 py-1" maxLength={200} value={seed} onChange={(event) => setSeed(event.target.value)} />
-      <button className="mt-3 rounded bg-red-700 px-3 py-2 text-white disabled:opacity-50" type="button" disabled={!props.usable || busy} onClick={() => void generate()}>
-        {busy ? "正在提交" : props.usable ? "生成 Mock 图片" : `生成 Mock 图片（${props.reason}）`}
-      </button>
-      {notice ? <p className="mt-2 text-sm">{notice}</p> : null}
-      {listError || acceptError ? (
-        <p className="mt-2 text-sm" role="alert">
-          {acceptError ?? listError}
-          <button className="ml-2 underline" type="button" onClick={() => void requery()}>重新查询</button>
-        </p>
+    <div className="min-w-0 space-y-4">
+      <section className="min-w-0 rounded-lg bg-white p-4">
+        <h2 className="font-medium">Mock 图片</h2>
+        <p className="mt-2 text-sm [overflow-wrap:anywhere]">确定性 1×1 Mock 测试图。seed 只写入快照，不改变像素。这不是真实 AI 图片，也不会写入 MinIO。</p>
+        <label className="mt-2 block text-sm" htmlFor="mock-image-seed">seed（可选）</label>
+        <input id="mock-image-seed" className="w-full rounded border px-2 py-1" maxLength={200} value={seed} onChange={(event) => setSeed(event.target.value)} />
+        <button className="mt-3 rounded bg-red-700 px-3 py-2 text-white disabled:opacity-50" type="button" disabled={!props.usable || busy !== null} onClick={() => void submitMedia("image")}>
+          {busy === "image" ? "正在提交" : props.usable ? "生成 Mock 图片" : `生成 Mock 图片（${props.reason}）`}
+        </button>
+        {notice ? <p className="mt-2 text-sm">{notice}</p> : null}
+        {acceptError ? (
+          <p className="mt-2 text-sm" role="alert">{acceptError}<button className="ml-2 underline" type="button" onClick={() => void requery()}>重新查询</button></p>
+        ) : null}
+        <AssetList title="当前版本图片" empty="没有图片" assets={imageCurrent} previewErrors={previewErrors} onPreviewError={previewError} />
+        <AssetList title="历史版本图片" empty="没有图片" assets={imageHistory} previewErrors={previewErrors} onPreviewError={previewError} />
+      </section>
+      <section className="min-w-0 rounded-lg bg-white p-4">
+        <h2 className="font-medium">Mock 视频</h2>
+        <p className="mt-2 text-sm [overflow-wrap:anywhere]">固定 16×16 黑色 1 秒测试视频。seed 和已保存提示词只进入审计快照，不改变画面。这不是真实 AI 视频，也不会写入 MinIO。</p>
+        <label className="mt-2 block text-sm" htmlFor="mock-video-seed">seed（可选）</label>
+        <input id="mock-video-seed" className="w-full rounded border px-2 py-1" maxLength={200} value={videoSeed} onChange={(event) => setVideoSeed(event.target.value)} />
+        <button className="mt-3 rounded bg-red-700 px-3 py-2 text-white disabled:opacity-50" type="button" disabled={!props.videoUsable || busy !== null} onClick={() => void submitMedia("video")}>
+          {busy === "video" ? "正在提交" : props.videoUsable ? "生成 Mock 视频" : `生成 Mock 视频（${props.videoReason}）`}
+        </button>
+        {videoNotice ? <p className="mt-2 text-sm">{videoNotice}</p> : null}
+        {videoAcceptError ? (
+          <p className="mt-2 text-sm" role="alert">{videoAcceptError}<button className="ml-2 underline" type="button" onClick={() => void requery()}>重新查询</button></p>
+        ) : null}
+        <AssetList title="当前版本视频" empty="没有视频" assets={videoCurrent} previewErrors={previewErrors} onPreviewError={previewError} />
+        <AssetList title="历史版本视频" empty="没有视频" assets={videoHistory} previewErrors={previewErrors} onPreviewError={previewError} />
+      </section>
+      <section className="min-w-0 rounded-lg bg-white p-4">
+        <h2 className="font-medium">Mock 配音</h2>
+        <p className="mt-2 text-sm [overflow-wrap:anywhere]">固定 100ms 单声道静音。已保存并审核的对白只作为来源审计，fixture 不会朗读它。这不是真实 TTS，也不会写入 MinIO。</p>
+        <label className="mt-2 block text-sm" htmlFor="mock-speech-seed">seed（可选）</label>
+        <input id="mock-speech-seed" className="w-full rounded border px-2 py-1" maxLength={200} value={speechSeed} onChange={(event) => setSpeechSeed(event.target.value)} />
+        <button className="mt-3 rounded bg-red-700 px-3 py-2 text-white disabled:opacity-50" type="button" disabled={!props.speechUsable || busy !== null} onClick={() => void submitMedia("speech")}>
+          {busy === "speech" ? "正在提交" : props.speechUsable ? "生成 Mock 配音" : `生成 Mock 配音（${props.speechReason}）`}
+        </button>
+        {speechNotice ? <p className="mt-2 text-sm">{speechNotice}</p> : null}
+        {speechAcceptError ? (
+          <p className="mt-2 text-sm" role="alert">{speechAcceptError}<button className="ml-2 underline" type="button" onClick={() => void requery()}>重新查询</button></p>
+        ) : null}
+        <AssetList title="当前版本配音" empty="没有配音" assets={speechCurrent} previewErrors={previewErrors} onPreviewError={previewError} />
+        <AssetList title="历史版本配音" empty="没有配音" assets={speechHistory} previewErrors={previewErrors} onPreviewError={previewError} />
+      </section>
+      {listError ? (
+        <p className="text-sm" role="alert">{listError}<button className="ml-2 underline" type="button" onClick={() => void requery()}>重新查询</button></p>
       ) : null}
-      <AssetList title="当前版本图片" assets={currentAssets} previewErrors={previewErrors} onPreviewError={(id) => setPreviewErrors((current) => ({ ...current, [id]: true }))} />
-      <AssetList title="历史版本图片" assets={historyAssets} previewErrors={previewErrors} onPreviewError={(id) => setPreviewErrors((current) => ({ ...current, [id]: true }))} />
-    </section>
+    </div>
   );
 }
 
 function AssetList(props: {
   title: string;
+  empty: string;
   assets: ShotAsset[];
   previewErrors: Record<string, boolean>;
   onPreviewError: (id: string) => void;
@@ -2276,26 +2375,28 @@ function AssetList(props: {
   return (
     <div className="mt-4 min-w-0">
       <h3 className="font-medium">{props.title}</h3>
-      {props.assets.length === 0 ? <p className="mt-2 text-sm">没有图片</p> : null}
+      {props.assets.length === 0 ? <p className="mt-2 text-sm">{props.empty}</p> : null}
       <ul className="mt-2 space-y-3">
         {props.assets.map((asset) => {
           const preview = canPreviewAsset(asset);
+          const src = `/api/v1/assets/${asset.id}/content`;
           return (
             <li key={asset.id} className="min-w-0 rounded border p-3 text-sm [overflow-wrap:anywhere]">
               <p>资产 {asset.id}</p>
-              <p>状态 {asset.status} · 审核 {asset.reviewStatus} · {asset.width ?? "无"}×{asset.height ?? "无"} · {asset.byteSize} 字节</p>
+              <p>状态 {asset.status} · 审核 {asset.reviewStatus} · {asset.kind} · {asset.width ?? "无"}×{asset.height ?? "无"} · {asset.durationMs ?? "无"} ms · {asset.byteSize} 字节</p>
               <p>来源镜头版本 {asset.sourceShotRevisionId ?? "无"} · 来源任务 {asset.sourceGenerationJobId ?? "无"}</p>
               <p>创建 {asset.createdAt}</p>
               <p className="break-all">{asset.checksumSha256}</p>
-              {preview && !props.previewErrors[asset.id] ? (
-                <img
-                  alt={`镜头图片 ${asset.id}`}
-                  className="mt-2 max-w-full"
-                  src={`/api/v1/assets/${asset.id}/content`}
-                  onError={() => props.onPreviewError(asset.id)}
-                />
+              {preview && !props.previewErrors[asset.id] && asset.kind === "IMAGE" ? (
+                <img alt={`镜头图片 ${asset.id}`} className="mt-2 max-w-full" src={src} onError={() => props.onPreviewError(asset.id)} />
               ) : null}
-              {preview && props.previewErrors[asset.id] ? <p role="alert">预览读取失败</p> : null}
+              {preview && !props.previewErrors[asset.id] && asset.kind === "VIDEO" ? (
+                <video className="mt-2 max-w-full" controls playsInline preload="metadata" src={src} onError={() => props.onPreviewError(asset.id)} />
+              ) : null}
+              {preview && !props.previewErrors[asset.id] && asset.kind === "AUDIO" ? (
+                <audio className="mt-2 max-w-full" controls preload="metadata" src={src} onError={() => props.onPreviewError(asset.id)} />
+              ) : null}
+              {preview && props.previewErrors[asset.id] ? <p role="alert">读取或解码失败</p> : null}
             </li>
           );
         })}
@@ -2312,6 +2413,7 @@ interface ShotAsset {
   reviewStatus: string;
   width: number | null;
   height: number | null;
+  durationMs: number | null;
   byteSize: number;
   checksumSha256: string;
   sourceShotRevisionId: string | null;
@@ -2320,9 +2422,12 @@ interface ShotAsset {
 }
 
 function canPreviewAsset(asset: ShotAsset): boolean {
-  return asset.kind === "IMAGE"
-    && asset.mimeType === "image/png"
-    && (asset.status === "ACTIVE" || asset.status === "STALE" || asset.status === "SUPERSEDED");
+  const visible = asset.status === "ACTIVE" || asset.status === "STALE" || asset.status === "SUPERSEDED";
+  if (!visible) return false;
+  if (asset.kind === "IMAGE") return asset.mimeType === "image/png";
+  if (asset.kind === "VIDEO") return asset.mimeType === "video/mp4";
+  if (asset.kind === "AUDIO") return asset.mimeType === "audio/wav";
+  return false;
 }
 
 function TaskDrawer(props: {
@@ -2367,7 +2472,7 @@ function TaskDrawer(props: {
   }
 
   const textRuns = props.runs.filter((run) => TEXT_WORKFLOW_TYPES.has(run.type));
-  const mediaRuns = props.runs.filter((run) => run.type === "MEDIA_IMAGE");
+  const mediaRuns = props.runs.filter((run) => MEDIA_WORKFLOW_TYPES.has(run.type));
 
   return (
     <div className="fixed inset-y-0 right-0 z-30 w-full max-w-md overflow-auto bg-white p-4 shadow-xl">
@@ -2399,13 +2504,13 @@ function TaskDrawer(props: {
           </li>
         ))}
       </ul>
-      <h2 className="mt-6 font-medium">Mock 图片任务</h2>
-      <p className="mt-2 text-sm">图片任务与文本任务分开。媒体手工重试不可用；需要另一张图时，在镜头页再次生成并使用新的幂等键。</p>
+      <h2 className="mt-6 font-medium">Mock 媒体任务</h2>
+      <p className="mt-2 text-sm">图片、视频和配音任务与文本任务分开。媒体手工重试不可用；需要另一份结果时，在镜头页再次生成并使用新的幂等键。</p>
       <ul className="mt-4 space-y-3">
-        {mediaRuns.length === 0 ? <li className="text-sm">没有图片任务</li> : null}
+        {mediaRuns.length === 0 ? <li className="text-sm">没有媒体任务</li> : null}
         {mediaRuns.map((run) => (
-          <li key={run.id} className="rounded border p-3 text-sm">
-            <p>Mock 图片 · {taskStatusLabel(run.status)}</p>
+          <li key={run.id} className="min-w-0 rounded border p-3 text-sm [overflow-wrap:anywhere]">
+            <p>{run.type === "MEDIA_VIDEO" ? "Mock 视频" : run.type === "MEDIA_TTS" ? "Mock 配音" : "Mock 图片"} · {taskStatusLabel(run.status)}</p>
             {run.jobs.map((job) => {
               const terminal = job.state === "SUCCEEDED" || job.state === "FAILED" || job.state === "CANCELED";
               return (

@@ -8,10 +8,12 @@ it("continues recovering a sibling after an invalid media row", async () => {
     jobId, attemptId: `attempt-${jobId}`, providerConfigurationId: "provider",
     providerRequestId: jobId === "bad" ? "bad-request" : null, cancelRequested: false }));
   const store = {
-    listExpiredMockImages: vi.fn(async () => rows),
-    loadMockImageExecution: vi.fn(async (_workspace: string, jobId: string) => ({
-      workspaceId: "workspace", jobId, projectId: "project", shotRevisionId: "shot",
+    listExpiredMockMedia: vi.fn(async () => rows),
+    loadMockMediaExecution: vi.fn(async (_workspace: string, jobId: string) => ({
+      workspaceId: "workspace", jobId, projectId: "project", kind: "MEDIA_IMAGE",
+      shotRevisionId: "shot",
       providerConfigurationId: jobId === "bad" ? "mismatch" : "provider",
+      inputSnapshot: { outcome: "success" },
       state: "RUNNING", cancelRequested: false,
     })),
   } as unknown as RuntimeStore;

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { PoolClient, QueryResultRow } from "pg";
 import type { DatabasePool } from "./job-service";
 import { PersistenceError } from "./job-service";
+import { MOCK_MEDIA_JOB_KINDS } from "./mock-media-kinds";
 
 export interface OutboxDispatchRow {
   id: string;
@@ -34,10 +35,11 @@ export interface ExecutionContext {
   providerRequestId: string | null;
 }
 
-export interface MockImageExecution {
+export interface MockMediaExecution {
   workspaceId: string;
   jobId: string;
   projectId: string;
+  kind: string;
   shotRevisionId: string | null;
   providerConfigurationId: string | null;
   inputHash: string;
@@ -45,6 +47,8 @@ export interface MockImageExecution {
   state: string;
   cancelRequested: boolean;
 }
+
+export type MockImageExecution = MockMediaExecution;
 
 export interface ProjectRecord {
   id: string;
@@ -282,7 +286,8 @@ export class RuntimeStore {
               ORDER BY attempt_no DESC
               LIMIT 1
            ) ja ON true
-          WHERE j.state = 'WAITING_EXTERNAL' AND j.kind <> 'MEDIA_IMAGE'
+          WHERE j.state = 'WAITING_EXTERNAL'
+            AND j.kind <> ALL(ARRAY['MEDIA_IMAGE','MEDIA_VIDEO','MEDIA_TTS'])
             AND ja.provider_request_id IS NOT NULL
             AND (j.next_run_at IS NULL OR j.next_run_at <= now())
           ORDER BY j.updated_at
@@ -309,7 +314,8 @@ export class RuntimeStore {
               ORDER BY attempt_no DESC
               LIMIT 1
            ) ja ON true
-          WHERE j.state = 'RUNNING' AND j.kind <> 'MEDIA_IMAGE'
+          WHERE j.state = 'RUNNING'
+            AND j.kind <> ALL(ARRAY['MEDIA_IMAGE','MEDIA_VIDEO','MEDIA_TTS'])
             AND j.lease_until IS NOT NULL AND j.lease_until <= $1
           ORDER BY j.lease_until
           LIMIT $2`,
@@ -321,7 +327,7 @@ export class RuntimeStore {
     }
   }
 
-  async listExpiredMockImages(limit: number, now = new Date()): Promise<ExpiredLeaseRow[]> {
+  async listExpiredMockMedia(limit: number, now = new Date()): Promise<ExpiredLeaseRow[]> {
     const client = await this.pool.connect();
     try {
       const result = await client.query<QueryResultRow>(
@@ -332,10 +338,10 @@ export class RuntimeStore {
              SELECT id, provider_configuration_id, provider_request_id FROM job_attempt
               WHERE generation_job_id = j.id ORDER BY attempt_no DESC LIMIT 1
            ) ja ON true
-          WHERE j.kind = 'MEDIA_IMAGE' AND j.state = 'RUNNING'
+          WHERE j.kind = ANY($3::text[]) AND j.state = 'RUNNING'
             AND j.lease_until IS NOT NULL AND j.lease_until <= $1
           ORDER BY j.lease_until LIMIT $2`,
-        [now, limit],
+        [now, limit, MOCK_MEDIA_JOB_KINDS],
       );
       return result.rows.map(mapLease);
     } finally {
@@ -343,23 +349,30 @@ export class RuntimeStore {
     }
   }
 
-  async loadMockImageExecution(workspaceId: string, jobId: string): Promise<MockImageExecution | null> {
+  async loadMockMediaExecution(workspaceId: string, jobId: string): Promise<MockMediaExecution | null> {
     const client = await this.pool.connect();
     try {
       const result = await client.query<QueryResultRow>(
-        `SELECT j.id, j.workspace_id, j.project_id, j.source_shot_revision_id,
+        `SELECT j.id, j.workspace_id, j.project_id, j.kind, j.source_shot_revision_id,
                 j.input_hash, j.input_snapshot, j.state, j.cancel_requested_at,
                 pc.id AS provider_configuration_id
            FROM generation_job j
            LEFT JOIN provider_configuration pc ON pc.workspace_id = j.workspace_id
-             AND pc.provider_key = 'mock-media' AND pc.capability = 'image.generate' AND pc.enabled
-          WHERE j.id = $1 AND j.workspace_id = $2 AND j.kind = 'MEDIA_IMAGE'`,
-        [jobId, workspaceId],
+             AND pc.provider_key = 'mock-media' AND pc.enabled
+             AND pc.capability = CASE j.kind
+               WHEN 'MEDIA_IMAGE' THEN 'image.generate'
+               WHEN 'MEDIA_VIDEO' THEN 'video.generate'
+               WHEN 'MEDIA_TTS' THEN 'audio.tts'
+               ELSE NULL
+             END
+          WHERE j.id = $1 AND j.workspace_id = $2 AND j.kind = ANY($3::text[])`,
+        [jobId, workspaceId, MOCK_MEDIA_JOB_KINDS],
       );
       const row = result.rows[0];
       if (!row) return null;
       return {
         workspaceId: String(row.workspace_id), jobId: String(row.id), projectId: String(row.project_id),
+        kind: String(row.kind),
         shotRevisionId: row.source_shot_revision_id === null ? null : String(row.source_shot_revision_id),
         providerConfigurationId: row.provider_configuration_id === null ? null : String(row.provider_configuration_id),
         inputHash: String(row.input_hash), inputSnapshot: row.input_snapshot,
