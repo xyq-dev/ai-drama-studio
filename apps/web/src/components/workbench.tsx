@@ -2032,7 +2032,7 @@ function RevisionColumn(props: {
   }
 
   return (
-    <aside className="rounded-lg bg-white p-4">
+    <aside className="min-w-0 rounded-lg bg-white p-4 [overflow-wrap:anywhere]">
       <h2 className="font-medium">版本</h2>
       {props.onOpen ? <button className="text-sm underline xl:hidden" type="button" onClick={props.onOpen}>在窄屏打开版本栏</button> : null}
       {props.items.length === 0 ? <p className="mt-2 text-sm">没有历史版本</p> : null}
@@ -2087,7 +2087,7 @@ function RevisionColumn(props: {
 function DiffList({ rows }: { rows: ReturnType<typeof diffJson> }) {
   if (rows.length === 0) return <p className="text-sm">没有内容差异</p>;
   return (
-    <ul className="space-y-2 text-sm lg:col-span-2">
+    <ul className="min-w-0 space-y-2 text-sm [overflow-wrap:anywhere] lg:col-span-2">
       {rows.map((row) => (
         <li key={row.path}>
           <p>{row.path} · {row.change === "added" ? "新增" : row.change === "removed" ? "删除" : "修改"}</p>

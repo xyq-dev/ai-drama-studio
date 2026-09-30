@@ -1,5 +1,7 @@
 # M2 创作工作台实现报告
 
+最新验收（2026-09-30）：M2 核心文本创作闭环已在独立 Linux 原生服务环境通过真实浏览器验收，15 个检查点通过；真实 409、草稿恢复、任务终态和 390px 窄屏比较另有证据。修复两处长内容换行样式。Migration 和 Workspace provision 只作用于新建测试库。详细结果与环境边界见 [M2_E2E_ACCEPTANCE_REPORT.md](M2_E2E_ACCEPTANCE_REPORT.md)。下文保留各轮当时的现场和未执行记录。
+
 ## 现场
 
 - 目录：`D:\Projects\ai-drama-studio`
