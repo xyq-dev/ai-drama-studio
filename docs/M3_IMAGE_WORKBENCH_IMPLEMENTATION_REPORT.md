@@ -1,5 +1,7 @@
 # M3 图片工作台实现报告
 
+2026-09-30：Codex 在精确提交 `0eee7cc8e23bcc33ce29a152c68a483ebb76c93d` 上完成 Linux 原生服务真实核心闭环：浏览器 11 项、内容/API 边界 15 项通过，并核验旧批准 revision 门禁。隐藏标签页用例未执行。详情见 [M3 真实验收报告](M3_E2E_ACCEPTANCE_REPORT.md)。下文保留此前 Windows 实现轮次的验证记录。
+
 目录：`D:\Projects\ai-drama-studio`  
 分支：`feat/m3-image-workbench`，跟踪 `origin/feat/m3-image-workbench`  
 基线：`65e251a591a34976c3301f05b27325b4859218a2`（`docs(m3): define the mock image workbench implementation slice`）  
@@ -58,7 +60,7 @@ pnpm --filter @ai-drama/api run typecheck
 
 结果：内容测试 4 tests 通过，API eslint 与 typecheck exit 0。随后 `pnpm verify` exit 0。这次 API 测试为 5 files / 11 tests，其中 `mock-image-content.spec.ts` 4 tests。Web 源文件未改，verify 复用了此前的 Web 测试缓存。这些都是模拟测试。真实 API 和浏览器未执行。
 
-## 未执行
+## 此前 Windows 实现轮次未执行
 
 - 真实浏览器、真实 API、真实 Worker 和同源 PNG 解码。happy-dom 只断言预览 URL 与错误文案。
 - 390px 视口。窄屏换行使用 `break-all` / `min-w-0`，不能用 class 字符串代替真实布局。
