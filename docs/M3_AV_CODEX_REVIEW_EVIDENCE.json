@@ -1,0 +1,188 @@
+{
+  "sourceCommit": "444d23f043cedc5df7a973ae00fabb141192a122",
+  "reviewDate": "2026-09-30",
+  "nodeVersion": "24.21.0",
+  "pnpmVersion": "10.17.0",
+  "evidenceScope": {
+    "worker": "Actual TypeScript recovery, runtime wiring, adapter and cost-validation code; mocked database/queue/storage and timer scheduling. Replayed independently by primary reviewer.",
+    "web": "Actual component and proxy TypeScript transpiled for a mounted happy-dom React test; fetch responses simulated. Private component exported only in transient test harness. Replayed independently by primary reviewer.",
+    "realApi": false,
+    "realWorkerProcess": false,
+    "realSql": false,
+    "realBrowser": false,
+    "productSourceChangedByReviewer": false,
+    "completionsMeaning": "Number of completeAttemptWithAsset calls; not a count of committed real database assets."
+  },
+  "workerReplay": {
+    "head": "444d23f043cedc5df7a973ae00fabb141192a122",
+    "expiredRevisionRecovery": {
+      "puts": 2,
+      "completions": 2,
+      "failures": 0,
+      "observations": 2,
+      "thrown": [
+        [
+          "REVIEW_REQUIRED"
+        ],
+        [
+          "REVIEW_REQUIRED"
+        ]
+      ]
+    },
+    "costConflictRecovery": {
+      "puts": 2,
+      "completions": 2,
+      "failures": 0,
+      "observations": 2,
+      "thrown": [
+        [
+          "COST_CONFLICT"
+        ],
+        [
+          "COST_CONFLICT"
+        ]
+      ]
+    },
+    "missingSourceRecovery": {
+      "puts": 2,
+      "completions": 2,
+      "failures": 0,
+      "observations": 2,
+      "thrown": [
+        [
+          "NOT_FOUND"
+        ],
+        [
+          "NOT_FOUND"
+        ]
+      ]
+    },
+    "disabledAvRuntimeRecovery": {
+      "puts": 1,
+      "completions": 1,
+      "observations": 1,
+      "assetKind": "VIDEO",
+      "costKind": "ACTUAL"
+    },
+    "evidenceScope": "actual TypeScript/adapter source, mocked database/queue/storage dependencies; no services or SQL"
+  },
+  "webReplay": {
+    "kind": "mounted-component-and-proxy-unit-reproduction",
+    "sourceCommit": "444d23f043cedc5df7a973ae00fabb141192a122",
+    "realApi": false,
+    "results": [
+      {
+        "case": "video-A-accepted-after-switch-to-revision-B",
+        "submitted": {
+          "url": "/api/v1/shot-revisions/rev-A/generate-video",
+          "key": "ed89dbd8-dc6a-4ff8-b829-40086fad8582",
+          "body": "{}"
+        },
+        "activeRevision": "rev-B",
+        "section": "Mock 视频固定 16×16 黑色 1 秒测试视频。seed 和已保存提示词只进入审计快照，不改变画面。这不是真实 AI 视频，也不会写入 MinIO。seed（可选）生成 Mock 视频已受理，结果以任务和视频列表为准。这不是生成成功。当前版本视频没有视频历史版本视频没有视频",
+        "oldAcceptanceShownAsCurrent": true
+      },
+      {
+        "case": "same-asset-successful-refresh-after-transient-load-error",
+        "playerPresent": false,
+        "failureStillShown": true,
+        "hasPreviewRetry": false
+      },
+      {
+        "case": "video-only-requery-failure-leaks-accepted-error-into-image-channel",
+        "imageSectionAlert": "刷新失败，可以重新查询。已受理的结果仍然有效。重新查询",
+        "videoSectionAlert": "刷新失败，可以重新查询。已受理的结果仍然有效。重新查询"
+      },
+      {
+        "case": "same-origin-full200-PNG-proxy",
+        "status": 200,
+        "mime": "image/png",
+        "bytes": [
+          137,
+          80,
+          78,
+          71
+        ],
+        "received": {
+          "url": "http://127.0.0.1:3001/api/v1/assets/33333333-3333-4333-8333-333333333333/content",
+          "method": "GET",
+          "range": "bytes=0-1"
+        }
+      },
+      {
+        "case": "same-origin-HEAD-proxy",
+        "status": 200,
+        "length": "4",
+        "bodyLength": 0
+      }
+    ]
+  },
+  "targetedExistingTests": [
+    {
+      "package": "@ai-drama/worker",
+      "files": 3,
+      "tests": 5,
+      "exitCode": 0,
+      "command": "pnpm --filter @ai-drama/worker exec vitest run src/runtime/mock-av-generation.spec.ts src/runtime/mock-media-recovery.spec.ts src/runtime/mock-media-consumer-guard.spec.ts"
+    },
+    {
+      "package": "@ai-drama/api",
+      "files": 2,
+      "tests": 2,
+      "exitCode": 0,
+      "command": "pnpm --filter @ai-drama/api exec vitest run src/studio/mock-av-content.spec.ts src/studio/asset-content.controller.spec.ts"
+    },
+    {
+      "package": "@ai-drama/database",
+      "files": 2,
+      "tests": 4,
+      "exitCode": 0,
+      "command": "pnpm --filter @ai-drama/database exec vitest run src/mock-media-cost.spec.ts src/provision-mock-av.spec.ts"
+    },
+    {
+      "package": "@ai-drama/web",
+      "files": 2,
+      "tests": 36,
+      "exitCode": 0,
+      "command": "pnpm --filter @ai-drama/web exec vitest run src/components/workbench.review.spec.tsx src/lib/asset-content-proxy.spec.ts",
+      "observedLog": "happy-dom ECONNREFUSED ::1:3000 and 127.0.0.1:3000; suite passed, no real API result"
+    }
+  ],
+  "fullVerifyRerunByReviewer": false,
+  "findings": [
+    {
+      "id": "R1",
+      "priority": "P1",
+      "caseKeys": [
+        "expiredRevisionRecovery",
+        "costConflictRecovery",
+        "missingSourceRecovery"
+      ],
+      "expected": "Permanent failure settles the original attempt without repeated provider submit or commit attempts."
+    },
+    {
+      "id": "R2",
+      "priority": "P2",
+      "caseKeys": [
+        "disabledAvRuntimeRecovery"
+      ],
+      "expected": "Disabled AV recovery must not inspect/resolve/write/commit media or cost."
+    },
+    {
+      "id": "R3",
+      "priority": "P2",
+      "caseKeys": [
+        "video-A-accepted-after-switch-to-revision-B"
+      ],
+      "expected": "A late response must not display an old revision acceptance in a new revision."
+    },
+    {
+      "id": "R4",
+      "priority": "P2",
+      "caseKeys": [
+        "video-only-requery-failure-leaks-accepted-error-into-image-channel"
+      ],
+      "expected": "An unsubmitted media channel must not receive another channel acceptance assertion."
+    }
+  ]
+}
