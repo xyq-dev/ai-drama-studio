@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { PersistenceError, type MediaAssetRecord } from "@ai-drama/database";
-import { assertReadableMockImage, readBoundedMockPng } from "./mock-image-content";
+import { MAX_MOCK_PNG_BYTES, assertReadableMockImage, readBoundedMockPng } from "./mock-image-content";
 
 const projectId = "11111111-1111-4111-8111-111111111111";
 const jobId = "22222222-2222-4222-8222-222222222222";
@@ -68,6 +68,58 @@ describe("mock image content", () => {
       byteSize: 9,
       checksumSha256: createHash("sha256").update("not-a-png").digest("hex"),
     })).rejects.toMatchObject({ code: "ASSET_CONTENT_INVALID" });
+  });
+
+  it("accepts the fixed PNG fixture and rejects signature-only, truncated, corrupt, oversized, and non-file content", async () => {
+    const directory = join(root, "mock-images", projectId, jobId);
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(root, key), PNG);
+    await expect(readBoundedMockPng(root, key, { byteSize: PNG.length, checksumSha256: checksum })).resolves.toEqual(PNG);
+
+    const signature = PNG.subarray(0, 8);
+    const signatureSum = createHash("sha256").update(signature).digest("hex");
+    const signatureKey = `mock-images/${projectId}/${jobId}/${signatureSum}.png`;
+    await writeFile(join(root, signatureKey), signature);
+    await expect(readBoundedMockPng(root, signatureKey, { byteSize: signature.length, checksumSha256: signatureSum })).rejects.toMatchObject({
+      code: "ASSET_CONTENT_INVALID",
+    });
+
+    const truncated = PNG.subarray(0, 16);
+    const truncatedSum = createHash("sha256").update(truncated).digest("hex");
+    const truncatedKey = `mock-images/${projectId}/${jobId}/${truncatedSum}.png`;
+    await writeFile(join(root, truncatedKey), truncated);
+    await expect(readBoundedMockPng(root, truncatedKey, { byteSize: truncated.length, checksumSha256: truncatedSum })).rejects.toMatchObject({
+      code: "ASSET_CONTENT_INVALID",
+    });
+
+    const corrupt = Buffer.from(PNG);
+    corrupt[corrupt.length - 1] ^= 0xff;
+    const corruptSum = createHash("sha256").update(corrupt).digest("hex");
+    const corruptKey = `mock-images/${projectId}/${jobId}/${corruptSum}.png`;
+    await writeFile(join(root, corruptKey), corrupt);
+    await expect(readBoundedMockPng(root, corruptKey, { byteSize: corrupt.length, checksumSha256: corruptSum })).rejects.toMatchObject({
+      code: "ASSET_CONTENT_INVALID",
+    });
+
+    const larger = Buffer.concat([PNG, Buffer.from([0])]);
+    await writeFile(join(root, key), larger);
+    await expect(readBoundedMockPng(root, key, { byteSize: PNG.length, checksumSha256: checksum })).rejects.toMatchObject({
+      code: "ASSET_CONTENT_INVALID",
+    });
+
+    const cappedSum = "d".repeat(64);
+    const cappedKey = `mock-images/${projectId}/${jobId}/${cappedSum}.png`;
+    await writeFile(join(root, cappedKey), Buffer.alloc(MAX_MOCK_PNG_BYTES + 1, 1));
+    await expect(readBoundedMockPng(root, cappedKey, {
+      byteSize: MAX_MOCK_PNG_BYTES + 1,
+      checksumSha256: cappedSum,
+    })).rejects.toMatchObject({ code: "ASSET_CONTENT_INVALID" });
+
+    const directoryKey = `mock-images/${projectId}/${jobId}/${"e".repeat(64)}.png`;
+    await mkdir(join(root, directoryKey));
+    await expect(readBoundedMockPng(root, directoryKey, { byteSize: PNG.length, checksumSha256: checksum })).rejects.toMatchObject({
+      code: "ASSET_CONTENT_INVALID",
+    });
   });
 
   it("rejects a directory junction that escapes the configured root", async () => {

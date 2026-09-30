@@ -50,6 +50,24 @@ function trackedWorkflow(run: { type: string }): boolean {
   return TEXT_WORKFLOW_TYPES.has(run.type) || run.type === "MEDIA_IMAGE";
 }
 
+function noteWorkflowTransitions(
+  runs: readonly WorkflowRun[],
+  known: Map<string, string>,
+): { mediaBecameTerminal: boolean; textBecameTerminal: boolean } {
+  let mediaBecameTerminal = false;
+  let textBecameTerminal = false;
+  for (const run of runs) {
+    const previous = known.get(run.id);
+    const terminal = !shouldPoll(run.status, false);
+    const becameTerminal = previous !== undefined && shouldPoll(previous, false) && terminal;
+    const firstTerminalMedia = previous === undefined && run.type === "MEDIA_IMAGE" && terminal;
+    if ((becameTerminal || firstTerminalMedia) && run.type === "MEDIA_IMAGE") mediaBecameTerminal = true;
+    if (becameTerminal && run.type !== "MEDIA_IMAGE") textBecameTerminal = true;
+    known.set(run.id, run.status);
+  }
+  return { mediaBecameTerminal, textBecameTerminal };
+}
+
 interface ProjectRecord {
   id: string;
   title: string;
@@ -228,20 +246,15 @@ export function Workbench({ projectId }: { projectId: string }) {
     ]);
     if (!shouldApplyLoad(request, baseToken.current)) return;
     const tracked = runs.filter(trackedWorkflow);
-    let sawTerminalMedia = false;
-    for (const run of tracked) {
-      if (!workflowStatus.current.has(run.id)) {
-        workflowStatus.current.set(run.id, run.status);
-        if (run.type === "MEDIA_IMAGE" && !shouldPoll(run.status, false)) sawTerminalMedia = true;
-      }
-    }
+    const transition = noteWorkflowTransitions(tracked, workflowStatus.current);
     setProject(nextProject);
     setEpisodes(episodePage.items);
     setStories(applyPage(null, { scope: projectId, items: storyPage.items, nextCursor: storyPage.nextCursor, append: false }));
     setCharacters(applyPage(null, { scope: projectId, items: characterPage.items, nextCursor: characterPage.nextCursor, append: false }));
     setLocations(applyPage(null, { scope: projectId, items: locationPage.items, nextCursor: locationPage.nextCursor, append: false }));
     setWorkflows(tracked);
-    if (sawTerminalMedia) setImageEpoch((value) => value + 1);
+    if (transition.mediaBecameTerminal) setImageEpoch((value) => value + 1);
+    if (transition.textBecameTerminal) setRefreshEpoch((value) => value + 1);
   }, [projectId]);
 
   useEffect(() => {
@@ -275,18 +288,10 @@ export function Workbench({ projectId }: { projectId: string }) {
       void client.get<WorkflowRun[]>(`/projects/${projectId}/workflow-runs`).then((runs) => {
         if (!shouldApplyLoad(request, baseToken.current)) return;
         const tracked = runs.filter(trackedWorkflow);
-        let textFinished = false;
-        let mediaFinished = false;
-        for (const run of tracked) {
-          const previous = workflowStatus.current.get(run.id);
-          const becameTerminal = Boolean(previous && shouldPoll(previous, false) && !shouldPoll(run.status, false));
-          if (becameTerminal && run.type === "MEDIA_IMAGE") mediaFinished = true;
-          if (becameTerminal && run.type !== "MEDIA_IMAGE") textFinished = true;
-          workflowStatus.current.set(run.id, run.status);
-        }
+        const transition = noteWorkflowTransitions(tracked, workflowStatus.current);
         setWorkflows(tracked);
-        if (mediaFinished) setImageEpoch((value) => value + 1);
-        if (textFinished) {
+        if (transition.mediaBecameTerminal) setImageEpoch((value) => value + 1);
+        if (transition.textBecameTerminal) {
           setRefreshEpoch((value) => value + 1);
           void reloadBase().catch(() => undefined);
         }
@@ -2151,37 +2156,60 @@ function ShotImagePanel(props: {
   const [seed, setSeed] = useState("");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [listError, setListError] = useState<string | null>(null);
+  const [acceptError, setAcceptError] = useState<string | null>(null);
   const [currentAssets, setCurrentAssets] = useState<ShotAsset[]>([]);
   const [historyAssets, setHistoryAssets] = useState<ShotAsset[]>([]);
   const [previewErrors, setPreviewErrors] = useState<Record<string, boolean>>({});
+  const [assetRevision, setAssetRevision] = useState(props.currentRevisionId);
+  const [listAttempt, setListAttempt] = useState(0);
   const pending = useRef<{ fingerprint: string; key: string } | null>(null);
   const requestToken = useRef(0);
+  if (assetRevision !== props.currentRevisionId) {
+    setAssetRevision(props.currentRevisionId);
+    setCurrentAssets([]);
+    setHistoryAssets([]);
+    setPreviewErrors({});
+    setListError(null);
+    setAcceptError(null);
+  }
 
   useEffect(() => {
     const request = ++requestToken.current;
     const currentId = props.currentRevisionId;
     const historyIds = props.historyKey.split("|").filter((id) => id.length > 0 && id !== currentId);
+    let cancelled = false;
     void (async () => {
       try {
         const currentPage = await client.get<{ items: ShotAsset[] }>(`/shot-revisions/${currentId}/assets`);
-        if (request !== requestToken.current) return;
+        if (cancelled || request !== requestToken.current) return;
         const historyPages = await Promise.all(historyIds.map(async (id) => {
           const page = await client.get<{ items: ShotAsset[] }>(`/shot-revisions/${id}/assets`);
           return page.items.filter((item) => item.sourceShotRevisionId === id);
         }));
-        if (request !== requestToken.current) return;
+        if (cancelled || request !== requestToken.current) return;
         setCurrentAssets(currentPage.items.filter((item) => item.sourceShotRevisionId === currentId));
         setHistoryAssets(historyPages.flat());
-        setError(null);
-      } catch (caught) {
-        if (request !== requestToken.current) return;
-        setCurrentAssets([]);
-        setHistoryAssets([]);
-        setError(caught instanceof ApiError ? caught.detail : "图片列表加载失败");
+        setListError(null);
+      } catch {
+        if (cancelled || request !== requestToken.current) return;
+        setListError("图片列表刷新失败，可以重新查询。");
       }
     })();
-  }, [props.currentRevisionId, props.historyKey, props.imageEpoch]);
+    return () => {
+      cancelled = true;
+    };
+  }, [props.currentRevisionId, props.historyKey, props.imageEpoch, listAttempt]);
+
+  async function requery() {
+    setListAttempt((value) => value + 1);
+    try {
+      await props.onAccepted();
+      setAcceptError(null);
+    } catch {
+      setAcceptError("刷新失败，可以重新查询。已受理的结果仍然有效。");
+    }
+  }
 
   async function generate() {
     if (!props.usable || busy) return;
@@ -2190,6 +2218,8 @@ function ShotImagePanel(props: {
     pending.current = { fingerprint, key };
     setBusy(true);
     setNotice(null);
+    setListError(null);
+    setAcceptError(null);
     try {
       const result = await client.write<{ workflowRunId: string }>({
         path: `/shot-revisions/${props.currentRevisionId}/generate-image`,
@@ -2200,13 +2230,18 @@ function ShotImagePanel(props: {
       setNotice(result.status === 202
         ? "已受理，结果以任务和图片列表为准。这不是生成成功。"
         : `已返回 ${result.status}，结果以随后的查询为准。`);
-      await props.onAccepted();
     } catch (caught) {
       setNotice(caught instanceof ApiError
         ? `${caught.code}：${caught.detail}。再次提交将复用同一幂等键。`
         : "提交失败，再次提交将复用同一幂等键。");
-    } finally {
       setBusy(false);
+      return;
+    }
+    setBusy(false);
+    try {
+      await props.onAccepted();
+    } catch {
+      setAcceptError("刷新失败，可以重新查询。已受理的结果仍然有效。");
     }
   }
 
@@ -2220,7 +2255,12 @@ function ShotImagePanel(props: {
         {busy ? "正在提交" : props.usable ? "生成 Mock 图片" : `生成 Mock 图片（${props.reason}）`}
       </button>
       {notice ? <p className="mt-2 text-sm">{notice}</p> : null}
-      {error ? <p className="mt-2 text-sm" role="alert">{error}</p> : null}
+      {listError || acceptError ? (
+        <p className="mt-2 text-sm" role="alert">
+          {acceptError ?? listError}
+          <button className="ml-2 underline" type="button" onClick={() => void requery()}>重新查询</button>
+        </p>
+      ) : null}
       <AssetList title="当前版本图片" assets={currentAssets} previewErrors={previewErrors} onPreviewError={(id) => setPreviewErrors((current) => ({ ...current, [id]: true }))} />
       <AssetList title="历史版本图片" assets={historyAssets} previewErrors={previewErrors} onPreviewError={(id) => setPreviewErrors((current) => ({ ...current, [id]: true }))} />
     </section>

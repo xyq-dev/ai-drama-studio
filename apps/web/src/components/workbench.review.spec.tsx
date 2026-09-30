@@ -45,6 +45,8 @@ interface Sim {
   imageAssets: Record<string, Array<Record<string, unknown>>>;
   mediaImage: boolean;
   mediaTask: boolean;
+  failWorkflowRead: number | null;
+  failAssetRead: number | null;
   fetch: (input: string, init?: RequestInit) => Promise<Response>;
 }
 
@@ -86,8 +88,11 @@ function createSim(): Sim {
     imageAssets: {},
     mediaImage: false,
     mediaTask: false,
+    failWorkflowRead: null,
+    failAssetRead: null,
     fetch: () => Promise.resolve(fail(500, "UNINSTALLED", "fetch was not installed")),
   };
+  let assetReads = 0;
   let storyConflictStage = 0;
   let storyConflictGets = 0;
   let sceneConflictGets = 0;
@@ -273,6 +278,7 @@ function createSim(): Sim {
     }
     if (path === `/api/v1/projects/${PROJECT}/workflow-runs` && method === "GET") {
       sim.workflowReads += 1;
+      if (sim.failWorkflowRead === sim.workflowReads) return fail(500, "REFRESH_FAILED", "任务刷新失败");
       if (sim.mediaTask) {
         return json([{
           id: "media-run",
@@ -416,6 +422,8 @@ function createSim(): Sim {
     }
     if (/\/shot-revisions\/[^/]+\/assets$/.test(path) && method === "GET") {
       const revisionId = path.split("/").at(-2) ?? "";
+      assetReads += 1;
+      if (sim.failAssetRead === assetReads) return fail(500, "ASSET_REFRESH_FAILED", "图片刷新失败");
       return json({ items: sim.imageAssets[revisionId] ?? [] });
     }
     if (/\/shot-revisions\/[^/]+\/generate-image$/.test(path) && method === "POST") {
@@ -1280,4 +1288,117 @@ describe("workbench review interactions against a simulated API", () => {
     await new Promise((resolve) => setTimeout(resolve, 2500));
     expect(sim.workflowReads).toBe(reads);
   }, 15000);
+
+  it("rereads images when a hidden media task finishes and then stops polling", async () => {
+    const sim = createSim();
+    sim.imageReady = true;
+    sim.mediaImage = true;
+    install(sim);
+    let hidden = false;
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => (hidden ? "hidden" : "visible") });
+    try {
+      renderAt(`focus=shot&episode=1&scene=scene-1&shot=${SHOT_A}`);
+      await screen.findByRole("heading", { name: "镜头 1" });
+      fireEvent.change(field("shot-action"), { target: { value: "隐藏期间保留" } });
+      expect(sim.workflowReads).toBe(1);
+      hidden = true;
+      await new Promise((resolve) => setTimeout(resolve, 2500));
+      expect(sim.workflowReads).toBe(1);
+      expect(screen.queryByText(/cccccccc-cccc-4ccc-8ccc-cccccccccccc/)).toBeNull();
+      hidden = false;
+      document.dispatchEvent(new Event("visibilitychange"));
+      expect(await screen.findByText(/cccccccc-cccc-4ccc-8ccc-cccccccccccc/)).toBeTruthy();
+      expect(field("shot-action").value).toBe("隐藏期间保留");
+      const reads = sim.workflowReads;
+      await new Promise((resolve) => setTimeout(resolve, 2500));
+      expect(sim.workflowReads).toBe(reads);
+    } finally {
+      delete (document as { visibilityState?: string }).visibilityState;
+    }
+  }, 15000);
+
+  it("clears the previous revision images before the new revision assets arrive", async () => {
+    const sim = createSim();
+    sim.imageReady = true;
+    const oldId = `${SHOT_A}-rev`;
+    const oldAsset = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+    sim.imageAssets[oldId] = [imageRecord(oldId, "ACTIVE", oldAsset)];
+    install(sim);
+    renderAt(`focus=shot&episode=1&scene=scene-1&shot=${SHOT_A}`);
+    expect(await screen.findByText(new RegExp(oldAsset))).toBeTruthy();
+    const newId = `${SHOT_A}-rev-5`;
+    let release!: () => void;
+    sim.holdGetPart = `/shot-revisions/${newId}/assets`;
+    sim.holdGet = new Promise<void>((resolve) => { release = resolve; });
+    fireEvent.change(field("shot-action"), { target: { value: "新版本动作" } });
+    fireEvent.click(within(formOf("镜头 1")).getByRole("button", { name: "保存新版本" }));
+    await screen.findByText("已保存");
+    expect(screen.queryByText(new RegExp(oldAsset))).toBeNull();
+    release();
+    expect(await screen.findByText(new RegExp(oldAsset))).toBeTruthy();
+    const current = screen.getByRole("heading", { name: "当前版本图片" }).parentElement;
+    const history = screen.getByRole("heading", { name: "历史版本图片" }).parentElement;
+    expect(current?.textContent).not.toContain(oldAsset);
+    expect(history?.textContent).toContain(oldAsset);
+    expect(history?.textContent).toContain(oldId);
+  });
+
+  it("ignores a late asset response from the revision that was just replaced", async () => {
+    const sim = createSim();
+    sim.imageReady = true;
+    const oldId = `${SHOT_A}-rev`;
+    const oldAsset = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+    sim.imageAssets[oldId] = [imageRecord(oldId, "ACTIVE", oldAsset)];
+    let release!: () => void;
+    sim.holdGetPart = `/shot-revisions/${oldId}/assets`;
+    sim.holdGet = new Promise<void>((resolve) => { release = resolve; });
+    install(sim);
+    renderAt(`focus=shot&episode=1&scene=scene-1&shot=${SHOT_A}`);
+    await screen.findByRole("heading", { name: "镜头 1" });
+    fireEvent.change(field("shot-action"), { target: { value: "先保存" } });
+    fireEvent.click(within(formOf("镜头 1")).getByRole("button", { name: "保存新版本" }));
+    await screen.findByText("已保存");
+    release();
+    expect(await screen.findByText(new RegExp(oldAsset))).toBeTruthy();
+    const current = screen.getByRole("heading", { name: "当前版本图片" }).parentElement;
+    const history = screen.getByRole("heading", { name: "历史版本图片" }).parentElement;
+    expect(current?.textContent).not.toContain(oldAsset);
+    expect(history?.textContent).toContain(oldId);
+  });
+
+  it("keeps an accepted image request when the following refresh fails", async () => {
+    const sim = createSim();
+    sim.imageReady = true;
+    sim.failWorkflowRead = 2;
+    install(sim);
+    renderAt(`focus=shot&episode=1&scene=scene-1&shot=${SHOT_A}`);
+    fireEvent.click(await screen.findByRole("button", { name: "生成 Mock 图片" }));
+    expect(await screen.findByText(/已受理，结果以任务和图片列表为准/)).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "重新查询" })).toBeTruthy();
+    expect(screen.queryByText(/复用同一幂等键/)).toBeNull();
+    expect(screen.queryByText(/再次生成/)).toBeNull();
+    expect(sim.calls.filter((call) => call.url.endsWith("/generate-image"))).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "重新查询" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "重新查询" })).toBeNull());
+    expect(screen.getByText(/已受理，结果以任务和图片列表为准/)).toBeTruthy();
+    expect(sim.calls.filter((call) => call.url.endsWith("/generate-image"))).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "生成 Mock 图片" }));
+    await waitFor(() => expect(sim.calls.filter((call) => call.url.endsWith("/generate-image"))).toHaveLength(2));
+    const posts = sim.calls.filter((call) => call.url.endsWith("/generate-image"));
+    expect(posts[0]?.key).not.toBe(posts[1]?.key);
+  });
+
+  it("retries an asset list query without reusing or replacing the generate key", async () => {
+    const sim = createSim();
+    sim.imageReady = true;
+    sim.failAssetRead = 1;
+    install(sim);
+    renderAt(`focus=shot&episode=1&scene=scene-1&shot=${SHOT_A}`);
+    expect(await screen.findByText(/图片列表刷新失败，可以重新查询/)).toBeTruthy();
+    expect(screen.queryByText(/复用同一幂等键/)).toBeNull();
+    expect(screen.queryByText(/再次生成/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "重新查询" }));
+    await waitFor(() => expect(screen.queryByText(/图片列表刷新失败/)).toBeNull());
+    expect(sim.calls.filter((call) => call.url.endsWith("/generate-image"))).toHaveLength(0);
+  });
 });
