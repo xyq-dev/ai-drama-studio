@@ -1,0 +1,543 @@
+{
+  "schema": "m3.av.fixture.preflight.v1",
+  "kind": "offline-media-fixture-preflight",
+  "startedAt": "2026-09-30T14:41:28.496Z",
+  "finishedAt": "2026-09-30T14:41:30.064Z",
+  "source": {
+    "repository": "xyq-dev/ai-drama-studio",
+    "codeBaseline": "0eee7cc8e23bcc33ce29a152c68a483ebb76c93d",
+    "checkedOutHead": "f62764be6722d75eb8d3dc4a6edde5c7a3081d0d",
+    "fixturePath": "packages/providers/src/mock-media-fixtures.ts",
+    "fixtureBlob": "8e0f841595a2e0d9ee1d2bfec9f0008e5982d03d",
+    "fixtureSourceUnchangedFromCodeBaseline": true
+  },
+  "runtime": {
+    "node": "v24.21.0",
+    "chrome": "154.0.8037.92",
+    "ffmpeg": "ffmpeg version 6.1.1-3ubuntu5 Copyright (c) 2000-2023 the FFmpeg developers",
+    "ffprobe": "ffprobe version 6.1.1-3ubuntu5 Copyright (c) 2007-2023 the FFmpeg developers"
+  },
+  "scope": {
+    "dataUrlsOnly": true,
+    "networkRequests": [],
+    "productApiStartedOrRequested": false,
+    "databaseOrMigration": false,
+    "productSourceModified": false,
+    "M3_C_Implemented": false,
+    "note": "This checks actual browser decoding and playback of standalone fixed fixtures. It is not API/Worker/Asset/workbench integration acceptance."
+  },
+  "existingMp4v": {
+    "name": "existing-provider-MP4-mp4v",
+    "byteLength": 894,
+    "checksumSha256": "4b404b7c23e4212c66ccb3d0ff94a2991ae815544a13bd18d82987a202535bfe",
+    "tag": "video",
+    "mime": "video/mp4",
+    "canPlayMime": "maybe",
+    "canPlayMp4v": "",
+    "canPlayH264Baseline": "probably",
+    "loadResult": "error",
+    "playResult": "not-started",
+    "duration": null,
+    "videoWidth": 0,
+    "videoHeight": 0,
+    "currentTime": 0,
+    "readyState": 0,
+    "error": {
+      "code": 4,
+      "message": "PipelineStatus::DEMUXER_ERROR_NO_SUPPORTED_STREAMS: FFmpegDemuxer: no supported streams"
+    },
+    "events": [
+      {
+        "type": "loadstart",
+        "ms": 1,
+        "readyState": 0,
+        "currentTime": 0,
+        "error": null
+      },
+      {
+        "type": "error",
+        "ms": 2,
+        "readyState": 0,
+        "currentTime": 0,
+        "error": {
+          "code": 4,
+          "message": "PipelineStatus::DEMUXER_ERROR_NO_SUPPORTED_STREAMS: FFmpegDemuxer: no supported streams"
+        }
+      }
+    ],
+    "ffprobe": {
+      "streams": [
+        {
+          "index": 0,
+          "codec_name": "mpeg4",
+          "codec_long_name": "MPEG-4 part 2",
+          "profile": "Simple Profile",
+          "codec_type": "video",
+          "codec_tag_string": "mp4v",
+          "codec_tag": "0x7634706d",
+          "width": 16,
+          "height": 16,
+          "coded_width": 16,
+          "coded_height": 16,
+          "closed_captions": 0,
+          "film_grain": 0,
+          "has_b_frames": 0,
+          "sample_aspect_ratio": "1:1",
+          "display_aspect_ratio": "1:1",
+          "pix_fmt": "yuv420p",
+          "level": 1,
+          "chroma_location": "left",
+          "refs": 1,
+          "quarter_sample": "false",
+          "divx_packed": "false",
+          "id": "0x1",
+          "r_frame_rate": "1/1",
+          "avg_frame_rate": "1/1",
+          "time_base": "1/16384",
+          "start_pts": 0,
+          "start_time": "0.000000",
+          "duration_ts": 16384,
+          "duration": "1.000000",
+          "bit_rate": "136",
+          "nb_frames": "1",
+          "extradata_size": 47,
+          "disposition": {
+            "default": 1,
+            "dub": 0,
+            "original": 0,
+            "comment": 0,
+            "lyrics": 0,
+            "karaoke": 0,
+            "forced": 0,
+            "hearing_impaired": 0,
+            "visual_impaired": 0,
+            "clean_effects": 0,
+            "attached_pic": 0,
+            "timed_thumbnails": 0,
+            "non_diegetic": 0,
+            "captions": 0,
+            "descriptions": 0,
+            "metadata": 0,
+            "dependent": 0,
+            "still_image": 0
+          },
+          "tags": {
+            "language": "und",
+            "handler_name": "VideoHandler",
+            "vendor_id": "[0][0][0][0]",
+            "encoder": "Lavc60.31.102 mpeg4"
+          }
+        }
+      ],
+      "format": {
+        "nb_streams": 1,
+        "nb_programs": 0,
+        "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+        "format_long_name": "QuickTime / MOV",
+        "start_time": "0.000000",
+        "duration": "1.000000",
+        "size": "894",
+        "bit_rate": "7152",
+        "probe_score": 100,
+        "tags": {
+          "major_brand": "isom",
+          "minor_version": "512",
+          "compatible_brands": "isomiso2mp41",
+          "encoder": "Lavf60.16.100"
+        }
+      }
+    },
+    "supported": false
+  },
+  "existingSilentWav": {
+    "name": "existing-provider-PCM-WAV",
+    "byteLength": 1644,
+    "checksumSha256": "c726d333dd159a31423f3480dbb1c5c4a9dfcd30efe1f7e12ade390dc92e8908",
+    "tag": "audio",
+    "mime": "audio/wav",
+    "canPlayMime": "maybe",
+    "canPlayMp4v": "",
+    "canPlayH264Baseline": "probably",
+    "loadResult": "canplay",
+    "playResult": "ended",
+    "duration": 0.1,
+    "videoWidth": null,
+    "videoHeight": null,
+    "currentTime": 0.1,
+    "readyState": 4,
+    "error": null,
+    "events": [
+      {
+        "type": "loadstart",
+        "ms": 0,
+        "readyState": 0,
+        "currentTime": 0,
+        "error": null
+      },
+      {
+        "type": "loadedmetadata",
+        "ms": 1,
+        "readyState": 1,
+        "currentTime": 0,
+        "error": null
+      },
+      {
+        "type": "loadeddata",
+        "ms": 43,
+        "readyState": 4,
+        "currentTime": 0,
+        "error": null
+      },
+      {
+        "type": "canplay",
+        "ms": 43,
+        "readyState": 4,
+        "currentTime": 0,
+        "error": null
+      },
+      {
+        "type": "playing",
+        "ms": 43,
+        "readyState": 4,
+        "currentTime": 0.000213,
+        "error": null
+      },
+      {
+        "type": "timeupdate",
+        "ms": 264,
+        "readyState": 4,
+        "currentTime": 0.1,
+        "error": null
+      },
+      {
+        "type": "ended",
+        "ms": 264,
+        "readyState": 4,
+        "currentTime": 0.1,
+        "error": null
+      }
+    ],
+    "ffprobe": {
+      "streams": [
+        {
+          "index": 0,
+          "codec_name": "pcm_s16le",
+          "codec_long_name": "PCM signed 16-bit little-endian",
+          "codec_type": "audio",
+          "codec_tag_string": "[1][0][0][0]",
+          "codec_tag": "0x0001",
+          "sample_fmt": "s16",
+          "sample_rate": "8000",
+          "channels": 1,
+          "bits_per_sample": 16,
+          "initial_padding": 0,
+          "r_frame_rate": "0/0",
+          "avg_frame_rate": "0/0",
+          "time_base": "1/8000",
+          "duration_ts": 800,
+          "duration": "0.100000",
+          "bit_rate": "128000",
+          "disposition": {
+            "default": 0,
+            "dub": 0,
+            "original": 0,
+            "comment": 0,
+            "lyrics": 0,
+            "karaoke": 0,
+            "forced": 0,
+            "hearing_impaired": 0,
+            "visual_impaired": 0,
+            "clean_effects": 0,
+            "attached_pic": 0,
+            "timed_thumbnails": 0,
+            "non_diegetic": 0,
+            "captions": 0,
+            "descriptions": 0,
+            "metadata": 0,
+            "dependent": 0,
+            "still_image": 0
+          }
+        }
+      ],
+      "format": {
+        "nb_streams": 1,
+        "nb_programs": 0,
+        "format_name": "wav",
+        "format_long_name": "WAV / WAVE (Waveform Audio)",
+        "duration": "0.100000",
+        "size": "1644",
+        "bit_rate": "131520",
+        "probe_score": 99
+      }
+    },
+    "supported": true,
+    "sampleRateHz": 8000,
+    "channels": 1,
+    "bitsPerSample": 16,
+    "durationMs": 100,
+    "realSpeech": false
+  },
+  "singleFrameH264CandidateNotSelected": {
+    "name": "candidate-H264-baseline-faststart",
+    "byteLength": 1477,
+    "checksumSha256": "68e25c7bf943c171c0ff7ceb5a91a3283bdf3afd3cc0e55d4bc3f2951514f57d",
+    "tag": "video",
+    "mime": "video/mp4",
+    "canPlayMime": "maybe",
+    "canPlayMp4v": "",
+    "canPlayH264Baseline": "probably",
+    "loadResult": "canplay",
+    "playResult": "AbortError: The play() request was interrupted by end of playback. https://goo.gl/LdLk22",
+    "duration": 1,
+    "videoWidth": 16,
+    "videoHeight": 16,
+    "currentTime": 1,
+    "readyState": 4,
+    "error": null,
+    "events": [
+      {
+        "type": "loadstart",
+        "ms": 1,
+        "readyState": 0,
+        "currentTime": 0,
+        "error": null
+      },
+      {
+        "type": "loadedmetadata",
+        "ms": 1,
+        "readyState": 1,
+        "currentTime": 0,
+        "error": null
+      },
+      {
+        "type": "loadeddata",
+        "ms": 4,
+        "readyState": 4,
+        "currentTime": 0,
+        "error": null
+      },
+      {
+        "type": "canplay",
+        "ms": 4,
+        "readyState": 4,
+        "currentTime": 0,
+        "error": null
+      },
+      {
+        "type": "timeupdate",
+        "ms": 254,
+        "readyState": 4,
+        "currentTime": 1,
+        "error": null
+      },
+      {
+        "type": "canplay",
+        "ms": 254,
+        "readyState": 4,
+        "currentTime": 1,
+        "error": null
+      },
+      {
+        "type": "timeupdate",
+        "ms": 254,
+        "readyState": 4,
+        "currentTime": 1,
+        "error": null
+      }
+    ]
+  },
+  "recommendedH264Fixture": {
+    "name": "candidate-H264-baseline-faststart-5frames",
+    "byteLength": 1552,
+    "checksumSha256": "6cbb357d0c5429c415430d0596dfc04417b9fa967eeb34e55186b0a3a9f590e3",
+    "tag": "video",
+    "mime": "video/mp4",
+    "canPlayMime": "maybe",
+    "canPlayMp4v": "",
+    "canPlayH264Baseline": "probably",
+    "loadResult": "canplay",
+    "playResult": "ended",
+    "duration": 1,
+    "videoWidth": 16,
+    "videoHeight": 16,
+    "currentTime": 1,
+    "readyState": 4,
+    "error": null,
+    "events": [
+      {
+        "type": "loadstart",
+        "ms": 1,
+        "readyState": 0,
+        "currentTime": 0,
+        "error": null
+      },
+      {
+        "type": "loadedmetadata",
+        "ms": 1,
+        "readyState": 1,
+        "currentTime": 0,
+        "error": null
+      },
+      {
+        "type": "loadeddata",
+        "ms": 2,
+        "readyState": 4,
+        "currentTime": 0,
+        "error": null
+      },
+      {
+        "type": "canplay",
+        "ms": 2,
+        "readyState": 4,
+        "currentTime": 0,
+        "error": null
+      },
+      {
+        "type": "playing",
+        "ms": 2,
+        "readyState": 4,
+        "currentTime": 6.6e-05,
+        "error": null
+      },
+      {
+        "type": "timeupdate",
+        "ms": 262,
+        "readyState": 4,
+        "currentTime": 0.259603,
+        "error": null
+      },
+      {
+        "type": "timeupdate",
+        "ms": 527,
+        "readyState": 4,
+        "currentTime": 0.525187,
+        "error": null
+      },
+      {
+        "type": "timeupdate",
+        "ms": 793,
+        "readyState": 4,
+        "currentTime": 0.790777,
+        "error": null
+      },
+      {
+        "type": "timeupdate",
+        "ms": 1002,
+        "readyState": 4,
+        "currentTime": 1,
+        "error": null
+      },
+      {
+        "type": "ended",
+        "ms": 1003,
+        "readyState": 4,
+        "currentTime": 1,
+        "error": null
+      }
+    ],
+    "ffprobe": {
+      "streams": [
+        {
+          "index": 0,
+          "codec_name": "h264",
+          "codec_long_name": "H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10",
+          "profile": "Constrained Baseline",
+          "codec_type": "video",
+          "codec_tag_string": "avc1",
+          "codec_tag": "0x31637661",
+          "width": 16,
+          "height": 16,
+          "coded_width": 16,
+          "coded_height": 16,
+          "closed_captions": 0,
+          "film_grain": 0,
+          "has_b_frames": 0,
+          "sample_aspect_ratio": "1:1",
+          "display_aspect_ratio": "1:1",
+          "pix_fmt": "yuv420p",
+          "level": 30,
+          "chroma_location": "left",
+          "field_order": "progressive",
+          "refs": 1,
+          "is_avc": "true",
+          "nal_length_size": "4",
+          "id": "0x1",
+          "r_frame_rate": "5/1",
+          "avg_frame_rate": "5/1",
+          "time_base": "1/10240",
+          "start_pts": 0,
+          "start_time": "0.000000",
+          "duration_ts": 10240,
+          "duration": "1.000000",
+          "bit_rate": "5448",
+          "bits_per_raw_sample": "8",
+          "nb_frames": "5",
+          "extradata_size": 38,
+          "disposition": {
+            "default": 1,
+            "dub": 0,
+            "original": 0,
+            "comment": 0,
+            "lyrics": 0,
+            "karaoke": 0,
+            "forced": 0,
+            "hearing_impaired": 0,
+            "visual_impaired": 0,
+            "clean_effects": 0,
+            "attached_pic": 0,
+            "timed_thumbnails": 0,
+            "non_diegetic": 0,
+            "captions": 0,
+            "descriptions": 0,
+            "metadata": 0,
+            "dependent": 0,
+            "still_image": 0
+          },
+          "tags": {
+            "language": "und",
+            "handler_name": "VideoHandler",
+            "vendor_id": "[0][0][0][0]",
+            "encoder": "Lavc60.31.102 libx264"
+          }
+        }
+      ],
+      "format": {
+        "nb_streams": 1,
+        "nb_programs": 0,
+        "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+        "format_long_name": "QuickTime / MOV",
+        "start_time": "0.000000",
+        "duration": "1.000000",
+        "size": "1552",
+        "bit_rate": "12416",
+        "probe_score": 100,
+        "tags": {
+          "major_brand": "isom",
+          "minor_version": "512",
+          "compatible_brands": "isomiso2avc1mp41",
+          "encoder": "Lavf60.16.100"
+        }
+      }
+    },
+    "supported": true,
+    "codec": "H264/AVC Constrained Baseline",
+    "sampleEntry": "avc1",
+    "pixelFormat": "yuv420p",
+    "durationMs": 1000,
+    "width": 16,
+    "height": 16,
+    "frames": 5,
+    "framesPerSecond": 5,
+    "faststart": true,
+    "includesAudio": false,
+    "pixels": "black",
+    "filename": "h264-baseline-16x16-5frames.mp4",
+    "base64": "AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAM3bW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAAAAAD6AAAA+gAAQAAAQAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAmF0cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAABAAAAAAAAA+gAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAABAAAAAQAAAAAAAkZWR0cwAAABxlbHN0AAAAAAAAAAEAAAPoAAAAAAABAAAAAAHZbWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAAAoAAAAKABVxAAAAAAALWhkbHIAAAAAAAAAAHZpZGUAAAAAAAAAAAAAAABWaWRlb0hhbmRsZXIAAAABhG1pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAAURzdGJsAAAAuHN0c2QAAAAAAAAAAQAAAKhhdmMxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAABAAEABIAAAASAAAAAAAAAABFUxhdmM2MC4zMS4xMDIgbGlieDI2NAAAAAAAAAAAAAAAGP//AAAALmF2Y0MBQsAe/+EAFmdCwB7ZHsBEAAADAAQAAAMAKDxYuSABAAVoy4PLIAAAABBwYXNwAAAAAQAAAAEAAAAUYnRydAAAAAAAABVIAAAVSAAAABhzdHRzAAAAAAAAAAEAAAAFAAAIAAAAABRzdHNzAAAAAAAAAAEAAAABAAAAHHN0c2MAAAAAAAAAAQAAAAEAAAAFAAAAAQAAAChzdHN6AAAAAAAAAAAAAAAFAAACgwAAAAoAAAAKAAAACQAAAAkAAAAUc3RjbwAAAAAAAAABAAADZwAAAGJ1ZHRhAAAAWm1ldGEAAAAAAAAAIWhkbHIAAAAAAAAAAG1kaXJhcHBsAAAAAAAAAAAAAAAALWlsc3QAAAAlqXRvbwAAAB1kYXRhAAAAAQAAAABMYXZmNjAuMTYuMTAwAAAACGZyZWUAAAKxbWRhdAAAAnAGBf//bNxF6b3m2Ui3lizYINkj7u94MjY0IC0gY29yZSAxNjQgcjMxMDggMzFlMTlmOSAtIEguMjY0L01QRUctNCBBVkMgY29kZWMgLSBDb3B5bGVmdCAyMDAzLTIwMjMgLSBodHRwOi8vd3d3LnZpZGVvbGFuLm9yZy94MjY0Lmh0bWwgLSBvcHRpb25zOiBjYWJhYz0wIHJlZj0zIGRlYmxvY2s9MTowOjAgYW5hbHlzZT0weDE6MHgxMTEgbWU9aGV4IHN1Ym1lPTcgcHN5PTEgcHN5X3JkPTEuMDA6MC4wMCBtaXhlZF9yZWY9MSBtZV9yYW5nZT0xNiBjaHJvbWFfbWU9MSB0cmVsbGlzPTEgOHg4ZGN0PTAgY3FtPTAgZGVhZHpvbmU9MjEsMTEgZmFzdF9wc2tpcD0xIGNocm9tYV9xcF9vZmZzZXQ9LTIgdGhyZWFkcz0xIGxvb2thaGVhZF90aHJlYWRzPTEgc2xpY2VkX3RocmVhZHM9MCBucj0wIGRlY2ltYXRlPTEgaW50ZXJsYWNlZD0wIGJsdXJheV9jb21wYXQ9MCBjb25zdHJhaW5lZF9pbnRyYT0wIGJmcmFtZXM9MCB3ZWlnaHRwPTAga2V5aW50PTI1MCBrZXlpbnRfbWluPTUgc2NlbmVjdXQ9NDAgaW50cmFfcmVmcmVzaD0wIHJjX2xvb2thaGVhZD00MCByYz1jcmYgbWJ0cmVlPTEgY3JmPTIzLjAgcWNvbXA9MC42MCBxcG1pbj0wIHFwbWF4PTY5IHFwc3RlcD00IGlwX3JhdGlvPTEuNDAgYXE9MToxLjAwAIAAAAALZYiEBHyYoAA2I4AAAAAGQZo4CPqAAAAABkGaVAI+oAAAAAVBmmAQ9QAAAAVBmoA/1A==",
+    "generationCommand": "ffmpeg -hide_banner -loglevel error -f lavfi -i color=c=black:s=16x16:r=5:d=1 -frames:v 5 -c:v libx264 -profile:v baseline -level:v 3.0 -pix_fmt yuv420p -movflags +faststart -an h264-baseline-16x16-5frames.mp4"
+  },
+  "recommendation": {
+    "fixture": "Use the embedded tested H264 baseline five-frame fixture; retain existing PCM silent WAV. Keep UI explicit that both are fixed Mock outputs, not AI video or speech.",
+    "fixedMockValidation": "For VIDEO/MP4 and AUDIO/WAV, require ordinary bounded local files, workspace/path/job/kind/MIME checks, exact recorded size and SHA256, then exact equality to the canonical supported fixture. Do not accept only ftyp/RIFF signatures or create a general media parser.",
+    "rangeAndHead": "Data URL checks do not test HTTP Range/HEAD. For these tiny fixed fixtures a full 200 response is the preferred initial scope; do not advertise Accept-Ranges until implemented. Verify real browser playback over the actual content API, including any browser-sent Range request and HEAD semantics during M3-C acceptance."
+  }
+}
