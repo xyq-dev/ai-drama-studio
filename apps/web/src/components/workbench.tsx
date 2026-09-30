@@ -12,7 +12,9 @@ import {
   confirmConflictDraft,
   currentStoryRevision,
   describeRevision,
+  attachSeenBaseline,
   diffJson,
+  displayedConflict,
   draftStorageKey,
   type DraftRecord,
   isSimpleContent,
@@ -770,6 +772,34 @@ interface SeenBaseline {
   server: unknown;
 }
 
+function payloadRecord(payload: unknown): Record<string, unknown> | null {
+  return payload && typeof payload === "object" && !Array.isArray(payload) ? payload as Record<string, unknown> : null;
+}
+
+function keptText(record: Record<string, unknown> | null, key: string, fallback: string): string {
+  if (!record || !Object.prototype.hasOwnProperty.call(record, key)) return fallback;
+  const value = record[key];
+  return typeof value === "string" ? value : "";
+}
+
+function activeStorageKey(projectId: string, entityKey: string, revisionId: string | null): string {
+  return readActiveDraftKey(window.sessionStorage, projectId, entityKey) ?? draftStorageKey(projectId, entityKey, revisionId);
+}
+
+function persistSeen(storageKey: string, seen: SeenBaseline | null): void {
+  const existing = readDraft(window.sessionStorage, storageKey);
+  if (!existing) return;
+  writeDraft(window.sessionStorage, storageKey, attachSeenBaseline(existing, seen));
+}
+
+function isSceneRevision(value: unknown): value is SceneRevision {
+  return Boolean(value && typeof value === "object" && "heading" in value && "summary" in value);
+}
+
+function isShotRevision(value: unknown): value is ShotRevision {
+  return Boolean(value && typeof value === "object" && "action" in value && "shotType" in value);
+}
+
 interface EditorDraft {
   mode: "text" | "json";
   text: string;
@@ -826,8 +856,8 @@ function ContentEditor(props: {
   onSaved: () => Promise<void>;
 }) {
   const scope = `${props.projectId}:${props.entityKey}:${props.baseRevisionId ?? "new"}`;
-  const [storageKey, setStorageKey] = useState(() => draftStorageKey(props.projectId, props.entityKey, props.baseRevisionId));
-  const initial = editorDraftFrom(null, props.content, props.initialSourceId ?? null);
+  const storageKey = activeStorageKey(props.projectId, props.entityKey, props.baseRevisionId);
+  const initial = editorDraftFrom(readDraft(window.sessionStorage, storageKey)?.payload ?? null, props.content, props.initialSourceId ?? null);
   const [advanced, setAdvanced] = useState(initial.mode === "json");
   const [text, setText] = useState(initial.text);
   const [raw, setRaw] = useState(initial.raw);
@@ -836,7 +866,14 @@ function ContentEditor(props: {
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState<string | null>(null);
   const [seen, setSeen] = useState<SeenBaseline | null>(null);
+  const [conflictEntity, setConflictEntity] = useState(props.entityKey);
   const scopeRef = useRef("");
+  if (conflictEntity !== props.entityKey) {
+    setConflictEntity(props.entityKey);
+    setConflict(null);
+    setSeen(null);
+    setError(null);
+  }
   const complex = !isSimpleContent(props.content);
   const contentStamp = stableJson(props.content);
   const selectedSource = props.sources?.find((item) => item.id === sourceId) ?? null;
@@ -853,16 +890,16 @@ function ContentEditor(props: {
   }
 
   function remember(next: EditorDraft) {
-    const draft = nextDraft(readDraft(window.sessionStorage, storageKey), next, props.ifMatch, () => crypto.randomUUID());
+    const existing = readDraft(window.sessionStorage, storageKey);
+    const baseline = existing ? existing.ifMatch : props.ifMatch;
+    const draft = nextDraft(existing, next, baseline, () => crypto.randomUUID());
     writeDraft(window.sessionStorage, storageKey, draft);
     rememberActiveDraft(window.sessionStorage, props.projectId, props.entityKey, storageKey);
     props.onStatus("未保存");
   }
 
   useEffect(() => {
-    const active = readActiveDraftKey(window.sessionStorage, props.projectId, props.entityKey);
-    const key = active ?? draftStorageKey(props.projectId, props.entityKey, props.baseRevisionId);
-    setStorageKey(key);
+    const key = activeStorageKey(props.projectId, props.entityKey, props.baseRevisionId);
     const stored = readDraft(window.sessionStorage, key);
     const draft = editorDraftFrom(stored?.payload, props.content, props.initialSourceId ?? null);
     setAdvanced(draft.mode === "json");
@@ -883,15 +920,21 @@ function ContentEditor(props: {
     setConflict(message);
     props.onStatus("版本冲突，草稿保留");
     try {
-      setSeen(await props.readConflict());
+      const snap = await props.readConflict();
+      setSeen(snap);
+      persistSeen(storageKey, snap);
     } catch {
       setSeen(null);
+      persistSeen(storageKey, null);
       setConflict(`${message} 未能读取新基线，草稿保留。`);
     }
   }
 
   async function save(force: boolean) {
-    if (!force && conflict) return;
+    const existing = readDraft(window.sessionStorage, storageKey);
+    const drift = displayedConflict(existing, props.ifMatch, props.content);
+    const shown = drift.blocked && drift.seen ? drift.seen : seen;
+    if (!force && (conflict || drift.blocked)) return;
     if (sourceBlocked) {
       setError(selectedSource ? selectedSource.reason : "没有已批准且 CURRENT 的来源");
       return;
@@ -904,11 +947,10 @@ function ContentEditor(props: {
       setError(caught instanceof Error ? caught.message : "JSON 无效");
       return;
     }
-    const ifMatch = force ? seen?.ifMatch : props.ifMatch;
+    const ifMatch = force ? shown?.ifMatch : (existing ? existing.ifMatch : props.ifMatch);
     if (ifMatch === undefined || ifMatch === null) return;
-    const existing = readDraft(window.sessionStorage, storageKey);
     const draft = force
-      ? confirmConflictDraft(existing ?? nextDraft(null, snapshot, ifMatch, () => crypto.randomUUID()), ifMatch, () => crypto.randomUUID())
+      ? attachSeenBaseline(confirmConflictDraft(existing ?? nextDraft(null, snapshot, ifMatch, () => crypto.randomUUID()), ifMatch, () => crypto.randomUUID()), null)
       : nextDraft(existing, snapshot, ifMatch, () => crypto.randomUUID());
     writeDraft(window.sessionStorage, storageKey, draft);
     rememberActiveDraft(window.sessionStorage, props.projectId, props.entityKey, storageKey);
@@ -933,10 +975,13 @@ function ContentEditor(props: {
     }
   }
 
+  const editorDrift = displayedConflict(readDraft(window.sessionStorage, storageKey), props.ifMatch, props.content);
+  const shownSeen = editorDrift.blocked && editorDrift.seen ? editorDrift.seen : seen;
+  const shownConflict = editorDrift.blocked ? (conflict ?? "编辑基线已变化，草稿保留") : conflict;
   let serverDiff: ReturnType<typeof diffJson> = [];
-  if (seen) {
+  if (shownSeen) {
     try {
-      serverDiff = diffJson(seen.server, contentFromDraft(currentDraft(), props.content));
+      serverDiff = diffJson(shownSeen.server, contentFromDraft(currentDraft(), props.content));
     } catch {
       serverDiff = [];
     }
@@ -1016,15 +1061,15 @@ function ContentEditor(props: {
           remember(currentDraft({ mode: "json", text: textOf(next), raw: nextRaw, parsed: next }));
         }}>{advanced ? "返回正文" : "高级 JSON"}</button>
       )}
-      <button className="mt-3 rounded bg-red-700 px-4 py-2 text-white disabled:opacity-50" type="submit" disabled={Boolean(conflict) || sourceBlocked}>保存新版本</button>
+      <button className="mt-3 rounded bg-red-700 px-4 py-2 text-white disabled:opacity-50" type="submit" disabled={Boolean(shownConflict) || sourceBlocked}>保存新版本</button>
       {sourceBlocked ? <p className="mt-2 text-sm">{selectedSource?.reason || "来源需要是当前、已批准且 CURRENT。"}</p> : null}
       {error ? <p className="mt-2 text-sm" role="alert">{error}</p> : null}
-      {conflict ? (
+      {shownConflict ? (
         <div className="mt-3 rounded border border-neutral-300 p-3" role="alert">
-          <p>{conflict}</p>
-          <p className="mt-1 text-sm">{seen ? `已看到的并发版本 ${seen.ifMatch}。确认后只按这个版本和新的幂等键提交。` : "草稿已保留。还没有可读的新基线，不能确认提交。"}</p>
-          {seen ? <DiffList rows={serverDiff} /> : null}
-          <button className="mt-2 rounded border px-3 py-1 disabled:opacity-50" type="button" disabled={!seen} onClick={() => void save(true)}>确认后重新提交</button>
+          <p>{shownConflict}</p>
+          <p className="mt-1 text-sm">{shownSeen ? `已看到的并发版本 ${shownSeen.ifMatch}。确认后只按这个版本和新的幂等键提交。` : "草稿已保留。还没有可读的新基线，不能确认提交。"}</p>
+          {shownSeen ? <DiffList rows={serverDiff} /> : null}
+          <button className="mt-2 rounded border px-3 py-1 disabled:opacity-50" type="button" disabled={!shownSeen} onClick={() => void save(true)}>确认后重新提交</button>
         </div>
       ) : null}
     </form>
@@ -1466,16 +1511,26 @@ function SceneForm(props: {
   onSubmit: (body: unknown, key: string, ifMatch: number) => Promise<void>;
   onSaved: () => Promise<void>;
 }) {
-  const storageKey = draftStorageKey(props.projectId, `scene:${props.scene.entityId}`, props.current.id);
-  const [heading, setHeading] = useState(props.current.heading);
-  const [summary, setSummary] = useState(props.current.summary);
-  const [timeOfDay, setTimeOfDay] = useState(props.current.timeOfDay ?? "");
-  const [ordinal, setOrdinal] = useState(String(props.current.ordinal));
-  const [locationId, setLocationId] = useState(props.current.locationRevisionId ?? "");
+  const sceneEntityKey = `scene:${props.scene.entityId}`;
+  const storageKey = activeStorageKey(props.projectId, sceneEntityKey, props.current.id);
+  const seeded = payloadRecord(readDraft(window.sessionStorage, storageKey)?.payload);
+  const [heading, setHeading] = useState(typeof seeded?.heading === "string" ? seeded.heading : props.current.heading);
+  const [summary, setSummary] = useState(typeof seeded?.summary === "string" ? seeded.summary : props.current.summary);
+  const [timeOfDay, setTimeOfDay] = useState(keptText(seeded, "timeOfDay", props.current.timeOfDay ?? ""));
+  const [ordinal, setOrdinal] = useState(typeof seeded?.ordinal === "number" ? String(seeded.ordinal) : String(props.current.ordinal));
+  const [locationId, setLocationId] = useState(keptText(seeded, "locationRevisionId", props.current.locationRevisionId ?? ""));
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState<string | null>(null);
   const [serverScene, setServerScene] = useState<SceneRevision | null>(null);
   const [seenVersion, setSeenVersion] = useState<number | null>(null);
+  const [conflictEntity, setConflictEntity] = useState(props.scene.entityId);
+  if (conflictEntity !== props.scene.entityId) {
+    setConflictEntity(props.scene.entityId);
+    setConflict(null);
+    setServerScene(null);
+    setSeenVersion(null);
+    setError(null);
+  }
   const scriptUsable = sourceUsable({
     reviewStatus: props.episode.currentScriptReviewStatus,
     freshnessStatus: props.episode.currentScriptFreshnessStatus,
@@ -1496,22 +1551,24 @@ function SceneForm(props: {
   }
 
   function remember(next = body()) {
-    const draft = nextDraft(readDraft(window.sessionStorage, storageKey), next, props.scene.rowVersion, () => crypto.randomUUID());
+    const existing = readDraft(window.sessionStorage, storageKey);
+    const baseline = existing ? existing.ifMatch : props.scene.rowVersion;
+    const draft = nextDraft(existing, next, baseline, () => crypto.randomUUID());
     writeDraft(window.sessionStorage, storageKey, draft);
-    rememberActiveDraft(window.sessionStorage, props.projectId, `scene:${props.scene.entityId}`, storageKey);
+    rememberActiveDraft(window.sessionStorage, props.projectId, sceneEntityKey, storageKey);
     props.onStatus("未保存");
     return draft;
   }
 
   useEffect(() => {
-    const payload = readDraft(window.sessionStorage, storageKey)?.payload;
-    const record = payload && typeof payload === "object" && !Array.isArray(payload) ? payload as Record<string, unknown> : null;
+    const key = activeStorageKey(props.projectId, sceneEntityKey, props.current.id);
+    const record = payloadRecord(readDraft(window.sessionStorage, key)?.payload);
     setHeading(typeof record?.heading === "string" ? record.heading : props.current.heading);
     setSummary(typeof record?.summary === "string" ? record.summary : props.current.summary);
-    setTimeOfDay(typeof record?.timeOfDay === "string" ? record.timeOfDay : (props.current.timeOfDay ?? ""));
+    setTimeOfDay(keptText(record, "timeOfDay", props.current.timeOfDay ?? ""));
     setOrdinal(typeof record?.ordinal === "number" ? String(record.ordinal) : String(props.current.ordinal));
-    setLocationId(typeof record?.locationRevisionId === "string" ? record.locationRevisionId : (props.current.locationRevisionId ?? ""));
-  }, [storageKey]);
+    setLocationId(keptText(record, "locationRevisionId", props.current.locationRevisionId ?? ""));
+  }, [props.current.heading, props.current.id, props.current.locationRevisionId, props.current.ordinal, props.current.summary, props.current.timeOfDay, props.projectId, props.scene.entityId, props.scene.rowVersion, sceneEntityKey]);
 
   async function beginConflict(message: string) {
     setConflict(message);
@@ -1522,26 +1579,31 @@ function SceneForm(props: {
       );
       const latest = fresh.items.find((item) => item.id === fresh.aggregate.currentRevisionId) ?? null;
       if (!latest) throw new Error("current scene missing");
+      const snap = { ifMatch: fresh.aggregate.rowVersion, server: latest };
       setServerScene(latest);
-      setSeenVersion(fresh.aggregate.rowVersion);
+      setSeenVersion(snap.ifMatch);
+      persistSeen(storageKey, snap);
     } catch {
       setServerScene(null);
       setSeenVersion(null);
+      persistSeen(storageKey, null);
       setConflict(`${message} 未能读取新基线，草稿保留。`);
     }
   }
 
   async function save(force: boolean) {
-    if (!force && conflict) return;
-    const nextBody = body();
-    const ifMatch = force ? seenVersion : props.scene.rowVersion;
-    if (ifMatch === null) return;
     const existing = readDraft(window.sessionStorage, storageKey);
+    const drift = displayedConflict(existing, props.scene.rowVersion, props.current);
+    const shownVersion = drift.blocked && drift.seen ? drift.seen.ifMatch : seenVersion;
+    if (!force && (conflict || drift.blocked)) return;
+    const nextBody = body();
+    const ifMatch = force ? shownVersion : (existing ? existing.ifMatch : props.scene.rowVersion);
+    if (ifMatch === null) return;
     const draft = force
-      ? confirmConflictDraft(existing ?? nextDraft(null, nextBody, ifMatch, () => crypto.randomUUID()), ifMatch, () => crypto.randomUUID())
+      ? attachSeenBaseline(confirmConflictDraft(existing ?? nextDraft(null, nextBody, ifMatch, () => crypto.randomUUID()), ifMatch, () => crypto.randomUUID()), null)
       : nextDraft(existing, nextBody, ifMatch, () => crypto.randomUUID());
     writeDraft(window.sessionStorage, storageKey, draft);
-    rememberActiveDraft(window.sessionStorage, props.projectId, `scene:${props.scene.entityId}`, storageKey);
+    rememberActiveDraft(window.sessionStorage, props.projectId, sceneEntityKey, storageKey);
     props.onStatus("保存中");
     try {
       await props.onSubmit(nextBody, draft.idempotencyKey, ifMatch);
@@ -1563,12 +1625,16 @@ function SceneForm(props: {
     }
   }
 
-  const sceneDiff = serverScene ? diffJson({
-    heading: serverScene.heading,
-    summary: serverScene.summary,
-    timeOfDay: serverScene.timeOfDay,
-    ordinal: serverScene.ordinal,
-    locationRevisionId: serverScene.locationRevisionId,
+  const sceneDrift = displayedConflict(readDraft(window.sessionStorage, storageKey), props.scene.rowVersion, props.current);
+  const shownScene = sceneDrift.blocked && isSceneRevision(sceneDrift.seen?.server) ? sceneDrift.seen.server : serverScene;
+  const shownSceneVersion = sceneDrift.blocked && sceneDrift.seen ? sceneDrift.seen.ifMatch : seenVersion;
+  const shownSceneConflict = sceneDrift.blocked ? (conflict ?? "编辑基线已变化，草稿保留") : conflict;
+  const sceneDiff = shownScene ? diffJson({
+    heading: shownScene.heading,
+    summary: shownScene.summary,
+    timeOfDay: shownScene.timeOfDay,
+    ordinal: shownScene.ordinal,
+    locationRevisionId: shownScene.locationRevisionId,
   }, body()) : [];
 
   return (
@@ -1590,14 +1656,14 @@ function SceneForm(props: {
         ))}
       </select>
       {!scriptUsable.usable ? <p className="mt-2 text-sm">来源剧本不可用：{scriptUsable.reason}</p> : <p className="mt-2 text-sm">来源剧本 {props.episode.currentScriptRevisionId}</p>}
-      <button className="mt-3 rounded bg-red-700 px-3 py-2 text-white disabled:opacity-50" type="submit" disabled={!scriptUsable.usable || Boolean(conflict)}>保存新版本</button>
+      <button className="mt-3 rounded bg-red-700 px-3 py-2 text-white disabled:opacity-50" type="submit" disabled={!scriptUsable.usable || Boolean(shownSceneConflict)}>保存新版本</button>
       {error ? <p role="alert">{error}</p> : null}
-      {conflict ? (
+      {shownSceneConflict ? (
         <div role="alert">
-          <p>{conflict} 草稿保留。</p>
-          <p className="text-sm">{seenVersion !== null ? `已看到的并发版本 ${seenVersion}。确认后只按这个版本提交。` : "还没有可读的新基线，不能确认提交。"}</p>
-          {serverScene ? <DiffList rows={sceneDiff} /> : null}
-          <button type="button" disabled={seenVersion === null} onClick={() => void save(true)}>确认后重新提交</button>
+          <p>{shownSceneConflict} 草稿保留。</p>
+          <p className="text-sm">{shownSceneVersion !== null ? `已看到的并发版本 ${shownSceneVersion}。确认后只按这个版本提交。` : "还没有可读的新基线，不能确认提交。"}</p>
+          {shownScene ? <DiffList rows={sceneDiff} /> : null}
+          <button type="button" disabled={shownSceneVersion === null} onClick={() => void save(true)}>确认后重新提交</button>
         </div>
       ) : null}
     </form>
@@ -1649,8 +1715,8 @@ function ShotCreateForm(props: {
     setShotType(typeof record?.shotType === "string" ? record.shotType : "中景");
     setCamera(typeof record?.camera === "string" ? record.camera : "");
     setAction(typeof record?.action === "string" ? record.action : "");
-    setDialogue(typeof record?.dialogue === "string" ? record.dialogue : "");
-    setDurationHint(typeof record?.durationHint === "string" ? record.durationHint : "");
+    setDialogue(keptText(record, "dialogue", ""));
+    setDurationHint(keptText(record, "durationHint", ""));
     setPromptText(typeof record?.promptText === "string" ? record.promptText : "");
   }, [storageKey]);
 
@@ -1728,20 +1794,31 @@ function ShotForm(props: {
   onSubmit: (body: unknown, key: string, ifMatch: number) => Promise<void>;
   onSaved: () => Promise<void>;
 }) {
-  const storageKey = draftStorageKey(props.projectId, `shot:${props.shot.entityId}`, props.current.id);
-  const initialSource = props.sources.find((item) => item.id === props.current.sourceSceneRevisionId && item.usable)?.id ?? "";
-  const [shotType, setShotType] = useState(props.current.shotType);
-  const [camera, setCamera] = useState(props.current.camera);
-  const [action, setAction] = useState(props.current.action);
-  const [dialogue, setDialogue] = useState(props.current.dialogue ?? "");
-  const [durationHint, setDurationHint] = useState(props.current.durationHint ?? "");
-  const [promptText, setPromptText] = useState(props.current.promptText);
-  const [ordinal, setOrdinal] = useState(String(props.current.ordinal));
+  const shotEntityKey = `shot:${props.shot.entityId}`;
+  const storageKey = activeStorageKey(props.projectId, shotEntityKey, props.current.id);
+  const seeded = payloadRecord(readDraft(window.sessionStorage, storageKey)?.payload);
+  const seededSource = keptText(seeded, "sourceSceneRevisionId", props.current.sourceSceneRevisionId);
+  const initialSource = props.sources.find((item) => item.id === seededSource && item.usable)?.id ?? "";
+  const [shotType, setShotType] = useState(typeof seeded?.shotType === "string" ? seeded.shotType : props.current.shotType);
+  const [camera, setCamera] = useState(typeof seeded?.camera === "string" ? seeded.camera : props.current.camera);
+  const [action, setAction] = useState(typeof seeded?.action === "string" ? seeded.action : props.current.action);
+  const [dialogue, setDialogue] = useState(keptText(seeded, "dialogue", props.current.dialogue ?? ""));
+  const [durationHint, setDurationHint] = useState(keptText(seeded, "durationHint", props.current.durationHint ?? ""));
+  const [promptText, setPromptText] = useState(typeof seeded?.promptText === "string" ? seeded.promptText : props.current.promptText);
+  const [ordinal, setOrdinal] = useState(typeof seeded?.ordinal === "number" ? String(seeded.ordinal) : String(props.current.ordinal));
   const [sourceId, setSourceId] = useState(initialSource);
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState<string | null>(null);
   const [serverShot, setServerShot] = useState<ShotRevision | null>(null);
   const [seenVersion, setSeenVersion] = useState<number | null>(null);
+  const [conflictEntity, setConflictEntity] = useState(props.shot.entityId);
+  if (conflictEntity !== props.shot.entityId) {
+    setConflictEntity(props.shot.entityId);
+    setConflict(null);
+    setServerShot(null);
+    setSeenVersion(null);
+    setError(null);
+  }
   const selectedSource = props.sources.find((item) => item.id === sourceId) ?? null;
 
   function body(nextSource = sourceId) {
@@ -1758,26 +1835,28 @@ function ShotForm(props: {
   }
 
   function remember(next = body()) {
-    const draft = nextDraft(readDraft(window.sessionStorage, storageKey), next, props.shot.rowVersion, () => crypto.randomUUID());
+    const existing = readDraft(window.sessionStorage, storageKey);
+    const baseline = existing ? existing.ifMatch : props.shot.rowVersion;
+    const draft = nextDraft(existing, next, baseline, () => crypto.randomUUID());
     writeDraft(window.sessionStorage, storageKey, draft);
-    rememberActiveDraft(window.sessionStorage, props.projectId, `shot:${props.shot.entityId}`, storageKey);
+    rememberActiveDraft(window.sessionStorage, props.projectId, shotEntityKey, storageKey);
     props.onStatus("未保存");
   }
 
   useEffect(() => {
-    const payload = readDraft(window.sessionStorage, storageKey)?.payload;
-    const record = payload && typeof payload === "object" && !Array.isArray(payload) ? payload as Record<string, unknown> : null;
+    const key = activeStorageKey(props.projectId, shotEntityKey, props.current.id);
+    const record = payloadRecord(readDraft(window.sessionStorage, key)?.payload);
     setShotType(typeof record?.shotType === "string" ? record.shotType : props.current.shotType);
     setCamera(typeof record?.camera === "string" ? record.camera : props.current.camera);
     setAction(typeof record?.action === "string" ? record.action : props.current.action);
-    setDialogue(typeof record?.dialogue === "string" ? record.dialogue : (props.current.dialogue ?? ""));
-    setDurationHint(typeof record?.durationHint === "string" ? record.durationHint : (props.current.durationHint ?? ""));
+    setDialogue(keptText(record, "dialogue", props.current.dialogue ?? ""));
+    setDurationHint(keptText(record, "durationHint", props.current.durationHint ?? ""));
     setPromptText(typeof record?.promptText === "string" ? record.promptText : props.current.promptText);
     setOrdinal(typeof record?.ordinal === "number" ? String(record.ordinal) : String(props.current.ordinal));
-    const storedSource = typeof record?.sourceSceneRevisionId === "string" ? record.sourceSceneRevisionId : props.current.sourceSceneRevisionId;
+    const storedSource = keptText(record, "sourceSceneRevisionId", props.current.sourceSceneRevisionId);
     const usable = props.sources.find((item) => item.id === storedSource && item.usable);
     setSourceId(usable?.id ?? "");
-  }, [storageKey]);
+  }, [props.current.action, props.current.camera, props.current.dialogue, props.current.durationHint, props.current.id, props.current.ordinal, props.current.promptText, props.current.shotType, props.current.sourceSceneRevisionId, props.projectId, props.shot.entityId, props.shot.rowVersion, props.sources, shotEntityKey]);
 
   async function beginConflict(message: string) {
     setConflict(message);
@@ -1786,28 +1865,32 @@ function ShotForm(props: {
       const snap = await props.readConflict();
       setServerShot(snap.server);
       setSeenVersion(snap.ifMatch);
+      persistSeen(storageKey, snap);
     } catch {
       setServerShot(null);
       setSeenVersion(null);
+      persistSeen(storageKey, null);
       setConflict(`${message} 未能读取新基线，草稿保留。`);
     }
   }
 
   async function save(force: boolean) {
-    if (!force && conflict) return;
+    const existing = readDraft(window.sessionStorage, storageKey);
+    const drift = displayedConflict(existing, props.shot.rowVersion, props.current);
+    const shownVersion = drift.blocked && drift.seen ? drift.seen.ifMatch : seenVersion;
+    if (!force && (conflict || drift.blocked)) return;
     if (!selectedSource?.usable) {
       setError(selectedSource?.reason || "来源需要是当前、已批准且 CURRENT。");
       return;
     }
     const nextBody = body();
-    const ifMatch = force ? seenVersion : props.shot.rowVersion;
+    const ifMatch = force ? shownVersion : (existing ? existing.ifMatch : props.shot.rowVersion);
     if (ifMatch === null) return;
-    const existing = readDraft(window.sessionStorage, storageKey);
     const draft = force
-      ? confirmConflictDraft(existing ?? nextDraft(null, nextBody, ifMatch, () => crypto.randomUUID()), ifMatch, () => crypto.randomUUID())
+      ? attachSeenBaseline(confirmConflictDraft(existing ?? nextDraft(null, nextBody, ifMatch, () => crypto.randomUUID()), ifMatch, () => crypto.randomUUID()), null)
       : nextDraft(existing, nextBody, ifMatch, () => crypto.randomUUID());
     writeDraft(window.sessionStorage, storageKey, draft);
-    rememberActiveDraft(window.sessionStorage, props.projectId, `shot:${props.shot.entityId}`, storageKey);
+    rememberActiveDraft(window.sessionStorage, props.projectId, shotEntityKey, storageKey);
     try {
       await props.onSubmit(nextBody, draft.idempotencyKey, ifMatch);
       if (releaseSubmittedDraft(window.sessionStorage, storageKey, draft)) {
@@ -1852,17 +1935,27 @@ function ShotForm(props: {
           <option key={item.id} value={item.id} disabled={!item.usable}>{item.label}{item.usable ? "" : ` ${item.reason}`}</option>
         ))}
       </select>
-      <button className="mt-3 rounded bg-red-700 px-3 py-2 text-white disabled:opacity-50" type="submit" disabled={Boolean(conflict) || !selectedSource?.usable}>保存新版本</button>
-      {!selectedSource?.usable ? <p className="mt-2 text-sm">{selectedSource?.reason || "来源需要是当前、已批准且 CURRENT。"}</p> : null}
-      {error ? <p role="alert">{error}</p> : null}
-      {conflict ? (
-        <div role="alert">
-          <p>{conflict} 草稿保留。</p>
-          <p className="text-sm">{seenVersion !== null ? `已看到的并发版本 ${seenVersion}。确认后只按这个版本提交。` : "还没有可读的新基线，不能确认提交。"}</p>
-          {serverShot ? <DiffList rows={diffJson(serverShot, readDraft(window.sessionStorage, storageKey)?.payload ?? body())} /> : null}
-          <button type="button" disabled={seenVersion === null} onClick={() => void save(true)}>确认后重新提交</button>
-        </div>
-      ) : null}
+      {(() => {
+        const shotDrift = displayedConflict(readDraft(window.sessionStorage, storageKey), props.shot.rowVersion, props.current);
+        const shownShot = shotDrift.blocked && isShotRevision(shotDrift.seen?.server) ? shotDrift.seen.server : serverShot;
+        const shownShotVersion = shotDrift.blocked && shotDrift.seen ? shotDrift.seen.ifMatch : seenVersion;
+        const shownShotConflict = shotDrift.blocked ? (conflict ?? "编辑基线已变化，草稿保留") : conflict;
+        return (
+          <>
+            <button className="mt-3 rounded bg-red-700 px-3 py-2 text-white disabled:opacity-50" type="submit" disabled={Boolean(shownShotConflict) || !selectedSource?.usable}>保存新版本</button>
+            {!selectedSource?.usable ? <p className="mt-2 text-sm">{selectedSource?.reason || "来源需要是当前、已批准且 CURRENT。"}</p> : null}
+            {error ? <p role="alert">{error}</p> : null}
+            {shownShotConflict ? (
+              <div role="alert">
+                <p>{shownShotConflict} 草稿保留。</p>
+                <p className="text-sm">{shownShotVersion !== null ? `已看到的并发版本 ${shownShotVersion}。确认后只按这个版本提交。` : "还没有可读的新基线，不能确认提交。"}</p>
+                {shownShot ? <DiffList rows={diffJson(shownShot, readDraft(window.sessionStorage, storageKey)?.payload ?? body())} /> : null}
+                <button type="button" disabled={shownShotVersion === null} onClick={() => void save(true)}>确认后重新提交</button>
+              </div>
+            ) : null}
+          </>
+        );
+      })()}
     </form>
   );
 }

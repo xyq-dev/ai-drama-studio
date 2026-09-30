@@ -34,6 +34,10 @@ interface Sim {
   failGetPart: string | null;
   characterPostGate: Promise<void> | null;
   scenePostGate: Promise<void> | null;
+  shotPostGate: Promise<void> | null;
+  withLocation: boolean;
+  sceneStale: boolean;
+  sceneStaleReads: number;
   fetch: (input: string, init?: RequestInit) => Promise<Response>;
 }
 
@@ -64,15 +68,22 @@ function createSim(): Sim {
     failGetPart: null,
     characterPostGate: null,
     scenePostGate: null,
+    shotPostGate: null,
+    withLocation: false,
+    sceneStale: false,
+    sceneStaleReads: 0,
     fetch: () => Promise.resolve(fail(500, "UNINSTALLED", "fetch was not installed")),
   };
   let storyConflictStage = 0;
   let storyConflictGets = 0;
   let sceneConflictGets = 0;
   let sceneConflictArmed = false;
-  let sceneServerHeading = "原标题";
   let shotConflictGets = 0;
   let shotConflictArmed = false;
+  let sceneRow = 2;
+  let sceneCurrentId = "scene-rev-new";
+  let sceneItems: ReturnType<typeof sceneRevision>[] | null = null;
+  const shotStates = new Map<string, { row: number; currentId: string; items: Array<ReturnType<typeof shotRevision>> }>();
   let characterText = "角色甲";
   let characterRow = 1;
   let characterRevId = "rev-1";
@@ -99,26 +110,105 @@ function createSim(): Sim {
     return { aggregate: aggregate(CHAR_A, characterRow, characterRevId, characterStatus, characterReviewVersion), items };
   }
 
+  function ensureSceneItems() {
+    if (!sceneItems) {
+      sceneItems = [
+        sceneRevision("scene-rev-new", 2, "原标题", "APPROVED", "CURRENT", "白天", sim.withLocation ? "loc-rev-1" : null),
+        sceneRevision("scene-rev-old", 1, "旧场景", "APPROVED", "STALE", "夜晚", null),
+      ];
+    }
+    return sceneItems;
+  }
+
+  function commitScene(body: Record<string, unknown>) {
+    const items = ensureSceneItems();
+    const previous = items[0];
+    sceneRow += 1;
+    sceneCurrentId = `scene-rev-${sceneRow}`;
+    const heading = typeof body.heading === "string" ? body.heading : (previous?.heading ?? "");
+    const summary = typeof body.summary === "string" ? body.summary : "场景摘要";
+    const timeOfDay = "timeOfDay" in body ? (typeof body.timeOfDay === "string" ? body.timeOfDay : null) : "白天";
+    const locationRevisionId = "locationRevisionId" in body
+      ? (typeof body.locationRevisionId === "string" ? body.locationRevisionId : null)
+      : null;
+    sceneItems = [
+      sceneRevision(sceneCurrentId, (previous?.revisionNo ?? 1) + 1, heading, "APPROVED", "CURRENT", timeOfDay, locationRevisionId, summary),
+      ...items,
+    ];
+  }
+
   function scenePayload() {
-    const heading = sim.sceneConflict && sceneConflictArmed
-      ? (sceneConflictGets <= 1 ? "服务端场景" : "更新场景")
-      : sceneServerHeading;
-    const rowVersion = sim.sceneConflict && sceneConflictArmed ? (sceneConflictGets <= 1 ? 5 : 8) : 2;
+    const items = ensureSceneItems();
+    if (sim.sceneStale) {
+      const row = sim.sceneStaleReads <= 1 ? 5 : 9;
+      const heading = row === 5 ? "后台标题" : "更新的后台";
+      const id = `scene-rev-stale-${row}`;
+      return {
+        aggregate: aggregate("scene-1", row, id, "APPROVED", 1, id),
+        items: [sceneRevision(id, row, heading, "APPROVED", "CURRENT"), ...items],
+      };
+    }
+    if (sim.sceneConflict && sceneConflictArmed) {
+      const row = sceneConflictGets <= 1 ? 5 : sceneConflictGets === 2 ? 8 : 11;
+      const heading = row === 5 ? "服务端场景" : row === 8 ? "更新场景" : "陷阱场景";
+      const id = `scene-rev-${row}`;
+      return {
+        aggregate: aggregate("scene-1", row, id, "APPROVED", 1, id),
+        items: [sceneRevision(id, row, heading, "APPROVED", "CURRENT"), ...items],
+      };
+    }
     return {
-      aggregate: aggregate("scene-1", rowVersion, "scene-rev-new", "APPROVED", 1, "scene-rev-new"),
-      items: [
-        sceneRevision("scene-rev-new", 2, heading, "APPROVED", "CURRENT"),
-        sceneRevision("scene-rev-old", 1, "旧场景", "APPROVED", "STALE"),
-      ],
+      aggregate: aggregate("scene-1", sceneRow, sceneCurrentId, "APPROVED", 1, sceneCurrentId),
+      items,
     };
   }
 
+  function ensureShot(id: string) {
+    const existing = shotStates.get(id);
+    if (existing) return existing;
+    const source = sim.shotUsesOldSource && id === SHOT_A ? "scene-rev-old" : "scene-rev-new";
+    const current = shotRevision(id, id === SHOT_B ? "动作二" : "动作一", source);
+    const created = { row: 4, currentId: current.id, items: [current] };
+    shotStates.set(id, created);
+    return created;
+  }
+
+  function commitShot(id: string, body: Record<string, unknown>) {
+    const state = ensureShot(id);
+    const previous = state.items[0];
+    if (!previous) return;
+    state.row += 1;
+    const revision = {
+      ...previous,
+      id: `${id}-rev-${state.row}`,
+      revisionNo: previous.revisionNo + 1,
+      sourceSceneRevisionId: typeof body.sourceSceneRevisionId === "string" ? body.sourceSceneRevisionId : previous.sourceSceneRevisionId,
+      ordinal: typeof body.ordinal === "number" ? body.ordinal : previous.ordinal,
+      shotType: typeof body.shotType === "string" ? body.shotType : previous.shotType,
+      camera: typeof body.camera === "string" ? body.camera : previous.camera,
+      action: typeof body.action === "string" ? body.action : previous.action,
+      dialogue: "dialogue" in body ? (typeof body.dialogue === "string" ? body.dialogue : null) : previous.dialogue,
+      durationHint: "durationHint" in body ? (typeof body.durationHint === "string" ? body.durationHint : null) : previous.durationHint,
+      promptText: typeof body.promptText === "string" ? body.promptText : previous.promptText,
+    };
+    state.currentId = revision.id;
+    state.items = [revision, ...state.items];
+  }
+
   function shotPayload(id: string) {
-    const oldSource = sim.shotUsesOldSource && id === SHOT_A;
-    const rowVersion = sim.shotConflict && shotConflictArmed ? (shotConflictGets <= 1 ? 6 : 11) : 4;
+    const state = ensureShot(id);
+    if (sim.shotConflict && shotConflictArmed && id === SHOT_A) {
+      const row = shotConflictGets <= 1 ? 6 : shotConflictGets === 2 ? 11 : 15;
+      const action = row === 6 ? "服务端动作" : row === 11 ? "更新动作" : "陷阱动作";
+      const current = { ...state.items[0], id: `${id}-rev-${row}`, action };
+      return {
+        aggregate: aggregate(id, row, current.id, "DRAFT", 1),
+        items: [current, ...state.items],
+      };
+    }
     return {
-      aggregate: aggregate(id, rowVersion, `${id}-rev`, "DRAFT", 1),
-      items: [shotRevision(id, id === SHOT_B ? "动作二" : "动作一", oldSource ? "scene-rev-old" : "scene-rev-new")],
+      aggregate: aggregate(id, state.row, state.currentId, "DRAFT", 1),
+      items: state.items,
     };
   }
 
@@ -152,7 +242,12 @@ function createSim(): Sim {
     if (path === `/api/v1/projects/${PROJECT}/characters` && method === "GET") {
       return json({ items: [listAggregate(CHAR_A), listAggregate(CHAR_B)], nextCursor: null });
     }
-    if (path === `/api/v1/projects/${PROJECT}/locations` && method === "GET") return json({ items: [], nextCursor: null });
+    if (path === `/api/v1/projects/${PROJECT}/locations` && method === "GET") {
+      return json({
+        items: sim.withLocation ? [aggregate("location-1", 1, "loc-rev-1", "APPROVED", 1, "loc-rev-1")] : [],
+        nextCursor: null,
+      });
+    }
     if (path === `/api/v1/projects/${PROJECT}/workflow-runs` && method === "GET") {
       sim.workflowReads += 1;
       if (!sim.scenesAfterWorkflow) return json([]);
@@ -173,26 +268,30 @@ function createSim(): Sim {
       return json({ items: visible ? [listAggregate("scene-1", "APPROVED")] : [], nextCursor: null });
     }
     if (path.endsWith("/scenes/scene-1/revisions") && method === "GET") {
-      if (sim.sceneConflict && sceneConflictArmed) sceneConflictGets += 1;
+      if (sim.sceneStale) sim.sceneStaleReads += 1;
+      else if (sim.sceneConflict && sceneConflictArmed) sceneConflictGets += 1;
       return json(scenePayload());
     }
     if (path.endsWith("/scenes/scene-1/revisions") && method === "POST") {
-      if (sim.scenePostGate) {
-        const heading = String(body.heading ?? "");
-        return sim.scenePostGate.then(() => {
-          sceneServerHeading = heading;
-          return json({ ok: true });
-        });
-      }
-      if (sim.sceneConflict) {
-        const count = sim.calls.filter((call) => call.method === "POST" && call.url.endsWith("/scenes/scene-1/revisions")).length;
-        if (count <= 2) {
-          sceneConflictArmed = true;
-          return fail(409, "CONFLICT", "版本冲突");
+      const finish = () => {
+        if (sim.sceneConflict) {
+          const count = sim.calls.filter((call) => call.method === "POST" && call.url.endsWith("/scenes/scene-1/revisions")).length;
+          if (count <= 2) {
+            sceneConflictArmed = true;
+            return fail(409, "CONFLICT", "版本冲突");
+          }
         }
-      }
-      sceneServerHeading = String(body.heading ?? sceneServerHeading);
-      return json({ ok: true });
+        commitScene(body);
+        const saved = ensureSceneItems()[0];
+        return json({
+          revisionId: sceneCurrentId,
+          currentRevisionId: sceneCurrentId,
+          revisionNo: saved?.revisionNo ?? sceneRow,
+          rowVersion: sceneRow,
+        });
+      };
+      if (sim.scenePostGate) return sim.scenePostGate.then(finish);
+      return finish();
     }
     if (path.endsWith("/scenes/scene-1/shots") && method === "GET") {
       return json({ items: [listAggregate(SHOT_A), listAggregate(SHOT_B)], nextCursor: null });
@@ -203,14 +302,26 @@ function createSim(): Sim {
       return json(shotPayload(id));
     }
     if (/\/shots\/[^/]+\/revisions$/.test(path) && method === "POST") {
-      if (sim.shotConflict) {
-        const count = sim.calls.filter((call) => call.method === "POST" && /\/shots\/[^/]+\/revisions$/.test(call.url)).length;
-        if (count <= 2) {
-          shotConflictArmed = true;
-          return fail(409, "CONFLICT", "版本冲突");
+      const id = path.includes(SHOT_B) ? SHOT_B : SHOT_A;
+      const finish = () => {
+        if (sim.shotConflict && id === SHOT_A) {
+          const count = sim.calls.filter((call) => call.method === "POST" && /\/shots\/[^/]+\/revisions$/.test(call.url)).length;
+          if (count <= 2) {
+            shotConflictArmed = true;
+            return fail(409, "CONFLICT", "版本冲突");
+          }
         }
-      }
-      return json({ ok: true });
+        commitShot(id, body);
+        const saved = ensureShot(id);
+        return json({
+          revisionId: saved.currentId,
+          currentRevisionId: saved.currentId,
+          revisionNo: saved.items[0]?.revisionNo ?? 1,
+          rowVersion: saved.row,
+        });
+      };
+      if (sim.shotPostGate && id === SHOT_A) return sim.shotPostGate.then(finish);
+      return finish();
     }
     if (/\/characters\/[^/]+\/revisions$/.test(path) && method === "GET") {
       return json(characterPayload(path.includes(CHAR_B) ? CHAR_B : CHAR_A));
@@ -305,23 +416,46 @@ function entityRevision(id: string, revisionNo: number, text: string, sourceScri
   return { id, revisionNo, content: { text }, sourceScriptRevisionId, reviewStatus, freshnessStatus: "CURRENT", reviewVersion };
 }
 
-function sceneRevision(id: string, revisionNo: number, heading: string, reviewStatus: string, freshnessStatus: string) {
+function sceneRevision(
+  id: string,
+  revisionNo: number,
+  heading: string,
+  reviewStatus: string,
+  freshnessStatus: string,
+  timeOfDay: string | null = "白天",
+  locationRevisionId: string | null = null,
+  summary = "场景摘要",
+) {
   return {
     id,
     revisionNo,
     sourceScriptRevisionId: "script-new",
-    locationRevisionId: null,
+    locationRevisionId,
     ordinal: revisionNo,
     heading,
-    timeOfDay: "白天",
-    summary: "场景摘要",
+    timeOfDay,
+    summary,
     reviewStatus,
     freshnessStatus,
     reviewVersion: 1,
   };
 }
 
-function shotRevision(id: string, action: string, sourceSceneRevisionId: string) {
+function shotRevision(id: string, action: string, sourceSceneRevisionId: string): {
+  id: string;
+  revisionNo: number;
+  sourceSceneRevisionId: string;
+  ordinal: number;
+  shotType: string;
+  camera: string;
+  action: string;
+  dialogue: string | null;
+  durationHint: string | null;
+  promptText: string;
+  reviewStatus: string;
+  freshnessStatus: string;
+  reviewVersion: number;
+} {
   return {
     id: `${id}-rev`,
     revisionNo: 1,
@@ -366,11 +500,11 @@ function postsEnding(sim: Sim, suffix: string): Call[] {
   return sim.calls.filter((call) => call.method === "POST" && call.url.endsWith(suffix));
 }
 
-function draftFor(part: string): { idempotencyKey: string; payload: unknown } | null {
+function draftFor(part: string): { idempotencyKey: string; ifMatch: number | null; payload: unknown } | null {
   for (let index = 0; index < sessionStorage.length; index += 1) {
     const key = sessionStorage.key(index);
     if (!key?.startsWith("ads-draft:") || !key.includes(part)) continue;
-    return JSON.parse(sessionStorage.getItem(key) ?? "null") as { idempotencyKey: string; payload: unknown };
+    return JSON.parse(sessionStorage.getItem(key) ?? "null") as { idempotencyKey: string; ifMatch: number | null; payload: unknown };
   }
   return null;
 }
@@ -590,11 +724,29 @@ describe("workbench review interactions against a simulated API", () => {
     fireEvent.change(screen.getByLabelText("标题"), { target: { value: "场景二" } });
     release();
     await screen.findByText("已保存");
-    expect(draftFor("scene:scene-1")?.payload).toMatchObject({ heading: "场景二", summary: "未提交摘要" });
+    expect(draftFor("scene:scene-1")).toMatchObject({ ifMatch: 2, payload: { heading: "场景二", summary: "未提交摘要" } });
+    expect(postsEnding(sim, "/scenes/scene-1/revisions")[0]?.ifMatch).toBe("2");
     restored.unmount();
     renderAt("focus=scene&episode=1&scene=scene-1");
     await waitFor(() => expect(field("edit-heading").value).toBe("场景二"));
     expect(field("edit-summary").value).toBe("未提交摘要");
+    expect(screen.getAllByText(/第 3 版/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/第 2 版/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/第 1 版/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/原标题/).length).toBeGreaterThan(0);
+    const sceneSave = within(formOf("场景一")).getByRole("button", { name: "保存新版本" });
+    expect((sceneSave as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(/已看到的并发版本 3/)).toBeTruthy();
+    fireEvent.change(field("edit-heading"), { target: { value: "场景三" } });
+    expect(draftFor("scene:scene-1")?.ifMatch).toBe(2);
+    expect((field("edit-heading") as HTMLInputElement).disabled).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "故事" }));
+    await screen.findByRole("heading", { name: "故事" });
+    fireEvent.click(screen.getByRole("button", { name: "第 1 集" }));
+    fireEvent.click(await screen.findByRole("button", { name: /场景 scene-1/ }));
+    await waitFor(() => expect(field("edit-heading").value).toBe("场景三"));
+    expect((within(formOf("场景一")).getByRole("button", { name: "保存新版本" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(draftFor("scene:scene-1")?.ifMatch).toBe(2);
   });
 
   it("blocks a scene save after 409 until the shown snapshot is confirmed", async () => {
@@ -704,6 +856,157 @@ describe("workbench review interactions against a simulated API", () => {
     expect(shotPosts.map((call) => call.ifMatch)).toEqual(["4", "6", "11"]);
     expect(shotPosts[2]?.body).toMatchObject({ action: "改动作" });
     expect(shotPosts[2]?.key).not.toBe(shotPosts[1]?.key);
+  });
+
+  it("blocks a refreshed scene draft on the baseline it displays and does not chase a later read", async () => {
+    const sim = createSim();
+    install(sim);
+    const view = renderAt("focus=scene&episode=1&scene=scene-1");
+    fireEvent.change(await screen.findByLabelText("标题"), { target: { value: "过期草稿" } });
+    view.unmount();
+    sim.sceneStale = true;
+    sim.sceneStaleReads = 0;
+    renderAt("focus=scene&episode=1&scene=scene-1");
+    await waitFor(() => expect(field("edit-heading").value).toBe("过期草稿"));
+    expect(screen.getAllByText(/已看到的并发版本 5/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/后台标题/).length).toBeGreaterThan(0);
+    expect(draftFor("scene:scene-1")?.ifMatch).toBe(2);
+    const save = within(formOf("后台标题")).getByRole("button", { name: "保存新版本" });
+    expect((save as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(field("edit-heading"), { target: { value: "过期草稿续" } });
+    expect(draftFor("scene:scene-1")?.ifMatch).toBe(2);
+    const postsBefore = postsEnding(sim, "/scenes/scene-1/revisions").length;
+    fireEvent.click(save);
+    expect(postsEnding(sim, "/scenes/scene-1/revisions")).toHaveLength(postsBefore);
+    fireEvent.click(screen.getByRole("button", { name: "确认后重新提交" }));
+    await waitFor(() => expect(postsEnding(sim, "/scenes/scene-1/revisions").map((call) => call.ifMatch)).toEqual(["5"]));
+    const confirmPost = postsEnding(sim, "/scenes/scene-1/revisions")[0];
+    const postIndex = sim.calls.indexOf(confirmPost!);
+    const readsBeforeConfirm = sim.calls.slice(0, postIndex).filter((call) => call.method === "GET" && call.url.endsWith("/scenes/scene-1/revisions"));
+    expect(readsBeforeConfirm).toHaveLength(2);
+    expect(confirmPost?.body).toMatchObject({ heading: "过期草稿续" });
+  });
+
+  it("restores a scene conflict after leaving and blocks confirmation to the displayed version", async () => {
+    const sim = createSim();
+    sim.sceneConflict = true;
+    install(sim);
+    renderAt("focus=scene&episode=1&scene=scene-1");
+    fireEvent.change(await screen.findByLabelText("标题"), { target: { value: "我的场景" } });
+    fireEvent.click(within(formOf("原标题")).getByRole("button", { name: "保存新版本" }));
+    expect(await screen.findByText(/已看到的并发版本 5/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "故事" }));
+    await screen.findByRole("heading", { name: "故事" });
+    fireEvent.click(screen.getByRole("button", { name: "第 1 集" }));
+    fireEvent.click(await screen.findByRole("button", { name: /场景 scene-1/ }));
+    await waitFor(() => expect(field("edit-heading").value).toBe("我的场景"));
+    expect(screen.getAllByText(/已看到的并发版本 8/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/更新场景/).length).toBeGreaterThan(0);
+    const save = within(formOf("更新场景")).getByRole("button", { name: "保存新版本" });
+    expect((save as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(save);
+    expect(postsEnding(sim, "/scenes/scene-1/revisions").map((call) => call.ifMatch)).toEqual(["2"]);
+    fireEvent.click(screen.getByRole("button", { name: "确认后重新提交" }));
+    await waitFor(() => expect(postsEnding(sim, "/scenes/scene-1/revisions").map((call) => call.ifMatch)).toEqual(["2", "8"]));
+    expect(await screen.findByText(/已看到的并发版本 11/)).toBeTruthy();
+    expect(field("edit-heading").value).toBe("我的场景");
+    expect(postsEnding(sim, "/scenes/scene-1/revisions").map((call) => call.ifMatch)).toEqual(["2", "8"]);
+  });
+
+  it("keeps shot text typed during a save after the new revision is loaded", async () => {
+    const sim = createSim();
+    let release!: () => void;
+    sim.shotPostGate = new Promise<void>((resolve) => { release = resolve; });
+    install(sim);
+    const view = renderAt(`focus=shot&episode=1&scene=scene-1&shot=${SHOT_A}`);
+    await screen.findByRole("heading", { name: "镜头 1" });
+    fireEvent.change(field("shot-action"), { target: { value: "动作甲" } });
+    fireEvent.click(within(formOf("镜头 1")).getByRole("button", { name: "保存新版本" }));
+    fireEvent.change(field("shot-action"), { target: { value: "动作乙" } });
+    release();
+    await screen.findByText("已保存");
+    await waitFor(() => expect(field("shot-action").value).toBe("动作乙"));
+    expect(draftFor(`shot:${SHOT_A}`)?.ifMatch).toBe(4);
+    expect(screen.getAllByText(/动作一/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/第 2 版/).length).toBeGreaterThan(0);
+    expect((within(formOf("镜头 1")).getByRole("button", { name: "保存新版本" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((field("shot-action") as HTMLTextAreaElement).disabled).toBe(false);
+    fireEvent.change(field("shot-action"), { target: { value: "动作丙" } });
+    expect(draftFor(`shot:${SHOT_A}`)?.ifMatch).toBe(4);
+    view.unmount();
+    renderAt(`focus=shot&episode=1&scene=scene-1&shot=${SHOT_A}`);
+    await waitFor(() => expect(field("shot-action").value).toBe("动作丙"));
+    expect((within(formOf("镜头 1")).getByRole("button", { name: "保存新版本" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "故事" }));
+    await screen.findByRole("heading", { name: "故事" });
+    fireEvent.click(screen.getByRole("button", { name: "第 1 集" }));
+    fireEvent.click(await screen.findByRole("button", { name: /场景 scene-1/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /镜头 11111111/ }));
+    await waitFor(() => expect(field("shot-action").value).toBe("动作丙"));
+    expect(draftFor(`shot:${SHOT_A}`)?.ifMatch).toBe(4);
+  });
+
+  it("restores a cleared optional field and keeps a missing field on the server value", async () => {
+    const sim = createSim();
+    sim.withLocation = true;
+    install(sim);
+    const sceneKey = `ads-draft:${PROJECT}:scene:scene-1:scene-rev-new`;
+    sessionStorage.setItem(sceneKey, JSON.stringify({
+      fingerprint: "seed-scene",
+      idempotencyKey: "seed-scene",
+      ifMatch: 2,
+      payload: { heading: "只改标题", summary: "场景摘要", ordinal: 2, sourceScriptRevisionId: "script-new" },
+    }));
+    sessionStorage.setItem(`ads-active:${PROJECT}:scene:scene-1`, sceneKey);
+    const sceneView = renderAt("focus=scene&episode=1&scene=scene-1");
+    await waitFor(() => {
+      expect(field("edit-heading").value).toBe("只改标题");
+      expect(field("edit-time").value).toBe("白天");
+      expect(field("edit-location").value).toBe("loc-rev-1");
+    });
+    fireEvent.change(field("edit-time"), { target: { value: "" } });
+    fireEvent.change(field("edit-location"), { target: { value: "" } });
+    sceneView.unmount();
+    renderAt("focus=scene&episode=1&scene=scene-1");
+    await waitFor(() => {
+      expect(field("edit-heading").value).toBe("只改标题");
+      expect(field("edit-time").value).toBe("");
+      expect(field("edit-location").value).toBe("");
+    });
+    expect(draftFor("scene:scene-1")?.payload).toMatchObject({ timeOfDay: null, locationRevisionId: null });
+    cleanup();
+
+    const shotKey = `ads-draft:${PROJECT}:shot:${SHOT_A}:${SHOT_A}-rev`;
+    sessionStorage.setItem(shotKey, JSON.stringify({
+      fingerprint: "seed-shot",
+      idempotencyKey: "seed-shot",
+      ifMatch: 4,
+      payload: {
+        sourceSceneRevisionId: "scene-rev-new",
+        ordinal: 1,
+        shotType: "中景",
+        camera: "固定",
+        action: "只改动作",
+        promptText: "原提示",
+      },
+    }));
+    sessionStorage.setItem(`ads-active:${PROJECT}:shot:${SHOT_A}`, shotKey);
+    const shotView = renderAt(`focus=shot&episode=1&scene=scene-1&shot=${SHOT_A}`);
+    await waitFor(() => {
+      expect(field("shot-action").value).toBe("只改动作");
+      expect(field("shot-dialogue").value).toBe("原对白");
+      expect(field("shot-duration").value).toBe("短");
+    });
+    fireEvent.change(field("shot-dialogue"), { target: { value: "" } });
+    fireEvent.change(field("shot-duration"), { target: { value: "" } });
+    shotView.unmount();
+    renderAt(`focus=shot&episode=1&scene=scene-1&shot=${SHOT_A}`);
+    await waitFor(() => {
+      expect(field("shot-action").value).toBe("只改动作");
+      expect(field("shot-dialogue").value).toBe("");
+      expect(field("shot-duration").value).toBe("");
+    });
+    expect(draftFor(`shot:${SHOT_A}`)?.payload).toMatchObject({ dialogue: null, durationHint: null });
   });
 
   it("reloads scenes when a text task reaches a terminal state and keeps the script draft", async () => {

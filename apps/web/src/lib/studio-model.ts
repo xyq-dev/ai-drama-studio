@@ -254,11 +254,17 @@ function stringifyValue(value: unknown): string {
   return typeof value === "string" ? value : stableJson(value);
 }
 
+export interface DraftBaseline {
+  ifMatch: number;
+  server: unknown;
+}
+
 export interface DraftRecord {
   fingerprint: string;
   idempotencyKey: string;
   ifMatch: number | null;
   payload: unknown;
+  seenBaseline?: DraftBaseline | null;
 }
 
 export function draftStorageKey(projectId: string, entityKey: string, baseRevisionId: string | null): string {
@@ -279,7 +285,23 @@ export function nextDraft(
   if (existing && existing.fingerprint === fingerprint) {
     return { ...existing, payload };
   }
-  return { fingerprint, idempotencyKey: createKey(), ifMatch, payload };
+  return { fingerprint, idempotencyKey: createKey(), ifMatch, payload, seenBaseline: existing?.seenBaseline ?? null };
+}
+
+export function attachSeenBaseline(draft: DraftRecord, seen: DraftBaseline | null): DraftRecord {
+  return { ...draft, seenBaseline: seen };
+}
+
+export function displayedConflict(
+  draft: DraftRecord | null,
+  loadedIfMatch: number,
+  loadedServer: unknown,
+): { blocked: boolean; seen: DraftBaseline | null } {
+  if (!draft || draft.ifMatch === null) return { blocked: false, seen: null };
+  const stored = draft.seenBaseline && draft.seenBaseline.ifMatch !== draft.ifMatch ? draft.seenBaseline : null;
+  if (loadedIfMatch > draft.ifMatch) return { blocked: true, seen: { ifMatch: loadedIfMatch, server: loadedServer } };
+  if (stored) return { blocked: true, seen: stored };
+  return { blocked: false, seen: null };
 }
 
 export function confirmConflictDraft(

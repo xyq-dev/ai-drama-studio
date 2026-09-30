@@ -131,3 +131,19 @@ Docker Desktop 安装失败，不是未执行：
 本轮 `pnpm verify` 退出码 0。其中 lint、typecheck、test、build 均成功。Web 测试 6 个文件、30 项通过，含上述 16 项模拟交互。没有关闭 engine 检查。Node 使用 24.21.0，pnpm 10.17.0。
 
 未执行，不能写成通过或失败：真实浏览器、真实 API、Compose、Migration、`workspace:provision`、Docker 重装。此前 Docker Desktop 安装失败的结论不变。没有创建 PR，没有合并，没有 pack，没有部署，没有推送 main。
+
+## 复审 859ffee 修复
+
+审查基线是 `859ffee4091cbf8c0b69662e15257d70157db4c7`。修复仍在 `feat/m2-creator-ui`。只改 Web 工作台、相关测试和本报告。没有改 API、数据库、Worker 或业务规则。
+
+1. 草稿保留开始编辑时的 If-Match。恢复草稿、后台刷新和继续输入都不会改成当前加载到的版本。加载版本高于这份基线时展示差异，并阻断普通保存。确认只提交界面上已经展示的版本，确认过程中不再另读一个更新的版本。409 读到的快照记在草稿上；页面仍停在原基线时继续使用该快照。离开后再次进入时，如果重新加载到了更高版本，展示和确认的是这个已加载版本。
+2. 场景和镜头与正文使用同一套活动草稿键。保存成功并产生新 revision 后，保存期间的新输入留在原来的基线键上，切换和刷新后仍可编辑。普通保存被阻断。模拟保存会追加 revision，并更新 revision id、`currentRevisionId`、`revisionNo`、`rowVersion`，旧历史保留。
+3. `timeOfDay`、`locationRevisionId`、`dialogue`、`durationHint` 在草稿里显式为 null 时恢复成空，不退回服务端原值。字段不存在时才使用服务端值。
+
+`workbench.review.spec.tsx` 挂载 `Workbench`，用模拟 `fetch` 覆盖：旧场景草稿刷新后阻断普通保存，确认使用已展示的版本 5，而不是下一次读取的版本 9；场景 409 后离开再返回，确认使用当时展示的版本 8，下一次冲突才显示 11；场景和镜头在新 revision 产生后保留在途输入，切换和刷新后仍可编辑且 If-Match 不变；可选字段缺失时用服务端值，明确清空后刷新仍为空。这不是真实 API 联调。
+
+本轮先跑 `vitest` 的 `workbench.review.spec.tsx` 与 `studio-model.spec.ts`，2 个文件、26 项通过。随后 `pnpm verify` 退出码 0。lint、typecheck、test、build 均成功。Web 测试 6 个文件、35 项通过，其中模拟交互 20 项。没有关闭 engine 检查。Node 24.21.0，pnpm 10.17.0。
+
+模拟测试日志里出现过连向 `127.0.0.1:3000` 的 `ECONNREFUSED`。该文件的 20 项测试仍然通过。这不是真实浏览器或真实 API 结果。
+
+未执行，不能写成通过或失败：真实浏览器、真实 API、Compose、Migration、`workspace:provision`、Docker 重装。此前 Docker Desktop 安装失败的结论不变。没有推送 main，没有 force push，没有创建 PR，没有合并，没有 pack，没有部署。
