@@ -20,7 +20,8 @@
     "lint": "eslint src",
     "test": "vitest run",
     "clean": "node --eval \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
-    "workspace:provision": "tsx src/provision-workspace-cli.ts"
+    "workspace:provision": "tsx src/provision-workspace-cli.ts",
+    "mock-media:provision": "tsx src/provision-mock-media-cli.ts"
   },
   "dependencies": {
     "@ai-drama/contracts": "workspace:*",

@@ -46,6 +46,10 @@ function taskStatusLabel(state: string): string {
   return `进行中 ${state}`;
 }
 
+function trackedWorkflow(run: { type: string }): boolean {
+  return TEXT_WORKFLOW_TYPES.has(run.type) || run.type === "MEDIA_IMAGE";
+}
+
 interface ProjectRecord {
   id: string;
   title: string;
@@ -141,6 +145,7 @@ interface WorkflowJob {
   state: string;
   errorCode: string | null;
   errorMessage: string | null;
+  sourceShotRevisionId?: string | null;
 }
 
 interface WorkflowRun {
@@ -207,6 +212,7 @@ export function Workbench({ projectId }: { projectId: string }) {
   const [tasksOpen, setTasksOpen] = useState(false);
   const [saveState, setSaveState] = useState("尚未修改");
   const [refreshEpoch, setRefreshEpoch] = useState(0);
+  const [imageEpoch, setImageEpoch] = useState(0);
   const baseToken = useRef(0);
   const workflowStatus = useRef(new Map<string, string>());
 
@@ -221,16 +227,21 @@ export function Workbench({ projectId }: { projectId: string }) {
       client.get<WorkflowRun[]>(`/projects/${projectId}/workflow-runs`),
     ]);
     if (!shouldApplyLoad(request, baseToken.current)) return;
-    const textRuns = runs.filter((run) => TEXT_WORKFLOW_TYPES.has(run.type));
-    for (const run of textRuns) {
-      if (!workflowStatus.current.has(run.id)) workflowStatus.current.set(run.id, run.status);
+    const tracked = runs.filter(trackedWorkflow);
+    let sawTerminalMedia = false;
+    for (const run of tracked) {
+      if (!workflowStatus.current.has(run.id)) {
+        workflowStatus.current.set(run.id, run.status);
+        if (run.type === "MEDIA_IMAGE" && !shouldPoll(run.status, false)) sawTerminalMedia = true;
+      }
     }
     setProject(nextProject);
     setEpisodes(episodePage.items);
     setStories(applyPage(null, { scope: projectId, items: storyPage.items, nextCursor: storyPage.nextCursor, append: false }));
     setCharacters(applyPage(null, { scope: projectId, items: characterPage.items, nextCursor: characterPage.nextCursor, append: false }));
     setLocations(applyPage(null, { scope: projectId, items: locationPage.items, nextCursor: locationPage.nextCursor, append: false }));
-    setWorkflows(textRuns);
+    setWorkflows(tracked);
+    if (sawTerminalMedia) setImageEpoch((value) => value + 1);
   }, [projectId]);
 
   useEffect(() => {
@@ -263,15 +274,19 @@ export function Workbench({ projectId }: { projectId: string }) {
       const request = baseToken.current;
       void client.get<WorkflowRun[]>(`/projects/${projectId}/workflow-runs`).then((runs) => {
         if (!shouldApplyLoad(request, baseToken.current)) return;
-        const text = runs.filter((run) => TEXT_WORKFLOW_TYPES.has(run.type));
-        let finished = false;
-        for (const run of text) {
+        const tracked = runs.filter(trackedWorkflow);
+        let textFinished = false;
+        let mediaFinished = false;
+        for (const run of tracked) {
           const previous = workflowStatus.current.get(run.id);
-          if (previous && shouldPoll(previous, false) && !shouldPoll(run.status, false)) finished = true;
+          const becameTerminal = Boolean(previous && shouldPoll(previous, false) && !shouldPoll(run.status, false));
+          if (becameTerminal && run.type === "MEDIA_IMAGE") mediaFinished = true;
+          if (becameTerminal && run.type !== "MEDIA_IMAGE") textFinished = true;
           workflowStatus.current.set(run.id, run.status);
         }
-        setWorkflows(text);
-        if (finished) {
+        setWorkflows(tracked);
+        if (mediaFinished) setImageEpoch((value) => value + 1);
+        if (textFinished) {
           setRefreshEpoch((value) => value + 1);
           void reloadBase().catch(() => undefined);
         }
@@ -399,6 +414,7 @@ export function Workbench({ projectId }: { projectId: string }) {
               sceneId={focus.sceneId}
               shotId={focus.kind === "shot" ? focus.shotId : null}
               refreshEpoch={refreshEpoch}
+              imageEpoch={imageEpoch}
               locations={locations?.items ?? []}
               onSaved={reloadBase}
               onStatus={setSaveState}
@@ -1292,6 +1308,7 @@ function ScenePane(props: {
   sceneId: string;
   shotId: string | null;
   refreshEpoch: number;
+  imageEpoch: number;
   locations: Aggregate[];
   onSaved: () => Promise<void>;
   onStatus: (value: string) => void;
@@ -1362,6 +1379,13 @@ function ScenePane(props: {
   const current = visibleHistory?.items.find((item) => item.id === visibleHistory.aggregate.currentRevisionId) ?? null;
   const visibleShot = props.shotId && shotHistory?.aggregate.entityId === props.shotId ? shotHistory : null;
   const shotCurrent = visibleShot ? visibleShot.items.find((item) => item.id === visibleShot.aggregate.currentRevisionId) ?? null : null;
+  const shotGate = visibleShot && shotCurrent ? sourceUsable({
+    reviewStatus: shotCurrent.reviewStatus,
+    freshnessStatus: shotCurrent.freshnessStatus,
+    currentId: visibleShot.aggregate.currentRevisionId,
+    approvedId: visibleShot.aggregate.approvedRevisionId,
+    revisionId: shotCurrent.id,
+  }) : { usable: false, reason: "没有当前镜头版本" };
   const sceneSources = (visibleHistory?.items ?? []).map((item) => ({
     id: item.id,
     label: `第 ${item.revisionNo} 版`,
@@ -1373,6 +1397,12 @@ function ScenePane(props: {
       revisionId: item.id,
     }),
   }));
+  const sourceScene = shotCurrent ? sceneSources.find((item) => item.id === shotCurrent.sourceSceneRevisionId) : undefined;
+  const imageGate = !shotGate.usable
+    ? shotGate
+    : sourceScene?.usable
+      ? { usable: true, reason: "" }
+      : { usable: false, reason: sourceScene?.reason ?? "来源场景不可用" };
   const locationChoices = props.locations.flatMap((location) => {
     const usable = sourceUsable({
       reviewStatus: location.currentRevision?.reviewStatus ?? null,
@@ -1454,6 +1484,7 @@ function ScenePane(props: {
       </section>
       {props.shotId && visibleShot && shotCurrent ? (
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]">
+          <div className="min-w-0 space-y-4">
           <ShotForm
             shot={visibleShot.aggregate}
             current={shotCurrent}
@@ -1476,6 +1507,15 @@ function ScenePane(props: {
             }}
             onSaved={async () => { await props.onSaved(); await load(); }}
           />
+          <ShotImagePanel
+            currentRevisionId={shotCurrent.id}
+            historyKey={visibleShot.items.map((item) => item.id).join("|")}
+            usable={imageGate.usable}
+            reason={imageGate.reason}
+            imageEpoch={props.imageEpoch}
+            onAccepted={props.onSaved}
+          />
+          </div>
           <RevisionColumn
             items={visibleShot.items.map((item) => ({
               id: item.id,
@@ -2100,6 +2140,151 @@ function DiffList({ rows }: { rows: ReturnType<typeof diffJson> }) {
   );
 }
 
+function ShotImagePanel(props: {
+  currentRevisionId: string;
+  historyKey: string;
+  usable: boolean;
+  reason: string;
+  imageEpoch: number;
+  onAccepted: () => Promise<void>;
+}) {
+  const [seed, setSeed] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [currentAssets, setCurrentAssets] = useState<ShotAsset[]>([]);
+  const [historyAssets, setHistoryAssets] = useState<ShotAsset[]>([]);
+  const [previewErrors, setPreviewErrors] = useState<Record<string, boolean>>({});
+  const pending = useRef<{ fingerprint: string; key: string } | null>(null);
+  const requestToken = useRef(0);
+
+  useEffect(() => {
+    const request = ++requestToken.current;
+    const currentId = props.currentRevisionId;
+    const historyIds = props.historyKey.split("|").filter((id) => id.length > 0 && id !== currentId);
+    void (async () => {
+      try {
+        const currentPage = await client.get<{ items: ShotAsset[] }>(`/shot-revisions/${currentId}/assets`);
+        if (request !== requestToken.current) return;
+        const historyPages = await Promise.all(historyIds.map(async (id) => {
+          const page = await client.get<{ items: ShotAsset[] }>(`/shot-revisions/${id}/assets`);
+          return page.items.filter((item) => item.sourceShotRevisionId === id);
+        }));
+        if (request !== requestToken.current) return;
+        setCurrentAssets(currentPage.items.filter((item) => item.sourceShotRevisionId === currentId));
+        setHistoryAssets(historyPages.flat());
+        setError(null);
+      } catch (caught) {
+        if (request !== requestToken.current) return;
+        setCurrentAssets([]);
+        setHistoryAssets([]);
+        setError(caught instanceof ApiError ? caught.detail : "图片列表加载失败");
+      }
+    })();
+  }, [props.currentRevisionId, props.historyKey, props.imageEpoch]);
+
+  async function generate() {
+    if (!props.usable || busy) return;
+    const fingerprint = `${props.currentRevisionId}|${seed}`;
+    const key = pending.current?.fingerprint === fingerprint ? pending.current.key : crypto.randomUUID();
+    pending.current = { fingerprint, key };
+    setBusy(true);
+    setNotice(null);
+    try {
+      const result = await client.write<{ workflowRunId: string }>({
+        path: `/shot-revisions/${props.currentRevisionId}/generate-image`,
+        body: seed.trim().length > 0 ? { seed: seed.trim() } : {},
+        idempotencyKey: key,
+      });
+      pending.current = null;
+      setNotice(result.status === 202
+        ? "已受理，结果以任务和图片列表为准。这不是生成成功。"
+        : `已返回 ${result.status}，结果以随后的查询为准。`);
+      await props.onAccepted();
+    } catch (caught) {
+      setNotice(caught instanceof ApiError
+        ? `${caught.code}：${caught.detail}。再次提交将复用同一幂等键。`
+        : "提交失败，再次提交将复用同一幂等键。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="min-w-0 rounded-lg bg-white p-4">
+      <h2 className="font-medium">Mock 图片</h2>
+      <p className="mt-2 text-sm [overflow-wrap:anywhere]">确定性 1×1 Mock 测试图。seed 只写入快照，不改变像素。这不是真实 AI 图片，也不会写入 MinIO。</p>
+      <label className="mt-2 block text-sm" htmlFor="mock-image-seed">seed（可选）</label>
+      <input id="mock-image-seed" className="w-full rounded border px-2 py-1" maxLength={200} value={seed} onChange={(event) => setSeed(event.target.value)} />
+      <button className="mt-3 rounded bg-red-700 px-3 py-2 text-white disabled:opacity-50" type="button" disabled={!props.usable || busy} onClick={() => void generate()}>
+        {busy ? "正在提交" : props.usable ? "生成 Mock 图片" : `生成 Mock 图片（${props.reason}）`}
+      </button>
+      {notice ? <p className="mt-2 text-sm">{notice}</p> : null}
+      {error ? <p className="mt-2 text-sm" role="alert">{error}</p> : null}
+      <AssetList title="当前版本图片" assets={currentAssets} previewErrors={previewErrors} onPreviewError={(id) => setPreviewErrors((current) => ({ ...current, [id]: true }))} />
+      <AssetList title="历史版本图片" assets={historyAssets} previewErrors={previewErrors} onPreviewError={(id) => setPreviewErrors((current) => ({ ...current, [id]: true }))} />
+    </section>
+  );
+}
+
+function AssetList(props: {
+  title: string;
+  assets: ShotAsset[];
+  previewErrors: Record<string, boolean>;
+  onPreviewError: (id: string) => void;
+}) {
+  return (
+    <div className="mt-4 min-w-0">
+      <h3 className="font-medium">{props.title}</h3>
+      {props.assets.length === 0 ? <p className="mt-2 text-sm">没有图片</p> : null}
+      <ul className="mt-2 space-y-3">
+        {props.assets.map((asset) => {
+          const preview = canPreviewAsset(asset);
+          return (
+            <li key={asset.id} className="min-w-0 rounded border p-3 text-sm [overflow-wrap:anywhere]">
+              <p>资产 {asset.id}</p>
+              <p>状态 {asset.status} · 审核 {asset.reviewStatus} · {asset.width ?? "无"}×{asset.height ?? "无"} · {asset.byteSize} 字节</p>
+              <p>来源镜头版本 {asset.sourceShotRevisionId ?? "无"} · 来源任务 {asset.sourceGenerationJobId ?? "无"}</p>
+              <p>创建 {asset.createdAt}</p>
+              <p className="break-all">{asset.checksumSha256}</p>
+              {preview && !props.previewErrors[asset.id] ? (
+                <img
+                  alt={`镜头图片 ${asset.id}`}
+                  className="mt-2 max-w-full"
+                  src={`/api/v1/assets/${asset.id}/content`}
+                  onError={() => props.onPreviewError(asset.id)}
+                />
+              ) : null}
+              {preview && props.previewErrors[asset.id] ? <p role="alert">预览读取失败</p> : null}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+interface ShotAsset {
+  id: string;
+  kind: string;
+  mimeType: string;
+  status: string;
+  reviewStatus: string;
+  width: number | null;
+  height: number | null;
+  byteSize: number;
+  checksumSha256: string;
+  sourceShotRevisionId: string | null;
+  sourceGenerationJobId: string | null;
+  createdAt: string;
+}
+
+function canPreviewAsset(asset: ShotAsset): boolean {
+  return asset.kind === "IMAGE"
+    && asset.mimeType === "image/png"
+    && (asset.status === "ACTIVE" || asset.status === "STALE" || asset.status === "SUPERSEDED");
+}
+
 function TaskDrawer(props: {
   projectId: string;
   runs: WorkflowRun[];
@@ -2141,6 +2326,9 @@ function TaskDrawer(props: {
     }
   }
 
+  const textRuns = props.runs.filter((run) => TEXT_WORKFLOW_TYPES.has(run.type));
+  const mediaRuns = props.runs.filter((run) => run.type === "MEDIA_IMAGE");
+
   return (
     <div className="fixed inset-y-0 right-0 z-30 w-full max-w-md overflow-auto bg-white p-4 shadow-xl">
       <button className="text-sm underline" type="button" onClick={props.onClose}>关闭任务</button>
@@ -2153,8 +2341,8 @@ function TaskDrawer(props: {
       {pending ? <p className="mt-2 text-sm">{pending}</p> : null}
       {error ? <p className="mt-2 text-sm" role="alert">{error}</p> : null}
       <ul className="mt-4 space-y-3">
-        {props.runs.length === 0 ? <li className="text-sm">没有文本任务</li> : null}
-        {props.runs.map((run) => (
+        {textRuns.length === 0 ? <li className="text-sm">没有文本任务</li> : null}
+        {textRuns.map((run) => (
           <li key={run.id} className="rounded border p-3 text-sm">
             <p>{run.type === "MOCK_TEXT_SCENES" ? "Mock 场景" : "Mock 镜头"} · {taskStatusLabel(run.status)}</p>
             {run.jobs.map((job) => {
@@ -2165,6 +2353,28 @@ function TaskDrawer(props: {
                   {job.errorMessage ? <p>{job.errorMessage}</p> : null}
                   <button className="mr-2 underline disabled:opacity-50" type="button" disabled={terminal} onClick={() => void act(`/generation-jobs/${job.id}/cancel`)}>取消{terminal ? "（已结束）" : ""}</button>
                   <button className="underline disabled:opacity-50" type="button" disabled={job.state !== "FAILED" && job.state !== "CANCELED"} onClick={() => void act(`/generation-jobs/${job.id}/retry`)}>重试{job.state === "FAILED" || job.state === "CANCELED" ? "" : "（尚未失败或取消）"}</button>
+                </div>
+              );
+            })}
+          </li>
+        ))}
+      </ul>
+      <h2 className="mt-6 font-medium">Mock 图片任务</h2>
+      <p className="mt-2 text-sm">图片任务与文本任务分开。媒体手工重试不可用；需要另一张图时，在镜头页再次生成并使用新的幂等键。</p>
+      <ul className="mt-4 space-y-3">
+        {mediaRuns.length === 0 ? <li className="text-sm">没有图片任务</li> : null}
+        {mediaRuns.map((run) => (
+          <li key={run.id} className="rounded border p-3 text-sm">
+            <p>Mock 图片 · {taskStatusLabel(run.status)}</p>
+            {run.jobs.map((job) => {
+              const terminal = job.state === "SUCCEEDED" || job.state === "FAILED" || job.state === "CANCELED";
+              return (
+                <div key={job.id} className="mt-2">
+                  <p>镜头版本 {job.sourceShotRevisionId ?? "未记录"}</p>
+                  <p>任务 {taskStatusLabel(job.state)}{job.errorCode ? ` · ${job.errorCode}` : ""}</p>
+                  {job.errorMessage ? <p>{job.errorMessage}</p> : null}
+                  <button className="mr-2 underline disabled:opacity-50" type="button" disabled={terminal} onClick={() => void act(`/generation-jobs/${job.id}/cancel`)}>取消{terminal ? "（已结束）" : ""}</button>
+                  <button className="underline disabled:opacity-50" type="button" disabled>重试（媒体手工重试不可用，请再次生成）</button>
                 </div>
               );
             })}

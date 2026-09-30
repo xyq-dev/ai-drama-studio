@@ -18,8 +18,8 @@ export interface MockImageJob {
   traceId: string;
 }
 
-/** Mock-only slice; intentionally not wired to queue delivery until expired-lease
- * routing and redelivery are tested with PostgreSQL and Redis.
+/** Synchronous MEDIA_IMAGE path used by the queue consumer.
+ * The pixels are a fixed 1×1 PNG fixture. seed is stored in the snapshot and does not change the image.
  */
 export async function runMockImageJob(
   input: MockImageJob,

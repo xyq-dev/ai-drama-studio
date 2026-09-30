@@ -71,6 +71,7 @@ export interface JobView {
   attemptId: string | null;
   attemptNo: number | null;
   providerRequestId: string | null;
+  sourceShotRevisionId: string | null;
 }
 
 export interface WorkflowView {
@@ -575,7 +576,7 @@ export class RuntimeStore {
 }
 
 const JOB_COLUMNS = `j.id, j.workspace_id, j.project_id, j.workflow_run_id, j.kind, j.state,
-  j.dispatch_seq, j.retry_count, j.error_code, j.error_message,
+  j.dispatch_seq, j.retry_count, j.error_code, j.error_message, j.source_shot_revision_id,
   ja.id AS attempt_id, ja.attempt_no, ja.provider_request_id`;
 
 export async function insertProject(
@@ -632,6 +633,7 @@ function mapJob(row: QueryResultRow): JobView {
     attemptId: row.attempt_id ? String(row.attempt_id) : null,
     attemptNo: row.attempt_no === null || row.attempt_no === undefined ? null : Number(row.attempt_no),
     providerRequestId: row.provider_request_id ? String(row.provider_request_id) : null,
+    sourceShotRevisionId: row.source_shot_revision_id == null ? null : String(row.source_shot_revision_id),
   };
 }
 

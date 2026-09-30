@@ -24,13 +24,26 @@ export interface MediaAssetRecord {
   id: string;
   projectId: string;
   kind: string;
+  storageProvider: string;
   objectKey: string;
   mimeType: string;
+  byteSize: number;
   checksumSha256: string;
+  width: number | null;
+  height: number | null;
+  status: string;
+  reviewStatus: string;
+  sourceJobAttemptId: string | null;
+  sourceGenerationJobId: string | null;
   sourceShotRevisionId: string | null;
   providerRequestId: string | null;
   createdAt: string;
 }
+
+const ASSET_COLUMNS = `id, project_id, kind, storage_provider, object_key, mime_type,
+                byte_size, checksum_sha256, width, height, status, review_status,
+                source_job_attempt_id, source_generation_job_id, source_shot_revision_id,
+                provider_request_id, created_at`;
 
 export class MediaAssetStore {
   constructor(private readonly pool: DatabasePool) {}
@@ -145,8 +158,7 @@ export class MediaAssetStore {
     const client = await this.pool.connect();
     try {
       const result = await client.query<QueryResultRow>(
-        `SELECT id, project_id, kind, object_key, mime_type, checksum_sha256,
-                source_shot_revision_id, provider_request_id, created_at
+        `SELECT ${ASSET_COLUMNS}
            FROM asset
           WHERE workspace_id = $1
             AND project_id = $2
@@ -155,6 +167,23 @@ export class MediaAssetStore {
         [workspaceId, projectId, shotRevisionId],
       );
       return result.rows.map(mapAsset);
+    } finally {
+      client.release();
+    }
+  }
+
+  async getWorkspaceAsset(workspaceId: string, assetId: string): Promise<MediaAssetRecord> {
+    const client = await this.pool.connect();
+    try {
+      const result = await client.query<QueryResultRow>(
+        `SELECT ${ASSET_COLUMNS}
+           FROM asset
+          WHERE id = $1 AND workspace_id = $2`,
+        [assetId, workspaceId],
+      );
+      const row = result.rows[0];
+      if (!row) throw new PersistenceError("NOT_FOUND", "Asset not found");
+      return mapAsset(row);
     } finally {
       client.release();
     }
@@ -319,8 +348,7 @@ async function loadExactReplayOrConflict(
   input: CreateMediaAssetInput,
 ): Promise<MediaAssetRecord | null> {
   const exact = await client.query<QueryResultRow>(
-    `SELECT id, project_id, kind, object_key, mime_type, checksum_sha256,
-            source_shot_revision_id, provider_request_id, created_at
+    `SELECT ${ASSET_COLUMNS}
        FROM asset
       WHERE workspace_id = $1
         AND storage_provider = $2
@@ -417,8 +445,7 @@ async function insertAsset(
        provider_configuration_id, provider_request_id, metadata_json)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::jsonb)
      ON CONFLICT (storage_provider, object_key) DO NOTHING
-     RETURNING id, project_id, kind, object_key, mime_type, checksum_sha256,
-               source_shot_revision_id, provider_request_id, created_at`,
+     RETURNING ${ASSET_COLUMNS}`,
     [
       input.workspaceId,
       input.projectId,
@@ -483,9 +510,17 @@ function mapAsset(row: QueryResultRow): MediaAssetRecord {
     id: String(row.id),
     projectId: String(row.project_id),
     kind: String(row.kind),
+    storageProvider: String(row.storage_provider),
     objectKey: String(row.object_key),
     mimeType: String(row.mime_type),
+    byteSize: Number(row.byte_size),
     checksumSha256: String(row.checksum_sha256),
+    width: row.width === null || row.width === undefined ? null : Number(row.width),
+    height: row.height === null || row.height === undefined ? null : Number(row.height),
+    status: String(row.status),
+    reviewStatus: String(row.review_status),
+    sourceJobAttemptId: row.source_job_attempt_id == null ? null : String(row.source_job_attempt_id),
+    sourceGenerationJobId: row.source_generation_job_id == null ? null : String(row.source_generation_job_id),
     sourceShotRevisionId:
       row.source_shot_revision_id === null ? null : String(row.source_shot_revision_id),
     providerRequestId: row.provider_request_id == null ? null : String(row.provider_request_id),

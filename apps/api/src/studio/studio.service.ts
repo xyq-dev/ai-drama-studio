@@ -14,6 +14,7 @@ import {
   type TextEntityKind,
 } from "@ai-drama/database";
 import { z } from "zod";
+import { assertReadableMockImage, readBoundedMockPng } from "./mock-image-content";
 
 const projectBodySchema = z.object({
   title: z.string().min(1).max(200),
@@ -96,6 +97,7 @@ export class StudioService {
     private readonly mockText?: MockTextService,
     private readonly mediaAssets?: MediaAssetStore,
     private readonly mockImageEnabled = false,
+    private readonly mockObjectDir: string | null = null,
   ) {}
 
   get workspace(): string {
@@ -617,6 +619,19 @@ export class StudioService {
     if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
     const { projectId } = await this.mediaAssets.requireShotScope(this.workspaceId, shotRevisionId);
     return { items: await this.mediaAssets.listShotAssets(this.workspaceId, projectId, shotRevisionId) };
+  }
+
+  async readMockImageContent(assetId: string): Promise<Buffer> {
+    if (!this.mockImageEnabled || !this.mockObjectDir) {
+      throw new PersistenceError("CONFIGURATION_ERROR", "Mock image content is not enabled");
+    }
+    if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
+    const asset = await this.mediaAssets.getWorkspaceAsset(this.workspaceId, assetId);
+    assertReadableMockImage(asset);
+    return readBoundedMockPng(this.mockObjectDir, asset.objectKey, {
+      byteSize: asset.byteSize,
+      checksumSha256: asset.checksumSha256,
+    });
   }
 
   async createMockSceneWorkflow(projectId: string, context: StudioContext) {

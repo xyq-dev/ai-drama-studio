@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Headers, Inject, Param, Post, Query, Req, Res } from "@nestjs/common";
+import { Body, Controller, Get, Headers, Inject, Param, Post, Query, Req, Res, StreamableFile } from "@nestjs/common";
 import { PersistenceError, RuntimeStore } from "@ai-drama/database";
 import { RUNTIME_STORE, STUDIO_SERVICE } from "./tokens";
 import { StudioService, createTraceId, type StudioContext } from "./studio.service";
@@ -14,6 +14,10 @@ const UUID_PARAM_PIPE = {
 
 interface StatusResponse {
   status(code: number): void;
+}
+
+interface ContentResponse {
+  setHeader(name: string, value: string): void;
 }
 
 interface SseResponse {
@@ -464,6 +468,18 @@ export class StudioController {
   @Get("shot-revisions/:revisionId/assets")
   listShotAssets(@Param("revisionId", UUID_PARAM_PIPE) revisionId: string) {
     return this.studio.listShotAssets(revisionId);
+  }
+
+  @Get("assets/:assetId/content")
+  async readAssetContent(
+    @Param("assetId", UUID_PARAM_PIPE) assetId: string,
+    @Res({ passthrough: true }) response: ContentResponse,
+  ) {
+    const bytes = await this.studio.readMockImageContent(assetId);
+    response.setHeader("Content-Type", "image/png");
+    response.setHeader("X-Content-Type-Options", "nosniff");
+    response.setHeader("Cache-Control", "private, no-store");
+    return new StreamableFile(bytes);
   }
 
   @Post("projects/:projectId/workflows/mock-scenes")

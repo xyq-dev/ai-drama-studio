@@ -3,16 +3,16 @@
 M2 文本 Scene/Shot 生成已通过厂商无关的同步 Adapter 边界运行；契约、恢复限制和验收证据见
 [`docs/M2_TEXT_ADAPTER_ACCEPTANCE.md`](docs/M2_TEXT_ADAPTER_ACCEPTANCE.md)。
 
-AI Drama Studio 是一个面向短剧创作的本地优先工作台。当前仓库包含 M1 persistence/job core，以及 M2 文本版本链、Mock Provider、BullMQ outbox dispatcher、Worker consumer、项目/工作流 API 和 DomainEvent SSE。公开 API 可分页发现 Character、Location、Scene、Shot，并从历史响应恢复 aggregate 并发版本。真实模型供应商和创作 UI 仍未实现。
+AI Drama Studio 是一个面向短剧创作的本地优先工作台。当前仓库包含 M1 persistence/job core、M2 文本版本链与创作工作台，以及镜头页上的 Mock 图片入口。公开 API 可分页发现 Character、Location、Scene、Shot，并从历史响应恢复 aggregate 并发版本。Mock 图片是确定性 1×1 PNG 测试图，按 Asset ID 同源读取，不写入 MinIO，也不是真实 AI 图片或付费模型。
 
 文本集合 GET 使用 `limit`（默认 20、最大 100）及不透明 `cursor` 并返回 `nextCursor`；
 revision 历史的 `aggregate` 提供 entity/父 scope、`rowVersion` 和 current/approved 指针。
-Mock 图片切片是确定性测试路径，不代表真实媒体 Provider 或真实媒体生成流程已完成。
+Mock 图片切片是确定性测试路径。开发环境需要显式设置 `M3_MOCK_IMAGE_ENABLED=true` 和绝对路径 `MOCK_OBJECT_DIR`，并在已有 ACTIVE workspace 上执行 `mock-media:provision`。该命令不运行 Migration，也不在 API 或 Worker 启动时自动插入配置。生产环境保持关闭。
 
 ## 目录
 
 ```text
-apps/web                 Next.js 状态页
+apps/web                 Next.js 创作工作台与状态页
 apps/api                 NestJS Core API：健康检查 + M1 项目/Mock 工作流/SSE
 apps/worker              NestJS Worker：BullMQ consumer / outbox dispatcher / reconciler
 services/media-worker    Python FastAPI 健康检查
@@ -102,9 +102,12 @@ corepack pnpm --filter @ai-drama/database prisma:validate
 corepack pnpm --filter @ai-drama/database prisma:generate
 corepack pnpm --filter @ai-drama/database migrate
 corepack pnpm --filter @ai-drama/database workspace:provision
+corepack pnpm --filter @ai-drama/database mock-media:provision
 ```
 
 首次初始化数据库时，必须在 Migration 后执行 `workspace:provision`。该命令读取服务端配置的 `APP_WORKSPACE_ID`（以及可选 `APP_WORKSPACE_NAME`），只创建该固定 Workspace；已存在但非 `ACTIVE` 时会失败，不会从名称或“第一条记录”推断 Workspace。
+
+`mock-media:provision` 只补当前 workspace 的 `mock-media` / `image.generate`。它要求进程环境中的 `DATABASE_URL`、非生产 `NODE_ENV`、`M3_MOCK_IMAGE_ENABLED=true` 和绝对路径 `MOCK_OBJECT_DIR`。已有禁用配置或已写入凭据引用时会失败且不覆盖。页面不读取这些服务端变量。
 
 自定义 Migration runner 使用单个 PostgreSQL `PoolClient` 持有 advisory lock，并在该同一会话上执行每个事务；已应用 migration 的 SHA-256 会记录并校验。数据库特有 CHECK、partial index、复合 FK 与 outbox 约束保留在 SQL Migration 中。
 
@@ -168,8 +171,9 @@ M1-B GitHub Actions 还会在隔离 PostgreSQL 16 上执行 Prisma validate/gene
 
 ## 本阶段明确没有实现
 
-- 真实 AI Provider
+- 真实 AI Provider、视频生成和付费模型
 - ComfyUI Workflow 调用
 - FFmpeg 合成
 - Story/Script/Character/Scene/Shot 等 M2 生产模型
-- 登录、项目、剧本、角色、分镜等产品页面
+- 登录
+- 媒体任务手工 retry

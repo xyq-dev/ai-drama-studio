@@ -38,6 +38,13 @@ interface Sim {
   withLocation: boolean;
   sceneStale: boolean;
   sceneStaleReads: number;
+  imageReady: boolean;
+  imageHistory: boolean;
+  imageFailures: number;
+  imagePostGate: Promise<void> | null;
+  imageAssets: Record<string, Array<Record<string, unknown>>>;
+  mediaImage: boolean;
+  mediaTask: boolean;
   fetch: (input: string, init?: RequestInit) => Promise<Response>;
 }
 
@@ -72,6 +79,13 @@ function createSim(): Sim {
     withLocation: false,
     sceneStale: false,
     sceneStaleReads: 0,
+    imageReady: false,
+    imageHistory: false,
+    imageFailures: 0,
+    imagePostGate: null,
+    imageAssets: {},
+    mediaImage: false,
+    mediaTask: false,
     fetch: () => Promise.resolve(fail(500, "UNINSTALLED", "fetch was not installed")),
   };
   let storyConflictStage = 0;
@@ -206,9 +220,18 @@ function createSim(): Sim {
         items: [current, ...state.items],
       };
     }
+    const ready = sim.imageReady && id === SHOT_A;
+    const items = ready
+      ? state.items.map((item) => item.id === state.currentId
+        ? { ...item, reviewStatus: "APPROVED", freshnessStatus: "CURRENT" }
+        : item)
+      : state.items;
+    const older = sim.imageHistory && ready && items[0]
+      ? [{ ...items[0], id: `${id}-rev-old`, revisionNo: 0, reviewStatus: "DRAFT" }]
+      : [];
     return {
-      aggregate: aggregate(id, state.row, state.currentId, "DRAFT", 1),
-      items: state.items,
+      aggregate: aggregate(id, state.row, state.currentId, ready ? "APPROVED" : "DRAFT", 1, ready ? state.currentId : null),
+      items: [...items, ...older],
     };
   }
 
@@ -250,6 +273,43 @@ function createSim(): Sim {
     }
     if (path === `/api/v1/projects/${PROJECT}/workflow-runs` && method === "GET") {
       sim.workflowReads += 1;
+      if (sim.mediaTask) {
+        return json([{
+          id: "media-run",
+          type: "MEDIA_IMAGE",
+          status: "FAILED",
+          createdAt: "2026-09-30T00:00:00.000Z",
+          jobs: [{
+            id: "media-job",
+            kind: "MEDIA_IMAGE",
+            state: "FAILED",
+            errorCode: "JOB_NOT_RETRYABLE",
+            errorMessage: "Media image retry is unavailable",
+            sourceShotRevisionId: `${SHOT_A}-rev`,
+          }],
+        }]);
+      }
+      if (sim.mediaImage) {
+        const status = sim.workflowReads === 1 ? "RUNNING" : "SUCCEEDED";
+        const revisionId = `${SHOT_A}-rev`;
+        if (status === "SUCCEEDED") {
+          sim.imageAssets[revisionId] = [imageRecord(revisionId, "ACTIVE", "cccccccc-cccc-4ccc-8ccc-cccccccccccc")];
+        }
+        return json([{
+          id: "media-run",
+          type: "MEDIA_IMAGE",
+          status,
+          createdAt: "2026-09-30T00:00:00.000Z",
+          jobs: [{
+            id: "media-job",
+            kind: "MEDIA_IMAGE",
+            state: status,
+            errorCode: null,
+            errorMessage: null,
+            sourceShotRevisionId: revisionId,
+          }],
+        }]);
+      }
       if (!sim.scenesAfterWorkflow) return json([]);
       const status = sim.workflowReads === 1 ? "RUNNING" : "SUCCEEDED";
       return json([{
@@ -354,9 +414,38 @@ function createSim(): Sim {
       }
       return json({ ok: true });
     }
+    if (/\/shot-revisions\/[^/]+\/assets$/.test(path) && method === "GET") {
+      const revisionId = path.split("/").at(-2) ?? "";
+      return json({ items: sim.imageAssets[revisionId] ?? [] });
+    }
+    if (/\/shot-revisions\/[^/]+\/generate-image$/.test(path) && method === "POST") {
+      if (sim.imagePostGate) await sim.imagePostGate;
+      if (sim.imageFailures > 0) {
+        sim.imageFailures -= 1;
+        return fail(409, "CONFLICT", "受理失败");
+      }
+      return json({ workflowRunId: "media-run", jobId: "media-job" }, 202);
+    }
     return fail(404, "NOT_FOUND", path);
   };
   return sim;
+}
+
+function imageRecord(revisionId: string, status: string, id: string) {
+  return {
+    id,
+    kind: "IMAGE",
+    mimeType: "image/png",
+    status,
+    reviewStatus: "DRAFT",
+    width: 1,
+    height: 1,
+    byteSize: 68,
+    checksumSha256: `${status.toLowerCase()}${"a".repeat(64)}`.slice(0, 64),
+    sourceShotRevisionId: revisionId,
+    sourceGenerationJobId: "job-image",
+    createdAt: "2026-09-30T00:00:00.000Z",
+  };
 }
 
 function aggregate(entityId: string, rowVersion: number, currentRevisionId: string, reviewStatus: string, reviewVersion: number, approvedRevisionId: string | null = null) {
@@ -1049,5 +1138,146 @@ describe("workbench review interactions against a simulated API", () => {
     } finally {
       delete (document as { visibilityState?: string }).visibilityState;
     }
+  }, 15000);
+
+  it("keeps mock image generation disabled until the loaded shot and its source are usable", async () => {
+    const sim = createSim();
+    install(sim);
+    renderAt(`focus=shot&episode=1&scene=scene-1&shot=${SHOT_A}`);
+    const button = await screen.findByRole("button", { name: /生成 Mock 图片/ });
+    expect((button as HTMLButtonElement).disabled).toBe(true);
+    expect(button.textContent).toContain("尚未批准，不能当作可用来源");
+    fireEvent.click(button);
+    expect(sim.calls.filter((call) => call.url.includes("/generate-image"))).toHaveLength(0);
+  });
+
+  it("accepts an explicit mock image request without treating 202 as a finished asset", async () => {
+    const sim = createSim();
+    sim.imageReady = true;
+    install(sim);
+    renderAt(`focus=shot&episode=1&scene=scene-1&shot=${SHOT_A}`);
+    fireEvent.click(await screen.findByRole("button", { name: "生成 Mock 图片" }));
+    expect(await screen.findByText(/已受理，结果以任务和图片列表为准/)).toBeTruthy();
+    expect(screen.queryByText("生成成功")).toBeNull();
+    const posts = sim.calls.filter((call) => call.method === "POST" && call.url.endsWith("/generate-image"));
+    expect(posts).toHaveLength(1);
+    expect(posts[0]?.body).toEqual({});
+    fireEvent.click(screen.getByRole("button", { name: "生成 Mock 图片" }));
+    await waitFor(() => expect(sim.calls.filter((call) => call.url.endsWith("/generate-image"))).toHaveLength(2));
+    const again = sim.calls.filter((call) => call.url.endsWith("/generate-image"));
+    expect(again[0]?.key).not.toBe(again[1]?.key);
+  });
+
+  it("reuses the image idempotency key after failure and changes it when the seed changes", async () => {
+    const sim = createSim();
+    sim.imageReady = true;
+    sim.imageFailures = 1;
+    install(sim);
+    renderAt(`focus=shot&episode=1&scene=scene-1&shot=${SHOT_A}`);
+    const button = await screen.findByRole("button", { name: "生成 Mock 图片" });
+    fireEvent.click(button);
+    expect(await screen.findByText(/再次提交将复用同一幂等键/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "生成 Mock 图片" }));
+    expect(await screen.findByText(/已受理/)).toBeTruthy();
+    const failed = sim.calls.filter((call) => call.url.endsWith("/generate-image"));
+    expect(failed[0]?.key).toBe(failed[1]?.key);
+    fireEvent.change(field("mock-image-seed"), { target: { value: "seed-b" } });
+    fireEvent.click(screen.getByRole("button", { name: "生成 Mock 图片" }));
+    await waitFor(() => expect(sim.calls.filter((call) => call.url.endsWith("/generate-image"))).toHaveLength(3));
+    const seeded = sim.calls.filter((call) => call.url.endsWith("/generate-image"));
+    expect(seeded[2]?.key).not.toBe(seeded[1]?.key);
+    expect(seeded[2]?.body).toEqual({ seed: "seed-b" });
+  });
+
+  it("ignores a second click while image generation is in flight", async () => {
+    const sim = createSim();
+    sim.imageReady = true;
+    let release!: () => void;
+    sim.imagePostGate = new Promise<void>((resolve) => { release = resolve; });
+    install(sim);
+    renderAt(`focus=shot&episode=1&scene=scene-1&shot=${SHOT_A}`);
+    fireEvent.click(await screen.findByRole("button", { name: "生成 Mock 图片" }));
+    const pending = await screen.findByRole("button", { name: "正在提交" });
+    expect((pending as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(pending);
+    release();
+    expect(await screen.findByText(/已受理/)).toBeTruthy();
+    expect(sim.calls.filter((call) => call.url.endsWith("/generate-image"))).toHaveLength(1);
+  });
+
+  it("keeps a late asset response on the shot that requested it", async () => {
+    const sim = createSim();
+    sim.imageReady = true;
+    const revisionId = `${SHOT_A}-rev`;
+    sim.imageAssets[revisionId] = [imageRecord(revisionId, "ACTIVE", "dddddddd-dddd-4ddd-8ddd-dddddddddddd")];
+    let release!: () => void;
+    sim.holdGetPart = `/shot-revisions/${revisionId}/assets`;
+    sim.holdGet = new Promise<void>((resolve) => { release = resolve; });
+    install(sim);
+    renderAt(`focus=shot&episode=1&scene=scene-1&shot=${SHOT_A}`);
+    fireEvent.click(await screen.findByRole("button", { name: new RegExp(SHOT_B.slice(0, 8)) }));
+    await screen.findByRole("heading", { name: "镜头 2" });
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(screen.queryByText("dddddddd-dddd-4ddd-8ddd-dddddddddddd")).toBeNull();
+    expect(field("shot-action").value).toBe("动作二");
+  });
+
+  it("shows current and historical images separately and previews only readable statuses", async () => {
+    const sim = createSim();
+    sim.imageReady = true;
+    sim.imageHistory = true;
+    const currentId = `${SHOT_A}-rev`;
+    const historyId = `${SHOT_A}-rev-old`;
+    sim.imageAssets[currentId] = [
+      imageRecord(currentId, "STALE", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"),
+      imageRecord(currentId, "FAILED", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1"),
+      { ...imageRecord(currentId, "DELETED", "cccccccc-cccc-4ccc-8ccc-ccccccccccc1"), sourceShotRevisionId: "other-shot" },
+    ];
+    sim.imageAssets[historyId] = [imageRecord(historyId, "SUPERSEDED", "dddddddd-dddd-4ddd-8ddd-ddddddddddd1")];
+    install(sim);
+    renderAt(`focus=shot&episode=1&scene=scene-1&shot=${SHOT_A}`);
+    expect(await screen.findByRole("heading", { name: "当前版本图片" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "历史版本图片" })).toBeTruthy();
+    const image = await screen.findByRole("img", { name: /aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1/ });
+    expect(image.getAttribute("src")).toBe("/api/v1/assets/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1/content");
+    expect(screen.queryByRole("img", { name: /bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1/ })).toBeNull();
+    expect(screen.queryByText(/cccccccc-cccc-4ccc-8ccc-ccccccccccc1/)).toBeNull();
+    expect(screen.getByText(/dddddddd-dddd-4ddd-8ddd-ddddddddddd1/)).toBeTruthy();
+    const current = screen.getByRole("heading", { name: "当前版本图片" }).parentElement;
+    const history = screen.getByRole("heading", { name: "历史版本图片" }).parentElement;
+    expect(current?.textContent).toContain("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1");
+    expect(current?.textContent).not.toContain("dddddddd-dddd-4ddd-8ddd-ddddddddddd1");
+    expect(history?.textContent).toContain(historyId);
+    expect(history?.textContent).not.toContain("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1");
+  });
+
+  it("shows the shot revision on a media task and keeps manual retry disabled", async () => {
+    const sim = createSim();
+    sim.mediaTask = true;
+    install(sim);
+    renderAt(`focus=shot&episode=1&scene=scene-1&shot=${SHOT_A}`);
+    fireEvent.click(await screen.findByRole("button", { name: "任务" }));
+    expect(await screen.findByText(new RegExp(`${SHOT_A}-rev`))).toBeTruthy();
+    const retry = screen.getByRole("button", { name: /媒体手工重试不可用/ });
+    expect((retry as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(retry);
+    expect(sim.calls.filter((call) => call.url.endsWith("/retry"))).toHaveLength(0);
+  });
+
+  it("reloads shot images when a media task finishes and keeps the in-progress draft", async () => {
+    const sim = createSim();
+    sim.imageReady = true;
+    sim.mediaImage = true;
+    install(sim);
+    renderAt(`focus=shot&episode=1&scene=scene-1&shot=${SHOT_A}`);
+    await screen.findByRole("heading", { name: "镜头 1" });
+    fireEvent.change(field("shot-action"), { target: { value: "图片刷新时保留" } });
+    expect(await screen.findByText(/cccccccc-cccc-4ccc-8ccc-cccccccccccc/, {}, { timeout: 6000 })).toBeTruthy();
+    expect(field("shot-action").value).toBe("图片刷新时保留");
+    await waitFor(() => expect(sim.workflowReads).toBeGreaterThanOrEqual(2));
+    const reads = sim.workflowReads;
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+    expect(sim.workflowReads).toBe(reads);
   }, 15000);
 });
