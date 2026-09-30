@@ -2,8 +2,10 @@ import { createHash } from "node:crypto";
 import { mkdir, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { crc32 } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import { PersistenceError, type MediaAssetRecord } from "@ai-drama/database";
+import { mockMediaFixture } from "../../../../packages/providers/src/mock-media-fixtures";
 import { MAX_MOCK_PNG_BYTES, assertReadableMockImage, readBoundedMockPng } from "./mock-image-content";
 
 const projectId = "11111111-1111-4111-8111-111111111111";
@@ -14,6 +16,30 @@ const PNG = Buffer.from(
 );
 const checksum = createHash("sha256").update(PNG).digest("hex");
 const key = `mock-images/${projectId}/${jobId}/${checksum}.png`;
+
+function pngChunk(type: string, data = Buffer.alloc(0)): Buffer {
+  const name = Buffer.from(type, "latin1");
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(Buffer.concat([name, data])) >>> 0);
+  return Buffer.concat([length, name, data, crc]);
+}
+
+function pngBytes(chunks: Buffer[]): Buffer {
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    ...chunks,
+  ]);
+}
+
+async function readStored(root: string, bytes: Buffer): Promise<Buffer> {
+  const sum = createHash("sha256").update(bytes).digest("hex");
+  const objectKey = `mock-images/${projectId}/${jobId}/${sum}.png`;
+  await mkdir(join(root, "mock-images", projectId, jobId), { recursive: true });
+  await writeFile(join(root, objectKey), bytes);
+  return readBoundedMockPng(root, objectKey, { byteSize: bytes.length, checksumSha256: sum });
+}
 
 function asset(overrides: Partial<MediaAssetRecord> = {}): MediaAssetRecord {
   return {
@@ -120,6 +146,33 @@ describe("mock image content", () => {
     await expect(readBoundedMockPng(root, directoryKey, { byteSize: PNG.length, checksumSha256: checksum })).rejects.toMatchObject({
       code: "ASSET_CONTENT_INVALID",
     });
+  });
+
+  it("requires consecutive non-empty IDAT chunks and reads the provider fixture", async () => {
+    const header = Buffer.alloc(13);
+    header.writeUInt32BE(1, 0);
+    header.writeUInt32BE(1, 4);
+    header[8] = 8;
+    await expect(readStored(root, pngBytes([pngChunk("IHDR", header), pngChunk("IEND")]))).rejects.toMatchObject({
+      code: "ASSET_CONTENT_INVALID",
+    });
+    await expect(readStored(root, pngBytes([
+      pngChunk("IHDR", header),
+      pngChunk("IDAT"),
+      pngChunk("IEND"),
+    ]))).rejects.toMatchObject({ code: "ASSET_CONTENT_INVALID" });
+    const imageData = pngChunk("IDAT", Buffer.from([0x78]));
+    const comment = pngChunk("tEXt", Buffer.from("Comment\0x"));
+    await expect(readStored(root, pngBytes([
+      pngChunk("IHDR", header),
+      imageData,
+      comment,
+      imageData,
+      pngChunk("IEND"),
+    ]))).rejects.toMatchObject({ code: "ASSET_CONTENT_INVALID" });
+
+    const fixture = mockMediaFixture("image/png");
+    await expect(readStored(root, fixture)).resolves.toEqual(fixture);
   });
 
   it("rejects a directory junction that escapes the configured root", async () => {

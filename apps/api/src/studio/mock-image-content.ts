@@ -111,6 +111,9 @@ function assertPngBytes(bytes: Buffer): void {
   let offset = PNG_SIGNATURE.length;
   let sawHeader = false;
   let sawEnd = false;
+  let sawIdat = false;
+  let idatClosed = false;
+  let idatLength = 0;
   while (offset < bytes.length) {
     if (sawEnd || bytes.length - offset < 12) {
       throw new PersistenceError("ASSET_CONTENT_INVALID", "Asset content does not match its record");
@@ -135,6 +138,15 @@ function assertPngBytes(bytes: Buffer): void {
     } else if (name === "IHDR") {
       throw new PersistenceError("ASSET_CONTENT_INVALID", "Asset content does not match its record");
     }
+    if (name === "IDAT") {
+      if (idatClosed) {
+        throw new PersistenceError("ASSET_CONTENT_INVALID", "Asset content does not match its record");
+      }
+      sawIdat = true;
+      idatLength += length;
+    } else if (sawIdat) {
+      idatClosed = true;
+    }
     offset += 12 + length;
     if (name === "IEND") {
       if (length !== 0 || offset !== bytes.length) {
@@ -143,7 +155,7 @@ function assertPngBytes(bytes: Buffer): void {
       sawEnd = true;
     }
   }
-  if (!sawHeader || !sawEnd) {
+  if (!sawHeader || !sawEnd || !sawIdat || idatLength === 0) {
     throw new PersistenceError("ASSET_CONTENT_INVALID", "Asset content does not match its record");
   }
 }
