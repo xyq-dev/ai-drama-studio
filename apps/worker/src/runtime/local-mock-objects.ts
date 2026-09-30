@@ -34,9 +34,25 @@ export class LocalMockObjects implements MockImageObjectStore {
       }
       await rename(temporary, path);
       const directoryHandle = await open(dirname(path), "r");
-      try { await directoryHandle.sync(); } finally { await directoryHandle.close(); }
+      try {
+        try {
+          await directoryHandle.sync();
+        } catch (error) {
+          // Non-production Windows NTFS rejects directory fsync with EPERM.
+          // File bytes were already synced before rename. Continuing here does
+          // not make the directory entry durable across power loss and is not
+          // equivalent to a successful directory fsync.
+          if (process.platform !== "win32" || !isDirectorySyncEperm(error)) throw error;
+        }
+      } finally {
+        await directoryHandle.close();
+      }
     } finally {
       await rm(temporary, { force: true });
     }
   }
+}
+
+function isDirectorySyncEperm(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "EPERM";
 }
