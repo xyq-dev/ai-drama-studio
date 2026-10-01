@@ -233,6 +233,9 @@ async function connectDb() {
   const require = createRequire(resolve(repo, "packages/database/package.json"));
   const { Client } = require("pg");
   const client = new Client({ connectionString: databaseUrl, statement_timeout: 10_000 });
+  client.on("error", (error) => {
+    state.evidence.pgClientError = error instanceof Error ? error.message : String(error);
+  });
   await client.connect();
   return client;
 }
@@ -1354,6 +1357,7 @@ let cleaned = false;
 async function cleanup() {
   if (cleaned) return;
   cleaned = true;
+  try {
   await restoreMockDir().catch((error) => {
     state.evidence.restoreError = error instanceof Error ? error.message : String(error);
   });
@@ -1366,6 +1370,8 @@ async function cleanup() {
   for (const app of state.apps) {
     try { process.kill(process.platform === "linux" ? -app.pid : app.pid, "SIGKILL"); } catch { /* exited */ }
   }
+  if (state.db) await state.db.end().catch(() => undefined);
+  state.db = null;
   if (state.composeStarted && /^[a-z0-9][a-z0-9_-]{0,62}$/.test(project)) {
     const down = await run("docker", [
       "compose", "-p", project, "-f", composeFile, "--env-file", envFile,
@@ -1374,7 +1380,6 @@ async function cleanup() {
     state.evidence.composeDown = { code: down.code, stderr: redact(down.stderr).slice(-1000) };
     if (down.code !== 0) state.evidence.composeDownFailed = true;
   }
-  if (state.db) await state.db.end().catch(() => undefined);
   for (const fd of state.logFds) {
     try { closeSync(fd); } catch { /* already closed */ }
   }
@@ -1386,8 +1391,11 @@ async function cleanup() {
   }
   if (existsSync(envFile)) rmSync(envFile, { force: true });
   for (const dir of state.imageDirs) rmSync(dir, { recursive: true, force: true });
+  } catch (error) {
+    state.evidence.cleanupError = error instanceof Error ? error.message : String(error);
+  }
   for (const name of pending) stages.push({ name, status: "skipped", reason: "earlier stage did not pass" });
-  const failed = stages.some((item) => item.status === "failed" || item.status === "blocked") || state.evidence.composeDownFailed === true;
+  const failed = stages.some((item) => item.status === "failed" || item.status === "blocked") || state.evidence.composeDownFailed === true || Boolean(state.evidence.cleanupError);
   const results = {
     ok: !failed,
     meta: state.evidence.meta ?? null,
@@ -1397,6 +1405,7 @@ async function cleanup() {
     stages,
     notRun,
     composeDown: state.evidence.composeDown ?? null,
+    cleanupError: state.evidence.cleanupError ?? null,
     migration: "Existing repository migrations only, applied after current_database, current_user, loopback URL, and public table count 0 were verified on this run's new database. No new migration and no DROP SCHEMA.",
     fatal: state.evidence.fatal ?? null,
   };
