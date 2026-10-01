@@ -316,9 +316,13 @@ export async function composeReview(ctx) {
   const side = blocked.shot;
   await replaceSideScene(ctx, side);
   await waitForCurrentSources(ctx);
+  const stale = await assetReview(ctx, blocked.assetId);
+  if (stale.status !== "STALE" || stale.review_status !== "DRAFT" || stale.checksum_sha256 !== blocked.checksum) {
+    throw new Error(`source change did not stale the draft composite ${stale.status} ${stale.review_status}`);
+  }
   ctx.expectStatus(await ctx.callApi(ctx.apiOrigin, "POST", `/assets/${blocked.assetId}/review`, {
-    ifMatch: blocked.rowVersion,
-    body: { decision: "APPROVE", note: "", contentHash: blocked.checksum },
+    ifMatch: stale.row_version,
+    body: { decision: "APPROVE", note: "", contentHash: stale.checksum_sha256 },
   }), 409, "REVIEW_INVALID_TRANSITION");
   ctx.state.world.composite = { ...pageAsset, rowVersion: approved.rowVersion, reviewStatus: "APPROVED" };
   return { approved: approved.reviewStatus, rejected: rejected.reviewStatus, race: winner.review_status };
