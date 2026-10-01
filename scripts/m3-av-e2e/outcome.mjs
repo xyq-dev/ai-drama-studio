@@ -15,6 +15,9 @@ export const requiredStages = [
   "mock-boundary",
   "recovery-disk",
   "recovery-flag",
+  "subtitle-music",
+  "subtitle-music-gates",
+  "subtitle-music-recovery",
 ];
 
 export function acceptanceFailed(input) {

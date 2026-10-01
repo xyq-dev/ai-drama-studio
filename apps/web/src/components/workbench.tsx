@@ -39,6 +39,14 @@ const client = new StudioClient();
 const EMPTY_CONTENT: Record<string, unknown> = { text: "" };
 const BODY_FIELD = "mt-1 w-full min-h-48 max-h-[70vh] resize-y rounded border border-neutral-300 px-3 py-2";
 
+function mediaTaskLabel(type: string): string {
+  if (type === "MEDIA_VIDEO") return "Mock 视频";
+  if (type === "MEDIA_TTS") return "Mock 配音";
+  if (type === "MEDIA_SUBTITLE") return "Mock 字幕";
+  if (type === "MEDIA_MUSIC") return "Mock 音乐";
+  return "Mock 图片";
+}
+
 function taskStatusLabel(state: string): string {
   if (state === "SUCCEEDED") return "成功 SUCCEEDED";
   if (state === "FAILED" || state === "PARTIAL_FAILED") return `失败 ${state}`;
@@ -46,7 +54,7 @@ function taskStatusLabel(state: string): string {
   return `进行中 ${state}`;
 }
 
-const MEDIA_WORKFLOW_TYPES = new Set(["MEDIA_IMAGE", "MEDIA_VIDEO", "MEDIA_TTS"]);
+const MEDIA_WORKFLOW_TYPES = new Set(["MEDIA_IMAGE", "MEDIA_VIDEO", "MEDIA_TTS", "MEDIA_SUBTITLE", "MEDIA_MUSIC"]);
 
 function trackedWorkflow(run: { type: string }): boolean {
   return TEXT_WORKFLOW_TYPES.has(run.type) || MEDIA_WORKFLOW_TYPES.has(run.type);
@@ -1423,6 +1431,8 @@ function ScenePane(props: {
     : savedDialogue.length > 0
       ? { usable: true, reason: "" }
       : { usable: false, reason: "先保存并审核对白" };
+  const subtitleGate = speechGate;
+  const musicGate = videoGate;
   const locationChoices = props.locations.flatMap((location) => {
     const usable = sourceUsable({
       reviewStatus: location.currentRevision?.reviewStatus ?? null,
@@ -1536,6 +1546,10 @@ function ScenePane(props: {
             videoReason={videoGate.reason}
             speechUsable={speechGate.usable}
             speechReason={speechGate.reason}
+            subtitleUsable={subtitleGate.usable}
+            subtitleReason={subtitleGate.reason}
+            musicUsable={musicGate.usable}
+            musicReason={musicGate.reason}
             imageEpoch={props.imageEpoch}
             onAccepted={props.onSaved}
           />
@@ -2173,20 +2187,30 @@ function ShotImagePanel(props: {
   videoReason: string;
   speechUsable: boolean;
   speechReason: string;
+  subtitleUsable: boolean;
+  subtitleReason: string;
+  musicUsable: boolean;
+  musicReason: string;
   imageEpoch: number;
   onAccepted: () => Promise<void>;
 }) {
   const [seed, setSeed] = useState("");
   const [videoSeed, setVideoSeed] = useState("");
   const [speechSeed, setSpeechSeed] = useState("");
+  const [subtitleSeed, setSubtitleSeed] = useState("");
+  const [musicSeed, setMusicSeed] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [videoNotice, setVideoNotice] = useState<string | null>(null);
   const [speechNotice, setSpeechNotice] = useState<string | null>(null);
+  const [subtitleNotice, setSubtitleNotice] = useState<string | null>(null);
+  const [musicNotice, setMusicNotice] = useState<string | null>(null);
   const [listError, setListError] = useState<string | null>(null);
   const [acceptError, setAcceptError] = useState<string | null>(null);
   const [videoAcceptError, setVideoAcceptError] = useState<string | null>(null);
   const [speechAcceptError, setSpeechAcceptError] = useState<string | null>(null);
+  const [subtitleAcceptError, setSubtitleAcceptError] = useState<string | null>(null);
+  const [musicAcceptError, setMusicAcceptError] = useState<string | null>(null);
   const [currentAssets, setCurrentAssets] = useState<ShotAsset[]>([]);
   const [historyAssets, setHistoryAssets] = useState<ShotAsset[]>([]);
   const [previewErrors, setPreviewErrors] = useState<Record<string, boolean>>({});
@@ -2195,9 +2219,13 @@ function ShotImagePanel(props: {
   const pending = useRef<{ fingerprint: string; key: string } | null>(null);
   const pendingVideo = useRef<{ fingerprint: string; key: string } | null>(null);
   const pendingSpeech = useRef<{ fingerprint: string; key: string } | null>(null);
+  const pendingSubtitle = useRef<{ fingerprint: string; key: string } | null>(null);
+  const pendingMusic = useRef<{ fingerprint: string; key: string } | null>(null);
   const requestToken = useRef(0);
   const revisionEpoch = useRef(0);
-  const acceptedEpoch = useRef<{ image: number; video: number; speech: number }>({ image: -1, video: -1, speech: -1 });
+  const acceptedEpoch = useRef<{ image: number; video: number; speech: number; subtitle: number; music: number }>({
+    image: -1, video: -1, speech: -1, subtitle: -1, music: -1,
+  });
   if (assetRevision !== props.currentRevisionId) {
     revisionEpoch.current += 1;
     setAssetRevision(props.currentRevisionId);
@@ -2208,13 +2236,19 @@ function ShotImagePanel(props: {
     setNotice(null);
     setVideoNotice(null);
     setSpeechNotice(null);
+    setSubtitleNotice(null);
+    setMusicNotice(null);
     setAcceptError(null);
     setVideoAcceptError(null);
     setSpeechAcceptError(null);
+    setSubtitleAcceptError(null);
+    setMusicAcceptError(null);
     setBusy(null);
     pending.current = null;
     pendingVideo.current = null;
     pendingSpeech.current = null;
+    pendingSubtitle.current = null;
+    pendingMusic.current = null;
   }
 
   useEffect(() => {
@@ -2244,19 +2278,23 @@ function ShotImagePanel(props: {
     };
   }, [props.currentRevisionId, props.historyKey, props.imageEpoch, listAttempt]);
 
-  function showNotice(channel: "image" | "video" | "speech", text: string) {
+  function showNotice(channel: MediaChannel, text: string) {
     if (channel === "image") setNotice(text);
     if (channel === "video") setVideoNotice(text);
     if (channel === "speech") setSpeechNotice(text);
+    if (channel === "subtitle") setSubtitleNotice(text);
+    if (channel === "music") setMusicNotice(text);
   }
 
-  function showAcceptError(channel: "image" | "video" | "speech", text: string | null) {
+  function showAcceptError(channel: MediaChannel, text: string | null) {
     if (channel === "image") setAcceptError(text);
     if (channel === "video") setVideoAcceptError(text);
     if (channel === "speech") setSpeechAcceptError(text);
+    if (channel === "subtitle") setSubtitleAcceptError(text);
+    if (channel === "music") setMusicAcceptError(text);
   }
 
-  async function requery(channel?: "image" | "video" | "speech") {
+  async function requery(channel?: MediaChannel) {
     const epoch = revisionEpoch.current;
     setListAttempt((value) => value + 1);
     try {
@@ -2273,13 +2311,25 @@ function ShotImagePanel(props: {
     }
   }
 
-  async function submitMedia(channel: "image" | "video" | "speech") {
-    const usable = channel === "image" ? props.usable : channel === "video" ? props.videoUsable : props.speechUsable;
+  async function submitMedia(channel: MediaChannel) {
+    const usable = channel === "image" ? props.usable
+      : channel === "video" ? props.videoUsable
+        : channel === "speech" ? props.speechUsable
+          : channel === "subtitle" ? props.subtitleUsable
+            : props.musicUsable;
     if (!usable || busy) return;
     const epoch = revisionEpoch.current;
     const revisionId = props.currentRevisionId;
-    const value = channel === "image" ? seed : channel === "video" ? videoSeed : speechSeed;
-    const slot = channel === "image" ? pending : channel === "video" ? pendingVideo : pendingSpeech;
+    const value = channel === "image" ? seed
+      : channel === "video" ? videoSeed
+        : channel === "speech" ? speechSeed
+          : channel === "subtitle" ? subtitleSeed
+            : musicSeed;
+    const slot = channel === "image" ? pending
+      : channel === "video" ? pendingVideo
+        : channel === "speech" ? pendingSpeech
+          : channel === "subtitle" ? pendingSubtitle
+            : pendingMusic;
     const fingerprint = `${channel}|${revisionId}|${value}`;
     const key = slot.current?.fingerprint === fingerprint ? slot.current.key : crypto.randomUUID();
     slot.current = { fingerprint, key };
@@ -2287,14 +2337,24 @@ function ShotImagePanel(props: {
     if (channel === "image") setNotice(null);
     if (channel === "video") setVideoNotice(null);
     if (channel === "speech") setSpeechNotice(null);
+    if (channel === "subtitle") setSubtitleNotice(null);
+    if (channel === "music") setMusicNotice(null);
     setListError(null);
     showAcceptError(channel, null);
-    const path = channel === "image" ? "generate-image" : channel === "video" ? "generate-video" : "generate-tts";
+    const path = channel === "image" ? "generate-image"
+      : channel === "video" ? "generate-video"
+        : channel === "speech" ? "generate-tts"
+          : channel === "subtitle" ? "generate-subtitle"
+            : "generate-music";
     const accepted = channel === "image"
       ? "已受理，结果以任务和图片列表为准。这不是生成成功。"
       : channel === "video"
         ? "已受理，结果以任务和视频列表为准。这不是生成成功。"
-        : "已受理，结果以任务和配音列表为准。这不是生成成功。";
+        : channel === "speech"
+          ? "已受理，结果以任务和配音列表为准。这不是生成成功。"
+          : channel === "subtitle"
+            ? "已受理，结果以任务和字幕列表为准。这不是生成成功。"
+            : "已受理，结果以任务和音乐列表为准。这不是生成成功。";
     try {
       const result = await client.write<{ workflowRunId: string }>({
         path: `/shot-revisions/${revisionId}/${path}`,
@@ -2334,6 +2394,10 @@ function ShotImagePanel(props: {
   const videoHistory = historyAssets.filter((asset) => asset.kind === "VIDEO");
   const speechCurrent = currentAssets.filter((asset) => asset.kind === "AUDIO");
   const speechHistory = historyAssets.filter((asset) => asset.kind === "AUDIO");
+  const subtitleCurrent = currentAssets.filter((asset) => asset.kind === "SUBTITLE");
+  const subtitleHistory = historyAssets.filter((asset) => asset.kind === "SUBTITLE");
+  const musicCurrent = currentAssets.filter((asset) => asset.kind === "MUSIC");
+  const musicHistory = historyAssets.filter((asset) => asset.kind === "MUSIC");
 
   return (
     <div className="min-w-0 space-y-4">
@@ -2382,6 +2446,36 @@ function ShotImagePanel(props: {
         <AssetList title="当前版本配音" empty="没有配音" assets={speechCurrent} previewErrors={previewErrors} onPreviewError={previewError} />
         <AssetList title="历史版本配音" empty="没有配音" assets={speechHistory} previewErrors={previewErrors} onPreviewError={previewError} />
       </section>
+      <section className="min-w-0 rounded-lg bg-white p-4">
+        <h2 className="font-medium">Mock 字幕</h2>
+        <p className="mt-2 text-sm [overflow-wrap:anywhere]">固定测试字幕，内容不随已保存对白变化。seed 只写入快照。这不是真实字幕生成，也不会写入 MinIO。</p>
+        <label className="mt-2 block text-sm" htmlFor="mock-subtitle-seed">seed（可选）</label>
+        <input id="mock-subtitle-seed" className="w-full rounded border px-2 py-1" maxLength={200} value={subtitleSeed} onChange={(event) => setSubtitleSeed(event.target.value)} />
+        <button className="mt-3 rounded bg-red-700 px-3 py-2 text-white disabled:opacity-50" type="button" disabled={!props.subtitleUsable || busy !== null} onClick={() => void submitMedia("subtitle")}>
+          {busy === "subtitle" ? "正在提交" : props.subtitleUsable ? "生成 Mock 字幕" : `生成 Mock 字幕（${props.subtitleReason}）`}
+        </button>
+        {subtitleNotice ? <p className="mt-2 text-sm">{subtitleNotice}</p> : null}
+        {subtitleAcceptError ? (
+          <p className="mt-2 text-sm" role="alert">{subtitleAcceptError}<button className="ml-2 underline" type="button" onClick={() => void requery("subtitle")}>重新查询</button></p>
+        ) : null}
+        <AssetList title="当前版本字幕" empty="没有字幕" assets={subtitleCurrent} previewErrors={previewErrors} onPreviewError={previewError} />
+        <AssetList title="历史版本字幕" empty="没有字幕" assets={subtitleHistory} previewErrors={previewErrors} onPreviewError={previewError} />
+      </section>
+      <section className="min-w-0 rounded-lg bg-white p-4">
+        <h2 className="font-medium">Mock 音乐</h2>
+        <p className="mt-2 text-sm [overflow-wrap:anywhere]">固定 100ms 静音，kind 为 MUSIC，与配音 AUDIO 分开。已保存提示词只进入审计快照，不会变成音乐。这不是真实音乐生成，也不会写入 MinIO。</p>
+        <label className="mt-2 block text-sm" htmlFor="mock-music-seed">seed（可选）</label>
+        <input id="mock-music-seed" className="w-full rounded border px-2 py-1" maxLength={200} value={musicSeed} onChange={(event) => setMusicSeed(event.target.value)} />
+        <button className="mt-3 rounded bg-red-700 px-3 py-2 text-white disabled:opacity-50" type="button" disabled={!props.musicUsable || busy !== null} onClick={() => void submitMedia("music")}>
+          {busy === "music" ? "正在提交" : props.musicUsable ? "生成 Mock 音乐" : `生成 Mock 音乐（${props.musicReason}）`}
+        </button>
+        {musicNotice ? <p className="mt-2 text-sm">{musicNotice}</p> : null}
+        {musicAcceptError ? (
+          <p className="mt-2 text-sm" role="alert">{musicAcceptError}<button className="ml-2 underline" type="button" onClick={() => void requery("music")}>重新查询</button></p>
+        ) : null}
+        <AssetList title="当前版本音乐" empty="没有音乐" assets={musicCurrent} previewErrors={previewErrors} onPreviewError={previewError} />
+        <AssetList title="历史版本音乐" empty="没有音乐" assets={musicHistory} previewErrors={previewErrors} onPreviewError={previewError} />
+      </section>
       {listError ? (
         <p className="text-sm" role="alert">{listError}<button className="ml-2 underline" type="button" onClick={() => void requery()}>重新查询</button></p>
       ) : null}
@@ -2420,6 +2514,12 @@ function AssetList(props: {
               {preview && !props.previewErrors[asset.id] && asset.kind === "AUDIO" ? (
                 <audio className="mt-2 max-w-full" controls preload="metadata" src={src} onError={() => props.onPreviewError(asset.id)} />
               ) : null}
+              {preview && !props.previewErrors[asset.id] && asset.kind === "MUSIC" ? (
+                <audio className="mt-2 max-w-full" controls preload="metadata" src={src} onError={() => props.onPreviewError(asset.id)} />
+              ) : null}
+              {preview && !props.previewErrors[asset.id] && asset.kind === "SUBTITLE" ? (
+                <SubtitlePreview assetId={asset.id} onError={() => props.onPreviewError(asset.id)} />
+              ) : null}
               {preview && props.previewErrors[asset.id] ? <p role="alert">读取或解码失败</p> : null}
             </li>
           );
@@ -2450,9 +2550,33 @@ function canPreviewAsset(asset: ShotAsset): boolean {
   if (!visible) return false;
   if (asset.kind === "IMAGE") return asset.mimeType === "image/png";
   if (asset.kind === "VIDEO") return asset.mimeType === "video/mp4";
-  if (asset.kind === "AUDIO") return asset.mimeType === "audio/wav";
+  if (asset.kind === "AUDIO" || asset.kind === "MUSIC") return asset.mimeType === "audio/wav";
+  if (asset.kind === "SUBTITLE") return asset.mimeType === "text/vtt";
   return false;
 }
+
+function SubtitlePreview(props: { assetId: string; onError: () => void }) {
+  const [text, setText] = useState<string | null>(null);
+  const onError = useRef(props.onError);
+  onError.current = props.onError;
+  useEffect(() => {
+    let cancelled = false;
+    void fetch(`/api/v1/assets/${props.assetId}/content`).then(async (response) => {
+      if (!response.ok) throw new Error("subtitle read failed");
+      const body = await response.text();
+      if (!cancelled) setText(body);
+    }).catch(() => {
+      if (!cancelled) onError.current();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [props.assetId]);
+  if (text === null) return null;
+  return <pre className="mt-2 max-w-full overflow-auto whitespace-pre-wrap text-sm">{text}</pre>;
+}
+
+type MediaChannel = "image" | "video" | "speech" | "subtitle" | "music";
 
 function TaskDrawer(props: {
   projectId: string;
@@ -2529,12 +2653,12 @@ function TaskDrawer(props: {
         ))}
       </ul>
       <h2 className="mt-6 font-medium">Mock 媒体任务</h2>
-      <p className="mt-2 text-sm">图片、视频和配音任务与文本任务分开。媒体手工重试不可用；需要另一份结果时，在镜头页再次生成并使用新的幂等键。</p>
+      <p className="mt-2 text-sm">图片、视频、配音、字幕和音乐任务与文本任务分开。媒体手工重试不可用；需要另一份结果时，在镜头页再次生成并使用新的幂等键。</p>
       <ul className="mt-4 space-y-3">
         {mediaRuns.length === 0 ? <li className="text-sm">没有媒体任务</li> : null}
         {mediaRuns.map((run) => (
           <li key={run.id} className="min-w-0 rounded border p-3 text-sm [overflow-wrap:anywhere]">
-            <p>{run.type === "MEDIA_VIDEO" ? "Mock 视频" : run.type === "MEDIA_TTS" ? "Mock 配音" : "Mock 图片"} · {taskStatusLabel(run.status)}</p>
+            <p>{mediaTaskLabel(run.type)} · {taskStatusLabel(run.status)}</p>
             {run.jobs.map((job) => {
               const terminal = job.state === "SUCCEEDED" || job.state === "FAILED" || job.state === "CANCELED";
               return (

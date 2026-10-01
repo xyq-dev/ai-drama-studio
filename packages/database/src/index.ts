@@ -132,3 +132,9 @@ export {
   type MockAvProvisionConfig,
   type MockAvProvisionResult,
 } from "./provision-mock-av";
+export {
+  provisionMockSmProviders,
+  resolveMockSmProvisionConfig,
+  type MockSmProvisionConfig,
+  type MockSmProvisionResult,
+} from "./provision-mock-sm";

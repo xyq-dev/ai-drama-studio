@@ -3,11 +3,13 @@ import { isMockMediaJobKind } from "@ai-drama/database";
 import type { MediaProviderAdapter } from "@ai-drama/providers";
 import { recoverMockAvAttempt } from "./mock-av-generation";
 import { recoverMockImageAttempt, type MockImageObjectStore } from "./mock-image-generation";
+import { recoverMockSmAttempt } from "./mock-sm-generation";
 import { classifyMediaFailure, mediaErrorMessage } from "./mock-media-failure";
 
 export interface MockMediaRecoveryFlags {
   mockImageEnabled: boolean;
   mockAvEnabled: boolean;
+  mockSmEnabled?: boolean;
 }
 
 export class MockMediaRecovery {
@@ -71,11 +73,17 @@ export class MockMediaRecovery {
       };
       const outcome = execution.kind === "MEDIA_IMAGE"
         ? await recoverMockImageAttempt(shared, { jobs: this.jobs, assets: this.assets, adapter: this.adapter, objects })
-        : await recoverMockAvAttempt({
-          ...shared,
-          capability: execution.kind === "MEDIA_VIDEO" ? "video.generate" : "audio.tts",
-          inputSnapshot: execution.inputSnapshot,
-        }, { jobs: this.jobs, assets: this.assets, adapter: this.adapter, objects });
+        : execution.kind === "MEDIA_SUBTITLE" || execution.kind === "MEDIA_MUSIC"
+          ? await recoverMockSmAttempt({
+            ...shared,
+            capability: execution.kind === "MEDIA_SUBTITLE" ? "subtitle.generate" : "audio.music",
+            inputSnapshot: execution.inputSnapshot,
+          }, { jobs: this.jobs, assets: this.assets, adapter: this.adapter, objects })
+          : await recoverMockAvAttempt({
+            ...shared,
+            capability: execution.kind === "MEDIA_VIDEO" ? "video.generate" : "audio.tts",
+            inputSnapshot: execution.inputSnapshot,
+          }, { jobs: this.jobs, assets: this.assets, adapter: this.adapter, objects });
       if (outcome === "ACTIVE") continue;
       if (outcome === "CANCELED") {
         await this.jobs.confirmCancellation({ workspaceId: row.workspaceId, jobId: row.jobId,
@@ -93,7 +101,9 @@ export class MockMediaRecovery {
           try {
             await this.jobs.failJob({ workspaceId: row.workspaceId, jobId: row.jobId,
               attemptId: row.attemptId, traceId: `mock-media:invalid-output:${row.jobId}`,
-              errorCode: kind === "MEDIA_IMAGE" ? "MOCK_IMAGE_OUTPUT_INVALID" : "MOCK_AV_OUTPUT_INVALID",
+              errorCode: kind === "MEDIA_IMAGE" ? "MOCK_IMAGE_OUTPUT_INVALID"
+                : kind === "MEDIA_SUBTITLE" || kind === "MEDIA_MUSIC" ? "MOCK_SM_OUTPUT_INVALID"
+                  : "MOCK_AV_OUTPUT_INVALID",
               errorMessage: mediaErrorMessage(error), retryable: false });
           } catch (failure) {
             if (classifyMediaFailure(failure) !== "terminal-race") errors.push(failure);
@@ -110,6 +120,7 @@ export class MockMediaRecovery {
     if (!this.objects) return false;
     if (kind === "MEDIA_IMAGE") return this.flags.mockImageEnabled;
     if (kind === "MEDIA_VIDEO" || kind === "MEDIA_TTS") return this.flags.mockAvEnabled;
+    if (kind === "MEDIA_SUBTITLE" || kind === "MEDIA_MUSIC") return this.flags.mockSmEnabled === true;
     return false;
   }
 }

@@ -22,6 +22,7 @@ async function bootstrap(): Promise<void> {
     databaseUrl: env.DATABASE_URL, redisUrl: env.REDIS_URL, mockObjectDir,
     mockImageEnabled: env.NODE_ENV !== "production" && env.M3_MOCK_IMAGE_ENABLED && directoryReady,
     mockAvEnabled: env.NODE_ENV !== "production" && env.M3_MOCK_AV_ENABLED && directoryReady,
+    mockSmEnabled: env.NODE_ENV !== "production" && env.M3_MOCK_SUBTITLE_MUSIC_ENABLED && directoryReady,
   });
   const app = await NestFactory.create(AppModule.register(env, runtime.status), {
     logger: ["error", "warn", "log"],

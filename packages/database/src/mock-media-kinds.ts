@@ -1,4 +1,4 @@
-export const MOCK_MEDIA_JOB_KINDS = ["MEDIA_IMAGE", "MEDIA_VIDEO", "MEDIA_TTS"] as const;
+export const MOCK_MEDIA_JOB_KINDS = ["MEDIA_IMAGE", "MEDIA_VIDEO", "MEDIA_TTS", "MEDIA_SUBTITLE", "MEDIA_MUSIC"] as const;
 
 export type MockMediaJobKind = (typeof MOCK_MEDIA_JOB_KINDS)[number];
 
@@ -20,6 +20,18 @@ export const MOCK_MEDIA_ROUTES = {
     assetKind: "AUDIO",
     mimeType: "audio/wav",
     schema: "m3.mock.tts.v1",
+  },
+  MEDIA_SUBTITLE: {
+    capability: "subtitle.generate",
+    assetKind: "SUBTITLE",
+    mimeType: "text/vtt",
+    schema: "m3.mock.subtitle.v1",
+  },
+  MEDIA_MUSIC: {
+    capability: "audio.music",
+    assetKind: "MUSIC",
+    mimeType: "audio/wav",
+    schema: "m3.mock.music.v1",
   },
 } as const;
 

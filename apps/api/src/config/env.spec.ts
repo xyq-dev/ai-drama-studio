@@ -35,6 +35,9 @@ describe("loadApiEnv", () => {
       { DATABASE_URL: "postgresql://file-user:file-secret@127.0.0.1:55432/ai_drama", UNUSED_TOKEN: "token" },
     );
     expect(env.API_PORT).toBe(3101);
+    expect(env.M3_MOCK_SUBTITLE_MUSIC_ENABLED).toBe(false);
+    expect(env.M3_MOCK_AV_ENABLED).toBe(false);
+    expect(env.M3_MOCK_IMAGE_ENABLED).toBe(false);
     expect(env.DATABASE_URL).toContain("super-secret-password");
     expect(env.S3_FORCE_PATH_STYLE).toBe(true);
   });

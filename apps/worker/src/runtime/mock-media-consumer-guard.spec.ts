@@ -5,9 +5,9 @@ import { MockJobConsumer } from "./consumer";
 import { completeMockJob } from "./mock-text-completion";
 
 describe("media jobs stay off the text consumer", () => {
-  it("refuses MEDIA_VIDEO before mock.generate", async () => {
+  it.each(["MEDIA_VIDEO", "MEDIA_SUBTITLE", "MEDIA_MUSIC"] as const)("refuses %s before mock.generate", async (kind) => {
     const store = {
-      loadExecution: vi.fn(async () => ({ kind: "MEDIA_VIDEO", providerConfigurationId: "provider" })),
+      loadExecution: vi.fn(async () => ({ kind, providerConfigurationId: "provider" })),
     } as unknown as RuntimeStore;
     const jobs = { acquireQueuedJob: vi.fn(), failJob: vi.fn() } as unknown as JobPersistenceService;
     const provider = { submit: vi.fn() } as unknown as MockProvider;

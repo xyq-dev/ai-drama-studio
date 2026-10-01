@@ -97,8 +97,12 @@ function resetHarness(): void {
   harness.put.mockClear();
 }
 
-function bind(kind: "MEDIA_IMAGE" | "MEDIA_VIDEO" | "MEDIA_TTS", cancelRequested = false): void {
-  const capability = kind === "MEDIA_IMAGE" ? "image.generate" : kind === "MEDIA_VIDEO" ? "video.generate" : "audio.tts";
+function bind(kind: "MEDIA_IMAGE" | "MEDIA_VIDEO" | "MEDIA_TTS" | "MEDIA_SUBTITLE" | "MEDIA_MUSIC", cancelRequested = false): void {
+  const capability = kind === "MEDIA_IMAGE" ? "image.generate"
+    : kind === "MEDIA_VIDEO" ? "video.generate"
+      : kind === "MEDIA_TTS" ? "audio.tts"
+        : kind === "MEDIA_SUBTITLE" ? "subtitle.generate"
+          : "audio.music";
   const providerRequestId = kind === "MEDIA_IMAGE"
     ? `mock-media|image.generate|${kind}:1`
     : `mock-media|sync|${capability}|${kind}:1`;
@@ -117,7 +121,7 @@ function bind(kind: "MEDIA_IMAGE" | "MEDIA_VIDEO" | "MEDIA_TTS", cancelRequested
   });
 }
 
-async function boot(options: { mockObjectDir?: string; mockImageEnabled?: boolean; mockAvEnabled?: boolean }): Promise<RuntimeHandle> {
+async function boot(options: { mockObjectDir?: string; mockImageEnabled?: boolean; mockAvEnabled?: boolean; mockSmEnabled?: boolean }): Promise<RuntimeHandle> {
   return startQueueRuntime({
     databaseUrl: "postgresql://unused:unused@127.0.0.1/unused",
     redisUrl: "redis://127.0.0.1:6379",
@@ -221,6 +225,46 @@ it("fails bound media without inspect when flags are omitted or storage is absen
   expect(harness.objectsConstructed).toBe(0);
   expect(inspect).not.toHaveBeenCalled();
   expect(harness.put).not.toHaveBeenCalled();
+});
+
+it("recovers subtitle and music only when their flag is on and leaves video on the AV flag", async () => {
+  resetHarness();
+  bind("MEDIA_SUBTITLE");
+  bind("MEDIA_MUSIC");
+  bind("MEDIA_VIDEO");
+  const runtime = await boot({ mockObjectDir: directory, mockImageEnabled: false, mockAvEnabled: false, mockSmEnabled: true });
+  try {
+    await vi.waitFor(() => {
+      expect(harness.complete).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        kind: "SUBTITLE",
+        actualCost: expect.objectContaining({ kind: "ACTUAL", amountDecimal: "0.00000000" }),
+      }));
+      expect(harness.complete).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ kind: "MUSIC" }));
+      expect(harness.failJob).toHaveBeenCalledWith(expect.objectContaining({
+        jobId: "MEDIA_VIDEO", errorCode: "MOCK_MEDIA_NOT_CONFIGURED", retryable: false,
+      }));
+    });
+  } finally {
+    await runtime.shutdown();
+  }
+  expect(harness.put).toHaveBeenCalledWith(expect.objectContaining({ mimeType: "text/vtt" }));
+  expect(harness.put).toHaveBeenCalledWith(expect.objectContaining({ key: expect.stringContaining("mock-music/") }));
+  expect(harness.complete).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ kind: "VIDEO" }));
+
+  resetHarness();
+  bind("MEDIA_VIDEO");
+  bind("MEDIA_SUBTITLE");
+  const avOnly = await boot({ mockObjectDir: directory, mockAvEnabled: true, mockSmEnabled: false });
+  try {
+    await vi.waitFor(() => {
+      expect(harness.complete).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ kind: "VIDEO" }));
+      expect(harness.failJob).toHaveBeenCalledWith(expect.objectContaining({
+        jobId: "MEDIA_SUBTITLE", errorCode: "MOCK_MEDIA_NOT_CONFIGURED", retryable: false,
+      }));
+    });
+  } finally {
+    await avOnly.shutdown();
+  }
 });
 
 it("cancels a disabled video without inspecting or writing an asset", async () => {

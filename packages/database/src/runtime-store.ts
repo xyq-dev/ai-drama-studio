@@ -287,7 +287,7 @@ export class RuntimeStore {
               LIMIT 1
            ) ja ON true
           WHERE j.state = 'WAITING_EXTERNAL'
-            AND j.kind <> ALL(ARRAY['MEDIA_IMAGE','MEDIA_VIDEO','MEDIA_TTS'])
+            AND j.kind <> ALL(ARRAY['MEDIA_IMAGE','MEDIA_VIDEO','MEDIA_TTS','MEDIA_SUBTITLE','MEDIA_MUSIC'])
             AND ja.provider_request_id IS NOT NULL
             AND (j.next_run_at IS NULL OR j.next_run_at <= now())
           ORDER BY j.updated_at
@@ -315,7 +315,7 @@ export class RuntimeStore {
               LIMIT 1
            ) ja ON true
           WHERE j.state = 'RUNNING'
-            AND j.kind <> ALL(ARRAY['MEDIA_IMAGE','MEDIA_VIDEO','MEDIA_TTS'])
+            AND j.kind <> ALL(ARRAY['MEDIA_IMAGE','MEDIA_VIDEO','MEDIA_TTS','MEDIA_SUBTITLE','MEDIA_MUSIC'])
             AND j.lease_until IS NOT NULL AND j.lease_until <= $1
           ORDER BY j.lease_until
           LIMIT $2`,
@@ -363,6 +363,8 @@ export class RuntimeStore {
                WHEN 'MEDIA_IMAGE' THEN 'image.generate'
                WHEN 'MEDIA_VIDEO' THEN 'video.generate'
                WHEN 'MEDIA_TTS' THEN 'audio.tts'
+               WHEN 'MEDIA_SUBTITLE' THEN 'subtitle.generate'
+               WHEN 'MEDIA_MUSIC' THEN 'audio.music'
                ELSE NULL
              END
           WHERE j.id = $1 AND j.workspace_id = $2 AND j.kind = ANY($3::text[])`,

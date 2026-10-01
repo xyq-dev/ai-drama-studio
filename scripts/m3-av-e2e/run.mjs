@@ -44,6 +44,8 @@ const dialogueText = "fixed silence for audit";
 const draftMarker = "unsaved-draft-m3-av-e2e";
 const videoSha = "6cbb357d0c5429c415430d0596dfc04417b9fa967eeb34e55186b0a3a9f590e3";
 const audioSha = "c726d333dd159a31423f3480dbb1c5c4a9dfcd30efe1f7e12ade390dc92e8908";
+const subtitleText = "WEBVTT\n\n00:00:00.000 --> 00:00:00.100\nMock subtitle\n";
+const subtitleSha = "a374db4ab7ea2f4479a245bb738ec75bb7ffdd1378db5f79f00f068b16f2ad8b";
 
 const databaseUrl = `postgresql://${dbUser}:${dbPassword}@127.0.0.1:${postgresPort}/${dbName}`;
 const redisUrl = `redis://127.0.0.1:${redisPort}`;
@@ -206,6 +208,7 @@ function childEnv(overrides = {}, unsetKeys = []) {
     APP_WORKSPACE_NAME: "M3 AV E2E",
     M3_MOCK_IMAGE_ENABLED: "true",
     M3_MOCK_AV_ENABLED: "true",
+    M3_MOCK_SUBTITLE_MUSIC_ENABLED: "true",
     MOCK_OBJECT_DIR: mockDir,
     API_PORT: "3001",
     WORKER_HEALTH_PORT: "3002",
@@ -400,7 +403,20 @@ function assertLedger(ledger, kind, revisionId, sourceText, mimeType, bytes, sha
   if (ledger.attempts.length !== 1 || ledger.attempts[0].attempt_no !== 1) {
     throw new Error(`attempt mismatch ${JSON.stringify(ledger.attempts)}`);
   }
-  const capability = kind === "MEDIA_VIDEO" ? "video.generate" : "audio.tts";
+  const capability = kind === "MEDIA_VIDEO" ? "video.generate"
+    : kind === "MEDIA_TTS" ? "audio.tts"
+      : kind === "MEDIA_SUBTITLE" ? "subtitle.generate"
+        : kind === "MEDIA_MUSIC" ? "audio.music"
+          : null;
+  if (!capability) throw new Error(`unsupported ledger kind ${kind}`);
+  const assetKind = kind === "MEDIA_VIDEO" ? "VIDEO"
+    : kind === "MEDIA_TTS" ? "AUDIO"
+      : kind === "MEDIA_SUBTITLE" ? "SUBTITLE"
+        : "MUSIC";
+  const folder = kind === "MEDIA_VIDEO" ? "mock-videos/"
+    : kind === "MEDIA_TTS" ? "mock-audio/"
+      : kind === "MEDIA_SUBTITLE" ? "mock-subtitles/"
+        : "mock-music/";
   const requestId = `mock-media|sync|${capability}|${ledger.job.id}:1`;
   if (ledger.attempts[0].provider_request_id !== requestId) {
     throw new Error(`provider request ${ledger.attempts[0].provider_request_id}`);
@@ -440,8 +456,8 @@ function assertLedger(ledger, kind, revisionId, sourceText, mimeType, bytes, sha
   if (cost.basis !== "PROVIDER_REPORTED" || cost.unit_type !== "request" || cost.supersedes_estimate_key !== null) {
     throw new Error(`cost basis mismatch ${JSON.stringify(cost)}`);
   }
-  if (!asset.object_key.startsWith(kind === "MEDIA_VIDEO" ? "mock-videos/" : "mock-audio/")) {
-    throw new Error(`object key ${asset.object_key}`);
+  if (asset.kind !== assetKind || !asset.object_key.startsWith(folder)) {
+    throw new Error(`object key ${asset.kind} ${asset.object_key}`);
   }
   const ledgerSnapshot = assertLinkage(linkageSnapshot(ledger));
   return { requestId, assetId: asset.id, ledger: ledgerSnapshot };
@@ -728,6 +744,11 @@ async function main() {
     if (!first.stdout.includes("created") || !second.stdout.includes("already present")) {
       throw new Error(`mock-av provision was not idempotent\n${first.stdout}\n${second.stdout}`);
     }
+    const smFirst = await run("pnpm", ["--filter", "@ai-drama/database", "mock-sm:provision"], { env });
+    const smSecond = await run("pnpm", ["--filter", "@ai-drama/database", "mock-sm:provision"], { env });
+    if (!smFirst.stdout.includes("created") || !smSecond.stdout.includes("already present")) {
+      throw new Error(`mock-sm provision was not idempotent\n${smFirst.stdout}\n${smSecond.stdout}`);
+    }
     const capabilities = await sql(
       `SELECT capability, enabled, encrypted_credential_ref IS NULL AS no_credential, count(*)::int AS count
          FROM provider_configuration
@@ -736,8 +757,8 @@ async function main() {
         ORDER BY capability`,
       [workspaceId],
     );
-    const expected = ["audio.tts", "image.generate", "video.generate"];
-    if (capabilities.length !== 3 || capabilities.some((row, index) =>
+    const expected = ["audio.music", "audio.tts", "image.generate", "subtitle.generate", "video.generate"];
+    if (capabilities.length !== 5 || capabilities.some((row, index) =>
       row.capability !== expected[index] || row.enabled !== true || row.no_credential !== true || row.count !== 1)) {
       throw new Error(`provider capability mismatch ${JSON.stringify(capabilities)}`);
     }
@@ -961,6 +982,88 @@ async function main() {
       video: state.world.video,
       speech: state.world.speech,
     };
+  });
+
+  await stage("subtitle-music", async () => {
+    const page = state.page;
+    await page.getByRole("button", { name: "生成 Mock 字幕", exact: true }).click({ timeout: 30_000 });
+    await page.getByText("已受理，结果以任务和字幕列表为准。这不是生成成功。").waitFor({ timeout: 20_000 });
+    await page.getByRole("button", { name: "生成 Mock 音乐", exact: true }).click({ timeout: 30_000 });
+    await page.getByText("已受理，结果以任务和音乐列表为准。这不是生成成功。").waitFor({ timeout: 20_000 });
+    const subtitlePost = state.posts.find((post) => post.url.includes("generate-subtitle"));
+    const musicPost = state.posts.find((post) => post.url.includes("generate-music"));
+    if (!subtitlePost || !musicPost || subtitlePost.status !== 202 || musicPost.status !== 202) {
+      throw new Error(`missing subtitle or music 202 ${JSON.stringify(state.posts)}`);
+    }
+    if (!subtitlePost.sameOrigin || !musicPost.sameOrigin || !subtitlePost.body?.jobId || !musicPost.body?.jobId) {
+      throw new Error(`subtitle or music posts were not same-origin jobs ${JSON.stringify([subtitlePost, musicPost])}`);
+    }
+    const subtitleJob = await pollJob(subtitlePost.body.jobId, 90_000);
+    const musicJob = await pollJob(musicPost.body.jobId, 90_000);
+    if (subtitleJob.state !== "SUCCEEDED" || musicJob.state !== "SUCCEEDED") {
+      throw new Error(`terminal state subtitle ${subtitleJob.state} music ${musicJob.state}`);
+    }
+    const subtitleLedger = await jobLedger(subtitlePost.body.jobId);
+    const musicLedger = await jobLedger(musicPost.body.jobId);
+    const subtitle = assertLedger(subtitleLedger, "MEDIA_SUBTITLE", state.world.shotRevisionId, dialogueText, "text/vtt", 52, subtitleSha, 100, null);
+    const music = assertLedger(musicLedger, "MEDIA_MUSIC", state.world.shotRevisionId, promptText, "audio/wav", 1644, audioSha, 100, null);
+    if (subtitle.requestId === music.requestId) throw new Error("subtitle and music share a provider request");
+    const subtitleUrl = `${webOrigin}/api/v1/assets/${subtitle.assetId}/content`;
+    const subtitleResponse = await fetch(subtitleUrl, { signal: AbortSignal.timeout(15_000) });
+    const subtitleBody = await subtitleResponse.text();
+    if (subtitleResponse.status !== 200 || subtitleBody !== subtitleText || !subtitleResponse.headers.get("content-type")?.includes("text/vtt")) {
+      throw new Error(`subtitle content ${subtitleResponse.status} ${subtitleBody.slice(0, 80)}`);
+    }
+    const musicUrl = `${webOrigin}/api/v1/assets/${music.assetId}/content`;
+    const musicFull = await fetch(musicUrl, { signal: AbortSignal.timeout(15_000) });
+    const musicBytes = Buffer.from(await musicFull.arrayBuffer());
+    if (musicFull.status !== 200 || musicBytes.length !== 1644 || createHash("sha256").update(musicBytes).digest("hex") !== audioSha) {
+      throw new Error(`music GET ${musicFull.status} ${musicBytes.length}`);
+    }
+    const musicHead = await fetch(musicUrl, { method: "HEAD", signal: AbortSignal.timeout(15_000) });
+    const musicHeadBytes = Buffer.from(await musicHead.arrayBuffer());
+    if (musicHead.status !== 200 || musicHeadBytes.length !== 0 || musicHead.headers.get("content-length") !== "1644") {
+      throw new Error(`music HEAD ${musicHead.status} ${musicHeadBytes.length}`);
+    }
+    const musicRange = await fetch(musicUrl, { headers: { Range: "bytes=0-10" }, signal: AbortSignal.timeout(15_000) });
+    if (musicRange.status !== 200) throw new Error(`music range status ${musicRange.status}`);
+    await page.getByText("Mock subtitle").waitFor({ timeout: 20_000 });
+    const musicPlayer = page.locator("section").filter({ has: page.getByRole("heading", { name: "Mock 音乐", exact: true }) }).locator("audio").first();
+    await musicPlayer.waitFor({ state: "attached", timeout: 20_000 });
+    const speechPlayers = await page.locator("section").filter({ has: page.getByRole("heading", { name: "Mock 配音", exact: true }) }).locator("audio").count();
+    const musicPlayers = await page.locator("section").filter({ has: page.getByRole("heading", { name: "Mock 音乐", exact: true }) }).locator("audio").count();
+    if (speechPlayers !== 1 || musicPlayers !== 1) throw new Error(`player counts speech ${speechPlayers} music ${musicPlayers}`);
+    await musicPlayer.click({ position: { x: 16, y: 12 }, force: true, timeout: 10_000 });
+    const musicProof = await musicPlayer.evaluate(async (element) => {
+      const media = element;
+      if (media.readyState < 1) {
+        await new Promise((resolveMedia, rejectMedia) => {
+          const timer = setTimeout(() => rejectMedia(new Error("music loadedmetadata timeout")), 15_000);
+          media.addEventListener("loadedmetadata", () => { clearTimeout(timer); resolveMedia(); }, { once: true });
+          media.addEventListener("error", () => {
+            clearTimeout(timer);
+            rejectMedia(new Error(media.error?.message ?? "music error"));
+          }, { once: true });
+        });
+      }
+      const duration = media.duration;
+      const before = media.currentTime;
+      await media.play();
+      await new Promise((resolveMedia, rejectMedia) => {
+        const timer = setTimeout(() => rejectMedia(new Error("music playback timeout")), 15_000);
+        media.addEventListener("ended", () => { clearTimeout(timer); resolveMedia(); }, { once: true });
+      });
+      return { duration, before, currentTime: media.currentTime, ended: media.ended };
+    });
+    if (musicProof.duration < 0.08 || musicProof.duration > 0.15) throw new Error(`music duration ${musicProof.duration}`);
+    if (!musicProof.ended && musicProof.currentTime <= musicProof.before) {
+      throw new Error(`music did not advance ${JSON.stringify(musicProof)}`);
+    }
+    const draft = await page.locator("#shot-action").inputValue();
+    if (draft !== draftMarker) throw new Error(`draft changed during subtitle and music ${draft}`);
+    state.world.subtitle = { ...subtitle, jobId: subtitlePost.body.jobId };
+    state.world.music = { ...music, jobId: musicPost.body.jobId };
+    return { subtitle, music, musicProof, draft };
   });
 
   await stage("playback", async () => {
@@ -1301,12 +1404,56 @@ async function main() {
     };
   });
 
+  await stage("subtitle-music-gates", async () => {
+    const before = await jobCount();
+    const path = `/shot-revisions/${state.world.shotRevisionId}/generate-subtitle`;
+    const unsetEnv = childEnv({ API_PORT: "3015" }, ["M3_MOCK_SUBTITLE_MUSIC_ENABLED"]);
+    if (Object.hasOwn(unsetEnv, "M3_MOCK_SUBTITLE_MUSIC_ENABLED")) {
+      throw new Error("unset did not remove M3_MOCK_SUBTITLE_MUSIC_ENABLED");
+    }
+    spawnApp("api-sm-unset", ["pnpm", "--filter", "@ai-drama/api", "start"], unsetEnv);
+    spawnApp("api-sm-off", ["pnpm", "--filter", "@ai-drama/api", "start"], appEnv({
+      API_PORT: "3016",
+      M3_MOCK_SUBTITLE_MUSIC_ENABLED: "false",
+    }));
+    spawnApp("api-sm-prod", ["pnpm", "--filter", "@ai-drama/api", "start"], appEnv({
+      API_PORT: "3017",
+      NODE_ENV: "production",
+      M3_MOCK_SUBTITLE_MUSIC_ENABLED: "true",
+      M3_MOCK_AV_ENABLED: "true",
+      M3_MOCK_IMAGE_ENABLED: "true",
+    }));
+    await waitHttp("http://127.0.0.1:3015/api/v1/health/ready", (status, body) => status === 200 && body?.dependencies?.postgres?.status === "ok", 60_000);
+    await waitHttp("http://127.0.0.1:3016/api/v1/health/ready", (status, body) => status === 200 && body?.dependencies?.postgres?.status === "ok", 60_000);
+    await waitHttp("http://127.0.0.1:3017/api/v1/health/ready", (status, body) => status === 200 && body?.dependencies?.postgres?.status === "ok", 60_000);
+    const unset = recordGate("sm-default-unset", "POST", path, expectStatus(await callApi("http://127.0.0.1:3015", "POST", path, { body: {} }), 400, "CONFIGURATION_ERROR"));
+    const disabled = recordGate("sm-explicit-false", "POST", path, expectStatus(await callApi("http://127.0.0.1:3016", "POST", path, { body: {} }), 400, "CONFIGURATION_ERROR"));
+    const production = recordGate("sm-production-flag-true", "POST", path, expectStatus(await callApi("http://127.0.0.1:3017", "POST", path, { body: {} }), 400, "CONFIGURATION_ERROR"));
+    const musicPath = `/shot-revisions/${state.world.shotRevisionId}/generate-music`;
+    const musicUnset = recordGate("sm-music-default-unset", "POST", musicPath, expectStatus(await callApi("http://127.0.0.1:3015", "POST", musicPath, { body: {} }), 400, "CONFIGURATION_ERROR"));
+    const after = await jobCount();
+    if (after !== before) throw new Error(`subtitle-music gates created jobs ${before} -> ${after}`);
+    await stopApp("api-sm-unset");
+    await stopApp("api-sm-off");
+    await stopApp("api-sm-prod");
+    return {
+      unset: unset.body.error.code,
+      disabled: disabled.body.error.code,
+      production: production.body.error.code,
+      musicUnset: musicUnset.body.error.code,
+      unsetPresent: Object.hasOwn(unsetEnv, "M3_MOCK_SUBTITLE_MUSIC_ENABLED"),
+    };
+  });
+
   await stage("mock-boundary", async () => {
     const files = listFiles(mockDir);
     const minio = await countMinio();
     if (minio !== state.evidence.minioBefore) throw new Error(`MinIO object count changed ${state.evidence.minioBefore} -> ${minio}`);
     if (!files.some((file) => file.startsWith("mock-videos/")) || !files.some((file) => file.startsWith("mock-audio/"))) {
       throw new Error(`local mock objects missing ${files.join(",")}`);
+    }
+    if (!files.some((file) => file.startsWith("mock-subtitles/")) || !files.some((file) => file.startsWith("mock-music/"))) {
+      throw new Error(`subtitle or music objects missing ${files.join(",")}`);
     }
     if (!files.some((file) => file.startsWith("mock-images/"))) throw new Error("local png object missing");
     const pageErrors = state.consoleEvents.filter((event) => event.type === "pageerror");
@@ -1315,6 +1462,126 @@ async function main() {
     if (mediaFailures.length > 0) throw new Error(`required media request failed ${JSON.stringify(mediaFailures)}`);
     state.evidence.localObjects = files;
     return { minio, files: files.length, httpEvents: state.httpEvents, pageErrors };
+  });
+
+  await stage("subtitle-music-recovery", async () => {
+    await breakMockDir();
+    let musicRequestId = null;
+    let musicJobId = null;
+    try {
+      const accepted = expectStatus(await callApi(apiOrigin, "POST", `/shot-revisions/${state.world.shotRevisionId}/generate-music`, {
+        body: { seed: "music-disk-failure" },
+      }), 202);
+      musicJobId = accepted.body.jobId;
+      const started = Date.now();
+      let attached = null;
+      while (Date.now() - started < 30_000) {
+        attached = await jobLedger(musicJobId);
+        if (attached.job?.state === "RUNNING" && attached.attempts[0]?.provider_request_id) break;
+        if (attached.job?.state === "FAILED" || attached.job?.state === "SUCCEEDED") {
+          throw new Error(`music fault job did not stay RUNNING ${attached.job?.state}`);
+        }
+        await sleep(500);
+      }
+      musicRequestId = attached?.attempts[0]?.provider_request_id ?? null;
+      if (attached?.job?.state !== "RUNNING" || !musicRequestId) {
+        throw new Error(`music request was not attached ${JSON.stringify(attached?.job)}`);
+      }
+      const aggregate = expectStatus(await callApi(
+        apiOrigin, "GET",
+        `/projects/${state.world.projectId}/episodes/${state.world.episodeId}/scenes/${state.world.sceneId}/shots/${state.world.shotId}/revisions`,
+      ), 200).body.aggregate;
+      const created = expectStatus(await callApi(
+        apiOrigin, "POST",
+        `/projects/${state.world.projectId}/episodes/${state.world.episodeId}/scenes/${state.world.sceneId}/shots/${state.world.shotId}/revisions`,
+        {
+          ifMatch: aggregate.rowVersion,
+          body: shotPayload(state.world.sceneRevisionId, 1, "subtitle-music-source-changed", promptText, dialogueText),
+        },
+      ), 201);
+      await approve(
+        apiOrigin,
+        `/projects/${state.world.projectId}/episodes/${state.world.episodeId}/scenes/${state.world.sceneId}/shots/${state.world.shotId}/revisions/${created.body.revisionId}/review`,
+        created.body.rowVersion,
+      );
+      state.world.shotRevisionId = created.body.revisionId;
+      await restoreMockDir();
+      const failed = await pollJob(musicJobId, 100_000);
+      const ledger = await jobLedger(musicJobId);
+      if (failed.state !== "FAILED" || ledger.job.error_code !== "MOCK_SM_OUTPUT_INVALID") {
+        throw new Error(`music recovery ${failed.state} ${ledger.job?.error_code} ${ledger.job?.error_message}`);
+      }
+      if (ledger.attempts.length !== 1 || ledger.attempts[0].provider_request_id !== musicRequestId) {
+        throw new Error(`music attempt was resubmitted ${JSON.stringify(ledger.attempts)}`);
+      }
+      if (ledger.assets.length !== 0 || ledger.costs.length !== 0) throw new Error("music recovery left an asset or cost");
+      const musicAttempt = assertLinkage(linkageSnapshot(ledger), {
+        expectAsset: false,
+        expectCost: false,
+        errorCode: "MOCK_SM_OUTPUT_INVALID",
+      });
+      await breakMockDir();
+      const subtitleAccepted = expectStatus(await callApi(apiOrigin, "POST", `/shot-revisions/${state.world.shotRevisionId}/generate-subtitle`, {
+        body: { seed: "subtitle-flag-failure" },
+      }), 202);
+      const subtitleStarted = Date.now();
+      let subtitleAttached = null;
+      while (Date.now() - subtitleStarted < 30_000) {
+        subtitleAttached = await jobLedger(subtitleAccepted.body.jobId);
+        if (subtitleAttached.job?.state === "RUNNING" && subtitleAttached.attempts[0]?.provider_request_id) break;
+        if (["FAILED", "SUCCEEDED"].includes(subtitleAttached.job?.state)) {
+          throw new Error(`subtitle fault job did not stay RUNNING ${subtitleAttached.job?.state}`);
+        }
+        await sleep(500);
+      }
+      const subtitleRequestId = subtitleAttached?.attempts[0]?.provider_request_id;
+      if (subtitleAttached?.job?.state !== "RUNNING" || !subtitleRequestId) {
+        throw new Error(`subtitle request was not attached ${JSON.stringify(subtitleAttached?.job)}`);
+      }
+      await stopApp("worker");
+      const downStarted = Date.now();
+      while (Date.now() - downStarted < 15_000) {
+        try {
+          await fetch(`${workerOrigin}/health/ready`, { signal: AbortSignal.timeout(1000) });
+          await sleep(300);
+        } catch {
+          break;
+        }
+      }
+      await restoreMockDir();
+      spawnApp("worker", ["pnpm", "--filter", "@ai-drama/worker", "start"], appEnv({
+        M3_MOCK_IMAGE_ENABLED: "true",
+        M3_MOCK_AV_ENABLED: "true",
+        M3_MOCK_SUBTITLE_MUSIC_ENABLED: "false",
+      }));
+      await waitHttp(`${workerOrigin}/health/ready`, (status, body) =>
+        status === 200 && body?.dependencies?.queue?.status === "ok", 60_000);
+      const subtitleFailed = await pollJob(subtitleAccepted.body.jobId, 100_000);
+      const subtitleLedger = await jobLedger(subtitleAccepted.body.jobId);
+      if (subtitleFailed.state !== "FAILED" || subtitleLedger.job.error_code !== "MOCK_MEDIA_NOT_CONFIGURED") {
+        throw new Error(`subtitle flag recovery ${subtitleFailed.state} ${subtitleLedger.job?.error_code}`);
+      }
+      if (subtitleLedger.attempts.length !== 1 || subtitleLedger.attempts[0].provider_request_id !== subtitleRequestId) {
+        throw new Error(`subtitle attempt changed ${JSON.stringify(subtitleLedger.attempts)}`);
+      }
+      const subtitleAttempt = assertLinkage(linkageSnapshot(subtitleLedger), {
+        expectAsset: false,
+        expectCost: false,
+        errorCode: "MOCK_MEDIA_NOT_CONFIGURED",
+      });
+      const video = expectStatus(await callApi(apiOrigin, "POST", `/shot-revisions/${state.world.shotRevisionId}/generate-video`, {
+        body: { seed: "video-after-sm-off" },
+      }), 202);
+      const videoDone = await pollJob(video.body.jobId, 90_000);
+      if (videoDone.state !== "SUCCEEDED") throw new Error(`video after subtitle-music off ${videoDone.state}`);
+      const videoLedger = await jobLedger(video.body.jobId);
+      const videoLink = assertLedger(videoLedger, "MEDIA_VIDEO", state.world.shotRevisionId, promptText, "video/mp4", 1552, videoSha, 1000, 16);
+      const minio = await countMinio();
+      if (minio !== state.evidence.minioBefore) throw new Error(`MinIO changed after subtitle-music recovery ${minio}`);
+      return { musicJobId, musicRequestId, musicAttempt, subtitleJobId: subtitleAccepted.body.jobId, subtitleRequestId, subtitleAttempt, videoJobId: video.body.jobId, videoLink, minio };
+    } finally {
+      await restoreMockDir();
+    }
   });
 
   await stage("recovery-disk", async () => {

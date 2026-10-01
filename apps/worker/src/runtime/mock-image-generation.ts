@@ -6,7 +6,7 @@ export interface MockImageObjectStore {
   put(input: {
     key: string;
     bytes: Buffer;
-    mimeType: "image/png" | "video/mp4" | "audio/wav";
+    mimeType: "image/png" | "video/mp4" | "audio/wav" | "text/vtt";
     checksumSha256: string;
   }): Promise<void>;
 }

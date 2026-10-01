@@ -482,6 +482,30 @@ export class StudioController {
       this.studio.generateShotVideo(revisionId, body, this.context(key, trace)));
   }
 
+  @Post("shot-revisions/:revisionId/generate-subtitle")
+  generateShotSubtitle(
+    @Param("revisionId", UUID_PARAM_PIPE) revisionId: string,
+    @Body() body: unknown,
+    @Res({ passthrough: true }) response: StatusResponse,
+    @Headers("idempotency-key") key?: string,
+    @Headers("x-trace-id") trace?: string,
+  ) {
+    return this.send(response,
+      this.studio.generateShotSubtitle(revisionId, body, this.context(key, trace)));
+  }
+
+  @Post("shot-revisions/:revisionId/generate-music")
+  generateShotMusic(
+    @Param("revisionId", UUID_PARAM_PIPE) revisionId: string,
+    @Body() body: unknown,
+    @Res({ passthrough: true }) response: StatusResponse,
+    @Headers("idempotency-key") key?: string,
+    @Headers("x-trace-id") trace?: string,
+  ) {
+    return this.send(response,
+      this.studio.generateShotMusic(revisionId, body, this.context(key, trace)));
+  }
+
   @Post("shot-revisions/:revisionId/generate-tts")
   generateShotTts(
     @Param("revisionId", UUID_PARAM_PIPE) revisionId: string,

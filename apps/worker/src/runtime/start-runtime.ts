@@ -19,6 +19,7 @@ import { startStaleRecalculationPolling } from "./stale-recalculation";
 import { LocalMockObjects } from "./local-mock-objects";
 import { runMockAvJob } from "./mock-av-generation";
 import { runMockImageJob } from "./mock-image-generation";
+import { runMockSmJob } from "./mock-sm-generation";
 import { MockMediaRecovery } from "./mock-media-recovery";
 
 export interface QueueRuntimeStatus {
@@ -48,6 +49,7 @@ export async function startQueueRuntime(options: {
   mockObjectDir?: string;
   mockImageEnabled?: boolean;
   mockAvEnabled?: boolean;
+  mockSmEnabled?: boolean;
 }): Promise<RuntimeHandle> {
   if (options.mockObjectDir && (process.env.NODE_ENV === "production" || !isAbsolute(options.mockObjectDir))) {
     throw new Error("Mock media requires an absolute local directory and is forbidden in production");
@@ -77,6 +79,7 @@ export async function startQueueRuntime(options: {
   const mediaRecovery = new MockMediaRecovery(jobs, assets, store, mockMedia, objects, {
     mockImageEnabled: options.mockImageEnabled === true,
     mockAvEnabled: options.mockAvEnabled === true,
+    mockSmEnabled: options.mockSmEnabled === true,
   });
   const reconciler = new RuntimeReconciler(jobs, store, provider, dispatcher,
     options.orphanGraceMs ?? 30_000, () => mediaRecovery.reconcileOnce(),
@@ -90,7 +93,8 @@ export async function startQueueRuntime(options: {
       if (media) {
         if (media.state === "SUCCEEDED" || media.state === "FAILED" || media.state === "CANCELED") return;
         const enabled = media.kind === "MEDIA_IMAGE" ? options.mockImageEnabled === true
-          : (media.kind === "MEDIA_VIDEO" || media.kind === "MEDIA_TTS") && options.mockAvEnabled === true;
+          : (media.kind === "MEDIA_VIDEO" || media.kind === "MEDIA_TTS") ? options.mockAvEnabled === true
+            : (media.kind === "MEDIA_SUBTITLE" || media.kind === "MEDIA_MUSIC") && options.mockSmEnabled === true;
         if (!enabled || !objects || !media.shotRevisionId || !media.providerConfigurationId || !isMockMediaJobKind(media.kind)) {
           if (media.state !== "QUEUED") {
             throw new Error("Mock media configuration missing for an already active attempt");
@@ -122,6 +126,13 @@ export async function startQueueRuntime(options: {
             shotRevisionId: media.shotRevisionId, jobId: message.jobId,
             dispatchSeq: message.dispatchSeq, providerConfigurationId: media.providerConfigurationId,
             inputHash: media.inputHash, inputSnapshot: media.inputSnapshot, traceId },
+          { jobs, assets, adapter: mockMedia, objects });
+        } else if (media.kind === "MEDIA_SUBTITLE" || media.kind === "MEDIA_MUSIC") {
+          await runMockSmJob({ workspaceId: message.workspaceId, projectId: media.projectId,
+            shotRevisionId: media.shotRevisionId, jobId: message.jobId,
+            dispatchSeq: message.dispatchSeq, providerConfigurationId: media.providerConfigurationId,
+            inputHash: media.inputHash, inputSnapshot: media.inputSnapshot, traceId,
+            capability: media.kind === "MEDIA_SUBTITLE" ? "subtitle.generate" : "audio.music" },
           { jobs, assets, adapter: mockMedia, objects });
         } else {
           await runMockAvJob({ workspaceId: message.workspaceId, projectId: media.projectId,

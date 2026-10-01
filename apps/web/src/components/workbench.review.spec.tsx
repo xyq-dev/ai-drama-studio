@@ -52,8 +52,12 @@ interface Sim {
   failAssetRead: number | null;
   videoPostGate: Promise<void> | null;
   speechPostGate: Promise<void> | null;
+  subtitlePostGate: Promise<void> | null;
+  musicPostGate: Promise<void> | null;
   videoFailures: number;
   speechFailures: number;
+  subtitleFailures: number;
+  musicFailures: number;
   shotCurrentId: string | null;
   fetch: (input: string, init?: RequestInit) => Promise<Response>;
 }
@@ -103,8 +107,12 @@ function createSim(): Sim {
     failAssetRead: null,
     videoPostGate: null,
     speechPostGate: null,
+    subtitlePostGate: null,
+    musicPostGate: null,
     videoFailures: 0,
     speechFailures: 0,
+    subtitleFailures: 0,
+    musicFailures: 0,
     shotCurrentId: null,
     fetch: () => Promise.resolve(fail(500, "UNINSTALLED", "fetch was not installed")),
   };
@@ -473,6 +481,28 @@ function createSim(): Sim {
         return fail(409, "CONFLICT", "受理失败");
       }
       return json({ workflowRunId: "av-run", jobId: "av-job" }, 202);
+    }
+    if (/\/assets\/[^/]+\/content$/.test(path) && method === "GET") {
+      return new Response("WEBVTT\n\n00:00:00.000 --> 00:00:00.100\nMock subtitle\n<script>alert(1)</script>\n", {
+        status: 200,
+        headers: { "content-type": "text/vtt" },
+      });
+    }
+    if (/\/shot-revisions\/[^/]+\/generate-subtitle$/.test(path) && method === "POST") {
+      if (sim.subtitlePostGate) await sim.subtitlePostGate;
+      if (sim.subtitleFailures > 0) {
+        sim.subtitleFailures -= 1;
+        return fail(409, "CONFLICT", "受理失败");
+      }
+      return json({ workflowRunId: "sm-run", jobId: "subtitle-job" }, 202);
+    }
+    if (/\/shot-revisions\/[^/]+\/generate-music$/.test(path) && method === "POST") {
+      if (sim.musicPostGate) await sim.musicPostGate;
+      if (sim.musicFailures > 0) {
+        sim.musicFailures -= 1;
+        return fail(409, "CONFLICT", "受理失败");
+      }
+      return json({ workflowRunId: "sm-run", jobId: "music-job" }, 202);
     }
     if (/\/shot-revisions\/[^/]+\/generate-tts$/.test(path) && method === "POST") {
       if (sim.speechPostGate) await sim.speechPostGate;
@@ -1467,6 +1497,8 @@ describe("workbench review interactions against a simulated API", () => {
     renderAt(`focus=shot&episode=1&scene=scene-1&shot=${SHOT_A}`);
     expect(await screen.findByRole("button", { name: "生成 Mock 视频（先保存并审核提示词）" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "生成 Mock 配音（先保存并审核对白）" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "生成 Mock 字幕（先保存并审核对白）" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "生成 Mock 音乐（先保存并审核提示词）" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "生成 Mock 图片" })).toBeTruthy();
   });
 
@@ -1516,6 +1548,8 @@ describe("workbench review interactions against a simulated API", () => {
     ["image", "生成 Mock 图片", "/generate-image", "Mock 图片"],
     ["video", "生成 Mock 视频", "/generate-video", "Mock 视频"],
     ["speech", "生成 Mock 配音", "/generate-tts", "Mock 配音"],
+    ["subtitle", "生成 Mock 字幕", "/generate-subtitle", "Mock 字幕"],
+    ["music", "生成 Mock 音乐", "/generate-music", "Mock 音乐"],
   ] as const)("keeps requery failure on the %s channel that was accepted", async (_channel, button, path, heading) => {
     const sim = createSim();
     sim.imageReady = true;
@@ -1526,14 +1560,14 @@ describe("workbench review interactions against a simulated API", () => {
     const section = mediaSection(heading);
     expect(await within(section).findByText(/已受理的结果仍然有效/)).toBeTruthy();
     expect(within(section).getByText(/这不是生成成功/)).toBeTruthy();
-    for (const other of ["Mock 图片", "Mock 视频", "Mock 配音"].filter((item) => item !== heading)) {
+    for (const other of ["Mock 图片", "Mock 视频", "Mock 配音", "Mock 字幕", "Mock 音乐"].filter((item) => item !== heading)) {
       expect(mediaSection(other).textContent ?? "").not.toContain("已受理的结果仍然有效");
       expect(mediaSection(other).textContent ?? "").not.toContain("已受理，结果以任务");
     }
     fireEvent.click(within(section).getByRole("button", { name: "重新查询" }));
     expect(await within(section).findByText(/已受理的结果仍然有效/)).toBeTruthy();
     expect(sim.calls.filter((call) => call.method === "POST" && call.url.endsWith(path))).toHaveLength(1);
-    expect(sim.calls.filter((call) => call.method === "POST" && /generate-(image|video|tts)$/.test(call.url))).toHaveLength(1);
+    expect(sim.calls.filter((call) => call.method === "POST" && /generate-(image|video|tts|subtitle|music)$/.test(call.url))).toHaveLength(1);
     const gets = sim.calls.filter((call) => call.method === "GET");
     expect(gets.length).toBeGreaterThan(0);
   });
@@ -1600,5 +1634,51 @@ describe("workbench review interactions against a simulated API", () => {
     const posts = late.calls.filter((call) => call.url.endsWith("/generate-video"));
     expect(posts[0]?.key).not.toBe(posts[1]?.key);
     expect(posts[1]?.url).not.toContain(`${SHOT_A}-rev/`);
+  });
+
+  it("shows fixed subtitle text without injecting markup and keeps music out of speech", async () => {
+    const sim = createSim();
+    sim.imageReady = true;
+    const revisionId = `${SHOT_A}-rev`;
+    sim.imageAssets[revisionId] = [
+      { ...imageRecord(revisionId, "ACTIVE", "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"), kind: "SUBTITLE", mimeType: "text/vtt", width: null, height: null, durationMs: 100 },
+      { ...imageRecord(revisionId, "ACTIVE", "ffffffff-ffff-4fff-8fff-ffffffffffff"), kind: "MUSIC", mimeType: "audio/wav", width: null, height: null, durationMs: 100 },
+      { ...imageRecord(revisionId, "ACTIVE", "12121212-1212-4121-8121-121212121212"), kind: "AUDIO", mimeType: "audio/wav", width: null, height: null, durationMs: 100 },
+    ];
+    install(sim);
+    renderAt(`focus=shot&episode=1&scene=scene-1&shot=${SHOT_A}`);
+    expect(await screen.findByRole("heading", { name: "Mock 字幕" })).toBeTruthy();
+    expect(await within(mediaSection("Mock 字幕")).findByText(/Mock subtitle/)).toBeTruthy();
+    expect(mediaSection("Mock 字幕").querySelector("script")).toBeNull();
+    expect(mediaSection("Mock 字幕").querySelector("pre")?.textContent).toContain("<script>alert(1)</script>");
+    expect(mediaSection("Mock 音乐").querySelector("audio")).toBeTruthy();
+    expect(mediaSection("Mock 配音").querySelectorAll("audio")).toHaveLength(1);
+    expect(mediaSection("Mock 音乐").textContent).not.toContain("12121212-1212-4121-8121-121212121212");
+  });
+
+  it.each([
+    ["subtitle", "生成 Mock 字幕", "/generate-subtitle", "Mock 字幕", "subtitlePostGate", "subtitleFailures"],
+    ["music", "生成 Mock 音乐", "/generate-music", "Mock 音乐", "musicPostGate", "musicFailures"],
+  ] as const)("drops a late %s acceptance after the revision changes", async (_channel, button, path, heading, gate, failures) => {
+    const sim = createSim();
+    sim.imageReady = true;
+    let release!: () => void;
+    sim[gate] = new Promise<void>((resolve) => { release = resolve; });
+    sim[failures] = 1;
+    install(sim);
+    renderAt(`focus=shot&episode=1&scene=scene-1&shot=${SHOT_A}`);
+    fireEvent.click(await screen.findByRole("button", { name: button }));
+    await waitFor(() => expect(sim.calls.filter((call) => call.url.endsWith(path))).toHaveLength(1));
+    await saveShot(sim, `${heading} 换版`);
+    release();
+    await waitFor(() => expect(screen.getByRole("button", { name: button })).toBeTruthy());
+    expect(mediaSection(heading).textContent ?? "").not.toContain("复用同一幂等键");
+    expect(mediaSection(heading).textContent ?? "").not.toContain("正在提交");
+    fireEvent.click(screen.getByRole("button", { name: button }));
+    await waitFor(() => expect(sim.calls.filter((call) => call.url.endsWith(path))).toHaveLength(2));
+    const posts = sim.calls.filter((call) => call.url.endsWith(path));
+    expect(posts[0]?.key).not.toBe(posts[1]?.key);
+    expect(mediaSection("Mock 配音").textContent ?? "").not.toContain("已受理");
+    expect(mediaSection("Mock 视频").textContent ?? "").not.toContain("复用同一幂等键");
   });
 });

@@ -10,7 +10,7 @@ export class LocalMockObjects implements MockImageObjectStore {
   async put(input: {
     key: string;
     bytes: Buffer;
-    mimeType: "image/png" | "video/mp4" | "audio/wav";
+    mimeType: "image/png" | "video/mp4" | "audio/wav" | "text/vtt";
     checksumSha256: string;
   }): Promise<void> {
     if (!allowedMockObject(input.key, input.mimeType)) {
@@ -58,10 +58,11 @@ export class LocalMockObjects implements MockImageObjectStore {
   }
 }
 
-function allowedMockObject(key: string, mimeType: "image/png" | "video/mp4" | "audio/wav"): boolean {
+function allowedMockObject(key: string, mimeType: "image/png" | "video/mp4" | "audio/wav" | "text/vtt"): boolean {
   if (mimeType === "image/png") return /^mock-images\/[0-9a-f-]+\/[0-9a-f-]+\/[0-9a-f]{64}\.png$/.test(key);
   if (mimeType === "video/mp4") return /^mock-videos\/[0-9a-f-]+\/[0-9a-f-]+\/[0-9a-f]{64}\.mp4$/.test(key);
-  return /^mock-audio\/[0-9a-f-]+\/[0-9a-f-]+\/[0-9a-f]{64}\.wav$/.test(key);
+  if (mimeType === "text/vtt") return /^mock-subtitles\/[0-9a-f-]+\/[0-9a-f-]+\/[0-9a-f]{64}\.vtt$/.test(key);
+  return /^mock-(?:audio|music)\/[0-9a-f-]+\/[0-9a-f-]+\/[0-9a-f]{64}\.wav$/.test(key);
 }
 
 function isDirectorySyncEperm(error: unknown): boolean {

@@ -10,6 +10,7 @@ const workerEnvSchema = z.object({
   MOCK_OBJECT_DIR: z.string().min(1).optional(),
   M3_MOCK_IMAGE_ENABLED: z.enum(["true", "false"]).default("false"),
   M3_MOCK_AV_ENABLED: z.enum(["true", "false"]).default("false"),
+  M3_MOCK_SUBTITLE_MUSIC_ENABLED: z.enum(["true", "false"]).default("false"),
 });
 
 export class EnvValidationError extends Error {
@@ -32,6 +33,7 @@ export interface WorkerEnv {
   MOCK_OBJECT_DIR?: string;
   M3_MOCK_IMAGE_ENABLED: boolean;
   M3_MOCK_AV_ENABLED: boolean;
+  M3_MOCK_SUBTITLE_MUSIC_ENABLED: boolean;
 }
 
 const WORKER_KEYS = [
@@ -44,6 +46,7 @@ const WORKER_KEYS = [
   "MOCK_OBJECT_DIR",
   "M3_MOCK_IMAGE_ENABLED",
   "M3_MOCK_AV_ENABLED",
+  "M3_MOCK_SUBTITLE_MUSIC_ENABLED",
 ] as const;
 
 function assertProtocol(field: string, value: string, protocols: readonly string[]): void {
@@ -81,5 +84,6 @@ export function loadWorkerEnv(
     ...parsed.data,
     M3_MOCK_IMAGE_ENABLED: parsed.data.M3_MOCK_IMAGE_ENABLED === "true",
     M3_MOCK_AV_ENABLED: parsed.data.M3_MOCK_AV_ENABLED === "true",
+    M3_MOCK_SUBTITLE_MUSIC_ENABLED: parsed.data.M3_MOCK_SUBTITLE_MUSIC_ENABLED === "true",
   };
 }

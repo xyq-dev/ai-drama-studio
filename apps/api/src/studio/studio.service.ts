@@ -16,6 +16,7 @@ import {
 } from "@ai-drama/database";
 import { z } from "zod";
 import { assertReadableMockAv, readBoundedMockAv } from "./mock-av-content";
+import { readBoundedMockSm } from "./mock-sm-content";
 import { assertReadableMockImage, readBoundedMockPng } from "./mock-image-content";
 
 const projectBodySchema = z.object({
@@ -101,6 +102,7 @@ export class StudioService {
     private readonly mockImageEnabled = false,
     private readonly mockObjectDir: string | null = null,
     private readonly mockAvEnabled = false,
+    private readonly mockSmEnabled = false,
   ) {}
 
   get workspace(): string {
@@ -626,6 +628,14 @@ export class StudioService {
     return this.queueMockAv(shotRevisionId, body, context, "MEDIA_TTS");
   }
 
+  async generateShotSubtitle(shotRevisionId: string, body: unknown, context: StudioContext) {
+    return this.queueMockSm(shotRevisionId, body, context, "MEDIA_SUBTITLE");
+  }
+
+  async generateShotMusic(shotRevisionId: string, body: unknown, context: StudioContext) {
+    return this.queueMockSm(shotRevisionId, body, context, "MEDIA_MUSIC");
+  }
+
   async listShotAssets(shotRevisionId: string) {
     if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
     const { projectId } = await this.mediaAssets.requireShotScope(this.workspaceId, shotRevisionId);
@@ -657,6 +667,12 @@ export class StudioService {
       }
       assertReadableMockAv(asset);
       return { mimeType: asset.mimeType, bytes: await readBoundedMockAv(this.mockObjectDir, asset) };
+    }
+    if (asset.kind === "SUBTITLE" || asset.kind === "MUSIC") {
+      if (!this.mockSmEnabled) {
+        throw new PersistenceError("CONFIGURATION_ERROR", "Mock subtitle and music content is not enabled");
+      }
+      return { mimeType: asset.mimeType, bytes: await readBoundedMockSm(this.mockObjectDir, asset) };
     }
     throw new PersistenceError("ASSET_CONTENT_INVALID", "Asset content is not a stored mock recording");
   }
@@ -786,6 +802,59 @@ export class StudioService {
         }
         const snapshot = {
           schema: kind === "MEDIA_VIDEO" ? "m3.mock.video.v1" : "m3.mock.tts.v1",
+          shotRevisionId,
+          seed: input.seed ?? null,
+          outcome: "success",
+          executionMode: "sync",
+          capability,
+          sourceText,
+          sourceHash: createHash("sha256").update(sourceText).digest("hex"),
+        };
+        return {
+          workspaceId: this.workspaceId,
+          projectId: source.projectId,
+          sourceShotRevisionId: shotRevisionId,
+          type: kind,
+          requestedBy: context.actorId,
+          kind,
+          inputHash: createHash("sha256").update(JSON.stringify(snapshot)).digest("hex"),
+          inputSnapshot: snapshot,
+          traceId: context.traceId,
+        };
+      },
+    );
+  }
+
+  private queueMockSm(
+    shotRevisionId: string,
+    body: unknown,
+    context: StudioContext,
+    kind: "MEDIA_SUBTITLE" | "MEDIA_MUSIC",
+  ) {
+    const input = parse(generateImageBodySchema, rejectClientWorkspace(body));
+    if (!this.mockSmEnabled) {
+      throw new PersistenceError("CONFIGURATION_ERROR", "Mock subtitle and music worker storage is not enabled");
+    }
+    if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
+    const route = kind === "MEDIA_SUBTITLE" ? "generate-subtitle" : "generate-music";
+    const capability = kind === "MEDIA_SUBTITLE" ? "subtitle.generate" : "audio.music";
+    return this.jobs.createAndQueueWorkflowJob(
+      this.scope(context, "POST", `/shot-revisions/${shotRevisionId}/${route}`, input),
+      async (client) => {
+        const source = await this.mediaAssets!.prepareShotGenerationInTransaction(
+          client, this.workspaceId, shotRevisionId, capability,
+        );
+        const sourceText = kind === "MEDIA_MUSIC" ? source.promptText.trim() : (source.dialogue ?? "").trim();
+        if (sourceText.length === 0) {
+          throw new PersistenceError(
+            "VALIDATION_ERROR",
+            kind === "MEDIA_MUSIC"
+              ? "Saved prompt text is required before mock music"
+              : "Saved dialogue is required before mock subtitle",
+          );
+        }
+        const snapshot = {
+          schema: kind === "MEDIA_SUBTITLE" ? "m3.mock.subtitle.v1" : "m3.mock.music.v1",
           shotRevisionId,
           seed: input.seed ?? null,
           outcome: "success",

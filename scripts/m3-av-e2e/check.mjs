@@ -3,7 +3,9 @@ import { resolve } from "node:path";
 
 const root = resolve(import.meta.dirname, "../..");
 const workflow = readFileSync(resolve(root, ".github/workflows/m3-av-e2e.yml"), "utf8").replace(/\r\n/g, "\n");
+const smWorkflow = readFileSync(resolve(root, ".github/workflows/m3-sm-e2e.yml"), "utf8").replace(/\r\n/g, "\n");
 const harness = readFileSync(resolve(root, "scripts/m3-av-e2e/run.mjs"), "utf8").replace(/\r\n/g, "\n");
+const outcome = readFileSync(resolve(root, "scripts/m3-av-e2e/outcome.mjs"), "utf8").replace(/\r\n/g, "\n");
 
 const required = [
   "branches:\n      - feat/m3-av-workbench",
@@ -54,6 +56,34 @@ if (!harness.includes("acceptanceFailed(") || !harness.includes("acceptanceExitC
 if (!harness.includes("assertLinkage(")) failures.push("harness does not assert ledger linkage");
 if (!harness.includes("viewport-390.png")) failures.push("harness does not save the 390px screenshot");
 if (!harness.includes('["M3_MOCK_AV_ENABLED"]')) failures.push("harness does not unset M3_MOCK_AV_ENABLED");
+if (!harness.includes('["M3_MOCK_SUBTITLE_MUSIC_ENABLED"]')) failures.push("harness does not unset M3_MOCK_SUBTITLE_MUSIC_ENABLED");
+for (const stage of ["subtitle-music", "subtitle-music-gates", "subtitle-music-recovery"]) {
+  if (!outcome.includes(`"${stage}"`)) failures.push(`outcome missing ${stage}`);
+  if (!harness.includes(`"${stage}"`)) failures.push(`harness missing ${stage}`);
+}
+const smRequired = [
+  "branches:\n      - feat/m3-subtitle-music-workbench",
+  "workflow_dispatch:",
+  "contents: read",
+  "ubuntu-24.04",
+  "timeout-minutes: 30",
+  "node-version: 24.21.0",
+  "version: 10.17.0",
+  "pnpm install --frozen-lockfile",
+  "playwright install --with-deps chrome",
+  "pnpm m3-av-e2e:outcome",
+  "node scripts/m3-av-e2e/run.mjs",
+  "name: m3-sm-e2e-evidence",
+  "retention-days: 7",
+  "if: always()",
+];
+for (const snippet of smRequired) {
+  if (!smWorkflow.includes(snippet)) failures.push(`subtitle workflow missing ${JSON.stringify(snippet)}`);
+}
+for (const snippet of forbidden) {
+  if (smWorkflow.includes(snippet)) failures.push(`subtitle workflow contains ${JSON.stringify(snippet)}`);
+}
+if (smWorkflow.includes("docs/**")) failures.push("subtitle workflow paths include docs");
 if (!harness.includes("7c5bd8512c6e966455b1d198209358b2d191c77a83ab377c4073281065fb855f")) {
   failures.push("harness does not pin the MinIO release checksum");
 }

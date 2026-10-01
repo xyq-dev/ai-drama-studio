@@ -28,6 +28,7 @@ function silentWav(): Buffer {
 
 const videoBytes = Buffer.from(H264_MP4, "base64");
 const audioBytes = silentWav();
+const subtitleBytes = Buffer.from("WEBVTT\n\n00:00:00.000 --> 00:00:00.100\nMock subtitle\n");
 
 export const MOCK_VIDEO_FIXTURE = {
   mimeType: "video/mp4" as const,
@@ -49,13 +50,24 @@ export const MOCK_AUDIO_FIXTURE = {
   durationMs: 100,
 };
 
+/** Fixed WebVTT used by subtitle.generate. The cue does not follow the saved dialogue. */
+export const MOCK_SUBTITLE_FIXTURE = {
+  mimeType: "text/vtt" as const,
+  bytes: subtitleBytes,
+  byteLength: subtitleBytes.length,
+  checksumSha256: createHash("sha256").update(subtitleBytes).digest("hex"),
+  width: null,
+  height: null,
+  durationMs: 100,
+};
+
 export function mockMediaFixture(mimeType: string): Buffer {
   switch (mimeType) {
     case "image/png": return Buffer.from(PNG, "base64");
     case "video/mp4": return Buffer.from(MOCK_VIDEO_FIXTURE.bytes);
     case "audio/wav": return Buffer.from(MOCK_AUDIO_FIXTURE.bytes);
     case "application/json": return Buffer.from('{"valid":true,"source":"mock-media"}\n');
-    case "text/vtt": return Buffer.from("WEBVTT\n\n00:00:00.000 --> 00:00:00.100\nMock subtitle\n");
+    case "text/vtt": return Buffer.from(MOCK_SUBTITLE_FIXTURE.bytes);
     default: throw new Error(`Unsupported mock media MIME type: ${mimeType}`);
   }
 }
