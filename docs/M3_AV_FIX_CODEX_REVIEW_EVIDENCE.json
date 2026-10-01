@@ -1,0 +1,422 @@
+{
+  "sourceCommit": "2e7dfb9c437aa56540a073eb49b25975535c780c",
+  "reviewDate": "2026-10-01",
+  "baseCommit": "6afa6345f8f7a99565b672e678059ffa5f2170df",
+  "conclusion": "R1-R4 code review passed; real AV integration acceptance pending",
+  "nodeVersion": "24.21.0",
+  "pnpmVersion": "10.17.0",
+  "reviewerChangedProductSource": false,
+  "backendBuild": {
+    "exitCode": 0,
+    "workspaceProjects": 7,
+    "command": "pnpm --filter @ai-drama/api... --filter @ai-drama/worker... -r build"
+  },
+  "targetedTests": [
+    {
+      "package": "@ai-drama/worker",
+      "exitCode": 0,
+      "files": 5,
+      "tests": 25,
+      "command": "pnpm --filter @ai-drama/worker exec vitest run src/runtime/mock-av-generation.spec.ts src/runtime/mock-media-recovery.spec.ts src/runtime/mock-media-consumer-guard.spec.ts src/runtime/start-runtime-media.spec.ts src/runtime/local-mock-objects.spec.ts",
+      "log": "(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:\n  - ESM syntax in a file loaded as CommonJS (vitest.config.ts:1:1). Use a `.mjs` extension or set `\"type\": \"module\"` in the closest package.json\nSet `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.\n\n RUN  v5.0.1 /workspace/scratch/62f2be8edb46/ai-drama-m3-av-fix-review/apps/worker\n\n\n Test Files  5 passed (5)\n      Tests  25 passed (25)\n   Start at  17:57:55\n   Duration  713ms (transform 39%, import 35%, tests 24%, worker 2%)\n\n"
+    },
+    {
+      "package": "@ai-drama/web",
+      "exitCode": 0,
+      "files": 2,
+      "tests": 41,
+      "command": "pnpm --filter @ai-drama/web exec vitest run src/components/workbench.review.spec.tsx src/lib/asset-content-proxy.spec.ts",
+      "log": "(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:\n  - ESM syntax in a file loaded as CommonJS (vitest.config.ts:1:1). Use a `.mjs` extension or set `\"type\": \"module\"` in the closest package.json\nSet `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.\n\n RUN  v5.0.1 /workspace/scratch/62f2be8edb46/ai-drama-m3-av-fix-review/apps/web\n\nAggregateError: \n    at internalConnectMultiple (node:net:1430:18)\n    at afterConnectMultiple (node:net:2099:7) {\n  code: 'ECONNREFUSED',\n  [errors]: [\n    Error: connect ECONNREFUSED ::1:3000\n        at createConnectionError (node:net:2062:14)\n        at afterConnectMultiple (node:net:2092:16) {\n      errno: -111,\n      code: 'ECONNREFUSED',\n      syscall: 'connect',\n      address: '::1',\n      port: 3000\n    },\n    Error: connect ECONNREFUSED 127.0.0.1:3000\n        at createConnectionError (node:net:2062:14)\n        at afterConnectMultiple (node:net:2092:16) {\n      errno: -111,\n      code: 'ECONNREFUSED',\n      syscall: 'connect',\n      address: '127.0.0.1',\n      port: 3000\n    }\n  ]\n}\nAggregateError: \n    at internalConnectMultiple (node:net:1430:18)\n    at afterConnectMultiple (node:net:2099:7) {\n  code: 'ECONNREFUSED',\n  [errors]: [\n    Error: connect ECONNREFUSED ::1:3000\n        at createConnectionError (node:net:2062:14)\n        at afterConnectMultiple (node:net:2092:16) {\n      errno: -111,\n      code: 'ECONNREFUSED',\n      syscall: 'connect',\n      address: '::1',\n      port: 3000\n    },\n    Error: connect ECONNREFUSED 127.0.0.1:3000\n        at createConnectionError (node:net:2062:14)\n        at afterConnectMultiple (node:net:2092:16) {\n      errno: -111,\n      code: 'ECONNREFUSED',\n      syscall: 'connect',\n      address: '127.0.0.1',\n      port: 3000\n    }\n  ]\n}\nAggregateError: \n    at internalConnectMultiple (node:net:1430:18)\n    at afterConnectMultiple (node:net:2099:7) {\n  code: 'ECONNREFUSED',\n  [errors]: [\n    Error: connect ECONNREFUSED ::1:3000\n        at createConnectionError (node:net:2062:14)\n        at afterConnectMultiple (node:net:2092:16) {\n      errno: -111,\n      code: 'ECONNREFUSED',\n      syscall: 'connect',\n      address: '::1',\n      port: 3000\n    },\n    Error: connect ECONNREFUSED 127.0.0.1:3000\n        at createConnectionError (node:net:2062:14)\n        at afterConnectMultiple (node:net:2092:16) {\n      errno: -111,\n      code: 'ECONNREFUSED',\n      syscall: 'connect',\n      address: '127.0.0.1',\n      port: 3000\n    }\n  ]\n}\nAggregateError: \n    at internalConnectMultiple (node:net:1430:18)\n    at afterConnectMultiple (node:net:2099:7) {\n  code: 'ECONNREFUSED',\n  [errors]: [\n    Error: connect ECONNREFUSED ::1:3000\n        at createConnectionError (node:net:2062:14)\n        at afterConnectMultiple (node:net:2092:16) {\n      errno: -111,\n      code: 'ECONNREFUSED',\n      syscall: 'connect',\n      address: '::1',\n      port: 3000\n    },\n    Error: connect ECONNREFUSED 127.0.0.1:3000\n        at createConnectionError (node:net:2062:14)\n        at afterConnectMultiple (node:net:2092:16) {\n      errno: -111,\n      code: 'ECONNREFUSED',\n      syscall: 'connect',\n      address: '127.0.0.1',\n      port: 3000\n    }\n  ]\n}\nAggregateError: \n    at internalConnectMultiple (node:net:1430:18)\n    at afterConnectMultiple (node:net:2099:7) {\n  code: 'ECONNREFUSED',\n  [errors]: [\n    Error: connect ECONNREFUSED ::1:3000\n        at createConnectionError (node:net:2062:14)\n        at afterConnectMultiple (node:net:2092:16) {\n      errno: -111,\n      code: 'ECONNREFUSED',\n      syscall: 'connect',\n      address: '::1',\n      port: 3000\n    },\n    Error: connect ECONNREFUSED 127.0.0.1:3000\n        at createConnectionError (node:net:2062:14)\n        at afterConnectMultiple (node:net:2092:16) {\n      errno: -111,\n      code: 'ECONNREFUSED',\n      syscall: 'connect',\n      address: '127.0.0.1',\n      port: 3000\n    }\n  ]\n}\nAggregateError: \n    at internalConnectMultiple (node:net:1430:18)\n    at afterConnectMultiple (node:net:2099:7) {\n  code: 'ECONNREFUSED',\n  [errors]: [\n    Error: connect ECONNREFUSED ::1:3000\n        at createConnectionError (node:net:2062:14)\n        at afterConnectMultiple (node:net:2092:16) {\n      errno: -111,\n      code: 'ECONNREFUSED',\n      syscall: 'connect',\n      address: '::1',\n      port: 3000\n    },\n    Error: connect ECONNREFUSED 127.0.0.1:3000\n        at createConnectionError (node:net:2062:14)\n        at afterConnectMultiple (node:net:2092:16) {\n      errno: -111,\n      code: 'ECONNREFUSED',\n      syscall: 'connect',\n      address: '127.0.0.1',\n      port: 3000\n    }\n  ]\n}\n\n Test Files  2 passed (2)\n      Tests  41 passed (41)\n   Start at  17:57:55\n   Duration  19.51s (tests 97%, environment 1%, transform 1%, import 1%)\n\n"
+    }
+  ],
+  "independentUiReplay": {
+    "primaryReviewerReran": true,
+    "currentExitCode": 0,
+    "baselineExitCode": 1,
+    "baselineExitMeaning": "Detected old defects, not an unexpected harness error",
+    "current": {
+      "source": "current",
+      "sourceSha": "2e7dfb9c437aa56540a073eb49b25975535c780c",
+      "node": "v24.21.0",
+      "mode": "Independent React mounting, happy-dom and controlled fetch; no real API/browser/services",
+      "results": [
+        {
+          "name": "accepted_then_two_query_failures_stay_in_image",
+          "passed": true,
+          "details": {
+            "callbackCompletions": 2,
+            "posts": [
+              {
+                "url": "/api/v1/shot-revisions/revision-A/generate-image",
+                "key": "0dfb9d4d-f65a-4b3c-98ba-1d99ba2f3860",
+                "body": {}
+              }
+            ],
+            "assetGets": 2,
+            "acceptedChannel": "image"
+          }
+        },
+        {
+          "name": "A_B_A_old_202_cannot_clear_image_busy_or_retry_key",
+          "passed": true,
+          "details": {
+            "posts": [
+              {
+                "url": "/api/v1/shot-revisions/revision-A/generate-image",
+                "key": "7d0f2bba-303d-489e-85ef-762a6723040b",
+                "body": {}
+              },
+              {
+                "url": "/api/v1/shot-revisions/revision-A/generate-image",
+                "key": "0e281a06-67de-4d91-a127-35a78aa025ef",
+                "body": {}
+              },
+              {
+                "url": "/api/v1/shot-revisions/revision-A/generate-image",
+                "key": "0e281a06-67de-4d91-a127-35a78aa025ef",
+                "body": {}
+              }
+            ],
+            "callbackCompletions": 2,
+            "old202Suppressed": true,
+            "oldFinallySuppressed": true,
+            "currentRetryKeyPreserved": true
+          }
+        },
+        {
+          "name": "A_B_old_write_failure_cannot_clear_new_image_busy",
+          "passed": true,
+          "details": {
+            "posts": [
+              {
+                "url": "/api/v1/shot-revisions/revision-A/generate-image",
+                "key": "0c984742-65e9-48f5-a05b-49bc0c7eae6d",
+                "body": {}
+              },
+              {
+                "url": "/api/v1/shot-revisions/revision-B/generate-image",
+                "key": "6d6cd1fc-5dd8-4c7d-81f8-6560b5d7ead4",
+                "body": {}
+              }
+            ],
+            "oldFailureSuppressed": true,
+            "oldFinallySuppressed": true
+          }
+        },
+        {
+          "name": "A_B_accepted_notice_and_old_requery_failure_do_not_leak_image",
+          "passed": true,
+          "details": {
+            "callbackCompletions": 2,
+            "posts": 1,
+            "oldAcceptedStateCleared": true,
+            "oldRequeryFailureSuppressed": true
+          }
+        },
+        {
+          "name": "accepted_then_two_query_failures_stay_in_video",
+          "passed": true,
+          "details": {
+            "callbackCompletions": 2,
+            "posts": [
+              {
+                "url": "/api/v1/shot-revisions/revision-A/generate-video",
+                "key": "3854ca6d-7a11-415a-9c68-3d3a260f000d",
+                "body": {}
+              }
+            ],
+            "assetGets": 2,
+            "acceptedChannel": "video"
+          }
+        },
+        {
+          "name": "A_B_A_old_202_cannot_clear_video_busy_or_retry_key",
+          "passed": true,
+          "details": {
+            "posts": [
+              {
+                "url": "/api/v1/shot-revisions/revision-A/generate-video",
+                "key": "63163362-b436-46b8-b42f-da04565bffdc",
+                "body": {}
+              },
+              {
+                "url": "/api/v1/shot-revisions/revision-A/generate-video",
+                "key": "552ea134-341e-4174-8de2-1f2bab48cb72",
+                "body": {}
+              },
+              {
+                "url": "/api/v1/shot-revisions/revision-A/generate-video",
+                "key": "552ea134-341e-4174-8de2-1f2bab48cb72",
+                "body": {}
+              }
+            ],
+            "callbackCompletions": 2,
+            "old202Suppressed": true,
+            "oldFinallySuppressed": true,
+            "currentRetryKeyPreserved": true
+          }
+        },
+        {
+          "name": "A_B_old_write_failure_cannot_clear_new_video_busy",
+          "passed": true,
+          "details": {
+            "posts": [
+              {
+                "url": "/api/v1/shot-revisions/revision-A/generate-video",
+                "key": "d139f5d3-56c2-4305-825e-5ce868d10f7e",
+                "body": {}
+              },
+              {
+                "url": "/api/v1/shot-revisions/revision-B/generate-video",
+                "key": "50715686-b3cc-4e96-970a-7c5a7d6ad02b",
+                "body": {}
+              }
+            ],
+            "oldFailureSuppressed": true,
+            "oldFinallySuppressed": true
+          }
+        },
+        {
+          "name": "A_B_accepted_notice_and_old_requery_failure_do_not_leak_video",
+          "passed": true,
+          "details": {
+            "callbackCompletions": 2,
+            "posts": 1,
+            "oldAcceptedStateCleared": true,
+            "oldRequeryFailureSuppressed": true
+          }
+        },
+        {
+          "name": "accepted_then_two_query_failures_stay_in_speech",
+          "passed": true,
+          "details": {
+            "callbackCompletions": 2,
+            "posts": [
+              {
+                "url": "/api/v1/shot-revisions/revision-A/generate-tts",
+                "key": "fb39aa8b-79e8-41bb-a90e-cb2117a9b791",
+                "body": {}
+              }
+            ],
+            "assetGets": 2,
+            "acceptedChannel": "speech"
+          }
+        },
+        {
+          "name": "A_B_A_old_202_cannot_clear_speech_busy_or_retry_key",
+          "passed": true,
+          "details": {
+            "posts": [
+              {
+                "url": "/api/v1/shot-revisions/revision-A/generate-tts",
+                "key": "5792e75d-931b-435e-bde4-6cd483931cbb",
+                "body": {}
+              },
+              {
+                "url": "/api/v1/shot-revisions/revision-A/generate-tts",
+                "key": "8b991304-3303-43f9-b9f1-95e22ebbc7b9",
+                "body": {}
+              },
+              {
+                "url": "/api/v1/shot-revisions/revision-A/generate-tts",
+                "key": "8b991304-3303-43f9-b9f1-95e22ebbc7b9",
+                "body": {}
+              }
+            ],
+            "callbackCompletions": 2,
+            "old202Suppressed": true,
+            "oldFinallySuppressed": true,
+            "currentRetryKeyPreserved": true
+          }
+        },
+        {
+          "name": "A_B_old_write_failure_cannot_clear_new_speech_busy",
+          "passed": true,
+          "details": {
+            "posts": [
+              {
+                "url": "/api/v1/shot-revisions/revision-A/generate-tts",
+                "key": "47bad63e-9869-4bbd-b6dd-1d4811ca5530",
+                "body": {}
+              },
+              {
+                "url": "/api/v1/shot-revisions/revision-B/generate-tts",
+                "key": "8c966a85-368f-4ed4-8407-ee6b07010247",
+                "body": {}
+              }
+            ],
+            "oldFailureSuppressed": true,
+            "oldFinallySuppressed": true
+          }
+        },
+        {
+          "name": "A_B_accepted_notice_and_old_requery_failure_do_not_leak_speech",
+          "passed": true,
+          "details": {
+            "callbackCompletions": 2,
+            "posts": 1,
+            "oldAcceptedStateCleared": true,
+            "oldRequeryFailureSuppressed": true
+          }
+        },
+        {
+          "name": "public_list_query_failure_is_neutral_with_no_POST",
+          "passed": true,
+          "details": {
+            "callbackCompletions": 1,
+            "posts": 0,
+            "neutralFailureOnly": true
+          }
+        }
+      ],
+      "passed": true
+    },
+    "baseline": {
+      "source": "baseline",
+      "sourceSha": "6afa6345f8f7a99565b672e678059ffa5f2170df",
+      "node": "v24.21.0",
+      "mode": "Independent React mounting, happy-dom and controlled fetch; no real API/browser/services",
+      "results": [
+        {
+          "name": "accepted_then_two_query_failures_stay_in_image",
+          "passed": true,
+          "details": {
+            "callbackCompletions": 2,
+            "posts": [
+              {
+                "url": "/api/v1/shot-revisions/revision-A/generate-image",
+                "key": "74b3ecc8-625f-439a-b2fe-b4db0254f585",
+                "body": {}
+              }
+            ],
+            "assetGets": 2,
+            "acceptedChannel": "image"
+          }
+        },
+        {
+          "name": "A_B_A_old_202_cannot_clear_image_busy_or_retry_key",
+          "passed": false,
+          "message": "Unable to find an accessible element with the role \"button\" and name \"生成 Mock 图片\"",
+          "originalDiagnosticCharacters": 3873
+        },
+        {
+          "name": "A_B_old_write_failure_cannot_clear_new_image_busy",
+          "passed": false,
+          "message": "Unable to find an accessible element with the role \"button\" and name \"生成 Mock 图片\"",
+          "originalDiagnosticCharacters": 3873
+        },
+        {
+          "name": "A_B_accepted_notice_and_old_requery_failure_do_not_leak_image",
+          "passed": false,
+          "message": "The expression evaluated to a falsy value:",
+          "originalDiagnosticCharacters": 88
+        },
+        {
+          "name": "accepted_then_two_query_failures_stay_in_video",
+          "passed": false,
+          "message": "image wrongly received accepted notice",
+          "originalDiagnosticCharacters": 38
+        },
+        {
+          "name": "A_B_A_old_202_cannot_clear_video_busy_or_retry_key",
+          "passed": false,
+          "message": "Unable to find an accessible element with the role \"button\" and name \"生成 Mock 视频\"",
+          "originalDiagnosticCharacters": 3885
+        },
+        {
+          "name": "A_B_old_write_failure_cannot_clear_new_video_busy",
+          "passed": false,
+          "message": "Unable to find an accessible element with the role \"button\" and name \"生成 Mock 视频\"",
+          "originalDiagnosticCharacters": 3885
+        },
+        {
+          "name": "A_B_accepted_notice_and_old_requery_failure_do_not_leak_video",
+          "passed": false,
+          "message": "The expression evaluated to a falsy value:",
+          "originalDiagnosticCharacters": 88
+        },
+        {
+          "name": "accepted_then_two_query_failures_stay_in_speech",
+          "passed": false,
+          "message": "image wrongly received accepted notice",
+          "originalDiagnosticCharacters": 38
+        },
+        {
+          "name": "A_B_A_old_202_cannot_clear_speech_busy_or_retry_key",
+          "passed": false,
+          "message": "Unable to find an accessible element with the role \"button\" and name \"生成 Mock 配音\"",
+          "originalDiagnosticCharacters": 3886
+        },
+        {
+          "name": "A_B_old_write_failure_cannot_clear_new_speech_busy",
+          "passed": false,
+          "message": "Unable to find an accessible element with the role \"button\" and name \"生成 Mock 配音\"",
+          "originalDiagnosticCharacters": 3886
+        },
+        {
+          "name": "A_B_accepted_notice_and_old_requery_failure_do_not_leak_speech",
+          "passed": false,
+          "message": "The expression evaluated to a falsy value:",
+          "originalDiagnosticCharacters": 88
+        },
+        {
+          "name": "public_list_query_failure_is_neutral_with_no_POST",
+          "passed": false,
+          "message": "Unable to find an element with the text: /媒体列表刷新失败，可以重新查询/. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.",
+          "originalDiagnosticCharacters": 7579
+        }
+      ],
+      "passed": false
+    },
+    "baselineDiagnosticFormat": "First line retained for each failed assertion; original lengths recorded. Full transient harness diagnostics are not needed to claim real integration, which remains unexecuted."
+  },
+  "nativePreflight": {
+    "capturedAt": "2026-10-01T00:58:43.284252+00:00",
+    "identity": {
+      "id": {
+        "command": [
+          "id"
+        ],
+        "exitCode": 0,
+        "stdout": "uid=0(root) gid=0(root) groups=0(root)",
+        "stderr": ""
+      },
+      "uidMap": "0          0          1",
+      "gidMap": "0          0          1",
+      "setgroups": "deny",
+      "runuserCheck": {
+        "command": [
+          "runuser",
+          "-u",
+          "nobody",
+          "--",
+          "id"
+        ],
+        "exitCode": 1,
+        "stdout": "",
+        "stderr": "runuser: cannot set groups: Operation not permitted"
+      },
+      "postgresNativeAcceptanceBlocked": true,
+      "reason": "Only UID/GID 0 is mapped and supplementary group changes are denied. No genuine non-root identity is available to start PostgreSQL."
+    },
+    "databaseStarted": false,
+    "redisStarted": false,
+    "migrationExecuted": false,
+    "provisionExecuted": false,
+    "browserAcceptanceExecuted": false,
+    "browserReadyForAcceptance": false,
+    "browserHeadlessAttempt": {
+      "command": "chrome --headless --no-sandbox --disable-dev-shm-usage --dump-dom about:blank",
+      "exitCode": 139,
+      "result": "segmentation fault; later byte comparison showed extracted Chrome file differs from original ZIP"
+    },
+    "postgresVersion": "postgres (PostgreSQL) 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1)",
+    "redisVersion": "Redis server v=7.0.15 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=e53ff17674aa6190"
+  },
+  "fullVerifyRerunByCodex": false,
+  "realApiTested": false,
+  "realWorkerProcessTested": false,
+  "realSqlTested": false,
+  "realBrowserPlaybackTested": false,
+  "nextAction": "Cursor implements feature-only Linux CI using existing Compose; actual run/sha/artifacts remain to be verified."
+}
