@@ -47,6 +47,12 @@ if (/sql\(\s*[`'"][^`'"]*drop\s+schema/i.test(harness)) {
   failures.push("harness SQL drops a schema");
 }
 if (!harness.includes('channel: "chrome"')) failures.push("harness does not launch Chrome for Testing");
+if (!harness.includes("7c5bd8512c6e966455b1d198209358b2d191c77a83ab377c4073281065fb855f")) {
+  failures.push("harness does not pin the MinIO release checksum");
+}
+if (!harness.includes("01f866e9c5f9b87c2b09116fa5d7c06695b106242d829a8bb32990c00312e891")) {
+  failures.push("harness does not pin the mc release checksum");
+}
 
 if (failures.length > 0) {
   process.stderr.write(`${failures.join("\n")}\n`);

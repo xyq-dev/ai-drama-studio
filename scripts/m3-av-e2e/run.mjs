@@ -53,6 +53,7 @@ const secrets = [dbPassword, minioPassword, databaseUrl];
 
 const state = {
   apps: [],
+  imageDirs: [],
   logFds: [],
   db: null,
   browser: null,
@@ -97,6 +98,30 @@ const notRun = [
 
 function sleep(ms) {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
+}
+
+async function assembleOfficialImage(spec) {
+  const dir = join(tempRoot, `m3-av-image-${spec.binary}-${runToken}`);
+  mkdirSync(dir, { recursive: true });
+  state.imageDirs.push(dir);
+  const response = await fetch(spec.url, { headers: { "User-Agent": "ai-drama-studio" } });
+  if (!response.ok) throw new Error(`download ${spec.binary} failed ${response.status}`);
+  const bytes = Buffer.from(await response.arrayBuffer());
+  const actual = createHash("sha256").update(bytes).digest("hex");
+  if (actual !== spec.sha256) {
+    throw new Error(`${spec.binary} checksum ${actual} did not match the pinned GitHub release`);
+  }
+  writeFileSync(join(dir, spec.binary), bytes);
+  const lines = [
+    "FROM mirror.gcr.io/library/alpine:3.22",
+    spec.packages ? `RUN apk add --no-cache ${spec.packages}` : null,
+    `COPY ${spec.binary} /usr/bin/${spec.binary}`,
+    `RUN chmod 755 /usr/bin/${spec.binary}`,
+    `ENTRYPOINT ["/usr/bin/${spec.binary}"]`,
+  ].filter(Boolean);
+  writeFileSync(join(dir, "Dockerfile"), `${lines.join("\n")}\n`);
+  await run("docker", ["build", "-t", spec.target, dir], { timeoutMs: 300_000 });
+  return { binary: spec.binary, sha256: actual, bytes: bytes.length, target: spec.target };
 }
 
 function run(command, args, options = {}) {
@@ -544,12 +569,30 @@ async function main() {
     const mirrors = [
       ["mirror.gcr.io/library/postgres:16.15-alpine", "postgres:16.15-alpine"],
       ["mirror.gcr.io/library/redis:7.4.11-alpine", "redis:7.4.11-alpine"],
-      ["mirror.gcr.io/minio/minio:RELEASE.2025-09-07T16-13-09Z", "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z"],
-      ["mirror.gcr.io/minio/mc:RELEASE.2025-08-13T08-35-41Z", "quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z"],
+      ["mirror.gcr.io/library/alpine:3.22", "mirror.gcr.io/library/alpine:3.22"],
     ];
     for (const [source, target] of mirrors) {
       await run("docker", ["pull", source], { timeoutMs: 180_000 });
-      await run("docker", ["tag", source, target]);
+      if (source !== target) await run("docker", ["tag", source, target]);
+    }
+    const assembled = [];
+    for (const spec of [
+      {
+        binary: "minio",
+        url: "https://github.com/minio/minio/releases/download/RELEASE.2025-09-07T16-13-09Z/minio.linux-amd64.RELEASE.2025-09-07T16-13-09Z",
+        sha256: "7c5bd8512c6e966455b1d198209358b2d191c77a83ab377c4073281065fb855f",
+        target: "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z",
+        packages: "curl ca-certificates",
+      },
+      {
+        binary: "mc",
+        url: "https://github.com/minio/mc/releases/download/RELEASE.2025-08-13T08-35-41Z/mc.linux-amd64.RELEASE.2025-08-13T08-35-41Z",
+        sha256: "01f866e9c5f9b87c2b09116fa5d7c06695b106242d829a8bb32990c00312e891",
+        target: "quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z",
+        packages: "",
+      },
+    ]) {
+      assembled.push(await assembleOfficialImage(spec));
     }
     await run("docker", [
       "compose", "-p", project, "-f", composeFile, "--env-file", envFile,
@@ -602,7 +645,8 @@ async function main() {
     return {
       images,
       minioObjects: state.evidence.minioBefore,
-      minioMirror: "Public mirror.gcr.io tags retagged to the compose image names after quay.io and Docker Hub rejected anonymous pulls",
+      assembled,
+      minioMirror: "PostgreSQL, Redis, and Alpine came from mirror.gcr.io. MinIO and mc are the pinned GitHub release binaries, checksum-verified and tagged to the compose image names after quay.io, Docker Hub, and mirror.gcr.io could not provide those images. compose.yaml was not modified.",
     };
   });
 
@@ -1341,6 +1385,7 @@ async function cleanup() {
     if (existsSync(file)) writeFileSync(file, redact(readFileSync(file, "utf8")));
   }
   if (existsSync(envFile)) rmSync(envFile, { force: true });
+  for (const dir of state.imageDirs) rmSync(dir, { recursive: true, force: true });
   for (const name of pending) stages.push({ name, status: "skipped", reason: "earlier stage did not pass" });
   const failed = stages.some((item) => item.status === "failed" || item.status === "blocked") || state.evidence.composeDownFailed === true;
   const results = {
