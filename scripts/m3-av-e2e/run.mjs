@@ -514,6 +514,7 @@ async function main() {
     mkdirSync(dockerConfigDir, { recursive: true });
     writeFileSync(join(dockerConfigDir, "config.json"), "{}\n");
     process.env.DOCKER_CONFIG = dockerConfigDir;
+    delete process.env.DOCKER_AUTH_CONFIG;
     try {
       await run("docker", ["info"], { timeoutMs: 30_000 });
     } catch (error) {
@@ -540,9 +541,17 @@ async function main() {
       "",
     ].join("\n"));
     state.composeStarted = true;
+    const mirrors = [
+      ["minio/minio:RELEASE.2025-09-07T16-13-09Z", "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z"],
+      ["minio/mc:RELEASE.2025-08-13T08-35-41Z", "quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z"],
+    ];
+    for (const [source, target] of mirrors) {
+      await run("docker", ["pull", source], { timeoutMs: 180_000 });
+      await run("docker", ["tag", source, target]);
+    }
     await run("docker", [
       "compose", "-p", project, "-f", composeFile, "--env-file", envFile,
-      "up", "-d", "postgres", "redis", "minio", "minio-init",
+      "up", "--pull", "missing", "-d", "postgres", "redis", "minio", "minio-init",
     ], { timeoutMs: 180_000 });
     const started = Date.now();
     let ready = false;
@@ -588,7 +597,11 @@ async function main() {
       images.push({ image, inspect: inspected.stdout.trim() });
     }
     state.evidence.minioBefore = await countMinio();
-    return { images, minioObjects: state.evidence.minioBefore };
+    return {
+      images,
+      minioObjects: state.evidence.minioBefore,
+      minioMirror: "Docker Hub release tags retagged to the compose quay.io names after quay.io rejected anonymous pulls",
+    };
   });
 
   await stage("identity", async () => {

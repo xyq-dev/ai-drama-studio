@@ -37,6 +37,16 @@ Web 模拟测试日志里的 `ECONNREFUSED 127.0.0.1:3000` 来自既有 happy-do
 - Artifact `m3-av-e2e-evidence`：https://github.com/xyq-dev/ai-drama-studio/actions/runs/36805856314 ，artifact id `11137134163`，1702 bytes，到期 2026-10-08。
 - 这不是产品缺陷。后续 harness 只把 Docker 配置换成空的匿名配置，避免 runner 凭据被发给 quay.io。`infra/compose.yaml` 未改。
 
+## Actions 第二次运行
+
+验收代码 `f3c0be3609b02a7fbd79895cb1d4be26f04dce43`。
+
+- Run：https://github.com/xyq-dev/ai-drama-studio/actions/runs/36806296139
+- Job：https://github.com/xyq-dev/ai-drama-studio/actions/runs/36806296139/job/110191265251
+- 结论：failure。仍停在 `docker compose up`。空的 `DOCKER_CONFIG` 没有避开拒绝。
+- 日志：`minio Error unauthorized: access to the requested resource is not authorized`。postgres 与 redis 的 pull 被中断。Migration、API、页面和播放未开始。
+- 随后的 harness 从 Docker Hub 拉取同一 MinIO / mc 发行标签，再标记成 compose 文件里的 `quay.io` 名称，并用 `--pull missing` 启动。`infra/compose.yaml` 仍不修改。
+
 ## 尚未执行
 
 - 真实页面、API、Worker、PostgreSQL 资产与成本和同源播放。第一次运行没有进入这些阶段。本机没有 Docker。
