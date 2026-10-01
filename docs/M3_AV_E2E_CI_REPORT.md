@@ -55,11 +55,32 @@ Web 模拟测试日志里的 `ECONNREFUSED 127.0.0.1:3000` 来自既有 happy-do
 - Job：https://github.com/xyq-dev/ai-drama-studio/actions/runs/36806545713/job/110192042521
 - 结论：failure。`docker pull minio/minio:RELEASE.2025-09-07T16-13-09Z` 返回 `pull access denied ... denied: requested access to the resource is denied`。
 - Migration、API、页面和播放仍未开始。
-- 下一次只改拉取来源为 `mirror.gcr.io` 上的同一标签，再标记成 compose 使用的名称。compose 文件仍不修改。如果公开镜像源仍拒绝，就停止再试，并保持失败记录。
+- 随后的 harness 改为从 `mirror.gcr.io` 拉取同一标签，再标记成 compose 使用的名称，并用 `--pull missing` 启动。`infra/compose.yaml` 仍不修改。
+
+## Actions 第四次运行
+
+验收代码 `75a4e887a8d0aabf8cb347a7db209c4250261eec`。这是 Actions 实际测试的 SHA。
+
+- Run：https://github.com/xyq-dev/ai-drama-studio/actions/runs/36806846317
+- Job：https://github.com/xyq-dev/ai-drama-studio/actions/runs/36806846317/job/110192983861
+- Artifact：https://github.com/xyq-dev/ai-drama-studio/actions/runs/36806846317/artifacts/11137977338 ，id `11137977338`，1646 bytes，名称 `m3-av-e2e-evidence`。
+- 结论：failure。Checkout、pnpm、Node 24.21.0、frozen install、Chrome for Testing、`pnpm build`（9/9）和 harness check 已成功。失败步骤仍是 “Run real page, API, worker, and database acceptance”，exit 1。
+- `results.json`：docker 阶段 passed。compose 阶段 failed。`docker pull mirror.gcr.io/minio/minio:RELEASE.2025-09-07T16-13-09Z` 返回 `manifest unknown: Failed to fetch "RELEASE.2025-09-07T16-13-09Z"`。拉取按 postgres、redis、minio、mc 顺序执行，失败点是第三个镜像，因此 compose `up` 没有启动。
+- `identity` 与 `chrome` 为 null。其后 identity、migrate-provision、processes、source-chain、page-submit、playback、content-headers、png-draft-viewport、idempotency-retry、revision-history、gates、mock-boundary、recovery-disk、recovery-flag 全部 skipped。`composeDown` exit 0。
+- 公开镜像源同样拿不到 compose 文件里的 MinIO 发行标签。停止再换 registry，不加入 secrets，不修改 `infra/compose.yaml`。这不是产品缺陷。
+
+## 最终 SHA
+
+Actions 实际测试 `75a4e887a8d0aabf8cb347a7db209c4250261eec`。
+
+- 提交：https://github.com/xyq-dev/ai-drama-studio/commit/75a4e887a8d0aabf8cb347a7db209c4250261eec
+- 普通 push：`3101278..75a4e88`，目标 `feat/m3-av-workbench`。没有 force push，没有 main，没有 PR，没有 merge。
+- 该次 CI 结论是 failure。镜像拉取之后的报告提交只改本文件，workflow paths 不包含 `docs/**`，不会再触发验收。
 
 ## 尚未执行
 
-- 真实页面、API、Worker、PostgreSQL 资产与成本和同源播放。第一次运行没有进入这些阶段。本机没有 Docker。
-- Migration。只允许在 CI 新建且已核验为空的隔离库上执行。第一次运行在镜像拉取失败，Migration 未执行。
-- 成本冲突、全部暂时故障与取消竞争、隐藏标签页，以及 Windows 和其余 Compose 故障组合。
-- 匿名拉取之后的第二次运行结果，在该 run 结束后补记。第一次失败不能写成 CI 通过。
+- 真实页面、API、Worker、PostgreSQL 资产与成本、同源视频/音频播放。四次运行都停在镜像拉取，本机没有 Docker。
+- Migration。只允许在 CI 新建且已核验为空的隔离库上执行。四次运行都没有读到 `current_database` 或 public 表数，Migration 未执行，没有 DROP SCHEMA。
+- 两次 `mock-av:provision` 幂等核对、页面点击、202、只读账本、Chrome 播放、内容头、PNG、草稿与 390px、幂等与手动重试、版本历史、门禁、MinIO 对象边界、磁盘恢复和关 AV 恢复。
+- 成本冲突、全部暂时故障与取消竞争、隐藏标签页，以及 Windows 和其余未触发的 Compose 故障组合。
+- 既有 integration 套件、新 Migration、应用 pack、部署、付费 Provider、ComfyUI、真实模型。
