@@ -31,6 +31,7 @@ export function ComposeJobPanel(props: {
   client: StudioClient;
 }) {
   const epoch = useRef(0);
+  const submitEpoch = useRef(0);
   const [boundRevision, setBoundRevision] = useState(props.revisionId);
   const [job, setJob] = useState<JobView | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -40,6 +41,7 @@ export function ComposeJobPanel(props: {
   const [busy, setBusy] = useState(false);
   if (boundRevision !== props.revisionId) {
     epoch.current += 1;
+    submitEpoch.current += 1;
     setBoundRevision(props.revisionId);
     setJob(null);
     setNotice(null);
@@ -82,24 +84,26 @@ export function ComposeJobPanel(props: {
 
   async function start() {
     if (!props.body) return;
-    const token = ++epoch.current;
+    const request = ++submitEpoch.current;
     setBusy(true);
     setError(null);
     setNotice(null);
     try {
-      const result = await props.client.write<JobView>({
+      const result = await props.client.write<{ id?: string; jobId?: string; state?: string }>({
         path: `/shot-revisions/${props.revisionId}/compose`,
         body: props.body,
         idempotencyKey: crypto.randomUUID(),
       });
-      if (token !== epoch.current) return;
-      setJob(result.body);
+      if (request !== submitEpoch.current) return;
+      const id = result.body.id ?? result.body.jobId;
+      if (!id) throw new ApiError(result.status, "COMPOSE_RESPONSE_INVALID", "合成响应没有任务编号");
+      setJob({ id, state: result.body.state ?? "QUEUED", errorCode: null, errorMessage: null });
       setNotice("合成任务已受理");
     } catch (caught) {
-      if (token !== epoch.current) return;
+      if (request !== submitEpoch.current) return;
       setError(caught instanceof ApiError ? caught.detail : "合成提交失败");
     } finally {
-      if (token === epoch.current) setBusy(false);
+      if (request === submitEpoch.current) setBusy(false);
     }
   }
 
