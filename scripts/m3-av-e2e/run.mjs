@@ -542,8 +542,10 @@ async function main() {
     ].join("\n"));
     state.composeStarted = true;
     const mirrors = [
-      ["minio/minio:RELEASE.2025-09-07T16-13-09Z", "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z"],
-      ["minio/mc:RELEASE.2025-08-13T08-35-41Z", "quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z"],
+      ["mirror.gcr.io/library/postgres:16.15-alpine", "postgres:16.15-alpine"],
+      ["mirror.gcr.io/library/redis:7.4.11-alpine", "redis:7.4.11-alpine"],
+      ["mirror.gcr.io/minio/minio:RELEASE.2025-09-07T16-13-09Z", "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z"],
+      ["mirror.gcr.io/minio/mc:RELEASE.2025-08-13T08-35-41Z", "quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z"],
     ];
     for (const [source, target] of mirrors) {
       await run("docker", ["pull", source], { timeoutMs: 180_000 });
@@ -600,7 +602,7 @@ async function main() {
     return {
       images,
       minioObjects: state.evidence.minioBefore,
-      minioMirror: "Docker Hub release tags retagged to the compose quay.io names after quay.io rejected anonymous pulls",
+      minioMirror: "Public mirror.gcr.io tags retagged to the compose image names after quay.io and Docker Hub rejected anonymous pulls",
     };
   });
 

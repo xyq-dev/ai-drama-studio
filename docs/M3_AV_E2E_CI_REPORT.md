@@ -47,6 +47,16 @@ Web 模拟测试日志里的 `ECONNREFUSED 127.0.0.1:3000` 来自既有 happy-do
 - 日志：`minio Error unauthorized: access to the requested resource is not authorized`。postgres 与 redis 的 pull 被中断。Migration、API、页面和播放未开始。
 - 随后的 harness 从 Docker Hub 拉取同一 MinIO / mc 发行标签，再标记成 compose 文件里的 `quay.io` 名称，并用 `--pull missing` 启动。`infra/compose.yaml` 仍不修改。
 
+## Actions 第三次运行
+
+验收代码 `31012780306e6616659db46dd1555f843cce09c0`。
+
+- Run：https://github.com/xyq-dev/ai-drama-studio/actions/runs/36806545713
+- Job：https://github.com/xyq-dev/ai-drama-studio/actions/runs/36806545713/job/110192042521
+- 结论：failure。`docker pull minio/minio:RELEASE.2025-09-07T16-13-09Z` 返回 `pull access denied ... denied: requested access to the resource is denied`。
+- Migration、API、页面和播放仍未开始。
+- 下一次只改拉取来源为 `mirror.gcr.io` 上的同一标签，再标记成 compose 使用的名称。compose 文件仍不修改。如果公开镜像源仍拒绝，就停止再试，并保持失败记录。
+
 ## 尚未执行
 
 - 真实页面、API、Worker、PostgreSQL 资产与成本和同源播放。第一次运行没有进入这些阶段。本机没有 Docker。
