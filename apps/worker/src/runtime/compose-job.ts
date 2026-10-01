@@ -4,6 +4,7 @@ import { copyFile, lstat, mkdir, open, readFile, realpath, rename, rm, stat } fr
 import { isAbsolute, join, resolve, sep } from "node:path";
 import {
   COMPOSE_RENDER_PROFILE,
+  canonicalInputHash,
   type ComposeJobSnapshot,
 } from "@ai-drama/domain";
 import {
@@ -116,7 +117,11 @@ function readRendererFailure(detail: string): { code?: string } {
 }
 
 function sameProfile(value: unknown): boolean {
-  return JSON.stringify(value) === JSON.stringify(COMPOSE_RENDER_PROFILE);
+  try {
+    return canonicalInputHash({ renderProfile: value }) === canonicalInputHash({ renderProfile: COMPOSE_RENDER_PROFILE });
+  } catch {
+    return false;
+  }
 }
 
 async function stageSources(root: string, attemptDir: string, snapshot: ComposeJobSnapshot): Promise<void> {
