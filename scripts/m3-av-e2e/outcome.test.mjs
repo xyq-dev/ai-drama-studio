@@ -115,6 +115,31 @@ test("success linkage requires the same attempt and request", () => {
   assert.equal(assertLinkage(snapshot).attempt.id, "attempt-1");
 });
 
+test("image success can record an attempt link without a cost row", () => {
+  const snapshot = {
+    jobId: "job-image",
+    jobErrorCode: null,
+    attempt: {
+      id: "attempt-image",
+      attemptNo: 1,
+      providerRequestId: "request-image",
+      providerConfigurationId: "provider-image",
+      finishedAt: "2026-10-01T00:00:00.000Z",
+      errorJson: null,
+    },
+    asset: {
+      sourceJobAttemptId: "attempt-image",
+      sourceGenerationJobId: "job-image",
+      providerRequestId: "request-image",
+      providerConfigurationId: "provider-image",
+    },
+    cost: null,
+    submitCallsMeasured: false,
+  };
+  assert.equal(assertLinkage(snapshot, { expectCost: false }).cost, null);
+  assert.throws(() => assertLinkage(snapshot), /cost missing/);
+});
+
 test("cost job_attempt_id mismatch fails linkage", () => {
   assert.throws(() => assertLinkage({
     jobId: "job-1",

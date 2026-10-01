@@ -1449,7 +1449,7 @@ async function main() {
       if (imageLedger.assets.length !== 1 || imageLedger.assets[0].kind !== "IMAGE") {
         throw new Error("image did not persist an asset");
       }
-      const imageLink = assertLinkage(linkageSnapshot(imageLedger));
+      const imageLink = assertLinkage(linkageSnapshot(imageLedger), { expectCost: false });
       const minio = await countMinio();
       if (minio !== state.evidence.minioBefore) throw new Error(`MinIO changed after recovery ${minio}`);
       return {
@@ -1459,6 +1459,8 @@ async function main() {
         attempt,
         imageJobId: image.body.jobId,
         imageLink,
+        imageCostWritten: false,
+        imageCostNote: "mock-image-generation persistMockImageOutput calls completeAttemptWithAsset without actualCost, so this image job has no cost_ledger row",
         minio,
       };
     } finally {
