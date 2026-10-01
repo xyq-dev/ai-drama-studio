@@ -95,6 +95,7 @@ workspace、project 及完整 episode/scene scope。revision 历史保留 `items
 | `POST /shot-revisions/:id/review` | 审核镜头分镜版本 | Owner；key；`REVIEW_CONFLICT` |
 | `POST /shot-revisions/:id/generate-image` | 图像生成 workflow | Owner；key；`SOURCE_STALE` |
 | `POST /shot-revisions/:id/generate-video` | 视频生成 workflow | Owner；key；`REVIEW_REQUIRED`,`SOURCE_STALE` |
+| `POST /shot-revisions/:revisionId/compose-preflight` | 同步单镜合成预检。请求仅 `{videoAssetId, audioAssetId?, musicAssetId?, subtitleAssetId?}`，缺失的可选项规范为 null。成功 `200`，`Cache-Control: private, no-store`，返回 `{schema:"m4.shot.compose.preflight.v1", manifest, inputHash, guards}`。不创建任务、资产、账本、outbox 或领域事件，不使用 IdempotencyRecord，也不执行 FFmpeg | Owner；无幂等结果缓存；`NOT_FOUND`,`REVIEW_REQUIRED`,`STALE_RECALCULATION_PENDING`,`COMPOSE_INPUT_INVALID`,`VALIDATION_ERROR`,`CONFIGURATION_ERROR` |
 
 ## Assets, Generation Jobs, Workflow Runs
 

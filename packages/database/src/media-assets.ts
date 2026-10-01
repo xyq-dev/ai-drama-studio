@@ -1,3 +1,12 @@
+import {
+  buildComposePreflight,
+  type ComposeAssetFacts,
+  type ComposeAttemptFacts,
+  type ComposeJobFacts,
+  type ComposePreflightResponse,
+  type ComposePreflightSelection,
+  DomainError,
+} from "@ai-drama/domain";
 import type { PoolClient, QueryResultRow } from "pg";
 import { PersistenceError, type DatabasePool, type JobPersistenceService } from "./job-service";
 import { guardSynchronousMockImageCost, recordProviderActualCost, type ProviderActualCostInput } from "./mock-media-cost";
@@ -39,13 +48,14 @@ export interface MediaAssetRecord {
   sourceShotRevisionId: string | null;
   providerRequestId: string | null;
   durationMs: number | null;
+  rowVersion: number;
   createdAt: string;
 }
 
 const ASSET_COLUMNS = `id, project_id, kind, storage_provider, object_key, mime_type,
                 byte_size, checksum_sha256, width, height, duration_ms, status, review_status,
                 source_job_attempt_id, source_generation_job_id, source_shot_revision_id,
-                provider_request_id, created_at`;
+                provider_request_id, row_version, created_at`;
 
 export class MediaAssetStore {
   constructor(private readonly pool: DatabasePool) {}
@@ -221,6 +231,28 @@ export class MediaAssetStore {
       const row = result.rows[0];
       if (!row) throw new PersistenceError("NOT_FOUND", "Asset not found");
       return mapAsset(row);
+    } finally {
+      client.release();
+    }
+  }
+
+  async preflightCompose(
+    workspaceId: string,
+    shotRevisionId: string,
+    selection: ComposePreflightSelection,
+  ): Promise<ComposePreflightResponse> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      try {
+        const result = await preflightComposeWithClient(client, workspaceId, shotRevisionId, selection);
+        await client.query("COMMIT");
+        return result;
+      } catch (error) {
+        await client.query("ROLLBACK");
+        if (error instanceof DomainError) throw new PersistenceError(error.code, error.message);
+        throw error;
+      }
     } finally {
       client.release();
     }
@@ -562,6 +594,141 @@ function mapAsset(row: QueryResultRow): MediaAssetRecord {
       row.source_shot_revision_id === null ? null : String(row.source_shot_revision_id),
     providerRequestId: row.provider_request_id == null ? null : String(row.provider_request_id),
     durationMs: row.duration_ms === null || row.duration_ms === undefined ? null : Number(row.duration_ms),
+    rowVersion: Number(row.row_version),
     createdAt: new Date(row.created_at as Date | string).toISOString(),
   };
+}
+
+async function preflightComposeWithClient(
+  client: PoolClient,
+  workspaceId: string,
+  shotRevisionId: string,
+  selection: ComposePreflightSelection,
+): Promise<ComposePreflightResponse> {
+  const scope = await client.query<{ project_id: string } & QueryResultRow>(
+    "SELECT project_id FROM shot_revision WHERE id = $1 AND workspace_id = $2",
+    [shotRevisionId, workspaceId],
+  );
+  const projectId = scope.rows[0]?.project_id;
+  if (!projectId) throw new PersistenceError("NOT_FOUND", "Shot revision not found");
+  await assertUsableShotWithClient(client, workspaceId, projectId, shotRevisionId, true);
+  const ids = [selection.videoAssetId, selection.audioAssetId, selection.musicAssetId, selection.subtitleAssetId]
+    .filter((id): id is string => id !== null)
+    .sort();
+  const assets = await client.query<QueryResultRow>(
+    `SELECT id, workspace_id, project_id, kind, storage_provider, mime_type, byte_size, checksum_sha256,
+            width, height, duration_ms, status, review_status, source_job_attempt_id,
+            source_generation_job_id, source_shot_revision_id, provider_configuration_id,
+            provider_request_id, row_version
+       FROM asset
+      WHERE workspace_id = $1 AND id = ANY($2::uuid[])
+      ORDER BY id
+      FOR UPDATE`,
+    [workspaceId, ids],
+  );
+  if (assets.rows.length !== ids.length) throw new PersistenceError("NOT_FOUND", "Asset not found");
+  const jobIds = [...new Set(assets.rows.map((row) => String(row.source_generation_job_id ?? "")))].filter((id) => id.length > 0).sort();
+  const attemptIds = [...new Set(assets.rows.map((row) => String(row.source_job_attempt_id ?? "")))].filter((id) => id.length > 0).sort();
+  const jobs = jobIds.length === 0 ? { rows: [] } : await client.query<QueryResultRow>(
+    `SELECT id, workspace_id, project_id, source_shot_revision_id, kind, state
+       FROM generation_job
+      WHERE workspace_id = $1 AND id = ANY($2::uuid[])
+      ORDER BY id
+      FOR SHARE`,
+    [workspaceId, jobIds],
+  );
+  const attempts = attemptIds.length === 0 ? { rows: [] } : await client.query<QueryResultRow>(
+    `SELECT id, generation_job_id, attempt_no, provider_request_id, provider_configuration_id,
+            finished_at IS NOT NULL AS finished
+       FROM job_attempt
+      WHERE workspace_id = $1 AND id = ANY($2::uuid[])
+      ORDER BY id
+      FOR SHARE`,
+    [workspaceId, attemptIds],
+  );
+  const jobsById = new Map(jobs.rows.map((row) => [String(row.id), row]));
+  const attemptsById = new Map(attempts.rows.map((row) => [String(row.id), row]));
+  const byId = new Map(assets.rows.map((row) => [String(row.id), composeFacts(workspaceId, row, jobsById, attemptsById)]));
+  return buildComposePreflight({
+    workspaceId,
+    projectId,
+    shotRevisionId,
+    assets: {
+      video: requiredFacts(byId, selection.videoAssetId),
+      audio: selection.audioAssetId ? requiredFacts(byId, selection.audioAssetId) : null,
+      music: selection.musicAssetId ? requiredFacts(byId, selection.musicAssetId) : null,
+      subtitle: selection.subtitleAssetId ? requiredFacts(byId, selection.subtitleAssetId) : null,
+    },
+  });
+}
+
+function requiredFacts(byId: Map<string, ComposeAssetFacts>, assetId: string): ComposeAssetFacts {
+  const facts = byId.get(assetId);
+  if (!facts) throw new PersistenceError("NOT_FOUND", "Asset not found");
+  return facts;
+}
+
+function composeFacts(
+  workspaceId: string,
+  row: QueryResultRow,
+  jobsById: Map<string, QueryResultRow>,
+  attemptsById: Map<string, QueryResultRow>,
+): ComposeAssetFacts {
+  const jobRow = row.source_generation_job_id == null ? undefined : jobsById.get(String(row.source_generation_job_id));
+  const attemptRow = row.source_job_attempt_id == null ? undefined : attemptsById.get(String(row.source_job_attempt_id));
+  return {
+    id: String(row.id),
+    workspaceId,
+    projectId: String(row.project_id),
+    shotRevisionId: row.source_shot_revision_id == null ? null : String(row.source_shot_revision_id),
+    kind: String(row.kind),
+    mimeType: String(row.mime_type),
+    byteSize: integerOrZero(row.byte_size),
+    checksumSha256: String(row.checksum_sha256),
+    width: row.width === null || row.width === undefined ? null : integerOrZero(row.width),
+    height: row.height === null || row.height === undefined ? null : integerOrZero(row.height),
+    durationMs: row.duration_ms === null || row.duration_ms === undefined ? null : integerOrZero(row.duration_ms),
+    status: String(row.status),
+    reviewStatus: String(row.review_status),
+    storageProvider: String(row.storage_provider),
+    sourceGenerationJobId: row.source_generation_job_id == null ? null : String(row.source_generation_job_id),
+    sourceJobAttemptId: row.source_job_attempt_id == null ? null : String(row.source_job_attempt_id),
+    providerRequestId: row.provider_request_id == null ? null : String(row.provider_request_id),
+    providerConfigurationId: row.provider_configuration_id == null ? null : String(row.provider_configuration_id),
+    rowVersion: integerOrZero(row.row_version),
+    job: jobRow ? composeJob(jobRow) : null,
+    attempt: attemptRow ? composeAttempt(attemptRow) : null,
+  };
+}
+
+function composeJob(row: QueryResultRow): ComposeJobFacts {
+  return {
+    id: String(row.id),
+    workspaceId: String(row.workspace_id),
+    projectId: String(row.project_id),
+    shotRevisionId: row.source_shot_revision_id == null ? null : String(row.source_shot_revision_id),
+    kind: String(row.kind),
+    state: String(row.state),
+  };
+}
+
+function composeAttempt(row: QueryResultRow): ComposeAttemptFacts {
+  return {
+    id: String(row.id),
+    generationJobId: String(row.generation_job_id),
+    attemptNo: integerOrZero(row.attempt_no),
+    providerRequestId: row.provider_request_id == null ? null : String(row.provider_request_id),
+    providerConfigurationId: row.provider_configuration_id == null ? null : String(row.provider_configuration_id),
+    finished: row.finished === true,
+  };
+}
+
+function integerOrZero(value: unknown): number {
+  if (typeof value === "bigint") return Number.isSafeInteger(Number(value)) ? Number(value) : 0;
+  if (typeof value === "number" && Number.isSafeInteger(value)) return value;
+  if (typeof value === "string" && /^-?\d+$/.test(value)) {
+    const parsed = Number(value);
+    if (Number.isSafeInteger(parsed)) return parsed;
+  }
+  return 0;
 }

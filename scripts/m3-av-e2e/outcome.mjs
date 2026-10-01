@@ -24,6 +24,9 @@ export const requiredStages = [
   "media-terminal-race",
   "media-observation-replay",
   "media-shot-isolation",
+  "compose-preflight-page",
+  "compose-preflight-gates",
+  "compose-preflight-readonly",
 ];
 
 export function acceptanceFailed(input) {

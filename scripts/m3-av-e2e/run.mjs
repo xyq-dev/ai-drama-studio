@@ -15,6 +15,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { rename, rm, writeFile } from "node:fs/promises";
+import { composePreflightGates, composePreflightPage, composePreflightReadonly } from "./compose-preflight.mjs";
 import { mediaCancel, mediaObservationReplay, mediaShotIsolation, mediaTerminalRace } from "./lifecycle.mjs";
 import { acceptanceExitCode, acceptanceFailed, assertLinkage, requiredStages } from "./outcome.mjs";
 
@@ -78,7 +79,7 @@ const stages = [];
 const pending = [...requiredStages];
 
 const notRun = [
-  "成本冲突",
+  "尚未覆盖的其他媒体组合成本冲突（图片成本冲突已由 image-cost-guard 通过）",
   "其余未在本轮触发的暂时故障组合",
   "隐藏标签页",
   "Windows 与其余未在本轮触发的 Compose 故障组合",
@@ -1956,6 +1957,9 @@ async function main() {
   await stage("media-terminal-race", () => mediaTerminalRace(lifecycle));
   await stage("media-observation-replay", () => mediaObservationReplay(lifecycle));
   await stage("media-shot-isolation", () => mediaShotIsolation(lifecycle));
+  await stage("compose-preflight-page", () => composePreflightPage(lifecycle));
+  await stage("compose-preflight-gates", () => composePreflightGates(lifecycle));
+  await stage("compose-preflight-readonly", () => composePreflightReadonly(lifecycle));
 }
 
 function lifecycleContext() {
@@ -1976,7 +1980,6 @@ function lifecycleContext() {
     breakMockDir,
     restoreMockDir,
     startWorker,
-    stopApp,
     createApprovedShot,
     approve,
     shotPayload,
@@ -1987,6 +1990,16 @@ function lifecycleContext() {
     assertSuccessfulImage,
     promptText,
     dialogueText,
+    draftMarker,
+    otherWorkspaceId,
+    workerOrigin,
+    outputDir,
+    spawnApp,
+    stopApp,
+    waitHttp,
+    appEnv,
+    childEnv,
+    recordGate,
   };
 }
 
@@ -2066,7 +2079,7 @@ async function cleanup() {
     events: state.httpEvents,
     expectedGates: state.expectedGates,
   }, null, 2));
-  for (const name of ["api.log", "worker.log", "web.log", "api-other.log", "api-off.log", "api-prod.log", "api-default.log"]) {
+  for (const name of ["api.log", "worker.log", "web.log", "api-other.log", "api-off.log", "api-prod.log", "api-default.log", "api-compose-other.log", "api-compose-off.log", "api-compose-sm-off.log", "api-compose-prod.log", "api-compose-unset.log"]) {
     const file = join(outputDir, name);
     if (existsSync(file)) writeFileSync(file, redact(readFileSync(file, "utf8")));
   }

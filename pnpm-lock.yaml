@@ -95,6 +95,9 @@ importers:
       '@ai-drama/database':
         specifier: workspace:*
         version: link:../../packages/database
+      '@ai-drama/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
       '@ai-drama/health':
         specifier: workspace:*
         version: link:../../packages/health

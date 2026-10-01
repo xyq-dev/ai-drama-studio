@@ -73,6 +73,18 @@ export function deriveWorkflowRunState(jobs: readonly WorkflowJobSummary[]): Wor
 }
 
 export {
+  COMPOSE_PREFLIGHT_SCHEMA,
+  COMPOSE_VIDEO_DURATION_MAX_MS,
+  buildComposePreflight,
+  parseComposePreflightRequest,
+  type ComposeAssetFacts,
+  type ComposeAttemptFacts,
+  type ComposeJobFacts,
+  type ComposePreflightResponse,
+  type ComposePreflightRole,
+  type ComposePreflightSelection,
+} from "./compose-preflight";
+export {
   FRESHNESS_STATUSES,
   PRODUCTION_EPISODE_NUMBERS,
   REVIEW_STATUSES,

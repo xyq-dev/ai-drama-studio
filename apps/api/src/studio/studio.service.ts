@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { DomainError, parseComposePreflightRequest } from "@ai-drama/domain";
 import {
   JobPersistenceService,
   MediaAssetStore,
@@ -640,6 +641,27 @@ export class StudioService {
     if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
     const { projectId } = await this.mediaAssets.requireShotScope(this.workspaceId, shotRevisionId);
     return { items: await this.mediaAssets.listShotAssets(this.workspaceId, projectId, shotRevisionId) };
+  }
+
+  async preflightShotCompose(shotRevisionId: string, body: unknown) {
+    let selection;
+    try {
+      selection = parseComposePreflightRequest(rejectClientWorkspace(body));
+    } catch (error) {
+      if (error instanceof DomainError) throw new PersistenceError(error.code, error.message);
+      throw error;
+    }
+    if (!this.mockAvEnabled) {
+      throw new PersistenceError("CONFIGURATION_ERROR", "Mock video and speech content is not enabled");
+    }
+    if ((selection.subtitleAssetId || selection.musicAssetId) && !this.mockSmEnabled) {
+      throw new PersistenceError("CONFIGURATION_ERROR", "Mock subtitle and music content is not enabled");
+    }
+    if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
+    return {
+      status: 200,
+      body: await this.mediaAssets.preflightCompose(this.workspaceId, shotRevisionId, selection),
+    };
   }
 
   async readMockAssetContent(assetId: string): Promise<{ mimeType: string; bytes: Buffer }> {

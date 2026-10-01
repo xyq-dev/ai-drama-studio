@@ -36,6 +36,15 @@ export class StudioClient {
     return parseBody<T>(response);
   }
 
+  async postJson<T>(path: string, body: unknown): Promise<T> {
+    const response = await this.request(`${this.prefix}${path}`, {
+      method: "POST",
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return parseBody<T>(response);
+  }
+
   async write<T>(request: WriteRequest): Promise<WriteResult<T>> {
     const headers: Record<string, string> = {
       Accept: "application/json",

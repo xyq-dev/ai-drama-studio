@@ -14,6 +14,7 @@ const UUID_PARAM_PIPE = {
 
 interface StatusResponse {
   status(code: number): void;
+  setHeader(name: string, value: string): void;
 }
 
 interface ContentRequest {
@@ -516,6 +517,16 @@ export class StudioController {
   ) {
     return this.send(response,
       this.studio.generateShotTts(revisionId, body, this.context(key, trace)));
+  }
+
+  @Post("shot-revisions/:revisionId/compose-preflight")
+  composePreflight(
+    @Param("revisionId", UUID_PARAM_PIPE) revisionId: string,
+    @Body() body: unknown,
+    @Res({ passthrough: true }) response: StatusResponse,
+  ) {
+    response.setHeader("Cache-Control", "private, no-store");
+    return this.send(response, this.studio.preflightShotCompose(revisionId, body));
   }
 
   @Get("shot-revisions/:revisionId/assets")

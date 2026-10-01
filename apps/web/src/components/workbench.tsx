@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ComposePreflight } from "./compose-preflight";
 import { ApiError, StudioClient } from "../lib/studio-client";
 import {
   LIMITS,
@@ -1553,6 +1554,7 @@ function ScenePane(props: {
             imageEpoch={props.imageEpoch}
             onAccepted={props.onSaved}
           />
+          <ComposePreflight revisionId={shotCurrent.id} refreshEpoch={props.imageEpoch} />
           </div>
           <RevisionColumn
             items={visibleShot.items.map((item) => ({

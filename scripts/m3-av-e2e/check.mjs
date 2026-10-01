@@ -7,6 +7,7 @@ const smWorkflow = readFileSync(resolve(root, ".github/workflows/m3-sm-e2e.yml")
 const harness = [
   readFileSync(resolve(root, "scripts/m3-av-e2e/run.mjs"), "utf8"),
   readFileSync(resolve(root, "scripts/m3-av-e2e/lifecycle.mjs"), "utf8"),
+  readFileSync(resolve(root, "scripts/m3-av-e2e/compose-preflight.mjs"), "utf8"),
 ].join("\n").replace(/\r\n/g, "\n");
 const outcome = readFileSync(resolve(root, "scripts/m3-av-e2e/outcome.mjs"), "utf8").replace(/\r\n/g, "\n");
 
@@ -159,6 +160,39 @@ for (const snippet of forbidden) {
   if (lifecycleWorkflow.includes(snippet)) failures.push(`lifecycle workflow contains ${JSON.stringify(snippet)}`);
 }
 if (lifecycleWorkflow.includes("docs/**")) failures.push("lifecycle workflow paths include docs");
+
+for (const stage of ["compose-preflight-page", "compose-preflight-gates", "compose-preflight-readonly"]) {
+  if (!outcome.includes(`"${stage}"`)) failures.push(`outcome missing ${stage}`);
+  if (!harness.includes(`"${stage}"`)) failures.push(`harness missing ${stage}`);
+}
+if (!harness.includes("尚未覆盖的其他媒体组合成本冲突（图片成本冲突已由 image-cost-guard 通过）")) {
+  failures.push("harness still lists image cost conflicts as not run");
+}
+if (harness.includes("\n  \"成本冲突\",")) failures.push("harness still has a blanket cost-conflict not-run item");
+const composeWorkflow = readFileSync(resolve(root, ".github/workflows/m4-compose-preflight-e2e.yml"), "utf8").replace(/\r\n/g, "\n");
+const composeRequired = [
+  "branches:\n      - feat/m4-compose-preflight",
+  "workflow_dispatch:",
+  "contents: read",
+  "ubuntu-24.04",
+  "timeout-minutes: 60",
+  "node-version: 24.21.0",
+  "version: 10.17.0",
+  "pnpm install --frozen-lockfile",
+  "playwright install --with-deps chrome",
+  "pnpm m3-av-e2e:outcome",
+  "node scripts/m3-av-e2e/run.mjs",
+  "name: m4-compose-preflight-e2e-evidence",
+  "retention-days: 7",
+  "if: always()",
+];
+for (const snippet of composeRequired) {
+  if (!composeWorkflow.includes(snippet)) failures.push(`compose workflow missing ${JSON.stringify(snippet)}`);
+}
+for (const snippet of forbidden) {
+  if (composeWorkflow.includes(snippet)) failures.push(`compose workflow contains ${JSON.stringify(snippet)}`);
+}
+if (composeWorkflow.includes("docs/**")) failures.push("compose workflow paths include docs");
 
 if (failures.length > 0) {
   process.stderr.write(`${failures.join("\n")}\n`);
