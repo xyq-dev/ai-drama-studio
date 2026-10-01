@@ -360,7 +360,8 @@ export async function composeProvenanceStale(ctx) {
     throw new Error(`stale review history ${JSON.stringify(stale)}`);
   }
   const panel = ctx.state.page.getByRole("region", { name: "Mock 单镜合成预检" });
-  await panel.getByText("历史成片").waitFor({ timeout: 20_000 });
+  const approvedCard = panel.locator(`[data-composite-id="${assetId}"]`);
+  await approvedCard.getByText("审核 APPROVED · 历史成片").waitFor({ timeout: 20_000 });
   const text = await panel.innerText();
   if (!text.includes("APPROVED") || !text.includes("历史成片") || text.includes("当前有效")) {
     throw new Error(`page did not separate approval from validity ${text}`);
