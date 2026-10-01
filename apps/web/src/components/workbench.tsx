@@ -2196,15 +2196,22 @@ function ShotImagePanel(props: {
   const pendingVideo = useRef<{ fingerprint: string; key: string } | null>(null);
   const pendingSpeech = useRef<{ fingerprint: string; key: string } | null>(null);
   const requestToken = useRef(0);
+  const revisionEpoch = useRef(0);
+  const acceptedEpoch = useRef<{ image: number; video: number; speech: number }>({ image: -1, video: -1, speech: -1 });
   if (assetRevision !== props.currentRevisionId) {
+    revisionEpoch.current += 1;
     setAssetRevision(props.currentRevisionId);
     setCurrentAssets([]);
     setHistoryAssets([]);
     setPreviewErrors({});
     setListError(null);
+    setNotice(null);
+    setVideoNotice(null);
+    setSpeechNotice(null);
     setAcceptError(null);
     setVideoAcceptError(null);
     setSpeechAcceptError(null);
+    setBusy(null);
     pending.current = null;
     pendingVideo.current = null;
     pendingSpeech.current = null;
@@ -2229,7 +2236,7 @@ function ShotImagePanel(props: {
         setListError(null);
       } catch {
         if (cancelled || request !== requestToken.current) return;
-        setListError("图片列表刷新失败，可以重新查询。");
+        setListError("媒体列表刷新失败，可以重新查询。");
       }
     })();
     return () => {
@@ -2237,24 +2244,43 @@ function ShotImagePanel(props: {
     };
   }, [props.currentRevisionId, props.historyKey, props.imageEpoch, listAttempt]);
 
-  async function requery() {
+  function showNotice(channel: "image" | "video" | "speech", text: string) {
+    if (channel === "image") setNotice(text);
+    if (channel === "video") setVideoNotice(text);
+    if (channel === "speech") setSpeechNotice(text);
+  }
+
+  function showAcceptError(channel: "image" | "video" | "speech", text: string | null) {
+    if (channel === "image") setAcceptError(text);
+    if (channel === "video") setVideoAcceptError(text);
+    if (channel === "speech") setSpeechAcceptError(text);
+  }
+
+  async function requery(channel?: "image" | "video" | "speech") {
+    const epoch = revisionEpoch.current;
     setListAttempt((value) => value + 1);
     try {
       await props.onAccepted();
-      setAcceptError(null);
-      setVideoAcceptError(null);
-      setSpeechAcceptError(null);
+      if (epoch !== revisionEpoch.current) return;
+      if (channel) showAcceptError(channel, null);
     } catch {
-      setAcceptError("刷新失败，可以重新查询。已受理的结果仍然有效。");
+      if (epoch !== revisionEpoch.current) return;
+      if (channel && acceptedEpoch.current[channel] === epoch) {
+        showAcceptError(channel, "刷新失败，可以重新查询。已受理的结果仍然有效。");
+        return;
+      }
+      setListError("媒体列表刷新失败，可以重新查询。");
     }
   }
 
   async function submitMedia(channel: "image" | "video" | "speech") {
     const usable = channel === "image" ? props.usable : channel === "video" ? props.videoUsable : props.speechUsable;
     if (!usable || busy) return;
+    const epoch = revisionEpoch.current;
+    const revisionId = props.currentRevisionId;
     const value = channel === "image" ? seed : channel === "video" ? videoSeed : speechSeed;
     const slot = channel === "image" ? pending : channel === "video" ? pendingVideo : pendingSpeech;
-    const fingerprint = `${channel}|${props.currentRevisionId}|${value}`;
+    const fingerprint = `${channel}|${revisionId}|${value}`;
     const key = slot.current?.fingerprint === fingerprint ? slot.current.key : crypto.randomUUID();
     slot.current = { fingerprint, key };
     setBusy(channel);
@@ -2262,9 +2288,7 @@ function ShotImagePanel(props: {
     if (channel === "video") setVideoNotice(null);
     if (channel === "speech") setSpeechNotice(null);
     setListError(null);
-    if (channel === "image") setAcceptError(null);
-    if (channel === "video") setVideoAcceptError(null);
-    if (channel === "speech") setSpeechAcceptError(null);
+    showAcceptError(channel, null);
     const path = channel === "image" ? "generate-image" : channel === "video" ? "generate-video" : "generate-tts";
     const accepted = channel === "image"
       ? "已受理，结果以任务和图片列表为准。这不是生成成功。"
@@ -2273,33 +2297,33 @@ function ShotImagePanel(props: {
         : "已受理，结果以任务和配音列表为准。这不是生成成功。";
     try {
       const result = await client.write<{ workflowRunId: string }>({
-        path: `/shot-revisions/${props.currentRevisionId}/${path}`,
+        path: `/shot-revisions/${revisionId}/${path}`,
         body: value.trim().length > 0 ? { seed: value.trim() } : {},
         idempotencyKey: key,
       });
-      slot.current = null;
+      if (epoch !== revisionEpoch.current) {
+        void props.onAccepted().catch(() => undefined);
+        return;
+      }
+      if (slot.current?.key === key) slot.current = null;
       const text = result.status === 202 ? accepted : `已返回 ${result.status}，结果以随后的查询为准。`;
-      if (channel === "image") setNotice(text);
-      if (channel === "video") setVideoNotice(text);
-      if (channel === "speech") setSpeechNotice(text);
+      if (result.status === 202) acceptedEpoch.current[channel] = epoch;
+      showNotice(channel, text);
+      if (result.status !== 202) return;
+      try {
+        await props.onAccepted();
+      } catch {
+        if (epoch !== revisionEpoch.current || acceptedEpoch.current[channel] !== epoch) return;
+        showAcceptError(channel, "刷新失败，可以重新查询。已受理的结果仍然有效。");
+      }
     } catch (caught) {
+      if (epoch !== revisionEpoch.current) return;
       const text = caught instanceof ApiError
         ? `${caught.code}：${caught.detail}。再次提交将复用同一幂等键。`
         : "提交失败，再次提交将复用同一幂等键。";
-      if (channel === "image") setNotice(text);
-      if (channel === "video") setVideoNotice(text);
-      if (channel === "speech") setSpeechNotice(text);
-      setBusy(null);
-      return;
-    }
-    setBusy(null);
-    try {
-      await props.onAccepted();
-    } catch {
-      const text = "刷新失败，可以重新查询。已受理的结果仍然有效。";
-      if (channel === "image") setAcceptError(text);
-      if (channel === "video") setVideoAcceptError(text);
-      if (channel === "speech") setSpeechAcceptError(text);
+      showNotice(channel, text);
+    } finally {
+      if (epoch === revisionEpoch.current) setBusy((current) => current === channel ? null : current);
     }
   }
 
@@ -2323,7 +2347,7 @@ function ShotImagePanel(props: {
         </button>
         {notice ? <p className="mt-2 text-sm">{notice}</p> : null}
         {acceptError ? (
-          <p className="mt-2 text-sm" role="alert">{acceptError}<button className="ml-2 underline" type="button" onClick={() => void requery()}>重新查询</button></p>
+          <p className="mt-2 text-sm" role="alert">{acceptError}<button className="ml-2 underline" type="button" onClick={() => void requery("image")}>重新查询</button></p>
         ) : null}
         <AssetList title="当前版本图片" empty="没有图片" assets={imageCurrent} previewErrors={previewErrors} onPreviewError={previewError} />
         <AssetList title="历史版本图片" empty="没有图片" assets={imageHistory} previewErrors={previewErrors} onPreviewError={previewError} />
@@ -2338,7 +2362,7 @@ function ShotImagePanel(props: {
         </button>
         {videoNotice ? <p className="mt-2 text-sm">{videoNotice}</p> : null}
         {videoAcceptError ? (
-          <p className="mt-2 text-sm" role="alert">{videoAcceptError}<button className="ml-2 underline" type="button" onClick={() => void requery()}>重新查询</button></p>
+          <p className="mt-2 text-sm" role="alert">{videoAcceptError}<button className="ml-2 underline" type="button" onClick={() => void requery("video")}>重新查询</button></p>
         ) : null}
         <AssetList title="当前版本视频" empty="没有视频" assets={videoCurrent} previewErrors={previewErrors} onPreviewError={previewError} />
         <AssetList title="历史版本视频" empty="没有视频" assets={videoHistory} previewErrors={previewErrors} onPreviewError={previewError} />
@@ -2353,7 +2377,7 @@ function ShotImagePanel(props: {
         </button>
         {speechNotice ? <p className="mt-2 text-sm">{speechNotice}</p> : null}
         {speechAcceptError ? (
-          <p className="mt-2 text-sm" role="alert">{speechAcceptError}<button className="ml-2 underline" type="button" onClick={() => void requery()}>重新查询</button></p>
+          <p className="mt-2 text-sm" role="alert">{speechAcceptError}<button className="ml-2 underline" type="button" onClick={() => void requery("speech")}>重新查询</button></p>
         ) : null}
         <AssetList title="当前版本配音" empty="没有配音" assets={speechCurrent} previewErrors={previewErrors} onPreviewError={previewError} />
         <AssetList title="历史版本配音" empty="没有配音" assets={speechHistory} previewErrors={previewErrors} onPreviewError={previewError} />

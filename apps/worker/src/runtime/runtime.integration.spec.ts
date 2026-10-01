@@ -209,7 +209,8 @@ describe("M1-C Redis and BullMQ integration", () => {
     const directory = await mkdtemp(join(tmpdir(), "m3-recover-"));
     try {
       const recovery = new MockMediaRecovery(jobs, new MediaAssetStore(pool), store,
-        new MockMediaAdapter(), new LocalMockObjects(directory));
+        new MockMediaAdapter(), new LocalMockObjects(directory),
+        { mockImageEnabled: true, mockAvEnabled: false });
       await recovery.reconcileOnce();
       expect(await jobState(created.jobId)).toBe("SUCCEEDED");
       expect(await jobState(sibling.jobId)).toBe("FAILED");
@@ -253,7 +254,8 @@ describe("M1-C Redis and BullMQ integration", () => {
       traceId: "media-acquired", providerConfigurationId: providerId });
     await sql("UPDATE generation_job SET lease_until = now() - interval '1 second' WHERE id = $1", [created.jobId]);
     const recovery = new MockMediaRecovery(jobs, new MediaAssetStore(pool), store,
-      new MockMediaAdapter(), new LocalMockObjects("/tmp/m3-unused-recovery"));
+      new MockMediaAdapter(), new LocalMockObjects("/tmp/m3-unused-recovery"),
+      { mockImageEnabled: true, mockAvEnabled: false });
     await recovery.reconcileOnce();
     expect(await jobState(created.jobId)).toBe("QUEUED");
     const runtime = await startQueueRuntime({ databaseUrl, redisUrl,

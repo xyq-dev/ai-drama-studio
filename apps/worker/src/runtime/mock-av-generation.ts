@@ -9,6 +9,7 @@ import {
   type MediaProviderOutput,
 } from "@ai-drama/providers";
 import type { MockImageObjectStore } from "./mock-image-generation";
+import { classifyMediaFailure, mediaErrorMessage } from "./mock-media-failure";
 
 export type MockAvCapability = "video.generate" | "audio.tts";
 
@@ -219,12 +220,9 @@ async function settleAvFailure(
   error: unknown,
   jobs: JobPersistenceService,
 ): Promise<void> {
-  const message = error instanceof Error ? error.message : String(error);
-  const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
-  const invalid = /canonical fixture|request identity changed|expected success|only supports success|not a synchronous|accounting/.test(message);
-  const retryable = code === "STALE_RECALCULATION_PENDING" ||
-    (code !== "REVIEW_REQUIRED" && code !== "NOT_FOUND" && code !== "COST_CONFLICT" && !invalid);
-  if (code === "JOB_TERMINAL" || code === "ATTEMPT_SUPERSEDED") throw error;
+  const disposition = classifyMediaFailure(error);
+  if (disposition === "terminal-race") throw error;
+  const retryable = disposition === "retryable";
   if (providerAttached && retryable) throw error;
   await jobs.failJob({
     workspaceId: input.workspaceId,
@@ -232,7 +230,7 @@ async function settleAvFailure(
     attemptId,
     traceId: input.traceId,
     errorCode: retryable ? "MOCK_AV_RUNTIME_FAILED" : "MOCK_AV_OUTPUT_INVALID",
-    errorMessage: message,
+    errorMessage: mediaErrorMessage(error),
     retryable,
     nextRunAt: retryable ? new Date(Date.now() + 30_000) : undefined,
   });

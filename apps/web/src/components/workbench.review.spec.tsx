@@ -48,7 +48,13 @@ interface Sim {
   mediaImage: boolean;
   mediaTask: boolean;
   failWorkflowRead: number | null;
+  failWorkflowReads: number[];
   failAssetRead: number | null;
+  videoPostGate: Promise<void> | null;
+  speechPostGate: Promise<void> | null;
+  videoFailures: number;
+  speechFailures: number;
+  shotCurrentId: string | null;
   fetch: (input: string, init?: RequestInit) => Promise<Response>;
 }
 
@@ -93,7 +99,13 @@ function createSim(): Sim {
     mediaImage: false,
     mediaTask: false,
     failWorkflowRead: null,
+    failWorkflowReads: [],
     failAssetRead: null,
+    videoPostGate: null,
+    speechPostGate: null,
+    videoFailures: 0,
+    speechFailures: 0,
+    shotCurrentId: null,
     fetch: () => Promise.resolve(fail(500, "UNINSTALLED", "fetch was not installed")),
   };
   let assetReads = 0;
@@ -222,6 +234,17 @@ function createSim(): Sim {
 
   function shotPayload(id: string) {
     const state = ensureShot(id);
+    if (sim.shotCurrentId && id === SHOT_A) {
+      const current = state.items.find((item) => item.id === sim.shotCurrentId);
+      if (current) {
+        return {
+          aggregate: aggregate(id, state.row, current.id, "APPROVED", 1, current.id),
+          items: state.items.map((item) => item.id === current.id
+            ? { ...item, reviewStatus: "APPROVED", freshnessStatus: "CURRENT" }
+            : item),
+        };
+      }
+    }
     if (sim.shotConflict && shotConflictArmed && id === SHOT_A) {
       const row = shotConflictGets <= 1 ? 6 : shotConflictGets === 2 ? 11 : 15;
       const action = row === 6 ? "服务端动作" : row === 11 ? "更新动作" : "陷阱动作";
@@ -284,7 +307,9 @@ function createSim(): Sim {
     }
     if (path === `/api/v1/projects/${PROJECT}/workflow-runs` && method === "GET") {
       sim.workflowReads += 1;
-      if (sim.failWorkflowRead === sim.workflowReads) return fail(500, "REFRESH_FAILED", "任务刷新失败");
+      if (sim.failWorkflowRead === sim.workflowReads || sim.failWorkflowReads.includes(sim.workflowReads)) {
+        return fail(500, "REFRESH_FAILED", "任务刷新失败");
+      }
       if (sim.mediaTask) {
         return json([{
           id: "media-run",
@@ -376,6 +401,15 @@ function createSim(): Sim {
     if (/\/shots\/[^/]+\/revisions$/.test(path) && method === "POST") {
       const id = path.includes(SHOT_B) ? SHOT_B : SHOT_A;
       const finish = () => {
+        if (sim.shotCurrentId && id === SHOT_A) {
+          const current = ensureShot(id).items.find((item) => item.id === sim.shotCurrentId);
+          return json({
+            revisionId: sim.shotCurrentId,
+            currentRevisionId: sim.shotCurrentId,
+            revisionNo: current?.revisionNo ?? 1,
+            rowVersion: ensureShot(id).row,
+          });
+        }
         if (sim.shotConflict && id === SHOT_A) {
           const count = sim.calls.filter((call) => call.method === "POST" && /\/shots\/[^/]+\/revisions$/.test(call.url)).length;
           if (count <= 2) {
@@ -432,7 +466,20 @@ function createSim(): Sim {
       if (sim.failAssetRead === assetReads) return fail(500, "ASSET_REFRESH_FAILED", "图片刷新失败");
       return json({ items: sim.imageAssets[revisionId] ?? [] });
     }
-    if (/\/shot-revisions\/[^/]+\/generate-(video|tts)$/.test(path) && method === "POST") {
+    if (/\/shot-revisions\/[^/]+\/generate-video$/.test(path) && method === "POST") {
+      if (sim.videoPostGate) await sim.videoPostGate;
+      if (sim.videoFailures > 0) {
+        sim.videoFailures -= 1;
+        return fail(409, "CONFLICT", "受理失败");
+      }
+      return json({ workflowRunId: "av-run", jobId: "av-job" }, 202);
+    }
+    if (/\/shot-revisions\/[^/]+\/generate-tts$/.test(path) && method === "POST") {
+      if (sim.speechPostGate) await sim.speechPostGate;
+      if (sim.speechFailures > 0) {
+        sim.speechFailures -= 1;
+        return fail(409, "CONFLICT", "受理失败");
+      }
       return json({ workflowRunId: "av-run", jobId: "av-job" }, 202);
     }
     if (/\/shot-revisions\/[^/]+\/generate-image$/.test(path) && method === "POST") {
@@ -1403,11 +1450,11 @@ describe("workbench review interactions against a simulated API", () => {
     sim.failAssetRead = 1;
     install(sim);
     renderAt(`focus=shot&episode=1&scene=scene-1&shot=${SHOT_A}`);
-    expect(await screen.findByText(/图片列表刷新失败，可以重新查询/)).toBeTruthy();
+    expect(await screen.findByText(/媒体列表刷新失败，可以重新查询/)).toBeTruthy();
     expect(screen.queryByText(/复用同一幂等键/)).toBeNull();
     expect(screen.queryByText(/再次生成/)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "重新查询" }));
-    await waitFor(() => expect(screen.queryByText(/图片列表刷新失败/)).toBeNull());
+    await waitFor(() => expect(screen.queryByText(/媒体列表刷新失败/)).toBeNull());
     expect(sim.calls.filter((call) => call.url.endsWith("/generate-image"))).toHaveLength(0);
   });
 
@@ -1449,5 +1496,109 @@ describe("workbench review interactions against a simulated API", () => {
     if (!video) throw new Error("video element missing");
     fireEvent.error(video);
     expect(await screen.findByText("读取或解码失败")).toBeTruthy();
+  });
+
+  function mediaSection(name: string): HTMLElement {
+    const node = screen.getByRole("heading", { name }).closest("section");
+    if (!node) throw new Error(`missing section ${name}`);
+    return node;
+  }
+
+  async function saveShot(sim: Sim, action: string) {
+    const before = sim.calls.filter((call) => call.method === "POST" && /\/shots\/[^/]+\/revisions$/.test(call.url)).length;
+    fireEvent.change(field("shot-action"), { target: { value: action } });
+    fireEvent.click(within(formOf("镜头 1")).getByRole("button", { name: "保存新版本" }));
+    await waitFor(() => expect(sim.calls.filter((call) => call.method === "POST" && /\/shots\/[^/]+\/revisions$/.test(call.url))).toHaveLength(before + 1));
+    expect(await screen.findByText("已保存")).toBeTruthy();
+  }
+
+  it.each([
+    ["image", "生成 Mock 图片", "/generate-image", "Mock 图片"],
+    ["video", "生成 Mock 视频", "/generate-video", "Mock 视频"],
+    ["speech", "生成 Mock 配音", "/generate-tts", "Mock 配音"],
+  ] as const)("keeps requery failure on the %s channel that was accepted", async (_channel, button, path, heading) => {
+    const sim = createSim();
+    sim.imageReady = true;
+    sim.failWorkflowReads = [2, 3];
+    install(sim);
+    renderAt(`focus=shot&episode=1&scene=scene-1&shot=${SHOT_A}`);
+    fireEvent.click(await screen.findByRole("button", { name: button }));
+    const section = mediaSection(heading);
+    expect(await within(section).findByText(/已受理的结果仍然有效/)).toBeTruthy();
+    expect(within(section).getByText(/这不是生成成功/)).toBeTruthy();
+    for (const other of ["Mock 图片", "Mock 视频", "Mock 配音"].filter((item) => item !== heading)) {
+      expect(mediaSection(other).textContent ?? "").not.toContain("已受理的结果仍然有效");
+      expect(mediaSection(other).textContent ?? "").not.toContain("已受理，结果以任务");
+    }
+    fireEvent.click(within(section).getByRole("button", { name: "重新查询" }));
+    expect(await within(section).findByText(/已受理的结果仍然有效/)).toBeTruthy();
+    expect(sim.calls.filter((call) => call.method === "POST" && call.url.endsWith(path))).toHaveLength(1);
+    expect(sim.calls.filter((call) => call.method === "POST" && /generate-(image|video|tts)$/.test(call.url))).toHaveLength(1);
+    const gets = sim.calls.filter((call) => call.method === "GET");
+    expect(gets.length).toBeGreaterThan(0);
+  });
+
+  it("drops a late video acceptance when the revision moves away and back", async () => {
+    const sim = createSim();
+    sim.imageReady = true;
+    let releaseOld!: () => void;
+    sim.videoPostGate = new Promise<void>((resolve) => { releaseOld = resolve; });
+    install(sim);
+    renderAt(`focus=shot&episode=1&scene=scene-1&shot=${SHOT_A}`);
+    const revisionA = `${SHOT_A}-rev`;
+    fireEvent.click(await screen.findByRole("button", { name: "生成 Mock 视频" }));
+    await waitFor(() => expect(sim.calls.some((call) => call.url.endsWith(`/shot-revisions/${revisionA}/generate-video`))).toBe(true));
+    await saveShot(sim, "切到下一版");
+    expect(mediaSection("Mock 视频").textContent ?? "").not.toContain("已受理");
+    sim.shotCurrentId = revisionA;
+    await saveShot(sim, "回到原版本");
+    let releaseNew!: () => void;
+    sim.videoPostGate = new Promise<void>((resolve) => { releaseNew = resolve; });
+    fireEvent.click(screen.getByRole("button", { name: "生成 Mock 视频" }));
+    await waitFor(() => expect(sim.calls.filter((call) => call.url.endsWith("/generate-video"))).toHaveLength(2));
+    releaseOld();
+    expect(await screen.findByRole("button", { name: "正在提交" })).toBeTruthy();
+    expect(mediaSection("Mock 视频").textContent ?? "").not.toContain("已受理");
+    sim.videoFailures = 1;
+    releaseNew();
+    expect(await within(mediaSection("Mock 视频")).findByText(/复用同一幂等键/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "生成 Mock 视频" }));
+    await waitFor(() => expect(sim.calls.filter((call) => call.url.endsWith("/generate-video"))).toHaveLength(3));
+    const posts = sim.calls.filter((call) => call.url.endsWith("/generate-video"));
+    expect(posts[1]?.key).toBe(posts[2]?.key);
+    expect(posts[0]?.key).not.toBe(posts[1]?.key);
+    expect(posts[2]?.url).toContain(revisionA);
+    expect(mediaSection("Mock 图片").textContent ?? "").not.toContain("已受理");
+    expect(mediaSection("Mock 配音").textContent ?? "").not.toContain("复用同一幂等键");
+  });
+
+  it("clears an existing video notice when the revision changes and ignores the old write failure", async () => {
+    const sim = createSim();
+    sim.imageReady = true;
+    install(sim);
+    renderAt(`focus=shot&episode=1&scene=scene-1&shot=${SHOT_A}`);
+    fireEvent.click(await screen.findByRole("button", { name: "生成 Mock 视频" }));
+    expect(await within(mediaSection("Mock 视频")).findByText(/已受理，结果以任务和视频列表为准/)).toBeTruthy();
+    await saveShot(sim, "换版本后清空提示");
+    expect(mediaSection("Mock 视频").textContent ?? "").not.toContain("已受理");
+    cleanup();
+    const late = createSim();
+    late.imageReady = true;
+    late.videoFailures = 1;
+    let release!: () => void;
+    late.videoPostGate = new Promise<void>((resolve) => { release = resolve; });
+    install(late);
+    renderAt(`focus=shot&episode=1&scene=scene-1&shot=${SHOT_A}`);
+    fireEvent.click(await screen.findByRole("button", { name: "生成 Mock 视频" }));
+    await waitFor(() => expect(late.calls.filter((call) => call.url.endsWith("/generate-video"))).toHaveLength(1));
+    await saveShot(late, "失败到达前已换版");
+    release();
+    await waitFor(() => expect(screen.getByRole("button", { name: "生成 Mock 视频" })).toBeTruthy());
+    expect(mediaSection("Mock 视频").textContent ?? "").not.toContain("复用同一幂等键");
+    fireEvent.click(screen.getByRole("button", { name: "生成 Mock 视频" }));
+    await waitFor(() => expect(late.calls.filter((call) => call.url.endsWith("/generate-video"))).toHaveLength(2));
+    const posts = late.calls.filter((call) => call.url.endsWith("/generate-video"));
+    expect(posts[0]?.key).not.toBe(posts[1]?.key);
+    expect(posts[1]?.url).not.toContain(`${SHOT_A}-rev/`);
   });
 });

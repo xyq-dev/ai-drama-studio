@@ -77,3 +77,7 @@ Web 日志中的 `ECONNREFUSED 127.0.0.1:3000` 与 `::1:3000` 来自 happy-dom �
 - 图片费用链、费用 UI、真实计费、ComfyUI、付费模型和成片。
 
 Migration 范围：无。
+
+## 审查修复
+
+在 `6afa6345f8f7a99565b672e678059ffa5f2170df` 上修了四项审查问题。永久恢复错误按持久化错误码进入终态；图片和视频开关分别控制恢复；迟到的 revision 响应不再改写当前提示；重新查询只保留实际受理渠道的文案。固定 fixture、零美元 ACTUAL、LocalMockObjects 和全量 200 未改。详情与本轮模拟验证见 [M3 AV 审查修复报告](M3_AV_REVIEW_FIX_REPORT.md)。真实 API、Worker 和浏览器仍未执行。

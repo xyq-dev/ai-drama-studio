@@ -74,9 +74,12 @@ export async function startQueueRuntime(options: {
   const assets = new MediaAssetStore(pool);
   const mockMedia = new MockMediaAdapter();
   const objects = options.mockObjectDir ? new LocalMockObjects(options.mockObjectDir) : null;
-  const mediaRecovery = objects ? new MockMediaRecovery(jobs, assets, store, mockMedia, objects) : null;
+  const mediaRecovery = new MockMediaRecovery(jobs, assets, store, mockMedia, objects, {
+    mockImageEnabled: options.mockImageEnabled === true,
+    mockAvEnabled: options.mockAvEnabled === true,
+  });
   const reconciler = new RuntimeReconciler(jobs, store, provider, dispatcher,
-    options.orphanGraceMs ?? 30_000, mediaRecovery ? () => mediaRecovery.reconcileOnce() : undefined,
+    options.orphanGraceMs ?? 30_000, () => mediaRecovery.reconcileOnce(),
     mockText, textAdapter);
   const status: QueueRuntimeStatus = { running: false };
   const worker = startBullWorker(
