@@ -167,7 +167,7 @@ export function ComposeJobPanel(props: {
               <p>{asset.width ?? "—"}×{asset.height ?? "—"} · {asset.durationMs ?? "—"} ms</p>
               <p>任务 {asset.sourceGenerationJobId}</p>
               <p>审核 {asset.reviewStatus}{current ? " · 当前有效" : " · 历史成片"}</p>
-              <video className="mt-2 w-full" controls src={`/api/v1/assets/${asset.id}/content`} />
+              <video className="mt-2 aspect-[9/16] w-full bg-black" controls src={`/api/v1/assets/${asset.id}/content`} />
               {current && asset.reviewStatus === "DRAFT" ? (
                 <div className="mt-2">
                   <label className="block" htmlFor={`compose-note-${asset.id}`}>退回说明</label>

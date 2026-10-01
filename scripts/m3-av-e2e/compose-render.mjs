@@ -29,7 +29,7 @@ export async function composeRenderPage(ctx) {
   if (asset.provider_configuration_id || asset.provider_request_id) throw new Error("composite recorded a provider");
   const card = panel.locator(`[data-composite-id="${asset.id}"]`);
   const video = card.locator("video");
-  await video.waitFor({ timeout: 20_000 });
+  await video.waitFor({ state: "attached", timeout: 20_000 });
   const playback = await video.evaluate(async (node) => {
     const media = node;
     media.muted = true;
