@@ -1,7 +1,47 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 
-const TABLES = ["generation_job", "job_attempt", "workflow_run", "asset", "cost_ledger", "dispatch_outbox", "domain_event"];
+export const LEDGER_TABLES = ["generation_job", "job_attempt", "workflow_run", "asset", "cost_ledger", "dispatch_outbox", "domain_event"];
+
+export function ledgerSnapshotQuery(table) {
+  if (!LEDGER_TABLES.includes(table)) throw new Error(`unexpected ledger table ${table}`);
+  return `SELECT id::text AS id, md5(row_to_json(t)::text) AS fingerprint FROM ${table} t ORDER BY id`;
+}
+
+export function summarizeLedgerTable(rows) {
+  const ordered = [...rows].map((row) => ({
+    id: String(row.id),
+    fingerprint: String(row.fingerprint),
+  })).sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
+  const fingerprint = createHash("sha256")
+    .update(ordered.map((row) => `${row.id}:${row.fingerprint}`).join("\n"))
+    .digest("hex");
+  return { count: ordered.length, ids: ordered.map((row) => row.id), fingerprint };
+}
+
+export function ledgerChanges(before, after) {
+  const changes = [];
+  for (const table of LEDGER_TABLES) {
+    const left = before?.[table];
+    const right = after?.[table];
+    if (!left || !right) {
+      changes.push(`${table} missing`);
+      continue;
+    }
+    if (left.count !== right.count) changes.push(`${table} count`);
+    if (left.ids.join("\n") !== right.ids.join("\n")) changes.push(`${table} ids`);
+    if (left.fingerprint !== right.fingerprint) changes.push(`${table} fingerprint`);
+  }
+  return changes;
+}
+
+export function ledgerPublicSummary(snapshot) {
+  return LEDGER_TABLES.map((table) => ({
+    table,
+    count: snapshot[table].count,
+    fingerprint: snapshot[table].fingerprint,
+  }));
+}
 
 export async function composePreflightPage(ctx) {
   await waitForCurrentSources(ctx);
@@ -211,8 +251,9 @@ export async function composePreflightReadonly(ctx) {
   await panel.getByRole("button", { name: "预检合成输入" }).click();
   await panel.getByText("合成尚未执行").waitFor({ timeout: 20_000 });
   const after = await ledgerSnapshot(ctx);
-  if (JSON.stringify(before) !== JSON.stringify(after)) {
-    throw new Error(`preflight changed stored records ${JSON.stringify({ before, after })}`);
+  const changes = ledgerChanges(before, after);
+  if (changes.length > 0) {
+    throw new Error(`preflight changed stored records: ${changes.join(", ")}`);
   }
   const page = ctx.state.page;
   if (await page.locator("#shot-action").inputValue() !== ctx.draftMarker) {
@@ -228,7 +269,7 @@ export async function composePreflightReadonly(ctx) {
   await page.screenshot({ path: join(ctx.outputDir, "compose-preflight-390.png"), fullPage: true });
   await page.setViewportSize({ width: 1280, height: 900 });
   if (await page.locator("#shot-action").inputValue() !== ctx.draftMarker) throw new Error("390px check overwrote the shot draft");
-  return { unchanged: TABLES.map((table) => ({ table, rows: before[table].length })), overflow };
+  return { unchanged: ledgerPublicSummary(before), overflow };
 }
 
 async function generateOnPage(ctx, buttonName, notice, urlPart) {
@@ -355,9 +396,8 @@ function assertManifest(payload, ids) {
 
 async function ledgerSnapshot(ctx) {
   const snapshot = {};
-  for (const table of TABLES) {
-    const rows = await ctx.sql(`SELECT id::text AS id FROM ${table} ORDER BY id`);
-    snapshot[table] = rows.map((row) => row.id);
+  for (const table of LEDGER_TABLES) {
+    snapshot[table] = summarizeLedgerTable(await ctx.sql(ledgerSnapshotQuery(table)));
   }
   return snapshot;
 }

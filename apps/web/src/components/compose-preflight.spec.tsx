@@ -30,6 +30,21 @@ function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 }
 
+function preflightBody(hash: string) {
+  return {
+    manifest: {
+      plan: { width: 1080, height: 1920, frameRate: 25, container: "mp4", durationMs: 1000 },
+      sources: [
+        { role: "video", asset: { assetId: VIDEO_A, durationMs: 1000 } },
+        { role: "audio", asset: null },
+        { role: "music", asset: null },
+        { role: "subtitle", asset: null },
+      ],
+    },
+    inputHash: hash,
+  };
+}
+
 function deferred() {
   let resolve: (response: Response) => void = () => undefined;
   const promise = new Promise<Response>((done) => {
@@ -126,5 +141,87 @@ describe("compose preflight selection", () => {
     }));
     await waitFor(() => expect(screen.queryByText(HASH_B)).toBeNull());
     expect(screen.queryByText("合成尚未执行")).toBeNull();
+  });
+
+  it("clears the previous result while a retry is waiting, shows only that error, and retries", async () => {
+    const rejected = deferred();
+    const retried = deferred();
+    let posts = 0;
+    const fetchImpl = (input: string) => {
+      if (input.includes("/assets")) return Promise.resolve(json({ items: [asset(VIDEO_A, REVISION_A)] }));
+      posts += 1;
+      if (posts === 1) return Promise.resolve(json(preflightBody(HASH_A)));
+      if (posts === 2) return rejected.promise;
+      return retried.promise;
+    };
+    render(createElement(ComposePreflight, { revisionId: REVISION_A, refreshEpoch: 0, client: new StudioClient(fetchImpl) }));
+    fireEvent.change(await screen.findByLabelText("合成视频"), { target: { value: VIDEO_A } });
+    fireEvent.click(screen.getByRole("button", { name: "预检合成输入" }));
+    expect(await screen.findByText(HASH_A)).toBeTruthy();
+    expect(screen.getByText("合成尚未执行")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "预检合成输入" }));
+    expect(screen.queryByText(HASH_A)).toBeNull();
+    expect(screen.queryByText("合成尚未执行")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect((screen.getByLabelText("合成视频") as HTMLSelectElement).value).toBe(VIDEO_A);
+
+    rejected.resolve(json({ error: { code: "COMPOSE_INPUT_INVALID", message: "本次预检没有通过" } }, 400));
+    expect(await screen.findByText("本次预检没有通过")).toBeTruthy();
+    expect(screen.queryByText(HASH_A)).toBeNull();
+    expect(screen.queryByText("合成尚未执行")).toBeNull();
+    expect((screen.getByLabelText("合成视频") as HTMLSelectElement).value).toBe(VIDEO_A);
+
+    fireEvent.click(screen.getByRole("button", { name: "预检合成输入" }));
+    expect(screen.queryByText("本次预检没有通过")).toBeNull();
+    expect(screen.queryByText(HASH_A)).toBeNull();
+    expect((screen.getByLabelText("合成视频") as HTMLSelectElement).value).toBe(VIDEO_A);
+    retried.resolve(json(preflightBody(HASH_B)));
+    expect(await screen.findByText(HASH_B)).toBeTruthy();
+    expect(screen.getByText("合成尚未执行")).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect((screen.getByLabelText("合成视频") as HTMLSelectElement).value).toBe(VIDEO_A);
+  });
+
+  it("keeps a newer result when an older response arrives", async () => {
+    const older = deferred();
+    const newer = deferred();
+    let posts = 0;
+    const fetchImpl = (input: string) => {
+      if (input.includes("/assets")) return Promise.resolve(json({ items: [asset(VIDEO_A, REVISION_A), asset(VIDEO_B, REVISION_A)] }));
+      posts += 1;
+      return posts === 1 ? older.promise : newer.promise;
+    };
+    render(createElement(ComposePreflight, { revisionId: REVISION_A, refreshEpoch: 0, client: new StudioClient(fetchImpl) }));
+    fireEvent.change(await screen.findByLabelText("合成视频"), { target: { value: VIDEO_A } });
+    fireEvent.click(screen.getByRole("button", { name: "预检合成输入" }));
+    fireEvent.change(screen.getByLabelText("合成视频"), { target: { value: VIDEO_B } });
+    fireEvent.change(screen.getByLabelText("合成视频"), { target: { value: VIDEO_A } });
+    fireEvent.click(screen.getByRole("button", { name: "预检合成输入" }));
+    newer.resolve(json(preflightBody(HASH_B)));
+    expect(await screen.findByText(HASH_B)).toBeTruthy();
+    older.resolve(json({ error: { code: "COMPOSE_INPUT_INVALID", message: "旧预检失败" } }, 400));
+    await waitFor(() => expect(screen.queryByText("旧预检失败")).toBeNull());
+    expect(screen.getByText(HASH_B)).toBeTruthy();
+    expect(screen.getByText("合成尚未执行")).toBeTruthy();
+    expect((screen.getByLabelText("合成视频") as HTMLSelectElement).value).toBe(VIDEO_A);
+  });
+
+  it("clears the result when a selected asset becomes unusable", async () => {
+    let items = [asset(VIDEO_A, REVISION_A)];
+    const fetchImpl = (input: string) => {
+      if (input.includes("/assets")) return Promise.resolve(json({ items }));
+      return Promise.resolve(json(preflightBody(HASH_A)));
+    };
+    const client = new StudioClient(fetchImpl);
+    const view = render(createElement(ComposePreflight, { revisionId: REVISION_A, refreshEpoch: 0, client }));
+    fireEvent.change(await screen.findByLabelText("合成视频"), { target: { value: VIDEO_A } });
+    fireEvent.click(screen.getByRole("button", { name: "预检合成输入" }));
+    expect(await screen.findByText(HASH_A)).toBeTruthy();
+    items = [asset(VIDEO_A, REVISION_A, "VIDEO", "video/mp4", "REJECTED")];
+    view.rerender(createElement(ComposePreflight, { revisionId: REVISION_A, refreshEpoch: 1, client }));
+    await waitFor(() => expect(screen.queryByText(HASH_A)).toBeNull());
+    expect(screen.queryByText("合成尚未执行")).toBeNull();
+    expect((screen.getByLabelText("合成视频") as HTMLSelectElement).value).toBe("");
   });
 });

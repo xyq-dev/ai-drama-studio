@@ -105,7 +105,7 @@ export function ComposePreflight(props: { revisionId: string; refreshEpoch: numb
   }
 
   async function submit() {
-    const token = epoch.current;
+    const token = ++epoch.current;
     const revisionId = props.revisionId;
     const body = {
       videoAssetId: selection.video,
@@ -113,6 +113,8 @@ export function ComposePreflight(props: { revisionId: string; refreshEpoch: numb
       musicAssetId: selection.music || null,
       subtitleAssetId: selection.subtitle || null,
     };
+    setResult(null);
+    setError(null);
     setBusy(true);
     try {
       const payload = await client.postJson<PreflightResponse>(`/shot-revisions/${revisionId}/compose-preflight`, body);
@@ -121,6 +123,7 @@ export function ComposePreflight(props: { revisionId: string; refreshEpoch: numb
       setError(null);
     } catch (caught) {
       if (token !== epoch.current || revisionId !== props.revisionId) return;
+      setResult(null);
       setError(caught instanceof ApiError ? caught.detail : "预检失败");
     } finally {
       if (token === epoch.current) setBusy(false);
