@@ -40,6 +40,128 @@ export interface StoredProviderCost {
   supersedesEstimateKey: string | null;
 }
 
+const FIXED_IMAGE_SNAPSHOT_KEYS = ["outcome", "schema", "seed", "shotRevisionId"];
+
+/** Legal synchronous image jobs are only the frozen v1 success snapshot. */
+export function assertFixedMockImageSnapshot(snapshot: unknown, shotRevisionId: string): void {
+  if (!isPlainRecord(snapshot)) {
+    throw new PersistenceError("COST_CONFLICT", "Mock image accounting snapshot is not a fixed success job");
+  }
+  const keys = Object.keys(snapshot).sort();
+  const expected = [...FIXED_IMAGE_SNAPSHOT_KEYS].sort();
+  if (keys.length !== expected.length || keys.some((key, index) => key !== expected[index])) {
+    throw new PersistenceError("COST_CONFLICT", "Mock image accounting snapshot is not a fixed success job");
+  }
+  if (snapshot.schema !== "m3.mock.image.v1"
+    || snapshot.outcome !== "success"
+    || snapshot.shotRevisionId !== shotRevisionId) {
+    throw new PersistenceError("COST_CONFLICT", "Mock image accounting snapshot is not a fixed success job");
+  }
+  if (snapshot.seed !== null && typeof snapshot.seed !== "string") {
+    throw new PersistenceError("COST_CONFLICT", "Mock image accounting snapshot is not a fixed success job");
+  }
+}
+
+export async function guardSynchronousMockImageCost(
+  client: PoolClient,
+  asset: {
+    workspaceId: string;
+    projectId: string;
+    generationJobId: string;
+    sourceJobAttemptId: string;
+    sourceShotRevisionId?: string;
+    providerConfigurationId: string;
+    providerRequestId: string;
+  },
+  actualCost: ProviderActualCostInput,
+): Promise<void> {
+  assertSyncActualCost(actualCost);
+  if (!asset.sourceShotRevisionId
+    || actualCost.workspaceId !== asset.workspaceId
+    || actualCost.projectId !== asset.projectId
+    || actualCost.generationJobId !== asset.generationJobId
+    || actualCost.jobAttemptId !== asset.sourceJobAttemptId
+    || actualCost.providerConfigurationId !== asset.providerConfigurationId
+    || actualCost.providerRequestId !== asset.providerRequestId
+    || actualCost.provider !== "mock-media"
+    || actualCost.model !== "mock-v1"
+    || actualCost.idempotencyKey !== `${asset.providerRequestId}:request:actual`) {
+    throw new PersistenceError("COST_CONFLICT", "Mock image accounting lineage does not match the asset");
+  }
+
+  const bound = await client.query<QueryResultRow>(
+    `SELECT job.kind,
+            job.project_id,
+            job.source_shot_revision_id,
+            job.input_snapshot,
+            (job.input_snapshot = attempt.request_snapshot) AS snapshots_match,
+            attempt.attempt_no::int AS attempt_no,
+            attempt.provider_client_request_key,
+            attempt.provider_request_id,
+            attempt.provider_configuration_id,
+            provider.provider_key,
+            provider.capability
+       FROM generation_job job
+       JOIN job_attempt attempt
+         ON attempt.id = $2
+        AND attempt.generation_job_id = job.id
+        AND attempt.workspace_id = job.workspace_id
+       JOIN provider_configuration provider
+         ON provider.id = attempt.provider_configuration_id
+        AND provider.workspace_id = attempt.workspace_id
+      WHERE job.id = $1
+        AND job.workspace_id = $3`,
+    [asset.generationJobId, asset.sourceJobAttemptId, asset.workspaceId],
+  );
+  const row = bound.rows[0];
+  const attemptNo = row ? Number(row.attempt_no) : NaN;
+  const expectedRequestId = `mock-media|image.generate|${asset.generationJobId}:${attemptNo}`;
+  const expectedClientKey = `${asset.generationJobId}:${attemptNo}`;
+  if (!row
+    || row.kind !== "MEDIA_IMAGE"
+    || String(row.project_id) !== asset.projectId
+    || String(row.source_shot_revision_id) !== asset.sourceShotRevisionId
+    || row.snapshots_match !== true
+    || String(row.provider_key) !== "mock-media"
+    || String(row.capability) !== "image.generate"
+    || String(row.provider_configuration_id) !== asset.providerConfigurationId
+    || String(row.provider_request_id) !== asset.providerRequestId
+    || String(row.provider_client_request_key) !== expectedClientKey
+    || asset.providerRequestId !== expectedRequestId) {
+    throw new PersistenceError("COST_CONFLICT", "Mock image accounting lineage does not match the asset");
+  }
+  assertFixedMockImageSnapshot(row.input_snapshot, asset.sourceShotRevisionId);
+
+  const estimated = await client.query(
+    `SELECT 1
+       FROM cost_ledger
+      WHERE workspace_id = $1
+        AND kind = 'ESTIMATED'
+        AND (job_attempt_id = $2 OR provider_request_id = $3)
+      LIMIT 1`,
+    [asset.workspaceId, asset.sourceJobAttemptId, asset.providerRequestId],
+  );
+  if (estimated.rows[0]) {
+    throw new PersistenceError("COST_CONFLICT", "Mock image accounting estimate already exists");
+  }
+  const occupied = await client.query(
+    `SELECT 1
+       FROM cost_ledger
+      WHERE workspace_id = $1
+        AND provider_configuration_id = $2
+        AND idempotency_key = $3
+      LIMIT 1`,
+    [asset.workspaceId, asset.providerConfigurationId, `${asset.providerRequestId}:request:estimated`],
+  );
+  if (occupied.rows[0]) {
+    throw new PersistenceError("COST_CONFLICT", "Mock image accounting estimate key is occupied");
+  }
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 export function assertSyncActualCost(input: ProviderActualCostInput): void {
   if (input.supersedesEstimateKey) {
     throw new PersistenceError("COST_CONFLICT", "Synchronous actual cost cannot reference an estimate");

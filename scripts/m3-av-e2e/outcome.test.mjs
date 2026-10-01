@@ -115,7 +115,7 @@ test("success linkage requires the same attempt and request", () => {
   assert.equal(assertLinkage(snapshot).attempt.id, "attempt-1");
 });
 
-test("image success can record an attempt link without a cost row", () => {
+test("default linkage requires a cost and can opt out only when the caller asks", () => {
   const snapshot = {
     jobId: "job-image",
     jobErrorCode: null,

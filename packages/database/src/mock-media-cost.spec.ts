@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assertSyncActualCost, providerCostMatches, type ProviderActualCostInput, type StoredProviderCost } from "./mock-media-cost";
+import { assertFixedMockImageSnapshot, assertSyncActualCost, providerCostMatches, type ProviderActualCostInput, type StoredProviderCost } from "./mock-media-cost";
 
 const incoming: ProviderActualCostInput = {
   workspaceId: "11111111-1111-4111-8111-111111111111",
@@ -48,6 +48,25 @@ describe("synchronous mock media cost", () => {
     expect(providerCostMatches({ ...stored, kind: "ESTIMATED" }, incoming)).toBe(false);
     expect(providerCostMatches({ ...stored, supersedesEstimateKey: "estimate" }, incoming)).toBe(false);
     expect(providerCostMatches(stored, { ...incoming, currency: "EUR" })).toBe(false);
+  });
+
+  it("accepts only the fixed synchronous image snapshot", () => {
+    const shotRevisionId = "33333333-3333-4333-8333-333333333333";
+    const legal = {
+      schema: "m3.mock.image.v1",
+      shotRevisionId,
+      seed: null,
+      outcome: "success",
+    };
+    expect(() => assertFixedMockImageSnapshot(legal, shotRevisionId)).not.toThrow();
+    expect(() => assertFixedMockImageSnapshot({ ...legal, seed: "same" }, shotRevisionId)).not.toThrow();
+    expect(() => assertFixedMockImageSnapshot({ ...legal, executionMode: "delayed" }, shotRevisionId))
+      .toThrow(/fixed success job/);
+    expect(() => assertFixedMockImageSnapshot({ ...legal, outcome: "delayed" }, shotRevisionId))
+      .toThrow(/fixed success job/);
+    expect(() => assertFixedMockImageSnapshot({ ...legal, shotRevisionId: "other" }, shotRevisionId))
+      .toThrow(/fixed success job/);
+    expect(() => assertFixedMockImageSnapshot({}, shotRevisionId)).toThrow(/fixed success job/);
   });
 
   it("rejects an actual that invents a missing estimate", () => {

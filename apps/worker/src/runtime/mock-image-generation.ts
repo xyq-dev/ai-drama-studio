@@ -1,6 +1,19 @@
 import { createHash } from "node:crypto";
-import type { JobPersistenceService, MediaAssetStore, MediaAssetRecord } from "@ai-drama/database";
-import type { MediaProviderAdapter, MediaGenerationRequest, MediaProviderOutput } from "@ai-drama/providers";
+import {
+  assertFixedMockImageSnapshot,
+  assertSyncActualCost,
+  type JobPersistenceService,
+  type MediaAssetStore,
+  type MediaAssetRecord,
+  type ProviderActualCostInput,
+} from "@ai-drama/database";
+import type {
+  MediaAccountingEnvelope,
+  MediaProviderAdapter,
+  MediaGenerationRequest,
+  MediaProviderOutput,
+} from "@ai-drama/providers";
+import { classifyMediaFailure } from "./mock-media-failure";
 
 export interface MockImageObjectStore {
   put(input: {
@@ -49,10 +62,7 @@ export async function runMockImageJob(
   let providerAttached = false;
   try {
   await dependencies.assets.assertUsableShot(input.workspaceId, input.projectId, input.shotRevisionId);
-  const snapshot = input.inputSnapshot as { outcome?: unknown } | null;
-  if (snapshot?.outcome !== undefined && snapshot.outcome !== "success") {
-    throw new Error("Synchronous Mock image path only supports success outcome");
-  }
+  assertFixedMockImageSnapshot(input.inputSnapshot, input.shotRevisionId);
 
   const request: MediaGenerationRequest = {
     workspaceId: input.workspaceId,
@@ -85,15 +95,15 @@ export async function runMockImageJob(
   if (result.outputs.length !== 1 || result.outputs[0]?.kind !== "IMAGE") {
     throw new Error("Mock image job requires exactly one image output");
   }
+  const actualCost = imageCostFromReceipt(
+    input, acquired.attemptId, result.providerRequestId, result.accounting, "submit",
+  );
   return await persistMockImageOutput(input, acquired.attemptId, result.providerRequestId,
-    result.outputs[0], dependencies);
+    result.outputs[0], actualCost, dependencies);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
-    const retryable = code === "STALE_RECALCULATION_PENDING" ||
-      (code !== "REVIEW_REQUIRED" && code !== "NOT_FOUND" &&
-        !/only supports success|request identity changed|expected success|requires exactly one|must be inline PNG|not a PNG|dimensions are invalid/.test(message));
-    if (code === "JOB_TERMINAL" || code === "ATTEMPT_SUPERSEDED") throw error;
+    const disposition = classifyMediaFailure(error);
+    if (disposition === "terminal-race") throw error;
+    const retryable = disposition === "retryable";
     if (providerAttached && retryable) {
       // Preserve the attempt and request; lease recovery inspects it before any resubmit.
       throw error;
@@ -102,7 +112,7 @@ export async function runMockImageJob(
       workspaceId: input.workspaceId, jobId: input.jobId, attemptId: acquired.attemptId,
       traceId: input.traceId,
       errorCode: retryable ? "MOCK_IMAGE_RUNTIME_FAILED" : "MOCK_IMAGE_OUTPUT_INVALID",
-      errorMessage: message, retryable,
+      errorMessage: error instanceof Error ? error.message : String(error), retryable,
       nextRunAt: retryable ? new Date(Date.now() + 30_000) : undefined,
     });
     return null;
@@ -120,7 +130,7 @@ type MockDependencies = {
  * Redelivery must never resubmit a request with an existing providerRequestId.
  */
 export async function recoverMockImageAttempt(
-  input: Omit<MockImageJob, "dispatchSeq" | "inputHash" | "inputSnapshot"> & {
+  input: Omit<MockImageJob, "dispatchSeq" | "inputHash"> & {
     attemptId: string;
     providerRequestId: string;
   },
@@ -140,8 +150,60 @@ export async function recoverMockImageAttempt(
   if (observation.outputs.length !== 1 || observation.outputs[0]?.kind !== "IMAGE") {
     throw new Error("Recovered Mock request requires exactly one image output");
   }
+  assertFixedMockImageSnapshot(input.inputSnapshot, input.shotRevisionId);
+  const actualCost = imageCostFromReceipt(
+    input, input.attemptId, input.providerRequestId, observation.accounting, "recover",
+  );
   return persistMockImageOutput(input, input.attemptId, input.providerRequestId,
-    observation.outputs[0], dependencies);
+    observation.outputs[0], actualCost, dependencies);
+}
+
+function imageCostFromReceipt(
+  input: Pick<MockImageJob, "workspaceId" | "projectId" | "jobId" | "providerConfigurationId">,
+  attemptId: string,
+  providerRequestId: string,
+  accounting: MediaAccountingEnvelope | undefined,
+  mode: "submit" | "recover",
+): ProviderActualCostInput {
+  const line = accounting?.costs.length === 1 ? accounting.costs[0] : undefined;
+  if (!accounting || !line) throw new Error("Mock image accounting must contain one cost line");
+  if (accounting.provider !== "mock-media" || accounting.model !== "mock-v1" || accounting.usage?.requests !== 1) {
+    throw new Error("Mock image accounting provider, model, or request usage is wrong");
+  }
+  if (line.component !== "request" || line.kind !== "ACTUAL") {
+    throw new Error("Mock image accounting cost line is not an actual request");
+  }
+  if (line.idempotencyKey !== `${providerRequestId}:request:actual`) {
+    throw new Error("Mock image accounting idempotency key is wrong");
+  }
+  const expectedEstimate = `${providerRequestId}:request:estimated`;
+  if (mode === "submit" ? line.supersedesEstimateKey !== undefined : line.supersedesEstimateKey !== expectedEstimate) {
+    throw new Error("Mock image accounting estimate reference is wrong");
+  }
+  if (typeof line.currency !== "string" || typeof line.amountDecimal !== "string" || typeof line.basis !== "string"
+    || typeof line.unitType !== "string" || typeof line.unitQuantity !== "string" || typeof line.unitPriceSnapshot !== "string") {
+    throw new Error("Mock image accounting amounts are missing");
+  }
+  const cost: ProviderActualCostInput = {
+    workspaceId: input.workspaceId,
+    projectId: input.projectId,
+    generationJobId: input.jobId,
+    jobAttemptId: attemptId,
+    providerConfigurationId: input.providerConfigurationId,
+    providerRequestId,
+    idempotencyKey: line.idempotencyKey,
+    currency: line.currency,
+    amountDecimal: line.amountDecimal,
+    kind: line.kind,
+    basis: line.basis,
+    unitType: line.unitType,
+    unitQuantity: line.unitQuantity,
+    unitPriceSnapshot: line.unitPriceSnapshot,
+    provider: accounting.provider,
+    model: accounting.model,
+  };
+  assertSyncActualCost(cost);
+  return cost;
 }
 
 async function persistMockImageOutput(
@@ -149,6 +211,7 @@ async function persistMockImageOutput(
   attemptId: string,
   providerRequestId: string,
   output: MediaProviderOutput,
+  actualCost: ProviderActualCostInput,
   dependencies: MockDependencies,
 ): Promise<MediaAssetRecord | null> {
   const resolved = await dependencies.adapter.resolveOutput(output);
@@ -181,5 +244,6 @@ async function persistMockImageOutput(
     sourceShotRevisionId: input.shotRevisionId,
     providerConfigurationId: input.providerConfigurationId,
     providerRequestId,
+    actualCost,
   });
 }

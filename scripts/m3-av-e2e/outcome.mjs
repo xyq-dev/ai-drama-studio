@@ -18,6 +18,8 @@ export const requiredStages = [
   "subtitle-music-recovery",
   "recovery-disk",
   "recovery-flag",
+  "image-recovery",
+  "image-cost-guard",
 ];
 
 export function acceptanceFailed(input) {

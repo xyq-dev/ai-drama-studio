@@ -17,6 +17,7 @@ interface Call {
   body: Record<string, unknown>;
   ifMatch: string | null;
   key: string | null;
+  status?: number;
 }
 
 interface Sim {
@@ -490,19 +491,23 @@ function createSim(): Sim {
     }
     if (/\/shot-revisions\/[^/]+\/generate-subtitle$/.test(path) && method === "POST") {
       if (sim.subtitlePostGate) await sim.subtitlePostGate;
-      if (sim.subtitleFailures > 0) {
-        sim.subtitleFailures -= 1;
-        return fail(409, "CONFLICT", "受理失败");
-      }
-      return json({ workflowRunId: "sm-run", jobId: "subtitle-job" }, 202);
+      const response = sim.subtitleFailures > 0
+        ? fail(409, "CONFLICT", "受理失败")
+        : json({ workflowRunId: "sm-run", jobId: "subtitle-job" }, 202);
+      if (sim.subtitleFailures > 0) sim.subtitleFailures -= 1;
+      const call = [...sim.calls].reverse().find((item) => item.method === "POST" && item.url === path && item.status === undefined);
+      if (call) call.status = response.status;
+      return response;
     }
     if (/\/shot-revisions\/[^/]+\/generate-music$/.test(path) && method === "POST") {
       if (sim.musicPostGate) await sim.musicPostGate;
-      if (sim.musicFailures > 0) {
-        sim.musicFailures -= 1;
-        return fail(409, "CONFLICT", "受理失败");
-      }
-      return json({ workflowRunId: "sm-run", jobId: "music-job" }, 202);
+      const response = sim.musicFailures > 0
+        ? fail(409, "CONFLICT", "受理失败")
+        : json({ workflowRunId: "sm-run", jobId: "music-job" }, 202);
+      if (sim.musicFailures > 0) sim.musicFailures -= 1;
+      const call = [...sim.calls].reverse().find((item) => item.method === "POST" && item.url === path && item.status === undefined);
+      if (call) call.status = response.status;
+      return response;
     }
     if (/\/shot-revisions\/[^/]+\/generate-tts$/.test(path) && method === "POST") {
       if (sim.speechPostGate) await sim.speechPostGate;
@@ -1657,26 +1662,32 @@ describe("workbench review interactions against a simulated API", () => {
   });
 
   it.each([
-    ["subtitle", "生成 Mock 字幕", "/generate-subtitle", "Mock 字幕", "subtitlePostGate", "subtitleFailures"],
-    ["music", "生成 Mock 音乐", "/generate-music", "Mock 音乐", "musicPostGate", "musicFailures"],
-  ] as const)("drops a late %s acceptance after the revision changes", async (_channel, button, path, heading, gate, failures) => {
+    ["subtitle", "生成 Mock 字幕", "/generate-subtitle", "Mock 字幕", "subtitlePostGate"],
+    ["music", "生成 Mock 音乐", "/generate-music", "Mock 音乐", "musicPostGate"],
+  ] as const)("drops a late %s acceptance after the revision changes", async (_channel, button, path, heading, gate) => {
     const sim = createSim();
     sim.imageReady = true;
     let release!: () => void;
     sim[gate] = new Promise<void>((resolve) => { release = resolve; });
-    sim[failures] = 1;
     install(sim);
     renderAt(`focus=shot&episode=1&scene=scene-1&shot=${SHOT_A}`);
     fireEvent.click(await screen.findByRole("button", { name: button }));
     await waitFor(() => expect(sim.calls.filter((call) => call.url.endsWith(path))).toHaveLength(1));
     await saveShot(sim, `${heading} 换版`);
+    const callsBeforeLate = sim.calls.length;
     release();
-    await waitFor(() => expect(screen.getByRole("button", { name: button })).toBeTruthy());
-    expect(mediaSection(heading).textContent ?? "").not.toContain("复用同一幂等键");
+    await waitFor(() => {
+      const late = sim.calls.find((call) => call.method === "POST" && call.url.endsWith(path));
+      expect(late?.status).toBe(202);
+      expect(sim.calls.length).toBeGreaterThan(callsBeforeLate);
+    });
+    expect(mediaSection(heading).textContent ?? "").not.toContain("已受理");
     expect(mediaSection(heading).textContent ?? "").not.toContain("正在提交");
+    expect(mediaSection(heading).textContent ?? "").not.toContain("复用同一幂等键");
     fireEvent.click(screen.getByRole("button", { name: button }));
     await waitFor(() => expect(sim.calls.filter((call) => call.url.endsWith(path))).toHaveLength(2));
     const posts = sim.calls.filter((call) => call.url.endsWith(path));
+    expect(posts[0]?.status).toBe(202);
     expect(posts[0]?.key).not.toBe(posts[1]?.key);
     expect(mediaSection("Mock 配音").textContent ?? "").not.toContain("已受理");
     expect(mediaSection("Mock 视频").textContent ?? "").not.toContain("复用同一幂等键");

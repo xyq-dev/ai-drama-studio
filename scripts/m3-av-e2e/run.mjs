@@ -339,8 +339,9 @@ async function jobLedger(jobId) {
     [jobId],
   );
   const costs = await sql(
-    `SELECT kind, currency, amount_decimal::text, basis, unit_type, provider_request_id,
-            provider_configuration_id, job_attempt_id, supersedes_cost_id, supersedes_estimate_key
+    `SELECT id, kind, currency, amount_decimal::text, basis, unit_type, provider_request_id,
+            provider_configuration_id, job_attempt_id, idempotency_key, model,
+            supersedes_cost_id, supersedes_estimate_key
        FROM cost_ledger WHERE generation_job_id = $1`,
     [jobId],
   );
@@ -461,6 +462,86 @@ function assertLedger(ledger, kind, revisionId, sourceText, mimeType, bytes, sha
   }
   const ledgerSnapshot = assertLinkage(linkageSnapshot(ledger));
   return { requestId, assetId: asset.id, ledger: ledgerSnapshot };
+}
+
+function assertSuccessfulImage(ledger, revisionId) {
+  if (!ledger.job || ledger.job.kind !== "MEDIA_IMAGE" || ledger.job.state !== "SUCCEEDED") {
+    throw new Error(`image job ${JSON.stringify(ledger.job)}`);
+  }
+  if (ledger.attempts.length !== 1 || ledger.attempts[0].attempt_no !== 1 || !ledger.attempts[0].id) {
+    throw new Error(`image attempts ${JSON.stringify(ledger.attempts)}`);
+  }
+  const requestId = `mock-media|image.generate|${ledger.job.id}:1`;
+  if (ledger.attempts[0].provider_request_id !== requestId) {
+    throw new Error(`image request ${ledger.attempts[0].provider_request_id}`);
+  }
+  const snapshot = ledger.job.input_snapshot;
+  if (snapshot?.schema !== "m3.mock.image.v1" || snapshot?.outcome !== "success"
+    || String(snapshot?.shotRevisionId) !== String(revisionId) || Object.hasOwn(snapshot, "executionMode")) {
+    throw new Error(`image snapshot ${JSON.stringify(snapshot)}`);
+  }
+  if (ledger.assets.length !== 1 || ledger.assets[0].kind !== "IMAGE" || ledger.assets[0].mime_type !== "image/png") {
+    throw new Error(`image assets ${ledger.assets.length}`);
+  }
+  if (ledger.costs.length !== 1) throw new Error(`image costs ${JSON.stringify(ledger.costs)}`);
+  const cost = ledger.costs[0];
+  if (cost.kind !== "ACTUAL" || cost.currency !== "USD" || Number(cost.amount_decimal) !== 0
+    || cost.supersedes_estimate_key !== null || cost.supersedes_cost_id !== null
+    || cost.idempotency_key !== `${requestId}:request:actual` || cost.model !== "mock-v1") {
+    throw new Error(`image cost ${JSON.stringify(cost)}`);
+  }
+  const link = assertLinkage(linkageSnapshot(ledger));
+  return { requestId, attemptId: ledger.attempts[0].id, assetId: ledger.assets[0].id, cost, link };
+}
+
+async function waitAttachedRequest(jobId) {
+  const started = Date.now();
+  let attached = null;
+  while (Date.now() - started < 30_000) {
+    attached = await jobLedger(jobId);
+    if (attached.job?.state === "RUNNING" && attached.attempts[0]?.provider_request_id && attached.attempts[0]?.id) {
+      return attached;
+    }
+    if (attached.job?.state === "FAILED" || attached.job?.state === "SUCCEEDED") {
+      throw new Error(`fault job did not stay RUNNING: ${attached.job?.state} ${attached.job?.error_code ?? ""}`);
+    }
+    await sleep(500);
+  }
+  throw new Error(`request was not attached ${JSON.stringify(attached?.job ?? null)}`);
+}
+
+async function startWorker() {
+  const downStarted = Date.now();
+  while (Date.now() - downStarted < 15_000) {
+    try {
+      await fetch(`${workerOrigin}/health/ready`, { signal: AbortSignal.timeout(1000) });
+      await sleep(300);
+    } catch {
+      break;
+    }
+  }
+  spawnApp("worker", ["pnpm", "--filter", "@ai-drama/worker", "start"], appEnv());
+  await waitHttp(`${workerOrigin}/health/ready`, (status, body) =>
+    status === 200 && body?.dependencies?.queue?.status === "ok", 60_000);
+}
+
+async function insertMarkedImageCost(row) {
+  if (row.model !== "m3-image-accounting-negative") throw new Error("unmarked image ledger row");
+  const inserted = await state.db.query(
+    `INSERT INTO cost_ledger
+      (workspace_id, project_id, generation_job_id, job_attempt_id,
+       idempotency_key, provider_configuration_id, provider_request_id,
+       currency, amount_decimal, kind, basis, unit_type, unit_quantity, unit_price_snapshot,
+       provider, model)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,'USD',$8,$9,'PROVIDER_REPORTED','request',1,0,'mock-media',$10)
+     RETURNING id, kind, amount_decimal::text AS amount_decimal, idempotency_key, model, supersedes_estimate_key`,
+    [
+      row.workspaceId, row.projectId, row.generationJobId, row.jobAttemptId,
+      row.idempotencyKey, row.providerConfigurationId, row.providerRequestId,
+      row.amount, row.kind, row.model,
+    ],
+  );
+  return inserted.rows[0];
 }
 
 async function pollJob(jobId, timeoutMs, terminal = ["SUCCEEDED", "FAILED", "CANCELED"]) {
@@ -1229,8 +1310,17 @@ async function main() {
     if (pngResponse.status !== 200 || pngBytes.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") {
       throw new Error(`png signature failed ${pngResponse.status}`);
     }
+    const imageLedger = await jobLedger(imagePost.body.jobId);
+    const imageAccount = assertSuccessfulImage(imageLedger, state.world.shotRevisionId);
+    const checksum = createHash("sha256").update(pngBytes).digest("hex");
+    if (imageLedger.assets[0].checksum_sha256 !== checksum || imageLedger.assets[0].byte_size !== String(pngBytes.length)) {
+      throw new Error("decoded png does not match the stored image asset");
+    }
     await page.screenshot({ path: join(outputDir, "viewport-and-png.png"), fullPage: true });
-    return { draft: action, overflow, viewport, screenshot: "viewport-390.png", decoded, imageJobId: imagePost.body.jobId };
+    return {
+      draft: action, overflow, viewport, screenshot: "viewport-390.png", decoded,
+      imageJobId: imagePost.body.jobId, imageAccount,
+    };
   });
 
   await stage("idempotency-retry", async () => {
@@ -1716,7 +1806,7 @@ async function main() {
       if (imageLedger.assets.length !== 1 || imageLedger.assets[0].kind !== "IMAGE") {
         throw new Error("image did not persist an asset");
       }
-      const imageLink = assertLinkage(linkageSnapshot(imageLedger), { expectCost: false });
+      const imageAccount = assertSuccessfulImage(imageLedger, state.world.shotRevisionId);
       const minio = await countMinio();
       if (minio !== state.evidence.minioBefore) throw new Error(`MinIO changed after recovery ${minio}`);
       return {
@@ -1725,11 +1815,135 @@ async function main() {
         attemptNo: ledger.attempts[0].attempt_no,
         attempt,
         imageJobId: image.body.jobId,
-        imageLink,
-        imageCostWritten: false,
-        imageCostNote: "mock-image-generation persistMockImageOutput calls completeAttemptWithAsset without actualCost, so this image job has no cost_ledger row",
+        imageAccount,
         minio,
       };
+    } finally {
+      await restoreMockDir();
+    }
+  });
+
+  await stage("image-recovery", async () => {
+    await breakMockDir();
+    try {
+      const accepted = expectStatus(await callApi(apiOrigin, "POST", `/shot-revisions/${state.world.shotRevisionId}/generate-image`, {
+        body: { seed: "image-disk-failure" },
+      }), 202);
+      const attached = await waitAttachedRequest(accepted.body.jobId);
+      const attemptId = attached.attempts[0].id;
+      const requestId = attached.attempts[0].provider_request_id;
+      await stopApp("worker");
+      await restoreMockDir();
+      await startWorker();
+      const done = await pollJob(accepted.body.jobId, 120_000);
+      const ledger = await jobLedger(accepted.body.jobId);
+      if (done.state !== "SUCCEEDED") throw new Error(`image recovery ${done.state} ${ledger.job?.error_code ?? ""}`);
+      if (ledger.attempts.length !== 1 || ledger.attempts[0].id !== attemptId || ledger.attempts[0].provider_request_id !== requestId) {
+        throw new Error(`image recovery attempt changed ${JSON.stringify(ledger.attempts)}`);
+      }
+      const imageAccount = assertSuccessfulImage(ledger, state.world.shotRevisionId);
+      const content = await fetch(`${webOrigin}/api/v1/assets/${imageAccount.assetId}/content`, { signal: AbortSignal.timeout(15_000) });
+      const bytes = Buffer.from(await content.arrayBuffer());
+      if (content.status !== 200 || bytes.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") {
+        throw new Error(`recovered png ${content.status}`);
+      }
+      return { jobId: accepted.body.jobId, attemptId, requestId, imageAccount, byteSize: bytes.length };
+    } finally {
+      await restoreMockDir();
+    }
+  });
+
+  await stage("image-cost-guard", async () => {
+    await breakMockDir();
+    const plans = [
+      {
+        seed: "image-estimate-other",
+        kind: "ESTIMATED",
+        amount: "0",
+        keyFor: (requestId) => `m3-image-accounting-negative:other-estimate:${requestId}`,
+      },
+      {
+        seed: "image-estimate-key",
+        kind: "ACTUAL",
+        amount: "0",
+        keyFor: (requestId) => `${requestId}:request:estimated`,
+      },
+      {
+        seed: "image-actual-conflict",
+        kind: "ACTUAL",
+        amount: "1.00000000",
+        keyFor: (requestId) => `${requestId}:request:actual`,
+      },
+    ];
+    try {
+      const prepared = [];
+      for (const plan of plans) {
+        const accepted = expectStatus(await callApi(apiOrigin, "POST", `/shot-revisions/${state.world.shotRevisionId}/generate-image`, {
+          body: { seed: plan.seed },
+        }), 202);
+        const attached = await waitAttachedRequest(accepted.body.jobId);
+        const attempt = attached.attempts[0];
+        const marked = await insertMarkedImageCost({
+          workspaceId,
+          projectId: state.world.projectId,
+          generationJobId: accepted.body.jobId,
+          jobAttemptId: attempt.id,
+          providerConfigurationId: attempt.provider_configuration_id,
+          providerRequestId: attempt.provider_request_id,
+          idempotencyKey: plan.keyFor(attempt.provider_request_id),
+          amount: plan.amount,
+          kind: plan.kind,
+          model: "m3-image-accounting-negative",
+        });
+        prepared.push({
+          jobId: accepted.body.jobId,
+          attemptId: attempt.id,
+          requestId: attempt.provider_request_id,
+          marked,
+        });
+      }
+      await stopApp("worker");
+      await restoreMockDir();
+      await startWorker();
+      const results = [];
+      for (const item of prepared) {
+        const done = await pollJob(item.jobId, 120_000);
+        const ledger = await jobLedger(item.jobId);
+        const events = await sql(
+          "SELECT count(*)::int AS count FROM domain_event WHERE aggregate_id = $1 AND event_type = 'job.succeeded'",
+          [item.jobId],
+        );
+        if (done.state !== "FAILED" || ledger.job?.error_code !== "MOCK_IMAGE_OUTPUT_INVALID") {
+          throw new Error(`image guard ${item.jobId} ${done.state} ${ledger.job?.error_code ?? ""}`);
+        }
+        if (ledger.attempts.length !== 1 || ledger.attempts[0].id !== item.attemptId || ledger.attempts[0].provider_request_id !== item.requestId) {
+          throw new Error(`image guard attempt changed ${JSON.stringify(ledger.attempts)}`);
+        }
+        if (ledger.attempts[0].error_json?.retryable !== false || ledger.attempts[0].error_json?.code !== "MOCK_IMAGE_OUTPUT_INVALID") {
+          throw new Error(`image guard retry ${JSON.stringify(ledger.attempts[0].error_json)}`);
+        }
+        if (ledger.assets.length !== 0 || events[0].count !== 0) {
+          throw new Error(`image guard committed success assets ${ledger.assets.length} events ${events[0].count}`);
+        }
+        if (ledger.costs.length !== 1 || ledger.costs[0].id !== item.marked.id
+          || ledger.costs[0].kind !== item.marked.kind
+          || ledger.costs[0].amount_decimal !== item.marked.amount_decimal
+          || ledger.costs[0].idempotency_key !== item.marked.idempotency_key
+          || ledger.costs[0].model !== item.marked.model) {
+          throw new Error(`image guard overwrote ledger ${JSON.stringify(ledger.costs)}`);
+        }
+        results.push({
+          jobId: item.jobId,
+          attemptId: item.attemptId,
+          requestId: item.requestId,
+          errorCode: ledger.job.error_code,
+          retryable: false,
+          markedCostId: item.marked.id,
+          assets: 0,
+          succeededEvents: 0,
+        });
+      }
+      return { results };
     } finally {
       await restoreMockDir();
     }

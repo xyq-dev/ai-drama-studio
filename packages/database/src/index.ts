@@ -120,7 +120,9 @@ export {
   type MockMediaJobKind,
 } from "./mock-media-kinds";
 export {
+  assertFixedMockImageSnapshot,
   assertSyncActualCost,
+  guardSynchronousMockImageCost,
   providerCostMatches,
   recordProviderActualCost,
   type ProviderActualCostInput,

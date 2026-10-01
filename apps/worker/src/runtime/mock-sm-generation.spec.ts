@@ -63,12 +63,13 @@ describe("synchronous mock subtitle and music", () => {
         providerConfigurationId: job.providerConfigurationId,
       }),
     }));
-    const submit = vi.spyOn(adapter, "submit");
+    const recoveryAdapter = new MockMediaAdapter();
+    const submit = vi.spyOn(recoveryAdapter, "submit");
     await recoverMockSmAttempt({
       ...job,
       attemptId: "66666666-6666-4666-8666-666666666666",
       providerRequestId: `mock-media|sync|${capability}|${job.jobId}:1`,
-    }, { jobs, assets, adapter: new MockMediaAdapter(), objects: { put } });
+    }, { jobs, assets, adapter: recoveryAdapter, objects: { put } });
     expect(submit).not.toHaveBeenCalled();
   });
 });

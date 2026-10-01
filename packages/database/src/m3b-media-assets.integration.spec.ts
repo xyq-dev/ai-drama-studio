@@ -769,3 +769,233 @@ describe("M3-B media asset store", () => {
     ).rejects.toMatchObject({ code: "ASSET_CONFLICT" });
   });
 });
+
+async function bindFixedImage() {
+  const seeded = await seedApprovedShot();
+  const snapshot = {
+    schema: "m3.mock.image.v1",
+    shotRevisionId: seeded.shotRevisionId,
+    seed: null,
+    outcome: "success",
+  };
+  const providerRequestId = `mock-media|image.generate|${seeded.generationJobId}:1`;
+  await pool.query(
+    `UPDATE generation_job
+        SET state = 'RUNNING', input_snapshot = $2::jsonb
+      WHERE id = $1`,
+    [seeded.generationJobId, JSON.stringify(snapshot)],
+  );
+  await pool.query(
+    `UPDATE job_attempt
+        SET provider_request_id = $2,
+            provider_client_request_key = $3,
+            request_snapshot = $4::jsonb
+      WHERE id = $1`,
+    [seeded.jobAttemptId, providerRequestId, `${seeded.generationJobId}:1`, JSON.stringify(snapshot)],
+  );
+  return { ...seeded, providerRequestId };
+}
+
+function fixedImageCost(bound: Awaited<ReturnType<typeof bindFixedImage>>, amount = "0.00000000") {
+  return {
+    workspaceId: bound.workspaceId,
+    projectId: bound.projectId,
+    generationJobId: bound.generationJobId,
+    jobAttemptId: bound.jobAttemptId,
+    providerConfigurationId: bound.providerConfigurationId,
+    providerRequestId: bound.providerRequestId,
+    idempotencyKey: `${bound.providerRequestId}:request:actual`,
+    currency: "USD",
+    amountDecimal: amount,
+    kind: "ACTUAL",
+    basis: "PROVIDER_REPORTED",
+    unitType: "request",
+    unitQuantity: "1",
+    unitPriceSnapshot: "0",
+    provider: "mock-media",
+    model: "mock-v1",
+  };
+}
+
+function fixedImageAsset(bound: Awaited<ReturnType<typeof bindFixedImage>>, objectKey: string) {
+  return {
+    workspaceId: bound.workspaceId,
+    projectId: bound.projectId,
+    generationJobId: bound.generationJobId,
+    traceId: "mock-image-cost",
+    kind: "IMAGE" as const,
+    storageProvider: "mock-object-store",
+    objectKey,
+    mimeType: "image/png",
+    byteSize: 1,
+    checksumSha256: hash,
+    width: 1,
+    height: 1,
+    sourceJobAttemptId: bound.jobAttemptId,
+    sourceShotRevisionId: bound.shotRevisionId,
+    providerConfigurationId: bound.providerConfigurationId,
+    providerRequestId: bound.providerRequestId,
+    actualCost: fixedImageCost(bound),
+  };
+}
+
+async function ledgerSnapshot(generationJobId: string) {
+  const costs = await pool.query<QueryResultRow>(
+    `SELECT id, kind, amount_decimal::text AS amount_decimal, idempotency_key, model, supersedes_estimate_key
+       FROM cost_ledger WHERE generation_job_id = $1 ORDER BY idempotency_key`,
+    [generationJobId],
+  );
+  const assets = await pool.query<{ count: number } & QueryResultRow>(
+    "SELECT count(*)::int AS count FROM asset WHERE source_generation_job_id = $1",
+    [generationJobId],
+  );
+  const events = await pool.query<{ count: number } & QueryResultRow>(
+    "SELECT count(*)::int AS count FROM domain_event WHERE aggregate_id = $1 AND event_type = 'job.succeeded'",
+    [generationJobId],
+  );
+  const job = await pool.query<{ state: string } & QueryResultRow>(
+    "SELECT state FROM generation_job WHERE id = $1",
+    [generationJobId],
+  );
+  return {
+    costs: costs.rows,
+    assets: assets.rows[0]?.count ?? -1,
+    succeededEvents: events.rows[0]?.count ?? -1,
+    state: job.rows[0]?.state ?? "",
+  };
+}
+
+describe("synchronous mock image cost guard", () => {
+  it("stores one image asset and one zero actual cost", async () => {
+    const bound = await bindFixedImage();
+    const asset = await store.completeAttemptWithAsset(jobs, fixedImageAsset(bound, "mock-images/fixed.png"));
+    expect(asset?.id).toBeTruthy();
+    const ledger = await ledgerSnapshot(bound.generationJobId);
+    expect(ledger.state).toBe("SUCCEEDED");
+    expect(ledger.assets).toBe(1);
+    expect(ledger.succeededEvents).toBe(1);
+    expect(ledger.costs).toEqual([expect.objectContaining({
+      kind: "ACTUAL",
+      amount_decimal: "0.00000000",
+      idempotency_key: `${bound.providerRequestId}:request:actual`,
+      model: "mock-v1",
+      supersedes_estimate_key: null,
+    })]);
+  });
+
+  it("replays an identical actual and does not reopen a finished image", async () => {
+    const bound = await bindFixedImage();
+    await pool.query(
+      `INSERT INTO cost_ledger
+        (workspace_id, project_id, generation_job_id, job_attempt_id,
+         idempotency_key, provider_configuration_id, provider_request_id,
+         currency, amount_decimal, kind, basis, unit_type, unit_quantity, unit_price_snapshot,
+         provider, model)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'USD',0,'ACTUAL','PROVIDER_REPORTED','request',1,0,'mock-media','mock-v1')`,
+      [
+        bound.workspaceId, bound.projectId, bound.generationJobId, bound.jobAttemptId,
+        `${bound.providerRequestId}:request:actual`, bound.providerConfigurationId, bound.providerRequestId,
+      ],
+    );
+    await store.completeAttemptWithAsset(jobs, fixedImageAsset(bound, "mock-images/replay.png"));
+    const afterReplay = await ledgerSnapshot(bound.generationJobId);
+    expect(afterReplay.assets).toBe(1);
+    expect(afterReplay.costs).toHaveLength(1);
+    await expect(store.completeAttemptWithAsset(jobs, fixedImageAsset(bound, "mock-images/replay.png")))
+      .rejects.toMatchObject({ code: "JOB_TERMINAL" });
+    const afterTerminal = await ledgerSnapshot(bound.generationJobId);
+    expect(afterTerminal).toEqual(afterReplay);
+  });
+
+  it("rejects estimates, occupied estimate keys, and a conflicting actual without committing success", async () => {
+    const cases = [
+      {
+        key: "m3-image-accounting-negative:other-estimate",
+        kind: "ESTIMATED",
+        amount: "0",
+        model: "m3-image-accounting-negative",
+      },
+      {
+        keySuffix: ":request:estimated",
+        kind: "ACTUAL",
+        amount: "0",
+        model: "m3-image-accounting-negative",
+      },
+      {
+        keySuffix: ":request:actual",
+        kind: "ACTUAL",
+        amount: "1.00000000",
+        model: "m3-image-accounting-negative",
+      },
+    ] as const;
+    for (const [index, entry] of cases.entries()) {
+      const bound = await bindFixedImage();
+      const idempotencyKey = "key" in entry
+        ? entry.key
+        : `${bound.providerRequestId}${entry.keySuffix}`;
+      const inserted = await pool.query<{ id: string } & QueryResultRow>(
+        `INSERT INTO cost_ledger
+          (workspace_id, project_id, generation_job_id, job_attempt_id,
+           idempotency_key, provider_configuration_id, provider_request_id,
+           currency, amount_decimal, kind, basis, unit_type, unit_quantity, unit_price_snapshot,
+           provider, model)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,'USD',$8,$9,'PROVIDER_REPORTED','request',1,0,'mock-media',$10)
+         RETURNING id`,
+        [
+          bound.workspaceId, bound.projectId, bound.generationJobId, bound.jobAttemptId,
+          idempotencyKey, bound.providerConfigurationId, bound.providerRequestId,
+          entry.amount, entry.kind, entry.model,
+        ],
+      );
+      const before = await ledgerSnapshot(bound.generationJobId);
+      await expect(store.completeAttemptWithAsset(jobs, fixedImageAsset(bound, `mock-images/rejected-${index}.png`)))
+        .rejects.toMatchObject({ code: "COST_CONFLICT" });
+      const after = await ledgerSnapshot(bound.generationJobId);
+      expect(after.state).toBe("RUNNING");
+      expect(after.assets).toBe(0);
+      expect(after.succeededEvents).toBe(0);
+      expect(after.costs).toEqual(before.costs);
+      expect(after.costs[0]?.id).toBe(inserted.rows[0]?.id);
+    }
+  });
+
+  it("rejects a contradictory snapshot or lineage and leaves a succeeded image without a backfill", async () => {
+    const contradictory = await bindFixedImage();
+    await pool.query(
+      `UPDATE generation_job
+          SET input_snapshot = jsonb_set(input_snapshot, '{executionMode}', '"delayed"')
+        WHERE id = $1`,
+      [contradictory.generationJobId],
+    );
+    await pool.query(
+      `UPDATE job_attempt
+          SET request_snapshot = (SELECT input_snapshot FROM generation_job WHERE id = $1)
+        WHERE id = $2`,
+      [contradictory.generationJobId, contradictory.jobAttemptId],
+    );
+    await expect(store.completeAttemptWithAsset(jobs, fixedImageAsset(contradictory, "mock-images/delayed.png")))
+      .rejects.toMatchObject({ code: "COST_CONFLICT" });
+    expect((await ledgerSnapshot(contradictory.generationJobId)).assets).toBe(0);
+
+    const mismatched = await bindFixedImage();
+    await expect(store.completeAttemptWithAsset(jobs, {
+      ...fixedImageAsset(mismatched, "mock-images/lineage.png"),
+      providerRequestId: "mock-media|image.generate|other:1",
+      actualCost: {
+        ...fixedImageCost(mismatched),
+        providerRequestId: "mock-media|image.generate|other:1",
+        idempotencyKey: "mock-media|image.generate|other:1:request:actual",
+      },
+    })).rejects.toMatchObject({ code: "COST_CONFLICT" });
+    expect((await ledgerSnapshot(mismatched.generationJobId)).assets).toBe(0);
+
+    const historical = await bindFixedImage();
+    await pool.query("UPDATE generation_job SET state = 'SUCCEEDED' WHERE id = $1", [historical.generationJobId]);
+    await expect(store.completeAttemptWithAsset(jobs, fixedImageAsset(historical, "mock-images/historical.png")))
+      .rejects.toMatchObject({ code: "JOB_TERMINAL" });
+    const untouched = await ledgerSnapshot(historical.generationJobId);
+    expect(untouched.state).toBe("SUCCEEDED");
+    expect(untouched.assets).toBe(0);
+    expect(untouched.costs).toEqual([]);
+  });
+});

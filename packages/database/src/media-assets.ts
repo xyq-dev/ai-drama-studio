@@ -1,6 +1,6 @@
 import type { PoolClient, QueryResultRow } from "pg";
 import { PersistenceError, type DatabasePool, type JobPersistenceService } from "./job-service";
-import { recordProviderActualCost, type ProviderActualCostInput } from "./mock-media-cost";
+import { guardSynchronousMockImageCost, recordProviderActualCost, type ProviderActualCostInput } from "./mock-media-cost";
 
 export interface CreateMediaAssetInput {
   workspaceId: string;
@@ -116,6 +116,17 @@ export class MediaAssetStore {
       attemptId: input.sourceJobAttemptId,
       traceId: input.traceId,
       persistArtifact: async (client) => {
+        if (input.kind === "IMAGE" && input.actualCost) {
+          await guardSynchronousMockImageCost(client, {
+            workspaceId: input.workspaceId,
+            projectId: input.projectId,
+            generationJobId: input.generationJobId,
+            sourceJobAttemptId: input.sourceJobAttemptId,
+            sourceShotRevisionId: input.sourceShotRevisionId,
+            providerConfigurationId: input.providerConfigurationId,
+            providerRequestId: input.providerRequestId,
+          }, input.actualCost);
+        }
         const replay = await loadExactReplayOrConflict(client, input);
         const asset = replay ?? await (async () => {
           if (input.sourceShotRevisionId) {

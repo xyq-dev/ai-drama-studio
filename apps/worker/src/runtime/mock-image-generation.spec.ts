@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import type { JobPersistenceService, MediaAssetStore, MediaAssetRecord } from "@ai-drama/database";
+import { PersistenceError, type JobPersistenceService, type MediaAssetStore, type MediaAssetRecord } from "@ai-drama/database";
 import { MockMediaAdapter } from "@ai-drama/providers";
 import { recoverMockImageAttempt, runMockImageJob, type MockImageJob } from "./mock-image-generation";
 
+const attemptId = "66666666-6666-4666-8666-666666666666";
 const input: MockImageJob = {
   workspaceId: "11111111-1111-4111-8111-111111111111",
   projectId: "22222222-2222-4222-8222-222222222222",
@@ -11,9 +12,15 @@ const input: MockImageJob = {
   dispatchSeq: 1,
   providerConfigurationId: "55555555-5555-4555-8555-555555555555",
   inputHash: "ab".repeat(32),
-  inputSnapshot: { prompt: "test" },
+  inputSnapshot: {
+    schema: "m3.mock.image.v1",
+    shotRevisionId: "33333333-3333-4333-8333-333333333333",
+    seed: null,
+    outcome: "success",
+  },
   traceId: "mock-test",
 };
+const providerRequestId = `mock-media|image.generate|${input.jobId}:1`;
 
 describe("synchronous Mock image generation", () => {
   it("acquires attempt, persists validated output, then completes job", async () => {
@@ -51,8 +58,24 @@ describe("synchronous Mock image generation", () => {
       sourceShotRevisionId: input.shotRevisionId,
       width: 1,
       height: 1,
-      sourceJobAttemptId: "66666666-6666-4666-8666-666666666666",
+      sourceJobAttemptId: attemptId,
+      kind: "IMAGE",
+      actualCost: expect.objectContaining({
+        provider: "mock-media",
+        model: "mock-v1",
+        kind: "ACTUAL",
+        currency: "USD",
+        amountDecimal: "0.00000000",
+        unitType: "request",
+        unitQuantity: "1.00000000",
+        unitPriceSnapshot: "0.00000000",
+        idempotencyKey: `${providerRequestId}:request:actual`,
+        providerRequestId,
+        jobAttemptId: attemptId,
+      }),
     }));
+    const cost = vi.mocked(assets.completeAttemptWithAsset).mock.calls[0]?.[1].actualCost;
+    expect(cost?.supersedesEstimateKey).toBeUndefined();
   });
 
   it("does not submit or persist when the queued job was already acquired", async () => {
@@ -90,12 +113,12 @@ describe("synchronous Mock image generation", () => {
     const completeAttemptWithAsset = vi.fn(async () => resultAsset);
     const recordProviderEvent = vi.fn(async () => true);
     const put = vi.fn(async () => undefined);
-    const providerRequestId = `mock-media|image.generate|${input.jobId}:1`;
     const result = await recoverMockImageAttempt({
       workspaceId: input.workspaceId, projectId: input.projectId,
       shotRevisionId: input.shotRevisionId, jobId: input.jobId,
       providerConfigurationId: input.providerConfigurationId,
-      traceId: input.traceId, attemptId: "attempt-1", providerRequestId,
+      inputSnapshot: input.inputSnapshot,
+      traceId: input.traceId, attemptId, providerRequestId,
     }, {
       jobs: { recordProviderEvent } as unknown as JobPersistenceService,
       assets: { completeAttemptWithAsset } as unknown as MediaAssetStore,
@@ -106,7 +129,28 @@ describe("synchronous Mock image generation", () => {
     expect(recordProviderEvent).toHaveBeenCalledTimes(1);
     expect(put).toHaveBeenCalledTimes(1);
     expect(completeAttemptWithAsset).toHaveBeenCalledWith(expect.anything(),
-      expect.objectContaining({ providerRequestId, sourceJobAttemptId: "attempt-1" }));
+      expect.objectContaining({ providerRequestId, sourceJobAttemptId: attemptId }));
+    const cost = completeAttemptWithAsset.mock.calls[0]?.[1].actualCost;
+    expect(cost?.idempotencyKey).toBe(`${providerRequestId}:request:actual`);
+    expect(cost?.amountDecimal).toBe("0.00000000");
+    expect(cost?.supersedesEstimateKey).toBeUndefined();
+    expect(recordProviderEvent).toHaveBeenCalledWith(expect.objectContaining({
+      normalizedEventKey: (await new MockMediaAdapter().inspect(providerRequestId)).normalizedEventKey,
+    }));
+    const recoveryAdapter = new MockMediaAdapter();
+    const recoverySubmit = vi.spyOn(recoveryAdapter, "submit");
+    await recoverMockImageAttempt({
+      workspaceId: input.workspaceId, projectId: input.projectId,
+      shotRevisionId: input.shotRevisionId, jobId: input.jobId,
+      providerConfigurationId: input.providerConfigurationId,
+      inputSnapshot: input.inputSnapshot,
+      traceId: input.traceId, attemptId, providerRequestId,
+    }, {
+      jobs: { recordProviderEvent } as unknown as JobPersistenceService,
+      assets: { completeAttemptWithAsset } as unknown as MediaAssetStore,
+      adapter: recoveryAdapter, objects: { put },
+    });
+    expect(recoverySubmit).not.toHaveBeenCalled();
   });
 
   it("persists deterministic Mock request before submit so a submit crash is recoverable", async () => {
@@ -127,5 +171,115 @@ describe("synchronous Mock image generation", () => {
       objects: { put: async () => undefined } })).rejects.toThrow(/crashed during submit/);
     expect(order).toEqual(["attach", "submit"]);
     expect(failJob).not.toHaveBeenCalled();
+  });
+
+  it("fails the original attempt when the receipt or snapshot cannot be booked", async () => {
+    const failJob = vi.fn(async () => "failed" as const);
+    const completeAttemptWithAsset = vi.fn();
+    const jobs = {
+      acquireQueuedJob: vi.fn(async () => ({ attemptId, attemptNo: 1 })),
+      attachProviderRequest: vi.fn(async () => undefined),
+      failJob,
+    } as unknown as JobPersistenceService;
+    const assets = {
+      assertUsableShot: vi.fn(async () => undefined),
+      completeAttemptWithAsset,
+    } as unknown as MediaAssetStore;
+    const adapter = new MockMediaAdapter();
+    vi.spyOn(adapter, "submit").mockResolvedValue({
+      kind: "succeeded",
+      providerRequestId,
+      outputs: [{
+        kind: "IMAGE",
+        retrieval: { kind: "HANDLE", handle: "missing-cost" },
+        mimeTypeHint: "image/png",
+      }],
+    });
+    await expect(runMockImageJob(input, {
+      jobs, assets, adapter, objects: { put: async () => undefined },
+    })).resolves.toBeNull();
+    expect(completeAttemptWithAsset).not.toHaveBeenCalled();
+    expect(failJob).toHaveBeenCalledWith(expect.objectContaining({
+      attemptId, retryable: false, errorCode: "MOCK_IMAGE_OUTPUT_INVALID",
+    }));
+
+    failJob.mockClear();
+    await expect(runMockImageJob({
+      ...input,
+      inputSnapshot: { ...input.inputSnapshot as object, executionMode: "delayed" },
+    }, {
+      jobs, assets, adapter: new MockMediaAdapter(), objects: { put: async () => undefined },
+    })).resolves.toBeNull();
+    expect(failJob).toHaveBeenCalledWith(expect.objectContaining({
+      retryable: false, errorCode: "MOCK_IMAGE_OUTPUT_INVALID",
+    }));
+  });
+
+  it("keeps a terminal race unchanged and fails a conflicting actual permanently", async () => {
+    const failJob = vi.fn(async () => "failed" as const);
+    const jobs = {
+      acquireQueuedJob: vi.fn(async () => ({ attemptId, attemptNo: 1 })),
+      attachProviderRequest: vi.fn(async () => undefined),
+      failJob,
+    } as unknown as JobPersistenceService;
+    const terminal = {
+      assertUsableShot: vi.fn(async () => undefined),
+      completeAttemptWithAsset: vi.fn(async () => {
+        throw new PersistenceError("JOB_TERMINAL", "Terminal jobs cannot reopen");
+      }),
+    } as unknown as MediaAssetStore;
+    await expect(runMockImageJob(input, {
+      jobs, assets: terminal, adapter: new MockMediaAdapter(), objects: { put: async () => undefined },
+    })).rejects.toMatchObject({ code: "JOB_TERMINAL" });
+    expect(failJob).not.toHaveBeenCalled();
+
+    const conflict = {
+      assertUsableShot: vi.fn(async () => undefined),
+      completeAttemptWithAsset: vi.fn(async () => {
+        throw new PersistenceError("COST_CONFLICT", "Mock image accounting estimate already exists");
+      }),
+    } as unknown as MediaAssetStore;
+    await expect(runMockImageJob(input, {
+      jobs, assets: conflict, adapter: new MockMediaAdapter(), objects: { put: async () => undefined },
+    })).resolves.toBeNull();
+    expect(failJob).toHaveBeenCalledWith(expect.objectContaining({
+      attemptId, retryable: false, errorCode: "MOCK_IMAGE_OUTPUT_INVALID",
+    }));
+  });
+
+  it("rejects a recovery receipt that does not supersede the exact estimate key", async () => {
+    const adapter = new MockMediaAdapter();
+    const baseline = await adapter.inspect(providerRequestId);
+    vi.spyOn(adapter, "inspect").mockImplementation(async () => {
+      if (baseline.state !== "SUCCEEDED" || !baseline.accounting) return baseline;
+      const line = baseline.accounting.costs[0];
+      if (!line) return baseline;
+      return {
+        ...baseline,
+        accounting: {
+          ...baseline.accounting,
+          costs: [{ ...line, supersedesEstimateKey: `${providerRequestId}:request:other` }],
+        },
+      };
+    });
+    const recordProviderEvent = vi.fn(async () => true);
+    const completeAttemptWithAsset = vi.fn();
+    const submit = vi.spyOn(adapter, "submit");
+    await expect(recoverMockImageAttempt({
+      ...input,
+      attemptId,
+      providerRequestId,
+    }, {
+      jobs: { recordProviderEvent } as unknown as JobPersistenceService,
+      assets: { completeAttemptWithAsset } as unknown as MediaAssetStore,
+      adapter,
+      objects: { put: async () => undefined },
+    })).rejects.toThrow(/estimate reference is wrong/);
+    expect(submit).not.toHaveBeenCalled();
+    expect(completeAttemptWithAsset).not.toHaveBeenCalled();
+    expect(recordProviderEvent).toHaveBeenCalledWith(expect.objectContaining({
+      normalizedEventKey: baseline.normalizedEventKey,
+    }));
+    expect(baseline.accounting?.costs[0]?.supersedesEstimateKey).toBe(`${providerRequestId}:request:estimated`);
   });
 });

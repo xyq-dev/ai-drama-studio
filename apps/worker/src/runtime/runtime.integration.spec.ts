@@ -180,7 +180,14 @@ describe("M1-C Redis and BullMQ integration", () => {
     const created = await jobs.createWorkflowJob({ workspaceId: seeded.workspaceId,
       projectId: seeded.projectId, sourceShotRevisionId: seeded.shotRevisionId,
       type: "MEDIA_IMAGE", requestedBy: "test", kind: "MEDIA_IMAGE",
-      inputHash: "ab".repeat(32), inputSnapshot: {}, traceId: "media-crash" });
+      inputHash: "ab".repeat(32),
+      inputSnapshot: {
+        schema: "m3.mock.image.v1",
+        shotRevisionId: seeded.shotRevisionId,
+        seed: null,
+        outcome: "success",
+      },
+      traceId: "media-crash" });
     const queued = await jobs.queueJob({ workspaceId: seeded.workspaceId,
       jobId: created.jobId, traceId: "media-queued" });
     const acquired = await jobs.acquireQueuedJob({ workspaceId: seeded.workspaceId,
@@ -217,6 +224,12 @@ describe("M1-C Redis and BullMQ integration", () => {
       const assets = await sql<{ count: number }>(
         "SELECT count(*)::int AS count FROM asset WHERE source_job_attempt_id = $1", [acquired.attemptId]);
       expect(assets.rows[0]?.count).toBe(1);
+      const costs = await sql<{ count: number }>(
+        `SELECT count(*)::int AS count FROM cost_ledger
+          WHERE job_attempt_id = $1 AND kind = 'ACTUAL' AND amount_decimal = 0
+            AND supersedes_estimate_key IS NULL`,
+        [acquired.attemptId]);
+      expect(costs.rows[0]?.count).toBe(1);
 
       const runtime = await startQueueRuntime({ databaseUrl, redisUrl, mockObjectDir: directory,
         dispatchIntervalMs: 60_000, reconcileIntervalMs: 60_000 });

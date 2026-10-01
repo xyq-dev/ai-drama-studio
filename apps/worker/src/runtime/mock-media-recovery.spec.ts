@@ -3,6 +3,33 @@ import { PersistenceError, type JobPersistenceService, type MediaAssetStore, typ
 import { MockMediaAdapter } from "@ai-drama/providers";
 import { MockMediaRecovery } from "./mock-media-recovery";
 
+it("does not reopen a succeeded image or write a backfill", async () => {
+  const failJob = vi.fn();
+  const completeAttemptWithAsset = vi.fn();
+  const store = {
+    listExpiredMockMedia: vi.fn(async () => [{
+      workspaceId: "workspace", jobId: "old-image", attemptId: "old-attempt",
+      providerConfigurationId: "provider", providerRequestId: "mock-media|image.generate|old-image:1",
+      cancelRequested: false,
+    }]),
+    loadMockMediaExecution: vi.fn(async () => ({
+      workspaceId: "workspace", jobId: "old-image", projectId: "project", kind: "MEDIA_IMAGE",
+      shotRevisionId: "shot", providerConfigurationId: "provider",
+      inputSnapshot: { schema: "m3.mock.image.v1", shotRevisionId: "shot", seed: null, outcome: "success" },
+      state: "SUCCEEDED", cancelRequested: false,
+    })),
+  } as unknown as RuntimeStore;
+  const recovery = new MockMediaRecovery(
+    { failJob } as unknown as JobPersistenceService,
+    { completeAttemptWithAsset } as unknown as MediaAssetStore,
+    store, new MockMediaAdapter(), { put: async () => undefined },
+    { mockImageEnabled: true, mockAvEnabled: false },
+  );
+  await recovery.reconcileOnce();
+  expect(completeAttemptWithAsset).not.toHaveBeenCalled();
+  expect(failJob).not.toHaveBeenCalled();
+});
+
 it("continues recovering a sibling after an invalid media row", async () => {
   const rows = ["bad", "sibling"].map((jobId) => ({ workspaceId: "workspace",
     jobId, attemptId: `attempt-${jobId}`, providerConfigurationId: "provider",

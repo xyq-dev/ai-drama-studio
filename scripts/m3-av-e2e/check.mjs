@@ -90,6 +90,40 @@ if (!harness.includes("7c5bd8512c6e966455b1d198209358b2d191c77a83ab377c407328106
 if (!harness.includes("01f866e9c5f9b87c2b09116fa5d7c06695b106242d829a8bb32990c00312e891")) {
   failures.push("harness does not pin the mc release checksum");
 }
+for (const stage of ["image-recovery", "image-cost-guard"]) {
+  if (!outcome.includes(`"${stage}"`)) failures.push(`outcome missing ${stage}`);
+  if (!harness.includes(`"${stage}"`)) failures.push(`harness missing ${stage}`);
+}
+if (harness.includes("imageCostWritten") || harness.includes("without actualCost")) {
+  failures.push("harness still exempts a successful image from a cost row");
+}
+if (!harness.includes("m3-image-accounting-negative")) {
+  failures.push("harness does not mark image ledger negatives");
+}
+const imageWorkflow = readFileSync(resolve(root, ".github/workflows/m3-image-accounting-e2e.yml"), "utf8").replace(/\r\n/g, "\n");
+const imageRequired = [
+  "branches:\n      - fix/m3-mock-image-accounting",
+  "workflow_dispatch:",
+  "contents: read",
+  "ubuntu-24.04",
+  "timeout-minutes: 40",
+  "node-version: 24.21.0",
+  "version: 10.17.0",
+  "pnpm install --frozen-lockfile",
+  "playwright install --with-deps chrome",
+  "pnpm m3-av-e2e:outcome",
+  "node scripts/m3-av-e2e/run.mjs",
+  "name: m3-image-accounting-e2e-evidence",
+  "retention-days: 7",
+  "if: always()",
+];
+for (const snippet of imageRequired) {
+  if (!imageWorkflow.includes(snippet)) failures.push(`image workflow missing ${JSON.stringify(snippet)}`);
+}
+for (const snippet of forbidden) {
+  if (imageWorkflow.includes(snippet)) failures.push(`image workflow contains ${JSON.stringify(snippet)}`);
+}
+if (imageWorkflow.includes("docs/**")) failures.push("image workflow paths include docs");
 
 if (failures.length > 0) {
   process.stderr.write(`${failures.join("\n")}\n`);

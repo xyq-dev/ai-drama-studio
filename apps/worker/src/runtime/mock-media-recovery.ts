@@ -72,7 +72,10 @@ export class MockMediaRecovery {
         attemptId: row.attemptId, providerRequestId: row.providerRequestId,
       };
       const outcome = execution.kind === "MEDIA_IMAGE"
-        ? await recoverMockImageAttempt(shared, { jobs: this.jobs, assets: this.assets, adapter: this.adapter, objects })
+        ? await recoverMockImageAttempt({
+          ...shared,
+          inputSnapshot: execution.inputSnapshot,
+        }, { jobs: this.jobs, assets: this.assets, adapter: this.adapter, objects })
         : execution.kind === "MEDIA_SUBTITLE" || execution.kind === "MEDIA_MUSIC"
           ? await recoverMockSmAttempt({
             ...shared,
