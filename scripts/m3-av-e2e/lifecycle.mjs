@@ -17,7 +17,17 @@ export function blockerList(value) {
 
 export function assertLockOverlap(rows, holderPid, minimum = 1) {
   const holder = String(holderPid);
-  const matched = (Array.isArray(rows) ? rows : []).filter((row) => blockerList(row?.blockers).includes(holder));
+  const list = Array.isArray(rows) ? rows : [];
+  const byPid = new Map(list.map((row) => [String(row.pid), row]));
+  const reachesHolder = (pid, seen = new Set()) => {
+    if (pid === holder) return true;
+    if (seen.has(pid)) return false;
+    seen.add(pid);
+    const row = byPid.get(pid);
+    if (!row) return false;
+    return blockerList(row.blockers).some((blocker) => reachesHolder(blocker, seen));
+  };
+  const matched = list.filter((row) => reachesHolder(String(row.pid)));
   const pids = new Set(matched.map((row) => String(row.pid)));
   if (pids.size < minimum) {
     throw new Error(`pg_blocking_pids did not show ${minimum} waiter(s) blocked by ${holder}`);

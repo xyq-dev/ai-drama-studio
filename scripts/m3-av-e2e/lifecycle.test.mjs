@@ -55,6 +55,11 @@ test("lock overlap requires the holder pid from pg_blocking_pids", () => {
   assert.equal(matched.length, 2);
   assert.equal(matched[1].blockers[0], 4);
   assert.throws(() => assertLockOverlap([{ pid: 10, blockers: [9] }], 4, 1), /pg_blocking_pids/);
+  const queued = assertLockOverlap([
+    { pid: 96, blockers: [804], wait_event_type: "Lock", wait_event: "transactionid", query: "SELECT id FROM generation_job" },
+    { pid: 805, blockers: [96], wait_event_type: "Lock", wait_event: "tuple", query: "SELECT id FROM generation_job" },
+  ], 804, 2);
+  assert.deepEqual(queued.map((row) => row.pid), [96, 805]);
 });
 
 test("terminal snapshot checks finished_at, workflow, assets, costs, and events", () => {
