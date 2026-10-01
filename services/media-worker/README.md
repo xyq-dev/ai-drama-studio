@@ -1,6 +1,6 @@
 # Media Worker
 
-M1-A health stub. It does not run FFmpeg or accept media jobs.
+M1-A health stub. The health process does not run FFmpeg or accept media jobs. Single-shot rendering is a separate CLI, `python -m media_worker.compose_cli`, invoked by the Node worker.
 
 ## Local setup
 

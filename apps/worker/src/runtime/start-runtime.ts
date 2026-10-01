@@ -17,6 +17,7 @@ import { OutboxDispatcher } from "./dispatcher";
 import { RuntimeReconciler } from "./reconciler";
 import { startStaleRecalculationPolling } from "./stale-recalculation";
 import { LocalMockObjects } from "./local-mock-objects";
+import { runComposeJob } from "./compose-job";
 import { runMockAvJob } from "./mock-av-generation";
 import { runMockImageJob } from "./mock-image-generation";
 import { runMockSmJob } from "./mock-sm-generation";
@@ -50,6 +51,12 @@ export async function startQueueRuntime(options: {
   mockImageEnabled?: boolean;
   mockAvEnabled?: boolean;
   mockSmEnabled?: boolean;
+  localComposeEnabled?: boolean;
+  composeWorkDir?: string;
+  composeObjectDir?: string;
+  composePythonBin?: string;
+  composePythonPath?: string;
+  composeHoldBeforeCommitMs?: number;
 }): Promise<RuntimeHandle> {
   if (options.mockObjectDir && (process.env.NODE_ENV === "production" || !isAbsolute(options.mockObjectDir))) {
     throw new Error("Mock media requires an absolute local directory and is forbidden in production");
@@ -89,6 +96,52 @@ export async function startQueueRuntime(options: {
     { url: options.redisUrl, maxRetriesPerRequest: null },
     prefix,
     async (message: QueueMessage) => {
+      const kind = await store.readJobKind(message.workspaceId, message.jobId);
+      if (kind === "MEDIA_COMPOSE") {
+        const compose = await store.loadComposeJob(message.workspaceId, message.jobId);
+        if (!compose) throw new Error("Compose job missed its loader");
+        if (compose.state === "SUCCEEDED" || compose.state === "FAILED" || compose.state === "CANCELED") return;
+        if (options.localComposeEnabled !== true || !options.mockObjectDir || !options.composeWorkDir || !options.composeObjectDir || !compose.shotRevisionId) {
+          if (compose.state !== "QUEUED") throw new Error("Compose configuration missing for an already active attempt");
+          const acquired = await jobs.acquireQueuedJob({
+            workspaceId: message.workspaceId, jobId: message.jobId, dispatchSeq: message.dispatchSeq,
+            leaseOwner: `compose-config:${process.pid}`, leaseMs: options.leaseMs ?? 30_000,
+            traceId: `compose:missing-config:${message.jobId}`, providerConfigurationId: null,
+          });
+          if (acquired) {
+            await jobs.failJob({
+              workspaceId: message.workspaceId, jobId: message.jobId, attemptId: acquired.attemptId,
+              traceId: `compose:missing-config:${message.jobId}`, errorCode: "CONFIGURATION_ERROR",
+              errorMessage: "Local compose requires an absolute work directory, object directory, and mock sources",
+              retryable: false,
+            });
+          }
+          return;
+        }
+        if (compose.cancelRequested && compose.state === "QUEUED") {
+          await jobs.cancelJob({ workspaceId: message.workspaceId, jobId: message.jobId, traceId: `compose:cancel:${message.jobId}` });
+          return;
+        }
+        if (compose.state === "RUNNING") {
+          throw new Error("Compose attempt is in progress; lease recovery must finish before redelivery");
+        }
+        await runComposeJob({
+          workspaceId: message.workspaceId,
+          projectId: compose.projectId,
+          shotRevisionId: compose.shotRevisionId,
+          jobId: message.jobId,
+          dispatchSeq: message.dispatchSeq,
+          inputHash: compose.inputHash,
+          inputSnapshot: compose.inputSnapshot as never,
+          traceId: `worker:compose:${message.jobId}`,
+        }, {
+          jobs, assets, mockObjectDir: options.mockObjectDir, workDir: options.composeWorkDir,
+          objectDir: options.composeObjectDir, pythonBin: options.composePythonBin ?? "python3",
+          pythonPath: options.composePythonPath ?? "", leaseOwner: `compose:${process.pid}`,
+          leaseMs: options.leaseMs ?? 30_000, holdBeforeCommitMs: options.composeHoldBeforeCommitMs ?? 0,
+        });
+        return;
+      }
       const media = await store.loadMockMediaExecution(message.workspaceId, message.jobId);
       if (media) {
         if (media.state === "SUCCEEDED" || media.state === "FAILED" || media.state === "CANCELED") return;
@@ -145,8 +198,8 @@ export async function startQueueRuntime(options: {
         return;
       }
       const execution = await store.loadExecution(message.workspaceId, message.jobId);
-      if (execution && isMockMediaJobKind(execution.kind)) {
-        throw new Error("Media job missed the mock media route");
+      if (execution && (execution.kind === "MEDIA_COMPOSE" || isMockMediaJobKind(execution.kind))) {
+        throw new Error("Media job missed its dedicated route");
       }
       await consumer.handle(message);
     },

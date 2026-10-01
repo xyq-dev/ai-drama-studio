@@ -349,6 +349,51 @@ export class RuntimeStore {
     }
   }
 
+  async loadComposeJob(workspaceId: string, jobId: string): Promise<{
+    projectId: string;
+    shotRevisionId: string | null;
+    state: string;
+    dispatchSeq: number;
+    inputHash: string;
+    inputSnapshot: unknown;
+    cancelRequested: boolean;
+  } | null> {
+    const client = await this.pool.connect();
+    try {
+      const result = await client.query<QueryResultRow>(
+        `SELECT project_id, source_shot_revision_id, state, dispatch_seq, input_hash, input_snapshot, cancel_requested_at
+           FROM generation_job WHERE id = $1 AND workspace_id = $2 AND kind = 'MEDIA_COMPOSE'`,
+        [jobId, workspaceId],
+      );
+      const row = result.rows[0];
+      if (!row) return null;
+      return {
+        projectId: String(row.project_id),
+        shotRevisionId: row.source_shot_revision_id === null ? null : String(row.source_shot_revision_id),
+        state: String(row.state),
+        dispatchSeq: Number(row.dispatch_seq),
+        inputHash: String(row.input_hash),
+        inputSnapshot: row.input_snapshot,
+        cancelRequested: row.cancel_requested_at !== null,
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  async readJobKind(workspaceId: string, jobId: string): Promise<string | null> {
+    const client = await this.pool.connect();
+    try {
+      const result = await client.query<QueryResultRow>(
+        "SELECT kind FROM generation_job WHERE id = $1 AND workspace_id = $2",
+        [jobId, workspaceId],
+      );
+      return result.rows[0] ? String(result.rows[0].kind) : null;
+    } finally {
+      client.release();
+    }
+  }
+
   async loadMockMediaExecution(workspaceId: string, jobId: string): Promise<MockMediaExecution | null> {
     const client = await this.pool.connect();
     try {

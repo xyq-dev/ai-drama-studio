@@ -8,6 +8,7 @@ const harness = [
   readFileSync(resolve(root, "scripts/m3-av-e2e/run.mjs"), "utf8"),
   readFileSync(resolve(root, "scripts/m3-av-e2e/lifecycle.mjs"), "utf8"),
   readFileSync(resolve(root, "scripts/m3-av-e2e/compose-preflight.mjs"), "utf8"),
+  readFileSync(resolve(root, "scripts/m3-av-e2e/compose-render.mjs"), "utf8"),
 ].join("\n").replace(/\r\n/g, "\n");
 const outcome = readFileSync(resolve(root, "scripts/m3-av-e2e/outcome.mjs"), "utf8").replace(/\r\n/g, "\n");
 
@@ -193,6 +194,39 @@ for (const snippet of forbidden) {
   if (composeWorkflow.includes(snippet)) failures.push(`compose workflow contains ${JSON.stringify(snippet)}`);
 }
 if (composeWorkflow.includes("docs/**")) failures.push("compose workflow paths include docs");
+
+for (const stage of ["compose-render-page", "compose-render-gates", "compose-render-lifecycle", "compose-review", "compose-provenance-stale"]) {
+  if (!outcome.includes(`"${stage}"`)) failures.push(`outcome missing ${stage}`);
+  if (!harness.includes(`"${stage}"`)) failures.push(`harness missing ${stage}`);
+}
+const renderWorkflow = readFileSync(resolve(root, ".github/workflows/m4-single-shot-render-e2e.yml"), "utf8").replace(/\r\n/g, "\n");
+const renderRequired = [
+  "branches:\n      - feat/m4-single-shot-render",
+  "workflow_dispatch:",
+  "contents: read",
+  "ubuntu-24.04",
+  "timeout-minutes: 90",
+  "node-version: 24.21.0",
+  "version: 10.17.0",
+  "pnpm install --frozen-lockfile",
+  "playwright install --with-deps chrome",
+  "python3-pytest",
+  "fonts-dejavu-core",
+  "ffmpeg",
+  "pytest services/media-worker/tests",
+  "node scripts/run-media-worker-tests.mjs",
+  "node scripts/m3-av-e2e/run.mjs",
+  "name: m4-single-shot-render-e2e-evidence",
+  "retention-days: 7",
+  "if: always()",
+];
+for (const snippet of renderRequired) {
+  if (!renderWorkflow.includes(snippet)) failures.push(`render workflow missing ${JSON.stringify(snippet)}`);
+}
+for (const snippet of forbidden) {
+  if (renderWorkflow.includes(snippet)) failures.push(`render workflow contains ${JSON.stringify(snippet)}`);
+}
+if (renderWorkflow.includes("docs/**")) failures.push("render workflow paths include docs");
 
 if (failures.length > 0) {
   process.stderr.write(`${failures.join("\n")}\n`);

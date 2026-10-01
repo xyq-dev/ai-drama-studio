@@ -1,10 +1,16 @@
 import {
+  assertExpectedPreflightHash,
+  buildComposeJobSnapshot,
   buildComposePreflight,
+  canonicalInputHash,
   type ComposeAssetFacts,
   type ComposeAttemptFacts,
   type ComposeJobFacts,
+  type ComposeJobSnapshot,
   type ComposePreflightResponse,
   type ComposePreflightSelection,
+  type ComposeRenderRequest,
+  type ComposeSourceObject,
   DomainError,
 } from "@ai-drama/domain";
 import type { PoolClient, QueryResultRow } from "pg";
@@ -257,6 +263,316 @@ export class MediaAssetStore {
       client.release();
     }
   }
+
+  async freezeComposeInput(
+    client: PoolClient,
+    workspaceId: string,
+    shotRevisionId: string,
+    request: ComposeRenderRequest,
+  ): Promise<{ projectId: string; snapshot: ComposeJobSnapshot; inputHash: string }> {
+    let preflight: ComposePreflightResponse;
+    try {
+      preflight = await preflightComposeWithClient(client, workspaceId, shotRevisionId, request);
+      assertExpectedPreflightHash(preflight.inputHash, request.expectedInputHash);
+    } catch (error) {
+      if (error instanceof DomainError) throw new PersistenceError(error.code, error.message);
+      throw error;
+    }
+    const ids = preflight.manifest.sources.flatMap((slot) => (slot.asset ? [slot.asset.assetId] : []));
+    const stored = await client.query<QueryResultRow>(
+      `SELECT id::text AS id, storage_provider, object_key, byte_size, checksum_sha256
+         FROM asset WHERE workspace_id = $1 AND id = ANY($2::uuid[])`,
+      [workspaceId, ids],
+    );
+    const byId = new Map(stored.rows.map((row) => [String(row.id), row]));
+    const sourceObjects: ComposeSourceObject[] = [];
+    for (const slot of preflight.manifest.sources) {
+      if (!slot.asset) continue;
+      const row = byId.get(slot.asset.assetId);
+      if (!row) throw new PersistenceError("NOT_FOUND", "Asset not found");
+      sourceObjects.push({
+        role: slot.role,
+        assetId: slot.asset.assetId,
+        storageProvider: String(row.storage_provider),
+        objectKey: String(row.object_key),
+        byteSize: Number(row.byte_size),
+        checksumSha256: String(row.checksum_sha256),
+      });
+    }
+    try {
+      const built = buildComposeJobSnapshot(preflight, sourceObjects);
+      return { projectId: preflight.manifest.projectId, snapshot: built.snapshot, inputHash: built.inputHash };
+    } catch (error) {
+      if (error instanceof DomainError) throw new PersistenceError(error.code, error.message);
+      throw error;
+    }
+  }
+
+  async commitLocalCompose(
+    jobs: JobPersistenceService,
+    input: {
+      workspaceId: string;
+      projectId: string;
+      shotRevisionId: string;
+      jobId: string;
+      attemptId: string;
+      leaseOwner: string;
+      traceId: string;
+      objectKey: string;
+      checksumSha256: string;
+      byteSize: number;
+      width: number;
+      height: number;
+      durationMs: number;
+      elapsedMs: number;
+    },
+  ): Promise<MediaAssetRecord | null> {
+    return jobs.succeedJobWithArtifact({
+      workspaceId: input.workspaceId,
+      jobId: input.jobId,
+      attemptId: input.attemptId,
+      traceId: input.traceId,
+      persistArtifact: async (client) => insertLocalComposeAsset(client, input),
+      artifactResponse: (asset) => ({ outputAssetIds: [asset.id], checksumSha256: asset.checksumSha256 }),
+    });
+  }
+
+  async reviewComposite(
+    client: PoolClient,
+    input: {
+      workspaceId: string;
+      assetId: string;
+      expectedRowVersion: number;
+      decision: "APPROVE" | "REJECT";
+      note: string;
+      contentHash: string;
+      reviewedBy: string;
+      traceId: string;
+    },
+  ): Promise<{ assetId: string; reviewStatus: string; rowVersion: number; contentHash: string }> {
+    const located = await client.query<{ project_id: string } & QueryResultRow>(
+      "SELECT project_id FROM asset WHERE id = $1 AND workspace_id = $2",
+      [input.assetId, input.workspaceId],
+    );
+    const projectId = located.rows[0]?.project_id;
+    if (!projectId) throw new PersistenceError("NOT_FOUND", "Asset not found");
+    await client.query("SELECT id FROM project WHERE id = $1 AND workspace_id = $2 FOR UPDATE", [projectId, input.workspaceId]);
+    const asset = await client.query<QueryResultRow>(
+      `SELECT id, project_id, kind, status, review_status, row_version, checksum_sha256, source_kind,
+              source_job_attempt_id, source_generation_job_id, source_shot_revision_id,
+              provider_configuration_id, provider_request_id, storage_provider, metadata_json
+         FROM asset WHERE id = $1 AND workspace_id = $2 FOR UPDATE`,
+      [input.assetId, input.workspaceId],
+    );
+    const row = asset.rows[0];
+    if (!row || row.kind !== "COMPOSITE" || row.source_kind !== "LOCAL_JOB" || row.storage_provider !== "local-compose") {
+      throw new PersistenceError("REVIEW_INVALID_TRANSITION", "Only a local composite draft can be reviewed");
+    }
+    if (row.review_status !== "DRAFT") {
+      throw new PersistenceError("REVIEW_INVALID_TRANSITION", "Composite review is already decided");
+    }
+    if (Number(row.row_version) !== input.expectedRowVersion) {
+      throw new PersistenceError("REVISION_CONFLICT", "Composite row version changed; reread before confirming");
+    }
+    if (row.status !== "ACTIVE") {
+      throw new PersistenceError("REVIEW_INVALID_TRANSITION", "Only an active composite draft can be reviewed");
+    }
+    if (String(row.checksum_sha256) !== input.contentHash) {
+      throw new PersistenceError("COMPOSE_CONTENT_HASH_MISMATCH", "Content hash does not match the composite being reviewed");
+    }
+    if (row.provider_configuration_id !== null || row.provider_request_id !== null || !row.source_job_attempt_id || !row.source_generation_job_id) {
+      throw new PersistenceError("REVIEW_INVALID_TRANSITION", "Composite lineage is incomplete");
+    }
+    const job = await client.query<QueryResultRow>(
+      `SELECT job.id, job.kind, job.state, job.input_hash, job.input_snapshot, attempt.id AS attempt_id
+         FROM generation_job job
+         JOIN job_attempt attempt ON attempt.id = $3 AND attempt.generation_job_id = job.id AND attempt.workspace_id = job.workspace_id
+        WHERE job.id = $1 AND job.workspace_id = $2 AND job.project_id = $4
+        FOR SHARE OF job, attempt`,
+      [row.source_generation_job_id, input.workspaceId, row.source_job_attempt_id, projectId],
+    );
+    const source = job.rows[0];
+    const latest = await client.query<QueryResultRow>(
+      `SELECT id FROM job_attempt WHERE generation_job_id = $1 ORDER BY attempt_no DESC LIMIT 1`,
+      [row.source_generation_job_id],
+    );
+    if (!source || source.kind !== "MEDIA_COMPOSE" || source.state !== "SUCCEEDED" || source.attempt_id !== row.source_job_attempt_id || latest.rows[0]?.id !== row.source_job_attempt_id) {
+      throw new PersistenceError("REVIEW_INVALID_TRANSITION", "Composite does not come from its successful compose attempt");
+    }
+    if (input.decision === "APPROVE") {
+      if (!row.source_shot_revision_id) throw new PersistenceError("REVIEW_INVALID_TRANSITION", "Composite has no shot source");
+      await assertUsableShotWithClient(client, input.workspaceId, String(projectId), String(row.source_shot_revision_id), true);
+      const metadata = row.metadata_json as { manifest?: { sources?: Array<{ role: string; asset: { assetId: string } | null }> } };
+      const selection = selectionFromMetadata(metadata);
+      try {
+        await preflightComposeWithClient(client, input.workspaceId, String(row.source_shot_revision_id), selection);
+      } catch (error) {
+        if (error instanceof DomainError) throw new PersistenceError(error.code, error.message);
+        if (error instanceof PersistenceError) throw error;
+        throw error;
+      }
+    }
+    const updated = await client.query<QueryResultRow>(
+      `UPDATE asset
+          SET review_status = $4, reviewed_by = $5, reviewed_at = now(), review_note = $6,
+              reviewed_content_hash = checksum_sha256, row_version = row_version + 1
+        WHERE id = $1 AND workspace_id = $2 AND review_status = 'DRAFT' AND status = 'ACTIVE' AND row_version = $3
+        RETURNING id, review_status, row_version, checksum_sha256`,
+      [input.assetId, input.workspaceId, input.expectedRowVersion, input.decision === "APPROVE" ? "APPROVED" : "REJECTED", input.reviewedBy, input.note],
+    );
+    const saved = updated.rows[0];
+    if (!saved) throw new PersistenceError("REVIEW_CONFLICT", "Composite review conflicted with another decision");
+    await client.query(
+      `INSERT INTO domain_event
+        (workspace_id, project_id, aggregate_type, aggregate_id, event_type, payload_json, trace_id)
+       VALUES ($1, $2, 'Asset', $3, 'asset.reviewed', $4::jsonb, $5)`,
+      [input.workspaceId, projectId, input.assetId, JSON.stringify({
+        assetId: input.assetId, reviewStatus: saved.review_status, rowVersion: Number(saved.row_version), contentHash: saved.checksum_sha256,
+      }), input.traceId],
+    );
+    return {
+      assetId: String(saved.id),
+      reviewStatus: String(saved.review_status),
+      rowVersion: Number(saved.row_version),
+      contentHash: String(saved.checksum_sha256),
+    };
+  }
+}
+
+function selectionFromMetadata(metadata: { manifest?: { sources?: Array<{ role: string; asset: { assetId: string } | null }> } }): ComposePreflightSelection {
+  const sources = metadata.manifest?.sources ?? [];
+  const id = (role: string) => sources.find((slot) => slot.role === role)?.asset?.assetId ?? null;
+  const videoAssetId = id("video");
+  if (!videoAssetId) throw new PersistenceError("COMPOSE_INPUT_INVALID", "Frozen compose manifest has no video");
+  return { videoAssetId, audioAssetId: id("audio"), musicAssetId: id("music"), subtitleAssetId: id("subtitle") };
+}
+
+async function insertLocalComposeAsset(
+  client: PoolClient,
+  input: {
+    workspaceId: string;
+    projectId: string;
+    shotRevisionId: string;
+    jobId: string;
+    attemptId: string;
+    leaseOwner: string;
+    traceId: string;
+    objectKey: string;
+    checksumSha256: string;
+    byteSize: number;
+    width: number;
+    height: number;
+    durationMs: number;
+    elapsedMs: number;
+  },
+): Promise<MediaAssetRecord> {
+  const expectedKey = `compose/${input.workspaceId}/${input.projectId}/${input.jobId}/${input.attemptId}/${input.checksumSha256}.mp4`;
+  if (input.objectKey !== expectedKey) {
+    throw new PersistenceError("COMPOSE_OUTPUT_INVALID", "Compose object key does not belong to this attempt");
+  }
+  const held = await client.query<QueryResultRow>(
+    `SELECT job.input_hash, job.input_snapshot
+       FROM generation_job job
+       JOIN job_attempt attempt ON attempt.id = $3 AND attempt.generation_job_id = job.id AND attempt.workspace_id = job.workspace_id
+      WHERE job.id = $1 AND job.workspace_id = $2 AND job.project_id = $4
+        AND job.kind = 'MEDIA_COMPOSE' AND job.state = 'RUNNING'
+        AND job.lease_owner = $5 AND job.cancel_requested_at IS NULL AND job.lease_until > now()
+        AND attempt.finished_at IS NULL
+        AND attempt.provider_configuration_id IS NULL AND attempt.provider_request_id IS NULL
+        AND attempt.attempt_no = (SELECT MAX(latest.attempt_no) FROM job_attempt latest WHERE latest.generation_job_id = job.id)`,
+    [input.jobId, input.workspaceId, input.attemptId, input.projectId, input.leaseOwner],
+  );
+  const locked = held.rows[0];
+  if (!locked) {
+    throw new PersistenceError("COMPOSE_RESULT_DISCARDED", "Compose result arrived after its attempt lost the lease");
+  }
+  const snapshot = locked.input_snapshot as ComposeJobSnapshot;
+  let hashed: string;
+  try {
+    hashed = canonicalInputHash(snapshot.input);
+  } catch (error) {
+    if (error instanceof DomainError) throw new PersistenceError("COMPOSE_INPUT_INVALID", error.message);
+    throw error;
+  }
+  if (hashed !== String(locked.input_hash) || snapshot.schema !== "m4.shot.compose.v1") {
+    throw new PersistenceError("COMPOSE_INPUT_INVALID", "Frozen compose input does not match its hash");
+  }
+  try {
+    const current = await preflightComposeWithClient(client, input.workspaceId, input.shotRevisionId, selectionFromMetadata({ manifest: snapshot.input.manifest }));
+    if (current.inputHash !== snapshot.preflightInputHash) {
+      throw new PersistenceError("COMPOSE_INPUT_INVALID", "Compose sources changed before the output could be stored");
+    }
+  } catch (error) {
+    if (error instanceof PersistenceError) throw error;
+    if (error instanceof DomainError) throw new PersistenceError(error.code, error.message);
+    throw error;
+  }
+  const metadata = {
+    schema: "m4.shot.compose.asset.v1",
+    manifest: snapshot.input.manifest,
+    renderProfile: snapshot.input.renderProfile,
+    preflightInputHash: snapshot.preflightInputHash,
+    output: {
+      checksumSha256: input.checksumSha256,
+      byteSize: input.byteSize,
+      durationMs: input.durationMs,
+      width: input.width,
+      height: input.height,
+      elapsedMs: input.elapsedMs,
+    },
+  };
+  const inserted = await client.query<QueryResultRow>(
+    `INSERT INTO asset
+      (workspace_id, project_id, kind, storage_provider, object_key, mime_type, byte_size, checksum_sha256,
+       width, height, duration_ms, source_kind, source_job_attempt_id, source_generation_job_id, source_shot_revision_id,
+       provider_configuration_id, provider_request_id, metadata_json)
+     VALUES ($1,$2,'COMPOSITE','local-compose',$3,'video/mp4',$4,$5,$6,$7,$8,'LOCAL_JOB',$9,$10,$11,NULL,NULL,$12::jsonb)
+     RETURNING ${ASSET_COLUMNS}`,
+    [
+      input.workspaceId, input.projectId, input.objectKey, input.byteSize, input.checksumSha256,
+      input.width, input.height, input.durationMs, input.attemptId, input.jobId, input.shotRevisionId,
+      JSON.stringify(metadata),
+    ],
+  );
+  const row = inserted.rows[0];
+  if (!row) throw new PersistenceError("ASSET_CONFLICT", "Compose object key is already registered");
+  for (const source of snapshot.input.sourceObjects) {
+    await client.query(
+      `INSERT INTO asset_dependency (workspace_id, project_id, dependent_asset_id, source_asset_id)
+       VALUES ($1, $2, $3, $4)`,
+      [input.workspaceId, input.projectId, row.id, source.assetId],
+    );
+  }
+  await client.query(
+    `INSERT INTO asset_revision_dependency
+      (workspace_id, project_id, dependent_asset_id, shot_revision_id, scene_revision_id, script_revision_id)
+     WITH source AS (
+       SELECT shot.id AS shot_id, scene.id AS scene_id
+         FROM shot_revision shot
+         JOIN scene_revision scene ON scene.id = shot.source_scene_revision_id
+          AND scene.workspace_id = shot.workspace_id AND scene.project_id = shot.project_id
+        WHERE shot.id = $4 AND shot.workspace_id = $2 AND shot.project_id = $3
+     ), script_sources AS (
+       SELECT DISTINCT edge.script_revision_id
+         FROM script_revision_consumer_source edge, source
+        WHERE edge.workspace_id = $2 AND edge.project_id = $3
+          AND ((edge.consumer_type = 'shot_revision' AND edge.consumer_revision_id = source.shot_id)
+            OR (edge.consumer_type = 'scene_revision' AND edge.consumer_revision_id = source.scene_id))
+     )
+     SELECT $2::uuid, $3::uuid, $1::uuid, shot_id, NULL::uuid, NULL::uuid FROM source
+     UNION ALL SELECT $2::uuid, $3::uuid, $1::uuid, NULL::uuid, scene_id, NULL::uuid FROM source
+     UNION ALL SELECT $2::uuid, $3::uuid, $1::uuid, NULL::uuid, NULL::uuid, script_revision_id FROM script_sources`,
+    [row.id, input.workspaceId, input.projectId, input.shotRevisionId],
+  );
+  await client.query(
+    `INSERT INTO domain_event
+      (workspace_id, project_id, aggregate_type, aggregate_id, event_type, payload_json, trace_id)
+     VALUES ($1, $2, 'Asset', $3, 'asset.created', $4::jsonb, $5)`,
+    [input.workspaceId, input.projectId, row.id, JSON.stringify({
+      assetId: row.id, kind: "COMPOSITE", jobId: input.jobId, attemptId: input.attemptId,
+    }), input.traceId],
+  );
+  return mapAsset(row);
 }
 
 async function assertUsableShotWithClient(

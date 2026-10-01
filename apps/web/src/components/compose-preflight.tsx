@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { ComposeJobPanel } from "./compose-job-panel";
 import { ApiError, StudioClient } from "../lib/studio-client";
 
 interface ListedAsset {
@@ -162,6 +163,18 @@ export function ComposePreflight(props: { revisionId: string; refreshEpoch: numb
           </details>
         </div>
       ) : null}
+      <ComposeJobPanel
+        revisionId={props.revisionId}
+        client={client}
+        eligible={Boolean(result) && !error && !busy && selection.video.length > 0}
+        body={result && !error ? {
+          videoAssetId: selection.video,
+          audioAssetId: selection.audio || null,
+          musicAssetId: selection.music || null,
+          subtitleAssetId: selection.subtitle || null,
+          expectedInputHash: result.inputHash,
+        } : null}
+      />
     </section>
   );
 }

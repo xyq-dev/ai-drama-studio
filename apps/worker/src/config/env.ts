@@ -11,6 +11,11 @@ const workerEnvSchema = z.object({
   M3_MOCK_IMAGE_ENABLED: z.enum(["true", "false"]).default("false"),
   M3_MOCK_AV_ENABLED: z.enum(["true", "false"]).default("false"),
   M3_MOCK_SUBTITLE_MUSIC_ENABLED: z.enum(["true", "false"]).default("false"),
+  M4_LOCAL_COMPOSE_ENABLED: z.enum(["true", "false"]).default("false"),
+  M4_COMPOSE_WORK_DIR: z.string().min(1).optional(),
+  M4_COMPOSE_OBJECT_DIR: z.string().min(1).optional(),
+  M4_COMPOSE_PYTHON: z.string().min(1).default("python3"),
+  M4_COMPOSE_HOLD_BEFORE_COMMIT_MS: z.coerce.number().int().min(0).max(120_000).default(0),
 });
 
 export class EnvValidationError extends Error {
@@ -34,6 +39,11 @@ export interface WorkerEnv {
   M3_MOCK_IMAGE_ENABLED: boolean;
   M3_MOCK_AV_ENABLED: boolean;
   M3_MOCK_SUBTITLE_MUSIC_ENABLED: boolean;
+  M4_LOCAL_COMPOSE_ENABLED: boolean;
+  M4_COMPOSE_WORK_DIR?: string;
+  M4_COMPOSE_OBJECT_DIR?: string;
+  M4_COMPOSE_PYTHON: string;
+  M4_COMPOSE_HOLD_BEFORE_COMMIT_MS: number;
 }
 
 const WORKER_KEYS = [
@@ -47,6 +57,11 @@ const WORKER_KEYS = [
   "M3_MOCK_IMAGE_ENABLED",
   "M3_MOCK_AV_ENABLED",
   "M3_MOCK_SUBTITLE_MUSIC_ENABLED",
+  "M4_LOCAL_COMPOSE_ENABLED",
+  "M4_COMPOSE_WORK_DIR",
+  "M4_COMPOSE_OBJECT_DIR",
+  "M4_COMPOSE_PYTHON",
+  "M4_COMPOSE_HOLD_BEFORE_COMMIT_MS",
 ] as const;
 
 function assertProtocol(field: string, value: string, protocols: readonly string[]): void {
@@ -85,5 +100,6 @@ export function loadWorkerEnv(
     M3_MOCK_IMAGE_ENABLED: parsed.data.M3_MOCK_IMAGE_ENABLED === "true",
     M3_MOCK_AV_ENABLED: parsed.data.M3_MOCK_AV_ENABLED === "true",
     M3_MOCK_SUBTITLE_MUSIC_ENABLED: parsed.data.M3_MOCK_SUBTITLE_MUSIC_ENABLED === "true",
+    M4_LOCAL_COMPOSE_ENABLED: parsed.data.M4_LOCAL_COMPOSE_ENABLED === "true",
   };
 }

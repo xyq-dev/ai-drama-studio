@@ -90,6 +90,7 @@ describe("compose preflight selection", () => {
     expect(video.textContent).not.toContain("cccccccc-cccc-4ccc-8ccc-cccccccccccc");
     expect(video.textContent).not.toContain("dddddddd-dddd-4ddd-8ddd-dddddddddddd");
     expect(screen.getByLabelText("合成配音").textContent).toContain("未选择");
+    expect(screen.getByRole("button", { name: "开始合成" }).hasAttribute("disabled")).toBe(true);
     fireEvent.change(video, { target: { value: VIDEO_A } });
     fireEvent.click(screen.getByRole("button", { name: "预检合成输入" }));
     expect(await screen.findByText("合成尚未执行")).toBeTruthy();
@@ -100,7 +101,9 @@ describe("compose preflight selection", () => {
     const post = calls.find((call) => call.url.includes("compose-preflight"));
     expect(post?.headers).toMatchObject({ "Content-Type": "application/json" });
     expect(JSON.stringify(post?.headers)).not.toContain("Idempotency-Key");
+    expect(screen.getByRole("button", { name: "开始合成" }).hasAttribute("disabled")).toBe(false);
     fireEvent.change(screen.getByLabelText("合成音乐"), { target: { value: "" } });
+    expect(screen.getByRole("button", { name: "开始合成" }).hasAttribute("disabled")).toBe(true);
     expect(screen.queryByText("合成尚未执行")).toBeNull();
     expect(screen.queryByText(HASH_A)).toBeNull();
   });

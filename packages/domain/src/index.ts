@@ -85,6 +85,19 @@ export {
   type ComposePreflightSelection,
 } from "./compose-preflight";
 export {
+  COMPOSE_JOB_SCHEMA,
+  COMPOSE_OUTPUT_MAX_BYTES,
+  COMPOSE_RENDER_PROFILE,
+  COMPOSE_RENDER_PROFILE_ID,
+  assertExpectedPreflightHash,
+  buildComposeJobSnapshot,
+  parseComposeRenderRequest,
+  parseComposeReviewRequest,
+  type ComposeJobSnapshot,
+  type ComposeRenderRequest,
+  type ComposeSourceObject,
+} from "./compose-render";
+export {
   FRESHNESS_STATUSES,
   PRODUCTION_EPISODE_NUMBERS,
   REVIEW_STATUSES,

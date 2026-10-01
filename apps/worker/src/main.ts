@@ -18,11 +18,19 @@ async function bootstrap(): Promise<void> {
   const env = loadWorkerEnv(process.env, readEnvFile(join(root, ".env")));
   const mockObjectDir = env.NODE_ENV === "production" ? undefined : env.MOCK_OBJECT_DIR;
   const directoryReady = Boolean(mockObjectDir && isAbsolute(mockObjectDir));
+  const composeWorkDir = env.M4_COMPOSE_WORK_DIR && isAbsolute(env.M4_COMPOSE_WORK_DIR) ? env.M4_COMPOSE_WORK_DIR : undefined;
+  const composeObjectDir = env.M4_COMPOSE_OBJECT_DIR && isAbsolute(env.M4_COMPOSE_OBJECT_DIR) ? env.M4_COMPOSE_OBJECT_DIR : undefined;
+  const composeAllowed = env.NODE_ENV !== "production" && env.M4_LOCAL_COMPOSE_ENABLED && directoryReady && Boolean(composeWorkDir && composeObjectDir);
   const runtime = await startQueueRuntime({
     databaseUrl: env.DATABASE_URL, redisUrl: env.REDIS_URL, mockObjectDir,
     mockImageEnabled: env.NODE_ENV !== "production" && env.M3_MOCK_IMAGE_ENABLED && directoryReady,
     mockAvEnabled: env.NODE_ENV !== "production" && env.M3_MOCK_AV_ENABLED && directoryReady,
     mockSmEnabled: env.NODE_ENV !== "production" && env.M3_MOCK_SUBTITLE_MUSIC_ENABLED && directoryReady,
+    localComposeEnabled: composeAllowed,
+    composeWorkDir, composeObjectDir,
+    composePythonBin: env.M4_COMPOSE_PYTHON,
+    composePythonPath: join(root, "services", "media-worker", "src"),
+    composeHoldBeforeCommitMs: composeAllowed ? env.M4_COMPOSE_HOLD_BEFORE_COMMIT_MS : 0,
   });
   const app = await NestFactory.create(AppModule.register(env, runtime.status), {
     logger: ["error", "warn", "log"],

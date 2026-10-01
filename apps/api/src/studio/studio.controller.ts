@@ -519,6 +519,29 @@ export class StudioController {
       this.studio.generateShotTts(revisionId, body, this.context(key, trace)));
   }
 
+  @Post("shot-revisions/:revisionId/compose")
+  composeShot(
+    @Param("revisionId", UUID_PARAM_PIPE) revisionId: string,
+    @Body() body: unknown,
+    @Res({ passthrough: true }) response: StatusResponse,
+    @Headers("idempotency-key") idempotencyKey?: string,
+    @Headers("x-trace-id") traceHeader?: string,
+  ) {
+    return this.send(response, this.studio.composeShot(revisionId, body, this.context(idempotencyKey, traceHeader)));
+  }
+
+  @Post("assets/:assetId/review")
+  reviewAsset(
+    @Param("assetId", UUID_PARAM_PIPE) assetId: string,
+    @Body() body: unknown,
+    @Res({ passthrough: true }) response: StatusResponse,
+    @Headers("idempotency-key") idempotencyKey?: string,
+    @Headers("if-match") ifMatch?: string,
+    @Headers("x-trace-id") traceHeader?: string,
+  ) {
+    return this.send(response, this.studio.reviewComposite(assetId, body, ifMatch, this.context(idempotencyKey, traceHeader)));
+  }
+
   @Post("shot-revisions/:revisionId/compose-preflight")
   composePreflight(
     @Param("revisionId", UUID_PARAM_PIPE) revisionId: string,

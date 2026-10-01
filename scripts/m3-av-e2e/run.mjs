@@ -16,6 +16,7 @@ import {
 } from "node:fs";
 import { rename, rm, writeFile } from "node:fs/promises";
 import { composePreflightGates, composePreflightPage, composePreflightReadonly } from "./compose-preflight.mjs";
+import { composeProvenanceStale, composeRenderGates, composeRenderLifecycle, composeRenderPage, composeReview } from "./compose-render.mjs";
 import { mediaCancel, mediaObservationReplay, mediaShotIsolation, mediaTerminalRace } from "./lifecycle.mjs";
 import { acceptanceExitCode, acceptanceFailed, assertLinkage, requiredStages } from "./outcome.mjs";
 
@@ -37,6 +38,8 @@ const redisPort = "56379";
 const s3Port = "59000";
 const tempRoot = process.env.RUNNER_TEMP ?? tmpdir();
 const mockDir = join(tempRoot, `m3-av-mock-${runToken}`);
+const composeWorkDir = join(outputDir, "compose-work");
+const composeObjectDir = join(outputDir, "compose-objects");
 const envFile = join(tempRoot, `m3-av-compose-${runToken}.env`);
 const apiOrigin = "http://127.0.0.1:3001";
 const webOrigin = "http://127.0.0.1:3000";
@@ -211,6 +214,10 @@ function childEnv(overrides = {}, unsetKeys = []) {
     M3_MOCK_IMAGE_ENABLED: "true",
     M3_MOCK_AV_ENABLED: "true",
     M3_MOCK_SUBTITLE_MUSIC_ENABLED: "true",
+    M4_LOCAL_COMPOSE_ENABLED: "true",
+    M4_COMPOSE_WORK_DIR: composeWorkDir,
+    M4_COMPOSE_OBJECT_DIR: composeObjectDir,
+    M4_COMPOSE_PYTHON: process.platform === "win32" ? "python" : "python3",
     MOCK_OBJECT_DIR: mockDir,
     API_PORT: "3001",
     WORKER_HEALTH_PORT: "3002",
@@ -663,6 +670,8 @@ function toolVersion(command, args) {
 async function main() {
   mkdirSync(outputDir, { recursive: true });
   mkdirSync(mockDir, { recursive: true });
+  mkdirSync(composeWorkDir, { recursive: true });
+  mkdirSync(composeObjectDir, { recursive: true });
   const sourceSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
   state.evidence.meta = {
     githubRunId: process.env.GITHUB_RUN_ID ?? null,
@@ -673,6 +682,10 @@ async function main() {
     pnpm: toolVersion("pnpm", ["-v"]),
     docker: toolVersion("docker", ["--version"]),
     compose: toolVersion("docker", ["compose", "version"]),
+    python: toolVersion(process.platform === "win32" ? "python" : "python3", ["--version"]),
+    ffmpeg: toolVersion("ffmpeg", ["-version"]),
+    ffprobe: toolVersion("ffprobe", ["-version"]),
+    ffmpegBuild: toolVersion("ffmpeg", ["-buildconf"]),
     workspaceId,
     otherWorkspaceId,
     database: dbName,
@@ -1960,6 +1973,11 @@ async function main() {
   await stage("compose-preflight-page", () => composePreflightPage(lifecycle));
   await stage("compose-preflight-gates", () => composePreflightGates(lifecycle));
   await stage("compose-preflight-readonly", () => composePreflightReadonly(lifecycle));
+  await stage("compose-render-page", () => composeRenderPage(lifecycle));
+  await stage("compose-render-gates", () => composeRenderGates(lifecycle));
+  await stage("compose-render-lifecycle", () => composeRenderLifecycle(lifecycle));
+  await stage("compose-review", () => composeReview(lifecycle));
+  await stage("compose-provenance-stale", () => composeProvenanceStale(lifecycle));
 }
 
 function lifecycleContext() {

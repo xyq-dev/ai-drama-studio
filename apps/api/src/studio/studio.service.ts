@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { DomainError, parseComposePreflightRequest } from "@ai-drama/domain";
+import { DomainError, parseComposePreflightRequest, parseComposeRenderRequest, parseComposeReviewRequest } from "@ai-drama/domain";
 import {
   JobPersistenceService,
   MediaAssetStore,
@@ -19,6 +19,7 @@ import { z } from "zod";
 import { assertReadableMockAv, readBoundedMockAv } from "./mock-av-content";
 import { readBoundedMockSm } from "./mock-sm-content";
 import { assertReadableMockImage, readBoundedMockPng } from "./mock-image-content";
+import { readCompositeContent } from "./compose-content";
 
 const projectBodySchema = z.object({
   title: z.string().min(1).max(200),
@@ -104,6 +105,8 @@ export class StudioService {
     private readonly mockObjectDir: string | null = null,
     private readonly mockAvEnabled = false,
     private readonly mockSmEnabled = false,
+    private readonly localComposeEnabled = false,
+    private readonly composeObjectDir: string | null = null,
   ) {}
 
   get workspace(): string {
@@ -664,6 +667,69 @@ export class StudioService {
     };
   }
 
+  async composeShot(shotRevisionId: string, body: unknown, context: StudioContext) {
+    if (!this.localComposeEnabled || !this.mockAvEnabled) {
+      throw new PersistenceError("CONFIGURATION_ERROR", "Local compose is not enabled");
+    }
+    let request;
+    try {
+      request = parseComposeRenderRequest(rejectClientWorkspace(body));
+    } catch (error) {
+      if (error instanceof DomainError) throw new PersistenceError(error.code, error.message);
+      throw error;
+    }
+    if ((request.subtitleAssetId || request.musicAssetId) && !this.mockSmEnabled) {
+      throw new PersistenceError("CONFIGURATION_ERROR", "Mock subtitle and music content is not enabled");
+    }
+    if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
+    return this.jobs.createAndQueueWorkflowJob(
+      this.scope(context, "POST", `/shot-revisions/${shotRevisionId}/compose`, request),
+      async (client) => {
+        const frozen = await this.mediaAssets!.freezeComposeInput(client, this.workspaceId, shotRevisionId, request);
+        return {
+          workspaceId: this.workspaceId,
+          projectId: frozen.projectId,
+          sourceShotRevisionId: shotRevisionId,
+          type: "MEDIA_COMPOSE",
+          requestedBy: context.actorId,
+          kind: "MEDIA_COMPOSE",
+          inputHash: frozen.inputHash,
+          inputSnapshot: frozen.snapshot,
+          traceId: context.traceId,
+        };
+      },
+    );
+  }
+
+  async reviewComposite(assetId: string, body: unknown, ifMatch: string | undefined, context: StudioContext) {
+    if (!this.localComposeEnabled) {
+      throw new PersistenceError("CONFIGURATION_ERROR", "Local compose review is not enabled");
+    }
+    let request;
+    try {
+      request = parseComposeReviewRequest(rejectClientWorkspace(body));
+    } catch (error) {
+      if (error instanceof DomainError) throw new PersistenceError(error.code, error.message);
+      throw error;
+    }
+    const expectedRowVersion = parseAggregateVersion(ifMatch);
+    if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
+    return this.jobs.runIdempotent(
+      this.scope(context, "POST", `/assets/${assetId}/review`, { ...request, expectedRowVersion }),
+      200,
+      (client) => this.mediaAssets!.reviewComposite(client, {
+        workspaceId: this.workspaceId,
+        assetId,
+        expectedRowVersion,
+        decision: request.decision,
+        note: request.note,
+        contentHash: request.contentHash,
+        reviewedBy: context.actorId,
+        traceId: context.traceId,
+      }),
+    );
+  }
+
   async readMockAssetContent(assetId: string): Promise<{ mimeType: string; bytes: Buffer }> {
     if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
     if (!this.mockObjectDir) {
@@ -689,6 +755,12 @@ export class StudioService {
       }
       assertReadableMockAv(asset);
       return { mimeType: asset.mimeType, bytes: await readBoundedMockAv(this.mockObjectDir, asset) };
+    }
+    if (asset.kind === "COMPOSITE") {
+      if (!this.localComposeEnabled || !this.composeObjectDir) {
+        throw new PersistenceError("CONFIGURATION_ERROR", "Local compose content is not enabled");
+      }
+      return readCompositeContent(this.composeObjectDir, this.workspaceId, asset);
     }
     if (asset.kind === "SUBTITLE" || asset.kind === "MUSIC") {
       if (!this.mockSmEnabled) {
@@ -750,6 +822,9 @@ export class StudioService {
 
   async retryJob(jobId: string, context: StudioContext) {
     const job = await this.store.getJob(this.workspaceId, jobId);
+    if (job.kind === "MEDIA_COMPOSE") {
+      throw new PersistenceError("JOB_NOT_RETRYABLE", "Compose must be submitted again after a new preflight");
+    }
     if (isMockMediaJobKind(job.kind)) {
       throw new PersistenceError("JOB_NOT_RETRYABLE", "Media retry is unavailable; generate again with a new idempotency key");
     }

@@ -465,6 +465,9 @@ async function manualRetryTx(
   }
 
   const oldJob = await loadJobForUpdate(client, input.workspaceId, input.jobId);
+  if (oldJob.kind === "MEDIA_COMPOSE") {
+    throw new PersistenceError("JOB_NOT_RETRYABLE", "Compose must be submitted again after a new preflight");
+  }
   if (oldJob.state !== "FAILED" && oldJob.state !== "CANCELED") {
     throw new PersistenceError("JOB_NOT_RETRYABLE", "Manual retry requires FAILED or CANCELED job");
   }
@@ -661,6 +664,49 @@ export class JobPersistenceService {
       });
       return { dispatchSeq: redispatched.dispatch_seq };
     });
+  }
+
+  async cancelRequested(workspaceId: string, jobId: string): Promise<boolean> {
+    const client = await this.pool.connect();
+    try {
+      const result = await client.query<{ canceling: boolean }>(
+        "SELECT cancel_requested_at IS NOT NULL AS canceling FROM generation_job WHERE id = $1 AND workspace_id = $2",
+        [jobId, workspaceId],
+      );
+      return result.rows[0]?.canceling === true;
+    } finally {
+      client.release();
+    }
+  }
+
+  async renewRunningLease(input: {
+    workspaceId: string;
+    jobId: string;
+    attemptId: string;
+    leaseOwner: string;
+    leaseMs: number;
+  }): Promise<boolean> {
+    const client = await this.pool.connect();
+    try {
+      const leaseUntil = new Date(Date.now() + input.leaseMs);
+      const updated = await client.query(
+        `UPDATE generation_job AS job
+            SET lease_until = $5, updated_at = now(), row_version = job.row_version + 1
+          WHERE job.id = $1 AND job.workspace_id = $2 AND job.state = 'RUNNING'
+            AND job.lease_owner = $3 AND job.cancel_requested_at IS NULL AND job.lease_until > now()
+            AND EXISTS (
+              SELECT 1 FROM job_attempt attempt
+               WHERE attempt.id = $4 AND attempt.generation_job_id = job.id AND attempt.finished_at IS NULL
+                 AND attempt.attempt_no = (
+                   SELECT MAX(latest.attempt_no) FROM job_attempt latest WHERE latest.generation_job_id = job.id
+                 )
+            )`,
+        [input.jobId, input.workspaceId, input.leaseOwner, input.attemptId, leaseUntil],
+      );
+      return updated.rowCount === 1;
+    } finally {
+      client.release();
+    }
   }
 
   async acquireQueuedJob(input: {

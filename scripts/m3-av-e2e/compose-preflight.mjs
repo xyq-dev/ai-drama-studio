@@ -288,7 +288,7 @@ async function generateOnPage(ctx, buttonName, notice, urlPart) {
   return assetId;
 }
 
-async function createSideShot(ctx) {
+export async function createSideShot(ctx) {
   const episode = ctx.expectStatus(await ctx.callApi(ctx.apiOrigin, "GET", `/projects/${ctx.state.world.projectId}/episodes`), 200)
     .body.items.find((item) => item.episodeNo === 1);
   const scene = ctx.expectStatus(await ctx.callApi(
@@ -335,7 +335,7 @@ async function createSideShot(ctx) {
   return { sceneId: scene.body.entityId, revisionId: shot.body.revisionId, videoId: ledger.assets[0].id };
 }
 
-async function replaceSideScene(ctx, side) {
+export async function replaceSideScene(ctx, side) {
   const episode = ctx.expectStatus(await ctx.callApi(ctx.apiOrigin, "GET", `/projects/${ctx.state.world.projectId}/episodes`), 200)
     .body.items.find((item) => item.episodeNo === 1);
   const aggregate = ctx.expectStatus(await ctx.callApi(
@@ -402,7 +402,7 @@ async function ledgerSnapshot(ctx) {
   return snapshot;
 }
 
-async function waitForCurrentSources(ctx) {
+export async function waitForCurrentSources(ctx) {
   const started = Date.now();
   let pending = [{ count: 1 }];
   while (Date.now() - started < 30_000) {

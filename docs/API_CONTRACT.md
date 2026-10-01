@@ -96,6 +96,8 @@ workspace、project 及完整 episode/scene scope。revision 历史保留 `items
 | `POST /shot-revisions/:id/generate-image` | 图像生成 workflow | Owner；key；`SOURCE_STALE` |
 | `POST /shot-revisions/:id/generate-video` | 视频生成 workflow | Owner；key；`REVIEW_REQUIRED`,`SOURCE_STALE` |
 | `POST /shot-revisions/:revisionId/compose-preflight` | 同步单镜合成预检。请求仅 `{videoAssetId, audioAssetId?, musicAssetId?, subtitleAssetId?}`，缺失的可选项规范为 null。成功 `200`，`Cache-Control: private, no-store`，返回 `{schema:"m4.shot.compose.preflight.v1", manifest, inputHash, guards}`。不创建任务、资产、账本、outbox 或领域事件，不使用 IdempotencyRecord，也不执行 FFmpeg | Owner；无幂等结果缓存；`NOT_FOUND`,`REVIEW_REQUIRED`,`STALE_RECALCULATION_PENDING`,`COMPOSE_INPUT_INVALID`,`VALIDATION_ERROR`,`CONFIGURATION_ERROR` |
+| `POST /shot-revisions/:revisionId/compose` | 受理单镜本地合成。请求仅 `{videoAssetId, audioAssetId?, musicAssetId?, subtitleAssetId?, expectedInputHash}`。`202` 只表示任务受理。`expectedInputHash` 必须等于服务端刚生成的预检 hash。任务 kind 为 `MEDIA_COMPOSE`，不使用 Provider 配置。需要 `M4_LOCAL_COMPOSE_ENABLED`，production 强制关闭 | Owner；`Idempotency-Key`；`NOT_FOUND`,`REVIEW_REQUIRED`,`STALE_RECALCULATION_PENDING`,`COMPOSE_INPUT_INVALID`,`COMPOSE_INPUT_CHANGED`,`VALIDATION_ERROR`,`CONFIGURATION_ERROR`,`IDEMPOTENCY_KEY_REUSED` |
+| `POST /assets/:assetId/review` | 审核本地 `COMPOSITE`。请求仅 `{decision:"APPROVE"\|"REJECT", note, contentHash}`。只允许 `DRAFT` 到 `APPROVED` 或 `REJECTED`。`contentHash` 必须等于正在预览的成片 checksum。不批准原始媒体，不自动发布 | Owner；`Idempotency-Key` 与 `If-Match`；`NOT_FOUND`,`REVIEW_INVALID_TRANSITION`,`REVIEW_CONFLICT`,`REVISION_CONFLICT`,`COMPOSE_CONTENT_HASH_MISMATCH`,`REVIEW_REQUIRED`,`STALE_RECALCULATION_PENDING`,`VALIDATION_ERROR`,`CONFIGURATION_ERROR` |
 
 ## Assets, Generation Jobs, Workflow Runs
 

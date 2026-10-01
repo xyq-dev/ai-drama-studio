@@ -43,9 +43,11 @@ export class StudioRuntime implements OnModuleDestroy {
     const mockImageEnabled = nonProduction && env.M3_MOCK_IMAGE_ENABLED && Boolean(absoluteDir);
     const mockAvEnabled = nonProduction && env.M3_MOCK_AV_ENABLED && Boolean(absoluteDir);
     const mockSmEnabled = nonProduction && env.M3_MOCK_SUBTITLE_MUSIC_ENABLED && Boolean(absoluteDir);
+    const composeObjectDir = env.M4_COMPOSE_OBJECT_DIR && isAbsolute(env.M4_COMPOSE_OBJECT_DIR) ? env.M4_COMPOSE_OBJECT_DIR : null;
+    const localComposeEnabled = nonProduction && env.M4_LOCAL_COMPOSE_ENABLED && Boolean(absoluteDir && composeObjectDir);
     return new StudioRuntime(pool,
       new StudioService(jobs, store, textChain, workspaceId, new MockTextService(pool), new MediaAssetStore(pool),
-        mockImageEnabled, absoluteDir, mockAvEnabled, mockSmEnabled), store);
+        mockImageEnabled, absoluteDir, mockAvEnabled, mockSmEnabled, localComposeEnabled, composeObjectDir), store);
   }
 
   async onModuleDestroy(): Promise<void> {
