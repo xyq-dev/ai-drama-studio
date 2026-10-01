@@ -1109,10 +1109,11 @@ async function main() {
     const musicRange = await fetch(musicUrl, { headers: { Range: "bytes=0-10" }, signal: AbortSignal.timeout(15_000) });
     if (musicRange.status !== 200) throw new Error(`music range status ${musicRange.status}`);
     await page.getByText("Mock subtitle").waitFor({ timeout: 20_000 });
-    const musicPlayer = page.locator("section").filter({ has: page.getByRole("heading", { name: "Mock 音乐", exact: true }) }).locator("audio").first();
+    const mediaSection = (name) => page.getByRole("heading", { name, exact: true }).locator("xpath=ancestor::section[1]");
+    const musicPlayer = mediaSection("Mock 音乐").locator("audio");
     await musicPlayer.waitFor({ state: "attached", timeout: 20_000 });
-    const speechPlayers = await page.locator("section").filter({ has: page.getByRole("heading", { name: "Mock 配音", exact: true }) }).locator("audio").count();
-    const musicPlayers = await page.locator("section").filter({ has: page.getByRole("heading", { name: "Mock 音乐", exact: true }) }).locator("audio").count();
+    const speechPlayers = await mediaSection("Mock 配音").locator("audio").count();
+    const musicPlayers = await mediaSection("Mock 音乐").locator("audio").count();
     if (speechPlayers !== 1 || musicPlayers !== 1) throw new Error(`player counts speech ${speechPlayers} music ${musicPlayers}`);
     await musicPlayer.click({ position: { x: 16, y: 12 }, force: true, timeout: 10_000 });
     const musicProof = await musicPlayer.evaluate(async (element) => {
