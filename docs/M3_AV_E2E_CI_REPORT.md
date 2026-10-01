@@ -69,18 +69,64 @@ Web 模拟测试日志里的 `ECONNREFUSED 127.0.0.1:3000` 来自既有 happy-do
 - `identity` 与 `chrome` 为 null。其后 identity、migrate-provision、processes、source-chain、page-submit、playback、content-headers、png-draft-viewport、idempotency-retry、revision-history、gates、mock-boundary、recovery-disk、recovery-flag 全部 skipped。`composeDown` exit 0。
 - 公开镜像源同样拿不到 compose 文件里的 MinIO 发行标签。停止再换 registry，不加入 secrets，不修改 `infra/compose.yaml`。这不是产品缺陷。
 
+## Actions 第五次运行
+
+验收代码 `a981b2c72c04c93e7e20987e76569aa750ef2239`。
+
+- Run：https://github.com/xyq-dev/ai-drama-studio/actions/runs/36808446288
+- Job：https://github.com/xyq-dev/ai-drama-studio/actions/runs/36808446288/job/110197922209
+- Artifact：https://github.com/xyq-dev/ai-drama-studio/actions/runs/36808446288/artifacts/11139185564 ，id `11139185564`，1355361 bytes。
+- 结论：failure。镜像拉取已通过：MinIO 与 mc 使用 GitHub Release 上同一标签的官方二进制，校验 SHA-256 后标成 compose 镜像名。`infra/compose.yaml` 未改。
+- 页面、API、门禁和 Worker 重启日志都已产生，但进程在清理阶段崩溃：`compose down` 关掉 PostgreSQL 时，只读客户端收到 `57P01`，未处理的 `error` 事件使进程在写出 `results.json` 之前退出。因此这次不能记成通过。这不是产品缺陷。
+
+## Actions 第六次运行
+
+验收代码 `165319edad445a171213d7ee96e82cd4e93da9a0`。这是 Actions 实际测试并通过的 SHA。
+
+- Run：https://github.com/xyq-dev/ai-drama-studio/actions/runs/36809119919
+- Job：https://github.com/xyq-dev/ai-drama-studio/actions/runs/36809119919/job/110199990702
+- Artifact：https://github.com/xyq-dev/ai-drama-studio/actions/runs/36809119919/artifacts/11139421014 ，id `11139421014`，1351482 bytes，到期 2026-10-08。名称 `m3-av-e2e-evidence`。
+- 结论：success。`results.json` 的 `ok` 为 true，`fatal` 与 `cleanupError` 为 null。`composeDown` exit 0，只删除本次 project `m3av-36809119919-1` 的容器和 volume。
+
+通过的阶段：
+
+| 阶段 | 结果 |
+| --- | --- |
+| docker / compose | passed。PostgreSQL、Redis、Alpine 来自 `mirror.gcr.io`。MinIO 二进制 110989496 bytes，SHA-256 `7c5bd8512c6e966455b1d198209358b2d191c77a83ab377c4073281065fb855f`。mc 二进制 30535864 bytes，SHA-256 `01f866e9c5f9b87c2b09116fa5d7c06695b106242d829a8bb32990c00312e891`。本地镜像没有上游 RepoDigest。 |
+| identity | passed。库 `m3av_36809119919a1`，角色同名，URL 为 loopback，public 表数 0。容器内地址 `172.18.0.2:5432` 只作记录。 |
+| migrate-provision | passed。既有 migration 5 个。`mock-av:provision` 第一次 created，第二次 already present。`audio.tts`、`image.generate`、`video.generate` 各 1 条且无凭据。 |
+| processes | passed。API ready 含 postgres、redis、objectStorage。Worker ready 含 postgres、redis、queue。 |
+| source-chain / page-submit | passed。Chrome `154.0.8037.92`。镜头页分别提交视频与配音，记录同源 workflow / job。 |
+| playback | passed。视频 16×16、duration 1、ended、decoded frame，`totalVideoFrames` 5。音频 duration 0.1、ended。浏览器对 asset/content 发出 `Range: bytes=0-`。 |
+| content-headers | passed。MP4 1552 bytes / SHA-256 `6cbb357d...90e3`，WAV 1644 bytes / SHA-256 `c726d333...8908`。HEAD 与 Range 都是 200。 |
+| png-draft-viewport | passed。PNG 1×1。390px 下 document/body overflow 0，两条 64 字符 hash overflow 0。未保存草稿仍在。 |
+| idempotency-retry / revision-history / gates | passed。门禁码为 `REVIEW_REQUIRED`、`VALIDATION_ERROR`、`NOT_FOUND`、`CONFIGURATION_ERROR`。 |
+| mock-boundary | passed。MinIO 对象数开始和结束都是 0。本次 LocalMockObjects 有 6 个文件。 |
+| recovery-disk | passed。原 attempt `FAILED` / `MOCK_AV_OUTPUT_INVALID`。 |
+| recovery-flag | passed。原 attempt `FAILED` / `MOCK_MEDIA_NOT_CONFIGURED`，attemptNo 1。关 AV 后图片任务仍完成。MinIO 对象数仍为 0。 |
+
+## 本轮补充命令
+
+| 命令 | 结果 |
+| --- | --- |
+| `git fetch` + 快进 | exit 0。开始时 HEAD 与远端同为 `0333505`，包含 `5470008` |
+| `node --check` 与 `node scripts/m3-av-e2e/check.mjs` | exit 0 |
+| `pnpm verify` | exit 0。lint 9/9，typecheck 14/14，test 14/14，build 9/9 |
+| 本机 Docker | 仍没有 `docker` 命令。真实服务只在上述 Actions runner 上运行 |
+
+Web 模拟测试里的 `ECONNREFUSED 127.0.0.1:3000` 仍来自 happy-dom，套件通过。
+
 ## 最终 SHA
 
-Actions 实际测试 `75a4e887a8d0aabf8cb347a7db209c4250261eec`。
+Actions 通过的验收 SHA 是 `165319edad445a171213d7ee96e82cd4e93da9a0`。
 
-- 提交：https://github.com/xyq-dev/ai-drama-studio/commit/75a4e887a8d0aabf8cb347a7db209c4250261eec
-- 普通 push：`3101278..75a4e88`，目标 `feat/m3-av-workbench`。没有 force push，没有 main，没有 PR，没有 merge。
-- 该次 CI 结论是 failure。镜像拉取之后的报告提交只改本文件，workflow paths 不包含 `docs/**`，不会再触发验收。
+- 提交：https://github.com/xyq-dev/ai-drama-studio/commit/165319edad445a171213d7ee96e82cd4e93da9a0
+- 普通 push 到 `feat/m3-av-workbench`：`0333505..a981b2c`，随后 `a981b2c..165319e`。没有 force push，没有 main，没有 PR，没有 merge。
+- `git fetch` 后该 SHA 与 `origin/feat/m3-av-workbench` 一致。随后的报告提交只改本文件，不会再触发 workflow。
 
 ## 尚未执行
 
-- 真实页面、API、Worker、PostgreSQL 资产与成本、同源视频/音频播放。四次运行都停在镜像拉取，本机没有 Docker。
-- Migration。只允许在 CI 新建且已核验为空的隔离库上执行。四次运行都没有读到 `current_database` 或 public 表数，Migration 未执行，没有 DROP SCHEMA。
-- 两次 `mock-av:provision` 幂等核对、页面点击、202、只读账本、Chrome 播放、内容头、PNG、草稿与 390px、幂等与手动重试、版本历史、门禁、MinIO 对象边界、磁盘恢复和关 AV 恢复。
 - 成本冲突、全部暂时故障与取消竞争、隐藏标签页，以及 Windows 和其余未触发的 Compose 故障组合。
-- 既有 integration 套件、新 Migration、应用 pack、部署、付费 Provider、ComfyUI、真实模型。
+- 既有 integration 套件、新 Migration、DROP SCHEMA、全库重置、应用 pack、部署、付费 Provider、ComfyUI、真实模型。
+- 本机真实 PostgreSQL、Redis、MinIO、API、Worker、Web 和浏览器。本机没有 Docker。
+- 上游 quay.io 镜像 digest。runner 无法匿名拉取该标签，实际运行的是校验过的同一 GitHub Release 二进制，本地镜像 id 已写入 artifact。
