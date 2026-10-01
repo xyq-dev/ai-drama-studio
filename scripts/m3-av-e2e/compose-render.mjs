@@ -265,7 +265,7 @@ export async function composeReview(ctx) {
   ctx.expectStatus(await ctx.callApi(ctx.apiOrigin, "POST", `/assets/${ctx.state.world.compose.videoId}/review`, {
     ifMatch: 1,
     body: { decision: "APPROVE", note: "", contentHash: current.checksum_sha256 },
-  }), 400, "REVIEW_INVALID_TRANSITION");
+  }), 409, "REVIEW_INVALID_TRANSITION");
   const key = "compose-review-approve-once";
   const approved = ctx.expectStatus(await ctx.callApi(ctx.apiOrigin, "POST", `/assets/${pageAsset.assetId}/review`, {
     key, ifMatch: current.row_version,
@@ -288,7 +288,7 @@ export async function composeReview(ctx) {
   ctx.expectStatus(await ctx.callApi(ctx.apiOrigin, "POST", `/assets/${pageAsset.assetId}/review`, {
     ifMatch: bytes.row_version,
     body: { decision: "REJECT", note: "reverse", contentHash: bytes.checksum_sha256 },
-  }), 400, "REVIEW_INVALID_TRANSITION");
+  }), 409, "REVIEW_INVALID_TRANSITION");
   const rejected = await reviewFreshComposite(ctx, "REJECT", "return this cut");
   const race = await createFreshComposite(ctx);
   const left = ctx.callApi(ctx.apiOrigin, "POST", `/assets/${race.assetId}/review`, {
@@ -319,7 +319,7 @@ export async function composeReview(ctx) {
   ctx.expectStatus(await ctx.callApi(ctx.apiOrigin, "POST", `/assets/${blocked.assetId}/review`, {
     ifMatch: blocked.rowVersion,
     body: { decision: "APPROVE", note: "", contentHash: blocked.checksum },
-  }), 400);
+  }), 409, "REVIEW_INVALID_TRANSITION");
   ctx.state.world.composite = { ...pageAsset, rowVersion: approved.rowVersion, reviewStatus: "APPROVED" };
   return { approved: approved.reviewStatus, rejected: rejected.reviewStatus, race: winner.review_status };
 }
