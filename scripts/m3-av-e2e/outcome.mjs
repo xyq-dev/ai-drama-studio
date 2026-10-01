@@ -6,18 +6,18 @@ export const requiredStages = [
   "processes",
   "source-chain",
   "page-submit",
+  "subtitle-music",
   "playback",
   "content-headers",
   "png-draft-viewport",
   "idempotency-retry",
   "revision-history",
   "gates",
+  "subtitle-music-gates",
   "mock-boundary",
+  "subtitle-music-recovery",
   "recovery-disk",
   "recovery-flag",
-  "subtitle-music",
-  "subtitle-music-gates",
-  "subtitle-music-recovery",
 ];
 
 export function acceptanceFailed(input) {
