@@ -53,6 +53,9 @@ jobs:
       - name: Check acceptance harness
         run: pnpm m3-av-e2e:check
 
+      - name: Run acceptance outcome regression
+        run: pnpm m3-av-e2e:outcome
+
       - name: Run real page, API, worker, and database acceptance
         run: node scripts/m3-av-e2e/run.mjs
 

@@ -47,6 +47,13 @@ if (/sql\(\s*[`'"][^`'"]*drop\s+schema/i.test(harness)) {
   failures.push("harness SQL drops a schema");
 }
 if (!harness.includes('channel: "chrome"')) failures.push("harness does not launch Chrome for Testing");
+if (!harness.includes('from "./outcome.mjs"')) failures.push("harness does not use the shared outcome module");
+if (!harness.includes("acceptanceFailed(") || !harness.includes("acceptanceExitCode(")) {
+  failures.push("harness does not use the shared pass/fail decision");
+}
+if (!harness.includes("assertLinkage(")) failures.push("harness does not assert ledger linkage");
+if (!harness.includes("viewport-390.png")) failures.push("harness does not save the 390px screenshot");
+if (!harness.includes('["M3_MOCK_AV_ENABLED"]')) failures.push("harness does not unset M3_MOCK_AV_ENABLED");
 if (!harness.includes("7c5bd8512c6e966455b1d198209358b2d191c77a83ab377c4073281065fb855f")) {
   failures.push("harness does not pin the MinIO release checksum");
 }

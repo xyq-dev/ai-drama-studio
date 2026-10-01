@@ -15,6 +15,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { rename, rm, writeFile } from "node:fs/promises";
+import { acceptanceExitCode, acceptanceFailed, assertLinkage, requiredStages } from "./outcome.mjs";
 
 const repo = resolve(import.meta.dirname, "../..");
 const outputDir = resolve(repo, "m3-av-e2e-output");
@@ -63,29 +64,15 @@ const state = {
   posts: [],
   contentRequests: [],
   consoleEvents: [],
+  httpEvents: [],
+  expectedGates: [],
+  activeStage: null,
   world: null,
   evidence: {},
 };
 
 const stages = [];
-const pending = [
-  "docker",
-  "compose",
-  "identity",
-  "migrate-provision",
-  "processes",
-  "source-chain",
-  "page-submit",
-  "playback",
-  "content-headers",
-  "png-draft-viewport",
-  "idempotency-retry",
-  "revision-history",
-  "gates",
-  "mock-boundary",
-  "recovery-disk",
-  "recovery-flag",
-];
+const pending = [...requiredStages];
 
 const notRun = [
   "成本冲突",
@@ -198,7 +185,11 @@ async function stopApp(name) {
 }
 
 function appEnv(overrides = {}) {
-  return {
+  return childEnv(overrides, []);
+}
+
+function childEnv(overrides = {}, unsetKeys = []) {
+  const env = {
     ...process.env,
     NODE_ENV: "development",
     BIND_HOST: "127.0.0.1",
@@ -221,6 +212,8 @@ function appEnv(overrides = {}) {
     NEXT_PUBLIC_API_BASE_URL: apiOrigin,
     ...overrides,
   };
+  for (const key of unsetKeys) delete env[key];
+  return env;
 }
 
 async function sql(text, params = []) {
@@ -331,24 +324,73 @@ async function jobLedger(jobId) {
     [jobId],
   );
   const attempts = await sql(
-    `SELECT attempt_no, provider_request_id FROM job_attempt
-      WHERE generation_job_id = $1 ORDER BY attempt_no`,
+    `SELECT id, attempt_no, provider_configuration_id, provider_request_id, finished_at, error_json
+       FROM job_attempt WHERE generation_job_id = $1 ORDER BY attempt_no`,
     [jobId],
   );
   const assets = await sql(
     `SELECT id, kind, storage_provider, object_key, mime_type, byte_size::text, checksum_sha256,
             width, height, duration_ms::text, status, review_status, source_shot_revision_id,
-            source_generation_job_id, provider_request_id
+            source_generation_job_id, source_job_attempt_id, provider_configuration_id, provider_request_id
        FROM asset WHERE source_generation_job_id = $1 ORDER BY created_at`,
     [jobId],
   );
   const costs = await sql(
     `SELECT kind, currency, amount_decimal::text, basis, unit_type, provider_request_id,
-            job_attempt_id, supersedes_cost_id, supersedes_estimate_key
+            provider_configuration_id, job_attempt_id, supersedes_cost_id, supersedes_estimate_key
        FROM cost_ledger WHERE generation_job_id = $1`,
     [jobId],
   );
   return { job: jobs[0] ?? null, attempts, assets, costs };
+}
+
+function timeValue(value) {
+  if (!value) return null;
+  if (value instanceof Date) return value.toISOString();
+  return String(value);
+}
+
+function publicErrorJson(value) {
+  if (!value || typeof value !== "object") return null;
+  return {
+    code: value.code ?? null,
+    retryable: value.retryable ?? null,
+    message: typeof value.message === "string" ? value.message.slice(0, 200) : null,
+  };
+}
+
+function linkageSnapshot(ledger) {
+  const attempt = ledger.attempts[0] ?? null;
+  const asset = ledger.assets[0] ?? null;
+  const cost = ledger.costs[0] ?? null;
+  return {
+    jobId: ledger.job?.id ?? null,
+    jobState: ledger.job?.state ?? null,
+    jobErrorCode: ledger.job?.error_code ?? null,
+    attempt: attempt ? {
+      id: attempt.id,
+      attemptNo: attempt.attempt_no,
+      providerRequestId: attempt.provider_request_id,
+      providerConfigurationId: attempt.provider_configuration_id,
+      finishedAt: timeValue(attempt.finished_at),
+      errorJson: publicErrorJson(attempt.error_json),
+    } : null,
+    asset: asset ? {
+      id: asset.id,
+      sourceJobAttemptId: asset.source_job_attempt_id,
+      sourceGenerationJobId: asset.source_generation_job_id,
+      providerRequestId: asset.provider_request_id,
+      providerConfigurationId: asset.provider_configuration_id,
+    } : null,
+    cost: cost ? {
+      jobAttemptId: cost.job_attempt_id,
+      providerRequestId: cost.provider_request_id,
+      providerConfigurationId: cost.provider_configuration_id,
+      kind: cost.kind,
+      amount: cost.amount_decimal,
+    } : null,
+    submitCallsMeasured: false,
+  };
 }
 
 function assertLedger(ledger, kind, revisionId, sourceText, mimeType, bytes, sha, duration, width) {
@@ -401,7 +443,8 @@ function assertLedger(ledger, kind, revisionId, sourceText, mimeType, bytes, sha
   if (!asset.object_key.startsWith(kind === "MEDIA_VIDEO" ? "mock-videos/" : "mock-audio/")) {
     throw new Error(`object key ${asset.object_key}`);
   }
-  return { requestId, assetId: asset.id };
+  const ledgerSnapshot = assertLinkage(linkageSnapshot(ledger));
+  return { requestId, assetId: asset.id, ledger: ledgerSnapshot };
 }
 
 async function pollJob(jobId, timeoutMs, terminal = ["SUCCEEDED", "FAILED", "CANCELED"]) {
@@ -492,6 +535,7 @@ async function restoreMockDir() {
 async function stage(name, fn) {
   if (pending[0] !== name) throw new Error(`stage order expected ${pending[0]}, called ${name}`);
   pending.shift();
+  state.activeStage = name;
   const started = Date.now();
   try {
     const detail = await fn();
@@ -814,10 +858,39 @@ async function main() {
     const page = await context.newPage();
     state.page = page;
     page.on("console", (message) => {
-      state.consoleEvents.push({ type: message.type(), text: message.text().slice(0, 500) });
+      const location = message.location();
+      state.consoleEvents.push({
+        type: message.type(),
+        text: redact(message.text()).slice(0, 500),
+        location: {
+          url: publicUrl(location.url || ""),
+          lineNumber: location.lineNumber,
+          columnNumber: location.columnNumber,
+        },
+        stage: state.activeStage,
+      });
     });
     page.on("pageerror", (error) => {
-      state.consoleEvents.push({ type: "pageerror", text: String(error).slice(0, 500) });
+      const stack = error instanceof Error ? error.stack ?? String(error) : String(error);
+      const lines = stack.split("\n");
+      state.consoleEvents.push({
+        type: "pageerror",
+        text: redact(stack).slice(0, 500),
+        location: redact(lines[1] ?? lines[0] ?? "").trim().slice(0, 300),
+        stage: state.activeStage,
+      });
+    });
+    page.on("requestfailed", (request) => {
+      const url = request.url();
+      state.httpEvents.push({
+        kind: "requestfailed",
+        stage: state.activeStage,
+        method: request.method(),
+        status: null,
+        url: publicUrl(url),
+        class: classifyRequest(url),
+        failure: redact(request.failure()?.errorText ?? "").slice(0, 200),
+      });
     });
     page.on("request", (request) => {
       if (!request.url().includes("/assets/") || !request.url().includes("/content")) return;
@@ -829,6 +902,18 @@ async function main() {
       });
     });
     page.on("response", async (response) => {
+      if (response.status() >= 400) {
+        const url = response.url();
+        state.httpEvents.push({
+          kind: "response",
+          stage: state.activeStage,
+          method: response.request().method(),
+          status: response.status(),
+          url: publicUrl(url),
+          class: classifyRequest(url),
+          failure: null,
+        });
+      }
       const request = response.request();
       if (request.method() !== "POST" || !response.url().includes("/generate-")) return;
       let body = null;
@@ -1008,6 +1093,8 @@ async function main() {
     if (overflow.hashes.length < 2 || overflow.hashes.some((item) => item.length < 64 || item.overflow > 1)) {
       throw new Error(`hash wrap failed ${JSON.stringify(overflow.hashes)}`);
     }
+    const viewport = page.viewportSize();
+    await page.screenshot({ path: join(outputDir, "viewport-390.png"), fullPage: true });
     await page.setViewportSize({ width: 1280, height: 900 });
     await page.getByRole("button", { name: "生成 Mock 图片", exact: true }).click({ timeout: 30_000 });
     await page.getByText("已受理，结果以任务和图片列表为准。这不是生成成功。").waitFor({ timeout: 20_000 });
@@ -1040,7 +1127,7 @@ async function main() {
       throw new Error(`png signature failed ${pngResponse.status}`);
     }
     await page.screenshot({ path: join(outputDir, "viewport-and-png.png"), fullPage: true });
-    return { draft: action, overflow, decoded, imageJobId: imagePost.body.jobId };
+    return { draft: action, overflow, viewport, screenshot: "viewport-390.png", decoded, imageJobId: imagePost.body.jobId };
   });
 
   await stage("idempotency-retry", async () => {
@@ -1122,14 +1209,15 @@ async function main() {
     if (currentAfter.includes(state.world.video.assetId) || !currentAfter.includes(current.assetId)) {
       throw new Error("current region does not match the new source asset");
     }
-    return { previousRevisionId: state.world.previousRevisionId, currentRevisionId: state.world.shotRevisionId, currentAssetId: current.assetId };
+    return { previousRevisionId: state.world.previousRevisionId, currentRevisionId: state.world.shotRevisionId, currentAssetId: current.assetId, ledger: current.ledger };
   });
 
   await stage("gates", async () => {
     const before = await jobCount();
-    const old = expectStatus(await callApi(apiOrigin, "POST", `/shot-revisions/${state.world.previousRevisionId}/generate-video`, {
+    const oldPath = `/shot-revisions/${state.world.previousRevisionId}/generate-video`;
+    const old = recordGate("old-approved-revision", "POST", oldPath, expectStatus(await callApi(apiOrigin, "POST", oldPath, {
       body: { seed: "old-revision" },
-    }), 400, "REVIEW_REQUIRED");
+    }), 400, "REVIEW_REQUIRED"));
     const draftCreated = expectStatus(await callApi(
       apiOrigin, "POST",
       `/projects/${state.world.projectId}/episodes/${state.world.episodeId}/scenes/${state.world.sceneId}/shots`,
@@ -1138,17 +1226,20 @@ async function main() {
         body: shotPayload(state.world.sceneRevisionId, 2, "draft", promptText, dialogueText),
       },
     ), 201);
-    const draft = expectStatus(await callApi(apiOrigin, "POST", `/shot-revisions/${draftCreated.body.revisionId}/generate-video`, {
+    const draftPath = `/shot-revisions/${draftCreated.body.revisionId}/generate-video`;
+    const draft = recordGate("draft-revision", "POST", draftPath, expectStatus(await callApi(apiOrigin, "POST", draftPath, {
       body: {},
-    }), 400, "REVIEW_REQUIRED");
+    }), 400, "REVIEW_REQUIRED"));
     const emptyPrompt = await createApprovedShot(3, "empty-prompt", "", dialogueText);
-    const promptGate = expectStatus(await callApi(apiOrigin, "POST", `/shot-revisions/${emptyPrompt.revisionId}/generate-video`, {
+    const promptPath = `/shot-revisions/${emptyPrompt.revisionId}/generate-video`;
+    const promptGate = recordGate("empty-prompt", "POST", promptPath, expectStatus(await callApi(apiOrigin, "POST", promptPath, {
       body: {},
-    }), 400, "VALIDATION_ERROR");
+    }), 400, "VALIDATION_ERROR"));
     const emptyDialogue = await createApprovedShot(4, "empty-dialogue", promptText, null);
-    const dialogueGate = expectStatus(await callApi(apiOrigin, "POST", `/shot-revisions/${emptyDialogue.revisionId}/generate-tts`, {
+    const dialoguePath = `/shot-revisions/${emptyDialogue.revisionId}/generate-tts`;
+    const dialogueGate = recordGate("empty-dialogue", "POST", dialoguePath, expectStatus(await callApi(apiOrigin, "POST", dialoguePath, {
       body: {},
-    }), 400, "VALIDATION_ERROR");
+    }), 400, "VALIDATION_ERROR"));
     await run("pnpm", ["--filter", "@ai-drama/database", "workspace:provision"], {
       env: appEnv({ APP_WORKSPACE_ID: otherWorkspaceId, APP_WORKSPACE_NAME: "M3 AV E2E other" }),
     });
@@ -1167,24 +1258,35 @@ async function main() {
       M3_MOCK_AV_ENABLED: "true",
       M3_MOCK_IMAGE_ENABLED: "true",
     }));
+    const defaultEnv = childEnv({ API_PORT: "3014" }, ["M3_MOCK_AV_ENABLED"]);
+    if (Object.hasOwn(defaultEnv, "M3_MOCK_AV_ENABLED")) {
+      throw new Error("unset did not remove M3_MOCK_AV_ENABLED");
+    }
+    spawnApp("api-default", ["pnpm", "--filter", "@ai-drama/api", "start"], defaultEnv);
     await waitHttp("http://127.0.0.1:3011/api/v1/health/ready", (status, body) => status === 200 && body?.dependencies?.postgres?.status === "ok", 60_000);
     await waitHttp("http://127.0.0.1:3012/api/v1/health/ready", (status, body) => status === 200 && body?.dependencies?.postgres?.status === "ok", 60_000);
     await waitHttp("http://127.0.0.1:3013/api/v1/health/ready", (status, body) => status === 200 && body?.dependencies?.postgres?.status === "ok", 60_000);
-    const wrong = expectStatus(await callApi("http://127.0.0.1:3011", "POST", `/shot-revisions/${state.world.shotRevisionId}/generate-video`, {
+    await waitHttp("http://127.0.0.1:3014/api/v1/health/ready", (status, body) => status === 200 && body?.dependencies?.postgres?.status === "ok", 60_000);
+    const wrongPath = `/shot-revisions/${state.world.shotRevisionId}/generate-video`;
+    const wrong = recordGate("wrong-workspace", "POST", wrongPath, expectStatus(await callApi("http://127.0.0.1:3011", "POST", wrongPath, {
       body: {},
-    }), 404, "NOT_FOUND");
-    const disabled = expectStatus(await callApi("http://127.0.0.1:3012", "POST", `/shot-revisions/${state.world.shotRevisionId}/generate-video`, {
+    }), 404, "NOT_FOUND"));
+    const disabled = recordGate("explicit-false", "POST", wrongPath, expectStatus(await callApi("http://127.0.0.1:3012", "POST", wrongPath, {
       body: {},
-    }), 400, "CONFIGURATION_ERROR");
-    const production = expectStatus(await callApi("http://127.0.0.1:3013", "POST", `/shot-revisions/${state.world.shotRevisionId}/generate-video`, {
+    }), 400, "CONFIGURATION_ERROR"));
+    const production = recordGate("production-flag-true", "POST", wrongPath, expectStatus(await callApi("http://127.0.0.1:3013", "POST", wrongPath, {
       body: {},
-    }), 400, "CONFIGURATION_ERROR");
+    }), 400, "CONFIGURATION_ERROR"));
+    const unset = recordGate("default-unset", "POST", wrongPath, expectStatus(await callApi("http://127.0.0.1:3014", "POST", wrongPath, {
+      body: {},
+    }), 400, "CONFIGURATION_ERROR"));
     const after = await jobCount();
     const otherJobs = await jobCount(otherWorkspaceId);
     if (after !== before || otherJobs !== 0) throw new Error(`gate created jobs ${before} -> ${after}, other ${otherJobs}`);
     await stopApp("api-other");
     await stopApp("api-off");
     await stopApp("api-prod");
+    await stopApp("api-default");
     return {
       old: old.body.error.code,
       draft: draft.body.error.code,
@@ -1193,6 +1295,9 @@ async function main() {
       wrong: wrong.body.error.code,
       disabled: disabled.body.error.code,
       production: production.body.error.code,
+      unset: unset.body.error.code,
+      unsetPresent: Object.hasOwn(defaultEnv, "M3_MOCK_AV_ENABLED"),
+      expectedGates: state.expectedGates,
     };
   });
 
@@ -1204,8 +1309,12 @@ async function main() {
       throw new Error(`local mock objects missing ${files.join(",")}`);
     }
     if (!files.some((file) => file.startsWith("mock-images/"))) throw new Error("local png object missing");
+    const pageErrors = state.consoleEvents.filter((event) => event.type === "pageerror");
+    if (pageErrors.length > 0) throw new Error(`unhandled pageerror ${JSON.stringify(pageErrors)}`);
+    const mediaFailures = state.httpEvents.filter((event) => event.class === "media-generate" || event.class === "asset-content");
+    if (mediaFailures.length > 0) throw new Error(`required media request failed ${JSON.stringify(mediaFailures)}`);
     state.evidence.localObjects = files;
-    return { minio, files: files.length };
+    return { minio, files: files.length, httpEvents: state.httpEvents, pageErrors };
   });
 
   await stage("recovery-disk", async () => {
@@ -1258,7 +1367,12 @@ async function main() {
       if (ledger.assets.length !== 0 || ledger.costs.length !== 0) {
         throw new Error("failed recovery left an asset or cost");
       }
-      return { jobId: accepted.body.jobId, errorCode: ledger.job.error_code, requestId };
+      const attempt = assertLinkage(linkageSnapshot(ledger), {
+        expectAsset: false,
+        expectCost: false,
+        errorCode: "MOCK_AV_OUTPUT_INVALID",
+      });
+      return { jobId: accepted.body.jobId, errorCode: ledger.job.error_code, requestId, attempt };
     } finally {
       await restoreMockDir();
     }
@@ -1321,6 +1435,11 @@ async function main() {
         throw new Error(`AV attempt changed ${JSON.stringify(ledger.attempts)}`);
       }
       if (ledger.assets.length !== 0 || ledger.costs.length !== 0) throw new Error("config failure left an asset or cost");
+      const attempt = assertLinkage(linkageSnapshot(ledger), {
+        expectAsset: false,
+        expectCost: false,
+        errorCode: "MOCK_MEDIA_NOT_CONFIGURED",
+      });
       const image = expectStatus(await callApi(apiOrigin, "POST", `/shot-revisions/${state.world.shotRevisionId}/generate-image`, {
         body: { seed: "image-after-av-off" },
       }), 202);
@@ -1330,19 +1449,54 @@ async function main() {
       if (imageLedger.assets.length !== 1 || imageLedger.assets[0].kind !== "IMAGE") {
         throw new Error("image did not persist an asset");
       }
+      const imageLink = assertLinkage(linkageSnapshot(imageLedger));
       const minio = await countMinio();
       if (minio !== state.evidence.minioBefore) throw new Error(`MinIO changed after recovery ${minio}`);
       return {
         failedJobId: accepted.body.jobId,
         requestId,
         attemptNo: ledger.attempts[0].attempt_no,
+        attempt,
         imageJobId: image.body.jobId,
+        imageLink,
         minio,
       };
     } finally {
       await restoreMockDir();
     }
   });
+}
+
+function publicUrl(value) {
+  try {
+    const url = new URL(value);
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return String(value).split("?")[0].slice(0, 300);
+  }
+}
+
+function classifyRequest(value) {
+  try {
+    const path = new URL(value).pathname;
+    if (path.endsWith("/favicon.ico")) return "favicon";
+    if (path.includes("/generate-")) return "media-generate";
+    if (path.includes("/assets/") && path.endsWith("/content")) return "asset-content";
+    return "other";
+  } catch {
+    return "other";
+  }
+}
+
+function recordGate(name, method, path, response) {
+  state.expectedGates.push({
+    name,
+    method,
+    path,
+    status: response.status,
+    code: response.body?.error?.code ?? null,
+  });
+  return response;
 }
 
 function redact(text) {
@@ -1385,7 +1539,11 @@ async function cleanup() {
   }
   writeFileSync(join(outputDir, "console.json"), JSON.stringify(state.consoleEvents, null, 2));
   writeFileSync(join(outputDir, "content-requests.json"), JSON.stringify(state.contentRequests, null, 2));
-  for (const name of ["api.log", "worker.log", "web.log", "api-other.log", "api-off.log", "api-prod.log"]) {
+  writeFileSync(join(outputDir, "http-failures.json"), JSON.stringify({
+    events: state.httpEvents,
+    expectedGates: state.expectedGates,
+  }, null, 2));
+  for (const name of ["api.log", "worker.log", "web.log", "api-other.log", "api-off.log", "api-prod.log", "api-default.log"]) {
     const file = join(outputDir, name);
     if (existsSync(file)) writeFileSync(file, redact(readFileSync(file, "utf8")));
   }
@@ -1395,9 +1553,16 @@ async function cleanup() {
     state.evidence.cleanupError = error instanceof Error ? error.message : String(error);
   }
   for (const name of pending) stages.push({ name, status: "skipped", reason: "earlier stage did not pass" });
-  const failed = stages.some((item) => item.status === "failed" || item.status === "blocked") || state.evidence.composeDownFailed === true || Boolean(state.evidence.cleanupError);
+  const outcomeInput = {
+    stages,
+    fatal: state.evidence.fatal ?? null,
+    restoreError: state.evidence.restoreError ?? null,
+    composeDownFailed: state.evidence.composeDownFailed === true,
+    cleanupError: state.evidence.cleanupError ?? null,
+  };
+  const judgment = acceptanceFailed(outcomeInput);
   const results = {
-    ok: !failed,
+    ok: judgment.ok,
     meta: state.evidence.meta ?? null,
     identity: state.evidence.identity ?? null,
     chrome: state.evidence.chrome ?? null,
@@ -1406,12 +1571,14 @@ async function cleanup() {
     notRun,
     composeDown: state.evidence.composeDown ?? null,
     cleanupError: state.evidence.cleanupError ?? null,
+    restoreError: state.evidence.restoreError ?? null,
+    outcome: judgment,
     migration: "Existing repository migrations only, applied after current_database, current_user, loopback URL, and public table count 0 were verified on this run's new database. No new migration and no DROP SCHEMA.",
     fatal: state.evidence.fatal ?? null,
   };
   mkdirSync(outputDir, { recursive: true });
   writeFileSync(join(outputDir, "results.json"), JSON.stringify(results, null, 2));
-  return failed;
+  return acceptanceExitCode(outcomeInput) === 1;
 }
 
 process.once("SIGTERM", () => {
