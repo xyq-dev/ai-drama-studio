@@ -25,13 +25,21 @@ Web 模拟测试日志里的 `ECONNREFUSED 127.0.0.1:3000` 来自既有 happy-do
 
 `scripts/m3-av-e2e/run.mjs` 使用独立 Compose project，私有 env 放在 `RUNNER_TEMP`。迁移前核对 loopback URL、`current_database`、`current_user` 和 public 表数 0，然后只应用仓库既有 migration，并执行 `workspace:provision`、`mock-media:provision`、两次 `mock-av:provision`。页面点击、同源 202、只读 SQL、Chrome for Testing 播放、幂等、门禁和两例恢复都在该脚本里。失败保持非零退出。证据写入 `m3-av-e2e-output/`，artifact 保留 7 天。清理只 `down -v` 本次 project。
 
+## Actions 第一次运行
+
+验收代码 `7057d43e5d1b4d040c6e5873d82dc20b4f5d64d3`。
+
+- Run：https://github.com/xyq-dev/ai-drama-studio/actions/runs/36805856314
+- Job：https://github.com/xyq-dev/ai-drama-studio/actions/runs/36805856314/job/110189910978
+- 结论：failure。失败步骤是 “Run real page, API, worker, and database acceptance”，exit 1。
+- Checkout、pnpm、Node、frozen install、Chrome for Testing、`pnpm build` 和 harness check 已成功。
+- 日志里的失败是 `docker compose up` 拉取 `quay.io/minio/mc` 时返回 `unauthorized`，postgres、redis 和 minio 的 pull 被中断。这发生在应用进程和 Migration 之前。
+- Artifact `m3-av-e2e-evidence`：https://github.com/xyq-dev/ai-drama-studio/actions/runs/36805856314 ，artifact id `11137134163`，1702 bytes，到期 2026-10-08。
+- 这不是产品缺陷。后续 harness 只把 Docker 配置换成空的匿名配置，避免 runner 凭据被发给 quay.io。`infra/compose.yaml` 未改。
+
 ## 尚未执行
 
-- 真实页面、API、Worker、PostgreSQL、MinIO 和同源播放。本机没有 Docker。
-- Migration。只允许在 CI 新建且已核验为空的隔离库上执行，本机未执行。
+- 真实页面、API、Worker、PostgreSQL 资产与成本和同源播放。第一次运行没有进入这些阶段。本机没有 Docker。
+- Migration。只允许在 CI 新建且已核验为空的隔离库上执行。第一次运行在镜像拉取失败，Migration 未执行。
 - 成本冲突、全部暂时故障与取消竞争、隐藏标签页，以及 Windows 和其余 Compose 故障组合。
-- GitHub Actions run、job 和 artifacts。本节在 push 之后按实际查询补记。文件落地不是 CI 通过。
-
-## Git
-
-最终 SHA、commit URL、workflow run 和 artifacts 链接在 push 与 Actions 查询后写入下一节。
+- 匿名拉取之后的第二次运行结果，在该 run 结束后补记。第一次失败不能写成 CI 通过。

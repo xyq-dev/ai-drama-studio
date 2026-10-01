@@ -510,6 +510,10 @@ async function main() {
   };
 
   await stage("docker", async () => {
+    const dockerConfigDir = join(tempRoot, `m3-av-docker-${runToken}`);
+    mkdirSync(dockerConfigDir, { recursive: true });
+    writeFileSync(join(dockerConfigDir, "config.json"), "{}\n");
+    process.env.DOCKER_CONFIG = dockerConfigDir;
     try {
       await run("docker", ["info"], { timeoutMs: 30_000 });
     } catch (error) {
@@ -518,7 +522,7 @@ async function main() {
       throw blocked;
     }
     if (!/^[a-z0-9][a-z0-9_-]{0,62}$/.test(project)) throw new Error(`refusing compose project ${project}`);
-    return { project };
+    return { project, dockerConfig: "empty anonymous config" };
   });
 
   await stage("compose", async () => {
