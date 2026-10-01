@@ -291,6 +291,14 @@ async function generateOnPage(ctx, buttonName, notice, urlPart) {
 export async function createSideShot(ctx) {
   const episode = ctx.expectStatus(await ctx.callApi(ctx.apiOrigin, "GET", `/projects/${ctx.state.world.projectId}/episodes`), 200)
     .body.items.find((item) => item.episodeNo === 1);
+  const nextOrdinal = Number((await ctx.sql(
+    `SELECT COALESCE(MAX(revision.ordinal), 0) + 1 AS ordinal
+       FROM scene
+       JOIN scene_revision AS revision ON revision.id = scene.current_revision_id
+      WHERE scene.workspace_id = $1 AND scene.episode_id = $2`,
+    [ctx.workspaceId, episode.id],
+  ))[0].ordinal);
+  if (!Number.isInteger(nextOrdinal) || nextOrdinal < 2) throw new Error(`side scene ordinal ${nextOrdinal}`);
   const scene = ctx.expectStatus(await ctx.callApi(
     ctx.apiOrigin,
     "POST",
@@ -299,8 +307,8 @@ export async function createSideShot(ctx) {
       ifMatch: episode.rowVersion,
       body: {
         sourceScriptRevisionId: ctx.state.world.scriptRevisionId,
-        ordinal: 2,
-        heading: "INT. OTHER",
+        ordinal: nextOrdinal,
+        heading: `INT. OTHER ${nextOrdinal}`,
         summary: "A separate room for compose gate checks",
       },
     },
@@ -338,20 +346,22 @@ export async function createSideShot(ctx) {
 export async function replaceSideScene(ctx, side) {
   const episode = ctx.expectStatus(await ctx.callApi(ctx.apiOrigin, "GET", `/projects/${ctx.state.world.projectId}/episodes`), 200)
     .body.items.find((item) => item.episodeNo === 1);
-  const aggregate = ctx.expectStatus(await ctx.callApi(
+  const history = ctx.expectStatus(await ctx.callApi(
     ctx.apiOrigin,
     "GET",
     `/projects/${ctx.state.world.projectId}/episodes/${episode.id}/scenes/${side.sceneId}/revisions`,
-  ), 200).body.aggregate;
+  ), 200).body;
+  const current = history.items.find((item) => item.id === history.aggregate.currentRevisionId);
+  if (!current) throw new Error("side scene has no current revision");
   const created = ctx.expectStatus(await ctx.callApi(
     ctx.apiOrigin,
     "POST",
     `/projects/${ctx.state.world.projectId}/episodes/${episode.id}/scenes/${side.sceneId}/revisions`,
     {
-      ifMatch: aggregate.rowVersion,
+      ifMatch: history.aggregate.rowVersion,
       body: {
         sourceScriptRevisionId: ctx.state.world.scriptRevisionId,
-        ordinal: 2,
+        ordinal: current.ordinal,
         heading: "INT. OTHER LATER",
         summary: "Replaced source for the side shot",
       },
