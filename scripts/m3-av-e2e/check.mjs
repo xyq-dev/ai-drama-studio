@@ -4,7 +4,10 @@ import { resolve } from "node:path";
 const root = resolve(import.meta.dirname, "../..");
 const workflow = readFileSync(resolve(root, ".github/workflows/m3-av-e2e.yml"), "utf8").replace(/\r\n/g, "\n");
 const smWorkflow = readFileSync(resolve(root, ".github/workflows/m3-sm-e2e.yml"), "utf8").replace(/\r\n/g, "\n");
-const harness = readFileSync(resolve(root, "scripts/m3-av-e2e/run.mjs"), "utf8").replace(/\r\n/g, "\n");
+const harness = [
+  readFileSync(resolve(root, "scripts/m3-av-e2e/run.mjs"), "utf8"),
+  readFileSync(resolve(root, "scripts/m3-av-e2e/lifecycle.mjs"), "utf8"),
+].join("\n").replace(/\r\n/g, "\n");
 const outcome = readFileSync(resolve(root, "scripts/m3-av-e2e/outcome.mjs"), "utf8").replace(/\r\n/g, "\n");
 
 const required = [
@@ -124,6 +127,38 @@ for (const snippet of forbidden) {
   if (imageWorkflow.includes(snippet)) failures.push(`image workflow contains ${JSON.stringify(snippet)}`);
 }
 if (imageWorkflow.includes("docs/**")) failures.push("image workflow paths include docs");
+
+for (const stage of ["media-cancel", "media-terminal-race", "media-observation-replay", "media-shot-isolation"]) {
+  if (!outcome.includes(`"${stage}"`)) failures.push(`outcome missing ${stage}`);
+  if (!harness.includes(`"${stage}"`)) failures.push(`harness missing ${stage}`);
+}
+for (const snippet of ["pg_blocking_pids", "recoverMockImageAttempt", "recoverMockAvAttempt", "recoverMockSmAttempt"]) {
+  if (!harness.includes(snippet)) failures.push(`harness missing ${snippet}`);
+}
+const lifecycleWorkflow = readFileSync(resolve(root, ".github/workflows/m3-lifecycle-e2e.yml"), "utf8").replace(/\r\n/g, "\n");
+const lifecycleRequired = [
+  "branches:\n      - feat/m3-lifecycle-acceptance",
+  "workflow_dispatch:",
+  "contents: read",
+  "ubuntu-24.04",
+  "timeout-minutes: 50",
+  "node-version: 24.21.0",
+  "version: 10.17.0",
+  "pnpm install --frozen-lockfile",
+  "playwright install --with-deps chrome",
+  "pnpm m3-av-e2e:outcome",
+  "node scripts/m3-av-e2e/run.mjs",
+  "name: m3-lifecycle-e2e-evidence",
+  "retention-days: 7",
+  "if: always()",
+];
+for (const snippet of lifecycleRequired) {
+  if (!lifecycleWorkflow.includes(snippet)) failures.push(`lifecycle workflow missing ${JSON.stringify(snippet)}`);
+}
+for (const snippet of forbidden) {
+  if (lifecycleWorkflow.includes(snippet)) failures.push(`lifecycle workflow contains ${JSON.stringify(snippet)}`);
+}
+if (lifecycleWorkflow.includes("docs/**")) failures.push("lifecycle workflow paths include docs");
 
 if (failures.length > 0) {
   process.stderr.write(`${failures.join("\n")}\n`);

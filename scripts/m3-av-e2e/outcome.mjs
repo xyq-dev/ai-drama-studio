@@ -20,6 +20,10 @@ export const requiredStages = [
   "recovery-flag",
   "image-recovery",
   "image-cost-guard",
+  "media-cancel",
+  "media-terminal-race",
+  "media-observation-replay",
+  "media-shot-isolation",
 ];
 
 export function acceptanceFailed(input) {

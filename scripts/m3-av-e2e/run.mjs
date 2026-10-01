@@ -15,6 +15,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { rename, rm, writeFile } from "node:fs/promises";
+import { mediaCancel, mediaObservationReplay, mediaShotIsolation, mediaTerminalRace } from "./lifecycle.mjs";
 import { acceptanceExitCode, acceptanceFailed, assertLinkage, requiredStages } from "./outcome.mjs";
 
 const repo = resolve(import.meta.dirname, "../..");
@@ -78,7 +79,7 @@ const pending = [...requiredStages];
 
 const notRun = [
   "成本冲突",
-  "全部暂时故障与取消竞争",
+  "其余未在本轮触发的暂时故障组合",
   "隐藏标签页",
   "Windows 与其余未在本轮触发的 Compose 故障组合",
   "既有 integration 套件（那些套件会 DROP SCHEMA，不能代替本闭环）",
@@ -1949,6 +1950,44 @@ async function main() {
       await restoreMockDir();
     }
   });
+
+  const lifecycle = lifecycleContext();
+  await stage("media-cancel", () => mediaCancel(lifecycle));
+  await stage("media-terminal-race", () => mediaTerminalRace(lifecycle));
+  await stage("media-observation-replay", () => mediaObservationReplay(lifecycle));
+  await stage("media-shot-isolation", () => mediaShotIsolation(lifecycle));
+}
+
+function lifecycleContext() {
+  return {
+    repo,
+    databaseUrl,
+    workspaceId,
+    apiOrigin,
+    webOrigin,
+    mockDir,
+    state,
+    sql,
+    callApi,
+    expectStatus,
+    pollJob,
+    jobLedger,
+    waitAttachedRequest,
+    breakMockDir,
+    restoreMockDir,
+    startWorker,
+    stopApp,
+    createApprovedShot,
+    approve,
+    shotPayload,
+    sleep,
+    assertLinkage,
+    linkageSnapshot,
+    assertLedger,
+    assertSuccessfulImage,
+    promptText,
+    dialogueText,
+  };
 }
 
 function publicUrl(value) {

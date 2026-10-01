@@ -22,7 +22,7 @@
 
 正常 submit 只接受真实 receipt 上的一条 ACTUAL：`provider=mock-media`、`model=mock-v1`、`component=request`、`usage.requests=1`，幂等键为 `${providerRequestId}:request:actual`，USD 0、一个 request、零单价，且没有 supersedes。缺字段或值不对时拒绝，不自行写成零成本。
 
-恢复传入数据库冻结的 `inputSnapshot`。只接受合法 `m3.mock.image.v1`、`outcome=success`、`shotRevisionId` 一致、且没有 `executionMode` 或其他额外字段的固定图片任务。只有当恢复 receipt 的 `supersedesEstimateKey` 正好是 `${providerRequestId}:request:estimated` 时，才构造一条不含该字段的候选成本。原始 observation、`responseHash`、`normalizedEventKey` 先写入 ProviderEvent。其他引用、错 provider/model/key、额外成本行、非 ACTUAL 或非零金额都拒绝。
+恢复传入数据库冻结的 `inputSnapshot`。只接受合法 `m3.mock.image.v1`、`outcome=success`、`shotRevisionId` 一致、且没有 `executionMode` 或其他额外字段的固定图片任务。只有当恢复 receipt 的 `supersedesEstimateKey` 正好是 `${providerRequestId}:request:estimated` 时，才构造一条不含该字段的候选成本。先记录原始 normalizedEventKey 和 externalStatus；hash 包含在事件键中，完整 observation 未持久化。其他引用、错 provider/model/key、额外成本行、非 ACTUAL 或非零金额都拒绝。
 
 `MediaAssetStore.completeAttemptWithAsset` 在已有的 job/最新 attempt 锁内，仅当 `kind=IMAGE` 且传入 `actualCost` 时重读并核验 MEDIA_IMAGE、workspace/project/job/attempt/source revision、`mock-media/image.generate`、两份 snapshot 一致且为合法 v1、`provider_client_request_key` 与 `providerRequestId`。当前 attempt 或同一 provider request 上的任何 ESTIMATED 行，以及同一 provider scope 里被占用的预期 estimated key，都会 `COST_CONFLICT` 并回滚 Asset、成功状态和成功事件。已有完全一致的 ACTUAL 键可以重放；不一致同样回滚。不删除、不覆盖旧账本。磁盘文件不算 Asset 成功。此前独立写入的 ProviderEvent 可以留下。
 

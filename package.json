@@ -19,8 +19,8 @@
     "infra:up": "docker compose -f infra/compose.yaml --env-file .env.example up -d",
     "infra:down": "docker compose -f infra/compose.yaml --env-file .env.example down",
     "infra:logs": "docker compose -f infra/compose.yaml --env-file .env.example logs",
-    "m3-av-e2e:check": "node --check scripts/m3-av-e2e/check.mjs && node --check scripts/m3-av-e2e/run.mjs && node --check scripts/m3-av-e2e/outcome.mjs && node --check scripts/m3-av-e2e/outcome.test.mjs && node scripts/m3-av-e2e/check.mjs",
-    "m3-av-e2e:outcome": "node --test scripts/m3-av-e2e/outcome.test.mjs"
+    "m3-av-e2e:check": "node --check scripts/m3-av-e2e/check.mjs && node --check scripts/m3-av-e2e/run.mjs && node --check scripts/m3-av-e2e/outcome.mjs && node --check scripts/m3-av-e2e/outcome.test.mjs && node --check scripts/m3-av-e2e/lifecycle.mjs && node --check scripts/m3-av-e2e/lifecycle.test.mjs && node scripts/m3-av-e2e/check.mjs",
+    "m3-av-e2e:outcome": "node --test scripts/m3-av-e2e/outcome.test.mjs scripts/m3-av-e2e/lifecycle.test.mjs"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
