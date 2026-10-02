@@ -9,7 +9,7 @@ import {
 } from "./lifecycle.mjs";
 
 test("lifecycle stages are required and ordered after the image guard", () => {
-  assert.deepEqual(requiredStages.slice(-12), [
+  assert.deepEqual(requiredStages.slice(-15), [
     "media-cancel",
     "media-terminal-race",
     "media-observation-replay",
@@ -22,6 +22,9 @@ test("lifecycle stages are required and ordered after the image guard", () => {
     "compose-render-lifecycle",
     "compose-review",
     "compose-provenance-stale",
+    "episode-compose-preflight",
+    "episode-compose-gates",
+    "episode-compose-readonly",
   ]);
   const stages = requiredStages.map((name) => ({ name, status: "passed" }));
   assert.equal(acceptanceFailed({ stages, fatal: null, restoreError: null, composeDownFailed: false, cleanupError: null }).ok, true);
