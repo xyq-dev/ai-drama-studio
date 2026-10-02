@@ -86,6 +86,44 @@ describe("compose job panel", () => {
     expect(document.querySelector("[data-compose-job]")?.getAttribute("data-compose-job")).toBe(JOB_B);
   });
 
+  it("keeps the same request when a gateway error or an incomplete acceptance leaves the job unknown", async () => {
+    const posts: Array<{ key: string; body: string }> = [];
+    let composePosts = 0;
+    const fetchImpl = (input: string, init?: RequestInit) => {
+      if (input.includes("/assets")) return Promise.resolve(json({ items: [] }));
+      if (input.includes("/compose")) {
+        composePosts += 1;
+        const headers = init?.headers as Record<string, string>;
+        posts.push({ key: String(headers?.["Idempotency-Key"] ?? ""), body: String(init?.body ?? "") });
+        if (composePosts === 1) return Promise.reject(new TypeError("network down"));
+        if (composePosts === 2) return Promise.resolve(json({ error: { code: "BAD_GATEWAY", message: "gateway" } }, 503));
+        if (composePosts === 3) return Promise.resolve(json({ state: "QUEUED" }, 202));
+        return Promise.resolve(json({ jobId: composePosts === 4 ? JOB_A : JOB_B, state: "QUEUED" }, 202));
+      }
+      const jobId = input.includes(JOB_B) ? JOB_B : JOB_A;
+      return Promise.resolve(json({ id: jobId, state: "QUEUED", errorCode: null, errorMessage: null }));
+    };
+    render(panel(fetchImpl));
+    fireEvent.click(screen.getByRole("button", { name: "开始合成" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("合成提交失败");
+    fireEvent.click(screen.getByRole("button", { name: "开始合成" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("gateway");
+    fireEvent.click(screen.getByRole("button", { name: "开始合成" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("合成响应没有任务编号");
+    fireEvent.click(screen.getByRole("button", { name: "开始合成" }));
+    expect(await screen.findByText("合成任务已受理")).toBeTruthy();
+    expect(posts).toHaveLength(4);
+    for (const post of posts) {
+      expect(post.key).toBe(posts[0]?.key);
+      expect(post.body).toBe(posts[0]?.body);
+    }
+    fireEvent.click(screen.getByRole("button", { name: "开始合成" }));
+    await waitFor(() => expect(posts).toHaveLength(5));
+    expect(posts[4]?.key).not.toBe(posts[0]?.key);
+    expect(posts[4]?.body).toBe(posts[0]?.body);
+    expect(document.querySelector("[data-compose-job]")?.getAttribute("data-compose-job")).toBe(JOB_B);
+  });
+
   it("does not let a late draft list replace an approval", async () => {
     let assetCalls = 0;
     let releaseLate: (response: Response) => void = () => undefined;
@@ -181,5 +219,30 @@ describe("compose job panel", () => {
     expect(screen.queryByText("合成任务 CANCELED")).toBeNull();
     expect(screen.queryByText(JOB_A)).toBeNull();
     expect(document.querySelector("[data-compose-job]")).toBeNull();
+  });
+
+  it("shows the job and composite when every read takes longer than the poll interval", async () => {
+    vi.useFakeTimers();
+    const assetReads: Array<(response: Response) => void> = [];
+    const jobReads: Array<(response: Response) => void> = [];
+    const fetchImpl = (input: string) => {
+      if (input.includes("/compose")) return Promise.resolve(json({ jobId: JOB_A, state: "QUEUED" }, 202));
+      if (input.includes("/assets")) return new Promise<Response>((resolve) => { assetReads.push(resolve); });
+      return new Promise<Response>((resolve) => { jobReads.push(resolve); });
+    };
+    render(panel(fetchImpl));
+    fireEvent.click(screen.getByRole("button", { name: "开始合成" }));
+    await vi.waitFor(() => expect(jobReads.length).toBe(1));
+    await vi.waitFor(() => expect(assetReads.length).toBeGreaterThanOrEqual(2));
+    const assetsBeforeWait = assetReads.length;
+    const jobsBeforeWait = jobReads.length;
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(assetReads.length).toBe(assetsBeforeWait);
+    expect(jobReads.length).toBe(jobsBeforeWait);
+    jobReads[0]?.(json({ id: JOB_A, state: "SUCCEEDED", errorCode: null, errorMessage: null }));
+    assetReads[assetReads.length - 1]?.(json({ items: [composite("DRAFT")] }));
+    await vi.waitFor(() => expect(document.body.textContent).toContain("合成任务 SUCCEEDED"));
+    expect(document.body.textContent).toContain("审核 DRAFT · 当前有效");
+    expect(document.querySelector(`[data-composite-id="${ASSET}"]`)).toBeTruthy();
   });
 });

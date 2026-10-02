@@ -1,7 +1,10 @@
 import hashlib
 import json
+import os
 import shutil
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -120,6 +123,62 @@ def test_ffmpeg_execution_records_thread_limits(tmp_path: Path) -> None:
     assert "filter_threads" in log and "argument 2" in log
     assert "filter_complex_threads" in log
     assert "threads=2" in log
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="PR_SET_PDEATHSIG is verified on Linux CI")
+@needs_ffmpeg
+def test_probe_and_decode_children_exit_when_python_is_killed(tmp_path: Path) -> None:
+    fifo = tmp_path / "probe-source"
+    os.mkfifo(fifo)
+    held = os.open(fifo, os.O_RDWR)
+    script = """
+import sys, time, subprocess
+from media_worker.compose_cli import _die_with_parent
+probe = subprocess.Popen(
+    ["ffprobe", "-v", "error", "-show_format", "-i", sys.argv[1]],
+    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    preexec_fn=_die_with_parent,
+)
+decode = subprocess.Popen(
+    ["ffmpeg", "-hide_banner", "-nostdin", "-f", "lavfi", "-i", "color=c=black:s=16x16:r=1:d=120", "-f", "null", "-"],
+    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    preexec_fn=_die_with_parent,
+)
+print(f"{probe.pid} {decode.pid}", flush=True)
+time.sleep(60)
+"""
+    child = subprocess.Popen(
+        [sys.executable, "-c", script, str(fifo)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    try:
+        assert child.stdout is not None
+        line = child.stdout.readline().strip()
+        probe_pid, decode_pid = (int(part) for part in line.split())
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not (_alive(probe_pid) and _alive(decode_pid)):
+            time.sleep(0.05)
+        assert _alive(probe_pid) and _alive(decode_pid)
+        child.kill()
+        child.wait(timeout=5)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and (_alive(probe_pid) or _alive(decode_pid)):
+            time.sleep(0.05)
+        assert not _alive(probe_pid)
+        assert not _alive(decode_pid)
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait(timeout=5)
+        os.close(held)
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
 
 
 def _ratio(value: str) -> float:

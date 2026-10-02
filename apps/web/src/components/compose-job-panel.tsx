@@ -78,32 +78,43 @@ export function ComposeJobPanel(props: {
     const revisionId = props.revisionId;
     let timer = 0;
     let stopped = false;
-    const loadAssets = () => {
-      const read = ++assetGen.current;
-      void props.client.get<{ items: ComposeAsset[] }>(`/shot-revisions/${revisionId}/assets`).then((page) => {
-        if (stopped || token !== epoch.current || read !== assetGen.current) return;
-        setAssets(page.items.filter((item) => item.kind === "COMPOSITE" && item.sourceShotRevisionId === revisionId));
-      }, () => undefined);
-    };
-    const tick = () => {
-      if (document.hidden) return;
-      loadAssets();
+    let running = false;
+    const round = async () => {
+      if (stopped || running || document.hidden) return;
+      running = true;
+      const assetRead = assetGen.current;
       const current = jobRef.current;
-      if (!current || terminalJob(current.state)) return;
-      const read = ++jobGen.current;
-      const jobId = current.id;
-      void props.client.get<JobView>(`/generation-jobs/${jobId}`).then((next) => {
-        if (stopped || token !== epoch.current || read !== jobGen.current || jobRef.current?.id !== jobId) return;
-        setJob(next);
-      }, () => undefined);
+      const jobId = current && !terminalJob(current.state) ? current.id : null;
+      const jobRead = jobGen.current;
+      const cancelToken = cancelGen.current;
+      try {
+        const assetsPromise = props.client.get<{ items: ComposeAsset[] }>(`/shot-revisions/${revisionId}/assets`).then((page) => {
+          if (stopped || token !== epoch.current || assetRead !== assetGen.current) return;
+          setAssets(page.items.filter((item) => item.kind === "COMPOSITE" && item.sourceShotRevisionId === revisionId));
+        }, () => undefined);
+        const jobPromise = jobId === null
+          ? Promise.resolve()
+          : props.client.get<JobView>(`/generation-jobs/${jobId}`).then((next) => {
+            if (stopped || token !== epoch.current || jobRead !== jobGen.current || cancelToken !== cancelGen.current || jobRef.current?.id !== jobId) return;
+            setJob(next);
+          }, () => undefined);
+        await Promise.all([assetsPromise, jobPromise]);
+      } finally {
+        running = false;
+      }
+      if (stopped || document.hidden) return;
+      timer = window.setTimeout(() => { void round(); }, 1000);
     };
-    tick();
-    timer = window.setInterval(tick, 1000);
-    const onVisible = () => { if (!document.hidden) tick(); };
+    void round();
+    const onVisible = () => {
+      if (document.hidden || stopped || running) return;
+      window.clearTimeout(timer);
+      void round();
+    };
     document.addEventListener("visibilitychange", onVisible);
     return () => {
       stopped = true;
-      window.clearInterval(timer);
+      window.clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [props.client, props.revisionId, job?.id]);
@@ -137,7 +148,6 @@ export function ComposeJobPanel(props: {
       setNotice("合成任务已受理");
     } catch (caught) {
       if (request !== submitEpoch.current) return;
-      if (caught instanceof ApiError) pendingSubmit.current = null;
       setError(caught instanceof ApiError ? caught.detail : "合成提交失败");
     } finally {
       if (request === submitEpoch.current) setBusy(false);

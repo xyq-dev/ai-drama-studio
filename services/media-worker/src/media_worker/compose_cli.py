@@ -79,14 +79,7 @@ def render(input_dir: Path, output: Path) -> dict[str, object]:
         srt.write_text(_srt(cues), encoding="utf-8")
     command = _command(video, speech, music, srt if cues else None, temporary, duration)
     try:
-        completed = subprocess.run(
-            command,
-            shell=False,
-            check=False,
-            capture_output=True,
-            timeout=PROFILE["render_timeout_sec"],
-            preexec_fn=_die_with_parent if sys.platform == "linux" else None,
-        )
+        completed = _run_tool(command, PROFILE["render_timeout_sec"])
     except subprocess.TimeoutExpired as error:
         temporary.unlink(missing_ok=True)
         raise ComposeFailure("COMPOSE_RENDER_TIMEOUT", True) from error
@@ -193,9 +186,9 @@ def _publish(temporary: Path, output: Path, duration: float, started: float) -> 
     if abs(float(probed["containerDuration"]) - duration) > 0.1:
         temporary.unlink(missing_ok=True)
         raise ComposeFailure("COMPOSE_OUTPUT_INVALID", False, f"container {probed['containerDuration']} expected {duration}")
-    decode = subprocess.run(
+    decode = _run_tool(
         ["ffmpeg", "-hide_banner", "-nostdin", "-v", "error", "-xerror", "-i", str(temporary), "-f", "null", "-"],
-        shell=False, check=False, capture_output=True, timeout=PROFILE["render_timeout_sec"],
+        PROFILE["render_timeout_sec"],
     )
     if decode.returncode != 0:
         temporary.unlink(missing_ok=True)
@@ -205,9 +198,9 @@ def _publish(temporary: Path, output: Path, duration: float, started: float) -> 
 
 def _probe(path: Path) -> dict[str, object]:
     try:
-        completed = subprocess.run(
+        completed = _run_tool(
             ["ffprobe", "-v", "error", "-print_format", "json", "-show_format", "-show_streams", str(path)],
-            shell=False, check=False, capture_output=True, timeout=PROFILE["probe_timeout_sec"],
+            PROFILE["probe_timeout_sec"],
         )
     except (subprocess.TimeoutExpired, OSError) as error:
         raise ComposeFailure("COMPOSE_PROBE_FAILED", True) from error
@@ -281,6 +274,17 @@ def _ratio(value: str) -> float:
 def _filter_path(path: Path) -> str:
     text = path.as_posix().replace("\\", "\\\\").replace(":", "\\:").replace("'", r"\'")
     return text
+
+
+def _run_tool(args: list[str], timeout: float) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(
+        args,
+        shell=False,
+        check=False,
+        capture_output=True,
+        timeout=timeout,
+        preexec_fn=_die_with_parent if sys.platform == "linux" else None,
+    )
 
 
 def _die_with_parent() -> None:

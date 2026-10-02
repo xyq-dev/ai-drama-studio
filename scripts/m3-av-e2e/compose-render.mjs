@@ -7,7 +7,7 @@ import { createSideShot, replaceSideScene, waitForCurrentSources } from "./compo
 
 const execFileAsync = promisify(execFile);
 const HOLD_BOUNDARY = "Lease-expiry late-result test. M4_COMPOSE_HOLD_BEFORE_COMMIT_MS stalls only attempt 1 after publish and before commitLocalCompose, without renewing the lease. It does not kill the worker. A hold longer than the 30s lease lets recovery queue a new attempt; the late commit is discarded and must not fail the new attempt.";
-const KILL_BOUNDARY = "SIGKILL terminates the running worker. The renderer sets PR_SET_PDEATHSIG so the Python and FFmpeg process tree dies with it. Recovery then runs on a new worker.";
+const KILL_BOUNDARY = "SIGKILL terminates the running worker. Encode, probe, and decode children set PR_SET_PDEATHSIG. Acceptance records the compose_cli PID and its ffmpeg or ffprobe child PIDs, then requires each recorded PID to exit.";
 const LOCK_BOUNDARY = "A second database session holds FOR UPDATE on the compose job for 8s. This worker's compose lease is 4s and its query timeout is 10s. After the lock wait, the commit reads clock_timestamp() and cannot store the expired attempt.";
 const COMMIT_BOUNDARY = "M4_COMPOSE_FAIL_INSIDE_COMMIT throws inside the success transaction after the asset, dependency, and asset.created statements. Those rows and job.succeeded roll back together.";
 
@@ -387,19 +387,21 @@ async function killRunningWorker(ctx) {
   const shot = await createSideShot(ctx);
   const submitted = await submitVideoCompose(ctx, shot);
   await waitState(ctx, submitted.jobId, "RUNNING");
-  const running = await processArgs();
-  if (!running.includes("media_worker.compose_cli")) throw new Error("compose renderer was not running before the worker was killed");
+  const watched = await waitForMediaTree();
   const app = ctx.state.apps.find((item) => item.name === "worker");
   if (!app?.pid) throw new Error("worker pid is missing");
   try { process.kill(process.platform === "linux" ? -app.pid : app.pid, "SIGKILL"); } catch { /* the stop below confirms it is gone */ }
   await ctx.stopApp("worker");
-  const started = Date.now();
-  let gone = false;
-  while (Date.now() - started < 15_000) {
-    if (!(await processArgs()).includes("media_worker.compose_cli")) { gone = true; break; }
-    await ctx.sleep(200);
+  for (const pid of [watched.cli, ...watched.media]) {
+    const started = Date.now();
+    let alive = true;
+    while (Date.now() - started < 15_000) {
+      alive = await pidAlive(pid);
+      if (!alive) break;
+      await ctx.sleep(200);
+    }
+    if (alive) throw new Error(`media pid ${pid} survived the killed worker`);
   }
-  if (!gone) throw new Error("renderer process survived the killed worker");
   try {
     await ctx.startWorker();
     const done = await ctx.pollJob(submitted.jobId, 180_000);
@@ -418,7 +420,15 @@ async function killRunningWorker(ctx) {
     if (done.state !== "SUCCEEDED" || attempts.length < 2 || assets.length !== 1 || assets[0].attempt_id !== attempts.at(-1).id || succeeded[0].count !== 1) {
       throw new Error(`killed worker recovery ${done.state} ${JSON.stringify({ attempts, assets, succeeded: succeeded[0].count })}`);
     }
-    return { boundary: KILL_BOUNDARY, jobId: submitted.jobId, attempts: attempts.length, assetAttempt: assets[0].attempt_id, successEvents: succeeded[0].count };
+    return {
+      boundary: KILL_BOUNDARY,
+      jobId: submitted.jobId,
+      attempts: attempts.length,
+      assetAttempt: assets[0].attempt_id,
+      successEvents: succeeded[0].count,
+      cliPid: watched.cli,
+      mediaPids: watched.media,
+    };
   } finally {
     if (!ctx.state.apps.some((item) => item.name === "worker")) await ctx.startWorker();
   }
@@ -507,9 +517,54 @@ async function holdJobLock(ctx, jobId, ms) {
   }
 }
 
-async function processArgs() {
-  const { stdout } = await execFileAsync("ps", ["-eo", "args"]);
-  return stdout;
+async function waitForMediaTree() {
+  const started = Date.now();
+  while (Date.now() - started < 60_000) {
+    const rows = await processRows();
+    const cli = rows.find((row) => row.args.includes("media_worker.compose_cli"));
+    if (cli) {
+      const descendants = descendantPids(rows, cli.pid);
+      const media = rows.filter((row) => descendants.includes(row.pid) && /\b(ffmpeg|ffprobe)\b/.test(row.args)).map((row) => row.pid);
+      if (media.length > 0) return { cli: cli.pid, media };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  throw new Error("compose renderer process tree was not visible before the worker was killed");
+}
+
+function descendantPids(rows, root) {
+  const children = new Map();
+  for (const row of rows) {
+    const list = children.get(row.ppid) ?? [];
+    list.push(row.pid);
+    children.set(row.ppid, list);
+  }
+  const found = [];
+  const walk = (pid) => {
+    for (const child of children.get(pid) ?? []) {
+      found.push(child);
+      walk(child);
+    }
+  };
+  walk(root);
+  return found;
+}
+
+async function processRows() {
+  const { stdout } = await execFileAsync("ps", ["-eo", "pid=,ppid=,args="]);
+  return stdout.split("\n").flatMap((line) => {
+    const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/);
+    return match ? [{ pid: Number(match[1]), ppid: Number(match[2]), args: match[3] }] : [];
+  });
+}
+
+async function pidAlive(pid) {
+  try {
+    const { stdout } = await execFileAsync("ps", ["-p", String(pid), "-o", "pid="]);
+    return stdout.trim().length > 0;
+  } catch {
+    return false;
+  }
 }
 
 async function withHold(ctx, holdMs, run) {
