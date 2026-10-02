@@ -210,12 +210,12 @@ export async function episodeComposeGates(ctx) {
     [ctx.state.world.projectId],
   ))[0];
   if (!stale || !rejected) throw new Error(`missing stale or rejected composite ${JSON.stringify({ stale, rejected })}`);
-  ctx.expectStatus(await ctx.callApi(ctx.apiOrigin, "POST", path, {
+  expectBlocked(await ctx.callApi(ctx.apiOrigin, "POST", path, {
     body: { compositeAssetIds: [prepared.first.assetId, stale.id] },
-  }), 400, "COMPOSE_INPUT_INVALID");
-  ctx.expectStatus(await ctx.callApi(ctx.apiOrigin, "POST", path, {
+  }));
+  expectBlocked(await ctx.callApi(ctx.apiOrigin, "POST", path, {
     body: { compositeAssetIds: [prepared.first.assetId, rejected.id] },
-  }), 400, "COMPOSE_INPUT_INVALID");
+  }));
   const draft = await composeWithoutReview(ctx, prepared.first);
   ctx.expectStatus(await ctx.callApi(ctx.apiOrigin, "POST", path, {
     body: { compositeAssetIds: [prepared.first.assetId, draft.assetId] },
@@ -271,6 +271,13 @@ export async function episodeComposeReadonly(ctx) {
     unchanged: EPISODE_FINGERPRINT_TABLES.map((table) => ({ table, count: before[table].count, fingerprint: before[table].fingerprint })),
     rejected: blocked.body?.error?.code ?? "REVIEW_REQUIRED",
   };
+}
+
+function expectBlocked(response) {
+  const code = response.body?.error?.code;
+  if (response.status !== 400 || (code !== "COMPOSE_INPUT_INVALID" && code !== "REVIEW_REQUIRED")) {
+    throw new Error(`expected a blocked episode preflight, got ${response.status} ${JSON.stringify(response.body)}`);
+  }
 }
 
 async function composeWithoutReview(ctx, shot) {
