@@ -331,7 +331,7 @@ export async function episodeRenderStale(ctx) {
   const assetId = ctx.state.episodeRender.approvedId;
   const before = await assetRow(ctx, assetId);
   if (before.review_status !== "APPROVED" || before.status !== "ACTIVE") throw new Error("episode composite was not approved");
-  await ageAsset(ctx, assetId, "2019-06-01T00:00:00.000001Z");
+  await insertFrontEpisodeComposites(ctx, assetId, 10);
   const page = ctx.state.page;
   await page.goto(`${ctx.webOrigin}/projects/${ctx.state.world.projectId}?focus=episode-compose&episode=1`, { waitUntil: "domcontentloaded", timeout: 30_000 });
   const card = page.locator(`[data-composite-id="${assetId}"]`);
@@ -455,12 +455,6 @@ async function episodeWithoutMockDir(ctx) {
 }
 
 async function verifyEpisodeCompositePages(ctx, reviewableId) {
-  const historyAsset = ctx.state.episodeRender.reverse;
-  const historyBefore = await assetRow(ctx, historyAsset.id);
-  if (historyBefore.review_status !== "DRAFT" || historyBefore.status !== "ACTIVE") {
-    throw new Error(`history review target ${historyBefore.review_status} ${historyBefore.status}`);
-  }
-  await ageAsset(ctx, historyAsset.id, "2019-01-01T00:00:00.000001Z");
   const seeded = await seedEpisodeCompositeTimestamps(ctx);
   const episodeId = ctx.state.episodeRender.episodeId;
   const expected = await exactEpisodeCompositeOrder(ctx, episodeId);
@@ -485,24 +479,36 @@ async function verifyEpisodeCompositePages(ctx, reviewableId) {
   const oldest = seeded.sameInstant[0];
   if ((await page.locator(`[data-composite-id="${oldest}"]`).count()) !== 0) throw new Error("history composite was already on the first page");
   await page.getByRole("button", { name: "加载更早的成片" }).click();
-  await page.locator(`[data-composite-id="${oldest}"]`).waitFor({ timeout: 20_000 });
+  const historyCard = page.locator(`[data-composite-id="${oldest}"]`);
+  await historyCard.waitFor({ timeout: 20_000 });
   await card.getByRole("button", { name: "批准成片" }).waitFor({ timeout: 10_000 });
-  const historyCard = page.locator(`[data-composite-id="${historyAsset.id}"]`);
-  if ((await historyCard.count()) !== 1) throw new Error("aged history composite was not on the loaded page");
+  const historyBefore = await assetRow(ctx, oldest);
+  if (historyBefore.review_status !== "DRAFT" || historyBefore.status !== "ACTIVE") {
+    throw new Error(`history review target ${historyBefore.review_status} ${historyBefore.status}`);
+  }
   const beforeVersion = Number(await historyCard.getAttribute("data-row-version"));
   await historyCard.getByRole("button", { name: "批准成片" }).click();
-  await page.waitForFunction(({ assetId, checksum, version }) => {
-    const node = document.querySelector(`[data-composite-id="${assetId}"]`);
-    if (!node) return false;
-    const buttons = [...node.querySelectorAll("button")].map((button) => button.textContent);
-    return node.getAttribute("data-review-status") === "APPROVED"
-      && node.getAttribute("data-reviewed-content") === checksum
-      && Number(node.getAttribute("data-row-version")) > version
-      && !buttons.includes("批准成片")
-      && !buttons.includes("退回成片");
-  }, { assetId: historyAsset.id, checksum: historyAsset.checksum_sha256, version: beforeVersion }, { timeout: 20_000 });
+  const reviewDeadline = Date.now() + 20_000;
+  let reviewedUi = "";
+  while (Date.now() < reviewDeadline) {
+    const status = await historyCard.getAttribute("data-review-status");
+    const reviewedContent = await historyCard.getAttribute("data-reviewed-content");
+    const version = Number(await historyCard.getAttribute("data-row-version"));
+    const approveCount = await historyCard.getByRole("button", { name: "批准成片" }).count();
+    const rejectCount = await historyCard.getByRole("button", { name: "退回成片" }).count();
+    if (status === "APPROVED" && reviewedContent === historyBefore.checksum_sha256 && version > beforeVersion && approveCount === 0 && rejectCount === 0) {
+      reviewedUi = "ok";
+      break;
+    }
+    if (await page.getByRole("alert").count()) {
+      reviewedUi = await page.getByRole("alert").innerText();
+      break;
+    }
+    await page.waitForTimeout(300);
+  }
+  if (reviewedUi !== "ok") throw new Error(`history review ${reviewedUi || "timed out"}`);
   await card.getByRole("button", { name: "批准成片" }).waitFor({ timeout: 10_000 });
-  const reviewed = await assetRow(ctx, historyAsset.id);
+  const reviewed = await assetRow(ctx, oldest);
   if (reviewed.review_status !== "APPROVED" || Number(reviewed.row_version) <= Number(historyBefore.row_version)) {
     throw new Error(`history review did not persist ${reviewed.review_status} ${reviewed.row_version}`);
   }
@@ -510,7 +516,7 @@ async function verifyEpisodeCompositePages(ctx, reviewableId) {
     count: expected.length,
     microseconds: sameInstant[0].created_at_text,
     oldest,
-    historyReview: { assetId: historyAsset.id, reviewStatus: reviewed.review_status, rowVersion: Number(reviewed.row_version) },
+    historyReview: { assetId: oldest, reviewStatus: reviewed.review_status, rowVersion: Number(reviewed.row_version) },
   };
 }
 
@@ -558,17 +564,54 @@ async function exactEpisodeCompositeOrder(ctx, episodeId) {
   );
 }
 
-async function ageAsset(ctx, assetId, stamp) {
+async function insertFrontEpisodeComposites(ctx, templateId, count) {
   const require = createRequire(join(ctx.repo, "packages/database/package.json"));
   const { Client } = require("pg");
   const client = new Client({ connectionString: ctx.databaseUrl, statement_timeout: 10_000 });
   await client.connect();
   try {
-    const updated = await client.query(
-      `UPDATE asset SET created_at = $2::timestamptz WHERE id = $1 AND workspace_id = $3 RETURNING id::text AS id`,
-      [assetId, stamp, ctx.workspaceId],
-    );
-    if (updated.rowCount !== 1) throw new Error(`asset ${assetId} was not aged`);
+    await client.query("BEGIN");
+    const template = (await client.query("SELECT * FROM asset WHERE id = $1", [templateId])).rows[0];
+    const job = (await client.query("SELECT * FROM generation_job WHERE id = $1", [template.source_generation_job_id])).rows[0];
+    const run = (await client.query(
+      `INSERT INTO workflow_run (workspace_id, project_id, type, requested_by, input_snapshot, status)
+       VALUES ($1, $2, $3, 'cursor-fixture', $4, 'SUCCEEDED') RETURNING id`,
+      [job.workspace_id, job.project_id, job.kind, job.input_snapshot],
+    )).rows[0];
+    const fixtureJob = (await client.query(
+      `INSERT INTO generation_job
+        (workspace_id, project_id, workflow_run_id, kind, state, input_hash, input_snapshot, source_shot_revision_id)
+       VALUES ($1, $2, $3, $4, 'SUCCEEDED', $5, $6, NULL) RETURNING id`,
+      [job.workspace_id, job.project_id, run.id, job.kind, job.input_hash, job.input_snapshot],
+    )).rows[0];
+    const attempt = (await client.query(
+      `INSERT INTO job_attempt
+        (workspace_id, generation_job_id, attempt_no, provider_client_request_key, request_snapshot, finished_at)
+       VALUES ($1, $2, 1, $3, $4, clock_timestamp()) RETURNING id`,
+      [job.workspace_id, fixtureJob.id, `cursor-fixture-front-${fixtureJob.id}`, job.input_snapshot],
+    )).rows[0];
+    const ids = [];
+    for (let index = 0; index < count; index += 1) {
+      const inserted = (await client.query(
+        `INSERT INTO asset
+          (workspace_id, project_id, kind, storage_provider, object_key, mime_type, byte_size, checksum_sha256,
+           width, height, duration_ms, source_kind, source_job_attempt_id, source_generation_job_id, metadata_json, status, review_status, created_at)
+         VALUES
+          ($1, $2, 'COMPOSITE', 'local-compose', $3, 'video/mp4', $4, $5, $6, $7, $8, 'LOCAL_JOB', $9, $10, $11, 'ACTIVE', 'DRAFT', clock_timestamp())
+         RETURNING id::text AS id`,
+        [
+          template.workspace_id, template.project_id, `cursor-fixture/front/${fixtureJob.id}/${index}.mp4`,
+          template.byte_size, template.checksum_sha256, template.width, template.height, template.duration_ms,
+          attempt.id, fixtureJob.id, template.metadata_json,
+        ],
+      )).rows[0];
+      ids.push(inserted.id);
+    }
+    await client.query("COMMIT");
+    return ids;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
   } finally {
     await client.end();
   }
