@@ -190,7 +190,17 @@ export async function episodeComposeGates(ctx) {
   }), 400, "VALIDATION_ERROR");
   ctx.expectStatus(await ctx.callApi(ctx.apiOrigin, "POST", `/projects/${ctx.state.world.projectId}/episodes/${other.id}/compose-preflight`, { body }), 400, "COMPOSE_INPUT_INVALID");
   ctx.expectStatus(await ctx.callApi(ctx.apiOrigin, "POST", `/projects/${randomUUID()}/episodes/${episode.id}/compose-preflight`, { body }), 404, "NOT_FOUND");
-  ctx.expectStatus(await ctx.callApi("http://127.0.0.1:3026", "POST", path, { body }), 404, "NOT_FOUND");
+  ctx.spawnApp("api-episode-other", ["pnpm", "--filter", "@ai-drama/api", "start"], ctx.appEnv({
+    API_PORT: "3027",
+    APP_WORKSPACE_ID: ctx.otherWorkspaceId,
+    APP_WORKSPACE_NAME: "M4 episode other",
+  }));
+  try {
+    await ctx.waitHttp("http://127.0.0.1:3027/api/v1/health/ready", (status, payload) => status === 200 && payload?.dependencies?.postgres?.status === "ok", 60_000);
+    ctx.expectStatus(await ctx.callApi("http://127.0.0.1:3027", "POST", path, { body }), 404, "NOT_FOUND");
+  } finally {
+    await ctx.stopApp("api-episode-other");
+  }
   const stale = (await ctx.sql(
     "SELECT id::text AS id FROM asset WHERE project_id = $1 AND kind = 'COMPOSITE' AND status = 'STALE' LIMIT 1",
     [ctx.state.world.projectId],
