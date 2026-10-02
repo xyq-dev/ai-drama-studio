@@ -1,6 +1,6 @@
-# M4-C2 审查修复
+# M4-C2 页面回归修复
 
-本报告只记录四项定向修复的验收。它不沿用上一轮 Run `36974211083`。Migration = NO。
+本报告记录两处页面回归的验收。它不沿用 Run `36974211083`、`36991878705`、`36996982629` 或 `37000568230`。Migration = NO。
 
 ## 目录与提交
 
@@ -9,79 +9,65 @@
 | 目录 | `D:\Projects\ai-drama-studio` |
 | origin | `https://github.com/xyq-dev/ai-drama-studio.git` |
 | 分支 | `feat/m4-episode-render` |
-| 起点 | `37bab3bda0ca600a69687f3f66f7add6c7c77a19` |
-| 审查源码 | `58edf8d00c00f113d5af8f3a259b0a89ee2e304c` |
-| 验收 SHA | `0ab54d1b29348e6bd236e79a86fe88a8252cfce7` |
+| 起点 | `06ccc12cdc0b8a77fb8d4b7449ef5235d15ae237` |
+| 审查源码 | `0ab54d1b29348e6bd236e79a86fe88a8252cfce7` |
+| 验收 SHA | `4426743f4558517ae0ea20cd0cd84fbae9cfb9b9` |
 | 报告 SHA | 包含本文件的提交；推送后与 `origin/feat/m4-episode-render` 一致 |
 | Migration | NO |
 
-起点核验时工作区干净，HEAD 与 `origin/feat/m4-episode-render` 同为 `37bab3b`。`origin/main` 仍为 `6548ffe07f54a03ac2c5547d7b724cb329af5932`。`origin/feat/m4-episode-compose-preflight` 仍为 `d127a344570224bad8a685121759ad3fc60c406b`。本轮只普通推送当前功能分支。
+起点核验时工作区干净，HEAD 与 `origin/feat/m4-episode-render` 同为 `06ccc12`。`origin/main` 仍为 `6548ffe07f54a03ac2c5547d7b724cb329af5932`。`origin/feat/m4-episode-compose-preflight` 仍为 `d127a344570224bad8a685121759ad3fc60c406b`。本轮只普通推送当前功能分支。
 
-## 四项根因、范围与结果
+## 两项根因与修复
 
-1. 幂等键。`start()` 把 500/502/504 当成确定失败并清掉 unresolved，下一次点击会换键。现在只有明确业务拒绝（校验、输入变化、配置、不存在、审核前提、幂等键被另一次请求占用）才释放原提交。网络异常、500/502/503/504、解析失败和不完整 202 继续使用原请求体和原键。有效 202 回执之后，下一次明确新合成才换键。新的预检结果不会替换尚未确认的提交。模拟回归里，服务端已按键创建 Job，响应仍是上述错误，重放后始终只有一个 Job。
+1. 取消后仍为 `RUNNING` 时停止查询。`cancel()` 回读后无条件递增 `jobGen` 再 `setJob`。任务 ID 和 `RUNNING` 都没变时，轮询 effect 不会重新执行，旧轮询又因世代不匹配退出，页面停在运行中。服务端先写 `cancel_requested_at`，Worker 收尾后才进入 `CANCELED`，这是合法行为。现在只有回读已是终态才推进任务世代和读取世代；非终态回读留在当前轮询里。旧任务的取消回读仍不能覆盖新任务，同任务更早的 `RUNNING` 也不能覆盖终态。隐藏后再显示沿用同一世代，不会因此停查。页面不把“已请求取消”显示成 `CANCELED`。
 
-2. 游标与分页。列表 SQL 按 `created_at` 比较，游标却经过 `new Date(String(row.created_at))`，毫秒和微秒都丢失，`limit=1` 会停在同一行。查询现在用 `to_char(...US...)` 取出数据库时间文本，排序、比较和游标编码使用同一文本，顺序改为 `created_at DESC, id DESC`。页面每次只读一页最新成片，用「加载更早的成片」继续历史页；轮询与历史按资产 ID 去重并保持顺序。隔离 CI 在真实 PostgreSQL 上核对了同时刻不同 ID、非零微秒 `.100001Z`、`limit=1` 和多页结束，16 条无重复、无遗漏。真实浏览器里最新成片可见且可批准，历史页能继续加载。
-
-3. 取消与回读。取消回写只比较集级 epoch，所以取消 A 的延迟响应能把同集已受理的 B 写成 A 的 `CANCELED`。回写现在同时检查任务 ID、操作世代和读取世代。B 被接受后，A 的取消成功、失败和回读都不再写入。同一任务取消到达终态后，更早的 `RUNNING` 查询也不能覆盖它。查询仍串行，终态停止轮询，隐藏暂停，可见后恢复。回归覆盖延迟成功、延迟失败、旧 `RUNNING` 回读，以及 A→B→A。
-
-4. Mock 目录。API 的 `localComposeEnabled` 把 `MOCK_OBJECT_DIR` 算进总开关，集级创建、列表、审核和内容又要求这个开关；读内容时在识别 `COMPOSITE` 之前就拒绝缺少 Mock 目录。现在总开关是非生产环境的 `M4_LOCAL_COMPOSE_ENABLED`。单镜生成仍要求 Mock 目录和对应 Mock 生成开关。集级在两个合成开关开启且 compose 对象目录为绝对路径时即可创建、执行、列表、播放和审核，不要求 `MOCK_OBJECT_DIR` 或 Mock 生成开关。内容按资产类型检查目录：图片、音视频、字幕和音乐走 Mock 目录，已存成片走 compose 目录。默认关闭、production 关闭和未知 schema 拒绝保持。Worker 集级判定同样不要求 Mock 目录。隔离 CI 先准备合法单镜成片，再在未配置 `MOCK_OBJECT_DIR`、关闭三个 Mock 生成开关的 API 与 Worker 上完成集级闭环；同一配置下单镜合成返回 `CONFIGURATION_ERROR`。
+2. 已加载的历史成片不刷新。历史页加载后，刷新只取 `limit=10` 的第一页，`mergeNewest` 永远留下第一页以外的旧记录。`review()` 成功后只调用可选的 `onReviewed`，父组件没有提供该回调。现在审核成功立即写回 `reviewStatus`、`rowVersion` 和 `contentHash`。轮询、重新可见和「重新查询成片」只重读已经加载的页数，按资产 ID 去重并保持最新优先。更低的 `rowVersion` 不能覆盖新审核；相同版本不能把 `STALE` 改回 `ACTIVE`。切集会作废上一集尚未返回的列表。不清空全部历史，不全表扫描，也不自动一直翻页。
 
 修改文件：
 
 - `apps/web/src/components/episode-compose-job-panel.tsx`
 - `apps/web/src/components/episode-compose-job-panel.spec.tsx`
-- `packages/database/src/media-assets.ts`
-- `packages/database/src/episode-composite-cursor.spec.ts`
-- `apps/api/src/studio/studio.runtime.ts`
-- `apps/api/src/studio/studio.service.ts`
-- `apps/api/src/studio/episode-compose.service.spec.ts`
 - `scripts/m3-av-e2e/episode-render.mjs`
 
-没有改渲染 profile、固定 fixture、通用任务状态机或审核规则。原有 42 个阶段全部保留，新断言加在 `episode-render-gates`、`episode-render-playback`、`episode-render-stale` 和 `episode-render-isolation` 内。
+没有改后台游标、配置、渲染或事务。资产的 `created_at` 属于不可变溯源，验收没有改写它，而是插入更新的成片行，把已有成片留在后续页。原有 42 个阶段全部保留。新的浏览器断言在 `episode-render-playback`、`episode-render-lifecycle` 和 `episode-render-stale` 内。
 
 ## 测试
 
-本机没有 Docker，因此没有在本机跑 `scripts/m3-av-e2e/run.mjs`。页面交互测试使用 happy-dom 和模拟 fetch。游标单测使用脚本化查询客户端，精确时间由 CI 的真实 PostgreSQL 和真实浏览器验收。
+本机没有 Docker，因此没有在本机跑 `scripts/m3-av-e2e/run.mjs`。组件回归使用稳定的 `StudioClient` 和模拟 fetch。真实浏览器、API、Worker 和 PostgreSQL 只在本次隔离 CI 中运行。
 
 | 命令 | 退出码 | 说明 |
 | --- | --- | --- |
-| Web 集级面板与预检测试 | 0 | 15 项通过，模拟 API |
-| API `episode-compose.service.spec.ts` | 0 | 4 项通过 |
-| 数据库 `episode-composite-cursor.spec.ts` | 0 | 脚本化游标 |
+| `episode-compose-job-panel.spec.tsx` | 0 | 16 项通过，happy-dom 模拟 API |
 | `pnpm m3-av-e2e:check` | 0 | harness 通过 |
 | `pnpm m3-av-e2e:outcome` | 0 | 23 项通过 |
 | `pnpm verify` | 0 | lint、typecheck、test、build，以及 media-worker 7 passed / 2 skipped |
+
+组件回归覆盖：取消后立即 GET 仍为 `RUNNING`、隐藏期间不查询、恢复后读到 `CANCELED` 并停止轮询；历史 `DRAFT` 到 `APPROVED` 和 `REJECTED`；已加载的 `APPROVED`/`ACTIVE` 变为 `APPROVED`/`STALE`；刷新与加载历史并发；切集后的迟到列表。
 
 ## 隔离 CI
 
 | 项 | 值 |
 | --- | --- |
-| Run | https://github.com/xyq-dev/ai-drama-studio/actions/runs/36991878705 |
+| Run | https://github.com/xyq-dev/ai-drama-studio/actions/runs/37002393916 |
 | attempt | 1 |
-| Job | `110789723358` |
+| Job | `110822833318` |
 | 结论 | success |
-| Artifact | `m4-episode-render-e2e-evidence` / `11220103863` |
-| 大小 | 4473555 字节 |
-| 下载 SHA-256 | `df3eafbef0e00e1c102ec7a330d2c932e2001d26d65e82055173ddbc9d1d8912` |
-| 数据库 | `m3av_36991878705a1`，迁移前 `public_tables=0` |
-| Migration | NO。沿用既有 5 个 migration，没有 DROP SCHEMA |
+| Artifact | `m4-episode-render-e2e-evidence` / `11224419536` |
+| 大小 | 4894426 字节 |
+| 下载 SHA-256 | `949fb5ae83472f0cdc5dc730fbbd998abb2b635881c78af15cd7465fe45f3250` |
+| 数据库 | `m3av_37002393916a1`，迁移前 `public_tables=0` |
+| Migration | NO。沿用既有 migration，没有 DROP SCHEMA |
 
 42 个阶段全部 `passed`。`fatal`、`restoreError`、`cleanupError` 均为空。`compose down` 退出码 0。`results.ok` 为 true。
 
-本次修复证据：
+本次页面证据：
 
-- 无 Mock 目录的集级任务 `b13d8462-3cad-4303-8a5d-9bc6244337a5`，成片 `81b5d5dd-52a3-44d6-96eb-92ff74b2cf10`，内容 14783 字节，审核 `APPROVED`。同配置下单镜合成被拒绝。
-- 精确游标页数 16，时间文本 `2020-01-01T00:00:00.100001Z`。浏览器加载到历史成片 `0c6b65e5-1964-40df-9227-14c590b3f826`，最新成片 `d0303ec4-efd9-4a2b-baee-db0ddc75cc88` 可批准。
-- 播放解码为 1080×1920，进度超过 0.2 并结束。正向与反向亮度顺序相反。
-- 审核批准、退回各一条，并发审核事件 1 条。
-- 取消任务 `efb9191d-6a73-4680-a71c-049a61943256`。来源变化任务 `16e31175-b7be-4bdd-97de-c891fe18317e` 为 `FAILED`。SIGKILL 任务 `839e636e-19f6-4577-bf27-34f6de3a722d` 有 2 次尝试，成片落在最新尝试 `936c197b-0105-497e-bcd1-e532763c74a9`。锁等待任务 `2f53fe07-bebf-4fcb-b093-a0af3db5ba33` 成功，过期尝试 `ef3aa982-88be-4077-a6de-0ba868ab0e75` 没有成片。注入失败 `d552cf89-5969-4bab-b7d4-c99f927045fb` 为 `COMPOSE_COMMIT_INJECTED`。
-- 历史成片 `d0303ec4-efd9-4a2b-baee-db0ddc75cc88` 为 `STALE` + `APPROVED`。隔离依赖 2 条，MinIO 对象数 0。对象键 `compose/6b606cdc-407e-457e-acb3-13dfec62dd69/3b11ffc4-9f05-4cb2-81b0-69c5f6591359/d4ede12c-60e8-4afa-a77c-3cd9ddb0caeb/f44eaf12-1f74-4f6b-9f7a-b49369afadbf/a81921ca53e51faa207c14cdde354b40b97ae2f68026fe5638c41800d5c31bc7.mp4`。
+- 真实运行中取消的任务 `ede4009b-ca81-4522-99a4-58a807bc95c5`。取消后的立即读取是 `RUNNING`，页面随后自己读到 `CANCELED`。同一阶段的 API 先取消任务 `09b18c16-4275-4df4-8404-b225971023f6` 仍以 `CANCELED` 结束且没有成片。
+- 精确游标页数 16，时间文本 `2020-01-01T00:00:00.100001Z`。历史成片 `1fe0cf2e-1644-4b8b-8e7a-37e1d6be135c` 不在第一页，一次「加载更早的成片」后可见。之后浏览器加载历史页并批准真实成片 `64950cba-b597-44c6-8421-07f707c797b3`，审核变为 `APPROVED`，`rowVersion` 为 2。第一页成片 `be4cc5af-9aee-4506-b52c-bdfe0cf17a42` 的批准按钮仍在。
+- 已加载历史成片 `be4cc5af-9aee-4506-b52c-bdfe0cf17a42` 在来源失效后显示 `STALE` + `APPROVED`，`rowVersion` 为 3。另一条已加载成片 `a754551d-de31-4a63-8ef3-2d00147e37be` 仍在。来源状态也是 `STALE`。
 
-亮度差来自既有 mock 黑帧和烧录字幕，不是真实配音。
+播放解码为 1080×1920，进度超过 0.2 并结束。正向与反向亮度顺序相反。亮度差来自既有 mock 黑帧和烧录字幕，不是真实配音。
 
-## 未执行项与遗留
+## 未执行项
 
 本机未执行真实 Docker 闭环。CI 的 `notRun` 仍包括：其他媒体组合的成本冲突、未触发的暂时故障组合、隐藏标签页、Windows 与其余 Compose 故障、会 `DROP SCHEMA` 的既有 integration 套件，以及新 migration、main、force push、PR、merge、pack、部署、付费 Provider、ComfyUI 和真实模型。
-
-没有新的遗留功能缺陷。Worker 执行集级任务时仍需要 compose 工作目录；API 的集级开关要求绝对 compose 对象目录。两边都不要求 Mock 目录。
