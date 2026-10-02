@@ -53,8 +53,24 @@ export async function episodeExportDownload(ctx) {
   if (manifest.schema !== "m4.episode.export.manifest.v1" || manifest.asset.checksumSha256 !== sha256 || manifest.asset.byteSize !== mp4.length) {
     throw new Error("export manifest does not match the downloaded mp4");
   }
-  if (manifest.compose.jobId !== asset.jobId || manifest.compose.inputHash !== asset.inputHash || manifest.compose.preflightInputHash == null) {
-    throw new Error("export manifest does not match the frozen compose job");
+  const job = (await ctx.sql("SELECT input_hash FROM generation_job WHERE id = $1", [asset.jobId]))[0];
+  if (
+    manifest.compose.jobId !== asset.jobId
+    || manifest.compose.attemptId !== asset.attempt_id
+    || manifest.compose.preflightInputHash !== asset.inputHash
+    || manifest.compose.inputHash !== job.input_hash
+    || manifest.compose.inputHash === manifest.compose.preflightInputHash
+  ) {
+    throw new Error(`export manifest does not match the frozen compose job ${JSON.stringify({
+      jobId: manifest.compose.jobId,
+      expectedJobId: asset.jobId,
+      attemptId: manifest.compose.attemptId,
+      expectedAttemptId: asset.attempt_id,
+      inputHash: manifest.compose.inputHash,
+      expectedInputHash: job.input_hash,
+      preflightInputHash: manifest.compose.preflightInputHash,
+      expectedPreflightInputHash: asset.inputHash,
+    })}`);
   }
   await assertManifestMatchesDatabase(ctx, asset.id, manifest);
   await probeMp4(mp4Path, mp4.length);
