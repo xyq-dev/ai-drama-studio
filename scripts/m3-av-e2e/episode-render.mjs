@@ -263,7 +263,7 @@ export async function episodeRenderStale(ctx) {
   const assetId = ctx.state.episodeRender.approvedId;
   const before = await assetRow(ctx, assetId);
   if (before.review_status !== "APPROVED" || before.status !== "ACTIVE") throw new Error("episode composite was not approved");
-  await replaceSideScene(ctx, ctx.state.episodeRender.burned.shot);
+  await replaceSideScene(ctx, ctx.state.episodeRender.burned);
   await waitForCurrentSources(ctx);
   const started = Date.now();
   let stale = before;
