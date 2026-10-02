@@ -93,6 +93,7 @@ export {
   EPISODE_COMPOSE_SHORT_NOTICE,
   EPISODE_COMPOSE_STATUS_NOTE,
   EPISODE_COMPOSE_TARGET_MIN_MS,
+  assertEpisodeCompositeEligible,
   buildEpisodeComposePreflight,
   parseEpisodeComposePreflightRequest,
   type EpisodeComposeAttemptFacts,

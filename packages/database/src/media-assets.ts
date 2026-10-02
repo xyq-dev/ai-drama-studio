@@ -1,6 +1,7 @@
 import {
   assertExpectedPreflightHash,
   buildComposeJobSnapshot,
+  assertEpisodeCompositeEligible,
   buildComposePreflight,
   buildEpisodeComposePreflight,
   canonicalInputHash,
@@ -1154,6 +1155,9 @@ async function listEpisodeComposeCandidatesWithClient(
   }
   const listed = await client.query<QueryResultRow>(
     `SELECT asset.id AS asset_id,
+            asset.workspace_id,
+            asset.project_id,
+            scene.episode_id,
             shot.id AS shot_id,
             revision.id AS shot_revision_id,
             scene.id AS scene_id,
@@ -1165,8 +1169,34 @@ async function listEpisodeComposeCandidatesWithClient(
             asset.width,
             asset.height,
             asset.duration_ms,
+            asset.mime_type,
+            asset.kind,
+            asset.status,
             asset.review_status,
-            asset.row_version
+            asset.source_kind,
+            asset.storage_provider,
+            asset.reviewed_content_hash,
+            asset.row_version,
+            asset.metadata_json,
+            asset.provider_configuration_id,
+            asset.provider_request_id,
+            asset.source_generation_job_id,
+            asset.source_job_attempt_id,
+            job.id AS job_id,
+            job.workspace_id AS job_workspace_id,
+            job.project_id AS job_project_id,
+            job.source_shot_revision_id AS job_shot_revision_id,
+            job.kind AS job_kind,
+            job.state AS job_state,
+            job.input_snapshot AS job_input_snapshot,
+            attempt.id AS attempt_id,
+            attempt.generation_job_id AS attempt_job_id,
+            attempt.finished_at IS NOT NULL AS attempt_finished,
+            attempt.attempt_no = (
+              SELECT MAX(latest.attempt_no)
+                FROM job_attempt latest
+               WHERE latest.generation_job_id = attempt.generation_job_id
+            ) AS attempt_is_latest
        FROM asset
        JOIN shot_revision revision
          ON revision.id = asset.source_shot_revision_id
@@ -1189,6 +1219,11 @@ async function listEpisodeComposeCandidatesWithClient(
         AND scene_revision.id = revision.source_scene_revision_id
         AND scene_revision.workspace_id = scene.workspace_id
         AND scene_revision.project_id = scene.project_id
+       LEFT JOIN generation_job job
+         ON job.id = asset.source_generation_job_id
+        AND job.workspace_id = asset.workspace_id
+       LEFT JOIN job_attempt attempt
+         ON attempt.id = asset.source_job_attempt_id
       WHERE asset.workspace_id = $1
         AND asset.project_id = $2
         AND asset.kind = 'COMPOSITE'
@@ -1204,10 +1239,23 @@ async function listEpisodeComposeCandidatesWithClient(
         AND revision.freshness_status = 'CURRENT'
         AND scene_revision.review_status = 'APPROVED'
         AND scene_revision.freshness_status = 'CURRENT'
-      ORDER BY scene_revision.ordinal, revision.ordinal, asset.id`,
-    [workspaceId, projectId, episodeId],
+        AND (
+          $4::integer IS NULL
+          OR (scene_revision.ordinal, revision.ordinal, asset.id) > ($4::integer, $5::integer, $6::uuid)
+        )
+      ORDER BY scene_revision.ordinal, revision.ordinal, asset.id
+      LIMIT $7`,
+    [
+      workspaceId,
+      projectId,
+      episodeId,
+      position?.sceneOrdinal ?? null,
+      position?.shotOrdinal ?? null,
+      position?.assetId ?? null,
+      limit,
+    ],
   );
-  const usable: EpisodeComposeCandidate[] = [];
+  const items: EpisodeComposeCandidate[] = [];
   for (const row of listed.rows) {
     try {
       await assertUsableShotWithClient(client, workspaceId, projectId, String(row.shot_revision_id), false);
@@ -1215,14 +1263,28 @@ async function listEpisodeComposeCandidatesWithClient(
       if (error instanceof PersistenceError && error.code === "REVIEW_REQUIRED") continue;
       throw error;
     }
-    usable.push(mapEpisodeCandidate(row));
+    try {
+      assertEpisodeCompositeEligible(
+        workspaceId,
+        projectId,
+        episodeId,
+        candidateCompositeFacts(row, true),
+      );
+    } catch (error) {
+      if (error instanceof DomainError && (error.code === "COMPOSE_INPUT_INVALID" || error.code === "REVIEW_REQUIRED")) continue;
+      if (error instanceof DomainError) throw new PersistenceError(error.code, error.message);
+      throw error;
+    }
+    items.push(mapEpisodeCandidate(row));
   }
-  const page = usable.filter((item) => position === null || compareEpisodeCandidate(item, position) > 0);
-  const items = page.slice(0, limit);
-  const next = page.length > limit ? items[items.length - 1] : undefined;
+  const tail = listed.rows[listed.rows.length - 1];
   return {
     items,
-    nextCursor: next ? encodeEpisodeCandidateCursor(next) : null,
+    nextCursor: listed.rows.length === limit && tail ? encodeEpisodeCandidateCursor({
+      sceneOrdinal: integerOrZero(tail.scene_ordinal),
+      shotOrdinal: integerOrZero(tail.shot_ordinal),
+      assetId: String(tail.asset_id),
+    }) : null,
   };
 }
 
@@ -1390,6 +1452,56 @@ function episodeCompositeFacts(
   };
 }
 
+function candidateCompositeFacts(row: QueryResultRow, sourceUsable: boolean): EpisodeCompositeFacts {
+  const metadata = isPlainJson(row.metadata_json) ? row.metadata_json : {};
+  const snapshot = isPlainJson(row.job_input_snapshot) ? row.job_input_snapshot : null;
+  const jobId = row.job_id == null ? null : String(row.job_id);
+  const attemptId = row.attempt_id == null ? null : String(row.attempt_id);
+  return {
+    assetId: String(row.asset_id),
+    workspaceId: row.workspace_id == null ? "" : String(row.workspace_id),
+    projectId: row.project_id == null ? "" : String(row.project_id),
+    episodeId: row.episode_id == null ? "" : String(row.episode_id),
+    shotId: String(row.shot_id),
+    shotRevisionId: row.shot_revision_id == null ? "" : String(row.shot_revision_id),
+    checksumSha256: String(row.checksum_sha256),
+    byteSize: integerOrZero(row.byte_size),
+    width: row.width == null ? null : integerOrZero(row.width),
+    height: row.height == null ? null : integerOrZero(row.height),
+    durationMs: row.duration_ms == null ? null : integerOrZero(row.duration_ms),
+    mimeType: String(row.mime_type),
+    kind: String(row.kind),
+    status: String(row.status),
+    reviewStatus: String(row.review_status),
+    sourceKind: row.source_kind == null ? null : String(row.source_kind),
+    storageProvider: String(row.storage_provider),
+    reviewedContentHash: row.reviewed_content_hash == null ? null : String(row.reviewed_content_hash),
+    rowVersion: integerOrZero(row.row_version),
+    metadataSchema: typeof metadata.schema === "string" ? metadata.schema : null,
+    renderProfile: metadata.renderProfile ?? null,
+    providerConfigurationId: row.provider_configuration_id == null ? null : String(row.provider_configuration_id),
+    providerRequestId: row.provider_request_id == null ? null : String(row.provider_request_id),
+    sourceGenerationJobId: row.source_generation_job_id == null ? null : String(row.source_generation_job_id),
+    sourceJobAttemptId: row.source_job_attempt_id == null ? null : String(row.source_job_attempt_id),
+    sourceUsable,
+    job: jobId ? {
+      id: jobId,
+      workspaceId: row.job_workspace_id == null ? "" : String(row.job_workspace_id),
+      projectId: row.job_project_id == null ? "" : String(row.job_project_id),
+      shotRevisionId: row.job_shot_revision_id == null ? null : String(row.job_shot_revision_id),
+      kind: String(row.job_kind),
+      state: String(row.job_state),
+      schema: snapshot && typeof snapshot.schema === "string" ? snapshot.schema : null,
+    } : null,
+    attempt: attemptId ? {
+      id: attemptId,
+      generationJobId: row.attempt_job_id == null ? "" : String(row.attempt_job_id),
+      finished: row.attempt_finished === true,
+      isLatest: row.attempt_is_latest === true,
+    } : null,
+  };
+}
+
 function mapEpisodeCandidate(row: QueryResultRow): EpisodeComposeCandidate {
   return {
     assetId: String(row.asset_id),
@@ -1409,16 +1521,7 @@ function mapEpisodeCandidate(row: QueryResultRow): EpisodeComposeCandidate {
   };
 }
 
-function compareEpisodeCandidate(
-  item: Pick<EpisodeComposeCandidate, "sceneOrdinal" | "shotOrdinal" | "assetId">,
-  cursor: { sceneOrdinal: number; shotOrdinal: number; assetId: string },
-): number {
-  if (item.sceneOrdinal !== cursor.sceneOrdinal) return item.sceneOrdinal - cursor.sceneOrdinal;
-  if (item.shotOrdinal !== cursor.shotOrdinal) return item.shotOrdinal - cursor.shotOrdinal;
-  return item.assetId < cursor.assetId ? -1 : item.assetId > cursor.assetId ? 1 : 0;
-}
-
-function encodeEpisodeCandidateCursor(item: EpisodeComposeCandidate): string {
+function encodeEpisodeCandidateCursor(item: Pick<EpisodeComposeCandidate, "sceneOrdinal" | "shotOrdinal" | "assetId">): string {
   return Buffer.from(JSON.stringify({
     v: 1,
     sceneOrdinal: item.sceneOrdinal,

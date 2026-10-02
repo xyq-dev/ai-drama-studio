@@ -47,10 +47,84 @@ function assetRow(id: string, shotRevisionId: string, jobId: string, attemptId: 
   };
 }
 
-function script(mode: "ok" | "stale" | "review" | "cross-project" | "list") {
+function listedCandidate(overrides: Record<string, unknown> = {}) {
+  return {
+    asset_id: secondAssetId,
+    workspace_id: workspaceId,
+    project_id: projectId,
+    episode_id: episodeId,
+    shot_id: secondShotId,
+    shot_revision_id: secondRevisionId,
+    scene_id: "99999999-9999-4999-8999-999999999999",
+    scene_ordinal: 2,
+    scene_heading: "INT. ROOM",
+    shot_ordinal: 1,
+    checksum_sha256: "ab".repeat(32),
+    byte_size: "2048",
+    width: 1080,
+    height: 1920,
+    duration_ms: "2500",
+    mime_type: "video/mp4",
+    kind: "COMPOSITE",
+    status: "ACTIVE",
+    review_status: "APPROVED",
+    source_kind: "LOCAL_JOB",
+    storage_provider: "local-compose",
+    reviewed_content_hash: "ab".repeat(32),
+    row_version: 4,
+    metadata_json: { schema: "m4.shot.compose.asset.v1", renderProfile: { ...COMPOSE_RENDER_PROFILE } },
+    provider_configuration_id: null,
+    provider_request_id: null,
+    source_generation_job_id: secondJobId,
+    source_job_attempt_id: secondAttemptId,
+    job_id: secondJobId,
+    job_workspace_id: workspaceId,
+    job_project_id: projectId,
+    job_shot_revision_id: secondRevisionId,
+    job_kind: "MEDIA_COMPOSE",
+    job_state: "SUCCEEDED",
+    job_input_snapshot: { schema: "m4.shot.compose.v1" },
+    attempt_id: secondAttemptId,
+    attempt_job_id: secondJobId,
+    attempt_finished: true,
+    attempt_is_latest: true,
+    ...overrides,
+  };
+}
+
+function pageCatalog() {
+  const rows = [
+    ["01", 1, 1, { metadata_json: { schema: "unknown", renderProfile: { ...COMPOSE_RENDER_PROFILE } } }],
+    ["02", 1, 2, { metadata_json: { schema: "m4.shot.compose.asset.v1", renderProfile: { ...COMPOSE_RENDER_PROFILE, crf: 18 } } }],
+    ["03", 2, 1, { job_state: "FAILED" }],
+    ["04", 2, 2, { attempt_is_latest: false }],
+    ["05", 3, 1, { attempt_finished: false }],
+    ["06", 3, 2, {}],
+    ["07", 4, 1, {}],
+  ] as const;
+  return rows.map(([suffix, sceneOrdinal, shotOrdinal, overrides]) => listedCandidate({
+    asset_id: `44444444-4444-4444-8444-4444444444${suffix}`,
+    shot_id: `55555555-5555-4555-8555-5555555555${suffix}`,
+    shot_revision_id: `66666666-6666-4666-8666-6666666666${suffix}`,
+    source_generation_job_id: `77777777-7777-4777-8777-7777777777${suffix}`,
+    source_job_attempt_id: `88888888-8888-4888-8888-8888888888${suffix}`,
+    job_id: `77777777-7777-4777-8777-7777777777${suffix}`,
+    job_shot_revision_id: `66666666-6666-4666-8666-6666666666${suffix}`,
+    attempt_id: `88888888-8888-4888-8888-8888888888${suffix}`,
+    attempt_job_id: `77777777-7777-4777-8777-7777777777${suffix}`,
+    scene_ordinal: sceneOrdinal,
+    shot_ordinal: shotOrdinal,
+    ...overrides,
+  }));
+}
+
+function script(mode: "ok" | "stale" | "review" | "cross-project" | "list" | "page") {
   const statements: string[] = [];
+  const candidateReads: Array<{ limit: unknown; returned: number; shotChecks: number }> = [];
+  let pendingShotChecks = 0;
+  const catalog = pageCatalog();
   const client = {
-    async query(sql: string) {
+    async query(sql: string, params: unknown[] = []) {
       const text = sql.replace(/\s+/g, " ").trim();
       statements.push(text);
       if (/^(insert|update|delete|truncate)\b/i.test(text)) throw new Error(`unexpected write: ${text}`);
@@ -59,24 +133,26 @@ function script(mode: "ok" | "stale" | "review" | "cross-project" | "list") {
       if (text.includes("FROM project WHERE")) return { rows: [{ id: projectId }] };
       if (text.includes("FROM stale_recalculation")) return { rows: mode === "stale" ? [{ "?column?": 1 }] : [] };
       if (text.includes("scene_revision.heading")) {
-        return {
-          rows: [{
-            asset_id: secondAssetId,
-            shot_id: secondShotId,
-            shot_revision_id: secondRevisionId,
-            scene_id: "99999999-9999-4999-8999-999999999999",
-            scene_ordinal: 2,
-            scene_heading: "INT. ROOM",
-            shot_ordinal: 1,
-            checksum_sha256: "ab".repeat(32),
-            byte_size: "2048",
-            width: 1080,
-            height: 1920,
-            duration_ms: "2500",
-            review_status: "APPROVED",
-            row_version: 4,
-          }],
-        };
+        const previous = candidateReads.at(-1);
+        if (previous) previous.shotChecks = pendingShotChecks;
+        pendingShotChecks = 0;
+        if (mode === "page") {
+          const limit = params[6];
+          const scene = params[3];
+          const shot = params[4];
+          const assetId = params[5];
+          const matched = catalog.filter((row) => {
+            if (scene == null) return true;
+            if (row.scene_ordinal !== scene) return row.scene_ordinal > Number(scene);
+            if (row.shot_ordinal !== shot) return row.shot_ordinal > Number(shot);
+            return String(row.asset_id) > String(assetId);
+          });
+          const rows = typeof limit === "number" ? matched.slice(0, limit) : matched;
+          candidateReads.push({ limit, returned: rows.length, shotChecks: 0 });
+          return { rows };
+        }
+        candidateReads.push({ limit: params[6], returned: 1, shotChecks: 0 });
+        return { rows: [listedCandidate()] };
       }
       if (text.includes("FROM asset")) {
         if (mode === "cross-project") {
@@ -114,6 +190,7 @@ function script(mode: "ok" | "stale" | "review" | "cross-project" | "list") {
         };
       }
       if (text.includes("AS ok, revision.source_scene_revision_id")) {
+        pendingShotChecks += 1;
         return { rows: [{ ok: mode !== "review", source_scene_revision_id: sceneRevisionId }] };
       }
       if (text.includes("consumer_type = 'scene_revision'")) return { rows: [{ script_revision_id: sceneRevisionId }] };
@@ -126,10 +203,19 @@ function script(mode: "ok" | "stale" | "review" | "cross-project" | "list") {
       return undefined;
     },
   };
-  return { client, statements };
+  return {
+    client,
+    statements,
+    candidateReads,
+    finishShotChecks() {
+      const previous = candidateReads.at(-1);
+      if (previous) previous.shotChecks = pendingShotChecks;
+      pendingShotChecks = 0;
+    },
+  };
 }
 
-function storeFor(mode: "ok" | "stale" | "review" | "cross-project" | "list") {
+function storeFor(mode: "ok" | "stale" | "review" | "cross-project" | "list" | "page") {
   const scripted = script(mode);
   const pool = { connect: async () => scripted.client as unknown as PoolClient };
   return { store: new MediaAssetStore(pool as never), statements: scripted.statements };
@@ -170,6 +256,41 @@ describe("episode compose preflight persistence", () => {
     expect(page.items).toHaveLength(1);
     expect(page.items[0]).toMatchObject({ assetId: secondAssetId, sceneHeading: "INT. ROOM", durationMs: 2500 });
     expect(JSON.stringify(page)).not.toMatch(/objectKey|object_key|storage_provider/);
+    expect(listed.statements.some((statement) => statement.includes("LIMIT $7"))).toBe(true);
     expect(listed.statements.some((statement) => /^(insert|update|delete|truncate)\b/i.test(statement))).toBe(false);
+  });
+
+  it("skips ineligible composites and keeps a bounded cursor", async () => {
+    const scripted = script("page");
+    const pool = { connect: async () => scripted.client as unknown as PoolClient };
+    const store = new MediaAssetStore(pool as never);
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    const pages: Array<{ ids: string[]; next: string | null }> = [];
+    for (let step = 0; step < 8; step += 1) {
+      const before = scripted.candidateReads.length;
+      const page = await store.listEpisodeComposeCandidates(workspaceId, projectId, episodeId, cursor, 2);
+      scripted.finishShotChecks();
+      const reads = scripted.candidateReads.slice(before);
+      expect(reads).toHaveLength(1);
+      expect(reads[0]).toMatchObject({ limit: 2 });
+      expect(reads[0]?.returned).toBeLessThanOrEqual(2);
+      expect(reads[0]?.shotChecks).toBeLessThanOrEqual(2);
+      for (const assetId of page.items.map((item) => item.assetId)) {
+        expect(seen).not.toContain(assetId);
+        seen.push(assetId);
+      }
+      pages.push({ ids: page.items.map((item) => item.assetId), next: page.nextCursor });
+      if (!page.nextCursor) break;
+      cursor = page.nextCursor;
+    }
+    expect(pages[0]).toEqual({ ids: [], next: expect.any(String) });
+    expect(seen).toEqual([
+      "44444444-4444-4444-8444-444444444406",
+      "44444444-4444-4444-8444-444444444407",
+    ]);
+    expect(pages.at(-1)?.next).toBeNull();
+    expect(scripted.candidateReads.length).toBeLessThan(pageCatalog().length);
+    expect(scripted.statements.some((statement) => /^(insert|update|delete|truncate)\b/i.test(statement))).toBe(false);
   });
 });

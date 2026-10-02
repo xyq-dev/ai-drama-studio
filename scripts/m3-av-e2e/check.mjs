@@ -48,8 +48,16 @@ for (const snippet of forbidden) {
   if (workflow.includes(snippet)) failures.push(`workflow contains ${JSON.stringify(snippet)}`);
 }
 if (workflow.includes("docs/**")) failures.push("workflow paths include docs and would rerun for report-only updates");
-if (harness.includes("page.route(") || harness.includes("docker system prune")) {
-  failures.push("harness contains fetch interception or global prune");
+if (harness.includes("docker system prune")) {
+  failures.push("harness contains global prune");
+}
+const episodeHarness = readFileSync(resolve(root, "scripts/m3-av-e2e/episode-compose-preflight.mjs"), "utf8").replace(/\r\n/g, "\n");
+const harnessWithoutEpisodeDelay = harness.replace(episodeHarness, "");
+if (harnessWithoutEpisodeDelay.includes("page.route(") || harness.includes("route.fulfill(") || harness.includes("route.abort(")) {
+  failures.push("harness contains fetch interception");
+}
+if (!episodeHarness.includes("page.route(") || !episodeHarness.includes("route.continue()")) {
+  failures.push("episode preflight delay does not forward the real response");
 }
 if (/sql\(\s*[`'"][^`'"]*drop\s+schema/i.test(harness)) {
   failures.push("harness SQL drops a schema");

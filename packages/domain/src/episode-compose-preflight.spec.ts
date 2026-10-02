@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { COMPOSE_JOB_SCHEMA, COMPOSE_RENDER_PROFILE } from "./compose-render";
+import { DomainError } from "./errors";
 import {
   EPISODE_COMPOSE_ASSET_SCHEMA,
   EPISODE_COMPOSE_MAX_DURATION_MS,
   EPISODE_COMPOSE_SHORT_NOTICE,
   EPISODE_COMPOSE_STATUS_NOTE,
+  assertEpisodeCompositeEligible,
   buildEpisodeComposePreflight,
   parseEpisodeComposePreflightRequest,
   type EpisodeCompositeFacts,
@@ -160,5 +162,50 @@ describe("episode compose preflight", () => {
     expect(() => build([facts(1, { attempt: { ...facts(1).attempt!, isLatest: false } }), facts(2)])).toThrow(/latest finished/);
     expect(() => build([facts(1, { storageProvider: "mock-object-store" }), facts(2)])).toThrow(/local single-shot/);
     expect(() => build([facts(1, { renderProfile: { ...COMPOSE_RENDER_PROFILE, crf: 18 } }), facts(2)])).toThrow(/metadata/);
+  });
+
+  it("matches single-composite eligibility without applying arrangement rules", () => {
+    const eligible = facts(1);
+    const partner = facts(2);
+    expect(() => assertEpisodeCompositeEligible(workspaceId, projectId, episodeId, eligible)).not.toThrow();
+    expect(() => assertEpisodeCompositeEligible(workspaceId, projectId, episodeId, partner)).not.toThrow();
+    const accepted = build([eligible, partner]);
+    expect(accepted.manifest.segments.map((segment) => segment.assetId)).toEqual([eligible.assetId, partner.assetId]);
+    const rejected = [
+      facts(1, { metadataSchema: "unknown" }),
+      facts(1, { metadataSchema: null }),
+      facts(1, { renderProfile: { ...COMPOSE_RENDER_PROFILE, crf: 18 } }),
+      facts(1, { job: { ...facts(1).job!, state: "FAILED" } }),
+      facts(1, { job: { ...facts(1).job!, schema: null } }),
+      facts(1, { attempt: { ...facts(1).attempt!, isLatest: false } }),
+      facts(1, { attempt: { ...facts(1).attempt!, finished: false } }),
+      facts(1, { durationMs: 0 }),
+      facts(1, { byteSize: 0 }),
+    ];
+    for (const composite of rejected) {
+      let eligibility: string | null = null;
+      try {
+        assertEpisodeCompositeEligible(workspaceId, projectId, episodeId, composite);
+      } catch (error) {
+        eligibility = error instanceof DomainError ? error.code : "other";
+      }
+      let preflight: string | null = null;
+      try {
+        build([composite, partner]);
+      } catch (error) {
+        preflight = error instanceof DomainError ? error.code : "other";
+      }
+      expect(eligibility).toBe("COMPOSE_INPUT_INVALID");
+      expect(preflight).toBe(eligibility);
+    }
+    const long = facts(1, { durationMs: 50_000 });
+    const longer = facts(2, { durationMs: 50_000 });
+    expect(() => assertEpisodeCompositeEligible(workspaceId, projectId, episodeId, long)).not.toThrow();
+    expect(() => assertEpisodeCompositeEligible(workspaceId, projectId, episodeId, longer)).not.toThrow();
+    expect(() => build([long, longer])).toThrow(/90000/);
+    const duplicateShot = facts(1, { assetId: partner.assetId });
+    expect(() => assertEpisodeCompositeEligible(workspaceId, projectId, episodeId, facts(1))).not.toThrow();
+    expect(() => assertEpisodeCompositeEligible(workspaceId, projectId, episodeId, duplicateShot)).not.toThrow();
+    expect(() => build([facts(1), duplicateShot])).toThrow(/同一个镜头只能选择一份成片/);
   });
 });

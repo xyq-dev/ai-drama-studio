@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 // Simulated API. fetch is mocked; this file does not start the API, database, worker, or a real browser.
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createElement } from "react";
 import { afterEach, describe, expect, it } from "vitest";
 import { StudioClient } from "../lib/studio-client";
@@ -11,9 +11,12 @@ const EPISODE_A = "33333333-3333-4333-8333-333333333333";
 const EPISODE_B = "34343434-3434-4434-8434-343434343434";
 const ASSET_A = "44444444-4444-4444-8444-444444444441";
 const ASSET_B = "44444444-4444-4444-8444-444444444442";
+const ASSET_C = "44444444-4444-4444-8444-444444444443";
 const SHOT_A = "55555555-5555-4555-8555-555555555551";
 const SHOT_B = "55555555-5555-4555-8555-555555555552";
+const SHOT_C = "55555555-5555-4555-8555-555555555553";
 const HASH_A = "ab".repeat(32);
+const HASH_NEW = "cd".repeat(32);
 
 function candidate(assetId: string, shotId: string) {
   return {
@@ -21,8 +24,8 @@ function candidate(assetId: string, shotId: string) {
     shotId,
     shotRevisionId: "66666666-6666-4666-8666-666666666661",
     sceneId: "99999999-9999-4999-8999-999999999999",
-    sceneOrdinal: assetId === ASSET_A ? 1 : 2,
-    sceneHeading: assetId === ASSET_A ? "INT. ROOM" : "INT. HALL",
+    sceneOrdinal: assetId === ASSET_A ? 1 : assetId === ASSET_B ? 2 : 3,
+    sceneHeading: assetId === ASSET_A ? "INT. ROOM" : assetId === ASSET_B ? "INT. HALL" : "INT. YARD",
     shotOrdinal: 1,
     durationMs: 1000,
     reviewStatus: "APPROVED",
@@ -62,6 +65,18 @@ function deferred() {
 
 function selectedIds() {
   return [...document.querySelectorAll("[data-selected-asset-id]")].map((node) => node.getAttribute("data-selected-asset-id"));
+}
+
+function preflightButton() {
+  return screen.getByRole("button", { name: "预检编排" }) as HTMLButtonElement;
+}
+
+async function settle(pending: { promise: Promise<Response>; resolve: (response: Response) => void }, response: Response) {
+  await act(async () => {
+    pending.resolve(response);
+    await pending.promise;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
 }
 
 afterEach(() => cleanup());
@@ -177,5 +192,97 @@ describe("episode compose arrangement", () => {
     await screen.findByText("场景 1 INT. ROOM");
     expect(calls.every((method) => method === "GET")).toBe(true);
     expect(screen.getByRole("button", { name: "加载更多" })).toBeTruthy();
+  });
+
+  it("lets a new preflight replace an invalidated request and ignores the late success", async () => {
+    const first = deferred();
+    const second = deferred();
+    let posts = 0;
+    const fetchImpl = (input: string, init?: RequestInit) => {
+      if (!init || init.method === "GET") {
+        return Promise.resolve(json({
+          items: [candidate(ASSET_A, SHOT_A), candidate(ASSET_B, SHOT_B), candidate(ASSET_C, SHOT_C)],
+          nextCursor: null,
+        }));
+      }
+      posts += 1;
+      return posts === 1 ? first.promise : second.promise;
+    };
+    render(createElement(EpisodeComposePreflight, {
+      projectId: PROJECT,
+      episodeId: EPISODE_A,
+      episodeNo: 1,
+      client: new StudioClient(fetchImpl),
+    }));
+    await screen.findByText("场景 1 INT. ROOM");
+    const addButtons = () => screen.getAllByRole("button", { name: "加入" });
+    fireEvent.click(addButtons()[0]!);
+    fireEvent.click(addButtons()[1]!);
+    fireEvent.click(preflightButton());
+    await waitFor(() => expect(preflightButton().disabled).toBe(true));
+    const moved = document.querySelector(`[data-selected-asset-id="${ASSET_B}"]`);
+    fireEvent.click(moved?.querySelector("button") as HTMLButtonElement);
+    fireEvent.click(addButtons()[2]!);
+    const added = document.querySelector(`[data-selected-asset-id="${ASSET_C}"]`);
+    fireEvent.click([...added!.querySelectorAll("button")].find((node) => node.textContent === "移除") as HTMLButtonElement);
+    await waitFor(() => expect(preflightButton().disabled).toBe(false));
+    expect(screen.queryByText(`inputHash ${HASH_A}`)).toBeNull();
+    expect(selectedIds()).toEqual([ASSET_B, ASSET_A]);
+    fireEvent.click(preflightButton());
+    await waitFor(() => expect(preflightButton().disabled).toBe(true));
+    await settle(first, json(preflight(HASH_A)));
+    expect(preflightButton().disabled).toBe(true);
+    expect(screen.queryByText(`inputHash ${HASH_A}`)).toBeNull();
+    expect(screen.queryByText("预检通过，尚未执行多镜合成")).toBeNull();
+    await settle(second, json(preflight(HASH_NEW, ASSET_B, ASSET_A)));
+    expect(screen.getByText(`inputHash ${HASH_NEW}`)).toBeTruthy();
+    expect(screen.queryByText(`inputHash ${HASH_A}`)).toBeNull();
+    expect(preflightButton().disabled).toBe(false);
+  });
+
+  it("keeps the new preflight busy when the invalidated request fails", async () => {
+    const first = deferred();
+    const second = deferred();
+    let posts = 0;
+    const fetchImpl = (_input: string, init?: RequestInit) => {
+      if (!init || init.method === "GET") {
+        return Promise.resolve(json({
+          items: [candidate(ASSET_A, SHOT_A), candidate(ASSET_B, SHOT_B), candidate(ASSET_C, SHOT_C)],
+          nextCursor: null,
+        }));
+      }
+      posts += 1;
+      return posts === 1 ? first.promise : second.promise;
+    };
+    render(createElement(EpisodeComposePreflight, {
+      projectId: PROJECT,
+      episodeId: EPISODE_A,
+      episodeNo: 1,
+      client: new StudioClient(fetchImpl),
+    }));
+    await screen.findByText("场景 3 INT. YARD");
+    const addButtons = () => screen.getAllByRole("button", { name: "加入" });
+    fireEvent.click(addButtons()[0]!);
+    fireEvent.click(addButtons()[2]!);
+    fireEvent.click(preflightButton());
+    await waitFor(() => expect(preflightButton().disabled).toBe(true));
+    const added = document.querySelector(`[data-selected-asset-id="${ASSET_C}"]`);
+    fireEvent.click([...added!.querySelectorAll("button")].find((node) => node.textContent === "移除") as HTMLButtonElement);
+    fireEvent.click(addButtons()[1]!);
+    const moved = document.querySelector(`[data-selected-asset-id="${ASSET_B}"]`);
+    fireEvent.click(moved?.querySelector("button") as HTMLButtonElement);
+    await waitFor(() => expect(preflightButton().disabled).toBe(false));
+    expect(selectedIds()).toEqual([ASSET_B, ASSET_A]);
+    fireEvent.click(preflightButton());
+    await waitFor(() => expect(preflightButton().disabled).toBe(true));
+    await settle(first, json({ error: { code: "COMPOSE_INPUT_INVALID", message: "旧预检失败" } }, 400));
+    expect(preflightButton().disabled).toBe(true);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByText("旧预检失败")).toBeNull();
+    await settle(second, json(preflight(HASH_NEW, ASSET_B, ASSET_A)));
+    expect(screen.getByText(`inputHash ${HASH_NEW}`)).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(preflightButton().disabled).toBe(false);
+    expect(selectedIds()).toEqual([ASSET_B, ASSET_A]);
   });
 });

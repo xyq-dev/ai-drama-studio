@@ -157,10 +157,7 @@ export function buildEpisodeComposePreflight(input: {
       throw new DomainError("COMPOSE_INPUT_INVALID", "同一个镜头只能选择一份成片");
     }
     seenShots.add(composite.shotId);
-    const durationMs = composite.durationMs;
-    if (!Number.isSafeInteger(durationMs) || durationMs === null || durationMs <= 0) {
-      throw new DomainError("COMPOSE_INPUT_INVALID", "Composite duration must be a positive integer millisecond value");
-    }
+    const durationMs = positiveDurationMs(composite);
     const startMs = cursor;
     cursor += durationMs;
     if (cursor > EPISODE_COMPOSE_MAX_DURATION_MS) {
@@ -216,7 +213,7 @@ export function buildEpisodeComposePreflight(input: {
   };
 }
 
-function assertComposite(
+export function assertEpisodeCompositeEligible(
   workspaceId: string,
   projectId: string,
   episodeId: string,
@@ -252,6 +249,7 @@ function assertComposite(
   if (composite.metadataSchema !== EPISODE_COMPOSE_ASSET_SCHEMA || !sameProfile(composite.renderProfile)) {
     throw new DomainError("COMPOSE_INPUT_INVALID", "Composite metadata is not the accepted single-shot schema");
   }
+  positiveDurationMs(composite);
   const job = composite.job;
   const attempt = composite.attempt;
   if (!job || !attempt || job.id !== composite.sourceGenerationJobId || attempt.id !== composite.sourceJobAttemptId) {
@@ -270,6 +268,23 @@ function assertComposite(
   if (!attempt.finished || !attempt.isLatest || attempt.generationJobId !== job.id) {
     throw new DomainError("COMPOSE_INPUT_INVALID", "Composite is not the latest finished compose attempt");
   }
+}
+
+function assertComposite(
+  workspaceId: string,
+  projectId: string,
+  episodeId: string,
+  composite: EpisodeCompositeFacts,
+): void {
+  assertEpisodeCompositeEligible(workspaceId, projectId, episodeId, composite);
+}
+
+function positiveDurationMs(composite: EpisodeCompositeFacts): number {
+  const durationMs = composite.durationMs;
+  if (typeof durationMs !== "number" || !Number.isSafeInteger(durationMs) || durationMs <= 0) {
+    throw new DomainError("COMPOSE_INPUT_INVALID", "Composite duration must be a positive integer millisecond value");
+  }
+  return durationMs;
 }
 
 function sameProfile(value: unknown): boolean {

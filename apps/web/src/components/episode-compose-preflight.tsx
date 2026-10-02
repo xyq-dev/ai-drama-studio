@@ -100,6 +100,8 @@ export function EpisodeComposePreflight(props: {
     selections.current.set(identity, next);
     setSelected(next);
     setResult(null);
+    setError(null);
+    setBusy(false);
     epoch.current += 1;
   }
 

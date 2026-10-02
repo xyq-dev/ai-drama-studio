@@ -151,6 +151,65 @@ export async function episodeComposePreflight(ctx) {
   if (reordered.manifest.segments.map((segment) => segment.assetId).join() !== [second.assetId, first.assetId].join()) {
     throw new Error(`reordered segments ${JSON.stringify(reordered.manifest.segments)}`);
   }
+  let releaseHeld = () => {};
+  const held = new Promise((resolve) => {
+    releaseHeld = resolve;
+  });
+  let heldPosts = 0;
+  const preflightPattern = `**/episodes/${episode.id}/compose-preflight`;
+  await page.route(preflightPattern, async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.continue();
+      return;
+    }
+    heldPosts += 1;
+    if (heldPosts === 1) await held;
+    await route.continue();
+  });
+  try {
+    await panel.getByRole("button", { name: "预检编排" }).click();
+    await page.waitForFunction(() => {
+      const button = [...document.querySelectorAll("button")].find((node) => node.textContent === "预检编排");
+      return Boolean(button && button.disabled);
+    });
+    await panel.locator(`[data-selected-asset-id="${first.assetId}"]`).getByRole("button", { name: "上移" }).click();
+    await page.waitForFunction(() => {
+      const button = [...document.querySelectorAll("button")].find((node) => node.textContent === "预检编排");
+      return Boolean(button && !button.disabled);
+    });
+    const renewedPromise = page.waitForResponse((response) =>
+      response.url().includes(`/episodes/${episode.id}/compose-preflight`) && response.request().method() === "POST",
+    { timeout: 20_000 });
+    await panel.getByRole("button", { name: "预检编排" }).click();
+    const renewedResponse = await renewedPromise;
+    const renewed = await renewedResponse.json();
+    if (renewedResponse.status() !== 200 || renewed.inputHash === reordered.inputHash) {
+      throw new Error("renewed preflight did not replace the held request");
+    }
+    await panel.getByText(`inputHash ${renewed.inputHash}`).waitFor({ timeout: 10_000 });
+    if (await panel.getByRole("button", { name: "预检编排" }).isDisabled()) {
+      throw new Error("preflight stayed disabled after the renewed request finished");
+    }
+    const latePromise = page.waitForResponse((response) =>
+      response.url().includes(`/episodes/${episode.id}/compose-preflight`)
+      && response.request().method() === "POST"
+      && response !== renewedResponse,
+    { timeout: 20_000 });
+    releaseHeld();
+    const lateResponse = await latePromise;
+    const late = await lateResponse.json();
+    if (late.inputHash !== reordered.inputHash) throw new Error("held response was not the superseded preflight");
+    const visible = await panel.innerText();
+    if (!visible.includes(renewed.inputHash) || visible.includes(late.inputHash)) {
+      throw new Error("stale preflight overwrote the renewed result");
+    }
+    if (await panel.getByRole("button", { name: "预检编排" }).isDisabled()) {
+      throw new Error("stale preflight cleared the renewed request");
+    }
+  } finally {
+    releaseHeld();
+    await page.unroute(preflightPattern);
+  }
   const after = await episodeSnapshot(ctx);
   const changes = episodeFingerprintChanges(before, after);
   if (changes.length > 0) throw new Error(`browser episode preflight changed stored records: ${changes.join(", ")}`);
