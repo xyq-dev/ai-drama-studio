@@ -35,6 +35,12 @@ export const requiredStages = [
   "episode-compose-preflight",
   "episode-compose-gates",
   "episode-compose-readonly",
+  "episode-render-gates",
+  "episode-render-playback",
+  "episode-render-review",
+  "episode-render-lifecycle",
+  "episode-render-stale",
+  "episode-render-isolation",
 ];
 
 export function acceptanceFailed(input) {

@@ -75,4 +75,59 @@ describe("episode compose preflight service", () => {
     })).rejects.toMatchObject({ code: "CONFIGURATION_ERROR" });
     expect(preflightEpisodeCompose).not.toHaveBeenCalled();
   });
+
+  it("queues one episode compose from the frozen server input and refuses the switch when local compose is off", async () => {
+    const createAndQueueWorkflowJob = vi.fn(async (_scope: unknown, factory: (client: unknown) => Promise<unknown>) => {
+      await factory({});
+      return { status: 202, body: { jobId: "99999999-9999-4999-8999-999999999999" } };
+    });
+    const freezeEpisodeComposeInput = vi.fn(async () => ({
+      snapshot: { schema: "m4.episode.compose.v1", input: { episodeId } },
+      inputHash: "cd".repeat(32),
+    }));
+    const enabled = new StudioService(
+      { createAndQueueWorkflowJob } as never,
+      {} as never,
+      {} as never,
+      workspaceId,
+      undefined,
+      { freezeEpisodeComposeInput } as unknown as MediaAssetStore,
+      false,
+      null,
+      false,
+      false,
+      true,
+      "D:\\compose-objects",
+      true,
+    );
+    const body = { compositeAssetIds: [firstAssetId, secondAssetId], expectedInputHash: "ab".repeat(32) };
+    await expect(enabled.composeEpisode(projectId, episodeId, body, {
+      actorId: "user",
+      traceId: "trace",
+      idempotencyKey: "same-key",
+    })).resolves.toMatchObject({ status: 202 });
+    expect(createAndQueueWorkflowJob).toHaveBeenCalledTimes(1);
+    expect(freezeEpisodeComposeInput).toHaveBeenCalledWith(expect.anything(), workspaceId, projectId, episodeId, body);
+    const closed = new StudioService(
+      { createAndQueueWorkflowJob } as never,
+      {} as never,
+      {} as never,
+      workspaceId,
+      undefined,
+      { freezeEpisodeComposeInput } as unknown as MediaAssetStore,
+      false,
+      null,
+      false,
+      false,
+      false,
+      "D:\\compose-objects",
+      true,
+    );
+    await expect(closed.composeEpisode(projectId, episodeId, body, {
+      actorId: "user",
+      traceId: "trace",
+      idempotencyKey: "same-key",
+    })).rejects.toMatchObject({ code: "CONFIGURATION_ERROR" });
+    expect(createAndQueueWorkflowJob).toHaveBeenCalledTimes(1);
+  });
 });

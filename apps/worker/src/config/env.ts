@@ -12,6 +12,7 @@ const workerEnvSchema = z.object({
   M3_MOCK_AV_ENABLED: z.enum(["true", "false"]).default("false"),
   M3_MOCK_SUBTITLE_MUSIC_ENABLED: z.enum(["true", "false"]).default("false"),
   M4_LOCAL_COMPOSE_ENABLED: z.enum(["true", "false"]).default("false"),
+  M4_LOCAL_EPISODE_COMPOSE_ENABLED: z.enum(["true", "false"]).default("false"),
   M4_COMPOSE_WORK_DIR: z.string().min(1).optional(),
   M4_COMPOSE_OBJECT_DIR: z.string().min(1).optional(),
   M4_COMPOSE_PYTHON: z.string().min(1).default("python3"),
@@ -42,6 +43,7 @@ export interface WorkerEnv {
   M3_MOCK_AV_ENABLED: boolean;
   M3_MOCK_SUBTITLE_MUSIC_ENABLED: boolean;
   M4_LOCAL_COMPOSE_ENABLED: boolean;
+  M4_LOCAL_EPISODE_COMPOSE_ENABLED: boolean;
   M4_COMPOSE_WORK_DIR?: string;
   M4_COMPOSE_OBJECT_DIR?: string;
   M4_COMPOSE_PYTHON: string;
@@ -62,6 +64,7 @@ const WORKER_KEYS = [
   "M3_MOCK_AV_ENABLED",
   "M3_MOCK_SUBTITLE_MUSIC_ENABLED",
   "M4_LOCAL_COMPOSE_ENABLED",
+  "M4_LOCAL_EPISODE_COMPOSE_ENABLED",
   "M4_COMPOSE_WORK_DIR",
   "M4_COMPOSE_OBJECT_DIR",
   "M4_COMPOSE_PYTHON",
@@ -107,6 +110,7 @@ export function loadWorkerEnv(
     M3_MOCK_AV_ENABLED: parsed.data.M3_MOCK_AV_ENABLED === "true",
     M3_MOCK_SUBTITLE_MUSIC_ENABLED: parsed.data.M3_MOCK_SUBTITLE_MUSIC_ENABLED === "true",
     M4_LOCAL_COMPOSE_ENABLED: parsed.data.M4_LOCAL_COMPOSE_ENABLED === "true",
+    M4_LOCAL_EPISODE_COMPOSE_ENABLED: parsed.data.M4_LOCAL_EPISODE_COMPOSE_ENABLED === "true",
     M4_COMPOSE_FAIL_INSIDE_COMMIT: parsed.data.M4_COMPOSE_FAIL_INSIDE_COMMIT === "true",
   };
 }

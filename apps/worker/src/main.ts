@@ -21,12 +21,14 @@ async function bootstrap(): Promise<void> {
   const composeWorkDir = env.M4_COMPOSE_WORK_DIR && isAbsolute(env.M4_COMPOSE_WORK_DIR) ? env.M4_COMPOSE_WORK_DIR : undefined;
   const composeObjectDir = env.M4_COMPOSE_OBJECT_DIR && isAbsolute(env.M4_COMPOSE_OBJECT_DIR) ? env.M4_COMPOSE_OBJECT_DIR : undefined;
   const composeAllowed = env.NODE_ENV !== "production" && env.M4_LOCAL_COMPOSE_ENABLED && directoryReady && Boolean(composeWorkDir && composeObjectDir);
+  const episodeComposeAllowed = env.NODE_ENV !== "production" && env.M4_LOCAL_COMPOSE_ENABLED && env.M4_LOCAL_EPISODE_COMPOSE_ENABLED && Boolean(composeWorkDir && composeObjectDir);
   const runtime = await startQueueRuntime({
     databaseUrl: env.DATABASE_URL, redisUrl: env.REDIS_URL, mockObjectDir,
     mockImageEnabled: env.NODE_ENV !== "production" && env.M3_MOCK_IMAGE_ENABLED && directoryReady,
     mockAvEnabled: env.NODE_ENV !== "production" && env.M3_MOCK_AV_ENABLED && directoryReady,
     mockSmEnabled: env.NODE_ENV !== "production" && env.M3_MOCK_SUBTITLE_MUSIC_ENABLED && directoryReady,
     localComposeEnabled: composeAllowed,
+    episodeComposeEnabled: episodeComposeAllowed,
     composeWorkDir, composeObjectDir,
     composePythonBin: env.M4_COMPOSE_PYTHON,
     composePythonPath: join(root, "services", "media-worker", "src"),

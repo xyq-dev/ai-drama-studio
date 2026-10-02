@@ -3,9 +3,15 @@ import {
   buildComposeJobSnapshot,
   assertEpisodeCompositeEligible,
   buildComposePreflight,
+  buildEpisodeComposeJobSnapshot,
   buildEpisodeComposePreflight,
   canonicalInputHash,
+  EPISODE_COMPOSE_JOB_SCHEMA,
+  EPISODE_COMPOSE_OUTPUT_SCHEMA,
+  type EpisodeComposeJobSnapshot,
   type EpisodeComposePreflightResponse,
+  type EpisodeComposeRenderRequest,
+  type EpisodeComposeSourceObject,
   type EpisodeCompositeFacts,
   type ComposeAssetFacts,
   type ComposeAttemptFacts,
@@ -229,6 +235,20 @@ export class MediaAssetStore {
     }
   }
 
+  async compositeOutputSchema(workspaceId: string, assetId: string): Promise<string | null> {
+    const client = await this.pool.connect();
+    try {
+      const result = await client.query<QueryResultRow>(
+        `SELECT metadata_json->>'schema' AS schema FROM asset WHERE id = $1 AND workspace_id = $2`,
+        [assetId, workspaceId],
+      );
+      const schema = result.rows[0]?.schema;
+      return schema == null ? null : String(schema);
+    } finally {
+      client.release();
+    }
+  }
+
   async getWorkspaceAsset(workspaceId: string, assetId: string): Promise<MediaAssetRecord> {
     const client = await this.pool.connect();
     try {
@@ -312,6 +332,106 @@ export class MediaAssetStore {
     } finally {
       client.release();
     }
+  }
+
+  async freezeEpisodeComposeInput(
+    client: PoolClient,
+    workspaceId: string,
+    projectId: string,
+    episodeId: string,
+    request: EpisodeComposeRenderRequest,
+  ): Promise<{ snapshot: EpisodeComposeJobSnapshot; inputHash: string }> {
+    let preflight: EpisodeComposePreflightResponse;
+    try {
+      preflight = await preflightEpisodeComposeWithClient(client, workspaceId, projectId, episodeId, request.compositeAssetIds);
+      assertExpectedPreflightHash(preflight.inputHash, request.expectedInputHash);
+    } catch (error) {
+      if (error instanceof DomainError) throw new PersistenceError(error.code, error.message);
+      throw error;
+    }
+    const ids = preflight.manifest.segments.map((segment) => segment.assetId);
+    const stored = await client.query<QueryResultRow>(
+      `SELECT id::text AS id, storage_provider, object_key, byte_size, checksum_sha256
+         FROM asset WHERE workspace_id = $1 AND project_id = $2 AND id = ANY($3::uuid[])`,
+      [workspaceId, projectId, ids],
+    );
+    const byId = new Map(stored.rows.map((row) => [String(row.id), row]));
+    const sourceObjects: EpisodeComposeSourceObject[] = preflight.manifest.segments.map((segment) => {
+      const row = byId.get(segment.assetId);
+      if (!row) throw new PersistenceError("NOT_FOUND", "Composite not found");
+      return {
+        assetId: segment.assetId,
+        shotId: segment.shotId,
+        shotRevisionId: segment.shotRevisionId,
+        storageProvider: String(row.storage_provider),
+        objectKey: String(row.object_key),
+        byteSize: integerOrZero(row.byte_size),
+        checksumSha256: String(row.checksum_sha256),
+        durationMs: segment.durationMs,
+        startMs: segment.startMs,
+        endMs: segment.endMs,
+      };
+    });
+    try {
+      const built = buildEpisodeComposeJobSnapshot(preflight, sourceObjects);
+      return { snapshot: built.snapshot, inputHash: built.inputHash };
+    } catch (error) {
+      if (error instanceof DomainError) throw new PersistenceError(error.code, error.message);
+      throw error;
+    }
+  }
+
+  async listEpisodeComposites(
+    workspaceId: string,
+    projectId: string,
+    episodeId: string,
+    cursor: string | undefined,
+    limit: number,
+  ): Promise<{ items: EpisodeCompositeListItem[]; nextCursor: string | null }> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      try {
+        const page = await listEpisodeCompositesWithClient(client, workspaceId, projectId, episodeId, cursor, limit);
+        await client.query("COMMIT");
+        return page;
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      }
+    } finally {
+      client.release();
+    }
+  }
+
+  async commitLocalEpisodeCompose(
+    jobs: JobPersistenceService,
+    input: {
+      workspaceId: string;
+      projectId: string;
+      episodeId: string;
+      jobId: string;
+      attemptId: string;
+      leaseOwner: string;
+      traceId: string;
+      objectKey: string;
+      checksumSha256: string;
+      byteSize: number;
+      width: number;
+      height: number;
+      durationMs: number;
+      elapsedMs: number;
+      failInsideCommit?: boolean;
+    },
+  ): Promise<MediaAssetRecord | null> {
+    return jobs.succeedJobWithArtifact({
+      workspaceId: input.workspaceId,
+      jobId: input.jobId,
+      attemptId: input.attemptId,
+      traceId: input.traceId,
+      persistArtifact: async (client) => insertLocalEpisodeComposeAsset(client, input),
+      artifactResponse: (asset) => ({ outputAssetIds: [asset.id], checksumSha256: asset.checksumSha256 }),
+    });
   }
 
   async freezeComposeInput(
@@ -399,6 +519,8 @@ export class MediaAssetStore {
       contentHash: string;
       reviewedBy: string;
       traceId: string;
+      shotReviewEnabled?: boolean;
+      episodeReviewEnabled?: boolean;
     },
   ): Promise<{ assetId: string; reviewStatus: string; rowVersion: number; contentHash: string }> {
     const located = await client.query<{ project_id: string } & QueryResultRow>(
@@ -450,18 +572,51 @@ export class MediaAssetStore {
     if (!source || source.kind !== "MEDIA_COMPOSE" || source.state !== "SUCCEEDED" || source.attempt_id !== row.source_job_attempt_id || latest.rows[0]?.id !== row.source_job_attempt_id) {
       throw new PersistenceError("REVIEW_INVALID_TRANSITION", "Composite does not come from its successful compose attempt");
     }
-    if (input.decision === "APPROVE") {
-      if (!row.source_shot_revision_id) throw new PersistenceError("REVIEW_INVALID_TRANSITION", "Composite has no shot source");
-      await assertUsableShotWithClient(client, input.workspaceId, String(projectId), String(row.source_shot_revision_id), true);
-      const metadata = row.metadata_json as { manifest?: { sources?: Array<{ role: string; asset: { assetId: string } | null }> } };
-      const selection = selectionFromMetadata(metadata);
+    const metadata = isPlainJson(row.metadata_json) ? row.metadata_json : {};
+    const assetSchema = typeof metadata.schema === "string" ? metadata.schema : "";
+    const jobSnapshot = isPlainJson(source.input_snapshot) ? source.input_snapshot : {};
+    const jobSchema = typeof jobSnapshot.schema === "string" ? jobSnapshot.schema : "";
+    if (assetSchema === EPISODE_COMPOSE_OUTPUT_SCHEMA) {
+      if (input.episodeReviewEnabled !== true) {
+        throw new PersistenceError("CONFIGURATION_ERROR", "Episode compose review is not enabled");
+      }
+      if (jobSchema !== EPISODE_COMPOSE_JOB_SCHEMA || row.source_shot_revision_id !== null) {
+        throw new PersistenceError("REVIEW_INVALID_TRANSITION", "Episode composite schema does not match its job");
+      }
+      let frozenHash: string;
       try {
-        await preflightComposeWithClient(client, input.workspaceId, String(row.source_shot_revision_id), selection);
+        frozenHash = canonicalInputHash(jobSnapshot.input);
       } catch (error) {
-        if (error instanceof DomainError) throw new PersistenceError(error.code, error.message);
-        if (error instanceof PersistenceError) throw error;
+        if (error instanceof DomainError) throw new PersistenceError("COMPOSE_INPUT_INVALID", error.message);
         throw error;
       }
+      if (String(source.input_hash) !== frozenHash) {
+        throw new PersistenceError("COMPOSE_INPUT_INVALID", "Frozen episode compose input does not match its hash");
+      }
+      if (input.decision === "APPROVE") {
+        await approveFrozenEpisodeComposite(client, input.workspaceId, String(projectId), jobSnapshot);
+      }
+    } else if (assetSchema === "m4.shot.compose.asset.v1") {
+      if (input.shotReviewEnabled === false) {
+        throw new PersistenceError("CONFIGURATION_ERROR", "Local compose review is not enabled");
+      }
+      if (jobSchema !== "m4.shot.compose.v1") {
+        throw new PersistenceError("REVIEW_INVALID_TRANSITION", "Composite schema does not match its job");
+      }
+      if (input.decision === "APPROVE") {
+        if (!row.source_shot_revision_id) throw new PersistenceError("REVIEW_INVALID_TRANSITION", "Composite has no shot source");
+        await assertUsableShotWithClient(client, input.workspaceId, String(projectId), String(row.source_shot_revision_id), true);
+        const selection = selectionFromMetadata(metadata as { manifest?: { sources?: Array<{ role: string; asset: { assetId: string } | null }> } });
+        try {
+          await preflightComposeWithClient(client, input.workspaceId, String(row.source_shot_revision_id), selection);
+        } catch (error) {
+          if (error instanceof DomainError) throw new PersistenceError(error.code, error.message);
+          if (error instanceof PersistenceError) throw error;
+          throw error;
+        }
+      }
+    } else {
+      throw new PersistenceError("REVIEW_INVALID_TRANSITION", "Composite schema is not a known local compose output");
     }
     const updated = await client.query<QueryResultRow>(
       `UPDATE asset
@@ -637,6 +792,253 @@ async function readHeldCompose(
     throw new PersistenceError("COMPOSE_RESULT_DISCARDED", "Compose result arrived after its attempt lost the lease");
   }
   return locked;
+}
+
+export interface EpisodeCompositeListItem {
+  assetId: string;
+  status: string;
+  reviewStatus: string;
+  rowVersion: number;
+  checksumSha256: string;
+  width: number | null;
+  height: number | null;
+  durationMs: number | null;
+  sourceGenerationJobId: string | null;
+  createdAt: string;
+  segments: Array<{ position: number; assetId: string; shotId: string; startMs: number; endMs: number }>;
+}
+
+async function listEpisodeCompositesWithClient(
+  client: PoolClient,
+  workspaceId: string,
+  projectId: string,
+  episodeId: string,
+  cursor: string | undefined,
+  limit: number,
+): Promise<{ items: EpisodeCompositeListItem[]; nextCursor: string | null }> {
+  const position = decodeEpisodeCompositeCursor(cursor);
+  const episode = await client.query(
+    `SELECT id FROM episode WHERE id = $1 AND workspace_id = $2 AND project_id = $3`,
+    [episodeId, workspaceId, projectId],
+  );
+  if (!episode.rows[0]) throw new PersistenceError("NOT_FOUND", "Episode not found");
+  const listed = await client.query<QueryResultRow>(
+    `SELECT asset.id AS asset_id, asset.status, asset.review_status, asset.row_version,
+            asset.checksum_sha256, asset.width, asset.height, asset.duration_ms,
+            asset.source_generation_job_id, asset.created_at, asset.metadata_json
+       FROM asset
+      WHERE asset.workspace_id = $1
+        AND asset.project_id = $2
+        AND asset.kind = 'COMPOSITE'
+        AND asset.storage_provider = 'local-compose'
+        AND asset.source_kind = 'LOCAL_JOB'
+        AND asset.source_shot_revision_id IS NULL
+        AND asset.metadata_json->>'schema' = $3
+        AND asset.metadata_json->'manifest'->>'episodeId' = $4
+        AND (
+          $5::timestamptz IS NULL
+          OR (asset.created_at, asset.id) > ($5::timestamptz, $6::uuid)
+        )
+      ORDER BY asset.created_at, asset.id
+      LIMIT $7`,
+    [
+      workspaceId,
+      projectId,
+      EPISODE_COMPOSE_OUTPUT_SCHEMA,
+      episodeId,
+      position?.createdAt ?? null,
+      position?.assetId ?? null,
+      limit,
+    ],
+  );
+  const items = listed.rows.map(mapEpisodeComposite);
+  const tail = listed.rows[listed.rows.length - 1];
+  return {
+    items,
+    nextCursor: listed.rows.length === limit && tail ? encodeEpisodeCompositeCursor(tail) : null,
+  };
+}
+
+function mapEpisodeComposite(row: QueryResultRow): EpisodeCompositeListItem {
+  const metadata = isPlainJson(row.metadata_json) ? row.metadata_json : {};
+  const manifest = isPlainJson(metadata.manifest) ? metadata.manifest : {};
+  const segments = Array.isArray(manifest.segments) ? manifest.segments : [];
+  return {
+    assetId: String(row.asset_id),
+    status: String(row.status),
+    reviewStatus: String(row.review_status),
+    rowVersion: integerOrZero(row.row_version),
+    checksumSha256: String(row.checksum_sha256),
+    width: row.width == null ? null : integerOrZero(row.width),
+    height: row.height == null ? null : integerOrZero(row.height),
+    durationMs: row.duration_ms == null ? null : integerOrZero(row.duration_ms),
+    sourceGenerationJobId: row.source_generation_job_id == null ? null : String(row.source_generation_job_id),
+    createdAt: new Date(String(row.created_at)).toISOString(),
+    segments: segments.flatMap((segment) => {
+      if (!isPlainJson(segment) || typeof segment.assetId !== "string") return [];
+      return [{
+        position: integerOrZero(segment.position),
+        assetId: segment.assetId,
+        shotId: typeof segment.shotId === "string" ? segment.shotId : "",
+        startMs: integerOrZero(segment.startMs),
+        endMs: integerOrZero(segment.endMs),
+      }];
+    }),
+  };
+}
+
+function encodeEpisodeCompositeCursor(row: QueryResultRow): string {
+  return Buffer.from(JSON.stringify({
+    v: 1,
+    createdAt: new Date(String(row.created_at)).toISOString(),
+    assetId: String(row.asset_id),
+  })).toString("base64url");
+}
+
+function decodeEpisodeCompositeCursor(cursor: string | undefined): { createdAt: string; assetId: string } | null {
+  if (!cursor) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+  } catch {
+    throw new PersistenceError("VALIDATION_ERROR", "Episode composite cursor is invalid");
+  }
+  if (!isPlainJson(parsed) || parsed.v !== 1 || typeof parsed.createdAt !== "string" || typeof parsed.assetId !== "string") {
+    throw new PersistenceError("VALIDATION_ERROR", "Episode composite cursor is invalid");
+  }
+  return { createdAt: parsed.createdAt, assetId: parsed.assetId };
+}
+
+async function approveFrozenEpisodeComposite(
+  client: PoolClient,
+  workspaceId: string,
+  projectId: string,
+  snapshot: Record<string, unknown>,
+): Promise<void> {
+  const input = isPlainJson(snapshot.input) ? snapshot.input : null;
+  const manifest = input && isPlainJson(input.manifest) ? input.manifest : null;
+  const segments = manifest && Array.isArray(manifest.segments) ? manifest.segments : [];
+  const episodeId = manifest && typeof manifest.episodeId === "string" ? manifest.episodeId : "";
+  const ids = segments.flatMap((segment) => isPlainJson(segment) && typeof segment.assetId === "string" ? [segment.assetId] : []);
+  if (!input || input.workspaceId !== workspaceId || input.projectId !== projectId || ids.length === 0) {
+    throw new PersistenceError("COMPOSE_INPUT_INVALID", "Frozen episode compose input is incomplete");
+  }
+  try {
+    const current = await preflightEpisodeComposeWithClient(client, workspaceId, projectId, episodeId, ids);
+    if (current.inputHash !== snapshot.preflightInputHash) {
+      throw new PersistenceError("COMPOSE_INPUT_INVALID", "Episode compose sources changed before review");
+    }
+  } catch (error) {
+    if (error instanceof PersistenceError) throw error;
+    if (error instanceof DomainError) throw new PersistenceError(error.code, error.message);
+    throw error;
+  }
+}
+
+async function insertLocalEpisodeComposeAsset(
+  client: PoolClient,
+  input: {
+    workspaceId: string;
+    projectId: string;
+    episodeId: string;
+    jobId: string;
+    attemptId: string;
+    leaseOwner: string;
+    traceId: string;
+    objectKey: string;
+    checksumSha256: string;
+    byteSize: number;
+    width: number;
+    height: number;
+    durationMs: number;
+    elapsedMs: number;
+    failInsideCommit?: boolean;
+  },
+): Promise<MediaAssetRecord> {
+  const expectedKey = `compose/${input.workspaceId}/${input.projectId}/${input.jobId}/${input.attemptId}/${input.checksumSha256}.mp4`;
+  if (input.objectKey !== expectedKey) {
+    throw new PersistenceError("COMPOSE_OUTPUT_INVALID", "Compose object key does not belong to this attempt");
+  }
+  const locked = await readHeldCompose(client, input);
+  const snapshot = locked.input_snapshot as EpisodeComposeJobSnapshot;
+  let hashed: string;
+  try {
+    hashed = canonicalInputHash(snapshot.input);
+  } catch (error) {
+    if (error instanceof DomainError) throw new PersistenceError("COMPOSE_INPUT_INVALID", error.message);
+    throw error;
+  }
+  if (hashed !== String(locked.input_hash) || snapshot.schema !== EPISODE_COMPOSE_JOB_SCHEMA || snapshot.input.episodeId !== input.episodeId) {
+    throw new PersistenceError("COMPOSE_INPUT_INVALID", "Frozen episode compose input does not match its hash");
+  }
+  try {
+    const current = await preflightEpisodeComposeWithClient(
+      client,
+      input.workspaceId,
+      input.projectId,
+      input.episodeId,
+      snapshot.input.manifest.segments.map((segment) => segment.assetId),
+    );
+    if (current.inputHash !== snapshot.preflightInputHash) {
+      throw new PersistenceError("COMPOSE_INPUT_INVALID", "Episode compose sources changed before the output could be stored");
+    }
+  } catch (error) {
+    if (error instanceof PersistenceError) throw error;
+    if (error instanceof DomainError) throw new PersistenceError(error.code, error.message);
+    throw error;
+  }
+  await readHeldCompose(client, input);
+  const metadata = {
+    schema: EPISODE_COMPOSE_OUTPUT_SCHEMA,
+    episodeId: input.episodeId,
+    manifest: snapshot.input.manifest,
+    renderProfile: snapshot.input.renderProfile,
+    preflightInputHash: snapshot.preflightInputHash,
+    sourceJobId: input.jobId,
+    sourceAttemptId: input.attemptId,
+    output: {
+      checksumSha256: input.checksumSha256,
+      byteSize: input.byteSize,
+      durationMs: input.durationMs,
+      width: input.width,
+      height: input.height,
+      elapsedMs: input.elapsedMs,
+    },
+  };
+  const inserted = await client.query<QueryResultRow>(
+    `INSERT INTO asset
+      (workspace_id, project_id, kind, storage_provider, object_key, mime_type, byte_size, checksum_sha256,
+       width, height, duration_ms, source_kind, source_job_attempt_id, source_generation_job_id, source_shot_revision_id,
+       provider_configuration_id, provider_request_id, metadata_json)
+     VALUES ($1,$2,'COMPOSITE','local-compose',$3,'video/mp4',$4,$5,$6,$7,$8,'LOCAL_JOB',$9,$10,NULL,NULL,NULL,$11::jsonb)
+     RETURNING ${ASSET_COLUMNS}`,
+    [
+      input.workspaceId, input.projectId, input.objectKey, input.byteSize, input.checksumSha256,
+      input.width, input.height, input.durationMs, input.attemptId, input.jobId,
+      JSON.stringify(metadata),
+    ],
+  );
+  const row = inserted.rows[0];
+  if (!row) throw new PersistenceError("ASSET_CONFLICT", "Compose object key is already registered");
+  for (const source of snapshot.input.sourceObjects) {
+    await client.query(
+      `INSERT INTO asset_dependency (workspace_id, project_id, dependent_asset_id, source_asset_id)
+       VALUES ($1, $2, $3, $4)`,
+      [input.workspaceId, input.projectId, row.id, source.assetId],
+    );
+  }
+  await client.query(
+    `INSERT INTO domain_event
+      (workspace_id, project_id, aggregate_type, aggregate_id, event_type, payload_json, trace_id)
+     VALUES ($1, $2, 'Asset', $3, 'asset.created', $4::jsonb, $5)`,
+    [input.workspaceId, input.projectId, row.id, JSON.stringify({
+      assetId: row.id, kind: "COMPOSITE", schema: EPISODE_COMPOSE_OUTPUT_SCHEMA, jobId: input.jobId, attemptId: input.attemptId,
+    }), input.traceId],
+  );
+  if (input.failInsideCommit) {
+    throw new PersistenceError("COMPOSE_COMMIT_INJECTED", "Compose commit failed before it could be stored");
+  }
+  return mapAsset(row);
 }
 
 async function assertUsableShotWithClient(

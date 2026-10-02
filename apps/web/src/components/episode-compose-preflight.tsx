@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { ApiError, StudioClient } from "../lib/studio-client";
+import { EpisodeComposeJobPanel } from "./episode-compose-job-panel";
 
 interface Candidate {
   assetId: string;
@@ -192,7 +193,7 @@ export function EpisodeComposePreflight(props: {
   return (
     <section className="min-w-0 max-w-full rounded-lg bg-white p-4" aria-label="多镜编排">
       <h2 className="text-lg font-medium">多镜编排</h2>
-      <p className="mt-2 text-sm text-neutral-700">第 {props.episodeNo} 集。选择本集已批准的单镜成片并调整顺序。这里只做预检，不合成新成片。</p>
+      <p className="mt-2 text-sm text-neutral-700">第 {props.episodeNo} 集。选择本集已批准的单镜成片并调整顺序。预检通过后可以开始多镜合成。</p>
       {!props.episodeId ? <p className="mt-3 text-sm">这一集还不存在</p> : null}
       {error ? <p className="mt-3 text-sm" role="alert">{error}</p> : null}
       {error ? <button className="mt-2 rounded border px-3 py-1 text-sm" type="button" onClick={() => void reload()}>重新查询</button> : null}
@@ -248,6 +249,17 @@ export function EpisodeComposePreflight(props: {
           </ul>
           <p>拼接 {result.manifest.plan.width}×{result.manifest.plan.height} · {result.manifest.plan.frameRate} fps · {result.manifest.plan.container} · 总时长 {result.manifest.plan.durationMs} ms</p>
         </div>
+      ) : null}
+      {props.episodeId ? (
+        <EpisodeComposeJobPanel
+          client={client}
+          projectId={props.projectId}
+          episodeId={props.episodeId}
+          body={result ? {
+            compositeAssetIds: result.manifest.segments.map((segment) => segment.assetId),
+            expectedInputHash: result.inputHash,
+          } : null}
+        />
       ) : null}
     </section>
   );

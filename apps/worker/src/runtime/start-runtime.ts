@@ -17,7 +17,8 @@ import { OutboxDispatcher } from "./dispatcher";
 import { RuntimeReconciler } from "./reconciler";
 import { startStaleRecalculationPolling } from "./stale-recalculation";
 import { LocalMockObjects } from "./local-mock-objects";
-import { runComposeJob, stopActiveComposeChildren, withSingleComposeRender } from "./compose-job";
+import { COMPOSE_JOB_SCHEMA, EPISODE_COMPOSE_JOB_SCHEMA } from "@ai-drama/domain";
+import { runComposeJob, runEpisodeComposeJob, stopActiveComposeChildren, withSingleComposeRender } from "./compose-job";
 import { runMockAvJob } from "./mock-av-generation";
 import { runMockImageJob } from "./mock-image-generation";
 import { runMockSmJob } from "./mock-sm-generation";
@@ -30,6 +31,35 @@ export interface QueueRuntimeStatus {
 export interface RuntimeHandle {
   status: QueueRuntimeStatus;
   shutdown(): Promise<void>;
+}
+
+async function failComposeConfiguration(
+  jobs: JobPersistenceService,
+  message: QueueMessage,
+  state: string,
+  leaseMs: number | undefined,
+  messageText: string,
+): Promise<void> {
+  if (state !== "QUEUED") throw new Error("Compose configuration missing for an already active attempt");
+  const acquired = await jobs.acquireQueuedJob({
+    workspaceId: message.workspaceId,
+    jobId: message.jobId,
+    dispatchSeq: message.dispatchSeq,
+    leaseOwner: `compose-config:${process.pid}`,
+    leaseMs: leaseMs ?? 30_000,
+    traceId: `compose:missing-config:${message.jobId}`,
+    providerConfigurationId: null,
+  });
+  if (!acquired) return;
+  await jobs.failJob({
+    workspaceId: message.workspaceId,
+    jobId: message.jobId,
+    attemptId: acquired.attemptId,
+    traceId: `compose:missing-config:${message.jobId}`,
+    errorCode: "CONFIGURATION_ERROR",
+    errorMessage: messageText,
+    retryable: false,
+  });
 }
 
 function inspectState(state: MockRequestState): "ACTIVE" | "SUCCEEDED" | "FAILED" | "UNKNOWN" {
@@ -52,6 +82,7 @@ export async function startQueueRuntime(options: {
   mockAvEnabled?: boolean;
   mockSmEnabled?: boolean;
   localComposeEnabled?: boolean;
+  episodeComposeEnabled?: boolean;
   composeWorkDir?: string;
   composeObjectDir?: string;
   composePythonBin?: string;
@@ -103,10 +134,48 @@ export async function startQueueRuntime(options: {
         const compose = await store.loadComposeJob(message.workspaceId, message.jobId);
         if (!compose) throw new Error("Compose job missed its loader");
         if (compose.state === "SUCCEEDED" || compose.state === "FAILED" || compose.state === "CANCELED") return;
-        const shotRevisionId = compose.shotRevisionId;
-        const mockObjectDir = options.mockObjectDir;
+        const snapshot = compose.inputSnapshot as { schema?: string; input?: { episodeId?: string } };
         const workDir = options.composeWorkDir;
         const objectDir = options.composeObjectDir;
+        if (snapshot.schema === EPISODE_COMPOSE_JOB_SCHEMA) {
+          const episodeId = snapshot.input?.episodeId;
+          if (options.episodeComposeEnabled !== true || !workDir || !objectDir || !episodeId) {
+            await failComposeConfiguration(jobs, message, compose.state, options.leaseMs, "Episode compose requires the episode switch, work directory, and object directory");
+            return;
+          }
+          if (compose.cancelRequested && compose.state === "QUEUED") {
+            await jobs.cancelJob({ workspaceId: message.workspaceId, jobId: message.jobId, traceId: `episode-compose:cancel:${message.jobId}` });
+            return;
+          }
+          if (compose.state === "RUNNING") {
+            throw new Error("Compose attempt is in progress; lease recovery must finish before redelivery");
+          }
+          await withSingleComposeRender(() => runEpisodeComposeJob({
+            workspaceId: message.workspaceId,
+            projectId: compose.projectId,
+            episodeId,
+            jobId: message.jobId,
+            dispatchSeq: message.dispatchSeq,
+            inputHash: compose.inputHash,
+            inputSnapshot: compose.inputSnapshot as never,
+            traceId: `worker:episode-compose:${message.jobId}`,
+          }, {
+            jobs, assets, workDir, objectDir,
+            pythonBin: options.composePythonBin ?? "python3",
+            pythonPath: options.composePythonPath ?? "",
+            leaseOwner: `episode-compose:${process.pid}`,
+            leaseMs: options.composeLeaseMs ?? 30_000,
+            holdBeforeCommitMs: options.composeHoldBeforeCommitMs ?? 0,
+            failInsideCommit: options.composeFailInsideCommit === true,
+          }));
+          return;
+        }
+        if (snapshot.schema !== COMPOSE_JOB_SCHEMA) {
+          await failComposeConfiguration(jobs, message, compose.state, options.leaseMs, "Compose snapshot schema is not a known local renderer");
+          return;
+        }
+        const shotRevisionId = compose.shotRevisionId;
+        const mockObjectDir = options.mockObjectDir;
         if (options.localComposeEnabled !== true || !mockObjectDir || !workDir || !objectDir || !shotRevisionId) {
           if (compose.state !== "QUEUED") throw new Error("Compose configuration missing for an already active attempt");
           const acquired = await jobs.acquireQueuedJob({

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { DomainError, parseComposePreflightRequest, parseComposeRenderRequest, parseComposeReviewRequest, parseEpisodeComposePreflightRequest } from "@ai-drama/domain";
+import { DomainError, parseComposePreflightRequest, parseComposeRenderRequest, parseComposeReviewRequest, parseEpisodeComposePreflightRequest, parseEpisodeComposeRenderRequest } from "@ai-drama/domain";
 import {
   JobPersistenceService,
   MediaAssetStore,
@@ -107,6 +107,7 @@ export class StudioService {
     private readonly mockSmEnabled = false,
     private readonly localComposeEnabled = false,
     private readonly composeObjectDir: string | null = null,
+    private readonly episodeComposeEnabled = false,
   ) {}
 
   get workspace(): string {
@@ -691,6 +692,44 @@ export class StudioService {
     };
   }
 
+  async listEpisodeComposites(projectId: string, episodeId: string, cursor?: string, limit?: string) {
+    if (!this.episodeComposeEnabled || !this.localComposeEnabled) {
+      throw new PersistenceError("CONFIGURATION_ERROR", "Episode compose is not enabled");
+    }
+    if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
+    return this.mediaAssets.listEpisodeComposites(this.workspaceId, projectId, episodeId, cursor, parsePageLimit(limit));
+  }
+
+  async composeEpisode(projectId: string, episodeId: string, body: unknown, context: StudioContext) {
+    if (!this.episodeComposeEnabled || !this.localComposeEnabled) {
+      throw new PersistenceError("CONFIGURATION_ERROR", "Episode compose is not enabled");
+    }
+    let request;
+    try {
+      request = parseEpisodeComposeRenderRequest(rejectClientWorkspace(body));
+    } catch (error) {
+      if (error instanceof DomainError) throw new PersistenceError(error.code, error.message);
+      throw error;
+    }
+    if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
+    return this.jobs.createAndQueueWorkflowJob(
+      this.scope(context, "POST", `/projects/${projectId}/episodes/${episodeId}/compose`, request),
+      async (client) => {
+        const frozen = await this.mediaAssets!.freezeEpisodeComposeInput(client, this.workspaceId, projectId, episodeId, request);
+        return {
+          workspaceId: this.workspaceId,
+          projectId,
+          type: "MEDIA_COMPOSE",
+          requestedBy: context.actorId,
+          kind: "MEDIA_COMPOSE",
+          inputHash: frozen.inputHash,
+          inputSnapshot: frozen.snapshot,
+          traceId: context.traceId,
+        };
+      },
+    );
+  }
+
   async composeShot(shotRevisionId: string, body: unknown, context: StudioContext) {
     if (!this.localComposeEnabled || !this.mockAvEnabled) {
       throw new PersistenceError("CONFIGURATION_ERROR", "Local compose is not enabled");
@@ -726,7 +765,7 @@ export class StudioService {
   }
 
   async reviewComposite(assetId: string, body: unknown, ifMatch: string | undefined, context: StudioContext) {
-    if (!this.localComposeEnabled) {
+    if (!this.localComposeEnabled && !this.episodeComposeEnabled) {
       throw new PersistenceError("CONFIGURATION_ERROR", "Local compose review is not enabled");
     }
     let request;
@@ -750,6 +789,8 @@ export class StudioService {
         contentHash: request.contentHash,
         reviewedBy: context.actorId,
         traceId: context.traceId,
+        shotReviewEnabled: this.localComposeEnabled,
+        episodeReviewEnabled: this.episodeComposeEnabled && this.localComposeEnabled,
       }),
     );
   }
@@ -781,8 +822,17 @@ export class StudioService {
       return { mimeType: asset.mimeType, bytes: await readBoundedMockAv(this.mockObjectDir, asset) };
     }
     if (asset.kind === "COMPOSITE") {
-      if (!this.localComposeEnabled || !this.composeObjectDir) {
+      const schema = await this.mediaAssets.compositeOutputSchema(this.workspaceId, assetId);
+      const episodeOutput = schema === "m4.episode.compose.asset.v1";
+      const shotOutput = schema === "m4.shot.compose.asset.v1";
+      if (episodeOutput && (!this.episodeComposeEnabled || !this.localComposeEnabled)) {
+        throw new PersistenceError("CONFIGURATION_ERROR", "Episode compose content is not enabled");
+      }
+      if (shotOutput && !this.localComposeEnabled) {
         throw new PersistenceError("CONFIGURATION_ERROR", "Local compose content is not enabled");
+      }
+      if ((!episodeOutput && !shotOutput) || !this.composeObjectDir) {
+        throw new PersistenceError("ASSET_CONTENT_INVALID", "Asset content is not a local composite");
       }
       return readCompositeContent(this.composeObjectDir, this.workspaceId, asset);
     }

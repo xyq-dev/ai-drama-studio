@@ -104,6 +104,17 @@ export {
   type EpisodeCompositeFacts,
 } from "./episode-compose-preflight";
 export {
+  EPISODE_COMPOSE_JOB_SCHEMA,
+  EPISODE_COMPOSE_OUTPUT_SCHEMA,
+  EPISODE_RENDER_PROFILE,
+  EPISODE_RENDER_PROFILE_ID,
+  buildEpisodeComposeJobSnapshot,
+  parseEpisodeComposeRenderRequest,
+  type EpisodeComposeJobSnapshot,
+  type EpisodeComposeRenderRequest,
+  type EpisodeComposeSourceObject,
+} from "./episode-compose-render";
+export {
   COMPOSE_JOB_SCHEMA,
   COMPOSE_OUTPUT_MAX_BYTES,
   COMPOSE_RENDER_PROFILE,

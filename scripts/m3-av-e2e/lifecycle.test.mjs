@@ -10,12 +10,6 @@ import {
 
 test("lifecycle stages are required and ordered after the image guard", () => {
   assert.deepEqual(requiredStages.slice(-15), [
-    "media-cancel",
-    "media-terminal-race",
-    "media-observation-replay",
-    "media-shot-isolation",
-    "compose-preflight-page",
-    "compose-preflight-gates",
     "compose-preflight-readonly",
     "compose-render-page",
     "compose-render-gates",
@@ -25,6 +19,12 @@ test("lifecycle stages are required and ordered after the image guard", () => {
     "episode-compose-preflight",
     "episode-compose-gates",
     "episode-compose-readonly",
+    "episode-render-gates",
+    "episode-render-playback",
+    "episode-render-review",
+    "episode-render-lifecycle",
+    "episode-render-stale",
+    "episode-render-isolation",
   ]);
   const stages = requiredStages.map((name) => ({ name, status: "passed" }));
   assert.equal(acceptanceFailed({ stages, fatal: null, restoreError: null, composeDownFailed: false, cleanupError: null }).ok, true);

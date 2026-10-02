@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 
 const repo = resolve(import.meta.dirname, "..");
 const python = process.env.MEDIA_WORKER_PYTHON ?? (process.platform === "win32" ? "python" : "python3");
-const result = spawnSync(python, ["-m", "pytest", "services/media-worker/tests/test_compose_cli.py", "-q"], {
+const result = spawnSync(python, ["-m", "pytest", "services/media-worker/tests/test_compose_cli.py", "services/media-worker/tests/test_episode_compose.py", "-q"], {
   cwd: repo,
   env: { ...process.env, PYTHONPATH: resolve(repo, "services/media-worker/src") },
   stdio: "inherit",

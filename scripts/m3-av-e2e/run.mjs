@@ -17,6 +17,7 @@ import {
 import { rename, rm, writeFile } from "node:fs/promises";
 import { composePreflightGates, composePreflightPage, composePreflightReadonly } from "./compose-preflight.mjs";
 import { episodeComposeGates, episodeComposePreflight, episodeComposeReadonly } from "./episode-compose-preflight.mjs";
+import { episodeRenderGates, episodeRenderIsolation, episodeRenderLifecycle, episodeRenderPlayback, episodeRenderReview, episodeRenderStale } from "./episode-render.mjs";
 import { composeProvenanceStale, composeRenderGates, composeRenderLifecycle, composeRenderPage, composeReview } from "./compose-render.mjs";
 import { mediaCancel, mediaObservationReplay, mediaShotIsolation, mediaTerminalRace } from "./lifecycle.mjs";
 import { acceptanceExitCode, acceptanceFailed, assertLinkage, requiredStages } from "./outcome.mjs";
@@ -216,6 +217,7 @@ function childEnv(overrides = {}, unsetKeys = []) {
     M3_MOCK_AV_ENABLED: "true",
     M3_MOCK_SUBTITLE_MUSIC_ENABLED: "true",
     M4_LOCAL_COMPOSE_ENABLED: "true",
+    M4_LOCAL_EPISODE_COMPOSE_ENABLED: "true",
     M4_COMPOSE_WORK_DIR: composeWorkDir,
     M4_COMPOSE_OBJECT_DIR: composeObjectDir,
     M4_COMPOSE_PYTHON: process.platform === "win32" ? "python" : "python3",
@@ -1982,6 +1984,12 @@ async function main() {
   await stage("episode-compose-preflight", () => episodeComposePreflight(lifecycle));
   await stage("episode-compose-gates", () => episodeComposeGates(lifecycle));
   await stage("episode-compose-readonly", () => episodeComposeReadonly(lifecycle));
+  await stage("episode-render-gates", () => episodeRenderGates(lifecycle));
+  await stage("episode-render-playback", () => episodeRenderPlayback(lifecycle));
+  await stage("episode-render-review", () => episodeRenderReview(lifecycle));
+  await stage("episode-render-lifecycle", () => episodeRenderLifecycle(lifecycle));
+  await stage("episode-render-stale", () => episodeRenderStale(lifecycle));
+  await stage("episode-render-isolation", () => episodeRenderIsolation(lifecycle));
 }
 
 function lifecycleContext() {
@@ -2016,6 +2024,8 @@ function lifecycleContext() {
     otherWorkspaceId,
     workerOrigin,
     outputDir,
+    composeObjectDir,
+    countMinio,
     spawnApp,
     stopApp,
     waitHttp,
