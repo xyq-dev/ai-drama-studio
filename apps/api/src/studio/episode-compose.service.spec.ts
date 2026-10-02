@@ -1,0 +1,78 @@
+import { describe, expect, it, vi } from "vitest";
+import { MediaAssetStore } from "@ai-drama/database";
+import { StudioService } from "./studio.service";
+
+const workspaceId = "11111111-1111-4111-8111-111111111111";
+const projectId = "22222222-2222-4222-8222-222222222222";
+const episodeId = "33333333-3333-4333-8333-333333333333";
+const firstAssetId = "44444444-4444-4444-8444-444444444441";
+const secondAssetId = "44444444-4444-4444-8444-444444444442";
+
+function service() {
+  const preflightEpisodeCompose = vi.fn(async () => ({
+    schema: "m4.episode.compose.preflight.v1",
+    inputHash: "ab".repeat(32),
+  }));
+  const listEpisodeComposeCandidates = vi.fn(async () => ({ items: [], nextCursor: null }));
+  const runIdempotent = vi.fn();
+  const studio = new StudioService(
+    { runIdempotent } as never,
+    {} as never,
+    {} as never,
+    workspaceId,
+    undefined,
+    { preflightEpisodeCompose, listEpisodeComposeCandidates } as unknown as MediaAssetStore,
+    false,
+    null,
+    false,
+    false,
+    false,
+    null,
+  );
+  return { studio, preflightEpisodeCompose, listEpisodeComposeCandidates, runIdempotent };
+}
+
+describe("episode compose preflight service", () => {
+  it("reads candidates and returns a preflight without an idempotent write", async () => {
+    const { studio, preflightEpisodeCompose, listEpisodeComposeCandidates, runIdempotent } = service();
+    await expect(studio.listEpisodeComposeCandidates(projectId, episodeId, undefined, "20")).resolves.toEqual({
+      items: [],
+      nextCursor: null,
+    });
+    const first = await studio.preflightEpisodeCompose(projectId, episodeId, {
+      compositeAssetIds: [firstAssetId, secondAssetId],
+    });
+    const second = await studio.preflightEpisodeCompose(projectId, episodeId, {
+      compositeAssetIds: [firstAssetId, secondAssetId],
+    });
+    expect(first.status).toBe(200);
+    expect(second.body.inputHash).toBe(first.body.inputHash);
+    expect(preflightEpisodeCompose).toHaveBeenCalledWith(workspaceId, projectId, episodeId, [firstAssetId, secondAssetId]);
+    expect(listEpisodeComposeCandidates).toHaveBeenCalledWith(workspaceId, projectId, episodeId, undefined, 20);
+    expect(runIdempotent).not.toHaveBeenCalled();
+  });
+
+  it("rejects unknown fields, duplicate assets, and a missing media store before any write", async () => {
+    const { studio, preflightEpisodeCompose } = service();
+    await expect(studio.preflightEpisodeCompose(projectId, episodeId, {
+      compositeAssetIds: [firstAssetId, secondAssetId],
+      workspaceId,
+    })).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+    await expect(studio.preflightEpisodeCompose(projectId, episodeId, {
+      compositeAssetIds: [firstAssetId, firstAssetId],
+    })).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+    await expect(studio.preflightEpisodeCompose(projectId, episodeId, {
+      compositeAssetIds: [firstAssetId],
+    })).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+    const closed = new StudioService(
+      { runIdempotent: vi.fn() } as never,
+      {} as never,
+      {} as never,
+      workspaceId,
+    );
+    await expect(closed.preflightEpisodeCompose(projectId, episodeId, {
+      compositeAssetIds: [firstAssetId, secondAssetId],
+    })).rejects.toMatchObject({ code: "CONFIGURATION_ERROR" });
+    expect(preflightEpisodeCompose).not.toHaveBeenCalled();
+  });
+});

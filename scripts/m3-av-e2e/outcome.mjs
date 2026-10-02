@@ -32,6 +32,9 @@ export const requiredStages = [
   "compose-render-lifecycle",
   "compose-review",
   "compose-provenance-stale",
+  "episode-compose-preflight",
+  "episode-compose-gates",
+  "episode-compose-readonly",
 ];
 
 export function acceptanceFailed(input) {

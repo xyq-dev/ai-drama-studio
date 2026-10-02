@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ComposePreflight } from "./compose-preflight";
+import { EpisodeComposePreflight } from "./episode-compose-preflight";
 import { ApiError, StudioClient } from "../lib/studio-client";
 import {
   LIMITS,
@@ -189,6 +190,7 @@ interface WorkflowRun {
 type Focus =
   | { kind: "story" }
   | { kind: "script"; episodeNo: number }
+  | { kind: "episode-compose"; episodeNo: number }
   | { kind: "character" }
   | { kind: "location" }
   | { kind: "scene"; episodeNo: number; sceneId: string }
@@ -210,6 +212,7 @@ function focusLabel(focus: Focus): string {
   switch (focus.kind) {
     case "story": return "故事";
     case "script": return `第 ${focus.episodeNo} 集剧本`;
+    case "episode-compose": return `第 ${focus.episodeNo} 集多镜编排`;
     case "character": return "角色";
     case "location": return "场地";
     case "scene": return `第 ${focus.episodeNo} 集场景`;
@@ -276,6 +279,7 @@ export function Workbench({ projectId }: { projectId: string }) {
     const sceneId = params.get("scene") ?? "";
     const shotId = params.get("shot") ?? "";
     if (kind === "script") setFocus({ kind, episodeNo });
+    else if (kind === "episode-compose") setFocus({ kind, episodeNo });
     else if (kind === "scene" && sceneId) setFocus({ kind, episodeNo, sceneId });
     else if (kind === "shot" && sceneId && shotId) setFocus({ kind, episodeNo, sceneId, shotId });
     else if (kind === "character" || kind === "location" || kind === "story") setFocus({ kind });
@@ -368,15 +372,25 @@ export function Workbench({ projectId }: { projectId: string }) {
           {[1, 2, 3].map((episodeNo) => {
             const episode = episodes.find((item) => item.episodeNo === episodeNo);
             return (
-              <button
-                key={episodeNo}
-                className="block w-full rounded px-2 py-2 text-left hover:bg-white disabled:text-neutral-400"
-                type="button"
-                disabled={!episode}
-                onClick={() => choose({ kind: "script", episodeNo })}
-              >
-                {episode ? `第 ${episodeNo} 集` : `第 ${episodeNo} 集（故事通过后出现）`}
-              </button>
+              <div key={episodeNo}>
+                <button
+                  className="block w-full rounded px-2 py-2 text-left hover:bg-white disabled:text-neutral-400"
+                  type="button"
+                  disabled={!episode}
+                  onClick={() => choose({ kind: "script", episodeNo })}
+                >
+                  {episode ? `第 ${episodeNo} 集` : `第 ${episodeNo} 集（故事通过后出现）`}
+                </button>
+                {episode ? (
+                  <button
+                    className="block w-full rounded px-2 py-2 text-left hover:bg-white"
+                    type="button"
+                    onClick={() => choose({ kind: "episode-compose", episodeNo })}
+                  >
+                    多镜编排 · 第 {episodeNo} 集
+                  </button>
+                ) : null}
+              </div>
             );
           })}
           <button className="mt-4 block w-full rounded px-2 py-2 text-left hover:bg-white" type="button" onClick={() => choose({ kind: "character" })}>角色</button>
@@ -399,6 +413,13 @@ export function Workbench({ projectId }: { projectId: string }) {
               onSaved={reloadBase}
               onStatus={setSaveState}
               onOpenSide={() => setSideOpen(true)}
+            />
+          ) : null}
+          {project && focus.kind === "episode-compose" ? (
+            <EpisodeComposePreflight
+              projectId={projectId}
+              episodeNo={focus.episodeNo}
+              episodeId={episodes.find((item) => item.episodeNo === focus.episodeNo)?.id ?? null}
             />
           ) : null}
           {project && focus.kind === "script" ? (

@@ -542,6 +542,29 @@ export class StudioController {
     return this.send(response, this.studio.reviewComposite(assetId, body, ifMatch, this.context(idempotencyKey, traceHeader)));
   }
 
+  @Get("projects/:projectId/episodes/:episodeId/compose-candidates")
+  listEpisodeComposeCandidates(
+    @Param("projectId", UUID_PARAM_PIPE) projectId: string,
+    @Param("episodeId", UUID_PARAM_PIPE) episodeId: string,
+    @Res({ passthrough: true }) response: StatusResponse,
+    @Query("cursor") cursor?: string,
+    @Query("limit") limit?: string,
+  ) {
+    response.setHeader("Cache-Control", "private, no-store");
+    return this.studio.listEpisodeComposeCandidates(projectId, episodeId, cursor, limit);
+  }
+
+  @Post("projects/:projectId/episodes/:episodeId/compose-preflight")
+  preflightEpisodeCompose(
+    @Param("projectId", UUID_PARAM_PIPE) projectId: string,
+    @Param("episodeId", UUID_PARAM_PIPE) episodeId: string,
+    @Body() body: unknown,
+    @Res({ passthrough: true }) response: StatusResponse,
+  ) {
+    response.setHeader("Cache-Control", "private, no-store");
+    return this.send(response, this.studio.preflightEpisodeCompose(projectId, episodeId, body));
+  }
+
   @Post("shot-revisions/:revisionId/compose-preflight")
   composePreflight(
     @Param("revisionId", UUID_PARAM_PIPE) revisionId: string,

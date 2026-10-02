@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { DomainError, parseComposePreflightRequest, parseComposeRenderRequest, parseComposeReviewRequest } from "@ai-drama/domain";
+import { DomainError, parseComposePreflightRequest, parseComposeRenderRequest, parseComposeReviewRequest, parseEpisodeComposePreflightRequest } from "@ai-drama/domain";
 import {
   JobPersistenceService,
   MediaAssetStore,
@@ -664,6 +664,30 @@ export class StudioService {
     return {
       status: 200,
       body: await this.mediaAssets.preflightCompose(this.workspaceId, shotRevisionId, selection),
+    };
+  }
+
+  async listEpisodeComposeCandidates(projectId: string, episodeId: string, cursor?: string, limit?: string) {
+    if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
+    return this.mediaAssets.listEpisodeComposeCandidates(
+      this.workspaceId, projectId, episodeId, cursor, parsePageLimit(limit),
+    );
+  }
+
+  async preflightEpisodeCompose(projectId: string, episodeId: string, body: unknown) {
+    let request;
+    try {
+      request = parseEpisodeComposePreflightRequest(rejectClientWorkspace(body));
+    } catch (error) {
+      if (error instanceof DomainError) throw new PersistenceError(error.code, error.message);
+      throw error;
+    }
+    if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
+    return {
+      status: 200,
+      body: await this.mediaAssets.preflightEpisodeCompose(
+        this.workspaceId, projectId, episodeId, request.compositeAssetIds,
+      ),
     };
   }
 

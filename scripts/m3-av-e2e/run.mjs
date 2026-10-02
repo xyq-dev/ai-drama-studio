@@ -16,6 +16,7 @@ import {
 } from "node:fs";
 import { rename, rm, writeFile } from "node:fs/promises";
 import { composePreflightGates, composePreflightPage, composePreflightReadonly } from "./compose-preflight.mjs";
+import { episodeComposeGates, episodeComposePreflight, episodeComposeReadonly } from "./episode-compose-preflight.mjs";
 import { composeProvenanceStale, composeRenderGates, composeRenderLifecycle, composeRenderPage, composeReview } from "./compose-render.mjs";
 import { mediaCancel, mediaObservationReplay, mediaShotIsolation, mediaTerminalRace } from "./lifecycle.mjs";
 import { acceptanceExitCode, acceptanceFailed, assertLinkage, requiredStages } from "./outcome.mjs";
@@ -1978,6 +1979,9 @@ async function main() {
   await stage("compose-render-lifecycle", () => composeRenderLifecycle(lifecycle));
   await stage("compose-review", () => composeReview(lifecycle));
   await stage("compose-provenance-stale", () => composeProvenanceStale(lifecycle));
+  await stage("episode-compose-preflight", () => episodeComposePreflight(lifecycle));
+  await stage("episode-compose-gates", () => episodeComposeGates(lifecycle));
+  await stage("episode-compose-readonly", () => episodeComposeReadonly(lifecycle));
 }
 
 function lifecycleContext() {

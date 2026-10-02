@@ -9,6 +9,7 @@ const harness = [
   readFileSync(resolve(root, "scripts/m3-av-e2e/lifecycle.mjs"), "utf8"),
   readFileSync(resolve(root, "scripts/m3-av-e2e/compose-preflight.mjs"), "utf8"),
   readFileSync(resolve(root, "scripts/m3-av-e2e/compose-render.mjs"), "utf8"),
+  readFileSync(resolve(root, "scripts/m3-av-e2e/episode-compose-preflight.mjs"), "utf8"),
 ].join("\n").replace(/\r\n/g, "\n");
 const outcome = readFileSync(resolve(root, "scripts/m3-av-e2e/outcome.mjs"), "utf8").replace(/\r\n/g, "\n");
 
@@ -229,6 +230,41 @@ for (const snippet of forbidden) {
   if (renderWorkflow.includes(snippet)) failures.push(`render workflow contains ${JSON.stringify(snippet)}`);
 }
 if (renderWorkflow.includes("docs/**")) failures.push("render workflow paths include docs");
+
+for (const stage of ["episode-compose-preflight", "episode-compose-gates", "episode-compose-readonly"]) {
+  if (!outcome.includes(`"${stage}"`)) failures.push(`outcome missing ${stage}`);
+  if (!harness.includes(`"${stage}"`)) failures.push(`harness missing ${stage}`);
+}
+const episodeWorkflow = readFileSync(resolve(root, ".github/workflows/m4-episode-compose-preflight-e2e.yml"), "utf8").replace(/\r\n/g, "\n");
+const episodeRequired = [
+  "branches:\n      - feat/m4-episode-compose-preflight",
+  "workflow_dispatch:",
+  "contents: read",
+  "ubuntu-24.04",
+  "timeout-minutes: 90",
+  "node-version: 24.21.0",
+  "version: 10.17.0",
+  "pnpm install --frozen-lockfile",
+  "playwright install --with-deps chrome",
+  "python3-pytest",
+  "fonts-dejavu-core",
+  "ffmpeg=7:6.1.1-3ubuntu5",
+  "fonts-dejavu-core=2.37-8",
+  "python3-pytest=7.4.4-1",
+  "pytest services/media-worker/tests",
+  "node scripts/run-media-worker-tests.mjs",
+  "node scripts/m3-av-e2e/run.mjs",
+  "name: m4-episode-compose-preflight-e2e-evidence",
+  "retention-days: 7",
+  "if: always()",
+];
+for (const snippet of episodeRequired) {
+  if (!episodeWorkflow.includes(snippet)) failures.push(`episode workflow missing ${JSON.stringify(snippet)}`);
+}
+for (const snippet of forbidden) {
+  if (episodeWorkflow.includes(snippet)) failures.push(`episode workflow contains ${JSON.stringify(snippet)}`);
+}
+if (episodeWorkflow.includes("docs/**")) failures.push("episode workflow paths include docs");
 
 if (failures.length > 0) {
   process.stderr.write(`${failures.join("\n")}\n`);

@@ -2,7 +2,10 @@ import {
   assertExpectedPreflightHash,
   buildComposeJobSnapshot,
   buildComposePreflight,
+  buildEpisodeComposePreflight,
   canonicalInputHash,
+  type EpisodeComposePreflightResponse,
+  type EpisodeCompositeFacts,
   type ComposeAssetFacts,
   type ComposeAttemptFacts,
   type ComposeJobFacts,
@@ -252,6 +255,52 @@ export class MediaAssetStore {
       await client.query("BEGIN");
       try {
         const result = await preflightComposeWithClient(client, workspaceId, shotRevisionId, selection);
+        await client.query("COMMIT");
+        return result;
+      } catch (error) {
+        await client.query("ROLLBACK");
+        if (error instanceof DomainError) throw new PersistenceError(error.code, error.message);
+        throw error;
+      }
+    } finally {
+      client.release();
+    }
+  }
+
+  async listEpisodeComposeCandidates(
+    workspaceId: string,
+    projectId: string,
+    episodeId: string,
+    cursor: string | undefined,
+    limit: number,
+  ): Promise<{ items: EpisodeComposeCandidate[]; nextCursor: string | null }> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      try {
+        const page = await listEpisodeComposeCandidatesWithClient(client, workspaceId, projectId, episodeId, cursor, limit);
+        await client.query("COMMIT");
+        return page;
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      }
+    } finally {
+      client.release();
+    }
+  }
+
+  async preflightEpisodeCompose(
+    workspaceId: string,
+    projectId: string,
+    episodeId: string,
+    compositeAssetIds: readonly string[],
+  ): Promise<EpisodeComposePreflightResponse> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      try {
+        const result = await preflightEpisodeComposeWithClient(client, workspaceId, projectId, episodeId, compositeAssetIds);
         await client.query("COMMIT");
         return result;
       } catch (error) {
@@ -1061,4 +1110,343 @@ function integerOrZero(value: unknown): number {
     if (Number.isSafeInteger(parsed)) return parsed;
   }
   return 0;
+}
+
+export interface EpisodeComposeCandidate {
+  assetId: string;
+  shotId: string;
+  shotRevisionId: string;
+  sceneId: string;
+  sceneOrdinal: number;
+  sceneHeading: string;
+  shotOrdinal: number;
+  checksumSha256: string;
+  byteSize: number;
+  width: number;
+  height: number;
+  durationMs: number;
+  reviewStatus: string;
+  rowVersion: number;
+}
+
+async function listEpisodeComposeCandidatesWithClient(
+  client: PoolClient,
+  workspaceId: string,
+  projectId: string,
+  episodeId: string,
+  cursor: string | undefined,
+  limit: number,
+): Promise<{ items: EpisodeComposeCandidate[]; nextCursor: string | null }> {
+  const position = decodeEpisodeCandidateCursor(cursor);
+  const episode = await client.query(
+    `SELECT id FROM episode WHERE id = $1 AND workspace_id = $2 AND project_id = $3`,
+    [episodeId, workspaceId, projectId],
+  );
+  if (!episode.rows[0]) throw new PersistenceError("NOT_FOUND", "Episode not found");
+  const pending = await client.query(
+    `SELECT 1 FROM stale_recalculation
+      WHERE workspace_id = $1 AND project_id = $2 AND status IN ('PENDING', 'RUNNING')
+      LIMIT 1`,
+    [workspaceId, projectId],
+  );
+  if (pending.rows[0]) {
+    throw new PersistenceError("STALE_RECALCULATION_PENDING", "Episode compose is blocked until stale propagation completes");
+  }
+  const listed = await client.query<QueryResultRow>(
+    `SELECT asset.id AS asset_id,
+            shot.id AS shot_id,
+            revision.id AS shot_revision_id,
+            scene.id AS scene_id,
+            scene_revision.ordinal AS scene_ordinal,
+            scene_revision.heading AS scene_heading,
+            revision.ordinal AS shot_ordinal,
+            asset.checksum_sha256,
+            asset.byte_size,
+            asset.width,
+            asset.height,
+            asset.duration_ms,
+            asset.review_status,
+            asset.row_version
+       FROM asset
+       JOIN shot_revision revision
+         ON revision.id = asset.source_shot_revision_id
+        AND revision.workspace_id = asset.workspace_id
+        AND revision.project_id = asset.project_id
+       JOIN shot
+         ON shot.id = revision.shot_id
+        AND shot.workspace_id = revision.workspace_id
+        AND shot.project_id = revision.project_id
+        AND shot.current_revision_id = revision.id
+        AND shot.approved_revision_id = revision.id
+       JOIN scene
+         ON scene.id = shot.scene_id
+        AND scene.workspace_id = shot.workspace_id
+        AND scene.project_id = shot.project_id
+        AND scene.episode_id = $3
+       JOIN scene_revision
+         ON scene_revision.id = scene.current_revision_id
+        AND scene_revision.id = scene.approved_revision_id
+        AND scene_revision.id = revision.source_scene_revision_id
+        AND scene_revision.workspace_id = scene.workspace_id
+        AND scene_revision.project_id = scene.project_id
+      WHERE asset.workspace_id = $1
+        AND asset.project_id = $2
+        AND asset.kind = 'COMPOSITE'
+        AND asset.status = 'ACTIVE'
+        AND asset.review_status = 'APPROVED'
+        AND asset.source_kind = 'LOCAL_JOB'
+        AND asset.storage_provider = 'local-compose'
+        AND asset.reviewed_content_hash = asset.checksum_sha256
+        AND asset.mime_type = 'video/mp4'
+        AND asset.width = 1080
+        AND asset.height = 1920
+        AND revision.review_status = 'APPROVED'
+        AND revision.freshness_status = 'CURRENT'
+        AND scene_revision.review_status = 'APPROVED'
+        AND scene_revision.freshness_status = 'CURRENT'
+      ORDER BY scene_revision.ordinal, revision.ordinal, asset.id`,
+    [workspaceId, projectId, episodeId],
+  );
+  const usable: EpisodeComposeCandidate[] = [];
+  for (const row of listed.rows) {
+    try {
+      await assertUsableShotWithClient(client, workspaceId, projectId, String(row.shot_revision_id), false);
+    } catch (error) {
+      if (error instanceof PersistenceError && error.code === "REVIEW_REQUIRED") continue;
+      throw error;
+    }
+    usable.push(mapEpisodeCandidate(row));
+  }
+  const page = usable.filter((item) => position === null || compareEpisodeCandidate(item, position) > 0);
+  const items = page.slice(0, limit);
+  const next = page.length > limit ? items[items.length - 1] : undefined;
+  return {
+    items,
+    nextCursor: next ? encodeEpisodeCandidateCursor(next) : null,
+  };
+}
+
+async function preflightEpisodeComposeWithClient(
+  client: PoolClient,
+  workspaceId: string,
+  projectId: string,
+  episodeId: string,
+  compositeAssetIds: readonly string[],
+): Promise<EpisodeComposePreflightResponse> {
+  const episode = await client.query(
+    `SELECT id FROM episode WHERE id = $1 AND workspace_id = $2 AND project_id = $3`,
+    [episodeId, workspaceId, projectId],
+  );
+  if (!episode.rows[0]) throw new PersistenceError("NOT_FOUND", "Episode not found");
+  const project = await client.query(
+    `SELECT id FROM project WHERE id = $1 AND workspace_id = $2 FOR UPDATE`,
+    [projectId, workspaceId],
+  );
+  if (!project.rows[0]) throw new PersistenceError("NOT_FOUND", "Project not found");
+  const pending = await client.query(
+    `SELECT 1 FROM stale_recalculation
+      WHERE workspace_id = $1 AND project_id = $2 AND status IN ('PENDING', 'RUNNING')
+      LIMIT 1`,
+    [workspaceId, projectId],
+  );
+  if (pending.rows[0]) {
+    throw new PersistenceError("STALE_RECALCULATION_PENDING", "Episode compose is blocked until stale propagation completes");
+  }
+  const lockedIds = [...compositeAssetIds].sort();
+  const assets = await client.query<QueryResultRow>(
+    `SELECT id, workspace_id, project_id, kind, mime_type, byte_size, checksum_sha256,
+            width, height, duration_ms, status, review_status, storage_provider, source_kind,
+            source_job_attempt_id, source_generation_job_id, source_shot_revision_id,
+            provider_configuration_id, provider_request_id, reviewed_content_hash, row_version, metadata_json
+       FROM asset
+      WHERE workspace_id = $1 AND id = ANY($2::uuid[])
+      ORDER BY id
+      FOR UPDATE`,
+    [workspaceId, lockedIds],
+  );
+  if (assets.rows.length !== lockedIds.length) throw new PersistenceError("NOT_FOUND", "Composite not found");
+  if (assets.rows.some((row) => String(row.project_id) !== projectId)) {
+    throw new PersistenceError("COMPOSE_INPUT_INVALID", "Composite is outside this project");
+  }
+  const jobIds = [...new Set(assets.rows.map((row) => String(row.source_generation_job_id ?? "")))].filter((id) => id.length > 0).sort();
+  const attemptIds = [...new Set(assets.rows.map((row) => String(row.source_job_attempt_id ?? "")))].filter((id) => id.length > 0).sort();
+  const jobs = jobIds.length === 0 ? { rows: [] as QueryResultRow[] } : await client.query<QueryResultRow>(
+    `SELECT id, workspace_id, project_id, source_shot_revision_id, kind, state, input_snapshot
+       FROM generation_job
+      WHERE workspace_id = $1 AND id = ANY($2::uuid[])
+      ORDER BY id
+      FOR SHARE`,
+    [workspaceId, jobIds],
+  );
+  const attempts = attemptIds.length === 0 ? { rows: [] as QueryResultRow[] } : await client.query<QueryResultRow>(
+    `SELECT attempt.id, attempt.generation_job_id,
+            attempt.finished_at IS NOT NULL AS finished,
+            attempt.attempt_no = (
+              SELECT MAX(latest.attempt_no) FROM job_attempt latest WHERE latest.generation_job_id = attempt.generation_job_id
+            ) AS is_latest
+       FROM job_attempt attempt
+      WHERE attempt.id = ANY($1::uuid[])
+      ORDER BY attempt.id
+      FOR SHARE`,
+    [attemptIds],
+  );
+  const revisionIds = [...new Set(assets.rows.map((row) => String(row.source_shot_revision_id ?? "")))].filter((id) => id.length > 0).sort();
+  const placements = revisionIds.length === 0 ? { rows: [] as QueryResultRow[] } : await client.query<QueryResultRow>(
+    `SELECT revision.id AS shot_revision_id, shot.id AS shot_id, scene.episode_id
+       FROM shot_revision revision
+       JOIN shot
+         ON shot.id = revision.shot_id
+        AND shot.workspace_id = revision.workspace_id
+        AND shot.project_id = revision.project_id
+       JOIN scene
+         ON scene.id = shot.scene_id
+        AND scene.workspace_id = shot.workspace_id
+        AND scene.project_id = shot.project_id
+      WHERE revision.workspace_id = $1
+        AND revision.project_id = $2
+        AND revision.id = ANY($3::uuid[])`,
+    [workspaceId, projectId, revisionIds],
+  );
+  for (const revisionId of revisionIds) {
+    await assertUsableShotWithClient(client, workspaceId, projectId, revisionId, true);
+  }
+  const jobsById = new Map(jobs.rows.map((row) => [String(row.id), row]));
+  const attemptsById = new Map(attempts.rows.map((row) => [String(row.id), row]));
+  const placementsByRevision = new Map(placements.rows.map((row) => [String(row.shot_revision_id), row]));
+  const assetsById = new Map(assets.rows.map((row) => [String(row.id), row]));
+  const composites = compositeAssetIds.map((assetId) => {
+    const row = assetsById.get(assetId);
+    if (!row) throw new PersistenceError("NOT_FOUND", "Composite not found");
+    return episodeCompositeFacts(row, workspaceId, jobsById, attemptsById, placementsByRevision);
+  });
+  try {
+    return buildEpisodeComposePreflight({
+      workspaceId,
+      projectId,
+      episodeId,
+      staleRecalculationPending: false,
+      composites,
+    });
+  } catch (error) {
+    if (error instanceof DomainError) throw new PersistenceError(error.code, error.message);
+    throw error;
+  }
+}
+
+function episodeCompositeFacts(
+  row: QueryResultRow,
+  workspaceId: string,
+  jobsById: Map<string, QueryResultRow>,
+  attemptsById: Map<string, QueryResultRow>,
+  placementsByRevision: Map<string, QueryResultRow>,
+): EpisodeCompositeFacts {
+  const metadata = isPlainJson(row.metadata_json) ? row.metadata_json : {};
+  const placement = placementsByRevision.get(String(row.source_shot_revision_id ?? ""));
+  const job = jobsById.get(String(row.source_generation_job_id ?? ""));
+  const attempt = attemptsById.get(String(row.source_job_attempt_id ?? ""));
+  const snapshot = job && isPlainJson(job.input_snapshot) ? job.input_snapshot : null;
+  return {
+    assetId: String(row.id),
+    workspaceId,
+    projectId: String(row.project_id),
+    episodeId: placement ? String(placement.episode_id) : "",
+    shotId: placement ? String(placement.shot_id) : "",
+    shotRevisionId: row.source_shot_revision_id == null ? "" : String(row.source_shot_revision_id),
+    checksumSha256: String(row.checksum_sha256),
+    byteSize: integerOrZero(row.byte_size),
+    width: row.width == null ? null : integerOrZero(row.width),
+    height: row.height == null ? null : integerOrZero(row.height),
+    durationMs: row.duration_ms == null ? null : integerOrZero(row.duration_ms),
+    mimeType: String(row.mime_type),
+    kind: String(row.kind),
+    status: String(row.status),
+    reviewStatus: String(row.review_status),
+    sourceKind: row.source_kind == null ? null : String(row.source_kind),
+    storageProvider: String(row.storage_provider),
+    reviewedContentHash: row.reviewed_content_hash == null ? null : String(row.reviewed_content_hash),
+    rowVersion: integerOrZero(row.row_version),
+    metadataSchema: typeof metadata.schema === "string" ? metadata.schema : null,
+    renderProfile: metadata.renderProfile ?? null,
+    providerConfigurationId: row.provider_configuration_id == null ? null : String(row.provider_configuration_id),
+    providerRequestId: row.provider_request_id == null ? null : String(row.provider_request_id),
+    sourceGenerationJobId: row.source_generation_job_id == null ? null : String(row.source_generation_job_id),
+    sourceJobAttemptId: row.source_job_attempt_id == null ? null : String(row.source_job_attempt_id),
+    sourceUsable: true,
+    job: job ? {
+      id: String(job.id),
+      workspaceId: String(job.workspace_id),
+      projectId: String(job.project_id),
+      shotRevisionId: job.source_shot_revision_id == null ? null : String(job.source_shot_revision_id),
+      kind: String(job.kind),
+      state: String(job.state),
+      schema: snapshot && typeof snapshot.schema === "string" ? snapshot.schema : null,
+    } : null,
+    attempt: attempt ? {
+      id: String(attempt.id),
+      generationJobId: String(attempt.generation_job_id),
+      finished: attempt.finished === true,
+      isLatest: attempt.is_latest === true,
+    } : null,
+  };
+}
+
+function mapEpisodeCandidate(row: QueryResultRow): EpisodeComposeCandidate {
+  return {
+    assetId: String(row.asset_id),
+    shotId: String(row.shot_id),
+    shotRevisionId: String(row.shot_revision_id),
+    sceneId: String(row.scene_id),
+    sceneOrdinal: integerOrZero(row.scene_ordinal),
+    sceneHeading: String(row.scene_heading),
+    shotOrdinal: integerOrZero(row.shot_ordinal),
+    checksumSha256: String(row.checksum_sha256),
+    byteSize: integerOrZero(row.byte_size),
+    width: integerOrZero(row.width),
+    height: integerOrZero(row.height),
+    durationMs: integerOrZero(row.duration_ms),
+    reviewStatus: String(row.review_status),
+    rowVersion: integerOrZero(row.row_version),
+  };
+}
+
+function compareEpisodeCandidate(
+  item: Pick<EpisodeComposeCandidate, "sceneOrdinal" | "shotOrdinal" | "assetId">,
+  cursor: { sceneOrdinal: number; shotOrdinal: number; assetId: string },
+): number {
+  if (item.sceneOrdinal !== cursor.sceneOrdinal) return item.sceneOrdinal - cursor.sceneOrdinal;
+  if (item.shotOrdinal !== cursor.shotOrdinal) return item.shotOrdinal - cursor.shotOrdinal;
+  return item.assetId < cursor.assetId ? -1 : item.assetId > cursor.assetId ? 1 : 0;
+}
+
+function encodeEpisodeCandidateCursor(item: EpisodeComposeCandidate): string {
+  return Buffer.from(JSON.stringify({
+    v: 1,
+    sceneOrdinal: item.sceneOrdinal,
+    shotOrdinal: item.shotOrdinal,
+    assetId: item.assetId,
+  })).toString("base64url");
+}
+
+function decodeEpisodeCandidateCursor(cursor: string | undefined): { sceneOrdinal: number; shotOrdinal: number; assetId: string } | null {
+  if (!cursor) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+  } catch {
+    throw new PersistenceError("VALIDATION_ERROR", "Episode compose cursor is invalid");
+  }
+  if (!isPlainJson(parsed) || parsed.v !== 1) {
+    throw new PersistenceError("VALIDATION_ERROR", "Episode compose cursor is invalid");
+  }
+  const sceneOrdinal = parsed.sceneOrdinal;
+  const shotOrdinal = parsed.shotOrdinal;
+  const assetId = parsed.assetId;
+  if (typeof sceneOrdinal !== "number" || typeof shotOrdinal !== "number" || !Number.isSafeInteger(sceneOrdinal) || !Number.isSafeInteger(shotOrdinal) || typeof assetId !== "string") {
+    throw new PersistenceError("VALIDATION_ERROR", "Episode compose cursor is invalid");
+  }
+  return { sceneOrdinal, shotOrdinal, assetId };
+}
+
+function isPlainJson(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

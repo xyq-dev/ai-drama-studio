@@ -85,6 +85,24 @@ export {
   type ComposePreflightSelection,
 } from "./compose-preflight";
 export {
+  EPISODE_COMPOSE_ASSET_SCHEMA,
+  EPISODE_COMPOSE_MAX_DURATION_MS,
+  EPISODE_COMPOSE_MAX_SEGMENTS,
+  EPISODE_COMPOSE_MIN_SEGMENTS,
+  EPISODE_COMPOSE_PREFLIGHT_SCHEMA,
+  EPISODE_COMPOSE_SHORT_NOTICE,
+  EPISODE_COMPOSE_STATUS_NOTE,
+  EPISODE_COMPOSE_TARGET_MIN_MS,
+  buildEpisodeComposePreflight,
+  parseEpisodeComposePreflightRequest,
+  type EpisodeComposeAttemptFacts,
+  type EpisodeComposeJobFacts,
+  type EpisodeComposePreflightRequest,
+  type EpisodeComposePreflightResponse,
+  type EpisodeComposeSegment,
+  type EpisodeCompositeFacts,
+} from "./episode-compose-preflight";
+export {
   COMPOSE_JOB_SCHEMA,
   COMPOSE_OUTPUT_MAX_BYTES,
   COMPOSE_RENDER_PROFILE,
