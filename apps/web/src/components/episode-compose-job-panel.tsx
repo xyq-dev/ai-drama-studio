@@ -43,7 +43,22 @@ interface HeldSubmit {
   unresolved: boolean;
 }
 
+function mergeNewest(current: CompositeItem[], page: CompositeItem[]): CompositeItem[] {
+  const pageIds = new Set(page.map((item) => item.assetId));
+  return [...page, ...current.filter((item) => !pageIds.has(item.assetId))];
+}
+
 const TERMINAL = new Set(["SUCCEEDED", "FAILED", "CANCELED"]);
+const DEFINITE_COMPOSE_REJECTION = new Set([
+  "VALIDATION_ERROR",
+  "COMPOSE_INPUT_CHANGED",
+  "COMPOSE_INPUT_INVALID",
+  "CONFIGURATION_ERROR",
+  "NOT_FOUND",
+  "REVIEW_REQUIRED",
+  "STALE_RECALCULATION_PENDING",
+  "IDEMPOTENCY_KEY_REUSED",
+]);
 
 export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
   const identity = `${props.projectId}:${props.episodeId}`;
@@ -54,19 +69,33 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
   const [listError, setListError] = useState<string | null>(null);
   const [held, setHeld] = useState<HeldSubmit | null>(null);
   const [reload, setReload] = useState(0);
+  const [historyCursor, setHistoryCursor] = useState<string | null>(null);
   const epoch = useRef(0);
   const listEpoch = useRef(0);
+  const jobGen = useRef(0);
+  const readGen = useRef(0);
+  const paged = useRef(false);
+  const historyCursorRef = useRef<string | null>(null);
   const reading = useRef(false);
   const hidden = useRef(typeof document !== "undefined" && document.visibilityState === "hidden");
 
+  function rememberCursor(value: string | null) {
+    historyCursorRef.current = value;
+    setHistoryCursor(value);
+  }
+
   function reset(nextEpoch: number) {
     epoch.current = nextEpoch;
+    jobGen.current += 1;
+    readGen.current += 1;
+    paged.current = false;
     setBusy(false);
     setError(null);
     setJob(null);
     setItems([]);
     setListError(null);
     setHeld(null);
+    rememberCursor(null);
   }
 
   useEffect(() => {
@@ -91,7 +120,8 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
           `/projects/${props.projectId}/episodes/${props.episodeId}/composites?limit=10`,
         );
         if (stopped || listEpoch.current !== token) return;
-        setItems(page.items);
+        setItems((current) => paged.current ? mergeNewest(current, page.items) : page.items);
+        if (!paged.current) rememberCursor(page.nextCursor);
         setListError(null);
       } catch (caught) {
         if (stopped || listEpoch.current !== token) return;
@@ -122,24 +152,34 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
   useEffect(() => {
     if (!job || TERMINAL.has(job.state)) return;
     const token = epoch.current;
+    const generation = jobGen.current;
     const jobId = job.id;
     let timer = 0;
     let active = false;
     let stopped = false;
+    const stillCurrent = () => !stopped && epoch.current === token && jobGen.current === generation && !hidden.current;
     const read = async () => {
-      if (stopped || hidden.current || active || epoch.current !== token) return;
+      if (stopped || hidden.current || active || epoch.current !== token || jobGen.current !== generation) return;
+      const seenRead = readGen.current;
       active = true;
       try {
         const next = await props.client.get<JobView>(`/generation-jobs/${jobId}`);
-        if (stopped || epoch.current !== token || jobId !== next.id) return;
+        const fresh = !stopped && epoch.current === token && jobGen.current === generation && readGen.current === seenRead;
+        if (!fresh || next.id !== jobId) {
+          if (stillCurrent()) timer = window.setTimeout(() => void read(), 1500);
+          return;
+        }
         setJob(next);
-        if (!TERMINAL.has(next.state) && epoch.current === token && !hidden.current && !stopped) {
+        if (!TERMINAL.has(next.state) && stillCurrent() && readGen.current === seenRead) {
           timer = window.setTimeout(() => void read(), 1500);
         }
       } catch (caught) {
-        if (stopped || epoch.current !== token) return;
+        if (stopped || epoch.current !== token || jobGen.current !== generation || readGen.current !== seenRead) {
+          if (stillCurrent()) timer = window.setTimeout(() => void read(), 1500);
+          return;
+        }
         setError(caught instanceof ApiError ? caught.detail : "任务暂时无法读取");
-        if (epoch.current === token && !hidden.current && !stopped) timer = window.setTimeout(() => void read(), 1500);
+        if (stillCurrent()) timer = window.setTimeout(() => void read(), 1500);
       } finally {
         active = false;
       }
@@ -182,14 +222,17 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
         setError("合成请求没有返回有效任务编号，将使用同一请求重试");
         return;
       }
+      jobGen.current += 1;
+      readGen.current += 1;
       setHeld({ ...request, unresolved: false });
       setJob({ id: jobId, state: result.body.state ?? "QUEUED", errorMessage: null });
     } catch (caught) {
       if (epoch.current !== token) return;
-      const retryable = caught instanceof ApiError && (caught.status === 503 || caught.status === 0);
-      const network = !(caught instanceof ApiError);
-      if (!retryable && !network) setHeld({ ...request, unresolved: false });
-      setError(caught instanceof ApiError ? caught.detail : "网络异常，将使用同一请求重试");
+      const definite = caught instanceof ApiError && DEFINITE_COMPOSE_REJECTION.has(caught.code);
+      if (definite) setHeld({ ...request, unresolved: false });
+      if (caught instanceof ApiError) setError(caught.detail);
+      else if (caught instanceof SyntaxError) setError("响应无法解析，将使用同一请求重试");
+      else setError("网络异常，将使用同一请求重试");
     } finally {
       if (epoch.current === token) setBusy(false);
     }
@@ -198,20 +241,49 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
   async function cancel() {
     if (!job) return;
     const token = epoch.current;
+    const generation = jobGen.current;
     const jobId = job.id;
+    readGen.current += 1;
     try {
       await props.client.write({
         path: `/generation-jobs/${jobId}/cancel`,
         body: {},
         idempotencyKey: crypto.randomUUID(),
       });
-      if (epoch.current !== token) return;
+      if (epoch.current !== token || jobGen.current !== generation) return;
       const next = await props.client.get<JobView>(`/generation-jobs/${jobId}`);
-      if (epoch.current !== token || next.id !== jobId) return;
+      if (epoch.current !== token || jobGen.current !== generation || next.id !== jobId) return;
+      jobGen.current += 1;
+      readGen.current += 1;
       setJob(next);
     } catch (caught) {
-      if (epoch.current !== token) return;
+      if (epoch.current !== token || jobGen.current !== generation) return;
       setError(caught instanceof ApiError ? caught.detail : "取消没有完成");
+    }
+  }
+
+  async function loadHistory() {
+    const cursor = historyCursorRef.current;
+    const token = listEpoch.current;
+    if (!cursor || reading.current) return;
+    reading.current = true;
+    try {
+      const page = await props.client.get<CompositePage>(
+        `/projects/${props.projectId}/episodes/${props.episodeId}/composites?limit=10&cursor=${encodeURIComponent(cursor)}`,
+      );
+      if (listEpoch.current !== token) return;
+      paged.current = true;
+      setItems((current) => {
+        const seen = new Set(current.map((item) => item.assetId));
+        return [...current, ...page.items.filter((item) => !seen.has(item.assetId))];
+      });
+      rememberCursor(page.nextCursor);
+      setListError(null);
+    } catch (caught) {
+      if (listEpoch.current !== token) return;
+      setListError(caught instanceof ApiError ? caught.detail : "集级成片暂时无法读取");
+    } finally {
+      reading.current = false;
     }
   }
 
@@ -239,6 +311,7 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
       {job ? <p className="mt-2 text-sm" role="status">多镜合成已受理 {job.state}</p> : null}
       {error ? <p className="mt-2 text-sm" role="alert">{error}</p> : null}
       {listError ? <button className="mt-2 rounded border px-3 py-1 text-sm" type="button" onClick={() => setReload((value) => value + 1)}>重新查询成片</button> : null}
+      {historyCursor ? <button className="mt-2 rounded border px-3 py-1 text-sm" type="button" onClick={() => void loadHistory()}>加载更早的成片</button> : null}
       {job && !TERMINAL.has(job.state) ? <button className="mt-2 rounded border px-3 py-1 text-sm" type="button" onClick={() => void cancel()}>取消合成</button> : null}
       <ul className="mt-3 space-y-2">
         {items.map((item) => (

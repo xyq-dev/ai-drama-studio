@@ -693,7 +693,7 @@ export class StudioService {
   }
 
   async listEpisodeComposites(projectId: string, episodeId: string, cursor?: string, limit?: string) {
-    if (!this.episodeComposeEnabled || !this.localComposeEnabled) {
+    if (!this.episodeComposeEnabled) {
       throw new PersistenceError("CONFIGURATION_ERROR", "Episode compose is not enabled");
     }
     if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
@@ -701,7 +701,7 @@ export class StudioService {
   }
 
   async composeEpisode(projectId: string, episodeId: string, body: unknown, context: StudioContext) {
-    if (!this.episodeComposeEnabled || !this.localComposeEnabled) {
+    if (!this.episodeComposeEnabled) {
       throw new PersistenceError("CONFIGURATION_ERROR", "Episode compose is not enabled");
     }
     let request;
@@ -790,18 +790,16 @@ export class StudioService {
         reviewedBy: context.actorId,
         traceId: context.traceId,
         shotReviewEnabled: this.localComposeEnabled,
-        episodeReviewEnabled: this.episodeComposeEnabled && this.localComposeEnabled,
+        episodeReviewEnabled: this.episodeComposeEnabled,
       }),
     );
   }
 
   async readMockAssetContent(assetId: string): Promise<{ mimeType: string; bytes: Buffer }> {
     if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
-    if (!this.mockObjectDir) {
-      throw new PersistenceError("CONFIGURATION_ERROR", "Mock object storage is not configured");
-    }
     const asset = await this.mediaAssets.getWorkspaceAsset(this.workspaceId, assetId);
     if (asset.kind === "IMAGE") {
+      if (!this.mockObjectDir) throw new PersistenceError("CONFIGURATION_ERROR", "Mock object storage is not configured");
       if (!this.mockImageEnabled) {
         throw new PersistenceError("CONFIGURATION_ERROR", "Mock image content is not enabled");
       }
@@ -815,6 +813,7 @@ export class StudioService {
       };
     }
     if (asset.kind === "VIDEO" || asset.kind === "AUDIO") {
+      if (!this.mockObjectDir) throw new PersistenceError("CONFIGURATION_ERROR", "Mock object storage is not configured");
       if (!this.mockAvEnabled) {
         throw new PersistenceError("CONFIGURATION_ERROR", "Mock video and speech content is not enabled");
       }
@@ -825,7 +824,7 @@ export class StudioService {
       const schema = await this.mediaAssets.compositeOutputSchema(this.workspaceId, assetId);
       const episodeOutput = schema === "m4.episode.compose.asset.v1";
       const shotOutput = schema === "m4.shot.compose.asset.v1";
-      if (episodeOutput && (!this.episodeComposeEnabled || !this.localComposeEnabled)) {
+      if (episodeOutput && !this.episodeComposeEnabled) {
         throw new PersistenceError("CONFIGURATION_ERROR", "Episode compose content is not enabled");
       }
       if (shotOutput && !this.localComposeEnabled) {
@@ -837,6 +836,7 @@ export class StudioService {
       return readCompositeContent(this.composeObjectDir, this.workspaceId, asset);
     }
     if (asset.kind === "SUBTITLE" || asset.kind === "MUSIC") {
+      if (!this.mockObjectDir) throw new PersistenceError("CONFIGURATION_ERROR", "Mock object storage is not configured");
       if (!this.mockSmEnabled) {
         throw new PersistenceError("CONFIGURATION_ERROR", "Mock subtitle and music content is not enabled");
       }

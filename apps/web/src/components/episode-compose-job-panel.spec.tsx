@@ -125,4 +125,201 @@ describe("episode compose job panel", () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(screen.queryByText(/CANCELED/)).toBeNull();
   });
+
+  it("replays one server job when the first response is an ambiguous failure", async () => {
+    const jobs = new Map<string, string>();
+    const posts: string[] = [];
+    const failures = [500, 502, 504];
+    let calls = 0;
+    const fetchImpl = (input: string, init?: RequestInit) => {
+      if (input.includes("/composites")) return Promise.resolve(json({ items: [], nextCursor: null }));
+      if (!input.includes("/compose")) return Promise.resolve(json({ id: JOB_A, state: "QUEUED", errorMessage: null }));
+      const headers = init?.headers as Record<string, string>;
+      const key = String(headers?.["Idempotency-Key"] ?? "");
+      posts.push(key);
+      if (!jobs.has(key)) jobs.set(key, JOB_A);
+      calls += 1;
+      if (calls <= failures.length) {
+        return Promise.resolve(json({ error: { code: "INTERNAL", message: `服务端 ${failures[calls - 1]}` } }, failures[calls - 1]));
+      }
+      if (calls === failures.length + 1) return Promise.resolve(new Response("not-json", { status: 200 }));
+      return Promise.resolve(json({ jobId: jobs.get(key), state: "QUEUED" }, 202));
+    };
+    render(panel(fetchImpl));
+    const button = () => screen.getByRole("button", { name: "开始多镜合成" });
+    fireEvent.click(button());
+    expect((await screen.findByRole("alert")).textContent).toContain("服务端 500");
+    fireEvent.click(button());
+    expect((await screen.findByRole("alert")).textContent).toContain("服务端 502");
+    fireEvent.click(button());
+    expect((await screen.findByRole("alert")).textContent).toContain("服务端 504");
+    fireEvent.click(button());
+    expect((await screen.findByRole("alert")).textContent).toContain("响应无法解析");
+    fireEvent.click(button());
+    expect(await screen.findByText(/多镜合成已受理/)).toBeTruthy();
+    expect(jobs.size).toBe(1);
+    expect(jobs.get(posts[0] ?? "")).toBe(JOB_A);
+    expect(posts.every((key) => key === posts[0])).toBe(true);
+  });
+
+  it("releases the original key only after an explicit compose rejection", async () => {
+    const posts: Array<{ key: string; body: string }> = [];
+    let calls = 0;
+    const fetchImpl = (input: string, init?: RequestInit) => {
+      if (input.includes("/composites")) return Promise.resolve(json({ items: [], nextCursor: null }));
+      if (!input.includes("/compose")) return Promise.resolve(json({}));
+      calls += 1;
+      const headers = init?.headers as Record<string, string>;
+      posts.push({ key: String(headers?.["Idempotency-Key"] ?? ""), body: String(init?.body ?? "") });
+      if (calls === 1) return Promise.resolve(json({ error: { code: "COMPOSE_INPUT_CHANGED", message: "来源已变化" } }, 409));
+      return Promise.resolve(json({ jobId: JOB_B, state: "QUEUED" }, 202));
+    };
+    const view = render(panel(fetchImpl));
+    const button = () => screen.getByRole("button", { name: "开始多镜合成" });
+    fireEvent.click(button());
+    expect((await screen.findByRole("alert")).textContent).toContain("来源已变化");
+    view.rerender(panel(fetchImpl, { ...body, expectedInputHash: "cd".repeat(32) }));
+    fireEvent.click(button());
+    expect(await screen.findByText(/多镜合成已受理/)).toBeTruthy();
+    expect(posts[1]?.key).not.toBe(posts[0]?.key);
+    expect(posts[1]?.body).toContain("cd".repeat(32));
+  });
+
+  it("loads older composites without duplicating a refreshed page", async () => {
+    const newest = "55555555-5555-4555-8555-555555555555";
+    const older = "66666666-6666-4666-8666-666666666666";
+    const oldest = "77777777-7777-4777-8777-777777777777";
+    const item = (assetId: string, reviewStatus: "DRAFT" | "APPROVED") => ({
+      assetId, status: "ACTIVE", reviewStatus, checksumSha256: HASH, rowVersion: 1, durationMs: 2000, segments: [],
+    });
+    let refreshes = 0;
+    const fetchImpl = (input: string) => {
+      if (!input.includes("/composites")) return Promise.resolve(json({}));
+      if (input.includes("cursor=")) return Promise.resolve(json({ items: [item(newest, "DRAFT"), item(older, "DRAFT"), item(oldest, "DRAFT")], nextCursor: null }));
+      refreshes += 1;
+      return Promise.resolve(json({
+        items: [item(newest, refreshes === 1 ? "DRAFT" : "APPROVED")],
+        nextCursor: "page-2",
+      }));
+    };
+    render(panel(fetchImpl, null));
+    fireEvent.click(await screen.findByRole("button", { name: "加载更早的成片" }));
+    await waitFor(() => expect(document.querySelector(`[data-composite-id="${oldest}"]`)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/APPROVED/)).toBeTruthy(), { timeout: 4000 });
+    const ids = [...document.querySelectorAll("[data-composite-id]")].map((node) => node.getAttribute("data-composite-id"));
+    expect(ids).toEqual([newest, older, oldest]);
+    expect(screen.getAllByRole("button", { name: "批准成片" })).toHaveLength(2);
+  });
+
+  it("ignores a delayed cancel from the previous job on the same episode", async () => {
+    let composePosts = 0;
+    let cancelReleased = false;
+    let releaseCancel: (value: Response) => void = () => undefined;
+    const fetchImpl = (input: string, init?: RequestInit) => {
+      if (input.includes("/composites")) return Promise.resolve(json({ items: [], nextCursor: null }));
+      if (input.includes("/compose")) {
+        composePosts += 1;
+        return Promise.resolve(json({ jobId: composePosts === 1 ? JOB_A : JOB_B, state: "RUNNING" }, 202));
+      }
+      if (init?.method === "POST") {
+        return new Promise<Response>((resolve) => {
+          releaseCancel = () => { cancelReleased = true; resolve(json({})); };
+        });
+      }
+      const jobId = input.includes(JOB_B) ? JOB_B : JOB_A;
+      const state = jobId === JOB_A && cancelReleased ? "CANCELED" : "RUNNING";
+      return Promise.resolve(json({ id: jobId, state, errorMessage: null }));
+    };
+    render(panel(fetchImpl));
+    fireEvent.click(screen.getByRole("button", { name: "开始多镜合成" }));
+    expect(await screen.findByText(/RUNNING/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "取消合成" }));
+    fireEvent.click(screen.getByRole("button", { name: "开始多镜合成" }));
+    await waitFor(() => expect(composePosts).toBe(2));
+    releaseCancel(json({}));
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(screen.getByText(/多镜合成已受理/).textContent).toContain("RUNNING");
+    expect(screen.getByRole("button", { name: "取消合成" })).toBeTruthy();
+    expect(screen.queryByText(/CANCELED/)).toBeNull();
+  });
+
+  it("ignores a delayed cancel failure after a newer job is accepted", async () => {
+    let composePosts = 0;
+    let releaseCancel: (value: Response) => void = () => undefined;
+    const fetchImpl = (input: string, init?: RequestInit) => {
+      if (input.includes("/composites")) return Promise.resolve(json({ items: [], nextCursor: null }));
+      if (input.includes("/compose")) {
+        composePosts += 1;
+        return Promise.resolve(json({ jobId: composePosts === 1 ? JOB_A : JOB_B, state: "RUNNING" }, 202));
+      }
+      if (init?.method === "POST") {
+        return new Promise<Response>((resolve) => { releaseCancel = resolve; });
+      }
+      const jobId = input.includes(JOB_B) ? JOB_B : JOB_A;
+      return Promise.resolve(json({ id: jobId, state: "RUNNING", errorMessage: null }));
+    };
+    render(panel(fetchImpl));
+    fireEvent.click(screen.getByRole("button", { name: "开始多镜合成" }));
+    expect(await screen.findByText(/RUNNING/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "取消合成" }));
+    fireEvent.click(screen.getByRole("button", { name: "开始多镜合成" }));
+    await waitFor(() => expect(composePosts).toBe(2));
+    releaseCancel(json({ error: { code: "INTERNAL", message: "取消没有完成" } }, 500));
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByText(/多镜合成已受理/).textContent).toContain("RUNNING");
+    expect(screen.getByRole("button", { name: "取消合成" })).toBeTruthy();
+  });
+
+  it("drops a cancel from episode A after visiting B and returning to A", async () => {
+    let releaseCancel: (value: Response) => void = () => undefined;
+    let composePosts = 0;
+    const fetchImpl = (input: string, init?: RequestInit) => {
+      if (input.includes("/composites")) return Promise.resolve(json({ items: [], nextCursor: null }));
+      if (input.includes("/compose")) {
+        composePosts += 1;
+        return Promise.resolve(json({ jobId: composePosts === 1 ? JOB_A : JOB_B, state: "RUNNING" }, 202));
+      }
+      if (init?.method === "POST") return new Promise<Response>((resolve) => { releaseCancel = resolve; });
+      const jobId = input.includes(JOB_B) ? JOB_B : JOB_A;
+      return Promise.resolve(json({ id: jobId, state: "RUNNING", errorMessage: null }));
+    };
+    const view = render(panel(fetchImpl));
+    fireEvent.click(screen.getByRole("button", { name: "开始多镜合成" }));
+    expect(await screen.findByText(/RUNNING/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "取消合成" }));
+    view.rerender(panel(fetchImpl, body, OTHER));
+    fireEvent.click(screen.getByRole("button", { name: "开始多镜合成" }));
+    expect(await screen.findByText(/RUNNING/)).toBeTruthy();
+    view.rerender(panel(fetchImpl, body, EPISODE));
+    await waitFor(() => expect(screen.queryByText(/多镜合成已受理/)).toBeNull());
+    releaseCancel(json({}));
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(screen.queryByText(/CANCELED/)).toBeNull();
+    expect(screen.queryByText(/RUNNING/)).toBeNull();
+  });
+
+  it("does not let an older running read replace a completed cancel", async () => {
+    let releaseRead: (value: Response) => void = () => undefined;
+    let jobReads = 0;
+    const fetchImpl = (input: string, init?: RequestInit) => {
+      if (input.includes("/composites")) return Promise.resolve(json({ items: [], nextCursor: null }));
+      if (input.includes("/compose")) return Promise.resolve(json({ jobId: JOB_A, state: "RUNNING" }, 202));
+      if (init?.method === "POST") return Promise.resolve(json({}));
+      jobReads += 1;
+      if (jobReads === 1) return new Promise<Response>((resolve) => { releaseRead = resolve; });
+      return Promise.resolve(json({ id: JOB_A, state: "CANCELED", errorMessage: null }));
+    };
+    render(panel(fetchImpl));
+    fireEvent.click(screen.getByRole("button", { name: "开始多镜合成" }));
+    expect(await screen.findByText(/RUNNING/)).toBeTruthy();
+    await waitFor(() => expect(jobReads).toBe(1));
+    fireEvent.click(screen.getByRole("button", { name: "取消合成" }));
+    expect(await screen.findByText(/CANCELED/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "取消合成" })).toBeNull();
+    releaseRead(json({ id: JOB_A, state: "RUNNING", errorMessage: null }));
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(screen.getByText(/多镜合成已受理/).textContent).toContain("CANCELED");
+    expect(screen.queryByRole("button", { name: "取消合成" })).toBeNull();
+  });
 });

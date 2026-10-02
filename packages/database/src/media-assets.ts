@@ -825,7 +825,8 @@ async function listEpisodeCompositesWithClient(
   const listed = await client.query<QueryResultRow>(
     `SELECT asset.id AS asset_id, asset.status, asset.review_status, asset.row_version,
             asset.checksum_sha256, asset.width, asset.height, asset.duration_ms,
-            asset.source_generation_job_id, asset.created_at, asset.metadata_json
+            asset.source_generation_job_id, asset.metadata_json,
+            to_char(asset.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at_text
        FROM asset
       WHERE asset.workspace_id = $1
         AND asset.project_id = $2
@@ -837,9 +838,9 @@ async function listEpisodeCompositesWithClient(
         AND asset.metadata_json->'manifest'->>'episodeId' = $4
         AND (
           $5::timestamptz IS NULL
-          OR (asset.created_at, asset.id) > ($5::timestamptz, $6::uuid)
+          OR (asset.created_at, asset.id) < ($5::timestamptz, $6::uuid)
         )
-      ORDER BY asset.created_at, asset.id
+      ORDER BY asset.created_at DESC, asset.id DESC
       LIMIT $7`,
     [
       workspaceId,
@@ -873,7 +874,7 @@ function mapEpisodeComposite(row: QueryResultRow): EpisodeCompositeListItem {
     height: row.height == null ? null : integerOrZero(row.height),
     durationMs: row.duration_ms == null ? null : integerOrZero(row.duration_ms),
     sourceGenerationJobId: row.source_generation_job_id == null ? null : String(row.source_generation_job_id),
-    createdAt: new Date(String(row.created_at)).toISOString(),
+    createdAt: exactTimestampText(row),
     segments: segments.flatMap((segment) => {
       if (!isPlainJson(segment) || typeof segment.assetId !== "string") return [];
       return [{
@@ -887,10 +888,18 @@ function mapEpisodeComposite(row: QueryResultRow): EpisodeCompositeListItem {
   };
 }
 
+function exactTimestampText(row: QueryResultRow): string {
+  const text = row.created_at_text;
+  if (typeof text !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/.test(text)) {
+    throw new PersistenceError("ASSET_CONTENT_INVALID", "Episode composite timestamp is incomplete");
+  }
+  return text;
+}
+
 function encodeEpisodeCompositeCursor(row: QueryResultRow): string {
   return Buffer.from(JSON.stringify({
     v: 1,
-    createdAt: new Date(String(row.created_at)).toISOString(),
+    createdAt: exactTimestampText(row),
     assetId: String(row.asset_id),
   })).toString("base64url");
 }

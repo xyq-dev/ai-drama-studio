@@ -100,7 +100,8 @@ export async function episodeRenderGates(ctx) {
     if (done.state !== "SUCCEEDED") throw new Error(`shot compose with episode switch off ${done.state} ${done.errorCode ?? ""}`);
     return { jobId: submitted.jobId, state: done.state };
   });
-  return { jobId: first.jobId, shotWhileOff, plain: pair.plain.assetId, burned: pair.burned.assetId };
+  const withoutMock = await episodeWithoutMockDir(ctx);
+  return { jobId: first.jobId, shotWhileOff, plain: pair.plain.assetId, burned: pair.burned.assetId, withoutMock };
 }
 
 export async function episodeRenderPlayback(ctx) {
@@ -169,7 +170,8 @@ export async function episodeRenderPlayback(ctx) {
   if (head.status !== 200) throw new Error(`episode HEAD ${head.status}`);
   ctx.state.episodeRender.forward = forwardAsset;
   ctx.state.episodeRender.reverse = reverseAsset;
-  return { forward: forwardAsset.id, reverse: reverseAsset.id, playback, overflow, forwardOrder, reverseOrder };
+  const pages = await verifyEpisodeCompositePages(ctx, forwardAsset.id);
+  return { forward: forwardAsset.id, reverse: reverseAsset.id, playback, overflow, forwardOrder, reverseOrder, pages };
 }
 
 export async function episodeRenderReview(ctx) {
@@ -279,6 +281,12 @@ export async function episodeRenderStale(ctx) {
   const page = ctx.state.page;
   await page.goto(`${ctx.webOrigin}/projects/${ctx.state.world.projectId}?focus=episode-compose&episode=1`, { waitUntil: "domcontentloaded", timeout: 30_000 });
   const card = page.locator(`[data-composite-id="${assetId}"]`);
+  const lookedUntil = Date.now() + 20_000;
+  while ((await card.count()) === 0 && Date.now() < lookedUntil) {
+    const more = page.getByRole("button", { name: "加载更早的成片" });
+    if ((await more.count()) > 0) await more.click();
+    await page.waitForTimeout(300);
+  }
   await card.getByText("历史成片").waitFor({ timeout: 20_000 });
   const text = await card.innerText();
   if (!text.includes("APPROVED") || text.includes("当前成片")) throw new Error(`stale episode card ${text}`);
@@ -288,14 +296,11 @@ export async function episodeRenderStale(ctx) {
 export async function episodeRenderIsolation(ctx) {
   const asset = await episodeAsset(ctx, ctx.state.episodeRender.forward.job_id);
   const other = (await episodes(ctx)).find((item) => item.episodeNo === 2);
-  const foreign = ctx.expectStatus(await ctx.callApi(
-    ctx.apiOrigin, "GET", `/projects/${ctx.state.world.projectId}/episodes/${other.id}/composites?limit=10`,
-  ), 200).body;
-  if ((foreign.items ?? []).some((item) => item.assetId === asset.id)) throw new Error("episode list leaked into another episode");
-  const own = ctx.expectStatus(await ctx.callApi(
-    ctx.apiOrigin, "GET", `/projects/${ctx.state.world.projectId}/episodes/${ctx.state.episodeRender.episodeId}/composites?limit=10`,
-  ), 200).body;
-  if (!(own.items ?? []).some((item) => item.assetId === asset.id)) throw new Error("episode list missed its own composite");
+  const foreign = await collectEpisodeComposites(ctx, other.id);
+  if (foreign.ids.includes(asset.id)) throw new Error("episode list leaked into another episode");
+  const own = await collectEpisodeComposites(ctx, ctx.state.episodeRender.episodeId);
+  if (!own.ids.includes(asset.id)) throw new Error("episode list missed its own composite");
+  if (new Set(own.ids).size !== own.ids.length || !own.ended) throw new Error("episode composite pages repeated or did not end");
   const edges = await ctx.sql(
     `SELECT source_asset_id::text AS source_asset_id FROM asset_dependency WHERE dependent_asset_id = $1 ORDER BY source_asset_id`,
     [asset.id],
@@ -314,6 +319,189 @@ export async function episodeRenderIsolation(ctx) {
     throw new Error(`episode object key ${asset.object_key}`);
   }
   return { assetId: asset.id, edges: linked.length, minio, objectKey: asset.object_key };
+}
+
+async function episodeWithoutMockDir(ctx) {
+  await ctx.stopApp("worker");
+  const env = ctx.childEnv({
+    API_PORT: "3035",
+    WORKER_HEALTH_PORT: "3036",
+    M3_MOCK_IMAGE_ENABLED: "false",
+    M3_MOCK_AV_ENABLED: "false",
+    M3_MOCK_SUBTITLE_MUSIC_ENABLED: "false",
+  }, ["MOCK_OBJECT_DIR"]);
+  if (Object.hasOwn(env, "MOCK_OBJECT_DIR")) throw new Error("mock object dir was not removed");
+  const names = ["api-episode-nomock", "worker-episode-nomock"];
+  ctx.spawnApp(names[0], ["pnpm", "--filter", "@ai-drama/api", "start"], env);
+  ctx.spawnApp(names[1], ["pnpm", "--filter", "@ai-drama/worker", "start"], env);
+  try {
+    await ctx.waitHttp("http://127.0.0.1:3035/api/v1/health/ready", (status, body) => status === 200 && body?.dependencies?.postgres?.status === "ok", 60_000);
+    await ctx.waitHttp("http://127.0.0.1:3036/health/ready", (status, body) => status === 200 && body?.dependencies?.queue?.status === "ok", 60_000);
+    const base = "http://127.0.0.1:3035";
+    const pair = ctx.state.episodeRender;
+    ctx.expectStatus(await ctx.callApi(base, "POST", `/shot-revisions/${pair.plain.revisionId}/compose`, {
+      body: { videoAssetId: pair.plain.videoId, expectedInputHash: "ab".repeat(32) },
+    }), 400, "CONFIGURATION_ERROR");
+    const path = `/projects/${ctx.state.world.projectId}/episodes/${pair.episodeId}`;
+    const preflight = ctx.expectStatus(await ctx.callApi(base, "POST", `${path}/compose-preflight`, {
+      body: { compositeAssetIds: [pair.plain.assetId, pair.burned.assetId] },
+    }), 200).body;
+    const accepted = ctx.expectStatus(await ctx.callApi(base, "POST", `${path}/compose`, {
+      body: { compositeAssetIds: [pair.plain.assetId, pair.burned.assetId], expectedInputHash: preflight.inputHash },
+    }), 202).body;
+    const done = await ctx.pollJob(accepted.jobId, 180_000);
+    if (done.state !== "SUCCEEDED") throw new Error(`episode compose without mock dir ${done.state} ${done.errorCode ?? ""}`);
+    const asset = await episodeAsset(ctx, accepted.jobId);
+    const listed = ctx.expectStatus(await ctx.callApi(base, "GET", `${path}/composites?limit=10`), 200).body;
+    if (listed.items?.[0]?.assetId !== asset.id) throw new Error("newest episode composite was not listed first without mock dir");
+    const content = await fetch(`${base}/api/v1/assets/${asset.id}/content`);
+    const bytes = Buffer.from(await content.arrayBuffer());
+    if (content.status !== 200 || !String(content.headers.get("content-type")).includes("video/mp4") || bytes.subarray(4, 8).toString() !== "ftyp") {
+      throw new Error(`episode content without mock dir ${content.status} ${bytes.length}`);
+    }
+    const reviewed = ctx.expectStatus(await ctx.callApi(base, "POST", `/assets/${asset.id}/review`, {
+      ifMatch: Number(asset.row_version),
+      body: { decision: "APPROVE", note: "without mock dir", contentHash: asset.checksum_sha256 },
+    }), 200).body;
+    if (reviewed.reviewStatus !== "APPROVED") throw new Error(`episode review without mock dir ${reviewed.reviewStatus}`);
+    return { jobId: accepted.jobId, assetId: asset.id, bytes: bytes.length, reviewStatus: reviewed.reviewStatus };
+  } finally {
+    for (const name of names) await ctx.stopApp(name);
+    if (!ctx.state.apps.some((item) => item.name === "worker")) await ctx.startWorker();
+  }
+}
+
+async function verifyEpisodeCompositePages(ctx, reviewableId) {
+  const seeded = await seedEpisodeCompositeTimestamps(ctx);
+  const episodeId = ctx.state.episodeRender.episodeId;
+  const expected = await exactEpisodeCompositeOrder(ctx, episodeId);
+  const collected = await collectEpisodeComposites(ctx, episodeId, 1);
+  if (!collected.ended || collected.ids.join() !== expected.map((item) => item.id).join()) {
+    throw new Error("episode cursor skipped, repeated, or did not match database order");
+  }
+  for (const item of expected) {
+    const seen = collected.createdAt.get(item.id);
+    if (seen !== item.created_at_text || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/.test(seen ?? "")) {
+      throw new Error(`episode cursor lost timestamp precision for ${item.id}`);
+    }
+  }
+  const sameInstant = expected.filter((item) => seeded.sameInstant.includes(item.id));
+  if (sameInstant.length !== 2 || sameInstant[0].created_at_text !== sameInstant[1].created_at_text || !sameInstant[0].created_at_text.endsWith(".100001Z")) {
+    throw new Error("same-timestamp episode composites were not both retained");
+  }
+  const page = ctx.state.page;
+  await page.goto(`${ctx.webOrigin}/projects/${ctx.state.world.projectId}?focus=episode-compose&episode=1`, { waitUntil: "domcontentloaded", timeout: 30_000 });
+  const card = page.locator(`[data-composite-id="${reviewableId}"]`);
+  await card.getByRole("button", { name: "批准成片" }).waitFor({ timeout: 20_000 });
+  const oldest = seeded.sameInstant[0];
+  if ((await page.locator(`[data-composite-id="${oldest}"]`).count()) !== 0) throw new Error("history composite was already on the first page");
+  await page.getByRole("button", { name: "加载更早的成片" }).click();
+  await page.locator(`[data-composite-id="${oldest}"]`).waitFor({ timeout: 20_000 });
+  await card.getByRole("button", { name: "批准成片" }).waitFor({ timeout: 10_000 });
+  return { count: expected.length, microseconds: sameInstant[0].created_at_text, oldest };
+}
+
+async function collectEpisodeComposites(ctx, episodeId, limit = 10) {
+  const ids = [];
+  const createdAt = new Map();
+  let cursor = "";
+  let ended = false;
+  for (let step = 0; step < 80; step += 1) {
+    const suffix = cursor ? `&cursor=${encodeURIComponent(cursor)}` : "";
+    const page = ctx.expectStatus(await ctx.callApi(
+      ctx.apiOrigin, "GET", `/projects/${ctx.state.world.projectId}/episodes/${episodeId}/composites?limit=${limit}${suffix}`,
+    ), 200).body;
+    if ((page.items ?? []).length > limit) throw new Error("episode page exceeded its limit");
+    for (const item of page.items ?? []) {
+      if (ids.includes(item.assetId)) throw new Error(`episode page repeated ${item.assetId}`);
+      ids.push(item.assetId);
+      createdAt.set(item.assetId, item.createdAt);
+    }
+    if (!page.nextCursor) {
+      ended = true;
+      break;
+    }
+    if (page.nextCursor === cursor) throw new Error("episode cursor did not advance");
+    cursor = page.nextCursor;
+  }
+  return { ids, createdAt, ended };
+}
+
+async function exactEpisodeCompositeOrder(ctx, episodeId) {
+  return ctx.sql(
+    `SELECT asset.id::text AS id,
+            to_char(asset.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at_text
+       FROM asset
+      WHERE asset.workspace_id = $1
+        AND asset.project_id = $2
+        AND asset.kind = 'COMPOSITE'
+        AND asset.storage_provider = 'local-compose'
+        AND asset.source_kind = 'LOCAL_JOB'
+        AND asset.source_shot_revision_id IS NULL
+        AND asset.metadata_json->>'schema' = 'm4.episode.compose.asset.v1'
+        AND asset.metadata_json->'manifest'->>'episodeId' = $3
+      ORDER BY asset.created_at DESC, asset.id DESC`,
+    [ctx.workspaceId, ctx.state.world.projectId, episodeId],
+  );
+}
+
+async function seedEpisodeCompositeTimestamps(ctx) {
+  const require = createRequire(join(ctx.repo, "packages/database/package.json"));
+  const { Client } = require("pg");
+  const client = new Client({ connectionString: ctx.databaseUrl, statement_timeout: 10_000 });
+  await client.connect();
+  try {
+    await client.query("BEGIN");
+    const template = (await client.query("SELECT * FROM asset WHERE id = $1", [ctx.state.episodeRender.forward.id])).rows[0];
+    const job = (await client.query("SELECT * FROM generation_job WHERE id = $1", [template.source_generation_job_id])).rows[0];
+    const run = (await client.query(
+      `INSERT INTO workflow_run (workspace_id, project_id, type, requested_by, input_snapshot, status)
+       VALUES ($1, $2, $3, 'cursor-fixture', $4, 'SUCCEEDED') RETURNING id`,
+      [job.workspace_id, job.project_id, job.kind, job.input_snapshot],
+    )).rows[0];
+    const fixtureJob = (await client.query(
+      `INSERT INTO generation_job
+        (workspace_id, project_id, workflow_run_id, kind, state, input_hash, input_snapshot, source_shot_revision_id)
+       VALUES ($1, $2, $3, $4, 'SUCCEEDED', $5, $6, NULL) RETURNING id`,
+      [job.workspace_id, job.project_id, run.id, job.kind, job.input_hash, job.input_snapshot],
+    )).rows[0];
+    const attempt = (await client.query(
+      `INSERT INTO job_attempt
+        (workspace_id, generation_job_id, attempt_no, provider_client_request_key, request_snapshot, finished_at)
+       VALUES ($1, $2, 1, $3, $4, clock_timestamp()) RETURNING id`,
+      [job.workspace_id, fixtureJob.id, `cursor-fixture-${fixtureJob.id}`, job.input_snapshot],
+    )).rows[0];
+    const stamps = [
+      "2020-01-01T00:00:00.100001Z",
+      "2020-01-01T00:00:00.100001Z",
+      "2020-01-01T00:00:00.100002Z",
+    ];
+    for (let index = 3; index < 12; index += 1) stamps.push(`2020-01-01T00:00:${String(index + 10).padStart(2, "0")}.000003Z`);
+    const ids = [];
+    for (let index = 0; index < stamps.length; index += 1) {
+      const inserted = (await client.query(
+        `INSERT INTO asset
+          (workspace_id, project_id, kind, storage_provider, object_key, mime_type, byte_size, checksum_sha256,
+           width, height, duration_ms, source_kind, source_job_attempt_id, source_generation_job_id, metadata_json, status, review_status, created_at)
+         VALUES
+          ($1, $2, 'COMPOSITE', 'local-compose', $3, 'video/mp4', $4, $5, $6, $7, $8, 'LOCAL_JOB', $9, $10, $11, 'ACTIVE', 'DRAFT', $12::timestamptz)
+         RETURNING id::text AS id`,
+        [
+          template.workspace_id, template.project_id, `cursor-fixture/${fixtureJob.id}/${index}.mp4`,
+          template.byte_size, template.checksum_sha256, template.width, template.height, template.duration_ms,
+          attempt.id, fixtureJob.id, template.metadata_json, stamps[index],
+        ],
+      )).rows[0];
+      ids.push(inserted.id);
+    }
+    await client.query("COMMIT");
+    return { ids, sameInstant: ids.slice(0, 2) };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    await client.end();
+  }
 }
 
 async function approvedPair(ctx) {
