@@ -243,12 +243,27 @@ async function observeRunningCancel(ctx) {
       const candidate = panel.locator(`[data-asset-id="${assetId}"]`);
       const lookedUntil = Date.now() + 20_000;
       while ((await candidate.count()) === 0 && Date.now() < lookedUntil) {
+        if ((await panel.getByText("正在加载候选成片").count()) > 0) {
+          await page.waitForTimeout(200);
+          continue;
+        }
         const more = panel.getByRole("button", { name: "加载更多" });
-        if ((await more.count()) === 0) break;
-        await more.click();
+        if ((await more.count()) > 0) {
+          await more.click();
+          await page.waitForTimeout(200);
+          continue;
+        }
+        const retry = panel.getByRole("button", { name: "重新查询" });
+        if ((await retry.count()) > 0) {
+          await retry.click();
+        }
         await page.waitForTimeout(200);
       }
-      if ((await candidate.count()) === 0) throw new Error(`episode candidate ${assetId} was not listed`);
+      if ((await candidate.count()) === 0) {
+        const alerts = await panel.getByRole("alert").allTextContents();
+        const detail = alerts.map((item) => item.trim()).filter(Boolean).join(" ");
+        throw new Error(`episode candidate ${assetId} was not listed${detail ? `: ${detail}` : ""}`);
+      }
       await candidate.getByRole("button", { name: "加入" }).click();
     }
     await panel.getByRole("button", { name: "预检编排" }).click();
