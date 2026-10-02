@@ -1,8 +1,15 @@
+import { execFile } from "node:child_process";
 import { renameSync } from "node:fs";
+import { createRequire } from "node:module";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { createSideShot, replaceSideScene, waitForCurrentSources } from "./compose-preflight.mjs";
 
-const HOLD_BOUNDARY = "M4_COMPOSE_HOLD_BEFORE_COMMIT_MS stalls only attempt 1 after the file is published and before commitLocalCompose. It does not renew the lease. A value above the 30s lease lets recovery queue a new attempt while the first handler is still asleep; the late commit is discarded and must not fail the new attempt.";
+const execFileAsync = promisify(execFile);
+const HOLD_BOUNDARY = "Lease-expiry late-result test. M4_COMPOSE_HOLD_BEFORE_COMMIT_MS stalls only attempt 1 after publish and before commitLocalCompose, without renewing the lease. It does not kill the worker. A hold longer than the 30s lease lets recovery queue a new attempt; the late commit is discarded and must not fail the new attempt.";
+const KILL_BOUNDARY = "SIGKILL terminates the running worker. The renderer sets PR_SET_PDEATHSIG so the Python and FFmpeg process tree dies with it. Recovery then runs on a new worker.";
+const LOCK_BOUNDARY = "A second database session holds FOR UPDATE on the compose job for 8s. This worker's compose lease is 4s and its query timeout is 10s. After the lock wait, the commit reads clock_timestamp() and cannot store the expired attempt.";
+const COMMIT_BOUNDARY = "M4_COMPOSE_FAIL_INSIDE_COMMIT throws inside the success transaction after the asset, dependency, and asset.created statements. Those rows and job.succeeded roll back together.";
 
 export async function composeRenderPage(ctx) {
   const panel = ctx.state.page.getByRole("region", { name: "Mock 单镜合成预检" });
@@ -224,6 +231,9 @@ export async function composeRenderLifecycle(ctx) {
     if (done.state !== "FAILED" || assets[0].count !== 0) throw new Error(`source changed during compose ${done.state} assets ${assets[0].count}`);
     return { jobId: submitted.jobId, errorCode: done.errorCode };
   });
+  const killed = await killRunningWorker(ctx);
+  const locked = await lockAcrossLease(ctx);
+  const injected = await injectCommitFailure(ctx);
   const missing = await createSideShot(ctx);
   await ctx.stopApp("worker");
   const queued = await submitVideoCompose(ctx, missing);
@@ -243,7 +253,10 @@ export async function composeRenderLifecycle(ctx) {
       throw new Error(`missing file ${failed.state} ${failed.errorCode} assets ${assets[0].count} events ${events[0].count}`);
     }
     ctx.expectStatus(await ctx.callApi(ctx.apiOrigin, "POST", `/generation-jobs/${queued.jobId}/retry`, { body: {} }), 409, "JOB_NOT_RETRYABLE");
-    return { hold: HOLD_BOUNDARY, late, canceled, terminal: terminal.body.error.code, staleDuring, missingFile: failed.errorCode };
+    return {
+      hold: HOLD_BOUNDARY, late, canceled, terminal: terminal.body.error.code, staleDuring,
+      killed, locked, injected, missingFile: failed.errorCode,
+    };
   } finally {
     renameSync(parked, absolute);
     await ctx.stopApp("worker");
@@ -368,6 +381,135 @@ export async function composeProvenanceStale(ctx) {
   }
   if (await ctx.state.page.locator("#shot-action").inputValue() !== ctx.draftMarker) throw new Error("stale refresh overwrote the shot draft");
   return { assetId, status: stale.status, reviewStatus: stale.review_status, edges: edges[0] };
+}
+
+async function killRunningWorker(ctx) {
+  const shot = await createSideShot(ctx);
+  const submitted = await submitVideoCompose(ctx, shot);
+  await waitState(ctx, submitted.jobId, "RUNNING");
+  const running = await processArgs();
+  if (!running.includes("media_worker.compose_cli")) throw new Error("compose renderer was not running before the worker was killed");
+  const app = ctx.state.apps.find((item) => item.name === "worker");
+  if (!app?.pid) throw new Error("worker pid is missing");
+  try { process.kill(process.platform === "linux" ? -app.pid : app.pid, "SIGKILL"); } catch { /* the stop below confirms it is gone */ }
+  await ctx.stopApp("worker");
+  const started = Date.now();
+  let gone = false;
+  while (Date.now() - started < 15_000) {
+    if (!(await processArgs()).includes("media_worker.compose_cli")) { gone = true; break; }
+    await ctx.sleep(200);
+  }
+  if (!gone) throw new Error("renderer process survived the killed worker");
+  try {
+    await ctx.startWorker();
+    const done = await ctx.pollJob(submitted.jobId, 180_000);
+    const attempts = await ctx.sql(
+      `SELECT attempt_no, id::text AS id FROM job_attempt WHERE generation_job_id = $1 ORDER BY attempt_no`,
+      [submitted.jobId],
+    );
+    const assets = await ctx.sql(
+      `SELECT source_job_attempt_id::text AS attempt_id FROM asset WHERE source_generation_job_id = $1`,
+      [submitted.jobId],
+    );
+    const succeeded = await ctx.sql(
+      `SELECT count(*)::int AS count FROM domain_event WHERE event_type = 'job.succeeded' AND aggregate_id = $1`,
+      [submitted.jobId],
+    );
+    if (done.state !== "SUCCEEDED" || attempts.length < 2 || assets.length !== 1 || assets[0].attempt_id !== attempts.at(-1).id || succeeded[0].count !== 1) {
+      throw new Error(`killed worker recovery ${done.state} ${JSON.stringify({ attempts, assets, succeeded: succeeded[0].count })}`);
+    }
+    return { boundary: KILL_BOUNDARY, jobId: submitted.jobId, attempts: attempts.length, assetAttempt: assets[0].attempt_id, successEvents: succeeded[0].count };
+  } finally {
+    if (!ctx.state.apps.some((item) => item.name === "worker")) await ctx.startWorker();
+  }
+}
+
+async function lockAcrossLease(ctx) {
+  return withWorkerEnv(ctx, { M4_COMPOSE_LEASE_MS: "4000" }, async () => {
+    const shot = await createSideShot(ctx);
+    const submitted = await submitVideoCompose(ctx, shot);
+    await waitState(ctx, submitted.jobId, "RUNNING");
+    const attempt = (await ctx.sql(
+      `SELECT id::text AS id FROM job_attempt WHERE generation_job_id = $1 AND finished_at IS NULL ORDER BY attempt_no DESC LIMIT 1`,
+      [submitted.jobId],
+    ))[0];
+    await holdJobLock(ctx, submitted.jobId, 8_000);
+    const done = await ctx.pollJob(submitted.jobId, 180_000);
+    const assets = await ctx.sql(
+      `SELECT source_job_attempt_id::text AS attempt_id FROM asset WHERE source_generation_job_id = $1`,
+      [submitted.jobId],
+    );
+    const expiredAsset = assets.filter((row) => row.attempt_id === attempt.id);
+    if (expiredAsset.length !== 0) throw new Error(`expired attempt stored an asset ${JSON.stringify(assets)}`);
+    if (done.state === "SUCCEEDED" && (assets.length !== 1 || assets[0].attempt_id === attempt.id)) {
+      throw new Error(`lock recovery asset ${JSON.stringify(assets)}`);
+    }
+    if (done.state !== "SUCCEEDED" && done.state !== "FAILED") throw new Error(`lock wait ended ${done.state}`);
+    return { boundary: LOCK_BOUNDARY, jobId: submitted.jobId, state: done.state, expiredAttempt: attempt.id, assets: assets.length };
+  });
+}
+
+async function injectCommitFailure(ctx) {
+  return withWorkerEnv(ctx, { M4_COMPOSE_FAIL_INSIDE_COMMIT: "true" }, async () => {
+    const shot = await createSideShot(ctx);
+    const submitted = await submitVideoCompose(ctx, shot);
+    const done = await ctx.pollJob(submitted.jobId, 180_000);
+    const assets = await ctx.sql(`SELECT count(*)::int AS count FROM asset WHERE source_generation_job_id = $1`, [submitted.jobId]);
+    const dependencies = await ctx.sql(
+      `SELECT count(*)::int AS count FROM asset_dependency WHERE dependent_asset_id IN (SELECT id FROM asset WHERE source_generation_job_id = $1)`,
+      [submitted.jobId],
+    );
+    const created = await ctx.sql(
+      `SELECT count(*)::int AS count FROM domain_event WHERE event_type = 'asset.created' AND payload_json->>'jobId' = $1`,
+      [submitted.jobId],
+    );
+    const succeeded = await ctx.sql(
+      `SELECT count(*)::int AS count FROM domain_event WHERE event_type = 'job.succeeded' AND aggregate_id = $1`,
+      [submitted.jobId],
+    );
+    if (done.state !== "FAILED" || assets[0].count !== 0 || dependencies[0].count !== 0 || created[0].count !== 0 || succeeded[0].count !== 0) {
+      throw new Error(`injected commit ${done.state} ${done.errorCode} assets ${assets[0].count} deps ${dependencies[0].count} created ${created[0].count} succeeded ${succeeded[0].count}`);
+    }
+    return { boundary: COMMIT_BOUNDARY, jobId: submitted.jobId, errorCode: done.errorCode };
+  });
+}
+
+async function withWorkerEnv(ctx, env, run) {
+  await ctx.stopApp("worker");
+  ctx.spawnApp("worker", ["pnpm", "--filter", "@ai-drama/worker", "start"], ctx.appEnv(env));
+  await ctx.waitHttp(`${ctx.workerOrigin}/health/ready`, (status, body) => status === 200 && body?.dependencies?.queue?.status === "ok", 60_000);
+  try {
+    return await run();
+  } finally {
+    await ctx.stopApp("worker");
+    await ctx.startWorker();
+  }
+}
+
+async function holdJobLock(ctx, jobId, ms) {
+  const require = createRequire(join(ctx.repo, "packages/database/package.json"));
+  const { Client } = require("pg");
+  const client = new Client({ connectionString: ctx.databaseUrl, statement_timeout: 0 });
+  await client.connect();
+  try {
+    await client.query("BEGIN");
+    const held = await client.query("SELECT state, lease_until > clock_timestamp() AS current FROM generation_job WHERE id = $1 FOR UPDATE", [jobId]);
+    if (held.rows[0]?.state !== "RUNNING" || held.rows[0]?.current !== true) {
+      throw new Error(`lock missed the live lease ${JSON.stringify(held.rows[0])}`);
+    }
+    await ctx.sleep(ms);
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    await client.end();
+  }
+}
+
+async function processArgs() {
+  const { stdout } = await execFileAsync("ps", ["-eo", "args"]);
+  return stdout;
 }
 
 async function withHold(ctx, holdMs, run) {

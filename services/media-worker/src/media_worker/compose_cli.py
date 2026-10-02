@@ -7,8 +7,10 @@ credentials. The HTTP health process remains a stub and does not render.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -34,6 +36,7 @@ FIXED_NAMES = {"video": "video.mp4", "audio": "audio.wav", "music": "music.wav",
 
 
 def main(argv: list[str] | None = None) -> int:
+    _die_with_parent()
     parser = argparse.ArgumentParser(prog="media-compose")
     parser.add_argument("--input-dir", required=True)
     parser.add_argument("--output", required=True)
@@ -82,6 +85,7 @@ def render(input_dir: Path, output: Path) -> dict[str, object]:
             check=False,
             capture_output=True,
             timeout=PROFILE["render_timeout_sec"],
+            preexec_fn=_die_with_parent if sys.platform == "linux" else None,
         )
     except subprocess.TimeoutExpired as error:
         temporary.unlink(missing_ok=True)
@@ -142,11 +146,13 @@ def _command(video: Path, speech: Path | None, music: Path | None, srt: Path | N
         "ffmpeg", "-hide_banner", "-nostdin", "-y",
         "-protocol_whitelist", "file,crypto,data",
         "-threads", "2",
+        "-filter_threads", "2",
+        "-filter_complex_threads", "2",
         *inputs,
         "-filter_complex", ";".join(filters),
         "-map", f"[{video_label}]" if video_label == "v" else "[v]",
         "-map", "[a]",
-        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", PROFILE["crf"], "-preset", PROFILE["preset"],
+        "-c:v", "libx264", "-x264-params", "threads=2", "-pix_fmt", "yuv420p", "-crf", PROFILE["crf"], "-preset", PROFILE["preset"],
         "-r", str(PROFILE["frame_rate"]),
         "-c:a", "aac", "-ar", PROFILE["sample_rate"], "-ac", "2",
         "-t", f"{duration:.6f}",
@@ -277,20 +283,34 @@ def _filter_path(path: Path) -> str:
     return text
 
 
+def _die_with_parent() -> None:
+    if sys.platform != "linux":
+        return
+    libc = ctypes.CDLL("libc.so.6", use_errno=True)
+    if libc.prctl(1, 9) != 0 or os.getppid() == 1:
+        os.kill(os.getpid(), 9)
+
+
 def _directory(path: Path) -> Path:
     if not path.is_absolute():
         raise ComposeFailure("COMPOSE_PATH_INVALID", False)
-    resolved = path.resolve()
-    if resolved.is_symlink() or not resolved.is_dir():
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        current = current / part
+        if current.is_symlink():
+            raise ComposeFailure("COMPOSE_PATH_INVALID", False)
+    if not current.is_dir():
         raise ComposeFailure("COMPOSE_PATH_INVALID", False)
-    return resolved
+    return current
 
 
 def _file(root: Path, name: str) -> Path:
-    path = (root / name).resolve()
-    if path.is_symlink() or not path.is_file() or root not in path.parents:
+    if name != Path(name).name or name in {".", ".."}:
         raise ComposeFailure("COMPOSE_PATH_INVALID", False)
-    return path
+    candidate = root / name
+    if candidate.is_symlink() or not candidate.is_file() or root.resolve() not in candidate.resolve().parents:
+        raise ComposeFailure("COMPOSE_PATH_INVALID", False)
+    return candidate.resolve()
 
 
 def _optional(root: Path, name: str) -> Path | None:

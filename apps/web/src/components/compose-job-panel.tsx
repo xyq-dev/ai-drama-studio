@@ -24,6 +24,16 @@ interface JobView {
   errorMessage: string | null;
 }
 
+interface PendingSubmit {
+  revisionId: string;
+  bodyKey: string;
+  idempotencyKey: string;
+}
+
+function terminalJob(state: string): boolean {
+  return state === "SUCCEEDED" || state === "FAILED" || state === "CANCELED";
+}
+
 export function ComposeJobPanel(props: {
   revisionId: string;
   eligible: boolean;
@@ -32,6 +42,12 @@ export function ComposeJobPanel(props: {
 }) {
   const epoch = useRef(0);
   const submitEpoch = useRef(0);
+  const assetGen = useRef(0);
+  const jobGen = useRef(0);
+  const reviewGen = useRef(0);
+  const cancelGen = useRef(0);
+  const pendingSubmit = useRef<PendingSubmit | null>(null);
+  const jobRef = useRef<JobView | null>(null);
   const [boundRevision, setBoundRevision] = useState(props.revisionId);
   const [job, setJob] = useState<JobView | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -39,9 +55,16 @@ export function ComposeJobPanel(props: {
   const [assets, setAssets] = useState<ComposeAsset[]>([]);
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
+  jobRef.current = job;
   if (boundRevision !== props.revisionId) {
     epoch.current += 1;
     submitEpoch.current += 1;
+    assetGen.current += 1;
+    jobGen.current += 1;
+    reviewGen.current += 1;
+    cancelGen.current += 1;
+    pendingSubmit.current = null;
+    jobRef.current = null;
     setBoundRevision(props.revisionId);
     setJob(null);
     setNotice(null);
@@ -56,19 +79,22 @@ export function ComposeJobPanel(props: {
     let timer = 0;
     let stopped = false;
     const loadAssets = () => {
+      const read = ++assetGen.current;
       void props.client.get<{ items: ComposeAsset[] }>(`/shot-revisions/${revisionId}/assets`).then((page) => {
-        if (stopped || token !== epoch.current || revisionId !== props.revisionId) return;
+        if (stopped || token !== epoch.current || read !== assetGen.current) return;
         setAssets(page.items.filter((item) => item.kind === "COMPOSITE" && item.sourceShotRevisionId === revisionId));
       }, () => undefined);
     };
     const tick = () => {
       if (document.hidden) return;
       loadAssets();
-      if (!job) return;
-      void props.client.get<JobView>(`/generation-jobs/${job.id}`).then((next) => {
-        if (stopped || token !== epoch.current || revisionId !== props.revisionId) return;
+      const current = jobRef.current;
+      if (!current || terminalJob(current.state)) return;
+      const read = ++jobGen.current;
+      const jobId = current.id;
+      void props.client.get<JobView>(`/generation-jobs/${jobId}`).then((next) => {
+        if (stopped || token !== epoch.current || read !== jobGen.current || jobRef.current?.id !== jobId) return;
         setJob(next);
-        if (next.state === "SUCCEEDED" || next.state === "FAILED" || next.state === "CANCELED") loadAssets();
       }, () => undefined);
     };
     tick();
@@ -84,6 +110,12 @@ export function ComposeJobPanel(props: {
 
   async function start() {
     if (!props.body) return;
+    const bodyKey = JSON.stringify(props.body);
+    const pending = pendingSubmit.current;
+    const idempotencyKey = pending && pending.revisionId === props.revisionId && pending.bodyKey === bodyKey
+      ? pending.idempotencyKey
+      : crypto.randomUUID();
+    pendingSubmit.current = { revisionId: props.revisionId, bodyKey, idempotencyKey };
     const request = ++submitEpoch.current;
     setBusy(true);
     setError(null);
@@ -92,15 +124,20 @@ export function ComposeJobPanel(props: {
       const result = await props.client.write<{ id?: string; jobId?: string; state?: string }>({
         path: `/shot-revisions/${props.revisionId}/compose`,
         body: props.body,
-        idempotencyKey: crypto.randomUUID(),
+        idempotencyKey,
       });
       if (request !== submitEpoch.current) return;
       const id = result.body.id ?? result.body.jobId;
       if (!id) throw new ApiError(result.status, "COMPOSE_RESPONSE_INVALID", "合成响应没有任务编号");
+      pendingSubmit.current = null;
+      jobGen.current += 1;
+      cancelGen.current += 1;
+      assetGen.current += 1;
       setJob({ id, state: result.body.state ?? "QUEUED", errorCode: null, errorMessage: null });
       setNotice("合成任务已受理");
     } catch (caught) {
       if (request !== submitEpoch.current) return;
+      if (caught instanceof ApiError) pendingSubmit.current = null;
       setError(caught instanceof ApiError ? caught.detail : "合成提交失败");
     } finally {
       if (request === submitEpoch.current) setBusy(false);
@@ -108,22 +145,26 @@ export function ComposeJobPanel(props: {
   }
 
   async function cancel() {
-    if (!job) return;
-    const token = epoch.current;
+    const current = jobRef.current;
+    if (!current) return;
+    const jobId = current.id;
+    const cancelToken = ++cancelGen.current;
     try {
-      await props.client.write({ path: `/generation-jobs/${job.id}/cancel`, body: {}, idempotencyKey: crypto.randomUUID() });
-      if (token !== epoch.current) return;
-      const next = await props.client.get<JobView>(`/generation-jobs/${job.id}`);
-      if (token !== epoch.current) return;
-      setJob(next);
+      await props.client.write({ path: `/generation-jobs/${jobId}/cancel`, body: {}, idempotencyKey: crypto.randomUUID() });
+      if (cancelToken !== cancelGen.current) return;
+      const next = await props.client.get<JobView>(`/generation-jobs/${jobId}`);
+      if (cancelToken !== cancelGen.current) return;
+      setJob((visible) => visible?.id === jobId ? next : visible);
     } catch (caught) {
-      if (token !== epoch.current) return;
+      if (cancelToken !== cancelGen.current) return;
       setError(caught instanceof ApiError ? caught.detail : "取消失败");
     }
   }
 
   async function review(asset: ComposeAsset, decision: "APPROVE" | "REJECT") {
     const token = epoch.current;
+    const reviewToken = ++reviewGen.current;
+    assetGen.current += 1;
     try {
       const result = await props.client.write<{ reviewStatus: string; rowVersion: number }>({
         path: `/assets/${asset.id}/review`,
@@ -131,15 +172,17 @@ export function ComposeJobPanel(props: {
         idempotencyKey: crypto.randomUUID(),
         ifMatch: asset.rowVersion,
       });
-      if (token !== epoch.current) return;
+      if (token !== epoch.current || reviewToken !== reviewGen.current) return;
+      assetGen.current += 1;
       setAssets((current) => current.map((item) => item.id === asset.id ? { ...item, reviewStatus: result.body.reviewStatus, rowVersion: result.body.rowVersion } : item));
       setError(null);
     } catch (caught) {
-      if (token !== epoch.current) return;
+      if (token !== epoch.current || reviewToken !== reviewGen.current) return;
       if (caught instanceof ApiError && caught.status === 409) {
         setError("请重读后重新确认");
+        const read = ++assetGen.current;
         const page = await props.client.get<{ items: ComposeAsset[] }>(`/shot-revisions/${props.revisionId}/assets`).catch(() => null);
-        if (page && token === epoch.current) {
+        if (page && token === epoch.current && read === assetGen.current) {
           setAssets(page.items.filter((item) => item.kind === "COMPOSITE" && item.sourceShotRevisionId === props.revisionId));
         }
         return;

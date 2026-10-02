@@ -325,6 +325,7 @@ export class MediaAssetStore {
       height: number;
       durationMs: number;
       elapsedMs: number;
+      failInsideCommit?: boolean;
     },
   ): Promise<MediaAssetRecord | null> {
     return jobs.succeedJobWithArtifact({
@@ -462,30 +463,16 @@ async function insertLocalComposeAsset(
     byteSize: number;
     width: number;
     height: number;
-    durationMs: number;
-    elapsedMs: number;
-  },
-): Promise<MediaAssetRecord> {
+      durationMs: number;
+      elapsedMs: number;
+      failInsideCommit?: boolean;
+    },
+  ): Promise<MediaAssetRecord> {
   const expectedKey = `compose/${input.workspaceId}/${input.projectId}/${input.jobId}/${input.attemptId}/${input.checksumSha256}.mp4`;
   if (input.objectKey !== expectedKey) {
     throw new PersistenceError("COMPOSE_OUTPUT_INVALID", "Compose object key does not belong to this attempt");
   }
-  const held = await client.query<QueryResultRow>(
-    `SELECT job.input_hash, job.input_snapshot
-       FROM generation_job job
-       JOIN job_attempt attempt ON attempt.id = $3 AND attempt.generation_job_id = job.id AND attempt.workspace_id = job.workspace_id
-      WHERE job.id = $1 AND job.workspace_id = $2 AND job.project_id = $4
-        AND job.kind = 'MEDIA_COMPOSE' AND job.state = 'RUNNING'
-        AND job.lease_owner = $5 AND job.cancel_requested_at IS NULL AND job.lease_until > now()
-        AND attempt.finished_at IS NULL
-        AND attempt.provider_configuration_id IS NULL AND attempt.provider_request_id IS NULL
-        AND attempt.attempt_no = (SELECT MAX(latest.attempt_no) FROM job_attempt latest WHERE latest.generation_job_id = job.id)`,
-    [input.jobId, input.workspaceId, input.attemptId, input.projectId, input.leaseOwner],
-  );
-  const locked = held.rows[0];
-  if (!locked) {
-    throw new PersistenceError("COMPOSE_RESULT_DISCARDED", "Compose result arrived after its attempt lost the lease");
-  }
+  const locked = await readHeldCompose(client, input);
   const snapshot = locked.input_snapshot as ComposeJobSnapshot;
   let hashed: string;
   try {
@@ -507,6 +494,7 @@ async function insertLocalComposeAsset(
     if (error instanceof DomainError) throw new PersistenceError(error.code, error.message);
     throw error;
   }
+  await readHeldCompose(client, input);
   const metadata = {
     schema: "m4.shot.compose.asset.v1",
     manifest: snapshot.input.manifest,
@@ -572,7 +560,33 @@ async function insertLocalComposeAsset(
       assetId: row.id, kind: "COMPOSITE", jobId: input.jobId, attemptId: input.attemptId,
     }), input.traceId],
   );
+  if (input.failInsideCommit) {
+    throw new PersistenceError("COMPOSE_COMMIT_INJECTED", "Compose commit failed before it could be stored");
+  }
   return mapAsset(row);
+}
+
+async function readHeldCompose(
+  client: PoolClient,
+  input: { workspaceId: string; projectId: string; jobId: string; attemptId: string; leaseOwner: string },
+): Promise<QueryResultRow> {
+  const held = await client.query<QueryResultRow>(
+    `SELECT job.input_hash, job.input_snapshot
+       FROM generation_job job
+       JOIN job_attempt attempt ON attempt.id = $3 AND attempt.generation_job_id = job.id AND attempt.workspace_id = job.workspace_id
+      WHERE job.id = $1 AND job.workspace_id = $2 AND job.project_id = $4
+        AND job.kind = 'MEDIA_COMPOSE' AND job.state = 'RUNNING'
+        AND job.lease_owner = $5 AND job.cancel_requested_at IS NULL AND job.lease_until > clock_timestamp()
+        AND attempt.finished_at IS NULL
+        AND attempt.provider_configuration_id IS NULL AND attempt.provider_request_id IS NULL
+        AND attempt.attempt_no = (SELECT MAX(latest.attempt_no) FROM job_attempt latest WHERE latest.generation_job_id = job.id)`,
+    [input.jobId, input.workspaceId, input.attemptId, input.projectId, input.leaseOwner],
+  );
+  const locked = held.rows[0];
+  if (!locked) {
+    throw new PersistenceError("COMPOSE_RESULT_DISCARDED", "Compose result arrived after its attempt lost the lease");
+  }
+  return locked;
 }
 
 async function assertUsableShotWithClient(

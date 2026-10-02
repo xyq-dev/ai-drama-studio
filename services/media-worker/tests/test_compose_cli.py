@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from media_worker.compose_cli import _safe_cues, main
+from media_worker.compose_cli import _command, _safe_cues, main
 
 needs_ffmpeg = pytest.mark.skipif(shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None, reason="ffmpeg is required")
 
@@ -81,6 +81,45 @@ def test_speech_and_music_mix_trim_and_pad(tmp_path: Path) -> None:
     probed = _probe(output)
     duration = float(probed["format"]["duration"])
     assert abs(duration - 1) < 0.15
+
+
+def test_symlink_directories_and_files_are_rejected(tmp_path: Path) -> None:
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "video.mp4").write_bytes(b"outside")
+    linked = tmp_path / "linked"
+    try:
+        linked.symlink_to(real, target_is_directory=True)
+    except OSError as error:
+        if getattr(error, "winerror", None) == 1314:
+            pytest.skip("symlink privilege is unavailable here; Linux CI still runs this check")
+        raise
+    assert main(["--input-dir", str(linked), "--output", str(tmp_path / "out.mp4")]) == 2
+    work = tmp_path / "work"
+    work.mkdir()
+    outside = tmp_path / "secret.mp4"
+    outside.write_bytes(b"secret")
+    (work / "video.mp4").symlink_to(outside)
+    assert main(["--input-dir", str(work), "--output", str(tmp_path / "leaf.mp4")]) == 2
+    assert outside.read_bytes() == b"secret"
+
+
+@needs_ffmpeg
+def test_ffmpeg_execution_records_thread_limits(tmp_path: Path) -> None:
+    _video(tmp_path / "video.mp4", "160x160", "0.2", "red")
+    output = tmp_path / "limited.mp4"
+    command = _command(tmp_path / "video.mp4", None, None, None, output, 0.2)
+    assert command[command.index("-threads") + 1] == "2"
+    assert command[command.index("-filter_threads") + 1] == "2"
+    assert command[command.index("-filter_complex_threads") + 1] == "2"
+    assert "threads=2" in command[command.index("-x264-params") + 1]
+    debug = [command[0], "-hide_banner", "-loglevel", "debug", *command[2:]]
+    completed = subprocess.run(debug, check=False, capture_output=True, text=True)
+    assert completed.returncode == 0, completed.stderr
+    log = completed.stderr
+    assert "filter_threads" in log and "argument 2" in log
+    assert "filter_complex_threads" in log
+    assert "threads=2" in log
 
 
 def _ratio(value: str) -> float:

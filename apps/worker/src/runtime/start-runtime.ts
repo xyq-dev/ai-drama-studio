@@ -17,7 +17,7 @@ import { OutboxDispatcher } from "./dispatcher";
 import { RuntimeReconciler } from "./reconciler";
 import { startStaleRecalculationPolling } from "./stale-recalculation";
 import { LocalMockObjects } from "./local-mock-objects";
-import { runComposeJob } from "./compose-job";
+import { runComposeJob, stopActiveComposeChildren, withSingleComposeRender } from "./compose-job";
 import { runMockAvJob } from "./mock-av-generation";
 import { runMockImageJob } from "./mock-image-generation";
 import { runMockSmJob } from "./mock-sm-generation";
@@ -57,6 +57,8 @@ export async function startQueueRuntime(options: {
   composePythonBin?: string;
   composePythonPath?: string;
   composeHoldBeforeCommitMs?: number;
+  composeLeaseMs?: number;
+  composeFailInsideCommit?: boolean;
 }): Promise<RuntimeHandle> {
   if (options.mockObjectDir && (process.env.NODE_ENV === "production" || !isAbsolute(options.mockObjectDir))) {
     throw new Error("Mock media requires an absolute local directory and is forbidden in production");
@@ -101,7 +103,11 @@ export async function startQueueRuntime(options: {
         const compose = await store.loadComposeJob(message.workspaceId, message.jobId);
         if (!compose) throw new Error("Compose job missed its loader");
         if (compose.state === "SUCCEEDED" || compose.state === "FAILED" || compose.state === "CANCELED") return;
-        if (options.localComposeEnabled !== true || !options.mockObjectDir || !options.composeWorkDir || !options.composeObjectDir || !compose.shotRevisionId) {
+        const shotRevisionId = compose.shotRevisionId;
+        const mockObjectDir = options.mockObjectDir;
+        const workDir = options.composeWorkDir;
+        const objectDir = options.composeObjectDir;
+        if (options.localComposeEnabled !== true || !mockObjectDir || !workDir || !objectDir || !shotRevisionId) {
           if (compose.state !== "QUEUED") throw new Error("Compose configuration missing for an already active attempt");
           const acquired = await jobs.acquireQueuedJob({
             workspaceId: message.workspaceId, jobId: message.jobId, dispatchSeq: message.dispatchSeq,
@@ -125,21 +131,22 @@ export async function startQueueRuntime(options: {
         if (compose.state === "RUNNING") {
           throw new Error("Compose attempt is in progress; lease recovery must finish before redelivery");
         }
-        await runComposeJob({
+        await withSingleComposeRender(() => runComposeJob({
           workspaceId: message.workspaceId,
           projectId: compose.projectId,
-          shotRevisionId: compose.shotRevisionId,
+          shotRevisionId,
           jobId: message.jobId,
           dispatchSeq: message.dispatchSeq,
           inputHash: compose.inputHash,
           inputSnapshot: compose.inputSnapshot as never,
           traceId: `worker:compose:${message.jobId}`,
         }, {
-          jobs, assets, mockObjectDir: options.mockObjectDir, workDir: options.composeWorkDir,
-          objectDir: options.composeObjectDir, pythonBin: options.composePythonBin ?? "python3",
+          jobs, assets, mockObjectDir, workDir,
+          objectDir, pythonBin: options.composePythonBin ?? "python3",
           pythonPath: options.composePythonPath ?? "", leaseOwner: `compose:${process.pid}`,
-          leaseMs: options.leaseMs ?? 30_000, holdBeforeCommitMs: options.composeHoldBeforeCommitMs ?? 0,
-        });
+          leaseMs: options.composeLeaseMs ?? 30_000, holdBeforeCommitMs: options.composeHoldBeforeCommitMs ?? 0,
+          failInsideCommit: options.composeFailInsideCommit === true,
+        }));
         return;
       }
       const media = await store.loadMockMediaExecution(message.workspaceId, message.jobId);
@@ -220,6 +227,7 @@ export async function startQueueRuntime(options: {
     status,
     shutdown: async () => {
       status.running = false;
+      stopActiveComposeChildren();
       clearInterval(dispatchTimer);
       clearInterval(reconcileTimer);
       await staleRecalculation.shutdown();

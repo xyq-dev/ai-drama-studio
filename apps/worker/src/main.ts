@@ -31,6 +31,8 @@ async function bootstrap(): Promise<void> {
     composePythonBin: env.M4_COMPOSE_PYTHON,
     composePythonPath: join(root, "services", "media-worker", "src"),
     composeHoldBeforeCommitMs: composeAllowed ? env.M4_COMPOSE_HOLD_BEFORE_COMMIT_MS : 0,
+    composeLeaseMs: composeAllowed ? env.M4_COMPOSE_LEASE_MS : 30_000,
+    composeFailInsideCommit: composeAllowed && env.M4_COMPOSE_FAIL_INSIDE_COMMIT,
   });
   const app = await NestFactory.create(AppModule.register(env, runtime.status), {
     logger: ["error", "warn", "log"],
