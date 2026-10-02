@@ -604,4 +604,98 @@ describe("episode compose job panel", () => {
     expect(document.querySelector(`[data-composite-id="${newest}"]`)?.getAttribute("data-row-version")).toBe("2");
     expect(document.querySelector(`[data-composite-id="${otherId}"]`)).toBeNull();
   }, 10000);
+
+  it("offers downloads only for an active approved composite and saves after the response is valid", async () => {
+    const assetId = "55555555-5555-4555-8555-555555555555";
+    const created: string[] = [];
+    const revoked: string[] = [];
+    const originalCreate = URL.createObjectURL;
+    const originalRevoke = URL.revokeObjectURL;
+    URL.createObjectURL = ((blob: Blob) => {
+      created.push(blob.type);
+      return "blob:episode";
+    }) as typeof URL.createObjectURL;
+    URL.revokeObjectURL = ((url: string) => { revoked.push(url); }) as typeof URL.revokeObjectURL;
+    let releaseDownload: (value: Response) => void = () => undefined;
+    const fetchImpl = (input: string) => {
+      if (input.includes("/download?")) {
+        return new Promise<Response>((resolve) => { releaseDownload = resolve; });
+      }
+      if (input.includes("/composites")) {
+        return Promise.resolve(json({
+          items: [
+            composite(assetId, { reviewStatus: "APPROVED", rowVersion: 2 }),
+            composite("66666666-6666-4666-8666-666666666666", { reviewStatus: "DRAFT" }),
+            composite("77777777-7777-4777-8777-777777777777", { reviewStatus: "REJECTED" }),
+            composite("88888888-8888-4888-8888-888888888888", { status: "STALE", reviewStatus: "APPROVED" }),
+          ],
+          nextCursor: null,
+        }));
+      }
+      return Promise.resolve(json({}));
+    };
+    render(panel(fetchImpl, null));
+    const approved = () => document.querySelector(`[data-composite-id="${assetId}"]`);
+    await waitFor(() => expect(buttonNamed(approved(), "下载 MP4")).toBeTruthy());
+    expect(buttonNamed(document.querySelector("[data-composite-id=\"66666666-6666-4666-8666-666666666666\"]"), "下载 MP4")).toBeUndefined();
+    expect(buttonNamed(document.querySelector("[data-composite-id=\"77777777-7777-4777-8777-777777777777\"]"), "下载来源清单")).toBeUndefined();
+    expect(buttonNamed(document.querySelector("[data-composite-id=\"88888888-8888-4888-8888-888888888888\"]"), "下载 MP4")).toBeUndefined();
+    fireEvent.click(buttonNamed(approved(), "下载 MP4")!);
+    expect(buttonNamed(approved(), "正在下载")).toBeTruthy();
+    releaseDownload(new Response(new Uint8Array([1, 2, 3]), {
+      status: 200,
+      headers: {
+        "content-type": "video/mp4",
+        "content-disposition": `attachment; filename="episode-01-${assetId}.mp4"`,
+      },
+    }));
+    await waitFor(() => expect(created).toEqual(["video/mp4"]));
+    expect(revoked).toEqual(["blob:episode"]);
+    expect(approved()?.textContent).not.toContain("重新生成");
+    URL.createObjectURL = originalCreate;
+    URL.revokeObjectURL = originalRevoke;
+  });
+
+  it("does not save an error response and ignores a download that returns after the episode changes", async () => {
+    const assetId = "55555555-5555-4555-8555-555555555555";
+    const created: string[] = [];
+    const originalCreate = URL.createObjectURL;
+    const originalRevoke = URL.revokeObjectURL;
+    URL.createObjectURL = (() => {
+      created.push("saved");
+      return "blob:late";
+    }) as typeof URL.createObjectURL;
+    URL.revokeObjectURL = (() => undefined) as typeof URL.revokeObjectURL;
+    let releaseDownload: (value: Response) => void = () => undefined;
+    const fetchImpl = (input: string) => {
+      if (input.includes("/download?") || input.includes("/export-manifest?")) {
+        return new Promise<Response>((resolve) => { releaseDownload = resolve; });
+      }
+      if (input.includes(OTHER)) return Promise.resolve(json({ items: [], nextCursor: null }));
+      if (input.includes("/composites")) {
+        return Promise.resolve(json({ items: [composite(assetId, { reviewStatus: "APPROVED" })], nextCursor: null }));
+      }
+      return Promise.resolve(json({}));
+    };
+    const view = render(panel(fetchImpl, null));
+    const card = () => document.querySelector(`[data-composite-id="${assetId}"]`);
+    fireEvent.click(await screen.findByRole("button", { name: "下载来源清单" }));
+    releaseDownload(new Response(JSON.stringify({ error: { code: "COMPOSE_INPUT_INVALID", message: "来源已变化" } }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    }));
+    expect(await screen.findByRole("alert")).toHaveProperty("textContent", "来源已变化");
+    expect(created).toEqual([]);
+    fireEvent.click(buttonNamed(card(), "下载 MP4")!);
+    view.rerender(panel(fetchImpl, null, OTHER));
+    releaseDownload(new Response(new Uint8Array([9]), {
+      status: 200,
+      headers: { "content-type": "video/mp4", "content-disposition": "attachment; filename=\"episode-01-late.mp4\"" },
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(created).toEqual([]);
+    expect(screen.queryByText("来源已变化")).toBeNull();
+    URL.createObjectURL = originalCreate;
+    URL.revokeObjectURL = originalRevoke;
+  });
 });

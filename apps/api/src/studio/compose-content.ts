@@ -53,6 +53,47 @@ export async function readCompositeContent(
   }
 }
 
+export async function readVerifiedCompositeBytes(
+  root: string,
+  asset: { objectKey: string; checksumSha256: string; byteSize: number },
+): Promise<Buffer> {
+  if (!isAbsolute(root)) throw new PersistenceError("CONFIGURATION_ERROR", "Local compose content is not enabled");
+  if (!COMPOSE_KEY.test(asset.objectKey) || !/^[0-9a-f]{64}$/.test(asset.checksumSha256)) {
+    throw new PersistenceError("ASSET_CONTENT_INVALID", "Asset content is not a local composite");
+  }
+  if (!Number.isSafeInteger(asset.byteSize) || asset.byteSize <= 0 || asset.byteSize > MAX_COMPOSE_BYTES) {
+    throw new PersistenceError("ASSET_CONTENT_INVALID", "Asset content does not match its record");
+  }
+  const absolute = await containedCompositePath(root, asset.objectKey);
+  const handle = await open(absolute, "r").catch((error: unknown) => {
+    if (error instanceof PersistenceError) throw error;
+    throw new PersistenceError("ASSET_CONTENT_INVALID", "Asset content is not a local composite");
+  });
+  try {
+    const info = await handle.stat();
+    if (!info.isFile() || info.size !== asset.byteSize) {
+      throw new PersistenceError("ASSET_CONTENT_INVALID", "Asset content does not match its record");
+    }
+    const target = Buffer.alloc(asset.byteSize + 1);
+    let offset = 0;
+    while (offset < target.length) {
+      const read = await handle.read(target, offset, target.length - offset, offset);
+      if (read.bytesRead === 0) break;
+      offset += read.bytesRead;
+    }
+    if (offset !== asset.byteSize) {
+      throw new PersistenceError("ASSET_CONTENT_INVALID", "Asset content does not match its record");
+    }
+    const bytes = Buffer.from(target.subarray(0, asset.byteSize));
+    if (createHash("sha256").update(bytes).digest("hex") !== asset.checksumSha256) {
+      throw new PersistenceError("ASSET_CONTENT_INVALID", "Asset content does not match its record");
+    }
+    return bytes;
+  } finally {
+    await handle.close();
+  }
+}
+
 async function containedCompositePath(root: string, objectKey: string): Promise<string> {
   const base = await realpath(root);
   const parts = objectKey.split(/[/\\]/).filter((part) => part.length > 0);

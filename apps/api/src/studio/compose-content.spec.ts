@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { MediaAssetRecord } from "@ai-drama/database";
 import { afterEach, describe, expect, it } from "vitest";
-import { readCompositeContent } from "./compose-content";
+import { readCompositeContent, readVerifiedCompositeBytes } from "./compose-content";
 
 const created: string[] = [];
 const workspaceId = "11111111-1111-4111-8111-111111111111";
@@ -57,5 +57,31 @@ describe("local composite content paths", () => {
     await symlink(outside, join(root, "compose"), process.platform === "win32" ? "junction" : "dir");
     await expect(readCompositeContent(root, workspaceId, { ...asset, objectKey: key })).rejects.toThrow(/local composite/);
     expect(await readFile(join(outside, "secret.mp4"))).toEqual(secret);
+    await expect(readVerifiedCompositeBytes(root, { objectKey: key, checksumSha256: asset.checksumSha256, byteSize: asset.byteSize })).rejects.toThrow(/local composite/);
+  });
+
+  it("returns the bytes just verified and rejects a directory, a short file, an extra byte, and a different hash", async () => {
+    const root = await tempDir();
+    const bytes = Buffer.from("episode-bytes");
+    const asset = record(bytes, "");
+    const key = `compose/${workspaceId}/${projectId}/${jobId}/${attemptId}/${asset.checksumSha256}.mp4`;
+    await mkdir(join(root, "compose", workspaceId, projectId, jobId, attemptId), { recursive: true });
+    const file = join(root, key);
+    await writeFile(file, bytes);
+    const read = await readVerifiedCompositeBytes(root, { objectKey: key, checksumSha256: asset.checksumSha256, byteSize: bytes.length });
+    expect(read).toEqual(bytes);
+    await writeFile(file, bytes.subarray(0, bytes.length - 1));
+    await expect(readVerifiedCompositeBytes(root, { objectKey: key, checksumSha256: asset.checksumSha256, byteSize: bytes.length })).rejects.toThrow(/does not match/);
+    await writeFile(file, Buffer.concat([bytes, Buffer.from("x")]));
+    await expect(readVerifiedCompositeBytes(root, { objectKey: key, checksumSha256: asset.checksumSha256, byteSize: bytes.length })).rejects.toThrow(/does not match/);
+    await writeFile(file, Buffer.from("different-bytes"));
+    const other = record(Buffer.from("different-bytes"), key);
+    await expect(readVerifiedCompositeBytes(root, { objectKey: key, checksumSha256: asset.checksumSha256, byteSize: other.byteSize })).rejects.toThrow(/does not match/);
+    await rm(file);
+    await mkdir(file);
+    await expect(readVerifiedCompositeBytes(root, { objectKey: key, checksumSha256: asset.checksumSha256, byteSize: bytes.length })).rejects.toThrow(/local composite|does not match/);
+    await expect(readVerifiedCompositeBytes(root, { objectKey: key, checksumSha256: asset.checksumSha256, byteSize: 64 * 1024 * 1024 + 1 })).rejects.toThrow(/does not match/);
+    await rm(file, { recursive: true, force: true });
+    await expect(readVerifiedCompositeBytes(root, { objectKey: key, checksumSha256: asset.checksumSha256, byteSize: bytes.length })).rejects.toThrow(/unavailable/);
   });
 });

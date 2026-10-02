@@ -44,6 +44,17 @@ interface HeldSubmit {
   unresolved: boolean;
 }
 
+function saveBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
 function dedupeComposites(items: CompositeItem[]): CompositeItem[] {
   const seen = new Set<string>();
   return items.filter((item) => {
@@ -88,6 +99,8 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
   const [listError, setListError] = useState<string | null>(null);
   const [held, setHeld] = useState<HeldSubmit | null>(null);
   const [reload, setReload] = useState(0);
+  const [pendingDownload, setPendingDownload] = useState<{ assetId: string; kind: "mp4" | "json" } | null>(null);
+  const [downloadError, setDownloadError] = useState<{ assetId: string; message: string } | null>(null);
   const [historyCursor, setHistoryCursor] = useState<string | null>(null);
   const epoch = useRef(0);
   const listEpoch = useRef(0);
@@ -119,6 +132,8 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
     setItems([]);
     setListError(null);
     setHeld(null);
+    setPendingDownload(null);
+    setDownloadError(null);
     rememberCursor(null);
   }
 
@@ -332,6 +347,34 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
     }
   }
 
+  async function download(item: CompositeItem, kind: "mp4" | "json") {
+    const token = epoch.current;
+    const assetId = item.assetId;
+    setPendingDownload({ assetId, kind });
+    setDownloadError((current) => current?.assetId === assetId ? null : current);
+    const leaf = kind === "mp4" ? "download" : "export-manifest";
+    const accept = kind === "mp4" ? "video/mp4" : "application/json";
+    try {
+      const result = await props.client.readAttachment(
+        `/projects/${props.projectId}/episodes/${props.episodeId}/composites/${assetId}/${leaf}?expectedContentHash=${item.checksumSha256}`,
+        accept,
+      );
+      if (epoch.current !== token) return;
+      if (!result.ok) {
+        setDownloadError({ assetId, message: result.message });
+        if (result.refresh) setReload((value) => value + 1);
+        return;
+      }
+      saveBlob(result.blob, result.filename);
+    } catch {
+      if (epoch.current === token) setDownloadError({ assetId, message: "下载没有完成" });
+    } finally {
+      if (epoch.current === token) {
+        setPendingDownload((current) => current?.assetId === assetId && current.kind === kind ? null : current);
+      }
+    }
+  }
+
   async function review(item: CompositeItem, action: "APPROVE" | "REJECT") {
     const token = epoch.current;
     const listToken = listEpoch.current;
@@ -384,6 +427,17 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
               {(item.segments ?? []).map((segment) => <li key={`${item.assetId}:${segment.position}:${segment.assetId}`}>{segment.position}. {segment.shotId}</li>)}
             </ol>
             <video className="mt-2 aspect-[9/16] w-full bg-black" controls src={`/api/v1/assets/${item.assetId}/content`} />
+            {item.status === "ACTIVE" && item.reviewStatus === "APPROVED" ? (
+              <div className="mt-2 flex flex-wrap gap-2">
+                <button className="rounded border px-2 py-1" type="button" disabled={pendingDownload?.assetId === item.assetId} onClick={() => void download(item, "mp4")}>
+                  {pendingDownload?.assetId === item.assetId && pendingDownload.kind === "mp4" ? "正在下载" : "下载 MP4"}
+                </button>
+                <button className="rounded border px-2 py-1" type="button" disabled={pendingDownload?.assetId === item.assetId} onClick={() => void download(item, "json")}>
+                  {pendingDownload?.assetId === item.assetId && pendingDownload.kind === "json" ? "正在下载" : "下载来源清单"}
+                </button>
+              </div>
+            ) : null}
+            {downloadError?.assetId === item.assetId ? <p className="mt-2" role="alert">{downloadError.message}</p> : null}
             {item.status === "ACTIVE" && item.reviewStatus === "DRAFT" ? (
               <div className="mt-2 flex flex-wrap gap-2">
                 <button className="rounded border px-2 py-1" type="button" onClick={() => void review(item, "APPROVE")}>批准成片</button>

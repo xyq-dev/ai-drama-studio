@@ -61,10 +61,57 @@ export class StudioClient {
     return { status: response.status, body };
   }
 
+  async readAttachment(path: string, accept: string): Promise<
+    | { ok: true; blob: Blob; filename: string; contentType: string }
+    | { ok: false; message: string; refresh: boolean }
+  > {
+    let response: Response;
+    try {
+      response = await this.request(`${this.prefix}${path}`, {
+        method: "GET",
+        headers: { Accept: accept },
+      });
+    } catch {
+      return { ok: false, message: "下载没有完成", refresh: false };
+    }
+    const contentType = response.headers.get("content-type") ?? "";
+    const disposition = response.headers.get("content-disposition") ?? "";
+    const matchesType = contentType.toLowerCase().includes(accept);
+    const attachment = disposition.toLowerCase().includes("attachment");
+    if (!response.ok || !matchesType || !attachment) {
+      const text = await response.text();
+      return { ok: false, message: attachmentMessage(text, response.ok), refresh: !response.ok };
+    }
+    return {
+      ok: true,
+      blob: await response.blob(),
+      filename: filenameFromDisposition(disposition),
+      contentType,
+    };
+  }
+
   private request(input: string, init?: RequestInit): Promise<Response> {
     const fetchImpl = this.fetchImpl ?? globalThis.fetch.bind(globalThis);
     return fetchImpl(input, init);
   }
+}
+
+function filenameFromDisposition(value: string): string {
+  const match = /filename="([A-Za-z0-9._-]+)"/.exec(value);
+  return match?.[1] ?? "episode-export";
+}
+
+function attachmentMessage(text: string, ok: boolean): string {
+  try {
+    const parsed: unknown = text.length === 0 ? null : JSON.parse(text);
+    if (parsed && typeof parsed === "object" && "error" in parsed) {
+      const message = (parsed as { error?: { message?: string } }).error?.message;
+      if (message) return message;
+    }
+  } catch {
+    return ok ? "下载内容与成片不一致" : "下载没有完成";
+  }
+  return ok ? "下载内容与成片不一致" : "下载没有完成";
 }
 
 function stripWorkspace(body: unknown): unknown {

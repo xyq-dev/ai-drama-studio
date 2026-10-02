@@ -1,6 +1,7 @@
 import { Body, Controller, Get, Head, Headers, Inject, Param, Post, Query, Req, Res, StreamableFile } from "@nestjs/common";
 import { PersistenceError, RuntimeStore } from "@ai-drama/database";
 import { RUNTIME_STORE, STUDIO_SERVICE } from "./tokens";
+import { attachmentDisposition } from "./episode-export";
 import { StudioService, createTraceId, type StudioContext } from "./studio.service";
 
 const UUID_PARAM_PIPE = {
@@ -564,6 +565,46 @@ export class StudioController {
   ) {
     response.setHeader("Cache-Control", "private, no-store");
     return this.studio.listEpisodeComposites(projectId, episodeId, cursor, limit);
+  }
+
+  @Get("projects/:projectId/episodes/:episodeId/composites/:assetId/download")
+  @Head("projects/:projectId/episodes/:episodeId/composites/:assetId/download")
+  async downloadEpisodeComposite(
+    @Param("projectId", UUID_PARAM_PIPE) projectId: string,
+    @Param("episodeId", UUID_PARAM_PIPE) episodeId: string,
+    @Param("assetId", UUID_PARAM_PIPE) assetId: string,
+    @Query() query: Record<string, unknown>,
+    @Req() request: ContentRequest,
+    @Res({ passthrough: true }) response: ContentResponse,
+  ) {
+    const payload = await this.studio.exportEpisodeComposite(projectId, episodeId, assetId, query);
+    response.status(200);
+    response.setHeader("Content-Type", "video/mp4");
+    response.setHeader("Content-Disposition", attachmentDisposition(`${payload.filenameStem}.mp4`));
+    response.setHeader("Content-Length", String(payload.bytes.length));
+    response.setHeader("X-Content-Type-Options", "nosniff");
+    response.setHeader("Cache-Control", "private, no-store");
+    if (request.method === "HEAD") return undefined;
+    return new StreamableFile(payload.bytes);
+  }
+
+  @Get("projects/:projectId/episodes/:episodeId/composites/:assetId/export-manifest")
+  async exportEpisodeManifest(
+    @Param("projectId", UUID_PARAM_PIPE) projectId: string,
+    @Param("episodeId", UUID_PARAM_PIPE) episodeId: string,
+    @Param("assetId", UUID_PARAM_PIPE) assetId: string,
+    @Query() query: Record<string, unknown>,
+    @Res({ passthrough: true }) response: ContentResponse,
+  ) {
+    const payload = await this.studio.exportEpisodeComposite(projectId, episodeId, assetId, query);
+    const body = Buffer.from(JSON.stringify(payload.manifest));
+    response.status(200);
+    response.setHeader("Content-Type", "application/json; charset=utf-8");
+    response.setHeader("Content-Disposition", attachmentDisposition(`${payload.filenameStem}.json`));
+    response.setHeader("Content-Length", String(body.length));
+    response.setHeader("X-Content-Type-Options", "nosniff");
+    response.setHeader("Cache-Control", "private, no-store");
+    return new StreamableFile(body);
   }
 
   @Post("projects/:projectId/episodes/:episodeId/compose")

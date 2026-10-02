@@ -19,7 +19,8 @@ import { z } from "zod";
 import { assertReadableMockAv, readBoundedMockAv } from "./mock-av-content";
 import { readBoundedMockSm } from "./mock-sm-content";
 import { assertReadableMockImage, readBoundedMockPng } from "./mock-image-content";
-import { readCompositeContent } from "./compose-content";
+import { readCompositeContent, readVerifiedCompositeBytes } from "./compose-content";
+import { episodeExportBody, exportIdentity, holdEpisodeExportLatch, parseExpectedContentHash } from "./episode-export";
 
 const projectBodySchema = z.object({
   title: z.string().min(1).max(200),
@@ -843,6 +844,38 @@ export class StudioService {
       return { mimeType: asset.mimeType, bytes: await readBoundedMockSm(this.mockObjectDir, asset) };
     }
     throw new PersistenceError("ASSET_CONTENT_INVALID", "Asset content is not a stored mock recording");
+  }
+
+  async exportEpisodeComposite(
+    projectId: string,
+    episodeId: string,
+    assetId: string,
+    query: Record<string, unknown>,
+  ): Promise<{ filenameStem: string; bytes: Buffer; manifest: ReturnType<typeof episodeExportBody>["manifest"] }> {
+    if (!this.episodeComposeEnabled || !this.composeObjectDir || !this.mediaAssets) {
+      throw new PersistenceError("CONFIGURATION_ERROR", "Episode compose is not enabled");
+    }
+    const expectedContentHash = parseExpectedContentHash(query);
+    const request = {
+      workspaceId: this.workspaceId,
+      projectId,
+      episodeId,
+      assetId,
+      expectedContentHash,
+    };
+    const first = await this.mediaAssets.inspectEpisodeCompositeExport(request);
+    const bytes = await readVerifiedCompositeBytes(this.composeObjectDir, first);
+    await holdEpisodeExportLatch();
+    const second = await this.mediaAssets.inspectEpisodeCompositeExport(request);
+    if (
+      exportIdentity(first) !== exportIdentity(second)
+      || bytes.length !== second.byteSize
+      || createHash("sha256").update(bytes).digest("hex") !== second.checksumSha256
+    ) {
+      throw new PersistenceError("COMPOSE_INPUT_CHANGED", "Episode export sources changed");
+    }
+    const built = episodeExportBody(second, new Date().toISOString());
+    return { filenameStem: built.filenameStem, bytes, manifest: built.manifest };
   }
 
   async createMockSceneWorkflow(projectId: string, context: StudioContext) {

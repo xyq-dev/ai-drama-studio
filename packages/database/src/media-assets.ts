@@ -6,10 +6,16 @@ import {
   buildEpisodeComposeJobSnapshot,
   buildEpisodeComposePreflight,
   canonicalInputHash,
+  COMPOSE_JOB_SCHEMA,
+  EPISODE_COMPOSE_ASSET_SCHEMA,
   EPISODE_COMPOSE_JOB_SCHEMA,
   EPISODE_COMPOSE_OUTPUT_SCHEMA,
   type EpisodeComposeJobSnapshot,
   type EpisodeComposePreflightResponse,
+  type EpisodeExportFacts,
+  assertDependencyEdges,
+  assertEpisodeExportRecord,
+  mediaFromFrozenShot,
   type EpisodeComposeRenderRequest,
   type EpisodeComposeSourceObject,
   type EpisodeCompositeFacts,
@@ -643,6 +649,29 @@ export class MediaAssetStore {
       contentHash: String(saved.checksum_sha256),
     };
   }
+
+  async inspectEpisodeCompositeExport(input: {
+    workspaceId: string;
+    projectId: string;
+    episodeId: string;
+    assetId: string;
+    expectedContentHash: string;
+  }): Promise<EpisodeExportFacts> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      try {
+        const facts = await inspectEpisodeCompositeExportWithClient(client, input);
+        await client.query("COMMIT");
+        return facts;
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      }
+    } finally {
+      client.release();
+    }
+  }
 }
 
 function selectionFromMetadata(metadata: { manifest?: { sources?: Array<{ role: string; asset: { assetId: string } | null }> } }): ComposePreflightSelection {
@@ -942,6 +971,293 @@ async function approveFrozenEpisodeComposite(
     if (error instanceof DomainError) throw new PersistenceError(error.code, error.message);
     throw error;
   }
+}
+
+async function inspectEpisodeCompositeExportWithClient(
+  client: PoolClient,
+  input: {
+    workspaceId: string;
+    projectId: string;
+    episodeId: string;
+    assetId: string;
+    expectedContentHash: string;
+  },
+): Promise<EpisodeExportFacts> {
+  const episode = await client.query<QueryResultRow>(
+    `SELECT episode_no FROM episode WHERE id = $1 AND workspace_id = $2 AND project_id = $3`,
+    [input.episodeId, input.workspaceId, input.projectId],
+  );
+  if (!episode.rows[0]) throw new PersistenceError("NOT_FOUND", "Episode not found");
+  const project = await client.query(
+    `SELECT id FROM project WHERE id = $1 AND workspace_id = $2 FOR UPDATE`,
+    [input.projectId, input.workspaceId],
+  );
+  if (!project.rows[0]) throw new PersistenceError("NOT_FOUND", "Project not found");
+  const pending = await client.query(
+    `SELECT 1 FROM stale_recalculation
+      WHERE workspace_id = $1 AND project_id = $2 AND status IN ('PENDING', 'RUNNING')
+      LIMIT 1`,
+    [input.workspaceId, input.projectId],
+  );
+  const assetResult = await client.query<QueryResultRow>(
+    `SELECT id::text AS id, workspace_id::text AS workspace_id, project_id::text AS project_id,
+            kind, source_kind, storage_provider, mime_type, byte_size, checksum_sha256, width, height,
+            duration_ms, status, review_status, reviewed_content_hash, row_version,
+            source_shot_revision_id::text AS source_shot_revision_id, object_key,
+            source_generation_job_id::text AS source_job_id, source_job_attempt_id::text AS source_attempt_id,
+            metadata_json
+       FROM asset
+      WHERE id = $1 AND workspace_id = $2 AND project_id = $3
+      FOR UPDATE`,
+    [input.assetId, input.workspaceId, input.projectId],
+  );
+  const asset = assetResult.rows[0];
+  if (!asset) throw new PersistenceError("NOT_FOUND", "Composite not found");
+  const jobId = asset.source_job_id == null ? null : String(asset.source_job_id);
+  const attemptId = asset.source_attempt_id == null ? null : String(asset.source_attempt_id);
+  const jobResult = jobId === null ? { rows: [] as QueryResultRow[] } : await client.query<QueryResultRow>(
+    `SELECT id::text AS id, workspace_id::text AS workspace_id, project_id::text AS project_id,
+            source_shot_revision_id::text AS source_shot_revision_id, kind, state, input_hash, input_snapshot
+       FROM generation_job
+      WHERE id = $1 AND workspace_id = $2
+      FOR SHARE`,
+    [jobId, input.workspaceId],
+  );
+  const attemptResult = attemptId === null ? { rows: [] as QueryResultRow[] } : await client.query<QueryResultRow>(
+    `SELECT attempt.id::text AS id, attempt.generation_job_id::text AS job_id,
+            attempt.finished_at IS NOT NULL AS finished,
+            attempt.attempt_no = (
+              SELECT MAX(latest.attempt_no) FROM job_attempt latest WHERE latest.generation_job_id = attempt.generation_job_id
+            ) AS is_latest
+       FROM job_attempt attempt
+      WHERE attempt.id = $1 AND attempt.workspace_id = $2
+      FOR SHARE`,
+    [attemptId, input.workspaceId],
+  );
+  const job = jobResult.rows[0];
+  const attempt = attemptResult.rows[0];
+  let core;
+  try {
+    core = assertEpisodeExportRecord({
+      workspaceId: input.workspaceId,
+      projectId: input.projectId,
+      episodeId: input.episodeId,
+      episodeNo: integerOrZero(episode.rows[0]?.episode_no),
+      expectedContentHash: input.expectedContentHash,
+      stalePending: Boolean(pending.rows[0]),
+      asset: {
+        id: String(asset.id),
+        workspaceId: String(asset.workspace_id),
+        projectId: String(asset.project_id),
+        kind: String(asset.kind),
+        sourceKind: asset.source_kind == null ? null : String(asset.source_kind),
+        storageProvider: String(asset.storage_provider),
+        mimeType: String(asset.mime_type),
+        byteSize: integerOrZero(asset.byte_size),
+        checksumSha256: String(asset.checksum_sha256),
+        width: asset.width == null ? null : integerOrZero(asset.width),
+        height: asset.height == null ? null : integerOrZero(asset.height),
+        durationMs: asset.duration_ms == null ? null : integerOrZero(asset.duration_ms),
+        status: String(asset.status),
+        reviewStatus: String(asset.review_status),
+        reviewedContentHash: asset.reviewed_content_hash == null ? null : String(asset.reviewed_content_hash),
+        rowVersion: integerOrZero(asset.row_version),
+        sourceShotRevisionId: asset.source_shot_revision_id == null ? null : String(asset.source_shot_revision_id),
+        objectKey: String(asset.object_key),
+        sourceJobId: jobId,
+        sourceAttemptId: attemptId,
+        metadata: asset.metadata_json,
+      },
+      job: job ? {
+        id: String(job.id),
+        workspaceId: String(job.workspace_id),
+        projectId: String(job.project_id),
+        shotRevisionId: job.source_shot_revision_id == null ? null : String(job.source_shot_revision_id),
+        kind: String(job.kind),
+        state: String(job.state),
+        inputHash: String(job.input_hash),
+        snapshot: job.input_snapshot,
+      } : null,
+      attempt: attempt ? {
+        id: String(attempt.id),
+        jobId: String(attempt.job_id),
+        finished: attempt.finished === true,
+        isLatest: attempt.is_latest === true,
+      } : null,
+    });
+  } catch (error) {
+    if (error instanceof PersistenceError) throw error;
+    if (error instanceof DomainError) throw new PersistenceError(error.code, error.message);
+    throw error;
+  }
+  const snapshot = isPlainJson(job?.input_snapshot) ? job.input_snapshot : null;
+  if (!snapshot) throw new PersistenceError("COMPOSE_INPUT_INVALID", "Frozen episode compose input is incomplete");
+  await approveFrozenEpisodeComposite(client, input.workspaceId, input.projectId, snapshot);
+  const revisionEdges = await client.query<QueryResultRow>(
+    `SELECT count(*)::int AS count FROM asset_revision_dependency WHERE dependent_asset_id = $1`,
+    [input.assetId],
+  );
+  if (integerOrZero(revisionEdges.rows[0]?.count) !== 0) {
+    throw new PersistenceError("COMPOSE_INPUT_INVALID", "Episode composite has revision dependencies");
+  }
+  const frozenInput = isPlainJson(snapshot.input) ? snapshot.input : null;
+  const manifest = frozenInput && isPlainJson(frozenInput.manifest) ? frozenInput.manifest : null;
+  const segments = manifest && Array.isArray(manifest.segments) ? manifest.segments : [];
+  const sourceObjects = frozenInput && Array.isArray(frozenInput.sourceObjects) ? frozenInput.sourceObjects : [];
+  const episodeEdges = await dependencyEdges(client, input.assetId);
+  try {
+    assertDependencyEdges(
+      input.workspaceId,
+      input.projectId,
+      sourceObjects.flatMap((item) => isPlainJson(item) && typeof item.assetId === "string" ? [item.assetId] : []),
+      episodeEdges,
+    );
+  } catch (error) {
+    if (error instanceof DomainError) throw new PersistenceError(error.code, error.message);
+    throw error;
+  }
+  const shotIds = segments.flatMap((item) => isPlainJson(item) && typeof item.assetId === "string" ? [item.assetId] : []);
+  const shotRows = shotIds.length === 0 ? [] : (await client.query<QueryResultRow>(
+    `SELECT id::text AS id, checksum_sha256, source_shot_revision_id::text AS source_shot_revision_id,
+            source_generation_job_id::text AS source_job_id, metadata_json
+       FROM asset
+      WHERE workspace_id = $1 AND project_id = $2 AND id = ANY($3::uuid[])`,
+    [input.workspaceId, input.projectId, shotIds],
+  )).rows;
+  const shotsById = new Map(shotRows.map((row) => [String(row.id), row]));
+  const prepared = segments.map((value, index) => {
+    const segment = isPlainJson(value) ? value : null;
+    const source = isPlainJson(sourceObjects[index]) ? sourceObjects[index] : null;
+    const shot = segment ? shotsById.get(String(segment.assetId)) : undefined;
+    if (!segment || !source || !shot || String(shot.checksum_sha256) !== String(segment.checksumSha256) || String(shot.source_shot_revision_id) !== String(segment.shotRevisionId)) {
+      throw new PersistenceError("COMPOSE_INPUT_INVALID", "Frozen shot composite does not match the episode manifest");
+    }
+    return { segment, shot };
+  });
+  const mediaIds = [...new Set(prepared.flatMap((item) => readShotSlots(item.shot.metadata_json).flatMap((slot) => slot.asset ? [slot.asset.assetId] : [])))].sort();
+  const mediaRows = mediaIds.length === 0 ? [] : (await client.query<QueryResultRow>(
+    `SELECT id::text AS id, workspace_id::text AS workspace_id, project_id::text AS project_id, kind, checksum_sha256,
+            source_generation_job_id::text AS source_job_id, source_job_attempt_id::text AS source_attempt_id
+       FROM asset
+      WHERE workspace_id = $1 AND id = ANY($2::uuid[])
+      ORDER BY id
+      FOR SHARE`,
+    [input.workspaceId, mediaIds],
+  )).rows;
+  const mediaById = new Map(mediaRows.map((row) => [String(row.id), row]));
+  const segmentsOut: EpisodeExportFacts["segments"] = [];
+  for (const item of prepared) {
+    segmentsOut.push(await exportSegment(client, input.workspaceId, input.projectId, item.segment, item.shot, mediaById));
+  }
+  return { ...core, segments: segmentsOut };
+}
+
+async function exportSegment(
+  client: PoolClient,
+  workspaceId: string,
+  projectId: string,
+  segment: Record<string, unknown>,
+  shot: QueryResultRow,
+  mediaById: Map<string, QueryResultRow>,
+): Promise<EpisodeExportFacts["segments"][number]> {
+  const metadata = shot.metadata_json;
+  if (!isPlainJson(metadata) || metadata.schema !== EPISODE_COMPOSE_ASSET_SCHEMA) {
+    throw new PersistenceError("COMPOSE_INPUT_INVALID", "Frozen shot composite metadata is not the accepted schema");
+  }
+  const jobId = shot.source_job_id == null ? "" : String(shot.source_job_id);
+  const job = await client.query<QueryResultRow>(
+    `SELECT input_snapshot FROM generation_job WHERE id = $1 AND workspace_id = $2`,
+    [jobId, workspaceId],
+  );
+  const snapshot = job.rows[0]?.input_snapshot;
+  if (!isPlainJson(snapshot) || snapshot.schema !== COMPOSE_JOB_SCHEMA) {
+    throw new PersistenceError("COMPOSE_INPUT_INVALID", "Frozen shot compose input is not the shot schema");
+  }
+  const frozenInput = isPlainJson(snapshot.input) ? snapshot.input : null;
+  const sourceObjects = Array.isArray(frozenInput?.sourceObjects) ? frozenInput.sourceObjects.flatMap((item) => {
+    if (!isPlainJson(item) || typeof item.role !== "string" || typeof item.assetId !== "string" || typeof item.checksumSha256 !== "string") return [];
+    return [{ role: item.role, assetId: item.assetId, checksumSha256: item.checksumSha256 }];
+  }) : [];
+  const slots = readShotSlots(metadata);
+  const edges = await dependencyEdges(client, String(shot.id));
+  const media = slots.flatMap((slot) => slot.asset ? [mediaById.get(slot.asset.assetId)] : []);
+  if (media.some((row) => !row)) {
+    throw new PersistenceError("COMPOSE_INPUT_INVALID", "Frozen media source does not match the stored asset");
+  }
+  try {
+    const listed = mediaFromFrozenShot({
+      workspaceId,
+      projectId,
+      sources: slots,
+      sourceObjects,
+      edges,
+      media: media.flatMap((row) => row ? [{
+        assetId: String(row.id),
+        workspaceId: String(row.workspace_id),
+        projectId: String(row.project_id),
+        kind: String(row.kind),
+        checksumSha256: String(row.checksum_sha256),
+        sourceJobId: row.source_job_id == null ? null : String(row.source_job_id),
+        sourceAttemptId: row.source_attempt_id == null ? null : String(row.source_attempt_id),
+      }] : []),
+    });
+    return {
+      position: integerOrZero(segment.position),
+      startMs: integerOrZero(segment.startMs),
+      endMs: integerOrZero(segment.endMs),
+      durationMs: integerOrZero(segment.durationMs),
+      shotAssetId: String(segment.assetId),
+      shotChecksumSha256: String(segment.checksumSha256),
+      shotId: String(segment.shotId),
+      shotRevisionId: String(segment.shotRevisionId),
+      media: listed,
+    };
+  } catch (error) {
+    if (error instanceof DomainError) throw new PersistenceError(error.code, error.message);
+    throw error;
+  }
+}
+
+function readShotSlots(metadata: unknown): Array<{ role: string; asset: { assetId: string; checksumSha256: string; kind: string } | null }> {
+  if (!isPlainJson(metadata) || metadata.schema !== EPISODE_COMPOSE_ASSET_SCHEMA) {
+    throw new PersistenceError("COMPOSE_INPUT_INVALID", "Frozen shot composite metadata is not the accepted schema");
+  }
+  const manifest = isPlainJson(metadata.manifest) ? metadata.manifest : null;
+  if (!Array.isArray(manifest?.sources)) {
+    throw new PersistenceError("COMPOSE_INPUT_INVALID", "Frozen shot sources are missing");
+  }
+  return manifest.sources.map((value) => {
+    if (!isPlainJson(value) || typeof value.role !== "string") {
+      throw new PersistenceError("COMPOSE_INPUT_INVALID", "Frozen shot source is not usable");
+    }
+    if (value.asset == null) return { role: value.role, asset: null };
+    const asset = isPlainJson(value.asset) ? value.asset : null;
+    if (!asset || typeof asset.assetId !== "string" || typeof asset.checksumSha256 !== "string" || typeof asset.kind !== "string") {
+      throw new PersistenceError("COMPOSE_INPUT_INVALID", "Frozen shot source is not usable");
+    }
+    return {
+      role: value.role,
+      asset: { assetId: asset.assetId, checksumSha256: asset.checksumSha256, kind: asset.kind },
+    };
+  });
+}
+
+async function dependencyEdges(
+  client: PoolClient,
+  assetId: string,
+): Promise<Array<{ workspaceId: string; projectId: string; sourceAssetId: string }>> {
+  const result = await client.query<QueryResultRow>(
+    `SELECT workspace_id::text AS workspace_id, project_id::text AS project_id, source_asset_id::text AS source_asset_id
+       FROM asset_dependency
+      WHERE dependent_asset_id = $1
+      ORDER BY source_asset_id`,
+    [assetId],
+  );
+  return result.rows.map((row) => ({
+    workspaceId: String(row.workspace_id),
+    projectId: String(row.project_id),
+    sourceAssetId: String(row.source_asset_id),
+  }));
 }
 
 async function insertLocalEpisodeComposeAsset(

@@ -41,6 +41,9 @@ export const requiredStages = [
   "episode-render-lifecycle",
   "episode-render-stale",
   "episode-render-isolation",
+  "episode-export-download",
+  "episode-export-gates",
+  "episode-export-readonly",
 ];
 
 export function acceptanceFailed(input) {

@@ -18,6 +18,7 @@ import { rename, rm, writeFile } from "node:fs/promises";
 import { composePreflightGates, composePreflightPage, composePreflightReadonly } from "./compose-preflight.mjs";
 import { episodeComposeGates, episodeComposePreflight, episodeComposeReadonly } from "./episode-compose-preflight.mjs";
 import { episodeRenderGates, episodeRenderIsolation, episodeRenderLifecycle, episodeRenderPlayback, episodeRenderReview, episodeRenderStale } from "./episode-render.mjs";
+import { episodeExportDownload, episodeExportGates, episodeExportReadonly } from "./episode-export.mjs";
 import { composeProvenanceStale, composeRenderGates, composeRenderLifecycle, composeRenderPage, composeReview } from "./compose-render.mjs";
 import { mediaCancel, mediaObservationReplay, mediaShotIsolation, mediaTerminalRace } from "./lifecycle.mjs";
 import { acceptanceExitCode, acceptanceFailed, assertLinkage, requiredStages } from "./outcome.mjs";
@@ -1990,6 +1991,9 @@ async function main() {
   await stage("episode-render-lifecycle", () => episodeRenderLifecycle(lifecycle));
   await stage("episode-render-stale", () => episodeRenderStale(lifecycle));
   await stage("episode-render-isolation", () => episodeRenderIsolation(lifecycle));
+  await stage("episode-export-download", () => episodeExportDownload(lifecycle));
+  await stage("episode-export-gates", () => episodeExportGates(lifecycle));
+  await stage("episode-export-readonly", () => episodeExportReadonly(lifecycle));
 }
 
 function lifecycleContext() {

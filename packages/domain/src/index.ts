@@ -104,6 +104,22 @@ export {
   type EpisodeCompositeFacts,
 } from "./episode-compose-preflight";
 export {
+  EPISODE_EXPORT_MANIFEST_SCHEMA,
+  assertDependencyEdges,
+  assertEpisodeExportRecord,
+  buildEpisodeExportManifest,
+  episodeExportFilenameStem,
+  mediaFromFrozenShot,
+  type EpisodeExportAttemptFacts,
+  type EpisodeExportAssetFacts,
+  type EpisodeExportCore,
+  type EpisodeExportFacts,
+  type EpisodeExportJobFacts,
+  type EpisodeExportMedia,
+  type EpisodeExportSegment,
+  type FrozenShotMediaInput,
+} from "./episode-export";
+export {
   EPISODE_COMPOSE_JOB_SCHEMA,
   EPISODE_COMPOSE_OUTPUT_SCHEMA,
   EPISODE_RENDER_PROFILE,
