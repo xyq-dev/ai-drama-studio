@@ -22,6 +22,28 @@ function json(payload: unknown, status = 200): Response {
   return new Response(JSON.stringify(payload), { status, headers: { "content-type": "application/json" } });
 }
 
+function composite(assetId: string, overrides: {
+  status?: "ACTIVE" | "STALE";
+  reviewStatus?: "DRAFT" | "APPROVED" | "REJECTED";
+  rowVersion?: number;
+  checksumSha256?: string;
+} = {}) {
+  return {
+    assetId,
+    status: "ACTIVE" as const,
+    reviewStatus: "DRAFT" as const,
+    checksumSha256: HASH,
+    rowVersion: 1,
+    durationMs: 2000,
+    segments: [] as Array<{ position: number; assetId: string; shotId: string; startMs: number; endMs: number }>,
+    ...overrides,
+  };
+}
+
+function buttonNamed(card: Element | null, name: string): HTMLButtonElement | undefined {
+  return [...(card?.querySelectorAll("button") ?? [])].find((node) => node.textContent === name) as HTMLButtonElement | undefined;
+}
+
 function panel(
   fetchImpl: (input: string, init?: RequestInit) => Promise<Response>,
   next: EpisodeComposeBody | null = body,
@@ -322,4 +344,264 @@ describe("episode compose job panel", () => {
     expect(screen.getByText(/多镜合成已受理/).textContent).toContain("CANCELED");
     expect(screen.queryByRole("button", { name: "取消合成" })).toBeNull();
   });
+
+  it("keeps polling after a running cancel until the same job becomes canceled", async () => {
+    let jobGets = 0;
+    let cancelPosts = 0;
+    let getsAfterCancel = 0;
+    let phase: "RUNNING" | "CANCELED" = "RUNNING";
+    let hidden = false;
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => (hidden ? "hidden" : "visible") });
+    const fetchImpl = (input: string, init?: RequestInit) => {
+      if (input.includes("/composites")) return Promise.resolve(json({ items: [], nextCursor: null }));
+      if (input.includes("/compose")) return Promise.resolve(json({ jobId: JOB_A, state: "RUNNING" }, 202));
+      if (init?.method === "POST") {
+        cancelPosts += 1;
+        return Promise.resolve(json({}));
+      }
+      jobGets += 1;
+      if (cancelPosts > 0) getsAfterCancel += 1;
+      return Promise.resolve(json({ id: JOB_A, state: phase, errorMessage: null }));
+    };
+    const client = new StudioClient(fetchImpl);
+    try {
+      render(createElement(EpisodeComposeJobPanel, { client, projectId: PROJECT, episodeId: EPISODE, body }));
+      fireEvent.click(screen.getByRole("button", { name: "开始多镜合成" }));
+      expect(await screen.findByText(/RUNNING/)).toBeTruthy();
+      const beforeCancel = jobGets;
+      fireEvent.click(screen.getByRole("button", { name: "取消合成" }));
+      await waitFor(() => expect(getsAfterCancel).toBeGreaterThanOrEqual(1));
+      expect(screen.getByText(/多镜合成已受理/).textContent).toContain("RUNNING");
+      expect(screen.getByRole("button", { name: "取消合成" })).toBeTruthy();
+      expect(jobGets).toBeGreaterThan(beforeCancel);
+      await new Promise((resolve) => setTimeout(resolve, 1600));
+      const whileHidden = getsAfterCancel;
+      hidden = true;
+      document.dispatchEvent(new Event("visibilitychange"));
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      expect(getsAfterCancel).toBe(whileHidden);
+      expect(screen.getByText(/多镜合成已受理/).textContent).toContain("RUNNING");
+      phase = "CANCELED";
+      hidden = false;
+      document.dispatchEvent(new Event("visibilitychange"));
+      expect(await screen.findByText(/CANCELED/)).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "取消合成" })).toBeNull();
+      const settled = getsAfterCancel;
+      await new Promise((resolve) => setTimeout(resolve, 1700));
+      expect(getsAfterCancel).toBe(settled);
+      expect(screen.getByText(/多镜合成已受理/).textContent).toContain("CANCELED");
+    } finally {
+      delete (document as { visibilityState?: string }).visibilityState;
+    }
+  }, 15000);
+
+  it.each([
+    ["APPROVE", "批准成片", "APPROVED"],
+    ["REJECT", "退回成片", "REJECTED"],
+  ] as const)("updates a loaded history composite after %s", async (_action, buttonName, reviewStatus) => {
+    const newest = "55555555-5555-4555-8555-555555555555";
+    const historyId = "66666666-6666-4666-8666-666666666666";
+    const reviewedHash = "cd".repeat(32);
+    let releaseStale: (value: Response) => void = () => undefined;
+    let listReads = 0;
+    const fetchImpl = (input: string) => {
+      if (input.includes("/review")) {
+        return Promise.resolve(json({ reviewStatus, rowVersion: 4, contentHash: reviewedHash }));
+      }
+      if (!input.includes("/composites")) return Promise.resolve(json({}));
+      if (input.includes("cursor=")) {
+        return Promise.resolve(json({
+          items: [composite(historyId, { reviewStatus: "DRAFT", rowVersion: 1 })],
+          nextCursor: null,
+        }));
+      }
+      listReads += 1;
+      if (listReads === 1) {
+        return Promise.resolve(json({ items: [composite(newest, { reviewStatus: "APPROVED", rowVersion: 2 })], nextCursor: "page-2" }));
+      }
+      return new Promise<Response>((resolve) => { releaseStale = resolve; });
+    };
+    render(panel(fetchImpl, null));
+    fireEvent.click(await screen.findByRole("button", { name: "加载更早的成片" }));
+    const card = () => document.querySelector(`[data-composite-id="${historyId}"]`);
+    await waitFor(() => expect(card()).toBeTruthy());
+    await waitFor(() => expect(listReads).toBeGreaterThanOrEqual(2), { timeout: 4000 });
+    const reviewButton = buttonNamed(card(), buttonName);
+    expect(reviewButton).toBeTruthy();
+    fireEvent.click(reviewButton!);
+    await waitFor(() => expect(card()?.getAttribute("data-review-status")).toBe(reviewStatus));
+    expect(card()?.getAttribute("data-row-version")).toBe("4");
+    expect(card()?.getAttribute("data-reviewed-content")).toBe(reviewedHash);
+    expect(card()?.textContent).toContain(reviewStatus);
+    expect(buttonNamed(card(), "批准成片")).toBeUndefined();
+    expect(buttonNamed(card(), "退回成片")).toBeUndefined();
+    releaseStale(json({
+      items: [composite(newest, { reviewStatus: "DRAFT", rowVersion: 1 }), composite(historyId, { reviewStatus: "DRAFT", rowVersion: 1 })],
+      nextCursor: null,
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(card()?.getAttribute("data-review-status")).toBe(reviewStatus);
+    expect(card()?.getAttribute("data-row-version")).toBe("4");
+    expect(card()?.getAttribute("data-reviewed-content")).toBe(reviewedHash);
+    expect(document.querySelector(`[data-composite-id="${newest}"]`)).toBeTruthy();
+  }, 10000);
+
+  it("refreshes an already loaded history composite to stale and ignores an older active read", async () => {
+    const newest = "55555555-5555-4555-8555-555555555555";
+    const historyId = "66666666-6666-4666-8666-666666666666";
+    let hidden = false;
+    let cursorReads = 0;
+    let failList = false;
+    let stale = false;
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => (hidden ? "hidden" : "visible") });
+    const pageFor = (cursor: boolean) => {
+      if (cursor) cursorReads += 1;
+      const history = composite(historyId, {
+        status: stale ? "STALE" : "ACTIVE",
+        reviewStatus: "APPROVED",
+        rowVersion: stale ? 5 : 2,
+      });
+      if (cursor) return json({ items: [history], nextCursor: null });
+      return json({ items: [composite(newest, { reviewStatus: "APPROVED", rowVersion: 3 })], nextCursor: "page-2" });
+    };
+    const fetchImpl = (input: string) => {
+      if (!input.includes("/composites")) return Promise.resolve(json({}));
+      if (failList && !input.includes("cursor=")) {
+        return Promise.resolve(json({ error: { code: "UNAVAILABLE", message: "list down" } }, 503));
+      }
+      return Promise.resolve(pageFor(input.includes("cursor=")));
+    };
+    try {
+      render(panel(fetchImpl, null));
+      fireEvent.click(await screen.findByRole("button", { name: "加载更早的成片" }));
+      const card = () => document.querySelector(`[data-composite-id="${historyId}"]`);
+      await waitFor(() => expect(card()?.textContent).toContain("当前成片"));
+      expect(card()?.getAttribute("data-review-status")).toBe("APPROVED");
+      expect(card()?.getAttribute("data-row-version")).toBe("2");
+      const loadedCursorReads = cursorReads;
+      hidden = true;
+      document.dispatchEvent(new Event("visibilitychange"));
+      stale = true;
+      hidden = false;
+      document.dispatchEvent(new Event("visibilitychange"));
+      await waitFor(() => expect(card()?.getAttribute("data-asset-status")).toBe("STALE"));
+      expect(cursorReads).toBeGreaterThan(loadedCursorReads);
+      expect(card()?.getAttribute("data-review-status")).toBe("APPROVED");
+      expect(card()?.getAttribute("data-row-version")).toBe("5");
+      expect(card()?.textContent).toContain("历史成片");
+      expect(buttonNamed(card(), "批准成片")).toBeUndefined();
+      expect(document.querySelector(`[data-composite-id="${newest}"]`)).toBeTruthy();
+      failList = true;
+      await waitFor(() => expect(screen.getByRole("button", { name: "重新查询成片" })).toBeTruthy(), { timeout: 4000 });
+      const beforeReread = cursorReads;
+      failList = false;
+      fireEvent.click(screen.getByRole("button", { name: "重新查询成片" }));
+      await waitFor(() => expect(cursorReads).toBeGreaterThan(beforeReread));
+      expect(card()?.getAttribute("data-asset-status")).toBe("STALE");
+      expect(card()?.getAttribute("data-row-version")).toBe("5");
+      stale = false;
+      const beforeOlderRead = cursorReads;
+      await waitFor(() => expect(cursorReads).toBeGreaterThan(beforeOlderRead), { timeout: 4000 });
+      expect(card()?.getAttribute("data-asset-status")).toBe("STALE");
+      expect(card()?.getAttribute("data-row-version")).toBe("5");
+      expect(card()?.getAttribute("data-review-status")).toBe("APPROVED");
+      expect(card()?.textContent).toContain("历史成片");
+      expect(document.querySelector(`[data-composite-id="${newest}"]`)).toBeTruthy();
+    } finally {
+      delete (document as { visibilityState?: string }).visibilityState;
+    }
+  }, 15000);
+
+  it("keeps loaded history when an older page refresh resolves later", async () => {
+    const newest = "55555555-5555-4555-8555-555555555555";
+    const older = "66666666-6666-4666-8666-666666666666";
+    const oldest = "77777777-7777-4777-8777-777777777777";
+    let releaseRefresh: (value: Response) => void = () => undefined;
+    let nonCursor = 0;
+    let cursorReads = 0;
+    const fetchImpl = (input: string) => {
+      if (!input.includes("/composites")) return Promise.resolve(json({}));
+      if (input.includes("cursor=")) {
+        cursorReads += 1;
+        if (cursorReads === 1) return Promise.resolve(json({ items: [composite(older), composite(oldest)], nextCursor: null }));
+        return Promise.resolve(json({
+          items: [composite(older, { reviewStatus: "APPROVED", rowVersion: 3 }), composite(oldest, { rowVersion: 2 })],
+          nextCursor: null,
+        }));
+      }
+      nonCursor += 1;
+      if (nonCursor === 1) return Promise.resolve(json({ items: [composite(newest)], nextCursor: "page-2" }));
+      if (nonCursor === 2) return new Promise<Response>((resolve) => { releaseRefresh = resolve; });
+      return Promise.resolve(json({ items: [composite(newest, { reviewStatus: "APPROVED", rowVersion: 4 })], nextCursor: "page-2" }));
+    };
+    render(panel(fetchImpl, null));
+    await screen.findByRole("button", { name: "加载更早的成片" });
+    await waitFor(() => expect(nonCursor).toBe(2), { timeout: 4000 });
+    fireEvent.click(screen.getByRole("button", { name: "加载更早的成片" }));
+    await waitFor(() => expect(document.querySelector(`[data-composite-id="${oldest}"]`)).toBeTruthy());
+    releaseRefresh(json({ items: [composite(newest, { reviewStatus: "DRAFT", rowVersion: 1 })], nextCursor: "page-2" }));
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect([...document.querySelectorAll("[data-composite-id]")].map((node) => node.getAttribute("data-composite-id"))).toEqual([newest, older, oldest]);
+    await waitFor(() => expect(cursorReads).toBeGreaterThanOrEqual(2), { timeout: 4000 });
+    await waitFor(() => expect(document.querySelector(`[data-composite-id="${older}"]`)?.getAttribute("data-review-status")).toBe("APPROVED"));
+    expect(document.querySelector(`[data-composite-id="${older}"]`)?.getAttribute("data-row-version")).toBe("3");
+    expect(document.querySelector(`[data-composite-id="${oldest}"]`)?.getAttribute("data-row-version")).toBe("2");
+    expect(document.querySelector(`[data-composite-id="${newest}"]`)?.getAttribute("data-row-version")).toBe("4");
+    expect(document.querySelector(`[data-composite-id="${newest}"]`)?.getAttribute("data-review-status")).toBe("APPROVED");
+  }, 10000);
+
+  it("drops a late history response after switching episodes", async () => {
+    const newest = "55555555-5555-4555-8555-555555555555";
+    const historyId = "66666666-6666-4666-8666-666666666666";
+    const otherId = "77777777-7777-4777-8777-777777777777";
+    let releaseLate: (value: Response) => void = () => undefined;
+    let hangArmed = false;
+    let lateStarted = 0;
+    const fetchImpl = (input: string) => {
+      if (input.includes("/review")) return Promise.resolve(json({ reviewStatus: "APPROVED", rowVersion: 6, contentHash: HASH }));
+      if (!input.includes("/composites")) return Promise.resolve(json({}));
+      if (input.includes(OTHER)) return Promise.resolve(json({ items: [composite(otherId)], nextCursor: null }));
+      if (input.includes("cursor=")) return Promise.resolve(json({ items: [composite(historyId)], nextCursor: null }));
+      if (hangArmed) {
+        hangArmed = false;
+        lateStarted += 1;
+        return new Promise<Response>((resolve) => { releaseLate = resolve; });
+      }
+      return Promise.resolve(json({ items: [composite(newest, { reviewStatus: "APPROVED", rowVersion: 2 })], nextCursor: "page-2" }));
+    };
+    const client = new StudioClient(fetchImpl);
+    const view = render(createElement(EpisodeComposeJobPanel, { client, projectId: PROJECT, episodeId: EPISODE, body: null }));
+    fireEvent.click(await screen.findByRole("button", { name: "加载更早的成片" }));
+    const card = () => document.querySelector(`[data-composite-id="${historyId}"]`);
+    await waitFor(() => expect(card()?.getAttribute("data-review-status")).toBe("DRAFT"));
+    const approve = buttonNamed(card(), "批准成片");
+    expect(approve).toBeTruthy();
+    fireEvent.click(approve!);
+    await waitFor(() => expect(card()?.getAttribute("data-row-version")).toBe("6"));
+    expect(card()?.getAttribute("data-review-status")).toBe("APPROVED");
+    expect(card()?.getAttribute("data-reviewed-content")).toBe(HASH);
+    expect(buttonNamed(card(), "批准成片")).toBeUndefined();
+    hangArmed = true;
+    await waitFor(() => expect(lateStarted).toBe(1), { timeout: 4000 });
+    view.rerender(createElement(EpisodeComposeJobPanel, { client, projectId: PROJECT, episodeId: OTHER, body: null }));
+    await waitFor(() => expect(document.querySelector(`[data-composite-id="${otherId}"]`)?.getAttribute("data-review-status")).toBe("DRAFT"));
+    expect(document.querySelector(`[data-composite-id="${historyId}"]`)).toBeNull();
+    releaseLate(json({
+      items: [
+        composite(historyId, { reviewStatus: "DRAFT", rowVersion: 1 }),
+        composite(newest, { reviewStatus: "DRAFT", rowVersion: 1 }),
+      ],
+      nextCursor: null,
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(document.querySelector(`[data-composite-id="${otherId}"]`)?.getAttribute("data-review-status")).toBe("DRAFT");
+    expect(document.querySelector(`[data-composite-id="${otherId}"]`)?.getAttribute("data-row-version")).toBe("1");
+    expect(document.querySelector(`[data-composite-id="${historyId}"]`)).toBeNull();
+    view.rerender(createElement(EpisodeComposeJobPanel, { client, projectId: PROJECT, episodeId: EPISODE, body: null }));
+    await waitFor(() => expect(document.querySelector(`[data-composite-id="${newest}"]`)?.getAttribute("data-review-status")).toBe("APPROVED"));
+    expect(document.querySelector(`[data-composite-id="${historyId}"]`)).toBeNull();
+    expect(document.querySelector(`[data-composite-id="${newest}"]`)?.getAttribute("data-review-status")).toBe("APPROVED");
+    expect(document.querySelector(`[data-composite-id="${newest}"]`)?.getAttribute("data-row-version")).toBe("2");
+    expect(document.querySelector(`[data-composite-id="${otherId}"]`)).toBeNull();
+  }, 10000);
 });

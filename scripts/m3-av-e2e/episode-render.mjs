@@ -232,6 +232,71 @@ export async function episodeRenderReview(ctx) {
   return { approved: approved.reviewStatus, rejected: returned.reviewStatus, raceEvents: winnerEvents[0].count };
 }
 
+async function observeRunningCancel(ctx) {
+  return withHold(ctx, 15000, async () => {
+    const page = ctx.state.page;
+    const pair = ctx.state.episodeRender;
+    await page.goto(`${ctx.webOrigin}/projects/${ctx.state.world.projectId}?focus=episode-compose&episode=1`, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    const panel = page.getByRole("region", { name: "多镜编排" });
+    await panel.getByRole("heading", { name: "多镜编排" }).waitFor({ timeout: 30_000 });
+    for (const assetId of [pair.plain.assetId, pair.burned.assetId]) {
+      const candidate = panel.locator(`[data-asset-id="${assetId}"]`);
+      const lookedUntil = Date.now() + 20_000;
+      while ((await candidate.count()) === 0 && Date.now() < lookedUntil) {
+        const more = panel.getByRole("button", { name: "加载更多" });
+        if ((await more.count()) === 0) break;
+        await more.click();
+        await page.waitForTimeout(200);
+      }
+      if ((await candidate.count()) === 0) throw new Error(`episode candidate ${assetId} was not listed`);
+      await candidate.getByRole("button", { name: "加入" }).click();
+    }
+    await panel.getByRole("button", { name: "预检编排" }).click();
+    await panel.getByText("预检通过，尚未执行多镜合成").waitFor({ timeout: 20_000 });
+    const composeResponse = page.waitForResponse((response) => {
+      const url = response.url();
+      return response.request().method() === "POST" && url.includes("/compose") && !url.includes("compose-preflight");
+    }, { timeout: 30_000 });
+    await panel.getByRole("button", { name: "开始多镜合成" }).click();
+    const accepted = await composeResponse;
+    const acceptedBody = await accepted.json();
+    const jobId = acceptedBody.jobId ?? acceptedBody.id;
+    if (accepted.status() !== 202 || !jobId) throw new Error(`page compose was not accepted ${accepted.status()}`);
+    await panel.getByText("多镜合成已受理 RUNNING").waitFor({ timeout: 60_000 });
+    const cancelResponse = page.waitForResponse((response) => response.request().method() === "POST" && response.url().includes(`/generation-jobs/${jobId}/cancel`), { timeout: 20_000 });
+    const immediateResponse = page.waitForResponse((response) => response.request().method() === "GET" && response.url().includes(`/generation-jobs/${jobId}`) && !response.url().includes("/cancel"), { timeout: 20_000 });
+    await panel.getByRole("button", { name: "取消合成" }).click();
+    const canceledPost = await cancelResponse;
+    if (canceledPost.status() !== 200) throw new Error(`page cancel ${canceledPost.status()}`);
+    const immediate = await immediateResponse;
+    const immediateBody = await immediate.json();
+    if (immediateBody.state === "CANCELED" || immediateBody.state === "SUCCEEDED" || immediateBody.state === "FAILED") {
+      throw new Error(`cancel read skipped the running state ${immediateBody.state}`);
+    }
+    await panel.getByText(`多镜合成已受理 ${immediateBody.state}`).waitFor({ timeout: 5_000 });
+    const deadline = Date.now() + 60_000;
+    let terminalBody = null;
+    while (Date.now() < deadline) {
+      const next = await page.waitForResponse((response) => response.request().method() === "GET" && response.url().includes(`/generation-jobs/${jobId}`) && !response.url().includes("/cancel"), { timeout: Math.max(1000, deadline - Date.now()) });
+      terminalBody = await next.json();
+      if (terminalBody.state === "CANCELED") break;
+      if (terminalBody.state === "SUCCEEDED" || terminalBody.state === "FAILED") throw new Error(`page cancel reached ${terminalBody.state}`);
+    }
+    if (terminalBody?.state !== "CANCELED") throw new Error("page did not read the canceled job");
+    await panel.getByText("多镜合成已受理 CANCELED").waitFor({ timeout: 10_000 });
+    if (await panel.getByRole("button", { name: "取消合成" }).count()) throw new Error("cancel button stayed after the terminal read");
+    const lateGet = await page.waitForResponse((response) => response.request().method() === "GET" && response.url().includes(`/generation-jobs/${jobId}`) && !response.url().includes("/cancel"), { timeout: 2000 }).then(() => true, (error) => {
+      if (String(error).includes("Timeout")) return false;
+      throw error;
+    });
+    if (lateGet) throw new Error("page kept polling after cancel");
+    const done = await ctx.pollJob(jobId, 30_000);
+    const assets = await ctx.sql(`SELECT count(*)::int AS count FROM asset WHERE source_generation_job_id = $1`, [jobId]);
+    if (done.state !== "CANCELED" || assets[0].count !== 0) throw new Error(`page cancel ${done.state} assets ${assets[0].count}`);
+    return { jobId, immediateState: immediateBody.state };
+  });
+}
+
 export async function episodeRenderLifecycle(ctx) {
   const canceled = await withHold(ctx, 8000, async () => {
     const submitted = await submitEpisode(ctx, [ctx.state.episodeRender.plain.assetId, ctx.state.episodeRender.burned.assetId]);
@@ -242,6 +307,7 @@ export async function episodeRenderLifecycle(ctx) {
     if (done.state !== "CANCELED" || assets[0].count !== 0) throw new Error(`episode cancel-first ${done.state} assets ${assets[0].count}`);
     return { jobId: submitted.jobId };
   });
+  const pageCancel = await observeRunningCancel(ctx);
   const approved = ctx.state.episodeRender.approvedId;
   ctx.expectStatus(await ctx.callApi(ctx.apiOrigin, "POST", `/generation-jobs/${ctx.state.episodeRender.forward.job_id}/cancel`, { body: {} }), 409, "JOB_TERMINAL");
   const during = await withHold(ctx, 20000, async () => {
@@ -258,13 +324,32 @@ export async function episodeRenderLifecycle(ctx) {
   const killed = await killRunningWorker(ctx);
   const locked = await lockAcrossLease(ctx);
   const injected = await injectCommitFailure(ctx);
-  return { canceled, terminal: "JOB_TERMINAL", during, killed, locked, injected, approved };
+  return { canceled, pageCancel, terminal: "JOB_TERMINAL", during, killed, locked, injected, approved };
 }
 
 export async function episodeRenderStale(ctx) {
   const assetId = ctx.state.episodeRender.approvedId;
   const before = await assetRow(ctx, assetId);
   if (before.review_status !== "APPROVED" || before.status !== "ACTIVE") throw new Error("episode composite was not approved");
+  await ageAsset(ctx, assetId, "2019-06-01T00:00:00.000001Z");
+  const page = ctx.state.page;
+  await page.goto(`${ctx.webOrigin}/projects/${ctx.state.world.projectId}?focus=episode-compose&episode=1`, { waitUntil: "domcontentloaded", timeout: 30_000 });
+  const card = page.locator(`[data-composite-id="${assetId}"]`);
+  await page.getByRole("button", { name: "加载更早的成片" }).waitFor({ timeout: 20_000 });
+  if ((await card.count()) !== 0) throw new Error("approved composite was still on the first page");
+  const lookedUntil = Date.now() + 30_000;
+  while ((await card.count()) === 0 && Date.now() < lookedUntil) {
+    const more = page.getByRole("button", { name: "加载更早的成片" });
+    if ((await more.count()) === 0) break;
+    await more.click();
+    await page.waitForTimeout(300);
+  }
+  await card.getByText("当前成片").waitFor({ timeout: 20_000 });
+  const beforeText = await card.innerText();
+  if (!beforeText.includes("APPROVED")) throw new Error(`history card was not approved before stale ${beforeText}`);
+  const loadedIds = await page.locator("[data-composite-id]").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-composite-id")));
+  const sibling = loadedIds.find((id) => id && id !== assetId);
+  if (!sibling) throw new Error("loaded history did not keep another composite");
   await replaceSideScene(ctx, ctx.state.episodeRender.burned);
   await waitForCurrentSources(ctx);
   const started = Date.now();
@@ -278,19 +363,17 @@ export async function episodeRenderStale(ctx) {
   if (stale.status !== "STALE" || stale.review_status !== "APPROVED" || source.status !== "STALE" || source.review_status !== "APPROVED") {
     throw new Error(`episode stale chain ${stale.status} ${stale.review_status} source ${source.status} ${source.review_status}`);
   }
-  const page = ctx.state.page;
-  await page.goto(`${ctx.webOrigin}/projects/${ctx.state.world.projectId}?focus=episode-compose&episode=1`, { waitUntil: "domcontentloaded", timeout: 30_000 });
-  const card = page.locator(`[data-composite-id="${assetId}"]`);
-  const lookedUntil = Date.now() + 20_000;
-  while ((await card.count()) === 0 && Date.now() < lookedUntil) {
-    const more = page.getByRole("button", { name: "加载更早的成片" });
-    if ((await more.count()) > 0) await more.click();
-    await page.waitForTimeout(300);
-  }
   await card.getByText("历史成片").waitFor({ timeout: 20_000 });
   const text = await card.innerText();
   if (!text.includes("APPROVED") || text.includes("当前成片")) throw new Error(`stale episode card ${text}`);
-  return { assetId, status: stale.status, reviewStatus: stale.review_status, sourceStatus: source.status };
+  if ((await page.locator(`[data-composite-id="${sibling}"]`).count()) !== 1) throw new Error("history refresh dropped a loaded composite");
+  const version = Number(await card.getAttribute("data-row-version"));
+  const assetStatus = await card.getAttribute("data-asset-status");
+  const reviewStatus = await card.getAttribute("data-review-status");
+  if (!(version > Number(before.row_version)) || assetStatus !== "STALE" || reviewStatus !== "APPROVED") {
+    throw new Error(`stale card ${assetStatus} ${reviewStatus} row ${version}`);
+  }
+  return { assetId, status: stale.status, reviewStatus: stale.review_status, sourceStatus: source.status, sibling, rowVersion: version };
 }
 
 export async function episodeRenderIsolation(ctx) {
@@ -372,6 +455,12 @@ async function episodeWithoutMockDir(ctx) {
 }
 
 async function verifyEpisodeCompositePages(ctx, reviewableId) {
+  const historyAsset = ctx.state.episodeRender.reverse;
+  const historyBefore = await assetRow(ctx, historyAsset.id);
+  if (historyBefore.review_status !== "DRAFT" || historyBefore.status !== "ACTIVE") {
+    throw new Error(`history review target ${historyBefore.review_status} ${historyBefore.status}`);
+  }
+  await ageAsset(ctx, historyAsset.id, "2019-01-01T00:00:00.000001Z");
   const seeded = await seedEpisodeCompositeTimestamps(ctx);
   const episodeId = ctx.state.episodeRender.episodeId;
   const expected = await exactEpisodeCompositeOrder(ctx, episodeId);
@@ -398,7 +487,31 @@ async function verifyEpisodeCompositePages(ctx, reviewableId) {
   await page.getByRole("button", { name: "加载更早的成片" }).click();
   await page.locator(`[data-composite-id="${oldest}"]`).waitFor({ timeout: 20_000 });
   await card.getByRole("button", { name: "批准成片" }).waitFor({ timeout: 10_000 });
-  return { count: expected.length, microseconds: sameInstant[0].created_at_text, oldest };
+  const historyCard = page.locator(`[data-composite-id="${historyAsset.id}"]`);
+  if ((await historyCard.count()) !== 1) throw new Error("aged history composite was not on the loaded page");
+  const beforeVersion = Number(await historyCard.getAttribute("data-row-version"));
+  await historyCard.getByRole("button", { name: "批准成片" }).click();
+  await page.waitForFunction(({ assetId, checksum, version }) => {
+    const node = document.querySelector(`[data-composite-id="${assetId}"]`);
+    if (!node) return false;
+    const buttons = [...node.querySelectorAll("button")].map((button) => button.textContent);
+    return node.getAttribute("data-review-status") === "APPROVED"
+      && node.getAttribute("data-reviewed-content") === checksum
+      && Number(node.getAttribute("data-row-version")) > version
+      && !buttons.includes("批准成片")
+      && !buttons.includes("退回成片");
+  }, { assetId: historyAsset.id, checksum: historyAsset.checksum_sha256, version: beforeVersion }, { timeout: 20_000 });
+  await card.getByRole("button", { name: "批准成片" }).waitFor({ timeout: 10_000 });
+  const reviewed = await assetRow(ctx, historyAsset.id);
+  if (reviewed.review_status !== "APPROVED" || Number(reviewed.row_version) <= Number(historyBefore.row_version)) {
+    throw new Error(`history review did not persist ${reviewed.review_status} ${reviewed.row_version}`);
+  }
+  return {
+    count: expected.length,
+    microseconds: sameInstant[0].created_at_text,
+    oldest,
+    historyReview: { assetId: historyAsset.id, reviewStatus: reviewed.review_status, rowVersion: Number(reviewed.row_version) },
+  };
 }
 
 async function collectEpisodeComposites(ctx, episodeId, limit = 10) {
@@ -443,6 +556,22 @@ async function exactEpisodeCompositeOrder(ctx, episodeId) {
       ORDER BY asset.created_at DESC, asset.id DESC`,
     [ctx.workspaceId, ctx.state.world.projectId, episodeId],
   );
+}
+
+async function ageAsset(ctx, assetId, stamp) {
+  const require = createRequire(join(ctx.repo, "packages/database/package.json"));
+  const { Client } = require("pg");
+  const client = new Client({ connectionString: ctx.databaseUrl, statement_timeout: 10_000 });
+  await client.connect();
+  try {
+    const updated = await client.query(
+      `UPDATE asset SET created_at = $2::timestamptz WHERE id = $1 AND workspace_id = $3 RETURNING id::text AS id`,
+      [assetId, stamp, ctx.workspaceId],
+    );
+    if (updated.rowCount !== 1) throw new Error(`asset ${assetId} was not aged`);
+  } finally {
+    await client.end();
+  }
 }
 
 async function seedEpisodeCompositeTimestamps(ctx) {

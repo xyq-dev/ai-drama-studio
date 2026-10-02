@@ -26,6 +26,7 @@ interface CompositeItem {
   status: "ACTIVE" | "STALE";
   reviewStatus: "DRAFT" | "APPROVED" | "REJECTED";
   checksumSha256: string;
+  reviewedContentHash?: string | null;
   rowVersion: number;
   durationMs: number | null;
   segments: Array<{ position: number; assetId: string; shotId: string; startMs: number; endMs: number }>;
@@ -43,9 +44,27 @@ interface HeldSubmit {
   unresolved: boolean;
 }
 
-function mergeNewest(current: CompositeItem[], page: CompositeItem[]): CompositeItem[] {
-  const pageIds = new Set(page.map((item) => item.assetId));
-  return [...page, ...current.filter((item) => !pageIds.has(item.assetId))];
+function dedupeComposites(items: CompositeItem[]): CompositeItem[] {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    if (seen.has(item.assetId)) return false;
+    seen.add(item.assetId);
+    return true;
+  });
+}
+
+function preferListed(current: CompositeItem[], incoming: CompositeItem[]): CompositeItem[] {
+  const previous = new Map(current.map((item) => [item.assetId, item]));
+  return dedupeComposites(incoming).map((item) => {
+    const prior = previous.get(item.assetId);
+    if (!prior) return item;
+    if (item.rowVersion < prior.rowVersion) return prior;
+    if (item.rowVersion === prior.rowVersion && prior.status === "STALE" && item.status === "ACTIVE") return prior;
+    return {
+      ...item,
+      reviewedContentHash: item.reviewedContentHash ?? prior.reviewedContentHash ?? null,
+    };
+  });
 }
 
 const TERMINAL = new Set(["SUCCEEDED", "FAILED", "CANCELED"]);
@@ -74,8 +93,10 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
   const listEpoch = useRef(0);
   const jobGen = useRef(0);
   const readGen = useRef(0);
-  const paged = useRef(false);
+  const listGen = useRef(0);
+  const loadedPages = useRef(1);
   const historyCursorRef = useRef<string | null>(null);
+  const readSerial = useRef(0);
   const reading = useRef(false);
   const hidden = useRef(typeof document !== "undefined" && document.visibilityState === "hidden");
 
@@ -88,7 +109,10 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
     epoch.current = nextEpoch;
     jobGen.current += 1;
     readGen.current += 1;
-    paged.current = false;
+    listGen.current += 1;
+    loadedPages.current = 1;
+    readSerial.current += 1;
+    reading.current = false;
     setBusy(false);
     setError(null);
     setJob(null);
@@ -114,20 +138,34 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
         timer = window.setTimeout(() => void read(), 50);
         return;
       }
+      const serial = ++readSerial.current;
       reading.current = true;
+      const readToken = ++listGen.current;
+      const pageCount = loadedPages.current;
       try {
-        const page = await props.client.get<CompositePage>(
-          `/projects/${props.projectId}/episodes/${props.episodeId}/composites?limit=10`,
-        );
-        if (stopped || listEpoch.current !== token) return;
-        setItems((current) => paged.current ? mergeNewest(current, page.items) : page.items);
-        if (!paged.current) rememberCursor(page.nextCursor);
+        const collected: CompositeItem[] = [];
+        let cursor: string | null = null;
+        let nextCursor: string | null = null;
+        for (let index = 0; index < pageCount; index += 1) {
+          const suffix: string = cursor ? `&cursor=${encodeURIComponent(cursor)}` : "";
+          const listed: CompositePage = await props.client.get<CompositePage>(
+            `/projects/${props.projectId}/episodes/${props.episodeId}/composites?limit=10${suffix}`,
+          );
+          if (stopped || listEpoch.current !== token || listGen.current !== readToken) return;
+          collected.push(...listed.items);
+          nextCursor = listed.nextCursor;
+          if (!listed.nextCursor) break;
+          cursor = listed.nextCursor;
+        }
+        if (stopped || listEpoch.current !== token || listGen.current !== readToken) return;
+        setItems((current) => preferListed(current, collected));
+        rememberCursor(nextCursor);
         setListError(null);
       } catch (caught) {
-        if (stopped || listEpoch.current !== token) return;
+        if (stopped || listEpoch.current !== token || listGen.current !== readToken) return;
         setListError(caught instanceof ApiError ? caught.detail : "集级成片暂时无法读取");
       } finally {
-        reading.current = false;
+        if (readSerial.current === serial) reading.current = false;
         if (!stopped && listEpoch.current === token && !hidden.current) {
           timer = window.setTimeout(() => void read(), 2000);
         }
@@ -253,8 +291,10 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
       if (epoch.current !== token || jobGen.current !== generation) return;
       const next = await props.client.get<JobView>(`/generation-jobs/${jobId}`);
       if (epoch.current !== token || jobGen.current !== generation || next.id !== jobId) return;
-      jobGen.current += 1;
-      readGen.current += 1;
+      if (TERMINAL.has(next.state)) {
+        jobGen.current += 1;
+        readGen.current += 1;
+      }
       setJob(next);
     } catch (caught) {
       if (epoch.current !== token || jobGen.current !== generation) return;
@@ -265,41 +305,56 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
   async function loadHistory() {
     const cursor = historyCursorRef.current;
     const token = listEpoch.current;
-    if (!cursor || reading.current) return;
-    reading.current = true;
+    if (!cursor) return;
+    loadedPages.current += 1;
+    const readToken = ++listGen.current;
     try {
       const page = await props.client.get<CompositePage>(
         `/projects/${props.projectId}/episodes/${props.episodeId}/composites?limit=10&cursor=${encodeURIComponent(cursor)}`,
       );
-      if (listEpoch.current !== token) return;
-      paged.current = true;
+      if (listEpoch.current !== token || listGen.current !== readToken) return;
       setItems((current) => {
-        const seen = new Set(current.map((item) => item.assetId));
-        return [...current, ...page.items.filter((item) => !seen.has(item.assetId))];
+        const incoming = new Map(page.items.map((item) => [item.assetId, item]));
+        const updated = current.map((entry) => {
+          const next = incoming.get(entry.assetId);
+          return next ? preferListed([entry], [next])[0] ?? entry : entry;
+        });
+        const seen = new Set(updated.map((item) => item.assetId));
+        return [...updated, ...page.items.filter((item) => !seen.has(item.assetId))];
       });
       rememberCursor(page.nextCursor);
       setListError(null);
     } catch (caught) {
-      if (listEpoch.current !== token) return;
-      setListError(caught instanceof ApiError ? caught.detail : "集级成片暂时无法读取");
-    } finally {
-      reading.current = false;
+      if (listEpoch.current === token && listGen.current === readToken) {
+        loadedPages.current = Math.max(1, loadedPages.current - 1);
+        setListError(caught instanceof ApiError ? caught.detail : "集级成片暂时无法读取");
+      }
     }
   }
 
   async function review(item: CompositeItem, action: "APPROVE" | "REJECT") {
     const token = epoch.current;
+    const listToken = listEpoch.current;
+    listGen.current += 1;
     try {
-      await props.client.write({
+      const result = await props.client.write<{ reviewStatus: CompositeItem["reviewStatus"]; rowVersion: number; contentHash: string }>({
         path: `/assets/${item.assetId}/review`,
         body: { decision: action, note: "", contentHash: item.checksumSha256 },
         idempotencyKey: crypto.randomUUID(),
         ifMatch: item.rowVersion,
       });
-      if (epoch.current !== token) return;
+      if (epoch.current !== token || listEpoch.current !== listToken) return;
+      listGen.current += 1;
+      setItems((current) => current.map((entry) => entry.assetId === item.assetId ? {
+        ...entry,
+        reviewStatus: result.body.reviewStatus,
+        rowVersion: result.body.rowVersion,
+        checksumSha256: result.body.contentHash,
+        reviewedContentHash: result.body.contentHash,
+      } : entry));
       props.onReviewed?.();
     } catch (caught) {
-      if (epoch.current !== token) return;
+      if (epoch.current !== token || listEpoch.current !== listToken) return;
       setError(caught instanceof ApiError ? caught.detail : "审核没有完成");
     }
   }
@@ -315,7 +370,15 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
       {job && !TERMINAL.has(job.state) ? <button className="mt-2 rounded border px-3 py-1 text-sm" type="button" onClick={() => void cancel()}>取消合成</button> : null}
       <ul className="mt-3 space-y-2">
         {items.map((item) => (
-          <li key={item.assetId} className="min-w-0 rounded border p-2 text-sm" data-composite-id={item.assetId}>
+          <li
+            key={item.assetId}
+            className="min-w-0 rounded border p-2 text-sm"
+            data-composite-id={item.assetId}
+            data-asset-status={item.status}
+            data-review-status={item.reviewStatus}
+            data-row-version={item.rowVersion}
+            data-reviewed-content={item.reviewedContentHash ?? ""}
+          >
             <p>{item.status === "STALE" ? "历史成片" : "当前成片"} · 审核 {item.reviewStatus} · {item.durationMs ?? 0} ms</p>
             <ol>
               {(item.segments ?? []).map((segment) => <li key={`${item.assetId}:${segment.position}:${segment.assetId}`}>{segment.position}. {segment.shotId}</li>)}
