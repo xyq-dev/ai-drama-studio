@@ -479,15 +479,32 @@ async function verifyEpisodeCompositePages(ctx, reviewableId) {
   const oldest = seeded.sameInstant[0];
   if ((await page.locator(`[data-composite-id="${oldest}"]`).count()) !== 0) throw new Error("history composite was already on the first page");
   await page.getByRole("button", { name: "加载更早的成片" }).click();
-  const historyCard = page.locator(`[data-composite-id="${oldest}"]`);
-  await historyCard.waitFor({ timeout: 20_000 });
+  await page.locator(`[data-composite-id="${oldest}"]`).waitFor({ timeout: 20_000 });
   await card.getByRole("button", { name: "批准成片" }).waitFor({ timeout: 10_000 });
-  const historyBefore = await assetRow(ctx, oldest);
+  const historyId = ctx.state.episodeRender.reverse.id;
+  await insertFrontEpisodeComposites(ctx, reviewableId, 10);
+  await page.goto(`${ctx.webOrigin}/projects/${ctx.state.world.projectId}?focus=episode-compose&episode=1`, { waitUntil: "domcontentloaded", timeout: 30_000 });
+  await page.getByRole("button", { name: "加载更早的成片" }).waitFor({ timeout: 20_000 });
+  const historyCard = page.locator(`[data-composite-id="${historyId}"]`);
+  if ((await historyCard.count()) !== 0) throw new Error("history review target was still on the first page");
+  const lookedUntil = Date.now() + 20_000;
+  while ((await historyCard.count()) === 0 && Date.now() < lookedUntil) {
+    const more = page.getByRole("button", { name: "加载更早的成片" });
+    if ((await more.count()) === 0) break;
+    await more.click();
+    await page.waitForTimeout(300);
+  }
+  await historyCard.getByRole("button", { name: "批准成片" }).waitFor({ timeout: 10_000 });
+  const historyBefore = await assetRow(ctx, historyId);
   if (historyBefore.review_status !== "DRAFT" || historyBefore.status !== "ACTIVE") {
     throw new Error(`history review target ${historyBefore.review_status} ${historyBefore.status}`);
   }
   const beforeVersion = Number(await historyCard.getAttribute("data-row-version"));
+  const reviewResponse = page.waitForResponse((response) => response.request().method() === "POST" && response.url().includes(`/assets/${historyId}/review`), { timeout: 20_000 });
   await historyCard.getByRole("button", { name: "批准成片" }).click();
+  const reviewPost = await reviewResponse;
+  const reviewBody = await reviewPost.text();
+  if (reviewPost.status() !== 200) throw new Error(`history review ${reviewPost.status()} ${reviewBody.slice(0, 400)}`);
   const reviewDeadline = Date.now() + 20_000;
   let reviewedUi = "";
   while (Date.now() < reviewDeadline) {
@@ -506,9 +523,9 @@ async function verifyEpisodeCompositePages(ctx, reviewableId) {
     }
     await page.waitForTimeout(300);
   }
-  if (reviewedUi !== "ok") throw new Error(`history review ${reviewedUi || "timed out"}`);
-  await card.getByRole("button", { name: "批准成片" }).waitFor({ timeout: 10_000 });
-  const reviewed = await assetRow(ctx, oldest);
+  if (reviewedUi !== "ok") throw new Error(`history review ui ${reviewedUi || "timed out"} ${reviewBody.slice(0, 200)}`);
+  await page.locator(`[data-composite-id="${reviewableId}"]`).getByRole("button", { name: "批准成片" }).waitFor({ timeout: 10_000 });
+  const reviewed = await assetRow(ctx, historyId);
   if (reviewed.review_status !== "APPROVED" || Number(reviewed.row_version) <= Number(historyBefore.row_version)) {
     throw new Error(`history review did not persist ${reviewed.review_status} ${reviewed.row_version}`);
   }
@@ -516,7 +533,7 @@ async function verifyEpisodeCompositePages(ctx, reviewableId) {
     count: expected.length,
     microseconds: sameInstant[0].created_at_text,
     oldest,
-    historyReview: { assetId: oldest, reviewStatus: reviewed.review_status, rowVersion: Number(reviewed.row_version) },
+    historyReview: { assetId: historyId, reviewStatus: reviewed.review_status, rowVersion: Number(reviewed.row_version) },
   };
 }
 
