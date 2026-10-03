@@ -98,4 +98,5 @@ jobs:
         run: pnpm verify
 
       - name: Test Python media worker
-        run: "$MEDIA_WORKER_PYTHON" -m pytest services/media-worker/tests
+        run: |
+          "$MEDIA_WORKER_PYTHON" -m pytest services/media-worker/tests
