@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 // Simulated API. fetch is mocked; this file does not start the API, database, worker, or a real browser.
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { StudioClient } from "../lib/studio-client";
@@ -697,5 +697,140 @@ describe("episode compose job panel", () => {
     expect(screen.queryByText("来源已变化")).toBeNull();
     URL.createObjectURL = originalCreate;
     URL.revokeObjectURL = originalRevoke;
+  });
+
+  it("isolates concurrent downloads and ignores a repeated click on the same asset", async () => {
+    const assetA = "55555555-5555-4555-8555-555555555555";
+    const assetB = "66666666-6666-4666-8666-666666666666";
+    const releases: Array<(value: Response) => void> = [];
+    let downloads = 0;
+    const fetchImpl = (input: string) => {
+      if (input.includes("/download?") || input.includes("/export-manifest?")) {
+        downloads += 1;
+        return new Promise<Response>((resolve) => { releases.push(resolve); });
+      }
+      if (input.includes("/composites")) {
+        return Promise.resolve(json({
+          items: [
+            composite(assetA, { reviewStatus: "APPROVED" }),
+            composite(assetB, { reviewStatus: "APPROVED" }),
+          ],
+          nextCursor: null,
+        }));
+      }
+      return Promise.resolve(json({}));
+    };
+    render(panel(fetchImpl, null));
+    const card = (assetId: string) => document.querySelector(`[data-composite-id="${assetId}"]`);
+    await waitFor(() => expect(buttonNamed(card(assetA), "下载 MP4")).toBeTruthy());
+    const first = buttonNamed(card(assetA), "下载 MP4")!;
+    fireEvent.click(first);
+    fireEvent.click(first);
+    fireEvent.click(buttonNamed(card(assetB), "下载来源清单")!);
+    expect(downloads).toBe(2);
+    expect(buttonNamed(card(assetA), "正在下载")).toBeTruthy();
+    expect(buttonNamed(card(assetB), "正在下载")).toBeTruthy();
+    expect(buttonNamed(card(assetA), "下载来源清单")?.disabled).toBe(true);
+    releases[0]!(new Response(JSON.stringify({ error: { code: "COMPOSE_INPUT_INVALID", message: "成片 A 不可导出" } }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    }));
+    expect(await screen.findByText("成片 A 不可导出")).toBeTruthy();
+    expect(buttonNamed(card(assetB), "正在下载")).toBeTruthy();
+    expect(card(assetB)?.textContent).not.toContain("成片 A 不可导出");
+    releases[1]!(new Response(JSON.stringify({ error: { code: "COMPOSE_INPUT_INVALID", message: "成片 B 不可导出" } }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    }));
+    expect(await screen.findByText("成片 B 不可导出")).toBeTruthy();
+    expect(screen.getByText("成片 A 不可导出")).toBeTruthy();
+    expect(buttonNamed(card(assetA), "正在下载")).toBeUndefined();
+    expect(buttonNamed(card(assetB), "正在下载")).toBeUndefined();
+  });
+
+  it("does not let an older download clear the newer request or save a file", async () => {
+    const assetId = "55555555-5555-4555-8555-555555555555";
+    const created: string[] = [];
+    const originalCreate = URL.createObjectURL;
+    URL.createObjectURL = (() => {
+      created.push("saved");
+      return "blob:old";
+    }) as typeof URL.createObjectURL;
+    const releases: Array<(value: Response) => void> = [];
+    const fetchImpl = (input: string) => {
+      if (input.includes("/download?")) {
+        return new Promise<Response>((resolve) => { releases.push(resolve); });
+      }
+      if (input.includes("/composites")) {
+        return Promise.resolve(json({ items: [composite(assetId, { reviewStatus: "APPROVED" })], nextCursor: null }));
+      }
+      return Promise.resolve(json({}));
+    };
+    const view = render(panel(fetchImpl, null));
+    const card = () => document.querySelector(`[data-composite-id="${assetId}"]`);
+    fireEvent.click(await screen.findByRole("button", { name: "下载 MP4" }));
+    view.rerender(panel(fetchImpl, null, OTHER));
+    fireEvent.click(await screen.findByRole("button", { name: "下载 MP4" }));
+    expect(buttonNamed(card(), "正在下载")).toBeTruthy();
+    releases[0]!(new Response(JSON.stringify({ error: { code: "COMPOSE_INPUT_INVALID", message: "旧请求失败" } }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(created).toEqual([]);
+    expect(screen.queryByText("旧请求失败")).toBeNull();
+    expect(buttonNamed(card(), "正在下载")).toBeTruthy();
+    releases[1]!(new Response(new Uint8Array([1]), {
+      status: 200,
+      headers: { "content-type": "video/mp4", "content-disposition": "attachment; filename=\"episode-01-new.mp4\"" },
+    }));
+    await waitFor(() => expect(created).toEqual(["saved"]));
+    expect(buttonNamed(card(), "正在下载")).toBeUndefined();
+    URL.createObjectURL = originalCreate;
+  });
+
+  it("does not save or write download state after the panel unmounts", async () => {
+    const assetId = "55555555-5555-4555-8555-555555555555";
+    const created: string[] = [];
+    const originalCreate = URL.createObjectURL;
+    URL.createObjectURL = (() => {
+      created.push("saved");
+      return "blob:unmounted";
+    }) as typeof URL.createObjectURL;
+    let releaseDownload: (value: Response) => void = () => undefined;
+    const fetchImpl = (input: string) => {
+      if (input.includes("/download?")) return new Promise<Response>((resolve) => { releaseDownload = resolve; });
+      if (input.includes("/composites")) {
+        return Promise.resolve(json({ items: [composite(assetId, { reviewStatus: "APPROVED" })], nextCursor: null }));
+      }
+      return Promise.resolve(json({}));
+    };
+    const view = render(panel(fetchImpl, null));
+    fireEvent.click(await screen.findByRole("button", { name: "下载 MP4" }));
+    expect(screen.getByRole("button", { name: "正在下载" })).toBeTruthy();
+    view.unmount();
+    await act(async () => {
+      releaseDownload(new Response(new Uint8Array([1]), {
+        status: 200,
+        headers: { "content-type": "video/mp4", "content-disposition": "attachment; filename=\"episode-01-late.mp4\"" },
+      }));
+      await Promise.resolve();
+    });
+    expect(created).toEqual([]);
+    expect(document.body.textContent).not.toContain("正在下载");
+    const failed = render(panel(fetchImpl, null));
+    fireEvent.click(await screen.findByRole("button", { name: "下载 MP4" }));
+    failed.unmount();
+    await act(async () => {
+      releaseDownload(new Response(JSON.stringify({ error: { code: "COMPOSE_INPUT_INVALID", message: "卸载后的失败" } }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      }));
+      await Promise.resolve();
+    });
+    expect(created).toEqual([]);
+    expect(document.body.textContent).not.toContain("卸载后的失败");
+    expect(document.body.textContent).not.toContain("正在下载");
+    URL.createObjectURL = originalCreate;
   });
 });
