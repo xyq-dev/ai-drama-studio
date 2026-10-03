@@ -91,10 +91,30 @@ jobs:
       - name: Run M2 worker and HTTP-to-worker integration
         run: pnpm --filter @ai-drama/worker integration
 
+      - name: Prepare media worker tests
+        run: |
+          sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list || true
+          sudo apt-get update -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            ffmpeg=7:6.1.1-3ubuntu5 \
+            fonts-dejavu-core=2.37-8 \
+            python3 \
+            python3-venv \
+            python3-pytest=7.4.4-1
+          test "$(dpkg-query -W -f '${Version}' ffmpeg)" = "7:6.1.1-3ubuntu5"
+          test "$(dpkg-query -W -f '${Version}' fonts-dejavu-core)" = "2.37-8"
+          test "$(dpkg-query -W -f '${Version}' python3-pytest)" = "7.4.4-1"
+          command -v ffmpeg
+          command -v ffprobe
+          ffmpeg -hide_banner -encoders | grep -q libx264
+          ffmpeg -hide_banner -filters | grep -q subtitles
+          test -f /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
+          python3 -m venv "$RUNNER_TEMP/media-worker-venv"
+          "$RUNNER_TEMP/media-worker-venv/bin/pip" install -e "services/media-worker[dev]"
+          echo "MEDIA_WORKER_PYTHON=$RUNNER_TEMP/media-worker-venv/bin/python" >> "$GITHUB_ENV"
+
       - name: Verify JavaScript workspace
         run: pnpm verify
 
       - name: Test Python media worker
-        run: |
-          python -m pip install -e "services/media-worker[dev]"
-          pytest services/media-worker/tests
+        run: "$MEDIA_WORKER_PYTHON" -m pytest services/media-worker/tests
