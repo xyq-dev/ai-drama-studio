@@ -6,7 +6,7 @@
 - 目标分支：`feat/m4-three-episode-sample`
 - 起点：`c187f08011dba61060ed7c37a84b764fd11a1f32`（`origin/feat/m4-project-cost-summary`，含已验收源码 `174a6bd564ca77d03241eef13de30271acf4c3ff`）
 - 功能验收 SHA：`a92bafb4d6f0647f666ef3fb78bde003e1856b37`
-- 390px 验收 SHA：`15b76676e487a9a4550f0f80e228f4195e046bce`
+- 390px 验收 SHA：`72b51b9ce59ff997b619eee3b9303c6e84f366a3`
 - 报告 SHA：见本文件提交
 - `origin/main` 保持 `6548ffe07f54a03ac2c5547d7b724cb329af5932`
 - `origin/feat/m4-project-cost-summary` 保持 `c187f08011dba61060ed7c37a84b764fd11a1f32`
@@ -38,25 +38,25 @@ CI 用固定的 ffmpeg `7:6.1.1-3ubuntu5` 探测并完整解码已提交文件�
 
 ## 三集成片
 
-独立项目 `f3b01833-73a3-4ef3-b637-7a0ac93197e5`，标题与正文为技术验收样片。同一故事下三集剧本已审核，场景与镜头为 CURRENT。15 个逻辑镜头各自生成 VIDEO Asset。每集第 1 个镜头另走现有 Mock 配音、音乐和字幕；它们仍是短静音和固定字幕，不是朗读或音乐质量验收。
+独立项目 `4bcd1862-3457-45d8-ab73-8885b236c181`，标题与正文为技术验收样片。同一故事下三集剧本已审核，场景与镜头为 CURRENT。15 个逻辑镜头各自生成 VIDEO Asset。每集第 1 个镜头另走现有 Mock 配音、音乐和字幕；它们仍是短静音和固定字幕，不是朗读或音乐质量验收。
 
-顺序：第 1 集 A、B、A、B；第 2 集 B、A、B、A、B；第 3 集 A、B、A、B、A、B。全部单镜成片先批准，再由浏览器走现有预检、多镜合成、批准和下载。故障与开关负例在另一项目 `fe364dcf-f8e4-476d-a7c1-bbd9ff2d4974`，没有改写这三集的最终状态。
+顺序：第 1 集 A、B、A、B；第 2 集 B、A、B、A、B；第 3 集 A、B、A、B、A、B。全部单镜成片先批准，再由浏览器走现有预检、多镜合成、批准和下载。故障与开关负例在另一项目 `6473ab25-d5d8-49f3-a4b7-755e08935259`，没有改写这三集的最终状态。
 
 输出为 1080×1920。Chrome 以 16 倍速实际播放到 ended，解码帧数与 25 fps 时长一致。ffprobe、Asset 与浏览器时长差均为 0 ms，业务 90 秒上限未放宽。
 
 | 集 | 镜头 | 目标 | Asset / 下载 SHA-256 | 字节 | 集级合成 |
 | --- | --- | --- | --- | --- | --- |
-| 1 | 4 | 60000 ms | `465e48daf93f92ba903772d68740564e687719ca512b3bf3fd9116aa9c50b2c1` | 878798 | Job `a09807dd-b263-40c7-85a9-fadad97a35e1`，attempt `c80ae2b5-ba2f-4d5e-8a26-08cccab8d964`，15148 ms |
-| 2 | 5 | 75000 ms | `d2c6a547095ed222f624102b2fd3d37f64bbd95370e148f3d7e629012c452d7d` | 1095004 | Job `23a4e984-d0a0-4139-ab54-d9ffe9f4e616`，attempt `038fba0f-3c17-4cbf-be7f-fbd478b91c80`，18178 ms |
-| 3 | 6 | 90000 ms | `1d54551c83212a072ff64eeb4c85306389e4fc46c31493a4a28a6ce6ed067e54` | 1312728 | Job `cc32feac-dc18-4319-94ea-af67e5a4088d`，attempt `8b4ee075-10ea-44ae-a3e2-4bb89d170532`，21213 ms |
+| 1 | 4 | 60000 ms | `465e48daf93f92ba903772d68740564e687719ca512b3bf3fd9116aa9c50b2c1` | 878798 | Job `040fa04a-dc89-4f2b-a626-2156ed232dcc`，attempt `f8be59c1-d772-4d6e-8516-6a2fb7141b0f`，15150 ms |
+| 2 | 5 | 75000 ms | `d2c6a547095ed222f624102b2fd3d37f64bbd95370e148f3d7e629012c452d7d` | 1095004 | Job `fff627f1-fbbb-4f88-b212-e0da9b862ab5`，attempt `8355e342-5db3-4a4c-a4e0-0a257e6128b1`，18152 ms |
+| 3 | 6 | 90000 ms | `1d54551c83212a072ff64eeb4c85306389e4fc46c31493a4a28a6ce6ed067e54` | 1312728 | Job `28911ef6-0040-432a-8e08-4f90bacb810b`，attempt `0d54f353-0f27-40dd-a841-26800ea30def`，21203 ms |
 
 三集成片均为 ACTIVE + APPROVED。审核哈希等于成片 SHA-256。来源清单的 Job、attempt、15000 ms 分段和依赖边与数据库一致。每个 15 秒分段的首、中、尾抽帧颜色符合 A/B 顺序，三段帧哈希彼此不同。最终 MP4 经 ffmpeg 完整解码。390px 横向溢出为 0。
 
 ## 恢复、成本与只读窗口
 
-样片恢复发生在真实 Worker 上：Job `794a8ae7-ed94-44a2-b5c2-0ed635f37543`，attempt `416157f2-94bc-459f-8e1d-041c16177922`，请求 ID `mock-media|sample-sync-v1|video.generate|sample-15s-b-v1|794a8ae7-ed94-44a2-b5c2-0ed635f37543:1`，Asset `2aeed46a-0ad6-4e13-92ee-d775ad1eb35a`，一条 ACTUAL USD 0。原 attempt 与请求未变。本次没有测量 Worker submit 次数。
+样片恢复发生在真实 Worker 上：Job `51d666fd-54b7-4abe-9366-c8bd86ca9eb7`，attempt `04828e45-bad7-405a-866d-6e9d246f5b7e`，请求 ID `mock-media|sample-sync-v1|video.generate|sample-15s-b-v1|51d666fd-54b7-4abe-9366-c8bd86ca9eb7:1`，Asset `ec2f5e48-8419-426f-bb1c-601dc52b2ce3`，一条 ACTUAL USD 0。原 attempt 与请求未变。本次没有测量 Worker submit 次数。
 
-开关关闭后，已绑定样片 Job `ffbb7c7e-0a3f-485f-89aa-c9665158be23` 以 `MOCK_MEDIA_NOT_CONFIGURED` 结束，没有 Asset 或成本。随后普通视频 Job `332cbde6-14cb-4a64-b55c-dc4e6d5ad8a4` 仍以 1 秒成片成功。
+开关关闭后，已绑定样片 Job `c7692df3-ef73-41f7-aedf-228bc28a2e91` 以 `MOCK_MEDIA_NOT_CONFIGURED` 结束，没有 Asset 或成本。随后普通视频 Job `a1c4415d-f153-41d3-a129-9247b87d8d5e` 仍以 1 秒成片成功。
 
 该样片项目账本为 24 行 ACTUAL USD `0.00000000`。15 次单镜合成和 3 次集级合成共 18 次本地编码没有账本行，页面沿用“本地编码等成本尚未计量”的既有说明。这不是完整生产成本。
 
@@ -64,26 +64,28 @@ CI 用固定的 ffmpeg `7:6.1.1-3ubuntu5` 探测并完整解码已提交文件�
 
 | 表 | 行数 | 指纹 |
 | --- | --- | --- |
-| generation_job | 161 | `cc643f9f35d2ee1de02aa03c81a3c4f4c58d6ac55c283cb37b95028f86184c57` |
-| job_attempt | 165 | `c7b97f990bebab342bf00050e6227bb8583b1bfa910949e630f8c0aaec078a8c` |
-| workflow_run | 161 | `e6c078d296f9e70cb4a3c69d2e86c9898899ce55c946e10e576b20d854ae3f9a` |
-| asset | 157 | `3ac4f10c5e7ecc50c2df1ac452922c875561548ca7587d62432950c4d32d3484` |
-| cost_ledger | 87 | `d1be71c2ab4f79a6a7f6b94885cba90829d29626daf29fd442142b97defc4df1` |
-| dispatch_outbox | 156 | `54df4c5bfe2b402ba2714c5f4df88aca30127ec247c267ad15b4c0c6c26efd0b` |
-| domain_event | 1395 | `d325ebaaa858a4b74d92286c8d3fa31e68d29567b8a7ac345681eb809177e8af` |
-| asset_dependency | 90 | `567dae308bf7bea4a3b450e4cc9ee1e808cd292d01011642215039369493f9e3` |
-| asset_revision_dependency | 333 | `d30402389f7de80c9e8a5b2fbd01b1576e1122301195239c3fca970bae9824af` |
-| idempotency_record | 529 | `3d25acfab80ed489c4252836028c80d10ce5240cfdccd5125ccbbf4a6b8718a1` |
+| generation_job | 161 | `2b21cc2e7530d0f60b9e0861cab1aaf84e5af8c6e70ed8b71595acfd2a8f7287` |
+| job_attempt | 165 | `463ae9700fa5337b98497ff44236699bd597344d314bf5d18a093a5b51b275dc` |
+| workflow_run | 161 | `754ef811eefc391620c0b0f07244f28dee7b45be9c4e4821351a359047ad7286` |
+| asset | 157 | `728b22dc0d827deda3b0c033d7f214bd72994d79966d685e78a4580e58879c2e` |
+| cost_ledger | 87 | `65d32e88f54c38ccb8cc99168434c43519a945a4c328cda9787f2b036e0bfb7d` |
+| dispatch_outbox | 156 | `741d3986d5be91becd7796fc567be33f427bfd4710240ae83770c248f5840c6b` |
+| domain_event | 1395 | `db12570b59b1ac883b2a2c7b35f05eec7d17451c4d5713aac89bdf85499c3a33` |
+| asset_dependency | 90 | `ec99a081f523c1801211a22349554fe0a7229dd11b25d1abe3ee6429982c55a7` |
+| asset_revision_dependency | 333 | `21e92329968908236fddf1117c557c97fc3004c85cf10f2d57b15e85fe0a2859` |
+| idempotency_record | 529 | `bfd885f3911cc7b4f822c15d511cfb3302056642dace509f8767e5909bf9ae83` |
 
 ## 模拟测试与真实执行
 
 定向测试在进程内检查 1 秒视频兼容、冻结快照、请求身份、全新 adapter 的 inspect/resolve、对象写入失败后的原 attempt、损坏内容、开关和合成资格伪装。它们不代替真实渲染。
 
-390px 验收把测量移到页面就绪之后。视口保持 390×844。第 3 集目标 Asset `6483feff-f25a-4243-a012-8143d4f99457` 的卡片为 ACTIVE + APPROVED，下载 MP4 与来源清单按钮具有正尺寸边界框，video 的 `readyState` 为 4，尺寸 1080×1920，时长 90000 ms。随后测得横向溢出 0，并截取整页 `docs/m4-three-episode-sample-390.png`（390×1518）。页面未出现上述元素时，等待会超时并使阶段失败。
+390px 截图前先等第 3 集已知的 6 个候选成片全部出现，并且“正在加载候选成片”消失，再检查目标卡片、APPROVED、两个下载按钮和视频 metadata。等待结束后重新读取元素边界和页面尺寸，测量溢出并截整页。截图后再读一次。页面高度和目标位置不一致时最多重试 3 次，仍变化则阶段失败。本次第 1 次即稳定。
 
-![第3集 390px 已加载成片](m4-three-episode-sample-390.png)
+视口 390×844。最终页面 390×2254。目标 Asset `e2307f4e-69a8-4e48-80c5-b3b3d867cfbc` 为 ACTIVE + APPROVED，video `readyState` 4、1080×1920、90000 ms。播放器位于 y=1627、高 548；下载 MP4 与来源清单位于 y=2183、高 30。6 个候选成片从 y=474 排到 y=1210。PNG `docs/m4-three-episode-sample-390.png` 为 390×2254，与页面滚动尺寸相同，完整包含候选列表、播放器和两个按钮。横向溢出 0。
 
-真实闭环是 GitHub Actions run `37098825112` attempt 1，job `111134146403`，HEAD `15b76676e487a9a4550f0f80e228f4195e046bce`。隔离库 `m3av_37098825112a1` 在迁移前 `public_tables=0`，随后只应用已有 migration。Worker、FFmpeg 6.1.1 和 Chrome 完成合成、播放、抽帧、完整解码与下载。证据包 artifact `11265915715` / `m4-three-episode-sample-e2e-evidence`，13654252 字节，SHA-256 `469759f3396ebeb3ae1439f96c710a47ddf24ec69f44beab843f9a381b7ab9a1`。
+![第3集 390px 完整成片页](m4-three-episode-sample-390.png)
+
+真实闭环是 GitHub Actions run `37100980441` attempt 1，job `111140294936`，HEAD `72b51b9ce59ff997b619eee3b9303c6e84f366a3`。隔离库 `m3av_37100980441a1` 在迁移前 `public_tables=0`，随后只应用已有 migration。Worker、FFmpeg 6.1.1 和 Chrome 完成合成、播放、抽帧、完整解码与下载。证据包 artifact `11266867420` / `m4-three-episode-sample-e2e-evidence`，13697382 字节，SHA-256 `fa0c40562dcfd4250cfa0157d20b1fe142a993072dd16c740da6e207534e68ec`。
 
 52 个必需阶段全部 passed。无 skipped、failed、fatal、restore 或 cleanup 失败。compose down 退出码 0。
 
