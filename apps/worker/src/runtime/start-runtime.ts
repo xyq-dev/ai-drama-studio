@@ -9,6 +9,7 @@ import {
   isMockMediaJobKind,
   type PostgresPool,
 } from "@ai-drama/database";
+import { isSampleVideoSnapshot } from "@ai-drama/contracts";
 import { MockMediaAdapter, MockProvider, MockTextAdapter, type MockRequestState } from "@ai-drama/providers";
 import { isAbsolute } from "node:path";
 import { BullMqQueue, startBullWorker, type QueueMessage } from "./bullmq-queue";
@@ -80,6 +81,7 @@ export async function startQueueRuntime(options: {
   mockObjectDir?: string;
   mockImageEnabled?: boolean;
   mockAvEnabled?: boolean;
+  mockSampleVideoEnabled?: boolean;
   mockSmEnabled?: boolean;
   localComposeEnabled?: boolean;
   episodeComposeEnabled?: boolean;
@@ -119,6 +121,7 @@ export async function startQueueRuntime(options: {
   const mediaRecovery = new MockMediaRecovery(jobs, assets, store, mockMedia, objects, {
     mockImageEnabled: options.mockImageEnabled === true,
     mockAvEnabled: options.mockAvEnabled === true,
+    mockSampleVideoEnabled: options.mockSampleVideoEnabled === true,
     mockSmEnabled: options.mockSmEnabled === true,
   });
   const reconciler = new RuntimeReconciler(jobs, store, provider, dispatcher,
@@ -221,8 +224,10 @@ export async function startQueueRuntime(options: {
       const media = await store.loadMockMediaExecution(message.workspaceId, message.jobId);
       if (media) {
         if (media.state === "SUCCEEDED" || media.state === "FAILED" || media.state === "CANCELED") return;
+        const sampleVideo = isSampleVideoSnapshot(media.inputSnapshot);
         const enabled = media.kind === "MEDIA_IMAGE" ? options.mockImageEnabled === true
-          : (media.kind === "MEDIA_VIDEO" || media.kind === "MEDIA_TTS") ? options.mockAvEnabled === true
+          : (media.kind === "MEDIA_VIDEO" || media.kind === "MEDIA_TTS")
+            ? options.mockAvEnabled === true && (!sampleVideo || options.mockSampleVideoEnabled === true)
             : (media.kind === "MEDIA_SUBTITLE" || media.kind === "MEDIA_MUSIC") && options.mockSmEnabled === true;
         if (!enabled || !objects || !media.shotRevisionId || !media.providerConfigurationId || !isMockMediaJobKind(media.kind)) {
           if (media.state !== "QUEUED") {

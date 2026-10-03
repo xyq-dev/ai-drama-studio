@@ -345,6 +345,10 @@ importers:
         version: 5.0.1(@types/node@26.6.2)(happy-dom@17.6.3)(vite@8.3.0(@types/node@26.6.2)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15))
 
   packages/domain:
+    dependencies:
+      '@ai-drama/contracts':
+        specifier: workspace:*
+        version: link:../contracts
     devDependencies:
       '@types/node':
         specifier: 'catalog:'

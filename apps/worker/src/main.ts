@@ -3,6 +3,7 @@ import { Logger } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { isAbsolute, join } from "node:path";
 import { AppModule } from "./app.module";
+import { sampleVideoGenerationEnabled } from "@ai-drama/contracts";
 import { EnvValidationError, loadWorkerEnv } from "./config/env";
 import { findRepoRoot, readEnvFile } from "./config/env-file";
 import { SafeExceptionFilter } from "./http/safe-exception.filter";
@@ -26,6 +27,12 @@ async function bootstrap(): Promise<void> {
     databaseUrl: env.DATABASE_URL, redisUrl: env.REDIS_URL, mockObjectDir,
     mockImageEnabled: env.NODE_ENV !== "production" && env.M3_MOCK_IMAGE_ENABLED && directoryReady,
     mockAvEnabled: env.NODE_ENV !== "production" && env.M3_MOCK_AV_ENABLED && directoryReady,
+    mockSampleVideoEnabled: sampleVideoGenerationEnabled({
+      nodeEnv: env.NODE_ENV,
+      sampleFlag: env.M4_MOCK_SAMPLE_VIDEO_ENABLED,
+      avFlag: env.M3_MOCK_AV_ENABLED,
+      directoryReady,
+    }),
     mockSmEnabled: env.NODE_ENV !== "production" && env.M3_MOCK_SUBTITLE_MUSIC_ENABLED && directoryReady,
     localComposeEnabled: composeAllowed,
     episodeComposeEnabled: episodeComposeAllowed,

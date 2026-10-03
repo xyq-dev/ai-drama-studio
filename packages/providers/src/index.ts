@@ -26,5 +26,6 @@ export {
 } from "./media-adapter";
 export { MockMediaAdapter } from "./mock-media-adapter";
 export { MOCK_AUDIO_FIXTURE, MOCK_SUBTITLE_FIXTURE, MOCK_VIDEO_FIXTURE, mockMediaFixture } from "./mock-media-fixtures";
+export { sampleVideoBytes } from "./sample-video";
 export { MockTextAdapter } from "./mock-text-adapter";
 export type { TextGenerationAdapter } from "@ai-drama/contracts";

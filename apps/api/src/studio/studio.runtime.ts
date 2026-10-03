@@ -10,6 +10,7 @@ import {
   createPostgresPool,
   type PostgresPool,
 } from "@ai-drama/database";
+import { sampleVideoGenerationEnabled } from "@ai-drama/contracts";
 import type { ApiEnv } from "../config/env";
 import { StudioService } from "./studio.service";
 
@@ -49,7 +50,13 @@ export class StudioRuntime implements OnModuleDestroy {
     const episodeComposeEnabled = composeSwitch && env.M4_LOCAL_EPISODE_COMPOSE_ENABLED && Boolean(composeObjectDir);
     return new StudioRuntime(pool,
       new StudioService(jobs, store, textChain, workspaceId, new MockTextService(pool), new MediaAssetStore(pool),
-        mockImageEnabled, absoluteDir, mockAvEnabled, mockSmEnabled, localComposeEnabled, composeObjectDir, episodeComposeEnabled), store);
+        mockImageEnabled, absoluteDir, mockAvEnabled, mockSmEnabled, localComposeEnabled, composeObjectDir, episodeComposeEnabled,
+        sampleVideoGenerationEnabled({
+          nodeEnv: env.NODE_ENV,
+          sampleFlag: env.M4_MOCK_SAMPLE_VIDEO_ENABLED,
+          avFlag: env.M3_MOCK_AV_ENABLED,
+          directoryReady: Boolean(absoluteDir),
+        })), store);
   }
 
   async onModuleDestroy(): Promise<void> {

@@ -47,6 +47,10 @@ export const requiredStages = [
   "project-cost-summary",
   "project-cost-gates",
   "project-cost-readonly",
+  "sample-video-fixtures",
+  "sample-video-gates-recovery",
+  "three-episode-render",
+  "three-episode-delivery",
 ];
 
 export function acceptanceFailed(input) {

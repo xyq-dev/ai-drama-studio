@@ -2,7 +2,8 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { MOCK_AUDIO_FIXTURE, MOCK_VIDEO_FIXTURE } from "@ai-drama/providers";
+import { SAMPLE_VIDEO_DESCRIPTIONS } from "@ai-drama/contracts";
+import { MOCK_AUDIO_FIXTURE, MOCK_VIDEO_FIXTURE, sampleVideoBytes } from "@ai-drama/providers";
 import type { MediaAssetRecord } from "@ai-drama/database";
 import { assertReadableMockAv, readBoundedMockAv } from "./mock-av-content";
 
@@ -67,5 +68,36 @@ describe("mock AV content", () => {
 
     await mkdir(join(root, video.objectKey), { recursive: true });
     await expect(readBoundedMockAv(root, video)).rejects.toMatchObject({ code: "ASSET_CONTENT_INVALID" });
+  });
+
+  it("reads a whitelisted sample and rejects the other fixture, truncation, and a malformed sample id", async () => {
+    const description = SAMPLE_VIDEO_DESCRIPTIONS["sample-15s-a-v1"];
+    const bytes = sampleVideoBytes("sample-15s-a-v1");
+    const other = sampleVideoBytes("sample-15s-b-v1");
+    const requestId = `mock-media|sample-sync-v1|video.generate|sample-15s-a-v1|${jobId}:1`;
+    const sample = asset(MOCK_VIDEO_FIXTURE, {
+      objectKey: `mock-videos/${projectId}/${jobId}/${description.checksumSha256}.mp4`,
+      byteSize: description.byteSize,
+      checksumSha256: description.checksumSha256,
+      width: description.width,
+      height: description.height,
+      durationMs: description.durationMs,
+      providerRequestId: requestId,
+    });
+    await mkdir(join(root, "mock-videos", projectId, jobId), { recursive: true });
+    await writeFile(join(root, sample.objectKey), bytes);
+    await expect(readBoundedMockAv(root, sample)).resolves.toEqual(bytes);
+    await writeFile(join(root, sample.objectKey), other);
+    await expect(readBoundedMockAv(root, sample)).rejects.toMatchObject({ code: "ASSET_CONTENT_INVALID" });
+    await writeFile(join(root, sample.objectKey), bytes.subarray(0, 20));
+    await expect(readBoundedMockAv(root, sample)).rejects.toMatchObject({ code: "ASSET_CONTENT_INVALID" });
+    expect(() => assertReadableMockAv({
+      ...sample,
+      providerRequestId: `mock-media|sample-sync-v1|video.generate|sample-15s-b-v1|${jobId}:1`,
+    })).toThrow(/not a stored mock recording/);
+    expect(() => assertReadableMockAv({
+      ...sample,
+      providerRequestId: "mock-media|sample-sync-v1|video.generate|unknown|1",
+    })).toThrow(/not a stored mock recording/);
   });
 });

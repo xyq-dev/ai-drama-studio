@@ -1,5 +1,12 @@
 import { createHash } from "node:crypto";
+import {
+  looksLikeSampleVideoRequestId,
+  parseSampleVideoRequestId,
+  sampleVideoRequestIdFromSnapshot,
+  type SampleVideoFixtureId,
+} from "@ai-drama/contracts";
 import { mockMediaFixture } from "./mock-media-fixtures";
+import { sampleVideoBytes } from "./sample-video";
 import {
   MEDIA_CAPABILITIES,
   type MediaAccountingEnvelope,
@@ -29,6 +36,20 @@ export class MockMediaAdapter implements MediaProviderAdapter {
 
   async submit(input: MediaGenerationRequest): Promise<MediaSubmitResult> {
     const snapshot = input.inputSnapshot as { outcome?: string; executionMode?: string } | null;
+    const sampleRequestId = sampleVideoRequestIdFromSnapshot(input.inputSnapshot, input.clientRequestKey);
+    if (sampleRequestId) {
+      if (input.capability !== "video.generate") {
+        throw new Error("Sample video request identity is not the canonical fixture");
+      }
+      const fixtureId = parseSampleVideoRequestId(sampleRequestId)?.fixtureId;
+      if (!fixtureId) throw new Error("Sample video request identity is not the canonical fixture");
+      return {
+        kind: "succeeded",
+        providerRequestId: sampleRequestId,
+        outputs: [sampleOutput(sampleRequestId, fixtureId)],
+        accounting: actualAccounting(sampleRequestId),
+      };
+    }
     const providerRequestId = snapshot?.executionMode === "sync"
       ? `mock-media|sync|${input.capability}|${input.clientRequestKey}`
       : `mock-media|${input.capability}|${input.clientRequestKey}`;
@@ -89,6 +110,34 @@ export class MockMediaAdapter implements MediaProviderAdapter {
       };
     }
 
+    if (looksLikeSampleVideoRequestId(providerRequestId)) {
+      const sample = parseSampleVideoRequestId(providerRequestId);
+      if (!sample) {
+        const unknownHash = observationHash(providerRequestId, "UNKNOWN");
+        return {
+          state: "UNKNOWN",
+          normalizedEventKey: `poll:${unknownHash}`,
+          responseHash: unknownHash,
+          observedAt: new Date().toISOString(),
+          metadata: { source: "mock" },
+        };
+      }
+      const outputs: [MediaProviderOutput, ...MediaProviderOutput[]] = [
+        sampleOutput(providerRequestId, sample.fixtureId),
+      ];
+      const accounting = actualAccounting(providerRequestId);
+      const responseHash = observationHash(providerRequestId, "SUCCEEDED", outputs, accounting);
+      return {
+        state: "SUCCEEDED",
+        normalizedEventKey: `poll:${responseHash}`,
+        responseHash,
+        observedAt: new Date().toISOString(),
+        outputs,
+        accounting,
+        metadata: { source: "mock", fixtureId: sample.fixtureId },
+      };
+    }
+
     const parsed = parseRequestId(providerRequestId);
     if (parsed) {
       const outputs: [MediaProviderOutput, ...MediaProviderOutput[]] = [
@@ -121,6 +170,16 @@ export class MockMediaAdapter implements MediaProviderAdapter {
     if (output.retrieval.kind === "URI") {
       return { uri: output.retrieval.uri, expiresAt: output.retrieval.expiresAt };
     }
+    if (output.retrieval.kind === "HANDLE" && output.retrieval.handle.startsWith("mock-sample:")) {
+      const requestId = output.retrieval.handle.slice("mock-sample:".length);
+      const sample = parseSampleVideoRequestId(requestId);
+      const metadata = output.metadata as { providerRequestId?: unknown; fixtureId?: unknown } | undefined;
+      if (!sample || metadata?.providerRequestId !== requestId || metadata.fixtureId !== sample.fixtureId) {
+        throw new Error("Sample video request identity is not the canonical fixture");
+      }
+      const bytes = sampleVideoBytes(sample.fixtureId);
+      return { uri: `data:video/mp4;base64,${bytes.toString("base64")}` };
+    }
     const mimeType = output.mimeTypeHint ?? "application/octet-stream";
     const bytes = mockMediaFixture(mimeType);
     return { uri: `data:${mimeType};base64,${bytes.toString("base64")}` };
@@ -149,6 +208,15 @@ function parseRequestId(providerRequestId: string): { capability: MediaCapabilit
   const capability = sync ? parts[2] : parts[1];
   if (!capability || !MEDIA_CAPABILITIES.includes(capability as MediaCapability)) return null;
   return { capability: capability as MediaCapability, sync };
+}
+
+function sampleOutput(providerRequestId: string, fixtureId: SampleVideoFixtureId): MediaProviderOutput {
+  return {
+    kind: "VIDEO",
+    retrieval: { kind: "HANDLE", handle: `mock-sample:${providerRequestId}` },
+    mimeTypeHint: "video/mp4",
+    metadata: { providerRequestId, fixtureId },
+  };
 }
 
 function outputFor(capability: MediaCapability, providerRequestId: string): MediaProviderOutput {

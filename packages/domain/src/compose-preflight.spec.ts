@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { SAMPLE_VIDEO_DESCRIPTIONS, SAMPLE_VIDEO_SCHEMA } from "@ai-drama/contracts";
 import {
   COMPOSE_PREFLIGHT_SCHEMA,
   COMPOSE_VIDEO_DURATION_MAX_MS,
@@ -180,5 +181,41 @@ describe("compose preflight manifest", () => {
         expect(error).toMatchObject({ code: "COMPOSE_INPUT_INVALID" });
       }
     }
+  });
+
+  it("accepts a sample video only when the request, snapshot, and asset describe the same fixture", () => {
+    const description = SAMPLE_VIDEO_DESCRIPTIONS["sample-15s-a-v1"];
+    const base = facts("video");
+    const requestId = `mock-media|sample-sync-v1|video.generate|sample-15s-a-v1|${base.job?.id}:1`;
+    const frozen = { schema: SAMPLE_VIDEO_SCHEMA, ...description };
+    const accepted = preflight({
+      providerRequestId: requestId,
+      checksumSha256: description.checksumSha256,
+      byteSize: description.byteSize,
+      width: description.width,
+      height: description.height,
+      durationMs: description.durationMs,
+      metadata: frozen,
+      job: { ...base.job!, inputSnapshot: { ...frozen, shotRevisionId, sourceText: "技术验收样片" } },
+      attempt: { ...base.attempt!, providerRequestId: requestId },
+    });
+    expect(accepted.manifest.sources[0]?.asset?.durationMs).toBe(15000);
+    const other = SAMPLE_VIDEO_DESCRIPTIONS["sample-15s-b-v1"];
+    expect(() => preflight({
+      providerRequestId: requestId,
+      checksumSha256: description.checksumSha256,
+      byteSize: description.byteSize,
+      width: description.width,
+      height: description.height,
+      durationMs: description.durationMs,
+      metadata: { schema: SAMPLE_VIDEO_SCHEMA, ...other },
+      job: { ...base.job!, inputSnapshot: frozen },
+      attempt: { ...base.attempt!, providerRequestId: requestId },
+    })).toThrowError(expect.objectContaining({ code: "COMPOSE_INPUT_INVALID" }));
+    expect(() => preflight({
+      providerRequestId: `mock-media|sample-sync-v1|video.generate|sample-15s-a-v1|${base.job?.id}`,
+      metadata: frozen,
+      job: { ...base.job!, inputSnapshot: frozen },
+    })).toThrowError(expect.objectContaining({ code: "COMPOSE_INPUT_INVALID" }));
   });
 });

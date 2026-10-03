@@ -1,5 +1,6 @@
 import type { JobPersistenceService, MediaAssetStore, RuntimeStore } from "@ai-drama/database";
 import { isMockMediaJobKind } from "@ai-drama/database";
+import { isSampleVideoSnapshot } from "@ai-drama/contracts";
 import type { MediaProviderAdapter } from "@ai-drama/providers";
 import { recoverMockAvAttempt } from "./mock-av-generation";
 import { recoverMockImageAttempt, type MockImageObjectStore } from "./mock-image-generation";
@@ -10,6 +11,7 @@ export interface MockMediaRecoveryFlags {
   mockImageEnabled: boolean;
   mockAvEnabled: boolean;
   mockSmEnabled?: boolean;
+  mockSampleVideoEnabled?: boolean;
 }
 
 export class MockMediaRecovery {
@@ -56,7 +58,7 @@ export class MockMediaRecovery {
       }
       kind = execution.kind;
       const objects = this.objects;
-      if (!objects || !this.kindEnabled(execution.kind)) {
+      if (!objects || !this.kindEnabled(execution.kind, execution.inputSnapshot)) {
         await this.jobs.failJob({ workspaceId: row.workspaceId, jobId: row.jobId,
           attemptId: row.attemptId, traceId: `mock-media:missing-config:${row.jobId}`,
           errorCode: "MOCK_MEDIA_NOT_CONFIGURED",
@@ -119,10 +121,13 @@ export class MockMediaRecovery {
     if (errors.length) throw new AggregateError(errors, "Mock media recovery encountered errors");
   }
 
-  private kindEnabled(kind: string): boolean {
+  private kindEnabled(kind: string, snapshot: unknown): boolean {
     if (!this.objects) return false;
     if (kind === "MEDIA_IMAGE") return this.flags.mockImageEnabled;
-    if (kind === "MEDIA_VIDEO" || kind === "MEDIA_TTS") return this.flags.mockAvEnabled;
+    if (kind === "MEDIA_VIDEO" || kind === "MEDIA_TTS") {
+      if (isSampleVideoSnapshot(snapshot)) return this.flags.mockAvEnabled && this.flags.mockSampleVideoEnabled === true;
+      return this.flags.mockAvEnabled;
+    }
     if (kind === "MEDIA_SUBTITLE" || kind === "MEDIA_MUSIC") return this.flags.mockSmEnabled === true;
     return false;
   }

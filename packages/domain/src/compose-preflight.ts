@@ -1,3 +1,9 @@
+import {
+  SAMPLE_VIDEO_DESCRIPTIONS,
+  frozenSampleFields,
+  looksLikeSampleVideoRequestId,
+  parseSampleVideoRequestId,
+} from "@ai-drama/contracts";
 import { DomainError } from "./errors";
 import { canonicalInputHash } from "./text-chain";
 
@@ -58,6 +64,7 @@ export interface ComposeJobFacts {
   shotRevisionId: string | null;
   kind: string;
   state: string;
+  inputSnapshot?: unknown;
 }
 
 export interface ComposeAssetFacts {
@@ -80,6 +87,7 @@ export interface ComposeAssetFacts {
   providerRequestId: string | null;
   providerConfigurationId: string | null;
   rowVersion: number;
+  metadata?: unknown;
   job: ComposeJobFacts | null;
   attempt: ComposeAttemptFacts | null;
 }
@@ -233,7 +241,7 @@ function checkedSource(
   if (!job || !attempt || !asset.sourceGenerationJobId || !asset.sourceJobAttemptId || !asset.providerRequestId || !asset.providerConfigurationId) {
     throw new DomainError("COMPOSE_INPUT_INVALID", `Compose input ${role} does not come from a successful generation`);
   }
-  const requestId = `mock-media|sync|${rule.capability}|${job.id}:${attempt.attemptNo}`;
+  const requestId = sampleRequestId(role, asset, job, attempt) ?? `mock-media|sync|${rule.capability}|${job.id}:${attempt.attemptNo}`;
   if (
     job.id !== asset.sourceGenerationJobId ||
     job.workspaceId !== scope.workspaceId ||
@@ -263,6 +271,41 @@ function checkedSource(
       durationMs: asset.durationMs,
     },
   };
+}
+
+function sampleRequestId(
+  role: ComposePreflightRole,
+  asset: ComposeAssetFacts,
+  job: ComposeJobFacts,
+  attempt: ComposeAttemptFacts,
+): string | null {
+  const providerRequestId = asset.providerRequestId ?? "";
+  if (!looksLikeSampleVideoRequestId(providerRequestId)) return null;
+  if (role !== "video") {
+    throw new DomainError("COMPOSE_INPUT_INVALID", "Compose input video sample identity is not valid for this slot");
+  }
+  const parsed = parseSampleVideoRequestId(providerRequestId);
+  const description = parsed ? SAMPLE_VIDEO_DESCRIPTIONS[parsed.fixtureId] : null;
+  const jobFrozen = frozenSampleFields(job.inputSnapshot);
+  const assetFrozen = frozenSampleFields(asset.metadata);
+  if (
+    !parsed ||
+    !description ||
+    !jobFrozen ||
+    !assetFrozen ||
+    parsed.jobId !== job.id ||
+    parsed.attemptNo !== attempt.attemptNo ||
+    jobFrozen.fixtureId !== parsed.fixtureId ||
+    assetFrozen.fixtureId !== parsed.fixtureId ||
+    asset.checksumSha256 !== description.checksumSha256 ||
+    asset.byteSize !== description.byteSize ||
+    asset.durationMs !== description.durationMs ||
+    asset.width !== description.width ||
+    asset.height !== description.height
+  ) {
+    throw new DomainError("COMPOSE_INPUT_INVALID", "Compose input video does not match its sample fixture");
+  }
+  return providerRequestId;
 }
 
 function positiveInteger(value: number | null): value is number {

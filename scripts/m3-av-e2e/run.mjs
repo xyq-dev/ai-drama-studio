@@ -20,6 +20,7 @@ import { episodeComposeGates, episodeComposePreflight, episodeComposeReadonly } 
 import { episodeRenderGates, episodeRenderIsolation, episodeRenderLifecycle, episodeRenderPlayback, episodeRenderReview, episodeRenderStale } from "./episode-render.mjs";
 import { episodeExportDownload, episodeExportGates, episodeExportReadonly } from "./episode-export.mjs";
 import { projectCostGates, projectCostReadonly, projectCostSummary } from "./project-cost.mjs";
+import { sampleVideoFixtures, sampleVideoGatesRecovery, threeEpisodeDelivery, threeEpisodeRender } from "./three-episode-sample.mjs";
 import { composeProvenanceStale, composeRenderGates, composeRenderLifecycle, composeRenderPage, composeReview } from "./compose-render.mjs";
 import { mediaCancel, mediaObservationReplay, mediaShotIsolation, mediaTerminalRace } from "./lifecycle.mjs";
 import { acceptanceExitCode, acceptanceFailed, assertLinkage, requiredStages } from "./outcome.mjs";
@@ -218,6 +219,7 @@ function childEnv(overrides = {}, unsetKeys = []) {
     M3_MOCK_IMAGE_ENABLED: "true",
     M3_MOCK_AV_ENABLED: "true",
     M3_MOCK_SUBTITLE_MUSIC_ENABLED: "true",
+    M4_MOCK_SAMPLE_VIDEO_ENABLED: "true",
     M4_LOCAL_COMPOSE_ENABLED: "true",
     M4_LOCAL_EPISODE_COMPOSE_ENABLED: "true",
     M4_COMPOSE_WORK_DIR: composeWorkDir,
@@ -1998,6 +2000,10 @@ async function main() {
   await stage("project-cost-summary", () => projectCostSummary(lifecycle));
   await stage("project-cost-gates", () => projectCostGates(lifecycle));
   await stage("project-cost-readonly", () => projectCostReadonly(lifecycle));
+  await stage("sample-video-fixtures", () => sampleVideoFixtures(lifecycle));
+  await stage("sample-video-gates-recovery", () => sampleVideoGatesRecovery(lifecycle));
+  await stage("three-episode-render", () => threeEpisodeRender(lifecycle));
+  await stage("three-episode-delivery", () => threeEpisodeDelivery(lifecycle));
 }
 
 function lifecycleContext() {

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { SAMPLE_VIDEO_FIXTURE_IDS, SAMPLE_VIDEO_SCHEMA, sampleVideoDescription, type SampleVideoFixtureId } from "@ai-drama/contracts";
 import { DomainError, parseComposePreflightRequest, parseComposeRenderRequest, parseComposeReviewRequest, parseEpisodeComposePreflightRequest, parseEpisodeComposeRenderRequest } from "@ai-drama/domain";
 import {
   JobPersistenceService,
@@ -80,6 +81,9 @@ const shotBodySchema = z.object({
 });
 
 const generateImageBodySchema = z.object({ seed: z.string().max(200).optional() }).strict();
+const generateVideoBodySchema = generateImageBodySchema.extend({
+  fixtureId: z.enum(SAMPLE_VIDEO_FIXTURE_IDS).optional(),
+}).strict();
 
 const textEntityBodySchema = z.object({
   projectId: z.string().uuid().optional(),
@@ -109,6 +113,7 @@ export class StudioService {
     private readonly localComposeEnabled = false,
     private readonly composeObjectDir: string | null = null,
     private readonly episodeComposeEnabled = false,
+    private readonly mockSampleVideoEnabled = false,
   ) {}
 
   get workspace(): string {
@@ -986,7 +991,12 @@ export class StudioService {
     context: StudioContext,
     kind: "MEDIA_VIDEO" | "MEDIA_TTS",
   ) {
-    const input = parse(generateImageBodySchema, rejectClientWorkspace(body));
+    const videoInput = kind === "MEDIA_VIDEO" ? parse(generateVideoBodySchema, rejectClientWorkspace(body)) : null;
+    const input = videoInput ?? parse(generateImageBodySchema, rejectClientWorkspace(body));
+    const fixtureId: SampleVideoFixtureId | undefined = videoInput?.fixtureId;
+    if (fixtureId && !this.mockSampleVideoEnabled) {
+      throw new PersistenceError("CONFIGURATION_ERROR", "Mock sample video is not enabled");
+    }
     if (!this.mockAvEnabled) {
       throw new PersistenceError("CONFIGURATION_ERROR", "Mock video and speech worker storage is not enabled");
     }
@@ -1008,16 +1018,38 @@ export class StudioService {
               : "Saved dialogue is required before mock speech",
           );
         }
-        const snapshot = {
-          schema: kind === "MEDIA_VIDEO" ? "m3.mock.video.v1" : "m3.mock.tts.v1",
-          shotRevisionId,
-          seed: input.seed ?? null,
-          outcome: "success",
-          executionMode: "sync",
-          capability,
-          sourceText,
-          sourceHash: createHash("sha256").update(sourceText).digest("hex"),
-        };
+        const sourceHash = createHash("sha256").update(sourceText).digest("hex");
+        const description = fixtureId ? sampleVideoDescription(fixtureId) : null;
+        const snapshot = description
+          ? {
+            schema: SAMPLE_VIDEO_SCHEMA,
+            fixtureId: description.fixtureId,
+            checksumSha256: description.checksumSha256,
+            byteSize: description.byteSize,
+            width: description.width,
+            height: description.height,
+            frameRate: description.frameRate,
+            frameCount: description.frameCount,
+            durationMs: description.durationMs,
+            hasAudio: false as const,
+            shotRevisionId,
+            seed: input.seed ?? null,
+            outcome: "success",
+            executionMode: "sync",
+            capability,
+            sourceText,
+            sourceHash,
+          }
+          : {
+            schema: kind === "MEDIA_VIDEO" ? "m3.mock.video.v1" : "m3.mock.tts.v1",
+            shotRevisionId,
+            seed: input.seed ?? null,
+            outcome: "success",
+            executionMode: "sync",
+            capability,
+            sourceText,
+            sourceHash,
+          };
         return {
           workspaceId: this.workspaceId,
           projectId: source.projectId,

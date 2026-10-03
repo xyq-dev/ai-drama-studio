@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { MockMediaAdapter, MockProvider, MockTextAdapter } from "./index";
+import { SAMPLE_VIDEO_DESCRIPTIONS, SAMPLE_VIDEO_SCHEMA } from "@ai-drama/contracts";
+import { MOCK_VIDEO_FIXTURE, MockMediaAdapter, MockProvider, MockTextAdapter, sampleVideoBytes } from "./index";
 
 describe("MockProvider", () => {
   it("returns deterministic request ids and the requested outcome", () => {
@@ -271,5 +272,52 @@ describe("MediaProviderObservation contract", () => {
     expect(success.state).toBe("SUCCEEDED");
     if (success.state !== "SUCCEEDED") throw new Error("expected successful observation");
     expect(success.outputs.length).toBeGreaterThan(0);
+  });
+});
+
+describe("sample video adapter", () => {
+  const jobId = "44444444-4444-4444-8444-444444444444";
+  const description = SAMPLE_VIDEO_DESCRIPTIONS["sample-15s-a-v1"];
+  const snapshot = {
+    schema: SAMPLE_VIDEO_SCHEMA,
+    ...description,
+    shotRevisionId: "33333333-3333-4333-8333-333333333333",
+    outcome: "success",
+    executionMode: "sync",
+    capability: "video.generate",
+    sourceText: "技术验收样片",
+    sourceHash: "cd".repeat(32),
+  };
+
+  it("rebuilds the same fixture from the request id on a fresh adapter", async () => {
+    const adapter = new MockMediaAdapter();
+    const submitted = await adapter.submit({
+      workspaceId: "11111111-1111-4111-8111-111111111111",
+      projectId: "22222222-2222-4222-8222-222222222222",
+      generationJobId: jobId,
+      jobAttemptId: "55555555-5555-4555-8555-555555555555",
+      providerConfigurationId: "66666666-6666-4666-8666-666666666666",
+      clientRequestKey: `${jobId}:1`,
+      inputHash: "ab".repeat(32),
+      inputSnapshot: snapshot,
+      traceId: "sample",
+      capability: "video.generate",
+    });
+    expect(submitted.kind).toBe("succeeded");
+    if (submitted.kind !== "succeeded") throw new Error("expected success");
+    expect(submitted.providerRequestId).toBe(`mock-media|sample-sync-v1|video.generate|sample-15s-a-v1|${jobId}:1`);
+    const fresh = new MockMediaAdapter();
+    const inspected = await fresh.inspect(submitted.providerRequestId);
+    expect(inspected.state).toBe("SUCCEEDED");
+    if (inspected.state !== "SUCCEEDED") throw new Error("expected inspection success");
+    const resolved = await fresh.resolveOutput(inspected.outputs[0]);
+    const prefix = "data:video/mp4;base64,";
+    expect(resolved.uri.startsWith(prefix)).toBe(true);
+    const bytes = Buffer.from(resolved.uri.slice(prefix.length), "base64");
+    expect(bytes.equals(sampleVideoBytes("sample-15s-a-v1"))).toBe(true);
+    expect(bytes.equals(MOCK_VIDEO_FIXTURE.bytes)).toBe(false);
+    await expect(fresh.inspect("mock-media|sample-sync-v1|video.generate|sample-15s-a-v1|not-a-job:1")).resolves.toMatchObject({ state: "UNKNOWN" });
+    const mismatched = { ...inspected.outputs[0], metadata: { providerRequestId: submitted.providerRequestId, fixtureId: "sample-15s-b-v1" } };
+    await expect(fresh.resolveOutput(mismatched)).rejects.toThrow(/canonical fixture/);
   });
 });

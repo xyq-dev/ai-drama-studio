@@ -16,6 +16,7 @@ const apiEnvSchema = z.object({
   APP_WORKSPACE_ID: z.string().uuid(),
   M3_MOCK_IMAGE_ENABLED: z.enum(["true", "false"]).default("false"),
   M3_MOCK_AV_ENABLED: z.enum(["true", "false"]).default("false"),
+  M4_MOCK_SAMPLE_VIDEO_ENABLED: z.enum(["true", "false"]).default("false"),
   M3_MOCK_SUBTITLE_MUSIC_ENABLED: z.enum(["true", "false"]).default("false"),
   MOCK_OBJECT_DIR: z.string().min(1).optional(),
   M4_LOCAL_COMPOSE_ENABLED: z.enum(["true", "false"]).default("false"),
@@ -49,6 +50,7 @@ export interface ApiEnv {
   APP_WORKSPACE_ID: string;
   M3_MOCK_IMAGE_ENABLED: boolean;
   M3_MOCK_AV_ENABLED: boolean;
+  M4_MOCK_SAMPLE_VIDEO_ENABLED: boolean;
   M3_MOCK_SUBTITLE_MUSIC_ENABLED: boolean;
   MOCK_OBJECT_DIR?: string;
   M4_LOCAL_COMPOSE_ENABLED: boolean;
@@ -72,6 +74,7 @@ const API_KEYS = [
   "APP_WORKSPACE_ID",
   "M3_MOCK_IMAGE_ENABLED",
   "M3_MOCK_AV_ENABLED",
+  "M4_MOCK_SAMPLE_VIDEO_ENABLED",
   "M3_MOCK_SUBTITLE_MUSIC_ENABLED",
   "MOCK_OBJECT_DIR",
   "M4_LOCAL_COMPOSE_ENABLED",
@@ -123,6 +126,7 @@ export function loadApiEnv(
     S3_FORCE_PATH_STYLE: parsed.data.S3_FORCE_PATH_STYLE === "true",
     M3_MOCK_IMAGE_ENABLED: parsed.data.M3_MOCK_IMAGE_ENABLED === "true",
     M3_MOCK_AV_ENABLED: parsed.data.M3_MOCK_AV_ENABLED === "true",
+    M4_MOCK_SAMPLE_VIDEO_ENABLED: parsed.data.M4_MOCK_SAMPLE_VIDEO_ENABLED === "true",
     M3_MOCK_SUBTITLE_MUSIC_ENABLED: parsed.data.M3_MOCK_SUBTITLE_MUSIC_ENABLED === "true",
     M4_LOCAL_COMPOSE_ENABLED: parsed.data.M4_LOCAL_COMPOSE_ENABLED === "true",
     M4_LOCAL_EPISODE_COMPOSE_ENABLED: parsed.data.M4_LOCAL_EPISODE_COMPOSE_ENABLED === "true",

@@ -1726,7 +1726,7 @@ async function preflightComposeWithClient(
     `SELECT id, workspace_id, project_id, kind, storage_provider, mime_type, byte_size, checksum_sha256,
             width, height, duration_ms, status, review_status, source_job_attempt_id,
             source_generation_job_id, source_shot_revision_id, provider_configuration_id,
-            provider_request_id, row_version
+            provider_request_id, metadata_json, row_version
        FROM asset
       WHERE workspace_id = $1 AND id = ANY($2::uuid[])
       ORDER BY id
@@ -1737,7 +1737,7 @@ async function preflightComposeWithClient(
   const jobIds = [...new Set(assets.rows.map((row) => String(row.source_generation_job_id ?? "")))].filter((id) => id.length > 0).sort();
   const attemptIds = [...new Set(assets.rows.map((row) => String(row.source_job_attempt_id ?? "")))].filter((id) => id.length > 0).sort();
   const jobs = jobIds.length === 0 ? { rows: [] } : await client.query<QueryResultRow>(
-    `SELECT id, workspace_id, project_id, source_shot_revision_id, kind, state
+    `SELECT id, workspace_id, project_id, source_shot_revision_id, kind, state, input_snapshot
        FROM generation_job
       WHERE workspace_id = $1 AND id = ANY($2::uuid[])
       ORDER BY id
@@ -1803,6 +1803,7 @@ function composeFacts(
     providerRequestId: row.provider_request_id == null ? null : String(row.provider_request_id),
     providerConfigurationId: row.provider_configuration_id == null ? null : String(row.provider_configuration_id),
     rowVersion: integerOrZero(row.row_version),
+    metadata: isPlainJson(row.metadata_json) ? row.metadata_json : null,
     job: jobRow ? composeJob(jobRow) : null,
     attempt: attemptRow ? composeAttempt(attemptRow) : null,
   };
@@ -1816,6 +1817,7 @@ function composeJob(row: QueryResultRow): ComposeJobFacts {
     shotRevisionId: row.source_shot_revision_id == null ? null : String(row.source_shot_revision_id),
     kind: String(row.kind),
     state: String(row.state),
+    inputSnapshot: row.input_snapshot ?? null,
   };
 }
 

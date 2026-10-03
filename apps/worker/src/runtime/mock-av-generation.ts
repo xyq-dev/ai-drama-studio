@@ -2,8 +2,16 @@ import { createHash } from "node:crypto";
 import type { JobPersistenceService, MediaAssetRecord, MediaAssetStore, ProviderActualCostInput } from "@ai-drama/database";
 import { assertSyncActualCost } from "@ai-drama/database";
 import {
+  frozenSampleFields,
+  isSampleVideoSnapshot,
+  looksLikeSampleVideoRequestId,
+  parseSampleVideoRequestId,
+  sampleVideoRequestIdFromSnapshot,
+} from "@ai-drama/contracts";
+import {
   MOCK_AUDIO_FIXTURE,
   MOCK_VIDEO_FIXTURE,
+  sampleVideoBytes,
   type MediaAccountingEnvelope,
   type MediaProviderAdapter,
   type MediaProviderOutput,
@@ -56,6 +64,9 @@ export async function runMockAvJob(
   try {
     await dependencies.assets.assertUsableShot(input.workspaceId, input.projectId, input.shotRevisionId);
     assertSyncSnapshot(input.inputSnapshot, input.capability);
+    if (isSampleVideoSnapshot(input.inputSnapshot) && input.capability !== "video.generate") {
+      throw new Error("Sample video snapshot is not the canonical fixture");
+    }
     const request = {
       workspaceId: input.workspaceId,
       projectId: input.projectId,
@@ -69,7 +80,8 @@ export async function runMockAvJob(
       traceId: input.traceId,
       capability: input.capability,
     };
-    const expectedProviderRequestId = `mock-media|sync|${input.capability}|${request.clientRequestKey}`;
+    const expectedProviderRequestId = sampleVideoRequestIdFromSnapshot(input.inputSnapshot, request.clientRequestKey)
+      ?? `mock-media|sync|${input.capability}|${request.clientRequestKey}`;
     await dependencies.jobs.attachProviderRequest({
       workspaceId: input.workspaceId,
       attemptId: acquired.attemptId,
@@ -119,7 +131,7 @@ export async function recoverMockAvAttempt(
 }
 
 async function persistMockAvOutput(
-  input: Pick<MockAvJob, "workspaceId" | "projectId" | "shotRevisionId" | "jobId" | "traceId" | "providerConfigurationId" | "capability">,
+  input: Pick<MockAvJob, "workspaceId" | "projectId" | "shotRevisionId" | "jobId" | "traceId" | "providerConfigurationId" | "capability" | "inputSnapshot">,
   attemptId: string,
   providerRequestId: string,
   output: MediaProviderOutput | undefined,
@@ -131,45 +143,117 @@ async function persistMockAvOutput(
     objects: MockImageObjectStore;
   },
 ): Promise<MediaAssetRecord | null> {
-  const fixture = FIXTURES[input.capability];
-  const expectedKind = input.capability === "video.generate" ? "VIDEO" : "AUDIO";
-  if (!output || output.kind !== expectedKind || output.mimeTypeHint !== fixture.mimeType) {
+  const expected = expectedAvOutput(input, providerRequestId);
+  if (!output || output.kind !== expected.kind || output.mimeTypeHint !== expected.mimeType) {
     throw new Error("Mock AV job requires the canonical fixture output");
   }
-  const resolved = await dependencies.adapter.resolveOutput(output);
-  const prefix = `data:${fixture.mimeType};base64,`;
-  if (!resolved.uri.startsWith(prefix)) throw new Error("Mock AV output must be inline fixture data");
-  const bytes = Buffer.from(resolved.uri.slice(prefix.length), "base64");
-  if (!bytes.equals(fixture.bytes)) throw new Error("Mock AV output is not the canonical fixture");
-  const checksumSha256 = createHash("sha256").update(bytes).digest("hex");
-  if (checksumSha256 !== fixture.checksumSha256 || bytes.length !== fixture.byteLength) {
+  const metadata = output.metadata as { fixtureId?: unknown } | undefined;
+  if (expected.fixtureId && metadata?.fixtureId !== expected.fixtureId) {
     throw new Error("Mock AV output is not the canonical fixture");
   }
-  const extension = fixture.mimeType === "video/mp4" ? "mp4" : "wav";
-  const folder = fixture.mimeType === "video/mp4" ? "mock-videos" : "mock-audio";
+  const resolved = await dependencies.adapter.resolveOutput(output);
+  const prefix = `data:${expected.mimeType};base64,`;
+  if (!resolved.uri.startsWith(prefix)) throw new Error("Mock AV output must be inline fixture data");
+  const bytes = Buffer.from(resolved.uri.slice(prefix.length), "base64");
+  if (!bytes.equals(expected.bytes)) throw new Error("Mock AV output is not the canonical fixture");
+  const checksumSha256 = createHash("sha256").update(bytes).digest("hex");
+  if (checksumSha256 !== expected.checksumSha256 || bytes.length !== expected.byteSize || bytes.length !== expected.bytes.length) {
+    throw new Error("Mock AV output is not the canonical fixture");
+  }
+  const extension = expected.mimeType === "video/mp4" ? "mp4" : "wav";
+  const folder = expected.mimeType === "video/mp4" ? "mock-videos" : "mock-audio";
   const key = `${folder}/${input.projectId}/${input.jobId}/${checksumSha256}.${extension}`;
-  await dependencies.objects.put({ key, bytes, mimeType: fixture.mimeType, checksumSha256 });
+  await dependencies.objects.put({ key, bytes, mimeType: expected.mimeType, checksumSha256 });
   const actualCost = costFromAccounting(input, attemptId, providerRequestId, accounting);
   return dependencies.assets.completeAttemptWithAsset(dependencies.jobs, {
     workspaceId: input.workspaceId,
     projectId: input.projectId,
     generationJobId: input.jobId,
     traceId: input.traceId,
-    kind: expectedKind,
+    kind: expected.kind,
     storageProvider: "mock-object-store",
     objectKey: key,
-    mimeType: fixture.mimeType,
+    mimeType: expected.mimeType,
     byteSize: bytes.length,
     checksumSha256,
-    width: fixture.width ?? undefined,
-    height: fixture.height ?? undefined,
-    durationMs: fixture.durationMs,
+    width: expected.width,
+    height: expected.height,
+    durationMs: expected.durationMs,
     sourceJobAttemptId: attemptId,
     sourceShotRevisionId: input.shotRevisionId,
     providerConfigurationId: input.providerConfigurationId,
     providerRequestId,
+    metadata: expected.metadata,
     actualCost,
   });
+}
+
+function expectedAvOutput(
+  input: Pick<MockAvJob, "capability" | "inputSnapshot">,
+  providerRequestId: string,
+): {
+  kind: "VIDEO" | "AUDIO";
+  mimeType: "video/mp4" | "audio/wav";
+  bytes: Buffer;
+  checksumSha256: string;
+  byteSize: number;
+  width?: number;
+  height?: number;
+  durationMs: number;
+  fixtureId?: string;
+  metadata?: Record<string, unknown>;
+} {
+  const sample = parseSampleVideoRequestId(providerRequestId);
+  const sampleSnapshot = isSampleVideoSnapshot(input.inputSnapshot);
+  if (looksLikeSampleVideoRequestId(providerRequestId) && !sample) {
+    throw new Error("Mock AV output is not the canonical fixture");
+  }
+  if (sampleSnapshot !== Boolean(sample)) throw new Error("Mock AV output is not the canonical fixture");
+  if (sample) {
+    const frozen = frozenSampleFields(input.inputSnapshot);
+    if (!frozen || frozen.fixtureId !== sample.fixtureId || input.capability !== "video.generate") {
+      throw new Error("Mock AV output is not the canonical fixture");
+    }
+    const bytes = sampleVideoBytes(sample.fixtureId);
+    const checksumSha256 = createHash("sha256").update(bytes).digest("hex");
+    if (checksumSha256 !== frozen.checksumSha256 || bytes.length !== frozen.byteSize) {
+      throw new Error("Mock AV output is not the canonical fixture");
+    }
+    return {
+      kind: "VIDEO",
+      mimeType: "video/mp4",
+      bytes,
+      checksumSha256,
+      byteSize: frozen.byteSize,
+      width: frozen.width,
+      height: frozen.height,
+      durationMs: frozen.durationMs,
+      fixtureId: frozen.fixtureId,
+      metadata: {
+        schema: "m4.mock.sample-video.v1",
+        fixtureId: frozen.fixtureId,
+        checksumSha256: frozen.checksumSha256,
+        byteSize: frozen.byteSize,
+        width: frozen.width,
+        height: frozen.height,
+        frameRate: frozen.frameRate,
+        frameCount: frozen.frameCount,
+        durationMs: frozen.durationMs,
+        hasAudio: false,
+      },
+    };
+  }
+  const fixture = FIXTURES[input.capability];
+  return {
+    kind: input.capability === "video.generate" ? "VIDEO" : "AUDIO",
+    mimeType: fixture.mimeType,
+    bytes: fixture.bytes,
+    checksumSha256: fixture.checksumSha256,
+    byteSize: fixture.byteLength,
+    width: fixture.width ?? undefined,
+    height: fixture.height ?? undefined,
+    durationMs: fixture.durationMs,
+  };
 }
 
 function costFromAccounting(
