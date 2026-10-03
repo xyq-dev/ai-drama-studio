@@ -425,10 +425,19 @@ if (sampleWorkflow.includes("docs/**")) failures.push("sample workflow paths inc
 if (sampleWorkflow.includes("M4_MOCK_SAMPLE_VIDEO_ENABLED")) failures.push("sample workflow adds a sample switch");
 const sampleDelivery = harness.slice(harness.indexOf("export async function threeEpisodeDelivery"), harness.indexOf("async function waitEpisodeThreeReady"));
 const sampleReady = harness.slice(harness.indexOf("async function waitEpisodeThreeReady"), harness.indexOf("async function recoverSample"));
-const readyCall = sampleDelivery.indexOf("await waitEpisodeThreeReady");
+const sampleSequence = ["await waitEpisodeThreeCandidates", "await waitEpisodeThreeReady", "await readEpisodeThreeLayout", "three-episode-sample-390.png"];
+let sampleCursor = 0;
+for (const mark of sampleSequence) {
+  const at = sampleDelivery.indexOf(mark, sampleCursor);
+  if (at < 0) failures.push(`sample 390px sequence missing ${JSON.stringify(mark)}`);
+  else sampleCursor = at + mark.length;
+}
 const sampleShot = sampleDelivery.indexOf("three-episode-sample-390.png");
-if (readyCall < 0 || sampleShot < 0 || readyCall > sampleShot) {
-  failures.push("sample 390px screenshot is taken before episode 3 readiness");
+if (sampleShot < 0 || sampleDelivery.indexOf("await readEpisodeThreeLayout", sampleShot) < 0) {
+  failures.push("sample 390px layout is not read again after the screenshot");
+}
+if (!sampleDelivery.includes("正在加载候选成片") || !sampleDelivery.includes("episode 3 layout changed during the 390px screenshot") || !sampleDelivery.includes("candidateIds.length !== 6")) {
+  failures.push("sample 390px check does not wait for the six candidates or a stable layout");
 }
 if (!sampleReady.includes("episode 3 loadedmetadata timeout") || !sampleReady.includes('data-review-status="APPROVED"') || !sampleReady.includes("下载来源清单")) {
   failures.push("sample 390px check does not wait for the approved episode 3 card");

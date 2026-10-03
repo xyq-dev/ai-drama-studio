@@ -169,6 +169,7 @@ export async function threeEpisodeDelivery(ctx) {
   if (!saved) throw new Error("three episode sample was not rendered");
   const episodeThree = saved.episodes.find((item) => item.episodeNo === 3);
   if (!episodeThree || episodeThree.durationMs !== 90_000) throw new Error("episode 3 sample was not rendered");
+  const candidateIds = (episodeThree.shots ?? []).map((shot) => shot.composite?.assetId);
   const page = ctx.state.page;
   await page.setViewportSize({ width: 390, height: 844 });
   const viewport = page.viewportSize();
@@ -176,10 +177,7 @@ export async function threeEpisodeDelivery(ctx) {
     throw new Error(`sample viewport ${JSON.stringify(viewport)}`);
   }
   await page.goto(`${ctx.webOrigin}/projects/${saved.projectId}?focus=episode-compose&episode=3`, { waitUntil: "domcontentloaded", timeout: 30_000 });
-  const ready = await waitEpisodeThreeReady(page, episodeThree.assetId);
-  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
-  await page.screenshot({ path: join(ctx.outputDir, "three-episode-sample-390.png"), fullPage: true });
-  if (overflow > 1) throw new Error(`sample episode overflow ${overflow}`);
+  const captured = await captureEpisodeThreeViewport(page, ctx.outputDir, episodeThree.assetId, candidateIds);
   await waitSampleIdle(ctx, saved.projectId);
   const before = await fingerprint(ctx);
   const downloads = [];
@@ -236,16 +234,152 @@ export async function threeEpisodeDelivery(ctx) {
   const changes = episodeFingerprintChanges(before, after);
   if (changes.length > 0) throw new Error(`sample delivery changed stored records: ${changes.join(", ")}`);
   return {
-    overflow,
+    overflow: captured.overflow,
     viewport,
     assetId: episodeThree.assetId,
-    ready,
+    page: captured.page,
+    png: captured.png,
+    layoutAttempt: captured.attempt,
+    candidates: captured.candidates,
+    targets: captured.targets,
+    ready: captured.ready,
     screenshot: "three-episode-sample-390.png",
     downloads,
     ledger,
     localComposeAttempts: coverage[0].local_compose,
     unchanged: EPISODE_FINGERPRINT_TABLES.map((table) => ({ table, count: before[table].count, fingerprint: before[table].fingerprint })),
   };
+}
+
+async function captureEpisodeThreeViewport(page, outputDir, assetId, candidateIds) {
+  let failure = null;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    await waitEpisodeThreeCandidates(page, candidateIds);
+    const ready = await waitEpisodeThreeReady(page, assetId);
+    const before = await readEpisodeThreeLayout(page, assetId, candidateIds);
+    const overflow = before.scrollWidth - before.clientWidth;
+    if (overflow > 1) throw new Error(`sample episode overflow ${overflow}`);
+    const pending = layoutGaps(before);
+    if (pending.length > 0) {
+      failure = { attempt, pending, before };
+      continue;
+    }
+    const file = join(outputDir, "three-episode-sample-390.png");
+    await page.screenshot({ path: file, fullPage: true });
+    const after = await readEpisodeThreeLayout(page, assetId, candidateIds);
+    const png = await pngSize(file);
+    const shifted = layoutShift(before, after);
+    const clipped = pngGaps(png, before);
+    if (shifted.length === 0 && clipped.length === 0) {
+      return {
+        attempt,
+        overflow,
+        ready,
+        page: {
+          scrollWidth: before.scrollWidth,
+          scrollHeight: before.scrollHeight,
+          clientWidth: before.clientWidth,
+          clientHeight: before.clientHeight,
+        },
+        png,
+        candidates: before.candidates,
+        targets: { card: before.card, video: before.video, mp4: before.mp4, manifest: before.manifest },
+      };
+    }
+    failure = { attempt, shifted, clipped, before, after, png };
+  }
+  throw new Error(`episode 3 layout changed during the 390px screenshot ${JSON.stringify(failure)}`);
+}
+
+async function waitEpisodeThreeCandidates(page, candidateIds) {
+  if (!Array.isArray(candidateIds) || candidateIds.length !== 6 || candidateIds.some((id) => typeof id !== "string") || new Set(candidateIds).size !== 6) {
+    throw new Error(`episode 3 candidates ${JSON.stringify(candidateIds)}`);
+  }
+  await page.waitForFunction((ids) => {
+    const shown = (node) => {
+      if (!node) return false;
+      const style = window.getComputedStyle(node);
+      const rect = node.getBoundingClientRect();
+      return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+    };
+    const loading = [...document.querySelectorAll("p")].some((node) => node.textContent.includes("正在加载候选成片") && shown(node));
+    return ids.length === 6 && !loading && ids.every((id) => shown(document.querySelector(`[data-asset-id="${id}"]`)));
+  }, candidateIds, { timeout: 30_000 });
+}
+
+async function readEpisodeThreeLayout(page, assetId, candidateIds) {
+  return page.evaluate(({ assetId, candidateIds }) => {
+    const box = (node) => {
+      if (!node) return null;
+      const rect = node.getBoundingClientRect();
+      return {
+        x: Math.round(rect.left + window.scrollX),
+        y: Math.round(rect.top + window.scrollY),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      };
+    };
+    const shown = (node) => {
+      if (!node) return false;
+      const style = window.getComputedStyle(node);
+      const rect = node.getBoundingClientRect();
+      return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+    };
+    const root = document.documentElement;
+    const card = document.querySelector(`[data-composite-id="${assetId}"]`);
+    const buttons = card ? [...card.querySelectorAll("button")] : [];
+    const labeled = (name) => buttons.find((button) => button.textContent.trim() === name) ?? null;
+    return {
+      scrollWidth: Math.round(root.scrollWidth),
+      scrollHeight: Math.round(root.scrollHeight),
+      clientWidth: Math.round(root.clientWidth),
+      clientHeight: Math.round(root.clientHeight),
+      loading: [...document.querySelectorAll("p")].some((node) => node.textContent.includes("正在加载候选成片") && shown(node)),
+      candidates: candidateIds.map((id) => box(document.querySelector(`[data-asset-id="${id}"]`))),
+      card: box(card),
+      video: box(card?.querySelector("video") ?? null),
+      mp4: box(labeled("下载 MP4")),
+      manifest: box(labeled("下载来源清单")),
+    };
+  }, { assetId, candidateIds });
+}
+
+function layoutGaps(layout) {
+  const gaps = [];
+  if (layout.loading) gaps.push("loading");
+  if (layout.candidates.length !== 6) gaps.push("candidate-count");
+  layout.candidates.forEach((box, index) => {
+    if (!box || box.width <= 0 || box.height <= 0) gaps.push(`candidate-${index}`);
+  });
+  for (const name of ["card", "video", "mp4", "manifest"]) {
+    const box = layout[name];
+    if (!box || box.width <= 0 || box.height <= 0) gaps.push(name);
+  }
+  return gaps;
+}
+
+function layoutShift(before, after) {
+  const changed = ["scrollWidth", "scrollHeight", "clientWidth", "clientHeight", "loading"].filter((field) => before[field] !== after[field]);
+  for (const name of ["card", "video", "mp4", "manifest"]) {
+    if (JSON.stringify(before[name]) !== JSON.stringify(after[name])) changed.push(name);
+  }
+  if (JSON.stringify(before.candidates) !== JSON.stringify(after.candidates)) changed.push("candidates");
+  return changed;
+}
+
+function pngGaps(png, layout) {
+  const gaps = [];
+  if (png.width !== layout.scrollWidth || png.height !== layout.scrollHeight) gaps.push("png-size");
+  [...layout.candidates, layout.card, layout.video, layout.mp4, layout.manifest].forEach((box, index) => {
+    if (!box || box.x < 0 || box.y < 0 || box.x + box.width > png.width || box.y + box.height > png.height) gaps.push(`clip-${index}`);
+  });
+  return gaps;
+}
+
+async function pngSize(file) {
+  const bytes = await readFile(file);
+  if (bytes.length < 24 || bytes[0] !== 0x89 || bytes.toString("ascii", 1, 4) !== "PNG") throw new Error("episode 3 screenshot is not a png");
+  return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20), byteSize: bytes.length };
 }
 
 async function waitEpisodeThreeReady(page, assetId) {
