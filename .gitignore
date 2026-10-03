@@ -20,3 +20,5 @@ __pycache__/
 *.log
 npm-debug.log*
 pnpm-debug.log*
+
+m3-av-e2e-output/

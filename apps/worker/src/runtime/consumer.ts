@@ -1,4 +1,4 @@
-import type { JobPersistenceService, MockTextService, RuntimeStore } from "@ai-drama/database";
+import { isMockMediaJobKind, type JobPersistenceService, type MockTextService, type RuntimeStore } from "@ai-drama/database";
 import { MOCK_OUTCOMES, MockTextAdapter, type MockOutcome, type MockProvider,
   type TextGenerationAdapter } from "@ai-drama/providers";
 import type { QueueMessage } from "./bullmq-queue";
@@ -28,6 +28,9 @@ export class MockJobConsumer {
 
   async handle(message: QueueMessage): Promise<"processed" | "ignored"> {
     const before = await this.store.loadExecution(message.workspaceId, message.jobId);
+    if (before && isMockMediaJobKind(before.kind)) {
+      throw new Error("Media jobs must not enter the text consumer");
+    }
     if (!before?.providerConfigurationId) return "ignored";
     const acquired = await this.jobs.acquireQueuedJob({
       workspaceId: message.workspaceId,

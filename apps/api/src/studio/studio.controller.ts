@@ -1,6 +1,7 @@
-import { Body, Controller, Get, Headers, Inject, Param, Post, Query, Req, Res } from "@nestjs/common";
+import { Body, Controller, Get, Head, Headers, Inject, Param, Post, Query, Req, Res, StreamableFile } from "@nestjs/common";
 import { PersistenceError, RuntimeStore } from "@ai-drama/database";
 import { RUNTIME_STORE, STUDIO_SERVICE } from "./tokens";
+import { attachmentDisposition } from "./episode-export";
 import { StudioService, createTraceId, type StudioContext } from "./studio.service";
 
 const UUID_PARAM_PIPE = {
@@ -14,6 +15,16 @@ const UUID_PARAM_PIPE = {
 
 interface StatusResponse {
   status(code: number): void;
+  setHeader(name: string, value: string): void;
+}
+
+interface ContentRequest {
+  method: string;
+}
+
+interface ContentResponse {
+  status(code: number): void;
+  setHeader(name: string, value: string): void;
 }
 
 interface SseResponse {
@@ -51,6 +62,11 @@ export class StudioController {
   @Get("projects/:projectId")
   getProject(@Param("projectId", UUID_PARAM_PIPE) projectId: string) {
     return this.studio.getProject(projectId);
+  }
+
+  @Get("projects/:projectId/cost-summary")
+  getProjectCostSummary(@Param("projectId", UUID_PARAM_PIPE) projectId: string) {
+    return this.studio.getProjectCostSummary(projectId);
   }
 
   @Post("projects/:projectId/stories")
@@ -461,9 +477,194 @@ export class StudioController {
       this.studio.generateShotImage(revisionId, body, this.context(key, trace)));
   }
 
+  @Post("shot-revisions/:revisionId/generate-video")
+  generateShotVideo(
+    @Param("revisionId", UUID_PARAM_PIPE) revisionId: string,
+    @Body() body: unknown,
+    @Res({ passthrough: true }) response: StatusResponse,
+    @Headers("idempotency-key") key?: string,
+    @Headers("x-trace-id") trace?: string,
+  ) {
+    return this.send(response,
+      this.studio.generateShotVideo(revisionId, body, this.context(key, trace)));
+  }
+
+  @Post("shot-revisions/:revisionId/generate-subtitle")
+  generateShotSubtitle(
+    @Param("revisionId", UUID_PARAM_PIPE) revisionId: string,
+    @Body() body: unknown,
+    @Res({ passthrough: true }) response: StatusResponse,
+    @Headers("idempotency-key") key?: string,
+    @Headers("x-trace-id") trace?: string,
+  ) {
+    return this.send(response,
+      this.studio.generateShotSubtitle(revisionId, body, this.context(key, trace)));
+  }
+
+  @Post("shot-revisions/:revisionId/generate-music")
+  generateShotMusic(
+    @Param("revisionId", UUID_PARAM_PIPE) revisionId: string,
+    @Body() body: unknown,
+    @Res({ passthrough: true }) response: StatusResponse,
+    @Headers("idempotency-key") key?: string,
+    @Headers("x-trace-id") trace?: string,
+  ) {
+    return this.send(response,
+      this.studio.generateShotMusic(revisionId, body, this.context(key, trace)));
+  }
+
+  @Post("shot-revisions/:revisionId/generate-tts")
+  generateShotTts(
+    @Param("revisionId", UUID_PARAM_PIPE) revisionId: string,
+    @Body() body: unknown,
+    @Res({ passthrough: true }) response: StatusResponse,
+    @Headers("idempotency-key") key?: string,
+    @Headers("x-trace-id") trace?: string,
+  ) {
+    return this.send(response,
+      this.studio.generateShotTts(revisionId, body, this.context(key, trace)));
+  }
+
+  @Post("shot-revisions/:revisionId/compose")
+  composeShot(
+    @Param("revisionId", UUID_PARAM_PIPE) revisionId: string,
+    @Body() body: unknown,
+    @Res({ passthrough: true }) response: StatusResponse,
+    @Headers("idempotency-key") idempotencyKey?: string,
+    @Headers("x-trace-id") traceHeader?: string,
+  ) {
+    return this.send(response, this.studio.composeShot(revisionId, body, this.context(idempotencyKey, traceHeader)));
+  }
+
+  @Post("assets/:assetId/review")
+  reviewAsset(
+    @Param("assetId", UUID_PARAM_PIPE) assetId: string,
+    @Body() body: unknown,
+    @Res({ passthrough: true }) response: StatusResponse,
+    @Headers("idempotency-key") idempotencyKey?: string,
+    @Headers("if-match") ifMatch?: string,
+    @Headers("x-trace-id") traceHeader?: string,
+  ) {
+    return this.send(response, this.studio.reviewComposite(assetId, body, ifMatch, this.context(idempotencyKey, traceHeader)));
+  }
+
+  @Get("projects/:projectId/episodes/:episodeId/compose-candidates")
+  listEpisodeComposeCandidates(
+    @Param("projectId", UUID_PARAM_PIPE) projectId: string,
+    @Param("episodeId", UUID_PARAM_PIPE) episodeId: string,
+    @Res({ passthrough: true }) response: StatusResponse,
+    @Query("cursor") cursor?: string,
+    @Query("limit") limit?: string,
+  ) {
+    response.setHeader("Cache-Control", "private, no-store");
+    return this.studio.listEpisodeComposeCandidates(projectId, episodeId, cursor, limit);
+  }
+
+  @Get("projects/:projectId/episodes/:episodeId/composites")
+  listEpisodeComposites(
+    @Param("projectId", UUID_PARAM_PIPE) projectId: string,
+    @Param("episodeId", UUID_PARAM_PIPE) episodeId: string,
+    @Res({ passthrough: true }) response: StatusResponse,
+    @Query("cursor") cursor?: string,
+    @Query("limit") limit?: string,
+  ) {
+    response.setHeader("Cache-Control", "private, no-store");
+    return this.studio.listEpisodeComposites(projectId, episodeId, cursor, limit);
+  }
+
+  @Get("projects/:projectId/episodes/:episodeId/composites/:assetId/download")
+  @Head("projects/:projectId/episodes/:episodeId/composites/:assetId/download")
+  async downloadEpisodeComposite(
+    @Param("projectId", UUID_PARAM_PIPE) projectId: string,
+    @Param("episodeId", UUID_PARAM_PIPE) episodeId: string,
+    @Param("assetId", UUID_PARAM_PIPE) assetId: string,
+    @Query() query: Record<string, unknown>,
+    @Req() request: ContentRequest,
+    @Res({ passthrough: true }) response: ContentResponse,
+  ) {
+    const payload = await this.studio.exportEpisodeComposite(projectId, episodeId, assetId, query);
+    response.status(200);
+    response.setHeader("Content-Type", "video/mp4");
+    response.setHeader("Content-Disposition", attachmentDisposition(`${payload.filenameStem}.mp4`));
+    response.setHeader("Content-Length", String(payload.bytes.length));
+    response.setHeader("X-Content-Type-Options", "nosniff");
+    response.setHeader("Cache-Control", "private, no-store");
+    if (request.method === "HEAD") return undefined;
+    return new StreamableFile(payload.bytes);
+  }
+
+  @Get("projects/:projectId/episodes/:episodeId/composites/:assetId/export-manifest")
+  async exportEpisodeManifest(
+    @Param("projectId", UUID_PARAM_PIPE) projectId: string,
+    @Param("episodeId", UUID_PARAM_PIPE) episodeId: string,
+    @Param("assetId", UUID_PARAM_PIPE) assetId: string,
+    @Query() query: Record<string, unknown>,
+    @Res({ passthrough: true }) response: ContentResponse,
+  ) {
+    const payload = await this.studio.exportEpisodeComposite(projectId, episodeId, assetId, query);
+    const body = Buffer.from(JSON.stringify(payload.manifest));
+    response.status(200);
+    response.setHeader("Content-Type", "application/json; charset=utf-8");
+    response.setHeader("Content-Disposition", attachmentDisposition(`${payload.filenameStem}.json`));
+    response.setHeader("Content-Length", String(body.length));
+    response.setHeader("X-Content-Type-Options", "nosniff");
+    response.setHeader("Cache-Control", "private, no-store");
+    return new StreamableFile(body);
+  }
+
+  @Post("projects/:projectId/episodes/:episodeId/compose")
+  composeEpisode(
+    @Param("projectId", UUID_PARAM_PIPE) projectId: string,
+    @Param("episodeId", UUID_PARAM_PIPE) episodeId: string,
+    @Body() body: unknown,
+    @Res({ passthrough: true }) response: StatusResponse,
+    @Headers("idempotency-key") idempotencyKey?: string,
+    @Headers("x-trace-id") traceHeader?: string,
+  ) {
+    return this.send(response, this.studio.composeEpisode(projectId, episodeId, body, this.context(idempotencyKey, traceHeader)));
+  }
+
+  @Post("projects/:projectId/episodes/:episodeId/compose-preflight")
+  preflightEpisodeCompose(
+    @Param("projectId", UUID_PARAM_PIPE) projectId: string,
+    @Param("episodeId", UUID_PARAM_PIPE) episodeId: string,
+    @Body() body: unknown,
+    @Res({ passthrough: true }) response: StatusResponse,
+  ) {
+    response.setHeader("Cache-Control", "private, no-store");
+    return this.send(response, this.studio.preflightEpisodeCompose(projectId, episodeId, body));
+  }
+
+  @Post("shot-revisions/:revisionId/compose-preflight")
+  composePreflight(
+    @Param("revisionId", UUID_PARAM_PIPE) revisionId: string,
+    @Body() body: unknown,
+    @Res({ passthrough: true }) response: StatusResponse,
+  ) {
+    response.setHeader("Cache-Control", "private, no-store");
+    return this.send(response, this.studio.preflightShotCompose(revisionId, body));
+  }
+
   @Get("shot-revisions/:revisionId/assets")
   listShotAssets(@Param("revisionId", UUID_PARAM_PIPE) revisionId: string) {
     return this.studio.listShotAssets(revisionId);
+  }
+
+  @Get("assets/:assetId/content")
+  @Head("assets/:assetId/content")
+  async readAssetContent(
+    @Param("assetId", UUID_PARAM_PIPE) assetId: string,
+    @Req() request: ContentRequest,
+    @Res({ passthrough: true }) response: ContentResponse,
+  ) {
+    const payload = await this.studio.readMockAssetContent(assetId);
+    response.status(200);
+    response.setHeader("Content-Type", payload.mimeType);
+    response.setHeader("Content-Length", String(payload.bytes.length));
+    response.setHeader("X-Content-Type-Options", "nosniff");
+    response.setHeader("Cache-Control", "private, no-store");
+    if (request.method === "HEAD") return undefined;
+    return new StreamableFile(payload.bytes);
   }
 
   @Post("projects/:projectId/workflows/mock-scenes")

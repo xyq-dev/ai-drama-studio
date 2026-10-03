@@ -15,6 +15,7 @@
   "dependencies": {
     "@ai-drama/contracts": "workspace:*",
     "@ai-drama/database": "workspace:*",
+    "@ai-drama/domain": "workspace:*",
     "@ai-drama/health": "workspace:*",
     "@ai-drama/providers": "workspace:*",
     "bullmq": "5.58.5",

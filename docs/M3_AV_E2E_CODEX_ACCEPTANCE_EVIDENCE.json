@@ -1,0 +1,551 @@
+{
+  "reviewDate": "2026-10-01",
+  "reviewer": "Codex",
+  "conclusion": "Mock AV core real CI acceptance passed; full M3 incomplete; harness hardening required for future reliability",
+  "repository": "xyq-dev/ai-drama-studio",
+  "branch": "feat/m3-av-workbench",
+  "reportHead": "1bf3f362aec56184127447f19df3fe5da5fbe494",
+  "actualTestedSha": "165319edad445a171213d7ee96e82cd4e93da9a0",
+  "productSourceSha": "2e7dfb9c437aa56540a073eb49b25975535c780c",
+  "run": {
+    "id": 36809119919,
+    "url": "https://github.com/xyq-dev/ai-drama-studio/actions/runs/36809119919",
+    "event": "push",
+    "conclusion": "success",
+    "attempt": 1,
+    "jobId": 110199990702
+  },
+  "artifact": {
+    "id": 11139421014,
+    "size": 1351482,
+    "expires": "2026-10-08",
+    "zipSha256": "a2178e339d0673bce90de1bc554846368dde34024f51341bad33eb598d4e326c",
+    "githubDigestMatchesDownloadedZip": true,
+    "resultsSha256": "33cb6c29f4aff42889a94bb55133eaa1beb5ff710b60ceffac19889c198db471"
+  },
+  "independentChecks": [
+    "GitHub run/job metadata and job logs",
+    "feature ref equals report HEAD before this review",
+    "exact-SHA harness read and source diff scope",
+    "downloaded ZIP digest verified",
+    "results.json and content/console evidence read",
+    "desktop screenshots visually inspected",
+    "official Release API linux-amd64 digest and size compared to runtime evidence",
+    "exact final-failed expression evaluated in isolation"
+  ],
+  "officialReleaseProvenance": [
+    {
+      "releaseApiUrl": "https://api.github.com/repos/minio/minio/releases/tags/RELEASE.2025-09-07T16-13-09Z",
+      "tag": "RELEASE.2025-09-07T16-13-09Z",
+      "asset": {
+        "name": "minio.linux-amd64.RELEASE.2025-09-07T16-13-09Z",
+        "digest": "sha256:7c5bd8512c6e966455b1d198209358b2d191c77a83ab377c4073281065fb855f",
+        "size": 110989496,
+        "url": "https://github.com/minio/minio/releases/download/RELEASE.2025-09-07T16-13-09Z/minio.linux-amd64.RELEASE.2025-09-07T16-13-09Z"
+      }
+    },
+    {
+      "releaseApiUrl": "https://api.github.com/repos/minio/mc/releases/tags/RELEASE.2025-08-13T08-35-41Z",
+      "tag": "RELEASE.2025-08-13T08-35-41Z",
+      "asset": {
+        "name": "mc.linux-amd64.RELEASE.2025-08-13T08-35-41Z",
+        "digest": "sha256:01f866e9c5f9b87c2b09116fa5d7c06695b106242d829a8bb32990c00312e891",
+        "size": 30535864,
+        "url": "https://github.com/minio/mc/releases/download/RELEASE.2025-08-13T08-35-41Z/mc.linux-amd64.RELEASE.2025-08-13T08-35-41Z"
+      }
+    }
+  ],
+  "harnessFindings": [
+    {
+      "id": "H1",
+      "description": "fatal, restoreError and skipped/missing stages are omitted from final failed decision",
+      "isolationReplay": [
+        {
+          "input": "fatal with passed stages",
+          "failed": false
+        },
+        {
+          "input": "fatal with skipped stage",
+          "failed": false
+        },
+        {
+          "input": "restoreError with passed stages",
+          "failed": false
+        },
+        {
+          "input": "failed stage",
+          "failed": true
+        }
+      ],
+      "affectsThisRun": false
+    },
+    {
+      "id": "H2",
+      "description": "cost attempt/request fields selected but not asserted; attempt terminal fields not selected; no direct submit-call-count measurement"
+    },
+    {
+      "id": "H3",
+      "description": "390px measurement passed but screenshots desktop1280; 3 console404 messages lack URLs; disabled gate explicitly false, not unset"
+    }
+  ],
+  "codexExecutedServices": false,
+  "codexReranVerify": false,
+  "artifactResults": {
+    "ok": true,
+    "meta": {
+      "githubRunId": "36809119919",
+      "githubRunAttempt": "1",
+      "githubSha": "165319edad445a171213d7ee96e82cd4e93da9a0",
+      "sourceSha": "165319edad445a171213d7ee96e82cd4e93da9a0",
+      "node": "v24.21.0",
+      "pnpm": "10.17.0",
+      "docker": "Docker version 28.0.4, build b8034c0",
+      "compose": "Docker Compose version v2.38.2",
+      "workspaceId": "31b4e725-4f2d-450b-b807-a922b2e27a3c",
+      "otherWorkspaceId": "702fbb93-4d3b-4f0f-a8bb-29fc97dbe7ef",
+      "database": "m3av_36809119919a1",
+      "bucket": "m3av-36809119919a1",
+      "composeProject": "m3av-36809119919-1"
+    },
+    "identity": {
+      "database": "m3av_36809119919a1",
+      "role": "m3av_36809119919a1",
+      "server_addr": "172.18.0.2/32",
+      "server_port": 5432,
+      "public_tables": 0
+    },
+    "chrome": "154.0.8037.92",
+    "minioBefore": 0,
+    "stages": [
+      {
+        "name": "docker",
+        "status": "passed",
+        "ms": 217,
+        "detail": {
+          "project": "m3av-36809119919-1",
+          "dockerConfig": "empty anonymous config"
+        }
+      },
+      {
+        "name": "compose",
+        "status": "passed",
+        "ms": 22249,
+        "detail": {
+          "images": [
+            {
+              "image": "postgres:16.15-alpine",
+              "inspect": "sha256:81bd698b4594e751a3269e4dcd3e03a4a0ec0daf7b72e7aa1abd43cce9887542 [\"mirror.gcr.io/library/postgres@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea\"]"
+            },
+            {
+              "image": "redis:7.4.11-alpine",
+              "inspect": "sha256:f84b0c4678011602b9b98c227a4dcd5468bf8b088b02fdd4165cb7758bad8058 [\"mirror.gcr.io/library/redis@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499\"]"
+            },
+            {
+              "image": "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z",
+              "inspect": "sha256:fc6e1148f5cb71851f40d1f73752c96984658e03e4261591e339fe08d3042801 []"
+            },
+            {
+              "image": "quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z",
+              "inspect": "sha256:17ca5d2f649e941718ed4240f6fc9f7c0061aac1ed54791bc6309d68fbd15be5 []"
+            }
+          ],
+          "minioObjects": 0,
+          "assembled": [
+            {
+              "binary": "minio",
+              "sha256": "7c5bd8512c6e966455b1d198209358b2d191c77a83ab377c4073281065fb855f",
+              "bytes": 110989496,
+              "target": "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z"
+            },
+            {
+              "binary": "mc",
+              "sha256": "01f866e9c5f9b87c2b09116fa5d7c06695b106242d829a8bb32990c00312e891",
+              "bytes": 30535864,
+              "target": "quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z"
+            }
+          ],
+          "minioMirror": "PostgreSQL, Redis, and Alpine came from mirror.gcr.io. MinIO and mc are the pinned GitHub release binaries, checksum-verified and tagged to the compose image names after quay.io, Docker Hub, and mirror.gcr.io could not provide those images. compose.yaml was not modified."
+        }
+      },
+      {
+        "name": "identity",
+        "status": "passed",
+        "ms": 35,
+        "detail": {
+          "database": "m3av_36809119919a1",
+          "role": "m3av_36809119919a1",
+          "server_addr": "172.18.0.2/32",
+          "server_port": 5432,
+          "public_tables": 0
+        }
+      },
+      {
+        "name": "migrate-provision",
+        "status": "passed",
+        "ms": 3959,
+        "detail": {
+          "migrated": "> @ai-drama/database@0.1.0 migrate /home/runner/work/ai-drama-studio/ai-drama-studio/packages/database\n> tsx src/migrate-cli.ts\n\nApplied 5 migration(s).",
+          "workspace": "> @ai-drama/database@0.1.0 workspace:provision /home/runner/work/ai-drama-studio/ai-drama-studio/packages/database\n> tsx src/provision-workspace-cli.ts\n\nWorkspace 31b4e725-4f2d-450b-b807-a922b2e27a3c is provisioned and ACTIVE.",
+          "image": "> @ai-drama/database@0.1.0 mock-media:provision /home/runner/work/ai-drama-studio/ai-drama-studio/packages/database\n> tsx src/provision-mock-media-cli.ts\n\nMock image provider bf156894-e3b8-43f3-92d2-e8f7c9152aeb is created for workspace 31b4e725-4f2d-450b-b807-a922b2e27a3c.",
+          "first": "> @ai-drama/database@0.1.0 mock-av:provision /home/runner/work/ai-drama-studio/ai-drama-studio/packages/database\n> tsx src/provision-mock-av-cli.ts\n\nMock AV providers video f39fa94e-1510-435f-bd1a-f2e23e4294df and audio 34bb7b32-c8ed-4c2c-83e1-b7e63105ccf6 are created for workspace 31b4e725-4f2d-450b-b807-a922b2e27a3c.",
+          "second": "> @ai-drama/database@0.1.0 mock-av:provision /home/runner/work/ai-drama-studio/ai-drama-studio/packages/database\n> tsx src/provision-mock-av-cli.ts\n\nMock AV providers video f39fa94e-1510-435f-bd1a-f2e23e4294df and audio 34bb7b32-c8ed-4c2c-83e1-b7e63105ccf6 are already present for workspace 31b4e725-4f2d-450b-b807-a922b2e27a3c.",
+          "capabilities": [
+            {
+              "capability": "audio.tts",
+              "enabled": true,
+              "no_credential": true,
+              "count": 1
+            },
+            {
+              "capability": "image.generate",
+              "enabled": true,
+              "no_credential": true,
+              "count": 1
+            },
+            {
+              "capability": "video.generate",
+              "enabled": true,
+              "no_credential": true,
+              "count": 1
+            }
+          ]
+        }
+      },
+      {
+        "name": "processes",
+        "status": "passed",
+        "ms": 3120,
+        "detail": {
+          "apiReady": {
+            "service": "api",
+            "status": "ok",
+            "timestamp": "2026-10-01T03:10:12.436Z",
+            "dependencies": {
+              "postgres": {
+                "status": "ok"
+              },
+              "redis": {
+                "status": "ok"
+              },
+              "objectStorage": {
+                "status": "ok"
+              }
+            }
+          },
+          "workerReady": {
+            "service": "worker",
+            "status": "ok",
+            "version": "0.1.0",
+            "timestamp": "2026-10-01T03:10:13.462Z",
+            "dependencies": {
+              "postgres": {
+                "status": "ok"
+              },
+              "redis": {
+                "status": "ok"
+              },
+              "queue": {
+                "status": "ok"
+              }
+            }
+          }
+        }
+      },
+      {
+        "name": "source-chain",
+        "status": "passed",
+        "ms": 295,
+        "detail": {
+          "projectId": "28a0837a-56ae-4ecb-97d4-872a1f20d1b3",
+          "storyRevisionId": "b0f6e186-b9df-462a-92ed-e9d2e5530b76",
+          "episodeId": "35667080-ad4d-40ae-9b79-d786f308f693",
+          "scriptRevisionId": "5df80425-0b4f-4899-868c-088bd0bee088",
+          "sceneRevisionId": "0edfde31-1d1d-439c-9744-acc5a7d5ea3a",
+          "shotRevisionId": "3333e100-4013-4a6e-b520-166728f9b273",
+          "sceneApprovedVersion": 4
+        }
+      },
+      {
+        "name": "page-submit",
+        "status": "passed",
+        "ms": 4742,
+        "detail": {
+          "chrome": "154.0.8037.92",
+          "shotUrl": "http://127.0.0.1:3000/projects/28a0837a-56ae-4ecb-97d4-872a1f20d1b3?focus=shot&episode=1&scene=2beafb11-0c31-45bf-b1fe-95a486995301&shot=a0808ba3-ed11-459f-ae36-a5128b270530",
+          "video": {
+            "requestId": "mock-media|sync|video.generate|c966f445-39fb-466c-9ae2-9bf0e45a4cf6:1",
+            "assetId": "bc40b0bf-eb07-4802-9ad1-34a48ff0bb2b",
+            "jobId": "c966f445-39fb-466c-9ae2-9bf0e45a4cf6",
+            "workflowRunId": "cb6bf350-5cde-4fc1-8b1b-a797a4ba2cac"
+          },
+          "speech": {
+            "requestId": "mock-media|sync|audio.tts|a4cd2d1b-5b01-4eb8-8321-73850442f141:1",
+            "assetId": "ab08c3b6-48a0-4c70-9fe9-bbf9bbe95a9b",
+            "jobId": "a4cd2d1b-5b01-4eb8-8321-73850442f141",
+            "workflowRunId": "e1ff6240-efd2-4229-85bb-6a852279d303"
+          }
+        }
+      },
+      {
+        "name": "playback",
+        "status": "passed",
+        "ms": 1511,
+        "detail": {
+          "videoProof": {
+            "videoWidth": 16,
+            "videoHeight": 16,
+            "duration": 1,
+            "currentTime": 1,
+            "ended": true,
+            "decodedCallback": true,
+            "framesBefore": 4,
+            "totalVideoFrames": 5
+          },
+          "audioProof": {
+            "duration": 0.1,
+            "currentTime": 0.1,
+            "ended": true,
+            "paused": true
+          },
+          "browserRangeRequests": [
+            {
+              "url": "http://127.0.0.1:3000/api/v1/assets/bc40b0bf-eb07-4802-9ad1-34a48ff0bb2b/content",
+              "method": "GET",
+              "range": "bytes=0-",
+              "ifRange": null
+            },
+            {
+              "url": "http://127.0.0.1:3000/api/v1/assets/ab08c3b6-48a0-4c70-9fe9-bbf9bbe95a9b/content",
+              "method": "GET",
+              "range": "bytes=0-",
+              "ifRange": null
+            },
+            {
+              "url": "http://127.0.0.1:3000/api/v1/assets/cab57bf1-5450-46b3-a0aa-87873c6c3557/content",
+              "method": "GET",
+              "range": null,
+              "ifRange": null
+            },
+            {
+              "url": "http://127.0.0.1:3000/api/v1/assets/cab57bf1-5450-46b3-a0aa-87873c6c3557/content",
+              "method": "GET",
+              "range": null,
+              "ifRange": null
+            },
+            {
+              "url": "http://127.0.0.1:3000/api/v1/assets/d81cefb0-4e9b-4390-8f2c-f893e48d730a/content",
+              "method": "GET",
+              "range": "bytes=0-",
+              "ifRange": null
+            },
+            {
+              "url": "http://127.0.0.1:3000/api/v1/assets/515c226c-c9f2-473b-ab3b-f365f9a7183b/content",
+              "method": "GET",
+              "range": "bytes=0-",
+              "ifRange": null
+            },
+            {
+              "url": "http://127.0.0.1:3000/api/v1/assets/bc40b0bf-eb07-4802-9ad1-34a48ff0bb2b/content",
+              "method": "GET",
+              "range": "bytes=0-",
+              "ifRange": null
+            },
+            {
+              "url": "http://127.0.0.1:3000/api/v1/assets/ab08c3b6-48a0-4c70-9fe9-bbf9bbe95a9b/content",
+              "method": "GET",
+              "range": "bytes=0-",
+              "ifRange": null
+            },
+            {
+              "url": "http://127.0.0.1:3000/api/v1/assets/2af72c77-e6cc-44a6-87c1-adb1e7538ed6/content",
+              "method": "GET",
+              "range": "bytes=0-",
+              "ifRange": null
+            }
+          ]
+        }
+      },
+      {
+        "name": "content-headers",
+        "status": "passed",
+        "ms": 22,
+        "detail": {
+          "video": {
+            "sha": "6cbb357d0c5429c415430d0596dfc04417b9fa967eeb34e55186b0a3a9f590e3",
+            "bytes": 1552,
+            "head": 200,
+            "range": 200
+          },
+          "audio": {
+            "sha": "c726d333dd159a31423f3480dbb1c5c4a9dfcd30efe1f7e12ade390dc92e8908",
+            "bytes": 1644,
+            "head": 200,
+            "range": 200
+          },
+          "browserRangeRequests": [
+            {
+              "url": "http://127.0.0.1:3000/api/v1/assets/bc40b0bf-eb07-4802-9ad1-34a48ff0bb2b/content",
+              "method": "GET",
+              "range": "bytes=0-",
+              "ifRange": null
+            },
+            {
+              "url": "http://127.0.0.1:3000/api/v1/assets/ab08c3b6-48a0-4c70-9fe9-bbf9bbe95a9b/content",
+              "method": "GET",
+              "range": "bytes=0-",
+              "ifRange": null
+            },
+            {
+              "url": "http://127.0.0.1:3000/api/v1/assets/cab57bf1-5450-46b3-a0aa-87873c6c3557/content",
+              "method": "GET",
+              "range": null,
+              "ifRange": null
+            },
+            {
+              "url": "http://127.0.0.1:3000/api/v1/assets/cab57bf1-5450-46b3-a0aa-87873c6c3557/content",
+              "method": "GET",
+              "range": null,
+              "ifRange": null
+            },
+            {
+              "url": "http://127.0.0.1:3000/api/v1/assets/d81cefb0-4e9b-4390-8f2c-f893e48d730a/content",
+              "method": "GET",
+              "range": "bytes=0-",
+              "ifRange": null
+            },
+            {
+              "url": "http://127.0.0.1:3000/api/v1/assets/515c226c-c9f2-473b-ab3b-f365f9a7183b/content",
+              "method": "GET",
+              "range": "bytes=0-",
+              "ifRange": null
+            },
+            {
+              "url": "http://127.0.0.1:3000/api/v1/assets/bc40b0bf-eb07-4802-9ad1-34a48ff0bb2b/content",
+              "method": "GET",
+              "range": "bytes=0-",
+              "ifRange": null
+            },
+            {
+              "url": "http://127.0.0.1:3000/api/v1/assets/ab08c3b6-48a0-4c70-9fe9-bbf9bbe95a9b/content",
+              "method": "GET",
+              "range": "bytes=0-",
+              "ifRange": null
+            },
+            {
+              "url": "http://127.0.0.1:3000/api/v1/assets/2af72c77-e6cc-44a6-87c1-adb1e7538ed6/content",
+              "method": "GET",
+              "range": "bytes=0-",
+              "ifRange": null
+            }
+          ]
+        }
+      },
+      {
+        "name": "png-draft-viewport",
+        "status": "passed",
+        "ms": 2727,
+        "detail": {
+          "draft": "unsaved-draft-m3-av-e2e",
+          "overflow": {
+            "documentOverflow": 0,
+            "bodyOverflow": 0,
+            "hashes": [
+              {
+                "length": 64,
+                "overflow": 0
+              },
+              {
+                "length": 64,
+                "overflow": 0
+              }
+            ]
+          },
+          "decoded": {
+            "naturalWidth": 1,
+            "naturalHeight": 1
+          },
+          "imageJobId": "df9f1fed-54b9-494b-af04-a1bdeeec4557"
+        }
+      },
+      {
+        "name": "idempotency-retry",
+        "status": "passed",
+        "ms": 2064,
+        "detail": {
+          "originalJobId": "f9ac17c4-611d-47b8-ab6d-c4f864e9cbd6",
+          "newJobId": "9100dc6f-4b2a-4ac8-a21d-a74a5ea7bdad"
+        }
+      },
+      {
+        "name": "revision-history",
+        "status": "passed",
+        "ms": 2658,
+        "detail": {
+          "previousRevisionId": "3333e100-4013-4a6e-b520-166728f9b273",
+          "currentRevisionId": "964d3ca5-b446-496e-95ad-83cbfdff5b85",
+          "currentAssetId": "2af72c77-e6cc-44a6-87c1-adb1e7538ed6"
+        }
+      },
+      {
+        "name": "gates",
+        "status": "passed",
+        "ms": 3767,
+        "detail": {
+          "old": "REVIEW_REQUIRED",
+          "draft": "REVIEW_REQUIRED",
+          "promptGate": "VALIDATION_ERROR",
+          "dialogueGate": "VALIDATION_ERROR",
+          "wrong": "NOT_FOUND",
+          "disabled": "CONFIGURATION_ERROR",
+          "production": "CONFIGURATION_ERROR"
+        }
+      },
+      {
+        "name": "mock-boundary",
+        "status": "passed",
+        "ms": 8,
+        "detail": {
+          "minio": 0,
+          "files": 6
+        }
+      },
+      {
+        "name": "recovery-disk",
+        "status": "passed",
+        "ms": 61221,
+        "detail": {
+          "jobId": "414e1d49-80b3-4224-b7e5-1d65b9e34f7f",
+          "errorCode": "MOCK_AV_OUTPUT_INVALID",
+          "requestId": "mock-media|sync|video.generate|414e1d49-80b3-4224-b7e5-1d65b9e34f7f:1"
+        }
+      },
+      {
+        "name": "recovery-flag",
+        "status": "passed",
+        "ms": 63433,
+        "detail": {
+          "failedJobId": "243bf290-e0e5-4968-907d-7b7a673e819e",
+          "requestId": "mock-media|sync|video.generate|243bf290-e0e5-4968-907d-7b7a673e819e:1",
+          "attemptNo": 1,
+          "imageJobId": "1b9c8da8-cc0b-473e-9cfc-ab06ac0eefd6",
+          "minio": 0
+        }
+      }
+    ],
+    "notRun": [
+      "成本冲突",
+      "全部暂时故障与取消竞争",
+      "隐藏标签页",
+      "Windows 与其余未在本轮触发的 Compose 故障组合",
+      "既有 integration 套件（那些套件会 DROP SCHEMA，不能代替本闭环）",
+      "新 Migration、DROP SCHEMA、全库重置、main、force push、PR、merge、应用 pack、部署、付费 Provider、ComfyUI、真实模型"
+    ],
+    "composeDown": {
+      "code": 0,
+      "stderr": "ing\n Container m3av-36809119919-1-minio-init-1  Stopping\n Container m3av-36809119919-1-minio-init-1  Stopped\n Container m3av-36809119919-1-minio-init-1  Removing\n Container m3av-36809119919-1-minio-init-1  Removed\n Container m3av-36809119919-1-minio-1  Stopping\n Container m3av-36809119919-1-postgres-1  Stopped\n Container m3av-36809119919-1-postgres-1  Removing\n Container m3av-36809119919-1-postgres-1  Removed\n Container m3av-36809119919-1-minio-1  Stopped\n Container m3av-36809119919-1-minio-1  Removing\n Container m3av-36809119919-1-minio-1  Removed\n Container m3av-36809119919-1-redis-1  Stopped\n Container m3av-36809119919-1-redis-1  Removing\n Container m3av-36809119919-1-redis-1  Removed\n Volume m3av-36809119919-1_ai-drama-minio  Removing\n Volume m3av-36809119919-1_ai-drama-postgres  Removing\n Network m3av-36809119919-1_default  Removing\n Network m3av-36809119919-1_default  Removed\n Volume m3av-36809119919-1_ai-drama-postgres  Removed\n Volume m3av-36809119919-1_ai-drama-minio  Removed\n"
+    },
+    "cleanupError": null,
+    "migration": "Existing repository migrations only, applied after current_database, current_user, loopback URL, and public table count 0 were verified on this run's new database. No new migration and no DROP SCHEMA.",
+    "fatal": null
+  }
+}

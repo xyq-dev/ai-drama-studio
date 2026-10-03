@@ -1,0 +1,29 @@
+Offline fixed fixtures for M4 sample video. CI probes these committed bytes and does not regenerate them.
+
+tool: ffmpeg N-116507-gbcf08c1171-20240801
+libx264: enabled in that build; encoded stream reports Lavc61.11.100 libx264
+muxer: Lavf61.5.101
+fontfile: C:\Windows\Fonts\arial.ttf
+font: Arial, used only for the labels MOCK A / MOCK B and a changing pts clock
+pixels: lavfi color, no photographed people, no commercial stock, no model output
+
+sample-15s-a-v1.mp4
+color: 0x1A4FBF
+label: MOCK A plus frame number and pts
+bytes: 28643
+sha256: 4f46bf904a42c7d3acd0cda9d37ccaa2de71dda095a6f91a83c211d5d48f04e7
+
+sample-15s-b-v1.mp4
+color: 0xC45A12
+label: MOCK B plus frame number and pts
+bytes: 28392
+sha256: 21f1c5ac372b71337e2a615e3994fdbf812aa79b7a7dc0a88c6de13401e8e60f
+
+shared probe:
+180x320, h264, yuv420p, constrained baseline, 5/1 fps, 75 frames, duration 15.000000, no audio stream
+
+command shape, font path escaped for the Windows lavfi drawtext filter:
+ffmpeg -y -f lavfi -i color=c=0x1A4FBF:s=180x320:r=5:d=15 -vf "drawtext=fontfile='C\:/Windows/Fonts/arial.ttf':text='MOCK A %{n}':fontsize=28:fontcolor=white:x=8:y=48,drawtext=fontfile='C\:/Windows/Fonts/arial.ttf':text='%{pts\:hms}':fontsize=22:fontcolor=white:x=8:y=96" -frames:v 75 -c:v libx264 -profile:v baseline -level:v 3.0 -pix_fmt yuv420p -movflags +faststart -an sample-15s-a-v1.mp4
+ffmpeg -y -f lavfi -i color=c=0xC45A12:s=180x320:r=5:d=15 -vf "drawtext=fontfile='C\:/Windows/Fonts/arial.ttf':text='MOCK B %{n}':fontsize=28:fontcolor=white:x=8:y=48,drawtext=fontfile='C\:/Windows/Fonts/arial.ttf':text='%{pts\:hms}':fontsize=22:fontcolor=white:x=8:y=96" -frames:v 75 -c:v libx264 -profile:v baseline -level:v 3.0 -pix_fmt yuv420p -movflags +faststart -an sample-15s-b-v1.mp4
+
+local full decode of both files with ffmpeg -f null completed without error before commit.

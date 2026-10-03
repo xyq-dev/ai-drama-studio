@@ -164,3 +164,22 @@ export interface TextGenerationAdapter {
   readonly replayPolicy: "REPLAY_SAFE_SYNC";
   generate(request: TextGenerationRequest, context: TextAdapterContext): Promise<TextAdapterResult>;
 }
+
+export {
+  SAMPLE_VIDEO_DESCRIPTIONS,
+  SAMPLE_VIDEO_FIXTURE_IDS,
+  SAMPLE_VIDEO_SCHEMA,
+  formatSampleVideoRequestId,
+  frozenSampleFields,
+  isSampleVideoFixtureId,
+  isSampleVideoSnapshot,
+  looksLikeSampleVideoRequestId,
+  parseSampleVideoRequestId,
+  sampleVideoDescription,
+  sampleVideoGenerationEnabled,
+  sampleVideoRequestIdFromSnapshot,
+  type FrozenSampleVideoFields,
+  type ParsedSampleVideoRequest,
+  type SampleVideoDescription,
+  type SampleVideoFixtureId,
+} from "./sample-video";

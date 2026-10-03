@@ -8,6 +8,18 @@ const workerEnvSchema = z.object({
   REDIS_URL: z.string().min(1),
   HEALTH_CHECK_TIMEOUT_MS: z.coerce.number().int().min(100).max(10_000).default(2000),
   MOCK_OBJECT_DIR: z.string().min(1).optional(),
+  M3_MOCK_IMAGE_ENABLED: z.enum(["true", "false"]).default("false"),
+  M3_MOCK_AV_ENABLED: z.enum(["true", "false"]).default("false"),
+  M4_MOCK_SAMPLE_VIDEO_ENABLED: z.enum(["true", "false"]).default("false"),
+  M3_MOCK_SUBTITLE_MUSIC_ENABLED: z.enum(["true", "false"]).default("false"),
+  M4_LOCAL_COMPOSE_ENABLED: z.enum(["true", "false"]).default("false"),
+  M4_LOCAL_EPISODE_COMPOSE_ENABLED: z.enum(["true", "false"]).default("false"),
+  M4_COMPOSE_WORK_DIR: z.string().min(1).optional(),
+  M4_COMPOSE_OBJECT_DIR: z.string().min(1).optional(),
+  M4_COMPOSE_PYTHON: z.string().min(1).default("python3"),
+  M4_COMPOSE_HOLD_BEFORE_COMMIT_MS: z.coerce.number().int().min(0).max(120_000).default(0),
+  M4_COMPOSE_LEASE_MS: z.coerce.number().int().min(1000).max(30_000).default(30_000),
+  M4_COMPOSE_FAIL_INSIDE_COMMIT: z.enum(["true", "false"]).default("false"),
 });
 
 export class EnvValidationError extends Error {
@@ -28,6 +40,18 @@ export interface WorkerEnv {
   REDIS_URL: string;
   HEALTH_CHECK_TIMEOUT_MS: number;
   MOCK_OBJECT_DIR?: string;
+  M3_MOCK_IMAGE_ENABLED: boolean;
+  M3_MOCK_AV_ENABLED: boolean;
+  M4_MOCK_SAMPLE_VIDEO_ENABLED: boolean;
+  M3_MOCK_SUBTITLE_MUSIC_ENABLED: boolean;
+  M4_LOCAL_COMPOSE_ENABLED: boolean;
+  M4_LOCAL_EPISODE_COMPOSE_ENABLED: boolean;
+  M4_COMPOSE_WORK_DIR?: string;
+  M4_COMPOSE_OBJECT_DIR?: string;
+  M4_COMPOSE_PYTHON: string;
+  M4_COMPOSE_HOLD_BEFORE_COMMIT_MS: number;
+  M4_COMPOSE_LEASE_MS: number;
+  M4_COMPOSE_FAIL_INSIDE_COMMIT: boolean;
 }
 
 const WORKER_KEYS = [
@@ -38,6 +62,18 @@ const WORKER_KEYS = [
   "REDIS_URL",
   "HEALTH_CHECK_TIMEOUT_MS",
   "MOCK_OBJECT_DIR",
+  "M3_MOCK_IMAGE_ENABLED",
+  "M3_MOCK_AV_ENABLED",
+  "M4_MOCK_SAMPLE_VIDEO_ENABLED",
+  "M3_MOCK_SUBTITLE_MUSIC_ENABLED",
+  "M4_LOCAL_COMPOSE_ENABLED",
+  "M4_LOCAL_EPISODE_COMPOSE_ENABLED",
+  "M4_COMPOSE_WORK_DIR",
+  "M4_COMPOSE_OBJECT_DIR",
+  "M4_COMPOSE_PYTHON",
+  "M4_COMPOSE_HOLD_BEFORE_COMMIT_MS",
+  "M4_COMPOSE_LEASE_MS",
+  "M4_COMPOSE_FAIL_INSIDE_COMMIT",
 ] as const;
 
 function assertProtocol(field: string, value: string, protocols: readonly string[]): void {
@@ -71,5 +107,14 @@ export function loadWorkerEnv(
   }
   assertProtocol("DATABASE_URL", parsed.data.DATABASE_URL, ["postgresql:", "postgres:"]);
   assertProtocol("REDIS_URL", parsed.data.REDIS_URL, ["redis:", "rediss:"]);
-  return parsed.data;
+  return {
+    ...parsed.data,
+    M3_MOCK_IMAGE_ENABLED: parsed.data.M3_MOCK_IMAGE_ENABLED === "true",
+    M3_MOCK_AV_ENABLED: parsed.data.M3_MOCK_AV_ENABLED === "true",
+    M4_MOCK_SAMPLE_VIDEO_ENABLED: parsed.data.M4_MOCK_SAMPLE_VIDEO_ENABLED === "true",
+    M3_MOCK_SUBTITLE_MUSIC_ENABLED: parsed.data.M3_MOCK_SUBTITLE_MUSIC_ENABLED === "true",
+    M4_LOCAL_COMPOSE_ENABLED: parsed.data.M4_LOCAL_COMPOSE_ENABLED === "true",
+    M4_LOCAL_EPISODE_COMPOSE_ENABLED: parsed.data.M4_LOCAL_EPISODE_COMPOSE_ENABLED === "true",
+    M4_COMPOSE_FAIL_INSIDE_COMMIT: parsed.data.M4_COMPOSE_FAIL_INSIDE_COMMIT === "true",
+  };
 }

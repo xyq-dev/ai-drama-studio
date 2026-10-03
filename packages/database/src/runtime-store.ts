@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import type { PoolClient, QueryResultRow } from "pg";
 import type { DatabasePool } from "./job-service";
 import { PersistenceError } from "./job-service";
+import { MOCK_MEDIA_JOB_KINDS } from "./mock-media-kinds";
+import { readProjectCostSummary as queryProjectCostSummary } from "./project-cost-summary";
 
 export interface OutboxDispatchRow {
   id: string;
@@ -34,10 +36,11 @@ export interface ExecutionContext {
   providerRequestId: string | null;
 }
 
-export interface MockImageExecution {
+export interface MockMediaExecution {
   workspaceId: string;
   jobId: string;
   projectId: string;
+  kind: string;
   shotRevisionId: string | null;
   providerConfigurationId: string | null;
   inputHash: string;
@@ -45,6 +48,8 @@ export interface MockImageExecution {
   state: string;
   cancelRequested: boolean;
 }
+
+export type MockImageExecution = MockMediaExecution;
 
 export interface ProjectRecord {
   id: string;
@@ -71,6 +76,7 @@ export interface JobView {
   attemptId: string | null;
   attemptNo: number | null;
   providerRequestId: string | null;
+  sourceShotRevisionId: string | null;
 }
 
 export interface WorkflowView {
@@ -211,6 +217,10 @@ export class RuntimeStore {
     }
   }
 
+  readProjectCostSummary(workspaceId: string, projectId: string) {
+    return queryProjectCostSummary(this.pool, workspaceId, projectId);
+  }
+
   async listUndispatched(limit: number, now = new Date()): Promise<OutboxDispatchRow[]> {
     return this.queryOutbox(
       `SELECT id, workspace_id, job_id, dispatch_seq
@@ -281,7 +291,8 @@ export class RuntimeStore {
               ORDER BY attempt_no DESC
               LIMIT 1
            ) ja ON true
-          WHERE j.state = 'WAITING_EXTERNAL' AND j.kind <> 'MEDIA_IMAGE'
+          WHERE j.state = 'WAITING_EXTERNAL'
+            AND j.kind <> ALL(ARRAY['MEDIA_IMAGE','MEDIA_VIDEO','MEDIA_TTS','MEDIA_SUBTITLE','MEDIA_MUSIC'])
             AND ja.provider_request_id IS NOT NULL
             AND (j.next_run_at IS NULL OR j.next_run_at <= now())
           ORDER BY j.updated_at
@@ -308,7 +319,8 @@ export class RuntimeStore {
               ORDER BY attempt_no DESC
               LIMIT 1
            ) ja ON true
-          WHERE j.state = 'RUNNING' AND j.kind <> 'MEDIA_IMAGE'
+          WHERE j.state = 'RUNNING'
+            AND j.kind <> ALL(ARRAY['MEDIA_IMAGE','MEDIA_VIDEO','MEDIA_TTS','MEDIA_SUBTITLE','MEDIA_MUSIC'])
             AND j.lease_until IS NOT NULL AND j.lease_until <= $1
           ORDER BY j.lease_until
           LIMIT $2`,
@@ -320,7 +332,7 @@ export class RuntimeStore {
     }
   }
 
-  async listExpiredMockImages(limit: number, now = new Date()): Promise<ExpiredLeaseRow[]> {
+  async listExpiredMockMedia(limit: number, now = new Date()): Promise<ExpiredLeaseRow[]> {
     const client = await this.pool.connect();
     try {
       const result = await client.query<QueryResultRow>(
@@ -331,10 +343,10 @@ export class RuntimeStore {
              SELECT id, provider_configuration_id, provider_request_id FROM job_attempt
               WHERE generation_job_id = j.id ORDER BY attempt_no DESC LIMIT 1
            ) ja ON true
-          WHERE j.kind = 'MEDIA_IMAGE' AND j.state = 'RUNNING'
+          WHERE j.kind = ANY($3::text[]) AND j.state = 'RUNNING'
             AND j.lease_until IS NOT NULL AND j.lease_until <= $1
           ORDER BY j.lease_until LIMIT $2`,
-        [now, limit],
+        [now, limit, MOCK_MEDIA_JOB_KINDS],
       );
       return result.rows.map(mapLease);
     } finally {
@@ -342,23 +354,77 @@ export class RuntimeStore {
     }
   }
 
-  async loadMockImageExecution(workspaceId: string, jobId: string): Promise<MockImageExecution | null> {
+  async loadComposeJob(workspaceId: string, jobId: string): Promise<{
+    projectId: string;
+    shotRevisionId: string | null;
+    state: string;
+    dispatchSeq: number;
+    inputHash: string;
+    inputSnapshot: unknown;
+    cancelRequested: boolean;
+  } | null> {
     const client = await this.pool.connect();
     try {
       const result = await client.query<QueryResultRow>(
-        `SELECT j.id, j.workspace_id, j.project_id, j.source_shot_revision_id,
-                j.input_hash, j.input_snapshot, j.state, j.cancel_requested_at,
-                pc.id AS provider_configuration_id
-           FROM generation_job j
-           LEFT JOIN provider_configuration pc ON pc.workspace_id = j.workspace_id
-             AND pc.provider_key = 'mock-media' AND pc.capability = 'image.generate' AND pc.enabled
-          WHERE j.id = $1 AND j.workspace_id = $2 AND j.kind = 'MEDIA_IMAGE'`,
+        `SELECT project_id, source_shot_revision_id, state, dispatch_seq, input_hash, input_snapshot, cancel_requested_at
+           FROM generation_job WHERE id = $1 AND workspace_id = $2 AND kind = 'MEDIA_COMPOSE'`,
         [jobId, workspaceId],
       );
       const row = result.rows[0];
       if (!row) return null;
       return {
+        projectId: String(row.project_id),
+        shotRevisionId: row.source_shot_revision_id === null ? null : String(row.source_shot_revision_id),
+        state: String(row.state),
+        dispatchSeq: Number(row.dispatch_seq),
+        inputHash: String(row.input_hash),
+        inputSnapshot: row.input_snapshot,
+        cancelRequested: row.cancel_requested_at !== null,
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  async readJobKind(workspaceId: string, jobId: string): Promise<string | null> {
+    const client = await this.pool.connect();
+    try {
+      const result = await client.query<QueryResultRow>(
+        "SELECT kind FROM generation_job WHERE id = $1 AND workspace_id = $2",
+        [jobId, workspaceId],
+      );
+      return result.rows[0] ? String(result.rows[0].kind) : null;
+    } finally {
+      client.release();
+    }
+  }
+
+  async loadMockMediaExecution(workspaceId: string, jobId: string): Promise<MockMediaExecution | null> {
+    const client = await this.pool.connect();
+    try {
+      const result = await client.query<QueryResultRow>(
+        `SELECT j.id, j.workspace_id, j.project_id, j.kind, j.source_shot_revision_id,
+                j.input_hash, j.input_snapshot, j.state, j.cancel_requested_at,
+                pc.id AS provider_configuration_id
+           FROM generation_job j
+           LEFT JOIN provider_configuration pc ON pc.workspace_id = j.workspace_id
+             AND pc.provider_key = 'mock-media' AND pc.enabled
+             AND pc.capability = CASE j.kind
+               WHEN 'MEDIA_IMAGE' THEN 'image.generate'
+               WHEN 'MEDIA_VIDEO' THEN 'video.generate'
+               WHEN 'MEDIA_TTS' THEN 'audio.tts'
+               WHEN 'MEDIA_SUBTITLE' THEN 'subtitle.generate'
+               WHEN 'MEDIA_MUSIC' THEN 'audio.music'
+               ELSE NULL
+             END
+          WHERE j.id = $1 AND j.workspace_id = $2 AND j.kind = ANY($3::text[])`,
+        [jobId, workspaceId, MOCK_MEDIA_JOB_KINDS],
+      );
+      const row = result.rows[0];
+      if (!row) return null;
+      return {
         workspaceId: String(row.workspace_id), jobId: String(row.id), projectId: String(row.project_id),
+        kind: String(row.kind),
         shotRevisionId: row.source_shot_revision_id === null ? null : String(row.source_shot_revision_id),
         providerConfigurationId: row.provider_configuration_id === null ? null : String(row.provider_configuration_id),
         inputHash: String(row.input_hash), inputSnapshot: row.input_snapshot,
@@ -575,7 +641,7 @@ export class RuntimeStore {
 }
 
 const JOB_COLUMNS = `j.id, j.workspace_id, j.project_id, j.workflow_run_id, j.kind, j.state,
-  j.dispatch_seq, j.retry_count, j.error_code, j.error_message,
+  j.dispatch_seq, j.retry_count, j.error_code, j.error_message, j.source_shot_revision_id,
   ja.id AS attempt_id, ja.attempt_no, ja.provider_request_id`;
 
 export async function insertProject(
@@ -632,6 +698,7 @@ function mapJob(row: QueryResultRow): JobView {
     attemptId: row.attempt_id ? String(row.attempt_id) : null,
     attemptNo: row.attempt_no === null || row.attempt_no === undefined ? null : Number(row.attempt_no),
     providerRequestId: row.provider_request_id ? String(row.provider_request_id) : null,
+    sourceShotRevisionId: row.source_shot_revision_id == null ? null : String(row.source_shot_revision_id),
   };
 }
 

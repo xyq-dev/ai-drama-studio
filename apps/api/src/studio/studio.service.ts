@@ -1,10 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
+import { SAMPLE_VIDEO_FIXTURE_IDS, SAMPLE_VIDEO_SCHEMA, sampleVideoDescription, type SampleVideoFixtureId } from "@ai-drama/contracts";
+import { DomainError, parseComposePreflightRequest, parseComposeRenderRequest, parseComposeReviewRequest, parseEpisodeComposePreflightRequest, parseEpisodeComposeRenderRequest } from "@ai-drama/domain";
 import {
   JobPersistenceService,
   MediaAssetStore,
   MockTextService,
   PersistenceError,
   RuntimeStore,
+  isMockMediaJobKind,
   TextChainService,
   insertProject,
   requestHash,
@@ -14,6 +17,11 @@ import {
   type TextEntityKind,
 } from "@ai-drama/database";
 import { z } from "zod";
+import { assertReadableMockAv, readBoundedMockAv } from "./mock-av-content";
+import { readBoundedMockSm } from "./mock-sm-content";
+import { assertReadableMockImage, readBoundedMockPng } from "./mock-image-content";
+import { readCompositeContent, readVerifiedCompositeBytes } from "./compose-content";
+import { episodeExportBody, exportIdentity, holdEpisodeExportLatch, parseExpectedContentHash } from "./episode-export";
 
 const projectBodySchema = z.object({
   title: z.string().min(1).max(200),
@@ -73,6 +81,9 @@ const shotBodySchema = z.object({
 });
 
 const generateImageBodySchema = z.object({ seed: z.string().max(200).optional() }).strict();
+const generateVideoBodySchema = generateImageBodySchema.extend({
+  fixtureId: z.enum(SAMPLE_VIDEO_FIXTURE_IDS).optional(),
+}).strict();
 
 const textEntityBodySchema = z.object({
   projectId: z.string().uuid().optional(),
@@ -96,6 +107,13 @@ export class StudioService {
     private readonly mockText?: MockTextService,
     private readonly mediaAssets?: MediaAssetStore,
     private readonly mockImageEnabled = false,
+    private readonly mockObjectDir: string | null = null,
+    private readonly mockAvEnabled = false,
+    private readonly mockSmEnabled = false,
+    private readonly localComposeEnabled = false,
+    private readonly composeObjectDir: string | null = null,
+    private readonly episodeComposeEnabled = false,
+    private readonly mockSampleVideoEnabled = false,
   ) {}
 
   get workspace(): string {
@@ -115,6 +133,10 @@ export class StudioService {
 
   async getProject(projectId: string) {
     return this.store.getProject(this.workspaceId, projectId);
+  }
+
+  getProjectCostSummary(projectId: string) {
+    return this.store.readProjectCostSummary(this.workspaceId, projectId);
   }
 
   async createStoryRevision(
@@ -613,10 +635,256 @@ export class StudioService {
     );
   }
 
+  async generateShotVideo(shotRevisionId: string, body: unknown, context: StudioContext) {
+    return this.queueMockAv(shotRevisionId, body, context, "MEDIA_VIDEO");
+  }
+
+  async generateShotTts(shotRevisionId: string, body: unknown, context: StudioContext) {
+    return this.queueMockAv(shotRevisionId, body, context, "MEDIA_TTS");
+  }
+
+  async generateShotSubtitle(shotRevisionId: string, body: unknown, context: StudioContext) {
+    return this.queueMockSm(shotRevisionId, body, context, "MEDIA_SUBTITLE");
+  }
+
+  async generateShotMusic(shotRevisionId: string, body: unknown, context: StudioContext) {
+    return this.queueMockSm(shotRevisionId, body, context, "MEDIA_MUSIC");
+  }
+
   async listShotAssets(shotRevisionId: string) {
     if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
     const { projectId } = await this.mediaAssets.requireShotScope(this.workspaceId, shotRevisionId);
     return { items: await this.mediaAssets.listShotAssets(this.workspaceId, projectId, shotRevisionId) };
+  }
+
+  async preflightShotCompose(shotRevisionId: string, body: unknown) {
+    let selection;
+    try {
+      selection = parseComposePreflightRequest(rejectClientWorkspace(body));
+    } catch (error) {
+      if (error instanceof DomainError) throw new PersistenceError(error.code, error.message);
+      throw error;
+    }
+    if (!this.mockAvEnabled) {
+      throw new PersistenceError("CONFIGURATION_ERROR", "Mock video and speech content is not enabled");
+    }
+    if ((selection.subtitleAssetId || selection.musicAssetId) && !this.mockSmEnabled) {
+      throw new PersistenceError("CONFIGURATION_ERROR", "Mock subtitle and music content is not enabled");
+    }
+    if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
+    return {
+      status: 200,
+      body: await this.mediaAssets.preflightCompose(this.workspaceId, shotRevisionId, selection),
+    };
+  }
+
+  async listEpisodeComposeCandidates(projectId: string, episodeId: string, cursor?: string, limit?: string) {
+    if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
+    return this.mediaAssets.listEpisodeComposeCandidates(
+      this.workspaceId, projectId, episodeId, cursor, parsePageLimit(limit),
+    );
+  }
+
+  async preflightEpisodeCompose(projectId: string, episodeId: string, body: unknown) {
+    let request;
+    try {
+      request = parseEpisodeComposePreflightRequest(rejectClientWorkspace(body));
+    } catch (error) {
+      if (error instanceof DomainError) throw new PersistenceError(error.code, error.message);
+      throw error;
+    }
+    if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
+    return {
+      status: 200,
+      body: await this.mediaAssets.preflightEpisodeCompose(
+        this.workspaceId, projectId, episodeId, request.compositeAssetIds,
+      ),
+    };
+  }
+
+  async listEpisodeComposites(projectId: string, episodeId: string, cursor?: string, limit?: string) {
+    if (!this.episodeComposeEnabled) {
+      throw new PersistenceError("CONFIGURATION_ERROR", "Episode compose is not enabled");
+    }
+    if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
+    return this.mediaAssets.listEpisodeComposites(this.workspaceId, projectId, episodeId, cursor, parsePageLimit(limit));
+  }
+
+  async composeEpisode(projectId: string, episodeId: string, body: unknown, context: StudioContext) {
+    if (!this.episodeComposeEnabled) {
+      throw new PersistenceError("CONFIGURATION_ERROR", "Episode compose is not enabled");
+    }
+    let request;
+    try {
+      request = parseEpisodeComposeRenderRequest(rejectClientWorkspace(body));
+    } catch (error) {
+      if (error instanceof DomainError) throw new PersistenceError(error.code, error.message);
+      throw error;
+    }
+    if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
+    return this.jobs.createAndQueueWorkflowJob(
+      this.scope(context, "POST", `/projects/${projectId}/episodes/${episodeId}/compose`, request),
+      async (client) => {
+        const frozen = await this.mediaAssets!.freezeEpisodeComposeInput(client, this.workspaceId, projectId, episodeId, request);
+        return {
+          workspaceId: this.workspaceId,
+          projectId,
+          type: "MEDIA_COMPOSE",
+          requestedBy: context.actorId,
+          kind: "MEDIA_COMPOSE",
+          inputHash: frozen.inputHash,
+          inputSnapshot: frozen.snapshot,
+          traceId: context.traceId,
+        };
+      },
+    );
+  }
+
+  async composeShot(shotRevisionId: string, body: unknown, context: StudioContext) {
+    if (!this.localComposeEnabled || !this.mockAvEnabled) {
+      throw new PersistenceError("CONFIGURATION_ERROR", "Local compose is not enabled");
+    }
+    let request;
+    try {
+      request = parseComposeRenderRequest(rejectClientWorkspace(body));
+    } catch (error) {
+      if (error instanceof DomainError) throw new PersistenceError(error.code, error.message);
+      throw error;
+    }
+    if ((request.subtitleAssetId || request.musicAssetId) && !this.mockSmEnabled) {
+      throw new PersistenceError("CONFIGURATION_ERROR", "Mock subtitle and music content is not enabled");
+    }
+    if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
+    return this.jobs.createAndQueueWorkflowJob(
+      this.scope(context, "POST", `/shot-revisions/${shotRevisionId}/compose`, request),
+      async (client) => {
+        const frozen = await this.mediaAssets!.freezeComposeInput(client, this.workspaceId, shotRevisionId, request);
+        return {
+          workspaceId: this.workspaceId,
+          projectId: frozen.projectId,
+          sourceShotRevisionId: shotRevisionId,
+          type: "MEDIA_COMPOSE",
+          requestedBy: context.actorId,
+          kind: "MEDIA_COMPOSE",
+          inputHash: frozen.inputHash,
+          inputSnapshot: frozen.snapshot,
+          traceId: context.traceId,
+        };
+      },
+    );
+  }
+
+  async reviewComposite(assetId: string, body: unknown, ifMatch: string | undefined, context: StudioContext) {
+    if (!this.localComposeEnabled && !this.episodeComposeEnabled) {
+      throw new PersistenceError("CONFIGURATION_ERROR", "Local compose review is not enabled");
+    }
+    let request;
+    try {
+      request = parseComposeReviewRequest(rejectClientWorkspace(body));
+    } catch (error) {
+      if (error instanceof DomainError) throw new PersistenceError(error.code, error.message);
+      throw error;
+    }
+    const expectedRowVersion = parseAggregateVersion(ifMatch);
+    if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
+    return this.jobs.runIdempotent(
+      this.scope(context, "POST", `/assets/${assetId}/review`, { ...request, expectedRowVersion }),
+      200,
+      (client) => this.mediaAssets!.reviewComposite(client, {
+        workspaceId: this.workspaceId,
+        assetId,
+        expectedRowVersion,
+        decision: request.decision,
+        note: request.note,
+        contentHash: request.contentHash,
+        reviewedBy: context.actorId,
+        traceId: context.traceId,
+        shotReviewEnabled: this.localComposeEnabled,
+        episodeReviewEnabled: this.episodeComposeEnabled,
+      }),
+    );
+  }
+
+  async readMockAssetContent(assetId: string): Promise<{ mimeType: string; bytes: Buffer }> {
+    if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
+    const asset = await this.mediaAssets.getWorkspaceAsset(this.workspaceId, assetId);
+    if (asset.kind === "IMAGE") {
+      if (!this.mockObjectDir) throw new PersistenceError("CONFIGURATION_ERROR", "Mock object storage is not configured");
+      if (!this.mockImageEnabled) {
+        throw new PersistenceError("CONFIGURATION_ERROR", "Mock image content is not enabled");
+      }
+      assertReadableMockImage(asset);
+      return {
+        mimeType: "image/png",
+        bytes: await readBoundedMockPng(this.mockObjectDir, asset.objectKey, {
+          byteSize: asset.byteSize,
+          checksumSha256: asset.checksumSha256,
+        }),
+      };
+    }
+    if (asset.kind === "VIDEO" || asset.kind === "AUDIO") {
+      if (!this.mockObjectDir) throw new PersistenceError("CONFIGURATION_ERROR", "Mock object storage is not configured");
+      if (!this.mockAvEnabled) {
+        throw new PersistenceError("CONFIGURATION_ERROR", "Mock video and speech content is not enabled");
+      }
+      assertReadableMockAv(asset);
+      return { mimeType: asset.mimeType, bytes: await readBoundedMockAv(this.mockObjectDir, asset) };
+    }
+    if (asset.kind === "COMPOSITE") {
+      const schema = await this.mediaAssets.compositeOutputSchema(this.workspaceId, assetId);
+      const episodeOutput = schema === "m4.episode.compose.asset.v1";
+      const shotOutput = schema === "m4.shot.compose.asset.v1";
+      if (episodeOutput && !this.episodeComposeEnabled) {
+        throw new PersistenceError("CONFIGURATION_ERROR", "Episode compose content is not enabled");
+      }
+      if (shotOutput && !this.localComposeEnabled) {
+        throw new PersistenceError("CONFIGURATION_ERROR", "Local compose content is not enabled");
+      }
+      if ((!episodeOutput && !shotOutput) || !this.composeObjectDir) {
+        throw new PersistenceError("ASSET_CONTENT_INVALID", "Asset content is not a local composite");
+      }
+      return readCompositeContent(this.composeObjectDir, this.workspaceId, asset);
+    }
+    if (asset.kind === "SUBTITLE" || asset.kind === "MUSIC") {
+      if (!this.mockObjectDir) throw new PersistenceError("CONFIGURATION_ERROR", "Mock object storage is not configured");
+      if (!this.mockSmEnabled) {
+        throw new PersistenceError("CONFIGURATION_ERROR", "Mock subtitle and music content is not enabled");
+      }
+      return { mimeType: asset.mimeType, bytes: await readBoundedMockSm(this.mockObjectDir, asset) };
+    }
+    throw new PersistenceError("ASSET_CONTENT_INVALID", "Asset content is not a stored mock recording");
+  }
+
+  async exportEpisodeComposite(
+    projectId: string,
+    episodeId: string,
+    assetId: string,
+    query: Record<string, unknown>,
+  ): Promise<{ filenameStem: string; bytes: Buffer; manifest: ReturnType<typeof episodeExportBody>["manifest"] }> {
+    if (!this.episodeComposeEnabled || !this.composeObjectDir || !this.mediaAssets) {
+      throw new PersistenceError("CONFIGURATION_ERROR", "Episode compose is not enabled");
+    }
+    const expectedContentHash = parseExpectedContentHash(query);
+    const request = {
+      workspaceId: this.workspaceId,
+      projectId,
+      episodeId,
+      assetId,
+      expectedContentHash,
+    };
+    const first = await this.mediaAssets.inspectEpisodeCompositeExport(request);
+    const bytes = await readVerifiedCompositeBytes(this.composeObjectDir, first);
+    await holdEpisodeExportLatch();
+    const second = await this.mediaAssets.inspectEpisodeCompositeExport(request);
+    if (
+      exportIdentity(first) !== exportIdentity(second)
+      || bytes.length !== second.byteSize
+      || createHash("sha256").update(bytes).digest("hex") !== second.checksumSha256
+    ) {
+      throw new PersistenceError("COMPOSE_INPUT_CHANGED", "Episode export sources changed");
+    }
+    const built = episodeExportBody(second, new Date().toISOString());
+    return { filenameStem: built.filenameStem, bytes, manifest: built.manifest };
   }
 
   async createMockSceneWorkflow(projectId: string, context: StudioContext) {
@@ -670,8 +938,11 @@ export class StudioService {
 
   async retryJob(jobId: string, context: StudioContext) {
     const job = await this.store.getJob(this.workspaceId, jobId);
-    if (job.kind === "MEDIA_IMAGE") {
-      throw new PersistenceError("JOB_NOT_RETRYABLE", "Media image retry is unavailable until shot lineage is preserved");
+    if (job.kind === "MEDIA_COMPOSE") {
+      throw new PersistenceError("JOB_NOT_RETRYABLE", "Compose must be submitted again after a new preflight");
+    }
+    if (isMockMediaJobKind(job.kind)) {
+      throw new PersistenceError("JOB_NOT_RETRYABLE", "Media retry is unavailable; generate again with a new idempotency key");
     }
     const retryable =
       job.state === "CANCELED" ||
@@ -712,6 +983,139 @@ export class StudioService {
       capability: "mock.generate",
       outcomes: ["success", "retryable_failure", "terminal_failure", "cancel", "delayed"],
     };
+  }
+
+  private queueMockAv(
+    shotRevisionId: string,
+    body: unknown,
+    context: StudioContext,
+    kind: "MEDIA_VIDEO" | "MEDIA_TTS",
+  ) {
+    const videoInput = kind === "MEDIA_VIDEO" ? parse(generateVideoBodySchema, rejectClientWorkspace(body)) : null;
+    const input = videoInput ?? parse(generateImageBodySchema, rejectClientWorkspace(body));
+    const fixtureId: SampleVideoFixtureId | undefined = videoInput?.fixtureId;
+    if (fixtureId && !this.mockSampleVideoEnabled) {
+      throw new PersistenceError("CONFIGURATION_ERROR", "Mock sample video is not enabled");
+    }
+    if (!this.mockAvEnabled) {
+      throw new PersistenceError("CONFIGURATION_ERROR", "Mock video and speech worker storage is not enabled");
+    }
+    if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
+    const route = kind === "MEDIA_VIDEO" ? "generate-video" : "generate-tts";
+    const capability = kind === "MEDIA_VIDEO" ? "video.generate" : "audio.tts";
+    return this.jobs.createAndQueueWorkflowJob(
+      this.scope(context, "POST", `/shot-revisions/${shotRevisionId}/${route}`, input),
+      async (client) => {
+        const source = await this.mediaAssets!.prepareShotGenerationInTransaction(
+          client, this.workspaceId, shotRevisionId, capability,
+        );
+        const sourceText = kind === "MEDIA_VIDEO" ? source.promptText.trim() : (source.dialogue ?? "").trim();
+        if (sourceText.length === 0) {
+          throw new PersistenceError(
+            "VALIDATION_ERROR",
+            kind === "MEDIA_VIDEO"
+              ? "Saved prompt text is required before mock video"
+              : "Saved dialogue is required before mock speech",
+          );
+        }
+        const sourceHash = createHash("sha256").update(sourceText).digest("hex");
+        const description = fixtureId ? sampleVideoDescription(fixtureId) : null;
+        const snapshot = description
+          ? {
+            schema: SAMPLE_VIDEO_SCHEMA,
+            fixtureId: description.fixtureId,
+            checksumSha256: description.checksumSha256,
+            byteSize: description.byteSize,
+            width: description.width,
+            height: description.height,
+            frameRate: description.frameRate,
+            frameCount: description.frameCount,
+            durationMs: description.durationMs,
+            hasAudio: false as const,
+            shotRevisionId,
+            seed: input.seed ?? null,
+            outcome: "success",
+            executionMode: "sync",
+            capability,
+            sourceText,
+            sourceHash,
+          }
+          : {
+            schema: kind === "MEDIA_VIDEO" ? "m3.mock.video.v1" : "m3.mock.tts.v1",
+            shotRevisionId,
+            seed: input.seed ?? null,
+            outcome: "success",
+            executionMode: "sync",
+            capability,
+            sourceText,
+            sourceHash,
+          };
+        return {
+          workspaceId: this.workspaceId,
+          projectId: source.projectId,
+          sourceShotRevisionId: shotRevisionId,
+          type: kind,
+          requestedBy: context.actorId,
+          kind,
+          inputHash: createHash("sha256").update(JSON.stringify(snapshot)).digest("hex"),
+          inputSnapshot: snapshot,
+          traceId: context.traceId,
+        };
+      },
+    );
+  }
+
+  private queueMockSm(
+    shotRevisionId: string,
+    body: unknown,
+    context: StudioContext,
+    kind: "MEDIA_SUBTITLE" | "MEDIA_MUSIC",
+  ) {
+    const input = parse(generateImageBodySchema, rejectClientWorkspace(body));
+    if (!this.mockSmEnabled) {
+      throw new PersistenceError("CONFIGURATION_ERROR", "Mock subtitle and music worker storage is not enabled");
+    }
+    if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
+    const route = kind === "MEDIA_SUBTITLE" ? "generate-subtitle" : "generate-music";
+    const capability = kind === "MEDIA_SUBTITLE" ? "subtitle.generate" : "audio.music";
+    return this.jobs.createAndQueueWorkflowJob(
+      this.scope(context, "POST", `/shot-revisions/${shotRevisionId}/${route}`, input),
+      async (client) => {
+        const source = await this.mediaAssets!.prepareShotGenerationInTransaction(
+          client, this.workspaceId, shotRevisionId, capability,
+        );
+        const sourceText = kind === "MEDIA_MUSIC" ? source.promptText.trim() : (source.dialogue ?? "").trim();
+        if (sourceText.length === 0) {
+          throw new PersistenceError(
+            "VALIDATION_ERROR",
+            kind === "MEDIA_MUSIC"
+              ? "Saved prompt text is required before mock music"
+              : "Saved dialogue is required before mock subtitle",
+          );
+        }
+        const snapshot = {
+          schema: kind === "MEDIA_SUBTITLE" ? "m3.mock.subtitle.v1" : "m3.mock.music.v1",
+          shotRevisionId,
+          seed: input.seed ?? null,
+          outcome: "success",
+          executionMode: "sync",
+          capability,
+          sourceText,
+          sourceHash: createHash("sha256").update(sourceText).digest("hex"),
+        };
+        return {
+          workspaceId: this.workspaceId,
+          projectId: source.projectId,
+          sourceShotRevisionId: shotRevisionId,
+          type: kind,
+          requestedBy: context.actorId,
+          kind,
+          inputHash: createHash("sha256").update(JSON.stringify(snapshot)).digest("hex"),
+          inputSnapshot: snapshot,
+          traceId: context.traceId,
+        };
+      },
+    );
   }
 
   private scope(context: StudioContext, method: string, routeKey: string, body: unknown): IdempotencyScope {

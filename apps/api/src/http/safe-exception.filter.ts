@@ -41,7 +41,9 @@ function httpStatus(code: string): number {
     code === "EVENT_CURSOR_EXPIRED" ||
     code === "JOB_TERMINAL" ||
     code === "RUN_TERMINAL" ||
-    code === "JOB_NOT_RETRYABLE"
+    code === "JOB_NOT_RETRYABLE" ||
+    code === "COMPOSE_INPUT_CHANGED" ||
+    code === "COMPOSE_CONTENT_HASH_MISMATCH"
   ) {
     return 409;
   }

@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata = {
   title: "AI Drama Studio",
-  description: "M1-A platform skeleton status",
+  description: "文本创作工作台",
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

@@ -7,8 +7,13 @@ import type { MockImageObjectStore } from "./mock-image-generation";
 export class LocalMockObjects implements MockImageObjectStore {
   constructor(private readonly directory: string) {}
 
-  async put(input: { key: string; bytes: Buffer; mimeType: "image/png"; checksumSha256: string }): Promise<void> {
-    if (!/^mock-images\/[0-9a-f-]+\/[0-9a-f-]+\/[0-9a-f]{64}\.png$/.test(input.key)) {
+  async put(input: {
+    key: string;
+    bytes: Buffer;
+    mimeType: "image/png" | "video/mp4" | "audio/wav" | "text/vtt";
+    checksumSha256: string;
+  }): Promise<void> {
+    if (!allowedMockObject(input.key, input.mimeType)) {
       throw new Error("Invalid Mock object key");
     }
     if (createHash("sha256").update(input.bytes).digest("hex") !== input.checksumSha256) {
@@ -34,9 +39,32 @@ export class LocalMockObjects implements MockImageObjectStore {
       }
       await rename(temporary, path);
       const directoryHandle = await open(dirname(path), "r");
-      try { await directoryHandle.sync(); } finally { await directoryHandle.close(); }
+      try {
+        try {
+          await directoryHandle.sync();
+        } catch (error) {
+          // Non-production Windows NTFS rejects directory fsync with EPERM.
+          // File bytes were already synced before rename. Continuing here does
+          // not make the directory entry durable across power loss and is not
+          // equivalent to a successful directory fsync.
+          if (process.platform !== "win32" || !isDirectorySyncEperm(error)) throw error;
+        }
+      } finally {
+        await directoryHandle.close();
+      }
     } finally {
       await rm(temporary, { force: true });
     }
   }
+}
+
+function allowedMockObject(key: string, mimeType: "image/png" | "video/mp4" | "audio/wav" | "text/vtt"): boolean {
+  if (mimeType === "image/png") return /^mock-images\/[0-9a-f-]+\/[0-9a-f-]+\/[0-9a-f]{64}\.png$/.test(key);
+  if (mimeType === "video/mp4") return /^mock-videos\/[0-9a-f-]+\/[0-9a-f-]+\/[0-9a-f]{64}\.mp4$/.test(key);
+  if (mimeType === "text/vtt") return /^mock-subtitles\/[0-9a-f-]+\/[0-9a-f-]+\/[0-9a-f]{64}\.vtt$/.test(key);
+  return /^mock-(?:audio|music)\/[0-9a-f-]+\/[0-9a-f-]+\/[0-9a-f]{64}\.wav$/.test(key);
+}
+
+function isDirectorySyncEperm(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "EPERM";
 }

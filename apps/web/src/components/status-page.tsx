@@ -3,8 +3,10 @@ import type { StatusView } from "../lib/load-status";
 export function StatusPage({ view }: { view: StatusView }) {
   return (
     <main className="mx-auto max-w-xl px-6 py-10">
-      <h1 className="text-2xl font-semibold">AI Drama Studio</h1>
-      <p className="mt-2 text-sm text-neutral-600">M1-A platform skeleton. Generation is not available.</p>
+      <h1 className="text-2xl font-semibold">服务状态</h1>
+      <p className="mt-2 text-sm text-neutral-600">
+        <a className="underline" href="/">返回项目列表</a>
+      </p>
       <dl className="mt-6 space-y-3">
         <div>
           <dt className="text-sm text-neutral-500">当前环境</dt>
