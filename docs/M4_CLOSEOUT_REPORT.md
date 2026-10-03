@@ -30,9 +30,14 @@
 
 ## 集成候选
 
-共同祖先与 `origin/main` 都是 `6548ffe07f54a03ac2c5547d7b724cb329af5932`。候选比 main 超前 83 个提交，包含此前 M2、M3 和各 M4 切片的验收历史。`72b51b9` 是 `a6cd529` 的祖先；两者之间没有产品源码差异。
+共同祖先与 `origin/main` 都是 `6548ffe07f54a03ac2c5547d7b724cb329af5932`。`72b51b9` 是 `a6cd529` 的祖先；两者之间没有产品源码差异。下列计数固定在对应 SHA，不随后续文档提交改写：
 
-相对 main 的范围是 202 个文件，+35710/−174。合入会带到：
+| 固定 SHA | 相对 `origin/main` |
+| --- | --- |
+| `a6cd529891ea4fee282d787c973a9d8de02e48ec` | 83 个提交，202 个文件。这是来源 `feat/m4-three-episode-sample`，不是当前候选 |
+| `44d5f2c945d661902bbd17b4410221b6d27f2fae` | 84 个提交，204 个文件。这是接通主线验收入口之前的 `chore/m4-closeout` |
+
+合入会带到：
 
 - `apps/web`：创作工作台、单镜/集级编排与合成、下载、已记录成本。
 - `apps/api`、`apps/worker`：Mock 媒体、本地合成和样片请求。
@@ -63,5 +68,7 @@
 - 范围：[`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md)
 - 启动：[`README.md`](../README.md)
 - 本记录：[`M4_CLOSEOUT_REPORT.md`](M4_CLOSEOUT_REPORT.md)
+
+52 阶段 workflow 仍使用原有路径过滤。产品与验收路径覆盖 `apps/**`、`packages/**`、`services/**`、`scripts/m3-av-e2e/**`、`infra/compose.yaml`、锁文件和该 workflow 自身。`docs/**` 不在过滤列表中，纯文档提交不重复触发。事件为样片分支、`chore/m4-closeout` 和 `main` 的 push，发往 `main` 的 `pull_request`，以及 `workflow_dispatch`。权限保持 `contents: read`。不使用 `pull_request_target`，没有生产凭据、发布或部署步骤。发往 `main` 的 pull request 和 `main` 的 push 在本记录中只完成配置检查，尚未由这些事件执行。
 
 剩余工作按这个顺序：先做该候选的合并前审查；审查前不继续扩展 Mock 功能。其后才可能单独处理真实 Provider、付费模型、ComfyUI、生产启用和未计量的本地编码成本。这些事项现在都未执行。

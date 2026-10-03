@@ -393,7 +393,9 @@ for (const stage of ["sample-video-fixtures", "sample-video-gates-recovery", "th
 if (!harness.includes('["M4_MOCK_SAMPLE_VIDEO_ENABLED"]')) failures.push("harness does not unset M4_MOCK_SAMPLE_VIDEO_ENABLED");
 const sampleWorkflow = readFileSync(resolve(root, ".github/workflows/m4-three-episode-sample-e2e.yml"), "utf8").replace(/\r\n/g, "\n");
 const sampleRequired = [
-  "branches:\n      - feat/m4-three-episode-sample",
+  "branches:\n      - feat/m4-three-episode-sample\n      - chore/m4-closeout\n      - main",
+  "pull_request:\n    branches:\n      - main\n    paths: *m4_acceptance_paths",
+  "paths: &m4_acceptance_paths",
   "workflow_dispatch:",
   "contents: read",
   "ubuntu-24.04",
@@ -418,7 +420,7 @@ const sampleRequired = [
 for (const snippet of sampleRequired) {
   if (!sampleWorkflow.includes(snippet)) failures.push(`sample workflow missing ${JSON.stringify(snippet)}`);
 }
-for (const snippet of forbidden) {
+for (const snippet of ["secrets.", "environment:", "pull_request_target"]) {
   if (sampleWorkflow.includes(snippet)) failures.push(`sample workflow contains ${JSON.stringify(snippet)}`);
 }
 if (sampleWorkflow.includes("docs/**")) failures.push("sample workflow paths include docs");

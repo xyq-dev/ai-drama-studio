@@ -4,7 +4,9 @@ on:
   push:
     branches:
       - feat/m4-three-episode-sample
-    paths:
+      - chore/m4-closeout
+      - main
+    paths: &m4_acceptance_paths
       - ".github/workflows/m4-three-episode-sample-e2e.yml"
       - "scripts/m3-av-e2e/**"
       - "scripts/run-media-worker-tests.mjs"
@@ -14,6 +16,10 @@ on:
       - "packages/**"
       - "services/**"
       - "infra/compose.yaml"
+  pull_request:
+    branches:
+      - main
+    paths: *m4_acceptance_paths
   workflow_dispatch:
 
 permissions:
