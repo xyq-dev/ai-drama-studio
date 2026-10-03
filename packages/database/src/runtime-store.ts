@@ -3,6 +3,7 @@ import type { PoolClient, QueryResultRow } from "pg";
 import type { DatabasePool } from "./job-service";
 import { PersistenceError } from "./job-service";
 import { MOCK_MEDIA_JOB_KINDS } from "./mock-media-kinds";
+import { readProjectCostSummary as queryProjectCostSummary } from "./project-cost-summary";
 
 export interface OutboxDispatchRow {
   id: string;
@@ -214,6 +215,10 @@ export class RuntimeStore {
     } finally {
       client.release();
     }
+  }
+
+  readProjectCostSummary(workspaceId: string, projectId: string) {
+    return queryProjectCostSummary(this.pool, workspaceId, projectId);
   }
 
   async listUndispatched(limit: number, now = new Date()): Promise<OutboxDispatchRow[]> {

@@ -130,6 +130,10 @@ export class StudioService {
     return this.store.getProject(this.workspaceId, projectId);
   }
 
+  getProjectCostSummary(projectId: string) {
+    return this.store.readProjectCostSummary(this.workspaceId, projectId);
+  }
+
   async createStoryRevision(
     projectId: string,
     body: unknown,

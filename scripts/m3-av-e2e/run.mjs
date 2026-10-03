@@ -19,6 +19,7 @@ import { composePreflightGates, composePreflightPage, composePreflightReadonly }
 import { episodeComposeGates, episodeComposePreflight, episodeComposeReadonly } from "./episode-compose-preflight.mjs";
 import { episodeRenderGates, episodeRenderIsolation, episodeRenderLifecycle, episodeRenderPlayback, episodeRenderReview, episodeRenderStale } from "./episode-render.mjs";
 import { episodeExportDownload, episodeExportGates, episodeExportReadonly } from "./episode-export.mjs";
+import { projectCostGates, projectCostReadonly, projectCostSummary } from "./project-cost.mjs";
 import { composeProvenanceStale, composeRenderGates, composeRenderLifecycle, composeRenderPage, composeReview } from "./compose-render.mjs";
 import { mediaCancel, mediaObservationReplay, mediaShotIsolation, mediaTerminalRace } from "./lifecycle.mjs";
 import { acceptanceExitCode, acceptanceFailed, assertLinkage, requiredStages } from "./outcome.mjs";
@@ -1994,6 +1995,9 @@ async function main() {
   await stage("episode-export-download", () => episodeExportDownload(lifecycle));
   await stage("episode-export-gates", () => episodeExportGates(lifecycle));
   await stage("episode-export-readonly", () => episodeExportReadonly(lifecycle));
+  await stage("project-cost-summary", () => projectCostSummary(lifecycle));
+  await stage("project-cost-gates", () => projectCostGates(lifecycle));
+  await stage("project-cost-readonly", () => projectCostReadonly(lifecycle));
 }
 
 function lifecycleContext() {

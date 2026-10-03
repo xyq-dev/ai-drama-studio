@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ComposePreflight } from "./compose-preflight";
 import { EpisodeComposePreflight } from "./episode-compose-preflight";
+import { ProjectCostSummary } from "./project-cost-summary";
 import { ApiError, StudioClient } from "../lib/studio-client";
 import {
   LIMITS,
@@ -403,6 +404,7 @@ export function Workbench({ projectId }: { projectId: string }) {
               <p className="mt-2 text-sm">标题：{project.title}</p>
               <p className="text-sm">梗概：{project.premise || "无"}</p>
               <p className="mt-2 text-sm text-neutral-600">当前接口没有项目更新路由，标题和梗概只在创建时写入。</p>
+              <ProjectCostSummary projectId={projectId} />
             </article>
           ) : null}
           {project && focus.kind === "story" ? (

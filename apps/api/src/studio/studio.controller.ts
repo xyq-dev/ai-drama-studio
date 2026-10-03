@@ -64,6 +64,11 @@ export class StudioController {
     return this.studio.getProject(projectId);
   }
 
+  @Get("projects/:projectId/cost-summary")
+  getProjectCostSummary(@Param("projectId", UUID_PARAM_PIPE) projectId: string) {
+    return this.studio.getProjectCostSummary(projectId);
+  }
+
   @Post("projects/:projectId/stories")
   createStoryRevision(
     @Param("projectId", UUID_PARAM_PIPE) projectId: string,

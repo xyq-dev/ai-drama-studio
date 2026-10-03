@@ -44,6 +44,9 @@ export const requiredStages = [
   "episode-export-download",
   "episode-export-gates",
   "episode-export-readonly",
+  "project-cost-summary",
+  "project-cost-gates",
+  "project-cost-readonly",
 ];
 
 export function acceptanceFailed(input) {

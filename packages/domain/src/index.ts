@@ -104,6 +104,18 @@ export {
   type EpisodeCompositeFacts,
 } from "./episode-compose-preflight";
 export {
+  PROJECT_COST_SUMMARY_SCHEMA,
+  LOCAL_COMPOSE_JOB_SCHEMAS,
+  assertLedgerAmount,
+  addLedgerAmounts,
+  summarizeRecordedLedger,
+  buildProjectCostSummary,
+  type RecordedLedgerFact,
+  type ProjectCostCoverage,
+  type ProjectCostCurrency,
+  type ProjectCostSummary,
+} from "./project-cost-summary";
+export {
   EPISODE_EXPORT_MANIFEST_SCHEMA,
   assertDependencyEdges,
   assertEpisodeExportRecord,

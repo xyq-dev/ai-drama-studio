@@ -46,6 +46,7 @@ export {
   type ShotRevisionInput,
 } from "./text-chain";
 export { type ScriptDependencyBinding, type ScriptDependencyConsumer } from "./script-dependencies";
+export { PROJECT_COST_SUMMARY_SQL, PROJECT_COST_SUMMARY_TRANSACTION, readProjectCostSummary } from "./project-cost-summary";
 export { MockTextService, type MockSceneSnapshot, type MockSceneSource,
   type MockShotSnapshot, type MockShotSource } from "./mock-text";
 
