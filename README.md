@@ -1,5 +1,7 @@
 # AI Drama Studio
 
+当前集成候选的验收边界见 [`docs/M4_CLOSEOUT_REPORT.md`](docs/M4_CLOSEOUT_REPORT.md)。项目范围仍以 [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) 为准。
+
 M2 文本 Scene/Shot 生成已通过厂商无关的同步 Adapter 边界运行；契约、恢复限制和验收证据见
 [`docs/M2_TEXT_ADAPTER_ACCEPTANCE.md`](docs/M2_TEXT_ADAPTER_ACCEPTANCE.md)。
 
@@ -170,11 +172,6 @@ services/media-worker/.venv/Scripts/python -m pytest services/media-worker/tests
 
 M1-B GitHub Actions 还会在隔离 PostgreSQL 16 上执行 Prisma validate/generate、真实数据库集成测试、`pnpm verify` 和既有 Python 测试。
 
-## 本阶段明确没有实现
+## 尚未纳入当前候选的范围
 
-- 真实 AI Provider、视频生成和付费模型
-- ComfyUI Workflow 调用
-- FFmpeg 合成
-- Story/Script/Character/Scene/Shot 等 M2 生产模型
-- 登录
-- 媒体任务手工 retry
+尚未完成和不得当成完成的事项见 [`docs/M4_CLOSEOUT_REPORT.md`](docs/M4_CLOSEOUT_REPORT.md)。其中包括真实 Provider、付费模型、ComfyUI 实际调用、生产启用和完整 M4。
