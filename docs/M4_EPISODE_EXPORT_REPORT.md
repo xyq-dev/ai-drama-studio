@@ -2,6 +2,8 @@
 
 本报告只记录已批准集级成片的 MP4 下载和来源清单。它不代表三集 60–90 秒样片、完整成本汇总或完整 M4 验收。不沿用 Run `37021902206` 或 `37026479322`。Migration = NO。
 
+下载生命周期修复从报告提交 `14f36dec8892d86f032088e5ffc6e489675e5ff2` 开始。验收 SHA 是 `95f4df1075277267d79443ec4799b71b87df9947`。功能实现 SHA 仍是 `9f69e83770bb07ab560474dc9a9de4716e889461`。
+
 ## 目录与提交
 
 | 项 | 值 |
@@ -11,8 +13,9 @@
 | 分支 | `feat/m4-episode-export` |
 | 起点 | `18e85eb3c0f0613975774590f108fbf7a28a2236` |
 | 已验收源码 | `4426743f4558517ae0ea20cd0cd84fbae9cfb9b9` |
-| 验收 SHA | `9f69e83770bb07ab560474dc9a9de4716e889461` |
-| 报告 SHA | 仅含本文件的提交；推送后与 `origin/feat/m4-episode-export` 一致 |
+| 功能 SHA | `9f69e83770bb07ab560474dc9a9de4716e889461` |
+| 验收 SHA | `95f4df1075277267d79443ec4799b71b87df9947` |
+| 报告 SHA | 仅含本文件更新的提交；推送后与 `origin/feat/m4-episode-export` 一致 |
 | Migration | NO |
 
 起点来自 `feat/m4-episode-render`。验收提交的父历史包含 `18e85eb`。`origin/main` 仍为 `6548ffe07f54a03ac2c5547d7b724cb329af5932`。`origin/feat/m4-episode-render` 仍为 `18e85eb3c0f0613975774590f108fbf7a28a2236`。本轮只普通推送 `feat/m4-episode-export`。
@@ -58,6 +61,35 @@
 两次 harness 修复没有重跑完整 `pnpm verify`。它们只改验收脚本：页面等待候选成片渲染完成；清单里的 `inputHash` 对照 `generation_job.input_hash`，`preflightInputHash` 对照提交时的预检哈希。隔离 CI 在验收 SHA 上重新执行了 harness check、outcome regression 和 45 个真实阶段。
 
 定向测试覆盖下载资格、错误 hash、DRAFT/REJECTED/STALE、schema、非最新 attempt、依赖不一致、pending STALE、文件缺失、目录、symlink/junction、超限、增长、截断、哈希不符、MP4/JSON/HEAD、同源代理、错误响应不保存，以及切集后的迟到响应。
+
+## 下载生命周期
+
+`busy` 和 error 按 `assetId` 分开保存。每次下载有独立世代。同一资产已在途时，重复点击不再发出请求。资产 A、B 并发时，一方完成不会清掉另一方的进行中状态或错误。旧请求完成时，不能清掉同一资产上更新请求的状态。
+
+项目或集切换，以及组件卸载，都会作废在途下载。迟到的成功不创建 Blob URL，也不触发保存。迟到的失败和 `finally` 不写回状态。下载资格、来源清单和后端实现没有改。
+
+挂载组件测试覆盖：A/B 并发、重复点击、旧请求完成后新请求仍在、错误互不覆盖，以及 `unmount` 之后成功和失败响应都不再保存或写回。
+
+| 命令 | 退出码 | 说明 |
+| --- | --- | --- |
+| `episode-compose-job-panel.spec.tsx` | 0 | 21 项通过，含上述挂载场景 |
+| `pnpm verify` | 0 | lint、typecheck、test、build，以及 media-worker 7 passed / 2 skipped |
+
+这次隔离 CI：
+
+| 项 | 值 |
+| --- | --- |
+| Run | https://github.com/xyq-dev/ai-drama-studio/actions/runs/37086868513 |
+| attempt | 1 |
+| Job | `111098884298` |
+| 结论 | success |
+| Artifact | `m4-episode-export-e2e-evidence` / `11260788797` |
+| 大小 | 4807249 字节 |
+| 下载 SHA-256 | `bf0f8cb564a11d60734106dde978b6ebefb2ccefc6ba3f28bdd9f222b267ed8f` |
+| 数据库 | `m3av_37086868513a1`，迁移前 `public_tables=0` |
+| Migration | NO |
+
+45 个阶段全部 `passed`。`fatal`、`restoreError`、`cleanupError` 为空。`compose down` 退出码 0。Chrome 下载的 MP4 为 Asset `e83d6ed9-20c4-4158-abec-749fcdc10852`，Job `a4f5d31f-622e-421f-8044-aa9d9b954ff7`，attempt `1d6f0ac8-ff51-486a-b469-f93dd0547463`，8079 字节，SHA-256 `eaa79f534f91cf0f8600100a8af3a3757ba75d9782c51d1a0aea000fb13e9662`。只读窗口十张业务表的行数未变。门闩仍以 HTTP 400、`COMPOSE_INPUT_INVALID` 拒绝失效后的导出。
 
 ## 隔离 CI
 
