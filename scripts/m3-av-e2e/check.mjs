@@ -423,6 +423,16 @@ for (const snippet of forbidden) {
 }
 if (sampleWorkflow.includes("docs/**")) failures.push("sample workflow paths include docs");
 if (sampleWorkflow.includes("M4_MOCK_SAMPLE_VIDEO_ENABLED")) failures.push("sample workflow adds a sample switch");
+const sampleDelivery = harness.slice(harness.indexOf("export async function threeEpisodeDelivery"), harness.indexOf("async function waitEpisodeThreeReady"));
+const sampleReady = harness.slice(harness.indexOf("async function waitEpisodeThreeReady"), harness.indexOf("async function recoverSample"));
+const readyCall = sampleDelivery.indexOf("await waitEpisodeThreeReady");
+const sampleShot = sampleDelivery.indexOf("three-episode-sample-390.png");
+if (readyCall < 0 || sampleShot < 0 || readyCall > sampleShot) {
+  failures.push("sample 390px screenshot is taken before episode 3 readiness");
+}
+if (!sampleReady.includes("episode 3 loadedmetadata timeout") || !sampleReady.includes('data-review-status="APPROVED"') || !sampleReady.includes("下载来源清单")) {
+  failures.push("sample 390px check does not wait for the approved episode 3 card");
+}
 
 if (failures.length > 0) {
   process.stderr.write(`${failures.join("\n")}\n`);

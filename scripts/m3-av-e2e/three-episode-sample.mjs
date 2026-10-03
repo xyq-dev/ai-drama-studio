@@ -167,9 +167,16 @@ export async function threeEpisodeRender(ctx) {
 export async function threeEpisodeDelivery(ctx) {
   const saved = ctx.state.sampleEpisodes;
   if (!saved) throw new Error("three episode sample was not rendered");
+  const episodeThree = saved.episodes.find((item) => item.episodeNo === 3);
+  if (!episodeThree || episodeThree.durationMs !== 90_000) throw new Error("episode 3 sample was not rendered");
   const page = ctx.state.page;
   await page.setViewportSize({ width: 390, height: 844 });
+  const viewport = page.viewportSize();
+  if (!viewport || viewport.width !== 390 || viewport.height !== 844) {
+    throw new Error(`sample viewport ${JSON.stringify(viewport)}`);
+  }
   await page.goto(`${ctx.webOrigin}/projects/${saved.projectId}?focus=episode-compose&episode=3`, { waitUntil: "domcontentloaded", timeout: 30_000 });
+  const ready = await waitEpisodeThreeReady(page, episodeThree.assetId);
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   await page.screenshot({ path: join(ctx.outputDir, "three-episode-sample-390.png"), fullPage: true });
   if (overflow > 1) throw new Error(`sample episode overflow ${overflow}`);
@@ -230,10 +237,74 @@ export async function threeEpisodeDelivery(ctx) {
   if (changes.length > 0) throw new Error(`sample delivery changed stored records: ${changes.join(", ")}`);
   return {
     overflow,
+    viewport,
+    assetId: episodeThree.assetId,
+    ready,
+    screenshot: "three-episode-sample-390.png",
     downloads,
     ledger,
     localComposeAttempts: coverage[0].local_compose,
     unchanged: EPISODE_FINGERPRINT_TABLES.map((table) => ({ table, count: before[table].count, fingerprint: before[table].fingerprint })),
+  };
+}
+
+async function waitEpisodeThreeReady(page, assetId) {
+  const card = page.locator(`[data-composite-id="${assetId}"][data-asset-status="ACTIVE"][data-review-status="APPROVED"]`);
+  await card.waitFor({ state: "visible", timeout: 30_000 });
+  await card.getByText("审核 APPROVED").waitFor({ state: "visible", timeout: 20_000 });
+  const mp4 = card.getByRole("button", { name: "下载 MP4" });
+  const manifest = card.getByRole("button", { name: "下载来源清单" });
+  await mp4.waitFor({ state: "visible", timeout: 20_000 });
+  await manifest.waitFor({ state: "visible", timeout: 20_000 });
+  const video = card.locator("video");
+  await video.waitFor({ state: "visible", timeout: 20_000 });
+  const boxes = {
+    card: await card.boundingBox(),
+    mp4: await mp4.boundingBox(),
+    manifest: await manifest.boundingBox(),
+    video: await video.boundingBox(),
+  };
+  if (Object.entries(boxes).some(([, box]) => !box || box.width <= 0 || box.height <= 0)) {
+    throw new Error(`episode 3 controls are not visible ${JSON.stringify(boxes)}`);
+  }
+  const metadata = await video.evaluate(async (node, expectedAssetId) => {
+    const media = node;
+    if (media.readyState < 1) {
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("episode 3 loadedmetadata timeout")), 20_000);
+        media.addEventListener("loadedmetadata", () => { clearTimeout(timer); resolve(); }, { once: true });
+      });
+    }
+    return {
+      readyState: media.readyState,
+      videoWidth: media.videoWidth,
+      videoHeight: media.videoHeight,
+      duration: media.duration,
+      src: media.currentSrc || media.getAttribute("src") || "",
+      expectedAssetId,
+    };
+  }, assetId);
+  const durationMs = Math.round(metadata.duration * 1000);
+  if (
+    metadata.readyState < 1
+    || metadata.videoWidth !== 1080
+    || metadata.videoHeight !== 1920
+    || Math.abs(durationMs - 90_000) > 40
+    || !metadata.src.includes(assetId)
+  ) {
+    throw new Error(`episode 3 metadata ${JSON.stringify({ ...metadata, durationMs })}`);
+  }
+  return {
+    assetId,
+    assetStatus: "ACTIVE",
+    reviewStatus: "APPROVED",
+    mp4Visible: true,
+    manifestVisible: true,
+    readyState: metadata.readyState,
+    videoWidth: metadata.videoWidth,
+    videoHeight: metadata.videoHeight,
+    durationMs,
+    boxes,
   };
 }
 
