@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import test from "node:test";
 import { inspectDevEnvironment, parseEnvText, renderReport } from "./dev-doctor.mjs";
@@ -139,6 +140,92 @@ test("disabled features do not require directories or the compose interpreter", 
   assert.equal(finding(result, "MOCK_OBJECT_DIR"), undefined);
   assert.equal(finding(result, "compose-python").status, "note");
   assert.equal(calls.some((call) => call.command === "python3"), false);
+});
+
+test("a file-only MEDIA_WORKER_PYTHON is not the verify interpreter", () => {
+  const filePython = "C:\\file python\\python.exe";
+  const { calls, result } = inspect({
+    fileText: baseFile(`MEDIA_WORKER_PYTHON=${filePython}\n`),
+  });
+  assert.equal(calls.some((call) => call.command === filePython), false);
+  assert.ok(calls.some((call) => call.command === "python" && call.options.shell === false));
+  assert.equal(finding(result, "python-selection").status, "ok");
+  assert.match(finding(result, "python-selection").summary, /process environment/);
+  assert.equal(finding(result, "python-file").status, "note");
+  assert.match(finding(result, "python-file").summary, /not exported/);
+  assert.equal(result.ok, true);
+});
+
+test("episode compose stays valid without MOCK_OBJECT_DIR while single-shot keeps its own requirement", () => {
+  const work = process.platform === "win32" ? "C:\\ai drama\\work" : "/tmp/ai drama/work";
+  const objects = process.platform === "win32" ? "C:\\ai drama\\objects" : "/tmp/ai drama/objects";
+  const episodeOnly = inspect({
+    fileText: baseFile([
+      "M4_LOCAL_COMPOSE_ENABLED=true",
+      "M4_LOCAL_EPISODE_COMPOSE_ENABLED=true",
+      `M4_COMPOSE_WORK_DIR=${work}`,
+      `M4_COMPOSE_OBJECT_DIR=${objects}`,
+    ].join("\n")),
+    pathExists: (value) => value === work || value === objects,
+  });
+  assert.equal(episodeOnly.result.ok, true);
+  assert.equal(finding(episodeOnly.result, "episode-compose").status, "ok");
+  assert.match(finding(episodeOnly.result, "episode-compose").suggestion, /MOCK_OBJECT_DIR is not required/);
+  assert.equal(finding(episodeOnly.result, "shot-compose").status, "note");
+  assert.match(finding(episodeOnly.result, "shot-compose").summary, /MOCK_OBJECT_DIR/);
+  assert.equal(finding(episodeOnly.result, "MOCK_OBJECT_DIR"), undefined);
+
+  const shotOnly = inspect({
+    fileText: baseFile([
+      "M4_LOCAL_COMPOSE_ENABLED=true",
+      `M4_COMPOSE_WORK_DIR=${work}`,
+      `M4_COMPOSE_OBJECT_DIR=${objects}`,
+    ].join("\n")),
+    pathExists: (value) => value === work || value === objects,
+  });
+  assert.equal(shotOnly.result.ok, false);
+  assert.equal(finding(shotOnly.result, "MOCK_OBJECT_DIR").status, "missing");
+  assert.equal(finding(shotOnly.result, "episode-compose"), undefined);
+});
+
+test("an empty M4_COMPOSE_PYTHON is invalid while every compose switch is off", () => {
+  const { result, calls } = inspect({
+    fileText: baseFile("M4_COMPOSE_PYTHON=\n"),
+  });
+  assert.equal(result.ok, false);
+  assert.equal(finding(result, "compose-python").status, "invalid");
+  assert.match(finding(result, "compose-python").suggestion, /empty string/);
+  assert.equal(finding(result, "features").status, "note");
+  assert.equal(calls.some((call) => call.command === "python3"), false);
+});
+
+test("the runbook installs and builds before init, and separates static, simulated, and real startup", () => {
+  const runbook = readFileSync(new URL("../docs/DEV_RUNBOOK.md", import.meta.url), "utf8");
+  const steps = [
+    "corepack pnpm install --frozen-lockfile",
+    "corepack pnpm --filter @ai-drama/database prisma:validate",
+    "corepack pnpm --filter @ai-drama/database prisma:generate",
+    "corepack pnpm build",
+    "corepack pnpm --filter @ai-drama/database migrate",
+    "corepack pnpm --filter @ai-drama/web dev",
+  ];
+  let cursor = 0;
+  for (const step of steps) {
+    const at = runbook.indexOf(step, cursor);
+    assert.ok(at >= cursor, step);
+    cursor = at + step.length;
+  }
+  assert.match(runbook, /services\/media-worker\/README\.md/);
+  assert.match(runbook, /dist\/index\.js/);
+  assert.match(runbook, /Test-Path/);
+  const loader = runbook.slice(runbook.indexOf("Get-Content .env"), runbook.indexOf("```bash"));
+  assert.ok(loader.indexOf("Test-Path") < loader.indexOf("Set-Item"));
+  assert.doesNotMatch(runbook, /set -a/);
+  assert.doesNotMatch(runbook, /\. \/\.env|\. \.\/\.env/);
+  assert.match(runbook, /静态检查/);
+  assert.match(runbook, /模拟测试/);
+  assert.match(runbook, /真实服务启动/);
+  assert.match(runbook, /同一套有效配置/);
 });
 
 test("a timed-out probe stays a tool failure and secrets are absent from the report", () => {

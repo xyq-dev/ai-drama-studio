@@ -178,16 +178,20 @@ export function inspectDevEnvironment(options) {
     findings.push(item("missing", "pnpm", "pnpm 10.17.0 was not probed successfully.", toolSuggestion("pnpm", pnpm.reason)));
   }
 
-  const verifyPython = merged.MEDIA_WORKER_PYTHON;
+  const processPython = processEnv.MEDIA_WORKER_PYTHON;
+  const filePython = fileEnv.MEDIA_WORKER_PYTHON;
   let verifyCommand = platform === "win32" ? "python" : "python3";
-  if (verifyPython === undefined) {
-    findings.push(item("ok", "python-selection", `MEDIA_WORKER_PYTHON is unset. pnpm verify uses ${verifyCommand}.`, "Set MEDIA_WORKER_PYTHON only when verify should use the media-worker virtualenv."));
-  } else if (verifyPython.length === 0) {
+  if (processPython === undefined) {
+    findings.push(item("ok", "python-selection", `MEDIA_WORKER_PYTHON is unset in the process environment. pnpm verify uses ${verifyCommand}.`, "pnpm verify reads only process.env. A value that exists only in the env file is not used."));
+    if (filePython !== undefined) {
+      findings.push(item("note", "python-file", "The env file contains MEDIA_WORKER_PYTHON, but that value is not exported to the process environment.", "Export it before pnpm verify when that interpreter should run. The doctor does not export it and does not probe it as the verify interpreter."));
+    }
+  } else if (processPython.length === 0) {
     verifyCommand = "";
-    findings.push(item("invalid", "python-selection", "MEDIA_WORKER_PYTHON is empty.", "Unset it to use the platform fallback, or set the media-worker virtualenv interpreter. The doctor will not substitute another Python."));
+    findings.push(item("invalid", "python-selection", "MEDIA_WORKER_PYTHON is empty in the process environment.", "Unset it to use the platform fallback, or set the media-worker virtualenv interpreter. The doctor will not substitute another Python."));
   } else {
-    verifyCommand = verifyPython;
-    findings.push(item("ok", "python-selection", `pnpm verify uses MEDIA_WORKER_PYTHON ${quotePath(verifyCommand)}.`, "This is the verify interpreter, not M4_COMPOSE_PYTHON and not the HTTP health process."));
+    verifyCommand = processPython;
+    findings.push(item("ok", "python-selection", `pnpm verify uses process.env MEDIA_WORKER_PYTHON ${quotePath(verifyCommand)}.`, "This is the verify interpreter, not M4_COMPOSE_PYTHON and not the HTTP health process."));
   }
 
   if (verifyCommand.length > 0) {
@@ -271,35 +275,48 @@ export function inspectDevEnvironment(options) {
     findings.push(item("note", "features", "Mock, sample, and local compose switches are off.", "Leaving them false is the normal default. The doctor does not enable them."));
   }
 
-  if (image || av || subtitles || sample || compose) {
+  if (image || av || subtitles || sample) {
     const directory = absoluteDirIssue("MOCK_OBJECT_DIR", merged.MOCK_OBJECT_DIR, exists);
     if (directory) findings.push(directory);
   }
   if (sample && !av) {
     findings.push(item("missing", "sample-video", "M4_MOCK_SAMPLE_VIDEO_ENABLED is true while M3_MOCK_AV_ENABLED is not true.", "Sample generation also requires the AV switch and an absolute MOCK_OBJECT_DIR. The doctor does not turn the AV switch on."));
   }
-  if (compose || episode) {
-    const work = absoluteDirIssue("M4_COMPOSE_WORK_DIR", merged.M4_COMPOSE_WORK_DIR, exists);
-    const objectDir = absoluteDirIssue("M4_COMPOSE_OBJECT_DIR", merged.M4_COMPOSE_OBJECT_DIR, exists);
-    if (work) findings.push(work);
-    if (objectDir) findings.push(objectDir);
+  const composeDirsRequested = compose || episode;
+  const workIssue = composeDirsRequested ? absoluteDirIssue("M4_COMPOSE_WORK_DIR", merged.M4_COMPOSE_WORK_DIR, exists) : null;
+  const objectIssue = composeDirsRequested ? absoluteDirIssue("M4_COMPOSE_OBJECT_DIR", merged.M4_COMPOSE_OBJECT_DIR, exists) : null;
+  if (workIssue) findings.push(workIssue);
+  if (objectIssue) findings.push(objectIssue);
+  if (compose) {
+    const mockIssue = absoluteDirIssue("MOCK_OBJECT_DIR", merged.MOCK_OBJECT_DIR, exists);
+    if (!mockIssue && !workIssue && !objectIssue) {
+      findings.push(item("ok", "shot-compose", "Single-shot compose has an absolute MOCK_OBJECT_DIR and both compose directories.", "This check does not start a render."));
+    } else if (episode && !workIssue && !objectIssue && mockIssue) {
+      findings.push(item("note", "shot-compose", "Single-shot compose stays off until MOCK_OBJECT_DIR is an existing absolute directory.", "Episode compose does not use MOCK_OBJECT_DIR. Set that directory only when single-shot compose should run. The doctor does not create it."));
+    } else if (mockIssue && !(image || av || subtitles || sample)) {
+      findings.push(mockIssue);
+    }
+  }
+  if (episode && !compose) {
+    findings.push(item("missing", "episode-compose", "M4_LOCAL_EPISODE_COMPOSE_ENABLED is true while M4_LOCAL_COMPOSE_ENABLED is not true.", "Episode compose also requires the single-shot compose switch. The doctor does not turn it on."));
+  } else if (episode && !workIssue && !objectIssue) {
+    findings.push(item("ok", "episode-compose", "Episode compose has both switches and both compose directories.", "MOCK_OBJECT_DIR is not required for episode compose. This check does not start a render."));
+  } else if (episode) {
+    findings.push(item("missing", "episode-compose", "Episode compose is missing an absolute compose directory.", "Set M4_COMPOSE_WORK_DIR and M4_COMPOSE_OBJECT_DIR. This requirement is separate from the single-shot MOCK_OBJECT_DIR requirement."));
+  }
+  if (merged.M4_COMPOSE_PYTHON === "") {
+    findings.push(item("invalid", "compose-python", "M4_COMPOSE_PYTHON is empty.", "The worker schema rejects an empty string even when every compose switch is off. Remove the variable to keep the python3 default, or set a non-empty interpreter. The doctor does not change the file."));
+  } else if (compose || episode) {
     const composePython = merged.M4_COMPOSE_PYTHON === undefined ? "python3" : merged.M4_COMPOSE_PYTHON;
-    if (composePython.length === 0) {
-      findings.push(item("invalid", "compose-python", "M4_COMPOSE_PYTHON is empty.", "Set the worker compose interpreter. The doctor does not choose another one."));
+    const result = probe(spawn, composePython, ["-c", "import sys; print(sys.executable)"], timeoutMs);
+    if (result.ok) {
+      findings.push(item("ok", "compose-python", `The worker compose interpreter started: ${quotePath(composePython)}.`, "M4_COMPOSE_PYTHON runs the compose CLI. It is separate from MEDIA_WORKER_PYTHON and from python -m media_worker."));
     } else {
-      const result = probe(spawn, composePython, ["-c", "import sys; print(sys.executable)"], timeoutMs);
-      if (result.ok) {
-        findings.push(item("ok", "compose-python", `The worker compose interpreter started: ${quotePath(composePython)}.`, "M4_COMPOSE_PYTHON runs the compose CLI. It is separate from MEDIA_WORKER_PYTHON and from python -m media_worker."));
-      } else {
-        findings.push(item("missing", "compose-python", `The worker compose interpreter did not start: ${quotePath(composePython)}.`, toolSuggestion("compose-python", result.reason)));
-      }
+      findings.push(item("missing", "compose-python", `The worker compose interpreter did not start: ${quotePath(composePython)}.`, toolSuggestion("compose-python", result.reason)));
     }
   } else {
     const composePython = merged.M4_COMPOSE_PYTHON === undefined ? "python3" : merged.M4_COMPOSE_PYTHON;
     findings.push(item("note", "compose-python", `Local compose is off. The worker default interpreter is ${quotePath(composePython)} and was not required.`, "Set M4_COMPOSE_PYTHON only when compose is explicitly enabled."));
-  }
-  if (episode && !compose) {
-    findings.push(item("missing", "episode-compose", "M4_LOCAL_EPISODE_COMPOSE_ENABLED is true while M4_LOCAL_COMPOSE_ENABLED is not true.", "Episode compose also requires the single-shot compose switch. The doctor does not turn it on."));
   }
 
   if (options.exampleText) {

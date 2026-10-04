@@ -94,6 +94,8 @@ corepack pnpm --filter @ai-drama/comfyui-adapter dev
 corepack pnpm --filter @ai-drama/web dev
 ```
 
+`pnpm --filter … dev` 不经过 Turbo 的依赖构建。`@ai-drama/contracts`、`domain`、`health`、`providers`、`database` 导出 `dist/index.js`。新检出仓库先按 `docs/DEV_RUNBOOK.md` 做锁定安装、Prisma validate/generate 和 `pnpm build`，再启动应用。初始化终端和应用终端使用同一套只填充未定义变量的配置。
+
 Worker 启动日志写明 `worker runtime` 和 `queue consumer enabled`。PostgreSQL 仍是业务状态真相；BullMQ payload 保留 `jobId + dispatchSeq`，自定义 queue job ID 使用不含冒号的 `${jobId}__${dispatchSeq}` 编码。
 
 ## 数据库 Schema 与 Migration
