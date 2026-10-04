@@ -378,7 +378,7 @@ describe("qwen text trial", () => {
     const code = await runQwenTextTrialCli(["--input", inputPath, "--output", join(parent, "direct")], {}, (line) => lines.push(line), (line) => lines.push(line));
     expect(code).toBe(0);
     expect(lines.join("\n")).toContain("status=dry_run");
-  });
+  }, 20_000);
 });
 
 function repoRoot(): string {

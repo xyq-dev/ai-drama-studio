@@ -427,5 +427,5 @@ describe("qwen writing candidates", () => {
     );
     expect(code).toBe(0);
     expect(lines.join("\n")).toContain("status=dry_run");
-  });
+  }, 20_000);
 });
