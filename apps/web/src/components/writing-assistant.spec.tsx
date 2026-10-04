@@ -211,4 +211,181 @@ describe("writing assistant isolation", () => {
     fireEvent.click(screen.getByRole("button", { name: "编剧助手" }));
     expect(screen.queryByLabelText("候选正文")).toBeNull();
   });
+
+  it("keeps the faster file when an earlier read finishes later", async () => {
+    const slow = deferredBuffer();
+    const adopted: string[] = [];
+    render(createElement(WritingAssistant, storyProps({
+      onAdopt: (text: string) => {
+        adopted.push(text);
+        return true;
+      },
+      readFile: (file: File) => file.name === "a.json"
+        ? slow.promise
+        : Promise.resolve(encoded(storyCandidate("较快的手写候选，不是模型结果"))),
+    })));
+    fireEvent.click(screen.getByRole("button", { name: "编剧助手" }));
+    chooseFile("a.json");
+    chooseFile("b.json");
+    await waitFor(() => expect(preview()).toContain("较快的手写候选，不是模型结果"));
+    slow.release(encoded(storyCandidate("较慢的手写候选，不是模型结果")));
+    await slow.promise;
+    expect(preview()).toContain("较快的手写候选，不是模型结果");
+    expect(preview()).not.toContain("较慢的手写候选");
+    expect(adopted).toHaveLength(0);
+    expect(storyProps().capture().ifMatch).toBe(2);
+  });
+
+  it("does not let an in-flight file replace a pasted candidate or a newer error", async () => {
+    const reads: Array<ReturnType<typeof deferredBuffer>> = [];
+    const adopted: string[] = [];
+    render(createElement(WritingAssistant, storyProps({
+      onAdopt: (text: string) => {
+        adopted.push(text);
+        return true;
+      },
+      readFile: () => {
+        const next = deferredBuffer();
+        reads.push(next);
+        return next.promise;
+      },
+    })));
+    fireEvent.click(screen.getByRole("button", { name: "编剧助手" }));
+    chooseFile("a.json");
+    fireEvent.change(screen.getByLabelText("粘贴 JSON 候选"), {
+      target: { value: JSON.stringify(storyCandidate("粘贴的手写候选，不是模型结果")) },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "校验并预览" }));
+    await waitFor(() => expect(preview()).toContain("粘贴的手写候选，不是模型结果"));
+    reads[0]?.reject(new Error("disk"));
+    await reads[0]?.promise.catch(() => undefined);
+    expect(screen.queryByText("文件没有读完")).toBeNull();
+    expect(preview()).toContain("粘贴的手写候选，不是模型结果");
+    chooseFile("c.json");
+    fireEvent.change(screen.getByLabelText("粘贴 JSON 候选"), { target: { value: "{" } });
+    fireEvent.click(screen.getByRole("button", { name: "校验并预览" }));
+    expect(await screen.findByText("导入内容不是合法 JSON")).toBeTruthy();
+    reads[1]?.release(encoded(storyCandidate("较慢的手写候选，不是模型结果")));
+    await reads[1]?.promise;
+    expect(screen.getByText("导入内容不是合法 JSON")).toBeTruthy();
+    expect(preview()).toContain("粘贴的手写候选，不是模型结果");
+    expect(preview()).not.toContain("较慢的手写候选");
+    expect(adopted).toHaveLength(0);
+    expect(storyProps().capture().ifMatch).toBe(2);
+  });
+
+  it("does not bind an in-flight file to a newly prepared episode instruction", async () => {
+    const slow = deferredBuffer();
+    const adopted: string[] = [];
+    const capture = () => target("script:episode-1", 1);
+    render(createElement(WritingAssistant, {
+      ...storyProps({
+        onAdopt: (text: string) => {
+          adopted.push(text);
+          return true;
+        },
+        readFile: () => slow.promise,
+      }),
+      mode: "episode",
+      entityKey: "script:episode-1",
+      episodeNo: 1,
+      confirmedMaterials: "已保存的故事",
+      capture,
+    }));
+    fireEvent.click(screen.getByRole("button", { name: "编剧助手" }));
+    fireEvent.change(screen.getByLabelText("题材"), { target: { value: "悬疑" } });
+    fireEvent.change(screen.getByLabelText("目标观众"), { target: { value: "成人" } });
+    fireEvent.change(screen.getByLabelText("人物设定"), { target: { value: "店员" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: "确认使用当前已加载的故事与分集材料" }));
+    fireEvent.change(screen.getByLabelText("修改要求"), { target: { value: "只改开场" } });
+    fireEvent.click(screen.getByRole("button", { name: "准备创作指令" }));
+    const instruction = screen.getByLabelText("创作指令") as HTMLTextAreaElement;
+    expect(instruction.value).toContain("悬疑");
+    expect(instruction.value).toContain("成人");
+    expect(instruction.value).toContain("店员");
+    expect(instruction.value).toContain("只改开场");
+    chooseFile("a.json");
+    fireEvent.change(screen.getByLabelText("修改要求"), { target: { value: "改结局" } });
+    fireEvent.click(screen.getByRole("button", { name: "准备创作指令" }));
+    expect((screen.getByLabelText("创作指令") as HTMLTextAreaElement).value).toContain("改结局");
+    expect((screen.getByLabelText("创作指令") as HTMLTextAreaElement).value).not.toContain("只改开场");
+    slow.release(encoded({ ...EPISODE_PLAN, episodeNo: 1 }));
+    await slow.promise;
+    expect(screen.queryByLabelText("候选正文")).toBeNull();
+    expect(screen.queryByText("文件没有读完")).toBeNull();
+    expect(adopted).toHaveLength(0);
+    expect(capture().ifMatch).toBe(2);
+    for (const label of ["题材", "目标观众", "人物设定"] as const) {
+      const field = screen.getByLabelText(label) as HTMLInputElement | HTMLTextAreaElement;
+      const original = field.value;
+      fireEvent.change(field, { target: { value: `${original}已改` } });
+      fireEvent.change(screen.getByLabelText("粘贴 JSON 候选"), {
+        target: { value: JSON.stringify({ ...EPISODE_PLAN, episodeNo: 1 }) },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "校验并预览" }));
+      await screen.findByLabelText("候选正文");
+      fireEvent.click(screen.getByRole("button", { name: "采纳到草稿" }));
+      expect(await screen.findByText(/创作要求已变化/)).toBeTruthy();
+      fireEvent.change(field, { target: { value: original } });
+    }
+    expect(adopted).toHaveLength(0);
+    expect(capture().ifMatch).toBe(2);
+  });
 });
+
+function storyCandidate(logline: string) {
+  return { ...STORY_PLAN, logline };
+}
+
+function encoded(value: unknown): ArrayBuffer {
+  return new TextEncoder().encode(JSON.stringify(value)).buffer;
+}
+
+function deferredBuffer() {
+  let release: (value: ArrayBuffer) => void = () => undefined;
+  let reject: (error: Error) => void = () => undefined;
+  const promise = new Promise<ArrayBuffer>((resolve, rejectPromise) => {
+    release = resolve;
+    reject = rejectPromise;
+  });
+  return { promise, release, reject };
+}
+
+function chooseFile(name: string) {
+  const input = document.querySelector("input[type='file']");
+  if (!(input instanceof HTMLInputElement)) throw new Error("missing file input");
+  fireEvent.change(input, { target: { files: [new File(["{"], name, { type: "application/json" })] } });
+}
+
+function preview(): string {
+  return (screen.getByLabelText("候选正文") as HTMLTextAreaElement).value;
+}
+
+function storyTarget(): WritingTargetSnapshot {
+  return {
+    projectId: "project-1",
+    entityKey: "story",
+    mode: "story",
+    episodeNo: null,
+    sourceRevisionId: "rev-1",
+    ifMatch: 2,
+    draftFingerprint: "same",
+    currentText: "原文",
+    loaded: true,
+  };
+}
+
+function storyProps(extra?: Partial<{ onAdopt: (text: string) => boolean; readFile: (file: File) => Promise<ArrayBuffer> }>) {
+  return {
+    mode: "story" as const,
+    projectId: "project-1",
+    entityKey: "story",
+    episodeNo: null,
+    premise: "夜班",
+    confirmedMaterials: "",
+    loaded: true,
+    capture: () => storyTarget(),
+    onAdopt: extra?.onAdopt ?? (() => true),
+    readFile: extra?.readFile,
+  };
+}

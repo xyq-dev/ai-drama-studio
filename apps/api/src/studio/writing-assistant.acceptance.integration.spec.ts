@@ -15,10 +15,16 @@ import {
 import { AppModule } from "../app.module";
 import { loadApiEnv } from "../config/env";
 import { SafeExceptionFilter } from "../http/safe-exception.filter";
+import { assertEmptyWritingAcceptanceDatabase } from "./writing-acceptance-database";
 
 /**
- * Handwritten candidate used to exercise import, draft adoption, and a real save.
- * It is not a model result, and this test does not call a model.
+ * Domain functions plus real HTTP. This file does not open a browser.
+ * It parses a handwritten candidate, checks adoption against the frozen If-Match,
+ * POSTs /stories, replays the idempotency key, and rereads a DRAFT revision.
+ * Episode saves and the workbench buttons are covered by the web acceptance.
+ * Initialization requires the dedicated empty database named by WRITING_ACCEPTANCE_DATABASE.
+ * Existing business tables abort the run; this file does not reset them.
+ * The candidate is not a model result, and this test does not call a model.
  */
 const STORY_PLAN: StoryPlanCandidate = {
   schema: "ads.writing.story-plan.v1",
@@ -69,7 +75,7 @@ let app: INestApplication | undefined;
 let base: string;
 
 beforeAll(async () => {
-  await pool.query("DROP SCHEMA public CASCADE; CREATE SCHEMA public");
+  await assertEmptyWritingAcceptanceDatabase(pool);
   await runMigrations(pool);
   await pool.query("INSERT INTO workspace (id, name, status) VALUES ($1, 'configured', 'ACTIVE')", [APP_WORKSPACE_ID]);
   const moduleRef = await Test.createTestingModule({

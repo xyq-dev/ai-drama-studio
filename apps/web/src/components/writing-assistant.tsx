@@ -32,6 +32,13 @@ interface AssistantDraft {
   imported: WritingImport | null;
 }
 
+interface ReadPermit {
+  readGeneration: number;
+  objectKey: string;
+  prepareGeneration: number;
+  inputFingerprint: string | null;
+}
+
 const EMPTY: AssistantDraft = {
   genre: "",
   audience: "",
@@ -83,10 +90,13 @@ export function WritingAssistant(props: {
   const [copyNote, setCopyNote] = useState<string | null>(null);
   const [differences, setDifferences] = useState<string[]>([]);
   const [adoptNote, setAdoptNote] = useState<string | null>(null);
-  const token = useRef(0);
+  const generation = useRef(0);
+  const prepareGeneration = useRef(0);
   const draftRef = useRef(draft);
+  const identityRef = useRef({ projectId: props.projectId, entityKey: props.entityKey });
   const importRef = useRef<HTMLTextAreaElement>(null);
   draftRef.current = draft;
+  identityRef.current = { projectId: props.projectId, entityKey: props.entityKey };
 
   if (boundKey !== key) {
     setBoundKey(key);
@@ -98,13 +108,14 @@ export function WritingAssistant(props: {
   }
 
   useEffect(() => {
-    token.current += 1;
+    generation.current += 1;
     return () => {
-      token.current += 1;
+      generation.current += 1;
     };
   }, [props.projectId, props.entityKey, props.episodeNo, props.mode]);
 
   function persist(next: AssistantDraft) {
+    draftRef.current = next;
     setDraft(next);
     try {
       window.sessionStorage.setItem(key, JSON.stringify(next));
@@ -120,6 +131,7 @@ export function WritingAssistant(props: {
   }
 
   function prepare() {
+    generation.current += 1;
     setError(null);
     setDifferences([]);
     setAdoptNote(null);
@@ -134,46 +146,11 @@ export function WritingAssistant(props: {
     const live = props.capture();
     try {
       const instruction = props.mode === "story"
-        ? buildStoryPlanInstruction({
-          premise: props.premise,
-          genre: draft.genre,
-          audience: draft.audience,
-          characters: draft.characters,
-          mustKeep: draft.mustKeep,
-          mustNotChange: draft.mustNotChange,
-          currentText: liveText(props),
-        })
-        : buildEpisodeDraftInstruction({
-          episodeNo: props.episodeNo ?? 0,
-          premise: props.premise,
-          confirmedStory: props.confirmedMaterials,
-          currentText: liveText(props),
-          revisionRequest: draft.revisionRequest,
-          mustKeep: draft.mustKeep,
-          mustKeepDialogue: draft.mustKeepDialogue,
-          mustKeepEnding: draft.mustKeepEnding,
-        });
-      const fingerprint = props.mode === "story"
-        ? writingInputFingerprint({
-          premise: props.premise,
-          genre: draft.genre,
-          audience: draft.audience,
-          characters: draft.characters,
-          mustKeep: draft.mustKeep,
-          mustNotChange: draft.mustNotChange,
-          currentText: liveText(props),
-        })
-        : writingInputFingerprint({
-          episodeNo: props.episodeNo,
-          premise: props.premise,
-          confirmedStory: props.confirmedMaterials,
-          currentText: liveText(props),
-          revisionRequest: draft.revisionRequest,
-          mustKeep: draft.mustKeep,
-          mustKeepDialogue: draft.mustKeepDialogue,
-          mustKeepEnding: draft.mustKeepEnding,
-        });
+        ? buildStoryPlanInstruction(storyRequest(props, draft))
+        : buildEpisodeDraftInstruction(episodeRequest(props, draft));
+      const fingerprint = inputFingerprint(props, draft);
       const frozen = freezeWritingContext({ ...live, loaded: true }, fingerprint);
+      prepareGeneration.current += 1;
       persist({ ...draft, instruction, frozen, imported: null });
     } catch (caught) {
       setError(caught instanceof DomainError ? caught.message : "创作指令没有准备好");
@@ -190,34 +167,55 @@ export function WritingAssistant(props: {
     }
   }
 
-  function acceptImport(bytes: Uint8Array, seen: number) {
+  function acceptImport(bytes: Uint8Array, permit: ReadPermit) {
     try {
       const imported = parseWritingImport(bytes, { mode: props.mode, episodeNo: props.episodeNo });
-      if (seen !== token.current) return;
+      if (!permitCurrent(permit)) return;
       formatWritingImport(imported);
+      if (!permitCurrent(permit)) return;
       persist({ ...draftRef.current, imported });
+      if (!permitCurrent(permit)) return;
       setError(null);
       setDifferences([]);
     } catch (caught) {
-      if (seen !== token.current) return;
+      if (!permitCurrent(permit)) return;
       setError(caught instanceof DomainError ? caught.message : "候选没有通过校验");
     }
   }
 
   function importText(value: string) {
-    acceptImport(new TextEncoder().encode(value), token.current);
+    acceptImport(new TextEncoder().encode(value), takePermit());
   }
 
   async function importFile(file: File) {
-    const seen = token.current;
+    const permit = takePermit();
     try {
       const buffer = props.readFile ? await props.readFile(file) : await file.arrayBuffer();
-      if (seen !== token.current) return;
-      acceptImport(new Uint8Array(buffer), seen);
+      if (!permitCurrent(permit)) return;
+      acceptImport(new Uint8Array(buffer), permit);
     } catch {
-      if (seen !== token.current) return;
+      if (!permitCurrent(permit)) return;
       setError("文件没有读完");
     }
+  }
+
+  function takePermit(): ReadPermit {
+    generation.current += 1;
+    const identity = identityRef.current;
+    return {
+      readGeneration: generation.current,
+      objectKey: storageKey(identity.projectId, identity.entityKey),
+      prepareGeneration: prepareGeneration.current,
+      inputFingerprint: draftRef.current.frozen?.inputFingerprint ?? null,
+    };
+  }
+
+  function permitCurrent(permit: ReadPermit): boolean {
+    const identity = identityRef.current;
+    return permit.readGeneration === generation.current
+      && permit.objectKey === storageKey(identity.projectId, identity.entityKey)
+      && permit.prepareGeneration === prepareGeneration.current
+      && permit.inputFingerprint === (draftRef.current.frozen?.inputFingerprint ?? null);
   }
 
   function adopt() {
@@ -348,6 +346,45 @@ function readCurrent(props: { capture: () => WritingTargetSnapshot }): string {
   return liveText(props);
 }
 
+function storyRequest(
+  props: { premise: string; capture: () => WritingTargetSnapshot },
+  draft: AssistantDraft,
+) {
+  return {
+    premise: props.premise,
+    genre: draft.genre,
+    audience: draft.audience,
+    characters: draft.characters,
+    mustKeep: draft.mustKeep,
+    mustNotChange: draft.mustNotChange,
+    currentText: liveText(props),
+  };
+}
+
+function episodeRequest(
+  props: {
+    episodeNo: number | null;
+    premise: string;
+    confirmedMaterials: string;
+    capture: () => WritingTargetSnapshot;
+  },
+  draft: AssistantDraft,
+) {
+  return {
+    episodeNo: props.episodeNo ?? 0,
+    premise: props.premise,
+    genre: draft.genre,
+    audience: draft.audience,
+    characters: draft.characters,
+    confirmedStory: props.confirmedMaterials,
+    currentText: liveText(props),
+    revisionRequest: draft.revisionRequest,
+    mustKeep: draft.mustKeep,
+    mustKeepDialogue: draft.mustKeepDialogue,
+    mustKeepEnding: draft.mustKeepEnding,
+  };
+}
+
 function inputFingerprint(
   props: {
     mode: "story" | "episode";
@@ -358,27 +395,7 @@ function inputFingerprint(
   },
   draft: AssistantDraft,
 ): string {
-  if (props.mode === "story") {
-    return writingInputFingerprint({
-      premise: props.premise,
-      genre: draft.genre,
-      audience: draft.audience,
-      characters: draft.characters,
-      mustKeep: draft.mustKeep,
-      mustNotChange: draft.mustNotChange,
-      currentText: liveText(props),
-    });
-  }
-  return writingInputFingerprint({
-    episodeNo: props.episodeNo,
-    premise: props.premise,
-    confirmedStory: props.confirmedMaterials,
-    currentText: liveText(props),
-    revisionRequest: draft.revisionRequest,
-    mustKeep: draft.mustKeep,
-    mustKeepDialogue: draft.mustKeepDialogue,
-    mustKeepEnding: draft.mustKeepEnding,
-  });
+  return writingInputFingerprint(props.mode === "story" ? storyRequest(props, draft) : episodeRequest(props, draft));
 }
 
 function safeFormat(imported: WritingImport): string {

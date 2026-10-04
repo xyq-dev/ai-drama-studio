@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { DomainError } from "./errors";
 import {
+  WRITING_BODY_MAX_CHARS,
   WRITING_IMPORT_MAX_BYTES,
+  WRITING_NOTE_MAX_CHARS,
   WRITING_PROMPT_VERSION,
   buildEpisodeDraftInstruction,
   buildStoryPlanInstruction,
@@ -10,6 +12,7 @@ import {
   formatStoryPlan,
   freezeWritingContext,
   parseWritingImport,
+  writingInputFingerprint,
   type EpisodeDraftCandidate,
   type StoryPlanCandidate,
   type WritingTargetSnapshot,
@@ -86,6 +89,9 @@ describe("writing instructions", () => {
     const instruction = buildEpisodeDraftInstruction({
       episodeNo: 2,
       premise: "夜班便利店",
+      genre: "悬疑",
+      audience: "成人",
+      characters: "店员，店长",
       confirmedStory: "第一集结束时记录还在",
       currentText: "第二集原文",
       revisionRequest: "只改开场",
@@ -96,9 +102,53 @@ describe("writing instructions", () => {
     expect(instruction).toContain(WRITING_PROMPT_VERSION);
     expect(instruction).toContain("模式：单集写作");
     expect(instruction).toContain("当前集：第 2 集");
+    expect(instruction).toContain("悬疑");
+    expect(instruction).toContain("成人");
+    expect(instruction).toContain("店员，店长");
     expect(instruction).toContain("对白承担人物行动");
     expect(instruction).toContain("局部修改保留没有点名的段落");
     expect(instruction).toContain("不是平台审核结论");
+  });
+
+  it("keeps a saved story longer than a note, and fingerprints every episode note", () => {
+    const saved = formatStoryPlan({
+      ...storyPlan,
+      episodes: [1, 2, 3].map((episodeNo) => ({
+        episodeNo: episodeNo as 1 | 2 | 3,
+        entryState: "进".repeat(400),
+        goal: "目".repeat(400),
+        action: "行".repeat(400),
+        turn: "转".repeat(400),
+        result: "果".repeat(400),
+        handoff: "交".repeat(400),
+      })),
+    });
+    expect(saved.length).toBeGreaterThan(WRITING_NOTE_MAX_CHARS);
+    expect(saved.length).toBeLessThanOrEqual(WRITING_BODY_MAX_CHARS);
+    const request = {
+      episodeNo: 1,
+      premise: "夜班便利店",
+      genre: "悬疑",
+      audience: "成人",
+      characters: "店员",
+      confirmedStory: saved,
+      currentText: "",
+      revisionRequest: "",
+      mustKeep: "",
+      mustKeepDialogue: "",
+      mustKeepEnding: "",
+    };
+    const instruction = buildEpisodeDraftInstruction(request);
+    expect(instruction).toContain(saved);
+    expect(instruction).toContain("题材（只属于本次助手草稿，不是已保存的项目配置）：\n悬疑");
+    const fingerprint = writingInputFingerprint(request);
+    expect(writingInputFingerprint({ ...request, genre: "喜剧" })).not.toBe(fingerprint);
+    expect(writingInputFingerprint({ ...request, audience: "青少年" })).not.toBe(fingerprint);
+    expect(writingInputFingerprint({ ...request, characters: "另一人" })).not.toBe(fingerprint);
+    expect(() => buildEpisodeDraftInstruction({
+      ...request,
+      confirmedStory: "故".repeat(WRITING_BODY_MAX_CHARS + 1),
+    })).toThrowError(/没有截断/);
   });
 });
 

@@ -36,6 +36,9 @@ export interface StoryPlanRequest {
 export interface EpisodeDraftRequest {
   episodeNo: number;
   premise: string;
+  genre: string;
+  audience: string;
+  characters: string;
   confirmedStory: string;
   currentText: string;
   revisionRequest: string;
@@ -103,6 +106,15 @@ function assertBody(value: string): void {
   }
 }
 
+function assertSavedBody(label: string, value: string): void {
+  if (value.length > WRITING_BODY_MAX_CHARS) {
+    throw new DomainError("WRITING_TOO_LARGE", `${label}超过 ${WRITING_BODY_MAX_CHARS} 字，已拒绝，没有截断`);
+  }
+  if (value.includes("\u0000")) {
+    throw new DomainError("WRITING_INVALID_CANDIDATE", `${label}含有空字符`);
+  }
+}
+
 function stableWritingJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map((item) => stableWritingJson(item)).join(",")}]`;
   if (value && typeof value === "object") {
@@ -164,7 +176,10 @@ export function buildEpisodeDraftInstruction(request: EpisodeDraftRequest): stri
     throw new DomainError("WRITING_EPISODE_MISMATCH", "当前试制只接受第 1、2、3 集");
   }
   assertNote("梗概", request.premise);
-  assertNote("已确认的故事材料", request.confirmedStory);
+  assertNote("题材", request.genre);
+  assertNote("目标观众", request.audience);
+  assertNote("人物设定", request.characters);
+  assertSavedBody("已确认的故事材料", request.confirmedStory);
   assertNote("修改要求", request.revisionRequest);
   assertNote("必须保留", request.mustKeep);
   assertNote("必须保留的对白", request.mustKeepDialogue);
@@ -177,6 +192,12 @@ export function buildEpisodeDraftInstruction(request: EpisodeDraftRequest): stri
     `当前集：第 ${request.episodeNo} 集`,
     "作品梗概：",
     request.premise,
+    "题材（只属于本次助手草稿，不是已保存的项目配置）：",
+    request.genre,
+    "目标观众（只属于本次助手草稿，不是已保存的项目配置）：",
+    request.audience,
+    "人物设定（只属于本次助手草稿，不是已保存的项目配置）：",
+    request.characters,
     "创作者确认使用的故事与分集材料：",
     request.confirmedStory,
     "修改要求：",
