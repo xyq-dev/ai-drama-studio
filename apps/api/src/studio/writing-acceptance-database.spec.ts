@@ -43,5 +43,9 @@ describe("writing acceptance database guard", () => {
     expect(web).not.toContain("DROP SCHEMA");
     expect(http).toContain("does not open a browser");
     expect(web).toContain("real Web, API, and PostgreSQL");
+    const config = readFileSync(join(__dirname, "../../vitest.integration.config.ts"), "utf8");
+    expect(config).toContain("writing-assistant.acceptance.integration.spec.ts");
+    expect(config).toContain("ai_drama_writing");
+    expect(config).toContain("ai_drama_writing_web");
   });
 });
