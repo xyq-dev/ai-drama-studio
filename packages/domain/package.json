@@ -8,6 +8,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./writing-assistant": {
+      "types": "./dist/writing-assistant.d.ts",
+      "default": "./dist/writing-assistant.js"
     }
   },
   "dependencies": {

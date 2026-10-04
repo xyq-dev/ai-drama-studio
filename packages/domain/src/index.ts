@@ -156,6 +156,27 @@ export {
   type ComposeSourceObject,
 } from "./compose-render";
 export {
+  EPISODE_DRAFT_SCHEMA,
+  STORY_PLAN_SCHEMA,
+  WRITING_BODY_MAX_CHARS,
+  WRITING_IMPORT_MAX_BYTES,
+  WRITING_PROMPT_VERSION,
+  buildEpisodeDraftInstruction,
+  buildStoryPlanInstruction,
+  canAdopt,
+  formatEpisodeDraft,
+  formatStoryPlan,
+  formatWritingImport,
+  freezeWritingContext,
+  parseWritingImport,
+  writingInputFingerprint,
+  type EpisodeDraftRequest,
+  type FrozenWritingContext,
+  type StoryPlanRequest,
+  type WritingImport,
+  type WritingTargetSnapshot,
+} from "./writing-assistant";
+export {
   FRESHNESS_STATUSES,
   PRODUCTION_EPISODE_NUMBERS,
   REVIEW_STATUSES,

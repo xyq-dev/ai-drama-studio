@@ -156,6 +156,9 @@ importers:
       '@ai-drama/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@ai-drama/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
       next:
         specifier: 16.3.6
         version: 16.3.6(@types/node@26.6.2)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
