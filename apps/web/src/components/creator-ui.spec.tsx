@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 // Simulated interface tests. fetch is mocked; this file does not start a browser or a backend.
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PreviewBoard } from "./preview-board";
 import { ProductHome } from "./product-home";
@@ -74,6 +74,92 @@ describe("creator interface", () => {
     fireEvent.keyDown(window, { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "新建作品" }));
+  });
+
+  it("shows a create failure inside the dialog and keeps it apart from a list failure", async () => {
+    let listMode: "fail" | "ok" = "fail";
+    const posts: string[] = [];
+    vi.stubGlobal("fetch", vi.fn((_input: string, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        posts.push(new Headers(init.headers).get("Idempotency-Key") ?? "");
+        return Promise.resolve(json({ error: { code: "UNAVAILABLE", message: "暂时不能创建这部很长的作品因为接口没有接上" } }, 503));
+      }
+      if (listMode === "fail") return Promise.resolve(json({ error: { code: "UNAVAILABLE", message: "项目列表加载失败" } }, 503));
+      return Promise.resolve(json({ items: [], nextCursor: null }));
+    }));
+    render(<ProjectHome />);
+    expect(await screen.findByText(/连接状态：读取失败/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "新建作品" }));
+    const title = await screen.findByLabelText("标题");
+    fireEvent.change(title, { target: { value: "夜班便利店夜班便利店夜班便利店夜班便利店" } });
+    fireEvent.change(screen.getByLabelText("故事梗概"), { target: { value: "最后一盒饭团" } });
+    fireEvent.click(screen.getByRole("button", { name: "创建项目" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.textContent).toContain("暂时不能创建这部很长的作品因为接口没有接上");
+    expect(dialog.textContent).not.toContain("项目列表加载失败");
+    expect(dialog.textContent).not.toContain("读取失败");
+    expect(screen.getByText(/连接状态：读取失败/)).toBeTruthy();
+    listMode = "ok";
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    expect(await screen.findByText(/还没有项目/)).toBeTruthy();
+    expect(screen.getByRole("dialog").textContent).toContain("暂时不能创建这部很长的作品因为接口没有接上");
+    expect(window.sessionStorage.getItem("ads-draft:new:project:new")).toContain("夜班便利店");
+    fireEvent.click(screen.getByRole("button", { name: "关闭" }));
+    fireEvent.click(screen.getByRole("button", { name: "新建作品" }));
+    expect((screen.getByLabelText("标题") as HTMLInputElement).value).toContain("夜班便利店");
+    fireEvent.click(screen.getByRole("button", { name: "创建项目" }));
+    await waitFor(() => expect(posts).toHaveLength(2));
+    expect(posts[0]).toBeTruthy();
+    expect(posts[1]).toBe(posts[0]);
+  });
+
+  it("keeps tab focus inside the create dialog", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(json({ items: [], nextCursor: null }))));
+    render(<ProjectHome />);
+    fireEvent.click(await screen.findByRole("button", { name: "新建作品" }));
+    const close = await screen.findByRole("button", { name: "关闭" });
+    const title = screen.getByLabelText("标题");
+    close.focus();
+    fireEvent.keyDown(window, { key: "Tab" });
+    expect(document.activeElement).toBe(title);
+    fireEvent.keyDown(window, { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toBe(close);
+    const opener = [...document.querySelectorAll("button")].find((button) => button.textContent === "新建作品");
+    expect(opener?.closest("[inert]")).toBeTruthy();
+  });
+
+  it("drops the mobile navigation trap when the viewport becomes wide", async () => {
+    const listeners = new Set<(event: MediaQueryListEvent) => void>();
+    let matches = false;
+    window.matchMedia = (query: string) => ({
+      get matches() { return matches; },
+      media: query,
+      onchange: null,
+      addEventListener: (_type: string, listener: EventListener) => listeners.add(listener as (event: MediaQueryListEvent) => void),
+      removeEventListener: (_type: string, listener: EventListener) => listeners.delete(listener as (event: MediaQueryListEvent) => void),
+      dispatchEvent: () => false,
+      addListener: () => undefined,
+      removeListener: () => undefined,
+    });
+    render(<ProductHome />);
+    fireEvent.click(screen.getByRole("button", { name: "打开导航" }));
+    const dialog = await screen.findByRole("dialog", { name: "导航" });
+    const close = screen.getByRole("button", { name: "关闭导航" });
+    const status = within(dialog).getByRole("link", { name: "服务状态" });
+    status.focus();
+    fireEvent.keyDown(window, { key: "Tab" });
+    expect(document.activeElement).toBe(close);
+    fireEvent.keyDown(window, { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toBe(status);
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    matches = true;
+    act(() => {
+      for (const listener of listeners) listener({ matches: true } as MediaQueryListEvent);
+    });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "导航" })).toBeNull());
+    expect(document.querySelector("[inert]")).toBeNull();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("shows loading, an empty list, a failed read, and retry without inventing projects", async () => {

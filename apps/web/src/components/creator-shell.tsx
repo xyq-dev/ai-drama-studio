@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useModalKeyboard } from "../lib/modal-keyboard";
 
 const LINKS = [
   { href: "/", label: "首页" },
@@ -33,16 +34,16 @@ export function CreatorShell({ children }: { children: ReactNode }) {
     opener.current?.focus();
   }
 
+  useModalKeyboard(open && !wide, panel, close);
+
   useEffect(() => {
-    if (!open) return;
-    const first = panel.current?.querySelector<HTMLElement>("a, button");
-    first?.focus();
-    function onKey(event: KeyboardEvent) {
-      if (event.key === "Escape") close();
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open]);
+    if (wide) setOpen(false);
+  }, [wide]);
+
+  useEffect(() => {
+    if (!open || wide) return;
+    panel.current?.querySelector<HTMLElement>("a, button")?.focus();
+  }, [open, wide]);
 
   const nav = (
     <ul className="space-y-1">
@@ -86,7 +87,7 @@ export function CreatorShell({ children }: { children: ReactNode }) {
                 role="dialog"
                 aria-modal="true"
                 aria-label="导航"
-                className="h-full w-72 border-r border-[#283140] bg-[#141A23] p-4"
+                className="h-full w-72 overflow-y-auto border-r border-[#283140] bg-[#141A23] p-4 [overflow-wrap:anywhere]"
               >
                 <button className="text-sm underline" type="button" onClick={close}>关闭导航</button>
                 <nav className="mt-4">{nav}</nav>

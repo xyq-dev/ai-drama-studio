@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ComposePreflight } from "./compose-preflight";
 import { EpisodeComposePreflight } from "./episode-compose-preflight";
 import { ProjectCostSummary } from "./project-cost-summary";
@@ -222,6 +222,34 @@ function focusLabel(focus: Focus): string {
   }
 }
 
+const InspectContext = createContext<{
+  visible: boolean;
+  registerInspect: () => void;
+  unregisterInspect: () => void;
+}>({
+  visible: true,
+  registerInspect: () => undefined,
+  unregisterInspect: () => undefined,
+});
+
+function EditorGrid({ children }: { children: ReactNode }) {
+  const { visible } = useContext(InspectContext);
+  return <div className={`grid gap-4 ${visible ? "xl:grid-cols-[minmax(0,1fr)_20rem]" : ""}`}>{children}</div>;
+}
+
+function InspectSlot({ children }: { children: ReactNode }) {
+  const { visible, registerInspect, unregisterInspect } = useContext(InspectContext);
+  useEffect(() => {
+    registerInspect();
+    return () => unregisterInspect();
+  }, [registerInspect, unregisterInspect]);
+  return (
+    <aside aria-label="检查面板" className={visible ? "min-w-0 [overflow-wrap:anywhere]" : "hidden"}>
+      {children}
+    </aside>
+  );
+}
+
 function focusQuery(focus: Focus): string {
   const params = new URLSearchParams();
   params.set("focus", focus.kind);
@@ -242,11 +270,35 @@ export function Workbench({ projectId }: { projectId: string }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [navOpen, setNavOpen] = useState(false);
-  const [sideOpen, setSideOpen] = useState(false);
+  const [wide, setWide] = useState(false);
+  const [narrowOpen, setNarrowOpen] = useState(false);
+  const [desktopOpen, setDesktopOpen] = useState(true);
+  const [inspectCount, setInspectCount] = useState(0);
+  const wideRef = useRef(false);
   useEffect(() => {
     if (typeof window.matchMedia !== "function") return;
-    if (window.matchMedia("(min-width: 1024px)").matches) setSideOpen(true);
+    const query = window.matchMedia("(min-width: 1280px)");
+    const apply = (event?: MediaQueryListEvent) => {
+      const nextWide = typeof event?.matches === "boolean" ? event.matches : query.matches;
+      wideRef.current = nextWide;
+      setWide(nextWide);
+      if (!nextWide) setNarrowOpen(false);
+    };
+    apply();
+    query.addEventListener("change", apply);
+    return () => query.removeEventListener("change", apply);
   }, []);
+  const toggleInspect = useCallback(() => {
+    if (wideRef.current) setDesktopOpen((open) => !open);
+    else setNarrowOpen((open) => !open);
+  }, []);
+  const registerInspect = useCallback(() => setInspectCount((count) => count + 1), []);
+  const unregisterInspect = useCallback(() => setInspectCount((count) => count - 1), []);
+  const inspectVisible = wide ? desktopOpen : narrowOpen;
+  const inspect = useMemo(
+    () => ({ visible: inspectVisible, registerInspect, unregisterInspect }),
+    [inspectVisible, registerInspect, unregisterInspect],
+  );
   const [tasksOpen, setTasksOpen] = useState(false);
   const [saveState, setSaveState] = useState("尚未修改");
   const [refreshEpoch, setRefreshEpoch] = useState(0);
@@ -358,22 +410,23 @@ export function Workbench({ projectId }: { projectId: string }) {
   const textWorkflows = workflows;
 
   return (
+    <InspectContext.Provider value={inspect}>
     <div className="min-h-screen bg-neutral-100 text-neutral-900">
       <header className="flex flex-wrap items-center gap-3 border-b border-neutral-200 bg-white px-4 py-3">
         <a className="text-sm underline" href="/studio">创作中心</a>
         <div className="min-w-0">
           <p className="text-xs text-neutral-600">作品</p>
-          <h1 className="text-lg font-semibold">{project?.title ?? "加载中"}</h1>
+          <h1 className="text-lg font-semibold [overflow-wrap:anywhere]">{project?.title ?? "加载中"}</h1>
         </div>
         <p className="text-sm text-neutral-600">当前内容：<span>{focusLabel(focus)}</span></p>
         <p className="text-sm">保存状态：<span>{saveState}</span></p>
         <button className="ml-auto rounded border border-neutral-300 px-3 py-1 text-sm lg:hidden" type="button" onClick={() => setNavOpen(true)}>目录</button>
-        <button className="rounded border border-neutral-300 px-3 py-1 text-sm" type="button" aria-expanded={sideOpen} onClick={() => setSideOpen((open) => !open)}>检查</button>
+        <button className="rounded border border-neutral-300 px-3 py-1 text-sm" type="button" aria-expanded={inspectVisible} onClick={toggleInspect}>检查</button>
         <button className="rounded bg-red-700 px-3 py-1 text-sm text-white" type="button" onClick={() => setTasksOpen(true)}>任务</button>
       </header>
       {error ? <p className="px-4 py-2 text-sm" role="alert">{error}</p> : null}
       {loading ? <p className="px-4 py-6 text-sm">正在加载工作台</p> : null}
-      <div className={`grid ${sideOpen ? "lg:grid-cols-[16rem_minmax(0,1fr)_22rem]" : "lg:grid-cols-[16rem_minmax(0,1fr)]"}`}>
+      <div className="grid lg:grid-cols-[16rem_minmax(0,1fr)]">
         <nav className={`${navOpen ? "fixed inset-y-0 left-0 z-20 w-72 overflow-auto bg-white p-4 shadow-xl" : "hidden"} lg:static lg:block lg:bg-transparent lg:p-4 lg:shadow-none`} aria-label="创作步骤">
           <button className="mb-3 text-sm underline lg:hidden" type="button" onClick={() => setNavOpen(false)}>关闭目录</button>
           <p className="px-2 pt-2 text-xs text-neutral-600">故事与剧本</p>
@@ -435,7 +488,6 @@ export function Workbench({ projectId }: { projectId: string }) {
               onMore={() => void more("stories")}
               onSaved={reloadBase}
               onStatus={setSaveState}
-              onOpenSide={() => setSideOpen(true)}
             />
           ) : null}
           {project && focus.kind === "episode-compose" ? (
@@ -482,12 +534,10 @@ export function Workbench({ projectId }: { projectId: string }) {
               onOpenShot={(shotId) => setFocus({ kind: "shot", episodeNo: focus.episodeNo, sceneId: focus.sceneId, shotId })}
             />
           ) : null}
+          {!loading && project && inspectVisible && inspectCount === 0 ? (
+            <p className="mt-4 rounded-lg bg-white p-4 text-sm [overflow-wrap:anywhere]" role="status">当前内容没有版本、比较、来源或审核。</p>
+          ) : null}
         </section>
-        <aside className={`${sideOpen ? "fixed inset-y-0 right-0 z-20 w-full max-w-md overflow-auto bg-white p-4 shadow-xl lg:static lg:shadow-none" : "hidden"} lg:p-4`} aria-label="检查面板">
-          <button className="mb-3 text-sm underline lg:hidden" type="button" onClick={() => setSideOpen(false)}>关闭检查</button>
-          <h2 className="font-medium">检查</h2>
-          <p className="mt-2 text-sm text-neutral-600">版本、比较、来源和审核仍在当前正文旁。打开检查面板查看说明；窄屏从「检查」进入。已记录成本不是余额，也不是应付费用。</p>
-        </aside>
       </div>
       {tasksOpen ? (
         <TaskDrawer
@@ -498,6 +548,7 @@ export function Workbench({ projectId }: { projectId: string }) {
         />
       ) : null}
     </div>
+    </InspectContext.Provider>
   );
 }
 
@@ -507,11 +558,10 @@ function StoryPane(props: {
   onMore: () => void;
   onSaved: () => Promise<void>;
   onStatus: (value: string) => void;
-  onOpenSide: () => void;
 }) {
   const current = currentStoryRevision(props.stories?.items ?? []);
   return (
-    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]">
+    <EditorGrid>
         <ContentEditor
           title="故事"
           projectId={props.project.id}
@@ -538,6 +588,7 @@ function StoryPane(props: {
         }}
         onSaved={props.onSaved}
       />
+      <InspectSlot>
       <RevisionColumn
         items={(props.stories?.items ?? []).map((item) => ({
           id: item.id,
@@ -556,9 +607,9 @@ function StoryPane(props: {
         ifMatch={props.project.version}
         reviewPath={(revisionId) => `/projects/${props.project.id}/stories/${revisionId}/review`}
         onSaved={props.onSaved}
-        onOpen={props.onOpenSide}
       />
-    </div>
+      </InspectSlot>
+    </EditorGrid>
   );
 }
 
@@ -616,7 +667,7 @@ function ScriptPane(props: {
   return (
     <div className="space-y-4">
       {error ? <p role="alert">{error}</p> : null}
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]">
+      <EditorGrid>
         <ContentEditor
           title={`第 ${episode.episodeNo} 集剧本`}
           projectId={props.projectId}
@@ -652,6 +703,7 @@ function ScriptPane(props: {
             await load();
           }}
         />
+        <InspectSlot>
         <RevisionColumn
           items={(scripts?.items ?? []).map((item) => ({
             id: item.id,
@@ -689,7 +741,8 @@ function ScriptPane(props: {
             await load();
           }}
         />
-      </div>
+        </InspectSlot>
+      </EditorGrid>
       <SceneList
         projectId={props.projectId}
         episode={props.episode}
@@ -1207,7 +1260,7 @@ function EntityPane(props: {
   const current = history?.items.find((item) => item.id === history.aggregate.currentRevisionId) ?? null;
 
   return (
-    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]">
+    <EditorGrid>
       <div className="space-y-4">
         <section className="rounded-lg bg-white p-4">
           <h2 className="font-medium">{props.kind === "character" ? "角色" : "场地"}</h2>
@@ -1266,6 +1319,7 @@ function EntityPane(props: {
           onSaved={props.onSaved}
         />
       </div>
+      <InspectSlot>
       {history?.aggregate.entityId === selected ? (
         <RevisionColumn
           items={history.items.map((item) => ({
@@ -1290,7 +1344,8 @@ function EntityPane(props: {
           }}
         />
       ) : <p className="text-sm">选择一个对象后显示版本。</p>}
-    </div>
+      </InspectSlot>
+    </EditorGrid>
   );
 }
 
@@ -1494,7 +1549,7 @@ function ScenePane(props: {
     <div className="space-y-4">
       {error ? <p role="alert">{error}</p> : null}
       {visibleHistory && current ? (
-        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]">
+        <EditorGrid>
           <SceneForm
             projectId={props.projectId}
             episode={props.episode}
@@ -1512,6 +1567,7 @@ function ScenePane(props: {
             }}
             onSaved={async () => { await props.onSaved(); await load(); }}
           />
+          <InspectSlot>
           <RevisionColumn
             items={visibleHistory.items.map((item) => ({
               id: item.id,
@@ -1531,7 +1587,8 @@ function ScenePane(props: {
             reviewPath={(revisionId) => `/projects/${props.projectId}/episodes/${props.episode?.id}/scenes/${props.sceneId}/revisions/${revisionId}/review`}
             onSaved={async () => { await props.onSaved(); await load(); }}
           />
-        </div>
+          </InspectSlot>
+        </EditorGrid>
       ) : <p>场景没有当前版本</p>}
       <section className="rounded-lg bg-white p-4">
         <h2 className="font-medium">镜头</h2>
@@ -1559,7 +1616,7 @@ function ScenePane(props: {
         ) : null}
       </section>
       {props.shotId && visibleShot && shotCurrent ? (
-        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]">
+        <EditorGrid>
           <div className="min-w-0 space-y-4">
           <ShotForm
             shot={visibleShot.aggregate}
@@ -1601,6 +1658,7 @@ function ScenePane(props: {
           />
           <ComposePreflight revisionId={shotCurrent.id} refreshEpoch={props.imageEpoch} />
           </div>
+          <InspectSlot>
           <RevisionColumn
             items={visibleShot.items.map((item) => ({
               id: item.id,
@@ -1620,7 +1678,8 @@ function ScenePane(props: {
             reviewPath={(revisionId) => `/projects/${props.projectId}/episodes/${props.episode?.id}/scenes/${props.sceneId}/shots/${props.shotId}/revisions/${revisionId}/review`}
             onSaved={async () => { await props.onSaved(); await load(); }}
           />
-        </div>
+          </InspectSlot>
+        </EditorGrid>
       ) : null}
     </div>
   );
@@ -2105,7 +2164,6 @@ function RevisionColumn(props: {
   ifMatch: number;
   reviewPath: (revisionId: string) => string;
   onSaved: () => Promise<void>;
-  onOpen?: () => void;
 }) {
   const latest = props.items[0];
   const previous = props.items[1];
@@ -2159,7 +2217,6 @@ function RevisionColumn(props: {
   return (
     <aside className="min-w-0 rounded-lg bg-white p-4 [overflow-wrap:anywhere]">
       <h2 className="font-medium">版本</h2>
-      {props.onOpen ? <button className="text-sm underline xl:hidden" type="button" onClick={props.onOpen}>在窄屏打开版本栏</button> : null}
       {props.items.length === 0 ? <p className="mt-2 text-sm">没有历史版本</p> : null}
       <ul className="mt-2 space-y-2 text-sm">
         {props.items.map((item) => (
