@@ -6,7 +6,7 @@
 
 | 目录 | 分支 | HEAD | 说明 |
 | --- | --- | --- | --- |
-| `D:\Projects\ai-drama-studio-writing-assistant` | `feat/drama-writing-assistant` | `758cb6e63c591e816b4eb060ae510ca4e9166517` | PR #43。审查时的 HEAD 是 `231da048a4ee1b0d658406cef3d75fac7fb9c247` |
+| `D:\Projects\ai-drama-studio-writing-assistant` | `feat/drama-writing-assistant` | `988dc8832f335aa3cfc1fd64110743fe52567a59` | PR #43 的已验证提交。审查时的 HEAD 是 `231da048a4ee1b0d658406cef3d75fac7fb9c247`。本段 Run 属于这个 SHA |
 | `D:\Projects\ai-drama-studio-commercial-creator-ui` | `feat/commercial-creator-ui` | `40d87f61a999eca9b2f3705f1c49add52db9a60f` | PR #42。审查时的 HEAD 是 `a5651f7ebd5c0c65acc1410a067eb02c61d9b269` |
 | `D:\Projects\ai-drama-studio` | `feat/qwen-text-trial` | `7ee5508bf01338ae4b974b7ad9943b1d2f7dff53` | 千问试接分支未改。未跟踪的 `m3-av-e2e-output-ci/` 仍在 |
 
@@ -39,12 +39,12 @@ PR #43 仍是 Draft，base 仍是 `feat/commercial-creator-ui`。PR #42 仍是 D
 
 ## Run 链接
 
-PR #43 新 HEAD `758cb6e63c591e816b4eb060ae510ca4e9166517`：
+PR #43 已验证提交 `988dc8832f335aa3cfc1fd64110743fe52567a59`：
 
-- push：https://github.com/xyq-dev/ai-drama-studio/actions/runs/37193456066 ，`import-adopt-save` 与 `web-import-adopt-save` 都成功
-- pull_request：https://github.com/xyq-dev/ai-drama-studio/actions/runs/37193458253 ，同样两个 job 都成功
+- push：https://github.com/xyq-dev/ai-drama-studio/actions/runs/37193650808 ，`import-adopt-save` 与 `web-import-adopt-save` 都成功
+- pull_request：https://github.com/xyq-dev/ai-drama-studio/actions/runs/37193653310 ，同样两个 job 都成功
 
-`66ccf0a` 与 `e9097cb` 上的 Writing assistant API 网页 job 失败，不能当作这个 HEAD 的结果。更早的 `37188059393` 也不属于这个 HEAD。
+同一套验收脚本在父提交 `758cb6e63c591e816b4eb060ae510ca4e9166517` 也通过了：push https://github.com/xyq-dev/ai-drama-studio/actions/runs/37193456066 ，pull_request https://github.com/xyq-dev/ai-drama-studio/actions/runs/37193458253 。`66ccf0a` 与 `e9097cb` 的网页 job 失败，不能代替上面的结果。更早的 `37188059393` 也不属于这些 HEAD。
 
 PR #42 新 HEAD `40d87f61a999eca9b2f3705f1c49add52db9a60f`：
 
