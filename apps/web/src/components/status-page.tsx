@@ -2,10 +2,12 @@ import type { StatusView } from "../lib/load-status";
 
 export function StatusPage({ view }: { view: StatusView }) {
   return (
-    <main className="mx-auto max-w-xl px-6 py-10">
+    <main className="mx-auto max-w-xl bg-[#0B0E14] px-6 py-10 text-[#F4F6FA]">
       <h1 className="text-2xl font-semibold">服务状态</h1>
-      <p className="mt-2 text-sm text-neutral-600">
-        <a className="underline" href="/">返回项目列表</a>
+      <p className="mt-2 text-sm text-[#AAB3C5]">
+        <a className="underline" href="/">返回首页</a>
+        <span> · </span>
+        <a className="underline" href="/studio">创作中心</a>
       </p>
       <dl className="mt-6 space-y-3">
         <div>

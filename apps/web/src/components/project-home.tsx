@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ApiError, StudioClient } from "../lib/studio-client";
 import {
   LIMITS,
@@ -31,6 +31,9 @@ export function ProjectHome() {
   const [title, setTitle] = useState("");
   const [premise, setPremise] = useState("");
   const [creating, setCreating] = useState(false);
+  const [composerOpen, setComposerOpen] = useState(false);
+  const openerRef = useRef<HTMLButtonElement>(null);
+  const titleRef = useRef<HTMLInputElement>(null);
 
   async function load(cursor: string | null, append: boolean) {
     setLoading(true);
@@ -56,6 +59,21 @@ export function ProjectHome() {
     }
     void load(null, false);
   }, []);
+
+  useEffect(() => {
+    if (!composerOpen) return;
+    titleRef.current?.focus();
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") closeComposer();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [composerOpen]);
+
+  function closeComposer() {
+    setComposerOpen(false);
+    openerRef.current?.focus();
+  }
 
   function remember(nextTitle: string, nextPremise: string) {
     setTitle(nextTitle);
@@ -85,54 +103,88 @@ export function ProjectHome() {
   }
 
   return (
-    <main className="mx-auto max-w-3xl px-4 py-8 text-neutral-900">
-      <header className="flex items-center justify-between gap-4">
-        <h1 className="text-2xl font-semibold">项目</h1>
-        <a className="text-sm underline" href="/status">服务状态</a>
-      </header>
-      <form
-        className="mt-6 space-y-3 rounded-lg bg-white p-4 shadow-sm"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void createProject();
-        }}
-      >
-        <h2 className="font-medium">创建项目</h2>
-        <label className="block text-sm" htmlFor="project-title">标题</label>
-        <input
-          id="project-title"
-          className="w-full rounded border border-neutral-300 px-3 py-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-red-700"
-          maxLength={LIMITS.title}
-          value={title}
-          onChange={(event) => remember(event.target.value, premise)}
-          required
-        />
-        <label className="block text-sm" htmlFor="project-premise">梗概</label>
-        <textarea
-          id="project-premise"
-          className="w-full rounded border border-neutral-300 px-3 py-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-red-700"
-          maxLength={LIMITS.premise}
-          rows={4}
-          value={premise}
-          onChange={(event) => remember(title, event.target.value)}
-        />
-        <button className="rounded bg-red-700 px-4 py-2 text-white disabled:opacity-50" type="submit" disabled={creating || title.trim().length === 0}>
-          {creating ? "创建中" : "创建项目"}
+    <main className="mx-auto max-w-5xl px-4 py-8 text-[#F4F6FA]">
+      <header className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <p className="text-sm text-[#AAB3C5]">创作中心</p>
+          <h1 className="text-2xl font-semibold">你的作品</h1>
+        </div>
+        <button
+          ref={openerRef}
+          className="rounded bg-[#9B8CFF] px-4 py-2 text-[#0B0E14]"
+          type="button"
+          aria-haspopup="dialog"
+          aria-expanded={composerOpen}
+          onClick={() => setComposerOpen(true)}
+        >
+          新建作品
         </button>
-      </form>
-      {error ? <p className="mt-4 text-sm" role="alert">{error}</p> : null}
-      <section className="mt-6 rounded-lg bg-white p-4 shadow-sm" aria-busy={loading}>
+      </header>
+      {composerOpen ? (
+        <div className="fixed inset-0 z-30 flex items-end justify-center bg-black/60 p-4 sm:items-center" role="presentation">
+          <form
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="create-work-title"
+            className="w-full max-w-lg space-y-3 rounded-lg border border-[#283140] bg-[#141A23] p-4"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void createProject();
+            }}
+          >
+            <h2 id="create-work-title" className="font-medium">新建作品</h2>
+            <p className="text-sm text-[#AAB3C5]">只保存标题和故事梗概。当前试制范围仍是固定三集，这里不能选择集数或时长。</p>
+            <label className="block text-sm" htmlFor="project-title">标题</label>
+            <input
+              ref={titleRef}
+              id="project-title"
+              className="w-full rounded border border-[#283140] bg-[#0B0E14] px-3 py-2 text-[#F4F6FA]"
+              maxLength={LIMITS.title}
+              value={title}
+              onChange={(event) => remember(event.target.value, premise)}
+              required
+            />
+            <label className="block text-sm" htmlFor="project-premise">故事梗概</label>
+            <textarea
+              id="project-premise"
+              className="w-full rounded border border-[#283140] bg-[#0B0E14] px-3 py-2 text-[#F4F6FA]"
+              maxLength={LIMITS.premise}
+              rows={4}
+              value={premise}
+              onChange={(event) => remember(title, event.target.value)}
+            />
+            <div className="flex gap-2">
+              <button className="rounded bg-[#9B8CFF] px-4 py-2 text-[#0B0E14] disabled:opacity-50" type="submit" disabled={creating || title.trim().length === 0}>
+                {creating ? "创建中" : "创建项目"}
+              </button>
+              <button className="rounded border border-[#283140] px-4 py-2" type="button" onClick={closeComposer}>关闭</button>
+            </div>
+          </form>
+        </div>
+      ) : null}
+      {error ? (
+        <div className="mt-4 rounded-lg border border-[#283140] bg-[#141A23] p-4" role="alert">
+          <p className="text-sm">{page === null ? `连接状态：读取失败。${error}` : error}</p>
+          {page === null ? <p className="mt-2 text-sm text-[#AAB3C5]">接口暂不可用时不会改用示例项目。</p> : null}
+          <div className="mt-3 flex gap-3">
+            <button className="rounded border border-[#283140] px-3 py-1 text-sm" type="button" onClick={() => void load(null, false)}>重试</button>
+            <a className="rounded border border-[#283140] px-3 py-1 text-sm" href="/preview">查看界面预览</a>
+          </div>
+        </div>
+      ) : null}
+      <section className="mt-6 rounded-lg border border-[#283140] bg-[#141A23] p-4" aria-busy={loading}>
         <h2 className="font-medium">继续创作</h2>
         {loading && page === null ? <p className="mt-3 text-sm">正在加载项目</p> : null}
-        {page && page.items.length === 0 ? <p className="mt-3 text-sm">还没有项目</p> : null}
-        <ul className="mt-3 divide-y divide-neutral-200">
+        {!loading && page && page.items.length === 0 ? <p className="mt-3 text-sm">还没有项目。可以用「新建作品」写下标题和梗概。</p> : null}
+        <ul className="mt-3 divide-y divide-[#283140]">
           {page?.items.map((project) => (
-            <li key={project.id} className="flex items-center justify-between gap-3 py-3">
-              <div>
+            <li key={project.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
+              <div className="min-w-0">
                 <p className="font-medium">{project.title}</p>
-                <p className="text-sm text-neutral-600">{project.premise || "无梗概"} · {project.status} · 版本 {project.version}</p>
+                <p className="text-sm text-[#AAB3C5]">{project.premise || "无梗概"}</p>
+                <p className="text-sm text-[#AAB3C5]">状态 {project.status} · 版本 {project.version}</p>
               </div>
-              <a className="rounded border border-neutral-300 px-3 py-1 text-sm" href={`/projects/${project.id}`}>继续创作</a>
+              <a className="rounded border border-[#283140] px-3 py-1 text-sm" href={`/projects/${project.id}`}>继续创作</a>
             </li>
           ))}
         </ul>

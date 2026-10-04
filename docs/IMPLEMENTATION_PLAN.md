@@ -61,3 +61,7 @@
 | 下一阶段进入条件 | V1 样本、运行手册、许可/SBOM 复核完成；之后另行立项。 |
 
 各项是否达到上表标准，以 [`M4_CLOSEOUT_REPORT.md`](M4_CLOSEOUT_REPORT.md) 的验收矩阵为准。该记录不改写本表，也不把部分通过写成完整 M4。
+
+## 商业创作者界面
+
+面向独立 AI 短剧创作者的第一版界面见 [`COMMERCIAL_PRODUCT_PLAN.md`](COMMERCIAL_PRODUCT_PLAN.md)。这一阶段只调整 Web 的产品入口、创作中心、工作台布局和只读预览。它不改写上面的 M1–M4 验收结论，也不表示产品已经可以公开商业运营。

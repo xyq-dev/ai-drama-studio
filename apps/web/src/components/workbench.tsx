@@ -243,6 +243,10 @@ export function Workbench({ projectId }: { projectId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [navOpen, setNavOpen] = useState(false);
   const [sideOpen, setSideOpen] = useState(false);
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    if (window.matchMedia("(min-width: 1024px)").matches) setSideOpen(true);
+  }, []);
   const [tasksOpen, setTasksOpen] = useState(false);
   const [saveState, setSaveState] = useState("尚未修改");
   const [refreshEpoch, setRefreshEpoch] = useState(0);
@@ -356,20 +360,25 @@ export function Workbench({ projectId }: { projectId: string }) {
   return (
     <div className="min-h-screen bg-neutral-100 text-neutral-900">
       <header className="flex flex-wrap items-center gap-3 border-b border-neutral-200 bg-white px-4 py-3">
-        <a className="text-sm underline" href="/">项目</a>
-        <h1 className="text-lg font-semibold">{project?.title ?? "加载中"}</h1>
-        <p className="text-sm text-neutral-600">{focusLabel(focus)}</p>
-        <p className="text-sm">{saveState}</p>
+        <a className="text-sm underline" href="/studio">创作中心</a>
+        <div className="min-w-0">
+          <p className="text-xs text-neutral-600">作品</p>
+          <h1 className="text-lg font-semibold">{project?.title ?? "加载中"}</h1>
+        </div>
+        <p className="text-sm text-neutral-600">当前内容：<span>{focusLabel(focus)}</span></p>
+        <p className="text-sm">保存状态：<span>{saveState}</span></p>
         <button className="ml-auto rounded border border-neutral-300 px-3 py-1 text-sm lg:hidden" type="button" onClick={() => setNavOpen(true)}>目录</button>
-        <button className="rounded border border-neutral-300 px-3 py-1 text-sm lg:hidden" type="button" onClick={() => setSideOpen(true)}>版本</button>
+        <button className="rounded border border-neutral-300 px-3 py-1 text-sm" type="button" aria-expanded={sideOpen} onClick={() => setSideOpen((open) => !open)}>检查</button>
         <button className="rounded bg-red-700 px-3 py-1 text-sm text-white" type="button" onClick={() => setTasksOpen(true)}>任务</button>
       </header>
       {error ? <p className="px-4 py-2 text-sm" role="alert">{error}</p> : null}
       {loading ? <p className="px-4 py-6 text-sm">正在加载工作台</p> : null}
-      <div className="grid lg:grid-cols-[16rem_minmax(0,1fr)_22rem]">
-        <nav className={`${navOpen ? "fixed inset-y-0 left-0 z-20 w-72 overflow-auto bg-white p-4 shadow-xl" : "hidden"} lg:static lg:block lg:bg-transparent lg:p-4 lg:shadow-none`}>
+      <div className={`grid ${sideOpen ? "lg:grid-cols-[16rem_minmax(0,1fr)_22rem]" : "lg:grid-cols-[16rem_minmax(0,1fr)]"}`}>
+        <nav className={`${navOpen ? "fixed inset-y-0 left-0 z-20 w-72 overflow-auto bg-white p-4 shadow-xl" : "hidden"} lg:static lg:block lg:bg-transparent lg:p-4 lg:shadow-none`} aria-label="创作步骤">
           <button className="mb-3 text-sm underline lg:hidden" type="button" onClick={() => setNavOpen(false)}>关闭目录</button>
+          <p className="px-2 pt-2 text-xs text-neutral-600">故事与剧本</p>
           <button className="block w-full rounded px-2 py-2 text-left hover:bg-white" type="button" onClick={() => choose({ kind: "story" })}>故事</button>
+          <p className="px-2 pt-3 text-xs text-neutral-600">当前试制范围固定为三集</p>
           {[1, 2, 3].map((episodeNo) => {
             const episode = episodes.find((item) => item.episodeNo === episodeNo);
             return (
@@ -382,28 +391,40 @@ export function Workbench({ projectId }: { projectId: string }) {
                 >
                   {episode ? `第 ${episodeNo} 集` : `第 ${episodeNo} 集（故事通过后出现）`}
                 </button>
-                {episode ? (
-                  <button
-                    className="block w-full rounded px-2 py-2 text-left hover:bg-white"
-                    type="button"
-                    onClick={() => choose({ kind: "episode-compose", episodeNo })}
-                  >
-                    多镜编排 · 第 {episodeNo} 集
-                  </button>
-                ) : null}
               </div>
             );
           })}
-          <button className="mt-4 block w-full rounded px-2 py-2 text-left hover:bg-white" type="button" onClick={() => choose({ kind: "character" })}>角色</button>
+          <p className="mt-4 px-2 text-xs text-neutral-600">角色与场地</p>
+          <button className="block w-full rounded px-2 py-2 text-left hover:bg-white" type="button" onClick={() => choose({ kind: "character" })}>角色</button>
           <button className="block w-full rounded px-2 py-2 text-left hover:bg-white" type="button" onClick={() => choose({ kind: "location" })}>场地</button>
+          <p className="mt-4 px-2 text-xs text-neutral-600">分镜与素材</p>
+          <p className="px-2 py-2 text-sm text-neutral-600">打开某一集后，在正文里进入场景和镜头。这里不提供可保存的集数、风格或时长选项。</p>
+          <p className="mt-4 px-2 text-xs text-neutral-600">合成与导出</p>
+          {[1, 2, 3].map((episodeNo) => {
+            const episode = episodes.find((item) => item.episodeNo === episodeNo);
+            if (!episode) return null;
+            return (
+              <button
+                key={`compose-${episodeNo}`}
+                className="block w-full rounded px-2 py-2 text-left hover:bg-white"
+                type="button"
+                onClick={() => choose({ kind: "episode-compose", episodeNo })}
+              >
+                多镜编排 · 第 {episodeNo} 集
+              </button>
+            );
+          })}
         </nav>
         <section className="min-w-0 p-4">
           {project ? (
             <article className="mb-4 rounded-lg bg-white p-4">
-              <h2 className="font-medium">项目信息</h2>
+              <h2 className="font-medium">作品</h2>
               <p className="mt-2 text-sm">标题：{project.title}</p>
               <p className="text-sm">梗概：{project.premise || "无"}</p>
-              <p className="mt-2 text-sm text-neutral-600">当前接口没有项目更新路由，标题和梗概只在创建时写入。</p>
+              <details className="mt-2 text-sm text-neutral-600">
+                <summary>标题和梗概的保存范围</summary>
+                <p className="mt-2">当前接口没有项目更新路由，标题和梗概只在创建时写入。</p>
+              </details>
               <ProjectCostSummary projectId={projectId} />
             </article>
           ) : null}
@@ -462,9 +483,10 @@ export function Workbench({ projectId }: { projectId: string }) {
             />
           ) : null}
         </section>
-        <aside className={`${sideOpen ? "fixed inset-y-0 right-0 z-20 w-full max-w-md overflow-auto bg-white p-4 shadow-xl" : "hidden"} lg:static lg:block lg:bg-transparent lg:p-4 lg:shadow-none`}>
-          <button className="mb-3 text-sm underline lg:hidden" type="button" onClick={() => setSideOpen(false)}>关闭版本</button>
-          <p className="text-sm text-neutral-600">版本、比较、审核和来源显示在当前对象编辑区右侧。窄屏时从这里查看。</p>
+        <aside className={`${sideOpen ? "fixed inset-y-0 right-0 z-20 w-full max-w-md overflow-auto bg-white p-4 shadow-xl lg:static lg:shadow-none" : "hidden"} lg:p-4`} aria-label="检查面板">
+          <button className="mb-3 text-sm underline lg:hidden" type="button" onClick={() => setSideOpen(false)}>关闭检查</button>
+          <h2 className="font-medium">检查</h2>
+          <p className="mt-2 text-sm text-neutral-600">版本、比较、来源和审核仍在当前正文旁。打开检查面板查看说明；窄屏从「检查」进入。已记录成本不是余额，也不是应付费用。</p>
         </aside>
       </div>
       {tasksOpen ? (
@@ -2428,7 +2450,7 @@ function ShotImagePanel(props: {
     <div className="min-w-0 space-y-4">
       <section className="min-w-0 rounded-lg bg-white p-4">
         <h2 className="font-medium">Mock 图片</h2>
-        <p className="mt-2 text-sm [overflow-wrap:anywhere]">确定性 1×1 Mock 测试图。seed 只写入快照，不改变像素。这不是真实 AI 图片，也不会写入 MinIO。</p>
+        <p className="mt-2 text-sm [overflow-wrap:anywhere]">演示素材。确定性 1×1 Mock 测试图。seed 只写入快照，不改变像素。这不是真实 AI 图片，也不会写入 MinIO。</p>
         <label className="mt-2 block text-sm" htmlFor="mock-image-seed">seed（可选）</label>
         <input id="mock-image-seed" className="w-full rounded border px-2 py-1" maxLength={200} value={seed} onChange={(event) => setSeed(event.target.value)} />
         <button className="mt-3 rounded bg-red-700 px-3 py-2 text-white disabled:opacity-50" type="button" disabled={!props.usable || busy !== null} onClick={() => void submitMedia("image")}>
@@ -2443,7 +2465,7 @@ function ShotImagePanel(props: {
       </section>
       <section className="min-w-0 rounded-lg bg-white p-4">
         <h2 className="font-medium">Mock 视频</h2>
-        <p className="mt-2 text-sm [overflow-wrap:anywhere]">固定 16×16 黑色 1 秒测试视频。seed 和已保存提示词只进入审计快照，不改变画面。这不是真实 AI 视频，也不会写入 MinIO。</p>
+        <p className="mt-2 text-sm [overflow-wrap:anywhere]">演示素材。固定 16×16 黑色 1 秒测试视频。seed 和已保存提示词只进入审计快照，不改变画面。这不是真实 AI 视频，也不会写入 MinIO。</p>
         <label className="mt-2 block text-sm" htmlFor="mock-video-seed">seed（可选）</label>
         <input id="mock-video-seed" className="w-full rounded border px-2 py-1" maxLength={200} value={videoSeed} onChange={(event) => setVideoSeed(event.target.value)} />
         <button className="mt-3 rounded bg-red-700 px-3 py-2 text-white disabled:opacity-50" type="button" disabled={!props.videoUsable || busy !== null} onClick={() => void submitMedia("video")}>
@@ -2458,7 +2480,7 @@ function ShotImagePanel(props: {
       </section>
       <section className="min-w-0 rounded-lg bg-white p-4">
         <h2 className="font-medium">Mock 配音</h2>
-        <p className="mt-2 text-sm [overflow-wrap:anywhere]">固定 100ms 单声道静音。已保存并审核的对白只作为来源审计，fixture 不会朗读它。这不是真实 TTS，也不会写入 MinIO。</p>
+        <p className="mt-2 text-sm [overflow-wrap:anywhere]">演示素材。固定 100ms 单声道静音。已保存并审核的对白只作为来源审计，fixture 不会朗读它。这不是真实 TTS，也不会写入 MinIO。</p>
         <label className="mt-2 block text-sm" htmlFor="mock-speech-seed">seed（可选）</label>
         <input id="mock-speech-seed" className="w-full rounded border px-2 py-1" maxLength={200} value={speechSeed} onChange={(event) => setSpeechSeed(event.target.value)} />
         <button className="mt-3 rounded bg-red-700 px-3 py-2 text-white disabled:opacity-50" type="button" disabled={!props.speechUsable || busy !== null} onClick={() => void submitMedia("speech")}>
@@ -2473,7 +2495,7 @@ function ShotImagePanel(props: {
       </section>
       <section className="min-w-0 rounded-lg bg-white p-4">
         <h2 className="font-medium">Mock 字幕</h2>
-        <p className="mt-2 text-sm [overflow-wrap:anywhere]">固定测试字幕，内容不随已保存对白变化。seed 只写入快照。这不是真实字幕生成，也不会写入 MinIO。</p>
+        <p className="mt-2 text-sm [overflow-wrap:anywhere]">演示素材。固定测试字幕，内容不随已保存对白变化。seed 只写入快照。这不是真实字幕生成，也不会写入 MinIO。</p>
         <label className="mt-2 block text-sm" htmlFor="mock-subtitle-seed">seed（可选）</label>
         <input id="mock-subtitle-seed" className="w-full rounded border px-2 py-1" maxLength={200} value={subtitleSeed} onChange={(event) => setSubtitleSeed(event.target.value)} />
         <button className="mt-3 rounded bg-red-700 px-3 py-2 text-white disabled:opacity-50" type="button" disabled={!props.subtitleUsable || busy !== null} onClick={() => void submitMedia("subtitle")}>
@@ -2488,7 +2510,7 @@ function ShotImagePanel(props: {
       </section>
       <section className="min-w-0 rounded-lg bg-white p-4">
         <h2 className="font-medium">Mock 音乐</h2>
-        <p className="mt-2 text-sm [overflow-wrap:anywhere]">固定 100ms 静音，kind 为 MUSIC，与配音 AUDIO 分开。已保存提示词只进入审计快照，不会变成音乐。这不是真实音乐生成，也不会写入 MinIO。</p>
+        <p className="mt-2 text-sm [overflow-wrap:anywhere]">演示素材。固定 100ms 静音，kind 为 MUSIC，与配音 AUDIO 分开。已保存提示词只进入审计快照，不会变成音乐。这不是真实音乐生成，也不会写入 MinIO。</p>
         <label className="mt-2 block text-sm" htmlFor="mock-music-seed">seed（可选）</label>
         <input id="mock-music-seed" className="w-full rounded border px-2 py-1" maxLength={200} value={musicSeed} onChange={(event) => setMusicSeed(event.target.value)} />
         <button className="mt-3 rounded bg-red-700 px-3 py-2 text-white disabled:opacity-50" type="button" disabled={!props.musicUsable || busy !== null} onClick={() => void submitMedia("music")}>
