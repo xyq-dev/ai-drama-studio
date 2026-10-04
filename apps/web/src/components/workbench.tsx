@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ComposePreflight } from "./compose-preflight";
 import { EpisodeComposePreflight } from "./episode-compose-preflight";
 import { ProjectCostSummary } from "./project-cost-summary";
@@ -222,6 +222,34 @@ function focusLabel(focus: Focus): string {
   }
 }
 
+const InspectContext = createContext<{
+  visible: boolean;
+  registerInspect: () => void;
+  unregisterInspect: () => void;
+}>({
+  visible: true,
+  registerInspect: () => undefined,
+  unregisterInspect: () => undefined,
+});
+
+function EditorGrid({ children }: { children: ReactNode }) {
+  const { visible } = useContext(InspectContext);
+  return <div className={`grid gap-4 ${visible ? "xl:grid-cols-[minmax(0,1fr)_20rem]" : ""}`}>{children}</div>;
+}
+
+function InspectSlot({ children }: { children: ReactNode }) {
+  const { visible, registerInspect, unregisterInspect } = useContext(InspectContext);
+  useEffect(() => {
+    registerInspect();
+    return () => unregisterInspect();
+  }, [registerInspect, unregisterInspect]);
+  return (
+    <aside aria-label="检查面板" className={visible ? "min-w-0 [overflow-wrap:anywhere]" : "hidden"}>
+      {children}
+    </aside>
+  );
+}
+
 function focusQuery(focus: Focus): string {
   const params = new URLSearchParams();
   params.set("focus", focus.kind);
@@ -242,7 +270,35 @@ export function Workbench({ projectId }: { projectId: string }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [navOpen, setNavOpen] = useState(false);
-  const [sideOpen, setSideOpen] = useState(false);
+  const [wide, setWide] = useState(false);
+  const [narrowOpen, setNarrowOpen] = useState(false);
+  const [desktopOpen, setDesktopOpen] = useState(true);
+  const [inspectCount, setInspectCount] = useState(0);
+  const wideRef = useRef(false);
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const query = window.matchMedia("(min-width: 1280px)");
+    const apply = (event?: MediaQueryListEvent) => {
+      const nextWide = typeof event?.matches === "boolean" ? event.matches : query.matches;
+      wideRef.current = nextWide;
+      setWide(nextWide);
+      if (!nextWide) setNarrowOpen(false);
+    };
+    apply();
+    query.addEventListener("change", apply);
+    return () => query.removeEventListener("change", apply);
+  }, []);
+  const toggleInspect = useCallback(() => {
+    if (wideRef.current) setDesktopOpen((open) => !open);
+    else setNarrowOpen((open) => !open);
+  }, []);
+  const registerInspect = useCallback(() => setInspectCount((count) => count + 1), []);
+  const unregisterInspect = useCallback(() => setInspectCount((count) => count - 1), []);
+  const inspectVisible = wide ? desktopOpen : narrowOpen;
+  const inspect = useMemo(
+    () => ({ visible: inspectVisible, registerInspect, unregisterInspect }),
+    [inspectVisible, registerInspect, unregisterInspect],
+  );
   const [tasksOpen, setTasksOpen] = useState(false);
   const [saveState, setSaveState] = useState("尚未修改");
   const [refreshEpoch, setRefreshEpoch] = useState(0);
@@ -354,22 +410,28 @@ export function Workbench({ projectId }: { projectId: string }) {
   const textWorkflows = workflows;
 
   return (
+    <InspectContext.Provider value={inspect}>
     <div className="min-h-screen bg-neutral-100 text-neutral-900">
       <header className="flex flex-wrap items-center gap-3 border-b border-neutral-200 bg-white px-4 py-3">
-        <a className="text-sm underline" href="/">项目</a>
-        <h1 className="text-lg font-semibold">{project?.title ?? "加载中"}</h1>
-        <p className="text-sm text-neutral-600">{focusLabel(focus)}</p>
-        <p className="text-sm">{saveState}</p>
+        <a className="text-sm underline" href="/studio">创作中心</a>
+        <div className="min-w-0">
+          <p className="text-xs text-neutral-600">作品</p>
+          <h1 className="text-lg font-semibold [overflow-wrap:anywhere]">{project?.title ?? "加载中"}</h1>
+        </div>
+        <p className="text-sm text-neutral-600">当前内容：<span>{focusLabel(focus)}</span></p>
+        <p className="text-sm">保存状态：<span>{saveState}</span></p>
         <button className="ml-auto rounded border border-neutral-300 px-3 py-1 text-sm lg:hidden" type="button" onClick={() => setNavOpen(true)}>目录</button>
-        <button className="rounded border border-neutral-300 px-3 py-1 text-sm lg:hidden" type="button" onClick={() => setSideOpen(true)}>版本</button>
+        <button className="rounded border border-neutral-300 px-3 py-1 text-sm" type="button" aria-expanded={inspectVisible} onClick={toggleInspect}>检查</button>
         <button className="rounded bg-red-700 px-3 py-1 text-sm text-white" type="button" onClick={() => setTasksOpen(true)}>任务</button>
       </header>
       {error ? <p className="px-4 py-2 text-sm" role="alert">{error}</p> : null}
       {loading ? <p className="px-4 py-6 text-sm">正在加载工作台</p> : null}
-      <div className="grid lg:grid-cols-[16rem_minmax(0,1fr)_22rem]">
-        <nav className={`${navOpen ? "fixed inset-y-0 left-0 z-20 w-72 overflow-auto bg-white p-4 shadow-xl" : "hidden"} lg:static lg:block lg:bg-transparent lg:p-4 lg:shadow-none`}>
+      <div className="grid lg:grid-cols-[16rem_minmax(0,1fr)]">
+        <nav className={`${navOpen ? "fixed inset-y-0 left-0 z-20 w-72 overflow-auto bg-white p-4 shadow-xl" : "hidden"} lg:static lg:block lg:bg-transparent lg:p-4 lg:shadow-none`} aria-label="创作步骤">
           <button className="mb-3 text-sm underline lg:hidden" type="button" onClick={() => setNavOpen(false)}>关闭目录</button>
+          <p className="px-2 pt-2 text-xs text-neutral-600">故事与剧本</p>
           <button className="block w-full rounded px-2 py-2 text-left hover:bg-white" type="button" onClick={() => choose({ kind: "story" })}>故事</button>
+          <p className="px-2 pt-3 text-xs text-neutral-600">当前试制范围固定为三集</p>
           {[1, 2, 3].map((episodeNo) => {
             const episode = episodes.find((item) => item.episodeNo === episodeNo);
             return (
@@ -382,28 +444,40 @@ export function Workbench({ projectId }: { projectId: string }) {
                 >
                   {episode ? `第 ${episodeNo} 集` : `第 ${episodeNo} 集（故事通过后出现）`}
                 </button>
-                {episode ? (
-                  <button
-                    className="block w-full rounded px-2 py-2 text-left hover:bg-white"
-                    type="button"
-                    onClick={() => choose({ kind: "episode-compose", episodeNo })}
-                  >
-                    多镜编排 · 第 {episodeNo} 集
-                  </button>
-                ) : null}
               </div>
             );
           })}
-          <button className="mt-4 block w-full rounded px-2 py-2 text-left hover:bg-white" type="button" onClick={() => choose({ kind: "character" })}>角色</button>
+          <p className="mt-4 px-2 text-xs text-neutral-600">角色与场地</p>
+          <button className="block w-full rounded px-2 py-2 text-left hover:bg-white" type="button" onClick={() => choose({ kind: "character" })}>角色</button>
           <button className="block w-full rounded px-2 py-2 text-left hover:bg-white" type="button" onClick={() => choose({ kind: "location" })}>场地</button>
+          <p className="mt-4 px-2 text-xs text-neutral-600">分镜与素材</p>
+          <p className="px-2 py-2 text-sm text-neutral-600">打开某一集后，在正文里进入场景和镜头。这里不提供可保存的集数、风格或时长选项。</p>
+          <p className="mt-4 px-2 text-xs text-neutral-600">合成与导出</p>
+          {[1, 2, 3].map((episodeNo) => {
+            const episode = episodes.find((item) => item.episodeNo === episodeNo);
+            if (!episode) return null;
+            return (
+              <button
+                key={`compose-${episodeNo}`}
+                className="block w-full rounded px-2 py-2 text-left hover:bg-white"
+                type="button"
+                onClick={() => choose({ kind: "episode-compose", episodeNo })}
+              >
+                多镜编排 · 第 {episodeNo} 集
+              </button>
+            );
+          })}
         </nav>
         <section className="min-w-0 p-4">
           {project ? (
             <article className="mb-4 rounded-lg bg-white p-4">
-              <h2 className="font-medium">项目信息</h2>
+              <h2 className="font-medium">作品</h2>
               <p className="mt-2 text-sm">标题：{project.title}</p>
               <p className="text-sm">梗概：{project.premise || "无"}</p>
-              <p className="mt-2 text-sm text-neutral-600">当前接口没有项目更新路由，标题和梗概只在创建时写入。</p>
+              <details className="mt-2 text-sm text-neutral-600">
+                <summary>标题和梗概的保存范围</summary>
+                <p className="mt-2">当前接口没有项目更新路由，标题和梗概只在创建时写入。</p>
+              </details>
               <ProjectCostSummary projectId={projectId} />
             </article>
           ) : null}
@@ -414,7 +488,6 @@ export function Workbench({ projectId }: { projectId: string }) {
               onMore={() => void more("stories")}
               onSaved={reloadBase}
               onStatus={setSaveState}
-              onOpenSide={() => setSideOpen(true)}
             />
           ) : null}
           {project && focus.kind === "episode-compose" ? (
@@ -461,11 +534,10 @@ export function Workbench({ projectId }: { projectId: string }) {
               onOpenShot={(shotId) => setFocus({ kind: "shot", episodeNo: focus.episodeNo, sceneId: focus.sceneId, shotId })}
             />
           ) : null}
+          {!loading && project && inspectVisible && inspectCount === 0 ? (
+            <p className="mt-4 rounded-lg bg-white p-4 text-sm [overflow-wrap:anywhere]" role="status">当前内容没有版本、比较、来源或审核。</p>
+          ) : null}
         </section>
-        <aside className={`${sideOpen ? "fixed inset-y-0 right-0 z-20 w-full max-w-md overflow-auto bg-white p-4 shadow-xl" : "hidden"} lg:static lg:block lg:bg-transparent lg:p-4 lg:shadow-none`}>
-          <button className="mb-3 text-sm underline lg:hidden" type="button" onClick={() => setSideOpen(false)}>关闭版本</button>
-          <p className="text-sm text-neutral-600">版本、比较、审核和来源显示在当前对象编辑区右侧。窄屏时从这里查看。</p>
-        </aside>
       </div>
       {tasksOpen ? (
         <TaskDrawer
@@ -476,6 +548,7 @@ export function Workbench({ projectId }: { projectId: string }) {
         />
       ) : null}
     </div>
+    </InspectContext.Provider>
   );
 }
 
@@ -485,11 +558,10 @@ function StoryPane(props: {
   onMore: () => void;
   onSaved: () => Promise<void>;
   onStatus: (value: string) => void;
-  onOpenSide: () => void;
 }) {
   const current = currentStoryRevision(props.stories?.items ?? []);
   return (
-    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]">
+    <EditorGrid>
         <ContentEditor
           title="故事"
           projectId={props.project.id}
@@ -516,6 +588,7 @@ function StoryPane(props: {
         }}
         onSaved={props.onSaved}
       />
+      <InspectSlot>
       <RevisionColumn
         items={(props.stories?.items ?? []).map((item) => ({
           id: item.id,
@@ -534,9 +607,9 @@ function StoryPane(props: {
         ifMatch={props.project.version}
         reviewPath={(revisionId) => `/projects/${props.project.id}/stories/${revisionId}/review`}
         onSaved={props.onSaved}
-        onOpen={props.onOpenSide}
       />
-    </div>
+      </InspectSlot>
+    </EditorGrid>
   );
 }
 
@@ -594,7 +667,7 @@ function ScriptPane(props: {
   return (
     <div className="space-y-4">
       {error ? <p role="alert">{error}</p> : null}
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]">
+      <EditorGrid>
         <ContentEditor
           title={`第 ${episode.episodeNo} 集剧本`}
           projectId={props.projectId}
@@ -630,6 +703,7 @@ function ScriptPane(props: {
             await load();
           }}
         />
+        <InspectSlot>
         <RevisionColumn
           items={(scripts?.items ?? []).map((item) => ({
             id: item.id,
@@ -667,7 +741,8 @@ function ScriptPane(props: {
             await load();
           }}
         />
-      </div>
+        </InspectSlot>
+      </EditorGrid>
       <SceneList
         projectId={props.projectId}
         episode={props.episode}
@@ -1185,7 +1260,7 @@ function EntityPane(props: {
   const current = history?.items.find((item) => item.id === history.aggregate.currentRevisionId) ?? null;
 
   return (
-    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]">
+    <EditorGrid>
       <div className="space-y-4">
         <section className="rounded-lg bg-white p-4">
           <h2 className="font-medium">{props.kind === "character" ? "角色" : "场地"}</h2>
@@ -1244,6 +1319,7 @@ function EntityPane(props: {
           onSaved={props.onSaved}
         />
       </div>
+      <InspectSlot>
       {history?.aggregate.entityId === selected ? (
         <RevisionColumn
           items={history.items.map((item) => ({
@@ -1268,7 +1344,8 @@ function EntityPane(props: {
           }}
         />
       ) : <p className="text-sm">选择一个对象后显示版本。</p>}
-    </div>
+      </InspectSlot>
+    </EditorGrid>
   );
 }
 
@@ -1472,7 +1549,7 @@ function ScenePane(props: {
     <div className="space-y-4">
       {error ? <p role="alert">{error}</p> : null}
       {visibleHistory && current ? (
-        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]">
+        <EditorGrid>
           <SceneForm
             projectId={props.projectId}
             episode={props.episode}
@@ -1490,6 +1567,7 @@ function ScenePane(props: {
             }}
             onSaved={async () => { await props.onSaved(); await load(); }}
           />
+          <InspectSlot>
           <RevisionColumn
             items={visibleHistory.items.map((item) => ({
               id: item.id,
@@ -1509,7 +1587,8 @@ function ScenePane(props: {
             reviewPath={(revisionId) => `/projects/${props.projectId}/episodes/${props.episode?.id}/scenes/${props.sceneId}/revisions/${revisionId}/review`}
             onSaved={async () => { await props.onSaved(); await load(); }}
           />
-        </div>
+          </InspectSlot>
+        </EditorGrid>
       ) : <p>场景没有当前版本</p>}
       <section className="rounded-lg bg-white p-4">
         <h2 className="font-medium">镜头</h2>
@@ -1537,7 +1616,7 @@ function ScenePane(props: {
         ) : null}
       </section>
       {props.shotId && visibleShot && shotCurrent ? (
-        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]">
+        <EditorGrid>
           <div className="min-w-0 space-y-4">
           <ShotForm
             shot={visibleShot.aggregate}
@@ -1579,6 +1658,7 @@ function ScenePane(props: {
           />
           <ComposePreflight revisionId={shotCurrent.id} refreshEpoch={props.imageEpoch} />
           </div>
+          <InspectSlot>
           <RevisionColumn
             items={visibleShot.items.map((item) => ({
               id: item.id,
@@ -1598,7 +1678,8 @@ function ScenePane(props: {
             reviewPath={(revisionId) => `/projects/${props.projectId}/episodes/${props.episode?.id}/scenes/${props.sceneId}/shots/${props.shotId}/revisions/${revisionId}/review`}
             onSaved={async () => { await props.onSaved(); await load(); }}
           />
-        </div>
+          </InspectSlot>
+        </EditorGrid>
       ) : null}
     </div>
   );
@@ -2083,7 +2164,6 @@ function RevisionColumn(props: {
   ifMatch: number;
   reviewPath: (revisionId: string) => string;
   onSaved: () => Promise<void>;
-  onOpen?: () => void;
 }) {
   const latest = props.items[0];
   const previous = props.items[1];
@@ -2137,7 +2217,6 @@ function RevisionColumn(props: {
   return (
     <aside className="min-w-0 rounded-lg bg-white p-4 [overflow-wrap:anywhere]">
       <h2 className="font-medium">版本</h2>
-      {props.onOpen ? <button className="text-sm underline xl:hidden" type="button" onClick={props.onOpen}>在窄屏打开版本栏</button> : null}
       {props.items.length === 0 ? <p className="mt-2 text-sm">没有历史版本</p> : null}
       <ul className="mt-2 space-y-2 text-sm">
         {props.items.map((item) => (
@@ -2428,7 +2507,7 @@ function ShotImagePanel(props: {
     <div className="min-w-0 space-y-4">
       <section className="min-w-0 rounded-lg bg-white p-4">
         <h2 className="font-medium">Mock 图片</h2>
-        <p className="mt-2 text-sm [overflow-wrap:anywhere]">确定性 1×1 Mock 测试图。seed 只写入快照，不改变像素。这不是真实 AI 图片，也不会写入 MinIO。</p>
+        <p className="mt-2 text-sm [overflow-wrap:anywhere]">演示素材。确定性 1×1 Mock 测试图。seed 只写入快照，不改变像素。这不是真实 AI 图片，也不会写入 MinIO。</p>
         <label className="mt-2 block text-sm" htmlFor="mock-image-seed">seed（可选）</label>
         <input id="mock-image-seed" className="w-full rounded border px-2 py-1" maxLength={200} value={seed} onChange={(event) => setSeed(event.target.value)} />
         <button className="mt-3 rounded bg-red-700 px-3 py-2 text-white disabled:opacity-50" type="button" disabled={!props.usable || busy !== null} onClick={() => void submitMedia("image")}>
@@ -2443,7 +2522,7 @@ function ShotImagePanel(props: {
       </section>
       <section className="min-w-0 rounded-lg bg-white p-4">
         <h2 className="font-medium">Mock 视频</h2>
-        <p className="mt-2 text-sm [overflow-wrap:anywhere]">固定 16×16 黑色 1 秒测试视频。seed 和已保存提示词只进入审计快照，不改变画面。这不是真实 AI 视频，也不会写入 MinIO。</p>
+        <p className="mt-2 text-sm [overflow-wrap:anywhere]">演示素材。固定 16×16 黑色 1 秒测试视频。seed 和已保存提示词只进入审计快照，不改变画面。这不是真实 AI 视频，也不会写入 MinIO。</p>
         <label className="mt-2 block text-sm" htmlFor="mock-video-seed">seed（可选）</label>
         <input id="mock-video-seed" className="w-full rounded border px-2 py-1" maxLength={200} value={videoSeed} onChange={(event) => setVideoSeed(event.target.value)} />
         <button className="mt-3 rounded bg-red-700 px-3 py-2 text-white disabled:opacity-50" type="button" disabled={!props.videoUsable || busy !== null} onClick={() => void submitMedia("video")}>
@@ -2458,7 +2537,7 @@ function ShotImagePanel(props: {
       </section>
       <section className="min-w-0 rounded-lg bg-white p-4">
         <h2 className="font-medium">Mock 配音</h2>
-        <p className="mt-2 text-sm [overflow-wrap:anywhere]">固定 100ms 单声道静音。已保存并审核的对白只作为来源审计，fixture 不会朗读它。这不是真实 TTS，也不会写入 MinIO。</p>
+        <p className="mt-2 text-sm [overflow-wrap:anywhere]">演示素材。固定 100ms 单声道静音。已保存并审核的对白只作为来源审计，fixture 不会朗读它。这不是真实 TTS，也不会写入 MinIO。</p>
         <label className="mt-2 block text-sm" htmlFor="mock-speech-seed">seed（可选）</label>
         <input id="mock-speech-seed" className="w-full rounded border px-2 py-1" maxLength={200} value={speechSeed} onChange={(event) => setSpeechSeed(event.target.value)} />
         <button className="mt-3 rounded bg-red-700 px-3 py-2 text-white disabled:opacity-50" type="button" disabled={!props.speechUsable || busy !== null} onClick={() => void submitMedia("speech")}>
@@ -2473,7 +2552,7 @@ function ShotImagePanel(props: {
       </section>
       <section className="min-w-0 rounded-lg bg-white p-4">
         <h2 className="font-medium">Mock 字幕</h2>
-        <p className="mt-2 text-sm [overflow-wrap:anywhere]">固定测试字幕，内容不随已保存对白变化。seed 只写入快照。这不是真实字幕生成，也不会写入 MinIO。</p>
+        <p className="mt-2 text-sm [overflow-wrap:anywhere]">演示素材。固定测试字幕，内容不随已保存对白变化。seed 只写入快照。这不是真实字幕生成，也不会写入 MinIO。</p>
         <label className="mt-2 block text-sm" htmlFor="mock-subtitle-seed">seed（可选）</label>
         <input id="mock-subtitle-seed" className="w-full rounded border px-2 py-1" maxLength={200} value={subtitleSeed} onChange={(event) => setSubtitleSeed(event.target.value)} />
         <button className="mt-3 rounded bg-red-700 px-3 py-2 text-white disabled:opacity-50" type="button" disabled={!props.subtitleUsable || busy !== null} onClick={() => void submitMedia("subtitle")}>
@@ -2488,7 +2567,7 @@ function ShotImagePanel(props: {
       </section>
       <section className="min-w-0 rounded-lg bg-white p-4">
         <h2 className="font-medium">Mock 音乐</h2>
-        <p className="mt-2 text-sm [overflow-wrap:anywhere]">固定 100ms 静音，kind 为 MUSIC，与配音 AUDIO 分开。已保存提示词只进入审计快照，不会变成音乐。这不是真实音乐生成，也不会写入 MinIO。</p>
+        <p className="mt-2 text-sm [overflow-wrap:anywhere]">演示素材。固定 100ms 静音，kind 为 MUSIC，与配音 AUDIO 分开。已保存提示词只进入审计快照，不会变成音乐。这不是真实音乐生成，也不会写入 MinIO。</p>
         <label className="mt-2 block text-sm" htmlFor="mock-music-seed">seed（可选）</label>
         <input id="mock-music-seed" className="w-full rounded border px-2 py-1" maxLength={200} value={musicSeed} onChange={(event) => setMusicSeed(event.target.value)} />
         <button className="mt-3 rounded bg-red-700 px-3 py-2 text-white disabled:opacity-50" type="button" disabled={!props.musicUsable || busy !== null} onClick={() => void submitMedia("music")}>

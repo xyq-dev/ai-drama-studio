@@ -1,5 +1,5 @@
-import { ProjectHome } from "../components/project-home";
+import { ProductHome } from "../components/product-home";
 
 export default function HomePage() {
-  return <ProjectHome />;
+  return <ProductHome />;
 }

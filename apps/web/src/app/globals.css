@@ -1,8 +1,33 @@
 @import "tailwindcss";
 
+:root {
+  color-scheme: dark;
+  --studio-bg: #0b0e14;
+  --studio-card: #141a23;
+  --studio-line: #283140;
+  --studio-accent: #9b8cff;
+  --studio-text: #f4f6fa;
+  --studio-muted: #aab3c5;
+}
+
 body {
   margin: 0;
-  background: #fafafa;
-  color: #171717;
+  background: var(--studio-bg);
+  color: var(--studio-text);
   font-family: ui-sans-serif, system-ui, sans-serif;
+  overflow-x: clip;
 }
+
+.bg-white { background-color: var(--studio-card); }
+.bg-neutral-100 { background-color: var(--studio-bg); }
+.text-neutral-900,
+.text-neutral-800 { color: var(--studio-text); }
+.text-neutral-600,
+.text-neutral-500,
+.text-neutral-400 { color: var(--studio-muted); }
+.border-neutral-200,
+.border-neutral-300,
+.divide-neutral-200 > :not([hidden]) ~ :not([hidden]) { border-color: var(--studio-line); }
+.bg-red-700 { background-color: var(--studio-accent); color: #0b0e14; }
+.hover\:bg-white:hover { background-color: #1c2430; }
+.focus-visible\:outline-red-700:focus-visible { outline-color: var(--studio-accent); }

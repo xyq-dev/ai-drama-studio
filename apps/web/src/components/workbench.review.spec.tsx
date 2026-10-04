@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 // Simulated API tests. fetch is mocked; this file does not start the API, database, worker, or a real browser.
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Workbench } from "./workbench";
@@ -1211,8 +1211,8 @@ describe("workbench review interactions against a simulated API", () => {
     expect(sim.workflowReads).toBe(reads);
     view.unmount();
     renderAt("focus=script&episode=1");
-    await waitFor(() => expect((screen.getByLabelText("正文") as HTMLTextAreaElement).value).toBe("剧本草稿"));
-    expect(screen.getByText(/场景 scene-1/)).toBeTruthy();
+    expect(await screen.findByText(/场景 scene-1/)).toBeTruthy();
+    expect((screen.getByLabelText("正文") as HTMLTextAreaElement).value).toBe("剧本草稿");
   }, 15000);
 
   it("pauses workflow polling while hidden and rereads when the page returns", async () => {
@@ -1692,4 +1692,110 @@ describe("workbench review interactions against a simulated API", () => {
     expect(mediaSection("Mock 配音").textContent ?? "").not.toContain("已受理");
     expect(mediaSection("Mock 视频").textContent ?? "").not.toContain("复用同一幂等键");
   });
+
+  it("keeps review notes while the inspect column collapses across breakpoints", async () => {
+    const viewport = installViewport(true);
+    const sim = createSim();
+    install(sim);
+    renderAt("focus=scene&episode=1&scene=scene-1");
+    const note = await screen.findByLabelText("备注") as HTMLTextAreaElement;
+    const panel = note.closest("[aria-label='检查面板']");
+    expect(panel?.className).not.toContain("hidden");
+    expect(panel?.className).not.toContain("fixed");
+    fireEvent.change(note, { target: { value: "保留这条审核备注" } });
+    const compare = screen.getByLabelText("左侧版本") as HTMLSelectElement;
+    const other = [...compare.options].find((option) => option.value !== compare.value);
+    if (!other) throw new Error("missing compare option");
+    fireEvent.change(compare, { target: { value: other.value } });
+    fireEvent.click(screen.getByRole("button", { name: "检查" }));
+    expect(note.closest("[aria-label='检查面板']")?.className).toContain("hidden");
+    expect((screen.getByLabelText("备注") as HTMLTextAreaElement).value).toBe("保留这条审核备注");
+    expect((screen.getByLabelText("左侧版本") as HTMLSelectElement).value).toBe(other.value);
+    fireEvent.click(screen.getByRole("button", { name: "检查" }));
+    viewport.set(false);
+    const narrowed = screen.getByLabelText("备注").closest("[aria-label='检查面板']");
+    expect(narrowed?.className).toContain("hidden");
+    expect(narrowed?.className).not.toContain("fixed");
+    fireEvent.click(screen.getByRole("button", { name: "检查" }));
+    expect(screen.getByLabelText("备注").closest("[aria-label='检查面板']")?.className).not.toContain("hidden");
+    expect(screen.getByRole("heading", { name: "审核" })).toBeTruthy();
+    viewport.set(true);
+    expect((screen.getByLabelText("备注") as HTMLTextAreaElement).value).toBe("保留这条审核备注");
+    expect((screen.getByLabelText("左侧版本") as HTMLSelectElement).value).toBe(other.value);
+    expect(screen.getByLabelText("备注").closest("[aria-label='检查面板']")?.className).not.toContain("fixed");
+  });
+
+  it("leaves the preflight summary clickable after a desktop viewport becomes narrow", async () => {
+    const viewport = installViewport(true);
+    const sim = createSim();
+    const inner = sim.fetch;
+    sim.fetch = (input, init) => {
+      const url = String(input);
+      if (url.includes("/compose-preflight")) {
+        return Promise.resolve(json({
+          manifest: {
+            plan: { width: 1080, height: 1920, frameRate: 30, container: "mp4", durationMs: 1000 },
+            sources: [],
+          },
+          inputHash: "hash-visible-in-the-summary",
+        }));
+      }
+      if (url.includes("/assets")) {
+        return Promise.resolve(json({
+          items: [{
+            id: "video-1",
+            kind: "VIDEO",
+            mimeType: "video/mp4",
+            status: "ACTIVE",
+            reviewStatus: "DRAFT",
+            sourceShotRevisionId: `${SHOT_A}-rev`,
+            durationMs: 1000,
+          }],
+        }));
+      }
+      return inner(input, init);
+    };
+    install(sim);
+    renderAt(`focus=shot&episode=1&scene=scene-1&shot=${SHOT_A}`);
+    expect(await screen.findByRole("option", { name: "video-1" })).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("合成视频"), { target: { value: "video-1" } });
+    fireEvent.click(screen.getByRole("button", { name: "预检合成输入" }));
+    const summary = await screen.findByText("预检摘要");
+    viewport.set(false);
+    for (const panel of document.querySelectorAll("[aria-label='检查面板']")) {
+      expect(panel.className).toContain("hidden");
+      expect(panel.className).not.toContain("fixed");
+    }
+    expect(summary.closest("[aria-label='检查面板']")).toBeNull();
+    fireEvent.click(summary);
+    expect(screen.getByText("hash-visible-in-the-summary")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "检查" }));
+    fireEvent.click(summary);
+    expect(screen.getByText("hash-visible-in-the-summary")).toBeTruthy();
+    expect(summary.closest("[aria-label='检查面板']")).toBeNull();
+  });
 });
+
+function installViewport(desktop: boolean) {
+  let matches = desktop;
+  const listeners = new Set<(event: MediaQueryListEvent) => void>();
+  window.matchMedia = (query: string) => ({
+    get matches() { return query.includes("1280") ? matches : false; },
+    media: query,
+    onchange: null,
+    addEventListener: (_type: string, listener: EventListener) => listeners.add(listener as (event: MediaQueryListEvent) => void),
+    removeEventListener: (_type: string, listener: EventListener) => listeners.delete(listener as (event: MediaQueryListEvent) => void),
+    dispatchEvent: () => false,
+    addListener: () => undefined,
+    removeListener: () => undefined,
+  });
+  return {
+    set(next: boolean) {
+      matches = next;
+      if (listeners.size === 0) throw new Error("no media listeners");
+      act(() => {
+        for (const listener of listeners) listener({ matches: next } as MediaQueryListEvent);
+      });
+    },
+  };
+}
