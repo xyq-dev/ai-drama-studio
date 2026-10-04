@@ -1,6 +1,14 @@
 # Media Worker
 
-M1-A health stub. The health process does not run FFmpeg or accept media jobs. Single-shot rendering is a separate CLI, `python -m media_worker.compose_cli`, invoked by the Node worker.
+M1-A health stub. The health process does not run FFmpeg or accept media jobs. Single-shot rendering is a separate CLI, `python -m media_worker.compose_cli`, invoked by the Node worker. Episode rendering is `python -m media_worker.episode_compose`.
+
+Three interpreters stay separate:
+
+- `MEDIA_WORKER_PYTHON` selects the interpreter for `pnpm verify`. When it is unset, `scripts/run-media-worker-tests.mjs` uses `python` on Windows and `python3` elsewhere. An empty value is not replaced with another interpreter.
+- `M4_COMPOSE_PYTHON` selects the interpreter the Node worker uses for the compose CLIs. The worker schema defaults it to `python3` when the variable is absent. An empty string is rejected even when every compose switch is off. This does not change `MEDIA_WORKER_PYTHON`.
+- `python -m media_worker` is only the HTTP health process. Its `/health/live` and `/health/ready` responses do not mean FFmpeg compose ran.
+
+The development path, including the default-off switches, is in `docs/DEV_RUNBOOK.md`.
 
 ## Local setup
 

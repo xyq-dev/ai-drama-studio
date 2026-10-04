@@ -1,6 +1,8 @@
 # M4 收尾与集成准备
 
-本文件只整理已有验收，不新增功能。仓库没有 `AGENTS.md`。范围仍以 [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) 为准，启动入口是仓库根目录 [`README.md`](../README.md)。报告提交不能代替验收 SHA。产品样片的 52 阶段仍属于 `72b51b9` 的 Run `37100980441`。主线入口提交另有一次同清单重跑，见下方记录；该记录不改写固定提交统计。
+本文件只整理已有验收，不新增功能。仓库没有 `AGENTS.md`。范围仍以 [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) 为准，启动入口是仓库根目录 [`README.md`](../README.md)，开发操作见 [`DEV_RUNBOOK.md`](DEV_RUNBOOK.md)。报告提交不能代替验收 SHA。产品样片的 52 阶段仍属于 `72b51b9` 的 Run `37100980441`。主线入口提交另有一次同清单重跑，见下方记录；该记录不改写固定提交统计。
+
+PR #40 已合并。核实过的 `origin/main` 是 `4f42f7ea786ef47b04a86a94f16350d4da8e1d13`。该 main 上的 M1-C Run `37135367806` 与 52 阶段 Run `37135367830` 均已成功。这两次是合并后的既有验收，不是运行手册这一轮的新测试。完整 M4 和完整生产成本仍未验收。下面的矩阵、历史 SHA 和固定的 83/202、84/204 统计保持原样。
 
 最后通过的产品验收 SHA 是 `72b51b9ce59ff997b619eee3b9303c6e84f366a3`。来源 `feat/m4-three-episode-sample` 的 `a6cd529891ea4fee282d787c973a9d8de02e48ec` 只在其后更新了样片报告和 390px 截图。
 
@@ -72,3 +74,5 @@
 52 阶段 workflow 仍使用原有路径过滤。产品与验收路径覆盖 `apps/**`、`packages/**`、`services/**`、`scripts/m3-av-e2e/**`、`infra/compose.yaml`、锁文件和该 workflow 自身。`docs/**` 不在过滤列表中，纯文档提交不重复触发。事件为样片分支、`chore/m4-closeout` 和 `main` 的 push，发往 `main` 的 `pull_request`，以及 `workflow_dispatch`。权限保持 `contents: read`。不使用 `pull_request_target`，没有生产凭据、发布或部署步骤。`chore/m4-closeout` 的 push 已在验收 SHA `de522441f096c96493911a571e7f9edb23c78f8d` 上自动触发 Run `37104185587` attempt 1，job `111149400295`。隔离库 `m3av_37104185587a1` 迁移前 `public_tables=0`，只应用已有 migration。52 个阶段全部 passed。`fatal`、`restoreError`、`cleanupError` 为空，`composeDown` 退出码 0。证据包 artifact `11268046670`，13730884 字节，SHA-256 `81cce7ebe43bbb6b290aaa6737894004bf9df97c95ca3ee66763bd8574a82121`。发往 `main` 的 pull request 和 `main` 的 push 仍只完成配置检查，尚未由这些事件执行。上述 84/204 与 83/202 不因这次记录改写。
 
 剩余工作按这个顺序：先做该候选的合并前审查；审查前不继续扩展 Mock 功能。其后才可能单独处理真实 Provider、付费模型、ComfyUI、生产启用和未计量的本地编码成本。这些事项现在都未执行。
+
+上述交接记录保留到合并前。PR #40 合并之后，候选已经在 `main` 的 `4f42f7ea786ef47b04a86a94f16350d4da8e1d13`。开发运行步骤见 [`DEV_RUNBOOK.md`](DEV_RUNBOOK.md)。这份手册不表示环境已经部署，也不把 M1-C Run `37135367806` 或 52 阶段 Run `37135367830` 记成新的产品验收。真实 Provider、付费模型、ComfyUI 实际调用、生产启用、完整 M4 和完整生产成本仍然未执行。

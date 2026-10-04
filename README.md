@@ -1,6 +1,6 @@
 # AI Drama Studio
 
-当前集成候选的验收边界见 [`docs/M4_CLOSEOUT_REPORT.md`](docs/M4_CLOSEOUT_REPORT.md)。项目范围仍以 [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) 为准。
+当前主线 `main` 已包含合并后的 PR #40，核实提交是 `4f42f7ea786ef47b04a86a94f16350d4da8e1d13`。验收边界见 [`docs/M4_CLOSEOUT_REPORT.md`](docs/M4_CLOSEOUT_REPORT.md)。项目范围仍以 [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) 为准。本地开发步骤见 [`docs/DEV_RUNBOOK.md`](docs/DEV_RUNBOOK.md)。完整 M4 和完整生产成本仍未验收。运行手册不表示环境已经部署。
 
 M2 文本 Scene/Shot 生成已通过厂商无关的同步 Adapter 边界运行；契约、恢复限制和验收证据见
 [`docs/M2_TEXT_ADAPTER_ACCEPTANCE.md`](docs/M2_TEXT_ADAPTER_ACCEPTANCE.md)。
@@ -80,9 +80,10 @@ corepack pnpm typecheck
 corepack pnpm test
 corepack pnpm build
 corepack pnpm verify
+corepack pnpm run doctor
 ```
 
-`pnpm verify` 按 lint、typecheck、test、build 的顺序执行。
+`pnpm verify` 按 lint、typecheck、test、build、`scripts/dev-doctor` 语法与测试、以及既有 Python 合成测试的顺序执行。`pnpm run doctor` 只读检查本机工具和所选配置，不表示服务 ready，也不表示业务闭环通过。pnpm 10.17.0 的 `pnpm doctor` 是它自己的安装检查，不运行本仓库脚本。显式指定 env 文件时使用 `corepack pnpm run doctor -- --env-file .env`。
 
 单独启动：
 
@@ -92,6 +93,8 @@ corepack pnpm --filter @ai-drama/worker dev
 corepack pnpm --filter @ai-drama/comfyui-adapter dev
 corepack pnpm --filter @ai-drama/web dev
 ```
+
+`pnpm --filter … dev` 不经过 Turbo 的依赖构建。`@ai-drama/contracts`、`domain`、`health`、`providers`、`database` 导出 `dist/index.js`。新检出仓库先按 `docs/DEV_RUNBOOK.md` 做锁定安装、Prisma validate/generate 和 `pnpm build`，再启动应用。初始化终端和应用终端使用同一套只填充未定义变量的配置。
 
 Worker 启动日志写明 `worker runtime` 和 `queue consumer enabled`。PostgreSQL 仍是业务状态真相；BullMQ payload 保留 `jobId + dispatchSeq`，自定义 queue job ID 使用不含冒号的 `${jobId}__${dispatchSeq}` 编码。
 
@@ -174,4 +177,4 @@ M1-B GitHub Actions 还会在隔离 PostgreSQL 16 上执行 Prisma validate/gene
 
 ## 尚未纳入当前候选的范围
 
-尚未完成和不得当成完成的事项见 [`docs/M4_CLOSEOUT_REPORT.md`](docs/M4_CLOSEOUT_REPORT.md)。其中包括真实 Provider、付费模型、ComfyUI 实际调用、生产启用和完整 M4。
+尚未完成和不得当成完成的事项见 [`docs/M4_CLOSEOUT_REPORT.md`](docs/M4_CLOSEOUT_REPORT.md)。其中包括真实 Provider、付费模型、ComfyUI 实际调用、生产启用、完整 M4 和完整生产成本。[`docs/DEV_RUNBOOK.md`](docs/DEV_RUNBOOK.md) 只说明如何在专用开发库上操作，不表示这些能力已经部署或验收。
