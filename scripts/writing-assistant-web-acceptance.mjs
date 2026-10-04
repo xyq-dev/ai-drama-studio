@@ -18,7 +18,9 @@ const { assertEmptyWritingAcceptanceDatabase, WRITING_WEB_DATABASE } = apiRequir
 const { chromium } = createRequire(join(root, "package.json"))("playwright");
 
 const workspaceId = process.env.APP_WORKSPACE_ID ?? "11111111-1111-4111-8111-111111111111";
-const apiPort = "3011";
+// next build stores the /api/v1 rewrite. The default target is port 3001,
+// and starting Next later does not change that compiled destination.
+const apiPort = "3001";
 const webPort = "3010";
 const apiOrigin = `http://127.0.0.1:${apiPort}`;
 const webOrigin = `http://127.0.0.1:${webPort}`;
@@ -214,6 +216,10 @@ async function main() {
     }, join(root, "apps/web"));
     await waitForApi();
     await waitForOk(webOrigin);
+    const proxied = await fetch(`${webOrigin}/api/v1/health/live`);
+    if (!proxied.ok) {
+      throw new Error(`the web /api/v1 rewrite did not reach the acceptance API on ${apiOrigin}: ${proxied.status}`);
+    }
 
     const created = await fetch(`${apiOrigin}/api/v1/projects`, {
       method: "POST",
