@@ -166,6 +166,20 @@ export interface TextGenerationAdapter {
 }
 
 export {
+  EPISODE_DRAFT_SCHEMA,
+  STORY_PLAN_SCHEMA,
+  WRITING_BODY_MAX_CHARS,
+  WRITING_IMPORT_MAX_BYTES,
+  WRITING_NOTE_MAX_CHARS,
+  WRITING_PROMPT_VERSION,
+  episodeDraftCandidateSchema,
+  storyPlanCandidateSchema,
+  writingCandidateSchema,
+  type EpisodeDraftCandidate,
+  type StoryPlanCandidate,
+  type WritingCandidate,
+} from "./writing-assistant";
+export {
   SAMPLE_VIDEO_DESCRIPTIONS,
   SAMPLE_VIDEO_FIXTURE_IDS,
   SAMPLE_VIDEO_SCHEMA,

@@ -8,7 +8,7 @@ const apiOrigin = resolveApiUpstream(process.env.NEXT_PUBLIC_API_BASE_URL);
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
-  transpilePackages: ["@ai-drama/contracts"],
+  transpilePackages: ["@ai-drama/contracts", "@ai-drama/domain"],
   async rewrites() {
     return [
       {

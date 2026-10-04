@@ -1,7 +1,9 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { canAdopt, type FrozenWritingContext, type WritingTargetSnapshot } from "@ai-drama/domain/writing-assistant";
 import { ComposePreflight } from "./compose-preflight";
+import { WritingAssistant } from "./writing-assistant";
 import { EpisodeComposePreflight } from "./episode-compose-preflight";
 import { ProjectCostSummary } from "./project-cost-summary";
 import { ApiError, StudioClient } from "../lib/studio-client";
@@ -19,6 +21,7 @@ import {
   diffJson,
   displayedConflict,
   draftStorageKey,
+  fingerprintOf,
   type DraftRecord,
   isSimpleContent,
   nextDraft,
@@ -503,6 +506,7 @@ export function Workbench({ projectId }: { projectId: string }) {
               projectVersion={project.version}
               episode={episodes.find((item) => item.episodeNo === focus.episodeNo) ?? null}
               storyCurrent={storyCurrent}
+              premise={project.premise}
               refreshEpoch={refreshEpoch}
               onSaved={reloadBase}
               onStatus={setSaveState}
@@ -578,7 +582,7 @@ function StoryPane(props: {
             return { ifMatch: nextProject.version, server: currentStoryRevision(page.items)?.content ?? { text: "" } };
           }}
         onStatus={props.onStatus}
-        onSubmit={async (content, draft) => {
+          onSubmit={async (content, draft) => {
           await client.write({
             path: `/projects/${props.project.id}/stories`,
             body: { content },
@@ -587,6 +591,13 @@ function StoryPane(props: {
           });
         }}
         onSaved={props.onSaved}
+        assistant={{
+          mode: "story",
+          episodeNo: null,
+          premise: props.project.premise,
+          confirmedMaterials: "",
+          loaded: props.stories !== null,
+        }}
       />
       <InspectSlot>
       <RevisionColumn
@@ -622,6 +633,7 @@ function ScriptPane(props: {
   onSaved: () => Promise<void>;
   onStatus: (value: string) => void;
   onOpenScene: (sceneId: string) => void;
+  premise: string;
 }) {
   const [scripts, setScripts] = useState<PageState<ScriptRevision> | null>(null);
   const [scenes, setScenes] = useState<PageState<Aggregate> | null>(null);
@@ -697,6 +709,13 @@ function ScriptPane(props: {
               idempotencyKey: draft.idempotencyKey,
               ifMatch: draft.ifMatch ?? undefined,
             });
+          }}
+          assistant={{
+            mode: "episode",
+            episodeNo: episode.episodeNo,
+            premise: props.premise,
+            confirmedMaterials: textOf(props.storyCurrent?.content ?? null),
+            loaded: scripts !== null && !currentNotLoaded,
           }}
           onSaved={async () => {
             await props.onSaved();
@@ -985,6 +1004,13 @@ function ContentEditor(props: {
   onStatus: (value: string) => void;
   onSubmit: (content: Record<string, unknown>, draft: { idempotencyKey: string; ifMatch: number | null }, sourceId: string | null) => Promise<void>;
   onSaved: () => Promise<void>;
+  assistant?: {
+    mode: "story" | "episode";
+    episodeNo: number | null;
+    premise: string;
+    confirmedMaterials: string;
+    loaded: boolean;
+  };
 }) {
   const scope = `${props.projectId}:${props.entityKey}:${props.baseRevisionId ?? "new"}`;
   const storageKey = activeStorageKey(props.projectId, props.entityKey, props.baseRevisionId);
@@ -1018,6 +1044,45 @@ function ContentEditor(props: {
       parsed: next?.parsed === undefined ? parsed : next.parsed,
       sourceId: next?.sourceId === undefined ? sourceId : next.sourceId,
     };
+  }
+
+  function captureTarget(): WritingTargetSnapshot {
+    const existing = readDraft(window.sessionStorage, storageKey);
+    const snapshot = currentDraft();
+    const ifMatch = existing ? existing.ifMatch : props.ifMatch;
+    return {
+      projectId: props.projectId,
+      entityKey: props.entityKey,
+      mode: props.assistant?.mode ?? "story",
+      episodeNo: props.assistant?.episodeNo ?? null,
+      sourceRevisionId: props.baseRevisionId,
+      ifMatch,
+      draftFingerprint: existing ? existing.fingerprint : fingerprintOf(snapshot, ifMatch),
+      currentText: snapshot.text,
+      loaded: props.assistant?.loaded ?? false,
+    };
+  }
+
+  function adoptText(formatted: string, frozen: FrozenWritingContext): boolean {
+    const live = captureTarget();
+    if (!canAdopt(frozen, live, frozen.inputFingerprint).ok) return false;
+    const editing = currentDraft();
+    const next = applyTextContent(editing.parsed ?? props.content, formatted);
+    const nextText = textOf(next);
+    const nextRaw = JSON.stringify(next, null, 2);
+    const complexNow = !isSimpleContent(props.content);
+    setText(nextText);
+    setParsed(next);
+    setRaw(nextRaw);
+    if (!complexNow) setAdvanced(false);
+    remember({
+      mode: complexNow ? "json" : "text",
+      text: nextText,
+      raw: nextRaw,
+      parsed: next,
+      sourceId: editing.sourceId,
+    });
+    return true;
   }
 
   function remember(next: EditorDraft) {
@@ -1121,6 +1186,19 @@ function ContentEditor(props: {
   return (
     <form className="rounded-lg bg-white p-4" onSubmit={(event) => { event.preventDefault(); void save(false); }}>
       <h2 className="font-medium">{props.title}</h2>
+      {props.assistant ? (
+        <WritingAssistant
+          mode={props.assistant.mode}
+          projectId={props.projectId}
+          entityKey={props.entityKey}
+          episodeNo={props.assistant.episodeNo}
+          premise={props.assistant.premise}
+          confirmedMaterials={props.assistant.confirmedMaterials}
+          loaded={props.assistant.loaded}
+          capture={captureTarget}
+          onAdopt={adoptText}
+        />
+      ) : null}
       {props.empty ? <p className="mt-2 text-sm">尚无版本。保存将创建第一版。</p> : null}
       {props.extra ? <p className="mt-2 text-sm">{props.extra}</p> : null}
       {props.sources ? (
