@@ -4,9 +4,11 @@ on:
   push:
     branches:
       - feat/drama-writing-assistant
+      - main
   pull_request:
     branches:
       - feat/commercial-creator-ui
+      - main
   workflow_dispatch:
 
 permissions:
