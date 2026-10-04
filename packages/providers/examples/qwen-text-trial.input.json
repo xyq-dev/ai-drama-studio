@@ -1,0 +1,6 @@
+{
+  "schema": "qwen.text.trial.input.v1",
+  "idea": "雨夜便利店里，实习店员把最后一盒临期饭团让给了赶末班车的陌生人。",
+  "tone": "克制、温暖",
+  "targetDurationSeconds": 60
+}

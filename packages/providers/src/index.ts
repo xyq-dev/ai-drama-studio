@@ -29,3 +29,15 @@ export { MOCK_AUDIO_FIXTURE, MOCK_SUBTITLE_FIXTURE, MOCK_VIDEO_FIXTURE, mockMedi
 export { sampleVideoBytes } from "./sample-video";
 export { MockTextAdapter } from "./mock-text-adapter";
 export type { TextGenerationAdapter } from "@ai-drama/contracts";
+export {
+  QWEN_TEXT_TRIAL_DEFAULT_MODEL,
+  QWEN_TEXT_TRIAL_MAX_RESPONSE_BYTES,
+  QWEN_TEXT_TRIAL_MAX_TOKENS,
+  QWEN_TEXT_TRIAL_MODEL_ENV,
+  QWEN_TEXT_TRIAL_TIMEOUT_MS,
+  createFetchTransport,
+  resolveQwenTextTrialEndpoint,
+  runQwenTextTrial,
+  type QwenTextTrialResult,
+  type QwenTransport,
+} from "./qwen-text-trial";

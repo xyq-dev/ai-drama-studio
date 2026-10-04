@@ -158,6 +158,21 @@ export const textAdapterResultSchema = z.discriminatedUnion("kind", [
 ]);
 export type TextAdapterResult = z.infer<typeof textAdapterResultSchema>;
 
+export {
+  QWEN_TEXT_TRIAL_DRAFT_SCHEMA,
+  QWEN_TEXT_TRIAL_INPUT_SCHEMA,
+  QWEN_TEXT_TRIAL_LIMITS,
+  QWEN_TEXT_TRIAL_RECEIPT_SCHEMA,
+  parseQwenTextTrialDraft,
+  parseQwenTextTrialInput,
+  qwenTextTrialDraftSchema,
+  qwenTextTrialInputSchema,
+  qwenTextTrialReceiptSchema,
+  type QwenTextTrialDraft,
+  type QwenTextTrialInput,
+  type QwenTextTrialReceipt,
+} from "./qwen-text-trial";
+
 /** Only replay-safe synchronous adapters are supported by the M2 recovery contract. */
 export interface TextGenerationAdapter {
   readonly providerKey: string;
