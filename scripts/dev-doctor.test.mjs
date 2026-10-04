@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { isAbsolute } from "node:path";
 import test from "node:test";
 import { inspectDevEnvironment, parseEnvText, renderReport } from "./dev-doctor.mjs";
 
@@ -104,9 +105,11 @@ test("the selected verify interpreter is probed and an empty value is not replac
 test("process environment overrides the env file and a quoted path keeps its spaces", () => {
   const parsed = parseEnvText("M4_COMPOSE_WORK_DIR=\"C:\\ai drama\\work\"\nMEDIA_WORKER_PYTHON=from-file\n");
   assert.equal(parsed.M4_COMPOSE_WORK_DIR, "C:\\ai drama\\work");
-  const work = "C:\\ai drama\\work";
-  const objects = "C:\\ai drama\\objects";
-  const mock = "C:\\ai drama\\mock";
+  const work = process.platform === "win32" ? "C:\\ai drama\\work" : "/tmp/ai drama/work";
+  const objects = process.platform === "win32" ? "C:\\ai drama\\objects" : "/tmp/ai drama/objects";
+  const mock = process.platform === "win32" ? "C:\\ai drama\\mock" : "/tmp/ai drama/mock";
+  assert.equal(isAbsolute(work), true);
+  assert.match(work, / /);
   const composePython = "C:\\Program Files\\Python\\python.exe";
   const { result, calls, report } = inspect({
     fileText: baseFile([
