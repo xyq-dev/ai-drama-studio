@@ -1211,8 +1211,8 @@ describe("workbench review interactions against a simulated API", () => {
     expect(sim.workflowReads).toBe(reads);
     view.unmount();
     renderAt("focus=script&episode=1");
-    await waitFor(() => expect((screen.getByLabelText("正文") as HTMLTextAreaElement).value).toBe("剧本草稿"));
-    expect(screen.getByText(/场景 scene-1/)).toBeTruthy();
+    expect(await screen.findByText(/场景 scene-1/)).toBeTruthy();
+    expect((screen.getByLabelText("正文") as HTMLTextAreaElement).value).toBe("剧本草稿");
   }, 15000);
 
   it("pauses workflow polling while hidden and rereads when the page returns", async () => {
