@@ -74,6 +74,26 @@ async function waitForOk(url) {
   throw new Error(`timed out waiting for ${url}: ${last}`);
 }
 
+async function waitForApi() {
+  const started = Date.now();
+  let last = "not started";
+  while (Date.now() - started < 60_000) {
+    try {
+      const live = await fetch(`${apiOrigin}/api/v1/health/live`);
+      const ready = await fetch(`${apiOrigin}/api/v1/health/ready`);
+      const body = await ready.json();
+      const postgres = body?.dependencies?.postgres?.status;
+      const redis = body?.dependencies?.redis?.status;
+      if (live.ok && postgres === "ok" && redis === "ok") return;
+      last = `live ${live.status}; postgres ${postgres}; redis ${redis}; objectStorage ${body?.dependencies?.objectStorage?.status}`;
+    } catch (error) {
+      last = error instanceof Error ? error.message : "fetch failed";
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error(`API postgres and redis were not ready: ${last}`);
+}
+
 function startProcess(command, args, env, cwd) {
   const child = spawn(command, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
   let logs = "";
@@ -192,7 +212,7 @@ async function main() {
       ...process.env,
       NEXT_PUBLIC_API_BASE_URL: apiOrigin,
     }, join(root, "apps/web"));
-    await waitForOk(`${apiOrigin}/api/v1/health/ready`);
+    await waitForApi();
     await waitForOk(webOrigin);
 
     const created = await fetch(`${apiOrigin}/api/v1/projects`, {
