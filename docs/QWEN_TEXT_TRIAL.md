@@ -28,4 +28,6 @@ API 和 Worker 不读取这些变量，未配置千问时仍可启动。
 
 客户端在 `packages/providers`，输入和草稿契约在 `packages/contracts`。它不是 `TextGenerationAdapter`，不声明 `REPLAY_SAFE_SYNC`，也不替换 `MockTextAdapter`。一次 `--execute` 只发一个非流式请求，超时、断连或响应超限后不自动再发。本地 runId 不作为服务商去重保证。费用金额保持未知。
 
+HTTP 请求与 `qwen:writing` 共用同一套实现。本入口的草稿 schema 仍是 `qwen.text.trial.draft.v1`，请求体仍使用 `max_tokens`。网页可导入的故事策划和单集剧本候选由 `qwen:writing` 生成，见 `docs/QWEN_WRITING_CANDIDATES.md`。
+
 本文件不代表真实模型已经调用，不代表网页已经接入，也不代表费用已经验收。Migration=NO。

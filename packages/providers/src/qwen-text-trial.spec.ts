@@ -175,6 +175,7 @@ describe("qwen text trial", () => {
     expect(body.stream).toBe(false);
     expect(body.enable_thinking).toBe(false);
     expect(body.max_tokens).toBe(QWEN_TEXT_TRIAL_MAX_TOKENS);
+    expect(body.max_completion_tokens).toBeUndefined();
     expect(body.n).toBe(1);
     expect(body.response_format).toEqual({ type: "json_object" });
     expect(sent.calls[0]?.url).toBe(`${BASE}/chat/completions`);
@@ -227,6 +228,8 @@ describe("qwen text trial", () => {
       { name: "truncated", body: completion("{", { choices: [{ finish_reason: "length", message: { content: "{" } }] }), code: "truncated" },
       { name: "invalid-json", body: completion("not-json"), code: "invalid_json" },
       { name: "invalid-draft", body: completion({ schema: "qwen.text.trial.draft.v1", title: "短", logline: "短句。", characters: [], scenes: [] }), code: "invalid_draft" },
+      { name: "non-stop-json", body: completion(draft(), { choices: [{ finish_reason: null, message: { content: JSON.stringify(draft()) } }] }), code: "invalid_finish" },
+      { name: "tool-call", body: completion(draft(), { choices: [{ finish_reason: "stop", message: { content: JSON.stringify(draft()), tool_calls: [{ id: "call-1", type: "function" }] } }] }), code: "tool_call" },
     ];
     for (const item of cases) {
       const sent = once(okResponse(item.body));

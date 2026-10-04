@@ -41,3 +41,4 @@ export {
   type QwenTextTrialResult,
   type QwenTransport,
 } from "./qwen-text-trial";
+export { runQwenWriting, type QwenWritingResult } from "./qwen-writing";

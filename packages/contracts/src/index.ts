@@ -172,6 +172,16 @@ export {
   type QwenTextTrialInput,
   type QwenTextTrialReceipt,
 } from "./qwen-text-trial";
+export {
+  QWEN_WRITING_INPUT_MAX_BYTES,
+  QWEN_WRITING_INPUT_SCHEMA,
+  QWEN_WRITING_RECEIPT_SCHEMA,
+  parseQwenWritingInput,
+  qwenWritingInputSchema,
+  qwenWritingReceiptSchema,
+  type QwenWritingInput,
+  type QwenWritingReceipt,
+} from "./qwen-writing";
 
 /** Only replay-safe synchronous adapters are supported by the M2 recovery contract. */
 export interface TextGenerationAdapter {

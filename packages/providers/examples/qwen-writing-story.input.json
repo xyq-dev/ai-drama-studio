@@ -1,0 +1,11 @@
+{
+  "schema": "qwen.writing.input.v1",
+  "mode": "story",
+  "premise": "夜班便利店的班次记录被改过。",
+  "genre": "悬疑",
+  "audience": "成人短剧观众",
+  "characters": "店员小林，店长周衡",
+  "mustKeep": "班次记录是真的",
+  "mustNotChange": "",
+  "currentText": ""
+}

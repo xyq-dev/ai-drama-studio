@@ -16,6 +16,7 @@
     "verify": "pnpm lint && pnpm typecheck && pnpm test && pnpm build && node --check scripts/dev-doctor.mjs && node --test scripts/dev-doctor.test.mjs && node scripts/run-media-worker-tests.mjs",
     "doctor": "node scripts/dev-doctor.mjs",
     "qwen:trial": "node ./packages/providers/node_modules/tsx/dist/cli.mjs ./packages/providers/src/qwen-text-trial-cli.ts",
+    "qwen:writing": "node ./packages/providers/node_modules/tsx/dist/cli.mjs ./packages/providers/src/qwen-writing-cli.ts",
     "clean": "turbo run clean",
     "infra:config": "docker compose -f infra/compose.yaml --env-file .env.example config",
     "infra:up": "docker compose -f infra/compose.yaml --env-file .env.example up -d",
