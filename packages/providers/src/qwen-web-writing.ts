@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { WRITING_PROMPT_VERSION, parseQwenWritingInput, type QwenWritingInput } from "@ai-drama/contracts";
-import { QWEN_CHAT_MAX_TOKENS, qwenFailureMessage, redactSecret, sendQwenChat, type QwenTransport } from "./qwen-chat";
+import { buildEpisodeDraftInstruction, buildStoryPlanInstruction } from "@ai-drama/domain";
+import { QWEN_CHAT_MAX_TOKENS, QWEN_CHAT_MODEL_ENV, buildQwenChatBody, qwenFailureMessage, redactSecret, selectedQwenModel, sendQwenChat, type QwenTransport } from "./qwen-chat";
 import { acceptPreparedCandidate } from "./qwen-writing";
 
 /** Qwen web calls are not replay-safe and must not enter the M2 text job path. */
@@ -33,43 +34,70 @@ export interface QwenWebRecord {
   updatedAt: string;
 }
 
+export type QwenWebFinish = Pick<QwenWebRecord, "serverRequestId" | "errorCode" | "providerResult" | "candidateJson" | "candidateExpiresAt" | "updatedAt"> & {
+  state: Exclude<QwenWebState, "reserved" | "submitted">;
+};
+export type QwenWebReservation =
+  | { kind: "reserved" | "existing" | "conflict"; record: QwenWebRecord }
+  | { kind: "blocked"; code: "QWEN_WEB_REQUEST_CAP" | "QWEN_WEB_CONCURRENCY_CAP" };
+
 export interface QwenWebStore {
-  countOpen(workspaceId: string): Promise<number>;
-  countSince(workspaceId: string, sinceIso: string): Promise<number>;
+  /** Key lookup, identity comparison, both caps and insert must be one atomic operation. */
+  reserve(record: QwenWebRecord, limits: { sinceIso: string; maxRequests: number; maxConcurrency: number }): Promise<QwenWebReservation>;
   findByKey(workspaceId: string, actorId: string, key: string): Promise<QwenWebRecord | null>;
-  insertReserved(record: QwenWebRecord): Promise<void>;
-  markSubmitted(id: string, updatedAt: string): Promise<void>;
-  finish(id: string, patch: Pick<QwenWebRecord, "state" | "serverRequestId" | "errorCode" | "providerResult" | "candidateJson" | "candidateExpiresAt" | "updatedAt">): Promise<void>;
+  markSubmitted(id: string, updatedAt: string): Promise<boolean>;
+  /** Only the still-submitted sender may finish. Recovery cannot be overwritten. */
+  finish(id: string, patch: QwenWebFinish): Promise<QwenWebRecord>;
+  /** Recovery caller must first establish that the owner stopped; replay is not recovery. */
+  markOrphanUnknown(id: string, expected: Pick<QwenWebRecord, "state" | "updatedAt">, nowIso: string): Promise<boolean>;
   expireCandidates(nowIso: string): Promise<number>;
 }
 
+/** Test-only store. A future database implementation must serialize reserve per workspace. */
 export class InMemoryQwenWebStore implements QwenWebStore {
-  readonly records: QwenWebRecord[] = [];
+  private readonly records: QwenWebRecord[] = [];
 
-  async countOpen(workspaceId: string): Promise<number> {
-    return this.records.filter((record) => record.workspaceId === workspaceId && (record.state === "reserved" || record.state === "submitted")).length;
-  }
-
-  async countSince(workspaceId: string, sinceIso: string): Promise<number> {
-    return this.records.filter((record) => record.workspaceId === workspaceId && record.createdAt >= sinceIso).length;
+  async reserve(record: QwenWebRecord, limits: { sinceIso: string; maxRequests: number; maxConcurrency: number }): Promise<QwenWebReservation> {
+    // No await between reading caps and inserting the reservation.
+    const existing = this.records.find((item) => item.workspaceId === record.workspaceId && item.actorId === record.actorId && item.idempotencyKey === record.idempotencyKey);
+    if (existing) {
+      return { kind: existing.inputHash === record.inputHash ? "existing" : "conflict", record: structuredClone(existing) };
+    }
+    const workspace = this.records.filter((item) => item.workspaceId === record.workspaceId);
+    if (workspace.filter((item) => item.createdAt >= limits.sinceIso).length >= limits.maxRequests) {
+      return { kind: "blocked", code: "QWEN_WEB_REQUEST_CAP" };
+    }
+    if (workspace.filter((item) => item.state === "reserved" || item.state === "submitted").length >= limits.maxConcurrency) {
+      return { kind: "blocked", code: "QWEN_WEB_CONCURRENCY_CAP" };
+    }
+    this.records.push(structuredClone(record));
+    return { kind: "reserved", record: structuredClone(record) };
   }
 
   async findByKey(workspaceId: string, actorId: string, key: string): Promise<QwenWebRecord | null> {
-    return this.records.find((record) => record.workspaceId === workspaceId && record.actorId === actorId && record.idempotencyKey === key) ?? null;
+    const record = this.records.find((item) => item.workspaceId === workspaceId && item.actorId === actorId && item.idempotencyKey === key);
+    return record ? structuredClone(record) : null;
   }
 
-  async insertReserved(record: QwenWebRecord): Promise<void> {
-    this.records.push(record);
-  }
-
-  async markSubmitted(id: string, updatedAt: string): Promise<void> {
+  async markSubmitted(id: string, updatedAt: string): Promise<boolean> {
     const record = this.require(id);
+    if (record.state !== "reserved") return false;
     record.state = "submitted";
     record.updatedAt = updatedAt;
+    return true;
   }
 
-  async finish(id: string, patch: Pick<QwenWebRecord, "state" | "serverRequestId" | "errorCode" | "providerResult" | "candidateJson" | "candidateExpiresAt" | "updatedAt">): Promise<void> {
-    Object.assign(this.require(id), patch);
+  async finish(id: string, patch: QwenWebFinish): Promise<QwenWebRecord> {
+    const record = this.require(id);
+    if (record.state === "submitted") Object.assign(record, patch);
+    return structuredClone(record);
+  }
+
+  async markOrphanUnknown(id: string, expected: Pick<QwenWebRecord, "state" | "updatedAt">, nowIso: string): Promise<boolean> {
+    const record = this.require(id);
+    if (record.state !== expected.state || record.updatedAt !== expected.updatedAt || (record.state !== "reserved" && record.state !== "submitted")) return false;
+    Object.assign(record, { state: "unknown", errorCode: "unknown", providerResult: "unknown", candidateJson: null, candidateExpiresAt: null, updatedAt: nowIso });
+    return true;
   }
 
   async expireCandidates(nowIso: string): Promise<number> {
@@ -121,7 +149,6 @@ export interface RunQwenWebWritingInput {
   requestedModel: string;
   apiKey: string;
   url: string;
-  body: string;
   store: QwenWebStore;
   transport: QwenTransport;
   now?: Date;
@@ -142,48 +169,33 @@ function hashInput(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
-function ambiguous(record: QwenWebRecord): boolean {
-  return record.state === "reserved" || record.state === "submitted";
-}
-
 export async function runQwenWebWriting(options: RunQwenWebWritingInput): Promise<QwenWebWritingResult> {
   const parsed = parseQwenWritingInput(options.input);
   if (!parsed.ok) return { status: 400, code: "invalid_input", requestCount: 0, record: null };
-  const inputHash = hashInput(parsed.data);
-  const existing = await options.store.findByKey(options.workspaceId, options.actorId, options.idempotencyKey);
-  if (existing && existing.inputHash !== inputHash) {
-    return { status: 409, code: "IDEMPOTENCY_KEY_REUSED", requestCount: 0, record: existing };
+  const model = selectedQwenModel({ [QWEN_CHAT_MODEL_ENV]: options.requestedModel });
+  if (!model.ok) return { status: 400, code: model.code, requestCount: 0, record: null };
+  let body: string;
+  try {
+    body = buildQwenChatBody({
+      model: model.model,
+      system: "你是中文短剧编剧助手。只输出一个 JSON 对象，不要 Markdown，不要工具调用。候选必须经人工比较采纳后保存。",
+      user: parsed.data.mode === "story" ? buildStoryPlanInstruction(parsed.data) : buildEpisodeDraftInstruction(parsed.data),
+      tokenLimitField: "max_completion_tokens",
+    });
+  } catch {
+    return { status: 400, code: "invalid_input", requestCount: 0, record: null };
   }
-  if (existing) {
-    if (ambiguous(existing)) {
-      const now = (options.now ?? new Date()).toISOString();
-      await options.store.finish(existing.id, {
-        state: "unknown",
-        serverRequestId: existing.serverRequestId,
-        errorCode: existing.errorCode ?? "unknown",
-        providerResult: "unknown",
-        candidateJson: null,
-        candidateExpiresAt: null,
-        updatedAt: now,
-      });
-      existing.state = "unknown";
-      existing.providerResult = "unknown";
-      existing.candidateJson = null;
-    }
-    return { status: 200, code: existing.state, requestCount: 0, record: existing };
-  }
-
+  // Bind the key to the exact generated request, its prompt version, and project scope.
+  const inputHash = hashInput({ projectId: options.projectId, input: parsed.data, promptVersion: WRITING_PROMPT_VERSION, url: options.url, body });
   const now = options.now ?? new Date();
   const since = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
   const maxRequests = options.maxRequests ?? QWEN_WEB_MAX_REQUESTS_DEFAULT;
   const maxConcurrency = options.maxConcurrency ?? QWEN_WEB_MAX_CONCURRENCY_DEFAULT;
-  if (await options.store.countSince(options.workspaceId, since) >= maxRequests) {
-    return { status: 429, code: "QWEN_WEB_REQUEST_CAP", requestCount: 0, record: null };
+  const retentionDays = options.retentionDays ?? QWEN_WEB_RETENTION_DAYS_DEFAULT;
+  if (![maxRequests, maxConcurrency].every((value) => Number.isSafeInteger(value) && value >= 0)
+      || !Number.isSafeInteger(retentionDays) || retentionDays < 1 || retentionDays > 365) {
+    return { status: 400, code: "invalid_limits", requestCount: 0, record: null };
   }
-  if (await options.store.countOpen(options.workspaceId) >= maxConcurrency) {
-    return { status: 429, code: "QWEN_WEB_CONCURRENCY_CAP", requestCount: 0, record: null };
-  }
-
   const createdAt = now.toISOString();
   const record: QwenWebRecord = {
     id: randomUUID(),
@@ -206,15 +218,20 @@ export async function runQwenWebWriting(options: RunQwenWebWritingInput): Promis
     createdAt,
     updatedAt: createdAt,
   };
-  await options.store.insertReserved(record);
-  await options.store.markSubmitted(record.id, createdAt);
-  record.state = "submitted";
+  const reservation = await options.store.reserve(record, { sinceIso: since, maxRequests, maxConcurrency });
+  if (reservation.kind === "blocked") return { status: 429, code: reservation.code, requestCount: 0, record: null };
+  if (reservation.kind === "conflict") return { status: 409, code: "IDEMPOTENCY_KEY_REUSED", requestCount: 0, record: reservation.record };
+  if (reservation.kind === "existing") return { status: 200, code: reservation.record.state, requestCount: 0, record: reservation.record };
+  if (!await options.store.markSubmitted(record.id, createdAt)) {
+    const current = await options.store.findByKey(options.workspaceId, options.actorId, options.idempotencyKey);
+    return { status: 200, code: current?.state ?? "unknown", requestCount: 0, record: current };
+  }
 
   const send = options.send ?? sendQwenChat;
   const exchange = await send({
     url: options.url,
     apiKey: options.apiKey,
-    body: options.body,
+    body,
     transport: options.transport,
   });
   const finishedAt = (options.now ?? new Date()).toISOString();
@@ -232,11 +249,10 @@ export async function runQwenWebWriting(options: RunQwenWebWritingInput): Promis
       errorCode = checked.errorCode;
     }
   }
-  const retentionDays = options.retentionDays ?? QWEN_WEB_RETENTION_DAYS_DEFAULT;
   const candidateExpiresAt = candidateJson
     ? new Date(now.getTime() + retentionDays * 24 * 60 * 60 * 1000).toISOString()
     : null;
-  await options.store.finish(record.id, {
+  const finished = await options.store.finish(record.id, {
     state,
     serverRequestId: exchange.serverRequestId,
     errorCode,
@@ -245,15 +261,8 @@ export async function runQwenWebWriting(options: RunQwenWebWritingInput): Promis
     candidateExpiresAt,
     updatedAt: finishedAt,
   });
-  record.state = state;
-  record.serverRequestId = exchange.serverRequestId;
-  record.errorCode = errorCode;
-  record.providerResult = state === "completed" ? "completed" : exchange.providerResult;
-  record.candidateJson = candidateJson;
-  record.candidateExpiresAt = candidateExpiresAt;
-  record.updatedAt = finishedAt;
-  const status = state === "completed" ? 200 : state === "unknown" ? 502 : 422;
-  return { status, code: state, requestCount: exchange.requestCount, record };
+  const status = finished.state === "completed" ? 200 : finished.state === "unknown" ? 502 : 422;
+  return { status, code: finished.state, requestCount: exchange.requestCount, record: finished };
 }
 
 export function qwenWebFailureText(code: string): string {

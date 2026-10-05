@@ -52,16 +52,26 @@ describe("synchronous mock media cost", () => {
 
   it("accepts only the fixed synchronous image snapshot", () => {
     const shotRevisionId = "33333333-3333-4333-8333-333333333333";
-    const legal = {
+    const legal = Object.freeze({
       schema: "m3.mock.image.v1",
       shotRevisionId,
       seed: null,
       outcome: "success",
-      bypassCache: false,
-    };
+    });
+    const persistedJson = JSON.stringify(legal);
     expect(() => assertFixedMockImageSnapshot(legal, shotRevisionId)).not.toThrow();
+    expect(JSON.stringify(legal)).toBe(persistedJson);
+    expect(Object.keys(legal)).toHaveLength(4);
+    for (const bypassCache of [false, true]) {
+      expect(() => assertFixedMockImageSnapshot({ ...legal, bypassCache }, shotRevisionId)).not.toThrow();
+    }
+    for (const bypassCache of [undefined, null, "false", 0]) {
+      expect(() => assertFixedMockImageSnapshot({ ...legal, bypassCache }, shotRevisionId)).toThrow(/fixed success job/);
+    }
     expect(() => assertFixedMockImageSnapshot({ ...legal, seed: "same" }, shotRevisionId)).not.toThrow();
     expect(() => assertFixedMockImageSnapshot({ ...legal, executionMode: "delayed" }, shotRevisionId))
+      .toThrow(/fixed success job/);
+    expect(() => assertFixedMockImageSnapshot({ ...legal, bypassCache: false, extra: true }, shotRevisionId))
       .toThrow(/fixed success job/);
     expect(() => assertFixedMockImageSnapshot({ ...legal, outcome: "delayed" }, shotRevisionId))
       .toThrow(/fixed success job/);

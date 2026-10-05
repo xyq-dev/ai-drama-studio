@@ -24,11 +24,17 @@ CREATE TABLE qwen_writing_request (
   updated_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (workspace_id, actor_id, idempotency_key),
   CHECK (billing_amount IS NULL),
+  CHECK ((mode = 'story' AND episode_no IS NULL)
+    OR (mode = 'episode' AND episode_no IS NOT NULL AND episode_no IN (1, 2, 3))),
   CHECK (candidate_json IS NULL OR state = 'completed'),
-  CHECK (state <> 'unknown' OR provider_result = 'unknown'),
+  CHECK (state <> 'unknown' OR (provider_result IS NOT NULL AND provider_result = 'unknown')),
   FOREIGN KEY (project_id, workspace_id) REFERENCES project (id, workspace_id)
 );
 
 CREATE INDEX qwen_writing_request_open_idx
   ON qwen_writing_request (workspace_id, state)
   WHERE state IN ('reserved', 'submitted');
+
+-- A future PostgreSQL store must reserve the idempotency key and workspace quota
+-- atomically, and fence state transitions by execution ownership. A table alone
+-- does not implement that protocol. Do not apply this draft to enable the route.

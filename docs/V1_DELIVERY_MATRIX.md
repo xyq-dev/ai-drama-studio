@@ -30,19 +30,19 @@
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 文本首接沿用千问，修复结束状态、UTF-8、单次请求和 token 参数 | 本次要求；[`PROVIDER_CONTRACTS.md`](PROVIDER_CONTRACTS.md) 禁止不确定结果进入可重放同步适配器 | `packages/providers/src/qwen-chat.ts`。HTTP 5xx 的 `providerResult` 为 `unknown`，保留校验后的请求 ID。`qwen:trial` 与 `qwen:writing` 共用该客户端 | 两个 CLI 规格覆盖 500/502/503/504，并断言每次操作一次请求 | 真实 `--execute` 未调用 | 手写响应、假密钥、可注入 transport | 真实密钥时另计费 | 本机规则已测。真实调用是外部待验收。Paid calls=NO |
 | 故事策划与单集剧本候选可被网页导入 | 编剧契约 `ads.writing.story-plan.v1` / `ads.writing.episode-draft.v1` | `acceptPreparedCandidate` 校验最终写入 `candidate.json` 的字节，含格式化、换行和脱敏 | 回归读取实际文件再导入，并覆盖接近 48,000 字节的合法候选 | 不放宽 48,000 字节或 20,000 字限制 | 同一套 `parseWritingImport` / `formatWritingImport` | 无 | 本机候选可用。模拟响应不是千问真实生成 |
-| 网页千问调用 | 审查后的六项技术决定 | 操作者门禁、发送前持久化、幂等拒绝、7 天候选和过期留审计。草案不在已执行 migration 目录。页面默认不显示请求按钮 | 假凭据与可注入 transport 测试 | 真实库表未执行，因此线上路由在发请求前停止。真实 `--execute` 未调用 | 无凭据状态测试。生产开关关闭 | 迁移执行授权；真实密钥另计费 | 规则已实现。数据库执行和真实调用是外部待验收。不接入 `REPLAY_SAFE_SYNC` |
+| 网页千问调用 | 审查后的六项技术决定 | 操作者门禁、发送前持久化、幂等拒绝、7 天候选和过期留审计。草案不在已执行 migration 目录。页面默认不显示请求按钮 | 假凭据与可注入 transport 测试 | PostgreSQL 存储、API 正文解析和调用接线未实现。路由固定返回不可用，执行草案不能启用它 | 无凭据状态测试。生产开关关闭 | 迁移执行授权；真实密钥另计费 | 内存协议已测试；网页数据库闭环尚未实现。不接入 `REPLAY_SAFE_SYNC` |
 
 ## 媒体、合成、导出、成本
 
 | 需求 | 出处 | 当前代码 | 已有证据 | 尚缺 | 验收方法 | 外部依赖 | 状态 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 图片、视频、配音、字幕、音乐的任务、取消、恢复、来源隔离和资产校验 | M3；[`PROVIDER_CONTRACTS.md`](PROVIDER_CONTRACTS.md) | Mock Adapter 与配置门，默认关闭。分镜预览走 `image.generate` 的 preview 门。视频仍要求镜头已审核 | M3 各验收报告；preview 与视频分流的集成规格 | 真实商业 Adapter 与 ComfyUI 调用。选定参考图的视频门槛依赖未执行草案 | Mock 技术流程。不用固定素材宣称真实 AI | 授权、密钥、配额；草案执行 | 预览门已实现。真实生成和选定参考图持久化是外部待验收 |
-| 角色参考图生成、选择、审核及来源 | [`PRODUCT_SCOPE.md`](PRODUCT_SCOPE.md) 审查后基线 | 领域谓词 `characterReferenceAllowed`、`videoGenerationAllowed`。SQL 草案增加 `reference_role` 与 `character_reference_selection` | 领域单测与草案文件测试 | 现行库禁止把 IMAGE 标成 APPROVED，也没有选择表。在线视频路径因此不查询该表 | 草案执行后才能做真实库验收 | 迁移执行授权 | 规则与草案已写。持久化和在线强制执行未实现，受未授权迁移阻塞 |
-| 失败重试与成功结果主动重生 | 审查后基线 `bypassCache=true` | 内容端点接受 `bypassCache`。为真时更换 seed，不走 job retry。终态任务不重开 | 领域 `classifyGenerationAction` 与工作台按钮测试 | 没有按 inputHash 复用的资产缓存。`bypassCache` 只改变本次 seed 和快照标记 | 组件测试断言重生请求体 | 无 | 已实现。重生不是失败重试 |
+| 角色参考图生成、选择、审核及来源 | [`PRODUCT_SCOPE.md`](PRODUCT_SCOPE.md) 审查后基线 | 领域谓词 `characterReferenceAllowed`、`videoGenerationAllowed`。SQL 草案增加 `reference_role` 与 `character_reference_selection` | 领域单测与草案文件测试 | 现行库禁止把 IMAGE 标成 APPROVED，也没有选择表。在线视频路径因此不查询该表 | 草案执行后才能做真实库验收 | 迁移执行授权 | 规则与草案已写。持久化和在线强制执行未实现。还缺应用代码；执行草案不会自动补齐 |
+| 失败重试与成功结果主动重生 | 审查后基线 `bypassCache=true` | 内容端点接受 `bypassCache`。为真时更换 seed，不走 job retry。终态任务不重开 | 领域 `classifyGenerationAction` 与工作台按钮测试 | 没有按 inputHash 复用的资产缓存。`bypassCache` 只改变本次 seed 和快照标记 | 组件测试断言重生请求体 | 无 | 主动重生入口已实现；媒体手工 retry 仍被服务端拒绝，不能记为已完成 |
 | 每次 attempt 的输入、Provider/model、状态、错误、耗时与成本 | 审查后基线 | `presentStoredAttempt` 与工作台 AttemptList。成本缺金额、币种或类型时保持未知 | 领域与工作台测试 | 不展示原始错误正文 | 只核对已记录字段 | 无 | 已实现。未知费用保持未知 |
 | 单镜与集级预检、本地 FFmpeg、播放、审核、上游失效后保留历史 | M4 | `services/media-worker` 与工作台合成面板 | 收尾矩阵中的预检、单镜、集级 Run | 真实成片素材仍是 Mock/样片 | 既有合成测试与 52 阶段样片 | FFmpeg 与隔离 CI | 技术验收通过。不是真实 AI 短剧 |
 | 合格成片下载与同一资产来源清单；过期或不合格来源拒绝导出 | M4 导出 | 导出路由与资格判断 | Run `37086868513`，SHA `95f4df1` | 无代码缺口 | 既有导出测试 | 无 | 技术验收通过 |
-| 已记录成本查询；实际、估算、未知分开；不用 ACTUAL 0 补齐未知项 | M4 成本；商业计划 | 项目成本查询。新的本地编码结果带 `localEncode` 耗时与资源计数，`productionCost` 金额和币种为空、状态 unknown | Run `37091291592`，SHA `174a6bd`；`test_encode_measurement.py` | 历史 18 次本地编码没有账本行。没有确认的编码费率。Windows 上 CPU/RSS 计数可以为空 | 查询测试只核对已记录行；新测量不写虚构金额 | 费率规则未定 | 已记录成本与本机耗时已测。完整生产成本未验收 |
+| 已记录成本查询；实际、估算、未知分开；不用 ACTUAL 0 补齐未知项 | M4 成本；商业计划 | 项目成本查询。新的本地编码结果带 `localEncode` 耗时与资源计数，`productionCost` 金额和币种为空、状态 unknown | Run `37091291592`，SHA `174a6bd`；`test_encode_measurement.py` | 历史 18 次本地编码没有账本行。没有确认的编码费率。CPU/RSS 是 Python 驱动进程生命周期计数，不是 FFmpeg 资源消耗；Windows 上可以为空 | 查询测试只核对已记录行；新测量不写虚构金额 | 费率规则未定 | 已记录成本与本机耗时已测。完整生产成本未验收 |
 | 合成资源限制、临时文件清理、存储生命周期 | M4 合成 | `compose_cli.py` 限制输出 64MB、时长不超过 90 秒、线程 2，并清理临时文件 | 既有合成测试 | 负载曲线没有新的生产压测 | 既有媒体 worker 测试 | 隔离 CI 的 FFmpeg | 限制与清理已在。生产负载证据仍是外部待验收 |
 | 许可与 SBOM | [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md) | drama-skills MIT 原文在 `third_party/drama-skills/LICENSE`，commit `c2426e03c0e7722bebcc6a488b6658dc38c65ac3` | 该文件与来源说明 | FFmpeg 实际 build、configure flags 与依赖许可证未固定 | 只引用已核验文本 | 选定 FFmpeg 构建后的 SBOM | drama-skills 已核验。FFmpeg SBOM 是外部待验收 |
 
@@ -58,6 +58,12 @@
 
 已在 main 验收过的创作者界面、文本链、编剧助手、Mock 媒体、本地合成、导出和已记录成本保持原样，只做回归。
 
-本分支在千问共享客户端上补了 5xx 不确定结果，以及写入 `candidate.json` 前的最终字节校验。网页调用规则见 [`QWEN_WEB_INVOCATION.md`](QWEN_WEB_INVOCATION.md)。工作台默认不显示请求按钮。路由在存储草案执行前不会发模型请求。
+本分支在千问共享客户端上补了 5xx 不确定结果，以及写入 `candidate.json` 前的最终字节校验。网页调用规则见 [`QWEN_WEB_INVOCATION.md`](QWEN_WEB_INVOCATION.md)。工作台默认不显示请求按钮。路由始终使用占位拒绝路径；执行草案也不会自动接通模型。
 
 角色参考图的选择表和 IMAGE 审核放宽只存在于未执行草案。分镜预览门已经接到现有 `image.generate`。视频仍使用已审核镜头门槛，选定参考图的在线强制执行要等草案执行。
+
+## 合并准备边界
+
+PR #45 的合并只集成候选 CLI 和已验证的增量修复，不代表完整 V1。网页千问、角色参考图在线闭环、媒体手工 retry 与真实 Provider 仍未交付。两份 SQL 保持未执行草案，需数据库协议及完整路径完成后另行审查。
+
+合并修复保留原四字段 `m3.mock.image.v1` 的执行与恢复兼容，并将页面图片预览门与视频等已批准来源门分开。新迁移执行、真实付费调用和部署均未授权。

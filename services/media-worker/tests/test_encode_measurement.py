@@ -10,3 +10,5 @@ def test_local_encode_measurement_keeps_cost_unknown() -> None:
     assert int(measured["elapsedMs"]) >= 0
     assert measured["productionCost"] == {"amount": None, "currency": None, "status": "unknown"}
     assert measured["productionCost"]["amount"] is None
+    assert measured["counterScope"] == "python-driver-lifetime"
+    assert measured["ffmpegResourceUsageMeasured"] is False

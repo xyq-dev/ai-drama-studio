@@ -1606,20 +1606,26 @@ function ScenePane(props: {
     }),
   }));
   const sourceScene = shotCurrent ? sceneSources.find((item) => item.id === shotCurrent.sourceSceneRevisionId) : undefined;
-  const imageGate = !shotGate.usable
-    ? shotGate
+  const previewShotGate = !visibleShot || !shotCurrent
+    ? { usable: false, reason: "没有当前镜头版本" }
+    : shotCurrent.freshnessStatus !== "CURRENT"
+      ? { usable: false, reason: "镜头已失效，不能预览" }
+      : { usable: true, reason: "" };
+  const imageGate = !previewShotGate.usable
+    ? previewShotGate
     : sourceScene?.usable
       ? { usable: true, reason: "" }
       : { usable: false, reason: sourceScene?.reason ?? "来源场景不可用" };
   const savedPrompt = shotCurrent?.promptText.trim() ?? "";
   const savedDialogue = shotCurrent?.dialogue?.trim() ?? "";
-  const videoGate = !imageGate.usable
-    ? imageGate
+  const approvedMediaGate = !shotGate.usable ? shotGate : imageGate;
+  const videoGate = !approvedMediaGate.usable
+    ? approvedMediaGate
     : savedPrompt.length > 0
       ? { usable: true, reason: "" }
       : { usable: false, reason: "先保存并审核提示词" };
-  const speechGate = !imageGate.usable
-    ? imageGate
+  const speechGate = !approvedMediaGate.usable
+    ? approvedMediaGate
     : savedDialogue.length > 0
       ? { usable: true, reason: "" }
       : { usable: false, reason: "先保存并审核对白" };

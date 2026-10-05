@@ -29,6 +29,7 @@ interface Sim {
   sceneConflict: boolean;
   shotConflict: boolean;
   shotUsesOldSource: boolean;
+  shotStale: boolean;
   characterSourceId: string;
   holdGet: Promise<void> | null;
   holdGetPart: string | null;
@@ -84,6 +85,7 @@ function createSim(): Sim {
     sceneConflict: false,
     shotConflict: false,
     shotUsesOldSource: false,
+    shotStale: false,
     characterSourceId: "script-new",
     holdGet: null,
     holdGetPart: null,
@@ -212,6 +214,7 @@ function createSim(): Sim {
     if (existing) return existing;
     const source = sim.shotUsesOldSource && id === SHOT_A ? "scene-rev-old" : "scene-rev-new";
     const current = shotRevision(id, id === SHOT_B ? "动作二" : "动作一", source);
+    if (sim.shotStale) current.freshnessStatus = "STALE";
     if (sim.blankPrompt) current.promptText = "";
     if (sim.blankDialogue) current.dialogue = null;
     const created = { row: 4, currentId: current.id, items: [current] };
@@ -1249,13 +1252,30 @@ describe("workbench review interactions against a simulated API", () => {
     }
   }, 15000);
 
-  it("keeps mock image generation disabled until the loaded shot and its source are usable", async () => {
+  it("allows a current DRAFT storyboard preview while keeping approved-media actions disabled", async () => {
     const sim = createSim();
+    install(sim);
+    renderAt(`focus=shot&episode=1&scene=scene-1&shot=${SHOT_A}`);
+    const button = await screen.findByRole("button", { name: "生成 Mock 图片" });
+    expect((button as HTMLButtonElement).disabled).toBe(false);
+    for (const name of [/生成 Mock 视频（/, /生成 Mock 配音（/, /生成 Mock 字幕（/, /生成 Mock 音乐（/]) {
+      const approvedButton = screen.getByRole("button", { name });
+      expect((approvedButton as HTMLButtonElement).disabled).toBe(true);
+      fireEvent.click(approvedButton);
+    }
+    fireEvent.click(button);
+    expect(await screen.findByText(/已受理，结果以任务和图片列表为准/)).toBeTruthy();
+    expect(sim.calls.filter((call) => call.method === "POST" && call.url.includes("/generate-")))
+      .toEqual([expect.objectContaining({ url: `/api/v1/shot-revisions/${SHOT_A}-rev/generate-image` })]);
+  });
+
+  it.each(["shotStale", "shotUsesOldSource"] as const)("blocks storyboard preview when %s", async (condition) => {
+    const sim = createSim();
+    sim[condition] = true;
     install(sim);
     renderAt(`focus=shot&episode=1&scene=scene-1&shot=${SHOT_A}`);
     const button = await screen.findByRole("button", { name: /生成 Mock 图片/ });
     expect((button as HTMLButtonElement).disabled).toBe(true);
-    expect(button.textContent).toContain("尚未批准，不能当作可用来源");
     fireEvent.click(button);
     expect(sim.calls.filter((call) => call.url.includes("/generate-image"))).toHaveLength(0);
   });

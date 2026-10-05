@@ -1,6 +1,4 @@
-import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { parseQwenWritingInput } from "@ai-drama/contracts";
 import { QWEN_CHAT_MAX_TOKENS, buildQwenChatBody, type QwenTransport } from "./qwen-chat";
 import { QWEN_WRITING_DEFAULT_MODEL } from "./qwen-writing";
 import {
@@ -9,6 +7,7 @@ import {
   assertQwenWebTokenCap,
   qwenWebAccessDecision,
   runQwenWebWriting,
+  type RunQwenWebWritingInput,
 } from "./qwen-web-writing";
 
 const SECRET = "sk-qwen-web-test-key-9f3a";
@@ -61,27 +60,38 @@ function transportOf(status: number, body: Uint8Array | null, requestId = "req-w
   return { calls, transport };
 }
 
-function base(store: InMemoryQwenWebStore, transport: QwenTransport, input: unknown = INPUT, key = "key-1") {
-  const body = buildQwenChatBody({
-    model: QWEN_WRITING_DEFAULT_MODEL,
-    system: "return json",
-    user: "story",
-    tokenLimitField: "max_completion_tokens",
-  });
-  assertQwenWebTokenCap(body);
-  return runQwenWebWriting({
+function requestOptions(store: InMemoryQwenWebStore, transport: QwenTransport, key = "key-1"): RunQwenWebWritingInput {
+  return {
     workspaceId: "workspace-1",
     projectId: "project-1",
     actorId: "operator-1",
     idempotencyKey: key,
-    input,
+    input: INPUT,
     requestedModel: QWEN_WRITING_DEFAULT_MODEL,
     apiKey: SECRET,
     url: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
-    body,
     store,
     transport,
-  });
+  };
+}
+
+function base(store: InMemoryQwenWebStore, transport: QwenTransport, input: unknown = INPUT, key = "key-1") {
+  return runQwenWebWriting({ ...requestOptions(store, transport, key), input });
+}
+
+function pendingTransport() {
+  let notifyStarted!: () => void;
+  const started = new Promise<void>((resolve) => { notifyStarted = resolve; });
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  let calls = 0;
+  const transport: QwenTransport = async () => {
+    calls += 1;
+    notifyStarted();
+    await released;
+    return { status: 200, headers: { get: () => null }, body: completion(PLAN) };
+  };
+  return { transport, started, release: () => release(), calls: () => calls };
 }
 
 describe("qwen web writing", () => {
@@ -155,39 +165,26 @@ describe("qwen web writing", () => {
     expect(server.calls).toEqual(["sent"]);
   });
 
-  it("treats a reserved row left by a crash as unknown and does not call the provider", async () => {
+  it("recovers only through an explicit CAS operation and a late sender cannot overwrite unknown", async () => {
     const store = new InMemoryQwenWebStore();
-    const now = new Date().toISOString();
-    await store.insertReserved({
-      id: "left-behind",
-      workspaceId: "workspace-1",
-      projectId: "project-1",
-      actorId: "operator-1",
-      idempotencyKey: "key-1",
-      inputHash: frozenHash(),
-      frozenInput: INPUT,
-      mode: "story",
-      episodeNo: null,
-      requestedModel: QWEN_WRITING_DEFAULT_MODEL,
-      state: "reserved",
-      serverRequestId: null,
-      errorCode: null,
-      providerResult: null,
-      candidateJson: null,
-      candidateExpiresAt: null,
-      billingStatus: "unknown",
-      createdAt: now,
-      updatedAt: now,
-    });
-    const calls: string[] = [];
-    const transport: QwenTransport = async () => {
-      calls.push("sent");
-      throw new Error("should not send");
-    };
-    const result = await base(store, transport);
-    expect(calls).toEqual([]);
-    expect(result.requestCount).toBe(0);
-    expect(result.record?.state).toBe("unknown");
+    const pending = pendingTransport();
+    const running = base(store, pending.transport);
+    await pending.started;
+    const active = await store.findByKey("workspace-1", "operator-1", "key-1");
+    expect(active?.state).toBe("submitted");
+    // Normal HTTP replay is never evidence that the original owner died.
+    const replay = await base(store, pending.transport);
+    expect(replay.record?.state).toBe("submitted");
+    expect(pending.calls()).toBe(1);
+    expect(await store.markOrphanUnknown(active!.id, { state: "submitted", updatedAt: "wrong-version" }, new Date().toISOString())).toBe(false);
+    // The recovery caller separately establishes owner death; test a stale completion afterward.
+    expect(await store.markOrphanUnknown(active!.id, { state: "submitted", updatedAt: active!.updatedAt }, new Date().toISOString())).toBe(true);
+    pending.release();
+    expect((await running).record?.state).toBe("unknown");
+    const afterRecovery = await base(store, pending.transport);
+    expect(afterRecovery.record?.state).toBe("unknown");
+    expect(afterRecovery.requestCount).toBe(0);
+    expect(pending.calls()).toBe(1);
   });
 
   it("clears an expired candidate and keeps the idempotency row", async () => {
@@ -206,71 +203,79 @@ describe("qwen web writing", () => {
     expect(replay.requestCount).toBe(0);
   });
 
-  it("stops at the request and concurrency caps before any send", async () => {
+  it("stops at a zero request cap before sending", async () => {
     const store = new InMemoryQwenWebStore();
     const sent = transportOf(200, completion(PLAN));
-    const capped = await runQwenWebWriting({
-      ...(await requestOptions(store, sent.transport, "cap-key")),
-      maxRequests: 0,
-    });
+    const capped = await runQwenWebWriting({ ...requestOptions(store, sent.transport, "cap-key"), maxRequests: 0 });
     expect(capped.code).toBe("QWEN_WEB_REQUEST_CAP");
     expect(sent.calls).toEqual([]);
-    const busy = new InMemoryQwenWebStore();
-    const now = new Date().toISOString();
-    await busy.insertReserved({
-      id: "open-1",
-      workspaceId: "workspace-1",
-      projectId: "project-1",
-      actorId: "other",
-      idempotencyKey: "other",
-      inputHash: "cd".repeat(32),
-      frozenInput: INPUT,
-      mode: "story",
-      episodeNo: null,
-      requestedModel: QWEN_WRITING_DEFAULT_MODEL,
-      state: "submitted",
-      serverRequestId: null,
-      errorCode: null,
-      providerResult: null,
-      candidateJson: null,
-      candidateExpiresAt: null,
-      billingStatus: "unknown",
-      createdAt: now,
-      updatedAt: now,
-    });
-    const blocked = await runQwenWebWriting({
-      ...(await requestOptions(busy, sent.transport, "new-key")),
-      maxConcurrency: 1,
-    });
-    expect(blocked.code).toBe("QWEN_WEB_CONCURRENCY_CAP");
-    expect(sent.calls).toEqual([]);
+  });
+
+  it.each([
+    { maxRequests: 1, maxConcurrency: 10, code: "QWEN_WEB_REQUEST_CAP" },
+    { maxRequests: 10, maxConcurrency: 1, code: "QWEN_WEB_CONCURRENCY_CAP" },
+  ])("atomically reserves different concurrent keys for $code", async ({ maxRequests, maxConcurrency, code }) => {
+    const store = new InMemoryQwenWebStore();
+    const pending = pendingTransport();
+    const results = Promise.all(["key-a", "key-b"].map((key) => runQwenWebWriting({
+      ...requestOptions(store, pending.transport, key), maxRequests, maxConcurrency,
+    })));
+    await pending.started;
+    expect(pending.calls()).toBe(1);
+    pending.release();
+    const settled = await results;
+    expect(settled.map((result) => result.code).sort()).toEqual([code, "completed"].sort());
+    expect(settled.reduce((sum, result) => sum + result.requestCount, 0)).toBe(1);
+    expect(pending.calls()).toBe(1);
+  });
+
+  it("keeps a same-key concurrent replay pending without freeing its concurrency slot", async () => {
+    const store = new InMemoryQwenWebStore();
+    const pending = pendingTransport();
+    const firstAndReplay = Promise.all([base(store, pending.transport), base(store, pending.transport)]);
+    await pending.started;
+    const submittedReplay = await base(store, pending.transport);
+    expect(submittedReplay.record?.state).toBe("submitted");
+    expect(submittedReplay.requestCount).toBe(0);
+    const other = await base(store, pending.transport, INPUT, "different-key");
+    expect(other.code).toBe("QWEN_WEB_CONCURRENCY_CAP");
+    expect(pending.calls()).toBe(1);
+    pending.release();
+    const settled = await firstAndReplay;
+    expect(settled.filter((result) => result.requestCount === 1)).toHaveLength(1);
+    expect(settled.find((result) => result.requestCount === 0)?.record?.state).toMatch(/^(reserved|submitted)$/);
+  });
+
+  it("binds idempotency to project and model as well as validated input", async () => {
+    const store = new InMemoryQwenWebStore();
+    const pending = pendingTransport();
+    const original = base(store, pending.transport);
+    await pending.started;
+    const changed = await Promise.all([
+      runQwenWebWriting({ ...requestOptions(store, pending.transport), projectId: "other-project" }),
+      runQwenWebWriting({ ...requestOptions(store, pending.transport), requestedModel: "other-model" }),
+    ]);
+    expect(changed.map((result) => result.code)).toEqual(["IDEMPOTENCY_KEY_REUSED", "IDEMPOTENCY_KEY_REUSED"]);
+    expect(pending.calls()).toBe(1);
+    pending.release();
+    await original;
+  });
+
+  it("constructs the capped request from validated input instead of accepting an arbitrary body", async () => {
+    const store = new InMemoryQwenWebStore();
+    const calls: string[] = [];
+    const transport: QwenTransport = async (request) => {
+      assertQwenWebTokenCap(request.body);
+      const body = JSON.parse(request.body);
+      expect(body.model).toBe(QWEN_WRITING_DEFAULT_MODEL);
+      expect(body.messages[1].content).toContain(INPUT.premise);
+      expect(body.messages[1].content).toContain(INPUT.characters);
+      calls.push(request.body);
+      return { status: 200, headers: { get: () => null }, body: completion(PLAN) };
+    };
+    const result = await runQwenWebWriting({ ...requestOptions(store, transport), ...{ body: "untrusted caller body" } });
+    expect(result.code).toBe("completed");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).not.toContain("untrusted caller body");
   });
 });
-
-function frozenHash(): string {
-  const parsed = parseQwenWritingInput(INPUT);
-  if (!parsed.ok) throw new Error("input");
-  return createHash("sha256").update(JSON.stringify(parsed.data)).digest("hex");
-}
-
-async function requestOptions(store: InMemoryQwenWebStore, transport: QwenTransport, key: string) {
-  const body = buildQwenChatBody({
-    model: QWEN_WRITING_DEFAULT_MODEL,
-    system: "return json",
-    user: "story",
-    tokenLimitField: "max_completion_tokens",
-  });
-  return {
-    workspaceId: "workspace-1",
-    projectId: "project-1",
-    actorId: "operator-1",
-    idempotencyKey: key,
-    input: INPUT,
-    requestedModel: QWEN_WRITING_DEFAULT_MODEL,
-    apiKey: SECRET,
-    url: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
-    body,
-    store,
-    transport,
-  };
-}

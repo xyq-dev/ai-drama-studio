@@ -5,6 +5,7 @@ Amounts stay unknown until a rate exists. A missing counter stays null.
 
 from __future__ import annotations
 
+import sys
 import time
 
 
@@ -14,6 +15,9 @@ def measure_local_encode(started: float) -> dict[str, object]:
         "userCpuMs": None,
         "systemCpuMs": None,
         "maxRss": None,
+        "counterScope": "python-driver-lifetime",
+        "maxRssUnit": None,
+        "ffmpegResourceUsageMeasured": False,
         "productionCost": {"amount": None, "currency": None, "status": "unknown"},
     }
     try:
@@ -24,4 +28,5 @@ def measure_local_encode(started: float) -> dict[str, object]:
     measurement["userCpuMs"] = int(usage.ru_utime * 1000)
     measurement["systemCpuMs"] = int(usage.ru_stime * 1000)
     measurement["maxRss"] = int(usage.ru_maxrss)
+    measurement["maxRssUnit"] = "KiB" if sys.platform.startswith("linux") else "bytes" if sys.platform == "darwin" else None
     return measurement
