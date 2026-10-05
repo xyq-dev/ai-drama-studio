@@ -186,6 +186,7 @@ describe("M1-C Redis and BullMQ integration", () => {
         shotRevisionId: seeded.shotRevisionId,
         seed: null,
         outcome: "success",
+        bypassCache: false,
       },
       traceId: "media-crash" });
     const queued = await jobs.queueJob({ workspaceId: seeded.workspaceId,

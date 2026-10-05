@@ -80,6 +80,7 @@ export function WritingAssistant(props: {
   capture: () => WritingTargetSnapshot;
   onAdopt: (text: string, frozen: FrozenWritingContext) => boolean;
   readFile?: (file: File) => Promise<ArrayBuffer>;
+  requestCandidate?: (input: { idempotencyKey: string }) => Promise<{ candidateJson: string; billingStatus: "unknown" }>;
 }) {
   const key = storageKey(props.projectId, props.entityKey);
   const [open, setOpen] = useState(false);
@@ -95,6 +96,8 @@ export function WritingAssistant(props: {
   const draftRef = useRef(draft);
   const identityRef = useRef({ projectId: props.projectId, entityKey: props.entityKey });
   const importRef = useRef<HTMLTextAreaElement>(null);
+  const requestKey = useRef<string | null>(null);
+  const [requestNote, setRequestNote] = useState<string | null>(null);
   draftRef.current = draft;
   identityRef.current = { projectId: props.projectId, entityKey: props.entityKey };
 
@@ -218,6 +221,27 @@ export function WritingAssistant(props: {
       && permit.inputFingerprint === (draftRef.current.frozen?.inputFingerprint ?? null);
   }
 
+  async function requestWorkspaceCandidate() {
+    if (!props.requestCandidate) return;
+    if (!draft.frozen) {
+      setError("请先准备创作指令");
+      return;
+    }
+    if (!requestKey.current) requestKey.current = crypto.randomUUID();
+    setRequestNote(null);
+    try {
+      const result = await props.requestCandidate({ idempotencyKey: requestKey.current });
+      if (result.billingStatus !== "unknown") {
+        setError("工作区回执的费用状态不正确");
+        return;
+      }
+      importText(result.candidateJson);
+      setRequestNote("候选已放进预览。费用未知。还要人工比较、采纳到草稿，再手动保存。");
+    } catch {
+      setError("工作区没有返回候选");
+    }
+  }
+
   function adopt() {
     if (!draft.frozen || !draft.imported) return;
     let formatted: string;
@@ -247,7 +271,9 @@ export function WritingAssistant(props: {
 
   return (
     <section className="mt-4 min-w-0 rounded border border-neutral-300 p-3" aria-label="编剧助手">
-      <p className="text-sm">本轮通过外部 AI 创作，网页不会自动调用模型。</p>
+      <p className="text-sm">{props.requestCandidate
+        ? "工作区调用由服务端开关控制。候选仍须比较、采纳到草稿，再手动保存。费用未知不会被写成 0。"
+        : "本轮通过外部 AI 创作，网页不会自动调用模型。"}</p>
       <button className="mt-2 text-sm underline" type="button" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
         {open ? "收起编剧助手" : "编剧助手"}
       </button>
@@ -290,6 +316,10 @@ export function WritingAssistant(props: {
             </>
           )}
           <button className="rounded border px-3 py-1 text-sm" type="button" onClick={prepare}>准备创作指令</button>
+          {props.requestCandidate ? (
+            <button className="ml-2 rounded border px-3 py-1 text-sm" type="button" onClick={() => void requestWorkspaceCandidate()}>向工作区请求候选</button>
+          ) : null}
+          {requestNote ? <p className="text-sm">{requestNote}</p> : null}
           {draft.instruction ? (
             <>
               <button className="ml-2 rounded border px-3 py-1 text-sm" type="button" onClick={() => void copyInstruction()}>复制创作指令</button>

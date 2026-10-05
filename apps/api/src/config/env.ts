@@ -22,6 +22,8 @@ const apiEnvSchema = z.object({
   M4_LOCAL_COMPOSE_ENABLED: z.enum(["true", "false"]).default("false"),
   M4_LOCAL_EPISODE_COMPOSE_ENABLED: z.enum(["true", "false"]).default("false"),
   M4_COMPOSE_OBJECT_DIR: z.string().min(1).optional(),
+  QWEN_WEB_WRITING_ENABLED: z.enum(["true", "false"]).default("false"),
+  QWEN_WEB_OPERATOR_TOKEN: z.string().min(16).max(200).optional(),
 });
 
 export class EnvValidationError extends Error {
@@ -56,6 +58,8 @@ export interface ApiEnv {
   M4_LOCAL_COMPOSE_ENABLED: boolean;
   M4_LOCAL_EPISODE_COMPOSE_ENABLED: boolean;
   M4_COMPOSE_OBJECT_DIR?: string;
+  QWEN_WEB_WRITING_ENABLED: boolean;
+  QWEN_WEB_OPERATOR_TOKEN?: string;
 }
 
 const API_KEYS = [
@@ -80,6 +84,8 @@ const API_KEYS = [
   "M4_LOCAL_COMPOSE_ENABLED",
   "M4_LOCAL_EPISODE_COMPOSE_ENABLED",
   "M4_COMPOSE_OBJECT_DIR",
+  "QWEN_WEB_WRITING_ENABLED",
+  "QWEN_WEB_OPERATOR_TOKEN",
 ] as const;
 
 function pickEnv(
@@ -130,5 +136,6 @@ export function loadApiEnv(
     M3_MOCK_SUBTITLE_MUSIC_ENABLED: parsed.data.M3_MOCK_SUBTITLE_MUSIC_ENABLED === "true",
     M4_LOCAL_COMPOSE_ENABLED: parsed.data.M4_LOCAL_COMPOSE_ENABLED === "true",
     M4_LOCAL_EPISODE_COMPOSE_ENABLED: parsed.data.M4_LOCAL_EPISODE_COMPOSE_ENABLED === "true",
+    QWEN_WEB_WRITING_ENABLED: parsed.data.QWEN_WEB_WRITING_ENABLED === "true",
   };
 }

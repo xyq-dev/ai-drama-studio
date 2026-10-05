@@ -15,14 +15,18 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src",
     "test": "vitest run",
+    "qwen:trial": "tsx src/qwen-text-trial-cli.ts",
+    "qwen:writing": "tsx src/qwen-writing-cli.ts",
     "clean": "node --eval \"require('node:fs').rmSync('dist',{recursive:true,force:true})\""
   },
   "dependencies": {
-    "@ai-drama/contracts": "workspace:*"
+    "@ai-drama/contracts": "workspace:*",
+    "@ai-drama/domain": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "catalog:",
     "eslint": "catalog:",
+    "tsx": "catalog:",
     "typescript": "catalog:",
     "typescript-eslint": "catalog:",
     "vite": "catalog:",

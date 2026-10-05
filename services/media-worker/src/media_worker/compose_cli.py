@@ -17,6 +17,8 @@ import sys
 import time
 from pathlib import Path
 
+from media_worker.encode_measurement import measure_local_encode
+
 PROFILE = {
     "width": 1080,
     "height": 1920,
@@ -101,6 +103,7 @@ def render(input_dir: Path, output: Path) -> dict[str, object]:
         "width": int(probed["width"]),
         "height": int(probed["height"]),
         "elapsedMs": int((time.monotonic() - started) * 1000),
+        "localEncode": measure_local_encode(started),
         "videoCodec": probed["videoCodec"],
         "audioCodec": probed["audioCodec"],
     }

@@ -48,7 +48,10 @@ export function assertFixedMockImageSnapshot(snapshot: unknown, shotRevisionId: 
     throw new PersistenceError("COST_CONFLICT", "Mock image accounting snapshot is not a fixed success job");
   }
   const keys = Object.keys(snapshot).sort();
-  const expected = [...FIXED_IMAGE_SNAPSHOT_KEYS].sort();
+  // v1 originally had four fields. Accept its optional later extension without
+  // normalizing persisted snapshots, hashes, or provider request identities.
+  const hasBypassCache = Object.prototype.hasOwnProperty.call(snapshot, "bypassCache");
+  const expected = [...FIXED_IMAGE_SNAPSHOT_KEYS, ...(hasBypassCache ? ["bypassCache"] : [])].sort();
   if (keys.length !== expected.length || keys.some((key, index) => key !== expected[index])) {
     throw new PersistenceError("COST_CONFLICT", "Mock image accounting snapshot is not a fixed success job");
   }
@@ -58,6 +61,9 @@ export function assertFixedMockImageSnapshot(snapshot: unknown, shotRevisionId: 
     throw new PersistenceError("COST_CONFLICT", "Mock image accounting snapshot is not a fixed success job");
   }
   if (snapshot.seed !== null && typeof snapshot.seed !== "string") {
+    throw new PersistenceError("COST_CONFLICT", "Mock image accounting snapshot is not a fixed success job");
+  }
+  if (hasBypassCache && typeof snapshot.bypassCache !== "boolean") {
     throw new PersistenceError("COST_CONFLICT", "Mock image accounting snapshot is not a fixed success job");
   }
 }

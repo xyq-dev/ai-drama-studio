@@ -1,0 +1,100 @@
+import { readFile, stat } from "node:fs/promises";
+import { QWEN_WRITING_INPUT_MAX_BYTES } from "@ai-drama/contracts";
+import { runQwenWriting } from "./qwen-writing";
+
+export interface QwenWritingArgs {
+  input: string;
+  output: string;
+  execute: boolean;
+}
+
+export function parseQwenWritingArgs(argv: readonly string[]): { ok: true; args: QwenWritingArgs } | { ok: false; code: string } {
+  const tokens = argv[0] === "--" ? argv.slice(1) : argv;
+  let input: string | undefined;
+  let output: string | undefined;
+  let execute = false;
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token === "--execute") {
+      execute = true;
+      continue;
+    }
+    if (token === "--input" || token === "--output") {
+      const value = tokens[index + 1];
+      if (!value || value.startsWith("--")) return { ok: false, code: token === "--input" ? "missing_input" : "missing_output" };
+      if (token === "--input") input = value;
+      else output = value;
+      index += 1;
+      continue;
+    }
+    return { ok: false, code: "unknown_argument" };
+  }
+  if (!input) return { ok: false, code: "missing_input" };
+  if (!output) return { ok: false, code: "missing_output" };
+  return { ok: true, args: { input, output, execute } };
+}
+
+export async function runQwenWritingCli(
+  argv: readonly string[],
+  env: NodeJS.ProcessEnv,
+  stdout: (line: string) => void,
+  stderr: (line: string) => void,
+): Promise<number> {
+  const parsed = parseQwenWritingArgs(argv);
+  if (!parsed.ok) {
+    stderr("status=rejected");
+    stderr(`code=${parsed.code}`);
+    return 2;
+  }
+  let text: string;
+  try {
+    const info = await stat(parsed.args.input);
+    if (!info.isFile() || info.size > QWEN_WRITING_INPUT_MAX_BYTES) {
+      stderr("status=rejected");
+      stderr("code=input_too_large");
+      return 2;
+    }
+    text = await readFile(parsed.args.input, "utf8");
+    if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+  } catch {
+    stderr("status=rejected");
+    stderr("code=input_unreadable");
+    return 2;
+  }
+  if (Buffer.byteLength(text) > QWEN_WRITING_INPUT_MAX_BYTES) {
+    stderr("status=rejected");
+    stderr("code=input_too_large");
+    return 2;
+  }
+  let json: unknown;
+  try {
+    json = JSON.parse(text) as unknown;
+  } catch {
+    stderr("status=rejected");
+    stderr("code=invalid_input");
+    return 2;
+  }
+  const result = await runQwenWriting({
+    mode: parsed.args.execute ? "execute" : "dry_run",
+    input: json,
+    outputDir: parsed.args.output,
+    env,
+  });
+  const write = result.exitCode === 0 ? stdout : stderr;
+  for (const line of result.lines) write(line);
+  return result.exitCode;
+}
+
+async function main(): Promise<void> {
+  process.exitCode = await runQwenWritingCli(
+    process.argv.slice(2),
+    process.env,
+    (line) => process.stdout.write(`${line}\n`),
+    (line) => process.stderr.write(`${line}\n`),
+  );
+}
+
+const entry = process.argv[1] ?? "";
+if (entry.endsWith("qwen-writing-cli.ts") || entry.endsWith("qwen-writing-cli.js")) {
+  void main();
+}

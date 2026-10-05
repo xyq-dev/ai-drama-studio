@@ -216,3 +216,7 @@ corepack pnpm infra:down
 Ubuntu 24.04 CI 已经跑过集成 workflow 和 52 阶段验收。那些结果属于对应 Run，不属于本机 Windows。
 
 Windows 上可以执行静态检查 `pnpm run doctor` 和模拟测试 `pnpm verify`。`verify` 里的 Python 合成测试在没有符号链接权限或没有 Linux `PR_SET_PDEATHSIG` 时会跳过对应用例。没有 Docker 时，不执行真实服务启动：`infra:up`、migrate、provision、ready 或页面操作，也不把它们记成通过。
+
+## 9. 千问候选不参与启动
+
+`pnpm qwen:writing` 与 `pnpm qwen:trial` 是本机命令。API、Worker 和网页启动都不读取 `DASHSCOPE_API_KEY`。默认 dry-run 不读取密钥、不联网、不创建输出目录。只有显式 `--execute` 才会请求模型。网页没有生成按钮。候选导入仍使用编剧助手里原有的粘贴、预览、采纳和「保存新版本」。说明见 [`QWEN_WRITING_CANDIDATES.md`](QWEN_WRITING_CANDIDATES.md)。网页调用尚未实现，规则见 [`QWEN_WEB_INVOCATION.md`](QWEN_WEB_INVOCATION.md)。

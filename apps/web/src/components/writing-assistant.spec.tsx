@@ -80,6 +80,7 @@ describe("writing assistant beside the editor", () => {
     render(createElement(Workbench, { projectId: "project-1" }));
     fireEvent.click(await screen.findByRole("button", { name: "编剧助手" }));
     expect(screen.getByText("本轮通过外部 AI 创作，网页不会自动调用模型。")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "向工作区请求候选" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "准备创作指令" }));
     const instruction = await screen.findByLabelText("创作指令") as HTMLTextAreaElement;
     expect(instruction.value).toContain("ads.writing.prompt.v1");
@@ -374,6 +375,30 @@ function storyTarget(): WritingTargetSnapshot {
     loaded: true,
   };
 }
+
+  it("requests one workspace candidate after the instruction is frozen and does not save it", async () => {
+    const requestCandidate = vi.fn(async (_input: { idempotencyKey: string }) => ({
+      candidateJson: JSON.stringify(STORY_PLAN),
+      billingStatus: "unknown" as const,
+    }));
+    const onAdopt = vi.fn(() => true);
+    render(createElement(WritingAssistant, { ...storyProps({ onAdopt }), requestCandidate }));
+    fireEvent.click(screen.getByRole("button", { name: "编剧助手" }));
+    fireEvent.click(screen.getByRole("button", { name: "向工作区请求候选" }));
+    expect(await screen.findByText("请先准备创作指令")).toBeTruthy();
+    expect(requestCandidate).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "准备创作指令" }));
+    fireEvent.click(screen.getByRole("button", { name: "向工作区请求候选" }));
+    await waitFor(() => expect(requestCandidate).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText("候选已放进预览。费用未知。还要人工比较、采纳到草稿，再手动保存。")).toBeTruthy();
+    expect((screen.getByLabelText("候选正文") as HTMLTextAreaElement).value).toContain("手写测试候选");
+    expect(onAdopt).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "向工作区请求候选" }));
+    await waitFor(() => expect(requestCandidate).toHaveBeenCalledTimes(2));
+    const first = requestCandidate.mock.calls[0]?.[0]?.idempotencyKey;
+    const second = requestCandidate.mock.calls[1]?.[0]?.idempotencyKey;
+    expect(second).toBe(first);
+  });
 
 function storyProps(extra?: Partial<{ onAdopt: (text: string) => boolean; readFile: (file: File) => Promise<ArrayBuffer> }>) {
   return {

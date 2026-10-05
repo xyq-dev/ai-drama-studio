@@ -115,7 +115,7 @@ function bind(kind: "MEDIA_IMAGE" | "MEDIA_VIDEO" | "MEDIA_TTS" | "MEDIA_SUBTITL
     shotRevisionId: "shot", providerConfigurationId: "provider",
     inputHash: "ab".repeat(32),
     inputSnapshot: kind === "MEDIA_IMAGE"
-      ? { schema: "m3.mock.image.v1", shotRevisionId: "shot", seed: null, outcome: "success" }
+      ? { schema: "m3.mock.image.v1", shotRevisionId: "shot", seed: null, outcome: "success", bypassCache: false }
       : { outcome: "success", executionMode: "sync", capability },
     state: "RUNNING", cancelRequested,
   });

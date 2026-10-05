@@ -1,6 +1,6 @@
 # AI Drama Studio
 
-当前主线 `main` 已包含合并后的 PR #40，核实提交是 `4f42f7ea786ef47b04a86a94f16350d4da8e1d13`。验收边界见 [`docs/M4_CLOSEOUT_REPORT.md`](docs/M4_CLOSEOUT_REPORT.md)。项目范围仍以 [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) 为准。本地开发步骤见 [`docs/DEV_RUNBOOK.md`](docs/DEV_RUNBOOK.md)。完整 M4 和完整生产成本仍未验收。运行手册不表示环境已经部署。
+交付台账见 [`docs/V1_DELIVERY_MATRIX.md`](docs/V1_DELIVERY_MATRIX.md)。本分支的共同祖先是 `origin/main` `a6315a5eadc7bb8c14ba18f2dee85ff237fc0272`，其中已经包含创作者界面、编剧助手和早前的 M4 技术闭环。验收边界仍见 [`docs/M4_CLOSEOUT_REPORT.md`](docs/M4_CLOSEOUT_REPORT.md)。项目范围以 [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) 为准。本地开发步骤见 [`docs/DEV_RUNBOOK.md`](docs/DEV_RUNBOOK.md)。完整 M4、真实模型验收和完整生产成本仍未完成。运行手册不表示环境已经部署。
 
 M2 文本 Scene/Shot 生成已通过厂商无关的同步 Adapter 边界运行；契约、恢复限制和验收证据见
 [`docs/M2_TEXT_ADAPTER_ACCEPTANCE.md`](docs/M2_TEXT_ADAPTER_ACCEPTANCE.md)。
@@ -177,4 +177,4 @@ M1-B GitHub Actions 还会在隔离 PostgreSQL 16 上执行 Prisma validate/gene
 
 ## 尚未纳入当前候选的范围
 
-尚未完成和不得当成完成的事项见 [`docs/M4_CLOSEOUT_REPORT.md`](docs/M4_CLOSEOUT_REPORT.md)。其中包括真实 Provider、付费模型、ComfyUI 实际调用、生产启用、完整 M4 和完整生产成本。[`docs/DEV_RUNBOOK.md`](docs/DEV_RUNBOOK.md) 只说明如何在专用开发库上操作，不表示这些能力已经部署或验收。
+尚未完成和不得当成完成的事项见 [`docs/V1_DELIVERY_MATRIX.md`](docs/V1_DELIVERY_MATRIX.md) 与 [`docs/M4_CLOSEOUT_REPORT.md`](docs/M4_CLOSEOUT_REPORT.md)。其中包括真实 Provider、付费模型、ComfyUI 实际调用、生产启用、完整 M4 和完整生产成本。本机千问命令可以准备可导入候选，网页不会自动调用模型；网页调用仍待 [`docs/QWEN_WEB_INVOCATION.md`](docs/QWEN_WEB_INVOCATION.md) 审查。[`docs/DEV_RUNBOOK.md`](docs/DEV_RUNBOOK.md) 只说明如何在专用开发库上操作，不表示这些能力已经部署或验收。

@@ -109,7 +109,14 @@ export class MediaAssetStore {
     );
     const projectId = result.rows[0]?.project_id;
     if (!projectId) throw new PersistenceError("NOT_FOUND", "Shot revision not found");
-    await assertUsableShotWithClient(client, workspaceId, projectId, shotRevisionId, true);
+    await assertUsableShotWithClient(
+      client,
+      workspaceId,
+      projectId,
+      shotRevisionId,
+      true,
+      capability === "image.generate" ? "preview" : "approved",
+    );
     const provider = await client.query(
       `SELECT id FROM provider_configuration
         WHERE workspace_id = $1 AND provider_key = 'mock-media'
@@ -163,7 +170,12 @@ export class MediaAssetStore {
         const asset = replay ?? await (async () => {
           if (input.sourceShotRevisionId) {
             await assertUsableShotWithClient(
-              client, input.workspaceId, input.projectId, input.sourceShotRevisionId, true,
+              client,
+              input.workspaceId,
+              input.projectId,
+              input.sourceShotRevisionId,
+              true,
+              input.kind === "IMAGE" ? "preview" : "approved",
             );
           }
           return insertAsset(client, input);
@@ -178,10 +190,11 @@ export class MediaAssetStore {
     workspaceId: string,
     projectId: string,
     shotRevisionId: string,
+    gate: "preview" | "approved" = "approved",
   ): Promise<void> {
     const client = await this.pool.connect();
     try {
-      await assertUsableShotWithClient(client, workspaceId, projectId, shotRevisionId, false);
+      await assertUsableShotWithClient(client, workspaceId, projectId, shotRevisionId, false, gate);
     } finally {
       client.release();
     }
@@ -1372,6 +1385,7 @@ async function assertUsableShotWithClient(
   projectId: string,
   shotRevisionId: string,
   lockRows: boolean,
+  gate: "preview" | "approved" = "approved",
 ): Promise<void> {
   const project = await client.query(
     `SELECT id FROM project WHERE id = $1 AND workspace_id = $2
@@ -1396,11 +1410,13 @@ async function assertUsableShotWithClient(
     );
   }
 
+  const shotApproval = gate === "approved"
+    ? "AND shot.approved_revision_id = revision.id AND revision.review_status = 'APPROVED'"
+    : "";
   const shotGate = await client.query<{ ok: boolean; source_scene_revision_id: string } & QueryResultRow>(
     `SELECT (
         shot.current_revision_id = revision.id
-        AND shot.approved_revision_id = revision.id
-        AND revision.review_status = 'APPROVED'
+        ${shotApproval}
         AND revision.freshness_status = 'CURRENT'
         AND scene.current_revision_id = revision.source_scene_revision_id
         AND scene.approved_revision_id = revision.source_scene_revision_id
@@ -1429,7 +1445,9 @@ async function assertUsableShotWithClient(
   if (shotGate.rows[0]?.ok !== true) {
     throw new PersistenceError(
       "REVIEW_REQUIRED",
-      "Media generation requires the current approved non-stale shot and scene revisions",
+      gate === "approved"
+        ? "Media generation requires the current approved non-stale shot and scene revisions"
+        : "Storyboard preview requires the current non-stale shot and an approved scene",
     );
   }
 

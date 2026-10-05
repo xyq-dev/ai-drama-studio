@@ -56,7 +56,10 @@ export class StudioRuntime implements OnModuleDestroy {
           sampleFlag: env.M4_MOCK_SAMPLE_VIDEO_ENABLED,
           avFlag: env.M3_MOCK_AV_ENABLED,
           directoryReady: Boolean(absoluteDir),
-        })), store);
+        }),
+        env.NODE_ENV !== "production" && env.QWEN_WEB_WRITING_ENABLED,
+        env.NODE_ENV,
+        env.QWEN_WEB_OPERATOR_TOKEN ?? null), store);
   }
 
   async onModuleDestroy(): Promise<void> {

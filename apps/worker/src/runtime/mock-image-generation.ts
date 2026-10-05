@@ -61,7 +61,7 @@ export async function runMockImageJob(
 
   let providerAttached = false;
   try {
-  await dependencies.assets.assertUsableShot(input.workspaceId, input.projectId, input.shotRevisionId);
+  await dependencies.assets.assertUsableShot(input.workspaceId, input.projectId, input.shotRevisionId, "preview");
   assertFixedMockImageSnapshot(input.inputSnapshot, input.shotRevisionId);
 
   const request: MediaGenerationRequest = {

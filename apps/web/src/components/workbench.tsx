@@ -174,6 +174,18 @@ interface ShotRevision {
   reviewVersion: number;
 }
 
+interface WorkflowAttempt {
+  attemptNo: number;
+  providerKey: string | null;
+  model: string | null;
+  status: "running" | "finished";
+  errorCode: string | null;
+  durationMs: number | null;
+  inputHash: string | null;
+  cost: { status: "recorded"; amount: string; currency: string; kind: string }
+    | { status: "unknown"; amount: null; currency: null; kind: null };
+}
+
 interface WorkflowJob {
   id: string;
   kind: string;
@@ -181,6 +193,7 @@ interface WorkflowJob {
   errorCode: string | null;
   errorMessage: string | null;
   sourceShotRevisionId?: string | null;
+  attempts?: WorkflowAttempt[];
 }
 
 interface WorkflowRun {
@@ -1593,20 +1606,26 @@ function ScenePane(props: {
     }),
   }));
   const sourceScene = shotCurrent ? sceneSources.find((item) => item.id === shotCurrent.sourceSceneRevisionId) : undefined;
-  const imageGate = !shotGate.usable
-    ? shotGate
+  const previewShotGate = !visibleShot || !shotCurrent
+    ? { usable: false, reason: "没有当前镜头版本" }
+    : shotCurrent.freshnessStatus !== "CURRENT"
+      ? { usable: false, reason: "镜头已失效，不能预览" }
+      : { usable: true, reason: "" };
+  const imageGate = !previewShotGate.usable
+    ? previewShotGate
     : sourceScene?.usable
       ? { usable: true, reason: "" }
       : { usable: false, reason: sourceScene?.reason ?? "来源场景不可用" };
   const savedPrompt = shotCurrent?.promptText.trim() ?? "";
   const savedDialogue = shotCurrent?.dialogue?.trim() ?? "";
-  const videoGate = !imageGate.usable
-    ? imageGate
+  const approvedMediaGate = !shotGate.usable ? shotGate : imageGate;
+  const videoGate = !approvedMediaGate.usable
+    ? approvedMediaGate
     : savedPrompt.length > 0
       ? { usable: true, reason: "" }
       : { usable: false, reason: "先保存并审核提示词" };
-  const speechGate = !imageGate.usable
-    ? imageGate
+  const speechGate = !approvedMediaGate.usable
+    ? approvedMediaGate
     : savedDialogue.length > 0
       ? { usable: true, reason: "" }
       : { usable: false, reason: "先保存并审核对白" };
@@ -2493,7 +2512,7 @@ function ShotImagePanel(props: {
     }
   }
 
-  async function submitMedia(channel: MediaChannel) {
+  async function submitMedia(channel: MediaChannel, bypassCache = false) {
     const usable = channel === "image" ? props.usable
       : channel === "video" ? props.videoUsable
         : channel === "speech" ? props.speechUsable
@@ -2512,7 +2531,7 @@ function ShotImagePanel(props: {
         : channel === "speech" ? pendingSpeech
           : channel === "subtitle" ? pendingSubtitle
             : pendingMusic;
-    const fingerprint = `${channel}|${revisionId}|${value}`;
+    const fingerprint = `${channel}|${revisionId}|${value}|${bypassCache ? "bypass" : "cache"}`;
     const key = slot.current?.fingerprint === fingerprint ? slot.current.key : crypto.randomUUID();
     slot.current = { fingerprint, key };
     setBusy(channel);
@@ -2528,7 +2547,9 @@ function ShotImagePanel(props: {
         : channel === "speech" ? "generate-tts"
           : channel === "subtitle" ? "generate-subtitle"
             : "generate-music";
-    const accepted = channel === "image"
+    const accepted = bypassCache
+      ? "已受理重新生成。这不是失败任务的重试，也不是生成成功。"
+      : channel === "image"
       ? "已受理，结果以任务和图片列表为准。这不是生成成功。"
       : channel === "video"
         ? "已受理，结果以任务和视频列表为准。这不是生成成功。"
@@ -2540,7 +2561,10 @@ function ShotImagePanel(props: {
     try {
       const result = await client.write<{ workflowRunId: string }>({
         path: `/shot-revisions/${revisionId}/${path}`,
-        body: value.trim().length > 0 ? { seed: value.trim() } : {},
+        body: {
+          ...(value.trim().length > 0 ? { seed: value.trim() } : {}),
+          ...(bypassCache ? { bypassCache: true } : {}),
+        },
         idempotencyKey: key,
       });
       if (epoch !== revisionEpoch.current) {
@@ -2591,6 +2615,7 @@ function ShotImagePanel(props: {
         <button className="mt-3 rounded bg-red-700 px-3 py-2 text-white disabled:opacity-50" type="button" disabled={!props.usable || busy !== null} onClick={() => void submitMedia("image")}>
           {busy === "image" ? "正在提交" : props.usable ? "生成 Mock 图片" : `生成 Mock 图片（${props.reason}）`}
         </button>
+        <button className="ml-2 mt-3 rounded border px-3 py-2 disabled:opacity-50" type="button" disabled={!props.usable || busy !== null} onClick={() => void submitMedia("image", true)}>重新生成图片</button>
         {notice ? <p className="mt-2 text-sm">{notice}</p> : null}
         {acceptError ? (
           <p className="mt-2 text-sm" role="alert">{acceptError}<button className="ml-2 underline" type="button" onClick={() => void requery("image")}>重新查询</button></p>
@@ -2606,6 +2631,7 @@ function ShotImagePanel(props: {
         <button className="mt-3 rounded bg-red-700 px-3 py-2 text-white disabled:opacity-50" type="button" disabled={!props.videoUsable || busy !== null} onClick={() => void submitMedia("video")}>
           {busy === "video" ? "正在提交" : props.videoUsable ? "生成 Mock 视频" : `生成 Mock 视频（${props.videoReason}）`}
         </button>
+        <button className="ml-2 mt-3 rounded border px-3 py-2 disabled:opacity-50" type="button" disabled={!props.videoUsable || busy !== null} onClick={() => void submitMedia("video", true)}>重新生成视频</button>
         {videoNotice ? <p className="mt-2 text-sm">{videoNotice}</p> : null}
         {videoAcceptError ? (
           <p className="mt-2 text-sm" role="alert">{videoAcceptError}<button className="ml-2 underline" type="button" onClick={() => void requery("video")}>重新查询</button></p>
@@ -2760,6 +2786,23 @@ function SubtitlePreview(props: { assetId: string; onError: () => void }) {
 
 type MediaChannel = "image" | "video" | "speech" | "subtitle" | "music";
 
+function AttemptList(props: { attempts?: WorkflowAttempt[] }) {
+  if (!props.attempts || props.attempts.length === 0) return null;
+  return (
+    <ul className="mt-2 space-y-1">
+      {props.attempts.map((attempt) => (
+        <li key={attempt.attemptNo}>
+          {`第 ${attempt.attemptNo} 次 · ${attempt.providerKey ?? "未记录提供方"} / ${attempt.model ?? "未记录模型"} · ${attempt.status === "finished" ? "已结束" : "进行中"}`}
+          {attempt.errorCode ? ` · ${attempt.errorCode}` : ""}
+          {` · 耗时 ${attempt.durationMs === null ? "未知" : `${attempt.durationMs} ms`}`}
+          {` · 费用 ${attempt.cost.status === "unknown" ? "未知" : `${attempt.cost.amount} ${attempt.cost.currency} ${attempt.cost.kind}`}`}
+          {` · 输入 ${attempt.inputHash ?? "未记录"}`}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function TaskDrawer(props: {
   projectId: string;
   runs: WorkflowRun[];
@@ -2826,6 +2869,7 @@ function TaskDrawer(props: {
                 <div key={job.id} className="mt-2">
                   <p>任务 {taskStatusLabel(job.state)}{job.errorCode ? ` · ${job.errorCode}` : ""}</p>
                   {job.errorMessage ? <p>{job.errorMessage}</p> : null}
+                  <AttemptList attempts={job.attempts} />
                   <button className="mr-2 underline disabled:opacity-50" type="button" disabled={terminal} onClick={() => void act(`/generation-jobs/${job.id}/cancel`)}>取消{terminal ? "（已结束）" : ""}</button>
                   <button className="underline disabled:opacity-50" type="button" disabled={job.state !== "FAILED" && job.state !== "CANCELED"} onClick={() => void act(`/generation-jobs/${job.id}/retry`)}>重试{job.state === "FAILED" || job.state === "CANCELED" ? "" : "（尚未失败或取消）"}</button>
                 </div>
@@ -2848,6 +2892,7 @@ function TaskDrawer(props: {
                   <p>镜头版本 {job.sourceShotRevisionId ?? "未记录"}</p>
                   <p>任务 {taskStatusLabel(job.state)}{job.errorCode ? ` · ${job.errorCode}` : ""}</p>
                   {job.errorMessage ? <p>{job.errorMessage}</p> : null}
+                  <AttemptList attempts={job.attempts} />
                   <button className="mr-2 underline disabled:opacity-50" type="button" disabled={terminal} onClick={() => void act(`/generation-jobs/${job.id}/cancel`)}>取消{terminal ? "（已结束）" : ""}</button>
                   <button className="underline disabled:opacity-50" type="button" disabled>重试（媒体手工重试不可用，请再次生成）</button>
                 </div>

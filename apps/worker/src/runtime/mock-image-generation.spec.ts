@@ -21,9 +21,13 @@ const input: MockImageJob = {
   traceId: "mock-test",
 };
 const providerRequestId = `mock-media|image.generate|${input.jobId}:1`;
+const snapshots = [
+  ["original four-key v1", Object.freeze({ ...input.inputSnapshot as object })],
+  ["extended v1", Object.freeze({ ...input.inputSnapshot as object, bypassCache: false })],
+] as const;
 
 describe("synchronous Mock image generation", () => {
-  it("acquires attempt, persists validated output, then completes job", async () => {
+  it.each(snapshots)("executes a queued %s snapshot without changing its request identity", async (_label, inputSnapshot) => {
     const order: string[] = [];
     const jobs = {
       acquireQueuedJob: vi.fn(async () => {
@@ -48,12 +52,23 @@ describe("synchronous Mock image generation", () => {
       completeAttemptWithAsset: vi.fn(async () => { order.push("atomic-complete"); return asset; }),
     } as unknown as MediaAssetStore;
     const put = vi.fn(async () => { order.push("put"); });
-    const result = await runMockImageJob(input, {
-      jobs, assets, adapter: new MockMediaAdapter(), objects: { put },
+    const adapter = new MockMediaAdapter();
+    const submit = vi.spyOn(adapter, "submit");
+    const persistedJson = JSON.stringify(inputSnapshot);
+    const result = await runMockImageJob({ ...input, inputSnapshot }, {
+      jobs, assets, adapter, objects: { put },
     });
     expect(result).toEqual(asset);
     expect(order).toEqual(["acquire", "gate", "attach", "put", "atomic-complete"]);
     expect(put.mock.calls).toHaveLength(1);
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(submit).toHaveBeenCalledWith(expect.objectContaining({
+      inputSnapshot, inputHash: input.inputHash, clientRequestKey: `${input.jobId}:1`,
+    }));
+    expect(JSON.stringify(inputSnapshot)).toBe(persistedJson);
+    expect(jobs.attachProviderRequest).toHaveBeenCalledWith(expect.objectContaining({
+      attemptId, providerRequestId,
+    }));
     expect(vi.mocked(assets.completeAttemptWithAsset)).toHaveBeenCalledWith(jobs, expect.objectContaining({
       sourceShotRevisionId: input.shotRevisionId,
       width: 1,
@@ -106,7 +121,8 @@ describe("synchronous Mock image generation", () => {
     expect(failJob).not.toHaveBeenCalled();
   });
 
-  it("resumes a persisted provider request without resubmitting on Redis redelivery", async () => {
+  it.each(snapshots)("recovers a persisted %s request without resubmitting or rewriting its snapshot", async (_label, inputSnapshot) => {
+    const persistedJson = JSON.stringify(inputSnapshot);
     const adapter = new MockMediaAdapter();
     const submit = vi.spyOn(adapter, "submit");
     const resultAsset = { id: "asset-id" } as MediaAssetRecord;
@@ -117,7 +133,7 @@ describe("synchronous Mock image generation", () => {
       workspaceId: input.workspaceId, projectId: input.projectId,
       shotRevisionId: input.shotRevisionId, jobId: input.jobId,
       providerConfigurationId: input.providerConfigurationId,
-      inputSnapshot: input.inputSnapshot,
+      inputSnapshot,
       traceId: input.traceId, attemptId, providerRequestId,
     }, {
       jobs: { recordProviderEvent } as unknown as JobPersistenceService,
@@ -143,7 +159,7 @@ describe("synchronous Mock image generation", () => {
       workspaceId: input.workspaceId, projectId: input.projectId,
       shotRevisionId: input.shotRevisionId, jobId: input.jobId,
       providerConfigurationId: input.providerConfigurationId,
-      inputSnapshot: input.inputSnapshot,
+      inputSnapshot,
       traceId: input.traceId, attemptId, providerRequestId,
     }, {
       jobs: { recordProviderEvent } as unknown as JobPersistenceService,
@@ -151,6 +167,7 @@ describe("synchronous Mock image generation", () => {
       adapter: recoveryAdapter, objects: { put },
     });
     expect(recoverySubmit).not.toHaveBeenCalled();
+    expect(JSON.stringify(inputSnapshot)).toBe(persistedJson);
   });
 
   it("persists deterministic Mock request before submit so a submit crash is recoverable", async () => {

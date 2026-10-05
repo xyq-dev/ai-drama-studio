@@ -177,6 +177,21 @@ export {
   type WritingTargetSnapshot,
 } from "./writing-assistant";
 export {
+  characterReferenceAllowed,
+  classifyGenerationAction,
+  regenerationSeed,
+  storyboardPreviewAllowed,
+  videoGenerationAllowed,
+  type CharacterReferenceGate,
+  type GenerationAction,
+  type VideoGenerationGate,
+} from "./media-gates";
+export {
+  presentStoredAttempt,
+  type PresentedAttempt,
+  type StoredAttemptView,
+} from "./attempt-presentation";
+export {
   FRESHNESS_STATUSES,
   PRODUCTION_EPISODE_NUMBERS,
   REVIEW_STATUSES,
