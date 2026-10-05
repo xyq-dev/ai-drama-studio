@@ -386,8 +386,14 @@ export async function composeProvenanceStale(ctx) {
 async function killRunningWorker(ctx) {
   const shot = await createSideShot(ctx);
   const submitted = await submitVideoCompose(ctx, shot);
-  await waitState(ctx, submitted.jobId, "RUNNING");
-  const watched = await waitForMediaTree();
+  const watchedPromise = waitForMediaTree();
+  try {
+    await waitState(ctx, submitted.jobId, "RUNNING");
+  } catch (error) {
+    watchedPromise.catch(() => undefined);
+    throw error;
+  }
+  const watched = await watchedPromise;
   const app = ctx.state.apps.find((item) => item.name === "worker");
   if (!app?.pid) throw new Error("worker pid is missing");
   try { process.kill(process.platform === "linux" ? -app.pid : app.pid, "SIGKILL"); } catch { /* the stop below confirms it is gone */ }

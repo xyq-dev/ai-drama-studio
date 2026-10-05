@@ -848,8 +848,14 @@ async function withHold(ctx, holdMs, run) {
 
 async function killRunningWorker(ctx) {
   const submitted = await submitEpisode(ctx, [ctx.state.episodeRender.plain.assetId, ctx.state.episodeRender.burned.assetId]);
-  await waitState(ctx, submitted.jobId, "RUNNING");
-  const watched = await waitForMediaTree();
+  const watchedPromise = waitForMediaTree();
+  try {
+    await waitState(ctx, submitted.jobId, "RUNNING");
+  } catch (error) {
+    watchedPromise.catch(() => undefined);
+    throw error;
+  }
+  const watched = await watchedPromise;
   const app = ctx.state.apps.find((item) => item.name === "worker");
   if (!app?.pid) throw new Error("worker pid is missing");
   try { process.kill(process.platform === "linux" ? -app.pid : app.pid, "SIGKILL"); } catch { /* stop confirms it */ }
