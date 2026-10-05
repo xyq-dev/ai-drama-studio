@@ -13,6 +13,7 @@ import sys
 import time
 from pathlib import Path
 
+from media_worker.encode_measurement import measure_local_encode
 from media_worker.compose_cli import (
     ComposeFailure,
     _die_with_parent,
@@ -92,6 +93,7 @@ def render(input_dir: Path, output: Path) -> dict[str, object]:
         "width": int(final["width"]),
         "height": int(final["height"]),
         "elapsedMs": int((time.monotonic() - started) * 1000),
+        "localEncode": measure_local_encode(started),
         "videoCodec": final["videoCodec"],
         "audioCodec": final["audioCodec"],
         "segments": len(segments),

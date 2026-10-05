@@ -248,15 +248,17 @@ describe("qwen text trial", () => {
     expect(receipt.usage).toEqual({ status: "unknown", promptTokens: null, completionTokens: null, totalTokens: null });
   });
 
-  it("reports credential, rate, server, disconnect, timeout, and size failures once", async () => {
-    for (const status of [401, 403, 429, 500, 502]) {
+  it("reports credential, rate, disconnect, timeout, and size failures once", async () => {
+    for (const status of [401, 403, 429]) {
       const sent = once({ status, headers: headers(), body: encode({ error: { message: SECRET } }) });
       const failed = await execute({ transport: sent.transport });
       expect(sent.calls).toHaveLength(1);
       expect(failed.result.requestCount).toBe(1);
+      expect(failed.result.status).not.toBe("billing_unknown");
       expect(failed.result.lines.join("\n")).not.toContain(SECRET);
       const receiptText = await readFile(join(failed.outputDir, "receipt.json"), "utf8");
       expect(receiptText).not.toContain(SECRET);
+      expect(receiptText).toContain(`"providerResult": "completed"`);
       expect(existsSync(join(failed.outputDir, "draft.json"))).toBe(false);
     }
     const disconnected = once(() => Promise.reject(new TypeError("socket hang up")));
@@ -342,6 +344,38 @@ describe("qwen text trial", () => {
     expect(failingWrite.calls).toHaveLength(1);
     expect(failedSave.result.code).toBe("save_failed");
     expect(failedSave.result.lines.join("\n")).toContain("did not call the model again");
+  });
+
+  it("treats HTTP 5xx as an unknown result, keeps a redacted request id, and does not retry", async () => {
+    for (const status of [500, 502, 503, 504]) {
+      const sent = once({
+        status,
+        headers: headers({ "x-request-id": "req-server-1" }),
+        body: encode({ error: { message: SECRET, detail: "internal explosion", request_id: "req-from-body" } }),
+      });
+      const failed = await execute({ transport: sent.transport });
+      expect(sent.calls, String(status)).toHaveLength(1);
+      expect(failed.result.requestCount, String(status)).toBe(1);
+      expect(failed.result.status, String(status)).toBe("billing_unknown");
+      expect(failed.result.code, String(status)).toBe("server_error");
+      const lines = failed.result.lines.join("\n");
+      expect(lines).toContain("billing are unknown");
+      expect(lines).toContain("did not switch models");
+      expect(lines).not.toContain(SECRET);
+      const receipt = JSON.parse(await readFile(join(failed.outputDir, "receipt.json"), "utf8")) as {
+        providerResult: string;
+        serverRequestId: string;
+        requestedModel: string;
+        billing: { amount: null; status: string };
+      };
+      expect(receipt.providerResult).toBe("unknown");
+      expect(receipt.serverRequestId).toBe("req-server-1");
+      expect(receipt.requestedModel).toBe(QWEN_TEXT_TRIAL_DEFAULT_MODEL);
+      expect(receipt.billing).toEqual({ amount: null, currency: null, status: "unknown" });
+      expect(JSON.stringify(receipt)).not.toContain(SECRET);
+      expect(JSON.stringify(receipt)).not.toContain("internal explosion");
+      expect(existsSync(join(failed.outputDir, "draft.json"))).toBe(false);
+    }
   });
 
   it("runs the CLI dry-run in a subprocess and keeps the exit code aligned", async () => {

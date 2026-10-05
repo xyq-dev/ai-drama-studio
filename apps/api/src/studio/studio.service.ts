@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { SAMPLE_VIDEO_FIXTURE_IDS, SAMPLE_VIDEO_SCHEMA, sampleVideoDescription, type SampleVideoFixtureId } from "@ai-drama/contracts";
-import { DomainError, parseComposePreflightRequest, parseComposeRenderRequest, parseComposeReviewRequest, parseEpisodeComposePreflightRequest, parseEpisodeComposeRenderRequest } from "@ai-drama/domain";
+import { DomainError, parseComposePreflightRequest, parseComposeRenderRequest, parseComposeReviewRequest, parseEpisodeComposePreflightRequest, parseEpisodeComposeRenderRequest, regenerationSeed } from "@ai-drama/domain";
+import { qwenWebAccessDecision } from "@ai-drama/providers";
 import {
   JobPersistenceService,
   MediaAssetStore,
@@ -80,7 +81,10 @@ const shotBodySchema = z.object({
   promptText: z.string().max(8000),
 });
 
-const generateImageBodySchema = z.object({ seed: z.string().max(200).optional() }).strict();
+const generateImageBodySchema = z.object({
+  seed: z.string().max(200).optional(),
+  bypassCache: z.boolean().optional(),
+}).strict();
 const generateVideoBodySchema = generateImageBodySchema.extend({
   fixtureId: z.enum(SAMPLE_VIDEO_FIXTURE_IDS).optional(),
 }).strict();
@@ -114,6 +118,9 @@ export class StudioService {
     private readonly composeObjectDir: string | null = null,
     private readonly episodeComposeEnabled = false,
     private readonly mockSampleVideoEnabled = false,
+    private readonly qwenWebEnabled = false,
+    private readonly nodeEnv: "development" | "test" | "production" = "production",
+    private readonly qwenOperatorToken: string | null = null,
   ) {}
 
   get workspace(): string {
@@ -625,8 +632,9 @@ export class StudioService {
         const { projectId } = await this.mediaAssets!.prepareShotGenerationInTransaction(
           client, this.workspaceId, shotRevisionId,
         );
+        const regeneration = regenerationSeed(input.seed ?? null, input.bypassCache === true, randomUUID());
         const snapshot = { schema: "m3.mock.image.v1", shotRevisionId,
-          seed: input.seed ?? null, outcome: "success" };
+          seed: regeneration.seed, outcome: "success", bypassCache: regeneration.bypassCache };
         return { workspaceId: this.workspaceId, projectId, sourceShotRevisionId: shotRevisionId,
           type: "MEDIA_IMAGE", requestedBy: context.actorId, kind: "MEDIA_IMAGE",
           inputHash: createHash("sha256").update(JSON.stringify(snapshot)).digest("hex"),
@@ -977,6 +985,24 @@ export class StudioService {
     );
   }
 
+  qwenWebCandidate(presentedToken: string | undefined) {
+    const decision = qwenWebAccessDecision({
+      nodeEnv: this.nodeEnv,
+      enabled: this.qwenWebEnabled,
+      storageReady: false,
+      configuredToken: this.qwenOperatorToken,
+      presentedToken: presentedToken ?? null,
+    });
+    return Promise.resolve({
+      status: decision.status,
+      body: {
+        code: decision.code,
+        replayPolicy: "NOT_REPLAY_SAFE" as const,
+        billingStatus: "unknown" as const,
+      },
+    });
+  }
+
   capabilities() {
     return {
       providerKey: "mock",
@@ -1019,6 +1045,7 @@ export class StudioService {
           );
         }
         const sourceHash = createHash("sha256").update(sourceText).digest("hex");
+        const regeneration = regenerationSeed(input.seed ?? null, input.bypassCache === true, randomUUID());
         const description = fixtureId ? sampleVideoDescription(fixtureId) : null;
         const snapshot = description
           ? {
@@ -1033,7 +1060,8 @@ export class StudioService {
             durationMs: description.durationMs,
             hasAudio: false as const,
             shotRevisionId,
-            seed: input.seed ?? null,
+            seed: regeneration.seed,
+            bypassCache: regeneration.bypassCache,
             outcome: "success",
             executionMode: "sync",
             capability,
@@ -1043,7 +1071,8 @@ export class StudioService {
           : {
             schema: kind === "MEDIA_VIDEO" ? "m3.mock.video.v1" : "m3.mock.tts.v1",
             shotRevisionId,
-            seed: input.seed ?? null,
+            seed: regeneration.seed,
+            bypassCache: regeneration.bypassCache,
             outcome: "success",
             executionMode: "sync",
             capability,

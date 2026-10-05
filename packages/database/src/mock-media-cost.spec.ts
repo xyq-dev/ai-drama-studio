@@ -57,6 +57,7 @@ describe("synchronous mock media cost", () => {
       shotRevisionId,
       seed: null,
       outcome: "success",
+      bypassCache: false,
     };
     expect(() => assertFixedMockImageSnapshot(legal, shotRevisionId)).not.toThrow();
     expect(() => assertFixedMockImageSnapshot({ ...legal, seed: "same" }, shotRevisionId)).not.toThrow();

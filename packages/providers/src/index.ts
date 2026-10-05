@@ -42,3 +42,4 @@ export {
   type QwenTransport,
 } from "./qwen-text-trial";
 export { runQwenWriting, type QwenWritingResult } from "./qwen-writing";
+export { QWEN_WEB_REPLAY_POLICY, qwenWebAccessDecision } from "./qwen-web-writing";

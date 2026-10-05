@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { presentStoredAttempt, type PresentedAttempt } from "@ai-drama/domain";
 import type { PoolClient, QueryResultRow } from "pg";
 import type { DatabasePool } from "./job-service";
 import { PersistenceError } from "./job-service";
@@ -77,6 +78,8 @@ export interface JobView {
   attemptNo: number | null;
   providerRequestId: string | null;
   sourceShotRevisionId: string | null;
+  inputHash: string | null;
+  attempts: PresentedAttempt[];
 }
 
 export interface WorkflowView {
@@ -475,11 +478,7 @@ export class RuntimeStore {
     const jobs = await this.queryJobs(
       `SELECT ${JOB_COLUMNS}
          FROM generation_job j
-         LEFT JOIN LATERAL (
-           SELECT id, attempt_no, provider_request_id
-             FROM job_attempt WHERE generation_job_id = j.id
-            ORDER BY attempt_no DESC LIMIT 1
-         ) ja ON true
+         ${ATTEMPT_JOINS}
         WHERE j.id = $1 AND j.workspace_id = $2`,
       [jobId, workspaceId],
     );
@@ -531,11 +530,7 @@ export class RuntimeStore {
     const jobs = await this.queryJobs(
       `SELECT ${JOB_COLUMNS}
          FROM generation_job j
-         LEFT JOIN LATERAL (
-           SELECT id, attempt_no, provider_request_id
-             FROM job_attempt WHERE generation_job_id = j.id
-            ORDER BY attempt_no DESC LIMIT 1
-         ) ja ON true
+         ${ATTEMPT_JOINS}
         WHERE j.workflow_run_id = $1 AND j.workspace_id = $2
         ORDER BY j.created_at, j.id`,
       [workflowRunId, workspaceId],
@@ -640,9 +635,76 @@ export class RuntimeStore {
   }
 }
 
+const ATTEMPT_JOINS = `
+LEFT JOIN LATERAL (
+  SELECT ja.id, ja.attempt_no, ja.provider_request_id,
+         ja.started_at, ja.finished_at, pc.provider_key,
+         COALESCE(ledger.model, NULLIF(ja.request_snapshot->>'model', '')) AS attempt_model,
+         ledger.amount_decimal::text AS cost_amount,
+         ledger.currency::text AS cost_currency,
+         ledger.kind AS cost_kind,
+         CASE
+           WHEN jsonb_typeof(ja.error_json) = 'object' AND (ja.error_json->>'code') ~ '^[A-Za-z0-9_.:-]{1,80}$'
+           THEN ja.error_json->>'code' ELSE NULL
+         END AS attempt_error_code,
+         octet_length(ja.request_snapshot::text) AS request_bytes
+    FROM job_attempt ja
+    LEFT JOIN provider_configuration pc
+      ON pc.id = ja.provider_configuration_id AND pc.workspace_id = ja.workspace_id
+    LEFT JOIN LATERAL (
+      SELECT amount_decimal, currency, kind, model
+        FROM cost_ledger WHERE job_attempt_id = ja.id
+       ORDER BY CASE WHEN kind = 'ACTUAL' THEN 0 ELSE 1 END, occurred_at DESC
+       LIMIT 1
+    ) ledger ON true
+   WHERE ja.generation_job_id = j.id
+   ORDER BY ja.attempt_no DESC
+   LIMIT 1
+) ja ON true
+LEFT JOIN LATERAL (
+  SELECT COALESCE(json_agg(json_build_object(
+           'attemptNo', item.attempt_no,
+           'providerKey', item.provider_key,
+           'model', item.attempt_model,
+           'startedAt', item.started_at,
+           'finishedAt', item.finished_at,
+           'errorCode', item.attempt_error_code,
+           'requestBytes', item.request_bytes,
+           'costAmount', item.cost_amount,
+           'costCurrency', item.cost_currency,
+           'costKind', item.cost_kind
+         ) ORDER BY item.attempt_no), '[]'::json) AS attempts_json
+    FROM (
+      SELECT ja.attempt_no, pc.provider_key,
+             COALESCE(ledger.model, NULLIF(ja.request_snapshot->>'model', '')) AS attempt_model,
+             ja.started_at, ja.finished_at,
+             CASE
+               WHEN jsonb_typeof(ja.error_json) = 'object' AND (ja.error_json->>'code') ~ '^[A-Za-z0-9_.:-]{1,80}$'
+               THEN ja.error_json->>'code' ELSE NULL
+             END AS attempt_error_code,
+             octet_length(ja.request_snapshot::text) AS request_bytes,
+             ledger.amount_decimal::text AS cost_amount,
+             ledger.currency::text AS cost_currency,
+             ledger.kind AS cost_kind
+        FROM job_attempt ja
+        LEFT JOIN provider_configuration pc
+          ON pc.id = ja.provider_configuration_id AND pc.workspace_id = ja.workspace_id
+        LEFT JOIN LATERAL (
+          SELECT amount_decimal, currency, kind, model
+            FROM cost_ledger WHERE job_attempt_id = ja.id
+           ORDER BY CASE WHEN kind = 'ACTUAL' THEN 0 ELSE 1 END, occurred_at DESC
+           LIMIT 1
+        ) ledger ON true
+       WHERE ja.generation_job_id = j.id
+    ) item
+) attempt_rows ON true`;
+
 const JOB_COLUMNS = `j.id, j.workspace_id, j.project_id, j.workflow_run_id, j.kind, j.state,
-  j.dispatch_seq, j.retry_count, j.error_code, j.error_message, j.source_shot_revision_id,
-  ja.id AS attempt_id, ja.attempt_no, ja.provider_request_id`;
+  j.dispatch_seq, j.retry_count, j.error_code, j.error_message, j.source_shot_revision_id, j.input_hash,
+  ja.id AS attempt_id, ja.attempt_no, ja.provider_request_id,
+  ja.started_at, ja.finished_at, ja.provider_key, ja.attempt_model,
+  ja.cost_amount, ja.cost_currency, ja.cost_kind, ja.attempt_error_code, ja.request_bytes,
+  attempt_rows.attempts_json`;
 
 export async function insertProject(
   client: PoolClient,
@@ -699,7 +761,32 @@ function mapJob(row: QueryResultRow): JobView {
     attemptNo: row.attempt_no === null || row.attempt_no === undefined ? null : Number(row.attempt_no),
     providerRequestId: row.provider_request_id ? String(row.provider_request_id) : null,
     sourceShotRevisionId: row.source_shot_revision_id == null ? null : String(row.source_shot_revision_id),
+    inputHash: row.input_hash == null ? null : String(row.input_hash),
+    attempts: mapAttempts(row.attempts_json, row.input_hash == null ? null : String(row.input_hash)),
   };
+}
+
+function mapAttempts(value: unknown, inputHash: string | null): PresentedAttempt[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const row = item as Record<string, unknown>;
+    const attemptNo = Number(row.attemptNo);
+    if (!Number.isInteger(attemptNo) || attemptNo < 1) return [];
+    return [presentStoredAttempt({
+      attemptNo,
+      providerKey: row.providerKey == null ? null : String(row.providerKey),
+      model: row.model == null ? null : String(row.model),
+      startedAt: row.startedAt == null ? null : String(row.startedAt),
+      finishedAt: row.finishedAt == null ? null : String(row.finishedAt),
+      errorCode: row.errorCode == null ? null : String(row.errorCode),
+      inputHash,
+      requestBytes: Number(row.requestBytes ?? 0),
+      costAmount: row.costAmount == null ? null : String(row.costAmount),
+      costCurrency: row.costCurrency == null ? null : String(row.costCurrency).trim(),
+      costKind: row.costKind == null ? null : String(row.costKind),
+    })];
+  });
 }
 
 export function requestHash(value: unknown): string {

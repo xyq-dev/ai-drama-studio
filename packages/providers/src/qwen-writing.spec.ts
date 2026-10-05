@@ -67,6 +67,60 @@ function storyPlan() {
   };
 }
 
+function episodeImports(draft: ReturnType<typeof episodeDraft>, pretty: boolean): boolean {
+  const text = pretty ? `${JSON.stringify(draft, null, 2)}\n` : JSON.stringify(draft);
+  try {
+    formatWritingImport(parseWritingImport(new TextEncoder().encode(text), { mode: "episode", episodeNo: 1 }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function episodeNearImportCap() {
+  let low = 1;
+  let high = 400;
+  let best: ReturnType<typeof episodeDraft> | null = null;
+  let bestBytes = 0;
+  while (low <= high) {
+    const actionLen = Math.floor((low + high) / 2);
+    const draft = sizedEpisode(actionLen);
+    const pretty = new TextEncoder().encode(`${JSON.stringify(draft, null, 2)}\n`);
+    if (pretty.byteLength <= 48_000 && episodeImports(draft, true)) {
+      best = draft;
+      bestBytes = pretty.byteLength;
+      low = actionLen + 1;
+    } else {
+      high = actionLen - 1;
+    }
+  }
+  if (!best || bestBytes < 46_000) throw new Error(`near-cap candidate was ${bestBytes} bytes`);
+  return best;
+}
+
+function episodePrettyOverflow() {
+  for (let actionLen = 1; actionLen <= 400; actionLen += 1) {
+    const draft = sizedEpisode(actionLen);
+    const compact = new TextEncoder().encode(JSON.stringify(draft)).byteLength;
+    const pretty = new TextEncoder().encode(`${JSON.stringify(draft, null, 2)}\n`).byteLength;
+    if (compact <= 48_000 && pretty > 48_000 && episodeImports(draft, false)) return draft;
+  }
+  throw new Error("could not build a compact candidate whose pretty file exceeds 48000 bytes");
+}
+
+function sizedEpisode(actionLen: number) {
+  return {
+    ...episodeDraft(),
+    screenplay: "字".repeat(12_000),
+    scenes: Array.from({ length: 12 }, () => ({
+      heading: "内景",
+      action: "动".repeat(actionLen),
+      dialogue: "",
+      sound: "",
+    })),
+  };
+}
+
 function episodeDraft(episodeNo = 1) {
   return {
     schema: "ads.writing.episode-draft.v1",
@@ -334,14 +388,16 @@ describe("qwen writing candidates", () => {
     }
   });
 
-  it("does not send a second request for auth, rate, server, redirect, timeout, disconnect, size, or disk failures", async () => {
-    for (const status of [401, 403, 429, 500, 502]) {
+  it("does not send a second request for auth, rate, redirect, timeout, disconnect, size, or disk failures", async () => {
+    for (const status of [401, 403, 429]) {
       const sent = once({ status, headers: headers(), body: encode({ error: { message: SECRET } }) });
       const failed = await execute({ transport: sent.transport });
       expect(sent.calls).toHaveLength(1);
       expect(failed.result.requestCount).toBe(1);
+      expect(failed.result.status).not.toBe("billing_unknown");
       const receiptText = await readFile(join(failed.outputDir, "receipt.json"), "utf8");
       expect(receiptText).not.toContain(SECRET);
+      expect(receiptText).toContain(`"providerResult": "completed"`);
       expect(existsSync(join(failed.outputDir, "candidate.json"))).toBe(false);
     }
     const redirect = once({ status: 302, headers: headers({ location: "https://example.invalid/next" }), body: null });
@@ -375,6 +431,93 @@ describe("qwen writing candidates", () => {
     expect(failingWrite.calls).toHaveLength(1);
     expect(failedSave.result.code).toBe("save_failed");
     expect(failedSave.result.lines.join("\n")).toContain("does not recommend an unconditional retry");
+  });
+
+  it("treats HTTP 5xx as an unknown result, keeps a redacted request id, and does not retry", async () => {
+    for (const status of [500, 502, 503, 504]) {
+      const sent = once({
+        status,
+        headers: headers({ "x-request-id": "req-server-1" }),
+        body: encode({ error: { message: SECRET, detail: "internal explosion", request_id: "req-from-body" } }),
+      });
+      const failed = await execute({ transport: sent.transport });
+      expect(sent.calls, String(status)).toHaveLength(1);
+      expect(failed.result.requestCount, String(status)).toBe(1);
+      expect(failed.result.status, String(status)).toBe("billing_unknown");
+      expect(failed.result.code, String(status)).toBe("server_error");
+      const lines = failed.result.lines.join("\n");
+      expect(lines).toContain("billing are unknown");
+      expect(lines).toContain("did not switch models");
+      expect(lines).not.toContain(SECRET);
+      const receipt = JSON.parse(await readFile(join(failed.outputDir, "receipt.json"), "utf8")) as {
+        providerResult: string;
+        serverRequestId: string;
+        errorCode: string;
+        requestedModel: string;
+        billing: { amount: null; status: string };
+      };
+      expect(receipt.providerResult).toBe("unknown");
+      expect(receipt.serverRequestId).toBe("req-server-1");
+      expect(receipt.errorCode).toBe("server_error");
+      expect(receipt.requestedModel).toBe(QWEN_WRITING_DEFAULT_MODEL);
+      expect(receipt.billing).toEqual({ amount: null, currency: null, status: "unknown" });
+      const receiptText = JSON.stringify(receipt);
+      expect(receiptText).not.toContain(SECRET);
+      expect(receiptText).not.toContain("internal explosion");
+      expect(receiptText).not.toContain("req-from-body");
+      expect(existsSync(join(failed.outputDir, "candidate.json"))).toBe(false);
+    }
+    const fromBody = once({
+      status: 503,
+      headers: headers(),
+      body: encode({ request_id: "req-body-only", error: { message: SECRET } }),
+    });
+    const bodyId = await execute({ transport: fromBody.transport });
+    expect(fromBody.calls).toHaveLength(1);
+    const bodyReceipt = JSON.parse(await readFile(join(bodyId.outputDir, "receipt.json"), "utf8")) as { serverRequestId: string };
+    expect(bodyReceipt.serverRequestId).toBe("req-body-only");
+    const secretId = once({
+      status: 500,
+      headers: headers({ "x-request-id": SECRET }),
+      body: encode({ error: { message: "boom" } }),
+    });
+    const dropped = await execute({ transport: secretId.transport });
+    const droppedReceipt = JSON.parse(await readFile(join(dropped.outputDir, "receipt.json"), "utf8")) as { serverRequestId: null };
+    expect(droppedReceipt.serverRequestId).toBeNull();
+    expect(JSON.stringify(droppedReceipt)).not.toContain(SECRET);
+  });
+
+  it("imports the exact candidate file, including a legal candidate near the byte cap", async () => {
+    const leaked = { ...storyPlan(), logline: SECRET };
+    const redacted = once(okResponse(completion(leaked)));
+    const savedSecret = await execute({ transport: redacted.transport });
+    expect(redacted.calls).toHaveLength(1);
+    const redactedText = await readFile(join(savedSecret.outputDir, "candidate.json"), "utf8");
+    expect(redactedText.endsWith("\n")).toBe(true);
+    expect(redactedText).not.toContain(SECRET);
+    expect(redactedText).toContain("[redacted]");
+    const redactedImport = parseWritingImport(new TextEncoder().encode(redactedText), { mode: "story", episodeNo: null });
+    expect(formatWritingImport(redactedImport)).toContain("[redacted]");
+
+    const nearCap = episodeNearImportCap();
+    const sent = once(okResponse(completion(nearCap)));
+    const saved = await execute({ input: episodeInput(), transport: sent.transport });
+    expect(sent.calls).toHaveLength(1);
+    expect(saved.result.status).toBe("candidate_saved");
+    const fileBytes = await readFile(join(saved.outputDir, "candidate.json"));
+    expect(fileBytes.byteLength).toBeGreaterThanOrEqual(46_000);
+    expect(fileBytes.byteLength).toBeLessThanOrEqual(48_000);
+    const imported = parseWritingImport(fileBytes, { mode: "episode", episodeNo: 1 });
+    const formatted = formatWritingImport(imported);
+    expect(formatted.length).toBeLessThanOrEqual(20_000);
+    expect(formatted.length).toBeGreaterThan(0);
+
+    const overflow = episodePrettyOverflow();
+    const rejected = once(okResponse(completion(overflow)));
+    const failed = await execute({ input: episodeInput(), transport: rejected.transport });
+    expect(rejected.calls).toHaveLength(1);
+    expect(failed.result.code).toBe("too_large");
+    expect(existsSync(join(failed.outputDir, "candidate.json"))).toBe(false);
   });
 
   it("does not overwrite an existing output directory or call the model", async () => {

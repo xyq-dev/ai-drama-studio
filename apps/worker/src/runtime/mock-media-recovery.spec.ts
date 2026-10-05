@@ -15,7 +15,7 @@ it("does not reopen a succeeded image or write a backfill", async () => {
     loadMockMediaExecution: vi.fn(async () => ({
       workspaceId: "workspace", jobId: "old-image", projectId: "project", kind: "MEDIA_IMAGE",
       shotRevisionId: "shot", providerConfigurationId: "provider",
-      inputSnapshot: { schema: "m3.mock.image.v1", shotRevisionId: "shot", seed: null, outcome: "success" },
+      inputSnapshot: { schema: "m3.mock.image.v1", shotRevisionId: "shot", seed: null, outcome: "success", bypassCache: false },
       state: "SUCCEEDED", cancelRequested: false,
     })),
   } as unknown as RuntimeStore;

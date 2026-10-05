@@ -461,6 +461,33 @@ describe("M3-B media asset store", () => {
     ).rejects.toMatchObject({ code: "REVIEW_REQUIRED" });
   });
 
+  it("allows an image preview before shot approval and still blocks video", async () => {
+    const seeded = await seedApprovedShot();
+    await pool.query(
+      `UPDATE shot SET approved_revision_id = NULL
+        WHERE id = (SELECT shot_id FROM shot_revision WHERE id = $1)`,
+      [seeded.shotRevisionId],
+    );
+    await pool.query(`UPDATE shot_revision SET review_status = 'DRAFT' WHERE id = $1`, [seeded.shotRevisionId]);
+    await pool.query(
+      `INSERT INTO provider_configuration
+        (workspace_id, provider_key, capability, default_timeout_ms)
+       VALUES ($1,'mock-media','video.generate',30000)`,
+      [seeded.workspaceId],
+    );
+    const client = await pool.connect();
+    try {
+      await expect(store.prepareShotGenerationInTransaction(
+        client, seeded.workspaceId, seeded.shotRevisionId, "image.generate",
+      )).resolves.toMatchObject({ projectId: seeded.projectId });
+      await expect(store.prepareShotGenerationInTransaction(
+        client, seeded.workspaceId, seeded.shotRevisionId, "video.generate",
+      )).rejects.toMatchObject({ code: "REVIEW_REQUIRED" });
+    } finally {
+      client.release();
+    }
+  });
+
   it("rejects asset lineage from a different project in the same workspace", async () => {
     const seeded = await seedApprovedShot();
 
@@ -777,6 +804,7 @@ async function bindFixedImage() {
     shotRevisionId: seeded.shotRevisionId,
     seed: null,
     outcome: "success",
+    bypassCache: false,
   };
   const providerRequestId = `mock-media|image.generate|${seeded.generationJobId}:1`;
   await pool.query(

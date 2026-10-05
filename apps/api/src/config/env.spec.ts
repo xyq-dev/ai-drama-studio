@@ -39,6 +39,7 @@ describe("loadApiEnv", () => {
     expect(env.M3_MOCK_AV_ENABLED).toBe(false);
     expect(env.M4_MOCK_SAMPLE_VIDEO_ENABLED).toBe(false);
     expect(env.M3_MOCK_IMAGE_ENABLED).toBe(false);
+    expect(env.QWEN_WEB_WRITING_ENABLED).toBe(false);
     expect(env.DATABASE_URL).toContain("super-secret-password");
     expect(env.S3_FORCE_PATH_STYLE).toBe(true);
   });

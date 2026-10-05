@@ -40,7 +40,7 @@ export interface StoredProviderCost {
   supersedesEstimateKey: string | null;
 }
 
-const FIXED_IMAGE_SNAPSHOT_KEYS = ["outcome", "schema", "seed", "shotRevisionId"];
+const FIXED_IMAGE_SNAPSHOT_KEYS = ["bypassCache", "outcome", "schema", "seed", "shotRevisionId"];
 
 /** Legal synchronous image jobs are only the frozen v1 success snapshot. */
 export function assertFixedMockImageSnapshot(snapshot: unknown, shotRevisionId: string): void {
@@ -58,6 +58,9 @@ export function assertFixedMockImageSnapshot(snapshot: unknown, shotRevisionId: 
     throw new PersistenceError("COST_CONFLICT", "Mock image accounting snapshot is not a fixed success job");
   }
   if (snapshot.seed !== null && typeof snapshot.seed !== "string") {
+    throw new PersistenceError("COST_CONFLICT", "Mock image accounting snapshot is not a fixed success job");
+  }
+  if (typeof snapshot.bypassCache !== "boolean") {
     throw new PersistenceError("COST_CONFLICT", "Mock image accounting snapshot is not a fixed success job");
   }
 }

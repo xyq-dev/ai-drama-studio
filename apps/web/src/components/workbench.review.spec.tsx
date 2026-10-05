@@ -332,6 +332,16 @@ function createSim(): Sim {
             errorCode: "JOB_NOT_RETRYABLE",
             errorMessage: "Media image retry is unavailable",
             sourceShotRevisionId: `${SHOT_A}-rev`,
+            attempts: [{
+              attemptNo: 1,
+              providerKey: "mock-media",
+              model: "mock-image",
+              status: "finished",
+              errorCode: "JOB_NOT_RETRYABLE",
+              durationMs: 40,
+              inputHash: "ab".repeat(32),
+              cost: { status: "unknown", amount: null, currency: null, kind: null },
+            }],
           }],
         }]);
       }
@@ -1359,6 +1369,9 @@ describe("workbench review interactions against a simulated API", () => {
     fireEvent.click(await screen.findByRole("button", { name: "任务" }));
     expect(await screen.findByText(new RegExp(`${SHOT_A}-rev`))).toBeTruthy();
     const retry = screen.getByRole("button", { name: /媒体手工重试不可用/ });
+    expect(screen.getByText(/费用 未知/)).toBeTruthy();
+    expect(screen.getByText(/耗时 40 ms/)).toBeTruthy();
+    expect(screen.getByText(/mock-media \/ mock-image/)).toBeTruthy();
     expect((retry as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(retry);
     expect(sim.calls.filter((call) => call.url.endsWith("/retry"))).toHaveLength(0);

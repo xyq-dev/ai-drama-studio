@@ -84,7 +84,7 @@ export function qwenFailureMessage(code: string): string {
     redirect_rejected: "The endpoint returned a redirect. The provider result and billing are unknown. A charge may already exist. The client did not follow it or send another request, and does not recommend an unconditional retry.",
     unauthorized: "The model endpoint rejected the credentials.",
     rate_limited: "The model endpoint rate-limited the request.",
-    server_error: "The model endpoint returned a server error.",
+    server_error: "The model endpoint returned a server error. The provider result and billing are unknown. A charge may already exist. The client did not send another request, did not switch models, and does not recommend an unconditional retry.",
     provider_error: "The model endpoint returned an unexpected status.",
     refusal: "The model refused the request.",
     truncated: "The model output was truncated by the token limit.",
@@ -328,6 +328,37 @@ export function createQwenFetchTransport(fetchImpl: typeof fetch = globalThis.fe
   };
 }
 
+function requestIdFromBody(body: Uint8Array | null, secret: string, maxBytes: number): string | null {
+  if (!body || body.byteLength === 0) return null;
+  let raw: string;
+  try {
+    raw = decodeQwenResponseBytes(body, maxBytes);
+  } catch {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const record = parsed as Record<string, unknown>;
+    const nested = record.error;
+    const nestedId = nested && typeof nested === "object" && !Array.isArray(nested)
+      ? (nested as Record<string, unknown>).request_id
+      : undefined;
+    return serverRequestId({ get: () => null }, record.request_id ?? record.id ?? nestedId, secret);
+  } catch {
+    return null;
+  }
+}
+
+function responseRequestId(
+  headers: { get(name: string): string | null },
+  body: Uint8Array | null,
+  secret: string,
+  maxBytes: number,
+): string | null {
+  return serverRequestId(headers, null, secret) ?? requestIdFromBody(body, secret, maxBytes);
+}
+
 function statusForHttp(status: number): string {
   if (status === 401 || status === 403) return "unauthorized";
   if (status === 429) return "rate_limited";
@@ -355,12 +386,16 @@ export async function sendQwenChat(options: {
   const maxBytes = Math.min(options.maxResponseBytes ?? QWEN_CHAT_MAX_RESPONSE_BYTES, QWEN_CHAT_MAX_RESPONSE_BYTES);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-  const failed = (errorCode: string, providerResult: "completed" | "unknown"): QwenChatExchange => ({
+  const failed = (
+    errorCode: string,
+    providerResult: "completed" | "unknown",
+    requestId: string | null = null,
+  ): QwenChatExchange => ({
     requestCount: 1,
     errorCode,
     providerResult,
     responseModel: null,
-    serverRequestId: null,
+    serverRequestId: requestId,
     usage: qwenUsageOf(null),
     content: null,
   });
@@ -374,7 +409,9 @@ export async function sendQwenChat(options: {
     });
     if (response.status === 0 || response.status < 200 || response.status >= 300) {
       const code = statusForHttp(response.status);
-      return failed(code, code === "redirect_rejected" ? "unknown" : "completed");
+      const uncertain = code === "redirect_rejected" || code === "server_error";
+      const requestId = responseRequestId(response.headers, response.body, options.apiKey, maxBytes);
+      return failed(code, uncertain ? "unknown" : "completed", requestId);
     }
     let raw: string;
     try {

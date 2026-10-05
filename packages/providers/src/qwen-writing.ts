@@ -119,17 +119,31 @@ function candidateErrorCode(error: unknown): string {
   return "invalid_candidate";
 }
 
-function acceptCandidate(content: string, input: QwenWritingInput): { candidate: unknown } | { errorCode: string } {
+function writingExpected(input: QwenWritingInput): { mode: "story" | "episode"; episodeNo: number | null } {
+  return {
+    mode: input.mode,
+    episodeNo: input.mode === "episode" ? input.episodeNo : null,
+  };
+}
+
+export function acceptPreparedCandidate(content: string, input: QwenWritingInput, secret: string): { text: string } | { errorCode: string } {
+  const expected = writingExpected(input);
+  let candidate: unknown;
   try {
-    const imported = parseWritingImport(new TextEncoder().encode(content), {
-      mode: input.mode,
-      episodeNo: input.mode === "episode" ? input.episodeNo : null,
-    });
+    const imported = parseWritingImport(new TextEncoder().encode(content), expected);
     formatWritingImport(imported);
-    return { candidate: imported.mode === "story" ? imported.plan : imported.draft };
+    candidate = imported.mode === "story" ? imported.plan : imported.draft;
   } catch (error) {
     return { errorCode: candidateErrorCode(error) };
   }
+  const text = redactSecret(`${JSON.stringify(candidate, null, 2)}\n`, secret);
+  try {
+    const written = parseWritingImport(new TextEncoder().encode(text), expected);
+    formatWritingImport(written);
+  } catch (error) {
+    return { errorCode: candidateErrorCode(error) };
+  }
+  return { text };
 }
 
 function receipt(input: Omit<QwenWritingReceipt, "schema" | "billing" | "idempotencyNote">): QwenWritingReceipt {
@@ -204,13 +218,13 @@ export async function runQwenWriting(options: RunOptions): Promise<QwenWritingRe
 
   const persist = async (
     fields: Omit<QwenWritingReceipt, "schema" | "billing" | "idempotencyNote" | "candidateFile">,
-    candidate: unknown | null,
+    candidateText: string | null,
     requestCount: number,
   ): Promise<QwenWritingResult> => {
     let candidateFile: QwenWritingReceipt["candidateFile"] = "not_written";
-    if (candidate && fields.candidateAccepted) {
+    if (candidateText && fields.candidateAccepted) {
       try {
-        await write(candidatePath, redactSecret(`${JSON.stringify(candidate, null, 2)}\n`, apiKey.apiKey));
+        await write(candidatePath, candidateText);
         candidateFile = "written";
       } catch {
         candidateFile = "failed";
@@ -247,14 +261,14 @@ export async function runQwenWriting(options: RunOptions): Promise<QwenWritingRe
     timeoutMs: options.timeoutMs,
     maxResponseBytes: options.maxResponseBytes,
   });
-  let candidate: unknown | null = null;
+  let candidateText: string | null = null;
   let errorCode = exchange.errorCode;
   let accepted = false;
   if (exchange.content && errorCode === null) {
-    const checked = acceptCandidate(exchange.content, parsedInput.data);
+    const checked = acceptPreparedCandidate(exchange.content, parsedInput.data, apiKey.apiKey);
     if ("errorCode" in checked) errorCode = checked.errorCode;
     else {
-      candidate = checked.candidate;
+      candidateText = checked.text;
       accepted = true;
     }
   }
@@ -272,5 +286,5 @@ export async function runQwenWriting(options: RunOptions): Promise<QwenWritingRe
     candidateAccepted: accepted,
     errorCode,
     providerResult: exchange.providerResult,
-  }, candidate, exchange.requestCount);
+  }, candidateText, exchange.requestCount);
 }
