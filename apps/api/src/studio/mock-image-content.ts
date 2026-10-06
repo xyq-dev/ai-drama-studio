@@ -44,6 +44,25 @@ export async function readBoundedMockPng(
   return bytes;
 }
 
+/** Error codes that prove the path does not exist. Anything else is an operational failure, not a missing object. */
+const MISSING_PATH_CODES = new Set(["ENOENT", "ENOTDIR"]);
+
+function isMissingPath(error: unknown): boolean {
+  const code = error && typeof error === "object" ? (error as { code?: unknown }).code : undefined;
+  return typeof code === "string" && MISSING_PATH_CODES.has(code);
+}
+
+/**
+ * NOT_FOUND only when the filesystem proved the object is absent. Permission, file-handle and I/O failures become
+ * ASSET_STORAGE_ERROR so callers (for example input reuse) never mistake them for a missing object. The message
+ * never carries the path.
+ */
+function storageFailure(error: unknown): PersistenceError {
+  return isMissingPath(error)
+    ? new PersistenceError("NOT_FOUND", "Asset content is unavailable")
+    : new PersistenceError("ASSET_STORAGE_ERROR", "Asset storage could not be read");
+}
+
 export async function readBoundedMockObject(
   root: string,
   objectKey: string,
@@ -56,8 +75,9 @@ export async function readBoundedMockObject(
   let rootReal: string;
   try {
     rootReal = await realpath(root);
-  } catch {
-    throw new PersistenceError("CONFIGURATION_ERROR", "Mock object storage is not configured");
+  } catch (error) {
+    if (isMissingPath(error)) throw new PersistenceError("CONFIGURATION_ERROR", "Mock object storage is not configured");
+    throw new PersistenceError("ASSET_STORAGE_ERROR", "Asset storage could not be read");
   }
   const segments = objectKey.split("/");
   let current = rootReal;
@@ -69,8 +89,8 @@ export async function readBoundedMockObject(
     const next = join(current, segment);
     try {
       info = await lstat(next);
-    } catch {
-      throw new PersistenceError("NOT_FOUND", "Asset content is unavailable");
+    } catch (error) {
+      throw storageFailure(error);
     }
     if (info.isSymbolicLink()) {
       throw new PersistenceError("ASSET_CONTENT_INVALID", rules.invalidMessage);
@@ -78,8 +98,8 @@ export async function readBoundedMockObject(
     let resolved: string;
     try {
       resolved = await realpath(next);
-    } catch {
-      throw new PersistenceError("NOT_FOUND", "Asset content is unavailable");
+    } catch (error) {
+      throw storageFailure(error);
     }
     if (!isInside(rootReal, resolved)) {
       throw new PersistenceError("ASSET_CONTENT_INVALID", rules.invalidMessage);
@@ -99,7 +119,12 @@ export async function readBoundedMockObject(
     throw new PersistenceError("ASSET_CONTENT_INVALID", "Asset content does not match its record");
   }
   const bytes = Buffer.alloc(expected.byteSize);
-  const handle = await open(current, "r");
+  let handle: Awaited<ReturnType<typeof open>>;
+  try {
+    handle = await open(current, "r");
+  } catch (error) {
+    throw storageFailure(error);
+  }
   try {
     const { bytesRead } = await handle.read(bytes, 0, expected.byteSize, 0);
     if (bytesRead !== expected.byteSize) {
@@ -107,7 +132,8 @@ export async function readBoundedMockObject(
     }
   } catch (error) {
     if (error instanceof PersistenceError) throw error;
-    throw new PersistenceError("NOT_FOUND", "Asset content is unavailable");
+    // A read that fails after a successful open is an I/O fault, never proof that the object is missing.
+    throw new PersistenceError("ASSET_STORAGE_ERROR", "Asset storage could not be read");
   } finally {
     await handle.close();
   }

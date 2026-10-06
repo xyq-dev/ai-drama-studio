@@ -5,9 +5,11 @@ import { canAdopt, type FrozenWritingContext, type WritingTargetSnapshot } from 
 import { MAX_MANUAL_MEDIA_RETRIES, mediaRetryDecision, type MediaRetryRejection } from "@ai-drama/domain/media-retry";
 import { ComposePreflight } from "./compose-preflight";
 import { WritingAssistant } from "./writing-assistant";
+import { CharacterReferencePanel } from "./character-reference-panel";
 import { EpisodeComposePreflight } from "./episode-compose-preflight";
 import { ProjectCostSummary } from "./project-cost-summary";
 import { ApiError, StudioClient } from "../lib/studio-client";
+import { createQwenWebClient } from "../lib/qwen-web-client";
 import {
   LIMITS,
   TEXT_WORKFLOW_TYPES,
@@ -43,6 +45,7 @@ import {
 } from "../lib/studio-model";
 
 const client = new StudioClient();
+const qwenWebClient = createQwenWebClient();
 const EMPTY_CONTENT: Record<string, unknown> = { text: "" };
 const BODY_FIELD = "mt-1 w-full min-h-48 max-h-[70vh] resize-y rounded border border-neutral-300 px-3 py-2";
 
@@ -1220,6 +1223,7 @@ function ContentEditor(props: {
           loaded={props.assistant.loaded}
           capture={captureTarget}
           onAdopt={adoptText}
+          workspaceQwen={qwenWebClient}
         />
       ) : null}
       {props.empty ? <p className="mt-2 text-sm">尚无版本。保存将创建第一版。</p> : null}
@@ -1412,6 +1416,9 @@ function EntityPane(props: {
             }}
           />
         ) : null}
+        {props.kind === "character" && selected && history?.aggregate.entityId === selected && current ? (
+          <CharacterReferencePanel characterId={selected} currentRevisionId={current.id} />
+        ) : null}
         <NewEntityForm
           project={props.project}
           kind={props.kind}
@@ -1536,6 +1543,8 @@ function ScenePane(props: {
   const [shots, setShots] = useState<PageState<Aggregate> | null>(null);
   const [shotHistory, setShotHistory] = useState<{ aggregate: Aggregate; items: ShotRevision[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // A reused result creates no job, so nothing bumps imageEpoch; this refreshes the compose candidates instead.
+  const [reuseEpoch, setReuseEpoch] = useState(0);
   const loadToken = useRef(0);
 
   const load = useCallback(async () => {
@@ -1762,8 +1771,9 @@ function ScenePane(props: {
             musicReason={musicGate.reason}
             imageEpoch={props.imageEpoch}
             onAccepted={props.onSaved}
+            onReused={() => setReuseEpoch((value) => value + 1)}
           />
-          <ComposePreflight revisionId={shotCurrent.id} refreshEpoch={props.imageEpoch} />
+          <ComposePreflight revisionId={shotCurrent.id} refreshEpoch={props.imageEpoch + reuseEpoch} />
           </div>
           <InspectSlot>
           <RevisionColumn
@@ -2404,6 +2414,8 @@ function ShotImagePanel(props: {
   musicReason: string;
   imageEpoch: number;
   onAccepted: () => Promise<void>;
+  /** A reuse answer created no job; the shot's asset list and compose candidates must be read again explicitly. */
+  onReused?: () => void;
 }) {
   const [seed, setSeed] = useState("");
   const [videoSeed, setVideoSeed] = useState("");
@@ -2569,7 +2581,7 @@ function ShotImagePanel(props: {
             ? "已受理，结果以任务和字幕列表为准。这不是生成成功。"
             : "已受理，结果以任务和音乐列表为准。这不是生成成功。";
     try {
-      const result = await client.write<{ workflowRunId: string }>({
+      const result = await client.write<{ workflowRunId?: string; cache?: string; assetId?: string }>({
         path: `/shot-revisions/${revisionId}/${path}`,
         body: {
           ...(value.trim().length > 0 ? { seed: value.trim() } : {}),
@@ -2582,10 +2594,19 @@ function ShotImagePanel(props: {
         return;
       }
       if (slot.current?.key === key) slot.current = null;
-      const text = result.status === 202 ? accepted : `已返回 ${result.status}，结果以随后的查询为准。`;
-      if (result.status === 202) acceptedEpoch.current[channel] = epoch;
+      const reused = result.status === 200 && result.body.cache === "HIT";
+      const text = result.status === 202 ? accepted
+        : reused ? `已复用同一输入的已有结果 ${result.body.assetId ?? ""}：没有新建任务，也没有新增费用。需要另一份结果请使用重新生成。`
+          : `已返回 ${result.status}，结果以随后的查询为准。`;
+      if (result.status === 202 || reused) acceptedEpoch.current[channel] = epoch;
       showNotice(channel, text);
-      if (result.status !== 202) return;
+      if (reused) {
+        // No task will finish to trigger a reload: read this revision's assets again (stale answers are dropped by the
+        // existing request token; a failure shows the requery action and keeps the reuse notice).
+        setListAttempt((value) => value + 1);
+        props.onReused?.();
+      }
+      if (result.status !== 202 && !reused) return;
       try {
         await props.onAccepted();
       } catch {

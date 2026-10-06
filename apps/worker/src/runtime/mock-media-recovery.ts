@@ -5,7 +5,7 @@ import type { MediaProviderAdapter } from "@ai-drama/providers";
 import { recoverMockAvAttempt } from "./mock-av-generation";
 import { recoverMockImageAttempt, type MockImageObjectStore } from "./mock-image-generation";
 import { recoverMockSmAttempt } from "./mock-sm-generation";
-import { classifyMediaFailure, mediaErrorMessage } from "./mock-media-failure";
+import { classifyMediaFailure, mediaErrorMessage, permanentMediaErrorCode } from "./mock-media-failure";
 
 export interface MockMediaRecoveryFlags {
   mockImageEnabled: boolean;
@@ -106,9 +106,9 @@ export class MockMediaRecovery {
           try {
             await this.jobs.failJob({ workspaceId: row.workspaceId, jobId: row.jobId,
               attemptId: row.attemptId, traceId: `mock-media:invalid-output:${row.jobId}`,
-              errorCode: kind === "MEDIA_IMAGE" ? "MOCK_IMAGE_OUTPUT_INVALID"
+              errorCode: permanentMediaErrorCode(error, kind === "MEDIA_IMAGE" ? "MOCK_IMAGE_OUTPUT_INVALID"
                 : kind === "MEDIA_SUBTITLE" || kind === "MEDIA_MUSIC" ? "MOCK_SM_OUTPUT_INVALID"
-                  : "MOCK_AV_OUTPUT_INVALID",
+                  : "MOCK_AV_OUTPUT_INVALID"),
               errorMessage: mediaErrorMessage(error), retryable: false });
           } catch (failure) {
             if (classifyMediaFailure(failure) !== "terminal-race") errors.push(failure);

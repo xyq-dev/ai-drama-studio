@@ -68,3 +68,30 @@
 PR #45 的合并只集成候选 CLI 和已验证的增量修复，不代表完整 V1。网页千问、角色参考图在线闭环、媒体手工 retry 与真实 Provider 仍未交付。两份 SQL 保持未执行草案，需数据库协议及完整路径完成后另行审查。
 
 合并修复保留原四字段 `m3.mock.image.v1` 的执行与恢复兼容，并将页面图片预览门与视频等已批准来源门分开。新迁移执行、真实付费调用和部署均未授权。
+
+## 2026-10-06 剩余交付轮（`feat/v1-remaining-delivery`，PR #48）
+
+起点 `origin/main` `934e18966d800bf6707dfe1c57dbe6c1ad2909cb`。该起点已包含 PR #47：上表「Mock 媒体手工 retry」一行写的「待 PR 审查与 CI」已在 `934e189` 合并，PR #47 当时的 CI 记录见该 PR（52 阶段 Run `37421373396`）。下表只补充本轮事实，上面各行保留为历史记录；同一需求以本表为准。
+
+| 需求 | 本轮实现位置 | 验收证据 | 状态 |
+| --- | --- | --- | --- |
+| 网页千问调用 | `PostgresQwenWebStore`（按工作区 advisory lock 预约、执行者租约、过期恢复、候选过期）；`QwenWebService` 与三个路由；编剧助手「工作区千问」面板；草案补 `executor_id`、`lease_until` 与索引。见 [`QWEN_WEB_INVOCATION.md`](QWEN_WEB_INVOCATION.md) | 协议、服务、浏览器客户端与组件测试；API 真实库集成：缺表时状态与请求都 503 且没有发送 | 已实现。草案表上的存储集成测试已写、待授权执行；真实千问调用未执行（Paid calls=NO） |
+| 角色参考图生成、审核、选择与严格视频门 | `CharacterReferenceStore`、`MEDIA_CHARACTER_REFERENCE` Worker 路由与租约恢复、四个 API、角色页「角色参考图」面板、`M3_CHARACTER_REFERENCE_GATE`（默认 legacy）。见 [`CHARACTER_REFERENCE_IMAGES.md`](CHARACTER_REFERENCE_IMAGES.md) | 领域、API、Worker、组件测试；API 真实库集成：草案未执行时列表、生成、选择均 503 且不建任务；legacy 视频门回归由既有集成与 52 阶段 E2E 覆盖 | 已实现，依赖未执行草案。草案上的数据库与严格门端到端验收待授权 |
+| 输入复用缓存 | `findReusableShotAssetsInTransaction`、`createQueueOrReuse`、生成端点 `reuseOrCreate`、工作台复用提示。协议见 [`API_CONTRACT.md`](API_CONTRACT.md)「Mock 媒体输入复用」 | API 单测（真实临时文件：可读复用、损坏/缺失回退、bypassCache 不查）；Worker 真实库集成（资格条件、200 不建任务/成本、重放）；52 阶段 E2E `idempotency-retry` 改为先验证复用再验证显式重生 | 已实现，无需 Migration |
+| 分类中心到创作 | `creative-direction-link.ts`、分类页入口、新建作品「把创作方向加入梗概」、编剧助手「带入分类方向」 | 组件测试；真实 Chromium 在本地生产构建上 1280px 与 390px 走完分类→新建作品（无后端，未提交创建） | 已实现，无需 Migration；跨设备不同步 |
+| FFmpeg SBOM 采集 | `scripts/ffmpeg-sbom.mjs` 与测试；M4 CI 写入 `ffmpeg-sbom.json` | 解析测试；CI 证据见 PR #48 的 M4 Run | 采集方法已交付。部署服务器构建未采集；商业分发许可未复核 |
+| 真实媒体 Provider | 未选定；需决定项见 [`PROVIDER_READINESS.md`](PROVIDER_READINESS.md) | — | 未实现，外部待决定 |
+
+Migration：本轮没有新增已执行目录里的 migration。两份草案仍在 `prisma/drafts`，内容为配合应用代码补充的列与说明，未在任何数据库执行。
+
+### 审查修复（基于 `2bb3b46` 的独立 Review）
+
+4 项 P1、3 项 P2 已在同一分支修复，各有回归测试：千问请求发送前持久化身份、回执只导入原冻结指令（`43976c1`）；调用生命周期使用实时时钟（`6648c35`）；冻结参考失效终结原 attempt（`b7209a3`）；复用检查使用事务连接、仅核实的坏文件算未命中（`e9d4766`）；复用命中后刷新资产与合成候选（`eb70e04`）；改选参考图使依赖旧图的视频与下游失效（`9226a10`）。改选 A→B 与严格视频写入参考边的数据库用例依赖参考图草案，仍待授权执行；`staleAssetsDependingOn` 只用已执行的表，已加入 CI 的真实 PostgreSQL 用例。
+
+### 第二轮审查修复（基于 `f1c3ea2` 的复审）
+
+- P1 换选与严格视频完成并发漏标（`fe8206c`）：换选与审核先取项目锁，与完成路径同序串行。CI 真实 PostgreSQL 用例验证锁等待；草案上的两种提交顺序竞争用例已编写、**未执行**（草案未授权）。
+- P1 结构探测吞掉数据库异常（`3bf013c`）：仅查询成功且确认缺失时返回不可用，超时与断连原样传播。CI 真实链路用例注入 57014；草案上"故障解除后成功恢复"用例已编写、**未执行**。
+- P2 文件操作故障被当成缓存未命中（`6b95585`）：仅 ENOENT/ENOTDIR 为未找到，其余为 `ASSET_STORAGE_ERROR`（503），复用不再因此新建任务。
+
+登记、本轮未处理的 P2：选定参考图超出 100 条分页时 `usable` 误判；千问状态与请求在令牌校验前探测存储；参考图生成任务未进入任务区与刷新跟踪；媒体恢复抛错时参考图恢复不执行；网页千问输入未在预约前检查 256,000 字节上限。「切角色后旧回执覆盖列表」在当前挂载路径下未复现，不列为缺陷。

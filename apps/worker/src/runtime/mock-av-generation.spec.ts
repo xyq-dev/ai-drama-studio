@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { JobPersistenceService, MediaAssetRecord, MediaAssetStore } from "@ai-drama/database";
+import { PersistenceError, type JobPersistenceService, type MediaAssetRecord, type MediaAssetStore } from "@ai-drama/database";
 import { SAMPLE_VIDEO_DESCRIPTIONS, SAMPLE_VIDEO_SCHEMA } from "@ai-drama/contracts";
 import { MockMediaAdapter, sampleVideoBytes } from "@ai-drama/providers";
 import { recoverMockAvAttempt, runMockAvJob, type MockAvJob } from "./mock-av-generation";
@@ -164,5 +164,40 @@ describe("sample video execution", () => {
       objects: { put: vi.fn() },
     })).rejects.toThrow(/canonical fixture/);
     expect(assets.completeAttemptWithAsset).not.toHaveBeenCalled();
+  });
+
+  it("ends the attempt once when a frozen character reference is no longer usable (review P1)", async () => {
+    const failJob = vi.fn(async () => "failed" as const);
+    const jobs = {
+      acquireQueuedJob: vi.fn(async () => ({ attemptId: "66666666-6666-4666-8666-666666666666", attemptNo: 1 })),
+      attachProviderRequest: vi.fn(async () => undefined),
+      failJob,
+    } as unknown as JobPersistenceService;
+    const completeAttemptWithAsset = vi.fn(async () => {
+      throw new PersistenceError("CHARACTER_REFERENCE_REQUIRED", "A frozen character reference is no longer usable");
+    });
+    const assets = { assertUsableShot: vi.fn(async () => undefined), completeAttemptWithAsset } as unknown as MediaAssetStore;
+    const adapter = new MockMediaAdapter();
+    const submit = vi.spyOn(adapter, "submit");
+    await expect(runMockAvJob(input, { jobs, assets, adapter, objects: { put: async () => undefined } })).resolves.toBeNull();
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(failJob).toHaveBeenCalledTimes(1);
+    expect(failJob).toHaveBeenCalledWith(expect.objectContaining({
+      errorCode: "CHARACTER_REFERENCE_REQUIRED", retryable: false, attemptId: "66666666-6666-4666-8666-666666666666",
+    }));
+  });
+
+  it("still leaves a transient failure after the request was attached to lease recovery", async () => {
+    const failJob = vi.fn();
+    const jobs = {
+      acquireQueuedJob: vi.fn(async () => ({ attemptId: "66666666-6666-4666-8666-666666666666", attemptNo: 1 })),
+      attachProviderRequest: vi.fn(async () => undefined),
+      failJob,
+    } as unknown as JobPersistenceService;
+    const assets = { assertUsableShot: vi.fn(async () => undefined),
+      completeAttemptWithAsset: vi.fn(async () => { throw new Error("connection terminated unexpectedly"); }) } as unknown as MediaAssetStore;
+    await expect(runMockAvJob(input, { jobs, assets, adapter: new MockMediaAdapter(), objects: { put: async () => undefined } }))
+      .rejects.toThrow("connection terminated");
+    expect(failJob).not.toHaveBeenCalled();
   });
 });

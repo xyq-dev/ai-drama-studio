@@ -23,6 +23,7 @@ const apiEnvSchema = z.object({
   M4_LOCAL_EPISODE_COMPOSE_ENABLED: z.enum(["true", "false"]).default("false"),
   M4_COMPOSE_OBJECT_DIR: z.string().min(1).optional(),
   QWEN_WEB_WRITING_ENABLED: z.enum(["true", "false"]).default("false"),
+  M3_CHARACTER_REFERENCE_GATE: z.enum(["legacy", "strict"]).default("legacy"),
   QWEN_WEB_OPERATOR_TOKEN: z.string().min(16).max(200).optional(),
 });
 
@@ -60,7 +61,16 @@ export interface ApiEnv {
   M4_COMPOSE_OBJECT_DIR?: string;
   QWEN_WEB_WRITING_ENABLED: boolean;
   QWEN_WEB_OPERATOR_TOKEN?: string;
+  /** legacy keeps the existing Mock video gate; strict requires selected, approved character reference images. */
+  M3_CHARACTER_REFERENCE_GATE: "legacy" | "strict";
+  /** Read from the process environment only, never from the .env file. Server-side secret. */
+  DASHSCOPE_API_KEY?: string;
+  BAILIAN_BASE_URL?: string;
+  QWEN_WEB_MODEL?: string;
 }
+
+/** Provider secrets and endpoints are accepted only from the process environment. */
+const PROCESS_ONLY_KEYS = ["DASHSCOPE_API_KEY", "BAILIAN_BASE_URL", "QWEN_WEB_MODEL"] as const;
 
 const API_KEYS = [
   "NODE_ENV",
@@ -86,6 +96,7 @@ const API_KEYS = [
   "M4_COMPOSE_OBJECT_DIR",
   "QWEN_WEB_WRITING_ENABLED",
   "QWEN_WEB_OPERATOR_TOKEN",
+  "M3_CHARACTER_REFERENCE_GATE",
 ] as const;
 
 function pickEnv(
@@ -127,8 +138,14 @@ export function loadApiEnv(
   assertProtocol("DATABASE_URL", parsed.data.DATABASE_URL, ["postgresql:", "postgres:"]);
   assertProtocol("REDIS_URL", parsed.data.REDIS_URL, ["redis:", "rediss:"]);
   assertProtocol("S3_ENDPOINT", parsed.data.S3_ENDPOINT, ["http:", "https:"]);
+  const processOnly: Partial<Record<(typeof PROCESS_ONLY_KEYS)[number], string>> = {};
+  for (const key of PROCESS_ONLY_KEYS) {
+    const value = processEnv[key];
+    if (value !== undefined && value.length > 0) processOnly[key] = value;
+  }
   return {
     ...parsed.data,
+    ...processOnly,
     S3_FORCE_PATH_STYLE: parsed.data.S3_FORCE_PATH_STYLE === "true",
     M3_MOCK_IMAGE_ENABLED: parsed.data.M3_MOCK_IMAGE_ENABLED === "true",
     M3_MOCK_AV_ENABLED: parsed.data.M3_MOCK_AV_ENABLED === "true",

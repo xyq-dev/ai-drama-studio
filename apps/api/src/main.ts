@@ -13,6 +13,10 @@ async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule.register(env), {
     logger: ["error", "warn", "log"],
   });
+  // A legal web Qwen writing input is at most 256,000 bytes (QWEN_WRITING_INPUT_MAX_BYTES); the default is 100kb.
+  // useBodyParser comes from the Express adapter; its typings need @types/express, which the API does not carry.
+  (app as unknown as { useBodyParser(type: "json", options: { limit: string }): void })
+    .useBodyParser("json", { limit: "300kb" });
   app.setGlobalPrefix("api/v1");
   app.enableShutdownHooks();
   app.useGlobalFilters(new SafeExceptionFilter());

@@ -465,12 +465,42 @@ export class StudioController {
     );
   }
 
-  @Post("writing/qwen-candidates")
-  qwenWebCandidate(
+  @Post("character-revisions/:revisionId/reference-images/generate")
+  generateCharacterReference(
+    @Param("revisionId", UUID_PARAM_PIPE) revisionId: string,
+    @Body() body: unknown,
     @Res({ passthrough: true }) response: StatusResponse,
-    @Headers("x-operator-token") operatorToken?: string,
+    @Headers("idempotency-key") key?: string,
+    @Headers("x-trace-id") trace?: string,
   ) {
-    return this.send(response, this.studio.qwenWebCandidate(operatorToken));
+    return this.send(response, this.studio.generateCharacterReference(revisionId, body, this.context(key, trace)));
+  }
+
+  @Get("characters/:characterId/reference-images")
+  listCharacterReferences(@Param("characterId", UUID_PARAM_PIPE) characterId: string) {
+    return this.studio.listCharacterReferences(characterId);
+  }
+
+  @Post("character-reference-images/:assetId/review")
+  reviewCharacterReference(
+    @Param("assetId", UUID_PARAM_PIPE) assetId: string,
+    @Body() body: unknown,
+    @Res({ passthrough: true }) response: StatusResponse,
+    @Headers("idempotency-key") key?: string,
+    @Headers("x-trace-id") trace?: string,
+  ) {
+    return this.send(response, this.studio.reviewCharacterReference(assetId, body, this.context(key, trace)));
+  }
+
+  @Post("characters/:characterId/reference-selection")
+  selectCharacterReference(
+    @Param("characterId", UUID_PARAM_PIPE) characterId: string,
+    @Body() body: unknown,
+    @Res({ passthrough: true }) response: StatusResponse,
+    @Headers("idempotency-key") key?: string,
+    @Headers("x-trace-id") trace?: string,
+  ) {
+    return this.send(response, this.studio.selectCharacterReference(characterId, body, this.context(key, trace)));
   }
 
   @Post("shot-revisions/:revisionId/generate-image")

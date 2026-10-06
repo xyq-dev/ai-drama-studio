@@ -272,11 +272,26 @@ export async function composePreflightReadonly(ctx) {
   return { unchanged: ledgerPublicSummary(before), overflow };
 }
 
+const REUSE_NOTICE = "已复用同一输入的已有结果";
+
 async function generateOnPage(ctx, buttonName, notice, urlPart) {
   const before = ctx.state.posts.length;
   await ctx.state.page.getByRole("button", { name: buttonName, exact: true }).click({ timeout: 30_000 });
-  await ctx.state.page.getByText(notice).waitFor({ timeout: 20_000 });
+  // The same input on the same shot revision may reuse an earlier readable result instead of creating a job.
+  await ctx.state.page.getByText(new RegExp(`${notice}|${REUSE_NOTICE}`)).first().waitFor({ timeout: 20_000 });
   const post = [...ctx.state.posts].slice(before).reverse().find((item) => item.url.includes(urlPart));
+  if (post?.status === 200 && post.body?.cache === "HIT") {
+    const rows = await ctx.sql(
+      "SELECT id, review_status, status, source_shot_revision_id FROM asset WHERE id = $1 AND workspace_id = $2",
+      [post.body.assetId, ctx.workspaceId],
+    );
+    const reused = rows[0];
+    if (!reused || reused.status !== "ACTIVE" || reused.review_status !== "DRAFT"
+      || reused.source_shot_revision_id !== ctx.state.world.shotRevisionId) {
+      throw new Error(`${urlPart} reused asset ${JSON.stringify(reused)}`);
+    }
+    return reused.id;
+  }
   if (!post || post.status !== 202) throw new Error(`${urlPart} was not accepted`);
   const job = await ctx.pollJob(post.body.jobId, 90_000);
   if (job.state !== "SUCCEEDED") throw new Error(`${urlPart} ${job.state} ${job.errorCode ?? ""}`);

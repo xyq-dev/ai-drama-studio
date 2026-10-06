@@ -77,8 +77,15 @@ function env(): ReturnType<typeof loadApiEnv> {
     APP_WORKSPACE_ID,
     M3_MOCK_IMAGE_ENABLED: "true",
     MOCK_OBJECT_DIR: "/tmp/m3-api-mock-objects",
+    QWEN_WEB_WRITING_ENABLED: "true",
+    QWEN_WEB_OPERATOR_TOKEN: QWEN_OPERATOR_TOKEN,
+    // A syntactically valid placeholder only: the applied migrations have no request table, so nothing is sent.
+    DASHSCOPE_API_KEY: "sk-integration-placeholder-key",
+    BAILIAN_BASE_URL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
   });
 }
+
+const QWEN_OPERATOR_TOKEN = "integration-operator-token-01";
 
 async function readSse(url: string, headers?: Record<string, string>): Promise<{ status: number; text: string }> {
   const response = await fetch(url, { headers, signal: AbortSignal.timeout(1500) });
@@ -125,6 +132,64 @@ afterAll(async () => {
 });
 
 describe("M1-C API and SSE integration", () => {
+  it("refuses character reference images while the reference draft is not applied", async () => {
+    const before = await sql<{ count: number }>("SELECT count(*)::int AS count FROM generation_job");
+    const list = await fetch(`${base}/api/v1/characters/55555555-5555-4555-8555-555555555555/reference-images`);
+    expect(list.status).toBe(503);
+    expect(await list.json()).toMatchObject({ error: { code: "CHARACTER_REFERENCE_STORAGE_UNAVAILABLE" } });
+    const generate = await fetch(`${base}/api/v1/character-revisions/66666666-6666-4666-8666-666666666666/reference-images/generate`, {
+      method: "POST", headers: { "content-type": "application/json", "idempotency-key": "reference-generate" },
+      body: JSON.stringify({}),
+    });
+    expect(generate.status).toBe(503);
+    // Selection locks the character's project first, so it needs a real character to reach the storage check.
+    const owner = await seedApprovedScriptForTextEntity("reference-selection");
+    const character = (await sql<{ id: string }>(
+      "INSERT INTO character (workspace_id, project_id, name) VALUES ($1, $2, 'lin') RETURNING id",
+      [APP_WORKSPACE_ID, owner.projectId])).rows[0]!;
+    const select = await fetch(`${base}/api/v1/characters/${character.id}/reference-selection`, {
+      method: "POST", headers: { "content-type": "application/json", "idempotency-key": "reference-select" },
+      body: JSON.stringify({ assetId: "77777777-7777-4777-8777-777777777777", expectedSelectedAssetId: null }),
+    });
+    expect(select.status).toBe(503);
+    const after = await sql<{ count: number }>("SELECT count(*)::int AS count FROM generation_job");
+    expect(after.rows[0]?.count).toBe(before.rows[0]?.count);
+  });
+
+  it("refuses web Qwen requests before any send while the draft request table is absent", async () => {
+    const project = await fetch(`${base}/api/v1/projects`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": "qwen-web-project" },
+      body: JSON.stringify({ title: "qwen web", premise: "storage gate" }),
+    });
+    const created = (await project.json()) as { id: string };
+    const forbidden = await fetch(`${base}/api/v1/writing/qwen-candidates/status`, {
+      headers: { "x-operator-token": "not-the-operator-token" },
+    });
+    expect(forbidden.status).toBe(403);
+    const status = await fetch(`${base}/api/v1/writing/qwen-candidates/status`, {
+      headers: { "x-operator-token": QWEN_OPERATOR_TOKEN },
+    });
+    expect(status.status).toBe(503);
+    expect(status.headers.get("cache-control")).toBe("private, no-store");
+    const statusBody = await status.json() as Record<string, unknown>;
+    expect(statusBody).toMatchObject({ code: "QWEN_WEB_STORAGE_UNAVAILABLE", ready: false, model: null });
+    expect(JSON.stringify(statusBody)).not.toContain("sk-integration-placeholder-key");
+    const request = await fetch(`${base}/api/v1/projects/${created.id}/writing/qwen-candidates`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": "qwen-web-1",
+        "x-operator-token": QWEN_OPERATOR_TOKEN },
+      body: JSON.stringify({ input: { schema: "qwen.writing.input.v1", mode: "story", premise: "p", genre: "g",
+        audience: "a", characters: "c", mustKeep: "k", mustNotChange: "n", currentText: "" } }),
+    });
+    expect(request.status).toBe(503);
+    expect(await request.json()).toEqual({ code: "QWEN_WEB_STORAGE_UNAVAILABLE" });
+    const table = await sql<{ name: string | null }>("SELECT to_regclass('public.qwen_writing_request')::text AS name");
+    expect(table.rows[0]?.name).toBeNull();
+    const placeholder = await fetch(`${base}/api/v1/writing/qwen-candidates`, { method: "POST" });
+    expect(placeholder.status).toBe(404);
+  });
+
   it("replays an idempotency key and rejects a hash conflict", async () => {
     const first = await fetch(`${base}/api/v1/projects`, {
       method: "POST",

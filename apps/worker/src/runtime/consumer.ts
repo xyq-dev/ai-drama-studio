@@ -28,7 +28,7 @@ export class MockJobConsumer {
 
   async handle(message: QueueMessage): Promise<"processed" | "ignored"> {
     const before = await this.store.loadExecution(message.workspaceId, message.jobId);
-    if (before && isMockMediaJobKind(before.kind)) {
+    if (before && (isMockMediaJobKind(before.kind) || before.kind === "MEDIA_CHARACTER_REFERENCE")) {
       throw new Error("Media jobs must not enter the text consumer");
     }
     if (!before?.providerConfigurationId) return "ignored";

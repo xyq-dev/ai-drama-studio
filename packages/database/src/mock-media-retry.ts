@@ -5,6 +5,7 @@ import { MAX_MANUAL_MEDIA_RETRIES, mediaRetryDecision, type MediaRetryRejection 
 import { PersistenceError, type ManualRetryLineage, type ManualRetrySource } from "./job-service";
 import type { MediaAssetStore } from "./media-assets";
 import { assertFixedMockImageSnapshot } from "./mock-media-cost";
+import { assertFrozenReferencesUsable, frozenCharacterReferences } from "./character-reference-store";
 import { mockMediaRoute } from "./mock-media-kinds";
 
 /** The same server switches that gate the original generate endpoints. */
@@ -59,6 +60,9 @@ export function mockMediaRetryLineage(input: {
       if (prepared.projectId !== source.projectId) {
         throw notRetryable("The source shot no longer belongs to this job's project");
       }
+      // A strict video snapshot froze its selected character references; a retry copies them, so they must hold.
+      const frozen = source.kind === "MEDIA_VIDEO" ? frozenCharacterReferences(snapshot) : null;
+      if (frozen) await assertFrozenReferencesUsable(client, input.workspaceId, frozen);
       if (source.kind !== "MEDIA_IMAGE") {
         const current = (source.kind === "MEDIA_VIDEO" || source.kind === "MEDIA_MUSIC"
           ? prepared.promptText

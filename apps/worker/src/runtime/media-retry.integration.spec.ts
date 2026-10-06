@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
+  CharacterReferenceStore,
   JobPersistenceService,
   MediaAssetStore,
   RuntimeStore,
@@ -12,6 +13,7 @@ import {
   mockMediaRetryLineage,
   requestHash,
   runMigrations,
+  staleAssetsDependingOn,
   type IdempotencyScope,
   type MockMediaRetryFlags,
   type PostgresPool,
@@ -21,6 +23,7 @@ import { LocalMockObjects } from "./local-mock-objects";
 import { runMockAvJob } from "./mock-av-generation";
 import { runMockImageJob } from "./mock-image-generation";
 import { runMockSmJob } from "./mock-sm-generation";
+import { MockMediaRecovery } from "./mock-media-recovery";
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) {
@@ -525,3 +528,561 @@ describe("Mock media manual retry", () => {
     await expect(jobs.manualRetry({ ...input, retryable: false })).rejects.toMatchObject({ code: "JOB_NOT_RETRYABLE" });
   });
 });
+
+describe("Mock media input reuse lookup", () => {
+  async function succeededImage(world: World, seed: string) {
+    const objectDir = await mkdtemp(join(tmpdir(), "media-reuse-"));
+    const job = await createMediaJob(world, "MEDIA_IMAGE", snapshotFor("MEDIA_IMAGE", world.shotRevisionId, seed));
+    const row = await jobRow(job.jobId);
+    const asset = await runMockImageJob({ workspaceId: world.workspaceId, projectId: world.projectId,
+      shotRevisionId: world.shotRevisionId, jobId: job.jobId, dispatchSeq: job.dispatchSeq,
+      providerConfigurationId: world.providers.MEDIA_IMAGE, inputHash: row?.input_hash as string,
+      inputSnapshot: row?.input_snapshot, traceId: "run" }, { jobs, assets, adapter, objects: new LocalMockObjects(objectDir) });
+    await rm(objectDir, { recursive: true, force: true });
+    return { job, row, assetId: asset!.id };
+  }
+
+  async function lookup(world: World, inputHash: string, overrides: Partial<{ projectId: string; jobKind: string;
+    capability: string; assetKind: string; shotRevisionId: string }> = {}) {
+    const client = await pool.connect();
+    try {
+      return (await assets.findReusableShotAssetsInTransaction(client, {
+        workspaceId: world.workspaceId, projectId: world.projectId, shotRevisionId: world.shotRevisionId,
+        jobKind: "MEDIA_IMAGE", inputHash, capability: "image.generate", assetKind: "IMAGE", ...overrides,
+      })).map((candidate) => ({ assetId: candidate.asset.id, jobId: candidate.jobId }));
+    } finally {
+      client.release();
+    }
+  }
+
+  it("finds only an ACTIVE asset of a SUCCEEDED job with the same scope, input and enabled provider", async () => {
+    const world = await seedApprovedShot();
+    const done = await succeededImage(world, "reuse-seed");
+    const hash = done.row?.input_hash as string;
+    expect(await lookup(world, hash)).toEqual([{ assetId: done.assetId, jobId: done.job.jobId }]);
+    expect(await lookup(world, "ef".repeat(32))).toEqual([]);
+    expect(await lookup(world, hash, { jobKind: "MEDIA_VIDEO", capability: "video.generate", assetKind: "VIDEO" })).toEqual([]);
+    expect(await lookup(world, hash, { shotRevisionId: randomUUID() })).toEqual([]);
+    const other = await seedApprovedShot();
+    expect(await lookup({ ...other, shotRevisionId: world.shotRevisionId }, hash)).toEqual([]);
+
+    const failed = await failedMediaJob(world, "MEDIA_IMAGE");
+    expect(await lookup(world, (await jobRow(failed.jobId))?.input_hash as string)).toEqual([]);
+
+    await sql("UPDATE provider_configuration SET enabled = false WHERE id = $1", [world.providers.MEDIA_IMAGE]);
+    expect(await lookup(world, hash)).toEqual([]);
+    await sql("UPDATE provider_configuration SET enabled = true WHERE id = $1", [world.providers.MEDIA_IMAGE]);
+    await sql("UPDATE asset SET status = 'STALE', row_version = row_version + 1 WHERE id = $1", [done.assetId]);
+    expect(await lookup(world, hash)).toEqual([]);
+  });
+
+  it("answers a reuse with 200 under the idempotency record and creates no job, attempt, outbox or cost", async () => {
+    const world = await seedApprovedShot();
+    const done = await succeededImage(world, "reuse-key");
+    const counts = async () => (await sql<{ jobs: number; attempts: number; outbox: number; costs: number }>(
+      `SELECT (SELECT count(*)::int FROM generation_job WHERE workspace_id = $1) AS jobs,
+              (SELECT count(*)::int FROM job_attempt WHERE workspace_id = $1) AS attempts,
+              (SELECT count(*)::int FROM dispatch_outbox WHERE workspace_id = $1) AS outbox,
+              (SELECT count(*)::int FROM cost_ledger WHERE workspace_id = $1) AS costs`, [world.workspaceId])).rows[0];
+    const before = await counts();
+    const reuseScope: IdempotencyScope = { workspaceId: world.workspaceId, actorId: "test", httpMethod: "POST",
+      routeKey: `/shot-revisions/${world.shotRevisionId}/generate-image`, key: "reuse-1", requestHash: requestHash({ seed: "reuse-key" }) };
+    const resolve = async (client: Parameters<typeof assets.findReusableShotAssetsInTransaction>[0]) => {
+      const [hit] = await assets.findReusableShotAssetsInTransaction(client, {
+        workspaceId: world.workspaceId, projectId: world.projectId, shotRevisionId: world.shotRevisionId,
+        jobKind: "MEDIA_IMAGE", inputHash: done.row?.input_hash as string, capability: "image.generate", assetKind: "IMAGE",
+      });
+      if (!hit) throw new Error("expected a reusable asset");
+      return { kind: "reuse" as const, body: { cache: "HIT" as const, assetId: hit.asset.id, sourceJobId: hit.jobId } };
+    };
+    const first = await jobs.createQueueOrReuse(reuseScope, resolve);
+    expect(first).toEqual({ replayed: false, status: 200,
+      body: { cache: "HIT", assetId: done.assetId, sourceJobId: done.job.jobId } });
+    const replay = await jobs.createQueueOrReuse(reuseScope, resolve);
+    expect(replay).toEqual({ replayed: true, status: 200, body: first.body });
+    expect(await counts()).toEqual(before);
+
+    const miss = await jobs.createQueueOrReuse({ ...reuseScope, key: "reuse-2" }, async () => ({
+      kind: "job" as const,
+      input: { workspaceId: world.workspaceId, projectId: world.projectId, sourceShotRevisionId: world.shotRevisionId,
+        type: "MEDIA_IMAGE", requestedBy: "test", kind: "MEDIA_IMAGE", inputHash: done.row?.input_hash as string,
+        inputSnapshot: done.row?.input_snapshot, traceId: "miss" },
+    }));
+    expect(miss.status).toBe(202);
+    expect(miss.body).toMatchObject({ dispatchSeq: 1 });
+    expect((await counts())?.jobs).toBe((before?.jobs ?? 0) + 1);
+  });
+
+  it("finds and answers a reuse on a one-connection pool, so the check never needs a second connection", async () => {
+    const world = await seedApprovedShot();
+    const done = await succeededImage(world, "single-connection");
+    // Any request for a second connection while the transaction holds the first one fails immediately.
+    let held = 0;
+    let secondRequested = false;
+    const narrow = {
+      connect: async () => {
+        if (held >= 1) {
+          secondRequested = true;
+          throw new Error("a second connection was requested inside the reuse transaction");
+        }
+        held += 1;
+        const client = await pool.connect();
+        const release = client.release.bind(client);
+        client.release = (...args: Parameters<typeof release>) => {
+          held -= 1;
+          client.release = release;
+          return release(...args);
+        };
+        return client;
+      },
+    };
+    try {
+      const narrowAssets = new MediaAssetStore(narrow);
+      const narrowJobs = new JobPersistenceService(narrow);
+      const answer = await narrowJobs.createQueueOrReuse({ workspaceId: world.workspaceId, actorId: "test", httpMethod: "POST",
+        routeKey: `/shot-revisions/${world.shotRevisionId}/generate-image`, key: "single", requestHash: requestHash({}) },
+      async (client) => {
+        const [hit] = await narrowAssets.findReusableShotAssetsInTransaction(client, {
+          workspaceId: world.workspaceId, projectId: world.projectId, shotRevisionId: world.shotRevisionId,
+          jobKind: "MEDIA_IMAGE", inputHash: done.row?.input_hash as string, capability: "image.generate", assetKind: "IMAGE",
+        });
+        if (!hit) throw new Error("expected a reusable asset");
+        expect(hit.asset).toMatchObject({ id: done.assetId, kind: "IMAGE", status: "ACTIVE", sourceShotRevisionId: world.shotRevisionId });
+        return { kind: "reuse" as const, body: { cache: "HIT" as const, assetId: hit.asset.id } };
+      });
+      expect(answer).toMatchObject({ status: 200, body: { assetId: done.assetId } });
+      expect(secondRequested).toBe(false);
+    } finally {
+      expect(held).toBe(0);
+    }
+  });
+});
+
+describe("replacing a selected reference stales what was made from it", () => {
+  it("marks dependent videos and their downstream assets STALE and leaves the reference, other branches, reviews and costs alone", async () => {
+    const world = await seedApprovedShot();
+    const objectDir = await mkdtemp(join(tmpdir(), "reference-stale-"));
+    const objects = new LocalMockObjects(objectDir);
+    const run = async (kind: "MEDIA_IMAGE" | "MEDIA_VIDEO" | "MEDIA_MUSIC", seed: string) => {
+      const job = await createMediaJob(world, kind, snapshotFor(kind, world.shotRevisionId, seed));
+      const row = await jobRow(job.jobId);
+      const common = { workspaceId: world.workspaceId, projectId: world.projectId, shotRevisionId: world.shotRevisionId,
+        jobId: job.jobId, dispatchSeq: job.dispatchSeq, providerConfigurationId: world.providers[kind],
+        inputHash: row?.input_hash as string, inputSnapshot: row?.input_snapshot, traceId: `stale-${seed}` };
+      const asset = kind === "MEDIA_IMAGE" ? await runMockImageJob(common, { jobs, assets, adapter, objects })
+        : kind === "MEDIA_VIDEO" ? await runMockAvJob({ ...common, capability: "video.generate" }, { jobs, assets, adapter, objects })
+          : await runMockSmJob({ ...common, capability: "audio.music" }, { jobs, assets, adapter, objects });
+      return asset!.id;
+    };
+    try {
+      // Stand-ins for the strict path: a reference image, a video made from it, and an asset made from that video.
+      const reference = await run("MEDIA_IMAGE", "reference-a");
+      const video = await run("MEDIA_VIDEO", "video-from-a");
+      const downstream = await run("MEDIA_MUSIC", "downstream-of-video");
+      const unrelated = await run("MEDIA_VIDEO", "video-from-b");
+      const edge = (dependent: string, source: string) => sql(
+        `INSERT INTO asset_dependency (workspace_id, project_id, dependent_asset_id, source_asset_id) VALUES ($1, $2, $3, $4)`,
+        [world.workspaceId, world.projectId, dependent, source]);
+      await edge(video, reference);
+      await edge(downstream, video);
+      const costsBefore = await sql<{ count: number }>("SELECT count(*)::int AS count FROM cost_ledger WHERE workspace_id = $1",
+        [world.workspaceId]);
+      const client = await pool.connect();
+      let staled: string[];
+      try {
+        await client.query("BEGIN");
+        staled = await staleAssetsDependingOn(client, world.workspaceId, reference, "character_reference_selection:test", "stale-test");
+        await client.query("COMMIT");
+      } finally {
+        client.release();
+      }
+      expect(staled.sort()).toEqual([video, downstream].sort());
+      const states = await sql<{ id: string; status: string; review_status: string; row_version: number }>(
+        "SELECT id, status, review_status, row_version FROM asset WHERE id = ANY($1::uuid[])",
+        [[reference, video, downstream, unrelated]]);
+      const byId = Object.fromEntries(states.rows.map((row) => [row.id, row]));
+      expect(byId[reference]).toMatchObject({ status: "ACTIVE", row_version: 1 });
+      expect(byId[video]).toMatchObject({ status: "STALE", review_status: "DRAFT", row_version: 2 });
+      expect(byId[downstream]).toMatchObject({ status: "STALE", row_version: 2 });
+      expect(byId[unrelated]).toMatchObject({ status: "ACTIVE", row_version: 1 });
+      const events = await sql<{ aggregate_id: string; payload_json: { staleFromRef: string } }>(
+        "SELECT aggregate_id, payload_json FROM domain_event WHERE event_type = 'asset.stale' AND workspace_id = $1",
+        [world.workspaceId]);
+      expect(events.rows.map((row) => row.aggregate_id).sort()).toEqual([video, downstream].sort());
+      expect(events.rows.every((row) => row.payload_json.staleFromRef === "character_reference_selection:test")).toBe(true);
+      expect((await sql<{ count: number }>("SELECT count(*)::int AS count FROM cost_ledger WHERE workspace_id = $1",
+        [world.workspaceId])).rows).toEqual(costsBefore.rows);
+      // A second pass finds nothing left ACTIVE on that branch.
+      const again = await pool.connect();
+      try {
+        expect(await staleAssetsDependingOn(again, world.workspaceId, reference, "character_reference_selection:test", "again")).toEqual([]);
+      } finally {
+        again.release();
+      }
+    } finally {
+      await rm(objectDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("a strict video whose reference probe hits a transient database error", () => {
+  it("keeps the attempt recoverable through execution and recovery, then settles once the probe answers", async () => {
+    const world = await seedApprovedShot();
+    const objectDir = await mkdtemp(join(tmpdir(), "probe-fault-"));
+    const objects = new LocalMockObjects(objectDir);
+    // The real pool; only the structure probe's query fails while the fault is on, as a statement timeout would.
+    const fault = { on: true };
+    const faultyPool = {
+      connect: async () => {
+        const client = await pool.connect();
+        const query = client.query.bind(client) as (...args: unknown[]) => Promise<unknown>;
+        (client as unknown as { query: (...args: unknown[]) => Promise<unknown> }).query = (...args: unknown[]) => {
+          const text = typeof args[0] === "string" ? args[0] : "";
+          if (fault.on && text.includes("information_schema.columns")) {
+            return Promise.reject(Object.assign(new Error("canceling statement due to statement timeout"),
+              { code: "57014", severity: "ERROR" }));
+          }
+          return query(...args);
+        };
+        const release = client.release.bind(client);
+        client.release = (...releaseArgs: Parameters<typeof release>) => {
+          (client as unknown as { query: unknown }).query = query;
+          client.release = release;
+          return release(...releaseArgs);
+        };
+        return client;
+      },
+    };
+    // The completion transaction is opened by JobPersistenceService.succeedJobWithArtifact, so both services must use
+    // the faulty pool for the probe inside that transaction to see the fault.
+    const faultyAssets = new MediaAssetStore(faultyPool);
+    const faultyJobs = new JobPersistenceService(faultyPool);
+    const strictSnapshot = { ...snapshotFor("MEDIA_VIDEO", world.shotRevisionId, "strict-probe"),
+      characterReferences: [{ characterRevisionId: randomUUID(), assetId: randomUUID(), checksumSha256: "ab".repeat(32) }] };
+    const job = await createMediaJob(world, "MEDIA_VIDEO", strictSnapshot);
+    const row = await jobRow(job.jobId);
+    const adapter = new MockMediaAdapter();
+    let submits = 0;
+    const submit = adapter.submit.bind(adapter);
+    adapter.submit = async (request) => { submits += 1; return submit(request); };
+    const ledger = async () => (await sql<{ state: string; error_code: string | null; attempts: number; requests: string[];
+      assets: number; costs: number; succeeded: number; failed: number }>(
+      `SELECT job.state, job.error_code,
+              (SELECT count(*)::int FROM job_attempt WHERE generation_job_id = job.id) AS attempts,
+              (SELECT array_agg(provider_request_id) FROM job_attempt WHERE generation_job_id = job.id) AS requests,
+              (SELECT count(*)::int FROM asset WHERE source_generation_job_id = job.id) AS assets,
+              (SELECT count(*)::int FROM cost_ledger WHERE generation_job_id = job.id) AS costs,
+              (SELECT count(*)::int FROM domain_event WHERE aggregate_id = job.id AND event_type = 'job.succeeded') AS succeeded,
+              (SELECT count(*)::int FROM domain_event WHERE aggregate_id = job.id AND event_type = 'job.failed') AS failed
+         FROM generation_job job WHERE job.id = $1`, [job.jobId])).rows[0]!;
+    try {
+      await expect(runMockAvJob({ workspaceId: world.workspaceId, projectId: world.projectId,
+        shotRevisionId: world.shotRevisionId, jobId: job.jobId, dispatchSeq: job.dispatchSeq,
+        providerConfigurationId: world.providers.MEDIA_VIDEO, inputHash: row?.input_hash as string,
+        inputSnapshot: row?.input_snapshot, traceId: "strict-probe", capability: "video.generate" },
+      { jobs: faultyJobs, assets: faultyAssets, adapter, objects })).rejects.toMatchObject({ code: "57014" });
+      const afterRun = await ledger();
+      expect(afterRun).toMatchObject({ state: "RUNNING", attempts: 1, assets: 0, costs: 0, succeeded: 0, failed: 0 });
+      const requestId = afterRun.requests[0];
+      expect(requestId).toMatch(/^mock-media\|sync\|video\.generate\|/);
+
+      await sql("UPDATE generation_job SET lease_until = now() - interval '1 second' WHERE id = $1", [job.jobId]);
+      const recovery = new MockMediaRecovery(faultyJobs, faultyAssets, store, adapter, objects,
+        { mockImageEnabled: false, mockAvEnabled: true });
+      await expect(recovery.reconcileOnce()).rejects.toBeInstanceOf(AggregateError);
+      expect(await ledger()).toMatchObject({ state: "RUNNING", attempts: 1, requests: [requestId], assets: 0, costs: 0, failed: 0 });
+
+      // The probe now answers: these migrations have no reference structure, so the frozen input cannot complete.
+      fault.on = false;
+      await recovery.reconcileOnce();
+      expect(await ledger()).toMatchObject({ state: "FAILED", error_code: "CHARACTER_REFERENCE_STORAGE_UNAVAILABLE",
+        attempts: 1, requests: [requestId], assets: 0, costs: 0, succeeded: 0, failed: 1 });
+      await recovery.reconcileOnce();
+      expect(await ledger()).toMatchObject({ state: "FAILED", attempts: 1, failed: 1 });
+      expect(submits).toBe(1);
+    } finally {
+      await rm(objectDir, { recursive: true, force: true });
+    }
+  });
+});
+
+/** Polls until a backend waits on a lock for exactly this statement text. No fixed sleep. */
+async function waitForLockWaiter(statement: string): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    const waiting = await sql<{ count: number }>(
+      `SELECT count(*)::int AS count FROM pg_stat_activity
+        WHERE datname = current_database() AND wait_event_type = 'Lock' AND query = $1`, [statement]);
+    if ((waiting.rows[0]?.count ?? 0) > 0) return;
+    if (Date.now() > deadline) throw new Error("no backend waited on the project lock");
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
+
+/**
+ * A pool whose next statement matching the pattern stops until released, inside its transaction and with every lock
+ * the transaction already holds. `reached` resolves when the statement is about to run.
+ */
+function barrierPool(pattern: RegExp) {
+  let notify!: () => void;
+  const reached = new Promise<void>((resolve) => { notify = resolve; });
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  let armed = true;
+  const wrapped = {
+    connect: async () => {
+      const client = await pool.connect();
+      const query = client.query.bind(client) as (...args: unknown[]) => Promise<unknown>;
+      (client as unknown as { query: (...args: unknown[]) => Promise<unknown> }).query = async (...args: unknown[]) => {
+        const text = typeof args[0] === "string" ? args[0] : "";
+        if (armed && pattern.test(text)) {
+          armed = false;
+          notify();
+          await released;
+        }
+        return query(...args);
+      };
+      const originalRelease = client.release.bind(client);
+      client.release = (...releaseArgs: Parameters<typeof originalRelease>) => {
+        (client as unknown as { query: unknown }).query = query;
+        client.release = originalRelease;
+        return originalRelease(...releaseArgs);
+      };
+      return client;
+    },
+  };
+  return { pool: wrapped, reached, release: () => release() };
+}
+
+const PROJECT_LOCK = "SELECT id FROM project WHERE id = $1 AND workspace_id = $2 FOR UPDATE";
+
+describe("a reference selection and a video completion in the same project are serialized", () => {
+  it("makes the selection wait while a video completion holds the project lock", async () => {
+    const world = await seedApprovedShot();
+    const objectDir = await mkdtemp(join(tmpdir(), "lock-order-"));
+    const characterId = (await sql<{ id: string }>(
+      "INSERT INTO character (workspace_id, project_id, name) VALUES ($1, $2, 'lin') RETURNING id",
+      [world.workspaceId, world.projectId])).rows[0]!.id;
+    // Stop the completion right before it inserts the video asset: it already holds the project lock from the gate.
+    const barrier = barrierPool(/^\s*INSERT INTO asset\s/);
+    const job = await createMediaJob(world, "MEDIA_VIDEO", snapshotFor("MEDIA_VIDEO", world.shotRevisionId, "lock-order"));
+    const row = await jobRow(job.jobId);
+    try {
+      const completion = runMockAvJob({ workspaceId: world.workspaceId, projectId: world.projectId,
+        shotRevisionId: world.shotRevisionId, jobId: job.jobId, dispatchSeq: job.dispatchSeq,
+        providerConfigurationId: world.providers.MEDIA_VIDEO, inputHash: row?.input_hash as string,
+        inputSnapshot: row?.input_snapshot, traceId: "lock-order", capability: "video.generate" },
+      { jobs: new JobPersistenceService(barrier.pool), assets: new MediaAssetStore(barrier.pool), adapter,
+        objects: new LocalMockObjects(objectDir) });
+      await barrier.reached;
+      const references = new CharacterReferenceStore(pool);
+      let selectionSettled = false;
+      const selection = references.transaction((client) => references.selectInTransaction(client, {
+        workspaceId: world.workspaceId, characterId, assetId: randomUUID(), expectedSelectedAssetId: null,
+        selectedBy: "owner", traceId: "lock-order" })).finally(() => { selectionSettled = true; });
+      selection.catch(() => undefined);
+      await waitForLockWaiter(PROJECT_LOCK);
+      expect(selectionSettled).toBe(false);
+      barrier.release();
+      expect(await completion).not.toBeNull();
+      expect((await jobRow(job.jobId))?.state).toBe("SUCCEEDED");
+      await expect(selection).rejects.toMatchObject({ code: "CHARACTER_REFERENCE_STORAGE_UNAVAILABLE" });
+    } finally {
+      barrier.release();
+      await rm(objectDir, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * The full race needs the reference draft (selection table, reference columns, IMAGE approval). These cases run only
+ * on an isolated database where that SQL was explicitly authorized; CI does not set the variable. Written, not run.
+ */
+describe.runIf(process.env.CHARACTER_REFERENCE_DRAFT_SQL_AUTHORIZED === "true")(
+  "strict video completion against reference replacement on the authorized draft",
+  () => {
+    beforeAll(async () => {
+      const { readFile } = await import("node:fs/promises");
+      const draft = await readFile(join(__dirname, "..", "..", "..", "..", "packages", "database", "prisma", "drafts",
+        "20261005000200_character_reference_image.sql"), "utf8");
+      await sql(draft);
+    });
+
+    const SHOT_PROJECT_LOCK = "SELECT id FROM project WHERE id = $1 AND workspace_id = $2%FOR UPDATE%";
+
+    async function waitForLockWaiterLike(pattern: string): Promise<void> {
+      const deadline = Date.now() + 10_000;
+      for (;;) {
+        const waiting = await sql<{ count: number }>(
+          `SELECT count(*)::int AS count FROM pg_stat_activity
+            WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE $1`, [pattern]);
+        if ((waiting.rows[0]?.count ?? 0) > 0) return;
+        if (Date.now() > deadline) throw new Error(`no backend waited on a lock for ${pattern}`);
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+    }
+
+    /** An approved current character referenced by the shot, two approved references A and B, and A selected. */
+    async function strictWorld() {
+      const world = await seedApprovedShot();
+      const hash = "ab".repeat(32);
+      const characterId = await insertId(
+        "INSERT INTO character (workspace_id, project_id, name) VALUES ($1, $2, 'lin') RETURNING id",
+        [world.workspaceId, world.projectId]);
+      const revisionId = await insertId(
+        `INSERT INTO character_revision (workspace_id, project_id, character_id, revision_no, content_json, content_hash,
+           review_status, reviewed_by, reviewed_at, reviewed_content_hash, created_by)
+         VALUES ($1, $2, $3, 1, '{}'::jsonb, $4, 'APPROVED', 'test', now(), $4, 'test') RETURNING id`,
+        [world.workspaceId, world.projectId, characterId, hash]);
+      await sql("UPDATE character SET current_revision_id = $1, approved_revision_id = $1 WHERE id = $2", [revisionId, characterId]);
+      await sql(`INSERT INTO shot_character_reference (workspace_id, project_id, shot_revision_id, character_revision_id, role)
+        VALUES ($1, $2, $3, $4, 'lead')`, [world.workspaceId, world.projectId, world.shotRevisionId, revisionId]);
+      const references = new CharacterReferenceStore(pool);
+      const reference = async (key: string) => {
+        const assetId = await insertId(
+          `INSERT INTO asset (workspace_id, project_id, kind, storage_provider, object_key, mime_type, byte_size,
+             checksum_sha256, source_kind, reference_role, source_character_revision_id)
+           VALUES ($1, $2, 'IMAGE', 'mock-object-store', $3, 'image/png', 1, $4, 'UPLOAD', 'character_reference', $5)
+           RETURNING id`, [world.workspaceId, world.projectId, key, hash, revisionId]);
+        await references.transaction((client) => references.reviewInTransaction(client, { workspaceId: world.workspaceId,
+          assetId, reviewedBy: "test", traceId: "t", decision: "APPROVED", expectedRowVersion: 1, contentHash: hash, note: null }));
+        return assetId;
+      };
+      const a = await reference(`refs/${characterId}-a.png`);
+      const b = await reference(`refs/${characterId}-b.png`);
+      await references.transaction((client) => references.selectInTransaction(client, { workspaceId: world.workspaceId,
+        characterId, assetId: a, expectedSelectedAssetId: null, selectedBy: "test", traceId: "t" }));
+      const frozen = await references.transaction((client) =>
+        references.strictVideoReferencesInTransaction(client, world.workspaceId, world.projectId, world.shotRevisionId));
+      expect(frozen.map((item) => item.assetId)).toEqual([a]);
+      return { world, characterId, a, b, frozen, references };
+    }
+
+    async function strictJob(world: World, frozen: unknown[], seed: string) {
+      const job = await createMediaJob(world, "MEDIA_VIDEO",
+        { ...snapshotFor("MEDIA_VIDEO", world.shotRevisionId, seed), characterReferences: frozen });
+      const row = await jobRow(job.jobId);
+      return { job, input: { workspaceId: world.workspaceId, projectId: world.projectId, shotRevisionId: world.shotRevisionId,
+        jobId: job.jobId, dispatchSeq: job.dispatchSeq, providerConfigurationId: world.providers.MEDIA_VIDEO,
+        inputHash: row?.input_hash as string, inputSnapshot: row?.input_snapshot, traceId: seed, capability: "video.generate" as const } };
+    }
+
+    async function jobLedger(jobId: string) {
+      return (await sql<{ state: string; error_code: string | null; assets: number; costs: number; succeeded: number }>(
+        `SELECT job.state, job.error_code,
+                (SELECT count(*)::int FROM asset WHERE source_generation_job_id = job.id) AS assets,
+                (SELECT count(*)::int FROM cost_ledger WHERE generation_job_id = job.id) AS costs,
+                (SELECT count(*)::int FROM domain_event WHERE aggregate_id = job.id AND event_type = 'job.succeeded') AS succeeded
+           FROM generation_job job WHERE job.id = $1`, [jobId])).rows[0]!;
+    }
+
+    it("video completes first, then A -> B: the video becomes STALE once and the references stay ACTIVE", async () => {
+      const { world, characterId, a, b, frozen, references } = await strictWorld();
+      const objectDir = await mkdtemp(join(tmpdir(), "race-video-first-"));
+      const barrier = barrierPool(/^\s*INSERT INTO asset_dependency/);
+      const { input } = await strictJob(world, frozen, "video-first");
+      try {
+        const completion = runMockAvJob(input, { jobs: new JobPersistenceService(barrier.pool),
+          assets: new MediaAssetStore(barrier.pool), adapter, objects: new LocalMockObjects(objectDir) });
+        await barrier.reached;
+        let replaced = false;
+        const replacement = references.transaction((client) => references.selectInTransaction(client, {
+          workspaceId: world.workspaceId, characterId, assetId: b, expectedSelectedAssetId: a, selectedBy: "test",
+          traceId: "replace" })).finally(() => { replaced = true; });
+        replacement.catch(() => undefined);
+        await waitForLockWaiter(PROJECT_LOCK);
+        expect(replaced).toBe(false);
+        barrier.release();
+        const video = await completion;
+        expect(video).not.toBeNull();
+        const result = await replacement;
+        expect(result.staleAssetIds).toContain(video!.id);
+        const status = await sql<{ id: string; status: string }>("SELECT id, status FROM asset WHERE id = ANY($1::uuid[])",
+          [[video!.id, a, b]]);
+        expect(Object.fromEntries(status.rows.map((row) => [row.id, row.status])))
+          .toMatchObject({ [video!.id]: "STALE", [a]: "ACTIVE", [b]: "ACTIVE" });
+        // Replacing again does not write a second stale event for assets that are already STALE.
+        await references.transaction((client) => references.selectInTransaction(client, { workspaceId: world.workspaceId,
+          characterId, assetId: a, expectedSelectedAssetId: b, selectedBy: "test", traceId: "back" }));
+        await references.transaction((client) => references.selectInTransaction(client, { workspaceId: world.workspaceId,
+          characterId, assetId: b, expectedSelectedAssetId: a, selectedBy: "test", traceId: "again" }));
+        const events = await sql<{ count: number }>(
+          "SELECT count(*)::int AS count FROM domain_event WHERE event_type = 'asset.stale' AND aggregate_id = $1", [video!.id]);
+        expect(events.rows[0]?.count).toBe(1);
+      } finally {
+        barrier.release();
+        await rm(objectDir, { recursive: true, force: true });
+      }
+    });
+
+    it("A -> B commits first: the video frozen on A is refused with no asset, cost or success event", async () => {
+      const { world, characterId, a, b, frozen } = await strictWorld();
+      const objectDir = await mkdtemp(join(tmpdir(), "race-selection-first-"));
+      const barrier = barrierPool(/WITH RECURSIVE affected/);
+      const blocked = new CharacterReferenceStore(barrier.pool);
+      const { job, input } = await strictJob(world, frozen, "selection-first");
+      try {
+        const replacement = blocked.transaction((client) => blocked.selectInTransaction(client, {
+          workspaceId: world.workspaceId, characterId, assetId: b, expectedSelectedAssetId: a, selectedBy: "test",
+          traceId: "replace" }));
+        await barrier.reached;
+        const completion = runMockAvJob(input, { jobs, assets, adapter, objects: new LocalMockObjects(objectDir) });
+        await waitForLockWaiterLike(SHOT_PROJECT_LOCK);
+        barrier.release();
+        await replacement;
+        expect(await completion).toBeNull();
+        expect(await jobLedger(job.jobId)).toMatchObject({ state: "FAILED", error_code: "CHARACTER_REFERENCE_REQUIRED",
+          assets: 0, costs: 0, succeeded: 0 });
+      } finally {
+        barrier.release();
+        await rm(objectDir, { recursive: true, force: true });
+      }
+    });
+
+    it("recovers a strict video after a transient probe failure without a second asset or cost", async () => {
+      const { world, frozen } = await strictWorld();
+      const objectDir = await mkdtemp(join(tmpdir(), "probe-heal-"));
+      const objects = new LocalMockObjects(objectDir);
+      const fault = { on: true };
+      const faultyPool = {
+        connect: async () => {
+          const client = await pool.connect();
+          const query = client.query.bind(client) as (...args: unknown[]) => Promise<unknown>;
+          (client as unknown as { query: (...args: unknown[]) => Promise<unknown> }).query = (...args: unknown[]) => {
+            const text = typeof args[0] === "string" ? args[0] : "";
+            if (fault.on && text.includes("information_schema.columns")) {
+              return Promise.reject(Object.assign(new Error("canceling statement due to statement timeout"), { code: "57014" }));
+            }
+            return query(...args);
+          };
+          const release = client.release.bind(client);
+          client.release = (...releaseArgs: Parameters<typeof release>) => {
+            (client as unknown as { query: unknown }).query = query;
+            client.release = release;
+            return release(...releaseArgs);
+          };
+          return client;
+        },
+      };
+      const faultyJobs = new JobPersistenceService(faultyPool);
+      const faultyAssets = new MediaAssetStore(faultyPool);
+      const { job, input } = await strictJob(world, frozen, "probe-heal");
+      const adapterWithCount = new MockMediaAdapter();
+      let submits = 0;
+      const submit = adapterWithCount.submit.bind(adapterWithCount);
+      adapterWithCount.submit = async (request) => { submits += 1; return submit(request); };
+      try {
+        await expect(runMockAvJob(input, { jobs: faultyJobs, assets: faultyAssets, adapter: adapterWithCount, objects }))
+          .rejects.toMatchObject({ code: "57014" });
+        await sql("UPDATE generation_job SET lease_until = now() - interval '1 second' WHERE id = $1", [job.jobId]);
+        fault.on = false;
+        await new MockMediaRecovery(faultyJobs, faultyAssets, store, adapterWithCount, objects,
+          { mockImageEnabled: false, mockAvEnabled: true }).reconcileOnce();
+        expect(await jobLedger(job.jobId)).toMatchObject({ state: "SUCCEEDED", assets: 1, costs: 1, succeeded: 1 });
+        expect(submits).toBe(1);
+      } finally {
+        await rm(objectDir, { recursive: true, force: true });
+      }
+    });
+  },
+);

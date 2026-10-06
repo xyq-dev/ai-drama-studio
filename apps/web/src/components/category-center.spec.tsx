@@ -40,12 +40,15 @@ describe("category center", () => {
     cleanup(); render(<CategoryCenter />);
     expect(screen.getByRole("button", { name: "移除现代都市" })).toBeTruthy();
     expect((screen.getByRole("button", { name: "复制创作方向" }) as HTMLButtonElement).disabled).toBe(false);
+    const start = screen.getByRole("link", { name: "用这个方向新建作品" });
+    expect(start.getAttribute("href")).toBe("/studio?direction=1");
     fireEvent.click(screen.getByRole("button", { name: "移除现代都市" }));
     expect(JSON.parse(window.localStorage.getItem(DIRECTION_STORAGE_KEY) ?? "{}").tagIds).toEqual([]);
     window.localStorage.setItem("unrelated-draft", "keep");
     fireEvent.click(screen.getByRole("button", { name: "清空选择" }));
     expect(window.localStorage.getItem("unrelated-draft")).toBe("keep");
     expect((screen.getByRole("button", { name: "复制创作方向" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole("link", { name: "用这个方向新建作品" })).toBeNull();
   });
 
   it("keeps modal focus contained and returns it to the category card", () => {

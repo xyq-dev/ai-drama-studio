@@ -95,6 +95,12 @@ jobs:
       - name: Run real page, API, worker, and database acceptance
         run: node scripts/m3-av-e2e/run.mjs
 
+      - name: Record the FFmpeg build actually used
+        if: always()
+        run: |
+          mkdir -p m3-av-e2e-output
+          node scripts/ffmpeg-sbom.mjs --output m3-av-e2e-output/ffmpeg-sbom.json
+
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v4

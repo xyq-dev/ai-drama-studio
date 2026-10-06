@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useModalKeyboard } from "../lib/modal-keyboard";
 import { ApiError, StudioClient } from "../lib/studio-client";
+import { appendOnce, bindDirectionToProject, premiseBlock, readSelectedDirection } from "../lib/creative-direction-link";
+import type { DirectionDraft } from "../lib/creative-taxonomy";
 import {
   LIMITS,
   applyPage,
@@ -34,6 +36,8 @@ export function ProjectHome() {
   const [premise, setPremise] = useState("");
   const [creating, setCreating] = useState(false);
   const [composerOpen, setComposerOpen] = useState(false);
+  const [direction, setDirection] = useState<DirectionDraft | null>(null);
+  const [directionNote, setDirectionNote] = useState<string | null>(null);
   const openerRef = useRef<HTMLButtonElement>(null);
   const titleRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLFormElement>(null);
@@ -60,6 +64,15 @@ export function ProjectHome() {
       if (typeof record.title === "string") setTitle(record.title);
       if (typeof record.premise === "string") setPremise(record.premise);
     }
+    let selected: DirectionDraft | null;
+    try {
+      selected = readSelectedDirection(window.localStorage);
+    } catch {
+      selected = null;
+    }
+    setDirection(selected);
+    // Only a flag travels in the URL; the direction itself stays in this browser's storage.
+    if (selected && new URLSearchParams(window.location.search).get("direction") === "1") setComposerOpen(true);
     void load(null, false);
   }, []);
 
@@ -82,6 +95,21 @@ export function ProjectHome() {
     writeDraft(window.sessionStorage, CREATE_KEY, draft);
   }
 
+  function applyDirection() {
+    if (!direction) return;
+    const result = appendOnce(premise, premiseBlock(direction), LIMITS.premise);
+    if (!result.ok) {
+      setDirectionNote("加入后会超过梗概长度上限，原梗概没有改动。可以先精简梗概。");
+      return;
+    }
+    if (!result.changed) {
+      setDirectionNote("梗概里已经有这段创作方向，没有重复加入。");
+      return;
+    }
+    remember(title, result.text);
+    setDirectionNote("已把创作方向加入梗概，原有内容保留。提交后才会保存到作品。");
+  }
+
   async function createProject() {
     const draft = nextDraft(readDraft(window.sessionStorage, CREATE_KEY), { title, premise }, null, () => crypto.randomUUID());
     writeDraft(window.sessionStorage, CREATE_KEY, draft);
@@ -94,6 +122,14 @@ export function ProjectHome() {
         idempotencyKey: draft.idempotencyKey,
       });
       clearDraft(window.sessionStorage, CREATE_KEY);
+      // Bind the direction to the real project id only when it was carried into this premise.
+      if (direction && premise.includes(premiseBlock(direction))) {
+        try {
+          bindDirectionToProject(window.localStorage, created.body.id, direction);
+        } catch {
+          // The project is saved; the browser-only direction link is optional.
+        }
+      }
       window.location.assign(`/projects/${created.body.id}`);
     } catch (caught) {
       setCreateError(caught instanceof ApiError ? `${caught.code}：${caught.detail}` : "创建失败，草稿仍保留，再次提交会复用同一幂等键");
@@ -154,6 +190,14 @@ export function ProjectHome() {
               value={premise}
               onChange={(event) => remember(title, event.target.value)}
             />
+            {direction ? (
+              <div className="rounded border border-[#283140] p-3">
+                <p className="text-sm">分类中心的创作方向（只保存在本浏览器，不会跨设备同步）</p>
+                <p className="mt-1 whitespace-pre-line text-sm text-[#AAB3C5]">{premiseBlock(direction)}</p>
+                <button className="mt-2 rounded border border-[#283140] px-3 py-1 text-sm" type="button" onClick={applyDirection}>把创作方向加入梗概</button>
+                {directionNote ? <p className="mt-1 text-sm" role="status">{directionNote}</p> : null}
+              </div>
+            ) : null}
             {createError ? (
               <div role="alert">
                 <p className="text-sm [overflow-wrap:anywhere]">{createError}</p>

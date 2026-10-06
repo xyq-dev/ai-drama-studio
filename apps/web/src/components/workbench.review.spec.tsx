@@ -52,6 +52,7 @@ interface Sim {
   mediaTaskState: string;
   mediaTaskErrorCode: string | null;
   mediaRetryResponse: { status: number; body: unknown } | null;
+  imageReuse: boolean;
   failWorkflowRead: number | null;
   failWorkflowReads: number[];
   failAssetRead: number | null;
@@ -72,6 +73,17 @@ function json(body: unknown, status = 200): Response {
     status,
     headers: { "content-type": "application/json" },
   });
+}
+
+/** Waits until a request counter stops changing, then returns it, so a test can assert the increment of one action. */
+async function settledReads(count: () => number): Promise<number> {
+  await screen.findByRole("button", { name: "生成 Mock 图片" });
+  let previous = -1;
+  while (previous !== count()) {
+    previous = count();
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+  return previous;
 }
 
 function fail(status: number, code: string, message: string): Response {
@@ -111,6 +123,7 @@ function createSim(): Sim {
     mediaTaskState: "FAILED",
     mediaTaskErrorCode: "MOCK_IMAGE_OUTPUT_INVALID",
     mediaRetryResponse: null,
+    imageReuse: false,
     failWorkflowRead: null,
     failWorkflowReads: [],
     failAssetRead: null,
@@ -544,6 +557,10 @@ function createSim(): Sim {
       if (sim.imageFailures > 0) {
         sim.imageFailures -= 1;
         return fail(409, "CONFLICT", "受理失败");
+      }
+      if (sim.imageReuse && body.bypassCache !== true) {
+        return json({ cache: "HIT", assetId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", sourceJobId: "old-job", sourceShotRevisionId: `${SHOT_A}-rev`,
+          jobKind: "MEDIA_IMAGE", inputHash: "ab".repeat(32), newCost: "none" }, 200);
       }
       return json({ workflowRunId: "media-run", jobId: "media-job" }, 202);
     }
@@ -1287,6 +1304,44 @@ describe("workbench review interactions against a simulated API", () => {
     expect((button as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(button);
     expect(sim.calls.filter((call) => call.url.includes("/generate-image"))).toHaveLength(0);
+  });
+
+  it("re-reads the revision's assets and compose candidates after a reuse, even after a failed first read (review P2)", async () => {
+    const sim = createSim();
+    sim.imageReady = true;
+    sim.imageReuse = true;
+    sim.failAssetRead = 1;
+    const revisionId = `${SHOT_A}-rev`;
+    sim.imageAssets[revisionId] = [imageRecord(revisionId, "ACTIVE", "cccccccc-cccc-4ccc-8ccc-cccccccccccc")];
+    install(sim);
+    renderAt(`focus=shot&episode=1&scene=scene-1&shot=${SHOT_A}`);
+    const assetReads = () => sim.calls.filter((call) => call.method === "GET" && call.url.endsWith(`/shot-revisions/${revisionId}/assets`)).length;
+    // The media panel and the compose preflight read the list on mount; the first of those reads failed.
+    const before = await settledReads(assetReads);
+    fireEvent.click(await screen.findByRole("button", { name: "生成 Mock 图片" }));
+    expect(await screen.findByText(/已复用同一输入的已有结果 cccccccc-cccc-4ccc-8ccc-cccccccccccc：没有新建任务，也没有新增费用/)).toBeTruthy();
+    expect(screen.queryByText(/已受理，结果以任务和图片列表为准/)).toBeNull();
+    await waitFor(() => expect(assetReads() - before).toBeGreaterThanOrEqual(2));
+    const current = screen.getByRole("heading", { name: "当前版本图片" }).parentElement;
+    await waitFor(() => expect(current?.textContent).toContain("cccccccc-cccc-4ccc-8ccc-cccccccccccc"));
+    expect(screen.queryByText(/媒体列表刷新失败/)).toBeNull();
+    expect(sim.calls.filter((call) => call.method === "POST" && call.url.endsWith("/generate-image"))).toHaveLength(1);
+  });
+
+  it("keeps the reuse notice and offers a requery when the refresh after a reuse fails", async () => {
+    const sim = createSim();
+    sim.imageReady = true;
+    sim.imageReuse = true;
+    install(sim);
+    renderAt(`focus=shot&episode=1&scene=scene-1&shot=${SHOT_A}`);
+    const revisionId = `${SHOT_A}-rev`;
+    const assetReads = () => sim.calls.filter((call) => call.method === "GET" && call.url.endsWith(`/shot-revisions/${revisionId}/assets`)).length;
+    sim.failAssetRead = (await settledReads(assetReads)) + 1;
+    fireEvent.click(await screen.findByRole("button", { name: "生成 Mock 图片" }));
+    expect(await screen.findByText(/已复用同一输入的已有结果/)).toBeTruthy();
+    expect(await screen.findByText(/媒体列表刷新失败，可以重新查询/)).toBeTruthy();
+    expect(screen.getByText(/已复用同一输入的已有结果/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "重新查询" })).toBeTruthy();
   });
 
   it("accepts an explicit mock image request without treating 202 as a finished asset", async () => {

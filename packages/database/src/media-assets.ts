@@ -32,6 +32,7 @@ import {
 import type { PoolClient, QueryResultRow } from "pg";
 import { PersistenceError, type DatabasePool, type JobPersistenceService } from "./job-service";
 import { guardSynchronousMockImageCost, recordProviderActualCost, type ProviderActualCostInput } from "./mock-media-cost";
+import { assertFrozenReferencesUsable, frozenCharacterReferences } from "./character-reference-store";
 
 export interface CreateMediaAssetInput {
   workspaceId: string;
@@ -141,6 +142,57 @@ export class MediaAssetStore {
     };
   }
 
+  /**
+   * Reuse candidates for a non-explicit generate request, newest first. Run inside the generate transaction after
+   * the shot gate. Only a SUCCEEDED job's ACTIVE Provider asset of the expected kind qualifies, bound to the same
+   * workspace, project, shot revision, job kind and input hash, and produced on the Mock media configuration that
+   * is enabled for the capability now. Returns full records through the same client, so the caller can verify the
+   * stored bytes without taking a second pool connection while it holds this transaction.
+   */
+  async findReusableShotAssetsInTransaction(
+    client: PoolClient,
+    input: {
+      workspaceId: string;
+      projectId: string;
+      shotRevisionId: string;
+      jobKind: string;
+      inputHash: string;
+      capability: string;
+      assetKind: string;
+    },
+  ): Promise<Array<{ asset: MediaAssetRecord; jobId: string }>> {
+    const columns = ASSET_COLUMNS.split(",").map((column) => `asset.${column.trim()}`).join(", ");
+    const result = await client.query<QueryResultRow>(
+      `SELECT ${columns}, job.id AS reuse_job_id
+         FROM generation_job job
+         JOIN asset
+           ON asset.source_generation_job_id = job.id
+          AND asset.workspace_id = job.workspace_id
+          AND asset.project_id = job.project_id
+         JOIN provider_configuration provider
+           ON provider.id = asset.provider_configuration_id
+          AND provider.workspace_id = asset.workspace_id
+        WHERE job.workspace_id = $1
+          AND job.project_id = $2
+          AND job.source_shot_revision_id = $3
+          AND job.kind = $4
+          AND job.input_hash = $5
+          AND job.state = 'SUCCEEDED'
+          AND asset.source_shot_revision_id = $3
+          AND asset.kind = $7
+          AND asset.status = 'ACTIVE'
+          AND asset.source_kind = 'PROVIDER'
+          AND provider.provider_key = 'mock-media'
+          AND provider.capability = $6
+          AND provider.enabled
+        ORDER BY asset.created_at DESC, asset.id DESC
+        LIMIT 5`,
+      [input.workspaceId, input.projectId, input.shotRevisionId, input.jobKind, input.inputHash,
+        input.capability, input.assetKind],
+    );
+    return result.rows.map((row) => ({ asset: mapAsset(row), jobId: String(row.reuse_job_id) }));
+  }
+
   async completeAttemptWithAsset(
     jobs: JobPersistenceService,
     input: CreateMediaAssetInput & {
@@ -178,7 +230,27 @@ export class MediaAssetStore {
               input.kind === "IMAGE" ? "preview" : "approved",
             );
           }
-          return insertAsset(client, input);
+          let frozen: ReturnType<typeof frozenCharacterReferences> = null;
+          if (input.kind === "VIDEO") {
+            // A strict video job froze its selected character references; they must still be usable now.
+            const job = await client.query<{ input_snapshot: unknown } & QueryResultRow>(
+              "SELECT input_snapshot FROM generation_job WHERE id = $1 AND workspace_id = $2",
+              [input.generationJobId, input.workspaceId],
+            );
+            frozen = frozenCharacterReferences(job.rows[0]?.input_snapshot);
+            if (frozen) await assertFrozenReferencesUsable(client, input.workspaceId, frozen);
+          }
+          const inserted = await insertAsset(client, input);
+          // Explicit source edges video -> reference image, so replacing a selection or the character revision
+          // stales this video and everything composed from it through the existing asset dependency graph.
+          for (const reference of frozen ?? []) {
+            await client.query(
+              `INSERT INTO asset_dependency (workspace_id, project_id, dependent_asset_id, source_asset_id)
+               VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
+              [input.workspaceId, input.projectId, inserted.id, reference.assetId],
+            );
+          }
+          return inserted;
         })();
         if (input.actualCost) await recordProviderActualCost(client, input.actualCost);
         return asset;

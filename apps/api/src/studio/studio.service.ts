@@ -1,7 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
 import { SAMPLE_VIDEO_FIXTURE_IDS, SAMPLE_VIDEO_SCHEMA, sampleVideoDescription, type SampleVideoFixtureId } from "@ai-drama/contracts";
+import {
+  CHARACTER_REFERENCE_JOB_KIND,
+  CHARACTER_REFERENCE_SNAPSHOT_SCHEMA,
+  parseCharacterReferenceReviewRequest,
+  parseCharacterReferenceSelectionRequest,
+  type CharacterReferenceGateMode,
+} from "@ai-drama/domain";
 import { DomainError, parseComposePreflightRequest, parseComposeRenderRequest, parseComposeReviewRequest, parseEpisodeComposePreflightRequest, parseEpisodeComposeRenderRequest, regenerationSeed } from "@ai-drama/domain";
-import { qwenWebAccessDecision } from "@ai-drama/providers";
 import {
   JobPersistenceService,
   MediaAssetStore,
@@ -10,10 +16,14 @@ import {
   RuntimeStore,
   isMockMediaJobKind,
   mockMediaRetryLineage,
+  mockMediaRoute,
   TextChainService,
   insertProject,
   requestHash,
+  type CharacterReferenceStore,
+  type CreateWorkflowJobInput,
   type IdempotencyScope,
+  type MediaAssetRecord,
   type MockSceneSnapshot,
   type MockShotSnapshot,
   type TextEntityKind,
@@ -97,6 +107,19 @@ const textEntityBodySchema = z.object({
   content: z.record(z.string(), z.unknown()),
 });
 
+type TransactionClient = Parameters<MediaAssetStore["findReusableShotAssetsInTransaction"]>[0];
+
+/** 200 answer of a generate endpoint that reused an existing result for the same input. */
+export interface MediaReuseBody {
+  cache: "HIT";
+  assetId: string;
+  sourceJobId: string;
+  sourceShotRevisionId: string;
+  jobKind: string;
+  inputHash: string;
+  newCost: "none";
+}
+
 export interface StudioContext {
   actorId: string;
   traceId: string;
@@ -119,9 +142,8 @@ export class StudioService {
     private readonly composeObjectDir: string | null = null,
     private readonly episodeComposeEnabled = false,
     private readonly mockSampleVideoEnabled = false,
-    private readonly qwenWebEnabled = false,
-    private readonly nodeEnv: "development" | "test" | "production" = "production",
-    private readonly qwenOperatorToken: string | null = null,
+    private readonly characterReferences?: CharacterReferenceStore,
+    private readonly referenceGate: CharacterReferenceGateMode = "legacy",
   ) {}
 
   get workspace(): string {
@@ -627,7 +649,7 @@ export class StudioService {
       throw new PersistenceError("CONFIGURATION_ERROR", "Mock image worker storage is not enabled");
     }
     if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
-    return this.jobs.createAndQueueWorkflowJob(
+    return this.jobs.createQueueOrReuse(
       this.scope(context, "POST", `/shot-revisions/${shotRevisionId}/generate-image`, input),
       async (client) => {
         const { projectId } = await this.mediaAssets!.prepareShotGenerationInTransaction(
@@ -636,10 +658,10 @@ export class StudioService {
         const regeneration = regenerationSeed(input.seed ?? null, input.bypassCache === true, randomUUID());
         const snapshot = { schema: "m3.mock.image.v1", shotRevisionId,
           seed: regeneration.seed, outcome: "success", bypassCache: regeneration.bypassCache };
-        return { workspaceId: this.workspaceId, projectId, sourceShotRevisionId: shotRevisionId,
+        return this.reuseOrCreate(client, { workspaceId: this.workspaceId, projectId, sourceShotRevisionId: shotRevisionId,
           type: "MEDIA_IMAGE", requestedBy: context.actorId, kind: "MEDIA_IMAGE",
           inputHash: createHash("sha256").update(JSON.stringify(snapshot)).digest("hex"),
-          inputSnapshot: snapshot, traceId: context.traceId };
+          inputSnapshot: snapshot, traceId: context.traceId }, input.bypassCache === true);
       },
     );
   }
@@ -817,6 +839,26 @@ export class StudioService {
   async readMockAssetContent(assetId: string): Promise<{ mimeType: string; bytes: Buffer }> {
     if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
     const asset = await this.mediaAssets.getWorkspaceAsset(this.workspaceId, assetId);
+    if (asset.kind === "COMPOSITE") {
+      const schema = await this.mediaAssets.compositeOutputSchema(this.workspaceId, assetId);
+      const episodeOutput = schema === "m4.episode.compose.asset.v1";
+      const shotOutput = schema === "m4.shot.compose.asset.v1";
+      if (episodeOutput && !this.episodeComposeEnabled) {
+        throw new PersistenceError("CONFIGURATION_ERROR", "Episode compose content is not enabled");
+      }
+      if (shotOutput && !this.localComposeEnabled) {
+        throw new PersistenceError("CONFIGURATION_ERROR", "Local compose content is not enabled");
+      }
+      if ((!episodeOutput && !shotOutput) || !this.composeObjectDir) {
+        throw new PersistenceError("ASSET_CONTENT_INVALID", "Asset content is not a local composite");
+      }
+      return readCompositeContent(this.composeObjectDir, this.workspaceId, asset);
+    }
+    return this.readMockMediaBytes(asset);
+  }
+
+  /** Reads and verifies the stored bytes of a Mock image, audio, video, subtitle or music record. No database access. */
+  private async readMockMediaBytes(asset: MediaAssetRecord): Promise<{ mimeType: string; bytes: Buffer }> {
     if (asset.kind === "IMAGE") {
       if (!this.mockObjectDir) throw new PersistenceError("CONFIGURATION_ERROR", "Mock object storage is not configured");
       if (!this.mockImageEnabled) {
@@ -838,21 +880,6 @@ export class StudioService {
       }
       assertReadableMockAv(asset);
       return { mimeType: asset.mimeType, bytes: await readBoundedMockAv(this.mockObjectDir, asset) };
-    }
-    if (asset.kind === "COMPOSITE") {
-      const schema = await this.mediaAssets.compositeOutputSchema(this.workspaceId, assetId);
-      const episodeOutput = schema === "m4.episode.compose.asset.v1";
-      const shotOutput = schema === "m4.shot.compose.asset.v1";
-      if (episodeOutput && !this.episodeComposeEnabled) {
-        throw new PersistenceError("CONFIGURATION_ERROR", "Episode compose content is not enabled");
-      }
-      if (shotOutput && !this.localComposeEnabled) {
-        throw new PersistenceError("CONFIGURATION_ERROR", "Local compose content is not enabled");
-      }
-      if ((!episodeOutput && !shotOutput) || !this.composeObjectDir) {
-        throw new PersistenceError("ASSET_CONTENT_INVALID", "Asset content is not a local composite");
-      }
-      return readCompositeContent(this.composeObjectDir, this.workspaceId, asset);
     }
     if (asset.kind === "SUBTITLE" || asset.kind === "MUSIC") {
       if (!this.mockObjectDir) throw new PersistenceError("CONFIGURATION_ERROR", "Mock object storage is not configured");
@@ -934,6 +961,88 @@ export class StudioService {
     );
   }
 
+  private requireReferences(): CharacterReferenceStore {
+    if (!this.characterReferences) {
+      throw new PersistenceError("CHARACTER_REFERENCE_STORAGE_UNAVAILABLE", "Character reference storage is not configured");
+    }
+    return this.characterReferences;
+  }
+
+  /** Mock reference image for one character revision. The character itself need not be approved yet. */
+  async generateCharacterReference(characterRevisionId: string, body: unknown, context: StudioContext) {
+    const input = parse(generateImageBodySchema, rejectClientWorkspace(body));
+    if (!this.mockImageEnabled) {
+      throw new PersistenceError("CONFIGURATION_ERROR", "Mock image worker storage is not enabled");
+    }
+    const references = this.requireReferences();
+    return this.jobs.createAndQueueWorkflowJob(
+      this.scope(context, "POST", `/character-revisions/${characterRevisionId}/reference-images/generate`, input),
+      async (client) => {
+        const prepared = await references.prepareGenerationInTransaction(client, this.workspaceId, characterRevisionId);
+        const regeneration = regenerationSeed(input.seed ?? null, input.bypassCache === true, randomUUID());
+        const snapshot = {
+          schema: CHARACTER_REFERENCE_SNAPSHOT_SCHEMA,
+          characterRevisionId,
+          characterContentHash: prepared.characterContentHash,
+          seed: regeneration.seed,
+          bypassCache: regeneration.bypassCache,
+          outcome: "success",
+          executionMode: "sync",
+          capability: "image.generate",
+        };
+        return {
+          workspaceId: this.workspaceId,
+          projectId: prepared.projectId,
+          type: CHARACTER_REFERENCE_JOB_KIND,
+          requestedBy: context.actorId,
+          kind: CHARACTER_REFERENCE_JOB_KIND,
+          inputHash: createHash("sha256").update(JSON.stringify(snapshot)).digest("hex"),
+          inputSnapshot: snapshot,
+          traceId: context.traceId,
+        };
+      },
+    );
+  }
+
+  async listCharacterReferences(characterId: string) {
+    return this.requireReferences().listForCharacter(this.workspaceId, characterId);
+  }
+
+  async reviewCharacterReference(assetId: string, body: unknown, context: StudioContext) {
+    let request;
+    try {
+      request = parseCharacterReferenceReviewRequest(rejectClientWorkspace(body));
+    } catch (error) {
+      if (error instanceof DomainError) throw new PersistenceError(error.code, error.message);
+      throw error;
+    }
+    const references = this.requireReferences();
+    return this.jobs.runIdempotent(
+      this.scope(context, "POST", `/character-reference-images/${assetId}/review`, request), 200,
+      (client) => references.reviewInTransaction(client, {
+        workspaceId: this.workspaceId, assetId, reviewedBy: context.actorId, traceId: context.traceId, ...request,
+      }),
+    );
+  }
+
+  async selectCharacterReference(characterId: string, body: unknown, context: StudioContext) {
+    let request;
+    try {
+      request = parseCharacterReferenceSelectionRequest(rejectClientWorkspace(body));
+    } catch (error) {
+      if (error instanceof DomainError) throw new PersistenceError(error.code, error.message);
+      throw error;
+    }
+    const references = this.requireReferences();
+    return this.jobs.runIdempotent(
+      this.scope(context, "POST", `/characters/${characterId}/reference-selection`, request), 200,
+      (client) => references.selectInTransaction(client, {
+        workspaceId: this.workspaceId, characterId, assetId: request.assetId,
+        expectedSelectedAssetId: request.expectedSelectedAssetId, selectedBy: context.actorId, traceId: context.traceId,
+      }),
+    );
+  }
+
   async getJob(jobId: string) {
     return this.store.getJob(this.workspaceId, jobId);
   }
@@ -1007,24 +1116,6 @@ export class StudioService {
     );
   }
 
-  qwenWebCandidate(presentedToken: string | undefined) {
-    const decision = qwenWebAccessDecision({
-      nodeEnv: this.nodeEnv,
-      enabled: this.qwenWebEnabled,
-      storageReady: false,
-      configuredToken: this.qwenOperatorToken,
-      presentedToken: presentedToken ?? null,
-    });
-    return Promise.resolve({
-      status: decision.status,
-      body: {
-        code: decision.code,
-        replayPolicy: "NOT_REPLAY_SAFE" as const,
-        billingStatus: "unknown" as const,
-      },
-    });
-  }
-
   capabilities() {
     return {
       providerKey: "mock",
@@ -1051,7 +1142,7 @@ export class StudioService {
     if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
     const route = kind === "MEDIA_VIDEO" ? "generate-video" : "generate-tts";
     const capability = kind === "MEDIA_VIDEO" ? "video.generate" : "audio.tts";
-    return this.jobs.createAndQueueWorkflowJob(
+    return this.jobs.createQueueOrReuse(
       this.scope(context, "POST", `/shot-revisions/${shotRevisionId}/${route}`, input),
       async (client) => {
         const source = await this.mediaAssets!.prepareShotGenerationInTransaction(
@@ -1069,6 +1160,16 @@ export class StudioService {
         const sourceHash = createHash("sha256").update(sourceText).digest("hex");
         const regeneration = regenerationSeed(input.seed ?? null, input.bypassCache === true, randomUUID());
         const description = fixtureId ? sampleVideoDescription(fixtureId) : null;
+        // Strict gate: freeze the selected reference images by id and content hash into the input. Missing storage
+        // or selections refuse the video; there is no fallback to the legacy gate.
+        let strict: { characterReferences: Awaited<ReturnType<CharacterReferenceStore["strictVideoReferencesInTransaction"]>> } | null = null;
+        if (kind === "MEDIA_VIDEO" && this.referenceGate === "strict") {
+          if (!this.characterReferences) {
+            throw new PersistenceError("CHARACTER_REFERENCE_STORAGE_UNAVAILABLE", "Character reference storage is not configured");
+          }
+          strict = { characterReferences: await this.characterReferences.strictVideoReferencesInTransaction(
+            client, this.workspaceId, source.projectId, shotRevisionId) };
+        }
         const snapshot = description
           ? {
             schema: SAMPLE_VIDEO_SCHEMA,
@@ -1089,6 +1190,7 @@ export class StudioService {
             capability,
             sourceText,
             sourceHash,
+            ...(strict ?? {}),
           }
           : {
             schema: kind === "MEDIA_VIDEO" ? "m3.mock.video.v1" : "m3.mock.tts.v1",
@@ -1100,8 +1202,9 @@ export class StudioService {
             capability,
             sourceText,
             sourceHash,
+            ...(strict ?? {}),
           };
-        return {
+        return this.reuseOrCreate(client, {
           workspaceId: this.workspaceId,
           projectId: source.projectId,
           sourceShotRevisionId: shotRevisionId,
@@ -1111,7 +1214,7 @@ export class StudioService {
           inputHash: createHash("sha256").update(JSON.stringify(snapshot)).digest("hex"),
           inputSnapshot: snapshot,
           traceId: context.traceId,
-        };
+        }, input.bypassCache === true);
       },
     );
   }
@@ -1129,7 +1232,7 @@ export class StudioService {
     if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
     const route = kind === "MEDIA_SUBTITLE" ? "generate-subtitle" : "generate-music";
     const capability = kind === "MEDIA_SUBTITLE" ? "subtitle.generate" : "audio.music";
-    return this.jobs.createAndQueueWorkflowJob(
+    return this.jobs.createQueueOrReuse(
       this.scope(context, "POST", `/shot-revisions/${shotRevisionId}/${route}`, input),
       async (client) => {
         const source = await this.mediaAssets!.prepareShotGenerationInTransaction(
@@ -1154,7 +1257,7 @@ export class StudioService {
           sourceText,
           sourceHash: createHash("sha256").update(sourceText).digest("hex"),
         };
-        return {
+        return this.reuseOrCreate(client, {
           workspaceId: this.workspaceId,
           projectId: source.projectId,
           sourceShotRevisionId: shotRevisionId,
@@ -1164,9 +1267,56 @@ export class StudioService {
           inputHash: createHash("sha256").update(JSON.stringify(snapshot)).digest("hex"),
           inputSnapshot: snapshot,
           traceId: context.traceId,
-        };
+        }, input.bypassCache === true);
       },
     );
+  }
+
+  /**
+   * Input reuse for a non-explicit generate request. A candidate is reused only if its stored bytes still read
+   * back and match the recorded checksum; otherwise a new job is created. bypassCache=true never reuses.
+   * A hit creates no job, attempt, outbox or cost: nothing new was generated or charged.
+   */
+  private async reuseOrCreate(
+    client: TransactionClient,
+    job: CreateWorkflowJobInput & { sourceShotRevisionId: string },
+    bypassCache: boolean,
+  ): Promise<{ kind: "job"; input: CreateWorkflowJobInput } | { kind: "reuse"; body: MediaReuseBody }> {
+    const route = mockMediaRoute(job.kind);
+    if (!bypassCache && route && this.mediaAssets) {
+      const candidates = await this.mediaAssets.findReusableShotAssetsInTransaction(client, {
+        workspaceId: job.workspaceId,
+        projectId: job.projectId,
+        shotRevisionId: job.sourceShotRevisionId,
+        jobKind: job.kind,
+        inputHash: job.inputHash,
+        capability: route.capability,
+        assetKind: route.assetKind,
+      });
+      for (const candidate of candidates) {
+        // The record came through this transaction's client; only the file check remains, and it opens no
+        // database connection. A verified missing or damaged object is a miss; any other failure propagates.
+        try {
+          await this.readMockMediaBytes(candidate.asset);
+        } catch (error) {
+          if (error instanceof PersistenceError && (error.code === "NOT_FOUND" || error.code === "ASSET_CONTENT_INVALID")) continue;
+          throw error;
+        }
+        return {
+          kind: "reuse",
+          body: {
+            cache: "HIT",
+            assetId: candidate.asset.id,
+            sourceJobId: candidate.jobId,
+            sourceShotRevisionId: job.sourceShotRevisionId,
+            jobKind: job.kind,
+            inputHash: job.inputHash,
+            newCost: "none",
+          },
+        };
+      }
+    }
+    return { kind: "job", input: job };
   }
 
   private scope(context: StudioContext, method: string, routeKey: string, body: unknown): IdempotencyScope {

@@ -112,7 +112,8 @@ describe("模拟 Provider 接线验证", () => {
     window.history.replaceState(null, "", "/projects/project-1?focus=story");
     render(createElement(Workbench, { projectId: "project-1" }));
     fireEvent.click(await screen.findByRole("button", { name: "编剧助手" }));
-    expect(screen.getByText("本轮通过外部 AI 创作，网页不会自动调用模型。")).toBeTruthy();
+    expect(screen.getByText("可以通过外部 AI 创作后导入；服务端开启时，也可以由操作者向工作区千问请求候选。候选仍须比较、采纳到草稿，再手动保存。费用未知不会被写成 0。")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "向工作区请求候选" }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.queryByRole("button", { name: "生成" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "准备创作指令" }));
     expect(await screen.findByLabelText("创作指令")).toBeTruthy();

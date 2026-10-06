@@ -1,5 +1,7 @@
 -- DRAFT. Do not apply. Execution of this migration is not authorized.
 -- Image approval is limited to character reference images. Composite approval stays unchanged.
+-- Read by CharacterReferenceStore (packages/database/src/character-reference-store.ts). Until every object below
+-- exists, the store reports storage unavailable and the API answers 503 for all reference image operations.
 
 ALTER TABLE asset ADD COLUMN reference_role text;
 ALTER TABLE asset ADD COLUMN source_character_revision_id uuid;

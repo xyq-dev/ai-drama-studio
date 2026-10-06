@@ -158,7 +158,7 @@ export async function recoverMockImageAttempt(
     observation.outputs[0], actualCost, dependencies);
 }
 
-function imageCostFromReceipt(
+export function imageCostFromReceipt(
   input: Pick<MockImageJob, "workspaceId" | "projectId" | "jobId" | "providerConfigurationId">,
   attemptId: string,
   providerRequestId: string,
