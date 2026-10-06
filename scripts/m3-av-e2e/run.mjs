@@ -1376,7 +1376,10 @@ async function main() {
       throw new Error(`same input did not reuse the earlier result ${JSON.stringify(reused.body)}`);
     }
     const reusedReplay = expectStatus(await callApi(apiOrigin, "POST", path, { key: reusedKey, body: { seed: "same-seed" } }), 200);
-    if (JSON.stringify(reusedReplay.body) !== JSON.stringify(reused.body)) throw new Error("reuse replay changed");
+    // The idempotency record stores JSONB, so compare fields rather than key order.
+    for (const field of ["cache", "assetId", "sourceJobId", "sourceShotRevisionId", "jobKind", "inputHash", "newCost"]) {
+      if (reusedReplay.body[field] !== reused.body[field]) throw new Error(`reuse replay changed ${field}`);
+    }
     const reuseAssets = (await sql("SELECT count(*)::int AS count FROM asset WHERE workspace_id = $1", [workspaceId]))[0].count;
     const reuseCosts = (await sql("SELECT count(*)::int AS count FROM cost_ledger WHERE workspace_id = $1", [workspaceId]))[0].count;
     if (reuseAssets !== midAssets || reuseCosts !== midCosts) throw new Error("input reuse wrote an asset or cost");

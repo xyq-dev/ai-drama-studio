@@ -362,6 +362,10 @@ export class CharacterReferenceStore {
     if (String(row.checksum_sha256) !== input.contentHash) {
       throw new PersistenceError("REVIEW_CONFLICT", "The reviewed content hash does not match the stored image");
     }
+    // The asset lifecycle trigger allows one review per asset, from DRAFT; a new decision needs a new image.
+    if (row.review_status !== "DRAFT") {
+      throw new PersistenceError("REVIEW_INVALID_TRANSITION", "This reference image was already reviewed");
+    }
     if (input.decision === "APPROVED") {
       if (row.status !== "ACTIVE") {
         throw new PersistenceError("REVIEW_INVALID_TRANSITION", "Only an ACTIVE reference image can be approved");

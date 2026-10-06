@@ -124,12 +124,12 @@ export function CharacterReferencePanel(props: { characterId: string; currentRev
               <p className="mt-1">{item.id.slice(0, 8)}{item.id === selectedId ? " · 当前选定" : ""}</p>
               <p>{STATUS_TEXT[item.status] ?? item.status} · {REVIEW_TEXT[item.reviewStatus] ?? item.reviewStatus}{current ? "" : " · 来自旧版本"}</p>
               {item.reviewNote ? <p>备注：{item.reviewNote}</p> : null}
-              {item.status === "ACTIVE" && current && item.reviewStatus !== "APPROVED" ? (
+              {item.status === "ACTIVE" && current && item.reviewStatus === "DRAFT" ? (
                 <button className="mt-1 mr-2 underline disabled:opacity-50" type="button" disabled={busy}
                   onClick={() => void write(`review:${item.id}:${item.rowVersion}:APPROVED`, `/character-reference-images/${item.id}/review`,
                     { decision: "APPROVED", expectedRowVersion: item.rowVersion, contentHash: item.checksumSha256 }, "参考图已通过")}>通过</button>
               ) : null}
-              {item.reviewStatus !== "REJECTED" ? (
+              {item.status === "ACTIVE" && item.reviewStatus === "DRAFT" ? (
                 <span className="mt-1 inline-flex flex-wrap items-center gap-1">
                   <input className="w-32 rounded border px-1" aria-label={`退回原因 ${item.id.slice(0, 8)}`} value={rejectNotes[item.id] ?? ""}
                     onChange={(event) => setRejectNotes({ ...rejectNotes, [item.id]: event.target.value })} />

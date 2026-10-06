@@ -76,7 +76,8 @@ describe("character reference panel", () => {
 
   it("re-reads after a selection conflict and needs a note to reject", async () => {
     const before = { characterId: CHARACTER, currentRevisionId: CURRENT, selection: null,
-      items: [asset("55555555-5555-4555-8555-555555555555", { reviewStatus: "APPROVED" })] };
+      items: [asset("55555555-5555-4555-8555-555555555555", { reviewStatus: "APPROVED" }),
+        asset("99999999-9999-4999-8999-999999999999")] };
     const after = { ...before, selection: { assetId: "88888888-8888-4888-8888-888888888888",
       sourceCharacterRevisionId: CURRENT, usable: true } };
     const calls = stub([before, after], [{ status: 409, body: { error: { code: "REFERENCE_SELECTION_CONFLICT",
@@ -86,9 +87,11 @@ describe("character reference panel", () => {
     expect(await screen.findByText(/REFERENCE_SELECTION_CONFLICT/)).toBeTruthy();
     expect(await screen.findByText(/当前选定：88888888 · 可用于视频/)).toBeTruthy();
     expect(calls.filter((call) => call.method === "GET").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByRole("button", { name: "退回" })).toHaveLength(1);
+    expect(screen.queryByLabelText("退回原因 55555555")).toBeNull();
     const reject = screen.getByRole("button", { name: "退回" }) as HTMLButtonElement;
     expect(reject.disabled).toBe(true);
-    fireEvent.change(screen.getByLabelText("退回原因 55555555"), { target: { value: "脸型不一致" } });
+    fireEvent.change(screen.getByLabelText("退回原因 99999999"), { target: { value: "脸型不一致" } });
     expect(reject.disabled).toBe(false);
   });
 });

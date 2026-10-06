@@ -569,7 +569,7 @@ describe("Mock media input reuse lookup", () => {
     await sql("UPDATE provider_configuration SET enabled = false WHERE id = $1", [world.providers.MEDIA_IMAGE]);
     expect(await lookup(world, hash)).toEqual([]);
     await sql("UPDATE provider_configuration SET enabled = true WHERE id = $1", [world.providers.MEDIA_IMAGE]);
-    await sql("UPDATE asset SET status = 'STALE' WHERE id = $1", [done.assetId]);
+    await sql("UPDATE asset SET status = 'STALE', row_version = row_version + 1 WHERE id = $1", [done.assetId]);
     expect(await lookup(world, hash)).toEqual([]);
   });
 

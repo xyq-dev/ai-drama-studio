@@ -90,6 +90,9 @@ describe.runIf(draftAuthorized)("CharacterReferenceStore on the authorized refer
     const approved = await tx((client) => store.reviewInTransaction(client, { workspaceId, assetId, reviewedBy: "owner",
       traceId: "t", decision: "APPROVED", expectedRowVersion: 1, contentHash: hash, note: null }));
     expect(approved).toMatchObject({ reviewStatus: "APPROVED", reviewedContentHash: hash, rowVersion: 2 });
+    await expect(tx((client) => store.reviewInTransaction(client, { workspaceId, assetId, reviewedBy: "owner",
+      traceId: "t", decision: "REJECTED", expectedRowVersion: 2, contentHash: hash, note: "again" })))
+      .rejects.toMatchObject({ code: "REVIEW_INVALID_TRANSITION" });
   });
 
   it("selects with compare-and-set and refuses an unapproved or stale reference", async () => {
