@@ -55,6 +55,6 @@ function httpStatus(code: string): number {
   ) {
     return 409;
   }
-  if (code === "CHARACTER_REFERENCE_STORAGE_UNAVAILABLE") return 503;
+  if (code === "CHARACTER_REFERENCE_STORAGE_UNAVAILABLE" || code === "ASSET_STORAGE_ERROR") return 503;
   return 400;
 }
