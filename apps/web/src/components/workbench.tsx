@@ -1543,6 +1543,8 @@ function ScenePane(props: {
   const [shots, setShots] = useState<PageState<Aggregate> | null>(null);
   const [shotHistory, setShotHistory] = useState<{ aggregate: Aggregate; items: ShotRevision[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // A reused result creates no job, so nothing bumps imageEpoch; this refreshes the compose candidates instead.
+  const [reuseEpoch, setReuseEpoch] = useState(0);
   const loadToken = useRef(0);
 
   const load = useCallback(async () => {
@@ -1769,8 +1771,9 @@ function ScenePane(props: {
             musicReason={musicGate.reason}
             imageEpoch={props.imageEpoch}
             onAccepted={props.onSaved}
+            onReused={() => setReuseEpoch((value) => value + 1)}
           />
-          <ComposePreflight revisionId={shotCurrent.id} refreshEpoch={props.imageEpoch} />
+          <ComposePreflight revisionId={shotCurrent.id} refreshEpoch={props.imageEpoch + reuseEpoch} />
           </div>
           <InspectSlot>
           <RevisionColumn
@@ -2411,6 +2414,8 @@ function ShotImagePanel(props: {
   musicReason: string;
   imageEpoch: number;
   onAccepted: () => Promise<void>;
+  /** A reuse answer created no job; the shot's asset list and compose candidates must be read again explicitly. */
+  onReused?: () => void;
 }) {
   const [seed, setSeed] = useState("");
   const [videoSeed, setVideoSeed] = useState("");
@@ -2595,6 +2600,12 @@ function ShotImagePanel(props: {
           : `已返回 ${result.status}，结果以随后的查询为准。`;
       if (result.status === 202 || reused) acceptedEpoch.current[channel] = epoch;
       showNotice(channel, text);
+      if (reused) {
+        // No task will finish to trigger a reload: read this revision's assets again (stale answers are dropped by the
+        // existing request token; a failure shows the requery action and keeps the reuse notice).
+        setListAttempt((value) => value + 1);
+        props.onReused?.();
+      }
       if (result.status !== 202 && !reused) return;
       try {
         await props.onAccepted();
