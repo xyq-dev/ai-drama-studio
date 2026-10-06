@@ -146,7 +146,8 @@ export class MediaAssetStore {
    * Reuse candidates for a non-explicit generate request, newest first. Run inside the generate transaction after
    * the shot gate. Only a SUCCEEDED job's ACTIVE Provider asset of the expected kind qualifies, bound to the same
    * workspace, project, shot revision, job kind and input hash, and produced on the Mock media configuration that
-   * is enabled for the capability now. The caller still verifies the stored bytes before reusing one.
+   * is enabled for the capability now. Returns full records through the same client, so the caller can verify the
+   * stored bytes without taking a second pool connection while it holds this transaction.
    */
   async findReusableShotAssetsInTransaction(
     client: PoolClient,
@@ -159,9 +160,10 @@ export class MediaAssetStore {
       capability: string;
       assetKind: string;
     },
-  ): Promise<Array<{ assetId: string; jobId: string }>> {
-    const result = await client.query<{ asset_id: string; job_id: string } & QueryResultRow>(
-      `SELECT asset.id AS asset_id, job.id AS job_id
+  ): Promise<Array<{ asset: MediaAssetRecord; jobId: string }>> {
+    const columns = ASSET_COLUMNS.split(",").map((column) => `asset.${column.trim()}`).join(", ");
+    const result = await client.query<QueryResultRow>(
+      `SELECT ${columns}, job.id AS reuse_job_id
          FROM generation_job job
          JOIN asset
            ON asset.source_generation_job_id = job.id
@@ -188,7 +190,7 @@ export class MediaAssetStore {
       [input.workspaceId, input.projectId, input.shotRevisionId, input.jobKind, input.inputHash,
         input.capability, input.assetKind],
     );
-    return result.rows.map((row) => ({ assetId: String(row.asset_id), jobId: String(row.job_id) }));
+    return result.rows.map((row) => ({ asset: mapAsset(row), jobId: String(row.reuse_job_id) }));
   }
 
   async completeAttemptWithAsset(

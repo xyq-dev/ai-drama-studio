@@ -32,28 +32,30 @@ async function store(jobId: string, bytes = PNG): Promise<void> {
   await writeFile(join(root, "mock-images", PROJECT, jobId, `${CHECKSUM}.png`), bytes);
 }
 
-function harness(candidates: Array<{ assetId: string; jobId: string }>) {
-  const find = vi.fn(async () => candidates);
+function harness(candidates: Array<{ assetId: string; jobId: string }>, mockObjectDir: string | null = root) {
+  const find = vi.fn(async () => candidates.map((item) => ({ asset: assetFor(item.jobId, item.assetId), jobId: item.jobId })));
+  // Every candidate record comes through the transaction client; asking the pool for another connection while
+  // holding the transaction is what saturated the four-connection pool.
+  const getWorkspaceAsset = vi.fn(async () => { throw new Error("timeout exceeded when trying to connect"); });
   const media = {
     prepareShotGenerationInTransaction: async () => ({ projectId: PROJECT, promptText: "prompt", dialogue: null }),
     findReusableShotAssetsInTransaction: find,
-    getWorkspaceAsset: async (_workspace: string, assetId: string) => {
-      const candidate = candidates.find((item) => item.assetId === assetId)!;
-      return assetFor(candidate.jobId, assetId);
-    },
+    getWorkspaceAsset,
   } as unknown as MediaAssetStore;
+  let jobsCreated = 0;
   const jobs = {
     createQueueOrReuse: async (_scope: unknown, resolveJob: (client: unknown) => Promise<{ kind: string; input?: unknown; body?: unknown }>) => {
       const resolved = await resolveJob({});
       return resolved.kind === "reuse"
         ? { replayed: false, status: 200, body: resolved.body }
-        : { replayed: false, status: 202, body: { workflowRunId: "run-new", jobId: "job-new", dispatchSeq: 1 } };
+        : (jobsCreated += 1, { replayed: false, status: 202, body: { workflowRunId: "run-new", jobId: "job-new", dispatchSeq: 1 } });
     },
   } as unknown as JobPersistenceService;
-  const service = new StudioService(jobs, {} as RuntimeStore, {} as TextChainService, WORKSPACE, undefined, media, true, root);
+  const service = new StudioService(jobs, {} as RuntimeStore, {} as TextChainService, WORKSPACE, undefined, media, true,
+    mockObjectDir);
   const generate = (body: Record<string, unknown> = {}) =>
     service.generateShotImage(SHOT, body, { actorId: "owner", traceId: "t", idempotencyKey: "k" });
-  return { generate, find };
+  return { generate, find, getWorkspaceAsset, jobsCreated: () => jobsCreated };
 }
 
 describe("media input reuse", () => {
@@ -93,5 +95,21 @@ describe("media input reuse", () => {
     const { generate, find } = harness([{ assetId: "asset-1", jobId: "55555555-5555-4555-8555-555555555555" }]);
     expect(await generate({ bypassCache: true })).toMatchObject({ status: 202, body: { jobId: "job-new" } });
     expect(find).not.toHaveBeenCalled();
+  });
+
+  it("reuses without a second pool connection while the transaction is held (review P2)", async () => {
+    await store("55555555-5555-4555-8555-555555555555");
+    const { generate, getWorkspaceAsset, jobsCreated } = harness([{ assetId: "asset-1", jobId: "55555555-5555-4555-8555-555555555555" }]);
+    expect(await generate()).toMatchObject({ status: 200, body: { cache: "HIT", assetId: "asset-1" } });
+    expect(getWorkspaceAsset).not.toHaveBeenCalled();
+    expect(jobsCreated()).toBe(0);
+  });
+
+  it("propagates an infrastructure failure instead of treating it as a miss and creating a job", async () => {
+    await store("55555555-5555-4555-8555-555555555555");
+    const { generate, jobsCreated } = harness([{ assetId: "asset-1", jobId: "55555555-5555-4555-8555-555555555555" }],
+      resolve(tmpdir(), `media-reuse-missing-root-${process.pid}`));
+    await expect(generate()).rejects.toMatchObject({ code: "CONFIGURATION_ERROR" });
+    expect(jobsCreated()).toBe(0);
   });
 });

@@ -23,6 +23,7 @@ import {
   type CharacterReferenceStore,
   type CreateWorkflowJobInput,
   type IdempotencyScope,
+  type MediaAssetRecord,
   type MockSceneSnapshot,
   type MockShotSnapshot,
   type TextEntityKind,
@@ -838,6 +839,26 @@ export class StudioService {
   async readMockAssetContent(assetId: string): Promise<{ mimeType: string; bytes: Buffer }> {
     if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
     const asset = await this.mediaAssets.getWorkspaceAsset(this.workspaceId, assetId);
+    if (asset.kind === "COMPOSITE") {
+      const schema = await this.mediaAssets.compositeOutputSchema(this.workspaceId, assetId);
+      const episodeOutput = schema === "m4.episode.compose.asset.v1";
+      const shotOutput = schema === "m4.shot.compose.asset.v1";
+      if (episodeOutput && !this.episodeComposeEnabled) {
+        throw new PersistenceError("CONFIGURATION_ERROR", "Episode compose content is not enabled");
+      }
+      if (shotOutput && !this.localComposeEnabled) {
+        throw new PersistenceError("CONFIGURATION_ERROR", "Local compose content is not enabled");
+      }
+      if ((!episodeOutput && !shotOutput) || !this.composeObjectDir) {
+        throw new PersistenceError("ASSET_CONTENT_INVALID", "Asset content is not a local composite");
+      }
+      return readCompositeContent(this.composeObjectDir, this.workspaceId, asset);
+    }
+    return this.readMockMediaBytes(asset);
+  }
+
+  /** Reads and verifies the stored bytes of a Mock image, audio, video, subtitle or music record. No database access. */
+  private async readMockMediaBytes(asset: MediaAssetRecord): Promise<{ mimeType: string; bytes: Buffer }> {
     if (asset.kind === "IMAGE") {
       if (!this.mockObjectDir) throw new PersistenceError("CONFIGURATION_ERROR", "Mock object storage is not configured");
       if (!this.mockImageEnabled) {
@@ -859,21 +880,6 @@ export class StudioService {
       }
       assertReadableMockAv(asset);
       return { mimeType: asset.mimeType, bytes: await readBoundedMockAv(this.mockObjectDir, asset) };
-    }
-    if (asset.kind === "COMPOSITE") {
-      const schema = await this.mediaAssets.compositeOutputSchema(this.workspaceId, assetId);
-      const episodeOutput = schema === "m4.episode.compose.asset.v1";
-      const shotOutput = schema === "m4.shot.compose.asset.v1";
-      if (episodeOutput && !this.episodeComposeEnabled) {
-        throw new PersistenceError("CONFIGURATION_ERROR", "Episode compose content is not enabled");
-      }
-      if (shotOutput && !this.localComposeEnabled) {
-        throw new PersistenceError("CONFIGURATION_ERROR", "Local compose content is not enabled");
-      }
-      if ((!episodeOutput && !shotOutput) || !this.composeObjectDir) {
-        throw new PersistenceError("ASSET_CONTENT_INVALID", "Asset content is not a local composite");
-      }
-      return readCompositeContent(this.composeObjectDir, this.workspaceId, asset);
     }
     if (asset.kind === "SUBTITLE" || asset.kind === "MUSIC") {
       if (!this.mockObjectDir) throw new PersistenceError("CONFIGURATION_ERROR", "Mock object storage is not configured");
@@ -1288,16 +1294,19 @@ export class StudioService {
         assetKind: route.assetKind,
       });
       for (const candidate of candidates) {
+        // The record came through this transaction's client; only the file check remains, and it opens no
+        // database connection. A verified missing or damaged object is a miss; any other failure propagates.
         try {
-          await this.readMockAssetContent(candidate.assetId);
-        } catch {
-          continue;
+          await this.readMockMediaBytes(candidate.asset);
+        } catch (error) {
+          if (error instanceof PersistenceError && (error.code === "NOT_FOUND" || error.code === "ASSET_CONTENT_INVALID")) continue;
+          throw error;
         }
         return {
           kind: "reuse",
           body: {
             cache: "HIT",
-            assetId: candidate.assetId,
+            assetId: candidate.asset.id,
             sourceJobId: candidate.jobId,
             sourceShotRevisionId: job.sourceShotRevisionId,
             jobKind: job.kind,

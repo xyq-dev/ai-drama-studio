@@ -543,10 +543,10 @@ describe("Mock media input reuse lookup", () => {
     capability: string; assetKind: string; shotRevisionId: string }> = {}) {
     const client = await pool.connect();
     try {
-      return await assets.findReusableShotAssetsInTransaction(client, {
+      return (await assets.findReusableShotAssetsInTransaction(client, {
         workspaceId: world.workspaceId, projectId: world.projectId, shotRevisionId: world.shotRevisionId,
         jobKind: "MEDIA_IMAGE", inputHash, capability: "image.generate", assetKind: "IMAGE", ...overrides,
-      });
+      })).map((candidate) => ({ assetId: candidate.asset.id, jobId: candidate.jobId }));
     } finally {
       client.release();
     }
@@ -590,7 +590,7 @@ describe("Mock media input reuse lookup", () => {
         jobKind: "MEDIA_IMAGE", inputHash: done.row?.input_hash as string, capability: "image.generate", assetKind: "IMAGE",
       });
       if (!hit) throw new Error("expected a reusable asset");
-      return { kind: "reuse" as const, body: { cache: "HIT" as const, assetId: hit.assetId, sourceJobId: hit.jobId } };
+      return { kind: "reuse" as const, body: { cache: "HIT" as const, assetId: hit.asset.id, sourceJobId: hit.jobId } };
     };
     const first = await jobs.createQueueOrReuse(reuseScope, resolve);
     expect(first).toEqual({ replayed: false, status: 200,
@@ -608,5 +608,49 @@ describe("Mock media input reuse lookup", () => {
     expect(miss.status).toBe(202);
     expect(miss.body).toMatchObject({ dispatchSeq: 1 });
     expect((await counts())?.jobs).toBe((before?.jobs ?? 0) + 1);
+  });
+
+  it("finds and answers a reuse on a one-connection pool, so the check never needs a second connection", async () => {
+    const world = await seedApprovedShot();
+    const done = await succeededImage(world, "single-connection");
+    // Any request for a second connection while the transaction holds the first one fails immediately.
+    let held = 0;
+    let secondRequested = false;
+    const narrow = {
+      connect: async () => {
+        if (held >= 1) {
+          secondRequested = true;
+          throw new Error("a second connection was requested inside the reuse transaction");
+        }
+        held += 1;
+        const client = await pool.connect();
+        const release = client.release.bind(client);
+        client.release = (...args: Parameters<typeof release>) => {
+          held -= 1;
+          client.release = release;
+          return release(...args);
+        };
+        return client;
+      },
+    };
+    try {
+      const narrowAssets = new MediaAssetStore(narrow);
+      const narrowJobs = new JobPersistenceService(narrow);
+      const answer = await narrowJobs.createQueueOrReuse({ workspaceId: world.workspaceId, actorId: "test", httpMethod: "POST",
+        routeKey: `/shot-revisions/${world.shotRevisionId}/generate-image`, key: "single", requestHash: requestHash({}) },
+      async (client) => {
+        const [hit] = await narrowAssets.findReusableShotAssetsInTransaction(client, {
+          workspaceId: world.workspaceId, projectId: world.projectId, shotRevisionId: world.shotRevisionId,
+          jobKind: "MEDIA_IMAGE", inputHash: done.row?.input_hash as string, capability: "image.generate", assetKind: "IMAGE",
+        });
+        if (!hit) throw new Error("expected a reusable asset");
+        expect(hit.asset).toMatchObject({ id: done.assetId, kind: "IMAGE", status: "ACTIVE", sourceShotRevisionId: world.shotRevisionId });
+        return { kind: "reuse" as const, body: { cache: "HIT" as const, assetId: hit.asset.id } };
+      });
+      expect(answer).toMatchObject({ status: 200, body: { assetId: done.assetId } });
+      expect(secondRequested).toBe(false);
+    } finally {
+      expect(held).toBe(0);
+    }
   });
 });
