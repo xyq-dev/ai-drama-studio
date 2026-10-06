@@ -7,6 +7,19 @@ const workspaceId = "11111111-1111-4111-8111-111111111111";
 const revisionId = "22222222-2222-4222-8222-222222222222";
 const context = { actorId: "owner", traceId: "test", idempotencyKey: "sample-key" };
 
+/** Generate endpoints call createQueueOrReuse; with no reusable result it behaves like createAndQueueWorkflowJob. */
+function withReuse(jobs: { createAndQueueWorkflowJob: ReturnType<typeof vi.fn> }) {
+  return {
+    ...jobs,
+    createQueueOrReuse: (scope: unknown, resolve: (client: unknown) => Promise<{ kind: string; input?: unknown }>) =>
+      jobs.createAndQueueWorkflowJob(scope, async (client: unknown) => {
+        const resolved = await resolve(client);
+        if (resolved.kind !== "job") throw new Error("unexpected reuse in this test");
+        return resolved.input;
+      }),
+  };
+}
+
 function service(sampleEnabled: boolean, jobs: { createAndQueueWorkflowJob: ReturnType<typeof vi.fn> }): StudioService {
   const media = {
     prepareShotGenerationInTransaction: vi.fn(async () => ({
@@ -14,9 +27,10 @@ function service(sampleEnabled: boolean, jobs: { createAndQueueWorkflowJob: Retu
       promptText: "技术验收样片",
       dialogue: "技术验收样片",
     })),
+    findReusableShotAssetsInTransaction: vi.fn(async () => []),
   } as unknown as MediaAssetStore;
   return new StudioService(
-    jobs as unknown as JobPersistenceService,
+    withReuse(jobs) as unknown as JobPersistenceService,
     {} as RuntimeStore,
     {} as TextChainService,
     workspaceId,

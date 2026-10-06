@@ -6,6 +6,19 @@ const workspaceId = "11111111-1111-4111-8111-111111111111";
 const revisionId = "22222222-2222-4222-8222-222222222222";
 const context = { actorId: "owner", traceId: "test", idempotencyKey: "same-key" };
 
+/** Generate endpoints call createQueueOrReuse; with no reusable result it behaves like createAndQueueWorkflowJob. */
+function withReuse(jobs: { createAndQueueWorkflowJob: ReturnType<typeof vi.fn> }) {
+  return {
+    ...jobs,
+    createQueueOrReuse: (scope: unknown, resolve: (client: unknown) => Promise<{ kind: string; input?: unknown }>) =>
+      jobs.createAndQueueWorkflowJob(scope, async (client: unknown) => {
+        const resolved = await resolve(client);
+        if (resolved.kind !== "job") throw new Error("unexpected reuse in this test");
+        return resolved.input;
+      }),
+  };
+}
+
 function service(options: {
   enabled?: boolean;
   dialogue?: string | null;
@@ -19,9 +32,10 @@ function service(options: {
       promptText: options.promptText ?? "saved prompt",
       dialogue: options.dialogue === undefined ? "saved dialogue" : options.dialogue,
     })),
+    findReusableShotAssetsInTransaction: vi.fn(async () => []),
   } as unknown as MediaAssetStore;
   return new StudioService(
-    jobs as unknown as JobPersistenceService,
+    withReuse(jobs) as unknown as JobPersistenceService,
     {} as RuntimeStore,
     {} as TextChainService,
     workspaceId,
