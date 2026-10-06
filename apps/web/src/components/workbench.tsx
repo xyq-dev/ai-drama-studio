@@ -5,6 +5,7 @@ import { canAdopt, type FrozenWritingContext, type WritingTargetSnapshot } from 
 import { MAX_MANUAL_MEDIA_RETRIES, mediaRetryDecision, type MediaRetryRejection } from "@ai-drama/domain/media-retry";
 import { ComposePreflight } from "./compose-preflight";
 import { WritingAssistant } from "./writing-assistant";
+import { CharacterReferencePanel } from "./character-reference-panel";
 import { EpisodeComposePreflight } from "./episode-compose-preflight";
 import { ProjectCostSummary } from "./project-cost-summary";
 import { ApiError, StudioClient } from "../lib/studio-client";
@@ -1414,6 +1415,9 @@ function EntityPane(props: {
               setHistoryToken((value) => value + 1);
             }}
           />
+        ) : null}
+        {props.kind === "character" && selected && history?.aggregate.entityId === selected && current ? (
+          <CharacterReferencePanel characterId={selected} currentRevisionId={current.id} />
         ) : null}
         <NewEntityForm
           project={props.project}

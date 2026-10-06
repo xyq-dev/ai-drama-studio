@@ -187,6 +187,21 @@ export {
   type VideoGenerationGate,
 } from "./media-gates";
 export {
+  CHARACTER_REFERENCE_JOB_KIND,
+  CHARACTER_REFERENCE_ROLE,
+  CHARACTER_REFERENCE_SNAPSHOT_SCHEMA,
+  parseCharacterReferenceGateMode,
+  parseCharacterReferenceReviewRequest,
+  parseCharacterReferenceSelectionRequest,
+  parseCharacterReferenceSnapshot,
+  selectedReferenceUsable,
+  type CharacterReferenceGateMode,
+  type CharacterReferenceReviewRequest,
+  type CharacterReferenceSelectionRequest,
+  type CharacterReferenceSnapshot,
+  type SelectedReferenceState,
+} from "./character-reference";
+export {
   MAX_MANUAL_MEDIA_RETRIES,
   MEDIA_RETRY_JOB_KINDS,
   RETRYABLE_MEDIA_ERROR_CODES,

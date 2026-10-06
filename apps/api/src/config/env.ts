@@ -23,6 +23,7 @@ const apiEnvSchema = z.object({
   M4_LOCAL_EPISODE_COMPOSE_ENABLED: z.enum(["true", "false"]).default("false"),
   M4_COMPOSE_OBJECT_DIR: z.string().min(1).optional(),
   QWEN_WEB_WRITING_ENABLED: z.enum(["true", "false"]).default("false"),
+  M3_CHARACTER_REFERENCE_GATE: z.enum(["legacy", "strict"]).default("legacy"),
   QWEN_WEB_OPERATOR_TOKEN: z.string().min(16).max(200).optional(),
 });
 
@@ -60,6 +61,8 @@ export interface ApiEnv {
   M4_COMPOSE_OBJECT_DIR?: string;
   QWEN_WEB_WRITING_ENABLED: boolean;
   QWEN_WEB_OPERATOR_TOKEN?: string;
+  /** legacy keeps the existing Mock video gate; strict requires selected, approved character reference images. */
+  M3_CHARACTER_REFERENCE_GATE: "legacy" | "strict";
   /** Read from the process environment only, never from the .env file. Server-side secret. */
   DASHSCOPE_API_KEY?: string;
   BAILIAN_BASE_URL?: string;
@@ -93,6 +96,7 @@ const API_KEYS = [
   "M4_COMPOSE_OBJECT_DIR",
   "QWEN_WEB_WRITING_ENABLED",
   "QWEN_WEB_OPERATOR_TOKEN",
+  "M3_CHARACTER_REFERENCE_GATE",
 ] as const;
 
 function pickEnv(

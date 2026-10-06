@@ -295,7 +295,7 @@ export class RuntimeStore {
               LIMIT 1
            ) ja ON true
           WHERE j.state = 'WAITING_EXTERNAL'
-            AND j.kind <> ALL(ARRAY['MEDIA_IMAGE','MEDIA_VIDEO','MEDIA_TTS','MEDIA_SUBTITLE','MEDIA_MUSIC'])
+            AND j.kind <> ALL(ARRAY['MEDIA_IMAGE','MEDIA_VIDEO','MEDIA_TTS','MEDIA_SUBTITLE','MEDIA_MUSIC','MEDIA_CHARACTER_REFERENCE'])
             AND ja.provider_request_id IS NOT NULL
             AND (j.next_run_at IS NULL OR j.next_run_at <= now())
           ORDER BY j.updated_at
@@ -323,7 +323,7 @@ export class RuntimeStore {
               LIMIT 1
            ) ja ON true
           WHERE j.state = 'RUNNING'
-            AND j.kind <> ALL(ARRAY['MEDIA_IMAGE','MEDIA_VIDEO','MEDIA_TTS','MEDIA_SUBTITLE','MEDIA_MUSIC'])
+            AND j.kind <> ALL(ARRAY['MEDIA_IMAGE','MEDIA_VIDEO','MEDIA_TTS','MEDIA_SUBTITLE','MEDIA_MUSIC','MEDIA_CHARACTER_REFERENCE'])
             AND j.lease_until IS NOT NULL AND j.lease_until <= $1
           ORDER BY j.lease_until
           LIMIT $2`,
@@ -335,7 +335,11 @@ export class RuntimeStore {
     }
   }
 
-  async listExpiredMockMedia(limit: number, now = new Date()): Promise<ExpiredLeaseRow[]> {
+  async listExpiredMockMedia(
+    limit: number,
+    now = new Date(),
+    kinds: readonly string[] = MOCK_MEDIA_JOB_KINDS,
+  ): Promise<ExpiredLeaseRow[]> {
     const client = await this.pool.connect();
     try {
       const result = await client.query<QueryResultRow>(
@@ -349,9 +353,43 @@ export class RuntimeStore {
           WHERE j.kind = ANY($3::text[]) AND j.state = 'RUNNING'
             AND j.lease_until IS NOT NULL AND j.lease_until <= $1
           ORDER BY j.lease_until LIMIT $2`,
-        [now, limit, MOCK_MEDIA_JOB_KINDS],
+        [now, limit, kinds],
       );
       return result.rows.map(mapLease);
+    } finally {
+      client.release();
+    }
+  }
+
+  /** Character reference generation jobs run on their own worker route, never the text or shot media paths. */
+  async loadCharacterReferenceExecution(workspaceId: string, jobId: string): Promise<{
+    projectId: string;
+    state: string;
+    cancelRequested: boolean;
+    inputHash: string;
+    inputSnapshot: unknown;
+    providerConfigurationId: string | null;
+  } | null> {
+    const client = await this.pool.connect();
+    try {
+      const result = await client.query<QueryResultRow>(
+        `SELECT j.project_id, j.state, j.cancel_requested_at, j.input_hash, j.input_snapshot, pc.id AS provider_configuration_id
+           FROM generation_job j
+           LEFT JOIN provider_configuration pc ON pc.workspace_id = j.workspace_id
+            AND pc.provider_key = 'mock-media' AND pc.capability = 'image.generate' AND pc.enabled
+          WHERE j.id = $1 AND j.workspace_id = $2 AND j.kind = 'MEDIA_CHARACTER_REFERENCE'`,
+        [jobId, workspaceId],
+      );
+      const row = result.rows[0];
+      if (!row) return null;
+      return {
+        projectId: String(row.project_id),
+        state: String(row.state),
+        cancelRequested: row.cancel_requested_at !== null,
+        inputHash: String(row.input_hash),
+        inputSnapshot: row.input_snapshot,
+        providerConfigurationId: row.provider_configuration_id === null ? null : String(row.provider_configuration_id),
+      };
     } finally {
       client.release();
     }

@@ -8,6 +8,7 @@ import {
   closePostgresPool,
   isMockMediaJobKind,
   type PostgresPool,
+  CharacterReferenceStore,
 } from "@ai-drama/database";
 import { isSampleVideoSnapshot } from "@ai-drama/contracts";
 import { MockMediaAdapter, MockProvider, MockTextAdapter, type MockRequestState } from "@ai-drama/providers";
@@ -18,12 +19,13 @@ import { OutboxDispatcher } from "./dispatcher";
 import { RuntimeReconciler } from "./reconciler";
 import { startStaleRecalculationPolling } from "./stale-recalculation";
 import { LocalMockObjects } from "./local-mock-objects";
-import { COMPOSE_JOB_SCHEMA, EPISODE_COMPOSE_JOB_SCHEMA } from "@ai-drama/domain";
+import { CHARACTER_REFERENCE_JOB_KIND, COMPOSE_JOB_SCHEMA, EPISODE_COMPOSE_JOB_SCHEMA } from "@ai-drama/domain";
 import { runComposeJob, runEpisodeComposeJob, stopActiveComposeChildren, withSingleComposeRender } from "./compose-job";
 import { runMockAvJob } from "./mock-av-generation";
 import { runMockImageJob } from "./mock-image-generation";
 import { runMockSmJob } from "./mock-sm-generation";
 import { MockMediaRecovery } from "./mock-media-recovery";
+import { CharacterReferenceRecovery, runMockCharacterReferenceJob } from "./mock-character-reference";
 
 export interface QueueRuntimeStatus {
   running: boolean;
@@ -124,8 +126,15 @@ export async function startQueueRuntime(options: {
     mockSampleVideoEnabled: options.mockSampleVideoEnabled === true,
     mockSmEnabled: options.mockSmEnabled === true,
   });
+  const references = new CharacterReferenceStore(pool);
+  const referenceRecovery = new CharacterReferenceRecovery(jobs, store,
+    { references, adapter: mockMedia, objects }, options.mockImageEnabled === true);
   const reconciler = new RuntimeReconciler(jobs, store, provider, dispatcher,
-    options.orphanGraceMs ?? 30_000, () => mediaRecovery.reconcileOnce(),
+    options.orphanGraceMs ?? 30_000,
+    async () => {
+      await mediaRecovery.reconcileOnce();
+      await referenceRecovery.reconcileOnce();
+    },
     mockText, textAdapter);
   const status: QueueRuntimeStatus = { running: false };
   const worker = startBullWorker(
@@ -221,6 +230,39 @@ export async function startQueueRuntime(options: {
         }));
         return;
       }
+      if (kind === CHARACTER_REFERENCE_JOB_KIND) {
+        const reference = await store.loadCharacterReferenceExecution(message.workspaceId, message.jobId);
+        if (!reference) throw new Error("Character reference job missed its loader");
+        if (reference.state === "SUCCEEDED" || reference.state === "FAILED" || reference.state === "CANCELED") return;
+        if (reference.cancelRequested && reference.state === "QUEUED") {
+          await jobs.cancelJob({ workspaceId: message.workspaceId, jobId: message.jobId,
+            traceId: `worker:mock-reference:cancel:${message.jobId}` });
+          return;
+        }
+        if (reference.state === "RUNNING" || reference.state === "WAITING_EXTERNAL") {
+          throw new Error("Mock reference attempt is in progress; lease recovery must finish before redelivery");
+        }
+        if (options.mockImageEnabled !== true || !objects || !reference.providerConfigurationId) {
+          const acquired = await jobs.acquireQueuedJob({ workspaceId: message.workspaceId,
+            jobId: message.jobId, dispatchSeq: message.dispatchSeq,
+            leaseOwner: `mock-reference-config:${process.pid}`, leaseMs: options.leaseMs ?? 30_000,
+            traceId: `mock-reference:missing-config:${message.jobId}` });
+          if (acquired) {
+            await jobs.failJob({ workspaceId: message.workspaceId, jobId: message.jobId,
+              attemptId: acquired.attemptId, traceId: `mock-reference:missing-config:${message.jobId}`,
+              errorCode: "MOCK_MEDIA_NOT_CONFIGURED",
+              errorMessage: "Mock reference images require local storage and provider configuration",
+              retryable: false });
+          }
+          return;
+        }
+        await runMockCharacterReferenceJob({ workspaceId: message.workspaceId, projectId: reference.projectId,
+          jobId: message.jobId, dispatchSeq: message.dispatchSeq,
+          providerConfigurationId: reference.providerConfigurationId, inputHash: reference.inputHash,
+          inputSnapshot: reference.inputSnapshot, traceId: `worker:mock-reference:${message.jobId}` },
+        { jobs, references, adapter: mockMedia, objects });
+        return;
+      }
       const media = await store.loadMockMediaExecution(message.workspaceId, message.jobId);
       if (media) {
         if (media.state === "SUCCEEDED" || media.state === "FAILED" || media.state === "CANCELED") return;
@@ -279,7 +321,8 @@ export async function startQueueRuntime(options: {
         return;
       }
       const execution = await store.loadExecution(message.workspaceId, message.jobId);
-      if (execution && (execution.kind === "MEDIA_COMPOSE" || isMockMediaJobKind(execution.kind))) {
+      if (execution && (execution.kind === "MEDIA_COMPOSE" || execution.kind === CHARACTER_REFERENCE_JOB_KIND
+        || isMockMediaJobKind(execution.kind))) {
         throw new Error("Media job missed its dedicated route");
       }
       await consumer.handle(message);

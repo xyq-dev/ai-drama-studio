@@ -132,6 +132,25 @@ afterAll(async () => {
 });
 
 describe("M1-C API and SSE integration", () => {
+  it("refuses character reference images while the reference draft is not applied", async () => {
+    const before = await sql<{ count: number }>("SELECT count(*)::int AS count FROM generation_job");
+    const list = await fetch(`${base}/api/v1/characters/55555555-5555-4555-8555-555555555555/reference-images`);
+    expect(list.status).toBe(503);
+    expect(await list.json()).toMatchObject({ error: { code: "CHARACTER_REFERENCE_STORAGE_UNAVAILABLE" } });
+    const generate = await fetch(`${base}/api/v1/character-revisions/66666666-6666-4666-8666-666666666666/reference-images/generate`, {
+      method: "POST", headers: { "content-type": "application/json", "idempotency-key": "reference-generate" },
+      body: JSON.stringify({}),
+    });
+    expect(generate.status).toBe(503);
+    const select = await fetch(`${base}/api/v1/characters/55555555-5555-4555-8555-555555555555/reference-selection`, {
+      method: "POST", headers: { "content-type": "application/json", "idempotency-key": "reference-select" },
+      body: JSON.stringify({ assetId: "77777777-7777-4777-8777-777777777777", expectedSelectedAssetId: null }),
+    });
+    expect(select.status).toBe(503);
+    const after = await sql<{ count: number }>("SELECT count(*)::int AS count FROM generation_job");
+    expect(after.rows[0]?.count).toBe(before.rows[0]?.count);
+  });
+
   it("refuses web Qwen requests before any send while the draft request table is absent", async () => {
     const project = await fetch(`${base}/api/v1/projects`, {
       method: "POST",

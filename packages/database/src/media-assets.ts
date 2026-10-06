@@ -32,6 +32,7 @@ import {
 import type { PoolClient, QueryResultRow } from "pg";
 import { PersistenceError, type DatabasePool, type JobPersistenceService } from "./job-service";
 import { guardSynchronousMockImageCost, recordProviderActualCost, type ProviderActualCostInput } from "./mock-media-cost";
+import { assertFrozenReferencesUsable, frozenCharacterReferences } from "./character-reference-store";
 
 export interface CreateMediaAssetInput {
   workspaceId: string;
@@ -226,6 +227,15 @@ export class MediaAssetStore {
               true,
               input.kind === "IMAGE" ? "preview" : "approved",
             );
+          }
+          if (input.kind === "VIDEO") {
+            // A strict video job froze its selected character references; they must still be usable now.
+            const job = await client.query<{ input_snapshot: unknown } & QueryResultRow>(
+              "SELECT input_snapshot FROM generation_job WHERE id = $1 AND workspace_id = $2",
+              [input.generationJobId, input.workspaceId],
+            );
+            const frozen = frozenCharacterReferences(job.rows[0]?.input_snapshot);
+            if (frozen) await assertFrozenReferencesUsable(client, input.workspaceId, frozen);
           }
           return insertAsset(client, input);
         })();

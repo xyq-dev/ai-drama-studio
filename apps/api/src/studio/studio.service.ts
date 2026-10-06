@@ -1,5 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import { SAMPLE_VIDEO_FIXTURE_IDS, SAMPLE_VIDEO_SCHEMA, sampleVideoDescription, type SampleVideoFixtureId } from "@ai-drama/contracts";
+import {
+  CHARACTER_REFERENCE_JOB_KIND,
+  CHARACTER_REFERENCE_SNAPSHOT_SCHEMA,
+  parseCharacterReferenceReviewRequest,
+  parseCharacterReferenceSelectionRequest,
+  type CharacterReferenceGateMode,
+} from "@ai-drama/domain";
 import { DomainError, parseComposePreflightRequest, parseComposeRenderRequest, parseComposeReviewRequest, parseEpisodeComposePreflightRequest, parseEpisodeComposeRenderRequest, regenerationSeed } from "@ai-drama/domain";
 import {
   JobPersistenceService,
@@ -13,6 +20,7 @@ import {
   TextChainService,
   insertProject,
   requestHash,
+  type CharacterReferenceStore,
   type CreateWorkflowJobInput,
   type IdempotencyScope,
   type MockSceneSnapshot,
@@ -133,6 +141,8 @@ export class StudioService {
     private readonly composeObjectDir: string | null = null,
     private readonly episodeComposeEnabled = false,
     private readonly mockSampleVideoEnabled = false,
+    private readonly characterReferences?: CharacterReferenceStore,
+    private readonly referenceGate: CharacterReferenceGateMode = "legacy",
   ) {}
 
   get workspace(): string {
@@ -945,6 +955,88 @@ export class StudioService {
     );
   }
 
+  private requireReferences(): CharacterReferenceStore {
+    if (!this.characterReferences) {
+      throw new PersistenceError("CHARACTER_REFERENCE_STORAGE_UNAVAILABLE", "Character reference storage is not configured");
+    }
+    return this.characterReferences;
+  }
+
+  /** Mock reference image for one character revision. The character itself need not be approved yet. */
+  async generateCharacterReference(characterRevisionId: string, body: unknown, context: StudioContext) {
+    const input = parse(generateImageBodySchema, rejectClientWorkspace(body));
+    if (!this.mockImageEnabled) {
+      throw new PersistenceError("CONFIGURATION_ERROR", "Mock image worker storage is not enabled");
+    }
+    const references = this.requireReferences();
+    return this.jobs.createAndQueueWorkflowJob(
+      this.scope(context, "POST", `/character-revisions/${characterRevisionId}/reference-images/generate`, input),
+      async (client) => {
+        const prepared = await references.prepareGenerationInTransaction(client, this.workspaceId, characterRevisionId);
+        const regeneration = regenerationSeed(input.seed ?? null, input.bypassCache === true, randomUUID());
+        const snapshot = {
+          schema: CHARACTER_REFERENCE_SNAPSHOT_SCHEMA,
+          characterRevisionId,
+          characterContentHash: prepared.characterContentHash,
+          seed: regeneration.seed,
+          bypassCache: regeneration.bypassCache,
+          outcome: "success",
+          executionMode: "sync",
+          capability: "image.generate",
+        };
+        return {
+          workspaceId: this.workspaceId,
+          projectId: prepared.projectId,
+          type: CHARACTER_REFERENCE_JOB_KIND,
+          requestedBy: context.actorId,
+          kind: CHARACTER_REFERENCE_JOB_KIND,
+          inputHash: createHash("sha256").update(JSON.stringify(snapshot)).digest("hex"),
+          inputSnapshot: snapshot,
+          traceId: context.traceId,
+        };
+      },
+    );
+  }
+
+  async listCharacterReferences(characterId: string) {
+    return this.requireReferences().listForCharacter(this.workspaceId, characterId);
+  }
+
+  async reviewCharacterReference(assetId: string, body: unknown, context: StudioContext) {
+    let request;
+    try {
+      request = parseCharacterReferenceReviewRequest(rejectClientWorkspace(body));
+    } catch (error) {
+      if (error instanceof DomainError) throw new PersistenceError(error.code, error.message);
+      throw error;
+    }
+    const references = this.requireReferences();
+    return this.jobs.runIdempotent(
+      this.scope(context, "POST", `/character-reference-images/${assetId}/review`, request), 200,
+      (client) => references.reviewInTransaction(client, {
+        workspaceId: this.workspaceId, assetId, reviewedBy: context.actorId, traceId: context.traceId, ...request,
+      }),
+    );
+  }
+
+  async selectCharacterReference(characterId: string, body: unknown, context: StudioContext) {
+    let request;
+    try {
+      request = parseCharacterReferenceSelectionRequest(rejectClientWorkspace(body));
+    } catch (error) {
+      if (error instanceof DomainError) throw new PersistenceError(error.code, error.message);
+      throw error;
+    }
+    const references = this.requireReferences();
+    return this.jobs.runIdempotent(
+      this.scope(context, "POST", `/characters/${characterId}/reference-selection`, request), 200,
+      (client) => references.selectInTransaction(client, {
+        workspaceId: this.workspaceId, characterId, assetId: request.assetId,
+        expectedSelectedAssetId: request.expectedSelectedAssetId, selectedBy: context.actorId, traceId: context.traceId,
+      }),
+    );
+  }
+
   async getJob(jobId: string) {
     return this.store.getJob(this.workspaceId, jobId);
   }
@@ -1062,6 +1154,16 @@ export class StudioService {
         const sourceHash = createHash("sha256").update(sourceText).digest("hex");
         const regeneration = regenerationSeed(input.seed ?? null, input.bypassCache === true, randomUUID());
         const description = fixtureId ? sampleVideoDescription(fixtureId) : null;
+        // Strict gate: freeze the selected reference images by id and content hash into the input. Missing storage
+        // or selections refuse the video; there is no fallback to the legacy gate.
+        let strict: { characterReferences: Awaited<ReturnType<CharacterReferenceStore["strictVideoReferencesInTransaction"]>> } | null = null;
+        if (kind === "MEDIA_VIDEO" && this.referenceGate === "strict") {
+          if (!this.characterReferences) {
+            throw new PersistenceError("CHARACTER_REFERENCE_STORAGE_UNAVAILABLE", "Character reference storage is not configured");
+          }
+          strict = { characterReferences: await this.characterReferences.strictVideoReferencesInTransaction(
+            client, this.workspaceId, source.projectId, shotRevisionId) };
+        }
         const snapshot = description
           ? {
             schema: SAMPLE_VIDEO_SCHEMA,
@@ -1082,6 +1184,7 @@ export class StudioService {
             capability,
             sourceText,
             sourceHash,
+            ...(strict ?? {}),
           }
           : {
             schema: kind === "MEDIA_VIDEO" ? "m3.mock.video.v1" : "m3.mock.tts.v1",
@@ -1093,6 +1196,7 @@ export class StudioService {
             capability,
             sourceText,
             sourceHash,
+            ...(strict ?? {}),
           };
         return this.reuseOrCreate(client, {
           workspaceId: this.workspaceId,

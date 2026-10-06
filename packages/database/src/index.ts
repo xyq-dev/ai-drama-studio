@@ -126,6 +126,18 @@ export {
 } from "./mock-media-kinds";
 export { mockMediaRetryLineage, type MockMediaRetryFlags } from "./mock-media-retry";
 export {
+  CHARACTER_REFERENCE_STORAGE_UNAVAILABLE,
+  CharacterReferenceStore,
+  assertFrozenReferencesUsable,
+  characterReferenceStorageReady,
+  frozenCharacterReferences,
+  type CharacterReferenceAsset,
+  type CharacterReferenceListing,
+  type CharacterReferenceSelection,
+  type PreparedReferenceGeneration,
+  type StrictVideoReference,
+} from "./character-reference-store";
+export {
   PostgresQwenWebStore,
   QWEN_WEB_REQUIRED_COLUMNS,
   QWEN_WEB_TABLE,

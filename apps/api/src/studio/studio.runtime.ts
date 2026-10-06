@@ -2,6 +2,7 @@ import { Injectable, type OnModuleDestroy } from "@nestjs/common";
 import { isAbsolute } from "node:path";
 import {
   JobPersistenceService,
+  CharacterReferenceStore,
   MediaAssetStore,
   MockTextService,
   PostgresQwenWebStore,
@@ -83,7 +84,9 @@ export class StudioRuntime implements OnModuleDestroy {
           sampleFlag: env.M4_MOCK_SAMPLE_VIDEO_ENABLED,
           avFlag: env.M3_MOCK_AV_ENABLED,
           directoryReady: Boolean(absoluteDir),
-        })), store, qwenWeb, qwenWebEnabled && qwenProvider.ok);
+        }),
+        new CharacterReferenceStore(pool),
+        env.M3_CHARACTER_REFERENCE_GATE), store, qwenWeb, qwenWebEnabled && qwenProvider.ok);
   }
 
   async onModuleDestroy(): Promise<void> {

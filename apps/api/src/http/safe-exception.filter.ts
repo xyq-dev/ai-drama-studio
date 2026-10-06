@@ -49,10 +49,12 @@ function httpStatus(code: string): number {
     code === "JOB_NOT_RETRYABLE" ||
     code === "RETRY_LIMIT" ||
     code === "RETRY_LINEAGE_INVALID" ||
+    code === "REFERENCE_SELECTION_CONFLICT" ||
     code === "COMPOSE_INPUT_CHANGED" ||
     code === "COMPOSE_CONTENT_HASH_MISMATCH"
   ) {
     return 409;
   }
+  if (code === "CHARACTER_REFERENCE_STORAGE_UNAVAILABLE") return 503;
   return 400;
 }
