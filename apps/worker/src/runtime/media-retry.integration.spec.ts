@@ -22,6 +22,7 @@ import { LocalMockObjects } from "./local-mock-objects";
 import { runMockAvJob } from "./mock-av-generation";
 import { runMockImageJob } from "./mock-image-generation";
 import { runMockSmJob } from "./mock-sm-generation";
+import { MockMediaRecovery } from "./mock-media-recovery";
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) {
@@ -717,6 +718,84 @@ describe("replacing a selected reference stales what was made from it", () => {
       } finally {
         again.release();
       }
+    } finally {
+      await rm(objectDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("a strict video whose reference probe hits a transient database error", () => {
+  it("keeps the attempt recoverable through execution and recovery, then settles once the probe answers", async () => {
+    const world = await seedApprovedShot();
+    const objectDir = await mkdtemp(join(tmpdir(), "probe-fault-"));
+    const objects = new LocalMockObjects(objectDir);
+    // The real pool; only the structure probe's query fails while the fault is on, as a statement timeout would.
+    const fault = { on: true };
+    const faultyPool = {
+      connect: async () => {
+        const client = await pool.connect();
+        const query = client.query.bind(client) as (...args: unknown[]) => Promise<unknown>;
+        (client as unknown as { query: (...args: unknown[]) => Promise<unknown> }).query = (...args: unknown[]) => {
+          const text = typeof args[0] === "string" ? args[0] : "";
+          if (fault.on && text.includes("information_schema.columns")) {
+            return Promise.reject(Object.assign(new Error("canceling statement due to statement timeout"),
+              { code: "57014", severity: "ERROR" }));
+          }
+          return query(...args);
+        };
+        const release = client.release.bind(client);
+        client.release = (...releaseArgs: Parameters<typeof release>) => {
+          (client as unknown as { query: unknown }).query = query;
+          client.release = release;
+          return release(...releaseArgs);
+        };
+        return client;
+      },
+    };
+    const faultyAssets = new MediaAssetStore(faultyPool);
+    const strictSnapshot = { ...snapshotFor("MEDIA_VIDEO", world.shotRevisionId, "strict-probe"),
+      characterReferences: [{ characterRevisionId: randomUUID(), assetId: randomUUID(), checksumSha256: "ab".repeat(32) }] };
+    const job = await createMediaJob(world, "MEDIA_VIDEO", strictSnapshot);
+    const row = await jobRow(job.jobId);
+    const adapter = new MockMediaAdapter();
+    let submits = 0;
+    const submit = adapter.submit.bind(adapter);
+    adapter.submit = async (request) => { submits += 1; return submit(request); };
+    const ledger = async () => (await sql<{ state: string; error_code: string | null; attempts: number; requests: string[];
+      assets: number; costs: number; succeeded: number; failed: number }>(
+      `SELECT job.state, job.error_code,
+              (SELECT count(*)::int FROM job_attempt WHERE generation_job_id = job.id) AS attempts,
+              (SELECT array_agg(provider_request_id) FROM job_attempt WHERE generation_job_id = job.id) AS requests,
+              (SELECT count(*)::int FROM asset WHERE source_generation_job_id = job.id) AS assets,
+              (SELECT count(*)::int FROM cost_ledger WHERE generation_job_id = job.id) AS costs,
+              (SELECT count(*)::int FROM domain_event WHERE aggregate_id = job.id AND event_type = 'job.succeeded') AS succeeded,
+              (SELECT count(*)::int FROM domain_event WHERE aggregate_id = job.id AND event_type = 'job.failed') AS failed
+         FROM generation_job job WHERE job.id = $1`, [job.jobId])).rows[0]!;
+    try {
+      await expect(runMockAvJob({ workspaceId: world.workspaceId, projectId: world.projectId,
+        shotRevisionId: world.shotRevisionId, jobId: job.jobId, dispatchSeq: job.dispatchSeq,
+        providerConfigurationId: world.providers.MEDIA_VIDEO, inputHash: row?.input_hash as string,
+        inputSnapshot: row?.input_snapshot, traceId: "strict-probe", capability: "video.generate" },
+      { jobs, assets: faultyAssets, adapter, objects })).rejects.toMatchObject({ code: "57014" });
+      const afterRun = await ledger();
+      expect(afterRun).toMatchObject({ state: "RUNNING", attempts: 1, assets: 0, costs: 0, succeeded: 0, failed: 0 });
+      const requestId = afterRun.requests[0];
+      expect(requestId).toMatch(/^mock-media\|sync\|video\.generate\|/);
+
+      await sql("UPDATE generation_job SET lease_until = now() - interval '1 second' WHERE id = $1", [job.jobId]);
+      const recovery = new MockMediaRecovery(jobs, faultyAssets, store, adapter, objects,
+        { mockImageEnabled: false, mockAvEnabled: true });
+      await expect(recovery.reconcileOnce()).rejects.toBeInstanceOf(AggregateError);
+      expect(await ledger()).toMatchObject({ state: "RUNNING", attempts: 1, requests: [requestId], assets: 0, costs: 0, failed: 0 });
+
+      // The probe now answers: these migrations have no reference structure, so the frozen input cannot complete.
+      fault.on = false;
+      await recovery.reconcileOnce();
+      expect(await ledger()).toMatchObject({ state: "FAILED", error_code: "CHARACTER_REFERENCE_STORAGE_UNAVAILABLE",
+        attempts: 1, requests: [requestId], assets: 0, costs: 0, succeeded: 0, failed: 1 });
+      await recovery.reconcileOnce();
+      expect(await ledger()).toMatchObject({ state: "FAILED", attempts: 1, failed: 1 });
+      expect(submits).toBe(1);
     } finally {
       await rm(objectDir, { recursive: true, force: true });
     }

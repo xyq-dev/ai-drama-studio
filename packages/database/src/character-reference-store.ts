@@ -150,26 +150,26 @@ async function withTransaction<T>(pool: DatabasePool, work: (client: PoolClient)
   }
 }
 
-/** True only when every draft column, the selection table and the IMAGE approval relaxation exist. */
+/**
+ * True only when every draft column, the selection table and the IMAGE approval relaxation exist. False means the
+ * queries succeeded and showed the structure is absent. A failed query (statement timeout, lost connection) is not
+ * evidence of a missing structure and is rethrown as it is, so callers can treat it as transient.
+ */
 export async function characterReferenceStorageReady(client: Pick<PoolClient, "query">): Promise<boolean> {
-  try {
-    const columns = await client.query<{ table_name: string; column_name: string } & QueryResultRow>(
-      `SELECT table_name, column_name FROM information_schema.columns
-        WHERE table_schema = current_schema()
-          AND ((table_name = 'asset' AND column_name IN ('reference_role', 'source_character_revision_id'))
-            OR (table_name = 'character_reference_selection'
-              AND column_name IN ('workspace_id', 'project_id', 'character_id', 'source_character_revision_id',
-                                  'asset_id', 'selected_by', 'created_at')))`,
-    );
-    if (columns.rows.length !== 9) return false;
-    const approval = await client.query<{ definition: string } & QueryResultRow>(
-      `SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint
-        WHERE conname = 'asset_approval_kind_check' AND conrelid = 'asset'::regclass`,
-    );
-    return approval.rows.length === 1 && String(approval.rows[0]?.definition).includes(CHARACTER_REFERENCE_ROLE);
-  } catch {
-    return false;
-  }
+  const columns = await client.query<{ table_name: string; column_name: string } & QueryResultRow>(
+    `SELECT table_name, column_name FROM information_schema.columns
+      WHERE table_schema = current_schema()
+        AND ((table_name = 'asset' AND column_name IN ('reference_role', 'source_character_revision_id'))
+          OR (table_name = 'character_reference_selection'
+            AND column_name IN ('workspace_id', 'project_id', 'character_id', 'source_character_revision_id',
+                                'asset_id', 'selected_by', 'created_at')))`,
+  );
+  if (columns.rows.length !== 9) return false;
+  const approval = await client.query<{ definition: string } & QueryResultRow>(
+    `SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint
+      WHERE conname = 'asset_approval_kind_check' AND conrelid = 'asset'::regclass`,
+  );
+  return approval.rows.length === 1 && String(approval.rows[0]?.definition).includes(CHARACTER_REFERENCE_ROLE);
 }
 
 export class CharacterReferenceStore {
