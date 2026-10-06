@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { QwenWritingInput } from "@ai-drama/contracts";
 import { PersistenceError, type PostgresQwenWebStore } from "@ai-drama/database";
 import { InMemoryQwenWebStore, QWEN_WEB_EXECUTOR_LEASE_MS, type QwenTransport } from "@ai-drama/providers";
@@ -143,4 +143,41 @@ describe("QwenWebService", () => {
     const later = await service.get(PROJECT, requestId, TOKEN);
     expect(later.body).toMatchObject({ request: { state: "completed", candidateJson: null, candidateExpired: true } });
   });
+
+  it("leases from the real send time when the process pauses after reserving (review P2)", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const start = new Date("2026-10-06T00:00:00.000Z");
+    vi.setSystemTime(start);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const transport: QwenTransport = async () => {
+      await gate;
+      return { status: 200, headers: { get: () => null }, body: completion() };
+    };
+    const store = new TestStore(true);
+    const reserve = store.reserve.bind(store);
+    // The pause happens after the reservation and before the send, as a suspended host would. The provider then
+    // computes the submit time and lease itself.
+    store.reserve = async (...args) => {
+      const reserved = await reserve(...args);
+      vi.setSystemTime(new Date(start.getTime() + 90_000));
+      return reserved;
+    };
+    const { service } = harness({ clock: undefined, store: store as unknown as PostgresQwenWebStore<QwenWritingInput>, transport });
+    const running = service.request(PROJECT, { input: INPUT }, TOKEN, context("paused"));
+    await vi.waitFor(async () => expect((await store.findByKey(WORKSPACE, "server-owner", "paused"))?.state).toBe("submitted"));
+    vi.setSystemTime(new Date(start.getTime() + 121_000));
+    expect(await store.recoverExpired(new Date().toISOString())).toBe(0);
+    expect(Date.parse((await store.findByKey(WORKSPACE, "server-owner", "paused"))!.leaseUntil))
+      .toBe(start.getTime() + 90_000 + QWEN_WEB_EXECUTOR_LEASE_MS);
+    release();
+    const done = await running;
+    expect(done.body).toMatchObject({ request: { state: "completed" } });
+    const stored = await store.findByKey(WORKSPACE, "server-owner", "paused");
+    expect(Date.parse(stored!.updatedAt)).toBeGreaterThanOrEqual(start.getTime() + 121_000);
+  });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });

@@ -145,7 +145,7 @@ export class QwenWebService {
       store: this.deps.store,
       transport: this.deps.transport,
       now: this.now(),
-      ...(this.deps.clock ? { clock: this.deps.clock } : {}),
+      clock: () => this.now(),
     });
     if (!result.record) {
       return { status: result.status, body: { code: result.code } };

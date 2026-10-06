@@ -216,7 +216,7 @@ export interface RunQwenWebWritingInput {
   store: QwenWebStore;
   transport: QwenTransport;
   now?: Date;
-  /** Clock for timestamps after the reservation. Defaults to `now` when given, else the wall clock. */
+  /** Clock for timestamps after the reservation (submit, lease renewal, finish). Defaults to the wall clock. */
   clock?: () => Date;
   executorId?: string;
   leaseMs?: number;
@@ -270,7 +270,8 @@ export async function runQwenWebWriting(options: RunQwenWebWritingInput): Promis
   if (!Number.isSafeInteger(leaseMs) || leaseMs < QWEN_CHAT_TIMEOUT_MS) {
     return { status: 400, code: "invalid_limits", requestCount: 0, record: null };
   }
-  const clock = options.clock ?? (() => options.now ?? new Date());
+  // Never freeze later timestamps at the reservation time: a pause before sending must not shorten the lease.
+  const clock = options.clock ?? (() => new Date());
   const record: QwenWebRecord = {
     id: randomUUID(),
     workspaceId: options.workspaceId,
