@@ -14,6 +14,10 @@ export {
   type CreatedWorkflowJob,
   type IdempotencyScope,
   type ManualRetryInput,
+  type ManualRetryLineage,
+  type ManualRetryLink,
+  type ManualRetryResult,
+  type ManualRetrySource,
   type ProviderEventInput,
   type QueueJobInput,
 } from "./job-service";
@@ -120,6 +124,7 @@ export {
   mockMediaRoute,
   type MockMediaJobKind,
 } from "./mock-media-kinds";
+export { mockMediaRetryLineage, type MockMediaRetryFlags } from "./mock-media-retry";
 export {
   assertFixedMockImageSnapshot,
   assertSyncActualCost,

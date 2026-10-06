@@ -12,6 +12,10 @@
     "./writing-assistant": {
       "types": "./dist/writing-assistant.d.ts",
       "default": "./dist/writing-assistant.js"
+    },
+    "./media-retry": {
+      "types": "./dist/media-retry.d.ts",
+      "default": "./dist/media-retry.js"
     }
   },
   "dependencies": {

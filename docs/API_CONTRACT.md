@@ -111,9 +111,20 @@ workspace、project 及完整 episode/scene scope。revision 历史保留 `items
 | `GET /projects/:projectId/assets` | 按 kind/status/source 分页 | Owner；安全 GET；无 |
 | `GET /generation-jobs/:jobId` | job、当前 attempt、错误摘要 | Owner；安全 GET；无 |
 | `POST /generation-jobs/:jobId/cancel` | 请求取消；返回当前 job | Owner；key；`JOB_TERMINAL` |
-| `POST /generation-jobs/:jobId/retry` | 仅对可重试 `FAILED`/`CANCELED` job 创建新的局部 WorkflowRun 与新的 GenerationJob；复制不可变输入快照，不修改旧 Job | Owner；key；`JOB_NOT_RETRYABLE`,`RETRY_LIMIT` |
+| `POST /generation-jobs/:jobId/retry` | 仅对可重试 `FAILED`/`CANCELED` job 创建新的局部 WorkflowRun 与新的 GenerationJob；复制不可变输入快照，不修改旧 Job。返回 `202 {workflowRunId, jobId, dispatchSeq, retry?}`；媒体规则见下方「Mock 媒体手工 retry」 | Owner；key；`JOB_NOT_RETRYABLE`,`RETRY_LIMIT`,`RETRY_LINEAGE_INVALID` |
 | `GET /workflow-runs/:runId` | 工作流及子 job 摘要 | Owner；安全 GET；无 |
 | `GET /projects/:projectId/workflow-runs` | 分页运行历史 | Owner；安全 GET；无 |
+
+### Mock 媒体手工 retry
+
+适用 `MEDIA_IMAGE`、`MEDIA_VIDEO`、`MEDIA_TTS`、`MEDIA_SUBTITLE`、`MEDIA_MUSIC`。`MEDIA_COMPOSE` 仍返回 `JOB_NOT_RETRYABLE`，须重新预检后提交。文本任务的 retry 规则不变。
+
+- 可重试：`CANCELED`；`FAILED` 且错误码为 `MOCK_IMAGE_RUNTIME_FAILED`、`MOCK_AV_RUNTIME_FAILED`、`MOCK_SM_RUNTIME_FAILED` 或 `LEASE_EXPIRED`。`MOCK_REQUEST_UNKNOWN`、输出/配置/路由类错误、成功和非终态任务返回 `JOB_NOT_RETRYABLE`，`details.reason` 给出原因。
+- 服务端在锁住源任务行的同一事务中重新检查：任务仍在固定 Mock 路由上（快照 schema、能力、来源镜头一致，已有 attempt 均为 `mock-media` 对应能力）；对应功能开关开启（关闭时 `CONFIGURATION_ERROR`）；原生成端点的镜头门槛（图片用预览门，其余用审核门，STALE 或重算中拒绝，`REVIEW_REQUIRED` / `STALE_RECALCULATION_PENDING`）；`mock-media` 配置仍启用（`PROVIDER_CONFIG_INVALID`）；视频、配音、字幕、音乐的已保存提示词或对白仍与快照 `sourceText/sourceHash` 一致。
+- 新任务原样复制 `sourceShotRevisionId`、`inputSnapshot`（含 seed、`bypassCache`）与 `inputHash`。旧任务、旧 attempt 与旧成本不改；新任务按既有 Mock 机制另记成本。自动重试上限仍是新任务自己的 `max_attempts`。
+- 每个源任务最多一个后继。已有后继时返回 `409 JOB_NOT_RETRYABLE`，`details: {retryJobId, rootJobId, manualRetryCount}`。同一 Idempotency-Key 重放仍返回首次创建的 `202` 结果。
+- 一条链从初始任务起最多手工重试 2 次；第三次返回 `409 RETRY_LIMIT`，`details: {rootJobId, manualRetryCount, limit}`。
+- 成功时 `retry: {sourceJobId, rootJobId, manualRetryCount}`，并追加两条 DomainEvent：源任务上的 `job.retried` 与新任务上的 `job.retry_of`。服务端用二者双向核对父任务与根任务；不一致时返回 `409 RETRY_LINEAGE_INVALID`。无需数据库结构变更。
 
 ## Providers and Exports
 
@@ -138,6 +149,8 @@ workspace、project 及完整 episode/scene scope。revision 历史保留 `items
 | `job.succeeded` | `jobId, outputAssetIds, cost?` |
 | `job.failed` | `jobId, error:{code,message}, retryable` |
 | `job.canceled` | `jobId, canceledAt` |
+| `job.retried` | `jobId, retryJobId, workflowRunId, rootJobId, manualRetryCount`（仅媒体手工 retry） |
+| `job.retry_of` | `jobId, sourceJobId, rootJobId, manualRetryCount`（仅媒体手工 retry） |
 | `asset.created` | `assetId, projectId, kind, sourceJobId` |
 | `workflow.updated` | `workflowRunId, status, completedJobs, failedJobs` |
 

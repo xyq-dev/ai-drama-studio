@@ -2,11 +2,13 @@ import type { PoolClient, QueryResultRow } from "pg";
 
 export class PersistenceError extends Error {
   readonly code: string;
+  readonly details?: Record<string, unknown>;
 
-  constructor(code: string, message: string) {
+  constructor(code: string, message: string, details?: Record<string, unknown>) {
     super(message);
     this.name = "PersistenceError";
     this.code = code;
+    if (details) this.details = details;
   }
 }
 
@@ -73,7 +75,36 @@ export interface ManualRetryInput {
   requestedBy: string;
   traceId: string;
   retryable: boolean;
+  /** Present only for media retries: one successor per job, a bounded chain and a source gate. */
+  lineage?: ManualRetryLineage;
 }
+
+/** The locked source job as seen inside the retry transaction. */
+export interface ManualRetrySource {
+  workspaceId: string;
+  projectId: string;
+  jobId: string;
+  kind: string;
+  state: string;
+  errorCode: string | null;
+  sourceShotRevisionId: string | null;
+  inputHash: string;
+  inputSnapshot: unknown;
+}
+
+export interface ManualRetryLineage {
+  maxManualRetries: number;
+  /** Throws to reject. Runs after the successor and chain checks, before any write. */
+  authorize(client: PoolClient, source: ManualRetrySource): Promise<void>;
+}
+
+export interface ManualRetryLink {
+  sourceJobId: string;
+  rootJobId: string;
+  manualRetryCount: number;
+}
+
+export type ManualRetryResult = CreatedWorkflowJob & { dispatchSeq: number; retry?: ManualRetryLink };
 
 export interface ProviderEventInput {
   workspaceId: string;
@@ -100,8 +131,10 @@ interface JobRow extends QueryResultRow {
   workspace_id: string;
   project_id: string;
   workflow_run_id: string;
+  source_shot_revision_id: string | null;
   kind: string;
   state: JobState;
+  error_code: string | null;
   input_hash: string;
   input_snapshot: unknown;
   dispatch_seq: number;
@@ -160,8 +193,8 @@ async function withTransaction<T>(pool: DatabasePool, work: (client: PoolClient)
 
 async function loadJobForUpdate(client: PoolClient, workspaceId: string, jobId: string): Promise<JobRow> {
   const result = await client.query<JobRow>(
-    `SELECT id, workspace_id, project_id, workflow_run_id, kind, state, input_hash,
-            input_snapshot, dispatch_seq, row_version, retry_count, is_critical,
+    `SELECT id, workspace_id, project_id, workflow_run_id, source_shot_revision_id, kind, state,
+            error_code, input_hash, input_snapshot, dispatch_seq, row_version, retry_count, is_critical,
             progress_weight, lease_until, cancel_requested_at
        FROM generation_job
       WHERE id = $1 AND workspace_id = $2
@@ -459,7 +492,7 @@ async function finalizeCancellationTx(
 async function manualRetryTx(
   client: PoolClient,
   input: ManualRetryInput,
-): Promise<CreatedWorkflowJob & { dispatchSeq: number }> {
+): Promise<ManualRetryResult> {
   if (!input.retryable) {
     throw new PersistenceError("JOB_NOT_RETRYABLE", "This terminal job is not retryable");
   }
@@ -471,6 +504,8 @@ async function manualRetryTx(
   if (oldJob.state !== "FAILED" && oldJob.state !== "CANCELED") {
     throw new PersistenceError("JOB_NOT_RETRYABLE", "Manual retry requires FAILED or CANCELED job");
   }
+  // The row lock above serializes retries of one source job, so the link reads below see any committed successor.
+  const link = input.lineage ? await authorizeLineageTx(client, oldJob, input.lineage) : null;
   const source = await client.query<WorkflowSourceRow>(
     "SELECT type, input_snapshot FROM workflow_run WHERE id = $1 AND workspace_id = $2",
     [oldJob.workflow_run_id, oldJob.workspace_id],
@@ -479,6 +514,7 @@ async function manualRetryTx(
   const created = await createWorkflowJobTx(client, {
     workspaceId: oldJob.workspace_id,
     projectId: oldJob.project_id,
+    ...(oldJob.source_shot_revision_id ? { sourceShotRevisionId: oldJob.source_shot_revision_id } : {}),
     type: oldWorkflow.type,
     requestedBy: input.requestedBy,
     kind: oldJob.kind,
@@ -490,7 +526,105 @@ async function manualRetryTx(
   });
   const newJob = await loadJobForUpdate(client, oldJob.workspace_id, created.jobId);
   const queued = await queueJobTx(client, newJob, input.traceId, null, 0);
-  return { ...created, dispatchSeq: queued.dispatch_seq };
+  if (!link) return { ...created, dispatchSeq: queued.dispatch_seq };
+
+  // Both directions are recorded so a job can find its parent/root and a parent can find its only successor.
+  await appendDomainEvent(client, oldJob, "job.retried", input.traceId, {
+    jobId: oldJob.id, retryJobId: created.jobId, workflowRunId: created.workflowRunId,
+    rootJobId: link.rootJobId, manualRetryCount: link.manualRetryCount,
+  });
+  await appendDomainEvent(client, newJob, "job.retry_of", input.traceId, {
+    jobId: created.jobId, sourceJobId: oldJob.id,
+    rootJobId: link.rootJobId, manualRetryCount: link.manualRetryCount,
+  });
+  return { ...created, dispatchSeq: queued.dispatch_seq, retry: link };
+}
+
+interface RetryEventPayload {
+  jobId: string;
+  retryJobId?: string;
+  sourceJobId?: string;
+  rootJobId: string;
+  manualRetryCount: number;
+}
+
+async function loadRetryEvents(
+  client: PoolClient,
+  workspaceId: string,
+  jobId: string,
+  eventType: "job.retried" | "job.retry_of",
+): Promise<RetryEventPayload[]> {
+  const result = await client.query<{ payload_json: RetryEventPayload } & QueryResultRow>(
+    `SELECT payload_json
+       FROM domain_event
+      WHERE workspace_id = $1 AND aggregate_type = 'GenerationJob' AND aggregate_id = $2 AND event_type = $3
+      ORDER BY id`,
+    [workspaceId, jobId, eventType],
+  );
+  return result.rows.map((row) => row.payload_json);
+}
+
+function lineageInvalid(jobId: string): PersistenceError {
+  return new PersistenceError("RETRY_LINEAGE_INVALID", "Manual retry lineage is inconsistent", { jobId });
+}
+
+/** Loads the manual retry link of a job: null for an initial job. Verifies the parent points back to it. */
+async function loadManualRetryLinkTx(
+  client: PoolClient,
+  workspaceId: string,
+  jobId: string,
+): Promise<ManualRetryLink | null> {
+  const parents = await loadRetryEvents(client, workspaceId, jobId, "job.retry_of");
+  if (parents.length === 0) return null;
+  const parent = parents[0];
+  if (parents.length > 1 || !parent || typeof parent.sourceJobId !== "string" || typeof parent.rootJobId !== "string"
+    || !Number.isInteger(parent.manualRetryCount) || parent.manualRetryCount < 1) {
+    throw lineageInvalid(jobId);
+  }
+  const back = await loadRetryEvents(client, workspaceId, parent.sourceJobId, "job.retried");
+  if (back.length !== 1 || back[0]?.retryJobId !== jobId || back[0].rootJobId !== parent.rootJobId
+    || back[0].manualRetryCount !== parent.manualRetryCount) {
+    throw lineageInvalid(jobId);
+  }
+  return { sourceJobId: parent.sourceJobId, rootJobId: parent.rootJobId, manualRetryCount: parent.manualRetryCount };
+}
+
+async function authorizeLineageTx(
+  client: PoolClient,
+  oldJob: JobRow,
+  lineage: ManualRetryLineage,
+): Promise<ManualRetryLink> {
+  const successors = await loadRetryEvents(client, oldJob.workspace_id, oldJob.id, "job.retried");
+  const successor = successors[0];
+  if (successor) {
+    throw new PersistenceError(
+      "JOB_NOT_RETRYABLE",
+      `This job was already retried as job ${String(successor.retryJobId)}`,
+      { retryJobId: successor.retryJobId, rootJobId: successor.rootJobId, manualRetryCount: successor.manualRetryCount },
+    );
+  }
+  const parent = await loadManualRetryLinkTx(client, oldJob.workspace_id, oldJob.id);
+  const rootJobId = parent?.rootJobId ?? oldJob.id;
+  const used = parent?.manualRetryCount ?? 0;
+  if (used >= lineage.maxManualRetries) {
+    throw new PersistenceError(
+      "RETRY_LIMIT",
+      `Manual retry limit of ${lineage.maxManualRetries} reached for this job chain`,
+      { rootJobId, manualRetryCount: used, limit: lineage.maxManualRetries },
+    );
+  }
+  await lineage.authorize(client, {
+    workspaceId: oldJob.workspace_id,
+    projectId: oldJob.project_id,
+    jobId: oldJob.id,
+    kind: oldJob.kind,
+    state: oldJob.state,
+    errorCode: oldJob.error_code,
+    sourceShotRevisionId: oldJob.source_shot_revision_id,
+    inputHash: oldJob.input_hash,
+    inputSnapshot: oldJob.input_snapshot,
+  });
+  return { sourceJobId: oldJob.id, rootJobId, manualRetryCount: used + 1 };
 }
 
 async function cancelWorkflowRunTx(
@@ -1020,7 +1154,7 @@ export class JobPersistenceService {
     });
   }
 
-  async manualRetry(input: ManualRetryInput): Promise<CreatedWorkflowJob & { dispatchSeq: number }> {
+  async manualRetry(input: ManualRetryInput): Promise<ManualRetryResult> {
     return withTransaction(this.pool, (client) => manualRetryTx(client, input));
   }
 
@@ -1077,7 +1211,7 @@ export class JobPersistenceService {
   async manualRetryIdempotent(
     scope: IdempotencyScope,
     input: ManualRetryInput,
-  ): Promise<{ replayed: boolean; status: number; body: CreatedWorkflowJob & { dispatchSeq: number } }> {
+  ): Promise<{ replayed: boolean; status: number; body: ManualRetryResult }> {
     return this.runIdempotent(scope, 202, (client) => manualRetryTx(client, input));
   }
 
