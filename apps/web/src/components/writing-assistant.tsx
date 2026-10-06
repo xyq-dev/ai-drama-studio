@@ -36,10 +36,67 @@ function qwenText(code: string): string {
   return QWEN_STATUS_TEXT[code] ?? `请求没有完成（${code}）`;
 }
 
+type WorkspaceRequestState = "sending" | "reserved" | "submitted" | "completed" | "rejected" | "unknown";
+
+/**
+ * One server-side Qwen request as this tab knows it. It is written before the request is sent and survives a
+ * refresh or remount, so a lost response is replayed with the same key instead of becoming a new paid call.
+ * It holds the frozen baseline the request was made for; a candidate is imported only into that same baseline.
+ * The operator token is never part of it.
+ */
 interface WorkspaceRequest {
-  fingerprint: string;
+  version: 1;
+  projectId: string;
+  entityKey: string;
   key: string;
+  fingerprint: string;
+  frozen: FrozenWritingContext;
+  input: unknown;
   requestId: string | null;
+  state: WorkspaceRequestState;
+  candidateGone: boolean;
+}
+
+const UNSETTLED: ReadonlySet<WorkspaceRequestState> = new Set(["sending", "reserved", "submitted", "unknown"]);
+
+function workspaceRequestKey(projectId: string, entityKey: string): string {
+  return `ads-writing-qwen:${projectId}:${entityKey}`;
+}
+
+function readWorkspaceRequest(projectId: string, entityKey: string): WorkspaceRequest | null {
+  try {
+    const raw = window.sessionStorage.getItem(workspaceRequestKey(projectId, entityKey));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<WorkspaceRequest> | null;
+    if (!parsed || parsed.version !== 1 || parsed.projectId !== projectId || parsed.entityKey !== entityKey
+      || typeof parsed.key !== "string" || typeof parsed.fingerprint !== "string" || !parsed.frozen
+      || typeof parsed.state !== "string") {
+      return null;
+    }
+    return parsed as WorkspaceRequest;
+  } catch {
+    return null;
+  }
+}
+
+function writeWorkspaceRequest(record: WorkspaceRequest): boolean {
+  try {
+    window.sessionStorage.setItem(workspaceRequestKey(record.projectId, record.entityKey), JSON.stringify(record));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function sameFrozen(left: FrozenWritingContext | null, right: FrozenWritingContext | null): boolean {
+  return left !== null && right !== null && JSON.stringify(left) === JSON.stringify(right);
+}
+
+function settledNote(record: WorkspaceRequest): string | null {
+  if (record.state === "sending") return "上次请求没有收到回执。可以用原请求标识重新读取，不会产生新的调用。";
+  if (record.state === "reserved" || record.state === "submitted") return "上次请求仍在处理。可以查询原请求，不会重复调用。";
+  if (record.state === "unknown") return "上次请求结果未知：服务商可能已经处理并产生费用。不会自动重发；如需新的调用，请确认后发起。";
+  return null;
 }
 
 interface AssistantDraft {
@@ -122,13 +179,12 @@ export function WritingAssistant(props: {
   const draftRef = useRef(draft);
   const identityRef = useRef({ projectId: props.projectId, entityKey: props.entityKey });
   const importRef = useRef<HTMLTextAreaElement>(null);
-  const workspaceRequest = useRef<WorkspaceRequest | null>(null);
+  const [workspaceRecord, setWorkspaceRecord] = useState<WorkspaceRequest | null>(() => readWorkspaceRequest(props.projectId, props.entityKey));
   const [requestNote, setRequestNote] = useState<string | null>(null);
   // The operator token stays in this component's memory only; it is never written to storage.
   const [qwenToken, setQwenToken] = useState("");
   const [qwenStatus, setQwenStatus] = useState<QwenWebStatus | null>(null);
   const [qwenBusy, setQwenBusy] = useState(false);
-  const [qwenFollowUp, setQwenFollowUp] = useState<"none" | "query" | "new">("none");
   const [confirmNewCall, setConfirmNewCall] = useState(false);
   const [projectDirection, setProjectDirection] = useState<DirectionDraft | null>(null);
   const [directionNote, setDirectionNote] = useState<string | null>(null);
@@ -138,6 +194,9 @@ export function WritingAssistant(props: {
   if (boundKey !== key) {
     setBoundKey(key);
     setDraft(readAssistant(props.projectId, props.entityKey));
+    setWorkspaceRecord(readWorkspaceRequest(props.projectId, props.entityKey));
+    setRequestNote(null);
+    setConfirmNewCall(false);
     setError(null);
     setDifferences([]);
     setAdoptNote(null);
@@ -303,17 +362,29 @@ export function WritingAssistant(props: {
       : { schema: "qwen.writing.input.v1", mode: "episode", ...episodeRequest(props, draftRef.current) };
   }
 
-  function handleOutcome(result: QwenWebOutcome, permit: ReadPermit) {
-    if (!permitCurrent(permit)) return;
+  /** Records the answer on the request it belongs to, then imports only into that request's own frozen baseline. */
+  function handleOutcome(record: WorkspaceRequest, result: QwenWebOutcome, permit: ReadPermit) {
+    const sameTarget = record.projectId === identityRef.current.projectId && record.entityKey === identityRef.current.entityKey;
     if (!result.ok) {
+      if (!sameTarget || !permitCurrent(permit)) return;
       setRequestNote(qwenText(result.code));
-      setQwenFollowUp(result.code === "IDEMPOTENCY_KEY_REUSED" ? "new" : "none");
       return;
     }
     const request = result.request;
-    if (workspaceRequest.current) workspaceRequest.current.requestId = request.requestId;
     if (request.billingStatus !== "unknown") {
-      setError("工作区回执的费用状态不正确");
+      if (sameTarget) setError("工作区回执的费用状态不正确");
+      return;
+    }
+    const updated: WorkspaceRequest = { ...record, requestId: request.requestId, state: request.state,
+      candidateGone: request.state === "completed" && !request.candidateJson };
+    // A newer request on the same target replaced this one; its answer must not overwrite the newer record.
+    const stored = readWorkspaceRequest(record.projectId, record.entityKey);
+    if (!stored || stored.key === record.key) writeWorkspaceRequest(updated);
+    if (!sameTarget) return;
+    if (!stored || stored.key === record.key) setWorkspaceRecord(updated);
+    if (!permitCurrent(permit)) return;
+    if (!sameFrozen(record.frozen, draftRef.current.frozen)) {
+      setRequestNote("这个请求属于之前准备的指令，结果没有放进当前草稿的预览。需要候选时请为当前指令发起请求。");
       return;
     }
     if (request.state === "completed") {
@@ -322,30 +393,39 @@ export function WritingAssistant(props: {
         setRequestNote("候选已放进预览。费用未知。还要人工比较、采纳到草稿，再手动保存。");
       } else {
         setRequestNote("候选正文已过期清除。请求记录保留；如需新的候选，请确认后发起新的调用。");
-        setQwenFollowUp("new");
-        return;
       }
-      setQwenFollowUp("none");
     } else if (request.state === "reserved" || request.state === "submitted") {
       setRequestNote("请求仍在处理。可以稍后查询，不会重复调用。");
-      setQwenFollowUp("query");
     } else if (request.state === "unknown") {
       setRequestNote("结果未知：服务商可能已经处理并产生费用。不会自动重发；如需新的调用，请确认后发起。");
-      setQwenFollowUp("new");
     } else {
       setRequestNote(`请求被拒绝（${request.errorCode ?? "rejected"}），没有候选。如需新的调用，请确认后发起。`);
-      setQwenFollowUp("new");
+    }
+  }
+
+  async function send(record: WorkspaceRequest) {
+    if (!props.workspaceQwen) return;
+    const permit = takePermit();
+    setQwenBusy(true);
+    try {
+      handleOutcome(record, await props.workspaceQwen.request(record.projectId, record.input, record.key, qwenToken), permit);
+    } catch {
+      if (record.projectId !== identityRef.current.projectId || record.entityKey !== identityRef.current.entityKey) return;
+      setRequestNote("连接中断，结果未知。再次请求会用同一请求标识读取原结果，不会重复调用。");
+    } finally {
+      setQwenBusy(false);
     }
   }
 
   async function requestWorkspaceCandidate(fresh: boolean) {
     if (!props.workspaceQwen || !qwenStatus?.ready) return;
-    if (!draft.frozen) {
+    const frozen = draftRef.current.frozen;
+    if (!frozen) {
       setError("请先准备创作指令");
       return;
     }
     const fingerprint = inputFingerprint(props, draftRef.current);
-    if (fingerprint !== draft.frozen.inputFingerprint) {
+    if (fingerprint !== frozen.inputFingerprint) {
       setError("输入已变化，请重新准备创作指令");
       return;
     }
@@ -353,33 +433,39 @@ export function WritingAssistant(props: {
       setError("发起新的调用前，请先勾选确认");
       return;
     }
-    // Same frozen input reuses its key, so a retry after a dropped connection reads the original request.
-    if (fresh || !workspaceRequest.current || workspaceRequest.current.fingerprint !== fingerprint) {
-      workspaceRequest.current = { fingerprint, key: crypto.randomUUID(), requestId: null };
-    }
-    setConfirmNewCall(false);
     setRequestNote(null);
     setError(null);
-    const permit = takePermit();
-    setQwenBusy(true);
-    try {
-      handleOutcome(await props.workspaceQwen.request(props.projectId, workspaceInput(), workspaceRequest.current.key, qwenToken), permit);
-    } catch {
-      if (!permitCurrent(permit)) return;
-      setRequestNote("连接中断，结果未知。再次请求会用同一请求标识读取原结果，不会重复调用。");
-      setQwenFollowUp("none");
-    } finally {
-      setQwenBusy(false);
+    const existing = readWorkspaceRequest(props.projectId, props.entityKey);
+    if (!fresh && existing && existing.fingerprint === fingerprint && sameFrozen(existing.frozen, frozen)) {
+      // Same frozen request: replay the original key and body. The server answers from its record.
+      await send(existing);
+      return;
     }
+    if (!fresh && existing && UNSETTLED.has(existing.state)) {
+      setError("上一次请求的结果还没有确定。请先读取或查询原请求，或勾选确认后发起新的调用。");
+      return;
+    }
+    const record: WorkspaceRequest = {
+      version: 1, projectId: props.projectId, entityKey: props.entityKey, key: crypto.randomUUID(), fingerprint,
+      frozen, input: workspaceInput(), requestId: null, state: "sending", candidateGone: false,
+    };
+    // Persist the identity before sending; without it a lost answer could only be retried as a new paid call.
+    if (!writeWorkspaceRequest(record)) {
+      setError("无法在本页保存请求标识，没有发送请求。");
+      return;
+    }
+    setWorkspaceRecord(record);
+    setConfirmNewCall(false);
+    await send(record);
   }
 
   async function queryWorkspaceRequest() {
-    const requestId = workspaceRequest.current?.requestId;
-    if (!props.workspaceQwen || !requestId) return;
+    const record = readWorkspaceRequest(props.projectId, props.entityKey);
+    if (!props.workspaceQwen || !record?.requestId) return;
     const permit = takePermit();
     setQwenBusy(true);
     try {
-      handleOutcome(await props.workspaceQwen.get(props.projectId, requestId, qwenToken), permit);
+      handleOutcome(record, await props.workspaceQwen.get(record.projectId, record.requestId, qwenToken), permit);
     } catch {
       if (!permitCurrent(permit)) return;
       setRequestNote("查询没有完成，请稍后再试");
@@ -387,6 +473,14 @@ export function WritingAssistant(props: {
       setQwenBusy(false);
     }
   }
+
+  const followUp: "none" | "replay" | "query" | "new" = !workspaceRecord ? "none"
+    : workspaceRecord.state === "sending" ? "replay"
+      : (workspaceRecord.state === "reserved" || workspaceRecord.state === "submitted")
+        ? (workspaceRecord.requestId ? "query" : "replay")
+        : (workspaceRecord.state === "unknown" || workspaceRecord.state === "rejected" || workspaceRecord.candidateGone)
+          ? "new" : "none";
+  const shownRequestNote = requestNote ?? (workspaceRecord ? settledNote(workspaceRecord) : null);
 
   function adopt() {
     if (!draft.frozen || !draft.imported) return;
@@ -481,10 +575,14 @@ export function WritingAssistant(props: {
               {qwenStatus ? <p className="text-sm" role="status">{qwenStatus.code === "NETWORK" ? "状态检查没有完成" : qwenText(qwenStatus.code)}{qwenStatus.ready && qwenStatus.model ? `，模型 ${qwenStatus.model}` : ""}</p> : null}
               <button className="mt-2 rounded border px-3 py-1 text-sm disabled:opacity-50" type="button"
                 disabled={!qwenStatus?.ready || qwenBusy} onClick={() => void requestWorkspaceCandidate(false)}>向工作区请求候选</button>
-              {qwenFollowUp === "query" ? (
+              {followUp === "replay" ? (
+                <button className="ml-2 mt-2 rounded border px-3 py-1 text-sm" type="button" disabled={qwenBusy || !qwenStatus?.ready}
+                  onClick={() => { if (workspaceRecord) void send(workspaceRecord); }}>用原请求标识重新读取</button>
+              ) : null}
+              {followUp === "query" ? (
                 <button className="ml-2 mt-2 rounded border px-3 py-1 text-sm" type="button" disabled={qwenBusy} onClick={() => void queryWorkspaceRequest()}>查询请求状态</button>
               ) : null}
-              {qwenFollowUp === "new" ? (
+              {followUp !== "none" ? (
                 <div className="mt-2">
                   <label className="block text-sm">
                     <input className="mr-2" type="checkbox" checked={confirmNewCall} onChange={(event) => setConfirmNewCall(event.target.checked)} />
@@ -496,7 +594,7 @@ export function WritingAssistant(props: {
               ) : null}
             </fieldset>
           ) : null}
-          {requestNote ? <p className="text-sm" role="status">{requestNote}</p> : null}
+          {shownRequestNote ? <p className="text-sm" role="status">{shownRequestNote}</p> : null}
           {draft.instruction ? (
             <>
               <button className="ml-2 rounded border px-3 py-1 text-sm" type="button" onClick={() => void copyInstruction()}>复制创作指令</button>

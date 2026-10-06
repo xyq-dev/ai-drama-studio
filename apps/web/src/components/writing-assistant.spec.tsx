@@ -473,6 +473,93 @@ describe("workspace Qwen requests", () => {
     expect(screen.queryByText("候选已放进预览。费用未知。还要人工比较、采纳到草稿，再手动保存。")).toBeNull();
     expect(screen.queryByLabelText("候选正文")).toBeNull();
   });
+
+  it("does not import an old request's candidate into a newly prepared instruction (review P1)", async () => {
+    const client = fakeQwen({ outcomes: [result("submitted")], lookups: [completed()] });
+    const onAdopt = vi.fn(() => true);
+    render(createElement(WritingAssistant, { ...storyProps({ onAdopt }), workspaceQwen: client }));
+    await readyAssistant();
+    fireEvent.click(screen.getByRole("button", { name: "准备创作指令" }));
+    fireEvent.click(screen.getByRole("button", { name: "向工作区请求候选" }));
+    expect(await screen.findByText("请求仍在处理。可以稍后查询，不会重复调用。")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("题材"), { target: { value: "改成温情" } });
+    fireEvent.click(screen.getByRole("button", { name: "准备创作指令" }));
+    fireEvent.click(screen.getByRole("button", { name: "查询请求状态" }));
+    expect(await screen.findByText(/这个请求属于之前准备的指令/)).toBeTruthy();
+    expect(client.get).toHaveBeenCalledTimes(1);
+    expect(screen.queryByLabelText("候选正文")).toBeNull();
+    expect(screen.queryByRole("button", { name: "采纳到草稿" })).toBeNull();
+    expect(onAdopt).not.toHaveBeenCalled();
+  });
+
+  it("keeps an unknown request's key across a remount and needs confirmation to rotate it (review P1)", async () => {
+    const client = fakeQwen({ outcomes: [result("unknown"), result("unknown"), completed()] });
+    const first = render(createElement(WritingAssistant, { ...storyProps(), workspaceQwen: client }));
+    await readyAssistant();
+    fireEvent.click(screen.getByRole("button", { name: "准备创作指令" }));
+    fireEvent.click(screen.getByRole("button", { name: "向工作区请求候选" }));
+    expect(await screen.findByText(/结果未知：服务商可能已经处理并产生费用/)).toBeTruthy();
+    const firstKey = client.request.mock.calls[0]?.[2];
+    first.unmount();
+
+    render(createElement(WritingAssistant, { ...storyProps(), workspaceQwen: client }));
+    await readyAssistant();
+    expect(screen.getByText(/上次请求结果未知/)).toBeTruthy();
+    expect(screen.getByLabelText("我确认发起一次新的调用，可能另外产生费用")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "向工作区请求候选" }));
+    await waitFor(() => expect(client.request).toHaveBeenCalledTimes(2));
+    expect(client.request.mock.calls[1]?.[2]).toBe(firstKey);
+    expect(client.request.mock.calls[1]?.[1]).toEqual(client.request.mock.calls[0]?.[1]);
+
+    fireEvent.change(screen.getByLabelText("题材"), { target: { value: "改成温情" } });
+    fireEvent.click(screen.getByRole("button", { name: "准备创作指令" }));
+    fireEvent.click(screen.getByRole("button", { name: "向工作区请求候选" }));
+    expect(await screen.findByText(/上一次请求的结果还没有确定/)).toBeTruthy();
+    expect(client.request).toHaveBeenCalledTimes(2);
+    fireEvent.click(screen.getByLabelText("我确认发起一次新的调用，可能另外产生费用"));
+    fireEvent.click(screen.getByRole("button", { name: "发起新的调用" }));
+    await waitFor(() => expect(client.request).toHaveBeenCalledTimes(3));
+    expect(client.request.mock.calls[2]?.[2]).not.toBe(firstKey);
+    expect(JSON.stringify({ ...sessionStorage })).not.toContain("token-1234567890ab");
+  });
+
+  it("replays a lost answer with the persisted key and body after a refresh (review P1)", async () => {
+    const client = fakeQwen({ outcomes: [] });
+    client.request.mockImplementationOnce(() => Promise.reject(new TypeError("network down")));
+    const first = render(createElement(WritingAssistant, { ...storyProps(), workspaceQwen: client }));
+    await readyAssistant();
+    fireEvent.click(screen.getByRole("button", { name: "准备创作指令" }));
+    fireEvent.click(screen.getByRole("button", { name: "向工作区请求候选" }));
+    expect(await screen.findByText(/连接中断，结果未知/)).toBeTruthy();
+    const lostKey = client.request.mock.calls[0]?.[2];
+    const stored = JSON.parse(sessionStorage.getItem("ads-writing-qwen:project-1:story") ?? "null") as { key: string; state: string };
+    expect(stored).toMatchObject({ key: lostKey, state: "sending" });
+    first.unmount();
+
+    render(createElement(WritingAssistant, { ...storyProps(), workspaceQwen: client }));
+    await readyAssistant();
+    expect(screen.getByText(/上次请求没有收到回执/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "用原请求标识重新读取" }));
+    expect(await screen.findByText("候选已放进预览。费用未知。还要人工比较、采纳到草稿，再手动保存。")).toBeTruthy();
+    expect(client.request.mock.calls[1]?.[2]).toBe(lostKey);
+    expect(client.request.mock.calls[1]?.[1]).toEqual(client.request.mock.calls[0]?.[1]);
+  });
+
+  it("does not send when the request identity cannot be saved first", async () => {
+    const client = fakeQwen({ outcomes: [completed()] });
+    render(createElement(WritingAssistant, { ...storyProps(), workspaceQwen: client }));
+    await readyAssistant();
+    fireEvent.click(screen.getByRole("button", { name: "准备创作指令" }));
+    const original = window.sessionStorage.setItem.bind(window.sessionStorage);
+    const setItem = vi.spyOn(window.sessionStorage, "setItem").mockImplementation((name: string, value: string) => {
+      if (name.startsWith("ads-writing-qwen:")) throw new Error("quota");
+      original(name, value);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "向工作区请求候选" }));
+    expect(await screen.findByText("无法在本页保存请求标识，没有发送请求。")).toBeTruthy();
+    expect(client.request).not.toHaveBeenCalled();
+    setItem.mockRestore();
+  });
 });
 
 type Outcome = Awaited<ReturnType<QwenWebClient["request"]>>;

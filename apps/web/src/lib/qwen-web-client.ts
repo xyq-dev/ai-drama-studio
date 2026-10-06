@@ -51,9 +51,13 @@ function codeOf(body: unknown, status: number): string {
   return `HTTP_${status}`;
 }
 
+/** Statuses that carry this key's own request: 200 settled or pending, 422 rejected, 502 unknown. */
+const REQUEST_STATUSES = new Set([200, 422, 502]);
+
 function outcome(response: Response, body: unknown): QwenWebOutcome {
   const record = body as { request?: QwenWebRequestView; requestCount?: unknown } | null;
-  if (record && record.request && typeof record.request.requestId === "string") {
+  // A 409 for a reused key also returns the other request; that record must never be treated as this answer.
+  if (REQUEST_STATUSES.has(response.status) && record && record.request && typeof record.request.requestId === "string") {
     return {
       ok: true,
       httpStatus: response.status,

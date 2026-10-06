@@ -34,4 +34,19 @@ describe("qwen web client", () => {
     expect(JSON.parse(seen[1]?.body ?? "{}")).toEqual({ input: { schema: "qwen.writing.input.v1" } });
     expect(seen.some((item) => [...item.headers.keys()].some((name) => name.toLowerCase() === "authorization"))).toBe(false);
   });
+
+  it("never treats a 409 that carries another request's record as this request's answer", async () => {
+    const client = createQwenWebClient(async () => json({ code: "IDEMPOTENCY_KEY_REUSED", requestCount: 0,
+      request: { requestId: "old", state: "completed", candidateJson: "{}", billingStatus: "unknown" } }, 409));
+    expect(await client.request("project-1", {}, "key-1", "token-1"))
+      .toEqual({ ok: false, httpStatus: 409, code: "IDEMPOTENCY_KEY_REUSED" });
+  });
+
+  it("accepts this key's own record on 200, 422 and 502", async () => {
+    for (const status of [200, 422, 502]) {
+      const client = createQwenWebClient(async () => json({ requestCount: 0,
+        request: { requestId: "r", state: "unknown", billingStatus: "unknown" } }, status));
+      expect(await client.request("project-1", {}, "key-1", "token-1")).toMatchObject({ ok: true, httpStatus: status });
+    }
+  });
 });
