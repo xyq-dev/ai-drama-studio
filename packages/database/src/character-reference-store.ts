@@ -172,6 +172,29 @@ export async function characterReferenceStorageReady(client: Pick<PoolClient, "q
   return approval.rows.length === 1 && String(approval.rows[0]?.definition).includes(CHARACTER_REFERENCE_ROLE);
 }
 
+/**
+ * Lock order shared with every writer of this project's media: project -> character -> assets. A strict video's
+ * completion holds the project lock from its shot gate through the frozen-reference check and the asset, edge,
+ * event and cost writes; selection and review take the same project lock before reading anything, so a selection
+ * change and a completion are fully serialized and the stale scan sees every committed video.
+ */
+async function lockProjectOf(
+  client: Pick<PoolClient, "query">,
+  workspaceId: string,
+  source: { table: "character" | "asset"; id: string },
+): Promise<string> {
+  const owner = await client.query<{ project_id: string } & QueryResultRow>(
+    `SELECT project_id FROM ${source.table} WHERE id = $1 AND workspace_id = $2`,
+    [source.id, workspaceId],
+  );
+  const projectId = owner.rows[0]?.project_id;
+  if (!projectId) {
+    throw new PersistenceError("NOT_FOUND", source.table === "character" ? "Character not found" : "Character reference image not found");
+  }
+  await client.query("SELECT id FROM project WHERE id = $1 AND workspace_id = $2 FOR UPDATE", [projectId, workspaceId]);
+  return String(projectId);
+}
+
 export class CharacterReferenceStore {
   constructor(private readonly pool: DatabasePool) {}
 
@@ -386,6 +409,7 @@ export class CharacterReferenceStore {
     client: PoolClient,
     input: { workspaceId: string; assetId: string; reviewedBy: string; traceId: string } & CharacterReferenceReviewRequest,
   ): Promise<CharacterReferenceAsset> {
+    await lockProjectOf(client, input.workspaceId, { table: "asset", id: input.assetId });
     await this.requireStorage(client);
     const locked = await client.query<QueryResultRow>(
       `SELECT ${ASSET_COLUMNS}, asset.reference_role FROM asset
@@ -446,6 +470,9 @@ export class CharacterReferenceStore {
     input: { workspaceId: string; characterId: string; assetId: string; expectedSelectedAssetId: string | null;
       selectedBy: string; traceId: string },
   ): Promise<CharacterReferenceSelection> {
+    // Project first: a strict video completing in this project finishes (or has not started its checks) before
+    // the selection below is read, replaced and its dependents scanned.
+    await lockProjectOf(client, input.workspaceId, { table: "character", id: input.characterId });
     await this.requireStorage(client);
     const character = await client.query<QueryResultRow>(
       `SELECT character.id, character.project_id, character.current_revision_id,

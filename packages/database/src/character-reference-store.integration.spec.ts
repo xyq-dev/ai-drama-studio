@@ -27,6 +27,59 @@ afterAll(async () => {
   await pool.end();
 });
 
+/** Polls until a backend is waiting on a row lock for a statement matching the pattern. No fixed sleep. */
+async function waitForLockWaiter(pattern: string): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    const waiting = await pool.query<{ count: number }>(
+      `SELECT count(*)::int AS count FROM pg_stat_activity
+        WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE $1`, [pattern]);
+    if ((waiting.rows[0]?.count ?? 0) > 0) return;
+    if (Date.now() > deadline) throw new Error(`no backend waited on a lock for ${pattern}`);
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
+
+async function seedProjectAndCharacter(): Promise<{ workspaceId: string; projectId: string; characterId: string; assetId: string }> {
+  const one = async (text: string, values: unknown[]) => String((await pool.query<{ id: string }>(text, values)).rows[0]!.id);
+  const workspaceId = await one("INSERT INTO workspace (name) VALUES ('lock-order') RETURNING id", []);
+  const projectId = await one("INSERT INTO project (workspace_id, title) VALUES ($1, 'lock-order') RETURNING id", [workspaceId]);
+  const characterId = await one("INSERT INTO character (workspace_id, project_id, name) VALUES ($1, $2, 'lin') RETURNING id",
+    [workspaceId, projectId]);
+  const assetId = await one(
+    `INSERT INTO asset (workspace_id, project_id, kind, storage_provider, object_key, mime_type, byte_size, checksum_sha256,
+       source_kind) VALUES ($1, $2, 'IMAGE', 'mock-object-store', $3, 'image/png', 1, $4, 'UPLOAD') RETURNING id`,
+    [workspaceId, projectId, `refs/${projectId}.png`, hash]);
+  return { workspaceId, projectId, characterId, assetId };
+}
+
+describe("reference writes take the project lock before reading anything", () => {
+  it.each(["selection", "review"] as const)("a %s waits for the project lock held by another transaction", async (kind) => {
+    const seeded = await seedProjectAndCharacter();
+    const holder = await pool.connect();
+    try {
+      await holder.query("BEGIN");
+      await holder.query("SELECT id FROM project WHERE id = $1 FOR UPDATE", [seeded.projectId]);
+      let settled = false;
+      const write = (kind === "selection"
+        ? store.transaction((client) => store.selectInTransaction(client, { workspaceId: seeded.workspaceId,
+          characterId: seeded.characterId, assetId: seeded.assetId, expectedSelectedAssetId: null, selectedBy: "owner", traceId: "t" }))
+        : store.transaction((client) => store.reviewInTransaction(client, { workspaceId: seeded.workspaceId,
+          assetId: seeded.assetId, reviewedBy: "owner", traceId: "t", decision: "APPROVED", expectedRowVersion: 1,
+          contentHash: hash, note: null })))
+        .finally(() => { settled = true; });
+      write.catch(() => undefined);
+      await waitForLockWaiter("SELECT id FROM project WHERE id = $1 AND workspace_id = $2 FOR UPDATE");
+      expect(settled).toBe(false);
+      await holder.query("COMMIT");
+      // Only after the project lock does it reach the structure check; these migrations have no reference draft.
+      await expect(write).rejects.toMatchObject({ code: "CHARACTER_REFERENCE_STORAGE_UNAVAILABLE" });
+    } finally {
+      holder.release();
+    }
+  });
+});
+
 describe("CharacterReferenceStore without the reference draft", () => {
   it("reports storage unavailable and refuses every operation", async () => {
     expect(await store.storageReady()).toBe(false);

@@ -142,7 +142,12 @@ describe("M1-C API and SSE integration", () => {
       body: JSON.stringify({}),
     });
     expect(generate.status).toBe(503);
-    const select = await fetch(`${base}/api/v1/characters/55555555-5555-4555-8555-555555555555/reference-selection`, {
+    // Selection locks the character's project first, so it needs a real character to reach the storage check.
+    const owner = await seedApprovedScriptForTextEntity("reference-selection");
+    const character = (await sql<{ id: string }>(
+      "INSERT INTO character (workspace_id, project_id, name) VALUES ($1, $2, 'lin') RETURNING id",
+      [APP_WORKSPACE_ID, owner.projectId])).rows[0]!;
+    const select = await fetch(`${base}/api/v1/characters/${character.id}/reference-selection`, {
       method: "POST", headers: { "content-type": "application/json", "idempotency-key": "reference-select" },
       body: JSON.stringify({ assetId: "77777777-7777-4777-8777-777777777777", expectedSelectedAssetId: null }),
     });
