@@ -17,6 +17,8 @@ import {
 } from "@ai-drama/domain/writing-assistant";
 import { lineDiff } from "../lib/studio-model";
 import type { QwenWebClient, QwenWebOutcome, QwenWebStatus } from "../lib/qwen-web-client";
+import { appendOnce, assistantNote, readProjectDirection } from "../lib/creative-direction-link";
+import type { DirectionDraft } from "../lib/creative-taxonomy";
 
 const QWEN_STATUS_TEXT: Record<string, string> = {
   QWEN_WEB_READY: "工作区调用可用",
@@ -128,6 +130,8 @@ export function WritingAssistant(props: {
   const [qwenBusy, setQwenBusy] = useState(false);
   const [qwenFollowUp, setQwenFollowUp] = useState<"none" | "query" | "new">("none");
   const [confirmNewCall, setConfirmNewCall] = useState(false);
+  const [projectDirection, setProjectDirection] = useState<DirectionDraft | null>(null);
+  const [directionNote, setDirectionNote] = useState<string | null>(null);
   draftRef.current = draft;
   identityRef.current = { projectId: props.projectId, entityKey: props.entityKey };
 
@@ -146,6 +150,32 @@ export function WritingAssistant(props: {
       generation.current += 1;
     };
   }, [props.projectId, props.entityKey, props.episodeNo, props.mode]);
+
+  useEffect(() => {
+    setDirectionNote(null);
+    try {
+      setProjectDirection(props.mode === "story" ? readProjectDirection(window.localStorage, props.projectId) : null);
+    } catch {
+      setProjectDirection(null);
+    }
+  }, [props.projectId, props.mode]);
+
+  function applyProjectDirection() {
+    if (!projectDirection) return;
+    const result = appendOnce(draft.genre, assistantNote(projectDirection), WRITING_NOTE_MAX_CHARS);
+    if (!result.ok) {
+      setDirectionNote("加入后会超过题材字段长度上限，原内容没有改动。");
+      return;
+    }
+    if (!result.changed) {
+      setDirectionNote("题材里已经有这条分类方向，没有重复加入。");
+      return;
+    }
+    update({ genre: result.text });
+    setDirectionNote(draft.frozen
+      ? "已带入分类方向。输入已变化，之前准备的指令和候选不能直接采纳，请重新准备创作指令。"
+      : "已带入分类方向，原有题材内容保留。");
+  }
 
   function persist(next: AssistantDraft) {
     draftRef.current = next;
@@ -399,6 +429,13 @@ export function WritingAssistant(props: {
           <label className="block text-sm">题材
             <input className="mt-1 w-full rounded border px-2 py-1" maxLength={WRITING_NOTE_MAX_CHARS} value={draft.genre} onChange={(event) => update({ genre: event.target.value })} />
           </label>
+          {projectDirection ? (
+            <div className="rounded border border-neutral-200 p-2">
+              <p className="text-sm">这部作品在本浏览器里保存了分类中心的方向：{assistantNote(projectDirection)}</p>
+              <button className="mt-1 rounded border px-3 py-1 text-sm" type="button" onClick={applyProjectDirection}>带入分类方向</button>
+              {directionNote ? <p className="mt-1 text-sm" role="status">{directionNote}</p> : null}
+            </div>
+          ) : null}
           <label className="block text-sm">目标观众
             <input className="mt-1 w-full rounded border px-2 py-1" maxLength={WRITING_NOTE_MAX_CHARS} value={draft.audience} onChange={(event) => update({ audience: event.target.value })} />
           </label>
