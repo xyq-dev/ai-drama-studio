@@ -681,7 +681,7 @@ export class JobPersistenceService {
 
   async runIdempotent<T>(
     scope: IdempotencyScope,
-    responseStatus: number,
+    responseStatus: number | ((body: T) => number),
     operation: (client: PoolClient) => Promise<T>,
   ): Promise<{ replayed: boolean; status: number; body: T }> {
     return withTransaction(this.pool, async (client) => {
@@ -731,6 +731,7 @@ export class JobPersistenceService {
       }
 
       const body = await operation(client);
+      const status = typeof responseStatus === "function" ? responseStatus(body) : responseStatus;
       await client.query(
         `UPDATE idempotency_record
             SET response_status = $6, response_body = $7::jsonb
@@ -742,11 +743,11 @@ export class JobPersistenceService {
           scope.httpMethod,
           scope.routeKey,
           scope.key,
-          responseStatus,
+          status,
           JSON.stringify(body),
         ],
       );
-      return { replayed: false, status: responseStatus, body };
+      return { replayed: false, status, body };
     });
   }
 
@@ -1196,6 +1197,28 @@ export class JobPersistenceService {
       const queued = await queueJobTx(client, job, resolved.traceId, null, 0);
       return { ...created, dispatchSeq: queued.dispatch_seq };
     });
+  }
+
+  /**
+   * Like createAndQueueWorkflowJob, but the resolver may instead return an existing eligible result. A reuse
+   * answers 200 under the same idempotency record and creates no workflow, job, attempt, outbox or cost.
+   */
+  async createQueueOrReuse<R extends object>(
+    scope: IdempotencyScope,
+    resolve: (client: PoolClient) => Promise<{ kind: "job"; input: CreateWorkflowJobInput } | { kind: "reuse"; body: R }>,
+  ): Promise<{ replayed: boolean; status: number; body: (CreatedWorkflowJob & { dispatchSeq: number }) | R }> {
+    return this.runIdempotent<(CreatedWorkflowJob & { dispatchSeq: number }) | R>(
+      scope,
+      (body) => ("jobId" in body && "dispatchSeq" in body ? 202 : 200),
+      async (client) => {
+        const resolved = await resolve(client);
+        if (resolved.kind === "reuse") return resolved.body;
+        const created = await createWorkflowJobTx(client, resolved.input);
+        const job = await loadJobForUpdate(client, resolved.input.workspaceId, created.jobId);
+        const queued = await queueJobTx(client, job, resolved.input.traceId, null, 0);
+        return { ...created, dispatchSeq: queued.dispatch_seq };
+      },
+    );
   }
 
   async cancelJobIdempotent(

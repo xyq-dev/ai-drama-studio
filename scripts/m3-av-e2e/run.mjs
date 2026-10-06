@@ -1367,10 +1367,24 @@ async function main() {
     if (midAssets !== beforeAssets + 1 || midCosts !== beforeCosts + 1) {
       throw new Error(`replay changed asset/cost counts ${midAssets}/${midCosts}`);
     }
-    const fresh = expectStatus(await callApi(apiOrigin, "POST", path, { body: { seed: "same-seed" } }), 202);
-    if (fresh.body.jobId === first.body.jobId) throw new Error("new key reused the original job");
+    // A new key with the same input reuses the readable earlier result: 200, no job, attempt, asset or cost.
+    const firstLedger = await jobLedger(first.body.jobId);
+    const reusedKey = randomUUID();
+    const reused = expectStatus(await callApi(apiOrigin, "POST", path, { key: reusedKey, body: { seed: "same-seed" } }), 200);
+    if (reused.body.cache !== "HIT" || reused.body.assetId !== firstLedger.assets[0]?.id || reused.body.sourceJobId !== first.body.jobId
+      || reused.body.newCost !== "none") {
+      throw new Error(`same input did not reuse the earlier result ${JSON.stringify(reused.body)}`);
+    }
+    const reusedReplay = expectStatus(await callApi(apiOrigin, "POST", path, { key: reusedKey, body: { seed: "same-seed" } }), 200);
+    if (JSON.stringify(reusedReplay.body) !== JSON.stringify(reused.body)) throw new Error("reuse replay changed");
+    const reuseAssets = (await sql("SELECT count(*)::int AS count FROM asset WHERE workspace_id = $1", [workspaceId]))[0].count;
+    const reuseCosts = (await sql("SELECT count(*)::int AS count FROM cost_ledger WHERE workspace_id = $1", [workspaceId]))[0].count;
+    if (reuseAssets !== midAssets || reuseCosts !== midCosts) throw new Error("input reuse wrote an asset or cost");
+    // An explicit regeneration never reuses and creates a new job.
+    const fresh = expectStatus(await callApi(apiOrigin, "POST", path, { body: { seed: "same-seed", bypassCache: true } }), 202);
+    if (fresh.body.jobId === first.body.jobId) throw new Error("explicit regeneration reused the original job");
     const freshDone = await pollJob(fresh.body.jobId, 90_000);
-    if (freshDone.state !== "SUCCEEDED") throw new Error(`new key job ${freshDone.state}`);
+    if (freshDone.state !== "SUCCEEDED") throw new Error(`regenerated job ${freshDone.state}`);
     const retry = expectStatus(await callApi(apiOrigin, "POST", `/generation-jobs/${state.world.video.jobId}/retry`, {
       body: {},
     }), 409, "JOB_NOT_RETRYABLE");
@@ -1379,7 +1393,7 @@ async function main() {
     if (await jobCount() < beforeJobs) throw new Error("job count went backwards");
     void conflict;
     void retry;
-    return { originalJobId: first.body.jobId, newJobId: fresh.body.jobId };
+    return { originalJobId: first.body.jobId, reusedAssetId: reused.body.assetId, newJobId: fresh.body.jobId };
   });
 
   await stage("revision-history", async () => {

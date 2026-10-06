@@ -9,9 +9,11 @@ import {
   RuntimeStore,
   isMockMediaJobKind,
   mockMediaRetryLineage,
+  mockMediaRoute,
   TextChainService,
   insertProject,
   requestHash,
+  type CreateWorkflowJobInput,
   type IdempotencyScope,
   type MockSceneSnapshot,
   type MockShotSnapshot,
@@ -95,6 +97,19 @@ const textEntityBodySchema = z.object({
   sourceScriptRevisionId: z.string().uuid(),
   content: z.record(z.string(), z.unknown()),
 });
+
+type TransactionClient = Parameters<MediaAssetStore["findReusableShotAssetsInTransaction"]>[0];
+
+/** 200 answer of a generate endpoint that reused an existing result for the same input. */
+export interface MediaReuseBody {
+  cache: "HIT";
+  assetId: string;
+  sourceJobId: string;
+  sourceShotRevisionId: string;
+  jobKind: string;
+  inputHash: string;
+  newCost: "none";
+}
 
 export interface StudioContext {
   actorId: string;
@@ -623,7 +638,7 @@ export class StudioService {
       throw new PersistenceError("CONFIGURATION_ERROR", "Mock image worker storage is not enabled");
     }
     if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
-    return this.jobs.createAndQueueWorkflowJob(
+    return this.jobs.createQueueOrReuse(
       this.scope(context, "POST", `/shot-revisions/${shotRevisionId}/generate-image`, input),
       async (client) => {
         const { projectId } = await this.mediaAssets!.prepareShotGenerationInTransaction(
@@ -632,10 +647,10 @@ export class StudioService {
         const regeneration = regenerationSeed(input.seed ?? null, input.bypassCache === true, randomUUID());
         const snapshot = { schema: "m3.mock.image.v1", shotRevisionId,
           seed: regeneration.seed, outcome: "success", bypassCache: regeneration.bypassCache };
-        return { workspaceId: this.workspaceId, projectId, sourceShotRevisionId: shotRevisionId,
+        return this.reuseOrCreate(client, { workspaceId: this.workspaceId, projectId, sourceShotRevisionId: shotRevisionId,
           type: "MEDIA_IMAGE", requestedBy: context.actorId, kind: "MEDIA_IMAGE",
           inputHash: createHash("sha256").update(JSON.stringify(snapshot)).digest("hex"),
-          inputSnapshot: snapshot, traceId: context.traceId };
+          inputSnapshot: snapshot, traceId: context.traceId }, input.bypassCache === true);
       },
     );
   }
@@ -1029,7 +1044,7 @@ export class StudioService {
     if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
     const route = kind === "MEDIA_VIDEO" ? "generate-video" : "generate-tts";
     const capability = kind === "MEDIA_VIDEO" ? "video.generate" : "audio.tts";
-    return this.jobs.createAndQueueWorkflowJob(
+    return this.jobs.createQueueOrReuse(
       this.scope(context, "POST", `/shot-revisions/${shotRevisionId}/${route}`, input),
       async (client) => {
         const source = await this.mediaAssets!.prepareShotGenerationInTransaction(
@@ -1079,7 +1094,7 @@ export class StudioService {
             sourceText,
             sourceHash,
           };
-        return {
+        return this.reuseOrCreate(client, {
           workspaceId: this.workspaceId,
           projectId: source.projectId,
           sourceShotRevisionId: shotRevisionId,
@@ -1089,7 +1104,7 @@ export class StudioService {
           inputHash: createHash("sha256").update(JSON.stringify(snapshot)).digest("hex"),
           inputSnapshot: snapshot,
           traceId: context.traceId,
-        };
+        }, input.bypassCache === true);
       },
     );
   }
@@ -1107,7 +1122,7 @@ export class StudioService {
     if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
     const route = kind === "MEDIA_SUBTITLE" ? "generate-subtitle" : "generate-music";
     const capability = kind === "MEDIA_SUBTITLE" ? "subtitle.generate" : "audio.music";
-    return this.jobs.createAndQueueWorkflowJob(
+    return this.jobs.createQueueOrReuse(
       this.scope(context, "POST", `/shot-revisions/${shotRevisionId}/${route}`, input),
       async (client) => {
         const source = await this.mediaAssets!.prepareShotGenerationInTransaction(
@@ -1132,7 +1147,7 @@ export class StudioService {
           sourceText,
           sourceHash: createHash("sha256").update(sourceText).digest("hex"),
         };
-        return {
+        return this.reuseOrCreate(client, {
           workspaceId: this.workspaceId,
           projectId: source.projectId,
           sourceShotRevisionId: shotRevisionId,
@@ -1142,9 +1157,53 @@ export class StudioService {
           inputHash: createHash("sha256").update(JSON.stringify(snapshot)).digest("hex"),
           inputSnapshot: snapshot,
           traceId: context.traceId,
-        };
+        }, input.bypassCache === true);
       },
     );
+  }
+
+  /**
+   * Input reuse for a non-explicit generate request. A candidate is reused only if its stored bytes still read
+   * back and match the recorded checksum; otherwise a new job is created. bypassCache=true never reuses.
+   * A hit creates no job, attempt, outbox or cost: nothing new was generated or charged.
+   */
+  private async reuseOrCreate(
+    client: TransactionClient,
+    job: CreateWorkflowJobInput & { sourceShotRevisionId: string },
+    bypassCache: boolean,
+  ): Promise<{ kind: "job"; input: CreateWorkflowJobInput } | { kind: "reuse"; body: MediaReuseBody }> {
+    const route = mockMediaRoute(job.kind);
+    if (!bypassCache && route && this.mediaAssets) {
+      const candidates = await this.mediaAssets.findReusableShotAssetsInTransaction(client, {
+        workspaceId: job.workspaceId,
+        projectId: job.projectId,
+        shotRevisionId: job.sourceShotRevisionId,
+        jobKind: job.kind,
+        inputHash: job.inputHash,
+        capability: route.capability,
+        assetKind: route.assetKind,
+      });
+      for (const candidate of candidates) {
+        try {
+          await this.readMockAssetContent(candidate.assetId);
+        } catch {
+          continue;
+        }
+        return {
+          kind: "reuse",
+          body: {
+            cache: "HIT",
+            assetId: candidate.assetId,
+            sourceJobId: candidate.jobId,
+            sourceShotRevisionId: job.sourceShotRevisionId,
+            jobKind: job.kind,
+            inputHash: job.inputHash,
+            newCost: "none",
+          },
+        };
+      }
+    }
+    return { kind: "job", input: job };
   }
 
   private scope(context: StudioContext, method: string, routeKey: string, body: unknown): IdempotencyScope {

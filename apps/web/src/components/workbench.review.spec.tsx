@@ -52,6 +52,7 @@ interface Sim {
   mediaTaskState: string;
   mediaTaskErrorCode: string | null;
   mediaRetryResponse: { status: number; body: unknown } | null;
+  imageReuse: boolean;
   failWorkflowRead: number | null;
   failWorkflowReads: number[];
   failAssetRead: number | null;
@@ -111,6 +112,7 @@ function createSim(): Sim {
     mediaTaskState: "FAILED",
     mediaTaskErrorCode: "MOCK_IMAGE_OUTPUT_INVALID",
     mediaRetryResponse: null,
+    imageReuse: false,
     failWorkflowRead: null,
     failWorkflowReads: [],
     failAssetRead: null,
@@ -544,6 +546,10 @@ function createSim(): Sim {
       if (sim.imageFailures > 0) {
         sim.imageFailures -= 1;
         return fail(409, "CONFLICT", "受理失败");
+      }
+      if (sim.imageReuse && body.bypassCache !== true) {
+        return json({ cache: "HIT", assetId: "reused-asset-1", sourceJobId: "old-job", sourceShotRevisionId: `${SHOT_A}-rev`,
+          jobKind: "MEDIA_IMAGE", inputHash: "ab".repeat(32), newCost: "none" }, 200);
       }
       return json({ workflowRunId: "media-run", jobId: "media-job" }, 202);
     }
@@ -1287,6 +1293,19 @@ describe("workbench review interactions against a simulated API", () => {
     expect((button as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(button);
     expect(sim.calls.filter((call) => call.url.includes("/generate-image"))).toHaveLength(0);
+  });
+
+  it("shows a reused result as no new job and no new cost, then refreshes the image list", async () => {
+    const sim = createSim();
+    sim.imageReady = true;
+    sim.imageReuse = true;
+    install(sim);
+    renderAt(`focus=shot&episode=1&scene=scene-1&shot=${SHOT_A}`);
+    fireEvent.click(await screen.findByRole("button", { name: "生成 Mock 图片" }));
+    expect(await screen.findByText(/已复用同一输入的已有结果 reused-asset-1：没有新建任务，也没有新增费用/)).toBeTruthy();
+    expect(screen.queryByText(/已受理，结果以任务和图片列表为准/)).toBeNull();
+    const reads = sim.calls.filter((call) => call.method === "GET" && call.url.endsWith(`/shot-revisions/${SHOT_A}-rev/assets`));
+    expect(reads.length).toBeGreaterThanOrEqual(2);
   });
 
   it("accepts an explicit mock image request without treating 202 as a finished asset", async () => {

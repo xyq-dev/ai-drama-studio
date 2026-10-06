@@ -2572,7 +2572,7 @@ function ShotImagePanel(props: {
             ? "已受理，结果以任务和字幕列表为准。这不是生成成功。"
             : "已受理，结果以任务和音乐列表为准。这不是生成成功。";
     try {
-      const result = await client.write<{ workflowRunId: string }>({
+      const result = await client.write<{ workflowRunId?: string; cache?: string; assetId?: string }>({
         path: `/shot-revisions/${revisionId}/${path}`,
         body: {
           ...(value.trim().length > 0 ? { seed: value.trim() } : {}),
@@ -2585,10 +2585,13 @@ function ShotImagePanel(props: {
         return;
       }
       if (slot.current?.key === key) slot.current = null;
-      const text = result.status === 202 ? accepted : `已返回 ${result.status}，结果以随后的查询为准。`;
-      if (result.status === 202) acceptedEpoch.current[channel] = epoch;
+      const reused = result.status === 200 && result.body.cache === "HIT";
+      const text = result.status === 202 ? accepted
+        : reused ? `已复用同一输入的已有结果 ${result.body.assetId ?? ""}：没有新建任务，也没有新增费用。需要另一份结果请使用重新生成。`
+          : `已返回 ${result.status}，结果以随后的查询为准。`;
+      if (result.status === 202 || reused) acceptedEpoch.current[channel] = epoch;
       showNotice(channel, text);
-      if (result.status !== 202) return;
+      if (result.status !== 202 && !reused) return;
       try {
         await props.onAccepted();
       } catch {

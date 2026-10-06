@@ -525,3 +525,88 @@ describe("Mock media manual retry", () => {
     await expect(jobs.manualRetry({ ...input, retryable: false })).rejects.toMatchObject({ code: "JOB_NOT_RETRYABLE" });
   });
 });
+
+describe("Mock media input reuse lookup", () => {
+  async function succeededImage(world: World, seed: string) {
+    const objectDir = await mkdtemp(join(tmpdir(), "media-reuse-"));
+    const job = await createMediaJob(world, "MEDIA_IMAGE", snapshotFor("MEDIA_IMAGE", world.shotRevisionId, seed));
+    const row = await jobRow(job.jobId);
+    const asset = await runMockImageJob({ workspaceId: world.workspaceId, projectId: world.projectId,
+      shotRevisionId: world.shotRevisionId, jobId: job.jobId, dispatchSeq: job.dispatchSeq,
+      providerConfigurationId: world.providers.MEDIA_IMAGE, inputHash: row?.input_hash as string,
+      inputSnapshot: row?.input_snapshot, traceId: "run" }, { jobs, assets, adapter, objects: new LocalMockObjects(objectDir) });
+    await rm(objectDir, { recursive: true, force: true });
+    return { job, row, assetId: asset!.id };
+  }
+
+  async function lookup(world: World, inputHash: string, overrides: Partial<{ projectId: string; jobKind: string;
+    capability: string; assetKind: string; shotRevisionId: string }> = {}) {
+    const client = await pool.connect();
+    try {
+      return await assets.findReusableShotAssetsInTransaction(client, {
+        workspaceId: world.workspaceId, projectId: world.projectId, shotRevisionId: world.shotRevisionId,
+        jobKind: "MEDIA_IMAGE", inputHash, capability: "image.generate", assetKind: "IMAGE", ...overrides,
+      });
+    } finally {
+      client.release();
+    }
+  }
+
+  it("finds only an ACTIVE asset of a SUCCEEDED job with the same scope, input and enabled provider", async () => {
+    const world = await seedApprovedShot();
+    const done = await succeededImage(world, "reuse-seed");
+    const hash = done.row?.input_hash as string;
+    expect(await lookup(world, hash)).toEqual([{ assetId: done.assetId, jobId: done.job.jobId }]);
+    expect(await lookup(world, "ef".repeat(32))).toEqual([]);
+    expect(await lookup(world, hash, { jobKind: "MEDIA_VIDEO", capability: "video.generate", assetKind: "VIDEO" })).toEqual([]);
+    expect(await lookup(world, hash, { shotRevisionId: randomUUID() })).toEqual([]);
+    const other = await seedApprovedShot();
+    expect(await lookup({ ...other, shotRevisionId: world.shotRevisionId }, hash)).toEqual([]);
+
+    const failed = await failedMediaJob(world, "MEDIA_IMAGE");
+    expect(await lookup(world, (await jobRow(failed.jobId))?.input_hash as string)).toEqual([]);
+
+    await sql("UPDATE provider_configuration SET enabled = false WHERE id = $1", [world.providers.MEDIA_IMAGE]);
+    expect(await lookup(world, hash)).toEqual([]);
+    await sql("UPDATE provider_configuration SET enabled = true WHERE id = $1", [world.providers.MEDIA_IMAGE]);
+    await sql("UPDATE asset SET status = 'STALE' WHERE id = $1", [done.assetId]);
+    expect(await lookup(world, hash)).toEqual([]);
+  });
+
+  it("answers a reuse with 200 under the idempotency record and creates no job, attempt, outbox or cost", async () => {
+    const world = await seedApprovedShot();
+    const done = await succeededImage(world, "reuse-key");
+    const counts = async () => (await sql<{ jobs: number; attempts: number; outbox: number; costs: number }>(
+      `SELECT (SELECT count(*)::int FROM generation_job WHERE workspace_id = $1) AS jobs,
+              (SELECT count(*)::int FROM job_attempt WHERE workspace_id = $1) AS attempts,
+              (SELECT count(*)::int FROM dispatch_outbox WHERE workspace_id = $1) AS outbox,
+              (SELECT count(*)::int FROM cost_ledger WHERE workspace_id = $1) AS costs`, [world.workspaceId])).rows[0];
+    const before = await counts();
+    const reuseScope: IdempotencyScope = { workspaceId: world.workspaceId, actorId: "test", httpMethod: "POST",
+      routeKey: `/shot-revisions/${world.shotRevisionId}/generate-image`, key: "reuse-1", requestHash: requestHash({ seed: "reuse-key" }) };
+    const resolve = async (client: Parameters<typeof assets.findReusableShotAssetsInTransaction>[0]) => {
+      const [hit] = await assets.findReusableShotAssetsInTransaction(client, {
+        workspaceId: world.workspaceId, projectId: world.projectId, shotRevisionId: world.shotRevisionId,
+        jobKind: "MEDIA_IMAGE", inputHash: done.row?.input_hash as string, capability: "image.generate", assetKind: "IMAGE",
+      });
+      if (!hit) throw new Error("expected a reusable asset");
+      return { kind: "reuse" as const, body: { cache: "HIT" as const, assetId: hit.assetId, sourceJobId: hit.jobId } };
+    };
+    const first = await jobs.createQueueOrReuse(reuseScope, resolve);
+    expect(first).toEqual({ replayed: false, status: 200,
+      body: { cache: "HIT", assetId: done.assetId, sourceJobId: done.job.jobId } });
+    const replay = await jobs.createQueueOrReuse(reuseScope, resolve);
+    expect(replay).toEqual({ replayed: true, status: 200, body: first.body });
+    expect(await counts()).toEqual(before);
+
+    const miss = await jobs.createQueueOrReuse({ ...reuseScope, key: "reuse-2" }, async () => ({
+      kind: "job" as const,
+      input: { workspaceId: world.workspaceId, projectId: world.projectId, sourceShotRevisionId: world.shotRevisionId,
+        type: "MEDIA_IMAGE", requestedBy: "test", kind: "MEDIA_IMAGE", inputHash: done.row?.input_hash as string,
+        inputSnapshot: done.row?.input_snapshot, traceId: "miss" },
+    }));
+    expect(miss.status).toBe(202);
+    expect(miss.body).toMatchObject({ dispatchSeq: 1 });
+    expect((await counts())?.jobs).toBe((before?.jobs ?? 0) + 1);
+  });
+});

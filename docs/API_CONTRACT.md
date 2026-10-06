@@ -126,6 +126,16 @@ workspace、project 及完整 episode/scene scope。revision 历史保留 `items
 - 一条链从初始任务起最多手工重试 2 次；第三次返回 `409 RETRY_LIMIT`，`details: {rootJobId, manualRetryCount, limit}`。
 - 成功时 `retry: {sourceJobId, rootJobId, manualRetryCount}`，并追加两条 DomainEvent：源任务上的 `job.retried` 与新任务上的 `job.retry_of`。服务端用二者双向核对父任务与根任务；不一致时返回 `409 RETRY_LINEAGE_INVALID`。无需数据库结构变更。
 
+### Mock 媒体输入复用
+
+`generate-image`、`generate-video`、`generate-tts`、`generate-subtitle`、`generate-music` 的非显式请求（未设置 `bypassCache=true`）在通过原生成门槛后，先在同一事务内查找可复用结果：
+
+- 身份：同一 workspace、project、`source_shot_revision_id`、任务类型与 `inputHash`（快照已含 schema、镜头修订、seed、来源文本哈希、能力和样片 fixture），且结果由当前仍启用的同能力 `mock-media` 配置产生。
+- 资格：原任务 `SUCCEEDED`；资产 `ACTIVE`、类型匹配、`source_kind = PROVIDER`；对象内容按记录的大小与 SHA-256 读回成功。`STALE`、失败、取消、未知或损坏的结果不复用，按时间倒序最多检查 5 个候选，均不合格则照常建新任务。
+- 命中：`200 {cache:"HIT", assetId, sourceJobId, sourceShotRevisionId, jobKind, inputHash, newCost:"none"}`，写入同一幂等记录，同 key 重放返回同一结果；不创建 WorkflowRun、Job、Attempt、outbox 或成本，不复制历史账本。
+- `bypassCache=true` 永不复用并创建新任务；`POST /generation-jobs/:jobId/retry` 不经过复用。
+- 并发：不同 key 的同输入请求各自独立判断；尚未完成的任务不会被当作可复用结果。
+
 ## Providers and Exports
 
 | Method / Path | 用途、输入、输出 | 权限 / 幂等 / 特有错误 |
