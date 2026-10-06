@@ -12,6 +12,7 @@ import {
   mockMediaRetryLineage,
   requestHash,
   runMigrations,
+  staleAssetsDependingOn,
   type IdempotencyScope,
   type MockMediaRetryFlags,
   type PostgresPool,
@@ -651,6 +652,73 @@ describe("Mock media input reuse lookup", () => {
       expect(secondRequested).toBe(false);
     } finally {
       expect(held).toBe(0);
+    }
+  });
+});
+
+describe("replacing a selected reference stales what was made from it", () => {
+  it("marks dependent videos and their downstream assets STALE and leaves the reference, other branches, reviews and costs alone", async () => {
+    const world = await seedApprovedShot();
+    const objectDir = await mkdtemp(join(tmpdir(), "reference-stale-"));
+    const objects = new LocalMockObjects(objectDir);
+    const run = async (kind: "MEDIA_IMAGE" | "MEDIA_VIDEO" | "MEDIA_MUSIC", seed: string) => {
+      const job = await createMediaJob(world, kind, snapshotFor(kind, world.shotRevisionId, seed));
+      const row = await jobRow(job.jobId);
+      const common = { workspaceId: world.workspaceId, projectId: world.projectId, shotRevisionId: world.shotRevisionId,
+        jobId: job.jobId, dispatchSeq: job.dispatchSeq, providerConfigurationId: world.providers[kind],
+        inputHash: row?.input_hash as string, inputSnapshot: row?.input_snapshot, traceId: `stale-${seed}` };
+      const asset = kind === "MEDIA_IMAGE" ? await runMockImageJob(common, { jobs, assets, adapter, objects })
+        : kind === "MEDIA_VIDEO" ? await runMockAvJob({ ...common, capability: "video.generate" }, { jobs, assets, adapter, objects })
+          : await runMockSmJob({ ...common, capability: "audio.music" }, { jobs, assets, adapter, objects });
+      return asset!.id;
+    };
+    try {
+      // Stand-ins for the strict path: a reference image, a video made from it, and an asset made from that video.
+      const reference = await run("MEDIA_IMAGE", "reference-a");
+      const video = await run("MEDIA_VIDEO", "video-from-a");
+      const downstream = await run("MEDIA_MUSIC", "downstream-of-video");
+      const unrelated = await run("MEDIA_VIDEO", "video-from-b");
+      const edge = (dependent: string, source: string) => sql(
+        `INSERT INTO asset_dependency (workspace_id, project_id, dependent_asset_id, source_asset_id) VALUES ($1, $2, $3, $4)`,
+        [world.workspaceId, world.projectId, dependent, source]);
+      await edge(video, reference);
+      await edge(downstream, video);
+      const costsBefore = await sql<{ count: number }>("SELECT count(*)::int AS count FROM cost_ledger WHERE workspace_id = $1",
+        [world.workspaceId]);
+      const client = await pool.connect();
+      let staled: string[];
+      try {
+        await client.query("BEGIN");
+        staled = await staleAssetsDependingOn(client, world.workspaceId, reference, "character_reference_selection:test", "stale-test");
+        await client.query("COMMIT");
+      } finally {
+        client.release();
+      }
+      expect(staled.sort()).toEqual([video, downstream].sort());
+      const states = await sql<{ id: string; status: string; review_status: string; row_version: number }>(
+        "SELECT id, status, review_status, row_version FROM asset WHERE id = ANY($1::uuid[])",
+        [[reference, video, downstream, unrelated]]);
+      const byId = Object.fromEntries(states.rows.map((row) => [row.id, row]));
+      expect(byId[reference]).toMatchObject({ status: "ACTIVE", row_version: 1 });
+      expect(byId[video]).toMatchObject({ status: "STALE", review_status: "DRAFT", row_version: 2 });
+      expect(byId[downstream]).toMatchObject({ status: "STALE", row_version: 2 });
+      expect(byId[unrelated]).toMatchObject({ status: "ACTIVE", row_version: 1 });
+      const events = await sql<{ aggregate_id: string; payload_json: { staleFromRef: string } }>(
+        "SELECT aggregate_id, payload_json FROM domain_event WHERE event_type = 'asset.stale' AND workspace_id = $1",
+        [world.workspaceId]);
+      expect(events.rows.map((row) => row.aggregate_id).sort()).toEqual([video, downstream].sort());
+      expect(events.rows.every((row) => row.payload_json.staleFromRef === "character_reference_selection:test")).toBe(true);
+      expect((await sql<{ count: number }>("SELECT count(*)::int AS count FROM cost_ledger WHERE workspace_id = $1",
+        [world.workspaceId])).rows).toEqual(costsBefore.rows);
+      // A second pass finds nothing left ACTIVE on that branch.
+      const again = await pool.connect();
+      try {
+        expect(await staleAssetsDependingOn(again, world.workspaceId, reference, "character_reference_selection:test", "again")).toEqual([]);
+      } finally {
+        again.release();
+      }
+    } finally {
+      await rm(objectDir, { recursive: true, force: true });
     }
   });
 });

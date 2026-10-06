@@ -230,16 +230,27 @@ export class MediaAssetStore {
               input.kind === "IMAGE" ? "preview" : "approved",
             );
           }
+          let frozen: ReturnType<typeof frozenCharacterReferences> = null;
           if (input.kind === "VIDEO") {
             // A strict video job froze its selected character references; they must still be usable now.
             const job = await client.query<{ input_snapshot: unknown } & QueryResultRow>(
               "SELECT input_snapshot FROM generation_job WHERE id = $1 AND workspace_id = $2",
               [input.generationJobId, input.workspaceId],
             );
-            const frozen = frozenCharacterReferences(job.rows[0]?.input_snapshot);
+            frozen = frozenCharacterReferences(job.rows[0]?.input_snapshot);
             if (frozen) await assertFrozenReferencesUsable(client, input.workspaceId, frozen);
           }
-          return insertAsset(client, input);
+          const inserted = await insertAsset(client, input);
+          // Explicit source edges video -> reference image, so replacing a selection or the character revision
+          // stales this video and everything composed from it through the existing asset dependency graph.
+          for (const reference of frozen ?? []) {
+            await client.query(
+              `INSERT INTO asset_dependency (workspace_id, project_id, dependent_asset_id, source_asset_id)
+               VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
+              [input.workspaceId, input.projectId, inserted.id, reference.assetId],
+            );
+          }
+          return inserted;
         })();
         if (input.actualCost) await recordProviderActualCost(client, input.actualCost);
         return asset;

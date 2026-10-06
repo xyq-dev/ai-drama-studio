@@ -15,7 +15,7 @@
 | 生成 | 修订是该角色的当前修订、`CURRENT`；它消费的每条剧本来源都已审核且可用（`m2_script_source_is_usable`）；项目没有进行中的失效重算；`mock-media` 的 `image.generate` 配置启用；`M3_MOCK_IMAGE_ENABLED`。角色本身不需要已审核。完成写入时在同一事务内再检查一次。 |
 | 审核 | 只针对 `reference_role = character_reference` 的资产；请求带 `expectedRowVersion` 和 `contentHash`，两者必须与库内一致，审核记录固定在该字节哈希上。通过只允许 `ACTIVE` 且来自角色当前 `CURRENT` 修订的资产；退回必须写原因。 |
 | 选择 | 比较并写入：请求带 `expectedSelectedAssetId`（看到的当前选择，没有则 `null`），不一致返回 `409 REFERENCE_SELECTION_CONFLICT` 并给出当前值。被选资产必须 `ACTIVE`、已通过且审核哈希等于内容哈希、来自角色当前 `CURRENT` 修订。 |
-| 失效 | 生成时写入 `asset_revision_dependency.character_revision_id` 边。角色修订被替换时，既有失效传播把这些参考图标为 `STALE`。选择记录保留为历史，但不再满足可用条件；`STALE` 的已通过资产不能作为来源。 |
+| 失效 | 生成时写入 `asset_revision_dependency.character_revision_id` 边；严格视频成功时在同一事务写入「视频 → 选定参考图」的 `asset_dependency` 边。角色修订被替换时，既有失效传播把参考图及沿这些边依赖它的视频、成片标为 `STALE`。改选参考图时，同一事务把依赖被替换参考图的视频及其下游（合成成片等）标为 `STALE` 并写 `asset.stale` 事件；被替换的参考图本身、审核记录、账本和无关分支不变。`STALE` 的视频不能再进入合成预检，`STALE` 的成片不能导出。选择记录保留为历史；`STALE` 的已通过资产不能作为来源。 |
 | 严格视频门 | 镜头修订引用的每个角色修订：角色当前且已审核、`CURRENT`；该角色的选择指向由同一修订生成、`ACTIVE`、按字节审核通过的参考图。选定参考图的 `assetId` 与内容哈希冻结进视频快照的 `characterReferences`，因此进入 `inputHash`。Worker 完成写入和手工 retry 前都重新核验这些冻结参考。 |
 
 ## 兼容

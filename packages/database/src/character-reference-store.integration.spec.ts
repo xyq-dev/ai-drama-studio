@@ -116,4 +116,33 @@ describe.runIf(draftAuthorized)("CharacterReferenceStore on the authorized refer
       [{ characterRevisionId: revisionId, assetId: good, checksumSha256: hash }])))
       .rejects.toMatchObject({ code: "CHARACTER_REFERENCE_REQUIRED" });
   });
+
+  it("stales the videos and downstream assets made from a replaced selection, and nothing else (review P1)", async () => {
+    const approve = (assetId: string) => tx((client) => store.reviewInTransaction(client, { workspaceId, assetId,
+      reviewedBy: "owner", traceId: "t", decision: "APPROVED", expectedRowVersion: 1, contentHash: hash, note: null }));
+    const a = await reference(revisionId, "refs/replace-a.png");
+    const b = await reference(revisionId, "refs/replace-b.png");
+    await approve(a);
+    await approve(b);
+    const current = (await store.listForCharacter(workspaceId, characterId)).selection?.assetId ?? null;
+    await tx((client) => store.selectInTransaction(client, { workspaceId, characterId, assetId: a,
+      expectedSelectedAssetId: current, selectedBy: "owner", traceId: "t" }));
+    const upload = (kind: string, key: string) => one(
+      `INSERT INTO asset (workspace_id, project_id, kind, storage_provider, object_key, mime_type, byte_size,
+         checksum_sha256, source_kind) VALUES ($1, $2, $3, 'mock-object-store', $4, 'video/mp4', 1, $5, 'UPLOAD') RETURNING id`,
+      [workspaceId, projectId, kind, key, hash]);
+    const video = await upload("VIDEO", "videos/from-a.mp4");
+    const composite = await upload("VIDEO", "videos/composite-of-a.mp4");
+    const unrelated = await upload("VIDEO", "videos/unrelated.mp4");
+    await pool.query("INSERT INTO asset_dependency (workspace_id, project_id, dependent_asset_id, source_asset_id) VALUES ($1,$2,$3,$4), ($1,$2,$5,$3)",
+      [workspaceId, projectId, video, a, composite]);
+    const replaced = await tx((client) => store.selectInTransaction(client, { workspaceId, characterId, assetId: b,
+      expectedSelectedAssetId: a, selectedBy: "owner", traceId: "t" }));
+    expect(replaced.staleAssetIds?.sort()).toEqual([video, composite].sort());
+    const rows = (await pool.query<{ id: string; status: string; review_status: string }>(
+      "SELECT id, status, review_status FROM asset WHERE id = ANY($1::uuid[])", [[a, b, video, composite, unrelated]])).rows;
+    const status = Object.fromEntries(rows.map((row) => [row.id, row.status]));
+    expect(status).toMatchObject({ [a]: "ACTIVE", [b]: "ACTIVE", [video]: "STALE", [composite]: "STALE", [unrelated]: "ACTIVE" });
+    expect(rows.find((row) => row.id === a)?.review_status).toBe("APPROVED");
+  });
 });

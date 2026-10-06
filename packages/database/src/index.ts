@@ -131,6 +131,7 @@ export {
   assertFrozenReferencesUsable,
   characterReferenceStorageReady,
   frozenCharacterReferences,
+  staleAssetsDependingOn,
   type CharacterReferenceAsset,
   type CharacterReferenceListing,
   type CharacterReferenceSelection,

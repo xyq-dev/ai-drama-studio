@@ -41,6 +41,8 @@ export interface CharacterReferenceSelection {
   assetId: string;
   selectedBy: string;
   createdAt: string;
+  /** Assets marked STALE because they depended on the reference this selection replaced. */
+  staleAssetIds?: string[];
 }
 
 export interface CharacterReferenceListing {
@@ -55,6 +57,44 @@ export interface PreparedReferenceGeneration {
   characterId: string;
   characterContentHash: string;
   providerConfigurationId: string;
+}
+
+/**
+ * Marks ACTIVE every asset that depends, directly or through further asset dependencies, on the given source asset
+ * as STALE, with one asset.stale event each. The source itself, reviews, ledgers and unrelated branches are untouched.
+ * Uses only applied tables (asset, asset_dependency, domain_event).
+ */
+export async function staleAssetsDependingOn(
+  client: Pick<PoolClient, "query">,
+  workspaceId: string,
+  sourceAssetId: string,
+  staleFromRef: string,
+  traceId: string,
+): Promise<string[]> {
+  const result = await client.query<{ id: string } & QueryResultRow>(
+    `WITH RECURSIVE affected(id) AS (
+       SELECT edge.dependent_asset_id FROM asset_dependency edge
+        WHERE edge.workspace_id = $1 AND edge.source_asset_id = $2
+       UNION
+       SELECT edge.dependent_asset_id FROM asset_dependency edge
+         JOIN affected ON affected.id = edge.source_asset_id
+        WHERE edge.workspace_id = $1
+     ),
+     changed AS (
+       UPDATE asset SET status = 'STALE', row_version = row_version + 1
+        WHERE workspace_id = $1 AND status = 'ACTIVE' AND id IN (SELECT id FROM affected)
+       RETURNING id, project_id
+     ),
+     events AS (
+       INSERT INTO domain_event
+         (workspace_id, project_id, aggregate_type, aggregate_id, event_type, payload_json, trace_id)
+       SELECT $1, project_id, 'Asset', id, 'asset.stale', jsonb_build_object('assetId', id, 'staleFromRef', $3::text), $4
+         FROM changed RETURNING 1
+     )
+     SELECT id FROM changed ORDER BY id`,
+    [workspaceId, sourceAssetId, staleFromRef, traceId],
+  );
+  return result.rows.map((row) => String(row.id));
 }
 
 export interface StrictVideoReference {
@@ -456,12 +496,17 @@ export class CharacterReferenceStore {
        RETURNING character_id, source_character_revision_id, asset_id, selected_by, created_at`,
       [input.workspaceId, found.project_id, input.characterId, revisionId, input.assetId, input.selectedBy],
     );
+    // Videos made from the replaced reference, and everything composed from them, may no longer be used.
+    const staleAssetIds = currentAssetId && currentAssetId !== input.assetId
+      ? await staleAssetsDependingOn(client, input.workspaceId, currentAssetId,
+        `character_reference_selection:${input.characterId}:${currentAssetId}`, input.traceId)
+      : [];
     await client.query(
       `INSERT INTO domain_event (workspace_id, project_id, aggregate_type, aggregate_id, event_type, payload_json, trace_id)
        VALUES ($1, $2, 'Character', $3, 'character.reference_selected', $4::jsonb, $5)`,
       [input.workspaceId, found.project_id, input.characterId,
         JSON.stringify({ characterId: input.characterId, assetId: input.assetId, characterRevisionId: revisionId,
-          previousAssetId: currentAssetId }), input.traceId],
+          previousAssetId: currentAssetId, staleAssetIds }), input.traceId],
     );
     const selected = saved.rows[0]!;
     return {
@@ -470,6 +515,7 @@ export class CharacterReferenceStore {
       assetId: String(selected.asset_id),
       selectedBy: String(selected.selected_by),
       createdAt: (selected.created_at as Date).toISOString(),
+      staleAssetIds,
     };
   }
 
