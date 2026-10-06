@@ -9,6 +9,7 @@ import {
   PersistenceError,
   RuntimeStore,
   isMockMediaJobKind,
+  mockMediaRetryLineage,
   TextChainService,
   insertProject,
   requestHash,
@@ -950,7 +951,28 @@ export class StudioService {
       throw new PersistenceError("JOB_NOT_RETRYABLE", "Compose must be submitted again after a new preflight");
     }
     if (isMockMediaJobKind(job.kind)) {
-      throw new PersistenceError("JOB_NOT_RETRYABLE", "Media retry is unavailable; generate again with a new idempotency key");
+      if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
+      // Eligibility, Mock route, switches and the shot gate are all re-checked under the source job row lock.
+      return this.jobs.manualRetryIdempotent(
+        this.scope(context, "POST", `/generation-jobs/${jobId}/retry`, {}),
+        {
+          workspaceId: this.workspaceId,
+          jobId,
+          requestedBy: context.actorId,
+          traceId: context.traceId,
+          retryable: true,
+          lineage: mockMediaRetryLineage({
+            workspaceId: this.workspaceId,
+            mediaAssets: this.mediaAssets,
+            flags: {
+              mockImageEnabled: this.mockImageEnabled,
+              mockAvEnabled: this.mockAvEnabled,
+              mockSmEnabled: this.mockSmEnabled,
+              mockSampleVideoEnabled: this.mockSampleVideoEnabled,
+            },
+          }),
+        },
+      );
     }
     const retryable =
       job.state === "CANCELED" ||

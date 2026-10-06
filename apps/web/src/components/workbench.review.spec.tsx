@@ -49,6 +49,9 @@ interface Sim {
   imageAssets: Record<string, Array<Record<string, unknown>>>;
   mediaImage: boolean;
   mediaTask: boolean;
+  mediaTaskState: string;
+  mediaTaskErrorCode: string | null;
+  mediaRetryResponse: { status: number; body: unknown } | null;
   failWorkflowRead: number | null;
   failWorkflowReads: number[];
   failAssetRead: number | null;
@@ -105,6 +108,9 @@ function createSim(): Sim {
     imageAssets: {},
     mediaImage: false,
     mediaTask: false,
+    mediaTaskState: "FAILED",
+    mediaTaskErrorCode: "MOCK_IMAGE_OUTPUT_INVALID",
+    mediaRetryResponse: null,
     failWorkflowRead: null,
     failWorkflowReads: [],
     failAssetRead: null,
@@ -317,6 +323,9 @@ function createSim(): Sim {
         nextCursor: null,
       });
     }
+    if (path === "/api/v1/generation-jobs/media-job/retry" && method === "POST" && sim.mediaRetryResponse) {
+      return json(sim.mediaRetryResponse.body, sim.mediaRetryResponse.status);
+    }
     if (path === `/api/v1/projects/${PROJECT}/workflow-runs` && method === "GET") {
       sim.workflowReads += 1;
       if (sim.failWorkflowRead === sim.workflowReads || sim.failWorkflowReads.includes(sim.workflowReads)) {
@@ -331,16 +340,16 @@ function createSim(): Sim {
           jobs: [{
             id: "media-job",
             kind: "MEDIA_IMAGE",
-            state: "FAILED",
-            errorCode: "JOB_NOT_RETRYABLE",
-            errorMessage: "Media image retry is unavailable",
+            state: sim.mediaTaskState,
+            errorCode: sim.mediaTaskErrorCode,
+            errorMessage: sim.mediaTaskErrorCode ? "Mock image failed" : null,
             sourceShotRevisionId: `${SHOT_A}-rev`,
             attempts: [{
               attemptNo: 1,
               providerKey: "mock-media",
               model: "mock-image",
               status: "finished",
-              errorCode: "JOB_NOT_RETRYABLE",
+              errorCode: sim.mediaTaskErrorCode,
               durationMs: 40,
               inputHash: "ab".repeat(32),
               cost: { status: "unknown", amount: null, currency: null, kind: null },
@@ -1381,20 +1390,77 @@ describe("workbench review interactions against a simulated API", () => {
     expect(history?.textContent).not.toContain("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1");
   });
 
-  it("shows the shot revision on a media task and keeps manual retry disabled", async () => {
+  it("shows the shot revision on a media task and disables retry for a permanent failure", async () => {
     const sim = createSim();
     sim.mediaTask = true;
     install(sim);
     renderAt(`focus=shot&episode=1&scene=scene-1&shot=${SHOT_A}`);
     fireEvent.click(await screen.findByRole("button", { name: "任务" }));
     expect(await screen.findByText(new RegExp(`${SHOT_A}-rev`))).toBeTruthy();
-    const retry = screen.getByRole("button", { name: /媒体手工重试不可用/ });
+    const retry = screen.getByRole("button", { name: /重试不可用（该错误重试也不会改变结果）/ });
     expect(screen.getByText(/费用 未知/)).toBeTruthy();
     expect(screen.getByText(/耗时 40 ms/)).toBeTruthy();
     expect(screen.getByText(/mock-media \/ mock-image/)).toBeTruthy();
+    expect(screen.getByText(/原任务及其记录保留不变/)).toBeTruthy();
     expect((retry as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(retry);
     expect(sim.calls.filter((call) => call.url.endsWith("/retry"))).toHaveLength(0);
+  });
+
+  it.each([
+    ["SUCCEEDED", null, /任务已成功，请在镜头页再次生成/],
+    ["FAILED", "MOCK_REQUEST_UNKNOWN", /结果未知，可能已执行/],
+    ["RUNNING", null, /任务尚未失败或取消/],
+  ])("keeps media retry disabled for %s %s", async (state, errorCode, reason) => {
+    const sim = createSim();
+    sim.mediaTask = true;
+    sim.mediaTaskState = state;
+    sim.mediaTaskErrorCode = errorCode;
+    install(sim);
+    renderAt(`focus=shot&episode=1&scene=scene-1&shot=${SHOT_A}`);
+    fireEvent.click(await screen.findByRole("button", { name: "任务" }));
+    const retry = await screen.findByRole("button", { name: reason });
+    expect((retry as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(retry);
+    expect(sim.calls.filter((call) => call.url.endsWith("/retry"))).toHaveLength(0);
+  });
+
+  it.each([
+    ["FAILED", "MOCK_IMAGE_RUNTIME_FAILED"],
+    ["FAILED", "LEASE_EXPIRED"],
+    ["CANCELED", null],
+  ])("sends one keyed media retry for %s %s", async (state, errorCode) => {
+    const sim = createSim();
+    sim.mediaTask = true;
+    sim.mediaTaskState = state;
+    sim.mediaTaskErrorCode = errorCode;
+    sim.mediaRetryResponse = { status: 202, body: { workflowRunId: "retry-run", jobId: "retry-job", dispatchSeq: 1 } };
+    install(sim);
+    renderAt(`focus=shot&episode=1&scene=scene-1&shot=${SHOT_A}`);
+    fireEvent.click(await screen.findByRole("button", { name: "任务" }));
+    const retry = await screen.findByRole("button", { name: "重试（新建任务，保留原任务）" });
+    expect((retry as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(retry);
+    await waitFor(() => expect(sim.calls.filter((call) => call.url.endsWith("/retry"))).toHaveLength(1));
+    const call = sim.calls.find((item) => item.url.endsWith("/retry"));
+    expect(call).toMatchObject({ url: "/api/v1/generation-jobs/media-job/retry", method: "POST" });
+    expect(call?.key).toBeTruthy();
+  });
+
+  it("shows the server reason when the media job was already retried", async () => {
+    const sim = createSim();
+    sim.mediaTask = true;
+    sim.mediaTaskErrorCode = "MOCK_IMAGE_RUNTIME_FAILED";
+    sim.mediaRetryResponse = { status: 409, body: { error: {
+      code: "JOB_NOT_RETRYABLE",
+      message: "This job was already retried as job retry-job",
+      details: { retryJobId: "retry-job", rootJobId: "media-job", manualRetryCount: 1 },
+    } } };
+    install(sim);
+    renderAt(`focus=shot&episode=1&scene=scene-1&shot=${SHOT_A}`);
+    fireEvent.click(await screen.findByRole("button", { name: "任务" }));
+    fireEvent.click(await screen.findByRole("button", { name: "重试（新建任务，保留原任务）" }));
+    expect(await screen.findByText(/JOB_NOT_RETRYABLE：This job was already retried as job retry-job/)).toBeTruthy();
   });
 
   it("reloads shot images when a media task finishes and keeps the in-progress draft", async () => {

@@ -2,6 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { canAdopt, type FrozenWritingContext, type WritingTargetSnapshot } from "@ai-drama/domain/writing-assistant";
+import { MAX_MANUAL_MEDIA_RETRIES, mediaRetryDecision, type MediaRetryRejection } from "@ai-drama/domain/media-retry";
 import { ComposePreflight } from "./compose-preflight";
 import { WritingAssistant } from "./writing-assistant";
 import { EpisodeComposePreflight } from "./episode-compose-preflight";
@@ -61,6 +62,15 @@ function taskStatusLabel(state: string): string {
 }
 
 const MEDIA_WORKFLOW_TYPES = new Set(["MEDIA_IMAGE", "MEDIA_VIDEO", "MEDIA_TTS", "MEDIA_SUBTITLE", "MEDIA_MUSIC"]);
+
+const MEDIA_RETRY_REASONS: Record<MediaRetryRejection, string> = {
+  NOT_MEDIA: "不是 Mock 媒体任务",
+  COMPOSE: "合成需重新预检后提交",
+  NOT_TERMINAL: "任务尚未失败或取消",
+  SUCCEEDED: "任务已成功，请在镜头页再次生成",
+  UNKNOWN_OUTCOME: "结果未知，可能已执行，请在镜头页再次生成",
+  ERROR_NOT_RETRYABLE: "该错误重试也不会改变结果",
+};
 
 function trackedWorkflow(run: { type: string }): boolean {
   return TEXT_WORKFLOW_TYPES.has(run.type) || MEDIA_WORKFLOW_TYPES.has(run.type);
@@ -2879,7 +2889,7 @@ function TaskDrawer(props: {
         ))}
       </ul>
       <h2 className="mt-6 font-medium">Mock 媒体任务</h2>
-      <p className="mt-2 text-sm">图片、视频、配音、字幕和音乐任务与文本任务分开。媒体手工重试不可用；需要另一份结果时，在镜头页再次生成并使用新的幂等键。</p>
+      <p className="mt-2 text-sm">图片、视频、配音、字幕和音乐任务与文本任务分开。失败或已取消的媒体任务可以手工重试：会用原镜头版本和原输入新建一个任务，原任务及其记录保留不变，新任务另行记录费用。每个任务只能重试一次，同一条链最多重试 {MAX_MANUAL_MEDIA_RETRIES} 次。服务端会重新检查镜头审核、失效状态和开关，拒绝时以返回原因为准。已成功的任务需要另一份结果时，在镜头页再次生成。</p>
       <ul className="mt-4 space-y-3">
         {mediaRuns.length === 0 ? <li className="text-sm">没有媒体任务</li> : null}
         {mediaRuns.map((run) => (
@@ -2887,6 +2897,7 @@ function TaskDrawer(props: {
             <p>{mediaTaskLabel(run.type)} · {taskStatusLabel(run.status)}</p>
             {run.jobs.map((job) => {
               const terminal = job.state === "SUCCEEDED" || job.state === "FAILED" || job.state === "CANCELED";
+              const retry = mediaRetryDecision({ kind: job.kind, state: job.state, errorCode: job.errorCode });
               return (
                 <div key={job.id} className="mt-2">
                   <p>镜头版本 {job.sourceShotRevisionId ?? "未记录"}</p>
@@ -2894,7 +2905,7 @@ function TaskDrawer(props: {
                   {job.errorMessage ? <p>{job.errorMessage}</p> : null}
                   <AttemptList attempts={job.attempts} />
                   <button className="mr-2 underline disabled:opacity-50" type="button" disabled={terminal} onClick={() => void act(`/generation-jobs/${job.id}/cancel`)}>取消{terminal ? "（已结束）" : ""}</button>
-                  <button className="underline disabled:opacity-50" type="button" disabled>重试（媒体手工重试不可用，请再次生成）</button>
+                  <button className="underline disabled:opacity-50" type="button" disabled={!retry.allowed} onClick={() => void act(`/generation-jobs/${job.id}/retry`)}>{retry.allowed ? "重试（新建任务，保留原任务）" : `重试不可用（${MEDIA_RETRY_REASONS[retry.reason]}）`}</button>
                 </div>
               );
             })}

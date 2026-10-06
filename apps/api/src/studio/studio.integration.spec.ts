@@ -1168,14 +1168,36 @@ describe("M1-C API and SSE integration", () => {
     });
     expect(cancelImage.status).toBe(200);
     const retryImage = await fetch(`${base}/api/v1/generation-jobs/${createdImage.jobId}/retry`, {
-      method: "POST", headers: { "idempotency-key": "m3-image-retry-blocked" },
+      method: "POST", headers: { "idempotency-key": "m3-image-retry" },
     });
-    expect(retryImage.status).toBe(409);
-    const mediaJobs = await sql<{ count: number }>(
-      "SELECT count(*)::int AS count FROM generation_job WHERE source_shot_revision_id = $1",
+    expect(retryImage.status).toBe(202);
+    const retried = (await retryImage.json()) as {
+      jobId: string; workflowRunId: string; retry: { sourceJobId: string; rootJobId: string; manualRetryCount: number };
+    };
+    expect(retried.jobId).not.toBe(createdImage.jobId);
+    expect(retried.retry).toEqual({ sourceJobId: createdImage.jobId, rootJobId: createdImage.jobId, manualRetryCount: 1 });
+    const retryReplay = await fetch(`${base}/api/v1/generation-jobs/${createdImage.jobId}/retry`, {
+      method: "POST", headers: { "idempotency-key": "m3-image-retry" },
+    });
+    expect(retryReplay.status).toBe(202);
+    expect(await retryReplay.json()).toEqual(retried);
+    const secondRetry = await fetch(`${base}/api/v1/generation-jobs/${createdImage.jobId}/retry`, {
+      method: "POST", headers: { "idempotency-key": "m3-image-retry-second" },
+    });
+    expect(secondRetry.status).toBe(409);
+    expect(await secondRetry.json()).toMatchObject({ error: {
+      code: "JOB_NOT_RETRYABLE", details: { retryJobId: retried.jobId, rootJobId: createdImage.jobId },
+    } });
+    const mediaJobs = await sql<{ id: string; state: string; input_hash: string }>(
+      "SELECT id, state, input_hash FROM generation_job WHERE source_shot_revision_id = $1 ORDER BY created_at",
       [shot.revisionId],
     );
-    expect(mediaJobs.rows[0]?.count).toBe(1);
+    expect(mediaJobs.rows.map((row) => row.state).sort()).toEqual(["CANCELED", "QUEUED"]);
+    expect(new Set(mediaJobs.rows.map((row) => row.input_hash)).size).toBe(1);
+    const canceledRetry = await fetch(`${base}/api/v1/generation-jobs/${retried.jobId}/cancel`, {
+      method: "POST", headers: { "idempotency-key": "m3-image-retry-cancel" },
+    });
+    expect(canceledRetry.status).toBe(200);
     const emptyAssets = await fetch(`${base}/api/v1/shot-revisions/${shot.revisionId}/assets`);
     expect(emptyAssets.status).toBe(200);
     expect(await emptyAssets.json()).toEqual({ items: [] });

@@ -15,7 +15,12 @@ export class SafeExceptionFilter implements ExceptionFilter {
     if (exception instanceof PersistenceError) {
       this.logger.error(`request failed: ${exception.code}`);
       response.status(httpStatus(exception.code)).json({
-        error: { code: exception.code, message: exception.message, traceId: "api" },
+        error: {
+          code: exception.code,
+          message: exception.message,
+          traceId: "api",
+          ...(exception.details ? { details: exception.details } : {}),
+        },
       });
       return;
     }
@@ -42,6 +47,8 @@ function httpStatus(code: string): number {
     code === "JOB_TERMINAL" ||
     code === "RUN_TERMINAL" ||
     code === "JOB_NOT_RETRYABLE" ||
+    code === "RETRY_LIMIT" ||
+    code === "RETRY_LINEAGE_INVALID" ||
     code === "COMPOSE_INPUT_CHANGED" ||
     code === "COMPOSE_CONTENT_HASH_MISMATCH"
   ) {
