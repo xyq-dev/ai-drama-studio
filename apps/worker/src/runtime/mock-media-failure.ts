@@ -1,4 +1,10 @@
-const PERMANENT_CODES = new Set(["REVIEW_REQUIRED", "NOT_FOUND", "COST_CONFLICT"]);
+/**
+ * A strict video froze its selected character references. Once one is no longer selected, approved, ACTIVE or from
+ * the same revision, the frozen input can never complete, and without the reference schema it can never be checked.
+ * Both end the attempt; connection or timeout errors stay retryable.
+ */
+const REFERENCE_ELIGIBILITY_CODES = new Set(["CHARACTER_REFERENCE_REQUIRED", "CHARACTER_REFERENCE_STORAGE_UNAVAILABLE"]);
+const PERMANENT_CODES = new Set(["REVIEW_REQUIRED", "NOT_FOUND", "COST_CONFLICT", ...REFERENCE_ELIGIBILITY_CODES]);
 const TERMINAL_RACE_CODES = new Set(["JOB_TERMINAL", "ATTEMPT_SUPERSEDED"]);
 
 /** Thrown by this worker before any database write. Database failures are classified by code, not by this text. */
@@ -15,6 +21,12 @@ export function mediaErrorCode(error: unknown): string {
 
 export function mediaErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** The error code to record for a permanent failure: the reference reason when there is one, else the fallback. */
+export function permanentMediaErrorCode(error: unknown, fallback: string): string {
+  const code = mediaErrorCode(error);
+  return REFERENCE_ELIGIBILITY_CODES.has(code) ? code : fallback;
 }
 
 /** Shared by synchronous AV execution and media recovery. Persistence codes decide database failures. */

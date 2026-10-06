@@ -17,7 +17,7 @@ import {
   type MediaProviderOutput,
 } from "@ai-drama/providers";
 import type { MockImageObjectStore } from "./mock-image-generation";
-import { classifyMediaFailure, mediaErrorMessage } from "./mock-media-failure";
+import { classifyMediaFailure, mediaErrorMessage, permanentMediaErrorCode } from "./mock-media-failure";
 
 export type MockAvCapability = "video.generate" | "audio.tts";
 
@@ -313,7 +313,7 @@ async function settleAvFailure(
     jobId: input.jobId,
     attemptId,
     traceId: input.traceId,
-    errorCode: retryable ? "MOCK_AV_RUNTIME_FAILED" : "MOCK_AV_OUTPUT_INVALID",
+    errorCode: retryable ? "MOCK_AV_RUNTIME_FAILED" : permanentMediaErrorCode(error, "MOCK_AV_OUTPUT_INVALID"),
     errorMessage: mediaErrorMessage(error),
     retryable,
     nextRunAt: retryable ? new Date(Date.now() + 30_000) : undefined,

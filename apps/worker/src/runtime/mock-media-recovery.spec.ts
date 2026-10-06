@@ -58,7 +58,9 @@ it("continues recovering a sibling after an invalid media row", async () => {
 });
 
 describe("simulated AV recovery settles permanent failures", () => {
-  const codes = ["REVIEW_REQUIRED", "NOT_FOUND", "COST_CONFLICT"] as const;
+  // The two reference codes come from a strict video whose frozen character reference is no longer usable.
+  const codes = ["REVIEW_REQUIRED", "NOT_FOUND", "COST_CONFLICT", "CHARACTER_REFERENCE_REQUIRED",
+    "CHARACTER_REFERENCE_STORAGE_UNAVAILABLE"] as const;
 
   it.each(codes.flatMap((code) => (["MEDIA_VIDEO", "MEDIA_TTS"] as const).map((kind) => [kind, code] as const)))(
     "fails the original %s attempt on %s once and does not inspect again",
@@ -103,7 +105,8 @@ describe("simulated AV recovery settles permanent failures", () => {
       await recovery.reconcileOnce();
       expect(failJob).toHaveBeenCalledTimes(1);
       expect(failJob).toHaveBeenCalledWith(expect.objectContaining({
-        jobId, attemptId, retryable: false, errorCode: "MOCK_AV_OUTPUT_INVALID",
+        jobId, attemptId, retryable: false,
+        errorCode: code.startsWith("CHARACTER_REFERENCE") ? code : "MOCK_AV_OUTPUT_INVALID",
       }));
       expect(submit).not.toHaveBeenCalled();
       expect(inspect).toHaveBeenCalledTimes(1);
