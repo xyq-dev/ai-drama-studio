@@ -42,4 +42,24 @@ export {
   type QwenTransport,
 } from "./qwen-text-trial";
 export { runQwenWriting, type QwenWritingResult } from "./qwen-writing";
-export { QWEN_WEB_REPLAY_POLICY, qwenWebAccessDecision } from "./qwen-web-writing";
+export {
+  QWEN_WEB_EXECUTOR_LEASE_MS,
+  QWEN_WEB_LOST_AFTER_SEND,
+  QWEN_WEB_LOST_BEFORE_SEND,
+  QWEN_WEB_MAX_CONCURRENCY_DEFAULT,
+  QWEN_WEB_MAX_REQUESTS_DEFAULT,
+  QWEN_WEB_REPLAY_POLICY,
+  QWEN_WEB_RETENTION_DAYS_DEFAULT,
+  InMemoryQwenWebStore,
+  qwenWebAccessDecision,
+  qwenWebProviderConfig,
+  runQwenWebWriting,
+  type QwenWebFinish,
+  type QwenWebProviderConfig,
+  type QwenWebRecord,
+  type QwenWebReservation,
+  type QwenWebState,
+  type QwenWebStore,
+  type QwenWebWritingResult,
+} from "./qwen-web-writing";
+export { createQwenFetchTransport } from "./qwen-chat";

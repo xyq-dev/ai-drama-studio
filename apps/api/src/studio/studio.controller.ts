@@ -465,14 +465,6 @@ export class StudioController {
     );
   }
 
-  @Post("writing/qwen-candidates")
-  qwenWebCandidate(
-    @Res({ passthrough: true }) response: StatusResponse,
-    @Headers("x-operator-token") operatorToken?: string,
-  ) {
-    return this.send(response, this.studio.qwenWebCandidate(operatorToken));
-  }
-
   @Post("shot-revisions/:revisionId/generate-image")
   generateShotImage(
     @Param("revisionId", UUID_PARAM_PIPE) revisionId: string,

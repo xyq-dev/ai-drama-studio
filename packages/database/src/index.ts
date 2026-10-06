@@ -126,6 +126,15 @@ export {
 } from "./mock-media-kinds";
 export { mockMediaRetryLineage, type MockMediaRetryFlags } from "./mock-media-retry";
 export {
+  PostgresQwenWebStore,
+  QWEN_WEB_REQUIRED_COLUMNS,
+  QWEN_WEB_TABLE,
+  type QwenWebStoredFinish,
+  type QwenWebStoredRecord,
+  type QwenWebStoredReservation,
+  type QwenWebStoredState,
+} from "./qwen-web-store";
+export {
   assertFixedMockImageSnapshot,
   assertSyncActualCost,
   guardSynchronousMockImageCost,

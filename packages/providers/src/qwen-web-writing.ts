@@ -1,7 +1,7 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { WRITING_PROMPT_VERSION, parseQwenWritingInput, type QwenWritingInput } from "@ai-drama/contracts";
 import { buildEpisodeDraftInstruction, buildStoryPlanInstruction } from "@ai-drama/domain";
-import { QWEN_CHAT_MAX_TOKENS, QWEN_CHAT_MODEL_ENV, buildQwenChatBody, qwenFailureMessage, redactSecret, selectedQwenModel, sendQwenChat, type QwenTransport } from "./qwen-chat";
+import { QWEN_CHAT_MAX_TOKENS, QWEN_CHAT_MODEL_ENV, QWEN_CHAT_TIMEOUT_MS, buildQwenChatBody, qwenFailureMessage, readQwenApiKey, redactSecret, resolveQwenChatEndpoint, selectedQwenModel, sendQwenChat, type QwenTransport } from "./qwen-chat";
 import { acceptPreparedCandidate } from "./qwen-writing";
 
 /** Qwen web calls are not replay-safe and must not enter the M2 text job path. */
@@ -9,6 +9,11 @@ export const QWEN_WEB_REPLAY_POLICY = "NOT_REPLAY_SAFE" as const;
 export const QWEN_WEB_RETENTION_DAYS_DEFAULT = 7;
 export const QWEN_WEB_MAX_REQUESTS_DEFAULT = 8;
 export const QWEN_WEB_MAX_CONCURRENCY_DEFAULT = 1;
+/**
+ * The executor lease covers the capped send time twice over. Recovery may act only after it expires: a live
+ * executor has either finished by then or will be fenced out of its finish.
+ */
+export const QWEN_WEB_EXECUTOR_LEASE_MS = QWEN_CHAT_TIMEOUT_MS * 2;
 
 export type QwenWebState = "reserved" | "submitted" | "completed" | "rejected" | "unknown";
 
@@ -24,6 +29,9 @@ export interface QwenWebRecord {
   episodeNo: 1 | 2 | 3 | null;
   requestedModel: string;
   state: QwenWebState;
+  /** The process-local sender that owns reserved/submitted. Only it may finish the record. */
+  executorId: string;
+  leaseUntil: string;
   serverRequestId: string | null;
   errorCode: string | null;
   providerResult: "completed" | "unknown" | null;
@@ -45,13 +53,22 @@ export interface QwenWebStore {
   /** Key lookup, identity comparison, both caps and insert must be one atomic operation. */
   reserve(record: QwenWebRecord, limits: { sinceIso: string; maxRequests: number; maxConcurrency: number }): Promise<QwenWebReservation>;
   findByKey(workspaceId: string, actorId: string, key: string): Promise<QwenWebRecord | null>;
-  markSubmitted(id: string, updatedAt: string): Promise<boolean>;
-  /** Only the still-submitted sender may finish. Recovery cannot be overwritten. */
-  finish(id: string, patch: QwenWebFinish): Promise<QwenWebRecord>;
-  /** Recovery caller must first establish that the owner stopped; replay is not recovery. */
-  markOrphanUnknown(id: string, expected: Pick<QwenWebRecord, "state" | "updatedAt">, nowIso: string): Promise<boolean>;
+  findById(workspaceId: string, projectId: string, id: string): Promise<QwenWebRecord | null>;
+  /** reserved -> submitted, only for the owning executor whose lease is still live. */
+  markSubmitted(id: string, executorId: string, updatedAt: string, leaseUntil: string): Promise<boolean>;
+  /** Only the still-submitted owning executor may finish. Recovery cannot be overwritten. */
+  finish(id: string, executorId: string, patch: QwenWebFinish): Promise<QwenWebRecord>;
+  /**
+   * Recovery: a record whose executor lease expired is fenced. reserved was never sent and becomes rejected;
+   * submitted may have reached the provider and becomes unknown. A live lease is never touched, so a replay
+   * or a concurrent recovery cannot turn a running request into unknown.
+   */
+  recoverExpired(nowIso: string): Promise<number>;
   expireCandidates(nowIso: string): Promise<number>;
 }
+
+export const QWEN_WEB_LOST_BEFORE_SEND = "executor_lost_before_send";
+export const QWEN_WEB_LOST_AFTER_SEND = "executor_lost";
 
 /** Test-only store. A future database implementation must serialize reserve per workspace. */
 export class InMemoryQwenWebStore implements QwenWebStore {
@@ -79,25 +96,40 @@ export class InMemoryQwenWebStore implements QwenWebStore {
     return record ? structuredClone(record) : null;
   }
 
-  async markSubmitted(id: string, updatedAt: string): Promise<boolean> {
+  async findById(workspaceId: string, projectId: string, id: string): Promise<QwenWebRecord | null> {
+    const record = this.records.find((item) => item.id === id && item.workspaceId === workspaceId && item.projectId === projectId);
+    return record ? structuredClone(record) : null;
+  }
+
+  async markSubmitted(id: string, executorId: string, updatedAt: string, leaseUntil: string): Promise<boolean> {
     const record = this.require(id);
-    if (record.state !== "reserved") return false;
+    if (record.state !== "reserved" || record.executorId !== executorId || record.leaseUntil <= updatedAt) return false;
     record.state = "submitted";
     record.updatedAt = updatedAt;
+    record.leaseUntil = leaseUntil;
     return true;
   }
 
-  async finish(id: string, patch: QwenWebFinish): Promise<QwenWebRecord> {
+  async finish(id: string, executorId: string, patch: QwenWebFinish): Promise<QwenWebRecord> {
     const record = this.require(id);
-    if (record.state === "submitted") Object.assign(record, patch);
+    if (record.state === "submitted" && record.executorId === executorId) Object.assign(record, patch);
     return structuredClone(record);
   }
 
-  async markOrphanUnknown(id: string, expected: Pick<QwenWebRecord, "state" | "updatedAt">, nowIso: string): Promise<boolean> {
-    const record = this.require(id);
-    if (record.state !== expected.state || record.updatedAt !== expected.updatedAt || (record.state !== "reserved" && record.state !== "submitted")) return false;
-    Object.assign(record, { state: "unknown", errorCode: "unknown", providerResult: "unknown", candidateJson: null, candidateExpiresAt: null, updatedAt: nowIso });
-    return true;
+  async recoverExpired(nowIso: string): Promise<number> {
+    let recovered = 0;
+    for (const record of this.records) {
+      if (record.leaseUntil > nowIso) continue;
+      if (record.state === "reserved") {
+        Object.assign(record, { state: "rejected", errorCode: QWEN_WEB_LOST_BEFORE_SEND, providerResult: null, updatedAt: nowIso });
+        recovered += 1;
+      } else if (record.state === "submitted") {
+        Object.assign(record, { state: "unknown", errorCode: QWEN_WEB_LOST_AFTER_SEND, providerResult: "unknown",
+          candidateJson: null, candidateExpiresAt: null, updatedAt: nowIso });
+        recovered += 1;
+      }
+    }
+    return recovered;
   }
 
   async expireCandidates(nowIso: string): Promise<number> {
@@ -123,21 +155,53 @@ export interface QwenWebAccessInput {
   nodeEnv: "development" | "test" | "production";
   enabled: boolean;
   storageReady: boolean;
+  /** Server-side key, official endpoint and model all resolved. Defaults to true for callers that check later. */
+  providerReady?: boolean;
   configuredToken: string | null;
   presentedToken: string | null;
+}
+
+function sameToken(configured: string, presented: string | null): boolean {
+  if (presented === null) return false;
+  const left = Buffer.from(configured, "utf8");
+  const right = Buffer.from(presented, "utf8");
+  return left.length === right.length && timingSafeEqual(left, right);
 }
 
 export function qwenWebAccessDecision(input: QwenWebAccessInput): { status: number; code: string } {
   if (input.nodeEnv === "production" || !input.enabled) {
     return { status: 404, code: "QWEN_WEB_DISABLED" };
   }
-  if (!input.configuredToken || input.presentedToken !== input.configuredToken) {
+  if (!input.configuredToken || !sameToken(input.configuredToken, input.presentedToken)) {
     return { status: 403, code: "QWEN_WEB_FORBIDDEN" };
+  }
+  if (input.providerReady === false) {
+    return { status: 503, code: "QWEN_WEB_PROVIDER_UNCONFIGURED" };
   }
   if (!input.storageReady) {
     return { status: 503, code: "QWEN_WEB_STORAGE_UNAVAILABLE" };
   }
   return { status: 200, code: "QWEN_WEB_READY" };
+}
+
+export type QwenWebProviderConfig =
+  | { ok: true; url: string; apiKey: string; model: string }
+  | { ok: false; code: string };
+
+/** Resolves the server-only key, official endpoint and model. The key never leaves the API process. */
+export function qwenWebProviderConfig(env: {
+  DASHSCOPE_API_KEY?: string;
+  BAILIAN_BASE_URL?: string;
+  QWEN_WEB_MODEL?: string;
+}): QwenWebProviderConfig {
+  const key = readQwenApiKey({ DASHSCOPE_API_KEY: env.DASHSCOPE_API_KEY });
+  if (!key.ok) return { ok: false, code: key.code };
+  if (!env.BAILIAN_BASE_URL) return { ok: false, code: "missing_base_url" };
+  const endpoint = resolveQwenChatEndpoint(env.BAILIAN_BASE_URL);
+  if (!endpoint.ok) return { ok: false, code: endpoint.code };
+  const model = selectedQwenModel(env.QWEN_WEB_MODEL === undefined ? {} : { [QWEN_CHAT_MODEL_ENV]: env.QWEN_WEB_MODEL });
+  if (!model.ok) return { ok: false, code: model.code };
+  return { ok: true, url: endpoint.url, apiKey: key.apiKey, model: model.model };
 }
 
 export interface RunQwenWebWritingInput {
@@ -152,6 +216,10 @@ export interface RunQwenWebWritingInput {
   store: QwenWebStore;
   transport: QwenTransport;
   now?: Date;
+  /** Clock for timestamps after the reservation. Defaults to `now` when given, else the wall clock. */
+  clock?: () => Date;
+  executorId?: string;
+  leaseMs?: number;
   retentionDays?: number;
   maxRequests?: number;
   maxConcurrency?: number;
@@ -197,6 +265,12 @@ export async function runQwenWebWriting(options: RunQwenWebWritingInput): Promis
     return { status: 400, code: "invalid_limits", requestCount: 0, record: null };
   }
   const createdAt = now.toISOString();
+  const executorId = options.executorId ?? `qwen-web:${randomUUID()}`;
+  const leaseMs = options.leaseMs ?? QWEN_WEB_EXECUTOR_LEASE_MS;
+  if (!Number.isSafeInteger(leaseMs) || leaseMs < QWEN_CHAT_TIMEOUT_MS) {
+    return { status: 400, code: "invalid_limits", requestCount: 0, record: null };
+  }
+  const clock = options.clock ?? (() => options.now ?? new Date());
   const record: QwenWebRecord = {
     id: randomUUID(),
     workspaceId: options.workspaceId,
@@ -209,6 +283,8 @@ export async function runQwenWebWriting(options: RunQwenWebWritingInput): Promis
     episodeNo: parsed.data.mode === "episode" ? parsed.data.episodeNo : null,
     requestedModel: options.requestedModel,
     state: "reserved",
+    executorId,
+    leaseUntil: new Date(now.getTime() + leaseMs).toISOString(),
     serverRequestId: null,
     errorCode: null,
     providerResult: null,
@@ -222,7 +298,11 @@ export async function runQwenWebWriting(options: RunQwenWebWritingInput): Promis
   if (reservation.kind === "blocked") return { status: 429, code: reservation.code, requestCount: 0, record: null };
   if (reservation.kind === "conflict") return { status: 409, code: "IDEMPOTENCY_KEY_REUSED", requestCount: 0, record: reservation.record };
   if (reservation.kind === "existing") return { status: 200, code: reservation.record.state, requestCount: 0, record: reservation.record };
-  if (!await options.store.markSubmitted(record.id, createdAt)) {
+  const submittedAt = clock();
+  const submitted = await options.store.markSubmitted(
+    record.id, executorId, submittedAt.toISOString(), new Date(submittedAt.getTime() + leaseMs).toISOString(),
+  );
+  if (!submitted) {
     const current = await options.store.findByKey(options.workspaceId, options.actorId, options.idempotencyKey);
     return { status: 200, code: current?.state ?? "unknown", requestCount: 0, record: current };
   }
@@ -234,7 +314,7 @@ export async function runQwenWebWriting(options: RunQwenWebWritingInput): Promis
     body,
     transport: options.transport,
   });
-  const finishedAt = (options.now ?? new Date()).toISOString();
+  const finishedAt = clock().toISOString();
   let state: QwenWebState = exchange.providerResult === "unknown" ? "unknown" : "rejected";
   let candidateJson: string | null = null;
   let errorCode = exchange.errorCode;
@@ -250,9 +330,9 @@ export async function runQwenWebWriting(options: RunQwenWebWritingInput): Promis
     }
   }
   const candidateExpiresAt = candidateJson
-    ? new Date(now.getTime() + retentionDays * 24 * 60 * 60 * 1000).toISOString()
+    ? new Date(Date.parse(finishedAt) + retentionDays * 24 * 60 * 60 * 1000).toISOString()
     : null;
-  const finished = await options.store.finish(record.id, {
+  const finished = await options.store.finish(record.id, executorId, {
     state,
     serverRequestId: exchange.serverRequestId,
     errorCode,

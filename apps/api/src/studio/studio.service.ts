@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { SAMPLE_VIDEO_FIXTURE_IDS, SAMPLE_VIDEO_SCHEMA, sampleVideoDescription, type SampleVideoFixtureId } from "@ai-drama/contracts";
 import { DomainError, parseComposePreflightRequest, parseComposeRenderRequest, parseComposeReviewRequest, parseEpisodeComposePreflightRequest, parseEpisodeComposeRenderRequest, regenerationSeed } from "@ai-drama/domain";
-import { qwenWebAccessDecision } from "@ai-drama/providers";
 import {
   JobPersistenceService,
   MediaAssetStore,
@@ -119,9 +118,6 @@ export class StudioService {
     private readonly composeObjectDir: string | null = null,
     private readonly episodeComposeEnabled = false,
     private readonly mockSampleVideoEnabled = false,
-    private readonly qwenWebEnabled = false,
-    private readonly nodeEnv: "development" | "test" | "production" = "production",
-    private readonly qwenOperatorToken: string | null = null,
   ) {}
 
   get workspace(): string {
@@ -1005,24 +1001,6 @@ export class StudioService {
       this.scope(context, "POST", `/workflow-runs/${workflowRunId}/cancel`, {}),
       { workspaceId: this.workspaceId, workflowRunId, traceId: context.traceId },
     );
-  }
-
-  qwenWebCandidate(presentedToken: string | undefined) {
-    const decision = qwenWebAccessDecision({
-      nodeEnv: this.nodeEnv,
-      enabled: this.qwenWebEnabled,
-      storageReady: false,
-      configuredToken: this.qwenOperatorToken,
-      presentedToken: presentedToken ?? null,
-    });
-    return Promise.resolve({
-      status: decision.status,
-      body: {
-        code: decision.code,
-        replayPolicy: "NOT_REPLAY_SAFE" as const,
-        billingStatus: "unknown" as const,
-      },
-    });
   }
 
   capabilities() {

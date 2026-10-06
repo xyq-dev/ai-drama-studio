@@ -3,10 +3,15 @@ import { QWEN_CHAT_MAX_TOKENS, buildQwenChatBody, type QwenTransport } from "./q
 import { QWEN_WRITING_DEFAULT_MODEL } from "./qwen-writing";
 import {
   InMemoryQwenWebStore,
+  QWEN_WEB_EXECUTOR_LEASE_MS,
+  QWEN_WEB_LOST_AFTER_SEND,
+  QWEN_WEB_LOST_BEFORE_SEND,
   QWEN_WEB_REPLAY_POLICY,
   assertQwenWebTokenCap,
   qwenWebAccessDecision,
+  qwenWebProviderConfig,
   runQwenWebWriting,
+  type QwenWebRecord,
   type RunQwenWebWritingInput,
 } from "./qwen-web-writing";
 
@@ -109,6 +114,33 @@ describe("qwen web writing", () => {
     expect(qwenWebAccessDecision({
       nodeEnv: "development", enabled: true, storageReady: false, configuredToken: "op", presentedToken: "op",
     })).toEqual({ status: 503, code: "QWEN_WEB_STORAGE_UNAVAILABLE" });
+    expect(qwenWebAccessDecision({
+      nodeEnv: "development", enabled: true, storageReady: true, providerReady: false,
+      configuredToken: "op", presentedToken: "op",
+    })).toEqual({ status: 503, code: "QWEN_WEB_PROVIDER_UNCONFIGURED" });
+    expect(qwenWebAccessDecision({
+      nodeEnv: "development", enabled: true, storageReady: true, providerReady: true,
+      configuredToken: "op", presentedToken: null,
+    }).code).toBe("QWEN_WEB_FORBIDDEN");
+    expect(qwenWebAccessDecision({
+      nodeEnv: "development", enabled: true, storageReady: true, providerReady: true,
+      configuredToken: "op", presentedToken: "op",
+    })).toEqual({ status: 200, code: "QWEN_WEB_READY" });
+  });
+
+  it("resolves only a server-side key, the official endpoint and a safe model", () => {
+    expect(qwenWebProviderConfig({})).toEqual({ ok: false, code: "missing_api_key" });
+    expect(qwenWebProviderConfig({ DASHSCOPE_API_KEY: SECRET })).toEqual({ ok: false, code: "missing_base_url" });
+    expect(qwenWebProviderConfig({ DASHSCOPE_API_KEY: SECRET, BAILIAN_BASE_URL: "https://example.com/compatible-mode/v1" }))
+      .toEqual({ ok: false, code: "unofficial_host" });
+    expect(qwenWebProviderConfig({ DASHSCOPE_API_KEY: SECRET,
+      BAILIAN_BASE_URL: "https://dashscope.aliyuncs.com/compatible-mode/v1", QWEN_WEB_MODEL: "bad model" }))
+      .toEqual({ ok: false, code: "invalid_model" });
+    expect(qwenWebProviderConfig({ DASHSCOPE_API_KEY: SECRET,
+      BAILIAN_BASE_URL: "https://dashscope.aliyuncs.com/compatible-mode/v1" })).toEqual({
+      ok: true, apiKey: SECRET, model: QWEN_WRITING_DEFAULT_MODEL,
+      url: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+    });
   });
 
   it("persists submitted before the single fake response and does not call again for the same key", async () => {
@@ -165,26 +197,69 @@ describe("qwen web writing", () => {
     expect(server.calls).toEqual(["sent"]);
   });
 
-  it("recovers only through an explicit CAS operation and a late sender cannot overwrite unknown", async () => {
+  it("recovers a submitted request only after its executor lease expires, and fences the late sender", async () => {
     const store = new InMemoryQwenWebStore();
     const pending = pendingTransport();
-    const running = base(store, pending.transport);
+    const start = new Date("2026-10-06T00:00:00.000Z");
+    let clock = start;
+    const running = runQwenWebWriting({ ...requestOptions(store, pending.transport), now: start, clock: () => clock });
     await pending.started;
     const active = await store.findByKey("workspace-1", "operator-1", "key-1");
     expect(active?.state).toBe("submitted");
-    // Normal HTTP replay is never evidence that the original owner died.
+    // A replay is never evidence that the executor died, and a live lease blocks recovery.
     const replay = await base(store, pending.transport);
     expect(replay.record?.state).toBe("submitted");
+    expect(await store.recoverExpired(new Date(start.getTime() + QWEN_WEB_EXECUTOR_LEASE_MS - 1).toISOString())).toBe(0);
+    expect((await store.findByKey("workspace-1", "operator-1", "key-1"))?.state).toBe("submitted");
     expect(pending.calls()).toBe(1);
-    expect(await store.markOrphanUnknown(active!.id, { state: "submitted", updatedAt: "wrong-version" }, new Date().toISOString())).toBe(false);
-    // The recovery caller separately establishes owner death; test a stale completion afterward.
-    expect(await store.markOrphanUnknown(active!.id, { state: "submitted", updatedAt: active!.updatedAt }, new Date().toISOString())).toBe(true);
+
+    clock = new Date(start.getTime() + QWEN_WEB_EXECUTOR_LEASE_MS + 1);
+    expect(await store.recoverExpired(clock.toISOString())).toBe(1);
+    const recovered = await store.findByKey("workspace-1", "operator-1", "key-1");
+    expect(recovered).toMatchObject({ state: "unknown", providerResult: "unknown", errorCode: QWEN_WEB_LOST_AFTER_SEND,
+      candidateJson: null, billingStatus: "unknown" });
     pending.release();
     expect((await running).record?.state).toBe("unknown");
     const afterRecovery = await base(store, pending.transport);
     expect(afterRecovery.record?.state).toBe("unknown");
     expect(afterRecovery.requestCount).toBe(0);
     expect(pending.calls()).toBe(1);
+  });
+
+  it("marks a reservation that never reached the provider as rejected, not unknown", async () => {
+    const store = new InMemoryQwenWebStore();
+    const now = "2026-10-06T00:00:00.000Z";
+    const record: QwenWebRecord = {
+      id: "reserved-only", workspaceId: "workspace-1", projectId: "project-1", actorId: "operator-1",
+      idempotencyKey: "crashed-before-send", inputHash: "ab".repeat(32), frozenInput: INPUT, mode: "story",
+      episodeNo: null, requestedModel: QWEN_WRITING_DEFAULT_MODEL, state: "reserved", executorId: "dead",
+      leaseUntil: "2026-10-06T00:02:00.000Z", serverRequestId: null, errorCode: null, providerResult: null,
+      candidateJson: null, candidateExpiresAt: null, billingStatus: "unknown", createdAt: now, updatedAt: now,
+    };
+    await store.reserve(record, { sinceIso: now, maxRequests: 8, maxConcurrency: 1 });
+    expect(await store.markSubmitted("reserved-only", "other-executor", now, "2026-10-06T00:04:00.000Z")).toBe(false);
+    expect(await store.markSubmitted("reserved-only", "dead", "2026-10-06T00:03:00.000Z", "2026-10-06T00:05:00.000Z"))
+      .toBe(false);
+    expect(await store.recoverExpired("2026-10-06T00:02:00.001Z")).toBe(1);
+    expect(await store.findById("workspace-1", "project-1", "reserved-only")).toMatchObject({
+      state: "rejected", errorCode: QWEN_WEB_LOST_BEFORE_SEND, providerResult: null,
+    });
+    expect(await store.findById("workspace-1", "other-project", "reserved-only")).toBeNull();
+  });
+
+  it("lets only the owning executor finish a submitted request", async () => {
+    const store = new InMemoryQwenWebStore();
+    const pending = pendingTransport();
+    const running = runQwenWebWriting({ ...requestOptions(store, pending.transport), executorId: "owner" });
+    await pending.started;
+    const active = await store.findByKey("workspace-1", "operator-1", "key-1");
+    const forged = await store.finish(active!.id, "intruder", {
+      state: "completed", serverRequestId: null, errorCode: null, providerResult: "completed",
+      candidateJson: "{}", candidateExpiresAt: null, updatedAt: new Date().toISOString(),
+    });
+    expect(forged.state).toBe("submitted");
+    pending.release();
+    expect((await running).record?.state).toBe("completed");
   });
 
   it("clears an expired candidate and keeps the idempotency row", async () => {

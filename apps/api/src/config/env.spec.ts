@@ -43,4 +43,18 @@ describe("loadApiEnv", () => {
     expect(env.DATABASE_URL).toContain("super-secret-password");
     expect(env.S3_FORCE_PATH_STYLE).toBe(true);
   });
+
+  it("reads the Qwen key, endpoint and model only from the process environment", () => {
+    const fromFile = loadApiEnv(valid, {
+      DASHSCOPE_API_KEY: "sk-file-only-secret", BAILIAN_BASE_URL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      QWEN_WEB_MODEL: "file-model",
+    });
+    expect(fromFile.DASHSCOPE_API_KEY).toBeUndefined();
+    expect(fromFile.BAILIAN_BASE_URL).toBeUndefined();
+    expect(fromFile.QWEN_WEB_MODEL).toBeUndefined();
+    const fromProcess = loadApiEnv({ ...valid, DASHSCOPE_API_KEY: "sk-process-secret",
+      BAILIAN_BASE_URL: "https://dashscope.aliyuncs.com/compatible-mode/v1" });
+    expect(fromProcess.DASHSCOPE_API_KEY).toBe("sk-process-secret");
+    expect(fromProcess.BAILIAN_BASE_URL).toBe("https://dashscope.aliyuncs.com/compatible-mode/v1");
+  });
 });

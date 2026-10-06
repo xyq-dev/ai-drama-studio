@@ -8,6 +8,7 @@ import { WritingAssistant } from "./writing-assistant";
 import { EpisodeComposePreflight } from "./episode-compose-preflight";
 import { ProjectCostSummary } from "./project-cost-summary";
 import { ApiError, StudioClient } from "../lib/studio-client";
+import { createQwenWebClient } from "../lib/qwen-web-client";
 import {
   LIMITS,
   TEXT_WORKFLOW_TYPES,
@@ -43,6 +44,7 @@ import {
 } from "../lib/studio-model";
 
 const client = new StudioClient();
+const qwenWebClient = createQwenWebClient();
 const EMPTY_CONTENT: Record<string, unknown> = { text: "" };
 const BODY_FIELD = "mt-1 w-full min-h-48 max-h-[70vh] resize-y rounded border border-neutral-300 px-3 py-2";
 
@@ -1220,6 +1222,7 @@ function ContentEditor(props: {
           loaded={props.assistant.loaded}
           capture={captureTarget}
           onAdopt={adoptText}
+          workspaceQwen={qwenWebClient}
         />
       ) : null}
       {props.empty ? <p className="mt-2 text-sm">尚无版本。保存将创建第一版。</p> : null}

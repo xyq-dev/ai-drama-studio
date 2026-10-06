@@ -1,5 +1,7 @@
 -- DRAFT. Do not apply. Execution of this migration is not authorized.
 -- Candidate expiry clears candidate_json only. The idempotency and audit row stays.
+-- Read by PostgresQwenWebStore (packages/database/src/qwen-web-store.ts). Until this table exists with every
+-- column below, the store reports storage unavailable and the API refuses the request before any send.
 
 CREATE TABLE qwen_writing_request (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -13,6 +15,10 @@ CREATE TABLE qwen_writing_request (
   episode_no integer CHECK (episode_no IS NULL OR episode_no IN (1, 2, 3)),
   requested_model text NOT NULL,
   state text NOT NULL CHECK (state IN ('reserved', 'submitted', 'completed', 'rejected', 'unknown')),
+  -- The sending process owns reserved/submitted until lease_until. Only it may finish the row; recovery acts
+  -- only after the lease expired and uses a conditional update.
+  executor_id text NOT NULL,
+  lease_until timestamptz NOT NULL,
   server_request_id text,
   error_code text,
   provider_result text CHECK (provider_result IS NULL OR provider_result IN ('completed', 'unknown')),
@@ -32,9 +38,15 @@ CREATE TABLE qwen_writing_request (
 );
 
 CREATE INDEX qwen_writing_request_open_idx
-  ON qwen_writing_request (workspace_id, state)
+  ON qwen_writing_request (workspace_id, state, lease_until)
   WHERE state IN ('reserved', 'submitted');
 
--- A future PostgreSQL store must reserve the idempotency key and workspace quota
--- atomically, and fence state transitions by execution ownership. A table alone
--- does not implement that protocol. Do not apply this draft to enable the route.
+CREATE INDEX qwen_writing_request_recent_idx
+  ON qwen_writing_request (workspace_id, created_at);
+
+CREATE INDEX qwen_writing_request_candidate_expiry_idx
+  ON qwen_writing_request (candidate_expires_at)
+  WHERE candidate_json IS NOT NULL;
+
+-- The store serializes reserve per workspace with a transaction-scoped advisory lock, so the key lookup,
+-- both caps and the insert are atomic. Do not apply this draft to enable the route without authorization.
