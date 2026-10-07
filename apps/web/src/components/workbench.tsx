@@ -65,6 +65,8 @@ function taskStatusLabel(state: string): string {
 }
 
 const MEDIA_WORKFLOW_TYPES = new Set(["MEDIA_IMAGE", "MEDIA_VIDEO", "MEDIA_TTS", "MEDIA_SUBTITLE", "MEDIA_MUSIC"]);
+/** Character reference generation. Shown and followed like other tasks; its own panel re-reads the reference list. */
+const REFERENCE_WORKFLOW_TYPE = "MEDIA_CHARACTER_REFERENCE";
 
 const MEDIA_RETRY_REASONS: Record<MediaRetryRejection, string> = {
   NOT_MEDIA: "不是 Mock 媒体任务",
@@ -76,7 +78,7 @@ const MEDIA_RETRY_REASONS: Record<MediaRetryRejection, string> = {
 };
 
 function trackedWorkflow(run: { type: string }): boolean {
-  return TEXT_WORKFLOW_TYPES.has(run.type) || MEDIA_WORKFLOW_TYPES.has(run.type);
+  return TEXT_WORKFLOW_TYPES.has(run.type) || MEDIA_WORKFLOW_TYPES.has(run.type) || run.type === REFERENCE_WORKFLOW_TYPE;
 }
 
 function noteWorkflowTransitions(
@@ -86,6 +88,11 @@ function noteWorkflowTransitions(
   let mediaBecameTerminal = false;
   let textBecameTerminal = false;
   for (const run of runs) {
+    // A reference run refreshes its own panel; it neither reloads text entities nor shot media.
+    if (run.type === REFERENCE_WORKFLOW_TYPE) {
+      known.set(run.id, run.status);
+      continue;
+    }
     const previous = known.get(run.id);
     const terminal = !shouldPoll(run.status, false);
     const becameTerminal = previous !== undefined && shouldPoll(previous, false) && terminal;
@@ -1417,7 +1424,7 @@ function EntityPane(props: {
           />
         ) : null}
         {props.kind === "character" && selected && history?.aggregate.entityId === selected && current ? (
-          <CharacterReferencePanel characterId={selected} currentRevisionId={current.id} />
+          <CharacterReferencePanel projectId={props.project.id} characterId={selected} currentRevisionId={current.id} />
         ) : null}
         <NewEntityForm
           project={props.project}
@@ -2877,6 +2884,7 @@ function TaskDrawer(props: {
 
   const textRuns = props.runs.filter((run) => TEXT_WORKFLOW_TYPES.has(run.type));
   const mediaRuns = props.runs.filter((run) => MEDIA_WORKFLOW_TYPES.has(run.type));
+  const referenceRuns = props.runs.filter((run) => run.type === REFERENCE_WORKFLOW_TYPE);
 
   return (
     <div className="fixed inset-y-0 right-0 z-30 w-full max-w-md overflow-auto bg-white p-4 shadow-xl">
@@ -2927,6 +2935,27 @@ function TaskDrawer(props: {
                   <AttemptList attempts={job.attempts} />
                   <button className="mr-2 underline disabled:opacity-50" type="button" disabled={terminal} onClick={() => void act(`/generation-jobs/${job.id}/cancel`)}>取消{terminal ? "（已结束）" : ""}</button>
                   <button className="underline disabled:opacity-50" type="button" disabled={!retry.allowed} onClick={() => void act(`/generation-jobs/${job.id}/retry`)}>{retry.allowed ? "重试（新建任务，保留原任务）" : `重试不可用（${MEDIA_RETRY_REASONS[retry.reason]}）`}</button>
+                </div>
+              );
+            })}
+          </li>
+        ))}
+      </ul>
+      <h2 className="mt-6 font-medium">角色参考图任务</h2>
+      <p className="mt-2 text-sm">在角色页「角色参考图」发起。返回 202 只表示受理；成功后角色页会重新读取参考图列表。这里不提供重试：需要新的参考图时，在角色页再次生成。</p>
+      <ul className="mt-4 space-y-3">
+        {referenceRuns.length === 0 ? <li className="text-sm">没有参考图任务</li> : null}
+        {referenceRuns.map((run) => (
+          <li key={run.id} className="min-w-0 rounded border p-3 text-sm [overflow-wrap:anywhere]">
+            <p>角色参考图 · {taskStatusLabel(run.status)}</p>
+            {run.jobs.map((job) => {
+              const terminal = job.state === "SUCCEEDED" || job.state === "FAILED" || job.state === "CANCELED";
+              return (
+                <div key={job.id} className="mt-2">
+                  <p>任务 {taskStatusLabel(job.state)}{job.errorCode ? ` · ${job.errorCode}` : ""}</p>
+                  {job.errorMessage ? <p>{job.errorMessage}</p> : null}
+                  <AttemptList attempts={job.attempts} />
+                  <button className="mr-2 underline disabled:opacity-50" type="button" disabled={terminal} onClick={() => void act(`/generation-jobs/${job.id}/cancel`)}>取消{terminal ? "（已结束）" : ""}</button>
                 </div>
               );
             })}

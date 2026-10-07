@@ -8,6 +8,7 @@ const CHARACTER = "11111111-1111-4111-8111-111111111111";
 const CURRENT = "22222222-2222-4222-8222-222222222222";
 const OLD = "33333333-3333-4333-8333-333333333333";
 const HASH = "ab".repeat(32);
+const PROJECT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
 afterEach(() => {
   cleanup();
@@ -44,7 +45,7 @@ function stub(listings: unknown[], writes: Array<{ status: number; body: unknown
 describe("character reference panel", () => {
   it("says the storage is not installed and offers no reference actions", async () => {
     const calls = stub(["unavailable"]);
-    render(<CharacterReferencePanel characterId={CHARACTER} currentRevisionId={CURRENT} />);
+    render(<CharacterReferencePanel projectId={PROJECT} characterId={CHARACTER} currentRevisionId={CURRENT} />);
     expect(await screen.findByText(/参考图存储尚未启用/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "为当前版本生成参考图" })).toBeNull();
     expect(calls.every((call) => call.method === "GET")).toBe(true);
@@ -53,11 +54,11 @@ describe("character reference panel", () => {
   it("reviews on the exact bytes and selects with the selection it saw", async () => {
     const listing = { characterId: CHARACTER, currentRevisionId: CURRENT, selection: null,
       items: [asset("44444444-4444-4444-8444-444444444444"),
-        asset("55555555-5555-4555-8555-555555555555", { reviewStatus: "APPROVED", rowVersion: 2 }),
+        asset("55555555-5555-4555-8555-555555555555", { reviewStatus: "APPROVED", rowVersion: 2, selectable: true }),
         asset("66666666-6666-4666-8666-666666666666", { reviewStatus: "APPROVED", characterRevisionId: OLD }),
         asset("77777777-7777-4777-8777-777777777777", { reviewStatus: "APPROVED", status: "STALE" })] };
     const calls = stub([listing]);
-    render(<CharacterReferencePanel characterId={CHARACTER} currentRevisionId={CURRENT} />);
+    render(<CharacterReferencePanel projectId={PROJECT} characterId={CHARACTER} currentRevisionId={CURRENT} />);
     expect(await screen.findByText("尚未选定参考图")).toBeTruthy();
     fireEvent.click(screen.getAllByRole("button", { name: "通过" })[0]!);
     await waitFor(() => expect(calls.some((call) => call.url.endsWith("/review"))).toBe(true));
@@ -76,13 +77,13 @@ describe("character reference panel", () => {
 
   it("re-reads after a selection conflict and needs a note to reject", async () => {
     const before = { characterId: CHARACTER, currentRevisionId: CURRENT, selection: null,
-      items: [asset("55555555-5555-4555-8555-555555555555", { reviewStatus: "APPROVED" }),
+      items: [asset("55555555-5555-4555-8555-555555555555", { reviewStatus: "APPROVED", selectable: true }),
         asset("99999999-9999-4999-8999-999999999999")] };
     const after = { ...before, selection: { assetId: "88888888-8888-4888-8888-888888888888",
       sourceCharacterRevisionId: CURRENT, usable: true } };
     const calls = stub([before, after], [{ status: 409, body: { error: { code: "REFERENCE_SELECTION_CONFLICT",
       message: "The selected reference changed since it was read" } } }]);
-    render(<CharacterReferencePanel characterId={CHARACTER} currentRevisionId={CURRENT} />);
+    render(<CharacterReferencePanel projectId={PROJECT} characterId={CHARACTER} currentRevisionId={CURRENT} />);
     fireEvent.click(await screen.findByRole("button", { name: "选为视频参考" }));
     expect(await screen.findByText(/REFERENCE_SELECTION_CONFLICT/)).toBeTruthy();
     expect(await screen.findByText(/当前选定：88888888 · 可用于视频/)).toBeTruthy();
