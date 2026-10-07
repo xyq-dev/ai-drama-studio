@@ -14,6 +14,18 @@ const harness = vi.hoisted(() => {
       cancelRequested: boolean;
     }>,
     executions: new Map<string, Record<string, unknown>>(),
+    referenceRows: [] as Array<{
+      workspaceId: string;
+      jobId: string;
+      attemptId: string;
+      providerConfigurationId: string;
+      providerRequestId: string | null;
+      cancelRequested: boolean;
+    }>,
+    /** Thrown by the shot-media or reference execution read while set, as a transient database fault would be. */
+    mediaFault: null as Error | null,
+    referenceFault: null as Error | null,
+    recoveryErrors: [] as string[],
     objectsConstructed: 0,
     failJob: vi.fn(async (input: { jobId: string }) => {
       state.rows = state.rows.filter((row) => row.jobId !== input.jobId);
@@ -27,6 +39,14 @@ const harness = vi.hoisted(() => {
       state.rows = state.rows.filter((row) => row.jobId !== input.jobId);
     }),
     put: vi.fn(async () => undefined),
+    referenceComplete: vi.fn(async (_jobs: unknown, input: { jobId: string }) => {
+      state.referenceRows = state.referenceRows.filter((row) => row.jobId !== input.jobId);
+      return { id: "reference-asset" };
+    }),
+    recoverExpiredLease: vi.fn(async (input: { jobId: string }) => {
+      state.referenceRows = state.referenceRows.filter((row) => row.jobId !== input.jobId);
+      return "requeued" as const;
+    }),
   };
   return state;
 });
@@ -50,8 +70,16 @@ vi.mock("@ai-drama/database", async () => {
       listOrphanQueued = async () => [];
       listExpiredRunning = async () => [];
       listWaitingExternal = async () => [];
-      listExpiredMockMedia = async () => harness.rows;
-      loadMockMediaExecution = async (_workspaceId: string, jobId: string) => harness.executions.get(jobId) ?? null;
+      listExpiredMockMedia = async (_limit: number, _now?: Date, kinds?: string[]) =>
+        kinds?.includes("MEDIA_CHARACTER_REFERENCE") ? harness.referenceRows : harness.rows;
+      loadMockMediaExecution = async (_workspaceId: string, jobId: string) => {
+        if (harness.mediaFault) throw harness.mediaFault;
+        return harness.executions.get(jobId) ?? null;
+      };
+      loadCharacterReferenceExecution = async (_workspaceId: string, jobId: string) => {
+        if (harness.referenceFault) throw harness.referenceFault;
+        return harness.executions.get(jobId) ?? null;
+      };
       markDispatched = async () => undefined;
       recordDispatchFailure = async () => undefined;
     },
@@ -59,8 +87,11 @@ vi.mock("@ai-drama/database", async () => {
       failJob = (input: { jobId: string }) => harness.failJob(input);
       confirmCancellation = (input: { jobId: string }) => harness.confirmCancellation(input);
       recordProviderEvent = async () => true;
-      recoverExpiredLease = async () => "requeued" as const;
+      recoverExpiredLease = (input: { jobId: string }) => harness.recoverExpiredLease(input);
       redispatchQueuedJob = async () => undefined;
+    },
+    CharacterReferenceStore: class {
+      completeGeneration = (jobs: unknown, input: { jobId: string }) => harness.referenceComplete(jobs, input);
     },
     MediaAssetStore: class {
       completeAttemptWithAsset = (jobs: unknown, input: { generationJobId: string }) => harness.complete(jobs, input);
@@ -89,6 +120,12 @@ const directory = resolve("tmp-mock-av-review");
 
 function resetHarness(): void {
   harness.rows = [];
+  harness.referenceRows = [];
+  harness.mediaFault = null;
+  harness.referenceFault = null;
+  harness.recoveryErrors = [];
+  harness.referenceComplete.mockClear();
+  harness.recoverExpiredLease.mockClear();
   harness.executions.clear();
   harness.objectsConstructed = 0;
   harness.failJob.mockClear();
@@ -128,6 +165,7 @@ async function boot(options: { mockObjectDir?: string; mockImageEnabled?: boolea
     dispatchIntervalMs: 60_000,
     reconcileIntervalMs: 15,
     staleRecalculationIntervalMs: 60_000,
+    onRecoveryError: (message: string) => { harness.recoveryErrors.push(message); },
     ...options,
   });
 }
@@ -283,4 +321,72 @@ it("cancels a disabled video without inspecting or writing an asset", async () =
   expect(inspect).not.toHaveBeenCalled();
   expect(harness.put).not.toHaveBeenCalled();
   expect(harness.complete).not.toHaveBeenCalled();
+});
+
+function bindReference(jobId: string, bound: boolean): void {
+  harness.referenceRows.push({
+    workspaceId: "workspace", jobId, attemptId: `attempt-${jobId}`, providerConfigurationId: "provider",
+    providerRequestId: bound ? `mock-media|sync|image.generate|${jobId}:1` : null, cancelRequested: false,
+  });
+  harness.executions.set(jobId, {
+    workspaceId: "workspace", jobId, projectId: "project", kind: "MEDIA_CHARACTER_REFERENCE", state: "RUNNING",
+    inputSnapshot: { schema: "m3.mock.character-reference.v1", characterRevisionId: "33333333-3333-4333-8333-333333333333",
+      characterContentHash: "cd".repeat(32), seed: null, bypassCache: false, outcome: "success", executionMode: "sync",
+      capability: "image.generate" },
+  });
+}
+
+it("keeps recovering character references while shot media recovery fails, then recovers media once the fault clears (closeout item 6)", async () => {
+  resetHarness();
+  bind("MEDIA_IMAGE");
+  bindReference("ref-unsent", false);
+  bindReference("ref-bound", true);
+  harness.mediaFault = Object.assign(new Error("Connection terminated unexpectedly"), { name: "ConnectionError" });
+  const submit = vi.spyOn(MockMediaAdapter.prototype, "submit");
+  const runtime = await boot({ mockObjectDir: directory, mockImageEnabled: true });
+  try {
+    await vi.waitFor(() => {
+      expect(harness.recoverExpiredLease).toHaveBeenCalledWith(expect.objectContaining({ jobId: "ref-unsent" }));
+      expect(harness.referenceComplete).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        jobId: "ref-bound", attemptId: "attempt-ref-bound", providerRequestId: "mock-media|sync|image.generate|ref-bound:1" }));
+      expect(harness.recoveryErrors.some((line) => line.startsWith("mock-media recovery failed: AggregateError (ConnectionError)"))).toBe(true);
+    });
+    // The transient fault left the image attempt alone: not failed, not completed.
+    expect(harness.complete).not.toHaveBeenCalled();
+    expect(harness.failJob).not.toHaveBeenCalled();
+    harness.mediaFault = null;
+    await vi.waitFor(() => {
+      expect(harness.complete).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ kind: "IMAGE" }));
+    });
+  } finally {
+    await runtime.shutdown();
+  }
+  // A bound reference request is inspected and persisted, never submitted again.
+  expect(submit).not.toHaveBeenCalled();
+  expect(harness.referenceComplete).toHaveBeenCalledTimes(1);
+  expect(harness.complete).toHaveBeenCalledTimes(1);
+  expect(harness.recoveryErrors.every((line) => !line.includes("Connection terminated"))).toBe(true);
+});
+
+it("keeps recovering shot media while character reference recovery fails, then recovers references (closeout item 6)", async () => {
+  resetHarness();
+  bind("MEDIA_IMAGE");
+  bindReference("ref-bound", true);
+  harness.referenceFault = Object.assign(new Error("EIO: i/o error"), { name: "IoError", code: "EIO" });
+  const runtime = await boot({ mockObjectDir: directory, mockImageEnabled: true });
+  try {
+    await vi.waitFor(() => {
+      expect(harness.complete).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ kind: "IMAGE" }));
+      expect(harness.recoveryErrors.some((line) => line.startsWith("character-reference recovery failed: AggregateError (IoError)"))).toBe(true);
+    });
+    expect(harness.referenceComplete).not.toHaveBeenCalled();
+    expect(harness.failJob).not.toHaveBeenCalled();
+    harness.referenceFault = null;
+    await vi.waitFor(() => {
+      expect(harness.referenceComplete).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ jobId: "ref-bound" }));
+    });
+  } finally {
+    await runtime.shutdown();
+  }
+  expect(harness.complete).toHaveBeenCalledTimes(1);
 });
