@@ -781,10 +781,15 @@ async function main() {
       const capabilityUrl = `${webOrigin}/api/v1/providers/capabilities`;
       let releaseCapability;
       const capabilityHeld = new Promise((done) => { releaseCapability = done; });
+      // Removing a route handler while it holds a request makes Playwright resume that request itself, so the
+      // handler is removed only after it has passed the request on.
+      let passedOn;
+      const capabilityPassed = new Promise((done) => { passedOn = done; });
       const holdCapability = async (route) => {
         faultDid("step5 pending gate: GET /api/v1/providers/capabilities held, then passed on with route.continue");
         await capabilityHeld;
         await route.continue();
+        passedOn();
       };
       await page.route(capabilityUrl, holdCapability);
       await page.goto(`${webOrigin}/projects/${world.projectId}/create?step=final`, { waitUntil: "domcontentloaded" });
@@ -804,6 +809,7 @@ async function main() {
         throw new Error(`compose open while the capability is pending ${JSON.stringify(pendingGate)}`);
       }
       releaseCapability();
+      await capabilityPassed;
       await page.unroute(capabilityUrl, holdCapability);
       await waitFor(async () => (await panel.getByRole("button", { name: "预检编排" }).isEnabled()) || "preflight still closed", "gate opened", 20_000);
       const kept = await panel.locator("[data-selected-asset-id]").count();
