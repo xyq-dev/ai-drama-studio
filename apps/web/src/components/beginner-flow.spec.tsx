@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 // Simulated interface tests. fetch is mocked; the real step panes are mounted. No browser or backend runs here.
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BeginnerFlow } from "./beginner-flow";
 
@@ -44,6 +44,15 @@ interface World {
 
 /** GET /providers/capabilities: a compose switch object, a failure status, or the default (both on). */
 let capabilities: { compose: { shot: boolean; episode: boolean } } | number = { compose: { shot: true, episode: true } };
+/** Capability answers taken in order before the default; each is awaited (to hold or answer late). */
+let capabilityQueue: Array<() => Promise<Response>> = [];
+let capabilityReads = 0;
+
+function capabilityAnswer(value: { shot: boolean; episode: boolean } | number): Response {
+  return typeof value === "number"
+    ? json({ error: { code: "UNAVAILABLE", message: "暂时不可用" } }, value)
+    : json({ providerKey: "mock", capability: "mock.generate", outcomes: [], compose: value });
+}
 
 function install(worlds: Record<string, World>) {
   const calls: string[] = [];
@@ -51,6 +60,9 @@ function install(worlds: Record<string, World>) {
     const path = String(input).split("?")[0] ?? "";
     calls.push(`${init?.method ?? "GET"} ${String(input)}`);
     if (path === "/api/v1/providers/capabilities") {
+      capabilityReads += 1;
+      const queued = capabilityQueue.shift();
+      if (queued) return queued();
       return typeof capabilities === "number"
         ? json({ error: { code: "UNAVAILABLE", message: "暂时不可用" } }, capabilities)
         : json({ providerKey: "mock", capability: "mock.generate", outcomes: [], ...capabilities });
@@ -100,6 +112,8 @@ function pageOf(items: unknown[], url: string): Response {
 
 beforeEach(() => {
   capabilities = { compose: { shot: true, episode: true } };
+  capabilityQueue = [];
+  capabilityReads = 0;
   window.history.replaceState(null, "", `/projects/${P1}/create`);
   Element.prototype.scrollIntoView = vi.fn();
   window.scrollTo = vi.fn() as unknown as typeof window.scrollTo;
@@ -456,5 +470,127 @@ describe("beginner scene editor locations (Issue #52 item 8)", () => {
     fireEvent.click(await screen.findByRole("button", { name: /场景 1/ }));
     expect(await screen.findByText(/场地列表没有读全（读取失败）/)).toBeTruthy();
     expect(locationReads).toBeGreaterThan(0);
+  });
+});
+
+function candidate(id: string, ordinal: number) {
+  return { assetId: id, shotId: `shot-${id}`, sceneOrdinal: 1, sceneHeading: "雨夜", shotOrdinal: ordinal, durationMs: 1000,
+    reviewStatus: "APPROVED" };
+}
+
+describe("compose capability gate (PR #53 review 2 and 3)", () => {
+  it("recheck really reads the capability again: closed, enabled on the server, recheck, open", async () => {
+    window.history.replaceState(null, "", `/projects/${P1}/create?step=sample`);
+    capabilities = { compose: { shot: false, episode: false } };
+    install({ [P1]: sceneWorld() });
+    render(<BeginnerFlow projectId={P1} />);
+    expect(await screen.findByText(/当前环境没有开启单镜成片所需的功能/)).toBeTruthy();
+    const before = capabilityReads;
+    capabilities = { compose: { shot: true, episode: true } };
+    fireEvent.click(screen.getByRole("button", { name: "重新检查功能状态" }));
+    expect(await screen.findByRole("button", { name: "选一个镜头试做" })).toBeTruthy();
+    expect(capabilityReads).toBe(before + 1);
+    expect(screen.queryByText(/当前环境没有开启单镜成片所需的功能/)).toBeNull();
+  });
+
+  it("a recheck in flight is not repeated, and a late answer of an older check never overrides a newer one", async () => {
+    window.history.replaceState(null, "", `/projects/${P1}/create?step=sample`);
+    let lateOld!: () => void;
+    capabilityQueue = [() => new Promise<Response>((done) => { lateOld = () => done(capabilityAnswer({ shot: false, episode: false })); })];
+    const worlds = { [P1]: sceneWorld(), [P2]: sceneWorld({ title: "第二部" }) };
+    install(worlds);
+    const view = render(<BeginnerFlow projectId={P1} />);
+    expect(await screen.findByText(/正在检查服务端的合成功能状态/)).toBeTruthy();
+    const primary = screen.getByRole("button", { name: "正在检查功能状态" });
+    fireEvent.click(primary);
+    fireEvent.click(primary);
+    expect(capabilityReads).toBe(1);
+    // Another work opens in the same component: its own check answers "open"; the old check answers "closed" late.
+    view.rerender(<BeginnerFlow projectId={P2} />);
+    expect(await screen.findByRole("heading", { name: "第二部" })).toBeTruthy();
+    await waitFor(() => expect(capabilityReads).toBe(2));
+    await act(async () => { lateOld(); });
+    await act(async () => { await new Promise((done) => setTimeout(done, 20)); });
+    expect(screen.queryByText(/当前环境没有开启单镜成片所需的功能/)).toBeNull();
+  });
+
+  it("a failed recheck keeps the chosen scene, says unconfirmed, and a later recheck succeeds", async () => {
+    window.history.replaceState(null, "", `/projects/${P1}/create?step=sample`);
+    capabilities = 503;
+    install({ [P1]: sceneWorld() });
+    render(<BeginnerFlow projectId={P1} />);
+    expect(await screen.findByText(/没能读取服务端的合成功能状态/)).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: /场景 1/ }));
+    expect(await screen.findByLabelText("场地")).toBeTruthy();
+    fireEvent.click(screen.getAllByRole("button", { name: "重新检查功能状态" })[0]!);
+    expect(await screen.findByText(/没能读取服务端的合成功能状态/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /场景 1/, pressed: true })).toBeTruthy();
+    capabilities = { compose: { shot: true, episode: true } };
+    fireEvent.click(screen.getAllByRole("button", { name: "重新检查功能状态" })[0]!);
+    await waitFor(() => expect(screen.queryByText(/没能读取服务端的合成功能状态/)).toBeNull());
+    expect(screen.getByRole("button", { name: /场景 1/, pressed: true })).toBeTruthy();
+    expect(screen.getByLabelText("场地")).toBeTruthy();
+  });
+
+  it("while the capability is pending, step 4 offers no compose action even though every other fact is ready", async () => {
+    window.history.replaceState(null, "", `/projects/${P1}/create?step=sample`);
+    let answer!: () => void;
+    capabilityQueue = [() => new Promise<Response>((done) => { answer = () => done(capabilityAnswer({ shot: true, episode: true })); })];
+    install({ [P1]: sceneWorld() });
+    render(<BeginnerFlow projectId={P1} />);
+    expect(await screen.findByText(/正在检查服务端的合成功能状态/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "选一个镜头试做" })).toBeNull();
+    expect((screen.getByRole("button", { name: "正在检查功能状态" }) as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => { answer(); });
+    expect(await screen.findByRole("button", { name: "选一个镜头试做" })).toBeTruthy();
+  });
+
+  it("step 5 opened directly: the inner preflight and submit stay closed until enabled, the arrangement survives, and an approved cut stays downloadable", async () => {
+    window.history.replaceState(null, "", `/projects/${P1}/create?step=final`);
+    let answer!: () => void;
+    capabilityQueue = [() => new Promise<Response>((done) => { answer = () => done(capabilityAnswer({ shot: true, episode: true })); })];
+    install({ [P1]: sceneWorld({
+      candidates: { "episode-1": [candidate("cut-a", 1), candidate("cut-b", 2)] },
+      composites: { "episode-1": [{ assetId: "episode-cut", status: "ACTIVE", reviewStatus: "APPROVED", rowVersion: 2, durationMs: 2000,
+        reviewedContentHash: "h", contentHash: "h", segments: [] } as never] },
+    }) });
+    render(<BeginnerFlow projectId={P1} />);
+    const panel = await screen.findByRole("region", { name: "多镜编排" });
+    expect(await screen.findByText(/正在检查服务端的合成功能状态/)).toBeTruthy();
+    for (const button of await within(panel).findAllByRole("button", { name: "加入" })) fireEvent.click(button);
+    expect(panel.querySelectorAll("[data-selected-asset-id]")).toHaveLength(2);
+    expect((within(panel).getByRole("button", { name: "预检编排" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((within(panel).getByRole("button", { name: "开始多镜合成" }) as HTMLButtonElement).disabled).toBe(true);
+    // The approved cut is still listed and downloadable: viewing does not depend on compose.
+    expect(await within(panel).findByRole("button", { name: "下载 MP4" })).toBeTruthy();
+    await act(async () => { answer(); });
+    await waitFor(() => expect((within(panel).getByRole("button", { name: "预检编排" }) as HTMLButtonElement).disabled).toBe(false));
+    expect(panel.querySelectorAll("[data-selected-asset-id]")).toHaveLength(2);
+  });
+
+  it("step 5 with episode compose closed: inner controls closed, the notice and a recheck shown", async () => {
+    window.history.replaceState(null, "", `/projects/${P1}/create?step=final`);
+    capabilities = { compose: { shot: true, episode: false } };
+    install({ [P1]: sceneWorld({ candidates: { "episode-1": [candidate("cut-a", 1), candidate("cut-b", 2)] } }) });
+    render(<BeginnerFlow projectId={P1} />);
+    expect(await screen.findByText(/当前环境没有开启集级合成/)).toBeTruthy();
+    const panel = await screen.findByRole("region", { name: "多镜编排" });
+    for (const button of await within(panel).findAllByRole("button", { name: "加入" })) fireEvent.click(button);
+    expect((within(panel).getByRole("button", { name: "预检编排" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByRole("button", { name: "重新检查功能状态" })).toBeTruthy();
+  });
+});
+
+describe("refresh banner tells the truth about retries (PR #53 review 1)", () => {
+  it("a failed reread while idle shows 正在自动重试 and recovers without a click", async () => {
+    window.history.replaceState(null, "", `/projects/${P1}/create?step=story`);
+    const world: World = { title: "夜班", story: story("DRAFT"), episodes: [] };
+    install({ [P1]: world });
+    render(<BeginnerFlow projectId={P1} />);
+    expect(await screen.findByRole("heading", { name: "第 1 步 · 定故事" })).toBeTruthy();
+    world.projectFailures = 1;
+    await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
+    expect(await screen.findByText(/正在自动重试/)).toBeTruthy();
+    await waitFor(() => expect(screen.queryByText(/正在自动重试/)).toBeNull(), { timeout: 6000 });
   });
 });

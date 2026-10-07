@@ -16,6 +16,8 @@ export interface EpisodeComposeJobPanelProps {
   onReviewed?: () => void;
   /** Called when a compose is accepted, reaches a terminal state, or a composite is reviewed. */
   onChanged?: () => void;
+  /** A new compose (or a resend of an unconfirmed one) cannot start now; the list, review and downloads stay. */
+  startBlocked?: boolean;
 }
 
 interface JobView {
@@ -267,6 +269,7 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
   }, [job?.id, job?.state, props.client]);
 
   async function start() {
+    if (props.startBlocked) return;
     const current = held?.identity === identity && held.unresolved ? held : null;
     const body = current?.body ?? props.body;
     if (!body) return;
@@ -441,7 +444,7 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
   const canStart = Boolean(props.body) || Boolean(held?.identity === identity && held.unresolved);
   return (
     <section className="mt-4 min-w-0" aria-label="集级合成">
-      <button className="rounded bg-neutral-900 px-3 py-2 text-sm text-white disabled:bg-neutral-400" type="button" disabled={!canStart || busy} onClick={() => void start()}>开始多镜合成</button>
+      <button className="rounded bg-neutral-900 px-3 py-2 text-sm text-white disabled:bg-neutral-400" type="button" disabled={!canStart || busy || Boolean(props.startBlocked)} onClick={() => void start()}>开始多镜合成</button>
       {job ? <p className="mt-2 text-sm" role="status">多镜合成已受理 {job.state}</p> : null}
       {error ? <p className="mt-2 text-sm" role="alert">{error}</p> : null}
       {listError ? <button className="mt-2 rounded border px-3 py-1 text-sm" type="button" onClick={() => setReload((value) => value + 1)}>重新查询成片</button> : null}

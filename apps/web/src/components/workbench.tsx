@@ -1407,8 +1407,8 @@ export function ScenePane(props: {
   onOpenShot: (shotId: string) => void;
   /** Compose accepted, finished or reviewed under this scene; the advanced workbench does not need it. */
   onMediaChanged?: () => void;
-  /** The server reports single-shot compose switched off: show that instead of a submit it would reject. */
-  shotComposeOff?: boolean;
+  /** Why a new single-shot compose cannot start now (capability pending, unread or off); null or absent: it can. */
+  shotComposeBlocked?: string | null;
 }) {
   const [history, setHistory] = useState<{ aggregate: Aggregate; items: SceneRevision[] } | null>(null);
   const [shots, setShots] = useState<PageState<Aggregate> | null>(null);
@@ -1644,9 +1644,8 @@ export function ScenePane(props: {
             onAccepted={props.onSaved}
             onReused={() => setReuseEpoch((value) => value + 1)}
           />
-          {props.shotComposeOff
-            ? <p className="mt-6 rounded border p-3 text-sm" role="status">单镜合成在当前环境没有开启，不能提交。需要管理员在服务端开启后才能继续。</p>
-            : <ComposePreflight revisionId={shotCurrent.id} refreshEpoch={props.imageEpoch + reuseEpoch} onChanged={props.onMediaChanged} />}
+          <ComposePreflight revisionId={shotCurrent.id} refreshEpoch={props.imageEpoch + reuseEpoch} onChanged={props.onMediaChanged}
+            blocked={props.shotComposeBlocked ?? null} />
           </div>
           <InspectSlot>
           <RevisionColumn

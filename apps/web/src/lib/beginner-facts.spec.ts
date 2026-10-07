@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ApiError } from "./studio-client";
 import type { Aggregate, EpisodeRecord } from "./project-base";
-import { MAX_PAGES, composeOff, loadComposeCapability, loadEntityLists, loadEpisodeMedia, readPages } from "./beginner-facts";
+import { MAX_PAGES, composeBlockedReason, composeGates, loadComposeCapability, loadEntityLists, loadEpisodeMedia, readPages } from "./beginner-facts";
 import { episodeFinalState, episodeSampleState, stepStates, type BeginnerFacts } from "./beginner-steps";
 
 /**
@@ -129,8 +129,6 @@ describe("progress facts follow pagination (review)", () => {
 });
 
 describe("single-shot compose closed state comes from the capability (Issue #52 item 3)", () => {
-  const ok = { 1: { candidates: { read: "ok" as const, count: 0 }, composites: { read: "ok" as const, approvedActive: false, draftActive: false, rejectedActive: false, staleApproved: false } } };
-
   it("reads the compose switches and treats a missing or failed answer as unconfirmed", async () => {
     const answer = (body: unknown) => ({ get: async <T,>() => body as T });
     expect(await loadComposeCapability(answer({ compose: { shot: false, episode: true } }))).toEqual({ read: "ok", shot: false, episode: true });
@@ -138,9 +136,12 @@ describe("single-shot compose closed state comes from the capability (Issue #52 
     expect(await loadComposeCapability({ get: async () => { throw new ApiError(503, "UNAVAILABLE", "x"); } })).toEqual({ read: "failed" });
   });
 
-  it("closed, open and unknown are three different answers even when the candidates read succeeded", () => {
-    expect(composeOff(ok, { read: "ok", shot: false, episode: true })).toEqual({ sample: true, final: false, unconfirmed: false });
-    expect(composeOff(ok, { read: "ok", shot: true, episode: true })).toEqual({ sample: false, final: false, unconfirmed: false });
-    expect(composeOff(ok, { read: "failed" })).toEqual({ sample: false, final: false, unconfirmed: true });
+  it("pending, failed, disabled and enabled are four answers, per channel, from the capability alone", () => {
+    expect(composeGates(null)).toEqual({ shot: "pending", episode: "pending" });
+    expect(composeGates({ read: "failed" })).toEqual({ shot: "failed", episode: "failed" });
+    expect(composeGates({ read: "ok", shot: false, episode: true })).toEqual({ shot: "disabled", episode: "enabled" });
+    expect(composeGates({ read: "ok", shot: true, episode: false })).toEqual({ shot: "enabled", episode: "disabled" });
+    expect(composeBlockedReason("enabled", "shot")).toBeNull();
+    for (const gate of ["pending", "failed", "disabled"] as const) expect(composeBlockedReason(gate, "episode")).toContain("不能开始新的合成");
   });
 });

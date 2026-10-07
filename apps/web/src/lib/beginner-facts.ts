@@ -126,20 +126,27 @@ export async function loadComposeCapability(client: Client): Promise<ComposeCapa
 }
 
 /**
- * Per step: off (the server says the feature is switched off) or unconfirmed (the capability could not be read).
- * Single-shot compose is decided by the capability alone; the candidates list does not check that switch.
+ * Whether a new composition may start, per channel, from the capability alone (never from candidate counts or a
+ * candidate read error). pending: the capability is being read; failed: it could not be read; disabled: the server
+ * reports the switch off; enabled: only then is a new compose offered.
  */
-export function composeOff(
-  media: Record<number, EpisodeMediaFacts>,
-  capability: ComposeCapability | null,
-): { sample: boolean; final: boolean; unconfirmed: boolean } {
-  const values = Object.values(media);
-  const known = capability?.read === "ok" ? capability : null;
-  return {
-    sample: (known !== null && !known.shot) || values.some((item) => item.candidates.read === "unavailable"),
-    final: (known !== null && !known.episode) || values.some((item) => item.composites.read === "unavailable"),
-    unconfirmed: capability?.read === "failed",
-  };
+export type ComposeGate = "pending" | "failed" | "disabled" | "enabled";
+
+export function composeGates(capability: ComposeCapability | null): { shot: ComposeGate; episode: ComposeGate } {
+  if (capability === null) return { shot: "pending", episode: "pending" };
+  if (capability.read === "failed") return { shot: "failed", episode: "failed" };
+  return { shot: capability.shot ? "enabled" : "disabled", episode: capability.episode ? "enabled" : "disabled" };
+}
+
+/** Why a new composition cannot start now, shown inside the compose panels; null when it can. */
+export function composeBlockedReason(gate: ComposeGate, channel: "shot" | "episode"): string | null {
+  const name = channel === "shot" ? "单镜合成" : "集级合成";
+  switch (gate) {
+    case "pending": return `正在检查${name}是否开启，检查完成前不能开始新的合成。`;
+    case "failed": return `没能确认${name}是否开启，暂时不能开始新的合成。请重新检查功能状态。`;
+    case "disabled": return `${name}在当前环境没有开启，不能开始新的合成。需要管理员在服务端开启后才能继续。`;
+    default: return null;
+  }
 }
 
 export function mediaReadFailed(media: Record<number, EpisodeMediaFacts>): boolean {
