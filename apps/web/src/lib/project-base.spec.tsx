@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 // useProjectBase against a stubbed fetch with controllable answers and fake timers. No browser or server.
-import { act, renderHook } from "@testing-library/react";
+import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useProjectBase, type WorkflowRun } from "./project-base";
 
@@ -22,6 +22,8 @@ interface Server {
   /** Answers for /projects/:id, consumed in order; a function is awaited (to hold or fail a request). */
   project: Array<() => Promise<Response>>;
   runsHold?: Promise<void>;
+  /** How many of the next workflow-runs reads answer 503. */
+  runsFail?: number;
   calls: string[];
 }
 
@@ -37,11 +39,24 @@ function install(server: Server) {
     }
     if (path.endsWith("/workflow-runs")) {
       if (server.runsHold) await server.runsHold;
+      if (server.runsFail) {
+        server.runsFail -= 1;
+        return json({ error: { code: "UNAVAILABLE", message: "暂时不可用" } }, 503);
+      }
       return json(server.runs);
     }
     if (path.endsWith("/episodes")) return json({ items: [] });
     return json({ items: [], nextCursor: null });
   }));
+}
+
+const projectReads = (server: Server) => server.calls.filter((path) => /^\/api\/v1\/projects\/[^/]+$/.test(path)).length;
+
+let visibility: "visible" | "hidden" = "visible";
+
+function setVisibility(next: "visible" | "hidden") {
+  visibility = next;
+  act(() => { document.dispatchEvent(new Event("visibilitychange")); });
 }
 
 const runsReads = (server: Server) => server.calls.filter((path) => path.endsWith("/workflow-runs")).length;
@@ -56,9 +71,12 @@ async function advance(ms: number) {
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  visibility = "visible";
+  Object.defineProperty(document, "visibilityState", { configurable: true, get: () => visibility });
 });
 
 afterEach(() => {
+  cleanup();
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
@@ -174,5 +192,137 @@ describe("useProjectBase ignores answers of superseded loads (final review 3)", 
     await act(async () => { await result.current.reloadBase(); });
     expect(result.current.error).toBeNull();
     expect(result.current.project?.id).toBe(P1);
+  });
+});
+
+describe("useProjectBase keeps one loading identity per project (Issue #52 item 9)", () => {
+  it("does not let the superseded initial load end a same-project reload still in flight", async () => {
+    let finishOld!: () => void;
+    let finishNew!: () => void;
+    const answer = () => json({ id: P1, title: "作品", premise: "", version: 1, status: "ACTIVE" });
+    const server: Server = { runs: [], calls: [], project: [
+      () => new Promise<Response>((done) => { finishOld = () => done(answer()); }),
+      () => new Promise<Response>((done) => { finishNew = () => done(answer()); }),
+    ] };
+    install(server);
+    const { result } = renderHook(() => useProjectBase(P1, "失败"));
+    await settle();
+    let manual!: Promise<void>;
+    act(() => { manual = result.current.reloadBase(); });
+    await settle();
+    await act(async () => { finishOld(); });
+    await settle();
+    // The initial request was superseded: it writes nothing, and its end does not end the newer read.
+    expect(result.current.loading).toBe(true);
+    expect(result.current.project).toBeNull();
+    await act(async () => { finishNew(); await manual; });
+    await settle();
+    expect(result.current.loading).toBe(false);
+    expect(result.current.project?.id).toBe(P1);
+  });
+
+  it("shows the failure of the reload that superseded the initial load", async () => {
+    let finishOld!: () => void;
+    const server: Server = { runs: [], calls: [], project: [
+      () => new Promise<Response>((done) => { finishOld = () => done(json({ id: P1, title: "旧", premise: "", version: 1, status: "ACTIVE" })); }),
+      async () => json({ error: { code: "INTERNAL", message: "新读取失败" } }, 500),
+    ] };
+    install(server);
+    const { result } = renderHook(() => useProjectBase(P1, "失败"));
+    await settle();
+    await act(async () => { await result.current.reloadBase().catch(() => undefined); });
+    await act(async () => { finishOld(); });
+    await settle();
+    expect(result.current.loading).toBe(false);
+    expect(result.current.project).toBeNull();
+    expect(result.current.error).toBe("新读取失败");
+  });
+
+  it("a background reload never turns loading back on or clears what is shown", async () => {
+    let finish!: () => void;
+    const server: Server = { runs: [], calls: [], project: [] };
+    install(server);
+    const { result } = renderHook(() => useProjectBase(P1, "失败"));
+    await settle();
+    expect(result.current.project?.id).toBe(P1);
+    server.project.push(() => new Promise<Response>((done) => { finish = () => done(json({ id: P1, title: "改名", premise: "", version: 2, status: "ACTIVE" })); }));
+    let manual!: Promise<void>;
+    act(() => { manual = result.current.reloadBase(); });
+    await settle();
+    expect(result.current.loading).toBe(false);
+    expect(result.current.project?.id).toBe(P1);
+    await act(async () => { finish(); await manual; });
+    expect(result.current.project?.title).toBe("改名");
+  });
+});
+
+describe("useProjectBase recovers polling after a failed visible refresh (Issue #52 item 7)", () => {
+  it("hidden, visible, one 503, and the terminal state still appears by itself", async () => {
+    const server: Server = { runs: [composeRun("RUNNING")], project: [], calls: [] };
+    install(server);
+    const { result } = renderHook(() => useProjectBase(P1, "失败"));
+    await settle();
+    setVisibility("hidden");
+    await advance(2000);
+    const hiddenReads = server.calls.length;
+    await advance(60_000);
+    // Nothing is read while hidden.
+    expect(server.calls.length).toBe(hiddenReads);
+    // The job finishes meanwhile; the first visible reread hits a transient 503 on the project read, so
+    // Promise.all drops the workflow answer too.
+    server.runs = [composeRun("SUCCEEDED")];
+    server.project.push(async () => json({ error: { code: "UNAVAILABLE", message: "暂时不可用" } }, 503));
+    setVisibility("visible");
+    await settle();
+    expect(result.current.allRuns[0]?.status).toBe("RUNNING");
+    expect(result.current.refreshFailed).toBe(true);
+    // No click, no reload: the bounded retry rereads the base and reaches the terminal state.
+    await advance(10_000);
+    expect(result.current.allRuns[0]?.status).toBe("SUCCEEDED");
+    expect(result.current.refreshFailed).toBe(false);
+    expect(result.current.error).toBeNull();
+    const reads = server.calls.length;
+    await advance(60_000);
+    // Terminal: nothing more is read.
+    expect(server.calls.length).toBe(reads);
+  });
+
+  it("does not start a second visible refresh while the first is still in flight", async () => {
+    const server: Server = { runs: [composeRun("RUNNING")], project: [], calls: [] };
+    install(server);
+    renderHook(() => useProjectBase(P1, "失败"));
+    await settle();
+    setVisibility("hidden");
+    await advance(2000);
+    let release!: () => void;
+    server.project.push(() => new Promise<Response>((done) => { release = () => done(json({ id: P1, title: "作品", premise: "", version: 1, status: "ACTIVE" })); }));
+    const before = projectReads(server);
+    setVisibility("visible");
+    setVisibility("hidden");
+    setVisibility("visible");
+    await settle();
+    expect(projectReads(server)).toBe(before + 1);
+    await advance(20_000);
+    expect(projectReads(server)).toBe(before + 1);
+    await act(async () => { release(); });
+    await settle();
+  });
+
+  it("backs off while workflow reads keep failing instead of retrying every two seconds", async () => {
+    const server: Server = { runs: [composeRun("RUNNING")], project: [], calls: [] };
+    install(server);
+    const { result } = renderHook(() => useProjectBase(P1, "失败"));
+    await settle();
+    expect(result.current.allRuns[0]?.status).toBe("RUNNING");
+    server.runsFail = 1000;
+    const before = runsReads(server);
+    await advance(60_000);
+    // 2 s, 4 s, 8 s, 16 s, 30 s: a bounded rate, never a tight loop.
+    expect(runsReads(server) - before).toBeLessThanOrEqual(6);
+    expect(runsReads(server) - before).toBeGreaterThanOrEqual(3);
+    server.runsFail = 0;
+    server.runs = [composeRun("SUCCEEDED")];
+    await advance(60_000);
+    expect(result.current.allRuns[0]?.status).toBe("SUCCEEDED");
   });
 });

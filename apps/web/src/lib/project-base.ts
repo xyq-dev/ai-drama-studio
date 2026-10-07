@@ -42,6 +42,8 @@ export interface StoryRevision {
 
 export interface Aggregate {
   entityId: string;
+  /** Characters and locations: the display name (read-only, from the list). */
+  name?: string;
   rowVersion: number;
   currentRevisionId: string | null;
   approvedRevisionId: string | null;
@@ -107,6 +109,12 @@ export function noteWorkflowTransitions(
 
 const client = new StudioClient();
 
+/** Polling interval while something runs, and the cap the interval backs off to after consecutive failed reads. */
+export const POLL_MS = 2000;
+export const MAX_BACKOFF_MS = 30_000;
+/** A failed base reread with nothing running is retried this many times, then waits for the user or a return. */
+const IDLE_BASE_RETRIES = 5;
+
 export type EntityPageKind = "stories" | "characters" | "locations";
 
 export function useProjectBase(projectId: string, failureText: string) {
@@ -123,7 +131,14 @@ export function useProjectBase(projectId: string, failureText: string) {
   const [refreshEpoch, setRefreshEpoch] = useState(0);
   const [imageEpoch, setImageEpoch] = useState(0);
   const baseToken = useRef(0);
-  const loadGeneration = useRef(0);
+  /** True from a project's first request until the current request settles; only then does loading end. */
+  const initialPending = useRef(false);
+  const failureTextRef = useRef(failureText);
+  failureTextRef.current = failureText;
+  /** A background reread failed: the next poll tick rereads the whole base instead of only the runs. */
+  const baseRetry = useRef(false);
+  const failures = useRef(0);
+  const [refreshFailed, setRefreshFailed] = useState(false);
   const workflowStatus = useRef(new Map<string, string>());
   const composeStatus = useRef(new Map<string, string>());
 
@@ -148,7 +163,10 @@ export function useProjectBase(projectId: string, failureText: string) {
 
   /**
    * Rereads the project base. Only the latest request may write: a superseded request resolves without touching
-   * state, while a failure of the latest request still rejects so callers see it.
+   * state, while a failure of the latest request still rejects so callers see it. Loading belongs to the latest
+   * request too: while a project's first data is pending, only the request that is current when it settles ends
+   * the loading, so a superseded request's end never closes a newer read. A reread after data is shown never turns
+   * loading on and never clears what is shown.
    */
   const reloadBase = useCallback(async () => {
     const request = ++baseToken.current;
@@ -164,10 +182,23 @@ export function useProjectBase(projectId: string, failureText: string) {
       ]);
     } catch (caught) {
       if (!shouldApplyLoad(request, baseToken.current)) return;
+      if (initialPending.current) {
+        initialPending.current = false;
+        setError(caught instanceof ApiError ? caught.detail : failureTextRef.current);
+        setLoading(false);
+      } else {
+        // Shown data stays; the poll retries the whole base with a growing interval.
+        baseRetry.current = true;
+        setRefreshFailed(true);
+      }
       throw caught;
     }
     if (!shouldApplyLoad(request, baseToken.current)) return;
     const [nextProject, episodePage, storyPage, characterPage, locationPage, runs] = loaded;
+    initialPending.current = false;
+    baseRetry.current = false;
+    setLoading(false);
+    setRefreshFailed(false);
     // A successful load supersedes an earlier failure.
     setError(null);
     setProject(nextProject);
@@ -180,56 +211,68 @@ export function useProjectBase(projectId: string, failureText: string) {
     if (transition.textBecameTerminal) setRefreshEpoch((value) => value + 1);
   }, [projectId, applyRuns]);
 
-  // The initial load of a project. Its error and loading belong to this load only: a later load, a project change
-  // or an unmount makes this one's catch and finally no-ops.
+  // The initial load of a project (a project change or mount). Its loading and error are settled by reloadBase for
+  // whichever request is current at the time; a project change or an unmount invalidates requests in flight.
   useEffect(() => {
-    const generation = ++loadGeneration.current;
+    initialPending.current = true;
+    baseRetry.current = false;
+    failures.current = 0;
     setLoading(true);
     setError(null);
-    void reloadBase().catch((caught: unknown) => {
-      if (generation === loadGeneration.current) setError(caught instanceof ApiError ? caught.detail : failureText);
-    }).finally(() => {
-      if (generation === loadGeneration.current) setLoading(false);
-    });
-    return () => { loadGeneration.current += 1; };
-  }, [reloadBase, failureText]);
+    setRefreshFailed(false);
+    void reloadBase().catch(() => undefined);
+    return () => { initialPending.current = false; };
+  }, [reloadBase]);
 
-  // While any run is in flight (including compose runs, whoever submitted them): one workflow-runs read at a time,
-  // the next scheduled only after the previous answer; stop when nothing runs; paused while hidden; a return to the
-  // page rereads.
+  // While any run is in flight (including compose runs, whoever submitted them), or after a background reread
+  // failed: one read at a time, the next scheduled only after the previous answer. Consecutive failures stretch the
+  // interval up to MAX_BACKOFF_MS. Stops when nothing runs and nothing needs rereading; paused while hidden; a return
+  // to the page rereads and then restarts the chain whether or not that reread succeeded.
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let stopped = false;
     let reading = false;
     const schedule = () => {
-      if (!stopped) timer = setTimeout(tick, 2000);
+      if (stopped || reading || timer) return;
+      timer = setTimeout(tick, Math.min(POLL_MS * 2 ** failures.current, MAX_BACKOFF_MS));
+    };
+    const settle = (ok: boolean) => {
+      failures.current = ok ? 0 : failures.current + 1;
+    };
+    const readRuns = async () => {
+      const request = baseToken.current;
+      const runs = await client.get<WorkflowRun[]>(`/projects/${projectId}/workflow-runs`);
+      if (stopped || !shouldApplyLoad(request, baseToken.current)) return;
+      const transition = applyRuns(runs);
+      if (transition.mediaBecameTerminal || transition.composeFinished) setImageEpoch((value) => value + 1);
+      if (transition.textBecameTerminal) {
+        setRefreshEpoch((value) => value + 1);
+        void reloadBase().catch(() => undefined);
+      }
     };
     const tick = () => {
       timer = undefined;
-      if (stopped || reading) return;
-      const hidden = document.visibilityState === "hidden";
-      const active = allRuns.some((run) => shouldPoll(run.status, hidden));
-      if (!active) return;
-      const request = baseToken.current;
+      if (stopped || reading || document.visibilityState === "hidden") return;
+      const active = allRuns.some((run) => shouldPoll(run.status, false));
+      const rereadBase = baseRetry.current && (active || failures.current < IDLE_BASE_RETRIES);
+      if (!active && !rereadBase) return;
       reading = true;
-      void client.get<WorkflowRun[]>(`/projects/${projectId}/workflow-runs`).then((runs) => {
-        if (stopped || !shouldApplyLoad(request, baseToken.current)) return;
-        const transition = applyRuns(runs);
-        if (transition.mediaBecameTerminal || transition.composeFinished) setImageEpoch((value) => value + 1);
-        if (transition.textBecameTerminal) {
-          setRefreshEpoch((value) => value + 1);
-          void reloadBase().catch(() => undefined);
-        }
-      }).catch(() => undefined).finally(() => {
+      void (rereadBase ? reloadBase() : readRuns()).then(() => settle(true), () => settle(false)).finally(() => {
         reading = false;
         schedule();
       });
     };
     schedule();
     const onVisible = () => {
-      if (document.visibilityState !== "visible") return;
+      if (document.visibilityState !== "visible" || stopped || reading) return;
+      if (timer) clearTimeout(timer);
+      timer = undefined;
       setRefreshEpoch((value) => value + 1);
-      void reloadBase().catch(() => undefined);
+      reading = true;
+      void reloadBase().then(() => settle(true), () => settle(false)).finally(() => {
+        reading = false;
+        schedule();
+      });
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => {
@@ -261,5 +304,5 @@ export function useProjectBase(projectId: string, failureText: string) {
   }, [projectId]);
 
   return { project, episodes, stories, characters, locations, workflows, allRuns, loading, error, setError, refreshEpoch,
-    imageEpoch, reloadBase, more, keepScopedPages };
+    imageEpoch, reloadBase, more, keepScopedPages, refreshFailed };
 }
