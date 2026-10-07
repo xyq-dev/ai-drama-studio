@@ -449,3 +449,22 @@ Commit / Push：YES（普通推送原分支）。Merge：NO。Deploy：NO。Migr
 ### 8. 状态
 
 Commit：YES（5 个分组提交 + 本报告）。Push：YES（普通推送新分支，无 force）。Review：等待 Codex 独立复审。Merge：NO。Deploy：NO。Migration：NO。Paid calls：NO。
+
+## BEGINNER_FOLLOWUP_FINAL_FIX_REPORT（PR #53 独立复审 #pullrequestreview-5448779782 的四项 P2）
+
+基线 `f4600c7`。本节与实现一起提交；该提交的 CI 结果记录在 PR #53 的回复中（报告写成时 CI 尚未运行，这里不预先记为通过）。
+
+| # | 原因 | 修复 | 关键文件 |
+| --- | --- | --- | --- |
+| 1 能力重查（r4209903090） | 「重新检查功能状态」只在上次读取失败时才重读 capabilities | 重查总是重新 GET `/providers/capabilities`；一次只读一个，按 token 只认最新读取（含换作品），读取期间为 pending；失败显示「尚未确认」并可再查；不清空选择与草稿 | `beginner-flow.tsx` |
+| 2 能力未确认时的合成入口（r4209903117） | `capability=null` 被当作非关闭；内层预检与提交没有门控 | 四态门 `pending / failed / disabled / enabled`，单镜与集级分别取服务端布尔值，不再用候选读取推断。顶层主按钮、单镜 `ComposePreflight` 的预检与开始合成、集级预检与「开始多镜合成」（含重发）只在 enabled 时可用；已有成片的列表、播放、审核与合格下载不变；选择与编排顺序在能力变化时保留 | `beginner-facts.ts`、`beginner-flow.tsx`、`workbench.tsx`、`compose-preflight.tsx`、`episode-compose-preflight.tsx`、`episode-compose-job-panel.tsx` |
+| 3 空闲读取失败不重试（r4209903104） | 轮询链停止后，`reloadBase()` 失败只设置 ref，没有唤醒调度 | 每个作品一条调度链（不再随 allRuns 重建）：新任务、任何来源的失败重读、返回可见都唤醒同一条链；读取运行列表用 ref，避免旧闭包；空闲失败按 2 s 起退避重试 5 次后显示「自动重试已暂停」并提供手动重试；切换作品或卸载后旧链不再被唤醒 | `project-base.ts`、`beginner-flow.tsx`（文案） |
+| 4 我的作品隐藏后仍出队（行内意见 4212341094） | `finally → pump()` 不检查可见性 | 在出队处检查：隐藏时后台重读留在队列（仍 pending），返回可见时 `pump()` 继续；卸载后不再出队；已发出的请求正常结束 | `my-works.tsx` |
+
+回归与修复前对照（隔离 worktree，detached 于 `f4600c7`，只复制新测试，node_modules 以目录联接借用；用后先删联接再删 worktree，当前工作区未被改动）：新增 11 项在基线失败、修复后通过——能力四态 1、空闲失败重试 3、单镜内层门控 1、我的作品排队 1、能力重查与门控 5；另 4 项为守护用例，新旧都通过（隐藏/恢复的待重试、切换作品不唤醒旧链、重查失败保留场景、刷新提示自动消失）。
+
+本地：Node 24.21.0、pnpm 10.17.0（engine 检查开启）。`pnpm verify` 退出码 0（web 261 项）；`pnpm m3-av-e2e:check` 0；`pnpm m3-av-e2e:outcome` 0（23 项）；`git diff --check` 0。
+
+新手 E2E 新增（仍在原 10 个阶段内）：关闭态页面不刷新、API 以开启状态重启后点「重新检查功能状态」，capabilities GET 恰好 1 次且步骤恢复；第 5 步在 capabilities 被挂起（延迟后 route.continue 原样放行）时，多镜预检、开始多镜合成与主按钮均不可用，放行后可用且已选编排保留；空闲页面批准成片的回调重读被 route.abort 一次后自动恢复。我的作品排队时序只有模拟组件回归，没有真实浏览器覆盖。所有注入故障均写入 `evidence.checks.faults`（含原有的创建作品 POST 中断，修正上一节所述记录位置不一致）；可见性仍为页面内模拟，不是真实标签页切换。
+
+后端、数据库、Worker、Provider 与业务规则未改；无 Migration、无 SQL 草案、无付费调用；未合并、未部署。

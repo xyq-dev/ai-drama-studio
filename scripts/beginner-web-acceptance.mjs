@@ -7,10 +7,11 @@
  * Direct API calls are of two labelled kinds: reads used as evidence, and "prep" writes that create the second
  * shot composite step 5 needs (the first one is made through the page). Read-only SQL is used for evidence only.
  * Injected faults, all recorded in evidence.checks.faults: the first create POST is cut once with route.abort; for the
- * Issue #52 recovery checks one project read after a visibility change is cut once with route.abort (at 1440 while
- * an episode compose runs, and again at 390), and page visibility is switched by redefining document.visibilityState
- * in the page and dispatching visibilitychange (headless Chrome has no real tab switch). Nothing is answered with
- * route.fulfill or a mocked fetch.
+ * Issue #52 recovery checks one project read is cut once with route.abort after a visibility change (at 1440 while
+ * an episode compose runs, and again at 390) and once after an approval callback on an idle page; at step 5 the
+ * capability request is held (delayed, then passed on unchanged with route.continue) to see the pending gate. Page
+ * visibility is switched by redefining document.visibilityState in the page and dispatching visibilitychange
+ * (emulated: headless Chrome has no real tab switch). Nothing is answered with route.fulfill or a mocked fetch.
  *
  * It initializes only the dedicated, empty database named below with the existing migrations and the existing
  * provisioning commands. Mock media and local compose switches are turned on for these child processes only.
@@ -445,6 +446,7 @@ async function main() {
       await page.route("**/api/v1/projects", async (route) => {
         if (route.request().method() === "POST" && !aborted) {
           aborted = true;
+          faultDid('create: route.abort("connectionreset") on the first POST /api/v1/projects');
           await route.abort("connectionreset");
           return;
         }
@@ -549,9 +551,25 @@ async function main() {
       await page.getByText(/当前阶段：第 2 步 看剧本/).waitFor();
       if (await page.getByText(/进度读取失败/).count()) throw new Error("compose-off made the work unreadable");
       await shot("03-compose-off-studio-1440");
-      // Restart the API with the compose switches for the rest of the run.
+      // Restart the API with the compose switches for the rest of the run, while the closed page stays open: its
+      // 重新检查功能状态 must read the capability again and reopen the step without a page reload.
+      await page.goto(`${webOrigin}/projects/${world.projectId}/create?step=sample`, { waitUntil: "domcontentloaded" });
+      await page.getByText(/当前环境没有开启单镜成片所需的功能/).waitFor({ timeout: 20_000 });
+      await page.evaluate(() => { window.__beginnerRecheck = "open"; });
       await stopProcess("api");
       await startApi(mediaEnv(env));
+      const capabilityReads = [];
+      const countCapability = (request) => {
+        if (new URL(request.url()).pathname === "/api/v1/providers/capabilities") capabilityReads.push(request.method());
+      };
+      page.on("request", countCapability);
+      await page.getByRole("button", { name: "重新检查功能状态" }).click();
+      await page.getByRole("button", { name: "选一个镜头试做" }).waitFor({ timeout: 20_000 });
+      page.off("request", countCapability);
+      if (capabilityReads.length !== 1 || capabilityReads[0] !== "GET") throw new Error(`recheck capability reads ${JSON.stringify(capabilityReads)}`);
+      if (await page.getByText(/当前环境没有开启单镜成片所需的功能/).count()) throw new Error("still closed after recheck");
+      if (await page.evaluate(() => window.__beginnerRecheck) !== "open") throw new Error("recheck reloaded the page");
+      evidence.checks.capabilityRecheck = { capabilityGets: capabilityReads.length, reopenedWithoutReload: true };
       const capabilityOn = expect(await api("GET", "/providers/capabilities"), 200, "capabilities (on)").compose;
       if (capabilityOn?.shot !== true || capabilityOn?.episode !== true) throw new Error(`capability on ${JSON.stringify(capabilityOn)}`);
       if (Object.values(capabilityOn).some((value) => typeof value !== "boolean")) throw new Error("capability carries more than booleans");
@@ -758,13 +776,39 @@ async function main() {
     });
 
     await stage("step5-final", async () => {
-      await stepButton("出成片");
+      // PR #53 review 3: open step 5 directly while the capability answer is held back. The arrangement can be
+      // built, but preflight and submit stay closed until the server says episode compose is on.
+      const capabilityUrl = `${webOrigin}/api/v1/providers/capabilities`;
+      let releaseCapability;
+      const capabilityHeld = new Promise((done) => { releaseCapability = done; });
+      const holdCapability = async (route) => {
+        faultDid("step5 pending gate: GET /api/v1/providers/capabilities held, then passed on with route.continue");
+        await capabilityHeld;
+        await route.continue();
+      };
+      await page.route(capabilityUrl, holdCapability);
+      await page.goto(`${webOrigin}/projects/${world.projectId}/create?step=final`, { waitUntil: "domcontentloaded" });
       await page.getByRole("tab", { name: /第 1 集/ }).click();
       const panel = page.getByRole("region", { name: "多镜编排" });
       await panel.getByRole("heading", { name: "多镜编排" }).waitFor({ timeout: 30_000 });
+      await page.getByText("正在检查服务端的合成功能状态，检查完成前不能开始新的合成。已有成片仍可查看。").waitFor({ timeout: 20_000 });
       for (const id of [world.composite1, world.composite2]) {
         await panel.locator(`[data-asset-id="${id}"]`).getByRole("button", { name: "加入" }).click({ timeout: 30_000 });
       }
+      const pendingGate = {
+        preflightDisabled: await panel.getByRole("button", { name: "预检编排" }).isDisabled(),
+        submitDisabled: await panel.getByRole("button", { name: "开始多镜合成" }).isDisabled(),
+        primaryDisabled: await page.getByRole("button", { name: "正在检查功能状态" }).isDisabled(),
+      };
+      if (!pendingGate.preflightDisabled || !pendingGate.submitDisabled || !pendingGate.primaryDisabled) {
+        throw new Error(`compose open while the capability is pending ${JSON.stringify(pendingGate)}`);
+      }
+      releaseCapability();
+      await page.unroute(capabilityUrl, holdCapability);
+      await waitFor(async () => (await panel.getByRole("button", { name: "预检编排" }).isEnabled()) || "preflight still closed", "gate opened", 20_000);
+      const kept = await panel.locator("[data-selected-asset-id]").count();
+      if (kept !== 2) throw new Error(`arrangement lost when the capability arrived: ${kept}`);
+      evidence.checks.pendingGate = { ...pendingGate, arrangementKept: kept };
       // Reorder: the second composite moves up, so the frozen order is [composite2, composite1].
       await panel.locator(`[data-selected-asset-id="${world.composite2}"]`).getByRole("button", { name: "上移" }).click();
       const preflightResponse = page.waitForResponse((response) => response.request().method() === "POST" && response.url().endsWith("/compose-preflight"));
@@ -821,9 +865,17 @@ async function main() {
       if (draftDownload.status === 200) throw new Error("draft composite was exportable");
       const playback = await playVideo(card.locator("video"), 1000);
       await shot("06-step5-composed-1440");
+      // PR #53 review 1: nothing runs now; the approval callback's reread loses its project read once. The page
+      // must retry by itself (no click, no visibility change) and still reach the approved state.
+      const idleCut = await cutNextProjectRead(world.projectId, "step5 approval callback on an idle page (1440)");
       const review = reviewResponse();
       await card.getByRole("button", { name: "批准成片" }).click();
       if ((await review).status() !== 200) throw new Error("episode composite approval failed");
+      await page.getByText("最新进度暂时没有读到，正在自动重试；页面上的内容可能不是最新。").waitFor({ timeout: 15_000 });
+      if (!idleCut.done()) throw new Error("the callback reread was not cut");
+      await idleCut.remove();
+      await page.getByText("最新进度暂时没有读到，正在自动重试；页面上的内容可能不是最新。").waitFor({ state: "detached", timeout: 30_000 });
+      evidence.checks.idleCallbackRecovery = { notice: "shown, then cleared by the automatic retry", clicks: 0 };
       await card.getByRole("button", { name: "下载 MP4" }).waitFor({ timeout: 20_000 });
       const mp4Path = join(evidenceDir, "episode.mp4");
       const jsonPath = join(evidenceDir, "episode-manifest.json");
