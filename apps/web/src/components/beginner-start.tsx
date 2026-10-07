@@ -5,7 +5,7 @@ import { ApiError, StudioClient } from "../lib/studio-client";
 import { appendOnce, bindDirectionToProject, premiseBlock, readSelectedDirection } from "../lib/creative-direction-link";
 import type { DirectionDraft } from "../lib/creative-taxonomy";
 import { IDEA_TEMPLATES, START_SCOPE_NOTE, suggestTitle } from "../lib/beginner-start";
-import { LIMITS, clearDraft, draftStorageKey, nextDraft, readDraft, writeDraft } from "../lib/studio-model";
+import { LIMITS, draftStorageKey, nextDraft, readDraft, releaseSubmittedDraft, writeDraft } from "../lib/studio-model";
 import { BeginnerShell } from "./beginner-shell";
 
 interface ProjectItem {
@@ -31,6 +31,7 @@ export function BeginnerStart({ active }: { active: "/create" | undefined }) {
   const [direction, setDirection] = useState<DirectionDraft | null>(null);
   const [directionNote, setDirectionNote] = useState<string | null>(null);
   const confirmHeading = useRef<HTMLHeadingElement>(null);
+  const creatingRef = useRef(false);
   const ideaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -65,6 +66,8 @@ export function BeginnerStart({ active }: { active: "/create" | undefined }) {
   }, [confirming]);
 
   function remember(nextTitle: string, nextIdea: string) {
+    // While a create is in flight the request content is frozen: nothing may change what was submitted.
+    if (creatingRef.current) return;
     setTitle(nextTitle);
     setIdea(nextIdea);
     try {
@@ -102,6 +105,7 @@ export function BeginnerStart({ active }: { active: "/create" | undefined }) {
   }
 
   async function create() {
+    if (creatingRef.current) return;
     let draft;
     try {
       draft = nextDraft(readDraft(window.sessionStorage, CREATE_KEY), { title, premise: idea }, null, () => crypto.randomUUID());
@@ -109,12 +113,14 @@ export function BeginnerStart({ active }: { active: "/create" | undefined }) {
     } catch {
       draft = nextDraft(null, { title, premise: idea }, null, () => crypto.randomUUID());
     }
+    creatingRef.current = true;
     setCreating(true);
     setError(null);
     try {
       const created = await client.write<ProjectItem>({ path: "/projects", body: { title, premise: idea }, idempotencyKey: draft.idempotencyKey });
       try {
-        clearDraft(window.sessionStorage, CREATE_KEY);
+        // Clear only the snapshot that was submitted; anything newer stays as this tab's draft.
+        releaseSubmittedDraft(window.sessionStorage, CREATE_KEY, draft);
         if (direction && idea.includes(premiseBlock(direction))) bindDirectionToProject(window.localStorage, created.body.id, direction);
       } catch {
         // The project is saved; the browser-only extras are optional.
@@ -125,6 +131,7 @@ export function BeginnerStart({ active }: { active: "/create" | undefined }) {
         ? `作品没有创建：${caught.detail}。你的内容还在，修改后可以再试。`
         : "没有确认作品是否已创建（网络或服务异常）。内容还在；再次点击会用同一个请求标识，服务器不会重复创建。");
     } finally {
+      creatingRef.current = false;
       setCreating(false);
     }
   }
@@ -151,12 +158,13 @@ export function BeginnerStart({ active }: { active: "/create" | undefined }) {
             placeholder="例如：一个外卖员发现自己每天送餐的那户人家，其实是他失散多年的哥哥。"
             value={idea}
             aria-describedby={error ? "start-error scope-note" : "scope-note"}
+            disabled={creating}
             onChange={(event) => { setConfirming(false); remember(title, event.target.value); }}
           />
           <p id="scope-note" className="mt-2 text-sm text-[#5F5D66]">{START_SCOPE_NOTE}</p>
           <div className="mt-4 flex flex-wrap items-center gap-3">
             <button className={confirming ? "rounded-[12px] border border-[#D34846] bg-white px-5 py-2.5 font-medium text-[#B8322F]"
-              : "rounded-[12px] bg-[#D34846] px-5 py-2.5 font-medium text-white"} type="button" onClick={startConfirm}>开始构思</button>
+              : "rounded-[12px] bg-[#D34846] px-5 py-2.5 font-medium text-white"} type="button" disabled={creating} onClick={startConfirm}>开始构思</button>
             <a className="text-[15px] underline" href="/categories">还没想法？看看灵感</a>
           </div>
           <div className="mt-5">
@@ -164,8 +172,8 @@ export function BeginnerStart({ active }: { active: "/create" | undefined }) {
             <ul className="mt-2 flex flex-wrap gap-2">
               {IDEA_TEMPLATES.map((template) => (
                 <li key={template.id}>
-                  <button className="rounded-[12px] border px-3 py-1.5 text-[15px] hover:bg-[#FBE7E4]" type="button"
-                    onClick={() => { setConfirming(false); remember(title, template.idea); }}>
+                  <button className="rounded-[12px] border px-3 py-1.5 text-[15px] hover:bg-[#FBE7E4] disabled:opacity-60" type="button"
+                    disabled={creating} onClick={() => { setConfirming(false); remember(title, template.idea); }}>
                     示例 · {template.label}
                   </button>
                 </li>
@@ -176,7 +184,7 @@ export function BeginnerStart({ active }: { active: "/create" | undefined }) {
             <div className="mt-5 rounded-[12px] border p-3">
               <p className="text-sm">灵感中心选好的创作方向（只保存在本浏览器）</p>
               <p className="mt-1 whitespace-pre-line text-sm text-[#5F5D66]">{premiseBlock(direction)}</p>
-              <button className="mt-2 rounded-[12px] border px-3 py-1 text-sm" type="button" onClick={applyDirection}>把创作方向加入想法</button>
+              <button className="mt-2 rounded-[12px] border px-3 py-1 text-sm" type="button" disabled={creating} onClick={applyDirection}>把创作方向加入想法</button>
               {directionNote ? <p className="mt-1 text-sm" role="status">{directionNote}</p> : null}
             </div>
           ) : null}
@@ -188,10 +196,10 @@ export function BeginnerStart({ active }: { active: "/create" | undefined }) {
             <p className="mt-1 text-[15px] text-[#5F5D66]">点「确认创建作品」后才会保存到服务器。之后在「定故事」一步把想法写成完整故事。</p>
             <label className="mt-4 block font-medium" htmlFor="work-title">作品名称</label>
             <input id="work-title" className="mt-1 w-full rounded-[12px] border px-3 py-2" maxLength={LIMITS.title} value={title}
-              aria-describedby="title-hint" onChange={(event) => remember(event.target.value, idea)} />
+              aria-describedby="title-hint" disabled={creating} onChange={(event) => remember(event.target.value, idea)} />
             <p id="title-hint" className="mt-1 text-sm text-[#5F5D66]">
               建议名称按规则截取自你的想法开头，不是 AI 生成，可以直接修改。
-              <button className="ml-2 underline" type="button" onClick={() => remember(suggestTitle(idea), idea)}>重新按想法截取</button>
+              <button className="ml-2 underline" type="button" disabled={creating} onClick={() => remember(suggestTitle(idea), idea)}>重新按想法截取</button>
             </p>
             <p className="mt-3 font-medium">故事想法</p>
             <p className="mt-1 whitespace-pre-line rounded-[12px] bg-[#F7F6F2] p-3 text-[15px] [overflow-wrap:anywhere]">{idea}</p>
@@ -200,6 +208,7 @@ export function BeginnerStart({ active }: { active: "/create" | undefined }) {
                 disabled={creating || title.trim().length === 0} onClick={() => void create()}>
                 {creating ? "正在创建…" : "确认创建作品"}
               </button>
+              {creating ? <p className="mt-2 text-sm text-[#5F5D66]" role="status">正在创建，内容已锁定，完成前不能修改。</p> : null}
             </div>
           </section>
         ) : null}

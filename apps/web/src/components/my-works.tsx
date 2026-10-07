@@ -28,6 +28,7 @@ function todo(step: StepKey, state: StepState): string {
     case "in_progress": return `${title}：任务处理中`;
     case "needs_attention": return `${title}：有内容需要处理`;
     case "source_updated": return `${title}：上游内容已更新，需要重新确认`;
+    case "unknown": return `${title}：部分进度没有读到，暂不能确认`;
     default: return "五步都已完成，可以查看和下载成片";
   }
 }
@@ -36,6 +37,8 @@ export function MyWorks() {
   const [items, setItems] = useState<ProjectItem[] | null>(null);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loadingPage, setLoadingPage] = useState(false);
+  const pageInFlight = useRef(false);
   const [progress, setProgress] = useState<Record<string, Progress>>({});
   const queue = useRef<string[]>([]);
   const running = useRef(0);
@@ -65,16 +68,27 @@ export function MyWorks() {
   }
 
   async function load(cursor: string | null) {
+    // One page request at a time: a second click on 加载更多 must not append the same page twice.
+    if (pageInFlight.current) return;
+    pageInFlight.current = true;
+    setLoadingPage(true);
     setError(null);
     try {
       const page = await client.get<{ items: ProjectItem[]; nextCursor: string | null }>(
         cursor ? `/projects?cursor=${encodeURIComponent(cursor)}` : "/projects");
       if (!alive.current) return;
-      setItems((current) => (cursor && current ? [...current, ...page.items] : page.items));
+      setItems((current) => {
+        if (!cursor || !current) return page.items;
+        const known = new Set(current.map((item) => item.id));
+        return [...current, ...page.items.filter((item) => !known.has(item.id))];
+      });
       setNextCursor(page.nextCursor);
       track(page.items.map((item) => item.id));
     } catch (caught) {
       if (alive.current) setError(caught instanceof ApiError ? caught.detail : "作品列表读取失败");
+    } finally {
+      pageInFlight.current = false;
+      if (alive.current) setLoadingPage(false);
     }
   }
 
@@ -140,7 +154,7 @@ export function MyWorks() {
             );
           })}
         </ul>
-        {nextCursor ? <button className="mt-6 rounded-[12px] border px-4 py-2" type="button" onClick={() => void load(nextCursor)}>加载更多作品</button> : null}
+        {nextCursor ? <button className="mt-6 rounded-[12px] border px-4 py-2 disabled:opacity-60" type="button" disabled={loadingPage} onClick={() => void load(nextCursor)}>{loadingPage ? "正在加载" : "加载更多作品"}</button> : null}
       </main>
     </BeginnerShell>
   );

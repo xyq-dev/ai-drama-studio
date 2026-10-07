@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 // Simulated interface tests. fetch is mocked; this file does not start a browser or a backend.
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BeginnerStart } from "./beginner-start";
 import { MyWorks } from "./my-works";
@@ -80,6 +80,40 @@ describe("beginner start page", () => {
     expect(posts[0]?.body).toEqual({ title: "夜班", premise: "夜班，店员发现记录被改。" });
     expect(posts[1]?.key).toBe(posts[0]?.key);
     expect(window.sessionStorage.length).toBe(0);
+  });
+
+  it("does not lose input written while a slow create is pending (review P1)", async () => {
+    let resolve!: (response: Response) => void;
+    const posts: string[] = [];
+    vi.stubGlobal("fetch", vi.fn((_input: string, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        posts.push(String(init.body));
+        return new Promise<Response>((done) => { resolve = done; });
+      }
+      return Promise.resolve(json({ items: [], nextCursor: null }));
+    }));
+    render(<BeginnerStart active="/create" />);
+    const idea = screen.getByLabelText("你想拍一个什么样的故事？") as HTMLTextAreaElement;
+    fireEvent.change(idea, { target: { value: "旧梗概" } });
+    fireEvent.click(screen.getByRole("button", { name: "开始构思" }));
+    fireEvent.click(await screen.findByRole("button", { name: "确认创建作品" }));
+    await waitFor(() => expect(posts).toHaveLength(1));
+    // While the request is in flight every control that changes the request is frozen.
+    expect(idea.disabled).toBe(true);
+    expect((screen.getByLabelText("作品名称") as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "示例 · 家庭情感" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText("正在创建，内容已锁定，完成前不能修改。")).toBeTruthy();
+    fireEvent.change(idea, { target: { value: "旧梗概，新结局" } });
+    const submitted = window.sessionStorage.getItem("ads-draft:new:project:new");
+    expect(submitted).toContain("旧梗概");
+    expect(submitted).not.toContain("新结局");
+    // A newer draft written to the slot meanwhile must survive the old request's success.
+    const newer = JSON.stringify({ ...JSON.parse(submitted!), payload: { title: "旧梗概", premise: "后来写的新结局" }, fingerprint: "newer" });
+    window.sessionStorage.setItem("ads-draft:new:project:new", newer);
+    resolve(json({ id: "11111111-1111-4111-8111-111111111111", title: "旧梗概" }, 201));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith("/projects/11111111-1111-4111-8111-111111111111/create"));
+    expect(JSON.parse(posts[0]!)).toEqual({ title: "旧梗概", premise: "旧梗概" });
+    expect(window.sessionStorage.getItem("ads-draft:new:project:new")).toBe(newer);
   });
 
   it("restores an unfinished create after a reload with the same key", async () => {
@@ -164,6 +198,31 @@ describe("my works", () => {
     render(<MyWorks />);
     expect(await screen.findByText(/当前阶段：第 2 步 看剧本/)).toBeTruthy();
     expect(screen.queryByText(/进度读取失败/)).toBeNull();
+  });
+
+  it("loads the next page once even when 加载更多作品 is clicked twice (review)", async () => {
+    let releasePage!: () => void;
+    const pageHold = new Promise<void>((done) => { releasePage = done; });
+    const pageRequests: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string) => {
+      const url = String(input);
+      if (url === "/api/v1/projects") return json({ items: [{ id: "a", title: "第一部", premise: "" }], nextCursor: "next" });
+      if (url.startsWith("/api/v1/projects?cursor=")) {
+        pageRequests.push(url);
+        await pageHold;
+        return json({ items: [{ id: "b", title: "第二部", premise: "" }], nextCursor: null });
+      }
+      if (url.endsWith("/workflow-runs")) return json([]);
+      return json({ items: [], nextCursor: null });
+    }));
+    render(<MyWorks />);
+    const more = await screen.findByRole("button", { name: "加载更多作品" });
+    fireEvent.click(more);
+    fireEvent.click(more);
+    await act(async () => { releasePage(); await pageHold; });
+    expect(await screen.findByRole("heading", { name: "第二部" })).toBeTruthy();
+    expect(pageRequests).toHaveLength(1);
+    expect(screen.getAllByRole("heading", { name: "第二部" })).toHaveLength(1);
   });
 
   it("shows a failed list as an error, not sample works", async () => {
