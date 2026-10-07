@@ -560,6 +560,42 @@ describe("workspace Qwen requests", () => {
     expect(client.request).not.toHaveBeenCalled();
     setItem.mockRestore();
   });
+
+  it("warns before sending and never creates a request identity for an input over 256,000 UTF-8 bytes", async () => {
+    // Every field within its character limit (20,000 per body, 1,000 per note), 45,000 characters in all, but
+    // \u0001 serializes to six bytes: about 270,000 UTF-8 bytes. String length would have let it through.
+    const control = (count: number) => "\u0001".repeat(count);
+    const client = fakeQwen({ outcomes: [completed()] });
+    render(createElement(WritingAssistant, {
+      ...storyProps(), mode: "episode", entityKey: "script:episode-1", episodeNo: 1, premise: control(1_000),
+      confirmedMaterials: control(20_000), capture: () => ({ ...storyTarget(), entityKey: "script:episode-1", mode: "episode" as const, episodeNo: 1,
+        currentText: control(20_000) }),
+      workspaceQwen: client,
+    }));
+    await readyAssistant();
+    for (const label of ["题材", "目标观众", "人物设定", "修改要求"]) {
+      fireEvent.change(screen.getByLabelText(label), { target: { value: control(1_000) } });
+    }
+    fireEvent.click(screen.getByRole("checkbox", { name: "确认使用当前已加载的故事与分集材料" }));
+    fireEvent.click(screen.getByRole("button", { name: "准备创作指令" }));
+    const alert = await screen.findByText(/字节（按 UTF-8 计），超过 256,000 字节上限/);
+    expect(alert.textContent).toMatch(/输入为 27\d,\d{3} 字节/);
+    const button = screen.getByRole("button", { name: "向工作区请求候选" }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    fireEvent.click(button);
+    expect(client.request).not.toHaveBeenCalled();
+    expect(Object.keys(sessionStorage).some((name) => name.startsWith("ads-writing-qwen:"))).toBe(false);
+  });
+
+  it("shows the server's byte-cap refusal without changing the request record", async () => {
+    const client = fakeQwen({ outcomes: [Promise.resolve({ ok: false, httpStatus: 413, code: "QWEN_WEB_INPUT_TOO_LARGE" } as Outcome)] });
+    render(createElement(WritingAssistant, { ...storyProps(), workspaceQwen: client }));
+    await readyAssistant();
+    fireEvent.click(screen.getByRole("button", { name: "准备创作指令" }));
+    fireEvent.click(screen.getByRole("button", { name: "向工作区请求候选" }));
+    expect(await screen.findByText("输入超过 256,000 字节上限，服务端没有预约或发送")).toBeTruthy();
+    expect(client.request).toHaveBeenCalledTimes(1);
+  });
 });
 
 type Outcome = Awaited<ReturnType<QwenWebClient["request"]>>;
