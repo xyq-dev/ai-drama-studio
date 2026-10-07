@@ -115,6 +115,8 @@ workspace、project 及完整 episode/scene scope。revision 历史保留 `items
 | `GET /workflow-runs/:runId` | 工作流及子 job 摘要 | Owner；安全 GET；无 |
 | `GET /projects/:projectId/workflow-runs` | 分页运行历史 | Owner；安全 GET；无 |
 
+每个 job 视图另有只读字段 `composeEpisodeId`：集级合成任务（`MEDIA_COMPOSE` 且无 `sourceShotRevisionId`）取自其冻结输入 `input.episodeId`，其余 job 为 `null`。新增字段，不改变既有字段与行为，无数据库结构变更。
+
 ### Mock 媒体手工 retry
 
 适用 `MEDIA_IMAGE`、`MEDIA_VIDEO`、`MEDIA_TTS`、`MEDIA_SUBTITLE`、`MEDIA_MUSIC`。`MEDIA_COMPOSE` 仍返回 `JOB_NOT_RETRYABLE`，须重新预检后提交。文本任务的 retry 规则不变。
