@@ -131,3 +131,64 @@ export function selectedReferenceUsable(reference: SelectedReferenceState, chara
     && reference.referenceRole === CHARACTER_REFERENCE_ROLE
     && reference.sourceCharacterRevisionId === characterRevisionId;
 }
+
+/**
+ * Why a character cannot yet feed a strict-gate video, in a fixed order. Empty means usable. The listing and the
+ * strict video gate both decide with this one function, so the page never says "usable" when the gate would refuse.
+ */
+export type CharacterReferenceBlocker =
+  | "CHARACTER_REVISION_MISSING"
+  | "CHARACTER_REVISION_NOT_CURRENT"
+  | "CHARACTER_REVISION_STALE"
+  | "CHARACTER_REVISION_NOT_APPROVED"
+  | "REFERENCE_NOT_SELECTED"
+  | "REFERENCE_SELECTION_OTHER_REVISION"
+  | "REFERENCE_UNAVAILABLE"
+  | "REFERENCE_NOT_ACTIVE"
+  | "REFERENCE_NOT_APPROVED"
+  | "REFERENCE_REVIEW_HASH_MISMATCH"
+  | "REFERENCE_OTHER_REVISION";
+
+export interface CharacterVideoReadinessInput {
+  /** The revision the video needs: the shot's referenced revision, or the character's current one for the page. */
+  requiredRevisionId: string | null;
+  currentRevisionId: string | null;
+  approvedRevisionId: string | null;
+  revisionReviewStatus: string | null;
+  revisionFreshness: string | null;
+  /** null: no selection row. */
+  selection: { sourceCharacterRevisionId: string; assetId: string } | null;
+  /** null: the selected asset could not be read in this character's scope. */
+  selectedAsset: SelectedReferenceState | null;
+}
+
+export function characterReferenceVideoBlockers(input: CharacterVideoReadinessInput): CharacterReferenceBlocker[] {
+  const blockers: CharacterReferenceBlocker[] = [];
+  const revisionId = input.requiredRevisionId;
+  if (revisionId === null) {
+    blockers.push("CHARACTER_REVISION_MISSING");
+  } else {
+    if (input.currentRevisionId !== revisionId) blockers.push("CHARACTER_REVISION_NOT_CURRENT");
+    if (input.revisionFreshness !== "CURRENT") blockers.push("CHARACTER_REVISION_STALE");
+    if (input.approvedRevisionId !== revisionId || input.revisionReviewStatus !== "APPROVED") {
+      blockers.push("CHARACTER_REVISION_NOT_APPROVED");
+    }
+  }
+  if (input.selection === null) {
+    blockers.push("REFERENCE_NOT_SELECTED");
+    return blockers;
+  }
+  if (revisionId !== null && input.selection.sourceCharacterRevisionId !== revisionId) {
+    blockers.push("REFERENCE_SELECTION_OTHER_REVISION");
+  }
+  const asset = input.selectedAsset;
+  if (asset === null || asset.referenceRole !== CHARACTER_REFERENCE_ROLE) {
+    blockers.push("REFERENCE_UNAVAILABLE");
+    return blockers;
+  }
+  if (asset.assetStatus !== "ACTIVE") blockers.push("REFERENCE_NOT_ACTIVE");
+  if (asset.reviewStatus !== "APPROVED") blockers.push("REFERENCE_NOT_APPROVED");
+  else if (asset.reviewedContentHash !== asset.checksumSha256) blockers.push("REFERENCE_REVIEW_HASH_MISMATCH");
+  if (revisionId !== null && asset.sourceCharacterRevisionId !== revisionId) blockers.push("REFERENCE_OTHER_REVISION");
+  return blockers;
+}

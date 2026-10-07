@@ -15,6 +15,7 @@ import {
   type WritingImport,
   type WritingTargetSnapshot,
 } from "@ai-drama/domain/writing-assistant";
+import { QWEN_WRITING_INPUT_MAX_BYTES, qwenWritingInputByteLength } from "@ai-drama/contracts";
 import { lineDiff } from "../lib/studio-model";
 import type { QwenWebClient, QwenWebOutcome, QwenWebStatus } from "../lib/qwen-web-client";
 import { appendOnce, assistantNote, readProjectDirection } from "../lib/creative-direction-link";
@@ -30,7 +31,12 @@ const QWEN_STATUS_TEXT: Record<string, string> = {
   QWEN_WEB_CONCURRENCY_CAP: "已有请求正在进行，请稍后再试",
   IDEMPOTENCY_KEY_REUSED: "同一请求标识对应了不同输入，服务端拒绝",
   invalid_input: "输入没有通过校验",
+  QWEN_WEB_INPUT_TOO_LARGE: `输入超过 ${QWEN_WRITING_INPUT_MAX_BYTES.toLocaleString("en-US")} 字节上限，服务端没有预约或发送`,
 };
+
+function inputTooLargeText(bytes: number): string {
+  return `输入为 ${bytes.toLocaleString("en-US")} 字节（按 UTF-8 计），超过 ${QWEN_WRITING_INPUT_MAX_BYTES.toLocaleString("en-US")} 字节上限。请缩短正文或备注后重新准备创作指令；没有发送请求。`;
+}
 
 function qwenText(code: string): string {
   return QWEN_STATUS_TEXT[code] ?? `请求没有完成（${code}）`;
@@ -445,9 +451,16 @@ export function WritingAssistant(props: {
       setError("上一次请求的结果还没有确定。请先读取或查询原请求，或勾选确认后发起新的调用。");
       return;
     }
+    const input = workspaceInput();
+    // Same metering as the server: an oversized input gets no request identity and is never sent.
+    const bytes = qwenWritingInputByteLength(input);
+    if (bytes > QWEN_WRITING_INPUT_MAX_BYTES) {
+      setError(inputTooLargeText(bytes));
+      return;
+    }
     const record: WorkspaceRequest = {
       version: 1, projectId: props.projectId, entityKey: props.entityKey, key: crypto.randomUUID(), fingerprint,
-      frozen, input: workspaceInput(), requestId: null, state: "sending", candidateGone: false,
+      frozen, input, requestId: null, state: "sending", candidateGone: false,
     };
     // Persist the identity before sending; without it a lost answer could only be retried as a new paid call.
     if (!writeWorkspaceRequest(record)) {
@@ -474,6 +487,9 @@ export function WritingAssistant(props: {
     }
   }
 
+  // Shown before any click: the prepared input as it would be sent, metered like the server does.
+  const workspaceBytes = props.workspaceQwen && draft.frozen ? qwenWritingInputByteLength(workspaceInput()) : null;
+  const workspaceTooLarge = workspaceBytes !== null && workspaceBytes > QWEN_WRITING_INPUT_MAX_BYTES;
   const followUp: "none" | "replay" | "query" | "new" = !workspaceRecord ? "none"
     : workspaceRecord.state === "sending" ? "replay"
       : (workspaceRecord.state === "reserved" || workspaceRecord.state === "submitted")
@@ -574,7 +590,8 @@ export function WritingAssistant(props: {
               <button className="mt-2 rounded border px-3 py-1 text-sm" type="button" disabled={qwenBusy} onClick={() => void checkWorkspace()}>检查工作区调用</button>
               {qwenStatus ? <p className="text-sm" role="status">{qwenStatus.code === "NETWORK" ? "状态检查没有完成" : qwenText(qwenStatus.code)}{qwenStatus.ready && qwenStatus.model ? `，模型 ${qwenStatus.model}` : ""}</p> : null}
               <button className="mt-2 rounded border px-3 py-1 text-sm disabled:opacity-50" type="button"
-                disabled={!qwenStatus?.ready || qwenBusy} onClick={() => void requestWorkspaceCandidate(false)}>向工作区请求候选</button>
+                disabled={!qwenStatus?.ready || qwenBusy || workspaceTooLarge} onClick={() => void requestWorkspaceCandidate(false)}>向工作区请求候选</button>
+              {workspaceTooLarge ? <p className="text-sm" role="alert">{inputTooLargeText(workspaceBytes)}</p> : null}
               {followUp === "replay" ? (
                 <button className="ml-2 mt-2 rounded border px-3 py-1 text-sm" type="button" disabled={qwenBusy || !qwenStatus?.ready}
                   onClick={() => { if (workspaceRecord) void send(workspaceRecord); }}>用原请求标识重新读取</button>
@@ -589,7 +606,7 @@ export function WritingAssistant(props: {
                     我确认发起一次新的调用，可能另外产生费用
                   </label>
                   <button className="mt-1 rounded border px-3 py-1 text-sm disabled:opacity-50" type="button"
-                    disabled={!confirmNewCall || !qwenStatus?.ready || qwenBusy} onClick={() => void requestWorkspaceCandidate(true)}>发起新的调用</button>
+                    disabled={!confirmNewCall || !qwenStatus?.ready || qwenBusy || workspaceTooLarge} onClick={() => void requestWorkspaceCandidate(true)}>发起新的调用</button>
                 </div>
               ) : null}
             </fieldset>

@@ -1,4 +1,5 @@
 import type { PoolClient, QueryResultRow } from "pg";
+import { CHARACTER_REFERENCE_JOB_KIND, parseCharacterReferenceSnapshot } from "@ai-drama/domain";
 import { PersistenceError } from "./job-service";
 
 export interface ProviderActualCostInput {
@@ -82,16 +83,7 @@ export async function guardSynchronousMockImageCost(
   actualCost: ProviderActualCostInput,
 ): Promise<void> {
   assertSyncActualCost(actualCost);
-  if (!asset.sourceShotRevisionId
-    || actualCost.workspaceId !== asset.workspaceId
-    || actualCost.projectId !== asset.projectId
-    || actualCost.generationJobId !== asset.generationJobId
-    || actualCost.jobAttemptId !== asset.sourceJobAttemptId
-    || actualCost.providerConfigurationId !== asset.providerConfigurationId
-    || actualCost.providerRequestId !== asset.providerRequestId
-    || actualCost.provider !== "mock-media"
-    || actualCost.model !== "mock-v1"
-    || actualCost.idempotencyKey !== `${asset.providerRequestId}:request:actual`) {
+  if (!asset.sourceShotRevisionId || !mockActualCostIdentityMatches(asset, actualCost)) {
     throw new PersistenceError("COST_CONFLICT", "Mock image accounting lineage does not match the asset");
   }
 
@@ -137,7 +129,36 @@ export async function guardSynchronousMockImageCost(
     throw new PersistenceError("COST_CONFLICT", "Mock image accounting lineage does not match the asset");
   }
   assertFixedMockImageSnapshot(row.input_snapshot, asset.sourceShotRevisionId);
+  await assertNoSynchronousEstimate(client, asset, "Mock image");
+}
 
+/**
+ * The ACTUAL row of a synchronous Mock request belongs to exactly that request: same workspace, project, job,
+ * attempt, provider configuration and request id, the fixed Mock provider and model, and the request's own
+ * actual idempotency key.
+ */
+function mockActualCostIdentityMatches(
+  asset: { workspaceId: string; projectId: string; generationJobId: string; sourceJobAttemptId: string;
+    providerConfigurationId: string; providerRequestId: string },
+  actualCost: ProviderActualCostInput,
+): boolean {
+  return actualCost.workspaceId === asset.workspaceId
+    && actualCost.projectId === asset.projectId
+    && actualCost.generationJobId === asset.generationJobId
+    && actualCost.jobAttemptId === asset.sourceJobAttemptId
+    && actualCost.providerConfigurationId === asset.providerConfigurationId
+    && actualCost.providerRequestId === asset.providerRequestId
+    && actualCost.provider === "mock-media"
+    && actualCost.model === "mock-v1"
+    && actualCost.idempotencyKey === `${asset.providerRequestId}:request:actual`;
+}
+
+/** A synchronous request never has an estimate: none for this attempt or request, and its estimate key is free. */
+async function assertNoSynchronousEstimate(
+  client: PoolClient,
+  asset: { workspaceId: string; sourceJobAttemptId: string; providerConfigurationId: string; providerRequestId: string },
+  label: string,
+): Promise<void> {
   const estimated = await client.query(
     `SELECT 1
        FROM cost_ledger
@@ -148,7 +169,7 @@ export async function guardSynchronousMockImageCost(
     [asset.workspaceId, asset.sourceJobAttemptId, asset.providerRequestId],
   );
   if (estimated.rows[0]) {
-    throw new PersistenceError("COST_CONFLICT", "Mock image accounting estimate already exists");
+    throw new PersistenceError("COST_CONFLICT", `${label} accounting estimate already exists`);
   }
   const occupied = await client.query(
     `SELECT 1
@@ -160,8 +181,81 @@ export async function guardSynchronousMockImageCost(
     [asset.workspaceId, asset.providerConfigurationId, `${asset.providerRequestId}:request:estimated`],
   );
   if (occupied.rows[0]) {
-    throw new PersistenceError("COST_CONFLICT", "Mock image accounting estimate key is occupied");
+    throw new PersistenceError("COST_CONFLICT", `${label} accounting estimate key is occupied`);
   }
+}
+
+/**
+ * Character reference counterpart of guardSynchronousMockImageCost. The cost must carry the identity of the frozen
+ * reference request: the reference job and attempt, the attempt's snapshot equal to the job's frozen
+ * m3.mock.character-reference.v1 snapshot for this character revision, the mock-media image.generate
+ * configuration, the synchronous request id and client key of that attempt, and the Mock zero-dollar actual.
+ * Read-only; a refusal is thrown before any write so the caller's transaction leaves nothing behind.
+ */
+export async function guardSynchronousMockReferenceCost(
+  client: PoolClient,
+  asset: {
+    workspaceId: string;
+    projectId: string;
+    generationJobId: string;
+    sourceJobAttemptId: string;
+    characterRevisionId: string;
+    providerConfigurationId: string;
+    providerRequestId: string;
+  },
+  actualCost: ProviderActualCostInput,
+): Promise<void> {
+  assertSyncActualCost(actualCost);
+  if (!mockActualCostIdentityMatches(asset, actualCost)) {
+    throw new PersistenceError("COST_CONFLICT", "Mock reference accounting lineage does not match the asset");
+  }
+  const bound = await client.query<QueryResultRow>(
+    `SELECT job.kind,
+            job.project_id,
+            job.input_snapshot,
+            (job.input_snapshot = attempt.request_snapshot) AS snapshots_match,
+            attempt.attempt_no::int AS attempt_no,
+            attempt.provider_client_request_key,
+            attempt.provider_request_id,
+            attempt.provider_configuration_id,
+            provider.provider_key,
+            provider.capability
+       FROM generation_job job
+       JOIN job_attempt attempt
+         ON attempt.id = $2
+        AND attempt.generation_job_id = job.id
+        AND attempt.workspace_id = job.workspace_id
+       JOIN provider_configuration provider
+         ON provider.id = attempt.provider_configuration_id
+        AND provider.workspace_id = attempt.workspace_id
+      WHERE job.id = $1
+        AND job.workspace_id = $3`,
+    [asset.generationJobId, asset.sourceJobAttemptId, asset.workspaceId],
+  );
+  const row = bound.rows[0];
+  const attemptNo = row ? Number(row.attempt_no) : NaN;
+  if (!row
+    || row.kind !== CHARACTER_REFERENCE_JOB_KIND
+    || String(row.project_id) !== asset.projectId
+    || row.snapshots_match !== true
+    || String(row.provider_key) !== "mock-media"
+    || String(row.capability) !== "image.generate"
+    || String(row.provider_configuration_id) !== asset.providerConfigurationId
+    || String(row.provider_request_id) !== asset.providerRequestId
+    || String(row.provider_client_request_key) !== `${asset.generationJobId}:${attemptNo}`
+    || asset.providerRequestId !== `mock-media|sync|image.generate|${asset.generationJobId}:${attemptNo}`) {
+    throw new PersistenceError("COST_CONFLICT", "Mock reference accounting lineage does not match the asset");
+  }
+  let frozenRevisionId: string;
+  try {
+    frozenRevisionId = parseCharacterReferenceSnapshot(row.input_snapshot).characterRevisionId;
+  } catch {
+    throw new PersistenceError("COST_CONFLICT", "Mock reference accounting snapshot is not a fixed reference job");
+  }
+  if (frozenRevisionId !== asset.characterRevisionId) {
+    throw new PersistenceError("COST_CONFLICT", "Mock reference accounting snapshot is not a fixed reference job");
+  }
+  await assertNoSynchronousEstimate(client, asset, "Mock reference");
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {

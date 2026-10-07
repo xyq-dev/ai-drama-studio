@@ -95,3 +95,19 @@ Migration：本轮没有新增已执行目录里的 migration。两份草案仍�
 - P2 文件操作故障被当成缓存未命中（`6b95585`）：仅 ENOENT/ENOTDIR 为未找到，其余为 `ASSET_STORAGE_ERROR`（503），复用不再因此新建任务。
 
 登记、本轮未处理的 P2：选定参考图超出 100 条分页时 `usable` 误判；千问状态与请求在令牌校验前探测存储；参考图生成任务未进入任务区与刷新跟踪；媒体恢复抛错时参考图恢复不执行；网页千问输入未在预约前检查 256,000 字节上限。「切角色后旧回执覆盖列表」在当前挂载路径下未复现，不列为缺陷。
+
+## 2026-10-07 可靠性收尾（`fix/v1-reliability-closeout`，PR #49）
+
+起点 `origin/main` `2fb19acfe086392eb415a3be92b4c4a6830a4cfd`（PR #48 合并）。上节末尾登记的 5 项 P2，加上「可用于视频」口径与参考图成本身份两项，共七项。详情与测试证据见 [`V1_RELIABILITY_CLOSEOUT_REPORT.md`](V1_RELIABILITY_CLOSEOUT_REPORT.md)。
+
+| 项 | 实现位置 | 状态 |
+| --- | --- | --- |
+| 选定参考图超出 100 条分页 | `listForCharacter` 页仍为 100（多取 1 条得 `hasMore`）；选定项按选择记录 ID 在工作区/项目/角色/参考图角色内单独读取 | 已修。假客户端单测；真实库用例依赖参考图草案，未执行 |
+| 「可用于视频」与严格视频门一致 | 领域 `characterReferenceVideoBlockers`，列表与严格门共用；返回 `videoReadiness.blockers`，页面逐条显示；每项 `selectable` 由服务端判定 | 已修。领域与组件测试；真实库用例依赖草案，未执行 |
+| 千问先鉴权再探测存储 | `QwenWebService.decide`：开关、令牌、Provider 先判定，通过后才 `storageReady()` | 已修。无效令牌下探测、预约、维护、transport 次数均为 0 |
+| 千问输入 256,000 字节 | `qwenWritingInputByteLength`（`input` 紧凑 JSON 的 UTF-8 字节）；网页提示并禁发；API 在维护/预约前 413 `QWEN_WEB_INPUT_TOO_LARGE`；`runQwenWebWriting` 再检查 | 已修。不依赖草案 |
+| 参考图任务可见与完成刷新 | 角色页按 `/generation-jobs/:id` 串行跟踪；工作台任务区「角色参考图任务」 | 已修。happy-dom 组件测试；真实 Chromium（API 为路由桩）1280/390 |
+| 恢复循环错误隔离 | `recovery-modules.ts`；参考图恢复逐行隔离、汇总上报；reconcile 不再重叠、错误上报 | 已修。不依赖草案 |
+| 参考图成本身份 | `guardSynchronousMockReferenceCost`，在任何写入前校验 | 已修。守卫在 CI 真实 PostgreSQL 上执行（不需草案）；`completeGeneration` 全事务回滚用例依赖草案，未写入执行 |
+
+Migration：无。两份草案未修改、未执行。Paid calls=NO，Deploy=NO。

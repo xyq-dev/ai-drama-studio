@@ -161,13 +161,19 @@ export class CharacterReferenceRecovery {
     private readonly enabled: boolean,
   ) {}
 
+  /**
+   * Each row is isolated: a transient fault on one row (database, filesystem) leaves that attempt for the next pass
+   * and is reported; a permanent refusal ends only that attempt. Faults are collected and thrown together after every
+   * row was tried, never swallowed.
+   */
   async reconcileOnce(now = new Date()): Promise<void> {
+    const errors: unknown[] = [];
     const rows = await this.store.listExpiredMockMedia(50, now, ["MEDIA_CHARACTER_REFERENCE"]);
     for (const row of rows) {
-      const execution = await this.store.loadCharacterReferenceExecution(row.workspaceId, row.jobId);
-      if (!execution || execution.state !== "RUNNING") continue;
       const traceId = `mock-reference:recover:${row.jobId}`;
       try {
+        const execution = await this.store.loadCharacterReferenceExecution(row.workspaceId, row.jobId);
+        if (!execution || execution.state !== "RUNNING") continue;
         if (row.cancelRequested) {
           await this.jobs.confirmCancellation({ workspaceId: row.workspaceId, jobId: row.jobId, attemptId: row.attemptId, traceId });
           continue;
@@ -183,6 +189,7 @@ export class CharacterReferenceRecovery {
             retryable: false });
           continue;
         }
+        // The request is already bound: inspect it and persist its deterministic output; never submit again.
         const observation = await this.dependencies.adapter.inspect(row.providerRequestId);
         await this.jobs.recordProviderEvent({ workspaceId: row.workspaceId, providerConfigurationId: row.providerConfigurationId,
           jobAttemptId: row.attemptId, providerRequestId: row.providerRequestId, source: "POLL",
@@ -202,13 +209,20 @@ export class CharacterReferenceRecovery {
           { ...this.dependencies, objects, jobs: this.jobs });
       } catch (error) {
         const kind = disposition(error);
+        // A newer attempt or a terminal state already owns the job; nothing of ours to settle.
         if (kind === "terminal-race") continue;
         if (kind === "permanent") {
-          await this.jobs.failJob({ workspaceId: row.workspaceId, jobId: row.jobId, attemptId: row.attemptId, traceId,
-            errorCode: "MOCK_REFERENCE_REJECTED", errorMessage: mediaErrorMessage(error), retryable: false })
-            .catch(() => undefined);
+          try {
+            await this.jobs.failJob({ workspaceId: row.workspaceId, jobId: row.jobId, attemptId: row.attemptId, traceId,
+              errorCode: "MOCK_REFERENCE_REJECTED", errorMessage: mediaErrorMessage(error), retryable: false });
+          } catch (failure) {
+            if (classifyMediaFailure(failure) !== "terminal-race") errors.push(failure);
+          }
+          continue;
         }
+        errors.push(error);
       }
     }
+    if (errors.length) throw new AggregateError(errors, "Mock reference recovery encountered errors");
   }
 }

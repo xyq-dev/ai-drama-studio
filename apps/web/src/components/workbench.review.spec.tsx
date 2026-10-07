@@ -49,6 +49,7 @@ interface Sim {
   imageAssets: Record<string, Array<Record<string, unknown>>>;
   mediaImage: boolean;
   mediaTask: boolean;
+  referenceTaskState: string | null;
   mediaTaskState: string;
   mediaTaskErrorCode: string | null;
   mediaRetryResponse: { status: number; body: unknown } | null;
@@ -120,6 +121,7 @@ function createSim(): Sim {
     imageAssets: {},
     mediaImage: false,
     mediaTask: false,
+    referenceTaskState: null,
     mediaTaskState: "FAILED",
     mediaTaskErrorCode: "MOCK_IMAGE_OUTPUT_INVALID",
     mediaRetryResponse: null,
@@ -343,6 +345,14 @@ function createSim(): Sim {
       sim.workflowReads += 1;
       if (sim.failWorkflowRead === sim.workflowReads || sim.failWorkflowReads.includes(sim.workflowReads)) {
         return fail(500, "REFRESH_FAILED", "任务刷新失败");
+      }
+      if (sim.referenceTaskState) {
+        return json([{
+          id: "reference-run", type: "MEDIA_CHARACTER_REFERENCE", status: sim.referenceTaskState,
+          createdAt: "2026-09-30T00:00:00.000Z",
+          jobs: [{ id: "reference-job", kind: "MEDIA_CHARACTER_REFERENCE", state: sim.referenceTaskState, errorCode: null,
+            errorMessage: null, sourceShotRevisionId: null, attempts: [] }],
+        }]);
       }
       if (sim.mediaTask) {
         return json([{
@@ -1479,6 +1489,21 @@ describe("workbench review interactions against a simulated API", () => {
     fireEvent.click(retry);
     expect(sim.calls.filter((call) => call.url.endsWith("/retry"))).toHaveLength(0);
   });
+
+  it("lists a character reference generation in the task area without a retry, and keeps polling it while it runs (closeout item 5)", async () => {
+    const sim = createSim();
+    sim.referenceTaskState = "RUNNING";
+    install(sim);
+    renderAt(`focus=shot&episode=1&scene=scene-1&shot=${SHOT_A}`);
+    fireEvent.click(await screen.findByRole("button", { name: "任务" }));
+    expect(await screen.findByText(/角色参考图 · /)).toBeTruthy();
+    expect(screen.queryByText("没有参考图任务")).toBeNull();
+    const reads = sim.workflowReads;
+    await waitFor(() => expect(sim.workflowReads).toBeGreaterThan(reads), { timeout: 5000 });
+    const card = screen.getByText(/角色参考图 · /).closest("li")!;
+    expect(card.textContent).not.toContain("重试");
+    expect(card.querySelector("button")?.textContent).toBe("取消");
+  }, 15000);
 
   it.each([
     ["FAILED", "MOCK_IMAGE_RUNTIME_FAILED"],

@@ -2,11 +2,14 @@ import type { PoolClient, QueryResultRow } from "pg";
 import {
   CHARACTER_REFERENCE_JOB_KIND,
   CHARACTER_REFERENCE_ROLE,
+  characterReferenceVideoBlockers,
   selectedReferenceUsable,
+  type CharacterReferenceBlocker,
   type CharacterReferenceReviewRequest,
+  type SelectedReferenceState,
 } from "@ai-drama/domain";
 import { PersistenceError, type DatabasePool, type JobPersistenceService } from "./job-service";
-import { recordProviderActualCost, type ProviderActualCostInput } from "./mock-media-cost";
+import { guardSynchronousMockReferenceCost, recordProviderActualCost, type ProviderActualCostInput } from "./mock-media-cost";
 
 /**
  * Character reference images. The asset columns `reference_role` / `source_character_revision_id`, the relaxed
@@ -45,11 +48,22 @@ export interface CharacterReferenceSelection {
   staleAssetIds?: string[];
 }
 
+/** The newest references shown per listing. The selection is read by id, so it never depends on this page. */
+export const CHARACTER_REFERENCE_PAGE_SIZE = 100;
+
 export interface CharacterReferenceListing {
   characterId: string;
   currentRevisionId: string | null;
-  selection: (CharacterReferenceSelection & { usable: boolean }) | null;
-  items: CharacterReferenceAsset[];
+  /**
+   * The selection record and the selected asset, read by id in this workspace, project and character. `asset` is
+   * null when the recorded asset can no longer be read in that scope. `usable` equals `videoReadiness.usable`.
+   */
+  selection: (CharacterReferenceSelection & { usable: boolean; asset: CharacterReferenceAsset | null }) | null;
+  /** The strict video gate's answer for the current revision, with every reason it would refuse. */
+  videoReadiness: { usable: boolean; blockers: CharacterReferenceBlocker[] };
+  /** Newest first, at most CHARACTER_REFERENCE_PAGE_SIZE. `selectable` is the selection endpoint's own rule. */
+  items: (CharacterReferenceAsset & { selectable: boolean })[];
+  hasMore: boolean;
 }
 
 export interface PreparedReferenceGeneration {
@@ -126,6 +140,20 @@ function toAsset(row: QueryResultRow): CharacterReferenceAsset {
     rowVersion: Number(row.row_version),
     createdAt: (row.created_at as Date).toISOString(),
   };
+}
+
+function referenceState(asset: CharacterReferenceAsset): SelectedReferenceState {
+  return { assetStatus: asset.status, reviewStatus: asset.reviewStatus, reviewedContentHash: asset.reviewedContentHash,
+    checksumSha256: asset.checksumSha256, referenceRole: CHARACTER_REFERENCE_ROLE,
+    sourceCharacterRevisionId: asset.characterRevisionId };
+}
+
+function rowReferenceState(row: QueryResultRow): SelectedReferenceState | null {
+  if (row.status === null || row.status === undefined) return null;
+  return { assetStatus: String(row.status), reviewStatus: String(row.review_status),
+    reviewedContentHash: row.reviewed_content_hash === null ? null : String(row.reviewed_content_hash),
+    checksumSha256: String(row.checksum_sha256), referenceRole: row.reference_role === null ? null : String(row.reference_role),
+    sourceCharacterRevisionId: row.source_character_revision_id === null ? null : String(row.source_character_revision_id) };
 }
 
 function unavailable(): PersistenceError {
@@ -309,6 +337,12 @@ export class CharacterReferenceStore {
         if (!lineage.rows[0]) {
           throw new PersistenceError("ASSET_LINEAGE_INVALID", "Reference attempt does not match its job and character revision");
         }
+        // Before any write: the ACTUAL row must carry this frozen request's identity, as for shot images.
+        await guardSynchronousMockReferenceCost(client, {
+          workspaceId: input.workspaceId, projectId: input.projectId, generationJobId: input.jobId,
+          sourceJobAttemptId: input.attemptId, characterRevisionId: input.characterRevisionId,
+          providerConfigurationId: input.providerConfigurationId, providerRequestId: input.providerRequestId,
+        }, input.actualCost);
         const inserted = await client.query<QueryResultRow>(
           `INSERT INTO asset
             (workspace_id, project_id, kind, storage_provider, object_key, mime_type, byte_size, checksum_sha256,
@@ -349,40 +383,65 @@ export class CharacterReferenceStore {
     try {
       await this.requireStorage(client);
       const character = await client.query<QueryResultRow>(
-        "SELECT id, current_revision_id FROM character WHERE id = $1 AND workspace_id = $2",
+        `SELECT character.id, character.project_id, character.current_revision_id, character.approved_revision_id,
+                revision.review_status AS revision_review, revision.freshness_status AS revision_freshness
+           FROM character
+           LEFT JOIN character_revision revision ON revision.id = character.current_revision_id
+            AND revision.workspace_id = character.workspace_id AND revision.character_id = character.id
+          WHERE character.id = $1 AND character.workspace_id = $2`,
         [characterId, workspaceId],
       );
       const found = character.rows[0];
       if (!found) throw new PersistenceError("NOT_FOUND", "Character not found");
-      const items = await client.query<QueryResultRow>(
+      const projectId = String(found.project_id);
+      const currentRevisionId = found.current_revision_id === null ? null : String(found.current_revision_id);
+      // One row past the page tells whether more exist without counting them.
+      const page = await client.query<QueryResultRow>(
         `SELECT ${ASSET_COLUMNS} FROM asset
            JOIN character_revision revision ON revision.id = asset.source_character_revision_id
-            AND revision.workspace_id = asset.workspace_id
-          WHERE asset.workspace_id = $1 AND revision.character_id = $2 AND asset.reference_role = $3
-          ORDER BY asset.created_at DESC, asset.id DESC LIMIT 100`,
-        [workspaceId, characterId, CHARACTER_REFERENCE_ROLE],
+            AND revision.workspace_id = asset.workspace_id AND revision.project_id = asset.project_id
+          WHERE asset.workspace_id = $1 AND asset.project_id = $2 AND revision.character_id = $3
+            AND asset.reference_role = $4
+          ORDER BY asset.created_at DESC, asset.id DESC LIMIT $5`,
+        [workspaceId, projectId, characterId, CHARACTER_REFERENCE_ROLE, CHARACTER_REFERENCE_PAGE_SIZE + 1],
       );
-      const assets = items.rows.map(toAsset);
+      const assets = page.rows.slice(0, CHARACTER_REFERENCE_PAGE_SIZE).map(toAsset);
       const selection = await client.query<QueryResultRow>(
         `SELECT character_id, source_character_revision_id, asset_id, selected_by, created_at
-           FROM character_reference_selection WHERE workspace_id = $1 AND character_id = $2`,
-        [workspaceId, characterId],
+           FROM character_reference_selection WHERE workspace_id = $1 AND project_id = $2 AND character_id = $3`,
+        [workspaceId, projectId, characterId],
       );
       const selected = selection.rows[0];
-      const currentRevisionId = found.current_revision_id === null ? null : String(found.current_revision_id);
-      let usable = false;
-      if (selected && currentRevisionId) {
-        const asset = assets.find((item) => item.id === String(selected.asset_id));
-        const fresh = await client.query<{ fresh: boolean } & QueryResultRow>(
-          "SELECT freshness_status = 'CURRENT' AS fresh FROM character_revision WHERE id = $1",
-          [currentRevisionId],
-        );
-        usable = Boolean(asset) && fresh.rows[0]?.fresh === true
-          && String(selected.source_character_revision_id) === currentRevisionId
-          && selectedReferenceUsable({ assetStatus: asset!.status, reviewStatus: asset!.reviewStatus,
-            reviewedContentHash: asset!.reviewedContentHash, checksumSha256: asset!.checksumSha256,
-            referenceRole: CHARACTER_REFERENCE_ROLE, sourceCharacterRevisionId: asset!.characterRevisionId }, currentRevisionId);
+      let selectedAsset: CharacterReferenceAsset | null = null;
+      if (selected) {
+        const selectedId = String(selected.asset_id);
+        // The selection record names the asset; it is read by that id in this workspace, project and character
+        // only, never trusted from the page or the client.
+        selectedAsset = assets.find((item) => item.id === selectedId) ?? null;
+        if (!selectedAsset) {
+          const byId = await client.query<QueryResultRow>(
+            `SELECT ${ASSET_COLUMNS} FROM asset
+               JOIN character_revision revision ON revision.id = asset.source_character_revision_id
+                AND revision.workspace_id = asset.workspace_id AND revision.project_id = asset.project_id
+              WHERE asset.id = $1 AND asset.workspace_id = $2 AND asset.project_id = $3 AND revision.character_id = $4
+                AND asset.reference_role = $5`,
+            [selectedId, workspaceId, projectId, characterId, CHARACTER_REFERENCE_ROLE],
+          );
+          selectedAsset = byId.rows[0] ? toAsset(byId.rows[0]) : null;
+        }
       }
+      const blockers = characterReferenceVideoBlockers({
+        requiredRevisionId: currentRevisionId,
+        currentRevisionId,
+        approvedRevisionId: found.approved_revision_id === null ? null : String(found.approved_revision_id),
+        revisionReviewStatus: found.revision_review === null ? null : String(found.revision_review),
+        revisionFreshness: found.revision_freshness === null ? null : String(found.revision_freshness),
+        selection: selected ? { sourceCharacterRevisionId: String(selected.source_character_revision_id),
+          assetId: String(selected.asset_id) } : null,
+        selectedAsset: selectedAsset ? referenceState(selectedAsset) : null,
+      });
+      const usable = blockers.length === 0;
+      const revisionFresh = found.revision_freshness === "CURRENT";
       return {
         characterId,
         currentRevisionId,
@@ -393,8 +452,12 @@ export class CharacterReferenceStore {
           selectedBy: String(selected.selected_by),
           createdAt: (selected.created_at as Date).toISOString(),
           usable,
+          asset: selectedAsset,
         } : null,
-        items: assets,
+        videoReadiness: { usable, blockers },
+        items: assets.map((item) => ({ ...item, selectable: currentRevisionId !== null && revisionFresh
+          && selectedReferenceUsable(referenceState(item), currentRevisionId) })),
+        hasMore: page.rows.length > CHARACTER_REFERENCE_PAGE_SIZE,
       };
     } finally {
       client.release();
@@ -578,18 +641,21 @@ export class CharacterReferenceStore {
     const result: StrictVideoReference[] = [];
     for (const row of refs.rows) {
       const revisionId = String(row.character_revision_id);
-      const characterUsable = String(row.current_revision_id) === revisionId && String(row.approved_revision_id) === revisionId
-        && row.revision_review === "APPROVED" && row.revision_freshness === "CURRENT";
-      const referenceUsable = row.asset_id !== null && String(row.selected_revision) === revisionId
-        && selectedReferenceUsable({ assetStatus: String(row.status), reviewStatus: String(row.review_status),
-          reviewedContentHash: row.reviewed_content_hash === null ? null : String(row.reviewed_content_hash),
-          checksumSha256: String(row.checksum_sha256), referenceRole: row.reference_role === null ? null : String(row.reference_role),
-          sourceCharacterRevisionId: row.source_character_revision_id === null ? null : String(row.source_character_revision_id),
-        }, revisionId);
-      if (!characterUsable || !referenceUsable) {
+      // The same rule the reference listing reports as videoReadiness.
+      const blockers = characterReferenceVideoBlockers({
+        requiredRevisionId: revisionId,
+        currentRevisionId: row.current_revision_id === null ? null : String(row.current_revision_id),
+        approvedRevisionId: row.approved_revision_id === null ? null : String(row.approved_revision_id),
+        revisionReviewStatus: row.revision_review === null ? null : String(row.revision_review),
+        revisionFreshness: row.revision_freshness === null ? null : String(row.revision_freshness),
+        selection: row.asset_id === null ? null
+          : { sourceCharacterRevisionId: String(row.selected_revision), assetId: String(row.asset_id) },
+        selectedAsset: rowReferenceState(row),
+      });
+      if (blockers.length > 0) {
         throw new PersistenceError("CHARACTER_REFERENCE_REQUIRED",
           "Video generation requires each referenced character and its selected reference image to be approved and current",
-          { characterRevisionId: revisionId });
+          { characterRevisionId: revisionId, blockers });
       }
       result.push({ characterRevisionId: revisionId, assetId: String(row.asset_id), checksumSha256: String(row.checksum_sha256) });
     }
