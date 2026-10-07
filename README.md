@@ -1,5 +1,7 @@
 # AI Drama Studio
 
+角色配音的下一阶段方案见 [`docs/CHARACTER_VOICE_DESIGN.md`](docs/CHARACTER_VOICE_DESIGN.md)，附[开源调查](docs/VOICE_OPEN_SOURCE_RESEARCH.md)与[可离线打开的交互设计图](docs/design/character-voice-preview.html)。本项处于设计阶段，尚未接入真实 TTS，不改变下述已验收范围。
+
 研发与 Git / 部署权限约定见 [`docs/ENGINEERING_WORKFLOW.md`](docs/ENGINEERING_WORKFLOW.md)：已交办任务验证通过后自动提交、推送、按 PR / CI 集成，并更新已指定测试站点。实际服务器发布结果单独核验。
 
 交付台账见 [`docs/V1_DELIVERY_MATRIX.md`](docs/V1_DELIVERY_MATRIX.md)。本分支的共同祖先是 `origin/main` `a6315a5eadc7bb8c14ba18f2dee85ff237fc0272`，其中已经包含创作者界面、编剧助手和早前的 M4 技术闭环。验收边界仍见 [`docs/M4_CLOSEOUT_REPORT.md`](docs/M4_CLOSEOUT_REPORT.md)。项目范围以 [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) 为准。本地开发步骤见 [`docs/DEV_RUNBOOK.md`](docs/DEV_RUNBOOK.md)。完整 M4、真实模型验收和完整生产成本仍未完成。运行手册不表示环境已经部署。

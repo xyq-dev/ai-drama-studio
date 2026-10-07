@@ -65,3 +65,9 @@
 ## 商业创作者界面
 
 面向独立 AI 短剧创作者的第一版界面见 [`COMMERCIAL_PRODUCT_PLAN.md`](COMMERCIAL_PRODUCT_PLAN.md)。这一阶段只调整 Web 的产品入口、创作中心、工作台布局和只读预览。它不改写上面的 M1–M4 验收结论，也不表示产品已经可以公开商业运营。
+
+## 角色配音：下一阶段设计
+
+设计基线与实施顺序见 [`CHARACTER_VOICE_DESIGN.md`](CHARACTER_VOICE_DESIGN.md)，选型证据见 [`VOICE_OPEN_SOURCE_RESEARCH.md`](VOICE_OPEN_SOURCE_RESEARCH.md)。将固定角色声音、逐句生成试听与选用、真实时长检查、字幕和混音嵌入新手五步流程，沿用现有版本、任务、来源失效和审核边界。
+
+当前只交付方案与离线交互原型。真实 TTS、付费调用恢复、声音选择持久化和新合成 profile 均未实现；数据库演进与调用预算另行确认。首个功能验收范围为同一场景双角色 4–8 句的短片，不以旧静音 fixture 代替人声验收。现有 M1–M4 的结论保持原样。

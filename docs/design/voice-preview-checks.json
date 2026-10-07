@@ -1,0 +1,76 @@
+{
+  "ok": true,
+  "kind": "offline-design-prototype-only",
+  "browser": "153.0.8010.0",
+  "pages": [
+    {
+      "viewport": 1440,
+      "tab": "cast",
+      "width": 1440,
+      "scrollWidth": 1440,
+      "height": 1000
+    },
+    {
+      "viewport": 1440,
+      "tab": "lines",
+      "width": 1440,
+      "scrollWidth": 1440,
+      "height": 1075
+    },
+    {
+      "viewport": 1440,
+      "tab": "mix",
+      "width": 1440,
+      "scrollWidth": 1440,
+      "height": 1279
+    },
+    {
+      "viewport": 1440,
+      "tab": "delivery",
+      "width": 1440,
+      "scrollWidth": 1440,
+      "height": 1065
+    },
+    {
+      "viewport": 390,
+      "tab": "cast",
+      "width": 390,
+      "scrollWidth": 390,
+      "height": 1657
+    },
+    {
+      "viewport": 390,
+      "tab": "lines",
+      "width": 390,
+      "scrollWidth": 390,
+      "height": 1668
+    },
+    {
+      "viewport": 390,
+      "tab": "mix",
+      "width": 390,
+      "scrollWidth": 390,
+      "height": 1760
+    },
+    {
+      "viewport": 390,
+      "tab": "delivery",
+      "width": 390,
+      "scrollWidth": 390,
+      "height": 1608
+    }
+  ],
+  "interactions": [
+    "tab keyboard",
+    "dialog Escape and focus return",
+    "voice selection",
+    "line selection",
+    "overflow blocks continue",
+    "changed voice invalidates selection",
+    "old candidate cannot be selected"
+  ],
+  "pageErrors": [],
+  "externalRequests": [],
+  "api": false,
+  "modelCalls": false
+}
