@@ -41,7 +41,7 @@ describe("category center", () => {
     expect(screen.getByRole("button", { name: "移除现代都市" })).toBeTruthy();
     expect((screen.getByRole("button", { name: "复制创作方向" }) as HTMLButtonElement).disabled).toBe(false);
     const start = screen.getByRole("link", { name: "用这个方向新建作品" });
-    expect(start.getAttribute("href")).toBe("/studio?direction=1");
+    expect(start.getAttribute("href")).toBe("/create?direction=1");
     fireEvent.click(screen.getByRole("button", { name: "移除现代都市" }));
     expect(JSON.parse(window.localStorage.getItem(DIRECTION_STORAGE_KEY) ?? "{}").tagIds).toEqual([]);
     window.localStorage.setItem("unrelated-draft", "keep");
