@@ -1121,6 +1121,14 @@ export class StudioService {
       providerKey: "mock",
       capability: "mock.generate",
       outcomes: ["success", "retryable_failure", "terminal_failure", "cancel", "delayed"],
+      /**
+       * Whether local composition is switched on here, decided by the same conditions the compose routes check.
+       * Booleans only: no paths, directories or credentials. Each route still validates every request itself.
+       */
+      compose: {
+        shot: this.localComposeEnabled && this.mockAvEnabled && Boolean(this.mediaAssets),
+        episode: this.episodeComposeEnabled && Boolean(this.mediaAssets),
+      },
     };
   }
 

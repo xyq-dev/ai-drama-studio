@@ -91,6 +91,8 @@ export interface CurrentRevisionSummary {
 export interface TextAggregatePointers {
   entityId: string;
   projectId: string;
+  /** Characters and locations only: the entity's display name, so a reader need not show its id. */
+  name?: string;
   episodeId?: string;
   sceneId?: string;
   rowVersion: number;
@@ -117,6 +119,8 @@ export interface TextEntityRevisionView {
   reviewStatus: string;
   freshnessStatus: string;
   reviewVersion: number;
+  /** The reviewer's note (for example why a revision was returned); null when none was written. */
+  reviewNote: string | null;
   createdAt: string;
 }
 
@@ -215,6 +219,7 @@ function mapAggregate(
 ): TextAggregateSummary {
   return {
     entityId, projectId, ...(episodeId ? { episodeId } : {}), ...(sceneId ? { sceneId } : {}),
+    ...(typeof row.name === "string" ? { name: row.name } : {}),
     rowVersion: Number(row.row_version),
     currentRevisionId: row.current_revision_id === null ? null : String(row.current_revision_id),
     approvedRevisionId: row.approved_revision_id === null ? null : String(row.approved_revision_id),
@@ -338,7 +343,7 @@ export class TextChainService {
         afterSql = "AND (parent.created_at, parent.id) > ($4::timestamptz, $5::uuid)";
       }
       const result = await client.query<QueryResultRow>(
-        `SELECT parent.id, parent.row_version, parent.current_revision_id,
+        `SELECT parent.id, parent.name, parent.row_version, parent.current_revision_id,
                 parent.approved_revision_id,
                 to_char(parent.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_sort,
                 revision.review_version,
@@ -545,7 +550,7 @@ export class TextChainService {
       if (!parent.rows[0]) throw new PersistenceError("NOT_FOUND", "Entity not found");
       const rows = await client.query<QueryResultRow>(
         `SELECT r.id, r.revision_no, r.content_json, r.content_hash, r.review_status,
-                r.freshness_status, r.review_version, r.created_at, edge.script_revision_id
+                r.freshness_status, r.review_version, r.review_note, r.created_at, edge.script_revision_id
            FROM ${kind} parent
            JOIN ${kind}_revision r ON r.${kind}_id = parent.id
            JOIN ${kind}_revision_script_source edge ON edge.${kind}_revision_id = r.id
@@ -560,7 +565,9 @@ export class TextChainService {
         content: row.content_json, contentHash: String(row.content_hash),
         sourceScriptRevisionId: String(row.script_revision_id),
         reviewStatus: String(row.review_status), freshnessStatus: String(row.freshness_status),
-        reviewVersion: Number(row.review_version), createdAt: new Date(row.created_at as Date).toISOString(),
+        reviewVersion: Number(row.review_version),
+        reviewNote: row.review_note === null || row.review_note === undefined ? null : String(row.review_note),
+        createdAt: new Date(row.created_at as Date).toISOString(),
       })) };
     } catch (error) { await client.query("ROLLBACK"); throw error; } finally {
       client.release();

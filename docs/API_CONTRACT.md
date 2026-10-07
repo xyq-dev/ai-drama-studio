@@ -66,14 +66,14 @@ workspace、project 及完整 episode/scene scope。revision 历史保留 `items
 | --- | --- | --- |
 | `POST /projects/:projectId/characters/extract` | 从批准剧本提取角色；返回 workflow | Owner；key；`SCRIPT_REVIEW_REQUIRED` |
 | `POST /projects/:projectId/characters` | 创建角色首版 `{name,sourceScriptRevisionId,content}`；返回 entityId/revisionId | Owner；key、If-Match；`SCRIPT_REVIEW_REQUIRED`,`DUPLICATE_CHARACTER_NAME` |
-| `GET /projects/:projectId/characters` | 当前未归档角色集合与当前 revision 摘要 | Owner；安全 GET；cursor 分页 |
+| `GET /projects/:projectId/characters` | 当前未归档角色集合与当前 revision 摘要；每项含只读 `name` | Owner；安全 GET；cursor 分页 |
 | `POST /projects/:projectId/characters/:characterId/revisions` | 创建角色新修订 `{sourceScriptRevisionId,content}` | Owner；key、If-Match；`SCRIPT_REVIEW_REQUIRED`,`REVISION_CONFLICT` |
-| `GET /projects/:projectId/characters/:characterId/revisions` | 查询修订历史及精确来源剧本 | Owner；安全 GET；无 |
+| `GET /projects/:projectId/characters/:characterId/revisions` | 查询修订历史及精确来源剧本；每个修订含只读 `reviewNote`（审核备注，如退回原因，无则 null） | Owner；安全 GET；无 |
 | `POST /projects/:projectId/characters/:characterId/revisions/:revisionId/review` | `DRAFT → IN_REVIEW → APPROVED/REJECTED` | Owner；key、If-Match；`REVIEW_CONFLICT` |
 | `POST /projects/:projectId/locations` | 创建场地首版 `{name,sourceScriptRevisionId,content}` | Owner；key、If-Match；`SCRIPT_REVIEW_REQUIRED` |
-| `GET /projects/:projectId/locations` | 当前未归档场地集合与当前 revision 摘要 | Owner；安全 GET；cursor 分页 |
+| `GET /projects/:projectId/locations` | 当前未归档场地集合与当前 revision 摘要；每项含只读 `name` | Owner；安全 GET；cursor 分页 |
 | `POST /projects/:projectId/locations/:locationId/revisions` | 创建场地新修订 `{sourceScriptRevisionId,content}` | Owner；key、If-Match；`REVISION_CONFLICT` |
-| `GET /projects/:projectId/locations/:locationId/revisions` | 查询场地修订历史及来源 | Owner；安全 GET；无 |
+| `GET /projects/:projectId/locations/:locationId/revisions` | 查询场地修订历史及来源；每个修订含只读 `reviewNote` | Owner；安全 GET；无 |
 | `POST /projects/:projectId/locations/:locationId/revisions/:revisionId/review` | 审核场地版本 | Owner；key、If-Match；`REVIEW_CONFLICT` |
 | `POST /character-revisions/:id/reference-images/generate` | 生成角色参考图工作流；只要求来源剧本已审核、revision 非 STALE 和输入有效 | Owner；key；`SCRIPT_REVIEW_REQUIRED`,`SOURCE_STALE` |
 | `POST /character-revisions/:id/review` | 规划：审核角色参考图（当前仅实现项目作用域文本审核路由） | Owner；key；`REVIEW_CONFLICT` |
@@ -142,7 +142,7 @@ workspace、project 及完整 episode/scene scope。revision 历史保留 `items
 
 | Method / Path | 用途、输入、输出 | 权限 / 幂等 / 特有错误 |
 | --- | --- | --- |
-| `GET /providers/capabilities` | 仅返回允许给当前工作区的能力/参数 schema | Owner；安全 GET；无 |
+| `GET /providers/capabilities` | 仅返回允许给当前工作区的能力/参数 schema；附 `compose: {shot, episode}` 两个布尔值，按合成路由相同的开关判断单镜/集级本地合成是否开启（只读、仅布尔，不含路径或凭据；各路由仍逐次校验） | Owner；安全 GET；无 |
 | `POST /provider-callbacks/:providerKey` | Provider 回调事件；验签后写入按 normalized event key 去重的 ProviderEvent；返回 204 | Provider signature；`INVALID_SIGNATURE`,`UNKNOWN_PROVIDER_REQUEST` |
 | `POST /episodes/:episodeId/compose` | 合成当前有效镜头、音频、字幕；返回 workflow | Owner；key；`SOURCE_STALE`,`REVIEW_REQUIRED` |
 | `POST /projects/:projectId/exports` | 创建全剧/单集 MP4 导出；返回 workflow | Owner；key；`EXPORT_INPUT_INVALID` |
