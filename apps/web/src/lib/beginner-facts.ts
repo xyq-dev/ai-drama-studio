@@ -1,5 +1,5 @@
 import { currentStoryRevision } from "./studio-model";
-import type { StudioClient } from "./studio-client";
+import { ApiError, type StudioClient } from "./studio-client";
 import type { Aggregate, EpisodeRecord, StoryRevision, WorkflowRun } from "./project-base";
 import { scriptState, type BeginnerFacts, type EpisodeMediaFacts } from "./beginner-steps";
 
@@ -20,8 +20,19 @@ export async function loadEpisodeMedia(
     }
     const base = `/projects/${projectId}/episodes/${episode.id}`;
     // Sequential per episode: a project page makes at most two reads per approved episode.
-    const candidates = await client.get<{ items: unknown[]; nextCursor: string | null }>(`${base}/compose-candidates`);
-    const composites = await client.get<{ items: Array<{ status: string; reviewStatus: string }> }>(`${base}/composites?limit=10`);
+    let candidates: { items: unknown[]; nextCursor: string | null };
+    let composites: { items: Array<{ status: string; reviewStatus: string }> };
+    try {
+      candidates = await client.get<{ items: unknown[]; nextCursor: string | null }>(`${base}/compose-candidates`);
+      composites = await client.get<{ items: Array<{ status: string; reviewStatus: string }> }>(`${base}/composites?limit=10`);
+    } catch (caught) {
+      // Local compose is off in this environment: nothing can be composed, and that is not a read failure.
+      if (caught instanceof ApiError && caught.code === "CONFIGURATION_ERROR") {
+        result[episode.episodeNo] = { candidates: null, composites: null, composeUnavailable: true };
+        continue;
+      }
+      throw caught;
+    }
     result[episode.episodeNo] = {
       candidates: candidates.items.length + (candidates.nextCursor ? 1 : 0),
       composites: composites.items.map((item) => ({ status: item.status, reviewStatus: item.reviewStatus })),

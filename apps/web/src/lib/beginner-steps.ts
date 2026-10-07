@@ -79,6 +79,12 @@ export interface EpisodeMediaFacts {
   candidates: number | null;
   /** Episode composites: current (ACTIVE) or history (STALE), with their review. null while unread. */
   composites: Array<{ status: string; reviewStatus: string }> | null;
+  /** The server answered CONFIGURATION_ERROR: local compose is not enabled here. */
+  composeUnavailable?: boolean;
+}
+
+export function composeUnavailable(media: Record<number, EpisodeMediaFacts>): boolean {
+  return Object.values(media).some((item) => item.composeUnavailable === true);
 }
 
 export interface BeginnerFacts {

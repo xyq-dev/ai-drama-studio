@@ -283,6 +283,8 @@ async function main() {
     await page.getByRole("heading", { name: "第 4 步 · 试一段" }).waitFor();
     await page.getByText(/演示视频约 1 秒/).waitFor();
     await page.getByText("这一集还没有场景。场景和镜头是单独的记录，需要先建立：").waitFor();
+    // This acceptance runs with local compose off (the default): the page must say so, not fail or fake a sample.
+    await page.getByText(/当前环境没有开启本地合成/).waitFor();
     step("refresh keeps the step; 试一段 explains demo media and the missing scenes");
 
     // 6. My works shows the real stage.

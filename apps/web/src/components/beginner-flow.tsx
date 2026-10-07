@@ -8,6 +8,7 @@ import {
   STEPS,
   STEP_STATE_MARK,
   STEP_STATE_TEXT,
+  composeUnavailable,
   currentStep,
   entityState,
   episodeFinalState,
@@ -308,6 +309,7 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
               <EpisodeTabs label="选择剧集" value={episodeNo} onChange={setEpisodeNo}
                 state={(no) => scriptState(episodes.find((item) => item.episodeNo === no)) !== "done" ? "not_started"
                   : (media[no]?.candidates ?? 0) > 0 ? "done" : "needs_input"} />
+              {composeUnavailable(media) ? <ComposeOff /> : null}
               <div className="rounded-[12px] border border-[#E7E5E0] bg-white p-4 text-[15px]">
                 <p className="font-medium">样片说明</p>
                 <ul className="mt-1 list-disc pl-5">
@@ -359,6 +361,7 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
             <>
               <EpisodeTabs label="选择剧集" value={episodeNo} onChange={setEpisodeNo} state={(no) => episodeFinalState(facts, no)} />
               <p className="text-[15px] text-[#5F5D66]">本集至少要有 2 个已确认的单镜成片才能编排，最多 30 个。合成完成后请播放检查，确认通过的当前成片才能下载 MP4 和来源清单；上游内容变化后，旧成片会保留为历史，不能再下载。</p>
+              {composeUnavailable(media) ? <ComposeOff /> : null}
               {mediaError ? <p className="rounded-[12px] border bg-white p-3" role="alert">成片列表暂时读取失败，下方面板会再次读取。</p> : null}
               {episode && scriptState(episode) === "done" ? (
                 <EpisodeComposePreflight projectId={projectId} episodeNo={episodeNo} episodeId={episode.id} />
@@ -378,6 +381,15 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
         <TaskDrawer projectId={projectId} runs={workflows} onClose={() => { setTasksOpen(false); tasksReturn.current?.focus(); }} onChanged={reloadBase} />
       ) : null}
     </BeginnerShell>
+  );
+}
+
+/** Shown when the server reports local compose as not configured; nothing here pretends a sample exists. */
+function ComposeOff() {
+  return (
+    <p className="rounded-[12px] border border-[#D34846] bg-white p-4 text-[15px]" role="status">
+      <span aria-hidden="true">！</span> 当前环境没有开启本地合成，单镜样片和单集成片暂时不能生成，这两步不会显示为完成。需要管理员在服务端开启后才能继续；其余步骤可以照常进行。
+    </p>
   );
 }
 

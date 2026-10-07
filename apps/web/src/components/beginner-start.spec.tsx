@@ -143,6 +143,29 @@ describe("my works", () => {
     expect(document.body.textContent).not.toMatch(/%/);
   });
 
+  it("names the stage when local compose is not configured instead of failing the card", async () => {
+    vi.stubGlobal("fetch", vi.fn((input: string) => {
+      const path = String(input);
+      if (path === "/api/v1/projects") return Promise.resolve(json({ items: [{ id: PROJECT, title: "夜班", premise: "" }], nextCursor: null }));
+      if (path.endsWith("/stories")) {
+        return Promise.resolve(json({ items: [{ id: "s", revisionNo: 1, content: {}, reviewStatus: "APPROVED", freshnessStatus: "CURRENT",
+          reviewVersion: 1, staleReason: null, staleFromRef: null, reviewNote: null }] }));
+      }
+      if (path.endsWith("/episodes")) {
+        return Promise.resolve(json({ items: [{ id: "e1", episodeNo: 1, title: "", rowVersion: 1, currentScriptRevisionId: "r",
+          approvedScriptRevisionId: "r", currentScriptReviewStatus: "APPROVED", currentScriptFreshnessStatus: "CURRENT" }] }));
+      }
+      if (path.includes("/compose-candidates") || path.includes("/composites")) {
+        return Promise.resolve(json({ error: { code: "CONFIGURATION_ERROR", message: "Local compose is not enabled" } }, 503));
+      }
+      if (path.endsWith("/workflow-runs")) return Promise.resolve(json([]));
+      return Promise.resolve(json({ items: [], nextCursor: null }));
+    }));
+    render(<MyWorks />);
+    expect(await screen.findByText(/当前阶段：第 2 步 看剧本/)).toBeTruthy();
+    expect(screen.queryByText(/进度读取失败/)).toBeNull();
+  });
+
   it("shows a failed list as an error, not sample works", async () => {
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(json({ error: { code: "DOWN", message: "服务不可用" } }, 503))));
     render(<MyWorks />);
