@@ -455,10 +455,14 @@ async function main() {
     });
 
     await stage("compose-off-state", async () => {
+      // Episode compose is off on this API: step 5 says so per its own switch, and nothing is called done.
+      await stepButton("出成片");
+      await page.getByText(/当前环境没有开启集级合成/).waitFor({ timeout: 20_000 });
+      await page.getByRole("tab", { name: /第 1 集 · — 尚未确认/ }).waitFor({ timeout: 20_000 });
+      if (await page.getByRole("button", { name: "查看并下载成片" }).count()) throw new Error("compose-off final step claimed done");
       await stepButton("试一段");
-      await page.getByText(/当前环境没有开启本地合成/).waitFor({ timeout: 20_000 });
       if (await page.getByRole("button", { name: "继续下一步" }).count()) throw new Error("compose-off sample step offered 继续下一步");
-      if ((await page.getByRole("navigation", { name: "创作步骤" }).innerText()).includes("4 试一段\n✓")) throw new Error("sample marked done");
+      if (await page.getByRole("button", { name: /第 4 步 试一段：已完成/ }).count()) throw new Error("sample marked done");
       await page.goto(`${webOrigin}/studio`, { waitUntil: "domcontentloaded" });
       await page.getByText(/当前阶段：第 2 步 看剧本/).waitFor();
       if (await page.getByText(/进度读取失败/).count()) throw new Error("compose-off made the work unreadable");
@@ -466,7 +470,7 @@ async function main() {
       // Restart the API with the compose switches for the rest of the run.
       await stopProcess("api");
       await startApi(mediaEnv(env));
-      return { message: "当前环境没有开启本地合成", studioStage: "第 2 步 看剧本" };
+      return { message: "当前环境没有开启集级合成", episode1: "尚未确认", studioStage: "第 2 步 看剧本" };
     });
 
     await stage("step3-cast", async () => {
@@ -541,7 +545,7 @@ async function main() {
     await stage("step4-sample", async () => {
       await stepButton("试一段");
       await page.getByText(/演示视频约 1 秒/).waitFor();
-      if (await page.getByText(/当前环境没有开启本地合成/).count()) throw new Error("compose still reported off after enabling it");
+      if (await page.getByText(/当前环境没有开启/).count()) throw new Error("compose still reported off after enabling it");
       const picker = page.locator("[data-beginner-picker]");
       await picker.getByRole("button", { name: /场景 1/ }).click();
       // Approve the scene shown, then create the shot under it.
@@ -595,16 +599,20 @@ async function main() {
       const card = panel.locator(`[data-composite-id="${composite.id}"]`);
       const playback = await playVideo(card.locator("video"), 1000);
       await shot("05-step4-composed-1440");
+      // From here on the page must update in place: a reload would clear this marker.
+      await page.evaluate(() => { window.__beginnerNoReload = "step4"; });
+      if (await page.getByRole("tab", { name: /第 1 集 · ✓ 已完成/ }).count()) throw new Error("sample shown done before approval");
       const review = reviewResponse();
       await card.getByRole("button", { name: "批准成片" }).click();
       if ((await review).status() !== 200) throw new Error("composite approval failed");
       const approved = (await sql("SELECT review_status, reviewed_content_hash, checksum_sha256 FROM asset WHERE id = $1", [composite.id]))[0];
       if (approved.review_status !== "APPROVED" || approved.reviewed_content_hash !== approved.checksum_sha256) throw new Error(`approval ${JSON.stringify(approved)}`);
       world.composite1 = composite.id;
-      // The step reflects the real approved single-shot composite after the page rereads.
-      await page.reload({ waitUntil: "domcontentloaded" });
-      await page.getByRole("heading", { name: "第 4 步 · 试一段" }).waitFor();
+      // No reload: the approval notifies the page, which rereads its facts in place.
       await page.getByRole("tab", { name: /第 1 集 · ✓ 已完成/ }).waitFor({ timeout: 30_000 });
+      await page.getByRole("button", { name: /第 4 步 试一段：已完成/ }).waitFor({ timeout: 10_000 });
+      await page.getByRole("button", { name: "继续下一步" }).waitFor({ timeout: 10_000 });
+      if (await page.evaluate(() => window.__beginnerNoReload) !== "step4") throw new Error("the page reloaded");
       browserDid("step 4: scene approved, shot created and approved, Mock video generated (worker), single-shot preflight and FFmpeg compose submitted, composite played and approved — all on the beginner page");
       return { videoJob: videoJob.id, composeJob: composeJob.id, composite: composite.id, playback };
     });
@@ -658,7 +666,14 @@ async function main() {
       await panel.getByRole("button", { name: "开始多镜合成" }).click();
       const accepted = await composeResponse;
       if (accepted.status() !== 202) throw new Error(`episode compose not accepted ${accepted.status()}`);
+      await page.evaluate(() => { window.__beginnerNoReload = "step5"; });
+      // Only episode 1 is composing: episodes 2 and 3 must never show 处理中 while it runs.
+      const tabTexts = async () => Promise.all([2, 3].map((no) => page.getByRole("tab", { name: new RegExp(`第 ${no} 集`) }).innerText()));
+      const whileRunning = await tabTexts();
+      if (whileRunning.some((text) => text.includes("处理中"))) throw new Error(`other episodes shown as running: ${whileRunning.join(" | ")}`);
       const job = await pollJob((await accepted.json()).jobId, 300_000);
+      const afterRun = await tabTexts();
+      if (afterRun.some((text) => text.includes("处理中"))) throw new Error(`other episodes shown as running: ${afterRun.join(" | ")}`);
       if (job.state !== "SUCCEEDED") throw new Error(`episode compose ${job.state} ${job.errorCode ?? ""} ${job.errorMessage ?? ""}`);
       const asset = (await sql(`SELECT a.id::text AS id, a.project_id::text AS project_id, a.checksum_sha256, a.byte_size, a.review_status,
           a.status, a.source_job_attempt_id::text AS attempt_id, j.project_id::text AS job_project, j.input_snapshot,
@@ -672,6 +687,8 @@ async function main() {
       if (!JSON.stringify(asset.input_snapshot).includes(world.episode.id)) throw new Error("frozen input does not name this episode");
       const card = page.locator(`[data-composite-id="${asset.id}"]`);
       await card.waitFor({ timeout: 60_000 });
+      // The finished compose updates the episode in place: a current draft composite waits for review.
+      await page.getByRole("tab", { name: /第 1 集 · ？ 待确认/ }).waitFor({ timeout: 30_000 });
       // Not approved yet: no download button, and the export route refuses.
       if (await card.getByRole("button", { name: "下载 MP4" }).count()) throw new Error("draft composite offered a download");
       const draftDownload = await api("GET", `/projects/${world.projectId}/episodes/${world.episode.id}/composites/${asset.id}/download?expectedContentHash=${asset.checksum_sha256}`);
@@ -705,9 +722,13 @@ async function main() {
         throw new Error(`segment order ${order.join()} preflight ${frozen.join()}`);
       }
       const probe = JSON.parse((await execFileAsync("ffprobe", ["-v", "error", "-show_streams", "-show_format", "-of", "json", mp4Path])).stdout);
-      await page.reload({ waitUntil: "domcontentloaded" });
-      await page.getByRole("heading", { name: "第 5 步 · 出成片" }).waitFor();
+      // No reload: the approval notifies the page; episode 1 is done and the done step offers a real action.
       await page.getByRole("tab", { name: /第 1 集 · ✓ 已完成/ }).waitFor({ timeout: 30_000 });
+      if (await page.evaluate(() => window.__beginnerNoReload) !== "step5") throw new Error("the page reloaded");
+      for (const no of [2, 3]) {
+        const text = await page.getByRole("tab", { name: new RegExp(`第 ${no} 集`) }).innerText();
+        if (text.includes("处理中") || text.includes("已完成")) throw new Error(`episode ${no} misreported: ${text}`);
+      }
       browserDid("step 5: chose two approved composites, moved one up, episode preflight, submitted episode compose (worker FFmpeg), played, approved, downloaded MP4 and manifest — all on the beginner page");
       return { job: job.id, asset: asset.id, sha256: sha, bytes: mp4.length, order, playback, jobsBefore: before.jobs,
         draftDownloadStatus: draftDownload.status, videoStream: probe.streams?.find((item) => item.codec_type === "video")?.codec_name,
