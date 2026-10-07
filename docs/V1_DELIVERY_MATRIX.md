@@ -103,7 +103,7 @@ Migration：本轮没有新增已执行目录里的 migration。两份草案仍�
 | 需求 | 本轮实现位置 | 状态 |
 | --- | --- | --- |
 | 新手入口：开始创作、我的作品、灵感中心、帮助（红果创作浅色主题） | `/`、`/create`、`/studio`、`/help`；`beginner-shell.tsx`、`globals.css` 的 `.beginner` | 已实现。仍是开发预览，不是商业运营验收 |
-| 五步新手流程 | `/projects/[id]/create`；`beginner-flow.tsx` 挂载原有面板；`beginner-steps.ts` 由服务器事实推导状态 | 第 1、2 步在 CI 真实 API/库/浏览器中走通；第 3–5 步页面已接线，真实浏览器闭环未执行 |
+| 五步新手流程 | `/projects/[id]/create`；`beginner-flow.tsx` 挂载原有面板；`beginner-steps.ts` 由服务器事实推导状态 | 五步均在 CI 真实 API + Worker + PostgreSQL + FFmpeg + Chrome 中经新手页面走通（第 1 集；验收 SHA `5cda55b`）；角色参考图只验证关闭态 |
 | 工作台数据加载共享 | `lib/project-base.ts`（`useProjectBase`） | 已实现；原工作台测试全部通过 |
 | 真实 AI 生成、真实媒体、真实 Provider | — | 未实现，不变。素材仍是演示素材 |
 

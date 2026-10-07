@@ -36,8 +36,8 @@
 | 1 定故事 | 原故事编辑器 + 编剧助手（准备要求、导入、预览、比较、采纳到草稿）+ 保存新版本 + 版本栏审核；站内千问按原状态显示，不自动填令牌 | 候选来源仍为用户输入、外部 AI 导入或已配置的站内接口 |
 | 2 看剧本 | 1/2/3 集标签显示各集真实状态；原剧本编辑与审核；说明审核只针对当前展示的这一集这一版、剧本描述不等于场景/镜头记录 | 不批量批准 |
 | 3 定人物 | 角色/场地标签（已确认数/总数）；原角色/场地编辑与审核；角色参考图沿用原面板（草案未执行时显示待配置）；画风只提示写入描述 | 不开启 strict，不保存画风字段 |
-| 4 试一段 | 剧集选择；场景列表；原场景/镜头面板（素材生成、单镜预检与合成、成片审核）；无场景时引导到任务面板（Mock 生成场景/镜头）或高级编辑；演示素材、约 1 秒、时长提示不等于实际时长、自然语言修改不会自动执行的说明；合成未开启时明确提示 | 浏览器真实闭环未执行（见下） |
-| 5 出成片 | 原多镜编排（加入/上移/下移/移除、总时长、预检、提交、任务、审核、MP4 与来源清单下载、历史成片）；2–30 个镜头说明；费用面板 | 浏览器真实闭环未执行（见下） |
+| 4 试一段 | 剧集选择；场景列表；原场景/镜头面板（素材生成、单镜预检与合成、成片审核）；无场景时引导到任务面板（Mock 生成场景/镜头）或高级编辑；演示素材、约 1 秒、时长提示不等于实际时长、自然语言修改不会自动执行的说明；合成未开启时明确提示 | 真实浏览器闭环已执行（见 E2E 章节） |
+| 5 出成片 | 原多镜编排（加入/上移/下移/移除、总时长、预检、提交、任务、审核、MP4 与来源清单下载、历史成片）；2–30 个镜头说明；费用面板 | 真实浏览器闭环已执行（见 E2E 章节） |
 | 稍后继续 / 高级编辑 | 有未保存修改时说明草稿只在本标签页；高级编辑链接到同一内容的工作台 focus | — |
 | 保存状态 | 「服务器已保存」「正在保存」「有未保存修改（本标签页草稿）」及冲突/失败说明，由原编辑器状态映射 | 不承诺跨浏览器恢复 |
 
@@ -65,7 +65,8 @@
 
 - **真实可用（本轮在 CI 真实 API + PostgreSQL + Chromium 中走通）：** 首页输入与灵感入口；网页创建作品及网络中断后同键重试；第 1 步候选导入、采纳、保存与审核；第 2 步第 1 集保存与审核；新手与高级编辑切换保留未保存草稿；刷新保留步骤；我的作品真实阶段；项目切换；390px 页面与错误状态。
 - **演示可用：** 第 4、5 步的素材均为 Mock 演示素材；合成依赖 `M4_LOCAL_COMPOSE_ENABLED`，默认关闭时页面明确提示。
-- **页面已接线、真实浏览器闭环未执行：** 第 3 步人物（原面板接线，组件层未单独测）、第 4 步任务状态与代表性单镜合成、第 5 步编排/审核/合格成片下载。原因：这需要 Worker、Mock 媒体开关、本地 FFmpeg 合成与媒体 worker 同时运行，本轮新增的 CI 作业只启动了 API 与 Web；已有 M4 52 阶段 E2E 覆盖的是高级页面，不能代替新手页面通过。
+- **第 3–5 步（E2E 轮补齐）：** 已在 CI 真实 API + Worker + PostgreSQL + FFmpeg + Chrome 中经新手页面完成，见下方 E2E 章节。素材仍是 Mock 演示素材。
+- **关闭态，不计为验收：** 角色参考图（依赖未执行的 SQL 草案）——页面显示不可用原因，不提供生成按钮；这只验证了关闭态，不是参考图功能验收。
 - **待接入（无后端支持）：** 画风持久化、自然语言修改的执行、预算控制/报价、项目封面、场景标题列表、单集合成任务所属集。
 
 ## 测试
@@ -124,7 +125,105 @@
 
 ## 剩余与下一步
 
-1. 第 3–5 步的真实浏览器闭环：在 CI 中复用 M4 E2E 的 Worker/媒体 worker/FFmpeg 启动方式，让新手页面完成场景与镜头、素材任务、单镜合成审核、编排合成、成片审核与下载。
+1. 第 2、3 集未在新手 E2E 中走完（只验证第 1 集）；第 5 步因此整体保持「待补充」，这是真实状态。
 2. 待接入能力需要后端设计：画风字段、自然语言修改、封面、场景标题、单集合成所属集、预算控制。
 3. 嵌入的原组件仍有部分英文状态词和折叠的「高级 JSON」，后续可在不改业务逻辑的前提下统一措辞。
 4. 合并前需要独立 Review。
+
+## BEGINNER_CREATOR_EXPERIENCE_E2E_REPORT（第 3–5 步真实浏览器验收）
+
+### 现场与 SHA
+
+| 项目 | 值 |
+| --- | --- |
+| 目录 / 分支 | `D:\Projects\ai-drama-studio-beginner-ui`，`feat/beginner-creator-experience`（核验：origin 正确，HEAD 与远端一致，对应 PR #50） |
+| 本轮起点 | `efad5b7f7c47d85854aaee5dff20eb196df91cfa`（上一轮报告 HEAD） |
+| 验收 SHA | `5cda55b67a7b37c9c72fa5b00f3699adbc203fac`（全部 10 个必需阶段通过的代码与脚本） |
+| 报告 SHA | 本报告所在提交（只改 `docs/`；与验收 SHA 的差异仅为文档） |
+| PR | https://github.com/xyq-dev/ai-drama-studio/pull/50 |
+| AGENTS.md / CLAUDE.md | 不存在 |
+
+主工作区 `fix/v1-reliability-closeout` 未改动；另一条 PR #49 未合并。未 reset/clean/stash/force push。
+
+### 隔离验收环境（复用既有机制）
+
+- GitHub Actions 服务容器提供当次新建的 PostgreSQL 16（库名固定 `ai_drama_beginner_web`，脚本拒绝非空库或其他库名）与 Redis 7。
+- 只执行仓库已有正式 migration（`runMigrations`），再用仓库既有命令 `workspace:provision`、`mock-media:provision`、`mock-av:provision` 初始化。未执行 SQL 草案，无新 Migration，不访问任何服务器库。
+- 与 M4 E2E 相同的锁定工具链：`ffmpeg=7:6.1.1-3ubuntu5`、`fonts-dejavu-core=2.37-8`、Chrome for Testing（`channel: "chrome"`，用于 H.264 播放）。
+- 启动真实 API、Worker（`apps/worker dist/main.js`，就绪检查 queue=ok）、Web（生产构建）。Mock 媒体与本地合成开关只设在这些子进程环境里；产品默认值未改。
+- 先以「合成关闭」启动 API 验证关闭态，再以开启状态重启 API 完成后续步骤。
+- Mock 对象与合成目录建在 `RUNNER_TEMP` 下的当次目录，结束后删除；API/Worker/Web 日志、截图、`evidence.json`、下载的 MP4 与来源清单作为 artifact 保留。
+- 必需阶段：`environment`、`home-and-create`、`step1-story`、`step2-script`、`compose-off-state`、`step3-cast`、`step4-sample`、`step5-prep`、`step5-final`、`layout-390`。任何阶段不是 passed（包括 missing）都使作业失败。
+
+### 修复内容
+
+| 提交 | 内容 | 原因 |
+| --- | --- | --- |
+| `9ca0a53` | 验收脚本扩展到五步；workflow 加 FFmpeg 与 Chrome；新手步骤按钮补 `aria-label` | 390px 下步骤按钮的可访问名称缺少标题（文字被隐藏），键盘/读屏用户无法分辨步骤；已加组件断言 |
+| `457dbbf` | 用对应 Mock 开关运行 provision 命令 | 首次运行 37586040547 在 `mock-media:provision` 失败：`M3_MOCK_IMAGE_ENABLED=true is required` |
+| `5cda55b` | 参考图关闭态检查限定在「角色参考图」面板内 | 运行 37587538176：定人物说明文字中也出现同一短语，未限定的文本匹配有两个结果 |
+
+两次失败都分析了当次日志后修改；没有放宽断言或重跑碰绿。没有后端修改，没有 Migration。
+
+### 五步逐项（全部由浏览器在新手路线完成，除标注为准备的部分）
+
+| 步骤 | 浏览器操作 | 实际结果与证据 |
+| --- | --- | --- |
+| 开始创作 | `/create` 选示例、开始构思、命名、确认创建；第一次 POST 被 `route.abort` 断开后重试 | 只创建 1 个作品，两次请求同一幂等键 |
+| 1 定故事 | 编剧助手导入手写候选、采纳、保存新版本、提交审核、通过 | 服务器故事为 APPROVED |
+| 2 看剧本 | 第 1 集导入候选并采纳 → 打开高级编辑确认草稿仍在（不在高级页保存）→ 回新手模式 → 保存、审核通过；用场景表单新建场景 | 第 1 集「✓ 已完成」，其他集未被改动；场景 1 个 |
+| 合成关闭态 | 合成开关关闭时打开试一段、我的作品 | 显示「当前环境没有开启本地合成」，不提供继续下一步，我的作品仍显示「第 2 步 看剧本」 |
+| 3 定人物 | 新建两名角色；切换对象后编辑器显示所选对象；编辑一名角色（状态先为「有未保存修改」，保存带 If-Match 后为「服务器已保存」），刷新后重新读取到新文本；两名角色提交审核并通过；新建场地并带备注退回；进入下一步再返回 | 角色「2/2 已确认」，场地 REJECTED、「0/1 已确认」，步骤显示「！ 需要处理」；参考图面板显示「参考图存储尚未启用」且无生成按钮（关闭态，不计为参考图验收） |
+| 4 试一段 | 选场景、审核通过场景、新建镜头、审核通过镜头、点「生成 Mock 视频」（202 受理后 Worker 完成）、在单镜预检中选视频、预检、开始合成（Worker 真实 FFmpeg）、播放、批准成片 | 视频任务与合成任务 SUCCEEDED；成片 1080×1920、1 秒，浏览器从同源 `/api/v1/assets/<id>/content` 读取，readyState 4，播放进度超过 0.2 秒；审核后 APPROVED 且审核哈希等于字节哈希；刷新后第 1 集「✓ 已完成」 |
+| 5 准备 | **API 准备（非页面操作）**：第 2 个镜头创建并审核、生成 Mock 视频、单镜预检与合成、批准成片 | 同一项目同一集第二个已批准单镜成片 |
+| 5 出成片 | 多镜编排加入两份成片、把第 2 份上移、预检编排、开始多镜合成（Worker FFmpeg）、播放、批准成片、下载 MP4 与来源清单 | 批准前没有下载按钮，导出接口返回 400；成片 2 秒 H.264 1080×1920 + AAC；下载 SHA-256 `eaa79f53…e9662` = 资产记录哈希 = 审核哈希 = 来源清单哈希，字节数一致；来源清单顺序 [第 2 份, 第 1 份] 与上移后的预检顺序一致；任务、attempt、资产属于同一作品，冻结输入含该集 ID；下载前后任务数与费用行数不变；刷新后第 1 集「✓ 已完成」 |
+| 390px 与错误态 | 首页、我的作品、五步、帮助逐页检查；不存在的作品 | 横向溢出 0；底部主操作可见且不遮挡正文；错误态显示「作品读取失败」 |
+
+本机另用 ffprobe 复核了 artifact 中的 `episode.mp4`：h264 1080×1920 + aac，时长 2.000000 秒，SHA-256 与证据一致。
+
+### 准备数据与浏览器动作的划分
+
+- 浏览器完成：作品创建、故事与第 1 集剧本的导入/采纳/保存/审核、场景创建与审核、角色与场地的创建/编辑/审核、镜头创建与审核、视频生成提交、单镜预检/合成/播放/审核、多镜编排/预检/合成/播放/审核、两种下载。
+- API 准备（明确标注）：第 2 个单镜成片（镜头、审核、视频、预检、合成、批准）；作品切换检查之外不再有其他 API 写入。
+- 只读 SQL：仅用于取任务产生的资产 ID 与核对哈希、归属、计数；没有直接写库。
+
+### 测试分类
+
+| 类型 | 内容 | 结果 |
+| --- | --- | --- |
+| 本机单元/组件（模拟 fetch，happy-dom） | `pnpm verify`：web 188（含新手 24 个与步骤按钮可访问名称断言）、其余包全部通过 | 通过（验收 SHA） |
+| 本机脚本检查 | `pnpm m3-av-e2e:check`、`pnpm m3-av-e2e:outcome`（23）、`git diff --check` | 通过 |
+| 真实 CI（API + Worker + PostgreSQL + FFmpeg + Chrome） | Beginner creator web，10 个必需阶段 | 通过，见下 |
+| 真实模型调用 | 无 | 未执行，Paid calls=NO |
+
+### CI（验收 SHA `5cda55b`）
+
+9/9 success：
+
+| 工作流 | Run | 结论 | 说明 |
+| --- | --- | --- | --- |
+| Beginner creator web（pull_request，job 112682059976） | [37587853541](https://github.com/xyq-dev/ai-drama-studio/actions/runs/37587853541) | success | 10/10 必需阶段 passed；artifact 11467700880 |
+| Beginner creator web（push） | [37587849882](https://github.com/xyq-dev/ai-drama-studio/actions/runs/37587849882) | success |  |
+| M4 three episode sample end-to-end | [37587853511](https://github.com/xyq-dev/ai-drama-studio/actions/runs/37587853511) | success | results.json 52/52 passed，missing/notPassed 为空；artifact 11468976777 |
+| Writing assistant API | [37587853615](https://github.com/xyq-dev/ai-drama-studio/actions/runs/37587853615) | success |  |
+| M1-C integration | [37587853609](https://github.com/xyq-dev/ai-drama-studio/actions/runs/37587853609) | success |  |
+| M2-A integration | [37587853584](https://github.com/xyq-dev/ai-drama-studio/actions/runs/37587853584) | success |  |
+| M2-C integration | [37587853505](https://github.com/xyq-dev/ai-drama-studio/actions/runs/37587853505) | success |  |
+| M3-A integration | [37587853611](https://github.com/xyq-dev/ai-drama-studio/actions/runs/37587853611) | success |  |
+| M3-B integration | [37587853644](https://github.com/xyq-dev/ai-drama-studio/actions/runs/37587853644) | success |  |
+
+本轮首次失败记录：run 37586040547（environment：provision 缺少 Mock 开关）、run 37587538176（step3-cast：文本匹配有歧义），均在修复后由 `5cda55b` 通过。
+
+Artifact `beginner-web-evidence`（id 11467700880，来自 Beginner creator web run 37587853541）：截图 `01-create-1440`、`02-step1-saved-1440`、`03-compose-off-studio-1440`、`04-step3-1440`、`05-step4-composed-1440`、`06-step5-composed-1440`、`10-home-390` 至 `17-help-390`（含五步各页）、`18-error-390`、`19-studio-final-1440`；`evidence.json`、`episode.mp4`、`episode-manifest.json`、`api.log`、`worker.log`、`web.log`。截图在 `networkidle` 与内容稳定后拍摄；整页截图中固定底栏出现在页面中部是整页截图的绘制方式。
+
+### 剩余问题与未执行项
+
+1. 角色参考图：依赖未执行草案，只验证了关闭态。
+2. 只验收了第 1 集；第 2、3 集剧本与成片未在新手 E2E 中走完，第 5 步整体为「待补充」。
+3. 嵌入的原组件仍显示对象 ID 片段（如「镜头 1465a619」）和部分英文状态词，未在本轮改写。
+4. 素材均为 Mock 演示素材（约 1 秒），不是真实 AI 生成；无真实 Provider。
+5. 画风、自然语言改镜头、封面、预算等无后端支持的能力仍未接入。
+
+### 状态
+
+Commit / Push：YES（普通推送到功能分支，PR #50 已更新）。Review：待 Codex 独立 Review。Merge：NO。Deploy：NO。Migration：NO。Paid calls：NO。
