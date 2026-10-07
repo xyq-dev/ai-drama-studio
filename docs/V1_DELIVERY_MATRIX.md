@@ -95,3 +95,16 @@ Migration：本轮没有新增已执行目录里的 migration。两份草案仍�
 - P2 文件操作故障被当成缓存未命中（`6b95585`）：仅 ENOENT/ENOTDIR 为未找到，其余为 `ASSET_STORAGE_ERROR`（503），复用不再因此新建任务。
 
 登记、本轮未处理的 P2：选定参考图超出 100 条分页时 `usable` 误判；千问状态与请求在令牌校验前探测存储；参考图生成任务未进入任务区与刷新跟踪；媒体恢复抛错时参考图恢复不执行；网页千问输入未在预约前检查 256,000 字节上限。「切角色后旧回执覆盖列表」在当前挂载路径下未复现，不列为缺陷。
+
+## 2026-10-07 新手创作体验（`feat/beginner-creator-experience`，PR #50）
+
+起点 `origin/main` `2fb19acfe086392eb415a3be92b4c4a6830a4cfd`。本节只补充本轮事实，上方各行保留为历史记录。设计见 [`BEGINNER_CREATOR_EXPERIENCE_DESIGN.md`](BEGINNER_CREATOR_EXPERIENCE_DESIGN.md)，验收见 [`BEGINNER_CREATOR_EXPERIENCE_REPORT.md`](BEGINNER_CREATOR_EXPERIENCE_REPORT.md)。
+
+| 需求 | 本轮实现位置 | 状态 |
+| --- | --- | --- |
+| 新手入口：开始创作、我的作品、灵感中心、帮助（红果创作浅色主题） | `/`、`/create`、`/studio`、`/help`；`beginner-shell.tsx`、`globals.css` 的 `.beginner` | 已实现。仍是开发预览，不是商业运营验收 |
+| 五步新手流程 | `/projects/[id]/create`；`beginner-flow.tsx` 挂载原有面板；`beginner-steps.ts` 由服务器事实推导状态 | 第 1、2 步在 CI 真实 API/库/浏览器中走通；第 3–5 步页面已接线，真实浏览器闭环未执行 |
+| 工作台数据加载共享 | `lib/project-base.ts`（`useProjectBase`） | 已实现；原工作台测试全部通过 |
+| 真实 AI 生成、真实媒体、真实 Provider | — | 未实现，不变。素材仍是演示素材 |
+
+Migration：无。两份草案未修改、未执行。Paid calls=NO，Deploy=NO。
