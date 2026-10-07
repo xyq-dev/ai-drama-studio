@@ -11,6 +11,16 @@ import { ProjectCostSummary } from "./project-cost-summary";
 import { ApiError, StudioClient } from "../lib/studio-client";
 import { createQwenWebClient } from "../lib/qwen-web-client";
 import {
+  MEDIA_WORKFLOW_TYPES,
+  useProjectBase,
+  type Aggregate,
+  type EpisodeRecord,
+  type ProjectRecord,
+  type StoryRevision,
+  type WorkflowAttempt,
+  type WorkflowRun,
+} from "../lib/project-base";
+import {
   LIMITS,
   TEXT_WORKFLOW_TYPES,
   aggregateVersion,
@@ -35,7 +45,6 @@ import {
   rememberActiveDraft,
   reviewActions,
   reviewRequest,
-  shouldPoll,
   shouldApplyLoad,
   sourceUsable,
   stableJson,
@@ -64,8 +73,6 @@ function taskStatusLabel(state: string): string {
   return `进行中 ${state}`;
 }
 
-const MEDIA_WORKFLOW_TYPES = new Set(["MEDIA_IMAGE", "MEDIA_VIDEO", "MEDIA_TTS", "MEDIA_SUBTITLE", "MEDIA_MUSIC"]);
-
 const MEDIA_RETRY_REASONS: Record<MediaRetryRejection, string> = {
   NOT_MEDIA: "不是 Mock 媒体任务",
   COMPOSE: "合成需重新预检后提交",
@@ -75,60 +82,6 @@ const MEDIA_RETRY_REASONS: Record<MediaRetryRejection, string> = {
   ERROR_NOT_RETRYABLE: "该错误重试也不会改变结果",
 };
 
-function trackedWorkflow(run: { type: string }): boolean {
-  return TEXT_WORKFLOW_TYPES.has(run.type) || MEDIA_WORKFLOW_TYPES.has(run.type);
-}
-
-function noteWorkflowTransitions(
-  runs: readonly WorkflowRun[],
-  known: Map<string, string>,
-): { mediaBecameTerminal: boolean; textBecameTerminal: boolean } {
-  let mediaBecameTerminal = false;
-  let textBecameTerminal = false;
-  for (const run of runs) {
-    const previous = known.get(run.id);
-    const terminal = !shouldPoll(run.status, false);
-    const becameTerminal = previous !== undefined && shouldPoll(previous, false) && terminal;
-    const media = MEDIA_WORKFLOW_TYPES.has(run.type);
-    const firstTerminalMedia = previous === undefined && media && terminal;
-    if ((becameTerminal || firstTerminalMedia) && media) mediaBecameTerminal = true;
-    if (becameTerminal && !media) textBecameTerminal = true;
-    known.set(run.id, run.status);
-  }
-  return { mediaBecameTerminal, textBecameTerminal };
-}
-
-interface ProjectRecord {
-  id: string;
-  title: string;
-  premise: string;
-  version: number;
-  status: string;
-}
-
-interface EpisodeRecord {
-  id: string;
-  episodeNo: number;
-  title: string;
-  rowVersion: number;
-  currentScriptRevisionId: string | null;
-  approvedScriptRevisionId: string | null;
-  currentScriptReviewStatus: string | null;
-  currentScriptFreshnessStatus: string | null;
-}
-
-interface StoryRevision {
-  id: string;
-  revisionNo: number;
-  content: unknown;
-  reviewStatus: string;
-  freshnessStatus: string;
-  reviewVersion: number;
-  staleReason: string | null;
-  staleFromRef: string | null;
-  reviewNote: string | null;
-}
-
 interface ScriptRevision {
   id: string;
   revisionNo: number;
@@ -137,14 +90,6 @@ interface ScriptRevision {
   reviewStatus: string;
   freshnessStatus: string;
   reviewVersion: number;
-}
-
-interface Aggregate {
-  entityId: string;
-  rowVersion: number;
-  currentRevisionId: string | null;
-  approvedRevisionId: string | null;
-  currentRevision: { reviewStatus: string; freshnessStatus: string; reviewVersion: number } | null;
 }
 
 interface EntityRevision {
@@ -185,36 +130,6 @@ interface ShotRevision {
   reviewStatus: string;
   freshnessStatus: string;
   reviewVersion: number;
-}
-
-interface WorkflowAttempt {
-  attemptNo: number;
-  providerKey: string | null;
-  model: string | null;
-  status: "running" | "finished";
-  errorCode: string | null;
-  durationMs: number | null;
-  inputHash: string | null;
-  cost: { status: "recorded"; amount: string; currency: string; kind: string }
-    | { status: "unknown"; amount: null; currency: null; kind: null };
-}
-
-interface WorkflowJob {
-  id: string;
-  kind: string;
-  state: string;
-  errorCode: string | null;
-  errorMessage: string | null;
-  sourceShotRevisionId?: string | null;
-  attempts?: WorkflowAttempt[];
-}
-
-interface WorkflowRun {
-  id: string;
-  type: string;
-  status: string;
-  createdAt: string;
-  jobs: WorkflowJob[];
 }
 
 type Focus =
@@ -289,15 +204,10 @@ function focusQuery(focus: Focus): string {
 }
 
 export function Workbench({ projectId }: { projectId: string }) {
-  const [project, setProject] = useState<ProjectRecord | null>(null);
-  const [episodes, setEpisodes] = useState<EpisodeRecord[]>([]);
-  const [stories, setStories] = useState<PageState<StoryRevision> | null>(null);
-  const [characters, setCharacters] = useState<PageState<Aggregate> | null>(null);
-  const [locations, setLocations] = useState<PageState<Aggregate> | null>(null);
-  const [workflows, setWorkflows] = useState<WorkflowRun[]>([]);
+  const base = useProjectBase(projectId, "工作台加载失败");
+  const { project, episodes, stories, characters, locations, workflows, loading, error, refreshEpoch, imageEpoch,
+    reloadBase } = base;
   const [focus, setFocus] = useState<Focus>({ kind: "story" });
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [navOpen, setNavOpen] = useState(false);
   const [wide, setWide] = useState(false);
   const [narrowOpen, setNarrowOpen] = useState(false);
@@ -330,34 +240,6 @@ export function Workbench({ projectId }: { projectId: string }) {
   );
   const [tasksOpen, setTasksOpen] = useState(false);
   const [saveState, setSaveState] = useState("尚未修改");
-  const [refreshEpoch, setRefreshEpoch] = useState(0);
-  const [imageEpoch, setImageEpoch] = useState(0);
-  const baseToken = useRef(0);
-  const workflowStatus = useRef(new Map<string, string>());
-
-  const reloadBase = useCallback(async () => {
-    const request = ++baseToken.current;
-    const [nextProject, episodePage, storyPage, characterPage, locationPage, runs] = await Promise.all([
-      client.get<ProjectRecord>(`/projects/${projectId}`),
-      client.get<{ items: EpisodeRecord[] }>(`/projects/${projectId}/episodes`),
-      client.get<{ items: StoryRevision[]; nextCursor: string | null }>(`/projects/${projectId}/stories`),
-      client.get<{ items: Aggregate[]; nextCursor: string | null }>(`/projects/${projectId}/characters`),
-      client.get<{ items: Aggregate[]; nextCursor: string | null }>(`/projects/${projectId}/locations`),
-      client.get<WorkflowRun[]>(`/projects/${projectId}/workflow-runs`),
-    ]);
-    if (!shouldApplyLoad(request, baseToken.current)) return;
-    const tracked = runs.filter(trackedWorkflow);
-    const transition = noteWorkflowTransitions(tracked, workflowStatus.current);
-    setProject(nextProject);
-    setEpisodes(episodePage.items);
-    setStories(applyPage(null, { scope: projectId, items: storyPage.items, nextCursor: storyPage.nextCursor, append: false }));
-    setCharacters(applyPage(null, { scope: projectId, items: characterPage.items, nextCursor: characterPage.nextCursor, append: false }));
-    setLocations(applyPage(null, { scope: projectId, items: locationPage.items, nextCursor: locationPage.nextCursor, append: false }));
-    setWorkflows(tracked);
-    if (transition.mediaBecameTerminal) setImageEpoch((value) => value + 1);
-    if (transition.textBecameTerminal) setRefreshEpoch((value) => value + 1);
-  }, [projectId]);
-
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const kind = params.get("focus");
@@ -369,70 +251,21 @@ export function Workbench({ projectId }: { projectId: string }) {
     else if (kind === "scene" && sceneId) setFocus({ kind, episodeNo, sceneId });
     else if (kind === "shot" && sceneId && shotId) setFocus({ kind, episodeNo, sceneId, shotId });
     else if (kind === "character" || kind === "location" || kind === "story") setFocus({ kind });
-    setLoading(true);
-    void reloadBase().catch((caught: unknown) => {
-      setError(caught instanceof ApiError ? caught.detail : "工作台加载失败");
-    }).finally(() => setLoading(false));
-  }, [reloadBase]);
+  }, []);
 
   useEffect(() => {
     const query = focusQuery(focus);
     window.history.replaceState(null, "", `/projects/${projectId}?${query}`);
   }, [focus, projectId]);
 
-  useEffect(() => {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const tick = () => {
-      const hidden = document.visibilityState === "hidden";
-      const active = workflows.some((run) => shouldPoll(run.status, hidden));
-      if (!active) return;
-      const request = baseToken.current;
-      void client.get<WorkflowRun[]>(`/projects/${projectId}/workflow-runs`).then((runs) => {
-        if (!shouldApplyLoad(request, baseToken.current)) return;
-        const tracked = runs.filter(trackedWorkflow);
-        const transition = noteWorkflowTransitions(tracked, workflowStatus.current);
-        setWorkflows(tracked);
-        if (transition.mediaBecameTerminal) setImageEpoch((value) => value + 1);
-        if (transition.textBecameTerminal) {
-          setRefreshEpoch((value) => value + 1);
-          void reloadBase().catch(() => undefined);
-        }
-      }).catch(() => undefined);
-      timer = setTimeout(tick, 2000);
-    };
-    timer = setTimeout(tick, 2000);
-    const onVisible = () => {
-      if (document.visibilityState !== "visible") return;
-      setRefreshEpoch((value) => value + 1);
-      void reloadBase().catch(() => undefined);
-    };
-    document.addEventListener("visibilitychange", onVisible);
-    return () => {
-      if (timer) clearTimeout(timer);
-      document.removeEventListener("visibilitychange", onVisible);
-    };
-  }, [projectId, reloadBase, workflows]);
-
   function choose(next: Focus) {
     setFocus(next);
     setNavOpen(false);
-    setCharacters((current) => current && current.scope === projectId ? current : null);
-    setLocations((current) => current && current.scope === projectId ? current : null);
+    base.keepScopedPages();
   }
 
-  async function more(kind: "stories" | "characters" | "locations") {
-    const current = kind === "stories" ? stories : kind === "characters" ? characters : locations;
-    if (!current?.nextCursor) return;
-    const request = baseToken.current;
-    const path = kind === "stories"
-      ? `/projects/${projectId}/stories?cursor=${encodeURIComponent(current.nextCursor)}`
-      : `/projects/${projectId}/${kind}?cursor=${encodeURIComponent(current.nextCursor)}`;
-    const body = await client.get<{ items: never[]; nextCursor: string | null }>(path);
-    if (!shouldApplyLoad(request, baseToken.current)) return;
-    const incoming = { scope: projectId, items: body.items, nextCursor: body.nextCursor, append: true };
-    if (kind === "stories") setStories((page) => applyPage(page, incoming));
-    if (kind === "characters") setCharacters((page) => applyPage(page, incoming));
-    if (kind === "locations") setLocations((page) => applyPage(page, incoming));
+  function more(kind: "stories" | "characters" | "locations") {
+    return base.more(kind);
   }
 
   const storyCurrent = currentStoryRevision(stories?.items ?? []);
@@ -442,7 +275,8 @@ export function Workbench({ projectId }: { projectId: string }) {
     <InspectContext.Provider value={inspect}>
     <div className="min-h-screen bg-neutral-100 text-neutral-900">
       <header className="flex flex-wrap items-center gap-3 border-b border-neutral-200 bg-white px-4 py-3">
-        <a className="text-sm underline" href="/studio">创作中心</a>
+        <a className="text-sm underline" href="/studio">我的作品</a>
+        <a className="text-sm underline" href={`/projects/${projectId}/create`}>新手模式</a>
         <div className="min-w-0">
           <p className="text-xs text-neutral-600">作品</p>
           <h1 className="text-lg font-semibold [overflow-wrap:anywhere]">{project?.title ?? "加载中"}</h1>
@@ -582,7 +416,7 @@ export function Workbench({ projectId }: { projectId: string }) {
   );
 }
 
-function StoryPane(props: {
+export function StoryPane(props: {
   project: ProjectRecord;
   stories: PageState<StoryRevision> | null;
   onMore: () => void;
@@ -650,7 +484,7 @@ function StoryPane(props: {
   );
 }
 
-function ScriptPane(props: {
+export function ScriptPane(props: {
   projectId: string;
   projectVersion: number;
   episode: EpisodeRecord | null;
@@ -1312,7 +1146,7 @@ function ContentEditor(props: {
   );
 }
 
-function EntityPane(props: {
+export function EntityPane(props: {
   project: ProjectRecord;
   kind: "character" | "location";
   page: PageState<Aggregate> | null;
@@ -1527,7 +1361,7 @@ function NewEntityForm(props: {
   );
 }
 
-function ScenePane(props: {
+export function ScenePane(props: {
   projectId: string;
   episode: EpisodeRecord | null;
   sceneId: string;
@@ -2834,7 +2668,7 @@ function AttemptList(props: { attempts?: WorkflowAttempt[] }) {
   );
 }
 
-function TaskDrawer(props: {
+export function TaskDrawer(props: {
   projectId: string;
   runs: WorkflowRun[];
   onClose: () => void;
