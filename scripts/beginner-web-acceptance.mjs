@@ -340,7 +340,8 @@ async function main() {
       await runMigrations(pool);
       const provision = [];
       for (const command of ["workspace:provision", "mock-media:provision", "mock-av:provision"]) {
-        const { stdout } = await execFileAsync("pnpm", ["--filter", "@ai-drama/database", command], { cwd: root, env });
+        // The provisioning commands refuse unless the matching Mock switch is on, as in the M4 harness.
+        const { stdout } = await execFileAsync("pnpm", ["--filter", "@ai-drama/database", command], { cwd: root, env: mediaEnv(env) });
         provision.push(`${command}: ${stdout.trim().split("\n").at(-1)}`);
       }
       const ffmpeg = (await execFileAsync("ffmpeg", ["-version"])).stdout.split("\n")[0];
