@@ -69,6 +69,9 @@ describe("beginner flow", () => {
     expect(screen.getByText("你需要决定")).toBeTruthy();
     expect(screen.getAllByText(/待确认/).length).toBeGreaterThan(0);
     expect(window.location.search).toBe("?step=story");
+    // Step buttons keep their title in the accessible name even where the title text is hidden (390px).
+    expect(screen.getByRole("button", { name: "第 1 步 定故事：待确认" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "第 4 步 试一段：未开始" })).toBeTruthy();
     // The existing story editor is mounted, not a copy.
     expect(await screen.findByRole("heading", { name: "故事" })).toBeTruthy();
     const primary = screen.getByRole("button", { name: "检查并确认当前版本" });

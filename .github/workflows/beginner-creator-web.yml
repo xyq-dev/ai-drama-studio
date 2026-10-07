@@ -16,7 +16,7 @@ permissions:
 jobs:
   beginner-pages:
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 60
 
     services:
       postgres:
@@ -67,8 +67,17 @@ jobs:
       - name: Install JavaScript dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Install Chromium
-        run: pnpm exec playwright install --with-deps chromium
+      - name: Install pinned media tools
+        run: |
+          sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list || true
+          sudo apt-get update -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ffmpeg=7:6.1.1-3ubuntu5 fonts-dejavu-core=2.37-8 python3
+          test "$(dpkg-query -W -f '${Version}' ffmpeg)" = "7:6.1.1-3ubuntu5"
+          ffmpeg -version | head -1
+          python3 --version
+
+      - name: Install Chrome for Testing
+        run: pnpm exec playwright install --with-deps chrome
 
       - name: Validate and generate Prisma
         run: |
@@ -78,7 +87,7 @@ jobs:
       - name: Build JavaScript workspace
         run: pnpm build
 
-      - name: Drive the beginner pages against the real API and database
+      - name: Drive the five beginner steps against the real API, worker, database and FFmpeg
         run: node scripts/beginner-web-acceptance.mjs
 
       - name: Upload screenshots and evidence

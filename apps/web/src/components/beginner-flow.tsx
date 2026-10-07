@@ -231,6 +231,7 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
             {STEPS.map((item) => (
               <li key={item.key} className="min-w-0">
                 <button type="button" aria-current={item.key === step ? "step" : undefined}
+                  aria-label={`第 ${item.no} 步 ${item.title}：${STEP_STATE_TEXT[states[item.key]]}`}
                   className={`flex w-full min-w-0 flex-col items-start rounded-[12px] border px-2 py-2 text-left sm:px-3 ${item.key === step ? "border-[#D34846] bg-[#FBE7E4]" : "bg-white"}`}
                   onClick={() => choose(item.key)}>
                   <span className="text-sm font-medium">{item.no}<span className="hidden sm:inline"> {item.title}</span></span>
