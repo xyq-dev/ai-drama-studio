@@ -3,7 +3,15 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { StudioClient } from "../lib/studio-client";
 import { useProjectBase, type Aggregate } from "../lib/project-base";
-import { composeOff, loadEntityLists, loadEpisodeMedia, mediaReadFailed, readPages } from "../lib/beginner-facts";
+import {
+  composeOff,
+  loadComposeCapability,
+  loadEntityLists,
+  loadEpisodeMedia,
+  mediaReadFailed,
+  readPages,
+  type ComposeCapability,
+} from "../lib/beginner-facts";
 import {
   STEPS,
   STEP_STATE_MARK,
@@ -11,7 +19,9 @@ import {
   currentStep,
   entityState,
   episodeFinalState,
+  episodeForAction,
   episodeForStep,
+  episodeNeedingWork,
   episodeSampleState,
   primaryAction,
   scriptState,
@@ -19,6 +29,7 @@ import {
   type BeginnerFacts,
   type EpisodeMediaFacts,
   type ListFacts,
+  type PrimaryTarget,
   type ReadState,
   type StepKey,
   type StepState,
@@ -46,6 +57,27 @@ interface Progress {
 }
 
 const UNREAD: ListFacts<Aggregate> = { items: [], read: "incomplete" };
+
+type CastKind = "character" | "location";
+
+interface CastProblem {
+  kind: CastKind;
+  entity: Aggregate;
+  state: StepState;
+}
+
+/** The characters and locations a cast action is about, from the complete lists. */
+function castProblems(facts: BeginnerFacts, wanted: readonly StepState[]): CastProblem[] {
+  const pick = (kind: CastKind, list: ListFacts<Aggregate>) => list.items.flatMap((entity) => {
+    const state = entityState(entity);
+    return wanted.includes(state) ? [{ kind, entity, state }] : [];
+  });
+  return [...pick("character", facts.characters), ...pick("location", facts.locations)];
+}
+
+function castLabel(problem: CastProblem): string {
+  return `${problem.kind === "character" ? "角色" : "场地"} · ${problem.entity.name ?? problem.entity.entityId.slice(0, 8)} · ${STEP_STATE_TEXT[problem.state]}`;
+}
 
 function StatePill({ state }: { state: StepState }) {
   const tone = state === "done" ? "bg-[#E8F3EA] text-[#1F6B33]"
@@ -79,7 +111,14 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
     reloadBase } = base;
   const [step, setStep] = useState<StepKey | null>(null);
   const [episodeNo, setEpisodeNo] = useState(1);
-  const [castKind, setCastKind] = useState<"character" | "location">("character");
+  const [castKind, setCastKind] = useState<CastKind>("character");
+  /** The cast entity a primary action opened, and the choice offered when several need the user. */
+  const [castFocus, setCastFocus] = useState<{ kind: CastKind; entityId: string; nonce: number } | null>(null);
+  const [castChoices, setCastChoices] = useState<CastProblem[] | null>(null);
+  const [capability, setCapability] = useState<ComposeCapability | null>(null);
+  const [capabilityEpoch, setCapabilityEpoch] = useState(0);
+  /** A primary action waiting for the next render (after its episode or object was selected). */
+  const [pendingFocus, setPendingFocus] = useState<{ target: PrimaryTarget | "choices"; nonce: number } | null>(null);
   const [sceneId, setSceneId] = useState<string | null>(null);
   const [shotId, setShotId] = useState<string | null>(null);
   const [scenes, setScenes] = useState<{ items: Aggregate[]; read: ReadState } | null>(null);
@@ -93,11 +132,23 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
   const tasksReturn = useRef<HTMLElement | null>(null);
   const mediaToken = useRef(0);
   const scenesToken = useRef(0);
+  const nonce = useRef(0);
 
   // Facts of another project never mix with this one.
   useEffect(() => {
     setProgress(null);
+    setCastFocus(null);
+    setCastChoices(null);
   }, [projectId]);
+
+  // Whether single-shot and episode compose are switched on comes from the server capability, not from whether a
+  // list read happened to fail.
+  useEffect(() => {
+    let live = true;
+    setCapability(null);
+    void loadComposeCapability(client).then((value) => { if (live) setCapability(value); });
+    return () => { live = false; };
+  }, [capabilityEpoch]);
 
   // Progress facts (complete entity lists, episode media) follow every base reload, which compose panels trigger
   // when a compose is accepted, finishes or is reviewed. Every read reports how complete it was; an older answer
@@ -119,7 +170,7 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
     runs: allRuns, media: ready ? progress.media : {},
   }), [stories, episodes, ready, progress, allRuns]);
   const states = useMemo(() => stepStates(facts), [facts]);
-  const off = composeOff(media);
+  const off = composeOff(media, capability);
 
   // First visit waits for every fact, then opens the first step (and episode) that still needs the user;
   // ?step= reopens a chosen step after a refresh.
@@ -145,6 +196,12 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
     void reloadBase().catch(() => undefined);
   }
 
+  /** The user asked to read progress again: also recheck the compose switches if they were not confirmed. */
+  function rereadAll() {
+    refreshFacts();
+    if (capability?.read !== "ok") setCapabilityEpoch((value) => value + 1);
+  }
+
   useEffect(() => {
     if (!step) return;
     window.history.replaceState(null, "", `/projects/${projectId}/create?step=${step}`);
@@ -152,12 +209,14 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
 
   const episode = episodes.find((item) => item.episodeNo === episodeNo) ?? null;
 
-  // A different episode means a different scene list: drop the selection that belonged to the old one.
-  const episodeId = episode?.id ?? null;
+  // The scene selection belongs to one approved script revision of one episode. Another episode, a new script
+  // revision, or a script that is no longer approved drops it (drafts stay in their own storage); the pane only
+  // mounts while that prerequisite holds.
+  const sceneScope = episode && scriptState(episode) === "done" ? `${episode.id}:${episode.currentScriptRevisionId}` : null;
   useEffect(() => {
     setSceneId(null);
     setShotId(null);
-  }, [episodeId]);
+  }, [sceneScope]);
 
   // Every scene of the chosen episode for 试一段, page by page; a failed read is not an empty episode.
   // Switching episodes or projects drops a late list.
@@ -173,6 +232,7 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
   function choose(next: StepKey) {
     setStep(next);
     setEpisodeNo(episodeForStep(next, facts));
+    setCastChoices(null);
     setDraftTick((tick) => tick + 1);
     base.keepScopedPages();
     window.scrollTo({ top: 0 });
@@ -186,8 +246,19 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
   const stepIndex = STEPS.findIndex((item) => item.key === step);
   const info = STEPS[stepIndex] ?? STEPS[0]!;
   const state = step ? states[step] : "not_started";
-  const action = primaryAction(info.key, state);
+  // A switched-off (or unconfirmed) compose step offers no action the server would reject: only a recheck.
+  const closed = state !== "done" && ((info.key === "sample" && (off.sample || off.unconfirmed))
+    || (info.key === "final" && (off.final || off.unconfirmed)));
+  const action = closed ? { label: "重新检查功能状态", target: "reload" as const } : primaryAction(info.key, state);
   const save = saveText(drafts, lastEvent);
+  /** On a completed step, the episode that still needs work, so the user can go on from there. */
+  const unfinished = state === "done" ? episodeNeedingWork(info.key, facts) : null;
+
+  function openCast(problem: CastProblem) {
+    setCastKind(problem.kind);
+    setCastChoices(null);
+    setCastFocus({ kind: problem.kind, entityId: problem.entity.entityId, nonce: ++nonce.current });
+  }
 
   function runPrimary() {
     if (action.target === "next") {
@@ -200,16 +271,46 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
       return;
     }
     if (action.target === "reload") {
-      refreshFacts();
+      rereadAll();
       return;
     }
+    // A returned, outdated or waiting character or location: open that object, not the new-entity form.
+    if (info.key === "cast" && (action.target === "editor" || action.target === "review")) {
+      const problems = castProblems(facts, action.target === "review" ? ["needs_confirmation"] : ["needs_attention", "source_updated"]);
+      if (problems.length === 1) {
+        openCast(problems[0]!);
+        return;
+      }
+      if (problems.length > 1) {
+        setCastChoices(problems);
+        setPendingFocus({ target: "choices", nonce: ++nonce.current });
+        return;
+      }
+    }
+    // Decided from the facts at click time: a finished episode hands the action to the one that needs it.
+    const target = episodeForAction(info.key, facts, episodeNo);
+    if (target !== episodeNo) setEpisodeNo(target);
+    setPendingFocus({ target: action.target, nonce: ++nonce.current });
+  }
+
+  // Focus runs after the render that shows the chosen episode or object.
+  useEffect(() => {
+    if (!pendingFocus) return;
+    setPendingFocus(null);
+    // focusTarget reads the DOM only.
+    focusTarget(pendingFocus.target);
+  }, [pendingFocus]);
+
+  function focusTarget(kind: PrimaryTarget | "choices") {
     const root = body.current;
     if (!root) return;
-    const target = action.target === "review"
+    const target = kind === "choices"
+      ? root.querySelector<HTMLElement>("[data-cast-choices]")
+      : kind === "review"
       ? root.querySelector<HTMLElement>("[data-beginner-review], aside[aria-label='检查面板'], [data-review-status]")
-      : action.target === "candidates"
+      : kind === "candidates"
         ? root.querySelector<HTMLElement>("[aria-label='Mock 单镜合成预检'], [data-beginner-picker]")
-        : action.target === "compose"
+        : kind === "compose"
           ? root.querySelector<HTMLElement>("[aria-label='多镜编排']")
           : root.querySelector<HTMLElement>("textarea, input:not([type='hidden'])");
     (target ?? root).scrollIntoView({ block: "start" });
@@ -263,6 +364,12 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
           </div>
         ) : null}
         {error ? <p className="mt-3 rounded-[12px] border border-[#D34846] bg-white p-3" role="alert">作品读取失败：{error}</p> : null}
+        {!error && base.refreshFailed ? (
+          <div className="mt-3 rounded-[12px] border border-[#D34846] bg-white p-3 text-[15px]" role="status">
+            <p>最新进度暂时没有读到，正在自动重试；页面上的内容可能不是最新。</p>
+            <button className="mt-2 rounded-[12px] border px-3 py-1.5" type="button" onClick={rereadAll}>立即重新读取</button>
+          </div>
+        ) : null}
 
         <nav aria-label="创作步骤" className="mt-5">
           <ol className="grid grid-cols-5 gap-1 sm:gap-2">
@@ -293,6 +400,12 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
               <div><dt className="text-[#5F5D66]">完成后得到</dt><dd>{info.result}</dd></div>
             </dl>
             <StepGuide step={info.key} state={state} />
+            {unfinished !== null ? (
+              <button className="mt-3 rounded-[12px] border bg-white px-4 py-2 text-[15px]" type="button"
+                onClick={() => { setEpisodeNo(unfinished); setPendingFocus({ target: info.key === "sample" ? "candidates" : info.key === "final" ? "compose" : "editor", nonce: ++nonce.current }); }}>
+                继续制作第 {unfinished} 集
+              </button>
+            ) : null}
             <div className="fixed inset-x-0 bottom-0 z-10 border-t border-[#E7E5E0] bg-white p-3 lg:static lg:mt-4 lg:border-0 lg:p-0">
               <button className="w-full rounded-[12px] bg-[#D34846] px-5 py-3 font-medium text-white lg:w-auto"
                 type="button" onClick={runPrimary}>
@@ -332,14 +445,27 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
                   return (
                     <button key={kind} role="tab" type="button" aria-selected={castKind === kind}
                       className={`rounded-[12px] border px-3 py-1.5 ${castKind === kind ? "border-[#D34846] bg-[#FBE7E4]" : "bg-white"}`}
-                      onClick={() => setCastKind(kind)}>
+                      onClick={() => { setCastKind(kind); setCastFocus(null); }}>
                       {kind === "character" ? "角色" : "场地"} · {list.read !== "ok" ? "尚未确认" : list.items.length === 0 ? "还没有" : `${list.items.filter((item) => entityState(item) === "done").length}/${list.items.length} 已确认`}
                     </button>
                   );
                 })}
               </div>
               <p className="text-[15px] text-[#5F5D66]">用文字描述人物的外貌、性格和关系。角色参考图在打开角色后出现；参考图存储尚未启用时会写明，不会拿普通图片代替。项目没有单独的画风字段，想统一画风时请写进描述，并在保存前确认。</p>
+              {castChoices ? (
+                <div className="rounded-[12px] border border-[#D34846] bg-white p-4 text-[15px]" role="group" aria-label="需要处理的人物与场地" data-cast-choices tabIndex={-1}>
+                  <p className="font-medium">有 {castChoices.length} 个对象需要处理，请选一个打开：</p>
+                  <ul className="mt-2 flex flex-wrap gap-2">
+                    {castChoices.map((problem) => (
+                      <li key={`${problem.kind}:${problem.entity.entityId}`}>
+                        <button className="rounded-[12px] border px-3 py-1.5" type="button" onClick={() => openCast(problem)}>{castLabel(problem)}</button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
               <EntityPane project={project} kind={castKind} page={castKind === "character" ? characters : locations} episodes={episodes}
+                focus={castFocus && castFocus.kind === castKind ? castFocus : null}
                 onMore={() => void base.more(castKind === "character" ? "characters" : "locations")} onSaved={reloadBase} onStatus={onStatus} />
             </>
           ) : null}
@@ -349,7 +475,8 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
               <EpisodeTabs label="选择剧集" value={episodeNo} onChange={setEpisodeNo}
                 state={(no) => episodeSampleState(facts, no)} />
               {off.sample ? <Notice>当前环境没有开启单镜成片所需的功能（Mock 媒体或本地合成），样片暂时不能生成，这一步不会显示为完成。需要管理员在服务端开启后才能继续；其余步骤可以照常进行。</Notice> : null}
-              {ready && mediaReadFailed(media) ? <ReadFailed onRetry={refreshFacts} /> : null}
+              {!off.sample && off.unconfirmed ? <CapabilityFailed onRetry={rereadAll} /> : null}
+              {ready && mediaReadFailed(media) ? <ReadFailed onRetry={rereadAll} /> : null}
               <div className="rounded-[12px] border border-[#E7E5E0] bg-white p-4 text-[15px]">
                 <p className="font-medium">样片说明</p>
                 <ul className="mt-1 list-disc pl-5">
@@ -396,10 +523,14 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
                   {sceneId && !shotId ? <p className="mt-2 text-[15px] text-[#5F5D66]">在下方场景里打开一个镜头，就会看到它的素材生成和单镜合成。</p> : null}
                 </div>
               )}
-              {sceneId && episode ? (
-                <ScenePane projectId={projectId} episode={episode} sceneId={sceneId} shotId={shotId} refreshEpoch={refreshEpoch}
-                  imageEpoch={imageEpoch} locations={locations?.items ?? []} onSaved={reloadBase} onStatus={onStatus}
-                  onOpenShot={setShotId} onMediaChanged={refreshFacts} />
+              {sceneId && episode && sceneScope ? (
+                <>
+                  <LocationNote list={ready ? progress.locations : null} onRetry={rereadAll} />
+                  <ScenePane projectId={projectId} episode={episode} sceneId={sceneId} shotId={shotId} refreshEpoch={refreshEpoch}
+                    imageEpoch={imageEpoch} locations={sceneLocations(ready ? progress.locations : null, locations?.items ?? [])}
+                    onSaved={reloadBase} onStatus={onStatus} onOpenShot={setShotId} onMediaChanged={refreshFacts}
+                    shotComposeOff={off.sample} />
+                </>
               ) : null}
             </>
           ) : null}
@@ -409,7 +540,8 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
               <EpisodeTabs label="选择剧集" value={episodeNo} onChange={setEpisodeNo} state={(no) => episodeFinalState(facts, no)} />
               <p className="text-[15px] text-[#5F5D66]">本集至少要有 2 个已确认的单镜成片才能编排，最多 30 个。合成完成后请播放检查，确认通过的当前成片才能下载 MP4 和来源清单；上游内容变化后，旧成片会保留为历史，不能再下载。</p>
               {off.final ? <Notice>当前环境没有开启集级合成，单集成片暂时不能生成，已有成片也无法在这里确认，这一步不会显示为完成。需要管理员在服务端开启后才能继续。</Notice> : null}
-              {ready && mediaReadFailed(media) ? <ReadFailed onRetry={refreshFacts} /> : null}
+              {!off.final && off.unconfirmed ? <CapabilityFailed onRetry={rereadAll} /> : null}
+              {ready && mediaReadFailed(media) ? <ReadFailed onRetry={rereadAll} /> : null}
               {episode && scriptState(episode) === "done" ? (
                 <EpisodeComposePreflight projectId={projectId} episodeNo={episodeNo} episodeId={episode.id} onChanged={refreshFacts} />
               ) : (
@@ -441,6 +573,40 @@ function Notice({ children }: { children: ReactNode }) {
     <p className="rounded-[12px] border border-[#D34846] bg-white p-4 text-[15px]" role="status">
       <span aria-hidden="true">！</span> {children}
     </p>
+  );
+}
+
+/** The compose switches could not be read: neither open nor closed is claimed. */
+function CapabilityFailed({ onRetry }: { onRetry: () => void }) {
+  return (
+    <div className="rounded-[12px] border border-[#D34846] bg-white p-4 text-[15px]" role="alert">
+      <p>没能读取服务端的合成功能状态（网络或服务暂时不可用），暂时无法确认这一步能不能进行。这不代表功能已关闭，也不代表还没有候选镜头。</p>
+      <button className="mt-2 rounded-[12px] border px-3 py-1.5" type="button" onClick={onRetry}>重新检查功能状态</button>
+    </div>
+  );
+}
+
+/**
+ * Location choices for the scene editor: the complete bounded list when it was read, so a location past the first
+ * page can be chosen; the first page only while the complete list is not there.
+ */
+function sceneLocations(complete: ListFacts<Aggregate> | null, firstPage: Aggregate[]): Aggregate[] {
+  if (!complete) return firstPage;
+  const known = new Set(complete.items.map((item) => item.entityId));
+  return [...complete.items, ...firstPage.filter((item) => !known.has(item.entityId))];
+}
+
+function LocationNote({ list, onRetry }: { list: ListFacts<Aggregate> | null; onRetry: () => void }) {
+  if (list === null) return <p className="text-[15px] text-[#5F5D66]" role="status">正在读取全部场地，场景里的场地选项暂时只有第一页。</p>;
+  if (list.read === "ok") return null;
+  if (list.read === "incomplete") {
+    return <p className="text-[15px] text-[#5F5D66]" role="status">场地很多，场景里的场地选项只列出已读到的 {list.items.length} 个，不代表全部；其余请在高级编辑中选择。</p>;
+  }
+  return (
+    <div className="rounded-[12px] border border-[#D34846] bg-white p-3 text-[15px]" role="alert">
+      <p>场地列表没有读全（读取失败），场景里的场地选项可能不完整。这不代表项目没有其他场地。</p>
+      <button className="mt-2 rounded-[12px] border px-3 py-1.5" type="button" onClick={onRetry}>重新读取</button>
+    </div>
   );
 }
 

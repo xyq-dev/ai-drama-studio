@@ -5,7 +5,9 @@ import {
   currentStep,
   entityState,
   episodeFinalState,
+  episodeForAction,
   episodeForStep,
+  episodeNeedingWork,
   episodeSampleState,
   primaryAction,
   revisionState,
@@ -192,5 +194,32 @@ describe("suggestTitle", () => {
     expect(suggestTitle("夜班便利店店员发现班次记录被人改过，所有证据都指向她自己。")).toBe("夜班便利店店员发现班次记…");
     expect(suggestTitle("  回家  ")).toBe("回家");
     expect(suggestTitle("😀😀😀😀😀😀😀😀😀😀😀😀😀")).toBe(`${"😀".repeat(12)}…`);
+  });
+});
+
+describe("which episode a step and its actions open (Issue #52 items 1 and 5)", () => {
+  const twoDone = facts({ episodes: approvedEpisodes, media: { 1: media(0), 2: media(1), 3: media(0) } });
+
+  it("a completed 试一段 opens the episode that has the approved sample", () => {
+    expect(stepStates(twoDone).sample).toBe("done");
+    expect(episodeForStep("sample", twoDone)).toBe(2);
+    // Continuing work goes to an episode that still needs a sample.
+    expect(episodeNeedingWork("sample", twoDone)).toBe(1);
+  });
+
+  it("an action on a finished episode moves to the episode that now needs the user", () => {
+    const scripts = facts({ episodes: [episode(1, "APPROVED"), episode(2, null), episode(3, "DRAFT")] });
+    expect(episodeForAction("script", scripts, 1)).toBe(2);
+    // An episode that itself needs the action keeps it.
+    expect(episodeForAction("script", scripts, 3)).toBe(3);
+    expect(episodeForAction("story", scripts, 2)).toBe(2);
+  });
+
+  it("all episodes done: the action stays on a finished episode to view and download", () => {
+    const allDone = facts({ episodes: approvedEpisodes,
+      media: { 1: media(2, { approvedActive: true }), 2: media(2, { approvedActive: true }), 3: media(2, { approvedActive: true }) } });
+    expect(stepStates(allDone).final).toBe("done");
+    expect(episodeForAction("final", allDone, 3)).toBe(3);
+    expect(episodeNeedingWork("final", allDone)).toBeNull();
   });
 });

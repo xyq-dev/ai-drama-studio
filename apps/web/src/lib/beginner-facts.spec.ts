@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ApiError } from "./studio-client";
 import type { Aggregate, EpisodeRecord } from "./project-base";
-import { MAX_PAGES, loadEntityLists, loadEpisodeMedia, readPages } from "./beginner-facts";
+import { MAX_PAGES, composeOff, loadComposeCapability, loadEntityLists, loadEpisodeMedia, readPages } from "./beginner-facts";
 import { episodeFinalState, episodeSampleState, stepStates, type BeginnerFacts } from "./beginner-steps";
 
 /**
@@ -125,5 +125,22 @@ describe("progress facts follow pagination (review)", () => {
     expect(client.urls.some((url) => url.includes("compose-candidates"))).toBe(false);
     expect(media[1]!.composites.staleApproved).toBe(true);
     expect(episodeFinalState(facts(media, [draftScript]), 1)).toBe("source_updated");
+  });
+});
+
+describe("single-shot compose closed state comes from the capability (Issue #52 item 3)", () => {
+  const ok = { 1: { candidates: { read: "ok" as const, count: 0 }, composites: { read: "ok" as const, approvedActive: false, draftActive: false, rejectedActive: false, staleApproved: false } } };
+
+  it("reads the compose switches and treats a missing or failed answer as unconfirmed", async () => {
+    const answer = (body: unknown) => ({ get: async <T,>() => body as T });
+    expect(await loadComposeCapability(answer({ compose: { shot: false, episode: true } }))).toEqual({ read: "ok", shot: false, episode: true });
+    expect(await loadComposeCapability(answer({ providerKey: "mock" }))).toEqual({ read: "failed" });
+    expect(await loadComposeCapability({ get: async () => { throw new ApiError(503, "UNAVAILABLE", "x"); } })).toEqual({ read: "failed" });
+  });
+
+  it("closed, open and unknown are three different answers even when the candidates read succeeded", () => {
+    expect(composeOff(ok, { read: "ok", shot: false, episode: true })).toEqual({ sample: true, final: false, unconfirmed: false });
+    expect(composeOff(ok, { read: "ok", shot: true, episode: true })).toEqual({ sample: false, final: false, unconfirmed: false });
+    expect(composeOff(ok, { read: "failed" })).toEqual({ sample: false, final: false, unconfirmed: true });
   });
 });

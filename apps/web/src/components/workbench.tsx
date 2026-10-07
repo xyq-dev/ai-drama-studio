@@ -101,6 +101,7 @@ interface EntityRevision {
   reviewStatus: string;
   freshnessStatus: string;
   reviewVersion: number;
+  reviewNote?: string | null;
 }
 
 interface SceneRevision {
@@ -1155,8 +1156,12 @@ export function EntityPane(props: {
   onMore: () => void;
   onSaved: () => Promise<void>;
   onStatus: (value: string) => void;
+  /** Open this entity (for example the one a review returned); a new nonce opens it again. */
+  focus?: { entityId: string; nonce: number } | null;
 }) {
   const [selected, setSelected] = useState<string | null>(null);
+  const editorRef = useRef<HTMLDivElement>(null);
+  const focusPending = useRef(false);
   const [history, setHistory] = useState<{ aggregate: Aggregate; items: EntityRevision[] } | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [historyToken, setHistoryToken] = useState(0);
@@ -1176,6 +1181,14 @@ export function EntityPane(props: {
   useEffect(() => {
     setSelected(null);
   }, [props.kind, props.project.id]);
+
+  const focusEntityId = props.focus?.entityId ?? null;
+  const focusNonce = props.focus?.nonce ?? 0;
+  useEffect(() => {
+    if (!focusEntityId) return;
+    focusPending.current = true;
+    setSelected(focusEntityId);
+  }, [focusEntityId, focusNonce, props.kind]);
 
   useEffect(() => {
     setHistory(null);
@@ -1198,6 +1211,15 @@ export function EntityPane(props: {
   }, [historyToken, props.kind, props.project.id, selected]);
 
   const current = history?.items.find((item) => item.id === history.aggregate.currentRevisionId) ?? null;
+  const shownEntity = selected && history?.aggregate.entityId === selected && current ? selected : null;
+
+  // A focused entity scrolls its own editor into view once its versions are read: never the new-entity form.
+  useEffect(() => {
+    if (!focusPending.current || !shownEntity || shownEntity !== focusEntityId) return;
+    focusPending.current = false;
+    editorRef.current?.scrollIntoView({ block: "start" });
+    editorRef.current?.querySelector<HTMLElement>("textarea, input")?.focus();
+  }, [shownEntity, focusEntityId]);
 
   return (
     <EditorGrid>
@@ -1208,8 +1230,8 @@ export function EntityPane(props: {
           <ul className="mt-2 space-y-2">
             {props.page?.items.map((item) => (
               <li key={item.entityId}>
-                <button className="underline" type="button" onClick={() => setSelected(item.entityId)}>
-                  {item.entityId.slice(0, 8)} · {item.currentRevision ? REVIEW_TEXT[item.currentRevision.reviewStatus] ?? item.currentRevision.reviewStatus : "currentRevision 为空"} · {item.currentRevision ? FRESH_TEXT[item.currentRevision.freshnessStatus] ?? item.currentRevision.freshnessStatus : "无新鲜度"}
+                <button className="underline" type="button" aria-pressed={selected === item.entityId} onClick={() => setSelected(item.entityId)}>
+                  {item.entityId.slice(0, 8)}{item.name ? ` · ${item.name}` : ""} · {item.currentRevision ? REVIEW_TEXT[item.currentRevision.reviewStatus] ?? item.currentRevision.reviewStatus : "currentRevision 为空"} · {item.currentRevision ? FRESH_TEXT[item.currentRevision.freshnessStatus] ?? item.currentRevision.freshnessStatus : "无新鲜度"}
                 </button>
               </li>
             ))}
@@ -1218,7 +1240,16 @@ export function EntityPane(props: {
         </section>
         {historyError ? <p role="alert">{historyError}</p> : null}
         {selected && !history && !historyError ? <p className="text-sm">正在加载版本</p> : null}
-        {selected && history?.aggregate.entityId === selected && current ? (
+        {shownEntity && history && current ? (
+          <div ref={editorRef} data-entity-editor={shownEntity} className="space-y-2">
+          {current.reviewStatus === "REJECTED" ? (
+            <p className="rounded-lg border border-red-700 bg-white p-3 text-sm" role="note">
+              退回原因：{current.reviewNote ? current.reviewNote : "审核时没有写原因"}。修改后保存新版本，再提交审核。
+            </p>
+          ) : null}
+          {current.freshnessStatus === "STALE" ? (
+            <p className="rounded-lg border border-red-700 bg-white p-3 text-sm" role="note">来源剧本已更新，这一版不能再批准。请修改后保存新版本。</p>
+          ) : null}
           <ContentEditor
             title="当前版本"
             projectId={props.project.id}
@@ -1250,6 +1281,7 @@ export function EntityPane(props: {
               setHistoryToken((value) => value + 1);
             }}
           />
+          </div>
         ) : null}
         {props.kind === "character" && selected && history?.aggregate.entityId === selected && current ? (
           <CharacterReferencePanel characterId={selected} currentRevisionId={current.id} />
@@ -1272,7 +1304,7 @@ export function EntityPane(props: {
             freshnessStatus: item.freshnessStatus,
             reviewVersion: item.reviewVersion,
             source: item.sourceScriptRevisionId,
-            note: null,
+            note: item.reviewNote ?? null,
             staleReason: null,
             body: item.content,
           }))}
@@ -1375,6 +1407,8 @@ export function ScenePane(props: {
   onOpenShot: (shotId: string) => void;
   /** Compose accepted, finished or reviewed under this scene; the advanced workbench does not need it. */
   onMediaChanged?: () => void;
+  /** The server reports single-shot compose switched off: show that instead of a submit it would reject. */
+  shotComposeOff?: boolean;
 }) {
   const [history, setHistory] = useState<{ aggregate: Aggregate; items: SceneRevision[] } | null>(null);
   const [shots, setShots] = useState<PageState<Aggregate> | null>(null);
@@ -1495,7 +1529,7 @@ export function ScenePane(props: {
       approvedId: location.approvedRevisionId,
       revisionId: location.currentRevisionId ?? "",
     });
-    return location.currentRevisionId ? [{ id: location.currentRevisionId, label: location.entityId.slice(0, 8), ...usable }] : [];
+    return location.currentRevisionId ? [{ id: location.currentRevisionId, label: location.name ? `${location.entityId.slice(0, 8)} · ${location.name}` : location.entityId.slice(0, 8), ...usable }] : [];
   });
 
   return (
@@ -1610,7 +1644,9 @@ export function ScenePane(props: {
             onAccepted={props.onSaved}
             onReused={() => setReuseEpoch((value) => value + 1)}
           />
-          <ComposePreflight revisionId={shotCurrent.id} refreshEpoch={props.imageEpoch + reuseEpoch} onChanged={props.onMediaChanged} />
+          {props.shotComposeOff
+            ? <p className="mt-6 rounded border p-3 text-sm" role="status">单镜合成在当前环境没有开启，不能提交。需要管理员在服务端开启后才能继续。</p>
+            : <ComposePreflight revisionId={shotCurrent.id} refreshEpoch={props.imageEpoch + reuseEpoch} onChanged={props.onMediaChanged} />}
           </div>
           <InspectSlot>
           <RevisionColumn
