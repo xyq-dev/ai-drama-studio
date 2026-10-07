@@ -347,7 +347,9 @@ async function main() {
       const ffmpeg = (await execFileAsync("ffmpeg", ["-version"])).stdout.split("\n")[0];
       // API first without the compose switches: step 4 must report compose as off, not fail.
       await startApi(env);
-      startProcess("worker", ["dist/main.js"], mediaEnv(env), join(root, "apps/worker"));
+      // The existing compose hold keeps attempt 1 RUNNING for a few seconds before commit (well under the 30 s
+      // lease), so step 5 can reopen the page while the episode compose is really still running.
+      startProcess("worker", ["dist/main.js"], { ...mediaEnv(env), M4_COMPOSE_HOLD_BEFORE_COMMIT_MS: "8000" }, join(root, "apps/worker"));
       await waitFor(async () => {
         const body = await (await fetch(`${workerOrigin}/health/ready`)).json();
         return body?.dependencies?.queue?.status === "ok" || JSON.stringify(body).slice(0, 200);
@@ -666,12 +668,23 @@ async function main() {
       await panel.getByRole("button", { name: "开始多镜合成" }).click();
       const accepted = await composeResponse;
       if (accepted.status() !== 202) throw new Error(`episode compose not accepted ${accepted.status()}`);
-      await page.evaluate(() => { window.__beginnerNoReload = "step5"; });
+      const acceptedJobId = (await accepted.json()).jobId;
+      // Recovery: leave and reopen the step while the compose is still RUNNING. The reopened page did not submit
+      // the job, so only its own run tracking can notice the end.
+      await page.goto(`${webOrigin}/projects/${world.projectId}/create?step=final`, { waitUntil: "domcontentloaded" });
+      await page.getByRole("tab", { name: /第 1 集 · … 处理中/ }).waitFor({ timeout: 20_000 });
+      const stateOnEntry = expect(await api("GET", `/generation-jobs/${acceptedJobId}`), 200, "job read").state;
+      if (!["QUEUED", "RUNNING"].includes(stateOnEntry)) throw new Error(`compose already ${stateOnEntry} when the page reopened`);
+      await page.evaluate(() => { window.__beginnerResume = "reopened"; });
       // Only episode 1 is composing: episodes 2 and 3 must never show 处理中 while it runs.
       const tabTexts = async () => Promise.all([2, 3].map((no) => page.getByRole("tab", { name: new RegExp(`第 ${no} 集`) }).innerText()));
       const whileRunning = await tabTexts();
       if (whileRunning.some((text) => text.includes("处理中"))) throw new Error(`other episodes shown as running: ${whileRunning.join(" | ")}`);
-      const job = await pollJob((await accepted.json()).jobId, 300_000);
+      // No click, no tab switch, no reload: the reopened page itself sees the compose finish.
+      await page.getByRole("tab", { name: /第 1 集 · ？ 待确认/ }).waitFor({ timeout: 120_000 });
+      if (await page.evaluate(() => window.__beginnerResume) !== "reopened") throw new Error("the reopened page was reloaded");
+      evidence.checks.resume = { stateOnEntry, updatedWithoutReload: true };
+      const job = await pollJob(acceptedJobId, 300_000);
       const afterRun = await tabTexts();
       if (afterRun.some((text) => text.includes("处理中"))) throw new Error(`other episodes shown as running: ${afterRun.join(" | ")}`);
       if (job.state !== "SUCCEEDED") throw new Error(`episode compose ${job.state} ${job.errorCode ?? ""} ${job.errorMessage ?? ""}`);
@@ -687,8 +700,8 @@ async function main() {
       if (!JSON.stringify(asset.input_snapshot).includes(world.episode.id)) throw new Error("frozen input does not name this episode");
       const card = page.locator(`[data-composite-id="${asset.id}"]`);
       await card.waitFor({ timeout: 60_000 });
-      // The finished compose updates the episode in place: a current draft composite waits for review.
-      await page.getByRole("tab", { name: /第 1 集 · ？ 待确认/ }).waitFor({ timeout: 30_000 });
+      // From here on, approval must update the page in place.
+      await page.evaluate(() => { window.__beginnerNoReload = "step5"; });
       // Not approved yet: no download button, and the export route refuses.
       if (await card.getByRole("button", { name: "下载 MP4" }).count()) throw new Error("draft composite offered a download");
       const draftDownload = await api("GET", `/projects/${world.projectId}/episodes/${world.episode.id}/composites/${asset.id}/download?expectedContentHash=${asset.checksum_sha256}`);
