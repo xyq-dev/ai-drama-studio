@@ -508,7 +508,7 @@ async function main() {
       await waitFor(async () => (await page.getByLabel("正文").first().inputValue()).includes("左手腕有旧伤") || "saved text not reread", "reread", 15_000);
       await reviewInColumn(inspectColumns().first(), "APPROVED", "character 1");
       // The reference image storage is the unapplied draft: the panel must say so and offer nothing.
-      await page.getByText(/参考图存储尚未启用/).waitFor({ timeout: 20_000 });
+      await page.getByRole("region", { name: "角色参考图" }).getByText(/参考图存储尚未启用/).waitFor({ timeout: 20_000 });
       if (await page.getByRole("button", { name: "为当前版本生成参考图" }).count()) throw new Error("reference generation offered without storage");
       await page.getByRole("button", { name: new RegExp(`^${second.entityId.slice(0, 8)}`) }).click();
       await reviewInColumn(inspectColumns().first(), "APPROVED", "character 2");
