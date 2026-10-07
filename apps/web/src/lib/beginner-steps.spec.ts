@@ -147,6 +147,26 @@ describe("beginner step states come from server facts", () => {
     expect([1, 2, 3].map((no) => episodeFinalState(unknownEpisode, no))).toEqual(["needs_input", "not_started", "not_started"]);
   });
 
+  it("does not mark other episodes' 试一段 as running from a shot job whose episode is unknown (final review)", () => {
+    // All three scripts approved and current, no approved sample anywhere; only a shot of episode 1 is generating.
+    const base = { story: story("APPROVED"), episodes: approvedEpisodes, media: { 1: media(0), 2: media(0), 3: media(0) } };
+    for (const job of [run("MEDIA_VIDEO", "RUNNING", { shot: "ep1-shot-r" }), run("MEDIA_COMPOSE", "RUNNING", { shot: "ep1-shot-r" })]) {
+      const running = facts({ ...base, runs: [job] });
+      expect([1, 2, 3].map((no) => episodeSampleState(running, no))).toEqual(["needs_input", "needs_input", "needs_input"]);
+      // The project-level step still says work is running, without naming an episode.
+      expect(sampleState(running)).toBe("in_progress");
+      // A single-shot compose is not an episode compose: no episode's final step changes.
+      expect([1, 2, 3].map((no) => episodeFinalState(running, no))).toEqual(["not_started", "not_started", "not_started"]);
+    }
+    // An episode compose for episode 1 changes only episode 1's final step and never the sample step.
+    const episodeCompose = facts({ ...base, media: { 1: media(2), 2: media(0), 3: media(0) },
+      runs: [run("MEDIA_COMPOSE", "RUNNING", { shot: null, episodeId: "e1" })] });
+    expect([1, 2, 3].map((no) => episodeFinalState(episodeCompose, no))).toEqual(["in_progress", "not_started", "not_started"]);
+    // Episode 1 has two approved samples (that is why it can compose); the running episode compose adds nothing here.
+    expect([1, 2, 3].map((no) => episodeSampleState(episodeCompose, no))).toEqual(["done", "needs_input", "needs_input"]);
+    expect(sampleState(episodeCompose)).toBe("done");
+  });
+
   it("opens the episode that needs the step's work, not always episode 1 (review)", () => {
     const scripts = facts({ story: story("APPROVED"), episodes: [episode(1, "APPROVED"), episode(2, "DRAFT"), episode(3, null)] });
     expect(episodeForStep("script", scripts)).toBe(2);

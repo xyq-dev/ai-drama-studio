@@ -128,8 +128,9 @@ export function entityState(entity: Aggregate): StepState {
 const RUNNING = new Set(["PENDING", "QUEUED", "RUNNING", "WAITING_EXTERNAL", "RETRY_WAIT"]);
 
 /**
- * Shot media jobs still running. Finished history is not used: a job that succeeded or failed for an older shot
- * revision says nothing about the current sample.
+ * Shot media jobs still running anywhere in the project (media generation and single-shot compose). Finished
+ * history is not used. The job view does not carry the shot's episode, so this is a project-level fact only: it
+ * may say the 试一段 step has work running, never which episode.
  */
 function shotJobRunning(runs: readonly WorkflowRun[]): boolean {
   return runs.some((run) => run.jobs.some((job) => job.kind.startsWith("MEDIA_") && Boolean(job.sourceShotRevisionId)
@@ -154,7 +155,8 @@ export function episodeSampleState(facts: BeginnerFacts, episodeNo: number): Ste
   if (!candidates) return "unknown";
   if (candidates.count > 0) return "done";
   if (candidates.read !== "ok") return "unknown";
-  return shotJobRunning(facts.runs) ? "in_progress" : "needs_input";
+  // A shot job does not say which episode its shot belongs to, so it never marks a single episode as running.
+  return "needs_input";
 }
 
 export function sampleState(facts: BeginnerFacts): StepState {
