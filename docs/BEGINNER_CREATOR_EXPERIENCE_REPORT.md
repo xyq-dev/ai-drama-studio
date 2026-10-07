@@ -323,3 +323,61 @@ E2E 加强（`scripts/beginner-web-acceptance.mjs`，原 10 个必需阶段不�
 ### 状态
 
 Commit / Push：YES（普通推送原分支）。Merge：NO。Deploy：NO。Migration：NO。Paid calls：NO。等待 Codex 复审。
+
+## BEGINNER_FINAL_REVIEW_FIX_REPORT（复审 #pullrequestreview-5443358176 的三项 P2）
+
+### 现场
+
+| 项目 | 值 |
+| --- | --- |
+| 目录 / 分支 | `D:\Projects\ai-drama-studio-beginner-ui`，`feat/beginner-creator-experience`；开始时本地与远端均为 `86d3641`，无新提交，工作区干净 |
+| 起点 | `86d364163fb5bca755882daac6357756b3394b98` |
+| 源码 SHA | `8fe05d144f564b77e94017277dba199b97fbc568`（`0fb7d42` 修复 2，`3d8f2a1` 修复 1 与 3，`8fe05d1` E2E 恢复场景） |
+| 报告 SHA | 本节所在提交，只改 `docs/` |
+
+修复 1 与 3 都在 `apps/web/src/lib/project-base.ts`，放在同一提交并在提交说明中分别描述。
+
+### 三项修复
+
+| # | 问题 | 修复 | 回归 |
+| --- | --- | --- | --- |
+| 1 | 轮询按过滤后的 workflows 判断在途，`MEDIA_COMPOSE` 被排除；重新打开页面后合成面板 job 为 null，只有合成在跑时不再查询 | 轮询改为按全部 run 判断；串行，前一次结束后才安排下一次；没有在途 run 时停止；隐藏暂停、恢复可见重读（原逻辑保留）；合成 run 进入终态时递增 imageEpoch，重读媒体与进度事实。不依赖由当前面板提交。文本、图片等其他媒体与 retry 规则不变 | `project-base.spec.tsx`：进入时只有一个 RUNNING 合成 → 服务端变 SUCCEEDED 后自动读取并更新、之后停止；FAILED / CANCELED 退出处理中并停止；慢查询期间不重叠 |
+| 2 | 单镜任务（媒体生成、单镜合成）不带所属集，却让每一集的「试一段」显示处理中 | 单镜任务不再改变任何单集状态，只让项目级「试一段」显示有任务在运行；集级合成仍按 `composeEpisodeId` 只影响本集。未新增后端字段、表或 Migration，也不扫描镜头 | `beginner-steps.spec.ts`：三集剧本均 APPROVED+CURRENT、均无样片，仅第 1 集镜头有 MEDIA_VIDEO 或单镜 MEDIA_COMPOSE 运行 → 三集都不是处理中，项目级为处理中；集级 MEDIA_COMPOSE 只影响第 1 集的出成片 |
+| 3 | 被取代请求的晚到失败写入 error；旧初始加载的 finally 可关闭新加载的 loading | `reloadBase` 在 catch 中检查请求身份，被取代的请求静默结束、不写状态；当前请求失败仍 reject（调用方契约不变）。初始加载按代次检查 catch 与 finally；切换项目或卸载使在途请求失效；切换项目时清空旧错误；后续成功清除错误 | `project-base.spec.tsx`：新请求成功后旧请求晚到失败；新加载在途时旧 finally 不关闭 loading；切换项目后旧项目失败不污染；当前失败后再成功清除错误（且 reloadBase 对当前失败仍 reject） |
+
+修复前对照：把 `project-base.ts` 与 `beginner-steps.ts` 换回 `86d3641` 运行新回归，7 项失败（跨集误标 1 项；合成轮询 4 项，其中「慢查询不重叠」在旧实现上失败的直接原因是旧实现根本不轮询合成；旧请求覆盖 2 项）。「当前失败后再成功清除错误」在新旧实现上都通过，属于既有行为的保护用例。
+
+### 测试
+
+| 类型 | 内容 | 结果 |
+| --- | --- | --- |
+| 定向（happy-dom + 模拟 fetch + 假定时器；纯函数） | 上表回归，`project-base.spec.tsx` 7 项、`beginner-steps.spec.ts` 新增 1 项 | 通过；旧实现 7 项失败 |
+| 本机（Node 24.21.0，engine 检查开启） | `pnpm verify`（web 222，其余包全部通过）、`pnpm m3-av-e2e:check`、`pnpm m3-av-e2e:outcome`（23）、`git diff --check` | 通过 |
+| 真实 CI | 见下 | 通过 |
+
+### 重新进入运行中任务后自动更新的证据
+
+新手 E2E 第 5 步在集级合成受理后立即离开并重新打开 `/projects/<id>/create?step=final`。Worker 在本次隔离运行中使用仓库已有的 `M4_COMPOSE_HOLD_BEFORE_COMMIT_MS=8000`（只延迟 attempt 1 提交，远低于 30 秒租约），保证重新打开时任务确实仍在途。脚本断言：重新打开后第 1 集显示「… 处理中」，此刻接口读取的任务状态为 `QUEUED`；第 2、3 集不显示处理中；随后不点击、不切换标签、不刷新，页面自行变为「？ 待确认」，并用页面标记证明没有重新加载。原有「批准后不 reload 即更新」的断言保留在重新打开之后的批准步骤上。证据：run 37638051176 的 `evidence.json` 中 `checks.resume = {"stateOnEntry":"QUEUED","updatedWithoutReload":true}`。
+
+### CI（源码 SHA `8fe05d1`）
+
+9/9 success，首次运行即通过：
+
+| 工作流 | Run | 说明 |
+| --- | --- | --- |
+| Beginner creator web（pull_request） | [37638051176](https://github.com/xyq-dev/ai-drama-studio/actions/runs/37638051176) | job 112849353332；10/10 必需阶段；artifact 11489334877（ZIP SHA-256 6a75e894…3bce，与 GitHub digest 一致） |
+| Beginner creator web（push） | [37638040348](https://github.com/xyq-dev/ai-drama-studio/actions/runs/37638040348) | — |
+| M4 three episode sample end-to-end | [37638051453](https://github.com/xyq-dev/ai-drama-studio/actions/runs/37638051453) | results.json 52/52；artifact 11491728823 |
+| M1-C / M2-A / M2-C / M3-A / M3-B / Writing assistant API | 37638051479 / 37638050822 / 37638051239 / 37638051465 / 37638051481 / 37638051287 | success |
+
+本轮没有失败的 CI 运行。
+
+### 未执行与已知非阻断事项
+
+- r4206012908：当前集完成后，步骤汇总动作指向另一集的工作，但主按钮仍定位到当前已完成的集。登记为后续 UI 修正，本轮未改。
+- r4206012918：角色/场地有退回项时，「查看原因并修改」可能聚焦空的新建表单。登记为后续 UI 修正，本轮未改。
+- 单镜 DRAFT 待审核汇总、配音与真实 Provider、角色参考图启用、三集完整闭环：本轮不扩展。
+
+### 后端与状态
+
+后端未修改，无 Migration。Commit / Push：YES（普通推送原分支）。Merge：NO。Deploy：NO。Paid calls：NO。等待 Codex 复审。
