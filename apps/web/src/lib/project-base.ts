@@ -123,21 +123,51 @@ export function useProjectBase(projectId: string, failureText: string) {
   const [refreshEpoch, setRefreshEpoch] = useState(0);
   const [imageEpoch, setImageEpoch] = useState(0);
   const baseToken = useRef(0);
+  const loadGeneration = useRef(0);
   const workflowStatus = useRef(new Map<string, string>());
+  const composeStatus = useRef(new Map<string, string>());
 
-  const reloadBase = useCallback(async () => {
-    const request = ++baseToken.current;
-    const [nextProject, episodePage, storyPage, characterPage, locationPage, runs] = await Promise.all([
-      client.get<ProjectRecord>(`/projects/${projectId}`),
-      client.get<{ items: EpisodeRecord[] }>(`/projects/${projectId}/episodes`),
-      client.get<{ items: StoryRevision[]; nextCursor: string | null }>(`/projects/${projectId}/stories`),
-      client.get<{ items: Aggregate[]; nextCursor: string | null }>(`/projects/${projectId}/characters`),
-      client.get<{ items: Aggregate[]; nextCursor: string | null }>(`/projects/${projectId}/locations`),
-      client.get<WorkflowRun[]>(`/projects/${projectId}/workflow-runs`),
-    ]);
-    if (!shouldApplyLoad(request, baseToken.current)) return;
+  // Leaving this project (route change or unmount) invalidates every request still in flight for it.
+  useEffect(() => () => { baseToken.current += 1; }, [projectId]);
+
+  /** Applies a workflow-runs answer; a compose job reaching a terminal state rereads media and progress facts. */
+  const applyRuns = useCallback((runs: WorkflowRun[]) => {
     const tracked = runs.filter(trackedWorkflow);
     const transition = noteWorkflowTransitions(tracked, workflowStatus.current);
+    let composeFinished = false;
+    for (const run of runs) {
+      if (run.type !== "MEDIA_COMPOSE") continue;
+      const previous = composeStatus.current.get(run.id);
+      if (previous !== undefined && shouldPoll(previous, false) && !shouldPoll(run.status, false)) composeFinished = true;
+      composeStatus.current.set(run.id, run.status);
+    }
+    setWorkflows(tracked);
+    setAllRuns(runs);
+    return { ...transition, composeFinished };
+  }, []);
+
+  /**
+   * Rereads the project base. Only the latest request may write: a superseded request resolves without touching
+   * state, while a failure of the latest request still rejects so callers see it.
+   */
+  const reloadBase = useCallback(async () => {
+    const request = ++baseToken.current;
+    let loaded;
+    try {
+      loaded = await Promise.all([
+        client.get<ProjectRecord>(`/projects/${projectId}`),
+        client.get<{ items: EpisodeRecord[] }>(`/projects/${projectId}/episodes`),
+        client.get<{ items: StoryRevision[]; nextCursor: string | null }>(`/projects/${projectId}/stories`),
+        client.get<{ items: Aggregate[]; nextCursor: string | null }>(`/projects/${projectId}/characters`),
+        client.get<{ items: Aggregate[]; nextCursor: string | null }>(`/projects/${projectId}/locations`),
+        client.get<WorkflowRun[]>(`/projects/${projectId}/workflow-runs`),
+      ]);
+    } catch (caught) {
+      if (!shouldApplyLoad(request, baseToken.current)) return;
+      throw caught;
+    }
+    if (!shouldApplyLoad(request, baseToken.current)) return;
+    const [nextProject, episodePage, storyPage, characterPage, locationPage, runs] = loaded;
     // A successful load supersedes an earlier failure.
     setError(null);
     setProject(nextProject);
@@ -145,42 +175,57 @@ export function useProjectBase(projectId: string, failureText: string) {
     setStories(applyPage(null, { scope: projectId, items: storyPage.items, nextCursor: storyPage.nextCursor, append: false }));
     setCharacters(applyPage(null, { scope: projectId, items: characterPage.items, nextCursor: characterPage.nextCursor, append: false }));
     setLocations(applyPage(null, { scope: projectId, items: locationPage.items, nextCursor: locationPage.nextCursor, append: false }));
-    setWorkflows(tracked);
-    setAllRuns(runs);
-    if (transition.mediaBecameTerminal) setImageEpoch((value) => value + 1);
+    const transition = applyRuns(runs);
+    if (transition.mediaBecameTerminal || transition.composeFinished) setImageEpoch((value) => value + 1);
     if (transition.textBecameTerminal) setRefreshEpoch((value) => value + 1);
-  }, [projectId]);
+  }, [projectId, applyRuns]);
 
+  // The initial load of a project. Its error and loading belong to this load only: a later load, a project change
+  // or an unmount makes this one's catch and finally no-ops.
   useEffect(() => {
+    const generation = ++loadGeneration.current;
     setLoading(true);
+    setError(null);
     void reloadBase().catch((caught: unknown) => {
-      setError(caught instanceof ApiError ? caught.detail : failureText);
-    }).finally(() => setLoading(false));
+      if (generation === loadGeneration.current) setError(caught instanceof ApiError ? caught.detail : failureText);
+    }).finally(() => {
+      if (generation === loadGeneration.current) setLoading(false);
+    });
+    return () => { loadGeneration.current += 1; };
   }, [reloadBase, failureText]);
 
-  // One workflow-runs read at a time while something runs; paused while hidden; a return to the page rereads.
+  // While any run is in flight (including compose runs, whoever submitted them): one workflow-runs read at a time,
+  // the next scheduled only after the previous answer; stop when nothing runs; paused while hidden; a return to the
+  // page rereads.
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let stopped = false;
+    let reading = false;
+    const schedule = () => {
+      if (!stopped) timer = setTimeout(tick, 2000);
+    };
     const tick = () => {
+      timer = undefined;
+      if (stopped || reading) return;
       const hidden = document.visibilityState === "hidden";
-      const active = workflows.some((run) => shouldPoll(run.status, hidden));
+      const active = allRuns.some((run) => shouldPoll(run.status, hidden));
       if (!active) return;
       const request = baseToken.current;
+      reading = true;
       void client.get<WorkflowRun[]>(`/projects/${projectId}/workflow-runs`).then((runs) => {
-        if (!shouldApplyLoad(request, baseToken.current)) return;
-        const tracked = runs.filter(trackedWorkflow);
-        const transition = noteWorkflowTransitions(tracked, workflowStatus.current);
-        setWorkflows(tracked);
-        setAllRuns(runs);
-        if (transition.mediaBecameTerminal) setImageEpoch((value) => value + 1);
+        if (stopped || !shouldApplyLoad(request, baseToken.current)) return;
+        const transition = applyRuns(runs);
+        if (transition.mediaBecameTerminal || transition.composeFinished) setImageEpoch((value) => value + 1);
         if (transition.textBecameTerminal) {
           setRefreshEpoch((value) => value + 1);
           void reloadBase().catch(() => undefined);
         }
-      }).catch(() => undefined);
-      timer = setTimeout(tick, 2000);
+      }).catch(() => undefined).finally(() => {
+        reading = false;
+        schedule();
+      });
     };
-    timer = setTimeout(tick, 2000);
+    schedule();
     const onVisible = () => {
       if (document.visibilityState !== "visible") return;
       setRefreshEpoch((value) => value + 1);
@@ -188,10 +233,11 @@ export function useProjectBase(projectId: string, failureText: string) {
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => {
+      stopped = true;
       if (timer) clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [projectId, reloadBase, workflows]);
+  }, [projectId, reloadBase, applyRuns, allRuns]);
 
   const more = useCallback(async (kind: EntityPageKind) => {
     const current = kind === "stories" ? stories : kind === "characters" ? characters : locations;
