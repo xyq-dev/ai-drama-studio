@@ -2,8 +2,8 @@ import type { Aggregate, EpisodeRecord, StoryRevision, WorkflowRun } from "./pro
 
 /**
  * The beginner flow's five steps, derived only from server facts: review and freshness of revisions, episode script
- * pointers, real approved single-shot composites, episode composites and workflow runs. Nothing here is a local
- * "done" flag or a fixed percentage; an unloaded fact stays unknown instead of being guessed.
+ * pointers, real approved single-shot composites, episode composites and running workflow jobs. Nothing here is a
+ * local "done" flag or a fixed percentage; a fact that was not read completely is "unknown", never "done".
  */
 export type StepKey = "story" | "script" | "cast" | "sample" | "final";
 
@@ -14,7 +14,8 @@ export type StepState =
   | "in_progress"
   | "needs_attention"
   | "done"
-  | "source_updated";
+  | "source_updated"
+  | "unknown";
 
 export const STEP_STATE_TEXT: Record<StepState, string> = {
   not_started: "未开始",
@@ -24,6 +25,7 @@ export const STEP_STATE_TEXT: Record<StepState, string> = {
   needs_attention: "需要处理",
   done: "已完成",
   source_updated: "来源已更新",
+  unknown: "尚未确认",
 };
 
 /** A short symbol so a state is never told by colour alone. */
@@ -35,6 +37,7 @@ export const STEP_STATE_MARK: Record<StepState, string> = {
   needs_attention: "！",
   done: "✓",
   source_updated: "↻",
+  unknown: "—",
 };
 
 export const STEPS: ReadonlyArray<{ key: StepKey; no: number; title: string; doing: string; decide: string; result: string }> = [
@@ -64,9 +67,9 @@ export function revisionState(revision: RevisionFacts | null, approved = true): 
   return "needs_confirmation";
 }
 
-/** Worst first: what the user must look at before anything else. */
-const PRIORITY: StepState[] = ["source_updated", "needs_attention", "in_progress", "needs_input", "needs_confirmation",
-  "not_started", "done"];
+/** Worst first: what the user must look at before anything else. A fact not read yet is never "done". */
+const PRIORITY: StepState[] = ["source_updated", "needs_attention", "unknown", "in_progress", "needs_input",
+  "needs_confirmation", "not_started", "done"];
 
 export function combine(states: readonly StepState[]): StepState {
   if (states.length === 0) return "needs_input";
@@ -74,24 +77,37 @@ export function combine(states: readonly StepState[]): StepState {
   return "done";
 }
 
-export interface EpisodeMediaFacts {
-  /** Approved, current single-shot composites the episode can compose from; null while unread. */
-  candidates: number | null;
-  /** Episode composites: current (ACTIVE) or history (STALE), with their review. null while unread. */
-  composites: Array<{ status: string; reviewStatus: string }> | null;
-  /** The server answered CONFIGURATION_ERROR: local compose is not enabled here. */
-  composeUnavailable?: boolean;
+/**
+ * How a list was read. ok: every page that matters was read. unavailable: the server reports the feature off
+ * (CONFIGURATION_ERROR). failed: the read failed. incomplete: the bounded scan ended with pages left.
+ */
+export type ReadState = "ok" | "unavailable" | "failed" | "incomplete";
+
+export interface CompositeSummary {
+  read: ReadState;
+  approvedActive: boolean;
+  draftActive: boolean;
+  rejectedActive: boolean;
+  staleApproved: boolean;
 }
 
-export function composeUnavailable(media: Record<number, EpisodeMediaFacts>): boolean {
-  return Object.values(media).some((item) => item.composeUnavailable === true);
+export interface EpisodeMediaFacts {
+  /** Approved, current single-shot composites; the scan stops once enough are found, so count is a lower bound. */
+  candidates: { read: ReadState; count: number };
+  /** Episode composites seen, current (ACTIVE) and history (STALE), summarized by review. */
+  composites: CompositeSummary;
+}
+
+export interface ListFacts<T> {
+  items: T[];
+  read: ReadState;
 }
 
 export interface BeginnerFacts {
   story: StoryRevision | null;
   episodes: EpisodeRecord[];
-  characters: Aggregate[];
-  locations: Aggregate[];
+  characters: ListFacts<Aggregate>;
+  locations: ListFacts<Aggregate>;
   /** Every workflow run of the project, unfiltered. */
   runs: WorkflowRun[];
   media: Record<number, EpisodeMediaFacts>;
@@ -111,45 +127,67 @@ export function entityState(entity: Aggregate): StepState {
 
 const RUNNING = new Set(["PENDING", "QUEUED", "RUNNING", "WAITING_EXTERNAL", "RETRY_WAIT"]);
 
-function shotMediaRuns(runs: readonly WorkflowRun[]) {
-  return runs.flatMap((run) => run.jobs.filter((job) => job.kind.startsWith("MEDIA_") && job.sourceShotRevisionId)
-    .map((job) => ({ run, job })));
+/**
+ * Shot media jobs still running. Finished history is not used: a job that succeeded or failed for an older shot
+ * revision says nothing about the current sample.
+ */
+function shotJobRunning(runs: readonly WorkflowRun[]): boolean {
+  return runs.some((run) => run.jobs.some((job) => job.kind.startsWith("MEDIA_") && Boolean(job.sourceShotRevisionId)
+    && RUNNING.has(job.state)));
+}
+
+/** Episode compose running for exactly this episode, by the episode frozen in the job input. Never inferred. */
+export function episodeComposeRunning(runs: readonly WorkflowRun[], episodeId: string | undefined): boolean {
+  if (!episodeId) return false;
+  return runs.some((run) => run.jobs.some((job) => job.kind === "MEDIA_COMPOSE" && !job.sourceShotRevisionId
+    && job.composeEpisodeId === episodeId && RUNNING.has(job.state)));
+}
+
+/** Any compose job (single shot or episode) still running. */
+export function composeRunning(runs: readonly WorkflowRun[]): boolean {
+  return runs.some((run) => run.jobs.some((job) => job.kind === "MEDIA_COMPOSE" && RUNNING.has(job.state)));
 }
 
 export function episodeSampleState(facts: BeginnerFacts, episodeNo: number): StepState {
   if (scriptState(facts.episodes.find((item) => item.episodeNo === episodeNo)) !== "done") return "not_started";
-  const media = facts.media[episodeNo];
-  if (media?.candidates && media.candidates > 0) return "done";
-  return media?.candidates === null || media === undefined ? "not_started" : "needs_input";
+  const candidates = facts.media[episodeNo]?.candidates;
+  if (!candidates) return "unknown";
+  if (candidates.count > 0) return "done";
+  if (candidates.read !== "ok") return "unknown";
+  return shotJobRunning(facts.runs) ? "in_progress" : "needs_input";
 }
 
 export function sampleState(facts: BeginnerFacts): StepState {
-  const scripts = [1, 2, 3].map((no) => scriptState(facts.episodes.find((item) => item.episodeNo === no)));
-  if (!scripts.includes("done")) return "not_started";
-  if ([1, 2, 3].some((no) => (facts.media[no]?.candidates ?? 0) > 0)) return "done";
-  const shotJobs = shotMediaRuns(facts.runs);
-  if (shotJobs.some(({ job }) => RUNNING.has(job.state))) return "in_progress";
-  const latestCompose = shotJobs.filter(({ job }) => job.kind === "MEDIA_COMPOSE")
-    .sort((left, right) => right.run.createdAt.localeCompare(left.run.createdAt))[0];
-  // A finished single-shot compose without an approved candidate yet is waiting for the user's review.
-  if (latestCompose?.job.state === "SUCCEEDED") return "needs_confirmation";
-  if (latestCompose && (latestCompose.job.state === "FAILED" || latestCompose.job.state === "CANCELED")) return "needs_attention";
-  return "needs_input";
+  const ready = [1, 2, 3].filter((no) => scriptState(facts.episodes.find((item) => item.episodeNo === no)) === "done");
+  if (ready.length === 0) return "not_started";
+  const perEpisode = ready.map((no) => episodeSampleState(facts, no));
+  if (perEpisode.includes("done")) return "done";
+  if (perEpisode.includes("unknown")) return "unknown";
+  return shotJobRunning(facts.runs) ? "in_progress" : "needs_input";
 }
 
 export function episodeFinalState(facts: BeginnerFacts, episodeNo: number): StepState {
   const media = facts.media[episodeNo];
-  if (!media || media.composites === null) return "not_started";
-  const current = media.composites.filter((item) => item.status === "ACTIVE");
-  if (current.some((item) => item.reviewStatus === "APPROVED")) return "done";
-  if (current.some((item) => item.reviewStatus === "DRAFT")) return "needs_confirmation";
-  if (media.composites.some((item) => item.status === "STALE" && item.reviewStatus === "APPROVED")) return "source_updated";
-  // Episode compose jobs carry no shot revision; the job view does not say which episode, so a running one marks
-  // every episode still without a current composite as in progress.
-  const composing = facts.runs.some((run) => run.jobs.some((job) => job.kind === "MEDIA_COMPOSE" && !job.sourceShotRevisionId
-    && RUNNING.has(job.state)));
-  if (composing) return "in_progress";
-  return (media.candidates ?? 0) >= 2 ? "needs_input" : "not_started";
+  const episode = facts.episodes.find((item) => item.episodeNo === episodeNo);
+  if (!media || !episode) return "not_started";
+  const composites = media.composites;
+  // An approved current composite settles the episode even when later pages were not read.
+  if (composites.approvedActive) return "done";
+  if (composites.read === "unavailable" || composites.read === "failed") return "unknown";
+  if (episodeComposeRunning(facts.runs, episode.id)) return "in_progress";
+  if (composites.draftActive) return "needs_confirmation";
+  if (composites.rejectedActive) return "needs_attention";
+  // History survives a script change: an approved result made stale by an upstream edit is still a fact.
+  if (composites.staleApproved) return "source_updated";
+  if (composites.read === "incomplete") return "unknown";
+  if (media.candidates.count >= 2) return "needs_input";
+  return media.candidates.read === "ok" || scriptState(episode) !== "done" ? "not_started" : "unknown";
+}
+
+function listStates(list: ListFacts<Aggregate>): StepState[] {
+  const states = list.items.map(entityState);
+  if (list.read !== "ok") states.push("unknown");
+  return states;
 }
 
 export function stepStates(facts: BeginnerFacts): Record<StepKey, StepState> {
@@ -157,15 +195,16 @@ export function stepStates(facts: BeginnerFacts): Record<StepKey, StepState> {
   const scriptStates = [1, 2, 3].map((no) => scriptState(facts.episodes.find((item) => item.episodeNo === no)));
   const script = facts.episodes.length === 0 ? "not_started" : combine(scriptStates);
   const anyScript = scriptStates.includes("done");
-  const cast = facts.characters.length === 0
-    ? (anyScript ? "needs_input" : "not_started")
-    : combine([...facts.characters, ...facts.locations].map(entityState));
+  // Location problems count even before the first character exists.
+  const castStates = [...listStates(facts.characters), ...listStates(facts.locations)];
+  if (facts.characters.read === "ok" && facts.characters.items.length === 0) castStates.push(anyScript ? "needs_input" : "not_started");
+  const cast = combine(castStates);
   const sample = sampleState(facts);
   const finals = [1, 2, 3].map((no) => episodeFinalState(facts, no));
   const open = finals.filter((state) => state !== "not_started" && state !== "done");
   const final: StepState = finals.every((state) => state === "done") ? "done"
-    : finals.every((state) => state === "not_started") ? "not_started"
-      : open.length > 0 ? combine(open) : "needs_input";
+    : open.length > 0 ? combine(open)
+      : finals.every((state) => state === "not_started") ? "not_started" : "needs_input";
   return { story, script, cast, sample, final };
 }
 
@@ -174,20 +213,52 @@ export function currentStep(states: Record<StepKey, StepState>): StepKey {
   return STEPS.find((step) => states[step.key] !== "done")?.key ?? "final";
 }
 
-/** What the single primary action on a step should do, in plain words, from its state. */
-export function primaryAction(step: StepKey, state: StepState): { label: string; target: "editor" | "review" | "next" | "tasks" | "candidates" } {
-  if (state === "done") return { label: "继续下一步", target: "next" };
-  if (state === "in_progress") return { label: "查看任务进度", target: "tasks" };
+/** Per-episode state of a step that has one. */
+export function episodeStepState(step: StepKey, facts: BeginnerFacts, episodeNo: number): StepState {
+  if (step === "script") return scriptState(facts.episodes.find((item) => item.episodeNo === episodeNo));
+  if (step === "sample") return episodeSampleState(facts, episodeNo);
+  if (step === "final") return episodeFinalState(facts, episodeNo);
+  return "done";
+}
+
+/** The episode a step should open: the first one whose own state still needs the user, else episode 1. */
+export function episodeForStep(step: StepKey, facts: BeginnerFacts): number {
+  if (step !== "script" && step !== "sample" && step !== "final") return 1;
+  const open = [1, 2, 3].find((no) => {
+    const state = episodeStepState(step, facts, no);
+    return state !== "done" && state !== "not_started";
+  });
+  return open ?? 1;
+}
+
+export type PrimaryTarget = "editor" | "review" | "next" | "tasks" | "candidates" | "compose" | "reload";
+
+/** What the single primary action on a step does, from its state. Every target has a real destination. */
+export function primaryAction(step: StepKey, state: StepState): { label: string; target: PrimaryTarget } {
+  if (state === "unknown") return { label: "重新读取进度", target: "reload" };
+  if (state === "done") return step === "final" ? { label: "查看并下载成片", target: "compose" } : { label: "继续下一步", target: "next" };
+  if (state === "in_progress") return step === "final" ? { label: "查看合成进度", target: "compose" } : { label: "查看任务进度", target: "tasks" };
   if (state === "needs_confirmation") {
-    return step === "sample" || step === "final" ? { label: "播放并检查", target: "review" } : { label: "检查并确认当前版本", target: "review" };
+    if (step === "final") return { label: "播放并检查", target: "compose" };
+    if (step === "sample") return { label: "播放并检查", target: "candidates" };
+    return { label: "检查并确认当前版本", target: "review" };
   }
-  if (state === "source_updated") return { label: "查看变化并重新确认", target: "review" };
-  if (state === "needs_attention") return { label: "查看原因并修改", target: "editor" };
+  // A stale revision cannot be approved again: the way out is a new version, or a new sample or episode cut.
+  if (state === "source_updated") {
+    if (step === "sample") return { label: "重新生成样片", target: "candidates" };
+    if (step === "final") return { label: "重新编排合成", target: "compose" };
+    return { label: "修改并保存新版本", target: "editor" };
+  }
+  if (state === "needs_attention") {
+    if (step === "final") return { label: "查看退回原因并重新合成", target: "compose" };
+    if (step === "sample") return { label: "选一个镜头重新试做", target: "candidates" };
+    return { label: "查看原因并修改", target: "editor" };
+  }
   switch (step) {
     case "story": return { label: "写下故事并保存", target: "editor" };
     case "script": return { label: "补齐剧本并保存", target: "editor" };
     case "cast": return { label: "添加角色", target: "editor" };
     case "sample": return { label: "选一个镜头试做", target: "candidates" };
-    default: return { label: "编排并合成本集", target: "editor" };
+    default: return { label: "编排并合成本集", target: "compose" };
   }
 }
