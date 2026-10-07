@@ -63,6 +63,7 @@ function mediaTaskLabel(type: string): string {
   if (type === "MEDIA_TTS") return "Mock 配音";
   if (type === "MEDIA_SUBTITLE") return "Mock 字幕";
   if (type === "MEDIA_MUSIC") return "Mock 音乐";
+  if (type === "MEDIA_COMPOSE") return "本地合成";
   return "Mock 图片";
 }
 
@@ -1372,6 +1373,8 @@ export function ScenePane(props: {
   onSaved: () => Promise<void>;
   onStatus: (value: string) => void;
   onOpenShot: (shotId: string) => void;
+  /** Compose accepted, finished or reviewed under this scene; the advanced workbench does not need it. */
+  onMediaChanged?: () => void;
 }) {
   const [history, setHistory] = useState<{ aggregate: Aggregate; items: SceneRevision[] } | null>(null);
   const [shots, setShots] = useState<PageState<Aggregate> | null>(null);
@@ -1607,7 +1610,7 @@ export function ScenePane(props: {
             onAccepted={props.onSaved}
             onReused={() => setReuseEpoch((value) => value + 1)}
           />
-          <ComposePreflight revisionId={shotCurrent.id} refreshEpoch={props.imageEpoch + reuseEpoch} />
+          <ComposePreflight revisionId={shotCurrent.id} refreshEpoch={props.imageEpoch + reuseEpoch} onChanged={props.onMediaChanged} />
           </div>
           <InspectSlot>
           <RevisionColumn
@@ -2710,7 +2713,7 @@ export function TaskDrawer(props: {
   }
 
   const textRuns = props.runs.filter((run) => TEXT_WORKFLOW_TYPES.has(run.type));
-  const mediaRuns = props.runs.filter((run) => MEDIA_WORKFLOW_TYPES.has(run.type));
+  const mediaRuns = props.runs.filter((run) => MEDIA_WORKFLOW_TYPES.has(run.type) || run.type === "MEDIA_COMPOSE");
 
   return (
     <div className="fixed inset-y-0 right-0 z-30 w-full max-w-md overflow-auto bg-white p-4 shadow-xl">

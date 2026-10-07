@@ -27,6 +27,14 @@ interface World {
   story: ReturnType<typeof story> | null;
   episodes: ReturnType<typeof episode>[];
   hold?: Promise<void>;
+  /** Holds every episode media read until released. */
+  mediaHold?: Promise<void>;
+  runs?: unknown[];
+  composites?: Record<string, Array<{ status: string; reviewStatus: string }>>;
+  candidates?: Record<string, unknown[]>;
+  /** Fail the project read this many times first. */
+  projectFailures?: number;
+  scenesFail?: () => boolean;
 }
 
 function install(worlds: Record<string, World>) {
@@ -38,12 +46,26 @@ function install(worlds: Record<string, World>) {
     const world = id ? worlds[id] : undefined;
     if (world?.hold && path === `/api/v1/projects/${id}`) await world.hold;
     if (!world) return json({ items: [], nextCursor: null });
-    if (path === `/api/v1/projects/${id}`) return json({ id, title: world.title, premise: "梗概", version: 3, status: "ACTIVE" });
+    if (path === `/api/v1/projects/${id}`) {
+      if (world.projectFailures && world.projectFailures > 0) {
+        world.projectFailures -= 1;
+        return json({ error: { code: "INTERNAL", message: "暂时失败" } }, 500);
+      }
+      return json({ id, title: world.title, premise: "梗概", version: 3, status: "ACTIVE" });
+    }
     if (path.endsWith("/episodes")) return json({ items: world.episodes });
     if (path.endsWith("/stories")) return json({ items: world.story ? [world.story] : [], nextCursor: null });
-    if (path.endsWith("/workflow-runs")) return json([]);
-    if (path.endsWith("/compose-candidates")) return json({ items: [], nextCursor: null });
-    if (path.endsWith("/composites")) return json({ items: [], nextCursor: null });
+    if (path.endsWith("/workflow-runs")) return json(world.runs ?? []);
+    const episodeId = path.split("/episodes/")[1]?.split("/")[0] ?? "";
+    if (path.endsWith("/compose-candidates")) {
+      if (world.mediaHold) await world.mediaHold;
+      return json({ items: world.candidates?.[episodeId] ?? [], nextCursor: null });
+    }
+    if (path.endsWith("/composites")) {
+      if (world.mediaHold) await world.mediaHold;
+      return json({ items: world.composites?.[episodeId] ?? [], nextCursor: null });
+    }
+    if (path.endsWith("/scenes") && world.scenesFail?.()) return json({ error: { code: "INTERNAL", message: "boom" } }, 500);
     return json({ items: [], nextCursor: null });
   }));
   return calls;
@@ -141,5 +163,92 @@ describe("beginner flow", () => {
     expect(await screen.findByRole("heading", { name: "新作品" })).toBeTruthy();
     await act(async () => { release(); await hold; });
     expect(screen.queryByRole("heading", { name: "旧作品" })).toBeNull();
+  });
+
+  it("reports a draft restored from this tab as unsaved and warns before leaving (review)", async () => {
+    window.sessionStorage.setItem(`ads-draft:${P1}:story:story-1`, JSON.stringify({ fingerprint: "f", idempotencyKey: "k",
+      payload: { text: "上次没保存的故事" }, ifMatch: 3 }));
+    install({ [P1]: { title: "夜班", story: story("DRAFT"), episodes: [] } });
+    const assign = vi.fn();
+    const original = window.location;
+    Object.defineProperty(window, "location", { configurable: true, value: { ...original, assign, search: original.search } });
+    try {
+      render(<BeginnerFlow projectId={P1} />);
+      expect(await screen.findByText("保存状态：有未保存修改（本标签页草稿）：故事")).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "稍后继续" }));
+      expect(screen.getByRole("alert").textContent).toContain("还有未保存的修改");
+      expect(assign).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(window, "location", { configurable: true, value: original });
+    }
+  });
+
+  it("waits for every progress fact before choosing the first step and episode (review)", async () => {
+    let release!: () => void;
+    const mediaHold = new Promise<void>((done) => { release = done; });
+    const approved = [episode(1, "APPROVED"), episode(2, "APPROVED"), episode(3, "APPROVED")];
+    install({ [P1]: { title: "夜班", story: story("APPROVED"), episodes: approved, mediaHold,
+      candidates: { "episode-1": [{}, {}], "episode-2": [{}, {}], "episode-3": [{}, {}] },
+      composites: { "episode-1": [{ status: "ACTIVE", reviewStatus: "APPROVED" }], "episode-2": [{ status: "ACTIVE", reviewStatus: "DRAFT" }] } } });
+    render(<BeginnerFlow projectId={P1} />);
+    await screen.findByRole("heading", { name: "夜班" });
+    // Before the media facts arrive no step is chosen, so nothing can be pinned to the wrong one.
+    expect(screen.queryByRole("heading", { name: /第 \d 步/ })).toBeNull();
+    await act(async () => { release(); await mediaHold; });
+    // Cast has no characters yet, so step 3 is first; switching to 出成片 opens episode 2, the one waiting for review.
+    expect(await screen.findByRole("heading", { name: "第 3 步 · 定人物" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /第 5 步 出成片/ }));
+    expect(await screen.findByRole("tab", { name: /第 2 集 · ？ 待确认/, selected: true })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: /第 1 集 · ✓ 已完成/ })).toBeTruthy();
+  });
+
+  it("shows only the episode whose compose is running as 处理中 and lists compose jobs in the task drawer (review)", async () => {
+    window.history.replaceState(null, "", `/projects/${P1}/create?step=final`);
+    const approved = [episode(1, "APPROVED"), episode(2, "APPROVED"), episode(3, "APPROVED")];
+    install({ [P1]: { title: "夜班", story: story("APPROVED"), episodes: approved,
+      runs: [{ id: "run-1", type: "MEDIA_COMPOSE", status: "RUNNING", createdAt: "2026-10-07T00:00:00.000Z",
+        jobs: [{ id: "job-1", kind: "MEDIA_COMPOSE", state: "RUNNING", errorCode: null, errorMessage: null,
+          sourceShotRevisionId: null, composeEpisodeId: "episode-1", attempts: [] }] },
+      { id: "run-2", type: "MEDIA_VIDEO", status: "RUNNING", createdAt: "2026-10-07T00:00:00.000Z",
+        jobs: [{ id: "job-2", kind: "MEDIA_VIDEO", state: "RUNNING", errorCode: null, errorMessage: null,
+          sourceShotRevisionId: "shot-r", attempts: [] }] }] } });
+    render(<BeginnerFlow projectId={P1} />);
+    expect(await screen.findByRole("tab", { name: /第 1 集 · … 处理中/ })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: /第 2 集 · ○ 未开始/ })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: /第 3 集 · ○ 未开始/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "查看合成进度" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /第 4 步 试一段/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "查看任务进度" }));
+    expect(await screen.findByText(/本地合成 · /)).toBeTruthy();
+  });
+
+  it("clears a project-load error once a later load succeeds (review)", async () => {
+    install({ [P1]: { title: "夜班", story: story("DRAFT"), episodes: [], projectFailures: 1 } });
+    render(<BeginnerFlow projectId={P1} />);
+    expect(await screen.findByText(/作品读取失败/)).toBeTruthy();
+    await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
+    expect(await screen.findByRole("heading", { name: "第 1 步 · 定故事" })).toBeTruthy();
+    expect(screen.queryByText(/作品读取失败/)).toBeNull();
+  });
+
+  it("tells a failed scene read apart from an episode without scenes (review)", async () => {
+    window.history.replaceState(null, "", `/projects/${P1}/create?step=sample`);
+    let fail = true;
+    install({ [P1]: { title: "夜班", story: story("APPROVED"), episodes: [episode(1, "APPROVED"), episode(2, null), episode(3, null)],
+      scenesFail: () => fail } });
+    render(<BeginnerFlow projectId={P1} />);
+    expect(await screen.findByText(/场景列表读取失败，不能确定这一集有没有场景/)).toBeTruthy();
+    expect(screen.queryByText(/这一集还没有场景/)).toBeNull();
+    fail = false;
+    fireEvent.click(screen.getByRole("button", { name: "重新读取场景" }));
+    expect(await screen.findByText(/这一集还没有场景/)).toBeTruthy();
+  });
+
+  it("opens the episode whose script still needs work (review)", async () => {
+    window.history.replaceState(null, "", `/projects/${P1}/create?step=script`);
+    install({ [P1]: { title: "夜班", story: story("APPROVED"), episodes: [episode(1, "APPROVED"), episode(2, "DRAFT"), episode(3, null)] } });
+    render(<BeginnerFlow projectId={P1} />);
+    expect(await screen.findByRole("tab", { name: /第 2 集/, selected: true })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "高级编辑" }).getAttribute("href")).toBe(`/projects/${P1}?focus=script&episode=2`);
   });
 });

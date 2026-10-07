@@ -67,6 +67,8 @@ export interface WorkflowJob {
   errorCode: string | null;
   errorMessage: string | null;
   sourceShotRevisionId?: string | null;
+  /** Episode-level compose jobs only: the episode frozen in the job input. */
+  composeEpisodeId?: string | null;
   attempts?: WorkflowAttempt[];
 }
 
@@ -136,6 +138,8 @@ export function useProjectBase(projectId: string, failureText: string) {
     if (!shouldApplyLoad(request, baseToken.current)) return;
     const tracked = runs.filter(trackedWorkflow);
     const transition = noteWorkflowTransitions(tracked, workflowStatus.current);
+    // A successful load supersedes an earlier failure.
+    setError(null);
     setProject(nextProject);
     setEpisodes(episodePage.items);
     setStories(applyPage(null, { scope: projectId, items: storyPage.items, nextCursor: storyPage.nextCursor, append: false }));

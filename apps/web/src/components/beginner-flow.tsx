@@ -1,24 +1,29 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { StudioClient } from "../lib/studio-client";
 import { useProjectBase, type Aggregate } from "../lib/project-base";
-import { loadEpisodeMedia } from "../lib/beginner-facts";
+import { composeOff, loadEntityLists, loadEpisodeMedia, mediaReadFailed, readPages } from "../lib/beginner-facts";
 import {
   STEPS,
   STEP_STATE_MARK,
   STEP_STATE_TEXT,
-  composeUnavailable,
   currentStep,
   entityState,
   episodeFinalState,
+  episodeForStep,
+  episodeSampleState,
   primaryAction,
   scriptState,
   stepStates,
+  type BeginnerFacts,
   type EpisodeMediaFacts,
+  type ListFacts,
+  type ReadState,
   type StepKey,
   type StepState,
 } from "../lib/beginner-steps";
+import { safeUnsavedDrafts, saveText } from "../lib/unsaved-drafts";
 import { currentStoryRevision } from "../lib/studio-model";
 import { BeginnerShell } from "./beginner-shell";
 import { EntityPane, ScenePane, ScriptPane, StoryPane, TaskDrawer } from "./workbench";
@@ -33,15 +38,14 @@ function stepFromUrl(): StepKey | null {
   return STEP_KEYS.includes(value as StepKey) ? (value as StepKey) : null;
 }
 
-/** "服务器已保存" / "本标签页草稿" / "有未保存修改", from the status the existing editors report. */
-function saveText(status: string): { text: string; unsaved: boolean } {
-  if (status === "已保存") return { text: "服务器已保存", unsaved: false };
-  if (status === "保存中") return { text: "正在保存到服务器", unsaved: true };
-  if (status === "尚未修改") return { text: "没有新的修改", unsaved: false };
-  if (status.includes("冲突")) return { text: "有未保存修改：服务器上的版本已变化，草稿保留在本标签页，需要你确认后再保存", unsaved: true };
-  if (status.includes("失败")) return { text: "有未保存修改：保存没有成功，草稿保留在本标签页", unsaved: true };
-  return { text: "有未保存修改（本标签页草稿）", unsaved: true };
+interface Progress {
+  projectId: string;
+  media: Record<number, EpisodeMediaFacts>;
+  characters: ListFacts<Aggregate>;
+  locations: ListFacts<Aggregate>;
 }
+
+const UNREAD: ListFacts<Aggregate> = { items: [], read: "incomplete" };
 
 function StatePill({ state }: { state: StepState }) {
   const tone = state === "done" ? "bg-[#E8F3EA] text-[#1F6B33]"
@@ -71,17 +75,18 @@ function EpisodeTabs(props: { value: number; onChange: (episodeNo: number) => vo
  */
 export function BeginnerFlow({ projectId }: { projectId: string }) {
   const base = useProjectBase(projectId, "作品读取失败");
-  const { project, episodes, stories, characters, locations, allRuns, workflows, loading, error, refreshEpoch, imageEpoch,
+  const { project, episodes, stories, characters, locations, allRuns, loading, error, refreshEpoch, imageEpoch,
     reloadBase } = base;
   const [step, setStep] = useState<StepKey | null>(null);
   const [episodeNo, setEpisodeNo] = useState(1);
   const [castKind, setCastKind] = useState<"character" | "location">("character");
   const [sceneId, setSceneId] = useState<string | null>(null);
   const [shotId, setShotId] = useState<string | null>(null);
-  const [scenes, setScenes] = useState<Aggregate[] | null>(null);
-  const [media, setMedia] = useState<Record<number, EpisodeMediaFacts>>({});
-  const [mediaError, setMediaError] = useState(false);
-  const [saveState, setSaveState] = useState("尚未修改");
+  const [scenes, setScenes] = useState<{ items: Aggregate[]; read: ReadState } | null>(null);
+  const [scenesEpoch, setScenesEpoch] = useState(0);
+  const [progress, setProgress] = useState<Progress | null>(null);
+  const [lastEvent, setLastEvent] = useState("尚未修改");
+  const [draftTick, setDraftTick] = useState(0);
   const [tasksOpen, setTasksOpen] = useState(false);
   const [leaving, setLeaving] = useState(false);
   const body = useRef<HTMLDivElement>(null);
@@ -89,30 +94,56 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
   const mediaToken = useRef(0);
   const scenesToken = useRef(0);
 
-  // Episode media facts follow every base reload; an older answer is dropped.
+  // Facts of another project never mix with this one.
   useEffect(() => {
-    if (!project) return;
+    setProgress(null);
+  }, [projectId]);
+
+  // Progress facts (complete entity lists, episode media) follow every base reload, which compose panels trigger
+  // when a compose is accepted, finishes or is reviewed. Every read reports how complete it was; an older answer
+  // is dropped.
+  useEffect(() => {
+    if (!project || project.id !== projectId) return;
     const token = ++mediaToken.current;
-    void loadEpisodeMedia(client, projectId, episodes).then((next) => {
+    void Promise.all([loadEntityLists(client, projectId), loadEpisodeMedia(client, projectId, episodes)]).then(([entities, media]) => {
       if (token !== mediaToken.current) return;
-      setMedia(next);
-      setMediaError(false);
-    }).catch(() => {
-      if (token === mediaToken.current) setMediaError(true);
+      setProgress({ projectId, media, ...entities });
     });
   }, [project, projectId, episodes, refreshEpoch, imageEpoch]);
 
-  const facts = useMemo(() => ({
-    story: currentStoryRevision(stories?.items ?? []), episodes, characters: characters?.items ?? [],
-    locations: locations?.items ?? [], runs: allRuns, media,
-  }), [stories, episodes, characters, locations, allRuns, media]);
+  const ready = progress !== null && progress.projectId === projectId;
+  const media = ready ? progress.media : {};
+  const facts: BeginnerFacts = useMemo(() => ({
+    story: currentStoryRevision(stories?.items ?? []), episodes,
+    characters: ready ? progress.characters : UNREAD, locations: ready ? progress.locations : UNREAD,
+    runs: allRuns, media: ready ? progress.media : {},
+  }), [stories, episodes, ready, progress, allRuns]);
   const states = useMemo(() => stepStates(facts), [facts]);
+  const off = composeOff(media);
 
-  // First visit opens the first step that still needs the user; ?step= reopens a chosen step after a refresh.
+  // First visit waits for every fact, then opens the first step (and episode) that still needs the user;
+  // ?step= reopens a chosen step after a refresh.
   useEffect(() => {
-    if (step !== null || loading || !project) return;
-    setStep(stepFromUrl() ?? currentStep(states));
-  }, [step, loading, project, states]);
+    if (step !== null || loading || !project || !ready) return;
+    const chosen = stepFromUrl() ?? currentStep(states);
+    setStep(chosen);
+    setEpisodeNo(episodeForStep(chosen, facts));
+  }, [step, loading, project, ready, states, facts]);
+
+  /** Unsaved work in this tab, per object, from the editors' stored drafts. */
+  const drafts = useMemo(() => (project ? safeUnsavedDrafts(projectId, episodes) : []),
+    // draftTick and lastEvent change whenever an editor reports, so the stored drafts are read again.
+    [project, projectId, episodes, draftTick, lastEvent]);
+
+  function onStatus(value: string) {
+    setLastEvent(value);
+    setDraftTick((tick) => tick + 1);
+  }
+
+  /** A compose panel changed facts: reread the base, which rereads the progress facts once. */
+  function refreshFacts() {
+    void reloadBase().catch(() => undefined);
+  }
 
   useEffect(() => {
     if (!step) return;
@@ -128,20 +159,21 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
     setShotId(null);
   }, [episodeId]);
 
-  // Scenes of the chosen episode for 试一段; switching episodes or projects drops a late list.
+  // Every scene of the chosen episode for 试一段, page by page; a failed read is not an empty episode.
+  // Switching episodes or projects drops a late list.
   useEffect(() => {
     setScenes(null);
     if (step !== "sample" || !episode || scriptState(episode) !== "done") return;
     const token = ++scenesToken.current;
-    void client.get<{ items: Aggregate[] }>(`/projects/${projectId}/episodes/${episode.id}/scenes`).then((page) => {
-      if (token === scenesToken.current) setScenes(page.items);
-    }).catch(() => {
-      if (token === scenesToken.current) setScenes([]);
+    void readPages<Aggregate>(client, `/projects/${projectId}/episodes/${episode.id}/scenes`).then((list) => {
+      if (token === scenesToken.current) setScenes(list);
     });
-  }, [step, episode, projectId, refreshEpoch]);
+  }, [step, episode, projectId, refreshEpoch, scenesEpoch]);
 
   function choose(next: StepKey) {
     setStep(next);
+    setEpisodeNo(episodeForStep(next, facts));
+    setDraftTick((tick) => tick + 1);
     base.keepScopedPages();
     window.scrollTo({ top: 0 });
   }
@@ -155,7 +187,7 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
   const info = STEPS[stepIndex] ?? STEPS[0]!;
   const state = step ? states[step] : "not_started";
   const action = primaryAction(info.key, state);
-  const save = saveText(saveState);
+  const save = saveText(drafts, lastEvent);
 
   function runPrimary() {
     if (action.target === "next") {
@@ -167,13 +199,19 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
       openTasks();
       return;
     }
+    if (action.target === "reload") {
+      refreshFacts();
+      return;
+    }
     const root = body.current;
     if (!root) return;
     const target = action.target === "review"
       ? root.querySelector<HTMLElement>("[data-beginner-review], aside[aria-label='检查面板'], [data-review-status]")
       : action.target === "candidates"
-        ? root.querySelector<HTMLElement>("[data-beginner-picker]")
-        : root.querySelector<HTMLElement>("textarea, input:not([type='hidden'])");
+        ? root.querySelector<HTMLElement>("[aria-label='Mock 单镜合成预检'], [data-beginner-picker]")
+        : action.target === "compose"
+          ? root.querySelector<HTMLElement>("[aria-label='多镜编排']")
+          : root.querySelector<HTMLElement>("textarea, input:not([type='hidden'])");
     (target ?? root).scrollIntoView({ block: "start" });
     const focusable = target?.matches("textarea, input, button, select") ? target
       : target?.querySelector<HTMLElement>("textarea, button, select, input");
@@ -193,7 +231,7 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
   }
 
   function later() {
-    if (save.unsaved) {
+    if (safeUnsavedDrafts(projectId, episodes).length > 0) {
       setLeaving(true);
       return;
     }
@@ -266,7 +304,7 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
 
         <div ref={body} className="mt-5 space-y-4">
           {project && step === "story" ? (
-            <StoryPane project={project} stories={stories} onMore={() => void base.more("stories")} onSaved={reloadBase} onStatus={setSaveState} />
+            <StoryPane project={project} stories={stories} onMore={() => void base.more("stories")} onSaved={reloadBase} onStatus={onStatus} />
           ) : null}
 
           {project && step === "script" ? (
@@ -279,7 +317,7 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
                 <p className="text-[15px] text-[#5F5D66]">审核只针对当前展示的这一集、这一个版本；其他集要分别打开检查。剧本里写到的场面还不是场景或镜头记录，它们在「试一段」里单独建立。</p>
                 <ScriptPane projectId={projectId} projectVersion={project.version} episode={episode}
                   storyCurrent={currentStoryRevision(stories?.items ?? [])} premise={project.premise} refreshEpoch={refreshEpoch}
-                  onSaved={reloadBase} onStatus={setSaveState}
+                  onSaved={reloadBase} onStatus={onStatus}
                   onOpenScene={(id) => { setSceneId(id); setStep("sample"); }} />
               </>
             )
@@ -289,28 +327,29 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
             <>
               <div role="tablist" aria-label="人物与场地" className="flex gap-2">
                 {(["character", "location"] as const).map((kind) => {
-                  const list = kind === "character" ? characters?.items ?? [] : locations?.items ?? [];
+                  // Counts come from the complete lists, not the first page the editor shows.
+                  const list = kind === "character" ? facts.characters : facts.locations;
                   return (
                     <button key={kind} role="tab" type="button" aria-selected={castKind === kind}
                       className={`rounded-[12px] border px-3 py-1.5 ${castKind === kind ? "border-[#D34846] bg-[#FBE7E4]" : "bg-white"}`}
                       onClick={() => setCastKind(kind)}>
-                      {kind === "character" ? "角色" : "场地"} · {list.length === 0 ? "还没有" : `${list.filter((item) => entityState(item) === "done").length}/${list.length} 已确认`}
+                      {kind === "character" ? "角色" : "场地"} · {list.read !== "ok" ? "尚未确认" : list.items.length === 0 ? "还没有" : `${list.items.filter((item) => entityState(item) === "done").length}/${list.items.length} 已确认`}
                     </button>
                   );
                 })}
               </div>
               <p className="text-[15px] text-[#5F5D66]">用文字描述人物的外貌、性格和关系。角色参考图在打开角色后出现；参考图存储尚未启用时会写明，不会拿普通图片代替。项目没有单独的画风字段，想统一画风时请写进描述，并在保存前确认。</p>
               <EntityPane project={project} kind={castKind} page={castKind === "character" ? characters : locations} episodes={episodes}
-                onMore={() => void base.more(castKind === "character" ? "characters" : "locations")} onSaved={reloadBase} onStatus={setSaveState} />
+                onMore={() => void base.more(castKind === "character" ? "characters" : "locations")} onSaved={reloadBase} onStatus={onStatus} />
             </>
           ) : null}
 
           {project && step === "sample" ? (
             <>
               <EpisodeTabs label="选择剧集" value={episodeNo} onChange={setEpisodeNo}
-                state={(no) => scriptState(episodes.find((item) => item.episodeNo === no)) !== "done" ? "not_started"
-                  : (media[no]?.candidates ?? 0) > 0 ? "done" : "needs_input"} />
-              {composeUnavailable(media) ? <ComposeOff /> : null}
+                state={(no) => episodeSampleState(facts, no)} />
+              {off.sample ? <Notice>当前环境没有开启单镜成片所需的功能（Mock 媒体或本地合成），样片暂时不能生成，这一步不会显示为完成。需要管理员在服务端开启后才能继续；其余步骤可以照常进行。</Notice> : null}
+              {ready && mediaReadFailed(media) ? <ReadFailed onRetry={refreshFacts} /> : null}
               <div className="rounded-[12px] border border-[#E7E5E0] bg-white p-4 text-[15px]">
                 <p className="font-medium">样片说明</p>
                 <ul className="mt-1 list-disc pl-5">
@@ -326,7 +365,14 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
                 <div className="rounded-[12px] border border-[#E7E5E0] bg-white p-4" data-beginner-picker>
                   <h3 className="font-medium">选一个代表性镜头</h3>
                   {scenes === null ? <p className="mt-2" role="status">正在读取场景</p> : null}
-                  {scenes && scenes.length === 0 ? (
+                  {scenes && scenes.read !== "ok" && scenes.read !== "incomplete" ? (
+                    <div className="mt-2 text-[15px]" role="alert">
+                      <p>场景列表读取失败，不能确定这一集有没有场景。请重试，不要因此重复添加场景。</p>
+                      <button className="mt-2 rounded-[12px] border px-3 py-1.5" type="button" onClick={() => setScenesEpoch((value) => value + 1)}>重新读取场景</button>
+                    </div>
+                  ) : null}
+                  {scenes && scenes.read === "incomplete" ? <p className="mt-2 text-[15px]">场景很多，这里只列出前 {scenes.items.length} 个；其余请在高级编辑中打开。</p> : null}
+                  {scenes && scenes.read === "ok" && scenes.items.length === 0 ? (
                     <div className="mt-2 text-[15px]">
                       <p>这一集还没有场景。场景和镜头是单独的记录，需要先建立：</p>
                       <ol className="mt-1 list-decimal pl-5">
@@ -337,7 +383,7 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
                     </div>
                   ) : null}
                   <ul className="mt-2 flex flex-wrap gap-2">
-                    {scenes?.map((scene, index) => (
+                    {scenes?.items.map((scene, index) => (
                       <li key={scene.entityId}>
                         <button type="button" aria-pressed={sceneId === scene.entityId}
                           className={`rounded-[12px] border px-3 py-1.5 ${sceneId === scene.entityId ? "border-[#D34846] bg-[#FBE7E4]" : ""}`}
@@ -352,8 +398,8 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
               )}
               {sceneId && episode ? (
                 <ScenePane projectId={projectId} episode={episode} sceneId={sceneId} shotId={shotId} refreshEpoch={refreshEpoch}
-                  imageEpoch={imageEpoch} locations={locations?.items ?? []} onSaved={reloadBase} onStatus={setSaveState}
-                  onOpenShot={setShotId} />
+                  imageEpoch={imageEpoch} locations={locations?.items ?? []} onSaved={reloadBase} onStatus={onStatus}
+                  onOpenShot={setShotId} onMediaChanged={refreshFacts} />
               ) : null}
             </>
           ) : null}
@@ -362,12 +408,16 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
             <>
               <EpisodeTabs label="选择剧集" value={episodeNo} onChange={setEpisodeNo} state={(no) => episodeFinalState(facts, no)} />
               <p className="text-[15px] text-[#5F5D66]">本集至少要有 2 个已确认的单镜成片才能编排，最多 30 个。合成完成后请播放检查，确认通过的当前成片才能下载 MP4 和来源清单；上游内容变化后，旧成片会保留为历史，不能再下载。</p>
-              {composeUnavailable(media) ? <ComposeOff /> : null}
-              {mediaError ? <p className="rounded-[12px] border bg-white p-3" role="alert">成片列表暂时读取失败，下方面板会再次读取。</p> : null}
+              {off.final ? <Notice>当前环境没有开启集级合成，单集成片暂时不能生成，已有成片也无法在这里确认，这一步不会显示为完成。需要管理员在服务端开启后才能继续。</Notice> : null}
+              {ready && mediaReadFailed(media) ? <ReadFailed onRetry={refreshFacts} /> : null}
               {episode && scriptState(episode) === "done" ? (
-                <EpisodeComposePreflight projectId={projectId} episodeNo={episodeNo} episodeId={episode.id} />
+                <EpisodeComposePreflight projectId={projectId} episodeNo={episodeNo} episodeId={episode.id} onChanged={refreshFacts} />
               ) : (
-                <p className="rounded-[12px] border bg-white p-4">这一集的剧本还没有确认通过，暂时不能编排成片。</p>
+                <p className="rounded-[12px] border bg-white p-4">
+                  {episodeFinalState(facts, episodeNo) === "source_updated"
+                    ? "这一集的剧本改过了，原来批准的成片已标为历史（来源已更新）。请先在「看剧本」确认新版本，再重新试做样片和编排。"
+                    : "这一集的剧本还没有确认通过，暂时不能编排成片。"}
+                </p>
               )}
               <section className="rounded-[12px] border border-[#E7E5E0] bg-white p-4" aria-label="费用">
                 <h3 className="font-medium">费用</h3>
@@ -379,18 +429,27 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
         </div>
       </main>
       {tasksOpen ? (
-        <TaskDrawer projectId={projectId} runs={workflows} onClose={() => { setTasksOpen(false); tasksReturn.current?.focus(); }} onChanged={reloadBase} />
+        <TaskDrawer projectId={projectId} runs={allRuns} onClose={() => { setTasksOpen(false); tasksReturn.current?.focus(); }} onChanged={reloadBase} />
       ) : null}
     </BeginnerShell>
   );
 }
 
-/** Shown when the server reports local compose as not configured; nothing here pretends a sample exists. */
-function ComposeOff() {
+/** A server-reported closed feature; nothing here pretends a result exists. */
+function Notice({ children }: { children: ReactNode }) {
   return (
     <p className="rounded-[12px] border border-[#D34846] bg-white p-4 text-[15px]" role="status">
-      <span aria-hidden="true">！</span> 当前环境没有开启本地合成，单镜样片和单集成片暂时不能生成，这两步不会显示为完成。需要管理员在服务端开启后才能继续；其余步骤可以照常进行。
+      <span aria-hidden="true">！</span> {children}
     </p>
+  );
+}
+
+function ReadFailed({ onRetry }: { onRetry: () => void }) {
+  return (
+    <div className="rounded-[12px] border border-[#D34846] bg-white p-4 text-[15px]" role="alert">
+      <p>部分进度读取失败，相关剧集显示为「尚未确认」，不会据此判断为完成。</p>
+      <button className="mt-2 rounded-[12px] border px-3 py-1.5" type="button" onClick={onRetry}>重新读取进度</button>
+    </div>
   );
 }
 
@@ -407,7 +466,10 @@ function StepGuide({ step, state }: { step: StepKey; state: StepState }) {
     in_progress: "任务正在处理，结果出来后这里会自动刷新。可以先去做别的。",
     needs_attention: "有内容被退回或任务失败。看清原因后修改并保存新版本；只有符合规则的任务才提供重试。",
     done: "这一步已经完成。可以回看，也可以继续下一步。",
-    source_updated: "上游内容改过了，这里的已确认内容已过期。原来的审核记录会保留；请检查变化后重新确认。",
+    source_updated: step === "sample" || step === "final"
+      ? "上游内容改过了，原来批准的成片已成为历史（审核记录保留，但不能再下载或用于编排）。请重新试做样片或重新编排合成。"
+      : "上游内容改过了，这里的已确认版本已过期，不能再次批准。原来的审核记录会保留；请修改后保存新版本，再提交审核。",
+    unknown: "这一步的部分进度没有读到（读取失败、功能未开启或列表还没读完），暂时不能确认是否完成。",
   };
   return <p className="mt-3 rounded-[12px] bg-[#F7F6F2] p-3 text-[15px]">{text[state]}</p>;
 }

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { StudioClient } from "../lib/studio-client";
 import { ApiError } from "../lib/studio-client";
+import { useChangeNotice } from "../lib/use-change-notice";
 
 export interface EpisodeComposeBody {
   compositeAssetIds: string[];
@@ -13,6 +14,8 @@ export interface EpisodeComposeJobPanelProps {
   episodeId: string;
   body: EpisodeComposeBody | null;
   onReviewed?: () => void;
+  /** Called when a compose is accepted, reaches a terminal state, or a composite is reviewed. */
+  onChanged?: () => void;
 }
 
 interface JobView {
@@ -95,6 +98,7 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [job, setJob] = useState<JobView | null>(null);
+  const notifyChanged = useChangeNotice(job, props.onChanged);
   const [items, setItems] = useState<CompositeItem[]>([]);
   const [listError, setListError] = useState<string | null>(null);
   const [held, setHeld] = useState<HeldSubmit | null>(null);
@@ -288,6 +292,7 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
       readGen.current += 1;
       setHeld({ ...request, unresolved: false });
       setJob({ id: jobId, state: result.body.state ?? "QUEUED", errorMessage: null });
+      notifyChanged();
     } catch (caught) {
       if (epoch.current !== token) return;
       const definite = caught instanceof ApiError && DEFINITE_COMPOSE_REJECTION.has(caught.code);
@@ -426,6 +431,7 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
         reviewedContentHash: result.body.contentHash,
       } : entry));
       props.onReviewed?.();
+      notifyChanged();
     } catch (caught) {
       if (epoch.current !== token || listEpoch.current !== listToken) return;
       setError(caught instanceof ApiError ? caught.detail : "审核没有完成");

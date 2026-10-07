@@ -42,7 +42,7 @@ const SLOT_RULES = {
   subtitle: { kind: "SUBTITLE", mimeType: "text/vtt" },
 } as const;
 
-export function ComposePreflight(props: { revisionId: string; refreshEpoch: number; client?: StudioClient }) {
+export function ComposePreflight(props: { revisionId: string; refreshEpoch: number; client?: StudioClient; onChanged?: () => void }) {
   const fallback = useRef<StudioClient | null>(null);
   if (!fallback.current) fallback.current = new StudioClient();
   const client = props.client ?? fallback.current;
@@ -166,6 +166,7 @@ export function ComposePreflight(props: { revisionId: string; refreshEpoch: numb
       <ComposeJobPanel
         revisionId={props.revisionId}
         client={client}
+        onChanged={props.onChanged}
         eligible={Boolean(result) && !error && !busy && selection.video.length > 0}
         body={result && !error ? {
           videoAssetId: selection.video,
