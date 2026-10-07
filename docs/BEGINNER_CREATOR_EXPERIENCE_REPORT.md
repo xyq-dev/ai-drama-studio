@@ -227,3 +227,99 @@ Artifact `beginner-web-evidence`（id 11467700880，来自 Beginner creator web 
 ### 状态
 
 Commit / Push：YES（普通推送到功能分支，PR #50 已更新）。Review：待 Codex 独立 Review。Merge：NO。Deploy：NO。Migration：NO。Paid calls：NO。
+
+## BEGINNER_REVIEW_FIX_REPORT（PR #50 独立 Review 修复）
+
+审查：https://github.com/xyq-dev/ai-drama-studio/pull/50#pullrequestreview-5440006199 及 23 条行内意见。
+
+### 现场
+
+| 项目 | 值 |
+| --- | --- |
+| 目录 / 分支 | `D:\Projects\ai-drama-studio-beginner-ui`，`feat/beginner-creator-experience`；开始时本地与远端 HEAD 均为 `52a1811`，无新提交，工作区干净 |
+| 起点 | `52a181141a320b0389640428aba0617aabca22cd` |
+| 修复提交 | `9e28a86` 后端只读字段、`9095827` 创建输入、`80ccdfc` 进度事实、`557d03f` 原地更新与按对象未保存、`7e4b7fa` E2E 加强 |
+| 源码 SHA | `7e4b7fa40e866accd4e4d2646043e47747467616`（全部检查对应此 SHA，见下） |
+| 报告 SHA | 本节所在提交，只改 `docs/` |
+| AGENTS.md / CLAUDE.md | 不存在；已读 `docs/ENGINEERING_WORKFLOW.md` |
+
+### 逐项
+
+| # | 问题与原因 | 修复行为 | 回归 |
+| --- | --- | --- | --- |
+| 1 | 创建请求进行中输入仍可编辑，成功后 `clearDraft` 无条件清空并跳转，丢失新输入 | 创建期间冻结想法、名称、模板、方向导入、重新截取与「开始构思」，`remember` 在源头拒绝改动，重复提交被拒；成功时用既有 `releaseSubmittedDraft`，只清理与提交快照一致的草稿；失败或结果未知保留原请求体与幂等键 | 组件：慢请求期间控件禁用、改动不写入；期间另有更新草稿时，旧请求成功后该草稿仍在。**修复前对照：旧实现失败**（控件未冻结） |
+| 2 | 所有编辑器共用一个保存状态字符串 | 未保存状态改为读取各编辑器真实保存的草稿（`ads-draft:<作品>:<对象>:<基线>`，编辑器保存成功只释放已提交快照），按对象列出；最后一次事件只补充原因。保存、If-Match、409 规则不变 | 单测：故事有草稿时剧本「已保存」仍显示故事未保存；恢复的草稿显示未保存；保存期间的新输入不被标为已保存。组件：刷新恢复草稿后状态正确，「稍后继续」给出提示 |
+| 3 | 合成与审核后父层不刷新；「查看任务进度」不含合成任务；首次定位不等事实 | 单镜、集级合成面板在受理、终态、审核后通知父层（`useChangeNotice`，每个终态只通知一次）；父层只重读一次事实，面板自身轮询不变（串行、终态停止、隐藏暂停、恢复重读）。任务抽屉列出 `MEDIA_COMPOSE`（不提供重试，沿用原规则）。首次步骤与剧集在全部事实读完后才选择；加载恢复成功清除旧错误 | 组件：事实未到前不选步骤；合成任务出现在任务抽屉；加载失败后恢复清除错误。**真实 E2E：单镜批准、集级批准后不 reload 即更新**（页面标记证明未刷新） |
+| 4 | 分页：游标被计为候选；成片只看最新 10 条；角色/场地/场景忽略后续页；场景失败当空列表；加载更多可重复 | 有界分页（每页 50、最多 20 页，可在结论确定时提前结束），游标只作扫描位置，空页带游标继续读，重复游标停止；结果标为 ok / unavailable / failed / incomplete，未读完或失败显示「尚未确认」。场景列表读全页并区分失败与空；我的作品「加载更多」请求中禁用并按 id 去重 | 单测：空候选页带游标（**旧实现失败**：被算成已完成）；第 11 条才有 ACTIVE+APPROVED（**旧实现失败**：判为待确认）；第 21 个角色 REJECTED；重复游标与上限；组件：场景加载失败与真实空列表；连续点击加载更多只请求一次 |
+| 5 | 一个集级任务让所有集显示处理中 | 后端为 job 视图补只读字段 `composeEpisodeId`（取自冻结输入），按此判断每集；无法确定归属的任务不归给任何集。进入步骤时打开真正需要处理的剧集 | 单测：仅第 1 集运行；无归属任务不影响任何集；剧集选择。组件：第 1 集处理中、第 2、3 集未开始。真实 PostgreSQL：worker 集成断言字段。**真实 E2E：第 1 集合成期间与完成后第 2、3 集都不显示处理中** |
+| 6 | 剧本换版后不读历史成片；历史 Job 的 SUCCEEDED 当作待审核；REJECTED 被忽略；失效与完成态动作无去向 | 历史成片对每集都读取（候选仍只在剧本通过时读）；STALE+APPROVED 显示「来源已更新」，ACTIVE+REJECTED 显示「需要处理」；只用正在运行的任务表示处理中，已结束的历史任务不再推导状态。来源已更新：文字步骤引导「修改并保存新版本」，媒体步骤引导重新生成/重新编排；最后一步完成显示「查看并下载成片」 | 单测：剧本 DRAFT 时仍读到 STALE+APPROVED；历史成功/失败任务不再给出待确认/需要处理；各状态动作去向 |
+| 7 | 其余讨论 | 见下表 | — |
+
+### 行内讨论逐条
+
+| 讨论 | 结论 |
+| --- | --- |
+| r4203526528 恢复草稿的保存状态 | 已修复（第 2 项） |
+| r4203526537 首次定位等待媒体事实 | 已修复（第 3 项） |
+| r4203526547 合成/审核后刷新 | 已修复（第 3 项） |
+| r4203526554 任务进度包含合成任务 | 已修复（第 3 项）；集级合成进行中时主按钮改为「查看合成进度」定位到编排面板 |
+| r4203526565 我的作品角色/场地分页 | 已修复（第 4 项） |
+| r4203526568 ACTIVE+REJECTED 成片 | 已修复（第 6 项） |
+| r4203526577 最后一步完成的空按钮 | 已修复（第 6 项） |
+| r4203526585 打开需要处理的剧集 | 已修复（第 5 项） |
+| r4203526589 加载更多重复 | 已修复（第 4 项） |
+| r4204153337 场景分页 | 已修复（第 4 项） |
+| r4204153351 场景读取失败当空列表 | 已修复（第 4 项） |
+| r4204153356 已换版镜头的历史任务 | 已修复（第 6 项：只看运行中任务） |
+| r4204153373 恢复后清除旧错误 | 已修复（第 3 项，共享 hook 只加一行 `setError(null)`） |
+| r4204153387 来源已更新的动作 | 已修复（第 6 项） |
+| r4204592894 多编辑器共用状态 | 与 r4203526528 重复，已修复（第 2 项） |
+| r4204592904 创建中的新输入 | 已修复（第 1 项） |
+| r4204592917 刷新失败后的旧事实 | 已修复：每次读取带状态，失败/不完整显示「尚未确认」并提供「重新读取进度」，不再据旧结果判定完成；切换作品先清空事实 |
+| r4204592925 无角色时场地问题被忽略 | 已修复（第 6 项相关的 cast 合并） |
+| r4204592934 两种合成开关分开 | 已修复：候选与成片分别分类，仅集级关闭时保留单镜事实，提示按各自开关显示 |
+| r4205011366 游标计数 | 已修复（第 4 项） |
+| r4205011375 只看 10 条成片 | 已修复（第 4 项） |
+| r4205011386 换版后读历史 | 已修复（第 6 项） |
+| r4205011396 集级任务广播 | 已修复（第 5 项） |
+
+### 后端
+
+`packages/database/src/runtime-store.ts`：job 视图新增只读字段 `composeEpisodeId`。原因：现有 job 视图没有集归属，前端只能猜测。来源为已存在的冻结输入 `input.episodeId`，只对无镜头来源的 `MEDIA_COMPOSE` 有值，其余为 `null`。新增字段，不改既有字段或行为；无数据库结构变更，**无 Migration**。`docs/API_CONTRACT.md` 已注明。
+
+### 测试
+
+| 类型 | 内容 | 结果 |
+| --- | --- | --- |
+| 本机（Node 24.21.0，engine 检查开启） | `pnpm verify`：web 214（新增步骤/事实/未保存/通知/组件回归）、api 67、worker 68、database 27、domain 78 等全部通过；`pnpm m3-av-e2e:check`；`pnpm m3-av-e2e:outcome` 23 通过；`git diff --check` | 通过（源码 SHA 内容） |
+| 模拟（happy-dom + 模拟 fetch / 假分页客户端） | 上表各回归 | 通过 |
+| 修复前对照 | 创建丢输入、游标计数、第 11 条成片：在旧实现上运行，3 项均失败；其余用例未做旧实现对照 | — |
+| 真实 CI | 见下 | — |
+
+E2E 加强（`scripts/beginner-web-acceptance.mjs`，原 10 个必需阶段不变）：单镜批准后与集级批准后都不 `page.reload`，用页面内标记证明未刷新，检查剧集标签、步骤按钮与下一步动作原地更新；集级合成受理后与完成后检查第 2、3 集不显示「处理中」；合成关闭态改为按集级开关检查（第 5 步提示与「尚未确认」）。创建断网重放与单作品幂等断言保留。
+
+### CI（源码 SHA `7e4b7fa`）
+
+9/9 success，首次运行即通过，没有重跑：
+
+| 工作流 | Run | 结论 | 说明 |
+| --- | --- | --- | --- |
+| Beginner creator web（pull_request） | [37606560484](https://github.com/xyq-dev/ai-drama-studio/actions/runs/37606560484) | success | job 112743358379；10/10 必需阶段，含不刷新更新与第 2、3 集不误标；artifact 11474554025 |
+| Beginner creator web（push） | [37606556452](https://github.com/xyq-dev/ai-drama-studio/actions/runs/37606556452) | success |  |
+| M4 three episode sample end-to-end | [37606560747](https://github.com/xyq-dev/ai-drama-studio/actions/runs/37606560747) | success | results.json 52/52 passed；artifact 11477180673 |
+| M1-C integration | [37606560491](https://github.com/xyq-dev/ai-drama-studio/actions/runs/37606560491) | success | job 112743358477；含 composeEpisodeId 真实 PostgreSQL 断言（media-retry.integration 通过） |
+| M2-C integration | [37606560482](https://github.com/xyq-dev/ai-drama-studio/actions/runs/37606560482) | success | job 112743358500；同上 |
+| M2-A integration | [37606560571](https://github.com/xyq-dev/ai-drama-studio/actions/runs/37606560571) | success |  |
+| M3-A integration | [37606560501](https://github.com/xyq-dev/ai-drama-studio/actions/runs/37606560501) | success |  |
+| M3-B integration | [37606560647](https://github.com/xyq-dev/ai-drama-studio/actions/runs/37606560647) | success |  |
+| Writing assistant API | [37606560780](https://github.com/xyq-dev/ai-drama-studio/actions/runs/37606560780) | success |  |
+
+### 遗留
+
+1. 单镜「待确认」（已合成未审核）只能在打开对应镜头后看到：没有不逐个扫描镜头就能读到当前单镜成片审核状态的接口，本轮不新增。
+2. 角色参考图仍只验证关闭态；第 2、3 集未在 E2E 中走完。
+3. 嵌入的原组件仍显示对象 ID 片段和部分英文状态词。
+
+### 状态
+
+Commit / Push：YES（普通推送原分支）。Merge：NO。Deploy：NO。Migration：NO。Paid calls：NO。等待 Codex 复审。
