@@ -67,9 +67,17 @@ export function MyWorks() {
   /** Rereads that fell due while the page was hidden; read when it is visible again. */
   const dueWhileHidden = useRef(new Set<string>());
 
+  /**
+   * Starts queued reads up to the concurrency limit. A hidden page starts no background reread, including one already
+   * queued when the page was hidden: it stays queued (and pending) until the page is visible again. Reads already
+   * started finish normally. Nothing starts after unmount.
+   */
   function pump() {
-    while (running.current < CONCURRENCY && queue.current.length > 0) {
-      const { id, background } = queue.current.shift()!;
+    while (alive.current && running.current < CONCURRENCY) {
+      const hidden = document.visibilityState === "hidden";
+      const index = queue.current.findIndex((item) => !hidden || !item.background);
+      if (index < 0) return;
+      const { id, background } = queue.current.splice(index, 1)[0]!;
       running.current += 1;
       void loadProjectFacts(client, id).then((facts) => {
         const states = stepStates(facts);
@@ -177,6 +185,8 @@ export function MyWorks() {
       const due = [...dueWhileHidden.current];
       dueWhileHidden.current.clear();
       for (const id of due) enqueue(id, true);
+      // Rereads queued before the page was hidden.
+      pump();
     };
     document.addEventListener("visibilitychange", onVisible);
     const scheduled = timers.current;

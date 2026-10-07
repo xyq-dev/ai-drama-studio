@@ -326,3 +326,116 @@ describe("useProjectBase recovers polling after a failed visible refresh (Issue 
     expect(result.current.allRuns[0]?.status).toBe("SUCCEEDED");
   });
 });
+
+describe("useProjectBase wakes the retry after an idle read failure (PR #53 review 1)", () => {
+  it("idle, callback reread gets a 503, the server recovers: the page reads again by itself and finds the new job", async () => {
+    const server: Server = { runs: [], project: [], calls: [] };
+    install(server);
+    const { result } = renderHook(() => useProjectBase(P1, "失败"));
+    await settle();
+    // Nothing runs: the poll chain has ended.
+    await advance(30_000);
+    const idle = projectReads(server);
+    // A save or compose callback rereads; that read fails once, and a job was accepted meanwhile.
+    server.project.push(async () => json({ error: { code: "UNAVAILABLE", message: "暂时不可用" } }, 503));
+    server.runs = [composeRun("QUEUED")];
+    await act(async () => { await result.current.reloadBase().catch(() => undefined); });
+    expect(result.current.refreshFailed).toBe(true);
+    // No click: the retry runs, reads the new job, and keeps following it to its end.
+    await advance(2000);
+    expect(projectReads(server)).toBe(idle + 2);
+    expect(result.current.refreshPaused).toBe(false);
+    expect(result.current.refreshFailed).toBe(false);
+    expect(result.current.allRuns[0]?.status).toBe("QUEUED");
+    server.runs = [composeRun("SUCCEEDED")];
+    await advance(2000);
+    expect(result.current.allRuns[0]?.status).toBe("SUCCEEDED");
+    const reads = server.calls.length;
+    await advance(120_000);
+    expect(server.calls.length).toBe(reads);
+  });
+
+  it("one retry chain only: repeated failed callbacks do not stack timers, and slow retries never overlap", async () => {
+    const server: Server = { runs: [], project: [], calls: [] };
+    install(server);
+    const { result } = renderHook(() => useProjectBase(P1, "失败"));
+    await settle();
+    await advance(30_000);
+    const idle = projectReads(server);
+    for (let index = 0; index < 3; index += 1) {
+      server.project.push(async () => json({ error: { code: "UNAVAILABLE", message: "x" } }, 503));
+      await act(async () => { await result.current.reloadBase().catch(() => undefined); });
+    }
+    expect(projectReads(server)).toBe(idle + 3);
+    let release!: () => void;
+    server.project.push(() => new Promise<Response>((done) => { release = () => done(json({ id: P1, title: "作品", premise: "", version: 1, status: "ACTIVE" })); }));
+    await advance(2000);
+    expect(projectReads(server)).toBe(idle + 4);
+    await advance(60_000);
+    // Still the one slow retry: nothing else was started.
+    expect(projectReads(server)).toBe(idle + 4);
+    await act(async () => { release(); });
+    await settle();
+    expect(result.current.refreshFailed).toBe(false);
+    await advance(60_000);
+    expect(projectReads(server)).toBe(idle + 4);
+  });
+
+  it("pauses while hidden and resumes the pending retry when visible", async () => {
+    const server: Server = { runs: [], project: [], calls: [] };
+    install(server);
+    const { result } = renderHook(() => useProjectBase(P1, "失败"));
+    await settle();
+    server.project.push(async () => json({ error: { code: "UNAVAILABLE", message: "x" } }, 503));
+    await act(async () => { await result.current.reloadBase().catch(() => undefined); });
+    setVisibility("hidden");
+    const hidden = server.calls.length;
+    await advance(60_000);
+    expect(server.calls.length).toBe(hidden);
+    setVisibility("visible");
+    await settle();
+    expect(result.current.refreshFailed).toBe(false);
+  });
+
+  it("a switched or unmounted project never wakes its old retry", async () => {
+    const server: Server = { runs: [], project: [], calls: [] };
+    install(server);
+    const { result, rerender, unmount } = renderHook(({ id }) => useProjectBase(id, "失败"), { initialProps: { id: P1 } });
+    await settle();
+    let failOld!: () => void;
+    server.project.push(() => new Promise<Response>((done) => { failOld = () => done(json({ error: { code: "UNAVAILABLE", message: "x" } }, 503)); }));
+    let pending!: Promise<void>;
+    act(() => { pending = result.current.reloadBase().catch(() => undefined); });
+    rerender({ id: P2 });
+    await settle();
+    await act(async () => { failOld(); await pending; });
+    expect(result.current.refreshFailed).toBe(false);
+    const after = server.calls.filter((path) => path.includes(P1)).length;
+    await advance(60_000);
+    expect(server.calls.filter((path) => path.includes(P1)).length).toBe(after);
+    unmount();
+    const total = server.calls.length;
+    await advance(60_000);
+    expect(server.calls.length).toBe(total);
+  });
+
+  it("after the automatic retries are used up it says so, and a manual retry recovers", async () => {
+    const server: Server = { runs: [], project: [], calls: [] };
+    install(server);
+    const { result } = renderHook(() => useProjectBase(P1, "失败"));
+    await settle();
+    const fail = async () => json({ error: { code: "UNAVAILABLE", message: "x" } }, 503);
+    server.project.push(fail, fail, fail, fail, fail, fail, fail, fail);
+    await act(async () => { await result.current.reloadBase().catch(() => undefined); });
+    await advance(600_000);
+    expect(result.current.refreshFailed).toBe(true);
+    expect(result.current.refreshPaused).toBe(true);
+    const reads = projectReads(server);
+    await advance(600_000);
+    expect(projectReads(server)).toBe(reads);
+    server.project.length = 0;
+    await act(async () => { await result.current.retryNow(); });
+    expect(result.current.refreshFailed).toBe(false);
+    expect(result.current.refreshPaused).toBe(false);
+  });
+});

@@ -139,6 +139,13 @@ export function useProjectBase(projectId: string, failureText: string) {
   const baseRetry = useRef(false);
   const failures = useRef(0);
   const [refreshFailed, setRefreshFailed] = useState(false);
+  /** The automatic rereads after a failure are used up; only a manual retry or a return to the page reads again. */
+  const [refreshPaused, setRefreshPaused] = useState(false);
+  /** The latest runs, for the scheduler, which outlives any one render. */
+  const runsRef = useRef<WorkflowRun[]>([]);
+  /** Wakes this project's single poll and retry chain; a no-op while no chain exists (unmounted or switching). */
+  const wakeRef = useRef<() => void>(() => undefined);
+  const retryRef = useRef<() => Promise<void>>(async () => undefined);
   const workflowStatus = useRef(new Map<string, string>());
   const composeStatus = useRef(new Map<string, string>());
 
@@ -158,6 +165,7 @@ export function useProjectBase(projectId: string, failureText: string) {
     }
     setWorkflows(tracked);
     setAllRuns(runs);
+    runsRef.current = runs;
     return { ...transition, composeFinished };
   }, []);
 
@@ -187,9 +195,11 @@ export function useProjectBase(projectId: string, failureText: string) {
         setError(caught instanceof ApiError ? caught.detail : failureTextRef.current);
         setLoading(false);
       } else {
-        // Shown data stays; the poll retries the whole base with a growing interval.
+        // Shown data stays; the one poll chain retries the whole base with a growing interval, even if it had
+        // already stopped because nothing was running.
         baseRetry.current = true;
         setRefreshFailed(true);
+        wakeRef.current();
       }
       throw caught;
     }
@@ -199,6 +209,7 @@ export function useProjectBase(projectId: string, failureText: string) {
     baseRetry.current = false;
     setLoading(false);
     setRefreshFailed(false);
+    setRefreshPaused(false);
     // A successful load supersedes an earlier failure.
     setError(null);
     setProject(nextProject);
@@ -209,6 +220,8 @@ export function useProjectBase(projectId: string, failureText: string) {
     const transition = applyRuns(runs);
     if (transition.mediaBecameTerminal || transition.composeFinished) setImageEpoch((value) => value + 1);
     if (transition.textBecameTerminal) setRefreshEpoch((value) => value + 1);
+    // A newly accepted job may need following although the chain had stopped.
+    wakeRef.current();
   }, [projectId, applyRuns]);
 
   // The initial load of a project (a project change or mount). Its loading and error are settled by reloadBase for
@@ -217,23 +230,33 @@ export function useProjectBase(projectId: string, failureText: string) {
     initialPending.current = true;
     baseRetry.current = false;
     failures.current = 0;
+    runsRef.current = [];
     setLoading(true);
     setError(null);
     setRefreshFailed(false);
+    setRefreshPaused(false);
     void reloadBase().catch(() => undefined);
     return () => { initialPending.current = false; };
   }, [reloadBase]);
 
-  // While any run is in flight (including compose runs, whoever submitted them), or after a background reread
-  // failed: one read at a time, the next scheduled only after the previous answer. Consecutive failures stretch the
-  // interval up to MAX_BACKOFF_MS. Stops when nothing runs and nothing needs rereading; paused while hidden; a return
-  // to the page rereads and then restarts the chain whether or not that reread succeeded.
+  // One chain per project, woken by new runs, by a failed reread from anywhere (callback, button or the chain itself)
+  // and by a return to the page. While any run is in flight (including compose runs, whoever submitted them), or
+  // after a background reread failed: one read at a time, the next scheduled only after the previous answer.
+  // Consecutive failures stretch the interval up to MAX_BACKOFF_MS; with nothing running, a failed reread is retried
+  // IDLE_BASE_RETRIES times and then reported as paused. Stops when nothing runs and nothing needs rereading; nothing
+  // starts while hidden; a return to the page rereads and then restarts the chain whatever that reread's outcome.
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let stopped = false;
     let reading = false;
+    const active = () => runsRef.current.some((run) => shouldPoll(run.status, false));
     const schedule = () => {
       if (stopped || reading || timer) return;
+      if (!active() && baseRetry.current && failures.current >= IDLE_BASE_RETRIES) {
+        setRefreshPaused(true);
+        return;
+      }
+      if (!active() && !baseRetry.current) return;
       timer = setTimeout(tick, Math.min(POLL_MS * 2 ** failures.current, MAX_BACKOFF_MS));
     };
     const settle = (ok: boolean) => {
@@ -253,15 +276,16 @@ export function useProjectBase(projectId: string, failureText: string) {
     const tick = () => {
       timer = undefined;
       if (stopped || reading || document.visibilityState === "hidden") return;
-      const active = allRuns.some((run) => shouldPoll(run.status, false));
-      const rereadBase = baseRetry.current && (active || failures.current < IDLE_BASE_RETRIES);
-      if (!active && !rereadBase) return;
+      const running = active();
+      const rereadBase = baseRetry.current && (running || failures.current < IDLE_BASE_RETRIES);
+      if (!running && !rereadBase) return;
       reading = true;
       void (rereadBase ? reloadBase() : readRuns()).then(() => settle(true), () => settle(false)).finally(() => {
         reading = false;
         schedule();
       });
     };
+    wakeRef.current = schedule;
     schedule();
     const onVisible = () => {
       if (document.visibilityState !== "visible" || stopped || reading) return;
@@ -275,12 +299,35 @@ export function useProjectBase(projectId: string, failureText: string) {
       });
     };
     document.addEventListener("visibilitychange", onVisible);
+    retryRef.current = async () => {
+      // The user asked: a fresh set of automatic retries, starting with this read.
+      failures.current = 0;
+      setRefreshPaused(false);
+      if (timer) clearTimeout(timer);
+      timer = undefined;
+      if (reading) return;
+      reading = true;
+      try {
+        await reloadBase();
+        settle(true);
+      } catch {
+        settle(false);
+      } finally {
+        reading = false;
+        schedule();
+      }
+    };
     return () => {
       stopped = true;
       if (timer) clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisible);
+      wakeRef.current = () => undefined;
+      retryRef.current = async () => undefined;
     };
-  }, [projectId, reloadBase, applyRuns, allRuns]);
+  }, [projectId, reloadBase, applyRuns]);
+
+  /** Manual retry after the automatic ones paused (or any time): one read now, then the usual schedule. */
+  const retryNow = useCallback(() => retryRef.current(), []);
 
   const more = useCallback(async (kind: EntityPageKind) => {
     const current = kind === "stories" ? stories : kind === "characters" ? characters : locations;
@@ -304,5 +351,5 @@ export function useProjectBase(projectId: string, failureText: string) {
   }, [projectId]);
 
   return { project, episodes, stories, characters, locations, workflows, allRuns, loading, error, setError, refreshEpoch,
-    imageEpoch, reloadBase, more, keepScopedPages, refreshFailed };
+    imageEpoch, reloadBase, more, keepScopedPages, refreshFailed, refreshPaused, retryNow };
 }

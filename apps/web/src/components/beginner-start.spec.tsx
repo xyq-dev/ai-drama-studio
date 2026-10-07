@@ -334,6 +334,52 @@ describe("my works refreshes cards whose workflows run (Issue #52 item 6)", () =
     expect(reads.length).toBe(count + 1);
   });
 
+  it("does not start a queued reread while hidden, and starts it once when visible again (PR #53 review 4)", async () => {
+    const cards: Record<string, Card> = { a: { story: "DRAFT", runs: "RUNNING" }, b: { story: "DRAFT", runs: "RUNNING" },
+      c: { story: "DRAFT", runs: "RUNNING" } };
+    const started: Array<{ id: string; visibility: string }> = [];
+    const holds = new Map<string, () => void>();
+    let holdRereads = false;
+    vi.stubGlobal("fetch", vi.fn(async (input: string) => {
+      const path = String(input);
+      if (path === "/api/v1/projects") return json({ items: Object.keys(cards).map((id) => ({ id, title: `作品${id}`, premise: "" })), nextCursor: null });
+      const id = Object.keys(cards).find((key) => path.includes(`/projects/${key}/`));
+      if (!id) return json({ items: [], nextCursor: null });
+      if (path.endsWith("/stories")) {
+        started.push({ id, visibility });
+        if (holdRereads && id !== "c") await new Promise<void>((done) => { holds.set(id, done); });
+        return json({ items: [{ id: "s", revisionNo: 1, content: {}, reviewStatus: cards[id]!.story, freshnessStatus: "CURRENT",
+          reviewVersion: 1, staleReason: null, staleFromRef: null, reviewNote: null }] });
+      }
+      if (path.endsWith("/workflow-runs")) return json([{ id: "run", type: "TEXT_STORY", status: cards[id]!.runs, createdAt: "2026-10-07T00:00:00.000Z", jobs: [] }]);
+      return json({ items: [], nextCursor: null });
+    }));
+    const view = render(<MyWorks />);
+    await waitFor(() => expect(screen.getAllByText(/有任务正在处理/)).toHaveLength(3));
+    // All three rereads fall due together; A and B are slow and fill both slots, C waits in the queue.
+    holdRereads = true;
+    started.length = 0;
+    await advance(5000);
+    await waitFor(() => expect(holds.size).toBe(2));
+    expect(started.map((item) => item.id).sort()).toEqual(["a", "b"]);
+    setVisibility("hidden");
+    await act(async () => { holds.get("a")!(); });
+    await advance(100);
+    // A freed a slot while hidden: C must not start.
+    expect(started.filter((item) => item.id === "c")).toHaveLength(0);
+    setVisibility("visible");
+    await waitFor(() => expect(started.filter((item) => item.id === "c")).toHaveLength(1));
+    expect(started.every((item) => item.visibility === "visible")).toBe(true);
+    await act(async () => { holds.get("b")!(); });
+    await advance(100);
+    expect(started.filter((item) => item.id === "c")).toHaveLength(1);
+    view.unmount();
+    const count = started.length;
+    holdRereads = false;
+    await advance(60_000);
+    expect(started.length).toBe(count);
+  });
+
   it("keeps cards apart, the concurrency limit, and the last stage when a reread fails", async () => {
     const cards: Record<string, Card> = { a: { story: "DRAFT", runs: "RUNNING" }, b: { story: "DRAFT", runs: "RUNNING" },
       c: { story: "DRAFT", runs: "SUCCEEDED" } };
