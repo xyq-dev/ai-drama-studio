@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { ApiError, StudioClient } from "../lib/studio-client";
+import { useChangeNotice } from "../lib/use-change-notice";
 
 interface ComposeAsset {
   id: string;
@@ -39,6 +40,8 @@ export function ComposeJobPanel(props: {
   eligible: boolean;
   body: { videoAssetId: string; audioAssetId: string | null; musicAssetId: string | null; subtitleAssetId: string | null; expectedInputHash: string } | null;
   client: StudioClient;
+  /** Called when a compose is accepted, reaches a terminal state, or its result is reviewed. */
+  onChanged?: () => void;
 }) {
   const epoch = useRef(0);
   const submitEpoch = useRef(0);
@@ -50,6 +53,7 @@ export function ComposeJobPanel(props: {
   const jobRef = useRef<JobView | null>(null);
   const [boundRevision, setBoundRevision] = useState(props.revisionId);
   const [job, setJob] = useState<JobView | null>(null);
+  const notifyChanged = useChangeNotice(job, props.onChanged);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [assets, setAssets] = useState<ComposeAsset[]>([]);
@@ -146,6 +150,7 @@ export function ComposeJobPanel(props: {
       assetGen.current += 1;
       setJob({ id, state: result.body.state ?? "QUEUED", errorCode: null, errorMessage: null });
       setNotice("合成任务已受理");
+      notifyChanged();
     } catch (caught) {
       if (request !== submitEpoch.current) return;
       setError(caught instanceof ApiError ? caught.detail : "合成提交失败");
@@ -186,6 +191,7 @@ export function ComposeJobPanel(props: {
       assetGen.current += 1;
       setAssets((current) => current.map((item) => item.id === asset.id ? { ...item, reviewStatus: result.body.reviewStatus, rowVersion: result.body.rowVersion } : item));
       setError(null);
+      notifyChanged();
     } catch (caught) {
       if (token !== epoch.current || reviewToken !== reviewGen.current) return;
       if (caught instanceof ApiError && caught.status === 409) {

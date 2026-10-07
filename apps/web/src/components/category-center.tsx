@@ -143,7 +143,7 @@ export function CategoryCenter() {
                 <div className={styles.chosenTags}>{selectedTags.map((tag) => <button key={tag.id} type="button" aria-label={`移除${tag.name}`} onClick={() => toggleTag(tag.id)}>{tag.name}<Icon name="close" /></button>)}</div>
                 <div className={styles.directionFooter}><div><p>建议从不同标签组选择 4–6 个标签，可按故事需要调整。</p><small role="status">{storageMessage}</small></div><button disabled={!selectedCategory || copyState === "copying"} className={styles.primaryButton} type="button" onClick={() => void copyDirection()}><Icon name={copyState === "copied" ? "check" : "copy"} />{copyState === "copied" ? "已复制创作方向" : copyState === "copying" ? "正在复制…" : "复制创作方向"}</button></div>
                 <p className={styles.useHint}>复制后可粘贴到作品梗概或编剧助手的本次要求中，由你确认并保存。</p>
-                {selectedCategory ? <p className={styles.useHint}><a className={styles.textButton} href="/studio?direction=1">用这个方向新建作品</a>：在新建作品里由你决定是否加入梗概，方向只在本浏览器保存。</p> : null}
+                {selectedCategory ? <p className={styles.useHint}><a className={styles.textButton} href="/create?direction=1">用这个方向新建作品</a>：在新建作品里由你决定是否加入梗概，方向只在本浏览器保存。</p> : null}
                 {copyState === "manual" ? <label className={styles.manualCopy}>自动复制不可用，请手动复制以下内容<textarea ref={manualCopyRef} aria-label="手动复制创作方向" readOnly rows={7} value={formatCreativeDirection(draft)} /></label> : null}
               </section>
               <p className={styles.catalogNote}>以上为本产品的创作参考分类，不代表其他平台的官方分类或审核标准。</p>

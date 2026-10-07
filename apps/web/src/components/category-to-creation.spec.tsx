@@ -7,6 +7,7 @@ import type { WritingTargetSnapshot } from "@ai-drama/domain/writing-assistant";
 import { CATEGORIES, DIRECTION_STORAGE_KEY, TAGS } from "../lib/creative-taxonomy";
 import { premiseBlock, projectDirectionKey } from "../lib/creative-direction-link";
 import { LIMITS } from "../lib/studio-model";
+import { BeginnerStart } from "./beginner-start";
 import { ProjectHome } from "./project-home";
 import { WritingAssistant } from "./writing-assistant";
 
@@ -35,6 +36,42 @@ function stubProjects(posts: string[]) {
     return Promise.resolve(json({ items: [], nextCursor: null }));
   }));
 }
+
+describe("category direction into the beginner start page", () => {
+  it("offers the direction only from the flag, adds it once and binds it to the created project", async () => {
+    window.localStorage.setItem(DIRECTION_STORAGE_KEY, JSON.stringify(DIRECTION));
+    window.history.replaceState(null, "", "/create?direction=1");
+    const assign = vi.spyOn(window.location, "assign").mockImplementation(() => undefined);
+    const posts: string[] = [];
+    stubProjects(posts);
+    render(<BeginnerStart active="/create" />);
+    fireEvent.change(screen.getByLabelText("你想拍一个什么样的故事？"), { target: { value: "原有想法" } });
+    fireEvent.click(await screen.findByRole("button", { name: "把创作方向加入想法" }));
+    const idea = screen.getByLabelText("你想拍一个什么样的故事？") as HTMLTextAreaElement;
+    expect(idea.value).toBe(`原有想法
+
+${premiseBlock(DIRECTION)}`);
+    fireEvent.click(screen.getByRole("button", { name: "把创作方向加入想法" }));
+    expect(await screen.findByText("想法里已经有这段创作方向。")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "开始构思" }));
+    fireEvent.change(await screen.findByLabelText("作品名称"), { target: { value: "夜班" } });
+    fireEvent.click(screen.getByRole("button", { name: "确认创建作品" }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith(`/projects/${PROJECT_ID}/create`));
+    expect(JSON.parse(posts[0] ?? "{}")).toEqual({ title: "夜班", premise: `原有想法
+
+${premiseBlock(DIRECTION)}` });
+    expect(window.localStorage.getItem(projectDirectionKey(PROJECT_ID))).not.toBeNull();
+  });
+
+  it("does not offer a stored direction without the flag", async () => {
+    window.localStorage.setItem(DIRECTION_STORAGE_KEY, JSON.stringify(DIRECTION));
+    window.history.replaceState(null, "", "/create");
+    stubProjects([]);
+    render(<BeginnerStart active="/create" />);
+    await screen.findByRole("heading", { name: "你的故事，从一句话开始" });
+    expect(screen.queryByRole("button", { name: "把创作方向加入想法" })).toBeNull();
+  });
+});
 
 describe("category direction into a new work", () => {
   it("opens the composer from the flag, adds the direction once and binds it to the created project", async () => {

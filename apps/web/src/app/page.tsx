@@ -1,5 +1,5 @@
-import { ProductHome } from "../components/product-home";
+import { BeginnerStart } from "../components/beginner-start";
 
 export default function HomePage() {
-  return <ProductHome />;
+  return <BeginnerStart active={undefined} />;
 }

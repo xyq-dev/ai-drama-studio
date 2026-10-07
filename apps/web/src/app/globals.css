@@ -31,3 +31,53 @@ body {
 .bg-red-700 { background-color: var(--studio-accent); color: #0b0e14; }
 .hover\:bg-white:hover { background-color: #1c2430; }
 .focus-visible\:outline-red-700:focus-visible { outline-color: var(--studio-accent); }
+
+/*
+ * 红果创作 beginner theme. It re-maps the shared tokens, so the existing editors, review columns and task panels
+ * mounted inside a beginner page follow it without a copy of their logic.
+ */
+.beginner {
+  color-scheme: light;
+  --studio-bg: #f7f6f2;
+  --studio-card: #ffffff;
+  --studio-line: #e7e5e0;
+  --studio-accent: #d34846;
+  --studio-text: #24232a;
+  --studio-muted: #5f5d66;
+  --beginner-selected: #fbe7e4;
+  --beginner-radius: 12px;
+  min-height: 100vh;
+  background: var(--studio-bg);
+  color: var(--studio-text);
+  font-size: 16px;
+  line-height: 1.6;
+}
+
+.beginner .bg-red-700 { color: #ffffff; }
+.beginner .hover\:bg-white:hover { background-color: var(--beginner-selected); }
+.beginner .rounded-lg { border-radius: var(--beginner-radius); }
+.beginner .border,
+.beginner .border-b,
+.beginner .border-t { border-color: var(--studio-line); }
+.beginner input,
+.beginner textarea,
+.beginner select {
+  background: #ffffff;
+  color: var(--studio-text);
+  border-color: #cfccc5;
+}
+.beginner a,
+.beginner button,
+.beginner input,
+.beginner textarea,
+.beginner select,
+.beginner summary {
+  outline-offset: 2px;
+}
+.beginner :is(a, button, input, textarea, select, summary):focus-visible {
+  outline: 3px solid #b8322f;
+}
+.beginner .bg-white.p-4 {
+  border: 1px solid var(--studio-line);
+  box-shadow: 0 1px 2px rgb(36 35 42 / 0.04);
+}

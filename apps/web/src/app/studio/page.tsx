@@ -1,10 +1,5 @@
-import { CreatorShell } from "../../components/creator-shell";
-import { ProjectHome } from "../../components/project-home";
+import { MyWorks } from "../../components/my-works";
 
 export default function StudioPage() {
-  return (
-    <CreatorShell>
-      <ProjectHome />
-    </CreatorShell>
-  );
+  return <MyWorks />;
 }

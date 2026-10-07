@@ -48,6 +48,8 @@ export function EpisodeComposePreflight(props: {
   episodeId: string | null;
   episodeNo: number;
   client?: StudioClient;
+  /** Forwarded to the job panel: compose accepted, finished or reviewed. */
+  onChanged?: () => void;
 }) {
   const fallback = useRef<StudioClient | null>(null);
   if (!fallback.current) fallback.current = new StudioClient();
@@ -255,6 +257,7 @@ export function EpisodeComposePreflight(props: {
           client={client}
           projectId={props.projectId}
           episodeId={props.episodeId}
+          onChanged={props.onChanged}
           body={result ? {
             compositeAssetIds: result.manifest.segments.map((segment) => segment.assetId),
             expectedInputHash: result.inputHash,

@@ -78,6 +78,11 @@ export interface JobView {
   attemptNo: number | null;
   providerRequestId: string | null;
   sourceShotRevisionId: string | null;
+  /**
+   * The episode an episode-level compose job froze in its input; null for every other job. Read-only, taken from
+   * the existing frozen snapshot so a reader can tell which episode a running compose belongs to.
+   */
+  composeEpisodeId: string | null;
   inputHash: string | null;
   attempts: PresentedAttempt[];
 }
@@ -739,6 +744,8 @@ LEFT JOIN LATERAL (
 
 const JOB_COLUMNS = `j.id, j.workspace_id, j.project_id, j.workflow_run_id, j.kind, j.state,
   j.dispatch_seq, j.retry_count, j.error_code, j.error_message, j.source_shot_revision_id, j.input_hash,
+  CASE WHEN j.kind = 'MEDIA_COMPOSE' AND j.source_shot_revision_id IS NULL
+       THEN j.input_snapshot #>> '{input,episodeId}' END AS compose_episode_id,
   ja.id AS attempt_id, ja.attempt_no, ja.provider_request_id,
   ja.started_at, ja.finished_at, ja.provider_key, ja.attempt_model,
   ja.cost_amount, ja.cost_currency, ja.cost_kind, ja.attempt_error_code, ja.request_bytes,
@@ -799,6 +806,7 @@ function mapJob(row: QueryResultRow): JobView {
     attemptNo: row.attempt_no === null || row.attempt_no === undefined ? null : Number(row.attempt_no),
     providerRequestId: row.provider_request_id ? String(row.provider_request_id) : null,
     sourceShotRevisionId: row.source_shot_revision_id == null ? null : String(row.source_shot_revision_id),
+    composeEpisodeId: row.compose_episode_id == null ? null : String(row.compose_episode_id),
     inputHash: row.input_hash == null ? null : String(row.input_hash),
     attempts: mapAttempts(row.attempts_json, row.input_hash == null ? null : String(row.input_hash)),
   };
