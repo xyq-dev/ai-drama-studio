@@ -172,8 +172,13 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
     const token = ++capabilityToken.current;
     capabilityChecking.current = true;
     setCapability(null);
+    // Each read settles once: whichever comes first of answer, failure or timeout decides; anything after it (such as
+    // the rejection the timeout's own abort causes) is ignored. The token still drops reads of a previous check, work
+    // or mount.
+    let settled = false;
     const finish = (value: ComposeCapability) => {
-      if (token !== capabilityToken.current) return;
+      if (settled || token !== capabilityToken.current) return;
+      settled = true;
       const read = capabilityRead.current;
       capabilityRead.current = null;
       if (read) clearTimeout(read.timer);
@@ -182,8 +187,9 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
     };
     const controller = new AbortController();
     const timer = setTimeout(() => {
-      controller.abort();
+      // Decide the timeout first, then cancel: the cancelled request's rejection can no longer replace it.
       finish({ read: "failed", reason: "timeout" });
+      controller.abort();
     }, CAPABILITY_TIMEOUT_MS);
     capabilityRead.current = { controller, timer };
     void loadComposeCapability(client, controller.signal).then(finish);

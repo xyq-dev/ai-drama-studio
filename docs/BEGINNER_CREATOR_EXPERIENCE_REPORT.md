@@ -490,3 +490,16 @@ Commit：YES（5 个分组提交 + 本报告）。Push：YES（普通推送新�
 - C 的超时、迟到回执、计时器清理与 B 的调度并发只用确定性的组件/hook 回归（模拟 fetch + 假定时器）验证，没有真实浏览器覆盖。
 
 后端、数据库、Worker、Provider 与业务状态机未改；无 Migration、无 SQL 草案、无 provision 变更、无付费调用；未合并、未部署。
+
+## PR55_REVIEW_FIX（独立复审 r4214455406、r4214682662）
+
+基线 `f2ce3d3`。本节随修复提交；新 HEAD 的 CI 结果记录在 PR #55 回复中。
+
+| 复审项 | 原因 | 修复 |
+| --- | --- | --- |
+| r4214455406 超时被取消回执覆盖 | 超时回调先 abort 再写 timeout；真实 fetch 因 abort 拒绝，被转成普通 error，同一 token 的 finish 再次结算覆盖了 timeout（原测试的挂起请求忽略 abort，没有暴露） | 每次读取只结算一次（`settled`），答复、失败、超时共用；超时先结算 timeout 再 abort，取消引发的回执被忽略；token 仍隔离重试、切换作品与卸载；超时后 checking 立即释放，可马上重试；15 秒与检查期间防重复不变 |
+| r4214682662 过期轮询失败重新触发退避 | `readRuns` 成功时检查请求 token，失败时直接计入失败 | 失败也按请求开始时的 token 与链的停止状态判断：被取代或已停止的失败不计成败、不改提示与调度；当前有效失败照常退避 |
+
+修复前对照（隔离 worktree，detached 于 `f2ce3d3`，只复制新测试，node_modules 以目录联接借用，先删联接再删 worktree）：4 项在基线失败、修复后通过——挂起 `/workflow-runs` 轮询期间完整 reloadBase 成功、旧轮询随后失败、下一次轮询仍按 POLL_MS；fetch 响应 abort 并以 AbortError 拒绝时超时提示保持；忽略 abort 的网络在重试前迟到成功/失败不覆盖超时（2 项）。另 2 项为守护用例（当前有效轮询失败仍退避；切换作品/卸载后的旧轮询失败不影响当前状态）。已有的切换作品、卸载清理、重复点击和「超时后重试成功、旧回执不覆盖」测试保留并通过。
+
+本地：Node 24.21.0、pnpm 10.17.0（engine 检查开启）。`pnpm verify` 0（web 285）；`git diff --check` 0。以上均为模拟测试（happy-dom、模拟 fetch、假定时器），本轮没有新增真实浏览器检查；新 HEAD 的既有新手 E2E 与 M4 由 CI 运行。

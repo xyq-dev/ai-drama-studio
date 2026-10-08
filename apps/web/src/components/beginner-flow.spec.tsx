@@ -45,7 +45,7 @@ interface World {
 /** GET /providers/capabilities: a compose switch object, a failure status, or the default (both on). */
 let capabilities: { compose: { shot: boolean; episode: boolean } } | number = { compose: { shot: true, episode: true } };
 /** Capability answers taken in order before the default; each is awaited (to hold or answer late). */
-let capabilityQueue: Array<() => Promise<Response>> = [];
+let capabilityQueue: Array<(signal?: AbortSignal) => Promise<Response>> = [];
 let capabilityReads = 0;
 /** The abort signal of each capability read, in order. */
 let capabilitySignals: Array<AbortSignal | undefined> = [];
@@ -65,7 +65,7 @@ function install(worlds: Record<string, World>) {
       capabilityReads += 1;
       capabilitySignals.push(init?.signal ?? undefined);
       const queued = capabilityQueue.shift();
-      if (queued) return queued();
+      if (queued) return queued(init?.signal ?? undefined);
       return typeof capabilities === "number"
         ? json({ error: { code: "UNAVAILABLE", message: "暂时不可用" } }, capabilities)
         : json({ providerKey: "mock", capability: "mock.generate", outcomes: [], ...capabilities });
@@ -748,5 +748,58 @@ describe("a closed compose notice always offers a recheck (Issue #54 D)", () => 
     // Single-shot compose is open, so the sample step has no closed notice.
     fireEvent.click(screen.getByRole("button", { name: /第 4 步 试一段/ }));
     expect(screen.queryByText(/当前环境没有开启单镜成片所需的功能/)).toBeNull();
+  });
+});
+
+describe("a timed-out capability read settles once (PR #55 review r4214455406)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function advance(ms: number) {
+    await act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+  }
+
+  /** Like a real fetch: the request rejects with AbortError as soon as its signal aborts. */
+  const honorsAbort = (signal?: AbortSignal) => new Promise<Response>((_, reject) => {
+    signal?.addEventListener("abort", () => reject(new DOMException("The operation was aborted.", "AbortError")));
+  });
+
+  it("a fetch that honours the abort still ends on the timeout message, not the network error", async () => {
+    window.history.replaceState(null, "", `/projects/${P1}/create?step=sample`);
+    capabilityQueue = [honorsAbort];
+    install({ [P1]: sceneWorld() });
+    render(<BeginnerFlow projectId={P1} />);
+    expect(await screen.findByText(/正在检查服务端的合成功能状态/)).toBeTruthy();
+    await advance(15_000);
+    await advance(100);
+    expect(capabilitySignals[0]?.aborted).toBe(true);
+    expect(await screen.findByText(/功能状态检查超时，请重试/)).toBeTruthy();
+    expect(screen.queryByText(/没能读取服务端的合成功能状态/)).toBeNull();
+    // The timeout released the check: a retry starts at once and recovers.
+    fireEvent.click(screen.getAllByRole("button", { name: "重新检查功能状态" })[0]!);
+    expect(await screen.findByRole("button", { name: "选一个镜头试做" })).toBeTruthy();
+    expect(capabilityReads).toBe(2);
+  });
+
+  it.each([
+    ["success", () => capabilityAnswer({ shot: true, episode: true })],
+    ["failure", () => capabilityAnswer(503)],
+  ])("a network that ignores the abort: a late %s before any retry does not replace the timeout", async (_label, late) => {
+    window.history.replaceState(null, "", `/projects/${P1}/create?step=sample`);
+    let answer!: () => void;
+    capabilityQueue = [() => new Promise<Response>((done) => { answer = () => done(late()); })];
+    install({ [P1]: sceneWorld() });
+    render(<BeginnerFlow projectId={P1} />);
+    await advance(15_000);
+    expect(await screen.findByText(/功能状态检查超时，请重试/)).toBeTruthy();
+    await act(async () => { answer(); });
+    await advance(100);
+    expect(screen.getByText(/功能状态检查超时，请重试/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "选一个镜头试做" })).toBeNull();
+    expect(screen.queryByText(/没能读取服务端的合成功能状态/)).toBeNull();
   });
 });
