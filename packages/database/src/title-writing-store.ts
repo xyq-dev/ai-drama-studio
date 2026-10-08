@@ -126,7 +126,7 @@ const EPISODE_STEPS: Record<number, TitleWritingStepKey> = { 1: "episode:1", 2: 
 export class PostgresTitleWritingStore implements TitleWritingStore {
   constructor(private readonly pool: DatabasePool, private readonly textChain: TextChainService) {}
 
-  /** True only when all three draft tables exist with every column this store reads or writes. */
+  /** True only when all four draft tables exist with every column this store reads or writes. */
   async storageReady(): Promise<boolean> {
     try {
       const result = await this.query(

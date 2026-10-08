@@ -52,6 +52,8 @@ afterAll(async () => {
 
 const later = (ms: number) => new Date(Date.now() + ms).toISOString();
 const now = () => new Date().toISOString();
+/** A logical instant `ms` after `base`: lease tests pass time explicitly instead of waiting for the wall clock. */
+const instant = (base: number, ms: number) => new Date(base + ms).toISOString();
 const wide = { sinceIso: "2000-01-01T00:00:00.000Z", maxCallsPerDay: 1000 };
 const USAGE_UNKNOWN = { status: "unknown" as const, inputTokens: null, outputTokens: null, totalTokens: null };
 
@@ -182,22 +184,27 @@ describe("PostgresTitleWritingStore on the authorized draft tables", () => {
     await stopRunning();
     const record = run(workspaceId, projectId, "fence");
     await store.createRun(record, { maxActiveRuns: 5 });
-    expect(await store.claimRun(workspaceId, record.id, "a", now(), later(60_000))).toBe(true);
-    expect(await store.claimRun(workspaceId, record.id, "b", now(), later(60_000))).toBe(false);
+    const base = Date.now();
+    const setupAt = instant(base, 0);
+    const leaseUntil = instant(base, 60_000);
+    const expired = instant(base, 120_000);
+    expect(await store.claimRun(workspaceId, record.id, "a", setupAt, leaseUntil)).toBe(true);
+    expect(await store.claimRun(workspaceId, record.id, "b", setupAt, leaseUntil)).toBe(false);
     const first = call(record, "a");
-    expect(await store.reserveCall(first, wide, now(), later(60_000))).toEqual({ kind: "reserved" });
-    expect(await store.markCallSubmitted(workspaceId, first.id, "b", now(), later(60_000))).toBe("lost");
-    expect(await store.markCallSubmitted(workspaceId, first.id, "a", now(), later(1))).toBe("submitted");
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(await store.recoverExpired(workspaceId, now())).toBe(1);
-    expect(await store.finishCall(workspaceId, first.id, "a", completed(CONCEPT as never), now())).toBe(false);
+    expect(await store.reserveCall(first, wide, setupAt, leaseUntil)).toEqual({ kind: "reserved" });
+    expect(await store.markCallSubmitted(workspaceId, first.id, "b", setupAt, leaseUntil)).toBe("lost");
+    expect(await store.markCallSubmitted(workspaceId, first.id, "a", setupAt, leaseUntil)).toBe("submitted");
+    expect(await store.recoverExpired(workspaceId, expired)).toBe(1);
+    expect(await store.finishCall(workspaceId, first.id, "a", completed(CONCEPT as never), expired)).toBe(false);
     const bundle = (await store.getRunById(workspaceId, record.id))!;
     expect(bundle.run).toMatchObject({ state: "needs_attention", errorCode: "executor_lost", executorId: null });
     expect(bundle.calls[0]).toMatchObject({ state: "unknown", errorCode: "executor_lost", usage: USAGE_UNKNOWN });
     expect(bundle.steps[0]).toMatchObject({ state: "unknown" });
   });
 
-  it("enforces the workspace daily call cap atomically", async () => {
+  // One sequential refusal once the cap is reached. It does not show that concurrent reservations cannot both take the
+  // last remaining call; that needs its own concurrent test.
+  it("refuses a reservation once the workspace daily call cap is reached", async () => {
     await stopRunning();
     const record = run(workspaceId, projectId, "cap");
     await store.createRun(record, { maxActiveRuns: 5 });
@@ -236,28 +243,33 @@ describe("R3: one workspace never touches another", () => {
     const pb2 = await newProject(wb, "b2");
     const sent = run(wb, pb, "sent");
     await store.createRun(sent, { maxActiveRuns: 5 });
-    expect(await store.claimRun(wb, sent.id, "dead-b", now(), later(1))).toBe(true);
+    // Preparation runs on one logical instant with a lease far longer than any database round trip, so B's executor
+    // cannot lose its own run before the call is submitted. Afterwards every check passes an instant past that lease.
+    const base = Date.now();
+    const setupAt = instant(base, 0);
+    const leaseUntil = instant(base, 60_000);
+    const expired = instant(base, 120_000);
+    expect(await store.claimRun(wb, sent.id, "dead-b", setupAt, leaseUntil)).toBe(true);
     const bCall = call(sent, "dead-b");
-    expect(await store.reserveCall(bCall, wide, now(), later(1))).toEqual({ kind: "reserved" });
-    expect(await store.markCallSubmitted(wb, bCall.id, "dead-b", now(), later(1))).toBe("submitted");
+    expect(await store.reserveCall(bCall, wide, setupAt, leaseUntil)).toEqual({ kind: "reserved" });
+    expect(await store.markCallSubmitted(wb, bCall.id, "dead-b", setupAt, leaseUntil)).toBe("submitted");
     const idle = run(wb, pb2, "idle");
     await store.createRun(idle, { maxActiveRuns: 5 });
-    await new Promise((resolve) => setTimeout(resolve, 20));
     const before = await pool.query("SELECT * FROM title_writing_run WHERE workspace_id = $1 ORDER BY id", [wb]);
 
-    expect(await store.recoverExpired(wa, now())).toBe(0);
-    expect(await store.listClaimable(wa, now(), 50)).toEqual([]);
-    expect(await store.claimRun(wa, idle.id, "exec-a", now(), later(60_000))).toBe(false);
+    expect(await store.recoverExpired(wa, expired)).toBe(0);
+    expect(await store.listClaimable(wa, expired, 50)).toEqual([]);
+    expect(await store.claimRun(wa, idle.id, "exec-a", expired, instant(base, 180_000))).toBe(false);
     expect(await store.getRunById(wa, sent.id)).toBeNull();
-    expect(await store.markCallSubmitted(wa, bCall.id, "dead-b", now(), later(60_000))).toBe("lost");
-    expect(await store.finishCall(wa, bCall.id, "dead-b", completed(CONCEPT as never), now())).toBe(false);
-    expect(await store.finishRun(wa, sent.id, "dead-b", "failed", null, now())).toBe(false);
-    expect(await store.reserveCall({ ...call(idle, "exec-a"), workspaceId: wa }, wide, now(), later(60_000))).toEqual({ kind: "lost" });
+    expect(await store.markCallSubmitted(wa, bCall.id, "dead-b", expired, instant(base, 180_000))).toBe("lost");
+    expect(await store.finishCall(wa, bCall.id, "dead-b", completed(CONCEPT as never), expired)).toBe(false);
+    expect(await store.finishRun(wa, sent.id, "dead-b", "failed", null, expired)).toBe(false);
+    expect(await store.reserveCall({ ...call(idle, "exec-a"), workspaceId: wa }, wide, expired, instant(base, 180_000))).toEqual({ kind: "lost" });
     expect((await pool.query("SELECT * FROM title_writing_run WHERE workspace_id = $1 ORDER BY id", [wb])).rows).toEqual(before.rows);
 
-    expect(await store.recoverExpired(wb, now())).toBe(1);
+    expect(await store.recoverExpired(wb, expired)).toBe(1);
     expect((await store.getRunById(wb, sent.id))!.run).toMatchObject({ state: "needs_attention", errorCode: "executor_lost" });
-    expect(await store.listClaimable(wb, now(), 50)).toEqual([idle.id]);
+    expect(await store.listClaimable(wb, expired, 50)).toEqual([idle.id]);
   });
 });
 
@@ -402,8 +414,11 @@ describe("R7: scripts go into episodes only after the person approved this run's
   });
 });
 
+// Five rounds of an unordered Promise.allSettled race. The scheduler decides the interleaving, so passing rounds do not
+// prove the lock order excludes a deadlock; that needs a test that makes one side wait on the other's lock on purpose
+// and records the wait (for example from pg_locks) before releasing it.
 describe("R6: script import and a person's save on the same episode", () => {
-  it("never deadlock and never overwrite each other", async () => {
+  it("in these racing rounds, neither deadlocks nor overwrites the other", async () => {
     await stopRunning();
     const ws = await newWorkspace("lock-order");
     for (let index = 0; index < 5; index += 1) {

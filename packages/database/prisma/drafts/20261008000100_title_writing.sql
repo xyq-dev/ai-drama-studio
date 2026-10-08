@@ -1,6 +1,6 @@
 -- DRAFT. Do not apply. Execution of this migration is not authorized.
 -- Title-driven writing runs (docs/TITLE_DRIVEN_WRITING.md). New tables only; no existing table changes.
--- Read by PostgresTitleWritingStore (packages/database/src/title-writing-store.ts). Until all three tables exist with
+-- Read by PostgresTitleWritingStore (packages/database/src/title-writing-store.ts). Until all four tables exist with
 -- every column below, the store reports storage unavailable and the API refuses before any provider send.
 -- Rollback while unused: DROP TABLE title_writing_resume, title_writing_call, title_writing_step, title_writing_run.
 -- With data: keep the tables, switch TITLE_WRITING_ENABLED off, forward-fix.
