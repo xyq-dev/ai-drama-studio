@@ -9,7 +9,7 @@
 .creator-workbench-directory button { border-radius: 10px; font-size: 14px; }
 .creator-workbench-directory button[aria-current=page] { background: var(--studio-selected); color: var(--studio-accent-hover); font-weight: 650; }
 .creator-workbench-content { padding: 24px; }
-.creator-project-summary { border-radius: var(--studio-radius-lg); }
+.creator-project-summary { border-radius: var(--studio-radius-lg); overflow-wrap: anywhere; }
 .creator-project-summary > h2 { font-size: 18px; }
 .creator-app .creator-task-drawer button { min-height: 44px; }
 .creator-app .creator-review-card button.bg-neutral-900 { background: var(--studio-accent); color: white; }

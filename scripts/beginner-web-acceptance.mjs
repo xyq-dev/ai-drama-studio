@@ -1015,6 +1015,35 @@ async function main() {
       await page.goto(`${webOrigin}/studio`, { waitUntil: "domcontentloaded" });
       await page.getByText(/当前阶段：第 2 步 看剧本/).waitFor();
       await shot("19-studio-final-1440");
+
+      // PR #57: valid, unbroken user text must wrap rather than be clipped or overflow.
+      // This auxiliary project is created only in the disposable acceptance database, after
+      // the original project's single-create/idempotency and five-step assertions finish.
+      const longPremise = "A".repeat(4000);
+      const wrappingProject = expect(await api("POST", "/projects", {
+        body: { title: "UI 换行验收专用作品", premise: longPremise },
+      }), 201, "long-premise project");
+      prepDid("API: auxiliary project with a 4000-character unbroken premise (layout only)");
+      evidence.checks.longPremise = {};
+      for (const width of [1440, 390]) {
+        await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
+        await page.goto(`${webOrigin}/projects/${wrappingProject.id}`, { waitUntil: "domcontentloaded" });
+        const premise = page.locator(".creator-project-summary p").filter({ hasText: longPremise });
+        await premise.waitFor({ timeout: 20_000 });
+        const text = await premise.textContent();
+        if (text !== `梗概：${longPremise}`) throw new Error("long premise was truncated or changed");
+        const lines = await premise.evaluate((element) => {
+          const range = document.createRange();
+          range.selectNodeContents(element);
+          const rects = [...range.getClientRects()];
+          return { count: rects.length, right: Math.max(...rects.map((rect) => rect.right)) };
+        });
+        if (lines.count < 2 || lines.right > width + 1) throw new Error(`long premise did not wrap at ${width}px`);
+        evidence.checks.longPremise[width] = { ...await assertLayout(`long-premise-${width}`),
+          characters: longPremise.length, lines: lines.count };
+        await shot(`20-long-premise-${width}`);
+      }
+      await page.setViewportSize({ width: 1440, height: 900 });
       return layout;
     });
 
