@@ -2,7 +2,7 @@
 // useProjectBase against a stubbed fetch with controllable answers and fake timers. No browser or server.
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { useProjectBase, type WorkflowRun } from "./project-base";
+import { POLL_MS, useProjectBase, type WorkflowRun } from "./project-base";
 
 const P1 = "11111111-1111-4111-8111-111111111111";
 const P2 = "22222222-2222-4222-8222-222222222222";
@@ -24,6 +24,8 @@ interface Server {
   runsHold?: Promise<void>;
   /** How many of the next workflow-runs reads answer 503. */
   runsFail?: number;
+  /** Answers for the next workflow-runs reads, taken in order before the rules above (to hold one read). */
+  runsQueue?: Array<() => Promise<Response>>;
   calls: string[];
 }
 
@@ -38,6 +40,8 @@ function install(server: Server) {
       return json({ id, title: `作品 ${id?.slice(0, 2)}`, premise: "", version: 1, status: "ACTIVE" });
     }
     if (path.endsWith("/workflow-runs")) {
+      const queued = server.runsQueue?.shift();
+      if (queued) return queued();
       if (server.runsHold) await server.runsHold;
       if (server.runsFail) {
         server.runsFail -= 1;
@@ -534,5 +538,68 @@ describe("a current successful reread ends the failure backoff (Issue #54 B)", (
     expect(runsReads(server)).toBe(runs + 1);
     await advance(2000);
     expect(runsReads(server)).toBe(runs + 2);
+  });
+});
+
+describe("a superseded workflow poll failure does not restart the backoff (PR #55 review r4214682662)", () => {
+  const unavailable = () => json({ error: { code: "UNAVAILABLE", message: "x" } }, 503);
+
+  it("poll held, a full reread succeeds with the job still running, the old poll fails: the next poll keeps the normal interval", async () => {
+    const server: Server = { runs: [composeRun("RUNNING")], project: [], calls: [] };
+    install(server);
+    const { result } = renderHook(() => useProjectBase(P1, "失败"));
+    await settle();
+    let failOld!: () => void;
+    server.runsQueue = [() => new Promise<Response>((done) => { failOld = () => done(unavailable()); })];
+    await advance(POLL_MS);
+    // The poll is in flight and held.
+    const heldAt = runsReads(server);
+    await act(async () => { await result.current.reloadBase(); });
+    expect(result.current.allRuns[0]?.status).toBe("RUNNING");
+    await act(async () => { failOld(); });
+    await settle();
+    expect(result.current.refreshFailed).toBe(false);
+    expect(result.current.refreshPaused).toBe(false);
+    expect(result.current.error).toBeNull();
+    const before = runsReads(server);
+    expect(before).toBe(heldAt + 1);
+    await advance(POLL_MS);
+    // Normal interval, not the doubled backoff.
+    expect(runsReads(server)).toBe(before + 1);
+  });
+
+  it("a current poll failure still backs off", async () => {
+    const server: Server = { runs: [composeRun("RUNNING")], project: [], calls: [] };
+    install(server);
+    renderHook(() => useProjectBase(P1, "失败"));
+    await settle();
+    server.runsQueue = [async () => unavailable()];
+    await advance(POLL_MS);
+    const after = runsReads(server);
+    await advance(POLL_MS);
+    expect(runsReads(server)).toBe(after);
+    await advance(POLL_MS);
+    expect(runsReads(server)).toBe(after + 1);
+  });
+
+  it("an old work's poll failing after a switch or unmount changes nothing", async () => {
+    const server: Server = { runs: [composeRun("RUNNING")], project: [], calls: [] };
+    install(server);
+    const { result, rerender, unmount } = renderHook(({ id }) => useProjectBase(id, "失败"), { initialProps: { id: P1 } });
+    await settle();
+    let failOld!: () => void;
+    server.runsQueue = [() => new Promise<Response>((done) => { failOld = () => done(unavailable()); })];
+    await advance(POLL_MS);
+    server.runs = [];
+    rerender({ id: P2 });
+    await settle();
+    await act(async () => { failOld(); });
+    await settle();
+    expect(result.current.refreshFailed).toBe(false);
+    expect(result.current.error).toBeNull();
+    const reads = server.calls.length;
+    await advance(60_000);
+    expect(server.calls.length).toBe(reads);
+    unmount();
   });
 });

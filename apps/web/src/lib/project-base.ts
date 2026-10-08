@@ -273,7 +273,15 @@ export function useProjectBase(projectId: string, failureText: string) {
     };
     const readRuns = async () => {
       const request = baseToken.current;
-      const runs = await client.get<WorkflowRun[]>(`/projects/${projectId}/workflow-runs`);
+      let runs: WorkflowRun[];
+      try {
+        runs = await client.get<WorkflowRun[]>(`/projects/${projectId}/workflow-runs`);
+      } catch (caught) {
+        // Superseded (a newer read began) or stopped (work switched, unmounted): neither success nor failure of the
+        // current run. A current failure still counts and backs off.
+        if (stopped || !shouldApplyLoad(request, baseToken.current)) return false;
+        throw caught;
+      }
       if (stopped || !shouldApplyLoad(request, baseToken.current)) return false;
       const transition = applyRuns(runs);
       if (transition.mediaBecameTerminal || transition.composeFinished) setImageEpoch((value) => value + 1);
