@@ -512,6 +512,11 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
         `SELECT ${STEP_COLUMNS} FROM title_writing_step WHERE run_id = $1 AND script_save IS NOT NULL ORDER BY ordinal`, [runId],
       )).rows.map(toStep);
       if (run.state === "running" || steps.every((step) => step.state !== "completed")) return { kind: "not_ready" };
+      // Lock order is project -> episode, the same as the script editor's save (lockAggregateForRevision), so this
+      // import and a person's save on the same episode cannot deadlock. The project lock is taken before any episode
+      // lock and the story is re-checked under it; story review and story saves also take this lock.
+      const locked = await client.query("SELECT id FROM project WHERE id = $1 AND workspace_id = $2 FOR UPDATE", [projectId, workspaceId]);
+      if (!locked.rows[0]) return { kind: "not_found" };
       const project = await client.query<Row>(
         `SELECT p.current_story_revision_id, p.approved_story_revision_id, sr.review_status, sr.freshness_status
            FROM project p LEFT JOIN story_revision sr ON sr.id = p.approved_story_revision_id
@@ -527,7 +532,7 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
       if (approved !== run.storyRevisionId && !options.acceptStoryChanged) return { kind: "story_changed" };
       const episodes = await client.query<Row>(
         `SELECT id, episode_no, row_version, current_script_revision_id FROM episode
-          WHERE project_id = $1 AND workspace_id = $2 FOR UPDATE`,
+          WHERE project_id = $1 AND workspace_id = $2 ORDER BY episode_no FOR UPDATE`,
         [projectId, workspaceId],
       );
       for (const episode of episodes.rows) {
@@ -539,7 +544,8 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
             [runId, stepKey, nowIso]);
           continue;
         }
-        // The same path as the script editor's save: a DRAFT script revision from the approved story.
+        // The same path as the script editor's save: a DRAFT script revision from the approved story. The helper
+        // re-checks, under the same locks, that the story is still the current, approved and CURRENT one.
         const created = await this.textChain.createScriptRevisionInTransaction(client, {
           workspaceId,
           projectId,
