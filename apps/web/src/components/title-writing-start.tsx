@@ -6,6 +6,8 @@ import { ApiError, StudioClient } from "../lib/studio-client";
 import {
   TitleWritingClient,
   TitleWritingError,
+  TitleWritingUnconfirmedError,
+  isEntityId,
   normalizeOptions,
   optionsUnavailableReason,
   type StartBody,
@@ -54,9 +56,19 @@ function readPendingStart(): PendingStart | null {
   }
 }
 
-/** Saves and reads back. False means the request identity could not be kept, so no write may be sent. */
-function savePendingStart(draft: PendingStart): boolean {
+/** One start is one pair of keys: its record may only be replaced or removed by that same start. */
+function sameStart(a: PendingStart, b: PendingStart): boolean {
+  return a.projectKey === b.projectKey && a.runKey === b.runKey;
+}
+
+/**
+ * Saves and reads back. A new start may only take an empty slot; a known start may only update its own record. False
+ * means the request identity could not be kept (or belongs to another start), so no write may be sent.
+ */
+function savePendingStart(draft: PendingStart, slot: "empty" | "own"): boolean {
   try {
+    const stored = readPendingStart();
+    if (slot === "empty" ? stored !== null : stored === null || !sameStart(stored, draft)) return false;
     const text = JSON.stringify(draft);
     window.sessionStorage.setItem(DRAFT_KEY, text);
     return window.sessionStorage.getItem(DRAFT_KEY) === text;
@@ -65,9 +77,11 @@ function savePendingStart(draft: PendingStart): boolean {
   }
 }
 
-function clearPendingStart(): void {
+/** Removes the record of this start only; a newer start's record stays. */
+function clearPendingStart(draft: PendingStart): void {
   try {
-    window.sessionStorage.removeItem(DRAFT_KEY);
+    const stored = readPendingStart();
+    if (stored && sameStart(stored, draft)) window.sessionStorage.removeItem(DRAFT_KEY);
   } catch {
     // Nothing to keep: the start was confirmed or explicitly abandoned.
   }
@@ -99,7 +113,9 @@ export function TitleWritingStart() {
   const [pending, setPending] = useState<PendingStart | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const busyRef = useRef(false);
+  // The send in progress on this mounted page. Leaving the page or starting another send replaces it, and an answer
+  // that arrives for a replaced send changes nothing: no state, no storage, no navigation.
+  const operation = useRef<object | null>(null);
   const pendingRef = useRef<PendingStart | null>(null);
   const titleRef = useRef<HTMLInputElement>(null);
   const tokenRef = useRef<HTMLInputElement>(null);
@@ -114,6 +130,11 @@ export function TitleWritingStart() {
     setProviderKey(draft.request.providerKey ?? "");
     setModel(draft.request.model ?? "");
   }
+
+  useEffect(() => () => {
+    // Leaving does not cancel anything on the server; the saved identity stays so the request can be replayed.
+    operation.current = null;
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -147,22 +168,31 @@ export function TitleWritingStart() {
     setModel(readyProviders.find((item) => item.providerKey === next)?.defaultModel ?? "");
   }
 
-  /** Sends the frozen request with its own keys. Every key is saved before the write that uses it. */
+  /**
+   * Sends the frozen request with its own keys. Every key is saved before the write that uses it. Only a receipt that
+   * proves the result (a project id, then a run of that project) confirms the start; anything else keeps the keys.
+   */
   async function send(draft: PendingStart) {
-    busyRef.current = true;
+    const mine = {};
+    operation.current = mine;
+    const live = () => operation.current === mine;
     setBusy(true);
     setError(null);
     let current = draft;
     try {
       if (!current.projectId) {
-        const created = await studio.write<{ id: string }>({ path: "/projects", body: { title: current.request.title, premise: "" },
+        const created = await studio.write<unknown>({ path: "/projects", body: { title: current.request.title, premise: "" },
           idempotencyKey: current.projectKey });
-        current = { ...current, projectId: created.body.id };
-        showPending(current);
-        if (!savePendingStart(current)) {
+        if (!live()) return;
+        const id = created.body && typeof created.body === "object" ? (created.body as { id?: unknown }).id : undefined;
+        if (!isEntityId(id)) throw new TitleWritingUnconfirmedError(created.status);
+        const next = { ...current, projectId: id };
+        if (!savePendingStart(next, "own")) {
           setError(NOT_SAVED);
           return;
         }
+        current = next;
+        showPending(current);
       }
       const projectId = current.projectId!;
       try {
@@ -171,14 +201,17 @@ export function TitleWritingStart() {
         // Another start of this work is already running: show that one instead of starting a second.
         if (!(caught instanceof TitleWritingError && caught.code === "TITLE_WRITING_RUN_ACTIVE")) throw caught;
       }
-      clearPendingStart();
+      if (!live()) return;
+      clearPendingStart(current);
       showPending(null);
       window.location.assign(`/projects/${projectId}/writing`);
     } catch (caught) {
-      setError(startError(caught));
+      if (live()) setError(startError(caught));
     } finally {
-      busyRef.current = false;
-      setBusy(false);
+      if (live()) {
+        operation.current = null;
+        setBusy(false);
+      }
     }
   }
 
@@ -197,7 +230,7 @@ export function TitleWritingStart() {
   }
 
   async function start() {
-    if (busyRef.current) return;
+    if (operation.current) return;
     if (pendingRef.current) {
       await retry();
       return;
@@ -220,7 +253,7 @@ export function TitleWritingStart() {
       projectId: null,
       runKey: crypto.randomUUID(),
     };
-    if (!savePendingStart(draft)) {
+    if (!savePendingStart(draft, "empty")) {
       setError(NOT_SAVED);
       return;
     }
@@ -231,14 +264,15 @@ export function TitleWritingStart() {
   /** Replays the unconfirmed request exactly: same body, same project key, same run key. */
   async function retry() {
     const draft = pendingRef.current;
-    if (busyRef.current || !draft || !checkReady()) return;
+    if (operation.current || !draft || !checkReady()) return;
     await send(draft);
   }
 
   /** An explicit new creation: the unconfirmed request is abandoned and the form is free again. */
   function abandon() {
-    if (busyRef.current) return;
-    clearPendingStart();
+    const draft = pendingRef.current;
+    if (operation.current || !draft) return;
+    clearPendingStart(draft);
     showPending(null);
     setError(null);
   }

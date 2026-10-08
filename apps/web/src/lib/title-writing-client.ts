@@ -19,6 +19,31 @@ export class TitleWritingError extends ApiError {
   }
 }
 
+/**
+ * A success status whose body does not prove what was done (no run id, a run of another work, an unreadable body).
+ * The result stays unknown: whoever sent the request keeps its keys and may only replay it.
+ */
+export class TitleWritingUnconfirmedError extends Error {
+  constructor(readonly status: number) {
+    super(`HTTP ${String(status)} without a usable receipt`);
+  }
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function isEntityId(value: unknown): value is string {
+  return typeof value === "string" && UUID.test(value);
+}
+
+/** The run in a start receipt, only when it names a run of exactly this work. */
+export function startReceiptRun(body: unknown, projectId: string): TitleWritingRunView | null {
+  if (!body || typeof body !== "object") return null;
+  const run = (body as { run?: unknown }).run;
+  if (!run || typeof run !== "object") return null;
+  const view = run as Partial<TitleWritingRunView>;
+  return isEntityId(view.runId) && view.projectId === projectId ? run as TitleWritingRunView : null;
+}
+
 export interface StartBody {
   title: string;
   providerKey?: TitleWritingProviderKey;
@@ -56,14 +81,17 @@ export class TitleWritingClient {
     return (await this.call<TitleWritingOptionsView>("/writing/title-runs/options", { method: "GET", headers: { Accept: "application/json" } })).body;
   }
 
+  /** Resolves only with a receipt naming a run of this work; any other success body throws TitleWritingUnconfirmedError. */
   async start(projectId: string, body: StartBody, options: { token: string; idempotencyKey: string }): Promise<TitleWritingRunView> {
-    const result = await this.call<{ run: TitleWritingRunView }>(`/projects/${projectId}/title-runs`, {
+    const result = await this.call<unknown>(`/projects/${projectId}/title-runs`, {
       method: "POST",
       headers: { Accept: "application/json", "Content-Type": "application/json", "Idempotency-Key": options.idempotencyKey,
         "X-Operator-Token": options.token },
       body: JSON.stringify(body),
     });
-    return result.body.run;
+    const run = startReceiptRun(result.body, projectId);
+    if (!run) throw new TitleWritingUnconfirmedError(result.status);
+    return run;
   }
 
   async latest(projectId: string, signal?: AbortSignal): Promise<TitleWritingRunView | null> {
