@@ -1,0 +1,367 @@
+{
+  "kind": "visual-only with mock client API; not backend acceptance",
+  "browser": "140.0.7339.186",
+  "results": [
+    {
+      "name": "selected-character",
+      "width": 1440,
+      "route": "/projects/11111111-1111-4111-8111-111111111111?focus=character",
+      "scenario": "ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 1440,
+      "height": 1885,
+      "bodyBackground": "rgb(247, 246, 242)",
+      "bodyColor": "rgb(36, 35, 42)",
+      "shells": 1,
+      "headings": [
+        "雨夜里的最后一封信",
+        "作品",
+        "角色",
+        "当前版本",
+        "角色参考图",
+        "新建角色",
+        "版本"
+      ],
+      "navigation": [
+        "主导航",
+        "创作步骤"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "selected-location",
+      "width": 1440,
+      "route": "/projects/11111111-1111-4111-8111-111111111111?focus=location",
+      "scenario": "ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 1440,
+      "height": 1682,
+      "bodyBackground": "rgb(247, 246, 242)",
+      "bodyColor": "rgb(36, 35, 42)",
+      "shells": 1,
+      "headings": [
+        "雨夜里的最后一封信",
+        "作品",
+        "场地",
+        "当前版本",
+        "新建场地",
+        "版本"
+      ],
+      "navigation": [
+        "主导航",
+        "创作步骤"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "approved-story",
+      "width": 1440,
+      "route": "/projects/11111111-1111-4111-8111-111111111111?focus=story",
+      "scenario": "ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 1440,
+      "height": 1078,
+      "bodyBackground": "rgb(247, 246, 242)",
+      "bodyColor": "rgb(36, 35, 42)",
+      "shells": 1,
+      "headings": [
+        "雨夜里的最后一封信",
+        "作品",
+        "故事",
+        "版本"
+      ],
+      "navigation": [
+        "主导航",
+        "创作步骤"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "selected-character",
+      "width": 390,
+      "route": "/projects/11111111-1111-4111-8111-111111111111?focus=character",
+      "scenario": "ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 390,
+      "height": 2116,
+      "bodyBackground": "rgb(247, 246, 242)",
+      "bodyColor": "rgb(36, 35, 42)",
+      "shells": 1,
+      "headings": [
+        "雨夜里的最后一封信",
+        "作品",
+        "角色",
+        "当前版本",
+        "角色参考图",
+        "新建角色",
+        "版本"
+      ],
+      "navigation": [
+        "主导航",
+        "创作步骤"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "selected-location",
+      "width": 390,
+      "route": "/projects/11111111-1111-4111-8111-111111111111?focus=location",
+      "scenario": "ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 390,
+      "height": 1866,
+      "bodyBackground": "rgb(247, 246, 242)",
+      "bodyColor": "rgb(36, 35, 42)",
+      "shells": 1,
+      "headings": [
+        "雨夜里的最后一封信",
+        "作品",
+        "场地",
+        "当前版本",
+        "新建场地",
+        "版本"
+      ],
+      "navigation": [
+        "主导航",
+        "创作步骤"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "approved-story",
+      "width": 390,
+      "route": "/projects/11111111-1111-4111-8111-111111111111?focus=story",
+      "scenario": "ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 390,
+      "height": 1289,
+      "bodyBackground": "rgb(247, 246, 242)",
+      "bodyColor": "rgb(36, 35, 42)",
+      "shells": 1,
+      "headings": [
+        "雨夜里的最后一封信",
+        "作品",
+        "故事",
+        "版本"
+      ],
+      "navigation": [
+        "主导航",
+        "创作步骤"
+      ],
+      "oldBrand": false
+    }
+  ],
+  "errors": [],
+  "requests": [
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111",
+      "mode": "ready"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/episodes",
+      "mode": "ready"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/stories",
+      "mode": "ready"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/characters",
+      "mode": "ready"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/locations",
+      "mode": "ready"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/workflow-runs",
+      "mode": "ready"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/characters/character-1/revisions",
+      "mode": "ready"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:3187/api/v1/characters/character-1/reference-images",
+      "mode": "ready"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111",
+      "mode": "ready"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/episodes",
+      "mode": "ready"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/stories",
+      "mode": "ready"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/characters",
+      "mode": "ready"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/locations",
+      "mode": "ready"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/workflow-runs",
+      "mode": "ready"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/locations/location-1/revisions",
+      "mode": "ready"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111",
+      "mode": "ready"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/episodes",
+      "mode": "ready"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/stories",
+      "mode": "ready"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/characters",
+      "mode": "ready"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/locations",
+      "mode": "ready"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/workflow-runs",
+      "mode": "ready"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111",
+      "mode": "ready"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/episodes",
+      "mode": "ready"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/stories",
+      "mode": "ready"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/characters",
+      "mode": "ready"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/locations",
+      "mode": "ready"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/workflow-runs",
+      "mode": "ready"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/characters/character-1/revisions",
+      "mode": "ready"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:3187/api/v1/characters/character-1/reference-images",
+      "mode": "ready"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111",
+      "mode": "ready"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/episodes",
+      "mode": "ready"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/stories",
+      "mode": "ready"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/characters",
+      "mode": "ready"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/locations",
+      "mode": "ready"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/workflow-runs",
+      "mode": "ready"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/locations/location-1/revisions",
+      "mode": "ready"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111",
+      "mode": "ready"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/episodes",
+      "mode": "ready"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/stories",
+      "mode": "ready"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/characters",
+      "mode": "ready"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/locations",
+      "mode": "ready"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/workflow-runs",
+      "mode": "ready"
+    }
+  ]
+}

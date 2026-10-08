@@ -5,113 +5,82 @@ import { useModalKeyboard } from "../lib/modal-keyboard";
 import styles from "./creator-shell.module.css";
 
 const LINKS = [
-  { href: "/", label: "首页" },
-  { href: "/studio", label: "创作中心" },
-  { href: "/categories", label: "分类中心" },
-  { href: "/preview", label: "界面示例" },
+  { href: "/studio", label: "我的作品", icon: "works" },
+  { href: "/create", label: "开始创作", icon: "create" },
+  { href: "/categories", label: "灵感中心", icon: "idea" },
+  { href: "/preview", label: "界面示例", icon: "preview" },
+  { href: "/help", label: "帮助", icon: "help" },
+  { href: "/status", label: "服务状态", icon: "status" },
 ] as const;
 
-function useWideScreen() {
+function NavIcon({ icon }: { icon: (typeof LINKS)[number]["icon"] }) {
+  return <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    {icon === "works" ? <><rect x="3" y="5" width="18" height="14" rx="3" /><path d="m10 9 5 3-5 3Z" /></> : null}
+    {icon === "create" ? <><circle cx="12" cy="12" r="9" /><path d="M12 8v8M8 12h8" /></> : null}
+    {icon === "idea" ? <><path d="M9 18h6M10 21h4M8 14a7 7 0 1 1 8 0c-1 .8-1 2-1 2H9s0-1.2-1-2Z" /></> : null}
+    {icon === "preview" ? <><rect x="3" y="4" width="18" height="16" rx="3" /><path d="m10 8 5 4-5 4Z" /></> : null}
+    {icon === "status" ? <><path d="M3 12h4l3-7 4 14 3-7h4" /></> : null}
+    {icon === "help" ? <><circle cx="12" cy="12" r="9" /><path d="M9.5 9a2.5 2.5 0 0 1 5 .5c0 1.5-2.5 1.5-2.5 3M12 16h.01" /></> : null}
+  </svg>;
+}
+
+function Brand() {
+  return <a className={styles.brand} href="/"><span className={styles.brandMark} aria-hidden="true"><span /></span><span>红果创作<small>把故事，做成短剧</small></span></a>;
+}
+
+/** Presentation frame only. The existing editors own all project state and business actions. */
+export function CreatorShell({ children, activePath }: { children: ReactNode; activePath?: string }) {
+  const [open, setOpen] = useState(false);
   const [wide, setWide] = useState(false);
+  const opener = useRef<HTMLButtonElement>(null);
+  const panel = useRef<HTMLDivElement>(null);
+  const wasOpen = useRef(false);
+  const dialogId = useId();
+  useModalKeyboard(open && !wide, panel, () => setOpen(false));
+
   useEffect(() => {
     if (typeof window.matchMedia !== "function") return;
     const query = window.matchMedia("(min-width: 1024px)");
-    const apply = () => setWide(query.matches);
-    apply();
-    query.addEventListener("change", apply);
-    return () => query.removeEventListener("change", apply);
+    const sync = () => { setWide(query.matches); if (query.matches) setOpen(false); };
+    sync();
+    query.addEventListener("change", sync);
+    return () => query.removeEventListener("change", sync);
   }, []);
-  return wide;
-}
-
-export function CreatorShell({ children, appearance = "dark", activePath }: { children: ReactNode; appearance?: "dark" | "light"; activePath?: string }) {
-  const light = appearance === "light";
-  const wide = useWideScreen();
-  const [open, setOpen] = useState(false);
-  const opener = useRef<HTMLButtonElement>(null);
-  const panel = useRef<HTMLDivElement>(null);
-  const openedRef = useRef(false);
-  const titleId = useId();
-
-  function close() {
-    setOpen(false);
-  }
-
-  useModalKeyboard(open && !wide, panel, close);
-
-  useEffect(() => {
-    if (wide) setOpen(false);
-  }, [wide]);
 
   useEffect(() => {
     if (open && !wide) {
-      openedRef.current = true;
-      panel.current?.querySelector<HTMLElement>("a, button")?.focus();
-    } else if (openedRef.current) {
-      openedRef.current = false;
-      // The modal hook has removed inert before restoring focus.
+      wasOpen.current = true;
+      panel.current?.querySelector<HTMLElement>("button, a")?.focus();
+    } else if (wasOpen.current) {
+      wasOpen.current = false;
       if (!wide) opener.current?.focus();
     }
   }, [open, wide]);
 
-  const nav = (
-    <ul className="space-y-1">
-      {LINKS.map((link) => (
-        <li key={link.href}>
-          <a className={light ? styles.navLink : "block rounded px-3 py-2 hover:bg-[#1c2430]"} href={link.href} aria-current={activePath === link.href ? "page" : undefined}>
-            {light ? <span className={styles.navIcon} aria-hidden="true">{link.href === "/categories" ? "▦" : link.href === "/studio" ? "▱" : link.href === "/preview" ? "▷" : "⌂"}</span> : null}
-            {link.label}
-          </a>
-        </li>
-      ))}
-    </ul>
-  );
+  const navigation = <nav aria-label="主导航" className={styles.navigation}><ul>
+    {LINKS.map((link) => <li key={link.href} className={link.icon === "preview" ? styles.help : undefined}>
+      <a className={styles.navLink} href={link.href} aria-current={activePath === link.href ? "page" : undefined}>
+        <NavIcon icon={link.icon} />{link.label}
+      </a>
+    </li>)}
+  </ul></nav>;
 
-  return (
-    <div className={light ? styles.shell : "min-h-screen bg-[#0B0E14] text-[#F4F6FA]"}>
-      <div className={light ? styles.layout : "lg:grid lg:grid-cols-[15rem_minmax(0,1fr)]"}>
-        <aside className={light ? styles.sidebar : "hidden border-r border-[#283140] p-4 lg:block"} aria-label="主导航">
-          {light ? <a className={styles.brand} href="/"><span className={styles.brandMark} aria-hidden="true">▶</span><span>AI Drama Studio<small>让好故事，被看见</small></span></a> : <p className="px-3 text-sm font-semibold">AI Drama Studio</p>}
-          <nav className="mt-4">{nav}</nav>
-          <p className="mt-8 px-3 text-xs text-[#AAB3C5]">帮助</p>
-          <a className={light ? styles.helpLink : "mt-1 block rounded px-3 py-2 text-sm text-[#AAB3C5] hover:bg-[#1c2430]"} href="/status">服务状态 <span aria-hidden="true">↗</span></a>
-          {light ? <div className={styles.sidebarBottom}><div className={styles.promo}><strong>用好故事<br />连接更多人</strong><span>从一个灵感开始创作</span><i aria-hidden="true">▶</i></div><p>AI Drama Studio · 创作工具</p></div> : null}
-        </aside>
-        <div className="min-w-0">
-          <div className={light ? styles.mobileHeader : "flex items-center justify-between border-b border-[#283140] px-4 py-3 lg:hidden"}>
-            <p className="font-semibold">AI Drama Studio</p>
-            <button
-              ref={opener}
-              className={light ? styles.menuButton : "rounded border border-[#283140] px-3 py-1 text-sm"}
-              type="button"
-              aria-expanded={open}
-              aria-controls={titleId}
-              onClick={() => setOpen(true)}
-              hidden={wide}
-            >
-              打开导航
-            </button>
-          </div>
-          {open ? (
-            <div className="fixed inset-0 z-40 bg-black/60 lg:hidden" role="presentation">
-              <div
-                ref={panel}
-                id={titleId}
-                role="dialog"
-                aria-modal="true"
-                aria-label="导航"
-                className={light ? styles.drawer : "h-full w-72 overflow-y-auto border-r border-[#283140] bg-[#141A23] p-4 [overflow-wrap:anywhere]"}
-              >
-                <button className="text-sm underline" type="button" onClick={close}>关闭导航</button>
-                <nav className="mt-4">{nav}</nav>
-                <p className="mt-8 text-xs text-[#AAB3C5]">帮助</p>
-                <a className="mt-1 block rounded px-3 py-2 text-sm text-[#AAB3C5]" href="/status">服务状态</a>
-              </div>
-            </div>
-          ) : null}
-          {children}
-        </div>
-      </div>
+  return <div className={`creator-app ${styles.shell}`} data-ui="hongguo">
+    <a className={styles.skip} href="#main">跳到正文</a>
+    <aside className={styles.sidebar}><Brand />{navigation}<p className={styles.footer}>每个好故事，都值得被看见</p></aside>
+    <div className={styles.page}>
+      <header className={styles.mobileHeader}><Brand /><button ref={opener} type="button" className={styles.menu}
+        aria-expanded={open} aria-controls={dialogId} onClick={() => setOpen(true)} hidden={wide}>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" /></svg>
+        <span className="sr-only">打开导航</span>
+      </button></header>
+      <div id="main" tabIndex={-1}>{children}</div>
     </div>
-  );
+    {open ? <div className={styles.backdrop} role="presentation">
+      <div ref={panel} id={dialogId} role="dialog" aria-modal="true" aria-label="导航" className={styles.drawer}>
+        <button className={styles.close} type="button" onClick={() => setOpen(false)}>关闭导航 <span aria-hidden="true">×</span></button>
+        <Brand />{navigation}
+      </div>
+    </div> : null}
+  </div>;
 }

@@ -10,33 +10,32 @@ const STEPS = [
 export function ProductHome() {
   return (
     <CreatorShell>
-      <main className="mx-auto grid max-w-6xl gap-8 px-4 py-10 lg:grid-cols-[minmax(0,1fr)_18rem]">
+      <main className="creator-page secondary-page secondary-home-grid">
         <div>
-          <p className="text-sm text-[#AAB3C5]">开发预览 · 还不能公开商业运营</p>
-          <h1 className="mt-3 text-4xl font-semibold">把故事，做成短剧</h1>
-          <p className="mt-4 max-w-2xl text-[#AAB3C5]">
-            AI Drama Studio 给独立创作者一条看得见的路径：知道自己正在写什么，下一步该打开哪一集，以及任务结果和失败原因放在哪里。
-          </p>
-          <ol className="mt-8 grid gap-3 sm:grid-cols-2">
+          <header className="creator-page-heading">
+            <p className="secondary-eyebrow">开发预览 · 还不能公开商业运营</p>
+            <h1>把故事，做成短剧</h1>
+            <p className="secondary-description">红果创作给独立创作者一条看得见的路径：知道自己正在写什么，下一步该打开哪一集，以及任务结果和失败原因放在哪里。</p>
+          </header>
+          <ol className="secondary-home-steps">
             {STEPS.map((step, index) => (
-              <li key={step.title} className="rounded-lg border border-[#283140] bg-[#141A23] p-4">
-                <p className="text-sm text-[#9B8CFF]">0{index + 1}</p>
-                <h2 className="mt-1 font-medium">{step.title}</h2>
-                <p className="mt-2 text-sm text-[#AAB3C5]">{step.text}</p>
+              <li key={step.title} className="ui-card">
+                <span className="secondary-item-number" aria-hidden="true">0{index + 1}</span>
+                <h2>{step.title}</h2>
+                <p>{step.text}</p>
               </li>
             ))}
           </ol>
-          <div className="mt-8 flex flex-wrap gap-3">
-            <a className="rounded bg-[#9B8CFF] px-4 py-2 text-[#0B0E14]" href="/studio">进入创作中心</a>
-            <a className="rounded border border-[#283140] px-4 py-2" href="/preview">查看界面示例</a>
+          <div className="secondary-actions">
+            <a className="ui-button ui-button-primary" href="/studio">进入创作中心</a>
+            <a className="ui-button ui-button-secondary" href="/preview">查看界面示例</a>
           </div>
         </div>
-        <aside className="justify-self-center" aria-label="竖屏示例">
-          <p className="mb-2 text-center text-sm text-[#AAB3C5]">9:16 成片位置</p>
-          <div className="flex aspect-[9/16] w-56 flex-col justify-end rounded-lg border border-[#283140] bg-[#141A23] p-4">
-            <p className="text-xs text-[#AAB3C5]">示例画面 · 不会生成</p>
-            <p className="mt-2 text-lg font-medium">夜班便利店</p>
-            <p className="text-sm text-[#AAB3C5]">最后一盒饭团</p>
+        <aside className="ui-card secondary-preview-aside" aria-label="竖屏示例">
+          <div className="secondary-aside-heading"><h2>成片位置</h2><span>9:16</span></div>
+          <div className="secondary-poster">
+            <span className="secondary-poster-mark" aria-hidden="true">夜</span>
+            <div className="secondary-poster-copy"><p>示例画面 · 不会生成</p><h3>夜班便利店</h3><span>最后一盒饭团</span></div>
           </div>
         </aside>
       </main>

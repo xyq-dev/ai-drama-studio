@@ -94,7 +94,7 @@ function EpisodeTabs(props: { value: number; onChange: (episodeNo: number) => vo
     <div role="tablist" aria-label={props.label} className="creator-episode-tabs flex flex-wrap gap-2">
       {[1, 2, 3].map((episodeNo) => (
         <button key={episodeNo} role="tab" type="button" aria-selected={props.value === episodeNo}
-          className={`rounded-[12px] border px-3 py-1.5 text-[15px] ${props.value === episodeNo ? "border-[#D34846] bg-[#FBE7E4]" : "bg-white"}`}
+          className={`rounded-[12px] border px-3 py-1.5 text-[15px] ${props.value === episodeNo ? "border-[var(--studio-accent)] bg-[#FBE7E4]" : "bg-white"}`}
           onClick={() => props.onChange(episodeNo)}>
           第 {episodeNo} 集 · <span>{STEP_STATE_MARK[props.state(episodeNo)]} {STEP_STATE_TEXT[props.state(episodeNo)]}</span>
         </button>
@@ -403,7 +403,7 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
   }
 
   return (
-    <BeginnerShell>
+    <BeginnerShell active="/studio">
       <main className="creator-flow mx-auto max-w-6xl px-4 pb-28 pt-6 lg:pb-10">
         <div className="creator-project-heading flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
@@ -417,18 +417,18 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
           </div>
         </div>
         {leaving ? (
-          <div className="mt-3 rounded-[12px] border border-[#D34846] bg-white p-4" role="alert">
+          <div className="mt-3 rounded-[12px] border border-[var(--studio-accent)] bg-white p-4" role="alert">
             <p className="font-medium">还有未保存的修改</p>
             <p className="mt-1 text-[15px]">草稿只保存在当前浏览器标签页。关闭浏览器或换设备后不保证能恢复。</p>
             <div className="mt-3 flex flex-wrap gap-3">
-              <button className="rounded-[12px] bg-[#D34846] px-4 py-2 text-white" type="button" onClick={() => { setLeaving(false); runPrimary(); }}>回到编辑去保存</button>
+              <button className="rounded-[12px] bg-[var(--studio-accent)] px-4 py-2 text-white" type="button" onClick={() => { setLeaving(false); runPrimary(); }}>回到编辑去保存</button>
               <a className="rounded-[12px] border px-4 py-2" href="/studio">保留本标签页草稿并离开</a>
             </div>
           </div>
         ) : null}
-        {error ? <p className="mt-3 rounded-[12px] border border-[#D34846] bg-white p-3" role="alert">作品读取失败：{error}</p> : null}
+        {error ? <p className="mt-3 rounded-[12px] border border-[var(--studio-accent)] bg-white p-3" role="alert">作品读取失败：{error}</p> : null}
         {!error && base.refreshFailed ? (
-          <div className="mt-3 rounded-[12px] border border-[#D34846] bg-white p-3 text-[15px]" role="status">
+          <div className="mt-3 rounded-[12px] border border-[var(--studio-accent)] bg-white p-3 text-[15px]" role="status">
             <p>{base.refreshPaused
               ? "最新进度多次没有读到，自动重试已暂停；页面上的内容可能不是最新。可以手动重试。"
               : "最新进度暂时没有读到，正在自动重试；页面上的内容可能不是最新。"}</p>
@@ -472,7 +472,7 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
               </button>
             ) : null}
             <div className="creator-primary-bar fixed inset-x-0 bottom-0 z-10 border-t border-[#E7E5E0] bg-white p-3 lg:static lg:mt-4 lg:border-0 lg:p-0">
-              <button className="w-full rounded-[12px] bg-[#D34846] px-5 py-3 font-medium text-white lg:w-auto"
+              <button className="w-full rounded-[12px] bg-[var(--studio-accent)] px-5 py-3 font-medium text-white lg:w-auto"
                 type="button" onClick={runPrimary} disabled={closed && gate === "pending"}>
                 {action.label}
               </button>
@@ -509,7 +509,7 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
                   const list = kind === "character" ? facts.characters : facts.locations;
                   return (
                     <button key={kind} role="tab" type="button" aria-selected={castKind === kind}
-                      className={`rounded-[12px] border px-3 py-1.5 ${castKind === kind ? "border-[#D34846] bg-[#FBE7E4]" : "bg-white"}`}
+                      className={`rounded-[12px] border px-3 py-1.5 ${castKind === kind ? "border-[var(--studio-accent)] bg-[#FBE7E4]" : "bg-white"}`}
                       onClick={() => { setCastKind(kind); setCastFocus(null); }}>
                       {kind === "character" ? "角色" : "场地"} · {list.read !== "ok" ? "尚未确认" : list.items.length === 0 ? "还没有" : `${list.items.filter((item) => entityState(item) === "done").length}/${list.items.length} 已确认`}
                     </button>
@@ -518,7 +518,7 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
               </div>
               <p className="text-[15px] text-[#5F5D66]">用文字描述人物的外貌、性格和关系。角色参考图在打开角色后出现；参考图存储尚未启用时会写明，不会拿普通图片代替。项目没有单独的画风字段，想统一画风时请写进描述，并在保存前确认。</p>
               {castChoices ? (
-                <div className="rounded-[12px] border border-[#D34846] bg-white p-4 text-[15px]" role="group" aria-label="需要处理的人物与场地" data-cast-choices tabIndex={-1}>
+                <div className="rounded-[12px] border border-[var(--studio-accent)] bg-white p-4 text-[15px]" role="group" aria-label="需要处理的人物与场地" data-cast-choices tabIndex={-1}>
                   <p className="font-medium">有 {castChoices.length} 个对象需要处理，请选一个打开：</p>
                   <ul className="mt-2 flex flex-wrap gap-2">
                     {castChoices.map((problem) => (
@@ -577,7 +577,7 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
                     {scenes?.items.map((scene, index) => (
                       <li key={scene.entityId}>
                         <button type="button" aria-pressed={sceneId === scene.entityId}
-                          className={`rounded-[12px] border px-3 py-1.5 ${sceneId === scene.entityId ? "border-[#D34846] bg-[#FBE7E4]" : ""}`}
+                          className={`rounded-[12px] border px-3 py-1.5 ${sceneId === scene.entityId ? "border-[var(--studio-accent)] bg-[#FBE7E4]" : ""}`}
                           onClick={() => { setSceneId(scene.entityId); setShotId(null); }}>
                           场景 {index + 1} · {STEP_STATE_TEXT[entityState(scene)]}
                         </button>
@@ -644,7 +644,7 @@ function GateNotice({ gate, onRetry, children }: { gate: ComposeGate; onRetry: (
     : gate === "timeout" ? "功能状态检查超时，请重试。服务端没有在限定时间内回答，暂时无法确认这一步能不能进行；这不代表功能已关闭。"
       : "没能读取服务端的合成功能状态（网络或服务暂时不可用），暂时无法确认这一步能不能进行。这不代表功能已关闭，也不代表还没有候选镜头。";
   return (
-    <div className="rounded-[12px] border border-[#D34846] bg-white p-4 text-[15px]" role={gate === "disabled" ? "status" : "alert"}>
+    <div className="rounded-[12px] border border-[var(--studio-accent)] bg-white p-4 text-[15px]" role={gate === "disabled" ? "status" : "alert"}>
       <p>{gate === "disabled" ? <span aria-hidden="true">！ </span> : null}{text}</p>
       <button className="mt-2 rounded-[12px] border px-3 py-1.5" type="button" onClick={onRetry}>重新检查功能状态</button>
     </div>
@@ -668,7 +668,7 @@ function LocationNote({ list, onRetry }: { list: ListFacts<Aggregate> | null; on
     return <p className="text-[15px] text-[#5F5D66]" role="status">场地很多，场景里的场地选项只列出已读到的 {list.items.length} 个，不代表全部；其余请在高级编辑中选择。</p>;
   }
   return (
-    <div className="rounded-[12px] border border-[#D34846] bg-white p-3 text-[15px]" role="alert">
+    <div className="rounded-[12px] border border-[var(--studio-accent)] bg-white p-3 text-[15px]" role="alert">
       <p>场地列表没有读全（读取失败），场景里的场地选项可能不完整。这不代表项目没有其他场地。</p>
       <button className="mt-2 rounded-[12px] border px-3 py-1.5" type="button" onClick={onRetry}>重新读取</button>
     </div>
@@ -677,7 +677,7 @@ function LocationNote({ list, onRetry }: { list: ListFacts<Aggregate> | null; on
 
 function ReadFailed({ onRetry }: { onRetry: () => void }) {
   return (
-    <div className="rounded-[12px] border border-[#D34846] bg-white p-4 text-[15px]" role="alert">
+    <div className="rounded-[12px] border border-[var(--studio-accent)] bg-white p-4 text-[15px]" role="alert">
       <p>部分进度读取失败，相关剧集显示为「尚未确认」，不会据此判断为完成。</p>
       <button className="mt-2 rounded-[12px] border px-3 py-1.5" type="button" onClick={onRetry}>重新读取进度</button>
     </div>
