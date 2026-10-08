@@ -439,3 +439,100 @@ describe("useProjectBase wakes the retry after an idle read failure (PR #53 revi
     expect(result.current.refreshPaused).toBe(false);
   });
 });
+
+describe("a current successful reread ends the failure backoff (Issue #54 B)", () => {
+  const fail = async () => json({ error: { code: "UNAVAILABLE", message: "x" } }, 503);
+
+  it("retries exhausted, an outside reread succeeds, a new 503 gets automatic retries again", async () => {
+    const server: Server = { runs: [], project: [], calls: [] };
+    install(server);
+    const { result } = renderHook(() => useProjectBase(P1, "失败"));
+    await settle();
+    server.project.push(fail, fail, fail, fail, fail, fail, fail, fail);
+    await act(async () => { await result.current.reloadBase().catch(() => undefined); });
+    await advance(600_000);
+    expect(result.current.refreshPaused).toBe(true);
+    server.project.length = 0;
+    await act(async () => { await result.current.reloadBase(); });
+    expect(result.current.refreshPaused).toBe(false);
+    expect(result.current.refreshFailed).toBe(false);
+    server.project.push(fail);
+    await act(async () => { await result.current.reloadBase().catch(() => undefined); });
+    expect(result.current.refreshPaused).toBe(false);
+    const reads = projectReads(server);
+    await advance(2000);
+    expect(projectReads(server)).toBe(reads + 1);
+    expect(result.current.refreshFailed).toBe(false);
+  });
+
+  it("after failed retries, an outside success that finds a new job follows it at the normal interval", async () => {
+    const server: Server = { runs: [], project: [], calls: [] };
+    install(server);
+    const { result } = renderHook(() => useProjectBase(P1, "失败"));
+    await settle();
+    server.project.push(fail, fail, fail);
+    await act(async () => { await result.current.reloadBase().catch(() => undefined); });
+    await advance(2000);
+    await advance(4000);
+    // Two automatic retries failed: the next one waits 8 s.
+    expect(server.project).toHaveLength(0);
+    server.runs = [composeRun("QUEUED")];
+    await act(async () => { await result.current.reloadBase(); });
+    const runs = runsReads(server);
+    await advance(2000);
+    expect(runsReads(server)).toBe(runs + 1);
+    server.runs = [composeRun("SUCCEEDED")];
+    await advance(2000);
+    expect(result.current.allRuns[0]?.status).toBe("SUCCEEDED");
+    const total = server.calls.length;
+    await advance(120_000);
+    expect(server.calls.length).toBe(total);
+  });
+
+  it("an old success arriving after a newer failure does not clear that failure", async () => {
+    const server: Server = { runs: [], project: [], calls: [] };
+    install(server);
+    const { result } = renderHook(() => useProjectBase(P1, "失败"));
+    await settle();
+    let finishOld!: () => void;
+    server.project.push(() => new Promise<Response>((done) => { finishOld = () => done(json({ id: P1, title: "旧", premise: "", version: 1, status: "ACTIVE" })); }), fail);
+    let old!: Promise<void>;
+    act(() => { old = result.current.reloadBase(); });
+    await act(async () => { await result.current.reloadBase().catch(() => undefined); });
+    await act(async () => { finishOld(); await old; });
+    expect(result.current.refreshFailed).toBe(true);
+    expect(result.current.project?.title).not.toBe("旧");
+    await advance(2000);
+    expect(result.current.refreshFailed).toBe(false);
+  });
+
+  it("an old failure arriving after a newer success adds no failure and starts no retry", async () => {
+    const server: Server = { runs: [], project: [], calls: [] };
+    install(server);
+    const { result } = renderHook(() => useProjectBase(P1, "失败"));
+    await settle();
+    let failOld!: () => void;
+    server.project.push(() => new Promise<Response>((done) => { failOld = () => done(json({ error: { code: "UNAVAILABLE", message: "x" } }, 503)); }));
+    let old!: Promise<void>;
+    act(() => { old = result.current.reloadBase().catch(() => undefined); });
+    await act(async () => { await result.current.reloadBase(); });
+    await act(async () => { failOld(); await old; });
+    expect(result.current.refreshFailed).toBe(false);
+    const reads = server.calls.length;
+    await advance(60_000);
+    expect(server.calls.length).toBe(reads);
+  });
+
+  it("several callbacks finishing together leave one chain: no stacked timers, no overlapping reads", async () => {
+    const server: Server = { runs: [composeRun("RUNNING")], project: [], calls: [] };
+    install(server);
+    const { result } = renderHook(() => useProjectBase(P1, "失败"));
+    await settle();
+    await act(async () => { await Promise.all([result.current.reloadBase(), result.current.reloadBase(), result.current.reloadBase()]); });
+    const runs = runsReads(server);
+    await advance(2000);
+    expect(runsReads(server)).toBe(runs + 1);
+    await advance(2000);
+    expect(runsReads(server)).toBe(runs + 2);
+  });
+});
