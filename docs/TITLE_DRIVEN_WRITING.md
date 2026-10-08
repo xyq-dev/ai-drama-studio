@@ -48,7 +48,7 @@
 6. 每步输出必须通过统一 schema 与安全检查；拒绝空结果、只有空白的必填叙事字段、缺集、错集号、无法解析的内容。只收到响应不算完成。
 7. 后续步骤只读取已保存的前序输出：大纲读取故事策划；第 N 集读取策划、大纲和第 1..N-1 集的交接事实。
 8. 保存：故事只在项目还没有当前故事版本时创建 DRAFT 版本（同一事务记录到运行上）；已有人工故事 → `conflict`，生成结果保留在运行中。分集剧本保存在运行中，故事通过人工审核后由「写入剧本草稿」写入还没有剧本的分集；已有剧本的集记为冲突，不覆盖。写入按 运行 → 项目 → 分集 的顺序加锁（与人工保存剧本相同），在项目锁内复核故事资格。从不改审核状态。
-9. 浏览器启动：未确认结果的启动请求（冻结的请求体、作品键、作品 ID、任务键）先写入会话存储并读回确认，写不进去就不发送；刷新后表单显示并锁定这次请求，只能「重试上次请求」（原样重放、同一组键）或「查看进度」，「放弃上次请求，重新填写」是单独的新创作。操作者令牌只在页面内存。
+9. 浏览器启动：未确认结果的启动请求（冻结的请求体、作品键、作品 ID、任务键）先写入会话存储并读回确认，写不进去就不发送；刷新后表单显示并锁定这次请求，只能「重试上次请求」（原样重放、同一组键）或「查看进度」，「放弃上次请求，重新填写」是单独的新创作。操作者令牌只在页面内存。只有能证明结果的回执才算确认：作品回执须带合法作品 ID，启动回执须带合法任务 ID 且属于本次作品；`{}`、`{run:null}`、缺编号、归属不符一律按「结果尚未确认」处理，保留冻结请求和原键。每次发送绑定页面生命周期与本次操作，离开页面后迟到的回执不改状态、不写存储、不跳转；会话存储按 `projectKey` + `runKey` 比对后才更新或删除，旧操作不会覆盖或删除新操作的记录。进度页的写操作（停止、续跑、写入剧本）只在同一作品、同一任务、且仍是当前操作时回写结果、错误和忙碌状态；读到同作品的新任务后，旧操作及其确认、续跑键一律失效；操作进行中如果已显示过更新的读取结果，回执的先后无法判断，不覆盖，改为再读一次（GET，不重发写请求）。
 10. 密钥只从 API 进程环境读取，不进浏览器、日志或响应。端点由服务端固定；用户只能在服务端白名单中选 Provider 和模型。
 
 ### API（均在项目范围内，响应 `Cache-Control: private, no-store`）
@@ -100,7 +100,7 @@
 
 故事通过审核、剧本写入并通过审核后，现有链路照常：分集 → 场景/镜头（`workflows/mock-scenes`、`mock-shots`）→ 角色参考图 → 镜头素材 → 合成下载。本轮不新增图片、视频、配音服务。
 
-## 验收状态（2026-10-09，审查 R1–R9 修复后，分支 feat/title-driven-ai-writing）
+## 验收状态（2026-10-09，审查 R1–R9 与 F1–F4 修复后，分支 feat/title-driven-ai-writing）
 
 审查修复记录见 [`TITLE_WRITING_REVIEW_FIX_REPORT.md`](TITLE_WRITING_REVIEW_FIX_REPORT.md)。
 
@@ -109,10 +109,10 @@
 | 三家适配器请求映射、输出解析、错误分类 | 单元测试（`packages/providers/src/text-writing.spec.ts`），可控 transport 替身 |
 | 顺序、上下文、幂等、并发、取消、恢复、限额、冲突、剧本落入、空白字段拒收 | 引擎测试（`title-writing-engine.spec.ts`、`title-writing-cancel.spec.ts`、`title-writing-resume.spec.ts`），内存存储 + 可控替身 |
 | 访问门禁、缺配置提示、密钥不外泄、续跑确认与重放、工作区隔离 | API 测试（`title-writing.service.spec.ts`、`title-writing.workspace.spec.ts`），内存存储 + 可控替身 |
-| 开始页幂等、进度页续跑确认、迟到回执 | 组件测试（`title-writing.spec.tsx`、`title-writing-start.spec.tsx`、`title-writing-resume.spec.tsx`、`title-writing-scope.spec.tsx`，模拟 fetch） |
+| 开始页幂等、进度页续跑确认、迟到回执 | 组件测试（`title-writing.spec.tsx`、`title-writing-start.spec.tsx`、`title-writing-start-identity.spec.tsx`、`title-writing-resume.spec.tsx`、`title-writing-scope.spec.tsx`、`title-writing-run-order.spec.tsx`，模拟 fetch；幂等服务端为内存模拟） |
 | 桌面 1280 与手机 390 布局 | 上一轮：真实 Chromium + 已构建网页 + **桩 API**（只验证布局与交互）。本轮开始卡与进度页有改动，**未重跑**浏览器检查 |
 | 验收入口拒绝行为 | 单元测试（`title-writing-acceptance-guard.spec.ts`）：环境检查为纯函数；身份检查用脚本化客户端，只证明判断逻辑 |
-| PostgreSQL 存储（含 R2/R3/R5/R6/R7 的数据库回归） | `title-writing-store.acceptance.spec.ts` 已写好；**未执行**（本机无 PostgreSQL，未授权隔离库） |
+| PostgreSQL 存储（含 R2/R3/R5/R6/R7 的数据库回归） | `title-writing-store.acceptance.spec.ts` 已写好；**未执行**（本机无 PostgreSQL，未授权隔离库）。即使执行：R6 的 `Promise.allSettled` 竞争由调度决定交错，不能证明锁顺序排除了死锁，需要另写确定性锁等待测试并记录等待证据；日限额用例是达到上限后的单次拒绝，不证明并发争抢最后一个额度时只有一个成功 |
 | 真实项目 API + 真实浏览器全流程 | **未执行**：依赖草案表 |
 | 真实模型调用（千问 / OpenAI / DeepSeek） | **未执行**，Paid calls = NO |
 
