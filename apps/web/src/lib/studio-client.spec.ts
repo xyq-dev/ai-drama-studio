@@ -67,3 +67,18 @@ describe("StudioClient", () => {
     await expect(client.get("/projects")).rejects.toBeInstanceOf(ApiError);
   });
 });
+
+describe("StudioClient.get optional signal (Issue #54 C)", () => {
+  it("passes a signal only when one is given, so every other call is unchanged", async () => {
+    const seen: Array<RequestInit | undefined> = [];
+    const client = new StudioClient(async (_input, init) => {
+      seen.push(init);
+      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+    await client.get("/a");
+    const controller = new AbortController();
+    await client.get("/b", { signal: controller.signal });
+    expect(seen[0] && "signal" in seen[0]).toBe(false);
+    expect(seen[1]?.signal).toBe(controller.signal);
+  });
+});

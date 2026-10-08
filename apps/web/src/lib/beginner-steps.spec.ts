@@ -210,8 +210,10 @@ describe("which episode a step and its actions open (Issue #52 items 1 and 5)", 
   it("an action on a finished episode moves to the episode that now needs the user", () => {
     const scripts = facts({ episodes: [episode(1, "APPROVED"), episode(2, null), episode(3, "DRAFT")] });
     expect(episodeForAction("script", scripts, 1)).toBe(2);
-    // An episode that itself needs the action keeps it.
-    expect(episodeForAction("script", scripts, 3)).toBe(3);
+    // Issue #54: episode 3 waits for review, which is not what 补齐剧本 (needs input) is for, so the action goes
+    // to episode 2, the episode that supplies the step state.
+    expect(stepStates(scripts).script).toBe("needs_input");
+    expect(episodeForAction("script", scripts, 3)).toBe(2);
     expect(episodeForAction("story", scripts, 2)).toBe(2);
   });
 
@@ -221,5 +223,41 @@ describe("which episode a step and its actions open (Issue #52 items 1 and 5)", 
     expect(stepStates(allDone).final).toBe("done");
     expect(episodeForAction("final", allDone, 3)).toBe(3);
     expect(episodeNeedingWork("final", allDone)).toBeNull();
+  });
+});
+
+describe("the primary action goes to the episode that supplies the step state (Issue #54 A)", () => {
+  it("DRAFT and REJECTED mixed: 查看原因并修改 opens the returned episode", () => {
+    const mixed = facts({ episodes: [episode(1, "DRAFT"), episode(2, "REJECTED"), episode(3, "APPROVED")] });
+    expect(stepStates(mixed).script).toBe("needs_attention");
+    expect(primaryAction("script", "needs_attention").label).toBe("查看原因并修改");
+    expect(episodeForAction("script", mixed, 1)).toBe(2);
+    expect(episodeForAction("script", mixed, 3)).toBe(2);
+  });
+
+  it("STALE outranks the rest and is opened first", () => {
+    const stale = facts({ episodes: [episode(1, "DRAFT"), episode(2, "APPROVED", "STALE"), episode(3, "REJECTED")] });
+    expect(stepStates(stale).script).toBe("source_updated");
+    expect(episodeForAction("script", stale, 3)).toBe(2);
+  });
+
+  it("keeps the shown episode when it already matches, and picks the first match in episode order otherwise", () => {
+    const two = facts({ episodes: [episode(1, "DRAFT"), episode(2, "REJECTED"), episode(3, "REJECTED")] });
+    expect(episodeForAction("script", two, 3)).toBe(3);
+    expect(episodeForAction("script", two, 2)).toBe(2);
+    expect(episodeForAction("script", two, 1)).toBe(2);
+  });
+
+  it("all done: stays on a done episode", () => {
+    const done = facts({ episodes: approvedEpisodes });
+    expect(episodeForAction("script", done, 3)).toBe(3);
+  });
+
+  it("a running shot job of unknown episode keeps the shown episode instead of inventing one", () => {
+    const running = facts({ episodes: approvedEpisodes, media: { 1: media(0), 2: media(0), 3: media(0) },
+      runs: [run("MEDIA_VIDEO", "RUNNING")] });
+    expect(stepStates(running).sample).toBe("in_progress");
+    expect(primaryAction("sample", "in_progress").target).toBe("tasks");
+    expect(episodeForAction("sample", running, 2)).toBe(2);
   });
 });

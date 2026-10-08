@@ -132,13 +132,15 @@ describe("single-shot compose closed state comes from the capability (Issue #52 
   it("reads the compose switches and treats a missing or failed answer as unconfirmed", async () => {
     const answer = (body: unknown) => ({ get: async <T,>() => body as T });
     expect(await loadComposeCapability(answer({ compose: { shot: false, episode: true } }))).toEqual({ read: "ok", shot: false, episode: true });
-    expect(await loadComposeCapability(answer({ providerKey: "mock" }))).toEqual({ read: "failed" });
-    expect(await loadComposeCapability({ get: async () => { throw new ApiError(503, "UNAVAILABLE", "x"); } })).toEqual({ read: "failed" });
+    expect(await loadComposeCapability(answer({ providerKey: "mock" }))).toEqual({ read: "failed", reason: "error" });
+    expect(await loadComposeCapability({ get: async () => { throw new ApiError(503, "UNAVAILABLE", "x"); } })).toEqual({ read: "failed", reason: "error" });
   });
 
   it("pending, failed, disabled and enabled are four answers, per channel, from the capability alone", () => {
     expect(composeGates(null)).toEqual({ shot: "pending", episode: "pending" });
-    expect(composeGates({ read: "failed" })).toEqual({ shot: "failed", episode: "failed" });
+    expect(composeGates({ read: "failed", reason: "error" })).toEqual({ shot: "failed", episode: "failed" });
+    expect(composeGates({ read: "failed", reason: "timeout" })).toEqual({ shot: "timeout", episode: "timeout" });
+    expect(composeBlockedReason("timeout", "shot")).toContain("检查超时");
     expect(composeGates({ read: "ok", shot: false, episode: true })).toEqual({ shot: "disabled", episode: "enabled" });
     expect(composeGates({ read: "ok", shot: true, episode: false })).toEqual({ shot: "enabled", episode: "disabled" });
     expect(composeBlockedReason("enabled", "shot")).toBeNull();

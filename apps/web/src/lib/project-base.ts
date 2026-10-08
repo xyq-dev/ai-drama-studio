@@ -146,6 +146,8 @@ export function useProjectBase(projectId: string, failureText: string) {
   /** Wakes this project's single poll and retry chain; a no-op while no chain exists (unmounted or switching). */
   const wakeRef = useRef<() => void>(() => undefined);
   const retryRef = useRef<() => Promise<void>>(async () => undefined);
+  /** Tells the chain a current full reread succeeded: the failure run is over and any backoff timer is replaced. */
+  const succeededRef = useRef<() => void>(() => undefined);
   const workflowStatus = useRef(new Map<string, string>());
   const composeStatus = useRef(new Map<string, string>());
 
@@ -174,9 +176,9 @@ export function useProjectBase(projectId: string, failureText: string) {
    * state, while a failure of the latest request still rejects so callers see it. Loading belongs to the latest
    * request too: while a project's first data is pending, only the request that is current when it settles ends
    * the loading, so a superseded request's end never closes a newer read. A reread after data is shown never turns
-   * loading on and never clears what is shown.
+   * loading on and never clears what is shown. Resolves true when this read was applied, false when superseded.
    */
-  const reloadBase = useCallback(async () => {
+  const loadBase = useCallback(async (): Promise<boolean> => {
     const request = ++baseToken.current;
     let loaded;
     try {
@@ -189,7 +191,7 @@ export function useProjectBase(projectId: string, failureText: string) {
         client.get<WorkflowRun[]>(`/projects/${projectId}/workflow-runs`),
       ]);
     } catch (caught) {
-      if (!shouldApplyLoad(request, baseToken.current)) return;
+      if (!shouldApplyLoad(request, baseToken.current)) return false;
       if (initialPending.current) {
         initialPending.current = false;
         setError(caught instanceof ApiError ? caught.detail : failureTextRef.current);
@@ -203,7 +205,7 @@ export function useProjectBase(projectId: string, failureText: string) {
       }
       throw caught;
     }
-    if (!shouldApplyLoad(request, baseToken.current)) return;
+    if (!shouldApplyLoad(request, baseToken.current)) return false;
     const [nextProject, episodePage, storyPage, characterPage, locationPage, runs] = loaded;
     initialPending.current = false;
     baseRetry.current = false;
@@ -220,9 +222,14 @@ export function useProjectBase(projectId: string, failureText: string) {
     const transition = applyRuns(runs);
     if (transition.mediaBecameTerminal || transition.composeFinished) setImageEpoch((value) => value + 1);
     if (transition.textBecameTerminal) setRefreshEpoch((value) => value + 1);
-    // A newly accepted job may need following although the chain had stopped.
-    wakeRef.current();
+    // The failure run is over (whoever asked for this read), and a newly accepted job may need following although the
+    // chain had stopped. A superseded read never gets here, so an old success cannot end a newer failure run.
+    succeededRef.current();
+    return true;
   }, [projectId, applyRuns]);
+
+  /** The public reread: same rules as loadBase, without the applied flag callers do not need. */
+  const reloadBase = useCallback(async () => { await loadBase(); }, [loadBase]);
 
   // The initial load of a project (a project change or mount). Its loading and error are settled by reloadBase for
   // whichever request is current at the time; a project change or an unmount invalidates requests in flight.
@@ -259,19 +266,30 @@ export function useProjectBase(projectId: string, failureText: string) {
       if (!active() && !baseRetry.current) return;
       timer = setTimeout(tick, Math.min(POLL_MS * 2 ** failures.current, MAX_BACKOFF_MS));
     };
-    const settle = (ok: boolean) => {
+    // A superseded read (applied === false) is neither a success nor a failure of the current run.
+    const settle = (ok: boolean, applied = true) => {
+      if (!applied) return;
       failures.current = ok ? 0 : failures.current + 1;
     };
     const readRuns = async () => {
       const request = baseToken.current;
-      const runs = await client.get<WorkflowRun[]>(`/projects/${projectId}/workflow-runs`);
-      if (stopped || !shouldApplyLoad(request, baseToken.current)) return;
+      let runs: WorkflowRun[];
+      try {
+        runs = await client.get<WorkflowRun[]>(`/projects/${projectId}/workflow-runs`);
+      } catch (caught) {
+        // Superseded (a newer read began) or stopped (work switched, unmounted): neither success nor failure of the
+        // current run. A current failure still counts and backs off.
+        if (stopped || !shouldApplyLoad(request, baseToken.current)) return false;
+        throw caught;
+      }
+      if (stopped || !shouldApplyLoad(request, baseToken.current)) return false;
       const transition = applyRuns(runs);
       if (transition.mediaBecameTerminal || transition.composeFinished) setImageEpoch((value) => value + 1);
       if (transition.textBecameTerminal) {
         setRefreshEpoch((value) => value + 1);
         void reloadBase().catch(() => undefined);
       }
+      return true;
     };
     const tick = () => {
       timer = undefined;
@@ -280,12 +298,19 @@ export function useProjectBase(projectId: string, failureText: string) {
       const rereadBase = baseRetry.current && (running || failures.current < IDLE_BASE_RETRIES);
       if (!running && !rereadBase) return;
       reading = true;
-      void (rereadBase ? reloadBase() : readRuns()).then(() => settle(true), () => settle(false)).finally(() => {
+      void (rereadBase ? loadBase() : readRuns()).then((applied) => settle(true, applied), () => settle(false)).finally(() => {
         reading = false;
         schedule();
       });
     };
     wakeRef.current = schedule;
+    succeededRef.current = () => {
+      failures.current = 0;
+      // A backoff timer from the failure run is replaced by the normal interval (or dropped if nothing needs it).
+      if (timer) clearTimeout(timer);
+      timer = undefined;
+      schedule();
+    };
     schedule();
     const onVisible = () => {
       if (document.visibilityState !== "visible" || stopped || reading) return;
@@ -293,7 +318,7 @@ export function useProjectBase(projectId: string, failureText: string) {
       timer = undefined;
       setRefreshEpoch((value) => value + 1);
       reading = true;
-      void reloadBase().then(() => settle(true), () => settle(false)).finally(() => {
+      void loadBase().then((applied) => settle(true, applied), () => settle(false)).finally(() => {
         reading = false;
         schedule();
       });
@@ -308,8 +333,7 @@ export function useProjectBase(projectId: string, failureText: string) {
       if (reading) return;
       reading = true;
       try {
-        await reloadBase();
-        settle(true);
+        settle(true, await loadBase());
       } catch {
         settle(false);
       } finally {
@@ -322,9 +346,10 @@ export function useProjectBase(projectId: string, failureText: string) {
       if (timer) clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisible);
       wakeRef.current = () => undefined;
+      succeededRef.current = () => undefined;
       retryRef.current = async () => undefined;
     };
-  }, [projectId, reloadBase, applyRuns]);
+  }, [projectId, loadBase, reloadBase, applyRuns]);
 
   /** Manual retry after the automatic ones paused (or any time): one read now, then the usual schedule. */
   const retryNow = useCallback(() => retryRef.current(), []);

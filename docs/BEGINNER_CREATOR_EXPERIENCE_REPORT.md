@@ -468,3 +468,38 @@ Commit：YES（5 个分组提交 + 本报告）。Push：YES（普通推送新�
 新手 E2E 新增（仍在原 10 个阶段内）：关闭态页面不刷新、API 以开启状态重启后点「重新检查功能状态」，capabilities GET 恰好 1 次且步骤恢复；第 5 步在 capabilities 被挂起（延迟后 route.continue 原样放行）时，多镜预检、开始多镜合成与主按钮均不可用，放行后可用且已选编排保留；空闲页面批准成片的回调重读被 route.abort 一次后自动恢复。我的作品排队时序只有模拟组件回归，没有真实浏览器覆盖。所有注入故障均写入 `evidence.checks.faults`（含原有的创建作品 POST 中断，修正上一节所述记录位置不一致）；可见性仍为页面内模拟，不是真实标签页切换。
 
 后端、数据库、Worker、Provider 与业务规则未改；无 Migration、无 SQL 草案、无付费调用；未合并、未部署。
+
+## BEGINNER_STATE_RECOVERY_REPORT（Issue #54 四项 P2）
+
+分支 `fix/beginner-state-recovery`，起点 `origin/main` = `ba56b8ded313314f81d9867470f73779371d23cb`（PR #53 合并）。本节与验收脚本一起提交；该提交的 CI 结果记录在 PR 回复中，这里不预先记为通过。
+
+| 项 | 原因 | 修复 | 位置 |
+| --- | --- | --- | --- |
+| A 主动作定位（r4212498711） | 只要当前集「未完成」就保留，DRAFT 的第 1 集接走了来自 REJECTED 第 2 集的「查看原因并修改」 | 点击时按最新事实取步骤全局状态；当前集自身状态等于它才保留，否则按 1→2→3 取第一个状态相同的集；没有任何集携带该状态（例如所属集未知的运行中单镜任务）时保留当前集，不编造归属。已完成、「继续制作第 N 集」、全部完成后查看下载的规则不变；切集不清其他集草稿 | `beginner-steps.ts` `episodeForAction` |
+| B 成功读取结束失败退避（r4212498719） | 外部 `reloadBase()` 成功只清提示，不清失败计数，也不替换已排队的退避 timer | 当前有效的完整读取成功时通知同一条调度链：失败计数清零、退避 timer 换成正常间隔（无任务且无待重读则停止）。被取代的读取（成功或失败）既不算成功也不算失败；内部 `loadBase` 返回是否生效，公开的 `reloadBase` 签名不变 | `project-base.ts` |
+| C 卡住的能力请求（r4212498732） | capabilities 请求不结束时一直 pending | 15 秒（`CAPABILITY_TIMEOUT_MS`）后由页面自己的 timer 结束等待并 abort 本次请求，显示「功能状态检查超时，请重试」与重查按钮；不依赖底层是否响应 abort；token 隔离迟到回执；pending 期间点击不重复发请求；切换作品与卸载时清 timer 并 abort。`StudioClient.get` 只新增可选 `signal`，不传时请求不变 | `beginner-flow.tsx`、`beginner-facts.ts`、`studio-client.ts` |
+| D 已完成步骤的关闭提示可重查（r4212962085） | disabled 提示没有重查按钮，步骤已完成时主按钮用于继续/下载 | 关闭、失败、超时三种提示都自带「重新检查功能状态」，与 C 共用同一套能力读取；单镜/集级各用自己的服务端开关；已完成内容的继续、查看、播放、审核、合格下载与已选编排不受影响 | `beginner-flow.tsx` `GateNotice` |
+
+回归与修复前对照（隔离 worktree，detached 于 `ba56b8d`，只复制新测试，node_modules 以目录联接借用；先删联接再删 worktree，当前工作区未被改动）：16 项在基线失败、修复后通过——A 5（含 1 项流程级）、B 2、C 5（含 `signal` 透传）、D 2，另 2 项为能力结果新增 `reason`/`timeout` 形态的单元断言。另 5 项为守护用例，新旧都通过：A「全部完成」「所属集未知的运行任务」，B「旧成功晚于新失败」「旧失败晚于新成功」「多个回调同时结束只有一条链」。原有一条单元断言（DRAFT 的第 3 集保留「补齐剧本」）正好编码了 A 的缺陷，已改为期望第 2 集，并在提交说明中写明。
+
+本地：Node 24.21.0、pnpm 10.17.0（engine 检查开启）。`pnpm verify` 0（web 279）；`pnpm m3-av-e2e:check` 0；`pnpm m3-av-e2e:outcome` 0（23）；`git diff --check` 0。
+
+新手 E2E（真实 API + PostgreSQL + Chrome，仍在原 10 个阶段内）新增：
+- D：API 以关闭合成重启，已完成的「试一段」只有提示区一个重查按钮、主按钮为「继续下一步」；API 以开启状态重启后点提示区重查，capabilities GET 恰好 1 次、提示消失、页面未重新加载。
+- A：**准备动作**经既有 API 在本次隔离验收库中完成——第 2 集剧本创建后退回（备注「结尾太仓促」），第 3 集剧本创建待审核；**页面操作**：选中第 3 集，点「查看原因并修改」，第 2 集被选中。
+- C 的超时、迟到回执、计时器清理与 B 的调度并发只用确定性的组件/hook 回归（模拟 fetch + 假定时器）验证，没有真实浏览器覆盖。
+
+后端、数据库、Worker、Provider 与业务状态机未改；无 Migration、无 SQL 草案、无 provision 变更、无付费调用；未合并、未部署。
+
+## PR55_REVIEW_FIX（独立复审 r4214455406、r4214682662）
+
+基线 `f2ce3d3`。本节随修复提交；新 HEAD 的 CI 结果记录在 PR #55 回复中。
+
+| 复审项 | 原因 | 修复 |
+| --- | --- | --- |
+| r4214455406 超时被取消回执覆盖 | 超时回调先 abort 再写 timeout；真实 fetch 因 abort 拒绝，被转成普通 error，同一 token 的 finish 再次结算覆盖了 timeout（原测试的挂起请求忽略 abort，没有暴露） | 每次读取只结算一次（`settled`），答复、失败、超时共用；超时先结算 timeout 再 abort，取消引发的回执被忽略；token 仍隔离重试、切换作品与卸载；超时后 checking 立即释放，可马上重试；15 秒与检查期间防重复不变 |
+| r4214682662 过期轮询失败重新触发退避 | `readRuns` 成功时检查请求 token，失败时直接计入失败 | 失败也按请求开始时的 token 与链的停止状态判断：被取代或已停止的失败不计成败、不改提示与调度；当前有效失败照常退避 |
+
+修复前对照（隔离 worktree，detached 于 `f2ce3d3`，只复制新测试，node_modules 以目录联接借用，先删联接再删 worktree）：4 项在基线失败、修复后通过——挂起 `/workflow-runs` 轮询期间完整 reloadBase 成功、旧轮询随后失败、下一次轮询仍按 POLL_MS；fetch 响应 abort 并以 AbortError 拒绝时超时提示保持；忽略 abort 的网络在重试前迟到成功/失败不覆盖超时（2 项）。另 2 项为守护用例（当前有效轮询失败仍退避；切换作品/卸载后的旧轮询失败不影响当前状态）。已有的切换作品、卸载清理、重复点击和「超时后重试成功、旧回执不覆盖」测试保留并通过。
+
+本地：Node 24.21.0、pnpm 10.17.0（engine 检查开启）。`pnpm verify` 0（web 285）；`git diff --check` 0。以上均为模拟测试（happy-dom、模拟 fetch、假定时器），本轮没有新增真实浏览器检查；新 HEAD 的既有新手 E2E 与 M4 由 CI 运行。
