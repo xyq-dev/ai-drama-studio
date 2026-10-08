@@ -37,6 +37,17 @@ function refused(caught: unknown): boolean {
   return caught instanceof TitleWritingError && caught.status >= 400 && caught.status < 500;
 }
 
+/**
+ * One write action (cancel, resume, place scripts) of one run. It stays current until it settles, or until the work,
+ * the shown run or the page changes; only the current action may write its answer, error, busy state or polling.
+ * snapshot is the generation of what was on screen when it began: when a newer snapshot has been shown since, its
+ * answer is not known to be newer, so the page reads again instead of showing it.
+ */
+interface Operation {
+  runId: string;
+  snapshot: number;
+}
+
 /** One resume action: its key is reused only to retry the same, unanswered request for the same uncertain calls. */
 interface ResumeAction {
   runId: string;
@@ -90,13 +101,29 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
   const [acceptStoryChanged, setAcceptStoryChanged] = useState(false);
   const [storyChanged, setStoryChanged] = useState(false);
   const [busy, setBusy] = useState(false);
-  const busyRef = useRef(false);
+  const operation = useRef<Operation | null>(null);
   const readToken = useRef(0);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  // The scope of this work on this mounted page. It changes when the work changes or the page unmounts, so a late
-  // answer to an older action (cancel, resume, place scripts) can no longer change content, errors, busy, confirmations
-  // or polling, and nothing is scheduled after unmount.
-  const scope = useRef(0);
+  // What is on screen: its run and a generation that grows with every snapshot shown. Changing the work, the run or
+  // unmounting the page ends the current action, so a late answer to it (cancel, resume, place scripts) can no longer
+  // change content, errors, busy, confirmations or polling, and nothing is scheduled after unmount.
+  const shown = useRef<{ runId: string | null; generation: number }>({ runId: null, generation: 0 });
+
+  const show = useCallback((next: TitleWritingRunView | null) => {
+    const runId = next?.runId ?? null;
+    if (runId !== shown.current.runId) {
+      // Another run of this work: nothing pending, typed into a confirmation or refused for the previous run carries over.
+      operation.current = null;
+      resumeAction.current = null;
+      setBusy(false);
+      setActionMessage(null);
+      setConfirmedFor(null);
+      setStoryChanged(false);
+      setAcceptStoryChanged(false);
+    }
+    shown.current = { runId, generation: shown.current.generation + 1 };
+    setRun(next);
+  }, []);
 
   const read = useCallback(async () => {
     const request = ++readToken.current;
@@ -104,7 +131,7 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
     try {
       const latest = await client.latest(projectId);
       if (request !== readToken.current) return;
-      setRun(latest);
+      show(latest);
       setReadError(null);
       setLoaded(true);
       if (latest?.state === "running") timer.current = setTimeout(() => { void read(); }, TITLE_WRITING_POLL_MS);
@@ -115,12 +142,12 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
         ? "创作任务存储还没有就绪，读不到创作记录。"
         : "暂时读不到创作进度。已显示的内容仍是上次读到的结果。");
     }
-  }, [client, projectId]);
+  }, [client, projectId, show]);
 
   useEffect(() => {
     // A new work starts clean: nothing shown, typed or confirmed for the previous one carries over.
-    scope.current += 1;
-    busyRef.current = false;
+    operation.current = null;
+    shown.current = { runId: null, generation: shown.current.generation + 1 };
     resumeAction.current = null;
     setRun(null);
     setLoaded(false);
@@ -132,28 +159,36 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
     setBusy(false);
     void read();
     return () => {
-      scope.current += 1;
+      operation.current = null;
       readToken.current += 1;
-      busyRef.current = false;
       if (timer.current) clearTimeout(timer.current);
     };
   }, [read]);
 
-  async function act(work: () => Promise<TitleWritingRunView>, fallback: string,
+  async function act(runId: string, work: () => Promise<TitleWritingRunView>, fallback: string,
     hooks: { accepted?: () => void; failed?: (caught: unknown) => void } = {}) {
-    if (busyRef.current) return;
-    const mine = scope.current;
-    const current = () => scope.current === mine;
-    busyRef.current = true;
+    if (operation.current || shown.current.runId !== runId) return;
+    const mine: Operation = { runId, snapshot: shown.current.generation };
+    operation.current = mine;
+    const current = () => operation.current === mine;
     setBusy(true);
     setActionMessage(null);
     try {
       const next = await work();
-      if (!current() || next.projectId !== projectId) return;
+      if (!current()) return;
+      if (next?.projectId !== projectId || next.runId !== mine.runId) {
+        void read();
+        return;
+      }
+      hooks.accepted?.();
+      if (shown.current.generation !== mine.snapshot) {
+        // A read was shown while this action was on its way, and either may be the later state: ask the server.
+        void read();
+        return;
+      }
       readToken.current += 1;
       if (timer.current) clearTimeout(timer.current);
-      setRun(next);
-      hooks.accepted?.();
+      show(next);
       if (next.state === "running") timer.current = setTimeout(() => { void read(); }, TITLE_WRITING_POLL_MS);
     } catch (caught) {
       if (!current()) return;
@@ -162,7 +197,7 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
       hooks.failed?.(caught);
     } finally {
       if (current()) {
-        busyRef.current = false;
+        operation.current = null;
         setBusy(false);
       }
     }
@@ -182,7 +217,7 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
     const action = previous && previous.runId === current.runId && previous.confirmedFor === uncertainKey
       ? previous : { runId: current.runId, confirmedFor: uncertainKey, key: crypto.randomUUID() };
     resumeAction.current = action;
-    void act(() => client.resume(projectId, current.runId, { confirmUncertainCallIds: confirmed, token: token.trim(), idempotencyKey: action.key }),
+    void act(current.runId, () => client.resume(projectId, current.runId, { confirmUncertainCallIds: confirmed, token: token.trim(), idempotencyKey: action.key }),
       "没有确认续跑是否已被受理（网络或服务异常）。再次点击会重放同一个续跑请求。", {
         accepted: () => { resumeAction.current = null; setConfirmedFor(null); },
         failed: (caught) => {
@@ -245,7 +280,7 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
               <div className={styles.actions}>
                 {run.state === "running" && !run.cancelRequested ? (
                   <button className={styles.secondary} type="button" disabled={busy}
-                    onClick={() => void act(() => client.cancel(projectId, run.runId), "没能提交停止请求，请重试。")}>停止创作</button>
+                    onClick={() => void act(run.runId, () => client.cancel(projectId, run.runId), "没能提交停止请求，请重试。")}>停止创作</button>
                 ) : null}
                 {run.state === "running" && run.cancelRequested ? (
                   <p className={styles.helper}>已请求停止。已经发出的那一步会如实记录结果，之后不再开始新的步骤。</p>
@@ -308,7 +343,7 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
                       </label>
                     ) : null}
                     <button className={styles.secondary} type="button" disabled={busy || (storyChanged && !acceptStoryChanged)}
-                      onClick={() => void act(() => client.placeScripts(projectId, run.runId, acceptStoryChanged), "没能写入剧本，请重试。")}>
+                      onClick={() => void act(run.runId, () => client.placeScripts(projectId, run.runId, acceptStoryChanged), "没能写入剧本，请重试。")}>
                       写入剧本草稿
                     </button>
                   </div>
