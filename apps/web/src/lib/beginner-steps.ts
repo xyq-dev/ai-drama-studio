@@ -250,16 +250,19 @@ export function episodeForStep(step: StepKey, facts: BeginnerFacts): number {
 }
 
 /**
- * The episode the primary action should act on, from the facts at click time. The shown episode stays when its own
- * state matches what the action is for; an episode that is already done (or cannot start yet) hands the action to
- * the episode that now supplies the step's state, so "补齐剧本" never focuses a finished script.
+ * The episode the primary action should act on, from the facts at click time. The action is derived from the step's
+ * state, so it belongs to an episode whose own state is that same state: the shown episode stays only when it
+ * matches; otherwise the first matching episode in episode order (1, 2, 3) takes it. "Not finished" is not a match:
+ * a draft awaiting review does not take 查看原因并修改. When no episode carries the state (for example a running shot
+ * job whose episode is unknown, which is a project-level fact), the shown episode stays rather than inventing one.
  */
 export function episodeForAction(step: StepKey, facts: BeginnerFacts, shown: number): number {
   if (!episodic(step)) return shown;
+  const global = stepStates(facts)[step];
   const own = episodeStepState(step, facts, shown);
-  if (stepStates(facts)[step] === "done") return own === "done" ? shown : episodeForStep(step, facts);
-  if (own !== "done" && own !== "not_started") return shown;
-  return episodeNeedingWork(step, facts) ?? shown;
+  if (global === "done") return own === "done" ? shown : episodeForStep(step, facts);
+  if (own === global) return shown;
+  return [1, 2, 3].find((no) => episodeStepState(step, facts, no) === global) ?? shown;
 }
 
 export type PrimaryTarget = "editor" | "review" | "next" | "tasks" | "candidates" | "compose" | "reload";
