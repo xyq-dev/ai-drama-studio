@@ -15,6 +15,7 @@
     "prisma:validate": "prisma validate --schema prisma/schema.prisma",
     "prisma:generate": "prisma generate --schema prisma/schema.prisma",
     "integration": "vitest run --config vitest.integration.config.ts",
+    "title-writing:acceptance": "vitest run --config vitest.title-writing-acceptance.config.ts",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src",
