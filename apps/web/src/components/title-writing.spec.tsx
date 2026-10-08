@@ -145,7 +145,7 @@ describe("AI 一键创作 on the start page", () => {
     expect(assign).not.toHaveBeenCalled();
   });
 
-  it("an unsure failure keeps the title and retries with the same keys, so nothing is created twice", async () => {
+  it("an unsure failure keeps the title and the retry replays the same keys", async () => {
     let fail = true;
     const calls = server((call) => {
       if (call.url.endsWith("/options")) return json(options());
@@ -162,9 +162,11 @@ describe("AI 一键创作 on the start page", () => {
     fireEvent.change(screen.getByLabelText("剧名"), { target: { value: "夜班证词" } });
     fireEvent.change(screen.getByLabelText("操作者令牌"), { target: { value: TOKEN } });
     fireEvent.click(button);
-    expect((await screen.findByRole("alert")).textContent).toContain("不会重复创建作品或重复开始创作");
+    expect((await screen.findByRole("alert")).textContent).toContain("没有确认是否已经启动");
     expect((screen.getByLabelText("剧名") as HTMLInputElement).value).toBe("夜班证词");
-    fireEvent.click(button);
+    const retry = await screen.findByRole("button", { name: "重试上次请求" });
+    await waitFor(() => expect((retry as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(retry);
     await waitFor(() => expect(assign).toHaveBeenCalled());
     const projectPosts = calls.filter((call) => call.method === "POST" && call.url === "/api/v1/projects");
     const runPosts = calls.filter((call) => call.method === "POST" && call.url.endsWith("/title-runs"));
