@@ -227,3 +227,16 @@ export {
   type FreshnessStatus,
   type ReviewStatus,
 } from "./text-chain";
+export {
+  TITLE_WRITING_SYSTEM_PROMPT,
+  buildTitleWritingPrompt,
+  episodeNoOf,
+  formatTitleEpisode,
+  formatTitleStory,
+  screenplayCharTarget,
+  validateTitleWritingOutput,
+  type TitleWritingContext,
+  type TitleWritingPrompt,
+  type TitleWritingSchemaKind,
+  type TitleWritingValidation,
+} from "./title-writing";

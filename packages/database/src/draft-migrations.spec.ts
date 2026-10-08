@@ -20,4 +20,17 @@ describe("unapplied migration drafts", () => {
     expect(reference).toContain("character_reference_selection");
     expect(reference).toContain("Do not apply");
   });
+
+  it("keeps the title writing draft unapplied, additive, and without a cost amount", async () => {
+    const appliedNames = await readdir(applied);
+    expect(appliedNames.some((name) => name.includes("title_writing"))).toBe(false);
+    const draft = await readFile(join(drafts, "20261008000100_title_writing.sql"), "utf8");
+    expect(draft).toContain("Do not apply");
+    expect(draft).not.toMatch(/^\s*(ALTER|UPDATE|DELETE|DROP|TRUNCATE)\b/im);
+    expect(draft).toContain("UNIQUE (workspace_id, actor_id, idempotency_key)");
+    expect(draft).toContain("WHERE state = 'running'");
+    expect(draft).toContain("CHECK (billing_status = 'unknown')");
+    expect(draft).not.toMatch(/amount\w*\s+(numeric|decimal)/i);
+    expect(draft).not.toContain("qwen_writing_request");
+  });
 });

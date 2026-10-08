@@ -7,6 +7,7 @@ import type { DirectionDraft } from "../lib/creative-taxonomy";
 import { IDEA_TEMPLATES, START_SCOPE_NOTE, suggestTitle } from "../lib/beginner-start";
 import { LIMITS, draftStorageKey, nextDraft, readDraft, releaseSubmittedDraft, writeDraft } from "../lib/studio-model";
 import { BeginnerShell } from "./beginner-shell";
+import { TitleWritingStart } from "./title-writing-start";
 import styles from "./creator-entry.module.css";
 
 interface ProjectItem {
@@ -155,7 +156,8 @@ export function BeginnerStart({ active }: { active: "/create" | undefined }) {
 
         <div className={styles.startLayout}>
           <div className={styles.startContent}>
-            <section className={styles.formCard} aria-label="写下想法">
+            <TitleWritingStart />
+            <section id="manual-start" className={styles.formCard} aria-label="写下想法">
               <label id="idea-label" className={styles.fieldLabel} htmlFor="idea">你想拍一个什么样的故事？</label>
               <textarea
                 ref={ideaRef}

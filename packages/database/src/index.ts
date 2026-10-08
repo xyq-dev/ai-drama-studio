@@ -168,3 +168,4 @@ export {
   type MockSmProvisionConfig,
   type MockSmProvisionResult,
 } from "./provision-mock-sm";
+export { PostgresTitleWritingStore, TITLE_WRITING_TABLES } from "./title-writing-store";

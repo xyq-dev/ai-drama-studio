@@ -8,6 +8,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./title-writing-fixtures": {
+      "types": "./dist/title-writing-fixtures.d.ts",
+      "default": "./dist/title-writing-fixtures.js"
     }
   },
   "scripts": {
