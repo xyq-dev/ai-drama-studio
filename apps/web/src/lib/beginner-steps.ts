@@ -223,14 +223,43 @@ export function episodeStepState(step: StepKey, facts: BeginnerFacts, episodeNo:
   return "done";
 }
 
-/** The episode a step should open: the first one whose own state still needs the user, else episode 1. */
-export function episodeForStep(step: StepKey, facts: BeginnerFacts): number {
-  if (step !== "script" && step !== "sample" && step !== "final") return 1;
-  const open = [1, 2, 3].find((no) => {
+function episodic(step: StepKey): boolean {
+  return step === "script" || step === "sample" || step === "final";
+}
+
+/** The first episode whose own state on this step still needs the user, or null when none does. */
+export function episodeNeedingWork(step: StepKey, facts: BeginnerFacts): number | null {
+  if (!episodic(step)) return null;
+  return [1, 2, 3].find((no) => {
     const state = episodeStepState(step, facts, no);
     return state !== "done" && state !== "not_started";
-  });
-  return open ?? 1;
+  }) ?? null;
+}
+
+/**
+ * The episode a step should open. A completed step shows an episode that really completed it (试一段 is complete
+ * as soon as one episode has an approved sample, so that episode is the one to look at); otherwise the first
+ * episode that still needs the user; else episode 1.
+ */
+export function episodeForStep(step: StepKey, facts: BeginnerFacts): number {
+  if (!episodic(step)) return 1;
+  if (stepStates(facts)[step] === "done") {
+    return [1, 2, 3].find((no) => episodeStepState(step, facts, no) === "done") ?? 1;
+  }
+  return episodeNeedingWork(step, facts) ?? 1;
+}
+
+/**
+ * The episode the primary action should act on, from the facts at click time. The shown episode stays when its own
+ * state matches what the action is for; an episode that is already done (or cannot start yet) hands the action to
+ * the episode that now supplies the step's state, so "补齐剧本" never focuses a finished script.
+ */
+export function episodeForAction(step: StepKey, facts: BeginnerFacts, shown: number): number {
+  if (!episodic(step)) return shown;
+  const own = episodeStepState(step, facts, shown);
+  if (stepStates(facts)[step] === "done") return own === "done" ? shown : episodeForStep(step, facts);
+  if (own !== "done" && own !== "not_started") return shown;
+  return episodeNeedingWork(step, facts) ?? shown;
 }
 
 export type PrimaryTarget = "editor" | "review" | "next" | "tasks" | "candidates" | "compose" | "reload";

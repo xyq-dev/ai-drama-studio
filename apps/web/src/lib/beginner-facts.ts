@@ -107,13 +107,46 @@ export async function loadProjectFacts(client: Client, projectId: string): Promi
   return { story: currentStoryRevision(stories.items), episodes: episodes.items, ...entities, runs, media };
 }
 
-/** Which media reads the server reported as switched off, per step. */
-export function composeOff(media: Record<number, EpisodeMediaFacts>): { sample: boolean; final: boolean } {
-  const values = Object.values(media);
-  return {
-    sample: values.some((item) => item.candidates.read === "unavailable"),
-    final: values.some((item) => item.composites.read === "unavailable"),
-  };
+/**
+ * Whether local composition is switched on, from GET /providers/capabilities (the same switches the compose routes
+ * check). A failed read, or an answer without the compose switches, is "failed": not known, so neither shown as
+ * open nor as closed.
+ */
+export type ComposeCapability = { read: "ok"; shot: boolean; episode: boolean } | { read: "failed" };
+
+export async function loadComposeCapability(client: Client): Promise<ComposeCapability> {
+  try {
+    const body = await client.get<{ compose?: { shot?: unknown; episode?: unknown } }>("/providers/capabilities");
+    const compose = body?.compose;
+    if (!compose || typeof compose.shot !== "boolean" || typeof compose.episode !== "boolean") return { read: "failed" };
+    return { read: "ok", shot: compose.shot, episode: compose.episode };
+  } catch {
+    return { read: "failed" };
+  }
+}
+
+/**
+ * Whether a new composition may start, per channel, from the capability alone (never from candidate counts or a
+ * candidate read error). pending: the capability is being read; failed: it could not be read; disabled: the server
+ * reports the switch off; enabled: only then is a new compose offered.
+ */
+export type ComposeGate = "pending" | "failed" | "disabled" | "enabled";
+
+export function composeGates(capability: ComposeCapability | null): { shot: ComposeGate; episode: ComposeGate } {
+  if (capability === null) return { shot: "pending", episode: "pending" };
+  if (capability.read === "failed") return { shot: "failed", episode: "failed" };
+  return { shot: capability.shot ? "enabled" : "disabled", episode: capability.episode ? "enabled" : "disabled" };
+}
+
+/** Why a new composition cannot start now, shown inside the compose panels; null when it can. */
+export function composeBlockedReason(gate: ComposeGate, channel: "shot" | "episode"): string | null {
+  const name = channel === "shot" ? "单镜合成" : "集级合成";
+  switch (gate) {
+    case "pending": return `正在检查${name}是否开启，检查完成前不能开始新的合成。`;
+    case "failed": return `没能确认${name}是否开启，暂时不能开始新的合成。请重新检查功能状态。`;
+    case "disabled": return `${name}在当前环境没有开启，不能开始新的合成。需要管理员在服务端开启后才能继续。`;
+    default: return null;
+  }
 }
 
 export function mediaReadFailed(media: Record<number, EpisodeMediaFacts>): boolean {

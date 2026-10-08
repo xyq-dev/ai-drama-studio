@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { ApiError, StudioClient } from "../lib/studio-client";
 import { loadProjectFacts } from "../lib/beginner-facts";
 import { STEPS, STEP_STATE_MARK, STEP_STATE_TEXT, currentStep, stepStates, type StepKey, type StepState } from "../lib/beginner-steps";
+import { shouldPoll } from "../lib/studio-model";
 import { BeginnerShell } from "./beginner-shell";
 
 interface ProjectItem {
@@ -12,11 +13,27 @@ interface ProjectItem {
   premise: string;
 }
 
-type Progress = { kind: "loading" } | { kind: "failed" } | { kind: "ready"; step: StepKey; state: StepState };
+type Progress =
+  | { kind: "loading" }
+  | { kind: "failed" }
+  | {
+    kind: "ready";
+    step: StepKey;
+    state: StepState;
+    /** A workflow of this project was still running when its facts were read. */
+    running: boolean;
+    /** The latest background reread failed; the shown stage is the last one read. */
+    refreshFailed?: boolean;
+    /** Automatic rereads used up while still running; the card waits for the user. */
+    paused?: boolean;
+  };
 
 const client = new StudioClient();
 /** At most this many projects read their progress at the same time. */
 const CONCURRENCY = 2;
+/** A card with a running workflow is read again after this delay, at most MAX_REFRESHES times in a row. */
+export const REFRESH_MS = 5000;
+export const MAX_REFRESHES = 24;
 
 /** One sentence per state: what the user has to do next on that step. */
 function todo(step: StepKey, state: StepState): string {
@@ -40,31 +57,98 @@ export function MyWorks() {
   const [loadingPage, setLoadingPage] = useState(false);
   const pageInFlight = useRef(false);
   const [progress, setProgress] = useState<Record<string, Progress>>({});
-  const queue = useRef<string[]>([]);
+  const queue = useRef<Array<{ id: string; background: boolean }>>([]);
   const running = useRef(0);
   const alive = useRef(true);
+  /** Projects queued or being read: a project is never read twice at once. */
+  const pending = useRef(new Set<string>());
+  const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  const refreshes = useRef(new Map<string, number>());
+  /** Rereads that fell due while the page was hidden; read when it is visible again. */
+  const dueWhileHidden = useRef(new Set<string>());
 
+  /**
+   * Starts queued reads up to the concurrency limit. A hidden page starts no background reread, including one already
+   * queued when the page was hidden: it stays queued (and pending) until the page is visible again. Reads already
+   * started finish normally. Nothing starts after unmount.
+   */
   function pump() {
-    while (running.current < CONCURRENCY && queue.current.length > 0) {
-      const id = queue.current.shift()!;
+    while (alive.current && running.current < CONCURRENCY) {
+      const hidden = document.visibilityState === "hidden";
+      const index = queue.current.findIndex((item) => !hidden || !item.background);
+      if (index < 0) return;
+      const { id, background } = queue.current.splice(index, 1)[0]!;
       running.current += 1;
       void loadProjectFacts(client, id).then((facts) => {
         const states = stepStates(facts);
         const step = currentStep(states);
-        if (alive.current) setProgress((current) => ({ ...current, [id]: { kind: "ready", step, state: states[step] } }));
+        const active = facts.runs.some((run) => shouldPoll(run.status, false));
+        if (!alive.current) return;
+        setProgress((current) => ({ ...current, [id]: { kind: "ready", step, state: states[step], running: active } }));
+        // A terminal answer ends the refreshes; a running one schedules the next, within the bound.
+        if (active) scheduleRefresh(id);
+        else refreshes.current.delete(id);
       }).catch(() => {
-        if (alive.current) setProgress((current) => ({ ...current, [id]: { kind: "failed" } }));
+        if (!alive.current) return;
+        setProgress((current) => {
+          const shown = current[id];
+          // A failed background reread keeps the last stage read and says it may be out of date.
+          return { ...current, [id]: background && shown?.kind === "ready" ? { ...shown, refreshFailed: true } : { kind: "failed" } };
+        });
+        if (background) scheduleRefresh(id);
       }).finally(() => {
         running.current -= 1;
+        pending.current.delete(id);
         if (alive.current) pump();
       });
     }
   }
 
+  function enqueue(id: string, background: boolean) {
+    if (pending.current.has(id)) return;
+    pending.current.add(id);
+    queue.current.push({ id, background });
+    pump();
+  }
+
+  function scheduleRefresh(id: string) {
+    if (timers.current.has(id)) return;
+    const used = refreshes.current.get(id) ?? 0;
+    if (used >= MAX_REFRESHES) {
+      setProgress((current) => {
+        const shown = current[id];
+        return shown?.kind === "ready" ? { ...current, [id]: { ...shown, paused: true } } : current;
+      });
+      return;
+    }
+    refreshes.current.set(id, used + 1);
+    timers.current.set(id, setTimeout(() => {
+      timers.current.delete(id);
+      if (!alive.current) return;
+      if (document.visibilityState === "hidden") {
+        dueWhileHidden.current.add(id);
+        return;
+      }
+      enqueue(id, true);
+    }, REFRESH_MS));
+  }
+
   function track(ids: string[]) {
     setProgress((current) => ({ ...current, ...Object.fromEntries(ids.map((id) => [id, { kind: "loading" } as Progress])) }));
-    queue.current.push(...ids);
-    pump();
+    for (const id of ids) {
+      refreshes.current.delete(id);
+      enqueue(id, false);
+    }
+  }
+
+  /** The user asked again: a fresh set of automatic rereads, keeping the shown stage meanwhile. */
+  function refreshNow(id: string) {
+    refreshes.current.delete(id);
+    setProgress((current) => {
+      const shown = current[id];
+      return shown?.kind === "ready" ? { ...current, [id]: { ...shown, paused: false } } : current;
+    });
+    enqueue(id, true);
   }
 
   async function load(cursor: string | null) {
@@ -95,7 +179,23 @@ export function MyWorks() {
   useEffect(() => {
     alive.current = true;
     void load(null);
-    return () => { alive.current = false; };
+    // Back on the page: read the cards whose reread fell due while it was hidden.
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      const due = [...dueWhileHidden.current];
+      dueWhileHidden.current.clear();
+      for (const id of due) enqueue(id, true);
+      // Rereads queued before the page was hidden.
+      pump();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    const scheduled = timers.current;
+    return () => {
+      alive.current = false;
+      document.removeEventListener("visibilitychange", onVisible);
+      for (const timer of scheduled.values()) clearTimeout(timer);
+      scheduled.clear();
+    };
   }, []);
 
   return (
@@ -143,6 +243,11 @@ export function MyWorks() {
                     <>
                       <p>{`当前阶段：第 ${stepTitle.no} 步 ${stepTitle.title} · ${STEP_STATE_MARK[state.state]} ${STEP_STATE_TEXT[state.state]}`}</p>
                       <p className="text-[#5F5D66]">{todo(state.step, state.state)}</p>
+                      {state.running && !state.paused ? <p className="text-[#5F5D66]">有任务正在处理，进度会自动刷新。</p> : null}
+                      {state.refreshFailed && !state.paused ? <p>最新进度暂时没有读到，显示的是上次读到的阶段，稍后会再试。</p> : null}
+                      {state.paused ? (
+                        <p>任务仍在处理，已暂停自动刷新。<button className="underline" type="button" onClick={() => refreshNow(item.id)}>刷新进度</button></p>
+                      ) : null}
                     </>
                   ) : null}
                 </div>

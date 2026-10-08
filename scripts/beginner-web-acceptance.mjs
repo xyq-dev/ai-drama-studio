@@ -6,7 +6,12 @@
  * opened once, only to check that an unsaved draft survives a beginner ↔ advanced switch; nothing is saved there.
  * Direct API calls are of two labelled kinds: reads used as evidence, and "prep" writes that create the second
  * shot composite step 5 needs (the first one is made through the page). Read-only SQL is used for evidence only.
- * A network cut is injected once with route.abort; nothing is answered with route.fulfill or a mocked fetch.
+ * Injected faults, all recorded in evidence.checks.faults: the first create POST is cut once with route.abort; for the
+ * Issue #52 recovery checks one project read is cut once with route.abort after a visibility change (at 1440 while
+ * an episode compose runs, and again at 390) and once after an approval callback on an idle page; at step 5 the
+ * capability request is held (delayed, then passed on unchanged with route.continue) to see the pending gate. Page
+ * visibility is switched by redefining document.visibilityState in the page and dispatching visibilitychange
+ * (emulated: headless Chrome has no real tab switch). Nothing is answered with route.fulfill or a mocked fetch.
  *
  * It initializes only the dedicated, empty database named below with the existing migrations and the existing
  * provisioning commands. Mock media and local compose switches are turned on for these child processes only.
@@ -106,6 +111,62 @@ function browserDid(text) {
 
 function prepDid(text) {
   evidence.prep.push(text);
+}
+
+function faultDid(text) {
+  evidence.checks.faults = [...(evidence.checks.faults ?? []), text];
+}
+
+/** Emulates leaving or returning to the tab inside the page (recorded as an injected condition). */
+async function setPageVisibility(state) {
+  await page.evaluate((next) => {
+    if (next === "visible") delete document.visibilityState;
+    else Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+    document.dispatchEvent(new Event("visibilitychange"));
+  }, state);
+}
+
+/** Cuts the next GET of this project's own record once (connection reset), then lets requests through. */
+async function cutNextProjectRead(projectId, label) {
+  const url = `${webOrigin}/api/v1/projects/${projectId}`;
+  let cut = false;
+  const handler = async (route) => {
+    if (route.request().method() === "GET" && !cut) {
+      cut = true;
+      faultDid(`${label}: route.abort("connectionreset") on GET /api/v1/projects/${projectId}`);
+      await route.abort("connectionreset");
+      return;
+    }
+    await route.fallback();
+  };
+  await page.route(url, handler);
+  return { done: () => cut, remove: () => page.unroute(url, handler) };
+}
+
+/**
+ * Issue #52 item 7: hidden → visible → the visible reread fails once → without a click or reload the page retries
+ * by itself and the notice clears. Returns how many workflow reads happened while hidden (must be 0).
+ */
+async function recoverFromTransientRead(projectId, label, hiddenMs) {
+  const reads = [];
+  const onRequest = (request) => {
+    // Only the base polling reads (project record and workflow runs) that pause while hidden.
+    const path = new URL(request.url()).pathname;
+    if (path === `/api/v1/projects/${projectId}` || path === `/api/v1/projects/${projectId}/workflow-runs`) reads.push(path);
+  };
+  await setPageVisibility("hidden");
+  page.on("request", onRequest);
+  await page.waitForTimeout(hiddenMs);
+  page.off("request", onRequest);
+  const whileHidden = reads.length;
+  if (whileHidden !== 0) throw new Error(`${label}: ${whileHidden} reads while hidden`);
+  const fault = await cutNextProjectRead(projectId, label);
+  await setPageVisibility("visible");
+  await page.getByText("最新进度暂时没有读到，正在自动重试；页面上的内容可能不是最新。").waitFor({ timeout: 15_000 });
+  if (!fault.done()) throw new Error(`${label}: the visible reread was not cut`);
+  await fault.remove();
+  await page.getByText("最新进度暂时没有读到，正在自动重试；页面上的内容可能不是最新。").waitFor({ state: "detached", timeout: 30_000 });
+  return { whileHidden, notice: "shown, then cleared by the automatic retry" };
 }
 
 async function assertDedicatedEmptyDatabase() {
@@ -385,6 +446,7 @@ async function main() {
       await page.route("**/api/v1/projects", async (route) => {
         if (route.request().method() === "POST" && !aborted) {
           aborted = true;
+          faultDid('create: route.abort("connectionreset") on the first POST /api/v1/projects');
           await route.abort("connectionreset");
           return;
         }
@@ -439,6 +501,11 @@ async function main() {
       if ((await save).status() !== 201) throw new Error("script save failed");
       await reviewInColumn(inspectColumns().first(), "APPROVED", "episode 1 script");
       await page.getByRole("tab", { name: /第 1 集 · ✓ 已完成/ }).waitFor();
+      // Issue #52 item 1: with episode 1 done in place, the primary action goes to the episode that needs a script.
+      await page.getByRole("button", { name: "补齐剧本并保存" }).click();
+      await page.getByRole("tab", { name: /第 2 集 · ＋ 待补充/, selected: true }).waitFor({ timeout: 10_000 });
+      evidence.checks.nextEpisode = { from: 1, to: 2, viewport: "1440" };
+      await page.getByRole("tab", { name: /第 1 集/ }).click();
       const episodes = (await api("GET", `/projects/${world.projectId}/episodes`)).body.items;
       world.episode = episodes.find((item) => item.episodeNo === 1);
       if (episodes.some((item) => item.episodeNo !== 1 && item.currentScriptRevisionId !== null)) throw new Error("other episodes changed");
@@ -465,13 +532,48 @@ async function main() {
       await stepButton("试一段");
       if (await page.getByRole("button", { name: "继续下一步" }).count()) throw new Error("compose-off sample step offered 继续下一步");
       if (await page.getByRole("button", { name: /第 4 步 试一段：已完成/ }).count()) throw new Error("sample marked done");
+      // Issue #52 item 3: the closed state comes from the server capability; no action the server would reject.
+      const capabilityOff = expect(await api("GET", "/providers/capabilities"), 200, "capabilities (off)").compose;
+      if (capabilityOff?.shot !== false || capabilityOff?.episode !== false) throw new Error(`capability off ${JSON.stringify(capabilityOff)}`);
+      const closedChecks = {};
+      for (const width of [1440, 390]) {
+        await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
+        await page.goto(`${webOrigin}/projects/${world.projectId}/create?step=sample`, { waitUntil: "domcontentloaded" });
+        await page.getByText(/当前环境没有开启单镜成片所需的功能/).waitFor({ timeout: 20_000 });
+        await page.getByRole("button", { name: "重新检查功能状态" }).waitFor();
+        if (await page.getByRole("button", { name: "选一个镜头试做" }).count()) throw new Error(`compose-off offered 选一个镜头试做 at ${width}`);
+        closedChecks[width] = await assertLayout(`compose-off sample ${width}`);
+        await shot(`03-compose-off-sample-${width}`);
+      }
+      await page.setViewportSize({ width: 1440, height: 900 });
+      evidence.checks.composeClosed = { capability: capabilityOff, viewports: closedChecks };
       await page.goto(`${webOrigin}/studio`, { waitUntil: "domcontentloaded" });
       await page.getByText(/当前阶段：第 2 步 看剧本/).waitFor();
       if (await page.getByText(/进度读取失败/).count()) throw new Error("compose-off made the work unreadable");
       await shot("03-compose-off-studio-1440");
-      // Restart the API with the compose switches for the rest of the run.
+      // Restart the API with the compose switches for the rest of the run, while the closed page stays open: its
+      // 重新检查功能状态 must read the capability again and reopen the step without a page reload.
+      await page.goto(`${webOrigin}/projects/${world.projectId}/create?step=sample`, { waitUntil: "domcontentloaded" });
+      await page.getByText(/当前环境没有开启单镜成片所需的功能/).waitFor({ timeout: 20_000 });
+      await page.evaluate(() => { window.__beginnerRecheck = "open"; });
       await stopProcess("api");
       await startApi(mediaEnv(env));
+      const capabilityReads = [];
+      const countCapability = (request) => {
+        if (new URL(request.url()).pathname === "/api/v1/providers/capabilities") capabilityReads.push(request.method());
+      };
+      page.on("request", countCapability);
+      await page.getByRole("button", { name: "重新检查功能状态" }).click();
+      await page.getByRole("button", { name: "选一个镜头试做" }).waitFor({ timeout: 20_000 });
+      page.off("request", countCapability);
+      if (capabilityReads.length !== 1 || capabilityReads[0] !== "GET") throw new Error(`recheck capability reads ${JSON.stringify(capabilityReads)}`);
+      if (await page.getByText(/当前环境没有开启单镜成片所需的功能/).count()) throw new Error("still closed after recheck");
+      if (await page.evaluate(() => window.__beginnerRecheck) !== "open") throw new Error("recheck reloaded the page");
+      evidence.checks.capabilityRecheck = { capabilityGets: capabilityReads.length, reopenedWithoutReload: true };
+      const capabilityOn = expect(await api("GET", "/providers/capabilities"), 200, "capabilities (on)").compose;
+      if (capabilityOn?.shot !== true || capabilityOn?.episode !== true) throw new Error(`capability on ${JSON.stringify(capabilityOn)}`);
+      if (Object.values(capabilityOn).some((value) => typeof value !== "boolean")) throw new Error("capability carries more than booleans");
+      evidence.checks.composeOpen = capabilityOn;
       return { message: "当前环境没有开启集级合成", episode1: "尚未确认", studioStage: "第 2 步 看剧本" };
     });
 
@@ -533,6 +635,28 @@ async function main() {
       await page.getByRole("tab", { name: /场地 · 0\/1 已确认/ }).waitFor();
       await page.getByRole("tab", { name: /角色/ }).click();
       await page.getByRole("tab", { name: /角色 · 2\/2 已确认/ }).waitFor();
+      // Issue #52 item 2: the new read-only fields on the real API and PostgreSQL.
+      const named = (await api("GET", `/projects/${world.projectId}/locations`)).body.items[0];
+      if (named?.name !== "便利店") throw new Error(`location list name ${JSON.stringify(named?.name)}`);
+      const returned = (await api("GET", `/projects/${world.projectId}/locations/${named.entityId}/revisions`)).body.items[0];
+      if (returned?.reviewNote !== "灯光描述不够具体") throw new Error(`revision reviewNote ${JSON.stringify(returned?.reviewNote)}`);
+      world.locationId = named.entityId;
+      // The primary action opens that location (from the character tab), with its reason, never the new form.
+      await page.getByRole("button", { name: "查看原因并修改" }).click();
+      await page.getByRole("tab", { name: /场地/, selected: true }).waitFor({ timeout: 10_000 });
+      await page.getByText("退回原因：灯光描述不够具体。修改后保存新版本，再提交审核。").waitFor({ timeout: 20_000 });
+      const locationEditor = page.locator(`[data-entity-editor="${named.entityId}"] textarea`).first();
+      await waitFor(async () => (await locationEditor.evaluate((node) => node === document.activeElement)) || "focus not in the location editor", "location focus", 10_000);
+      if (await page.locator("#entity-name").evaluate((node) => node === document.activeElement)) throw new Error("focused the new-entity form");
+      // A draft in that editor survives leaving and coming back through the same action.
+      const draft = `${await locationEditor.inputValue()}；冷白灯管一闪一闪`;
+      await locationEditor.fill(draft);
+      await page.getByRole("tab", { name: /角色/ }).click();
+      await page.getByRole("button", { name: "查看原因并修改" }).click();
+      await page.getByText(/退回原因：灯光描述不够具体/).waitFor({ timeout: 20_000 });
+      if ((await page.locator(`[data-entity-editor="${named.entityId}"] textarea`).first().inputValue()) !== draft) throw new Error("location draft lost");
+      evidence.checks.rejectedTarget = { kind: "location", name: named.name, reviewNote: returned.reviewNote, draftKept: true, viewport: "1440" };
+      await page.getByRole("tab", { name: /角色/ }).click();
       await shot("04-step3-1440");
       // Next and back keep the state.
       await stepButton("试一段");
@@ -552,6 +676,8 @@ async function main() {
       await picker.getByRole("button", { name: /场景 1/ }).click();
       // Approve the scene shown, then create the shot under it.
       await page.locator("#new-shot-action").waitFor({ timeout: 20_000 });
+      await waitFor(async () => (await page.locator("#edit-location option", { hasText: "便利店" }).count()) > 0
+        || "location missing from the scene editor", "scene location choice", 20_000);
       await reviewInColumn(inspectColumns().first(), "APPROVED", "scene");
       await page.locator("#new-shot-action").fill("店员把记录按在柜台上");
       await page.locator("#new-shot-prompt").fill("fixed black frame for audit");
@@ -615,6 +741,9 @@ async function main() {
       await page.getByRole("button", { name: /第 4 步 试一段：已完成/ }).waitFor({ timeout: 10_000 });
       await page.getByRole("button", { name: "继续下一步" }).waitFor({ timeout: 10_000 });
       if (await page.evaluate(() => window.__beginnerNoReload) !== "step4") throw new Error("the page reloaded");
+      // Issue #52 item 5: reopening the completed step shows the episode that has the approved sample.
+      await page.goto(`${webOrigin}/projects/${world.projectId}/create?step=sample`, { waitUntil: "domcontentloaded" });
+      await page.getByRole("tab", { name: /第 1 集 · ✓ 已完成/, selected: true }).waitFor({ timeout: 20_000 });
       browserDid("step 4: scene approved, shot created and approved, Mock video generated (worker), single-shot preflight and FFmpeg compose submitted, composite played and approved — all on the beginner page");
       return { videoJob: videoJob.id, composeJob: composeJob.id, composite: composite.id, playback };
     });
@@ -647,13 +776,45 @@ async function main() {
     });
 
     await stage("step5-final", async () => {
-      await stepButton("出成片");
+      // PR #53 review 3: open step 5 directly while the capability answer is held back. The arrangement can be
+      // built, but preflight and submit stay closed until the server says episode compose is on.
+      const capabilityUrl = `${webOrigin}/api/v1/providers/capabilities`;
+      let releaseCapability;
+      const capabilityHeld = new Promise((done) => { releaseCapability = done; });
+      // Removing a route handler while it holds a request makes Playwright resume that request itself, so the
+      // handler is removed only after it has passed the request on.
+      let passedOn;
+      const capabilityPassed = new Promise((done) => { passedOn = done; });
+      const holdCapability = async (route) => {
+        faultDid("step5 pending gate: GET /api/v1/providers/capabilities held, then passed on with route.continue");
+        await capabilityHeld;
+        await route.continue();
+        passedOn();
+      };
+      await page.route(capabilityUrl, holdCapability);
+      await page.goto(`${webOrigin}/projects/${world.projectId}/create?step=final`, { waitUntil: "domcontentloaded" });
       await page.getByRole("tab", { name: /第 1 集/ }).click();
       const panel = page.getByRole("region", { name: "多镜编排" });
       await panel.getByRole("heading", { name: "多镜编排" }).waitFor({ timeout: 30_000 });
+      await page.getByText("正在检查服务端的合成功能状态，检查完成前不能开始新的合成。已有成片仍可查看。").waitFor({ timeout: 20_000 });
       for (const id of [world.composite1, world.composite2]) {
         await panel.locator(`[data-asset-id="${id}"]`).getByRole("button", { name: "加入" }).click({ timeout: 30_000 });
       }
+      const pendingGate = {
+        preflightDisabled: await panel.getByRole("button", { name: "预检编排" }).isDisabled(),
+        submitDisabled: await panel.getByRole("button", { name: "开始多镜合成" }).isDisabled(),
+        primaryDisabled: await page.getByRole("button", { name: "正在检查功能状态" }).isDisabled(),
+      };
+      if (!pendingGate.preflightDisabled || !pendingGate.submitDisabled || !pendingGate.primaryDisabled) {
+        throw new Error(`compose open while the capability is pending ${JSON.stringify(pendingGate)}`);
+      }
+      releaseCapability();
+      await capabilityPassed;
+      await page.unroute(capabilityUrl, holdCapability);
+      await waitFor(async () => (await panel.getByRole("button", { name: "预检编排" }).isEnabled()) || "preflight still closed", "gate opened", 20_000);
+      const kept = await panel.locator("[data-selected-asset-id]").count();
+      if (kept !== 2) throw new Error(`arrangement lost when the capability arrived: ${kept}`);
+      evidence.checks.pendingGate = { ...pendingGate, arrangementKept: kept };
       // Reorder: the second composite moves up, so the frozen order is [composite2, composite1].
       await panel.locator(`[data-selected-asset-id="${world.composite2}"]`).getByRole("button", { name: "上移" }).click();
       const preflightResponse = page.waitForResponse((response) => response.request().method() === "POST" && response.url().endsWith("/compose-preflight"));
@@ -680,6 +841,8 @@ async function main() {
       const tabTexts = async () => Promise.all([2, 3].map((no) => page.getByRole("tab", { name: new RegExp(`第 ${no} 集`) }).innerText()));
       const whileRunning = await tabTexts();
       if (whileRunning.some((text) => text.includes("处理中"))) throw new Error(`other episodes shown as running: ${whileRunning.join(" | ")}`);
+      // Issue #52 item 7: hidden while the compose runs, the visible reread fails once, the page recovers by itself.
+      evidence.checks.transientRecovery = { "1440": await recoverFromTransientRead(world.projectId, "step5 compose running (1440)", 4000) };
       // No click, no tab switch, no reload: the reopened page itself sees the compose finish.
       await page.getByRole("tab", { name: /第 1 集 · ？ 待确认/ }).waitFor({ timeout: 120_000 });
       if (await page.evaluate(() => window.__beginnerResume) !== "reopened") throw new Error("the reopened page was reloaded");
@@ -708,9 +871,17 @@ async function main() {
       if (draftDownload.status === 200) throw new Error("draft composite was exportable");
       const playback = await playVideo(card.locator("video"), 1000);
       await shot("06-step5-composed-1440");
+      // PR #53 review 1: nothing runs now; the approval callback's reread loses its project read once. The page
+      // must retry by itself (no click, no visibility change) and still reach the approved state.
+      const idleCut = await cutNextProjectRead(world.projectId, "step5 approval callback on an idle page (1440)");
       const review = reviewResponse();
       await card.getByRole("button", { name: "批准成片" }).click();
       if ((await review).status() !== 200) throw new Error("episode composite approval failed");
+      await page.getByText("最新进度暂时没有读到，正在自动重试；页面上的内容可能不是最新。").waitFor({ timeout: 15_000 });
+      if (!idleCut.done()) throw new Error("the callback reread was not cut");
+      await idleCut.remove();
+      await page.getByText("最新进度暂时没有读到，正在自动重试；页面上的内容可能不是最新。").waitFor({ state: "detached", timeout: 30_000 });
+      evidence.checks.idleCallbackRecovery = { notice: "shown, then cleared by the automatic retry", clicks: 0 };
       await card.getByRole("button", { name: "下载 MP4" }).waitFor({ timeout: 20_000 });
       const mp4Path = join(evidenceDir, "episode.mp4");
       const jsonPath = join(evidenceDir, "episode-manifest.json");
@@ -765,6 +936,19 @@ async function main() {
         layout[name] = await assertLayout(name);
         await shot(name);
       }
+      // Issue #52 at 390: targeting of the returned location and recovery from one failed read.
+      await page.goto(`${webOrigin}/projects/${world.projectId}/create?step=cast`, { waitUntil: "domcontentloaded" });
+      await page.getByRole("button", { name: "查看原因并修改" }).click();
+      await page.getByRole("tab", { name: /场地/, selected: true }).waitFor({ timeout: 10_000 });
+      await page.getByText(/退回原因：灯光描述不够具体/).waitFor({ timeout: 20_000 });
+      await page.locator(`[data-entity-editor="${world.locationId}"]`).waitFor();
+      layout["14b-step3-target-390"] = await assertLayout("14b-step3-target-390");
+      await shot("14b-step3-target-390");
+      evidence.checks.rejectedTarget390 = true;
+      await page.goto(`${webOrigin}/projects/${world.projectId}/create?step=final`, { waitUntil: "domcontentloaded" });
+      await page.getByRole("tab", { name: /第 1 集 · ✓ 已完成/ }).waitFor({ timeout: 20_000 });
+      evidence.checks.transientRecovery["390"] = await recoverFromTransientRead(world.projectId, "step5 idle (390)", 3000);
+      await shot("16b-step5-recovered-390");
       await page.goto(`${webOrigin}/projects/99999999-9999-4999-8999-999999999999/create`, { waitUntil: "domcontentloaded" });
       await page.getByRole("alert").filter({ hasText: "作品读取失败" }).waitFor();
       await shot("18-error-390");

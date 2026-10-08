@@ -107,6 +107,20 @@ describe.each(["character", "location"] as const)("M2 %s API persistence slice",
     expect(second.revisionNo).toBe(2);
     expect((await chain.listTextEntityRevisions(kind, workspaceId, projectId, first.entityId))
       .items.map((item) => item.id)).toEqual([second.revisionId, first.revisionId]);
+    // Read-only additions: the list names the entity and a returned revision carries the reviewer's reason.
+    expect((await chain.listTextEntities(kind, workspaceId, projectId)).items[0]).toMatchObject({ entityId: first.entityId, name: "Lead" });
+    const secondReview = await transaction((client) => chain.reviewTextEntityInTransaction(client, {
+      kind, workspaceId, projectId, entityId: first.entityId, revisionId: second.revisionId,
+      expectedVersion: second.rowVersion, expectedReviewVersion: 1, to: "IN_REVIEW", reviewedBy: "editor",
+    }));
+    await transaction((client) => chain.reviewTextEntityInTransaction(client, {
+      kind, workspaceId, projectId, entityId: first.entityId, revisionId: second.revisionId,
+      expectedVersion: secondReview.rowVersion, expectedReviewVersion: secondReview.reviewVersion,
+      to: "REJECTED", reviewedBy: "editor", reviewNote: "光线描述不够具体",
+    }));
+    const returned = await chain.listTextEntityRevisions(kind, workspaceId, projectId, first.entityId);
+    expect(returned.items[0]).toMatchObject({ id: second.revisionId, reviewStatus: "REJECTED", reviewNote: "光线描述不够具体" });
+    expect(returned.items[1]?.reviewNote).toBeNull();
     await expect(transaction((client) => chain.createTextEntityRevisionInTransaction(client, {
       ...input, workspaceId: "22222222-2222-4222-8222-222222222222",
       entityId: first.entityId, expectedVersion: second.rowVersion,

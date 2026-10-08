@@ -231,3 +231,169 @@ describe("my works", () => {
     expect((await screen.findByRole("alert")).textContent).toContain("不会显示示例作品");
   });
 });
+
+describe("my works refreshes cards whose workflows run (Issue #52 item 6)", () => {
+  let visibility: "visible" | "hidden" = "visible";
+
+  interface Card { story: string; runs: string; fail?: boolean }
+
+  function stubCards(cards: Record<string, Card>) {
+    const reads: string[] = [];
+    let inFlight = 0;
+    let maxInFlight = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: string) => {
+      const path = String(input);
+      if (path === "/api/v1/projects") {
+        return json({ items: Object.keys(cards).map((id) => ({ id, title: `作品${id}`, premise: "" })), nextCursor: null });
+      }
+      const id = Object.keys(cards).find((key) => path.includes(`/projects/${key}/`));
+      const card = id ? cards[id] : undefined;
+      if (!card) return json({ items: [], nextCursor: null });
+      if (path.endsWith("/stories")) {
+        reads.push(id!);
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await Promise.resolve();
+        inFlight -= 1;
+        if (card.fail) return json({ error: { code: "DOWN", message: "x" } }, 503);
+        return json({ items: [{ id: "s", revisionNo: 1, content: {}, reviewStatus: card.story, freshnessStatus: "CURRENT",
+          reviewVersion: 1, staleReason: null, staleFromRef: null, reviewNote: null }] });
+      }
+      if (path.endsWith("/workflow-runs")) {
+        return json([{ id: "run", type: "TEXT_STORY", status: card.runs, createdAt: "2026-10-07T00:00:00.000Z", jobs: [] }]);
+      }
+      return json({ items: [], nextCursor: null });
+    }));
+    return { reads, maxInFlight: () => maxInFlight };
+  }
+
+  function setVisibility(next: "visible" | "hidden") {
+    visibility = next;
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+  }
+
+  async function advance(ms: number) {
+    await act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    visibility = "visible";
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => visibility });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("rereads a running card until its workflow ends, then stops", async () => {
+    const card: Card = { story: "DRAFT", runs: "RUNNING" };
+    const { reads } = stubCards({ a: card });
+    render(<MyWorks />);
+    expect(await screen.findByText(/有任务正在处理，进度会自动刷新/)).toBeTruthy();
+    card.story = "APPROVED";
+    card.runs = "SUCCEEDED";
+    await advance(5000);
+    expect(await screen.findByText(/当前阶段：第 2 步 看剧本/)).toBeTruthy();
+    expect(screen.queryByText(/有任务正在处理/)).toBeNull();
+    const count = reads.length;
+    await advance(120_000);
+    expect(reads.length).toBe(count);
+  });
+
+  it("does not read while hidden and rereads when the page is visible again", async () => {
+    const card: Card = { story: "DRAFT", runs: "RUNNING" };
+    const { reads } = stubCards({ a: card });
+    render(<MyWorks />);
+    await screen.findByText(/有任务正在处理/);
+    setVisibility("hidden");
+    const count = reads.length;
+    await advance(60_000);
+    expect(reads.length).toBe(count);
+    card.story = "APPROVED";
+    card.runs = "SUCCEEDED";
+    setVisibility("visible");
+    expect(await screen.findByText(/当前阶段：第 2 步 看剧本/)).toBeTruthy();
+    expect(reads.length).toBe(count + 1);
+  });
+
+  it("is bounded: a card that keeps running pauses and offers a manual refresh", async () => {
+    const card: Card = { story: "DRAFT", runs: "RUNNING" };
+    const { reads } = stubCards({ a: card });
+    render(<MyWorks />);
+    await screen.findByText(/有任务正在处理/);
+    await advance(5000 * 30);
+    expect(reads.length).toBeLessThanOrEqual(1 + 24);
+    const button = await screen.findByRole("button", { name: "刷新进度" });
+    const count = reads.length;
+    await advance(60_000);
+    expect(reads.length).toBe(count);
+    card.runs = "SUCCEEDED";
+    fireEvent.click(button);
+    await waitFor(() => expect(screen.queryByText(/已暂停自动刷新/)).toBeNull());
+    expect(reads.length).toBe(count + 1);
+  });
+
+  it("does not start a queued reread while hidden, and starts it once when visible again (PR #53 review 4)", async () => {
+    const cards: Record<string, Card> = { a: { story: "DRAFT", runs: "RUNNING" }, b: { story: "DRAFT", runs: "RUNNING" },
+      c: { story: "DRAFT", runs: "RUNNING" } };
+    const started: Array<{ id: string; visibility: string }> = [];
+    const holds = new Map<string, () => void>();
+    let holdRereads = false;
+    vi.stubGlobal("fetch", vi.fn(async (input: string) => {
+      const path = String(input);
+      if (path === "/api/v1/projects") return json({ items: Object.keys(cards).map((id) => ({ id, title: `作品${id}`, premise: "" })), nextCursor: null });
+      const id = Object.keys(cards).find((key) => path.includes(`/projects/${key}/`));
+      if (!id) return json({ items: [], nextCursor: null });
+      if (path.endsWith("/stories")) {
+        started.push({ id, visibility });
+        if (holdRereads && id !== "c") await new Promise<void>((done) => { holds.set(id, done); });
+        return json({ items: [{ id: "s", revisionNo: 1, content: {}, reviewStatus: cards[id]!.story, freshnessStatus: "CURRENT",
+          reviewVersion: 1, staleReason: null, staleFromRef: null, reviewNote: null }] });
+      }
+      if (path.endsWith("/workflow-runs")) return json([{ id: "run", type: "TEXT_STORY", status: cards[id]!.runs, createdAt: "2026-10-07T00:00:00.000Z", jobs: [] }]);
+      return json({ items: [], nextCursor: null });
+    }));
+    const view = render(<MyWorks />);
+    await waitFor(() => expect(screen.getAllByText(/有任务正在处理/)).toHaveLength(3));
+    // All three rereads fall due together; A and B are slow and fill both slots, C waits in the queue.
+    holdRereads = true;
+    started.length = 0;
+    await advance(5000);
+    await waitFor(() => expect(holds.size).toBe(2));
+    expect(started.map((item) => item.id).sort()).toEqual(["a", "b"]);
+    setVisibility("hidden");
+    await act(async () => { holds.get("a")!(); });
+    await advance(100);
+    // A freed a slot while hidden: C must not start.
+    expect(started.filter((item) => item.id === "c")).toHaveLength(0);
+    setVisibility("visible");
+    await waitFor(() => expect(started.filter((item) => item.id === "c")).toHaveLength(1));
+    expect(started.every((item) => item.visibility === "visible")).toBe(true);
+    await act(async () => { holds.get("b")!(); });
+    await advance(100);
+    expect(started.filter((item) => item.id === "c")).toHaveLength(1);
+    view.unmount();
+    const count = started.length;
+    holdRereads = false;
+    await advance(60_000);
+    expect(started.length).toBe(count);
+  });
+
+  it("keeps cards apart, the concurrency limit, and the last stage when a reread fails", async () => {
+    const cards: Record<string, Card> = { a: { story: "DRAFT", runs: "RUNNING" }, b: { story: "DRAFT", runs: "RUNNING" },
+      c: { story: "DRAFT", runs: "SUCCEEDED" } };
+    const stub = stubCards(cards);
+    render(<MyWorks />);
+    await waitFor(() => expect(screen.getAllByText(/当前阶段：第 1 步 定故事/)).toHaveLength(3));
+    cards.a!.fail = true;
+    cards.b!.story = "APPROVED";
+    cards.b!.runs = "SUCCEEDED";
+    await advance(5000);
+    expect(await screen.findByText(/当前阶段：第 2 步 看剧本/)).toBeTruthy();
+    // a keeps its last stage and says the reread failed; c finished before and was not read again.
+    expect(await screen.findByText(/最新进度暂时没有读到/)).toBeTruthy();
+    expect(stub.reads.filter((id) => id === "c")).toHaveLength(1);
+    expect(stub.maxInFlight()).toBeLessThanOrEqual(2);
+  });
+});

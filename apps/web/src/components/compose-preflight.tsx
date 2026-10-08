@@ -42,7 +42,14 @@ const SLOT_RULES = {
   subtitle: { kind: "SUBTITLE", mimeType: "text/vtt" },
 } as const;
 
-export function ComposePreflight(props: { revisionId: string; refreshEpoch: number; client?: StudioClient; onChanged?: () => void }) {
+export function ComposePreflight(props: {
+  revisionId: string;
+  refreshEpoch: number;
+  client?: StudioClient;
+  onChanged?: () => void;
+  /** Why a new compose cannot start now; preflight and submit stay closed, selections and results are kept. */
+  blocked?: string | null;
+}) {
   const fallback = useRef<StudioClient | null>(null);
   if (!fallback.current) fallback.current = new StudioClient();
   const client = props.client ?? fallback.current;
@@ -106,6 +113,7 @@ export function ComposePreflight(props: { revisionId: string; refreshEpoch: numb
   }
 
   async function submit() {
+    if (props.blocked) return;
     const token = ++epoch.current;
     const revisionId = props.revisionId;
     const body = {
@@ -143,7 +151,8 @@ export function ComposePreflight(props: { revisionId: string; refreshEpoch: numb
       <OptionalSelect id="compose-audio" label="合成配音" value={selection.audio} assets={usable(assets, props.revisionId, "audio")} onChange={(value) => choose("audio", value)} />
       <OptionalSelect id="compose-music" label="合成音乐" value={selection.music} assets={usable(assets, props.revisionId, "music")} onChange={(value) => choose("music", value)} />
       <OptionalSelect id="compose-subtitle" label="合成字幕" value={selection.subtitle} assets={usable(assets, props.revisionId, "subtitle")} onChange={(value) => choose("subtitle", value)} />
-      <button className="mt-3 rounded border px-3 py-2 disabled:opacity-50" type="button" disabled={!selection.video || busy} onClick={() => void submit()}>
+      {props.blocked ? <p className="mt-3 text-sm" role="status">{props.blocked}</p> : null}
+      <button className="mt-3 rounded border px-3 py-2 disabled:opacity-50" type="button" disabled={!selection.video || busy || Boolean(props.blocked)} onClick={() => void submit()}>
         {busy ? "正在预检" : "预检合成输入"}
       </button>
       {error ? <p className="mt-2 text-sm" role="alert">{error}</p> : null}
@@ -167,7 +176,7 @@ export function ComposePreflight(props: { revisionId: string; refreshEpoch: numb
         revisionId={props.revisionId}
         client={client}
         onChanged={props.onChanged}
-        eligible={Boolean(result) && !error && !busy && selection.video.length > 0}
+        eligible={Boolean(result) && !error && !busy && selection.video.length > 0 && !props.blocked}
         body={result && !error ? {
           videoAssetId: selection.video,
           audioAssetId: selection.audio || null,

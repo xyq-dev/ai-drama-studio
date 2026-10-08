@@ -381,3 +381,90 @@ Commit / Push：YES（普通推送原分支）。Merge：NO。Deploy：NO。Migr
 ### 后端与状态
 
 后端未修改，无 Migration。Commit / Push：YES（普通推送原分支）。Merge：NO。Deploy：NO。Paid calls：NO。等待 Codex 复审。
+
+## BEGINNER_FOLLOWUP_REPORT（Issue #52 九项 P2 跟进）
+
+### 1. 现场
+
+| 项目 | 值 |
+| --- | --- |
+| 目录 / 分支 | `D:\Projects\ai-drama-studio-beginner-ui`，新建 `fix/beginner-experience-followups`（远端此前不存在） |
+| 起点 | `origin/main` = `6a386d535153bb301455a0bbd058ab49176571e7`（PR #50 合并） |
+| 源码 SHA | `0bc85e2f31c1051c4009f062f406e2399cb3b933` |
+| 报告 SHA | 本节所在提交，只改 `docs/` |
+| PR | [#53](https://github.com/xyq-dev/ai-drama-studio/pull/53) → main |
+
+### 2. 九项结果
+
+| # | 修复 | 提交 | 回归 |
+| --- | --- | --- | --- |
+| 1 | 主按钮在点击时按最新事实选集：本集已完成就交给需要处理的集；全部完成时停在已完成集，可查看下载；其他集草稿不动 | 368d076 | beginner-steps（episodeForAction）、beginner-flow（批准第 1 集后「补齐剧本」到第 2 集）；E2E `checks.nextEpisode` |
+| 2 | 「查看原因并修改」打开具体被退回/过期的角色或场地，显示退回原因、保留草稿、聚焦该对象编辑器；多个时给出选择；不落到新建表单 | 4ba831d、368d076 | beginner-flow 2 项；PostgreSQL 集成断言 name/reviewNote；E2E 1440 与 390 |
+| 3 | 关闭态来自 `capabilities.compose.shot`；关闭 / 读取失败 / 无候选分开显示；关闭或未确认时主按钮只有「重新检查功能状态」，单镜合成面板改为说明 | 4ba831d、368d076 | API capabilities 4 项；beginner-facts 2 项；beginner-flow 2 项；E2E 关闭态 1440 与 390、开启后为 true |
+| 4 | 场景/镜头选择绑定「已通过的当前剧本版本」；换版或不再通过即清除、ScenePane 不挂载；恢复后需重新选择 | 368d076 | beginner-flow：同集新剧本版本后场景编辑器关闭，再通过后不自动恢复 |
+| 5 | 「试一段」已完成时打开有已批准样片的集；「继续制作第 N 集」打开仍需处理的集 | 368d076 | beginner-steps、beginner-flow；E2E 重新打开 `?step=sample` 选中第 1 集 |
+| 6 | 我的作品：有运行中任务的卡片每 5 秒经原队列重读（并发 2、同项目去重），连续最多 24 次后暂停并提供「刷新进度」；隐藏不读、返回重读；终态停止；重读失败保留上次阶段并提示 | e3590f4 | beginner-start 4 项（终态停止、隐藏暂停与返回重读、上限与手动刷新、隔离/并发/失败保留） |
+| 7 | 返回可见后无论重读成败都重启串行链；失败以整批重读重试，连续失败退避 2 s→30 s（空闲时最多 5 次）；不重叠、隐藏不查、终态不查；页面提示「正在自动重试」并可立即重读 | 10068cf | project-base 3 项；E2E 恢复 1440（合成运行中）与 390 |
+| 8 | 场景编辑器使用完整有界读取的场地；未读完 / 失败分别说明，不宣称齐全；旧引用和「不引用场地」不变 | 368d076 | beginner-flow 2 项（第 25 个场地可选、旧引用保留；完整读取失败时提示）；E2E 场景编辑器出现「便利店」 |
+| 9 | loading 由结算时仍为最新的请求结束；被取代的首次加载不再关闭新读取；后台重读不开启 loading、不清空内容；跨项目、卸载、旧失败丢弃、成功清错保持 | 10068cf | project-base 3 项（同项目重叠读取、取代请求失败显示、后台重读不清空） |
+
+### 3. 范围与后端
+
+改动：`apps/web`（project-base、beginner-steps、beginner-facts、beginner-flow、my-works、workbench 中 EntityPane 的 focus 属性与退回原因、ScenePane 的关闭态与场地名称）、`apps/api`（capabilities）、`packages/database`（两条只读查询）、`scripts/beginner-web-acceptance.mjs`、`docs/API_CONTRACT.md`。
+
+新增只读字段：`GET /providers/capabilities` 的 `compose {shot, episode}`（仅布尔，与合成路由同一组开关；不含路径、目录或凭据）；角色/场地列表的 `name`；角色/场地修订的 `reviewNote`。必要性：前端没有其他途径得知单镜合成开关、对象名称和退回原因。兼容：只增字段，旧客户端忽略即可。**不需要 Migration**：字段读自已有列 `character.name`、`location.name`、`*_revision.review_note`，无新表、新列，写入、If-Match、409、幂等、审核、来源失效、费用、retry 规则均未改。
+
+### 4. 测试
+
+| 类型 | 内容 | 结果 |
+| --- | --- | --- |
+| 模拟（vitest + happy-dom，fetch 为桩） | project-base 6、beginner-steps 3、beginner-facts 2、beginner-flow 10、我的作品 4、API capabilities 4 | 通过 |
+| 本机（Node 24.21.0） | `pnpm verify`（web 247 等全部通过）、`pnpm m3-av-e2e:check`、`pnpm m3-av-e2e:outcome`、`git diff --check` | 通过 |
+| 真实 PostgreSQL | `text-entities.integration.spec.ts`：列表 `name`=Lead；退回修订 `reviewNote`；未写备注为 null | M1-C、M2-A 中通过 |
+| 真实 API + 浏览器 | 新手 E2E（API + Worker + PostgreSQL + FFmpeg + Chrome），断言加在原有 10 个阶段内 | 10/10 |
+
+注入故障：恢复验收中，可见后第一次 `GET /api/v1/projects/:id` 被 `route.abort("connectionreset")` 一次（1440、390 各一次，记录在 `evidence.checks.faults`）；可见性通过在页面内重定义 `document.visibilityState` 并派发 `visibilitychange` 模拟。原有的创建作品首个 POST 中断一次仍保留，记录在 `evidence.browser`（脚本开头注释说「均记录在 checks.faults」，对这一项不准确，下次改脚本时更正）。未使用 route.fulfill 或模拟 fetch。
+
+### 5. 修复前对照
+
+把 7 个源文件临时换回 `origin/main`、保留新测试：web 新增回归 23 项失败、API 4 项失败，共 27 项；修复后全部通过。失败原因与缺陷一致，例如：剧本换版后 `#edit-location` 仍存在（项 4）、打开空的第 2 集而非已完成的集（项 5）、第 25 个场地不可选（项 8）、退回场地标签未被选中（项 2）、可见后 503 状态停在 RUNNING（项 7）、旧 finally 使 loading=false（项 9）。新增 web 回归 25 项中另有 2 项为守护用例，修复前后均通过：「全部完成仍停在已完成集」（beginner-flow）与「后台重读不开启 loading、不清空内容」（project-base）。换回内容已恢复，未提交。
+
+### 6. CI（源码 SHA `0bc85e2`）
+
+8/8 success，首次运行即通过，无重跑：
+
+| 工作流 | Run | 说明 |
+| --- | --- | --- |
+| Beginner creator web | [37655263172](https://github.com/xyq-dev/ai-drama-studio/actions/runs/37655263172) | job 112908666944；10/10；artifact 11497719340（ZIP SHA-256 9ddcf958…0e72，与 GitHub digest 一致）；`checks.resume.stateOnEntry=RUNNING`；无页面错误 |
+| M4 three episode sample end-to-end | [37655262917](https://github.com/xyq-dev/ai-drama-studio/actions/runs/37655262917) | results.json 52/52；artifact 11498549094 |
+| M1-C / M2-A integration | 37655263299 / 37655263066 | 含 `text-entities.integration.spec.ts`（4 tests） |
+| M2-C / M3-A / M3-B / Writing assistant API | 37655262890 / 37655263056 / 37655263072 / 37655263085 | success |
+
+### 7. 剩余
+
+- 我的作品的刷新、场景编辑器场地分页（超过一页）只有模拟测试，浏览器 E2E 未覆盖（E2E 中只有一个场地）。
+- 「继续制作第 N 集」在 E2E 中不会出现（其他集剧本未通过），只有模拟测试。
+- 脚本注释中关于故障记录位置的措辞见第 4 节。
+
+### 8. 状态
+
+Commit：YES（5 个分组提交 + 本报告）。Push：YES（普通推送新分支，无 force）。Review：等待 Codex 独立复审。Merge：NO。Deploy：NO。Migration：NO。Paid calls：NO。
+
+## BEGINNER_FOLLOWUP_FINAL_FIX_REPORT（PR #53 独立复审 #pullrequestreview-5448779782 的四项 P2）
+
+基线 `f4600c7`。本节与实现一起提交；该提交的 CI 结果记录在 PR #53 的回复中（报告写成时 CI 尚未运行，这里不预先记为通过）。
+
+| # | 原因 | 修复 | 关键文件 |
+| --- | --- | --- | --- |
+| 1 能力重查（r4209903090） | 「重新检查功能状态」只在上次读取失败时才重读 capabilities | 重查总是重新 GET `/providers/capabilities`；一次只读一个，按 token 只认最新读取（含换作品），读取期间为 pending；失败显示「尚未确认」并可再查；不清空选择与草稿 | `beginner-flow.tsx` |
+| 2 能力未确认时的合成入口（r4209903117） | `capability=null` 被当作非关闭；内层预检与提交没有门控 | 四态门 `pending / failed / disabled / enabled`，单镜与集级分别取服务端布尔值，不再用候选读取推断。顶层主按钮、单镜 `ComposePreflight` 的预检与开始合成、集级预检与「开始多镜合成」（含重发）只在 enabled 时可用；已有成片的列表、播放、审核与合格下载不变；选择与编排顺序在能力变化时保留 | `beginner-facts.ts`、`beginner-flow.tsx`、`workbench.tsx`、`compose-preflight.tsx`、`episode-compose-preflight.tsx`、`episode-compose-job-panel.tsx` |
+| 3 空闲读取失败不重试（r4209903104） | 轮询链停止后，`reloadBase()` 失败只设置 ref，没有唤醒调度 | 每个作品一条调度链（不再随 allRuns 重建）：新任务、任何来源的失败重读、返回可见都唤醒同一条链；读取运行列表用 ref，避免旧闭包；空闲失败按 2 s 起退避重试 5 次后显示「自动重试已暂停」并提供手动重试；切换作品或卸载后旧链不再被唤醒 | `project-base.ts`、`beginner-flow.tsx`（文案） |
+| 4 我的作品隐藏后仍出队（行内意见 4212341094） | `finally → pump()` 不检查可见性 | 在出队处检查：隐藏时后台重读留在队列（仍 pending），返回可见时 `pump()` 继续；卸载后不再出队；已发出的请求正常结束 | `my-works.tsx` |
+
+回归与修复前对照（隔离 worktree，detached 于 `f4600c7`，只复制新测试，node_modules 以目录联接借用；用后先删联接再删 worktree，当前工作区未被改动）：新增 11 项在基线失败、修复后通过——能力四态 1、空闲失败重试 3、单镜内层门控 1、我的作品排队 1、能力重查与门控 5；另 4 项为守护用例，新旧都通过（隐藏/恢复的待重试、切换作品不唤醒旧链、重查失败保留场景、刷新提示自动消失）。
+
+本地：Node 24.21.0、pnpm 10.17.0（engine 检查开启）。`pnpm verify` 退出码 0（web 261 项）；`pnpm m3-av-e2e:check` 0；`pnpm m3-av-e2e:outcome` 0（23 项）；`git diff --check` 0。
+
+新手 E2E 新增（仍在原 10 个阶段内）：关闭态页面不刷新、API 以开启状态重启后点「重新检查功能状态」，capabilities GET 恰好 1 次且步骤恢复；第 5 步在 capabilities 被挂起（延迟后 route.continue 原样放行）时，多镜预检、开始多镜合成与主按钮均不可用，放行后可用且已选编排保留；空闲页面批准成片的回调重读被 route.abort 一次后自动恢复。我的作品排队时序只有模拟组件回归，没有真实浏览器覆盖。所有注入故障均写入 `evidence.checks.faults`（含原有的创建作品 POST 中断，修正上一节所述记录位置不一致）；可见性仍为页面内模拟，不是真实标签页切换。
+
+后端、数据库、Worker、Provider 与业务规则未改；无 Migration、无 SQL 草案、无付费调用；未合并、未部署。
