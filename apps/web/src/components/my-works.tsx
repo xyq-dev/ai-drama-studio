@@ -6,6 +6,8 @@ import { loadProjectFacts } from "../lib/beginner-facts";
 import { STEPS, STEP_STATE_MARK, STEP_STATE_TEXT, currentStep, stepStates, type StepKey, type StepState } from "../lib/beginner-steps";
 import { shouldPoll } from "../lib/studio-model";
 import { BeginnerShell } from "./beginner-shell";
+import { CreatorCover } from "./creator-cover";
+import styles from "./creator-entry.module.css";
 
 interface ProjectItem {
   id: string;
@@ -200,66 +202,71 @@ export function MyWorks() {
 
   return (
     <BeginnerShell active="/studio">
-      <main className="mx-auto max-w-6xl px-4 py-8">
-        <div className="flex flex-wrap items-end justify-between gap-4">
+      <main className={styles.page}>
+        <header className={styles.headingRow}>
           <div>
-            <h1 className="text-3xl font-semibold">我的作品</h1>
-            <p className="mt-1 text-[15px] text-[#5F5D66]">进度按服务器上的真实内容、审核和任务状态读取。</p>
+            <p className={styles.eyebrow}>你的创作空间</p>
+            <h1 className={styles.heading}>我的作品</h1>
+            <p className={styles.intro}>进度按服务器上的真实内容、审核和任务状态读取。</p>
           </div>
-          <a className="rounded-[12px] bg-[#D34846] px-5 py-2.5 font-medium text-white" href="/create">开始创作</a>
-        </div>
+          <a className={styles.primary} href="/create"><span className={styles.plus} aria-hidden="true">+</span>开始创作</a>
+        </header>
         {error ? (
-          <div className="mt-6 rounded-[12px] border border-[#D34846] bg-white p-4" role="alert">
+          <div className={styles.notice} role="alert">
             <p>作品列表读取失败：{error}。不会显示示例作品。</p>
-            <button className="mt-2 rounded-[12px] border px-3 py-1" type="button" onClick={() => void load(null)}>重试</button>
+            <button className={styles.secondary} type="button" onClick={() => void load(null)}>重试</button>
           </div>
         ) : null}
-        {items === null && !error ? <p className="mt-6" role="status">正在读取作品</p> : null}
+        {items === null && !error ? <p className={styles.loading} role="status">正在读取作品</p> : null}
         {items && items.length === 0 ? (
-          <div className="mt-6 rounded-[12px] border border-[#E7E5E0] bg-white p-6">
+          <div className={styles.empty}>
+            <span className={styles.emptyIcon} aria-hidden="true">
+              <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"><path d="M7 3h10a2 2 0 0 1 2 2v15l-7-3-7 3V5a2 2 0 0 1 2-2Z" /><path d="M9 8h6M9 12h4" /></svg>
+            </span>
             <p className="font-medium">还没有作品</p>
             <p className="mt-1 text-[15px] text-[#5F5D66]">从一句话开始，写下你想拍的故事。</p>
-            <a className="mt-3 inline-block rounded-[12px] bg-[#D34846] px-4 py-2 text-white" href="/create">开始创作</a>
+            <a className={styles.primary} href="/create">开始创作<span aria-hidden="true">→</span></a>
           </div>
         ) : null}
-        <ul className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {items?.map((item) => {
+        <ul className={styles.worksGrid}>
+          {items?.map((item, index) => {
             const state = progress[item.id];
             const stepTitle = state?.kind === "ready" ? STEPS.find((step) => step.key === state.step) : null;
             return (
-              <li key={item.id} className="flex min-w-0 flex-col rounded-[12px] border border-[#E7E5E0] bg-white p-4 shadow-sm">
+              <li key={item.id} className={styles.workCard}>
                 {/* No real cover asset is listed for a project, so the card uses a text cover. */}
-                <div className="flex aspect-[16/7] items-center justify-center rounded-[10px] bg-[#FBE7E4] text-3xl font-semibold text-[#B8322F]" aria-hidden="true">
-                  {Array.from(item.title.trim())[0] ?? "作"}
-                </div>
-                <h2 className="mt-3 text-lg font-semibold [overflow-wrap:anywhere]">{item.title}</h2>
-                <p className="mt-1 line-clamp-2 text-[15px] text-[#5F5D66] [overflow-wrap:anywhere]">{item.premise || "还没有故事想法"}</p>
-                <div className="mt-3 text-[15px]" aria-live="polite">
-                  {!state || state.kind === "loading" ? <p>正在读取进度…</p> : null}
-                  {state?.kind === "failed" ? (
-                    <p>进度读取失败。<button className="underline" type="button" onClick={() => track([item.id])}>重试</button></p>
-                  ) : null}
-                  {state?.kind === "ready" && stepTitle ? (
-                    <>
-                      <p>{`当前阶段：第 ${stepTitle.no} 步 ${stepTitle.title} · ${STEP_STATE_MARK[state.state]} ${STEP_STATE_TEXT[state.state]}`}</p>
-                      <p className="text-[#5F5D66]">{todo(state.step, state.state)}</p>
-                      {state.running && !state.paused ? <p className="text-[#5F5D66]">有任务正在处理，进度会自动刷新。</p> : null}
-                      {state.refreshFailed && !state.paused ? <p>最新进度暂时没有读到，显示的是上次读到的阶段，稍后会再试。</p> : null}
-                      {state.paused ? (
-                        <p>任务仍在处理，已暂停自动刷新。<button className="underline" type="button" onClick={() => refreshNow(item.id)}>刷新进度</button></p>
-                      ) : null}
-                    </>
-                  ) : null}
-                </div>
-                <div className="mt-auto flex flex-wrap items-center gap-3 pt-4">
-                  <a className="rounded-[12px] bg-[#D34846] px-4 py-2 font-medium text-white" href={`/projects/${item.id}/create`}>继续创作</a>
-                  <a className="text-sm text-[#5F5D66] underline" href={`/projects/${item.id}`}>高级编辑</a>
+                <CreatorCover title={item.title} />
+                <div className={styles.workBody}>
+                  {index === 0 ? <p className={styles.workEyebrow}>接着把这个故事讲下去</p> : null}
+                  <h2 className={styles.workTitle}>{item.title}</h2>
+                  <p className={styles.workPremise}>{item.premise || "还没有故事想法"}</p>
+                  <div className={styles.workProgress} aria-live="polite">
+                    {!state || state.kind === "loading" ? <p>正在读取进度…</p> : null}
+                    {state?.kind === "failed" ? (
+                      <p>进度读取失败。<button className="underline" type="button" onClick={() => track([item.id])}>重试</button></p>
+                    ) : null}
+                    {state?.kind === "ready" && stepTitle ? (
+                      <>
+                        <p className={styles.statusLine} data-state={state.state}>{`当前阶段：第 ${stepTitle.no} 步 ${stepTitle.title} · ${STEP_STATE_MARK[state.state]} ${STEP_STATE_TEXT[state.state]}`}</p>
+                        <p className={styles.todo}>{todo(state.step, state.state)}</p>
+                        {state.running && !state.paused ? <p className={styles.progressNote}>有任务正在处理，进度会自动刷新。</p> : null}
+                        {state.refreshFailed && !state.paused ? <p className={styles.progressNote}>最新进度暂时没有读到，显示的是上次读到的阶段，稍后会再试。</p> : null}
+                        {state.paused ? (
+                          <p>任务仍在处理，已暂停自动刷新。<button className="underline" type="button" onClick={() => refreshNow(item.id)}>刷新进度</button></p>
+                        ) : null}
+                      </>
+                    ) : null}
+                  </div>
+                  <div className={styles.workActions}>
+                    <a className={styles.primary} href={`/projects/${item.id}/create`}>继续创作<span aria-hidden="true">→</span></a>
+                    <a className={styles.textLink} href={`/projects/${item.id}`}>高级编辑</a>
+                  </div>
                 </div>
               </li>
             );
           })}
         </ul>
-        {nextCursor ? <button className="mt-6 rounded-[12px] border px-4 py-2 disabled:opacity-60" type="button" disabled={loadingPage} onClick={() => void load(nextCursor)}>{loadingPage ? "正在加载" : "加载更多作品"}</button> : null}
+        {nextCursor ? <button className={`${styles.secondary} ${styles.loadMore}`} type="button" disabled={loadingPage} onClick={() => void load(nextCursor)}>{loadingPage ? "正在加载" : "加载更多作品"}</button> : null}
       </main>
     </BeginnerShell>
   );

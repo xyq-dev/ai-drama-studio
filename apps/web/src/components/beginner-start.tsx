@@ -7,6 +7,7 @@ import type { DirectionDraft } from "../lib/creative-taxonomy";
 import { IDEA_TEMPLATES, START_SCOPE_NOTE, suggestTitle } from "../lib/beginner-start";
 import { LIMITS, draftStorageKey, nextDraft, readDraft, releaseSubmittedDraft, writeDraft } from "../lib/studio-model";
 import { BeginnerShell } from "./beginner-shell";
+import styles from "./creator-entry.module.css";
 
 interface ProjectItem {
   id: string;
@@ -138,81 +139,110 @@ export function BeginnerStart({ active }: { active: "/create" | undefined }) {
 
   return (
     <BeginnerShell active={active}>
-      <main className="mx-auto max-w-3xl px-4 pb-28 pt-10 sm:pb-12">
-        <h1 className="text-3xl font-semibold leading-tight sm:text-4xl">你的故事，从一句话开始</h1>
-        <p className="mt-3 text-[17px] text-[#5F5D66]">不用会写剧本，先告诉我你想拍什么。</p>
-        {latest ? (
-          <p className="mt-4 text-[15px]">
-            <a className="underline" href={`/projects/${latest.id}/create`}>继续上次创作：{latest.title}</a>
-          </p>
-        ) : null}
-
-        <section className="mt-6 rounded-[12px] border border-[#E7E5E0] bg-white p-5 shadow-sm" aria-label="写下想法">
-          <label id="idea-label" className="block font-medium" htmlFor="idea">你想拍一个什么样的故事？</label>
-          <textarea
-            ref={ideaRef}
-            id="idea"
-            className="mt-2 w-full rounded-[12px] border px-3 py-2 text-[16px]"
-            rows={4}
-            maxLength={LIMITS.premise}
-            placeholder="例如：一个外卖员发现自己每天送餐的那户人家，其实是他失散多年的哥哥。"
-            value={idea}
-            aria-describedby={error ? "start-error scope-note" : "scope-note"}
-            disabled={creating}
-            onChange={(event) => { setConfirming(false); remember(title, event.target.value); }}
-          />
-          <p id="scope-note" className="mt-2 text-sm text-[#5F5D66]">{START_SCOPE_NOTE}</p>
-          <div className="mt-4 flex flex-wrap items-center gap-3">
-            <button className={confirming ? "rounded-[12px] border border-[#D34846] bg-white px-5 py-2.5 font-medium text-[#B8322F]"
-              : "rounded-[12px] bg-[#D34846] px-5 py-2.5 font-medium text-white"} type="button" disabled={creating} onClick={startConfirm}>开始构思</button>
-            <a className="text-[15px] underline" href="/categories">还没想法？看看灵感</a>
+      <main className={`${styles.page} ${styles.startPage}`}>
+        <header className={styles.headingRow}>
+          <div>
+            <p className={styles.eyebrow}>开始一部新作品</p>
+            <h1 className={styles.heading}>你的故事，从一句话开始</h1>
+            <p className={styles.intro}>不用会写剧本，先告诉我你想拍什么。</p>
+            {latest ? (
+              <p>
+                <a className={styles.continueLink} href={`/projects/${latest.id}/create`}>继续上次创作：{latest.title}<span aria-hidden="true">→</span></a>
+              </p>
+            ) : null}
           </div>
-          <div className="mt-5">
-            <p className="text-sm text-[#5F5D66]">示例模板（静态示例，点选只会填入输入框，不会创建作品）</p>
-            <ul className="mt-2 flex flex-wrap gap-2">
-              {IDEA_TEMPLATES.map((template) => (
-                <li key={template.id}>
-                  <button className="rounded-[12px] border px-3 py-1.5 text-[15px] hover:bg-[#FBE7E4] disabled:opacity-60" type="button"
-                    disabled={creating} onClick={() => { setConfirming(false); remember(title, template.idea); }}>
-                    示例 · {template.label}
+        </header>
+
+        <div className={styles.startLayout}>
+          <div className={styles.startContent}>
+            <section className={styles.formCard} aria-label="写下想法">
+              <label id="idea-label" className={styles.fieldLabel} htmlFor="idea">你想拍一个什么样的故事？</label>
+              <textarea
+                ref={ideaRef}
+                id="idea"
+                className={styles.ideaInput}
+                rows={4}
+                maxLength={LIMITS.premise}
+                placeholder="例如：一个外卖员发现自己每天送餐的那户人家，其实是他失散多年的哥哥。"
+                value={idea}
+                aria-describedby={error ? "start-error scope-note" : "scope-note"}
+                disabled={creating}
+                onChange={(event) => { setConfirming(false); remember(title, event.target.value); }}
+              />
+              <p id="scope-note" className={styles.scopeNote}>{START_SCOPE_NOTE}</p>
+              <div className={styles.formActions}>
+                <button className={confirming ? styles.secondary : styles.primary} type="button" disabled={creating} onClick={startConfirm}>开始构思<span aria-hidden="true">→</span></button>
+                <a className={styles.textLink} href="/categories">还没想法？看看灵感</a>
+              </div>
+              <div className={styles.templateGroup}>
+                <p className={styles.helper}>示例模板（静态示例，点选只会填入输入框，不会创建作品）</p>
+                <ul className={styles.templateList}>
+                  {IDEA_TEMPLATES.map((template) => (
+                    <li key={template.id}>
+                      <button className={styles.templateButton} type="button"
+                        disabled={creating} onClick={() => { setConfirming(false); remember(title, template.idea); }}>
+                        示例 · {template.label}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              {direction ? (
+                <div className={styles.directionBox}>
+                  <p className="text-sm">灵感中心选好的创作方向（只保存在本浏览器）</p>
+                  <p className="mt-1 whitespace-pre-line text-sm text-[#5F5D66]">{premiseBlock(direction)}</p>
+                  <button className={styles.secondary} type="button" disabled={creating} onClick={applyDirection}>把创作方向加入想法</button>
+                  {directionNote ? <p className="mt-1 text-sm" role="status">{directionNote}</p> : null}
+                </div>
+              ) : null}
+            </section>
+
+            {confirming ? (
+              <section className={`${styles.formCard} ${styles.confirmCard}`} aria-labelledby="confirm-title">
+                <h2 id="confirm-title" ref={confirmHeading} tabIndex={-1} className={styles.confirmHeading}>确认创建作品</h2>
+                <p className="mt-1 text-[15px] text-[#5F5D66]">点「确认创建作品」后才会保存到服务器。之后在「定故事」一步把想法写成完整故事。</p>
+                <label className="mt-4 block font-medium" htmlFor="work-title">作品名称</label>
+                <input id="work-title" className={styles.titleInput} maxLength={LIMITS.title} value={title}
+                  aria-describedby="title-hint" disabled={creating} onChange={(event) => remember(event.target.value, idea)} />
+                <p id="title-hint" className="mt-1 text-sm text-[#5F5D66]">
+                  建议名称按规则截取自你的想法开头，不是 AI 生成，可以直接修改。
+                  <button className="ml-2 underline" type="button" disabled={creating} onClick={() => remember(suggestTitle(idea), idea)}>重新按想法截取</button>
+                </p>
+                <p className="mt-3 font-medium">故事想法</p>
+                <p className={styles.premise}>{idea}</p>
+                <div className={`${styles.confirmActions} fixed inset-x-0 bottom-0 sm:static`}>
+                  <button className={styles.primary} type="button"
+                    disabled={creating || title.trim().length === 0} onClick={() => void create()}>
+                    {creating ? "正在创建…" : "确认创建作品"}
                   </button>
+                  {creating ? <p className="mt-2 text-sm text-[#5F5D66]" role="status">正在创建，内容已锁定，完成前不能修改。</p> : null}
+                </div>
+              </section>
+            ) : null}
+            {error ? <p id="start-error" className={styles.notice} role="alert">{error}</p> : null}
+          </div>
+          <aside className={styles.journey} aria-label="创作流程说明">
+            <h2 className={styles.journeyHeading}>接下来，只需做好五件事</h2>
+            <p className={styles.journeyIntro}>每一步都可以回来修改，不用一次想完。</p>
+            <ol className={styles.journeySteps}>
+              {[
+                ["定故事", "把想法写成完整故事，保存后检查确认。"],
+                ["看剧本", "编辑或导入本集剧本，保存后提交审核。"],
+                ["定人物", "设定主要角色的性格、关系和故事场地。"],
+                ["试一段", "先做一个镜头。当前使用演示素材，合成后看看效果。"],
+                ["出成片", "编排已批准的片段，合成、审核并下载本集。"],
+              ].map(([step, description], index) => (
+                <li key={step} className={styles.journeyStep}>
+                  <span className={styles.journeyNumber} aria-hidden="true">{index + 1}</span>
+                  <div>
+                    <p className={styles.journeyTitle}>{step}</p>
+                    <p className={styles.journeyDescription}>{description}</p>
+                  </div>
                 </li>
               ))}
-            </ul>
-          </div>
-          {direction ? (
-            <div className="mt-5 rounded-[12px] border p-3">
-              <p className="text-sm">灵感中心选好的创作方向（只保存在本浏览器）</p>
-              <p className="mt-1 whitespace-pre-line text-sm text-[#5F5D66]">{premiseBlock(direction)}</p>
-              <button className="mt-2 rounded-[12px] border px-3 py-1 text-sm" type="button" disabled={creating} onClick={applyDirection}>把创作方向加入想法</button>
-              {directionNote ? <p className="mt-1 text-sm" role="status">{directionNote}</p> : null}
-            </div>
-          ) : null}
-        </section>
-
-        {confirming ? (
-          <section className="mt-6 rounded-[12px] border-2 border-[#D34846] bg-white p-5" aria-labelledby="confirm-title">
-            <h2 id="confirm-title" ref={confirmHeading} tabIndex={-1} className="text-xl font-semibold">确认创建作品</h2>
-            <p className="mt-1 text-[15px] text-[#5F5D66]">点「确认创建作品」后才会保存到服务器。之后在「定故事」一步把想法写成完整故事。</p>
-            <label className="mt-4 block font-medium" htmlFor="work-title">作品名称</label>
-            <input id="work-title" className="mt-1 w-full rounded-[12px] border px-3 py-2" maxLength={LIMITS.title} value={title}
-              aria-describedby="title-hint" disabled={creating} onChange={(event) => remember(event.target.value, idea)} />
-            <p id="title-hint" className="mt-1 text-sm text-[#5F5D66]">
-              建议名称按规则截取自你的想法开头，不是 AI 生成，可以直接修改。
-              <button className="ml-2 underline" type="button" disabled={creating} onClick={() => remember(suggestTitle(idea), idea)}>重新按想法截取</button>
-            </p>
-            <p className="mt-3 font-medium">故事想法</p>
-            <p className="mt-1 whitespace-pre-line rounded-[12px] bg-[#F7F6F2] p-3 text-[15px] [overflow-wrap:anywhere]">{idea}</p>
-            <div className="fixed inset-x-0 bottom-0 z-10 border-t border-[#E7E5E0] bg-white p-3 sm:static sm:mt-4 sm:border-0 sm:p-0">
-              <button className="w-full rounded-[12px] bg-[#D34846] px-5 py-3 font-medium text-white disabled:opacity-60 sm:w-auto" type="button"
-                disabled={creating || title.trim().length === 0} onClick={() => void create()}>
-                {creating ? "正在创建…" : "确认创建作品"}
-              </button>
-              {creating ? <p className="mt-2 text-sm text-[#5F5D66]" role="status">正在创建，内容已锁定，完成前不能修改。</p> : null}
-            </div>
-          </section>
-        ) : null}
-        {error ? <p id="start-error" className="mt-4 rounded-[12px] border border-[#D34846] bg-[#FBE7E4] p-3 text-[15px]" role="alert">{error}</p> : null}
+            </ol>
+          </aside>
+        </div>
       </main>
     </BeginnerShell>
   );

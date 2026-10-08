@@ -1,0 +1,144 @@
+.page {
+  width: 100%;
+  min-width: 0;
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 40px 32px 56px;
+}
+
+.startPage { max-width: 1180px; padding-bottom: 110px; }
+.headingRow { display: flex; align-items: end; justify-content: space-between; flex-wrap: wrap; gap: 20px; margin-bottom: 28px; }
+.eyebrow { margin: 0 0 8px; color: #a86655; font-size: 12px; font-weight: 650; letter-spacing: .14em; }
+.heading { margin: 0; font-size: clamp(26px, 2.3vw, 34px); line-height: 1.35; letter-spacing: -.035em; font-weight: 650; color: #28272d; }
+.intro { margin: 10px 0 0; color: #68646c; font-size: 15px; line-height: 1.8; }
+.primary, .secondary, .templateButton { display: inline-flex; align-items: center; justify-content: center; gap: 12px; min-height: 44px; border-radius: 10px; padding: 10px 20px; font-size: 15px; font-weight: 600; line-height: 1.5; text-decoration: none; transition: background-color .16s ease, border-color .16s ease; }
+.primary { border: 1px solid #d34846; background: #d34846; color: white; box-shadow: 0 3px 7px #d3484612; }
+.primary:hover { background: #bd3b39; border-color: #bd3b39; }
+.secondary { border: 1px solid #ead9d4; background: #fff9f7; color: #b63835; }
+.secondary:hover { background: #fbe7e4; }
+.primary:disabled, .secondary:disabled, .templateButton:disabled { cursor: not-allowed; opacity: .55; }
+.textLink { color: #69626a; font-size: 14px; text-underline-offset: 4px; text-decoration: underline; }
+.plus { font-size: 23px; font-weight: 400; line-height: 1; }
+.continueLink { display: inline-flex; max-width: 100%; gap: 10px; align-items: center; margin-top: 18px; border: 1px solid #e8ded5; border-radius: 9px; padding: 8px 12px; background: #fffcf8; color: #6c554c; font-size: 14px; overflow-wrap: anywhere; text-decoration: none; }
+.startLayout { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 24px; align-items: start; }
+.startContent { min-width: 0; }
+.formCard { min-width: 0; border: 1px solid #e7e5e0; border-radius: 16px; background: #fff; padding: 28px; box-shadow: 0 3px 14px #29222004; }
+.fieldLabel { display: block; color: #302d32; font-size: 17px; font-weight: 600; }
+.ideaInput { display: block; width: 100%; min-height: 180px; resize: vertical; margin-top: 14px; padding: 16px; border: 1px solid #dedbd5; border-radius: 12px; font-size: 16px; line-height: 1.9; }
+.ideaInput::placeholder { color: #989197; }
+.scopeNote { margin: 14px 0 0; border-radius: 9px; background: #f7f6f2; padding: 11px 13px; font-size: 13px; line-height: 1.8; color: #726a6b; }
+.formActions { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; margin-top: 22px; }
+.templateGroup { margin-top: 24px; padding-top: 22px; border-top: 1px solid #f0ede8; }
+.helper { font-size: 13px; color: #7c747b; line-height: 1.8; }
+.templateList { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; padding: 0; list-style: none; }
+.templateButton { min-height: 38px; padding: 8px 12px; border: 1px solid #ece4de; background: #faf8f5; color: #655f66; font-size: 13px; font-weight: 500; }
+.templateButton:hover { border-color: #e7bab4; background: #fff0ec; color: #b63835; }
+.directionBox { margin-top: 22px; padding: 16px; border: 1px solid #ece4de; border-radius: 10px; background: #fcfaf7; }
+.directionBox button { margin-top: 10px; }
+.confirmCard { margin-top: 20px; border-color: #dda5a0; box-shadow: 0 0 0 3px #d3484605; }
+.confirmHeading { margin: 0; font-size: 21px; line-height: 1.5; font-weight: 650; }
+.titleInput { display: block; width: 100%; margin-top: 8px; padding: 11px 13px; border: 1px solid #dedbd5; border-radius: 10px; font-size: 16px; }
+.premise { margin-top: 8px; padding: 16px; border-radius: 10px; background: #f7f6f2; font-size: 15px; line-height: 1.9; white-space: pre-line; overflow-wrap: anywhere; }
+.confirmActions { margin-top: 22px; }
+.journey { border: 1px solid #f0dfda; border-radius: 16px; background: linear-gradient(155deg, #fff7f2, #fdf1ef); padding: 24px 22px; }
+.journeyHeading { margin: 0; color: #453932; font-size: 18px; line-height: 1.65; font-weight: 650; }
+.journeyIntro { margin: 6px 0 22px; color: #8a7267; font-size: 13px; line-height: 1.8; }
+.journeySteps { list-style: none; padding: 0; margin: 0; }
+.journeyStep { position: relative; display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: 12px; padding-bottom: 24px; }
+.journeyStep:last-child { padding-bottom: 0; }
+.journeyStep:not(:last-child)::after { position: absolute; content: ""; left: 15px; top: 38px; bottom: 7px; width: 1px; background: #e6d8d2; }
+.journeyNumber { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; border: 1px solid #e9d9d3; border-radius: 50%; background: #fffaf7; color: #a66b59; font-size: 14px; font-weight: 600; }
+.journeyStep:first-child .journeyNumber { background: #d34846; border-color: #d34846; color: white; }
+.journeyTitle { margin: 2px 0 4px; font-size: 15px; font-weight: 600; color: #4c4244; }
+.journeyDescription { font-size: 13px; line-height: 1.8; color: #897a78; }
+.notice { margin-top: 24px; border: 1px solid #ecd3cd; border-radius: 12px; background: #fff7f4; padding: 18px 20px; color: #8f3c34; font-size: 15px; }
+.notice button { margin-top: 10px; }
+.loading { margin-top: 24px; border: 1px dashed #ddd5cc; border-radius: 14px; padding: 42px 24px; background: #fcfaf7; color: #877c77; }
+.empty { margin-top: 28px; border: 1px solid #e7e5e0; border-radius: 16px; background: #fff; padding: 56px 24px; text-align: center; }
+.emptyIcon { margin: 0 auto 20px; display: grid; place-items: center; width: 64px; height: 64px; border-radius: 20px; color: #c5685b; background: #faeee7; }
+.empty .primary { margin-top: 24px; }
+.worksGrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; list-style: none; padding: 0; margin-top: 28px; }
+.workCard { min-width: 0; display: flex; flex-direction: column; overflow: hidden; border: 1px solid #e7e5e0; border-radius: 15px; background: #fff; box-shadow: 0 3px 12px #33251d04; }
+.workCard:first-child { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); }
+.workBody { display: flex; min-width: 0; flex-direction: column; padding: 22px; }
+.workCard:first-child .workBody { padding: 28px 30px; }
+.workEyebrow { margin: 0 0 10px; color: #9d7b67; font-size: 12px; letter-spacing: .1em; }
+.workTitle { margin: 0; color: #2f2d31; font-size: 20px; font-weight: 650; line-height: 1.5; overflow-wrap: anywhere; }
+.workCard:first-child .workTitle { font-size: 26px; }
+.workPremise { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; margin-top: 8px; color: #8a8185; font-size: 14px; line-height: 1.8; overflow-wrap: anywhere; }
+.workProgress { margin-top: 16px; font-size: 13px; line-height: 1.8; }
+.statusLine { display: inline-block; padding: 4px 9px; border-radius: 7px; background: #f4f0ec; color: #706665; font-size: 12px; font-weight: 550; }
+.statusLine[data-state="needs_confirmation"], .statusLine[data-state="in_progress"] { background: #fff5df; color: #966022; }
+.statusLine[data-state="done"] { background: #eaf5e9; color: #487249; }
+.statusLine[data-state="needs_attention"], .statusLine[data-state="source_updated"] { background: #fbe9e6; color: #ae5144; }
+.todo { margin-top: 8px; color: #726b73; }
+.progressNote { margin-top: 6px; color: #7c747c; }
+.workActions { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; margin-top: auto; padding-top: 20px; }
+.workActions .primary { padding: 10px 18px; font-size: 14px; }
+.workCard:not(:first-child) .workActions .primary { border-color: #f9e8e4; background: #fff0ec; color: #be4440; box-shadow: none; }
+.workCard:not(:first-child) .workActions .primary:hover { background: #fbe3dc; }
+.cover { --cover-bg: #eddfc6; --cover-fg: #614937; --cover-line: #b8a280; position: relative; display: flex; flex-direction: column; justify-content: center; width: 100%; min-width: 0; min-height: 180px; aspect-ratio: 16 / 9; overflow: hidden; isolation: isolate; padding: 34px 26px 26px; background: var(--cover-bg); color: var(--cover-fg); }
+.cover[data-tone="1"] { --cover-bg: #ead0c3; --cover-fg: #754a3f; --cover-line: #c79882; }
+.cover[data-tone="2"] { --cover-bg: #dce3d4; --cover-fg: #405546; --cover-line: #a2af9c; }
+.cover::before { position: absolute; z-index: -1; inset: 10px; content: ""; border: 1px solid var(--cover-line); opacity: .5; }
+.cover::after { position: absolute; z-index: -1; inset: 0; content: ""; background: repeating-linear-gradient(0deg, transparent 0, transparent 3px, #ffffff12 4px, transparent 5px); }
+.coverLabel { position: absolute; top: 20px; right: 20px; border: 1px solid #ffffff80; border-radius: 5px; background: #fffcf080; padding: 2px 7px; color: var(--cover-fg); font-size: 11px; }
+.coverArch { position: absolute; z-index: -1; width: 54%; height: 170%; top: 28%; right: -13%; border: 1px solid var(--cover-line); border-radius: 50% 50% 0 0; transform: rotate(-24deg); box-shadow: 0 0 0 16px #ffffff15, 0 0 0 17px var(--cover-line), 0 0 0 38px #ffffff12, 0 0 0 39px var(--cover-line); opacity: .65; }
+.coverOrb { position: absolute; z-index: -1; top: 18%; left: -35px; width: 115px; height: 115px; border: 1px solid var(--cover-line); border-radius: 50%; opacity: .5; }
+.coverTitle { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; max-width: 85%; font-family: inherit; font-size: clamp(28px, 2.5vw, 38px); font-weight: 600; line-height: 1.55; letter-spacing: .06em; overflow-wrap: anywhere; }
+.coverCaption { margin-top: 15px; font-size: 11px; letter-spacing: .25em; opacity: .75; }
+.workCard:first-child .cover { height: 100%; min-height: 290px; aspect-ratio: auto; }
+.workCard:first-child .coverTitle { font-size: clamp(30px, 3vw, 44px); }
+.loadMore { margin: 28px auto 0; display: flex; }
+
+@media (max-width: 1100px) {
+  .page { padding-right: 24px; padding-left: 24px; }
+  .worksGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .startLayout { grid-template-columns: minmax(0, 1fr) 230px; gap: 18px; }
+  .journey { padding: 22px 18px; }
+  .formCard { padding: 24px; }
+}
+
+@media (max-width: 850px) {
+  .startLayout { grid-template-columns: minmax(0, 1fr); }
+  .journey { padding: 24px; }
+  .journeyIntro { margin-bottom: 20px; }
+  .journeySteps { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; }
+  .journeyStep { padding: 0; }
+  .journeyStep::after { display: none; }
+}
+
+@media (max-width: 640px) {
+  .page { padding: 24px 16px 40px; }
+  .startPage { padding-bottom: 120px; }
+  .headingRow { align-items: start; gap: 18px; margin-bottom: 22px; }
+  .heading { font-size: 26px; }
+  .intro { font-size: 14px; }
+  .eyebrow { font-size: 11px; }
+  .headingRow > .primary { width: 100%; }
+  .formCard { padding: 20px 18px; border-radius: 14px; }
+  .ideaInput { min-height: 188px; padding: 13px; }
+  .formActions .primary { flex: 1; }
+  .templateButton { font-size: 12px; padding-right: 10px; padding-left: 10px; }
+  .confirmActions { position: fixed; z-index: 30; inset: auto 0 0; margin: 0; padding: 12px 16px calc(12px + env(safe-area-inset-bottom)); border-top: 1px solid #ece5de; background: #fffefa; box-shadow: 0 -4px 15px #31262008; }
+  .confirmActions .primary { width: 100%; }
+  .journey { padding: 20px 18px; border-radius: 14px; }
+  .journeySteps { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+  .journeyStep { grid-template-columns: 30px minmax(0, 1fr); }
+  .journeyDescription { font-size: 13px; }
+  .worksGrid { grid-template-columns: minmax(0, 1fr); gap: 20px; margin-top: 24px; }
+  .workCard:first-child { display: flex; }
+  .workCard:first-child .cover { height: auto; min-height: 190px; aspect-ratio: 16 / 9; }
+  .workCard:first-child .workBody, .workBody { padding: 20px; }
+  .workCard:first-child .workTitle { font-size: 22px; }
+  .workCard:first-child .coverTitle { font-size: 34px; }
+  .cover { min-height: 180px; }
+  .coverTitle { font-size: 32px; }
+  .workActions .primary { flex: 1; }
+  .statusLine { font-size: 12px; }
+  .empty { padding: 40px 22px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .primary, .secondary, .templateButton { transition: none; }
+}

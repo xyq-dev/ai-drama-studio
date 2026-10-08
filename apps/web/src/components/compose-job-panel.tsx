@@ -208,7 +208,7 @@ export function ComposeJobPanel(props: {
   }
 
   return (
-    <div className="mt-3 min-w-0">
+    <div className="creator-compose-results mt-3 min-w-0">
       <button className="rounded border px-3 py-2 disabled:opacity-50" type="button" disabled={!props.eligible || busy} onClick={() => void start()}>
         开始合成
       </button>
@@ -225,12 +225,12 @@ export function ComposeJobPanel(props: {
         {assets.map((asset) => {
           const current = asset.status === "ACTIVE";
           return (
-            <li key={asset.id} className="rounded border p-2 text-sm" data-composite-id={asset.id}>
+            <li key={asset.id} className="creator-composite-card rounded border p-2 text-sm" data-composite-id={asset.id}>
               <p>本地合成 · Mock 来源</p>
               <p>{asset.width ?? "—"}×{asset.height ?? "—"} · {asset.durationMs ?? "—"} ms</p>
               <p>任务 {asset.sourceGenerationJobId}</p>
               <p>审核 {asset.reviewStatus}{current ? " · 当前有效" : " · 历史成片"}</p>
-              <video className="mt-2 aspect-[9/16] w-full bg-black" controls src={`/api/v1/assets/${asset.id}/content`} />
+              <video className="creator-composite-player mt-2 aspect-[9/16] w-full bg-black" controls src={`/api/v1/assets/${asset.id}/content`} />
               {current && asset.reviewStatus === "DRAFT" ? (
                 <div className="mt-2">
                   <label className="block" htmlFor={`compose-note-${asset.id}`}>退回说明</label>

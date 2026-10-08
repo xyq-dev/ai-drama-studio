@@ -1,4 +1,6 @@
 @import "tailwindcss";
+@import "../components/creator-editors.css";
+@import "../components/creator-flow.css";
 
 :root {
   color-scheme: dark;

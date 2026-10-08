@@ -141,7 +141,7 @@ export function ComposePreflight(props: {
 
   const videos = usable(assets, props.revisionId, "video");
   return (
-    <section className="mt-6 min-w-0 rounded border p-3" aria-label="Mock 单镜合成预检">
+    <section className="creator-preflight-card mt-6 min-w-0 rounded border p-3" aria-label="Mock 单镜合成预检">
       <h3 className="font-medium">Mock 单镜合成预检</h3>
       <label className="mt-3 block text-sm" htmlFor="compose-video">合成视频</label>
       <select id="compose-video" className="mt-1 w-full rounded border px-2 py-1" value={selection.video} onChange={(event) => choose("video", event.target.value)}>
@@ -157,7 +157,7 @@ export function ComposePreflight(props: {
       </button>
       {error ? <p className="mt-2 text-sm" role="alert">{error}</p> : null}
       {result ? (
-        <div className="mt-3 text-sm">
+        <div className="creator-preflight-result mt-3 text-sm">
           <p>合成尚未执行</p>
           <p>计划尺寸 {result.manifest.plan.width}×{result.manifest.plan.height} · {result.manifest.plan.frameRate}fps · {result.manifest.plan.container.toUpperCase()}</p>
           <p>计划时长 {result.manifest.plan.durationMs} ms</p>

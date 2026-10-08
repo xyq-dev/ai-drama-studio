@@ -56,7 +56,7 @@ import {
 const client = new StudioClient();
 const qwenWebClient = createQwenWebClient();
 const EMPTY_CONTENT: Record<string, unknown> = { text: "" };
-const BODY_FIELD = "mt-1 w-full min-h-48 max-h-[70vh] resize-y rounded border border-neutral-300 px-3 py-2";
+const BODY_FIELD = "creator-body-field mt-1 w-full min-h-48 max-h-[70vh] resize-y rounded border border-neutral-300 px-3 py-2";
 
 function mediaTaskLabel(type: string): string {
   if (type === "MEDIA_VIDEO") return "Mock 视频";
@@ -180,7 +180,7 @@ const InspectContext = createContext<{
 
 function EditorGrid({ children }: { children: ReactNode }) {
   const { visible } = useContext(InspectContext);
-  return <div className={`grid gap-4 ${visible ? "xl:grid-cols-[minmax(0,1fr)_20rem]" : ""}`}>{children}</div>;
+  return <div className={`creator-editor-grid grid gap-4 ${visible ? "xl:grid-cols-[minmax(0,1fr)_20rem]" : ""}`}>{children}</div>;
 }
 
 function InspectSlot({ children }: { children: ReactNode }) {
@@ -739,7 +739,7 @@ function SceneList(props: {
   }
 
   return (
-    <section className="rounded-lg bg-white p-4">
+    <section className="creator-section rounded-lg bg-white p-4">
       <h2 className="font-medium">场景</h2>
       <p className="mt-1 text-sm text-neutral-600">Mock 生成场景处理固定三集。前置条件由服务端判断：来源剧本需已通过且为 CURRENT。不会覆盖已经占用的 ordinal 1，也不是一键重新生成。</p>
       {props.page?.items.length === 0 ? <p className="mt-3 text-sm">这一集还没有场景</p> : null}
@@ -1046,7 +1046,7 @@ function ContentEditor(props: {
   }
 
   return (
-    <form className="rounded-lg bg-white p-4" onSubmit={(event) => { event.preventDefault(); void save(false); }}>
+    <form className="creator-editor-card rounded-lg bg-white p-4" onSubmit={(event) => { event.preventDefault(); void save(false); }}>
       <h2 className="font-medium">{props.title}</h2>
       {props.assistant ? (
         <WritingAssistant
@@ -1224,10 +1224,10 @@ export function EntityPane(props: {
   return (
     <EditorGrid>
       <div className="space-y-4">
-        <section className="rounded-lg bg-white p-4">
+        <section className="creator-section rounded-lg bg-white p-4">
           <h2 className="font-medium">{props.kind === "character" ? "角色" : "场地"}</h2>
           {describeRevision(props.page?.items.length ? { id: "list" } : null) === "empty" ? <p className="mt-2 text-sm">列表为空</p> : null}
-          <ul className="mt-2 space-y-2">
+          <ul className="creator-entity-list mt-2 space-y-2">
             {props.page?.items.map((item) => (
               <li key={item.entityId}>
                 <button className="underline" type="button" aria-pressed={selected === item.entityId} onClick={() => setSelected(item.entityId)}>
@@ -1381,7 +1381,7 @@ function NewEntityForm(props: {
   }
 
   return (
-    <form className="rounded-lg bg-white p-4" onSubmit={(event) => { event.preventDefault(); void save(); }}>
+    <form className="creator-editor-card rounded-lg bg-white p-4" onSubmit={(event) => { event.preventDefault(); void save(); }}>
       <h2 className="font-medium">新建{props.kind === "character" ? "角色" : "场地"}</h2>
       <label className="mt-2 block text-sm" htmlFor="entity-name">名称</label>
       <input id="entity-name" className="w-full rounded border px-2 py-1" maxLength={LIMITS.name} value={name} onChange={(event) => { setName(event.target.value); remember(event.target.value, text); }} required />
@@ -1577,7 +1577,7 @@ export function ScenePane(props: {
           </InspectSlot>
         </EditorGrid>
       ) : <p>场景没有当前版本</p>}
-      <section className="rounded-lg bg-white p-4">
+      <section className="creator-section rounded-lg bg-white p-4">
         <h2 className="font-medium">镜头</h2>
         {shots?.items.length === 0 ? <p className="mt-2 text-sm">还没有镜头</p> : null}
         <ul className="mt-2 space-y-2">
@@ -1811,7 +1811,7 @@ function SceneForm(props: {
   }, body()) : [];
 
   return (
-    <form className="rounded-lg bg-white p-4" onSubmit={(event) => { event.preventDefault(); void save(false); }}>
+    <form className="creator-editor-card rounded-lg bg-white p-4" onSubmit={(event) => { event.preventDefault(); void save(false); }}>
       <h2 className="font-medium">{props.current.heading}</h2>
       <label className="mt-2 block" htmlFor="edit-heading">标题</label>
       <input id="edit-heading" className="w-full rounded border px-2 py-1" maxLength={LIMITS.heading} value={heading} onChange={(event) => { setHeading(event.target.value); remember({ ...body(), heading: event.target.value }); }} />
@@ -2085,7 +2085,7 @@ function ShotForm(props: {
   }
 
   return (
-    <form className="rounded-lg bg-white p-4" onSubmit={(event) => { event.preventDefault(); void save(false); }}>
+    <form className="creator-editor-card rounded-lg bg-white p-4" onSubmit={(event) => { event.preventDefault(); void save(false); }}>
       <h2 className="font-medium">镜头 {props.current.ordinal}</h2>
       <label htmlFor="shot-type">景别</label>
       <input id="shot-type" className="w-full rounded border px-2 py-1" maxLength={LIMITS.shotType} value={shotType} onChange={(event) => { setShotType(event.target.value); remember({ ...body(), shotType: event.target.value }); }} />
@@ -2204,10 +2204,10 @@ function RevisionColumn(props: {
   }
 
   return (
-    <aside className="min-w-0 rounded-lg bg-white p-4 [overflow-wrap:anywhere]">
+    <aside className="creator-review-card min-w-0 rounded-lg bg-white p-4 [overflow-wrap:anywhere]">
       <h2 className="font-medium">版本</h2>
       {props.items.length === 0 ? <p className="mt-2 text-sm">没有历史版本</p> : null}
-      <ul className="mt-2 space-y-2 text-sm">
+      <ul className="creator-revision-list mt-2 space-y-2 text-sm">
         {props.items.map((item) => (
           <li key={item.id} className={item.id === props.currentId ? "font-medium" : ""}>
             第 {item.revisionNo} 版 · {REVIEW_TEXT[item.reviewStatus] ?? item.reviewStatus} · {FRESH_TEXT[item.freshnessStatus] ?? item.freshnessStatus}
@@ -2234,7 +2234,7 @@ function RevisionColumn(props: {
         </div>
       )}
       {current ? (
-        <div className="mt-4">
+        <div className="creator-review-actions mt-4">
           <h3 className="font-medium">审核</h3>
           <p className="text-sm">{REVIEW_TEXT[current.reviewStatus] ?? current.reviewStatus}，新鲜度 {FRESH_TEXT[current.freshnessStatus] ?? current.freshnessStatus}。已通过不等于新鲜。</p>
           {current.staleReason ? <p className="text-sm">过期原因 {current.staleReason}</p> : null}
@@ -2509,8 +2509,8 @@ function ShotImagePanel(props: {
   const musicHistory = historyAssets.filter((asset) => asset.kind === "MUSIC");
 
   return (
-    <div className="min-w-0 space-y-4">
-      <section className="min-w-0 rounded-lg bg-white p-4">
+    <div className="creator-media-grid min-w-0 space-y-4">
+      <section className="creator-media-card min-w-0 rounded-lg bg-white p-4">
         <h2 className="font-medium">Mock 图片</h2>
         <p className="mt-2 text-sm [overflow-wrap:anywhere]">演示素材。确定性 1×1 Mock 测试图。seed 只写入快照，不改变像素。这不是真实 AI 图片，也不会写入 MinIO。</p>
         <label className="mt-2 block text-sm" htmlFor="mock-image-seed">seed（可选）</label>
@@ -2526,7 +2526,7 @@ function ShotImagePanel(props: {
         <AssetList title="当前版本图片" empty="没有图片" assets={imageCurrent} previewErrors={previewErrors} onPreviewError={previewError} />
         <AssetList title="历史版本图片" empty="没有图片" assets={imageHistory} previewErrors={previewErrors} onPreviewError={previewError} />
       </section>
-      <section className="min-w-0 rounded-lg bg-white p-4">
+      <section className="creator-media-card min-w-0 rounded-lg bg-white p-4">
         <h2 className="font-medium">Mock 视频</h2>
         <p className="mt-2 text-sm [overflow-wrap:anywhere]">演示素材。固定 16×16 黑色 1 秒测试视频。seed 和已保存提示词只进入审计快照，不改变画面。这不是真实 AI 视频，也不会写入 MinIO。</p>
         <label className="mt-2 block text-sm" htmlFor="mock-video-seed">seed（可选）</label>
@@ -2542,7 +2542,7 @@ function ShotImagePanel(props: {
         <AssetList title="当前版本视频" empty="没有视频" assets={videoCurrent} previewErrors={previewErrors} onPreviewError={previewError} />
         <AssetList title="历史版本视频" empty="没有视频" assets={videoHistory} previewErrors={previewErrors} onPreviewError={previewError} />
       </section>
-      <section className="min-w-0 rounded-lg bg-white p-4">
+      <section className="creator-media-card min-w-0 rounded-lg bg-white p-4">
         <h2 className="font-medium">Mock 配音</h2>
         <p className="mt-2 text-sm [overflow-wrap:anywhere]">演示素材。固定 100ms 单声道静音。已保存并审核的对白只作为来源审计，fixture 不会朗读它。这不是真实 TTS，也不会写入 MinIO。</p>
         <label className="mt-2 block text-sm" htmlFor="mock-speech-seed">seed（可选）</label>
@@ -2557,7 +2557,7 @@ function ShotImagePanel(props: {
         <AssetList title="当前版本配音" empty="没有配音" assets={speechCurrent} previewErrors={previewErrors} onPreviewError={previewError} />
         <AssetList title="历史版本配音" empty="没有配音" assets={speechHistory} previewErrors={previewErrors} onPreviewError={previewError} />
       </section>
-      <section className="min-w-0 rounded-lg bg-white p-4">
+      <section className="creator-media-card min-w-0 rounded-lg bg-white p-4">
         <h2 className="font-medium">Mock 字幕</h2>
         <p className="mt-2 text-sm [overflow-wrap:anywhere]">演示素材。固定测试字幕，内容不随已保存对白变化。seed 只写入快照。这不是真实字幕生成，也不会写入 MinIO。</p>
         <label className="mt-2 block text-sm" htmlFor="mock-subtitle-seed">seed（可选）</label>
@@ -2572,7 +2572,7 @@ function ShotImagePanel(props: {
         <AssetList title="当前版本字幕" empty="没有字幕" assets={subtitleCurrent} previewErrors={previewErrors} onPreviewError={previewError} />
         <AssetList title="历史版本字幕" empty="没有字幕" assets={subtitleHistory} previewErrors={previewErrors} onPreviewError={previewError} />
       </section>
-      <section className="min-w-0 rounded-lg bg-white p-4">
+      <section className="creator-media-card min-w-0 rounded-lg bg-white p-4">
         <h2 className="font-medium">Mock 音乐</h2>
         <p className="mt-2 text-sm [overflow-wrap:anywhere]">演示素材。固定 100ms 静音，kind 为 MUSIC，与配音 AUDIO 分开。已保存提示词只进入审计快照，不会变成音乐。这不是真实音乐生成，也不会写入 MinIO。</p>
         <label className="mt-2 block text-sm" htmlFor="mock-music-seed">seed（可选）</label>
@@ -2602,7 +2602,7 @@ function AssetList(props: {
   onPreviewError: (id: string) => void;
 }) {
   return (
-    <div className="mt-4 min-w-0">
+    <div className="creator-asset-library mt-4 min-w-0">
       <h3 className="font-medium">{props.title}</h3>
       {props.assets.length === 0 ? <p className="mt-2 text-sm">{props.empty}</p> : null}
       <ul className="mt-2 space-y-3">
@@ -2610,7 +2610,7 @@ function AssetList(props: {
           const preview = canPreviewAsset(asset);
           const src = `/api/v1/assets/${asset.id}/content`;
           return (
-            <li key={asset.id} className="min-w-0 rounded border p-3 text-sm [overflow-wrap:anywhere]">
+            <li key={asset.id} className="creator-asset-card min-w-0 rounded border p-3 text-sm [overflow-wrap:anywhere]">
               <p>资产 {asset.id}</p>
               <p>状态 {asset.status} · 审核 {asset.reviewStatus} · {asset.kind} · {asset.width ?? "无"}×{asset.height ?? "无"} · {asset.durationMs ?? "无"} ms · {asset.byteSize} 字节</p>
               <p>来源镜头版本 {asset.sourceShotRevisionId ?? "无"} · 来源任务 {asset.sourceGenerationJobId ?? "无"}</p>
@@ -2751,7 +2751,7 @@ export function TaskDrawer(props: {
   const mediaRuns = props.runs.filter((run) => MEDIA_WORKFLOW_TYPES.has(run.type) || run.type === "MEDIA_COMPOSE");
 
   return (
-    <div className="fixed inset-y-0 right-0 z-30 w-full max-w-md overflow-auto bg-white p-4 shadow-xl">
+    <div className="creator-task-drawer fixed inset-y-0 right-0 z-30 w-full max-w-md overflow-auto bg-white p-4 shadow-xl">
       <button className="text-sm underline" type="button" onClick={props.onClose}>关闭任务</button>
       <h2 className="mt-3 font-medium">Mock 文本任务</h2>
       <p className="mt-2 text-sm">Mock 生成场景和 Mock 生成镜头都只处理固定三集，不是一键重新生成，也不会覆盖已占用的 ordinal 1。场景要求三集剧本均已通过且为 CURRENT；镜头还要求对应场景已通过且为 CURRENT。服务端拒绝时以返回原因为准。返回 202 只表示受理，结果从任务和实体查询读取。</p>

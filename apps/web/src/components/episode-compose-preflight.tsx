@@ -198,13 +198,13 @@ export function EpisodeComposePreflight(props: {
   let localCursor = 0;
 
   return (
-    <section className="min-w-0 max-w-full rounded-lg bg-white p-4" aria-label="多镜编排">
+    <section className="creator-episode-arrangement min-w-0 max-w-full rounded-lg bg-white p-4" aria-label="多镜编排">
       <h2 className="text-lg font-medium">多镜编排</h2>
       <p className="mt-2 text-sm text-neutral-700">第 {props.episodeNo} 集。选择本集已批准的单镜成片并调整顺序。预检通过后可以开始多镜合成。</p>
       {!props.episodeId ? <p className="mt-3 text-sm">这一集还不存在</p> : null}
       {error ? <p className="mt-3 text-sm" role="alert">{error}</p> : null}
       {error ? <button className="mt-2 rounded border px-3 py-1 text-sm" type="button" onClick={() => void reload()}>重新查询</button> : null}
-      <div className="mt-4 min-w-0">
+      <div className="creator-candidate-panel mt-4 min-w-0">
         <h3 className="font-medium">可用成片</h3>
         {loading ? <p className="mt-2 text-sm">正在加载候选成片</p> : null}
         <ul className="mt-2 space-y-2">
@@ -219,7 +219,7 @@ export function EpisodeComposePreflight(props: {
         </ul>
         {nextCursor ? <button className="mt-2 rounded border px-3 py-1 text-sm" type="button" onClick={() => void more()}>加载更多</button> : null}
       </div>
-      <div className="mt-4 min-w-0">
+      <div className="creator-arrangement-panel mt-4 min-w-0">
         <h3 className="font-medium">已选顺序</h3>
         <ol className="mt-2 space-y-2">
           {selected.map((item, index) => {
@@ -245,7 +245,7 @@ export function EpisodeComposePreflight(props: {
         <button className="mt-3 rounded bg-neutral-900 px-3 py-2 text-sm text-white disabled:bg-neutral-400" type="button" disabled={selected.length < 2 || busy || Boolean(props.composeBlocked)} onClick={() => void preflight()}>预检编排</button>
       </div>
       {result ? (
-        <div className="mt-4 min-w-0 text-sm">
+        <div className="creator-preflight-result mt-4 min-w-0 text-sm">
           <p>{result.statusNote}</p>
           <p>元数据预检，未校验磁盘内容，未完成解码。</p>
           {result.durationNotice ? <p>{result.durationNotice}</p> : null}
