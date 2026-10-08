@@ -24,7 +24,7 @@ it("keeps keyboard focus in the mobile menu, restores focus on Escape and makes 
   const close = within(dialog).getByRole("button", { name: "关闭导航" });
   await waitFor(() => expect(document.activeElement).toBe(close));
   expect(document.querySelector("main")?.closest("[inert]")).toBeTruthy();
-  const last = within(dialog).getByRole("link", { name: "帮助" });
+  const last = within(dialog).getByRole("link", { name: "服务状态" });
   last.focus();
   fireEvent.keyDown(window, { key: "Tab" });
   expect(document.activeElement).toBe(close);

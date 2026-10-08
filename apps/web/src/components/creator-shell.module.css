@@ -1,24 +1,35 @@
-.shell { min-height: 100vh; background: #f8fafc; color: #172032; color-scheme: light; }
-.shell * { box-sizing: border-box; }
-.layout { display: grid; grid-template-columns: 232px minmax(0, 1fr); }
-.sidebar { position: sticky; top: 0; display: flex; flex-direction: column; height: 100vh; min-height: 640px; padding: 28px 16px 22px; border-right: 1px solid #edf0f5; background: #fff; }
-.brand { display: flex; align-items: center; gap: 10px; padding: 0 5px 27px; text-decoration: none; font-size: 17px; font-weight: 750; letter-spacing: -.5px; }
-.brand small { display: block; margin-top: 5px; font-size: 11px; font-weight: 400; color: #9099aa; letter-spacing: 1px; }
-.brandMark { display: grid; place-items: center; flex: 0 0 39px; height: 42px; border-radius: 13px 18px 16px 12px; background: linear-gradient(140deg,#ff9777,#ff453a 70%); color: white; box-shadow: inset -5px -2px 0 #ff775c; font-size: 19px; }
-.navLink { position: relative; display: flex; align-items: center; gap: 16px; padding: 14px 17px; border-radius: 10px; color: #667186; font-size: 15px; text-decoration: none; }
-.navLink:hover { background: #fff5f2; color: #e94e3b; }
-.navLink[aria-current=page] { background: linear-gradient(90deg,#fff0ec,#fff1ef); color: #ec4938; font-weight: 700; }
-.navLink[aria-current=page]::before { position: absolute; content: ""; left: -16px; top: 10px; bottom: 10px; width: 4px; border-radius: 2px; background: #ff654e; }
-.navIcon { width: 23px; text-align: center; font-size: 25px; font-weight: 500; line-height: 1; }
-.helpLink { display: flex; justify-content: space-between; padding: 12px; color: #69758a; font-size: 14px; }
-.sidebarBottom { margin-top: auto; padding-top: 40px; }
-.sidebarBottom > p { margin-top: 24px; font-size: 11px; color: #929aaa; padding-left: 7px; }
-.promo { position: relative; padding: 23px 18px; overflow: hidden; border-radius: 12px; background: linear-gradient(125deg,#fff3f1,#ffe6de); color: #ac3830; }
-.promo strong { font-size: 19px; line-height: 1.7; }
-.promo span { display: block; margin-top: 12px; font-size: 11px; color: #a46d67; }
-.promo i { position: absolute; right: -10px; top: 50px; transform: rotate(-12deg); border: 12px solid #ffffff55; border-radius: 24px; color: #ffac97; font-style: normal; font-size: 34px; }
+.shell { display: grid; grid-template-columns: 220px minmax(0, 1fr); }
+.shell *, .shell *::before, .shell *::after { box-sizing: border-box; }
+.sidebar { position: sticky; top: 0; height: 100dvh; display: flex; flex-direction: column; padding: 36px 18px 22px; border-right: 1px solid var(--studio-line); background: #fffdfa; }
+.brand { display: flex; align-items: center; gap: 11px; padding: 0 10px; color: var(--studio-text); text-decoration: none; font-size: 20px; font-weight: 750; letter-spacing: -.6px; }
+.brand small { display: block; margin-top: 4px; color: var(--studio-muted); font-size: 12px; font-weight: 400; letter-spacing: 1px; }
+.brandMark { position: relative; flex: 0 0 30px; height: 30px; border-radius: 40% 43% 47% 46%; background: linear-gradient(145deg, #f08169, var(--studio-accent) 60%, #ac3334); box-shadow: inset 3px 2px 0 #ffb29a50; transform: rotate(-8deg); }
+.brandMark::before { content: ""; position: absolute; top: -7px; left: 17px; width: 12px; height: 7px; border-radius: 10px 0; background: #80814d; transform: rotate(-20deg); }
+.brandMark > span { position: absolute; left: 7px; top: 5px; width: 7px; height: 5px; border-radius: 50%; background: #ffffffb3; }
+.navigation { flex: 1; margin-top: 40px; }
+.navigation ul { display: flex; flex-direction: column; height: 100%; min-height: 250px; gap: 9px; padding: 0; margin: 0; list-style: none; }
+.navLink { display: flex; align-items: center; gap: 13px; padding: 13px 14px; border-radius: 10px; color: #615b5b; text-decoration: none; font-size: 15px; transition: background .15s, color .15s; }
+.navLink:hover { background: #f7f2ec; color: var(--studio-text); }
+.navLink[aria-current=page] { background: var(--studio-selected); color: var(--studio-accent-hover); font-weight: 650; }
+.help { margin-top: auto; }
+.footer { padding: 22px 10px 0; color: var(--studio-muted); font-size: 12px; }
+.page { min-width: 0; }
 .mobileHeader { display: none; }
-.drawer { height: 100%; width: min(288px, calc(100vw - 32px)); overflow-y: auto; padding: 24px; background: #fff; color: #172032; }
-.menuButton { border: 1px solid #e4e8ef; border-radius: 8px; padding: 8px 12px; background: #fff; font-size: 13px; }
-.shell a:focus-visible, .shell button:focus-visible { outline: 3px solid #ff9a80; outline-offset: 3px; }
-@media(max-width:1023px) { .layout { display: block; } .sidebar { display: none; } .mobileHeader { display: flex; align-items: center; justify-content: space-between; padding: 14px 20px; background: white; border-bottom: 1px solid #edf0f5; } }
+.menu { display: inline-grid; place-items: center; width: 44px; height: 44px; border: 1px solid var(--studio-line); border-radius: 10px; color: #454047; background: white; }
+.menu[hidden] { display: none; }
+.skip { position: fixed; left: 14px; top: 10px; z-index: 100; transform: translateY(-160%); background: white; padding: 8px 14px; border-radius: 8px; }
+.skip:focus { transform: translateY(0); }
+.backdrop { position: fixed; inset: 0; z-index: 70; background: #24232a66; }
+.drawer { display: flex; flex-direction: column; width: min(310px, calc(100vw - 36px)); height: 100dvh; overflow-y: auto; background: #fffdfa; padding: 18px; }
+.close { display: flex; align-items: center; justify-content: space-between; min-height: 44px; padding: 8px 10px; margin-bottom: 30px; border-radius: 8px; color: #625c59; font-size: 14px; }
+.close span { font-size: 24px; }
+@media (min-width: 1600px) { .shell { grid-template-columns: 240px minmax(0,1fr); } }
+@media (max-width: 1023px) {
+  .shell { display: block; }
+  .sidebar { display: none; }
+  .mobileHeader { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 76px; padding: 13px 20px; background: #fffdfa; border-bottom: 1px solid var(--studio-line); }
+  .mobileHeader .brand { padding: 0; font-size: 18px; }
+  .mobileHeader .brand small { display: none; }
+  .mobileHeader .brandMark { flex-basis: 27px; height: 27px; }
+}
+@media (prefers-reduced-motion: reduce) { .navLink { transition: none; } }

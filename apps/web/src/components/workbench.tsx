@@ -1,5 +1,7 @@
 "use client";
 
+import { CreatorShell } from "./creator-shell";
+
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { canAdopt, type FrozenWritingContext, type WritingTargetSnapshot } from "@ai-drama/domain/writing-assistant";
 import { MAX_MANUAL_MEDIA_RETRIES, mediaRetryDecision, type MediaRetryRejection } from "@ai-drama/domain/media-retry";
@@ -275,8 +277,9 @@ export function Workbench({ projectId }: { projectId: string }) {
 
   return (
     <InspectContext.Provider value={inspect}>
-    <div className="min-h-screen bg-neutral-100 text-neutral-900">
-      <header className="flex flex-wrap items-center gap-3 border-b border-neutral-200 bg-white px-4 py-3">
+    <CreatorShell activePath="/studio">
+    <main className="creator-workbench min-h-screen bg-neutral-100 text-neutral-900">
+      <header className="creator-workbench-header flex flex-wrap items-center gap-3 border-b border-neutral-200 bg-white px-4 py-3">
         <a className="text-sm underline" href="/studio">我的作品</a>
         <a className="text-sm underline" href={`/projects/${projectId}/create`}>新手模式</a>
         <div className="min-w-0">
@@ -291,11 +294,11 @@ export function Workbench({ projectId }: { projectId: string }) {
       </header>
       {error ? <p className="px-4 py-2 text-sm" role="alert">{error}</p> : null}
       {loading ? <p className="px-4 py-6 text-sm">正在加载工作台</p> : null}
-      <div className="grid lg:grid-cols-[16rem_minmax(0,1fr)]">
-        <nav className={`${navOpen ? "fixed inset-y-0 left-0 z-20 w-72 overflow-auto bg-white p-4 shadow-xl" : "hidden"} lg:static lg:block lg:bg-transparent lg:p-4 lg:shadow-none`} aria-label="创作步骤">
+      <div className="creator-workbench-layout grid lg:grid-cols-[16rem_minmax(0,1fr)]">
+        <nav className={`creator-workbench-directory ${navOpen ? "fixed inset-y-0 left-0 z-20 w-72 overflow-auto bg-white p-4 shadow-xl" : "hidden"} lg:static lg:block lg:bg-transparent lg:p-4 lg:shadow-none`} aria-label="创作步骤">
           <button className="mb-3 text-sm underline lg:hidden" type="button" onClick={() => setNavOpen(false)}>关闭目录</button>
           <p className="px-2 pt-2 text-xs text-neutral-600">故事与剧本</p>
-          <button className="block w-full rounded px-2 py-2 text-left hover:bg-white" type="button" onClick={() => choose({ kind: "story" })}>故事</button>
+          <button className="block w-full rounded px-2 py-2 text-left hover:bg-white" type="button" aria-current={focus.kind === "story" ? "page" : undefined} onClick={() => choose({ kind: "story" })}>故事</button>
           <p className="px-2 pt-3 text-xs text-neutral-600">当前试制范围固定为三集</p>
           {[1, 2, 3].map((episodeNo) => {
             const episode = episodes.find((item) => item.episodeNo === episodeNo);
@@ -305,6 +308,7 @@ export function Workbench({ projectId }: { projectId: string }) {
                   className="block w-full rounded px-2 py-2 text-left hover:bg-white disabled:text-neutral-400"
                   type="button"
                   disabled={!episode}
+                  aria-current={focus.kind === "script" && focus.episodeNo === episodeNo ? "page" : undefined}
                   onClick={() => choose({ kind: "script", episodeNo })}
                 >
                   {episode ? `第 ${episodeNo} 集` : `第 ${episodeNo} 集（故事通过后出现）`}
@@ -313,8 +317,8 @@ export function Workbench({ projectId }: { projectId: string }) {
             );
           })}
           <p className="mt-4 px-2 text-xs text-neutral-600">角色与场地</p>
-          <button className="block w-full rounded px-2 py-2 text-left hover:bg-white" type="button" onClick={() => choose({ kind: "character" })}>角色</button>
-          <button className="block w-full rounded px-2 py-2 text-left hover:bg-white" type="button" onClick={() => choose({ kind: "location" })}>场地</button>
+          <button className="block w-full rounded px-2 py-2 text-left hover:bg-white" type="button" aria-current={focus.kind === "character" ? "page" : undefined} onClick={() => choose({ kind: "character" })}>角色</button>
+          <button className="block w-full rounded px-2 py-2 text-left hover:bg-white" type="button" aria-current={focus.kind === "location" ? "page" : undefined} onClick={() => choose({ kind: "location" })}>场地</button>
           <p className="mt-4 px-2 text-xs text-neutral-600">分镜与素材</p>
           <p className="px-2 py-2 text-sm text-neutral-600">打开某一集后，在正文里进入场景和镜头。这里不提供可保存的集数、风格或时长选项。</p>
           <p className="mt-4 px-2 text-xs text-neutral-600">合成与导出</p>
@@ -326,6 +330,7 @@ export function Workbench({ projectId }: { projectId: string }) {
                 key={`compose-${episodeNo}`}
                 className="block w-full rounded px-2 py-2 text-left hover:bg-white"
                 type="button"
+                aria-current={focus.kind === "episode-compose" && focus.episodeNo === episodeNo ? "page" : undefined}
                 onClick={() => choose({ kind: "episode-compose", episodeNo })}
               >
                 多镜编排 · 第 {episodeNo} 集
@@ -333,9 +338,9 @@ export function Workbench({ projectId }: { projectId: string }) {
             );
           })}
         </nav>
-        <section className="min-w-0 p-4">
+        <section className="creator-workbench-content min-w-0 p-4">
           {project ? (
-            <article className="mb-4 rounded-lg bg-white p-4">
+            <article className="creator-project-summary mb-4 rounded-lg bg-white p-4">
               <h2 className="font-medium">作品</h2>
               <p className="mt-2 text-sm">标题：{project.title}</p>
               <p className="text-sm">梗概：{project.premise || "无"}</p>
@@ -413,7 +418,8 @@ export function Workbench({ projectId }: { projectId: string }) {
           onChanged={reloadBase}
         />
       ) : null}
-    </div>
+    </main>
+    </CreatorShell>
     </InspectContext.Provider>
   );
 }

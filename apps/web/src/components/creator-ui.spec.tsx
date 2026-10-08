@@ -22,7 +22,7 @@ describe("creator interface", () => {
     render(<ProductHome />);
     expect(screen.getByRole("link", { name: "进入创作中心" }).getAttribute("href")).toBe("/studio");
     expect(screen.getByRole("link", { name: "查看界面示例" }).getAttribute("href")).toBe("/preview");
-    expect(document.body.textContent).not.toContain("红果");
+    expect(document.body.textContent).toContain("红果创作");
     expect(document.body.textContent).not.toContain("无限生成");
   });
 
@@ -209,5 +209,20 @@ describe("creator interface", () => {
     expect(document.body.textContent).not.toContain("支付成功");
     expect(document.body.textContent).not.toContain("生成成功");
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("lets keyboard users move between preview tabs with the displayed panel labeled correctly", () => {
+    render(<PreviewBoard />);
+    const story = screen.getByRole("tab", { name: "故事" });
+    story.focus();
+    fireEvent.keyDown(story, { key: "ArrowRight" });
+    const character = screen.getByRole("tab", { name: "角色" });
+    expect(document.activeElement).toBe(character);
+    expect(character.getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("tabpanel", { name: "角色" })).toBeTruthy();
+    fireEvent.keyDown(character, { key: "End" });
+    expect(screen.getByRole("tabpanel", { name: "成片" })).toBeTruthy();
+    fireEvent.keyDown(screen.getByRole("tab", { name: "成片" }), { key: "Home" });
+    expect(document.activeElement).toBe(story);
   });
 });

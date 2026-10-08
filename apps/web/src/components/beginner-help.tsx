@@ -13,16 +13,39 @@ const ITEMS: ReadonlyArray<{ q: string; a: string }> = [
 export function BeginnerHelp() {
   return (
     <BeginnerShell active="/help">
-      <main className="mx-auto max-w-3xl px-4 py-8">
-        <h1 className="text-3xl font-semibold">帮助</h1>
-        <p className="mt-2 text-[15px] text-[#5F5D66]">第一次做短剧？这里是最常见的问题。服务是否在线可以看 <a className="underline" href="/status">服务状态</a>。</p>
-        <div className="mt-6 space-y-3">
-          {ITEMS.map((item) => (
-            <details key={item.q} className="rounded-[12px] border border-[#E7E5E0] bg-white p-4">
-              <summary className="cursor-pointer font-medium">{item.q}</summary>
-              <p className="mt-2 text-[15px]">{item.a}</p>
-            </details>
-          ))}
+      <main className="creator-page secondary-page">
+        <header className="creator-page-heading secondary-page-heading">
+          <div>
+            <p className="secondary-eyebrow">陪你完成第一部作品</p>
+            <h1>帮助</h1>
+            <p className="secondary-description">第一次做短剧？从一句想法开始，每一步都有清楚的下一步。</p>
+          </div>
+          <a className="ui-button ui-button-primary" href="/create">开始创作</a>
+        </header>
+        <div className="secondary-help-grid">
+          <section aria-labelledby="help-questions-title">
+            <h2 id="help-questions-title" className="secondary-section-title">常见问题</h2>
+            <div className="secondary-faq-list">
+              {ITEMS.map((item) => (
+                <details key={item.q} className="ui-card secondary-faq">
+                  <summary>{item.q}</summary>
+                  <p>{item.a}</p>
+                </details>
+              ))}
+            </div>
+          </section>
+          <aside className="ui-card secondary-help-aside">
+            <span className="secondary-item-number" aria-hidden="true">?</span>
+            <h2>不知道下一步做什么？</h2>
+            <p>回到「我的作品」，继续上次的进度。需要先熟悉流程，可以打开界面示例。</p>
+            <a className="ui-button ui-button-secondary" href="/studio">我的作品</a>
+            <a className="secondary-text-link" href="/preview">先看看界面示例 →</a>
+            <div className="secondary-help-service">
+              <h3>页面没有正常加载？</h3>
+              <p>先检查网络，再查看服务是否在线。</p>
+              <a className="secondary-text-link" href="/status">服务状态 →</a>
+            </div>
+          </aside>
         </div>
       </main>
     </BeginnerShell>

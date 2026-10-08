@@ -95,20 +95,20 @@ export function CategoryCenter() {
 
   return (
     <div className={styles.page}>
-      <header className={styles.topbar}>
-        <div className={styles.search}>
-          <Icon name="search" />
-          <input aria-label="搜索分类、标签或关键词" type="search" maxLength={100} placeholder="搜索分类、标签或关键词…" value={query} onChange={(event) => setQuery(event.target.value)} />
-          {query ? <button type="button" aria-label="清空搜索" onClick={() => setQuery("")}><Icon name="close" /></button> : <span className={styles.searchHint}>寻找灵感</span>}
-        </div>
-        <a className={styles.workspaceLink} href="/studio"><span className={styles.workspaceAvatar} aria-hidden="true"><Icon name="person" /></span><span>我的创作空间<small>从故事开始</small></span><Icon name="arrow" /></a>
-      </header>
-      <main className={styles.main}>
+      <main className={`creator-page ${styles.main}`}>
         <div className={styles.content}>
-          <header className={styles.heading}>
-            <div><div className={styles.titleLine}><h1>短剧分类中心</h1><span className={styles.badge}>创作灵感库</span></div><p>找到故事的方向，让每一个灵感都有清晰的表达。</p></div>
-            <a className={styles.primaryButton} href="/studio"><span aria-hidden="true">＋</span>进入创作中心</a>
+          <header className={`creator-page-heading ${styles.heading}`}>
+            <div><div className={styles.titleLine}><h1>灵感中心</h1><span className={styles.badge}>创作灵感库</span></div><p>找到故事的方向，让每一个灵感都有清晰的表达。</p></div>
+            <a className={`ui-button ui-button-primary ${styles.primaryButton}`} href="/create"><span aria-hidden="true">＋</span>开始创作</a>
           </header>
+          <div className={styles.topbar}>
+            <div className={styles.search}>
+              <Icon name="search" />
+              <input aria-label="搜索分类、标签或关键词" type="search" maxLength={100} placeholder="搜索分类、标签或关键词…" value={query} onChange={(event) => setQuery(event.target.value)} />
+              {query ? <button type="button" aria-label="清空搜索" onClick={() => setQuery("")}><Icon name="close" /></button> : <span className={styles.searchHint}>寻找灵感</span>}
+            </div>
+            <a className={styles.workspaceLink} href="/studio">返回我的作品<Icon name="arrow" /></a>
+          </div>
           <div className={styles.columns}>
             <div className={styles.primaryColumn}>
               <section className={styles.stats} aria-label="分类库概览">
@@ -119,7 +119,7 @@ export function CategoryCenter() {
                 <div className={styles.sectionHeading}><h2 id="category-heading">一级分类 <span>（固定 {CATEGORIES.length} 个）</span></h2><p>选择最能代表故事主线的一个题材</p></div>
                 {filtered ? <p className={styles.results} role="status">找到 {categories.length} 个分类、{tags.length} 个标签{group !== "all" ? "（当前标签组内）" : ""}</p> : null}
                 <div className={styles.categoryGrid}>
-                  {categories.map((category) => <button type="button" key={category.id} className={`${styles.categoryCard} ${draft.categoryId === category.id ? styles.categorySelected : ""}`} aria-haspopup="dialog" aria-label={`查看${category.name}分类`} onClick={(event) => { openerRef.current = event.currentTarget; setDetail(category); }}><span className={styles.artwork}><CategoryArtwork id={category.id} /></span><span className={styles.categoryName}><strong>{category.name}</strong><small>{category.id}</small></span><Icon name={draft.categoryId === category.id ? "check" : "arrow"} /></button>)}
+                  {categories.map((category) => <button type="button" key={category.id} className={`${styles.categoryCard} ${draft.categoryId === category.id ? styles.categorySelected : ""}`} aria-haspopup="dialog" aria-label={`查看${category.name}分类`} onClick={(event) => { openerRef.current = event.currentTarget; setDetail(category); }}><span className={styles.artwork}><CategoryArtwork id={category.id} /></span><span className={styles.categoryName}><strong>{category.name}</strong><small>查看题材灵感</small></span><Icon name={draft.categoryId === category.id ? "check" : "arrow"} /></button>)}
                 </div>
                 {!categories.length ? <div className={styles.empty}><Icon name="search" /><strong>没有找到对应分类</strong><p>试试更简短的关键词，或查看下方标签。</p><button type="button" onClick={() => setQuery("")}>显示全部分类</button></div> : null}
               </section>
@@ -141,7 +141,7 @@ export function CategoryCenter() {
                 <div className={styles.sectionHeading}><h2 id="direction-heading">我的创作方向</h2>{(draft.categoryId || draft.tagIds.length > 0) ? <button type="button" className={styles.textButton} onClick={() => remember({ ...EMPTY_DIRECTION, tagIds: [] })}>清空选择</button> : null}</div>
                 <div className={styles.directionCategory}>{selectedCategory ? <><span className={styles.directionMiniArt}><CategoryArtwork id={selectedCategory.id} /></span><div><small>主分类</small><strong>{selectedCategory.name}</strong></div></> : <p>还没有选择主分类。点击上方题材卡片，找到你的故事方向。</p>}</div>
                 <div className={styles.chosenTags}>{selectedTags.map((tag) => <button key={tag.id} type="button" aria-label={`移除${tag.name}`} onClick={() => toggleTag(tag.id)}>{tag.name}<Icon name="close" /></button>)}</div>
-                <div className={styles.directionFooter}><div><p>建议从不同标签组选择 4–6 个标签，可按故事需要调整。</p><small role="status">{storageMessage}</small></div><button disabled={!selectedCategory || copyState === "copying"} className={styles.primaryButton} type="button" onClick={() => void copyDirection()}><Icon name={copyState === "copied" ? "check" : "copy"} />{copyState === "copied" ? "已复制创作方向" : copyState === "copying" ? "正在复制…" : "复制创作方向"}</button></div>
+                <div className={styles.directionFooter}><div><p>建议从不同标签组选择 4–6 个标签，可按故事需要调整。</p><small role="status">{storageMessage}</small></div><button disabled={!selectedCategory || copyState === "copying"} className={`ui-button ui-button-primary ${styles.primaryButton}`} type="button" onClick={() => void copyDirection()}><Icon name={copyState === "copied" ? "check" : "copy"} />{copyState === "copied" ? "已复制创作方向" : copyState === "copying" ? "正在复制…" : "复制创作方向"}</button></div>
                 <p className={styles.useHint}>复制后可粘贴到作品梗概或编剧助手的本次要求中，由你确认并保存。</p>
                 {selectedCategory ? <p className={styles.useHint}><a className={styles.textButton} href="/create?direction=1">用这个方向新建作品</a>：在新建作品里由你决定是否加入梗概，方向只在本浏览器保存。</p> : null}
                 {copyState === "manual" ? <label className={styles.manualCopy}>自动复制不可用，请手动复制以下内容<textarea ref={manualCopyRef} aria-label="手动复制创作方向" readOnly rows={7} value={formatCreativeDirection(draft)} /></label> : null}
@@ -150,19 +150,19 @@ export function CategoryCenter() {
             </div>
 
             <aside className={styles.rail} aria-label="创作提示">
-              <div className={styles.hero}><div className={styles.heroCopy}><span>EVERY STORY MATTERS</span><h2>好故事<br />点亮更多生活</h2><p>让灵感有方向，让表达被看见</p></div><div className={styles.heroArt}><CategoryHeroArtwork /></div><p className={styles.heroSign}>每一个故事<br />都有发光的可能</p></div>
+              <div className={styles.hero}><div className={styles.heroCopy}><span>让创作从一个灵感开始</span><h2>好故事<br />点亮更多生活</h2><p>让灵感有方向，让表达被看见</p></div><div className={styles.heroArt}><CategoryHeroArtwork /></div><p className={styles.heroSign}>每一个故事<br />都有发光的可能</p></div>
               <section className={styles.rules}><h2><Icon name="script" />分类使用指南</h2><ol>{[
                 ["一级分类只选择 1 个", "按故事的核心冲突选择主题，主分类不会因为场景变化而改变。"],
                 ["二级标签支持多选", "根据内容特点选择相关标签，组合出属于你的故事表达。"],
                 ["推荐选择 4–6 个标签", "优先覆盖背景、人物与情绪，不必把每一个细节都变成标签。"],
                 ["区分题材与故事背景", "题材回答“故事讲什么”，背景回答“故事发生在哪里、何时”。"],
-              ].map(([title, body], index) => <li key={title}><span>{index + 1}</span><div><h3>{title}</h3><p>{body}</p></div></li>)}</ol><blockquote><span aria-hidden="true">“</span>分类是秩序的开始，<br />也是好故事被发现的起点。<footer>— AI Drama Studio</footer></blockquote></section>
+              ].map(([title, body], index) => <li key={title}><span>{index + 1}</span><div><h3>{title}</h3><p>{body}</p></div></li>)}</ol><blockquote><span aria-hidden="true">“</span>分类是秩序的开始，<br />也是好故事被发现的起点。<footer>— 红果创作</footer></blockquote></section>
               <div className={styles.tip}><span aria-hidden="true">✦</span><p><strong>先确定主线，再丰富细节</strong>不必一次选得完美。创作过程中，你随时可以回来调整方向。</p></div>
             </aside>
           </div>
         </div>
       </main>
-      {detail ? <div className={styles.modalBackdrop}><div className={styles.modal} ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="category-detail-title"><button ref={closeRef} type="button" className={styles.closeButton} aria-label="关闭分类详情" onClick={closeDetail}><Icon name="close" /></button><div className={styles.modalArt}><CategoryArtwork id={detail.id} /></div><span className={styles.eyebrow}>探索一种故事可能</span><h2 id="category-detail-title">{detail.name}</h2><p className={styles.modalDescription}>{detail.description}</p><div className={styles.inspiration}><strong>从这个问题开始</strong><p>{detail.prompt}</p></div><h3>可以搭配的标签</h3><div className={styles.recommendations}>{detail.recommended.map((id) => <span key={id}>{TAGS.find((tag) => tag.id === id)?.name}</span>)}</div><p className={styles.modalNote}>选为题材会替换当前主分类，已有标签保持不变。</p><button disabled={!ready} type="button" className={styles.primaryButton} onClick={() => { remember({ ...draft, categoryId: detail.id }); closeDetail(); }}>选为我的题材<Icon name="arrow" /></button></div></div> : null}
+      {detail ? <div className={styles.modalBackdrop}><div className={styles.modal} ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="category-detail-title"><button ref={closeRef} type="button" className={styles.closeButton} aria-label="关闭分类详情" onClick={closeDetail}><Icon name="close" /></button><div className={styles.modalArt}><CategoryArtwork id={detail.id} /></div><span className={styles.eyebrow}>探索一种故事可能</span><h2 id="category-detail-title">{detail.name}</h2><p className={styles.modalDescription}>{detail.description}</p><div className={styles.inspiration}><strong>从这个问题开始</strong><p>{detail.prompt}</p></div><h3>可以搭配的标签</h3><div className={styles.recommendations}>{detail.recommended.map((id) => <span key={id}>{TAGS.find((tag) => tag.id === id)?.name}</span>)}</div><p className={styles.modalNote}>选为题材会替换当前主分类，已有标签保持不变。</p><button disabled={!ready} type="button" className={`ui-button ui-button-primary ${styles.primaryButton}`} onClick={() => { remember({ ...draft, categoryId: detail.id }); closeDetail(); }}>选为我的题材<Icon name="arrow" /></button></div></div> : null}
     </div>
   );
 }

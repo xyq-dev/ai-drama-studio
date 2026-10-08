@@ -139,15 +139,15 @@ export function ProjectHome() {
   }
 
   return (
-    <main className="mx-auto max-w-5xl px-4 py-8 text-[#F4F6FA]">
-      <header className="flex flex-wrap items-end justify-between gap-4">
+    <main className="creator-page secondary-page">
+      <header className="creator-page-heading secondary-page-heading">
         <div>
-          <p className="text-sm text-[#AAB3C5]">创作中心</p>
-          <h1 className="text-2xl font-semibold">你的作品</h1>
+          <p className="secondary-eyebrow">创作中心</p>
+          <h1>你的作品</h1>
         </div>
         <button
           ref={openerRef}
-          className="rounded bg-[#9B8CFF] px-4 py-2 text-[#0B0E14]"
+          className="ui-button ui-button-primary"
           type="button"
           aria-haspopup="dialog"
           aria-expanded={composerOpen}
@@ -157,25 +157,25 @@ export function ProjectHome() {
         </button>
       </header>
       {composerOpen ? (
-        <div className="fixed inset-0 z-30 flex items-end justify-center bg-black/60 p-4 sm:items-center" role="presentation">
+        <div className="secondary-modal-backdrop" role="presentation">
           <form
             ref={dialogRef}
             role="dialog"
             aria-modal="true"
             aria-labelledby="create-work-title"
-            className="max-h-[min(40rem,calc(100vh-2rem))] w-full min-w-0 max-w-lg space-y-3 overflow-y-auto rounded-lg border border-[#283140] bg-[#141A23] p-4 [overflow-wrap:anywhere]"
+            className="secondary-modal space-y-3"
             onSubmit={(event) => {
               event.preventDefault();
               void createProject();
             }}
           >
             <h2 id="create-work-title" className="font-medium">新建作品</h2>
-            <p className="text-sm text-[#AAB3C5]">只保存标题和故事梗概。当前试制范围仍是固定三集，这里不能选择集数或时长。</p>
+            <p className="text-sm secondary-muted">只保存标题和故事梗概。当前试制范围仍是固定三集，这里不能选择集数或时长。</p>
             <label className="block text-sm" htmlFor="project-title">标题</label>
             <input
               ref={titleRef}
               id="project-title"
-              className="w-full rounded border border-[#283140] bg-[#0B0E14] px-3 py-2 text-[#F4F6FA]"
+              className="secondary-field"
               maxLength={LIMITS.title}
               value={title}
               onChange={(event) => remember(event.target.value, premise)}
@@ -184,58 +184,58 @@ export function ProjectHome() {
             <label className="block text-sm" htmlFor="project-premise">故事梗概</label>
             <textarea
               id="project-premise"
-              className="w-full rounded border border-[#283140] bg-[#0B0E14] px-3 py-2 text-[#F4F6FA]"
+              className="secondary-field"
               maxLength={LIMITS.premise}
               rows={4}
               value={premise}
               onChange={(event) => remember(title, event.target.value)}
             />
             {direction ? (
-              <div className="rounded border border-[#283140] p-3">
+              <div className="ui-notice">
                 <p className="text-sm">分类中心的创作方向（只保存在本浏览器，不会跨设备同步）</p>
-                <p className="mt-1 whitespace-pre-line text-sm text-[#AAB3C5]">{premiseBlock(direction)}</p>
-                <button className="mt-2 rounded border border-[#283140] px-3 py-1 text-sm" type="button" onClick={applyDirection}>把创作方向加入梗概</button>
+                <p className="mt-1 whitespace-pre-line text-sm secondary-muted">{premiseBlock(direction)}</p>
+                <button className="ui-button ui-button-secondary mt-2" type="button" onClick={applyDirection}>把创作方向加入梗概</button>
                 {directionNote ? <p className="mt-1 text-sm" role="status">{directionNote}</p> : null}
               </div>
             ) : null}
             {createError ? (
-              <div role="alert">
+              <div className="ui-notice secondary-error" role="alert">
                 <p className="text-sm [overflow-wrap:anywhere]">{createError}</p>
-                <p className="mt-2 text-sm text-[#AAB3C5]">草稿仍保留。可以改标题或梗概后再提交，同一内容会复用原来的幂等键。</p>
+                <p className="mt-2 text-sm secondary-muted">草稿仍保留。可以改标题或梗概后再提交，同一内容会复用原来的幂等键。</p>
               </div>
             ) : null}
-            <div className="flex gap-2">
-              <button className="rounded bg-[#9B8CFF] px-4 py-2 text-[#0B0E14] disabled:opacity-50" type="submit" disabled={creating || title.trim().length === 0}>
+            <div className="secondary-actions">
+              <button className="ui-button ui-button-primary" type="submit" disabled={creating || title.trim().length === 0}>
                 {creating ? "创建中" : "创建项目"}
               </button>
-              <button className="rounded border border-[#283140] px-4 py-2" type="button" onClick={closeComposer}>关闭</button>
+              <button className="ui-button ui-button-secondary" type="button" onClick={closeComposer}>关闭</button>
             </div>
           </form>
         </div>
       ) : null}
       {listError ? (
-        <div className="mt-4 rounded-lg border border-[#283140] bg-[#141A23] p-4 [overflow-wrap:anywhere]" role="alert">
+        <div className="ui-notice secondary-error mt-4" role="alert">
           <p className="text-sm">{page === null ? `连接状态：读取失败。${listError}` : listError}</p>
-          {page === null ? <p className="mt-2 text-sm text-[#AAB3C5]">接口暂不可用时不会改用示例项目。</p> : null}
-          <div className="mt-3 flex gap-3">
-            <button className="rounded border border-[#283140] px-3 py-1 text-sm" type="button" onClick={() => void load(null, false)}>重试</button>
-            <a className="rounded border border-[#283140] px-3 py-1 text-sm" href="/preview">查看界面预览</a>
+          {page === null ? <p className="mt-2 text-sm secondary-muted">接口暂不可用时不会改用示例项目。</p> : null}
+          <div className="secondary-actions">
+            <button className="ui-button ui-button-secondary" type="button" onClick={() => void load(null, false)}>重试</button>
+            <a className="ui-button ui-button-secondary" href="/preview">查看界面预览</a>
           </div>
         </div>
       ) : null}
-      <section className="mt-6 rounded-lg border border-[#283140] bg-[#141A23] p-4" aria-busy={loading}>
+      <section className="ui-card secondary-project-list" aria-busy={loading}>
         <h2 className="font-medium">继续创作</h2>
         {loading && page === null ? <p className="mt-3 text-sm">正在加载项目</p> : null}
         {!loading && page && page.items.length === 0 ? <p className="mt-3 text-sm">还没有项目。可以用「新建作品」写下标题和梗概。</p> : null}
-        <ul className="mt-3 divide-y divide-[#283140]">
+        <ul className="secondary-project-items">
           {page?.items.map((project) => (
             <li key={project.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
               <div className="min-w-0">
                 <p className="font-medium [overflow-wrap:anywhere]">{project.title}</p>
-                <p className="text-sm text-[#AAB3C5]">{project.premise || "无梗概"}</p>
-                <p className="text-sm text-[#AAB3C5]">状态 {project.status} · 版本 {project.version}</p>
+                <p className="text-sm secondary-muted">{project.premise || "无梗概"}</p>
+                <p className="text-sm secondary-muted">状态 {project.status} · 版本 {project.version}</p>
               </div>
-              <a className="rounded border border-[#283140] px-3 py-1 text-sm" href={`/projects/${project.id}`}>继续创作</a>
+              <a className="ui-button ui-button-secondary" href={`/projects/${project.id}`}>继续创作</a>
             </li>
           ))}
         </ul>
