@@ -39,3 +39,9 @@
 ## 本地编码费率
 
 本地 FFmpeg 编码只记录耗时和资源计数，`productionCost` 金额与币种为空、状态 unknown。没有确认的费率前，不定价、不补历史账、不把未知写成 0。
+
+## 配音技术候选（2026-10-07，仅设计）
+
+[`VOICE_OPEN_SOURCE_RESEARCH.md`](VOICE_OPEN_SOURCE_RESEARCH.md) 建议先验证百炼官方 CosyVoice 系预置音色，后续再考虑独立自托管 CosyVoice。它是技术候选，不代表供应商账号、地域、精确模型、费率和许可已经选定或核验，也不表示有可运行的真实 Speech Adapter。
+
+实施遵循 [`CHARACTER_VOICE_DESIGN.md`](CHARACTER_VOICE_DESIGN.md)：角色声音版本、逐句计划、发送前持久化、UNKNOWN 不自动重发、费用与资产可用性分别记录、长台词阻断合成。云端服务与开源模型的能力合同分别验证；现有 Mock 配音保持原样。
