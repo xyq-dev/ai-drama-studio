@@ -443,7 +443,7 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
 
   const canStart = Boolean(props.body) || Boolean(held?.identity === identity && held.unresolved);
   return (
-    <section className="mt-4 min-w-0" aria-label="集级合成">
+    <section className="creator-episode-results mt-4 min-w-0" aria-label="集级合成">
       <button className="rounded bg-neutral-900 px-3 py-2 text-sm text-white disabled:bg-neutral-400" type="button" disabled={!canStart || busy || Boolean(props.startBlocked)} onClick={() => void start()}>开始多镜合成</button>
       {job ? <p className="mt-2 text-sm" role="status">多镜合成已受理 {job.state}</p> : null}
       {error ? <p className="mt-2 text-sm" role="alert">{error}</p> : null}
@@ -454,7 +454,7 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
         {items.map((item) => (
           <li
             key={item.assetId}
-            className="min-w-0 rounded border p-2 text-sm"
+            className="creator-composite-card min-w-0 rounded border p-2 text-sm"
             data-composite-id={item.assetId}
             data-asset-status={item.status}
             data-review-status={item.reviewStatus}
@@ -465,7 +465,7 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
             <ol>
               {(item.segments ?? []).map((segment) => <li key={`${item.assetId}:${segment.position}:${segment.assetId}`}>{segment.position}. {segment.shotId}</li>)}
             </ol>
-            <video className="mt-2 aspect-[9/16] w-full bg-black" controls src={`/api/v1/assets/${item.assetId}/content`} />
+            <video className="creator-composite-player mt-2 aspect-[9/16] w-full bg-black" controls src={`/api/v1/assets/${item.assetId}/content`} />
             {item.status === "ACTIVE" && item.reviewStatus === "APPROVED" ? (
               <div className="mt-2 flex flex-wrap gap-2">
                 <button className="rounded border px-2 py-1" type="button" disabled={pendingDownloads[item.assetId] !== undefined} onClick={() => void download(item, "mp4")}>

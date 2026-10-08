@@ -510,15 +510,15 @@ export function WritingAssistant(props: {
   const diff = formatted ? lineDiff(current, formatted).filter((line) => line.kind !== "same") : [];
 
   return (
-    <section className="mt-4 min-w-0 rounded border border-neutral-300 p-3" aria-label="编剧助手">
+    <section className="creator-writing-assistant mt-4 min-w-0 rounded border border-neutral-300 p-3" aria-label="编剧助手">
       <p className="text-sm">{props.workspaceQwen
         ? "可以通过外部 AI 创作后导入；服务端开启时，也可以由操作者向工作区千问请求候选。候选仍须比较、采纳到草稿，再手动保存。费用未知不会被写成 0。"
         : "本轮通过外部 AI 创作，网页不会自动调用模型。"}</p>
-      <button className="mt-2 text-sm underline" type="button" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+      <button className="creator-assistant-toggle mt-2 text-sm underline" type="button" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
         {open ? "收起编剧助手" : "编剧助手"}
       </button>
       {open ? (
-        <div className="mt-3 space-y-3">
+        <div className="creator-assistant-content mt-3 space-y-3">
           <p className="text-sm text-neutral-600">题材、观众和人物设定只保存在这次助手草稿里，不会写成项目配置。</p>
           <label className="block text-sm">题材
             <input className="mt-1 w-full rounded border px-2 py-1" maxLength={WRITING_NOTE_MAX_CHARS} value={draft.genre} onChange={(event) => update({ genre: event.target.value })} />

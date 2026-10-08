@@ -90,7 +90,7 @@ function StatePill({ state }: { state: StepState }) {
 
 function EpisodeTabs(props: { value: number; onChange: (episodeNo: number) => void; state: (episodeNo: number) => StepState; label: string }) {
   return (
-    <div role="tablist" aria-label={props.label} className="flex flex-wrap gap-2">
+    <div role="tablist" aria-label={props.label} className="creator-episode-tabs flex flex-wrap gap-2">
       {[1, 2, 3].map((episodeNo) => (
         <button key={episodeNo} role="tab" type="button" aria-selected={props.value === episodeNo}
           className={`rounded-[12px] border px-3 py-1.5 text-[15px] ${props.value === episodeNo ? "border-[#D34846] bg-[#FBE7E4]" : "bg-white"}`}
@@ -375,12 +375,12 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
 
   return (
     <BeginnerShell>
-      <main className="mx-auto max-w-6xl px-4 pb-28 pt-6 lg:pb-10">
-        <div className="flex flex-wrap items-start justify-between gap-3">
+      <main className="creator-flow mx-auto max-w-6xl px-4 pb-28 pt-6 lg:pb-10">
+        <div className="creator-project-heading flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
-            <p className="text-sm text-[#5F5D66]">我的作品</p>
+            <a className="creator-back" href="/studio"><span aria-hidden="true">← </span>我的作品</a>
             <h1 className="text-2xl font-semibold [overflow-wrap:anywhere]">{project?.title ?? (loading ? "正在读取作品" : "作品")}</h1>
-            <p className="mt-1 text-sm" role="status">保存状态：{save.text}</p>
+            <p className="creator-save-status mt-1 text-sm" role="status">保存状态：{save.text}</p>
           </div>
           <div className="flex flex-wrap items-center gap-3 text-[15px]">
             <button className="rounded-[12px] border bg-white px-3 py-1.5" type="button" onClick={later}>稍后继续</button>
@@ -407,17 +407,17 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
           </div>
         ) : null}
 
-        <nav aria-label="创作步骤" className="mt-5">
+        <nav aria-label="创作步骤" className="creator-steps mt-5">
           <ol className="grid grid-cols-5 gap-1 sm:gap-2">
             {STEPS.map((item) => (
               <li key={item.key} className="min-w-0">
                 <button type="button" aria-current={item.key === step ? "step" : undefined}
                   aria-label={`第 ${item.no} 步 ${item.title}：${STEP_STATE_TEXT[states[item.key]]}`}
-                  className={`flex w-full min-w-0 flex-col items-start rounded-[12px] border px-2 py-2 text-left sm:px-3 ${item.key === step ? "border-[#D34846] bg-[#FBE7E4]" : "bg-white"}`}
+                  className="creator-step-button" data-state={states[item.key]}
                   onClick={() => choose(item.key)}>
-                  <span className="text-sm font-medium">{item.no}<span className="hidden sm:inline"> {item.title}</span></span>
-                  <span className="sr-only sm:not-sr-only text-xs text-[#5F5D66]">{STEP_STATE_MARK[states[item.key]]} {STEP_STATE_TEXT[states[item.key]]}</span>
-                  <span className="text-xs sm:hidden" aria-hidden="true">{STEP_STATE_MARK[states[item.key]]}</span>
+                  <span className="creator-step-number" aria-hidden="true">{states[item.key] === "done" ? "✓" : item.no}</span>
+                  <span className="creator-step-title">{item.title}</span>
+                  <span className="creator-step-state"><span aria-hidden="true">{STEP_STATE_MARK[states[item.key]]}</span><span className="creator-step-state-text"> {STEP_STATE_TEXT[states[item.key]]}</span></span>
                 </button>
               </li>
             ))}
@@ -425,12 +425,12 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
         </nav>
 
         {step ? (
-          <section className="mt-5 rounded-[12px] border border-[#E7E5E0] bg-white p-5 shadow-sm" aria-labelledby="step-title">
+          <section className="creator-step-overview mt-5 rounded-[12px] border border-[#E7E5E0] bg-white p-5 shadow-sm" aria-labelledby="step-title">
             <div className="flex flex-wrap items-center gap-3">
               <h2 id="step-title" className="text-xl font-semibold">第 {info.no} 步 · {info.title}</h2>
               <StatePill state={state} />
             </div>
-            <dl className="mt-3 grid gap-2 text-[15px] sm:grid-cols-3">
+            <dl className="creator-step-facts mt-3 grid gap-2 text-[15px] sm:grid-cols-3">
               <div><dt className="text-[#5F5D66]">现在在做</dt><dd>{info.doing}</dd></div>
               <div><dt className="text-[#5F5D66]">你需要决定</dt><dd>{info.decide}</dd></div>
               <div><dt className="text-[#5F5D66]">完成后得到</dt><dd>{info.result}</dd></div>
@@ -442,7 +442,7 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
                 继续制作第 {unfinished} 集
               </button>
             ) : null}
-            <div className="fixed inset-x-0 bottom-0 z-10 border-t border-[#E7E5E0] bg-white p-3 lg:static lg:mt-4 lg:border-0 lg:p-0">
+            <div className="creator-primary-bar fixed inset-x-0 bottom-0 z-10 border-t border-[#E7E5E0] bg-white p-3 lg:static lg:mt-4 lg:border-0 lg:p-0">
               <button className="w-full rounded-[12px] bg-[#D34846] px-5 py-3 font-medium text-white lg:w-auto"
                 type="button" onClick={runPrimary} disabled={closed && gate === "pending"}>
                 {action.label}
@@ -451,7 +451,7 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
           </section>
         ) : null}
 
-        <div ref={body} className="mt-5 space-y-4">
+        <div ref={body} className="creator-flow-body mt-5 space-y-4" data-step={step ?? undefined}>
           {project && step === "story" ? (
             <StoryPane project={project} stories={stories} onMore={() => void base.more("stories")} onSaved={reloadBase} onStatus={onStatus} />
           ) : null}
@@ -474,7 +474,7 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
 
           {project && step === "cast" ? (
             <>
-              <div role="tablist" aria-label="人物与场地" className="flex gap-2">
+              <div role="tablist" aria-label="人物与场地" className="creator-cast-tabs flex gap-2">
                 {(["character", "location"] as const).map((kind) => {
                   // Counts come from the complete lists, not the first page the editor shows.
                   const list = kind === "character" ? facts.characters : facts.locations;
@@ -682,5 +682,5 @@ function StepGuide({ step, state }: { step: StepKey; state: StepState }) {
       : "上游内容改过了，这里的已确认版本已过期，不能再次批准。原来的审核记录会保留；请修改后保存新版本，再提交审核。",
     unknown: "这一步的部分进度没有读到（读取失败、功能未开启或列表还没读完），暂时不能确认是否完成。",
   };
-  return <p className="mt-3 rounded-[12px] bg-[#F7F6F2] p-3 text-[15px]">{text[state]}</p>;
+  return <p className="creator-step-guide mt-3 rounded-[12px] bg-[#F7F6F2] p-3 text-[15px]">{text[state]}</p>;
 }

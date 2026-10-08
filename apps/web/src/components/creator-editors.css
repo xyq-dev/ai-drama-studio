@@ -1,0 +1,395 @@
+/* Shared, verified editors get a creator-facing surface only inside the beginner shell. */
+.beginner .creator-editor-grid {
+  align-items: start;
+  gap: 24px;
+}
+
+.beginner :is(.creator-editor-card, .creator-section, .creator-review-card, .creator-media-card, .creator-episode-arrangement).bg-white {
+  min-width: 0;
+  padding: 24px;
+  border: 1px solid var(--studio-line);
+  border-radius: 18px;
+  background: var(--studio-card);
+  box-shadow: 0 5px 20px rgb(59 40 31 / 0.035);
+  overflow-wrap: anywhere;
+}
+
+.beginner :is(.creator-editor-card, .creator-section, .creator-review-card, .creator-media-card, .creator-episode-arrangement) > h2 {
+  margin-bottom: 16px;
+  color: var(--studio-text);
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  line-height: 1.5;
+}
+
+.beginner :is(.creator-editor-card, .creator-section, .creator-review-card, .creator-media-card, .creator-preflight-card, .creator-episode-arrangement) :is(input:not([type="checkbox"]):not([type="file"]), select, textarea) {
+  min-width: 0;
+  max-width: 100%;
+  border: 1px solid #dcd8d2;
+  border-radius: 9px;
+  background: #fff;
+  color: var(--studio-text);
+  padding: 11px 12px;
+  line-height: 1.65;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+
+.beginner :is(.creator-editor-card, .creator-section, .creator-review-card, .creator-media-card, .creator-preflight-card, .creator-episode-arrangement) :is(input, select, textarea):focus-visible {
+  border-color: var(--studio-accent);
+  box-shadow: 0 0 0 4px rgb(211 72 70 / 0.07);
+}
+
+.beginner :is(.creator-editor-card, .creator-section, .creator-review-card, .creator-media-card, .creator-preflight-card, .creator-episode-arrangement) label {
+  color: #49434a;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.beginner .creator-editor-card > label {
+  margin-top: 20px;
+  margin-bottom: 6px;
+}
+
+.beginner .creator-editor-card .creator-body-field {
+  min-height: 300px;
+  padding: 18px;
+  font-size: 16px;
+  line-height: 1.95;
+}
+
+.beginner :is(.creator-editor-card, .creator-section, .creator-review-card, .creator-media-card, .creator-preflight-card, .creator-episode-arrangement) button {
+  max-width: 100%;
+  border-radius: 9px;
+  line-height: 1.5;
+  transition: background-color 150ms ease, border-color 150ms ease, box-shadow 150ms ease;
+}
+
+.beginner :is(.creator-editor-card, .creator-section, .creator-review-card, .creator-media-card, .creator-preflight-card, .creator-episode-arrangement) button.border {
+  min-height: 38px;
+  padding: 8px 12px;
+  background: #fff;
+  border-color: #ddd8d3;
+}
+
+.beginner :is(.creator-editor-card, .creator-section, .creator-review-card, .creator-media-card, .creator-preflight-card, .creator-episode-arrangement) button.border:not(:disabled):hover {
+  border-color: #d9ada5;
+  background: #fff5f1;
+}
+
+.beginner :is(.creator-editor-card, .creator-section, .creator-media-card, .creator-episode-arrangement) button:is(.bg-red-700, .bg-neutral-900) {
+  min-height: 42px;
+  padding: 10px 18px;
+  background: var(--studio-accent);
+  color: #fff;
+  font-weight: 650;
+  box-shadow: 0 3px 8px rgb(211 72 70 / 0.12);
+}
+
+.beginner :is(.creator-editor-card, .creator-section, .creator-media-card, .creator-episode-arrangement) button:is(.bg-red-700, .bg-neutral-900):not(:disabled):hover {
+  background: #bc3b39;
+}
+
+.beginner :is(.creator-editor-card, .creator-section, .creator-review-card, .creator-media-card, .creator-preflight-card, .creator-episode-arrangement) button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+  box-shadow: none;
+}
+
+.beginner :is(.creator-editor-card, .creator-section, .creator-review-card, .creator-media-card, .creator-preflight-card, .creator-episode-arrangement) [role="alert"] {
+  padding: 12px 14px;
+  border: 1px solid #eac4bc;
+  border-radius: 10px;
+  background: #fff3ed;
+  color: #963e2b;
+  overflow-wrap: anywhere;
+}
+
+.beginner .creator-review-card {
+  background: #fffefa;
+}
+
+.beginner .creator-review-card > h2 {
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--studio-line);
+}
+
+.beginner .creator-revision-list > li {
+  padding: 10px 12px;
+  border: 1px solid #eee9e2;
+  border-radius: 9px;
+  background: #fff;
+  font-size: 13px;
+}
+
+.beginner .creator-revision-list > li.font-medium {
+  border-color: #e8bdb5;
+  background: #fff1eb;
+  color: #9e3e36;
+}
+
+.beginner .creator-review-actions {
+  margin-top: 22px;
+  padding-top: 20px;
+  border-top: 1px solid var(--studio-line);
+}
+
+.beginner .creator-review-actions > h3 {
+  margin-bottom: 8px;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.beginner .creator-review-actions textarea {
+  min-height: 94px;
+}
+
+.beginner .creator-entity-list {
+  display: grid;
+  gap: 10px;
+}
+
+.beginner .creator-entity-list > li {
+  margin: 0;
+}
+
+.beginner .creator-entity-list button {
+  width: 100%;
+  padding: 14px 16px;
+  border: 1px solid var(--studio-line);
+  background: #fdfcf9;
+  color: #51484d;
+  text-align: left;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.beginner .creator-entity-list button[aria-pressed="true"] {
+  border-color: #e4afa4;
+  background: #fff0ea;
+  color: #a34439;
+  box-shadow: inset 3px 0 0 var(--studio-accent);
+}
+
+.beginner section[aria-label="角色参考图"].bg-white {
+  padding: 20px;
+  border: 1px solid #e5dfd5;
+  border-radius: 14px;
+  background: #f9f7f2;
+}
+
+.beginner section[aria-label="角色参考图"] > p {
+  color: #6f665b;
+  font-size: 13px;
+  line-height: 1.8;
+}
+
+.beginner .creator-writing-assistant {
+  margin-bottom: 20px;
+  padding: 16px 18px;
+  border-color: #eddbd2;
+  border-radius: 12px;
+  background: #fcf7f1;
+}
+
+.beginner .creator-writing-assistant > p {
+  color: #756257;
+  font-size: 13px;
+  line-height: 1.75;
+}
+
+.beginner .creator-assistant-toggle {
+  color: #a33f36;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.beginner .creator-assistant-content {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid #eadfd6;
+}
+
+.beginner .creator-assistant-content fieldset {
+  padding: 16px;
+  border-color: #e5d8cd;
+  border-radius: 12px;
+  background: #fffaf6;
+}
+
+.beginner .creator-media-card > p:first-of-type {
+  padding: 10px 12px;
+  border-radius: 9px;
+  background: #f7f4ef;
+  color: #736759;
+  font-size: 13px;
+  line-height: 1.75;
+}
+
+.beginner .creator-asset-library {
+  padding-top: 16px;
+  border-top: 1px solid var(--studio-line);
+}
+
+.beginner .creator-asset-library > ul > li {
+  padding: 16px;
+  border-color: #e7e1d9;
+  border-radius: 12px;
+  background: #fdfcf9;
+}
+
+.beginner .creator-asset-library :is(video, audio, img) {
+  max-width: 100%;
+  border-radius: 9px;
+}
+
+.beginner .creator-preflight-card {
+  padding: 22px;
+  border-color: #e4d6c9;
+  border-radius: 16px;
+  background: #fffdf8;
+}
+
+.beginner .creator-preflight-card > h3 {
+  margin-bottom: 10px;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.beginner .creator-preflight-result {
+  padding: 16px;
+  border: 1px solid #dce5d9;
+  border-radius: 12px;
+  background: #f5f8f0;
+  color: #426043;
+  overflow-wrap: anywhere;
+}
+
+.beginner :is(.creator-candidate-panel, .creator-arrangement-panel) {
+  padding: 18px;
+  border: 1px solid var(--studio-line);
+  border-radius: 12px;
+  background: #faf9f6;
+}
+
+.beginner :is(.creator-candidate-panel, .creator-arrangement-panel) > h3 {
+  margin-bottom: 12px;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.beginner :is(.creator-candidate-panel, .creator-arrangement-panel) > :is(ul, ol) > li {
+  padding: 14px 16px;
+  border: 1px solid #e8e3db;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.beginner .creator-arrangement-panel > ol > li {
+  border-left: 3px solid #deada2;
+}
+
+.beginner :is(.creator-compose-results, .creator-episode-results) {
+  padding-top: 20px;
+  border-top: 1px solid var(--studio-line);
+}
+
+.beginner .creator-composite-card {
+  margin-top: 20px;
+  padding: 22px;
+  border: 1px solid var(--studio-line);
+  border-radius: 16px;
+  background: #fff;
+  color: #665d63;
+  overflow-wrap: anywhere;
+}
+
+.beginner .creator-composite-card > p:first-child {
+  margin-bottom: 8px;
+  color: var(--studio-text);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.beginner .creator-composite-player {
+  display: block;
+  width: min(100%, 310px);
+  max-height: 552px;
+  margin: 20px auto;
+  border-radius: 12px;
+  background: #151416;
+  object-fit: contain;
+  box-shadow: 0 8px 24px rgb(20 18 16 / 0.12);
+}
+
+.beginner .creator-task-drawer {
+  padding: 28px;
+  border-left: 1px solid #e6dfd6;
+  background: #fffdfa;
+  box-shadow: -16px 0 60px rgb(38 27 22 / 0.12);
+}
+
+.beginner .creator-task-drawer h2 {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.beginner .creator-task-drawer > p {
+  color: var(--studio-muted);
+  font-size: 13px;
+  line-height: 1.8;
+}
+
+@media (min-width: 1280px) {
+  .beginner .creator-editor-grid:has(> aside:not(.hidden)) {
+    grid-template-columns: minmax(0, 1fr) 300px;
+  }
+
+  .beginner .creator-candidate-panel > ul {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  .beginner .creator-candidate-panel > ul > li {
+    margin: 0;
+  }
+}
+
+@media (max-width: 639px) {
+  .beginner .creator-editor-grid {
+    gap: 16px;
+  }
+
+  .beginner :is(.creator-editor-card, .creator-section, .creator-review-card, .creator-media-card, .creator-episode-arrangement).bg-white {
+    padding: 16px;
+    border-radius: 13px;
+  }
+
+  .beginner :is(.creator-editor-card, .creator-section, .creator-review-card, .creator-media-card, .creator-preflight-card, .creator-episode-arrangement) :is(input, select, textarea) {
+    font-size: 16px;
+  }
+
+  .beginner .creator-editor-card .creator-body-field {
+    min-height: 260px;
+    padding: 13px;
+  }
+
+  .beginner :is(.creator-writing-assistant, .creator-candidate-panel, .creator-arrangement-panel, .creator-preflight-card, .creator-composite-card) {
+    padding: 14px;
+  }
+
+  .beginner .creator-composite-player {
+    max-height: 500px;
+  }
+
+  .beginner .creator-task-drawer {
+    padding: 20px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .beginner :is(.creator-editor-card, .creator-section, .creator-review-card, .creator-media-card, .creator-preflight-card, .creator-episode-arrangement) :is(button, input, select, textarea) {
+    transition: none;
+  }
+}
