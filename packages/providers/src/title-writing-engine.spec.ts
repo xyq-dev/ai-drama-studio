@@ -8,7 +8,7 @@ import {
   newTitleRun,
   titleRunView,
 } from "./title-writing-engine";
-import { chatAnswer, fixtureChatTransport, fixtureConcept, type FixtureExchange, type FixtureStep } from "./title-writing-fixtures";
+import { chatAnswer, fixtureChatTransport, fixtureConcept, fixtureOutline, type FixtureExchange, type FixtureStep } from "./title-writing-fixtures";
 
 const WS = "11111111-1111-4111-8111-111111111111";
 const P1 = "22222222-2222-4222-8222-222222222222";
@@ -152,6 +152,29 @@ describe("title-driven writing run", () => {
     const runId = created.kind === "blocked" ? "" : created.bundle.run.id;
     await engine.drive(runId);
     expect(titleRunView((await store.getRunById(runId))!).steps[2]).toMatchObject({ state: "rejected", errorCode: code, output: null });
+  });
+
+  it("a concept whose narrative fields are only whitespace is rejected and the outline never starts", async () => {
+    const blank = { ...fixtureConcept(TITLE), logline: "  ", synopsis: "\n\n", coreConflict: "\t" };
+    const { store, engine, run, seen } = setup({ override: (step) => step === "concept" ? { status: 200, body: chatAnswer(blank) } : undefined });
+    const created = await store.createRun(run(), { maxActiveRuns: 1 });
+    const runId = created.kind === "blocked" ? "" : created.bundle.run.id;
+    await engine.drive(runId);
+    const view = titleRunView((await store.getRunById(runId))!);
+    expect(view).toMatchObject({ state: "failed", errorCode: "invalid_output" });
+    expect(view.steps.map((step) => step.state)).toEqual(["rejected", "pending", "pending", "pending", "pending"]);
+    expect(seen.map((item) => item.step)).toEqual(["concept"]);
+  });
+
+  it("an outline whose episode text is only whitespace is rejected and no episode starts", async () => {
+    const { store, engine, run, seen } = setup({ override: (step) => step === "outline"
+      ? { status: 200, body: chatAnswer({ ...fixtureOutline(), episodes: fixtureOutline().episodes.map((episode) => ({ ...episode, goal: " \n " })) }) }
+      : undefined });
+    const created = await store.createRun(run(), { maxActiveRuns: 1 });
+    const runId = created.kind === "blocked" ? "" : created.bundle.run.id;
+    await engine.drive(runId);
+    expect(titleRunView((await store.getRunById(runId))!)).toMatchObject({ state: "partial", errorCode: "invalid_output" });
+    expect(seen.map((item) => item.step)).toEqual(["concept", "outline"]);
   });
 
   it("an outline missing an episode is rejected", async () => {

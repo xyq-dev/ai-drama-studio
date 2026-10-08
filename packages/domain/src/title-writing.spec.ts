@@ -48,6 +48,29 @@ describe("title writing output validation", () => {
     expect(validateTitleWritingOutput("concept", JSON.stringify({ ...CONCEPT, characters: [CONCEPT.characters[0], CONCEPT.characters[0]] })).ok).toBe(false);
   });
 
+  it.each([
+    ["spaces", "   "],
+    ["line breaks", "\n\n"],
+    ["tabs and a full-width space", "\t　\t"],
+  ])("rejects required concept and outline text made only of %s", (_label, blank) => {
+    for (const field of ["genre", "logline", "synopsis", "protagonistGoal", "opposition", "coreConflict", "direction"] as const) {
+      expect(validateTitleWritingOutput("concept", JSON.stringify({ ...CONCEPT, [field]: blank }))).toEqual({ ok: false, code: "invalid_output" });
+    }
+    const blankCharacter = { ...CONCEPT, characters: [{ ...CONCEPT.characters[0], profile: blank }, CONCEPT.characters[1]] };
+    expect(validateTitleWritingOutput("concept", JSON.stringify(blankCharacter)).ok).toBe(false);
+    const blankRelationship = { ...CONCEPT, relationships: [{ name: blank, pressure: "互相怀疑" }] };
+    expect(validateTitleWritingOutput("concept", JSON.stringify(blankRelationship)).ok).toBe(false);
+    for (const field of ["title", "entryState", "goal", "action", "turn", "result", "handoff"] as const) {
+      const episodes = OUTLINE.episodes.map((episode, index) => index === 1 ? { ...episode, [field]: blank } : episode);
+      expect(validateTitleWritingOutput("outline", JSON.stringify({ ...OUTLINE, episodes }))).toEqual({ ok: false, code: "invalid_output" });
+    }
+  });
+
+  it("keeps visible text as sent, including surrounding spaces", () => {
+    const result = validateTitleWritingOutput("concept", JSON.stringify({ ...CONCEPT, logline: "  一句话  " }));
+    expect(result).toMatchObject({ ok: true, output: { logline: "  一句话  " } });
+  });
+
   it("formats the saved story text with title, characters and the outline", () => {
     const text = formatTitleStory("夜班证词", CONCEPT as never, OUTLINE as never);
     expect(text).toContain("剧名：夜班证词");

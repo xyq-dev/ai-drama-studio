@@ -20,8 +20,11 @@ export type TitleWritingStepKey = (typeof TITLE_WRITING_STEP_KEYS)[number];
 
 const MODEL_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 
+/** Required text counts only visible content: spaces, tabs or line breaks alone are empty. The value is kept as sent. */
 function text(min: number, max: number) {
-  return z.string().min(min).max(max).refine((value) => !value.includes("\u0000"), "文本含有空字符");
+  return z.string().max(max)
+    .refine((value) => value.trim().length >= min, "必填内容不能为空白")
+    .refine((value) => !value.includes("\u0000"), "文本含有空字符");
 }
 
 const titleText = z.string().trim().min(1, "请填写剧名").max(TITLE_WRITING_TITLE_MAX_CHARS, `剧名最多 ${TITLE_WRITING_TITLE_MAX_CHARS} 字`)
