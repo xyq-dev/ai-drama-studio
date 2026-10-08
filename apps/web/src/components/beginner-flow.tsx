@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { StudioClient } from "../lib/studio-client";
 import { useProjectBase, type Aggregate } from "../lib/project-base";
 import {
+  CAPABILITY_TIMEOUT_MS,
   composeBlockedReason,
   composeGates,
   loadComposeCapability,
@@ -121,6 +122,8 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
   const [capability, setCapability] = useState<ComposeCapability | null>(null);
   const capabilityToken = useRef(0);
   const capabilityChecking = useRef(false);
+  /** The read in flight: its abort controller and its timeout, cleared on answer, timeout, work switch or unmount. */
+  const capabilityRead = useRef<{ controller: AbortController; timer: ReturnType<typeof setTimeout> } | null>(null);
   /** A primary action waiting for the next render (after its episode or object was selected). */
   const [pendingFocus, setPendingFocus] = useState<{ target: PrimaryTarget | "choices"; nonce: number } | null>(null);
   const [sceneId, setSceneId] = useState<string | null>(null);
@@ -145,34 +148,54 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
     setCastChoices(null);
   }, [projectId]);
 
+  /** Ends the read in flight (if any): its timer is cleared and its request cancelled; its answer can no longer write. */
+  const dropCapabilityRead = useCallback(() => {
+    capabilityToken.current += 1;
+    capabilityChecking.current = false;
+    const read = capabilityRead.current;
+    capabilityRead.current = null;
+    if (read) {
+      clearTimeout(read.timer);
+      read.controller.abort();
+    }
+  }, []);
+
   /**
    * Reads GET /providers/capabilities again, whatever the last answer was. One read at a time; only the latest read
    * may write, so a late answer of an older read (or of another work) never replaces a newer one. While it runs the
-   * gates are "pending": nothing new can be composed, and nothing chosen or arranged is cleared.
+   * gates are "pending": nothing new can be composed, and nothing chosen or arranged is cleared. A read without an
+   * answer after CAPABILITY_TIMEOUT_MS is cancelled and reported as a timeout by the page's own timer, so the wait
+   * ends on time even if the network layer ignores the cancel; the user can then check again.
    */
   const checkCapability = useCallback(() => {
     if (capabilityChecking.current) return;
     const token = ++capabilityToken.current;
     capabilityChecking.current = true;
     setCapability(null);
-    void loadComposeCapability(client).then((value) => {
+    const finish = (value: ComposeCapability) => {
       if (token !== capabilityToken.current) return;
+      const read = capabilityRead.current;
+      capabilityRead.current = null;
+      if (read) clearTimeout(read.timer);
       capabilityChecking.current = false;
       setCapability(value);
-    });
+    };
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      controller.abort();
+      finish({ read: "failed", reason: "timeout" });
+    }, CAPABILITY_TIMEOUT_MS);
+    capabilityRead.current = { controller, timer };
+    void loadComposeCapability(client, controller.signal).then(finish);
   }, []);
 
   // Whether single-shot and episode compose are switched on comes from the server capability, not from whether a
-  // list read happened to fail. Each work starts its own read; leaving it drops the old one's answer.
+  // list read happened to fail. Each work starts its own read; leaving it (or unmounting) cancels the old one.
   useEffect(() => {
-    capabilityToken.current += 1;
-    capabilityChecking.current = false;
+    dropCapabilityRead();
     checkCapability();
-    return () => {
-      capabilityToken.current += 1;
-      capabilityChecking.current = false;
-    };
-  }, [projectId, checkCapability]);
+    return dropCapabilityRead;
+  }, [projectId, checkCapability, dropCapabilityRead]);
 
   // Progress facts (complete entity lists, episode media) follow every base reload, which compose panels trigger
   // when a compose is accepted, finishes or is reviewed. Every read reports how complete it was; an older answer
@@ -602,30 +625,21 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
   );
 }
 
-/** A server-reported closed feature; nothing here pretends a result exists. */
-function Notice({ children }: { children: ReactNode }) {
-  return (
-    <p className="rounded-[12px] border border-[#D34846] bg-white p-4 text-[15px]" role="status">
-      <span aria-hidden="true">！</span> {children}
-    </p>
-  );
-}
-
-/** The capability state of one compose channel; nothing for an enabled one. */
+/**
+ * The capability state of one compose channel; nothing for an enabled one. Every state the user can act on carries
+ * its own 重新检查功能状态, also when the step is done and the primary action continues or downloads instead.
+ */
 function GateNotice({ gate, onRetry, children }: { gate: ComposeGate; onRetry: () => void; children: ReactNode }) {
   if (gate === "pending") {
     return <p className="rounded-[12px] border bg-white p-4 text-[15px]" role="status">正在检查服务端的合成功能状态，检查完成前不能开始新的合成。已有成片仍可查看。</p>;
   }
-  if (gate === "failed") return <CapabilityFailed onRetry={onRetry} />;
-  if (gate === "disabled") return <Notice>{children}</Notice>;
-  return null;
-}
-
-/** The compose switches could not be read: neither open nor closed is claimed. */
-function CapabilityFailed({ onRetry }: { onRetry: () => void }) {
+  if (gate === "enabled") return null;
+  const text = gate === "disabled" ? children
+    : gate === "timeout" ? "功能状态检查超时，请重试。服务端没有在限定时间内回答，暂时无法确认这一步能不能进行；这不代表功能已关闭。"
+      : "没能读取服务端的合成功能状态（网络或服务暂时不可用），暂时无法确认这一步能不能进行。这不代表功能已关闭，也不代表还没有候选镜头。";
   return (
-    <div className="rounded-[12px] border border-[#D34846] bg-white p-4 text-[15px]" role="alert">
-      <p>没能读取服务端的合成功能状态（网络或服务暂时不可用），暂时无法确认这一步能不能进行。这不代表功能已关闭，也不代表还没有候选镜头。</p>
+    <div className="rounded-[12px] border border-[#D34846] bg-white p-4 text-[15px]" role={gate === "disabled" ? "status" : "alert"}>
+      <p>{gate === "disabled" ? <span aria-hidden="true">！ </span> : null}{text}</p>
       <button className="mt-2 rounded-[12px] border px-3 py-1.5" type="button" onClick={onRetry}>重新检查功能状态</button>
     </div>
   );

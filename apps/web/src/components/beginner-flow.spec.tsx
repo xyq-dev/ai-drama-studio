@@ -47,6 +47,8 @@ let capabilities: { compose: { shot: boolean; episode: boolean } } | number = { 
 /** Capability answers taken in order before the default; each is awaited (to hold or answer late). */
 let capabilityQueue: Array<() => Promise<Response>> = [];
 let capabilityReads = 0;
+/** The abort signal of each capability read, in order. */
+let capabilitySignals: Array<AbortSignal | undefined> = [];
 
 function capabilityAnswer(value: { shot: boolean; episode: boolean } | number): Response {
   return typeof value === "number"
@@ -61,6 +63,7 @@ function install(worlds: Record<string, World>) {
     calls.push(`${init?.method ?? "GET"} ${String(input)}`);
     if (path === "/api/v1/providers/capabilities") {
       capabilityReads += 1;
+      capabilitySignals.push(init?.signal ?? undefined);
       const queued = capabilityQueue.shift();
       if (queued) return queued();
       return typeof capabilities === "number"
@@ -114,6 +117,7 @@ beforeEach(() => {
   capabilities = { compose: { shot: true, episode: true } };
   capabilityQueue = [];
   capabilityReads = 0;
+  capabilitySignals = [];
   window.history.replaceState(null, "", `/projects/${P1}/create`);
   Element.prototype.scrollIntoView = vi.fn();
   window.scrollTo = vi.fn() as unknown as typeof window.scrollTo;
@@ -385,7 +389,7 @@ describe("beginner flow targets the right object (Issue #52)", () => {
     render(<BeginnerFlow projectId={P1} />);
     expect(await screen.findByText(/当前环境没有开启单镜成片所需的功能/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "选一个镜头试做" })).toBeNull();
-    expect(screen.getByRole("button", { name: "重新检查功能状态" })).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "重新检查功能状态" })[0]!).toBeTruthy();
   });
 
   it("item 3: a failed capability read is neither closed nor open, and a recheck recovers", async () => {
@@ -487,7 +491,7 @@ describe("compose capability gate (PR #53 review 2 and 3)", () => {
     expect(await screen.findByText(/当前环境没有开启单镜成片所需的功能/)).toBeTruthy();
     const before = capabilityReads;
     capabilities = { compose: { shot: true, episode: true } };
-    fireEvent.click(screen.getByRole("button", { name: "重新检查功能状态" }));
+    fireEvent.click(screen.getAllByRole("button", { name: "重新检查功能状态" })[0]!);
     expect(await screen.findByRole("button", { name: "选一个镜头试做" })).toBeTruthy();
     expect(capabilityReads).toBe(before + 1);
     expect(screen.queryByText(/当前环境没有开启单镜成片所需的功能/)).toBeNull();
@@ -577,7 +581,7 @@ describe("compose capability gate (PR #53 review 2 and 3)", () => {
     const panel = await screen.findByRole("region", { name: "多镜编排" });
     for (const button of await within(panel).findAllByRole("button", { name: "加入" })) fireEvent.click(button);
     expect((within(panel).getByRole("button", { name: "预检编排" }) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByRole("button", { name: "重新检查功能状态" })).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "重新检查功能状态" })[0]!).toBeTruthy();
   });
 });
 
@@ -592,5 +596,157 @@ describe("refresh banner tells the truth about retries (PR #53 review 1)", () =>
     await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
     expect(await screen.findByText(/正在自动重试/)).toBeTruthy();
     await waitFor(() => expect(screen.queryByText(/正在自动重试/)).toBeNull(), { timeout: 6000 });
+  });
+});
+
+describe("primary action targets the episode behind the step state (Issue #54 A)", () => {
+  it("episode 1 DRAFT shown, episode 2 REJECTED: 查看原因并修改 opens episode 2 and keeps episode 1's draft", async () => {
+    window.history.replaceState(null, "", `/projects/${P1}/create?step=script`);
+    window.sessionStorage.setItem(`ads-draft:${P1}:script:episode-1:script-1`, JSON.stringify({ fingerprint: "f", idempotencyKey: "k",
+      payload: { mode: "text", text: "第一集草稿", raw: "", parsed: null, sourceId: null }, ifMatch: 1 }));
+    install({ [P1]: { title: "夜班", story: story("APPROVED"), episodes: [episode(1, "DRAFT"), episode(2, "REJECTED"), episode(3, "APPROVED")] } });
+    render(<BeginnerFlow projectId={P1} />);
+    expect(await screen.findByRole("tab", { name: /第 1 集/, selected: true })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "查看原因并修改" }));
+    expect(await screen.findByRole("tab", { name: /第 2 集 · ！ 需要处理/, selected: true })).toBeTruthy();
+    expect(window.sessionStorage.getItem(`ads-draft:${P1}:script:episode-1:script-1`)).toContain("第一集草稿");
+  });
+});
+
+/** A capability answer that never comes and ignores abort, like a stuck connection. */
+const never = () => new Promise<Response>(() => undefined);
+
+describe("a stuck capability read ends with a timeout and a retry (Issue #54 C)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function advance(ms: number) {
+    await act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+  }
+
+  it("never answers: after the timeout the page stops waiting, says so, and a retry recovers", async () => {
+    window.history.replaceState(null, "", `/projects/${P1}/create?step=sample`);
+    capabilityQueue = [never];
+    install({ [P1]: sceneWorld() });
+    render(<BeginnerFlow projectId={P1} />);
+    expect(await screen.findByText(/正在检查服务端的合成功能状态/)).toBeTruthy();
+    await advance(14_000);
+    expect(screen.queryByText(/功能状态检查超时，请重试/)).toBeNull();
+    await advance(1_000);
+    expect(await screen.findByText(/功能状态检查超时，请重试/)).toBeTruthy();
+    // The stuck read was cancelled; no new read starts by itself.
+    expect(capabilitySignals[0]?.aborted).toBe(true);
+    expect(capabilityReads).toBe(1);
+    await advance(60_000);
+    expect(capabilityReads).toBe(1);
+    expect(screen.queryByRole("button", { name: "选一个镜头试做" })).toBeNull();
+    fireEvent.click(screen.getAllByRole("button", { name: "重新检查功能状态" })[0]!);
+    expect(await screen.findByRole("button", { name: "选一个镜头试做" })).toBeTruthy();
+    expect(capabilityReads).toBe(2);
+  });
+
+  it("an old read answering after its timeout (success or failure) never overrides the retry", async () => {
+    window.history.replaceState(null, "", `/projects/${P1}/create?step=sample`);
+    let lateClosed!: () => void;
+    let lateFailure!: () => void;
+    capabilityQueue = [
+      () => new Promise<Response>((done) => { lateClosed = () => done(capabilityAnswer({ shot: false, episode: false })); }),
+      () => new Promise<Response>((done) => { lateFailure = () => done(capabilityAnswer(503)); }),
+    ];
+    install({ [P1]: sceneWorld() });
+    render(<BeginnerFlow projectId={P1} />);
+    await advance(15_000);
+    fireEvent.click((await screen.findAllByRole("button", { name: "重新检查功能状态" }))[0]!);
+    await advance(15_000);
+    expect(await screen.findByText(/功能状态检查超时，请重试/)).toBeTruthy();
+    fireEvent.click(screen.getAllByRole("button", { name: "重新检查功能状态" })[0]!);
+    expect(await screen.findByRole("button", { name: "选一个镜头试做" })).toBeTruthy();
+    await act(async () => { lateClosed(); lateFailure(); });
+    await advance(100);
+    expect(screen.getByRole("button", { name: "选一个镜头试做" })).toBeTruthy();
+    expect(screen.queryByText(/当前环境没有开启单镜成片所需的功能/)).toBeNull();
+    expect(screen.queryByText(/没能读取服务端的合成功能状态/)).toBeNull();
+  });
+
+  it("rapid clicks while a check runs start one read; a quick answer never shows the timeout", async () => {
+    window.history.replaceState(null, "", `/projects/${P1}/create?step=sample`);
+    capabilities = { compose: { shot: false, episode: false } };
+    install({ [P1]: sceneWorld() });
+    render(<BeginnerFlow projectId={P1} />);
+    expect(await screen.findByText(/当前环境没有开启单镜成片所需的功能/)).toBeTruthy();
+    capabilityQueue = [never];
+    fireEvent.click(screen.getAllByRole("button", { name: "重新检查功能状态" })[0]!);
+    for (const button of screen.queryAllByRole("button", { name: /功能状态/ })) fireEvent.click(button);
+    expect(capabilityReads).toBe(2);
+    await advance(15_000);
+    capabilities = { compose: { shot: true, episode: true } };
+    fireEvent.click(screen.getAllByRole("button", { name: "重新检查功能状态" })[0]!);
+    expect(await screen.findByRole("button", { name: "选一个镜头试做" })).toBeTruthy();
+    await advance(30_000);
+    expect(screen.queryByText(/功能状态检查超时/)).toBeNull();
+  });
+
+  it("switching works or unmounting cancels the pending read and its timer", async () => {
+    window.history.replaceState(null, "", `/projects/${P1}/create?step=sample`);
+    capabilityQueue = [never, never];
+    install({ [P1]: sceneWorld(), [P2]: sceneWorld({ title: "第二部" }) });
+    const view = render(<BeginnerFlow projectId={P1} />);
+    await waitFor(() => expect(capabilityReads).toBe(1));
+    view.rerender(<BeginnerFlow projectId={P2} />);
+    await waitFor(() => expect(capabilityReads).toBe(2));
+    expect(capabilitySignals[0]?.aborted).toBe(true);
+    view.unmount();
+    expect(capabilitySignals[1]?.aborted).toBe(true);
+    await advance(30_000);
+    expect(capabilityReads).toBe(2);
+  });
+});
+
+describe("a closed compose notice always offers a recheck (Issue #54 D)", () => {
+  it("试一段 done on episode 1, episode 2 unfinished, shot compose closed: the notice rechecks and reopens", async () => {
+    window.history.replaceState(null, "", `/projects/${P1}/create?step=sample`);
+    capabilities = { compose: { shot: false, episode: false } };
+    const approved = [episode(1, "APPROVED"), episode(2, "APPROVED"), episode(3, null)];
+    install({ [P1]: sceneWorld({ episodes: approved, candidates: { "episode-1": [{}] } }) });
+    render(<BeginnerFlow projectId={P1} />);
+    const notice = await screen.findByText(/当前环境没有开启单镜成片所需的功能/);
+    // The step is done, so the primary action continues; the recheck lives in the notice.
+    expect(screen.getByRole("button", { name: "继续下一步" })).toBeTruthy();
+    const box = notice.closest("[role='status']") as HTMLElement;
+    capabilities = { compose: { shot: true, episode: true } };
+    const before = capabilityReads;
+    fireEvent.click(within(box).getByRole("button", { name: "重新检查功能状态" }));
+    await waitFor(() => expect(screen.queryByText(/当前环境没有开启单镜成片所需的功能/)).toBeNull());
+    expect(capabilityReads).toBe(before + 1);
+    expect(screen.getByRole("button", { name: "继续下一步" })).toBeTruthy();
+  });
+
+  it("every episode cut done and episode compose closed: recheck is offered, the approved cut stays downloadable and the arrangement stays", async () => {
+    window.history.replaceState(null, "", `/projects/${P1}/create?step=final`);
+    capabilities = { compose: { shot: true, episode: false } };
+    const approved = [episode(1, "APPROVED"), episode(2, "APPROVED"), episode(3, "APPROVED")];
+    const cut = (id: string) => ({ assetId: id, status: "ACTIVE", reviewStatus: "APPROVED", rowVersion: 2, durationMs: 2000,
+      reviewedContentHash: "h", contentHash: "h", segments: [] }) as never;
+    install({ [P1]: sceneWorld({ episodes: approved,
+      candidates: { "episode-1": [candidate("cut-a", 1), candidate("cut-b", 2)], "episode-2": [{}, {}], "episode-3": [{}, {}] },
+      composites: { "episode-1": [cut("e1-cut")], "episode-2": [cut("e2-cut")], "episode-3": [cut("e3-cut")] } }) });
+    render(<BeginnerFlow projectId={P1} />);
+    expect(await screen.findByRole("button", { name: "查看并下载成片" })).toBeTruthy();
+    const notice = await screen.findByText(/当前环境没有开启集级合成/);
+    const panel = await screen.findByRole("region", { name: "多镜编排" });
+    for (const button of await within(panel).findAllByRole("button", { name: "加入" })) fireEvent.click(button);
+    expect(await within(panel).findByRole("button", { name: "下载 MP4" })).toBeTruthy();
+    capabilities = { compose: { shot: true, episode: true } };
+    fireEvent.click(within(notice.closest("[role='status']") as HTMLElement).getByRole("button", { name: "重新检查功能状态" }));
+    await waitFor(() => expect((within(panel).getByRole("button", { name: "预检编排" }) as HTMLButtonElement).disabled).toBe(false));
+    expect(panel.querySelectorAll("[data-selected-asset-id]")).toHaveLength(2);
+    expect(within(panel).getByRole("button", { name: "下载 MP4" })).toBeTruthy();
+    // Single-shot compose is open, so the sample step has no closed notice.
+    fireEvent.click(screen.getByRole("button", { name: /第 4 步 试一段/ }));
+    expect(screen.queryByText(/当前环境没有开启单镜成片所需的功能/)).toBeNull();
   });
 });

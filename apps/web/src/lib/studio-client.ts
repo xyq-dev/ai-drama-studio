@@ -28,10 +28,12 @@ export class StudioClient {
     private readonly prefix = "/api/v1",
   ) {}
 
-  async get<T>(path: string): Promise<T> {
+  /** options.signal (optional) cancels the request; without it the call is unchanged. */
+  async get<T>(path: string, options?: { signal?: AbortSignal }): Promise<T> {
     const response = await this.request(`${this.prefix}${path}`, {
       method: "GET",
       headers: { Accept: "application/json" },
+      ...(options?.signal ? { signal: options.signal } : {}),
     });
     return parseBody<T>(response);
   }
