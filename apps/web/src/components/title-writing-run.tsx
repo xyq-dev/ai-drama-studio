@@ -90,8 +90,13 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
   const [acceptStoryChanged, setAcceptStoryChanged] = useState(false);
   const [storyChanged, setStoryChanged] = useState(false);
   const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
   const readToken = useRef(0);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // The scope of this work on this mounted page. It changes when the work changes or the page unmounts, so a late
+  // answer to an older action (cancel, resume, place scripts) can no longer change content, errors, busy, confirmations
+  // or polling, and nothing is scheduled after unmount.
+  const scope = useRef(0);
 
   const read = useCallback(async () => {
     const request = ++readToken.current;
@@ -113,30 +118,53 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
   }, [client, projectId]);
 
   useEffect(() => {
+    // A new work starts clean: nothing shown, typed or confirmed for the previous one carries over.
+    scope.current += 1;
+    busyRef.current = false;
+    resumeAction.current = null;
+    setRun(null);
+    setLoaded(false);
+    setReadError(null);
+    setActionMessage(null);
+    setConfirmedFor(null);
+    setStoryChanged(false);
+    setAcceptStoryChanged(false);
+    setBusy(false);
     void read();
     return () => {
+      scope.current += 1;
       readToken.current += 1;
+      busyRef.current = false;
       if (timer.current) clearTimeout(timer.current);
     };
   }, [read]);
 
   async function act(work: () => Promise<TitleWritingRunView>, fallback: string,
     hooks: { accepted?: () => void; failed?: (caught: unknown) => void } = {}) {
-    if (busy) return;
+    if (busyRef.current) return;
+    const mine = scope.current;
+    const current = () => scope.current === mine;
+    busyRef.current = true;
     setBusy(true);
     setActionMessage(null);
     try {
       const next = await work();
+      if (!current() || next.projectId !== projectId) return;
       readToken.current += 1;
+      if (timer.current) clearTimeout(timer.current);
       setRun(next);
       hooks.accepted?.();
       if (next.state === "running") timer.current = setTimeout(() => { void read(); }, TITLE_WRITING_POLL_MS);
     } catch (caught) {
+      if (!current()) return;
       if (caught instanceof TitleWritingError && caught.code === "TITLE_WRITING_STORY_CHANGED") setStoryChanged(true);
       setActionMessage(actionError(caught, fallback));
       hooks.failed?.(caught);
     } finally {
-      setBusy(false);
+      if (current()) {
+        busyRef.current = false;
+        setBusy(false);
+      }
     }
   }
 
