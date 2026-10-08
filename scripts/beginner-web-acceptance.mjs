@@ -271,6 +271,13 @@ async function pollJob(jobId, timeoutMs = 180_000) {
   return last;
 }
 
+/** Return one revision through its review path with a note: IN_REVIEW then REJECTED (prep only). */
+async function rejectByApi(path, rowVersion, note, label) {
+  const submitted = expect(await api("POST", path, { ifMatch: rowVersion, body: { to: "IN_REVIEW", expectedReviewVersion: 1 } }), 200, label);
+  return expect(await api("POST", path, { ifMatch: submitted.rowVersion,
+    body: { to: "REJECTED", expectedReviewVersion: submitted.reviewVersion, reviewNote: note } }), 200, label);
+}
+
 /** Approve one revision through its review path: IN_REVIEW then APPROVED (prep only). */
 async function approveByApi(path, rowVersion, label) {
   const submitted = expect(await api("POST", path, { ifMatch: rowVersion, body: { to: "IN_REVIEW", expectedReviewVersion: 1 } }), 200, label);
@@ -540,7 +547,9 @@ async function main() {
         await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
         await page.goto(`${webOrigin}/projects/${world.projectId}/create?step=sample`, { waitUntil: "domcontentloaded" });
         await page.getByText(/当前环境没有开启单镜成片所需的功能/).waitFor({ timeout: 20_000 });
-        await page.getByRole("button", { name: "重新检查功能状态" }).waitFor();
+        // The step is not done: the primary action and the notice both offer the recheck.
+        await page.getByRole("button", { name: "重新检查功能状态" }).first().waitFor();
+        if (await page.getByRole("button", { name: "重新检查功能状态" }).count() !== 2) throw new Error(`recheck buttons at ${width}`);
         if (await page.getByRole("button", { name: "选一个镜头试做" }).count()) throw new Error(`compose-off offered 选一个镜头试做 at ${width}`);
         closedChecks[width] = await assertLayout(`compose-off sample ${width}`);
         await shot(`03-compose-off-sample-${width}`);
@@ -563,7 +572,7 @@ async function main() {
         if (new URL(request.url()).pathname === "/api/v1/providers/capabilities") capabilityReads.push(request.method());
       };
       page.on("request", countCapability);
-      await page.getByRole("button", { name: "重新检查功能状态" }).click();
+      await page.getByRole("button", { name: "重新检查功能状态" }).first().click();
       await page.getByRole("button", { name: "选一个镜头试做" }).waitFor({ timeout: 20_000 });
       page.off("request", countCapability);
       if (capabilityReads.length !== 1 || capabilityReads[0] !== "GET") throw new Error(`recheck capability reads ${JSON.stringify(capabilityReads)}`);
@@ -953,6 +962,56 @@ async function main() {
       await page.getByRole("alert").filter({ hasText: "作品读取失败" }).waitFor();
       await shot("18-error-390");
       await page.setViewportSize({ width: 1440, height: 900 });
+
+      // Issue #54 D: a completed step whose compose is switched off still offers a recheck in its notice. The API is
+      // restarted without the compose switches; 试一段 is done (episode 1 has an approved sample).
+      await stopProcess("api");
+      await startApi(env);
+      await page.goto(`${webOrigin}/projects/${world.projectId}/create?step=sample`, { waitUntil: "domcontentloaded" });
+      const closedNotice = page.getByRole("status").filter({ hasText: "当前环境没有开启单镜成片所需的功能" });
+      await closedNotice.waitFor({ timeout: 20_000 });
+      await page.getByRole("button", { name: "继续下一步" }).waitFor();
+      if (await page.getByRole("button", { name: "重新检查功能状态" }).count() !== 1) throw new Error("done step: recheck not only in the notice");
+      await page.evaluate(() => { window.__beginnerDoneRecheck = "open"; });
+      await stopProcess("api");
+      await startApi(mediaEnv(env));
+      const doneReads = [];
+      const countDone = (request) => {
+        if (new URL(request.url()).pathname === "/api/v1/providers/capabilities") doneReads.push(request.method());
+      };
+      page.on("request", countDone);
+      await closedNotice.getByRole("button", { name: "重新检查功能状态" }).click();
+      await closedNotice.waitFor({ state: "detached", timeout: 20_000 });
+      page.off("request", countDone);
+      if (doneReads.length !== 1) throw new Error(`done-step recheck capability reads ${doneReads.length}`);
+      await page.getByRole("button", { name: "继续下一步" }).waitFor();
+      if (await page.evaluate(() => window.__beginnerDoneRecheck) !== "open") throw new Error("done-step recheck reloaded the page");
+      evidence.checks.doneStepRecheck = { step: "sample", capabilityGets: doneReads.length, primaryKept: "继续下一步" };
+
+      // Issue #54 A, PREP through the real API (not a page action): episode 2 gets a script that is returned with a
+      // note, episode 3 a script awaiting review. The page then shows episode 3; the primary action must open 2.
+      const storyId = expect(await api("GET", `/projects/${world.projectId}/stories`), 200, "stories").items
+        .reduce((best, item) => (!best || item.revisionNo > best.revisionNo ? item : best), null).id;
+      const prepScript = async (no) => {
+        const episode = expect(await api("GET", `/projects/${world.projectId}/episodes`), 200, "episodes").items.find((item) => item.episodeNo === no);
+        return expect(await api("POST", `/projects/${world.projectId}/episodes/${episode.id}/scripts`, {
+          ifMatch: episode.rowVersion,
+          body: { storyRevisionId: storyId, content: { schema: "m2.script.revision.v1", episode: no, title: `第${no}集`,
+            body: `新手验收准备的第${no}集剧本`, scenes: [] } },
+        }), 201, `prep script ${no}`);
+      };
+      const second = await prepScript(2);
+      const secondEpisode = expect(await api("GET", `/projects/${world.projectId}/episodes`), 200, "episodes").items.find((item) => item.episodeNo === 2);
+      await rejectByApi(`/projects/${world.projectId}/episodes/${secondEpisode.id}/scripts/${second.revisionId}/review`, second.rowVersion,
+        "结尾太仓促", "prep script 2 review");
+      await prepScript(3);
+      prepDid("API: episode 2 script created and returned with a note; episode 3 script created (awaiting review)");
+      await page.goto(`${webOrigin}/projects/${world.projectId}/create?step=script`, { waitUntil: "domcontentloaded" });
+      await page.getByRole("tab", { name: /第 3 集/ }).click();
+      await page.getByRole("tab", { name: /第 3 集 · ？ 待确认/, selected: true }).waitFor({ timeout: 20_000 });
+      await page.getByRole("button", { name: "查看原因并修改" }).click();
+      await page.getByRole("tab", { name: /第 2 集 · ！ 需要处理/, selected: true }).waitFor({ timeout: 10_000 });
+      evidence.checks.actionEpisode = { shown: 3, opened: 2, reason: "episode 2 REJECTED, episode 3 DRAFT" };
       await page.goto(`${webOrigin}/studio`, { waitUntil: "domcontentloaded" });
       await page.getByText(/当前阶段：第 2 步 看剧本/).waitFor();
       await shot("19-studio-final-1440");
