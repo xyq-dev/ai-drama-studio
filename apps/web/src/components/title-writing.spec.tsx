@@ -231,9 +231,13 @@ describe("progress and results page", () => {
 
   it("an uncertain step needs the checkbox and the token to resend", async () => {
     const posts: Call[] = [];
+    const unknownCall = { callId: "aaaaaaaa-0000-4000-8000-000000000001", stepKey: "outline" as const, attemptNo: 1, providerKey: "qwen" as const,
+      model: "q-1", responseModel: null, providerRequestId: null, state: "unknown" as const, errorCode: "timeout",
+      usage: { status: "unknown" as const, inputTokens: null, outputTokens: null, totalTokens: null }, billingStatus: "unknown" as const,
+      createdAt: "2026-10-08T00:00:00Z", finishedAt: "2026-10-08T00:02:00Z" };
     server((call) => {
       if (call.method === "POST") { posts.push(call); return json({ run: run({}, ["completed", "submitted"]) }); }
-      return json({ run: run({ state: "needs_attention", errorCode: "timeout" }, ["completed", "unknown"]) });
+      return json({ run: run({ state: "needs_attention", errorCode: "timeout", calls: [unknownCall] }, ["completed", "unknown"]) });
     });
     render(<TitleWritingRun projectId={P1} client={new TitleWritingClient()} />);
     expect(await screen.findByText("需要处理")).toBeTruthy();
@@ -246,7 +250,8 @@ describe("progress and results page", () => {
     fireEvent.click(resume);
     await waitFor(() => expect(posts).toHaveLength(1));
     expect(posts[0]?.url).toBe(`/api/v1/projects/${P1}/title-runs/${RUN}/resume`);
-    expect(posts[0]?.body).toEqual({ confirmUncertain: true });
+    expect(posts[0]?.body).toEqual({ confirmUncertainCallIds: ["aaaaaaaa-0000-4000-8000-000000000001"] });
+    expect(posts[0]?.headers["Idempotency-Key"]).toBeTruthy();
     expect(posts[0]?.headers["X-Operator-Token"]).toBe(TOKEN);
   });
 

@@ -98,9 +98,23 @@ export interface TitleCallFinish {
   outputHash: string | null;
 }
 
+/**
+ * replayed: this resume action (same key, same confirmation) was already applied; nothing changes and nothing is sent.
+ * stale_confirmation: the confirmed calls are not exactly the current uncertain calls.
+ * key_conflict: the key was used for a different confirmation on this run.
+ */
 export type TitleResumePreparation =
-  | { kind: "ok"; bundle: TitleRunBundle }
-  | { kind: "not_resumable" | "needs_confirmation" | "active" | "active_cap" | "not_found" };
+  | { kind: "ok" | "replayed"; bundle: TitleRunBundle }
+  | { kind: "not_resumable" | "needs_confirmation" | "stale_confirmation" | "key_conflict" | "active" | "active_cap" | "not_found" };
+
+export interface TitleResumeRequest {
+  /** Identity of one resume action, from the Idempotency-Key header. */
+  resumeKey: string;
+  /** Hash of the confirmed call ids; a replay with the same key must carry the same confirmation. */
+  requestHash: string;
+  confirmedCallIds: readonly string[];
+  maxActiveRuns: number;
+}
 
 export type TitleScriptPlacement =
   | { kind: "ok"; bundle: TitleRunBundle }
@@ -134,7 +148,11 @@ export interface TitleWritingStore {
   saveStory(workspaceId: string, runId: string, executorId: string, storyText: string, actorId: string, nowIso: string): Promise<"saved" | "conflict" | "lost">;
   finishRun(workspaceId: string, runId: string, executorId: string, state: Exclude<TitleWritingRunState, "running">, errorCode: string | null, nowIso: string): Promise<boolean>;
   requestCancel(workspaceId: string, projectId: string, runId: string, nowIso: string): Promise<TitleRunBundle | null>;
-  prepareResume(workspaceId: string, projectId: string, runId: string, options: { confirmUncertain: boolean; maxActiveRuns: number }, nowIso: string): Promise<TitleResumePreparation>;
+  /**
+   * One transaction under the run lock: replay check by resume key, then state and cap checks, then the confirmation
+   * must equal the current uncertain calls exactly. Only then are rejected, canceled and confirmed unknown steps reset.
+   */
+  prepareResume(workspaceId: string, projectId: string, runId: string, request: TitleResumeRequest, nowIso: string): Promise<TitleResumePreparation>;
   /** Fences expired executors of this workspace: reserved calls were never sent, submitted calls become unknown. */
   recoverExpired(workspaceId: string, nowIso: string): Promise<number>;
   listClaimable(workspaceId: string, nowIso: string, limit: number): Promise<string[]>;

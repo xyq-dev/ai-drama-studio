@@ -6,6 +6,7 @@ import {
   type TitleCallReservation,
   type TitleCallSubmission,
   type TitleResumePreparation,
+  type TitleResumeRequest,
   type TitleRunBundle,
   type TitleRunCreation,
   type TitleRunRecord,
@@ -18,6 +19,7 @@ import {
   TITLE_WRITING_JSON_SCHEMAS,
   TITLE_WRITING_PROMPT_VERSION,
   TITLE_WRITING_STEP_KEYS,
+  currentUncertainCallIds,
   type EpisodeDraftCandidate,
   type EpisodeOutline,
   type TitleConcept,
@@ -60,6 +62,7 @@ export const TITLE_WRITING_LOST_BEFORE_SEND = "executor_lost_before_send";
 export const TITLE_WRITING_LOST_AFTER_SEND = "executor_lost";
 
 export type {
+  TitleResumeRequest,
   TitleCallFinish,
   TitleCallRecord,
   TitleCallReservation,
@@ -74,6 +77,21 @@ export type {
 
 export function hashTitleWritingInput(projectId: string, input: TitleWritingFrozenInput): string {
   return canonicalInputHash({ projectId, input });
+}
+
+/** Identity of a resume action's content: the run and exactly which uncertain calls the person confirmed. */
+export function hashTitleResume(runId: string, confirmedCallIds: readonly string[]): string {
+  return canonicalInputHash({ runId, confirmUncertainCallIds: [...confirmedCallIds].sort() });
+}
+
+/** True when the confirmation names exactly the uncertain calls a resume would resend now. */
+export function confirmationMatches(current: readonly string[], confirmed: readonly string[]): boolean {
+  const sorted = [...confirmed].sort();
+  return current.length === sorted.length && current.every((id, index) => id === sorted[index]);
+}
+
+export function uncertainCallIdsOf(steps: readonly TitleStepRecord[], calls: readonly TitleCallRecord[]): string[] {
+  return currentUncertainCallIds(steps, calls.map((call) => ({ callId: call.id, stepKey: call.stepKey, attemptNo: call.attemptNo, state: call.state })));
 }
 
 export function newTitleRun(options: {
@@ -422,6 +440,7 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
   readonly steps: TitleStepRecord[] = [];
   readonly calls: TitleCallRecord[] = [];
   readonly projects = new Map<string, MemoryProject>();
+  readonly resumes: Array<{ runId: string; key: string; requestHash: string; confirmedCallIds: string[]; createdAt: string }> = [];
   ready = true;
 
   addProject(workspaceId: string, projectId: string): MemoryProject {
@@ -589,19 +608,24 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
     return this.bundle(run);
   }
 
-  async prepareResume(workspaceId: string, projectId: string, runId: string, options: { confirmUncertain: boolean; maxActiveRuns: number }, nowIso: string): Promise<TitleResumePreparation> {
+  async prepareResume(workspaceId: string, projectId: string, runId: string, request: TitleResumeRequest, nowIso: string): Promise<TitleResumePreparation> {
     const run = this.runs.find((item) => item.id === runId && item.workspaceId === workspaceId && item.projectId === projectId);
     if (!run) return { kind: "not_found" };
+    const previous = this.resumes.find((item) => item.runId === runId && item.key === request.resumeKey);
+    if (previous) return previous.requestHash === request.requestHash ? { kind: "replayed", bundle: this.bundle(run) } : { kind: "key_conflict" };
     if (run.state === "running") return { kind: "active" };
     if (run.state === "completed") return { kind: "not_resumable" };
     if (this.runs.some((item) => item.projectId === projectId && item.state === "running")) return { kind: "active" };
-    if (this.runs.filter((item) => item.workspaceId === workspaceId && item.state === "running").length >= options.maxActiveRuns) {
+    if (this.runs.filter((item) => item.workspaceId === workspaceId && item.state === "running").length >= request.maxActiveRuns) {
       return { kind: "active_cap" };
     }
     const steps = this.steps.filter((item) => item.runId === runId);
-    if (steps.some((step) => step.state === "unknown") && !options.confirmUncertain) return { kind: "needs_confirmation" };
+    const uncertain = uncertainCallIdsOf(steps, this.calls.filter((item) => item.runId === runId));
+    if (uncertain.length > 0 && request.confirmedCallIds.length === 0) return { kind: "needs_confirmation" };
+    if (!confirmationMatches(uncertain, request.confirmedCallIds)) return { kind: "stale_confirmation" };
     const redo = steps.filter((step) => step.state === "unknown" || step.state === "rejected" || step.state === "canceled");
     if (redo.length === 0 && run.storySave !== "pending") return { kind: "not_resumable" };
+    this.resumes.push({ runId, key: request.resumeKey, requestHash: request.requestHash, confirmedCallIds: [...request.confirmedCallIds].sort(), createdAt: nowIso });
     for (const step of redo) Object.assign(step, { state: "pending", updatedAt: nowIso });
     Object.assign(run, { state: "running", errorCode: null, cancelRequestedAt: null, executorId: null, leaseUntil: null, updatedAt: nowIso });
     return { kind: "ok", bundle: this.bundle(run) };

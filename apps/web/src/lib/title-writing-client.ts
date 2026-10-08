@@ -1,9 +1,10 @@
-import type {
-  TitleWritingOptionsView,
-  TitleWritingProviderKey,
-  TitleWritingRunView,
-  TitleWritingStepKey,
-  TitleWritingStepState,
+import {
+  currentUncertainCallIds,
+  type TitleWritingOptionsView,
+  type TitleWritingProviderKey,
+  type TitleWritingRunView,
+  type TitleWritingStepKey,
+  type TitleWritingStepState,
 } from "@ai-drama/contracts";
 import { ApiError } from "./studio-client";
 
@@ -75,11 +76,16 @@ export class TitleWritingClient {
       { method: "POST", headers: { Accept: "application/json" } })).body.run;
   }
 
-  async resume(projectId: string, runId: string, confirmUncertain: boolean, token: string): Promise<TitleWritingRunView> {
+  /**
+   * confirmUncertainCallIds are the uncertain calls the person saw and accepted may be billed again. The idempotency
+   * key identifies this one resume action: a retry after an unanswered request reuses it, so it is applied once.
+   */
+  async resume(projectId: string, runId: string, options: { confirmUncertainCallIds: readonly string[]; token: string; idempotencyKey: string }): Promise<TitleWritingRunView> {
     return (await this.call<{ run: TitleWritingRunView }>(`/projects/${projectId}/title-runs/${runId}/resume`, {
       method: "POST",
-      headers: { Accept: "application/json", "Content-Type": "application/json", "X-Operator-Token": token },
-      body: JSON.stringify({ confirmUncertain }),
+      headers: { Accept: "application/json", "Content-Type": "application/json", "X-Operator-Token": options.token,
+        "Idempotency-Key": options.idempotencyKey },
+      body: JSON.stringify({ confirmUncertainCallIds: options.confirmUncertainCallIds }),
     })).body.run;
   }
 
@@ -188,6 +194,11 @@ export function errorText(code: string | null): string | null {
 
 export function hasUncertain(run: TitleWritingRunView): boolean {
   return run.steps.some((step) => step.state === "unknown");
+}
+
+/** The uncertain calls a resume would resend now, by the same rule the server applies. */
+export function uncertainCallIds(run: TitleWritingRunView): string[] {
+  return currentUncertainCallIds(run.steps, run.calls);
 }
 
 export function canResume(run: TitleWritingRunView): boolean {

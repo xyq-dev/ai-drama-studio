@@ -2,6 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import {
   TITLE_WRITING_PROVIDER_KEYS,
+  titleWritingResumeSchema,
   titleWritingSettingsSchema,
   titleWritingStartSchema,
   type TitleWritingOptionsView,
@@ -12,6 +13,7 @@ import type { RuntimeStore } from "@ai-drama/database";
 import {
   TITLE_WRITING_CALL_CAP_PER_RUN,
   WRITING_ADAPTERS,
+  hashTitleResume,
   newTitleRun,
   titleRunView,
   type TitleRunBundle,
@@ -52,6 +54,7 @@ const MESSAGES: Record<string, string> = {
   TITLE_WRITING_ACTIVE_RUN_CAP: "同时进行的创作已达上限，请等当前创作结束。",
   IDEMPOTENCY_KEY_REUSED: "同一个请求标识被用于不同的内容，已拒绝。",
   TITLE_WRITING_NEEDS_CONFIRMATION: "有结果不确定的调用，可能已经计费。确认后才会重新发送。",
+  TITLE_WRITING_CONFIRMATION_STALE: "确认的不确定调用和现在的不一致（可能又出现了新的不确定调用），没有重新发送。请重新查看后再确认。",
   TITLE_WRITING_NOT_RESUMABLE: "这次创作没有需要续跑的步骤。",
   TITLE_WRITING_STORY_NOT_APPROVED: "故事还没有通过审核，剧本暂不能写入分集。",
   TITLE_WRITING_STORY_CHANGED: "审核通过的故事和生成剧本时用的故事不同，请确认后再写入。",
@@ -71,7 +74,6 @@ function sameToken(configured: string, presented: string | undefined): boolean {
   return left.length === right.length && timingSafeEqual(left, right);
 }
 
-const resumeSchema = z.object({ confirmUncertain: z.boolean().default(false) }).strict();
 const placeSchema = z.object({ acceptStoryChanged: z.boolean().default(false) }).strict();
 
 /**
@@ -208,25 +210,39 @@ export class TitleWritingService {
     return this.found(await this.deps.store.requestCancel(this.deps.workspaceId, projectId, runId, this.now().toISOString()));
   }
 
-  async resume(projectId: string, runId: string, body: unknown, token: string | undefined): Promise<TitleWritingResult> {
+  /**
+   * Resumes only what the person saw: the confirmation must name exactly the run's current uncertain calls, checked in
+   * the store transaction. The Idempotency-Key identifies this one action; a replay after a lost receipt returns the
+   * current run and never resets or sends anything again.
+   */
+  async resume(projectId: string, runId: string, body: unknown, token: string | undefined, context: StudioContext): Promise<TitleWritingResult> {
     const refused = await this.gate(token);
     if (refused) return refused;
+    if (!context.idempotencyKey || context.idempotencyKey.length > 200) return failure(400, "VALIDATION_ERROR", { field: "Idempotency-Key" });
     await this.deps.projects.getProject(this.deps.workspaceId, projectId);
-    const parsed = resumeSchema.safeParse(body ?? {});
-    if (!parsed.success) return failure(400, "VALIDATION_ERROR");
+    const parsed = titleWritingResumeSchema.safeParse(body ?? {});
+    if (!parsed.success) return failure(400, "VALIDATION_ERROR", { field: parsed.error.issues[0]?.path.join(".") ?? "body" });
     const existing = await this.deps.store.getRun(this.deps.workspaceId, projectId, runId);
     if (!existing) return failure(404, "NOT_FOUND");
     const provider = this.deps.providers[existing.run.input.providerKey];
     if (!provider.ok || !provider.models.includes(existing.run.input.model)) {
       return failure(503, "TITLE_WRITING_PROVIDER_UNCONFIGURED", { providerKey: existing.run.input.providerKey, missing: provider.ok ? [] : provider.missing });
     }
-    const prepared = await this.deps.store.prepareResume(this.deps.workspaceId, projectId, runId,
-      { confirmUncertain: parsed.data.confirmUncertain, maxActiveRuns: this.deps.maxActiveRuns }, this.now().toISOString());
+    const confirmed = parsed.data.confirmUncertainCallIds;
+    const prepared = await this.deps.store.prepareResume(this.deps.workspaceId, projectId, runId, {
+      resumeKey: context.idempotencyKey,
+      requestHash: hashTitleResume(runId, confirmed),
+      confirmedCallIds: confirmed,
+      maxActiveRuns: this.deps.maxActiveRuns,
+    }, this.now().toISOString());
+    if (prepared.kind === "replayed") return this.found(prepared.bundle);
     if (prepared.kind !== "ok") {
       if (prepared.kind === "not_found") return failure(404, "NOT_FOUND");
       if (prepared.kind === "active") return failure(409, "TITLE_WRITING_RUN_ACTIVE", { runId });
       if (prepared.kind === "active_cap") return failure(429, "TITLE_WRITING_ACTIVE_RUN_CAP");
       if (prepared.kind === "needs_confirmation") return failure(409, "TITLE_WRITING_NEEDS_CONFIRMATION");
+      if (prepared.kind === "stale_confirmation") return failure(409, "TITLE_WRITING_CONFIRMATION_STALE");
+      if (prepared.kind === "key_conflict") return failure(409, "IDEMPOTENCY_KEY_REUSED");
       return failure(409, "TITLE_WRITING_NOT_RESUMABLE");
     }
     this.schedule(runId);

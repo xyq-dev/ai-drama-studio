@@ -229,6 +229,37 @@ export interface TitleWritingRunView {
   updatedAt: string;
 }
 
+/** At most one uncertain call per step can be open for confirmation, so five steps bound the list. */
+export const TITLE_WRITING_MAX_CONFIRMED_CALLS = TITLE_WRITING_STEP_KEYS.length;
+
+/**
+ * The uncertain calls a resume would resend: for every step that is currently unknown, the call of its current
+ * attempt. A confirmation is valid only for exactly this set, so an old confirmation can never cover a newer
+ * uncertain attempt. Server and browser use the same rule. Sorted for comparison.
+ */
+export function currentUncertainCallIds(
+  steps: ReadonlyArray<{ stepKey: TitleWritingStepKey; state: TitleWritingStepState; attemptNo: number }>,
+  calls: ReadonlyArray<{ callId: string; stepKey: TitleWritingStepKey; attemptNo: number; state: TitleWritingCallState }>,
+): string[] {
+  const ids: string[] = [];
+  for (const step of steps) {
+    if (step.state !== "unknown") continue;
+    const call = calls.find((item) => item.stepKey === step.stepKey && item.attemptNo === step.attemptNo && item.state === "unknown");
+    if (call) ids.push(call.callId);
+  }
+  return ids.sort();
+}
+
+/**
+ * Resume request body. confirmUncertainCallIds names the uncertain calls the person saw and accepted may be billed
+ * again; it must equal currentUncertainCallIds at the time the server applies it. The Idempotency-Key header is the
+ * identity of this one resume action.
+ */
+export const titleWritingResumeSchema = z.object({
+  confirmUncertainCallIds: z.array(z.string().uuid()).max(TITLE_WRITING_MAX_CONFIRMED_CALLS).default([]),
+}).strict();
+export type TitleWritingResume = z.infer<typeof titleWritingResumeSchema>;
+
 export interface TitleWritingProviderOption {
   providerKey: TitleWritingProviderKey;
   label: string;

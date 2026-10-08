@@ -1,6 +1,7 @@
 import type { PoolClient, QueryResult, QueryResultRow } from "pg";
 import {
   TITLE_WRITING_CANCELED_BEFORE_SEND,
+  currentUncertainCallIds,
   type EpisodeDraftCandidate,
   type TitleWritingFrozenInput,
   type TitleWritingRunState,
@@ -10,6 +11,7 @@ import {
   type TitleCallReservation,
   type TitleCallSubmission,
   type TitleResumePreparation,
+  type TitleResumeRequest,
   type TitleRunBundle,
   type TitleRunCreation,
   type TitleRunRecord,
@@ -40,6 +42,7 @@ export const TITLE_WRITING_TABLES = {
     "id", "run_id", "workspace_id", "step_key", "attempt_no", "provider_key", "model", "request_hash", "state", "executor_id",
     "provider_request_id", "response_model", "usage_json", "billing_status", "error_code", "created_at", "finished_at",
   ],
+  title_writing_resume: ["run_id", "workspace_id", "idempotency_key", "request_hash", "confirmed_call_ids", "created_at"],
 } as const;
 
 const RUN_COLUMNS = TITLE_WRITING_TABLES.title_writing_run.join(", ");
@@ -388,7 +391,7 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
     return this.getRun(workspaceId, projectId, runId);
   }
 
-  async prepareResume(workspaceId: string, projectId: string, runId: string, options: { confirmUncertain: boolean; maxActiveRuns: number }, nowIso: string): Promise<TitleResumePreparation> {
+  async prepareResume(workspaceId: string, projectId: string, runId: string, request: TitleResumeRequest, nowIso: string): Promise<TitleResumePreparation> {
     return this.transaction(async (client) => {
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`title_writing_run:${workspaceId}`]);
       const result = await client.query<Row>(
@@ -398,16 +401,37 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
       const row = result.rows[0];
       if (!row) return { kind: "not_found" };
       const run = toRun(row);
+      // The run row lock serializes concurrent requests of one resume action; the primary key is the backstop.
+      const previous = await client.query<Row>(
+        "SELECT request_hash FROM title_writing_resume WHERE run_id = $1 AND idempotency_key = $2", [runId, request.resumeKey]);
+      if (previous.rows[0]) {
+        return String(previous.rows[0].request_hash) === request.requestHash
+          ? { kind: "replayed", bundle: (await this.load(client, row))! }
+          : { kind: "key_conflict" };
+      }
       if (run.state === "running") return { kind: "active" };
       if (run.state === "completed") return { kind: "not_resumable" };
       const running = await client.query<Row>(
         "SELECT project_id FROM title_writing_run WHERE workspace_id = $1 AND state = 'running'", [workspaceId]);
       if (running.rows.some((item) => String(item.project_id) === projectId)) return { kind: "active" };
-      if (running.rows.length >= options.maxActiveRuns) return { kind: "active_cap" };
+      if (running.rows.length >= request.maxActiveRuns) return { kind: "active_cap" };
       const steps = (await client.query<Row>(`SELECT ${STEP_COLUMNS} FROM title_writing_step WHERE run_id = $1`, [runId])).rows.map(toStep);
-      if (steps.some((step) => step.state === "unknown") && !options.confirmUncertain) return { kind: "needs_confirmation" };
+      const calls = (await client.query<Row>("SELECT id, step_key, attempt_no, state FROM title_writing_call WHERE run_id = $1", [runId])).rows
+        .map((item) => ({ callId: String(item.id), stepKey: item.step_key as TitleWritingStepKey, attemptNo: Number(item.attempt_no),
+          state: item.state as TitleCallRecord["state"] }));
+      const uncertain = currentUncertainCallIds(steps, calls);
+      const confirmed = [...request.confirmedCallIds].sort();
+      if (uncertain.length > 0 && confirmed.length === 0) return { kind: "needs_confirmation" };
+      if (uncertain.length !== confirmed.length || uncertain.some((id, index) => id !== confirmed[index])) {
+        return { kind: "stale_confirmation" };
+      }
       const redo = steps.filter((step) => step.state === "unknown" || step.state === "rejected" || step.state === "canceled");
       if (redo.length === 0 && run.storySave !== "pending") return { kind: "not_resumable" };
+      await client.query(
+        `INSERT INTO title_writing_resume (run_id, workspace_id, idempotency_key, request_hash, confirmed_call_ids, created_at)
+         VALUES ($1, $2, $3, $4, $5::jsonb, $6)`,
+        [runId, workspaceId, request.resumeKey, request.requestHash, JSON.stringify(confirmed), nowIso],
+      );
       await client.query(
         `UPDATE title_writing_step SET state = 'pending', updated_at = $2
           WHERE run_id = $1 AND state IN ('unknown', 'rejected', 'canceled')`,

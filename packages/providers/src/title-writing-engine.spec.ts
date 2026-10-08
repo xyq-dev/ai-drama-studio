@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { TITLE_WRITING_DEFAULT_EPISODE_SECONDS, type TitleWritingProviderKey } from "@ai-drama/contracts";
 import { titleWritingProviderConfigs, type WritingProviderConfig, type WritingTransport } from "./text-writing";
@@ -5,8 +6,10 @@ import {
   InMemoryTitleWritingStore,
   TITLE_WRITING_CALL_CAP_PER_RUN,
   TitleWritingEngine,
+  hashTitleResume,
   newTitleRun,
   titleRunView,
+  uncertainCallIdsOf,
 } from "./title-writing-engine";
 import { chatAnswer, fixtureChatTransport, fixtureConcept, fixtureOutline, type FixtureExchange, type FixtureStep } from "./title-writing-fixtures";
 
@@ -43,6 +46,14 @@ function setup(options: {
     providerKey: options.providerKey ?? "qwen", model: options.model ?? "q-1", now: new Date(),
   });
   return { store, engine, seen, run };
+}
+
+/** A fresh resume action; with confirm it names exactly the uncertain calls the store holds now, as the page shows them. */
+async function resume(store: InMemoryTitleWritingStore, projectId: string, runId: string, confirm: boolean) {
+  const bundle = (await store.getRunById(WS, runId))!;
+  const confirmed = confirm ? uncertainCallIdsOf(bundle.steps, bundle.calls) : [];
+  return store.prepareResume(WS, projectId, runId, { resumeKey: randomUUID(), requestHash: hashTitleResume(runId, confirmed),
+    confirmedCallIds: confirmed, maxActiveRuns: 1 }, new Date().toISOString());
 }
 
 describe("title-driven writing run", () => {
@@ -197,8 +208,8 @@ describe("title-driven writing run", () => {
     expect(seen.map((item) => item.step)).toEqual(["concept", "outline"]);
     await engine.drive(runId);
     expect(seen).toHaveLength(2);
-    expect((await store.prepareResume(WS, P1, runId, { confirmUncertain: false, maxActiveRuns: 1 }, new Date().toISOString())).kind).toBe("needs_confirmation");
-    expect((await store.prepareResume(WS, P1, runId, { confirmUncertain: true, maxActiveRuns: 1 }, new Date().toISOString())).kind).toBe("ok");
+    expect((await resume(store, P1, runId, false)).kind).toBe("needs_confirmation");
+    expect((await resume(store, P1, runId, true)).kind).toBe("ok");
     await engine.drive(runId);
     view = titleRunView((await store.getRunById(WS, runId))!);
     expect(view.state).toBe("completed");
@@ -234,11 +245,11 @@ describe("title-driven writing run", () => {
     const runId = created.kind === "blocked" ? "" : created.bundle.run.id;
     await engine.drive(runId);
     expect((await store.getRunById(WS, runId))!.run.state).toBe("partial");
-    expect((await store.prepareResume(WS, P1, runId, { confirmUncertain: false, maxActiveRuns: 1 }, new Date().toISOString())).kind).toBe("ok");
+    expect((await resume(store, P1, runId, false)).kind).toBe("ok");
     await engine.drive(runId);
     expect(seen.map((item) => item.step)).toEqual(["concept", "outline", "episode:1", "episode:2", "episode:2", "episode:3"]);
     expect((await store.getRunById(WS, runId))!.run.state).toBe("completed");
-    expect((await store.prepareResume(WS, P1, runId, { confirmUncertain: true, maxActiveRuns: 1 }, new Date().toISOString())).kind).toBe("not_resumable");
+    expect((await resume(store, P1, runId, true)).kind).toBe("not_resumable");
   });
 
   it("resuming respects the workspace active-run cap", async () => {
@@ -247,7 +258,7 @@ describe("title-driven writing run", () => {
     const firstId = first.kind === "blocked" ? "" : first.bundle.run.id;
     await engine.drive(firstId);
     expect((await store.createRun(run(P2, "b"), { maxActiveRuns: 1 })).kind).toBe("created");
-    expect((await store.prepareResume(WS, P1, firstId, { confirmUncertain: false, maxActiveRuns: 1 }, new Date().toISOString())).kind)
+    expect((await resume(store, P1, firstId, false)).kind)
       .toBe("active_cap");
   });
 
@@ -272,7 +283,7 @@ describe("title-driven writing run", () => {
     const runId = created.kind === "blocked" ? "" : created.bundle.run.id;
     for (let index = 0; index < TITLE_WRITING_CALL_CAP_PER_RUN + 2; index += 1) {
       await engine.drive(runId);
-      await store.prepareResume(WS, P1, runId, { confirmUncertain: false, maxActiveRuns: 1 }, new Date().toISOString());
+      await resume(store, P1, runId, false);
     }
     await engine.drive(runId);
     expect(seen).toHaveLength(TITLE_WRITING_CALL_CAP_PER_RUN);

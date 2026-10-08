@@ -199,14 +199,51 @@ describe("after a start", () => {
     const started = await service.start(P1, { title: "夜班证词" }, TOKEN, CONTEXT("k"));
     await settle();
     const runId = (started.body as { run: { runId: string } }).run.runId;
-    expect(((await service.get(P1, runId)).body as { run: { state: string } }).run.state).toBe("needs_attention");
-    expect((await service.resume(P1, runId, {}, undefined)).status).toBe(403);
-    expect((await service.resume(P1, runId, {}, TOKEN)).body).toMatchObject({ error: { code: "TITLE_WRITING_NEEDS_CONFIRMATION" } });
+    const shown = (await service.get(P1, runId)).body as { run: { state: string; calls: Array<{ callId: string; state: string }> } };
+    expect(shown.run.state).toBe("needs_attention");
+    const uncertainIds = shown.run.calls.filter((call) => call.state === "unknown").map((call) => call.callId);
+    const confirm = { confirmUncertainCallIds: uncertainIds };
+    expect((await service.resume(P1, runId, confirm, undefined, CONTEXT("r1"))).status).toBe(403);
+    expect((await service.resume(P1, runId, confirm, "wrong-token-000000000", CONTEXT("r1"))).body)
+      .toMatchObject({ error: { code: "TITLE_WRITING_FORBIDDEN" } });
+    expect((await service.resume(P1, runId, confirm, TOKEN, CONTEXT())).body).toMatchObject({ error: { code: "VALIDATION_ERROR" } });
+    expect((await service.resume(P1, runId, { confirmUncertain: true }, TOKEN, CONTEXT("r0"))).status).toBe(400);
+    expect((await service.resume(P1, runId, {}, TOKEN, CONTEXT("r0"))).body).toMatchObject({ error: { code: "TITLE_WRITING_NEEDS_CONFIRMATION" } });
     expect(seen).toHaveLength(1);
-    expect((await service.resume(P1, runId, { confirmUncertain: true }, TOKEN)).status).toBe(200);
+    expect((await service.resume(P1, runId, confirm, TOKEN, CONTEXT("r1"))).status).toBe(200);
     await settle();
     expect(((await service.get(P1, runId)).body as { run: { state: string } }).run.state).toBe("completed");
     expect(seen.map((item) => item.step)).toEqual(["concept", "concept", "outline", "episode:1", "episode:2", "episode:3"]);
+    // The receipt was lost: replaying the same action returns the run as it is now and sends nothing.
+    const replay = await service.resume(P1, runId, confirm, TOKEN, CONTEXT("r1"));
+    await settle();
+    expect(replay.status).toBe(200);
+    expect((replay.body as { run: { state: string } }).run.state).toBe("completed");
+    expect(seen).toHaveLength(6);
+  });
+
+  it("a confirmation for an older uncertain attempt is refused in the store, even when replayed under a new key", async () => {
+    const { service, settle, seen } = setup({ override: (step, attempt) => step === "concept" && attempt <= 2 ? { status: 502, body: {} } : undefined });
+    const started = await service.start(P1, { title: "夜班证词" }, TOKEN, CONTEXT("k"));
+    await settle();
+    const runId = (started.body as { run: { runId: string } }).run.runId;
+    const read = async () => ((await service.get(P1, runId)).body as { run: { calls: Array<{ callId: string; state: string; attemptNo: number }> } })
+      .run.calls.filter((call) => call.state === "unknown");
+    const old = { confirmUncertainCallIds: (await read()).map((call) => call.callId) };
+    expect((await service.resume(P1, runId, old, TOKEN, CONTEXT("r1"))).status).toBe(200);
+    await settle();
+    expect(seen).toHaveLength(2);
+    // Attempt 2 is uncertain as well. The old confirmation, sent again under the old or a new key, does not resend it.
+    expect((await service.resume(P1, runId, old, TOKEN, CONTEXT("r1"))).status).toBe(200);
+    expect((await service.resume(P1, runId, old, TOKEN, CONTEXT("r2"))).body).toMatchObject({ error: { code: "TITLE_WRITING_CONFIRMATION_STALE" } });
+    expect((await service.resume(P1, runId, { confirmUncertainCallIds: [] }, TOKEN, CONTEXT("r1"))).body)
+      .toMatchObject({ error: { code: "IDEMPOTENCY_KEY_REUSED" } });
+    await settle();
+    expect(seen).toHaveLength(2);
+    const fresh = { confirmUncertainCallIds: (await read()).filter((call) => call.attemptNo === 2).map((call) => call.callId) };
+    expect((await service.resume(P1, runId, fresh, TOKEN, CONTEXT("r3"))).status).toBe(200);
+    await settle();
+    expect(seen.map((item) => item.step)).toEqual(["concept", "concept", "concept", "outline", "episode:1", "episode:2", "episode:3"]);
   });
 
   it("cancel is recorded on the run and later steps never start", async () => {

@@ -12,6 +12,7 @@ import {
   scriptsAwaitApproval,
   stepLabel,
   stepStateText,
+  uncertainCallIds,
   type TitleWritingRunView,
 } from "../lib/title-writing-client";
 import { BeginnerShell } from "./beginner-shell";
@@ -25,9 +26,22 @@ const PROVIDER_LABELS: Record<string, string> = { qwen: "千问", openai: "OpenA
 function actionError(caught: unknown, fallback: string): string {
   if (caught instanceof TitleWritingError) {
     if (caught.code === "TITLE_WRITING_FORBIDDEN") return "操作者令牌不正确，没有发出任何调用。";
+    if (caught.code === "TITLE_WRITING_CONFIRMATION_STALE") return "不确定的调用已经变化，之前的确认已作废，没有重新发送。请查看最新状态后重新确认。";
     return caught.detail;
   }
   return fallback;
+}
+
+/** A definite refusal: the server answered and applied nothing, so the action's key is not reused. */
+function refused(caught: unknown): boolean {
+  return caught instanceof TitleWritingError && caught.status >= 400 && caught.status < 500;
+}
+
+/** One resume action: its key is reused only to retry the same, unanswered request for the same uncertain calls. */
+interface ResumeAction {
+  runId: string;
+  confirmedFor: string;
+  key: string;
 }
 
 function ConceptView({ concept }: { concept: TitleConcept }) {
@@ -70,7 +84,9 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
   const [readError, setReadError] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [token, setToken] = useState("");
-  const [confirmUncertain, setConfirmUncertain] = useState(false);
+  // The uncertain calls the person confirmed, as a sorted id list. It only counts while it equals what is shown now.
+  const [confirmedFor, setConfirmedFor] = useState<string | null>(null);
+  const resumeAction = useRef<ResumeAction | null>(null);
   const [acceptStoryChanged, setAcceptStoryChanged] = useState(false);
   const [storyChanged, setStoryChanged] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -104,7 +120,8 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
     };
   }, [read]);
 
-  async function act(work: () => Promise<TitleWritingRunView>, fallback: string) {
+  async function act(work: () => Promise<TitleWritingRunView>, fallback: string,
+    hooks: { accepted?: () => void; failed?: (caught: unknown) => void } = {}) {
     if (busy) return;
     setBusy(true);
     setActionMessage(null);
@@ -112,10 +129,12 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
       const next = await work();
       readToken.current += 1;
       setRun(next);
+      hooks.accepted?.();
       if (next.state === "running") timer.current = setTimeout(() => { void read(); }, TITLE_WRITING_POLL_MS);
     } catch (caught) {
       if (caught instanceof TitleWritingError && caught.code === "TITLE_WRITING_STORY_CHANGED") setStoryChanged(true);
       setActionMessage(actionError(caught, fallback));
+      hooks.failed?.(caught);
     } finally {
       setBusy(false);
     }
@@ -125,6 +144,27 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
   const outline = run?.steps.find((step) => step.stepKey === "outline")?.output as EpisodeOutline | null | undefined;
   const episodes = run?.steps.filter((step) => step.stepKey.startsWith("episode:")) ?? [];
   const uncertain = run ? hasUncertain(run) : false;
+  const uncertainIds = run ? uncertainCallIds(run) : [];
+  const uncertainKey = uncertainIds.join(",");
+  const confirmUncertain = uncertain && confirmedFor === uncertainKey;
+
+  function resume(current: TitleWritingRunView) {
+    const confirmed = uncertain ? uncertainIds : [];
+    const previous = resumeAction.current;
+    const action = previous && previous.runId === current.runId && previous.confirmedFor === uncertainKey
+      ? previous : { runId: current.runId, confirmedFor: uncertainKey, key: crypto.randomUUID() };
+    resumeAction.current = action;
+    void act(() => client.resume(projectId, current.runId, { confirmUncertainCallIds: confirmed, token: token.trim(), idempotencyKey: action.key }),
+      "没有确认续跑是否已被受理（网络或服务异常）。再次点击会重放同一个续跑请求。", {
+        accepted: () => { resumeAction.current = null; setConfirmedFor(null); },
+        failed: (caught) => {
+          if (!refused(caught)) return;
+          resumeAction.current = null;
+          setConfirmedFor(null);
+          if (caught instanceof TitleWritingError && caught.code === "TITLE_WRITING_CONFIRMATION_STALE") void read();
+        },
+      });
+  }
 
   return (
     <BeginnerShell>
@@ -188,7 +228,8 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
                   <p className={styles.helper}>继续创作会复用已完成的内容，只重新进行没有完成的步骤，使用同一个模型服务。</p>
                   {uncertain ? (
                     <label className={styles.check}>
-                      <input type="checkbox" checked={confirmUncertain} onChange={(event) => setConfirmUncertain(event.target.checked)} />
+                      <input type="checkbox" checked={confirmUncertain}
+                        onChange={(event) => setConfirmedFor(event.target.checked ? uncertainKey : null)} />
                       我知道「结果不确定」的那一步可能已经产生费用，确认重新发送。
                     </label>
                   ) : null}
@@ -196,7 +237,7 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
                   <input id="resume-token" className={styles.input} type="password" autoComplete="off" value={token}
                     onChange={(event) => setToken(event.target.value)} />
                   <button className={styles.primary} type="button" disabled={busy || token.trim().length === 0 || (uncertain && !confirmUncertain)}
-                    onClick={() => void act(() => client.resume(projectId, run.runId, confirmUncertain, token.trim()), "没能继续创作，请重试。")}>
+                    onClick={() => resume(run)}>
                     继续创作
                   </button>
                 </div>

@@ -71,8 +71,11 @@ export class TitleWritingController {
     @Body() body: unknown,
     @Res({ passthrough: true }) response: StatusResponse,
     @Headers("x-operator-token") operatorToken?: string,
+    @Headers("idempotency-key") idempotencyKey?: string,
+    @Headers("x-trace-id") traceHeader?: string,
   ) {
-    return this.send(response, this.writing.resume(projectId, runId, body, operatorToken));
+    return this.send(response, this.writing.resume(projectId, runId, body, operatorToken,
+      { actorId: "server-owner", traceId: createTraceId(traceHeader), idempotencyKey }));
   }
 
   @Post("projects/:projectId/title-runs/:runId/scripts")

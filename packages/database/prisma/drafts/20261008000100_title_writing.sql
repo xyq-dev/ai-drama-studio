@@ -2,8 +2,8 @@
 -- Title-driven writing runs (docs/TITLE_DRIVEN_WRITING.md). New tables only; no existing table changes.
 -- Read by PostgresTitleWritingStore (packages/database/src/title-writing-store.ts). Until all three tables exist with
 -- every column below, the store reports storage unavailable and the API refuses before any provider send.
--- Rollback while unused: DROP TABLE title_writing_call, title_writing_step, title_writing_run. With data: keep the
--- tables, switch TITLE_WRITING_ENABLED off, forward-fix.
+-- Rollback while unused: DROP TABLE title_writing_resume, title_writing_call, title_writing_step, title_writing_run.
+-- With data: keep the tables, switch TITLE_WRITING_ENABLED off, forward-fix.
 
 CREATE TABLE title_writing_run (
   id uuid PRIMARY KEY,
@@ -90,3 +90,17 @@ CREATE TABLE title_writing_call (
 
 CREATE INDEX title_writing_call_recent_idx ON title_writing_call (workspace_id, created_at);
 CREATE INDEX title_writing_call_open_idx ON title_writing_call (run_id) WHERE state IN ('reserved', 'submitted');
+
+-- One row per accepted resume action. The key is the Idempotency-Key of the resume request: a replay with the same key
+-- and the same confirmation changes nothing and sends nothing; the same key with another confirmation is refused.
+-- confirmed_call_ids are the uncertain calls the person confirmed; they must equal the run's current uncertain calls.
+CREATE TABLE title_writing_resume (
+  run_id uuid NOT NULL,
+  workspace_id uuid NOT NULL,
+  idempotency_key text NOT NULL CHECK (length(idempotency_key) BETWEEN 1 AND 200),
+  request_hash text NOT NULL CHECK (request_hash ~ '^[0-9a-f]{64}$'),
+  confirmed_call_ids jsonb NOT NULL CHECK (jsonb_typeof(confirmed_call_ids) = 'array'),
+  created_at timestamptz NOT NULL,
+  PRIMARY KEY (run_id, idempotency_key),
+  FOREIGN KEY (run_id, workspace_id) REFERENCES title_writing_run (id, workspace_id) ON DELETE CASCADE
+);
