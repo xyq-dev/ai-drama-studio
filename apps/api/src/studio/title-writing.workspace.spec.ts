@@ -48,7 +48,7 @@ async function seedWorkspaceB(store: InMemoryTitleWritingStore, clock: () => Dat
     requestHash: "h", state: "reserved", executorId: "dead-b", providerRequestId: null, responseModel: null,
     usage: { status: "unknown", inputTokens: null, outputTokens: null, totalTokens: null }, errorCode: null, createdAt: clock().toISOString(),
     finishedAt: null }, { sinceIso: "2000-01-01T00:00:00Z", maxCallsPerDay: 30 }, clock().toISOString(), lease);
-  expect(await store.markCallSubmitted(WB, callId, "dead-b", clock().toISOString(), lease)).toBe(true);
+  expect(await store.markCallSubmitted(WB, callId, "dead-b", clock().toISOString(), lease)).toBe("submitted");
   const idle = newTitleRun({ workspaceId: WB, projectId: PB2, actorId: "b", idempotencyKey: "idle", title: "乙二", providerKey: "qwen", model: "q-1",
     settings: SETTINGS, now: clock() });
   await store.createRun(idle, { maxActiveRuns: 5 });

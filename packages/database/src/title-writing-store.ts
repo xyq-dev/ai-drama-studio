@@ -1,19 +1,21 @@
 import type { PoolClient, QueryResult, QueryResultRow } from "pg";
-import type {
-  EpisodeDraftCandidate,
-  TitleWritingFrozenInput,
-  TitleWritingRunState,
-  TitleWritingStepKey,
-  TitleCallFinish,
-  TitleCallRecord,
-  TitleCallReservation,
-  TitleResumePreparation,
-  TitleRunBundle,
-  TitleRunCreation,
-  TitleRunRecord,
-  TitleScriptPlacement,
-  TitleStepRecord,
-  TitleWritingStore,
+import {
+  TITLE_WRITING_CANCELED_BEFORE_SEND,
+  type EpisodeDraftCandidate,
+  type TitleWritingFrozenInput,
+  type TitleWritingRunState,
+  type TitleWritingStepKey,
+  type TitleCallFinish,
+  type TitleCallRecord,
+  type TitleCallReservation,
+  type TitleCallSubmission,
+  type TitleResumePreparation,
+  type TitleRunBundle,
+  type TitleRunCreation,
+  type TitleRunRecord,
+  type TitleScriptPlacement,
+  type TitleStepRecord,
+  type TitleWritingStore,
 } from "@ai-drama/contracts";
 import { formatTitleEpisode } from "@ai-drama/domain";
 import type { DatabasePool } from "./job-service";
@@ -263,23 +265,37 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
     });
   }
 
-  async markCallSubmitted(workspaceId: string, callId: string, executorId: string, nowIso: string, leaseUntil: string): Promise<boolean> {
+  async markCallSubmitted(workspaceId: string, callId: string, executorId: string, nowIso: string, leaseUntil: string): Promise<TitleCallSubmission> {
     return this.transaction(async (client) => {
       const callRow = await client.query<Row>("SELECT run_id, step_key FROM title_writing_call WHERE id = $1 AND workspace_id = $2",
         [callId, workspaceId]);
       const found = callRow.rows[0];
-      if (!found) return false;
+      if (!found) return "lost";
+      // The run row lock orders this against requestCancel: whichever commits first decides whether the call is sent.
       const run = await this.ownedRun(client, workspaceId, String(found.run_id), executorId, nowIso);
-      if (!run) return false;
+      if (!run) return "lost";
+      if (run.cancelRequestedAt !== null) {
+        const closed = await client.query(
+          `UPDATE title_writing_call SET state = 'rejected', error_code = $3, finished_at = $4
+            WHERE id = $1 AND executor_id = $2 AND state = 'reserved'`,
+          [callId, executorId, TITLE_WRITING_CANCELED_BEFORE_SEND, nowIso],
+        );
+        if (closed.rowCount !== 1) return "lost";
+        await client.query(
+          "UPDATE title_writing_step SET state = 'canceled', error_code = NULL, updated_at = $3 WHERE run_id = $1 AND step_key = $2",
+          [run.id, found.step_key, nowIso]);
+        await client.query("UPDATE title_writing_run SET updated_at = $2 WHERE id = $1", [run.id, nowIso]);
+        return "canceled";
+      }
       const updated = await client.query(
         "UPDATE title_writing_call SET state = 'submitted' WHERE id = $1 AND executor_id = $2 AND state = 'reserved'",
         [callId, executorId],
       );
-      if (updated.rowCount !== 1) return false;
+      if (updated.rowCount !== 1) return "lost";
       await client.query("UPDATE title_writing_step SET state = 'submitted', updated_at = $3 WHERE run_id = $1 AND step_key = $2",
         [run.id, found.step_key, nowIso]);
       await client.query("UPDATE title_writing_run SET lease_until = $2, updated_at = $3 WHERE id = $1", [run.id, leaseUntil, nowIso]);
-      return true;
+      return "submitted";
     });
   }
 

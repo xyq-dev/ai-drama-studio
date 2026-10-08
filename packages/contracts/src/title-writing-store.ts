@@ -83,6 +83,11 @@ export type TitleCallReservation =
   | { kind: "canceled" | "lost" }
   | { kind: "blocked"; code: "TITLE_WRITING_DAILY_CAP" | "TITLE_WRITING_RUN_CAP" };
 
+export type TitleCallSubmission = "submitted" | "canceled" | "lost";
+
+/** Error code of a reserved call closed because the run was canceled before it was sent. Nothing was sent. */
+export const TITLE_WRITING_CANCELED_BEFORE_SEND = "canceled_before_send";
+
 export interface TitleCallFinish {
   state: "completed" | "rejected" | "unknown";
   errorCode: string | null;
@@ -119,8 +124,11 @@ export interface TitleWritingStore {
   claimRun(workspaceId: string, runId: string, executorId: string, nowIso: string, leaseUntil: string): Promise<boolean>;
   /** Checks workspace, ownership, cancellation, the run cap and the workspace daily cap, then inserts the call as reserved. */
   reserveCall(call: TitleCallRecord, limits: { sinceIso: string; maxCallsPerDay: number }, nowIso: string, leaseUntil: string): Promise<TitleCallReservation>;
-  /** Persisted before any network send. */
-  markCallSubmitted(workspaceId: string, callId: string, executorId: string, nowIso: string, leaseUntil: string): Promise<boolean>;
+  /**
+   * Persisted before any network send, under the run lock. A cancel committed before this point closes the reserved
+   * call as never sent ("canceled"); nothing may be sent then. A cancel committed after it leaves the call to finish.
+   */
+  markCallSubmitted(workspaceId: string, callId: string, executorId: string, nowIso: string, leaseUntil: string): Promise<TitleCallSubmission>;
   finishCall(workspaceId: string, callId: string, executorId: string, patch: TitleCallFinish, nowIso: string): Promise<boolean>;
   /** Creates a DRAFT story revision only when the project has no current story; records it on the run atomically. */
   saveStory(workspaceId: string, runId: string, executorId: string, storyText: string, actorId: string, nowIso: string): Promise<"saved" | "conflict" | "lost">;

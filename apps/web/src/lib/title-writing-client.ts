@@ -173,6 +173,7 @@ const ERRORS: Record<string, string> = {
   provider_error: "模型服务返回了意外的状态。",
   executor_lost: "服务重启时这一步已经发出，结果和费用不确定，不会自动重发。",
   executor_lost_before_send: "服务重启时这一步还没有发出。",
+  canceled_before_send: "停止请求先到达，这一步没有发出。",
   provider_unconfigured: "这次创作使用的模型服务现在没有配置完整，没有发出请求。",
   story_conflict: "作品里已经有故事，没有覆盖。生成的故事保留在下方。",
   story_too_large: "整理后的故事超过长度上限，没有保存。",

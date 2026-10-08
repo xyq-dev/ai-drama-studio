@@ -98,8 +98,8 @@ describe.runIf(draftAuthorized)("PostgresTitleWritingStore on the authorized dra
     expect(await store.claimRun(workspaceId, record.id, "b", now, later(60_000))).toBe(false);
     const first = call(record.id, "a");
     expect(await store.reserveCall(first, wide, now, later(60_000))).toEqual({ kind: "reserved" });
-    expect(await store.markCallSubmitted(workspaceId, first.id, "b", now, later(60_000))).toBe(false);
-    expect(await store.markCallSubmitted(workspaceId, first.id, "a", now, later(1))).toBe(true);
+    expect(await store.markCallSubmitted(workspaceId, first.id, "b", now, later(60_000))).toBe("lost");
+    expect(await store.markCallSubmitted(workspaceId, first.id, "a", now, later(1))).toBe("submitted");
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(await store.recoverExpired(workspaceId, new Date().toISOString())).toBe(1);
     const late = await store.finishCall(workspaceId, first.id, "a", { state: "completed", errorCode: null, providerRequestId: null, responseModel: null,

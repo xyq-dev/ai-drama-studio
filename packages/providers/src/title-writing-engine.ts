@@ -1,15 +1,17 @@
 import { createHash, randomUUID } from "node:crypto";
-import type {
-  TitleCallFinish,
-  TitleCallRecord,
-  TitleCallReservation,
-  TitleResumePreparation,
-  TitleRunBundle,
-  TitleRunCreation,
-  TitleRunRecord,
-  TitleScriptPlacement,
-  TitleStepRecord,
-  TitleWritingStore,
+import {
+  TITLE_WRITING_CANCELED_BEFORE_SEND,
+  type TitleCallFinish,
+  type TitleCallRecord,
+  type TitleCallReservation,
+  type TitleCallSubmission,
+  type TitleResumePreparation,
+  type TitleRunBundle,
+  type TitleRunCreation,
+  type TitleRunRecord,
+  type TitleScriptPlacement,
+  type TitleStepRecord,
+  type TitleWritingStore,
 } from "@ai-drama/contracts";
 import {
   TITLE_WRITING_INPUT_SCHEMA,
@@ -348,7 +350,11 @@ export class TitleWritingEngine {
     if (reservation.kind === "canceled") return this.finish(runId, "canceled", null);
     if (reservation.kind === "blocked") return this.finish(runId, anyCompleted ? "partial" : "failed", reservation.code);
     const submittedAt = this.now();
-    if (!await this.deps.store.markCallSubmitted(this.deps.workspaceId, call.id, this.executorId, submittedAt.toISOString(), this.lease(submittedAt))) return false;
+    const submission = await this.deps.store.markCallSubmitted(this.deps.workspaceId, call.id, this.executorId,
+      submittedAt.toISOString(), this.lease(submittedAt));
+    // A cancel committed before submission closed the reservation: nothing is sent.
+    if (submission === "canceled") return this.finish(runId, "canceled", null);
+    if (submission !== "submitted") return false;
 
     const exchange: WritingExchange = await (this.deps.send ?? sendWriting)({
       adapter,
@@ -517,14 +523,21 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
     return { kind: "reserved" };
   }
 
-  async markCallSubmitted(workspaceId: string, callId: string, executorId: string, nowIso: string, leaseUntil: string): Promise<boolean> {
+  async markCallSubmitted(workspaceId: string, callId: string, executorId: string, nowIso: string, leaseUntil: string): Promise<TitleCallSubmission> {
     const call = this.requireCall(callId);
     const run = this.requireRun(call.runId);
-    if (call.state !== "reserved" || call.executorId !== executorId || !this.owns(run, workspaceId, executorId, nowIso)) return false;
+    if (call.state !== "reserved" || call.executorId !== executorId || !this.owns(run, workspaceId, executorId, nowIso)) return "lost";
+    const step = this.requireStep(call.runId, call.stepKey);
+    if (run.cancelRequestedAt !== null) {
+      Object.assign(call, { state: "rejected", errorCode: TITLE_WRITING_CANCELED_BEFORE_SEND, finishedAt: nowIso });
+      Object.assign(step, { state: "canceled", errorCode: null, updatedAt: nowIso });
+      run.updatedAt = nowIso;
+      return "canceled";
+    }
     call.state = "submitted";
-    Object.assign(this.requireStep(call.runId, call.stepKey), { state: "submitted", updatedAt: nowIso });
+    Object.assign(step, { state: "submitted", updatedAt: nowIso });
     Object.assign(run, { leaseUntil, updatedAt: nowIso });
-    return true;
+    return "submitted";
   }
 
   async finishCall(workspaceId: string, callId: string, executorId: string, patch: TitleCallFinish, nowIso: string): Promise<boolean> {
