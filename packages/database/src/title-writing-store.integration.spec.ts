@@ -94,18 +94,18 @@ describe.runIf(draftAuthorized)("PostgresTitleWritingStore on the authorized dra
     const record = run("fence");
     await store.createRun(record, { maxActiveRuns: 5 });
     const now = new Date().toISOString();
-    expect(await store.claimRun(record.id, "a", now, later(60_000))).toBe(true);
-    expect(await store.claimRun(record.id, "b", now, later(60_000))).toBe(false);
+    expect(await store.claimRun(workspaceId, record.id, "a", now, later(60_000))).toBe(true);
+    expect(await store.claimRun(workspaceId, record.id, "b", now, later(60_000))).toBe(false);
     const first = call(record.id, "a");
     expect(await store.reserveCall(first, wide, now, later(60_000))).toEqual({ kind: "reserved" });
-    expect(await store.markCallSubmitted(first.id, "b", now, later(60_000))).toBe(false);
-    expect(await store.markCallSubmitted(first.id, "a", now, later(1))).toBe(true);
+    expect(await store.markCallSubmitted(workspaceId, first.id, "b", now, later(60_000))).toBe(false);
+    expect(await store.markCallSubmitted(workspaceId, first.id, "a", now, later(1))).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(await store.recoverExpired(new Date().toISOString())).toBe(1);
-    const late = await store.finishCall(first.id, "a", { state: "completed", errorCode: null, providerRequestId: null, responseModel: null,
+    expect(await store.recoverExpired(workspaceId, new Date().toISOString())).toBe(1);
+    const late = await store.finishCall(workspaceId, first.id, "a", { state: "completed", errorCode: null, providerRequestId: null, responseModel: null,
       usage: first.usage, output: null, outputHash: null }, new Date().toISOString());
     expect(late).toBe(false);
-    const bundle = (await store.getRunById(record.id))!;
+    const bundle = (await store.getRunById(workspaceId, record.id))!;
     expect(bundle.run).toMatchObject({ state: "needs_attention", errorCode: "executor_lost", executorId: null });
     expect(bundle.calls[0]).toMatchObject({ state: "unknown", errorCode: "executor_lost" });
     expect(bundle.steps[0]).toMatchObject({ state: "unknown" });
@@ -116,7 +116,7 @@ describe.runIf(draftAuthorized)("PostgresTitleWritingStore on the authorized dra
     const record = run("cap");
     await store.createRun(record, { maxActiveRuns: 5 });
     const now = new Date().toISOString();
-    await store.claimRun(record.id, "a", now, later(60_000));
+    await store.claimRun(workspaceId, record.id, "a", now, later(60_000));
     const used = Number((await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM title_writing_call")).rows[0]!.n);
     expect(await store.reserveCall(call(record.id, "a"), { ...wide, maxCallsPerDay: used }, now, later(60_000)))
       .toEqual({ kind: "blocked", code: "TITLE_WRITING_DAILY_CAP" });
@@ -128,20 +128,20 @@ describe.runIf(draftAuthorized)("PostgresTitleWritingStore on the authorized dra
     const record = run("story", fresh);
     await store.createRun(record, { maxActiveRuns: 5 });
     const now = new Date().toISOString();
-    await store.claimRun(record.id, "a", now, later(60_000));
-    expect(await store.saveStory(record.id, "a", "故事正文", "server-owner", now)).toBe("saved");
-    expect(await store.saveStory(record.id, "a", "故事正文", "server-owner", now)).toBe("saved");
+    await store.claimRun(workspaceId, record.id, "a", now, later(60_000));
+    expect(await store.saveStory(workspaceId, record.id, "a", "故事正文", "server-owner", now)).toBe("saved");
+    expect(await store.saveStory(workspaceId, record.id, "a", "故事正文", "server-owner", now)).toBe("saved");
     const stories = await pool.query<{ review_status: string; content_json: unknown }>(
       "SELECT review_status, content_json FROM story_revision WHERE project_id = $1", [fresh]);
     expect(stories.rows).toEqual([{ review_status: "DRAFT", content_json: { text: "故事正文" } }]);
     expect((await store.placeScripts(workspaceId, fresh, record.id, { acceptStoryChanged: false }, "a", now)).kind).toBe("not_ready");
-    await store.finishRun(record.id, "a", "completed", null, now);
+    await store.finishRun(workspaceId, record.id, "a", "completed", null, now);
     expect((await store.placeScripts(workspaceId, fresh, record.id, { acceptStoryChanged: false }, "a", now)).kind).toBe("story_not_approved");
 
     const second = run("story-2", fresh, "12".repeat(32));
     await store.createRun(second, { maxActiveRuns: 5 });
-    await store.claimRun(second.id, "a", now, later(60_000));
-    expect(await store.saveStory(second.id, "a", "另一份", "server-owner", now)).toBe("conflict");
+    await store.claimRun(workspaceId, second.id, "a", now, later(60_000));
+    expect(await store.saveStory(workspaceId, second.id, "a", "另一份", "server-owner", now)).toBe("conflict");
     expect((await pool.query("SELECT 1 FROM story_revision WHERE project_id = $1", [fresh])).rowCount).toBe(1);
   });
 });

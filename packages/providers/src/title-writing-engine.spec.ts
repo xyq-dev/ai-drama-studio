@@ -36,7 +36,7 @@ function setup(options: {
   store.addProject(WS, P2);
   const seen = options.seen ?? [];
   const transport = options.transport ?? fixtureChatTransport(TITLE, { seen, ...(options.override ? { override: options.override } : {}) });
-  const engine = new TitleWritingEngine({ store, providers: providers(), transport, maxCallsPerDay: options.maxCallsPerDay ?? 30, timeoutMs: 20 });
+  const engine = new TitleWritingEngine({ workspaceId: WS, store, providers: providers(), transport, maxCallsPerDay: options.maxCallsPerDay ?? 30, timeoutMs: 20 });
   const run = (projectId = P1, key = "key-1", title = TITLE) => newTitleRun({
     workspaceId: WS, projectId, actorId: "server-owner", idempotencyKey: key, title,
     settings: { episodeCount: 3, episodeSeconds: TITLE_WRITING_DEFAULT_EPISODE_SECONDS, style: "" },
@@ -118,8 +118,8 @@ describe("title-driven writing run", () => {
     const { store, run, seen } = setup();
     const created = await store.createRun(run(), { maxActiveRuns: 1 });
     const runId = created.kind === "blocked" ? "" : created.bundle.run.id;
-    const engineB = new TitleWritingEngine({ store, providers: providers(), transport: fixtureChatTransport(TITLE, { seen }), maxCallsPerDay: 30 });
-    const engineA = new TitleWritingEngine({ store, providers: providers(), transport: fixtureChatTransport(TITLE, { seen }), maxCallsPerDay: 30 });
+    const engineB = new TitleWritingEngine({ workspaceId: WS, store, providers: providers(), transport: fixtureChatTransport(TITLE, { seen }), maxCallsPerDay: 30 });
+    const engineA = new TitleWritingEngine({ workspaceId: WS, store, providers: providers(), transport: fixtureChatTransport(TITLE, { seen }), maxCallsPerDay: 30 });
     await Promise.all([engineA.drive(runId), engineB.drive(runId), engineA.drive(runId)]);
     expect(seen.map((item) => item.step)).toEqual(["concept", "outline", "episode:1", "episode:2", "episode:3"]);
   });
@@ -131,7 +131,7 @@ describe("title-driven writing run", () => {
     const created = await store.createRun(run(), { maxActiveRuns: 1 });
     const runId = created.kind === "blocked" ? "" : created.bundle.run.id;
     await engine.drive(runId);
-    const view = titleRunView((await store.getRunById(runId))!);
+    const view = titleRunView((await store.getRunById(WS, runId))!);
     expect(view.state).toBe("partial");
     expect(view.steps.map((step) => step.state)).toEqual(["completed", "completed", "completed", "rejected", "pending"]);
     expect(view.steps[3]?.output).toBeNull();
@@ -151,7 +151,7 @@ describe("title-driven writing run", () => {
     const created = await store.createRun(run(), { maxActiveRuns: 1 });
     const runId = created.kind === "blocked" ? "" : created.bundle.run.id;
     await engine.drive(runId);
-    expect(titleRunView((await store.getRunById(runId))!).steps[2]).toMatchObject({ state: "rejected", errorCode: code, output: null });
+    expect(titleRunView((await store.getRunById(WS, runId))!).steps[2]).toMatchObject({ state: "rejected", errorCode: code, output: null });
   });
 
   it("a concept whose narrative fields are only whitespace is rejected and the outline never starts", async () => {
@@ -160,7 +160,7 @@ describe("title-driven writing run", () => {
     const created = await store.createRun(run(), { maxActiveRuns: 1 });
     const runId = created.kind === "blocked" ? "" : created.bundle.run.id;
     await engine.drive(runId);
-    const view = titleRunView((await store.getRunById(runId))!);
+    const view = titleRunView((await store.getRunById(WS, runId))!);
     expect(view).toMatchObject({ state: "failed", errorCode: "invalid_output" });
     expect(view.steps.map((step) => step.state)).toEqual(["rejected", "pending", "pending", "pending", "pending"]);
     expect(seen.map((item) => item.step)).toEqual(["concept"]);
@@ -173,7 +173,7 @@ describe("title-driven writing run", () => {
     const created = await store.createRun(run(), { maxActiveRuns: 1 });
     const runId = created.kind === "blocked" ? "" : created.bundle.run.id;
     await engine.drive(runId);
-    expect(titleRunView((await store.getRunById(runId))!)).toMatchObject({ state: "partial", errorCode: "invalid_output" });
+    expect(titleRunView((await store.getRunById(WS, runId))!)).toMatchObject({ state: "partial", errorCode: "invalid_output" });
     expect(seen.map((item) => item.step)).toEqual(["concept", "outline"]);
   });
 
@@ -183,7 +183,7 @@ describe("title-driven writing run", () => {
     const created = await store.createRun(run(), { maxActiveRuns: 1 });
     const runId = created.kind === "blocked" ? "" : created.bundle.run.id;
     await engine.drive(runId);
-    expect(titleRunView((await store.getRunById(runId))!).steps[1]).toMatchObject({ state: "rejected", errorCode: "invalid_output" });
+    expect(titleRunView((await store.getRunById(WS, runId))!).steps[1]).toMatchObject({ state: "rejected", errorCode: "invalid_output" });
   });
 
   it("an uncertain call (timeout) stops the run, is not resent, and resuming needs explicit confirmation", async () => {
@@ -191,7 +191,7 @@ describe("title-driven writing run", () => {
     const created = await store.createRun(run(), { maxActiveRuns: 1 });
     const runId = created.kind === "blocked" ? "" : created.bundle.run.id;
     await engine.drive(runId);
-    let view = titleRunView((await store.getRunById(runId))!);
+    let view = titleRunView((await store.getRunById(WS, runId))!);
     expect(view.state).toBe("needs_attention");
     expect(view.steps[1]).toMatchObject({ state: "unknown", errorCode: "timeout" });
     expect(seen.map((item) => item.step)).toEqual(["concept", "outline"]);
@@ -200,7 +200,7 @@ describe("title-driven writing run", () => {
     expect((await store.prepareResume(WS, P1, runId, { confirmUncertain: false, maxActiveRuns: 1 }, new Date().toISOString())).kind).toBe("needs_confirmation");
     expect((await store.prepareResume(WS, P1, runId, { confirmUncertain: true, maxActiveRuns: 1 }, new Date().toISOString())).kind).toBe("ok");
     await engine.drive(runId);
-    view = titleRunView((await store.getRunById(runId))!);
+    view = titleRunView((await store.getRunById(WS, runId))!);
     expect(view.state).toBe("completed");
     // The completed concept was reused; only the uncertain outline and the remaining steps were sent.
     expect(seen.map((item) => item.step)).toEqual(["concept", "outline", "outline", "episode:1", "episode:2", "episode:3"]);
@@ -216,7 +216,7 @@ describe("title-driven writing run", () => {
     const created = await store.createRun(run(), { maxActiveRuns: 1 });
     const runId = created.kind === "blocked" ? "" : created.bundle.run.id;
     await engine.drive(runId);
-    const view = titleRunView((await store.getRunById(runId))!);
+    const view = titleRunView((await store.getRunById(WS, runId))!);
     expect(view).toMatchObject({ state, errorCode: code });
     expect(seen).toHaveLength(1);
   });
@@ -233,11 +233,11 @@ describe("title-driven writing run", () => {
     const created = await store.createRun(run(), { maxActiveRuns: 1 });
     const runId = created.kind === "blocked" ? "" : created.bundle.run.id;
     await engine.drive(runId);
-    expect((await store.getRunById(runId))!.run.state).toBe("partial");
+    expect((await store.getRunById(WS, runId))!.run.state).toBe("partial");
     expect((await store.prepareResume(WS, P1, runId, { confirmUncertain: false, maxActiveRuns: 1 }, new Date().toISOString())).kind).toBe("ok");
     await engine.drive(runId);
     expect(seen.map((item) => item.step)).toEqual(["concept", "outline", "episode:1", "episode:2", "episode:2", "episode:3"]);
-    expect((await store.getRunById(runId))!.run.state).toBe("completed");
+    expect((await store.getRunById(WS, runId))!.run.state).toBe("completed");
     expect((await store.prepareResume(WS, P1, runId, { confirmUncertain: true, maxActiveRuns: 1 }, new Date().toISOString())).kind).toBe("not_resumable");
   });
 
@@ -256,7 +256,7 @@ describe("title-driven writing run", () => {
     const created = await store.createRun(run(), { maxActiveRuns: 1 });
     const runId = created.kind === "blocked" ? "" : created.bundle.run.id;
     await engine.drive(runId);
-    const view = titleRunView((await store.getRunById(runId))!);
+    const view = titleRunView((await store.getRunById(WS, runId))!);
     expect(view).toMatchObject({ state: "partial", errorCode: "TITLE_WRITING_DAILY_CAP" });
     expect(seen).toHaveLength(2);
   });
@@ -277,7 +277,7 @@ describe("title-driven writing run", () => {
     await engine.drive(runId);
     expect(seen).toHaveLength(TITLE_WRITING_CALL_CAP_PER_RUN);
     expect(failures).toBe(TITLE_WRITING_CALL_CAP_PER_RUN);
-    expect((await store.getRunById(runId))!.run).toMatchObject({ state: "failed", errorCode: "TITLE_WRITING_RUN_CAP" });
+    expect((await store.getRunById(WS, runId))!.run).toMatchObject({ state: "failed", errorCode: "TITLE_WRITING_RUN_CAP" });
   });
 
   it("cancel stops later steps; the in-flight call keeps its real outcome and billing stays unknown", async () => {
@@ -291,13 +291,13 @@ describe("title-driven writing run", () => {
       if (seen.length === 2 && cancel) await cancel();
       return answer;
     };
-    const engine = new TitleWritingEngine({ store, providers: providers(), transport, maxCallsPerDay: 30 });
+    const engine = new TitleWritingEngine({ workspaceId: WS, store, providers: providers(), transport, maxCallsPerDay: 30 });
     const record = newTitleRun({ workspaceId: WS, projectId: P1, actorId: "a", idempotencyKey: "k", title: TITLE,
       settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey: "qwen", model: "q-1", now: new Date() });
     await store.createRun(record, { maxActiveRuns: 1 });
     cancel = async () => { await store.requestCancel(WS, P1, record.id, new Date().toISOString()); };
     await engine.drive(record.id);
-    const view = titleRunView((await store.getRunById(record.id))!);
+    const view = titleRunView((await store.getRunById(WS, record.id))!);
     expect(view.state).toBe("canceled");
     expect(view.steps.map((step) => step.state)).toEqual(["completed", "completed", "canceled", "canceled", "canceled"]);
     expect(view.calls.map((call) => [call.stepKey, call.state, call.billingStatus])).toEqual([
@@ -315,22 +315,22 @@ describe("title-driven writing run", () => {
       settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey: "qwen", model: "q-1", now: clock() });
     await store.createRun(record, { maxActiveRuns: 1 });
     // A crashed executor: claimed, reserved the concept call and marked it submitted, then died.
-    expect(await store.claimRun(record.id, "dead", clock().toISOString(), new Date(now + 1000).toISOString())).toBe(true);
+    expect(await store.claimRun(WS, record.id, "dead", clock().toISOString(), new Date(now + 1000).toISOString())).toBe(true);
     const callId = "44444444-4444-4444-8444-444444444444";
     await store.reserveCall({ id: callId, runId: record.id, workspaceId: WS, stepKey: "concept", attemptNo: 1, providerKey: "qwen",
       model: "q-1", requestHash: "h", state: "reserved", executorId: "dead", providerRequestId: null, responseModel: null,
       usage: { status: "unknown", inputTokens: null, outputTokens: null, totalTokens: null }, errorCode: null,
       createdAt: clock().toISOString(), finishedAt: null }, { sinceIso: "2026-10-07T00:00:00Z", maxCallsPerDay: 30 },
     clock().toISOString(), new Date(now + 1000).toISOString());
-    await store.markCallSubmitted(callId, "dead", clock().toISOString(), new Date(now + 1000).toISOString());
+    await store.markCallSubmitted(WS, callId, "dead", clock().toISOString(), new Date(now + 1000).toISOString());
     const seen: FixtureExchange[] = [];
-    const engine = new TitleWritingEngine({ store, providers: providers(), transport: fixtureChatTransport(TITLE, { seen }), maxCallsPerDay: 30, clock });
+    const engine = new TitleWritingEngine({ workspaceId: WS, store, providers: providers(), transport: fixtureChatTransport(TITLE, { seen }), maxCallsPerDay: 30, clock });
     await engine.maintain();
     expect(seen).toHaveLength(0);
     now += 2000;
     await engine.maintain();
     expect(seen).toHaveLength(0);
-    const view = titleRunView((await store.getRunById(record.id))!);
+    const view = titleRunView((await store.getRunById(WS, record.id))!);
     expect(view.state).toBe("needs_attention");
     expect(view.calls[0]).toMatchObject({ state: "unknown", errorCode: "executor_lost" });
 
@@ -338,7 +338,7 @@ describe("title-driven writing run", () => {
     const second = newTitleRun({ workspaceId: WS, projectId: P1, actorId: "a", idempotencyKey: "k2", title: TITLE,
       settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey: "qwen", model: "q-1", now: clock() });
     await store.createRun(second, { maxActiveRuns: 1 });
-    await store.claimRun(second.id, "dead", clock().toISOString(), new Date(now + 1000).toISOString());
+    await store.claimRun(WS, second.id, "dead", clock().toISOString(), new Date(now + 1000).toISOString());
     await store.reserveCall({ id: "55555555-5555-4555-8555-555555555555", runId: second.id, workspaceId: WS, stepKey: "concept",
       attemptNo: 1, providerKey: "qwen", model: "q-1", requestHash: "h", state: "reserved", executorId: "dead",
       providerRequestId: null, responseModel: null, usage: { status: "unknown", inputTokens: null, outputTokens: null, totalTokens: null },
@@ -347,7 +347,7 @@ describe("title-driven writing run", () => {
     now += 2000;
     await engine.maintain();
     expect(seen.map((item) => item.step)).toEqual(["concept", "outline", "episode:1", "episode:2", "episode:3"]);
-    expect((await store.getRunById(second.id))!.run.state).toBe("completed");
+    expect((await store.getRunById(WS, second.id))!.run.state).toBe("completed");
   });
 
   it("a fenced executor's late answer cannot overwrite recovery", async () => {
@@ -362,14 +362,14 @@ describe("title-driven writing run", () => {
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const inner = fixtureChatTransport(TITLE);
     const slow: WritingTransport = async (request) => { await gate; return inner(request); };
-    const engine = new TitleWritingEngine({ store, providers: providers(), transport: slow, maxCallsPerDay: 30, clock, leaseMs: 1000 });
+    const engine = new TitleWritingEngine({ workspaceId: WS, store, providers: providers(), transport: slow, maxCallsPerDay: 30, clock, leaseMs: 1000 });
     const driving = engine.drive(record.id);
     await new Promise((resolve) => setTimeout(resolve, 5));
     now += 5000;
-    expect(await store.recoverExpired(clock().toISOString())).toBe(1);
+    expect(await store.recoverExpired(WS, clock().toISOString())).toBe(1);
     release();
     await driving;
-    const view = titleRunView((await store.getRunById(record.id))!);
+    const view = titleRunView((await store.getRunById(WS, record.id))!);
     expect(view.state).toBe("needs_attention");
     expect(view.steps[0]).toMatchObject({ state: "unknown", output: null });
   });
@@ -380,7 +380,7 @@ describe("title-driven writing run", () => {
     const created = await store.createRun(run(), { maxActiveRuns: 1 });
     const runId = created.kind === "blocked" ? "" : created.bundle.run.id;
     await engine.drive(runId);
-    const view = titleRunView((await store.getRunById(runId))!);
+    const view = titleRunView((await store.getRunById(WS, runId))!);
     expect(view).toMatchObject({ state: "needs_attention", errorCode: "story_conflict", storySave: "conflict" });
     expect(view.storyText).toContain("故事梗概");
     expect(store.projects.get(P1)!.stories.map((story) => story.text)).toEqual(["我自己写的故事"]);
@@ -397,7 +397,7 @@ describe("title-driven writing run", () => {
     store.projects.get(P1)!.episodes.get(2)!.currentScriptId = "human-script";
     const placed = await store.placeScripts(WS, P1, runId, { acceptStoryChanged: false }, "a", now);
     expect(placed.kind).toBe("ok");
-    const view = titleRunView(placed.kind === "ok" ? placed.bundle : (await store.getRunById(runId))!);
+    const view = titleRunView(placed.kind === "ok" ? placed.bundle : (await store.getRunById(WS, runId))!);
     expect(view.steps.slice(2).map((step) => step.scriptSave)).toEqual(["saved", "conflict", "saved"]);
     expect(store.projects.get(P1)!.episodes.get(2)!.currentScriptId).toBe("human-script");
     // Placing again changes nothing.
@@ -422,7 +422,7 @@ describe("title-driven writing run", () => {
     const created = await store.createRun(run(), { maxActiveRuns: 1 });
     const runId = created.kind === "blocked" ? "" : created.bundle.run.id;
     await engine.drive(runId);
-    expect((await store.getRunById(runId))!.run).toMatchObject({ state: "needs_attention", errorCode: "provider_unconfigured" });
+    expect((await store.getRunById(WS, runId))!.run).toMatchObject({ state: "needs_attention", errorCode: "provider_unconfigured" });
     expect(seen).toHaveLength(0);
   });
 });

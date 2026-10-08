@@ -28,7 +28,7 @@ export interface TitleWritingDependencies {
   defaultProvider: TitleWritingProviderKey | null;
   providers: Record<TitleWritingProviderKey, WritingProviderConfig>;
   store: TitleWritingStore;
-  engine: Pick<TitleWritingEngine, "drive" | "maintain">;
+  engine: Pick<TitleWritingEngine, "workspaceId" | "drive" | "maintain">;
   projects: Pick<RuntimeStore, "getProject">;
   maxCallsPerDay: number;
   maxActiveRuns: number;
@@ -79,7 +79,10 @@ const placeSchema = z.object({ acceptStoryChanged: z.boolean().default(false) })
  * token, ready storage and a configured provider before anything is reserved. Reads never call a provider.
  */
 export class TitleWritingService {
-  constructor(private readonly deps: TitleWritingDependencies) {}
+  constructor(private readonly deps: TitleWritingDependencies) {
+    // Recovery and execution must never reach another workspace's runs.
+    if (deps.engine.workspaceId !== deps.workspaceId) throw new Error("title writing engine is bound to another workspace");
+  }
 
   private now(): Date {
     return this.deps.clock ? this.deps.clock() : new Date();
@@ -246,13 +249,16 @@ export class TitleWritingService {
     return this.found(placed.bundle);
   }
 
-  /** Fences expired executors always; continues runs (which may send) only while the feature is on. */
+  /**
+   * Fences expired executors of this workspace always; continues its runs (which may send) only while the feature is
+   * on. Runs of other workspaces are never read, fenced, finished or sent for.
+   */
   async maintain(): Promise<void> {
     if (!await this.deps.store.storageReady()) return;
     if (this.active()) {
       await this.deps.engine.maintain();
       return;
     }
-    await this.deps.store.recoverExpired(this.now().toISOString());
+    await this.deps.store.recoverExpired(this.deps.workspaceId, this.now().toISOString());
   }
 }

@@ -104,29 +104,32 @@ export type TitleScriptPlacement =
 /**
  * Persistence of title writing runs. Every method that changes a running run is conditional on the executor that
  * holds a live lease, so a late or fenced executor cannot overwrite recovery, cancellation or another executor.
+ * Every method is scoped to one workspace: an executor, recovery pass or reader of workspace A never sees, claims,
+ * fences, sends for or writes a run of workspace B.
  */
 export interface TitleWritingStore {
   storageReady(): Promise<boolean>;
   /** Idempotency lookup, input comparison, active-run checks and insert of the run with its five steps: one atomic step. */
   createRun(run: TitleRunRecord, limits: { maxActiveRuns: number }): Promise<TitleRunCreation>;
   getRun(workspaceId: string, projectId: string, runId: string): Promise<TitleRunBundle | null>;
-  getRunById(runId: string): Promise<TitleRunBundle | null>;
+  /** Executor read: the run only when it belongs to this workspace. */
+  getRunById(workspaceId: string, runId: string): Promise<TitleRunBundle | null>;
   latestRun(workspaceId: string, projectId: string): Promise<TitleRunBundle | null>;
-  /** Takes a running run whose lease is free or expired. */
-  claimRun(runId: string, executorId: string, nowIso: string, leaseUntil: string): Promise<boolean>;
-  /** Checks ownership, cancellation, the run cap and the workspace daily cap, then inserts the call as reserved. */
+  /** Takes a running run of this workspace whose lease is free or expired. */
+  claimRun(workspaceId: string, runId: string, executorId: string, nowIso: string, leaseUntil: string): Promise<boolean>;
+  /** Checks workspace, ownership, cancellation, the run cap and the workspace daily cap, then inserts the call as reserved. */
   reserveCall(call: TitleCallRecord, limits: { sinceIso: string; maxCallsPerDay: number }, nowIso: string, leaseUntil: string): Promise<TitleCallReservation>;
   /** Persisted before any network send. */
-  markCallSubmitted(callId: string, executorId: string, nowIso: string, leaseUntil: string): Promise<boolean>;
-  finishCall(callId: string, executorId: string, patch: TitleCallFinish, nowIso: string): Promise<boolean>;
+  markCallSubmitted(workspaceId: string, callId: string, executorId: string, nowIso: string, leaseUntil: string): Promise<boolean>;
+  finishCall(workspaceId: string, callId: string, executorId: string, patch: TitleCallFinish, nowIso: string): Promise<boolean>;
   /** Creates a DRAFT story revision only when the project has no current story; records it on the run atomically. */
-  saveStory(runId: string, executorId: string, storyText: string, actorId: string, nowIso: string): Promise<"saved" | "conflict" | "lost">;
-  finishRun(runId: string, executorId: string, state: Exclude<TitleWritingRunState, "running">, errorCode: string | null, nowIso: string): Promise<boolean>;
+  saveStory(workspaceId: string, runId: string, executorId: string, storyText: string, actorId: string, nowIso: string): Promise<"saved" | "conflict" | "lost">;
+  finishRun(workspaceId: string, runId: string, executorId: string, state: Exclude<TitleWritingRunState, "running">, errorCode: string | null, nowIso: string): Promise<boolean>;
   requestCancel(workspaceId: string, projectId: string, runId: string, nowIso: string): Promise<TitleRunBundle | null>;
   prepareResume(workspaceId: string, projectId: string, runId: string, options: { confirmUncertain: boolean; maxActiveRuns: number }, nowIso: string): Promise<TitleResumePreparation>;
-  /** Fences expired executors: reserved calls were never sent, submitted calls become unknown. */
-  recoverExpired(nowIso: string): Promise<number>;
-  listClaimable(nowIso: string, limit: number): Promise<string[]>;
+  /** Fences expired executors of this workspace: reserved calls were never sent, submitted calls become unknown. */
+  recoverExpired(workspaceId: string, nowIso: string): Promise<number>;
+  listClaimable(workspaceId: string, nowIso: string, limit: number): Promise<string[]>;
   /** After the story was approved by a person: writes each saved screenplay into an episode that has no script yet. */
   placeScripts(workspaceId: string, projectId: string, runId: string, options: { acceptStoryChanged: boolean }, actorId: string, nowIso: string): Promise<TitleScriptPlacement>;
 }

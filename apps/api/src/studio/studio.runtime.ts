@@ -101,6 +101,7 @@ export class StudioRuntime implements OnModuleDestroy {
       store: titleStore,
       // Only the real fetch transport is wired. A missing configuration never falls back to a Mock answer.
       engine: new TitleWritingEngine({
+        workspaceId,
         store: titleStore,
         providers: titleProviders,
         transport: createQwenFetchTransport(),

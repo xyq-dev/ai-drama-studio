@@ -193,8 +193,8 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
     return this.load(null, result.rows[0] as Row | undefined);
   }
 
-  async getRunById(runId: string): Promise<TitleRunBundle | null> {
-    const result = await this.query(`SELECT ${RUN_COLUMNS} FROM title_writing_run WHERE id = $1`, [runId]);
+  async getRunById(workspaceId: string, runId: string): Promise<TitleRunBundle | null> {
+    const result = await this.query(`SELECT ${RUN_COLUMNS} FROM title_writing_run WHERE id = $1 AND workspace_id = $2`, [runId, workspaceId]);
     return this.load(null, result.rows[0] as Row | undefined);
   }
 
@@ -207,21 +207,22 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
     return this.load(null, result.rows[0] as Row | undefined);
   }
 
-  async claimRun(runId: string, executorId: string, nowIso: string, leaseUntil: string): Promise<boolean> {
+  async claimRun(workspaceId: string, runId: string, executorId: string, nowIso: string, leaseUntil: string): Promise<boolean> {
     const result = await this.query(
       `UPDATE title_writing_run r SET executor_id = $2, lease_until = $4, updated_at = $3
-        WHERE r.id = $1 AND r.state = 'running'
+        WHERE r.id = $1 AND r.workspace_id = $5 AND r.state = 'running'
           AND (r.executor_id IS NULL OR r.executor_id = $2 OR r.lease_until <= $3)
           AND (r.executor_id = $2 OR NOT EXISTS (
             SELECT 1 FROM title_writing_call c WHERE c.run_id = r.id AND c.state IN ('reserved', 'submitted')))`,
-      [runId, executorId, nowIso, leaseUntil],
+      [runId, executorId, nowIso, leaseUntil, workspaceId],
     );
     return result.rowCount === 1;
   }
 
-  /** Locks the run row and returns it only while this executor holds a live lease. */
-  private async ownedRun(client: PoolClient, runId: string, executorId: string, nowIso: string): Promise<TitleRunRecord | null> {
-    const result = await client.query<Row>(`SELECT ${RUN_COLUMNS} FROM title_writing_run WHERE id = $1 FOR UPDATE`, [runId]);
+  /** Locks the run row and returns it only when it belongs to this workspace and this executor holds a live lease. */
+  private async ownedRun(client: PoolClient, workspaceId: string, runId: string, executorId: string, nowIso: string): Promise<TitleRunRecord | null> {
+    const result = await client.query<Row>(
+      `SELECT ${RUN_COLUMNS} FROM title_writing_run WHERE id = $1 AND workspace_id = $2 FOR UPDATE`, [runId, workspaceId]);
     const row = result.rows[0];
     if (!row) return null;
     const run = toRun(row);
@@ -232,7 +233,7 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
   async reserveCall(call: TitleCallRecord, limits: { sinceIso: string; maxCallsPerDay: number }, nowIso: string, leaseUntil: string): Promise<TitleCallReservation> {
     return this.transaction(async (client) => {
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`title_writing_call:${call.workspaceId}`]);
-      const run = await this.ownedRun(client, call.runId, call.executorId, nowIso);
+      const run = await this.ownedRun(client, call.workspaceId, call.runId, call.executorId, nowIso);
       if (!run) return { kind: "lost" };
       if (run.cancelRequestedAt !== null) return { kind: "canceled" };
       if (run.callsUsed >= run.callCap) return { kind: "blocked", code: "TITLE_WRITING_RUN_CAP" };
@@ -262,12 +263,13 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
     });
   }
 
-  async markCallSubmitted(callId: string, executorId: string, nowIso: string, leaseUntil: string): Promise<boolean> {
+  async markCallSubmitted(workspaceId: string, callId: string, executorId: string, nowIso: string, leaseUntil: string): Promise<boolean> {
     return this.transaction(async (client) => {
-      const callRow = await client.query<Row>("SELECT run_id, step_key FROM title_writing_call WHERE id = $1", [callId]);
+      const callRow = await client.query<Row>("SELECT run_id, step_key FROM title_writing_call WHERE id = $1 AND workspace_id = $2",
+        [callId, workspaceId]);
       const found = callRow.rows[0];
       if (!found) return false;
-      const run = await this.ownedRun(client, String(found.run_id), executorId, nowIso);
+      const run = await this.ownedRun(client, workspaceId, String(found.run_id), executorId, nowIso);
       if (!run) return false;
       const updated = await client.query(
         "UPDATE title_writing_call SET state = 'submitted' WHERE id = $1 AND executor_id = $2 AND state = 'reserved'",
@@ -281,13 +283,15 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
     });
   }
 
-  async finishCall(callId: string, executorId: string, patch: TitleCallFinish, nowIso: string): Promise<boolean> {
+  async finishCall(workspaceId: string, callId: string, executorId: string, patch: TitleCallFinish, nowIso: string): Promise<boolean> {
     return this.transaction(async (client) => {
-      const callRow = await client.query<Row>("SELECT run_id, step_key FROM title_writing_call WHERE id = $1", [callId]);
+      const callRow = await client.query<Row>("SELECT run_id, step_key FROM title_writing_call WHERE id = $1 AND workspace_id = $2",
+        [callId, workspaceId]);
       const found = callRow.rows[0];
       if (!found) return false;
       // The run lock orders this finish against recovery; an expired-but-unrecovered lease may still finish.
-      const runRow = await client.query<Row>("SELECT executor_id FROM title_writing_run WHERE id = $1 FOR UPDATE", [found.run_id]);
+      const runRow = await client.query<Row>("SELECT executor_id FROM title_writing_run WHERE id = $1 AND workspace_id = $2 FOR UPDATE",
+        [found.run_id, workspaceId]);
       if (runRow.rows[0]?.executor_id !== executorId) return false;
       const updated = await client.query(
         `UPDATE title_writing_call SET state = $3, error_code = $4, provider_request_id = $5, response_model = $6,
@@ -307,9 +311,9 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
     });
   }
 
-  async saveStory(runId: string, executorId: string, storyText: string, actorId: string, nowIso: string): Promise<"saved" | "conflict" | "lost"> {
+  async saveStory(workspaceId: string, runId: string, executorId: string, storyText: string, actorId: string, nowIso: string): Promise<"saved" | "conflict" | "lost"> {
     return this.transaction(async (client) => {
-      const run = await this.ownedRun(client, runId, executorId, nowIso);
+      const run = await this.ownedRun(client, workspaceId, runId, executorId, nowIso);
       if (!run) return "lost";
       if (run.storySave === "saved") return "saved";
       const project = await client.query<Row>(
@@ -343,12 +347,12 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
     });
   }
 
-  async finishRun(runId: string, executorId: string, state: Exclude<TitleWritingRunState, "running">, errorCode: string | null, nowIso: string): Promise<boolean> {
+  async finishRun(workspaceId: string, runId: string, executorId: string, state: Exclude<TitleWritingRunState, "running">, errorCode: string | null, nowIso: string): Promise<boolean> {
     return this.transaction(async (client) => {
       const updated = await client.query(
         `UPDATE title_writing_run SET state = $3, error_code = $4, executor_id = NULL, lease_until = NULL, updated_at = $5
-          WHERE id = $1 AND state = 'running' AND executor_id = $2`,
-        [runId, executorId, state, errorCode, nowIso],
+          WHERE id = $1 AND workspace_id = $6 AND state = 'running' AND executor_id = $2`,
+        [runId, executorId, state, errorCode, nowIso, workspaceId],
       );
       if (updated.rowCount !== 1) return false;
       if (state === "canceled") {
@@ -402,12 +406,13 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
     });
   }
 
-  async recoverExpired(nowIso: string): Promise<number> {
+  async recoverExpired(workspaceId: string, nowIso: string): Promise<number> {
     return this.transaction(async (client) => {
       const expired = await client.query<Row>(
-        `SELECT id FROM title_writing_run WHERE state = 'running' AND executor_id IS NOT NULL AND lease_until <= $1
+        `SELECT id FROM title_writing_run
+          WHERE workspace_id = $2 AND state = 'running' AND executor_id IS NOT NULL AND lease_until <= $1
           ORDER BY lease_until LIMIT 50 FOR UPDATE SKIP LOCKED`,
-        [nowIso],
+        [nowIso, workspaceId],
       );
       for (const row of expired.rows) {
         const runId = String(row.id);
@@ -444,11 +449,12 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
     });
   }
 
-  async listClaimable(nowIso: string, limit: number): Promise<string[]> {
+  async listClaimable(workspaceId: string, nowIso: string, limit: number): Promise<string[]> {
     const result = await this.query(
-      `SELECT id FROM title_writing_run WHERE state = 'running' AND (executor_id IS NULL OR lease_until <= $1)
+      `SELECT id FROM title_writing_run
+        WHERE workspace_id = $3 AND state = 'running' AND (executor_id IS NULL OR lease_until <= $1)
         ORDER BY updated_at LIMIT $2`,
-      [nowIso, limit],
+      [nowIso, limit, workspaceId],
     );
     return result.rows.map((row) => String(row.id));
   }

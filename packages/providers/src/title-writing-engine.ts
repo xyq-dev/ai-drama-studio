@@ -221,6 +221,8 @@ export function titleRunView(bundle: TitleRunBundle): TitleWritingRunView {
 }
 
 export interface TitleWritingEngineDeps {
+  /** The only workspace this engine claims, recovers, sends for and writes. */
+  workspaceId: string;
   store: TitleWritingStore;
   providers: Record<TitleWritingProviderKey, WritingProviderConfig>;
   transport: WritingTransport;
@@ -243,10 +245,12 @@ function sha256(value: string): string {
  */
 export class TitleWritingEngine {
   readonly executorId: string;
+  readonly workspaceId: string;
   private readonly running = new Set<string>();
 
   constructor(private readonly deps: TitleWritingEngineDeps) {
     this.executorId = deps.executorId ?? `title-writing:${randomUUID()}`;
+    this.workspaceId = deps.workspaceId;
   }
 
   private now(): Date {
@@ -263,7 +267,7 @@ export class TitleWritingEngine {
     this.running.add(runId);
     try {
       const claimedAt = this.now();
-      if (!await this.deps.store.claimRun(runId, this.executorId, claimedAt.toISOString(), this.lease(claimedAt))) return;
+      if (!await this.deps.store.claimRun(this.deps.workspaceId, runId, this.executorId, claimedAt.toISOString(), this.lease(claimedAt))) return;
       while (await this.advance(runId)) {
         // Each pass handles one step and re-reads the persisted run.
       }
@@ -272,22 +276,23 @@ export class TitleWritingEngine {
     }
   }
 
-  /** One maintenance pass: fence expired executors, then continue runs that are free to claim. */
+  /** One maintenance pass over this engine's workspace: fence expired executors, then continue runs free to claim. */
   async maintain(limit = 5): Promise<void> {
     const nowIso = this.now().toISOString();
-    await this.deps.store.recoverExpired(nowIso);
-    const runIds = await this.deps.store.listClaimable(nowIso, limit);
+    await this.deps.store.recoverExpired(this.deps.workspaceId, nowIso);
+    const runIds = await this.deps.store.listClaimable(this.deps.workspaceId, nowIso, limit);
     for (const runId of runIds) await this.drive(runId);
   }
 
   private async finish(runId: string, state: Exclude<TitleWritingRunState, "running">, errorCode: string | null): Promise<false> {
-    await this.deps.store.finishRun(runId, this.executorId, state, errorCode, this.now().toISOString());
+    await this.deps.store.finishRun(this.deps.workspaceId, runId, this.executorId, state, errorCode, this.now().toISOString());
     return false;
   }
 
   private async advance(runId: string): Promise<boolean> {
-    const bundle = await this.deps.store.getRunById(runId);
-    if (!bundle || bundle.run.state !== "running" || bundle.run.executorId !== this.executorId) return false;
+    const bundle = await this.deps.store.getRunById(this.deps.workspaceId, runId);
+    if (!bundle || bundle.run.workspaceId !== this.deps.workspaceId || bundle.run.state !== "running"
+      || bundle.run.executorId !== this.executorId) return false;
     const { run } = bundle;
     const anyCompleted = bundle.steps.some((step) => step.state === "completed");
     if (run.cancelRequestedAt !== null) return this.finish(runId, "canceled", null);
@@ -320,7 +325,7 @@ export class TitleWritingEngine {
     const call: TitleCallRecord = {
       id: randomUUID(),
       runId,
-      workspaceId: run.workspaceId,
+      workspaceId: this.deps.workspaceId,
       stepKey: next.stepKey,
       attemptNo: next.attemptNo + 1,
       providerKey: run.input.providerKey,
@@ -343,7 +348,7 @@ export class TitleWritingEngine {
     if (reservation.kind === "canceled") return this.finish(runId, "canceled", null);
     if (reservation.kind === "blocked") return this.finish(runId, anyCompleted ? "partial" : "failed", reservation.code);
     const submittedAt = this.now();
-    if (!await this.deps.store.markCallSubmitted(call.id, this.executorId, submittedAt.toISOString(), this.lease(submittedAt))) return false;
+    if (!await this.deps.store.markCallSubmitted(this.deps.workspaceId, call.id, this.executorId, submittedAt.toISOString(), this.lease(submittedAt))) return false;
 
     const exchange: WritingExchange = await (this.deps.send ?? sendWriting)({
       adapter,
@@ -373,7 +378,7 @@ export class TitleWritingEngine {
       };
     }
     // A fenced executor's late answer is dropped: recovery already recorded the call as unknown.
-    return this.deps.store.finishCall(call.id, this.executorId, patch, this.now().toISOString());
+    return this.deps.store.finishCall(this.deps.workspaceId, call.id, this.executorId, patch, this.now().toISOString());
   }
 
   private async saveAndComplete(bundle: TitleRunBundle): Promise<false> {
@@ -382,7 +387,7 @@ export class TitleWritingEngine {
     if (run.storySave === "conflict") return this.finish(run.id, "needs_attention", "story_conflict");
     const text = storyTextOf(bundle);
     if (text === null) return this.finish(run.id, "needs_attention", "story_too_large");
-    const saved = await this.deps.store.saveStory(run.id, this.executorId, text, run.actorId, this.now().toISOString());
+    const saved = await this.deps.store.saveStory(this.deps.workspaceId, run.id, this.executorId, text, run.actorId, this.now().toISOString());
     if (saved === "lost") return false;
     return saved === "saved"
       ? this.finish(run.id, "completed", null)
@@ -471,8 +476,8 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
     return run ? this.bundle(run) : null;
   }
 
-  async getRunById(runId: string): Promise<TitleRunBundle | null> {
-    const run = this.runs.find((item) => item.id === runId);
+  async getRunById(workspaceId: string, runId: string): Promise<TitleRunBundle | null> {
+    const run = this.runs.find((item) => item.id === runId && item.workspaceId === workspaceId);
     return run ? this.bundle(run) : null;
   }
 
@@ -482,9 +487,9 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
     return latest ? this.bundle(latest) : null;
   }
 
-  async claimRun(runId: string, executorId: string, nowIso: string, leaseUntil: string): Promise<boolean> {
-    const run = this.requireRun(runId);
-    if (run.state !== "running") return false;
+  async claimRun(workspaceId: string, runId: string, executorId: string, nowIso: string, leaseUntil: string): Promise<boolean> {
+    const run = this.runs.find((item) => item.id === runId && item.workspaceId === workspaceId);
+    if (!run || run.state !== "running") return false;
     if (run.executorId !== null && run.executorId !== executorId && !expired(run.leaseUntil, nowIso)) return false;
     const open = this.calls.some((call) => call.runId === runId && (call.state === "reserved" || call.state === "submitted"));
     if (open && run.executorId !== executorId) return false;
@@ -492,13 +497,14 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
     return true;
   }
 
-  private owns(run: TitleRunRecord, executorId: string, nowIso: string): boolean {
-    return run.state === "running" && run.executorId === executorId && !expired(run.leaseUntil, nowIso);
+  private owns(run: TitleRunRecord, workspaceId: string, executorId: string, nowIso: string): boolean {
+    return run.workspaceId === workspaceId && run.state === "running" && run.executorId === executorId
+      && !expired(run.leaseUntil, nowIso);
   }
 
   async reserveCall(call: TitleCallRecord, limits: { sinceIso: string; maxCallsPerDay: number }, nowIso: string, leaseUntil: string): Promise<TitleCallReservation> {
     const run = this.requireRun(call.runId);
-    if (!this.owns(run, call.executorId, nowIso)) return { kind: "lost" };
+    if (!this.owns(run, call.workspaceId, call.executorId, nowIso)) return { kind: "lost" };
     if (run.cancelRequestedAt !== null) return { kind: "canceled" };
     if (run.callsUsed >= run.callCap) return { kind: "blocked", code: "TITLE_WRITING_RUN_CAP" };
     const recent = this.calls.filter((item) => item.workspaceId === call.workspaceId && item.createdAt >= limits.sinceIso).length;
@@ -511,20 +517,21 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
     return { kind: "reserved" };
   }
 
-  async markCallSubmitted(callId: string, executorId: string, nowIso: string, leaseUntil: string): Promise<boolean> {
+  async markCallSubmitted(workspaceId: string, callId: string, executorId: string, nowIso: string, leaseUntil: string): Promise<boolean> {
     const call = this.requireCall(callId);
     const run = this.requireRun(call.runId);
-    if (call.state !== "reserved" || call.executorId !== executorId || !this.owns(run, executorId, nowIso)) return false;
+    if (call.state !== "reserved" || call.executorId !== executorId || !this.owns(run, workspaceId, executorId, nowIso)) return false;
     call.state = "submitted";
     Object.assign(this.requireStep(call.runId, call.stepKey), { state: "submitted", updatedAt: nowIso });
     Object.assign(run, { leaseUntil, updatedAt: nowIso });
     return true;
   }
 
-  async finishCall(callId: string, executorId: string, patch: TitleCallFinish, nowIso: string): Promise<boolean> {
+  async finishCall(workspaceId: string, callId: string, executorId: string, patch: TitleCallFinish, nowIso: string): Promise<boolean> {
     const call = this.requireCall(callId);
     const run = this.requireRun(call.runId);
-    if (call.state !== "submitted" || call.executorId !== executorId || run.executorId !== executorId) return false;
+    if (run.workspaceId !== workspaceId || call.state !== "submitted" || call.executorId !== executorId
+      || run.executorId !== executorId) return false;
     Object.assign(call, { state: patch.state, errorCode: patch.errorCode, providerRequestId: patch.providerRequestId,
       responseModel: patch.responseModel, usage: patch.usage, finishedAt: nowIso });
     const step = this.requireStep(call.runId, call.stepKey);
@@ -533,9 +540,9 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
     return true;
   }
 
-  async saveStory(runId: string, executorId: string, storyText: string, _actorId: string, nowIso: string): Promise<"saved" | "conflict" | "lost"> {
+  async saveStory(workspaceId: string, runId: string, executorId: string, storyText: string, _actorId: string, nowIso: string): Promise<"saved" | "conflict" | "lost"> {
     const run = this.requireRun(runId);
-    if (!this.owns(run, executorId, nowIso)) return "lost";
+    if (!this.owns(run, workspaceId, executorId, nowIso)) return "lost";
     if (run.storySave === "saved") return "saved";
     const project = this.requireProject(run.projectId);
     if (project.currentStoryId !== null) {
@@ -550,9 +557,9 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
     return "saved";
   }
 
-  async finishRun(runId: string, executorId: string, state: Exclude<TitleWritingRunState, "running">, errorCode: string | null, nowIso: string): Promise<boolean> {
+  async finishRun(workspaceId: string, runId: string, executorId: string, state: Exclude<TitleWritingRunState, "running">, errorCode: string | null, nowIso: string): Promise<boolean> {
     const run = this.requireRun(runId);
-    if (run.state !== "running" || run.executorId !== executorId) return false;
+    if (run.workspaceId !== workspaceId || run.state !== "running" || run.executorId !== executorId) return false;
     if (state === "canceled") {
       for (const step of this.steps.filter((item) => item.runId === runId && item.state === "pending")) {
         Object.assign(step, { state: "canceled", updatedAt: nowIso });
@@ -587,10 +594,11 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
     return { kind: "ok", bundle: this.bundle(run) };
   }
 
-  async recoverExpired(nowIso: string): Promise<number> {
+  async recoverExpired(workspaceId: string, nowIso: string): Promise<number> {
     let recovered = 0;
     for (const run of this.runs) {
-      if (run.state !== "running" || run.executorId === null || !expired(run.leaseUntil, nowIso)) continue;
+      if (run.workspaceId !== workspaceId || run.state !== "running" || run.executorId === null
+        || !expired(run.leaseUntil, nowIso)) continue;
       recovered += 1;
       let uncertain = false;
       for (const call of this.calls.filter((item) => item.runId === run.id)) {
@@ -611,9 +619,10 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
     return recovered;
   }
 
-  async listClaimable(nowIso: string, limit: number): Promise<string[]> {
+  async listClaimable(workspaceId: string, nowIso: string, limit: number): Promise<string[]> {
     return this.runs
-      .filter((run) => run.state === "running" && (run.executorId === null || expired(run.leaseUntil, nowIso)))
+      .filter((run) => run.workspaceId === workspaceId && run.state === "running"
+        && (run.executorId === null || expired(run.leaseUntil, nowIso)))
       .slice(0, limit)
       .map((run) => run.id);
   }

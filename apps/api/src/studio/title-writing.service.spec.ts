@@ -38,7 +38,7 @@ function setup(options: {
   const seen: FixtureExchange[] = [];
   const providers = titleWritingProviderConfigs(options.env ?? CONFIGURED);
   const transport: WritingTransport = fixtureChatTransport("夜班证词", { seen, ...(options.override ? { override: options.override } : {}) });
-  const engine = new TitleWritingEngine({ store, providers, transport, maxCallsPerDay: 30, timeoutMs: 20 });
+  const engine = new TitleWritingEngine({ workspaceId: WS, store, providers, transport, maxCallsPerDay: 30, timeoutMs: 20 });
   const pending: Array<Promise<void>> = [];
   const service = new TitleWritingService({
     workspaceId: WS,
