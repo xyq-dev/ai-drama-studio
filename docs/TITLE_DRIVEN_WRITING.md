@@ -109,11 +109,11 @@
 | 三家适配器请求映射、输出解析、错误分类 | 单元测试（`packages/providers/src/text-writing.spec.ts`），可控 transport 替身 |
 | 顺序、上下文、幂等、并发、取消、恢复、限额、冲突、剧本落入、空白字段拒收 | 引擎测试（`title-writing-engine.spec.ts`、`title-writing-cancel.spec.ts`、`title-writing-resume.spec.ts`），内存存储 + 可控替身 |
 | 访问门禁、缺配置提示、密钥不外泄、续跑确认与重放、工作区隔离 | API 测试（`title-writing.service.spec.ts`、`title-writing.workspace.spec.ts`），内存存储 + 可控替身 |
-| 开始页幂等、进度页续跑确认、迟到回执 | 组件测试（`title-writing.spec.tsx`、`title-writing-start.spec.tsx`、`title-writing-start-identity.spec.tsx`、`title-writing-resume.spec.tsx`、`title-writing-scope.spec.tsx`、`title-writing-run-order.spec.tsx`，模拟 fetch；幂等服务端为内存模拟） |
-| 桌面 1280 与手机 390 布局 | 上一轮：真实 Chromium + 已构建网页 + **桩 API**（只验证布局与交互）。本轮开始卡与进度页有改动，**未重跑**浏览器检查 |
+| 开始页幂等、进度页续跑确认、迟到回执、读取串行（P2-A/P2-B） | 组件测试（`title-writing.spec.tsx`、`title-writing-start.spec.tsx`、`title-writing-start-identity.spec.tsx`、`title-writing-resume.spec.tsx`、`title-writing-scope.spec.tsx`、`title-writing-run-order.spec.tsx`、`title-writing-run-reads.spec.tsx`，模拟 fetch；幂等服务端为内存模拟） |
+| 真实浏览器用户闭环（桌面 1440 与手机 390） | **已在隔离环境执行并通过**（2026-10-09，CI run 37873699546）：Chrome → 已构建 Next 页面 → 同源 `/api/v1` 代理 → 真实 API → 一次性 PostgreSQL，模型为计数替身，4 项。见 [`TITLE_WRITING_BROWSER_ACCEPTANCE_REPORT.md`](TITLE_WRITING_BROWSER_ACCEPTANCE_REPORT.md) |
 | 验收入口拒绝行为 | 单元测试（`title-writing-acceptance-guard.spec.ts`）：环境检查为纯函数；身份检查用脚本化客户端，只证明判断逻辑 |
-| PostgreSQL 存储（含 R2/R3/R5/R6/R7 的数据库回归） | **已在隔离环境执行并通过**（2026-10-09，CI run 37862662279，`postgres:16`，一次性空库）：22 项，含结构核对、独立会话竞争、最后一个日额度竞争、预约与发送的恢复区分，以及用 `pg_blocking_pids` 证明的确定性锁顺序。见 [`TITLE_WRITING_ISOLATED_ACCEPTANCE_REPORT.md`](TITLE_WRITING_ISOLATED_ACCEPTANCE_REPORT.md) |
-| 真实项目 API（模型替身） | **已在隔离环境执行并通过**：真实 Nest 应用、真实 HTTP、真实 PostgreSQL，模型为计数替身，10 项。浏览器与进程崩溃恢复未执行 |
+| PostgreSQL 存储（含 R2/R3/R5/R6/R7 的数据库回归） | **已在隔离环境执行并通过**（2026-10-09，CI run 37862662279，`postgres:16`，一次性空库）：22 项（P2-C 后为 25 项，run 37873699546），含结构核对、独立会话竞争、最后一个日额度竞争、预约与发送的恢复区分，以及用 `pg_blocking_pids` 证明的确定性锁顺序。见 [`TITLE_WRITING_ISOLATED_ACCEPTANCE_REPORT.md`](TITLE_WRITING_ISOLATED_ACCEPTANCE_REPORT.md) |
+| 真实项目 API（模型替身） | **已在隔离环境执行并通过**：真实 Nest 应用、真实 HTTP、真实 PostgreSQL，模型为计数替身，10 项。进程崩溃恢复未执行 |
 | 真实模型调用（千问 / OpenAI / DeepSeek） | **未执行**，Paid calls = NO |
 
 ### 隔离 PostgreSQL 与真实 API 验收（需单独授权；2026-10-09 已在 CI 隔离环境执行一次）
@@ -132,4 +132,4 @@ TITLE_WRITING_DRAFT_SQL_AUTHORIZED=true TITLE_WRITING_ACCEPTANCE_DATABASE_NAME=a
 
 不要先手工执行草案再跑通用 `integration`：通用集成测试的其他文件会重建 schema。
 
-真实 API 验收用同样三个变量，但要另建一个空库，命令为 `pnpm --filter @ai-drama/api title-writing:acceptance`。它在空库上先验证「存储未就绪时拒绝」，然后才应用草案。工作流 `.github/workflows/title-writing-acceptance.yml` 为两条命令各起一个作业级 `postgres:16` 容器和一次性库，并上传脱敏证据。
+真实 API 验收用同样三个变量，但要另建一个空库，命令为 `pnpm --filter @ai-drama/api title-writing:acceptance`。它在空库上先验证「存储未就绪时拒绝」，然后才应用草案。真实浏览器验收同样用三个变量和另一个空库，先 `pnpm build`，再运行 `pnpm --filter @ai-drama/api title-writing:browser-acceptance`（API 监听 3001，即网页构建时编译进代理的默认上游；网页监听 3010）。工作流 `.github/workflows/title-writing-acceptance.yml` 为三条命令各起一个作业级 `postgres:16` 容器和一次性库，并上传脱敏证据（浏览器作业只有 JSON 与截图，不录 trace/HAR）。
