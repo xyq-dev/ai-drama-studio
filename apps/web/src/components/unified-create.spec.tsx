@@ -156,6 +156,42 @@ describe("one creation page with an inline inspiration section", () => {
     expect(screen.getByText(/方向已取消选择/)).toBeTruthy();
   });
 
+  it("does not take ownership of a direction text the user already wrote (PR #60 review)", () => {
+    serve();
+    render(<BeginnerStart active="/create" />);
+    const pasted = `我贴进来的：\n\n${premiseBlock(FIRST_DIRECTION)}`;
+    fireEvent.change(idea(), { target: { value: pasted } });
+    use(FIRST.name);
+    expect(idea().value).toBe(pasted);
+    expect(picker().getByText(/你写的，移除时不会删除/)).toBeTruthy();
+    fireEvent.click(picker().getByRole("button", { name: "移除方向" }));
+    expect(idea().value).toBe(pasted);
+    expect(screen.getByText(/不是本页加入的，没有删除/)).toBeTruthy();
+  });
+
+  it("does not top up an edited direction with a second copy when the same direction is used again (PR #60 review)", () => {
+    serve();
+    render(<BeginnerStart active="/create" />);
+    use(FIRST.name);
+    const edited = idea().value.replace("请围绕", "我改过：请围绕");
+    fireEvent.change(idea(), { target: { value: edited } });
+    use(FIRST.name);
+    expect(idea().value).toBe(edited);
+    expect(screen.getByText(/为避免误删你写的内容，正文保持不变/)).toBeTruthy();
+  });
+
+  it("leaves the confirm step when removing the direction empties the idea (PR #60 review)", () => {
+    serve();
+    render(<BeginnerStart active="/create" />);
+    use(FIRST.name);
+    fireEvent.click(screen.getByRole("button", { name: "开始构思" }));
+    expect(screen.getByRole("button", { name: "确认创建作品" })).toBeTruthy();
+    fireEvent.click(picker().getByRole("button", { name: "移除方向" }));
+    expect(idea().value).toBe("");
+    expect(screen.queryByRole("button", { name: "确认创建作品" })).toBeNull();
+    expect(writes()).toEqual([]);
+  });
+
   it("refuses to change the frozen draft from the inspiration section while a create is in flight", async () => {
     serve({ holdCreate: true });
     vi.spyOn(window.location, "assign").mockImplementation(() => undefined);

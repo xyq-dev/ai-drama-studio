@@ -133,7 +133,8 @@ export function BeginnerStart({ active }: { active: "/create" | undefined }) {
     const switched = !keepOld && appliedBlock !== null && appliedBlock !== block;
     if (result.changed) remember(title, result.text);
     setDirection(next);
-    setAppliedBlock(block);
+    // The page owns the block only when it appended it now or already owned it; a copy the user wrote stays theirs.
+    setAppliedBlock(result.changed || appliedBlock === block ? block : null);
     storeDirection(next);
     setDirectionNote(!result.changed ? "想法里已经有这段创作方向。"
       : switched ? "已换成新的方向，你写的其他内容没有改动。确认创建后才会保存。"
@@ -147,11 +148,15 @@ export function BeginnerStart({ active }: { active: "/create" | undefined }) {
     if (appliedBlock !== null) {
       const removed = removeOnce(idea, appliedBlock);
       if (removed.ok) {
+        // An emptied idea cannot stay confirmed: 开始构思 is what checks that an idea was written.
+        if (removed.text.trim().length === 0) setConfirming(false);
         remember(title, removed.text);
         setDirectionNote("已移除方向文字，你写的其他内容没有改动。");
       } else {
         setDirectionNote(`${EDITED_NOTE}方向已取消选择，需要的话可以手动删改这段文字。`);
       }
+    } else if (direction && idea.includes(premiseBlock(direction))) {
+      setDirectionNote("已取消选择。想法里这段方向文字不是本页加入的，没有删除。");
     } else {
       setDirectionNote("已取消选择这个方向。");
     }
@@ -193,7 +198,8 @@ export function BeginnerStart({ active }: { active: "/create" | undefined }) {
   }
 
   const directionState: DirectionState | null = !direction ? null
-    : appliedBlock === null ? "pending" : idea.includes(appliedBlock) ? "applied" : "edited";
+    : appliedBlock !== null ? (idea.includes(appliedBlock) ? "applied" : "edited")
+    : idea.includes(premiseBlock(direction)) ? "present" : "pending";
 
   return (
     <BeginnerShell active={active}>

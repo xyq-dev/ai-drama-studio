@@ -67,7 +67,10 @@ export type SwitchResult = { ok: true; text: string; changed: boolean } | { ok: 
  * nothing changes.
  */
 export function switchBlock(text: string, applied: string | null, next: string | null, maxChars: number): SwitchResult {
-  if (applied !== null && applied === next) return appendOnce(text, next, maxChars);
+  if (applied !== null && applied === next) {
+    // The same direction again: fine while its block is intact; an edited block is never topped up with a fresh copy.
+    return text.includes(applied) ? { ok: true, text, changed: false } : { ok: false, reason: "edited" };
+  }
   let base = text;
   if (applied !== null) {
     const removed = removeOnce(text, applied);

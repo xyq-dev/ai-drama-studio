@@ -8,7 +8,8 @@ import styles from "./inspiration-picker.module.css";
 /** Cards shown before "查看更多方向". */
 const FIRST_CARDS = 4;
 
-export type DirectionState = "applied" | "pending" | "edited";
+/** applied: this page added the block; present: the idea already had it as the user's own text. */
+export type DirectionState = "applied" | "present" | "pending" | "edited";
 
 interface Props {
   selected: DirectionDraft | null;
@@ -32,6 +33,7 @@ function tagNames(ids: readonly string[]): string[] {
 
 const STATE_TEXT: Record<DirectionState, string> = {
   applied: "已加在「故事想法」末尾",
+  present: "想法里已有这段方向文字（你写的，移除时不会删除）",
   pending: "还没有加入想法，点「用这个方向」才会加入",
   edited: "方向文字已被你修改，页面不会再自动改动它",
 };

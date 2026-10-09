@@ -77,6 +77,7 @@ describe("switching the direction block", () => {
     const edited = `开头\n\n${block.replace("创作方向", "我的方向")}`;
     expect(switchBlock(edited, block, other, 4000)).toEqual({ ok: false, reason: "edited" });
     expect(switchBlock(edited, block, null, 4000)).toEqual({ ok: false, reason: "edited" });
+    expect(switchBlock(edited, block, block, 4000)).toEqual({ ok: false, reason: "edited" });
     expect(switchBlock("开头", null, block, 5)).toEqual({ ok: false, reason: "too_long" });
   });
 });
