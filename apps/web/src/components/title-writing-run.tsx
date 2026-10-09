@@ -48,6 +48,28 @@ interface Operation {
   snapshot: number;
 }
 
+/**
+ * A failed action's message. moot says when a snapshot shown later makes it untrue (a stop that failed to send, next to
+ * a run whose stop the server already recorded); only such a snapshot hides it, not any read.
+ */
+interface ActionMessage {
+  text: string;
+  moot?: (run: TitleWritingRunView) => boolean;
+}
+
+/** A stop has nothing left to do once the server recorded one, or the run is no longer running. */
+const stopSettled = (run: TitleWritingRunView) => run.cancelRequested || run.state !== "running";
+
+/**
+ * The reads of one page scope (one work while mounted). At most one GET is in flight; a read asked for meanwhile is
+ * merged into a single follow-up that starts after it, and the in-flight answer, which may predate what asked, is
+ * dropped. A scope replaced by a new work or by unmounting writes nothing and schedules nothing.
+ */
+interface Reads {
+  inFlight: boolean;
+  again: boolean;
+}
+
 /** One resume action: its key is reused only to retry the same, unanswered request for the same uncertain calls. */
 interface ResumeAction {
   runId: string;
@@ -93,7 +115,7 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
   const [run, setRun] = useState<TitleWritingRunView | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [readError, setReadError] = useState<string | null>(null);
-  const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [actionMessage, setActionMessage] = useState<ActionMessage | null>(null);
   const [token, setToken] = useState("");
   // The uncertain calls the person confirmed, as a sorted id list. It only counts while it equals what is shown now.
   const [confirmedFor, setConfirmedFor] = useState<string | null>(null);
@@ -102,7 +124,7 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
   const [storyChanged, setStoryChanged] = useState(false);
   const [busy, setBusy] = useState(false);
   const operation = useRef<Operation | null>(null);
-  const readToken = useRef(0);
+  const reads = useRef<Reads>({ inFlight: false, again: false });
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   // What is on screen: its run and a generation that grows with every snapshot shown. Changing the work, the run or
   // unmounting the page ends the current action, so a late answer to it (cancel, resume, place scripts) can no longer
@@ -125,24 +147,51 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
     setRun(next);
   }, []);
 
-  const read = useCallback(async () => {
-    const request = ++readToken.current;
+  const schedule = useCallback((next: TitleWritingRunView | null, poll: () => void) => {
     if (timer.current) clearTimeout(timer.current);
-    try {
-      const latest = await client.latest(projectId);
-      if (request !== readToken.current) return;
-      show(latest);
-      setReadError(null);
-      setLoaded(true);
-      if (latest?.state === "running") timer.current = setTimeout(() => { void read(); }, TITLE_WRITING_POLL_MS);
-    } catch (caught) {
-      if (request !== readToken.current) return;
-      setLoaded(true);
-      setReadError(caught instanceof TitleWritingError && caught.code === "TITLE_WRITING_STORAGE_UNAVAILABLE"
-        ? "创作任务存储还没有就绪，读不到创作记录。"
-        : "暂时读不到创作进度。已显示的内容仍是上次读到的结果。");
+    timer.current = next?.state === "running" ? setTimeout(poll, TITLE_WRITING_POLL_MS) : undefined;
+  }, []);
+
+  const read = useCallback(() => {
+    const scope = reads.current;
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = undefined;
+    if (scope.inFlight) {
+      scope.again = true;
+      return;
     }
-  }, [client, projectId, show]);
+    scope.inFlight = true;
+    void (async () => {
+      try {
+        for (;;) {
+          scope.again = false;
+          let latest: TitleWritingRunView | null = null;
+          let failure: unknown = null;
+          try {
+            latest = await client.latest(projectId);
+          } catch (caught) {
+            failure = caught ?? new Error("read failed");
+          }
+          if (reads.current !== scope) return;
+          // Asked for while this GET was in flight: its answer may predate what asked, so read once more instead.
+          if (scope.again) continue;
+          setLoaded(true);
+          if (failure) {
+            setReadError(failure instanceof TitleWritingError && failure.code === "TITLE_WRITING_STORAGE_UNAVAILABLE"
+              ? "创作任务存储还没有就绪，读不到创作记录。"
+              : "暂时读不到创作进度。已显示的内容仍是上次读到的结果。");
+            return;
+          }
+          show(latest);
+          setReadError(null);
+          schedule(latest, read);
+          return;
+        }
+      } finally {
+        scope.inFlight = false;
+      }
+    })();
+  }, [client, projectId, show, schedule]);
 
   useEffect(() => {
     // A new work starts clean: nothing shown, typed or confirmed for the previous one carries over.
@@ -157,16 +206,19 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
     setStoryChanged(false);
     setAcceptStoryChanged(false);
     setBusy(false);
-    void read();
+    reads.current = { inFlight: false, again: false };
+    read();
     return () => {
       operation.current = null;
-      readToken.current += 1;
+      // A new scope: the old one's in-flight answer is dropped and schedules nothing.
+      reads.current = { inFlight: false, again: false };
       if (timer.current) clearTimeout(timer.current);
+      timer.current = undefined;
     };
   }, [read]);
 
   async function act(runId: string, work: () => Promise<TitleWritingRunView>, fallback: string,
-    hooks: { accepted?: () => void; failed?: (caught: unknown) => void } = {}) {
+    hooks: { accepted?: () => void; failed?: (caught: unknown) => void; settled?: (run: TitleWritingRunView) => boolean } = {}) {
     if (operation.current || shown.current.runId !== runId) return;
     const mine: Operation = { runId, snapshot: shown.current.generation };
     operation.current = mine;
@@ -177,23 +229,23 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
       const next = await work();
       if (!current()) return;
       if (next?.projectId !== projectId || next.runId !== mine.runId) {
-        void read();
+        read();
         return;
       }
       hooks.accepted?.();
       if (shown.current.generation !== mine.snapshot) {
         // A read was shown while this action was on its way, and either may be the later state: ask the server.
-        void read();
+        read();
         return;
       }
-      readToken.current += 1;
-      if (timer.current) clearTimeout(timer.current);
       show(next);
-      if (next.state === "running") timer.current = setTimeout(() => { void read(); }, TITLE_WRITING_POLL_MS);
+      // A GET in flight may have been answered from before this action: drop it and read once more after it.
+      if (reads.current.inFlight) read();
+      else schedule(next, read);
     } catch (caught) {
       if (!current()) return;
       if (caught instanceof TitleWritingError && caught.code === "TITLE_WRITING_STORY_CHANGED") setStoryChanged(true);
-      setActionMessage(actionError(caught, fallback));
+      setActionMessage({ text: actionError(caught, fallback), moot: hooks.settled });
       hooks.failed?.(caught);
     } finally {
       if (current()) {
@@ -210,6 +262,8 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
   const uncertainIds = run ? uncertainCallIds(run) : [];
   const uncertainKey = uncertainIds.join(",");
   const confirmUncertain = uncertain && confirmedFor === uncertainKey;
+  // The run on screen is always the run of the action that failed: another run or work clears the message.
+  const message = actionMessage && !(run && actionMessage.moot?.(run)) ? actionMessage.text : null;
 
   function resume(current: TitleWritingRunView) {
     const confirmed = uncertain ? uncertainIds : [];
@@ -224,7 +278,7 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
           if (!refused(caught)) return;
           resumeAction.current = null;
           setConfirmedFor(null);
-          if (caught instanceof TitleWritingError && caught.code === "TITLE_WRITING_CONFIRMATION_STALE") void read();
+          if (caught instanceof TitleWritingError && caught.code === "TITLE_WRITING_CONFIRMATION_STALE") read();
         },
       });
   }
@@ -237,7 +291,7 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
         {readError ? (
           <div className={styles.error} role="alert">
             <p>{readError}</p>
-            <button className={styles.secondary} type="button" onClick={() => void read()}>重新读取</button>
+            <button className={styles.secondary} type="button" onClick={() => read()}>重新读取</button>
           </div>
         ) : null}
         {loaded && !run && !readError ? (
@@ -280,7 +334,7 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
               <div className={styles.actions}>
                 {run.state === "running" && !run.cancelRequested ? (
                   <button className={styles.secondary} type="button" disabled={busy}
-                    onClick={() => void act(run.runId, () => client.cancel(projectId, run.runId), "没能提交停止请求，请重试。")}>停止创作</button>
+                    onClick={() => void act(run.runId, () => client.cancel(projectId, run.runId), "没能提交停止请求，请重试。", { settled: stopSettled })}>停止创作</button>
                 ) : null}
                 {run.state === "running" && run.cancelRequested ? (
                   <p className={styles.helper}>已请求停止。已经发出的那一步会如实记录结果，之后不再开始新的步骤。</p>
@@ -305,7 +359,7 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
                   </button>
                 </div>
               ) : null}
-              {actionMessage ? <p className={styles.error} role="alert">{actionMessage}</p> : null}
+              {message ? <p className={styles.error} role="alert">{message}</p> : null}
             </section>
 
             {concept ? (
