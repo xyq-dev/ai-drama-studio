@@ -217,7 +217,42 @@ describe("one creation page with an inline inspiration section", () => {
     expect(JSON.parse(writes()[0]!.body ?? "{}").premise).toBe(frozen);
   });
 
-  it("keeps the idempotency key while browsing directions and shows the applied direction again after a reload", () => {
+  it("does not take ownership of a replacement the user already wrote (PR #60 review 2)", () => {
+    serve();
+    render(<BeginnerStart active="/create" />);
+    const userCopy = premiseBlock(SECOND_DIRECTION);
+    fireEvent.change(idea(), { target: { value: userCopy } });
+    use(FIRST.name);
+    use(SECOND.name);
+    expect(idea().value).toBe(userCopy);
+    expect(picker().getByText(/你写的，移除时不会删除/)).toBeTruthy();
+    fireEvent.click(picker().getByRole("button", { name: "移除方向" }));
+    expect(idea().value).toBe(userCopy);
+  });
+
+  it("does not reopen confirmation for a blank restored idea, and never sends one (PR #60 review 2)", async () => {
+    window.sessionStorage.setItem("ads-draft:new:project:new", JSON.stringify({ fingerprint: "x", idempotencyKey: "k", ifMatch: null,
+      payload: { title: "夜班", premise: "" }, seenBaseline: null }));
+    serve();
+    render(<BeginnerStart active="/create" />);
+    await waitFor(() => expect(calls.length).toBeGreaterThan(0));
+    expect(screen.queryByRole("button", { name: "确认创建作品" })).toBeNull();
+    expect(writes()).toEqual([]);
+  });
+
+  it("reaches every tag of the taxonomy from a direction's details", () => {
+    serve();
+    render(<BeginnerStart active="/create" />);
+    openCard(FIRST.name);
+    const detail = within(screen.getByRole("region", { name: FIRST.name }));
+    expect(detail.getAllByRole("button", { pressed: true }).length + detail.getAllByRole("button", { pressed: false }).length).toBe(TAGS.length);
+    const extra = TAGS.find((tag) => !(FIRST.recommended as readonly string[]).includes(tag.id))!;
+    fireEvent.click(detail.getByRole("button", { name: new RegExp(extra.name) }));
+    fireEvent.click(detail.getByRole("button", { name: "用这个方向" }));
+    expect(idea().value).toContain(extra.name);
+  });
+
+  it("keeps the idempotency key while browsing, and after a reload treats the direction text as the user's own", async () => {
     serve();
     const view = render(<BeginnerStart active="/create" />);
     fireEvent.change(idea(), { target: { value: "刷新前的想法" } });
@@ -231,10 +266,13 @@ describe("one creation page with an inline inspiration section", () => {
 
     view.unmount();
     render(<BeginnerStart active="/create" />);
-    return waitFor(() => {
+    await waitFor(() => {
       expect(idea().value).toBe(`刷新前的想法\n\n${premiseBlock(FIRST_DIRECTION)}`);
-      expect(picker().getByText("已加在「故事想法」末尾")).toBeTruthy();
+      expect(picker().getByText(/你写的，移除时不会删除/)).toBeTruthy();
     });
+    // Ownership is not inferred from matching text after a reload: nothing is removed.
+    fireEvent.click(picker().getByRole("button", { name: "移除方向" }));
+    expect(idea().value).toBe(`刷新前的想法\n\n${premiseBlock(FIRST_DIRECTION)}`);
   });
 
   it("keeps the manual path when AI writing is not enabled", async () => {

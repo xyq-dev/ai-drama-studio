@@ -70,14 +70,18 @@ describe("switching the direction block", () => {
   });
 
   it("swaps only the applied block, refuses edited text, and keeps the length limit", () => {
-    expect(switchBlock("开头", null, block, 4000)).toEqual({ ok: true, text: `开头\n\n${block}`, changed: true });
-    expect(switchBlock(`开头\n\n${block}`, block, block, 4000)).toEqual({ ok: true, text: `开头\n\n${block}`, changed: false });
-    expect(switchBlock(`开头\n\n${block}\n\n结尾`, block, other, 4000)).toEqual({ ok: true, text: `开头\n\n结尾\n\n${other}`, changed: true });
-    expect(switchBlock(`开头\n\n${block}`, block, null, 4000)).toEqual({ ok: true, text: "开头", changed: true });
+    expect(switchBlock("开头", null, block, 4000)).toEqual({ ok: true, text: `开头\n\n${block}`, changed: true, appended: true });
+    expect(switchBlock(`开头\n\n${block}`, block, block, 4000)).toEqual({ ok: true, text: `开头\n\n${block}`, changed: false, appended: false });
+    expect(switchBlock(`开头\n\n${block}\n\n结尾`, block, other, 4000)).toEqual({ ok: true, text: `开头\n\n结尾\n\n${other}`, changed: true, appended: true });
+    expect(switchBlock(`开头\n\n${block}`, block, null, 4000)).toEqual({ ok: true, text: "开头", changed: true, appended: false });
     const edited = `开头\n\n${block.replace("创作方向", "我的方向")}`;
     expect(switchBlock(edited, block, other, 4000)).toEqual({ ok: false, reason: "edited" });
     expect(switchBlock(edited, block, null, 4000)).toEqual({ ok: false, reason: "edited" });
     expect(switchBlock(edited, block, block, 4000)).toEqual({ ok: false, reason: "edited" });
     expect(switchBlock("开头", null, block, 5)).toEqual({ ok: false, reason: "too_long" });
+    // A user-written copy of the new direction is kept and not reported as appended.
+    expect(switchBlock(`${other}
+
+${block}`, block, other, 4000)).toEqual({ ok: true, text: other, changed: true, appended: false });
   });
 });

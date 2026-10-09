@@ -72,9 +72,19 @@
       "detail": ""
     },
     {
+      "name": "desktop: full tag catalog opens in place",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "desktop: catalog tag toggles",
+      "ok": true,
+      "detail": ""
+    },
+    {
       "name": "desktop: direction appended, idea kept",
       "ok": true,
-      "detail": "我已经想好的开头：便利店夜班。\n\n创作方向：悬疑罪案\n剧情机制：真假身份、探案解谜\n细分题材：刑侦推理\n情绪风格：紧张悬"
+      "detail": "我已经想好的开头：便利店夜班。\n\n创作方向：悬疑罪案\n剧情机制：真假身份、探案解谜\n细分题材：商战博弈、刑侦推理\n情绪风"
     },
     {
       "name": "desktop: AI title kept",
@@ -122,7 +132,7 @@
       "detail": ""
     },
     {
-      "name": "desktop: reload restores applied direction",
+      "name": "desktop: reload shows direction as the user's own text",
       "ok": true,
       "detail": ""
     },
@@ -212,9 +222,19 @@
       "detail": ""
     },
     {
+      "name": "mobile: full tag catalog opens in place",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "mobile: catalog tag toggles",
+      "ok": true,
+      "detail": ""
+    },
+    {
       "name": "mobile: direction appended, idea kept",
       "ok": true,
-      "detail": "我已经想好的开头：便利店夜班。\n\n创作方向：悬疑罪案\n剧情机制：真假身份、探案解谜\n细分题材：刑侦推理\n情绪风格：紧张悬"
+      "detail": "我已经想好的开头：便利店夜班。\n\n创作方向：悬疑罪案\n剧情机制：真假身份、探案解谜\n细分题材：商战博弈、刑侦推理\n情绪风"
     },
     {
       "name": "mobile: AI title kept",
@@ -262,7 +282,7 @@
       "detail": ""
     },
     {
-      "name": "mobile: reload restores applied direction",
+      "name": "mobile: reload shows direction as the user's own text",
       "ok": true,
       "detail": ""
     },
@@ -299,9 +319,9 @@
   ],
   "screenshots": {
     "desktop-create.png": "63842a90d700851a525597c800785204e94d90b74517b27d37cc367e914d3c25",
-    "desktop-inspiration.png": "203e0f2160799e4fa4abf19137af2a1d2ea7d6466edc3b25f0d5a1c32f776cd7",
+    "desktop-inspiration.png": "8a4f7a4cbc944e014e671cb1d26366f5f6516fb67e0b10c7074fd3332a917cd3",
     "mobile-create.png": "ced5a06e2d1b8f7f4ce46f26ea39b3995cc1ae3f23b128acd1a695b71e1c2238",
-    "mobile-inspiration.png": "ca955ab58970ef692d646547858df3bac8980ada0fa907b49c21f005907c5428",
+    "mobile-inspiration.png": "d235eba512a8e9e10ca235469ba4574415e06a2bda2a5308e59543bb6bc61a0a",
     "mobile-create-top.png": "7df80ce34a260df0830296ad67c6921d4462d288600f10f4b28151cc306aec9a"
   }
 }

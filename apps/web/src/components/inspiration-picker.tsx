@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { CATEGORIES, TAGS, type Category, type DirectionDraft } from "../lib/creative-taxonomy";
+import { CATEGORIES, TAG_GROUPS, TAGS, type Category, type DirectionDraft } from "../lib/creative-taxonomy";
 import { CategoryArtwork } from "./category-artwork";
 import styles from "./inspiration-picker.module.css";
 
@@ -79,6 +79,15 @@ export function InspirationPicker({ selected, state, frozen, note, keepAndAppend
 
   const cards = expanded ? CATEGORIES : CATEGORIES.slice(0, FIRST_CARDS);
   const detailTags = open ? [...new Set<string>([...open.recommended, ...(selected?.categoryId === open.id ? selected.tagIds : [])])] : [];
+  const tagButton = (id: string) => {
+    const on = tagIds.includes(id);
+    return (
+      <button key={id} type="button" aria-pressed={on} disabled={frozen}
+        onClick={() => setTagIds(on ? tagIds.filter((tag) => tag !== id) : [...tagIds, id])}>
+        <span aria-hidden="true">{on ? "✓" : "＋"}</span>{TAGS.find((tag) => tag.id === id)?.name}
+      </button>
+    );
+  };
   const sameAsSelected = !!open && selected?.categoryId === open.id
     && selected.tagIds.length === tagIds.length && tagIds.every((id) => selected.tagIds.includes(id));
 
@@ -157,18 +166,20 @@ export function InspirationPicker({ selected, state, frozen, note, keepAndAppend
           <div className={styles.prompt}><strong>从这个问题开始</strong><p>{open.prompt}</p></div>
           <fieldset className={styles.tags}>
             <legend>可以搭配的标签（可取消）</legend>
-            <div>
-              {detailTags.map((id) => {
-                const on = tagIds.includes(id);
-                return (
-                  <button key={id} type="button" aria-pressed={on} disabled={frozen}
-                    onClick={() => setTagIds(on ? tagIds.filter((tag) => tag !== id) : [...tagIds, id])}>
-                    <span aria-hidden="true">{on ? "✓" : "＋"}</span>{TAGS.find((tag) => tag.id === id)?.name}
-                  </button>
-                );
-              })}
-            </div>
+            <div>{detailTags.map(tagButton)}</div>
           </fieldset>
+          <details className={styles.catalog}>
+            <summary>更多标签（共 {TAGS.length} 个，按标签组）</summary>
+            {TAG_GROUPS.map((group) => {
+              const ids = TAGS.filter((tag) => tag.groupId === group.id && !detailTags.includes(tag.id)).map((tag) => tag.id);
+              return ids.length ? (
+                <fieldset key={group.id} className={styles.tags}>
+                  <legend>{group.name} · {group.description}</legend>
+                  <div>{ids.map(tagButton)}</div>
+                </fieldset>
+              ) : null;
+            })}
+          </details>
           <div className={styles.detailActions}>
             <button className="ui-button ui-button-primary" type="button" disabled={frozen}
               onClick={() => onUse({ version: 1, categoryId: open.id, tagIds: TAGS.map((tag) => tag.id).filter((id) => tagIds.includes(id)) })}>

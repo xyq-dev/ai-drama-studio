@@ -67,16 +67,15 @@ export function BeginnerStart({ active }: { active: "/create" | undefined }) {
     } catch {
       // A broken draft slot only means nothing is restored.
     }
-    if (restored !== null) setConfirming(true);
+    // Only an idea that was actually written returns to confirmation; a blank one must pass 开始构思 again.
+    if (restored !== null && restored.trim().length > 0) setConfirming(true);
     try {
       // A stored direction is offered from the old "用这个方向新建作品" flag, or shown again after a reload when the
-      // restored idea still carries its block verbatim.
+      // restored idea still carries its block. Ownership is not kept across a reload, so that text counts as the
+      // user's own: it is shown as present and never removed by this page.
       const selected = readSelectedDirection(window.localStorage);
       const inIdea = selected !== null && restored !== null && restored.includes(premiseBlock(selected));
-      if (selected && (inIdea || new URLSearchParams(window.location.search).get("direction") === "1")) {
-        setDirection(selected);
-        if (inIdea) setAppliedBlock(premiseBlock(selected));
-      }
+      if (selected && (inIdea || new URLSearchParams(window.location.search).get("direction") === "1")) setDirection(selected);
     } catch {
       setDirection(null);
     }
@@ -131,13 +130,17 @@ export function BeginnerStart({ active }: { active: "/create" | undefined }) {
       return;
     }
     const switched = !keepOld && appliedBlock !== null && appliedBlock !== block;
+    // The previous direction's text is the user's own (e.g. after a reload): it stays where it is.
+    const oldKept = appliedBlock === null && direction !== null && premiseBlock(direction) !== block
+      && idea.includes(premiseBlock(direction));
     if (result.changed) remember(title, result.text);
     setDirection(next);
     // The page owns the block only when it appended it now or already owned it; a copy the user wrote stays theirs.
-    setAppliedBlock(result.changed || appliedBlock === block ? block : null);
+    setAppliedBlock(result.appended || (appliedBlock === block && !keepOld) ? block : null);
     storeDirection(next);
     setDirectionNote(!result.changed ? "想法里已经有这段创作方向。"
       : switched ? "已换成新的方向，你写的其他内容没有改动。确认创建后才会保存。"
+      : oldKept ? "已加入新方向。原来那段方向文字无法确认是本页加入的，保留在想法里；不需要可以手动删除。"
       : "已加入创作方向。确认创建后才会保存。");
   }
 
@@ -167,6 +170,13 @@ export function BeginnerStart({ active }: { active: "/create" | undefined }) {
 
   async function create() {
     if (creatingRef.current) return;
+    if (idea.trim().length === 0) {
+      // However the idea became blank, nothing is sent without one.
+      setConfirming(false);
+      setError("先写下一句你想拍的故事。");
+      ideaRef.current?.focus();
+      return;
+    }
     let draft;
     try {
       draft = nextDraft(readDraft(window.sessionStorage, CREATE_KEY), { title, premise: idea }, null, () => crypto.randomUUID());

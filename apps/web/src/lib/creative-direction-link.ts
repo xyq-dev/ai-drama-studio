@@ -59,7 +59,10 @@ export function removeOnce(text: string, block: string): RemoveResult {
   return { ok: true, text: `${before}${after}` };
 }
 
-export type SwitchResult = { ok: true; text: string; changed: boolean } | { ok: false; reason: "too_long" | "edited" };
+/** `appended` is true only when `next` was added by this call: an identical block already in the text stays the user's. */
+export type SwitchResult =
+  | { ok: true; text: string; changed: boolean; appended: boolean }
+  | { ok: false; reason: "too_long" | "edited" };
 
 /**
  * Moves the text from the block this page added (`applied`, null when none) to `next` (null removes it). Only the
@@ -69,7 +72,7 @@ export type SwitchResult = { ok: true; text: string; changed: boolean } | { ok: 
 export function switchBlock(text: string, applied: string | null, next: string | null, maxChars: number): SwitchResult {
   if (applied !== null && applied === next) {
     // The same direction again: fine while its block is intact; an edited block is never topped up with a fresh copy.
-    return text.includes(applied) ? { ok: true, text, changed: false } : { ok: false, reason: "edited" };
+    return text.includes(applied) ? { ok: true, text, changed: false, appended: false } : { ok: false, reason: "edited" };
   }
   let base = text;
   if (applied !== null) {
@@ -77,10 +80,10 @@ export function switchBlock(text: string, applied: string | null, next: string |
     if (!removed.ok) return { ok: false, reason: "edited" };
     base = removed.text;
   }
-  if (next === null) return { ok: true, text: base, changed: base !== text };
+  if (next === null) return { ok: true, text: base, changed: base !== text, appended: false };
   const added = appendOnce(base, next, maxChars);
   if (!added.ok) return added;
-  return { ok: true, text: added.text, changed: added.text !== text };
+  return { ok: true, text: added.text, changed: added.text !== text, appended: added.changed };
 }
 
 export function premiseBlock(direction: DirectionDraft): string {
