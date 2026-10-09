@@ -1,0 +1,161 @@
+name: Title writing isolated acceptance
+
+# Runs only the title writing acceptance against a PostgreSQL service container that exists for this job alone.
+# Each job creates one new, empty database named ads_title_acceptance_<job>_<run id>_<attempt>, gives its name and URL
+# only to the acceptance command, and is discarded with the container when the job ends. No production credentials,
+# no provider keys, no deployment. The model is a stub inside the test process; nothing reaches a provider.
+
+on:
+  push:
+    branches:
+      - feat/title-driven-ai-writing
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: title-writing-acceptance-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  store:
+    name: PostgreSQL store acceptance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          # Runner-local, job-scoped container without a password, so no password exists to leak into logs.
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.0
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.21.0
+          cache: pnpm
+
+      - name: Install JavaScript dependencies (engine-strict)
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate and generate Prisma
+        run: |
+          pnpm --filter @ai-drama/database prisma:validate
+          pnpm --filter @ai-drama/database prisma:generate
+
+      - name: Build JavaScript workspace
+        run: pnpm build
+
+      - name: Create a new, empty acceptance database
+        run: |
+          name="ads_title_acceptance_store_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+          psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE ${name}"
+          psql -h 127.0.0.1 -U postgres -d "${name}" -v ON_ERROR_STOP=1 -At -c "SELECT 'database=' || current_database() || ' server=' || current_setting('server_version') || ' user_tables=' || (SELECT count(*) FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog', 'information_schema'))"
+
+      - name: Run the store acceptance (guarded, deny by default)
+        run: |
+          name="ads_title_acceptance_store_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+          TITLE_WRITING_DRAFT_SQL_AUTHORIZED=true \
+          TITLE_WRITING_ACCEPTANCE_DATABASE_NAME="${name}" \
+          TITLE_WRITING_ACCEPTANCE_DATABASE_URL="postgresql://postgres@127.0.0.1:5432/${name}" \
+          TITLE_WRITING_ACCEPTANCE_EVIDENCE_DIR="${RUNNER_TEMP}/title-acceptance-evidence" \
+          pnpm --filter @ai-drama/database title-writing:acceptance
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: title-writing-store-acceptance-evidence
+          path: ${{ runner.temp }}/title-acceptance-evidence
+          if-no-files-found: warn
+          retention-days: 14
+
+  api:
+    name: Real API acceptance (model stub)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.0
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.21.0
+          cache: pnpm
+
+      - name: Install JavaScript dependencies (engine-strict)
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate and generate Prisma
+        run: |
+          pnpm --filter @ai-drama/database prisma:validate
+          pnpm --filter @ai-drama/database prisma:generate
+
+      - name: Build JavaScript workspace
+        run: pnpm build
+
+      - name: Create a new, empty acceptance database
+        run: |
+          name="ads_title_acceptance_api_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+          psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE ${name}"
+          psql -h 127.0.0.1 -U postgres -d "${name}" -v ON_ERROR_STOP=1 -At -c "SELECT 'database=' || current_database() || ' server=' || current_setting('server_version') || ' user_tables=' || (SELECT count(*) FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog', 'information_schema'))"
+
+      - name: Run the real API acceptance (guarded, deny by default)
+        run: |
+          name="ads_title_acceptance_api_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+          TITLE_WRITING_DRAFT_SQL_AUTHORIZED=true \
+          TITLE_WRITING_ACCEPTANCE_DATABASE_NAME="${name}" \
+          TITLE_WRITING_ACCEPTANCE_DATABASE_URL="postgresql://postgres@127.0.0.1:5432/${name}" \
+          TITLE_WRITING_ACCEPTANCE_EVIDENCE_DIR="${RUNNER_TEMP}/title-acceptance-evidence" \
+          pnpm --filter @ai-drama/api title-writing:acceptance
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: title-writing-api-acceptance-evidence
+          path: ${{ runner.temp }}/title-acceptance-evidence
+          if-no-files-found: warn
+          retention-days: 14

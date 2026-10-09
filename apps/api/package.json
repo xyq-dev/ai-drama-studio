@@ -10,6 +10,7 @@
     "lint": "eslint src",
     "test": "vitest run",
     "integration": "vitest run --config vitest.integration.config.ts",
+    "title-writing:acceptance": "vitest run --config vitest.title-writing-acceptance.config.ts",
     "clean": "node --eval \"require('node:fs').rmSync('dist',{recursive:true,force:true})\""
   },
   "dependencies": {
