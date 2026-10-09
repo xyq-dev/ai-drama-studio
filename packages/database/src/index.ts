@@ -3,6 +3,7 @@ import { Pool, type PoolClient } from "pg";
 export {
   runMigrations,
   type MigrationClient,
+  type MigrationOptions,
   type MigrationPool,
   type MigrationResult,
 } from "./migrations";
@@ -168,7 +169,7 @@ export {
   type MockSmProvisionConfig,
   type MockSmProvisionResult,
 } from "./provision-mock-sm";
-export { PostgresTitleWritingStore, TITLE_WRITING_TABLES } from "./title-writing-store";
+export { PostgresTitleWritingStore, TITLE_WRITING_MIGRATION, TITLE_WRITING_TABLES } from "./title-writing-store";
 export {
   TITLE_WRITING_ACCEPTANCE_NAME_PATTERN,
   checkTitleWritingAcceptanceEnv,

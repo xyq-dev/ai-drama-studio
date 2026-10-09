@@ -649,3 +649,95 @@ model AssetRevisionDependency {
   @@index([workspaceId, projectId, locationRevisionId])
   @@map("asset_revision_dependency")
 }
+
+/// One title-driven writing run (migration 20261008000100_title_writing). Database-only rules stay in the migration:
+/// the CHECKs, the partial unique index of one running run per project, the partial lease index, and the composite
+/// foreign keys to project and story_revision.
+model TitleWritingRun {
+  id                String    @id @db.Uuid
+  workspaceId       String    @map("workspace_id") @db.Uuid
+  projectId         String    @map("project_id") @db.Uuid
+  actorId           String    @map("actor_id")
+  idempotencyKey    String    @map("idempotency_key")
+  inputHash         String    @map("input_hash")
+  inputJson         Json      @map("input_json") @db.JsonB
+  providerKey       String    @map("provider_key")
+  model             String
+  state             String
+  errorCode         String?   @map("error_code")
+  cancelRequestedAt DateTime? @map("cancel_requested_at") @db.Timestamptz(6)
+  executorId        String?   @map("executor_id")
+  leaseUntil        DateTime? @map("lease_until") @db.Timestamptz(6)
+  callCap           Int       @map("call_cap")
+  callsUsed         Int       @default(0) @map("calls_used")
+  storySave         String    @default("pending") @map("story_save")
+  storyRevisionId   String?   @map("story_revision_id") @db.Uuid
+  createdAt         DateTime  @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime  @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([workspaceId, actorId, idempotencyKey])
+  @@unique([id, workspaceId])
+  @@index([workspaceId, projectId, createdAt(sort: Desc)])
+  @@map("title_writing_run")
+}
+
+/// One of the five steps of a run. The composite foreign keys to the run (ON DELETE CASCADE) and to script_revision,
+/// and the CHECKs, are in the migration.
+model TitleWritingStep {
+  runId            String   @map("run_id") @db.Uuid
+  workspaceId      String   @map("workspace_id") @db.Uuid
+  stepKey          String   @map("step_key")
+  ordinal          Int      @db.SmallInt
+  state            String
+  attemptNo        Int      @default(0) @map("attempt_no")
+  errorCode        String?  @map("error_code")
+  outputJson       Json?    @map("output_json") @db.JsonB
+  outputHash       String?  @map("output_hash")
+  scriptSave       String?  @map("script_save")
+  scriptRevisionId String?  @map("script_revision_id") @db.Uuid
+  updatedAt        DateTime @map("updated_at") @db.Timestamptz(6)
+
+  @@id([runId, stepKey])
+  @@unique([runId, ordinal])
+  @@map("title_writing_step")
+}
+
+/// One provider call of a step. billing_status is fixed to 'unknown' by a CHECK and there is no amount column. The
+/// partial index of open calls and the foreign key to the step (ON DELETE CASCADE) are in the migration.
+model TitleWritingCall {
+  id                String    @id @db.Uuid
+  runId             String    @map("run_id") @db.Uuid
+  workspaceId       String    @map("workspace_id") @db.Uuid
+  stepKey           String    @map("step_key")
+  attemptNo         Int       @map("attempt_no")
+  providerKey       String    @map("provider_key")
+  model             String
+  requestHash       String    @map("request_hash")
+  state             String
+  executorId        String    @map("executor_id")
+  providerRequestId String?   @map("provider_request_id")
+  responseModel     String?   @map("response_model")
+  usageJson         Json      @map("usage_json") @db.JsonB
+  billingStatus     String    @default("unknown") @map("billing_status")
+  errorCode         String?   @map("error_code")
+  createdAt         DateTime  @map("created_at") @db.Timestamptz(6)
+  finishedAt        DateTime? @map("finished_at") @db.Timestamptz(6)
+
+  @@unique([runId, stepKey, attemptNo])
+  @@index([workspaceId, createdAt])
+  @@map("title_writing_call")
+}
+
+/// One accepted resume action, keyed by the resume request's Idempotency-Key. The foreign key to the run
+/// (ON DELETE CASCADE) and the CHECKs are in the migration.
+model TitleWritingResume {
+  runId            String   @map("run_id") @db.Uuid
+  workspaceId      String   @map("workspace_id") @db.Uuid
+  idempotencyKey   String   @map("idempotency_key")
+  requestHash      String   @map("request_hash")
+  confirmedCallIds Json     @map("confirmed_call_ids") @db.JsonB
+  createdAt        DateTime @map("created_at") @db.Timestamptz(6)
+
+  @@id([runId, idempotencyKey])
+  @@map("title_writing_resume")
+}

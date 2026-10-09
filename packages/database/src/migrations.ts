@@ -45,11 +45,22 @@ async function discoverMigrations(directory: string): Promise<MigrationFile[]> {
   return migrations.sort((left, right) => left.name.localeCompare(right.name));
 }
 
+export interface MigrationOptions {
+  /**
+   * Apply only the migrations whose names sort before this one. Used by isolated acceptances to build the schema of an
+   * earlier release and then upgrade it with a second, unrestricted run. The deploy command never sets it.
+   */
+  before?: string;
+}
+
 export async function runMigrations(
   pool: MigrationPool,
   directory = defaultMigrationDirectory(),
+  options: MigrationOptions = {},
 ): Promise<MigrationResult> {
-  const migrations = await discoverMigrations(directory);
+  const { before } = options;
+  const migrations = (await discoverMigrations(directory))
+    .filter((migration) => before === undefined || migration.name.localeCompare(before) < 0);
   const result: MigrationResult = { applied: [], alreadyApplied: [] };
   const client = await pool.connect();
   let locked = false;

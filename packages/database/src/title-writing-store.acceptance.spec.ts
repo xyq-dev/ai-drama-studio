@@ -1,12 +1,14 @@
 /**
  * Title writing store acceptance on real PostgreSQL. NOT part of `test` or `integration`: run only with
  * `pnpm --filter @ai-drama/database title-writing:acceptance` against a newly created, empty, disposable database that
- * a person named on purpose (see title-writing-acceptance-guard.ts). It applies the migrations and the unapplied draft
- * SQL to that database and nothing else. It never drops or truncates anything; refusal happens before any connection.
+ * a person named on purpose (see title-writing-acceptance-guard.ts). It migrates that database through the released
+ * migrations only, checks that storage is refused and writes existing business data, then upgrades it through the
+ * normal migration chain (which adds the title writing migration) and runs the chain again. The draft SQL is never
+ * applied. It never drops or truncates anything; refusal happens before any connection.
  */
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -21,10 +23,10 @@ import {
   type TitleWritingStepKey,
 } from "@ai-drama/contracts";
 import { canonicalInputHash } from "@ai-drama/domain";
-import { runMigrations } from "./migrations";
+import { runMigrations, type MigrationResult } from "./migrations";
 import { TextChainService } from "./text-chain";
 import { checkTitleWritingAcceptanceEnv, verifyTitleWritingAcceptanceDatabase } from "./title-writing-acceptance-guard";
-import { PostgresTitleWritingStore } from "./title-writing-store";
+import { PostgresTitleWritingStore, TITLE_WRITING_MIGRATION } from "./title-writing-store";
 
 // Refuse before any connection is opened.
 const decision = checkTitleWritingAcceptanceEnv(process.env);
@@ -34,7 +36,9 @@ const acceptanceUrl = decision.url;
 const pool = new Pool({ connectionString: acceptanceUrl, max: 8, application_name: "title-acceptance-main" });
 const chain = new TextChainService(pool);
 const store = new PostgresTitleWritingStore(pool, chain);
-const DRAFT_NAME = "20261008000100_title_writing.sql";
+/** The migrations released before title writing, in order: the schema a server has before this release. */
+const MIGRATIONS_BEFORE = ["20260924000100_m1b_job_core", "20260925000100_m2a_text_chain", "20260928000100_script_dependency_scopes",
+  "20260928000200_m3a_media_assets", "20260928000300_m3b_job_shot_lineage"];
 
 /**
  * Evidence of this run, written as JSON when TITLE_WRITING_ACCEPTANCE_EVIDENCE_DIR is set. It holds identities, counts,
@@ -65,14 +69,83 @@ beforeAll(async () => {
               WHERE table_schema NOT IN ('pg_catalog', 'information_schema') AND table_schema NOT LIKE 'pg_toast%') AS tables`,
   )).rows[0]!;
   evidence.database = { name: identity.name, serverVersion: identity.version, tablesBeforeWrite: identity.tables };
-  const migrations = await runMigrations(pool);
-  evidence.migrationsApplied = migrations.applied;
-  expect(await store.storageReady()).toBe(false);
-  evidence.storageReadyBeforeDraft = false;
-  const draft = await readFile(join(__dirname, "..", "prisma", "drafts", DRAFT_NAME), "utf8");
-  await pool.query(draft);
-  evidence.draftApplied = DRAFT_NAME;
+  // The released schema first: every migration before the title writing one, as on a server before this release.
+  released = await runMigrations(pool, undefined, { before: TITLE_WRITING_MIGRATION });
+  storageBeforeUpgrade = await store.storageReady();
+  existing = await seedExistingData();
+  beforeUpgrade = await snapshotExisting();
+  // Then the normal deploy path: the unrestricted chain, which applies only what is not recorded yet.
+  upgrade = await runMigrations(pool);
+  afterUpgrade = await snapshotExisting();
+  redeploy = await runMigrations(pool);
+  recorded = (await pool.query<{ name: string; checksum: string }>("SELECT name, checksum FROM schema_migration ORDER BY name")).rows;
+  evidence.migration = { released: released.applied, storageReadyBeforeUpgrade: storageBeforeUpgrade, upgradeApplied: upgrade.applied,
+    upgradeAlreadyApplied: upgrade.alreadyApplied, redeployApplied: redeploy.applied, recorded: recorded.map((row) => row.name),
+    existingRows: beforeUpgrade.rows };
 });
+
+let released: MigrationResult;
+let upgrade: MigrationResult;
+let redeploy: MigrationResult;
+let storageBeforeUpgrade: boolean;
+let existing: Awaited<ReturnType<typeof seedExistingData>>;
+let beforeUpgrade: Awaited<ReturnType<typeof snapshotExisting>>;
+let afterUpgrade: Awaited<ReturnType<typeof snapshotExisting>>;
+let recorded: Array<{ name: string; checksum: string }>;
+
+/**
+ * Existing business data of the released schema, written through the same paths the product uses where one exists:
+ * a project with an approved story and a script version, a workflow run, a job, an attempt and a cost ledger row.
+ */
+async function seedExistingData() {
+  const ws = await newWorkspace("before-title-writing");
+  const project = await newProject(ws, "已有作品");
+  const story = await saveHumanStory(ws, project, "上线前的故事");
+  await approveCurrentStory(ws, project);
+  const first = await episode(project, 1);
+  const script = (await chain.createScriptRevision({ workspaceId: ws, projectId: project, episodeId: first.id, sourceStoryRevisionId: story,
+    content: { text: "上线前的剧本" }, createdBy: "editor", expectedVersion: first.row_version })).revisionId;
+  const provider = await one(`INSERT INTO provider_configuration (workspace_id, provider_key, capability, default_timeout_ms)
+    VALUES ($1, 'mock-media', 'image.generate', 30000) RETURNING id`, [ws]);
+  const workflow = await one(`INSERT INTO workflow_run (workspace_id, project_id, type, requested_by, input_snapshot)
+    VALUES ($1, $2, 'MEDIA_IMAGE', 'before-title-writing', '{}'::jsonb) RETURNING id`, [ws, project]);
+  const job = await one(`INSERT INTO generation_job (workspace_id, project_id, workflow_run_id, kind, input_hash, input_snapshot)
+    VALUES ($1, $2, $3, 'MEDIA_IMAGE', $4, '{}'::jsonb) RETURNING id`, [ws, project, workflow, "ef".repeat(32)]);
+  const attempt = await one(`INSERT INTO job_attempt (workspace_id, generation_job_id, attempt_no, provider_configuration_id,
+    provider_request_id, provider_client_request_key, request_snapshot) VALUES ($1, $2, 1, $3, 'before|1', 'client-before', '{}'::jsonb) RETURNING id`,
+  [ws, job, provider]);
+  const ledger = await one(`INSERT INTO cost_ledger (workspace_id, project_id, generation_job_id, job_attempt_id, idempotency_key,
+    provider_configuration_id, provider_request_id, currency, amount_decimal, kind, basis, provider, model)
+    VALUES ($1, $2, $3, $4, 'cost:estimate', $5, 'before|1', 'USD', 0.10, 'ESTIMATED', 'LOCALLY_CALCULATED', 'mock-media', 'mock') RETURNING id`,
+  [ws, project, job, attempt, provider]);
+  return { ws, project, story, script, workflow, job, attempt, ledger };
+}
+
+/**
+ * Every table that existed before the title writing migration: its row count and a digest of all rows in a fixed
+ * order, plus its columns, constraints and indexes. Equal snapshots mean nothing was deleted, rewritten or altered.
+ */
+async function snapshotExisting() {
+  const tables = (await pool.query<{ name: string }>(
+    `SELECT table_name AS name FROM information_schema.tables WHERE table_schema = current_schema() AND table_type = 'BASE TABLE'
+        AND table_name <> 'schema_migration' AND table_name NOT LIKE 'title_writing_%' ORDER BY 1`)).rows.map((row) => row.name);
+  const rows: Record<string, { count: number; digest: string }> = {};
+  for (const table of tables) {
+    const result = (await pool.query<{ count: number; digest: string | null }>(
+      `SELECT count(*)::int AS count, md5(string_agg(row_to_json(t)::text, '|' ORDER BY row_to_json(t)::text)) AS digest FROM ${table} t`)).rows[0]!;
+    rows[table] = { count: result.count, digest: result.digest ?? "" };
+  }
+  const catalog = (await pool.query<{ item: string }>(
+    `SELECT format('column %s.%s %s %s %s', table_name, column_name, data_type, is_nullable, coalesce(column_default, '')) AS item
+       FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ANY($1)
+     UNION ALL
+     SELECT format('constraint %s %s', conrelid::regclass::text, pg_get_constraintdef(oid)) FROM pg_constraint
+      WHERE connamespace = current_schema()::regnamespace AND conrelid::regclass::text = ANY($1)
+     UNION ALL
+     SELECT format('index %s', indexdef) FROM pg_indexes WHERE schemaname = current_schema() AND tablename = ANY($1)
+     ORDER BY 1`, [tables])).rows.map((row) => row.item);
+  return { tables, rows, catalog };
+}
 
 async function writeEvidence(): Promise<void> {
   const dir = process.env.TITLE_WRITING_ACCEPTANCE_EVIDENCE_DIR;
@@ -191,7 +264,7 @@ function resumeRequest(runId: string, key: string, confirmed: string[]): TitleRe
     maxActiveRuns: 5 };
 }
 
-describe("PostgresTitleWritingStore on the authorized draft tables", () => {
+describe("PostgresTitleWritingStore on the migrated tables", () => {
   let workspaceId: string;
   let projectId: string;
   let otherProjectId: string;
@@ -492,7 +565,47 @@ describe("R6: script import and a person's save on the same episode", () => {
   });
 });
 
-describe("draft schema on PostgreSQL", () => {
+describe("formal migration on a database of the released schema", () => {
+  it("refuses storage before the migration: the released schema has no title writing tables", () => {
+    expect(released.applied).toEqual(MIGRATIONS_BEFORE);
+    expect(storageBeforeUpgrade).toBe(false);
+  });
+
+  it("upgrades through the normal chain, applying only the title writing migration with its file's checksum", async () => {
+    expect(upgrade.applied).toEqual([TITLE_WRITING_MIGRATION]);
+    expect(upgrade.alreadyApplied).toEqual(MIGRATIONS_BEFORE);
+    const sql = await readFile(join(__dirname, "..", "prisma", "migrations", TITLE_WRITING_MIGRATION, "migration.sql"), "utf8");
+    expect(recorded.find((row) => row.name === TITLE_WRITING_MIGRATION)?.checksum).toBe(createHash("sha256").update(sql).digest("hex"));
+    expect(recorded.map((row) => row.name)).toEqual([...MIGRATIONS_BEFORE, TITLE_WRITING_MIGRATION]);
+    expect(await store.storageReady()).toBe(true);
+  });
+
+  it("leaves every existing table's rows, columns, constraints and indexes as they were", () => {
+    expect(afterUpgrade.tables).toEqual(beforeUpgrade.tables);
+    expect(afterUpgrade.rows).toEqual(beforeUpgrade.rows);
+    expect(afterUpgrade.catalog).toEqual(beforeUpgrade.catalog);
+    for (const table of ["project", "story_revision", "script_revision", "episode", "workflow_run", "generation_job", "job_attempt", "cost_ledger"]) {
+      expect(beforeUpgrade.rows[table]?.count, table).toBeGreaterThan(0);
+    }
+  });
+
+  it("keeps the existing project, versions, job and ledger readable by their ids after the upgrade", async () => {
+    const read = async (sql: string, id: string) => (await pool.query(sql, [id])).rowCount;
+    expect(await read("SELECT 1 FROM project WHERE id = $1 AND title = '已有作品'", existing.project)).toBe(1);
+    expect(await read("SELECT 1 FROM story_revision WHERE id = $1 AND review_status = 'APPROVED'", existing.story)).toBe(1);
+    expect(await read("SELECT 1 FROM script_revision WHERE id = $1", existing.script)).toBe(1);
+    expect(await read("SELECT 1 FROM generation_job WHERE id = $1", existing.job)).toBe(1);
+    expect(await read("SELECT 1 FROM cost_ledger WHERE id = $1 AND amount_decimal = 0.10", existing.ledger)).toBe(1);
+  });
+
+  it("does nothing when the deploy command runs again", async () => {
+    expect(redeploy.applied).toEqual([]);
+    expect(redeploy.alreadyApplied).toEqual([...MIGRATIONS_BEFORE, TITLE_WRITING_MIGRATION]);
+    expect((await pool.query("SELECT 1 FROM schema_migration WHERE name = $1", [TITLE_WRITING_MIGRATION])).rowCount).toBe(1);
+  });
+});
+
+describe("migrated schema on PostgreSQL", () => {
   it("creates the four tables with the declared keys, foreign keys, partial indexes and checks", async () => {
     const tables = (await pool.query<{ table_name: string }>(
       `SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() AND table_name LIKE 'title_writing_%'
