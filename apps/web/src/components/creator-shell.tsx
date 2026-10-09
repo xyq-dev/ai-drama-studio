@@ -36,6 +36,7 @@ export function CreatorShell({ children, activePath }: { children: ReactNode; ac
   const panel = useRef<HTMLDivElement>(null);
   const wasOpen = useRef(false);
   const dialogId = useId();
+  const currentSection = LINKS.find((link) => link.href === activePath)?.label ?? "创作中心";
   useModalKeyboard(open && !wide, panel, () => setOpen(false));
 
   useEffect(() => {
@@ -59,6 +60,7 @@ export function CreatorShell({ children, activePath }: { children: ReactNode; ac
 
   const navigation = <nav aria-label="主导航" className={styles.navigation}><ul>
     {LINKS.map((link) => <li key={link.href} className={link.icon === "preview" ? styles.help : undefined}>
+      {link.icon === "works" || link.icon === "preview" ? <span className={styles.navSection} aria-hidden="true">{link.icon === "works" ? "创作工作区" : "了解与帮助"}</span> : null}
       <a className={styles.navLink} href={link.href} aria-current={activePath === link.href ? "page" : undefined}>
         <NavIcon icon={link.icon} />{link.label}
       </a>
@@ -67,8 +69,12 @@ export function CreatorShell({ children, activePath }: { children: ReactNode; ac
 
   return <div className={`creator-app ${styles.shell}`} data-ui="hongguo">
     <a className={styles.skip} href="#main">跳到正文</a>
-    <aside className={styles.sidebar}><Brand />{navigation}<p className={styles.footer}>每个好故事，都值得被看见</p></aside>
+    <aside className={styles.sidebar}><Brand />{navigation}<p className={styles.footer}><span>从一个想法，到一部作品。</span>每个好故事，都值得被看见</p></aside>
     <div className={styles.page}>
+      <header className={styles.topbar} aria-label="工作区页眉">
+        <p>创作工作区<span aria-hidden="true">/</span><strong>{currentSection}</strong></p>
+        <div className={styles.topbarActions}><span className={styles.previewBadge}>开发预览</span><a href="/help">查看创作指南<span aria-hidden="true"> ↗</span></a></div>
+      </header>
       <header className={styles.mobileHeader}><Brand /><button ref={opener} type="button" className={styles.menu}
         aria-expanded={open} aria-controls={dialogId} onClick={() => setOpen(true)} hidden={wide}>
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" /></svg>

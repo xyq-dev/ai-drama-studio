@@ -1,0 +1,59 @@
+name: Creator UI checks
+
+# The UI is a stacked change while title writing is developed independently.
+# This job needs no database, application environment, provider keys, or deployment credentials.
+on:
+  push:
+    branches:
+      - feat/creator-ui-finish
+    paths:
+      - .github/workflows/creator-ui-check.yml
+      - apps/web/**
+      - packages/contracts/**
+      - packages/domain/**
+      - packages/providers/**
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+  pull_request:
+    branches:
+      - main
+      - feat/title-driven-ai-writing
+    paths:
+      - .github/workflows/creator-ui-check.yml
+      - apps/web/**
+      - packages/contracts/**
+      - packages/domain/**
+      - packages/providers/**
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  web:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.0
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.21.0
+          cache: pnpm
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build Web and its workspace dependencies
+        run: pnpm --filter @ai-drama/web... build
+      - name: Lint Web
+        run: pnpm --filter @ai-drama/web lint
+      - name: Typecheck Web
+        run: pnpm --filter @ai-drama/web typecheck
+      - name: Run Web component and unit regressions
+        run: pnpm --filter @ai-drama/web test
