@@ -143,17 +143,47 @@ describe("one creation page with an inline inspiration section", () => {
     fireEvent.change(idea(), { target: { value: edited } });
     expect(picker().getByText(/方向文字已被你修改/)).toBeTruthy();
 
+    // A different direction is appended after the edited text, which stays exactly as the user left it.
     use(SECOND.name);
-    expect(idea().value).toBe(edited);
-    expect(screen.getByText(/为避免误删你写的内容，正文保持不变/)).toBeTruthy();
-    fireEvent.click(picker().getByRole("button", { name: `保留原文字，另外加入「${SECOND.name}」` }));
     expect(idea().value).toBe(`${edited}\n\n${premiseBlock(SECOND_DIRECTION)}`);
+    expect(screen.getByText(/你改过的旧方向文字（如果还在）保留在想法里/)).toBeTruthy();
 
     fireEvent.change(idea(), { target: { value: idea().value.replace(`创作方向：${SECOND.name}`, `创作方向：${SECOND.name}（我改的）`) } });
     const before = idea().value;
     fireEvent.click(picker().getByRole("button", { name: "移除方向" }));
     expect(idea().value).toBe(before);
     expect(screen.getByText(/方向已取消选择/)).toBeTruthy();
+  });
+
+  it("lets the user choose again after deleting an edited direction, and asks before re-adding the same one (PR #60 review 4)", () => {
+    serve();
+    render(<BeginnerStart active="/create" />);
+    fireEvent.change(idea(), { target: { value: "开头" } });
+    use(FIRST.name);
+    fireEvent.change(idea(), { target: { value: idea().value.replace("请围绕", "我改过：请围绕") } });
+    fireEvent.change(idea(), { target: { value: "开头" } });
+
+    use(FIRST.name);
+    expect(idea().value).toBe("开头");
+    expect(screen.getByText(/这个方向的文字你已经改过/)).toBeTruthy();
+    fireEvent.click(picker().getByRole("button", { name: `仍然加入「${FIRST.name}」（不改动现有文字）` }));
+    expect(idea().value).toBe(`开头\n\n${premiseBlock(FIRST_DIRECTION)}`);
+    expect(picker().getByText("已加在「故事想法」末尾")).toBeTruthy();
+
+    use(SECOND.name);
+    expect(idea().value).toBe(`开头\n\n${premiseBlock(SECOND_DIRECTION)}`);
+  });
+
+  it("keeps a blank line the user typed after the direction when removing it (PR #60 review 4)", () => {
+    serve();
+    render(<BeginnerStart active="/create" />);
+    fireEvent.change(idea(), { target: { value: "foo" } });
+    use(FIRST.name);
+    const block = premiseBlock(FIRST_DIRECTION);
+    fireEvent.change(idea(), { target: { value: `foo${block}` } });
+    fireEvent.change(idea(), { target: { value: `foo${block}\n\nbar` } });
+    fireEvent.click(picker().getByRole("button", { name: "移除方向" }));
+    expect(idea().value).toBe("foo\n\nbar");
   });
 
   it("does not take ownership of a direction text the user already wrote (PR #60 review)", () => {
@@ -177,7 +207,7 @@ describe("one creation page with an inline inspiration section", () => {
     fireEvent.change(idea(), { target: { value: edited } });
     use(FIRST.name);
     expect(idea().value).toBe(edited);
-    expect(screen.getByText(/为避免误删你写的内容，正文保持不变/)).toBeTruthy();
+    expect(screen.getByText(/这个方向的文字你已经改过/)).toBeTruthy();
   });
 
   it("leaves the confirm step when removing the direction empties the idea (PR #60 review)", () => {

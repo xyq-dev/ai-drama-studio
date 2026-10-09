@@ -42,11 +42,17 @@ export function appendOnce(text: string, block: string, maxChars: number): Appen
   return { ok: true, text: next, changed: true };
 }
 
-/** The block this page appended, and where it starts. Only that occurrence is ever removed. */
+/**
+ * The block this page appended and where it starts. `separated` says the blank line right before it was also put there
+ * by the page and is still untouched. Only that occurrence, and only that separator, is ever removed.
+ */
 export interface OwnedBlock {
   block: string;
   at: number;
+  separated: boolean;
 }
+
+const SEPARATOR = "\n\n";
 
 export type RemoveResult = { ok: true; text: string } | { ok: false; reason: "not_found" };
 
@@ -58,9 +64,9 @@ export type RemoveResult = { ok: true; text: string } | { ok: false; reason: "no
 export function removeOwned(text: string, owned: OwnedBlock): RemoveResult {
   if (text.slice(owned.at, owned.at + owned.block.length) !== owned.block) return { ok: false, reason: "not_found" };
   let before = text.slice(0, owned.at);
-  let after = text.slice(owned.at + owned.block.length);
-  if (before.endsWith("\n\n")) before = before.slice(0, -2);
-  else if (after.startsWith("\n\n")) after = after.slice(2);
+  const after = text.slice(owned.at + owned.block.length);
+  // Separators the user typed, before or after the block, are theirs and stay.
+  if (owned.separated && before.endsWith(SEPARATOR)) before = before.slice(0, -SEPARATOR.length);
   return { ok: true, text: `${before}${after}` };
 }
 
@@ -81,7 +87,9 @@ export function trackOwned(previous: string, next: string, owned: OwnedBlock): O
   if (editEnd <= owned.at) at = owned.at + next.length - previous.length;
   else if (prefix >= blockEnd) at = owned.at;
   else return null;
-  return next.slice(at, at + owned.block.length) === owned.block ? { block: owned.block, at } : null;
+  // An edit reaching into the page's separator makes whatever blank line is there now the user's.
+  const separated = owned.separated && !(prefix < owned.at && editEnd > owned.at - SEPARATOR.length);
+  return next.slice(at, at + owned.block.length) === owned.block ? { block: owned.block, at, separated } : null;
 }
 
 /** `owned` is set only when `next` was appended by this call: an identical block already in the text stays the user's. */
@@ -110,7 +118,8 @@ export function switchBlock(text: string, owned: OwnedBlock | null, next: string
   const added = appendOnce(base, next, maxChars);
   if (!added.ok) return added;
   return { ok: true, text: added.text, changed: added.text !== text,
-    owned: added.changed ? { block: next, at: added.text.length - next.length } : null };
+    // appendOnce puts a blank line before the block unless the text was empty.
+    owned: added.changed ? { block: next, at: added.text.length - next.length, separated: base.trim().length > 0 } : null };
 }
 
 export function premiseBlock(direction: DirectionDraft): string {

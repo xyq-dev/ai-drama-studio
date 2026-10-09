@@ -132,20 +132,26 @@ export function BeginnerStart({ active }: { active: "/create" | undefined }) {
   function chooseDirection(next: DirectionDraft, keepOld = false) {
     if (creatingRef.current) return;
     const block = premiseBlock(next);
-    const result: ReturnType<typeof switchBlock> = ownedLost && !keepOld
-      ? { ok: false, reason: "edited" }
-      : switchBlock(idea, keepOld ? null : owned, block, LIMITS.premise);
     setKeepAndAppend(null);
+    // The user edited this very direction's text: a fresh copy is added only when they ask for it explicitly.
+    if (ownedLost && !keepOld && direction !== null && premiseBlock(direction) === block) {
+      setDirectionNote("这个方向的文字你已经改过，页面不会再自动加一份原样的。需要的话可以点下面的按钮仍然加入。");
+      setKeepAndAppend(next);
+      return;
+    }
+    // Text the page no longer owns is never taken out; a new direction is only appended after it.
+    const result = switchBlock(idea, keepOld || ownedLost ? null : owned, block, LIMITS.premise);
     if (!result.ok) {
       if (result.reason === "edited") {
-        setDirectionNote(`${EDITED_NOTE}新方向没有加入；可以先手动删掉旧方向文字再选，或保留它另外加入新方向。`);
+        setDirectionNote(`${EDITED_NOTE}新方向没有加入；需要的话可以点下面的按钮仍然加入。`);
         setKeepAndAppend(next);
       } else {
         setDirectionNote("加入后会超过梗概长度上限，原内容没有改动。");
       }
       return;
     }
-    const switched = !keepOld && owned !== null && owned.block !== block;
+    const switched = !keepOld && !ownedLost && owned !== null && owned.block !== block;
+    const editedKept = ownedLost && !keepOld;
     // The previous direction's text is the user's own (e.g. after a reload): it stays where it is.
     const oldKept = owned === null && direction !== null && premiseBlock(direction) !== block
       && idea.includes(premiseBlock(direction));
@@ -157,6 +163,7 @@ export function BeginnerStart({ active }: { active: "/create" | undefined }) {
     storeDirection(next);
     setDirectionNote(!result.changed ? "想法里已经有这段创作方向。"
       : switched ? "已换成新的方向，你写的其他内容没有改动。确认创建后才会保存。"
+      : editedKept ? "已加入新方向。你改过的旧方向文字（如果还在）保留在想法里，页面不会删改它。"
       : oldKept ? "已加入新方向。原来那段方向文字无法确认是本页加入的，保留在想法里；不需要可以手动删除。"
       : "已加入创作方向。确认创建后才会保存。");
   }

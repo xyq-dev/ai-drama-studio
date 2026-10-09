@@ -60,24 +60,40 @@ describe("creative direction link", () => {
 describe("switching the direction block", () => {
   const block = premiseBlock(direction);
   const other = premiseBlock({ version: 1, categoryId: CATEGORIES[1]!.id, tagIds: [] });
-  const ownedAt = (text: string) => ({ block, at: text.lastIndexOf(block) });
+  const ownedAt = (text: string) => ({ block, at: text.lastIndexOf(block), separated: true });
 
   it("removes only the owned occurrence with the blank line it was added with", () => {
     const tail = `开头\n\n${block}`;
     expect(removeOwned(tail, ownedAt(tail))).toEqual({ ok: true, text: "开头" });
     const middle = `开头\n\n${block}\n\n结尾`;
     expect(removeOwned(middle, ownedAt(middle))).toEqual({ ok: true, text: "开头\n\n结尾" });
-    expect(removeOwned(`${block}！`, { block, at: 0 })).toEqual({ ok: true, text: "！" });
+    expect(removeOwned(`${block}！`, { block, at: 0, separated: false })).toEqual({ ok: true, text: "！" });
     // The user's pasted copy at the start stays; only the recorded occurrence goes.
     const two = `${block}\n\n${block}`;
     expect(removeOwned(two, ownedAt(two))).toEqual({ ok: true, text: block });
-    expect(removeOwned(`开头${block.slice(1)}`, { block, at: 2 })).toEqual({ ok: false, reason: "not_found" });
+    expect(removeOwned(`开头${block.slice(1)}`, { block, at: 2, separated: true })).toEqual({ ok: false, reason: "not_found" });
+  });
+
+  it("removes only the separator the page put before the block, never one the user typed", () => {
+    const appended = switchBlock("foo", null, block, 4000);
+    if (!appended.ok || !appended.owned) throw new Error("not appended");
+    // The user deletes the page's blank line, then types their own after the block.
+    const joined = `foo${block}`;
+    const ownedJoined = trackOwned(appended.text, joined, appended.owned)!;
+    expect(ownedJoined.separated).toBe(false);
+    const withTail = `${joined}\n\nbar`;
+    const ownedTail = trackOwned(joined, withTail, ownedJoined)!;
+    expect(removeOwned(withTail, ownedTail)).toEqual({ ok: true, text: "foo\n\nbar" });
+    // Untouched, the page's own blank line goes with the block and the user's tail stays.
+    const kept = `${appended.text}\n\nbar`;
+    expect(removeOwned(kept, trackOwned(appended.text, kept, appended.owned)!)).toEqual({ ok: true, text: "foo\n\nbar" });
+    expect(switchBlock("", null, block, 4000)).toMatchObject({ owned: { at: 0, separated: false } });
   });
 
   it("follows the owned block through edits before and after it, and drops it when an edit touches it", () => {
     const text = `开头\n\n${block}`;
     const owned = ownedAt(text);
-    expect(trackOwned(text, `更长的开头\n\n${block}`, owned)).toEqual({ block, at: owned.at + 3 });
+    expect(trackOwned(text, `更长的开头\n\n${block}`, owned)).toEqual({ block, at: owned.at + 3, separated: true });
     expect(trackOwned(text, `${text}\n\n结尾`, owned)).toEqual(owned);
     expect(trackOwned(text, text.replace("请围绕", "我改过：请围绕"), owned)).toBeNull();
     // Paste a pristine copy first, then edit the original: the copy is never taken as the page's.
@@ -89,12 +105,12 @@ describe("switching the direction block", () => {
 
   it("swaps only the owned block, refuses edited text, and keeps the length limit", () => {
     const appended = switchBlock("开头", null, block, 4000);
-    expect(appended).toEqual({ ok: true, text: `开头\n\n${block}`, changed: true, owned: { block, at: 4 } });
+    expect(appended).toEqual({ ok: true, text: `开头\n\n${block}`, changed: true, owned: { block, at: 4, separated: true } });
     const text = `开头\n\n${block}`;
     expect(switchBlock(text, ownedAt(text), block, 4000)).toEqual({ ok: true, text, changed: false, owned: ownedAt(text) });
     const middle = `开头\n\n${block}\n\n结尾`;
     const swapped = `开头\n\n结尾\n\n${other}`;
-    expect(switchBlock(middle, ownedAt(middle), other, 4000)).toEqual({ ok: true, text: swapped, changed: true, owned: { block: other, at: swapped.length - other.length } });
+    expect(switchBlock(middle, ownedAt(middle), other, 4000)).toEqual({ ok: true, text: swapped, changed: true, owned: { block: other, at: swapped.length - other.length, separated: true } });
     expect(switchBlock(text, ownedAt(text), null, 4000)).toEqual({ ok: true, text: "开头", changed: true, owned: null });
     const edited = text.replace("创作方向", "我的方向");
     expect(switchBlock(edited, ownedAt(text), other, 4000)).toEqual({ ok: false, reason: "edited" });

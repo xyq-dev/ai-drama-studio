@@ -122,7 +122,7 @@ export function InspirationPicker({ selected, state, frozen, note, keepAndAppend
           <p>{note}</p>
           {keepAndAppend ? (
             <button className="ui-button ui-button-secondary" type="button" disabled={frozen} onClick={() => onUse(keepAndAppend, true)}>
-              保留原文字，另外加入「{categoryName(keepAndAppend.categoryId)}」
+              仍然加入「{categoryName(keepAndAppend.categoryId)}」（不改动现有文字）
             </button>
           ) : null}
         </div>
