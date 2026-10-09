@@ -3,14 +3,15 @@ import type { ApiEnv } from "../config/env";
 import { QwenWebController } from "./qwen-web.controller";
 import { EventsController, StudioController } from "./studio.controller";
 import { StudioRuntime } from "./studio.runtime";
-import { QWEN_WEB_SERVICE, RUNTIME_STORE, STUDIO_RUNTIME, STUDIO_SERVICE } from "./tokens";
+import { TitleWritingController } from "./title-writing.controller";
+import { QWEN_WEB_SERVICE, RUNTIME_STORE, STUDIO_RUNTIME, STUDIO_SERVICE, TITLE_WRITING_SERVICE } from "./tokens";
 
 @Module({})
 export class StudioModule {
   static register(env: ApiEnv): DynamicModule {
     return {
       module: StudioModule,
-      controllers: [StudioController, EventsController, QwenWebController],
+      controllers: [StudioController, EventsController, QwenWebController, TitleWritingController],
       providers: [
         {
           provide: STUDIO_RUNTIME,
@@ -25,6 +26,11 @@ export class StudioModule {
           provide: QWEN_WEB_SERVICE,
           inject: [STUDIO_RUNTIME],
           useFactory: (runtime: StudioRuntime) => runtime.qwenWeb,
+        },
+        {
+          provide: TITLE_WRITING_SERVICE,
+          inject: [STUDIO_RUNTIME],
+          useFactory: (runtime: StudioRuntime) => runtime.titleWriting,
         },
         {
           provide: RUNTIME_STORE,
