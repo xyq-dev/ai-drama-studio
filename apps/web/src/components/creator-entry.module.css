@@ -33,8 +33,7 @@
 .templateList { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; padding: 0; list-style: none; }
 .templateButton { min-height: var(--studio-control-height); padding: 8px 12px; border: 1px solid var(--studio-line); background: var(--studio-raised); color: var(--studio-muted); font-size: 13px; font-weight: 500; }
 .templateButton:not(:disabled):hover { border-color: var(--studio-accent-line); background: var(--studio-selected); color: var(--studio-accent-hover); }
-.directionBox { margin-top: 22px; padding: 16px; border: 1px solid var(--studio-line); border-radius: var(--studio-control-radius); background: var(--studio-raised); }
-.directionBox button { margin-top: 10px; }
+.directionChip { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin-top: 18px; border: 1px solid var(--studio-accent-line); border-radius: var(--studio-control-radius); background: var(--studio-selected); padding: 4px 12px; color: var(--studio-text); font-size: 14px; font-weight: 600; }
 .confirmCard { margin-top: 20px; border-color: var(--studio-accent-line); box-shadow: var(--studio-shadow); }
 .confirmHeading { margin: 0; font-size: 21px; line-height: 1.5; font-weight: 650; }
 .titleInput { display: block; width: 100%; margin-top: 8px; padding: 11px 13px; border: 1px solid var(--studio-input-line); border-radius: var(--studio-control-radius); font-size: 16px; }

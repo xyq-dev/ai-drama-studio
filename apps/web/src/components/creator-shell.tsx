@@ -7,7 +7,6 @@ import styles from "./creator-shell.module.css";
 const LINKS = [
   { href: "/studio", label: "我的作品", icon: "works" },
   { href: "/create", label: "开始创作", icon: "create" },
-  { href: "/categories", label: "灵感中心", icon: "idea" },
   { href: "/preview", label: "界面示例", icon: "preview" },
   { href: "/help", label: "帮助", icon: "help" },
   { href: "/status", label: "服务状态", icon: "status" },
@@ -17,7 +16,6 @@ function NavIcon({ icon }: { icon: (typeof LINKS)[number]["icon"] }) {
   return <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     {icon === "works" ? <><rect x="3" y="5" width="18" height="14" rx="3" /><path d="m10 9 5 3-5 3Z" /></> : null}
     {icon === "create" ? <><circle cx="12" cy="12" r="9" /><path d="M12 8v8M8 12h8" /></> : null}
-    {icon === "idea" ? <><path d="M9 18h6M10 21h4M8 14a7 7 0 1 1 8 0c-1 .8-1 2-1 2H9s0-1.2-1-2Z" /></> : null}
     {icon === "preview" ? <><rect x="3" y="4" width="18" height="16" rx="3" /><path d="m10 8 5 4-5 4Z" /></> : null}
     {icon === "status" ? <><path d="M3 12h4l3-7 4 14 3-7h4" /></> : null}
     {icon === "help" ? <><circle cx="12" cy="12" r="9" /><path d="M9.5 9a2.5 2.5 0 0 1 5 .5c0 1.5-2.5 1.5-2.5 3M12 16h.01" /></> : null}
