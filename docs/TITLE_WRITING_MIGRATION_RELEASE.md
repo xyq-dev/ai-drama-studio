@@ -141,4 +141,41 @@
 
 ## 验证结果
 
-（由本轮 CI 实际结果填写，见下。）
+验证对象是提交 `88c351ad6b351aa201ec0fd99078d190819fa1d5`（Draft PR #61）。本机没有 PostgreSQL 或 Docker，真实数据库与真实进程验收沿用已有的隔离 CI。
+
+### 模拟测试（本机，Node 24.21.0，没有数据库）
+
+| 检查 | 结果 |
+| --- | --- |
+| database lint / typecheck / test | 0 / 0 / 54 通过（含新增：语句逐字节一致、只新增、草案标记、5 个已发布迁移校验和、Prisma 列与存储列一致、`before` 分阶段迁移） |
+| api lint / typecheck / test | 0 / 0 / 97 通过 |
+| web lint / typecheck / test | 0 / 0 / 387 通过（只改了一句提示文字） |
+| `prisma validate` / `prisma generate` | 通过 |
+
+### 真实 PostgreSQL（CI「Title writing isolated acceptance」run 37953785450，作业级 `postgres:16`，一次性库）
+
+| 场景 | 结果 |
+| --- | --- |
+| B 升级路径（store 作业） | 30/30 通过。先只迁到已发布的 5 个 → `storageReady()` 为假 → 写入项目、已审核故事、剧本版本、工作流、任务、尝试、成本账本 → 普通 `runMigrations` 只应用 `20261008000100_title_writing`，记录的校验和与文件一致 → 全部既有表的行数、行摘要、列、约束、索引与升级前相同 → 再执行一次 `applied = []` |
+| A 全新空库 + 部署命令 | 真实命令 `pnpm --filter @ai-drama/database migrate` 在新库输出 `Applied 6 migration(s).`，再执行输出 `Applied 0 migration(s).`，四张表存在，`schema_migration` 末行为 `20261008000100_title_writing` |
+| C 重复部署 | 在升级后的验收库再执行部署命令：`Applied 0 migration(s).` |
+| A 全新空库 + 浏览器（browser 作业） | 4/4 通过：完整迁移链后，Chrome → 已构建网页 → 真实 API 的原有三条用户闭环 |
+
+### 真实进程（同一 run）
+
+| 场景 | 结果 |
+| --- | --- |
+| API 作业（真实 Nest + HTTP） | 10/10 通过。迁移前开始创作返回 503 `TITLE_WRITING_STORAGE_UNAVAILABLE`、发送 0；API 不重启、普通链升级后就绪；其余原有用例不变 |
+| 运行时作业（`node dist/main.js` 子进程） | 5/5 通过。迁移前：默认关闭 404、production 强制关闭 404、缺存储 503，均发送 0；升级 → 再执行为 0 → **迁移后以默认关闭启动真实 API 正常并返回 404**；之后原有的 SIGKILL / 重启 / 240 秒租约恢复用例全部通过 |
+
+### 其他 CI（同一提交）
+
+10 个工作流全部成功。5 个 `integration` 作业都运行了只读的 `title-writing-store.integration.spec.ts` 并通过（共享库已走完整迁移链）。跳过数与 main（`27710a9`）相同：都在千问与角色参考图草案的既有用例里，与本次无关。
+
+模型全程是测试替身，运行时作业把 provider 域名解析到回环地址；没有真实外网模型调用。
+
+### 未执行
+
+- 没有在任何服务器、生产库或既有开发库执行迁移。
+- 本机没有运行真实 PostgreSQL（没有 PostgreSQL 或 Docker），真实库只在 CI 一次性容器中运行。
+- 没有执行真实千问调用（缺第 7 节所列授权）。
