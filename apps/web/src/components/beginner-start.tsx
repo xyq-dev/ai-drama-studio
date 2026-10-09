@@ -2,11 +2,12 @@
 
 import { useEffect, useRef, useState } from "react";
 import { ApiError, StudioClient } from "../lib/studio-client";
-import { appendOnce, bindDirectionToProject, premiseBlock, readSelectedDirection } from "../lib/creative-direction-link";
-import type { DirectionDraft } from "../lib/creative-taxonomy";
+import { bindDirectionToProject, premiseBlock, readSelectedDirection, removeOnce, switchBlock } from "../lib/creative-direction-link";
+import { CATEGORIES, DIRECTION_STORAGE_KEY, EMPTY_DIRECTION, type DirectionDraft } from "../lib/creative-taxonomy";
 import { IDEA_TEMPLATES, START_SCOPE_NOTE, suggestTitle } from "../lib/beginner-start";
 import { LIMITS, draftStorageKey, nextDraft, readDraft, releaseSubmittedDraft, writeDraft } from "../lib/studio-model";
 import { BeginnerShell } from "./beginner-shell";
+import { InspirationPicker, type DirectionState } from "./inspiration-picker";
 import { TitleWritingStart } from "./title-writing-start";
 import styles from "./creator-entry.module.css";
 
@@ -19,9 +20,22 @@ const client = new StudioClient();
 /** Same draft slot as the earlier create dialog, so an unfinished create keeps its idempotency key. */
 const CREATE_KEY = draftStorageKey("new", "project", null);
 
+const EDITED_NOTE = "「故事想法」里找不到原样的方向文字（可能已被你修改），为避免误删你写的内容，正文保持不变。";
+
+/** Keeps the chosen direction in the browser slot the inspiration centre used; failing only loses that memory. */
+function storeDirection(direction: DirectionDraft | null): void {
+  try {
+    window.localStorage.setItem(DIRECTION_STORAGE_KEY, JSON.stringify(direction ?? EMPTY_DIRECTION));
+  } catch {
+    // The direction still applies to this page's draft.
+  }
+}
+
 /**
- * "你的故事，从一句话开始". Typing, choosing a template or opening the inspiration centre never creates a project:
- * only "确认创建作品" posts { title, premise } with the draft's idempotency key, which survives a failed or unsure reply.
+ * "你的故事，从这里开始". Typing, choosing a template, or browsing and using a story direction never creates a
+ * project: only "确认创建作品" posts { title, premise } with the draft's idempotency key, which survives a failed or
+ * unsure reply. A direction is appended to the idea once; switching or removing it takes out only the exact block
+ * this page added, and never guesses at text the user has edited.
  */
 export function BeginnerStart({ active }: { active: "/create" | undefined }) {
   const [idea, setIdea] = useState("");
@@ -32,27 +46,37 @@ export function BeginnerStart({ active }: { active: "/create" | undefined }) {
   const [latest, setLatest] = useState<ProjectItem | null>(null);
   const [direction, setDirection] = useState<DirectionDraft | null>(null);
   const [directionNote, setDirectionNote] = useState<string | null>(null);
+  /** The exact block this page put into the idea for `direction`, or null when it has not been added. */
+  const [appliedBlock, setAppliedBlock] = useState<string | null>(null);
+  /** After an edited block blocked a switch: the direction the user may still add next to the old text. */
+  const [keepAndAppend, setKeepAndAppend] = useState<DirectionDraft | null>(null);
   const confirmHeading = useRef<HTMLHeadingElement>(null);
   const creatingRef = useRef(false);
   const ideaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
-    let restored = false;
+    let restored: string | null = null;
     try {
       const draft = readDraft(window.sessionStorage, CREATE_KEY);
       const payload = draft?.payload as { title?: unknown; premise?: unknown } | undefined;
       if (payload && typeof payload.premise === "string") {
         setIdea(payload.premise);
-        restored = true;
+        restored = payload.premise;
       }
       if (payload && typeof payload.title === "string") setTitle(payload.title);
     } catch {
       // A broken draft slot only means nothing is restored.
     }
-    if (restored) setConfirming(true);
+    if (restored !== null) setConfirming(true);
     try {
+      // A stored direction is offered from the old "用这个方向新建作品" flag, or shown again after a reload when the
+      // restored idea still carries its block verbatim.
       const selected = readSelectedDirection(window.localStorage);
-      if (selected && new URLSearchParams(window.location.search).get("direction") === "1") setDirection(selected);
+      const inIdea = selected !== null && restored !== null && restored.includes(premiseBlock(selected));
+      if (selected && (inIdea || new URLSearchParams(window.location.search).get("direction") === "1")) {
+        setDirection(selected);
+        if (inIdea) setAppliedBlock(premiseBlock(selected));
+      }
     } catch {
       setDirection(null);
     }
@@ -91,19 +115,49 @@ export function BeginnerStart({ active }: { active: "/create" | undefined }) {
     setConfirming(true);
   }
 
-  function applyDirection() {
-    if (!direction) return;
-    const result = appendOnce(idea, premiseBlock(direction), LIMITS.premise);
+  /** "用这个方向": appends the direction once, or swaps it for the one this page added before. */
+  function chooseDirection(next: DirectionDraft, keepOld = false) {
+    if (creatingRef.current) return;
+    const block = premiseBlock(next);
+    const result = switchBlock(idea, keepOld ? null : appliedBlock, block, LIMITS.premise);
+    setKeepAndAppend(null);
     if (!result.ok) {
-      setDirectionNote("加入后会超过梗概长度上限，原内容没有改动。");
+      if (result.reason === "edited") {
+        setDirectionNote(`${EDITED_NOTE}新方向没有加入；可以先手动删掉旧方向文字再选，或保留它另外加入新方向。`);
+        setKeepAndAppend(next);
+      } else {
+        setDirectionNote("加入后会超过梗概长度上限，原内容没有改动。");
+      }
       return;
     }
-    if (!result.changed) {
-      setDirectionNote("想法里已经有这段创作方向。");
-      return;
+    const switched = !keepOld && appliedBlock !== null && appliedBlock !== block;
+    if (result.changed) remember(title, result.text);
+    setDirection(next);
+    setAppliedBlock(block);
+    storeDirection(next);
+    setDirectionNote(!result.changed ? "想法里已经有这段创作方向。"
+      : switched ? "已换成新的方向，你写的其他内容没有改动。确认创建后才会保存。"
+      : "已加入创作方向。确认创建后才会保存。");
+  }
+
+  /** "移除方向": takes out only the block this page added; edited text stays as written. */
+  function removeDirection() {
+    if (creatingRef.current) return;
+    setKeepAndAppend(null);
+    if (appliedBlock !== null) {
+      const removed = removeOnce(idea, appliedBlock);
+      if (removed.ok) {
+        remember(title, removed.text);
+        setDirectionNote("已移除方向文字，你写的其他内容没有改动。");
+      } else {
+        setDirectionNote(`${EDITED_NOTE}方向已取消选择，需要的话可以手动删改这段文字。`);
+      }
+    } else {
+      setDirectionNote("已取消选择这个方向。");
     }
-    remember(title, result.text);
-    setDirectionNote("已加入创作方向。确认创建后才会保存。");
+    setDirection(null);
+    setAppliedBlock(null);
+    storeDirection(null);
   }
 
   async function create() {
@@ -138,14 +192,17 @@ export function BeginnerStart({ active }: { active: "/create" | undefined }) {
     }
   }
 
+  const directionState: DirectionState | null = !direction ? null
+    : appliedBlock === null ? "pending" : idea.includes(appliedBlock) ? "applied" : "edited";
+
   return (
     <BeginnerShell active={active}>
       <main className={`${styles.page} ${styles.startPage}`}>
         <header className={styles.headingRow}>
           <div>
             <p className={styles.eyebrow}>开始一部新作品</p>
-            <h1 className={styles.heading}>你的故事，从一句话开始</h1>
-            <p className={styles.intro}>不用会写剧本，先告诉我你想拍什么。</p>
+            <h1 className={styles.heading}>你的故事，从这里开始</h1>
+            <p className={styles.intro}>有想法直接写，没想法也可以先选一个方向。</p>
             {latest ? (
               <p>
                 <a className={styles.continueLink} href={`/projects/${latest.id}/create`}>继续上次创作：{latest.title}<span aria-hidden="true">→</span></a>
@@ -174,7 +231,7 @@ export function BeginnerStart({ active }: { active: "/create" | undefined }) {
               <p id="scope-note" className={styles.scopeNote}>{START_SCOPE_NOTE}</p>
               <div className={styles.formActions}>
                 <button className={confirming ? styles.secondary : styles.primary} type="button" disabled={creating} onClick={startConfirm}>开始构思<span aria-hidden="true">→</span></button>
-                <a className={styles.textLink} href="/categories">还没想法？看看灵感</a>
+                <a className={styles.textLink} href="#inspiration">还没想法？选一个故事方向</a>
               </div>
               <div className={styles.templateGroup}>
                 <p className={styles.helper}>示例模板（静态示例，点选只会填入输入框，不会创建作品）</p>
@@ -190,14 +247,15 @@ export function BeginnerStart({ active }: { active: "/create" | undefined }) {
                 </ul>
               </div>
               {direction ? (
-                <div className={styles.directionBox}>
-                  <p className="text-sm">灵感中心选好的创作方向（只保存在本浏览器）</p>
-                  <p className="mt-1 whitespace-pre-line text-sm text-[#5F5D66]">{premiseBlock(direction)}</p>
-                  <button className={styles.secondary} type="button" disabled={creating} onClick={applyDirection}>把创作方向加入想法</button>
-                  {directionNote ? <p className="mt-1 text-sm" role="status">{directionNote}</p> : null}
-                </div>
+                <p className={styles.directionChip}>
+                  已选方向：{CATEGORIES.find((item) => item.id === direction.categoryId)?.name}
+                  <a className={styles.textLink} href="#inspiration">查看、更换或移除</a>
+                </p>
               ) : null}
             </section>
+
+            <InspirationPicker selected={direction} state={directionState} frozen={creating} note={directionNote}
+              keepAndAppend={keepAndAppend} onUse={chooseDirection} onRemove={removeDirection} />
 
             {confirming ? (
               <section className={`${styles.formCard} ${styles.confirmCard}`} aria-labelledby="confirm-title">

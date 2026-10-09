@@ -32,9 +32,9 @@ describe("beginner start page", () => {
       return Promise.resolve(json({ items: [], nextCursor: null }));
     }));
     render(<BeginnerStart active="/create" />);
-    expect(screen.getByRole("heading", { name: "你的故事，从一句话开始" })).toBeTruthy();
-    expect(screen.getByText("不用会写剧本，先告诉我你想拍什么。")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "还没想法？看看灵感" }).getAttribute("href")).toBe("/categories");
+    expect(screen.getByRole("heading", { name: "你的故事，从这里开始" })).toBeTruthy();
+    expect(screen.getByText("有想法直接写，没想法也可以先选一个方向。")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "还没想法？选一个故事方向" }).getAttribute("href")).toBe("#inspiration");
     expect(screen.getByText(/固定三集、竖屏 9:16/)).toBeTruthy();
     fireEvent.change(screen.getByLabelText("你想拍一个什么样的故事？"), { target: { value: "一个外卖员的故事" } });
     fireEvent.click(screen.getByRole("button", { name: "示例 · 家庭情感" }));

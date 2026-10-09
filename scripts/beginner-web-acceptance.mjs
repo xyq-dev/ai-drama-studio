@@ -436,9 +436,19 @@ async function main() {
 
     await stage("home-and-create", async () => {
       await page.goto(`${webOrigin}/`, { waitUntil: "domcontentloaded" });
-      await page.getByRole("heading", { name: "你的故事，从一句话开始" }).waitFor();
-      await page.getByRole("link", { name: "还没想法？看看灵感" }).click();
-      await page.waitForURL(`${webOrigin}/categories`);
+      await page.getByRole("heading", { name: "你的故事，从这里开始" }).waitFor();
+      await page.getByRole("link", { name: "还没想法？选一个故事方向" }).click();
+      await page.waitForURL(`${webOrigin}/#inspiration`);
+      // The old 灵感中心 address lands on the inspiration section of the one creation page.
+      await page.goto(`${webOrigin}/categories`, { waitUntil: "domcontentloaded" });
+      await page.waitForURL(`${webOrigin}/create?direction=1#inspiration`);
+      const inspiration = page.locator("#inspiration");
+      await inspiration.getByRole("button", { name: /^爱情情感/ }).click();
+      await inspiration.getByRole("button", { name: "用这个方向" }).click();
+      await inspiration.getByText("已加在「故事想法」末尾").waitFor();
+      await inspiration.getByRole("button", { name: "移除方向" }).click();
+      if ((await page.getByLabel("你想拍一个什么样的故事？").inputValue()) !== "") throw new Error("removing the direction left text behind");
+      await page.evaluate(() => window.sessionStorage.clear());
       await page.goto(`${webOrigin}/create`, { waitUntil: "domcontentloaded" });
       await page.getByRole("button", { name: "示例 · 都市悬疑" }).click();
       if ((await api("GET", "/projects")).body.items.length !== 0) throw new Error("browsing or choosing a template created a project");

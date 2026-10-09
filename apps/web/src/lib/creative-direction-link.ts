@@ -42,6 +42,44 @@ export function appendOnce(text: string, block: string, maxChars: number): Appen
   return { ok: true, text: next, changed: true };
 }
 
+export type RemoveResult = { ok: true; text: string } | { ok: false; reason: "not_found" | "ambiguous" };
+
+/**
+ * Removes the one verbatim copy of a block that appendOnce added, together with the blank line appendOnce put before
+ * it. Text the block is not found in exactly once is left alone: nothing is guessed or fuzzily matched.
+ */
+export function removeOnce(text: string, block: string): RemoveResult {
+  const at = text.indexOf(block);
+  if (at < 0) return { ok: false, reason: "not_found" };
+  if (text.indexOf(block, at + 1) >= 0) return { ok: false, reason: "ambiguous" };
+  let before = text.slice(0, at);
+  let after = text.slice(at + block.length);
+  if (before.endsWith("\n\n")) before = before.slice(0, -2);
+  else if (after.startsWith("\n\n")) after = after.slice(2);
+  return { ok: true, text: `${before}${after}` };
+}
+
+export type SwitchResult = { ok: true; text: string; changed: boolean } | { ok: false; reason: "too_long" | "edited" };
+
+/**
+ * Moves the text from the block this page added (`applied`, null when none) to `next` (null removes it). Only the
+ * applied block itself is taken out; when it is no longer in the text verbatim, the text is returned as "edited" and
+ * nothing changes.
+ */
+export function switchBlock(text: string, applied: string | null, next: string | null, maxChars: number): SwitchResult {
+  if (applied !== null && applied === next) return appendOnce(text, next, maxChars);
+  let base = text;
+  if (applied !== null) {
+    const removed = removeOnce(text, applied);
+    if (!removed.ok) return { ok: false, reason: "edited" };
+    base = removed.text;
+  }
+  if (next === null) return { ok: true, text: base, changed: base !== text };
+  const added = appendOnce(base, next, maxChars);
+  if (!added.ok) return added;
+  return { ok: true, text: added.text, changed: added.text !== text };
+}
+
 export function premiseBlock(direction: DirectionDraft): string {
   return formatCreativeDirection(direction);
 }

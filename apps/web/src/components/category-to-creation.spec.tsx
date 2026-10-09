@@ -46,12 +46,13 @@ describe("category direction into the beginner start page", () => {
     stubProjects(posts);
     render(<BeginnerStart active="/create" />);
     fireEvent.change(screen.getByLabelText("你想拍一个什么样的故事？"), { target: { value: "原有想法" } });
-    fireEvent.click(await screen.findByRole("button", { name: "把创作方向加入想法" }));
+    fireEvent.click(await screen.findByRole("button", { name: "用这个方向" }));
     const idea = screen.getByLabelText("你想拍一个什么样的故事？") as HTMLTextAreaElement;
     expect(idea.value).toBe(`原有想法
 
 ${premiseBlock(DIRECTION)}`);
-    fireEvent.click(screen.getByRole("button", { name: "把创作方向加入想法" }));
+    fireEvent.click(screen.getByRole("button", { name: new RegExp(CATEGORIES[0]!.name) }));
+    fireEvent.click(screen.getByRole("button", { name: "已在使用这个方向" }));
     expect(await screen.findByText("想法里已经有这段创作方向。")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "开始构思" }));
     fireEvent.change(await screen.findByLabelText("作品名称"), { target: { value: "夜班" } });
@@ -68,8 +69,8 @@ ${premiseBlock(DIRECTION)}` });
     window.history.replaceState(null, "", "/create");
     stubProjects([]);
     render(<BeginnerStart active="/create" />);
-    await screen.findByRole("heading", { name: "你的故事，从一句话开始" });
-    expect(screen.queryByRole("button", { name: "把创作方向加入想法" })).toBeNull();
+    await screen.findByRole("heading", { name: "你的故事，从这里开始" });
+    expect(screen.queryByRole("button", { name: "用这个方向" })).toBeNull();
   });
 });
 

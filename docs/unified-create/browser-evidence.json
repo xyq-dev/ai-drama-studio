@@ -1,0 +1,307 @@
+{
+  "chromium": "140.0.7339.186",
+  "origin": "http://127.0.0.1:3011",
+  "viewports": {
+    "desktop": {
+      "width": 1440,
+      "height": 900,
+      "pageErrors": [],
+      "writes": []
+    },
+    "mobile": {
+      "width": 390,
+      "height": 844,
+      "pageErrors": [],
+      "writes": []
+    }
+  },
+  "results": [
+    {
+      "name": "desktop: heading",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "desktop: intro",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "desktop: AI off is stated",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "desktop: no horizontal overflow initial",
+      "ok": true,
+      "detail": "{\"sw\":1440,\"iw\":1440}"
+    },
+    {
+      "name": "desktop: 4 cards by default",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "desktop: more directions expand in place",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "desktop: detail opens in page",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "desktop: focus moves to detail heading",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "desktop: card shows expanded",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "desktop: viewing keeps the draft",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "desktop: tags reachable by keyboard",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "desktop: direction appended, idea kept",
+      "ok": true,
+      "detail": "我已经想好的开头：便利店夜班。\n\n创作方向：悬疑罪案\n剧情机制：真假身份、探案解谜\n细分题材：刑侦推理\n情绪风格：紧张悬"
+    },
+    {
+      "name": "desktop: AI title kept",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "desktop: selected state visible",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "desktop: selected chip in form",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "desktop: no horizontal overflow after apply",
+      "ok": true,
+      "detail": "{\"sw\":1440,\"iw\":1440}"
+    },
+    {
+      "name": "desktop: no covered controls after apply",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "desktop: controls at least 44px high after apply",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "desktop: switch keeps own text",
+      "ok": true,
+      "detail": "我已经想好的开头：便利店夜班。\n\n补充：主角其实是证人。\n\n创作方向：都市现实\n背景标签：现代都市、职场商圈\n人物设定：职场新人\n情绪风格：现实质感\n请围绕以上"
+    },
+    {
+      "name": "desktop: remove keeps own text",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "desktop: reload restores draft",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "desktop: reload restores applied direction",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "desktop: no horizontal overflow after reload",
+      "ok": true,
+      "detail": "{\"sw\":1440,\"iw\":1440}"
+    },
+    {
+      "name": "desktop: /categories lands on inspiration",
+      "ok": true,
+      "detail": "http://127.0.0.1:3011/create?direction=1#inspiration"
+    },
+    {
+      "name": "desktop: nav has no separate inspiration centre",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "desktop: skip link hidden in live viewport unless focused",
+      "ok": true,
+      "detail": "{\"bottom\":-18.556251525878906,\"focused\":false}"
+    },
+    {
+      "name": "desktop: no page errors",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "desktop: no create or generate request",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "mobile: heading",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "mobile: intro",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "mobile: AI off is stated",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "mobile: no horizontal overflow initial",
+      "ok": true,
+      "detail": "{\"sw\":390,\"iw\":390}"
+    },
+    {
+      "name": "mobile: 4 cards by default",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "mobile: more directions expand in place",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "mobile: detail opens in page",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "mobile: focus moves to detail heading",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "mobile: card shows expanded",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "mobile: viewing keeps the draft",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "mobile: tags reachable by keyboard",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "mobile: direction appended, idea kept",
+      "ok": true,
+      "detail": "我已经想好的开头：便利店夜班。\n\n创作方向：悬疑罪案\n剧情机制：真假身份、探案解谜\n细分题材：刑侦推理\n情绪风格：紧张悬"
+    },
+    {
+      "name": "mobile: AI title kept",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "mobile: selected state visible",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "mobile: selected chip in form",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "mobile: no horizontal overflow after apply",
+      "ok": true,
+      "detail": "{\"sw\":390,\"iw\":390}"
+    },
+    {
+      "name": "mobile: no covered controls after apply",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "mobile: controls at least 44px high after apply",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "mobile: switch keeps own text",
+      "ok": true,
+      "detail": "我已经想好的开头：便利店夜班。\n\n补充：主角其实是证人。\n\n创作方向：都市现实\n背景标签：现代都市、职场商圈\n人物设定：职场新人\n情绪风格：现实质感\n请围绕以上"
+    },
+    {
+      "name": "mobile: remove keeps own text",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "mobile: reload restores draft",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "mobile: reload restores applied direction",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "mobile: no horizontal overflow after reload",
+      "ok": true,
+      "detail": "{\"sw\":390,\"iw\":390}"
+    },
+    {
+      "name": "mobile: /categories lands on inspiration",
+      "ok": true,
+      "detail": "http://127.0.0.1:3011/create?direction=1#inspiration"
+    },
+    {
+      "name": "mobile: nav has no separate inspiration centre",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "mobile: skip link hidden in live viewport unless focused",
+      "ok": true,
+      "detail": "{\"bottom\":-18.556251525878906,\"focused\":false}"
+    },
+    {
+      "name": "mobile: no page errors",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "mobile: no create or generate request",
+      "ok": true,
+      "detail": ""
+    }
+  ],
+  "screenshots": {
+    "desktop-create.png": "63842a90d700851a525597c800785204e94d90b74517b27d37cc367e914d3c25",
+    "desktop-inspiration.png": "6488f43baf4500d842203d0aed02fac01aa037cb9f10cff681fcbda7e010e3f4",
+    "mobile-create.png": "ced5a06e2d1b8f7f4ce46f26ea39b3995cc1ae3f23b128acd1a695b71e1c2238",
+    "mobile-inspiration.png": "ca955ab58970ef692d646547858df3bac8980ada0fa907b49c21f005907c5428",
+    "mobile-create-top.png": "7df80ce34a260df0830296ad67c6921d4462d288600f10f4b28151cc306aec9a"
+  }
+}

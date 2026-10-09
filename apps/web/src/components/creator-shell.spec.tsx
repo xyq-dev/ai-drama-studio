@@ -7,7 +7,7 @@ import { BeginnerShell } from "./beginner-shell";
 afterEach(cleanup);
 
 const destinations = [
-  ["/studio", "我的作品"], ["/create", "开始创作"], ["/categories", "灵感中心"],
+  ["/studio", "我的作品"], ["/create", "开始创作"],
   ["/preview", "界面示例"], ["/help", "帮助"], ["/status", "服务状态"],
 ] as const;
 

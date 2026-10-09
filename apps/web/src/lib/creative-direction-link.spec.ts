@@ -8,6 +8,8 @@ import {
   projectDirectionKey,
   readProjectDirection,
   readSelectedDirection,
+  removeOnce,
+  switchBlock,
 } from "./creative-direction-link";
 
 class MemoryStorage {
@@ -51,5 +53,30 @@ describe("creative direction link", () => {
     expect(readProjectDirection(storage, "project-b")).toBeNull();
     const failing = { setItem: () => { throw new Error("quota"); } };
     expect(bindDirectionToProject(failing, "project-c", direction)).toBe(false);
+  });
+});
+
+describe("switching the direction block", () => {
+  const block = premiseBlock(direction);
+  const other = premiseBlock({ version: 1, categoryId: CATEGORIES[1]!.id, tagIds: [] });
+
+  it("removes the one verbatim block with the blank line it was added with, and nothing else", () => {
+    expect(removeOnce(`开头\n\n${block}`, block)).toEqual({ ok: true, text: "开头" });
+    expect(removeOnce(`开头\n\n${block}\n\n结尾`, block)).toEqual({ ok: true, text: "开头\n\n结尾" });
+    expect(removeOnce(`${block}\n\n结尾`, block)).toEqual({ ok: true, text: "结尾" });
+    expect(removeOnce(`${block}！`, block)).toEqual({ ok: true, text: "！" });
+    expect(removeOnce(`开头${block.slice(1)}`, block)).toEqual({ ok: false, reason: "not_found" });
+    expect(removeOnce(`${block}\n\n${block}`, block)).toEqual({ ok: false, reason: "ambiguous" });
+  });
+
+  it("swaps only the applied block, refuses edited text, and keeps the length limit", () => {
+    expect(switchBlock("开头", null, block, 4000)).toEqual({ ok: true, text: `开头\n\n${block}`, changed: true });
+    expect(switchBlock(`开头\n\n${block}`, block, block, 4000)).toEqual({ ok: true, text: `开头\n\n${block}`, changed: false });
+    expect(switchBlock(`开头\n\n${block}\n\n结尾`, block, other, 4000)).toEqual({ ok: true, text: `开头\n\n结尾\n\n${other}`, changed: true });
+    expect(switchBlock(`开头\n\n${block}`, block, null, 4000)).toEqual({ ok: true, text: "开头", changed: true });
+    const edited = `开头\n\n${block.replace("创作方向", "我的方向")}`;
+    expect(switchBlock(edited, block, other, 4000)).toEqual({ ok: false, reason: "edited" });
+    expect(switchBlock(edited, block, null, 4000)).toEqual({ ok: false, reason: "edited" });
+    expect(switchBlock("开头", null, block, 5)).toEqual({ ok: false, reason: "too_long" });
   });
 });

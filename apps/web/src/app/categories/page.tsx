@@ -1,9 +1,12 @@
-import type { Metadata } from "next";
-import { CategoryCenter } from "../../components/category-center";
-import { CreatorShell } from "../../components/creator-shell";
+import { redirect } from "next/navigation";
 
-export const metadata: Metadata = { title: "灵感中心 · 红果创作", description: "探索短剧题材、故事标签，整理你的创作方向。" };
+/** Where the old 灵感中心 page lived. Its categories, tags and directions are now the inspiration section of /create. */
+const CATEGORIES_REDIRECT = "/create?direction=1#inspiration";
 
-export default function CategoriesPage() {
-  return <CreatorShell activePath="/categories"><CategoryCenter /></CreatorShell>;
+/**
+ * Old links and bookmarks land on the inspiration section of the one creation page. The flag only lets that page offer
+ * the direction this browser saved in 灵感中心 before; it carries no story text and adds nothing to the draft.
+ */
+export default function CategoriesPage(): never {
+  redirect(CATEGORIES_REDIRECT);
 }
