@@ -344,7 +344,9 @@ beforeAll(async () => {
             (SELECT count(*)::int FROM information_schema.tables
               WHERE table_schema NOT IN ('pg_catalog', 'information_schema') AND table_schema NOT LIKE 'pg_toast%') AS tables`))[0]!;
   evidence.database = { name: identity.name, serverVersion: identity.version, tablesBeforeWrite: identity.tables };
-  evidence.source = { sha: process.env.GITHUB_SHA ?? null, runId: process.env.GITHUB_RUN_ID ?? null, runAttempt: process.env.GITHUB_RUN_ATTEMPT ?? null,
+  // For a pull request GITHUB_SHA is the merge commit; the workflow passes the branch head it was made from.
+  evidence.source = { headSha: process.env.TITLE_WRITING_ACCEPTANCE_HEAD_SHA ?? null, event: process.env.GITHUB_EVENT_NAME ?? null,
+    testedSha: process.env.GITHUB_SHA ?? null, runId: process.env.GITHUB_RUN_ID ?? null, runAttempt: process.env.GITHUB_RUN_ATTEMPT ?? null,
     job: process.env.GITHUB_JOB ?? null };
   // A second layer under the preload: on the runner the provider hosts resolve to loopback, so no request can reach them.
   const resolved = await Promise.all(["dashscope.aliyuncs.com", "api.openai.com", "api.deepseek.com"].map(async (host) =>
@@ -556,6 +558,9 @@ describe("title writing on the real runtime, killed and restarted, model stubbed
       recoveredSeenAt: recoveredSeenAt.toISOString(), secondsFromKillToRecoverySeen: Math.round((recoveredSeenAt.getTime() - killedAt.getTime()) / 1000),
       recoveryPassesOfRestartedApi: restartedPasses.length,
       before: { A: before.A.calls, B: before.B.calls, C: before.C.calls }, sendsBeforeKill: { A: before.A.sends, B: before.B.sends, C: before.C.sends },
+      after: { A: await calls(runs.A), B: await calls(runs.B), C: await calls(runs.C) }, sendsAfterRecovery: { A: sends(TA), B: sends(TB), C: sends(TC) },
+      runsPerProject: { A: await runCount(projects.A), B: await runCount(projects.B), C: await runCount(projects.C) },
+      storyRevisions: { A: await storyCount(projects.A), C: await storyCount(projects.C) },
     };
     evidence.runs = { projects, runs };
   }, 900_000);

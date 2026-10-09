@@ -330,6 +330,8 @@ jobs:
           psql -h 127.0.0.1 -U postgres -d "${name}" -v ON_ERROR_STOP=1 -At -c "SELECT 'database=' || current_database() || ' server=' || current_setting('server_version') || ' user_tables=' || (SELECT count(*) FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog', 'information_schema'))"
 
       - name: Run the real runtime and crash recovery acceptance (guarded, deny by default)
+        env:
+          TITLE_WRITING_ACCEPTANCE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           name="ads_title_acceptance_runtime_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
           TITLE_WRITING_DRAFT_SQL_AUTHORIZED=true           TITLE_WRITING_ACCEPTANCE_DATABASE_NAME="${name}"           TITLE_WRITING_ACCEPTANCE_DATABASE_URL="postgresql://postgres@127.0.0.1:5432/${name}"           TITLE_WRITING_ACCEPTANCE_EVIDENCE_DIR="${RUNNER_TEMP}/title-acceptance-evidence"           pnpm --filter @ai-drama/api title-writing:runtime-acceptance
