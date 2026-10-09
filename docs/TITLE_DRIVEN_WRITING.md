@@ -113,7 +113,8 @@
 | 真实浏览器用户闭环（桌面 1440 与手机 390） | **已在隔离环境执行并通过**（2026-10-09，CI run 37873699546）：Chrome → 已构建 Next 页面 → 同源 `/api/v1` 代理 → 真实 API → 一次性 PostgreSQL，模型为计数替身，4 项。见 [`TITLE_WRITING_BROWSER_ACCEPTANCE_REPORT.md`](TITLE_WRITING_BROWSER_ACCEPTANCE_REPORT.md) |
 | 验收入口拒绝行为 | 单元测试（`title-writing-acceptance-guard.spec.ts`）：环境检查为纯函数；身份检查用脚本化客户端，只证明判断逻辑 |
 | PostgreSQL 存储（含 R2/R3/R5/R6/R7 的数据库回归） | **已在隔离环境执行并通过**（2026-10-09，CI run 37862662279，`postgres:16`，一次性空库）：22 项（P2-C 后为 25 项，run 37873699546），含结构核对、独立会话竞争、最后一个日额度竞争、预约与发送的恢复区分，以及用 `pg_blocking_pids` 证明的确定性锁顺序。见 [`TITLE_WRITING_ISOLATED_ACCEPTANCE_REPORT.md`](TITLE_WRITING_ISOLATED_ACCEPTANCE_REPORT.md) |
-| 真实项目 API（模型替身） | **已在隔离环境执行并通过**：真实 Nest 应用、真实 HTTP、真实 PostgreSQL，模型为计数替身，10 项。进程崩溃恢复未执行 |
+| 真实项目 API（模型替身） | **已在隔离环境执行并通过**：真实 Nest 应用、真实 HTTP、真实 PostgreSQL，模型为计数替身，10 项（服务在测试中构造；正式运行时见下一行） |
+| 正式运行时装配与进程崩溃恢复 | **已在隔离环境执行并通过**（CI run 37884818164）：`node dist/main.js` 正常入口与正式 StudioRuntime、恢复定时器；默认关闭、生产强制关闭及缺令牌、存储、供应商时拒绝且发送 0；对“已预约未发送 / 已发送 / 已提交步骤”真实 SIGKILL 并重启，由正式定时器在 240 秒租约后恢复。模型为进程外计数替身。见 [`TITLE_WRITING_RUNTIME_RECOVERY_REPORT.md`](TITLE_WRITING_RUNTIME_RECOVERY_REPORT.md) |
 | 真实模型调用（千问 / OpenAI / DeepSeek） | **未执行**，Paid calls = NO |
 
 ### 隔离 PostgreSQL 与真实 API 验收（需单独授权；2026-10-09 已在 CI 隔离环境执行一次）
@@ -132,4 +133,4 @@ TITLE_WRITING_DRAFT_SQL_AUTHORIZED=true TITLE_WRITING_ACCEPTANCE_DATABASE_NAME=a
 
 不要先手工执行草案再跑通用 `integration`：通用集成测试的其他文件会重建 schema。
 
-真实 API 验收用同样三个变量，但要另建一个空库，命令为 `pnpm --filter @ai-drama/api title-writing:acceptance`。它在空库上先验证「存储未就绪时拒绝」，然后才应用草案。真实浏览器验收同样用三个变量和另一个空库，先 `pnpm build`，再运行 `pnpm --filter @ai-drama/api title-writing:browser-acceptance`（API 监听 3001，即网页构建时编译进代理的默认上游；网页监听 3010）。工作流 `.github/workflows/title-writing-acceptance.yml` 为三条命令各起一个作业级 `postgres:16` 容器和一次性库，并上传脱敏证据（浏览器作业只有 JSON 与截图，不录 trace/HAR）。
+真实 API 验收用同样三个变量，但要另建一个空库，命令为 `pnpm --filter @ai-drama/api title-writing:acceptance`。它在空库上先验证「存储未就绪时拒绝」，然后才应用草案。真实浏览器验收同样用三个变量和另一个空库，先 `pnpm build`，再运行 `pnpm --filter @ai-drama/api title-writing:browser-acceptance`（API 监听 3001，即网页构建时编译进代理的默认上游；网页监听 3010）。运行时验收 `pnpm --filter @ai-drama/api title-writing:runtime-acceptance` 用同样三个变量和另一个空库，先 `pnpm build`，以子进程运行 `node --require apps/api/acceptance/title-writing-runtime-preload.cjs dist/main.js`（预加载仅限验收，默认拒绝），单次约 5 分钟（含 240 秒产品租约）。工作流 `.github/workflows/title-writing-acceptance.yml` 为四条命令各起一个作业级 `postgres:16` 容器和一次性库（也在发往 main 的 PR 和 main push 上运行），并上传脱敏证据（浏览器作业只有 JSON 与截图，不录 trace/HAR）。
