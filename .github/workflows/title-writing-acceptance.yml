@@ -1,7 +1,8 @@
 name: Title writing isolated acceptance
 
-# Runs only the title writing acceptances (store, real API, real browser), each against a PostgreSQL service container
-# that exists for that job alone.
+# Runs only the title writing acceptances (store, real API, real browser, real runtime with a crash and restart), each
+# against a PostgreSQL service container that exists for that job alone. It also runs for pull requests to main and on
+# main, so the acceptances stay in force after the feature branch is merged (pull_request, never pull_request_target).
 # Each job creates one new, empty database named ads_title_acceptance_<job>_<run id>_<attempt>, gives its name and URL
 # only to the acceptance command, and is discarded with the container when the job ends. No production credentials,
 # no provider keys, no deployment. The model is a stub inside the test process; nothing reaches a provider.
@@ -10,6 +11,17 @@ on:
   push:
     branches:
       - feat/title-driven-ai-writing
+      - main
+    paths: &title_acceptance_paths
+      - ".github/workflows/title-writing-acceptance.yml"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "apps/**"
+      - "packages/**"
+  pull_request:
+    branches:
+      - main
+    paths: *title_acceptance_paths
   workflow_dispatch:
 
 permissions:
@@ -250,6 +262,90 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: title-writing-browser-acceptance-evidence
+          path: ${{ runner.temp }}/title-acceptance-evidence
+          if-no-files-found: warn
+          retention-days: 14
+
+  runtime:
+    name: Real runtime and crash recovery acceptance (model stub)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.0
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.21.0
+          cache: pnpm
+
+      - name: Install JavaScript dependencies (engine-strict)
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate and generate Prisma
+        env:
+          # The schema file names env("DATABASE_URL"). validate/generate never connect; this placeholder points nowhere
+          # and is set for this step only, so the acceptance steps never see a DATABASE_URL.
+          DATABASE_URL: postgresql://prisma-offline@127.0.0.1:1/prisma_offline_placeholder
+        run: |
+          pnpm --filter @ai-drama/database prisma:validate
+          pnpm --filter @ai-drama/database prisma:generate
+
+      - name: Build JavaScript workspace
+        # The acceptance starts the built API (apps/api/dist/main.js) through its normal entry point.
+        run: pnpm build
+
+      - name: Pin model provider hosts to loopback on this runner
+        # A second layer under the test preload: even an unintercepted request cannot reach a provider from this job.
+        run: |
+          echo "127.0.0.1 dashscope.aliyuncs.com dashscope-intl.aliyuncs.com api.openai.com api.deepseek.com" | sudo tee -a /etc/hosts > /dev/null
+          for host in dashscope.aliyuncs.com api.openai.com api.deepseek.com; do getent hosts "$host"; done
+
+      - name: Create a new, empty acceptance database
+        run: |
+          name="ads_title_acceptance_runtime_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+          psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE ${name}"
+          psql -h 127.0.0.1 -U postgres -d "${name}" -v ON_ERROR_STOP=1 -At -c "SELECT 'database=' || current_database() || ' server=' || current_setting('server_version') || ' user_tables=' || (SELECT count(*) FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog', 'information_schema'))"
+
+      - name: Run the real runtime and crash recovery acceptance (guarded, deny by default)
+        run: |
+          name="ads_title_acceptance_runtime_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+          TITLE_WRITING_DRAFT_SQL_AUTHORIZED=true           TITLE_WRITING_ACCEPTANCE_DATABASE_NAME="${name}"           TITLE_WRITING_ACCEPTANCE_DATABASE_URL="postgresql://postgres@127.0.0.1:5432/${name}"           TITLE_WRITING_ACCEPTANCE_EVIDENCE_DIR="${RUNNER_TEMP}/title-acceptance-evidence"           pnpm --filter @ai-drama/api title-writing:runtime-acceptance
+
+      - name: Check that no API child is left
+        if: always()
+        run: |
+          # The acceptance stops every API it started (by its own recorded PID); a leftover listener fails the job.
+          if ss -ltn | grep -E ':3101\s'; then echo "a listener was left behind on 3101"; exit 1; fi
+          echo "no listener on 3101"
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: title-writing-runtime-acceptance-evidence
           path: ${{ runner.temp }}/title-acceptance-evidence
           if-no-files-found: warn
           retention-days: 14
