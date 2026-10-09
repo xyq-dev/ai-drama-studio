@@ -37,7 +37,7 @@
 影响说明：
 
 - 现有行不读不写。验收把升级前后每张既有表的行数、全部行的摘要、列、约束、索引逐一比较，完全相同（见文末）。
-- 新外键引用 `project`、`story_revision`、`script_revision`。建表时会对这三张表短暂加 `SHARE ROW EXCLUSIVE` 锁（新表为空，持续时间是建表本身），期间对这三张表的写入会等待。建议在低峰执行。
+- 新外键引用 `project`、`story_revision`、`script_revision`。创建外键会对这三张被引用表取得 `SHARE ROW EXCLUSIVE` 锁；本迁移在单个事务中执行，这些锁会一直持有到本次迁移事务提交或回滚，而不只是某条建表语句执行期间。若后续语句在等待其他锁，已取得的锁也会继续持有。持锁期间对这三张表的写入会等待。因此应在低峰执行，并在执行时观察锁等待（例如 `pg_stat_activity` 中的 `wait_event_type = 'Lock'`、`pg_locks` 中未授予的锁）。迁移命令已有连接、语句和查询超时配置（`migrate-cli.ts`：连接 5 秒、语句 30 秒、查询 30 秒），本发布不新增超时机制，也不改迁移执行器。
 - 之后若某个项目、故事版本或剧本版本被标题创作引用，直接 `DELETE` 这些行会被外键拒绝（没有 ON DELETE）。现有产品没有删除项目或版本的路径（项目是归档），不受影响；人工清理数据时需要注意。
 - 应用代码：API 在表存在后 `storageReady()` 为真，但功能仍默认关闭（见第 5 节）。Worker 不读这些表。API、Worker 都不会在启动时自动迁移。
 
@@ -77,7 +77,7 @@
 
 1. `SELECT name FROM schema_migration ORDER BY name;` 多出 `20261008000100_title_writing` 一行。
 2. 第 4 步的 `to_regclass` 四个值都不为空。
-3. API `/health` 正常；`GET /api/v1/writing/title-runs/options` 返回 `TITLE_WRITING_DISABLED`（功能仍关闭）。
+3. API 健康检查（全局前缀 `api/v1`，见 `apps/api/src/main.ts` 与 `health.controller.ts`）：`GET /api/v1/health/live` 返回存活结果；`GET /api/v1/health/ready` 返回依赖就绪结果，就绪时为 200、依赖未就绪时为 503，两者都需检查。`GET /api/v1/writing/title-runs/options` 返回 `TITLE_WRITING_DISABLED`（功能仍关闭）。
 4. 再执行一次 `migrate` 应输出 `Applied 0 migration(s).`（重复部署安全）。
 
 **失败处理**
