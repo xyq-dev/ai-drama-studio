@@ -59,6 +59,10 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Validate and generate Prisma
+        env:
+          # The schema file names env("DATABASE_URL"). validate/generate never connect; this placeholder points nowhere
+          # and is set for this step only, so the acceptance steps never see a DATABASE_URL.
+          DATABASE_URL: postgresql://prisma-offline@127.0.0.1:1/prisma_offline_placeholder
         run: |
           pnpm --filter @ai-drama/database prisma:validate
           pnpm --filter @ai-drama/database prisma:generate
@@ -129,6 +133,10 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Validate and generate Prisma
+        env:
+          # The schema file names env("DATABASE_URL"). validate/generate never connect; this placeholder points nowhere
+          # and is set for this step only, so the acceptance steps never see a DATABASE_URL.
+          DATABASE_URL: postgresql://prisma-offline@127.0.0.1:1/prisma_offline_placeholder
         run: |
           pnpm --filter @ai-drama/database prisma:validate
           pnpm --filter @ai-drama/database prisma:generate
