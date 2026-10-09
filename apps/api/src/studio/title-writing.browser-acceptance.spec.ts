@@ -314,7 +314,7 @@ async function editorTexts(): Promise<string[]> {
 
 async function scriptsOf(projectId: string) {
   return await q<{ id: string; episode_no: number; review_status: string; source_story_revision_id: string | null; text: string; current: boolean }>(
-    `SELECT s.id, e.episode_no, s.review_status, s.source_story_revision_id, s.content->>'text' AS text, e.current_script_revision_id = s.id AS current
+    `SELECT s.id, e.episode_no, s.review_status, s.source_story_revision_id, s.content_json->>'text' AS text, e.current_script_revision_id = s.id AS current
        FROM script_revision s JOIN episode e ON e.id = s.episode_id WHERE s.project_id = $1 ORDER BY e.episode_no, s.created_at`, [projectId]);
 }
 
