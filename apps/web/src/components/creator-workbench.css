@@ -1,23 +1,133 @@
 /* Advanced and guided creation share the same shell, surfaces and controls. */
-.creator-workbench { min-height: 100dvh; }
-.creator-workbench-header { position: relative; gap: 12px 18px; padding: 24px; background: var(--studio-raised); }
-.creator-workbench-header h1 { font-size: 24px; font-weight: 700; }
-.creator-workbench-header > a { color: var(--studio-muted); text-underline-offset: 4px; }
-.creator-workbench-header > button { padding: 9px 15px; border-radius: 10px; }
-.creator-workbench-directory { border-right: 1px solid var(--studio-line); }
-.creator-workbench-directory > p { color: var(--studio-muted); font-size: 12px; }
-.creator-workbench-directory button { border-radius: 10px; font-size: 14px; }
-.creator-workbench-directory button[aria-current=page] { background: var(--studio-selected); color: var(--studio-accent-hover); font-weight: 650; }
-.creator-workbench-content { padding: 24px; }
-.creator-project-summary { border-radius: var(--studio-radius-lg); overflow-wrap: anywhere; }
-.creator-project-summary > h2 { font-size: 18px; }
-.creator-app .creator-task-drawer button { min-height: 44px; }
-.creator-app .creator-review-card button.bg-neutral-900 { background: var(--studio-accent); color: white; }
-@media (min-width: 1024px) {
-  .creator-workbench-layout { grid-template-columns: 176px minmax(0,1fr); }
-  .creator-workbench-directory { padding: 20px 12px; }
+.creator-workbench {
+  min-height: 100dvh;
 }
+
+.creator-workbench-header {
+  position: relative;
+  gap: 12px 18px;
+  padding: 28px var(--studio-page-pad);
+  border-color: var(--studio-line);
+  background: var(--studio-card);
+}
+
+.creator-workbench-header h1 {
+  color: var(--studio-text);
+  font-size: var(--studio-heading);
+  font-weight: 700;
+  line-height: 1.35;
+  letter-spacing: -0.035em;
+}
+
+.creator-workbench-header > div {
+  flex: 1 1 280px;
+}
+
+.creator-workbench-header > a {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--studio-control-height);
+  color: var(--studio-muted);
+  text-underline-offset: 4px;
+}
+
+.creator-workbench-header > a:hover {
+  color: var(--studio-accent-hover);
+}
+
+.creator-workbench-header > button {
+  padding: 10px 16px;
+  border-radius: var(--studio-control-radius);
+}
+
+.creator-workbench-directory {
+  border-right: 1px solid var(--studio-line);
+}
+
+.creator-workbench-directory > p {
+  color: var(--studio-muted);
+  font-size: 12px;
+  line-height: 1.8;
+}
+
+.creator-workbench-directory button {
+  border-radius: var(--studio-control-radius);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.creator-workbench-directory button[aria-current=page] {
+  background: var(--studio-selected);
+  color: var(--studio-accent-hover);
+  font-weight: 650;
+}
+
+.creator-workbench-content {
+  padding: 28px;
+}
+
+.creator-app .creator-project-summary.bg-white {
+  margin-bottom: 24px;
+  padding: 24px;
+  border-radius: var(--studio-radius-lg);
+  overflow-wrap: anywhere;
+}
+
+.creator-project-summary > h2 {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+}
+
+.creator-project-summary > p {
+  line-height: 1.85;
+}
+
+.creator-project-summary summary {
+  display: list-item;
+  min-height: var(--studio-control-height);
+  padding: 10px 0;
+}
+
+@media (min-width: 1024px) {
+  .creator-workbench-layout {
+    grid-template-columns: 176px minmax(0, 1fr);
+  }
+
+  .creator-workbench-directory {
+    padding: 24px 12px;
+  }
+}
+
 @media (max-width: 1023px) {
-  .creator-workbench-header { padding: 20px 16px; }
-  .creator-workbench-content { padding: 20px 16px 40px; }
+  .creator-workbench-header {
+    padding: 24px 20px;
+  }
+
+  .creator-workbench-content {
+    padding: 24px 20px 48px;
+  }
+}
+
+@media (max-width: 639px) {
+  .creator-workbench-header {
+    padding: 24px 16px;
+    gap: 10px 16px;
+  }
+
+  .creator-workbench-header > div {
+    flex-basis: 100%;
+  }
+
+  .creator-workbench-header h1 {
+    font-size: var(--studio-heading-mobile);
+  }
+
+  .creator-workbench-content {
+    padding: 20px 16px 40px;
+  }
+
+  .creator-app .creator-project-summary.bg-white {
+    padding: 18px;
+  }
 }

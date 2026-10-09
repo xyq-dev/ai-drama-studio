@@ -39,9 +39,12 @@ export function PreviewBoard() {
           界面预览 · 示例内容 · 不会真实生成
         </p>
         <section className="secondary-preview-intro">
-          <span className="secondary-kicker">示例作品</span>
-          <h2>{STORY.title}</h2>
-          <p>{STORY.logline}</p>
+          <div className="secondary-preview-intro-mark" aria-hidden="true">夜</div>
+          <div>
+            <span className="secondary-kicker">示例作品 · 生活片段</span>
+            <h2>{STORY.title}</h2>
+            <p>{STORY.logline}</p>
+          </div>
         </section>
         <div className="secondary-tabs" role="tablist" aria-label="预览环节">
           {STAGES.map((item, index) => (
@@ -80,6 +83,7 @@ export function PreviewBoard() {
             aria-labelledby={`preview-tab-${STAGES.indexOf(stage)}`}
             aria-live="polite"
           >
+            <div className="secondary-preview-panel-heading"><span>创作内容</span><span>示例 / 0{STAGES.indexOf(stage) + 1}</span></div>
             {stage === "故事" ? (
               <>
                 <p className="secondary-kicker">从一个有温度的瞬间开始</p>

@@ -1,35 +1,46 @@
-.shell { display: grid; grid-template-columns: 220px minmax(0, 1fr); }
-.shell *, .shell *::before, .shell *::after { box-sizing: border-box; }
-.sidebar { position: sticky; top: 0; height: 100dvh; display: flex; flex-direction: column; padding: 36px 18px 22px; border-right: 1px solid var(--studio-line); background: #fffdfa; }
-.brand { display: flex; align-items: center; gap: 11px; padding: 0 10px; color: var(--studio-text); text-decoration: none; font-size: 20px; font-weight: 750; letter-spacing: -.6px; }
-.brand small { display: block; margin-top: 4px; color: var(--studio-muted); font-size: 12px; font-weight: 400; letter-spacing: 1px; }
-.brandMark { position: relative; flex: 0 0 30px; height: 30px; border-radius: 40% 43% 47% 46%; background: linear-gradient(145deg, #f08169, var(--studio-accent) 60%, #ac3334); box-shadow: inset 3px 2px 0 #ffb29a50; transform: rotate(-8deg); }
-.brandMark::before { content: ""; position: absolute; top: -7px; left: 17px; width: 12px; height: 7px; border-radius: 10px 0; background: #80814d; transform: rotate(-20deg); }
-.brandMark > span { position: absolute; left: 7px; top: 5px; width: 7px; height: 5px; border-radius: 50%; background: #ffffffb3; }
-.navigation { flex: 1; margin-top: 40px; }
-.navigation ul { display: flex; flex-direction: column; height: 100%; min-height: 250px; gap: 9px; padding: 0; margin: 0; list-style: none; }
-.navLink { display: flex; align-items: center; gap: 13px; padding: 13px 14px; border-radius: 10px; color: #615b5b; text-decoration: none; font-size: 15px; transition: background .15s, color .15s; }
-.navLink:hover { background: #f7f2ec; color: var(--studio-text); }
-.navLink[aria-current=page] { background: var(--studio-selected); color: var(--studio-accent-hover); font-weight: 650; }
-.help { margin-top: auto; }
-.footer { padding: 22px 10px 0; color: var(--studio-muted); font-size: 12px; }
+.shell { display: grid; grid-template-columns: 232px minmax(0, 1fr); }
+.sidebar { position: sticky; top: 0; height: 100dvh; display: flex; flex-direction: column; padding: 36px 18px 24px; border-right: 1px solid var(--studio-line); background: var(--studio-raised); overflow-y: auto; }
+.brand { display: flex; align-items: center; gap: 12px; padding: 0 12px; color: var(--studio-text); text-decoration: none; font-size: 21px; font-weight: 750; letter-spacing: -.6px; }
+.brand small { display: block; margin-top: 4px; color: var(--studio-muted); font-size: 12px; font-weight: 400; letter-spacing: 1.5px; }
+.brandMark { position: relative; flex: 0 0 32px; height: 32px; border-radius: 11px 13px 14px 14px; background: var(--studio-accent); transform: rotate(-6deg); }
+.brandMark::before { content: ""; position: absolute; top: -6px; left: 18px; width: 13px; height: 7px; border-radius: 10px 0; background: #727d52; transform: rotate(-20deg); }
+.brandMark > span { position: absolute; left: 9px; top: 8px; width: 0; height: 0; border-top: 7px solid transparent; border-bottom: 7px solid transparent; border-left: 10px solid white; transform: rotate(6deg); }
+.navigation { flex: 1; margin-top: 36px; }
+.navigation ul { display: flex; flex-direction: column; min-height: 310px; gap: 6px; padding: 0; margin: 0; list-style: none; }
+.navSection { display: block; padding: 0 14px; margin-bottom: 10px; color: var(--studio-muted); font-size: 12px; letter-spacing: .08em; }
+.navLink { position: relative; display: flex; align-items: center; gap: 12px; min-height: 48px; padding: 12px 14px; border: 1px solid transparent; border-radius: var(--studio-control-radius); color: var(--studio-muted); text-decoration: none; font-size: 14px; transition: background .15s, color .15s, border-color .15s; }
+.navLink:hover { background: var(--studio-soft); color: var(--studio-text); }
+.navLink[aria-current=page] { background: var(--studio-selected); border-color: var(--studio-accent-line); color: var(--studio-accent-hover); font-weight: 650; }
+.navLink[aria-current=page]::after { content: ""; margin-left: auto; width: 5px; height: 5px; flex: 0 0 5px; border-radius: 50%; background: currentColor; }
+.help { margin-top: 26px; padding-top: 24px; border-top: 1px solid var(--studio-line); }
+.footer { padding: 20px 12px 0; margin-top: 28px; color: var(--studio-muted); font-size: 12px; line-height: 1.9; }
+.footer > span { display: block; margin-bottom: 4px; color: var(--studio-text); font-size: 12px; }
 .page { min-width: 0; }
+.topbar { display: flex; min-height: 72px; align-items: center; justify-content: space-between; gap: 20px; padding: 16px var(--studio-page-pad); border-bottom: 1px solid var(--studio-line); background: var(--studio-card); }
+.topbar > p { display: flex; align-items: center; gap: 14px; margin: 0; font-size: 12px; color: var(--studio-muted); }
+.topbar strong { font-size: 13px; font-weight: 550; color: var(--studio-text); }
+.topbarActions { display: flex; align-items: center; gap: 20px; }
+.topbarActions > a { display: inline-flex; align-items: center; min-height: 44px; color: var(--studio-muted); text-decoration: none; font-size: 12px; }
+.topbarActions > a:hover { color: var(--studio-accent-hover); }
+.previewBadge { padding: 4px 9px; border: 1px solid var(--studio-line); border-radius: 6px; color: var(--studio-muted); background: var(--studio-raised); font-size: 12px; white-space: nowrap; }
 .mobileHeader { display: none; }
-.menu { display: inline-grid; place-items: center; width: 44px; height: 44px; border: 1px solid var(--studio-line); border-radius: 10px; color: #454047; background: white; }
+.menu { display: inline-grid; place-items: center; width: 44px; height: 44px; border: 1px solid var(--studio-line); border-radius: var(--studio-control-radius); color: var(--studio-text); background: var(--studio-card); }
 .menu[hidden] { display: none; }
-.skip { position: fixed; left: 14px; top: 10px; z-index: 100; transform: translateY(-160%); background: white; padding: 8px 14px; border-radius: 8px; }
+.skip { position: fixed; left: 14px; top: 10px; z-index: 100; transform: translateY(-160%); background: var(--studio-card); padding: 10px 16px; border: 1px solid var(--studio-accent); border-radius: var(--studio-control-radius); color: var(--studio-accent-hover); }
 .skip:focus { transform: translateY(0); }
-.backdrop { position: fixed; inset: 0; z-index: 70; background: #24232a66; }
-.drawer { display: flex; flex-direction: column; width: min(310px, calc(100vw - 36px)); height: 100dvh; overflow-y: auto; background: #fffdfa; padding: 18px; }
-.close { display: flex; align-items: center; justify-content: space-between; min-height: 44px; padding: 8px 10px; margin-bottom: 30px; border-radius: 8px; color: #625c59; font-size: 14px; }
+.backdrop { position: fixed; inset: 0; z-index: 70; background: rgb(24 29 26 / .4); }
+.drawer { display: flex; flex-direction: column; width: min(310px, calc(100vw - 36px)); height: 100dvh; overflow-y: auto; background: var(--studio-raised); padding: 18px; }
+.close { display: flex; align-items: center; justify-content: space-between; min-height: 44px; padding: 8px 10px; margin-bottom: 30px; border-radius: var(--studio-control-radius); color: var(--studio-muted); font-size: 14px; }
 .close span { font-size: 24px; }
-@media (min-width: 1600px) { .shell { grid-template-columns: 240px minmax(0,1fr); } }
+@media (min-width: 1600px) { .shell { grid-template-columns: 248px minmax(0,1fr); } }
 @media (max-width: 1023px) {
   .shell { display: block; }
-  .sidebar { display: none; }
-  .mobileHeader { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 76px; padding: 13px 20px; background: #fffdfa; border-bottom: 1px solid var(--studio-line); }
+  .sidebar, .topbar { display: none; }
+  .mobileHeader { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 72px; padding: 12px 20px; background: var(--studio-card); border-bottom: 1px solid var(--studio-line); }
   .mobileHeader .brand { padding: 0; font-size: 18px; }
   .mobileHeader .brand small { display: none; }
-  .mobileHeader .brandMark { flex-basis: 27px; height: 27px; }
+  .mobileHeader .brandMark { flex-basis: 28px; height: 28px; }
+  .mobileHeader .brandMark > span { left: 9px; top: 7px; border-top-width: 6px; border-bottom-width: 6px; border-left-width: 8px; }
 }
+@media (max-width: 639px) { .mobileHeader { padding-right: 16px; padding-left: 16px; } }
 @media (prefers-reduced-motion: reduce) { .navLink { transition: none; } }

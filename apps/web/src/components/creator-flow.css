@@ -1,71 +1,337 @@
-/* Visual layer for the existing five-step workflow; no visibility-based business gates. */
-.creator-app { -webkit-font-smoothing: antialiased; }
-.creator-app main { width: 100%; }
-.creator-app :is(button, a, input, select, textarea) { -webkit-tap-highlight-color: transparent; }
-.creator-app button:not(:disabled), .creator-app summary { cursor: pointer; }
-.creator-app button:disabled { cursor: not-allowed; opacity: .55; }
-.creator-app :is(input, textarea, select) { border-radius: 10px; font: inherit; }
-.creator-app input:not([type=checkbox]):not([type=radio]), .creator-app select { min-height: 44px; }
-.creator-app textarea { line-height: 1.85; }
-.creator-app .creator-flow { max-width: 1440px; padding: 30px clamp(20px, 3vw, 48px) 56px; }
-.creator-app .creator-project-heading { align-items: center; padding-bottom: 23px; }
-.creator-app .creator-back { display: inline-block; margin-bottom: 12px; color: #77716f; font-size: 13px; text-decoration: none; }
-.creator-app .creator-back:hover { color: var(--studio-accent-hover); }
-.creator-app .creator-project-heading h1 { font-size: clamp(24px, 2.4vw, 32px); letter-spacing: -.6px; line-height: 1.35; }
-.creator-app .creator-save-status { max-width: 72ch; color: #6e6767; overflow-wrap: anywhere; }
-.creator-app .creator-steps { padding: 12px 0 24px; margin-top: 0; }
-.creator-app .creator-steps ol { gap: 0; }
-.creator-app .creator-steps li { position: relative; }
-.creator-app .creator-steps li:not(:last-child)::after { position: absolute; z-index: 0; content: ""; height: 1px; background: #dedbd4; top: 19px; left: calc(50% + 28px); right: calc(-50% + 28px); pointer-events: none; }
-.creator-app .creator-step-button { position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; gap: 5px; width: 100%; min-width: 0; padding: 0 6px 8px; border-radius: 10px; color: var(--studio-muted); background: transparent; text-align: center; }
-.creator-app .creator-step-button:hover { color: var(--studio-accent-hover); }
-.creator-app .creator-step-number { display: grid; place-items: center; width: 38px; height: 38px; border: 1px solid #d9d5cf; border-radius: 50%; background: var(--studio-bg); font-size: 16px; font-weight: 650; }
-.creator-app .creator-step-title { font-size: 15px; font-weight: 550; }
-.creator-app .creator-step-state { font-size: 12px; color: #6e6767; }
-.creator-app .creator-step-button[aria-current=step] { color: var(--studio-accent-hover); }
-.creator-app .creator-step-button[aria-current=step] .creator-step-title { font-weight: 750; }
-.creator-app .creator-step-button[aria-current=step] .creator-step-number { border-color: var(--studio-accent); background: var(--studio-accent); color: white; box-shadow: 0 0 0 5px var(--studio-selected); }
-.creator-app .creator-step-button[data-state=done]:not([aria-current=step]) .creator-step-number { border-color: #b9cdbb; color: #337047; background: #eef5ee; }
-.creator-app .creator-step-overview { position: relative; margin-top: 0; padding: 24px; border: 1px solid var(--studio-line); border-radius: 16px; background: linear-gradient(115deg, #fff, #fffaf6); box-shadow: 0 3px 16px #31282504; }
-.creator-app .creator-step-overview h2 { font-size: 23px; letter-spacing: -.4px; }
-.creator-app .creator-step-facts { margin-top: 18px; gap: 18px; font-size: 14px; }
-.creator-app .creator-step-facts dt { margin-bottom: 5px; font-size: 12px; color: var(--studio-muted); }
-.creator-app .creator-step-facts dd { color: #454047; line-height: 1.7; }
-.creator-app .creator-step-guide { margin-top: 18px; background: #f6f3ee; color: #655b56; padding: 12px 16px; font-size: 14px; line-height: 1.75; }
-.creator-app .creator-primary-bar button { box-shadow: 0 3px 8px #d3484614; min-height: 46px; }
-.creator-app .creator-flow-body { margin-top: 28px; }
-.creator-app .creator-episode-tabs { margin-bottom: 20px; gap: 10px; }
-.creator-app .creator-episode-tabs [role=tab] { min-height: 52px; min-width: 155px; padding: 12px 18px; text-align: center; font-weight: 600; }
-.creator-app .creator-episode-tabs [role=tab] span { font-size: 12px; font-weight: 400; }
-.creator-app .creator-cast-tabs { border-bottom: 1px solid var(--studio-line); padding-bottom: 14px; }
-.creator-app .creator-cast-tabs [role=tab] { min-height: 44px; }
-.creator-app [role=alert] { overflow-wrap: anywhere; }
+/* Layout and hierarchy for the existing five-step workflow. Global controls live in globals.css. */
+.creator-app .creator-flow {
+  max-width: var(--studio-page-width);
+  padding: 40px var(--studio-page-pad) 56px;
+}
+
+.creator-app .creator-project-heading {
+  align-items: center;
+  padding-bottom: 24px;
+}
+
+.creator-app .creator-back {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--studio-control-height);
+  margin-bottom: 8px;
+  color: var(--studio-muted);
+  font-size: 14px;
+  text-decoration: none;
+}
+
+.creator-app .creator-back:hover {
+  color: var(--studio-accent-hover);
+}
+
+.creator-app .creator-project-heading h1 {
+  font-size: var(--studio-heading);
+  letter-spacing: -0.035em;
+  line-height: 1.35;
+}
+
+.creator-app .creator-save-status {
+  max-width: 72ch;
+  color: var(--studio-muted);
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+
+.creator-app .creator-steps {
+  margin-top: 0;
+  padding: 12px 0 28px;
+}
+
+.creator-app .creator-steps ol {
+  gap: 0;
+}
+
+.creator-app .creator-steps li {
+  position: relative;
+}
+
+.creator-app .creator-steps li:not(:last-child)::after {
+  position: absolute;
+  z-index: 0;
+  content: "";
+  height: 1px;
+  background: var(--studio-input-line);
+  top: 19px;
+  left: calc(50% + 28px);
+  right: calc(-50% + 28px);
+  pointer-events: none;
+}
+
+.creator-app .creator-step-button {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 0 6px 8px;
+  border-radius: var(--studio-control-radius);
+  color: var(--studio-muted);
+  background: transparent;
+  text-align: center;
+}
+
+.creator-app .creator-step-button:hover {
+  color: var(--studio-accent-hover);
+}
+
+.creator-app .creator-step-number {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--studio-input-line);
+  border-radius: 50%;
+  background: var(--studio-bg);
+  font-size: 16px;
+  font-weight: 650;
+}
+
+.creator-app .creator-step-title {
+  font-size: 15px;
+  font-weight: 550;
+}
+
+.creator-app .creator-step-state {
+  font-size: 12px;
+  color: var(--studio-muted);
+}
+
+.creator-app .creator-step-button[aria-current=step] {
+  color: var(--studio-accent-hover);
+}
+
+.creator-app .creator-step-button[aria-current=step] .creator-step-title {
+  font-weight: 750;
+}
+
+.creator-app .creator-step-button[aria-current=step] .creator-step-number {
+  border-color: var(--studio-accent);
+  background: var(--studio-accent);
+  color: white;
+  box-shadow: 0 0 0 5px var(--studio-selected);
+}
+
+.creator-app .creator-step-button[data-state=done]:not([aria-current=step]) .creator-step-number {
+  border-color: var(--studio-success-line);
+  color: var(--studio-success);
+  background: var(--studio-success-bg);
+}
+
+.creator-app .creator-step-overview {
+  position: relative;
+  margin-top: 0;
+  padding: 24px;
+  border: 1px solid var(--studio-line);
+  border-radius: var(--studio-radius-lg);
+  background: var(--studio-card);
+  box-shadow: var(--studio-shadow);
+}
+
+.creator-app .creator-step-overview h2 {
+  font-size: 22px;
+  letter-spacing: -0.025em;
+  line-height: 1.5;
+}
+
+.creator-app .creator-step-facts {
+  margin-top: 20px;
+  gap: 20px;
+  font-size: 14px;
+}
+
+.creator-app .creator-step-facts dt {
+  margin-bottom: 6px;
+  font-size: 12px;
+  color: var(--studio-muted);
+}
+
+.creator-app .creator-step-facts dd {
+  color: var(--studio-text);
+  line-height: 1.8;
+}
+
+.creator-app .creator-step-guide {
+  margin-top: 20px;
+  border-radius: var(--studio-radius);
+  background: var(--studio-raised);
+  color: var(--studio-muted);
+  padding: 12px 16px;
+  font-size: 14px;
+  line-height: 1.8;
+}
+
+.creator-app .creator-primary-bar button {
+  min-height: 46px;
+  border-radius: var(--studio-control-radius);
+  box-shadow: var(--studio-shadow);
+}
+
+.creator-app .creator-flow-body {
+  margin-top: 28px;
+}
+
+.creator-app .creator-episode-tabs {
+  margin-bottom: 24px;
+  gap: 10px;
+}
+
+.creator-app .creator-episode-tabs [role=tab] {
+  min-height: 56px;
+  min-width: 155px;
+  padding: 12px 18px;
+  border-radius: var(--studio-radius);
+  text-align: center;
+  font-weight: 600;
+}
+
+.creator-app .creator-episode-tabs [role=tab] span {
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.creator-app .creator-cast-tabs {
+  border-bottom: 1px solid var(--studio-line);
+  padding-bottom: 16px;
+}
+
+.creator-app .creator-cast-tabs [role=tab] {
+  min-height: var(--studio-control-height);
+  border-radius: var(--studio-control-radius);
+}
+
 @media (min-width: 1280px) {
-  .creator-app .creator-step-overview { padding-right: 240px; }
-  .creator-app .creator-primary-bar { position: absolute; right: 24px; top: 24px; bottom: auto; left: auto; margin-top: 0; background: transparent; }
-  .creator-app .creator-primary-bar button { max-width: 200px; }
+  .creator-app .creator-step-overview {
+    padding-right: 240px;
+  }
+
+  .creator-app .creator-primary-bar {
+    position: absolute;
+    right: 24px;
+    top: 24px;
+    bottom: auto;
+    left: auto;
+    margin-top: 0;
+    background: transparent;
+  }
+
+  .creator-app .creator-primary-bar button {
+    max-width: 200px;
+  }
 }
+
 @media (max-width: 1023px) {
-  .creator-app .creator-flow { padding: 24px 20px calc(112px + env(safe-area-inset-bottom)); }
-  .creator-app .creator-primary-bar { padding-bottom: calc(12px + env(safe-area-inset-bottom)); box-shadow: 0 -3px 18px #302a2410; }
-  .creator-app .creator-project-heading { padding-bottom: 12px; }
+  .creator-app .creator-flow {
+    padding: 24px 20px calc(112px + env(safe-area-inset-bottom));
+  }
+
+  .creator-app .creator-primary-bar {
+    border-color: var(--studio-line);
+    background: var(--studio-card);
+    padding-bottom: calc(12px + env(safe-area-inset-bottom));
+    box-shadow: 0 -3px 18px rgb(42 38 30 / 0.06);
+  }
+
+  .creator-app .creator-project-heading {
+    padding-bottom: 12px;
+  }
 }
+
 @media (max-width: 639px) {
-  .creator-app .creator-flow { padding-left: 16px; padding-right: 16px; }
-  .creator-app .creator-steps { margin-top: 15px; padding-bottom: 22px; }
-  .creator-app .creator-step-number { width: 30px; height: 30px; font-size: 13px; }
-  .creator-app .creator-step-title { font-size: 12px; white-space: nowrap; }
-  .creator-app .creator-step-state { font-size: 12px; line-height: 1; min-height: 12px; }
-  .creator-app .creator-step-state-text { display: none; }
-  .creator-app .creator-step-button:is([data-state=needs_attention], [data-state=source_updated]) .creator-step-state { color: var(--studio-accent-hover); }
-  .creator-app .creator-steps li:not(:last-child)::after { top: 15px; left: calc(50% + 21px); right: calc(-50% + 21px); }
-  .creator-app .creator-step-overview { padding: 18px; border-radius: 13px; }
-  .creator-app .creator-step-overview h2 { font-size: 20px; }
-  .creator-app .creator-step-facts { gap: 12px; }
-  .creator-app .creator-step-facts > div { display: grid; grid-template-columns: 80px minmax(0,1fr); gap: 8px; }
-  .creator-app .creator-step-facts dt { margin: 2px 0 0; }
-  .creator-app .creator-step-guide { padding: 12px; font-size: 13px; }
-  .creator-app .creator-episode-tabs { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 6px; }
-  .creator-app .creator-episode-tabs [role=tab] { min-width: 0; padding: 10px 4px; font-size: 13px; }
-  .creator-app .creator-episode-tabs [role=tab] span { display: block; font-size: 12px; margin-top: 4px; }
+  .creator-app .creator-flow {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .creator-app .creator-project-heading h1 {
+    font-size: var(--studio-heading-mobile);
+  }
+
+  .creator-app .creator-steps {
+    margin-top: 16px;
+    padding-bottom: 24px;
+  }
+
+  .creator-app .creator-step-number {
+    width: 30px;
+    height: 30px;
+    font-size: 13px;
+  }
+
+  .creator-app .creator-step-title {
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  .creator-app .creator-step-state {
+    font-size: 12px;
+    line-height: 1;
+    min-height: 12px;
+  }
+
+  .creator-app .creator-step-state-text {
+    display: none;
+  }
+
+  .creator-app .creator-step-button:is([data-state=needs_attention], [data-state=source_updated]) .creator-step-state {
+    color: var(--studio-accent-hover);
+  }
+
+  .creator-app .creator-steps li:not(:last-child)::after {
+    top: 15px;
+    left: calc(50% + 21px);
+    right: calc(-50% + 21px);
+  }
+
+  .creator-app .creator-step-overview {
+    padding: 18px;
+    border-radius: var(--studio-radius);
+  }
+
+  .creator-app .creator-step-overview h2 {
+    font-size: 20px;
+  }
+
+  .creator-app .creator-step-facts {
+    gap: 12px;
+  }
+
+  .creator-app .creator-step-facts > div {
+    display: grid;
+    grid-template-columns: 80px minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .creator-app .creator-step-facts dt {
+    margin: 2px 0 0;
+  }
+
+  .creator-app .creator-step-guide {
+    padding: 12px;
+    font-size: 13px;
+  }
+
+  .creator-app .creator-episode-tabs {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .creator-app .creator-episode-tabs [role=tab] {
+    min-width: 0;
+    padding: 10px 4px;
+    font-size: 13px;
+  }
+
+  .creator-app .creator-episode-tabs [role=tab] span {
+    display: block;
+    font-size: 12px;
+    margin-top: 4px;
+  }
 }
