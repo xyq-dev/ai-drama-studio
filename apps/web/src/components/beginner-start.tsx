@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { ApiError, StudioClient } from "../lib/studio-client";
-import { bindDirectionToProject, premiseBlock, readSelectedDirection, removeOnce, switchBlock } from "../lib/creative-direction-link";
+import { bindDirectionToProject, premiseBlock, readSelectedDirection, removeOwned, switchBlock, trackOwned, type OwnedBlock } from "../lib/creative-direction-link";
 import { CATEGORIES, DIRECTION_STORAGE_KEY, EMPTY_DIRECTION, type DirectionDraft } from "../lib/creative-taxonomy";
 import { IDEA_TEMPLATES, START_SCOPE_NOTE, suggestTitle } from "../lib/beginner-start";
 import { LIMITS, draftStorageKey, nextDraft, readDraft, releaseSubmittedDraft, writeDraft } from "../lib/studio-model";
@@ -46,8 +46,10 @@ export function BeginnerStart({ active }: { active: "/create" | undefined }) {
   const [latest, setLatest] = useState<ProjectItem | null>(null);
   const [direction, setDirection] = useState<DirectionDraft | null>(null);
   const [directionNote, setDirectionNote] = useState<string | null>(null);
-  /** The exact block this page put into the idea for `direction`, or null when it has not been added. */
-  const [appliedBlock, setAppliedBlock] = useState<string | null>(null);
+  /** The block this page put into the idea and where it is, followed through every edit; null when it owns none. */
+  const [owned, setOwned] = useState<OwnedBlock | null>(null);
+  /** The user edited the block this page added: from then on that text is theirs and is never changed by the page. */
+  const [ownedLost, setOwnedLost] = useState(false);
   /** After an edited block blocked a switch: the direction the user may still add next to the old text. */
   const [keepAndAppend, setKeepAndAppend] = useState<DirectionDraft | null>(null);
   const confirmHeading = useRef<HTMLHeadingElement>(null);
@@ -114,11 +116,25 @@ export function BeginnerStart({ active }: { active: "/create" | undefined }) {
     setConfirming(true);
   }
 
+  /** A change the user typed or picked: the owned block follows it, or stops being owned when the change touches it. */
+  function editIdea(nextIdea: string) {
+    if (creatingRef.current) return;
+    if (owned) {
+      const tracked = trackOwned(idea, nextIdea, owned);
+      setOwned(tracked);
+      if (!tracked) setOwnedLost(true);
+    }
+    setConfirming(false);
+    remember(title, nextIdea);
+  }
+
   /** "用这个方向": appends the direction once, or swaps it for the one this page added before. */
   function chooseDirection(next: DirectionDraft, keepOld = false) {
     if (creatingRef.current) return;
     const block = premiseBlock(next);
-    const result = switchBlock(idea, keepOld ? null : appliedBlock, block, LIMITS.premise);
+    const result: ReturnType<typeof switchBlock> = ownedLost && !keepOld
+      ? { ok: false, reason: "edited" }
+      : switchBlock(idea, keepOld ? null : owned, block, LIMITS.premise);
     setKeepAndAppend(null);
     if (!result.ok) {
       if (result.reason === "edited") {
@@ -129,14 +145,15 @@ export function BeginnerStart({ active }: { active: "/create" | undefined }) {
       }
       return;
     }
-    const switched = !keepOld && appliedBlock !== null && appliedBlock !== block;
+    const switched = !keepOld && owned !== null && owned.block !== block;
     // The previous direction's text is the user's own (e.g. after a reload): it stays where it is.
-    const oldKept = appliedBlock === null && direction !== null && premiseBlock(direction) !== block
+    const oldKept = owned === null && direction !== null && premiseBlock(direction) !== block
       && idea.includes(premiseBlock(direction));
     if (result.changed) remember(title, result.text);
     setDirection(next);
     // The page owns the block only when it appended it now or already owned it; a copy the user wrote stays theirs.
-    setAppliedBlock(result.appended || (appliedBlock === block && !keepOld) ? block : null);
+    setOwned(result.owned);
+    setOwnedLost(false);
     storeDirection(next);
     setDirectionNote(!result.changed ? "想法里已经有这段创作方向。"
       : switched ? "已换成新的方向，你写的其他内容没有改动。确认创建后才会保存。"
@@ -148,23 +165,22 @@ export function BeginnerStart({ active }: { active: "/create" | undefined }) {
   function removeDirection() {
     if (creatingRef.current) return;
     setKeepAndAppend(null);
-    if (appliedBlock !== null) {
-      const removed = removeOnce(idea, appliedBlock);
-      if (removed.ok) {
-        // An emptied idea cannot stay confirmed: 开始构思 is what checks that an idea was written.
-        if (removed.text.trim().length === 0) setConfirming(false);
-        remember(title, removed.text);
-        setDirectionNote("已移除方向文字，你写的其他内容没有改动。");
-      } else {
-        setDirectionNote(`${EDITED_NOTE}方向已取消选择，需要的话可以手动删改这段文字。`);
-      }
+    const removed = owned ? removeOwned(idea, owned) : null;
+    if (removed?.ok) {
+      // An emptied idea cannot stay confirmed: 开始构思 is what checks that an idea was written.
+      if (removed.text.trim().length === 0) setConfirming(false);
+      remember(title, removed.text);
+      setDirectionNote("已移除方向文字，你写的其他内容没有改动。");
+    } else if (removed || ownedLost) {
+      setDirectionNote(`${EDITED_NOTE}方向已取消选择，需要的话可以手动删改这段文字。`);
     } else if (direction && idea.includes(premiseBlock(direction))) {
       setDirectionNote("已取消选择。想法里这段方向文字不是本页加入的，没有删除。");
     } else {
       setDirectionNote("已取消选择这个方向。");
     }
     setDirection(null);
-    setAppliedBlock(null);
+    setOwned(null);
+    setOwnedLost(false);
     storeDirection(null);
   }
 
@@ -208,7 +224,7 @@ export function BeginnerStart({ active }: { active: "/create" | undefined }) {
   }
 
   const directionState: DirectionState | null = !direction ? null
-    : appliedBlock !== null ? (idea.includes(appliedBlock) ? "applied" : "edited")
+    : owned !== null ? "applied" : ownedLost ? "edited"
     : idea.includes(premiseBlock(direction)) ? "present" : "pending";
 
   return (
@@ -242,7 +258,7 @@ export function BeginnerStart({ active }: { active: "/create" | undefined }) {
                 value={idea}
                 aria-describedby={error ? "start-error scope-note" : "scope-note"}
                 disabled={creating}
-                onChange={(event) => { setConfirming(false); remember(title, event.target.value); }}
+                onChange={(event) => editIdea(event.target.value)}
               />
               <p id="scope-note" className={styles.scopeNote}>{START_SCOPE_NOTE}</p>
               <div className={styles.formActions}>
@@ -255,7 +271,7 @@ export function BeginnerStart({ active }: { active: "/create" | undefined }) {
                   {IDEA_TEMPLATES.map((template) => (
                     <li key={template.id}>
                       <button className={styles.templateButton} type="button"
-                        disabled={creating} onClick={() => { setConfirming(false); remember(title, template.idea); }}>
+                        disabled={creating} onClick={() => editIdea(template.idea)}>
                         示例 · {template.label}
                       </button>
                     </li>

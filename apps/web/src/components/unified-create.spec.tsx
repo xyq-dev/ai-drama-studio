@@ -230,6 +230,25 @@ describe("one creation page with an inline inspiration section", () => {
     expect(idea().value).toBe(userCopy);
   });
 
+  it("never removes a pasted copy after the page's own block was edited (PR #60 review 3)", () => {
+    serve();
+    render(<BeginnerStart active="/create" />);
+    fireEvent.change(idea(), { target: { value: "开头" } });
+    use(FIRST.name);
+    const block = premiseBlock(FIRST_DIRECTION);
+    fireEvent.change(idea(), { target: { value: `${block}\n\n${idea().value}` } });
+    expect(picker().getByText("已加在「故事想法」末尾")).toBeTruthy();
+    const edited = `${block}\n\n开头\n\n${block.replace("请围绕", "我改过：请围绕")}`;
+    fireEvent.change(idea(), { target: { value: edited } });
+    expect(picker().getByText(/方向文字已被你修改/)).toBeTruthy();
+    fireEvent.click(picker().getByRole("button", { name: "移除方向" }));
+    expect(idea().value).toBe(edited);
+    use(SECOND.name);
+    expect(idea().value).toBe(`${edited}
+
+${premiseBlock(SECOND_DIRECTION)}`);
+  });
+
   it("does not reopen confirmation for a blank restored idea, and never sends one (PR #60 review 2)", async () => {
     window.sessionStorage.setItem("ads-draft:new:project:new", JSON.stringify({ fingerprint: "x", idempotencyKey: "k", ifMatch: null,
       payload: { title: "夜班", premise: "" }, seenBaseline: null }));

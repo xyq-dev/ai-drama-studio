@@ -8,8 +8,9 @@ import {
   projectDirectionKey,
   readProjectDirection,
   readSelectedDirection,
-  removeOnce,
+  removeOwned,
   switchBlock,
+  trackOwned,
 } from "./creative-direction-link";
 
 class MemoryStorage {
@@ -59,29 +60,49 @@ describe("creative direction link", () => {
 describe("switching the direction block", () => {
   const block = premiseBlock(direction);
   const other = premiseBlock({ version: 1, categoryId: CATEGORIES[1]!.id, tagIds: [] });
+  const ownedAt = (text: string) => ({ block, at: text.lastIndexOf(block) });
 
-  it("removes the one verbatim block with the blank line it was added with, and nothing else", () => {
-    expect(removeOnce(`开头\n\n${block}`, block)).toEqual({ ok: true, text: "开头" });
-    expect(removeOnce(`开头\n\n${block}\n\n结尾`, block)).toEqual({ ok: true, text: "开头\n\n结尾" });
-    expect(removeOnce(`${block}\n\n结尾`, block)).toEqual({ ok: true, text: "结尾" });
-    expect(removeOnce(`${block}！`, block)).toEqual({ ok: true, text: "！" });
-    expect(removeOnce(`开头${block.slice(1)}`, block)).toEqual({ ok: false, reason: "not_found" });
-    expect(removeOnce(`${block}\n\n${block}`, block)).toEqual({ ok: false, reason: "ambiguous" });
+  it("removes only the owned occurrence with the blank line it was added with", () => {
+    const tail = `开头\n\n${block}`;
+    expect(removeOwned(tail, ownedAt(tail))).toEqual({ ok: true, text: "开头" });
+    const middle = `开头\n\n${block}\n\n结尾`;
+    expect(removeOwned(middle, ownedAt(middle))).toEqual({ ok: true, text: "开头\n\n结尾" });
+    expect(removeOwned(`${block}！`, { block, at: 0 })).toEqual({ ok: true, text: "！" });
+    // The user's pasted copy at the start stays; only the recorded occurrence goes.
+    const two = `${block}\n\n${block}`;
+    expect(removeOwned(two, ownedAt(two))).toEqual({ ok: true, text: block });
+    expect(removeOwned(`开头${block.slice(1)}`, { block, at: 2 })).toEqual({ ok: false, reason: "not_found" });
   });
 
-  it("swaps only the applied block, refuses edited text, and keeps the length limit", () => {
-    expect(switchBlock("开头", null, block, 4000)).toEqual({ ok: true, text: `开头\n\n${block}`, changed: true, appended: true });
-    expect(switchBlock(`开头\n\n${block}`, block, block, 4000)).toEqual({ ok: true, text: `开头\n\n${block}`, changed: false, appended: false });
-    expect(switchBlock(`开头\n\n${block}\n\n结尾`, block, other, 4000)).toEqual({ ok: true, text: `开头\n\n结尾\n\n${other}`, changed: true, appended: true });
-    expect(switchBlock(`开头\n\n${block}`, block, null, 4000)).toEqual({ ok: true, text: "开头", changed: true, appended: false });
-    const edited = `开头\n\n${block.replace("创作方向", "我的方向")}`;
-    expect(switchBlock(edited, block, other, 4000)).toEqual({ ok: false, reason: "edited" });
-    expect(switchBlock(edited, block, null, 4000)).toEqual({ ok: false, reason: "edited" });
-    expect(switchBlock(edited, block, block, 4000)).toEqual({ ok: false, reason: "edited" });
-    expect(switchBlock("开头", null, block, 5)).toEqual({ ok: false, reason: "too_long" });
-    // A user-written copy of the new direction is kept and not reported as appended.
-    expect(switchBlock(`${other}
+  it("follows the owned block through edits before and after it, and drops it when an edit touches it", () => {
+    const text = `开头\n\n${block}`;
+    const owned = ownedAt(text);
+    expect(trackOwned(text, `更长的开头\n\n${block}`, owned)).toEqual({ block, at: owned.at + 3 });
+    expect(trackOwned(text, `${text}\n\n结尾`, owned)).toEqual(owned);
+    expect(trackOwned(text, text.replace("请围绕", "我改过：请围绕"), owned)).toBeNull();
+    // Paste a pristine copy first, then edit the original: the copy is never taken as the page's.
+    const pasted = `${block}\n\n${text}`;
+    const afterPaste = trackOwned(text, pasted, owned)!;
+    expect(afterPaste.at).toBe(pasted.lastIndexOf(block));
+    expect(trackOwned(pasted, `${block}\n\n开头\n\n${block.replace("请围绕", "改：请围绕")}`, afterPaste)).toBeNull();
+  });
 
-${block}`, block, other, 4000)).toEqual({ ok: true, text: other, changed: true, appended: false });
+  it("swaps only the owned block, refuses edited text, and keeps the length limit", () => {
+    const appended = switchBlock("开头", null, block, 4000);
+    expect(appended).toEqual({ ok: true, text: `开头\n\n${block}`, changed: true, owned: { block, at: 4 } });
+    const text = `开头\n\n${block}`;
+    expect(switchBlock(text, ownedAt(text), block, 4000)).toEqual({ ok: true, text, changed: false, owned: ownedAt(text) });
+    const middle = `开头\n\n${block}\n\n结尾`;
+    const swapped = `开头\n\n结尾\n\n${other}`;
+    expect(switchBlock(middle, ownedAt(middle), other, 4000)).toEqual({ ok: true, text: swapped, changed: true, owned: { block: other, at: swapped.length - other.length } });
+    expect(switchBlock(text, ownedAt(text), null, 4000)).toEqual({ ok: true, text: "开头", changed: true, owned: null });
+    const edited = text.replace("创作方向", "我的方向");
+    expect(switchBlock(edited, ownedAt(text), other, 4000)).toEqual({ ok: false, reason: "edited" });
+    expect(switchBlock(edited, ownedAt(text), null, 4000)).toEqual({ ok: false, reason: "edited" });
+    expect(switchBlock(edited, ownedAt(text), block, 4000)).toEqual({ ok: false, reason: "edited" });
+    expect(switchBlock("开头", null, block, 5)).toEqual({ ok: false, reason: "too_long" });
+    // A user-written copy of the new direction is kept and not taken as owned.
+    const userOther = `${other}\n\n${block}`;
+    expect(switchBlock(userOther, ownedAt(userOther), other, 4000)).toEqual({ ok: true, text: other, changed: true, owned: null });
   });
 });
