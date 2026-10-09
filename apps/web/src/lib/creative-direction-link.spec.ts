@@ -88,6 +88,16 @@ describe("switching the direction block", () => {
     const kept = `${appended.text}\n\nbar`;
     expect(removeOwned(kept, trackOwned(appended.text, kept, appended.owned)!)).toEqual({ ok: true, text: "foo\n\nbar" });
     expect(switchBlock("", null, block, 4000)).toMatchObject({ owned: { at: 0, separated: false } });
+    // Text ending in a blank line inserted right at the block's start: that blank line is the user's (review 5).
+    const start = `${appended.text}baz`;
+    const startOwned = trackOwned(appended.text, start, appended.owned)!;
+    const inserted = `foo\n\nbar\n\n${block}baz`;
+    const insertedOwned = trackOwned(start, inserted, startOwned)!;
+    expect(insertedOwned).toMatchObject({ at: inserted.length - block.length - 3, separated: false });
+    expect(removeOwned(inserted, insertedOwned)).toEqual({ ok: true, text: "foo\n\nbar\n\nbaz" });
+    // An edit well before the separator keeps it the page's.
+    const earlier = `xoo\n\n${block}`;
+    expect(trackOwned(appended.text, earlier, appended.owned)).toMatchObject({ separated: true });
   });
 
   it("follows the owned block through edits before and after it, and drops it when an edit touches it", () => {

@@ -87,8 +87,10 @@ export function trackOwned(previous: string, next: string, owned: OwnedBlock): O
   if (editEnd <= owned.at) at = owned.at + next.length - previous.length;
   else if (prefix >= blockEnd) at = owned.at;
   else return null;
-  // An edit reaching into the page's separator makes whatever blank line is there now the user's.
-  const separated = owned.separated && !(prefix < owned.at && editEnd > owned.at - SEPARATOR.length);
+  // An edit reaching the page's separator, or inserting right at the block's start, makes whatever blank line now
+  // precedes the block the user's. The boundaries are inclusive: the diff cannot tell which side an insertion took,
+  // and wrongly keeping one blank line is harmless where wrongly removing one merges the user's text.
+  const separated = owned.separated && !(prefix <= owned.at && editEnd >= owned.at - SEPARATOR.length);
   return next.slice(at, at + owned.block.length) === owned.block ? { block: owned.block, at, separated } : null;
 }
 
