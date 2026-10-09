@@ -27,7 +27,7 @@ const NAME_PATTERN = /^ads_title_acceptance_[a-z0-9_]{6,40}$/;
 const LOOPBACK = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
 const PROVIDER_HOSTS = new Set(["dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com", "api.openai.com", "api.deepseek.com"]);
 
-if (process.env.TITLE_WRITING_DRAFT_SQL_AUTHORIZED !== "true") refuse("not authorized");
+if (process.env.TITLE_WRITING_ACCEPTANCE_AUTHORIZED !== "true") refuse("not authorized");
 const expectedName = process.env.TITLE_WRITING_ACCEPTANCE_DATABASE_NAME ?? "";
 if (!NAME_PATTERN.test(expectedName)) refuse("no acceptance database name");
 let database;

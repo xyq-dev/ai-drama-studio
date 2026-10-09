@@ -139,7 +139,7 @@ export function optionsUnavailableReason(options: TitleWritingOptionsView | null
   if (options.code === "TITLE_WRITING_READY") return null;
   if (options.code === "TITLE_WRITING_DISABLED") return "AI 一键创作没有在服务端开启（TITLE_WRITING_ENABLED）。可以先手动创作。";
   if (options.code === "TITLE_WRITING_FORBIDDEN") return "服务端还没有设置操作者令牌（TITLE_WRITING_OPERATOR_TOKEN）。可以先手动创作。";
-  if (options.code === "TITLE_WRITING_STORAGE_UNAVAILABLE") return "创作任务的数据库表还没有创建（迁移草案待审查授权）。可以先手动创作。";
+  if (options.code === "TITLE_WRITING_STORAGE_UNAVAILABLE") return "创作任务的数据库表还没有创建（服务器尚未执行数据库迁移）。可以先手动创作。";
   if (options.code === "TITLE_WRITING_PROVIDER_UNCONFIGURED") {
     const missing = options.providers.map((item) => `${item.label}：${item.missing.join("、")}`).join("；");
     return `还没有可用的模型服务。缺少的服务端配置：${missing}。可以先手动创作。`;

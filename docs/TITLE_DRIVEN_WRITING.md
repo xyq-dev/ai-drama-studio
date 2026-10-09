@@ -15,14 +15,14 @@
 
 ### 最小数据变更
 
-迁移草案 `packages/database/prisma/drafts/20261008000100_title_writing.sql`（**未执行**），四张新表，不改任何旧表：
+正式迁移 `packages/database/prisma/migrations/20261008000100_title_writing/migration.sql`（发布候选，**尚未在服务器执行**；与已验收的草案 `prisma/drafts/20261008000100_title_writing.sql` 语句逐字节相同，草案已标记为被替代、不再执行，见 [`TITLE_WRITING_MIGRATION_RELEASE.md`](TITLE_WRITING_MIGRATION_RELEASE.md)），四张新表，不改任何旧表：
 
 - `title_writing_run`：一次创作。工作区、项目、操作者、幂等键、输入哈希、冻结输入（剧名与设置）、Provider、模型、状态、取消请求时间、执行者与租约、单次调用上限、已用调用数、故事保存结果、错误码。
 - `title_writing_step`：`concept`、`outline`、`episode:1..3` 五步。状态、当前尝试号、校验后的结构化输出、输出哈希、剧本落入的版本 ID 与状态。
 - `title_writing_call`：每次真实发送一行。请求哈希、Provider、模型、状态、服务商请求 ID、响应模型、usage、`billing_status`（固定 `unknown`，金额列不存在）、错误码。
 - `title_writing_resume`：每个被受理的续跑操作一行。续跑的 `Idempotency-Key`、请求哈希、确认过的不确定调用 ID（审查 R2 后新增）。
 
-兼容：只新增表；旧数据不受影响。回滚：在没有依赖前可按 resume → call → step → run 顺序 `DROP TABLE`；已有数据时保留表、关闭开关（forward-fix）。草案未执行时 `storageReady()` 为假，接口在任何发送前返回 503 `TITLE_WRITING_STORAGE_UNAVAILABLE`。
+兼容：只新增表；旧数据不受影响。回滚：不提供 down migration，代码回滚时保留表、关闭开关（forward-fix），不自动 `DROP`。数据库尚未迁移到该版本时 `storageReady()` 为假，接口在任何发送前返回 503 `TITLE_WRITING_STORAGE_UNAVAILABLE`。
 
 ### 状态
 
@@ -121,16 +121,16 @@
 
 只用一个**新建的空库**，库名必须形如 `ads_title_acceptance_<后缀>`。入口默认拒绝：
 
-- 在打开任何连接前，必须同时满足 `TITLE_WRITING_DRAFT_SQL_AUTHORIZED=true`、`TITLE_WRITING_ACCEPTANCE_DATABASE_NAME=ads_title_acceptance_...`、`TITLE_WRITING_ACCEPTANCE_DATABASE_URL` 指向同名库。不读 `DATABASE_URL`；若 `DATABASE_URL` 与之相同或同名，拒绝。
+- 在打开任何连接前，必须同时满足 `TITLE_WRITING_ACCEPTANCE_AUTHORIZED=true`、`TITLE_WRITING_ACCEPTANCE_DATABASE_NAME=ads_title_acceptance_...`、`TITLE_WRITING_ACCEPTANCE_DATABASE_URL` 指向同名库。不读 `DATABASE_URL`；若 `DATABASE_URL` 与之相同或同名，拒绝。
 - 在任何写入前，只读确认连接到的库就是这个名字且没有任何表。
-- 入口不删库、不删表、不清表；它对这个新库执行现有迁移和草案 SQL，然后运行本功能的测试。
+- 入口不删库、不删表、不清表；它先只迁到已发布的 5 个迁移（验证存储未就绪、写入既有业务数据），再用正式迁移链升级（只应用 `20261008000100_title_writing`），核对既有数据不变、重复执行无变化，然后运行本功能的测试。不执行草案 SQL。
 - 专用命令只收集 `title-writing-store.acceptance.spec.ts` 一个文件；`pnpm test` 不收集它；通用 `integration` 中本功能的文件只读。
 
 ```bash
 # 由有权限的人先新建空库（示例名），再运行：
-TITLE_WRITING_DRAFT_SQL_AUTHORIZED=true TITLE_WRITING_ACCEPTANCE_DATABASE_NAME=ads_title_acceptance_20261009a TITLE_WRITING_ACCEPTANCE_DATABASE_URL=postgresql://<user>@<isolated-host>:5432/ads_title_acceptance_20261009a pnpm --filter @ai-drama/database title-writing:acceptance
+TITLE_WRITING_ACCEPTANCE_AUTHORIZED=true TITLE_WRITING_ACCEPTANCE_DATABASE_NAME=ads_title_acceptance_20261009a TITLE_WRITING_ACCEPTANCE_DATABASE_URL=postgresql://<user>@<isolated-host>:5432/ads_title_acceptance_20261009a pnpm --filter @ai-drama/database title-writing:acceptance
 ```
 
-不要先手工执行草案再跑通用 `integration`：通用集成测试的其他文件会重建 schema。
+不要手工执行草案：它已被正式迁移替代，手工执行后正式迁移会因表已存在而失败。通用 `integration` 的其他文件会重建 schema 并运行完整迁移链；本功能在其中的文件只读，只断言「存储就绪 ⇔ 已记录该迁移」。
 
-真实 API 验收用同样三个变量，但要另建一个空库，命令为 `pnpm --filter @ai-drama/api title-writing:acceptance`。它在空库上先验证「存储未就绪时拒绝」，然后才应用草案。真实浏览器验收同样用三个变量和另一个空库，先 `pnpm build`，再运行 `pnpm --filter @ai-drama/api title-writing:browser-acceptance`（API 监听 3001，即网页构建时编译进代理的默认上游；网页监听 3010）。运行时验收 `pnpm --filter @ai-drama/api title-writing:runtime-acceptance` 用同样三个变量和另一个空库，先 `pnpm build`，以子进程运行 `node --require apps/api/acceptance/title-writing-runtime-preload.cjs dist/main.js`（预加载仅限验收，默认拒绝），单次约 5 分钟（含 240 秒产品租约）。工作流 `.github/workflows/title-writing-acceptance.yml` 为四条命令各起一个作业级 `postgres:16` 容器和一次性库（也在发往 main 的 PR 和 main push 上运行），并上传脱敏证据（浏览器作业只有 JSON 与截图，不录 trace/HAR）。
+真实 API 验收用同样三个变量，但要另建一个空库，命令为 `pnpm --filter @ai-drama/api title-writing:acceptance`。它在只迁到已发布版本的库上先验证「存储未就绪时拒绝」，然后由正式迁移链升级。真实浏览器验收同样用三个变量和另一个空库，先 `pnpm build`，再运行 `pnpm --filter @ai-drama/api title-writing:browser-acceptance`（API 监听 3001，即网页构建时编译进代理的默认上游；网页监听 3010）。运行时验收 `pnpm --filter @ai-drama/api title-writing:runtime-acceptance` 用同样三个变量和另一个空库，先 `pnpm build`，以子进程运行 `node --require apps/api/acceptance/title-writing-runtime-preload.cjs dist/main.js`（预加载仅限验收，默认拒绝），单次约 5 分钟（含 240 秒产品租约）。工作流 `.github/workflows/title-writing-acceptance.yml` 为四条命令各起一个作业级 `postgres:16` 容器和一次性库（也在发往 main 的 PR 和 main push 上运行），并上传脱敏证据（浏览器作业只有 JSON 与截图，不录 trace/HAR）。

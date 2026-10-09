@@ -24,9 +24,15 @@ import type { DatabasePool } from "./job-service";
 import type { TextChainService } from "./text-chain";
 
 /**
- * PostgreSQL storage for title-driven writing runs. The tables come from the unapplied draft
- * prisma/drafts/20261008000100_title_writing.sql; until they exist storageReady() is false and callers refuse before any
- * send. There is no in-memory fallback in the runtime.
+ * The migration that creates the title writing tables (prisma/migrations/20261008000100_title_writing). It replaced the
+ * draft of the same name in prisma/drafts. Acceptances migrate to just before it to see a database without the tables.
+ */
+export const TITLE_WRITING_MIGRATION = "20261008000100_title_writing";
+
+/**
+ * PostgreSQL storage for title-driven writing runs. The tables come from the migration TITLE_WRITING_MIGRATION; until
+ * they exist (a database not yet migrated to it) storageReady() is false and callers refuse before any send. There is
+ * no in-memory fallback in the runtime.
  */
 export const TITLE_WRITING_TABLES = {
   title_writing_run: [

@@ -1,15 +1,12 @@
--- SUPERSEDED DRAFT. Do not apply. Kept only as the record of what passed the isolated acceptances.
--- Replaced by the formal migration prisma/migrations/20261008000100_title_writing/migration.sql, which contains these
--- statements unchanged and is applied by `pnpm --filter @ai-drama/database migrate` from the main commit that adds it.
--- Running this file by hand creates the tables without a schema_migration record; the formal migration then stops
--- with "relation already exists" and rolls back. Release steps: docs/TITLE_WRITING_MIGRATION_RELEASE.md.
--- Original draft notes follow.
--- (was) DRAFT. Do not apply. Execution of this migration is not authorized.
--- Title-driven writing runs (docs/TITLE_DRIVEN_WRITING.md). New tables only; no existing table changes.
+-- Title-driven writing runs (docs/TITLE_DRIVEN_WRITING.md, docs/TITLE_WRITING_MIGRATION_RELEASE.md).
+-- Formal migration of prisma/drafts/20261008000100_title_writing.sql, the draft that passed the isolated store, API,
+-- browser and runtime acceptances. Every statement below is the draft's, byte for byte; only this header differs.
+-- Additive: four new tables with their keys, checks and indexes. No existing table, column, constraint or row changes.
 -- Read by PostgresTitleWritingStore (packages/database/src/title-writing-store.ts). Until all four tables exist with
 -- every column below, the store reports storage unavailable and the API refuses before any provider send.
--- Rollback while unused: DROP TABLE title_writing_resume, title_writing_call, title_writing_step, title_writing_run.
--- With data: keep the tables, switch TITLE_WRITING_ENABLED off, forward-fix.
+-- Creating the tables enables nothing: the feature stays off unless TITLE_WRITING_ENABLED=true, and is always off
+-- when NODE_ENV=production.
+-- No down migration. A code rollback keeps these tables; switch TITLE_WRITING_ENABLED off and forward-fix.
 
 CREATE TABLE title_writing_run (
   id uuid PRIMARY KEY,

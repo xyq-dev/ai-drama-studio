@@ -1,8 +1,9 @@
 /**
  * Title writing acceptance over real HTTP and real PostgreSQL, with a controllable model double. NOT part of `test` or
  * `integration`: run only with `pnpm --filter @ai-drama/api title-writing:acceptance` against a newly created, empty,
- * disposable database (same guard and variables as the store acceptance, a different database). It applies the
- * migrations and the unapplied draft SQL to that database and nothing else.
+ * disposable database (same guard and variables as the store acceptance, a different database). It migrates that
+ * database through the released migrations only, checks the refusal, then upgrades it through the normal migration
+ * chain while the API keeps running. The draft SQL is never applied.
  *
  * What is real: the Nest application with its real controllers and services, listening on a local port and called with
  * fetch; the PostgreSQL store and text chain. What is not: the model. The title writing service the controller uses is
@@ -11,7 +12,7 @@
  */
 import "reflect-metadata";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { INestApplication } from "@nestjs/common";
 import { Test } from "@nestjs/testing";
@@ -23,6 +24,7 @@ import {
   checkTitleWritingAcceptanceEnv,
   closePostgresPool,
   createPostgresPool,
+  TITLE_WRITING_MIGRATION,
   runMigrations,
   verifyTitleWritingAcceptanceDatabase,
 } from "@ai-drama/database";
@@ -48,7 +50,6 @@ if (!decision.ok) throw new Error(`Title writing API acceptance refused: ${decis
 const acceptanceUrl = decision.url;
 
 const WORKSPACE = "11111111-1111-4111-8111-111111111111";
-const DRAFT_NAME = "20261008000100_title_writing.sql";
 // Generated per run, held in memory, never printed or written to the evidence.
 const OPERATOR_TOKEN = `acceptance-${randomUUID()}`;
 // Not a key of any provider account: the stub never sends it anywhere.
@@ -275,7 +276,8 @@ beforeAll(async () => {
             (SELECT count(*)::int FROM information_schema.tables
               WHERE table_schema NOT IN ('pg_catalog', 'information_schema') AND table_schema NOT LIKE 'pg_toast%') AS tables`)).rows[0]!;
   evidence.database = { name: identity.name, serverVersion: identity.version, tablesBeforeWrite: identity.tables };
-  evidence.migrationsApplied = (await runMigrations(pool)).applied;
+  // The released schema: every migration before the title writing one, as on a server before this release.
+  evidence.migrationsApplied = (await runMigrations(pool, undefined, { before: TITLE_WRITING_MIGRATION })).applied;
   await q("INSERT INTO workspace (id, name, status) VALUES ($1, 'title-acceptance', 'ACTIVE')", [WORKSPACE]);
   main = await boot(true);
 });
@@ -293,7 +295,7 @@ afterAll(async () => {
 });
 
 describe("title writing over real HTTP and PostgreSQL, model stubbed", () => {
-  it("before the draft tables exist, start is refused with nothing sent; then the draft is applied", async () => {
+  it("before the title writing migration, start is refused with nothing sent; then the normal chain adds it", async () => {
     const projectId = await createProject("存储未就绪");
     const options = await http(main, "GET", "/writing/title-runs/options");
     expect(options.body).toMatchObject({ code: "TITLE_WRITING_STORAGE_UNAVAILABLE", storageReady: false });
@@ -302,9 +304,9 @@ describe("title writing over real HTTP and PostgreSQL, model stubbed", () => {
     expect(refused.body.error.code).toBe("TITLE_WRITING_STORAGE_UNAVAILABLE");
     expect(sent).toHaveLength(0);
 
-    const draft = await readFile(join(__dirname, "..", "..", "..", "..", "packages", "database", "prisma", "drafts", DRAFT_NAME), "utf8");
-    await q(draft);
-    evidence.draftApplied = DRAFT_NAME;
+    const upgrade = await runMigrations(pool);
+    expect(upgrade.applied).toEqual([TITLE_WRITING_MIGRATION]);
+    evidence.upgradeApplied = upgrade.applied;
     const ready = await http(main, "GET", "/writing/title-runs/options");
     expect(ready.body).toMatchObject({ code: "TITLE_WRITING_READY", storageReady: true, billing: "unknown" });
     scenarios.storageNotReady = { status: refused.status, code: refused.body.error.code, sends: 0 };

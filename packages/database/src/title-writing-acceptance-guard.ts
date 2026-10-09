@@ -1,10 +1,10 @@
 /**
  * Guard of the title writing acceptance run (src/title-writing-store.acceptance.spec.ts). That run writes: it applies
- * the migrations and the unapplied title writing draft SQL to a database. It must only ever touch a newly created,
+ * the migration chain (including the title writing migration) to a database. It must only ever touch a newly created,
  * empty, disposable database that a person named on purpose. Everything here refuses by default.
  *
  * Required, all of them:
- * - TITLE_WRITING_DRAFT_SQL_AUTHORIZED=true                  explicit authorization to apply the draft SQL
+ * - TITLE_WRITING_ACCEPTANCE_AUTHORIZED=true                  explicit authorization to migrate and write that database
  * - TITLE_WRITING_ACCEPTANCE_DATABASE_NAME=ads_title_acceptance_<suffix>   the disposable database's name
  * - TITLE_WRITING_ACCEPTANCE_DATABASE_URL=postgresql://.../<that name>     its own variable, never DATABASE_URL
  * Then, before any write, the connected database must report that name and contain no tables at all.
@@ -12,7 +12,7 @@
 export const TITLE_WRITING_ACCEPTANCE_NAME_PATTERN = /^ads_title_acceptance_[a-z0-9_]{6,40}$/;
 
 export interface TitleWritingAcceptanceEnv {
-  TITLE_WRITING_DRAFT_SQL_AUTHORIZED?: string | undefined;
+  TITLE_WRITING_ACCEPTANCE_AUTHORIZED?: string | undefined;
   TITLE_WRITING_ACCEPTANCE_DATABASE_NAME?: string | undefined;
   TITLE_WRITING_ACCEPTANCE_DATABASE_URL?: string | undefined;
   DATABASE_URL?: string | undefined;
@@ -35,8 +35,8 @@ function databaseNameOf(url: string): string | null {
 
 /** Pure check of the environment. Runs before any connection is opened. */
 export function checkTitleWritingAcceptanceEnv(env: TitleWritingAcceptanceEnv): TitleWritingAcceptanceDecision {
-  if (env.TITLE_WRITING_DRAFT_SQL_AUTHORIZED !== "true") {
-    return { ok: false, reason: "TITLE_WRITING_DRAFT_SQL_AUTHORIZED is not \"true\": applying the draft SQL is not authorized." };
+  if (env.TITLE_WRITING_ACCEPTANCE_AUTHORIZED !== "true") {
+    return { ok: false, reason: "TITLE_WRITING_ACCEPTANCE_AUTHORIZED is not \"true\": writing to an acceptance database is not authorized." };
   }
   const expected = env.TITLE_WRITING_ACCEPTANCE_DATABASE_NAME;
   if (!expected || !TITLE_WRITING_ACCEPTANCE_NAME_PATTERN.test(expected)) {

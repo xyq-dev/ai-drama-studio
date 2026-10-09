@@ -92,11 +92,36 @@ jobs:
       - name: Run the store acceptance (guarded, deny by default)
         run: |
           name="ads_title_acceptance_store_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
-          TITLE_WRITING_DRAFT_SQL_AUTHORIZED=true \
+          TITLE_WRITING_ACCEPTANCE_AUTHORIZED=true \
           TITLE_WRITING_ACCEPTANCE_DATABASE_NAME="${name}" \
           TITLE_WRITING_ACCEPTANCE_DATABASE_URL="postgresql://postgres@127.0.0.1:5432/${name}" \
           TITLE_WRITING_ACCEPTANCE_EVIDENCE_DIR="${RUNNER_TEMP}/title-acceptance-evidence" \
           pnpm --filter @ai-drama/database title-writing:acceptance
+
+      - name: Run the deploy migration command on a new database, then again
+        # The real deploy command (pnpm --filter @ai-drama/database migrate) on a second database of this job's container.
+        # It must apply all six migrations once and nothing the second time; the four title writing tables must exist.
+        run: |
+          name="ads_title_acceptance_deploy_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+          url="postgresql://postgres@127.0.0.1:5432/${name}"
+          psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE ${name}"
+          first="$(DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate)"
+          echo "first run: ${first}"
+          printf '%s\n' "${first}" | grep -Eq "(^|[^0-9])Applied 6 migration\(s\)\.$"
+          second="$(DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate)"
+          echo "second run: ${second}"
+          printf '%s\n' "${second}" | grep -Eq "(^|[^0-9])Applied 0 migration\(s\)\.$"
+          tables="$(psql -h 127.0.0.1 -U postgres -d "${name}" -v ON_ERROR_STOP=1 -At -c "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name IN ('title_writing_run', 'title_writing_step', 'title_writing_call', 'title_writing_resume')")"
+          test "${tables}" = "4"
+          psql -h 127.0.0.1 -U postgres -d "${name}" -v ON_ERROR_STOP=1 -At -c "SELECT name FROM schema_migration ORDER BY name"
+
+      - name: Run the deploy migration command again on the upgraded acceptance database
+        # The store acceptance upgraded this database from the released schema; the deploy command must find nothing to do.
+        run: |
+          name="ads_title_acceptance_store_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+          again="$(DATABASE_URL="postgresql://postgres@127.0.0.1:5432/${name}" pnpm --silent --filter @ai-drama/database migrate)"
+          echo "redeploy: ${again}"
+          printf '%s\n' "${again}" | grep -Eq "(^|[^0-9])Applied 0 migration\(s\)\.$"
 
       - name: Upload evidence
         if: always()
@@ -166,7 +191,7 @@ jobs:
       - name: Run the real API acceptance (guarded, deny by default)
         run: |
           name="ads_title_acceptance_api_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
-          TITLE_WRITING_DRAFT_SQL_AUTHORIZED=true \
+          TITLE_WRITING_ACCEPTANCE_AUTHORIZED=true \
           TITLE_WRITING_ACCEPTANCE_DATABASE_NAME="${name}" \
           TITLE_WRITING_ACCEPTANCE_DATABASE_URL="postgresql://postgres@127.0.0.1:5432/${name}" \
           TITLE_WRITING_ACCEPTANCE_EVIDENCE_DIR="${RUNNER_TEMP}/title-acceptance-evidence" \
@@ -244,7 +269,7 @@ jobs:
       - name: Run the real browser acceptance (guarded, deny by default)
         run: |
           name="ads_title_acceptance_browser_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
-          TITLE_WRITING_DRAFT_SQL_AUTHORIZED=true \
+          TITLE_WRITING_ACCEPTANCE_AUTHORIZED=true \
           TITLE_WRITING_ACCEPTANCE_DATABASE_NAME="${name}" \
           TITLE_WRITING_ACCEPTANCE_DATABASE_URL="postgresql://postgres@127.0.0.1:5432/${name}" \
           TITLE_WRITING_ACCEPTANCE_EVIDENCE_DIR="${RUNNER_TEMP}/title-acceptance-evidence" \
@@ -334,7 +359,7 @@ jobs:
           TITLE_WRITING_ACCEPTANCE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           name="ads_title_acceptance_runtime_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
-          TITLE_WRITING_DRAFT_SQL_AUTHORIZED=true           TITLE_WRITING_ACCEPTANCE_DATABASE_NAME="${name}"           TITLE_WRITING_ACCEPTANCE_DATABASE_URL="postgresql://postgres@127.0.0.1:5432/${name}"           TITLE_WRITING_ACCEPTANCE_EVIDENCE_DIR="${RUNNER_TEMP}/title-acceptance-evidence"           pnpm --filter @ai-drama/api title-writing:runtime-acceptance
+          TITLE_WRITING_ACCEPTANCE_AUTHORIZED=true           TITLE_WRITING_ACCEPTANCE_DATABASE_NAME="${name}"           TITLE_WRITING_ACCEPTANCE_DATABASE_URL="postgresql://postgres@127.0.0.1:5432/${name}"           TITLE_WRITING_ACCEPTANCE_EVIDENCE_DIR="${RUNNER_TEMP}/title-acceptance-evidence"           pnpm --filter @ai-drama/api title-writing:runtime-acceptance
 
       - name: Check that no API child is left
         if: always()

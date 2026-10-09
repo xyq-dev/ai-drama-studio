@@ -3,8 +3,8 @@
  * Title writing browser acceptance: a real browser drives the real Next pages, which reach the real API through the
  * web's own same-origin /api/v1 rewrite; the API runs on a newly created, empty, disposable PostgreSQL database. NOT part
  * of `test` or `integration`: run only with `pnpm --filter @ai-drama/api title-writing:browser-acceptance`, with the same
- * guard and variables as the other title writing acceptances (and a database of its own). It applies the migrations and
- * the unapplied draft SQL to that database and nothing else. Run `pnpm build` first: it serves the built web app.
+ * guard and variables as the other title writing acceptances (and a database of its own). It applies the
+ * full migration chain to that new database (as a fresh install) and nothing else; the draft SQL is never applied. Run `pnpm build` first: it serves the built web app.
  *
  * What is real: Chrome, the built Next app, its rewrite, the Nest application with its controllers, services, store and
  * text chain, and PostgreSQL. What is not: the model. As in the API acceptance, the title writing service the controller
@@ -34,6 +34,7 @@ import {
   checkTitleWritingAcceptanceEnv,
   closePostgresPool,
   createPostgresPool,
+  TITLE_WRITING_MIGRATION,
   runMigrations,
   verifyTitleWritingAcceptanceDatabase,
 } from "@ai-drama/database";
@@ -53,7 +54,6 @@ const acceptanceUrl = decision.url;
 
 const ROOT = join(__dirname, "..", "..", "..", "..");
 const WORKSPACE = "11111111-1111-4111-8111-111111111111";
-const DRAFT_NAME = "20261008000100_title_writing.sql";
 // `next build` compiles the /api/v1 rewrite to this origin (the web's default upstream); the API listens there.
 const API_PORT = 3001;
 const WEB_PORT = 3010;
@@ -355,9 +355,10 @@ beforeAll(async () => {
             (SELECT count(*)::int FROM information_schema.tables
               WHERE table_schema NOT IN ('pg_catalog', 'information_schema') AND table_schema NOT LIKE 'pg_toast%') AS tables`))[0]!;
   evidence.database = { name: identity.name, serverVersion: identity.version, tablesBeforeWrite: identity.tables };
-  evidence.migrationsApplied = (await runMigrations(pool)).applied;
-  await q(await readFile(join(ROOT, "packages", "database", "prisma", "drafts", DRAFT_NAME), "utf8"));
-  evidence.draftApplied = DRAFT_NAME;
+  // A new database through the normal chain: every released migration and then the title writing one.
+  const migrated = await runMigrations(pool);
+  expect(migrated.applied.at(-1)).toBe(TITLE_WRITING_MIGRATION);
+  evidence.migrationsApplied = migrated.applied;
   await q("INSERT INTO workspace (id, name, status) VALUES ($1, 'title-browser-acceptance', 'ACTIVE')", [WORKSPACE]);
   if (shotsDir) await mkdir(shotsDir, { recursive: true });
 

@@ -11,7 +11,7 @@ import {
 
 const NAME = "ads_title_acceptance_20261009a";
 const URL_OK = `postgresql://u:p@127.0.0.1:5432/${NAME}`;
-const AUTHORIZED = { TITLE_WRITING_DRAFT_SQL_AUTHORIZED: "true", TITLE_WRITING_ACCEPTANCE_DATABASE_NAME: NAME, TITLE_WRITING_ACCEPTANCE_DATABASE_URL: URL_OK };
+const AUTHORIZED = { TITLE_WRITING_ACCEPTANCE_AUTHORIZED: "true", TITLE_WRITING_ACCEPTANCE_DATABASE_NAME: NAME, TITLE_WRITING_ACCEPTANCE_DATABASE_URL: URL_OK };
 
 describe("title writing acceptance environment", () => {
   it("accepts only an explicit authorization, a disposable name and a URL pointing at exactly that name", () => {
@@ -21,7 +21,7 @@ describe("title writing acceptance environment", () => {
   it.each([
     ["nothing set", {}],
     ["only DATABASE_URL", { DATABASE_URL: URL_OK }],
-    ["authorization not exactly true", { ...AUTHORIZED, TITLE_WRITING_DRAFT_SQL_AUTHORIZED: "1" }],
+    ["authorization not exactly true", { ...AUTHORIZED, TITLE_WRITING_ACCEPTANCE_AUTHORIZED: "1" }],
     ["no expected name", { ...AUTHORIZED, TITLE_WRITING_ACCEPTANCE_DATABASE_NAME: undefined }],
     ["a name that is not disposable", { ...AUTHORIZED, TITLE_WRITING_ACCEPTANCE_DATABASE_NAME: "ai_drama", TITLE_WRITING_ACCEPTANCE_DATABASE_URL: "postgresql://h/ai_drama" }],
     ["the production-like default name", { ...AUTHORIZED, TITLE_WRITING_ACCEPTANCE_DATABASE_NAME: "postgres", TITLE_WRITING_ACCEPTANCE_DATABASE_URL: "postgresql://h/postgres" }],

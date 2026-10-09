@@ -19,7 +19,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
@@ -29,6 +29,7 @@ import {
   checkTitleWritingAcceptanceEnv,
   closePostgresPool,
   createPostgresPool,
+  TITLE_WRITING_MIGRATION,
   runMigrations,
   verifyTitleWritingAcceptanceDatabase,
 } from "@ai-drama/database";
@@ -43,7 +44,6 @@ const ROOT = join(__dirname, "..", "..", "..", "..");
 const API_DIR = join(ROOT, "apps", "api");
 const PRELOAD = join(API_DIR, "acceptance", "title-writing-runtime-preload.cjs");
 const WORKSPACE = "11111111-1111-4111-8111-111111111111";
-const DRAFT_NAME = "20261008000100_title_writing.sql";
 const API_PORT = 3101;
 const API = `http://127.0.0.1:${String(API_PORT)}/api/v1`;
 // Generated per run, held in memory, given only to the API child's environment; never printed or written to evidence.
@@ -165,7 +165,7 @@ function apiEnv(label: string, overrides: Record<string, string | undefined>): N
     APP_WORKSPACE_ID: WORKSPACE,
     // Names this child's database sessions, so their end can be checked after a kill.
     PGAPPNAME: `title-runtime-${label}`,
-    TITLE_WRITING_DRAFT_SQL_AUTHORIZED: "true",
+    TITLE_WRITING_ACCEPTANCE_AUTHORIZED: "true",
     TITLE_WRITING_ACCEPTANCE_DATABASE_NAME: decision.ok ? decision.databaseName : "",
     TITLE_WRITING_RUNTIME_ACCEPTANCE_CONTROL: controlUrl,
   };
@@ -353,7 +353,8 @@ beforeAll(async () => {
     [host, (await lookup(host).catch(() => ({ address: "unresolved" }))).address] as const));
   evidence.providerHostsResolveTo = Object.fromEntries(resolved);
   expect(resolved.every(([, address]) => address === "127.0.0.1" || address === "::1" || address === "unresolved")).toBe(true);
-  evidence.migrationsApplied = (await runMigrations(pool)).applied;
+  // The released schema: every migration before the title writing one, as on a server before this release.
+  evidence.migrationsApplied = (await runMigrations(pool, undefined, { before: TITLE_WRITING_MIGRATION })).applied;
   await q("INSERT INTO workspace (id, name, status) VALUES ($1, 'title-runtime-acceptance', 'ACTIVE')", [WORKSPACE]);
   server = createServer((request, response) => {
     void handle(request, response).catch(() => { if (!response.headersSent) response.writeHead(500).end(); });
@@ -423,16 +424,29 @@ describe("title writing on the real runtime, killed and restarted, model stubbed
     results.productionEnabled = refused.status;
     await stopApi(api, "SIGTERM");
 
-    // Storage missing: the draft is not applied yet.
-    api = await startApi("no-storage", "enabled, draft tables absent", ENABLED);
+    // Storage missing: the database is not migrated to the title writing migration yet.
+    api = await startApi("no-storage", "enabled, title writing migration not applied", ENABLED);
     projectId = await createProject("运行时存储未就绪");
     refused = await start(projectId, "运行时存储未就绪");
     expect([refused.status, refused.body.error?.code]).toEqual([503, "TITLE_WRITING_STORAGE_UNAVAILABLE"]);
     results.storageMissing = refused.status;
     await stopApi(api, "SIGTERM");
 
-    await q(await readFile(join(ROOT, "packages", "database", "prisma", "drafts", DRAFT_NAME), "utf8"));
-    evidence.draftApplied = DRAFT_NAME;
+    // The deploy step: the normal chain applies only the title writing migration; a second run applies nothing.
+    const upgrade = await runMigrations(pool);
+    expect(upgrade.applied).toEqual([TITLE_WRITING_MIGRATION]);
+    const again = await runMigrations(pool);
+    expect(again.applied).toEqual([]);
+    evidence.migration = { upgradeApplied: upgrade.applied, redeployApplied: again.applied };
+
+    // After the migration the feature is still off by default, and the API starts and refuses as before.
+    api = await startApi("off-after-migration", "TITLE_WRITING_ENABLED unset, after the migration", { DASHSCOPE_API_KEY: FAKE_KEY,
+      BAILIAN_BASE_URL: QWEN_BASE, TITLE_WRITING_QWEN_MODELS: STUB_MODEL, TITLE_WRITING_OPERATOR_TOKEN: OPERATOR_TOKEN });
+    projectId = await createProject("运行时迁移后默认关闭");
+    refused = await start(projectId, "运行时迁移后默认关闭");
+    expect([refused.status, refused.body.error?.code]).toEqual([404, "TITLE_WRITING_DISABLED"]);
+    results.offAfterMigration = refused.status;
+    await stopApi(api, "SIGTERM");
 
     // No operator token configured on the server: every token is refused.
     api = await startApi("no-server-token", "enabled, TITLE_WRITING_OPERATOR_TOKEN unset", { ...ENABLED, TITLE_WRITING_OPERATOR_TOKEN: undefined });
