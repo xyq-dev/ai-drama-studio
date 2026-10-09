@@ -7,7 +7,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { Pool } from "pg";
+import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   EPISODE_DRAFT_SCHEMA,
@@ -46,6 +46,8 @@ const extraPools: Pool[] = [];
 /** A store on its own one-connection pool: a separate PostgreSQL session, named so lock waits can be attributed. */
 function independent(name: string) {
   const own = new Pool({ connectionString: acceptanceUrl, max: 1, application_name: name });
+  // A pooled connection whose session ends is reported here instead of ending the run; the failure-path tests end one.
+  own.on("error", (error) => { ((evidence.poolErrors ??= []) as string[]).push(`${name}: ${error.message}`); });
   extraPools.push(own);
   const ownChain = new TextChainService(own);
   return { pool: own, chain: ownChain, store: new PostgresTitleWritingStore(own, ownChain) };
@@ -72,14 +74,21 @@ beforeAll(async () => {
   evidence.draftApplied = DRAFT_NAME;
 });
 
-afterAll(async () => {
-  for (const own of extraPools) await own.end();
-  await pool.end();
+async function writeEvidence(): Promise<void> {
   const dir = process.env.TITLE_WRITING_ACCEPTANCE_EVIDENCE_DIR;
-  if (dir) {
-    await mkdir(dir, { recursive: true });
-    await writeFile(join(dir, "title-writing-store-acceptance.json"), `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
-  }
+  if (!dir) return;
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, "title-writing-store-acceptance.json"), `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
+}
+
+afterAll(async () => {
+  // Evidence first: closing a pool waits for its connections, and one that never comes back must not stop the evidence.
+  await writeEvidence();
+  const closing = await Promise.allSettled([...extraPools, pool].map((own) => bounded(own.end(), 10_000, "closing an acceptance pool")));
+  const stuck = closing.filter((item) => item.status === "rejected").length;
+  evidence.poolsClosed = { total: closing.length, stuck };
+  await writeEvidence();
+  if (stuck > 0) throw new Error(`${String(stuck)} acceptance pool(s) did not close`);
 });
 
 const later = (ms: number) => new Date(Date.now() + ms).toISOString();
@@ -687,6 +696,92 @@ async function waitUntilBlocked(apps: string[]): Promise<LockWait[]> {
   }
 }
 
+/** Rejects when `work` has not settled within `ms`; the timer never outlives it. */
+async function bounded<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([work, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${what} did not finish within ${String(ms)} ms`)), ms);
+    })]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** What the last holdingProjectLock cleanup did, for the failure-path assertions and the evidence. */
+interface LockCleanup { endedBy: "commit" | "rollback" | "destroyed"; queuedSettled: boolean; problems: string[] }
+let lastLockCleanup: LockCleanup | null = null;
+
+/**
+ * Holds the project row lock on a session of this test's own `holder` pool while `body` queues writers behind it, then
+ * always ends that transaction and returns or destroys the connection, whatever `body` did. `release` commits the lock
+ * on purpose; a body that fails before it gets a ROLLBACK, so the queued writers go on instead of waiting forever. When
+ * the session cannot be ended cleanly it is destroyed (its own socket closed, which ends its transaction on the server);
+ * no other session is touched. Every writer passed through `track` is settled, within a bound, before this returns, so
+ * none is left as an unhandled rejection. A cleanup problem never replaces the body's own failure (it goes to the
+ * evidence instead) and never passes as success when the body succeeded.
+ */
+async function holdingProjectLock<T>(holder: Pool, project: string,
+  body: (release: () => Promise<void>, track: <P>(writer: Promise<P>) => Promise<P>) => Promise<T>): Promise<T> {
+  const queued: Array<Promise<unknown>> = [];
+  const track = <P>(writer: Promise<P>): Promise<P> => {
+    queued.push(writer.then(() => undefined, () => undefined));
+    return writer;
+  };
+  const cleanup: LockCleanup = { endedBy: "commit", queuedSettled: false, problems: [] };
+  lastLockCleanup = cleanup;
+  ((evidence.lockCleanups ??= []) as LockCleanup[]).push(cleanup);
+  const client: PoolClient = await holder.connect();
+  // A checked-out client that loses its server session emits "error"; without a listener that would end the run.
+  client.on("error", (error: Error) => { cleanup.problems.push(`holder session: ${error.message}`); });
+  let open = false;
+  const release = async () => {
+    if (!open) return;
+    open = false;
+    await client.query("COMMIT");
+  };
+
+  const finish = async () => {
+    let destroy: Error | undefined;
+    if (open) {
+      open = false;
+      cleanup.endedBy = "rollback";
+      try {
+        await bounded(client.query("ROLLBACK"), 5_000, "ROLLBACK of the lock holder");
+      } catch (error) {
+        cleanup.endedBy = "destroyed";
+        destroy = error instanceof Error ? error : new Error(String(error));
+        cleanup.problems.push(destroy.message);
+      }
+    }
+    // A client released with an error is closed instead of returned to the pool.
+    client.release(destroy);
+    try {
+      await bounded(Promise.all(queued), 15_000, "queued writers");
+      cleanup.queuedSettled = true;
+    } catch (error) {
+      cleanup.problems.push(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  let result: T;
+  try {
+    await client.query("BEGIN");
+    open = true;
+    await client.query("SELECT id FROM project WHERE id = $1 FOR UPDATE", [project]);
+    result = await body(release, track);
+  } catch (error) {
+    // The body's own failure stays the failure; whatever cleanup meets is recorded in the evidence.
+    await finish();
+    throw error;
+  }
+  await finish();
+  if (cleanup.problems.length > 0 || !cleanup.queuedSettled) {
+    throw new Error(`lock holder cleanup failed: ${cleanup.problems.join("; ")}`);
+  }
+  return result;
+}
+
 describe("R6 with a deterministic interleaving: import and a person's save queued on one project lock", () => {
   async function arrange(label: string) {
     await stopRunning();
@@ -696,14 +791,11 @@ describe("R6 with a deterministic interleaving: import and a person's save queue
     await store.createRun(record, { maxActiveRuns: 50 });
     await completeRun(record);
     const approved = await approveCurrentStory(ws, project);
+    // The test's own session holds the project row lock both writers take first, so their order is arranged, not raced.
     const holder = independent(`title-lock-holder-${label}`);
     const importer = independent(`title-import-${label}`);
     const person = independent(`title-person-${label}`);
-    // The test's own session holds the project row lock both writers take first, so their order is arranged, not raced.
-    const client = await holder.pool.connect();
-    await client.query("BEGIN");
-    await client.query("SELECT id FROM project WHERE id = $1 FOR UPDATE", [project]);
-    return { ws, project, record, approved, client, importer, person, label };
+    return { ws, project, record, approved, holder, importer, person, label };
   }
 
   type Arranged = Awaited<ReturnType<typeof arrange>>;
@@ -717,18 +809,40 @@ describe("R6 with a deterministic interleaving: import and a person's save queue
     return arranged.importer.store.placeScripts(arranged.ws, arranged.project, arranged.record.id, { acceptStoryChanged: false }, "editor", now());
   }
 
+  /**
+   * Sessions of this scenario still waiting on a lock, and whether its holder still has a transaction open. It polls
+   * briefly, since a session that was just ended can stay visible for a moment, and returns what it last saw.
+   */
+  async function leftovers(arranged: Arranged) {
+    const apps = [`title-lock-holder-${arranged.label}`, `title-import-${arranged.label}`, `title-person-${arranged.label}`];
+    const deadline = Date.now() + 5_000;
+    for (;;) {
+      const rows = (await pool.query<{ app: string; state: string | null; blocked: boolean }>(
+        `SELECT application_name AS app, state, cardinality(pg_blocking_pids(pid)) > 0 AS blocked
+           FROM pg_stat_activity WHERE datname = current_database() AND application_name = ANY ($1::text[])`, [apps])).rows;
+      const seen = {
+        blocked: rows.filter((row) => row.blocked).map((row) => row.app),
+        holderInTransaction: rows.some((row) => row.app === apps[0] && row.state !== null && row.state.startsWith("idle in transaction")),
+      };
+      if ((seen.blocked.length === 0 && !seen.holderInTransaction) || Date.now() > deadline) return seen;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+
   it("import queued first: it writes all three; the person's save on the old version is refused, without deadlock", async () => {
     const arranged = await arrange("import-first");
     const target = await episode(arranged.project, 1);
-    const imported = importScripts(arranged);
-    const firstWait = await waitUntilBlocked([`title-import-${arranged.label}`]);
-    const saved = personSave(arranged, target.row_version, target.id);
-    const waits = await waitUntilBlocked([`title-import-${arranged.label}`, `title-person-${arranged.label}`]);
-    expect(firstWait[0]!.blockedBy).toEqual([`title-lock-holder-${arranged.label}`]);
-    expect(waits.every((row) => row.waitEventType === "Lock")).toBe(true);
-    await arranged.client.query("COMMIT");
-    arranged.client.release();
-    const [importOutcome, saveOutcome] = await Promise.allSettled([imported, saved]);
+    const { firstWait, waits, outcomes } = await holdingProjectLock(arranged.holder.pool, arranged.project, async (release, track) => {
+      const imported = track(importScripts(arranged));
+      const firstWait = await waitUntilBlocked([`title-import-${arranged.label}`]);
+      const saved = track(personSave(arranged, target.row_version, target.id));
+      const waits = await waitUntilBlocked([`title-import-${arranged.label}`, `title-person-${arranged.label}`]);
+      expect(firstWait[0]!.blockedBy).toEqual([`title-lock-holder-${arranged.label}`]);
+      expect(waits.every((row) => row.waitEventType === "Lock")).toBe(true);
+      await release();
+      return { firstWait, waits, outcomes: await Promise.allSettled([imported, saved]) };
+    });
+    const [importOutcome, saveOutcome] = outcomes;
     expect(importOutcome.status).toBe("fulfilled");
     const placed = (importOutcome as PromiseFulfilledResult<Awaited<ReturnType<typeof importScripts>>>).value;
     expect(placed.kind === "ok" && placed.bundle.steps.slice(2).map((step) => step.scriptSave)).toEqual(["saved", "saved", "saved"]);
@@ -737,21 +851,24 @@ describe("R6 with a deterministic interleaving: import and a person's save queue
     const step = placed.kind === "ok" ? placed.bundle.steps.find((item) => item.stepKey === "episode:1")! : null;
     expect((await episode(arranged.project, 1)).current_script_revision_id).toBe(step?.scriptRevisionId);
     expect(await scriptCount(arranged.project)).toBe(3);
+    expect(lastLockCleanup).toMatchObject({ endedBy: "commit", queuedSettled: true, problems: [] });
     evidence.lockOrderImportFirst = { firstWait, waits, import: "ok: saved, saved, saved", personSave: "REVISION_CONFLICT", scripts: 3, deadlock: false };
   });
 
   it("person queued first: the save wins episode 1; the import reports that episode as a conflict and writes the others", async () => {
     const arranged = await arrange("person-first");
     const target = await episode(arranged.project, 1);
-    const saved = personSave(arranged, target.row_version, target.id);
-    const firstWait = await waitUntilBlocked([`title-person-${arranged.label}`]);
-    const imported = importScripts(arranged);
-    const waits = await waitUntilBlocked([`title-person-${arranged.label}`, `title-import-${arranged.label}`]);
-    expect(firstWait[0]!.blockedBy).toEqual([`title-lock-holder-${arranged.label}`]);
-    expect(waits.every((row) => row.waitEventType === "Lock")).toBe(true);
-    await arranged.client.query("COMMIT");
-    arranged.client.release();
-    const [saveOutcome, importOutcome] = await Promise.allSettled([saved, imported]);
+    const { firstWait, waits, outcomes } = await holdingProjectLock(arranged.holder.pool, arranged.project, async (release, track) => {
+      const saved = track(personSave(arranged, target.row_version, target.id));
+      const firstWait = await waitUntilBlocked([`title-person-${arranged.label}`]);
+      const imported = track(importScripts(arranged));
+      const waits = await waitUntilBlocked([`title-person-${arranged.label}`, `title-import-${arranged.label}`]);
+      expect(firstWait[0]!.blockedBy).toEqual([`title-lock-holder-${arranged.label}`]);
+      expect(waits.every((row) => row.waitEventType === "Lock")).toBe(true);
+      await release();
+      return { firstWait, waits, outcomes: await Promise.allSettled([saved, imported]) };
+    });
+    const [saveOutcome, importOutcome] = outcomes;
     expect(saveOutcome.status).toBe("fulfilled");
     expect(importOutcome.status).toBe("fulfilled");
     const human = (saveOutcome as PromiseFulfilledResult<Awaited<ReturnType<typeof personSave>>>).value;
@@ -759,6 +876,75 @@ describe("R6 with a deterministic interleaving: import and a person's save queue
     expect(placed.kind === "ok" && placed.bundle.steps.slice(2).map((step) => step.scriptSave)).toEqual(["conflict", "saved", "saved"]);
     expect((await episode(arranged.project, 1)).current_script_revision_id).toBe(human.revisionId);
     expect(await scriptCount(arranged.project)).toBe(3);
+    expect(lastLockCleanup).toMatchObject({ endedBy: "commit", queuedSettled: true, problems: [] });
     evidence.lockOrderPersonFirst = { firstWait, waits, personSave: "ok", import: "conflict, saved, saved", scripts: 3, deadlock: false };
   });
+
+  // The failure paths below fail on purpose inside holdingProjectLock; each outer test asserts that failure exactly, so a
+  // deliberate failure can never pass unnoticed and an unexpected one still fails the run.
+
+  it("a failure before the lock is released rolls the holder back, settles the queued writers and keeps the original error", async () => {
+    const arranged = await arrange("fail-before-release");
+    const injected = new Error("injected failure before the lock was released");
+    let imported: Promise<unknown> | undefined;
+    const outcome = await holdingProjectLock(arranged.holder.pool, arranged.project, async (_release, track) => {
+      imported = track(importScripts(arranged));
+      await waitUntilBlocked([`title-import-${arranged.label}`]);
+      throw injected;
+    }).then(() => "passed", (error: unknown) => error);
+    expect(outcome).toBe(injected);
+    expect(lastLockCleanup).toMatchObject({ endedBy: "rollback", queuedSettled: true, problems: [] });
+    // The queued import was not stranded: once the holder rolled back it ran and wrote the three scripts.
+    const placed = await imported as Awaited<ReturnType<typeof importScripts>>;
+    expect(placed.kind === "ok" && placed.bundle.steps.slice(2).map((step) => step.scriptSave)).toEqual(["saved", "saved", "saved"]);
+    expect(await leftovers(arranged)).toEqual({ blocked: [], holderInTransaction: false });
+    // The holder's connection went back to its pool and works.
+    expect((await arranged.holder.pool.query<{ ok: number }>("SELECT 1 AS ok")).rows[0]!.ok).toBe(1);
+    evidence.lockFailureBeforeRelease = { error: "original kept", endedBy: "rollback", queuedWriter: "settled: saved, saved, saved",
+      blockedAfter: 0, holderInTransactionAfter: false };
+  });
+
+  it("a holder session that cannot be rolled back is destroyed; the body's own failure still comes first", async () => {
+    const arranged = await arrange("holder-lost");
+    const injected = new Error("injected failure after the holder session was lost");
+    let imported: Promise<unknown> | undefined;
+    const outcome = await holdingProjectLock(arranged.holder.pool, arranged.project, async (_release, track) => {
+      imported = track(importScripts(arranged));
+      await waitUntilBlocked([`title-import-${arranged.label}`]);
+      // End only this scenario's own holder session, found by its name and the lock it holds on this test's project.
+      await terminateOwnHolder(arranged.label);
+      throw injected;
+    }).then(() => "passed", (error: unknown) => error);
+    expect(outcome).toBe(injected);
+    expect(lastLockCleanup?.endedBy).toBe("destroyed");
+    expect(lastLockCleanup?.queuedSettled).toBe(true);
+    expect(lastLockCleanup?.problems.length).toBeGreaterThan(0);
+    const placed = await imported as Awaited<ReturnType<typeof importScripts>>;
+    expect(placed.kind).toBe("ok");
+    expect(await leftovers(arranged)).toEqual({ blocked: [], holderInTransaction: false });
+    evidence.lockHolderLost = { error: "original kept", endedBy: "destroyed", cleanupProblemRecorded: true, queuedWriter: "settled" };
+  });
+
+  it("a cleanup failure after a passing body fails the test instead of passing as success", async () => {
+    const arranged = await arrange("cleanup-fails");
+    const outcome = await holdingProjectLock(arranged.holder.pool, arranged.project, async () => {
+      await terminateOwnHolder(arranged.label);
+      return "body passed";
+    }).then((value) => value, (error: unknown) => error);
+    expect(outcome).toBeInstanceOf(Error);
+    expect((outcome as Error).message).toMatch(/^lock holder cleanup failed: /);
+    expect(lastLockCleanup?.endedBy).toBe("destroyed");
+    expect(await leftovers(arranged)).toEqual({ blocked: [], holderInTransaction: false });
+    evidence.lockCleanupFailure = { outcome: "test fails with the cleanup error", endedBy: "destroyed" };
+  });
 });
+
+/** Terminates the one holder session of this scenario: named by this test and holding a lock in this database. */
+async function terminateOwnHolder(label: string): Promise<void> {
+  const ended = (await pool.query<{ ended: boolean }>(
+    `SELECT pg_terminate_backend(a.pid) AS ended FROM pg_stat_activity a
+      WHERE a.datname = current_database() AND a.application_name = $1 AND a.pid <> pg_backend_pid()
+        AND EXISTS (SELECT 1 FROM pg_locks l WHERE l.pid = a.pid AND l.granted AND l.locktype = 'transactionid')`,
+    [`title-lock-holder-${label}`])).rows;
+  expect(ended).toEqual([{ ended: true }]);
+}
