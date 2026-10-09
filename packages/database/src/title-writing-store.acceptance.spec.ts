@@ -4,7 +4,7 @@
  * a person named on purpose (see title-writing-acceptance-guard.ts). It applies the migrations and the unapplied draft
  * SQL to that database and nothing else. It never drops or truncates anything; refusal happens before any connection.
  */
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { Pool } from "pg";
@@ -30,9 +30,26 @@ import { PostgresTitleWritingStore } from "./title-writing-store";
 const decision = checkTitleWritingAcceptanceEnv(process.env);
 if (!decision.ok) throw new Error(`Title writing acceptance refused: ${decision.reason}`);
 
-const pool = new Pool({ connectionString: decision.url, max: 8 });
+const acceptanceUrl = decision.url;
+const pool = new Pool({ connectionString: acceptanceUrl, max: 8, application_name: "title-acceptance-main" });
 const chain = new TextChainService(pool);
 const store = new PostgresTitleWritingStore(pool, chain);
+const DRAFT_NAME = "20261008000100_title_writing.sql";
+
+/**
+ * Evidence of this run, written as JSON when TITLE_WRITING_ACCEPTANCE_EVIDENCE_DIR is set. It holds identities, counts,
+ * outcomes and lock waits only: never the connection URL, a password, a token or a key.
+ */
+const evidence: Record<string, unknown> = {};
+const extraPools: Pool[] = [];
+
+/** A store on its own one-connection pool: a separate PostgreSQL session, named so lock waits can be attributed. */
+function independent(name: string) {
+  const own = new Pool({ connectionString: acceptanceUrl, max: 1, application_name: name });
+  extraPools.push(own);
+  const ownChain = new TextChainService(own);
+  return { pool: own, chain: ownChain, store: new PostgresTitleWritingStore(own, ownChain) };
+}
 
 beforeAll(async () => {
   const verified = await verifyTitleWritingAcceptanceDatabase(pool, decision.databaseName);
@@ -40,14 +57,29 @@ beforeAll(async () => {
     await pool.end();
     throw new Error(`Title writing acceptance refused: ${verified.reason}`);
   }
-  await runMigrations(pool);
+  const identity = (await pool.query<{ name: string; version: string; tables: number }>(
+    `SELECT current_database() AS name, current_setting('server_version') AS version,
+            (SELECT count(*)::int FROM information_schema.tables
+              WHERE table_schema NOT IN ('pg_catalog', 'information_schema') AND table_schema NOT LIKE 'pg_toast%') AS tables`,
+  )).rows[0]!;
+  evidence.database = { name: identity.name, serverVersion: identity.version, tablesBeforeWrite: identity.tables };
+  const migrations = await runMigrations(pool);
+  evidence.migrationsApplied = migrations.applied;
   expect(await store.storageReady()).toBe(false);
-  const draft = await readFile(join(__dirname, "..", "prisma", "drafts", "20261008000100_title_writing.sql"), "utf8");
+  evidence.storageReadyBeforeDraft = false;
+  const draft = await readFile(join(__dirname, "..", "prisma", "drafts", DRAFT_NAME), "utf8");
   await pool.query(draft);
+  evidence.draftApplied = DRAFT_NAME;
 });
 
 afterAll(async () => {
+  for (const own of extraPools) await own.end();
   await pool.end();
+  const dir = process.env.TITLE_WRITING_ACCEPTANCE_EVIDENCE_DIR;
+  if (dir) {
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "title-writing-store-acceptance.json"), `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
+  }
 });
 
 const later = (ms: number) => new Date(Date.now() + ms).toISOString();
@@ -448,5 +480,285 @@ describe("R6: script import and a person's save on the same episode", () => {
         expect(current).toBe(step.scriptRevisionId);
       }
     }
+  });
+});
+
+describe("draft schema on PostgreSQL", () => {
+  it("creates the four tables with the declared keys, foreign keys, partial indexes and checks", async () => {
+    const tables = (await pool.query<{ table_name: string }>(
+      `SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() AND table_name LIKE 'title_writing_%'
+        ORDER BY table_name`)).rows.map((row) => row.table_name);
+    expect(tables).toEqual(["title_writing_call", "title_writing_resume", "title_writing_run", "title_writing_step"]);
+    const constraints = (await pool.query<{ rel: string; type: string; def: string }>(
+      `SELECT conrelid::regclass::text AS rel, contype::text AS type, pg_get_constraintdef(oid) AS def FROM pg_constraint
+        WHERE conrelid::regclass::text LIKE 'title_writing_%' ORDER BY 1, 2, 3`)).rows;
+    const keyed = constraints.filter((row) => row.type !== "c").map((row) => `${row.rel} ${row.def}`).sort();
+    expect(keyed).toEqual([
+      "title_writing_call FOREIGN KEY (run_id, step_key) REFERENCES title_writing_step(run_id, step_key) ON DELETE CASCADE",
+      "title_writing_call PRIMARY KEY (id)",
+      "title_writing_call UNIQUE (run_id, step_key, attempt_no)",
+      "title_writing_resume FOREIGN KEY (run_id, workspace_id) REFERENCES title_writing_run(id, workspace_id) ON DELETE CASCADE",
+      "title_writing_resume PRIMARY KEY (run_id, idempotency_key)",
+      "title_writing_run FOREIGN KEY (project_id, workspace_id) REFERENCES project(id, workspace_id)",
+      "title_writing_run FOREIGN KEY (story_revision_id, project_id, workspace_id) REFERENCES story_revision(id, project_id, workspace_id)",
+      "title_writing_run PRIMARY KEY (id)",
+      "title_writing_run UNIQUE (id, workspace_id)",
+      "title_writing_run UNIQUE (workspace_id, actor_id, idempotency_key)",
+      "title_writing_step FOREIGN KEY (run_id, workspace_id) REFERENCES title_writing_run(id, workspace_id) ON DELETE CASCADE",
+      "title_writing_step FOREIGN KEY (script_revision_id) REFERENCES script_revision(id)",
+      "title_writing_step PRIMARY KEY (run_id, step_key)",
+      "title_writing_step UNIQUE (run_id, ordinal)",
+    ].sort());
+    const checks = constraints.filter((row) => row.type === "c");
+    expect(checks.some((row) => row.rel === "title_writing_call" && row.def.includes("billing_status = 'unknown'"))).toBe(true);
+    const indexes = (await pool.query<{ name: string; def: string }>(
+      `SELECT indexname AS name, indexdef AS def FROM pg_indexes WHERE schemaname = current_schema() AND tablename LIKE 'title_writing_%'
+          AND indexname IN ('title_writing_run_one_running_idx', 'title_writing_run_project_idx', 'title_writing_run_lease_idx',
+                            'title_writing_call_recent_idx', 'title_writing_call_open_idx') ORDER BY 1`)).rows;
+    expect(indexes.map((row) => row.name)).toEqual(["title_writing_call_open_idx", "title_writing_call_recent_idx",
+      "title_writing_run_lease_idx", "title_writing_run_one_running_idx", "title_writing_run_project_idx"]);
+    const oneRunning = indexes.find((row) => row.name === "title_writing_run_one_running_idx")!.def;
+    expect(oneRunning).toMatch(/^CREATE UNIQUE INDEX .* WHERE \(state = 'running'::text\)$/);
+    expect(await store.storageReady()).toBe(true);
+    evidence.schema = { tables, keyed, checkConstraints: checks.length, indexes };
+  });
+
+  it("refuses a cost written as anything but unknown", async () => {
+    await stopRunning();
+    const ws = await newWorkspace("billing");
+    const record = run(ws, await newProject(ws, "billing"), "billing");
+    await store.createRun(record, { maxActiveRuns: 50 });
+    await store.claimRun(ws, record.id, "a", now(), later(60_000));
+    const item = call(record, "a");
+    await store.reserveCall(item, wide, now(), later(60_000));
+    await expect(pool.query("UPDATE title_writing_call SET billing_status = '0' WHERE id = $1", [item.id])).rejects.toMatchObject({ code: "23514" });
+    expect((await pool.query<{ billing_status: string }>("SELECT billing_status FROM title_writing_call WHERE id = $1", [item.id])).rows[0]!.billing_status)
+      .toBe("unknown");
+  });
+});
+
+describe("races between independent PostgreSQL sessions", () => {
+  it("one executor wins a claim raced by six sessions", async () => {
+    await stopRunning();
+    const ws = await newWorkspace("claim-race");
+    const record = run(ws, await newProject(ws, "claim"), "claim-race");
+    await store.createRun(record, { maxActiveRuns: 50 });
+    const sessions = [1, 2, 3, 4, 5, 6].map((index) => independent(`title-claim-${String(index)}`));
+    const base = Date.now();
+    const won = await Promise.all(sessions.map((session, index) =>
+      session.store.claimRun(ws, record.id, `exec-${String(index)}`, instant(base, 0), instant(base, 60_000))));
+    expect(won.filter(Boolean)).toHaveLength(1);
+    const winner = `exec-${String(won.indexOf(true))}`;
+    expect((await pool.query<{ executor_id: string }>("SELECT executor_id FROM title_writing_run WHERE id = $1", [record.id])).rows[0]!.executor_id)
+      .toBe(winner);
+    evidence.claimRace = { sessions: sessions.length, winners: won.filter(Boolean).length };
+  });
+
+  it("one key replayed by five sessions is one run; the same key with another input is refused", async () => {
+    await stopRunning();
+    const ws = await newWorkspace("key-race");
+    const project = await newProject(ws, "key");
+    const template = run(ws, project, "same-key");
+    const sessions = [1, 2, 3, 4, 5].map((index) => independent(`title-key-${String(index)}`));
+    const outcomes = await Promise.all(sessions.map((session) =>
+      session.store.createRun({ ...template, id: randomUUID() }, { maxActiveRuns: 50 })));
+    expect(outcomes.map((item) => item.kind).sort()).toEqual(["created", "existing", "existing", "existing", "existing"]);
+    const ids = new Set(outcomes.map((item) => (item as { bundle: { run: { id: string } } }).bundle.run.id));
+    expect(ids.size).toBe(1);
+    expect((await pool.query("SELECT 1 FROM title_writing_run WHERE workspace_id = $1", [ws])).rowCount).toBe(1);
+    expect((await pool.query("SELECT 1 FROM title_writing_call WHERE workspace_id = $1", [ws])).rowCount).toBe(0);
+    expect((await store.createRun({ ...template, id: randomUUID(), inputHash: "ef".repeat(32) }, { maxActiveRuns: 50 })).kind).toBe("conflict");
+    evidence.idempotencyRace = { sessions: sessions.length, outcomes: outcomes.map((item) => item.kind).sort(), runs: 1 };
+  });
+
+  it("six sessions starting six works never exceed a workspace cap of two running runs", async () => {
+    await stopRunning();
+    const ws = await newWorkspace("active-race");
+    const records: TitleRunRecord[] = [];
+    for (let index = 0; index < 6; index += 1) records.push(run(ws, await newProject(ws, `w${String(index)}`), `active-${String(index)}`));
+    const sessions = records.map((_, index) => independent(`title-active-${String(index)}`));
+    const outcomes = await Promise.all(records.map((record, index) => sessions[index]!.store.createRun(record, { maxActiveRuns: 2 })));
+    expect(outcomes.filter((item) => item.kind === "created")).toHaveLength(2);
+    expect(outcomes.filter((item) => item.kind === "blocked" && item.code === "TITLE_WRITING_ACTIVE_RUN_CAP")).toHaveLength(4);
+    expect(Number((await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM title_writing_run WHERE workspace_id = $1 AND state = 'running'", [ws]))
+      .rows[0]!.n)).toBe(2);
+    evidence.activeCapRace = { sessions: sessions.length, cap: 2, created: 2, blocked: 4 };
+  });
+
+  it("four sessions racing for the last daily call: exactly one reservation is persisted", async () => {
+    await stopRunning();
+    const ws = await newWorkspace("daily-last");
+    const base = Date.now();
+    const lease = instant(base, 60_000);
+    const records: TitleRunRecord[] = [];
+    for (let index = 0; index < 5; index += 1) {
+      const record = run(ws, await newProject(ws, `d${String(index)}`), `daily-${String(index)}`);
+      await store.createRun(record, { maxActiveRuns: 50 });
+      expect(await store.claimRun(ws, record.id, `exec-${String(index)}`, instant(base, 0), lease)).toBe(true);
+      records.push(record);
+    }
+    // Two calls are already used in this window; the cap leaves exactly one.
+    for (const stepKey of ["concept", "outline"] as const) {
+      expect(await store.reserveCall(call(records[0]!, "exec-0", stepKey), wide, instant(base, 0), lease)).toEqual({ kind: "reserved" });
+    }
+    const cap = { sinceIso: "2000-01-01T00:00:00.000Z", maxCallsPerDay: 3 };
+    const contenders = records.slice(1);
+    const sessions = contenders.map((_, index) => independent(`title-daily-${String(index)}`));
+    const outcomes = await Promise.all(contenders.map((record, index) =>
+      sessions[index]!.store.reserveCall(call(record, `exec-${String(index + 1)}`), cap, instant(base, 1), lease)));
+    expect(outcomes.filter((item) => item.kind === "reserved")).toHaveLength(1);
+    expect(outcomes.filter((item) => item.kind === "blocked" && item.code === "TITLE_WRITING_DAILY_CAP")).toHaveLength(3);
+    const persisted = (await pool.query<{ run_id: string }>("SELECT run_id FROM title_writing_call WHERE workspace_id = $1", [ws])).rows;
+    expect(persisted).toHaveLength(3);
+    const winner = contenders[outcomes.findIndex((item) => item.kind === "reserved")]!;
+    expect(persisted.filter((row) => row.run_id === winner.id)).toHaveLength(1);
+    const used = (await pool.query<{ calls_used: number }>("SELECT calls_used FROM title_writing_run WHERE workspace_id = $1", [ws])).rows;
+    expect(used.reduce((sum, row) => sum + row.calls_used, 0)).toBe(3);
+    evidence.dailyCapLastSlot = { sessions: sessions.length, cap: 3, usedBefore: 2, reserved: 1, blocked: 3, persistedCalls: persisted.length };
+  });
+});
+
+describe("lease recovery: never sent versus maybe sent", () => {
+  it("a reserved call is released for a safe retry; a submitted one becomes unknown; the fenced executor can do neither later", async () => {
+    await stopRunning();
+    const ws = await newWorkspace("recover-split");
+    const base = Date.now();
+    const setupAt = instant(base, 0);
+    const leaseUntil = instant(base, 60_000);
+    const expired = instant(base, 120_000);
+    const reservedRun = run(ws, await newProject(ws, "r"), "reserved-only");
+    const sentRun = run(ws, await newProject(ws, "s"), "sent");
+    for (const record of [reservedRun, sentRun]) {
+      await store.createRun(record, { maxActiveRuns: 50 });
+      expect(await store.claimRun(ws, record.id, "dead", setupAt, leaseUntil)).toBe(true);
+    }
+    const unsent = call(reservedRun, "dead");
+    expect(await store.reserveCall(unsent, wide, setupAt, leaseUntil)).toEqual({ kind: "reserved" });
+    const sent = call(sentRun, "dead");
+    expect(await store.reserveCall(sent, wide, setupAt, leaseUntil)).toEqual({ kind: "reserved" });
+    expect(await store.markCallSubmitted(ws, sent.id, "dead", setupAt, leaseUntil)).toBe("submitted");
+
+    expect(await store.recoverExpired(ws, expired)).toBe(2);
+    const released = (await store.getRunById(ws, reservedRun.id))!;
+    expect(released.run).toMatchObject({ state: "running", executorId: null, leaseUntil: null });
+    expect(released.steps[0]).toMatchObject({ state: "pending" });
+    expect(released.calls).toEqual([expect.objectContaining({ state: "rejected", errorCode: "executor_lost_before_send", usage: USAGE_UNKNOWN })]);
+    const uncertain = (await store.getRunById(ws, sentRun.id))!;
+    expect(uncertain.run).toMatchObject({ state: "needs_attention", errorCode: "executor_lost" });
+    expect(uncertain.steps[0]).toMatchObject({ state: "unknown" });
+    expect(uncertain.calls).toEqual([expect.objectContaining({ state: "unknown", errorCode: "executor_lost", usage: USAGE_UNKNOWN })]);
+    expect(await store.listClaimable(ws, expired, 50)).toEqual([reservedRun.id]);
+
+    // The fenced executor comes back late: it can neither send the released reservation nor record the sent answer.
+    expect(await store.markCallSubmitted(ws, unsent.id, "dead", expired, instant(base, 180_000))).toBe("lost");
+    expect(await store.finishCall(ws, sent.id, "dead", completed(CONCEPT as never), expired)).toBe(false);
+    expect((await store.getRunById(ws, sentRun.id))!.calls[0]).toMatchObject({ state: "unknown" });
+    expect((await pool.query("SELECT 1 FROM title_writing_call WHERE workspace_id = $1", [ws])).rowCount).toBe(2);
+    const billing = (await pool.query<{ billing_status: string }>("SELECT DISTINCT billing_status FROM title_writing_call WHERE workspace_id = $1", [ws])).rows;
+    expect(billing).toEqual([{ billing_status: "unknown" }]);
+    evidence.recoverySplit = { reserved: "rejected/executor_lost_before_send, step pending, claimable", submitted: "unknown/executor_lost, needs_attention",
+      lateSubmit: "lost", lateFinish: false };
+  });
+});
+
+interface LockWait { app: string; waitEventType: string | null; waitEvent: string | null; blockedBy: string[] }
+
+/**
+ * Waits until every named session is blocked, and returns what PostgreSQL reports for each: the wait event and the
+ * sessions blocking it (pg_blocking_pids, mapped to application names). It polls for this condition and fails when the
+ * waits do not appear; a fixed sleep never stands in for the evidence.
+ */
+async function waitUntilBlocked(apps: string[]): Promise<LockWait[]> {
+  const deadline = Date.now() + 15_000;
+  for (;;) {
+    const rows = (await pool.query<{ app: string; wait_event_type: string | null; wait_event: string | null; blocked_by: string[] | null }>(
+      `SELECT a.application_name AS app, a.wait_event_type, a.wait_event,
+              (SELECT array_agg(b.application_name ORDER BY b.application_name) FROM pg_stat_activity b
+                WHERE b.pid = ANY (pg_blocking_pids(a.pid))) AS blocked_by
+         FROM pg_stat_activity a
+        WHERE a.datname = current_database() AND a.application_name = ANY ($1::text[]) AND cardinality(pg_blocking_pids(a.pid)) > 0`,
+      [apps])).rows;
+    if (rows.length === apps.length) {
+      return rows.map((row) => ({ app: row.app, waitEventType: row.wait_event_type, waitEvent: row.wait_event, blockedBy: row.blocked_by ?? [] }))
+        .sort((left, right) => apps.indexOf(left.app) - apps.indexOf(right.app));
+    }
+    if (Date.now() > deadline) throw new Error(`Sessions did not block as arranged: ${JSON.stringify(rows)}`);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
+describe("R6 with a deterministic interleaving: import and a person's save queued on one project lock", () => {
+  async function arrange(label: string) {
+    await stopRunning();
+    const ws = await newWorkspace(`lock-${label}`);
+    const project = await newProject(ws, `lock-${label}`);
+    const record = run(ws, project, `lock-${label}`);
+    await store.createRun(record, { maxActiveRuns: 50 });
+    await completeRun(record);
+    const approved = await approveCurrentStory(ws, project);
+    const holder = independent(`title-lock-holder-${label}`);
+    const importer = independent(`title-import-${label}`);
+    const person = independent(`title-person-${label}`);
+    // The test's own session holds the project row lock both writers take first, so their order is arranged, not raced.
+    const client = await holder.pool.connect();
+    await client.query("BEGIN");
+    await client.query("SELECT id FROM project WHERE id = $1 FOR UPDATE", [project]);
+    return { ws, project, record, approved, client, importer, person, label };
+  }
+
+  type Arranged = Awaited<ReturnType<typeof arrange>>;
+
+  function personSave(arranged: Arranged, expectedVersion: number, episodeId: string) {
+    return arranged.person.chain.createScriptRevision({ workspaceId: arranged.ws, projectId: arranged.project, episodeId,
+      sourceStoryRevisionId: arranged.approved, content: { text: "人工剧本" }, createdBy: "editor", expectedVersion });
+  }
+
+  function importScripts(arranged: Arranged) {
+    return arranged.importer.store.placeScripts(arranged.ws, arranged.project, arranged.record.id, { acceptStoryChanged: false }, "editor", now());
+  }
+
+  it("import queued first: it writes all three; the person's save on the old version is refused, without deadlock", async () => {
+    const arranged = await arrange("import-first");
+    const target = await episode(arranged.project, 1);
+    const imported = importScripts(arranged);
+    const firstWait = await waitUntilBlocked([`title-import-${arranged.label}`]);
+    const saved = personSave(arranged, target.row_version, target.id);
+    const waits = await waitUntilBlocked([`title-import-${arranged.label}`, `title-person-${arranged.label}`]);
+    expect(firstWait[0]!.blockedBy).toEqual([`title-lock-holder-${arranged.label}`]);
+    expect(waits.every((row) => row.waitEventType === "Lock")).toBe(true);
+    await arranged.client.query("COMMIT");
+    arranged.client.release();
+    const [importOutcome, saveOutcome] = await Promise.allSettled([imported, saved]);
+    expect(importOutcome.status).toBe("fulfilled");
+    const placed = (importOutcome as PromiseFulfilledResult<Awaited<ReturnType<typeof importScripts>>>).value;
+    expect(placed.kind === "ok" && placed.bundle.steps.slice(2).map((step) => step.scriptSave)).toEqual(["saved", "saved", "saved"]);
+    expect(saveOutcome.status).toBe("rejected");
+    expect((saveOutcome as PromiseRejectedResult).reason).toMatchObject({ code: "REVISION_CONFLICT" });
+    const step = placed.kind === "ok" ? placed.bundle.steps.find((item) => item.stepKey === "episode:1")! : null;
+    expect((await episode(arranged.project, 1)).current_script_revision_id).toBe(step?.scriptRevisionId);
+    expect(await scriptCount(arranged.project)).toBe(3);
+    evidence.lockOrderImportFirst = { firstWait, waits, import: "ok: saved, saved, saved", personSave: "REVISION_CONFLICT", scripts: 3, deadlock: false };
+  });
+
+  it("person queued first: the save wins episode 1; the import reports that episode as a conflict and writes the others", async () => {
+    const arranged = await arrange("person-first");
+    const target = await episode(arranged.project, 1);
+    const saved = personSave(arranged, target.row_version, target.id);
+    const firstWait = await waitUntilBlocked([`title-person-${arranged.label}`]);
+    const imported = importScripts(arranged);
+    const waits = await waitUntilBlocked([`title-person-${arranged.label}`, `title-import-${arranged.label}`]);
+    expect(firstWait[0]!.blockedBy).toEqual([`title-lock-holder-${arranged.label}`]);
+    expect(waits.every((row) => row.waitEventType === "Lock")).toBe(true);
+    await arranged.client.query("COMMIT");
+    arranged.client.release();
+    const [saveOutcome, importOutcome] = await Promise.allSettled([saved, imported]);
+    expect(saveOutcome.status).toBe("fulfilled");
+    expect(importOutcome.status).toBe("fulfilled");
+    const human = (saveOutcome as PromiseFulfilledResult<Awaited<ReturnType<typeof personSave>>>).value;
+    const placed = (importOutcome as PromiseFulfilledResult<Awaited<ReturnType<typeof importScripts>>>).value;
+    expect(placed.kind === "ok" && placed.bundle.steps.slice(2).map((step) => step.scriptSave)).toEqual(["conflict", "saved", "saved"]);
+    expect((await episode(arranged.project, 1)).current_script_revision_id).toBe(human.revisionId);
+    expect(await scriptCount(arranged.project)).toBe(3);
+    evidence.lockOrderPersonFirst = { firstWait, waits, personSave: "ok", import: "conflict, saved, saved", scripts: 3, deadlock: false };
   });
 });

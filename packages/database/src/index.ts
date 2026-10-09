@@ -169,3 +169,9 @@ export {
   type MockSmProvisionResult,
 } from "./provision-mock-sm";
 export { PostgresTitleWritingStore, TITLE_WRITING_TABLES } from "./title-writing-store";
+export {
+  TITLE_WRITING_ACCEPTANCE_NAME_PATTERN,
+  checkTitleWritingAcceptanceEnv,
+  verifyTitleWritingAcceptanceDatabase,
+  type TitleWritingAcceptanceDecision,
+} from "./title-writing-acceptance-guard";
