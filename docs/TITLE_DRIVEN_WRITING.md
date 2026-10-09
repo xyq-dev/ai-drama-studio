@@ -112,11 +112,11 @@
 | 开始页幂等、进度页续跑确认、迟到回执 | 组件测试（`title-writing.spec.tsx`、`title-writing-start.spec.tsx`、`title-writing-start-identity.spec.tsx`、`title-writing-resume.spec.tsx`、`title-writing-scope.spec.tsx`、`title-writing-run-order.spec.tsx`，模拟 fetch；幂等服务端为内存模拟） |
 | 桌面 1280 与手机 390 布局 | 上一轮：真实 Chromium + 已构建网页 + **桩 API**（只验证布局与交互）。本轮开始卡与进度页有改动，**未重跑**浏览器检查 |
 | 验收入口拒绝行为 | 单元测试（`title-writing-acceptance-guard.spec.ts`）：环境检查为纯函数；身份检查用脚本化客户端，只证明判断逻辑 |
-| PostgreSQL 存储（含 R2/R3/R5/R6/R7 的数据库回归） | `title-writing-store.acceptance.spec.ts` 已写好；**未执行**（本机无 PostgreSQL，未授权隔离库）。即使执行：R6 的 `Promise.allSettled` 竞争由调度决定交错，不能证明锁顺序排除了死锁，需要另写确定性锁等待测试并记录等待证据；日限额用例是达到上限后的单次拒绝，不证明并发争抢最后一个额度时只有一个成功 |
-| 真实项目 API + 真实浏览器全流程 | **未执行**：依赖草案表 |
+| PostgreSQL 存储（含 R2/R3/R5/R6/R7 的数据库回归） | **已在隔离环境执行并通过**（2026-10-09，CI run 37862662279，`postgres:16`，一次性空库）：22 项，含结构核对、独立会话竞争、最后一个日额度竞争、预约与发送的恢复区分，以及用 `pg_blocking_pids` 证明的确定性锁顺序。见 [`TITLE_WRITING_ISOLATED_ACCEPTANCE_REPORT.md`](TITLE_WRITING_ISOLATED_ACCEPTANCE_REPORT.md) |
+| 真实项目 API（模型替身） | **已在隔离环境执行并通过**：真实 Nest 应用、真实 HTTP、真实 PostgreSQL，模型为计数替身，10 项。浏览器与进程崩溃恢复未执行 |
 | 真实模型调用（千问 / OpenAI / DeepSeek） | **未执行**，Paid calls = NO |
 
-### 隔离 PostgreSQL 验收（需单独授权，本轮未执行）
+### 隔离 PostgreSQL 与真实 API 验收（需单独授权；2026-10-09 已在 CI 隔离环境执行一次）
 
 只用一个**新建的空库**，库名必须形如 `ads_title_acceptance_<后缀>`。入口默认拒绝：
 
@@ -131,3 +131,5 @@ TITLE_WRITING_DRAFT_SQL_AUTHORIZED=true TITLE_WRITING_ACCEPTANCE_DATABASE_NAME=a
 ```
 
 不要先手工执行草案再跑通用 `integration`：通用集成测试的其他文件会重建 schema。
+
+真实 API 验收用同样三个变量，但要另建一个空库，命令为 `pnpm --filter @ai-drama/api title-writing:acceptance`。它在空库上先验证「存储未就绪时拒绝」，然后才应用草案。工作流 `.github/workflows/title-writing-acceptance.yml` 为两条命令各起一个作业级 `postgres:16` 容器和一次性库，并上传脱敏证据。
