@@ -73,6 +73,8 @@ export function AdminModels() {
   const [mustReload, setMustReload] = useState(false);
   const [busy, setBusy] = useState("");
   const [showModelProblem, setShowModelProblem] = useState(false);
+  // Bumped whenever a server view is installed, so the picker's own search text, errors and hints start over too.
+  const [viewEpoch, setViewEpoch] = useState(0);
   const busyRef = useRef("");
   const generation = useRef(0);
   const expiryChecking = useRef(false);
@@ -99,7 +101,7 @@ export function AdminModels() {
   }
   function installView(next: AdminModelsView) {
     setView(next); setDrafts(draftsFor(next)); setLimits(limitsFor(next));
-    setMustReload(false); setReloadConfirmed(false); setShowModelProblem(false); forgetSecrets();
+    setMustReload(false); setReloadConfirmed(false); setShowModelProblem(false); setViewEpoch((epoch) => epoch + 1); forgetSecrets();
   }
   /** The console uses the site login. Signed out goes to /login; with the site login off the console stays closed. */
   function acceptSession(next: SiteSession): boolean {
@@ -207,7 +209,7 @@ export function AdminModels() {
   const saved = view?.saved.providers.find((provider) => provider.providerKey === selected);
   const active = view?.active.providers.find((provider) => provider.providerKey === selected);
   const meta = PROVIDERS.find((provider) => provider.key === selected)!;
-  const draft = drafts[selected] ?? { models: [], defaultModel: "", custom: [], baseUrl: "" };
+  const draft = drafts[selected] ?? { models: [], defaultModel: "", custom: [], pendingCustom: "", baseUrl: "" };
   const dirty = !!view && (comparable(drafts) !== comparable(draftsFor(view))
     || JSON.stringify(limits) !== JSON.stringify(limitsFor(view)) || secretAction !== "keep");
   const canEdit = !busy && !mustReload;
@@ -317,8 +319,8 @@ export function AdminModels() {
                 <fieldset className={styles.fieldset} disabled={!canEdit}>
                   <label className={styles.field}>服务端点{selected === "qwen" ? <input type="url" value={draft.baseUrl} onChange={(event) => changeDraft({ baseUrl: event.target.value })} placeholder="填写账户地域对应的官方兼容模式端点" spellCheck={false} autoComplete="off" maxLength={512} /> : <input type="text" readOnly value={selected === "openai" ? "https://api.openai.com/v1/responses" : "https://api.deepseek.com/chat/completions"} />}
                     <small>{selected === "qwen" ? "仅支持已允许的百炼官方 HTTPS 端点，路径为 /compatible-mode/v1。" : "固定为供应商官方端点，不能填写转发或代理地址。"}</small></label>
-                  <ModelPicker key={selected} providerKey={selected} draft={draft} showProblem={showModelProblem} clearing={secretAction === "clear"}
-                    onChange={(next) => changeDraft({ models: next.models, defaultModel: next.defaultModel, custom: next.custom })} />
+                  <ModelPicker key={`${selected}:${viewEpoch}`} providerKey={selected} draft={draft} showProblem={showModelProblem} clearing={secretAction === "clear"}
+                    onChange={(next) => changeDraft({ models: next.models, defaultModel: next.defaultModel, custom: next.custom, pendingCustom: next.pendingCustom })} />
                   <div className={styles.secretBlock}><div className={styles.sectionLabel}><strong>API 密钥</strong><Badge>{saved?.keyConfigured ? "已保存 · 不可读取" : "尚未保存"}</Badge></div>
                     <fieldset className={styles.secretActions}><legend>本次密钥操作</legend>{([{ value: "keep", label: "保留现有" }, { value: "replace", label: "填写 / 替换" }, { value: "clear", label: "清除密钥" }] as const).map((action) => <label key={action.value} className={secretAction === action.value ? styles.radioSelected : ""}><input type="radio" name="secret-action" value={action.value} checked={secretAction === action.value} onChange={() => { setSecretAction(action.value); setApiKey(""); setClearConfirmed(false); setSecretNotice(""); }} />{action.label}</label>)}</fieldset>
                     {secretAction === "replace" && <label className={styles.field}>新的 API Key<input name="provider-api-key" type="password" autoComplete="off" spellCheck={false} value={apiKey} onChange={(event) => setApiKey(event.target.value)} maxLength={256} placeholder="仅本次提交使用，保存后不会显示" /><small>不会保存在浏览器本地存储。提交结束后，无论成功或失败，输入框都会清空。</small></label>}

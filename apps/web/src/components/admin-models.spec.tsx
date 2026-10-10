@@ -427,6 +427,35 @@ describe("model picker on the provider settings", () => {
     expect(puts(calls)[0]!.body).toMatchObject({ models: ["account-qwen-model", "qwen3.8-flash", "qwen-only-custom"] });
   });
 
+  it("only filters on Enter in the search box and never submits the provider form", async () => {
+    const calls = server(); render(<AdminModels />); await ready();
+    chooseSecret("清除密钥"); fireEvent.click(screen.getByRole("checkbox", { name: /我确认清除/ }));
+    const search = providerForm().getByRole("searchbox", { name: "搜索可用模型" });
+    fireEvent.change(search, { target: { value: "max" } });
+    const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+    search.dispatchEvent(enter);
+    expect(enter.defaultPrevented).toBe(true);
+    expect(codes(within(providerForm().getByRole("list", { name: "候选模型" })))).toEqual(["qwen3.8-max"]);
+    expect(puts(calls)).toHaveLength(0);
+  });
+
+  it("keeps a typed but unadded custom ID with its provider's draft and clears it on reading the server config", async () => {
+    server(); render(<AdminModels />); await ready();
+    const customInput = () => providerForm().getByLabelText(/^添加自定义模型 ID/) as HTMLInputElement;
+    fireEvent.change(customInput(), { target: { value: "half-typed-qwen" } });
+    fireEvent.click(screen.getByRole("button", { name: /OpenAI Responses API/ }));
+    const openai = within(screen.getByRole("region", { name: "OpenAI设置" }));
+    expect((openai.getByLabelText(/^添加自定义模型 ID/) as HTMLInputElement).value).toBe("");
+    fireEvent.click(screen.getByRole("button", { name: /千问 阿里云百炼/ }));
+    expect(customInput().value).toBe("half-typed-qwen");
+    expect(screen.queryByLabelText(/我确认放弃本页/)).toBeNull();
+    fireEvent.change(providerForm().getByRole("searchbox", { name: "搜索可用模型" }), { target: { value: "flash" } });
+    fireEvent.click(screen.getByRole("button", { name: "重新读取最新配置" }));
+    await screen.findByText("已重新读取服务器配置。");
+    expect(customInput().value).toBe("");
+    expect((providerForm().getByRole("searchbox", { name: "搜索可用模型" }) as HTMLInputElement).value).toBe("");
+  });
+
   it("counts a picker change as unsaved, so reading the server config asks first", async () => {
     server(); render(<AdminModels />); await ready();
     expect(screen.queryByLabelText(/我确认放弃本页/)).toBeNull();

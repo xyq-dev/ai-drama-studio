@@ -12,12 +12,14 @@ const MODEL_ID = /^[A-Za-z0-9._:-]{1,128}$/;
  * The model part of a provider draft. The API takes one ordered `models` array and uses its first entry as the
  * provider's default, so the default is kept here separately and only becomes the first entry when saving.
  * `custom` keeps IDs outside the candidate list visible (saved ones and ones added by hand) even while unselected.
+ * `pendingCustom` is a custom ID typed but not yet added: it belongs to the provider's draft, so switching providers
+ * keeps it and reading the server config clears it, like the rest of the draft. It is never sent.
  */
-export type ModelDraft = { models: string[]; defaultModel: string; custom: string[] };
+export type ModelDraft = { models: string[]; defaultModel: string; custom: string[]; pendingCustom: string };
 
 export function modelDraftFor(providerKey: TitleWritingProviderKey, models: readonly string[]): ModelDraft {
   return { models: [...models], defaultModel: models[0] ?? "",
-    custom: models.filter((id) => !candidateFor(providerKey, id)) };
+    custom: models.filter((id) => !candidateFor(providerKey, id)), pendingCustom: "" };
 }
 /** The array the existing save contract expects: the default first, the rest in the order they were chosen. */
 export function orderedModels(draft: ModelDraft): string[] {
@@ -46,7 +48,6 @@ export function ModelPicker({ providerKey, draft, showProblem, clearing, onChang
 }) {
   const id = useId();
   const [query, setQuery] = useState("");
-  const [customId, setCustomId] = useState("");
   const [customError, setCustomError] = useState("");
   const [defaultCleared, setDefaultCleared] = useState(false);
   const options: Option[] = [
@@ -78,17 +79,21 @@ export function ModelPicker({ providerKey, draft, showProblem, clearing, onChang
     if (model) setDefaultCleared(false);
   }
   function addCustom() {
-    const value = customId.trim();
+    const value = draft.pendingCustom.trim();
     if (!MODEL_ID.test(value)) { setCustomError("模型 ID 只能包含字母、数字和 . _ : -，最长 128 个字符。"); return; }
     const known = options.some((option) => option.id === value);
     if (draft.models.includes(value)) { setCustomError("该模型已在可用模型中。"); return; }
     if (full) { setCustomError(`最多选择 ${MAX_MODELS} 个模型，请先取消一个再添加。`); return; }
-    onChange({ ...draft, models: [...draft.models, value], custom: known ? draft.custom : [...draft.custom, value] });
-    setCustomId(""); setCustomError("");
+    onChange({ ...draft, models: [...draft.models, value], custom: known ? draft.custom : [...draft.custom, value], pendingCustom: "" });
+    setCustomError("");
   }
   function onCustomKey(event: KeyboardEvent<HTMLInputElement>) {
     // Enter adds the ID instead of submitting the whole provider form.
     if (event.key === "Enter") { event.preventDefault(); addCustom(); }
+  }
+  function onSearchKey(event: KeyboardEvent<HTMLInputElement>) {
+    // Enter in the search box only filters; it must never submit the provider form (and with it the key action).
+    if (event.key === "Enter") event.preventDefault();
   }
 
   return <div className={styles.picker}>
@@ -97,7 +102,7 @@ export function ModelPicker({ providerKey, draft, showProblem, clearing, onChang
       <span id={`${id}-label`}>可用模型</span>
       <div className={styles.pickerBox}>
         <input type="search" aria-label="搜索可用模型" aria-controls={`${id}-list`} placeholder="按名称或 ID 搜索" value={query}
-          onChange={(event) => setQuery(event.target.value)} spellCheck={false} autoComplete="off" maxLength={128} />
+          onChange={(event) => setQuery(event.target.value)} onKeyDown={onSearchKey} spellCheck={false} autoComplete="off" maxLength={128} />
         <ul id={`${id}-list`} className={styles.pickerList} aria-label="候选模型">
           {visible.map((option) => {
             const checked = draft.models.includes(option.id);
@@ -130,12 +135,12 @@ export function ModelPicker({ providerKey, draft, showProblem, clearing, onChang
       <summary>高级设置</summary>
       <div className={styles.customRow}>
         <label className={styles.field}>添加自定义模型 ID
-          <input type="text" value={customId} onChange={(event) => { setCustomId(event.target.value); setCustomError(""); }} onKeyDown={onCustomKey}
+          <input type="text" value={draft.pendingCustom} onChange={(event) => { onChange({ ...draft, pendingCustom: event.target.value }); setCustomError(""); }} onKeyDown={onCustomKey}
             placeholder="例如账户中已开通的其他模型 ID" spellCheck={false} autoComplete="off" maxLength={128} aria-invalid={!!customError} />
           {customError ? <small className={styles.fieldError} role="alert">{customError}</small>
             : <small>仅在候选列表中没有需要的模型时使用。请填写供应商控制台中的准确 ID，不会自动校验是否可用。</small>}
         </label>
-        <button type="button" className={styles.secondary} onClick={addCustom} disabled={!customId.trim()}>添加</button>
+        <button type="button" className={styles.secondary} onClick={addCustom} disabled={!draft.pendingCustom.trim()}>添加</button>
       </div>
     </details>
   </div>;

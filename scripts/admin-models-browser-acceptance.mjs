@@ -160,6 +160,14 @@ try {
   await page.getByRole("radio", { name: "清除密钥", exact: true }).check();
   assert.equal(await page.getByRole("button", { name: "校验并保存配置", exact: true }).isDisabled(), true);
   await page.getByRole("checkbox", { name: /我确认清除/ }).check();
+  // The form is now submittable (valid models, confirmed clear): Enter in the search box must still only filter.
+  const clearSearch = page.getByRole("searchbox", { name: "搜索可用模型" });
+  await clearSearch.fill("max");
+  await clearSearch.press("Enter");
+  await delay(500);
+  assert.equal((await readView(page)).savedRevision, 1, "Enter in the model search must not submit the form");
+  assert.equal(requests.filter((request) => request.method === "PUT").length, 1);
+  await clearSearch.fill("");
   await page.getByRole("button", { name: "校验并保存配置", exact: true }).click();
   await page.getByRole("status").filter({ hasText: /^千问配置已保存/ }).waitFor();
   const cleared = await readView(page);
@@ -178,7 +186,8 @@ try {
   await capture(page, "mobile-login");
   assert.deepEqual(evidence.errors, []);
   evidence.checks.save = { savedRevision: 1, activeRevision: 0, pendingRestart: true, secretNotReturned: true };
-  evidence.checks.modelPicker = { keyboardSelect: true, customIdByEnter: true, savedModels: ["browser-test-model", "qwen3.8-flash"] };
+  evidence.checks.modelPicker = { keyboardSelect: true, customIdByEnter: true, searchEnterDoesNotSubmit: true,
+    savedModels: ["browser-test-model", "qwen3.8-flash"] };
   evidence.checks.clear = { explicitConfirmation: true, keyConfigured: false, revision: 2 };
   evidence.checks.limits = { daily: 8, savedRevision: 3, activeRevision: 0, titleWritingEnabled: false };
   evidence.checks.logout = { protectedReadAfterLogout: 401, reloginReadsSavedConfig: true };
