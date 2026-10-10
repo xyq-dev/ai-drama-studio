@@ -43,7 +43,7 @@ Python合成测试本地未能启动：环境没有pytest；未修改Python代�
 - 1440与390宽共6张截图，无横向溢出、pageerror为0；截图仅假配置，实际密钥字段已清空。
 - 本地脚本曾因审计文本重名和移动隐藏说明的选择器失败，收窄到实际可操作角色/名称后通过；没有放宽产品验收要求。
 
-截图和本地证据：`docs/admin-models/`。本地证据headSha为null是因为它在提交前运行；不能事后写成某次CI。
+截图和证据：`docs/admin-models/`。最初的本地证据 headSha 为 null，因为它在提交前运行。模型选择器上线后（PR #64），这些文件已替换为 CI 运行的产物，来源 SHA 与 run 见 `docs/admin-models/README.md`。
 新增 `Admin model settings` 工作流在PR/main复用同一浏览器脚本，将证据保存为artifact。
 
 ## 独立复审

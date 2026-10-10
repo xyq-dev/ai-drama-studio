@@ -1,8 +1,8 @@
 {
-  "kind": "real-browser-real-admin-http-temporary-encrypted-file",
+  "kind": "real-browser-real-site-login-admin-http-temporary-encrypted-file",
   "database": false,
   "modelCalls": 0,
-  "headSha": null,
+  "headSha": "f047157b19e69b9dda31c67aafd637cbf9a955c7",
   "routeFulfill": false,
   "mockFetch": false,
   "screenshots": [
@@ -13,6 +13,11 @@
     },
     {
       "file": "desktop-models-empty.png",
+      "width": 1440,
+      "scroll": 1440
+    },
+    {
+      "file": "desktop-model-picker.png",
       "width": 1440,
       "scroll": 1440
     },
@@ -49,6 +54,14 @@
       "pendingRestart": true,
       "secretNotReturned": true
     },
+    "modelPicker": {
+      "keyboardSelect": true,
+      "customIdByEnter": true,
+      "savedModels": [
+        "browser-test-model",
+        "qwen3.8-flash"
+      ]
+    },
     "clear": {
       "explicitConfirmation": true,
       "keyConfigured": false,
@@ -73,12 +86,8 @@
   "errors": [],
   "requests": [
     {
-      "path": "/api/v1/admin/session",
+      "path": "/api/v1/admin/models",
       "method": "GET"
-    },
-    {
-      "path": "/api/v1/admin/session",
-      "method": "POST"
     },
     {
       "path": "/api/v1/admin/models",
@@ -97,24 +106,12 @@
       "method": "GET"
     },
     {
-      "path": "/api/v1/admin/session",
-      "method": "GET"
-    },
-    {
       "path": "/api/v1/admin/models",
       "method": "GET"
     },
     {
       "path": "/api/v1/admin/models",
       "method": "GET"
-    },
-    {
-      "path": "/api/v1/admin/session",
-      "method": "DELETE"
-    },
-    {
-      "path": "/api/v1/admin/session",
-      "method": "POST"
     },
     {
       "path": "/api/v1/admin/models",
@@ -139,10 +136,6 @@
     {
       "path": "/api/v1/admin/models",
       "method": "GET"
-    },
-    {
-      "path": "/api/v1/admin/session",
-      "method": "DELETE"
     }
   ],
   "success": true
