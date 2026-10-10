@@ -2,6 +2,7 @@
 
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useModalKeyboard } from "../lib/modal-keyboard";
+import { AccountControl } from "./account-control";
 import styles from "./creator-shell.module.css";
 
 const LINKS = [
@@ -71,7 +72,7 @@ export function CreatorShell({ children, activePath }: { children: ReactNode; ac
     <div className={styles.page}>
       <header className={styles.topbar} aria-label="工作区页眉">
         <p>创作工作区<span aria-hidden="true">/</span><strong>{currentSection}</strong></p>
-        <div className={styles.topbarActions}><span className={styles.previewBadge}>开发预览</span><a href="/help">查看创作指南<span aria-hidden="true"> ↗</span></a></div>
+        <div className={styles.topbarActions}><span className={styles.previewBadge}>开发预览</span><a href="/help">查看创作指南<span aria-hidden="true"> ↗</span></a><AccountControl variant="header" /></div>
       </header>
       <header className={styles.mobileHeader}><Brand /><button ref={opener} type="button" className={styles.menu}
         aria-expanded={open} aria-controls={dialogId} onClick={() => setOpen(true)} hidden={wide}>
@@ -84,6 +85,7 @@ export function CreatorShell({ children, activePath }: { children: ReactNode; ac
       <div ref={panel} id={dialogId} role="dialog" aria-modal="true" aria-label="导航" className={styles.drawer}>
         <button className={styles.close} type="button" onClick={() => setOpen(false)}>关闭导航 <span aria-hidden="true">×</span></button>
         <Brand />{navigation}
+        <AccountControl variant="drawer" />
       </div>
     </div> : null}
   </div>;

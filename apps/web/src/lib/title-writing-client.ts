@@ -6,6 +6,7 @@ import {
   type TitleWritingStepKey,
   type TitleWritingStepState,
 } from "@ai-drama/contracts";
+import { withSession } from "./site-session";
 import { ApiError } from "./studio-client";
 
 export type { TitleWritingOptionsView, TitleWritingRunView };
@@ -59,8 +60,7 @@ export class TitleWritingClient {
   constructor(private readonly fetchImpl?: FetchLike, private readonly prefix = "/api/v1") {}
 
   private async call<T>(path: string, init: RequestInit): Promise<{ status: number; body: T }> {
-    const fetchImpl = this.fetchImpl ?? globalThis.fetch.bind(globalThis);
-    const response = await fetchImpl(`${this.prefix}${path}`, init);
+    const response = await withSession(this.fetchImpl ?? globalThis.fetch.bind(globalThis))(`${this.prefix}${path}`, init);
     const text = await response.text();
     let parsed: unknown;
     try {

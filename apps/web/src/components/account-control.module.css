@@ -1,0 +1,8 @@
+.account { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.user { display: inline-flex; align-items: center; gap: 8px; color: var(--studio-text); font-size: 13px; font-weight: 600; }
+.avatar { display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: var(--studio-selected); color: var(--studio-accent-hover); font-size: 12px; font-weight: 700; }
+.logout { min-height: var(--studio-control-height); padding: 0 14px; border: 1px solid var(--studio-line); border-radius: var(--studio-control-radius); background: var(--studio-card); color: var(--studio-text); font-size: 13px; font-weight: 600; }
+.logout:not(:disabled):hover { border-color: var(--studio-accent-line); color: var(--studio-accent-hover); }
+.logout:disabled { cursor: not-allowed; opacity: .6; }
+.error { flex-basis: 100%; color: var(--studio-error); font-size: 12px; }
+.drawer { display: flex; width: 100%; margin-top: auto; padding-top: 18px; border-top: 1px solid var(--studio-line); justify-content: space-between; }

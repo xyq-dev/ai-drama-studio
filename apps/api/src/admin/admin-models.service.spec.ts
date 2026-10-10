@@ -19,9 +19,9 @@ async function fixture(extra: Record<string, string> = {}) {
   const directory = await mkdtemp(join(tmpdir(), "admin-runtime-"));
   await chmod(directory, 0o700);
   directories.push(directory);
-  const env = loadApiEnv({ ...base, MODEL_ADMIN_ENABLED: "true", MODEL_ADMIN_TOKEN: "admin-test-".repeat(5),
+  const env = loadApiEnv({ ...base, MODEL_ADMIN_ENABLED: "true",
     MODEL_ADMIN_MASTER_KEY: randomBytes(32).toString("hex"), MODEL_ADMIN_CONFIG_PATH: join(directory, "models.enc"),
-    MODEL_ADMIN_PUBLIC_ORIGIN: "https://drama.example.test", OPENAI_API_KEY: "sk-legacy-test-secret",
+    OPENAI_API_KEY: "sk-legacy-test-secret",
     TITLE_WRITING_OPENAI_MODELS: "approved-model", ...extra });
   const bootstrap = adminBootstrap(env)!;
   return { env, bootstrap };
@@ -29,8 +29,9 @@ async function fixture(extra: Record<string, string> = {}) {
 
 describe("admin bootstrap boundary", () => {
   it("stays unconfigured by default and ignores .env bootstrap secrets", () => {
-    const env = loadApiEnv(base, { MODEL_ADMIN_ENABLED: "true", MODEL_ADMIN_TOKEN: "file-secret", MODEL_ADMIN_MASTER_KEY: "a".repeat(64) });
-    expect(env.MODEL_ADMIN_TOKEN).toBeUndefined();
+    const env = loadApiEnv(base, { MODEL_ADMIN_ENABLED: "true", MODEL_ADMIN_MASTER_KEY: "a".repeat(64), SITE_AUTH_PASSWORD_HASH: "file-hash" });
+    expect(env.MODEL_ADMIN_MASTER_KEY).toBeUndefined();
+    expect(env.SITE_AUTH_PASSWORD_HASH).toBeUndefined();
     expect(adminBootstrap(env)).toBeNull();
   });
   it("rejects incomplete, relative, repository-local and insecure production configurations without values", async () => {
@@ -39,18 +40,22 @@ describe("admin bootstrap boundary", () => {
       { MODEL_ADMIN_MASTER_KEY: "secret-invalid" }, { MODEL_ADMIN_CONFIG_PATH: "relative.enc" },
       { MODEL_ADMIN_CONFIG_PATH: "/repo/source/key.enc" }, { MODEL_ADMIN_ENABLED: "yes" },
       { MODEL_ADMIN_CONFIG_PATH: "/repo/source/..private/key.enc" },
-      { MODEL_ADMIN_PUBLIC_ORIGIN: "https://user:password@example.test" },
-      { TITLE_WRITING_OPERATOR_TOKEN: env.MODEL_ADMIN_TOKEN },
-      { NODE_ENV: "production" as const, MODEL_ADMIN_PUBLIC_ORIGIN: "http://localhost:3000" },
     ];
     for (const change of cases) {
       expect(() => adminBootstrap({ ...env, ...change }, "/repo/source")).toThrow("管理员配置尚未就绪。");
     }
   });
+  it("no longer needs or reads the old administrator token: access is the site login", async () => {
+    const { env } = await fixture();
+    expect(adminBootstrap(env)?.enabled).toBe(true);
+    const legacy = adminBootstrap({ ...env, MODEL_ADMIN_TOKEN: "admin-test-".repeat(5), MODEL_ADMIN_PUBLIC_ORIGIN: "https://drama.example.test" });
+    expect(legacy).toEqual(adminBootstrap(env));
+    expect(Object.keys(legacy!).sort()).toEqual(["enabled", "masterKey", "path"]);
+  });
   it("does not silently discard vault settings when the admin UI is disabled", async () => {
     const { env } = await fixture();
-    const config = adminBootstrap({ ...env, MODEL_ADMIN_ENABLED: "false", MODEL_ADMIN_TOKEN: undefined });
-    expect(config?.auth).toBeNull();
+    const config = adminBootstrap({ ...env, MODEL_ADMIN_ENABLED: "false" });
+    expect(config?.enabled).toBe(false);
     expect(config?.path).toBe(env.MODEL_ADMIN_CONFIG_PATH);
     expect(() => adminBootstrap({ ...env, MODEL_ADMIN_ENABLED: "false", MODEL_ADMIN_MASTER_KEY: undefined })).toThrow();
   });

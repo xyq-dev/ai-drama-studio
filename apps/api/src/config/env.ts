@@ -86,10 +86,17 @@ export interface ApiEnv {
   TITLE_WRITING_DEEPSEEK_MODELS?: string;
   /** Administrator bootstrap is process-only. Saved model secrets live in the encrypted configuration vault. */
   MODEL_ADMIN_ENABLED?: string;
+  /** No longer used (replaced by the site login); read only to warn that it can be removed. */
   MODEL_ADMIN_TOKEN?: string;
   MODEL_ADMIN_MASTER_KEY?: string;
   MODEL_ADMIN_CONFIG_PATH?: string;
+  /** No longer used; read only to warn that it can be removed. */
   MODEL_ADMIN_PUBLIC_ORIGIN?: string;
+  /** Site login (src/auth). Process environment only, never the .env file or NEXT_PUBLIC_*. */
+  SITE_AUTH_ENABLED?: string;
+  SITE_AUTH_USERNAME?: string;
+  SITE_AUTH_PASSWORD_HASH?: string;
+  SITE_AUTH_PUBLIC_ORIGIN?: string;
 }
 
 /** Provider secrets and endpoints are accepted only from the process environment. */
@@ -107,6 +114,10 @@ const PROCESS_ONLY_KEYS = [
   "MODEL_ADMIN_MASTER_KEY",
   "MODEL_ADMIN_CONFIG_PATH",
   "MODEL_ADMIN_PUBLIC_ORIGIN",
+  "SITE_AUTH_ENABLED",
+  "SITE_AUTH_USERNAME",
+  "SITE_AUTH_PASSWORD_HASH",
+  "SITE_AUTH_PUBLIC_ORIGIN",
 ] as const;
 
 const API_KEYS = [

@@ -6,7 +6,7 @@
 
 ## 用户操作与真实含义
 
-1. 服务器完成下面的一次性初始化后，用独立管理员访问令牌登录。它不是供应商 API Key，也不是标题创作操作者令牌。
+1. 使用站点统一登录（`/login`，见 [`UNIFIED_ADMIN_LOGIN.md`](UNIFIED_ADMIN_LOGIN.md)）进入；不再有独立的管理员访问令牌。登录账号不是供应商 API Key，也不是标题创作操作者令牌。
 2. 选择供应商，填写账户确实可用的模型 ID。千问需填写地域匹配的官方 compatible-mode 地址；OpenAI/DeepSeek 地址固定。
 3. 密钥操作有「保持」「替换」「清除」，清除需勾选确认。服务端只返回是否已配置，不返回密钥、尾号或摘要。
 4. 保存只做本地格式和白名单校验；“配置就绪”不代表供应商真实可用或真实调用已验收。
@@ -31,13 +31,13 @@
   删除密文和标记二者会被视为新的初始化，禁止用此方式“修复”存储。可信本机管理员仍对文件完整性负责。
 - atomic rename/fsync，revision CAS，文件独占锁。崩溃残留 `.lock` 不自动抢占；先确认没有存活写进程，再由运维处理。
   rename后fsync失败可能已经保存，必须重新读取revision，不能假定503代表未保存。
-- 管理员 token、主密钥和bootstrap配置只读API**进程环境**，根 `.env` / `NEXT_PUBLIC_*` 无效。
-- 写接口先验证session、固定Origin和CSRF；HTTPS cookie为Secure/HttpOnly/SameSite=Strict。登录全局每分钟最多5次，最多20会话。
-  管理页禁止iframe；接口和页面no-store。反向代理应保留Cookie、Origin、X-Admin-CSRF，不记录请求正文或这些认证值。
+- 主密钥、bootstrap配置和站点登录配置只读API**进程环境**，根 `.env` / `NEXT_PUBLIC_*` 无效。
+- 后台使用站点会话：写接口先验证会话、固定Origin、`X-CSRF-Token` 和 JSON。站点登录关闭或配置无效时后台返回503，不会匿名开放。
+  管理页禁止iframe；接口和页面no-store。反向代理应保留Cookie、Origin、X-CSRF-Token，不记录请求正文或这些认证值。
 
 ## Hermes 初始化与部署
 
-本功能本身无需数据库迁移；以发布SHA相对实际运行版本的差异为准。保留现有 Basic Auth 和所有标题创作开关；不修改 `NODE_ENV` 来开启功能。
+本功能本身无需数据库迁移；以发布SHA相对实际运行版本的差异为准。登录方式与 Basic Auth 的切换按 [`UNIFIED_ADMIN_LOGIN.md`](UNIFIED_ADMIN_LOGIN.md) 的顺序进行；保留所有标题创作开关；不修改 `NODE_ENV` 来开启功能。
 
 先独立构建并验证待发布的完整SHA。记录现有Web/API工作目录、版本、代理地址，保留回滚目录。
 使用Node24.21.0 / pnpm10.17.0，安装、prisma validate/generate、build均依现有运行手册；**不执行 migrate 或草案**。
@@ -48,22 +48,21 @@
 ```bash
 sudo install -d -o <API_USER> -g <API_GROUP> -m 700 <PRIVATE_PARENT>
 sudo -u <API_USER> <NODE24_PATH> <RELEASE>/scripts/admin-models-init.mjs \
-  --directory <PRIVATE_PARENT>/models --origin https://drama.playhubs.cn
+  --directory <PRIVATE_PARENT>/models
 ```
 
-初始化只创建 `api-admin.env` 和 `admin-login.txt`（600），不打印凭据、不连接模型、不修改服务。
+初始化只创建 `api-admin.env`（600），不生成登录凭据、不打印内容、不连接模型、不修改服务。已经初始化过的服务器不要重新执行。
 目录已经存在时拒绝，**不要重新生成主密钥**。初始化失败保留现场，先检查部分文件，禁止盲目覆盖。
-通过现有安全运维通道读取登录文件；不要将内容粘贴到聊天、截图、CI、Git或日志。
 
 给API的systemd单元增加 `EnvironmentFile=<PRIVATE_PARENT>/models/api-admin.env`（使用受保护文件，不内联值）。里面包含：
 
 | 变量 | 用途 |
 | --- | --- |
 | MODEL_ADMIN_ENABLED | `true`开放管理员接口；不是标题创作开关 |
-| MODEL_ADMIN_PUBLIC_ORIGIN | 精确浏览器origin，无路径和末尾斜杠；测试站HTTPS |
 | MODEL_ADMIN_CONFIG_PATH | 私有目录里的 `models.enc` |
 | MODEL_ADMIN_MASTER_KEY | 32字节随机加密主密钥，64位十六进制 |
-| MODEL_ADMIN_TOKEN | 独立随机管理员凭据，32–256字符 |
+
+`MODEL_ADMIN_TOKEN`、`MODEL_ADMIN_PUBLIC_ORIGIN` 已不再读取（API 启动时只记录可删除的提示，不作为登录方式）；升级时从此文件删除，站点 origin 改为 `SITE_AUTH_PUBLIC_ORIGIN`。旧版本生成的 `admin-login.txt` 已无用，可按运维规程安全删除。
 
 只把此EnvironmentFile注入API，不给Web/Worker。保留已有环境来源；检查 `TITLE_WRITING_ENABLED` 仍为false/未设，操作者令牌没有被替换。
 先停旧API再启新API；API健康后切换Web。Worker/media-worker无需因本功能切换；若同次部署还包含其他变更需另作差异核验。
@@ -71,8 +70,8 @@ sudo -u <API_USER> <NODE24_PATH> <RELEASE>/scripts/admin-models-init.mjs \
 部署后：
 
 1. 核对Web/API进程cwd、git SHA、Web BUILD_ID，live/ready和同源代理。
-2. `/admin/models`显示初始化后的登录页；未登录GET `/api/v1/admin/models`为401。未初始化环境503属于预期关闭态。
-3. 经Basic Auth访问，使用安全取得的管理员凭据登录，确认每家供应商只显示“已配置/未配置”，不回显密钥。
+2. 未登录打开 `/admin/models` 跳转 `/login?returnTo=%2Fadmin%2Fmodels`；未登录GET `/api/v1/admin/models`为401。后台未开启时503属于预期关闭态。
+3. 用站点账号登录后回到后台，确认每家供应商只显示“已配置/未配置”，不回显密钥。
 4. 标题创作options仍 `enabled=false`；进入后台或保存未产生模型请求。
 5. 1440与390页面检查；不要为验收随意填假密钥覆盖服务器真实配置。需要真实供应商验收仍单独授权。
 6. 失败回退Web/API服务目录并检查health；保留私有配置目录，不删文件、不执行SQL、不自动回退数据库。
@@ -85,7 +84,7 @@ sudo -u <API_USER> <NODE24_PATH> <RELEASE>/scripts/admin-models-init.mjs \
 - API：真实临时文件加密、权限、篡改、marker、并发CAS；真实Nest HTTP的登录/CSRF/错误保护；真实StudioRuntime装配配合数据库边界替身。
 - Web：组件交互、密钥清理、冲突/错误/会话恢复，另有真实浏览器同源HTTP验收。
 - `scripts/admin-models-browser-server.mjs` 只在显式 `ADMIN_MODELS_BROWSER_ACCEPTANCE=local-temporary-storage` 下启动loopback验收服务。
-  使用真实auth/controller/service/vault、一次性私有目录与假凭据；没有数据库连接，所有出站fetch拒绝。它不属于生产入口。
+  使用真实站点登录/controller/service/vault、一次性私有目录与每次生成的测试密码；没有数据库连接，所有出站fetch拒绝。它不属于生产入口。
 - 本地初始化脚本测试由 `pnpm verify` 覆盖。
 
 真实供应商连接、计费、服务器部署和已有数据库未因这些测试获得验证。

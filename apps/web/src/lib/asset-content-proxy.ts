@@ -13,6 +13,9 @@ export async function proxyAssetContent(
   const headers = new Headers();
   const range = request.headers.get("range");
   if (range) headers.set("range", range);
+  // The API checks the site session itself; this proxy only passes the browser cookie through, never grants access.
+  const cookie = request.headers.get("cookie");
+  if (cookie) headers.set("cookie", cookie);
   const upstream = await fetchImpl(`${origin}/api/v1/assets/${assetId.toLowerCase()}/content`, {
     method: request.method,
     headers,

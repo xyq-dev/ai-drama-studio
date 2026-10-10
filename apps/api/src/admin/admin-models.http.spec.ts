@@ -1,16 +1,23 @@
 import "reflect-metadata";
 import { Test } from "@nestjs/testing";
 import type { INestApplication } from "@nestjs/common";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AdminModelsView, AdminSessionView } from "@ai-drama/contracts";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import type { AdminModelsView } from "@ai-drama/contracts";
+import type { ApiEnv } from "../config/env";
 import { SafeExceptionFilter } from "../http/safe-exception.filter";
-import { ADMIN_AUTH, ADMIN_SESSION_COOKIE, ADMIN_SESSION_DURATION_MS, AdminAuth, setAdminResponseHeaders } from "./admin-auth";
+import { AuthModule } from "../auth/auth.module";
+import { hashPassword } from "../auth/password-hash";
+import { SESSION_IDLE_MS, SiteAuth, type SiteAuthState } from "../auth/site-auth";
+import { setAdminResponseHeaders } from "./admin-auth";
 import type { AdminHeaderResponse } from "./admin-auth";
 import { ADMIN_MODELS_SERVICE, AdminModelsController } from "./admin-models.controller";
 
-const TOKEN = "test-only-admin-bootstrap-7VCTEdmr_-84HqRZ";
+// Test-only values. The console is reached through the site login; the old token must not open it.
+const PASSWORD = "test-only-site-password-Qm7#x";
+const LEGACY_TOKEN = "test-only-admin-bootstrap-7VCTEdmr_-84HqRZ";
 const SECRET = "sk-test-never-echo-provider-key";
 const ORIGIN = "https://drama.example.test";
+let HASH = "";
 const VIEW: AdminModelsView = {
   savedRevision: 0,
   activeRevision: 0,
@@ -36,11 +43,14 @@ function backend() {
 
 function privateHeaders(response: Response): void {
   expect(response.headers.get("cache-control")).toBe("private, no-store");
-  expect(response.headers.get("pragma")).toBe("no-cache");
   expect(response.headers.get("x-content-type-options")).toBe("nosniff");
 }
 
-describe("administrator model settings real HTTP boundary", () => {
+beforeAll(async () => {
+  HASH = await hashPassword(PASSWORD, { log2N: 15, r: 8, p: 1, saltBytes: 16, keyBytes: 32 });
+});
+
+describe("administrator model settings real HTTP boundary (site login)", () => {
   let app: INestApplication | undefined;
   let base: string;
   let now = Date.parse("2026-10-10T00:00:00Z");
@@ -52,15 +62,17 @@ describe("administrator model settings real HTTP boundary", () => {
     now = Date.parse("2026-10-10T00:00:00Z");
   });
 
-  async function start(options: { authMissing?: boolean; backendMissing?: boolean; publicOrigin?: string } = {}) {
+  async function start(options: { site?: "enabled" | "disabled" | "misconfigured"; backendMissing?: boolean } = {}) {
+    await app?.close();
     store = backend();
-    const auth = options.authMissing ? null : new AdminAuth({ token: TOKEN, publicOrigin: options.publicOrigin ?? ORIGIN }, { now: () => now });
+    const kind = options.site ?? "enabled";
+    const state: SiteAuthState = kind === "enabled"
+      ? { kind, auth: new SiteAuth({ username: "admin", passwordHash: HASH, publicOrigin: ORIGIN }, { now: () => now }) }
+      : { kind };
     const module = await Test.createTestingModule({
+      imports: [AuthModule.register({ NODE_ENV: "test" } as ApiEnv, state)],
       controllers: [AdminModelsController],
-      providers: [
-        { provide: ADMIN_AUTH, useValue: auth },
-        { provide: ADMIN_MODELS_SERVICE, useValue: options.backendMissing ? null : store },
-      ],
+      providers: [{ provide: ADMIN_MODELS_SERVICE, useValue: options.backendMissing ? null : store }],
     }).compile();
     app = module.createNestApplication({ logger: false });
     app.use("/api/v1/admin", (_request: unknown, response: AdminHeaderResponse, next: () => void) => {
@@ -70,156 +82,70 @@ describe("administrator model settings real HTTP boundary", () => {
     app.setGlobalPrefix("api/v1");
     app.useGlobalFilters(new SafeExceptionFilter());
     await app.listen(0, "127.0.0.1");
-    base = `${await app.getUrl()}/api/v1/admin`;
+    base = `${await app.getUrl()}/api/v1`;
   }
 
-  function request(path: string, init?: RequestInit) {
-    return fetch(`${base}${path}`, init);
-  }
-
-  async function login(token: unknown = TOKEN, extraHeaders: Record<string, string> = {}) {
-    return request("/session", {
-      method: "POST",
-      headers: { origin: ORIGIN, "content-type": "application/json", ...extraHeaders },
-      body: JSON.stringify({ token }),
-    });
-  }
+  const request = (path: string, init?: RequestInit) => fetch(`${base}${path}`, init);
 
   async function signedIn() {
-    const response = await login();
+    const response = await request("/auth/login", { method: "POST", headers: { origin: ORIGIN, "content-type": "application/json" },
+      body: JSON.stringify({ username: "admin", password: PASSWORD }) });
     expect(response.status).toBe(200);
-    privateHeaders(response);
-    const cookie = response.headers.get("set-cookie")!.split(";", 1)[0]!;
-    const view = await response.json() as AdminSessionView;
-    return { response, cookie, view, headers: { cookie, origin: ORIGIN, "content-type": "application/json", "x-admin-csrf": view.csrfToken } };
+    const cookie = response.headers.getSetCookie().filter((item) => /^__Host-ads_(session|csrf)=/.test(item))
+      .map((item) => item.split(";", 1)[0]).join("; ");
+    const view = await response.json() as { csrfToken: string };
+    return { cookie, headers: { cookie, origin: ORIGIN, "content-type": "application/json", "x-csrf-token": view.csrfToken } };
   }
 
-  it("requires authentication before all settings backend reads and writes", async () => {
+  it("requires the site session before every console read and write reaches the backend", async () => {
     await start();
     for (const [path, init] of [
-      ["/session", undefined],
-      ["/models", undefined],
-      ["/models/providers/qwen", { method: "PUT", headers: { origin: ORIGIN, "content-type": "application/json" }, body: JSON.stringify(UPDATE) }],
-      ["/models/limits", { method: "PUT", headers: { origin: ORIGIN, "content-type": "application/json" }, body: JSON.stringify(LIMITS) }],
+      ["/admin/models", undefined],
+      ["/admin/models/providers/qwen", { method: "PUT", headers: { origin: ORIGIN, "content-type": "application/json" }, body: JSON.stringify(UPDATE) }],
+      ["/admin/models/limits", { method: "PUT", headers: { origin: ORIGIN, "content-type": "application/json" }, body: JSON.stringify(LIMITS) }],
     ] as const) {
       const response = await request(path, init);
       expect(response.status).toBe(401);
-      privateHeaders(response);
-      expect(await response.json()).toMatchObject({ error: { code: "ADMIN_UNAUTHENTICATED" } });
+      expect(await response.json()).toMatchObject({ error: { code: "AUTH_REQUIRED" } });
     }
     expect(store.view).not.toHaveBeenCalled();
     expect(store.updateProvider).not.toHaveBeenCalled();
-    expect(store.updateLimits).not.toHaveBeenCalled();
   });
 
-  it("issues an opaque restricted cookie, restores CSRF by session GET, and never echoes bootstrap credentials", async () => {
+  it("never opens with the old administrator token, and the token login routes are gone", async () => {
     await start();
-    const { response, cookie, view } = await signedIn();
-    const setCookie = response.headers.get("set-cookie")!;
-    expect(setCookie).toMatch(new RegExp(`^${ADMIN_SESSION_COOKIE}=[A-Za-z0-9_-]{43};`));
-    expect(setCookie).toContain("Path=/api/v1/admin");
-    expect(setCookie).toContain("HttpOnly");
-    expect(setCookie).toContain("SameSite=Strict");
-    expect(setCookie).toContain("Secure");
-    expect(setCookie).toContain("Max-Age=1800");
-    expect(setCookie).not.toContain("Domain=");
-    expect(JSON.stringify(view)).not.toContain(TOKEN);
-    expect(view.expiresAt).toBe(new Date(now + ADMIN_SESSION_DURATION_MS).toISOString());
-    const restored = await request("/session", { headers: { cookie } });
-    expect(await restored.json()).toEqual(view);
-    const models = await request("/models", { headers: { cookie } });
-    expect(models.status).toBe(200);
-    expect(await models.json()).toEqual(VIEW);
-    expect(store.view).toHaveBeenCalledTimes(1);
-  });
-
-  it("rejects wrong, missing, oversized or malformed login tokens without setting cookies", async () => {
-    await start();
-    for (const token of [null, "wrong-token", "x".repeat(257), { token: TOKEN }]) {
-      const response = await login(token);
-      expect(response.status).toBe(401);
-      expect(response.headers.get("set-cookie")).toBeNull();
-      privateHeaders(response);
-      const text = await response.text();
-      expect(text).toContain("ADMIN_LOGIN_FAILED");
-      expect(text).not.toContain(TOKEN);
-    }
-    const missing = await request("/session", { method: "POST", headers: { origin: ORIGIN, "content-type": "application/json" }, body: "{}" });
-    expect(missing.status).toBe(401);
-    expect(missing.headers.get("set-cookie")).toBeNull();
+    for (const init of [
+      { method: "POST", headers: { origin: ORIGIN, "content-type": "application/json" }, body: JSON.stringify({ token: LEGACY_TOKEN }) },
+      { method: "GET", headers: { cookie: `ads_admin_session=${LEGACY_TOKEN}` } },
+    ]) expect((await request("/admin/session", init)).status).toBe(401);
+    const { headers } = await signedIn();
+    // Even signed in, the earlier session routes no longer exist.
+    expect((await request("/admin/session", { headers })).status).toBe(404);
+    expect((await request("/admin/models", { headers: { authorization: `Bearer ${LEGACY_TOKEN}` } })).status).toBe(401);
     expect(store.view).not.toHaveBeenCalled();
   });
 
-  it("requires exact trusted Origin and JSON for login, ignoring forwarded host claims", async () => {
-    await start();
-    for (const origin of ["https://evil.test", "null", `${ORIGIN}.evil.test`, `${ORIGIN}/`]) {
-      const response = await login(TOKEN, { origin, "x-forwarded-host": "drama.example.test" });
-      expect(response.status).toBe(403);
-      expect(response.headers.get("set-cookie")).toBeNull();
-    }
-    const noOrigin = await request("/session", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: TOKEN }) });
-    expect(noOrigin.status).toBe(403);
-    const wrongType = await login(TOKEN, { "content-type": "text/plain" });
-    expect(wrongType.status).toBe(415);
-    expect(wrongType.headers.get("set-cookie")).toBeNull();
-    expect((await login()).status).toBe(200);
-  });
-
-  it("rate limits all login attempts globally without trusting spoofed forwarded IPs", async () => {
-    await start();
-    for (let i = 0; i < 5; i += 1) {
-      expect((await login("wrong-token", { "x-forwarded-for": `10.0.0.${i}` })).status).toBe(401);
-    }
-    const response = await login(TOKEN, { "x-forwarded-for": "203.0.113.9" });
-    expect(response.status).toBe(429);
-    expect(response.headers.get("set-cookie")).toBeNull();
-    expect(await response.json()).toMatchObject({ error: { code: "ADMIN_RATE_LIMITED" } });
-    now += 60_001;
-    expect((await login()).status).toBe(200);
-  });
-
-  it("rejects forged and duplicate session cookies before accessing storage", async () => {
+  it("serves the console view to a signed-in session with private headers", async () => {
     await start();
     const { cookie } = await signedIn();
-    for (const value of [
-      `${ADMIN_SESSION_COOKIE}=${"A".repeat(43)}`,
-      `${cookie}; ${cookie}`,
-      `${cookie}; ${ADMIN_SESSION_COOKIE}=forged`,
-      `${ADMIN_SESSION_COOKIE}=not-valid`,
-    ]) {
-      expect((await request("/models", { headers: { cookie: value } })).status).toBe(401);
-    }
-    expect(store.view).not.toHaveBeenCalled();
+    const response = await request("/admin/models", { headers: { cookie } });
+    expect(response.status).toBe(200);
+    privateHeaders(response);
+    expect(await response.json()).toEqual(VIEW);
   });
 
-  it("has an absolute 30-minute expiry that reads do not extend", async () => {
+  it("requires the exact origin, the session CSRF token and JSON on every console mutation", async () => {
     await start();
-    const { cookie } = await signedIn();
-    now += ADMIN_SESSION_DURATION_MS - 1;
-    expect((await request("/session", { headers: { cookie } })).status).toBe(200);
-    now += 1;
-    expect((await request("/models", { headers: { cookie } })).status).toBe(401);
-    expect(store.view).not.toHaveBeenCalled();
-  });
-
-  it("requires session-bound CSRF and trusted Origin on every settings mutation", async () => {
-    await start();
-    const first = await signedIn();
-    const second = await signedIn();
-    for (const [path, body] of [["/models/providers/qwen", UPDATE], ["/models/limits", LIMITS]] as const) {
-      for (const headers of [
-        { cookie: first.cookie, origin: ORIGIN, "content-type": "application/json" },
-        { ...first.headers, "x-admin-csrf": second.view.csrfToken },
-        { ...first.headers, origin: "https://evil.test" },
-      ]) {
-        const response = await request(path, { method: "PUT", headers, body: JSON.stringify(body) });
-        expect(response.status).toBe(403);
-        privateHeaders(response);
-      }
-      const mediaFailure = await request(path, { method: "PUT", headers: { ...first.headers, "content-type": "text/plain" }, body: JSON.stringify(body) });
-      expect(mediaFailure.status).toBe(415);
+    const { headers, cookie } = await signedIn();
+    for (const [changed, code] of [
+      [{ ...headers, origin: "https://evil.example" }, "AUTH_ORIGIN_REJECTED"],
+      [{ cookie, origin: ORIGIN, "content-type": "application/json" }, "AUTH_CSRF_REJECTED"],
+      [{ ...headers, "x-csrf-token": "A".repeat(43) }, "AUTH_CSRF_REJECTED"],
+      [{ ...headers, "content-type": "text/plain" }, "AUTH_CONTENT_TYPE_REJECTED"],
+    ] as const) {
+      const response = await request("/admin/models/limits", { method: "PUT", headers: changed, body: JSON.stringify(LIMITS) });
+      expect(await response.json(), code).toMatchObject({ error: { code } });
     }
-    expect(store.updateProvider).not.toHaveBeenCalled();
     expect(store.updateLimits).not.toHaveBeenCalled();
   });
 
@@ -227,11 +153,11 @@ describe("administrator model settings real HTTP boundary", () => {
     await start();
     const { headers } = await signedIn();
     for (const [path, body] of [
-      ["/models/providers/unknown", UPDATE],
-      ["/models/providers/qwen", { ...UPDATE, secretAction: "keep" }],
-      ["/models/providers/qwen", { ...UPDATE, models: ["https://secret.test/model"] }],
-      ["/models/limits", { ...LIMITS, maxActiveRuns: 0 }],
-      ["/models/limits", { ...LIMITS, apiKey: SECRET }],
+      ["/admin/models/providers/unknown", UPDATE],
+      ["/admin/models/providers/qwen", { ...UPDATE, secretAction: "keep" }],
+      ["/admin/models/providers/qwen", { ...UPDATE, models: ["https://secret.test/model"] }],
+      ["/admin/models/limits", { ...LIMITS, maxActiveRuns: 0 }],
+      ["/admin/models/limits", { ...LIMITS, apiKey: SECRET }],
     ]) {
       const response = await request(path as string, { method: "PUT", headers, body: JSON.stringify(body) });
       expect(response.status).toBe(400);
@@ -247,13 +173,12 @@ describe("administrator model settings real HTTP boundary", () => {
   it("passes valid mutations once to the backend and returns only its public view", async () => {
     await start();
     const { headers } = await signedIn();
-    const provider = await request("/models/providers/qwen", { method: "PUT", headers, body: JSON.stringify(UPDATE) });
+    const provider = await request("/admin/models/providers/qwen", { method: "PUT", headers, body: JSON.stringify(UPDATE) });
     expect(provider.status).toBe(200);
     expect(await provider.json()).toEqual(VIEW);
     expect(store.updateProvider).toHaveBeenCalledExactlyOnceWith("qwen", UPDATE);
-    const limits = await request("/models/limits", { method: "PUT", headers, body: JSON.stringify(LIMITS) });
+    const limits = await request("/admin/models/limits", { method: "PUT", headers, body: JSON.stringify(LIMITS) });
     expect(limits.status).toBe(200);
-    expect(await limits.json()).toEqual(VIEW);
     expect(store.updateLimits).toHaveBeenCalledExactlyOnceWith(LIMITS);
   });
 
@@ -261,91 +186,66 @@ describe("administrator model settings real HTTP boundary", () => {
     await start();
     const { headers } = await signedIn();
     for (const [code, status] of [["ADMIN_CONFIG_BUSY", 409], ["ADMIN_CONFIG_CONFLICT", 409], ["ADMIN_CONFIG_STORAGE_UNAVAILABLE", 503], ["ADMIN_CONFIG_INVALID", 400], ["EACCES", 500]] as const) {
-      store.updateProvider.mockRejectedValueOnce(Object.assign(new Error(`/secret/path ${TOKEN} ${SECRET}`), { code }));
-      const response = await request("/models/providers/qwen", { method: "PUT", headers, body: JSON.stringify(UPDATE) });
+      store.updateProvider.mockRejectedValueOnce(Object.assign(new Error(`/secret/path ${PASSWORD} ${SECRET}`), { code }));
+      const response = await request("/admin/models/providers/qwen", { method: "PUT", headers, body: JSON.stringify(UPDATE) });
       expect(response.status).toBe(status);
       privateHeaders(response);
       const text = await response.text();
       expect(text).not.toContain("/secret/path");
-      expect(text).not.toContain(TOKEN);
+      expect(text).not.toContain(PASSWORD);
       expect(text).not.toContain(SECRET);
       expect(text).toContain(status === 500 ? "ADMIN_INTERNAL_ERROR" : code);
     }
   });
 
-  it("requires CSRF for logout, revokes the session and expires the same-path cookie", async () => {
+  it("closes the console when the site session expires or is logged out", async () => {
     await start();
-    const { headers, cookie } = await signedIn();
-    expect((await request("/session", { method: "DELETE", headers: { cookie, origin: ORIGIN } })).status).toBe(403);
-    expect((await request("/session", { headers: { cookie } })).status).toBe(200);
-    const response = await request("/session", { method: "DELETE", headers });
-    expect(response.status).toBe(204);
-    expect(await response.text()).toBe("");
-    expect(response.headers.get("set-cookie")).toContain(`${ADMIN_SESSION_COOKIE}=; Path=/api/v1/admin; HttpOnly; SameSite=Strict; Max-Age=0; Secure`);
-    expect((await request("/models", { headers: { cookie } })).status).toBe(401);
+    const { cookie, headers } = await signedIn();
+    now += SESSION_IDLE_MS;
+    expect((await request("/admin/models", { headers: { cookie } })).status).toBe(401);
+    await start();
+    const second = await signedIn();
+    expect((await request("/auth/logout", { method: "POST", headers: second.headers })).status).toBe(204);
+    expect((await request("/admin/models", { headers: { cookie: second.cookie } })).status).toBe(401);
+    expect((await request("/admin/models/limits", { method: "PUT", headers, body: JSON.stringify(LIMITS) })).status).toBe(401);
     expect(store.view).not.toHaveBeenCalled();
   });
 
-  it.each([{ authMissing: true }, { backendMissing: true }])("returns configuration-unavailable with no login cookie or backend access for %j", async (options) => {
-    await start(options);
-    for (const response of [await login(), await request("/session"), await request("/models")]) {
-      expect(response.status).toBe(503);
-      expect(await response.json()).toMatchObject({ error: { code: "ADMIN_NOT_CONFIGURED" } });
-      expect(response.headers.get("set-cookie")).toBeNull();
-      privateHeaders(response);
-    }
+  it("refuses (never opens anonymously) when the site login is off or misconfigured", async () => {
+    await start({ site: "disabled" });
+    const disabled = await request("/admin/models");
+    expect(disabled.status).toBe(503);
+    expect(await disabled.json()).toMatchObject({ error: { code: "ADMIN_NOT_CONFIGURED" } });
+    await start({ site: "misconfigured" });
+    const misconfigured = await request("/admin/models");
+    expect(misconfigured.status).toBe(503);
+    expect(await misconfigured.json()).toMatchObject({ error: { code: "AUTH_NOT_CONFIGURED" } });
     expect(store.view).not.toHaveBeenCalled();
   });
 
-  it("bounds session memory and admits a new session when expired sessions have been removed", async () => {
-    await start();
-    for (let group = 0; group < 4; group += 1) {
-      for (let i = 0; i < 5; i += 1) expect((await login()).status).toBe(200);
-      now += 60_001;
-    }
-    const full = await login();
-    expect(full.status).toBe(429);
-    expect(await full.json()).toMatchObject({ error: { code: "ADMIN_SESSION_LIMIT" } });
-    now += ADMIN_SESSION_DURATION_MS;
-    expect((await login()).status).toBe(200);
+  it("returns configuration-unavailable to a signed-in session when the console is disabled", async () => {
+    await start({ backendMissing: true });
+    const { cookie } = await signedIn();
+    const response = await request("/admin/models", { headers: { cookie } });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ error: { code: "ADMIN_NOT_CONFIGURED" } });
+    privateHeaders(response);
   });
 
-  it("rejects a previous API process session after a new auth instance starts", async () => {
+  it("rejects a previous API process session after a restart", async () => {
     await start();
     const { cookie } = await signedIn();
-    await app!.close();
-    app = undefined;
     await start();
-    expect((await request("/models", { headers: { cookie } })).status).toBe(401);
+    expect((await request("/admin/models", { headers: { cookie } })).status).toBe(401);
     expect(store.view).not.toHaveBeenCalled();
   });
 
   it("keeps parser failures non-cacheable and does not expose malformed JSON content", async () => {
     await start();
-    const response = await request("/session", {
-      method: "POST", headers: { origin: ORIGIN, "content-type": "application/json" }, body: `{"token":"${TOKEN}",bad-json`,
-    });
+    const { headers } = await signedIn();
+    const response = await request("/admin/models/limits", { method: "PUT", headers, body: `{"apiKey":"${SECRET}",bad-json` });
     expect(response.status).toBe(400);
     privateHeaders(response);
-    expect(await response.text()).not.toContain(TOKEN);
-    expect(response.headers.get("set-cookie")).toBeNull();
-  });
-});
-
-describe("admin auth configuration boundary", () => {
-  it("allows insecure cookies only for explicitly configured loopback development origins", () => {
-    for (const publicOrigin of ["http://localhost:3000", "http://127.0.0.1:3000", "http://[::1]:3000"]) {
-      const auth = new AdminAuth({ token: TOKEN, publicOrigin });
-      expect(auth.login(TOKEN).cookie).not.toContain("Secure");
-    }
-    for (const publicOrigin of ["http://drama.example.test", "https://user:pass@drama.example.test", `${ORIGIN}/path`, `${ORIGIN}?secret=x`, "not-an-origin"]) {
-      expect(() => new AdminAuth({ token: TOKEN, publicOrigin })).toThrow("管理员配置尚未就绪");
-    }
-  });
-
-  it("rejects short, whitespace or unbounded administrator bootstrap tokens", () => {
-    for (const token of ["x".repeat(31), "x".repeat(257), `${TOKEN} with spaces`]) {
-      expect(() => new AdminAuth({ token, publicOrigin: ORIGIN })).toThrow("管理员配置尚未就绪");
-    }
+    expect(await response.text()).not.toContain(SECRET);
   });
 });

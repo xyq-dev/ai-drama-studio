@@ -1,12 +1,12 @@
-import { Body, Controller, Delete, Get, Headers, Inject, Param, Post, Put, Res } from "@nestjs/common";
+import { Body, Controller, Get, Headers, Inject, Optional, Param, Put, Res } from "@nestjs/common";
 import {
   adminLimitsUpdateSchema,
   adminProviderKeySchema,
   adminProviderUpdateSchema,
 } from "@ai-drama/contracts";
 import type { AdminLimitsUpdate, AdminModelsView, AdminProviderUpdate, TitleWritingProviderKey } from "@ai-drama/contracts";
-import { ADMIN_AUTH, AdminAuth, AdminHttpError, safeAdminError, setAdminResponseHeaders } from "./admin-auth";
-import type { AdminRequestHeaders } from "./admin-auth";
+import { SITE_AUTH, SiteAuthError, type RequestHeaders, type SiteAuth, type SiteAuthState } from "../auth/site-auth";
+import { AdminHttpError, safeAdminError, setAdminResponseHeaders } from "./admin-auth";
 
 export const ADMIN_MODELS_SERVICE = "ADMIN_MODELS_SERVICE";
 
@@ -21,45 +21,19 @@ interface AdminResponse {
   status(code: number): void;
 }
 
+/**
+ * The model console. Signing in is the site login; the console additionally needs MODEL_ADMIN_ENABLED and the site
+ * login switched on. With the site login off or misconfigured it refuses (503) instead of opening anonymously.
+ */
 @Controller("admin")
 export class AdminModelsController {
   constructor(
-    @Inject(ADMIN_AUTH) private readonly auth: AdminAuth | null,
     @Inject(ADMIN_MODELS_SERVICE) private readonly backend: AdminModelsBackend | null,
+    @Optional() @Inject(SITE_AUTH) private readonly site: SiteAuthState | null = null,
   ) {}
 
-  @Get("session")
-  session(@Headers() headers: AdminRequestHeaders, @Res({ passthrough: true }) response: AdminResponse) {
-    return this.send(response, () => this.configured().auth.session(headers));
-  }
-
-  @Post("session")
-  login(
-    @Headers() headers: AdminRequestHeaders,
-    @Body() body: unknown,
-    @Res({ passthrough: true }) response: AdminResponse,
-  ) {
-    return this.send(response, () => {
-      const { auth } = this.configured();
-      auth.assertOriginAndJson(headers);
-      const token = typeof body === "object" && body !== null && !Array.isArray(body) &&
-        Object.keys(body).length === 1 && "token" in body ? body.token : undefined;
-      const result = auth.login(token);
-      response.setHeader("Set-Cookie", result.cookie);
-      return result.session;
-    });
-  }
-
-  @Delete("session")
-  logout(@Headers() headers: AdminRequestHeaders, @Res({ passthrough: true }) response: AdminResponse) {
-    return this.send(response, () => {
-      response.setHeader("Set-Cookie", this.configured().auth.logout(headers));
-      return undefined;
-    }, 204);
-  }
-
   @Get("models")
-  models(@Headers() headers: AdminRequestHeaders, @Res({ passthrough: true }) response: AdminResponse) {
+  models(@Headers() headers: RequestHeaders, @Res({ passthrough: true }) response: AdminResponse) {
     return this.send(response, () => {
       const { auth, backend } = this.configured();
       auth.session(headers);
@@ -70,13 +44,13 @@ export class AdminModelsController {
   @Put("models/providers/:providerKey")
   updateProvider(
     @Param("providerKey") providerKey: string,
-    @Headers() headers: AdminRequestHeaders,
+    @Headers() headers: RequestHeaders,
     @Body() body: unknown,
     @Res({ passthrough: true }) response: AdminResponse,
   ) {
     return this.send(response, () => {
       const { auth, backend } = this.configured();
-      auth.authorizeWrite(headers);
+      authorizeJsonWrite(auth, headers);
       const key = adminProviderKeySchema.safeParse(providerKey);
       const input = adminProviderUpdateSchema.safeParse(body);
       if (!key.success || !input.success) throw new AdminHttpError(400, "ADMIN_CONFIG_INVALID");
@@ -86,22 +60,22 @@ export class AdminModelsController {
 
   @Put("models/limits")
   updateLimits(
-    @Headers() headers: AdminRequestHeaders,
+    @Headers() headers: RequestHeaders,
     @Body() body: unknown,
     @Res({ passthrough: true }) response: AdminResponse,
   ) {
     return this.send(response, () => {
       const { auth, backend } = this.configured();
-      auth.authorizeWrite(headers);
+      authorizeJsonWrite(auth, headers);
       const input = adminLimitsUpdateSchema.safeParse(body);
       if (!input.success) throw new AdminHttpError(400, "ADMIN_CONFIG_INVALID");
       return backend.updateLimits(input.data);
     });
   }
 
-  private configured(): { auth: AdminAuth; backend: AdminModelsBackend } {
-    if (!this.auth || !this.backend) throw new AdminHttpError(503, "ADMIN_NOT_CONFIGURED");
-    return { auth: this.auth, backend: this.backend };
+  private configured(): { auth: SiteAuth; backend: AdminModelsBackend } {
+    if (!this.backend || this.site?.kind !== "enabled") throw new AdminHttpError(503, "ADMIN_NOT_CONFIGURED");
+    return { auth: this.site.auth, backend: this.backend };
   }
 
   private async send(response: AdminResponse, work: () => unknown | Promise<unknown>, status = 200): Promise<unknown> {
@@ -111,9 +85,22 @@ export class AdminModelsController {
       response.status(status);
       return body;
     } catch (cause) {
+      if (cause instanceof SiteAuthError) {
+        response.status(cause.status);
+        return { error: { code: cause.code, message: cause.message } };
+      }
       const error = safeAdminError(cause);
       response.status(error.status);
       return { error: { code: error.code, message: error.message } };
     }
+  }
+}
+
+/** Console writes are JSON only, on top of the site's session, origin and CSRF checks. */
+function authorizeJsonWrite(auth: SiteAuth, headers: RequestHeaders): void {
+  auth.authorizeWrite(headers);
+  const contentType = headers["content-type"];
+  if (typeof contentType !== "string" || contentType.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
+    throw new SiteAuthError(415, "AUTH_CONTENT_TYPE_REJECTED");
   }
 }

@@ -8,6 +8,7 @@ on:
       - "apps/web/**"
       - "packages/**"
       - "scripts/admin-models*"
+      - "scripts/site-auth-password*"
       - "package.json"
       - "pnpm-lock.yaml"
       - ".github/workflows/admin-models.yml"
@@ -18,6 +19,7 @@ on:
       - "apps/web/**"
       - "packages/**"
       - "scripts/admin-models*"
+      - "scripts/site-auth-password*"
       - "package.json"
       - "pnpm-lock.yaml"
       - ".github/workflows/admin-models.yml"
@@ -55,7 +57,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y fonts-noto-cjk
       - name: Verify private bootstrap
-        run: node --test scripts/admin-models-init.test.mjs
+        run: node --test scripts/admin-models-init.test.mjs scripts/site-auth-password.test.mjs
       - name: Real browser and admin HTTP, temporary encrypted storage
         env:
           ADMIN_MODELS_BROWSER_ACCEPTANCE: local-temporary-storage

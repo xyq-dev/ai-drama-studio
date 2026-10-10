@@ -1,7 +1,8 @@
-// Real Chrome -> production Next -> Nest controller/auth -> encrypted temporary file.
+// Real Chrome -> production Next (page proxy) -> Nest site login + admin controller -> encrypted temporary file.
 // This isolated harness never connects to the application DB or a model provider.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { createRequire } from "node:module";
 import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -16,12 +17,14 @@ const require = createRequire(import.meta.url);
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
 const origin = "http://127.0.0.1:3820";
 const output = resolve(root, process.env.ADMIN_MODELS_EVIDENCE_DIR || "docs/admin-models");
-const token = "test-only-admin-credential-" + "x".repeat(24);
+// Generated per run, test-only; passed to the fixture server through its environment, never written to evidence.
+const password = `test-only-${randomBytes(18).toString("base64url")}`;
+process.env.ADMIN_MODELS_TEST_PASSWORD = password;
 const fakeKey = "sk-admin-browser-fake-key";
 const processes = [];
 let browser;
 const evidence = {
-  kind: "real-browser-real-admin-http-temporary-encrypted-file", database: false, modelCalls: 0,
+  kind: "real-browser-real-site-login-admin-http-temporary-encrypted-file", database: false, modelCalls: 0,
   headSha: process.env.ADMIN_MODELS_HEAD_SHA || null,
   routeFulfill: false, mockFetch: false, screenshots: [], checks: {}, errors: [],
 };
@@ -54,8 +57,8 @@ async function capture(page, name) {
   evidence.screenshots.push({ file, ...dimensions });
 }
 async function signIn(page) {
-  await page.getByLabel("管理员访问令牌", { exact: true }).fill(token);
-  await page.getByRole("button", { name: "进入模型配置", exact: true }).click();
+  await page.getByLabel("密码", { exact: true }).fill(password);
+  await page.getByRole("button", { name: "登录", exact: true }).click();
   await page.getByRole("button", { name: "校验并保存配置", exact: true }).waitFor();
 }
 async function readView(page) {
@@ -65,7 +68,7 @@ async function readView(page) {
   });
   assert.equal(result.status, 200);
   assert.equal(JSON.stringify(result.body).includes(fakeKey), false);
-  assert.equal(JSON.stringify(result.body).includes(token), false);
+  assert.equal(JSON.stringify(result.body).includes(password), false);
   return result.body;
 }
 
@@ -73,7 +76,7 @@ try {
   launch(["scripts/admin-models-browser-server.mjs"]);
   const webRequire = createRequire(resolve(root, "apps/web/package.json"));
   launch([webRequire.resolve("next/dist/bin/next"), "start", "--hostname", "127.0.0.1", "--port", "3820"], resolve(root, "apps/web"));
-  await waitHttp("http://127.0.0.1:3841/api/v1/admin/session", 401);
+  await waitHttp("http://127.0.0.1:3841/api/v1/auth/session", 401);
   await waitHttp(`${origin}/admin/models`, 200);
   browser = await chromium.launch({ headless: true,
     ...(process.env.CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.CHROMIUM_EXECUTABLE_PATH } : {}),
@@ -83,18 +86,21 @@ try {
   page.on("pageerror", (error) => evidence.errors.push(error.message));
   const requests = [];
   page.on("request", (request) => { if (request.url().includes("/api/v1/admin/")) requests.push({ path: new URL(request.url()).pathname, method: request.method() }); });
+  // Signed out: the page proxy sends the console to the site login, keeping where it was going.
   const response = await page.goto(`${origin}/admin/models`);
   assert.equal(response.status(), 200);
+  assert.equal(new URL(page.url()).pathname + new URL(page.url()).search, "/login?returnTo=%2Fadmin%2Fmodels");
   const headers = response.headers();
   assert.equal(headers["x-frame-options"], "DENY");
   assert.equal(headers["content-security-policy"], "frame-ancestors 'none'");
   assert.ok(headers["cache-control"].includes("no-store"), "Administrator HTML must not be cached");
-  await page.getByRole("button", { name: "进入模型配置", exact: true }).waitFor();
+  await page.getByRole("heading", { name: "登录红果创作", exact: true }).waitFor();
   await capture(page, "desktop-login");
   await signIn(page);
   await capture(page, "desktop-models-empty");
   const cookies = await context.cookies();
-  assert.ok(cookies.some((cookie) => cookie.httpOnly && cookie.sameSite === "Strict"));
+  const session = cookies.find((cookie) => cookie.name === "ads_session");
+  assert.ok(session && session.httpOnly && session.sameSite === "Lax" && session.path === "/");
   const before = await readView(page);
   assert.equal(before.savedRevision, 0);
   await page.getByLabel(/^服务端点/).fill("https://dashscope.aliyuncs.com/compatible-mode/v1");
@@ -114,11 +120,13 @@ try {
   assert.equal((await readView(page)).savedRevision, 1);
   const storage = await page.evaluate(() => ({ local: Object.values(localStorage), session: Object.values(sessionStorage), cookie: document.cookie }));
   assert.equal(JSON.stringify(storage).includes(fakeKey), false);
-  assert.equal(JSON.stringify(storage).includes(token), false);
-  assert.equal(storage.cookie, "");
+  assert.equal(JSON.stringify(storage).includes(password), false);
+  // Only the CSRF cookie is readable; the session cookie is HttpOnly.
+  assert.match(storage.cookie, /^ads_csrf=[A-Za-z0-9_-]{43}$/);
+  assert.equal(storage.cookie.includes(session.value), false);
   evidence.checks.refresh = { sameSavedRevision: true, httpOnlySession: true, noSecretsInBrowserStorage: true };
   await page.getByRole("button", { name: "退出", exact: true }).click();
-  await page.getByRole("button", { name: "进入模型配置", exact: true }).waitFor();
+  await page.waitForURL(/\/login\?returnTo=%2Fadmin%2Fmodels&reason=signed-out$/);
   const afterLogout = await context.request.get(`${origin}/api/v1/admin/models`);
   assert.equal(afterLogout.status(), 401);
   await signIn(page);
@@ -146,7 +154,8 @@ try {
   assert.equal(limits.savedRevision, 3); assert.equal(limits.saved.maxCallsPerDay, 8); assert.equal(limits.activeRevision, 0);
   assert.equal(limits.titleWriting.enabled, false);
   await page.getByRole("button", { name: "退出", exact: true }).click();
-  await page.getByRole("button", { name: "进入模型配置", exact: true }).waitFor();
+  await page.waitForURL(/\/login\?/);
+  await page.getByRole("heading", { name: "登录红果创作", exact: true }).waitFor();
   await capture(page, "mobile-login");
   assert.deepEqual(evidence.errors, []);
   evidence.checks.save = { savedRevision: 1, activeRevision: 0, pendingRestart: true, secretNotReturned: true };

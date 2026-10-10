@@ -6,23 +6,35 @@
 
 错误体：`{ error: { code, message, traceId, details? } }`。所有端点可能有 `UNAUTHENTICATED`、`FORBIDDEN`、`NOT_FOUND`、`VALIDATION_ERROR`、`RATE_LIMITED`；下表仅列模块特有错误。权限中的 Owner 是当前单工作区操作者；未来成员模型加入前不推断角色权限。
 
-## Admin model configuration
+## Site login
 
-独立管理员权限，不使用项目操作者令牌。此前缀同为 `/api/v1`；响应均 `Cache-Control: private, no-store`。
-会话cookie为 `ads_admin_session`（HttpOnly、SameSite=Strict；HTTPS时Secure；Path=/api/v1/admin；绝对30分钟）。
-成功响应为原始DTO；本组错误为固定脱敏的 `{error:{code,message}}`，不返回配置值、密钥或异常原文。
+启用 `SITE_AUTH_ENABLED=true` 后，整个 `/api/v1` 只有下表与健康探针可以匿名访问；其余读写、素材、下载、导出和模型后台都要求有效的服务端会话，未登录返回 401 JSON（不是登录页 HTML）。
+会话 cookie 在 HTTPS 下为 `__Host-ads_session`（HttpOnly、Secure、SameSite=Lax、Path=/），另有可读的 `__Host-ads_csrf`（SameSite=Strict）供页面在写请求中回显。空闲 2 小时或登录 12 小时后失效，API 重启使所有会话失效。
+写请求（非 GET/HEAD/OPTIONS）还需 `Origin` 与配置的站点 origin 完全一致，以及 `X-CSRF-Token` 等于本会话的 CSRF 值；原有 `Idempotency-Key`、`If-Match` 规则不变。
 
 | Method / Path | 请求与响应 | 限制 |
 | --- | --- | --- |
-| `POST /admin/session` | `{token}` → `AdminSessionView` + cookie，200 | 固定Origin、JSON、5次/分钟；无供应商请求 |
-| `GET /admin/session` | `AdminSessionView`含会话CSRF与过期时间，200 | 已验证cookie；未登录401 |
-| `DELETE /admin/session` | 204，失效cookie与会话 | 固定Origin、`X-Admin-CSRF` |
-| `GET /admin/models` | `AdminModelsView`：saved/active、revision、待重启/暂缓、审计、标题创作只读门控 | 管理员会话；只回keyConfigured，不返回密钥或尾号 |
+| `GET /auth/session` | 已登录：`{enabled:true,authenticated:true,username,csrfToken,expiresAt}`；未登录 401 `AUTH_REQUIRED` / `AUTH_SESSION_EXPIRED`；登录关闭：`{enabled:false,authenticated:false}` | no-store |
+| `POST /auth/login` | `{username,password}` → 会话视图 + cookie，200；错误 401 `AUTH_LOGIN_FAILED`（账号不存在与密码错误相同） | 固定 Origin、JSON、全局每分钟 5 次（429 `AUTH_RATE_LIMITED`），最多 20 个会话 |
+| `POST /auth/logout` | 204，撤销服务端会话并清除 cookie | 有会话时需固定 Origin 与 `X-CSRF-Token` |
+| `GET|HEAD /health/live`、`/health/ready` | 不变 | 匿名；不含业务数据 |
+
+`SITE_AUTH_ENABLED=true` 但配置缺失或无效：除健康探针外全部 503 `AUTH_NOT_CONFIGURED`，不回退为匿名开放。
+
+## Admin model configuration
+
+使用站点统一登录（上一节），不再有独立的管理员访问令牌，也不使用项目操作者令牌。此前缀同为 `/api/v1`；响应均 `Cache-Control: private, no-store`。
+站点登录关闭或配置无效时本组返回 503，不会匿名开放。成功响应为原始DTO；本组错误为固定脱敏的 `{error:{code,message}}`，不返回配置值、密钥或异常原文。
+原 `GET/POST/DELETE /admin/session`（令牌登录）已删除。
+
+| Method / Path | 请求与响应 | 限制 |
+| --- | --- | --- |
+| `GET /admin/models` | `AdminModelsView`：saved/active、revision、待重启/暂缓、审计、标题创作只读门控 | 站点会话；只回keyConfigured，不返回密钥或尾号 |
 | `PUT /admin/models/providers/:providerKey` | `{expectedRevision,models,baseUrl?,secretAction,apiKey?}` → 更新后View | key∈qwen/openai/deepseek；secretAction∈keep/replace/clear；仅replace携带apiKey |
 | `PUT /admin/models/limits` | `{expectedRevision,defaultProvider,maxCallsPerDay,maxActiveRuns}` → 更新后View | defaultProvider可null；每日1–500、并发1–10；次数不是金额预算 |
 
-PUT需会话、固定Origin、JSON、`X-Admin-CSRF`与最新revision，CAS失败409 `ADMIN_CONFIG_CONFLICT`；存储忙409 `ADMIN_CONFIG_BUSY`；
-配置无效400 `ADMIN_CONFIG_INVALID`；后台未配置503 `ADMIN_NOT_CONFIGURED`；存储错误503 `ADMIN_CONFIG_STORAGE_UNAVAILABLE`。
+PUT需站点会话、固定Origin、JSON、`X-CSRF-Token`与最新revision，CAS失败409 `ADMIN_CONFIG_CONFLICT`；存储忙409 `ADMIN_CONFIG_BUSY`；
+配置无效400 `ADMIN_CONFIG_INVALID`；后台未开启503 `ADMIN_NOT_CONFIGURED`；存储错误503 `ADMIN_CONFIG_STORAGE_UNAVAILABLE`。
 保存不保证已生效；API启动时无running标题任务才应用，否则保留旧active；无自动模型请求或重试。详见 `ADMIN_MODEL_SETTINGS.md`。
 
 ## Projects
