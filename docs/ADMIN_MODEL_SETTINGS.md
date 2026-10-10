@@ -62,7 +62,7 @@ sudo -u <API_USER> <NODE24_PATH> <RELEASE>/scripts/admin-models-init.mjs \
 | MODEL_ADMIN_CONFIG_PATH | 私有目录里的 `models.enc` |
 | MODEL_ADMIN_MASTER_KEY | 32字节随机加密主密钥，64位十六进制 |
 
-`MODEL_ADMIN_TOKEN`、`MODEL_ADMIN_PUBLIC_ORIGIN` 已不再读取（API 启动时只记录可删除的提示，不作为登录方式）；升级时从此文件删除，站点 origin 改为 `SITE_AUTH_PUBLIC_ORIGIN`。旧版本生成的 `admin-login.txt` 已无用，可按运维规程安全删除。
+新版不再读取 `MODEL_ADMIN_TOKEN`、`MODEL_ADMIN_PUBLIC_ORIGIN`（API 启动时只记录可删除的提示，不作为登录方式），站点 origin 改为 `SITE_AUTH_PUBLIC_ORIGIN`。**旧版 API 在后台开启时仍需要这两个变量**，所以在回滚窗口内保留它们和旧 `admin-login.txt`，不要改动此文件；统一登录配置放在单独的环境文件里。确认不再回退后再删除，步骤见 [`UNIFIED_ADMIN_LOGIN.md`](UNIFIED_ADMIN_LOGIN.md) 的 Hermes 交接。
 
 只把此EnvironmentFile注入API，不给Web/Worker。保留已有环境来源；检查 `TITLE_WRITING_ENABLED` 仍为false/未设，操作者令牌没有被替换。
 先停旧API再启新API；API健康后切换Web。Worker/media-worker无需因本功能切换；若同次部署还包含其他变更需另作差异核验。

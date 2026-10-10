@@ -104,7 +104,7 @@ try {
   // 1. Anonymous: every business entry refused by the application itself, through the candidate Caddy config.
   const id = randomUUID();
   const refused = {};
-  for (const [method, path] of [["GET", "/api/v1/projects"], ["POST", "/api/v1/projects"], ["GET", `/api/v1/projects/${id}/story-revisions`],
+  for (const [method, path] of [["GET", "/api/v1/projects"], ["POST", "/api/v1/projects"], ["GET", `/api/v1/projects/${id}/stories`],
     ["GET", `/api/v1/assets/${id}/content`], ["GET", `/api/v1/projects/${id}/episodes/${id}/composites/${id}/download?expectedContentHash=${"a".repeat(64)}`],
     ["GET", "/api/v1/admin/models"], ["GET", "/api/v1/writing/title-runs/options"], ["POST", `/api/v1/projects/${id}/title-runs`]]) {
     const response = await anonymous.request.fetch(`${SITE}${path}`, { method, headers: { origin: SITE, "content-type": "application/json" },
@@ -164,8 +164,19 @@ try {
   await page.getByRole("button", { name: "确认创建作品" }).click();
   await page.waitForURL(/\/projects\/[0-9a-f-]+\/create/);
   const projects = await (await page.request.get(`${SITE}/api/v1/projects`)).json();
-  assert.ok(projects.items.some((item) => item.title === title), "the created work is listed");
+  const created = projects.items.find((item) => item.title === title);
+  assert.ok(created, "the created work is listed");
   evidence.checks.createdWork = true;
+  // The same real route, on the work just created: the real handler answers with the session, and refuses without it.
+  const storiesPath = `/api/v1/projects/${created.id}/stories`;
+  const signedInStories = await page.request.get(`${SITE}${storiesPath}`);
+  assert.equal(signedInStories.status(), 200, "signed in, the real stories handler answers");
+  await signedInStories.json();
+  const stranger = await browser.newContext({ ignoreHTTPSErrors: true });
+  const anonymousStories = await stranger.request.get(`${SITE}${storiesPath}`);
+  assert.equal(anonymousStories.status(), 401, "the same route without a session");
+  await stranger.close();
+  evidence.checks.realRouteWithAndWithoutSession = { path: "/api/v1/projects/:projectId/stories", signedIn: 200, anonymous: 401 };
   await page.goto(`${SITE}/studio`);
   await page.getByText(title).first().waitFor();
   await capture(page, "desktop-studio");

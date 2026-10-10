@@ -36,7 +36,7 @@ class BusinessRoutes {
 for (const [decorator, path, name] of [
   [Get, "projects", "list"],
   [Post, "projects", "create"],
-  [Get, "projects/:id/story-revisions", "stories"],
+  [Get, "projects/:projectId/stories", "stories"],
   [Get, "assets/:id/content", "content"],
   [Head, "assets/:id/content", "contentHead"],
   [Get, "projects/:p/episodes/:e/composites/:a/download", "download"],
@@ -74,6 +74,7 @@ describe("site login over real HTTP", () => {
   });
 
   async function start(state?: SiteAuthState) {
+    await app?.close();
     const chosen = state ?? { kind: "enabled", auth: new SiteAuth({ username: USERNAME, passwordHash: HASH, publicOrigin: ORIGIN }, { now: () => now }) };
     class Routes {}
     Module({ controllers: [BusinessRoutes] })(Routes);
@@ -151,7 +152,7 @@ describe("site login over real HTTP", () => {
     await start();
     const id = "11111111-1111-4111-8111-111111111111";
     for (const [method, path] of [
-      ["GET", "/projects"], ["POST", "/projects"], ["GET", `/projects/${id}/story-revisions`],
+      ["GET", "/projects"], ["POST", "/projects"], ["GET", `/projects/${id}/stories`],
       ["GET", `/assets/${id}/content`], ["HEAD", `/assets/${id}/content`],
       ["GET", `/projects/${id}/episodes/${id}/composites/${id}/download?expectedContentHash=${"a".repeat(64)}`],
       ["GET", `/projects/${id}/episodes/${id}/composites/${id}/export-manifest?expectedContentHash=${"a".repeat(64)}`],
@@ -215,6 +216,22 @@ describe("site login over real HTTP", () => {
     const expired = await request("/projects", { headers: read });
     expect(expired.status).toBe(401);
     expect(await expired.json()).toMatchObject({ error: { code: "AUTH_SESSION_EXPIRED", message: "登录已过期或已退出，请重新登录。" } });
+  });
+
+  it("answers a passive session check without extending the idle limit; a normal read does extend it", async () => {
+    await start();
+    const { read } = await signedIn();
+    const passive = { ...read, "x-session-check": "passive" };
+    now += SESSION_IDLE_MS - 1;
+    expect((await request("/auth/session", { headers: passive })).status).toBe(200);
+    now += 1;
+    expect((await request("/auth/session", { headers: passive })).status).toBe(401);
+    await start();
+    const second = await signedIn();
+    now += SESSION_IDLE_MS - 1;
+    expect((await request("/auth/session", { headers: second.read })).status).toBe(200);
+    now += 1;
+    expect((await request("/auth/session", { headers: { ...second.read, "x-session-check": "passive" } })).status).toBe(200);
   });
 
   it("ends a session at the absolute limit even while it is in use", async () => {

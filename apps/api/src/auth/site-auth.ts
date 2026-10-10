@@ -162,6 +162,25 @@ export class SiteAuth {
     return this.view(found.value);
   }
 
+  /** The same answer as session() without counting as activity: for a page's own expiry check, not for access. */
+  peek(headers: RequestHeaders): SiteSessionView {
+    const found = this.lookup(headers);
+    if (!found) throw this.missing(headers);
+    return this.view(found.value);
+  }
+
+  /**
+   * For long-lived responses (the event stream): binds to the session the request carries and returns a check that
+   * is true only while that very session still exists and has not expired. The check never counts as activity, so
+   * server pushes cannot extend the idle limit. Null when the request has no valid session.
+   */
+  watch(headers: RequestHeaders): (() => boolean) | null {
+    const found = this.lookup(headers);
+    if (!found) return null;
+    const { key, value } = found;
+    return () => this.sessions.get(key) === value && this.expiresAt(value) > this.now();
+  }
+
   /** Writes need the session, the exact origin and the session's CSRF token in X-CSRF-Token. */
   authorizeWrite(headers: RequestHeaders): void {
     this.assertOrigin(headers);

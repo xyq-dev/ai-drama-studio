@@ -69,6 +69,8 @@ export function AdminModels() {
   const [busy, setBusy] = useState("");
   const busyRef = useRef("");
   const generation = useRef(0);
+  const expiryChecking = useRef(false);
+  const expiryRetry = useRef<number | undefined>(undefined);
 
   function begin(kind: string): number | null {
     if (busyRef.current) return null;
@@ -84,6 +86,7 @@ export function AdminModels() {
   }
   function endSession(message: string) {
     generation.current += 1;
+    if (expiryRetry.current !== undefined) { window.clearTimeout(expiryRetry.current); expiryRetry.current = undefined; }
     busyRef.current = ""; setBusy("");
     setSession(null); setView(null); setDrafts({}); setAuth("guest");
     forgetSecrets(); setError(""); setNotice(""); setLoginError(message); setMustReload(false);
@@ -125,14 +128,45 @@ export function AdminModels() {
 
   useEffect(() => {
     void checkSession();
-    return () => { generation.current += 1; busyRef.current = ""; };
+    return () => {
+      generation.current += 1; busyRef.current = "";
+      if (expiryRetry.current !== undefined) window.clearTimeout(expiryRetry.current);
+    };
     // The initial authentication request owns this mount; actions start their own guarded requests.
   }, []);
 
+  /**
+   * At the expiry the page last saw, ask the server (passively: the check is not activity) whether the session is
+   * still there. Reads and writes may have extended it: then only the snapshot and the timer move, drafts stay.
+   * Only a confirmed end clears sensitive input and goes to the login; a failed check is not an end, it is asked again.
+   * This never reinstalls the settings view, so unsaved edits are kept.
+   */
+  async function confirmExpiry() {
+    if (expiryChecking.current) return;
+    expiryChecking.current = true;
+    const epoch = generation.current;
+    try {
+      const next = await readSession(undefined, { passive: true });
+      if (epoch !== generation.current) return;
+      if (next.enabled && next.authenticated && next.expiresAt && Number.isFinite(Date.parse(next.expiresAt))) {
+        setSession((current) => (current ? { ...current, ...next } : current));
+        return;
+      }
+      endSession("登录已过期，请重新登录。");
+      goToLogin("expired");
+    } catch {
+      if (epoch !== generation.current) return;
+      expiryRetry.current = window.setTimeout(() => { expiryRetry.current = undefined; void confirmExpiry(); }, 30_000);
+    } finally {
+      expiryChecking.current = false;
+    }
+  }
+
   useEffect(() => {
     if (!session) return;
-    const timer = window.setTimeout(() => { endSession("登录已过期，请重新登录。"); goToLogin("expired"); },
-      Math.min(2_147_483_647, Math.max(0, Date.parse(session.expiresAt ?? "") - Date.now())));
+    // At least a short delay, so a timer firing a little early cannot spin.
+    const timer = window.setTimeout(() => { void confirmExpiry(); },
+      Math.min(2_147_483_647, Math.max(250, Date.parse(session.expiresAt ?? "") - Date.now())));
     return () => window.clearTimeout(timer);
   }, [session]);
 

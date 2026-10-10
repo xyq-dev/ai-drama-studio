@@ -196,6 +196,9 @@ export function loadApiEnv(
     const value = processEnv[key];
     if (value !== undefined && value.length > 0) processOnly[key] = value;
   }
+  // The login switch keeps an explicitly empty value: "SITE_AUTH_ENABLED=" is a broken setting, not "unset", and the
+  // site login refuses access for it instead of treating it as switched off. Other variables keep dropping "".
+  if (processEnv.SITE_AUTH_ENABLED === "") processOnly.SITE_AUTH_ENABLED = "";
   return {
     ...parsed.data,
     ...processOnly,

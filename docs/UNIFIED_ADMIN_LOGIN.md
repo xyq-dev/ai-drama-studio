@@ -74,25 +74,33 @@ sudo -u <API_USER> <NODE24_PATH> <RELEASE>/scripts/site-auth-password.mjs --pass
 
 ### 旧配置的升级与清理
 
-- `MODEL_ADMIN_TOKEN`、`MODEL_ADMIN_PUBLIC_ORIGIN` 不再读取；若仍存在，API 启动时只记录“可删除”的警告，不作为任何登录方式（令牌登录路由已删除）。升级后从 `api-admin.env` 删除这两行；旧 `admin-login.txt` 按运维规程安全删除。
+- 新版不再读取 `MODEL_ADMIN_TOKEN`、`MODEL_ADMIN_PUBLIC_ORIGIN`；若仍存在，API 启动时只记录“可删除”的警告，不作为任何登录方式（令牌登录路由已删除）。
+- **但旧版 API 在模型后台开启时仍必须有这两个变量**，缺失会在启动阶段抛出 `ADMIN_NOT_CONFIGURED`（已用虚构配置在旧版 `91ed8ad` 的 bootstrap 上核对）。因此**回滚窗口内保留它们**：不改动现有 `api-admin.env`，统一登录配置放在单独的新文件；回滚窗口结束、确认不再回退后，才删除这两行和旧 `admin-login.txt`。
 - `scripts/admin-models-init.mjs` 只生成模型保险库配置，不再生成令牌或登录文件；已初始化的服务器不要重新执行。
 
 ## Hermes 部署交接
 
 **本 PR 不部署、不改服务器。**以下按顺序执行；每一步通过后再进行下一步。不要把服务器实际凭据写进交接或日志。只改本站点，不动其他站点。
 
+0. **先备份现场（全部受保护保存，不进 Git、报告或日志）**：当前 Caddy 配置（含 Basic Auth 站点块）、API/Web 的 systemd 单元、API 的全部 EnvironmentFile（含 `api-admin.env`）、正在运行的版本与目录。记录 `NODE_ENV` 等现有值，保持现场实际原值，不假定为 production，也不为启用功能修改它。
 1. **保留现有 Caddy Basic Auth**，准备新配置：
    - 用 `scripts/site-auth-password.mjs` 按用户指定的密码生成哈希（隐藏输入或受保护文件）。
-   - 新建受保护环境文件（600，API 服务账号所有），内容：`SITE_AUTH_ENABLED=true`、`SITE_AUTH_USERNAME=admin`、`SITE_AUTH_PASSWORD_HASH=…`、`SITE_AUTH_PUBLIC_ORIGIN=https://drama.playhubs.cn`；在 API 的 systemd 单元追加 `EnvironmentFile=`。只给 API，不给 Web/Worker。
-   - 从 `api-admin.env` 删除 `MODEL_ADMIN_TOKEN`、`MODEL_ADMIN_PUBLIC_ORIGIN`。不改 `MODEL_ADMIN_MASTER_KEY`、`MODEL_ADMIN_CONFIG_PATH`、`models.enc` 与初始化标记。
-   - 确认 `TITLE_WRITING_ENABLED` 仍为 false/未设，`NODE_ENV=production` 不变。
+   - 新建**单独的**受保护环境文件（600，API 服务账号所有，版本化命名，如 `site-auth.env`），内容：`SITE_AUTH_ENABLED=true`、`SITE_AUTH_USERNAME=admin`、`SITE_AUTH_PASSWORD_HASH=…`、`SITE_AUTH_PUBLIC_ORIGIN=https://drama.playhubs.cn`；在 API 的 systemd 单元追加一行 `EnvironmentFile=`。只给 API，不给 Web/Worker。
+   - **不修改**现有 `api-admin.env`：其中的 `MODEL_ADMIN_TOKEN`、`MODEL_ADMIN_PUBLIC_ORIGIN` 在回滚窗口内保留（新版只会提示可删除）；`MODEL_ADMIN_MASTER_KEY`、`MODEL_ADMIN_CONFIG_PATH`、`models.enc` 与初始化标记都不变。
+   - 确认 `TITLE_WRITING_ENABLED` 仍为 false/未设，`NODE_ENV` 与部署前相同。
 2. **部署并启用应用层统一登录**（Basic Auth 仍在外层）：按现有手册构建精确 SHA（Web 构建时 `NEXT_PUBLIC_API_BASE_URL` 指向本机 API）；先停旧 API 再启新 API，API 健康后切换 Web。经 Basic Auth 验证：
    - 打开站点任一页面 → 跳到 `/login`；登录一次 → 回到原页面；`/admin/models` 不再要求令牌。
    - 本机绕过 Caddy 直接请求 Web：`curl -sI http://127.0.0.1:<WEB_PORT>/studio` 为 307 到 `/login?returnTo=%2Fstudio`；`curl -s http://127.0.0.1:<WEB_PORT>/api/v1/projects` 为 401 JSON；`/api/v1/health/live`、`/ready` 正常。
    - API 日志中没有 “login configuration is incomplete”。
 3. **确认保护完整后才替换 Caddy 站点配置**：用 `node scripts/render-caddy-site.mjs --site drama.playhubs.cn --upstream 127.0.0.1:<WEB_PORT>` 生成新站点块（无 `basic_auth`，只代理到 Web），先 `caddy validate`，再只替换本站点的块并 `caddy reload`。若服务器上有生成 Caddy 配置的脚本或模板，同步改为使用本仓库模板，否则下次部署会重新出现双重登录。
-4. **验证**：浏览器只出现一次登录、无 Basic Auth 弹窗；匿名访问页面跳登录、匿名 API 401；退出后旧会话失效（页面跳登录、API 401）；原有创作、模型后台读取正常；标题创作 options 仍为 `enabled=false`；健康检查正常。
-5. **回滚顺序**：先恢复外层保护（还原 Caddy 站点块为 Basic Auth 并 reload），再退回旧应用版本；不要先退应用，避免出现匿名开放窗口。若只需退回登录方式，也可在保留 Basic Auth 的前提下把 `SITE_AUTH_ENABLED` 改为 false 并重启 API（站点回到旧的两层登录，模型后台此时返回 503）。
+4. **验证**：浏览器只出现一次登录、无 Basic Auth 弹窗；匿名访问页面跳登录、匿名 API 401；退出后旧会话失效（页面跳登录、API 401，已打开的事件流随之结束）；原有创作、模型后台读取正常；标题创作 options 仍为 `enabled=false`；健康检查正常。
+5. **回滚**（按此顺序，避免匿名开放窗口，也避免旧版启动失败）：
+   1. 恢复外层保护：还原第 0 步备份的 Caddy 站点块（Basic Auth）并 `caddy validate`、`reload`，确认未登录访问出现 Basic Auth。
+   2. 恢复旧版所需环境：还原第 0 步备份的 systemd 单元与 EnvironmentFile（去掉 `site-auth.env` 那一行；`api-admin.env` 应仍含 `MODEL_ADMIN_TOKEN`、`MODEL_ADMIN_PUBLIC_ORIGIN`，若已被改动则用备份恢复），`systemctl daemon-reload`。
+   3. 恢复旧应用：先停新 API 再启旧版本 API，API 健康后切换旧 Web。
+   4. 验证：`/api/v1/health/live`、`/ready` 正常；经 Basic Auth 打开站点；`/admin/models` 用旧管理员令牌登录可读取配置；数据库与 `models.enc` 未变。
+   - 回滚不能只靠把 `SITE_AUTH_ENABLED` 改为 false：新版已没有令牌登录，这样做不会恢复旧的两层登录，模型后台会一直返回 503。
+6. **回滚窗口结束后清理**：确认不再回退后，才从 `api-admin.env` 删除 `MODEL_ADMIN_TOKEN`、`MODEL_ADMIN_PUBLIC_ORIGIN`，安全删除旧 `admin-login.txt` 与不再需要的备份；重启 API 一次并确认警告消失。
 
 ## 验证
 
@@ -121,10 +129,10 @@ sudo -u <API_USER> <NODE24_PATH> <RELEASE>/scripts/site-auth-password.mjs --pass
 
 Unified site login 验收中实际核对（证据 `unified-login/site-login-evidence.json`）：
 
-- 匿名经 Caddy：作品列表/创建、故事版本、素材内容、成片下载、模型后台、标题创作选项与启动全部 401 JSON，无 `WWW-Authenticate`；`/`、`/studio`、`/create`、`/admin/models`、`/projects/<id>` 均 307 到 `/login?returnTo=…`；`/api/v1/health/live` 200，只含 service/status/timestamp/version。
+- 匿名经 Caddy：作品列表/创建、故事版本列表（`/projects/:projectId/stories`）、素材内容、成片下载、模型后台、标题创作选项与启动全部 401 JSON，无 `WWW-Authenticate`。其中素材与成片下载使用随机 ID：401 只证明认证层在进入业务前拒绝，不代表对真实素材做过“登录可下载、匿名被拒”的对照；`/`、`/studio`、`/create`、`/admin/models`、`/projects/<id>` 均 307 到 `/login?returnTo=…`；`/api/v1/health/live` 200，只含 service/status/timestamp/version。
 - 旧令牌：`POST /admin/session`、作为密码登录、作为 Bearer 头均被拒绝。
 - 一次登录：错误密码提示统一文案；正确密码回到 `/create`；cookie 为 `__Host-ads_session`（HttpOnly、Secure、Lax、/）和 `__Host-ads_csrf`（可读、Secure、Strict）。
-- 登录后在创作页真实创建作品（CSRF、幂等键、Origin 均真实），在“我的作品”可见；`/admin/models` 无令牌输入、刷新保持会话；标题创作仍 `TITLE_WRITING_DISABLED`。
+- 登录后在创作页真实创建作品（CSRF、幂等键、Origin 均真实），在“我的作品”可见；对这部作品的真实故事版本接口 `/projects/:projectId/stories`，登录时 200、匿名 401（同一路径的对照，修复 S5 后加入）；`/admin/models` 无令牌输入、刷新保持会话；标题创作仍 `TITLE_WRITING_DISABLED`。
 - 带会话的跨站写（伪造 Origin）与缺 CSRF 的写均 403；localStorage / sessionStorage 为空，页面读不到会话 cookie。
 - 退出后旧会话 cookie 访问 API 401、访问页面跳登录（`reason=expired`）；再次打开 `/admin/models` 需登录。
 - 1440 与 390 无横向溢出。

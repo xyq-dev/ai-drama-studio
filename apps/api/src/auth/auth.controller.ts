@@ -24,7 +24,8 @@ export class AuthController {
   session(@Headers() headers: RequestHeaders, @Res({ passthrough: true }) response: AuthResponse) {
     return this.send(response, () => {
       if (this.state.kind === "disabled") return { enabled: false, authenticated: false };
-      return this.auth().session(headers);
+      // A passive check (a page asking whether its session is still there) must not keep the session alive.
+      return headers["x-session-check"] === "passive" ? this.auth().peek(headers) : this.auth().session(headers);
     });
   }
 

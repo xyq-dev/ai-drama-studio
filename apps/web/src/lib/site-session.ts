@@ -104,9 +104,13 @@ export interface SiteSession {
   expiresAt?: string;
 }
 
-/** Reads the login state; a 401 means signed out. Throws only when the login service cannot answer. */
-export async function readSession(fetchImpl: FetchLike = globalThis.fetch.bind(globalThis)): Promise<SiteSession> {
-  const response = await fetchImpl("/api/v1/auth/session", { headers: { Accept: "application/json" }, credentials: "same-origin", cache: "no-store" });
+/**
+ * Reads the login state; a 401 means signed out. Throws only when the login service cannot answer. A passive read
+ * (a page checking its own expiry) does not count as activity, so it cannot keep an idle session alive.
+ */
+export async function readSession(fetchImpl: FetchLike = globalThis.fetch.bind(globalThis), options: { passive?: boolean } = {}): Promise<SiteSession> {
+  const response = await fetchImpl("/api/v1/auth/session", { headers: { Accept: "application/json", ...(options.passive ? { "X-Session-Check": "passive" } : {}) },
+    credentials: "same-origin", cache: "no-store" });
   if (response.status === 401) return { enabled: true, authenticated: false };
   if (!response.ok) throw new Error("LOGIN_SERVICE_UNAVAILABLE");
   const body = await response.json() as SiteSession;

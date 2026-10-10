@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 // UI and request-contract regressions with simulated fetch; not server or provider acceptance.
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdminModelsView } from "@ai-drama/contracts";
 import { AdminModels } from "./admin-models";
@@ -226,5 +226,81 @@ describe("administrator model settings behind the site login", () => {
     render(<AdminModels />);
     await screen.findByRole("button", { name: "重新检查后台状态" }); fireEvent.click(screen.getByRole("button", { name: "重新检查后台状态" })); await ready();
     expect(calls.filter((call) => call.method !== "GET")).toHaveLength(0);
+  });
+});
+
+describe("session expiry check on the model console (S4)", () => {
+  const soon = () => ({ ...session(), expiresAt: new Date(Date.now() + 300).toISOString() });
+  const later = () => ({ ...session(), expiresAt: new Date(Date.now() + 3_600_000).toISOString() });
+  const passiveCalls = (calls: Call[]) => calls.filter((call) => call.url.endsWith("/auth/session")
+    && new Headers(call.init.headers).get("X-Session-Check") === "passive");
+
+  it("keeps unsaved edits and only moves its timer when the session was extended meanwhile", async () => {
+    let first = true;
+    const calls = server((call) => {
+      if (!call.url.endsWith("/auth/session")) return undefined;
+      if (first) { first = false; return json(soon()); }
+      return json(later());
+    });
+    render(<AdminModels />); await ready();
+    fireEvent.change(modelsInput(), { target: { value: "unsaved-draft-model" } });
+    chooseSecret("填写 / 替换"); fireEvent.change(keyInput(), { target: { value: KEY } });
+    await waitFor(() => expect(passiveCalls(calls)).toHaveLength(1), { timeout: 3000 });
+    await act(async () => { await Promise.resolve(); });
+    expect(assign).not.toHaveBeenCalled();
+    expect(modelsInput().value).toBe("unsaved-draft-model");
+    expect(keyInput().value).toBe(KEY);
+    // The settings were not read again: a renewal never reinstalls the view.
+    expect(calls.filter((call) => call.url.endsWith("/admin/models"))).toHaveLength(1);
+  });
+
+  it("clears sensitive input and goes to the login only when the server confirms the session ended", async () => {
+    let first = true;
+    const calls = server((call) => {
+      if (!call.url.endsWith("/auth/session")) return undefined;
+      if (first) { first = false; return json(soon()); }
+      return json({ error: { code: "AUTH_SESSION_EXPIRED" } }, 401);
+    });
+    render(<AdminModels />); await ready();
+    chooseSecret("填写 / 替换"); fireEvent.change(keyInput(), { target: { value: KEY } });
+    await waitFor(() => expect(assign).toHaveBeenCalledWith("/login?returnTo=%2Fadmin%2Fmodels&reason=expired"), { timeout: 3000 });
+    expect(passiveCalls(calls)).toHaveLength(1);
+    expect(screen.queryByRole("heading", { name: "模型配置" })).toBeNull();
+    expect(screen.queryByLabelText(/^新的 API Key/)).toBeNull();
+    expect(document.body.textContent).not.toContain(KEY);
+  });
+
+  it("does not treat a failed check as a logout: nothing is cleared and nobody is sent away", async () => {
+    for (const failure of [() => Promise.reject(new Error("offline")), () => Promise.resolve(json({ error: { code: "AUTH_NOT_CONFIGURED" } }, 503))]) {
+      let first = true;
+      const calls = server((call) => {
+        if (!call.url.endsWith("/auth/session")) return undefined;
+        if (first) { first = false; return json(soon()); }
+        return failure();
+      });
+      render(<AdminModels />); await ready();
+      fireEvent.change(modelsInput(), { target: { value: "kept-model" } });
+      await waitFor(() => expect(passiveCalls(calls)).toHaveLength(1), { timeout: 3000 });
+      await act(async () => { await Promise.resolve(); });
+      expect(assign).not.toHaveBeenCalled();
+      expect(screen.getByRole("heading", { name: "模型配置" })).toBeTruthy();
+      expect(modelsInput().value).toBe("kept-model");
+      cleanup();
+    }
+  });
+
+  it("ignores a late answer that arrives after the page was left", async () => {
+    let first = true;
+    const pending = deferred<Response>();
+    const calls = server((call) => {
+      if (!call.url.endsWith("/auth/session")) return undefined;
+      if (first) { first = false; return json(soon()); }
+      return pending.promise;
+    });
+    const mount = render(<AdminModels />); await ready();
+    await waitFor(() => expect(passiveCalls(calls)).toHaveLength(1), { timeout: 3000 });
+    mount.unmount();
+    await act(async () => pending.resolve(json({ error: { code: "AUTH_SESSION_EXPIRED" } }, 401)));
+    expect(assign).not.toHaveBeenCalled();
   });
 });

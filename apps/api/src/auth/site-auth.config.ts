@@ -2,9 +2,10 @@ import type { ApiEnv } from "../config/env";
 import { SiteAuth, type SiteAuthState } from "./site-auth";
 
 /**
- * SITE_AUTH_ENABLED is independent of MODEL_ADMIN_ENABLED. Unset or "false" keeps the earlier behaviour (no
- * application login; the deployment must then protect the site in front of it). "true" with anything missing or
- * invalid is "misconfigured": every protected request is refused, never served anonymously.
+ * SITE_AUTH_ENABLED is independent of MODEL_ADMIN_ENABLED. Unset or exactly "false" keeps the earlier behaviour (no
+ * application login; the deployment must then protect the site in front of it). Any other value — including an
+ * explicitly empty one (loadApiEnv keeps "" for this key) — or "true" with anything missing or invalid is
+ * "misconfigured": every protected request is refused, never served anonymously.
  */
 export function siteAuthFromEnv(env: ApiEnv): SiteAuthState {
   const enabled = env.SITE_AUTH_ENABLED;
