@@ -62,7 +62,7 @@ export {
   type QwenWebStore,
   type QwenWebWritingResult,
 } from "./qwen-web-writing";
-export { createQwenFetchTransport } from "./qwen-chat";
+export { createQwenFetchTransport, resolveQwenChatEndpoint } from "./qwen-chat";
 export {
   DEEPSEEK_CHAT_URL,
   OPENAI_RESPONSES_URL,

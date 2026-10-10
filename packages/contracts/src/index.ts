@@ -1,4 +1,5 @@
 import { z } from "zod";
+export * from "./admin-models";
 
 export const SERVICE_NAME = {
   api: "api",
