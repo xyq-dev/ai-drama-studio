@@ -11,7 +11,7 @@
 | 起始 HEAD | `876c5d17b74f5ce92d3f5a638188b4c618d8831c`（本地、远端、PR #63 一致，工作区干净） |
 | 基线 main | `91ed8ad0250407cf1f4e76cedbd8624211feec7c` |
 | 工具链 | Node 24.21.0、pnpm 10.17.0（engines 检查开启） |
-| 最终 HEAD | 见文末“提交与 CI” |
+| 最终 HEAD | 代码修复 `08026f9`；随后一个仅文档提交（见文末） |
 
 范围只限五项。没有改模型保险库、主密钥、模型调用、故事审核、费用、幂等与版本冲突规则；没有新依赖、数据库结构或 Migration；没有部署、服务器操作或真实模型调用。
 
@@ -102,10 +102,13 @@
 ## 提交与 CI
 
 - 授权：本会话此前的任务明确允许普通 commit、push 与更新 Draft PR；本轮未 merge、未转 Ready、未 force push。
-- 提交、最终 HEAD 与 CI 结果在推送后补充于下方。
+- 修复提交：`08026f9cca7c19b60f2d6c7f5dadeb072d02d2cc`（普通 push 到 `feat/unified-admin-login`）。
+- 该提交实际触发的 13 个工作流全部成功，包括 **Unified site login**（PR run 38039952914、push run 38039951042）：真实 Chromium → Caddy（仓库模板）→ Next → 真实 API → 新空库，`success:true`、截图 8、pageerror 0、Basic Auth 质询 0；新的同路径对照 `/api/v1/projects/:projectId/stories` 登录 200、匿名 401；运维脚本测试 8/8。证据 `docs/unified-login/site-login-evidence.json`（headSha 为该提交）。
+- 其余：Admin model settings、Creator UI checks、Beginner creator web、Writing assistant API、Title writing isolated acceptance、M1-C/M2-A/M2-C/M3-A/M3-B integration、M4 three episode sample 均成功。
+- 本报告与证据文件随后作为仅文档提交推送；该提交触发的 CI 以 GitHub 上对应 SHA 为准，不借用上面的结果。
 
 ## 遗留
 
 - 会话仍保存在单个 API 进程内存中（设计如此）；多实例部署需另行设计。
 - 事件流在会话结束后最长约 250ms 内关闭（下一次定时检查）；读取进行中的那次结果不会发送。
-- 复审版本：见下方最终 HEAD。
+- 复审版本：代码以 `08026f9cca7c19b60f2d6c7f5dadeb072d02d2cc` 为准；其后只追加本报告与证据文件（文档提交）。
