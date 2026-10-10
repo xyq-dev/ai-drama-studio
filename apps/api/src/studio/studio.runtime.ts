@@ -21,7 +21,6 @@ import { StudioService } from "./studio.service";
 import { TitleWritingService } from "./title-writing.service";
 import { adminBootstrap } from "../admin/admin-bootstrap";
 import { AdminModelsService, managedProviderConfigs } from "../admin/admin-models.service";
-import type { AdminAuth } from "../admin/admin-auth";
 
 const QWEN_WEB_MAINTENANCE_MS = 60_000;
 /** Title writing recovery pass. Only expired leases are fenced, so a live run is never touched. */
@@ -44,7 +43,8 @@ export class StudioRuntime implements OnModuleDestroy {
     qwenWebActive = false,
     titleWriting: TitleWritingService | null = null,
     readonly adminModels: AdminModelsService | null = null,
-    readonly adminAuth: AdminAuth | null = null,
+    /** Whether the model console routes are open (MODEL_ADMIN_ENABLED); access itself needs the site login. */
+    readonly adminConsoleEnabled = false,
   ) {
     this.service = service;
     this.store = store;
@@ -151,7 +151,7 @@ export class StudioRuntime implements OnModuleDestroy {
         }),
         new CharacterReferenceStore(pool),
         env.M3_CHARACTER_REFERENCE_GATE), store, qwenWeb, qwenWebEnabled && qwenProvider.ok, titleWriting,
-      adminModels, admin?.auth ?? null);
+      adminModels, admin?.enabled ?? false);
   }
 
   async onModuleDestroy(): Promise<void> {

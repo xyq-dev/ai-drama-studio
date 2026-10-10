@@ -11,6 +11,13 @@ const nextConfig: NextConfig = {
   transpilePackages: ["@ai-drama/contracts", "@ai-drama/domain"],
   async headers() {
     return [{
+      source: "/login",
+      headers: [
+        { key: "Content-Security-Policy", value: "frame-ancestors 'none'" },
+        { key: "X-Frame-Options", value: "DENY" },
+        { key: "Cache-Control", value: "no-store" },
+      ],
+    }, {
       source: "/admin/:path*",
       headers: [
         { key: "Content-Security-Policy", value: "frame-ancestors 'none'" },

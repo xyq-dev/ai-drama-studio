@@ -4,9 +4,10 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import {
   adminLimitsUpdateSchema, adminProviderUpdateSchema,
-  type AdminModelsView, type AdminProviderView, type AdminSessionView, type TitleWritingProviderKey,
+  type AdminModelsView, type AdminProviderView, type TitleWritingProviderKey,
 } from "@ai-drama/contracts";
 import { AdminApiError, createAdminModelsClient } from "../lib/admin-models-client";
+import { goToLogin, loginUrl, logout as siteLogout, readSession, type SiteSession } from "../lib/site-session";
 import styles from "./admin-models.module.css";
 
 const PROVIDERS: Array<{ key: TitleWritingProviderKey; label: string; mark: string; description: string }> = [
@@ -51,8 +52,7 @@ function LockIcon() {
 export function AdminModels() {
   const client = useMemo(() => createAdminModelsClient(), []);
   const [auth, setAuth] = useState<AuthState>("checking");
-  const [session, setSession] = useState<AdminSessionView | null>(null);
-  const [token, setToken] = useState("");
+  const [session, setSession] = useState<SiteSession | null>(null);
   const [loginError, setLoginError] = useState("");
   const [view, setView] = useState<AdminModelsView | null>(null);
   const [selected, setSelected] = useState<TitleWritingProviderKey>("qwen");
@@ -69,6 +69,8 @@ export function AdminModels() {
   const [busy, setBusy] = useState("");
   const busyRef = useRef("");
   const generation = useRef(0);
+  const expiryChecking = useRef(false);
+  const expiryRetry = useRef<number | undefined>(undefined);
 
   function begin(kind: string): number | null {
     if (busyRef.current) return null;
@@ -80,10 +82,11 @@ export function AdminModels() {
     busyRef.current = ""; setBusy("");
   }
   function forgetSecrets() {
-    setToken(""); setApiKey(""); setSecretAction("keep"); setClearConfirmed(false); setSecretNotice("");
+    setApiKey(""); setSecretAction("keep"); setClearConfirmed(false); setSecretNotice("");
   }
   function endSession(message: string) {
     generation.current += 1;
+    if (expiryRetry.current !== undefined) { window.clearTimeout(expiryRetry.current); expiryRetry.current = undefined; }
     busyRef.current = ""; setBusy("");
     setSession(null); setView(null); setDrafts({}); setAuth("guest");
     forgetSecrets(); setError(""); setNotice(""); setLoginError(message); setMustReload(false);
@@ -92,11 +95,18 @@ export function AdminModels() {
     setView(next); setDrafts(draftsFor(next)); setLimits(limitsFor(next));
     setMustReload(false); setReloadConfirmed(false); forgetSecrets();
   }
-  function acceptSession(next: AdminSessionView) {
-    if (!next.authenticated || !next.csrfToken || !Number.isFinite(Date.parse(next.expiresAt))) {
-      throw new AdminApiError(0, "INVALID_RESPONSE");
+  /** The console uses the site login. Signed out goes to /login; with the site login off the console stays closed. */
+  function acceptSession(next: SiteSession): boolean {
+    if (!next.enabled) {
+      setAuth("unavailable"); setLoginError("站点统一登录尚未启用，模型后台保持关闭。请联系服务器管理员。");
+      return false;
     }
-    setSession(next); setAuth("signedin"); setToken(""); setLoginError("");
+    if (!next.authenticated || !next.expiresAt || !Number.isFinite(Date.parse(next.expiresAt))) {
+      setAuth("guest"); goToLogin("expired");
+      return false;
+    }
+    setSession(next); setAuth("signedin"); setLoginError("");
+    return true;
   }
 
   async function checkSession() {
@@ -104,57 +114,61 @@ export function AdminModels() {
     if (epoch === null) return;
     setAuth("checking"); setLoginError("");
     try {
-      const next = await client.session();
-      if (epoch !== generation.current) return;
-      acceptSession(next);
+      const next = await readSession();
+      if (epoch !== generation.current || !acceptSession(next)) return;
       const settings = await client.models();
       if (epoch === generation.current) installView(settings);
     } catch (caught) {
       if (epoch !== generation.current) return;
       if (caught instanceof AdminApiError && caught.status === 401) endSession("");
-      else if (caught instanceof AdminApiError && caught.status === 503) { setAuth("unavailable"); setLoginError("管理员后台尚未就绪，请联系服务器管理员完成认证与安全存储初始化。"); }
-      else { setAuth("guest"); setLoginError("暂时无法确认管理员会话，请重试。"); setSession(null); }
+      else if (caught instanceof AdminApiError && caught.status === 503) { setAuth("unavailable"); setLoginError("管理员后台尚未就绪，请联系服务器管理员完成安全存储初始化。"); }
+      else { setAuth("unavailable"); setLoginError("暂时无法确认登录状态，请重试。"); setSession(null); }
     } finally { finish(epoch); }
   }
 
   useEffect(() => {
     void checkSession();
-    return () => { generation.current += 1; busyRef.current = ""; };
+    return () => {
+      generation.current += 1; busyRef.current = "";
+      if (expiryRetry.current !== undefined) window.clearTimeout(expiryRetry.current);
+    };
     // The initial authentication request owns this mount; actions start their own guarded requests.
   }, []);
 
+  /**
+   * At the expiry the page last saw, ask the server (passively: the check is not activity) whether the session is
+   * still there. Reads and writes may have extended it: then only the snapshot and the timer move, drafts stay.
+   * Only a confirmed end clears sensitive input and goes to the login; a failed check is not an end, it is asked again.
+   * This never reinstalls the settings view, so unsaved edits are kept.
+   */
+  async function confirmExpiry() {
+    if (expiryChecking.current) return;
+    expiryChecking.current = true;
+    const epoch = generation.current;
+    try {
+      const next = await readSession(undefined, { passive: true });
+      if (epoch !== generation.current) return;
+      if (next.enabled && next.authenticated && next.expiresAt && Number.isFinite(Date.parse(next.expiresAt))) {
+        setSession((current) => (current ? { ...current, ...next } : current));
+        return;
+      }
+      endSession("登录已过期，请重新登录。");
+      goToLogin("expired");
+    } catch {
+      if (epoch !== generation.current) return;
+      expiryRetry.current = window.setTimeout(() => { expiryRetry.current = undefined; void confirmExpiry(); }, 30_000);
+    } finally {
+      expiryChecking.current = false;
+    }
+  }
+
   useEffect(() => {
     if (!session) return;
-    const timer = window.setTimeout(() => endSession("管理员会话已过期，请重新验证。"),
-      Math.min(2_147_483_647, Math.max(0, Date.parse(session.expiresAt) - Date.now())));
+    // At least a short delay, so a timer firing a little early cannot spin.
+    const timer = window.setTimeout(() => { void confirmExpiry(); },
+      Math.min(2_147_483_647, Math.max(250, Date.parse(session.expiresAt ?? "") - Date.now())));
     return () => window.clearTimeout(timer);
   }, [session]);
-
-  async function login(event: FormEvent) {
-    event.preventDefault();
-    const epoch = begin("login");
-    if (epoch === null || !token) { if (epoch !== null) finish(epoch); return; }
-    const submitted = token;
-    setLoginError("");
-    try {
-      const next = await client.login(submitted);
-      if (epoch !== generation.current) return;
-      acceptSession(next);
-      try {
-        const settings = await client.models();
-        if (epoch === generation.current) installView(settings);
-      } catch (caught) {
-        if (epoch !== generation.current) return;
-        if (caught instanceof AdminApiError && caught.status === 401) endSession("管理员会话已过期，请重新验证。");
-        else setError(messageFor(caught));
-      }
-    } catch (caught) {
-      if (epoch !== generation.current) return;
-      if (caught instanceof AdminApiError && caught.status === 503) setAuth("unavailable");
-      setLoginError(caught instanceof AdminApiError && (caught.status === 401 || caught.status === 403)
-        ? "管理员访问令牌不正确，请重新输入。" : messageFor(caught));
-    } finally { if (epoch === generation.current) setToken(""); finish(epoch); }
-  }
 
   async function logout() {
     if (!session) return;
@@ -162,12 +176,11 @@ export function AdminModels() {
     if (epoch === null) return;
     forgetSecrets();
     try {
-      await client.logout(session.csrfToken);
-      if (epoch === generation.current) endSession("已退出管理员控制台。");
-    } catch (caught) {
+      await siteLogout();
+      if (epoch === generation.current) { endSession("已退出登录。"); window.location.assign(loginUrl("/admin/models", "signed-out")); }
+    } catch {
       if (epoch !== generation.current) return;
-      if (caught instanceof AdminApiError && caught.status === 401) endSession("管理员会话已结束。");
-      else setError("退出尚未确认，请重试退出。输入的令牌和密钥已清空。");
+      setError("退出尚未确认，请重试退出。输入的密钥已清空。");
     } finally { finish(epoch); }
   }
 
@@ -220,7 +233,7 @@ export function AdminModels() {
     const replaced = secretAction === "replace";
     setError(""); setNotice(""); setSecretNotice("");
     try {
-      const next = await client.provider(providerKey, parsed.data, session.csrfToken);
+      const next = await client.provider(providerKey, parsed.data);
       if (epoch !== generation.current) return;
       setView(next);
       const updated = next.saved.providers.find((provider) => provider.providerKey === providerKey);
@@ -248,7 +261,7 @@ export function AdminModels() {
     if (epoch === null) return;
     setError(""); setNotice("");
     try {
-      const next = await client.limits(parsed.data, session.csrfToken);
+      const next = await client.limits(parsed.data);
       if (epoch !== generation.current) return;
       setView(next); setLimits(limitsFor(next));
       setNotice(`调用规则已保存。${next.pendingRestart ? "等待 API 重启后应用。" : "以当前生效配置为准。"}次数限制不等于金额预算。`);
@@ -270,20 +283,18 @@ export function AdminModels() {
       {auth !== "signedin" ? <div className={styles.loginLayout}>
         <section className={styles.loginIntro}><span className={styles.eyebrow}>红果 · 创作基础设施</span><h1>为好故事，<br />接上合适的模型。</h1><p>在一处管理创作使用的模型、访问密钥和调用规则。创作者专注于故事，配置交给管理员。</p>
           <div className={styles.loginFacts}><div><span>01</span><strong>三家供应商</strong><p>千问、OpenAI 与 DeepSeek</p></div><div><span>02</span><strong>密钥只写不读</strong><p>保存后不会从接口回传</p></div><div><span>03</span><strong>手动保存配置</strong><p>保存不会触发付费调用</p></div></div></section>
-        <section className={styles.loginCard} aria-label="管理员登录"><div className={styles.lock}><LockIcon /></div><span className={styles.eyebrow}>受保护的管理入口</span><h2>验证管理员身份</h2><p>此入口独立于创作者页面。请使用服务器管理员配置的访问令牌。</p>
-          {auth === "checking" ? <p role="status" className={styles.loading}>正在检查管理员会话…</p>
+        <section className={styles.loginCard} aria-label="管理员登录"><div className={styles.lock}><LockIcon /></div><span className={styles.eyebrow}>受保护的管理入口</span><h2>管理员登录</h2><p>模型后台与创作页面使用同一个账号登录，登录后即可进入。</p>
+          {auth === "checking" ? <p role="status" className={styles.loading}>正在检查登录状态…</p>
             : auth === "unavailable" ? <><div className={styles.warning} role="alert">{loginError || "管理员后台尚未就绪，请联系服务器管理员完成认证与安全存储初始化。"}</div><button className={styles.secondary} disabled={!!busy} onClick={() => void checkSession()}>重新检查后台状态</button></>
-              : <form onSubmit={(event) => void login(event)}><label className={styles.field}>管理员访问令牌<input name="admin-token" type="password" autoComplete="off" spellCheck={false} value={token} onChange={(event) => setToken(event.target.value)} disabled={!!busy} required maxLength={256} placeholder="输入管理员令牌" /></label>
-                {loginError && <div className={styles.error} role="alert">{loginError}</div>}
-                <button className={styles.primary} type="submit" disabled={!!busy || !token}>{busy === "login" ? "正在验证…" : "进入模型配置"}<span aria-hidden="true">→</span></button>
-                <p className={styles.footnote}>令牌不会写入浏览器本地存储。这里不填写模型 API Key。</p></form>}
+              : <><p className={styles.footnote}>{loginError || "请先登录。登录后会回到模型后台。"}</p>
+                <a className={styles.primary} href={loginUrl("/admin/models")}>前往登录<span aria-hidden="true">→</span></a></>}
         </section>
       </div> : <>
         <div className={styles.pageHeading}><div><span className={styles.eyebrow}>管理控制台 / 模型配置</span><h1>模型配置<span className={styles.headingDot} /></h1><p>连接创作能力，掌握每一次调用。</p></div><Badge><LockIcon /> 管理员会话有效</Badge></div>
         {error && <div className={styles.error} role="alert">{error}</div>}
         {notice && <div className={styles.success} role="status">{notice}</div>}
         {!view ? <section className={styles.card}><p>{busy ? "正在读取模型配置…" : "模型配置尚未读取。"}</p><button className={styles.secondary} onClick={() => void reload()} disabled={!!busy}>重新读取配置</button></section> : <>
-          <section className={styles.overview} aria-label="配置概况"><div><span>已保存版本</span><strong>v{view.savedRevision}</strong><small>{view.source === "managed" ? "管理员配置" : "服务器环境配置"}</small></div><div><span>当前生效版本</span><strong>v{view.activeRevision}</strong><small>{view.pendingRestart ? "新配置尚未应用" : "与已保存配置一致"}</small></div><div><span>标题 AI 创作</span><strong className={styles.smallStrong}>{view.titleWriting.enabled ? "已开启" : "未开启"}</strong><small>{view.titleWriting.productionBlocked ? "生产环境强制关闭" : "由服务器功能开关控制"}</small></div><div><span>操作者授权</span><strong className={styles.smallStrong}>{view.titleWriting.operatorConfigured ? "已配置" : "未配置"}</strong><small>与管理员访问令牌分别管理</small></div></section>
+          <section className={styles.overview} aria-label="配置概况"><div><span>已保存版本</span><strong>v{view.savedRevision}</strong><small>{view.source === "managed" ? "管理员配置" : "服务器环境配置"}</small></div><div><span>当前生效版本</span><strong>v{view.activeRevision}</strong><small>{view.pendingRestart ? "新配置尚未应用" : "与已保存配置一致"}</small></div><div><span>标题 AI 创作</span><strong className={styles.smallStrong}>{view.titleWriting.enabled ? "已开启" : "未开启"}</strong><small>{view.titleWriting.productionBlocked ? "生产环境强制关闭" : "由服务器功能开关控制"}</small></div><div><span>操作者授权</span><strong className={styles.smallStrong}>{view.titleWriting.operatorConfigured ? "已配置" : "未配置"}</strong><small>与站点登录账号分别管理</small></div></section>
           {view.pendingRestart && <div className={styles.warning} role="status"><strong>配置已保存，等待 API 重启生效</strong><p>请由服务器管理员按发布流程重启 API。本页面不会重启服务，也不会自动启用 AI 创作。</p></div>}
           {view.activationDeferred && <div className={styles.warning} role="status"><strong>有创作任务尚未结束，配置应用已推迟</strong><p>服务继续使用原有的生效配置，避免改变正在执行或恢复中的模型请求。请在任务结束后联系服务器管理员处理。</p></div>}
           <div className={styles.workspace}>
@@ -320,7 +331,7 @@ export function AdminModels() {
             </div><div className={styles.formFooter}><p>当前生效：{PROVIDERS.find((provider) => provider.key === view.active.defaultProvider)?.label ?? "未指定"} · 每日 {view.active.maxCallsPerDay} 次 · 同时 {view.active.maxActiveRuns} 个<span className={styles.block}>金额费用未知时保持 unknown，不显示为 0。</span></p><button className={styles.secondary} type="submit" disabled={!canEdit}>{busy === "limits" ? "正在保存…" : "保存调用规则"}</button></div></fieldset></form>
           </section>
           <section className={styles.bottomGrid}><div className={styles.card}><h2>最近配置活动</h2><p className={styles.footnote}>只记录操作类型和版本，不记录密钥内容。</p>{view.audit.length ? <ol className={styles.audit}>{view.audit.slice(-8).reverse().map((item, index) => <li key={`${item.at}-${index}`}><span className={styles.auditDot} /><div><strong>{item.action === "activated" ? "配置已应用" : item.action === "limits_updated" ? "调用规则已保存" : `${PROVIDERS.find((provider) => provider.key === item.providerKey)?.label ?? "供应商"}配置已保存`}</strong><time dateTime={item.at}>{new Date(item.at).toLocaleString("zh-CN", { hour12: false })}</time></div><span>v{item.revision}</span></li>)}</ol> : <p className={styles.empty}>还没有管理员配置记录</p>}</div>
-            <div className={styles.card}><h2>读取最新配置</h2><p className={styles.footnote}>保存采用版本校验，其他管理员的修改不会被静默覆盖。重新读取会清空本页所有未保存内容和密钥输入。</p>{dirty && <label className={styles.confirm}><input type="checkbox" checked={reloadConfirmed} onChange={(event) => setReloadConfirmed(event.target.checked)} disabled={!!busy} />我确认放弃本页未保存的修改</label>}<button type="button" className={styles.secondary} onClick={() => void reload()} disabled={!!busy || (dirty && !reloadConfirmed)}>{busy === "read" ? "正在读取…" : "重新读取最新配置"}</button><p className={styles.footnote}>管理员令牌、AI 操作者令牌及功能开关仍由服务器管理员管理。</p></div>
+            <div className={styles.card}><h2>读取最新配置</h2><p className={styles.footnote}>保存采用版本校验，其他管理员的修改不会被静默覆盖。重新读取会清空本页所有未保存内容和密钥输入。</p>{dirty && <label className={styles.confirm}><input type="checkbox" checked={reloadConfirmed} onChange={(event) => setReloadConfirmed(event.target.checked)} disabled={!!busy} />我确认放弃本页未保存的修改</label>}<button type="button" className={styles.secondary} onClick={() => void reload()} disabled={!!busy || (dirty && !reloadConfirmed)}>{busy === "read" ? "正在读取…" : "重新读取最新配置"}</button><p className={styles.footnote}>站点登录密码、AI 操作者令牌及功能开关仍由服务器管理员管理。</p></div>
           </section>
         </>}
       </>}

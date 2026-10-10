@@ -101,9 +101,8 @@ describe.skipIf(process.platform === "win32")("StudioRuntime managed model start
     await chmod(directory, 0o700);
     directories.push(directory);
     return loadApiEnv({
-      ...BASE, MODEL_ADMIN_ENABLED: "true", MODEL_ADMIN_TOKEN: "test-only-admin-bootstrap-token-".repeat(2),
+      ...BASE, MODEL_ADMIN_ENABLED: "true",
       MODEL_ADMIN_MASTER_KEY: randomBytes(32).toString("hex"), MODEL_ADMIN_CONFIG_PATH: join(directory, "models.enc"),
-      MODEL_ADMIN_PUBLIC_ORIGIN: "https://drama.example.test",
     });
   }
 
@@ -173,8 +172,8 @@ describe.skipIf(process.platform === "win32")("StudioRuntime managed model start
   it("keeps managed configuration effective when admin login is disabled, and retains production blocking", async () => {
     const env = await environment();
     await savePending(env);
-    const runtime = await open({ ...env, MODEL_ADMIN_ENABLED: "false", MODEL_ADMIN_TOKEN: undefined, NODE_ENV: "production" });
-    expect(runtime.adminAuth).toBeNull();
+    const runtime = await open({ ...env, MODEL_ADMIN_ENABLED: "false", NODE_ENV: "production" });
+    expect(runtime.adminConsoleEnabled).toBe(false);
     expect(runtime.adminModels).not.toBeNull();
     expect(await options(runtime)).toMatchObject({
       enabled: false, code: "TITLE_WRITING_DISABLED", defaultProvider: "openai", maxCallsPerDay: 8, maxActiveRuns: 2,
@@ -183,7 +182,7 @@ describe.skipIf(process.platform === "win32")("StudioRuntime managed model start
 
   it("leaves legacy environment configuration unchanged when admin bootstrap is absent", async () => {
     const runtime = await open(loadApiEnv(BASE));
-    expect(runtime.adminAuth).toBeNull();
+    expect(runtime.adminConsoleEnabled).toBe(false);
     expect(runtime.adminModels).toBeNull();
     expect(await options(runtime)).toMatchObject({ defaultProvider: "qwen", maxCallsPerDay: 30, maxActiveRuns: 1 });
     expect(pools.at(-1)!.query).not.toHaveBeenCalled();

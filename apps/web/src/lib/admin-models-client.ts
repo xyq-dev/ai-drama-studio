@@ -1,6 +1,7 @@
 import type {
-  AdminLimitsUpdate, AdminModelsView, AdminProviderUpdate, AdminSessionView, TitleWritingProviderKey,
+  AdminLimitsUpdate, AdminModelsView, AdminProviderUpdate, TitleWritingProviderKey,
 } from "@ai-drama/contracts";
+import { withSession } from "./site-session";
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -11,14 +12,18 @@ export class AdminApiError extends Error {
   }
 }
 
+/**
+ * The model console's API. Signing in and out is the site login (lib/site-session.ts); writes carry the site session's
+ * CSRF token through withSession. There is no administrator token any more.
+ */
 export function createAdminModelsClient(fetchImpl?: FetchLike) {
-  async function request<T>(path: string, method: string, body?: unknown, csrfToken?: string): Promise<T> {
+  const send = withSession(fetchImpl ?? globalThis.fetch.bind(globalThis));
+  async function request<T>(path: string, method: string, body?: unknown): Promise<T> {
     let response: Response;
     try {
-      response = await (fetchImpl ?? globalThis.fetch)(`/api/v1/admin${path}`, {
-        method, credentials: "same-origin", cache: "no-store",
-        headers: { Accept: "application/json", ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
-          ...(csrfToken ? { "X-Admin-CSRF": csrfToken } : {}) },
+      response = await send(`/api/v1/admin${path}`, {
+        method, cache: "no-store",
+        headers: { Accept: "application/json", ...(body !== undefined ? { "Content-Type": "application/json" } : {}) },
         ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
       });
     } catch { throw new AdminApiError(0, "NETWORK_ERROR"); }
@@ -35,12 +40,9 @@ export function createAdminModelsClient(fetchImpl?: FetchLike) {
     return payload as T;
   }
   return {
-    session: () => request<AdminSessionView>("/session", "GET"),
-    login: (token: string) => request<AdminSessionView>("/session", "POST", { token }),
-    logout: (csrf: string) => request<void>("/session", "DELETE", undefined, csrf),
     models: () => request<AdminModelsView>("/models", "GET"),
-    provider: (key: TitleWritingProviderKey, update: AdminProviderUpdate, csrf: string) =>
-      request<AdminModelsView>(`/models/providers/${key}`, "PUT", update, csrf),
-    limits: (update: AdminLimitsUpdate, csrf: string) => request<AdminModelsView>("/models/limits", "PUT", update, csrf),
+    provider: (key: TitleWritingProviderKey, update: AdminProviderUpdate) =>
+      request<AdminModelsView>(`/models/providers/${key}`, "PUT", update),
+    limits: (update: AdminLimitsUpdate) => request<AdminModelsView>("/models/limits", "PUT", update),
   };
 }

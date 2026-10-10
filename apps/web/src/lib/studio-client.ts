@@ -1,3 +1,5 @@
+import { withSession } from "./site-session";
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -93,8 +95,8 @@ export class StudioClient {
   }
 
   private request(input: string, init?: RequestInit): Promise<Response> {
-    const fetchImpl = this.fetchImpl ?? globalThis.fetch.bind(globalThis);
-    return fetchImpl(input, init);
+    // Writes carry the session CSRF token next to Idempotency-Key and If-Match; an ended session goes to /login.
+    return withSession(this.fetchImpl ?? globalThis.fetch.bind(globalThis))(input, init);
   }
 }
 

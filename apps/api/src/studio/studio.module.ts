@@ -5,7 +5,6 @@ import { EventsController, StudioController } from "./studio.controller";
 import { StudioRuntime } from "./studio.runtime";
 import { TitleWritingController } from "./title-writing.controller";
 import { QWEN_WEB_SERVICE, RUNTIME_STORE, STUDIO_RUNTIME, STUDIO_SERVICE, TITLE_WRITING_SERVICE } from "./tokens";
-import { ADMIN_AUTH } from "../admin/admin-auth";
 import { ADMIN_MODELS_SERVICE, AdminModelsController } from "../admin/admin-models.controller";
 
 @Module({})
@@ -40,14 +39,10 @@ export class StudioModule {
           useFactory: (runtime: StudioRuntime) => runtime.store,
         },
         {
-          provide: ADMIN_AUTH,
-          inject: [STUDIO_RUNTIME],
-          useFactory: (runtime: StudioRuntime) => runtime.adminAuth,
-        },
-        {
           provide: ADMIN_MODELS_SERVICE,
           inject: [STUDIO_RUNTIME],
-          useFactory: (runtime: StudioRuntime) => runtime.adminModels,
+          // The console routes exist only while MODEL_ADMIN_ENABLED=true; the runtime keeps using managed settings either way.
+          useFactory: (runtime: StudioRuntime) => (runtime.adminConsoleEnabled ? runtime.adminModels : null),
         },
       ],
     };
