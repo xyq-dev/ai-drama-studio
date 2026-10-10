@@ -194,3 +194,33 @@
   .loginFacts { margin-top: 22px; }
 }
 @media (prefers-reduced-motion: reduce) { .providerButton { transition: none; } }
+.pickerBox { border: 1px solid var(--studio-input-line); border-radius: 8px; background: var(--studio-card); min-width: 0; overflow: hidden; }
+.field .pickerBox input[type="search"] { border: 0; border-bottom: 1px solid var(--studio-line); border-radius: 0; }
+.app .pickerBox input[type="search"]:focus-visible { outline-offset: -3px; }
+.pickerList { list-style: none; margin: 0; padding: 6px; max-height: 336px; overflow-y: auto; }
+.pickerOption { display: flex; align-items: flex-start; gap: 11px; padding: 10px 11px; border: 1px solid transparent; border-radius: 7px; cursor: pointer; min-width: 0; }
+.pickerOption:hover { background: var(--studio-raised); }
+.pickerOption.pickerChecked { background: var(--studio-selected); border-color: var(--studio-accent-line); }
+.pickerOption:has(input:disabled) { cursor: not-allowed; opacity: .6; }
+.field .pickerOption input[type="checkbox"] { accent-color: var(--studio-accent); width: 16px; height: 16px; min-height: 0; padding: 0; margin: 3px 0 0; flex: none; }
+.pickerText { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-weight: 400; }
+.pickerText strong { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 13px; font-weight: 650; overflow-wrap: anywhere; }
+.pickerText code { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: 12px; color: var(--studio-text); overflow-wrap: anywhere; }
+.field .pickerText small { line-height: 1.6; }
+.customTag,.defaultTag { border-radius: 5px; padding: 1px 6px; font-size: 10px; font-weight: 600; line-height: 1.6; }
+.customTag { color: var(--studio-warning); background: var(--studio-warning-bg); border: 1px solid var(--studio-warning-line); }
+.defaultTag { color: var(--studio-accent); border: 1px solid var(--studio-accent-line); background: var(--studio-card); }
+.pickerEmpty { padding: 12px; color: var(--studio-muted); font-size: 12px; }
+.field small.fieldError { color: var(--studio-error); font-weight: 600; }
+.advanced { margin: -4px 0 21px; border-top: 1px dashed var(--studio-line); padding-top: 12px; }
+.advanced summary { width: fit-content; cursor: pointer; font-size: 12px; font-weight: 600; color: var(--studio-muted); padding: 6px 0; }
+.advanced summary:focus-visible { outline: 2px solid var(--studio-accent); outline-offset: 4px; }
+.customRow { display: flex; align-items: flex-start; gap: 10px; margin-top: 12px; }
+.customRow .field { flex: 1; margin-bottom: 0; }
+.customRow > .secondary { margin-top: 29px; flex: none; }
+@media (max-width: 700px) {
+  .pickerList { max-height: 300px; padding: 4px; }
+  .pickerOption { padding: 10px 8px; gap: 9px; }
+  .customRow { flex-direction: column; align-items: stretch; }
+  .customRow > .secondary { margin-top: 0; width: 100%; }
+}
