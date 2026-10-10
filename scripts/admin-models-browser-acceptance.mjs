@@ -104,7 +104,21 @@ try {
   const before = await readView(page);
   assert.equal(before.savedRevision, 0);
   await page.getByLabel(/^服务端点/).fill("https://dashscope.aliyuncs.com/compatible-mode/v1");
-  await page.getByLabel(/^允许使用的模型 ID/).fill("browser-test-model");
+  // Model picker by keyboard: search, Tab to the matching candidate, Space to select; Enter adds a custom ID
+  // without submitting the form; the default is chosen explicitly and saved as the first entry.
+  const search = page.getByRole("searchbox", { name: "搜索可用模型" });
+  await search.fill("3.8-flash");
+  await search.press("Tab");
+  await page.keyboard.press("Space");
+  assert.equal(await page.getByRole("checkbox", { name: /qwen3\.8-flash/ }).isChecked(), true);
+  await search.fill("");
+  await page.getByText("高级设置", { exact: true }).click();
+  await page.getByLabel(/^添加自定义模型 ID/).fill("browser-test-model");
+  await page.getByLabel(/^添加自定义模型 ID/).press("Enter");
+  assert.equal(await page.getByRole("checkbox", { name: /browser-test-model/ }).isChecked(), true);
+  assert.equal((await readView(page)).savedRevision, 0);
+  await page.getByRole("combobox", { name: /^默认模型/ }).selectOption("browser-test-model");
+  await capture(page, "desktop-model-picker");
   await page.getByRole("radio", { name: "填写 / 替换", exact: true }).check();
   await page.getByLabel(/^新的 API Key/).fill(fakeKey);
   await page.getByRole("button", { name: "校验并保存配置", exact: true }).click();
@@ -113,6 +127,7 @@ try {
   const saved = await readView(page);
   assert.equal(saved.savedRevision, 1); assert.equal(saved.activeRevision, 0); assert.equal(saved.pendingRestart, true);
   assert.equal(saved.saved.providers.find((provider) => provider.providerKey === "qwen").keyConfigured, true);
+  assert.deepEqual(saved.saved.providers.find((provider) => provider.providerKey === "qwen").models, ["browser-test-model", "qwen3.8-flash"]);
   assert.equal(saved.active.providers.find((provider) => provider.providerKey === "qwen").keyConfigured, false);
   await capture(page, "desktop-models-saved");
   await page.reload();
@@ -136,11 +151,23 @@ try {
   await page.getByRole("button", { name: /^OpenAI/ }).click();
   await page.getByRole("region", { name: "OpenAI设置" }).waitFor();
   assert.equal(await page.getByLabel(/^服务端点/).getAttribute("readonly"), "");
+  // OpenAI shows only its own candidates; a selection without a default is shown as still needing one.
+  assert.equal(await page.getByRole("checkbox", { name: /qwen/ }).count(), 0);
+  await page.getByRole("checkbox", { name: /gpt-6-luna/ }).check();
+  await page.getByText("请从已选的可用模型中选择默认模型。").waitFor();
   await capture(page, "mobile-openai");
   await page.getByRole("button", { name: /^千问/ }).click();
   await page.getByRole("radio", { name: "清除密钥", exact: true }).check();
   assert.equal(await page.getByRole("button", { name: "校验并保存配置", exact: true }).isDisabled(), true);
   await page.getByRole("checkbox", { name: /我确认清除/ }).check();
+  // The form is now submittable (valid models, confirmed clear): Enter in the search box must still only filter.
+  const clearSearch = page.getByRole("searchbox", { name: "搜索可用模型" });
+  await clearSearch.fill("max");
+  await clearSearch.press("Enter");
+  await delay(500);
+  assert.equal((await readView(page)).savedRevision, 1, "Enter in the model search must not submit the form");
+  assert.equal(requests.filter((request) => request.method === "PUT").length, 1);
+  await clearSearch.fill("");
   await page.getByRole("button", { name: "校验并保存配置", exact: true }).click();
   await page.getByRole("status").filter({ hasText: /^千问配置已保存/ }).waitFor();
   const cleared = await readView(page);
@@ -159,6 +186,8 @@ try {
   await capture(page, "mobile-login");
   assert.deepEqual(evidence.errors, []);
   evidence.checks.save = { savedRevision: 1, activeRevision: 0, pendingRestart: true, secretNotReturned: true };
+  evidence.checks.modelPicker = { keyboardSelect: true, customIdByEnter: true, searchEnterDoesNotSubmit: true,
+    savedModels: ["browser-test-model", "qwen3.8-flash"] };
   evidence.checks.clear = { explicitConfirmation: true, keyConfigured: false, revision: 2 };
   evidence.checks.limits = { daily: 8, savedRevision: 3, activeRevision: 0, titleWritingEnabled: false };
   evidence.checks.logout = { protectedReadAfterLogout: 401, reloginReadsSavedConfig: true };
