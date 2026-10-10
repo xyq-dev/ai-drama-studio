@@ -6,6 +6,25 @@
 
 错误体：`{ error: { code, message, traceId, details? } }`。所有端点可能有 `UNAUTHENTICATED`、`FORBIDDEN`、`NOT_FOUND`、`VALIDATION_ERROR`、`RATE_LIMITED`；下表仅列模块特有错误。权限中的 Owner 是当前单工作区操作者；未来成员模型加入前不推断角色权限。
 
+## Admin model configuration
+
+独立管理员权限，不使用项目操作者令牌。此前缀同为 `/api/v1`；响应均 `Cache-Control: private, no-store`。
+会话cookie为 `ads_admin_session`（HttpOnly、SameSite=Strict；HTTPS时Secure；Path=/api/v1/admin；绝对30分钟）。
+成功响应为原始DTO；本组错误为固定脱敏的 `{error:{code,message}}`，不返回配置值、密钥或异常原文。
+
+| Method / Path | 请求与响应 | 限制 |
+| --- | --- | --- |
+| `POST /admin/session` | `{token}` → `AdminSessionView` + cookie，200 | 固定Origin、JSON、5次/分钟；无供应商请求 |
+| `GET /admin/session` | `AdminSessionView`含会话CSRF与过期时间，200 | 已验证cookie；未登录401 |
+| `DELETE /admin/session` | 204，失效cookie与会话 | 固定Origin、`X-Admin-CSRF` |
+| `GET /admin/models` | `AdminModelsView`：saved/active、revision、待重启/暂缓、审计、标题创作只读门控 | 管理员会话；只回keyConfigured，不返回密钥或尾号 |
+| `PUT /admin/models/providers/:providerKey` | `{expectedRevision,models,baseUrl?,secretAction,apiKey?}` → 更新后View | key∈qwen/openai/deepseek；secretAction∈keep/replace/clear；仅replace携带apiKey |
+| `PUT /admin/models/limits` | `{expectedRevision,defaultProvider,maxCallsPerDay,maxActiveRuns}` → 更新后View | defaultProvider可null；每日1–500、并发1–10；次数不是金额预算 |
+
+PUT需会话、固定Origin、JSON、`X-Admin-CSRF`与最新revision，CAS失败409 `ADMIN_CONFIG_CONFLICT`；存储忙409 `ADMIN_CONFIG_BUSY`；
+配置无效400 `ADMIN_CONFIG_INVALID`；后台未配置503 `ADMIN_NOT_CONFIGURED`；存储错误503 `ADMIN_CONFIG_STORAGE_UNAVAILABLE`。
+保存不保证已生效；API启动时无running标题任务才应用，否则保留旧active；无自动模型请求或重试。详见 `ADMIN_MODEL_SETTINGS.md`。
+
 ## Projects
 
 | Method / Path | 用途、输入、输出 | 权限 / 幂等 / 特有错误 |

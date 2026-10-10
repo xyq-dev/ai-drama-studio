@@ -19,6 +19,9 @@ import type { ApiEnv } from "../config/env";
 import { QwenWebService } from "./qwen-web.service";
 import { StudioService } from "./studio.service";
 import { TitleWritingService } from "./title-writing.service";
+import { adminBootstrap } from "../admin/admin-bootstrap";
+import { AdminModelsService, managedProviderConfigs } from "../admin/admin-models.service";
+import type { AdminAuth } from "../admin/admin-auth";
 
 const QWEN_WEB_MAINTENANCE_MS = 60_000;
 /** Title writing recovery pass. Only expired leases are fenced, so a live run is never touched. */
@@ -40,6 +43,8 @@ export class StudioRuntime implements OnModuleDestroy {
     qwenWeb: QwenWebService,
     qwenWebActive = false,
     titleWriting: TitleWritingService | null = null,
+    readonly adminModels: AdminModelsService | null = null,
+    readonly adminAuth: AdminAuth | null = null,
   ) {
     this.service = service;
     this.store = store;
@@ -58,6 +63,7 @@ export class StudioRuntime implements OnModuleDestroy {
   }
 
   static async open(env: ApiEnv): Promise<StudioRuntime> {
+    const admin = adminBootstrap(env);
     const pool = createPostgresPool({
       connectionString: env.DATABASE_URL,
       connectionTimeoutMs: env.HEALTH_CHECK_TIMEOUT_MS,
@@ -89,14 +95,37 @@ export class StudioRuntime implements OnModuleDestroy {
       projects: store,
       transport: createQwenFetchTransport(),
     });
-    const titleProviders = titleWritingProviderConfigs(env);
     const titleStore = new PostgresTitleWritingStore(pool, textChain);
+    let adminModels: AdminModelsService | null;
+    try {
+      adminModels = admin ? await AdminModelsService.open(env, admin, async () => {
+        // storageReady() deliberately reports both absent schema and transient probe failures as false.
+        // Activation must distinguish those cases: only a successful absence check proves no runs exist.
+        const presence = await pool.query(
+          "SELECT to_regclass('title_writing_run') IS NULL AS missing",
+        ) as { rows: { missing: boolean }[] };
+        if (presence.rows[0]?.missing === true) return true;
+        if (presence.rows[0]?.missing !== false) throw new Error("Title writing activation probe unavailable");
+        const result = await pool.query(
+          "SELECT EXISTS(SELECT 1 FROM title_writing_run WHERE workspace_id = $1 AND state = 'running') AS running",
+          [workspaceId],
+        ) as { rows: { running: boolean }[] };
+        return result.rows[0]?.running === false;
+      }) : null;
+    } catch (error) {
+      await closePostgresPool(pool);
+      throw error;
+    }
+    const managed = adminModels?.runtimeSettings();
+    const titleProviders = managed ? managedProviderConfigs(managed) : titleWritingProviderConfigs(env);
+    const maxCallsPerDay = managed?.maxCallsPerDay ?? env.TITLE_WRITING_MAX_CALLS_PER_DAY;
+    const maxActiveRuns = managed?.maxActiveRuns ?? env.TITLE_WRITING_MAX_ACTIVE_RUNS;
     const titleWriting = new TitleWritingService({
       workspaceId,
       nodeEnv: env.NODE_ENV,
       enabled: env.NODE_ENV !== "production" && env.TITLE_WRITING_ENABLED,
       operatorToken: env.TITLE_WRITING_OPERATOR_TOKEN ?? null,
-      defaultProvider: env.TITLE_WRITING_DEFAULT_PROVIDER ?? null,
+      defaultProvider: managed ? managed.defaultProvider : env.TITLE_WRITING_DEFAULT_PROVIDER ?? null,
       providers: titleProviders,
       store: titleStore,
       // Only the real fetch transport is wired. A missing configuration never falls back to a Mock answer.
@@ -105,11 +134,11 @@ export class StudioRuntime implements OnModuleDestroy {
         store: titleStore,
         providers: titleProviders,
         transport: createQwenFetchTransport(),
-        maxCallsPerDay: env.TITLE_WRITING_MAX_CALLS_PER_DAY,
+        maxCallsPerDay,
       }),
       projects: store,
-      maxCallsPerDay: env.TITLE_WRITING_MAX_CALLS_PER_DAY,
-      maxActiveRuns: env.TITLE_WRITING_MAX_ACTIVE_RUNS,
+      maxCallsPerDay,
+      maxActiveRuns,
     });
     return new StudioRuntime(pool,
       new StudioService(jobs, store, textChain, workspaceId, new MockTextService(pool), new MediaAssetStore(pool),
@@ -121,7 +150,8 @@ export class StudioRuntime implements OnModuleDestroy {
           directoryReady: Boolean(absoluteDir),
         }),
         new CharacterReferenceStore(pool),
-        env.M3_CHARACTER_REFERENCE_GATE), store, qwenWeb, qwenWebEnabled && qwenProvider.ok, titleWriting);
+        env.M3_CHARACTER_REFERENCE_GATE), store, qwenWeb, qwenWebEnabled && qwenProvider.ok, titleWriting,
+      adminModels, admin?.auth ?? null);
   }
 
   async onModuleDestroy(): Promise<void> {

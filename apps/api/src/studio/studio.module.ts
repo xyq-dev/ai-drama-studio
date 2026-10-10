@@ -5,13 +5,15 @@ import { EventsController, StudioController } from "./studio.controller";
 import { StudioRuntime } from "./studio.runtime";
 import { TitleWritingController } from "./title-writing.controller";
 import { QWEN_WEB_SERVICE, RUNTIME_STORE, STUDIO_RUNTIME, STUDIO_SERVICE, TITLE_WRITING_SERVICE } from "./tokens";
+import { ADMIN_AUTH } from "../admin/admin-auth";
+import { ADMIN_MODELS_SERVICE, AdminModelsController } from "../admin/admin-models.controller";
 
 @Module({})
 export class StudioModule {
   static register(env: ApiEnv): DynamicModule {
     return {
       module: StudioModule,
-      controllers: [StudioController, EventsController, QwenWebController, TitleWritingController],
+      controllers: [StudioController, EventsController, QwenWebController, TitleWritingController, AdminModelsController],
       providers: [
         {
           provide: STUDIO_RUNTIME,
@@ -36,6 +38,16 @@ export class StudioModule {
           provide: RUNTIME_STORE,
           inject: [STUDIO_RUNTIME],
           useFactory: (runtime: StudioRuntime) => runtime.store,
+        },
+        {
+          provide: ADMIN_AUTH,
+          inject: [STUDIO_RUNTIME],
+          useFactory: (runtime: StudioRuntime) => runtime.adminAuth,
+        },
+        {
+          provide: ADMIN_MODELS_SERVICE,
+          inject: [STUDIO_RUNTIME],
+          useFactory: (runtime: StudioRuntime) => runtime.adminModels,
         },
       ],
     };

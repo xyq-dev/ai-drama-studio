@@ -1,0 +1,149 @@
+{
+  "kind": "real-browser-real-admin-http-temporary-encrypted-file",
+  "database": false,
+  "modelCalls": 0,
+  "headSha": null,
+  "routeFulfill": false,
+  "mockFetch": false,
+  "screenshots": [
+    {
+      "file": "desktop-login.png",
+      "width": 1440,
+      "scroll": 1440
+    },
+    {
+      "file": "desktop-models-empty.png",
+      "width": 1440,
+      "scroll": 1440
+    },
+    {
+      "file": "desktop-models-saved.png",
+      "width": 1440,
+      "scroll": 1440
+    },
+    {
+      "file": "mobile-models-saved.png",
+      "width": 390,
+      "scroll": 390
+    },
+    {
+      "file": "mobile-openai.png",
+      "width": 390,
+      "scroll": 390
+    },
+    {
+      "file": "mobile-login.png",
+      "width": 390,
+      "scroll": 390
+    }
+  ],
+  "checks": {
+    "refresh": {
+      "sameSavedRevision": true,
+      "httpOnlySession": true,
+      "noSecretsInBrowserStorage": true
+    },
+    "save": {
+      "savedRevision": 1,
+      "activeRevision": 0,
+      "pendingRestart": true,
+      "secretNotReturned": true
+    },
+    "clear": {
+      "explicitConfirmation": true,
+      "keyConfigured": false,
+      "revision": 2
+    },
+    "limits": {
+      "daily": 8,
+      "savedRevision": 3,
+      "activeRevision": 0,
+      "titleWritingEnabled": false
+    },
+    "logout": {
+      "protectedReadAfterLogout": 401,
+      "reloginReadsSavedConfig": true
+    },
+    "headers": {
+      "frameOptions": "DENY",
+      "csp": "frame-ancestors 'none'",
+      "cache": "no-store"
+    }
+  },
+  "errors": [],
+  "requests": [
+    {
+      "path": "/api/v1/admin/session",
+      "method": "GET"
+    },
+    {
+      "path": "/api/v1/admin/session",
+      "method": "POST"
+    },
+    {
+      "path": "/api/v1/admin/models",
+      "method": "GET"
+    },
+    {
+      "path": "/api/v1/admin/models",
+      "method": "GET"
+    },
+    {
+      "path": "/api/v1/admin/models/providers/qwen",
+      "method": "PUT"
+    },
+    {
+      "path": "/api/v1/admin/models",
+      "method": "GET"
+    },
+    {
+      "path": "/api/v1/admin/session",
+      "method": "GET"
+    },
+    {
+      "path": "/api/v1/admin/models",
+      "method": "GET"
+    },
+    {
+      "path": "/api/v1/admin/models",
+      "method": "GET"
+    },
+    {
+      "path": "/api/v1/admin/session",
+      "method": "DELETE"
+    },
+    {
+      "path": "/api/v1/admin/session",
+      "method": "POST"
+    },
+    {
+      "path": "/api/v1/admin/models",
+      "method": "GET"
+    },
+    {
+      "path": "/api/v1/admin/models",
+      "method": "GET"
+    },
+    {
+      "path": "/api/v1/admin/models/providers/qwen",
+      "method": "PUT"
+    },
+    {
+      "path": "/api/v1/admin/models",
+      "method": "GET"
+    },
+    {
+      "path": "/api/v1/admin/models/limits",
+      "method": "PUT"
+    },
+    {
+      "path": "/api/v1/admin/models",
+      "method": "GET"
+    },
+    {
+      "path": "/api/v1/admin/session",
+      "method": "DELETE"
+    }
+  ],
+  "success": true
+}

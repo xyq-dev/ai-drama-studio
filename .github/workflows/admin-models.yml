@@ -1,0 +1,71 @@
+name: Admin model settings
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "apps/api/**"
+      - "apps/web/**"
+      - "packages/**"
+      - "scripts/admin-models*"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/admin-models.yml"
+  push:
+    branches: [main, feat/admin-model-settings]
+    paths:
+      - "apps/api/**"
+      - "apps/web/**"
+      - "packages/**"
+      - "scripts/admin-models*"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/admin-models.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: admin-models-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  browser:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.0
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.21.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build actual API and production Web
+        env:
+          NEXT_PUBLIC_API_BASE_URL: http://127.0.0.1:3841
+        run: pnpm exec turbo run build --filter=@ai-drama/api --filter=@ai-drama/web
+      - name: Install browser and CJK font
+        run: |
+          pnpm exec playwright install --with-deps chromium
+          sudo apt-get update
+          sudo apt-get install -y fonts-noto-cjk
+      - name: Verify private bootstrap
+        run: node --test scripts/admin-models-init.test.mjs
+      - name: Real browser and admin HTTP, temporary encrypted storage
+        env:
+          ADMIN_MODELS_BROWSER_ACCEPTANCE: local-temporary-storage
+          ADMIN_MODELS_EVIDENCE_DIR: ${{ runner.temp }}/admin-model-evidence
+          ADMIN_MODELS_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: node scripts/admin-models-browser-acceptance.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: admin-model-settings-evidence
+          path: ${{ runner.temp }}/admin-model-evidence
+          if-no-files-found: ignore
+          retention-days: 7
