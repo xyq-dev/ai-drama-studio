@@ -96,8 +96,48 @@ sudo -u <API_USER> <NODE24_PATH> <RELEASE>/scripts/site-auth-password.mjs --pass
 
 ## 验证
 
-见 PR 描述与 CI；结果记录在下方“执行记录”。
+### 执行记录（源码 `54b1ed9`，Draft PR #63）
 
-### 执行记录
+**本机（Windows，Node 24.21.0，无 PostgreSQL / Docker）**
 
-（由本轮实际执行结果填写。）
+| 检查 | 结果 |
+| --- | --- |
+| API lint / typecheck / 测试 | 0 / 0 / 132 通过；43 项为仅 POSIX 的保险库与运行时用例，在 Windows 跳过、在 Linux CI 执行 |
+| Web lint / typecheck / 测试 | 0 / 0 / 457 通过 |
+| contracts 测试 | 33 通过 |
+| 脚本测试（密码哈希、Caddy 模板、保险库初始化） | 6 通过，2 项仅 POSIX 在本机跳过（CI 全部 8 项通过） |
+| API + Web 生产构建 | 成功，`ƒ Proxy (Middleware)`、`/login` 已生成 |
+| 本机**局部**浏览器检查 | 29/29：真实编译后的登录模块与中间件、真实 Next 生产构建与 Chromium；业务接口为替身、无数据库，只作补充，**不算验收** |
+
+本机局部检查发现并修复一个问题：Next proxy 不接受相对 `Location`（页面请求 500），改为基于请求自身 origin 的绝对地址；Next 对同源地址仍以相对路径下发。
+
+**隔离 CI（GitHub Actions，同一提交）**
+
+| 工作流 | 结果 |
+| --- | --- |
+| Unified site login（run 38030314031，及 push run 38030302159） | 成功。`postgres:16` 新建空库 → 正式迁移链 → 真实 API `dist/main.js`（`NODE_ENV=production`、统一登录、模型后台开启，另设旧 `MODEL_ADMIN_TOKEN` 验证被忽略）→ `next start` → Caddy 2.8.4（校验 SHA-512，仓库模板渲染、`tls internal`，无 basic_auth）→ Chromium。`success:true`，截图 8 张，pageerror 0，Basic Auth 质询 0 |
+| Admin model settings | 成功。改造后的模型后台浏览器验收：站点登录 → 后台保存/清除密钥/规则 → 刷新 → 退出 → 401 → 再登录；截图 6 张，pageerror 0 |
+| Creator UI checks、Beginner creator web、Writing assistant API、Title writing isolated acceptance、M1-C/M2-A/M2-C/M3-A/M3-B integration、M4 three episode sample | 全部成功（统一登录默认关闭，原有验收不受影响） |
+
+Unified site login 验收中实际核对（证据 `unified-login/site-login-evidence.json`）：
+
+- 匿名经 Caddy：作品列表/创建、故事版本、素材内容、成片下载、模型后台、标题创作选项与启动全部 401 JSON，无 `WWW-Authenticate`；`/`、`/studio`、`/create`、`/admin/models`、`/projects/<id>` 均 307 到 `/login?returnTo=…`；`/api/v1/health/live` 200，只含 service/status/timestamp/version。
+- 旧令牌：`POST /admin/session`、作为密码登录、作为 Bearer 头均被拒绝。
+- 一次登录：错误密码提示统一文案；正确密码回到 `/create`；cookie 为 `__Host-ads_session`（HttpOnly、Secure、Lax、/）和 `__Host-ads_csrf`（可读、Secure、Strict）。
+- 登录后在创作页真实创建作品（CSRF、幂等键、Origin 均真实），在“我的作品”可见；`/admin/models` 无令牌输入、刷新保持会话；标题创作仍 `TITLE_WRITING_DISABLED`。
+- 带会话的跨站写（伪造 Origin）与缺 CSRF 的写均 403；localStorage / sessionStorage 为空，页面读不到会话 cookie。
+- 退出后旧会话 cookie 访问 API 401、访问页面跳登录（`reason=expired`）；再次打开 `/admin/models` 需登录。
+- 1440 与 390 无横向溢出。
+
+![桌面登录](unified-login/desktop-login.png)
+![桌面创作页](unified-login/desktop-create.png)
+![桌面模型后台](unified-login/desktop-admin-models.png)
+![手机我的作品](unified-login/mobile-studio.png)
+![手机导航与退出](unified-login/mobile-navigation.png)
+![手机会话过期提示](unified-login/mobile-login-expired.png)
+
+**未执行**
+
+- 服务器切换（Hermes 步骤 1–5）、真实站点的 Caddy 配置与真实密码：本轮禁止，未执行。
+- 会话真实等待 2 小时 / 12 小时过期、API 重启后会话失效：用可控时钟与重启在 API HTTP 测试中验证，未在浏览器中真实等待。
+- 服务器上可能存在的 Caddy 生成脚本：仓库中没有，无法核对；交接中要求同步到本仓库模板。
