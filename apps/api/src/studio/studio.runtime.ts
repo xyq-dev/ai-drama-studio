@@ -99,7 +99,13 @@ export class StudioRuntime implements OnModuleDestroy {
     let adminModels: AdminModelsService | null;
     try {
       adminModels = admin ? await AdminModelsService.open(env, admin, async () => {
-        if (!(await titleStore.storageReady())) return true;
+        // storageReady() deliberately reports both absent schema and transient probe failures as false.
+        // Activation must distinguish those cases: only a successful absence check proves no runs exist.
+        const presence = await pool.query(
+          "SELECT to_regclass('title_writing_run') IS NULL AS missing",
+        ) as { rows: { missing: boolean }[] };
+        if (presence.rows[0]?.missing === true) return true;
+        if (presence.rows[0]?.missing !== false) throw new Error("Title writing activation probe unavailable");
         const result = await pool.query(
           "SELECT EXISTS(SELECT 1 FROM title_writing_run WHERE workspace_id = $1 AND state = 'running') AS running",
           [workspaceId],

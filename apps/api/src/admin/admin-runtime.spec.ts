@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  createPostgresPool, PostgresTitleWritingStore, RuntimeStore, type PostgresPool,
+  createPostgresPool, PostgresTitleWritingStore, RuntimeStore, TITLE_WRITING_TABLES, type PostgresPool,
 } from "@ai-drama/database";
 import type { TitleWritingOptionsView } from "@ai-drama/contracts";
 import { loadApiEnv, type ApiEnv } from "../config/env";
@@ -41,17 +41,30 @@ describe.skipIf(process.platform === "win32")("StudioRuntime managed model start
   const runtimes = new Set<StudioRuntime>();
   const pools: FakePool[] = [];
   let running = false;
+  let tableMissing = false;
+  let metadataFailure: Error | undefined;
   let queryFailure: Error | undefined;
   let outbound: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     running = false;
+    tableMissing = false;
+    metadataFailure = undefined;
     queryFailure = undefined;
     vi.spyOn(RuntimeStore.prototype, "requireActiveWorkspace").mockResolvedValue(WORKSPACE);
     vi.spyOn(PostgresTitleWritingStore.prototype, "storageReady").mockResolvedValue(true);
     vi.mocked(createPostgresPool).mockImplementation(() => {
       const pool: FakePool = {
         query: vi.fn(async (sql: string, values?: unknown[]) => {
+          if (sql.includes("to_regclass") && sql.includes("title_writing_run")) {
+            if (metadataFailure) throw metadataFailure;
+            return { rows: [{ missing: tableMissing }] };
+          }
+          if (sql.includes("information_schema.columns")) {
+            if (metadataFailure) throw metadataFailure;
+            return { rows: tableMissing ? [] : Object.entries(TITLE_WRITING_TABLES).flatMap(([table, columns]) =>
+              columns.map((column) => ({ table_name: table, column_name: column }))) };
+          }
           if (!sql.includes("title_writing_run") || !sql.includes("state = 'running'") || values?.[0] !== WORKSPACE) {
             throw new Error("Unexpected database operation in no-database startup test");
           }
@@ -139,8 +152,8 @@ describe.skipIf(process.platform === "win32")("StudioRuntime managed model start
     expect(await restarted.adminModels!.view()).toMatchObject({
       pendingRestart: true, activationDeferred: true, activeRevision: 0, savedRevision: 2,
     });
-    expect(pools.at(-1)!.query).toHaveBeenCalledTimes(1);
-    expect(pools.at(-1)!.query.mock.calls[0]?.[1]).toEqual([WORKSPACE]);
+    expect(pools.at(-1)!.query).toHaveBeenCalledTimes(2);
+    expect(pools.at(-1)!.query.mock.calls.find(([sql]) => sql.includes("state = 'running'"))?.[1]).toEqual([WORKSPACE]);
   });
 
   it("uses pending provider and limits in the actual title service only after an idle restart", async () => {
@@ -198,6 +211,40 @@ describe.skipIf(process.platform === "win32")("StudioRuntime managed model start
     const restarted = await open(env);
     expect(await options(restarted)).toMatchObject({ defaultProvider: "qwen", maxCallsPerDay: 30 });
     expect((await restarted.adminModels!.view()).activeRevision).toBe(0);
+  });
+
+  it("does not treat a transient metadata query failure as an idle workspace", async () => {
+    const env = await environment();
+    await savePending(env);
+    // Exercise the existing real storageReady() in the old startup implementation: it catches this error
+    // and returns false. Returning true from the activation callback on that false used to apply pending settings.
+    vi.mocked(PostgresTitleWritingStore.prototype.storageReady).mockRestore();
+    metadataFailure = Object.assign(new Error("metadata query timed out"), { code: "57014" });
+    const outcome = await open(env).then(() => "startup unexpectedly succeeded", (error: unknown) => error);
+    expect(outcome).toMatchObject({ code: "ADMIN_CONFIG_STORAGE_UNAVAILABLE" });
+    expect(pools.at(-1)!.end).toHaveBeenCalledExactlyOnceWith();
+    expect(pools.at(-1)!.query.mock.calls.some(([sql]) => sql.includes("state = 'running'"))).toBe(false);
+
+    // A subsequent healthy metadata read with a running task still sees the old active revision:
+    // the failed startup must not have persisted the pending provider or lowered its call cap.
+    metadataFailure = undefined;
+    running = true;
+    const recovered = await open(env);
+    expect(await options(recovered)).toMatchObject({ defaultProvider: "qwen", maxCallsPerDay: 30, maxActiveRuns: 1 });
+    expect(await recovered.adminModels!.view()).toMatchObject({ activeRevision: 0, savedRevision: 2, activationDeferred: true });
+  });
+
+  it("allows activation only after the run table is positively confirmed absent", async () => {
+    const env = await environment();
+    await savePending(env);
+    tableMissing = true;
+    vi.mocked(PostgresTitleWritingStore.prototype.storageReady).mockResolvedValue(false);
+    const runtime = await open(env);
+    expect(await options(runtime)).toMatchObject({ storageReady: false, defaultProvider: "openai", maxCallsPerDay: 8, maxActiveRuns: 2 });
+    expect(await runtime.adminModels!.view()).toMatchObject({ pendingRestart: false, activationDeferred: false, activeRevision: 2 });
+    expect(pools.at(-1)!.query).toHaveBeenCalledTimes(1);
+    expect(pools.at(-1)!.query.mock.calls[0]?.[0]).toContain("to_regclass");
+    expect(pools.at(-1)!.query.mock.calls.some(([sql]) => sql.includes("state = 'running'"))).toBe(false);
   });
 
   it("clears all maintenance timers and closes the pool on runtime teardown", async () => {

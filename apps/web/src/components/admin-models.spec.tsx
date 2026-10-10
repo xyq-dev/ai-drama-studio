@@ -89,6 +89,19 @@ describe("protected administrator model settings", () => {
     expect(screen.queryByLabelText(/^新的 API Key/)).toBeNull();
     expect(calls.map((call) => call.url)).toEqual(["/api/v1/admin/session", "/api/v1/admin/models"]);
   });
+  it("shows the newest eight audit entries first and preserves that order on rerender", async () => {
+    const next = modelView({ audit: Array.from({ length: 9 }, (_, index) => ({
+      at: `2026-10-10T00:00:0${index}Z`, action: "limits_updated" as const, revision: index + 1,
+    })) });
+    server((call) => call.url.endsWith("/models") ? json(next) : undefined);
+    render(<AdminModels />); await ready();
+    const revisions = () => within(screen.getByRole("list")).getAllByRole("listitem")
+      .map((item) => item.lastElementChild?.textContent);
+    expect(revisions()).toEqual(["v9", "v8", "v7", "v6", "v5", "v4", "v3", "v2"]);
+    expect(within(screen.getByRole("list")).queryByText("v1", { exact: true })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /OpenAI Responses API/ }));
+    expect(revisions()).toEqual(["v9", "v8", "v7", "v6", "v5", "v4", "v3", "v2"]);
+  });
   it("explicitly saves keep without transmitting a key and preserves unsaved limits", async () => {
     const next = modelView({ savedRevision: 5, pendingRestart: true }); next.saved.providers[0]!.models = ["m-1", "m-2"];
     const calls = server((call) => call.method === "PUT" ? json(next) : undefined);
