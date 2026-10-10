@@ -2,7 +2,7 @@
   "kind": "real-browser-real-site-login-admin-http-temporary-encrypted-file",
   "database": false,
   "modelCalls": 0,
-  "headSha": "f047157b19e69b9dda31c67aafd637cbf9a955c7",
+  "headSha": "11a8c92853344d6774f2656831503d54ece557d5",
   "routeFulfill": false,
   "mockFetch": false,
   "screenshots": [
@@ -57,6 +57,7 @@
     "modelPicker": {
       "keyboardSelect": true,
       "customIdByEnter": true,
+      "searchEnterDoesNotSubmit": true,
       "savedModels": [
         "browser-test-model",
         "qwen3.8-flash"
@@ -100,6 +101,10 @@
     {
       "path": "/api/v1/admin/models/providers/qwen",
       "method": "PUT"
+    },
+    {
+      "path": "/api/v1/admin/models",
+      "method": "GET"
     },
     {
       "path": "/api/v1/admin/models",
