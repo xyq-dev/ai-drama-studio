@@ -17,8 +17,10 @@ const MODEL_ID = /^[A-Za-z0-9._:-]{1,128}$/;
  */
 export type ModelDraft = { models: string[]; defaultModel: string; custom: string[]; pendingCustom: string };
 
-export function modelDraftFor(providerKey: TitleWritingProviderKey, models: readonly string[]): ModelDraft {
-  return { models: [...models], defaultModel: models[0] ?? "",
+export function modelDraftFor(providerKey: TitleWritingProviderKey, saved: readonly string[]): ModelDraft {
+  // The contract accepts repeated IDs; keep the first of each, in order, so the default (first entry) is unchanged.
+  const models = [...new Set(saved)];
+  return { models, defaultModel: models[0] ?? "",
     custom: models.filter((id) => !candidateFor(providerKey, id)), pendingCustom: "" };
 }
 /** The array the existing save contract expects: the default first, the rest in the order they were chosen. */

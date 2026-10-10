@@ -294,6 +294,19 @@ describe("model picker on the provider settings", () => {
     expect(puts(calls)[0]!.body).toMatchObject({ models: ["legacy-qwen-model", "qwen3.8-flash", "old-account-model"] });
   });
 
+  it("shows each saved ID once when the saved list repeats IDs, keeping the first as default", async () => {
+    const view = modelView(); view.saved.providers[0]!.models = ["dup-model", "qwen3.8-flash", "dup-model", "qwen3.8-flash"];
+    const calls = server((call) => call.url.endsWith("/admin/models") && call.method === "GET" ? json(view) : undefined);
+    render(<AdminModels />); await ready();
+    expect(providerForm().getAllByRole("checkbox", { name: /dup-model/ })).toHaveLength(1);
+    expect(checkedModels()).toEqual(["Qwen3.8-Flash", "dup-model"]);
+    expect(providerForm().getByText(/已选 2 \/ 10/)).toBeTruthy();
+    expect(defaultSelect().value).toBe("dup-model");
+    expect([...defaultSelect().options].map((option) => option.value)).toEqual(["", "dup-model", "qwen3.8-flash"]);
+    save(); await screen.findByText(/千问配置已保存/);
+    expect(puts(calls)[0]!.body).toMatchObject({ models: ["dup-model", "qwen3.8-flash"] });
+  });
+
   it("keeps an unselected custom model available to choose again", async () => {
     server(); render(<AdminModels />); await ready();
     toggleModel("qwen3.8-flash"); chooseDefault("qwen3.8-flash"); toggleModel("account-qwen-model");
