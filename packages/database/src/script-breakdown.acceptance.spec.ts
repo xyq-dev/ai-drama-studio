@@ -277,7 +277,9 @@ describe("script breakdown on PostgreSQL", () => {
   it("the upgrade applies only the breakdown migration and keeps every existing row; a redeploy applies nothing", async () => {
     expect(upgrade.applied).toEqual([SCRIPT_BREAKDOWN_MIGRATION]);
     expect(redeploy.applied).toEqual([]);
-    expect(rowsAfter).toEqual(rowsBefore);
+    // Every existing table keeps its rows exactly; the only difference is the new, empty scene link table.
+    expect(rowsAfter).toEqual({ ...rowsBefore, script_breakdown_scene: { count: 0, digest: "" } });
+    expect(rowsBefore.script_breakdown_scene).toBeUndefined();
     expect(await store.breakdownStorageReady()).toBe(true);
     const run = (await pool.query<{ run_kind: string; breakdown_save: string | null; episode_id: string | null }>(
       "SELECT run_kind, breakdown_save, episode_id FROM title_writing_run WHERE id = $1", [history.runId])).rows[0];
@@ -289,7 +291,8 @@ describe("script breakdown on PostgreSQL", () => {
   it("enforces the run shape, the breakdown step, the planned duration range and shot immutability", async () => {
     await expect(pool.query("UPDATE title_writing_run SET breakdown_save = 'pending' WHERE id = $1", [history.runId])).rejects.toThrow(/breakdown_shape/);
     await expect(pool.query("UPDATE title_writing_run SET run_kind = 'script_breakdown' WHERE id = $1", [history.runId])).rejects.toThrow(/breakdown_shape/);
-    await expect(pool.query("UPDATE title_writing_step SET step_key = 'storyboard' WHERE run_id = $1 AND step_key = 'concept'", [history.runId]))
+    // An episode step renamed out of range breaks only the step key CHECK (its script_save rule still holds).
+    await expect(pool.query("UPDATE title_writing_step SET step_key = 'episode:7' WHERE run_id = $1 AND step_key = 'episode:1'", [history.runId]))
       .rejects.toThrow(/step_key_check/);
     const { ws, project, episodes } = await work(1);
     const record = await startBreakdown(ws, project, episodes[0]!.id);
