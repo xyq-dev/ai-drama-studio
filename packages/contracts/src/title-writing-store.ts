@@ -12,6 +12,15 @@ import type {
   TitleWritingStorySave,
   TitleWritingUsageView,
 } from "./title-writing";
+import type {
+  ScriptBreakdownFrozenInput,
+  ScriptBreakdownOutput,
+  ScriptBreakdownSave,
+  ScriptBreakdownSceneView,
+} from "./script-breakdown";
+
+/** The frozen input of a run of either kind: a title run (v1 or v2) or a script breakdown run. */
+export type TitleRunInput = TitleWritingFrozenInput | ScriptBreakdownFrozenInput;
 
 /** Storage contract of title writing runs, shared by the run engine (providers) and the PostgreSQL store (database). */
 export interface TitleRunRecord {
@@ -21,7 +30,7 @@ export interface TitleRunRecord {
   actorId: string;
   idempotencyKey: string;
   inputHash: string;
-  input: TitleWritingFrozenInput;
+  input: TitleRunInput;
   state: TitleWritingRunState;
   errorCode: string | null;
   cancelRequestedAt: string | null;
@@ -31,6 +40,8 @@ export interface TitleRunRecord {
   callsUsed: number;
   storySave: TitleWritingStorySave;
   storyRevisionId: string | null;
+  /** Save state of a script breakdown run's result; null for a title run. */
+  breakdownSave?: ScriptBreakdownSave | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -42,7 +53,7 @@ export interface TitleStepRecord {
   state: TitleWritingStepState;
   attemptNo: number;
   errorCode: string | null;
-  output: TitleConcept | EpisodeOutline | EpisodeDraftCandidate | null;
+  output: TitleConcept | EpisodeOutline | EpisodeDraftCandidate | ScriptBreakdownOutput | null;
   outputHash: string | null;
   scriptSave: TitleWritingScriptSave | null;
   scriptRevisionId: string | null;
@@ -127,6 +138,46 @@ export interface TitleResumeRequest {
   maxActiveRuns: number;
 }
 
+/** What a breakdown start reads, in one consistent snapshot, before anything is created or sent. */
+export type ScriptBreakdownSourceRead =
+  | {
+    kind: "ok";
+    episodeNo: number;
+    scriptRevisionId: string;
+    scriptRevisionNo: number;
+    scriptContentHash: string;
+    scriptContent: unknown;
+    targetEpisodeSeconds: number | null;
+    /** Current revisions of the project's characters that are not archived, oldest first. */
+    characters: Array<{ characterId: string; revisionId: string; name: string }>;
+    /** The episode's scenes and their shots that are not archived. */
+    scenes: Array<{ sceneId: string; rowVersion: number }>;
+    shots: Array<{ shotId: string; rowVersion: number }>;
+  }
+  | { kind: "not_found" | "script_missing" | "script_review_required" };
+
+/** Per scene key, what one shot placement did. */
+export interface ScriptBreakdownPlacementOutcome {
+  placed: string[];
+  /** The scene is not approved yet (or its current revision is not the approved one). */
+  awaitingApproval: string[];
+  /** The approved scene revision differs from the one this breakdown wrote; needs acceptSceneChanged. */
+  sceneChanged: string[];
+  /** A referenced character revision is no longer current; nothing is written for that scene. */
+  charactersChanged: string[];
+  /** The scene was archived or is no longer usable. */
+  unavailable: string[];
+}
+
+export type ScriptBreakdownPlacement =
+  | { kind: "ok"; bundle: TitleRunBundle; outcome: ScriptBreakdownPlacementOutcome }
+  | { kind: "not_found" | "not_ready" };
+
+export interface ScriptBreakdownDetails {
+  scenes: ScriptBreakdownSceneView[];
+  episodeScript: { currentRevisionId: string | null; currentRevisionNo: number | null; approved: boolean };
+}
+
 export type TitleScriptPlacement =
   | { kind: "ok"; bundle: TitleRunBundle }
   | { kind: "not_found" | "not_ready" | "story_not_approved" | "story_changed" | "plan_mismatch" };
@@ -175,4 +226,22 @@ export interface TitleWritingStore {
    * plan_mismatch: the project's episodes are not exactly 1..N of this run; nothing is written.
    */
   placeScripts(workspaceId: string, projectId: string, runId: string, options: { acceptStoryChanged: boolean }, actorId: string, nowIso: string): Promise<TitleScriptPlacement>;
+
+  // Script breakdown runs (migration 20261012000100_script_breakdown). A run of kind "script_breakdown" uses the
+  // methods above for claiming, reserving, sending, finishing, cancelling, resuming and recovery.
+  /** True only when the breakdown columns, the scene link table and shot_revision.planned_duration_ms exist. */
+  breakdownStorageReady(): Promise<boolean>;
+  /** The run created by this request identity, of any kind and project; null when the key is new. */
+  findRunByKey(workspaceId: string, actorId: string, idempotencyKey: string): Promise<TitleRunBundle | null>;
+  breakdownSource(workspaceId: string, projectId: string, episodeId: string): Promise<ScriptBreakdownSourceRead>;
+  latestBreakdown(workspaceId: string, projectId: string, episodeId: string): Promise<TitleRunBundle | null>;
+  breakdownDetails(workspaceId: string, run: TitleRunRecord): Promise<ScriptBreakdownDetails>;
+  /**
+   * Saves the validated result of a breakdown run whose step completed, under the run lock held by this executor:
+   * source_changed when the frozen script or a referenced character is no longer current and approved; conflict when
+   * the episode's scenes or shots differ from the frozen ones. Neither writes anything but the save state.
+   */
+  saveBreakdown(workspaceId: string, runId: string, executorId: string, actorId: string, nowIso: string): Promise<ScriptBreakdownSave | "lost">;
+  /** Writes the proposed shots of every approved scene of a saved breakdown that has none written yet. */
+  placeBreakdownShots(workspaceId: string, projectId: string, episodeId: string, runId: string, options: { acceptSceneChanged: boolean }, actorId: string, nowIso: string): Promise<ScriptBreakdownPlacement>;
 }

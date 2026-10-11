@@ -17,6 +17,7 @@ import { sampleVideoGenerationEnabled, type QwenWritingInput } from "@ai-drama/c
 import { TitleWritingEngine, createQwenFetchTransport, qwenWebProviderConfig, titleWritingProviderConfigs } from "@ai-drama/providers";
 import type { ApiEnv } from "../config/env";
 import { QwenWebService } from "./qwen-web.service";
+import { ScriptBreakdownService } from "./script-breakdown.service";
 import { StudioService } from "./studio.service";
 import { TitleWritingService } from "./title-writing.service";
 import { adminBootstrap } from "../admin/admin-bootstrap";
@@ -45,6 +46,8 @@ export class StudioRuntime implements OnModuleDestroy {
     readonly adminModels: AdminModelsService | null = null,
     /** Whether the model console routes are open (MODEL_ADMIN_ENABLED); access itself needs the site login. */
     readonly adminConsoleEnabled = false,
+    /** Script breakdown: same switch, token, providers, quota and engine as title writing. */
+    readonly scriptBreakdown: ScriptBreakdownService | null = null,
   ) {
     this.service = service;
     this.store = store;
@@ -120,22 +123,39 @@ export class StudioRuntime implements OnModuleDestroy {
     const titleProviders = managed ? managedProviderConfigs(managed) : titleWritingProviderConfigs(env);
     const maxCallsPerDay = managed?.maxCallsPerDay ?? env.TITLE_WRITING_MAX_CALLS_PER_DAY;
     const maxActiveRuns = managed?.maxActiveRuns ?? env.TITLE_WRITING_MAX_ACTIVE_RUNS;
+    // Only the real fetch transport is wired. A missing configuration never falls back to a Mock answer. One engine
+    // drives runs of both kinds, so recovery and the per-run in-process guard cover title writing and breakdowns alike.
+    const titleEngine = new TitleWritingEngine({
+      workspaceId,
+      store: titleStore,
+      providers: titleProviders,
+      transport: createQwenFetchTransport(),
+      maxCallsPerDay,
+    });
+    const writingEnabled = env.NODE_ENV !== "production" && env.TITLE_WRITING_ENABLED;
+    const defaultProvider = managed ? managed.defaultProvider : env.TITLE_WRITING_DEFAULT_PROVIDER ?? null;
     const titleWriting = new TitleWritingService({
       workspaceId,
       nodeEnv: env.NODE_ENV,
-      enabled: env.NODE_ENV !== "production" && env.TITLE_WRITING_ENABLED,
+      enabled: writingEnabled,
       operatorToken: env.TITLE_WRITING_OPERATOR_TOKEN ?? null,
-      defaultProvider: managed ? managed.defaultProvider : env.TITLE_WRITING_DEFAULT_PROVIDER ?? null,
+      defaultProvider,
       providers: titleProviders,
       store: titleStore,
-      // Only the real fetch transport is wired. A missing configuration never falls back to a Mock answer.
-      engine: new TitleWritingEngine({
-        workspaceId,
-        store: titleStore,
-        providers: titleProviders,
-        transport: createQwenFetchTransport(),
-        maxCallsPerDay,
-      }),
+      engine: titleEngine,
+      projects: store,
+      maxCallsPerDay,
+      maxActiveRuns,
+    });
+    const scriptBreakdown = new ScriptBreakdownService({
+      workspaceId,
+      nodeEnv: env.NODE_ENV,
+      enabled: writingEnabled,
+      operatorToken: env.TITLE_WRITING_OPERATOR_TOKEN ?? null,
+      defaultProvider,
+      providers: titleProviders,
+      store: titleStore,
+      engine: titleEngine,
       projects: store,
       maxCallsPerDay,
       maxActiveRuns,
@@ -151,7 +171,7 @@ export class StudioRuntime implements OnModuleDestroy {
         }),
         new CharacterReferenceStore(pool),
         env.M3_CHARACTER_REFERENCE_GATE), store, qwenWeb, qwenWebEnabled && qwenProvider.ok, titleWriting,
-      adminModels, admin?.enabled ?? false);
+      adminModels, admin?.enabled ?? false, scriptBreakdown);
   }
 
   async onModuleDestroy(): Promise<void> {

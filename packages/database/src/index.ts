@@ -169,7 +169,7 @@ export {
   type MockSmProvisionConfig,
   type MockSmProvisionResult,
 } from "./provision-mock-sm";
-export { PostgresTitleWritingStore, TITLE_WRITING_MIGRATION, TITLE_WRITING_TABLES } from "./title-writing-store";
+export { PostgresTitleWritingStore, SCRIPT_BREAKDOWN_COLUMNS, SCRIPT_BREAKDOWN_MIGRATION, TITLE_WRITING_MIGRATION, TITLE_WRITING_TABLES } from "./title-writing-store";
 export {
   EPISODE_PLAN_COLUMNS,
   EPISODE_PLAN_MIGRATION,

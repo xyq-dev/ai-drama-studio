@@ -45,7 +45,8 @@ export function titleWritingCallCap(episodeCount: number): number {
 export const TITLE_WRITING_ALL_STEP_KEYS = [
   "concept", "outline", "episode:1", "episode:2", "episode:3", "episode:4", "episode:5", "episode:6",
 ] as const;
-export type TitleWritingStepKey = (typeof TITLE_WRITING_ALL_STEP_KEYS)[number];
+/** A title run's steps, or the single "breakdown" step of a script breakdown run (script-breakdown.ts). */
+export type TitleWritingStepKey = (typeof TITLE_WRITING_ALL_STEP_KEYS)[number] | "breakdown";
 /** The five steps of a v1 run. */
 export const TITLE_WRITING_STEP_KEYS = ["concept", "outline", "episode:1", "episode:2", "episode:3"] as const satisfies readonly TitleWritingStepKey[];
 

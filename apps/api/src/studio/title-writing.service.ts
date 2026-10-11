@@ -7,7 +7,6 @@ import {
   TITLE_WRITING_MAX_EPISODES,
   TITLE_WRITING_MIN_EPISODES,
   TITLE_WRITING_PROVIDER_KEYS,
-  titleWritingEpisodeCount,
   titleWritingRequiredCalls,
   titleWritingResumeSchema,
   titleWritingSettingsSchema,
@@ -23,6 +22,7 @@ import {
   TITLE_WRITING_CALL_CAP_PER_RUN,
   WRITING_ADAPTERS,
   hashTitleResume,
+  isScriptBreakdownRun,
   newTitleRun,
   titleRunView,
   type TitleRunBundle,
@@ -173,8 +173,9 @@ export class TitleWritingService {
     return null;
   }
 
+  /** A script breakdown run is not a title run: these routes never show, cancel, resume or place one. */
   private found(bundle: TitleRunBundle | null, status = 200): TitleWritingResult {
-    return bundle ? { status, body: { run: titleRunView(bundle) } } : failure(404, "NOT_FOUND");
+    return bundle && !isScriptBreakdownRun(bundle.run) ? { status, body: { run: titleRunView(bundle) } } : failure(404, "NOT_FOUND");
   }
 
   async start(projectId: string, body: unknown, token: string | undefined, context: StudioContext): Promise<TitleWritingResult> {
@@ -213,7 +214,7 @@ export class TitleWritingService {
         quota: {
           sinceIso: new Date(startedAt.getTime() - 24 * 60 * 60 * 1000).toISOString(),
           maxCallsPerDay: this.deps.maxCallsPerDay,
-          requiredCalls: titleWritingRequiredCalls(titleWritingEpisodeCount(run.input)),
+          requiredCalls: titleWritingRequiredCalls(frozen.settings.episodeCount),
         },
       } : {}),
     });
@@ -224,7 +225,7 @@ export class TitleWritingService {
     }
     if (created.kind === "conflict") return failure(409, "IDEMPOTENCY_KEY_REUSED");
     if (created.kind === "active") return failure(409, "TITLE_WRITING_RUN_ACTIVE", { runId: created.bundle.run.id });
-    if (created.bundle.run.projectId !== projectId) return failure(409, "IDEMPOTENCY_KEY_REUSED");
+    if (created.bundle.run.projectId !== projectId || isScriptBreakdownRun(created.bundle.run)) return failure(409, "IDEMPOTENCY_KEY_REUSED");
     if (created.kind === "created") this.schedule(created.bundle.run.id);
     return this.found(created.bundle, created.kind === "created" ? 201 : 200);
   }
@@ -268,6 +269,8 @@ export class TitleWritingService {
   async cancel(projectId: string, runId: string): Promise<TitleWritingResult> {
     const refused = await this.readable(projectId);
     if (refused) return refused;
+    const existing = await this.deps.store.getRun(this.deps.workspaceId, projectId, runId);
+    if (!existing || isScriptBreakdownRun(existing.run)) return failure(404, "NOT_FOUND");
     return this.found(await this.deps.store.requestCancel(this.deps.workspaceId, projectId, runId, this.now().toISOString()));
   }
 
@@ -284,7 +287,7 @@ export class TitleWritingService {
     const parsed = titleWritingResumeSchema.safeParse(body ?? {});
     if (!parsed.success) return failure(400, "VALIDATION_ERROR", { field: parsed.error.issues[0]?.path.join(".") ?? "body" });
     const existing = await this.deps.store.getRun(this.deps.workspaceId, projectId, runId);
-    if (!existing) return failure(404, "NOT_FOUND");
+    if (!existing || isScriptBreakdownRun(existing.run)) return failure(404, "NOT_FOUND");
     const provider = this.deps.providers[existing.run.input.providerKey];
     if (!provider.ok || !provider.models.includes(existing.run.input.model)) {
       return failure(503, "TITLE_WRITING_PROVIDER_UNCONFIGURED", { providerKey: existing.run.input.providerKey, missing: provider.ok ? [] : provider.missing });

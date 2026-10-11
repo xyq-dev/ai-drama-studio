@@ -501,6 +501,8 @@ model ShotRevision {
   action               String
   dialogue             String?
   durationHint         String?   @map("duration_hint")
+  /// Planned seconds × 1000 (migration 20261012000100_script_breakdown). A writing plan, never a measured length.
+  plannedDurationMs    Int?      @map("planned_duration_ms")
   promptText           String    @map("prompt_text")
   contentHash          String    @map("content_hash")
   reviewStatus         String    @default("DRAFT") @map("review_status")
@@ -676,6 +678,12 @@ model TitleWritingRun {
   callsUsed         Int       @default(0) @map("calls_used")
   storySave         String    @default("pending") @map("story_save")
   storyRevisionId   String?   @map("story_revision_id") @db.Uuid
+  /// 'title' or 'script_breakdown' (migration 20261012000100_script_breakdown). The three columns below are set only
+  /// for a script breakdown run; the shape CHECK and the foreign key to script_revision are in the migration.
+  runKind                String    @default("title") @map("run_kind")
+  episodeId              String?   @map("episode_id") @db.Uuid
+  sourceScriptRevisionId String?   @map("source_script_revision_id") @db.Uuid
+  breakdownSave          String?   @map("breakdown_save")
   createdAt         DateTime  @map("created_at") @db.Timestamptz(6)
   updatedAt         DateTime  @map("updated_at") @db.Timestamptz(6)
 
@@ -730,6 +738,28 @@ model TitleWritingCall {
   @@unique([runId, stepKey, attemptNo])
   @@index([workspaceId, createdAt])
   @@map("title_writing_call")
+}
+
+/// The scene a script breakdown run wrote for one scene key, and whether its proposed shots were written under an
+/// approved revision of it (migration 20261012000100_script_breakdown). CHECKs and foreign keys are in the migration.
+model ScriptBreakdownScene {
+  runId                 String   @map("run_id") @db.Uuid
+  workspaceId           String   @map("workspace_id") @db.Uuid
+  projectId             String   @map("project_id") @db.Uuid
+  episodeId             String   @map("episode_id") @db.Uuid
+  sceneKey              String   @map("scene_key")
+  ordinal               Int      @db.SmallInt
+  sceneId               String   @map("scene_id") @db.Uuid
+  sceneRevisionId       String   @unique @map("scene_revision_id") @db.Uuid
+  shotSave              String   @default("pending") @map("shot_save")
+  placedSceneRevisionId String?  @map("placed_scene_revision_id") @db.Uuid
+  createdAt             DateTime @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime @map("updated_at") @db.Timestamptz(6)
+
+  @@id([runId, sceneKey])
+  @@unique([runId, ordinal])
+  @@index([workspaceId, sceneId])
+  @@map("script_breakdown_scene")
 }
 
 /// One accepted resume action, keyed by the resume request's Idempotency-Key. The foreign key to the run

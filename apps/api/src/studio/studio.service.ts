@@ -100,6 +100,8 @@ const shotBodySchema = z.object({
   action: z.string().max(4000),
   dialogue: z.string().max(4000).nullable().optional(),
   durationHint: z.string().max(200).nullable().optional(),
+  /** Planned seconds × 1000. A writing plan, never a measured length. Needs the script breakdown migration. */
+  plannedDurationMs: z.number().int().min(1000).max(15000).nullable().optional(),
   promptText: z.string().max(8000),
 });
 
@@ -373,6 +375,7 @@ export class StudioService {
     const request = {
       ...input, sourceSceneRevisionId: input.sourceSceneRevisionId.toLowerCase(),
       dialogue: input.dialogue ?? null, durationHint: input.durationHint ?? null,
+      plannedDurationMs: input.plannedDurationMs ?? null,
       expectedVersion,
     };
     const route = shotId
