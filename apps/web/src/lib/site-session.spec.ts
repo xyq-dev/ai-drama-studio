@@ -74,11 +74,11 @@ describe("CSRF and session handling for API requests", () => {
     expect(await readSession(async () => new Response(JSON.stringify({ enabled: false, authenticated: false }))))
       .toMatchObject({ enabled: false, authenticated: false });
     await expect(readSession(async () => new Response("{}", { status: 503 }))).rejects.toThrow();
+    await expect(logout(async () => new Response(null, { status: 403 }))).rejects.toThrow();
     const fetch = vi.fn(async (_input: string, _init?: RequestInit) => new Response(null, { status: 204 }));
     await logout(fetch);
     expect(fetch.mock.calls[0]![0]).toBe("/api/v1/auth/logout");
     expect(fetch.mock.calls[0]![1]).toMatchObject({ method: "POST", headers: { "X-CSRF-Token": CSRF } });
-    await expect(logout(async () => new Response(null, { status: 403 }))).rejects.toThrow();
   });
   it("never uses browser storage", async () => {
     const set = vi.spyOn(Storage.prototype, "setItem");

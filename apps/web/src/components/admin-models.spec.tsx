@@ -3,7 +3,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdminModelsView } from "@ai-drama/contracts";
-import { AdminModels } from "./admin-models";
+let AdminModels: typeof import("./admin-models")["AdminModels"];
 
 const KEY = "provider-private-0123456789";
 const CSRF = "c".repeat(43);
@@ -55,7 +55,10 @@ function save() { fireEvent.click(screen.getByRole("button", { name: "校验并�
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>((done) => { resolve = done; }); return { promise, resolve }; }
 
 let assign: ReturnType<typeof vi.fn<(url: string | URL) => void>>;
-beforeEach(() => {
+beforeEach(async () => {
+  // assign is mocked below; load a fresh document's modules instead of retaining a previous test's logout intent.
+  vi.resetModules();
+  ({ AdminModels } = await import("./admin-models"));
   window.history.replaceState(null, "", "/admin/models");
   document.cookie = `ads_csrf=${CSRF}; Path=/`;
   assign = vi.fn<(url: string | URL) => void>();
