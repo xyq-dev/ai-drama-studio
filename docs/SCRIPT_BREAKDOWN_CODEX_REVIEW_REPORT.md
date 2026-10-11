@@ -64,6 +64,85 @@
 - 拆解与标题创作共用每作品单个活动 AI 任务、共同额度和现有未知结果处理。本次不新增后台自动重试或自动继续生成。
 - 场景整版依赖剧本，修改一句仍会使整集来源过期；没有台词级局部重做。
 - 新手五步仍是原来模板流程，尚未接入本功能。工作台可拆解，不代表新手页或一键成片已经贯通。
-- 归档到媒体失效、合成及导出拒绝过期依赖的调用链已静态核对，未确认绕过。但本轮新增数据库回归没有实测“R2 归档 → 真实媒体合成/导出”的完整链路，不能扩大证据结论。
+- 归档到媒体失效、合成及导出拒绝过期依赖的调用链，首轮只做了静态核对。真实链路由下一节的集成验收补测，结论以该节记录的 CI 结果为准。
 - 4,096 token 上限不保证最大 20 镜答案能完整输出；截断拒收。严格对白归属的真实供应商通过率未测，不猜测无标注散文的说话人。
 - 真实模型调用为 0；无服务器迁移、服务重启、配置激活或部署。
+
+## R2 取代 → 媒体失效 → 合成与导出门槛：真实集成验收
+
+补测上一节列为未实测的链路。没有修改产品代码、审核规则、费用规则、状态机或迁移 SQL，也没有升级依赖。
+
+### 环境与边界
+
+- 命令：`pnpm --filter @ai-drama/api script-breakdown:media-acceptance`。文件为 `apps/api/src/studio/script-breakdown.media-acceptance.spec.ts`，配置为 `vitest.script-breakdown-media-acceptance.config.ts`；不进入 `test` 或 `integration`。
+- CI：`title-writing-acceptance.yml` 新增 `breakdown-media` 作业。只用本作业的 PostgreSQL 16 和 Redis 服务容器，新建空库 `ads_title_acceptance_breakdown_media_<run>_<attempt>`。作业结束即丢弃，没有生产凭据。
+- 守卫：沿用标题创作验收的授权标记、库名、URL 和空库校验。另要求数据库和 Redis 都在 loopback，任一不满足即拒绝，且拒绝前不连接。
+- 真实组件：
+  - Nest HTTP API，在测试进程内监听本地端口；
+  - PostgreSQL 存储、文本链和媒体存储；
+  - 子进程运行构建后的 Worker（`apps/worker/dist/main.js`），负责 Mock 视频任务、失效传播和本地 FFmpeg 合成；
+  - FFmpeg 固定为 `7:6.1.1-3ubuntu5`。
+- 只有模型是替身。拆解服务注入与 `script-breakdown.acceptance.spec.ts` 相同的桩：按提示词里的剧本副本回答，不联网。运行器还把供应商域名指向 loopback。
+- 数据写入：只有工作区行和现有 `provisionMockAvProviders` 写入的 Mock 供应商配置是直接写库的验收数据。其余状态变化都走业务接口。之后的 SQL 只读，用于计数、状态和依赖边；没有直接把任何媒体改成 `STALE`。
+
+### 各端点预期（按现有契约，先于运行确定）
+
+| 场景 | 端点 | 取代前 | 取代后预期 |
+|---|---|---|---|
+| 旧镜头生成视频 | `POST /shot-revisions/:id/generate-video` | 202 | 400 `REVIEW_REQUIRED`（镜头版本已 STALE） |
+| 旧来源单镜预检 | `POST /shot-revisions/:id/compose-preflight` | 200 | 400 `REVIEW_REQUIRED` |
+| 旧来源单镜提交（取代前的 inputHash） | `POST /shot-revisions/:id/compose` | 202 | 400 `REVIEW_REQUIRED` |
+| 旧单镜成片集级预检 | `POST …/episodes/:id/compose-preflight` | 200 | 400 `REVIEW_REQUIRED`（镜头门槛先于成片状态检查） |
+| 旧单镜成片集级提交（取代前的 inputHash） | `POST …/episodes/:id/compose` | 202 | 400 `REVIEW_REQUIRED` |
+| 新旧单镜成片混用 | `POST …/episodes/:id/compose-preflight` | — | 400 `REVIEW_REQUIRED` |
+| 旧集级成片正式下载 | `GET …/composites/:id/download` | 200，哈希一致 | 400 `COMPOSE_INPUT_INVALID` |
+| 旧集级成片来源清单 | `GET …/composites/:id/export-manifest` | 200 | 400 `COMPOSE_INPUT_INVALID` |
+| 旧集级成片历史文件 | `GET /assets/:id/content` | 200 | 200，字节哈希不变 |
+
+- 历史文件读取沿用既有规则：只有 `DELETED`/`FAILED` 被拒绝，`STALE` 仍可读，本轮未改成禁止访问。可读不等于仍有合成或正式导出资格。
+- 每个拒绝都断言状态码和业务错误码，500、鉴权失败或配置关闭都不算通过。
+- 拒绝前后比较本项目的 `generation_job`、`job_attempt`、`workflow_run`、`cost_ledger`、`asset`、`title_writing_call`，以及本工作区的 `dispatch_outbox`，必须完全相等。
+
+### 链路
+
+1. **取代前（成功对照）**：两集各有人写的场景和两个已批准镜头，各自完成：
+   - Mock 视频；
+   - 单镜合成和批准；
+   - 集级合成和批准；
+   - 正式下载与来源清单。
+   要求 MP4 哈希等于资产记录；清单的任务、预检哈希和片段与数据库依赖边一致。
+2. **R2 取代**：
+   - 不带同意时返回 409 `SCRIPT_BREAKDOWN_EXISTING_SCENES`，没有模型调用；
+   - 带 `replaceExisting: true` 时任务 `completed / saved`，取代 1 场，恰好 1 次调用；
+   - 旧场景和镜头已归档，修订行仍在，历史接口返回 200；
+   - 新场景为 `DRAFT`；依赖边不变；等待传播完成。
+3. **传播与拦截**：
+   - 旧视频、旧单镜成片和旧集级成片均为 `STALE`，成片审核状态仍为 `APPROVED`，来源镜头版本不变；
+   - 镜头历史显示 `STALE`；
+   - 各端点按上表拒绝，记录数不变。
+4. **新来源**：
+   - 场景批准前写入镜头返回 `awaitingApproval`；
+   - 人工批准后写入两个镜头草稿；
+   - 镜头经人工批准后完成视频、单镜合成、集级合成和正式导出；
+   - 新旧成片混用仍被拒绝。
+5. **无关集**：第 2 集场景和镜头未归档，镜头版本 `CURRENT`，全部媒体 `ACTIVE`。集级预检 inputHash 与取代前相同，再次导出的 MP4 哈希也不变。
+
+### 本地检查
+
+使用 Node 24.21.0 和 pnpm 10.17.0，保持 engine-strict 设置不变。
+
+- API lint 通过。
+- 新文件类型检查只剩一个错误：`@ai-drama/providers/title-writing-fixtures` 子路径无法解析。现有 `script-breakdown.acceptance.spec.ts` 有同样错误，vitest 运行时能解析，spec 也不在包的 typecheck 范围内。
+- 默认 `vitest list` 不收集新文件。
+- 未授权时，命令在连接前拒绝：缺授权标记拒绝，缺 Redis URL 也拒绝。
+- `git diff --check` 通过。
+
+本机没有 PostgreSQL、Redis 和 Docker，没有在本机跑真实链路，结果以 CI 为准。
+
+### CI 结果
+
+（推送后按精确 HEAD 记录在 PR 描述与本节。）
+
+### 结论边界
+
+本项只覆盖 Mock 媒体和本地 FFmpeg 的门槛链路，不代表整个 R2 已完成真实供应商验收，也不代表可以自动部署。真实模型调用为 0。仅在本次一次性隔离库应用已有迁移；服务器和已有数据库未执行。
