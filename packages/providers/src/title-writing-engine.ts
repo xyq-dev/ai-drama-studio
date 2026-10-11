@@ -1060,14 +1060,27 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
     const input = run.input;
     const output = this.requireStep(runId, SCRIPT_BREAKDOWN_STEP_KEY).output as ScriptBreakdownOutput;
     const outcome: ScriptBreakdownPlacementOutcome = { placed: [], awaitingApproval: [], sceneChanged: [], charactersChanged: [], unavailable: [] };
-    for (const link of this.breakdownLinks.filter((item) => item.runId === runId).sort((left, right) => left.ordinal - right.ordinal)) {
-      if (link.shotSave === "saved") continue;
+    const pending = this.breakdownLinks.filter((item) => item.runId === runId && item.shotSave !== "saved")
+      .sort((left, right) => left.ordinal - right.ordinal);
+    if (pending.length === 0) return { kind: "ok", bundle: this.bundle(run), outcome };
+    const episode = this.requireBreakdownEpisode(episodeId);
+    const script = episode.scripts.find((item) => item.id === input.scriptRevisionId);
+    const sourceCurrent = episode.currentScriptId === input.scriptRevisionId && episode.approvedScriptId === input.scriptRevisionId
+      && script?.reviewStatus === "APPROVED" && script.freshnessStatus === "CURRENT";
+    if (!sourceCurrent) return { kind: "not_ready" };
+    for (const link of pending) {
       const scene = this.requireScene(link.sceneId);
       const approved = scene.revisions.find((item) => item.id === scene.approvedRevisionId);
       if (scene.archived) { outcome.unavailable.push(link.sceneKey); continue; }
       if (!approved || scene.currentRevisionId !== approved.id || approved.reviewStatus !== "APPROVED") { outcome.awaitingApproval.push(link.sceneKey); continue; }
-      if (approved.freshnessStatus !== "CURRENT") { outcome.unavailable.push(link.sceneKey); continue; }
+      if (approved.freshnessStatus !== "CURRENT" || approved.sourceScriptRevisionId !== input.scriptRevisionId) {
+        outcome.unavailable.push(link.sceneKey); continue;
+      }
+      // Scene-change consent accepts an edited scene of this script, never a newer script or existing manual shots.
       if (approved.id !== link.sceneRevisionId && !options.acceptSceneChanged) { outcome.sceneChanged.push(link.sceneKey); continue; }
+      if (this.shots.some((shot) => shot.sceneId === scene.sceneId && !shot.archived)) {
+        outcome.unavailable.push(link.sceneKey); continue;
+      }
       const generatedScene = output.scenes.find((item) => item.key === link.sceneKey)!;
       const planned = shotsOfScene(output, link.sceneKey);
       const characterRevisions = planned.map((shot) => shot.characterKeys.map((key) => input.characters.find((item) => item.key === key)!));

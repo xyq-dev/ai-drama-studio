@@ -177,4 +177,21 @@ describe("starting a script breakdown", () => {
     expect(store.shots.map((shot) => shot.plannedDurationMs)).toEqual([3000, 4000]);
     expect((await service.placeShots(P1, episode.episodeId, randomUUID(), {}, CONTEXT())).status).toBe(404);
   });
+
+  it("scene-change consent cannot attach an old breakdown to the next approved script", async () => {
+    const { store, service, episode, start, settle, runOf, seen } = setup();
+    const started = await start();
+    await settle();
+    const newScript = store.writeScript(episode.episodeId, `${SCRIPT}\n周野：这是第二版。`);
+    for (const scene of store.scenes.filter((item) => !item.archived)) {
+      const newScene = store.editScene(scene.sceneId, "按新剧本人工重写");
+      scene.revisions.find((revision) => revision.id === newScene)!.sourceScriptRevisionId = newScript;
+      store.approveScene(scene.sceneId);
+    }
+    const result = await service.placeShots(P1, episode.episodeId, runOf(started).runId, { acceptSceneChanged: true }, CONTEXT());
+    expect(result.status).toBe(409);
+    expect(result.body).toMatchObject({ error: { code: "SCRIPT_BREAKDOWN_NOT_SAVED" } });
+    expect(store.shots).toHaveLength(0);
+    expect(seen).toHaveLength(1);
+  });
 });

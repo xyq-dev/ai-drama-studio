@@ -158,6 +158,39 @@ describe("script breakdown output checks", () => {
     expect(check(output(), input({ scriptText: "场 1 便利店 夜\n林夏盯着监控屏幕。" }))).toEqual({ ok: false, code: "dialogue_not_in_script" });
   });
 
+  it.each([
+    { speaker: "林夏", line: "你终于来了。" },
+    { speaker: "林夏", line: "周野推开铁门。" },
+    { speaker: "铁门", line: "你终于来了。" },
+  ])("refuses a mismatched dialogue attribution $speaker: $line even when both substrings occur", (dialogue) => {
+    const answer = output();
+    answer.shots[1]!.dialogue = [dialogue];
+    expect(check(answer)).toEqual({ ok: false, code: "dialogue_not_in_script" });
+  });
+
+  it.each([
+    "林夏：这不是我。",
+    '林夏: "这不是我。"',
+    "林夏（低声）：『这不是我。』",
+    " 林 夏 ( 低声 ) : “这不是 我。”",
+    "林夏：\n“这不是我。”",
+  ])("accepts an explicitly attributed line with supported punctuation: %s", (line) => {
+    expect(check(output(), input({ scriptText: SCRIPT.replace("林夏：这不是我。", line) })).ok).toBe(true);
+  });
+
+  it("accepts explicitly marked narration without requiring a character entry", () => {
+    const answer = output();
+    answer.shots[1]!.dialogue = [{ speaker: "旁白", line: "夜幕落下。" }];
+    expect(check(answer, input({ scriptText: `${SCRIPT}\n旁白：夜幕落下。` })).ok).toBe(true);
+  });
+
+  it("does not infer attribution from unmarked prose or a later action line", () => {
+    const answer = output();
+    answer.shots[1]!.dialogue = [{ speaker: "林夏", line: "周野推开铁门。" }];
+    expect(check(answer, input({ scriptText: `${SCRIPT}\n林夏：\n周野推开铁门。` })))
+      .toEqual({ ok: false, code: "dialogue_not_in_script" });
+  });
+
   it("refuses unsafe text and a total planned duration outside 5–180 seconds", () => {
     expect(check(output({ scenes: [{ ...output().scenes[0]!, description: "见 https://example.com" }, output().scenes[1]!] }))).toEqual({ ok: false, code: "unsafe_content" });
     const short = output({ scenes: [output().scenes[0]!], shots: [{ ...output().shots[0]!, plannedSeconds: 2 }, { ...output().shots[1]!, plannedSeconds: 2 }] });

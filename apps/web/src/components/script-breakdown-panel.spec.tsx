@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 // Simulated interface tests. fetch is mocked; this file does not start a browser, the API or a model.
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ScriptBreakdownOptionsView, ScriptBreakdownRunView } from "@ai-drama/contracts";
 import { SCRIPT_BREAKDOWN_LIMITS } from "@ai-drama/contracts";
 import { ScriptBreakdownClient } from "../lib/script-breakdown-client";
@@ -72,6 +72,7 @@ function panel(h: ReturnType<typeof harness>, props: { scriptReady?: boolean; sc
     sceneCount={props.sceneCount ?? 0} onOpenScene={h.onOpenScene} onChanged={h.onChanged} client={h.client} />);
 }
 
+beforeEach(() => window.sessionStorage.clear());
 afterEach(() => cleanup());
 
 describe("AI breakdown panel", () => {
@@ -97,7 +98,7 @@ describe("AI breakdown panel", () => {
     await screen.findByText(/状态：进行中/);
     const post = h.seen.find((item) => item.method === "POST")!;
     expect(post.url).toBe(`/api/v1/projects/${P1}/episodes/${E1}/script-breakdowns`);
-    expect(post.body).toEqual({ replaceExisting: true });
+    expect(post.body).toEqual({ replaceExisting: true, providerKey: "qwen", model: "q-1" });
     expect(post.headers["x-operator-token"]).toBe(TOKEN);
     expect(post.headers["idempotency-key"]).toMatch(/^[0-9a-f-]{36}$/);
   });
@@ -108,7 +109,7 @@ describe("AI breakdown panel", () => {
     fireEvent.change(await screen.findByLabelText("操作者令牌"), { target: { value: TOKEN } });
     fireEvent.click(screen.getByRole("button", { name: "生成场景与分镜" }));
     expect((await screen.findByRole("alert")).textContent).toContain("只会重放同一个请求");
-    fireEvent.click(screen.getByRole("button", { name: "生成场景与分镜" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认上次启动结果" }));
     await screen.findByText(/状态：已完成/);
     const keys = h.seen.filter((item) => item.method === "POST").map((item) => item.headers["idempotency-key"]);
     expect(keys).toHaveLength(2);
@@ -166,7 +167,7 @@ describe("AI breakdown panel", () => {
     expect(breakdownErrorText(null)).toBeNull();
   });
 
-  it("treats a body that does not name a breakdown of this episode as no breakdown, without breaking the page", async () => {
+  it("rejects an unreadable options/snapshot response without allowing a new request", async () => {
     const seen: string[] = [];
     const fetchImpl = vi.fn(async (input: string) => {
       seen.push(input);

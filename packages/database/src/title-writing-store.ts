@@ -902,16 +902,31 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
           WHERE run_id = $1 AND workspace_id = $2 AND shot_save = 'pending' ORDER BY ordinal`,
         [runId, workspaceId],
       );
+      // A completed placement remains a no-op replay even if its source has since changed. The source gate below is
+      // about creating new revisions, never about undoing the prior receipt.
+      if (links.rows.length === 0) return { kind: "ok", bundle: (await this.load(client, runRow))!, outcome };
+      // Confirm after taking the project lock: accepting an edited scene does not permit attaching an old plan to a
+      // different script. The page disables this action for an obsolete source, but the API must enforce it too.
+      const source = await client.query(
+        `SELECT 1 FROM episode e JOIN script_revision script ON script.id = e.current_script_revision_id
+            AND script.episode_id = e.id AND script.workspace_id = e.workspace_id AND script.project_id = e.project_id
+          WHERE e.id = $1 AND e.workspace_id = $2 AND e.project_id = $3
+            AND e.current_script_revision_id = $4 AND e.approved_script_revision_id = $4
+            AND script.review_status = 'APPROVED' AND script.freshness_status = 'CURRENT'
+          FOR SHARE OF e, script`,
+        [episodeId, workspaceId, projectId, input.scriptRevisionId],
+      );
+      if (!source.rows[0]) return { kind: "not_ready" };
       const traceId = `script-breakdown:${runId}`;
       for (const link of links.rows) {
         const sceneKey = String(link.scene_key);
         const sceneId = String(link.scene_id);
         const scene = await client.query<Row>(
           `SELECT scene.archived_at IS NOT NULL AS archived, scene.current_revision_id, scene.approved_revision_id,
-                  revision.review_status, revision.freshness_status
+                  revision.review_status, revision.freshness_status, revision.source_script_revision_id
              FROM scene LEFT JOIN scene_revision revision ON revision.id = scene.approved_revision_id
-            WHERE scene.id = $1 AND scene.workspace_id = $2 AND scene.project_id = $3 FOR UPDATE OF scene`,
-          [sceneId, workspaceId, projectId],
+            WHERE scene.id = $1 AND scene.workspace_id = $2 AND scene.project_id = $3 AND scene.episode_id = $4 FOR UPDATE OF scene`,
+          [sceneId, workspaceId, projectId, episodeId],
         );
         const sceneRow = scene.rows[0];
         if (!sceneRow || sceneRow.archived === true) { outcome.unavailable.push(sceneKey); continue; }
@@ -920,8 +935,18 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
           outcome.awaitingApproval.push(sceneKey);
           continue;
         }
-        if (sceneRow.freshness_status !== "CURRENT") { outcome.unavailable.push(sceneKey); continue; }
+        if (sceneRow.freshness_status !== "CURRENT" || sceneRow.source_script_revision_id !== input.scriptRevisionId) {
+          outcome.unavailable.push(sceneKey); continue;
+        }
         if (approvedId !== String(link.scene_revision_id) && !options.acceptSceneChanged) { outcome.sceneChanged.push(sceneKey); continue; }
+        // Scene creation and manual shot edits use this project lock as well. A person may have added shots since the
+        // scene was generated: preserve those and let the other scenes proceed instead of hitting the ordinal trigger
+        // (a raw PostgreSQL exception) and rolling back the entire placement.
+        const existing = await client.query(
+          `SELECT 1 FROM shot WHERE scene_id = $1 AND workspace_id = $2 AND project_id = $3 AND archived_at IS NULL LIMIT 1`,
+          [sceneId, workspaceId, projectId],
+        );
+        if (existing.rows[0]) { outcome.unavailable.push(sceneKey); continue; }
         const planned = shotsOfScene(output, sceneKey);
         const references = planned.map((shot) => shot.characterKeys.map((key) => input.characters.find((item) => item.key === key)!));
         if (!await this.charactersCurrent(client, workspaceId, projectId, references.flat())) { outcome.charactersChanged.push(sceneKey); continue; }
@@ -951,7 +976,7 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
           await client.query("RELEASE SAVEPOINT script_breakdown_shots");
           outcome.placed.push(sceneKey);
         } catch (error) {
-          // For example a shot a person already added at the same position: nothing of this scene is written.
+          // Domain-level source or version conflicts leave this scene untouched; unexpected database errors propagate.
           if (!(error instanceof PersistenceError)) throw error;
           await client.query("ROLLBACK TO SAVEPOINT script_breakdown_shots");
           outcome.unavailable.push(sceneKey);

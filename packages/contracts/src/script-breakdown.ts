@@ -17,7 +17,8 @@ export const SCRIPT_BREAKDOWN_STEP_KEY = "breakdown" as const;
 
 /**
  * Bounds of one breakdown, shown on the page. Scenes and shots follow the production plan (60 s: 2–4 scenes, 90 s:
- * 3–6 scenes, about 5 s per shot); field lengths keep the whole answer inside the 4,096-token output cap.
+ * 3–6 scenes, about 5 s per shot). Field bounds limit size but do not guarantee a fit in the 4,096-token output cap;
+ * a truncated answer is rejected, never silently shortened or continued.
  */
 export const SCRIPT_BREAKDOWN_LIMITS = {
   scriptMaxChars: WRITING_BODY_MAX_CHARS,

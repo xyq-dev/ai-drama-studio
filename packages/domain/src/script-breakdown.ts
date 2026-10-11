@@ -58,6 +58,7 @@ export function buildScriptBreakdownPrompt(input: ScriptBreakdownFrozenInput): S
       `- heading ≤${String(L.headingMaxChars)} 字（如“内景 咖啡馆”），timeOfDay ≤${String(L.timeOfDayMaxChars)} 字（不知道时给空字符串），description ≤${String(L.descriptionMaxChars)} 字。`,
       `- shotType ≤${String(L.shotTypeMaxChars)} 字（如远景、全景、中景、近景、特写），camera 写机位、构图和运镜 ≤${String(L.cameraMaxChars)} 字，action ≤${String(L.actionMaxChars)} 字。`,
       `- dialogue 每镜最多 ${String(L.maxLinesPerShot)} 句：line 必须逐字摘自剧本正文，speaker 必须是剧本里出现的说话人名字；没有对白时给 []。`,
+      "- speaker 和 line 必须来自同一处明确的“说话人（可选表演提示）：对白”标注；旁白也须明确标注。不得换说话人或把动作说明当对白。",
       "- characterKeys 只能使用下面角色表里的键；表里没有的人物不要引用。",
       "",
       "角色表：",
@@ -105,6 +106,35 @@ export function lineInScript(line: string, normalizedScript: string): boolean {
   return normalized.length > 0 && normalizedScript.includes(normalized);
 }
 
+/**
+ * Read explicit speaker labels, not names and sentences found anywhere in the script. Supports colon variants,
+ * optional parenthesized performance notes after the speaker and quoted dialogue. A label on its own may introduce
+ * one following quoted line; an unmarked action or prose line never inherits the previous speaker.
+ */
+function attributedDialogue(script: string): Array<{ speaker: string; line: string }> {
+  const result: Array<{ speaker: string; line: string }> = [];
+  let pendingSpeaker: string | null = null;
+  for (const rawLine of script.split(/\r?\n/u)) {
+    const line = normalizeForMatch(rawLine);
+    const labelled = /^([^:]{1,160}):(.*)$/u.exec(line);
+    if (labelled) {
+      pendingSpeaker = null;
+      const label = labelled[1]!.replace(QUOTES, "");
+      const speaker = /^([^():]{1,20})(?:\([^()]{0,120}\))?$/u.exec(label)?.[1];
+      if (!speaker) continue;
+      const dialogue = labelled[2]!.replace(QUOTES, "");
+      if (dialogue.length > 0) result.push({ speaker, line: dialogue });
+      else pendingSpeaker = speaker;
+    } else {
+      if (pendingSpeaker && /^["'“‘「『].+["'”’」』]$/u.test(line)) {
+        result.push({ speaker: pendingSpeaker, line: line.replace(QUOTES, "") });
+      }
+      pendingSpeaker = null;
+    }
+  }
+  return result;
+}
+
 export function plannedTotalSeconds(output: ScriptBreakdownOutput): number {
   return output.shots.reduce((sum, shot) => sum + shot.plannedSeconds, 0);
 }
@@ -116,7 +146,7 @@ function duplicates(values: readonly string[]): boolean {
 /**
  * Accepts a model answer only when it is one JSON object of the output schema for exactly the frozen episode, with
  * unique keys, every scene and character reference present, at least one shot per scene, shots grouped in scene
- * order, every dialogue line and speaker found in the frozen script, and a total planned duration inside the range.
+ * order, every dialogue line attributed to its speaker in the frozen script, and a total planned duration inside the range.
  */
 export function validateScriptBreakdownOutput(content: string, input: ScriptBreakdownFrozenInput): ScriptBreakdownValidation {
   if (content.trim().length === 0) return { ok: false, code: "invalid_json" };
@@ -158,10 +188,13 @@ export function validateScriptBreakdownOutput(content: string, input: ScriptBrea
   if (output.scenes.some((scene) => output.shots.filter((shot) => shot.sceneKey === scene.key).length > L.maxShotsPerScene)) {
     return { ok: false, code: "invalid_output" };
   }
-  const script = normalizeForMatch(input.scriptText);
+  const dialogue = attributedDialogue(input.scriptText);
   for (const shot of output.shots) {
     for (const item of shot.dialogue) {
-      if (!lineInScript(item.speaker, script) || !lineInScript(item.line, script)) return { ok: false, code: "dialogue_not_in_script" };
+      const speaker = normalizeForMatch(item.speaker).replace(QUOTES, "");
+      if (!dialogue.some((source) => source.speaker === speaker && lineInScript(item.line, source.line))) {
+        return { ok: false, code: "dialogue_not_in_script" };
+      }
     }
   }
   const total = plannedTotalSeconds(output);

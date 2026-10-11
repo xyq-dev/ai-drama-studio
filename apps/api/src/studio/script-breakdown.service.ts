@@ -69,7 +69,7 @@ const MESSAGES: Record<string, string> = {
   SCRIPT_BREAKDOWN_SCRIPT_TOO_LARGE: `剧本正文超过 ${String(SCRIPT_BREAKDOWN_LIMITS.scriptMaxChars)} 字，没有启动任何调用。`,
   SCRIPT_BREAKDOWN_TOO_MANY_CHARACTERS: `作品角色超过 ${String(SCRIPT_BREAKDOWN_LIMITS.maxCharacters)} 个，没有启动任何调用。`,
   SCRIPT_BREAKDOWN_EXISTING_SCENES: "这一集已经有场景。确认用新结果取代后才能拆解（旧版本会保留）。",
-  SCRIPT_BREAKDOWN_NOT_SAVED: "拆解结果还没有写入场景，不能写入镜头。",
+  SCRIPT_BREAKDOWN_NOT_SAVED: "拆解结果尚未就绪，或来源剧本已更新、未批准、已过期，不能写入镜头。请刷新查看当前来源。",
   NOT_FOUND: "没有找到这次拆解。",
   EPISODE_NOT_FOUND: "没有找到这一集。",
   VALIDATION_ERROR: "请求内容无效。",

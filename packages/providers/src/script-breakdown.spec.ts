@@ -297,6 +297,77 @@ describe("writing proposed shots", () => {
     expect(store.shots).toHaveLength(0);
   });
 
+  it("never attaches the old proposal to a scene rebased onto a newer script, even with scene-change consent", async () => {
+    const { store, episode, record } = await saved();
+    const [first, second] = liveScenes(store, episode);
+    store.approveScene(first!.sceneId);
+    const place = () => store.placeBreakdownShots(WS, P1, episode.episodeId, record.id,
+      { acceptSceneChanged: true }, "owner", new Date().toISOString());
+    await place();
+    const alreadyPlaced = structuredClone(store.shots);
+    expect(alreadyPlaced).toHaveLength(2);
+
+    const newScript = store.writeScript(episode.episodeId, `${scriptOf(1, 2)}\n林夏：新的对白。`);
+    const revisionId = store.editScene(second!.sceneId, "基于第二版剧本人工重写");
+    second!.revisions.find((revision) => revision.id === revisionId)!.sourceScriptRevisionId = newScript;
+    store.approveScene(second!.sceneId);
+    const afterScriptChange = structuredClone(store.shots);
+    expect(await place()).toEqual({ kind: "not_ready" });
+    expect(await place()).toEqual({ kind: "not_ready" });
+    expect(store.shots).toEqual(afterScriptChange);
+    expect(store.shots.map((shot) => shot.shotId)).toEqual(alreadyPlaced.map((shot) => shot.shotId));
+  });
+
+  it.each(["approval_revoked", "script_stale", "scene_source_changed"] as const)(
+    "refuses pending shots after %s without sending another model request",
+    async (change) => {
+      const { store, episode, record } = await saved();
+      for (const scene of liveScenes(store, episode)) store.approveScene(scene.sceneId);
+      if (change === "approval_revoked") episode.approvedScriptId = null;
+      if (change === "script_stale") episode.scripts.find((script) => script.id === episode.currentScriptId)!.freshnessStatus = "STALE";
+      if (change === "scene_source_changed") {
+        for (const scene of liveScenes(store, episode)) {
+          scene.revisions.find((revision) => revision.id === scene.currentRevisionId)!.sourceScriptRevisionId = "another-script-revision";
+        }
+      }
+      const beforeCalls = store.calls.length;
+      const placed = await store.placeBreakdownShots(WS, P1, episode.episodeId, record.id,
+        { acceptSceneChanged: true }, "owner", new Date().toISOString());
+      if (change === "scene_source_changed") {
+        expect(placed).toMatchObject({ kind: "ok", outcome: { placed: [], unavailable: ["S1", "S2"] } });
+      } else expect(placed).toEqual({ kind: "not_ready" });
+      expect(store.shots).toHaveLength(0);
+      expect(store.calls).toHaveLength(beforeCalls);
+    },
+  );
+
+  it("does not add AI shots to a pending scene that now contains a manual shot", async () => {
+    const { store, episode, record } = await saved();
+    const [first, second] = liveScenes(store, episode);
+    store.approveScene(first!.sceneId);
+    const place = () => store.placeBreakdownShots(WS, P1, episode.episodeId, record.id,
+      { acceptSceneChanged: true }, "owner", new Date().toISOString());
+    await place();
+    store.approveScene(second!.sceneId);
+    store.shots.push({ ...structuredClone(store.shots[0]!), shotId: "manual-shot", revisionId: "manual-revision",
+      sceneId: second!.sceneId, sourceSceneRevisionId: second!.currentRevisionId!, dialogue: "人工对白" });
+    const before = structuredClone(store.shots);
+    expect(await place()).toMatchObject({ kind: "ok", outcome: { placed: [], unavailable: ["S2"] } });
+    expect(store.shots).toEqual(before);
+  });
+
+  it("replays an already completed placement after a script change without rewriting any shots", async () => {
+    const { store, episode, record } = await saved();
+    for (const scene of liveScenes(store, episode)) store.approveScene(scene.sceneId);
+    const place = () => store.placeBreakdownShots(WS, P1, episode.episodeId, record.id,
+      { acceptSceneChanged: true }, "owner", new Date().toISOString());
+    await place();
+    store.writeScript(episode.episodeId, `${scriptOf(1, 2)}\n林夏：下一版。`);
+    const before = structuredClone(store.shots);
+    expect(await place()).toMatchObject({ kind: "ok", outcome: { placed: [], unavailable: [] } });
+    expect(store.shots).toEqual(before);
+  });
+
   it("refuses before the result is saved and for another episode", async () => {
     const store = new InMemoryTitleWritingStore();
     const episode = store.addBreakdownEpisode({ workspaceId: WS, projectId: P1, episodeNo: 1, text: scriptOf(1, 2) });

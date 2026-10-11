@@ -8,7 +8,13 @@ import {
   type ScriptBreakdownPlacementOutcome,
   type ScriptBreakdownRunView,
 } from "../lib/script-breakdown-client";
-import { TitleWritingError, TitleWritingUnconfirmedError } from "../lib/title-writing-client";
+import { TitleWritingError } from "../lib/title-writing-client";
+
+import { clearBreakdownPending, readBreakdownPending, writeBreakdownPending, type BreakdownPendingStart, type BreakdownPendingResume } from "../lib/script-breakdown-pending";
+
+interface Reads { inFlight: boolean; again: boolean }
+interface Operation { runId: string | null; snapshot: number; scope: Reads }
+const refused = (caught: unknown): caught is TitleWritingError => caught instanceof TitleWritingError && caught.status >= 400 && caught.status < 500;
 
 const defaultClient = new ScriptBreakdownClient();
 const POLL_MS = 2_000;
@@ -70,6 +76,8 @@ export interface ScriptBreakdownPanelProps {
   /** After a save or shot placement: reload the episode and its scene list. */
   onChanged: () => Promise<void>;
   client?: ScriptBreakdownClient;
+  /** Parent saved/reviewed text; read the current source even after a task is terminal. */
+  refreshEpoch?: number;
 }
 
 /**
@@ -83,153 +91,204 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
   const [loaded, setLoaded] = useState(false);
   const [token, setToken] = useState("");
   const [replaceExisting, setReplaceExisting] = useState(false);
-  const [confirmUncertain, setConfirmUncertain] = useState(false);
+  const [confirmedFor, setConfirmedFor] = useState<string | null>(null);
   const [acceptSceneChanged, setAcceptSceneChanged] = useState(false);
   const [placement, setPlacement] = useState<ScriptBreakdownPlacementOutcome | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
-  // A start or resume whose answer was not seen keeps its key: pressing again replays the same request, never a new one.
-  const startKey = useRef<{ key: string; replaceExisting: boolean } | null>(null);
-  const resumeKey = useRef<{ runId: string; confirmed: string; key: string } | null>(null);
-  const alive = useRef(true);
+  const [cancelFailed, setCancelFailed] = useState(false);
+  const [readError, setReadError] = useState<string | null>(null);
+  const [identityError, setIdentityError] = useState(false);
+  const [pendingStart, setPendingStart] = useState<BreakdownPendingStart | null>(null);
+  const [pendingResume, setPendingResume] = useState<BreakdownPendingResume | null>(null);
+  const reads = useRef<Reads>({ inFlight: false, again: false });
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const shown = useRef<{ runId: string | null; generation: number; state: string | null }>({ runId: null, generation: 0, state: null });
+  const operation = useRef<Operation | null>(null);
   const onChanged = useRef(props.onChanged);
   onChanged.current = props.onChanged;
 
-  const refresh = useCallback(async () => {
-    const latest = await client.latest(props.projectId, props.episodeId);
-    if (alive.current) setRun(latest);
-    return latest;
-  }, [client, props.projectId, props.episodeId]);
+  const show = useCallback((next: ScriptBreakdownRunView | null) => {
+    const runId = next?.runId ?? null;
+    if (runId !== shown.current.runId) {
+      if (operation.current?.runId) { operation.current = null; setBusy(false); }
+      setMessage(null);
+      setPlacement(null);
+      setConfirmedFor(null);
+      setAcceptSceneChanged(false);
+    }
+    shown.current = { runId, generation: shown.current.generation + 1, state: next?.state ?? null };
+    setRun(next);
+  }, []);
+
+  const schedule = useCallback((next: ScriptBreakdownRunView | null, poll: () => void) => {
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = next?.state === "running" ? setTimeout(poll, POLL_MS) : undefined;
+  }, []);
+
+  // One GET per mounted project/episode. Follow-up reads coalesce and discard the superseded answer.
+  const refresh = useCallback(() => {
+    const scope = reads.current;
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = undefined;
+    if (scope.inFlight) { scope.again = true; return; }
+    scope.inFlight = true;
+    void (async () => {
+      try {
+        for (;;) {
+          scope.again = false;
+          let next: ScriptBreakdownRunView | null = null;
+          let failure: unknown = null;
+          try { next = await client.latest(props.projectId, props.episodeId); }
+          catch (caught) { failure = caught ?? new Error("Read failed"); }
+          if (reads.current !== scope) return;
+          if (scope.again) continue;
+          setLoaded(true);
+          if (failure) { setReadError("拆解状态暂时无法读取，稍后刷新再试。已显示的内容可能不是最新状态。"); return; }
+          const finished = shown.current.runId === next?.runId && shown.current.state === "running" && next?.state !== "running";
+          show(next);
+          setReadError(null);
+          if (finished) void onChanged.current().catch(() => undefined);
+          schedule(next, refresh);
+          return;
+        }
+      } finally { scope.inFlight = false; }
+    })();
+  }, [client, props.projectId, props.episodeId, show, schedule]);
 
   useEffect(() => {
-    alive.current = true;
-    setRun(null);
-    setLoaded(false);
-    setMessage(null);
-    setPlacement(null);
-    setReplaceExisting(false);
-    startKey.current = null;
-    resumeKey.current = null;
-    void Promise.all([client.options(), refresh()]).then(([view]) => {
-      if (!alive.current) return;
-      setOptions(view);
-      setLoaded(true);
-    }).catch((caught: unknown) => {
-      if (!alive.current) return;
-      setLoaded(true);
-      setMessage(caught instanceof TitleWritingError ? caught.detail : "拆解状态暂时无法读取，稍后刷新再试。");
+    const scope: Reads = { inFlight: false, again: false };
+    reads.current = scope;
+    operation.current = null;
+    shown.current = { runId: null, generation: shown.current.generation + 1, state: null };
+    setRun(null); setOptions(null); setLoaded(false); setBusy(false); setToken("");
+    setMessage(null); setCancelFailed(false); setReadError(null); setPlacement(null); setConfirmedFor(null); setAcceptSceneChanged(false);
+    setPendingStart(null); setPendingResume(null); setReplaceExisting(false); setIdentityError(false);
+    try {
+      const pending = readBreakdownPending(props.projectId, props.episodeId, "start");
+      setPendingStart(pending); setReplaceExisting(pending?.body.replaceExisting ?? false);
+      setPendingResume(readBreakdownPending(props.projectId, props.episodeId, "resume"));
+    } catch { setIdentityError(true); setMessage("无法读取上次请求身份，为避免重复调用，不能开始新请求。"); }
+    refresh();
+    void client.options().then((view) => { if (reads.current === scope) setOptions(view); }).catch(() => {
+      if (reads.current === scope) setMessage("拆解状态暂时无法读取，稍后刷新再试。");
     });
-    return () => { alive.current = false; };
-  }, [client, refresh]);
+    return () => {
+      operation.current = null;
+      reads.current = { inFlight: false, again: false };
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = undefined;
+    };
+  }, [client, props.projectId, props.episodeId, refresh]);
+
+  const parentEpoch = useRef(props.refreshEpoch);
+  useEffect(() => {
+    if (parentEpoch.current === props.refreshEpoch) return;
+    parentEpoch.current = props.refreshEpoch;
+    refresh();
+  }, [props.refreshEpoch, refresh]);
 
   const running = run?.state === "running";
-  useEffect(() => {
-    if (!running) return;
-    const timer = setInterval(() => {
-      void refresh().then((latest) => {
-        if (latest && latest.state !== "running") void onChanged.current();
-      }).catch(() => undefined);
-    }, POLL_MS);
-    return () => clearInterval(timer);
-  }, [running, refresh]);
-
   const limits = options?.limits;
   const ready = options?.code === "SCRIPT_BREAKDOWN_READY";
   const needsReplace = props.sceneCount > 0;
-  const startBlocked = !props.scriptReady ? "剧本批准后才能拆解（剧本门槛不变）。"
+  const startBlocked = identityError ? "无法恢复请求身份，请先解决浏览器会话存储问题。"
+    : !pendingStart && readError ? "请先重新读取本集任务状态。"
+    : !pendingStart && !props.scriptReady ? "剧本批准后才能拆解（剧本门槛不变）。"
     : !options ? "正在读取拆解设置。"
       : !ready ? options.code === "TITLE_WRITING_DISABLED" ? "AI 写作没有开启。"
         : options.code === "SCRIPT_BREAKDOWN_STORAGE_UNAVAILABLE" ? "剧本拆解的数据库迁移还没有执行。"
           : options.code === "TITLE_WRITING_PROVIDER_UNCONFIGURED" ? "模型服务还没有配置完整。" : "服务端还不能开始拆解。"
-        : running ? "这一集的拆解正在进行。"
-          : needsReplace && !replaceExisting ? "这一集已有场景，勾选“用新结果取代”后才能开始。"
+        : !pendingStart && running ? "这一集的拆解正在进行。"
+          : !pendingStart && needsReplace && !replaceExisting ? "这一集已有场景，勾选“用新结果取代”后才能开始。"
             : token.trim().length === 0 ? "请填写操作者令牌。" : null;
 
-  async function start() {
-    if (startBlocked) return;
-    const pending = startKey.current?.replaceExisting === replaceExisting ? startKey.current : { key: crypto.randomUUID(), replaceExisting };
-    startKey.current = pending;
-    setBusy(true);
-    setMessage(null);
-    setPlacement(null);
+  async function act(runId: string | null, work: () => Promise<ScriptBreakdownRunView>, fallback: string,
+    hooks: { accepted?: () => void; failed?: (caught: unknown) => void; changed?: boolean; cancel?: boolean } = {}) {
+    if (operation.current || (runId && shown.current.runId !== runId)) return;
+    const mine: Operation = { runId, snapshot: shown.current.generation, scope: reads.current };
+    operation.current = mine;
+    const current = () => operation.current === mine && reads.current === mine.scope;
+    setBusy(true); setMessage(null); setCancelFailed(false);
     try {
-      const view = await client.start(props.projectId, props.episodeId, { replaceExisting }, { token: token.trim(), idempotencyKey: pending.key });
-      startKey.current = null;
-      if (alive.current) setRun(view);
+      const next = await work();
+      if (!current()) return;
+      hooks.accepted?.();
+      if (shown.current.generation !== mine.snapshot) refresh();
+      else { show(next); if (reads.current.inFlight) refresh(); else schedule(next, refresh); }
+      if (hooks.changed || next.save === "saved") await onChanged.current();
     } catch (caught) {
-      // A refusal is final for this key; an unanswered request keeps the key so pressing again only replays it.
-      if (caught instanceof TitleWritingError) {
-        startKey.current = null;
-        setMessage(caught.detail);
-      } else {
-        setMessage(caught instanceof TitleWritingUnconfirmedError
-          ? "服务端回应无法确认是否已开始。再次点击只会重放同一个请求，不会新建任务。"
-          : "请求没有得到回应。再次点击只会重放同一个请求，不会新建任务。");
-      }
+      if (!current()) return;
+      hooks.failed?.(caught);
+      setCancelFailed(hooks.cancel === true);
+      setMessage(refused(caught) ? caught.detail : fallback);
     } finally {
-      if (alive.current) setBusy(false);
+      if (current()) { operation.current = null; setBusy(false); }
     }
+  }
+
+  function clearPending(pending: BreakdownPendingStart | BreakdownPendingResume) {
+    try {
+      clearBreakdownPending(props.projectId, props.episodeId, pending);
+      if (pending.kind === "start") setPendingStart(null); else setPendingResume(null);
+    } catch { setIdentityError(true); setMessage("请求已确认，但浏览器未能更新请求身份。请先解决会话存储问题。"); }
+  }
+
+  function start() {
+    if (startBlocked || operation.current) return;
+    const provider = options?.providers.find((item) => item.providerKey === options.defaultProvider && item.ready)
+      ?? options?.providers.find((item) => item.ready);
+    if (!pendingStart && !provider?.defaultModel) return;
+    const pending: BreakdownPendingStart = pendingStart ?? { kind: "start", key: crypto.randomUUID(),
+      body: { replaceExisting, providerKey: provider!.providerKey, model: provider!.defaultModel! } };
+    try { writeBreakdownPending(props.projectId, props.episodeId, pending); }
+    catch { setIdentityError(true); setMessage("无法保存请求身份，未发送请求。请先解决浏览器会话存储问题。"); return; }
+    setPendingStart(pending); setPlacement(null);
+    void act(null, () => client.start(props.projectId, props.episodeId, pending.body, { token: token.trim(), idempotencyKey: pending.key }),
+      "服务端回应无法确认是否已开始。再次点击只会重放同一个请求，不会新建任务。", {
+        accepted: () => clearPending(pending),
+        failed: (caught) => { if (refused(caught) && !pendingStart) clearPending(pending); },
+      });
   }
 
   const uncertain = run ? currentUncertainCallIds([{ stepKey: "breakdown", state: run.step.state, attemptNo: run.step.attemptNo }],
     run.calls.map((call) => ({ callId: call.callId, stepKey: call.stepKey, attemptNo: call.attemptNo, state: call.state }))) : [];
-  const resumable = run !== null && run.state !== "running" && run.state !== "completed" && run.save === "pending"
-    && (run.step.state === "rejected" || run.step.state === "unknown" || run.step.state === "canceled");
+  const uncertainKey = `${run?.runId ?? ""}:${uncertain.join(",")}`;
+  const confirmUncertain = confirmedFor === uncertainKey;
+  const replayResume = pendingResume?.runId === run?.runId ? pendingResume : null;
+  const resumable = run !== null && (replayResume !== null || (run.state !== "running" && run.state !== "completed" && run.save === "pending"
+    && (run.step.state === "rejected" || run.step.state === "unknown" || run.step.state === "canceled")));
 
-  async function resume() {
-    if (!run || !resumable || token.trim().length === 0 || (uncertain.length > 0 && !confirmUncertain)) return;
-    const confirmed = uncertain.join(",");
-    const previous = resumeKey.current;
-    const action = previous && previous.runId === run.runId && previous.confirmed === confirmed ? previous : { runId: run.runId, confirmed, key: crypto.randomUUID() };
-    resumeKey.current = action;
-    setBusy(true);
-    setMessage(null);
-    try {
-      const view = await client.resume(props.projectId, props.episodeId, run.runId, { confirmUncertainCallIds: uncertain, token: token.trim(), idempotencyKey: action.key });
-      resumeKey.current = null;
-      setConfirmUncertain(false);
-      if (alive.current) setRun(view);
-    } catch (caught) {
-      if (caught instanceof TitleWritingError) {
-        resumeKey.current = null;
-        setMessage(caught.detail);
-      } else {
-        setMessage("请求没有得到回应。再次点击只会重放同一个续跑请求。");
-      }
-    } finally {
-      if (alive.current) setBusy(false);
-    }
+  function resume() {
+    if (!run || !resumable || identityError || operation.current || token.trim().length === 0 || (!replayResume && uncertain.length > 0 && !confirmUncertain)) return;
+    const pending: BreakdownPendingResume = replayResume ?? { kind: "resume", runId: run.runId, confirmed: uncertain, key: crypto.randomUUID() };
+    try { writeBreakdownPending(props.projectId, props.episodeId, pending); }
+    catch { setIdentityError(true); setMessage("无法保存续跑身份，未发送请求。请先解决浏览器会话存储问题。"); return; }
+    setPendingResume(pending);
+    void act(run.runId, () => client.resume(props.projectId, props.episodeId, pending.runId,
+      { confirmUncertainCallIds: pending.confirmed, token: token.trim(), idempotencyKey: pending.key }),
+      "请求没有得到回应。再次点击只会重放同一个续跑请求。", {
+        accepted: () => { clearPending(pending); setConfirmedFor(null); },
+        failed: (caught) => { if (refused(caught) && !replayResume) { clearPending(pending); setConfirmedFor(null); refresh(); } },
+      });
   }
 
-  async function cancel() {
+  function cancel() {
+    if (run) void act(run.runId, () => client.cancel(props.projectId, props.episodeId, run.runId), "取消请求失败，请读取最新状态后再试。", { cancel: true });
+  }
+
+  function placeShots() {
     if (!run) return;
-    setBusy(true);
-    try {
-      setRun(await client.cancel(props.projectId, props.episodeId, run.runId));
-    } catch (caught) {
-      setMessage(caught instanceof TitleWritingError ? caught.detail : "取消请求失败");
-    } finally {
-      if (alive.current) setBusy(false);
-    }
+    let result: ScriptBreakdownPlacementOutcome | null = null;
+    void act(run.runId, async () => {
+      const placed = await client.placeShots(props.projectId, props.episodeId, run.runId, acceptSceneChanged);
+      result = placed.placement;
+      return placed.run;
+    }, "写入镜头失败，请稍后重试", { accepted: () => setPlacement(result), changed: true });
   }
 
-  async function placeShots() {
-    if (!run) return;
-    setBusy(true);
-    setMessage(null);
-    try {
-      const result = await client.placeShots(props.projectId, props.episodeId, run.runId, acceptSceneChanged);
-      if (!alive.current) return;
-      setRun(result.run);
-      setPlacement(result.placement);
-      await onChanged.current();
-    } catch (caught) {
-      setMessage(caught instanceof TitleWritingError ? caught.detail : "写入镜头失败，请稍后重试");
-    } finally {
-      if (alive.current) setBusy(false);
-    }
-  }
-
+  // Only a confirmed stop/terminal snapshot makes a cancel failure irrelevant; an ordinary poll does not.
+  const visibleMessage = cancelFailed && run && (run.cancelRequested || run.state !== "running") ? null : message;
   const sourceOutdated = run !== null && run.episodeScript.currentRevisionId !== run.scriptRevisionId;
   const pendingShots = run?.save === "saved" && run.scenes.some((scene) => scene.shotSave === "pending");
 
@@ -248,14 +307,16 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
         </p>
       ) : null}
       {options ? (
-        <p className="mt-1 text-sm text-neutral-600">每次拆解调用上限 {options.callCapPerRun} 次（计入每天 {options.maxCallsPerDay} 次的共同额度），费用未知。结果未知的调用不会自动重发。</p>
+        <p className="mt-1 text-sm text-neutral-600">每次拆解调用上限 {options.callCapPerRun} 次（计入最近 24 小时 {options.maxCallsPerDay} 次的共同额度，不是自动重试次数），费用未知。结果未知的调用不会自动重发。</p>
       ) : null}
-      {message ? <p className="mt-2 text-sm text-red-700 [overflow-wrap:anywhere]" role="alert">{message}</p> : null}
+      {visibleMessage || readError ? <div className="mt-2 text-sm text-red-700 [overflow-wrap:anywhere]" role="alert">
+        <p>{visibleMessage ?? readError}</p>{readError ? <button type="button" onClick={refresh}>重新读取</button> : null}
+      </div> : null}
 
       <div className="mt-3 grid gap-2">
         {needsReplace ? (
           <label className="flex items-start gap-2 text-sm">
-            <input type="checkbox" checked={replaceExisting} disabled={busy} onChange={(event) => setReplaceExisting(event.target.checked)} />
+            <input type="checkbox" checked={replaceExisting} disabled={busy || pendingStart !== null} onChange={(event) => setReplaceExisting(event.target.checked)} />
             <span>用新结果取代这一集现有的场景及其镜头（旧版本保留为历史，不删除；依赖它们的图片和视频会标为过期）</span>
           </label>
         ) : null}
@@ -265,7 +326,7 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
         <div className="flex flex-wrap gap-2">
           <button className="rounded bg-neutral-900 px-3 py-2 text-white disabled:opacity-50" type="button" disabled={busy || !loaded || startBlocked !== null}
             onClick={() => void start()}>
-            {run && !running ? "重新生成场景与分镜" : "生成场景与分镜"}
+            {pendingStart ? "确认上次启动结果" : run && !running ? "重新生成场景与分镜" : "生成场景与分镜"}
           </button>
           {running ? (
             <button className="rounded border px-3 py-2" type="button" disabled={busy || run?.cancelRequested} onClick={() => void cancel()}>
@@ -293,15 +354,15 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
           ) : null}
           {resumable ? (
             <div className="grid gap-2 rounded border border-neutral-200 p-2">
-              {uncertain.length > 0 ? (
+              {uncertain.length > 0 && !replayResume ? (
                 <label className="flex items-start gap-2 text-sm">
-                  <input type="checkbox" checked={confirmUncertain} onChange={(event) => setConfirmUncertain(event.target.checked)} />
+                  <input type="checkbox" checked={confirmUncertain} disabled={busy} onChange={(event) => setConfirmedFor(event.target.checked ? uncertainKey : null)} />
                   <span>我知道上一次调用结果未知、可能已经计费，确认重新发送</span>
                 </label>
               ) : null}
               <button className="rounded border px-3 py-2" type="button"
-                disabled={busy || token.trim().length === 0 || (uncertain.length > 0 && !confirmUncertain)} onClick={() => void resume()}>
-                续跑（重新发送一次调用）
+                disabled={busy || identityError || token.trim().length === 0 || (!replayResume && uncertain.length > 0 && !confirmUncertain)} onClick={() => void resume()}>
+                {replayResume ? "确认上次续跑结果" : "续跑（重新发送一次调用）"}
               </button>
             </div>
           ) : null}
@@ -310,7 +371,7 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
             <div className="grid gap-2 rounded border border-neutral-200 p-2">
               <p className="text-sm">镜头方案在场景审核通过后才写入为镜头草稿（现有门槛：镜头只能挂在已批准的场景下）。</p>
               <label className="flex items-start gap-2 text-sm">
-                <input type="checkbox" checked={acceptSceneChanged} onChange={(event) => setAcceptSceneChanged(event.target.checked)} />
+                <input type="checkbox" checked={acceptSceneChanged} disabled={busy} onChange={(event) => setAcceptSceneChanged(event.target.checked)} />
                 <span>场景被人工修改过时，仍按修改后的已批准版本写入这些镜头</span>
               </label>
               <button className="rounded border px-3 py-2" type="button" disabled={busy || sourceOutdated} onClick={() => void placeShots()}>

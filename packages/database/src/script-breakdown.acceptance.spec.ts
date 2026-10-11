@@ -474,6 +474,63 @@ describe("script breakdown on PostgreSQL", () => {
     expect((bundle.run.input as ScriptBreakdownFrozenInput).scriptRevisionId).not.toBe(newer);
     expect(details.episodeScript).toMatchObject({ currentRevisionId: newer, approved: true });
     expect(details.scenes[0]!.current.freshnessStatus).toBe("STALE");
+    const replay = await store.placeBreakdownShots(ws, project, episode.id, record.id, { acceptSceneChanged: false }, "editor", now());
+    expect(replay.kind === "ok" && replay.outcome).toMatchObject({ placed: [], unavailable: [] });
+    expect((await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM shot_revision WHERE project_id = $1", [project])).rows[0]!.n).toBe(2);
+  });
+
+  it("refuses an old plan even when an edited scene is approved under the new script and the caller accepts scene changes", async () => {
+    const { ws, project, storyId, episodes } = await work(1);
+    const episode = episodes[0]!;
+    const record = await startBreakdown(ws, project, episode.id);
+    const executor = await answer(record, outputOf(1, 1, null));
+    expect(await store.saveBreakdown(ws, record.id, executor, "server-owner", now())).toBe("saved");
+    const scene = (await liveScenes(episode.id))[0]!;
+    const newer = await writeScript(ws, project, storyId, episode.id, "完全不同的新剧本，不再包含原来的对白。");
+    const version = (await pool.query<{ row_version: number }>("SELECT row_version FROM scene WHERE id = $1", [scene.id])).rows[0]!.row_version;
+    await tx((client) => chain.createSceneRevisionInTransaction(client, {
+      workspaceId: ws, projectId: project, episodeId: episode.id, sceneId: scene.id, sourceScriptRevisionId: newer,
+      ordinal: 1, heading: "新剧本的场景", summary: "只属于新剧本", createdBy: "editor", expectedVersion: version,
+    }));
+    await approveScene(ws, project, episode.id, scene.id);
+
+    const placed = await store.placeBreakdownShots(ws, project, episode.id, record.id, { acceptSceneChanged: true }, "editor", now());
+    expect(placed).toEqual({ kind: "not_ready" });
+    expect((await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM shot WHERE scene_id = $1", [scene.id])).rows[0]!.n).toBe(0);
+    expect((await pool.query<{ shot_save: string }>("SELECT shot_save FROM script_breakdown_scene WHERE run_id = $1", [record.id])).rows)
+      .toEqual([{ shot_save: "pending" }]);
+  });
+
+  it("preserves a person's shot, places the other scene, and replays without duplicate revisions", async () => {
+    const { ws, project, episodes } = await work(2);
+    const episode = episodes[1]!;
+    const record = await startBreakdown(ws, project, episode.id);
+    const executor = await answer(record, outputOf(2, 2, null));
+    expect(await store.saveBreakdown(ws, record.id, executor, "server-owner", now())).toBe("saved");
+    const links = (await pool.query<{ scene_key: string; scene_id: string; scene_revision_id: string }>(
+      "SELECT scene_key, scene_id, scene_revision_id FROM script_breakdown_scene WHERE run_id = $1 ORDER BY ordinal", [record.id])).rows;
+    for (const link of links) await approveScene(ws, project, episode.id, link.scene_id);
+    const first = links[0]!;
+    const version = (await pool.query<{ row_version: number }>("SELECT row_version FROM scene WHERE id = $1", [first.scene_id])).rows[0]!.row_version;
+    const manual = await tx((client) => chain.createShotScopedInTransaction(client, {
+      workspaceId: ws, projectId: project, sceneId: first.scene_id, sourceSceneRevisionId: first.scene_revision_id,
+      ordinal: 1, shotType: "全景", camera: "人工机位", action: "人工动作", dialogue: "人工保留的对白", promptText: "人工提示词",
+      createdBy: "editor", expectedVersion: version,
+    }));
+    const place = () => store.placeBreakdownShots(ws, project, episode.id, record.id, { acceptSceneChanged: true }, "editor", now());
+    const placed = await place();
+    expect(placed.kind === "ok" && placed.outcome).toMatchObject({ placed: ["S2"], unavailable: ["S1"] });
+    const shotRows = async () => (await pool.query<{ id: string; current_revision_id: string; action: string; dialogue: string | null }>(
+      `SELECT s.id, s.current_revision_id, r.action, r.dialogue FROM shot s JOIN shot_revision r ON r.id = s.current_revision_id
+        WHERE s.scene_id = ANY($1::uuid[]) ORDER BY s.id`, [links.map((link) => link.scene_id)])).rows;
+    const saved = await shotRows();
+    expect(saved).toHaveLength(3);
+    expect(saved.find((row) => row.id === manual.entityId)).toEqual({ id: manual.entityId, current_revision_id: manual.revisionId,
+      action: "人工动作", dialogue: "人工保留的对白" });
+    const repeated = await place();
+    expect(repeated.kind === "ok" && repeated.outcome).toMatchObject({ placed: [], unavailable: ["S1"] });
+    expect(await shotRows()).toEqual(saved);
+    expect((await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM shot_revision WHERE project_id = $1", [project])).rows[0]!.n).toBe(3);
   });
 
   it("returns the same run for the same key and refuses the key for another request", async () => {

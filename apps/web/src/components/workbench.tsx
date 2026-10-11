@@ -657,6 +657,7 @@ export function ScriptPane(props: {
         </InspectSlot>
       </EditorGrid>
       <ScriptBreakdownPanel
+        refreshEpoch={props.refreshEpoch}
         projectId={props.projectId}
         episodeId={episode.id}
         episodeNo={episode.episodeNo}
