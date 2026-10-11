@@ -35,6 +35,7 @@ import {
   closePostgresPool,
   createPostgresPool,
   EPISODE_PLAN_MIGRATION,
+  SCRIPT_BREAKDOWN_MIGRATION,
   TITLE_WRITING_MIGRATION,
   runMigrations,
   verifyTitleWritingAcceptanceDatabase,
@@ -366,7 +367,7 @@ beforeAll(async () => {
   evidence.database = { name: identity.name, serverVersion: identity.version, tablesBeforeWrite: identity.tables };
   // A new database through the normal chain: every released migration, the title writing one and the episode plan one.
   const migrated = await runMigrations(pool);
-  expect(migrated.applied.slice(-2)).toEqual([TITLE_WRITING_MIGRATION, EPISODE_PLAN_MIGRATION]);
+  expect(migrated.applied.slice(-3)).toEqual([TITLE_WRITING_MIGRATION, EPISODE_PLAN_MIGRATION, SCRIPT_BREAKDOWN_MIGRATION]);
   evidence.migrationsApplied = migrated.applied;
   await q("INSERT INTO workspace (id, name, status) VALUES ($1, 'title-browser-acceptance', 'ACTIVE')", [WORKSPACE]);
   if (shotsDir) await mkdir(shotsDir, { recursive: true });

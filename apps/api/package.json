@@ -13,6 +13,7 @@
     "title-writing:acceptance": "vitest run --config vitest.title-writing-acceptance.config.ts",
     "title-writing:browser-acceptance": "vitest run --config vitest.title-writing-browser-acceptance.config.ts",
     "title-writing:runtime-acceptance": "vitest run --config vitest.title-writing-runtime-acceptance.config.ts",
+    "script-breakdown:acceptance": "vitest run --config vitest.script-breakdown-acceptance.config.ts",
     "clean": "node --eval \"require('node:fs').rmSync('dist',{recursive:true,force:true})\""
   },
   "dependencies": {

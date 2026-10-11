@@ -109,21 +109,36 @@ jobs:
           TITLE_WRITING_ACCEPTANCE_EVIDENCE_DIR="${RUNNER_TEMP}/title-acceptance-evidence" \
           pnpm --filter @ai-drama/database episode-plan:acceptance
 
+      - name: Run the script breakdown acceptance on its own new database (guarded, deny by default)
+        # Upgrade from the episode plan release, history kept; N = 1/3/6, replace, source changed, a person's concurrent
+        # scene edit, shot placement after approval, STALE after a newer script. Model answers are fixed values.
+        run: |
+          name="ads_title_acceptance_breakdown_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+          psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE ${name}"
+          TITLE_WRITING_ACCEPTANCE_AUTHORIZED=true \
+          TITLE_WRITING_ACCEPTANCE_DATABASE_NAME="${name}" \
+          TITLE_WRITING_ACCEPTANCE_DATABASE_URL="postgresql://postgres@127.0.0.1:5432/${name}" \
+          TITLE_WRITING_ACCEPTANCE_EVIDENCE_DIR="${RUNNER_TEMP}/title-acceptance-evidence" \
+          pnpm --filter @ai-drama/database script-breakdown:acceptance
+
       - name: Run the deploy migration command on a new database, then again
         # The real deploy command (pnpm --filter @ai-drama/database migrate) on a second database of this job's container.
-        # It must apply all seven migrations once and nothing the second time; the four title writing tables must exist.
+        # It must apply all eight migrations once and nothing the second time; the four title writing tables and the
+        # script breakdown scene table must exist.
         run: |
           name="ads_title_acceptance_deploy_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
           url="postgresql://postgres@127.0.0.1:5432/${name}"
           psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE ${name}"
           first="$(DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate)"
           echo "first run: ${first}"
-          printf '%s\n' "${first}" | grep -Eq "(^|[^0-9])Applied 7 migration\(s\)\.$"
+          printf '%s\n' "${first}" | grep -Eq "(^|[^0-9])Applied 8 migration\(s\)\.$"
           second="$(DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate)"
           echo "second run: ${second}"
           printf '%s\n' "${second}" | grep -Eq "(^|[^0-9])Applied 0 migration\(s\)\.$"
           tables="$(psql -h 127.0.0.1 -U postgres -d "${name}" -v ON_ERROR_STOP=1 -At -c "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name IN ('title_writing_run', 'title_writing_step', 'title_writing_call', 'title_writing_resume')")"
           test "${tables}" = "4"
+          breakdown="$(psql -h 127.0.0.1 -U postgres -d "${name}" -v ON_ERROR_STOP=1 -At -c "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'script_breakdown_scene'")"
+          test "${breakdown}" = "1"
           psql -h 127.0.0.1 -U postgres -d "${name}" -v ON_ERROR_STOP=1 -At -c "SELECT name FROM schema_migration ORDER BY name"
 
       - name: Run the deploy migration command again on the upgraded acceptance database
@@ -207,6 +222,18 @@ jobs:
           TITLE_WRITING_ACCEPTANCE_DATABASE_URL="postgresql://postgres@127.0.0.1:5432/${name}" \
           TITLE_WRITING_ACCEPTANCE_EVIDENCE_DIR="${RUNNER_TEMP}/title-acceptance-evidence" \
           pnpm --filter @ai-drama/api title-writing:acceptance
+
+      - name: Run the script breakdown API acceptance on its own new database (guarded, deny by default)
+        # Real Nest HTTP API and PostgreSQL, model stub: N = 1/3/6, refusals before any send, replay, invalid output,
+        # resume, replacement with consent, shot placement after approval, shot edits and a newer script.
+        run: |
+          name="ads_title_acceptance_breakdown_api_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+          psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE ${name}"
+          TITLE_WRITING_ACCEPTANCE_AUTHORIZED=true \
+          TITLE_WRITING_ACCEPTANCE_DATABASE_NAME="${name}" \
+          TITLE_WRITING_ACCEPTANCE_DATABASE_URL="postgresql://postgres@127.0.0.1:5432/${name}" \
+          TITLE_WRITING_ACCEPTANCE_EVIDENCE_DIR="${RUNNER_TEMP}/title-acceptance-evidence" \
+          pnpm --filter @ai-drama/api script-breakdown:acceptance
 
       - name: Upload evidence
         if: always()

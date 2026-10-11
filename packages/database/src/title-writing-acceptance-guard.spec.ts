@@ -69,15 +69,18 @@ describe("title writing acceptance database identity (scripted client)", () => {
 });
 
 describe("title writing acceptance entry", () => {
-  it("refuses before opening a connection and contains no destructive SQL", async () => {
-    const source = await readFile(join(__dirname, "title-writing-store.acceptance.spec.ts"), "utf8");
-    expect(source.indexOf("checkTitleWritingAcceptanceEnv(process.env)")).toBeGreaterThan(-1);
-    expect(source.indexOf("checkTitleWritingAcceptanceEnv(process.env)")).toBeLessThan(source.indexOf("new Pool("));
-    expect(source.indexOf("verifyTitleWritingAcceptanceDatabase(pool")).toBeLessThan(source.indexOf("runMigrations(pool)"));
-    // SQL statements only (upper case, as the code writes them); the comments may say what is never done.
-    expect(source).not.toMatch(/\bDROP\s+(SCHEMA|TABLE|DATABASE)\b|\bTRUNCATE\b|\bDELETE\s+FROM\b/);
-    expect(source).not.toContain("process.env.DATABASE_URL");
-  });
+  it.each(["title-writing-store.acceptance.spec.ts", "script-breakdown.acceptance.spec.ts"])(
+    "%s refuses before opening a connection and contains no destructive SQL", async (file) => {
+      const source = await readFile(join(__dirname, file), "utf8");
+      expect(source.indexOf("checkTitleWritingAcceptanceEnv(process.env)")).toBeGreaterThan(-1);
+      expect(source.indexOf("checkTitleWritingAcceptanceEnv(process.env)")).toBeLessThan(source.indexOf("new Pool("));
+      // The identity check comes before the first migration call of any form.
+      expect(source.indexOf("runMigrations(pool")).toBeGreaterThan(-1);
+      expect(source.indexOf("verifyTitleWritingAcceptanceDatabase(pool")).toBeLessThan(source.indexOf("runMigrations(pool"));
+      // SQL statements only (upper case, as the code writes them); the comments may say what is never done.
+      expect(source).not.toMatch(/\bDROP\s+(SCHEMA|TABLE|DATABASE)\b|\bTRUNCATE\b|\bDELETE\s+FROM\b/);
+      expect(source).not.toContain("process.env.DATABASE_URL");
+    });
 
   it("the general integration file for title writing is read-only", async () => {
     const source = await readFile(join(__dirname, "title-writing-store.integration.spec.ts"), "utf8");
