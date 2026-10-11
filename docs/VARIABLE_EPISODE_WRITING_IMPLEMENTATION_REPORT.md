@@ -2,9 +2,10 @@
 
 日期：2026-10-11
 
-本轮状态：
-- 只做了实现、测试和本报告。没有 commit、push、PR、合并、打包或部署。
-- 没有执行新 Migration 或任何 SQL，没有建库，也没有调用任何真实模型。
+本轮状态（第 8 节为提交、推送、Draft PR 和 CI 的实际记录）：
+- 代码已分组提交，已普通推送到功能分支，Draft PR #65 已创建。没有合并、打包或部署，PR 没有转为 Ready。
+- 新 Migration 只在 GitHub Actions 作业专属的一次性空库中执行过；任何服务器和已有数据库都没有执行。
+- 没有调用任何真实模型。
 
 ## 1. 工作区
 
@@ -126,7 +127,7 @@ Mock 场景和镜头链已改为覆盖作品的全部 N 集。它仍然是每集
 
 ## 4. Migration
 
-### 已编写，未执行
+### 已编写（只在 CI 一次性库中执行过，见下方「执行范围」）
 
 `packages/database/prisma/migrations/20261011000100_episode_plan/migration.sql` 只扩展、不删除：
 
@@ -184,9 +185,11 @@ Mock 场景和镜头链已改为覆盖作品的全部 N 集。它仍然是每集
   3. 再回退代码。
 - 不执行向下迁移，不删除数据，按 forward-fix 处理。
 
-### 已执行
+### 执行范围
 
-无。没有在任何数据库执行这个迁移，也没有自建数据库做试验。
+- **CI 一次性库**：在 PR #65 的 GitHub Actions 作业中执行过，库是作业专属的 PostgreSQL 16 服务容器中新建的空库，作业结束后随容器销毁。结果见第 8 节。
+- **服务器、生产库、已有开发库**：都没有执行。
+- **本机**：没有建库，也没有执行任何 SQL。
 
 ## 5. 测试
 
@@ -257,9 +260,10 @@ Mock 场景和镜头链已改为覆盖作品的全部 N 集。它仍然是每集
   - Next 服务端的登录检查由本机一个只返回「登录已关闭」的桩应答。
 - 截图和 JSON 证据都在会话临时目录中，未放进仓库。
 
-### 已编写、未执行的 PostgreSQL 和 API 验收
+### PostgreSQL 和 API 验收
 
-本轮没有获得隔离数据库的执行授权，所以以下验收都**没有运行**，只确认了能通过 tsc 类型检查和 lint：
+以下验收不在本机运行，由 PR #65 的 CI 在一次性库中执行。最终结果见第 8 节：
+
 
 - `packages/database/src/episode-plan.acceptance.spec.ts`：
   - 命令：`pnpm --filter @ai-drama/database episode-plan:acceptance`；
@@ -281,7 +285,7 @@ Mock 场景和镜头链已改为覆盖作品的全部 N 集。它仍然是每集
   - 在编辑器中修改最后一集，产生第二个版本。
 - 现有的三份 title writing 验收（store、API、runtime）、browser 验收和 CI 中 deploy 步骤的预期迁移数（6 改为 7），都已更新为把新迁移计入迁移链。
 - CI 工作流 `.github/workflows/title-writing-acceptance.yml` 的 store job 增加了「episode plan acceptance」这一步，每次运行新建一个一次性库，库名以 `ads_title_acceptance_plan_` 开头。
-- 以上 CI 都需要 push 后才会运行，本轮没有运行过，也不能把它们算作 PostgreSQL 证据。
+- 第 8 节记录了这些验收在 CI 中的实际运行结果，包括失败的轮次。
 
 ## 6. 遗留问题与需要审查的高风险点
 
@@ -292,7 +296,7 @@ Mock 场景和镜头链已改为覆盖作品的全部 N 集。它仍然是每集
    - 新代码在迁移前可以运行，但带规格的功能保持关闭。
 4. **约束名依赖 PostgreSQL 的默认命名**（`episode_episode_no_check`、`title_writing_step_step_key_check`、`title_writing_step_ordinal_check`）：
    - 如果某个服务器上的约束名不同，迁移会整体回滚，不留下半成品；
-   - 这一点要以 PostgreSQL 验收结果为准，目前未执行。
+   - 在 CI 的 PostgreSQL 16 一次性库中，从当前已发布迁移链升级时，这些约束名都存在，迁移成功。生产服务器上的约束名没有核对。
 5. **只用替身验证过**：4096 token 输出上限下，6 集大纲的真实生成质量和截断率都没有验证。真实模型调用需要另行授权。
 6. **写作助手**（与标题创作无关的另一功能）仍限 1–3 集：
    - 故事方案固定 3 集，分集提示词只接受第 1–3 集；
@@ -304,11 +308,102 @@ Mock 场景和镜头链已改为覆盖作品的全部 N 集。它仍然是每集
 
 | 动作 | 状态 |
 |---|---|
-| commit | NO |
-| push | NO |
-| 创建或合并 PR | NO |
+| commit | 是，5 个提交，加上本报告更新共 6 个，见第 8 节 |
+| push | 是，普通推送到 `feat/variable-episode-writing`，未强推 |
+| 创建 PR | 是，Draft PR #65 |
+| 转 Ready 或合并 PR | NO |
 | pack 或部署 | NO |
-| 执行 Migration 或 SQL | NO |
+| 执行 Migration 或 SQL | 只在 CI 一次性库中执行；服务器和已有数据库都没有执行 |
 | 修改服务器配置或生产数据 | NO |
 | 启用标题创作 | NO |
 | 真实模型调用 | 0 |
+
+## 8. 提交、推送、Draft PR 与 CI（2026-10-11）
+
+### 分支与 PR
+
+- 分支：`feat/variable-episode-writing`，上游为 `origin/feat/variable-episode-writing`。推送前远端没有这个分支。
+- 开发基线：`722224891ae8d7e3cc9df1de9653170401de2573`。推送前核对过 `origin/main`，没有前移。
+- Draft PR：https://github.com/xyq-dev/ai-drama-studio/pull/65（base `main`）。
+- CI 的 `pull_request` 事件检出的是 GitHub 生成的合并提交，与分支 HEAD 不是同一个提交：
+
+  | 提交 | SHA |
+  |---|---|
+  | 已验证的源码 HEAD（第 5 个提交） | `7ba4ea11b63ab76b3c65ac170876e8b06d9ef139` |
+  | 对应的 PR 合并提交 | `5464ed3ad1710b54ea37f193ba277c35b60218d8` |
+
+### 提交
+
+| 提交 | 内容 |
+|---|---|
+| `d11f3e4` | feat(title-writing)：集数规格、v2 任务、迁移、后端测试和验收 |
+| `f905a9d` | feat(web)：开始页、进度页、工作台和新手流程按 N 显示 |
+| `8574e75` | docs：本报告初版 |
+| `7ddd993` | test：按新规格调整 m2 集成测试和浏览器验收（CI 第 1 轮暴露） |
+| `7ba4ea1` | fix(database)：数据库不可达时，规格就绪检查返回「未就绪」而不是报错（CI 第 2 轮暴露），并补了回归测试 |
+
+本报告的更新会作为下一个文档提交推送。所有推送都是普通推送。
+
+### CI 运行记录（全部由 pull_request 事件触发，没有手动重跑）
+
+**第 1 轮，HEAD `8574e75`**：12 个工作流，6 个失败。
+
+- **M1-C、M2-A、M2-C、M3-A、M3-B 集成**：同一个测试失败。该测试断言第 4 集会被数据库拒绝，而本 PR 的迁移有意把范围放宽到 1–6。
+  - 修复：把拒绝边界改成第 7 集。
+  - 同时增加断言：没有规格的作品审核后仍恰好是 1..3 集，多出第 4 集时集合校验失败。断言没有放宽。
+- **Title writing 的浏览器验收**：A、B、C 三个场景失败，任务停在「部分完成」。
+  - 原因：页面现在建作品时带默认规格（3 集、90 秒），任务是 v2；但浏览器验收里的模型替身仍返回 v1 大纲，被 v2 校验拒绝。
+  - 修复：替身改为按提示词返回 N 集 v2 大纲，进度标题的预期文字更新为「（共 3 集）」。
+  - 同时增加断言：作品规格是 3 集 90 秒，任务是 v2、3 集、上限 8 次。
+- 同一轮通过的项：store 验收 30/30（其中 episode-plan 验收 14/14），API 验收 13/13，runtime 验收 5/5。
+
+**第 2 轮，HEAD `7ddd993`**：Title writing 验收的 4 个作业全部通过；5 个集成工作流在「Verify workspace」步骤失败。
+
+- 原因：只在 Linux 上运行的 `apps/api/src/admin/admin-runtime.spec.ts` 禁止连接数据库。新加的规格就绪检查中，`pool.connect()` 写在 try 外面，数据库不可达时 options 接口直接报错，而不是返回「未就绪」。这是本 PR 引入的真实缺陷；本机是 Windows，这个测试被跳过，所以本地没发现。
+- 修复：把 `connect()` 移进 try。新增 `packages/database/src/episode-plan.spec.ts`，覆盖数据库不可达、查询失败、迁移记录或列缺失、只缓存「已就绪」结果，这些测试在 Windows 上也会运行。
+
+**第 3 轮，HEAD `7ba4ea1`**：12 个工作流全部通过。
+
+| 工作流 | 运行 ID | 结论 |
+|---|---|---|
+| Title writing isolated acceptance | 38108953304 | success |
+| M1-C integration | 38108953305 | success |
+| M2-A integration | 38108953317 | success |
+| M2-C integration | 38108953300 | success |
+| M3-A integration | 38108953310 | success |
+| M3-B integration | 38108953302 | success |
+| M4 three episode sample end-to-end | 38108953299 | success |
+| Writing assistant API | 38108953320 | success |
+| Beginner creator web | 38108953306 | success |
+| Creator UI checks | 38108953315 | success |
+| Admin model settings | 38108953301 | success |
+| Unified site login | 38108953330 | success |
+
+第 3 轮 Title writing isolated acceptance 中各项的实际结果：
+
+| 作业 | 测试环境 | 结果 |
+|---|---|---|
+| PostgreSQL store acceptance | 真实 PostgreSQL 16，作业专属一次性空库 | store 验收 30/30；episode-plan 验收 14/14 |
+| 同作业：deploy 迁移命令 | 另建一个新库 | 第一次应用 7 个迁移，第二次应用 0 个；在已升级的验收库上再执行也是 0 个 |
+| Real API acceptance | 真实 Nest HTTP API + 真实 PostgreSQL + **模型替身** | 13/13，其中包括新增的 N=1/3/6 场景 |
+| Real browser acceptance | 真实 Chrome + 真实 Web + 真实 API + 真实 PostgreSQL + **模型替身** | 4/4（场景 A、B、C 全部恢复通过，没有删减） |
+| Real runtime and crash recovery acceptance | 构建后的 API 进程 + 真实 PostgreSQL + **模型替身**，供应商主机名指向本机 | 5/5 |
+
+episode-plan 验收的 14 项包括：
+- 迁移前带规格的作品被拒，v2 任务无法写入，run 和 call 都为 0；
+- 升级只应用一个迁移，重复执行应用 0 个；历史行（除新列外）逐表摘要不变；
+- v1 任务的输入、哈希、五个步骤和上限 8 不变；
+- N=1/3/6 审核建集、写入、重复写入；冲突不覆盖；规格不一致时不写入；
+- 额度不足拒绝新任务、同键重放仍返回原任务；
+- 持有调用锁时启动不阻塞；5 个会话同键启动只建一个任务；4 个会话争最后一次调用，只成功一次。
+
+### 各类证据的边界
+
+| 类别 | 内容 |
+|---|---|
+| 本地模拟测试 | 内存存储 + 模型替身的单元和组件测试（Windows、Node 24.21.0） |
+| 真实 PostgreSQL | 只有 CI 一次性库中的 store、episode-plan、集成和 deploy 迁移步骤 |
+| 真实 HTTP API + 模型替身 | CI 中的 API、browser、runtime 验收 |
+| 浏览器 | CI 浏览器验收使用真实 API；本机 1440/390 检查使用路由替身，不是 API 验收 |
+| 真实供应商调用 | 未执行 |
+| 服务器 | 没有执行迁移，没有部署 |
