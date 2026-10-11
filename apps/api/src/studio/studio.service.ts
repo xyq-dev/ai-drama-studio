@@ -35,9 +35,20 @@ import { assertReadableMockImage, readBoundedMockPng } from "./mock-image-conten
 import { readCompositeContent, readVerifiedCompositeBytes } from "./compose-content";
 import { episodeExportBody, exportIdentity, holdEpisodeExportLatch, parseExpectedContentHash } from "./episode-export";
 
+/**
+ * A project may be created with an episode plan (episodeCount 1–6 and targetEpisodeSeconds 60 or 90, both or neither).
+ * Without one it is a three-episode project with no recorded target, exactly as before the plan existed. The plan is
+ * fixed at creation: no route changes it afterwards.
+ */
 const projectBodySchema = z.object({
   title: z.string().min(1).max(200),
   premise: z.string().max(4000).default(""),
+  episodeCount: z.number().int().min(1).max(6).optional(),
+  targetEpisodeSeconds: z.union([z.literal(60), z.literal(90)]).optional(),
+}).superRefine((value, context) => {
+  if ((value.episodeCount === undefined) !== (value.targetEpisodeSeconds === undefined)) {
+    context.addIssue({ code: "custom", path: ["episodeCount"], message: "episodeCount and targetEpisodeSeconds are set together" });
+  }
 });
 
 const mockWorkflowSchema = z.object({
@@ -152,8 +163,15 @@ export class StudioService {
 
   async createProject(body: unknown, context: StudioContext) {
     const input = parse(projectBodySchema, rejectClientWorkspace(body));
-    return this.jobs.runIdempotent(this.scope(context, "POST", "/projects", input), 201, (client) =>
-      insertProject(client, { workspaceId: this.workspaceId, title: input.title, premise: input.premise }),
+    const plan = input.episodeCount !== undefined && input.targetEpisodeSeconds !== undefined
+      ? { episodeCount: input.episodeCount, targetEpisodeSeconds: input.targetEpisodeSeconds } : undefined;
+    // A request without a plan keeps the identity it always had, so a replay recorded before the plan existed still matches.
+    const identity = plan ? { title: input.title, premise: input.premise, ...plan } : { title: input.title, premise: input.premise };
+    if (plan && !await this.store.episodePlanReady()) {
+      throw new PersistenceError("EPISODE_PLAN_UNAVAILABLE", "Episode plan storage is not migrated; nothing was created");
+    }
+    return this.jobs.runIdempotent(this.scope(context, "POST", "/projects", identity), 201, (client) =>
+      insertProject(client, { workspaceId: this.workspaceId, title: input.title, premise: input.premise, ...(plan ? { plan } : {}) }),
     );
   }
 
@@ -161,8 +179,10 @@ export class StudioService {
     return this.store.listProjects(this.workspaceId, 20, cursor);
   }
 
+  /** The project with its episode plan: episodeCount (three without a plan) and targetEpisodeSeconds (null when unknown). */
   async getProject(projectId: string) {
-    return this.store.getProject(this.workspaceId, projectId);
+    const project = await this.store.getProject(this.workspaceId, projectId);
+    return { ...project, ...await this.store.getProjectEpisodePlan(this.workspaceId, projectId) };
   }
 
   getProjectCostSummary(projectId: string) {

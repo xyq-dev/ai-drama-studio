@@ -1,12 +1,21 @@
 import { timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import {
+  TITLE_WRITING_DEFAULT_EPISODE_COUNT,
+  TITLE_WRITING_DEFAULT_EPISODE_SECONDS,
+  TITLE_WRITING_EPISODE_SECONDS_CHOICES,
+  TITLE_WRITING_MAX_EPISODES,
+  TITLE_WRITING_MIN_EPISODES,
   TITLE_WRITING_PROVIDER_KEYS,
+  titleWritingEpisodeCount,
+  titleWritingRequiredCalls,
   titleWritingResumeSchema,
   titleWritingSettingsSchema,
   titleWritingStartSchema,
   type TitleWritingOptionsView,
   type TitleWritingProviderKey,
+  type TitleWritingSettings,
+  type TitleWritingStart,
   type TitleWritingStore,
 } from "@ai-drama/contracts";
 import type { RuntimeStore } from "@ai-drama/database";
@@ -31,7 +40,8 @@ export interface TitleWritingDependencies {
   providers: Record<TitleWritingProviderKey, WritingProviderConfig>;
   store: TitleWritingStore;
   engine: Pick<TitleWritingEngine, "workspaceId" | "drive" | "maintain">;
-  projects: Pick<RuntimeStore, "getProject">;
+  /** The project and its episode plan: the plan, not the request, decides N, the target seconds and the version. */
+  projects: Pick<RuntimeStore, "getProject" | "getProjectEpisodePlan" | "episodePlanReady">;
   maxCallsPerDay: number;
   maxActiveRuns: number;
   clock?: () => Date;
@@ -57,6 +67,9 @@ const MESSAGES: Record<string, string> = {
   TITLE_WRITING_CONFIRMATION_STALE: "确认的不确定调用和现在的不一致（可能又出现了新的不确定调用），没有重新发送。请重新查看后再确认。",
   TITLE_WRITING_NOT_RESUMABLE: "这次创作没有需要续跑的步骤。",
   TITLE_WRITING_STORY_NOT_APPROVED: "故事还没有通过审核，剧本暂不能写入分集。",
+  TITLE_WRITING_PLAN_MISMATCH: "作品的集数设置和这次创作不一致，没有发出任何调用，也没有写入剧本。",
+  TITLE_WRITING_EPISODE_PLAN_UNAVAILABLE: "集数设置的数据库迁移还没有执行，没有启动任何调用。",
+  TITLE_WRITING_DAILY_QUOTA_LOW: "最近 24 小时剩余的调用次数不够完成这次创作，没有创建任务，也没有发出任何调用。",
   TITLE_WRITING_STORY_CHANGED: "审核通过的故事和生成剧本时用的故事不同，请确认后再写入。",
   TITLE_WRITING_NOT_READY: "剧本还没有生成完成。",
   NOT_FOUND: "没有找到这次创作。",
@@ -134,6 +147,14 @@ export class TitleWritingService {
       callCapPerRun: TITLE_WRITING_CALL_CAP_PER_RUN,
       billing: "unknown",
       defaults: titleWritingSettingsSchema.parse({}),
+      episodePlan: {
+        minEpisodes: TITLE_WRITING_MIN_EPISODES,
+        maxEpisodes: TITLE_WRITING_MAX_EPISODES,
+        defaultEpisodes: TITLE_WRITING_DEFAULT_EPISODE_COUNT,
+        secondsChoices: [...TITLE_WRITING_EPISODE_SECONDS_CHOICES],
+        defaultSeconds: TITLE_WRITING_DEFAULT_EPISODE_SECONDS,
+      },
+      episodePlanReady: await this.deps.projects.episodePlanReady(),
     };
     return { status: 200, body };
   }
@@ -163,31 +184,69 @@ export class TitleWritingService {
     await this.deps.projects.getProject(this.deps.workspaceId, projectId);
     const parsed = titleWritingStartSchema.safeParse(body);
     if (!parsed.success) return failure(400, "VALIDATION_ERROR", { field: parsed.error.issues[0]?.path.join(".") ?? "body" });
+    const frozen = await this.frozenSettings(projectId, parsed.data.settings);
+    if ("refusal" in frozen) return frozen.refusal;
     const providerKey = parsed.data.providerKey ?? this.deps.defaultProvider
       ?? TITLE_WRITING_PROVIDER_KEYS.find((key) => this.deps.providers[key].ok) ?? "qwen";
     const provider = this.deps.providers[providerKey];
     if (!provider.ok) return failure(503, "TITLE_WRITING_PROVIDER_UNCONFIGURED", { providerKey, missing: provider.missing });
     const model = parsed.data.model ?? provider.models[0]!;
     if (!provider.models.includes(model)) return failure(400, "TITLE_WRITING_MODEL_UNAVAILABLE", { providerKey });
-    const settings = titleWritingSettingsSchema.parse(parsed.data.settings ?? {});
+    const startedAt = this.now();
     const run = newTitleRun({
       workspaceId: this.deps.workspaceId,
       projectId,
       actorId: context.actorId,
       idempotencyKey: context.idempotencyKey,
       title: parsed.data.title,
-      settings,
+      settings: frozen.settings,
       providerKey,
       model,
-      now: this.now(),
+      now: startedAt,
+      version: frozen.version,
     });
-    const created = await this.deps.store.createRun(run, { maxActiveRuns: this.deps.maxActiveRuns });
-    if (created.kind === "blocked") return failure(429, created.code);
+    // The store looks the key up first: a replay of an existing run is returned whatever the quota is now. Only a new
+    // run must find N+2 calls left in the rolling 24 hours; the check reserves nothing for later steps.
+    const created = await this.deps.store.createRun(run, {
+      maxActiveRuns: this.deps.maxActiveRuns,
+      quota: {
+        sinceIso: new Date(startedAt.getTime() - 24 * 60 * 60 * 1000).toISOString(),
+        maxCallsPerDay: this.deps.maxCallsPerDay,
+        requiredCalls: titleWritingRequiredCalls(titleWritingEpisodeCount(run.input)),
+      },
+    });
+    if (created.kind === "blocked") {
+      return created.code === "TITLE_WRITING_DAILY_QUOTA_LOW"
+        ? failure(429, created.code, { requiredCalls: created.requiredCalls, remainingCalls: created.remainingCalls })
+        : failure(429, created.code);
+    }
     if (created.kind === "conflict") return failure(409, "IDEMPOTENCY_KEY_REUSED");
     if (created.kind === "active") return failure(409, "TITLE_WRITING_RUN_ACTIVE", { runId: created.bundle.run.id });
     if (created.bundle.run.projectId !== projectId) return failure(409, "IDEMPOTENCY_KEY_REUSED");
     if (created.kind === "created") this.schedule(created.bundle.run.id);
     return this.found(created.bundle, created.kind === "created" ? 201 : 200);
+  }
+
+  /**
+   * The settings a new run freezes, from the project's episode plan. A project with a plan gets a v2 run of exactly its
+   * N and target seconds; sent values must equal them. A project without a plan keeps the v1 rules unchanged (three
+   * episodes, 30–180 seconds), so requests saved by an older page replay to the same input and hash.
+   */
+  private async frozenSettings(projectId: string, sent: TitleWritingStart["settings"]):
+    Promise<{ version: 1 | 2; settings: TitleWritingSettings } | { refusal: TitleWritingResult }> {
+    const plan = await this.deps.projects.getProjectEpisodePlan(this.deps.workspaceId, projectId);
+    if (plan.targetEpisodeSeconds === null) {
+      const v1 = titleWritingSettingsSchema.safeParse(sent ?? {});
+      if (!v1.success) return { refusal: failure(400, "VALIDATION_ERROR", { field: `settings.${v1.error.issues[0]?.path.join(".") ?? ""}` }) };
+      return { version: 1, settings: v1.data };
+    }
+    if (!await this.deps.projects.episodePlanReady()) return { refusal: failure(503, "TITLE_WRITING_EPISODE_PLAN_UNAVAILABLE") };
+    const planned = { episodeCount: plan.episodeCount, targetEpisodeSeconds: plan.targetEpisodeSeconds };
+    if ((sent?.episodeCount !== undefined && sent.episodeCount !== plan.episodeCount)
+      || (sent?.episodeSeconds !== undefined && sent.episodeSeconds !== plan.targetEpisodeSeconds)) {
+      return { refusal: failure(409, "TITLE_WRITING_PLAN_MISMATCH", planned) };
+    }
+    return { version: 2, settings: { episodeCount: plan.episodeCount, episodeSeconds: plan.targetEpisodeSeconds, style: (sent?.style ?? "").trim() } };
   }
 
   async latest(projectId: string): Promise<TitleWritingResult> {
@@ -260,6 +319,7 @@ export class TitleWritingService {
       if (placed.kind === "not_found") return failure(404, "NOT_FOUND");
       if (placed.kind === "not_ready") return failure(409, "TITLE_WRITING_NOT_READY");
       if (placed.kind === "story_not_approved") return failure(409, "TITLE_WRITING_STORY_NOT_APPROVED");
+      if (placed.kind === "plan_mismatch") return failure(409, "TITLE_WRITING_PLAN_MISMATCH");
       return failure(409, "TITLE_WRITING_STORY_CHANGED");
     }
     return this.found(placed.bundle);

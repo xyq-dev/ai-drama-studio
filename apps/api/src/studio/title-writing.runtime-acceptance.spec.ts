@@ -29,6 +29,7 @@ import {
   checkTitleWritingAcceptanceEnv,
   closePostgresPool,
   createPostgresPool,
+  EPISODE_PLAN_MIGRATION,
   TITLE_WRITING_MIGRATION,
   runMigrations,
   verifyTitleWritingAcceptanceDatabase,
@@ -432,9 +433,10 @@ describe("title writing on the real runtime, killed and restarted, model stubbed
     results.storageMissing = refused.status;
     await stopApi(api, "SIGTERM");
 
-    // The deploy step: the normal chain applies only the title writing migration; a second run applies nothing.
+    // The deploy step: the normal chain applies the title writing migration and, after it, the episode plan migration;
+    // a second run applies nothing.
     const upgrade = await runMigrations(pool);
-    expect(upgrade.applied).toEqual([TITLE_WRITING_MIGRATION]);
+    expect(upgrade.applied).toEqual([TITLE_WRITING_MIGRATION, EPISODE_PLAN_MIGRATION]);
     const again = await runMigrations(pool);
     expect(again.applied).toEqual([]);
     evidence.migration = { upgradeApplied: upgrade.applied, redeployApplied: again.applied };

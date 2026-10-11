@@ -26,6 +26,7 @@ import { canonicalInputHash } from "@ai-drama/domain";
 import { runMigrations, type MigrationResult } from "./migrations";
 import { TextChainService } from "./text-chain";
 import { checkTitleWritingAcceptanceEnv, verifyTitleWritingAcceptanceDatabase } from "./title-writing-acceptance-guard";
+import { EPISODE_PLAN_MIGRATION } from "./episode-plan";
 import { PostgresTitleWritingStore, TITLE_WRITING_MIGRATION } from "./title-writing-store";
 
 // Refuse before any connection is opened.
@@ -74,18 +75,22 @@ beforeAll(async () => {
   storageBeforeUpgrade = await store.storageReady();
   existing = await seedExistingData();
   beforeUpgrade = await snapshotExisting();
-  // Then the normal deploy path: the unrestricted chain, which applies only what is not recorded yet.
-  upgrade = await runMigrations(pool);
+  // Then the release that added title writing: the chain up to it, which applies only what is not recorded yet.
+  upgrade = await runMigrations(pool, undefined, { before: EPISODE_PLAN_MIGRATION });
   afterUpgrade = await snapshotExisting();
+  // Then the normal deploy path of today: the unrestricted chain adds the episode plan migration; once more adds nothing.
+  planUpgrade = await runMigrations(pool);
   redeploy = await runMigrations(pool);
   recorded = (await pool.query<{ name: string; checksum: string }>("SELECT name, checksum FROM schema_migration ORDER BY name")).rows;
   evidence.migration = { released: released.applied, storageReadyBeforeUpgrade: storageBeforeUpgrade, upgradeApplied: upgrade.applied,
-    upgradeAlreadyApplied: upgrade.alreadyApplied, redeployApplied: redeploy.applied, recorded: recorded.map((row) => row.name),
+    upgradeAlreadyApplied: upgrade.alreadyApplied, planUpgradeApplied: planUpgrade.applied, redeployApplied: redeploy.applied,
+    recorded: recorded.map((row) => row.name),
     existingRows: beforeUpgrade.rows };
 });
 
 let released: MigrationResult;
 let upgrade: MigrationResult;
+let planUpgrade: MigrationResult;
 let redeploy: MigrationResult;
 let storageBeforeUpgrade: boolean;
 let existing: Awaited<ReturnType<typeof seedExistingData>>;
@@ -576,7 +581,8 @@ describe("formal migration on a database of the released schema", () => {
     expect(upgrade.alreadyApplied).toEqual(MIGRATIONS_BEFORE);
     const sql = await readFile(join(__dirname, "..", "prisma", "migrations", TITLE_WRITING_MIGRATION, "migration.sql"), "utf8");
     expect(recorded.find((row) => row.name === TITLE_WRITING_MIGRATION)?.checksum).toBe(createHash("sha256").update(sql).digest("hex"));
-    expect(recorded.map((row) => row.name)).toEqual([...MIGRATIONS_BEFORE, TITLE_WRITING_MIGRATION]);
+    expect(recorded.map((row) => row.name)).toEqual([...MIGRATIONS_BEFORE, TITLE_WRITING_MIGRATION, EPISODE_PLAN_MIGRATION]);
+    expect(planUpgrade.applied).toEqual([EPISODE_PLAN_MIGRATION]);
     expect(await store.storageReady()).toBe(true);
   });
 
@@ -600,7 +606,7 @@ describe("formal migration on a database of the released schema", () => {
 
   it("does nothing when the deploy command runs again", async () => {
     expect(redeploy.applied).toEqual([]);
-    expect(redeploy.alreadyApplied).toEqual([...MIGRATIONS_BEFORE, TITLE_WRITING_MIGRATION]);
+    expect(redeploy.alreadyApplied).toEqual([...MIGRATIONS_BEFORE, TITLE_WRITING_MIGRATION, EPISODE_PLAN_MIGRATION]);
     expect((await pool.query("SELECT 1 FROM schema_migration WHERE name = $1", [TITLE_WRITING_MIGRATION])).rowCount).toBe(1);
   });
 });

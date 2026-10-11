@@ -98,16 +98,27 @@ jobs:
           TITLE_WRITING_ACCEPTANCE_EVIDENCE_DIR="${RUNNER_TEMP}/title-acceptance-evidence" \
           pnpm --filter @ai-drama/database title-writing:acceptance
 
+      - name: Run the episode plan acceptance on its own new database (guarded, deny by default)
+        # Upgrade from today's released chain, history kept, N = 1/3/6, start quota, lock order and races.
+        run: |
+          name="ads_title_acceptance_plan_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+          psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE ${name}"
+          TITLE_WRITING_ACCEPTANCE_AUTHORIZED=true \
+          TITLE_WRITING_ACCEPTANCE_DATABASE_NAME="${name}" \
+          TITLE_WRITING_ACCEPTANCE_DATABASE_URL="postgresql://postgres@127.0.0.1:5432/${name}" \
+          TITLE_WRITING_ACCEPTANCE_EVIDENCE_DIR="${RUNNER_TEMP}/title-acceptance-evidence" \
+          pnpm --filter @ai-drama/database episode-plan:acceptance
+
       - name: Run the deploy migration command on a new database, then again
         # The real deploy command (pnpm --filter @ai-drama/database migrate) on a second database of this job's container.
-        # It must apply all six migrations once and nothing the second time; the four title writing tables must exist.
+        # It must apply all seven migrations once and nothing the second time; the four title writing tables must exist.
         run: |
           name="ads_title_acceptance_deploy_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
           url="postgresql://postgres@127.0.0.1:5432/${name}"
           psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE ${name}"
           first="$(DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate)"
           echo "first run: ${first}"
-          printf '%s\n' "${first}" | grep -Eq "(^|[^0-9])Applied 6 migration\(s\)\.$"
+          printf '%s\n' "${first}" | grep -Eq "(^|[^0-9])Applied 7 migration\(s\)\.$"
           second="$(DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate)"
           echo "second run: ${second}"
           printf '%s\n' "${second}" | grep -Eq "(^|[^0-9])Applied 0 migration\(s\)\.$"

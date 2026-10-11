@@ -6,6 +6,7 @@ import {
 } from "@ai-drama/domain";
 import type { PoolClient, QueryResultRow } from "pg";
 import { PersistenceError, type DatabasePool } from "./job-service";
+import { projectEpisodePlanIn } from "./episode-plan";
 import {
   affectedScriptConsumerIds,
   insertScriptDependencies,
@@ -1492,11 +1493,12 @@ export class TextChainService {
   async assertProductionEpisodes(workspaceId: string, projectId: string): Promise<void> {
     const client = await this.pool.connect();
     try {
+      const { episodeCount } = await projectEpisodePlanIn(client, workspaceId, projectId);
       const rows = await client.query<{ episode_no: number } & QueryResultRow>(
         `SELECT episode_no FROM episode WHERE workspace_id = $1 AND project_id = $2`,
         [workspaceId, projectId],
       );
-      assertProductionEpisodeSet(rows.rows.map((row) => row.episode_no));
+      assertProductionEpisodeSet(rows.rows.map((row) => row.episode_no), episodeCount);
     } finally {
       client.release();
     }
@@ -2498,23 +2500,28 @@ async function emitCurrentRevisionEvent(
   );
 }
 
+/**
+ * Creates the project's episodes 1..N on story approval, N being its episode plan (three without a plan). Existing
+ * episodes keep their ids; afterwards the project must have exactly 1..N, or the approval rolls back.
+ */
 async function ensureEpisodes(
   client: PoolClient,
   workspaceId: string,
   projectId: string,
 ): Promise<void> {
+  const { episodeCount } = await projectEpisodePlanIn(client, workspaceId, projectId);
   await client.query(
     `INSERT INTO episode (workspace_id, project_id, episode_no, title)
      SELECT $1, $2, episode_no, 'Episode ' || episode_no::text
-       FROM (VALUES (1), (2), (3)) AS required(episode_no)
+       FROM generate_series(1, $3::int) AS required(episode_no)
      ON CONFLICT (project_id, episode_no) DO NOTHING`,
-    [workspaceId, projectId],
+    [workspaceId, projectId, episodeCount],
   );
   const rows = await client.query<{ episode_no: number } & QueryResultRow>(
     `SELECT episode_no FROM episode WHERE workspace_id = $1 AND project_id = $2`,
     [workspaceId, projectId],
   );
-  assertProductionEpisodeSet(rows.rows.map((row) => row.episode_no));
+  assertProductionEpisodeSet(rows.rows.map((row) => row.episode_no), episodeCount);
 }
 
 const STALE_SYNC_LIMIT = 200;

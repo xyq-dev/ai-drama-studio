@@ -34,6 +34,7 @@ import {
   checkTitleWritingAcceptanceEnv,
   closePostgresPool,
   createPostgresPool,
+  EPISODE_PLAN_MIGRATION,
   TITLE_WRITING_MIGRATION,
   runMigrations,
   verifyTitleWritingAcceptanceDatabase,
@@ -355,9 +356,9 @@ beforeAll(async () => {
             (SELECT count(*)::int FROM information_schema.tables
               WHERE table_schema NOT IN ('pg_catalog', 'information_schema') AND table_schema NOT LIKE 'pg_toast%') AS tables`))[0]!;
   evidence.database = { name: identity.name, serverVersion: identity.version, tablesBeforeWrite: identity.tables };
-  // A new database through the normal chain: every released migration and then the title writing one.
+  // A new database through the normal chain: every released migration, the title writing one and the episode plan one.
   const migrated = await runMigrations(pool);
-  expect(migrated.applied.at(-1)).toBe(TITLE_WRITING_MIGRATION);
+  expect(migrated.applied.slice(-2)).toEqual([TITLE_WRITING_MIGRATION, EPISODE_PLAN_MIGRATION]);
   evidence.migrationsApplied = migrated.applied;
   await q("INSERT INTO workspace (id, name, status) VALUES ($1, 'title-browser-acceptance', 'ACTIVE')", [WORKSPACE]);
   if (shotsDir) await mkdir(shotsDir, { recursive: true });

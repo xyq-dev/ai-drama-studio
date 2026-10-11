@@ -218,7 +218,9 @@ export {
 } from "./attempt-presentation";
 export {
   FRESHNESS_STATUSES,
+  MAX_PRODUCTION_EPISODES,
   PRODUCTION_EPISODE_NUMBERS,
+  productionEpisodeNumbers,
   REVIEW_STATUSES,
   assertProductionEpisodeSet,
   assertReviewTransition,

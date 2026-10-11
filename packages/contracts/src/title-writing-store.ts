@@ -76,7 +76,18 @@ export interface TitleRunBundle {
 
 export type TitleRunCreation =
   | { kind: "created" | "existing" | "conflict" | "active"; bundle: TitleRunBundle }
-  | { kind: "blocked"; code: "TITLE_WRITING_ACTIVE_RUN_CAP" };
+  | { kind: "blocked"; code: "TITLE_WRITING_ACTIVE_RUN_CAP" }
+  | { kind: "blocked"; code: "TITLE_WRITING_DAILY_QUOTA_LOW"; requiredCalls: number; remainingCalls: number };
+
+/**
+ * Limits checked when a new run would be created, after the idempotency lookup (a replay of an existing run is never
+ * refused by them). The quota check only reads the rolling 24-hour call count: it reserves nothing, and every send
+ * still reserves its own call under the workspace call lock.
+ */
+export interface TitleRunCreationLimits {
+  maxActiveRuns: number;
+  quota?: { sinceIso: string; maxCallsPerDay: number; requiredCalls: number };
+}
 
 export type TitleCallReservation =
   | { kind: "reserved" }
@@ -118,7 +129,7 @@ export interface TitleResumeRequest {
 
 export type TitleScriptPlacement =
   | { kind: "ok"; bundle: TitleRunBundle }
-  | { kind: "not_found" | "not_ready" | "story_not_approved" | "story_changed" };
+  | { kind: "not_found" | "not_ready" | "story_not_approved" | "story_changed" | "plan_mismatch" };
 
 /**
  * Persistence of title writing runs. Every method that changes a running run is conditional on the executor that
@@ -128,8 +139,11 @@ export type TitleScriptPlacement =
  */
 export interface TitleWritingStore {
   storageReady(): Promise<boolean>;
-  /** Idempotency lookup, input comparison, active-run checks and insert of the run with its five steps: one atomic step. */
-  createRun(run: TitleRunRecord, limits: { maxActiveRuns: number }): Promise<TitleRunCreation>;
+  /**
+   * Idempotency lookup, input comparison, active-run checks, the start quota check and insert of the run with its
+   * N+2 steps (five for v1): one atomic step.
+   */
+  createRun(run: TitleRunRecord, limits: TitleRunCreationLimits): Promise<TitleRunCreation>;
   getRun(workspaceId: string, projectId: string, runId: string): Promise<TitleRunBundle | null>;
   /** Executor read: the run only when it belongs to this workspace. */
   getRunById(workspaceId: string, runId: string): Promise<TitleRunBundle | null>;
@@ -156,6 +170,9 @@ export interface TitleWritingStore {
   /** Fences expired executors of this workspace: reserved calls were never sent, submitted calls become unknown. */
   recoverExpired(workspaceId: string, nowIso: string): Promise<number>;
   listClaimable(workspaceId: string, nowIso: string, limit: number): Promise<string[]>;
-  /** After the story was approved by a person: writes each saved screenplay into an episode that has no script yet. */
+  /**
+   * After the story was approved by a person: writes each saved screenplay into an episode that has no script yet.
+   * plan_mismatch: the project's episodes are not exactly 1..N of this run; nothing is written.
+   */
   placeScripts(workspaceId: string, projectId: string, runId: string, options: { acceptStoryChanged: boolean }, actorId: string, nowIso: string): Promise<TitleScriptPlacement>;
 }

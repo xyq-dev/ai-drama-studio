@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { EPISODE_PLAN_COLUMNS, EPISODE_PLAN_MIGRATION } from "./episode-plan";
 import { TITLE_WRITING_MIGRATION, TITLE_WRITING_TABLES } from "./title-writing-store";
 
 const drafts = join(__dirname, "..", "prisma", "drafts");
@@ -62,10 +63,10 @@ describe("title writing formal migration", () => {
     expect(sql).not.toContain("qwen_writing_request");
   });
 
-  it("is applied after every released migration, and the draft is marked superseded and not applied", async () => {
+  it("is applied after every earlier migration, and the draft is marked superseded and not applied", async () => {
     const names = (await readdir(applied)).filter((name) => /^\d+_/.test(name)).sort();
-    expect(names.at(-1)).toBe(TITLE_WRITING_MIGRATION);
-    expect(names).toEqual([...Object.keys(RELEASED), TITLE_WRITING_MIGRATION]);
+    expect(names.indexOf(TITLE_WRITING_MIGRATION)).toBe(Object.keys(RELEASED).indexOf(TITLE_WRITING_MIGRATION));
+    expect(names).toEqual([...Object.keys(RELEASED), EPISODE_PLAN_MIGRATION]);
     const draft = await readFile(draftPath, "utf8");
     expect(draft.split("\n")[0]).toBe("-- SUPERSEDED DRAFT. Do not apply. Kept only as the record of what passed the isolated acceptances.");
     expect(draft).toContain(`prisma/migrations/${TITLE_WRITING_MIGRATION}/migration.sql`);
@@ -91,6 +92,50 @@ describe("title writing formal migration", () => {
   });
 });
 
+describe("episode plan migration", () => {
+  const migrationPath = join(applied, EPISODE_PLAN_MIGRATION, "migration.sql");
+
+  it("is the last migration, after every released one", async () => {
+    const names = (await readdir(applied)).filter((name) => /^\d+_/.test(name)).sort();
+    expect(names.at(-1)).toBe(EPISODE_PLAN_MIGRATION);
+    expect(names.slice(0, -1)).toEqual(Object.keys(RELEASED));
+  });
+
+  it("only expands: adds two project columns and widens CHECKs, writing, rewriting or dropping no data", async () => {
+    const sql = statements(await readFile(migrationPath, "utf8"));
+    const each = sql.split(";").map((item) => item.replace(/\s+/g, " ").trim()).filter(Boolean);
+    expect(each.every((item) => /^ALTER TABLE (project|episode|title_writing_step) (ADD COLUMN|ADD CONSTRAINT|DROP CONSTRAINT) /.test(item))).toBe(true);
+    expect(sql).not.toMatch(/\b(INSERT|UPDATE|DELETE|TRUNCATE|DROP TABLE|DROP COLUMN|ALTER COLUMN|RENAME)\b/i);
+    // Both new columns: the count defaults to the old fixed three, the target stays NULL for every existing project.
+    expect(sql).toContain("ADD COLUMN episode_count smallint NOT NULL DEFAULT 3;");
+    expect(sql).toContain("ADD COLUMN target_episode_seconds smallint;");
+    expect(sql).toContain("CHECK (target_episode_seconds IS NOT NULL OR episode_count = 3)");
+    // Every dropped constraint is re-added under the same name with a range that contains the old one.
+    const dropped = [...sql.matchAll(/DROP CONSTRAINT (\w+)/g)].map((match) => match[1]);
+    const added = [...sql.matchAll(/ADD CONSTRAINT (\w+)/g)].map((match) => match[1]);
+    expect(dropped).toEqual(["episode_episode_no_check", "title_writing_step_step_key_check", "title_writing_step_ordinal_check"]);
+    for (const name of dropped) expect(added).toContain(name);
+    expect(sql).toContain("CHECK (episode_no BETWEEN 1 AND 6)");
+    expect(sql).toContain("'concept', 'outline', 'episode:1', 'episode:2', 'episode:3', 'episode:4', 'episode:5', 'episode:6'");
+    expect(sql).toContain("CHECK (ordinal BETWEEN 0 AND 7)");
+  });
+
+  it("drops only constraints the released migrations created under those default names, with the old ranges", async () => {
+    const m2a = await readFile(join(applied, "20260925000100_m2a_text_chain", "migration.sql"), "utf8");
+    expect(m2a).toContain("episode_no smallint NOT NULL CHECK (episode_no BETWEEN 1 AND 3),");
+    const title = await readFile(join(applied, TITLE_WRITING_MIGRATION, "migration.sql"), "utf8");
+    expect(title).toContain("step_key text NOT NULL CHECK (step_key IN ('concept', 'outline', 'episode:1', 'episode:2', 'episode:3')),");
+    expect(title).toContain("ordinal smallint NOT NULL CHECK (ordinal BETWEEN 0 AND 4),");
+  });
+
+  it("is expressed in the Prisma schema", async () => {
+    const schema = await readFile(join(__dirname, "..", "prisma", "schema.prisma"), "utf8");
+    const project = [...schema.matchAll(/^model \w+ \{\n([\s\S]*?)\n\}/gm)].map((match) => match[1]!)
+      .find((block) => block.includes('@@map("project")'));
+    for (const column of EPISODE_PLAN_COLUMNS) expect(project).toContain(`@map("${column}")`);
+  });
+});
+
 /** Released migrations and the checksums servers have recorded for them. A change here means a released file changed. */
 const RELEASED: Record<string, string> = {
   "20260924000100_m1b_job_core": "15ee68a4d23c82e3078db554c035ca9c29aed894cdb36448324d251432946605",
@@ -98,4 +143,5 @@ const RELEASED: Record<string, string> = {
   "20260928000100_script_dependency_scopes": "d10b3314354069aeb6ce4ec0025411fae3cfcae200688fe74b407deb30f117d7",
   "20260928000200_m3a_media_assets": "a8540cb57ec0e9a034ca56ef2c5c9a3ce55a2fdc4076bdabd7e6844c79b26ae2",
   "20260928000300_m3b_job_shot_lineage": "fa3e195e82b760ea3ce8ed39b2daedd2169c8e5de955c5750a5511c8b7073b62",
+  "20261008000100_title_writing": "b3931d041dc4f9c1bbaf43fa69e9cfce069465272da9c80173da282271f32671",
 };

@@ -24,6 +24,7 @@ import {
   checkTitleWritingAcceptanceEnv,
   closePostgresPool,
   createPostgresPool,
+  EPISODE_PLAN_MIGRATION,
   TITLE_WRITING_MIGRATION,
   runMigrations,
   verifyTitleWritingAcceptanceDatabase,
@@ -34,6 +35,7 @@ import {
   fixtureConcept,
   fixtureEpisode,
   fixtureOutline,
+  fixtureOutlineCountOf,
   fixtureStepOf,
   type FixtureStep,
 } from "@ai-drama/providers/title-writing-fixtures";
@@ -102,7 +104,7 @@ const transport: WritingTransport = async (request) => {
   }
   if (plan && "hold" in plan) await plan.hold;
   const answer = plan && "status" in plan ? plan : { status: 200, body: chatAnswer(step === "concept" ? fixtureConcept(title)
-    : step === "outline" ? fixtureOutline() : fixtureEpisode(Number(step.slice(-1)) as 1 | 2 | 3)) };
+    : step === "outline" ? fixtureOutline(fixtureOutlineCountOf(user)) : fixtureEpisode(Number(step.slice(-1)))) };
   return {
     status: answer.status,
     headers: { get: (name: string) => name.toLowerCase() === "x-request-id" ? `stub-${step}-${String(attempt)}` : null },
@@ -305,7 +307,8 @@ describe("title writing over real HTTP and PostgreSQL, model stubbed", () => {
     expect(sent).toHaveLength(0);
 
     const upgrade = await runMigrations(pool);
-    expect(upgrade.applied).toEqual([TITLE_WRITING_MIGRATION]);
+    // Today's chain after the title writing migration also adds the episode plan migration.
+    expect(upgrade.applied).toEqual([TITLE_WRITING_MIGRATION, EPISODE_PLAN_MIGRATION]);
     evidence.upgradeApplied = upgrade.applied;
     const ready = await http(main, "GET", "/writing/title-runs/options");
     expect(ready.body).toMatchObject({ code: "TITLE_WRITING_READY", storageReady: true, billing: "unknown" });
@@ -392,6 +395,48 @@ describe("title writing over real HTTP and PostgreSQL, model stubbed", () => {
     scenarios.fullFlow = { projectId, runId, storyRevisionId: done.storyRevisionId, scriptRevisionIds: placedSteps.map((step) => step.scriptRevisionId),
       sends: sends(title), replayStatus: replay.status, reusedKey: reused.status, secondStart: second.status, beforeApproval: early.status,
       scriptsAfterReplay: 3 };
+  });
+
+  it.each([1, 3, 6])("N=%i over HTTP: the work keeps its plan, the run has N+2 steps, approval makes N episodes, N scripts are written once and edited", async (count) => {
+    const title = `集数验收${String(count)}`;
+    const created = await http(main, "POST", "/projects", { body: { title, premise: "", episodeCount: count, targetEpisodeSeconds: 60 },
+      headers: { "idempotency-key": randomUUID() } });
+    expect(created.status).toBe(201);
+    const projectId = created.body.id as string;
+    expect((await http(main, "GET", `/projects/${projectId}`)).body).toMatchObject({ episodeCount: count, targetEpisodeSeconds: 60 });
+    // The request cannot change the plan: a different count or target is refused before anything is stored or sent.
+    const mismatch = await http(main, "POST", `/projects/${projectId}/title-runs`,
+      { body: { title, settings: { episodeCount: count === 6 ? 5 : count + 1 } }, headers: operator(randomUUID()) });
+    expect([mismatch.status, mismatch.body.error.code]).toEqual([409, "TITLE_WRITING_PLAN_MISMATCH"]);
+    expect(sends(title)).toBe(0);
+    const started = await http(main, "POST", `/projects/${projectId}/title-runs`,
+      { body: { title, settings: { episodeCount: count, episodeSeconds: 60 } }, headers: operator(randomUUID()) });
+    expect(started.status).toBe(201);
+    const runId = started.body.run.runId as string;
+    expect(started.body.run).toMatchObject({ inputVersion: 2, episodeCount: count, callCap: count + 5 });
+    const done = await until(projectId, resting);
+    expect(done).toMatchObject({ state: "completed", storySave: "saved", callsUsed: count + 2 });
+    expect(sends(title)).toBe(count + 2);
+    expect(await episodes(projectId)).toEqual([]);
+    await approveStory(projectId, done.storyRevisionId!);
+    const made = await episodes(projectId);
+    expect(made.map((item) => item.episodeNo)).toEqual(Array.from({ length: count }, (_, index) => index + 1));
+    const placed = await http(main, "POST", `/projects/${projectId}/title-runs/${runId}/scripts`, { body: {} });
+    expect(placed.status).toBe(200);
+    expect((placed.body.run as TitleWritingRunView).steps.slice(2).map((step) => step.scriptSave)).toEqual(Array.from({ length: count }, () => "saved"));
+    await http(main, "POST", `/projects/${projectId}/title-runs/${runId}/scripts`, { body: {} });
+    expect(await scriptRows(projectId)).toHaveLength(count);
+    // The last episode is edited in the existing editor path: a new version, the AI version kept as history.
+    const last = (await episodes(projectId)).at(-1)!;
+    const edited = await http(main, "POST", `/projects/${projectId}/episodes/${last.id}/scripts`, {
+      body: { sourceStoryRevisionId: done.storyRevisionId, content: { text: `第 ${String(count)} 集，改过的剧本` } },
+      headers: { "idempotency-key": randomUUID(), "if-match": String(last.rowVersion) },
+    });
+    expect(edited.status).toBe(201);
+    expect((await http(main, "GET", `/projects/${projectId}/episodes/${last.id}/scripts`)).body.items).toHaveLength(2);
+    expect(sends(title)).toBe(count + 2);
+    ((scenarios.episodePlan ??= {}) as Record<string, unknown>)[String(count)] = { projectId, runId, sends: sends(title), episodes: made.length,
+      scripts: count, mismatch: mismatch.status };
   });
 
   it("an episode that already has a person's script is a conflict and keeps its text; the others are written", async () => {
