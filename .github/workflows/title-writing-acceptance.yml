@@ -142,12 +142,19 @@ jobs:
           psql -h 127.0.0.1 -U postgres -d "${name}" -v ON_ERROR_STOP=1 -At -c "SELECT name FROM schema_migration ORDER BY name"
 
       - name: Run the deploy migration command again on the upgraded acceptance database
-        # The store acceptance upgraded this database from the released schema; the deploy command must find nothing to do.
+        # The store acceptance upgraded this database, with its title writing data, to the episode plan release. The real
+        # deploy command must add exactly the script breakdown migration, and a second run must find nothing to do.
         run: |
           name="ads_title_acceptance_store_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
-          again="$(DATABASE_URL="postgresql://postgres@127.0.0.1:5432/${name}" pnpm --silent --filter @ai-drama/database migrate)"
+          url="postgresql://postgres@127.0.0.1:5432/${name}"
+          again="$(DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate)"
           echo "redeploy: ${again}"
-          printf '%s\n' "${again}" | grep -Eq "(^|[^0-9])Applied 0 migration\(s\)\.$"
+          printf '%s\n' "${again}" | grep -Eq "(^|[^0-9])Applied 1 migration\(s\)\.$"
+          last="$(psql -h 127.0.0.1 -U postgres -d "${name}" -v ON_ERROR_STOP=1 -At -c "SELECT name FROM schema_migration ORDER BY name DESC LIMIT 1")"
+          test "${last}" = "20261012000100_script_breakdown"
+          final="$(DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate)"
+          echo "final redeploy: ${final}"
+          printf '%s\n' "${final}" | grep -Eq "(^|[^0-9])Applied 0 migration\(s\)\.$"
 
       - name: Upload evidence
         if: always()
