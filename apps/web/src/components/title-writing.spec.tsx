@@ -25,6 +25,7 @@ function options(overrides: Partial<TitleWritingOptionsView> = {}): TitleWriting
     ],
     maxCallsPerDay: 30, maxActiveRuns: 1, callCapPerRun: 8, billing: "unknown",
     defaults: { episodeCount: 3, episodeSeconds: 90, style: "" },
+    episodePlan: { minEpisodes: 1, maxEpisodes: 6, defaultEpisodes: 3, secondsChoices: [60, 90], defaultSeconds: 90 }, episodePlanReady: true,
     ...overrides,
   };
 }
@@ -54,7 +55,7 @@ function steps(states: Array<TitleWritingStepView["state"]>): TitleWritingStepVi
 
 function run(overrides: Partial<TitleWritingRunView> = {}, states: Array<TitleWritingStepView["state"]> = []): TitleWritingRunView {
   return {
-    runId: RUN, projectId: P1, title: "夜班证词", settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey: "qwen", model: "q-1",
+    runId: RUN, projectId: P1, title: "夜班证词", inputVersion: 1, episodeCount: 3, settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey: "qwen", model: "q-1",
     state: "running", errorCode: null, cancelRequested: false, callCap: 8, callsUsed: 0, storySave: "pending", storyRevisionId: null,
     storyText: null, steps: steps(states), calls: [], createdAt: "2026-10-08T00:00:00Z", updatedAt: "2026-10-08T00:00:00Z",
     ...overrides,
@@ -107,8 +108,9 @@ describe("AI 一键创作 on the start page", () => {
     await waitFor(() => expect(assign).toHaveBeenCalledWith(`/projects/${P1}/writing`));
     const posts = calls.filter((call) => call.method === "POST");
     expect(posts.map((call) => call.url)).toEqual(["/api/v1/projects", `/api/v1/projects/${P1}/title-runs`]);
-    expect(posts[0]?.body).toEqual({ title: "夜班证词", premise: "" });
-    expect(posts[1]?.body).toEqual({ title: "夜班证词", providerKey: "qwen", model: "q-1", settings: { episodeSeconds: 90, style: "" } });
+    // The work carries the default plan (3 episodes, about 1.5 minutes); the run asks for the same plan.
+    expect(posts[0]?.body).toEqual({ title: "夜班证词", premise: "", episodeCount: 3, targetEpisodeSeconds: 90 });
+    expect(posts[1]?.body).toEqual({ title: "夜班证词", providerKey: "qwen", model: "q-1", settings: { episodeCount: 3, episodeSeconds: 90, style: "" } });
     expect(posts[1]?.headers["X-Operator-Token"]).toBe(TOKEN);
     expect(posts[1]?.headers["Idempotency-Key"]).toBeTruthy();
     expect(JSON.stringify(posts.map((call) => call.body))).not.toContain(TOKEN);
@@ -197,7 +199,7 @@ describe("progress and results page", () => {
   it("headlines follow the server state only", () => {
     expect(runHeadline(run({}, []))).toBe("正在构思故事");
     expect(runHeadline(run({}, ["completed", "submitted"]))).toBe("正在规划分集");
-    expect(runHeadline(run({}, ["completed", "completed", "completed", "submitted"]))).toBe("正在编写第 2 集");
+    expect(runHeadline(run({}, ["completed", "completed", "completed", "submitted"]))).toBe("正在编写第 2 集（共 3 集）");
     expect(runHeadline(run({}, ["completed", "completed", "completed", "completed", "completed"]))).toBe("正在保存结果");
     expect(runHeadline(run({ state: "completed" }))).toBe("创作完成");
     expect(runHeadline(run({ state: "partial" }))).toBe("部分完成");
@@ -217,7 +219,7 @@ describe("progress and results page", () => {
     render(<TitleWritingRun projectId={P1} client={new TitleWritingClient()} />);
     expect(await screen.findByText("正在构思故事")).toBeTruthy();
     await act(async () => { await vi.advanceTimersByTimeAsync(TITLE_WRITING_POLL_MS); });
-    expect(await screen.findByText("正在编写第 1 集")).toBeTruthy();
+    expect(await screen.findByText("正在编写第 1 集（共 3 集）")).toBeTruthy();
     await act(async () => { await vi.advanceTimersByTimeAsync(TITLE_WRITING_POLL_MS); });
     expect(await screen.findByText("创作完成")).toBeTruthy();
     expect(screen.getByText("梗概正文")).toBeTruthy();
@@ -286,6 +288,29 @@ describe("progress and results page", () => {
     expect(await screen.findByText("正在停止")).toBeTruthy();
     expect(screen.getByText(/已经发出的那一步会如实记录结果/)).toBeTruthy();
     expect(posts).toEqual([`/api/v1/projects/${P1}/title-runs/${RUN}/cancel`]);
+  });
+
+  it("a six-episode run shows its plan and keeps generated scripts apart from scripts written into the work", async () => {
+    const keys = ["concept", "outline", "episode:1", "episode:2", "episode:3", "episode:4", "episode:5", "episode:6"] as const;
+    const sixSteps = keys.map((stepKey, index) => ({
+      stepKey, state: "completed" as const, attemptNo: 1, errorCode: null, output: null,
+      text: index >= 2 ? `第 ${String(index - 1)} 集 剧本正文` : null,
+      scriptSave: index < 2 ? null : index < 4 ? "saved" as const : index === 4 ? "conflict" as const : "awaiting_story_approval" as const,
+      scriptRevisionId: null,
+    }));
+    server(() => json({ run: run({ state: "completed", storySave: "saved", inputVersion: 2, episodeCount: 6, callCap: 11, callsUsed: 8,
+      settings: { episodeCount: 6, episodeSeconds: 60, style: "" }, steps: sixSteps }) }));
+    render(<TitleWritingRun projectId={P1} client={new TitleWritingClient()} />);
+    expect(await screen.findByText(/共 6 集 · 每集目标约 1 分钟（写作目标，不代表成片时长）/)).toBeTruthy();
+    expect(screen.getByText(/本次上限 11 次，不是自动重试次数/)).toBeTruthy();
+    const progress = screen.getByText(/本次创作已生成 6 \/ 6 集剧本/).textContent ?? "";
+    expect(progress).toContain("已写入作品 2 / 6 集");
+    expect(progress).toContain("1 集已有剧本没有覆盖");
+    expect(progress).toContain("只有写入作品的剧本才能在作品里修改");
+    expect(screen.getAllByText("第 6 集剧本").length).toBeGreaterThan(0);
+    // Each written episode links to its own number, also beyond the third.
+    const links = screen.getAllByRole("link", { name: "去修改这一集剧本" }).map((link) => link.getAttribute("href"));
+    expect(links).toEqual([`/projects/${P1}?focus=script&episode=1`, `/projects/${P1}?focus=script&episode=2`]);
   });
 
   it("no run yet offers the manual path", async () => {

@@ -2,6 +2,8 @@ import type { PoolClient, QueryResult, QueryResultRow } from "pg";
 import {
   TITLE_WRITING_CANCELED_BEFORE_SEND,
   currentUncertainCallIds,
+  titleWritingEpisodeCount,
+  titleWritingStepKeysFor,
   type EpisodeDraftCandidate,
   type TitleWritingFrozenInput,
   type TitleWritingRunState,
@@ -14,12 +16,14 @@ import {
   type TitleResumeRequest,
   type TitleRunBundle,
   type TitleRunCreation,
+  type TitleRunCreationLimits,
   type TitleRunRecord,
   type TitleScriptPlacement,
   type TitleStepRecord,
   type TitleWritingStore,
 } from "@ai-drama/contracts";
 import { formatTitleEpisode } from "@ai-drama/domain";
+import { projectEpisodePlanIn } from "./episode-plan";
 import type { DatabasePool } from "./job-service";
 import type { TextChainService } from "./text-chain";
 
@@ -127,7 +131,6 @@ function toCall(row: Row): TitleCallRecord {
   };
 }
 
-const EPISODE_STEPS: Record<number, TitleWritingStepKey> = { 1: "episode:1", 2: "episode:2", 3: "episode:3" };
 
 export class PostgresTitleWritingStore implements TitleWritingStore {
   constructor(private readonly pool: DatabasePool, private readonly textChain: TextChainService) {}
@@ -156,7 +159,7 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
     return { run, steps: steps.rows.map(toStep), calls: calls.rows.map(toCall) };
   }
 
-  async createRun(run: TitleRunRecord, limits: { maxActiveRuns: number }): Promise<TitleRunCreation> {
+  async createRun(run: TitleRunRecord, limits: TitleRunCreationLimits): Promise<TitleRunCreation> {
     return this.transaction(async (client) => {
       // Serializes starts of one workspace: key lookup, active checks and insert are atomic.
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`title_writing_run:${run.workspaceId}`]);
@@ -176,6 +179,18 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
       const sameProject = active.rows.find((row) => String(row.project_id) === run.projectId);
       if (sameProject) return { kind: "active", bundle: (await this.load(client, sameProject))! };
       if (active.rows.length >= limits.maxActiveRuns) return { kind: "blocked", code: "TITLE_WRITING_ACTIVE_RUN_CAP" };
+      if (limits.quota) {
+        // A start check only, after the key lookup so a replay is never refused by it. It reads the rolling 24-hour
+        // count without the call lock (lock order stays run lock -> run row, as before) and reserves nothing: each
+        // send still reserves its call atomically in reserveCall.
+        const { sinceIso, maxCallsPerDay, requiredCalls } = limits.quota;
+        const recent = await client.query<Row>(
+          "SELECT count(*)::int AS recent FROM title_writing_call WHERE workspace_id = $1 AND created_at >= $2",
+          [run.workspaceId, sinceIso],
+        );
+        const remainingCalls = Math.max(0, maxCallsPerDay - Number(recent.rows[0]?.recent ?? 0));
+        if (remainingCalls < requiredCalls) return { kind: "blocked", code: "TITLE_WRITING_DAILY_QUOTA_LOW", requiredCalls, remainingCalls };
+      }
       const inserted = await client.query<Row>(
         `INSERT INTO title_writing_run (id, workspace_id, project_id, actor_id, idempotency_key, input_hash, input_json, provider_key,
            model, state, call_cap, calls_used, story_save, created_at, updated_at)
@@ -184,8 +199,8 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
         [run.id, run.workspaceId, run.projectId, run.actorId, run.idempotencyKey, run.inputHash, JSON.stringify(run.input),
           run.input.providerKey, run.input.model, run.callCap, run.createdAt],
       );
-      const keys = ["concept", "outline", "episode:1", "episode:2", "episode:3"] as const;
-      for (const [ordinal, stepKey] of keys.entries()) {
+      // The run's own steps: the original five for v1, concept, outline and episode:1..N for v2.
+      for (const [ordinal, stepKey] of titleWritingStepKeysFor(run.input).entries()) {
         await client.query(
           `INSERT INTO title_writing_step (run_id, workspace_id, step_key, ordinal, state, attempt_no, script_save, updated_at)
            VALUES ($1, $2, $3, $4, 'pending', 0, $5, $6)`,
@@ -541,8 +556,15 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
           WHERE project_id = $1 AND workspace_id = $2 ORDER BY episode_no FOR UPDATE`,
         [projectId, workspaceId],
       );
+      // The project's plan and its episodes must be exactly this run's 1..N, or nothing is written.
+      const count = titleWritingEpisodeCount(run.input);
+      const plan = await projectEpisodePlanIn(client, workspaceId, projectId);
+      const numbers = episodes.rows.map((row) => Number(row.episode_no));
+      if (plan.episodeCount !== count || numbers.length !== count || numbers.some((episodeNo, index) => episodeNo !== index + 1)) {
+        return { kind: "plan_mismatch" };
+      }
       for (const episode of episodes.rows) {
-        const stepKey = EPISODE_STEPS[Number(episode.episode_no)];
+        const stepKey = `episode:${String(episode.episode_no)}` as TitleWritingStepKey;
         const step = steps.find((item) => item.stepKey === stepKey);
         if (!step || step.state !== "completed" || step.scriptSave === "saved" || !step.output) continue;
         if (episode.current_script_revision_id !== null) {

@@ -56,9 +56,15 @@ const sceneSchema = z.object({
   sound: text(0, 120),
 }).strict();
 
+/**
+ * An episode draft may belong to any episode a project can have (1–6). Each reader still requires the exact episode
+ * it asked for; the story plan above stays three episodes.
+ */
+const draftEpisodeNoSchema = z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5), z.literal(6)]);
+
 export const episodeDraftCandidateSchema = z.object({
   schema: z.literal(EPISODE_DRAFT_SCHEMA),
-  episodeNo: episodeNoSchema,
+  episodeNo: draftEpisodeNoSchema,
   title: text(1, 80),
   screenplay: text(1, 12_000),
   scenes: z.array(sceneSchema).min(1).max(12),

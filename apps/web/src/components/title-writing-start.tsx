@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { TitleWritingProviderKey } from "@ai-drama/contracts";
+import { titleWritingCallCap, titleWritingRequiredCalls, type TitleWritingProviderKey } from "@ai-drama/contracts";
 import { ApiError, StudioClient } from "../lib/studio-client";
 import {
   TitleWritingClient,
@@ -19,14 +19,18 @@ const studio = new StudioClient();
 const writing = new TitleWritingClient();
 const DRAFT_KEY = "title-writing:start";
 const TITLE_MAX = 60;
-const SECONDS = [60, 90, 120, 180];
+/** A new work's episode plan: the server freezes exactly these into the work and its writing run. */
+const EPISODE_COUNTS = [1, 2, 3, 4, 5, 6];
+const SECONDS: ReadonlyArray<{ value: number; label: string }> = [{ value: 60, label: "约 1 分钟" }, { value: 90, label: "约 1.5 分钟" }];
 const PROVIDERS: readonly TitleWritingProviderKey[] = ["qwen", "openai", "deepseek"];
 
 /**
  * One start whose result is not confirmed yet: the frozen request exactly as sent, and the keys of both writes.
  * While it exists the form shows it and only it can be sent again; a new creation is a separate, explicit choice.
+ * version 2 is a record saved by the earlier page (no plan: three episodes, 30–180 seconds); it is replayed exactly as
+ * it was saved, so its work and run keep their original identity. version 3 carries the new work's episode plan.
  */
-interface PendingStart {
+interface PendingStartV2 {
   version: 2;
   request: StartBody & { settings: { episodeSeconds: number; style: string } };
   projectKey: string;
@@ -34,16 +38,33 @@ interface PendingStart {
   runKey: string;
 }
 
+interface PendingStartV3 {
+  version: 3;
+  plan: { episodeCount: number; targetEpisodeSeconds: number };
+  request: StartBody & { settings: { episodeCount: number; episodeSeconds: number; style: string } };
+  projectKey: string;
+  projectId: string | null;
+  runKey: string;
+}
+
+type PendingStart = PendingStartV2 | PendingStartV3;
+
 function isPendingStart(value: unknown): value is PendingStart {
   if (!value || typeof value !== "object") return false;
-  const draft = value as Partial<PendingStart>;
-  const request = draft.request as Partial<PendingStart["request"]> | undefined;
-  return draft.version === 2 && typeof draft.projectKey === "string" && typeof draft.runKey === "string"
+  const draft = value as Partial<PendingStartV3> & { version?: unknown };
+  const request = draft.request as Partial<PendingStartV3["request"]> | undefined;
+  const common = typeof draft.projectKey === "string" && typeof draft.runKey === "string"
     && (draft.projectId === null || typeof draft.projectId === "string")
     && !!request && typeof request.title === "string" && !!request.settings
     && typeof request.settings.episodeSeconds === "number" && typeof request.settings.style === "string"
     && (request.providerKey === undefined || PROVIDERS.includes(request.providerKey))
     && (request.model === undefined || typeof request.model === "string");
+  if (!common) return false;
+  if ((value as { version?: unknown }).version === 2) return true;
+  const plan = draft.plan;
+  return draft.version === 3 && !!plan && EPISODE_COUNTS.includes(plan.episodeCount)
+    && SECONDS.some((item) => item.value === plan.targetEpisodeSeconds)
+    && request.settings!.episodeCount === plan.episodeCount && request.settings!.episodeSeconds === plan.targetEpisodeSeconds;
 }
 
 function readPendingStart(): PendingStart | null {
@@ -89,14 +110,33 @@ function clearPendingStart(draft: PendingStart): void {
 
 const NOT_SAVED = "浏览器没能保存这次请求的标识（会话存储不可用或已满），为避免重复创建作品或重复开始创作，没有发送请求。可以换用普通窗口后再试。";
 
-function startError(caught: unknown): string {
+/** Normal requests and the hard cap of a run of n episodes, as the server counts them (contracts). */
+function callsFor(episodeCount: number): { required: number; cap: number } {
+  return { required: titleWritingRequiredCalls(episodeCount), cap: titleWritingCallCap(episodeCount) };
+}
+
+/**
+ * Creating the work and its writing run are separate writes. A refusal of this attempt does not settle an earlier
+ * lost receipt: only the quota refusal (after the server's idempotency lookup) proves no new run or call this time.
+ */
+function startError(caught: unknown, projectCreated: boolean): string {
+  const work = projectCreated ? "作品已经创建，可以在作品列表里找到。" : "";
+  const previous = "此前未确认的请求可能已经执行，请先查看进度；重试仍会使用原请求标识。";
   if (caught instanceof TitleWritingError) {
     const missing = Array.isArray(caught.details?.missing) ? (caught.details.missing as string[]).join("、") : "";
-    if (caught.code === "TITLE_WRITING_FORBIDDEN") return "操作者令牌不正确，没有启动任何调用。改正令牌后可以重试上次请求。";
-    if (caught.code === "TITLE_WRITING_PROVIDER_UNCONFIGURED") return `所选模型服务没有配置完整${missing ? `（缺少 ${missing}）` : ""}，没有启动任何调用。`;
-    if (caught.status > 0 && caught.status < 500) return `${caught.detail} 上次请求没有被受理。`;
+    if (caught.code === "TITLE_WRITING_FORBIDDEN") return `${work}操作者令牌不正确，本次请求没有被受理。${previous}改正令牌后可以重试上次请求。`;
+    if (caught.code === "TITLE_WRITING_PROVIDER_UNCONFIGURED") return `${work}所选模型服务没有配置完整${missing ? `（缺少 ${missing}）` : ""}，本次请求没有被受理。${previous}`;
+    if (caught.code === "TITLE_WRITING_DAILY_QUOTA_LOW") {
+      const required = Number(caught.details?.requiredCalls);
+      const remaining = Number(caught.details?.remainingCalls);
+      const counts = Number.isFinite(required) && Number.isFinite(remaining) ? `最近 24 小时还剩 ${String(remaining)} 次调用，这次创作正常需要 ${String(required)} 次。` : "";
+      return `${work}${counts}额度不够，本次请求未创建新任务，也未发出模型调用。可以以后再试，或放弃上次请求改选更少的集数。`;
+    }
+    if (caught.status > 0 && caught.status < 500) return `${work}${caught.detail} 本次请求没有被受理。${previous}`;
   }
-  if (caught instanceof ApiError && caught.status > 0 && caught.status < 500) return `作品没有创建：${caught.detail}。上次请求没有被受理。`;
+  if (caught instanceof ApiError && caught.status > 0 && caught.status < 500) {
+    return `本次创建作品请求没有被受理：${caught.detail}。此前未确认的请求可能已经执行，请先查看作品列表；重试仍会使用原请求标识。`;
+  }
   return "没有确认是否已经启动（网络或服务异常）。剧名和设置已保留。可以先查看进度，或重试上次请求：重试会使用同一个请求标识。";
 }
 
@@ -105,6 +145,7 @@ export function TitleWritingStart() {
   const [options, setOptions] = useState<TitleWritingOptionsView | null>(null);
   const [optionsLoaded, setOptionsLoaded] = useState(false);
   const [title, setTitle] = useState("");
+  const [episodeCount, setEpisodeCount] = useState(3);
   const [seconds, setSeconds] = useState(90);
   const [style, setStyle] = useState("");
   const [providerKey, setProviderKey] = useState<TitleWritingProviderKey | "">("");
@@ -125,6 +166,7 @@ export function TitleWritingStart() {
     setPending(draft);
     if (!draft) return;
     setTitle(draft.request.title);
+    setEpisodeCount(draft.version === 3 ? draft.plan.episodeCount : 3);
     setSeconds(draft.request.settings.episodeSeconds);
     setStyle(draft.request.settings.style);
     setProviderKey(draft.request.providerKey ?? "");
@@ -149,7 +191,10 @@ export function TitleWritingStart() {
         setProviderKey(normalized.defaultProvider);
         setModel(normalized.providers.find((item) => item.providerKey === normalized.defaultProvider)?.defaultModel ?? "");
       }
-      if (normalized?.defaults) setSeconds(normalized.defaults.episodeSeconds);
+      if (normalized?.episodePlan) {
+        setEpisodeCount(normalized.episodePlan.defaultEpisodes);
+        setSeconds(normalized.episodePlan.defaultSeconds);
+      }
     }).catch(() => {
       if (alive) setOptions(null);
     }).finally(() => {
@@ -159,6 +204,9 @@ export function TitleWritingStart() {
   }, []);
 
   const unavailable = optionsLoaded ? optionsUnavailableReason(options) : null;
+  // A new work needs the episode plan storage; a restored request from the earlier page has no plan and does not.
+  const planUnavailable = optionsLoaded && options && !unavailable && options.episodePlanReady !== true
+    ? "集数和时长设置还没有在服务器上就绪（数据库迁移尚未执行），暂时不能用 AI 一键创作新作品。可以先手动创作。" : null;
   const readyProviders = options?.providers.filter((item) => item.ready) ?? [];
   const chosen = readyProviders.find((item) => item.providerKey === providerKey) ?? null;
   const locked = busy || pending !== null;
@@ -181,8 +229,9 @@ export function TitleWritingStart() {
     let current = draft;
     try {
       if (!current.projectId) {
-        const created = await studio.write<unknown>({ path: "/projects", body: { title: current.request.title, premise: "" },
-          idempotencyKey: current.projectKey });
+        // The work carries the plan; a record from the earlier page creates the work exactly as it would have then.
+        const body = current.version === 3 ? { title: current.request.title, premise: "", ...current.plan } : { title: current.request.title, premise: "" };
+        const created = await studio.write<unknown>({ path: "/projects", body, idempotencyKey: current.projectKey });
         if (!live()) return;
         const id = created.body && typeof created.body === "object" ? (created.body as { id?: unknown }).id : undefined;
         if (!isEntityId(id)) throw new TitleWritingUnconfirmedError(created.status);
@@ -206,7 +255,7 @@ export function TitleWritingStart() {
       showPending(null);
       window.location.assign(`/projects/${projectId}/writing`);
     } catch (caught) {
-      if (live()) setError(startError(caught));
+      if (live()) setError(startError(caught, current.projectId !== null));
     } finally {
       if (live()) {
         operation.current = null;
@@ -215,10 +264,14 @@ export function TitleWritingStart() {
     }
   }
 
-  function checkReady(): boolean {
+  function checkReady(draft: PendingStart | null): boolean {
     if (!optionsLoaded) return false;
     if (unavailable) {
       setError(unavailable);
+      return false;
+    }
+    if (planUnavailable && draft?.version !== 2) {
+      setError(planUnavailable);
       return false;
     }
     if (token.trim().length === 0) {
@@ -241,13 +294,14 @@ export function TitleWritingStart() {
       titleRef.current?.focus();
       return;
     }
-    if (!checkReady()) return;
+    if (!checkReady(null)) return;
     const draft: PendingStart = {
-      version: 2,
+      version: 3,
+      plan: { episodeCount, targetEpisodeSeconds: seconds },
       request: {
         title: trimmed,
         ...(chosen ? { providerKey: chosen.providerKey, ...(model || chosen.defaultModel ? { model: model || chosen.defaultModel! } : {}) } : {}),
-        settings: { episodeSeconds: seconds, style: style.trim() },
+        settings: { episodeCount, episodeSeconds: seconds, style: style.trim() },
       },
       projectKey: crypto.randomUUID(),
       projectId: null,
@@ -264,7 +318,7 @@ export function TitleWritingStart() {
   /** Replays the unconfirmed request exactly: same body, same project key, same run key. */
   async function retry() {
     const draft = pendingRef.current;
-    if (operation.current || !draft || !checkReady()) return;
+    if (operation.current || !draft || !checkReady(draft)) return;
     await send(draft);
   }
 
@@ -280,7 +334,7 @@ export function TitleWritingStart() {
   return (
     <section className={styles.startCard} aria-labelledby="ai-start-title">
       <h2 id="ai-start-title" className={styles.cardTitle}>AI 一键创作</h2>
-      <p className={styles.cardIntro}>只填剧名。AI 会补全题材、人物、梗概、故事走向、分集大纲和每一集剧本，结果存为可修改的草稿。</p>
+      <p className={styles.cardIntro}>只填剧名，选好集数和每集时长。AI 会补全题材、人物、梗概、故事走向、分集大纲和每一集剧本，结果存为可修改的草稿。</p>
       {pending && !busy ? (
         <div className={styles.notice} role="status">
           <p>上次的启动请求还没有确认结果。下面是当时提交的剧名和设置，重试会原样重放它，使用同一个请求标识。</p>
@@ -301,14 +355,33 @@ export function TitleWritingStart() {
         disabled={locked}
         onChange={(event) => setTitle(event.target.value)}
       />
+      {pending?.version === 2 ? (
+        <p className={styles.fixed}>集数：3 集 · 每集约 {pending.request.settings.episodeSeconds} 秒（上次请求来自旧版页面，按原样重放）</p>
+      ) : (
+        <div className={styles.planGrid}>
+          <div>
+            <label className={styles.label} htmlFor="ai-episodes">集数</label>
+            <select id="ai-episodes" className={styles.input} value={episodeCount} disabled={locked} onChange={(event) => setEpisodeCount(Number(event.target.value))}>
+              {EPISODE_COUNTS.map((value) => <option key={value} value={value}>{value} 集</option>)}
+            </select>
+          </div>
+          <div>
+            <label className={styles.label} htmlFor="ai-seconds">每集时长</label>
+            <select id="ai-seconds" className={styles.input} value={seconds} disabled={locked} onChange={(event) => setSeconds(Number(event.target.value))}>
+              {SECONDS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+            </select>
+          </div>
+        </div>
+      )}
+      {pending?.version !== 2 ? (
+        <p className={styles.helper}>
+          正常需要 {callsFor(episodeCount).required} 次模型调用，这次创作最多 {callsFor(episodeCount).cap} 次（上限，不会自动重试）。
+          每集时长是写作目标，用来控制剧本篇幅，不代表成片已经达到这个长度。作品创建后集数不能再改。
+        </p>
+      ) : null}
       <details className={styles.more} open={pending !== null || undefined}>
         <summary>更多设置（可不填）</summary>
         <div className={styles.moreGrid}>
-          <p className={styles.fixed}>集数：3 集（当前试制范围固定）</p>
-          <label className={styles.label} htmlFor="ai-seconds">每集时长</label>
-          <select id="ai-seconds" className={styles.input} value={seconds} disabled={locked} onChange={(event) => setSeconds(Number(event.target.value))}>
-            {(SECONDS.includes(seconds) ? SECONDS : [...SECONDS, seconds]).map((value) => <option key={value} value={value}>约 {value} 秒</option>)}
-          </select>
           <label className={styles.label} htmlFor="ai-style">风格</label>
           <input id="ai-style" className={styles.input} maxLength={40} placeholder="不填则由 AI 根据剧名判断" value={style}
             disabled={locked} onChange={(event) => setStyle(event.target.value)} />
@@ -345,10 +418,11 @@ export function TitleWritingStart() {
         <h3 id="ai-config-title" className={styles.configTitle}>配置与权限</h3>
         {!optionsLoaded ? <p className={styles.helper} role="status">正在读取服务端配置…</p> : null}
         {unavailable ? <p className={styles.warning} role="status">{unavailable}</p> : null}
+        {planUnavailable ? <p className={styles.warning} role="status">{planUnavailable}</p> : null}
         {options && !unavailable ? (
           <p className={styles.helper}>
-            服务端已配置：{readyProviders.map((item) => item.label).join("、")}。每天最多 {options.maxCallsPerDay} 次模型调用，
-            每次创作最多 {options.callCapPerRun} 次。费用以服务商账单为准，本页不估算金额。
+            服务端已配置：{readyProviders.map((item) => item.label).join("、")}。最近 24 小时最多 {options.maxCallsPerDay} 次模型调用；
+            开始前剩余次数少于正常需要的次数时，不会创建任务。费用以服务商账单为准，本页不估算金额。
           </p>
         ) : null}
         <label className={styles.label} htmlFor="ai-token">操作者令牌</label>

@@ -21,7 +21,7 @@ function view(projectId: string, title: string, overrides: Partial<TitleWritingR
     attemptNo: index === 0 ? 1 : 0, errorCode: null, output: null, text: null, scriptSave: stepKey.startsWith("episode:") ? "pending" : null,
     scriptRevisionId: null }));
   return {
-    runId: projectId === PA ? RUN_A : RUN_B, projectId, title, settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey: "qwen",
+    runId: projectId === PA ? RUN_A : RUN_B, projectId, title, inputVersion: 1, episodeCount: 3, settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey: "qwen",
     model: "q-1", state: "running", errorCode: null, cancelRequested: false, callCap: 8, callsUsed: 1, storySave: "pending", storyRevisionId: null,
     storyText: null, steps, calls: [], createdAt: "2026-10-08T00:00:00Z", updatedAt: "2026-10-08T00:00:00Z", ...overrides,
   };

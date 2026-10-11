@@ -30,11 +30,15 @@ function setup(options: {
   storageReady?: boolean;
   override?: (step: FixtureStep, attempt: number) => { status: number; body: unknown } | "hang" | "throw" | undefined;
   operatorToken?: string | null;
+  /** Episode plans by project; a project without one is a three-episode project with no target. */
+  plans?: Record<string, { episodeCount: number; targetEpisodeSeconds: number }>;
+  planReady?: boolean;
 } = {}) {
   const store = new InMemoryTitleWritingStore();
   store.ready = options.storageReady ?? true;
-  store.addProject(WS, P1);
-  store.addProject(WS, P2);
+  const plans = options.plans ?? {};
+  store.addProject(WS, P1, plans[P1]?.episodeCount ?? 3);
+  store.addProject(WS, P2, plans[P2]?.episodeCount ?? 3);
   const seen: FixtureExchange[] = [];
   const providers = titleWritingProviderConfigs(options.env ?? CONFIGURED);
   const transport: WritingTransport = fixtureChatTransport("夜班证词", { seen, ...(options.override ? { override: options.override } : {}) });
@@ -54,6 +58,11 @@ function setup(options: {
         if (projectId !== P1 && projectId !== P2) throw new PersistenceError("NOT_FOUND", "Project not found");
         return { id: projectId } as never;
       },
+      getProjectEpisodePlan: async (_workspaceId: string, projectId: string) => {
+        if (projectId !== P1 && projectId !== P2) throw new PersistenceError("NOT_FOUND", "Project not found");
+        return plans[projectId] ?? { episodeCount: 3, targetEpisodeSeconds: null };
+      },
+      episodePlanReady: async () => options.planReady ?? true,
     },
     maxCallsPerDay: 30,
     maxActiveRuns: 1,

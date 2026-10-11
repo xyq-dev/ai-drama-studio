@@ -22,6 +22,7 @@ const OPTIONS: TitleWritingOptionsView = {
   enabled: true, code: "TITLE_WRITING_READY", storageReady: true, operatorTokenRequired: true, defaultProvider: "qwen",
   providers: [{ providerKey: "qwen", label: "千问", ready: true, models: ["q-1"], defaultModel: "q-1", missing: [] }],
   maxCallsPerDay: 30, maxActiveRuns: 1, callCapPerRun: 8, billing: "unknown", defaults: { episodeCount: 3, episodeSeconds: 90, style: "" },
+    episodePlan: { minEpisodes: 1, maxEpisodes: 6, defaultEpisodes: 3, secondsChoices: [60, 90], defaultSeconds: 90 }, episodePlanReady: true,
 };
 
 interface Call { method: string; url: string; key: string; body: unknown }
@@ -270,6 +271,44 @@ describe("F2: only a receipt that proves the result confirms a start", () => {
     fireEvent.click(screen.getByRole("button", { name: "重试上次请求" }));
     await waitFor(() => expect(assign).toHaveBeenCalledWith(`/projects/${P_A}/writing`));
     expect(stored()).toBeNull();
+  });
+
+  it.each([
+    [403, "TITLE_WRITING_FORBIDDEN"],
+    [409, "IDEMPOTENCY_KEY_REUSED"],
+  ])("a %i replay refusal does not deny a previously accepted run with a lost receipt (%s)", async (status, code) => {
+    const acceptedRuns = new Set<string>();
+    let firstRunAnswer = true;
+    const s = server((call) => {
+      if (call.url === "/api/v1/projects") return json({ id: P_A }, 201);
+      if (firstRunAnswer) {
+        firstRunAnswer = false;
+        acceptedRuns.add(call.key);
+        return Promise.reject(new TypeError("accepted, but the receipt was lost"));
+      }
+      return json({ error: { code, message: "这次请求被拒绝。" } }, status);
+    });
+    const { button } = await mount();
+    fireEvent.change(screen.getByLabelText("剧名"), { target: { value: "甲" } });
+    fireEvent.click(button);
+    expect((await screen.findByRole("alert")).textContent).toContain(UNSURE);
+    const kept = stored()!;
+
+    fireEvent.click(screen.getByRole("button", { name: "重试上次请求" }));
+    await waitFor(() => expect(runPosts(s.calls)).toHaveLength(2));
+    await waitFor(() => expect((screen.getByRole("button", { name: "重试上次请求" }) as HTMLButtonElement).disabled).toBe(false));
+    const alert = screen.getByRole("alert").textContent ?? "";
+    expect(alert).not.toMatch(/空作品|任务没有创建|没有发出任何模型调用|没有启动任何调用|上次请求没有被受理/);
+    expect(alert).toContain("此前未确认的请求可能已经执行");
+    expect(alert).toContain("查看进度");
+    expect(stored()).toEqual(kept);
+    expect(runPosts(s.calls).map((call) => call.key)).toEqual([kept.runKey, kept.runKey]);
+    expect(runPosts(s.calls)[1]!.body).toEqual(runPosts(s.calls)[0]!.body);
+    await settle();
+    expect(projectPosts(s.calls)).toHaveLength(1);
+    expect(runPosts(s.calls)).toHaveLength(2);
+    expect(acceptedRuns.size).toBe(1);
+    expect(assign).not.toHaveBeenCalled();
   });
 
   it("an in-memory idempotent server: replaying an unconfirmed start creates one project and one run, then a new start gets new keys", async () => {

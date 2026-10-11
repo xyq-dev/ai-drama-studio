@@ -14,6 +14,7 @@ import { ApiError, StudioClient } from "../lib/studio-client";
 import { createQwenWebClient } from "../lib/qwen-web-client";
 import {
   MEDIA_WORKFLOW_TYPES,
+  projectEpisodeNumbers,
   useProjectBase,
   type Aggregate,
   type EpisodeRecord,
@@ -299,8 +300,8 @@ export function Workbench({ projectId }: { projectId: string }) {
           <button className="mb-3 text-sm underline lg:hidden" type="button" onClick={() => setNavOpen(false)}>关闭目录</button>
           <p className="px-2 pt-2 text-xs text-neutral-600">故事与剧本</p>
           <button className="block w-full rounded px-2 py-2 text-left hover:bg-white" type="button" aria-current={focus.kind === "story" ? "page" : undefined} onClick={() => choose({ kind: "story" })}>故事</button>
-          <p className="px-2 pt-3 text-xs text-neutral-600">当前试制范围固定为三集</p>
-          {[1, 2, 3].map((episodeNo) => {
+          <p className="px-2 pt-3 text-xs text-neutral-600">本作品共 {projectEpisodeNumbers(project).length} 集</p>
+          {projectEpisodeNumbers(project).map((episodeNo) => {
             const episode = episodes.find((item) => item.episodeNo === episodeNo);
             return (
               <div key={episodeNo}>
@@ -322,7 +323,7 @@ export function Workbench({ projectId }: { projectId: string }) {
           <p className="mt-4 px-2 text-xs text-neutral-600">分镜与素材</p>
           <p className="px-2 py-2 text-sm text-neutral-600">打开某一集后，在正文里进入场景和镜头。这里不提供可保存的集数、风格或时长选项。</p>
           <p className="mt-4 px-2 text-xs text-neutral-600">合成与导出</p>
-          {[1, 2, 3].map((episodeNo) => {
+          {projectEpisodeNumbers(project).map((episodeNo) => {
             const episode = episodes.find((item) => item.episodeNo === episodeNo);
             if (!episode) return null;
             return (
@@ -459,6 +460,9 @@ export function StoryPane(props: {
           });
         }}
         onSaved={props.onSaved}
+        assistantUnavailableReason={projectEpisodeNumbers(props.project).length !== 3
+          ? "故事编剧助手目前仅支持三集作品。当前作品的故事可以在下方直接修改并保存新版本。"
+          : undefined}
         assistant={{
           mode: "story",
           episodeNo: null,
@@ -578,6 +582,9 @@ export function ScriptPane(props: {
               ifMatch: draft.ifMatch ?? undefined,
             });
           }}
+          assistantUnavailableReason={episode.episodeNo > 3
+            ? "分集编剧助手目前仅支持第 1–3 集。这一集的剧本可以在下方直接修改并保存新版本。"
+            : undefined}
           assistant={{
             mode: "episode",
             episodeNo: episode.episodeNo,
@@ -747,7 +754,7 @@ function SceneList(props: {
   return (
     <section className="creator-section rounded-lg bg-white p-4">
       <h2 className="font-medium">场景</h2>
-      <p className="mt-1 text-sm text-neutral-600">Mock 生成场景处理固定三集。前置条件由服务端判断：来源剧本需已通过且为 CURRENT。不会覆盖已经占用的 ordinal 1，也不是一键重新生成。</p>
+      <p className="mt-1 text-sm text-neutral-600">Mock 生成场景一次处理本作品的全部各集。前置条件由服务端判断：来源剧本需已通过且为 CURRENT。不会覆盖已经占用的 ordinal 1，也不是一键重新生成。</p>
       {props.page?.items.length === 0 ? <p className="mt-3 text-sm">这一集还没有场景</p> : null}
       <ul className="mt-3 space-y-2">
         {props.page?.items.map((scene) => (
@@ -872,6 +879,7 @@ function ContentEditor(props: {
   onStatus: (value: string) => void;
   onSubmit: (content: Record<string, unknown>, draft: { idempotencyKey: string; ifMatch: number | null }, sourceId: string | null) => Promise<void>;
   onSaved: () => Promise<void>;
+  assistantUnavailableReason?: string;
   assistant?: {
     mode: "story" | "episode";
     episodeNo: number | null;
@@ -1054,7 +1062,7 @@ function ContentEditor(props: {
   return (
     <form className="creator-editor-card rounded-lg bg-white p-4" onSubmit={(event) => { event.preventDefault(); void save(false); }}>
       <h2 className="font-medium">{props.title}</h2>
-      {props.assistant ? (
+      {props.assistantUnavailableReason ? <p className="mt-2 text-sm" role="status">{props.assistantUnavailableReason}</p> : props.assistant ? (
         <WritingAssistant
           mode={props.assistant.mode}
           projectId={props.projectId}
@@ -2760,7 +2768,7 @@ export function TaskDrawer(props: {
     <div className="creator-task-drawer fixed inset-y-0 right-0 z-30 w-full max-w-md overflow-auto bg-white p-4 shadow-xl">
       <button className="text-sm underline" type="button" onClick={props.onClose}>关闭任务</button>
       <h2 className="mt-3 font-medium">Mock 文本任务</h2>
-      <p className="mt-2 text-sm">Mock 生成场景和 Mock 生成镜头都只处理固定三集，不是一键重新生成，也不会覆盖已占用的 ordinal 1。场景要求三集剧本均已通过且为 CURRENT；镜头还要求对应场景已通过且为 CURRENT。服务端拒绝时以返回原因为准。返回 202 只表示受理，结果从任务和实体查询读取。</p>
+      <p className="mt-2 text-sm">Mock 生成场景和 Mock 生成镜头一次处理本作品的全部各集（每集一个模板场景和镜头，不是按剧本真实拆分），不是一键重新生成，也不会覆盖已占用的 ordinal 1。场景要求每一集剧本均已通过且为 CURRENT；镜头还要求对应场景已通过且为 CURRENT。服务端拒绝时以返回原因为准。返回 202 只表示受理，结果从任务和实体查询读取。</p>
       <div className="mt-3 flex gap-2">
         <button className="rounded bg-red-700 px-3 py-2 text-white" type="button" onClick={() => void start("mock-scenes")}>Mock 生成场景</button>
         <button className="rounded bg-red-700 px-3 py-2 text-white" type="button" onClick={() => void start("mock-shots")}>Mock 生成镜头</button>

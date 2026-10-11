@@ -1,10 +1,12 @@
 import {
   EPISODE_DRAFT_SCHEMA,
   EPISODE_OUTLINE_SCHEMA,
+  EPISODE_OUTLINE_SCHEMA_V2,
   TITLE_CONCEPT_SCHEMA,
   type EpisodeDraftCandidate,
   type EpisodeOutline,
   type TitleConcept,
+  type TitleWritingStepKey,
 } from "@ai-drama/contracts";
 import type { WritingTransport } from "./text-writing";
 
@@ -34,12 +36,15 @@ export function fixtureConcept(title: string): TitleConcept {
   };
 }
 
-export function fixtureOutline(): EpisodeOutline {
+const OUTLINE_TITLES = ["改过的监控", "雨夜追踪", "当众说出真相", "旧账本", "天台对峙", "清晨的证词"];
+
+/** The v1 outline (three episodes), or with count the v2 outline of exactly that many episodes. */
+export function fixtureOutline(count?: number): EpisodeOutline {
   return {
-    schema: EPISODE_OUTLINE_SCHEMA,
-    episodes: [1, 2, 3].map((episodeNo) => ({
-      episodeNo: episodeNo as 1 | 2 | 3,
-      title: ["改过的监控", "雨夜追踪", "当众说出真相"][episodeNo - 1]!,
+    schema: count === undefined ? EPISODE_OUTLINE_SCHEMA : EPISODE_OUTLINE_SCHEMA_V2,
+    episodes: Array.from({ length: count ?? 3 }, (_, index) => index + 1).map((episodeNo) => ({
+      episodeNo,
+      title: OUTLINE_TITLES[episodeNo - 1]!,
       entryState: `第 ${episodeNo} 集开场时林夏的处境。`,
       goal: "林夏要找到改监控的人。",
       action: "她和周岩分头调查。",
@@ -50,10 +55,10 @@ export function fixtureOutline(): EpisodeOutline {
   };
 }
 
-export function fixtureEpisode(episodeNo: 1 | 2 | 3): EpisodeDraftCandidate {
+export function fixtureEpisode(episodeNo: number): EpisodeDraftCandidate {
   return {
     schema: EPISODE_DRAFT_SCHEMA,
-    episodeNo,
+    episodeNo: episodeNo as EpisodeDraftCandidate["episodeNo"],
     title: `第 ${episodeNo} 集`,
     screenplay: `场 1 便利店 夜\n林夏盯着监控屏幕。\n林夏：这不是我。\n（第 ${episodeNo} 集）`,
     scenes: [{ heading: "便利店 夜", action: "林夏发现监控被改。", dialogue: "林夏：这不是我。", sound: "冰柜嗡嗡声" }],
@@ -61,15 +66,22 @@ export function fixtureEpisode(episodeNo: 1 | 2 | 3): EpisodeDraftCandidate {
   };
 }
 
-export type FixtureStep = "concept" | "outline" | "episode:1" | "episode:2" | "episode:3";
+export type FixtureStep = TitleWritingStepKey;
 
-/** Which step a prompt belongs to, read from the provider-neutral prompt text. */
+/** Which step a prompt belongs to, read from the provider-neutral prompt text (v1 or v2). */
 export function fixtureStepOf(userPrompt: string): FixtureStep {
   if (userPrompt.includes("只根据剧名完成故事策划")) return "concept";
   if (userPrompt.includes("写分集大纲")) return "outline";
-  const match = /写第 (\d) 集完整剧本/.exec(userPrompt);
-  if (match?.[1] === "1" || match?.[1] === "2" || match?.[1] === "3") return `episode:${match[1]}` as FixtureStep;
+  const match = /写第 ([1-6]) 集(?:（共 [1-6] 集）)?完整剧本/.exec(userPrompt);
+  if (match?.[1]) return `episode:${match[1]}` as FixtureStep;
   throw new Error("unrecognized prompt");
+}
+
+/** The episode count a v2 outline prompt asks for, or undefined for a v1 prompt. */
+export function fixtureOutlineCountOf(userPrompt: string): number | undefined {
+  if (!userPrompt.includes(EPISODE_OUTLINE_SCHEMA_V2)) return undefined;
+  const match = /episodes 正好 ([1-6]) 项/.exec(userPrompt);
+  return match?.[1] ? Number(match[1]) : undefined;
 }
 
 export interface FixtureExchange {
@@ -104,7 +116,7 @@ export function fixtureChatTransport(title: string, options: {
       });
     }
     const answer = custom ?? { status: 200, body: chatAnswer(step === "concept" ? fixtureConcept(title)
-      : step === "outline" ? fixtureOutline() : fixtureEpisode(Number(step.slice(-1)) as 1 | 2 | 3)) };
+      : step === "outline" ? fixtureOutline(fixtureOutlineCountOf(user)) : fixtureEpisode(Number(step.slice(-1)))) };
     return {
       status: answer.status,
       headers: { get: (name: string) => name.toLowerCase() === "x-request-id" ? `fixture-${step}-${String(attempt)}` : null },

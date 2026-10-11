@@ -9,9 +9,12 @@ import {
   errorText,
   hasUncertain,
   runHeadline,
+  scriptProgress,
   scriptsAwaitApproval,
+  stepEpisodeNo,
   stepLabel,
   stepStateText,
+  targetText,
   uncertainCallIds,
   type TitleWritingRunView,
 } from "../lib/title-writing-client";
@@ -310,7 +313,10 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
               <h1 className={styles.heading}>《{run.title}》</h1>
               <p className={styles.headline} role="status" aria-live="polite">{runHeadline(run)}</p>
               <p className={styles.helper}>
-                模型：{PROVIDER_LABELS[run.providerKey] ?? run.providerKey} · {run.model} · 已调用 {run.callsUsed} 次（本次上限 {run.callCap} 次）。
+                共 {run.episodeCount ?? 3} 集 · 每集目标{targetText(run.settings.episodeSeconds)}（写作目标，不代表成片时长）。
+              </p>
+              <p className={styles.helper}>
+                模型：{PROVIDER_LABELS[run.providerKey] ?? run.providerKey} · {run.model} · 已调用 {run.callsUsed} 次（本次上限 {run.callCap} 次，不是自动重试次数）。
                 费用以服务商账单为准，本页不估算金额。
               </p>
               {errorText(run.errorCode) ? <p className={styles.warning}>{errorText(run.errorCode)}</p> : null}
@@ -387,6 +393,11 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
             {episodes.some((step) => step.text) ? (
               <section className={styles.card} aria-labelledby="scripts-title">
                 <h2 id="scripts-title" className={styles.sectionTitle}>分集剧本</h2>
+                <p className={styles.helper} role="status">
+                  本次创作已生成 {scriptProgress(run).generated} / {scriptProgress(run).total} 集剧本；已写入作品 {scriptProgress(run).placed} / {scriptProgress(run).total} 集
+                  {scriptProgress(run).conflicts > 0 ? `，${String(scriptProgress(run).conflicts)} 集已有剧本没有覆盖` : ""}。
+                  {scriptProgress(run).placed < scriptProgress(run).total ? "只有写入作品的剧本才能在作品里修改。" : ""}
+                </p>
                 {scriptsAwaitApproval(run) ? (
                   <div className={styles.notice}>
                     <p>剧本已经生成并保存在这次创作里。按审核规则，故事通过审核后才能把剧本写入各集草稿；写入时不会覆盖已有剧本。</p>
@@ -409,7 +420,7 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
                       {step.scriptSave === "saved" ? " · 已写入剧本草稿" : step.scriptSave === "conflict" ? " · 该集已有剧本，没有覆盖" : ""}
                     </summary>
                     <div className={styles.scriptText}>{step.text}</div>
-                    {step.scriptSave === "saved" ? <a className={styles.textLink} href={`/projects/${projectId}?focus=script&episode=${step.stepKey.slice(-1)}`}>去修改这一集剧本</a> : null}
+                    {step.scriptSave === "saved" ? <a className={styles.textLink} href={`/projects/${projectId}?focus=script&episode=${String(stepEpisodeNo(step.stepKey))}`}>去修改这一集剧本</a> : null}
                   </details>
                 ) : null)}
               </section>

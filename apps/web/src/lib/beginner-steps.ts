@@ -1,4 +1,4 @@
-import type { Aggregate, EpisodeRecord, StoryRevision, WorkflowRun } from "./project-base";
+import { projectEpisodeNumbers, type Aggregate, type EpisodeRecord, type StoryRevision, type WorkflowRun } from "./project-base";
 
 /**
  * The beginner flow's five steps, derived only from server facts: review and freshness of revisions, episode script
@@ -41,10 +41,10 @@ export const STEP_STATE_MARK: Record<StepState, string> = {
 };
 
 export const STEPS: ReadonlyArray<{ key: StepKey; no: number; title: string; doing: string; decide: string; result: string }> = [
-  { key: "story", no: 1, title: "定故事", doing: "把你的想法整理成一个完整故事：主角、核心冲突和三集走向。",
-    decide: "故事讲什么、保留哪些内容。", result: "一版经你确认的故事，三集剧本从它出发。" },
+  { key: "story", no: 1, title: "定故事", doing: "把你的想法整理成一个完整故事：主角、核心冲突和各集走向。",
+    decide: "故事讲什么、保留哪些内容。", result: "一版经你确认的故事，各集剧本从它出发。" },
   { key: "script", no: 2, title: "看剧本", doing: "逐集阅读剧本：动作、对白和结尾。",
-    decide: "每一集是否按这个版本拍。", result: "三集经你确认的剧本。" },
+    decide: "每一集是否按这个版本拍。", result: "每一集经你确认的剧本。" },
   { key: "cast", no: 3, title: "定人物", doing: "确认角色和场地的文字设定，需要时为角色准备参考图。",
     decide: "人物长什么样、是什么性格，故事发生在哪里。", result: "经你确认的角色与场地设定。" },
   { key: "sample", no: 4, title: "试一段", doing: "先试看一个代表性镜头，检查人物、声音、字幕和节奏。",
@@ -105,6 +105,8 @@ export interface ListFacts<T> {
 
 export interface BeginnerFacts {
   story: StoryRevision | null;
+  /** The work's episode count (its plan); three when not known. Episodes 1..N are the ones every step covers. */
+  episodeCount?: number;
   episodes: EpisodeRecord[];
   characters: ListFacts<Aggregate>;
   locations: ListFacts<Aggregate>;
@@ -149,6 +151,11 @@ export function composeRunning(runs: readonly WorkflowRun[]): boolean {
   return runs.some((run) => run.jobs.some((job) => job.kind === "MEDIA_COMPOSE" && RUNNING.has(job.state)));
 }
 
+/** Episode numbers 1..N of the work the facts describe. */
+export function episodeNumbers(facts: Pick<BeginnerFacts, "episodeCount">): number[] {
+  return projectEpisodeNumbers({ ...(facts.episodeCount !== undefined ? { episodeCount: facts.episodeCount } : {}) });
+}
+
 export function episodeSampleState(facts: BeginnerFacts, episodeNo: number): StepState {
   if (scriptState(facts.episodes.find((item) => item.episodeNo === episodeNo)) !== "done") return "not_started";
   const candidates = facts.media[episodeNo]?.candidates;
@@ -160,7 +167,7 @@ export function episodeSampleState(facts: BeginnerFacts, episodeNo: number): Ste
 }
 
 export function sampleState(facts: BeginnerFacts): StepState {
-  const ready = [1, 2, 3].filter((no) => scriptState(facts.episodes.find((item) => item.episodeNo === no)) === "done");
+  const ready = episodeNumbers(facts).filter((no) => scriptState(facts.episodes.find((item) => item.episodeNo === no)) === "done");
   if (ready.length === 0) return "not_started";
   const perEpisode = ready.map((no) => episodeSampleState(facts, no));
   if (perEpisode.includes("done")) return "done";
@@ -194,7 +201,7 @@ function listStates(list: ListFacts<Aggregate>): StepState[] {
 
 export function stepStates(facts: BeginnerFacts): Record<StepKey, StepState> {
   const story = facts.story ? revisionState(facts.story) : "not_started";
-  const scriptStates = [1, 2, 3].map((no) => scriptState(facts.episodes.find((item) => item.episodeNo === no)));
+  const scriptStates = episodeNumbers(facts).map((no) => scriptState(facts.episodes.find((item) => item.episodeNo === no)));
   const script = facts.episodes.length === 0 ? "not_started" : combine(scriptStates);
   const anyScript = scriptStates.includes("done");
   // Location problems count even before the first character exists.
@@ -202,7 +209,7 @@ export function stepStates(facts: BeginnerFacts): Record<StepKey, StepState> {
   if (facts.characters.read === "ok" && facts.characters.items.length === 0) castStates.push(anyScript ? "needs_input" : "not_started");
   const cast = combine(castStates);
   const sample = sampleState(facts);
-  const finals = [1, 2, 3].map((no) => episodeFinalState(facts, no));
+  const finals = episodeNumbers(facts).map((no) => episodeFinalState(facts, no));
   const open = finals.filter((state) => state !== "not_started" && state !== "done");
   const final: StepState = finals.every((state) => state === "done") ? "done"
     : open.length > 0 ? combine(open)
@@ -230,7 +237,7 @@ function episodic(step: StepKey): boolean {
 /** The first episode whose own state on this step still needs the user, or null when none does. */
 export function episodeNeedingWork(step: StepKey, facts: BeginnerFacts): number | null {
   if (!episodic(step)) return null;
-  return [1, 2, 3].find((no) => {
+  return episodeNumbers(facts).find((no) => {
     const state = episodeStepState(step, facts, no);
     return state !== "done" && state !== "not_started";
   }) ?? null;
@@ -244,7 +251,7 @@ export function episodeNeedingWork(step: StepKey, facts: BeginnerFacts): number 
 export function episodeForStep(step: StepKey, facts: BeginnerFacts): number {
   if (!episodic(step)) return 1;
   if (stepStates(facts)[step] === "done") {
-    return [1, 2, 3].find((no) => episodeStepState(step, facts, no) === "done") ?? 1;
+    return episodeNumbers(facts).find((no) => episodeStepState(step, facts, no) === "done") ?? 1;
   }
   return episodeNeedingWork(step, facts) ?? 1;
 }
@@ -262,7 +269,7 @@ export function episodeForAction(step: StepKey, facts: BeginnerFacts, shown: num
   const own = episodeStepState(step, facts, shown);
   if (global === "done") return own === "done" ? shown : episodeForStep(step, facts);
   if (own === global) return shown;
-  return [1, 2, 3].find((no) => episodeStepState(step, facts, no) === global) ?? shown;
+  return episodeNumbers(facts).find((no) => episodeStepState(step, facts, no) === global) ?? shown;
 }
 
 export type PrimaryTarget = "editor" | "review" | "next" | "tasks" | "candidates" | "compose" | "reload";

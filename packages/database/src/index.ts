@@ -171,6 +171,15 @@ export {
 } from "./provision-mock-sm";
 export { PostgresTitleWritingStore, TITLE_WRITING_MIGRATION, TITLE_WRITING_TABLES } from "./title-writing-store";
 export {
+  EPISODE_PLAN_COLUMNS,
+  EPISODE_PLAN_MIGRATION,
+  EpisodePlanStore,
+  LEGACY_EPISODE_PLAN,
+  episodePlanReadyIn,
+  projectEpisodePlanIn,
+  type ProjectEpisodePlan,
+} from "./episode-plan";
+export {
   TITLE_WRITING_ACCEPTANCE_NAME_PATTERN,
   checkTitleWritingAcceptanceEnv,
   verifyTitleWritingAcceptanceDatabase,

@@ -21,6 +21,12 @@ const CONFIGURED: TitleWritingProviderEnv = {
   DASHSCOPE_API_KEY: "sk-test-secret-abcdefghijkl", BAILIAN_BASE_URL: "https://dashscope.aliyuncs.com/compatible-mode/v1", TITLE_WRITING_QWEN_MODELS: "q-1",
 };
 const SETTINGS = { episodeCount: 3 as const, episodeSeconds: 90, style: "" };
+/** Projects without an episode plan: three episodes, no target, as every project before the plan existed. */
+const LEGACY_PROJECTS = {
+  getProject: async () => ({}) as never,
+  getProjectEpisodePlan: async () => ({ episodeCount: 3, targetEpisodeSeconds: null }),
+  episodePlanReady: async () => true,
+};
 
 function workspace(store: InMemoryTitleWritingStore, workspaceId: string, options: { enabled: boolean; env: TitleWritingProviderEnv; clock: () => Date }) {
   const seen: FixtureExchange[] = [];
@@ -29,7 +35,7 @@ function workspace(store: InMemoryTitleWritingStore, workspaceId: string, option
     maxCallsPerDay: 30, clock: options.clock });
   const service = new TitleWritingService({
     workspaceId, nodeEnv: "test", enabled: options.enabled, operatorToken: TOKEN, defaultProvider: null, providers, store, engine,
-    projects: { getProject: async () => ({}) as never }, maxCallsPerDay: 30, maxActiveRuns: 5, clock: options.clock, schedule: () => undefined,
+    projects: LEGACY_PROJECTS, maxCallsPerDay: 30, maxActiveRuns: 5, clock: options.clock, schedule: () => undefined,
   });
   return { service, seen, engine };
 }
@@ -121,7 +127,7 @@ describe("title writing maintenance stays inside its workspace", () => {
     const providers = titleWritingProviderConfigs(CONFIGURED);
     const engine = new TitleWritingEngine({ workspaceId: WB, store, providers, transport: fixtureChatTransport("x"), maxCallsPerDay: 30 });
     expect(() => new TitleWritingService({ workspaceId: WA, nodeEnv: "test", enabled: true, operatorToken: TOKEN, defaultProvider: null,
-      providers, store, engine, projects: { getProject: async () => ({}) as never }, maxCallsPerDay: 30, maxActiveRuns: 1 }))
+      providers, store, engine, projects: LEGACY_PROJECTS, maxCallsPerDay: 30, maxActiveRuns: 1 }))
       .toThrow("another workspace");
   });
 });

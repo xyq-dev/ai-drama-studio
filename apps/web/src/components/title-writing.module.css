@@ -86,6 +86,20 @@
   padding-bottom: 8px;
 }
 
+/* Episode count and per-episode target side by side; stacked on narrow screens. */
+.planGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+@media (max-width: 479px) {
+  .planGrid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+}
+
 .fixed {
   margin: 8px 0 0;
   color: var(--studio-muted);

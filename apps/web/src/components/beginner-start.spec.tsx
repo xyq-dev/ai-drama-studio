@@ -35,7 +35,7 @@ describe("beginner start page", () => {
     expect(screen.getByRole("heading", { name: "你的故事，从这里开始" })).toBeTruthy();
     expect(screen.getByText("有想法直接写，没想法也可以先选一个方向。")).toBeTruthy();
     expect(screen.getByRole("link", { name: "还没想法？选一个故事方向" }).getAttribute("href")).toBe("#inspiration");
-    expect(screen.getByText(/固定三集、竖屏 9:16/)).toBeTruthy();
+    expect(screen.getByText(/AI 一键创作可选 1–6 集，竖屏 9:16/)).toBeTruthy();
     fireEvent.change(screen.getByLabelText("你想拍一个什么样的故事？"), { target: { value: "一个外卖员的故事" } });
     fireEvent.click(screen.getByRole("button", { name: "示例 · 家庭情感" }));
     expect((screen.getByLabelText("你想拍一个什么样的故事？") as HTMLTextAreaElement).value).toContain("回到老家");

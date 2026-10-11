@@ -29,7 +29,7 @@ function uncertainRun(attemptNo: number, overrides: Partial<TitleWritingRunView>
     attemptNo: index === 0 ? attemptNo : 0, errorCode: index === 0 ? "timeout" : null, output: null, text: null,
     scriptSave: stepKey.startsWith("episode:") ? "pending" : null, scriptRevisionId: null }));
   return {
-    runId: RUN, projectId: P1, title: "夜班证词", settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey: "qwen", model: "q-1",
+    runId: RUN, projectId: P1, title: "夜班证词", inputVersion: 1, episodeCount: 3, settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey: "qwen", model: "q-1",
     state: "needs_attention", errorCode: "timeout", cancelRequested: false, callCap: 8, callsUsed: attemptNo, storySave: "pending",
     storyRevisionId: null, storyText: null, steps, calls: [CALL_1, CALL_2].slice(0, attemptNo).map((id, index) => call(id, index + 1, "unknown")),
     createdAt: "2026-10-08T00:00:00Z", updatedAt: "2026-10-08T00:00:00Z", ...overrides,

@@ -34,12 +34,21 @@ import {
   checkTitleWritingAcceptanceEnv,
   closePostgresPool,
   createPostgresPool,
+  EPISODE_PLAN_MIGRATION,
   TITLE_WRITING_MIGRATION,
   runMigrations,
   verifyTitleWritingAcceptanceDatabase,
 } from "@ai-drama/database";
 import { TitleWritingEngine, titleWritingProviderConfigs, type WritingTransport } from "@ai-drama/providers";
-import { chatAnswer, fixtureConcept, fixtureEpisode, fixtureOutline, fixtureStepOf, type FixtureStep } from "@ai-drama/providers/title-writing-fixtures";
+import {
+  chatAnswer,
+  fixtureConcept,
+  fixtureEpisode,
+  fixtureOutline,
+  fixtureOutlineCountOf,
+  fixtureStepOf,
+  type FixtureStep,
+} from "@ai-drama/providers/title-writing-fixtures";
 import { AppModule } from "../app.module";
 import { loadApiEnv } from "../config/env";
 import { SafeExceptionFilter } from "../http/safe-exception.filter";
@@ -111,7 +120,7 @@ const transport: WritingTransport = async (request) => {
   const plan = plans.get(title)?.(step, attempt);
   if (plan && "hold" in plan) await plan.hold;
   const answer = plan && "status" in plan ? plan : { status: 200, body: chatAnswer(step === "concept" ? fixtureConcept(title)
-    : step === "outline" ? fixtureOutline() : fixtureEpisode(Number(step.slice(-1)) as 1 | 2 | 3)) };
+    : step === "outline" ? fixtureOutline(fixtureOutlineCountOf(user)) : fixtureEpisode(Number(step.slice(-1)))) };
   return {
     status: answer.status,
     headers: { get: (name: string) => name.toLowerCase() === "x-request-id" ? `stub-${step}-${String(attempt)}` : null },
@@ -355,9 +364,9 @@ beforeAll(async () => {
             (SELECT count(*)::int FROM information_schema.tables
               WHERE table_schema NOT IN ('pg_catalog', 'information_schema') AND table_schema NOT LIKE 'pg_toast%') AS tables`))[0]!;
   evidence.database = { name: identity.name, serverVersion: identity.version, tablesBeforeWrite: identity.tables };
-  // A new database through the normal chain: every released migration and then the title writing one.
+  // A new database through the normal chain: every released migration, the title writing one and the episode plan one.
   const migrated = await runMigrations(pool);
-  expect(migrated.applied.at(-1)).toBe(TITLE_WRITING_MIGRATION);
+  expect(migrated.applied.slice(-2)).toEqual([TITLE_WRITING_MIGRATION, EPISODE_PLAN_MIGRATION]);
   evidence.migrationsApplied = migrated.applied;
   await q("INSERT INTO workspace (id, name, status) VALUES ($1, 'title-browser-acceptance', 'ACTIVE')", [WORKSPACE]);
   if (shotsDir) await mkdir(shotsDir, { recursive: true });
@@ -436,16 +445,19 @@ describe("title writing in a real browser, real web and API, isolated PostgreSQL
     expect(startWrites.map((write) => write.path)).toEqual(["/api/v1/projects", `/api/v1/projects/${projectId}/title-runs`]);
 
     // Running: episode 1 is held in the stub, so the page shows real progress, not a loading state.
-    await waitHeadline("正在编写第 1 集");
+    await waitHeadline("正在编写第 1 集（共 3 集）");
     expect(sends(MAIN_TITLE)).toBe(3);
     const running = await latestRun(projectId);
+    // The page created the work with its default plan (3 episodes, 90 seconds), so the run is a v2 run of exactly 3.
+    expect(running).toMatchObject({ inputVersion: 2, episodeCount: 3, callCap: 8, settings: { episodeCount: 3, episodeSeconds: 90 } });
+    expect(await apiGet(`/projects/${projectId}`)).toMatchObject({ episodeCount: 3, targetEpisodeSeconds: 90 });
     await capture("02-running", page.getByText("故事策划"), page.getByRole("button", { name: "停止创作" }));
 
     // Reload while running: the same work and run come back, and nothing is sent or written again.
     const writesBeforeReload = pageWrites.length;
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.getByRole("heading", { name: `《${MAIN_TITLE}》` }).waitFor({ timeout: 30_000 });
-    await waitHeadline("正在编写第 1 集");
+    await waitHeadline("正在编写第 1 集（共 3 集）");
     expect(page.url()).toBe(`${WEB}/projects/${projectId}/writing`);
     expect(await sendsDuring(MAIN_TITLE)).toBe(0);
     expect((await latestRun(projectId)).runId).toBe(running.runId);

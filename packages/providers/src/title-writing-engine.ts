@@ -9,6 +9,7 @@ import {
   type TitleResumeRequest,
   type TitleRunBundle,
   type TitleRunCreation,
+  type TitleRunCreationLimits,
   type TitleRunRecord,
   type TitleScriptPlacement,
   type TitleStepRecord,
@@ -16,10 +17,15 @@ import {
 } from "@ai-drama/contracts";
 import {
   TITLE_WRITING_INPUT_SCHEMA,
-  TITLE_WRITING_JSON_SCHEMAS,
+  TITLE_WRITING_INPUT_SCHEMA_V2,
   TITLE_WRITING_PROMPT_VERSION,
-  TITLE_WRITING_STEP_KEYS,
+  TITLE_WRITING_PROMPT_VERSION_V2,
   currentUncertainCallIds,
+  isTitleWritingInputV2,
+  titleWritingCallCapFor,
+  titleWritingEpisodeCount,
+  titleWritingJsonSchemas,
+  titleWritingStepKeysFor,
   type EpisodeDraftCandidate,
   type EpisodeOutline,
   type TitleConcept,
@@ -52,7 +58,10 @@ import {
 
 } from "./text-writing";
 
-/** Five required steps plus three resends for rejected or confirmed-uncertain steps. Never more per run. */
+/**
+ * Cap of a v1 run: five required steps plus three resends for rejected or confirmed-uncertain steps. A v2 run's cap is
+ * N+5 (titleWritingCallCap); a stored run keeps the cap it was created with.
+ */
 export const TITLE_WRITING_CALL_CAP_PER_RUN = 8;
 export const TITLE_WRITING_MAX_CALLS_PER_DAY_DEFAULT = 30;
 export const TITLE_WRITING_MAX_ACTIVE_RUNS_DEFAULT = 1;
@@ -69,6 +78,7 @@ export type {
   TitleResumePreparation,
   TitleRunBundle,
   TitleRunCreation,
+  TitleRunCreationLimits,
   TitleRunRecord,
   TitleScriptPlacement,
   TitleStepRecord,
@@ -104,15 +114,13 @@ export function newTitleRun(options: {
   providerKey: TitleWritingProviderKey;
   model: string;
   now: Date;
+  /** 2 freezes the project's episode plan (N, target seconds); 1, the default, is the unchanged three-episode input. */
+  version?: 1 | 2;
 }): TitleRunRecord {
-  const input: TitleWritingFrozenInput = {
-    schema: TITLE_WRITING_INPUT_SCHEMA,
-    promptVersion: TITLE_WRITING_PROMPT_VERSION,
-    title: options.title,
-    settings: options.settings,
-    providerKey: options.providerKey,
-    model: options.model,
-  };
+  const common = { title: options.title, settings: options.settings, providerKey: options.providerKey, model: options.model };
+  const input: TitleWritingFrozenInput = options.version === 2
+    ? { schema: TITLE_WRITING_INPUT_SCHEMA_V2, promptVersion: TITLE_WRITING_PROMPT_VERSION_V2, ...common }
+    : { schema: TITLE_WRITING_INPUT_SCHEMA, promptVersion: TITLE_WRITING_PROMPT_VERSION, ...common };
   const createdAt = options.now.toISOString();
   return {
     id: randomUUID(),
@@ -127,7 +135,7 @@ export function newTitleRun(options: {
     cancelRequestedAt: null,
     executorId: null,
     leaseUntil: null,
-    callCap: TITLE_WRITING_CALL_CAP_PER_RUN,
+    callCap: titleWritingCallCapFor(input),
     callsUsed: 0,
     storySave: "pending",
     storyRevisionId: null,
@@ -136,8 +144,9 @@ export function newTitleRun(options: {
   };
 }
 
+/** concept, outline and episode:1..N of the run's own input; a v1 run gets its original five steps. */
 export function initialSteps(run: TitleRunRecord): TitleStepRecord[] {
-  return TITLE_WRITING_STEP_KEYS.map((stepKey, ordinal) => ({
+  return titleWritingStepKeysFor(run.input).map((stepKey, ordinal) => ({
     runId: run.id,
     stepKey,
     ordinal,
@@ -158,9 +167,11 @@ export function contextFromSteps(steps: readonly TitleStepRecord[]): TitleWritin
   const concept = byKey.get("concept");
   const outline = byKey.get("outline");
   const episodes: EpisodeDraftCandidate[] = [];
-  for (const key of ["episode:1", "episode:2", "episode:3"] as const) {
-    const step = byKey.get(key);
-    if (step?.state !== "completed" || !step.output) break;
+  // Episodes in order up to the first one not completed; a run has exactly its own episode:1..N steps.
+  const episodeSteps = steps.filter((step) => episodeNoOf(step.stepKey) !== null)
+    .sort((left, right) => (episodeNoOf(left.stepKey) ?? 0) - (episodeNoOf(right.stepKey) ?? 0));
+  for (const step of episodeSteps) {
+    if (step.state !== "completed" || !step.output) break;
     episodes.push(step.output as EpisodeDraftCandidate);
   }
   return {
@@ -199,6 +210,8 @@ export function titleRunView(bundle: TitleRunBundle): TitleWritingRunView {
     runId: run.id,
     projectId: run.projectId,
     title: run.input.title,
+    inputVersion: isTitleWritingInputV2(run.input) ? 2 : 1,
+    episodeCount: titleWritingEpisodeCount(run.input),
     settings: run.input.settings,
     providerKey: run.input.providerKey,
     model: run.input.model,
@@ -329,9 +342,14 @@ export class TitleWritingEngine {
     if (!provider.ok || !provider.models.includes(run.input.model)) {
       return this.finish(runId, "needs_attention", "provider_unconfigured");
     }
+    // v2: the story saved after the last episode must fit its storage limit. Checked once concept and outline exist,
+    // before any episode is requested, so an unsavable story never costs the episode calls.
+    if (isTitleWritingInputV2(run.input) && episodeNoOf(next.stepKey) !== null && storyTextOf(bundle) === null) {
+      return this.finish(runId, "needs_attention", "story_too_large");
+    }
     const adapter = (this.deps.adapters ?? WRITING_ADAPTERS)[run.input.providerKey];
     const prompt = buildTitleWritingPrompt(next.stepKey, run.input, contextForStep(next.stepKey, steps));
-    const schema = TITLE_WRITING_JSON_SCHEMAS[prompt.schemaKind];
+    const schema = titleWritingJsonSchemas(run.input)[prompt.schemaKind];
     const request = {
       model: run.input.model,
       system: prompt.system,
@@ -384,7 +402,7 @@ export class TitleWritingEngine {
     });
     let patch: TitleCallFinish;
     if (exchange.outcome === "answered" && exchange.content !== null) {
-      const checked = validateTitleWritingOutput(next.stepKey, exchange.content);
+      const checked = validateTitleWritingOutput(next.stepKey, exchange.content, run.input);
       patch = checked.ok
         ? { state: "completed", errorCode: null, output: checked.output, outputHash: canonicalInputHash(checked.output),
           providerRequestId: exchange.providerRequestId, responseModel: exchange.responseModel, usage: exchange.usage }
@@ -421,6 +439,8 @@ export class TitleWritingEngine {
 
 interface MemoryProject {
   workspaceId: string;
+  /** The project's episode count: its plan's N, or three without a plan. */
+  episodeCount: number;
   stories: Array<{ id: string; text: string; reviewStatus: "DRAFT" | "APPROVED" }>;
   currentStoryId: string | null;
   approvedStoryId: string | null;
@@ -443,20 +463,20 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
   readonly resumes: Array<{ runId: string; key: string; requestHash: string; confirmedCallIds: string[]; createdAt: string }> = [];
   ready = true;
 
-  addProject(workspaceId: string, projectId: string): MemoryProject {
-    const project: MemoryProject = { workspaceId, stories: [], currentStoryId: null, approvedStoryId: null, episodes: new Map() };
+  addProject(workspaceId: string, projectId: string, episodeCount = 3): MemoryProject {
+    const project: MemoryProject = { workspaceId, episodeCount, stories: [], currentStoryId: null, approvedStoryId: null, episodes: new Map() };
     this.projects.set(projectId, project);
     return project;
   }
 
-  /** Test helper standing in for the person's review: approval creates the three episodes like the real chain. */
+  /** Test helper standing in for the person's review: approval creates the project's N episodes like the real chain. */
   approveCurrentStory(projectId: string): void {
     const project = this.requireProject(projectId);
     const story = project.stories.find((item) => item.id === project.currentStoryId);
     if (!story) throw new Error("no current story");
     story.reviewStatus = "APPROVED";
     project.approvedStoryId = story.id;
-    for (const episodeNo of [1, 2, 3]) {
+    for (let episodeNo = 1; episodeNo <= project.episodeCount; episodeNo += 1) {
       if (!project.episodes.has(episodeNo)) project.episodes.set(episodeNo, { id: randomUUID(), currentScriptId: null, scripts: [] });
     }
   }
@@ -482,7 +502,7 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
     });
   }
 
-  async createRun(run: TitleRunRecord, limits: { maxActiveRuns: number }): Promise<TitleRunCreation> {
+  async createRun(run: TitleRunRecord, limits: TitleRunCreationLimits): Promise<TitleRunCreation> {
     const existing = this.runs.find((item) => item.workspaceId === run.workspaceId && item.actorId === run.actorId
       && item.idempotencyKey === run.idempotencyKey);
     if (existing) return { kind: existing.inputHash === run.inputHash ? "existing" : "conflict", bundle: this.bundle(existing) };
@@ -490,6 +510,12 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
     if (sameProject) return { kind: "active", bundle: this.bundle(sameProject) };
     if (this.runs.filter((item) => item.workspaceId === run.workspaceId && item.state === "running").length >= limits.maxActiveRuns) {
       return { kind: "blocked", code: "TITLE_WRITING_ACTIVE_RUN_CAP" };
+    }
+    if (limits.quota) {
+      const { sinceIso, maxCallsPerDay, requiredCalls } = limits.quota;
+      const recent = this.calls.filter((item) => item.workspaceId === run.workspaceId && item.createdAt >= sinceIso).length;
+      const remainingCalls = Math.max(0, maxCallsPerDay - recent);
+      if (remainingCalls < requiredCalls) return { kind: "blocked", code: "TITLE_WRITING_DAILY_QUOTA_LOW", requiredCalls, remainingCalls };
     }
     this.runs.push(structuredClone(run));
     this.steps.push(...initialSteps(run));
@@ -673,6 +699,9 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
     const approved = project.approvedStoryId;
     if (!approved || project.currentStoryId !== approved) return { kind: "story_not_approved" };
     if (approved !== run.storyRevisionId && !options.acceptStoryChanged) return { kind: "story_changed" };
+    const count = titleWritingEpisodeCount(run.input);
+    if (project.episodeCount !== count || project.episodes.size !== count
+      || [...project.episodes.keys()].some((episodeNo) => episodeNo < 1 || episodeNo > count)) return { kind: "plan_mismatch" };
     for (const step of steps) {
       if (step.state !== "completed" || step.scriptSave === "saved") continue;
       const episode = project.episodes.get(episodeNoOf(step.stepKey) ?? 0);

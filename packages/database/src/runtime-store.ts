@@ -3,6 +3,7 @@ import { presentStoredAttempt, type PresentedAttempt } from "@ai-drama/domain";
 import type { PoolClient, QueryResultRow } from "pg";
 import type { DatabasePool } from "./job-service";
 import { PersistenceError } from "./job-service";
+import { EpisodePlanStore, LEGACY_EPISODE_PLAN, episodePlanReadyIn, type ProjectEpisodePlan } from "./episode-plan";
 import { MOCK_MEDIA_JOB_KINDS } from "./mock-media-kinds";
 import { readProjectCostSummary as queryProjectCostSummary } from "./project-cost-summary";
 
@@ -111,7 +112,21 @@ function iso(value: Date | string): string {
 }
 
 export class RuntimeStore {
-  constructor(private readonly pool: DatabasePool) {}
+  private readonly episodePlans: EpisodePlanStore;
+
+  constructor(private readonly pool: DatabasePool) {
+    this.episodePlans = new EpisodePlanStore(pool);
+  }
+
+  /** True once the episode plan migration is applied; until then no project may be created with a plan. */
+  episodePlanReady(): Promise<boolean> {
+    return this.episodePlans.ready();
+  }
+
+  /** The stored plan of a project of this workspace; three episodes and no target when none was recorded. */
+  getProjectEpisodePlan(workspaceId: string, projectId: string): Promise<ProjectEpisodePlan> {
+    return this.episodePlans.read(workspaceId, projectId);
+  }
 
   async requireActiveWorkspace(workspaceId: string): Promise<string> {
     const client = await this.pool.connect();
@@ -751,19 +766,34 @@ const JOB_COLUMNS = `j.id, j.workspace_id, j.project_id, j.workflow_run_id, j.ki
   ja.cost_amount, ja.cost_currency, ja.cost_kind, ja.attempt_error_code, ja.request_bytes,
   attempt_rows.attempts_json`;
 
+/**
+ * Creates a project. Without a plan the statement is the one used before the episode plan existed, so it also works on
+ * a database without the plan columns, and the project is a three-episode project with no target. With a plan the
+ * episode plan migration must be applied (checked in this transaction), otherwise nothing is written.
+ */
 export async function insertProject(
   client: PoolClient,
-  input: { workspaceId: string; title: string; premise: string },
-): Promise<ProjectRecord> {
-  const result = await client.query<QueryResultRow>(
-    `INSERT INTO project (workspace_id, title, premise)
-     VALUES ($1, $2, $3)
-     RETURNING id, workspace_id, title, premise, status, version, created_at, updated_at`,
-    [input.workspaceId, input.title, input.premise],
-  );
+  input: { workspaceId: string; title: string; premise: string; plan?: { episodeCount: number; targetEpisodeSeconds: number } },
+): Promise<ProjectRecord & ProjectEpisodePlan> {
+  if (input.plan && !await episodePlanReadyIn(client)) {
+    throw new PersistenceError("EPISODE_PLAN_UNAVAILABLE", "Episode plan storage is not migrated; nothing was created");
+  }
+  const result = input.plan
+    ? await client.query<QueryResultRow>(
+      `INSERT INTO project (workspace_id, title, premise, episode_count, target_episode_seconds)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id, workspace_id, title, premise, status, version, created_at, updated_at`,
+      [input.workspaceId, input.title, input.premise, input.plan.episodeCount, input.plan.targetEpisodeSeconds],
+    )
+    : await client.query<QueryResultRow>(
+      `INSERT INTO project (workspace_id, title, premise)
+       VALUES ($1, $2, $3)
+       RETURNING id, workspace_id, title, premise, status, version, created_at, updated_at`,
+      [input.workspaceId, input.title, input.premise],
+    );
   const row = result.rows[0];
   if (!row) throw new PersistenceError("PROJECT_CREATE_FAILED", "Project was not created");
-  return mapProject(row);
+  return { ...mapProject(row), ...(input.plan ?? LEGACY_EPISODE_PLAN) };
 }
 
 function mapLease(row: QueryResultRow): ExpiredLeaseRow {

@@ -25,6 +25,10 @@ model Project {
   version                 Int       @default(1)
   currentStoryRevisionId  String?   @map("current_story_revision_id") @db.Uuid
   approvedStoryRevisionId String?   @map("approved_story_revision_id") @db.Uuid
+  /// Episode plan (migration 20261011000100_episode_plan): 1–6 episodes; 3 for every project without a plan.
+  episodeCount            Int       @default(3) @map("episode_count") @db.SmallInt
+  /// 60 or 90; NULL when no target was ever recorded (every project created before the plan existed).
+  targetEpisodeSeconds    Int?      @map("target_episode_seconds") @db.SmallInt
   createdAt               DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt   DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
   archivedAt  DateTime? @map("archived_at") @db.Timestamptz(6)
