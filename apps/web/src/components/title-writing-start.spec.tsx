@@ -320,7 +320,7 @@ describe("the episode plan of a new work", () => {
     expect(screen.getByText(/每集时长是写作目标，用来控制剧本篇幅，不代表成片已经达到这个长度/)).toBeTruthy();
   });
 
-  it("a refused run after the work was created says the work exists, the run was not created and nothing was sent", async () => {
+  it("a quota refusal confirms the work exists and this request created no new run or call", async () => {
     server((call) => call.url === "/api/v1/projects" ? json({ id: P1 }, 201)
       : json({ error: { code: "TITLE_WRITING_DAILY_QUOTA_LOW", message: "额度不足", details: { requiredCalls: 8, remainingCalls: 2 } } }, 429));
     const { button } = await mount();
@@ -328,8 +328,9 @@ describe("the episode plan of a new work", () => {
     fireEvent.change(screen.getByLabelText("集数"), { target: { value: "6" } });
     fireEvent.click(button);
     const alert = (await screen.findByRole("alert")).textContent ?? "";
-    expect(alert).toContain("作品已经创建（目前是空作品");
-    expect(alert).toContain("创作任务没有创建，没有发出任何模型调用");
+    expect(alert).toContain("作品已经创建，可以在作品列表里找到");
+    expect(alert).not.toContain("空作品");
+    expect(alert).toContain("本次请求未创建新任务，也未发出模型调用");
     expect(alert).toContain("最近 24 小时还剩 2 次调用，这次创作正常需要 8 次");
     expect(assign).not.toHaveBeenCalled();
   });

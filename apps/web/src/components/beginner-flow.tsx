@@ -690,8 +690,8 @@ function ReadFailed({ onRetry }: { onRetry: () => void }) {
 function StepGuide({ step, state }: { step: StepKey; state: StepState }) {
   const text: Record<StepState, string> = {
     not_started: "上一步还没有完成，完成后这里就能开始。",
-    needs_input: step === "story" ? "在下方写下故事并「保存新版本」。没有思路时可以用编剧助手：先准备创作要求，再把外部 AI 或站内千问的候选导入预览、比较后采纳到草稿。"
-      : step === "script" ? "这一集还没有剧本。可以自己写，也可以用编剧助手生成候选后采纳，再保存。"
+    needs_input: step === "story" ? "在下方写下故事并「保存新版本」。若编辑器提供编剧助手，可先准备创作要求，再导入候选、比较后采纳到草稿；不支持的规格会在编辑器里说明。"
+      : step === "script" ? "这一集还没有剧本。可以在下方直接编写并保存；若编辑器提供编剧助手，也可以先生成候选再采纳。"
         : step === "cast" ? "添加主要角色，写下外貌、性格和关系，然后保存并提交审核。"
           : step === "sample" ? "选一个场景里的镜头，为它生成演示视频，再做单镜合成。"
             : "在下方选择已确认的单镜成片，排好顺序，预检后提交合成。",

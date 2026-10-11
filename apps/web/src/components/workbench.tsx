@@ -460,6 +460,9 @@ export function StoryPane(props: {
           });
         }}
         onSaved={props.onSaved}
+        assistantUnavailableReason={projectEpisodeNumbers(props.project).length !== 3
+          ? "故事编剧助手目前仅支持三集作品。当前作品的故事可以在下方直接修改并保存新版本。"
+          : undefined}
         assistant={{
           mode: "story",
           episodeNo: null,
@@ -579,6 +582,9 @@ export function ScriptPane(props: {
               ifMatch: draft.ifMatch ?? undefined,
             });
           }}
+          assistantUnavailableReason={episode.episodeNo > 3
+            ? "分集编剧助手目前仅支持第 1–3 集。这一集的剧本可以在下方直接修改并保存新版本。"
+            : undefined}
           assistant={{
             mode: "episode",
             episodeNo: episode.episodeNo,
@@ -873,6 +879,7 @@ function ContentEditor(props: {
   onStatus: (value: string) => void;
   onSubmit: (content: Record<string, unknown>, draft: { idempotencyKey: string; ifMatch: number | null }, sourceId: string | null) => Promise<void>;
   onSaved: () => Promise<void>;
+  assistantUnavailableReason?: string;
   assistant?: {
     mode: "story" | "episode";
     episodeNo: number | null;
@@ -1055,7 +1062,7 @@ function ContentEditor(props: {
   return (
     <form className="creator-editor-card rounded-lg bg-white p-4" onSubmit={(event) => { event.preventDefault(); void save(false); }}>
       <h2 className="font-medium">{props.title}</h2>
-      {props.assistant ? (
+      {props.assistantUnavailableReason ? <p className="mt-2 text-sm" role="status">{props.assistantUnavailableReason}</p> : props.assistant ? (
         <WritingAssistant
           mode={props.assistant.mode}
           projectId={props.projectId}

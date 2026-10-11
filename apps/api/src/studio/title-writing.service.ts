@@ -205,15 +205,17 @@ export class TitleWritingService {
       now: startedAt,
       version: frozen.version,
     });
-    // The store looks the key up first: a replay of an existing run is returned whatever the quota is now. Only a new
-    // run must find N+2 calls left in the rolling 24 hours; the check reserves nothing for later steps.
+    // The store looks the key up first: a replay of an existing run is returned whatever the quota is now. A new v2
+    // run needs N+2 calls left in the rolling 24 hours; this reserves nothing. v1 keeps its existing per-call checks.
     const created = await this.deps.store.createRun(run, {
       maxActiveRuns: this.deps.maxActiveRuns,
-      quota: {
-        sinceIso: new Date(startedAt.getTime() - 24 * 60 * 60 * 1000).toISOString(),
-        maxCallsPerDay: this.deps.maxCallsPerDay,
-        requiredCalls: titleWritingRequiredCalls(titleWritingEpisodeCount(run.input)),
-      },
+      ...(frozen.version === 2 ? {
+        quota: {
+          sinceIso: new Date(startedAt.getTime() - 24 * 60 * 60 * 1000).toISOString(),
+          maxCallsPerDay: this.deps.maxCallsPerDay,
+          requiredCalls: titleWritingRequiredCalls(titleWritingEpisodeCount(run.input)),
+        },
+      } : {}),
     });
     if (created.kind === "blocked") {
       return created.code === "TITLE_WRITING_DAILY_QUOTA_LOW"

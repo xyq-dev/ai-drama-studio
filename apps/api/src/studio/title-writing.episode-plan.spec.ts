@@ -173,6 +173,31 @@ describe("a project without a plan keeps the v1 run unchanged", () => {
     expect((await service.start(P1, { title: "x", settings: { episodeCount: 7 } }, TOKEN, CONTEXT("k7"))).status).toBe(400);
     expect(store.runs).toHaveLength(0);
   });
+
+  it("keeps v1 starts with fewer than five calls left, then stops at the per-call limit without resending on replay", async () => {
+    const { service, store, settle, seen, read } = setup(null);
+    spendCalls(store, 28);
+
+    const started = await service.start(P1, { title: "夜班证词", settings: { episodeSeconds: 180 } }, TOKEN, CONTEXT("legacy-low-quota"));
+    expect(started.status).toBe(201);
+    const runId = (started.body as RunBody).run.runId;
+    await settle();
+
+    expect((await read(runId)).run).toMatchObject({
+      inputVersion: 1, episodeCount: 3, state: "partial", errorCode: "TITLE_WRITING_DAILY_CAP", callsUsed: 2, callCap: 8,
+      settings: { episodeCount: 3, episodeSeconds: 180 },
+    });
+    expect(seen.map((item) => item.step)).toEqual(["concept", "outline"]);
+    expect(store.calls).toHaveLength(30);
+
+    const replay = await service.start(P1, { title: "夜班证词", settings: { episodeSeconds: 180 } }, TOKEN, CONTEXT("legacy-low-quota"));
+    expect(replay.status).toBe(200);
+    expect((replay.body as RunBody).run.runId).toBe(runId);
+    await settle();
+    expect(store.runs).toHaveLength(1);
+    expect(store.calls).toHaveLength(30);
+    expect(seen).toHaveLength(2);
+  });
 });
 
 describe("the start quota check", () => {

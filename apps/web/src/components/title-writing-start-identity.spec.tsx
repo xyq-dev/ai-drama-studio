@@ -273,6 +273,44 @@ describe("F2: only a receipt that proves the result confirms a start", () => {
     expect(stored()).toBeNull();
   });
 
+  it.each([
+    [403, "TITLE_WRITING_FORBIDDEN"],
+    [409, "IDEMPOTENCY_KEY_REUSED"],
+  ])("a %i replay refusal does not deny a previously accepted run with a lost receipt (%s)", async (status, code) => {
+    const acceptedRuns = new Set<string>();
+    let firstRunAnswer = true;
+    const s = server((call) => {
+      if (call.url === "/api/v1/projects") return json({ id: P_A }, 201);
+      if (firstRunAnswer) {
+        firstRunAnswer = false;
+        acceptedRuns.add(call.key);
+        return Promise.reject(new TypeError("accepted, but the receipt was lost"));
+      }
+      return json({ error: { code, message: "这次请求被拒绝。" } }, status);
+    });
+    const { button } = await mount();
+    fireEvent.change(screen.getByLabelText("剧名"), { target: { value: "甲" } });
+    fireEvent.click(button);
+    expect((await screen.findByRole("alert")).textContent).toContain(UNSURE);
+    const kept = stored()!;
+
+    fireEvent.click(screen.getByRole("button", { name: "重试上次请求" }));
+    await waitFor(() => expect(runPosts(s.calls)).toHaveLength(2));
+    await waitFor(() => expect((screen.getByRole("button", { name: "重试上次请求" }) as HTMLButtonElement).disabled).toBe(false));
+    const alert = screen.getByRole("alert").textContent ?? "";
+    expect(alert).not.toMatch(/空作品|任务没有创建|没有发出任何模型调用|没有启动任何调用|上次请求没有被受理/);
+    expect(alert).toContain("此前未确认的请求可能已经执行");
+    expect(alert).toContain("查看进度");
+    expect(stored()).toEqual(kept);
+    expect(runPosts(s.calls).map((call) => call.key)).toEqual([kept.runKey, kept.runKey]);
+    expect(runPosts(s.calls)[1]!.body).toEqual(runPosts(s.calls)[0]!.body);
+    await settle();
+    expect(projectPosts(s.calls)).toHaveLength(1);
+    expect(runPosts(s.calls)).toHaveLength(2);
+    expect(acceptedRuns.size).toBe(1);
+    expect(assign).not.toHaveBeenCalled();
+  });
+
   it("an in-memory idempotent server: replaying an unconfirmed start creates one project and one run, then a new start gets new keys", async () => {
     // Simulated acceptance only: this models the server's idempotency in memory; it is not the real API or database.
     const projects = new Map<string, string>();

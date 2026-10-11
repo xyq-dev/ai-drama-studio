@@ -116,24 +116,27 @@ function callsFor(episodeCount: number): { required: number; cap: number } {
 }
 
 /**
- * What a failed start did. Creating the work and creating its writing run are two writes: when the work exists, the
- * message says so, and that the run was not created and nothing was sent.
+ * Creating the work and its writing run are separate writes. A refusal of this attempt does not settle an earlier
+ * lost receipt: only the quota refusal (after the server's idempotency lookup) proves no new run or call this time.
  */
 function startError(caught: unknown, projectCreated: boolean): string {
-  const work = projectCreated ? "作品已经创建（目前是空作品，可以在作品列表里找到），但创作任务没有创建，没有发出任何模型调用。" : "";
+  const work = projectCreated ? "作品已经创建，可以在作品列表里找到。" : "";
+  const previous = "此前未确认的请求可能已经执行，请先查看进度；重试仍会使用原请求标识。";
   if (caught instanceof TitleWritingError) {
     const missing = Array.isArray(caught.details?.missing) ? (caught.details.missing as string[]).join("、") : "";
-    if (caught.code === "TITLE_WRITING_FORBIDDEN") return `${work}操作者令牌不正确，没有启动任何调用。改正令牌后可以重试上次请求。`;
-    if (caught.code === "TITLE_WRITING_PROVIDER_UNCONFIGURED") return `${work}所选模型服务没有配置完整${missing ? `（缺少 ${missing}）` : ""}，没有启动任何调用。`;
+    if (caught.code === "TITLE_WRITING_FORBIDDEN") return `${work}操作者令牌不正确，本次请求没有被受理。${previous}改正令牌后可以重试上次请求。`;
+    if (caught.code === "TITLE_WRITING_PROVIDER_UNCONFIGURED") return `${work}所选模型服务没有配置完整${missing ? `（缺少 ${missing}）` : ""}，本次请求没有被受理。${previous}`;
     if (caught.code === "TITLE_WRITING_DAILY_QUOTA_LOW") {
       const required = Number(caught.details?.requiredCalls);
       const remaining = Number(caught.details?.remainingCalls);
       const counts = Number.isFinite(required) && Number.isFinite(remaining) ? `最近 24 小时还剩 ${String(remaining)} 次调用，这次创作正常需要 ${String(required)} 次。` : "";
-      return `${work}${counts}额度不够，创作任务没有创建。可以以后再试，或放弃上次请求改选更少的集数。`;
+      return `${work}${counts}额度不够，本次请求未创建新任务，也未发出模型调用。可以以后再试，或放弃上次请求改选更少的集数。`;
     }
-    if (caught.status > 0 && caught.status < 500) return `${work}${caught.detail} 上次请求没有被受理。`;
+    if (caught.status > 0 && caught.status < 500) return `${work}${caught.detail} 本次请求没有被受理。${previous}`;
   }
-  if (caught instanceof ApiError && caught.status > 0 && caught.status < 500) return `作品没有创建：${caught.detail}。上次请求没有被受理。`;
+  if (caught instanceof ApiError && caught.status > 0 && caught.status < 500) {
+    return `本次创建作品请求没有被受理：${caught.detail}。此前未确认的请求可能已经执行，请先查看作品列表；重试仍会使用原请求标识。`;
+  }
   return "没有确认是否已经启动（网络或服务异常）。剧名和设置已保留。可以先查看进度，或重试上次请求：重试会使用同一个请求标识。";
 }
 

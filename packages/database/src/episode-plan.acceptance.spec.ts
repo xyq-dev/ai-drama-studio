@@ -50,7 +50,8 @@ const decision = checkTitleWritingAcceptanceEnv(process.env);
 if (!decision.ok) throw new Error(`Episode plan acceptance refused: ${decision.reason}`);
 
 const acceptanceUrl = decision.url;
-const pool = new Pool({ connectionString: acceptanceUrl, max: 8, application_name: "episode-plan-acceptance-main" });
+const poolOptions = { connectionString: acceptanceUrl, connectionTimeoutMillis: 5_000, statement_timeout: 15_000, query_timeout: 20_000 };
+const pool = new Pool({ ...poolOptions, max: 8, application_name: "episode-plan-acceptance-main" });
 const chain = new TextChainService(pool);
 const store = new PostgresTitleWritingStore(pool, chain);
 const evidence: Record<string, unknown> = {};
@@ -209,11 +210,95 @@ async function seedHistory() {
 }
 
 function independent(name: string) {
-  const own = new Pool({ connectionString: acceptanceUrl, max: 1, application_name: name });
+  const own = new Pool({ ...poolOptions, max: 1, application_name: name });
   own.on("error", (error) => { ((evidence.poolErrors ??= []) as string[]).push(`${name}: ${error.message}`); });
   extraPools.push(own);
   const ownChain = new TextChainService(own);
   return { pool: own, store: new PostgresTitleWritingStore(own, ownChain) };
+}
+
+/** Vitest's test timeout does not cancel PostgreSQL queries: this bound returns control to our transaction cleanup. */
+async function bounded<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([work, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${what} did not finish within ${String(ms)} ms`)), ms);
+    })]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+interface CallLockCleanup { endedBy: "rollback" | "destroyed"; queuedSettled: boolean; problems: string[] }
+
+/**
+ * Always release the held lock, settle tracked queries, and preserve the original failure. The worst-case budget is
+ * connection 5s + BEGIN 2s + lock 2s + body 5s + rollback 3s + queued queries 10s = 27s, below the suite's 30s timeout.
+ */
+async function holdingCallLock<T>(holder: Pool, workspaceId: string, cleanup: CallLockCleanup,
+  body: (track: <P>(work: Promise<P>) => Promise<P>, destroy: () => void) => Promise<T>): Promise<T> {
+  const queued: Array<Promise<void>> = [];
+  const track = <P>(work: Promise<P>): Promise<P> => {
+    // Attach the rejection handler immediately, even when the body fails before it awaits this query.
+    queued.push(work.then(() => undefined, () => undefined));
+    return work;
+  };
+  ((evidence.callLockCleanups ??= []) as CallLockCleanup[]).push(cleanup);
+  const client = await holder.connect();
+  let released = false;
+  let bodyFailed = false;
+  let originalError: unknown;
+  let result: T | undefined;
+  const destroy = () => {
+    if (released) return;
+    released = true;
+    cleanup.endedBy = "destroyed";
+    client.release(new Error("destroying this acceptance's lock holder"));
+  };
+  const sessionError = (error: Error) => { cleanup.problems.push(`holder session: ${error.message}`); };
+  client.on("error", sessionError);
+  try {
+    await bounded(client.query("BEGIN"), 2_000, "BEGIN of the call lock holder");
+    await bounded(client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`title_writing_call:${workspaceId}`]),
+      2_000, "acquiring the call lock");
+    result = await bounded(body(track, destroy), 5_000, "call lock body");
+  } catch (error) {
+    bodyFailed = true;
+    originalError = error;
+  } finally {
+    if (!released) {
+      try {
+        await bounded(client.query("ROLLBACK"), 3_000, "ROLLBACK of the call lock holder");
+        released = true;
+        client.release();
+      } catch (error) {
+        cleanup.problems.push(error instanceof Error ? error.message : String(error));
+        destroy();
+      }
+    }
+    try {
+      await bounded(Promise.all(queued), 10_000, "queued call lock queries");
+      cleanup.queuedSettled = true;
+    } catch (error) {
+      cleanup.problems.push(error instanceof Error ? error.message : String(error));
+    }
+  }
+  if (bodyFailed) throw originalError;
+  if (cleanup.problems.length > 0) throw new Error(`Call lock cleanup failed: ${cleanup.problems.join("; ")}`);
+  return result as T;
+}
+
+/** Confirm a real waiter before injecting a failure; elapsed time alone is not evidence of lock contention. */
+async function waitForCallLockWaiter(applicationName: string): Promise<void> {
+  const deadline = Date.now() + 3_000;
+  for (;;) {
+    const waiting = await pool.query(
+      `SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND application_name = $1
+        AND wait_event_type = 'Lock' AND cardinality(pg_blocking_pids(pid)) > 0`, [applicationName]);
+    if (waiting.rows.length === 1) return;
+    if (Date.now() >= deadline) throw new Error("The deliberate call lock waiter did not block");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
 }
 
 beforeAll(async () => {
@@ -248,13 +333,32 @@ beforeAll(async () => {
   evidence.migration = { released: released.applied, upgradeApplied: upgrade.applied, redeployApplied: redeploy.applied, beforeUpgrade };
 });
 
-afterAll(async () => {
+async function writeEvidence(): Promise<void> {
   const dir = process.env.TITLE_WRITING_ACCEPTANCE_EVIDENCE_DIR;
   if (dir) {
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, "episode-plan-acceptance.json"), `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
   }
-  await Promise.allSettled([...extraPools, pool].map((own) => own.end()));
+}
+
+afterAll(async () => {
+  // Write before closing pools, and still close them if writing evidence itself fails.
+  let evidenceError: unknown;
+  try {
+    await bounded(writeEvidence(), 5_000, "writing episode plan evidence before cleanup");
+  } catch (error) {
+    evidenceError = error;
+  }
+  const closing = await Promise.allSettled([...extraPools, pool].map((own) => bounded(own.end(), 10_000, "closing an episode plan pool")));
+  const stuck = closing.filter((item) => item.status === "rejected").length;
+  evidence.poolsClosed = { total: closing.length, stuck };
+  try {
+    await bounded(writeEvidence(), 5_000, "writing episode plan evidence after cleanup");
+  } catch (error) {
+    evidenceError ??= error;
+  }
+  if (evidenceError) throw evidenceError;
+  if (stuck > 0) throw new Error(`${String(stuck)} episode plan acceptance pool(s) did not close`);
 });
 
 describe("before the episode plan migration", () => {
@@ -385,20 +489,49 @@ describe("start quota and concurrency", () => {
     const ws = await newWorkspace("lock-order");
     const project = await projectWith(ws, "锁顺序", { episodeCount: 2, targetEpisodeSeconds: 60 });
     const holder = independent("episode-plan-call-lock-holder");
-    const session = await holder.pool.connect();
-    try {
-      await session.query("BEGIN");
-      await session.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`title_writing_call:${ws}`]);
+    const cleanup: CallLockCleanup = { endedBy: "rollback", queuedSettled: false, problems: [] };
+    await holdingCallLock(holder.pool, ws, cleanup, async (track) => {
       const started = Date.now();
-      const result = await store.createRun(runRecord(ws, project, "lock-order", input(2)), { maxActiveRuns: 5,
-        quota: { sinceIso: "2000-01-01T00:00:00.000Z", maxCallsPerDay: 1000, requiredCalls: 4 } });
+      const result = await track(store.createRun(runRecord(ws, project, "lock-order", input(2)), { maxActiveRuns: 5,
+        quota: { sinceIso: "2000-01-01T00:00:00.000Z", maxCallsPerDay: 1000, requiredCalls: 4 } }));
       expect(result.kind).toBe("created");
       expect(Date.now() - started).toBeLessThan(5_000);
       evidence.lockOrder = { createRunWhileCallLockHeldMs: Date.now() - started };
-    } finally {
-      await session.query("ROLLBACK");
-      session.release();
-    }
+    });
+    expect(cleanup).toEqual({ endedBy: "rollback", queuedSettled: true, problems: [] });
+  });
+
+  it.each(["body_failure", "wait_timeout", "holder_lost"] as const)("cleans the real lock waiter after %s without replacing the original failure", async (failure) => {
+    const ws = await newWorkspace(`lock-cleanup-${failure}`);
+    const holder = independent(`episode-plan-holder-${failure}`);
+    const waiterName = `episode-plan-waiter-${failure}`;
+    const waiter = independent(waiterName);
+    const cleanup: CallLockCleanup = { endedBy: "rollback", queuedSettled: false, problems: [] };
+    const original = new Error(`deliberate ${failure}`);
+    let expected: unknown = original;
+    let waiterFinished = false;
+    const attempt = holdingCallLock(holder.pool, ws, cleanup, async (track, destroy) => {
+      const queued = track(waiter.pool.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`title_writing_call:${ws}`])
+        .then(() => { waiterFinished = true; }));
+      await waitForCallLockWaiter(waiterName);
+      if (failure === "wait_timeout") {
+        try {
+          await bounded(queued, 100, "deliberate blocked query");
+        } catch (error) {
+          expected = error;
+          throw error;
+        }
+        throw new Error("The deliberately blocked query unexpectedly completed");
+      }
+      if (failure === "holder_lost") destroy();
+      throw original;
+    });
+    // Handle rejection before doing any other asynchronous work; these are intentionally failing inner operations.
+    const outcome = await attempt.then(() => ({ error: null }), (error: unknown) => ({ error }));
+    expect(outcome.error).toBe(expected);
+    if (failure === "wait_timeout") expect(String(outcome.error)).toContain("deliberate blocked query did not finish");
+    expect(waiterFinished).toBe(true);
+    expect(cleanup).toEqual({ endedBy: failure === "holder_lost" ? "destroyed" : "rollback", queuedSettled: true, problems: [] });
   });
 
   it("five sessions replaying one start key make one run with N+2 steps", async () => {
