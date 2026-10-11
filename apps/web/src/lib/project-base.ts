@@ -15,6 +15,17 @@ export interface ProjectRecord {
   premise: string;
   version: number;
   status: string;
+  /** The work's episode count, fixed at creation: 1–6 with an episode plan, 3 without one (and from older servers). */
+  episodeCount?: number;
+  /** Per-episode writing target in seconds (60 or 90); null when the work was created without one. */
+  targetEpisodeSeconds?: number | null;
+}
+
+/** The episode numbers 1..N of a work; three while the work (or its plan) is not known. */
+export function projectEpisodeNumbers(project: Pick<ProjectRecord, "episodeCount"> | null | undefined): number[] {
+  const count = project?.episodeCount;
+  const valid = typeof count === "number" && Number.isInteger(count) && count >= 1 && count <= 6 ? count : 3;
+  return Array.from({ length: valid }, (_, index) => index + 1);
 }
 
 export interface EpisodeRecord {

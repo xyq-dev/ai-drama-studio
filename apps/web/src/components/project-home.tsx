@@ -170,7 +170,7 @@ export function ProjectHome() {
             }}
           >
             <h2 id="create-work-title" className="font-medium">新建作品</h2>
-            <p className="text-sm secondary-muted">只保存标题和故事梗概。当前试制范围仍是固定三集，这里不能选择集数或时长。</p>
+            <p className="text-sm secondary-muted">只保存标题和故事梗概。手动创建的作品固定三集；要选择集数和每集时长，请用 AI 一键创作。</p>
             <label className="block text-sm" htmlFor="project-title">标题</label>
             <input
               ref={titleRef}

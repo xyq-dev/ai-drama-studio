@@ -49,7 +49,8 @@ export interface StartBody {
   title: string;
   providerKey?: TitleWritingProviderKey;
   model?: string;
-  settings?: { episodeSeconds?: number; style?: string };
+  /** episodeCount and episodeSeconds must equal the work's episode plan; the server freezes the plan, not these. */
+  settings?: { episodeCount?: number; episodeSeconds?: number; style?: string };
 }
 
 /**
@@ -147,16 +148,37 @@ export function optionsUnavailableReason(options: TitleWritingOptionsView | null
   return "AI 一键创作暂不可用。可以先手动创作。";
 }
 
-const STEP_LABELS: Record<TitleWritingStepKey, string> = {
-  concept: "故事策划",
-  outline: "分集大纲",
-  "episode:1": "第 1 集剧本",
-  "episode:2": "第 2 集剧本",
-  "episode:3": "第 3 集剧本",
-};
+/** The episode number of an episode step, or null for concept and outline. */
+export function stepEpisodeNo(stepKey: TitleWritingStepKey): number | null {
+  const match = /^episode:([1-6])$/.exec(stepKey);
+  return match ? Number(match[1]) : null;
+}
 
 export function stepLabel(stepKey: TitleWritingStepKey): string {
-  return STEP_LABELS[stepKey];
+  if (stepKey === "concept") return "故事策划";
+  if (stepKey === "outline") return "分集大纲";
+  return `第 ${String(stepEpisodeNo(stepKey) ?? "?")} 集剧本`;
+}
+
+/**
+ * Two different facts about the scripts of a run: how many were generated inside the run, and how many were written
+ * into the work's episodes. Only the second makes them editable in the work.
+ */
+export function scriptProgress(run: TitleWritingRunView): { total: number; generated: number; placed: number; conflicts: number } {
+  const episodes = run.steps.filter((step) => stepEpisodeNo(step.stepKey) !== null);
+  return {
+    total: run.episodeCount ?? episodes.length,
+    generated: episodes.filter((step) => step.state === "completed").length,
+    placed: episodes.filter((step) => step.scriptSave === "saved").length,
+    conflicts: episodes.filter((step) => step.scriptSave === "conflict").length,
+  };
+}
+
+/** The per-episode target of a run as people say it; v1 runs stored any 30–180 seconds and show them as stored. */
+export function targetText(seconds: number): string {
+  if (seconds === 60) return "约 1 分钟";
+  if (seconds === 90) return "约 1.5 分钟";
+  return `约 ${String(seconds)} 秒`;
 }
 
 const STEP_STATES: Record<TitleWritingStepState, string> = {
@@ -185,7 +207,7 @@ export function runHeadline(run: TitleWritingRunView): string {
   if (!next) return "正在保存结果";
   if (next.stepKey === "concept") return "正在构思故事";
   if (next.stepKey === "outline") return "正在规划分集";
-  return `正在编写第 ${next.stepKey.slice(-1)} 集`;
+  return `正在编写第 ${String(stepEpisodeNo(next.stepKey))} 集（共 ${String(run.episodeCount ?? run.steps.length - 2)} 集）`;
 }
 
 const ERRORS: Record<string, string> = {
@@ -211,7 +233,7 @@ const ERRORS: Record<string, string> = {
   provider_unconfigured: "这次创作使用的模型服务现在没有配置完整，没有发出请求。",
   story_conflict: "作品里已经有故事，没有覆盖。生成的故事保留在下方。",
   story_too_large: "整理后的故事超过长度上限，没有保存。",
-  TITLE_WRITING_DAILY_CAP: "今天的调用次数已达服务端上限。",
+  TITLE_WRITING_DAILY_CAP: "最近 24 小时的调用次数已达服务端上限，已完成的内容保留。",
   TITLE_WRITING_RUN_CAP: "这次创作的调用次数已达上限。",
 };
 

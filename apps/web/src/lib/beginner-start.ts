@@ -17,4 +17,4 @@ export const IDEA_TEMPLATES: ReadonlyArray<{ id: string; label: string; idea: st
   { id: "rival-chef", label: "职场逆袭", idea: "被赶出后厨的年轻厨师，在对面开了一家只卖一道菜的小店。" },
 ];
 
-export const START_SCOPE_NOTE = "当前是试制范围：每部作品固定三集、竖屏 9:16。素材是演示素材，不是真实 AI 拍摄。";
+export const START_SCOPE_NOTE = "当前是试制范围：手动创建的作品固定三集，AI 一键创作可选 1–6 集，竖屏 9:16。素材是演示素材，不是真实 AI 拍摄。";

@@ -25,6 +25,7 @@ import {
   episodeForAction,
   episodeForStep,
   episodeNeedingWork,
+  episodeNumbers,
   episodeSampleState,
   primaryAction,
   scriptState,
@@ -89,10 +90,10 @@ function StatePill({ state }: { state: StepState }) {
   return <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-sm ${tone}`}><span aria-hidden="true">{STEP_STATE_MARK[state]}</span>{STEP_STATE_TEXT[state]}</span>;
 }
 
-function EpisodeTabs(props: { value: number; onChange: (episodeNo: number) => void; state: (episodeNo: number) => StepState; label: string }) {
+function EpisodeTabs(props: { numbers: number[]; value: number; onChange: (episodeNo: number) => void; state: (episodeNo: number) => StepState; label: string }) {
   return (
     <div role="tablist" aria-label={props.label} className="creator-episode-tabs flex flex-wrap gap-2">
-      {[1, 2, 3].map((episodeNo) => (
+      {props.numbers.map((episodeNo) => (
         <button key={episodeNo} role="tab" type="button" aria-selected={props.value === episodeNo}
           className={`rounded-[12px] border px-3 py-1.5 text-[15px] ${props.value === episodeNo ? "border-[var(--studio-accent)] bg-[#FBE7E4]" : "bg-white"}`}
           onClick={() => props.onChange(episodeNo)}>
@@ -219,9 +220,10 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
   const media = ready ? progress.media : {};
   const facts: BeginnerFacts = useMemo(() => ({
     story: currentStoryRevision(stories?.items ?? []), episodes,
+    ...(project?.episodeCount !== undefined ? { episodeCount: project.episodeCount } : {}),
     characters: ready ? progress.characters : UNREAD, locations: ready ? progress.locations : UNREAD,
     runs: allRuns, media: ready ? progress.media : {},
-  }), [stories, episodes, ready, progress, allRuns]);
+  }), [stories, episodes, ready, progress, allRuns, project?.episodeCount]);
   const states = useMemo(() => stepStates(facts), [facts]);
   const gates = composeGates(capability);
 
@@ -487,10 +489,10 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
 
           {project && step === "script" ? (
             episodes.length === 0 ? (
-              <p className="rounded-[12px] border bg-white p-4">故事确认通过后，服务器会建立固定的三集。请先完成第 1 步。</p>
+              <p className="rounded-[12px] border bg-white p-4">故事确认通过后，服务器会按作品设置建立 {episodeNumbers(facts).length} 集。请先完成第 1 步。</p>
             ) : (
               <>
-                <EpisodeTabs label="选择剧集" value={episodeNo} onChange={setEpisodeNo}
+                <EpisodeTabs numbers={episodeNumbers(facts)} label="选择剧集" value={episodeNo} onChange={setEpisodeNo}
                   state={(no) => scriptState(episodes.find((item) => item.episodeNo === no))} />
                 <p className="text-[15px] text-[#5F5D66]">审核只针对当前展示的这一集、这一个版本；其他集要分别打开检查。剧本里写到的场面还不是场景或镜头记录，它们在「试一段」里单独建立。</p>
                 <ScriptPane projectId={projectId} projectVersion={project.version} episode={episode}
@@ -537,7 +539,7 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
 
           {project && step === "sample" ? (
             <>
-              <EpisodeTabs label="选择剧集" value={episodeNo} onChange={setEpisodeNo}
+              <EpisodeTabs numbers={episodeNumbers(facts)} label="选择剧集" value={episodeNo} onChange={setEpisodeNo}
                 state={(no) => episodeSampleState(facts, no)} />
               <GateNotice gate={gates.shot} onRetry={recheck}>当前环境没有开启单镜成片所需的功能（Mock 媒体或本地合成），样片暂时不能生成，这一步不会显示为完成。需要管理员在服务端开启后才能继续；其余步骤可以照常进行。</GateNotice>
               {ready && mediaReadFailed(media) ? <ReadFailed onRetry={rereadAll} /> : null}
@@ -567,7 +569,7 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
                     <div className="mt-2 text-[15px]">
                       <p>这一集还没有场景。场景和镜头是单独的记录，需要先建立：</p>
                       <ol className="mt-1 list-decimal pl-5">
-                        <li>在任务面板用「Mock 生成场景」，再用「Mock 生成镜头」（需要三集剧本都已通过）；或</li>
+                        <li>在任务面板用「Mock 生成场景」，再用「Mock 生成镜头」（需要每一集剧本都已通过）；或</li>
                         <li>到高级编辑手动添加场景。</li>
                       </ol>
                       <button className="mt-2 rounded-[12px] border px-3 py-1.5" type="button" onClick={openTasks}>打开任务面板</button>
@@ -601,7 +603,7 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
 
           {project && step === "final" ? (
             <>
-              <EpisodeTabs label="选择剧集" value={episodeNo} onChange={setEpisodeNo} state={(no) => episodeFinalState(facts, no)} />
+              <EpisodeTabs numbers={episodeNumbers(facts)} label="选择剧集" value={episodeNo} onChange={setEpisodeNo} state={(no) => episodeFinalState(facts, no)} />
               <p className="text-[15px] text-[#5F5D66]">本集至少要有 2 个已确认的单镜成片才能编排，最多 30 个。合成完成后请播放检查，确认通过的当前成片才能下载 MP4 和来源清单；上游内容变化后，旧成片会保留为历史，不能再下载。</p>
               <GateNotice gate={gates.episode} onRetry={recheck}>当前环境没有开启集级合成，单集成片暂时不能生成，这一步不会显示为完成。需要管理员在服务端开启后才能继续。</GateNotice>
               {ready && mediaReadFailed(media) ? <ReadFailed onRetry={rereadAll} /> : null}

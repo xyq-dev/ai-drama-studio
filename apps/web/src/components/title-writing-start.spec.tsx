@@ -22,6 +22,7 @@ function options(overrides: Partial<TitleWritingOptionsView> = {}): TitleWriting
       { providerKey: "deepseek", label: "DeepSeek", ready: true, models: ["d-1", "d-2"], defaultModel: "d-1", missing: [] },
     ],
     maxCallsPerDay: 30, maxActiveRuns: 1, callCapPerRun: 8, billing: "unknown", defaults: { episodeCount: 3, episodeSeconds: 90, style: "" },
+    episodePlan: { minEpisodes: 1, maxEpisodes: 6, defaultEpisodes: 3, secondsChoices: [60, 90], defaultSeconds: 90 }, episodePlanReady: true,
     ...overrides,
   };
 }
@@ -58,13 +59,15 @@ async function mount() {
 
 function fillNonDefault() {
   fireEvent.change(screen.getByLabelText("剧名"), { target: { value: "夜班证词" } });
-  fireEvent.change(screen.getByLabelText("每集时长"), { target: { value: "180" } });
+  fireEvent.change(screen.getByLabelText("集数"), { target: { value: "5" } });
+  fireEvent.change(screen.getByLabelText("每集时长"), { target: { value: "60" } });
   fireEvent.change(screen.getByLabelText("风格"), { target: { value: "悬疑" } });
   fireEvent.change(screen.getByLabelText("模型服务"), { target: { value: "deepseek" } });
   fireEvent.change(screen.getByLabelText("模型"), { target: { value: "d-2" } });
 }
 
-const NON_DEFAULT_BODY = { title: "夜班证词", providerKey: "deepseek", model: "d-2", settings: { episodeSeconds: 180, style: "悬疑" } };
+const NON_DEFAULT_BODY = { title: "夜班证词", providerKey: "deepseek", model: "d-2", settings: { episodeCount: 5, episodeSeconds: 60, style: "悬疑" } };
+const NON_DEFAULT_PROJECT = { title: "夜班证词", premise: "", episodeCount: 5, targetEpisodeSeconds: 60 };
 
 let assign: ReturnType<typeof vi.fn>;
 const realSessionStorage = Object.getOwnPropertyDescriptor(window, "sessionStorage");
@@ -117,13 +120,16 @@ describe("an unconfirmed start", () => {
     expect(second.button.textContent).toBe("重试上次请求");
     expect((screen.getByLabelText("剧名") as HTMLInputElement).value).toBe("夜班证词");
     expect((screen.getByLabelText("剧名") as HTMLInputElement).disabled).toBe(true);
-    expect((screen.getByLabelText("每集时长") as HTMLSelectElement).value).toBe("180");
+    expect((screen.getByLabelText("集数") as HTMLSelectElement).value).toBe("5");
+    expect((screen.getByLabelText("集数") as HTMLSelectElement).disabled).toBe(true);
+    expect((screen.getByLabelText("每集时长") as HTMLSelectElement).value).toBe("60");
     expect((screen.getByLabelText("风格") as HTMLInputElement).value).toBe("悬疑");
     expect(screen.getByText(/DeepSeek · d-2（上次提交的选择）/)).toBeTruthy();
     expect(screen.getByRole("link", { name: "查看进度" }).getAttribute("href")).toBe(`/projects/${P1}/writing`);
     fireEvent.click(second.button);
     await waitFor(() => expect(assign).toHaveBeenCalledWith(`/projects/${P1}/writing`));
     expect(projectPosts(calls)).toHaveLength(1);
+    expect(projectPosts(calls)[0]?.body).toEqual(NON_DEFAULT_PROJECT);
     const runs = runPosts(calls);
     expect(runs).toHaveLength(2);
     expect(runs[0]?.body).toEqual(NON_DEFAULT_BODY);
@@ -146,9 +152,11 @@ describe("an unconfirmed start", () => {
     fireEvent.click(first.button);
     expect((await screen.findByRole("alert")).textContent).toContain("没有确认是否已经启动");
     first.view.unmount();
-    current.options = options({ defaultProvider: "deepseek", defaults: { episodeCount: 3, episodeSeconds: 120, style: "" } });
+    current.options = options({ defaultProvider: "deepseek",
+      episodePlan: { minEpisodes: 1, maxEpisodes: 6, defaultEpisodes: 6, secondsChoices: [60, 90], defaultSeconds: 60 } });
 
     const second = await mount();
+    expect((screen.getByLabelText("集数") as HTMLSelectElement).value).toBe("3");
     expect((screen.getByLabelText("每集时长") as HTMLSelectElement).value).toBe("90");
     fireEvent.click(second.button);
     await waitFor(() => expect(assign).toHaveBeenCalled());
@@ -156,9 +164,25 @@ describe("an unconfirmed start", () => {
     expect(projects).toHaveLength(2);
     expect(projects[1]?.headers["Idempotency-Key"]).toBe(projects[0]?.headers["Idempotency-Key"]);
     expect(projects[1]?.body).toEqual(projects[0]?.body);
+    expect(projects[0]?.body).toEqual({ title: "夜班证词", premise: "", episodeCount: 3, targetEpisodeSeconds: 90 });
     expect(runPosts(calls).map((call) => call.body)).toEqual([
-      { title: "夜班证词", providerKey: "qwen", model: "q-1", settings: { episodeSeconds: 90, style: "" } },
+      { title: "夜班证词", providerKey: "qwen", model: "q-1", settings: { episodeCount: 3, episodeSeconds: 90, style: "" } },
     ]);
+  });
+
+  it("a record saved by the earlier page (no plan, 180 seconds) is shown and replayed exactly as it was saved", async () => {
+    const legacy = { version: 2, request: { title: "旧剧名", providerKey: "qwen", model: "q-1", settings: { episodeSeconds: 180, style: "悬疑" } },
+      projectKey: "11111111-aaaa-4aaa-8aaa-111111111111", projectId: null, runKey: "22222222-bbbb-4bbb-8bbb-222222222222" };
+    window.sessionStorage.setItem(DRAFT_KEY, JSON.stringify(legacy));
+    const { calls } = server((call) => call.url === "/api/v1/projects" ? json({ id: P1 }, 201) : json(finished(), 201));
+    const { button } = await mount();
+    expect(button.textContent).toBe("重试上次请求");
+    expect(screen.getByText(/集数：3 集 · 每集约 180 秒（上次请求来自旧版页面，按原样重放）/)).toBeTruthy();
+    expect(screen.queryByLabelText("集数")).toBeNull();
+    fireEvent.click(button);
+    await waitFor(() => expect(assign).toHaveBeenCalledWith(`/projects/${P1}/writing`));
+    expect(projectPosts(calls).map((call) => [call.body, call.headers["Idempotency-Key"]])).toEqual([[{ title: "旧剧名", premise: "" }, legacy.projectKey]]);
+    expect(runPosts(calls).map((call) => [call.body, call.headers["Idempotency-Key"]])).toEqual([[legacy.request, legacy.runKey]]);
   });
 
   it("the same unconfirmed request replayed several times always carries the same body and both keys", async () => {
@@ -279,5 +303,44 @@ describe("when the request identity cannot be kept", () => {
     await screen.findByRole("alert");
     expect(window.sessionStorage.getItem(DRAFT_KEY)).not.toContain(TOKEN);
     expect(JSON.stringify({ ...window.localStorage })).not.toContain(TOKEN);
+  });
+});
+
+describe("the episode plan of a new work", () => {
+  it("shows the normal requests and the cap for the chosen count, and offers only 1–6 episodes and about 1 or 1.5 minutes", async () => {
+    server(() => json({ id: P1 }, 201));
+    await mount();
+    expect([...(screen.getByLabelText("集数") as HTMLSelectElement).options].map((option) => option.value)).toEqual(["1", "2", "3", "4", "5", "6"]);
+    expect([...(screen.getByLabelText("每集时长") as HTMLSelectElement).options].map((option) => option.textContent)).toEqual(["约 1 分钟", "约 1.5 分钟"]);
+    expect(screen.getByText(/正常需要 5 次模型调用，这次创作最多 8 次/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("集数"), { target: { value: "6" } });
+    expect(screen.getByText(/正常需要 8 次模型调用，这次创作最多 11 次/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("集数"), { target: { value: "1" } });
+    expect(screen.getByText(/正常需要 3 次模型调用，这次创作最多 6 次/)).toBeTruthy();
+    expect(screen.getByText(/每集时长是写作目标，用来控制剧本篇幅，不代表成片已经达到这个长度/)).toBeTruthy();
+  });
+
+  it("a refused run after the work was created says the work exists, the run was not created and nothing was sent", async () => {
+    server((call) => call.url === "/api/v1/projects" ? json({ id: P1 }, 201)
+      : json({ error: { code: "TITLE_WRITING_DAILY_QUOTA_LOW", message: "额度不足", details: { requiredCalls: 8, remainingCalls: 2 } } }, 429));
+    const { button } = await mount();
+    fireEvent.change(screen.getByLabelText("剧名"), { target: { value: "夜班证词" } });
+    fireEvent.change(screen.getByLabelText("集数"), { target: { value: "6" } });
+    fireEvent.click(button);
+    const alert = (await screen.findByRole("alert")).textContent ?? "";
+    expect(alert).toContain("作品已经创建（目前是空作品");
+    expect(alert).toContain("创作任务没有创建，没有发出任何模型调用");
+    expect(alert).toContain("最近 24 小时还剩 2 次调用，这次创作正常需要 8 次");
+    expect(assign).not.toHaveBeenCalled();
+  });
+
+  it("while the server's episode plan storage is not ready, a new work is not started and nothing is sent", async () => {
+    const { calls } = server(() => json({ id: P1 }, 201), { options: options({ episodePlanReady: false }) });
+    const { button } = await mount();
+    expect(screen.getByText(/集数和时长设置还没有在服务器上就绪/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("剧名"), { target: { value: "夜班证词" } });
+    fireEvent.click(button);
+    expect((await screen.findByRole("alert")).textContent).toContain("数据库迁移尚未执行");
+    expect(calls.filter((call) => call.method === "POST")).toEqual([]);
   });
 });

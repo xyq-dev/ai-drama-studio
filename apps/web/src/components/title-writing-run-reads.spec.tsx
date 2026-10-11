@@ -25,7 +25,7 @@ function steps(state: TitleWritingStepView["state"]): TitleWritingStepView[] {
 
 function view(overrides: Partial<TitleWritingRunView> = {}, first: TitleWritingStepView["state"] = "submitted"): TitleWritingRunView {
   return {
-    runId: RUN_A, projectId: PA, title: "作品甲", settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey: "qwen",
+    runId: RUN_A, projectId: PA, title: "作品甲", inputVersion: 1, episodeCount: 3, settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey: "qwen",
     model: "q-1", state: "running", errorCode: null, cancelRequested: false, callCap: 8, callsUsed: 1, storySave: "pending", storyRevisionId: null,
     storyText: null, steps: steps(first), calls: [], createdAt: "2026-10-08T00:00:00Z", updatedAt: "2026-10-08T00:00:00Z", ...overrides,
   };

@@ -261,3 +261,19 @@ describe("the primary action goes to the episode that supplies the step state (I
     expect(episodeForAction("sample", running, 2)).toBe(2);
   });
 });
+
+describe("steps cover the work's own episodes 1..N", () => {
+  it("a six-episode work is done only when all six scripts are approved, and opens the first one still needing work", () => {
+    const six = Array.from({ length: 6 }, (_, index) => episode(index + 1, "APPROVED"));
+    expect(stepStates(facts({ episodeCount: 6, episodes: six })).script).toBe("done");
+    const fifthDraft = six.map((item) => item.episodeNo === 5 ? episode(5, "DRAFT") : item);
+    expect(stepStates(facts({ episodeCount: 6, episodes: fifthDraft })).script).not.toBe("done");
+    expect(episodeNeedingWork("script", facts({ episodeCount: 6, episodes: fifthDraft }))).toBe(5);
+    // Without the plan the three-episode scope is read, as before.
+    expect(episodeNeedingWork("script", facts({ episodes: fifthDraft }))).toBeNull();
+  });
+
+  it("a one-episode work is done with its single script", () => {
+    expect(stepStates(facts({ episodeCount: 1, episodes: [episode(1, "APPROVED")] })).script).toBe("done");
+  });
+});
