@@ -216,6 +216,10 @@ jobs:
       - name: Build JavaScript workspace
         run: pnpm build
 
+      - name: Type-check the script breakdown acceptances
+        # Both acceptance files are outside the package typecheck; this checks them statically before they run.
+        run: pnpm --filter @ai-drama/api typecheck:acceptance
+
       - name: Create a new, empty acceptance database
         run: |
           name="ads_title_acceptance_api_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
@@ -322,6 +326,10 @@ jobs:
       - name: Build JavaScript workspace
         # The acceptance starts the built Worker (apps/worker/dist/main.js).
         run: pnpm build
+
+      - name: Type-check the script breakdown acceptances
+        # Both acceptance files are outside the package typecheck; this checks them statically before they run.
+        run: pnpm --filter @ai-drama/api typecheck:acceptance
 
       - name: Pin model provider hosts to loopback on this runner
         # A second layer under the in-process model stub: even an unintercepted request cannot reach a provider.

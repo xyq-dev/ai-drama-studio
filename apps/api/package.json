@@ -7,6 +7,7 @@
     "start": "node dist/main.js",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck:acceptance": "tsc -p tsconfig.acceptance.json",
     "lint": "eslint src",
     "test": "vitest run",
     "integration": "vitest run --config vitest.integration.config.ts",

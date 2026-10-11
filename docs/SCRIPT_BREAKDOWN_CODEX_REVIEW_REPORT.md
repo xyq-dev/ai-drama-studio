@@ -132,7 +132,7 @@
 使用 Node 24.21.0 和 pnpm 10.17.0，保持 engine-strict 设置不变。
 
 - API lint 通过。
-- 新文件类型检查只剩一个错误：`@ai-drama/providers/title-writing-fixtures` 子路径无法解析。现有 `script-breakdown.acceptance.spec.ts` 有同样错误，vitest 运行时能解析，spec 也不在包的 typecheck 范围内。
+- 首次提交时，新文件类型检查只剩一个错误：`@ai-drama/providers/title-writing-fixtures` 子路径在 `moduleResolution: node` 下无法解析，现有 `script-breakdown.acceptance.spec.ts` 也有。已由下文“验收文件静态类型检查”修复。
 - 默认 `vitest list` 不收集新文件。
 - 未授权时，命令在连接前拒绝：缺授权标记拒绝，缺 Redis URL 也拒绝。
 - `git diff --check` 通过。
@@ -141,7 +141,25 @@
 
 ### CI 结果
 
-（推送后按精确 HEAD 记录在 PR 描述与本节。）
+首次提交 `6c5654d39920a6d7fa39745946d6c5fe9d35fff2` 的 CI 结果如下：
+
+- PR 合并测试提交为 `eb73bf7bcc17555e0e9e99b698e2f387cfa13e07`。
+- 隔离验收运行 `38179006564`，媒体验收作业 `114587369024` 为 6/6 通过，没有遗留 Worker 监听。
+- 该 SHA 上 12 个工作流全部成功，没有失败运行，也没有重跑。
+
+### 验收文件静态类型检查
+
+- `packages/providers/package.json` 增加精确的 `typesVersions` 映射，只把 `title-writing-fixtures` 指向 `./dist/title-writing-fixtures.d.ts`。运行时 `exports` 不变，全局 `moduleResolution` 不变，没有使用 ts-ignore 或 any 绕过。
+- 新增 `apps/api/tsconfig.acceptance.json` 和脚本 `typecheck:acceptance`，只检查两个 script-breakdown 验收文件。
+  - 该配置单独开启 `skipLibCheck`。原因：vitest 自带的声明文件引用 `vite/module-runner`，在仓库的 `moduleResolution: node` 下无法解析。
+  - 这个开关只跳过第三方 `.d.ts` 的内部检查，两个验收文件本身仍按 strict 检查。
+  - 写入一条故意的类型错误时，检查以 TS2322 失败；随后已还原。
+- `title-writing-acceptance.yml` 的 `api` 与 `breakdown-media` 作业在运行验收前先执行该检查。
+- 本地回归（Node 24.21.0、pnpm 10.17.0）：
+  - api、worker、web 及依赖构建通过；
+  - providers、api、worker、web 类型检查通过；
+  - api、providers lint 通过；
+  - API 单元测试 190 通过、43 跳过（仅 Linux 可执行的用例），providers 144/144。
 
 ### 结论边界
 
