@@ -10,6 +10,7 @@ import { WritingAssistant } from "./writing-assistant";
 import { CharacterReferencePanel } from "./character-reference-panel";
 import { EpisodeComposePreflight } from "./episode-compose-preflight";
 import { ProjectCostSummary } from "./project-cost-summary";
+import { ScriptBreakdownPanel } from "./script-breakdown-panel";
 import { ApiError, StudioClient } from "../lib/studio-client";
 import { createQwenWebClient } from "../lib/qwen-web-client";
 import {
@@ -131,10 +132,28 @@ interface ShotRevision {
   action: string;
   dialogue: string | null;
   durationHint: string | null;
+  /** Planned seconds × 1000 (a writing plan, not a measured length); null when none was planned. */
+  plannedDurationMs?: number | null;
   promptText: string;
   reviewStatus: string;
   freshnessStatus: string;
   reviewVersion: number;
+}
+
+/** Planned seconds typed in a shot form: "" is no plan; anything else must be a whole number of seconds from 1 to 15. */
+export function plannedDurationOf(seconds: string): { ok: true; ms: number | null } | { ok: false } {
+  const trimmed = seconds.trim();
+  if (trimmed.length === 0) return { ok: true, ms: null };
+  if (!/^\d{1,2}$/.test(trimmed)) return { ok: false };
+  const value = Number(trimmed);
+  return value >= 1 && value <= 15 ? { ok: true, ms: value * 1000 } : { ok: false };
+}
+
+function plannedSecondsText(record: Record<string, unknown> | null, current: number | null | undefined): string {
+  if (record && "plannedDurationMs" in record) {
+    return typeof record.plannedDurationMs === "number" ? String(record.plannedDurationMs / 1000) : "";
+  }
+  return typeof current === "number" ? String(current / 1000) : "";
 }
 
 type Focus =
@@ -637,6 +656,21 @@ export function ScriptPane(props: {
         />
         </InspectSlot>
       </EditorGrid>
+      <ScriptBreakdownPanel
+        projectId={props.projectId}
+        episodeId={episode.id}
+        episodeNo={episode.episodeNo}
+        scriptReady={episode.currentScriptRevisionId !== null
+          && episode.currentScriptRevisionId === episode.approvedScriptRevisionId
+          && episode.currentScriptReviewStatus === "APPROVED"
+          && episode.currentScriptFreshnessStatus === "CURRENT"}
+        sceneCount={scenes?.items.length ?? 0}
+        onOpenScene={props.onOpenScene}
+        onChanged={async () => {
+          await props.onSaved();
+          await load();
+        }}
+      />
       <SceneList
         projectId={props.projectId}
         episode={props.episode}
@@ -1991,6 +2025,7 @@ function ShotForm(props: {
   const [action, setAction] = useState(typeof seeded?.action === "string" ? seeded.action : props.current.action);
   const [dialogue, setDialogue] = useState(keptText(seeded, "dialogue", props.current.dialogue ?? ""));
   const [durationHint, setDurationHint] = useState(keptText(seeded, "durationHint", props.current.durationHint ?? ""));
+  const [plannedSeconds, setPlannedSeconds] = useState(plannedSecondsText(seeded, props.current.plannedDurationMs));
   const [promptText, setPromptText] = useState(typeof seeded?.promptText === "string" ? seeded.promptText : props.current.promptText);
   const [ordinal, setOrdinal] = useState(typeof seeded?.ordinal === "number" ? String(seeded.ordinal) : String(props.current.ordinal));
   const [sourceId, setSourceId] = useState(initialSource);
@@ -2008,7 +2043,8 @@ function ShotForm(props: {
   }
   const selectedSource = props.sources.find((item) => item.id === sourceId) ?? null;
 
-  function body(nextSource = sourceId) {
+  function body(nextSource = sourceId, nextPlanned = plannedSeconds) {
+    const planned = plannedDurationOf(nextPlanned);
     return {
       sourceSceneRevisionId: nextSource,
       ordinal: Number(ordinal),
@@ -2017,6 +2053,7 @@ function ShotForm(props: {
       action,
       dialogue: dialogue.trim().length > 0 ? dialogue : null,
       durationHint: durationHint.trim().length > 0 ? durationHint : null,
+      plannedDurationMs: planned.ok ? planned.ms : null,
       promptText,
     };
   }
@@ -2038,12 +2075,13 @@ function ShotForm(props: {
     setAction(typeof record?.action === "string" ? record.action : props.current.action);
     setDialogue(keptText(record, "dialogue", props.current.dialogue ?? ""));
     setDurationHint(keptText(record, "durationHint", props.current.durationHint ?? ""));
+    setPlannedSeconds(plannedSecondsText(record, props.current.plannedDurationMs));
     setPromptText(typeof record?.promptText === "string" ? record.promptText : props.current.promptText);
     setOrdinal(typeof record?.ordinal === "number" ? String(record.ordinal) : String(props.current.ordinal));
     const storedSource = keptText(record, "sourceSceneRevisionId", props.current.sourceSceneRevisionId);
     const usable = props.sources.find((item) => item.id === storedSource && item.usable);
     setSourceId(usable?.id ?? "");
-  }, [props.current.action, props.current.camera, props.current.dialogue, props.current.durationHint, props.current.id, props.current.ordinal, props.current.promptText, props.current.shotType, props.current.sourceSceneRevisionId, props.projectId, props.shot.entityId, props.shot.rowVersion, props.sources, shotEntityKey]);
+  }, [props.current.action, props.current.camera, props.current.dialogue, props.current.durationHint, props.current.plannedDurationMs, props.current.id, props.current.ordinal, props.current.promptText, props.current.shotType, props.current.sourceSceneRevisionId, props.projectId, props.shot.entityId, props.shot.rowVersion, props.sources, shotEntityKey]);
 
   async function beginConflict(message: string) {
     setConflict(message);
@@ -2068,6 +2106,10 @@ function ShotForm(props: {
     if (!force && (conflict || drift.blocked)) return;
     if (!selectedSource?.usable) {
       setError(selectedSource?.reason || "来源需要是当前、已批准且 CURRENT。");
+      return;
+    }
+    if (!plannedDurationOf(plannedSeconds).ok) {
+      setError("预计时长需为 1–15 的整数秒，或留空。");
       return;
     }
     const nextBody = body();
@@ -2111,6 +2153,8 @@ function ShotForm(props: {
       <textarea id="shot-dialogue" className={BODY_FIELD} maxLength={LIMITS.dialogue} value={dialogue} onChange={(event) => { setDialogue(event.target.value); remember({ ...body(), dialogue: event.target.value.trim().length > 0 ? event.target.value : null }); }} />
       <label htmlFor="shot-duration">时长提示</label>
       <input id="shot-duration" className="w-full rounded border px-2 py-1" maxLength={LIMITS.durationHint} value={durationHint} onChange={(event) => { setDurationHint(event.target.value); remember({ ...body(), durationHint: event.target.value.trim().length > 0 ? event.target.value : null }); }} />
+      <label htmlFor="shot-planned">预计时长（秒，计划值，不是成片时长）</label>
+      <input id="shot-planned" className="w-full rounded border px-2 py-1" inputMode="numeric" value={plannedSeconds} onChange={(event) => { setPlannedSeconds(event.target.value); remember(body(sourceId, event.target.value)); }} />
       <label htmlFor="shot-prompt">提示词</label>
       <textarea id="shot-prompt" className={BODY_FIELD} maxLength={LIMITS.promptText} value={promptText} onChange={(event) => { setPromptText(event.target.value); remember({ ...body(), promptText: event.target.value }); }} />
       <label htmlFor="shot-ordinal">序号</label>
