@@ -76,9 +76,15 @@ export class EpisodePlanStore {
 
   constructor(private readonly pool: DatabasePool) {}
 
+  /** False, never an error, when the database cannot be reached or read: readiness is a refusal, not a failure. */
   async ready(): Promise<boolean> {
     if (this.readyConfirmed) return true;
-    const client = await this.pool.connect();
+    let client: PoolClient;
+    try {
+      client = await this.pool.connect();
+    } catch {
+      return false;
+    }
     try {
       this.readyConfirmed = await episodePlanReadyIn(client);
       return this.readyConfirmed;
