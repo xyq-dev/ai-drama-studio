@@ -101,6 +101,10 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
   const [identityError, setIdentityError] = useState(false);
   const [pendingStart, setPendingStart] = useState<BreakdownPendingStart | null>(null);
   const [pendingResume, setPendingResume] = useState<BreakdownPendingResume | null>(null);
+  const [optionsError, setOptionsError] = useState(false);
+  const [optionsLoading, setOptionsLoading] = useState(false);
+  /** The server refused a start because the episode has scenes, which the parent's count may not show yet. */
+  const [scenesExist, setScenesExist] = useState(false);
   const reads = useRef<Reads>({ inFlight: false, again: false });
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const shown = useRef<{ runId: string | null; generation: number; state: string | null }>({ runId: null, generation: 0, state: null });
@@ -156,6 +160,25 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
     })();
   }, [client, props.projectId, props.episodeId, show, schedule]);
 
+  // Reads only the feature settings: never a task or a model call. One read at a time per mounted project/episode; an
+  // answer for a scope that was left (another episode, unmount) is dropped.
+  const optionsRead = useRef<Reads | null>(null);
+  const loadOptions = useCallback(() => {
+    const scope = reads.current;
+    if (optionsRead.current === scope) return;
+    optionsRead.current = scope;
+    setOptionsLoading(true);
+    void client.options().then((view) => {
+      if (reads.current === scope) { setOptions(view); setOptionsError(false); }
+    }).catch(() => {
+      if (reads.current === scope) setOptionsError(true);
+    }).finally(() => {
+      if (optionsRead.current !== scope) return;
+      optionsRead.current = null;
+      if (reads.current === scope) setOptionsLoading(false);
+    });
+  }, [client]);
+
   useEffect(() => {
     const scope: Reads = { inFlight: false, again: false };
     reads.current = scope;
@@ -164,22 +187,21 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
     setRun(null); setOptions(null); setLoaded(false); setBusy(false); setToken("");
     setMessage(null); setCancelFailed(false); setReadError(null); setPlacement(null); setConfirmedFor(null); setAcceptSceneChanged(false);
     setPendingStart(null); setPendingResume(null); setReplaceExisting(false); setIdentityError(false);
+    setOptionsError(false); setOptionsLoading(false); setScenesExist(false);
     try {
       const pending = readBreakdownPending(props.projectId, props.episodeId, "start");
       setPendingStart(pending); setReplaceExisting(pending?.body.replaceExisting ?? false);
       setPendingResume(readBreakdownPending(props.projectId, props.episodeId, "resume"));
     } catch { setIdentityError(true); setMessage("无法读取上次请求身份，为避免重复调用，不能开始新请求。"); }
     refresh();
-    void client.options().then((view) => { if (reads.current === scope) setOptions(view); }).catch(() => {
-      if (reads.current === scope) setMessage("拆解状态暂时无法读取，稍后刷新再试。");
-    });
+    loadOptions();
     return () => {
       operation.current = null;
       reads.current = { inFlight: false, again: false };
       if (timer.current) clearTimeout(timer.current);
       timer.current = undefined;
     };
-  }, [client, props.projectId, props.episodeId, refresh]);
+  }, [client, props.projectId, props.episodeId, refresh, loadOptions]);
 
   const parentEpoch = useRef(props.refreshEpoch);
   useEffect(() => {
@@ -191,16 +213,19 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
   const running = run?.state === "running";
   const limits = options?.limits;
   const ready = options?.code === "SCRIPT_BREAKDOWN_READY";
-  const needsReplace = props.sceneCount > 0;
+  const needsReplace = props.sceneCount > 0 || scenesExist;
+  // Confirming a start already sent replays its stored key and body: the current settings, defaults or a failed settings
+  // read cannot block it (the server answers it from the run that key created). Only a new start must pass every gate.
   const startBlocked = identityError ? "无法恢复请求身份，请先解决浏览器会话存储问题。"
-    : !pendingStart && readError ? "请先重新读取本集任务状态。"
-    : !pendingStart && !props.scriptReady ? "剧本批准后才能拆解（剧本门槛不变）。"
-    : !options ? "正在读取拆解设置。"
+    : pendingStart ? (token.trim().length === 0 ? "请填写操作者令牌。" : null)
+    : readError ? "请先重新读取本集任务状态。"
+    : !props.scriptReady ? "剧本批准后才能拆解（剧本门槛不变）。"
+    : !options ? optionsError ? "功能配置读取失败，请先“重新读取功能配置”。" : "正在读取拆解设置。"
       : !ready ? options.code === "TITLE_WRITING_DISABLED" ? "AI 写作没有开启。"
         : options.code === "SCRIPT_BREAKDOWN_STORAGE_UNAVAILABLE" ? "剧本拆解的数据库迁移还没有执行。"
           : options.code === "TITLE_WRITING_PROVIDER_UNCONFIGURED" ? "模型服务还没有配置完整。" : "服务端还不能开始拆解。"
-        : !pendingStart && running ? "这一集的拆解正在进行。"
-          : !pendingStart && needsReplace && !replaceExisting ? "这一集已有场景，勾选“用新结果取代”后才能开始。"
+        : running ? "这一集的拆解正在进行。"
+          : needsReplace && !replaceExisting ? "这一集已有场景，勾选“用新结果取代”后才能开始。"
             : token.trim().length === 0 ? "请填写操作者令牌。" : null;
 
   async function act(runId: string | null, work: () => Promise<ScriptBreakdownRunView>, fallback: string,
@@ -230,7 +255,8 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
   function clearPending(pending: BreakdownPendingStart | BreakdownPendingResume) {
     try {
       clearBreakdownPending(props.projectId, props.episodeId, pending);
-      if (pending.kind === "start") setPendingStart(null); else setPendingResume(null);
+      if (pending.kind === "start") setPendingStart((current) => current?.key === pending.key ? null : current);
+      else setPendingResume((current) => current?.key === pending.key ? null : current);
     } catch { setIdentityError(true); setMessage("请求已确认，但浏览器未能更新请求身份。请先解决会话存储问题。"); }
   }
 
@@ -247,7 +273,17 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
     void act(null, () => client.start(props.projectId, props.episodeId, pending.body, { token: token.trim(), idempotencyKey: pending.key }),
       "服务端回应无法确认是否已开始。再次点击只会重放同一个请求，不会新建任务。", {
         accepted: () => clearPending(pending),
-        failed: (caught) => { if (refused(caught) && !pendingStart) clearPending(pending); },
+        failed: (caught) => {
+          // EXISTING_SCENES comes after the server's key lookup: it proves no task exists for this key, and this body
+          // (without consent) can never succeed. Release the identity, sent now or restored, and ask for consent; a new
+          // start then takes a new key and a newly frozen body. Lost answers, 5xx and other refusals of a restored start
+          // keep the identity for a replay.
+          if (refused(caught) && caught.code === "SCRIPT_BREAKDOWN_EXISTING_SCENES") {
+            clearPending(pending);
+            setScenesExist(true);
+            setReplaceExisting(false);
+          } else if (refused(caught) && !pendingStart) clearPending(pending);
+        },
       });
   }
 
@@ -319,6 +355,10 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
       {visibleMessage || readError ? <div className="mt-2 text-sm text-red-700 [overflow-wrap:anywhere]" role="alert">
         <p>{visibleMessage ?? readError}</p>{readError ? <button type="button" onClick={refresh}>重新读取</button> : null}
       </div> : null}
+      {optionsError ? <div className="mt-2 text-sm text-red-700 [overflow-wrap:anywhere]" role="status" data-testid="breakdown-options-error">
+        <p>功能配置暂时无法读取。已有任务、结果和未确认的请求不受影响；重新读取只读取配置，不会创建任务或调用模型。</p>
+        <button type="button" className="underline disabled:opacity-50" disabled={optionsLoading} onClick={loadOptions}>重新读取功能配置</button>
+      </div> : null}
 
       <div className="mt-3 grid gap-2">
         {needsReplace ? (
@@ -341,6 +381,11 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
             </button>
           ) : null}
         </div>
+        {pendingStart ? (
+          <p className="text-sm text-neutral-600 [overflow-wrap:anywhere]" data-testid="breakdown-pending-start">
+            上次启动请求的结果还没有确认。确认只会重放上次的同一个请求（原模型、原“取代”选项和原请求标识），不会新建任务；要发起新的生成，请先确认这次结果。
+          </p>
+        ) : null}
         {startBlocked && loaded ? <p className="text-sm text-neutral-600" data-testid="breakdown-blocked">{startBlocked}</p> : null}
       </div>
 

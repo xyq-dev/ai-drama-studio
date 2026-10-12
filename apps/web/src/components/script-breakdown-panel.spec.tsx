@@ -275,3 +275,199 @@ describe("source validity and resume entry", () => {
     expect(h.seen.find((item) => item.method === "POST")!.headers["idempotency-key"]).toBe("dddddddd-dddd-4ddd-8ddd-dddddddddddd");
   });
 });
+
+describe("start identity: confirming a sent start, reading settings again, releasing a refused start", () => {
+  const E2 = "33333333-3333-4333-8333-333333333334";
+  const OLD_KEY = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+  const E2_KEY = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+  const storageKey = (episodeId = E1) => `ads:breakdown:${P1}:${episodeId}:start:v1`;
+  const stored = (episodeId = E1) => {
+    const raw = window.sessionStorage.getItem(storageKey(episodeId));
+    return raw ? JSON.parse(raw) as { kind: string; key: string; body: unknown } : null;
+  };
+  const restore = (body: Record<string, unknown>, key = OLD_KEY, episodeId = E1) =>
+    window.sessionStorage.setItem(storageKey(episodeId), JSON.stringify({ kind: "start", key, body }));
+  const UNCONFIGURED: ScriptBreakdownOptionsView = { ...OPTIONS, code: "TITLE_WRITING_PROVIDER_UNCONFIGURED", defaultProvider: null,
+    providers: [{ providerKey: "qwen", label: "千问", ready: false, models: [], defaultModel: null, missing: ["DASHSCOPE_API_KEY"] }] };
+  const existing = () => json({ error: { code: "SCRIPT_BREAKDOWN_EXISTING_SCENES", message: "这一集已经有场景。确认用新结果取代后才能拆解（旧版本会保留）。",
+    details: { sceneCount: 2, shotCount: 0 } } }, 409);
+  const started = () => json({ run: run({ state: "running", step: { state: "submitted", attemptNo: 1, errorCode: null }, output: null,
+    plannedTotalSeconds: null, save: "pending", scenes: [] }) }, 201);
+  function held<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => { resolve = done; });
+    return { promise, resolve };
+  }
+
+  /** A scripted server: options answers in order (the last repeats), POST answers in order; every request is recorded. */
+  function server(optionAnswers: Array<() => Response | Promise<Response>>, posts: Array<() => Response | Promise<Response>>) {
+    const seen: Seen[] = [];
+    let optionCalls = 0;
+    const fetchImpl = vi.fn(async (input: string, init?: RequestInit) => {
+      const headers = Object.fromEntries([...new Headers(init?.headers).entries()].map(([name, value]) => [name.toLowerCase(), value]));
+      seen.push({ method: init?.method ?? "GET", url: input, headers, body: init?.body ? JSON.parse(String(init.body)) : null });
+      if (input.endsWith("/writing/script-breakdowns/options")) {
+        optionCalls += 1;
+        return optionAnswers[Math.min(optionCalls, optionAnswers.length) - 1]!();
+      }
+      if (input.endsWith("/latest")) return json({ run: null });
+      const next = posts.shift();
+      if (!next) throw new Error(`unexpected ${input}`);
+      return next();
+    });
+    return {
+      seen,
+      client: new ScriptBreakdownClient(fetchImpl as unknown as typeof fetch),
+      posts: () => seen.filter((item) => item.method === "POST"),
+      optionReads: () => seen.filter((item) => item.url.endsWith("/options")).length,
+    };
+  }
+  const panelFor = (client: ScriptBreakdownClient, episodeId = E1) => (
+    <ScriptBreakdownPanel projectId={P1} episodeId={episodeId} episodeNo={episodeId === E1 ? 2 : 3} scriptReady sceneCount={0}
+      onOpenScene={vi.fn()} onChanged={vi.fn(async () => undefined)} client={client} />
+  );
+  const enterToken = async () => fireEvent.change(await screen.findByLabelText("操作者令牌"), { target: { value: TOKEN } });
+  const button = (name: string) => screen.getByRole<HTMLButtonElement>("button", { name });
+
+  it("confirms a restored start with its own key and body although its provider is no longer configured", async () => {
+    const body = { replaceExisting: false, providerKey: "deepseek", model: "d-1" };
+    restore(body);
+    const s = server([() => json(UNCONFIGURED)], [() => json({ run: run() }, 200)]);
+    render(panelFor(s.client));
+    await enterToken();
+    await waitFor(() => expect(s.optionReads()).toBe(1));
+    expect(screen.getByTestId("breakdown-pending-start").textContent).toContain("确认只会重放上次的同一个请求");
+    const confirm = button("确认上次启动结果");
+    expect(confirm.disabled).toBe(false);
+    fireEvent.click(confirm);
+    fireEvent.click(confirm);
+    await screen.findByText(/状态：已完成/);
+    expect(s.posts()).toHaveLength(1);
+    expect([s.posts()[0]!.headers["idempotency-key"], s.posts()[0]!.body, s.posts()[0]!.headers["x-operator-token"]]).toEqual([OLD_KEY, body, TOKEN]);
+    expect(stored()).toBeNull();
+  });
+
+  it("lets a restored start be confirmed while the settings cannot be read, but never starts a new request without them", async () => {
+    restore({ replaceExisting: false, providerKey: "qwen", model: "q-1" });
+    const s = server([() => new Response("down", { status: 502 })], [() => json({ run: run() }, 200)]);
+    render(panelFor(s.client));
+    await enterToken();
+    expect((await screen.findByTestId("breakdown-options-error")).textContent).toContain("功能配置暂时无法读取");
+    fireEvent.click(button("确认上次启动结果"));
+    await screen.findByText(/状态：已完成/);
+    expect(s.posts().map((item) => item.headers["idempotency-key"])).toEqual([OLD_KEY]);
+    cleanup();
+
+    const fresh = server([() => new Response("down", { status: 502 })], []);
+    render(panelFor(fresh.client));
+    await enterToken();
+    await screen.findByTestId("breakdown-options-error");
+    expect(button("生成场景与分镜").disabled).toBe(true);
+    expect(screen.getByTestId("breakdown-blocked").textContent).toContain("功能配置读取失败");
+    fireEvent.click(button("生成场景与分镜"));
+    expect(fresh.posts()).toHaveLength(0);
+    expect(stored()).toBeNull();
+  });
+
+  it("reads the settings again on request, once at a time, without a reload, a task or a model call", async () => {
+    const second = held<Response>();
+    const s = server([() => new Response("down", { status: 503 }), () => second.promise], []);
+    render(panelFor(s.client));
+    await enterToken();
+    const retry = await screen.findByRole<HTMLButtonElement>("button", { name: "重新读取功能配置" });
+    fireEvent.click(retry);
+    fireEvent.click(retry);
+    expect(s.optionReads()).toBe(2);
+    expect(button("重新读取功能配置").disabled).toBe(true);
+    second.resolve(json(OPTIONS));
+    await waitFor(() => expect(screen.queryByTestId("breakdown-options-error")).toBeNull());
+    expect(button("生成场景与分镜").disabled).toBe(false);
+    expect((screen.getByLabelText("操作者令牌") as HTMLInputElement).value).toBe(TOKEN);
+    expect(s.posts()).toHaveLength(0);
+    expect(s.optionReads()).toBe(2);
+  });
+
+  for (const origin of ["sent from this page", "restored after a reload"] as const) {
+    it(`releases a start ${origin} once the server refuses it for existing scenes, and asks for consent before a new key`, async () => {
+      if (origin === "restored after a reload") restore({ replaceExisting: false, providerKey: "qwen", model: "q-1" });
+      const s = server([() => json(OPTIONS)], [existing, started]);
+      render(panelFor(s.client));
+      await enterToken();
+      await waitFor(() => expect(s.optionReads()).toBe(1));
+      fireEvent.click(button(origin === "restored after a reload" ? "确认上次启动结果" : "生成场景与分镜"));
+      expect((await screen.findByRole("alert")).textContent).toContain("这一集已经有场景");
+      const firstKey = s.posts()[0]!.headers["idempotency-key"]!;
+      if (origin === "restored after a reload") expect(firstKey).toBe(OLD_KEY);
+      expect(stored()).toBeNull();
+      // The parent's scene count was stale (0): the refusal itself shows the consent box, unchecked.
+      const consent = screen.getByRole<HTMLInputElement>("checkbox", { name: /用新结果取代这一集现有的场景/ });
+      expect([consent.checked, consent.disabled]).toEqual([false, false]);
+      expect(button("生成场景与分镜").disabled).toBe(true);
+      fireEvent.click(button("生成场景与分镜"));
+      expect(s.posts()).toHaveLength(1);
+      fireEvent.click(consent);
+      fireEvent.click(button("生成场景与分镜"));
+      await screen.findByText(/状态：进行中/);
+      const second = s.posts()[1]!;
+      expect(second.headers["idempotency-key"]).not.toBe(firstKey);
+      expect(second.body).toEqual({ replaceExisting: true, providerKey: "qwen", model: "q-1" });
+      expect(s.posts()).toHaveLength(2);
+      expect(stored()).toBeNull();
+    });
+  }
+
+  it("keeps a restored start's identity through a lost answer, a gateway error, a 5xx and a non-definitive refusal, sending once per click", async () => {
+    const body = { replaceExisting: false, providerKey: "qwen", model: "q-1" };
+    restore(body);
+    const slow = held<Response>();
+    const s = server([() => json(OPTIONS)], [
+      () => Promise.reject(new TypeError("network down")),
+      () => new Response("gateway", { status: 504 }),
+      () => json({ error: { code: "INTERNAL", message: "boom" } }, 500),
+      () => json({ error: { code: "TITLE_WRITING_RUN_ACTIVE", message: "busy" } }, 409),
+      () => slow.promise,
+    ]);
+    render(panelFor(s.client));
+    await enterToken();
+    for (let attempt = 1; attempt <= 4; attempt += 1) {
+      await waitFor(() => expect(button("确认上次启动结果").disabled).toBe(false));
+      fireEvent.click(button("确认上次启动结果"));
+      await waitFor(() => expect(s.posts()).toHaveLength(attempt));
+      await screen.findByRole("alert");
+      expect(stored()).toEqual({ kind: "start", key: OLD_KEY, body });
+    }
+    await waitFor(() => expect(button("确认上次启动结果").disabled).toBe(false));
+    fireEvent.click(button("确认上次启动结果"));
+    fireEvent.click(button("确认上次启动结果"));
+    expect(s.posts()).toHaveLength(5);
+    slow.resolve(json({ run: run() }, 200));
+    await screen.findByText(/状态：已完成/);
+    expect(new Set(s.posts().map((item) => item.headers["idempotency-key"]))).toEqual(new Set([OLD_KEY]));
+    expect(s.posts().every((item) => JSON.stringify(item.body) === JSON.stringify(body))).toBe(true);
+    expect(stored()).toBeNull();
+  });
+
+  it("does not let a late refusal for another episode or an unmounted panel release a newer identity", async () => {
+    const late = held<Response>();
+    const s = server([() => json(OPTIONS)], [() => late.promise]);
+    const mounted = render(panelFor(s.client));
+    await enterToken();
+    await waitFor(() => expect(s.optionReads()).toBe(1));
+    fireEvent.click(button("生成场景与分镜"));
+    await waitFor(() => expect(s.posts()).toHaveLength(1));
+    const e1Key = stored()!.key;
+    // Episode 2 holds its own restored start; the panel switches to it before episode 1's answer arrives.
+    restore({ replaceExisting: true, providerKey: "qwen", model: "q-1" }, E2_KEY, E2);
+    mounted.rerender(panelFor(s.client, E2));
+    expect(await screen.findByRole("button", { name: "确认上次启动结果" })).toBeTruthy();
+    late.resolve(existing());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    // The answer belongs to no current request: nothing is released, and episode 2 is untouched.
+    expect(stored(E2)).toEqual({ kind: "start", key: E2_KEY, body: { replaceExisting: true, providerKey: "qwen", model: "q-1" } });
+    expect(stored(E1)?.key).toBe(e1Key);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("button", { name: "确认上次启动结果" })).toBeTruthy();
+    mounted.unmount();
+    expect(stored(E2)?.key).toBe(E2_KEY);
+  });
+});
