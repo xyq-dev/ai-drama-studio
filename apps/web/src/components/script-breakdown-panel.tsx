@@ -298,10 +298,11 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
   const sourceOutdated = sourceReplaced || sourceInvalid;
   const replayResume = pendingResume?.runId === run?.runId ? pendingResume : null;
   // Confirming an already sent resume is always possible (it only reads its receipt). A new resume is offered only where
-  // the server accepts one: a stopped run with its result unsaved, a valid source, and a step that was refused, unknown,
-  // canceled or never reserved (pending, e.g. a quota race or a provider unconfigured before the call).
-  const resumable = run !== null && (replayResume !== null || (run.state !== "running" && run.state !== "completed" && run.save === "pending"
-    && !sourceOutdated && (run.step.state === "rejected" || run.step.state === "unknown" || run.step.state === "canceled" || run.step.state === "pending")));
+  // the server accepts one, a stopped run with its result unsaved and a valid source, in the mode its step implies (the
+  // server decides the same from the persisted steps): "save" when the answer was stored before the run stopped (no call,
+  // no billing question); "resend" when the step was refused, unknown (confirmation needed), canceled or never reserved.
+  const resumeMode = resumeModeOf(run, sourceOutdated);
+  const resumable = run !== null && (replayResume !== null || resumeMode !== null);
 
   function resume() {
     if (!run || !resumable || identityError || operation.current || token.trim().length === 0 || (!replayResume && uncertain.length > 0 && !confirmUncertain)) return;
@@ -407,7 +408,16 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
               旧结果保留，不会自动重新生成。
             </p>
           ) : null}
-          {resumable ? (
+          {resumable && !replayResume && resumeMode === "save" ? (
+            <div className="grid gap-2 rounded border border-neutral-200 p-2">
+              <p className="text-sm [overflow-wrap:anywhere]" data-testid="breakdown-save-only">
+                模型答案已经生成并通过校验，但在写入场景前停止了。保存已有结果不会再次调用模型，也不增加调用次数；来源剧本仍须是本集当前已批准的版本。
+              </p>
+              <button className="rounded border px-3 py-2" type="button" disabled={busy || identityError || token.trim().length === 0} onClick={() => void resume()}>
+                保存已有结果（不再调用模型）
+              </button>
+            </div>
+          ) : resumable ? (
             <div className="grid gap-2 rounded border border-neutral-200 p-2">
               {uncertain.length > 0 && !replayResume ? (
                 <label className="flex items-start gap-2 text-sm">
@@ -439,6 +449,13 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
       ) : loaded ? <p className="mt-3 text-sm text-neutral-600">这一集还没有拆解过。</p> : null}
     </section>
   );
+}
+
+/** What a new resume of this run would do, or null when none is offered (running, finished, saved or settled, invalid source). */
+function resumeModeOf(run: ScriptBreakdownRunView | null, sourceOutdated: boolean): "save" | "resend" | null {
+  if (!run || run.state === "running" || run.state === "completed" || run.save !== "pending" || sourceOutdated) return null;
+  if (run.step.state === "completed") return "save";
+  return run.step.state === "rejected" || run.step.state === "unknown" || run.step.state === "canceled" || run.step.state === "pending" ? "resend" : null;
 }
 
 function PlacementSummary({ outcome }: { outcome: ScriptBreakdownPlacementOutcome }) {

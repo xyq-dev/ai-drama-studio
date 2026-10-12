@@ -256,7 +256,8 @@ export class ScriptBreakdownService {
         ? failure(429, created.code, { requiredCalls: created.requiredCalls, remainingCalls: created.remainingCalls })
         : failure(429, created.code);
     }
-    if (created.kind === "active") return failure(409, "TITLE_WRITING_RUN_ACTIVE");
+    // One AI task per work: name the kind of the running task, never offer its run here.
+    if (created.kind === "active") return failure(409, "TITLE_WRITING_RUN_ACTIVE", { taskKind: isScriptBreakdownRun(created.bundle.run) ? "script_breakdown" : "title" });
     const mine = this.ofEpisode(created.bundle, projectId, episodeId);
     if (created.kind === "conflict" || !mine || mine.run.inputHash !== requestHash) return failure(409, "IDEMPOTENCY_KEY_REUSED");
     if (created.kind === "created") this.schedule(mine.run.id);
@@ -303,15 +304,15 @@ export class ScriptBreakdownService {
     // recoverable. Only a new resume is held to the provider, source and state checks below.
     const receipt = await this.deps.store.findResume(this.deps.workspaceId, projectId, runId, context.idempotencyKey);
     if (receipt) return receipt.requestHash === requestHash ? this.view(existing) : failure(409, "IDEMPOTENCY_KEY_REUSED");
+    // The store decides from the run's persisted steps, under its lock, whether this resume sends again: only then must the
+    // provider be ready. A run that stopped after its answer was stored only saves it (no call, no reservation).
     const provider = this.deps.providers[existing.run.input.providerKey];
-    if (!provider.ok || !provider.models.includes(existing.run.input.model)) {
-      return failure(503, "TITLE_WRITING_PROVIDER_UNCONFIGURED", { providerKey: existing.run.input.providerKey, missing: provider.ok ? [] : provider.missing });
-    }
     const prepared = await this.deps.store.prepareResume(this.deps.workspaceId, projectId, runId, {
       resumeKey: context.idempotencyKey,
       requestHash,
       confirmedCallIds: confirmed,
       maxActiveRuns: this.deps.maxActiveRuns,
+      providerReady: provider.ok && provider.models.includes(existing.run.input.model),
     }, this.now().toISOString());
     if (prepared.kind === "replayed") return this.view(prepared.bundle);
     if (prepared.kind !== "ok") {
@@ -322,6 +323,9 @@ export class ScriptBreakdownService {
       if (prepared.kind === "stale_confirmation") return failure(409, "TITLE_WRITING_CONFIRMATION_STALE");
       if (prepared.kind === "key_conflict") return failure(409, "IDEMPOTENCY_KEY_REUSED");
       if (prepared.kind === "source_changed") return failure(409, "SCRIPT_BREAKDOWN_SOURCE_CHANGED");
+      if (prepared.kind === "provider_unconfigured") {
+        return failure(503, "TITLE_WRITING_PROVIDER_UNCONFIGURED", { providerKey: existing.run.input.providerKey, missing: provider.ok ? [] : provider.missing });
+      }
       return failure(409, "TITLE_WRITING_NOT_RESUMABLE");
     }
     this.schedule(runId);

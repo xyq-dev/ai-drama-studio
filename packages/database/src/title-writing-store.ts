@@ -504,6 +504,8 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
       const redo = steps.filter((step) => step.state === "unknown" || step.state === "rejected" || step.state === "canceled");
       const savePending = isScriptBreakdownInput(run.input) ? run.breakdownSave === "pending" : run.storySave === "pending";
       if (redo.length === 0 && !savePending) return { kind: "not_resumable" };
+      // Only a resume that resets a step sends a call; saving a stored answer needs no provider.
+      if (redo.length > 0 && request.providerReady === false) return { kind: "provider_unconfigured" };
       // A breakdown resumes only against its frozen script; a newer, unapproved or STALE source is never resent.
       // Checked under the run -> project -> episode locks, before anything of the resume is written.
       if (isScriptBreakdownInput(run.input) && !await this.breakdownScriptCurrent(client, workspaceId, projectId, run.input)) {

@@ -804,6 +804,7 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
     const redo = steps.filter((step) => step.state === "unknown" || step.state === "rejected" || step.state === "canceled");
     const savePending = isScriptBreakdownInput(run.input) ? run.breakdownSave === "pending" : run.storySave === "pending";
     if (redo.length === 0 && !savePending) return { kind: "not_resumable" };
+    if (redo.length > 0 && request.providerReady === false) return { kind: "provider_unconfigured" };
     if (isScriptBreakdownInput(run.input) && !this.breakdownScriptCurrent(run.input)) return { kind: "source_changed" };
     this.resumes.push({ runId, key: request.resumeKey, requestHash: request.requestHash, confirmedCallIds: [...request.confirmedCallIds].sort(), createdAt: nowIso });
     for (const step of redo) Object.assign(step, { state: "pending", updatedAt: nowIso });

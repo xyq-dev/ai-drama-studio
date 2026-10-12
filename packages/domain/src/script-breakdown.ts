@@ -59,7 +59,7 @@ export function buildScriptBreakdownPrompt(input: ScriptBreakdownFrozenInput): S
       `- shotType ≤${String(L.shotTypeMaxChars)} 字（如远景、全景、中景、近景、特写），camera 写机位、构图和运镜 ≤${String(L.cameraMaxChars)} 字，action ≤${String(L.actionMaxChars)} 字。`,
       `- dialogue 每镜最多 ${String(L.maxLinesPerShot)} 句：line 必须逐字摘自剧本正文，speaker 必须是剧本里出现的说话人名字；没有对白时给 []。`,
       "- speaker 和 line 必须来自同一处明确的“说话人（可选表演提示）：对白”标注；旁白也须明确标注。不得换说话人或把动作说明当对白。",
-      "- characterKeys 只能使用下面角色表里的键；表里没有的人物不要引用。",
+      "- characterKeys 只能使用下面角色表里的键；表里没有的人物不要引用。对白的 speaker 是角色表里的角色时，该镜 characterKeys 必须包含这个角色的键（同名角色时写明其中一个）。",
       "",
       "角色表：",
       ...characters,
@@ -135,6 +135,11 @@ function attributedDialogue(script: string): Array<{ speaker: string; line: stri
   return result;
 }
 
+/** A speaker or character name as dialogue attribution compares it: whitespace and outer quotes ignored. */
+function speakerName(name: string): string {
+  return normalizeForMatch(name).replace(QUOTES, "");
+}
+
 export function plannedTotalSeconds(output: ScriptBreakdownOutput): number {
   return output.shots.reduce((sum, shot) => sum + shot.plannedSeconds, 0);
 }
@@ -147,7 +152,8 @@ function duplicates(values: readonly string[]): boolean {
  * Accepts a model answer only when it is one JSON object of the output schema for exactly the frozen episode, with
  * unique keys, every scene and character reference present, at least one shot per scene, shots grouped in scene
  * order, keys matching their scene and position (S1, S2, …; S1-1, S1-2, …), every dialogue line attributed to its
- * speaker in the frozen script, and a total planned duration inside the range.
+ * speaker in the frozen script, the key of every speaking frozen character referenced by its shot, and a total planned
+ * duration inside the range.
  */
 export function validateScriptBreakdownOutput(content: string, input: ScriptBreakdownFrozenInput): ScriptBreakdownValidation {
   if (content.trim().length === 0) return { ok: false, code: "invalid_json" };
@@ -199,12 +205,24 @@ export function validateScriptBreakdownOutput(content: string, input: ScriptBrea
     if (shot.key !== `${shot.sceneKey}-${String(position)}`) return { ok: false, code: "invalid_output" };
   }
   const dialogue = attributedDialogue(input.scriptText);
+  // Frozen characters by their name, normalized as speakers are. A name can belong to several characters.
+  const byName = new Map<string, string[]>();
+  for (const character of input.characters) {
+    const name = speakerName(character.name);
+    byName.set(name, [...byName.get(name) ?? [], character.key]);
+  }
   for (const shot of output.shots) {
     for (const item of shot.dialogue) {
-      const speaker = normalizeForMatch(item.speaker).replace(QUOTES, "");
+      const speaker = speakerName(item.speaker);
       if (!dialogue.some((source) => source.speaker === speaker && lineInScript(item.line, source.line))) {
         return { ok: false, code: "dialogue_not_in_script" };
       }
+      // A line spoken by a frozen character makes the shot depend on that character: its key must be referenced, so the
+      // shot's character reference (and staleness on a new character revision) follows. Another character's key does not
+      // count; with several characters of that name the answer must name one of them (none is chosen here). A speaker who
+      // is no frozen character (narration, an extra) needs no key and none is invented.
+      const candidates = byName.get(speaker);
+      if (candidates && !candidates.some((key) => shot.characterKeys.includes(key))) return { ok: false, code: "missing_reference" };
     }
   }
   const total = plannedTotalSeconds(output);

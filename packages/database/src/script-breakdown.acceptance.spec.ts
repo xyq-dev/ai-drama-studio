@@ -34,6 +34,7 @@ import {
   type TitleCallRecord,
   type TitleRunRecord,
   type TitleWritingFrozenInput,
+  isScriptBreakdownInput,
 } from "@ai-drama/contracts";
 import { canonicalInputHash } from "@ai-drama/domain";
 import { runMigrations, type MigrationResult } from "./migrations";
@@ -153,6 +154,14 @@ async function addCharacter(ws: string, project: string, scriptRevisionId: strin
 
 /** What the API does at start: freeze the source through the store, then create the run. */
 async function startBreakdown(ws: string, project: string, episodeId: string, key: string = randomUUID()): Promise<TitleRunRecord> {
+  const record = await breakdownRecord(ws, project, episodeId, key);
+  const created = await store.createRun(record, { maxActiveRuns: 10, quota: { sinceIso: "2000-01-01T00:00:00.000Z", maxCallsPerDay: 1000, requiredCalls: 1 } });
+  expect(created.kind).toBe("created");
+  return record;
+}
+
+/** The run record a breakdown start would create from the episode's current source (not yet created). */
+async function breakdownRecord(ws: string, project: string, episodeId: string, key: string): Promise<TitleRunRecord> {
   const source = await store.breakdownSource(ws, project, episodeId);
   if (source.kind !== "ok") throw new Error(`source ${source.kind}`);
   const frozen: ScriptBreakdownFrozenInput = {
@@ -169,8 +178,6 @@ async function startBreakdown(ws: string, project: string, episodeId: string, ke
     errorCode: null, cancelRequestedAt: null, executorId: null, leaseUntil: null, callCap: SCRIPT_BREAKDOWN_CALL_CAP, callsUsed: 0,
     storySave: "pending", storyRevisionId: null, breakdownSave: "pending", createdAt: at, updatedAt: at,
   };
-  const created = await store.createRun(record, { maxActiveRuns: 10, quota: { sinceIso: "2000-01-01T00:00:00.000Z", maxCallsPerDay: 1000, requiredCalls: 1 } });
-  expect(created.kind).toBe("created");
   return record;
 }
 
@@ -703,6 +710,89 @@ describe("script breakdown on PostgreSQL", () => {
     expect(again.kind === "ok" && again.outcome.placed).toEqual([]);
     expect(await shots()).toEqual(written);
     evidence.editedScenePrompts = { scenes: 2, shots: written.length };
+  });
+
+  it("resumes a stopped run whose answer was stored but not saved without the provider, and saves it once", async () => {
+    const { ws, project, episodes } = await work(1);
+    const episode = episodes[0]!;
+    const record = await startBreakdown(ws, project, episode.id);
+    const executor = await answer(record, outputOf(1, 1, null));
+    // The engine saw a cancel before saving: the run stops with a completed step and an unsaved answer.
+    expect(await store.finishRun(ws, record.id, executor, "canceled", null, now())).toBe(true);
+    const before = await runTrace(record.id);
+    expect(before).toMatchObject({ state: "canceled", callsUsed: 1, calls: 1, resumes: 0, step: "completed" });
+    const save = (key: string) => store.prepareResume(ws, project, record.id, { resumeKey: key, requestHash: "a".repeat(64), confirmedCallIds: [],
+      maxActiveRuns: 10, providerReady: false }, now());
+    expect((await save("save-1")).kind).toBe("ok");
+    expect(await runTrace(record.id)).toMatchObject({ state: "running", callsUsed: 1, calls: 1, resumes: 1, step: "completed" });
+    const saver = `saver-${record.id.slice(0, 8)}`;
+    expect(await store.claimRun(ws, record.id, saver, now(), later(60_000))).toBe(true);
+    expect(await store.saveBreakdown(ws, record.id, saver, "server-owner", now())).toBe("saved");
+    expect(await store.saveBreakdown(ws, record.id, saver, "server-owner", now())).toBe("saved");
+    expect(await store.finishRun(ws, record.id, saver, "completed", null, now())).toBe(true);
+    expect(await liveScenes(episode.id)).toHaveLength(1);
+    expect((await save("save-1")).kind).toBe("replayed");
+    expect((await save("save-2")).kind).toBe("not_resumable");
+    expect(await runTrace(record.id)).toMatchObject({ state: "completed", callsUsed: 1, calls: 1, resumes: 1 });
+  });
+
+  it("keeps the provider requirement for a resume that sends again", async () => {
+    const { ws, project, episodes } = await work(1);
+    const record = await startBreakdown(ws, project, episodes[0]!.id);
+    await failOnce(record);
+    const before = await runTrace(record.id);
+    expect(await store.prepareResume(ws, project, record.id, { resumeKey: "resend", requestHash: "a".repeat(64), confirmedCallIds: [],
+      maxActiveRuns: 10, providerReady: false }, now())).toEqual({ kind: "provider_unconfigured" });
+    expect(await runTrace(record.id)).toEqual(before);
+  });
+
+  it("references the speaking character from the written shot, and a new character revision makes that shot STALE", async () => {
+    const { ws, project, episodes } = await work(1);
+    const episode = episodes[0]!;
+    const scriptId = (await episodeRow(episode.id)).current_script_revision_id!;
+    const character = await addCharacter(ws, project, scriptId, "林夏");
+    const record = await startBreakdown(ws, project, episode.id);
+    const executor = await answer(record, outputOf(1, 1, "C1"));
+    expect(await store.saveBreakdown(ws, record.id, executor, "server-owner", now())).toBe("saved");
+    const scene = (await liveScenes(episode.id))[0]!;
+    await approveScene(ws, project, episode.id, scene.id);
+    const placed = await store.placeBreakdownShots(ws, project, episode.id, record.id, { acceptSceneChanged: false }, "editor", now());
+    expect(placed.kind === "ok" && placed.outcome.placed).toEqual(["S1"]);
+    const speaking = (await pool.query<{ id: string }>(
+      `SELECT r.id FROM shot s JOIN shot_revision r ON r.id = s.current_revision_id WHERE s.scene_id = $1 AND r.dialogue IS NOT NULL`, [scene.id])).rows;
+    expect(speaking).toHaveLength(1);
+    expect((await pool.query("SELECT 1 FROM shot_character_reference WHERE shot_revision_id = $1 AND character_revision_id = $2",
+      [speaking[0]!.id, character.revisionId])).rows).toHaveLength(1);
+    const version = (await pool.query<{ row_version: number }>("SELECT row_version FROM character WHERE id = $1", [character.entityId])).rows[0]!.row_version;
+    await tx((client) => chain.createTextEntityRevisionInTransaction(client, { kind: "character", workspaceId: ws, projectId: project, entityId: character.entityId,
+      name: "林夏", sourceScriptRevisionId: scriptId, content: { name: "林夏", note: "改了设定" }, createdBy: "editor", expectedVersion: version }));
+    expect((await pool.query<{ freshness_status: string }>("SELECT freshness_status FROM shot_revision WHERE id = $1", [speaking[0]!.id])).rows[0]!.freshness_status)
+      .toBe("STALE");
+    evidence.speakerReference = { references: 1, staleAfterCharacterRevision: true };
+  });
+
+  it("answers a start of either kind with the other kind's running run as active, and replays an existing key first", async () => {
+    const { ws, project, episodes } = await work(1);
+    const titleInput: TitleWritingFrozenInput = { schema: TITLE_WRITING_INPUT_SCHEMA, promptVersion: TITLE_WRITING_PROMPT_VERSION, title: "互斥",
+      settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey: "qwen", model: "q-1" };
+    const at = now();
+    const titleRun: TitleRunRecord = { id: randomUUID(), workspaceId: ws, projectId: project, actorId: "server-owner", idempotencyKey: "title-key",
+      inputHash: canonicalInputHash({ projectId: project, input: titleInput }), input: titleInput, state: "running", errorCode: null, cancelRequestedAt: null,
+      executorId: null, leaseUntil: null, callCap: 8, callsUsed: 0, storySave: "pending", storyRevisionId: null, createdAt: at, updatedAt: at };
+    expect((await store.createRun(titleRun, { maxActiveRuns: 10 })).kind).toBe("created");
+    // A breakdown start while the title run runs: the active run is the title run, and nothing is created.
+    const blocked = await store.createRun(await breakdownRecord(ws, project, episodes[0]!.id, "breakdown-key"), { maxActiveRuns: 10 });
+    expect(blocked.kind === "active" && [blocked.bundle.run.id, isScriptBreakdownInput(blocked.bundle.run.input)]).toEqual([titleRun.id, false]);
+    const titleExecutor = "title-exec";
+    expect(await store.claimRun(ws, titleRun.id, titleExecutor, now(), later(60_000))).toBe(true);
+    expect(await store.finishRun(ws, titleRun.id, titleExecutor, "canceled", null, now())).toBe(true);
+    // Then a breakdown runs: a new title start sees the breakdown as the active run, and the old title key still replays.
+    const breakdown = await startBreakdown(ws, project, episodes[0]!.id);
+    const busy = await store.createRun({ ...titleRun, id: randomUUID(), idempotencyKey: "title-key-2" }, { maxActiveRuns: 10 });
+    expect(busy.kind === "active" && [busy.bundle.run.id, isScriptBreakdownInput(busy.bundle.run.input)]).toEqual([breakdown.id, true]);
+    const replay = await store.createRun({ ...titleRun, id: randomUUID() }, { maxActiveRuns: 10 });
+    expect([replay.kind, replay.kind !== "blocked" && replay.bundle.run.id]).toEqual(["existing", titleRun.id]);
+    expect(Number((await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM title_writing_run WHERE project_id = $1", [project])).rows[0]!.n)).toBe(2);
   });
 
   it("returns the same run for the same key and refuses the key for another request", async () => {

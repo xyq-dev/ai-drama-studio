@@ -61,6 +61,7 @@ const MESSAGES: Record<string, string> = {
   TITLE_WRITING_PROVIDER_UNCONFIGURED: "所选模型服务还没有配置完整，没有启动任何调用。",
   TITLE_WRITING_MODEL_UNAVAILABLE: "所选模型不在服务端允许的列表中。",
   TITLE_WRITING_RUN_ACTIVE: "这部作品已有一次创作正在进行。",
+  TITLE_WRITING_OTHER_TASK_ACTIVE: "这部作品正在进行剧本拆解，标题创作暂时不能开始。没有创建任务，也没有发出调用。",
   TITLE_WRITING_ACTIVE_RUN_CAP: "同时进行的创作已达上限，请等当前创作结束。",
   IDEMPOTENCY_KEY_REUSED: "同一个请求标识被用于不同的内容，已拒绝。",
   TITLE_WRITING_NEEDS_CONFIRMATION: "有结果不确定的调用，可能已经计费。确认后才会重新发送。",
@@ -224,7 +225,13 @@ export class TitleWritingService {
         : failure(429, created.code);
     }
     if (created.kind === "conflict") return failure(409, "IDEMPOTENCY_KEY_REUSED");
-    if (created.kind === "active") return failure(409, "TITLE_WRITING_RUN_ACTIVE", { runId: created.bundle.run.id });
+    // One AI task per work. Only a running title run is offered to be opened; a running script breakdown is named as the
+    // other task and its run id is not exposed as a title run (the writing page could not show it).
+    if (created.kind === "active") {
+      return isScriptBreakdownRun(created.bundle.run)
+        ? failure(409, "TITLE_WRITING_OTHER_TASK_ACTIVE", { taskKind: "script_breakdown" })
+        : failure(409, "TITLE_WRITING_RUN_ACTIVE", { runId: created.bundle.run.id });
+    }
     if (created.bundle.run.projectId !== projectId || isScriptBreakdownRun(created.bundle.run)) return failure(409, "IDEMPOTENCY_KEY_REUSED");
     if (created.kind === "created") this.schedule(created.bundle.run.id);
     return this.found(created.bundle, created.kind === "created" ? 201 : 200);

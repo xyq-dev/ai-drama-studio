@@ -125,6 +125,9 @@ function startError(caught: unknown, projectCreated: boolean): string {
   if (caught instanceof TitleWritingError) {
     const missing = Array.isArray(caught.details?.missing) ? (caught.details.missing as string[]).join("、") : "";
     if (caught.code === "TITLE_WRITING_FORBIDDEN") return `${work}操作者令牌不正确，本次请求没有被受理。${previous}改正令牌后可以重试上次请求。`;
+    if (caught.code === "TITLE_WRITING_OTHER_TASK_ACTIVE") {
+      return `${work}这部作品正在进行剧本拆解，标题创作暂时不能开始。本次请求没有创建任务，也没有发出模型调用。等拆解结束后，可以重试上次请求（使用同一个请求标识）。`;
+    }
     if (caught.code === "TITLE_WRITING_PROVIDER_UNCONFIGURED") return `${work}所选模型服务没有配置完整${missing ? `（缺少 ${missing}）` : ""}，本次请求没有被受理。${previous}`;
     if (caught.code === "TITLE_WRITING_DAILY_QUOTA_LOW") {
       const required = Number(caught.details?.requiredCalls);

@@ -171,9 +171,34 @@ describe("script breakdown output checks", () => {
     const three = output({
       scenes: [...output().scenes, { key: "S3", heading: "码头", timeOfDay: "晨", description: "两人离开。" }],
       shots: [shot("S1-1", "S1"), shot("S2-1", "S2"), shot("S2-2", "S2"), shot("S2-3", "S2"), shot("S3-1", "S3"),
-        { ...shot("S3-2", "S3"), dialogue: [{ speaker: "周野", line: "走吧。" }] }],
+        { ...shot("S3-2", "S3"), dialogue: [{ speaker: "周野", line: "走吧。" }], characterKeys: ["C2"] }],
     });
     expect(check(three, input({ scriptText: script }))).toEqual({ ok: true, output: three });
+  });
+
+  it("requires the key of the frozen character who speaks a line; another character's key does not count", () => {
+    const [a, b, c] = output().shots;
+    // S1-2: 林夏 (C1) speaks. Missing key, or only 周野's key: refused.
+    expect(check(output({ shots: [a!, { ...b!, characterKeys: [] }, c!] }))).toEqual({ ok: false, code: "missing_reference" });
+    expect(check(output({ shots: [a!, { ...b!, characterKeys: ["C2"] }, c!] }))).toEqual({ ok: false, code: "missing_reference" });
+    expect(check(output({ shots: [a!, b!, { ...c!, characterKeys: ["C1"] }] }))).toEqual({ ok: false, code: "missing_reference" });
+    // The speaker's key alongside others passes; the spoken name is matched as the dialogue rules match it.
+    expect(check(output({ shots: [a!, { ...b!, characterKeys: ["C2", "C1"] }, c!] })).ok).toBe(true);
+    expect(check(output({ shots: [a!, { ...b!, dialogue: [{ speaker: "林 夏", line: "这不是我。" }], characterKeys: ["C1"] }, c!] })).ok).toBe(true);
+  });
+
+  it("asks nothing of a speaker who is not a frozen character, and takes no guess between characters of one name", () => {
+    const [a, b, c] = output().shots;
+    // 周野 is not a frozen character here: his line needs no key (and none is invented).
+    const onlyLinXia = input({ characters: [input().characters[0]!] });
+    expect(check(output({ shots: [a!, b!, { ...c!, characterKeys: [] }] }), onlyLinXia).ok).toBe(true);
+    // Two characters named 林夏: the line needs one of them, chosen by the answer; none is refused, either one passes.
+    const twins = input({ characters: [input().characters[0]!, { ...input().characters[1]!, name: "林夏" }] });
+    const linXiaShots = (keys: string[]) => output({ shots: [{ ...a!, characterKeys: [] }, { ...b!, characterKeys: keys }, { ...c!, characterKeys: [] }] });
+    // 周野's line in S2-1 now has no frozen character, so only S1-2 matters.
+    expect(check(linXiaShots([]), twins)).toEqual({ ok: false, code: "missing_reference" });
+    expect(check(linXiaShots(["C1"]), twins).ok).toBe(true);
+    expect(check(linXiaShots(["C2"]), twins).ok).toBe(true);
   });
 
   it("refuses dialogue or a speaker that is not in the frozen script, ignoring only whitespace and outer quotes", () => {

@@ -471,3 +471,43 @@ describe("start identity: confirming a sent start, reading settings again, relea
     expect(stored(E2)?.key).toBe(E2_KEY);
   });
 });
+
+describe("saving an answer that a cancel left unsaved", () => {
+  const completedCall = { callId: "99999999-bbbb-4bbb-8bbb-bbbbbbbbbbbb", stepKey: "breakdown", attemptNo: 1, state: "completed", providerKey: "qwen",
+    model: "q-1", outcome: null, rejectionCode: null, usage: null, billing: "unknown", createdAt: "2026-10-12T00:00:00Z" } as unknown as ScriptBreakdownRunView["calls"][number];
+  const unsaved = (overrides: Partial<ScriptBreakdownRunView> = {}) => run({ state: "canceled", save: "pending", scenes: [],
+    step: { state: "completed", attemptNo: 1, errorCode: null }, calls: [completedCall], ...overrides });
+  const saveButton = () => screen.queryByRole<HTMLButtonElement>("button", { name: "保存已有结果（不再调用模型）" });
+
+  it("offers to save the stored answer without a billing confirmation or a resend, once per click", async () => {
+    const h = harness(unsaved(), [json({ run: run({ state: "running", save: "pending", scenes: [], step: { state: "completed", attemptNo: 1, errorCode: null } }) })]);
+    panel(h);
+    fireEvent.change(await screen.findByLabelText("操作者令牌"), { target: { value: TOKEN } });
+    expect(screen.getByTestId("breakdown-save-only").textContent).toContain("不会再次调用模型");
+    expect(screen.queryByRole("checkbox", { name: /可能已经计费/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: "续跑（重新发送一次调用）" })).toBeNull();
+    const save = saveButton()!;
+    fireEvent.click(save);
+    fireEvent.click(save);
+    await screen.findByText(/状态：进行中/);
+    const posts = h.seen.filter((item) => item.method === "POST");
+    expect(posts).toHaveLength(1);
+    expect([posts[0]!.url, posts[0]!.body]).toEqual([`/api/v1/projects/${P1}/episodes/${E1}/script-breakdowns/${RUN}/resume`, { confirmUncertainCallIds: [] }]);
+  });
+
+  it("offers no save once the source is no longer valid, after saving, or while running", async () => {
+    for (const shown of [
+      unsaved({ episodeScript: { currentRevisionId: "88888888-8888-4888-8888-888888888888", currentRevisionNo: 3, approved: false } }),
+      unsaved({ episodeScript: { currentRevisionId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", currentRevisionNo: 4, approved: true } }),
+      unsaved({ save: "source_changed" }),
+      unsaved({ state: "completed", save: "saved" }),
+      unsaved({ state: "running" }),
+    ]) {
+      panel(harness(shown));
+      await screen.findByText(/状态：/);
+      expect(saveButton()).toBeNull();
+      expect(screen.queryByRole("button", { name: "续跑（重新发送一次调用）" })).toBeNull();
+      cleanup();
+    }
+  });
+});

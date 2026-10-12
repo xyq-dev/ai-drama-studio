@@ -129,10 +129,11 @@ export interface TitleCallFinish {
  * stale_confirmation: the confirmed calls are not exactly the current uncertain calls.
  * key_conflict: the key was used for a different confirmation on this run.
  * source_changed: a script breakdown whose frozen script was replaced, left unapproved or made STALE; nothing changes.
+ * provider_unconfigured: the resume would send a call again but the run's provider or model cannot send; nothing changes.
  */
 export type TitleResumePreparation =
   | { kind: "ok" | "replayed"; bundle: TitleRunBundle }
-  | { kind: "not_resumable" | "needs_confirmation" | "stale_confirmation" | "key_conflict" | "active" | "active_cap" | "not_found" | "source_changed" };
+  | { kind: "not_resumable" | "needs_confirmation" | "stale_confirmation" | "key_conflict" | "active" | "active_cap" | "not_found" | "source_changed" | "provider_unconfigured" };
 
 export interface TitleResumeRequest {
   /** Identity of one resume action, from the Idempotency-Key header. */
@@ -141,6 +142,11 @@ export interface TitleResumeRequest {
   requestHash: string;
   confirmedCallIds: readonly string[];
   maxActiveRuns: number;
+  /**
+   * Whether the run's provider and model can send now. Consulted only when this resume resets a step that sends a call;
+   * a resume that only saves a stored answer needs no provider. Absent means ready (the caller checked already).
+   */
+  providerReady?: boolean;
 }
 
 /** What a breakdown start reads, in one consistent snapshot, before anything is created or sent. */

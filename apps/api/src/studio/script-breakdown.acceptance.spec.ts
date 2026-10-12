@@ -57,7 +57,7 @@ const scenarios = evidence.scenarios as Record<string, unknown>;
 // Model double: answers each breakdown prompt from the script copy inside it, unless told otherwise for an episode.
 interface Sent { episodeNo: number; script: string; keyMatches: boolean; endpoint: string }
 const sent: Sent[] = [];
-const overrides = new Map<string, () => { status: number; body: unknown }>();
+const overrides = new Map<string, (user: string) => { status: number; body: unknown } | Promise<{ status: number; body: unknown }>>();
 
 const transport: WritingTransport = async (request) => {
   const body = JSON.parse(request.body) as { messages?: Array<{ role: string; content: string }> };
@@ -68,7 +68,7 @@ const transport: WritingTransport = async (request) => {
   sent.push({ episodeNo: parts.episodeNo, script: parts.script, keyMatches: (headers.Authorization ?? headers.authorization) === `Bearer ${STUB_KEY}`,
     endpoint: `${endpoint.host}${endpoint.pathname}` });
   const marker = /标记：(\S+)/.exec(parts.script)?.[1] ?? "";
-  const answer = overrides.get(marker)?.() ?? { status: 200, body: chatAnswer(fixtureBreakdownFromPrompt(user)) };
+  const answer = await overrides.get(marker)?.(user) ?? { status: 200, body: chatAnswer(fixtureBreakdownFromPrompt(user)) };
   return {
     status: answer.status,
     headers: { get: (name: string) => name.toLowerCase() === "x-request-id" ? `stub-${String(sent.length)}` : null },
@@ -565,6 +565,66 @@ describe("script breakdown over real HTTP and PostgreSQL, model stubbed", () => 
     expect(goodRevision.status, JSON.stringify(goodRevision.body)).toBe(201);
     expect(await revisions()).toBe(count + 2);
     scenarios.wholeSeconds = { refusedCreate: [1501, 999, 15001], refusedRevise: [2500], accepted: [15000, 1000] };
+  });
+
+  it("saves an answer that arrived before a cancel without the provider or another call, once, and refuses it after a source change", async () => {
+    const { projectId, storyId, episodes } = await work(2, "saveonly");
+    const valid = (user: string) => ({ status: 200, body: chatAnswer(fixtureBreakdownFromPrompt(user)) });
+    // The cancel is sent through the API while the call is out and is committed before the answer comes back.
+    const cancelWhileOut = (episodeId: string) => async (user: string) => {
+      const running = await latest(projectId, episodeId);
+      const canceled = await http("POST", `${base(projectId, episodeId)}/${running!.runId}/cancel`);
+      expect(canceled.status).toBe(200);
+      return valid(user);
+    };
+    const stopped = async (episode: { id: string; episodeNo: number }) => {
+      overrides.set(`saveonly-${String(episode.episodeNo)}`, cancelWhileOut(episode.id));
+      expect((await http("POST", base(projectId, episode.id), { body: {}, headers: operator() })).status).toBe(201);
+      const run = await settled(projectId, episode.id);
+      overrides.delete(`saveonly-${String(episode.episodeNo)}`);
+      expect([run.state, run.step.state, run.save, run.callsUsed, run.output !== null]).toEqual(["canceled", "completed", "pending", 1, true]);
+      expect(await scenesOf(projectId, episode.id)).toHaveLength(0);
+      return run;
+    };
+    const ledger = async (runId: string) => (await q<{ calls_used: number; calls: number; resumes: number }>(
+      `SELECT calls_used, (SELECT count(*)::int FROM title_writing_call WHERE run_id = r.id) AS calls,
+              (SELECT count(*)::int FROM title_writing_resume WHERE run_id = r.id) AS resumes FROM title_writing_run r WHERE id = $1`, [runId])).rows[0]!;
+    const [first, second] = episodes;
+    const run = await stopped(first!);
+    const sends = sent.length;
+    const original = { providers: breakdownDeps.providers, defaultProvider: breakdownDeps.defaultProvider };
+    try {
+      breakdownDeps.providers = titleWritingProviderConfigs({});
+      breakdownDeps.defaultProvider = null;
+      const keys = [randomUUID(), randomUUID()];
+      const path = `${base(projectId, first!.id)}/${run.runId}/resume`;
+      const both = await Promise.all(keys.map((key) => http("POST", path, { body: {}, headers: operator(key) })));
+      const accepted = both.flatMap((item, index) => item.status === 200 ? [keys[index]!] : []);
+      expect(accepted, JSON.stringify(both.map((item) => item.body))).toHaveLength(1);
+      const accepter = accepted[0]!;
+      expect(both.find((item) => item.status !== 200)!.status).toBe(409);
+      const done = await settled(projectId, first!.id);
+      expect([done.state, done.save, done.callsUsed]).toEqual(["completed", "saved", 1]);
+      const replay = await http("POST", path, { body: {}, headers: operator(accepter) });
+      expect([replay.status, replay.body.run.save]).toEqual([200, "saved"]);
+    } finally {
+      breakdownDeps.providers = original.providers;
+      breakdownDeps.defaultProvider = original.defaultProvider;
+    }
+    expect(sent.length).toBe(sends);
+    expect(await ledger(run.runId)).toEqual({ calls_used: 1, calls: 1, resumes: 1 });
+    expect(await scenesOf(projectId, first!.id)).toHaveLength(run.output!.scenes.length);
+
+    const changed = await stopped(second!);
+    await saveScript(projectId, storyId, second!.id, scriptOf(2, 1, "saveonly-2b"));
+    const refused = await http("POST", `${base(projectId, second!.id)}/${changed.runId}/resume`, { body: {}, headers: operator() });
+    expect([refused.status, refused.body.error.code]).toEqual([409, "SCRIPT_BREAKDOWN_SOURCE_CHANGED"]);
+    const kept = await latest(projectId, second!.id);
+    expect([kept!.state, kept!.save, kept!.output !== null]).toEqual(["canceled", "pending", true]);
+    expect(await scenesOf(projectId, second!.id)).toHaveLength(0);
+    expect(await ledger(changed.runId)).toEqual({ calls_used: 1, calls: 1, resumes: 0 });
+    scenarios.saveOnly = { canceledBeforeSave: true, providerDisabled: true, concurrentResumes: { accepted: 1, refused: 1 }, sends: 0,
+      scenesSavedOnce: true, sourceChanged: 409 };
   });
 
   it("never reaches a provider: every send went to the stub with the stub key", () => {

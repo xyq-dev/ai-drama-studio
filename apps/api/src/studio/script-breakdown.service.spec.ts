@@ -365,3 +365,118 @@ describe("writing shots under an edited, approved scene", () => {
     expect(store.shots).toHaveLength(count);
   });
 });
+
+describe("saving an answer that arrived before a cancel", () => {
+  /** A cancel that lands while the call is out: the answer is stored, and the next pass sees the cancel before saving. */
+  function cancelWhileOut(options: Parameters<typeof setup>[0] = {}) {
+    const box: { cancel?: () => Promise<unknown> } = {};
+    const context = setup({ ...options, override: (_step, attempt) => {
+      if (attempt === 1) void box.cancel?.();
+      return undefined;
+    } });
+    return { ...context, box };
+  }
+  const code = (result: { body: unknown }) => (result.body as { error?: { code: string } }).error?.code;
+
+  async function canceledWithAnswer() {
+    const context = cancelWhileOut();
+    const { service, episode, start, settle, runOf } = context;
+    const runId = runOf(await start()).runId;
+    // The store operation behind the cancel route, applied synchronously while the call is out (no timing involved).
+    context.box.cancel = () => context.store.requestCancel(WS, P1, runId, new Date().toISOString());
+    await settle();
+    const run = runOf(await service.get(P1, episode.episodeId, runId));
+    expect([run.state, run.step.state, run.save, run.callsUsed, run.output !== null]).toEqual(["canceled", "completed", "pending", 1, true]);
+    expect(context.store.scenes).toHaveLength(0);
+    return { ...context, runId };
+  }
+
+  it("saves the stored answer without the provider, a new call or a new reservation, and only once", async () => {
+    const { store, service, episode, settle, runOf, seen, reconfigured, runId } = await canceledWithAnswer();
+    const disabled = reconfigured({}, null);
+    const key = randomUUID();
+    const resumed = await disabled.resume(P1, episode.episodeId, runId, {}, TOKEN, CONTEXT(key));
+    expect(resumed.status).toBe(200);
+    await settle();
+    const run = runOf(await service.get(P1, episode.episodeId, runId));
+    expect([run.state, run.save, run.callsUsed, seen.length, store.calls.length]).toEqual(["completed", "saved", 1, 1, 1]);
+    const scenes = store.scenes.filter((scene) => !scene.archived).length;
+    expect(scenes).toBe(run.output!.scenes.length);
+    // A replay answers from the receipt; another resume finds nothing to do. Nothing is saved twice.
+    expect((await disabled.resume(P1, episode.episodeId, runId, {}, TOKEN, CONTEXT(key))).status).toBe(200);
+    const again = await disabled.resume(P1, episode.episodeId, runId, {}, TOKEN, CONTEXT(randomUUID()));
+    expect([again.status, code(again)]).toEqual([409, "TITLE_WRITING_NOT_RESUMABLE"]);
+    await settle();
+    expect([store.scenes.filter((scene) => !scene.archived).length, seen.length, store.calls.length, store.resumes.length]).toEqual([scenes, 1, 1, 1]);
+  });
+
+  it("refuses to save the stored answer once its source changed, and keeps the answer", async () => {
+    const { store, service, episode, settle, runOf, seen, reconfigured, runId } = await canceledWithAnswer();
+    store.writeScript(episode.episodeId, `${SCRIPT}\n周野：保存前改了。`);
+    const refused = await reconfigured({}, null).resume(P1, episode.episodeId, runId, {}, TOKEN, CONTEXT(randomUUID()));
+    expect([refused.status, code(refused)]).toEqual([409, "SCRIPT_BREAKDOWN_SOURCE_CHANGED"]);
+    await settle();
+    const run = runOf(await service.get(P1, episode.episodeId, runId));
+    expect([run.state, run.save, run.output !== null, store.scenes.length, seen.length, store.resumes.length]).toEqual(["canceled", "pending", true, 0, 1, 0]);
+  });
+
+  it("still holds a resume that sends again to the provider check and to the unknown-call confirmation", async () => {
+    const refusedFirst: Override = (_step, attempt) => attempt === 1
+      ? { status: 200, body: chatAnswer({ schema: "ads.script-breakdown.output.v1", episodeNo: 1, scenes: [], shots: [] }) } : undefined;
+    const rejected = setup({ override: refusedFirst });
+    const runId = rejected.runOf(await rejected.start()).runId;
+    await rejected.settle();
+    const blocked = await rejected.reconfigured({}, null).resume(P1, rejected.episode.episodeId, runId, {}, TOKEN, CONTEXT(randomUUID()));
+    expect([blocked.status, code(blocked)]).toEqual([503, "TITLE_WRITING_PROVIDER_UNCONFIGURED"]);
+    expect([rejected.store.resumes.length, rejected.seen.length]).toEqual([0, 1]);
+
+    const unknown = setup({ override: (_step, attempt) => attempt === 1 ? "hang" : undefined });
+    const unknownRun = unknown.runOf(await unknown.start()).runId;
+    await unknown.settle();
+    const stopped = unknown.runOf(await unknown.service.get(P1, unknown.episode.episodeId, unknownRun));
+    expect([stopped.state, stopped.step.state]).toEqual(["needs_attention", "unknown"]);
+    const unconfirmed = await unknown.service.resume(P1, unknown.episode.episodeId, unknownRun, {}, TOKEN, CONTEXT(randomUUID()));
+    expect([unconfirmed.status, code(unconfirmed)]).toEqual([409, "TITLE_WRITING_NEEDS_CONFIRMATION"]);
+    const confirmed = { confirmUncertainCallIds: stopped.calls.filter((call) => call.state === "unknown").map((call) => call.callId) };
+    const offline = await unknown.reconfigured({}, null).resume(P1, unknown.episode.episodeId, unknownRun, confirmed, TOKEN, CONTEXT(randomUUID()));
+    expect([offline.status, code(offline)]).toEqual([503, "TITLE_WRITING_PROVIDER_UNCONFIGURED"]);
+    expect([unknown.store.resumes.length, unknown.seen.length]).toEqual([0, 1]);
+  });
+});
+
+describe("one AI task per work across title writing and script breakdown", () => {
+  const code = (result: { body: unknown }) => (result.body as { error?: { code: string; details?: Record<string, unknown> } }).error;
+
+  it("tells a title start that a breakdown is running, without offering that run as a title run", async () => {
+    const { store, title, start, runOf, seen } = setup();
+    const breakdown = runOf(await start()).runId;
+    const refused = await title.start(P1, { title: "剧名" }, TOKEN, CONTEXT(randomUUID()));
+    expect([refused.status, code(refused)?.code, code(refused)?.details]).toEqual([409, "TITLE_WRITING_OTHER_TASK_ACTIVE", { taskKind: "script_breakdown" }]);
+    expect(JSON.stringify(refused.body)).not.toContain(breakdown);
+    expect([store.runs.length, seen.length]).toEqual([1, 0]);
+  });
+
+  it("tells a breakdown start that a title run is running, and keeps same-kind and replay answers", async () => {
+    const { store, title, start, episode, service, seen, settle } = setup();
+    const titleKey = randomUUID();
+    const titled = await title.start(P1, { title: "剧名" }, TOKEN, CONTEXT(titleKey));
+    expect(titled.status).toBe(201);
+    const titleRunId = (titled.body as { run: { runId: string } }).run.runId;
+    const refused = await start();
+    expect([refused.status, code(refused)?.code, code(refused)?.details]).toEqual([409, "TITLE_WRITING_RUN_ACTIVE", { taskKind: "title" }]);
+    // The same kind still opens the running run; the original request still replays to its own run.
+    const sameKind = await title.start(P1, { title: "另一个" }, TOKEN, CONTEXT(randomUUID()));
+    expect([sameKind.status, code(sameKind)?.code, code(sameKind)?.details]).toEqual([409, "TITLE_WRITING_RUN_ACTIVE", { runId: titleRunId }]);
+    const replay = await title.start(P1, { title: "剧名" }, TOKEN, CONTEXT(titleKey));
+    expect([replay.status, (replay.body as { run: { runId: string } }).run.runId]).toEqual([200, titleRunId]);
+    // After the title run stops, a breakdown runs; the title request still replays to its own run first.
+    await title.cancel(P1, titleRunId);
+    await settle();
+    expect(store.runs.find((item) => item.id === titleRunId)!.state).toBe("canceled");
+    const breakdown = await service.start(P1, episode.episodeId, {}, TOKEN, CONTEXT(randomUUID()));
+    expect(breakdown.status).toBe(201);
+    const later = await title.start(P1, { title: "剧名" }, TOKEN, CONTEXT(titleKey));
+    expect([later.status, (later.body as { run: { runId: string } }).run.runId]).toEqual([200, titleRunId]);
+    expect([store.runs.length, seen.length]).toEqual([2, 0]);
+  });
+});
