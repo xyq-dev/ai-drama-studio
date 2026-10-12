@@ -143,8 +143,8 @@ export interface TitleResumeRequest {
   confirmedCallIds: readonly string[];
   maxActiveRuns: number;
   /**
-   * Whether the run's provider and model can send now. Consulted only when this resume resets a step that sends a call;
-   * a resume that only saves a stored answer needs no provider. Absent means ready (the caller checked already).
+   * Whether the run's provider and model can send now. Consulted only when this resume will send a call (it resets a step,
+   * or a step was never reserved); a resume that only saves a stored answer needs no provider. Absent means ready.
    */
   providerReady?: boolean;
 }

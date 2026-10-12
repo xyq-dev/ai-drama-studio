@@ -17,6 +17,9 @@ interface Operation { runId: string | null; snapshot: number; scope: Reads }
 const refused = (caught: unknown): caught is TitleWritingError => caught instanceof TitleWritingError && caught.status >= 400 && caught.status < 500;
 
 const defaultClient = new ScriptBreakdownClient();
+/** Resume refusals that come after the server found no receipt for the key and that the same request can never pass. */
+const RESUME_RELEASED_BY = new Set(["TITLE_WRITING_CONFIRMATION_STALE", "TITLE_WRITING_NEEDS_CONFIRMATION", "SCRIPT_BREAKDOWN_SOURCE_CHANGED",
+  "TITLE_WRITING_NOT_RESUMABLE"]);
 const POLL_MS = 2_000;
 
 const STATE_TEXT: Record<string, string> = {
@@ -241,7 +244,12 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
       hooks.accepted?.();
       if (shown.current.generation !== mine.snapshot) refresh();
       else { show(next); if (reads.current.inFlight) refresh(); else schedule(next, refresh); }
-      if (hooks.changed || next.save === "saved") await onChanged.current();
+      // The action was accepted and shown. A failing follow-up refresh of the page is reported as such, never as a failed
+      // action (which would invite a second attempt).
+      if (hooks.changed || next.save === "saved") {
+        try { await onChanged.current(); }
+        catch { if (current()) setMessage("操作已完成，但页面其他部分没有刷新成功。请稍后刷新查看最新的场景和镜头。"); }
+      }
     } catch (caught) {
       if (!current()) return;
       hooks.failed?.(caught);
@@ -314,7 +322,12 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
       { confirmUncertainCallIds: pending.confirmed, token: token.trim(), idempotencyKey: pending.key }),
       "请求没有得到回应。再次点击只会重放同一个续跑请求。", {
         accepted: () => { clearPending(pending); setConfirmedFor(null); },
-        failed: (caught) => { if (refused(caught) && !replayResume) { clearPending(pending); setConfirmedFor(null); refresh(); } },
+        failed: (caught) => {
+          // A new resume refused is settled. A restored one is released only by refusals the server gives after finding no
+          // receipt for its key that this body can never pass (its confirmation is stale or missing, the source changed,
+          // nothing is left to resume); lost answers, 5xx, a busy run or a refused token keep it for a replay.
+          if (refused(caught) && (!replayResume || RESUME_RELEASED_BY.has(caught.code))) { clearPending(pending); setConfirmedFor(null); refresh(); }
+        },
       });
   }
 

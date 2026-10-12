@@ -480,3 +480,22 @@ describe("one AI task per work across title writing and script breakdown", () =>
     expect([store.runs.length, seen.length]).toEqual([2, 0]);
   });
 });
+
+describe("resuming a run stopped before its first call was reserved", () => {
+  it("needs the provider, because the resume will send; nothing is recorded while it is unavailable", async () => {
+    const { store, service, episode, start, settle, runOf, seen, reconfigured } = setup({ maxCallsPerDay: 1 });
+    const runId = runOf(await start()).runId;
+    // Another call takes the last one of the day after the start's check: the reservation is refused, nothing is sent.
+    store.calls.push({ id: randomUUID(), runId: randomUUID(), workspaceId: WS, stepKey: "concept", attemptNo: 1, providerKey: "qwen", model: "q-1",
+      requestHash: "0".repeat(64), state: "completed", executorId: "elsewhere", providerRequestId: null, responseModel: null,
+      usage: { status: "unknown", inputTokens: null, outputTokens: null, totalTokens: null }, errorCode: null,
+      createdAt: new Date().toISOString(), finishedAt: new Date().toISOString() });
+    await settle();
+    const stopped = runOf(await service.get(P1, episode.episodeId, runId));
+    expect([stopped.state, stopped.step.state, stopped.save, stopped.callsUsed, seen.length]).toEqual(["failed", "pending", "pending", 0, 0]);
+    const offline = await reconfigured({}, null).resume(P1, episode.episodeId, runId, {}, TOKEN, CONTEXT(randomUUID()));
+    expect([offline.status, (offline.body as { error: { code: string } }).error.code]).toEqual([503, "TITLE_WRITING_PROVIDER_UNCONFIGURED"]);
+    await settle();
+    expect([runOf(await service.get(P1, episode.episodeId, runId)).state, store.resumes.length, seen.length]).toEqual(["failed", 0, 0]);
+  });
+});

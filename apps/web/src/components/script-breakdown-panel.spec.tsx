@@ -511,3 +511,75 @@ describe("saving an answer that a cancel left unsaved", () => {
     }
   });
 });
+
+describe("follow-up refresh and restored resume identities", () => {
+  const OLD_CALL = "99999999-aaaa-4aaa-aaaa-aaaaaaaaaaaa";
+  const NEW_CALL = "99999999-cccc-4ccc-8ccc-cccccccccccc";
+  const RESUME_KEY = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+  const resumeStorage = `ads:breakdown:${P1}:${E1}:resume:v1`;
+  const unknownCall = (callId: string, attemptNo: number) => ({ callId, stepKey: "breakdown", attemptNo, state: "unknown", providerKey: "qwen", model: "q-1",
+    outcome: null, rejectionCode: null, usage: null, billing: "unknown", createdAt: "2026-10-12T00:00:00Z" }) as unknown as ScriptBreakdownRunView["calls"][number];
+  const uncertain = (callId: string, attemptNo: number) => run({ state: "needs_attention", save: "pending", output: null, scenes: [],
+    step: { state: "unknown", attemptNo, errorCode: "executor_lost" }, calls: [unknownCall(callId, attemptNo)] });
+
+  it("reports an accepted shot write as done when only the following page refresh fails", async () => {
+    const placed = run({ scenes: [{ ...run().scenes[0]!, shotSave: "saved" }] });
+    const h = harness(run(), [json({ run: placed, placement: { placed: ["S1"], awaitingApproval: [], sceneChanged: [], charactersChanged: [], unavailable: [] } })]);
+    h.onChanged.mockRejectedValueOnce(new Error("scene list unavailable"));
+    panel(h);
+    fireEvent.click(await screen.findByRole("button", { name: "写入已批准场景的镜头" }));
+    expect(await screen.findByText("已写入：S1")).toBeTruthy();
+    const alert = (await screen.findByRole("alert")).textContent ?? "";
+    expect(alert).toContain("已完成");
+    expect(alert).toContain("刷新");
+    expect(alert).not.toContain("写入镜头失败");
+    expect(h.seen.filter((item) => item.method === "POST")).toHaveLength(1);
+  });
+
+  it("releases a restored resume refused for a stale confirmation, reads the run again and confirms the current call with a new key", async () => {
+    window.sessionStorage.setItem(resumeStorage, JSON.stringify({ kind: "resume", runId: RUN, confirmed: [OLD_CALL], key: RESUME_KEY }));
+    let latest = uncertain(OLD_CALL, 1);
+    const posts: Seen[] = [];
+    const answers = [
+      () => { latest = uncertain(NEW_CALL, 2); return json({ error: { code: "TITLE_WRITING_CONFIRMATION_STALE", message: "确认的不确定调用和现在的不一致。" } }, 409); },
+      () => json({ run: run({ state: "running", save: "pending", output: null, scenes: [], step: { state: "pending", attemptNo: 2, errorCode: null } }) }),
+    ];
+    const client = new ScriptBreakdownClient((async (input: string, init?: RequestInit) => {
+      if (input.endsWith("/options")) return json(OPTIONS);
+      if (input.endsWith("/latest")) return json({ run: latest });
+      const headers = Object.fromEntries([...new Headers(init?.headers).entries()].map(([name, value]) => [name.toLowerCase(), value]));
+      posts.push({ method: "POST", url: input, headers, body: JSON.parse(String(init?.body)) });
+      return answers.shift()!();
+    }) as unknown as typeof fetch);
+    render(<ScriptBreakdownPanel projectId={P1} episodeId={E1} episodeNo={2} scriptReady sceneCount={0} onOpenScene={vi.fn()}
+      onChanged={vi.fn(async () => undefined)} client={client} />);
+    fireEvent.change(await screen.findByLabelText("操作者令牌"), { target: { value: TOKEN } });
+    fireEvent.click(await screen.findByRole("button", { name: "确认上次续跑结果" }));
+    await waitFor(() => expect(window.sessionStorage.getItem(resumeStorage)).toBeNull());
+    // The run is read again: the current unknown call needs its own confirmation, under a new key.
+    const confirm = await screen.findByRole<HTMLInputElement>("checkbox", { name: /我知道上一次调用结果未知/ });
+    expect(confirm.checked).toBe(false);
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: "续跑（重新发送一次调用）" }).disabled).toBe(true);
+    fireEvent.click(confirm);
+    fireEvent.click(screen.getByRole("button", { name: "续跑（重新发送一次调用）" }));
+    await screen.findByText(/状态：进行中/);
+    expect(posts.map((item) => [item.headers["idempotency-key"] === RESUME_KEY, item.body])).toEqual([
+      [true, { confirmUncertainCallIds: [OLD_CALL] }], [false, { confirmUncertainCallIds: [NEW_CALL] }]]);
+  });
+
+  it("keeps a restored resume identity through a lost answer, a 5xx, a busy run and a refused token", async () => {
+    window.sessionStorage.setItem(resumeStorage, JSON.stringify({ kind: "resume", runId: RUN, confirmed: [OLD_CALL], key: RESUME_KEY }));
+    const h = harness(uncertain(OLD_CALL, 1), [new TypeError("network down"), json({ error: { code: "INTERNAL", message: "x" } }, 502),
+      json({ error: { code: "TITLE_WRITING_RUN_ACTIVE", message: "busy" } }, 409), json({ error: { code: "TITLE_WRITING_FORBIDDEN", message: "token" } }, 403)]);
+    panel(h);
+    fireEvent.change(await screen.findByLabelText("操作者令牌"), { target: { value: TOKEN } });
+    for (let attempt = 1; attempt <= 4; attempt += 1) {
+      await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "确认上次续跑结果" }).disabled).toBe(false));
+      fireEvent.click(screen.getByRole("button", { name: "确认上次续跑结果" }));
+      await waitFor(() => expect(h.seen.filter((item) => item.method === "POST")).toHaveLength(attempt));
+      await screen.findByRole("alert");
+      expect(JSON.parse(window.sessionStorage.getItem(resumeStorage)!)).toMatchObject({ key: RESUME_KEY, confirmed: [OLD_CALL] });
+    }
+    expect(new Set(h.seen.filter((item) => item.method === "POST").map((item) => item.headers["idempotency-key"]))).toEqual(new Set([RESUME_KEY]));
+  });
+});

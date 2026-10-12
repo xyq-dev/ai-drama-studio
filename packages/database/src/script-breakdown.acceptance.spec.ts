@@ -736,6 +736,22 @@ describe("script breakdown on PostgreSQL", () => {
     expect(await runTrace(record.id)).toMatchObject({ state: "completed", callsUsed: 1, calls: 1, resumes: 1 });
   });
 
+  it("keeps the provider requirement for a run stopped before its first call was reserved (pending step)", async () => {
+    const { ws, project, episodes } = await work(1);
+    const record = await startBreakdown(ws, project, episodes[0]!.id);
+    const executor = `stopped-${record.id.slice(0, 8)}`;
+    expect(await store.claimRun(ws, record.id, executor, now(), later(60_000))).toBe(true);
+    expect(await store.finishRun(ws, record.id, executor, "failed", "TITLE_WRITING_DAILY_CAP", now())).toBe(true);
+    const before = await runTrace(record.id);
+    expect(before).toMatchObject({ state: "failed", callsUsed: 0, calls: 0, resumes: 0, step: "pending" });
+    const request = (providerReady: boolean) => ({ resumeKey: `pending-${String(providerReady)}`, requestHash: "a".repeat(64), confirmedCallIds: [],
+      maxActiveRuns: 10, providerReady });
+    expect(await store.prepareResume(ws, project, record.id, request(false), now())).toEqual({ kind: "provider_unconfigured" });
+    expect(await runTrace(record.id)).toEqual(before);
+    expect((await store.prepareResume(ws, project, record.id, request(true), now())).kind).toBe("ok");
+    expect(await runTrace(record.id)).toMatchObject({ state: "running", callsUsed: 0, resumes: 1, step: "pending" });
+  });
+
   it("keeps the provider requirement for a resume that sends again", async () => {
     const { ws, project, episodes } = await work(1);
     const record = await startBreakdown(ws, project, episodes[0]!.id);
