@@ -479,6 +479,94 @@ describe("script breakdown over real HTTP and PostgreSQL, model stubbed", () => 
     scenarios.legacyShotReplay = { replayed: 201, explicitNull: 201, changedDuration: 409, changedContent: 409, newRevisions: 0 };
   });
 
+  it("replays an accepted resume after the provider was disabled or the source changed, and handles concurrent identical requests once", async () => {
+    const { projectId, storyId, episodes } = await work(2, "rreplay");
+    const invalid = (episodeNo: number) => () => ({ status: 200, body: chatAnswer({ schema: "ads.script-breakdown.output.v1", episodeNo, scenes: [], shots: [] }) });
+    const failedRun = async (episode: { id: string; episodeNo: number }) => {
+      expect((await http("POST", base(projectId, episode.id), { body: {}, headers: operator() })).status).toBe(201);
+      const run = await settled(projectId, episode.id);
+      expect(run.state).toBe("failed");
+      return run.runId;
+    };
+    const resumes = async (runId: string) => Number((await q<{ n: number }>("SELECT count(*)::int AS n FROM title_writing_resume WHERE run_id = $1", [runId])).rows[0]!.n);
+    const [first, second] = episodes;
+    // Episode 1: the resumed call is refused again, so the run is failed (not running) when the receipt is replayed.
+    overrides.set("rreplay-1", invalid(1));
+    const runId = await failedRun(first!);
+    const resumeKey = randomUUID();
+    const resumePath = `${base(projectId, first!.id)}/${runId}/resume`;
+    const accepted = await http("POST", resumePath, { body: {}, headers: operator(resumeKey) });
+    expect([accepted.status, accepted.body.run.state]).toEqual([200, "running"]);
+    expect((await settled(projectId, first!.id)).state).toBe("failed");
+    overrides.delete("rreplay-1");
+    const sends = sent.length;
+    const original = { providers: breakdownDeps.providers, defaultProvider: breakdownDeps.defaultProvider };
+    try {
+      breakdownDeps.providers = titleWritingProviderConfigs({});
+      breakdownDeps.defaultProvider = null;
+      const disabled = await http("POST", resumePath, { body: {}, headers: operator(resumeKey) });
+      expect([disabled.status, disabled.body.run?.runId, disabled.body.run?.state], JSON.stringify(disabled.body)).toEqual([200, runId, "failed"]);
+      const fresh = await http("POST", resumePath, { body: {}, headers: operator() });
+      expect([fresh.status, fresh.body.error.code]).toEqual([503, "TITLE_WRITING_PROVIDER_UNCONFIGURED"]);
+    } finally {
+      breakdownDeps.providers = original.providers;
+      breakdownDeps.defaultProvider = original.defaultProvider;
+    }
+    await saveScript(projectId, storyId, first!.id, scriptOf(1, 2, "rreplay-1b"));
+    const concurrent = await Promise.all([1, 2, 3].map(() => http("POST", resumePath, { body: {}, headers: operator(resumeKey) })));
+    expect(concurrent.map((item) => [item.status, item.body.run?.state])).toEqual([[200, "failed"], [200, "failed"], [200, "failed"]]);
+    const other = await http("POST", resumePath, { body: { confirmUncertainCallIds: [randomUUID()] }, headers: operator(resumeKey) });
+    expect([other.status, other.body.error.code]).toEqual([409, "IDEMPOTENCY_KEY_REUSED"]);
+    const newAfterSource = await http("POST", resumePath, { body: {}, headers: operator() });
+    expect([newAfterSource.status, newAfterSource.body.error.code]).toEqual([409, "SCRIPT_BREAKDOWN_SOURCE_CHANGED"]);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(sent.length).toBe(sends);
+    expect(await resumes(runId)).toBe(1);
+    expect((await q<{ state: string }>("SELECT state FROM title_writing_run WHERE id = $1", [runId])).rows[0]!.state).toBe("failed");
+
+    // Episode 2: two identical first resumes at once are prepared once and send once.
+    overrides.set("rreplay-2", invalid(2));
+    const secondRun = await failedRun(second!);
+    overrides.delete("rreplay-2");
+    const secondKey = randomUUID();
+    const before = sent.length;
+    const both = await Promise.all([1, 2].map(() => http("POST", `${base(projectId, second!.id)}/${secondRun}/resume`, { body: {}, headers: operator(secondKey) })));
+    expect(both.map((item) => [item.status, item.body.run?.runId])).toEqual([[200, secondRun], [200, secondRun]]);
+    const done = await settled(projectId, second!.id);
+    expect([done.state, done.save, done.callsUsed]).toEqual(["completed", "saved", 2]);
+    expect([sent.length - before, await resumes(secondRun)]).toEqual([1, 1]);
+    scenarios.resumeReplay = { disabledProvider: 200, sourceChanged: 200, concurrentReplays: 3, otherContent: 409, newDisabled: 503,
+      newSourceChanged: 409, concurrentFirstResumes: { accepted: 2, resumeRecords: 1, sends: 1 } };
+  });
+
+  it("accepts only whole planned seconds on shot create and revise, before anything is written", async () => {
+    const { projectId, episodes } = await work(1, "seconds");
+    const episode = episodes[0]!;
+    expect((await http("POST", base(projectId, episode.id), { body: {}, headers: operator() })).status).toBe(201);
+    const run = await settled(projectId, episode.id);
+    const sceneId = run.scenes[0]!.sceneId;
+    await approveScene(projectId, episode.id, sceneId);
+    const scene = (await scenesOf(projectId, episode.id)).find((item) => item.entityId === sceneId)!;
+    const route = `/projects/${projectId}/episodes/${episode.id}/scenes/${sceneId}/shots`;
+    const body = { sourceSceneRevisionId: scene.currentRevisionId, ordinal: 1, shotType: "中景", camera: "固定机位", action: "林夏停下", promptText: "便利店" };
+    const revisions = async () => Number((await q<{ n: number }>("SELECT count(*)::int AS n FROM shot_revision WHERE project_id = $1", [projectId])).rows[0]!.n);
+    const count = await revisions();
+    for (const plannedDurationMs of [1501, 999, 15001]) {
+      const refused = await http("POST", route, { body: { ...body, plannedDurationMs }, headers: { ...key(), "if-match": String(scene.rowVersion) } });
+      expect([refused.status, refused.body.error.code]).toEqual([400, "VALIDATION_ERROR"]);
+    }
+    expect(await revisions()).toBe(count);
+    const created = await http("POST", route, { body: { ...body, plannedDurationMs: 15000 }, headers: { ...key(), "if-match": String(scene.rowVersion) } });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const revise = `${route}/${String(created.body.entityId)}/revisions`;
+    const badRevision = await http("POST", revise, { body: { ...body, plannedDurationMs: 2500 }, headers: { ...key(), "if-match": String(created.body.rowVersion) } });
+    expect([badRevision.status, badRevision.body.error.code]).toEqual([400, "VALIDATION_ERROR"]);
+    const goodRevision = await http("POST", revise, { body: { ...body, plannedDurationMs: 1000 }, headers: { ...key(), "if-match": String(created.body.rowVersion) } });
+    expect(goodRevision.status, JSON.stringify(goodRevision.body)).toBe(201);
+    expect(await revisions()).toBe(count + 2);
+    scenarios.wholeSeconds = { refusedCreate: [1501, 999, 15001], refusedRevise: [2500], accepted: [15000, 1000] };
+  });
+
   it("never reaches a provider: every send went to the stub with the stub key", () => {
     expect(sent.length).toBeGreaterThan(0);
     expect(sent.every((item) => item.keyMatches)).toBe(true);

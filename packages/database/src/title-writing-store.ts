@@ -528,6 +528,17 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
     });
   }
 
+  async findResume(workspaceId: string, projectId: string, runId: string, resumeKey: string): Promise<{ requestHash: string } | null> {
+    const result = await this.query(
+      `SELECT resume.request_hash FROM title_writing_resume resume
+         JOIN title_writing_run run ON run.id = resume.run_id AND run.workspace_id = resume.workspace_id
+        WHERE resume.run_id = $1 AND resume.idempotency_key = $2 AND run.workspace_id = $3 AND run.project_id = $4`,
+      [runId, resumeKey, workspaceId, projectId],
+    );
+    const row = result.rows[0];
+    return row ? { requestHash: String(row.request_hash) } : null;
+  }
+
   async recoverExpired(workspaceId: string, nowIso: string): Promise<number> {
     return this.transaction(async (client) => {
       const expired = await client.query<Row>(
@@ -933,7 +944,7 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
         const sceneId = String(link.scene_id);
         const scene = await client.query<Row>(
           `SELECT scene.archived_at IS NOT NULL AS archived, scene.current_revision_id, scene.approved_revision_id,
-                  revision.review_status, revision.freshness_status, revision.source_script_revision_id
+                  revision.review_status, revision.freshness_status, revision.source_script_revision_id, revision.heading, revision.time_of_day
              FROM scene LEFT JOIN scene_revision revision ON revision.id = scene.approved_revision_id
             WHERE scene.id = $1 AND scene.workspace_id = $2 AND scene.project_id = $3 AND scene.episode_id = $4 FOR UPDATE OF scene`,
           [sceneId, workspaceId, projectId, episodeId],
@@ -960,7 +971,10 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
         const planned = shotsOfScene(output, sceneKey);
         const references = planned.map((shot) => shot.characterKeys.map((key) => input.characters.find((item) => item.key === key)!));
         if (!await this.charactersCurrent(client, workspaceId, projectId, references.flat())) { outcome.charactersChanged.push(sceneKey); continue; }
-        const generatedScene = output.scenes.find((item) => item.key === sceneKey)!;
+        // The prompt's place and time come from the approved revision the shots will point to (an accepted edit
+        // included), read under the scene lock above; the shot plan, action and dialogue stay as proposed.
+        const approvedScene = { ...output.scenes.find((item) => item.key === sceneKey)!,
+          heading: String(sceneRow.heading), timeOfDay: (sceneRow.time_of_day as string | null) ?? "" };
         await client.query("SAVEPOINT script_breakdown_shots");
         try {
           for (const [index, shot] of planned.entries()) {
@@ -970,7 +984,7 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
               workspaceId, projectId, sceneId, sourceSceneRevisionId: approvedId, ordinal: index + 1,
               shotType: shot.shotType.trim(), camera: shot.camera.trim(), action: shot.action.trim(),
               dialogue: breakdownDialogueText(shot), durationHint: null, plannedDurationMs: shot.plannedSeconds * 1000,
-              promptText: breakdownShotPromptText(generatedScene, shot), createdBy: actorId,
+              promptText: breakdownShotPromptText(approvedScene, shot), createdBy: actorId,
               expectedVersion: Number(version.rows[0]?.row_version), traceId,
             });
             await this.textChain.addShotCharacterReferencesInTransaction(client, {

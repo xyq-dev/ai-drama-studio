@@ -296,14 +296,20 @@ export class ScriptBreakdownService {
     if (!parsed.success) return failure(400, "VALIDATION_ERROR", { field: parsed.error.issues[0]?.path.join(".") ?? "body" });
     const existing = this.ofEpisode(await this.deps.store.getRun(this.deps.workspaceId, projectId, runId), projectId, episodeId);
     if (!existing) return failure(404, "NOT_FOUND");
+    const confirmed = parsed.data.confirmUncertainCallIds;
+    const requestHash = hashTitleResume(runId, confirmed);
+    // An accepted resume is answered from its receipt (read only, nothing prepared or sent) before the current gates: the
+    // provider may have been disabled, the source changed or the run moved on since, and a lost response must stay
+    // recoverable. Only a new resume is held to the provider, source and state checks below.
+    const receipt = await this.deps.store.findResume(this.deps.workspaceId, projectId, runId, context.idempotencyKey);
+    if (receipt) return receipt.requestHash === requestHash ? this.view(existing) : failure(409, "IDEMPOTENCY_KEY_REUSED");
     const provider = this.deps.providers[existing.run.input.providerKey];
     if (!provider.ok || !provider.models.includes(existing.run.input.model)) {
       return failure(503, "TITLE_WRITING_PROVIDER_UNCONFIGURED", { providerKey: existing.run.input.providerKey, missing: provider.ok ? [] : provider.missing });
     }
-    const confirmed = parsed.data.confirmUncertainCallIds;
     const prepared = await this.deps.store.prepareResume(this.deps.workspaceId, projectId, runId, {
       resumeKey: context.idempotencyKey,
-      requestHash: hashTitleResume(runId, confirmed),
+      requestHash,
       confirmedCallIds: confirmed,
       maxActiveRuns: this.deps.maxActiveRuns,
     }, this.now().toISOString());

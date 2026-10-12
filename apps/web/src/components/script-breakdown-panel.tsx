@@ -255,9 +255,17 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
     run.calls.map((call) => ({ callId: call.callId, stepKey: call.stepKey, attemptNo: call.attemptNo, state: call.state }))) : [];
   const uncertainKey = `${run?.runId ?? ""}:${uncertain.join(",")}`;
   const confirmUncertain = confirmedFor === uncertainKey;
+  // The source is valid only while the frozen revision is still the episode's current one AND approved and fresh: the
+  // same revision can go STALE (an upstream story change) or stop being the approved one without its id changing.
+  const sourceReplaced = run !== null && run.episodeScript.currentRevisionId !== run.scriptRevisionId;
+  const sourceInvalid = run !== null && !sourceReplaced && !run.episodeScript.approved;
+  const sourceOutdated = sourceReplaced || sourceInvalid;
   const replayResume = pendingResume?.runId === run?.runId ? pendingResume : null;
+  // Confirming an already sent resume is always possible (it only reads its receipt). A new resume is offered only where
+  // the server accepts one: a stopped run with its result unsaved, a valid source, and a step that was refused, unknown,
+  // canceled or never reserved (pending, e.g. a quota race or a provider unconfigured before the call).
   const resumable = run !== null && (replayResume !== null || (run.state !== "running" && run.state !== "completed" && run.save === "pending"
-    && (run.step.state === "rejected" || run.step.state === "unknown" || run.step.state === "canceled")));
+    && !sourceOutdated && (run.step.state === "rejected" || run.step.state === "unknown" || run.step.state === "canceled" || run.step.state === "pending")));
 
   function resume() {
     if (!run || !resumable || identityError || operation.current || token.trim().length === 0 || (!replayResume && uncertain.length > 0 && !confirmUncertain)) return;
@@ -289,7 +297,6 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
 
   // Only a confirmed stop/terminal snapshot makes a cancel failure irrelevant; an ordinary poll does not.
   const visibleMessage = cancelFailed && run && (run.cancelRequested || run.state !== "running") ? null : message;
-  const sourceOutdated = run !== null && run.episodeScript.currentRevisionId !== run.scriptRevisionId;
   const pendingShots = run?.save === "saved" && run.scenes.some((scene) => scene.shotSave === "pending");
 
   return (
@@ -341,7 +348,7 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
         <div className="mt-4 space-y-3" data-testid="breakdown-run">
           <p className="text-sm [overflow-wrap:anywhere]">
             状态：{STATE_TEXT[run.state] ?? run.state}
-            {" · "}来源：第 {run.scriptRevisionNo} 版剧本{sourceOutdated ? `（当前已是第 ${run.episodeScript.currentRevisionNo ?? "?"} 版）` : "（当前版本）"}
+            {" · "}来源：第 {run.scriptRevisionNo} 版剧本{sourceReplaced ? `（当前已是第 ${run.episodeScript.currentRevisionNo ?? "?"} 版）` : sourceInvalid ? "（已过期或未批准）" : "（当前版本）"}
             {" · "}模型 {run.model}{" · "}调用 {run.callsUsed}/{run.callCap}
           </p>
           {breakdownErrorText(run.errorCode ?? run.step.errorCode) ? (
@@ -349,7 +356,10 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
           ) : null}
           {sourceOutdated ? (
             <p className="rounded bg-amber-50 p-2 text-sm text-amber-900 [overflow-wrap:anywhere]" role="status" data-testid="breakdown-outdated">
-              来源剧本已更新到第 {run.episodeScript.currentRevisionNo ?? "?"} 版，下面的场景与分镜来自第 {run.scriptRevisionNo} 版，需要重新生成。旧结果保留，不会自动重新生成。
+              {sourceReplaced
+                ? `来源剧本已更新到第 ${run.episodeScript.currentRevisionNo ?? "?"} 版，下面的场景与分镜来自第 ${run.scriptRevisionNo} 版，需要重新生成。`
+                : `第 ${run.scriptRevisionNo} 版剧本已过期或不再是已批准版本，下面的场景与分镜不能再写入镜头，需要在有新的已批准剧本后重新生成。`}
+              旧结果保留，不会自动重新生成。
             </p>
           ) : null}
           {resumable ? (

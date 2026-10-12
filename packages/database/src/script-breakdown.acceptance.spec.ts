@@ -652,6 +652,59 @@ describe("script breakdown on PostgreSQL", () => {
     });
   }
 
+  it("finds an accepted resume's receipt by its key without changing anything; an unknown key finds nothing", async () => {
+    const { ws, project, episodes } = await work(1);
+    const record = await startBreakdown(ws, project, episodes[0]!.id);
+    await failOnce(record);
+    expect(await store.findResume(ws, project, record.id, "never-used")).toBeNull();
+    expect((await store.prepareResume(ws, project, record.id, { resumeKey: "accepted", requestHash: "a".repeat(64), confirmedCallIds: [], maxActiveRuns: 10 }, now())).kind)
+      .toBe("ok");
+    const before = await runTrace(record.id);
+    expect(await store.findResume(ws, project, record.id, "accepted")).toEqual({ requestHash: "a".repeat(64) });
+    // Scoped to the run's own work: another project id finds nothing.
+    expect(await store.findResume(ws, randomUUID(), record.id, "accepted")).toBeNull();
+    expect(await runTrace(record.id)).toEqual(before);
+  });
+
+  it("writes shots under an edited, approved scene with prompts built from that approved revision, once", async () => {
+    const { ws, project, episodes } = await work(2);
+    const episode = episodes[1]!;
+    const scriptId = (await episodeRow(episode.id)).current_script_revision_id!;
+    const record = await startBreakdown(ws, project, episode.id);
+    const executor = await answer(record, outputOf(2, 2, null));
+    expect(await store.saveBreakdown(ws, record.id, executor, "server-owner", now())).toBe("saved");
+    const links = (await pool.query<{ scene_id: string }>("SELECT scene_id FROM script_breakdown_scene WHERE run_id = $1 ORDER BY ordinal", [record.id])).rows;
+    const edit = async (sceneId: string, ordinal: number, heading: string, timeOfDay: string | null) => {
+      const version = (await pool.query<{ row_version: number }>("SELECT row_version FROM scene WHERE id = $1", [sceneId])).rows[0]!.row_version;
+      const edited = await tx((client) => chain.createSceneRevisionInTransaction(client, { workspaceId: ws, projectId: project, episodeId: episode.id,
+        sceneId, sourceScriptRevisionId: scriptId, ordinal, heading, timeOfDay, summary: "人工修改地点与时段", createdBy: "editor", expectedVersion: version }));
+      await approveScene(ws, project, episode.id, sceneId);
+      return edited.revisionId;
+    };
+    const dock = await edit(links[0]!.scene_id, 1, "码头", "清晨");
+    const warehouse = await edit(links[1]!.scene_id, 2, "旧仓库", null);
+    const place = (accept: boolean) => store.placeBreakdownShots(ws, project, episode.id, record.id, { acceptSceneChanged: accept }, "editor", now());
+    const refused = await place(false);
+    expect(refused.kind === "ok" && refused.outcome).toMatchObject({ placed: [], sceneChanged: ["S1", "S2"] });
+    const placed = await place(true);
+    expect(placed.kind === "ok" && placed.outcome.placed).toEqual(["S1", "S2"]);
+    const shots = async () => (await pool.query<{ scene_id: string; source_scene_revision_id: string; prompt_text: string; action: string; dialogue: string | null }>(
+      `SELECT s.scene_id, r.source_scene_revision_id, r.prompt_text, r.action, r.dialogue FROM shot s JOIN shot_revision r ON r.id = s.current_revision_id
+        WHERE s.scene_id = ANY($1::uuid[]) ORDER BY s.scene_id, r.ordinal`, [links.map((link) => link.scene_id)])).rows;
+    const written = await shots();
+    const of = (sceneId: string) => written.filter((row) => row.scene_id === sceneId);
+    expect(of(links[0]!.scene_id).map((row) => row.source_scene_revision_id)).toEqual([dock, dock]);
+    expect(of(links[0]!.scene_id).map((row) => row.prompt_text)).toEqual(["码头（清晨）；中景；缓慢推近；林夏停下", "码头（清晨）；近景；固定机位；林夏开口"]);
+    expect(of(links[1]!.scene_id).map((row) => [row.source_scene_revision_id, row.prompt_text.split("；")[0]])).toEqual([[warehouse, "旧仓库"], [warehouse, "旧仓库"]]);
+    // The plan's action and dialogue stay as proposed; only the scene fields follow the approved revision.
+    expect(of(links[0]!.scene_id).map((row) => [row.action, row.dialogue])).toEqual([["林夏停下", null], ["林夏开口", "林夏：第 2 集第 1 句。"]]);
+    expect(written.some((row) => row.prompt_text.includes("地点2-"))).toBe(false);
+    const again = await place(true);
+    expect(again.kind === "ok" && again.outcome.placed).toEqual([]);
+    expect(await shots()).toEqual(written);
+    evidence.editedScenePrompts = { scenes: 2, shots: written.length };
+  });
+
   it("returns the same run for the same key and refuses the key for another request", async () => {
     const { ws, project, episodes } = await work(1);
     const record = await startBreakdown(ws, project, episodes[0]!.id, "same-key");

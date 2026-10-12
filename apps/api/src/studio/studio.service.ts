@@ -100,8 +100,11 @@ const shotBodySchema = z.object({
   action: z.string().max(4000),
   dialogue: z.string().max(4000).nullable().optional(),
   durationHint: z.string().max(200).nullable().optional(),
-  /** Planned seconds × 1000. A writing plan, never a measured length. Needs the script breakdown migration. */
-  plannedDurationMs: z.number().int().min(1000).max(15000).nullable().optional(),
+  /**
+   * Whole planned seconds 1–15, × 1000 (the editor's unit). A writing plan, never a measured length. Needs the script
+   * breakdown migration. Omitted and null both mean "not set".
+   */
+  plannedDurationMs: z.number().int().min(1000).max(15000).multipleOf(1000).nullable().optional(),
   promptText: z.string().max(8000),
 });
 

@@ -223,6 +223,11 @@ export interface TitleWritingStore {
    * must equal the current uncertain calls exactly. Only then are rejected, canceled and confirmed unknown steps reset.
    */
   prepareResume(workspaceId: string, projectId: string, runId: string, request: TitleResumeRequest, nowIso: string): Promise<TitleResumePreparation>;
+  /**
+   * The receipt of a resume action already accepted for this run of this work, by its key; null when there is none.
+   * Reads only: a replay is answered from it before any current gate (provider, source, run state) is applied.
+   */
+  findResume(workspaceId: string, projectId: string, runId: string, resumeKey: string): Promise<{ requestHash: string } | null>;
   /** Fences expired executors of this workspace: reserved calls were never sent, submitted calls become unknown. */
   recoverExpired(workspaceId: string, nowIso: string): Promise<number>;
   listClaimable(workspaceId: string, nowIso: string, limit: number): Promise<string[]>;

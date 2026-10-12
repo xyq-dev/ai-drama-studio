@@ -296,3 +296,72 @@ describe("replaying a breakdown start after the provider settings changed", () =
     expect(seen).toHaveLength(1);
   });
 });
+
+describe("replaying an accepted resume", () => {
+  const RESUME_KEY = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+  // Both the first call and the resumed call are refused, so the run ends failed again after the accepted resume.
+  const failTwice: Override = (_step, attempt) => attempt <= 2
+    ? { status: 200, body: chatAnswer({ schema: "ads.script-breakdown.output.v1", episodeNo: 1, scenes: [], shots: [] }) } : undefined;
+  const code = (result: { body: unknown }) => (result.body as { error?: { code: string } }).error?.code;
+
+  it("returns the accepted resume's run after the provider was disabled, the source changed or the run moved on, without a send", async () => {
+    const { store, service, episode, start, settle, runOf, seen, reconfigured } = setup({ override: failTwice });
+    const runId = runOf(await start()).runId;
+    await settle();
+    const accepted = await service.resume(P1, episode.episodeId, runId, {}, TOKEN, CONTEXT(RESUME_KEY));
+    expect([accepted.status, runOf(accepted).state]).toEqual([200, "running"]);
+    await settle();
+    expect([runOf(await service.get(P1, episode.episodeId, runId)).state, seen.length, store.resumes.length]).toEqual(["failed", 2, 1]);
+
+    const disabled = reconfigured({}, null);
+    const afterDisable = await disabled.resume(P1, episode.episodeId, runId, {}, TOKEN, CONTEXT(RESUME_KEY));
+    expect([afterDisable.status, runOf(afterDisable).runId, runOf(afterDisable).state]).toEqual([200, runId, "failed"]);
+    store.writeScript(episode.episodeId, `${SCRIPT}\n周野：换了剧本。`);
+    const afterSource = await service.resume(P1, episode.episodeId, runId, {}, TOKEN, CONTEXT(RESUME_KEY));
+    expect([afterSource.status, runOf(afterSource).state]).toEqual([200, "failed"]);
+    // Nothing was prepared, reserved or sent by any replay.
+    await settle();
+    expect([seen.length, store.resumes.length, store.calls.length, runOf(await service.get(P1, episode.episodeId, runId)).state]).toEqual([2, 1, 2, "failed"]);
+
+    // The key with another confirmation is another request; new resumes keep every gate.
+    const other = await service.resume(P1, episode.episodeId, runId, { confirmUncertainCallIds: [randomUUID()] }, TOKEN, CONTEXT(RESUME_KEY));
+    expect([other.status, code(other)]).toEqual([409, "IDEMPOTENCY_KEY_REUSED"]);
+    expect(code(await disabled.resume(P1, episode.episodeId, runId, {}, TOKEN, CONTEXT(randomUUID())))).toBe("TITLE_WRITING_PROVIDER_UNCONFIGURED");
+    const fresh = await service.resume(P1, episode.episodeId, runId, {}, TOKEN, CONTEXT(randomUUID()));
+    expect([fresh.status, code(fresh)]).toEqual([409, "SCRIPT_BREAKDOWN_SOURCE_CHANGED"]);
+    // A replay still needs the token and the run's own work and episode.
+    expect((await disabled.resume(P1, episode.episodeId, runId, {}, "wrong-token-0000000000", CONTEXT(RESUME_KEY))).status).toBe(403);
+    const elsewhere = store.addBreakdownEpisode({ workspaceId: WS, projectId: P1, episodeNo: 2, text: SCRIPT });
+    expect((await disabled.resume(P1, elsewhere.episodeId, runId, {}, TOKEN, CONTEXT(RESUME_KEY))).status).toBe(404);
+    expect([seen.length, store.resumes.length]).toEqual([2, 1]);
+  });
+});
+
+describe("writing shots under an edited, approved scene", () => {
+  it("builds the shot prompts from the approved revision the shots point to, and writes them once", async () => {
+    const { store, service, episode, start, settle, runOf } = setup();
+    const runId = runOf(await start()).runId;
+    await settle();
+    const [first, second] = store.scenes.filter((scene) => !scene.archived);
+    const edited = store.editScene(first!.sceneId, "人工改了地点和时段", { heading: "码头", timeOfDay: "清晨" });
+    const noTime = store.editScene(second!.sceneId, "人工去掉了时段", { heading: "旧仓库", timeOfDay: null });
+    store.approveScene(first!.sceneId);
+    store.approveScene(second!.sceneId);
+    const refused = await service.placeShots(P1, episode.episodeId, runId, {}, CONTEXT());
+    expect(refused.body).toMatchObject({ placement: { placed: [], sceneChanged: ["S1", "S2"] } });
+    expect(store.shots).toHaveLength(0);
+    const placed = await service.placeShots(P1, episode.episodeId, runId, { acceptSceneChanged: true }, CONTEXT());
+    expect(placed.body).toMatchObject({ placement: { placed: ["S1", "S2"] } });
+    const of = (sceneId: string) => store.shots.filter((shot) => shot.sceneId === sceneId);
+    expect(of(first!.sceneId).map((shot) => shot.sourceSceneRevisionId)).toEqual([edited, edited]);
+    expect(of(first!.sceneId).every((shot) => shot.promptText.startsWith("码头（清晨）；"))).toBe(true);
+    expect(of(second!.sceneId).length).toBeGreaterThan(0);
+    expect(of(second!.sceneId).every((shot) => shot.sourceSceneRevisionId === noTime && shot.promptText.startsWith("旧仓库；"))).toBe(true);
+    expect(store.shots.some((shot) => /便利店|天台/.test(shot.promptText))).toBe(false);
+    // Shot plan, dialogue and action stay as proposed.
+    expect(of(first!.sceneId).map((shot) => shot.action)).toEqual(runOf(await service.get(P1, episode.episodeId, runId)).output!.shots.slice(0, 2).map((shot) => shot.action));
+    const count = store.shots.length;
+    await service.placeShots(P1, episode.episodeId, runId, { acceptSceneChanged: true }, CONTEXT());
+    expect(store.shots).toHaveLength(count);
+  });
+});

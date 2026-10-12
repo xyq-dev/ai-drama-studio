@@ -14,7 +14,7 @@ const LEGACY_HASH = "ff253f3642381317614e3a1a45ef72c58835de9a3e9c0fb0635e5d607d8
 const BODY = { sourceSceneRevisionId: "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA", ordinal: 2, shotType: "中景", camera: "固定机位",
   action: "林夏停下", dialogue: "林夏：这不是我。", promptText: "便利店；中景" };
 
-async function write(body: unknown): Promise<{ scope: IdempotencyScope; persisted: Record<string, unknown> }> {
+async function write(body: unknown, shotId?: string): Promise<{ scope: IdempotencyScope; persisted: Record<string, unknown> }> {
   let scope: IdempotencyScope | null = null;
   let persisted: Record<string, unknown> | null = null;
   const jobs = {
@@ -30,7 +30,7 @@ async function write(body: unknown): Promise<{ scope: IdempotencyScope; persiste
   };
   const service = new StudioService(jobs as never, { getProject: async () => ({}) } as never, chain as never, "11111111-1111-4111-8111-111111111111");
   await service.createShotRevision("22222222-2222-4222-8222-222222222222", "33333333-3333-4333-8333-333333333333",
-    "44444444-4444-4444-8444-444444444444", undefined, body, "3", { actorId: "server-owner", traceId: "t", idempotencyKey: "k" });
+    "44444444-4444-4444-8444-444444444444", shotId, body, "3", { actorId: "server-owner", traceId: "t", idempotencyKey: "k" });
   return { scope: scope!, persisted: persisted! };
 }
 
@@ -51,5 +51,17 @@ describe("shot write identity across the planned duration field", () => {
     expect(new Set([LEGACY_HASH, four.scope.requestHash, five.scope.requestHash]).size).toBe(3);
     expect((await write({ ...BODY, action: "林夏转身" })).scope.requestHash).not.toBe(LEGACY_HASH);
     expect((await write({ ...BODY, action: "林夏转身", plannedDurationMs: 4000 })).scope.requestHash).not.toBe(four.scope.requestHash);
+  });
+});
+
+describe("planned duration bounds at the API", () => {
+  it("accepts whole seconds from 1 to 15 and refuses anything else on create and on revise, before anything is written", async () => {
+    for (const ms of [1000, 2000, 15000]) expect((await write({ ...BODY, plannedDurationMs: ms })).persisted.plannedDurationMs).toBe(ms);
+    for (const shotId of [undefined, "55555555-5555-4555-8555-555555555555"]) {
+      for (const ms of [1501, 1999, 2500, 999, 0, 15001, 16000, -1000]) {
+        await expect(write({ ...BODY, plannedDurationMs: ms }, shotId)).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+      }
+    }
+    expect((await write({ ...BODY, plannedDurationMs: 2000 }, "55555555-5555-4555-8555-555555555555")).persisted.plannedDurationMs).toBe(2000);
   });
 });

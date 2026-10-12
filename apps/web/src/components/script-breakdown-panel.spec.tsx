@@ -191,3 +191,87 @@ describe("planned seconds in the shot form", () => {
     for (const bad of ["0", "16", "2.5", "-1", "abc"]) expect(plannedDurationOf(bad)).toEqual({ ok: false });
   });
 });
+
+describe("source validity and resume entry", () => {
+  const SAME_SCRIPT = "88888888-8888-4888-8888-888888888888";
+  const pendingStepRun = (overrides: Partial<ScriptBreakdownRunView> = {}) => run({ state: "failed", errorCode: "TITLE_WRITING_DAILY_CAP",
+    step: { state: "pending", attemptNo: 0, errorCode: null }, output: null, plannedTotalSeconds: null, save: "pending", scenes: [], callsUsed: 0, ...overrides });
+  const unknownCall = { callId: "99999999-aaaa-4aaa-aaaa-aaaaaaaaaaaa", stepKey: "breakdown", attemptNo: 1, state: "unknown", providerKey: "qwen", model: "q-1",
+    outcome: null, rejectionCode: null, usage: null, billing: "unknown", createdAt: "2026-10-12T00:00:00Z" } as unknown as ScriptBreakdownRunView["calls"][number];
+  const newResume = () => screen.queryByRole<HTMLButtonElement>("button", { name: "续跑（重新发送一次调用）" });
+
+  it("treats the same script revision that went STALE or lost approval as an invalid source: says so plainly and disables shot writing", async () => {
+    const h = harness(run({ episodeScript: { currentRevisionId: SAME_SCRIPT, currentRevisionNo: 3, approved: false } }));
+    panel(h);
+    const notice = (await screen.findByTestId("breakdown-outdated")).textContent!;
+    expect(notice).toContain("第 3 版剧本已过期或不再是已批准版本");
+    expect(notice).not.toContain("已更新到第 3 版");
+    expect(screen.getByTestId("breakdown-run").textContent).toContain("来源：第 3 版剧本（已过期或未批准）");
+    expect((screen.getByRole("button", { name: "写入已批准场景的镜头" }) as HTMLButtonElement).disabled).toBe(true);
+    // The old result stays readable.
+    expect(screen.getByTestId("breakdown-scene-S1").textContent).toContain("场景描述：林夏发现监控被改。");
+    expect(h.seen.filter((item) => item.method === "POST")).toHaveLength(0);
+  });
+
+  it("offers a manual resume for a terminal run stopped before its call was reserved, without a billing confirmation, once per click", async () => {
+    const h = harness(pendingStepRun(), [json({ run: run({ state: "running", step: { state: "pending", attemptNo: 0, errorCode: null }, output: null, save: "pending", scenes: [] }) })]);
+    panel(h);
+    fireEvent.change(await screen.findByLabelText("操作者令牌"), { target: { value: TOKEN } });
+    expect(screen.queryByRole("checkbox", { name: /可能已经计费/ })).toBeNull();
+    const button = newResume()!;
+    expect(button.disabled).toBe(false);
+    fireEvent.click(button);
+    fireEvent.click(button);
+    await screen.findByText(/状态：进行中/);
+    const posts = h.seen.filter((item) => item.method === "POST");
+    expect(posts).toHaveLength(1);
+    expect([posts[0]!.url, posts[0]!.body]).toEqual([`/api/v1/projects/${P1}/episodes/${E1}/script-breakdowns/${RUN}/resume`, { confirmUncertainCallIds: [] }]);
+    expect(posts[0]!.headers["idempotency-key"]).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it("offers the same resume for a needs-attention run whose provider was unconfigured before the call", async () => {
+    panel(harness(pendingStepRun({ state: "needs_attention", errorCode: "provider_unconfigured" })));
+    await screen.findByText(/状态：/);
+    expect(newResume()).not.toBeNull();
+  });
+
+  it("still requires the billing confirmation for a truly unknown call", async () => {
+    panel(harness(run({ state: "needs_attention", save: "pending", output: null, scenes: [], step: { state: "unknown", attemptNo: 1, errorCode: "executor_lost" }, calls: [unknownCall] })));
+    fireEvent.change(await screen.findByLabelText("操作者令牌"), { target: { value: TOKEN } });
+    expect(newResume()!.disabled).toBe(true);
+    fireEvent.click(screen.getByRole("checkbox", { name: /我知道上一次调用结果未知、可能已经计费/ }));
+    expect(newResume()!.disabled).toBe(false);
+  });
+
+  it("offers no new resume while running, after completion, or once the source was replaced or went STALE", async () => {
+    for (const shown of [
+      run({ state: "running", step: { state: "pending", attemptNo: 0, errorCode: null }, output: null, save: "pending", scenes: [] }),
+      run(),
+      pendingStepRun({ episodeScript: { currentRevisionId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", currentRevisionNo: 4, approved: true } }),
+      pendingStepRun({ episodeScript: { currentRevisionId: SAME_SCRIPT, currentRevisionNo: 3, approved: false } }),
+      run({ state: "failed", step: { state: "rejected", attemptNo: 1, errorCode: "invalid_output" }, output: null, save: "pending", scenes: [],
+        episodeScript: { currentRevisionId: SAME_SCRIPT, currentRevisionNo: 3, approved: false } }),
+    ]) {
+      const h = harness(shown);
+      panel(h);
+      await screen.findByText(/状态：/);
+      expect(newResume()).toBeNull();
+      expect(screen.queryByRole("button", { name: "确认上次续跑结果" })).toBeNull();
+      cleanup();
+    }
+  });
+
+  it("still lets a person confirm an already sent resume after the source changed", async () => {
+    window.sessionStorage.setItem(`ads:breakdown:${P1}:${E1}:resume:v1`, JSON.stringify({ kind: "resume", runId: RUN, confirmed: [], key: "dddddddd-dddd-4ddd-8ddd-dddddddddddd" }));
+    const h = harness(pendingStepRun({ episodeScript: { currentRevisionId: SAME_SCRIPT, currentRevisionNo: 3, approved: false } }),
+      [json({ run: pendingStepRun({ state: "needs_attention", errorCode: "breakdown_source_changed" }) })]);
+    panel(h);
+    fireEvent.change(await screen.findByLabelText("操作者令牌"), { target: { value: TOKEN } });
+    expect(newResume()).toBeNull();
+    const confirm = screen.getByRole("button", { name: "确认上次续跑结果" }) as HTMLButtonElement;
+    expect(confirm.disabled).toBe(false);
+    fireEvent.click(confirm);
+    await waitFor(() => expect(h.seen.filter((item) => item.method === "POST")).toHaveLength(1));
+    expect(h.seen.find((item) => item.method === "POST")!.headers["idempotency-key"]).toBe("dddddddd-dddd-4ddd-8ddd-dddddddddddd");
+  });
+});

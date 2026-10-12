@@ -811,6 +811,12 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
     return { kind: "ok", bundle: this.bundle(run) };
   }
 
+  async findResume(workspaceId: string, projectId: string, runId: string, resumeKey: string): Promise<{ requestHash: string } | null> {
+    const run = this.runs.find((item) => item.id === runId && item.workspaceId === workspaceId && item.projectId === projectId);
+    const previous = run ? this.resumes.find((item) => item.runId === runId && item.key === resumeKey) : undefined;
+    return previous ? { requestHash: previous.requestHash } : null;
+  }
+
   async recoverExpired(workspaceId: string, nowIso: string): Promise<number> {
     let recovered = 0;
     for (const run of this.runs) {
@@ -938,10 +944,10 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
   }
 
   /** Test helper standing in for a person saving a new scene revision; shots under the old revision go STALE. */
-  editScene(sceneId: string, summary: string): string {
+  editScene(sceneId: string, summary: string, place: { heading?: string; timeOfDay?: string | null } = {}): string {
     const scene = this.requireScene(sceneId);
     const current = scene.revisions.find((item) => item.id === scene.currentRevisionId)!;
-    const revision: MemorySceneRevision = { ...current, id: randomUUID(), summary, reviewStatus: "DRAFT", freshnessStatus: "CURRENT" };
+    const revision: MemorySceneRevision = { ...current, ...place, id: randomUUID(), summary, reviewStatus: "DRAFT", freshnessStatus: "CURRENT" };
     scene.revisions.push(revision);
     scene.currentRevisionId = revision.id;
     scene.rowVersion += 1;
@@ -1100,7 +1106,8 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
       if (this.shots.some((shot) => shot.sceneId === scene.sceneId && !shot.archived)) {
         outcome.unavailable.push(link.sceneKey); continue;
       }
-      const generatedScene = output.scenes.find((item) => item.key === link.sceneKey)!;
+      // Place and time come from the approved revision the shots point to; plan, action and dialogue stay as proposed.
+      const approvedScene = { ...output.scenes.find((item) => item.key === link.sceneKey)!, heading: approved.heading, timeOfDay: approved.timeOfDay ?? "" };
       const planned = shotsOfScene(output, link.sceneKey);
       const characterRevisions = planned.map((shot) => shot.characterKeys.map((key) => input.characters.find((item) => item.key === key)!));
       if (characterRevisions.flat().some((frozen) => {
@@ -1111,7 +1118,7 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
         this.shots.push({ shotId: randomUUID(), sceneId: scene.sceneId, rowVersion: 1, archived: false, revisionId: randomUUID(),
           sourceSceneRevisionId: approved.id, ordinal: index + 1, shotType: shot.shotType, camera: shot.camera, action: shot.action,
           dialogue: breakdownDialogueText(shot), plannedDurationMs: shot.plannedSeconds * 1000,
-          promptText: breakdownShotPromptText(generatedScene, shot), characterRevisionIds: characterRevisions[index]!.map((item) => item.revisionId),
+          promptText: breakdownShotPromptText(approvedScene, shot), characterRevisionIds: characterRevisions[index]!.map((item) => item.revisionId),
           freshnessStatus: "CURRENT" });
         scene.rowVersion += 1;
       });
