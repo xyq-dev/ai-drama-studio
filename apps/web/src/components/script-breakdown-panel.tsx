@@ -219,8 +219,11 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
   const needsReplace = props.sceneCount > 0 || scenesExist;
   // Confirming a start already sent replays its stored key and body: the current settings, defaults or a failed settings
   // read cannot block it (the server answers it from the run that key created). Only a new start must pass every gate.
+  // A resume whose answer was lost blocks every new request of this page until it is confirmed: a new start or resume would
+  // take its identity's place.
   const startBlocked = identityError ? "无法恢复请求身份，请先解决浏览器会话存储问题。"
     : pendingStart ? (token.trim().length === 0 ? "请填写操作者令牌。" : null)
+    : pendingResume ? "请先确认上次续跑结果，之后才能发起新的生成。"
     : readError ? "请先重新读取本集任务状态。"
     : !props.scriptReady ? "剧本批准后才能拆解（剧本门槛不变）。"
     : !options ? optionsError ? "功能配置读取失败，请先“重新读取功能配置”。" : "正在读取拆解设置。"
@@ -232,7 +235,7 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
             : token.trim().length === 0 ? "请填写操作者令牌。" : null;
 
   async function act(runId: string | null, work: () => Promise<ScriptBreakdownRunView>, fallback: string,
-    hooks: { accepted?: () => void; failed?: (caught: unknown) => void; changed?: boolean; cancel?: boolean } = {}) {
+    hooks: { accepted?: () => void; failed?: (caught: unknown) => void; changed?: boolean; cancel?: boolean; detached?: boolean } = {}) {
     if (operation.current || (runId && shown.current.runId !== runId)) return;
     const mine: Operation = { runId, snapshot: shown.current.generation, scope: reads.current };
     operation.current = mine;
@@ -242,7 +245,9 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
       const next = await work();
       if (!current()) return;
       hooks.accepted?.();
-      if (shown.current.generation !== mine.snapshot) refresh();
+      // A detached action (confirming a resume of a run that may no longer be the latest) never shows its answer over another
+      // run: the latest run is read instead, so an older run cannot replace the one shown.
+      if (shown.current.generation !== mine.snapshot || (hooks.detached && next.runId !== shown.current.runId)) refresh();
       else { show(next); if (reads.current.inFlight) refresh(); else schedule(next, refresh); }
       // The action was accepted and shown. A failing follow-up refresh of the page is reported as such, never as a failed
       // action (which would invite a second attempt).
@@ -304,29 +309,50 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
   const sourceReplaced = run !== null && run.episodeScript.currentRevisionId !== run.scriptRevisionId;
   const sourceInvalid = run !== null && !sourceReplaced && !run.episodeScript.approved;
   const sourceOutdated = sourceReplaced || sourceInvalid;
-  const replayResume = pendingResume?.runId === run?.runId ? pendingResume : null;
-  // Confirming an already sent resume is always possible (it only reads its receipt). A new resume is offered only where
-  // the server accepts one, a stopped run with its result unsaved and a valid source, in the mode its step implies (the
-  // server decides the same from the persisted steps): "save" when the answer was stored before the run stopped (no call,
-  // no billing question); "resend" when the step was refused, unknown (confirmation needed), canceled or never reserved.
+  // A new resume is offered only where the server accepts one, a stopped run with its result unsaved and a valid source,
+  // in the mode its step implies (the server decides the same from the persisted steps): "save" when the answer was stored
+  // before the run stopped (no call, no billing question); "resend" when the step was refused, unknown (confirmation
+  // needed), canceled or never reserved. Never while a sent resume is unconfirmed.
   const resumeMode = resumeModeOf(run, sourceOutdated);
-  const resumable = run !== null && (replayResume !== null || resumeMode !== null);
+  const resumable = run !== null && resumeMode !== null;
 
   function resume() {
-    if (!run || !resumable || identityError || operation.current || token.trim().length === 0 || (!replayResume && uncertain.length > 0 && !confirmUncertain)) return;
-    const pending: BreakdownPendingResume = replayResume ?? { kind: "resume", runId: run.runId, confirmed: uncertain, key: crypto.randomUUID() };
-    try { writeBreakdownPending(props.projectId, props.episodeId, pending); }
-    catch { setIdentityError(true); setMessage("无法保存续跑身份，未发送请求。请先解决浏览器会话存储问题。"); return; }
+    if (!run || !resumable || pendingResume || identityError || operation.current || token.trim().length === 0 || (uncertain.length > 0 && !confirmUncertain)) return;
+    const pending: BreakdownPendingResume = { kind: "resume", runId: run.runId, confirmed: uncertain, key: crypto.randomUUID() };
+    try {
+      // Never overwrite a stored identity this page does not hold yet (written meanwhile): it is offered for confirmation.
+      const stored = readBreakdownPending(props.projectId, props.episodeId, "resume");
+      if (stored) { setPendingResume(stored); return; }
+      writeBreakdownPending(props.projectId, props.episodeId, pending);
+    } catch { setIdentityError(true); setMessage("无法保存续跑身份，未发送请求。请先解决浏览器会话存储问题。"); return; }
     setPendingResume(pending);
     void act(run.runId, () => client.resume(props.projectId, props.episodeId, pending.runId,
       { confirmUncertainCallIds: pending.confirmed, token: token.trim(), idempotencyKey: pending.key }),
-      "请求没有得到回应。再次点击只会重放同一个续跑请求。", {
+      "请求没有得到回应。请用“确认上次续跑结果”重放同一个续跑请求。", {
+        accepted: () => { clearPending(pending); setConfirmedFor(null); },
+        // A new resume refused is settled; a lost answer or a 5xx keeps it for confirmation.
+        failed: (caught) => { if (refused(caught)) { clearPending(pending); setConfirmedFor(null); refresh(); } },
+      });
+  }
+
+  /**
+   * Replays the stored resume exactly (its run, key and confirmed calls), whichever run is shown now or if none can be read.
+   * Detached from the shown run: a newer latest run neither cancels it nor is replaced by its answer. A request the server
+   * accepted before is not executed again; one it never received is handled as that same request now.
+   */
+  function confirmResume() {
+    const pending = pendingResume;
+    if (!pending || identityError || operation.current || token.trim().length === 0) return;
+    void act(null, () => client.resume(props.projectId, props.episodeId, pending.runId,
+      { confirmUncertainCallIds: pending.confirmed, token: token.trim(), idempotencyKey: pending.key }),
+      "请求没有得到回应。再次确认只会重放同一个续跑请求。", {
+        detached: true,
         accepted: () => { clearPending(pending); setConfirmedFor(null); },
         failed: (caught) => {
-          // A new resume refused is settled. A restored one is released only by refusals the server gives after finding no
-          // receipt for its key that this body can never pass (its confirmation is stale or missing, the source changed,
-          // nothing is left to resume); lost answers, 5xx, a busy run or a refused token keep it for a replay.
-          if (refused(caught) && (!replayResume || RESUME_RELEASED_BY.has(caught.code))) { clearPending(pending); setConfirmedFor(null); refresh(); }
+          // Released only by refusals the server gives after finding no receipt for its key that this body can never pass
+          // (its confirmation is stale or missing, the source changed, nothing is left to resume); lost answers, 5xx, a busy
+          // run or a refused token keep it.
+          if (refused(caught) && RESUME_RELEASED_BY.has(caught.code)) { clearPending(pending); setConfirmedFor(null); refresh(); }
         },
       });
   }
@@ -400,6 +426,20 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
             上次启动请求的结果还没有确认。确认只会重放上次的同一个请求（原模型、原“取代”选项和原请求标识），不会新建任务；要发起新的生成，请先确认这次结果。
           </p>
         ) : null}
+        {pendingResume ? (
+          <div className="grid gap-2 rounded border border-amber-300 bg-amber-50 p-2" data-testid="breakdown-pending-resume">
+            <p className="text-sm [overflow-wrap:anywhere]">
+              {pendingResume.runId === run?.runId
+                ? "这个任务有一条续跑请求的结果还没有确认。"
+                : `另一条续跑请求（任务 ${pendingResume.runId.slice(0, 8)}）的结果还没有确认，它不是下面显示的任务。`}
+              确认会用原请求标识和原内容重放这条请求：服务端已经受理过的，不会重复执行；上次没有送达的，按原内容提交这一次。确认之前，本页不能发起新的生成或续跑。
+            </p>
+            <button className="rounded border px-3 py-2" type="button" disabled={busy || identityError || token.trim().length === 0}
+              onClick={() => void confirmResume()}>
+              确认上次续跑结果
+            </button>
+          </div>
+        ) : null}
         {startBlocked && loaded ? <p className="text-sm text-neutral-600" data-testid="breakdown-blocked">{startBlocked}</p> : null}
       </div>
 
@@ -421,7 +461,11 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
               旧结果保留，不会自动重新生成。
             </p>
           ) : null}
-          {resumable && !replayResume && resumeMode === "save" ? (
+          {resumable && pendingResume ? (
+            <p className="text-sm text-neutral-600 [overflow-wrap:anywhere]" data-testid="breakdown-resume-blocked">
+              请先确认上次续跑结果，之后才能续跑或保存这个任务。
+            </p>
+          ) : resumable && resumeMode === "save" ? (
             <div className="grid gap-2 rounded border border-neutral-200 p-2">
               <p className="text-sm [overflow-wrap:anywhere]" data-testid="breakdown-save-only">
                 模型答案已经生成并通过校验，但在写入场景前停止了。保存已有结果不会再次调用模型，也不增加调用次数；来源剧本仍须是本集当前已批准的版本。
@@ -432,15 +476,15 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
             </div>
           ) : resumable ? (
             <div className="grid gap-2 rounded border border-neutral-200 p-2">
-              {uncertain.length > 0 && !replayResume ? (
+              {uncertain.length > 0 ? (
                 <label className="flex items-start gap-2 text-sm">
                   <input type="checkbox" checked={confirmUncertain} disabled={busy} onChange={(event) => setConfirmedFor(event.target.checked ? uncertainKey : null)} />
                   <span>我知道上一次调用结果未知、可能已经计费，确认重新发送</span>
                 </label>
               ) : null}
               <button className="rounded border px-3 py-2" type="button"
-                disabled={busy || identityError || token.trim().length === 0 || (!replayResume && uncertain.length > 0 && !confirmUncertain)} onClick={() => void resume()}>
-                {replayResume ? "确认上次续跑结果" : "续跑（重新发送一次调用）"}
+                disabled={busy || identityError || token.trim().length === 0 || (uncertain.length > 0 && !confirmUncertain)} onClick={() => void resume()}>
+                续跑（重新发送一次调用）
               </button>
             </div>
           ) : null}

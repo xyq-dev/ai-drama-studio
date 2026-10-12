@@ -583,3 +583,208 @@ describe("follow-up refresh and restored resume identities", () => {
     expect(new Set(h.seen.filter((item) => item.method === "POST").map((item) => item.headers["idempotency-key"]))).toEqual(new Set([RESUME_KEY]));
   });
 });
+
+describe("a resume identity left for an earlier run after a newer run appeared", () => {
+  const RUN_B = "66666666-6666-4666-8666-6666666666bb";
+  const E2 = "33333333-3333-4333-8333-333333333334";
+  const KEY_A = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+  const KEY_E2 = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+  const storage = (episodeId = E1) => `ads:breakdown:${P1}:${episodeId}:resume:v1`;
+  const stored = (episodeId = E1) => {
+    const raw = window.sessionStorage.getItem(storage(episodeId));
+    return raw ? JSON.parse(raw) as { kind: string; runId: string; key: string; confirmed: string[] } : null;
+  };
+  const restore = (runId = RUN, key = KEY_A, episodeId = E1) =>
+    window.sessionStorage.setItem(storage(episodeId), JSON.stringify({ kind: "resume", runId, confirmed: [], key }));
+  /** Run A stopped before its call was reserved: a new resume is offered without a billing question. */
+  const stoppedA = () => run({ state: "failed", errorCode: "TITLE_WRITING_DAILY_CAP", step: { state: "pending", attemptNo: 0, errorCode: null },
+    output: null, plannedTotalSeconds: null, save: "pending", scenes: [], callsUsed: 0 });
+  const runB = (overrides: Partial<ScriptBreakdownRunView> = {}) => run({ runId: RUN_B, model: "q-B", ...overrides });
+  const stoppedB = () => runB({ state: "failed", errorCode: "TITLE_WRITING_DAILY_CAP", step: { state: "pending", attemptNo: 0, errorCode: null },
+    output: null, plannedTotalSeconds: null, save: "pending", scenes: [], callsUsed: 0 });
+  const resumedA = () => json({ run: run({ state: "completed", model: "q-A" }) });
+  function held<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => { resolve = done; });
+    return { promise, resolve };
+  }
+  /** `latest` answers from a switchable source (a run, null or a failure); POSTs answer in order and are recorded. */
+  function server(answers: Array<() => Response | Promise<Response>>) {
+    const seen: Seen[] = [];
+    const state = { latest: (): Response => json({ run: null }) };
+    const fetchImpl = vi.fn(async (input: string, init?: RequestInit) => {
+      const headers = Object.fromEntries([...new Headers(init?.headers).entries()].map(([name, value]) => [name.toLowerCase(), value]));
+      seen.push({ method: init?.method ?? "GET", url: input, headers, body: init?.body ? JSON.parse(String(init.body)) : null });
+      if (input.endsWith("/writing/script-breakdowns/options")) return json(OPTIONS);
+      if (input.endsWith("/latest")) return state.latest();
+      const next = answers.shift();
+      if (!next) throw new Error(`unexpected ${input}`);
+      return await next();
+    });
+    return {
+      seen, state,
+      client: new ScriptBreakdownClient(fetchImpl as unknown as typeof fetch),
+      posts: () => seen.filter((item) => item.method === "POST"),
+      reads: () => seen.filter((item) => item.url.endsWith("/latest")).length,
+      show: (next: ScriptBreakdownRunView | null) => { state.latest = () => json({ run: next }); },
+    };
+  }
+  const panelFor = (s: ReturnType<typeof server>, epoch = 0, episodeId = E1) => (
+    <ScriptBreakdownPanel projectId={P1} episodeId={episodeId} episodeNo={episodeId === E1 ? 2 : 3} scriptReady sceneCount={0}
+      onOpenScene={vi.fn()} onChanged={vi.fn(async () => undefined)} client={s.client} refreshEpoch={epoch} />
+  );
+  const enterToken = async () => fireEvent.change(await screen.findByLabelText("操作者令牌"), { target: { value: TOKEN } });
+  const confirmA = () => screen.queryByRole<HTMLButtonElement>("button", { name: "确认上次续跑结果" });
+  const newResume = () => screen.queryByRole<HTMLButtonElement>("button", { name: "续跑（重新发送一次调用）" });
+  const resumeOf = (item: Seen) => [item.url, item.headers["idempotency-key"], item.body];
+  const sentA = [`/api/v1/projects/${P1}/episodes/${E1}/script-breakdowns/${RUN}/resume`, KEY_A, { confirmUncertainCallIds: [] }];
+
+  it("keeps the confirmation of a lost resume after the latest run became another one, and replays A's own key and body", async () => {
+    const s = server([() => { throw new TypeError("network down"); }, resumedA]);
+    s.show(stoppedA());
+    const view = render(panelFor(s));
+    await enterToken();
+    fireEvent.click(newResume()!);
+    await screen.findByRole("alert");
+    const sent = stored()!;
+    expect(sent.runId).toBe(RUN);
+    // Another tab started run B; this page reads the episode again.
+    s.show(runB());
+    view.rerender(panelFor(s, 1));
+    await screen.findByText(/模型 q-B/);
+    expect(screen.getByTestId("breakdown-pending-resume").textContent).toContain("不是下面显示的任务");
+    fireEvent.click(confirmA()!);
+    await waitFor(() => expect(s.posts()).toHaveLength(2));
+    expect(resumeOf(s.posts()[1]!)).toEqual([sentA[0], sent.key, { confirmUncertainCallIds: [] }]);
+    expect(s.posts()[0]!.headers["idempotency-key"]).toBe(sent.key);
+  });
+
+  it("offers a restored identity of run A while the latest run is B, none, or cannot be read", async () => {
+    for (const latest of [() => json({ run: runB() }), () => json({ run: null }), () => json({ error: { code: "INTERNAL", message: "x" } }, 500)]) {
+      restore();
+      const s = server([resumedA]);
+      s.state.latest = latest;
+      render(panelFor(s));
+      await enterToken();
+      await waitFor(() => expect(confirmA()?.disabled).toBe(false));
+      fireEvent.click(confirmA()!);
+      await waitFor(() => expect(stored()).toBeNull());
+      expect(s.posts().map(resumeOf)).toEqual([sentA]);
+      cleanup();
+      window.sessionStorage.clear();
+    }
+  });
+
+  it("blocks a new resume of B and a new start until A is confirmed, so A's identity is never overwritten", async () => {
+    restore();
+    const s = server([]);
+    s.show(stoppedB());
+    render(panelFor(s));
+    await enterToken();
+    await screen.findByText(/模型 q-B/);
+    expect(newResume()).toBeNull();
+    expect(screen.getByTestId("breakdown-resume-blocked").textContent).toContain("请先确认上次续跑结果");
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: "重新生成场景与分镜" }).disabled).toBe(true);
+    expect(screen.getByTestId("breakdown-blocked").textContent).toContain("请先确认上次续跑结果");
+    fireEvent.click(screen.getByRole("button", { name: "重新生成场景与分镜" }));
+    expect(s.posts()).toHaveLength(0);
+    expect(stored()).toEqual({ kind: "resume", runId: RUN, confirmed: [], key: KEY_A });
+    expect(confirmA()!.disabled).toBe(false);
+  });
+
+  it("settles A's confirmation while the latest run turned into B, sends once on a double click, then shows and polls B", async () => {
+    restore();
+    const answer = held<Response>();
+    const s = server([() => answer.promise]);
+    s.show(stoppedA());
+    const view = render(panelFor(s));
+    await enterToken();
+    await waitFor(() => expect(confirmA()?.disabled).toBe(false));
+    fireEvent.click(confirmA()!);
+    fireEvent.click(confirmA()!);
+    await waitFor(() => expect(s.posts()).toHaveLength(1));
+    // While A's answer is in flight, the page reads B.
+    s.show(runB({ state: "running", step: { state: "submitted", attemptNo: 1, errorCode: null }, output: null, save: "pending", scenes: [] }));
+    view.rerender(panelFor(s, 1));
+    await screen.findByText(/模型 q-B/);
+    answer.resolve(resumedA());
+    await waitFor(() => expect(stored()).toBeNull());
+    await waitFor(() => expect(confirmA()).toBeNull());
+    // A's answer is not shown over B; B stays shown and is polled.
+    expect(screen.getByTestId("breakdown-run").textContent).toContain("模型 q-B");
+    expect(screen.queryByText(/模型 q-A/)).toBeNull();
+    expect(screen.getByText(/状态：进行中/)).toBeTruthy();
+    const reads = s.reads();
+    await waitFor(() => expect(s.reads()).toBeGreaterThan(reads), { timeout: 3_000 });
+    expect(screen.getByTestId("breakdown-run").textContent).toContain("模型 q-B");
+    expect(s.posts()).toHaveLength(1);
+  });
+
+  it("keeps A's identity through a lost answer, a 5xx and a refused token, and a success clears only the matching identity", async () => {
+    restore();
+    const last = held<Response>();
+    const s = server([() => { throw new TypeError("network down"); }, () => json({ error: { code: "INTERNAL", message: "x" } }, 502),
+      () => json({ error: { code: "TITLE_WRITING_FORBIDDEN", message: "token" } }, 403), () => last.promise]);
+    s.show(runB());
+    render(panelFor(s));
+    await enterToken();
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      await waitFor(() => expect(confirmA()?.disabled).toBe(false));
+      fireEvent.click(confirmA()!);
+      await waitFor(() => expect(s.posts()).toHaveLength(attempt));
+      await screen.findByRole("alert");
+      expect(stored()).toEqual({ kind: "resume", runId: RUN, confirmed: [], key: KEY_A });
+    }
+    await waitFor(() => expect(confirmA()?.disabled).toBe(false));
+    fireEvent.click(confirmA()!);
+    await waitFor(() => expect(s.posts()).toHaveLength(4));
+    // Another identity took the slot meanwhile (as a late write would): A's receipt must not remove it.
+    restore(RUN_B, KEY_E2);
+    last.resolve(resumedA());
+    await waitFor(() => expect(screen.queryByTestId("breakdown-pending-resume")).toBeNull());
+    expect(stored()?.key).toBe(KEY_E2);
+    expect(new Set(s.posts().map((item) => item.headers["idempotency-key"]))).toEqual(new Set([KEY_A]));
+  });
+
+  it("keeps protecting A's identity when the browser cannot clear it after a confirmed answer", async () => {
+    restore();
+    const s = server([resumedA]);
+    s.show(runB());
+    render(panelFor(s));
+    await enterToken();
+    await waitFor(() => expect(confirmA()?.disabled).toBe(false));
+    const remove = vi.spyOn(window.sessionStorage, "removeItem").mockImplementation(() => { throw new Error("storage blocked"); });
+    try {
+      fireEvent.click(confirmA()!);
+      expect((await screen.findByRole("alert")).textContent).toContain("浏览器未能更新请求身份");
+    } finally { remove.mockRestore(); }
+    expect(stored()?.key).toBe(KEY_A);
+    expect(screen.getByTestId("breakdown-pending-resume")).toBeTruthy();
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: "重新生成场景与分镜" }).disabled).toBe(true);
+  });
+
+  it("does not let A's late answer change another episode's page or identity, or an unmounted panel", async () => {
+    restore();
+    restore(RUN_B, KEY_E2, E2);
+    const answer = held<Response>();
+    const s = server([() => answer.promise]);
+    s.show(runB());
+    const view = render(panelFor(s));
+    await enterToken();
+    await waitFor(() => expect(confirmA()?.disabled).toBe(false));
+    fireEvent.click(confirmA()!);
+    await waitFor(() => expect(s.posts()).toHaveLength(1));
+    s.show(null);
+    view.rerender(panelFor(s, 0, E2));
+    await waitFor(() => expect(screen.getByRole("heading", { level: 2 }).id).toBe(`breakdown-${E2}`));
+    expect(await screen.findByTestId("breakdown-pending-resume")).toBeTruthy();
+    answer.resolve(resumedA());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(stored(E2)).toEqual({ kind: "resume", runId: RUN_B, confirmed: [], key: KEY_E2 });
+    expect(stored(E1)?.key).toBe(KEY_A);
+    expect(screen.getByTestId("breakdown-pending-resume")).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+    view.unmount();
+    expect(stored(E2)?.key).toBe(KEY_E2);
+  });
+});
