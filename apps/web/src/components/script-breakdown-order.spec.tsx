@@ -64,6 +64,7 @@ describe("breakdown actions keep their identity and scope", () => {
     const keys: string[] = [];
     const client = new ScriptBreakdownClient(async (url, init) => {
       if (url.endsWith("/options")) return json(OPTIONS);
+      if (url.endsWith("/latest-saved")) return json({ run: null });
       if (url.endsWith("/latest")) return json({ run: null });
       keys.push(new Headers(init?.headers).get("Idempotency-Key")!);
       return keys.length === 1 ? new Response("Bad Gateway", { status: 502 }) : json({ run: run() });
@@ -79,6 +80,7 @@ describe("breakdown actions keep their identity and scope", () => {
     const keys: string[] = [];
     const client = new ScriptBreakdownClient(async (url, init) => {
       if (url.endsWith("/options")) return json(OPTIONS);
+      if (url.endsWith("/latest-saved")) return json({ run: null });
       if (url.endsWith("/latest")) return json({ run: null });
       keys.push(new Headers(init?.headers).get("Idempotency-Key")!);
       if (keys.length === 1) throw new TypeError("lost response");
@@ -142,6 +144,7 @@ describe("breakdown actions keep their identity and scope", () => {
     const pending = held<Response>(); let reads = 0;
     const client = new ScriptBreakdownClient(async (url) => {
       if (url.endsWith("/options")) return json(OPTIONS);
+      if (url.endsWith("/latest-saved")) return json({ run: null });
       reads += 1; return reads === 1 ? json({ run: running() }) : pending.promise;
     });
     render(<ScriptBreakdownPanel {...props(client)} />); await screen.findByText(/状态：进行中/);
@@ -165,6 +168,7 @@ describe("pending request recovery and source refresh", () => {
     const keys: string[] = [];
     const client = new ScriptBreakdownClient(async (url, init) => {
       if (url.endsWith("/options")) return json(OPTIONS);
+      if (url.endsWith("/latest-saved")) return json({ run: null });
       if (url.endsWith("/latest")) return json({ run: null });
       keys.push(new Headers(init?.headers).get("Idempotency-Key")!);
       if (keys.length < 3) return json({ error: { code: "UNAVAILABLE", message: "refused" } }, keys.length === 1 ? 503 : 403);
@@ -188,6 +192,7 @@ describe("pending request recovery and source refresh", () => {
     const sent: Array<{ key: string; body: string }> = [];
     const client = new ScriptBreakdownClient(async (url, init) => {
       if (url.endsWith("/options")) return json(OPTIONS);
+      if (url.endsWith("/latest-saved")) return json({ run: null });
       if (url.endsWith("/latest")) return json({ run: uncertain });
       sent.push({ key: new Headers(init?.headers).get("Idempotency-Key")!, body: String(init?.body) });
       return sent.length === 1 ? new Response("gateway", { status: 504 }) : json({ run: running() });

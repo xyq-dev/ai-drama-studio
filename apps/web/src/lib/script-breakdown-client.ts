@@ -125,6 +125,18 @@ export class ScriptBreakdownClient {
     return run;
   }
 
+  /**
+   * The newest saved breakdown of this episode (it may be older than latest), or null only for an explicit empty result.
+   * Anything that is not a saved run of this episode is not evidence of none.
+   */
+  async latestSaved(projectId: string, episodeId: string): Promise<ScriptBreakdownRunView | null> {
+    const result = await this.call<unknown>(`${this.base(projectId, episodeId)}/latest-saved`, { method: "GET", headers: { Accept: "application/json" } });
+    if (record(result.body) && result.body.run === null) return null;
+    const run = breakdownReceiptRun(result.body, projectId, episodeId);
+    if (!run || run.save !== "saved") throw new TitleWritingUnconfirmedError(result.status);
+    return run;
+  }
+
   async cancel(projectId: string, episodeId: string, runId: string): Promise<ScriptBreakdownRunView> {
     const result = await this.call<unknown>(`${this.base(projectId, episodeId)}/${runId}/cancel`, { method: "POST", headers: { Accept: "application/json" } });
     const run = breakdownReceiptRun(result.body, projectId, episodeId, runId);

@@ -108,6 +108,14 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
   const [optionsLoading, setOptionsLoading] = useState(false);
   /** The server refused a start because the episode has scenes, which the parent's count may not show yet. */
   const [scenesExist, setScenesExist] = useState(false);
+  /**
+   * The newest saved breakdown, read from the server. While a newer run has not saved (running, failed, canceled, refused),
+   * this episode's scenes still come from it and its approved scenes can take their shots. Kept apart from `run`.
+   */
+  const [saved, setSaved] = useState<ScriptBreakdownRunView | null>(null);
+  const [savedError, setSavedError] = useState(false);
+  const [savedPlacement, setSavedPlacement] = useState<{ runId: string; outcome: ScriptBreakdownPlacementOutcome } | null>(null);
+  const [savedAcceptFor, setSavedAcceptFor] = useState<string | null>(null);
   const reads = useRef<Reads>({ inFlight: false, again: false });
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const shown = useRef<{ runId: string | null; generation: number; state: string | null }>({ runId: null, generation: 0, state: null });
@@ -126,6 +134,8 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
     }
     shown.current = { runId, generation: shown.current.generation + 1, state: next?.state ?? null };
     setRun(next);
+    // The latest run, once saved, is also the newest saved one.
+    if (next?.save === "saved") { setSaved(next); setSavedError(false); }
   }, []);
 
   const schedule = useCallback((next: ScriptBreakdownRunView | null, poll: () => void) => {
@@ -148,12 +158,26 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
           let failure: unknown = null;
           try { next = await client.latest(props.projectId, props.episodeId); }
           catch (caught) { failure = caught ?? new Error("Read failed"); }
+          // A latest run that is not saved does not tell which result this episode's scenes come from: read the newest saved
+          // run too (read after latest, so it is never older than a save latest already showed).
+          let kept: ScriptBreakdownRunView | null = null;
+          let keptFailed = false;
+          if (!failure && next && next.save !== "saved") {
+            try { kept = await client.latestSaved(props.projectId, props.episodeId); }
+            catch { keptFailed = true; }
+          }
           if (reads.current !== scope) return;
           if (scope.again) continue;
           setLoaded(true);
           if (failure) { setReadError("拆解状态暂时无法读取，稍后刷新再试。已显示的内容可能不是最新状态。"); return; }
           const finished = shown.current.runId === next?.runId && shown.current.state === "running" && next?.state !== "running";
           show(next);
+          if (!next) { setSaved(null); setSavedError(false); }
+          else if (next.save !== "saved") {
+            // A failed read keeps what was shown (marked as possibly outdated); it is never taken as "nothing saved".
+            if (keptFailed) setSavedError(true);
+            else { setSaved(kept); setSavedError(false); }
+          }
           setReadError(null);
           if (finished) void onChanged.current().catch(() => undefined);
           schedule(next, refresh);
@@ -191,6 +215,7 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
     setMessage(null); setCancelFailed(false); setReadError(null); setPlacement(null); setConfirmedFor(null); setAcceptSceneChanged(false);
     setPendingStart(null); setPendingResume(null); setReplaceExisting(false); setIdentityError(false);
     setOptionsError(false); setOptionsLoading(false); setScenesExist(false);
+    setSaved(null); setSavedError(false); setSavedPlacement(null); setSavedAcceptFor(null);
     try {
       const pending = readBreakdownPending(props.projectId, props.episodeId, "start");
       setPendingStart(pending); setReplaceExisting(pending?.body.replaceExisting ?? false);
@@ -304,11 +329,7 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
     run.calls.map((call) => ({ callId: call.callId, stepKey: call.stepKey, attemptNo: call.attemptNo, state: call.state }))) : [];
   const uncertainKey = `${run?.runId ?? ""}:${uncertain.join(",")}`;
   const confirmUncertain = confirmedFor === uncertainKey;
-  // The source is valid only while the frozen revision is still the episode's current one AND approved and fresh: the
-  // same revision can go STALE (an upstream story change) or stop being the approved one without its id changing.
-  const sourceReplaced = run !== null && run.episodeScript.currentRevisionId !== run.scriptRevisionId;
-  const sourceInvalid = run !== null && !sourceReplaced && !run.episodeScript.approved;
-  const sourceOutdated = sourceReplaced || sourceInvalid;
+  const sourceOutdated = sourceOf(run).outdated;
   // A new resume is offered only where the server accepts one, a stopped run with its result unsaved and a valid source,
   // in the mode its step implies (the server decides the same from the persisted steps): "save" when the answer was stored
   // before the run stopped (no call, no billing question); "resend" when the step was refused, unknown (confirmation
@@ -371,9 +392,32 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
     }, "写入镜头失败，请稍后重试", { accepted: () => setPlacement(result), changed: true });
   }
 
+  // The newest saved run, shown on its own only while it is not the latest run: a saved latest run is itself the newest
+  // saved one, so an older saved run is never offered next to it.
+  const kept = saved && saved.runId !== run?.runId && run?.save !== "saved" ? saved : null;
+  const keptSource = sourceOf(kept);
+
+  /**
+   * Writes the shots of the saved run shown apart from the latest one, through that run's own endpoint. Detached from the
+   * latest run: its answer is never shown as the latest run; both are read again instead.
+   */
+  function placeKeptShots() {
+    const target = kept;
+    if (!target) return;
+    let result: ScriptBreakdownPlacementOutcome | null = null;
+    void act(null, async () => {
+      const placed = await client.placeShots(props.projectId, props.episodeId, target.runId, savedAcceptFor === target.runId);
+      result = placed.placement;
+      return placed.run;
+    }, "写入镜头失败，请稍后重试", {
+      detached: true, changed: true,
+      accepted: () => { const outcome = result; if (outcome) setSavedPlacement({ runId: target.runId, outcome }); },
+    });
+  }
+
   // Only a confirmed stop/terminal snapshot makes a cancel failure irrelevant; an ordinary poll does not.
   const visibleMessage = cancelFailed && run && (run.cancelRequested || run.state !== "running") ? null : message;
-  const pendingShots = run?.save === "saved" && run.scenes.some((scene) => scene.shotSave === "pending");
+  const pendingShots = hasPendingShots(run);
 
   return (
     <section className="creator-section rounded-lg bg-white p-4" aria-labelledby={`breakdown-${props.episodeId}`}>
@@ -445,22 +489,16 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
 
       {run ? (
         <div className="mt-4 space-y-3" data-testid="breakdown-run">
+          <h3 className="text-sm font-medium">{run.save === "saved" ? "最新拆解任务（也是最近已保存方案）" : "最新拆解任务"}</h3>
           <p className="text-sm [overflow-wrap:anywhere]">
             状态：{STATE_TEXT[run.state] ?? run.state}
-            {" · "}来源：第 {run.scriptRevisionNo} 版剧本{sourceReplaced ? `（当前已是第 ${run.episodeScript.currentRevisionNo ?? "?"} 版）` : sourceInvalid ? "（已过期或未批准）" : "（当前版本）"}
+            {" · "}来源：<SourceLabel run={run} />
             {" · "}模型 {run.model}{" · "}调用 {run.callsUsed}/{run.callCap}
           </p>
           {breakdownErrorText(run.errorCode ?? run.step.errorCode) ? (
             <p className="text-sm text-amber-800 [overflow-wrap:anywhere]" role="status">{breakdownErrorText(run.errorCode ?? run.step.errorCode)}</p>
           ) : null}
-          {sourceOutdated ? (
-            <p className="rounded bg-amber-50 p-2 text-sm text-amber-900 [overflow-wrap:anywhere]" role="status" data-testid="breakdown-outdated">
-              {sourceReplaced
-                ? `来源剧本已更新到第 ${run.episodeScript.currentRevisionNo ?? "?"} 版，下面的场景与分镜来自第 ${run.scriptRevisionNo} 版，需要重新生成。`
-                : `第 ${run.scriptRevisionNo} 版剧本已过期或不再是已批准版本，下面的场景与分镜不能再写入镜头，需要在有新的已批准剧本后重新生成。`}
-              旧结果保留，不会自动重新生成。
-            </p>
-          ) : null}
+          <SourceNotice run={run} testId="breakdown-outdated" />
           {resumable && pendingResume ? (
             <p className="text-sm text-neutral-600 [overflow-wrap:anywhere]" data-testid="breakdown-resume-blocked">
               请先确认上次续跑结果，之后才能续跑或保存这个任务。
@@ -490,21 +528,82 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
           ) : null}
           {run.output ? <BreakdownResult run={run} output={run.output} onOpenScene={props.onOpenScene} /> : null}
           {pendingShots ? (
-            <div className="grid gap-2 rounded border border-neutral-200 p-2">
-              <p className="text-sm">镜头方案在场景审核通过后才写入为镜头草稿（现有门槛：镜头只能挂在已批准的场景下）。</p>
-              <label className="flex items-start gap-2 text-sm">
-                <input type="checkbox" checked={acceptSceneChanged} disabled={busy} onChange={(event) => setAcceptSceneChanged(event.target.checked)} />
-                <span>场景被人工修改过时，仍按修改后的已批准版本写入这些镜头</span>
-              </label>
-              <button className="rounded border px-3 py-2" type="button" disabled={busy || sourceOutdated} onClick={() => void placeShots()}>
-                写入已批准场景的镜头
-              </button>
-            </div>
+            <ShotPlacement busy={busy} outdated={sourceOutdated} accept={acceptSceneChanged} onAccept={setAcceptSceneChanged} onPlace={placeShots} />
           ) : null}
           {placement ? <PlacementSummary outcome={placement} /> : null}
         </div>
       ) : loaded ? <p className="mt-3 text-sm text-neutral-600">这一集还没有拆解过。</p> : null}
+
+      {savedError ? (
+        <div className="mt-4 text-sm text-red-700 [overflow-wrap:anywhere]" role="status" data-testid="breakdown-saved-error">
+          <p>最近已保存的拆解方案暂时无法读取{kept ? "，下面显示的可能不是最新状态" : ""}。这不表示没有已保存的方案；重新读取不会创建任务或调用模型。</p>
+          <button type="button" className="underline disabled:opacity-50" onClick={refresh}>重新读取已保存方案</button>
+        </div>
+      ) : null}
+      {kept ? (
+        <div className="mt-4 space-y-3 rounded border border-neutral-300 p-3" data-testid="breakdown-saved">
+          <h3 className="text-sm font-medium">最近已保存方案</h3>
+          <p className="text-sm [overflow-wrap:anywhere]">
+            最新任务还没有保存结果，这一集现有的场景来自这次已保存的拆解（任务 {kept.runId.slice(0, 8)}，来源：<SourceLabel run={kept} />，模型 {kept.model}）。
+            新任务真正保存后才会取代它。已保存不等于当前可写：场景是否已审核、已过期或已被取代，以下面的状态为准。
+          </p>
+          <SourceNotice run={kept} testId="breakdown-saved-outdated" />
+          {kept.output ? <BreakdownResult run={kept} output={kept.output} onOpenScene={props.onOpenScene} /> : null}
+          {hasPendingShots(kept) ? (
+            <ShotPlacement busy={busy} outdated={keptSource.outdated} accept={savedAcceptFor === kept.runId}
+              onAccept={(checked) => setSavedAcceptFor(checked ? kept.runId : null)} onPlace={placeKeptShots} />
+          ) : null}
+          {savedPlacement?.runId === kept.runId ? <PlacementSummary outcome={savedPlacement.outcome} /> : null}
+        </div>
+      ) : null}
     </section>
+  );
+}
+
+/**
+ * The source is valid only while the frozen revision is still the episode's current one AND approved and fresh: the same
+ * revision can go STALE (an upstream story change) or stop being the approved one without its id changing.
+ */
+function sourceOf(run: ScriptBreakdownRunView | null): { replaced: boolean; invalid: boolean; outdated: boolean } {
+  const replaced = run !== null && run.episodeScript.currentRevisionId !== run.scriptRevisionId;
+  const invalid = run !== null && !replaced && !run.episodeScript.approved;
+  return { replaced, invalid, outdated: replaced || invalid };
+}
+
+function hasPendingShots(run: ScriptBreakdownRunView | null): boolean {
+  return run?.save === "saved" && run.scenes.some((scene) => scene.shotSave === "pending");
+}
+
+function SourceLabel({ run }: { run: ScriptBreakdownRunView }) {
+  const source = sourceOf(run);
+  return <>第 {run.scriptRevisionNo} 版剧本{source.replaced ? `（当前已是第 ${run.episodeScript.currentRevisionNo ?? "?"} 版）` : source.invalid ? "（已过期或未批准）" : "（当前版本）"}</>;
+}
+
+function SourceNotice({ run, testId }: { run: ScriptBreakdownRunView; testId: string }) {
+  const source = sourceOf(run);
+  if (!source.outdated) return null;
+  return (
+    <p className="rounded bg-amber-50 p-2 text-sm text-amber-900 [overflow-wrap:anywhere]" role="status" data-testid={testId}>
+      {source.replaced
+        ? `来源剧本已更新到第 ${run.episodeScript.currentRevisionNo ?? "?"} 版，下面的场景与分镜来自第 ${run.scriptRevisionNo} 版，需要重新生成。`
+        : `第 ${run.scriptRevisionNo} 版剧本已过期或不再是已批准版本，下面的场景与分镜不能再写入镜头，需要在有新的已批准剧本后重新生成。`}
+      旧结果保留，不会自动重新生成。
+    </p>
+  );
+}
+
+function ShotPlacement(props: { busy: boolean; outdated: boolean; accept: boolean; onAccept: (checked: boolean) => void; onPlace: () => void }) {
+  return (
+    <div className="grid gap-2 rounded border border-neutral-200 p-2">
+      <p className="text-sm">镜头方案在场景审核通过后才写入为镜头草稿（现有门槛：镜头只能挂在已批准的场景下）。</p>
+      <label className="flex items-start gap-2 text-sm">
+        <input type="checkbox" checked={props.accept} disabled={props.busy} onChange={(event) => props.onAccept(event.target.checked)} />
+        <span>场景被人工修改过时，仍按修改后的已批准版本写入这些镜头</span>
+      </label>
+      <button className="rounded border px-3 py-2" type="button" disabled={props.busy || props.outdated} onClick={props.onPlace}>
+        写入已批准场景的镜头
+      </button>
+    </div>
   );
 }
 

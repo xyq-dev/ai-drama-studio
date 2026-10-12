@@ -53,6 +53,16 @@ export class ScriptBreakdownController {
     return this.send(response, this.breakdown.latest(projectId, episodeId));
   }
 
+  // Declared before `:runId` so the fixed path is not read as a run id.
+  @Get(`${BASE}/latest-saved`)
+  latestSaved(
+    @Param("projectId", UUID_PARAM_PIPE) projectId: string,
+    @Param("episodeId", UUID_PARAM_PIPE) episodeId: string,
+    @Res({ passthrough: true }) response: StatusResponse,
+  ) {
+    return this.send(response, this.breakdown.latestSaved(projectId, episodeId));
+  }
+
   @Get(`${BASE}/:runId`)
   get(
     @Param("projectId", UUID_PARAM_PIPE) projectId: string,

@@ -251,6 +251,8 @@ export interface TitleWritingStore {
   findRunByKey(workspaceId: string, actorId: string, idempotencyKey: string): Promise<TitleRunBundle | null>;
   breakdownSource(workspaceId: string, projectId: string, episodeId: string): Promise<ScriptBreakdownSourceRead>;
   latestBreakdown(workspaceId: string, projectId: string, episodeId: string): Promise<TitleRunBundle | null>;
+  /** The newest breakdown run of this episode whose result was saved (same order as latestBreakdown), or null. */
+  latestSavedBreakdown(workspaceId: string, projectId: string, episodeId: string): Promise<TitleRunBundle | null>;
   breakdownDetails(workspaceId: string, run: TitleRunRecord): Promise<ScriptBreakdownDetails>;
   /**
    * Saves the validated result of a breakdown run whose step completed, under the run lock held by this executor:

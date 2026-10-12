@@ -1013,8 +1013,16 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
   }
 
   async latestBreakdown(workspaceId: string, projectId: string, episodeId: string): Promise<TitleRunBundle | null> {
+    return this.newestBreakdown(workspaceId, projectId, episodeId, () => true);
+  }
+
+  async latestSavedBreakdown(workspaceId: string, projectId: string, episodeId: string): Promise<TitleRunBundle | null> {
+    return this.newestBreakdown(workspaceId, projectId, episodeId, (run) => run.breakdownSave === "saved");
+  }
+
+  private newestBreakdown(workspaceId: string, projectId: string, episodeId: string, keep: (run: TitleRunRecord) => boolean): TitleRunBundle | null {
     const runs = this.runs.filter((item) => item.workspaceId === workspaceId && item.projectId === projectId
-      && isScriptBreakdownInput(item.input) && item.input.episodeId === episodeId);
+      && isScriptBreakdownInput(item.input) && item.input.episodeId === episodeId && keep(item));
     const latest = runs.sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id))[0];
     return latest ? this.bundle(latest) : null;
   }

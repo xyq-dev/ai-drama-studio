@@ -778,6 +778,16 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
     return this.load(null, result.rows[0] as Row | undefined);
   }
 
+  async latestSavedBreakdown(workspaceId: string, projectId: string, episodeId: string): Promise<TitleRunBundle | null> {
+    const result = await this.query(
+      `SELECT ${RUN_COLUMNS} FROM title_writing_run
+        WHERE workspace_id = $1 AND project_id = $2 AND run_kind = 'script_breakdown' AND episode_id = $3 AND breakdown_save = 'saved'
+        ORDER BY created_at DESC, id DESC LIMIT 1`,
+      [workspaceId, projectId, episodeId],
+    );
+    return this.load(null, result.rows[0] as Row | undefined);
+  }
+
   async breakdownDetails(workspaceId: string, run: TitleRunRecord): Promise<ScriptBreakdownDetails> {
     if (!isScriptBreakdownInput(run.input) || run.workspaceId !== workspaceId) throw new Error("not a breakdown run of this workspace");
     const links = await this.query(

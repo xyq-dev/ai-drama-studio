@@ -686,6 +686,108 @@ describe("script breakdown over real HTTP and PostgreSQL, model stubbed", () => 
       scenesSavedOnce: true, sourceChanged: 409 };
   });
 
+  it("keeps the saved breakdown readable and its shots writable after a newer run failed, until a newer run is saved", async () => {
+    const { projectId, episodes } = await work(2, "saved");
+    const [episode, sibling] = episodes;
+    const savedOf = async (project = projectId, episodeId = episode!.id) => {
+      const read = await http("GET", `${base(project, episodeId)}/latest-saved`);
+      expect(read.status, JSON.stringify(read.body)).toBe(200);
+      return read.body.run as ScriptBreakdownRunView | null;
+    };
+    const shotRows = async (sceneId: string) => Number((await q<{ n: number }>(
+      "SELECT count(*)::int AS n FROM shot_revision r JOIN shot s ON s.id = r.shot_id WHERE s.scene_id = $1", [sceneId])).rows[0]!.n);
+    const before = sent.length;
+    expect(await savedOf()).toBeNull();
+    expect((await http("POST", base(projectId, episode!.id), { body: {}, headers: operator() })).status).toBe(201);
+    const a = await settled(projectId, episode!.id);
+    expect([a.state, a.save]).toEqual(["completed", "saved"]);
+    const sceneId = a.scenes[0]!.sceneId;
+    await approveScene(projectId, episode!.id, sceneId);
+
+    // B: the model's answer is refused. Latest is B; the saved breakdown is still A, with its approved scene's shots pending.
+    overrides.set("saved-1", () => ({ status: 200, body: chatAnswer({ schema: "ads.script-breakdown.output.v1", episodeNo: 3, scenes: [], shots: [] }) }));
+    expect((await http("POST", base(projectId, episode!.id), { body: { replaceExisting: true }, headers: operator() })).status).toBe(201);
+    const b = await settled(projectId, episode!.id);
+    overrides.delete("saved-1");
+    expect([b.state, b.save, b.runId === a.runId]).toEqual(["failed", "pending", false]);
+    const kept = (await savedOf())!;
+    expect([kept.runId, kept.save, kept.scenes.map((scene) => [scene.sceneId, scene.shotSave, scene.current.reviewStatus])])
+      .toEqual([a.runId, "saved", [[sceneId, "pending", "APPROVED"]]]);
+    // Shots are written through A's own endpoint, once.
+    const placed = await http("POST", `${base(projectId, episode!.id)}/${a.runId}/shots`, { body: {} });
+    expect([placed.status, placed.body.run.runId, (placed.body.placement as ScriptBreakdownPlacementOutcome).placed]).toEqual([200, a.runId, ["S1"]]);
+    expect(await shotRows(sceneId)).toBe(2);
+    const again = await http("POST", `${base(projectId, episode!.id)}/${a.runId}/shots`, { body: {} });
+    expect([again.status, (again.body.placement as ScriptBreakdownPlacementOutcome).placed]).toEqual([200, []]);
+    expect(await shotRows(sceneId)).toBe(2);
+    expect((await savedOf())!.scenes[0]!.shotSave).toBe("saved");
+    expect((await latest(projectId, episode!.id))!.runId).toBe(b.runId);
+
+    // Other scopes never see A: the sibling episode, another work (with A's episode id), an unknown work.
+    const other = await work(1, "saved-other");
+    expect(await savedOf(projectId, sibling!.id)).toBeNull();
+    expect(await savedOf(other.projectId, episode!.id)).toBeNull();
+    expect((await http("GET", `${base(randomUUID(), episode!.id)}/latest-saved`)).status).toBe(404);
+
+    // C runs: A stays the saved one while C is running, and C becomes it only once C is saved.
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    overrides.set("saved-1", async (user) => { await held; return { status: 200, body: chatAnswer(fixtureBreakdownFromPrompt(user)) }; });
+    try {
+      expect((await http("POST", base(projectId, episode!.id), { body: { replaceExisting: true }, headers: operator() })).status).toBe(201);
+      const running = (await latest(projectId, episode!.id))!;
+      expect([running.state, (await savedOf())!.runId]).toEqual(["running", a.runId]);
+      release();
+      const c = await settled(projectId, episode!.id);
+      expect([c.state, c.save]).toEqual(["completed", "saved"]);
+      expect((await savedOf())!.runId).toBe(c.runId);
+      expect((await q<{ archived: boolean }>("SELECT archived_at IS NOT NULL AS archived FROM scene WHERE id = $1", [sceneId])).rows[0]!.archived).toBe(true);
+    } finally {
+      release();
+      overrides.delete("saved-1");
+    }
+    expect(sent.length - before).toBe(3);
+    scenarios.latestSaved = { afterFailedRun: "earlier saved run", placedThroughSavedRun: ["S1"], repeatedPlacement: [], shotRevisions: 2,
+      whileNewerRunning: "earlier saved run", afterNewerSaved: "newer run", otherScopes: [null, null, 404], sends: 3 };
+  });
+
+  it("starts a request that names no provider on the ready provider options reports, and freezes it for a replay", async () => {
+    const { projectId, episodes } = await work(1, "fallback");
+    const episode = episodes[0]!;
+    // The engine reads the same provider settings object, so it reaches the stub through the provider chosen here.
+    const original = { ...breakdownDeps.providers };
+    const originalDefault = breakdownDeps.defaultProvider;
+    const deepseekOnly = titleWritingProviderConfigs({ DEEPSEEK_API_KEY: STUB_KEY, TITLE_WRITING_DEEPSEEK_MODELS: "deepseek-acceptance-stub" });
+    const runs = async () => Number((await q<{ n: number }>("SELECT count(*)::int AS n FROM title_writing_run WHERE project_id = $1", [projectId])).rows[0]!.n);
+    const before = sent.length;
+    try {
+      Object.assign(breakdownDeps.providers, { qwen: deepseekOnly.qwen, deepseek: deepseekOnly.deepseek });
+      breakdownDeps.defaultProvider = "qwen";
+      const options = await http("GET", "/writing/script-breakdowns/options");
+      expect([options.body.code, options.body.defaultProvider]).toEqual(["SCRIPT_BREAKDOWN_READY", "deepseek"]);
+      const named = await http("POST", base(projectId, episode.id), { body: { providerKey: "qwen" }, headers: operator() });
+      expect([named.status, named.body.error.code, named.body.error.details.providerKey]).toEqual([503, "TITLE_WRITING_PROVIDER_UNCONFIGURED", "qwen"]);
+      const model = await http("POST", base(projectId, episode.id), { body: { model: STUB_MODEL }, headers: operator() });
+      expect([model.status, model.body.error.code, model.body.error.details]).toEqual([400, "TITLE_WRITING_MODEL_UNAVAILABLE", { providerKey: "deepseek" }]);
+      expect(await runs()).toBe(0);
+      const idempotencyKey = randomUUID();
+      const started = await http("POST", base(projectId, episode.id), { body: {}, headers: operator(idempotencyKey) });
+      expect([started.status, started.body.run.providerKey, started.body.run.model]).toEqual([201, options.body.defaultProvider, "deepseek-acceptance-stub"]);
+      const done = await settled(projectId, episode.id);
+      expect([done.state, done.save, done.providerKey]).toEqual(["completed", "saved", "deepseek"]);
+      // The configured default is ready again and the other provider is gone: the same request and key is the same run.
+      Object.assign(breakdownDeps.providers, original);
+      const replay = await http("POST", base(projectId, episode.id), { body: {}, headers: operator(idempotencyKey) });
+      expect([replay.status, replay.body.run.runId, replay.body.run.providerKey]).toEqual([200, done.runId, "deepseek"]);
+    } finally {
+      Object.assign(breakdownDeps.providers, original);
+      breakdownDeps.defaultProvider = originalDefault;
+    }
+    expect([sent.length - before, await runs()]).toEqual([1, 1]);
+    expect(sent.at(-1)!.endpoint).toContain("deepseek");
+    scenarios.defaultProviderFallback = { optionsDefault: "deepseek", frozen: "deepseek", namedUnready: 503, foreignModel: 400, replayAfterChange: 200, sends: 1 };
+  });
+
   it("never reaches a provider: every send went to the stub with the stub key", () => {
     expect(sent.length).toBeGreaterThan(0);
     expect(sent.every((item) => item.keyMatches)).toBe(true);

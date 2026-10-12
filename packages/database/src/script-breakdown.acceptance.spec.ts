@@ -820,4 +820,41 @@ describe("script breakdown on PostgreSQL", () => {
     expect(other.kind).toBe("conflict");
     expect((await store.findRunByKey(ws, "server-owner", "same-key"))?.run.id).toBe(record.id);
   });
+
+  it("finds the newest saved breakdown of exactly this episode while newer runs failed or still run; never another scope or a title run", async () => {
+    const { ws, project, episodes } = await work(2);
+    const [episode, sibling] = episodes;
+    const saved = async (scope = { ws, project, episodeId: episode!.id }) => (await store.latestSavedBreakdown(scope.ws, scope.project, scope.episodeId))?.run.id ?? null;
+    expect(await saved()).toBeNull();
+    const a = await startBreakdown(ws, project, episode!.id);
+    const executorA = await answer(a, outputOf(1, 1, null));
+    expect(await store.saveBreakdown(ws, a.id, executorA, "server-owner", now())).toBe("saved");
+    expect(await store.finishRun(ws, a.id, executorA, "completed", null, now())).toBe(true);
+    // B fails before saving, then C is still running: latest moves on, the saved one stays A.
+    const b = await startBreakdown(ws, project, episode!.id);
+    await failOnce(b);
+    expect([(await store.latestBreakdown(ws, project, episode!.id))?.run.id, await saved()]).toEqual([b.id, a.id]);
+    const c = await startBreakdown(ws, project, episode!.id);
+    expect([(await store.latestBreakdown(ws, project, episode!.id))?.run.id, await saved()]).toEqual([c.id, a.id]);
+    // Other scopes see nothing: the sibling episode, another work, another workspace.
+    const other = await work(1);
+    expect(await saved({ ws, project, episodeId: sibling!.id })).toBeNull();
+    expect(await saved({ ws, project: other.project, episodeId: episode!.id })).toBeNull();
+    expect(await saved({ ws: other.ws, project, episodeId: episode!.id })).toBeNull();
+    // C saved: only now is it the saved one.
+    const executorC = await answer(c, outputOf(1, 1, null));
+    expect(await store.saveBreakdown(ws, c.id, executorC, "server-owner", now())).toBe("saved");
+    expect(await store.finishRun(ws, c.id, executorC, "completed", null, now())).toBe(true);
+    expect(await saved()).toBe(c.id);
+    // A newer title run of the same work is never answered.
+    const titleInput: TitleWritingFrozenInput = { schema: TITLE_WRITING_INPUT_SCHEMA, promptVersion: TITLE_WRITING_PROMPT_VERSION, title: "已保存",
+      settings: { episodeCount: 2, episodeSeconds: 60, style: "" }, providerKey: "qwen", model: "q-1" };
+    const at = now();
+    const titleRun: TitleRunRecord = { id: randomUUID(), workspaceId: ws, projectId: project, actorId: "server-owner", idempotencyKey: `title-${randomUUID()}`,
+      inputHash: canonicalInputHash({ projectId: project, input: titleInput }), input: titleInput, state: "running", errorCode: null, cancelRequestedAt: null,
+      executorId: null, leaseUntil: null, callCap: 8, callsUsed: 0, storySave: "pending", storyRevisionId: null, createdAt: at, updatedAt: at };
+    expect((await store.createRun(titleRun, { maxActiveRuns: 10 })).kind).toBe("created");
+    expect(await saved()).toBe(c.id);
+    evidence.latestSaved = { afterFailed: "earlier saved run", whileRunning: "earlier saved run", afterSave: "newer run", otherScopes: null, titleRun: "ignored" };
+  });
 });

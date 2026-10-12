@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 // Simulated interface tests. fetch is mocked; this file does not start a browser, the API or a model.
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ScriptBreakdownOptionsView, ScriptBreakdownRunView } from "@ai-drama/contracts";
 import { SCRIPT_BREAKDOWN_LIMITS } from "@ai-drama/contracts";
@@ -55,6 +55,7 @@ function harness(latest: ScriptBreakdownRunView | null, answers: Array<Response 
     const headers = Object.fromEntries([...new Headers(init?.headers).entries()].map(([name, value]) => [name.toLowerCase(), value]));
     seen.push({ method: init?.method ?? "GET", url: input, headers, body: init?.body ? JSON.parse(String(init.body)) : null });
     if (input.endsWith("/writing/script-breakdowns/options")) return json(OPTIONS);
+    if (input.endsWith("/latest-saved")) return json({ run: null });
     if (input.endsWith("/latest")) return json({ run: latest });
     const next = answers.shift();
     if (!next) throw new Error(`unexpected ${input}`);
@@ -171,6 +172,7 @@ describe("AI breakdown panel", () => {
     const seen: string[] = [];
     const fetchImpl = vi.fn(async (input: string) => {
       seen.push(input);
+      if (input.endsWith("/latest-saved")) return json({ run: null });
       if (input.endsWith("/latest")) return json({ run: { ...run(), episodeId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd" } });
       return json({ items: [] });
     });
@@ -310,6 +312,7 @@ describe("start identity: confirming a sent start, reading settings again, relea
         optionCalls += 1;
         return optionAnswers[Math.min(optionCalls, optionAnswers.length) - 1]!();
       }
+      if (input.endsWith("/latest-saved")) return json({ run: null });
       if (input.endsWith("/latest")) return json({ run: null });
       const next = posts.shift();
       if (!next) throw new Error(`unexpected ${input}`);
@@ -546,6 +549,7 @@ describe("follow-up refresh and restored resume identities", () => {
     ];
     const client = new ScriptBreakdownClient((async (input: string, init?: RequestInit) => {
       if (input.endsWith("/options")) return json(OPTIONS);
+      if (input.endsWith("/latest-saved")) return json({ run: null });
       if (input.endsWith("/latest")) return json({ run: latest });
       const headers = Object.fromEntries([...new Headers(init?.headers).entries()].map(([name, value]) => [name.toLowerCase(), value]));
       posts.push({ method: "POST", url: input, headers, body: JSON.parse(String(init?.body)) });
@@ -616,6 +620,7 @@ describe("a resume identity left for an earlier run after a newer run appeared",
       const headers = Object.fromEntries([...new Headers(init?.headers).entries()].map(([name, value]) => [name.toLowerCase(), value]));
       seen.push({ method: init?.method ?? "GET", url: input, headers, body: init?.body ? JSON.parse(String(init.body)) : null });
       if (input.endsWith("/writing/script-breakdowns/options")) return json(OPTIONS);
+      if (input.endsWith("/latest-saved")) return json({ run: null });
       if (input.endsWith("/latest")) return state.latest();
       const next = answers.shift();
       if (!next) throw new Error(`unexpected ${input}`);
@@ -786,5 +791,228 @@ describe("a resume identity left for an earlier run after a newer run appeared",
     expect(screen.queryByRole("alert")).toBeNull();
     view.unmount();
     expect(stored(E2)?.key).toBe(KEY_E2);
+  });
+});
+
+describe("the latest saved breakdown stays reachable while a newer run has not saved", () => {
+  const RUN_B = "66666666-6666-4666-8666-6666666666bb";
+  const SCENE_B = "77777777-7777-4777-8777-7777777777bb";
+  const E2 = "33333333-3333-4333-8333-333333333334";
+  const REVISION = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const PLACED = { placed: ["S1"], awaitingApproval: [], sceneChanged: [], charactersChanged: [], unavailable: [] };
+  const approvedScene = (sceneId = SCENE, shotSave: "pending" | "saved" = "pending") => [{ key: "S1", ordinal: 1, sceneId, sceneRevisionId: REVISION,
+    shotSave, placedSceneRevisionId: null, current: { archived: false, currentRevisionId: REVISION, approvedRevisionId: REVISION, reviewStatus: "APPROVED", freshnessStatus: "CURRENT" } }];
+  const savedA = (overrides: Partial<ScriptBreakdownRunView> = {}) => run({ model: "q-A", scenes: approvedScene(), ...overrides });
+  const placedA = () => savedA({ scenes: approvedScene(SCENE, "saved") });
+  const savedB = () => run({ runId: RUN_B, model: "q-B", scenes: approvedScene(SCENE_B) });
+  const unsaved = (overrides: Partial<ScriptBreakdownRunView>) => run({ runId: RUN_B, model: "q-B", output: null, plannedTotalSeconds: null, save: "pending", scenes: [], ...overrides });
+  const NOT_SAVED: Array<[string, () => ScriptBreakdownRunView]> = [
+    ["failed (its output was refused)", () => unsaved({ state: "failed", step: { state: "rejected", attemptNo: 1, errorCode: "invalid_output" } })],
+    ["canceled", () => unsaved({ state: "canceled", errorCode: "canceled_before_send", step: { state: "canceled", attemptNo: 0, errorCode: null } })],
+    ["stopped with a result that could not be saved", () => unsaved({ state: "needs_attention", errorCode: "breakdown_conflict", save: "conflict",
+      output: run().output, plannedTotalSeconds: 7 })],
+    ["still running", () => unsaved({ state: "running", step: { state: "submitted", attemptNo: 1, errorCode: null } })],
+  ];
+  function held<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => { resolve = done; });
+    return { promise, resolve };
+  }
+  type Answer = (url: string) => Response | Promise<Response>;
+  /** Reads answer from switchable sources per URL; POSTs answer in order. Every request is recorded. */
+  function server() {
+    const seen: Seen[] = [];
+    const state: { latest: Answer; saved: Answer; posts: Array<() => Response | Promise<Response>> } = {
+      latest: () => json({ run: null }), saved: () => json({ run: null }), posts: [] };
+    const fetchImpl = vi.fn(async (input: string, init?: RequestInit) => {
+      const headers = Object.fromEntries([...new Headers(init?.headers).entries()].map(([name, value]) => [name.toLowerCase(), value]));
+      seen.push({ method: init?.method ?? "GET", url: input, headers, body: init?.body ? JSON.parse(String(init.body)) : null });
+      if (input.endsWith("/writing/script-breakdowns/options")) return json(OPTIONS);
+      if (input.endsWith("/latest-saved")) return await state.saved(input);
+      if (input.endsWith("/latest")) return await state.latest(input);
+      const next = state.posts.shift();
+      if (!next) throw new Error(`unexpected ${input}`);
+      return await next();
+    });
+    return {
+      seen, state, client: new ScriptBreakdownClient(fetchImpl as unknown as typeof fetch),
+      posts: () => seen.filter((item) => item.method === "POST"),
+      gets: (suffix: string) => seen.filter((item) => item.method === "GET" && item.url.endsWith(suffix)).length,
+    };
+  }
+  const panelFor = (s: ReturnType<typeof server>, options: { epoch?: number; episodeId?: string; onChanged?: () => Promise<void> } = {}) => (
+    <ScriptBreakdownPanel projectId={P1} episodeId={options.episodeId ?? E1} episodeNo={2} scriptReady sceneCount={1}
+      onOpenScene={vi.fn()} onChanged={options.onChanged ?? vi.fn(async () => undefined)} client={s.client} refreshEpoch={options.epoch ?? 0} />
+  );
+  const shotsUrl = (runId: string) => `/api/v1/projects/${P1}/episodes/${E1}/script-breakdowns/${runId}/shots`;
+  const latestBlock = () => screen.getByTestId("breakdown-run");
+  const keptBlock = () => screen.queryByTestId("breakdown-saved");
+  const placeButtons = () => screen.queryAllByRole<HTMLButtonElement>("button", { name: "写入已批准场景的镜头" });
+
+  for (const [label, newer] of NOT_SAVED) {
+    it(`keeps A viewable and writes its shots through A's endpoint while the newer run B is ${label}`, async () => {
+      const s = server();
+      s.state.latest = () => json({ run: newer() });
+      s.state.saved = () => json({ run: savedA() });
+      s.state.posts.push(() => json({ run: placedA(), placement: PLACED }));
+      const onChanged = vi.fn(async () => undefined);
+      render(panelFor(s, { onChanged }));
+      const kept = await screen.findByTestId("breakdown-saved");
+      expect(latestBlock().textContent).toContain("模型 q-B");
+      expect(latestBlock().textContent).not.toContain("模型 q-A");
+      expect(kept.textContent).toContain("最近已保存方案");
+      expect(kept.textContent).toContain("模型 q-A");
+      expect(kept.textContent).toContain("S1 · 便利店");
+      expect(kept.textContent).toContain("场景：已通过 · 镜头未写入");
+      expect(within(kept).getByRole("button", { name: "打开场景（修改或审核）" })).toBeTruthy();
+      // The only write offered is A's.
+      expect(placeButtons()).toHaveLength(1);
+      s.state.saved = () => json({ run: placedA() });
+      const reads = s.gets("/latest-saved");
+      fireEvent.click(within(kept).getByRole("button", { name: "写入已批准场景的镜头" }));
+      fireEvent.click(within(kept).getByRole("button", { name: "写入已批准场景的镜头" }));
+      await waitFor(() => expect(screen.getByTestId("breakdown-saved").textContent).toContain("已写入：S1"));
+      expect(s.posts().map((item) => [item.url, item.body])).toEqual([[shotsUrl(RUN), { acceptSceneChanged: false }]]);
+      // A's answer refreshed both reads; it never became the latest run.
+      await waitFor(() => expect(s.gets("/latest-saved")).toBeGreaterThan(reads));
+      await waitFor(() => expect(screen.getByTestId("breakdown-saved").textContent).toContain("镜头已写入"));
+      expect(latestBlock().textContent).toContain("模型 q-B");
+      expect(latestBlock().textContent).not.toContain("模型 q-A");
+      expect(placeButtons()).toHaveLength(0);
+      expect(onChanged).toHaveBeenCalledTimes(1);
+      expect(screen.queryByRole("alert")).toBeNull();
+    });
+  }
+
+  it("finds A again from the server after a remount while the latest run is B; nothing is kept in the browser", async () => {
+    const s = server();
+    s.state.latest = () => json({ run: NOT_SAVED[0]![1]() });
+    s.state.saved = () => json({ run: savedA() });
+    const first = render(panelFor(s));
+    await screen.findByTestId("breakdown-saved");
+    first.unmount();
+    window.sessionStorage.clear();
+    render(panelFor(s));
+    expect((await screen.findByTestId("breakdown-saved")).textContent).toContain("模型 q-A");
+    expect(s.gets("/latest-saved")).toBe(2);
+    expect(window.sessionStorage.length).toBe(0);
+  });
+
+  it("shows B's saved result once B is saved, and offers A no more, even when a stale read still names A", async () => {
+    const s = server();
+    s.state.latest = () => json({ run: NOT_SAVED[3]![1]() });
+    s.state.saved = () => json({ run: savedA() });
+    s.state.posts.push(() => json({ run: run({ runId: RUN_B, model: "q-B", scenes: approvedScene(SCENE_B, "saved") }), placement: PLACED }));
+    const view = render(panelFor(s));
+    expect((await screen.findByTestId("breakdown-saved")).textContent).toContain("模型 q-A");
+    // B is saved. The saved read answers A still (it may lag behind); latest names B saved, which wins.
+    s.state.latest = () => json({ run: savedB() });
+    view.rerender(panelFor(s, { epoch: 1 }));
+    await waitFor(() => expect(keptBlock()).toBeNull());
+    expect(latestBlock().textContent).toContain("最新拆解任务（也是最近已保存方案）");
+    expect(screen.queryByText(/模型 q-A/)).toBeNull();
+    expect(placeButtons()).toHaveLength(1);
+    fireEvent.click(placeButtons()[0]!);
+    await waitFor(() => expect(s.posts()).toHaveLength(1));
+    expect(s.posts()[0]!.url).toBe(shotsUrl(RUN_B));
+    await screen.findByText("已写入：S1");
+    expect(keptBlock()).toBeNull();
+  });
+
+  it("shows a run that is both the latest and the saved one once, without reading the saved one separately", async () => {
+    const s = server();
+    s.state.latest = () => json({ run: savedA() });
+    s.state.saved = () => json({ run: savedA() });
+    render(panelFor(s));
+    await screen.findByText(/模型 q-A/);
+    expect(keptBlock()).toBeNull();
+    expect(screen.getAllByText(/S1 · 便利店/)).toHaveLength(1);
+    expect(placeButtons()).toHaveLength(1);
+    expect(s.gets("/latest-saved")).toBe(0);
+  });
+
+  it("reports a failed saved read with a retry instead of 'nothing saved', and keeps what it showed when a later read fails", async () => {
+    const s = server();
+    s.state.latest = () => json({ run: NOT_SAVED[0]![1]() });
+    s.state.saved = () => json({ error: { code: "INTERNAL", message: "x" } }, 500);
+    const view = render(panelFor(s));
+    const failed = await screen.findByTestId("breakdown-saved-error");
+    expect(failed.textContent).toContain("这不表示没有已保存的方案");
+    expect(keptBlock()).toBeNull();
+    s.state.saved = () => json({ run: savedA() });
+    fireEvent.click(within(failed).getByRole("button", { name: "重新读取已保存方案" }));
+    expect((await screen.findByTestId("breakdown-saved")).textContent).toContain("模型 q-A");
+    expect(screen.queryByTestId("breakdown-saved-error")).toBeNull();
+    // A later read fails: A stays, marked as possibly outdated.
+    s.state.saved = () => json({ error: { code: "INTERNAL", message: "x" } }, 502);
+    view.rerender(panelFor(s, { epoch: 1 }));
+    expect((await screen.findByTestId("breakdown-saved-error")).textContent).toContain("下面显示的可能不是最新状态");
+    expect(keptBlock()!.textContent).toContain("模型 q-A");
+    expect(s.posts()).toHaveLength(0);
+  });
+
+  it("shows a saved run whose source went out of date as such, and does not offer to write its shots", async () => {
+    const s = server();
+    s.state.latest = () => json({ run: NOT_SAVED[0]![1]() });
+    s.state.saved = () => json({ run: savedA({ episodeScript: { currentRevisionId: "99999999-9999-4999-8999-99999999999a", currentRevisionNo: 4, approved: true } }) });
+    render(panelFor(s));
+    const kept = await screen.findByTestId("breakdown-saved");
+    expect(within(kept).getByTestId("breakdown-saved-outdated").textContent).toContain("来源剧本已更新到第 4 版");
+    expect(within(kept).getByRole<HTMLButtonElement>("button", { name: "写入已批准场景的镜头" }).disabled).toBe(true);
+  });
+
+  it("drops a saved read or a shot write answered after the episode changed or the panel was unmounted", async () => {
+    const s = server();
+    const lateRead = held<Response>();
+    s.state.latest = (url) => json({ run: url.includes(E2) ? null : NOT_SAVED[0]![1]() });
+    s.state.saved = () => lateRead.promise;
+    const view = render(panelFor(s));
+    await waitFor(() => expect(s.gets("/latest-saved")).toBe(1));
+    view.rerender(panelFor(s, { episodeId: E2 }));
+    await screen.findByText("这一集还没有拆解过。");
+    lateRead.resolve(json({ run: savedA() }));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(keptBlock()).toBeNull();
+    expect(screen.getByRole("heading", { level: 2 }).id).toBe(`breakdown-${E2}`);
+
+    // Back on E1 with A shown, a shot write is still in flight when the panel goes to E2, then unmounts.
+    s.state.saved = () => json({ run: savedA() });
+    view.rerender(panelFor(s, { episodeId: E1 }));
+    const kept = await screen.findByTestId("breakdown-saved");
+    const lateWrite = held<Response>();
+    s.state.posts.push(() => lateWrite.promise);
+    const onChanged = vi.fn(async () => undefined);
+    view.rerender(panelFor(s, { episodeId: E1, onChanged }));
+    fireEvent.click(within(kept).getByRole("button", { name: "写入已批准场景的镜头" }));
+    await waitFor(() => expect(s.posts()).toHaveLength(1));
+    view.rerender(panelFor(s, { episodeId: E2, onChanged }));
+    await screen.findByText("这一集还没有拆解过。");
+    lateWrite.resolve(json({ run: placedA(), placement: PLACED }));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(keptBlock()).toBeNull();
+    expect(screen.queryByText("已写入：S1")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(onChanged).not.toHaveBeenCalled();
+    view.unmount();
+  });
+
+  it("keeps an unconfirmed resume of B confirmable and B's identity untouched while A's shots are written", async () => {
+    const KEY = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+    const storage = `ads:breakdown:${P1}:${E1}:resume:v1`;
+    window.sessionStorage.setItem(storage, JSON.stringify({ kind: "resume", runId: RUN_B, confirmed: [], key: KEY }));
+    const s = server();
+    s.state.latest = () => json({ run: NOT_SAVED[0]![1]() });
+    s.state.saved = () => json({ run: savedA() });
+    s.state.posts.push(() => json({ run: placedA(), placement: PLACED }));
+    render(panelFor(s));
+    fireEvent.change(await screen.findByLabelText("操作者令牌"), { target: { value: TOKEN } });
+    const kept = await screen.findByTestId("breakdown-saved");
+    expect(screen.getByTestId("breakdown-pending-resume")).toBeTruthy();
+    fireEvent.click(within(kept).getByRole("button", { name: "写入已批准场景的镜头" }));
+    await screen.findByText("已写入：S1");
+    expect(s.posts().map((item) => item.url)).toEqual([shotsUrl(RUN)]);
+    expect(JSON.parse(window.sessionStorage.getItem(storage)!)).toEqual({ kind: "resume", runId: RUN_B, confirmed: [], key: KEY });
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: "确认上次续跑结果" }).disabled).toBe(false);
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: "重新生成场景与分镜" }).disabled).toBe(true);
   });
 });

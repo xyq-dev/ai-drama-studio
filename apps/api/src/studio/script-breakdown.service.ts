@@ -118,6 +118,17 @@ export class ScriptBreakdownService {
     return await this.deps.store.storageReady() && await this.deps.store.breakdownStorageReady();
   }
 
+  /**
+   * The provider a new start uses when the request names none, and the default that options() reports: the configured
+   * default when it is ready, otherwise the first ready provider in the fixed order; null when none is ready. A provider
+   * the request names is used as named, never replaced by this.
+   */
+  private readyDefault(): TitleWritingProviderKey | null {
+    const configured = this.deps.defaultProvider;
+    if (configured && this.deps.providers[configured].ok) return configured;
+    return TITLE_WRITING_PROVIDER_KEYS.find((key) => this.deps.providers[key].ok) ?? null;
+  }
+
   async options(): Promise<ScriptBreakdownResult> {
     const storageReady = await this.storageReady();
     const providers = TITLE_WRITING_PROVIDER_KEYS.map((providerKey) => {
@@ -132,7 +143,6 @@ export class ScriptBreakdownService {
       };
     });
     const firstReady = providers.find((item) => item.ready)?.providerKey ?? null;
-    const configuredDefault = this.deps.defaultProvider && this.deps.providers[this.deps.defaultProvider].ok ? this.deps.defaultProvider : null;
     const code = !this.active() ? "TITLE_WRITING_DISABLED"
       : !this.deps.operatorToken ? "TITLE_WRITING_FORBIDDEN"
         : !storageReady ? "SCRIPT_BREAKDOWN_STORAGE_UNAVAILABLE"
@@ -142,7 +152,7 @@ export class ScriptBreakdownService {
       code,
       storageReady,
       operatorTokenRequired: true,
-      defaultProvider: configuredDefault ?? firstReady,
+      defaultProvider: this.readyDefault(),
       providers,
       maxCallsPerDay: this.deps.maxCallsPerDay,
       callCapPerRun: SCRIPT_BREAKDOWN_CALL_CAP,
@@ -198,9 +208,9 @@ export class ScriptBreakdownService {
       return same && same.run.inputHash === requestHash ? this.view(same) : failure(409, "IDEMPOTENCY_KEY_REUSED");
     }
 
-    // A new request takes the current settings.
-    const providerKey = parsed.data.providerKey ?? this.deps.defaultProvider
-      ?? TITLE_WRITING_PROVIDER_KEYS.find((key) => this.deps.providers[key].ok) ?? "qwen";
+    // A new request takes the current settings: the provider it names, else the ready default options() reports. Both are
+    // frozen into the run; replays (above), resumes and recovery keep them.
+    const providerKey = parsed.data.providerKey ?? this.readyDefault() ?? this.deps.defaultProvider ?? TITLE_WRITING_PROVIDER_KEYS[0];
     const provider = this.deps.providers[providerKey];
     if (!provider.ok) return failure(503, "TITLE_WRITING_PROVIDER_UNCONFIGURED", { providerKey, missing: provider.missing });
     const model = parsed.data.model ?? provider.models[0]!;
@@ -269,6 +279,17 @@ export class ScriptBreakdownService {
     if (refused) return refused;
     const bundle = this.ofEpisode(await this.deps.store.latestBreakdown(this.deps.workspaceId, projectId, episodeId), projectId, episodeId);
     return bundle ? this.view(bundle) : { status: 200, body: { run: null } };
+  }
+
+  /**
+   * The newest run of this episode whose result was saved: its scenes may still be current and take their shots after a
+   * newer run failed, was canceled or is still running. { run: null } when none was saved. Read only.
+   */
+  async latestSaved(projectId: string, episodeId: string): Promise<ScriptBreakdownResult> {
+    const refused = await this.readable(projectId);
+    if (refused) return refused;
+    const bundle = this.ofEpisode(await this.deps.store.latestSavedBreakdown(this.deps.workspaceId, projectId, episodeId), projectId, episodeId);
+    return bundle && bundle.run.breakdownSave === "saved" ? this.view(bundle) : { status: 200, body: { run: null } };
   }
 
   async get(projectId: string, episodeId: string, runId: string): Promise<ScriptBreakdownResult> {

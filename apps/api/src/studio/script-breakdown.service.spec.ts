@@ -597,3 +597,130 @@ describe("replaying a resume whose receipt was committed while the request was i
     expect([pending.length, seen.length, store.resumes.length]).toEqual([1, 1, 1]);
   });
 });
+
+describe("choosing the provider of a new start", () => {
+  const QWEN_DOWN: TitleWritingProviderEnv = { DEEPSEEK_API_KEY: "sk-test-deepseek-not-real-0", TITLE_WRITING_DEEPSEEK_MODELS: "d-1" };
+  const BOTH: TitleWritingProviderEnv = { ...ENV, ...QWEN_DOWN };
+  const error = (result: { body: unknown }) => (result.body as { error?: { code: string; details?: unknown } }).error;
+  const defaultOf = async (service: ScriptBreakdownService) => ((await service.options()).body as { defaultProvider: string | null }).defaultProvider;
+
+  it("uses the configured default only when it is ready, otherwise the first ready provider, the same one options reports", async () => {
+    const { store, episode, settle, runOf, seen, reconfigured } = setup();
+    const fallback = reconfigured(QWEN_DOWN, "qwen");
+    expect(await defaultOf(fallback)).toBe("deepseek");
+    const started = await fallback.start(P1, episode.episodeId, {}, TOKEN, CONTEXT(randomUUID()));
+    expect([started.status, runOf(started).providerKey, runOf(started).model]).toEqual([201, "deepseek", "d-1"]);
+    await settle();
+    for (const [defaultProvider, expected] of [["qwen", "qwen"], ["deepseek", "deepseek"], [null, "qwen"]] as const) {
+      const service = reconfigured(BOTH, defaultProvider);
+      expect(await defaultOf(service)).toBe(expected);
+      const next = await service.start(P1, episode.episodeId, { replaceExisting: true }, TOKEN, CONTEXT(randomUUID()));
+      expect([next.status, runOf(next).providerKey, runOf(next).model]).toEqual([201, expected, expected === "qwen" ? "q-1" : "d-1"]);
+      await settle();
+    }
+    // This engine only reaches qwen (the deepseek runs stop before a send); what matters here is what each run froze.
+    expect([store.runs.map((run) => run.input.providerKey), seen.length]).toEqual([["deepseek", "qwen", "deepseek", "qwen"], 2]);
+  });
+
+  it("never swaps a provider named in the request, refuses when none is ready, and checks the model against the chosen provider", async () => {
+    const { store, episode, settle, seen, reconfigured } = setup();
+    const fallback = reconfigured(QWEN_DOWN, "qwen");
+    for (const [service, body, status, expected] of [
+      [fallback, { providerKey: "qwen" }, 503, { code: "TITLE_WRITING_PROVIDER_UNCONFIGURED", details: expect.objectContaining({ providerKey: "qwen" }) }],
+      [reconfigured({}, "qwen"), {}, 503, { code: "TITLE_WRITING_PROVIDER_UNCONFIGURED" }],
+      [fallback, { model: "q-1" }, 400, { code: "TITLE_WRITING_MODEL_UNAVAILABLE", details: { providerKey: "deepseek" } }],
+      [fallback, { providerKey: "deepseek", model: "q-1" }, 400, { code: "TITLE_WRITING_MODEL_UNAVAILABLE", details: { providerKey: "deepseek" } }],
+    ] as const) {
+      const refused = await service.start(P1, episode.episodeId, body, TOKEN, CONTEXT(randomUUID()));
+      expect([refused.status, error(refused)]).toEqual([status, expect.objectContaining(expected)]);
+    }
+    await settle();
+    expect([store.runs.length, seen.length]).toEqual([0, 0]);
+  });
+
+  it("freezes the provider a new start resolved: a replay after the settings changed and a resume keep it", async () => {
+    // This engine reaches only qwen, so the deepseek run stops before its call is reserved and can be resumed.
+    const { store, episode, settle, runOf, seen, reconfigured } = setup();
+    const key = randomUUID();
+    const first = runOf(await reconfigured(QWEN_DOWN, "qwen").start(P1, episode.episodeId, {}, TOKEN, CONTEXT(key)));
+    expect([first.providerKey, first.model]).toEqual(["deepseek", "d-1"]);
+    await settle();
+    // The configured default became ready (and the other one went away): the same request and key is the same run.
+    const qwenOnly = reconfigured(ENV, "qwen");
+    const sends = seen.length;
+    const replay = await qwenOnly.start(P1, episode.episodeId, {}, TOKEN, CONTEXT(key));
+    expect([replay.status, runOf(replay).runId, runOf(replay).providerKey, runOf(replay).model]).toEqual([200, first.runId, "deepseek", "d-1"]);
+    // Resuming the failed run needs its own provider: it is not moved to the one that is ready now.
+    const resumed = await qwenOnly.resume(P1, episode.episodeId, first.runId, {}, TOKEN, CONTEXT(randomUUID()));
+    expect([resumed.status, error(resumed)]).toEqual([503,
+      expect.objectContaining({ code: "TITLE_WRITING_PROVIDER_UNCONFIGURED", details: expect.objectContaining({ providerKey: "deepseek" }) })]);
+    await settle();
+    expect([store.runs.length, store.resumes.length, seen.length]).toEqual([1, 0, sends]);
+  });
+});
+
+describe("the latest saved breakdown of an episode", () => {
+  const empty = { status: 200, body: chatAnswer({ schema: "ads.script-breakdown.output.v1", episodeNo: 1, scenes: [], shots: [] }) };
+
+  it("stays the earlier saved run while a newer run fails, is canceled or is still running, and moves only when a newer run is saved", async () => {
+    let refuse = false;
+    const { store, service, episode, start, settle, runOf } = setup({ override: () => refuse ? empty : undefined });
+    const savedOf = async () => runOf(await service.latestSaved(P1, episode.episodeId));
+    const latestOf = async () => runOf(await service.latest(P1, episode.episodeId));
+    expect((await service.latestSaved(P1, episode.episodeId)).body).toEqual({ run: null });
+    const a = runOf(await start());
+    await settle();
+    expect([(await savedOf()).runId, (await savedOf()).save]).toEqual([a.runId, "saved"]);
+    store.approveScene(store.scenes.find((scene) => !scene.archived)!.sceneId);
+
+    // B is refused by the model: latest is B, the saved one is still A, and A's approved scene takes its shots.
+    refuse = true;
+    const b = runOf(await start({ replaceExisting: true }));
+    expect((await savedOf()).runId).toBe(a.runId);
+    await settle();
+    expect([(await latestOf()).runId, (await latestOf()).state]).toEqual([b.runId, "failed"]);
+    const saved = await savedOf();
+    expect([saved.runId, saved.scenes.map((scene) => scene.shotSave)]).toEqual([a.runId, ["pending", "pending"]]);
+    const placed = await service.placeShots(P1, episode.episodeId, a.runId, {}, CONTEXT());
+    expect(placed.body).toMatchObject({ placement: { placed: ["S1"], awaitingApproval: ["S2"] } });
+    const again = await service.placeShots(P1, episode.episodeId, a.runId, {}, CONTEXT());
+    expect(again.body).toMatchObject({ placement: { placed: [] } });
+    expect(store.shots.filter((shot) => !shot.archived)).toHaveLength(2);
+
+    // C is canceled before its call: still A.
+    refuse = false;
+    const c = runOf(await start({ replaceExisting: true }));
+    await service.cancel(P1, episode.episodeId, c.runId);
+    await settle();
+    expect([(await latestOf()).runId, (await latestOf()).state, (await savedOf()).runId]).toEqual([c.runId, "canceled", a.runId]);
+
+    // D is saved: only then is it the saved one.
+    const d = runOf(await start({ replaceExisting: true }));
+    expect((await savedOf()).runId).toBe(a.runId);
+    await settle();
+    expect([(await savedOf()).runId, (await savedOf()).save]).toEqual([d.runId, "saved"]);
+  });
+
+  it("never answers with another episode's, another work's or another workspace's run, or a title run", async () => {
+    const { store, service, episode, start, settle, title, runOf } = setup();
+    const a = runOf(await start());
+    await settle();
+    const other = store.addBreakdownEpisode({ workspaceId: WS, projectId: P1, episodeNo: 2, text: SCRIPT });
+    expect((await service.latestSaved(P1, other.episodeId)).body).toEqual({ run: null });
+    await expect(service.latestSaved("99999999-9999-4999-8999-999999999999", episode.episodeId)).rejects.toThrow(/not found/i);
+    expect(await store.latestSavedBreakdown("33333333-3333-4333-8333-333333333333", P1, episode.episodeId)).toBeNull();
+    expect(await store.latestSavedBreakdown(WS, P1, episode.episodeId)).toMatchObject({ run: { id: a.runId } });
+    // A newer title run of the same work is not a breakdown.
+    const titled = await title.start(P1, { title: "雨夜" }, TOKEN, CONTEXT(randomUUID()));
+    expect(titled.status).toBe(201);
+    await title.cancel(P1, (titled.body as { run: { runId: string } }).run.runId);
+    await settle();
+    expect(store.runs).toHaveLength(2);
+    expect(runOf(await service.latestSaved(P1, episode.episodeId)).runId).toBe(a.runId);
+  });
+
+  it("is refused before the breakdown storage is ready", async () => {
+    const { service, episode } = setup({ breakdownReady: false });
+    expect((await service.latestSaved(P1, episode.episodeId)).status).toBe(503);
+  });
+});
