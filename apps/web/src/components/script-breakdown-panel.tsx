@@ -396,6 +396,12 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
   // saved one, so an older saved run is never offered next to it.
   const kept = saved && saved.runId !== run?.runId && run?.save !== "saved" ? saved : null;
   const keptSource = sourceOf(kept);
+  // Writing the saved plan's shots changes the scenes and shots a newer run froze, so that run's result would be refused as
+  // a conflict when it saves. Not while a newer run can still save on its own: it is running, or a resume of it (or of any
+  // run but the saved one) may be running unconfirmed. A stopped newer run saves only if someone resumes it: allowed, with
+  // that consequence stated.
+  const keptWaits = kept !== null && (run?.state === "running" || (pendingResume !== null && pendingResume.runId !== kept.runId));
+  const keptSupersedesResume = kept !== null && !keptWaits && resumeMode !== null;
 
   /**
    * Writes the shots of the saved run shown apart from the latest one, through that run's own endpoint. Detached from the
@@ -403,7 +409,7 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
    */
   function placeKeptShots() {
     const target = kept;
-    if (!target) return;
+    if (!target || keptWaits) return;
     let result: ScriptBreakdownPlacementOutcome | null = null;
     void act(null, async () => {
       const placed = await client.placeShots(props.projectId, props.episodeId, target.runId, savedAcceptFor === target.runId);
@@ -549,8 +555,18 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
           </p>
           <SourceNotice run={kept} testId="breakdown-saved-outdated" />
           {kept.output ? <BreakdownResult run={kept} output={kept.output} onOpenScene={props.onOpenScene} /> : null}
+          {hasPendingShots(kept) && keptWaits ? (
+            <p className="text-sm text-neutral-600 [overflow-wrap:anywhere]" data-testid="breakdown-saved-wait">
+              最新任务还可能保存结果（正在进行，或有未确认的续跑请求），这期间不能写入这个方案的镜头：写入会改变最新任务冻结的场景和镜头，它付费得到的结果将因冲突不能保存。等最新任务结束或续跑结果确认后再写入。
+            </p>
+          ) : null}
+          {hasPendingShots(kept) && keptSupersedesResume ? (
+            <p className="text-sm text-amber-800 [overflow-wrap:anywhere]" data-testid="breakdown-saved-supersedes">
+              写入后，这一集的场景和镜头随之改变：之后再续跑上面的最新任务，它的结果会因冲突不能保存。
+            </p>
+          ) : null}
           {hasPendingShots(kept) ? (
-            <ShotPlacement busy={busy} outdated={keptSource.outdated} accept={savedAcceptFor === kept.runId}
+            <ShotPlacement busy={busy} outdated={keptSource.outdated || keptWaits} accept={savedAcceptFor === kept.runId}
               onAccept={(checked) => setSavedAcceptFor(checked ? kept.runId : null)} onPlace={placeKeptShots} />
           ) : null}
           {savedPlacement?.runId === kept.runId ? <PlacementSummary outcome={savedPlacement.outcome} /> : null}

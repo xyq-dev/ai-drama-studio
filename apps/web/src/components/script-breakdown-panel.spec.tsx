@@ -849,7 +849,8 @@ describe("the latest saved breakdown stays reachable while a newer run has not s
   const keptBlock = () => screen.queryByTestId("breakdown-saved");
   const placeButtons = () => screen.queryAllByRole<HTMLButtonElement>("button", { name: "写入已批准场景的镜头" });
 
-  for (const [label, newer] of NOT_SAVED) {
+  // B is stopped in each case: it saves only if someone resumes it.
+  for (const [label, newer] of NOT_SAVED.slice(0, 3)) {
     it(`keeps A viewable and writes its shots through A's endpoint while the newer run B is ${label}`, async () => {
       const s = server();
       s.state.latest = () => json({ run: newer() });
@@ -883,6 +884,30 @@ describe("the latest saved breakdown stays reachable while a newer run has not s
       expect(screen.queryByRole("alert")).toBeNull();
     });
   }
+
+  it("shows A but holds its shot write while B is running (B froze A's scenes), then allows it once B stopped, stating what it means for B", async () => {
+    const s = server();
+    s.state.latest = () => json({ run: NOT_SAVED[3]![1]() });
+    s.state.saved = () => json({ run: savedA() });
+    s.state.posts.push(() => json({ run: placedA(), placement: PLACED }));
+    const view = render(panelFor(s));
+    const kept = await screen.findByTestId("breakdown-saved");
+    expect(kept.textContent).toContain("S1 · 便利店");
+    expect(within(kept).getByTestId("breakdown-saved-wait").textContent).toContain("付费得到的结果将因冲突不能保存");
+    const write = within(kept).getByRole<HTMLButtonElement>("button", { name: "写入已批准场景的镜头" });
+    expect(write.disabled).toBe(true);
+    fireEvent.click(write);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(s.posts()).toHaveLength(0);
+    // B stopped after its answer was refused: it would save only through a resume, so A's write is allowed and says so.
+    s.state.latest = () => json({ run: NOT_SAVED[0]![1]() });
+    view.rerender(panelFor(s, { epoch: 1 }));
+    await waitFor(() => expect(screen.queryByTestId("breakdown-saved-wait")).toBeNull());
+    expect(screen.getByTestId("breakdown-saved-supersedes").textContent).toContain("之后再续跑上面的最新任务，它的结果会因冲突不能保存");
+    fireEvent.click(within(screen.getByTestId("breakdown-saved")).getByRole("button", { name: "写入已批准场景的镜头" }));
+    await screen.findByText("已写入：S1");
+    expect(s.posts().map((item) => item.url)).toEqual([shotsUrl(RUN)]);
+  });
 
   it("finds A again from the server after a remount while the latest run is B; nothing is kept in the browser", async () => {
     const s = server();
@@ -996,21 +1021,23 @@ describe("the latest saved breakdown stays reachable while a newer run has not s
     view.unmount();
   });
 
-  it("keeps an unconfirmed resume of B confirmable and B's identity untouched while A's shots are written", async () => {
+  it("holds A's shot write while a resume of B is unconfirmed (B may be running), keeping B's identity and its confirmation", async () => {
     const KEY = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
     const storage = `ads:breakdown:${P1}:${E1}:resume:v1`;
     window.sessionStorage.setItem(storage, JSON.stringify({ kind: "resume", runId: RUN_B, confirmed: [], key: KEY }));
     const s = server();
     s.state.latest = () => json({ run: NOT_SAVED[0]![1]() });
     s.state.saved = () => json({ run: savedA() });
-    s.state.posts.push(() => json({ run: placedA(), placement: PLACED }));
     render(panelFor(s));
     fireEvent.change(await screen.findByLabelText("操作者令牌"), { target: { value: TOKEN } });
     const kept = await screen.findByTestId("breakdown-saved");
     expect(screen.getByTestId("breakdown-pending-resume")).toBeTruthy();
-    fireEvent.click(within(kept).getByRole("button", { name: "写入已批准场景的镜头" }));
-    await screen.findByText("已写入：S1");
-    expect(s.posts().map((item) => item.url)).toEqual([shotsUrl(RUN)]);
+    expect(within(kept).getByTestId("breakdown-saved-wait")).toBeTruthy();
+    const write = within(kept).getByRole<HTMLButtonElement>("button", { name: "写入已批准场景的镜头" });
+    expect(write.disabled).toBe(true);
+    fireEvent.click(write);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(s.posts()).toHaveLength(0);
     expect(JSON.parse(window.sessionStorage.getItem(storage)!)).toEqual({ kind: "resume", runId: RUN_B, confirmed: [], key: KEY });
     expect(screen.getByRole<HTMLButtonElement>("button", { name: "确认上次续跑结果" }).disabled).toBe(false);
     expect(screen.getByRole<HTMLButtonElement>("button", { name: "重新生成场景与分镜" }).disabled).toBe(true);
