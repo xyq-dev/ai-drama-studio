@@ -19,7 +19,7 @@ const refused = (caught: unknown): caught is TitleWritingError => caught instanc
 const defaultClient = new ScriptBreakdownClient();
 /** Resume refusals that come after the server found no receipt for the key and that the same request can never pass. */
 const RESUME_RELEASED_BY = new Set(["TITLE_WRITING_CONFIRMATION_STALE", "TITLE_WRITING_NEEDS_CONFIRMATION", "SCRIPT_BREAKDOWN_SOURCE_CHANGED",
-  "TITLE_WRITING_NOT_RESUMABLE"]);
+  "SCRIPT_BREAKDOWN_CONFLICT", "TITLE_WRITING_NOT_RESUMABLE"]);
 const POLL_MS = 2_000;
 
 const STATE_TEXT: Record<string, string> = {
@@ -43,7 +43,7 @@ export const BREAKDOWN_ERROR_TEXT: Record<string, string> = {
   duration_out_of_range: "各镜预计时长的合计超出范围，结果没有使用。",
   truncated: "模型输出被截断。没有自动续写，也没有改用模板。",
   breakdown_source_changed: "生成期间来源剧本或引用的角色已改变：结果保留在这里，没有写入场景，也没有被标为当前可用。",
-  breakdown_conflict: "生成期间这一集的场景或镜头被修改：结果保留在这里，没有覆盖任何新版本。",
+  breakdown_conflict: "这一集的场景或镜头已改变，本次拆解不能继续写入。已有结果保留，没有覆盖任何新版本；请重新生成。",
   executor_lost: "服务中断时调用已发出，结果未知，可能已经计费。确认后才会重新发送。",
   executor_lost_before_send: "服务中断时调用还没有发出。",
   canceled_before_send: "在发送前取消，没有发出调用。",
@@ -389,7 +389,13 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
       const placed = await client.placeShots(props.projectId, props.episodeId, run.runId, acceptSceneChanged);
       result = placed.placement;
       return placed.run;
-    }, "写入镜头失败，请稍后重试", { accepted: () => setPlacement(result), changed: true });
+    }, "写入镜头失败，请稍后重试", { accepted: () => setPlacement(result), changed: true, failed: refreshAfterPlacementRefusal });
+  }
+
+  function refreshAfterPlacementRefusal(caught: unknown) {
+    // Another tab may have started a breakdown after this page read its snapshot. The server refuses the write atomically;
+    // read its current run and saved plan without changing any unresolved start/resume identity.
+    if (refused(caught) && caught.code === "SCRIPT_BREAKDOWN_RUN_ACTIVE") refresh();
   }
 
   // The newest saved run, shown on its own only while it is not the latest run: a saved latest run is itself the newest
@@ -418,6 +424,7 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
     }, "写入镜头失败，请稍后重试", {
       detached: true, changed: true,
       accepted: () => { const outcome = result; if (outcome) setSavedPlacement({ runId: target.runId, outcome }); },
+      failed: refreshAfterPlacementRefusal,
     });
   }
 
@@ -562,7 +569,7 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
           ) : null}
           {hasPendingShots(kept) && keptSupersedesResume ? (
             <p className="text-sm text-amber-800 [overflow-wrap:anywhere]" data-testid="breakdown-saved-supersedes">
-              写入后，这一集的场景和镜头随之改变：之后再续跑上面的最新任务，它的结果会因冲突不能保存。
+              写入后，这一集的场景和镜头随之改变：上面的最新任务将无法续跑，需要按当前内容重新生成。
             </p>
           ) : null}
           {hasPendingShots(kept) ? (

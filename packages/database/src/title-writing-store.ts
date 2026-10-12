@@ -6,6 +6,7 @@ import {
   currentUncertainCallIds,
   isScriptBreakdownInput,
   type ScriptBreakdownDetails,
+  type ScriptBreakdownFrozenInput,
   type ScriptBreakdownOutput,
   type ScriptBreakdownPlacement,
   type ScriptBreakdownPlacementOutcome,
@@ -312,10 +313,11 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
       const run = await this.ownedRun(client, call.workspaceId, call.runId, call.executorId, nowIso);
       if (!run) return { kind: "lost" };
       if (run.cancelRequestedAt !== null) return { kind: "canceled" };
-      // A breakdown prompt is the frozen script copy: reserve a paid call only while that script is still the episode's
-      // current, approved, CURRENT one, checked in this transaction under the run -> project -> episode lock order.
-      if (isScriptBreakdownInput(run.input) && !await this.breakdownScriptCurrent(client, call.workspaceId, run.projectId, run.input)) {
-        return { kind: "source_changed" };
+      // Refuse a known source/save conflict before reserving a paid call. The project lock protects the script and
+      // replacement scene/shot snapshot together, in the existing run -> project -> episode lock order.
+      if (isScriptBreakdownInput(run.input)) {
+        if (!await this.breakdownScriptCurrent(client, call.workspaceId, run.projectId, run.input)) return { kind: "source_changed" };
+        if (!await this.breakdownSceneSetCurrent(client, call.workspaceId, run.projectId, run.input)) return { kind: "conflict" };
       }
       if (run.callsUsed >= run.callCap) return { kind: "blocked", code: "TITLE_WRITING_RUN_CAP" };
       const recent = await client.query<Row>(
@@ -508,10 +510,11 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
       // a stored answer needs no provider.
       const sends = redo.length > 0 || steps.some((step) => step.state === "pending");
       if (sends && request.providerReady === false) return { kind: "provider_unconfigured" };
-      // A breakdown resumes only against its frozen script; a newer, unapproved or STALE source is never resent.
-      // Checked under the run -> project -> episode locks, before anything of the resume is written.
-      if (isScriptBreakdownInput(run.input) && !await this.breakdownScriptCurrent(client, workspaceId, projectId, run.input)) {
-        return { kind: "source_changed" };
+      // A known conflict cannot be repaired by resending the frozen prompt or saving a stored answer. Check under
+      // run -> project -> episode locks before writing a receipt; already accepted receipts replay above these gates.
+      if (isScriptBreakdownInput(run.input)) {
+        if (!await this.breakdownScriptCurrent(client, workspaceId, projectId, run.input)) return { kind: "source_changed" };
+        if (!await this.breakdownSceneSetCurrent(client, workspaceId, projectId, run.input)) return { kind: "conflict" };
       }
       await client.query(
         `INSERT INTO title_writing_resume (run_id, workspace_id, idempotency_key, request_hash, confirmed_call_ids, created_at)
@@ -874,11 +877,7 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
           await client.query("ROLLBACK TO SAVEPOINT script_breakdown_save");
           return settle("source_changed");
         }
-        const now = await this.episodeSceneSet(client, workspaceId, run.projectId, input.episodeId);
-        const same = (current: Array<{ id: string; rowVersion: number }>, expected: Array<{ id: string; rowVersion: number }>) =>
-          current.length === expected.length && current.every((item) => expected.some((other) => other.id === item.id && other.rowVersion === item.rowVersion));
-        if (!same(now.scenes, input.replace.scenes.map((item) => ({ id: item.sceneId, rowVersion: item.rowVersion })))
-          || !same(now.shots, input.replace.shots.map((item) => ({ id: item.shotId, rowVersion: item.rowVersion })))) {
+        if (!await this.breakdownSceneSetCurrent(client, workspaceId, run.projectId, input)) {
           await client.query("ROLLBACK TO SAVEPOINT script_breakdown_save");
           return settle("conflict");
         }
@@ -915,6 +914,9 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
 
   async placeBreakdownShots(workspaceId: string, projectId: string, episodeId: string, runId: string, options: { acceptSceneChanged: boolean }, actorId: string, nowIso: string): Promise<ScriptBreakdownPlacement> {
     return this.transaction(async (client) => {
+      // Serialize placement against starts/resumes before taking any run/project row locks. Looking up another run
+      // below never locks it, so a saving worker holding that run and waiting for the project cannot deadlock us.
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`title_writing_run:${workspaceId}`]);
       const runResult = await client.query<Row>(
         `SELECT ${RUN_COLUMNS} FROM title_writing_run WHERE id = $1 AND workspace_id = $2 AND project_id = $3 FOR UPDATE`,
         [runId, workspaceId, projectId],
@@ -940,6 +942,12 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
       // A completed placement remains a no-op replay even if its source has since changed. The source gate below is
       // about creating new revisions, never about undoing the prior receipt.
       if (links.rows.length === 0) return { kind: "ok", bundle: (await this.load(client, runRow))!, outcome };
+      const active = await client.query(
+        `SELECT 1 FROM title_writing_run WHERE workspace_id = $1 AND project_id = $2 AND episode_id = $3
+          AND run_kind = 'script_breakdown' AND state = 'running' AND id <> $4 LIMIT 1`,
+        [workspaceId, projectId, episodeId, runId],
+      );
+      if (active.rows.length > 0) return { kind: "active" };
       // Confirm after taking the project lock: accepting an edited scene does not permit attaching an old plan to a
       // different script. The page disables this action for an obsolete source, but the API must enforce it too.
       const source = await client.query(
@@ -1060,6 +1068,16 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
       [input.episodeId, projectId, workspaceId, input.scriptRevisionId],
     );
     return current.rows.length === 1;
+  }
+
+  /** Same comparison at reservation, resume and save: edits, additions and archival all invalidate the snapshot. */
+  private async breakdownSceneSetCurrent(client: PoolClient, workspaceId: string, projectId: string,
+    input: ScriptBreakdownFrozenInput): Promise<boolean> {
+    const current = await this.episodeSceneSet(client, workspaceId, projectId, input.episodeId);
+    const same = (now: Array<{ id: string; rowVersion: number }>, expected: Array<{ id: string; rowVersion: number }>) =>
+      now.length === expected.length && now.every((item) => expected.some((other) => other.id === item.id && other.rowVersion === item.rowVersion));
+    return same(current.scenes, input.replace.scenes.map((item) => ({ id: item.sceneId, rowVersion: item.rowVersion })))
+      && same(current.shots, input.replace.shots.map((item) => ({ id: item.shotId, rowVersion: item.rowVersion })));
   }
 
   private async episodeSceneSet(client: PoolClient, workspaceId: string, projectId: string, episodeId: string) {

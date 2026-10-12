@@ -149,6 +149,19 @@ async function http(method: "GET" | "POST", path: string, options: { body?: unkn
 const key = () => ({ "idempotency-key": randomUUID() });
 const operator = (idempotencyKey = randomUUID()) => ({ "x-operator-token": OPERATOR_TOKEN, "idempotency-key": idempotencyKey });
 
+function barrier() {
+  let release!: () => void;
+  const promise = new Promise<void>((resolve) => { release = resolve; });
+  return { promise, release };
+}
+
+async function callLedger(runId: string) {
+  return (await q<{ state: string; calls_used: number; calls: number; resumes: number }>(
+    `SELECT state, calls_used, (SELECT count(*)::int FROM title_writing_call WHERE run_id = r.id) AS calls,
+            (SELECT count(*)::int FROM title_writing_resume WHERE run_id = r.id) AS resumes
+       FROM title_writing_run r WHERE id = $1`, [runId])).rows[0]!;
+}
+
 function scriptOf(episodeNo: number, scenes: number, marker: string): string {
   const lines = [`第 ${String(episodeNo)} 集`, `标记：${marker}`];
   for (let scene = 1; scene <= scenes; scene += 1) {
@@ -409,6 +422,48 @@ describe("script breakdown over real HTTP and PostgreSQL, model stubbed", () => 
       .toBe("STALE");
     await refuse(third!);
     scenarios.resumeSourceChanged = { replaced: 409, unapproved: 409, stale: 409, sends: 0 };
+  });
+
+  it("does not reserve or send a frozen plan after an editor adds a scene, and refuses its new resume without a receipt", async () => {
+    const { projectId, episodes } = await work(1, "snapshot-send");
+    const episode = episodes[0]!;
+    const store = breakdownDeps.store;
+    const reserve = store.reserveCall.bind(store);
+    const reached = barrier();
+    const gate = barrier();
+    const before = sent.length;
+    let held = false;
+    store.reserveCall = async (...args: Parameters<typeof reserve>) => {
+      if (!held) { held = true; reached.release(); await gate.promise; }
+      return reserve(...args);
+    };
+    try {
+      const started = await http("POST", base(projectId, episode.id), { body: {}, headers: operator() });
+      expect(started.status).toBe(201);
+      const runId = String(started.body.run.runId);
+      await reached.promise;
+      // An actual editor route commits after freezing and before reserveCall's transaction, with the script unchanged.
+      const version = (await episodesOf(projectId)).find((item) => item.id === episode.id)!.rowVersion;
+      const created = await http("POST", `/projects/${projectId}/episodes/${episode.id}/scenes`, {
+        body: { sourceScriptRevisionId: episode.currentScriptRevisionId, ordinal: 1, heading: "人工场景", summary: "人工新增" },
+        headers: { ...key(), "if-match": String(version) } });
+      expect(created.status, JSON.stringify(created.body)).toBe(201);
+      gate.release();
+      const stopped = await settled(projectId, episode.id);
+      expect([stopped.state, stopped.errorCode, stopped.callsUsed, stopped.save])
+        .toEqual(["needs_attention", "breakdown_conflict", 0, "pending"]);
+      const trace = await callLedger(runId);
+      expect(trace).toEqual({ state: "needs_attention", calls_used: 0, calls: 0, resumes: 0 });
+      const resumed = await http("POST", `${base(projectId, episode.id)}/${runId}/resume`, { body: {}, headers: operator() });
+      expect([resumed.status, resumed.body.error?.code], JSON.stringify(resumed.body)).toEqual([409, "SCRIPT_BREAKDOWN_CONFLICT"]);
+      expect(await callLedger(runId)).toEqual(trace);
+      expect(sent.length).toBe(before);
+      expect((await scenesOf(projectId, episode.id)).map((item) => item.entityId)).toEqual([created.body.entityId]);
+      scenarios.preSendSnapshot = { refusedBeforeReservation: true, calls: 0, sends: 0, resumeReceipts: 0, resumeStatus: 409 };
+    } finally {
+      gate.release();
+      store.reserveCall = reserve;
+    }
   });
 
   it("replays a start with the same key and body after the default provider or model changed or the provider was unconfigured", async () => {
@@ -749,6 +804,83 @@ describe("script breakdown over real HTTP and PostgreSQL, model stubbed", () => 
     expect(sent.length - before).toBe(3);
     scenarios.latestSaved = { afterFailedRun: "earlier saved run", placedThroughSavedRun: ["S1"], repeatedPlacement: [], shotRevisions: 2,
       whileNewerRunning: "earlier saved run", afterNewerSaved: "newer run", otherScopes: [null, null, 404], sends: 3 };
+  });
+
+  it("guards pending shot writes against the same episode's running breakdown, but keeps no-op replays and other episodes usable", async () => {
+    const { projectId, episodes } = await work(2, "placement-guard");
+    const [episode, sibling] = episodes;
+    const savedRuns: ScriptBreakdownRunView[] = [];
+    for (const item of episodes) {
+      expect((await http("POST", base(projectId, item.id), { body: {}, headers: operator() })).status).toBe(201);
+      const saved = await settled(projectId, item.id);
+      expect([saved.state, saved.save]).toEqual(["completed", "saved"]);
+      for (const scene of saved.scenes) await approveScene(projectId, item.id, scene.sceneId);
+      savedRuns.push(saved);
+    }
+    const [a, other] = savedRuns;
+    const shotsPath = (item: ScriptBreakdownRunView) => `${base(projectId, item.episodeId)}/${item.runId}/shots`;
+    const shotCount = async (episodeId: string) => Number((await q<{ n: number }>(
+      "SELECT count(*)::int AS n FROM shot_revision r JOIN shot s ON s.id = r.shot_id WHERE s.episode_id = $1", [episodeId])).rows[0]!.n);
+    const store = breakdownDeps.store;
+    const reserve = store.reserveCall.bind(store);
+    let reached = barrier();
+    let gate = barrier();
+    let shouldPause = true;
+    store.reserveCall = async (...args: Parameters<typeof reserve>) => {
+      if (shouldPause) { shouldPause = false; reached.release(); await gate.promise; }
+      return reserve(...args);
+    };
+    overrides.set("placement-guard-1", () => ({ status: 200, body: chatAnswer({ schema: "ads.script-breakdown.output.v1", episodeNo: 1, scenes: [], shots: [] }) }));
+    try {
+      // B has frozen episode 1 but has not reserved a call. Direct callers must obey the same guard as the page.
+      expect((await http("POST", base(projectId, episode!.id), { body: { replaceExisting: true }, headers: operator() })).status).toBe(201);
+      await reached.promise;
+      const b = (await latest(projectId, episode!.id))!;
+      const before = await callLedger(b.runId);
+      const sentBefore = sent.length;
+      const denied = await http("POST", shotsPath(a!), { body: {} });
+      expect([denied.status, denied.body.error?.code], JSON.stringify(denied.body)).toEqual([409, "SCRIPT_BREAKDOWN_RUN_ACTIVE"]);
+      expect(await shotCount(episode!.id)).toBe(0);
+      expect(await callLedger(b.runId)).toEqual(before);
+      expect(sent.length).toBe(sentBefore);
+      const stillPending = await http("GET", `${base(projectId, episode!.id)}/latest-saved`);
+      expect((stillPending.body.run as ScriptBreakdownRunView).scenes.map((scene) => scene.shotSave)).toEqual(["pending"]);
+      // The active task belongs to episode 1; episode 2 is allowed to place all of its own shots.
+      const different = await http("POST", shotsPath(other!), { body: {} });
+      expect([different.status, different.body.placement?.placed], JSON.stringify(different.body)).toEqual([200, ["S1", "S2"]]);
+      expect(await shotCount(sibling!.id)).toBe(4);
+      gate.release();
+      expect((await settled(projectId, episode!.id)).state).toBe("failed");
+      expect(sent.length - sentBefore).toBe(1);
+      // Stopped B permits manual progression, but the changed shot set can no longer be sent by resuming B.
+      const placed = await http("POST", shotsPath(a!), { body: {} });
+      expect([placed.status, placed.body.placement?.placed], JSON.stringify(placed.body)).toEqual([200, ["S1"]]);
+      expect(await shotCount(episode!.id)).toBe(2);
+      const stoppedLedger = await callLedger(b.runId);
+      const afterStopped = sent.length;
+      const resume = await http("POST", `${base(projectId, episode!.id)}/${b.runId}/resume`, { body: {}, headers: operator() });
+      expect([resume.status, resume.body.error?.code], JSON.stringify(resume.body)).toEqual([409, "SCRIPT_BREAKDOWN_CONFLICT"]);
+      expect(await callLedger(b.runId)).toEqual(stoppedLedger);
+      expect(sent.length).toBe(afterStopped);
+
+      // Once A has placed its shots, its repeat is a read-only no-op even while C is running on the same episode.
+      reached = barrier();
+      gate = barrier();
+      shouldPause = true;
+      expect((await http("POST", base(projectId, episode!.id), { body: { replaceExisting: true }, headers: operator() })).status).toBe(201);
+      await reached.promise;
+      const replay = await http("POST", shotsPath(a!), { body: {} });
+      expect([replay.status, replay.body.placement?.placed], JSON.stringify(replay.body)).toEqual([200, []]);
+      expect(await shotCount(episode!.id)).toBe(2);
+      gate.release();
+      expect((await settled(projectId, episode!.id)).state).toBe("failed");
+      scenarios.placementActiveGuard = { sameEpisode: 409, pendingWrites: 0, otherEpisode: 200, otherShots: 4,
+        afterStop: 200, changedSnapshotResume: 409, completedPlacementReplayWhileRunning: 200 };
+    } finally {
+      gate.release();
+      store.reserveCall = reserve;
+      overrides.delete("placement-guard-1");
+    }
   });
 
   it("starts a request that names no provider on the ready provider options reports, and freezes it for a replay", async () => {

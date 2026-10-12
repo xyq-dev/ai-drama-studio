@@ -432,6 +432,7 @@ export class TitleWritingEngine {
     if (reservation.kind === "canceled") return this.finish(runId, "canceled", null);
     // The frozen script changed after the run started or resumed: nothing was reserved and nothing is sent.
     if (reservation.kind === "source_changed") return this.finish(runId, "needs_attention", "breakdown_source_changed");
+    if (reservation.kind === "conflict") return this.finish(runId, "needs_attention", "breakdown_conflict");
     if (reservation.kind === "blocked") return this.finish(runId, anyCompleted ? "partial" : "failed", reservation.code);
     const submittedAt = this.now();
     const submission = await this.deps.store.markCallSubmitted(this.deps.workspaceId, call.id, this.executorId,
@@ -708,7 +709,10 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
     const run = this.requireRun(call.runId);
     if (!this.owns(run, call.workspaceId, call.executorId, nowIso)) return { kind: "lost" };
     if (run.cancelRequestedAt !== null) return { kind: "canceled" };
-    if (isScriptBreakdownInput(run.input) && !this.breakdownScriptCurrent(run.input)) return { kind: "source_changed" };
+    if (isScriptBreakdownInput(run.input)) {
+      if (!this.breakdownScriptCurrent(run.input)) return { kind: "source_changed" };
+      if (!this.breakdownSceneSetCurrent(run.input)) return { kind: "conflict" };
+    }
     if (run.callsUsed >= run.callCap) return { kind: "blocked", code: "TITLE_WRITING_RUN_CAP" };
     const recent = this.calls.filter((item) => item.workspaceId === call.workspaceId && item.createdAt >= limits.sinceIso).length;
     if (recent >= limits.maxCallsPerDay) return { kind: "blocked", code: "TITLE_WRITING_DAILY_CAP" };
@@ -806,7 +810,10 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
     if (redo.length === 0 && !savePending) return { kind: "not_resumable" };
     const sends = redo.length > 0 || steps.some((step) => step.state === "pending");
     if (sends && request.providerReady === false) return { kind: "provider_unconfigured" };
-    if (isScriptBreakdownInput(run.input) && !this.breakdownScriptCurrent(run.input)) return { kind: "source_changed" };
+    if (isScriptBreakdownInput(run.input)) {
+      if (!this.breakdownScriptCurrent(run.input)) return { kind: "source_changed" };
+      if (!this.breakdownSceneSetCurrent(run.input)) return { kind: "conflict" };
+    }
     this.resumes.push({ runId, key: request.resumeKey, requestHash: request.requestHash, confirmedCallIds: [...request.confirmedCallIds].sort(), createdAt: nowIso });
     for (const step of redo) Object.assign(step, { state: "pending", updatedAt: nowIso });
     Object.assign(run, { state: "running", errorCode: null, cancelRequestedAt: null, executorId: null, leaseUntil: null, updatedAt: nowIso });
@@ -983,6 +990,15 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
       && script.reviewStatus === "APPROVED" && script.freshnessStatus === "CURRENT";
   }
 
+  private breakdownSceneSetCurrent(input: ScriptBreakdownFrozenInput): boolean {
+    const scenes = this.scenes.filter((item) => item.episodeId === input.episodeId && !item.archived);
+    const shots = this.shots.filter((item) => !item.archived && scenes.some((scene) => scene.sceneId === item.sceneId));
+    return scenes.length === input.replace.scenes.length && scenes.every((item) =>
+      input.replace.scenes.some((frozen) => frozen.sceneId === item.sceneId && frozen.rowVersion === item.rowVersion))
+      && shots.length === input.replace.shots.length && shots.every((item) =>
+        input.replace.shots.some((frozen) => frozen.shotId === item.shotId && frozen.rowVersion === item.rowVersion));
+  }
+
   async breakdownStorageReady(): Promise<boolean> {
     return this.ready && this.breakdownReady;
   }
@@ -1073,11 +1089,7 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
     }
     const scenes = this.scenes.filter((item) => item.episodeId === episode.episodeId && !item.archived);
     const shots = this.shots.filter((item) => !item.archived && scenes.some((scene) => scene.sceneId === item.sceneId));
-    const scenesSame = scenes.length === input.replace.scenes.length && scenes.every((item) =>
-      input.replace.scenes.some((frozen) => frozen.sceneId === item.sceneId && frozen.rowVersion === item.rowVersion));
-    const shotsSame = shots.length === input.replace.shots.length && shots.every((item) =>
-      input.replace.shots.some((frozen) => frozen.shotId === item.shotId && frozen.rowVersion === item.rowVersion));
-    if (!scenesSame || !shotsSame) return settle("conflict");
+    if (!this.breakdownSceneSetCurrent(input)) return settle("conflict");
     for (const shot of shots) Object.assign(shot, { archived: true, rowVersion: shot.rowVersion + 1 });
     for (const scene of scenes) Object.assign(scene, { archived: true, rowVersion: scene.rowVersion + 1 });
     output.scenes.forEach((generated, index) => {
@@ -1098,6 +1110,8 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
     const pending = this.breakdownLinks.filter((item) => item.runId === runId && item.shotSave !== "saved")
       .sort((left, right) => left.ordinal - right.ordinal);
     if (pending.length === 0) return { kind: "ok", bundle: this.bundle(run), outcome };
+    if (this.runs.some((other) => other.id !== runId && other.workspaceId === workspaceId && other.projectId === projectId
+      && other.state === "running" && isScriptBreakdownInput(other.input) && other.input.episodeId === episodeId)) return { kind: "active" };
     const episode = this.requireBreakdownEpisode(episodeId);
     const script = episode.scripts.find((item) => item.id === input.scriptRevisionId);
     const sourceCurrent = episode.currentScriptId === input.scriptRevisionId && episode.approvedScriptId === input.scriptRevisionId

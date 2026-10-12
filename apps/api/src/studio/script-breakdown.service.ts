@@ -64,6 +64,8 @@ const MESSAGES: Record<string, string> = {
   TITLE_WRITING_CONFIRMATION_STALE: "确认的不确定调用和现在的不一致，没有重新发送。请重新查看后再确认。",
   TITLE_WRITING_NOT_RESUMABLE: "这次拆解没有需要续跑的步骤。",
   SCRIPT_BREAKDOWN_SOURCE_CHANGED: "这次拆解的来源剧本已被新版本取代、未批准或已过期，没有续跑，也没有发出调用。原结果保留；请对当前已批准的剧本重新拆解。",
+  SCRIPT_BREAKDOWN_CONFLICT: "这次拆解冻结的场景或镜头已被修改，没有续跑，也没有发出调用。原结果保留；请根据当前内容重新生成。",
+  SCRIPT_BREAKDOWN_RUN_ACTIVE: "本集拆解正在进行，未写入镜头。原方案仍可查看，请等本集任务结束后再试。",
   SCRIPT_BREAKDOWN_NO_SCRIPT: "这一集还没有剧本。",
   SCRIPT_REVIEW_REQUIRED: "这一集的当前剧本还没有通过审核（或已过期）。剧本批准后才能拆解。",
   SCRIPT_BREAKDOWN_SCRIPT_UNSUPPORTED: "这一集的剧本不是纯文本正文，无法拆解。",
@@ -350,6 +352,7 @@ export class ScriptBreakdownService {
       if (prepared.kind === "stale_confirmation") return failure(409, "TITLE_WRITING_CONFIRMATION_STALE");
       if (prepared.kind === "key_conflict") return failure(409, "IDEMPOTENCY_KEY_REUSED");
       if (prepared.kind === "source_changed") return failure(409, "SCRIPT_BREAKDOWN_SOURCE_CHANGED");
+      if (prepared.kind === "conflict") return failure(409, "SCRIPT_BREAKDOWN_CONFLICT");
       if (prepared.kind === "provider_unconfigured") {
         return failure(503, "TITLE_WRITING_PROVIDER_UNCONFIGURED", { providerKey: existing.run.input.providerKey, missing: provider.ok ? [] : provider.missing });
       }
@@ -371,6 +374,7 @@ export class ScriptBreakdownService {
     const placed = await this.deps.store.placeBreakdownShots(this.deps.workspaceId, projectId, episodeId, runId,
       { acceptSceneChanged: parsed.data.acceptSceneChanged }, context.actorId, this.now().toISOString());
     if (placed.kind === "not_found") return failure(404, "NOT_FOUND");
+    if (placed.kind === "active") return failure(409, "SCRIPT_BREAKDOWN_RUN_ACTIVE");
     if (placed.kind !== "ok") return failure(409, "SCRIPT_BREAKDOWN_NOT_SAVED");
     const result = await this.view(placed.bundle);
     return { status: 200, body: { ...(result.body as Record<string, unknown>), placement: placed.outcome } };

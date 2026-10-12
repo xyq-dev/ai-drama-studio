@@ -279,6 +279,79 @@ describe("writing proposed shots", () => {
     return { store, episode, record };
   }
 
+  it.each((["scene_edit", "scene_added", "scene_archived", "shot_edit", "shot_added", "shot_archived"] as const)
+    .flatMap((change) => [false, true].map((resume) => ({ change, resume }))))(
+    "does not reserve or resume after frozen $change changes (resume=$resume)",
+    async ({ change, resume }) => {
+      const { store, episode, record: savedRun } = await saved();
+      for (const scene of liveScenes(store, episode)) store.approveScene(scene.sceneId);
+      await store.placeBreakdownShots(WS, P1, episode.episodeId, savedRun.id,
+        { acceptSceneChanged: false }, "owner", new Date().toISOString());
+      const run = await start(store, episode, { key: "replacement", replaceExisting: true });
+      if (resume) await engineFor(store, fixtureChatTransport("t", { override: () => ({ status: 200, body: chatAnswer("not json") }) })).drive(run.id);
+      const beforeCalls = structuredClone(store.calls);
+      const beforeResumes = structuredClone(store.resumes);
+      const beforeCallsUsed = (await store.getRunById(WS, run.id))!.run.callsUsed;
+      const scene = liveScenes(store, episode)[0]!;
+      const shot = store.shots.find((item) => item.sceneId === scene.sceneId)!;
+      if (change === "scene_edit") store.editScene(scene.sceneId, "人工修改");
+      if (change === "scene_added") store.addManualScene(episode.episodeId, "新增场景");
+      if (change === "scene_archived") scene.archived = true;
+      if (change === "shot_edit") shot.rowVersion += 1;
+      if (change === "shot_added") store.shots.push({ ...structuredClone(shot), shotId: "new-manual-shot" });
+      if (change === "shot_archived") shot.archived = true;
+      const beforeScenes = structuredClone(store.scenes);
+      const beforeShots = structuredClone(store.shots);
+      const seen: FixtureExchange[] = [];
+      if (resume) {
+        expect(await store.prepareResume(WS, P1, run.id, { resumeKey: "conflicting-resume", requestHash: "a".repeat(64),
+          confirmedCallIds: [], maxActiveRuns: 1 }, new Date().toISOString())).toEqual({ kind: "conflict" });
+      } else {
+        await engineFor(store, fixtureChatTransport("t", { seen })).drive(run.id);
+        expect(await view(store, run.id)).toMatchObject({ state: "needs_attention", errorCode: "breakdown_conflict", save: "pending" });
+      }
+      expect(seen).toHaveLength(0);
+      expect(store.calls).toEqual(beforeCalls);
+      expect(store.resumes).toEqual(beforeResumes);
+      expect((await store.getRunById(WS, run.id))!.run.callsUsed).toBe(beforeCallsUsed);
+      expect(store.scenes).toEqual(beforeScenes);
+      expect(store.shots).toEqual(beforeShots);
+    },
+  );
+
+  it("rechecks the frozen scene set again after a successful resume and before reservation", async () => {
+    const { store, episode } = await saved();
+    const run = await start(store, episode, { key: "replacement", replaceExisting: true });
+    await engineFor(store, fixtureChatTransport("t", { override: () => ({ status: 200, body: chatAnswer("not json") }) })).drive(run.id);
+    expect((await store.prepareResume(WS, P1, run.id, { resumeKey: "accepted-resume", requestHash: "a".repeat(64),
+      confirmedCallIds: [], maxActiveRuns: 1 }, new Date().toISOString())).kind).toBe("ok");
+    const callsBefore = structuredClone(store.calls);
+    store.editScene(liveScenes(store, episode)[0]!.sceneId, "续跑后人工修改");
+    const seen: FixtureExchange[] = [];
+    await engineFor(store, fixtureChatTransport("t", { seen })).drive(run.id);
+    expect(await view(store, run.id)).toMatchObject({ state: "needs_attention", errorCode: "breakdown_conflict", save: "pending" });
+    expect(store.calls).toEqual(callsBefore);
+    expect(seen).toHaveLength(0);
+  });
+
+  it("blocks pending placement during another running breakdown of the same episode, allowing stopped and other-episode runs", async () => {
+    const { store, episode, record } = await saved();
+    for (const scene of liveScenes(store, episode)) store.approveScene(scene.sceneId);
+    const later = await start(store, episode, { key: "replacement", replaceExisting: true });
+    const place = () => store.placeBreakdownShots(WS, P1, episode.episodeId, record.id,
+      { acceptSceneChanged: false }, "owner", new Date().toISOString());
+    expect(await place()).toEqual({ kind: "active" });
+    expect(store.shots).toHaveLength(0);
+    store.runs.find((run) => run.id === later.id)!.state = "canceled";
+    const otherEpisode = store.addBreakdownEpisode({ workspaceId: WS, projectId: P1, episodeNo: 2, text: scriptOf(2, 1) });
+    await start(store, otherEpisode, { key: "other-episode" });
+    expect(await place()).toMatchObject({ kind: "ok", outcome: { placed: ["S1", "S2"] } });
+    const shotsBefore = structuredClone(store.shots);
+    store.runs.find((run) => run.id === later.id)!.state = "running";
+    expect(await place()).toMatchObject({ kind: "ok", outcome: { placed: [] } });
+    expect(store.shots).toEqual(shotsBefore);
+  });
+
   it("waits for a person's scene approval, then writes each approved scene's shots once, with the plan kept apart", async () => {
     const { store, episode, record } = await saved(true);
     const place = (accept = false) => store.placeBreakdownShots(WS, P1, episode.episodeId, record.id, { acceptSceneChanged: accept }, "owner", new Date().toISOString());

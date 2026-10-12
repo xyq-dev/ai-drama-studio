@@ -102,11 +102,12 @@ export interface TitleRunCreationLimits {
 
 /**
  * source_changed: a script breakdown whose frozen script is no longer the episode's current, approved, CURRENT script.
+ * conflict: the episode's current scene/shot ids or row versions differ from the frozen replacement set.
  * Checked under the run, project and episode locks in the same transaction as the reservation; nothing is reserved.
  */
 export type TitleCallReservation =
   | { kind: "reserved" }
-  | { kind: "canceled" | "lost" | "source_changed" }
+  | { kind: "canceled" | "lost" | "source_changed" | "conflict" }
   | { kind: "blocked"; code: "TITLE_WRITING_DAILY_CAP" | "TITLE_WRITING_RUN_CAP" };
 
 export type TitleCallSubmission = "submitted" | "canceled" | "lost";
@@ -129,11 +130,12 @@ export interface TitleCallFinish {
  * stale_confirmation: the confirmed calls are not exactly the current uncertain calls.
  * key_conflict: the key was used for a different confirmation on this run.
  * source_changed: a script breakdown whose frozen script was replaced, left unapproved or made STALE; nothing changes.
+ * conflict: a script breakdown's frozen scene/shot set changed; no resume receipt or new call is created.
  * provider_unconfigured: the resume would send a call again but the run's provider or model cannot send; nothing changes.
  */
 export type TitleResumePreparation =
   | { kind: "ok" | "replayed"; bundle: TitleRunBundle }
-  | { kind: "not_resumable" | "needs_confirmation" | "stale_confirmation" | "key_conflict" | "active" | "active_cap" | "not_found" | "source_changed" | "provider_unconfigured" };
+  | { kind: "not_resumable" | "needs_confirmation" | "stale_confirmation" | "key_conflict" | "active" | "active_cap" | "not_found" | "source_changed" | "conflict" | "provider_unconfigured" };
 
 export interface TitleResumeRequest {
   /** Identity of one resume action, from the Idempotency-Key header. */
@@ -182,7 +184,8 @@ export interface ScriptBreakdownPlacementOutcome {
 
 export type ScriptBreakdownPlacement =
   | { kind: "ok"; bundle: TitleRunBundle; outcome: ScriptBreakdownPlacementOutcome }
-  | { kind: "not_found" | "not_ready" };
+  /** Pending shots cannot change the frozen scene set of another running breakdown in this episode. */
+  | { kind: "not_found" | "not_ready" | "active" };
 
 export interface ScriptBreakdownDetails {
   scenes: ScriptBreakdownSceneView[];

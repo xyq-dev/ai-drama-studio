@@ -245,6 +245,68 @@ async function approveScene(ws: string, project: string, episodeId: string, scen
     revisionId: scene.current_revision_id, expectedVersion: review.rowVersion, expectedReviewVersion: review.reviewVersion, to: "APPROVED", reviewedBy: "editor" }));
 }
 
+/** Actual editor-created scene/shot revisions to freeze before a later edit or archive. */
+async function editableWorld() {
+  const world = await work(2);
+  const { ws, project, episodes } = world;
+  const episodeId = episodes[0]!.id;
+  const scriptId = (await episodeRow(episodeId)).current_script_revision_id!;
+  const episodeVersion = (await episodeRow(episodeId)).row_version;
+  const scene = await tx((client) => chain.createSceneRevisionInTransaction(client, { workspaceId: ws, projectId: project,
+    episodeId, sourceScriptRevisionId: scriptId, ordinal: 1, heading: "原场景", timeOfDay: "夜", summary: "原描述",
+    createdBy: "editor", expectedVersion: episodeVersion }));
+  await approveScene(ws, project, episodeId, scene.entityId);
+  const sceneVersion = (await liveScenes(episodeId))[0]!.row_version;
+  const shot = await tx((client) => chain.createShotScopedInTransaction(client, { workspaceId: ws, projectId: project,
+    sceneId: scene.entityId, sourceSceneRevisionId: scene.revisionId, ordinal: 1, shotType: "中景", camera: "固定",
+    action: "原动作", promptText: "原提示词", createdBy: "editor", expectedVersion: sceneVersion }));
+  return { ...world, episodeId, scriptId, scene, shot };
+}
+
+type EditableWorld = Awaited<ReturnType<typeof editableWorld>>;
+const FROZEN_CHANGES = ["scene added", "scene edited", "scene archived", "shot added", "shot edited", "shot archived"] as const;
+type FrozenChange = typeof FROZEN_CHANGES[number];
+
+async function editFrozen(world: EditableWorld, change: FrozenChange, client: PoolClient): Promise<void> {
+  const { ws, project, episodeId, scriptId, scene, shot } = world;
+  await client.query("SELECT id FROM project WHERE id = $1 FOR UPDATE", [project]);
+  if (change === "scene added" || change === "scene edited") {
+    const edited = change === "scene edited";
+    const row = (await client.query<{ row_version: number }>(edited
+      ? "SELECT row_version FROM scene WHERE id = $1" : "SELECT row_version FROM episode WHERE id = $1",
+    [edited ? scene.entityId : episodeId])).rows[0]!;
+    await chain.createSceneRevisionInTransaction(client, { workspaceId: ws, projectId: project, episodeId,
+      ...(edited ? { sceneId: scene.entityId } : {}), sourceScriptRevisionId: scriptId, ordinal: edited ? 1 : 2,
+      heading: "人工修改", timeOfDay: "日", summary: "人工内容", createdBy: "editor", expectedVersion: row.row_version });
+  } else if (change === "shot added" || change === "shot edited") {
+    const edited = change === "shot edited";
+    const row = (await client.query<{ row_version: number }>(edited
+      ? "SELECT row_version FROM shot WHERE id = $1" : "SELECT row_version FROM scene WHERE id = $1",
+    [edited ? shot.entityId : scene.entityId])).rows[0]!;
+    await chain.createShotScopedInTransaction(client, { workspaceId: ws, projectId: project, sceneId: scene.entityId,
+      ...(edited ? { shotId: shot.entityId } : {}), sourceSceneRevisionId: scene.revisionId, ordinal: edited ? 1 : 2,
+      shotType: "近景", camera: "人工机位", action: "人工动作", promptText: "人工提示词", createdBy: "editor", expectedVersion: row.row_version });
+  } else {
+    const shotVersion = (await client.query<{ row_version: number }>("SELECT row_version FROM shot WHERE id = $1", [shot.entityId])).rows[0]!.row_version;
+    const sceneVersion = (await client.query<{ row_version: number }>("SELECT row_version FROM scene WHERE id = $1", [scene.entityId])).rows[0]!.row_version;
+    await chain.archiveSceneSetInTransaction(client, { workspaceId: ws, projectId: project, episodeId,
+      scenes: change === "scene archived" ? [{ sceneId: scene.entityId, rowVersion: sceneVersion }] : [],
+      shots: [{ shotId: shot.entityId, rowVersion: shotVersion }], traceId: `acceptance-${change}` });
+  }
+}
+
+/** Observe the real database lock dependency, not a guessed duration or timer race. */
+async function waitUntilBlockedBy(pid: number): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  for (;;) {
+    const result = await pool.query<{ waiting: boolean }>(
+      `SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE application_name = 'script-breakdown-acceptance-main'
+         AND $1::int = ANY(pg_blocking_pids(pid))) AS waiting`, [pid]);
+    if (result.rows[0]!.waiting) return;
+    if (Date.now() >= deadline) throw new Error("The guarded transaction never waited behind the editor's project lock");
+  }
+}
+
 /** Rows of every table except the columns the migration adds: equal digests mean no existing value changed. */
 async function rowDigests() {
   const tables = (await pool.query<{ name: string }>(
@@ -575,6 +637,60 @@ describe("script breakdown on PostgreSQL", () => {
     expect(repeated.kind === "ok" && repeated.outcome).toMatchObject({ placed: [], unavailable: ["S1"] });
     expect(await shotRows()).toEqual(saved);
     expect((await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM shot_revision WHERE project_id = $1", [project])).rows[0]!.n).toBe(3);
+  });
+
+  for (const path of ["reserve", "resume"] as const) {
+    for (const change of FROZEN_CHANGES) {
+      it(`refuses ${path} after a frozen ${change}, without a call or resume receipt`, async () => {
+        const world = await editableWorld();
+        const record = await startBreakdown(world.ws, world.project, world.episodeId);
+        if (path === "resume") await failOnce(record);
+        await tx((client) => editFrozen(world, change, client));
+        const before = await runTrace(record.id);
+        const result = path === "reserve" ? await reserveBreakdown(record) : await resumeOf(world.ws, world.project, record.id);
+        expect(result).toEqual({ kind: "conflict" });
+        expect(await runTrace(record.id)).toEqual(before);
+        ((evidence.frozenChangesRefused ??= []) as string[]).push(`${path}: ${change}`);
+      });
+    }
+
+    it(`a ${path} waiting behind a manual scene edit checks the committed snapshot before any paid work`, async () => {
+      const world = await editableWorld();
+      const record = await startBreakdown(world.ws, world.project, world.episodeId);
+      if (path === "resume") await failOnce(record);
+      const before = await runTrace(record.id);
+      const person = await pool.connect();
+      let pending: Promise<unknown> | undefined;
+      try {
+        await person.query("BEGIN");
+        await person.query("SELECT id FROM project WHERE id = $1 FOR UPDATE", [world.project]);
+        const pid = (await person.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
+        pending = path === "reserve" ? reserveBreakdown(record) : resumeOf(world.ws, world.project, record.id);
+        // Rejection is observed only after the editor has committed while the guarded path is blocked behind it.
+        await waitUntilBlockedBy(pid);
+        await editFrozen(world, "scene edited", person);
+        await person.query("COMMIT");
+        expect(await pending).toEqual({ kind: "conflict" });
+      } finally {
+        await person.query("ROLLBACK");
+        person.release();
+        await pending?.catch(() => undefined);
+      }
+      expect(await runTrace(record.id)).toEqual(before);
+      ((evidence.frozenChangesLockOrdered ??= []) as string[]).push(path);
+    });
+  }
+
+  it("does not invalidate a frozen episode when only a different episode gains a scene", async () => {
+    const world = await editableWorld();
+    const record = await startBreakdown(world.ws, world.project, world.episodeId);
+    const other = world.episodes[1]!;
+    const row = await episodeRow(other.id);
+    await tx((client) => chain.createSceneRevisionInTransaction(client, { workspaceId: world.ws, projectId: world.project,
+      episodeId: other.id, sourceScriptRevisionId: row.current_script_revision_id!, ordinal: 1, heading: "其他集场景",
+      summary: "无关修改", createdBy: "editor", expectedVersion: row.row_version }));
+    expect(await reserveBreakdown(record)).toEqual({ kind: "reserved" });
+    expect(await runTrace(record.id)).toMatchObject({ callsUsed: 1, calls: 1, step: "reserved" });
   });
 
   for (const change of ["replaced by a newer approved script", "left unapproved by a newer draft", "made STALE by a new story"] as const) {

@@ -586,6 +586,25 @@ describe("follow-up refresh and restored resume identities", () => {
     }
     expect(new Set(h.seen.filter((item) => item.method === "POST").map((item) => item.headers["idempotency-key"]))).toEqual(new Set([RESUME_KEY]));
   });
+
+  it("releases a restored resume only after its receipt lookup definitively refuses a changed scene snapshot", async () => {
+    const pending = { kind: "resume", runId: RUN, confirmed: [OLD_CALL], key: RESUME_KEY };
+    window.sessionStorage.setItem(resumeStorage, JSON.stringify(pending));
+    const h = harness(uncertain(OLD_CALL, 1), [json({ error: { code: "SCRIPT_BREAKDOWN_CONFLICT",
+      message: "这一集的场景或镜头已改变，不能续跑原任务，请重新生成。" } }, 409)]);
+    panel(h);
+    fireEvent.change(await screen.findByLabelText("操作者令牌"), { target: { value: TOKEN } });
+    const reads = h.seen.filter((item) => item.url.endsWith("/latest")).length;
+    fireEvent.click(await screen.findByRole("button", { name: "确认上次续跑结果" }));
+    await waitFor(() => expect(window.sessionStorage.getItem(resumeStorage)).toBeNull());
+    await waitFor(() => expect(h.seen.filter((item) => item.url.endsWith("/latest")).length).toBeGreaterThan(reads));
+    expect(screen.queryByRole("button", { name: "确认上次续跑结果" })).toBeNull();
+    expect(screen.getByRole("alert").textContent).toContain("请重新生成");
+    const posts = h.seen.filter((item) => item.method === "POST");
+    expect(posts).toHaveLength(1);
+    expect(posts[0]!.headers["idempotency-key"]).toBe(RESUME_KEY);
+    expect(posts[0]!.body).toEqual({ confirmUncertainCallIds: [OLD_CALL] });
+  });
 });
 
 describe("a resume identity left for an earlier run after a newer run appeared", () => {
@@ -903,7 +922,7 @@ describe("the latest saved breakdown stays reachable while a newer run has not s
     s.state.latest = () => json({ run: NOT_SAVED[0]![1]() });
     view.rerender(panelFor(s, { epoch: 1 }));
     await waitFor(() => expect(screen.queryByTestId("breakdown-saved-wait")).toBeNull());
-    expect(screen.getByTestId("breakdown-saved-supersedes").textContent).toContain("之后再续跑上面的最新任务，它的结果会因冲突不能保存");
+    expect(screen.getByTestId("breakdown-saved-supersedes").textContent).toContain("上面的最新任务将无法续跑，需要按当前内容重新生成");
     fireEvent.click(within(screen.getByTestId("breakdown-saved")).getByRole("button", { name: "写入已批准场景的镜头" }));
     await screen.findByText("已写入：S1");
     expect(s.posts().map((item) => item.url)).toEqual([shotsUrl(RUN)]);
@@ -1042,4 +1061,36 @@ describe("the latest saved breakdown stays reachable while a newer run has not s
     expect(screen.getByRole<HTMLButtonElement>("button", { name: "确认上次续跑结果" }).disabled).toBe(false);
     expect(screen.getByRole<HTMLButtonElement>("button", { name: "重新生成场景与分镜" }).disabled).toBe(true);
   });
+
+  for (const oldLatest of ["saved A", "stopped B"] as const) {
+    it(`refreshes a stale ${oldLatest} after the server refuses its shot write for an active breakdown, preserving the saved plan and request identity`, async () => {
+      const s = server();
+      const storage = `ads:breakdown:${P1}:${E1}:start:v1`;
+      const pending = { kind: "start", key: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+        body: { providerKey: "qwen", model: "q-1", replaceExisting: true } };
+      window.sessionStorage.setItem(storage, JSON.stringify(pending));
+      s.state.latest = () => json({ run: oldLatest === "saved A" ? savedA() : NOT_SAVED[0]![1]() });
+      s.state.saved = () => json({ run: savedA() });
+      s.state.posts.push(() => {
+        s.state.latest = () => json({ run: NOT_SAVED[3]![1]() });
+        return json({ error: { code: "SCRIPT_BREAKDOWN_RUN_ACTIVE", message: "本集拆解正在进行，未写入镜头，请结束后再试。" } }, 409);
+      });
+      const onChanged = vi.fn(async () => undefined);
+      render(panelFor(s, { onChanged }));
+      const write = await screen.findByRole<HTMLButtonElement>("button", { name: "写入已批准场景的镜头" });
+      expect(write.disabled).toBe(false);
+      const reads = s.gets("/latest");
+      fireEvent.click(write);
+      await waitFor(() => expect(s.gets("/latest")).toBeGreaterThan(reads));
+      await screen.findByText(/状态：进行中/);
+      const kept = await screen.findByTestId("breakdown-saved");
+      expect(kept.textContent).toContain("模型 q-A");
+      expect(within(kept).getByTestId("breakdown-saved-wait")).toBeTruthy();
+      expect(within(kept).getByRole<HTMLButtonElement>("button", { name: "写入已批准场景的镜头" }).disabled).toBe(true);
+      expect(s.posts().map((item) => [item.url, item.body])).toEqual([[shotsUrl(RUN), { acceptSceneChanged: false }]]);
+      expect(JSON.parse(window.sessionStorage.getItem(storage)!)).toEqual(pending);
+      expect(screen.queryByText("已写入：S1")).toBeNull();
+      expect(onChanged).not.toHaveBeenCalled();
+    });
+  }
 });
