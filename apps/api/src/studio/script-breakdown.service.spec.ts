@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import type { ScriptBreakdownRunView } from "@ai-drama/contracts";
+import type { ScriptBreakdownRunView, TitleWritingProviderKey } from "@ai-drama/contracts";
 import { PersistenceError } from "@ai-drama/database";
 import {
   InMemoryTitleWritingStore,
@@ -52,7 +52,10 @@ function setup(options: { enabled?: boolean; breakdownReady?: boolean; override?
   const settle = async () => { while (pending.length > 0) await pending.shift()!(); };
   const start = (body: unknown = {}, key: string | undefined = randomUUID(), token = TOKEN) => service.start(P1, episode.episodeId, body, token, CONTEXT(key));
   const runOf = (result: { body: unknown }) => (result.body as { run: ScriptBreakdownRunView }).run;
-  return { store, episode, service, title, seen, settle, start, runOf, pending };
+  /** The same store and engine after an administrator changed the provider settings (a restart with other configuration). */
+  const reconfigured = (env: TitleWritingProviderEnv, defaultProvider: TitleWritingProviderKey | null) =>
+    new ScriptBreakdownService({ ...common, projects, providers: titleWritingProviderConfigs(env), defaultProvider });
+  return { store, episode, service, title, seen, settle, start, runOf, pending, reconfigured };
 }
 
 describe("starting a script breakdown", () => {
@@ -192,6 +195,104 @@ describe("starting a script breakdown", () => {
     expect(result.status).toBe(409);
     expect(result.body).toMatchObject({ error: { code: "SCRIPT_BREAKDOWN_NOT_SAVED" } });
     expect(store.shots).toHaveLength(0);
+    expect(seen).toHaveLength(1);
+  });
+});
+
+describe("resuming a script breakdown only against its frozen, still current script", () => {
+  const failFirst: Override = (_step, attempt) => attempt === 1
+    ? { status: 200, body: chatAnswer({ schema: "ads.script-breakdown.output.v1", episodeNo: 1, scenes: [], shots: [] }) } : undefined;
+  const changes: Array<[string, (store: InMemoryTitleWritingStore, episodeId: string) => void]> = [
+    ["a newer approved script replaced it", (store, episodeId) => { store.writeScript(episodeId, `${SCRIPT}\n周野：第二版。`); }],
+    ["a newer draft left the current script unapproved", (store, episodeId) => { store.writeScript(episodeId, `${SCRIPT}\n周野：草稿。`, false); }],
+    ["the same revision went STALE upstream", (store, episodeId) => { store.staleScript(episodeId); }],
+  ];
+
+  for (const [label, change] of changes) {
+    it(`refuses the resume before any reservation or send when ${label}`, async () => {
+      const { store, service, episode, start, settle, runOf, seen } = setup({ override: failFirst });
+      const runId = runOf(await start()).runId;
+      await settle();
+      change(store, episode.episodeId);
+      const calls = store.calls.length;
+      const resumed = await service.resume(P1, episode.episodeId, runId, {}, TOKEN, CONTEXT(randomUUID()));
+      expect([resumed.status, (resumed.body as { error: { code: string } }).error.code]).toEqual([409, "SCRIPT_BREAKDOWN_SOURCE_CHANGED"]);
+      await settle();
+      const run = runOf(await service.get(P1, episode.episodeId, runId));
+      // The run keeps its frozen source and its failed state; nothing was reserved, resumed, sent or written.
+      expect([run.state, run.callsUsed, run.save, run.scriptRevisionNo]).toEqual(["failed", 1, "pending", 1]);
+      expect([seen.length, store.calls.length, store.resumes.length, store.scenes.length]).toEqual([1, calls, 0, 0]);
+    });
+  }
+
+  it("sends nothing when the script changes after the resume was accepted and before the call is reserved", async () => {
+    const { store, service, episode, start, settle, runOf, seen } = setup({ override: failFirst });
+    const runId = runOf(await start()).runId;
+    await settle();
+    const resumed = await service.resume(P1, episode.episodeId, runId, {}, TOKEN, CONTEXT(randomUUID()));
+    expect(resumed.status).toBe(200);
+    store.writeScript(episode.episodeId, `${SCRIPT}\n周野：续跑前改了。`);
+    await settle();
+    const run = runOf(await service.get(P1, episode.episodeId, runId));
+    expect([run.state, run.errorCode, run.callsUsed, run.save]).toEqual(["needs_attention", "breakdown_source_changed", 1, "pending"]);
+    expect([seen.length, store.calls.length, store.scenes.length]).toEqual([1, 1, 0]);
+  });
+
+  it("still resumes against a current, approved script", async () => {
+    const { store, service, episode, start, settle, runOf, seen } = setup({ override: failFirst });
+    const runId = runOf(await start()).runId;
+    await settle();
+    expect((await service.resume(P1, episode.episodeId, runId, {}, TOKEN, CONTEXT(randomUUID()))).status).toBe(200);
+    await settle();
+    const run = runOf(await service.get(P1, episode.episodeId, runId));
+    expect([run.state, run.save, run.callsUsed, seen.length, store.resumes.length]).toEqual(["completed", "saved", 2, 2, 1]);
+  });
+});
+
+describe("replaying a breakdown start after the provider settings changed", () => {
+  const DEEPSEEK_TOO: TitleWritingProviderEnv = { ...ENV, DEEPSEEK_API_KEY: "sk-test-deepseek-not-real-0", TITLE_WRITING_DEEPSEEK_MODELS: "d-1" };
+
+  it("answers the same request and key with the original run, without a second run or send", async () => {
+    const { store, episode, start, settle, runOf, seen, reconfigured } = setup();
+    const key = randomUUID();
+    const first = runOf(await start({}, key));
+    await settle();
+    const replayWith = (service: ScriptBreakdownService, body: unknown = {}, episodeId = episode.episodeId) =>
+      service.start(P1, episodeId, body, TOKEN, CONTEXT(key));
+    for (const service of [
+      reconfigured({ ...ENV, TITLE_WRITING_QWEN_MODELS: "q-2,q-1" }, null), // another default model
+      reconfigured(DEEPSEEK_TOO, "deepseek"), // another default provider
+      reconfigured({ ...ENV, DASHSCOPE_API_KEY: undefined }, null), // the original provider is no longer configured
+      reconfigured({}, null), // no provider is configured at all
+    ]) {
+      const replay = await replayWith(service);
+      expect([replay.status, runOf(replay).runId, runOf(replay).providerKey, runOf(replay).model]).toEqual([200, first.runId, "qwen", "q-1"]);
+    }
+    expect([store.runs.length, seen.length]).toEqual([1, 1]);
+  });
+
+  it("still refuses the key for another request, and checks a new request against the current settings", async () => {
+    const { store, episode, start, settle, runOf, seen, reconfigured } = setup();
+    const key = randomUUID();
+    await start({}, key);
+    await settle();
+    const changed = reconfigured(DEEPSEEK_TOO, "deepseek");
+    for (const body of [{ replaceExisting: true }, { providerKey: "deepseek" }, { providerKey: "qwen", model: "q-2" }]) {
+      const other = await changed.start(P1, episode.episodeId, body, TOKEN, CONTEXT(key));
+      expect([other.status, (other.body as { error: { code: string } }).error.code]).toEqual([409, "IDEMPOTENCY_KEY_REUSED"]);
+    }
+    const otherEpisode = store.addBreakdownEpisode({ workspaceId: WS, projectId: P1, episodeNo: 2, text: SCRIPT });
+    const elsewhere = await changed.start(P1, otherEpisode.episodeId, {}, TOKEN, CONTEXT(key));
+    expect([elsewhere.status, (elsewhere.body as { error: { code: string } }).error.code]).toEqual([409, "IDEMPOTENCY_KEY_REUSED"]);
+    // A new key is a new request: it takes the current default provider, and an unconfigured provider is refused.
+    const fresh = await changed.start(P1, otherEpisode.episodeId, {}, TOKEN, CONTEXT(randomUUID()));
+    expect([fresh.status, runOf(fresh).providerKey, runOf(fresh).model]).toEqual([201, "deepseek", "d-1"]);
+    const unconfigured = await reconfigured({}, null).start(P1, otherEpisode.episodeId, { replaceExisting: true }, TOKEN, CONTEXT(randomUUID()));
+    expect([unconfigured.status, (unconfigured.body as { error: { code: string } }).error.code]).toEqual([503, "TITLE_WRITING_PROVIDER_UNCONFIGURED"]);
+    // A replay still needs the operator token and a work the caller can reach.
+    const wrongToken = await changed.start(P1, episode.episodeId, {}, "wrong-token-0000000000", CONTEXT(key));
+    expect(wrongToken.status).toBe(403);
+    await expect(changed.start("99999999-9999-4999-8999-999999999999", episode.episodeId, {}, TOKEN, CONTEXT(key))).rejects.toThrow(/not found/i);
     expect(seen).toHaveLength(1);
   });
 });

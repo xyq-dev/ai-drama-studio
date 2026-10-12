@@ -18,12 +18,14 @@ import { Test } from "@nestjs/testing";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { ScriptBreakdownPlacementOutcome, ScriptBreakdownRunView } from "@ai-drama/contracts";
 import {
+  JobPersistenceService,
   PostgresTitleWritingStore,
   SCRIPT_BREAKDOWN_MIGRATION,
   TextChainService,
   checkTitleWritingAcceptanceEnv,
   closePostgresPool,
   createPostgresPool,
+  requestHash,
   runMigrations,
   verifyTitleWritingAcceptanceDatabase,
 } from "@ai-drama/database";
@@ -32,7 +34,7 @@ import { breakdownPromptParts, chatAnswer, fixtureBreakdownFromPrompt } from "@a
 import { AppModule } from "../app.module";
 import { loadApiEnv } from "../config/env";
 import { SafeExceptionFilter } from "../http/safe-exception.filter";
-import { ScriptBreakdownService } from "./script-breakdown.service";
+import { ScriptBreakdownService, type ScriptBreakdownDependencies } from "./script-breakdown.service";
 import type { StudioRuntime } from "./studio.runtime";
 import { SCRIPT_BREAKDOWN_SERVICE, STUDIO_RUNTIME } from "./tokens";
 
@@ -74,16 +76,39 @@ const transport: WritingTransport = async (request) => {
   };
 };
 
+/** Provider settings as the server reads them from its environment; only the stub key is ever configured. */
+const stubProviders = (extra: Parameters<typeof titleWritingProviderConfigs>[0] = {}) => titleWritingProviderConfigs({ DASHSCOPE_API_KEY: STUB_KEY,
+  BAILIAN_BASE_URL: "https://dashscope.aliyuncs.com/compatible-mode/v1", TITLE_WRITING_QWEN_MODELS: STUB_MODEL, ...extra });
+
+/** The service's dependencies, kept so a scenario can change the provider settings an administrator controls. */
+let breakdownDeps: ScriptBreakdownDependencies;
+
 function breakdownService(runtime: StudioRuntime): ScriptBreakdownService {
-  const providers = titleWritingProviderConfigs({ DASHSCOPE_API_KEY: STUB_KEY, BAILIAN_BASE_URL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    TITLE_WRITING_QWEN_MODELS: STUB_MODEL });
+  const providers = stubProviders();
   const store = new PostgresTitleWritingStore(runtime.pool, new TextChainService(runtime.pool));
-  return new ScriptBreakdownService({
+  breakdownDeps = {
     workspaceId: WORKSPACE, nodeEnv: "test", enabled: true, operatorToken: OPERATOR_TOKEN, defaultProvider: "qwen", providers, store,
     engine: new TitleWritingEngine({ workspaceId: WORKSPACE, store, providers, transport, maxCallsPerDay: 200, timeoutMs: 1_500 }),
     projects: runtime.store, maxCallsPerDay: 200, maxActiveRuns: 10,
-  });
+  };
+  return new ScriptBreakdownService(breakdownDeps);
 }
+
+/**
+ * The identity the released server (main at f5e8eb491ed2584ae708056a6448daf23358d5ec) gave a shot write, copied from its
+ * createShotRevision: no planned duration field existed and its body schema stripped one. Pinned below to the hash that
+ * released code produced for a fixed body (see studio.shot-idempotency.spec.ts).
+ */
+interface LegacyShotBody { sourceSceneRevisionId: string; ordinal: number; shotType: string; camera: string; action: string; dialogue?: string | null;
+  durationHint?: string | null; promptText: string }
+const legacyShotRequest = (input: LegacyShotBody, expectedVersion: number) => ({
+  ...input, sourceSceneRevisionId: input.sourceSceneRevisionId.toLowerCase(),
+  dialogue: input.dialogue ?? null, durationHint: input.durationHint ?? null,
+  expectedVersion,
+});
+const LEGACY_GOLDEN = { body: { sourceSceneRevisionId: "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA", ordinal: 2, shotType: "中景", camera: "固定机位",
+  action: "林夏停下", dialogue: "林夏：这不是我。", promptText: "便利店；中景" }, expectedVersion: 3,
+  hash: "ff253f3642381317614e3a1a45ef72c58835de9a3e9c0fb0635e5d607d868ee9" };
 
 interface Booted { app: INestApplication; base: string }
 let main: Booted;
@@ -340,6 +365,118 @@ describe("script breakdown over real HTTP and PostgreSQL, model stubbed", () => 
     expect(stale.scenes[0]!.current.freshnessStatus).toBe("STALE");
     expect(sent.length).toBe(before);
     scenarios.placement = { awaitingThenPlaced: true, editedRevision: 2, staleAfterScript: true };
+  });
+
+  it("refuses a resume once the frozen script was replaced, left unapproved or made STALE, before any reservation or send", async () => {
+    const { projectId, storyId, episodes } = await work(3, "resume");
+    const failed: Record<number, string> = {};
+    for (const episode of episodes) {
+      const marker = `resume-${String(episode.episodeNo)}`;
+      overrides.set(marker, () => ({ status: 200, body: chatAnswer({ schema: "ads.script-breakdown.output.v1", episodeNo: episode.episodeNo, scenes: [], shots: [] }) }));
+      expect((await http("POST", base(projectId, episode.id), { body: {}, headers: operator() })).status).toBe(201);
+      const run = await settled(projectId, episode.id);
+      expect([run.state, run.callsUsed]).toEqual(["failed", 1]);
+      overrides.delete(marker);
+      failed[episode.episodeNo] = run.runId;
+    }
+    const trace = async (runId: string) => (await q<{ state: string; calls_used: number; calls: number; resumes: number }>(
+      `SELECT state, calls_used, (SELECT count(*)::int FROM title_writing_call WHERE run_id = r.id) AS calls,
+              (SELECT count(*)::int FROM title_writing_resume WHERE run_id = r.id) AS resumes FROM title_writing_run r WHERE id = $1`, [runId])).rows[0]!;
+    const refuse = async (episode: { id: string; episodeNo: number }) => {
+      const runId = failed[episode.episodeNo]!;
+      const before = sent.length;
+      const resumed = await http("POST", `${base(projectId, episode.id)}/${runId}/resume`, { body: {}, headers: operator() });
+      expect([resumed.status, resumed.body.error.code]).toEqual([409, "SCRIPT_BREAKDOWN_SOURCE_CHANGED"]);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(sent.length).toBe(before);
+      expect(await trace(runId)).toEqual({ state: "failed", calls_used: 1, calls: 1, resumes: 0 });
+      expect(await scenesOf(projectId, episode.id)).toHaveLength(0);
+    };
+    const [first, second, third] = episodes;
+    // Episode 1: a newer approved script replaced the frozen one.
+    await saveScript(projectId, storyId, first!.id, scriptOf(1, 2, "resume-1b"));
+    await refuse(first!);
+    // Episode 2: a newer draft is current, so the episode has no approved current script.
+    await saveScript(projectId, storyId, second!.id, scriptOf(2, 1, "resume-2b"), false);
+    await refuse(second!);
+    // Episode 3: a new story leaves the frozen revision current but STALE.
+    const project = await http("GET", `/projects/${projectId}`);
+    const story = await http("POST", `/projects/${projectId}/stories`, { body: { content: { text: "新故事" } },
+      headers: { ...key(), "if-match": String(project.body.version) } });
+    expect(story.status).toBe(201);
+    const third3 = (await episodesOf(projectId)).find((item) => item.id === third!.id)!;
+    expect((await q<{ freshness_status: string }>("SELECT freshness_status FROM script_revision WHERE id = $1", [third3.currentScriptRevisionId])).rows[0]!.freshness_status)
+      .toBe("STALE");
+    await refuse(third!);
+    scenarios.resumeSourceChanged = { replaced: 409, unapproved: 409, stale: 409, sends: 0 };
+  });
+
+  it("replays a start with the same key and body after the default provider or model changed or the provider was unconfigured", async () => {
+    const { projectId, episodes } = await work(1, "replay");
+    const episode = episodes[0]!;
+    const idempotencyKey = randomUUID();
+    expect((await http("POST", base(projectId, episode.id), { body: {}, headers: operator(idempotencyKey) })).status).toBe(201);
+    const done = await settled(projectId, episode.id);
+    const before = sent.length;
+    const original = { providers: breakdownDeps.providers, defaultProvider: breakdownDeps.defaultProvider };
+    try {
+      for (const [providers, defaultProvider] of [
+        [stubProviders({ TITLE_WRITING_QWEN_MODELS: `qwen-acceptance-other,${STUB_MODEL}` }), "qwen"],
+        [stubProviders({ DEEPSEEK_API_KEY: STUB_KEY, TITLE_WRITING_DEEPSEEK_MODELS: "deepseek-acceptance-stub" }), "deepseek"],
+        [titleWritingProviderConfigs({}), null],
+      ] as const) {
+        breakdownDeps.providers = providers;
+        breakdownDeps.defaultProvider = defaultProvider;
+        const replay = await http("POST", base(projectId, episode.id), { body: {}, headers: operator(idempotencyKey) });
+        expect([replay.status, replay.body.run?.runId, replay.body.run?.providerKey, replay.body.run?.model], JSON.stringify(replay.body))
+          .toEqual([200, done.runId, "qwen", STUB_MODEL]);
+      }
+      // Still unconfigured: other content under the key is refused; a new request is checked against the current settings.
+      const other = await http("POST", base(projectId, episode.id), { body: { replaceExisting: true }, headers: operator(idempotencyKey) });
+      expect([other.status, other.body.error.code]).toEqual([409, "IDEMPOTENCY_KEY_REUSED"]);
+      const fresh = await http("POST", base(projectId, episode.id), { body: { replaceExisting: true }, headers: operator() });
+      expect([fresh.status, fresh.body.error.code]).toEqual([503, "TITLE_WRITING_PROVIDER_UNCONFIGURED"]);
+    } finally {
+      breakdownDeps.providers = original.providers;
+      breakdownDeps.defaultProvider = original.defaultProvider;
+    }
+    expect(sent.length).toBe(before);
+    expect(Number((await q<{ n: number }>("SELECT count(*)::int AS n FROM title_writing_run WHERE project_id = $1", [projectId])).rows[0]!.n)).toBe(1);
+    scenarios.replayAfterSettingsChange = { replays: 3, otherContent: 409, newUnconfigured: 503, sends: 0 };
+  });
+
+  it("replays a shot write recorded by the released server, and refuses a changed duration or content under its key", async () => {
+    expect(requestHash(legacyShotRequest(LEGACY_GOLDEN.body, LEGACY_GOLDEN.expectedVersion))).toBe(LEGACY_GOLDEN.hash);
+    const { projectId, episodes } = await work(1, "legacy");
+    const episode = episodes[0]!;
+    expect((await http("POST", base(projectId, episode.id), { body: {}, headers: operator() })).status).toBe(201);
+    const run = await settled(projectId, episode.id);
+    const sceneId = run.scenes[0]!.sceneId;
+    await approveScene(projectId, episode.id, sceneId);
+    const scene = (await scenesOf(projectId, episode.id)).find((item) => item.entityId === sceneId)!;
+    const body: LegacyShotBody = { sourceSceneRevisionId: scene.currentRevisionId, ordinal: 3, shotType: "全景", camera: "旧版机位",
+      action: "旧版本写入的镜头", dialogue: "林夏：第 1 集第 1 句。", promptText: "旧版提示词" };
+    const route = `/projects/${projectId}/episodes/${episode.id}/scenes/${sceneId}/shots`;
+    const idempotencyKey = randomUUID();
+    // The released server's write: its identity and the same persistence call in one idempotent transaction.
+    const legacy = await new JobPersistenceService(pool).runIdempotent({ workspaceId: WORKSPACE, actorId: "server-owner", httpMethod: "POST",
+      routeKey: route, key: idempotencyKey, requestHash: requestHash(legacyShotRequest(body, scene.rowVersion)) }, 201,
+    (client) => new TextChainService(pool).createShotScopedInTransaction(client, { ...legacyShotRequest(body, scene.rowVersion), workspaceId: WORKSPACE,
+      projectId, sceneId, createdBy: "server-owner", traceId: "released-server" }));
+    expect(legacy.replayed).toBe(false);
+    const revisions = async () => Number((await q<{ n: number }>("SELECT count(*)::int AS n FROM shot_revision WHERE project_id = $1", [projectId])).rows[0]!.n);
+    const count = await revisions();
+    const send = (payload: unknown) => http("POST", route, { body: payload, headers: { "idempotency-key": idempotencyKey, "if-match": String(scene.rowVersion) } });
+    const replay = await send(body);
+    expect([replay.status, replay.body]).toEqual([201, JSON.parse(JSON.stringify(legacy.body))]);
+    const explicitNull = await send({ ...body, plannedDurationMs: null });
+    expect([explicitNull.status, explicitNull.body]).toEqual([201, JSON.parse(JSON.stringify(legacy.body))]);
+    for (const changed of [{ ...body, plannedDurationMs: 4000 }, { ...body, action: "改过的动作" }]) {
+      const refused = await send(changed);
+      expect([refused.status, refused.body.error.code]).toEqual([409, "IDEMPOTENCY_KEY_REUSED"]);
+    }
+    expect(await revisions()).toBe(count);
+    scenarios.legacyShotReplay = { replayed: 201, explicitNull: 201, changedDuration: 409, changedContent: 409, newRevisions: 0 };
   });
 
   it("never reaches a provider: every send went to the stub with the stub key", () => {

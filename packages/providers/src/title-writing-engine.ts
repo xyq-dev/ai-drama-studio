@@ -903,6 +903,12 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
     return script.id;
   }
 
+  /** Test helper standing in for an upstream story replacement: the current script stays current but goes STALE. */
+  staleScript(episodeId: string): void {
+    const episode = this.requireBreakdownEpisode(episodeId);
+    episode.scripts.find((item) => item.id === episode.currentScriptId)!.freshnessStatus = "STALE";
+  }
+
   addCharacter(projectId: string, name: string): MemoryCharacter {
     const character: MemoryCharacter = { projectId, characterId: randomUUID(), revisionId: randomUUID(), name, archived: false };
     this.characters.push(character);

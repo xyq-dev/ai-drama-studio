@@ -147,6 +147,35 @@ describe("script breakdown output checks", () => {
     expect(check(output({ shots: [a!, c!, b!] }))).toEqual({ ok: false, code: "invalid_output" });
   });
 
+  it("refuses keys that do not match their scene and position: S1, S2, … and S<scene>-1, S<scene>-2, … with nothing renamed", () => {
+    const [a, b, c] = output().shots;
+    // A shot keyed for S2 placed under S1, and the reverse.
+    expect(check(output({ shots: [a!, { ...b!, key: "S2-1" }, { ...c!, key: "S2-2" }] }))).toEqual({ ok: false, code: "invalid_output" });
+    expect(check(output({ shots: [a!, b!, { ...c!, key: "S1-3" }] }))).toEqual({ ok: false, code: "invalid_output" });
+    // Wrong, skipped or swapped ordinals inside a scene.
+    expect(check(output({ shots: [{ ...a!, key: "S1-2" }, { ...b!, key: "S1-1" }, c!] }))).toEqual({ ok: false, code: "invalid_output" });
+    expect(check(output({ shots: [a!, { ...b!, key: "S1-3" }, c!] }))).toEqual({ ok: false, code: "invalid_output" });
+    expect(check(output({ shots: [a!, b!, { ...c!, key: "S2-2" }] }))).toEqual({ ok: false, code: "invalid_output" });
+    // Scene keys out of order or skipped (shots follow their scenes, so only the scene keys are wrong).
+    const [s1, s2] = output().scenes;
+    expect(check(output({ scenes: [{ ...s1!, key: "S2" }, { ...s2!, key: "S1" }],
+      shots: [{ ...a!, key: "S2-1", sceneKey: "S2" }, { ...b!, key: "S2-2", sceneKey: "S2" }, { ...c!, key: "S1-1", sceneKey: "S1" }] })))
+      .toEqual({ ok: false, code: "invalid_output" });
+    expect(check(output({ scenes: [s1!, { ...s2!, key: "S3" }], shots: [a!, b!, { ...c!, key: "S3-1", sceneKey: "S3" }] })))
+      .toEqual({ ok: false, code: "invalid_output" });
+  });
+
+  it("accepts a valid answer of three scenes with one, three and two shots, keys exactly as given", () => {
+    const script = [SCRIPT, "场 3 码头 晨", "周野：走吧。"].join("\n");
+    const shot = (key: string, sceneKey: string) => ({ key, sceneKey, shotType: "中景", camera: "固定机位", action: "动作", dialogue: [], characterKeys: [], plannedSeconds: 3 });
+    const three = output({
+      scenes: [...output().scenes, { key: "S3", heading: "码头", timeOfDay: "晨", description: "两人离开。" }],
+      shots: [shot("S1-1", "S1"), shot("S2-1", "S2"), shot("S2-2", "S2"), shot("S2-3", "S2"), shot("S3-1", "S3"),
+        { ...shot("S3-2", "S3"), dialogue: [{ speaker: "周野", line: "走吧。" }] }],
+    });
+    expect(check(three, input({ scriptText: script }))).toEqual({ ok: true, output: three });
+  });
+
   it("refuses dialogue or a speaker that is not in the frozen script, ignoring only whitespace and outer quotes", () => {
     const invented = output({ shots: [output().shots[0]!, { ...output().shots[1]!, dialogue: [{ speaker: "林夏", line: "这真的不是我。" }] }, output().shots[2]!] });
     expect(check(invented)).toEqual({ ok: false, code: "dialogue_not_in_script" });

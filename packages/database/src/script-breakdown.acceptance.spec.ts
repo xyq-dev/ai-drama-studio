@@ -188,6 +188,43 @@ async function answer(record: TitleRunRecord, output: ScriptBreakdownOutput): Pr
   return executor;
 }
 
+/** The single breakdown call is sent and rejected (an invalid answer); the run ends failed, resumable on request. */
+async function failOnce(record: TitleRunRecord): Promise<void> {
+  const executor = `exec-${record.id.slice(0, 8)}`;
+  expect(await store.claimRun(record.workspaceId, record.id, executor, now(), later(60_000))).toBe(true);
+  const call: TitleCallRecord = { id: randomUUID(), runId: record.id, workspaceId: record.workspaceId, stepKey: "breakdown", attemptNo: 1,
+    providerKey: "qwen", model: "q-1", requestHash: "cd".repeat(32), state: "reserved", executorId: executor, providerRequestId: null,
+    responseModel: null, usage: { status: "unknown", inputTokens: null, outputTokens: null, totalTokens: null }, errorCode: null, createdAt: now(), finishedAt: null };
+  expect(await store.reserveCall(call, { sinceIso: "2000-01-01T00:00:00.000Z", maxCallsPerDay: 1000 }, now(), later(60_000))).toEqual({ kind: "reserved" });
+  expect(await store.markCallSubmitted(record.workspaceId, call.id, executor, now(), later(60_000))).toBe("submitted");
+  expect(await store.finishCall(record.workspaceId, call.id, executor, { state: "rejected", errorCode: "invalid_output", providerRequestId: "req",
+    responseModel: "q-1", usage: USAGE, output: null, outputHash: null }, now())).toBe(true);
+  expect(await store.finishRun(record.workspaceId, record.id, executor, "failed", "invalid_output", now())).toBe(true);
+}
+
+const resumeOf = (ws: string, project: string, runId: string, resumeKey: string = randomUUID()) =>
+  store.prepareResume(ws, project, runId, { resumeKey, requestHash: "e".repeat(64), confirmedCallIds: [], maxActiveRuns: 10 }, now());
+
+/** What a resume or a refused resume left behind: run state, calls, resume records and step state. */
+async function runTrace(runId: string) {
+  const run = (await pool.query<{ state: string; calls_used: number; source_script_revision_id: string }>(
+    "SELECT state, calls_used, source_script_revision_id FROM title_writing_run WHERE id = $1", [runId])).rows[0]!;
+  const count = async (table: string) => Number((await pool.query<{ n: number }>(`SELECT count(*)::int AS n FROM ${table} WHERE run_id = $1`, [runId])).rows[0]!.n);
+  const step = (await pool.query<{ state: string }>("SELECT state FROM title_writing_step WHERE run_id = $1", [runId])).rows[0]!.state;
+  return { state: run.state, callsUsed: Number(run.calls_used), source: run.source_script_revision_id, calls: await count("title_writing_call"),
+    resumes: await count("title_writing_resume"), step };
+}
+
+/** Claims the run as the engine would and tries to reserve its next breakdown call. */
+async function reserveBreakdown(record: TitleRunRecord) {
+  const executor = `exec2-${record.id.slice(0, 8)}`;
+  expect(await store.claimRun(record.workspaceId, record.id, executor, now(), later(60_000))).toBe(true);
+  const call: TitleCallRecord = { id: randomUUID(), runId: record.id, workspaceId: record.workspaceId, stepKey: "breakdown", attemptNo: 2,
+    providerKey: "qwen", model: "q-1", requestHash: "ce".repeat(32), state: "reserved", executorId: executor, providerRequestId: null,
+    responseModel: null, usage: { status: "unknown", inputTokens: null, outputTokens: null, totalTokens: null }, errorCode: null, createdAt: now(), finishedAt: null };
+  return store.reserveCall(call, { sinceIso: "2000-01-01T00:00:00.000Z", maxCallsPerDay: 1000 }, now(), later(60_000));
+}
+
 async function liveScenes(episodeId: string) {
   return (await pool.query<{ id: string; current_revision_id: string; row_version: number }>(
     "SELECT id, current_revision_id, row_version FROM scene WHERE episode_id = $1 AND archived_at IS NULL ORDER BY id", [episodeId])).rows;
@@ -532,6 +569,88 @@ describe("script breakdown on PostgreSQL", () => {
     expect(await shotRows()).toEqual(saved);
     expect((await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM shot_revision WHERE project_id = $1", [project])).rows[0]!.n).toBe(3);
   });
+
+  for (const change of ["replaced by a newer approved script", "left unapproved by a newer draft", "made STALE by a new story"] as const) {
+    it(`refuses a resume once the frozen script was ${change}: nothing is resumed, reserved or sent`, async () => {
+      const { ws, project, storyId, episodes } = await work(1);
+      const episode = episodes[0]!;
+      const record = await startBreakdown(ws, project, episode.id);
+      const frozen = (record.input as ScriptBreakdownFrozenInput).scriptRevisionId;
+      await failOnce(record);
+      if (change === "replaced by a newer approved script") {
+        await writeScript(ws, project, storyId, episode.id, scriptOf(1, 2));
+      } else if (change === "left unapproved by a newer draft") {
+        await chain.createScriptRevision({ workspaceId: ws, projectId: project, episodeId: episode.id, sourceStoryRevisionId: storyId,
+          content: { text: scriptOf(1, 2) }, createdBy: "editor", expectedVersion: (await episodeRow(episode.id)).row_version });
+      } else {
+        const version = (await pool.query<{ version: number }>("SELECT version FROM project WHERE id = $1", [project])).rows[0]!.version;
+        await chain.createStoryRevision({ workspaceId: ws, projectId: project, content: { text: "新故事" }, createdBy: "editor", expectedVersion: version });
+        // The episode still points at the frozen revision; only its freshness changed.
+        expect((await episodeRow(episode.id)).current_script_revision_id).toBe(frozen);
+        expect((await pool.query<{ freshness_status: string }>("SELECT freshness_status FROM script_revision WHERE id = $1", [frozen])).rows[0]!.freshness_status)
+          .toBe("STALE");
+      }
+      const before = await runTrace(record.id);
+      expect(before).toMatchObject({ state: "failed", callsUsed: 1, calls: 1, resumes: 0, step: "rejected", source: frozen });
+      expect(await resumeOf(ws, project, record.id)).toEqual({ kind: "source_changed" });
+      expect(await runTrace(record.id)).toEqual(before);
+      ((evidence.resumeRefused ??= []) as string[]).push(change);
+    });
+  }
+
+  it("resumes against a current, approved script and reserves its next call", async () => {
+    const { ws, project, episodes } = await work(1);
+    const record = await startBreakdown(ws, project, episodes[0]!.id);
+    await failOnce(record);
+    expect((await resumeOf(ws, project, record.id)).kind).toBe("ok");
+    expect(await runTrace(record.id)).toMatchObject({ state: "running", callsUsed: 1, calls: 1, resumes: 1, step: "pending" });
+    expect(await reserveBreakdown(record)).toEqual({ kind: "reserved" });
+    expect(await runTrace(record.id)).toMatchObject({ callsUsed: 2, calls: 2, step: "reserved" });
+  });
+
+  it("reserves no call when the script changed after the resume was accepted (the engine's send path)", async () => {
+    const { ws, project, storyId, episodes } = await work(1);
+    const episode = episodes[0]!;
+    const record = await startBreakdown(ws, project, episode.id);
+    await failOnce(record);
+    expect((await resumeOf(ws, project, record.id)).kind).toBe("ok");
+    await writeScript(ws, project, storyId, episode.id, scriptOf(1, 2));
+    expect(await reserveBreakdown(record)).toEqual({ kind: "source_changed" });
+    expect(await runTrace(record.id)).toMatchObject({ state: "running", callsUsed: 1, calls: 1, step: "pending" });
+  });
+
+  for (const path of ["resume", "reserve"] as const) {
+    it(`a ${path} waiting behind a person's script save under the project lock sees the saved script and reserves nothing`, async () => {
+      const { ws, project, storyId, episodes } = await work(1);
+      const episode = episodes[0]!;
+      const record = await startBreakdown(ws, project, episode.id);
+      await failOnce(record);
+      if (path === "reserve") expect((await resumeOf(ws, project, record.id)).kind).toBe("ok");
+      const before = await runTrace(record.id);
+      const holder = new Pool({ ...poolOptions, max: 1, application_name: `breakdown-${path}-person` });
+      extraPools.push(holder);
+      const person = await holder.connect();
+      try {
+        // The script editor's lock order: project, then episode. The person holds the project lock while saving.
+        await person.query("BEGIN");
+        await person.query("SELECT id FROM project WHERE id = $1 FOR UPDATE", [project]);
+        const pending = path === "resume" ? resumeOf(ws, project, record.id) : reserveBreakdown(record);
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        const waiting = (await pool.query<{ n: number }>(
+          "SELECT count(*)::int AS n FROM pg_stat_activity WHERE application_name = 'script-breakdown-acceptance-main' AND wait_event_type = 'Lock'")).rows[0]!.n;
+        expect(Number(waiting)).toBeGreaterThanOrEqual(1);
+        const created = await chain.createScriptRevisionInTransaction(person, { workspaceId: ws, projectId: project, episodeId: episode.id,
+          sourceStoryRevisionId: storyId, content: { text: scriptOf(1, 2) }, createdBy: "editor", expectedVersion: (await episodeRow(episode.id)).row_version });
+        await person.query("COMMIT");
+        expect(created.revisionId).not.toBe((record.input as ScriptBreakdownFrozenInput).scriptRevisionId);
+        expect(await pending).toEqual({ kind: "source_changed" });
+      } finally {
+        person.release();
+      }
+      expect(await runTrace(record.id)).toEqual(before);
+      ((evidence.lockOrdered ??= []) as string[]).push(path);
+    });
+  }
 
   it("returns the same run for the same key and refuses the key for another request", async () => {
     const { ws, project, episodes } = await work(1);
