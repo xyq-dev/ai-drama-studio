@@ -9,6 +9,9 @@ const CSRF_COOKIES = ["__Host-ads_csrf", "ads_csrf"];
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 export const DEFAULT_AFTER_LOGIN = "/studio";
 export type LoginReason = "expired" | "signed-out" | "unavailable";
+// Shared by all clients in this document. Login/logout navigate the whole page, so this is never persisted.
+// A successful logout retains priority until that navigation commits; an old read may still return 401 meanwhile.
+let logoutState: { promise: Promise<void> | null; confirmed: boolean; deferredReason: LoginReason | null } | null = null;
 
 /** The session's CSRF token from its readable cookie, or null when not signed in (or login is off). */
 export function csrfToken(cookieText: string = typeof document === "undefined" ? "" : document.cookie): string | null {
@@ -56,6 +59,10 @@ function currentPath(): string {
 /** Sends the browser to the login page, keeping where it was. */
 export function goToLogin(reason: LoginReason): void {
   if (typeof window === "undefined" || window.location.pathname === "/login") return;
+  if (reason !== "signed-out" && logoutState) {
+    if (!logoutState.confirmed) logoutState.deferredReason = reason;
+    return;
+  }
   window.location.assign(loginUrl(currentPath(), reason));
 }
 
@@ -117,11 +124,32 @@ export async function readSession(fetchImpl: FetchLike = globalThis.fetch.bind(g
   return { enabled: body.enabled !== false, authenticated: body.authenticated === true, username: body.username, csrfToken: body.csrfToken, expiresAt: body.expiresAt };
 }
 
-export async function logout(fetchImpl: FetchLike = globalThis.fetch.bind(globalThis)): Promise<void> {
-  const token = csrfToken();
-  const response = await fetchImpl("/api/v1/auth/logout", {
-    method: "POST", credentials: "same-origin", cache: "no-store",
-    headers: { Accept: "application/json", ...(token ? { "X-CSRF-Token": token } : {}) },
+export function logout(fetchImpl: FetchLike = globalThis.fetch.bind(globalThis)): Promise<void> {
+  if (logoutState?.confirmed) return Promise.resolve();
+  if (logoutState?.promise) return logoutState.promise;
+  const attempt: NonNullable<typeof logoutState> = { promise: null, confirmed: false, deferredReason: null };
+  logoutState = attempt;
+  // Register the shared intent before sending. Header, drawer and console cannot start competing logout requests.
+  attempt.promise = Promise.resolve().then(async () => {
+    try {
+      const token = csrfToken();
+      const response = await fetchImpl("/api/v1/auth/logout", {
+        method: "POST", credentials: "same-origin", cache: "no-store",
+        headers: { Accept: "application/json", ...(token ? { "X-CSRF-Token": token } : {}) },
+      });
+      if (response.status !== 204) throw new Error("LOGOUT_NOT_CONFIRMED");
+      attempt.confirmed = true;
+      // A passive expiry check may have cleared its component's session while logout was in flight. Complete its
+      // deferred navigation here as well; otherwise that component may no longer run its own success callback.
+      if (attempt.deferredReason) goToLogin("signed-out");
+    } catch (error) {
+      logoutState = null;
+      // A failed logout must not swallow an actual loss of authorization observed by another request.
+      if (attempt.deferredReason) goToLogin(attempt.deferredReason);
+      throw error;
+    } finally {
+      attempt.promise = null;
+    }
   });
-  if (response.status !== 204) throw new Error("LOGOUT_NOT_CONFIRMED");
+  return attempt.promise;
 }

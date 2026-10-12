@@ -8,6 +8,7 @@ import {
   type TitleConcept,
   type TitleWritingStepKey,
 } from "@ai-drama/contracts";
+import { fixtureBreakdownFromPrompt, isBreakdownPrompt } from "./script-breakdown-fixtures";
 import type { WritingTransport } from "./text-writing";
 
 /**
@@ -70,6 +71,7 @@ export type FixtureStep = TitleWritingStepKey;
 
 /** Which step a prompt belongs to, read from the provider-neutral prompt text (v1 or v2). */
 export function fixtureStepOf(userPrompt: string): FixtureStep {
+  if (isBreakdownPrompt(userPrompt)) return "breakdown";
   if (userPrompt.includes("只根据剧名完成故事策划")) return "concept";
   if (userPrompt.includes("写分集大纲")) return "outline";
   const match = /写第 ([1-6]) 集(?:（共 [1-6] 集）)?完整剧本/.exec(userPrompt);
@@ -116,7 +118,8 @@ export function fixtureChatTransport(title: string, options: {
       });
     }
     const answer = custom ?? { status: 200, body: chatAnswer(step === "concept" ? fixtureConcept(title)
-      : step === "outline" ? fixtureOutline(fixtureOutlineCountOf(user)) : fixtureEpisode(Number(step.slice(-1)))) };
+      : step === "outline" ? fixtureOutline(fixtureOutlineCountOf(user))
+        : step === "breakdown" ? fixtureBreakdownFromPrompt(user) : fixtureEpisode(Number(step.slice(-1)))) };
     return {
       status: answer.status,
       headers: { get: (name: string) => name.toLowerCase() === "x-request-id" ? `fixture-${step}-${String(attempt)}` : null },
@@ -133,3 +136,6 @@ export function chatAnswer(value: unknown, finish = "stop") {
     usage: { prompt_tokens: 100, completion_tokens: 200, total_tokens: 300 },
   };
 }
+
+/** Breakdown answers for the same stubbed acceptances. */
+export { breakdownPromptParts, fixtureBreakdown, fixtureBreakdownFromPrompt } from "./script-breakdown-fixtures";

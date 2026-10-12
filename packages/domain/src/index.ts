@@ -242,3 +242,17 @@ export {
   type TitleWritingSchemaKind,
   type TitleWritingValidation,
 } from "./title-writing";
+export {
+  SCRIPT_BREAKDOWN_SYSTEM_PROMPT,
+  breakdownDialogueText,
+  breakdownShotPromptText,
+  buildScriptBreakdownPrompt,
+  lineInScript,
+  normalizeForMatch,
+  plannedTotalSeconds,
+  scriptTextOf,
+  shotsOfScene,
+  validateScriptBreakdownOutput,
+  type ScriptBreakdownPrompt,
+  type ScriptBreakdownValidation,
+} from "./script-breakdown";

@@ -157,6 +157,11 @@ export interface ShotRevisionInput {
   action: string;
   dialogue?: string | null;
   durationHint?: string | null;
+  /**
+   * Planned seconds × 1000, 1000–15000 (shot_revision.planned_duration_ms, migration 20261012000100_script_breakdown).
+   * A writing plan, never a measured length. Null or absent writes no value and needs no migration.
+   */
+  plannedDurationMs?: number | null;
   promptText: string;
   createdBy: string;
   expectedVersion: number;
@@ -826,22 +831,43 @@ export class TextChainService {
         [input.sceneId],
       );
     }
+    const planned = input.plannedDurationMs ?? null;
+    if (planned !== null && (!Number.isInteger(planned) || planned < 1000 || planned > 15000)) {
+      throw new PersistenceError("VALIDATION_ERROR", "Planned duration must be 1000 to 15000 milliseconds");
+    }
+    if (planned !== null) {
+      const column = await client.query(
+        `SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
+            AND table_name = 'shot_revision' AND column_name = 'planned_duration_ms'`,
+      );
+      if (!column.rows[0]) {
+        throw new PersistenceError("VALIDATION_ERROR", "Planned duration needs migration 20261012000100_script_breakdown");
+      }
+    }
     const contentHash = canonicalInputHash({
       schema: "m2.shot.revision.v1",
       sourceSceneRevisionId: input.sourceSceneRevisionId,
       ordinal: input.ordinal, shotType: input.shotType, camera: input.camera,
       action: input.action, dialogue: input.dialogue ?? null,
       durationHint: input.durationHint ?? null, promptText: input.promptText,
+      // Only a shot with a planned duration hashes it, so every hash computed before the column existed still holds.
+      ...(planned === null ? {} : { plannedDurationMs: planned }),
     });
     const revisionId = (await client.query<{ id: string } & QueryResultRow>(
-      `INSERT INTO shot_revision
-        (workspace_id, project_id, scene_id, shot_id, revision_no, source_scene_revision_id,
-         ordinal, shot_type, camera, action, dialogue, duration_hint, prompt_text, content_hash, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`,
+      planned === null
+        ? `INSERT INTO shot_revision
+            (workspace_id, project_id, scene_id, shot_id, revision_no, source_scene_revision_id,
+             ordinal, shot_type, camera, action, dialogue, duration_hint, prompt_text, content_hash, created_by)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`
+        : `INSERT INTO shot_revision
+            (workspace_id, project_id, scene_id, shot_id, revision_no, source_scene_revision_id,
+             ordinal, shot_type, camera, action, dialogue, duration_hint, prompt_text, content_hash, created_by,
+             planned_duration_ms)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id`,
       [input.workspaceId, input.projectId, input.sceneId, shotId, revisionNo,
         input.sourceSceneRevisionId, input.ordinal, input.shotType, input.camera,
         input.action, input.dialogue ?? null, input.durationHint ?? null,
-        input.promptText, contentHash, input.createdBy],
+        input.promptText, contentHash, input.createdBy, ...(planned === null ? [] : [planned])],
     )).rows[0]?.id;
     if (!revisionId) throw new PersistenceError("REVISION_CREATE_FAILED", "Shot revision was not created");
     const rowVersion = await bumpPointer(
@@ -878,9 +904,11 @@ export class TextChainService {
       );
       if (!parent.rows[0]) throw new PersistenceError("NOT_FOUND", "Shot not found");
       const result = await client.query<QueryResultRow>(
+        // planned_duration_ms is read through to_jsonb so this also works before the breakdown migration (null then).
         `SELECT id, revision_no, source_scene_revision_id, ordinal, shot_type, camera,
                 action, dialogue, duration_hint, prompt_text, content_hash, review_status,
-                freshness_status, review_version, created_at
+                freshness_status, review_version, created_at,
+                (to_jsonb(shot_revision) ->> 'planned_duration_ms')::int AS planned_duration_ms
            FROM shot_revision WHERE shot_id = $1 AND workspace_id = $2
            ORDER BY revision_no DESC`,
         [shotId, workspaceId],
@@ -893,6 +921,7 @@ export class TextChainService {
         camera: String(row.camera), action: String(row.action),
         dialogue: row.dialogue === null ? null : String(row.dialogue),
         durationHint: row.duration_hint === null ? null : String(row.duration_hint),
+        plannedDurationMs: row.planned_duration_ms === null ? null : Number(row.planned_duration_ms),
         promptText: String(row.prompt_text), contentHash: String(row.content_hash),
         reviewStatus: String(row.review_status), freshnessStatus: String(row.freshness_status),
         reviewVersion: Number(row.review_version),
@@ -1012,6 +1041,60 @@ export class TextChainService {
       reviewedBy: input.reviewedBy, reviewNote: input.reviewNote, traceId: input.traceId,
     }, input.kind, `${input.kind}_revision`);
     return { reviewVersion: input.expectedReviewVersion + 1, rowVersion: input.expectedVersion + 1 };
+  }
+
+  /**
+   * Archives exactly these scenes and shots of one episode, each only at the given row version, inside the caller's
+   * transaction (the caller holds the project lock). Nothing is deleted: every revision stays readable. Archiving
+   * works like replacing a revision by nothing: shots, assets and composites that depend on an archived revision are
+   * marked STALE through the existing propagation, so they cannot be reused as current.
+   */
+  async archiveSceneSetInTransaction(client: PoolClient, input: {
+    workspaceId: string; projectId: string; episodeId: string;
+    scenes: ReadonlyArray<{ sceneId: string; rowVersion: number }>;
+    shots: ReadonlyArray<{ shotId: string; rowVersion: number }>;
+    traceId: string;
+  }): Promise<void> {
+    const archive = async (table: "scene" | "shot", id: string, rowVersion: number) => {
+      const scope = table === "scene"
+        ? "episode_id = $4"
+        : "scene_id IN (SELECT id FROM scene WHERE episode_id = $4 AND workspace_id = $2)";
+      const result = await client.query<{ current_revision_id: string | null } & QueryResultRow>(
+        `UPDATE ${table} SET archived_at = now(), row_version = row_version + 1, updated_at = now()
+          WHERE id = $1 AND workspace_id = $2 AND project_id = $3 AND ${scope}
+            AND row_version = $5 AND archived_at IS NULL
+          RETURNING current_revision_id`,
+        [id, input.workspaceId, input.projectId, input.episodeId, rowVersion],
+      );
+      if (!result.rows[0]) throw new PersistenceError("REVISION_CONFLICT", `${table} changed before it was archived`);
+      await client.query(
+        `INSERT INTO domain_event
+          (workspace_id, project_id, aggregate_type, aggregate_id, event_type, payload_json, trace_id)
+         VALUES ($1, $2, $3, $4, 'aggregate.archived', $5::jsonb, $6)`,
+        [input.workspaceId, input.projectId, table === "scene" ? "Scene" : "Shot", id,
+          JSON.stringify({ rowVersion: rowVersion + 1, currentRevisionId: result.rows[0].current_revision_id }), input.traceId],
+      );
+      const revisionId = result.rows[0].current_revision_id;
+      if (revisionId && await staleFromTextEntity(client, table, input.workspaceId, revisionId, input.traceId)) {
+        await enqueueStaleRecalculation(client, input.workspaceId, input.projectId,
+          table === "scene" ? "SOURCE_SCENE_REPLACED" : "SOURCE_SHOT_REPLACED", `${table}_revision:${revisionId}`);
+      }
+    };
+    for (const shot of input.shots) await archive("shot", shot.shotId, shot.rowVersion);
+    for (const scene of input.scenes) await archive("scene", scene.sceneId, scene.rowVersion);
+  }
+
+  /** Character references of a fresh shot draft; the provenance triggers require current, fresh character revisions. */
+  async addShotCharacterReferencesInTransaction(client: PoolClient, input: {
+    workspaceId: string; projectId: string; shotRevisionId: string; characterRevisionIds: readonly string[]; role: string;
+  }): Promise<void> {
+    for (const characterRevisionId of [...new Set(input.characterRevisionIds)]) {
+      await client.query(
+        `INSERT INTO shot_character_reference (workspace_id, project_id, shot_revision_id, character_revision_id, role)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [input.workspaceId, input.projectId, input.shotRevisionId, characterRevisionId, input.role],
+      );
+    }
   }
 
   async bindScriptSourceDependencies(

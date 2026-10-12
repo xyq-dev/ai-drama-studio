@@ -27,7 +27,7 @@ import { runMigrations, type MigrationResult } from "./migrations";
 import { TextChainService } from "./text-chain";
 import { checkTitleWritingAcceptanceEnv, verifyTitleWritingAcceptanceDatabase } from "./title-writing-acceptance-guard";
 import { EPISODE_PLAN_MIGRATION } from "./episode-plan";
-import { PostgresTitleWritingStore, TITLE_WRITING_MIGRATION } from "./title-writing-store";
+import { PostgresTitleWritingStore, SCRIPT_BREAKDOWN_MIGRATION, TITLE_WRITING_MIGRATION } from "./title-writing-store";
 
 // Refuse before any connection is opened.
 const decision = checkTitleWritingAcceptanceEnv(process.env);
@@ -78,9 +78,10 @@ beforeAll(async () => {
   // Then the release that added title writing: the chain up to it, which applies only what is not recorded yet.
   upgrade = await runMigrations(pool, undefined, { before: EPISODE_PLAN_MIGRATION });
   afterUpgrade = await snapshotExisting();
-  // Then the normal deploy path of today: the unrestricted chain adds the episode plan migration; once more adds nothing.
-  planUpgrade = await runMigrations(pool);
-  redeploy = await runMigrations(pool);
+  // Then the episode plan release: the chain up to the script breakdown release (which has its own acceptance) adds the
+  // episode plan migration; once more adds nothing.
+  planUpgrade = await runMigrations(pool, undefined, { before: SCRIPT_BREAKDOWN_MIGRATION });
+  redeploy = await runMigrations(pool, undefined, { before: SCRIPT_BREAKDOWN_MIGRATION });
   recorded = (await pool.query<{ name: string; checksum: string }>("SELECT name, checksum FROM schema_migration ORDER BY name")).rows;
   evidence.migration = { released: released.applied, storageReadyBeforeUpgrade: storageBeforeUpgrade, upgradeApplied: upgrade.applied,
     upgradeAlreadyApplied: upgrade.alreadyApplied, planUpgradeApplied: planUpgrade.applied, redeployApplied: redeploy.applied,

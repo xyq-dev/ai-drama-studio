@@ -25,6 +25,7 @@ import {
   closePostgresPool,
   createPostgresPool,
   EPISODE_PLAN_MIGRATION,
+  SCRIPT_BREAKDOWN_MIGRATION,
   TITLE_WRITING_MIGRATION,
   runMigrations,
   verifyTitleWritingAcceptanceDatabase,
@@ -307,8 +308,8 @@ describe("title writing over real HTTP and PostgreSQL, model stubbed", () => {
     expect(sent).toHaveLength(0);
 
     const upgrade = await runMigrations(pool);
-    // Today's chain after the title writing migration also adds the episode plan migration.
-    expect(upgrade.applied).toEqual([TITLE_WRITING_MIGRATION, EPISODE_PLAN_MIGRATION]);
+    // Today's chain after the title writing migration also adds the episode plan and script breakdown migrations.
+    expect(upgrade.applied).toEqual([TITLE_WRITING_MIGRATION, EPISODE_PLAN_MIGRATION, SCRIPT_BREAKDOWN_MIGRATION]);
     evidence.upgradeApplied = upgrade.applied;
     const ready = await http(main, "GET", "/writing/title-runs/options");
     expect(ready.body).toMatchObject({ code: "TITLE_WRITING_READY", storageReady: true, billing: "unknown" });

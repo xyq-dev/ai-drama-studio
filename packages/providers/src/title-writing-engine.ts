@@ -16,6 +16,18 @@ import {
   type TitleWritingStore,
 } from "@ai-drama/contracts";
 import {
+  SCRIPT_BREAKDOWN_STEP_KEY,
+  isScriptBreakdownInput,
+  scriptBreakdownJsonSchema,
+  type ScriptBreakdownDetails,
+  type ScriptBreakdownFrozenInput,
+  type ScriptBreakdownOutput,
+  type ScriptBreakdownPlacement,
+  type ScriptBreakdownPlacementOutcome,
+  type ScriptBreakdownSave,
+  type ScriptBreakdownSourceRead,
+} from "@ai-drama/contracts";
+import {
   TITLE_WRITING_INPUT_SCHEMA,
   TITLE_WRITING_INPUT_SCHEMA_V2,
   TITLE_WRITING_PROMPT_VERSION,
@@ -36,13 +48,19 @@ import {
   type TitleWritingRunView,
   type TitleWritingSettings,
   type TitleWritingStepKey,
+  type TitleWritingStepView,
 } from "@ai-drama/contracts";
 import {
+  breakdownDialogueText,
+  breakdownShotPromptText,
+  shotsOfScene,
+  buildScriptBreakdownPrompt,
   buildTitleWritingPrompt,
   canonicalInputHash,
   episodeNoOf,
   formatTitleEpisode,
   formatTitleStory,
+  validateScriptBreakdownOutput,
   validateTitleWritingOutput,
   type TitleWritingContext,
 } from "@ai-drama/domain";
@@ -139,14 +157,24 @@ export function newTitleRun(options: {
     callsUsed: 0,
     storySave: "pending",
     storyRevisionId: null,
+    breakdownSave: null,
     createdAt,
     updatedAt: createdAt,
   };
 }
 
-/** concept, outline and episode:1..N of the run's own input; a v1 run gets its original five steps. */
+/** The title input of a run, or null for a script breakdown run. */
+function titleInputOf(run: TitleRunRecord): TitleWritingFrozenInput | null {
+  return isScriptBreakdownInput(run.input) ? null : run.input;
+}
+
+/**
+ * concept, outline and episode:1..N of the run's own input; a v1 run gets its original five steps. A script breakdown
+ * run has the single step "breakdown".
+ */
 export function initialSteps(run: TitleRunRecord): TitleStepRecord[] {
-  return titleWritingStepKeysFor(run.input).map((stepKey, ordinal) => ({
+  const keys: TitleWritingStepKey[] = isScriptBreakdownInput(run.input) ? [SCRIPT_BREAKDOWN_STEP_KEY] : titleWritingStepKeysFor(run.input);
+  return keys.map((stepKey, ordinal) => ({
     runId: run.id,
     stepKey,
     ordinal,
@@ -188,10 +216,12 @@ function contextForStep(stepKey: TitleWritingStepKey, steps: readonly TitleStepR
 }
 
 export function storyTextOf(bundle: TitleRunBundle): string | null {
+  const input = titleInputOf(bundle.run);
+  if (!input) return null;
   const context = contextFromSteps(bundle.steps);
   if (!context.concept || !context.outline) return null;
   try {
-    return formatTitleStory(bundle.run.input.title, context.concept, context.outline);
+    return formatTitleStory(input.title, context.concept, context.outline);
   } catch {
     return null;
   }
@@ -206,15 +236,17 @@ function stepText(step: TitleStepRecord): string | null {
 /** Public view: no executor, idempotency key, request hash, raw response or credential. */
 export function titleRunView(bundle: TitleRunBundle): TitleWritingRunView {
   const { run } = bundle;
+  const input = titleInputOf(run);
+  if (!input) throw new Error("not a title writing run");
   return {
     runId: run.id,
     projectId: run.projectId,
-    title: run.input.title,
-    inputVersion: isTitleWritingInputV2(run.input) ? 2 : 1,
-    episodeCount: titleWritingEpisodeCount(run.input),
-    settings: run.input.settings,
-    providerKey: run.input.providerKey,
-    model: run.input.model,
+    title: input.title,
+    inputVersion: isTitleWritingInputV2(input) ? 2 : 1,
+    episodeCount: titleWritingEpisodeCount(input),
+    settings: input.settings,
+    providerKey: input.providerKey,
+    model: input.model,
     state: run.state,
     errorCode: run.errorCode,
     cancelRequested: run.cancelRequestedAt !== null,
@@ -228,7 +260,8 @@ export function titleRunView(bundle: TitleRunBundle): TitleWritingRunView {
       state: step.state,
       attemptNo: step.attemptNo,
       errorCode: step.errorCode,
-      output: step.state === "completed" ? step.output : null,
+      // A title run never has a breakdown step, so its outputs are title outputs.
+      output: step.state === "completed" ? step.output as TitleWritingStepView["output"] : null,
       text: stepText(step),
       scriptSave: step.scriptSave,
       scriptRevisionId: step.scriptRevisionId,
@@ -342,14 +375,27 @@ export class TitleWritingEngine {
     if (!provider.ok || !provider.models.includes(run.input.model)) {
       return this.finish(runId, "needs_attention", "provider_unconfigured");
     }
+    const titleInput = titleInputOf(run);
     // v2: the story saved after the last episode must fit its storage limit. Checked once concept and outline exist,
     // before any episode is requested, so an unsavable story never costs the episode calls.
-    if (isTitleWritingInputV2(run.input) && episodeNoOf(next.stepKey) !== null && storyTextOf(bundle) === null) {
+    if (titleInput && isTitleWritingInputV2(titleInput) && episodeNoOf(next.stepKey) !== null && storyTextOf(bundle) === null) {
       return this.finish(runId, "needs_attention", "story_too_large");
     }
     const adapter = (this.deps.adapters ?? WRITING_ADAPTERS)[run.input.providerKey];
-    const prompt = buildTitleWritingPrompt(next.stepKey, run.input, contextForStep(next.stepKey, steps));
-    const schema = titleWritingJsonSchemas(run.input)[prompt.schemaKind];
+    let prompt: { system: string; user: string };
+    let schema: { name: string; schema: Record<string, unknown> };
+    if (titleInput) {
+      const titlePrompt = buildTitleWritingPrompt(next.stepKey, titleInput, contextForStep(next.stepKey, steps));
+      prompt = titlePrompt;
+      schema = titleWritingJsonSchemas(titleInput)[titlePrompt.schemaKind];
+    } else {
+      // A breakdown prompt is built from the frozen copy of the script only. reserveCall re-checks, in the reservation's
+      // transaction, that this copy is still the episode's current approved script; the save checks it once more.
+      const breakdown = run.input as ScriptBreakdownFrozenInput;
+      if (next.stepKey !== SCRIPT_BREAKDOWN_STEP_KEY) return this.finish(runId, "failed", "invalid_step");
+      prompt = buildScriptBreakdownPrompt(breakdown);
+      schema = scriptBreakdownJsonSchema(breakdown.episodeNo);
+    }
     const request = {
       model: run.input.model,
       system: prompt.system,
@@ -384,6 +430,9 @@ export class TitleWritingEngine {
     }, reservedAt.toISOString(), this.lease(reservedAt));
     if (reservation.kind === "lost") return false;
     if (reservation.kind === "canceled") return this.finish(runId, "canceled", null);
+    // The frozen script changed after the run started or resumed: nothing was reserved and nothing is sent.
+    if (reservation.kind === "source_changed") return this.finish(runId, "needs_attention", "breakdown_source_changed");
+    if (reservation.kind === "conflict") return this.finish(runId, "needs_attention", "breakdown_conflict");
     if (reservation.kind === "blocked") return this.finish(runId, anyCompleted ? "partial" : "failed", reservation.code);
     const submittedAt = this.now();
     const submission = await this.deps.store.markCallSubmitted(this.deps.workspaceId, call.id, this.executorId,
@@ -402,7 +451,9 @@ export class TitleWritingEngine {
     });
     let patch: TitleCallFinish;
     if (exchange.outcome === "answered" && exchange.content !== null) {
-      const checked = validateTitleWritingOutput(next.stepKey, exchange.content, run.input);
+      const checked = titleInput
+        ? validateTitleWritingOutput(next.stepKey, exchange.content, titleInput)
+        : validateScriptBreakdownOutput(exchange.content, run.input as ScriptBreakdownFrozenInput);
       patch = checked.ok
         ? { state: "completed", errorCode: null, output: checked.output, outputHash: canonicalInputHash(checked.output),
           providerRequestId: exchange.providerRequestId, responseModel: exchange.responseModel, usage: exchange.usage }
@@ -425,6 +476,7 @@ export class TitleWritingEngine {
 
   private async saveAndComplete(bundle: TitleRunBundle): Promise<false> {
     const { run } = bundle;
+    if (isScriptBreakdownInput(run.input)) return this.saveBreakdownAndComplete(run);
     if (run.storySave === "saved") return this.finish(run.id, "completed", null);
     if (run.storySave === "conflict") return this.finish(run.id, "needs_attention", "story_conflict");
     const text = storyTextOf(bundle);
@@ -434,6 +486,21 @@ export class TitleWritingEngine {
     return saved === "saved"
       ? this.finish(run.id, "completed", null)
       : this.finish(run.id, "needs_attention", "story_conflict");
+  }
+
+  /**
+   * A breakdown result is saved only against its frozen sources. When the script, a referenced character or the
+   * episode's scenes changed meanwhile, the result stays in the run and nothing is written or marked current.
+   */
+  private async saveBreakdownAndComplete(run: TitleRunRecord): Promise<false> {
+    let save: ScriptBreakdownSave | "lost" = run.breakdownSave ?? "pending";
+    if (save === "pending") {
+      save = await this.deps.store.saveBreakdown(this.deps.workspaceId, run.id, this.executorId, run.actorId, this.now().toISOString());
+    }
+    if (save === "lost") return false;
+    if (save === "saved") return this.finish(run.id, "completed", null);
+    if (save === "source_changed") return this.finish(run.id, "needs_attention", "breakdown_source_changed");
+    return this.finish(run.id, "needs_attention", "breakdown_conflict");
   }
 }
 
@@ -445,6 +512,84 @@ interface MemoryProject {
   currentStoryId: string | null;
   approvedStoryId: string | null;
   episodes: Map<number, { id: string; currentScriptId: string | null; scripts: Array<{ id: string; text: string; sourceStoryId: string }> }>;
+}
+
+interface MemoryScript {
+  id: string;
+  revisionNo: number;
+  content: unknown;
+  contentHash: string;
+  reviewStatus: "DRAFT" | "APPROVED";
+  freshnessStatus: "CURRENT" | "STALE";
+}
+
+/** One episode of the breakdown memory model: its scripts and its scene and shot aggregates. */
+export interface MemoryBreakdownEpisode {
+  workspaceId: string;
+  projectId: string;
+  episodeId: string;
+  episodeNo: number;
+  targetEpisodeSeconds: number | null;
+  scripts: MemoryScript[];
+  currentScriptId: string | null;
+  approvedScriptId: string | null;
+}
+
+export interface MemorySceneRevision {
+  id: string;
+  sourceScriptRevisionId: string;
+  ordinal: number;
+  heading: string;
+  timeOfDay: string | null;
+  summary: string;
+  reviewStatus: "DRAFT" | "APPROVED";
+  freshnessStatus: "CURRENT" | "STALE";
+}
+
+export interface MemoryScene {
+  sceneId: string;
+  episodeId: string;
+  rowVersion: number;
+  archived: boolean;
+  revisions: MemorySceneRevision[];
+  currentRevisionId: string | null;
+  approvedRevisionId: string | null;
+}
+
+export interface MemoryShot {
+  shotId: string;
+  sceneId: string;
+  rowVersion: number;
+  archived: boolean;
+  revisionId: string;
+  sourceSceneRevisionId: string;
+  ordinal: number;
+  shotType: string;
+  camera: string;
+  action: string;
+  dialogue: string | null;
+  plannedDurationMs: number | null;
+  promptText: string;
+  characterRevisionIds: string[];
+  freshnessStatus: "CURRENT" | "STALE";
+}
+
+export interface MemoryCharacter {
+  projectId: string;
+  characterId: string;
+  revisionId: string;
+  name: string;
+  archived: boolean;
+}
+
+interface MemoryBreakdownLink {
+  runId: string;
+  sceneKey: string;
+  ordinal: number;
+  sceneId: string;
+  sceneRevisionId: string;
+  shotSave: "pending" | "saved";
+  placedSceneRevisionId: string | null;
 }
 
 function expired(leaseUntil: string | null, nowIso: string): boolean {
@@ -462,6 +607,12 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
   readonly projects = new Map<string, MemoryProject>();
   readonly resumes: Array<{ runId: string; key: string; requestHash: string; confirmedCallIds: string[]; createdAt: string }> = [];
   ready = true;
+  breakdownReady = true;
+  readonly breakdownEpisodes = new Map<string, MemoryBreakdownEpisode>();
+  readonly scenes: MemoryScene[] = [];
+  readonly shots: MemoryShot[] = [];
+  readonly characters: MemoryCharacter[] = [];
+  readonly breakdownLinks: MemoryBreakdownLink[] = [];
 
   addProject(workspaceId: string, projectId: string, episodeCount = 3): MemoryProject {
     const project: MemoryProject = { workspaceId, episodeCount, stories: [], currentStoryId: null, approvedStoryId: null, episodes: new Map() };
@@ -533,7 +684,8 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
   }
 
   async latestRun(workspaceId: string, projectId: string): Promise<TitleRunBundle | null> {
-    const runs = this.runs.filter((item) => item.workspaceId === workspaceId && item.projectId === projectId);
+    const runs = this.runs.filter((item) => item.workspaceId === workspaceId && item.projectId === projectId
+      && !isScriptBreakdownInput(item.input));
     const latest = runs.sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id))[0];
     return latest ? this.bundle(latest) : null;
   }
@@ -557,6 +709,10 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
     const run = this.requireRun(call.runId);
     if (!this.owns(run, call.workspaceId, call.executorId, nowIso)) return { kind: "lost" };
     if (run.cancelRequestedAt !== null) return { kind: "canceled" };
+    if (isScriptBreakdownInput(run.input)) {
+      if (!this.breakdownScriptCurrent(run.input)) return { kind: "source_changed" };
+      if (!this.breakdownSceneSetCurrent(run.input)) return { kind: "conflict" };
+    }
     if (run.callsUsed >= run.callCap) return { kind: "blocked", code: "TITLE_WRITING_RUN_CAP" };
     const recent = this.calls.filter((item) => item.workspaceId === call.workspaceId && item.createdAt >= limits.sinceIso).length;
     if (recent >= limits.maxCallsPerDay) return { kind: "blocked", code: "TITLE_WRITING_DAILY_CAP" };
@@ -650,11 +806,24 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
     if (uncertain.length > 0 && request.confirmedCallIds.length === 0) return { kind: "needs_confirmation" };
     if (!confirmationMatches(uncertain, request.confirmedCallIds)) return { kind: "stale_confirmation" };
     const redo = steps.filter((step) => step.state === "unknown" || step.state === "rejected" || step.state === "canceled");
-    if (redo.length === 0 && run.storySave !== "pending") return { kind: "not_resumable" };
+    const savePending = isScriptBreakdownInput(run.input) ? run.breakdownSave === "pending" : run.storySave === "pending";
+    if (redo.length === 0 && !savePending) return { kind: "not_resumable" };
+    const sends = redo.length > 0 || steps.some((step) => step.state === "pending");
+    if (sends && request.providerReady === false) return { kind: "provider_unconfigured" };
+    if (isScriptBreakdownInput(run.input)) {
+      if (!this.breakdownScriptCurrent(run.input)) return { kind: "source_changed" };
+      if (!this.breakdownSceneSetCurrent(run.input)) return { kind: "conflict" };
+    }
     this.resumes.push({ runId, key: request.resumeKey, requestHash: request.requestHash, confirmedCallIds: [...request.confirmedCallIds].sort(), createdAt: nowIso });
     for (const step of redo) Object.assign(step, { state: "pending", updatedAt: nowIso });
     Object.assign(run, { state: "running", errorCode: null, cancelRequestedAt: null, executorId: null, leaseUntil: null, updatedAt: nowIso });
     return { kind: "ok", bundle: this.bundle(run) };
+  }
+
+  async findResume(workspaceId: string, projectId: string, runId: string, resumeKey: string): Promise<{ requestHash: string } | null> {
+    const run = this.runs.find((item) => item.id === runId && item.workspaceId === workspaceId && item.projectId === projectId);
+    const previous = run ? this.resumes.find((item) => item.runId === runId && item.key === resumeKey) : undefined;
+    return previous ? { requestHash: previous.requestHash } : null;
   }
 
   async recoverExpired(workspaceId: string, nowIso: string): Promise<number> {
@@ -692,14 +861,14 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
 
   async placeScripts(workspaceId: string, projectId: string, runId: string, options: { acceptStoryChanged: boolean }, _actorId: string, nowIso: string): Promise<TitleScriptPlacement> {
     const run = this.runs.find((item) => item.id === runId && item.workspaceId === workspaceId && item.projectId === projectId);
-    if (!run) return { kind: "not_found" };
+    if (!run || isScriptBreakdownInput(run.input)) return { kind: "not_found" };
     const steps = this.steps.filter((item) => item.runId === runId && item.scriptSave !== null);
     if (run.state === "running" || steps.every((step) => step.state !== "completed")) return { kind: "not_ready" };
     const project = this.requireProject(projectId);
     const approved = project.approvedStoryId;
     if (!approved || project.currentStoryId !== approved) return { kind: "story_not_approved" };
     if (approved !== run.storyRevisionId && !options.acceptStoryChanged) return { kind: "story_changed" };
-    const count = titleWritingEpisodeCount(run.input);
+    const count = titleWritingEpisodeCount(run.input as TitleWritingFrozenInput);
     if (project.episodeCount !== count || project.episodes.size !== count
       || [...project.episodes.keys()].some((episodeNo) => episodeNo < 1 || episodeNo > count)) return { kind: "plan_mismatch" };
     for (const step of steps) {
@@ -717,6 +886,283 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
     }
     run.updatedAt = nowIso;
     return { kind: "ok", bundle: this.bundle(run) };
+  }
+
+  // --- Script breakdown: a small model of one episode's scripts, scenes, shots and the project's characters. ---
+
+  /** Test helper: an episode whose current script is `text` (approved unless said otherwise). */
+  addBreakdownEpisode(options: { workspaceId: string; projectId: string; episodeNo: number; text: string; approved?: boolean; targetEpisodeSeconds?: number | null }): MemoryBreakdownEpisode {
+    const episode: MemoryBreakdownEpisode = {
+      workspaceId: options.workspaceId, projectId: options.projectId, episodeId: randomUUID(), episodeNo: options.episodeNo,
+      targetEpisodeSeconds: options.targetEpisodeSeconds ?? null, scripts: [], currentScriptId: null, approvedScriptId: null,
+    };
+    this.breakdownEpisodes.set(episode.episodeId, episode);
+    this.writeScript(episode.episodeId, options.text, options.approved ?? true);
+    return episode;
+  }
+
+  /** Test helper standing in for a script save (and optionally its approval): the old script's scenes and shots go STALE. */
+  writeScript(episodeId: string, text: string, approve = true): string {
+    const episode = this.requireBreakdownEpisode(episodeId);
+    const content = { text };
+    const script: MemoryScript = { id: randomUUID(), revisionNo: episode.scripts.length + 1, content, contentHash: canonicalInputHash(content),
+      reviewStatus: approve ? "APPROVED" : "DRAFT", freshnessStatus: "CURRENT" };
+    const previous = episode.currentScriptId;
+    episode.scripts.push(script);
+    episode.currentScriptId = script.id;
+    if (approve) episode.approvedScriptId = script.id;
+    if (previous) {
+      for (const scene of this.scenes) {
+        for (const revision of scene.revisions) {
+          if (revision.sourceScriptRevisionId !== previous) continue;
+          revision.freshnessStatus = "STALE";
+          for (const shot of this.shots.filter((item) => item.sourceSceneRevisionId === revision.id)) shot.freshnessStatus = "STALE";
+        }
+      }
+    }
+    return script.id;
+  }
+
+  /** Test helper standing in for an upstream story replacement: the current script stays current but goes STALE. */
+  staleScript(episodeId: string): void {
+    const episode = this.requireBreakdownEpisode(episodeId);
+    episode.scripts.find((item) => item.id === episode.currentScriptId)!.freshnessStatus = "STALE";
+  }
+
+  addCharacter(projectId: string, name: string): MemoryCharacter {
+    const character: MemoryCharacter = { projectId, characterId: randomUUID(), revisionId: randomUUID(), name, archived: false };
+    this.characters.push(character);
+    return character;
+  }
+
+  /** Test helper: a new current revision of the character; shots referencing the old one go STALE. */
+  reviseCharacter(characterId: string): string {
+    const character = this.characters.find((item) => item.characterId === characterId);
+    if (!character) throw new Error("character missing");
+    const previous = character.revisionId;
+    character.revisionId = randomUUID();
+    for (const shot of this.shots.filter((item) => item.characterRevisionIds.includes(previous))) shot.freshnessStatus = "STALE";
+    return character.revisionId;
+  }
+
+  /** Test helper standing in for a person creating a scene in the editor. */
+  addManualScene(episodeId: string, heading: string): MemoryScene {
+    const episode = this.requireBreakdownEpisode(episodeId);
+    const ordinal = this.scenes.filter((item) => item.episodeId === episodeId && !item.archived).length + 1;
+    return this.createScene(episode, ordinal, heading, null, "");
+  }
+
+  /** Test helper standing in for a person saving a new scene revision; shots under the old revision go STALE. */
+  editScene(sceneId: string, summary: string, place: { heading?: string; timeOfDay?: string | null } = {}): string {
+    const scene = this.requireScene(sceneId);
+    const current = scene.revisions.find((item) => item.id === scene.currentRevisionId)!;
+    const revision: MemorySceneRevision = { ...current, ...place, id: randomUUID(), summary, reviewStatus: "DRAFT", freshnessStatus: "CURRENT" };
+    scene.revisions.push(revision);
+    scene.currentRevisionId = revision.id;
+    scene.rowVersion += 1;
+    for (const shot of this.shots.filter((item) => item.sourceSceneRevisionId === current.id)) shot.freshnessStatus = "STALE";
+    return revision.id;
+  }
+
+  /** Test helper standing in for a person approving the scene's current revision. */
+  approveScene(sceneId: string): void {
+    const scene = this.requireScene(sceneId);
+    const revision = scene.revisions.find((item) => item.id === scene.currentRevisionId)!;
+    revision.reviewStatus = "APPROVED";
+    scene.approvedRevisionId = revision.id;
+    scene.rowVersion += 1;
+  }
+
+  private createScene(episode: MemoryBreakdownEpisode, ordinal: number, heading: string, timeOfDay: string | null, summary: string): MemoryScene {
+    const revision: MemorySceneRevision = { id: randomUUID(), sourceScriptRevisionId: episode.currentScriptId!, ordinal, heading, timeOfDay,
+      summary, reviewStatus: "DRAFT", freshnessStatus: "CURRENT" };
+    const scene: MemoryScene = { sceneId: randomUUID(), episodeId: episode.episodeId, rowVersion: 1, archived: false,
+      revisions: [revision], currentRevisionId: revision.id, approvedRevisionId: null };
+    this.scenes.push(scene);
+    return scene;
+  }
+
+  /** The frozen script is still the episode's current, approved, CURRENT script (the store's resume and reservation check). */
+  private breakdownScriptCurrent(input: { episodeId: string; scriptRevisionId: string }): boolean {
+    const episode = this.breakdownEpisodes.get(input.episodeId);
+    const script = episode?.scripts.find((item) => item.id === episode.currentScriptId);
+    return !!episode && !!script && script.id === input.scriptRevisionId && episode.approvedScriptId === script.id
+      && script.reviewStatus === "APPROVED" && script.freshnessStatus === "CURRENT";
+  }
+
+  private breakdownSceneSetCurrent(input: ScriptBreakdownFrozenInput): boolean {
+    const scenes = this.scenes.filter((item) => item.episodeId === input.episodeId && !item.archived);
+    const shots = this.shots.filter((item) => !item.archived && scenes.some((scene) => scene.sceneId === item.sceneId));
+    return scenes.length === input.replace.scenes.length && scenes.every((item) =>
+      input.replace.scenes.some((frozen) => frozen.sceneId === item.sceneId && frozen.rowVersion === item.rowVersion))
+      && shots.length === input.replace.shots.length && shots.every((item) =>
+        input.replace.shots.some((frozen) => frozen.shotId === item.shotId && frozen.rowVersion === item.rowVersion));
+  }
+
+  async breakdownStorageReady(): Promise<boolean> {
+    return this.ready && this.breakdownReady;
+  }
+
+  async findRunByKey(workspaceId: string, actorId: string, idempotencyKey: string): Promise<TitleRunBundle | null> {
+    const run = this.runs.find((item) => item.workspaceId === workspaceId && item.actorId === actorId && item.idempotencyKey === idempotencyKey);
+    return run ? this.bundle(run) : null;
+  }
+
+  async breakdownSource(workspaceId: string, projectId: string, episodeId: string): Promise<ScriptBreakdownSourceRead> {
+    const episode = this.breakdownEpisodes.get(episodeId);
+    if (!episode || episode.workspaceId !== workspaceId || episode.projectId !== projectId) return { kind: "not_found" };
+    const script = episode.scripts.find((item) => item.id === episode.currentScriptId);
+    if (!script) return { kind: "script_missing" };
+    if (episode.approvedScriptId !== script.id || script.reviewStatus !== "APPROVED" || script.freshnessStatus !== "CURRENT") {
+      return { kind: "script_review_required" };
+    }
+    const scenes = this.scenes.filter((item) => item.episodeId === episodeId && !item.archived);
+    return {
+      kind: "ok", episodeNo: episode.episodeNo, scriptRevisionId: script.id, scriptRevisionNo: script.revisionNo,
+      scriptContentHash: script.contentHash, scriptContent: structuredClone(script.content), targetEpisodeSeconds: episode.targetEpisodeSeconds,
+      characters: this.characters.filter((item) => item.projectId === projectId && !item.archived)
+        .map((item) => ({ characterId: item.characterId, revisionId: item.revisionId, name: item.name })),
+      scenes: scenes.map((item) => ({ sceneId: item.sceneId, rowVersion: item.rowVersion })),
+      shots: this.shots.filter((item) => !item.archived && scenes.some((scene) => scene.sceneId === item.sceneId))
+        .map((item) => ({ shotId: item.shotId, rowVersion: item.rowVersion })),
+    };
+  }
+
+  async latestBreakdown(workspaceId: string, projectId: string, episodeId: string): Promise<TitleRunBundle | null> {
+    return this.newestBreakdown(workspaceId, projectId, episodeId, () => true);
+  }
+
+  async latestSavedBreakdown(workspaceId: string, projectId: string, episodeId: string): Promise<TitleRunBundle | null> {
+    return this.newestBreakdown(workspaceId, projectId, episodeId, (run) => run.breakdownSave === "saved");
+  }
+
+  private newestBreakdown(workspaceId: string, projectId: string, episodeId: string, keep: (run: TitleRunRecord) => boolean): TitleRunBundle | null {
+    const runs = this.runs.filter((item) => item.workspaceId === workspaceId && item.projectId === projectId
+      && isScriptBreakdownInput(item.input) && item.input.episodeId === episodeId && keep(item));
+    const latest = runs.sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id))[0];
+    return latest ? this.bundle(latest) : null;
+  }
+
+  async breakdownDetails(workspaceId: string, run: TitleRunRecord): Promise<ScriptBreakdownDetails> {
+    if (!isScriptBreakdownInput(run.input) || run.workspaceId !== workspaceId) throw new Error("not a breakdown run of this workspace");
+    const episode = this.requireBreakdownEpisode(run.input.episodeId);
+    const current = episode.scripts.find((item) => item.id === episode.currentScriptId) ?? null;
+    return {
+      scenes: this.breakdownLinks.filter((link) => link.runId === run.id).sort((left, right) => left.ordinal - right.ordinal).map((link) => {
+        const scene = this.requireScene(link.sceneId);
+        const revision = scene.revisions.find((item) => item.id === scene.currentRevisionId) ?? null;
+        return {
+          key: link.sceneKey, ordinal: link.ordinal, sceneId: link.sceneId, sceneRevisionId: link.sceneRevisionId, shotSave: link.shotSave,
+          placedSceneRevisionId: link.placedSceneRevisionId,
+          current: { archived: scene.archived, currentRevisionId: scene.currentRevisionId, approvedRevisionId: scene.approvedRevisionId,
+            reviewStatus: revision?.reviewStatus ?? null, freshnessStatus: revision?.freshnessStatus ?? null },
+        };
+      }),
+      episodeScript: {
+        currentRevisionId: current?.id ?? null,
+        currentRevisionNo: current?.revisionNo ?? null,
+        approved: current !== null && episode.approvedScriptId === current.id && current.reviewStatus === "APPROVED" && current.freshnessStatus === "CURRENT",
+      },
+    };
+  }
+
+  async saveBreakdown(workspaceId: string, runId: string, executorId: string, _actorId: string, nowIso: string): Promise<ScriptBreakdownSave | "lost"> {
+    const run = this.requireRun(runId);
+    if (!this.owns(run, workspaceId, executorId, nowIso) || !isScriptBreakdownInput(run.input)) return "lost";
+    if ((run.breakdownSave ?? "pending") !== "pending") return run.breakdownSave!;
+    const input = run.input;
+    const step = this.requireStep(runId, SCRIPT_BREAKDOWN_STEP_KEY);
+    if (step.state !== "completed" || !step.output) return "lost";
+    const output = step.output as ScriptBreakdownOutput;
+    const settle = (save: ScriptBreakdownSave): ScriptBreakdownSave => {
+      Object.assign(run, { breakdownSave: save, updatedAt: nowIso });
+      return save;
+    };
+    const episode = this.requireBreakdownEpisode(input.episodeId);
+    const script = episode.scripts.find((item) => item.id === episode.currentScriptId);
+    if (!script || script.id !== input.scriptRevisionId || episode.approvedScriptId !== script.id || script.reviewStatus !== "APPROVED"
+      || script.freshnessStatus !== "CURRENT") return settle("source_changed");
+    const referenced = new Set(output.shots.flatMap((shot) => shot.characterKeys));
+    for (const frozen of input.characters.filter((item) => referenced.has(item.key))) {
+      const character = this.characters.find((item) => item.characterId === frozen.characterId);
+      if (!character || character.archived || character.revisionId !== frozen.revisionId) return settle("source_changed");
+    }
+    const scenes = this.scenes.filter((item) => item.episodeId === episode.episodeId && !item.archived);
+    const shots = this.shots.filter((item) => !item.archived && scenes.some((scene) => scene.sceneId === item.sceneId));
+    if (!this.breakdownSceneSetCurrent(input)) return settle("conflict");
+    for (const shot of shots) Object.assign(shot, { archived: true, rowVersion: shot.rowVersion + 1 });
+    for (const scene of scenes) Object.assign(scene, { archived: true, rowVersion: scene.rowVersion + 1 });
+    output.scenes.forEach((generated, index) => {
+      const scene = this.createScene(episode, index + 1, generated.heading, generated.timeOfDay.trim() || null, generated.description);
+      this.breakdownLinks.push({ runId, sceneKey: generated.key, ordinal: index + 1, sceneId: scene.sceneId,
+        sceneRevisionId: scene.currentRevisionId!, shotSave: "pending", placedSceneRevisionId: null });
+    });
+    return settle("saved");
+  }
+
+  async placeBreakdownShots(workspaceId: string, projectId: string, episodeId: string, runId: string, options: { acceptSceneChanged: boolean }, _actorId: string, nowIso: string): Promise<ScriptBreakdownPlacement> {
+    const run = this.runs.find((item) => item.id === runId && item.workspaceId === workspaceId && item.projectId === projectId);
+    if (!run || !isScriptBreakdownInput(run.input) || run.input.episodeId !== episodeId) return { kind: "not_found" };
+    if (run.breakdownSave !== "saved") return { kind: "not_ready" };
+    const input = run.input;
+    const output = this.requireStep(runId, SCRIPT_BREAKDOWN_STEP_KEY).output as ScriptBreakdownOutput;
+    const outcome: ScriptBreakdownPlacementOutcome = { placed: [], awaitingApproval: [], sceneChanged: [], charactersChanged: [], unavailable: [] };
+    const pending = this.breakdownLinks.filter((item) => item.runId === runId && item.shotSave !== "saved")
+      .sort((left, right) => left.ordinal - right.ordinal);
+    if (pending.length === 0) return { kind: "ok", bundle: this.bundle(run), outcome };
+    if (this.runs.some((other) => other.id !== runId && other.workspaceId === workspaceId && other.projectId === projectId
+      && other.state === "running" && isScriptBreakdownInput(other.input) && other.input.episodeId === episodeId)) return { kind: "active" };
+    const episode = this.requireBreakdownEpisode(episodeId);
+    const script = episode.scripts.find((item) => item.id === input.scriptRevisionId);
+    const sourceCurrent = episode.currentScriptId === input.scriptRevisionId && episode.approvedScriptId === input.scriptRevisionId
+      && script?.reviewStatus === "APPROVED" && script.freshnessStatus === "CURRENT";
+    if (!sourceCurrent) return { kind: "not_ready" };
+    for (const link of pending) {
+      const scene = this.requireScene(link.sceneId);
+      const approved = scene.revisions.find((item) => item.id === scene.approvedRevisionId);
+      if (scene.archived) { outcome.unavailable.push(link.sceneKey); continue; }
+      if (!approved || scene.currentRevisionId !== approved.id || approved.reviewStatus !== "APPROVED") { outcome.awaitingApproval.push(link.sceneKey); continue; }
+      if (approved.freshnessStatus !== "CURRENT" || approved.sourceScriptRevisionId !== input.scriptRevisionId) {
+        outcome.unavailable.push(link.sceneKey); continue;
+      }
+      // Scene-change consent accepts an edited scene of this script, never a newer script or existing manual shots.
+      if (approved.id !== link.sceneRevisionId && !options.acceptSceneChanged) { outcome.sceneChanged.push(link.sceneKey); continue; }
+      if (this.shots.some((shot) => shot.sceneId === scene.sceneId && !shot.archived)) {
+        outcome.unavailable.push(link.sceneKey); continue;
+      }
+      // Place and time come from the approved revision the shots point to; plan, action and dialogue stay as proposed.
+      const approvedScene = { ...output.scenes.find((item) => item.key === link.sceneKey)!, heading: approved.heading, timeOfDay: approved.timeOfDay ?? "" };
+      const planned = shotsOfScene(output, link.sceneKey);
+      const characterRevisions = planned.map((shot) => shot.characterKeys.map((key) => input.characters.find((item) => item.key === key)!));
+      if (characterRevisions.flat().some((frozen) => {
+        const character = this.characters.find((item) => item.characterId === frozen.characterId);
+        return !character || character.archived || character.revisionId !== frozen.revisionId;
+      })) { outcome.charactersChanged.push(link.sceneKey); continue; }
+      planned.forEach((shot, index) => {
+        this.shots.push({ shotId: randomUUID(), sceneId: scene.sceneId, rowVersion: 1, archived: false, revisionId: randomUUID(),
+          sourceSceneRevisionId: approved.id, ordinal: index + 1, shotType: shot.shotType, camera: shot.camera, action: shot.action,
+          dialogue: breakdownDialogueText(shot), plannedDurationMs: shot.plannedSeconds * 1000,
+          promptText: breakdownShotPromptText(approvedScene, shot), characterRevisionIds: characterRevisions[index]!.map((item) => item.revisionId),
+          freshnessStatus: "CURRENT" });
+        scene.rowVersion += 1;
+      });
+      Object.assign(link, { shotSave: "saved", placedSceneRevisionId: approved.id });
+      outcome.placed.push(link.sceneKey);
+    }
+    run.updatedAt = nowIso;
+    return { kind: "ok", bundle: this.bundle(run), outcome };
+  }
+
+  private requireBreakdownEpisode(id: string): MemoryBreakdownEpisode {
+    const episode = this.breakdownEpisodes.get(id);
+    if (!episode) throw new Error("episode missing");
+    return episode;
+  }
+
+  private requireScene(id: string): MemoryScene {
+    const scene = this.scenes.find((item) => item.sceneId === id);
+    if (!scene) throw new Error("scene missing");
+    return scene;
   }
 
   private requireRun(id: string): TitleRunRecord {

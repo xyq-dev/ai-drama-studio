@@ -3,7 +3,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { EPISODE_PLAN_COLUMNS, EPISODE_PLAN_MIGRATION } from "./episode-plan";
-import { TITLE_WRITING_MIGRATION, TITLE_WRITING_TABLES } from "./title-writing-store";
+import { SCRIPT_BREAKDOWN_COLUMNS, SCRIPT_BREAKDOWN_MIGRATION, TITLE_WRITING_MIGRATION, TITLE_WRITING_TABLES } from "./title-writing-store";
 
 const drafts = join(__dirname, "..", "prisma", "drafts");
 const applied = join(__dirname, "..", "prisma", "migrations");
@@ -66,7 +66,7 @@ describe("title writing formal migration", () => {
   it("is applied after every earlier migration, and the draft is marked superseded and not applied", async () => {
     const names = (await readdir(applied)).filter((name) => /^\d+_/.test(name)).sort();
     expect(names.indexOf(TITLE_WRITING_MIGRATION)).toBe(Object.keys(RELEASED).indexOf(TITLE_WRITING_MIGRATION));
-    expect(names).toEqual([...Object.keys(RELEASED), EPISODE_PLAN_MIGRATION]);
+    expect(names).toEqual([...Object.keys(RELEASED), SCRIPT_BREAKDOWN_MIGRATION]);
     const draft = await readFile(draftPath, "utf8");
     expect(draft.split("\n")[0]).toBe("-- SUPERSEDED DRAFT. Do not apply. Kept only as the record of what passed the isolated acceptances.");
     expect(draft).toContain(`prisma/migrations/${TITLE_WRITING_MIGRATION}/migration.sql`);
@@ -80,7 +80,9 @@ describe("title writing formal migration", () => {
 
   it("is expressed in the Prisma schema with the columns the store reads", async () => {
     const schema = await readFile(join(__dirname, "..", "prisma", "schema.prisma"), "utf8");
-    for (const [table, columns] of Object.entries(TITLE_WRITING_TABLES)) {
+    for (const [table, titleColumns] of Object.entries(TITLE_WRITING_TABLES)) {
+      // The script breakdown migration adds columns to title_writing_run; title writing itself never needs them.
+      const columns = [...titleColumns, ...(table === "title_writing_run" ? SCRIPT_BREAKDOWN_COLUMNS.title_writing_run : [])];
       const model = [...schema.matchAll(/^model \w+ \{\n([\s\S]*?)\n\}/gm)].map((match) => match[1]!)
         .find((block) => block.includes(`@@map("${table}")`));
       expect(model, table).toBeDefined();
@@ -95,10 +97,10 @@ describe("title writing formal migration", () => {
 describe("episode plan migration", () => {
   const migrationPath = join(applied, EPISODE_PLAN_MIGRATION, "migration.sql");
 
-  it("is the last migration, after every released one", async () => {
+  it("is released right after the title writing migration", async () => {
     const names = (await readdir(applied)).filter((name) => /^\d+_/.test(name)).sort();
-    expect(names.at(-1)).toBe(EPISODE_PLAN_MIGRATION);
-    expect(names.slice(0, -1)).toEqual(Object.keys(RELEASED));
+    expect(names.indexOf(EPISODE_PLAN_MIGRATION)).toBe(names.indexOf(TITLE_WRITING_MIGRATION) + 1);
+    expect(Object.keys(RELEASED)).toContain(EPISODE_PLAN_MIGRATION);
   });
 
   it("only expands: adds two project columns and widens CHECKs, writing, rewriting or dropping no data", async () => {
@@ -136,6 +138,59 @@ describe("episode plan migration", () => {
   });
 });
 
+describe("script breakdown migration", () => {
+  const migrationPath = join(applied, SCRIPT_BREAKDOWN_MIGRATION, "migration.sql");
+
+  it("is the last migration, after every released one", async () => {
+    const names = (await readdir(applied)).filter((name) => /^\d+_/.test(name)).sort();
+    expect(names.at(-1)).toBe(SCRIPT_BREAKDOWN_MIGRATION);
+    expect(names.slice(0, -1)).toEqual(Object.keys(RELEASED));
+  });
+
+  it("only expands: adds columns, one table, one index and wider CHECKs, and writes, rewrites or drops no data", async () => {
+    const sql = statements(await readFile(migrationPath, "utf8"));
+    expect(sql).not.toMatch(/\b(INSERT|UPDATE|DELETE|TRUNCATE|DROP TABLE|DROP COLUMN|ALTER COLUMN|RENAME)\b/i);
+    // Every new column of an existing table is nullable or has a constant default, so no existing row is rewritten.
+    expect(sql).toContain("ALTER TABLE title_writing_run ADD COLUMN run_kind text NOT NULL DEFAULT 'title';");
+    for (const column of ["episode_id uuid;", "source_script_revision_id uuid;", "breakdown_save text;"]) {
+      expect(sql).toContain(`ALTER TABLE title_writing_run ADD COLUMN ${column}`);
+    }
+    expect(sql).toContain("ALTER TABLE shot_revision ADD COLUMN planned_duration_ms integer;");
+    expect(sql).toContain("CHECK (planned_duration_ms IS NULL OR planned_duration_ms BETWEEN 1000 AND 15000)");
+    // Existing runs are title runs with no breakdown columns, which the shape CHECK accepts.
+    expect(sql).toContain("(run_kind = 'title' AND episode_id IS NULL AND source_script_revision_id IS NULL AND breakdown_save IS NULL)");
+    // The dropped step CHECKs are replaced by wider ones: every old step key and script_save rule still holds.
+    expect([...sql.matchAll(/DROP CONSTRAINT (\w+)/g)].map((match) => match[1])).toEqual(["title_writing_step_step_key_check"]);
+    expect(sql).toContain("'concept', 'outline', 'episode:1', 'episode:2', 'episode:3', 'episode:4', 'episode:5', 'episode:6', 'breakdown'");
+    expect(sql).toContain("CHECK ((script_save IS NULL) = (step_key IN ('concept', 'outline', 'breakdown')))");
+    expect(sql).toContain("RAISE EXCEPTION 'expected exactly one script_save step CHECK, found %'");
+    expect([...sql.matchAll(/^CREATE TABLE (\w+)/gm)].map((match) => match[1])).toEqual(["script_breakdown_scene"]);
+  });
+
+  it("keeps shot revisions immutable, the new column included", async () => {
+    const sql = statements(await readFile(migrationPath, "utf8"));
+    const m2a = await readFile(join(applied, "20260925000100_m2a_text_chain", "migration.sql"), "utf8");
+    const original = /CREATE FUNCTION m2_reject_shot_content_update\(\)[\s\S]*?END \$\$;/.exec(m2a)![0];
+    const replaced = /CREATE OR REPLACE FUNCTION m2_reject_shot_content_update\(\)[\s\S]*?END \$\$;/.exec(sql)![0];
+    const compared = (text: string) => [...text.matchAll(/NEW\.(\w+) IS DISTINCT FROM OLD\.\1/g)].map((match) => match[1]);
+    expect(compared(replaced)).toEqual([...compared(original).slice(0, compared(original).indexOf("duration_hint") + 1), "planned_duration_ms",
+      ...compared(original).slice(compared(original).indexOf("duration_hint") + 1)]);
+  });
+
+  it("is expressed in the Prisma schema", async () => {
+    const schema = await readFile(join(__dirname, "..", "prisma", "schema.prisma"), "utf8");
+    const models = [...schema.matchAll(/^model \w+ \{\n([\s\S]*?)\n\}/gm)].map((match) => match[1]!);
+    for (const [table, columns] of Object.entries(SCRIPT_BREAKDOWN_COLUMNS)) {
+      const model = models.find((block) => block.includes(`@@map("${table}")`));
+      expect(model, table).toBeDefined();
+      for (const column of columns) {
+        const named = model!.includes(`@map("${column}")`) || new RegExp(`^\\s+${column}\\s`, "m").test(model!);
+        expect(named, `${table}.${column}`).toBe(true);
+      }
+    }
+  });
+});
+
 /** Released migrations and the checksums servers have recorded for them. A change here means a released file changed. */
 const RELEASED: Record<string, string> = {
   "20260924000100_m1b_job_core": "15ee68a4d23c82e3078db554c035ca9c29aed894cdb36448324d251432946605",
@@ -144,4 +199,5 @@ const RELEASED: Record<string, string> = {
   "20260928000200_m3a_media_assets": "a8540cb57ec0e9a034ca56ef2c5c9a3ce55a2fdc4076bdabd7e6844c79b26ae2",
   "20260928000300_m3b_job_shot_lineage": "fa3e195e82b760ea3ce8ed39b2daedd2169c8e5de955c5750a5511c8b7073b62",
   "20261008000100_title_writing": "b3931d041dc4f9c1bbaf43fa69e9cfce069465272da9c80173da282271f32671",
+  "20261011000100_episode_plan": "93c7f7a0f3236e9a9d08307a59fac02af5bd763851b98ffbec608ce198b424f1",
 };

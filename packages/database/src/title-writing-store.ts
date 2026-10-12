@@ -1,7 +1,19 @@
 import type { PoolClient, QueryResult, QueryResultRow } from "pg";
 import {
+  SCRIPT_BREAKDOWN_INPUT_SCHEMA,
+  SCRIPT_BREAKDOWN_STEP_KEY,
   TITLE_WRITING_CANCELED_BEFORE_SEND,
   currentUncertainCallIds,
+  isScriptBreakdownInput,
+  type ScriptBreakdownDetails,
+  type ScriptBreakdownFrozenInput,
+  type ScriptBreakdownOutput,
+  type ScriptBreakdownPlacement,
+  type ScriptBreakdownPlacementOutcome,
+  type ScriptBreakdownSave,
+  type ScriptBreakdownSceneView,
+  type ScriptBreakdownSourceRead,
+  type TitleRunInput,
   titleWritingEpisodeCount,
   titleWritingStepKeysFor,
   type EpisodeDraftCandidate,
@@ -22,9 +34,9 @@ import {
   type TitleStepRecord,
   type TitleWritingStore,
 } from "@ai-drama/contracts";
-import { formatTitleEpisode } from "@ai-drama/domain";
+import { breakdownDialogueText, breakdownShotPromptText, formatTitleEpisode, shotsOfScene } from "@ai-drama/domain";
 import { projectEpisodePlanIn } from "./episode-plan";
-import type { DatabasePool } from "./job-service";
+import { PersistenceError, type DatabasePool } from "./job-service";
 import type { TextChainService } from "./text-chain";
 
 /**
@@ -55,7 +67,28 @@ export const TITLE_WRITING_TABLES = {
   title_writing_resume: ["run_id", "workspace_id", "idempotency_key", "request_hash", "confirmed_call_ids", "created_at"],
 } as const;
 
-const RUN_COLUMNS = TITLE_WRITING_TABLES.title_writing_run.join(", ");
+/**
+ * The migration that lets a title writing run be a script breakdown run, adds shot_revision.planned_duration_ms and the
+ * scene link table (prisma/migrations/20261012000100_script_breakdown). Title writing never needs it.
+ */
+export const SCRIPT_BREAKDOWN_MIGRATION = "20261012000100_script_breakdown";
+
+export const SCRIPT_BREAKDOWN_COLUMNS = {
+  title_writing_run: ["run_kind", "episode_id", "source_script_revision_id", "breakdown_save"],
+  shot_revision: ["planned_duration_ms"],
+  script_breakdown_scene: [
+    "run_id", "workspace_id", "project_id", "episode_id", "scene_key", "ordinal", "scene_id", "scene_revision_id", "shot_save",
+    "placed_scene_revision_id", "created_at", "updated_at",
+  ],
+} as const;
+
+/**
+ * Run columns. breakdown_save is read through to_jsonb, so every title writing query works the same before the breakdown
+ * migration (it is then null, as for every title run).
+ */
+const RUN_COLUMNS = `${TITLE_WRITING_TABLES.title_writing_run.join(", ")}, (to_jsonb(title_writing_run) ->> 'breakdown_save') AS breakdown_save`;
+/** Title runs only: a breakdown run is never a project's latest title run. Works before the breakdown migration. */
+const TITLE_RUNS_ONLY = `input_json ->> 'schema' IS DISTINCT FROM '${SCRIPT_BREAKDOWN_INPUT_SCHEMA}'`;
 const STEP_COLUMNS = TITLE_WRITING_TABLES.title_writing_step.join(", ");
 const CALL_COLUMNS = TITLE_WRITING_TABLES.title_writing_call.join(", ");
 
@@ -78,7 +111,7 @@ function toRun(row: Row): TitleRunRecord {
     idempotencyKey: String(row.idempotency_key),
     inputHash: String(row.input_hash),
     // Written only by createRun after the service validated it.
-    input: row.input_json as TitleWritingFrozenInput,
+    input: row.input_json as TitleRunInput,
     state: row.state as TitleWritingRunState,
     errorCode: (row.error_code as string | null) ?? null,
     cancelRequestedAt: isoOrNull(row.cancel_requested_at),
@@ -88,6 +121,7 @@ function toRun(row: Row): TitleRunRecord {
     callsUsed: Number(row.calls_used),
     storySave: row.story_save as TitleRunRecord["storySave"],
     storyRevisionId: (row.story_revision_id as string | null) ?? null,
+    breakdownSave: (row.breakdown_save ?? null) as ScriptBreakdownSave | null,
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
   };
@@ -133,6 +167,9 @@ function toCall(row: Row): TitleCallRecord {
 
 
 export class PostgresTitleWritingStore implements TitleWritingStore {
+  // Once applied a migration stays applied, so only a positive answer is remembered.
+  private breakdownReadyConfirmed = false;
+
   constructor(private readonly pool: DatabasePool, private readonly textChain: TextChainService) {}
 
   /** True only when all four draft tables exist with every column this store reads or writes. */
@@ -191,16 +228,30 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
         const remainingCalls = Math.max(0, maxCallsPerDay - Number(recent.rows[0]?.recent ?? 0));
         if (remainingCalls < requiredCalls) return { kind: "blocked", code: "TITLE_WRITING_DAILY_QUOTA_LOW", requiredCalls, remainingCalls };
       }
-      const inserted = await client.query<Row>(
-        `INSERT INTO title_writing_run (id, workspace_id, project_id, actor_id, idempotency_key, input_hash, input_json, provider_key,
-           model, state, call_cap, calls_used, story_save, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, 'running', $10, 0, 'pending', $11, $11)
-         RETURNING ${RUN_COLUMNS}`,
-        [run.id, run.workspaceId, run.projectId, run.actorId, run.idempotencyKey, run.inputHash, JSON.stringify(run.input),
-          run.input.providerKey, run.input.model, run.callCap, run.createdAt],
-      );
-      // The run's own steps: the original five for v1, concept, outline and episode:1..N for v2.
-      for (const [ordinal, stepKey] of titleWritingStepKeysFor(run.input).entries()) {
+      const breakdown = isScriptBreakdownInput(run.input) ? run.input : null;
+      const inserted = breakdown
+        ? await client.query<Row>(
+          `INSERT INTO title_writing_run (id, workspace_id, project_id, actor_id, idempotency_key, input_hash, input_json, provider_key,
+             model, state, call_cap, calls_used, story_save, created_at, updated_at, run_kind, episode_id, source_script_revision_id,
+             breakdown_save)
+           VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, 'running', $10, 0, 'pending', $11, $11, 'script_breakdown', $12, $13,
+             'pending')
+           RETURNING ${RUN_COLUMNS}`,
+          [run.id, run.workspaceId, run.projectId, run.actorId, run.idempotencyKey, run.inputHash, JSON.stringify(run.input),
+            run.input.providerKey, run.input.model, run.callCap, run.createdAt, breakdown.episodeId, breakdown.scriptRevisionId],
+        )
+        : await client.query<Row>(
+          `INSERT INTO title_writing_run (id, workspace_id, project_id, actor_id, idempotency_key, input_hash, input_json, provider_key,
+             model, state, call_cap, calls_used, story_save, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, 'running', $10, 0, 'pending', $11, $11)
+           RETURNING ${RUN_COLUMNS}`,
+          [run.id, run.workspaceId, run.projectId, run.actorId, run.idempotencyKey, run.inputHash, JSON.stringify(run.input),
+            run.input.providerKey, run.input.model, run.callCap, run.createdAt],
+        );
+      // The run's own steps: the original five for v1, concept, outline and episode:1..N for v2, the single breakdown
+      // step for a script breakdown.
+      const stepKeys: TitleWritingStepKey[] = breakdown ? [SCRIPT_BREAKDOWN_STEP_KEY] : titleWritingStepKeysFor(run.input as TitleWritingFrozenInput);
+      for (const [ordinal, stepKey] of stepKeys.entries()) {
         await client.query(
           `INSERT INTO title_writing_step (run_id, workspace_id, step_key, ordinal, state, attempt_no, script_save, updated_at)
            VALUES ($1, $2, $3, $4, 'pending', 0, $5, $6)`,
@@ -226,7 +277,7 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
 
   async latestRun(workspaceId: string, projectId: string): Promise<TitleRunBundle | null> {
     const result = await this.query(
-      `SELECT ${RUN_COLUMNS} FROM title_writing_run WHERE workspace_id = $1 AND project_id = $2
+      `SELECT ${RUN_COLUMNS} FROM title_writing_run WHERE workspace_id = $1 AND project_id = $2 AND ${TITLE_RUNS_ONLY}
         ORDER BY created_at DESC, id DESC LIMIT 1`,
       [workspaceId, projectId],
     );
@@ -262,6 +313,12 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
       const run = await this.ownedRun(client, call.workspaceId, call.runId, call.executorId, nowIso);
       if (!run) return { kind: "lost" };
       if (run.cancelRequestedAt !== null) return { kind: "canceled" };
+      // Refuse a known source/save conflict before reserving a paid call. The project lock protects the script and
+      // replacement scene/shot snapshot together, in the existing run -> project -> episode lock order.
+      if (isScriptBreakdownInput(run.input)) {
+        if (!await this.breakdownScriptCurrent(client, call.workspaceId, run.projectId, run.input)) return { kind: "source_changed" };
+        if (!await this.breakdownSceneSetCurrent(client, call.workspaceId, run.projectId, run.input)) return { kind: "conflict" };
+      }
       if (run.callsUsed >= run.callCap) return { kind: "blocked", code: "TITLE_WRITING_RUN_CAP" };
       const recent = await client.query<Row>(
         "SELECT count(*)::int AS recent FROM title_writing_call WHERE workspace_id = $1 AND created_at >= $2",
@@ -447,7 +504,18 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
         return { kind: "stale_confirmation" };
       }
       const redo = steps.filter((step) => step.state === "unknown" || step.state === "rejected" || step.state === "canceled");
-      if (redo.length === 0 && run.storySave !== "pending") return { kind: "not_resumable" };
+      const savePending = isScriptBreakdownInput(run.input) ? run.breakdownSave === "pending" : run.storySave === "pending";
+      if (redo.length === 0 && !savePending) return { kind: "not_resumable" };
+      // A resume sends a call when it resets a step or a step was never reserved (pending, e.g. a quota race); only saving
+      // a stored answer needs no provider.
+      const sends = redo.length > 0 || steps.some((step) => step.state === "pending");
+      if (sends && request.providerReady === false) return { kind: "provider_unconfigured" };
+      // A known conflict cannot be repaired by resending the frozen prompt or saving a stored answer. Check under
+      // run -> project -> episode locks before writing a receipt; already accepted receipts replay above these gates.
+      if (isScriptBreakdownInput(run.input)) {
+        if (!await this.breakdownScriptCurrent(client, workspaceId, projectId, run.input)) return { kind: "source_changed" };
+        if (!await this.breakdownSceneSetCurrent(client, workspaceId, projectId, run.input)) return { kind: "conflict" };
+      }
       await client.query(
         `INSERT INTO title_writing_resume (run_id, workspace_id, idempotency_key, request_hash, confirmed_call_ids, created_at)
          VALUES ($1, $2, $3, $4, $5::jsonb, $6)`,
@@ -465,6 +533,17 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
       );
       return { kind: "ok", bundle: (await this.load(client, updated.rows[0]))! };
     });
+  }
+
+  async findResume(workspaceId: string, projectId: string, runId: string, resumeKey: string): Promise<{ requestHash: string } | null> {
+    const result = await this.query(
+      `SELECT resume.request_hash FROM title_writing_resume resume
+         JOIN title_writing_run run ON run.id = resume.run_id AND run.workspace_id = resume.workspace_id
+        WHERE resume.run_id = $1 AND resume.idempotency_key = $2 AND run.workspace_id = $3 AND run.project_id = $4`,
+      [runId, resumeKey, workspaceId, projectId],
+    );
+    const row = result.rows[0];
+    return row ? { requestHash: String(row.request_hash) } : null;
   }
 
   async recoverExpired(workspaceId: string, nowIso: string): Promise<number> {
@@ -529,6 +608,7 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
       const runRow = runResult.rows[0];
       if (!runRow) return { kind: "not_found" };
       const run = toRun(runRow);
+      if (isScriptBreakdownInput(run.input)) return { kind: "not_found" };
       const steps = (await client.query<Row>(
         `SELECT ${STEP_COLUMNS} FROM title_writing_step WHERE run_id = $1 AND script_save IS NOT NULL ORDER BY ordinal`, [runId],
       )).rows.map(toStep);
@@ -557,7 +637,7 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
         [projectId, workspaceId],
       );
       // The project's plan and its episodes must be exactly this run's 1..N, or nothing is written.
-      const count = titleWritingEpisodeCount(run.input);
+      const count = titleWritingEpisodeCount(run.input as TitleWritingFrozenInput);
       const plan = await projectEpisodePlanIn(client, workspaceId, projectId);
       const numbers = episodes.rows.map((row) => Number(row.episode_no));
       if (plan.episodeCount !== count || numbers.length !== count || numbers.some((episodeNo, index) => episodeNo !== index + 1)) {
@@ -593,6 +673,430 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
       await client.query("UPDATE title_writing_run SET updated_at = $2 WHERE id = $1", [runId, nowIso]);
       return { kind: "ok", bundle: (await this.load(client, runRow))! };
     });
+  }
+
+  // --- Script breakdown (migration SCRIPT_BREAKDOWN_MIGRATION) ---
+
+  /** True only when the breakdown migration is recorded and every column and table it adds exists. */
+  async breakdownStorageReady(): Promise<boolean> {
+    if (this.breakdownReadyConfirmed) return true;
+    try {
+      const table = await this.query("SELECT to_regclass('schema_migration') IS NOT NULL AS present", []);
+      if (table.rows[0]?.present !== true) return false;
+      const recorded = await this.query("SELECT 1 FROM schema_migration WHERE name = $1", [SCRIPT_BREAKDOWN_MIGRATION]);
+      if (!recorded.rows[0]) return false;
+      const result = await this.query(
+        `SELECT table_name, column_name FROM information_schema.columns
+          WHERE table_schema = current_schema() AND table_name = ANY($1::text[])`,
+        [Object.keys(SCRIPT_BREAKDOWN_COLUMNS)],
+      );
+      const present = new Set(result.rows.map((row) => `${String(row.table_name)}.${String(row.column_name)}`));
+      this.breakdownReadyConfirmed = (await this.storageReady()) && Object.entries(SCRIPT_BREAKDOWN_COLUMNS)
+        .every(([name, columns]) => columns.every((column) => present.has(`${name}.${column}`)));
+      return this.breakdownReadyConfirmed;
+    } catch {
+      return false;
+    }
+  }
+
+  async findRunByKey(workspaceId: string, actorId: string, idempotencyKey: string): Promise<TitleRunBundle | null> {
+    const result = await this.query(
+      `SELECT ${RUN_COLUMNS} FROM title_writing_run WHERE workspace_id = $1 AND actor_id = $2 AND idempotency_key = $3`,
+      [workspaceId, actorId, idempotencyKey],
+    );
+    return this.load(null, result.rows[0] as Row | undefined);
+  }
+
+  /** One consistent snapshot of what a breakdown start freezes. Reads only; nothing is locked or written. */
+  async breakdownSource(workspaceId: string, projectId: string, episodeId: string): Promise<ScriptBreakdownSourceRead> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+      try {
+        const episode = await client.query<Row>(
+          `SELECT episode_no, current_script_revision_id, approved_script_revision_id FROM episode
+            WHERE id = $1 AND project_id = $2 AND workspace_id = $3`,
+          [episodeId, projectId, workspaceId],
+        );
+        const episodeRow = episode.rows[0];
+        if (!episodeRow) return { kind: "not_found" };
+        const currentId = episodeRow.current_script_revision_id as string | null;
+        if (!currentId) return { kind: "script_missing" };
+        const script = await client.query<Row>(
+          `SELECT revision_no, content_json, content_hash, review_status, freshness_status FROM script_revision
+            WHERE id = $1 AND episode_id = $2 AND workspace_id = $3`,
+          [currentId, episodeId, workspaceId],
+        );
+        const scriptRow = script.rows[0];
+        if (!scriptRow || episodeRow.approved_script_revision_id !== currentId || scriptRow.review_status !== "APPROVED"
+          || scriptRow.freshness_status !== "CURRENT") return { kind: "script_review_required" };
+        const plan = await projectEpisodePlanIn(client, workspaceId, projectId);
+        // Only characters whose current revision is fresh can be referenced by a shot draft (provenance triggers).
+        const characters = await client.query<Row>(
+          `SELECT c.id, c.current_revision_id, c.name FROM character c
+             JOIN character_revision r ON r.id = c.current_revision_id AND r.character_id = c.id AND r.workspace_id = c.workspace_id
+            WHERE c.project_id = $1 AND c.workspace_id = $2 AND c.archived_at IS NULL AND r.freshness_status = 'CURRENT'
+            ORDER BY c.created_at, c.id`,
+          [projectId, workspaceId],
+        );
+        const scenes = await client.query<Row>(
+          `SELECT id, row_version FROM scene WHERE episode_id = $1 AND project_id = $2 AND workspace_id = $3 AND archived_at IS NULL
+            ORDER BY id`,
+          [episodeId, projectId, workspaceId],
+        );
+        const shots = await client.query<Row>(
+          `SELECT shot.id, shot.row_version FROM shot JOIN scene ON scene.id = shot.scene_id AND scene.workspace_id = shot.workspace_id
+            WHERE scene.episode_id = $1 AND shot.project_id = $2 AND shot.workspace_id = $3
+              AND scene.archived_at IS NULL AND shot.archived_at IS NULL
+            ORDER BY shot.id`,
+          [episodeId, projectId, workspaceId],
+        );
+        return {
+          kind: "ok",
+          episodeNo: Number(episodeRow.episode_no),
+          scriptRevisionId: currentId,
+          scriptRevisionNo: Number(scriptRow.revision_no),
+          scriptContentHash: String(scriptRow.content_hash),
+          scriptContent: scriptRow.content_json,
+          targetEpisodeSeconds: plan.targetEpisodeSeconds,
+          characters: characters.rows.map((row) => ({ characterId: String(row.id), revisionId: String(row.current_revision_id), name: String(row.name) })),
+          scenes: scenes.rows.map((row) => ({ sceneId: String(row.id), rowVersion: Number(row.row_version) })),
+          shots: shots.rows.map((row) => ({ shotId: String(row.id), rowVersion: Number(row.row_version) })),
+        };
+      } finally {
+        await client.query("ROLLBACK");
+      }
+    } finally {
+      client.release();
+    }
+  }
+
+  async latestBreakdown(workspaceId: string, projectId: string, episodeId: string): Promise<TitleRunBundle | null> {
+    const result = await this.query(
+      `SELECT ${RUN_COLUMNS} FROM title_writing_run
+        WHERE workspace_id = $1 AND project_id = $2 AND run_kind = 'script_breakdown' AND episode_id = $3
+        ORDER BY created_at DESC, id DESC LIMIT 1`,
+      [workspaceId, projectId, episodeId],
+    );
+    return this.load(null, result.rows[0] as Row | undefined);
+  }
+
+  async latestSavedBreakdown(workspaceId: string, projectId: string, episodeId: string): Promise<TitleRunBundle | null> {
+    const result = await this.query(
+      `SELECT ${RUN_COLUMNS} FROM title_writing_run
+        WHERE workspace_id = $1 AND project_id = $2 AND run_kind = 'script_breakdown' AND episode_id = $3 AND breakdown_save = 'saved'
+        ORDER BY created_at DESC, id DESC LIMIT 1`,
+      [workspaceId, projectId, episodeId],
+    );
+    return this.load(null, result.rows[0] as Row | undefined);
+  }
+
+  async breakdownDetails(workspaceId: string, run: TitleRunRecord): Promise<ScriptBreakdownDetails> {
+    if (!isScriptBreakdownInput(run.input) || run.workspaceId !== workspaceId) throw new Error("not a breakdown run of this workspace");
+    const links = await this.query(
+      `SELECT link.scene_key, link.ordinal, link.scene_id, link.scene_revision_id, link.shot_save, link.placed_scene_revision_id,
+              scene.archived_at IS NOT NULL AS archived, scene.current_revision_id, scene.approved_revision_id,
+              current_revision.review_status, current_revision.freshness_status
+         FROM script_breakdown_scene link
+         JOIN scene ON scene.id = link.scene_id AND scene.workspace_id = link.workspace_id
+         LEFT JOIN scene_revision current_revision ON current_revision.id = scene.current_revision_id
+        WHERE link.run_id = $1 AND link.workspace_id = $2
+        ORDER BY link.ordinal`,
+      [run.id, workspaceId],
+    );
+    const script = await this.query(
+      `SELECT episode.current_script_revision_id, script.revision_no,
+              (episode.approved_script_revision_id = script.id AND script.review_status = 'APPROVED'
+                AND script.freshness_status = 'CURRENT') AS approved
+         FROM episode LEFT JOIN script_revision script ON script.id = episode.current_script_revision_id
+        WHERE episode.id = $1 AND episode.workspace_id = $2`,
+      [run.input.episodeId, workspaceId],
+    );
+    const scriptRow = script.rows[0];
+    return {
+      scenes: links.rows.map((row): ScriptBreakdownSceneView => ({
+        key: String(row.scene_key),
+        ordinal: Number(row.ordinal),
+        sceneId: String(row.scene_id),
+        sceneRevisionId: String(row.scene_revision_id),
+        shotSave: row.shot_save === "saved" ? "saved" : "pending",
+        placedSceneRevisionId: (row.placed_scene_revision_id as string | null) ?? null,
+        current: {
+          archived: row.archived === true,
+          currentRevisionId: (row.current_revision_id as string | null) ?? null,
+          approvedRevisionId: (row.approved_revision_id as string | null) ?? null,
+          reviewStatus: (row.review_status as string | null) ?? null,
+          freshnessStatus: (row.freshness_status as string | null) ?? null,
+        },
+      })),
+      episodeScript: {
+        currentRevisionId: (scriptRow?.current_script_revision_id as string | null | undefined) ?? null,
+        currentRevisionNo: scriptRow?.revision_no === null || scriptRow?.revision_no === undefined ? null : Number(scriptRow.revision_no),
+        approved: scriptRow?.approved === true,
+      },
+    };
+  }
+
+  async saveBreakdown(workspaceId: string, runId: string, executorId: string, actorId: string, nowIso: string): Promise<ScriptBreakdownSave | "lost"> {
+    return this.transaction(async (client) => {
+      const run = await this.ownedRun(client, workspaceId, runId, executorId, nowIso);
+      if (!run || !isScriptBreakdownInput(run.input)) return "lost";
+      if ((run.breakdownSave ?? "pending") !== "pending") return run.breakdownSave!;
+      const input = run.input;
+      const step = await client.query<Row>(
+        "SELECT state, output_json FROM title_writing_step WHERE run_id = $1 AND step_key = $2",
+        [runId, SCRIPT_BREAKDOWN_STEP_KEY],
+      );
+      if (step.rows[0]?.state !== "completed" || !step.rows[0].output_json) return "lost";
+      const output = step.rows[0].output_json as ScriptBreakdownOutput;
+      const settle = async (save: ScriptBreakdownSave): Promise<ScriptBreakdownSave> => {
+        await client.query("UPDATE title_writing_run SET breakdown_save = $2, updated_at = $3 WHERE id = $1", [runId, save, nowIso]);
+        return save;
+      };
+      // Lock order run -> project -> episode, the same as saveStory and placeScripts, then the text chain's own order.
+      const project = await client.query("SELECT id FROM project WHERE id = $1 AND workspace_id = $2 FOR UPDATE", [run.projectId, workspaceId]);
+      if (!project.rows[0]) return settle("source_changed");
+      await client.query("SAVEPOINT script_breakdown_save");
+      try {
+        const episode = await client.query<Row>(
+          `SELECT e.current_script_revision_id, e.approved_script_revision_id, s.review_status, s.freshness_status
+             FROM episode e LEFT JOIN script_revision s ON s.id = e.current_script_revision_id
+            WHERE e.id = $1 AND e.project_id = $2 AND e.workspace_id = $3 FOR UPDATE OF e`,
+          [input.episodeId, run.projectId, workspaceId],
+        );
+        const episodeRow = episode.rows[0];
+        if (!episodeRow || episodeRow.current_script_revision_id !== input.scriptRevisionId
+          || episodeRow.approved_script_revision_id !== input.scriptRevisionId || episodeRow.review_status !== "APPROVED"
+          || episodeRow.freshness_status !== "CURRENT") {
+          await client.query("ROLLBACK TO SAVEPOINT script_breakdown_save");
+          return settle("source_changed");
+        }
+        const referenced = new Set(output.shots.flatMap((shot) => shot.characterKeys));
+        const frozen = input.characters.filter((item) => referenced.has(item.key));
+        if (!await this.charactersCurrent(client, workspaceId, run.projectId, frozen)) {
+          await client.query("ROLLBACK TO SAVEPOINT script_breakdown_save");
+          return settle("source_changed");
+        }
+        if (!await this.breakdownSceneSetCurrent(client, workspaceId, run.projectId, input)) {
+          await client.query("ROLLBACK TO SAVEPOINT script_breakdown_save");
+          return settle("conflict");
+        }
+        const traceId = `script-breakdown:${runId}`;
+        await this.textChain.archiveSceneSetInTransaction(client, {
+          workspaceId, projectId: run.projectId, episodeId: input.episodeId,
+          scenes: input.replace.scenes, shots: input.replace.shots, traceId,
+        });
+        for (const [index, scene] of output.scenes.entries()) {
+          const version = await client.query<Row>("SELECT row_version FROM episode WHERE id = $1 AND workspace_id = $2", [input.episodeId, workspaceId]);
+          // The same path as the scene editor's save: a DRAFT scene revision from the current approved script.
+          const created = await this.textChain.createSceneRevisionInTransaction(client, {
+            workspaceId, projectId: run.projectId, episodeId: input.episodeId, sourceScriptRevisionId: input.scriptRevisionId,
+            ordinal: index + 1, heading: scene.heading.trim(), timeOfDay: scene.timeOfDay.trim() || null, summary: scene.description.trim(),
+            createdBy: actorId, expectedVersion: Number(version.rows[0]?.row_version), traceId,
+          });
+          await client.query(
+            `INSERT INTO script_breakdown_scene (run_id, workspace_id, project_id, episode_id, scene_key, ordinal, scene_id,
+               scene_revision_id, shot_save, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending', $9, $9)`,
+            [runId, workspaceId, run.projectId, input.episodeId, scene.key, index + 1, created.entityId, created.revisionId, nowIso],
+          );
+        }
+        await client.query("RELEASE SAVEPOINT script_breakdown_save");
+        return settle("saved");
+      } catch (error) {
+        // A source that moved under the save (a concurrent edit, pending propagation) keeps the result unwritten.
+        if (!(error instanceof PersistenceError)) throw error;
+        await client.query("ROLLBACK TO SAVEPOINT script_breakdown_save");
+        return settle(error.code === "SCRIPT_REVIEW_REQUIRED" ? "source_changed" : "conflict");
+      }
+    });
+  }
+
+  async placeBreakdownShots(workspaceId: string, projectId: string, episodeId: string, runId: string, options: { acceptSceneChanged: boolean }, actorId: string, nowIso: string): Promise<ScriptBreakdownPlacement> {
+    return this.transaction(async (client) => {
+      // Serialize placement against starts/resumes before taking any run/project row locks. Looking up another run
+      // below never locks it, so a saving worker holding that run and waiting for the project cannot deadlock us.
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`title_writing_run:${workspaceId}`]);
+      const runResult = await client.query<Row>(
+        `SELECT ${RUN_COLUMNS} FROM title_writing_run WHERE id = $1 AND workspace_id = $2 AND project_id = $3 FOR UPDATE`,
+        [runId, workspaceId, projectId],
+      );
+      const runRow = runResult.rows[0];
+      if (!runRow) return { kind: "not_found" };
+      const run = toRun(runRow);
+      if (!isScriptBreakdownInput(run.input) || run.input.episodeId !== episodeId) return { kind: "not_found" };
+      if (run.breakdownSave !== "saved") return { kind: "not_ready" };
+      const input = run.input;
+      const step = await client.query<Row>("SELECT output_json FROM title_writing_step WHERE run_id = $1 AND step_key = $2",
+        [runId, SCRIPT_BREAKDOWN_STEP_KEY]);
+      const output = step.rows[0]?.output_json as ScriptBreakdownOutput | undefined;
+      if (!output) return { kind: "not_ready" };
+      const locked = await client.query("SELECT id FROM project WHERE id = $1 AND workspace_id = $2 FOR UPDATE", [projectId, workspaceId]);
+      if (!locked.rows[0]) return { kind: "not_found" };
+      const outcome: ScriptBreakdownPlacementOutcome = { placed: [], awaitingApproval: [], sceneChanged: [], charactersChanged: [], unavailable: [] };
+      const links = await client.query<Row>(
+        `SELECT scene_key, scene_id, scene_revision_id FROM script_breakdown_scene
+          WHERE run_id = $1 AND workspace_id = $2 AND shot_save = 'pending' ORDER BY ordinal`,
+        [runId, workspaceId],
+      );
+      // A completed placement remains a no-op replay even if its source has since changed. The source gate below is
+      // about creating new revisions, never about undoing the prior receipt.
+      if (links.rows.length === 0) return { kind: "ok", bundle: (await this.load(client, runRow))!, outcome };
+      const active = await client.query(
+        `SELECT 1 FROM title_writing_run WHERE workspace_id = $1 AND project_id = $2 AND episode_id = $3
+          AND run_kind = 'script_breakdown' AND state = 'running' AND id <> $4 LIMIT 1`,
+        [workspaceId, projectId, episodeId, runId],
+      );
+      if (active.rows.length > 0) return { kind: "active" };
+      // Confirm after taking the project lock: accepting an edited scene does not permit attaching an old plan to a
+      // different script. The page disables this action for an obsolete source, but the API must enforce it too.
+      const source = await client.query(
+        `SELECT 1 FROM episode e JOIN script_revision script ON script.id = e.current_script_revision_id
+            AND script.episode_id = e.id AND script.workspace_id = e.workspace_id AND script.project_id = e.project_id
+          WHERE e.id = $1 AND e.workspace_id = $2 AND e.project_id = $3
+            AND e.current_script_revision_id = $4 AND e.approved_script_revision_id = $4
+            AND script.review_status = 'APPROVED' AND script.freshness_status = 'CURRENT'
+          FOR SHARE OF e, script`,
+        [episodeId, workspaceId, projectId, input.scriptRevisionId],
+      );
+      if (!source.rows[0]) return { kind: "not_ready" };
+      const traceId = `script-breakdown:${runId}`;
+      for (const link of links.rows) {
+        const sceneKey = String(link.scene_key);
+        const sceneId = String(link.scene_id);
+        const scene = await client.query<Row>(
+          `SELECT scene.archived_at IS NOT NULL AS archived, scene.current_revision_id, scene.approved_revision_id,
+                  revision.review_status, revision.freshness_status, revision.source_script_revision_id, revision.heading, revision.time_of_day
+             FROM scene LEFT JOIN scene_revision revision ON revision.id = scene.approved_revision_id
+            WHERE scene.id = $1 AND scene.workspace_id = $2 AND scene.project_id = $3 AND scene.episode_id = $4 FOR UPDATE OF scene`,
+          [sceneId, workspaceId, projectId, episodeId],
+        );
+        const sceneRow = scene.rows[0];
+        if (!sceneRow || sceneRow.archived === true) { outcome.unavailable.push(sceneKey); continue; }
+        const approvedId = sceneRow.approved_revision_id as string | null;
+        if (!approvedId || sceneRow.current_revision_id !== approvedId || sceneRow.review_status !== "APPROVED") {
+          outcome.awaitingApproval.push(sceneKey);
+          continue;
+        }
+        if (sceneRow.freshness_status !== "CURRENT" || sceneRow.source_script_revision_id !== input.scriptRevisionId) {
+          outcome.unavailable.push(sceneKey); continue;
+        }
+        if (approvedId !== String(link.scene_revision_id) && !options.acceptSceneChanged) { outcome.sceneChanged.push(sceneKey); continue; }
+        // Scene creation and manual shot edits use this project lock as well. A person may have added shots since the
+        // scene was generated: preserve those and let the other scenes proceed instead of hitting the ordinal trigger
+        // (a raw PostgreSQL exception) and rolling back the entire placement.
+        const existing = await client.query(
+          `SELECT 1 FROM shot WHERE scene_id = $1 AND workspace_id = $2 AND project_id = $3 AND archived_at IS NULL LIMIT 1`,
+          [sceneId, workspaceId, projectId],
+        );
+        if (existing.rows[0]) { outcome.unavailable.push(sceneKey); continue; }
+        const planned = shotsOfScene(output, sceneKey);
+        const references = planned.map((shot) => shot.characterKeys.map((key) => input.characters.find((item) => item.key === key)!));
+        if (!await this.charactersCurrent(client, workspaceId, projectId, references.flat())) { outcome.charactersChanged.push(sceneKey); continue; }
+        // The prompt's place and time come from the approved revision the shots will point to (an accepted edit
+        // included), read under the scene lock above; the shot plan, action and dialogue stay as proposed.
+        const approvedScene = { ...output.scenes.find((item) => item.key === sceneKey)!,
+          heading: String(sceneRow.heading), timeOfDay: (sceneRow.time_of_day as string | null) ?? "" };
+        await client.query("SAVEPOINT script_breakdown_shots");
+        try {
+          for (const [index, shot] of planned.entries()) {
+            const version = await client.query<Row>("SELECT row_version FROM scene WHERE id = $1 AND workspace_id = $2", [sceneId, workspaceId]);
+            // The same path as the shot editor's save; it re-checks that the scene revision is current and approved.
+            const created = await this.textChain.createShotScopedInTransaction(client, {
+              workspaceId, projectId, sceneId, sourceSceneRevisionId: approvedId, ordinal: index + 1,
+              shotType: shot.shotType.trim(), camera: shot.camera.trim(), action: shot.action.trim(),
+              dialogue: breakdownDialogueText(shot), durationHint: null, plannedDurationMs: shot.plannedSeconds * 1000,
+              promptText: breakdownShotPromptText(approvedScene, shot), createdBy: actorId,
+              expectedVersion: Number(version.rows[0]?.row_version), traceId,
+            });
+            await this.textChain.addShotCharacterReferencesInTransaction(client, {
+              workspaceId, projectId, shotRevisionId: created.revisionId,
+              characterRevisionIds: references[index]!.map((item) => item.revisionId), role: "appears",
+            });
+          }
+          await client.query(
+            `UPDATE script_breakdown_scene SET shot_save = 'saved', placed_scene_revision_id = $3, updated_at = $4
+              WHERE run_id = $1 AND scene_key = $2`,
+            [runId, sceneKey, approvedId, nowIso],
+          );
+          await client.query("RELEASE SAVEPOINT script_breakdown_shots");
+          outcome.placed.push(sceneKey);
+        } catch (error) {
+          // Domain-level source or version conflicts leave this scene untouched; unexpected database errors propagate.
+          if (!(error instanceof PersistenceError)) throw error;
+          await client.query("ROLLBACK TO SAVEPOINT script_breakdown_shots");
+          outcome.unavailable.push(sceneKey);
+        }
+      }
+      await client.query("UPDATE title_writing_run SET updated_at = $2 WHERE id = $1", [runId, nowIso]);
+      return { kind: "ok", bundle: (await this.load(client, runRow))!, outcome };
+    });
+  }
+
+  /** True when each frozen character is not archived and its current revision is still the frozen, fresh one. */
+  private async charactersCurrent(client: PoolClient, workspaceId: string, projectId: string,
+    frozen: ReadonlyArray<{ characterId: string; revisionId: string }>): Promise<boolean> {
+    if (frozen.length === 0) return true;
+    const ids = [...new Set(frozen.map((item) => item.characterId))];
+    const rows = await client.query<Row>(
+      `SELECT c.id, c.current_revision_id, c.archived_at IS NOT NULL AS archived, r.freshness_status
+         FROM character c LEFT JOIN character_revision r ON r.id = c.current_revision_id
+        WHERE c.id = ANY($1::uuid[]) AND c.workspace_id = $2 AND c.project_id = $3
+        FOR SHARE OF c`,
+      [ids, workspaceId, projectId],
+    );
+    return frozen.every((item) => rows.rows.some((row) => String(row.id) === item.characterId && row.archived !== true
+      && row.current_revision_id === item.revisionId && row.freshness_status === "CURRENT"));
+  }
+
+  /**
+   * True when the frozen script is still the episode's current and approved revision, APPROVED and CURRENT. Takes the
+   * project, episode and script share locks after the run lock (run -> project -> episode, as saveBreakdown and the
+   * script editor), so a script save or review either commits before this check or waits until its transaction ends.
+   */
+  private async breakdownScriptCurrent(client: PoolClient, workspaceId: string, projectId: string,
+    input: { episodeId: string; scriptRevisionId: string }): Promise<boolean> {
+    const project = await client.query("SELECT id FROM project WHERE id = $1 AND workspace_id = $2 FOR SHARE", [projectId, workspaceId]);
+    if (!project.rows[0]) return false;
+    const current = await client.query<Row>(
+      `SELECT e.id FROM episode e
+         JOIN script_revision s ON s.id = e.current_script_revision_id AND s.episode_id = e.id AND s.workspace_id = e.workspace_id
+        WHERE e.id = $1 AND e.project_id = $2 AND e.workspace_id = $3
+          AND e.current_script_revision_id = $4 AND e.approved_script_revision_id = $4
+          AND s.review_status = 'APPROVED' AND s.freshness_status = 'CURRENT'
+        FOR SHARE OF e, s`,
+      [input.episodeId, projectId, workspaceId, input.scriptRevisionId],
+    );
+    return current.rows.length === 1;
+  }
+
+  /** Same comparison at reservation, resume and save: edits, additions and archival all invalidate the snapshot. */
+  private async breakdownSceneSetCurrent(client: PoolClient, workspaceId: string, projectId: string,
+    input: ScriptBreakdownFrozenInput): Promise<boolean> {
+    const current = await this.episodeSceneSet(client, workspaceId, projectId, input.episodeId);
+    const same = (now: Array<{ id: string; rowVersion: number }>, expected: Array<{ id: string; rowVersion: number }>) =>
+      now.length === expected.length && now.every((item) => expected.some((other) => other.id === item.id && other.rowVersion === item.rowVersion));
+    return same(current.scenes, input.replace.scenes.map((item) => ({ id: item.sceneId, rowVersion: item.rowVersion })))
+      && same(current.shots, input.replace.shots.map((item) => ({ id: item.shotId, rowVersion: item.rowVersion })));
+  }
+
+  private async episodeSceneSet(client: PoolClient, workspaceId: string, projectId: string, episodeId: string) {
+    const scenes = await client.query<Row>(
+      `SELECT id, row_version FROM scene WHERE episode_id = $1 AND project_id = $2 AND workspace_id = $3 AND archived_at IS NULL
+        FOR UPDATE`,
+      [episodeId, projectId, workspaceId],
+    );
+    const shots = await client.query<Row>(
+      `SELECT shot.id, shot.row_version FROM shot JOIN scene ON scene.id = shot.scene_id AND scene.workspace_id = shot.workspace_id
+        WHERE scene.episode_id = $1 AND shot.project_id = $2 AND shot.workspace_id = $3
+          AND scene.archived_at IS NULL AND shot.archived_at IS NULL
+        FOR UPDATE OF shot`,
+      [episodeId, projectId, workspaceId],
+    );
+    return {
+      scenes: scenes.rows.map((row) => ({ id: String(row.id), rowVersion: Number(row.row_version) })),
+      shots: shots.rows.map((row) => ({ id: String(row.id), rowVersion: Number(row.row_version) })),
+    };
   }
 
   private async query(sql: string, values: unknown[]): Promise<QueryResult<Row>> {

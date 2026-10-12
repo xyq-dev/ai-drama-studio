@@ -3,8 +3,11 @@ import type { ApiEnv } from "../config/env";
 import { QwenWebController } from "./qwen-web.controller";
 import { EventsController, StudioController } from "./studio.controller";
 import { StudioRuntime } from "./studio.runtime";
+import { ScriptBreakdownController } from "./script-breakdown.controller";
 import { TitleWritingController } from "./title-writing.controller";
-import { QWEN_WEB_SERVICE, RUNTIME_STORE, STUDIO_RUNTIME, STUDIO_SERVICE, TITLE_WRITING_SERVICE } from "./tokens";
+import {
+  QWEN_WEB_SERVICE, RUNTIME_STORE, SCRIPT_BREAKDOWN_SERVICE, STUDIO_RUNTIME, STUDIO_SERVICE, TITLE_WRITING_SERVICE,
+} from "./tokens";
 import { ADMIN_MODELS_SERVICE, AdminModelsController } from "../admin/admin-models.controller";
 
 @Module({})
@@ -12,7 +15,9 @@ export class StudioModule {
   static register(env: ApiEnv): DynamicModule {
     return {
       module: StudioModule,
-      controllers: [StudioController, EventsController, QwenWebController, TitleWritingController, AdminModelsController],
+      controllers: [
+        StudioController, EventsController, QwenWebController, TitleWritingController, ScriptBreakdownController, AdminModelsController,
+      ],
       providers: [
         {
           provide: STUDIO_RUNTIME,
@@ -32,6 +37,11 @@ export class StudioModule {
           provide: TITLE_WRITING_SERVICE,
           inject: [STUDIO_RUNTIME],
           useFactory: (runtime: StudioRuntime) => runtime.titleWriting,
+        },
+        {
+          provide: SCRIPT_BREAKDOWN_SERVICE,
+          inject: [STUDIO_RUNTIME],
+          useFactory: (runtime: StudioRuntime) => runtime.scriptBreakdown,
         },
         {
           provide: RUNTIME_STORE,

@@ -44,7 +44,7 @@ import { MockTextService } from "./mock-text";
 import { insertProject } from "./runtime-store";
 import { TextChainService } from "./text-chain";
 import { checkTitleWritingAcceptanceEnv, verifyTitleWritingAcceptanceDatabase } from "./title-writing-acceptance-guard";
-import { PostgresTitleWritingStore } from "./title-writing-store";
+import { PostgresTitleWritingStore, SCRIPT_BREAKDOWN_MIGRATION } from "./title-writing-store";
 
 const decision = checkTitleWritingAcceptanceEnv(process.env);
 if (!decision.ok) throw new Error(`Episode plan acceptance refused: ${decision.reason}`);
@@ -156,7 +156,7 @@ async function completeRun(record: TitleRunRecord, count: number): Promise<void>
   const executor = `exec-${record.id.slice(0, 8)}`;
   const wide = { sinceIso: "2000-01-01T00:00:00.000Z", maxCallsPerDay: 1000 };
   expect(await store.claimRun(record.workspaceId, record.id, executor, now(), later(60_000))).toBe(true);
-  for (const stepKey of titleWritingStepKeysFor(record.input)) {
+  for (const stepKey of titleWritingStepKeysFor(record.input as TitleWritingFrozenInput)) {
     const output = stepKey === "concept" ? CONCEPT : stepKey === "outline" ? outlineOf(count) : episodeOf(Number(stepKey.slice(-1)));
     const item = callOf(record, executor, stepKey);
     expect(await store.reserveCall(item, wide, now(), later(60_000))).toEqual({ kind: "reserved" });
@@ -327,9 +327,10 @@ beforeAll(async () => {
   const callsAfterRefusal = Number((await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM title_writing_call c JOIN title_writing_run r ON r.id = c.run_id WHERE r.project_id = $1", [legacyProject])).rows[0]!.n);
   beforeUpgrade = { readyBefore, planRefusal, v2StoreRefusal, runsAfterRefusal, callsAfterRefusal };
   rowsBefore = await rowDigests();
-  upgrade = await runMigrations(pool);
+  // The episode plan release: the chain up to the next release (script breakdown), which has its own acceptance.
+  upgrade = await runMigrations(pool, undefined, { before: SCRIPT_BREAKDOWN_MIGRATION });
   rowsAfter = await rowDigests();
-  redeploy = await runMigrations(pool);
+  redeploy = await runMigrations(pool, undefined, { before: SCRIPT_BREAKDOWN_MIGRATION });
   evidence.migration = { released: released.applied, upgradeApplied: upgrade.applied, redeployApplied: redeploy.applied, beforeUpgrade };
 });
 
@@ -420,7 +421,7 @@ describe("works with an episode plan of N = 1, 3, 6", () => {
       quota: { sinceIso: "2000-01-01T00:00:00.000Z", maxCallsPerDay: 1000, requiredCalls: titleWritingRequiredCalls(count) } });
     expect(created.kind).toBe("created");
     if (created.kind !== "created") return;
-    expect(created.bundle.steps.map((step) => [step.stepKey, step.ordinal])).toEqual(titleWritingStepKeysFor(record.input).map((key, index) => [key, index]));
+    expect(created.bundle.steps.map((step) => [step.stepKey, step.ordinal])).toEqual(titleWritingStepKeysFor(record.input as TitleWritingFrozenInput).map((key, index) => [key, index]));
     expect(created.bundle.run.callCap).toBe(count + 5);
     await completeRun(record, count);
     expect((await store.placeScripts(ws, project, record.id, { acceptStoryChanged: false }, "owner", now())).kind).toBe("story_not_approved");

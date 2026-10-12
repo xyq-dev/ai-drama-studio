@@ -100,6 +100,11 @@ const shotBodySchema = z.object({
   action: z.string().max(4000),
   dialogue: z.string().max(4000).nullable().optional(),
   durationHint: z.string().max(200).nullable().optional(),
+  /**
+   * Whole planned seconds 1–15, × 1000 (the editor's unit). A writing plan, never a measured length. Needs the script
+   * breakdown migration. Omitted and null both mean "not set".
+   */
+  plannedDurationMs: z.number().int().min(1000).max(15000).multipleOf(1000).nullable().optional(),
   promptText: z.string().max(8000),
 });
 
@@ -370,17 +375,21 @@ export class StudioService {
     if (shotId) await this.textChain.listShotRevisions(this.workspaceId, projectId, sceneId, shotId);
     const input = parse(shotBodySchema, rejectClientWorkspace(body));
     const expectedVersion = parseAggregateVersion(ifMatch);
-    const request = {
-      ...input, sourceSceneRevisionId: input.sourceSceneRevisionId.toLowerCase(),
+    const { plannedDurationMs, ...rest } = input;
+    // An omitted and an explicit null planned duration both mean "no planned duration". Such a request keeps the
+    // identity it had before the field existed, so a replay of a write recorded by the released server still matches.
+    const identity = {
+      ...rest, sourceSceneRevisionId: input.sourceSceneRevisionId.toLowerCase(),
       dialogue: input.dialogue ?? null, durationHint: input.durationHint ?? null,
+      ...(plannedDurationMs == null ? {} : { plannedDurationMs }),
       expectedVersion,
     };
     const route = shotId
       ? `/projects/${projectId}/episodes/${episodeId}/scenes/${sceneId}/shots/${shotId}/revisions`
       : `/projects/${projectId}/episodes/${episodeId}/scenes/${sceneId}/shots`;
-    return this.jobs.runIdempotent(this.scope(context, "POST", route, request), 201,
+    return this.jobs.runIdempotent(this.scope(context, "POST", route, identity), 201,
       (client) => this.textChain.createShotScopedInTransaction(client, {
-        ...request, workspaceId: this.workspaceId, projectId, sceneId, shotId,
+        ...identity, plannedDurationMs: plannedDurationMs ?? null, workspaceId: this.workspaceId, projectId, sceneId, shotId,
         createdBy: context.actorId, traceId: context.traceId,
       }));
   }

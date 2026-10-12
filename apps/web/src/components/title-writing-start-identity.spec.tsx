@@ -257,6 +257,31 @@ describe("F2: only a receipt that proves the result confirms a start", () => {
     expect(new Set(runPosts(s.calls).map((call) => call.key)).size).toBe(1);
   });
 
+  it("a running script breakdown of the work neither opens the writing page nor drops the request; the retry keeps its key", async () => {
+    let busy = true;
+    const s = server((call) => {
+      if (call.url === "/api/v1/projects") return json({ id: P_A }, 201);
+      return busy ? json({ error: { code: "TITLE_WRITING_OTHER_TASK_ACTIVE", message: "这部作品正在进行剧本拆解。", details: { taskKind: "script_breakdown" } } }, 409)
+        : json({ run: { runId: RUN_A, projectId: P_A, state: "running" } }, 201);
+    });
+    const { button } = await mount();
+    fireEvent.change(screen.getByLabelText("剧名"), { target: { value: "甲" } });
+    fireEvent.click(button);
+    const alert = (await screen.findByRole("alert")).textContent ?? "";
+    expect(alert).toContain("正在进行剧本拆解");
+    expect(alert).toContain("没有创建任务");
+    expect(assign).not.toHaveBeenCalled();
+    const kept = stored();
+    expect(kept).toMatchObject({ projectId: P_A });
+    busy = false;
+    fireEvent.click(screen.getByRole("button", { name: "重试上次请求" }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith(`/projects/${P_A}/writing`));
+    const keys = runPosts(s.calls).map((call) => call.key);
+    expect(keys).toHaveLength(2);
+    expect(new Set(keys).size).toBe(1);
+    expect(s.calls.filter((call) => call.url === "/api/v1/projects")).toHaveLength(1);
+  });
+
   it("a running start of the same work (TITLE_WRITING_RUN_ACTIVE) opens it; another refusal does not", async () => {
     let code = "IDEMPOTENCY_KEY_REUSED";
     server((call) => call.url === "/api/v1/projects" ? json({ id: P_A }, 201)

@@ -88,6 +88,10 @@ export {
 } from "./text-writing";
 export {
   InMemoryTitleWritingStore,
+  type MemoryBreakdownEpisode,
+  type MemoryCharacter,
+  type MemoryScene,
+  type MemoryShot,
   TITLE_WRITING_CALL_CAP_PER_RUN,
   TITLE_WRITING_LEASE_MS,
   TITLE_WRITING_LOST_AFTER_SEND,
@@ -117,3 +121,9 @@ export {
   type TitleWritingEngineDeps,
   type TitleWritingStore,
 } from "./title-writing-engine";
+export {
+  hashScriptBreakdownRequest,
+  isScriptBreakdownRun,
+  newScriptBreakdownRun,
+  scriptBreakdownRunView,
+} from "./script-breakdown-run";
