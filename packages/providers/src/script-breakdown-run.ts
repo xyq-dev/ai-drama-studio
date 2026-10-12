@@ -17,12 +17,13 @@ import {
 import { canonicalInputHash, plannedTotalSeconds } from "@ai-drama/domain";
 
 /**
- * Identity of a breakdown start request: the work, the episode, the provider and model and whether existing scenes may
- * be replaced. The frozen script and scenes are not part of it, so the same key replayed after the script changed
- * still finds its original run instead of conflicting or creating a second one.
+ * Identity of a breakdown start request as the caller sent it: the work, the episode, the provider and model when given
+ * (null when omitted) and whether existing scenes may be replaced. Neither the frozen script and scenes nor the server's
+ * current defaults are part of it, so the same request replayed after the script or the provider settings changed still
+ * finds its original run instead of conflicting or creating a second one.
  */
 export function hashScriptBreakdownRequest(projectId: string, request: {
-  episodeId: string; providerKey: TitleWritingProviderKey; model: string; replaceExisting: boolean;
+  episodeId: string; providerKey: TitleWritingProviderKey | null; model: string | null; replaceExisting: boolean;
 }): string {
   return canonicalInputHash({ kind: "script_breakdown", projectId, request });
 }

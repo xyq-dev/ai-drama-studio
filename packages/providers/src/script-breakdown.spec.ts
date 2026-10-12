@@ -103,19 +103,38 @@ describe("script breakdown runs", () => {
     });
   }
 
-  it("send the script frozen at start; a script saved meanwhile keeps the result out of the episode (source_changed)", async () => {
+  it("send the script frozen at start; a script saved while the call is out keeps the result out of the episode (source_changed)", async () => {
     const store = new InMemoryTitleWritingStore();
     const episode = store.addBreakdownEpisode({ workspaceId: WS, projectId: P1, episodeNo: 2, text: scriptOf(2, 2) });
     const record = await start(store, episode);
-    store.writeScript(episode.episodeId, scriptOf(2, 5));
     const seen: FixtureExchange[] = [];
-    await engineFor(store, fixtureChatTransport("t", { seen })).drive(record.id);
+    const inner = fixtureChatTransport("t", { seen });
+    // The reservation found the frozen script current; the newer script is saved after the send, before the answer.
+    const transport: WritingTransport = async (request) => {
+      store.writeScript(episode.episodeId, scriptOf(2, 5));
+      return inner(request);
+    };
+    await engineFor(store, transport).drive(record.id);
+    expect(seen).toHaveLength(1);
     expect(breakdownPromptParts(seen[0]!.user).script).toBe(scriptOf(2, 2));
     const result = await view(store, record.id);
     expect([result.state, result.errorCode, result.save]).toEqual(["needs_attention", "breakdown_source_changed", "source_changed"]);
     expect(result.output!.scenes).toHaveLength(2);
     expect(liveScenes(store, episode)).toHaveLength(0);
     expect(result.episodeScript).toMatchObject({ currentRevisionNo: 2, approved: true });
+    expect(result.scriptRevisionNo).toBe(1);
+  });
+
+  it("send nothing when a script was saved after the start and before the call is reserved (breakdown_source_changed)", async () => {
+    const store = new InMemoryTitleWritingStore();
+    const episode = store.addBreakdownEpisode({ workspaceId: WS, projectId: P1, episodeNo: 2, text: scriptOf(2, 2) });
+    const record = await start(store, episode);
+    store.writeScript(episode.episodeId, scriptOf(2, 5));
+    const seen: FixtureExchange[] = [];
+    await engineFor(store, fixtureChatTransport("t", { seen })).drive(record.id);
+    const result = await view(store, record.id);
+    expect([result.state, result.errorCode, result.save, result.callsUsed, result.output]).toEqual(["needs_attention", "breakdown_source_changed", "pending", 0, null]);
+    expect([seen.length, store.calls.length, liveScenes(store, episode).length]).toEqual([0, 0, 0]);
     expect(result.scriptRevisionNo).toBe(1);
   });
 

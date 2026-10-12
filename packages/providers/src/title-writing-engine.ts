@@ -389,7 +389,8 @@ export class TitleWritingEngine {
       prompt = titlePrompt;
       schema = titleWritingJsonSchemas(titleInput)[titlePrompt.schemaKind];
     } else {
-      // A breakdown prompt is built from the frozen copy of the script only; nothing is read again before sending.
+      // A breakdown prompt is built from the frozen copy of the script only. reserveCall re-checks, in the reservation's
+      // transaction, that this copy is still the episode's current approved script; the save checks it once more.
       const breakdown = run.input as ScriptBreakdownFrozenInput;
       if (next.stepKey !== SCRIPT_BREAKDOWN_STEP_KEY) return this.finish(runId, "failed", "invalid_step");
       prompt = buildScriptBreakdownPrompt(breakdown);
@@ -429,6 +430,8 @@ export class TitleWritingEngine {
     }, reservedAt.toISOString(), this.lease(reservedAt));
     if (reservation.kind === "lost") return false;
     if (reservation.kind === "canceled") return this.finish(runId, "canceled", null);
+    // The frozen script changed after the run started or resumed: nothing was reserved and nothing is sent.
+    if (reservation.kind === "source_changed") return this.finish(runId, "needs_attention", "breakdown_source_changed");
     if (reservation.kind === "blocked") return this.finish(runId, anyCompleted ? "partial" : "failed", reservation.code);
     const submittedAt = this.now();
     const submission = await this.deps.store.markCallSubmitted(this.deps.workspaceId, call.id, this.executorId,
@@ -705,6 +708,7 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
     const run = this.requireRun(call.runId);
     if (!this.owns(run, call.workspaceId, call.executorId, nowIso)) return { kind: "lost" };
     if (run.cancelRequestedAt !== null) return { kind: "canceled" };
+    if (isScriptBreakdownInput(run.input) && !this.breakdownScriptCurrent(run.input)) return { kind: "source_changed" };
     if (run.callsUsed >= run.callCap) return { kind: "blocked", code: "TITLE_WRITING_RUN_CAP" };
     const recent = this.calls.filter((item) => item.workspaceId === call.workspaceId && item.createdAt >= limits.sinceIso).length;
     if (recent >= limits.maxCallsPerDay) return { kind: "blocked", code: "TITLE_WRITING_DAILY_CAP" };
@@ -800,6 +804,7 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
     const redo = steps.filter((step) => step.state === "unknown" || step.state === "rejected" || step.state === "canceled");
     const savePending = isScriptBreakdownInput(run.input) ? run.breakdownSave === "pending" : run.storySave === "pending";
     if (redo.length === 0 && !savePending) return { kind: "not_resumable" };
+    if (isScriptBreakdownInput(run.input) && !this.breakdownScriptCurrent(run.input)) return { kind: "source_changed" };
     this.resumes.push({ runId, key: request.resumeKey, requestHash: request.requestHash, confirmedCallIds: [...request.confirmedCallIds].sort(), createdAt: nowIso });
     for (const step of redo) Object.assign(step, { state: "pending", updatedAt: nowIso });
     Object.assign(run, { state: "running", errorCode: null, cancelRequestedAt: null, executorId: null, leaseUntil: null, updatedAt: nowIso });
@@ -960,6 +965,14 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
       revisions: [revision], currentRevisionId: revision.id, approvedRevisionId: null };
     this.scenes.push(scene);
     return scene;
+  }
+
+  /** The frozen script is still the episode's current, approved, CURRENT script (the store's resume and reservation check). */
+  private breakdownScriptCurrent(input: { episodeId: string; scriptRevisionId: string }): boolean {
+    const episode = this.breakdownEpisodes.get(input.episodeId);
+    const script = episode?.scripts.find((item) => item.id === episode.currentScriptId);
+    return !!episode && !!script && script.id === input.scriptRevisionId && episode.approvedScriptId === script.id
+      && script.reviewStatus === "APPROVED" && script.freshnessStatus === "CURRENT";
   }
 
   async breakdownStorageReady(): Promise<boolean> {

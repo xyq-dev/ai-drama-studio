@@ -146,7 +146,8 @@ function duplicates(values: readonly string[]): boolean {
 /**
  * Accepts a model answer only when it is one JSON object of the output schema for exactly the frozen episode, with
  * unique keys, every scene and character reference present, at least one shot per scene, shots grouped in scene
- * order, every dialogue line attributed to its speaker in the frozen script, and a total planned duration inside the range.
+ * order, keys matching their scene and position (S1, S2, …; S1-1, S1-2, …), every dialogue line attributed to its
+ * speaker in the frozen script, and a total planned duration inside the range.
  */
 export function validateScriptBreakdownOutput(content: string, input: ScriptBreakdownFrozenInput): ScriptBreakdownValidation {
   if (content.trim().length === 0) return { ok: false, code: "invalid_json" };
@@ -187,6 +188,15 @@ export function validateScriptBreakdownOutput(content: string, input: ScriptBrea
   }
   if (output.scenes.some((scene) => output.shots.filter((shot) => shot.sceneKey === scene.key).length > L.maxShotsPerScene)) {
     return { ok: false, code: "invalid_output" };
+  }
+  // Keys follow the prompt's contract: scenes S1, S2, … in order, and each shot "<its scene key>-<its position in that
+  // scene>". A key naming another scene or another position is refused; nothing is renamed or renumbered.
+  if (output.scenes.some((scene, index) => scene.key !== `S${String(index + 1)}`)) return { ok: false, code: "invalid_output" };
+  const positions = new Map<string, number>();
+  for (const shot of output.shots) {
+    const position = (positions.get(shot.sceneKey) ?? 0) + 1;
+    positions.set(shot.sceneKey, position);
+    if (shot.key !== `${shot.sceneKey}-${String(position)}`) return { ok: false, code: "invalid_output" };
   }
   const dialogue = attributedDialogue(input.scriptText);
   for (const shot of output.shots) {

@@ -63,6 +63,7 @@ const MESSAGES: Record<string, string> = {
   TITLE_WRITING_NEEDS_CONFIRMATION: "有结果不确定的调用，可能已经计费。确认后才会重新发送。",
   TITLE_WRITING_CONFIRMATION_STALE: "确认的不确定调用和现在的不一致，没有重新发送。请重新查看后再确认。",
   TITLE_WRITING_NOT_RESUMABLE: "这次拆解没有需要续跑的步骤。",
+  SCRIPT_BREAKDOWN_SOURCE_CHANGED: "这次拆解的来源剧本已被新版本取代、未批准或已过期，没有续跑，也没有发出调用。原结果保留；请对当前已批准的剧本重新拆解。",
   SCRIPT_BREAKDOWN_NO_SCRIPT: "这一集还没有剧本。",
   SCRIPT_REVIEW_REQUIRED: "这一集的当前剧本还没有通过审核（或已过期）。剧本批准后才能拆解。",
   SCRIPT_BREAKDOWN_SCRIPT_UNSUPPORTED: "这一集的剧本不是纯文本正文，无法拆解。",
@@ -184,21 +185,26 @@ export class ScriptBreakdownService {
     await this.deps.projects.getProject(this.deps.workspaceId, projectId);
     const parsed = scriptBreakdownStartSchema.safeParse(body ?? {});
     if (!parsed.success) return failure(400, "VALIDATION_ERROR", { field: parsed.error.issues[0]?.path.join(".") ?? "body" });
+    const requestHash = hashScriptBreakdownRequest(projectId, { episodeId, providerKey: parsed.data.providerKey ?? null,
+      model: parsed.data.model ?? null, replaceExisting: parsed.data.replaceExisting });
+
+    // A replay is answered from the run this key created, before anything is read again or resolved from the current
+    // settings: the script, the scenes (the run itself replaces scenes), the default provider and model or a provider's
+    // configuration may have changed since, and a replay must never create or freeze a second run. The run must belong
+    // to this work and episode, which the caller reached above.
+    const previous = await this.deps.store.findRunByKey(this.deps.workspaceId, context.actorId, context.idempotencyKey);
+    if (previous) {
+      const same = this.ofEpisode(previous, projectId, episodeId);
+      return same && same.run.inputHash === requestHash ? this.view(same) : failure(409, "IDEMPOTENCY_KEY_REUSED");
+    }
+
+    // A new request takes the current settings.
     const providerKey = parsed.data.providerKey ?? this.deps.defaultProvider
       ?? TITLE_WRITING_PROVIDER_KEYS.find((key) => this.deps.providers[key].ok) ?? "qwen";
     const provider = this.deps.providers[providerKey];
     if (!provider.ok) return failure(503, "TITLE_WRITING_PROVIDER_UNCONFIGURED", { providerKey, missing: provider.missing });
     const model = parsed.data.model ?? provider.models[0]!;
     if (!provider.models.includes(model)) return failure(400, "TITLE_WRITING_MODEL_UNAVAILABLE", { providerKey });
-    const requestHash = hashScriptBreakdownRequest(projectId, { episodeId, providerKey, model, replaceExisting: parsed.data.replaceExisting });
-
-    // A replay is answered from the run this key created, before anything is read again: the script or the scenes may
-    // have changed since (the run itself replaces scenes), and a replay must never create or freeze a second run.
-    const previous = await this.deps.store.findRunByKey(this.deps.workspaceId, context.actorId, context.idempotencyKey);
-    if (previous) {
-      const same = this.ofEpisode(previous, projectId, episodeId);
-      return same && same.run.inputHash === requestHash ? this.view(same) : failure(409, "IDEMPOTENCY_KEY_REUSED");
-    }
 
     const source = await this.deps.store.breakdownSource(this.deps.workspaceId, projectId, episodeId);
     if (source.kind === "not_found") return failure(404, "EPISODE_NOT_FOUND");
@@ -309,6 +315,7 @@ export class ScriptBreakdownService {
       if (prepared.kind === "needs_confirmation") return failure(409, "TITLE_WRITING_NEEDS_CONFIRMATION");
       if (prepared.kind === "stale_confirmation") return failure(409, "TITLE_WRITING_CONFIRMATION_STALE");
       if (prepared.kind === "key_conflict") return failure(409, "IDEMPOTENCY_KEY_REUSED");
+      if (prepared.kind === "source_changed") return failure(409, "SCRIPT_BREAKDOWN_SOURCE_CHANGED");
       return failure(409, "TITLE_WRITING_NOT_RESUMABLE");
     }
     this.schedule(runId);

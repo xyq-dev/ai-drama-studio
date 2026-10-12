@@ -100,9 +100,13 @@ export interface TitleRunCreationLimits {
   quota?: { sinceIso: string; maxCallsPerDay: number; requiredCalls: number };
 }
 
+/**
+ * source_changed: a script breakdown whose frozen script is no longer the episode's current, approved, CURRENT script.
+ * Checked under the run, project and episode locks in the same transaction as the reservation; nothing is reserved.
+ */
 export type TitleCallReservation =
   | { kind: "reserved" }
-  | { kind: "canceled" | "lost" }
+  | { kind: "canceled" | "lost" | "source_changed" }
   | { kind: "blocked"; code: "TITLE_WRITING_DAILY_CAP" | "TITLE_WRITING_RUN_CAP" };
 
 export type TitleCallSubmission = "submitted" | "canceled" | "lost";
@@ -124,10 +128,11 @@ export interface TitleCallFinish {
  * replayed: this resume action (same key, same confirmation) was already applied; nothing changes and nothing is sent.
  * stale_confirmation: the confirmed calls are not exactly the current uncertain calls.
  * key_conflict: the key was used for a different confirmation on this run.
+ * source_changed: a script breakdown whose frozen script was replaced, left unapproved or made STALE; nothing changes.
  */
 export type TitleResumePreparation =
   | { kind: "ok" | "replayed"; bundle: TitleRunBundle }
-  | { kind: "not_resumable" | "needs_confirmation" | "stale_confirmation" | "key_conflict" | "active" | "active_cap" | "not_found" };
+  | { kind: "not_resumable" | "needs_confirmation" | "stale_confirmation" | "key_conflict" | "active" | "active_cap" | "not_found" | "source_changed" };
 
 export interface TitleResumeRequest {
   /** Identity of one resume action, from the Idempotency-Key header. */

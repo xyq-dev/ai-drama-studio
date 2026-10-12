@@ -312,6 +312,11 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
       const run = await this.ownedRun(client, call.workspaceId, call.runId, call.executorId, nowIso);
       if (!run) return { kind: "lost" };
       if (run.cancelRequestedAt !== null) return { kind: "canceled" };
+      // A breakdown prompt is the frozen script copy: reserve a paid call only while that script is still the episode's
+      // current, approved, CURRENT one, checked in this transaction under the run -> project -> episode lock order.
+      if (isScriptBreakdownInput(run.input) && !await this.breakdownScriptCurrent(client, call.workspaceId, run.projectId, run.input)) {
+        return { kind: "source_changed" };
+      }
       if (run.callsUsed >= run.callCap) return { kind: "blocked", code: "TITLE_WRITING_RUN_CAP" };
       const recent = await client.query<Row>(
         "SELECT count(*)::int AS recent FROM title_writing_call WHERE workspace_id = $1 AND created_at >= $2",
@@ -499,6 +504,11 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
       const redo = steps.filter((step) => step.state === "unknown" || step.state === "rejected" || step.state === "canceled");
       const savePending = isScriptBreakdownInput(run.input) ? run.breakdownSave === "pending" : run.storySave === "pending";
       if (redo.length === 0 && !savePending) return { kind: "not_resumable" };
+      // A breakdown resumes only against its frozen script; a newer, unapproved or STALE source is never resent.
+      // Checked under the run -> project -> episode locks, before anything of the resume is written.
+      if (isScriptBreakdownInput(run.input) && !await this.breakdownScriptCurrent(client, workspaceId, projectId, run.input)) {
+        return { kind: "source_changed" };
+      }
       await client.query(
         `INSERT INTO title_writing_resume (run_id, workspace_id, idempotency_key, request_hash, confirmed_call_ids, created_at)
          VALUES ($1, $2, $3, $4, $5::jsonb, $6)`,
@@ -1001,6 +1011,27 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
     );
     return frozen.every((item) => rows.rows.some((row) => String(row.id) === item.characterId && row.archived !== true
       && row.current_revision_id === item.revisionId && row.freshness_status === "CURRENT"));
+  }
+
+  /**
+   * True when the frozen script is still the episode's current and approved revision, APPROVED and CURRENT. Takes the
+   * project, episode and script share locks after the run lock (run -> project -> episode, as saveBreakdown and the
+   * script editor), so a script save or review either commits before this check or waits until its transaction ends.
+   */
+  private async breakdownScriptCurrent(client: PoolClient, workspaceId: string, projectId: string,
+    input: { episodeId: string; scriptRevisionId: string }): Promise<boolean> {
+    const project = await client.query("SELECT id FROM project WHERE id = $1 AND workspace_id = $2 FOR SHARE", [projectId, workspaceId]);
+    if (!project.rows[0]) return false;
+    const current = await client.query<Row>(
+      `SELECT e.id FROM episode e
+         JOIN script_revision s ON s.id = e.current_script_revision_id AND s.episode_id = e.id AND s.workspace_id = e.workspace_id
+        WHERE e.id = $1 AND e.project_id = $2 AND e.workspace_id = $3
+          AND e.current_script_revision_id = $4 AND e.approved_script_revision_id = $4
+          AND s.review_status = 'APPROVED' AND s.freshness_status = 'CURRENT'
+        FOR SHARE OF e, s`,
+      [input.episodeId, projectId, workspaceId, input.scriptRevisionId],
+    );
+    return current.rows.length === 1;
   }
 
   private async episodeSceneSet(client: PoolClient, workspaceId: string, projectId: string, episodeId: string) {
