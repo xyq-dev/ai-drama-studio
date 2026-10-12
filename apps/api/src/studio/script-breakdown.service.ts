@@ -303,7 +303,13 @@ export class ScriptBreakdownService {
     // provider may have been disabled, the source changed or the run moved on since, and a lost response must stay
     // recoverable. Only a new resume is held to the provider, source and state checks below.
     const receipt = await this.deps.store.findResume(this.deps.workspaceId, projectId, runId, context.idempotencyKey);
-    if (receipt) return receipt.requestHash === requestHash ? this.view(existing) : failure(409, "IDEMPOTENCY_KEY_REUSED");
+    if (receipt) {
+      if (receipt.requestHash !== requestHash) return failure(409, "IDEMPOTENCY_KEY_REUSED");
+      // Read the run again: an identical request may have committed this receipt after `existing` was read, so the run
+      // has moved on (running, or already finished). Same work and episode scope; never the earlier read.
+      const current = this.ofEpisode(await this.deps.store.getRun(this.deps.workspaceId, projectId, runId), projectId, episodeId);
+      return current ? this.view(current) : failure(404, "NOT_FOUND");
+    }
     // The store decides from the run's persisted steps, under its lock, whether this resume sends again: only then must the
     // provider be ready. A run that stopped after its answer was stored only saves it (no call, no reservation).
     const provider = this.deps.providers[existing.run.input.providerKey];

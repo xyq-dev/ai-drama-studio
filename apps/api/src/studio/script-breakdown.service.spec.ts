@@ -499,3 +499,101 @@ describe("resuming a run stopped before its first call was reserved", () => {
     expect([runOf(await service.get(P1, episode.episodeId, runId)).state, store.resumes.length, seen.length]).toEqual(["failed", 0, 0]);
   });
 });
+
+describe("replaying a resume whose receipt was committed while the request was in flight", () => {
+  // The first call is refused, so the run is failed before the resume; the resumed call answers normally.
+  const failOnce: Override = (_step, attempt) => attempt <= 1
+    ? { status: 200, body: chatAnswer({ schema: "ads.script-breakdown.output.v1", episodeNo: 1, scenes: [], shots: [] }) } : undefined;
+  const code = (result: { body: unknown }) => (result.body as { error?: { code: string } }).error?.code;
+  const deferred = () => {
+    let release!: () => void;
+    const promise = new Promise<void>((resolve) => { release = resolve; });
+    return { promise, release };
+  };
+  /** Holds the first receipt lookup under `key` (request B, which has already read the run) until released; other lookups pass. */
+  const holdFirstLookup = (store: InMemoryTitleWritingStore, key: string) => {
+    const reached = deferred();
+    const gate = deferred();
+    const original = store.findResume.bind(store);
+    let held = false;
+    store.findResume = async (...args: Parameters<typeof original>) => {
+      if (!held && args[3] === key) {
+        held = true;
+        reached.release();
+        await gate.promise;
+      }
+      return await original(...args);
+    };
+    return { reached: reached.promise, release: gate.release };
+  };
+  const failedRun = async () => {
+    const context = setup({ override: failOnce });
+    const runId = context.runOf(await context.start()).runId;
+    await context.settle();
+    expect(context.runOf(await context.service.get(P1, context.episode.episodeId, runId)).state).toBe("failed");
+    return { ...context, runId };
+  };
+
+  it("answers with the run as it is now (running), not the failed run it read before the identical request committed", async () => {
+    const { store, service, episode, settle, runOf, seen, pending, runId } = await failedRun();
+    const key = randomUUID();
+    const barrier = holdFirstLookup(store, key);
+    const b = service.resume(P1, episode.episodeId, runId, {}, TOKEN, CONTEXT(key));
+    await barrier.reached;
+    const a = await service.resume(P1, episode.episodeId, runId, {}, TOKEN, CONTEXT(key));
+    expect([a.status, runOf(a).state]).toEqual([200, "running"]);
+    // The engine's work stays queued, so the run is still running while B answers.
+    const after = { pending: pending.length, sends: seen.length, calls: store.calls.length, resumes: store.resumes.length };
+    expect([after.pending, after.resumes]).toEqual([1, 1]);
+    barrier.release();
+    const replay = await b;
+    expect([replay.status, runOf(replay).runId, runOf(replay).state]).toEqual([200, runId, "running"]);
+    // The replay prepared, scheduled, reserved and sent nothing.
+    expect({ pending: pending.length, sends: seen.length, calls: store.calls.length, resumes: store.resumes.length }).toEqual(after);
+    await settle();
+    expect([runOf(await service.get(P1, episode.episodeId, runId)).state, seen.length, store.resumes.length]).toEqual(["completed", 2, 1]);
+  });
+
+  it("answers with the finished run when the accepted resume completed before the replay looked", async () => {
+    const { store, service, episode, settle, runOf, seen, runId } = await failedRun();
+    const key = randomUUID();
+    const barrier = holdFirstLookup(store, key);
+    const b = service.resume(P1, episode.episodeId, runId, {}, TOKEN, CONTEXT(key));
+    await barrier.reached;
+    expect(runOf(await service.resume(P1, episode.episodeId, runId, {}, TOKEN, CONTEXT(key))).state).toBe("running");
+    await settle();
+    barrier.release();
+    const replay = await b;
+    expect([replay.status, runOf(replay).state, runOf(replay).save]).toEqual([200, "completed", "saved"]);
+    expect([seen.length, store.resumes.length]).toEqual([2, 1]);
+  });
+
+  it("still refuses other content under the key, and never answers with a run that is gone or of another episode", async () => {
+    const { store, service, episode, runOf, seen, pending, runId } = await failedRun();
+    const key = randomUUID();
+    const barrier = holdFirstLookup(store, key);
+    const other = service.resume(P1, episode.episodeId, runId, { confirmUncertainCallIds: [randomUUID()] }, TOKEN, CONTEXT(key));
+    await barrier.reached;
+    expect(runOf(await service.resume(P1, episode.episodeId, runId, {}, TOKEN, CONTEXT(key))).state).toBe("running");
+    barrier.release();
+    const refused = await other;
+    expect([refused.status, code(refused)]).toEqual([409, "IDEMPOTENCY_KEY_REUSED"]);
+
+    // The run read again after the receipt is found: gone, or (as the store returns it) bound to another episode.
+    const getRun = store.getRun.bind(store);
+    for (const reread of ["gone", "elsewhere"] as const) {
+      let reads = 0;
+      store.getRun = async (...args: Parameters<typeof getRun>) => {
+        const bundle = await getRun(...args);
+        reads += 1;
+        if (reads === 1 || !bundle) return bundle;
+        return reread === "gone" ? null : { ...bundle, run: { ...bundle.run, input: { ...bundle.run.input, episodeId: randomUUID() } } };
+      };
+      const replay = await service.resume(P1, episode.episodeId, runId, {}, TOKEN, CONTEXT(key));
+      expect([reread, replay.status, code(replay)]).toEqual([reread, 404, "NOT_FOUND"]);
+      expect(reads).toBe(2);
+    }
+    store.getRun = getRun;
+    expect([pending.length, seen.length, store.resumes.length]).toEqual([1, 1, 1]);
+  });
+});

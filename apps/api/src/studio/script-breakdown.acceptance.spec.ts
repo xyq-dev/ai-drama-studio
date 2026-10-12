@@ -539,6 +539,65 @@ describe("script breakdown over real HTTP and PostgreSQL, model stubbed", () => 
       newSourceChanged: 409, concurrentFirstResumes: { accepted: 2, resumeRecords: 1, sends: 1 } };
   });
 
+  it("answers a replay whose receipt was committed while it was in flight with the run as it is now, not the run it read first", async () => {
+    const { projectId, episodes } = await work(1, "rrace");
+    const episode = episodes[0]!;
+    const deferred = () => {
+      let release!: () => void;
+      const promise = new Promise<void>((resolve) => { release = resolve; });
+      return { promise, release };
+    };
+    overrides.set("rrace-1", () => ({ status: 200, body: chatAnswer({ schema: "ads.script-breakdown.output.v1", episodeNo: 1, scenes: [], shots: [] }) }));
+    expect((await http("POST", base(projectId, episode.id), { body: {}, headers: operator() })).status).toBe(201);
+    const run = await settled(projectId, episode.id);
+    expect(run.state).toBe("failed");
+    // The resumed call is held at the model double until the replay has answered, so the run is really running then.
+    const model = deferred();
+    overrides.set("rrace-1", async (user) => { await model.promise; return { status: 200, body: chatAnswer(fixtureBreakdownFromPrompt(user)) }; });
+    // Request B reads the failed run, then waits before its receipt lookup until request A has committed the resume.
+    const resumeKey = randomUUID();
+    const store = breakdownDeps.store;
+    const findResume = store.findResume.bind(store);
+    const reached = deferred();
+    const gate = deferred();
+    let held = false;
+    store.findResume = async (...args: Parameters<typeof findResume>) => {
+      if (!held && args[3] === resumeKey) {
+        held = true;
+        reached.release();
+        await gate.promise;
+      }
+      return await findResume(...args);
+    };
+    const path = `${base(projectId, episode.id)}/${run.runId}/resume`;
+    const ledger = async () => (await q<{ state: string; calls_used: number; resumes: number }>(
+      `SELECT r.state, r.calls_used, (SELECT count(*)::int FROM title_writing_resume WHERE run_id = r.id) AS resumes
+         FROM title_writing_run r WHERE id = $1`, [run.runId])).rows[0]!;
+    const before = sent.length;
+    try {
+      const b = http("POST", path, { body: {}, headers: operator(resumeKey) });
+      await reached.promise;
+      const a = await http("POST", path, { body: {}, headers: operator(resumeKey) });
+      expect([a.status, a.body.run?.state], JSON.stringify(a.body)).toEqual([200, "running"]);
+      gate.release();
+      const replay = await b;
+      expect([replay.status, replay.body.run?.runId, replay.body.run?.state], JSON.stringify(replay.body)).toEqual([200, run.runId, "running"]);
+      expect(await ledger()).toMatchObject({ state: "running", resumes: 1 });
+    } finally {
+      gate.release();
+      model.release();
+      store.findResume = findResume;
+    }
+    const done = await settled(projectId, episode.id);
+    expect([done.state, done.save]).toEqual(["completed", "saved"]);
+    // After the run finished, the same replay answers with the finished run.
+    const finished = await http("POST", path, { body: {}, headers: operator(resumeKey) });
+    expect([finished.status, finished.body.run?.state]).toEqual([200, "completed"]);
+    overrides.delete("rrace-1");
+    expect([sent.length - before, (await ledger()).resumes, (await ledger()).calls_used]).toEqual([1, 1, 2]);
+    scenarios.resumeReplayInFlight = { replayWhileRunning: "running", replayAfterFinish: "completed", resumeRecords: 1, sends: 1 };
+  });
+
   it("accepts only whole planned seconds on shot create and revise, before anything is written", async () => {
     const { projectId, episodes } = await work(1, "seconds");
     const episode = episodes[0]!;
