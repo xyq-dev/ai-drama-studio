@@ -21,8 +21,19 @@ const PLAN = {
 
 /** The provider protocol in memory plus the storage readiness switch the PostgreSQL store reports. */
 class TestStore extends InMemoryQwenWebStore {
+  probes = 0;
+  reservations = 0;
+  maintenance = 0;
   constructor(private readonly ready: boolean) { super(); }
-  async storageReady(): Promise<boolean> { return this.ready; }
+  async storageReady(): Promise<boolean> { this.probes += 1; return this.ready; }
+  override async reserve(...args: Parameters<InMemoryQwenWebStore["reserve"]>) {
+    this.reservations += 1;
+    return super.reserve(...args);
+  }
+  override async recoverExpired(nowIso: string): Promise<number> {
+    this.maintenance += 1;
+    return super.recoverExpired(nowIso);
+  }
 }
 
 function completion(): Uint8Array {
@@ -175,6 +186,84 @@ describe("QwenWebService", () => {
     expect(done.body).toMatchObject({ request: { state: "completed" } });
     const stored = await store.findByKey(WORKSPACE, "server-owner", "paused");
     expect(Date.parse(stored!.updatedAt)).toBeGreaterThanOrEqual(start.getTime() + 121_000);
+  });
+
+  it("checks the operator token before any storage probe, reservation or send (closeout item 3)", async () => {
+    for (const token of [undefined, "", "wrong-token-0000000", `${TOKEN}x`]) {
+      // Storage present or absent must look the same to an unauthorized caller.
+      for (const ready of [true, false]) {
+        const { service, calls, store } = harness({ ready });
+        expect(await service.status(token)).toMatchObject({ status: 403, body: { code: "QWEN_WEB_FORBIDDEN", ready: false, model: null } });
+        expect(await service.request(PROJECT, { input: INPUT }, token, context("k"))).toEqual({ status: 403, body: { code: "QWEN_WEB_FORBIDDEN" } });
+        expect(await service.get(PROJECT, "33333333-3333-4333-8333-333333333333", token)).toEqual({ status: 403, body: { code: "QWEN_WEB_FORBIDDEN" } });
+        expect(store.probes).toBe(0);
+        expect(store.reservations).toBe(0);
+        expect(store.maintenance).toBe(0);
+        expect(calls).toHaveLength(0);
+      }
+    }
+    // Disabled and production keep their earlier answer, still without a probe.
+    for (const overrides of [{ enabled: false }, { nodeEnv: "production" as const }]) {
+      const { service, store, calls } = harness(overrides);
+      expect(await service.request(PROJECT, { input: INPUT }, TOKEN, context("k"))).toEqual({ status: 404, body: { code: "QWEN_WEB_DISABLED" } });
+      expect(store.probes).toBe(0);
+      expect(calls).toHaveLength(0);
+    }
+    // A missing provider config is decided before the probe too.
+    const noKey = harness({ provider: { ok: false, code: "missing_api_key" } });
+    await noKey.service.status(TOKEN);
+    expect(noKey.store.probes).toBe(0);
+    // The right token probes exactly once per call.
+    const authorized = harness({ ready: false });
+    expect((await authorized.service.status(TOKEN)).body).toMatchObject({ code: "QWEN_WEB_STORAGE_UNAVAILABLE" });
+    expect(authorized.store.probes).toBe(1);
+  });
+
+  it("refuses an input over 256,000 UTF-8 bytes before reserving or sending (closeout item 4)", async () => {
+    // \u0001 serializes to six bytes. An episode input has two 20,000-character bodies, so a schema-legal input can
+    // cross the cap; a story input (one body) cannot.
+    const note = "\u0001".repeat(1_000);
+    const base = { schema: "qwen.writing.input.v1", mode: "episode", episodeNo: 1, premise: note, genre: note,
+      audience: note, characters: note, confirmedStory: "\u0001".repeat(20_000), currentText: "", revisionRequest: note,
+      mustKeep: note, mustKeepDialogue: note, mustKeepEnding: note };
+    const baseBytes = new TextEncoder().encode(JSON.stringify(base)).byteLength;
+    const field = (bytes: number) => "\u0001".repeat(Math.floor(bytes / 6)) + "a".repeat(bytes % 6);
+    const at = { ...base, currentText: field(256_000 - baseBytes) };
+    const over = { ...base, currentText: field(256_001 - baseBytes) };
+    expect(new TextEncoder().encode(JSON.stringify(at)).byteLength).toBe(256_000);
+    expect(new TextEncoder().encode(JSON.stringify(over)).byteLength).toBe(256_001);
+    expect(over.currentText.length).toBeLessThanOrEqual(20_000);
+    const { parseQwenWritingInput } = await import("@ai-drama/contracts");
+    expect(parseQwenWritingInput(over).ok).toBe(true);
+
+    const refused = harness();
+    expect(await refused.service.request(PROJECT, { input: over }, TOKEN, context("big"))).toEqual({ status: 413, body: { code: "QWEN_WEB_INPUT_TOO_LARGE" } });
+    expect(refused.store.reservations).toBe(0);
+    expect(refused.store.maintenance).toBe(0);
+    expect(await refused.store.findByKey(WORKSPACE, "server-owner", "big")).toBeNull();
+    expect(refused.calls).toHaveLength(0);
+
+    // Exactly at the cap is sent once. The fake reply is a story plan, so the episode request ends rejected (422);
+    // what matters here is that it was reserved and sent.
+    const accepted = harness();
+    const result = await accepted.service.request(PROJECT, { input: at }, TOKEN, context("edge"));
+    expect(result.body).toMatchObject({ requestCount: 1 });
+    expect(accepted.store.reservations).toBe(1);
+    expect(accepted.calls).toHaveLength(1);
+  });
+
+  it("counts Chinese and emoji by UTF-8 bytes, not string length (closeout item 4)", async () => {
+    // 3 bytes per CJK character and 4 per emoji: these inputs are far below 256,000 characters but not bytes.
+    const { qwenWritingInputByteLength } = await import("@ai-drama/contracts");
+    expect(qwenWritingInputByteLength("故")).toBe(5);
+    expect(qwenWritingInputByteLength("😀")).toBe(6);
+    expect("😀".length).toBe(2);
+    const cjk = { ...INPUT, currentText: "故".repeat(20_000) };
+    expect(JSON.stringify(cjk).length).toBeLessThan(25_000);
+    expect(qwenWritingInputByteLength(cjk)).toBeGreaterThan(60_000);
+    const { service, calls } = harness();
+    expect((await service.request(PROJECT, { input: cjk }, TOKEN, context("cjk"))).status).toBe(200);
+    expect(calls).toHaveLength(1);
   });
 });
 

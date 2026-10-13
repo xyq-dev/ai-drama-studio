@@ -15,6 +15,7 @@ import { ApiError, StudioClient } from "../lib/studio-client";
 import { createQwenWebClient } from "../lib/qwen-web-client";
 import {
   MEDIA_WORKFLOW_TYPES,
+  REFERENCE_WORKFLOW_TYPE,
   projectEpisodeNumbers,
   useProjectBase,
   type Aggregate,
@@ -409,6 +410,8 @@ export function Workbench({ projectId }: { projectId: string }) {
               onMore={() => void more(focus.kind === "character" ? "characters" : "locations")}
               onSaved={reloadBase}
               onStatus={setSaveState}
+              referenceEpoch={base.referenceEpoch}
+              onReferenceAccepted={base.reloadForProject}
             />
           ) : null}
           {project && (focus.kind === "scene" || focus.kind === "shot") ? (
@@ -1207,6 +1210,10 @@ export function EntityPane(props: {
   onStatus: (value: string) => void;
   /** Open this entity (for example the one a review returned); a new nonce opens it again. */
   focus?: { entityId: string; nonce: number } | null;
+  /** From useProjectBase: changes when a tracked character reference run reaches a terminal state. */
+  referenceEpoch?: number;
+  /** From useProjectBase (reloadForProject): a reference generation was accepted in this project. */
+  onReferenceAccepted?: (projectId: string) => void;
 }) {
   const [selected, setSelected] = useState<string | null>(null);
   const editorRef = useRef<HTMLDivElement>(null);
@@ -1333,7 +1340,9 @@ export function EntityPane(props: {
           </div>
         ) : null}
         {props.kind === "character" && selected && history?.aggregate.entityId === selected && current ? (
-          <CharacterReferencePanel characterId={selected} currentRevisionId={current.id} />
+          <CharacterReferencePanel projectId={props.project.id} characterId={selected} currentRevisionId={current.id}
+            onJobAccepted={props.onReferenceAccepted} refreshEpoch={props.referenceEpoch}
+            revisionState={`${current.reviewStatus}|${current.freshnessStatus}|${current.reviewVersion}|${history.aggregate.approvedRevisionId ?? ""}`} />
         ) : null}
         <NewEntityForm
           project={props.project}
@@ -2808,6 +2817,7 @@ export function TaskDrawer(props: {
 
   const textRuns = props.runs.filter((run) => TEXT_WORKFLOW_TYPES.has(run.type));
   const mediaRuns = props.runs.filter((run) => MEDIA_WORKFLOW_TYPES.has(run.type) || run.type === "MEDIA_COMPOSE");
+  const referenceRuns = props.runs.filter((run) => run.type === REFERENCE_WORKFLOW_TYPE);
 
   return (
     <div className="creator-task-drawer fixed inset-y-0 right-0 z-30 w-full max-w-md overflow-auto bg-white p-4 shadow-xl">
@@ -2858,6 +2868,27 @@ export function TaskDrawer(props: {
                   <AttemptList attempts={job.attempts} />
                   <button className="mr-2 underline disabled:opacity-50" type="button" disabled={terminal} onClick={() => void act(`/generation-jobs/${job.id}/cancel`)}>取消{terminal ? "（已结束）" : ""}</button>
                   <button className="underline disabled:opacity-50" type="button" disabled={!retry.allowed} onClick={() => void act(`/generation-jobs/${job.id}/retry`)}>{retry.allowed ? "重试（新建任务，保留原任务）" : `重试不可用（${MEDIA_RETRY_REASONS[retry.reason]}）`}</button>
+                </div>
+              );
+            })}
+          </li>
+        ))}
+      </ul>
+      <h2 className="mt-6 font-medium">角色参考图任务</h2>
+      <p className="mt-2 text-sm">在角色页「角色参考图」发起。返回 202 只表示受理；成功后角色页会重新读取参考图列表。这里不提供重试：需要新的参考图时，在角色页再次生成。</p>
+      <ul className="mt-4 space-y-3">
+        {referenceRuns.length === 0 ? <li className="text-sm">没有参考图任务</li> : null}
+        {referenceRuns.map((run) => (
+          <li key={run.id} className="min-w-0 rounded border p-3 text-sm [overflow-wrap:anywhere]">
+            <p>角色参考图 · {taskStatusLabel(run.status)}</p>
+            {run.jobs.map((job) => {
+              const terminal = job.state === "SUCCEEDED" || job.state === "FAILED" || job.state === "CANCELED";
+              return (
+                <div key={job.id} className="mt-2">
+                  <p>任务 {taskStatusLabel(job.state)}{job.errorCode ? ` · ${job.errorCode}` : ""}</p>
+                  {job.errorMessage ? <p>{job.errorMessage}</p> : null}
+                  <AttemptList attempts={job.attempts} />
+                  <button className="mr-2 underline disabled:opacity-50" type="button" disabled={terminal} onClick={() => void act(`/generation-jobs/${job.id}/cancel`)}>取消{terminal ? "（已结束）" : ""}</button>
                 </div>
               );
             })}

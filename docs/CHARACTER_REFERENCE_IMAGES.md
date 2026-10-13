@@ -36,11 +36,15 @@
 | 方法 / 路径 | 说明 |
 | --- | --- |
 | `POST /character-revisions/:revisionId/reference-images/generate` | `{seed?, bypassCache?}`，需 `Idempotency-Key`；`202` 返回任务。任务类型 `MEDIA_CHARACTER_REFERENCE`，快照 `m3.mock.character-reference.v1`（含角色修订内容哈希）。 |
-| `GET /characters/:characterId/reference-images` | 该角色所有参考图、当前修订和选择（含 `usable`）。 |
+| `GET /characters/:characterId/reference-images` | 最近 100 张参考图（`items`，每项带服务端判定的 `selectable`）、`hasMore`、当前修订和选择。选择按选择记录中的资产 ID、在同一工作区/项目/角色/参考图角色内单独读取（`selection.asset`），不依赖这一页。`videoReadiness` 与 `selection.usable` 用严格视频门同一函数 `characterReferenceVideoBlockers` 判定，`blockers` 列出全部原因（如角色当前版本未审核）。 |
 | `POST /character-reference-images/:assetId/review` | `{decision: APPROVED|REJECTED, expectedRowVersion, contentHash, note?}`，需 `Idempotency-Key`。 |
 | `POST /characters/:characterId/reference-selection` | `{assetId, expectedSelectedAssetId}`，需 `Idempotency-Key`。 |
 
-Worker 为 `MEDIA_CHARACTER_REFERENCE` 单独路由，不进入文本或镜头媒体路径，也从通用文本恢复查询中排除。租约过期时：未附加请求的 attempt 重新入队；已附加请求的只重新查询并写入确定性输出，不重新提交。参考图是 Mock 固定 1×1 PNG，不是模型生成结果；成本按 Mock 账本记 ACTUAL 0。
+生成返回 `202` 只表示受理。角色页按 `GET /generation-jobs/:id` 串行跟踪该任务：终态停止、页面隐藏时暂停、恢复可见后重读；成功后重读参考图列表，失败或取消显示真实状态。切换项目、角色、修订或卸载后，迟到的应答不改写列表、提示和 busy。工作台任务区单列「角色参考图任务」，只提供取消。
+
+成功写入时，ACTUAL 成本须与该冻结请求一致：工作区、项目、任务、attempt、Provider 配置（`mock-media`/`image.generate`）、请求 ID 与客户端键、`mock-media`/`mock-v1`、`<请求ID>:request:actual`、零美元，且该请求没有估算行（`guardSynchronousMockReferenceCost`）。不一致在任何写入前以 `COST_CONFLICT` 拒绝，资产、依赖、成本与成功事件同属一个事务。
+
+Worker 为 `MEDIA_CHARACTER_REFERENCE` 单独路由，不进入文本或镜头媒体路径，也从通用文本恢复查询中排除。租约过期时：未附加请求的 attempt 重新入队；已附加请求的只重新查询并写入确定性输出，不重新提交。每次恢复逐行隔离：暂时故障留待下一轮并汇总上报，永久拒绝只结束所属 attempt。镜头媒体恢复与参考图恢复按顺序各自运行，一方抛错时另一方照常执行并各自上报（`recovery-modules.ts`）；进程停止时整轮中止。参考图是 Mock 固定 1×1 PNG，不是模型生成结果；成本按 Mock 账本记 ACTUAL 0。
 
 ## 授权后需要执行的验收
 

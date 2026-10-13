@@ -190,15 +190,18 @@ export {
   CHARACTER_REFERENCE_JOB_KIND,
   CHARACTER_REFERENCE_ROLE,
   CHARACTER_REFERENCE_SNAPSHOT_SCHEMA,
+  characterReferenceVideoBlockers,
   parseCharacterReferenceGateMode,
   parseCharacterReferenceReviewRequest,
   parseCharacterReferenceSelectionRequest,
   parseCharacterReferenceSnapshot,
   selectedReferenceUsable,
+  type CharacterReferenceBlocker,
   type CharacterReferenceGateMode,
   type CharacterReferenceReviewRequest,
   type CharacterReferenceSelectionRequest,
   type CharacterReferenceSnapshot,
+  type CharacterVideoReadinessInput,
   type SelectedReferenceState,
 } from "./character-reference";
 export {

@@ -26,6 +26,7 @@ import { runMockImageJob } from "./mock-image-generation";
 import { runMockSmJob } from "./mock-sm-generation";
 import { MockMediaRecovery } from "./mock-media-recovery";
 import { CharacterReferenceRecovery, runMockCharacterReferenceJob } from "./mock-character-reference";
+import { describeRecoveryError, isProcessStopping, runRecoveryModules } from "./recovery-modules";
 
 export interface QueueRuntimeStatus {
   running: boolean;
@@ -94,6 +95,8 @@ export async function startQueueRuntime(options: {
   composeHoldBeforeCommitMs?: number;
   composeLeaseMs?: number;
   composeFailInsideCommit?: boolean;
+  /** Receives one line per failed recovery module or reconcile pass. Defaults to stderr. */
+  onRecoveryError?: (message: string) => void;
 }): Promise<RuntimeHandle> {
   if (options.mockObjectDir && (process.env.NODE_ENV === "production" || !isAbsolute(options.mockObjectDir))) {
     throw new Error("Mock media requires an absolute local directory and is forbidden in production");
@@ -129,14 +132,21 @@ export async function startQueueRuntime(options: {
   const references = new CharacterReferenceStore(pool);
   const referenceRecovery = new CharacterReferenceRecovery(jobs, store,
     { references, adapter: mockMedia, objects }, options.mockImageEnabled === true);
+  const status: QueueRuntimeStatus = { running: false };
+  const reportRecovery = options.onRecoveryError ?? ((message: string) => { console.error(message); });
+  // Shot media and character references recover in turn; a fault in one is reported and does not skip the other.
   const reconciler = new RuntimeReconciler(jobs, store, provider, dispatcher,
     options.orphanGraceMs ?? 30_000,
     async () => {
-      await mediaRecovery.reconcileOnce();
-      await referenceRecovery.reconcileOnce();
+      await runRecoveryModules([
+        { name: "mock-media", run: () => mediaRecovery.reconcileOnce() },
+        { name: "character-reference", run: () => referenceRecovery.reconcileOnce() },
+      ], {
+        running: () => status.running,
+        report: (module, error) => reportRecovery(describeRecoveryError(module, error)),
+      });
     },
     mockText, textAdapter);
-  const status: QueueRuntimeStatus = { running: false };
   const worker = startBullWorker(
     { url: options.redisUrl, maxRetriesPerRequest: null },
     prefix,
@@ -337,8 +347,17 @@ export async function startQueueRuntime(options: {
   const dispatchTimer = setInterval(() => {
     void dispatcher.dispatchOnce().catch(() => undefined);
   }, options.dispatchIntervalMs ?? 1000);
+  // One pass at a time: an overlapping pass would contend for the same attempts and leases.
+  let reconciling = false;
   const reconcileTimer = setInterval(() => {
-    void reconciler.reconcileOnce().catch(() => undefined);
+    if (reconciling) return;
+    reconciling = true;
+    void reconciler.reconcileOnce()
+      .catch((error: unknown) => {
+        // A pass cut short by shutdown is expected; anything else is reported and retried next interval.
+        if (status.running && !isProcessStopping(error)) reportRecovery(describeRecoveryError("reconcile", error));
+      })
+      .finally(() => { reconciling = false; });
   }, options.reconcileIntervalMs ?? 5000);
   return {
     status,

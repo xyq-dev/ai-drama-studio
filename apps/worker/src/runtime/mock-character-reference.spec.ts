@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { PersistenceError, type CharacterReferenceStore, type JobPersistenceService } from "@ai-drama/database";
+import { PersistenceError, type CharacterReferenceStore, type JobPersistenceService, type RuntimeStore } from "@ai-drama/database";
 import { MockMediaAdapter } from "@ai-drama/providers";
-import { runMockCharacterReferenceJob, type MockCharacterReferenceJob } from "./mock-character-reference";
+import { CharacterReferenceRecovery, runMockCharacterReferenceJob, type MockCharacterReferenceJob } from "./mock-character-reference";
 
 const REVISION = "33333333-3333-4333-8333-333333333333";
 const input: MockCharacterReferenceJob = {
@@ -63,5 +63,76 @@ describe("Mock character reference generation", () => {
     await expect(runMockCharacterReferenceJob(input, { jobs, references, adapter: new MockMediaAdapter(), objects: { put } }))
       .rejects.toThrow("disk busy");
     expect(jobs.failJob).not.toHaveBeenCalled();
+  });
+});
+
+describe("character reference lease recovery isolates each attempt (closeout item 6)", () => {
+  const row = (jobId: string) => ({ workspaceId: input.workspaceId, jobId, attemptId: `attempt-${jobId}`,
+    providerConfigurationId: input.providerConfigurationId, providerRequestId: `mock-media|sync|image.generate|${jobId}:1`,
+    cancelRequested: false });
+
+  function recovery(options: { complete: (jobId: string) => Promise<unknown>; load?: (jobId: string) => Promise<unknown>;
+    failJob?: () => Promise<unknown> }) {
+    const jobs = {
+      failJob: vi.fn(options.failJob ?? (async () => "failed")),
+      recordProviderEvent: vi.fn(async () => true),
+      recoverExpiredLease: vi.fn(async () => "requeued"),
+      confirmCancellation: vi.fn(async () => undefined),
+    } as unknown as JobPersistenceService;
+    const store = {
+      listExpiredMockMedia: vi.fn(async () => ["permanent", "transient", "sibling"].map(row)),
+      loadCharacterReferenceExecution: vi.fn(async (_workspace: string, jobId: string) => (options.load
+        ? options.load(jobId)
+        : { workspaceId: input.workspaceId, jobId, projectId: input.projectId, state: "RUNNING", inputSnapshot: input.inputSnapshot })),
+    } as unknown as RuntimeStore;
+    const references = { completeGeneration: vi.fn(async (_jobs: unknown, call: { jobId: string }) => options.complete(call.jobId)) } as unknown as CharacterReferenceStore;
+    const adapter = new MockMediaAdapter();
+    const submit = vi.spyOn(adapter, "submit");
+    return { jobs, references, submit,
+      run: () => new CharacterReferenceRecovery(jobs, store, { references, adapter, objects: { put: async () => undefined } }, true).reconcileOnce() };
+  }
+
+  it("ends only the permanently refused attempt, keeps a transient one for the next pass, and reports it", async () => {
+    const transient = Object.assign(new Error("Connection terminated unexpectedly"), {});
+    const { jobs, references, submit, run } = recovery({ complete: async (jobId) => {
+      if (jobId === "permanent") throw new PersistenceError("SOURCE_STALE", "Character revision is STALE");
+      if (jobId === "transient") throw transient;
+      return { id: `asset-${jobId}` };
+    } });
+    const failure = await run().then(() => null, (error: unknown) => error);
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).errors).toEqual([transient]);
+    expect(jobs.failJob).toHaveBeenCalledTimes(1);
+    expect(jobs.failJob).toHaveBeenCalledWith(expect.objectContaining({ jobId: "permanent", attemptId: "attempt-permanent",
+      errorCode: "MOCK_REFERENCE_REJECTED", retryable: false }));
+    expect(references.completeGeneration).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ jobId: "sibling" }));
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  it("does not let a failed read of one execution skip its siblings", async () => {
+    const fault = new Error("statement timeout");
+    const { references, run } = recovery({ complete: async (jobId) => ({ id: jobId }),
+      load: async (jobId) => {
+        if (jobId === "permanent") throw fault;
+        return { workspaceId: input.workspaceId, jobId, projectId: input.projectId, state: "RUNNING", inputSnapshot: input.inputSnapshot };
+      } });
+    await expect(run()).rejects.toMatchObject({ errors: [fault] });
+    expect(vi.mocked(references.completeGeneration).mock.calls.map((call) => (call[1] as { jobId: string }).jobId))
+      .toEqual(["transient", "sibling"]);
+  });
+
+  it("reports a failed settlement of a permanent refusal instead of swallowing it, but ignores a terminal race", async () => {
+    const settle = new Error("deadlock detected");
+    const reported = recovery({ complete: async (jobId) => {
+      if (jobId === "permanent") throw new PersistenceError("REVIEW_REQUIRED", "refused");
+      return { id: jobId };
+    }, failJob: async () => { throw settle; } });
+    await expect(reported.run()).rejects.toMatchObject({ errors: [settle] });
+
+    const raced = recovery({ complete: async (jobId) => {
+      if (jobId === "permanent") throw new PersistenceError("REVIEW_REQUIRED", "refused");
+      return { id: jobId };
+    }, failJob: async () => { throw new PersistenceError("ATTEMPT_SUPERSEDED", "newer attempt"); } });
+    await expect(raced.run()).resolves.toBeUndefined();
   });
 });

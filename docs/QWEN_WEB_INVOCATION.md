@@ -10,7 +10,8 @@
 - 执行者租约：每次发送有 `executor_id` 和 `lease_until`（客户端最长发送时间 60 秒的两倍）。只有持有者能把 `reserved` 改为 `submitted`、把 `submitted` 结束。恢复只处理租约已过期的记录：从未发送的 `reserved` 记为 `rejected`（`executor_lost_before_send`），已发送的 `submitted` 记为 `unknown`（`executor_lost`）。活动租约永远不会被重放或恢复改写；迟到的原执行者被条件更新挡住。
 - 草案 `prisma/drafts/20261005000100_qwen_web_writing.sql` 为此补充了 `executor_id`、`lease_until` 和三个索引，仍未执行。
 - API：`GET /api/v1/writing/qwen-candidates/status`、`POST /api/v1/projects/:projectId/writing/qwen-candidates`（请求体 `{ input }`，`input` 为 `qwen.writing.input.v1`，需 `Idempotency-Key`）、`GET /api/v1/projects/:projectId/writing/qwen-candidates/:requestId`。都需要 `X-Operator-Token`，响应 `Cache-Control: private, no-store`。原占位 `POST /api/v1/writing/qwen-candidates` 已移除。
-- 判定顺序：生产或开关关闭 → 404 `QWEN_WEB_DISABLED`；令牌不符（定长比较）→ 403；服务端密钥、官方端点或模型无效 → 503 `QWEN_WEB_PROVIDER_UNCONFIGURED`；存储未就绪 → 503 `QWEN_WEB_STORAGE_UNAVAILABLE`。这些都在预约和发送之前。
+- 判定顺序：生产或开关关闭 → 404 `QWEN_WEB_DISABLED`；令牌不符（定长比较）→ 403；服务端密钥、官方端点或模型无效 → 503 `QWEN_WEB_PROVIDER_UNCONFIGURED`；存储未就绪 → 503 `QWEN_WEB_STORAGE_UNAVAILABLE`。这些都在预约和发送之前。前三项不访问数据库：未授权请求不会触发结构探测，也无法得知草案表是否存在。
+- 输入字节上限：计量对象是 `input` 的紧凑 JSON 序列化（`JSON.stringify`）的 UTF-8 字节数，上限 256,000（`qwenWritingInputByteLength`，CLI 读取的输入文件与浏览器发送的 `input` 是同一序列化）。网页在准备指令后即提示并禁用发送，且不为超限输入生成请求标识；服务端在维护、预约和发送之前独立返回 413 `QWEN_WEB_INPUT_TOO_LARGE`，不写记录。
 - 密钥：`DASHSCOPE_API_KEY`、`BAILIAN_BASE_URL`、`QWEN_WEB_MODEL` 只从 API 进程环境读取，不读 `.env` 文件，不进响应、日志或浏览器。
 - 响应只给 `requestId`、状态、错误码、候选正文（未过期时）、过期时间、`billingStatus: "unknown"`；不返回执行者、幂等键、冻结输入或密钥。
 - API 每 60 秒（及每次请求/查询前）执行一次租约恢复和候选过期清理。过期只清空 `candidate_json`，幂等与审计行保留。

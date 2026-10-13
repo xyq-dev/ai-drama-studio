@@ -1,9 +1,11 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { Pool, type PoolClient } from "pg";
+import { Pool, type PoolClient, type QueryResultRow } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { runMigrations } from "./migrations";
 import { CharacterReferenceStore, assertFrozenReferencesUsable } from "./character-reference-store";
+import { JobPersistenceService } from "./job-service";
+import { guardSynchronousMockReferenceCost } from "./mock-media-cost";
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) throw new Error("DATABASE_URL is required for PostgreSQL integration tests");
@@ -15,6 +17,14 @@ if (!databaseUrl) throw new Error("DATABASE_URL is required for PostgreSQL integ
 const draftAuthorized = process.env.CHARACTER_REFERENCE_DRAFT_SQL_AUTHORIZED === "true";
 
 const pool = new Pool({ connectionString: databaseUrl, max: 4 });
+
+/** Applies the reference draft once per run, for whichever draft-only block starts first. */
+let draftApplied: Promise<void> | null = null;
+function applyReferenceDraft(): Promise<void> {
+  draftApplied ??= readFile(join(__dirname, "..", "prisma", "drafts", "20261005000200_character_reference_image.sql"), "utf8")
+    .then(async (draft) => { await pool.query(draft); });
+  return draftApplied;
+}
 const store = new CharacterReferenceStore(pool);
 const hash = "ab".repeat(32);
 
@@ -94,6 +104,101 @@ describe("CharacterReferenceStore without the reference draft", () => {
   });
 });
 
+describe("reference ACTUAL cost identity on applied tables (closeout item 7)", () => {
+  const revision = "33333333-3333-4333-8333-333333333333";
+  const snapshot = { schema: "m3.mock.character-reference.v1", characterRevisionId: revision,
+    characterContentHash: "cd".repeat(32), seed: null, bypassCache: false, outcome: "success", executionMode: "sync",
+    capability: "image.generate" };
+
+  async function bound(overrides: { kind?: string; capability?: string; attemptSnapshot?: unknown } = {}) {
+    const one = async (text: string, values: unknown[]) => String((await pool.query<{ id: string }>(text, values)).rows[0]!.id);
+    const workspaceId = await one("INSERT INTO workspace (name) VALUES ('reference-cost') RETURNING id", []);
+    const projectId = await one("INSERT INTO project (workspace_id, title) VALUES ($1, 'reference-cost') RETURNING id", [workspaceId]);
+    const providerConfigurationId = await one(
+      `INSERT INTO provider_configuration (workspace_id, provider_key, capability, default_timeout_ms)
+       VALUES ($1, 'mock-media', $2, 30000) RETURNING id`, [workspaceId, overrides.capability ?? "image.generate"]);
+    const workflowRunId = await one(
+      `INSERT INTO workflow_run (workspace_id, project_id, type, requested_by, input_snapshot)
+       VALUES ($1, $2, 'MEDIA_CHARACTER_REFERENCE', 'test', '{}'::jsonb) RETURNING id`, [workspaceId, projectId]);
+    const generationJobId = await one(
+      `INSERT INTO generation_job (workspace_id, project_id, workflow_run_id, kind, input_hash, input_snapshot)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb) RETURNING id`,
+      [workspaceId, projectId, workflowRunId, overrides.kind ?? "MEDIA_CHARACTER_REFERENCE", hash, JSON.stringify(snapshot)]);
+    const providerRequestId = `mock-media|sync|image.generate|${generationJobId}:1`;
+    const sourceJobAttemptId = await one(
+      `INSERT INTO job_attempt (workspace_id, generation_job_id, attempt_no, provider_configuration_id, provider_request_id,
+         provider_client_request_key, request_snapshot)
+       VALUES ($1, $2, 1, $3, $4, $5, $6::jsonb) RETURNING id`,
+      [workspaceId, generationJobId, providerConfigurationId, providerRequestId, `${generationJobId}:1`,
+        JSON.stringify(overrides.attemptSnapshot ?? snapshot)]);
+    const asset = { workspaceId, projectId, generationJobId, sourceJobAttemptId, characterRevisionId: revision,
+      providerConfigurationId, providerRequestId };
+    const cost = { workspaceId, projectId, generationJobId, jobAttemptId: sourceJobAttemptId, providerConfigurationId,
+      providerRequestId, idempotencyKey: `${providerRequestId}:request:actual`, currency: "USD", amountDecimal: "0.00000000",
+      kind: "ACTUAL", basis: "PROVIDER_REPORTED", unitType: "request", unitQuantity: "1.00000000",
+      unitPriceSnapshot: "0.00000000", provider: "mock-media", model: "mock-v1" };
+    return { asset, cost };
+  }
+
+  const guard = (asset: Parameters<typeof guardSynchronousMockReferenceCost>[1],
+    cost: Parameters<typeof guardSynchronousMockReferenceCost>[2]) =>
+    store.transaction((client) => guardSynchronousMockReferenceCost(client, asset, cost));
+
+  it("accepts the frozen request's own zero-dollar actual", async () => {
+    const { asset, cost } = await bound();
+    await expect(guard(asset, cost)).resolves.toBeUndefined();
+  });
+
+  it("refuses a cost that names another request, attempt, job, provider, model, key or amount", async () => {
+    const { asset, cost } = await bound();
+    const other = await bound();
+    const variants = [
+      { providerRequestId: other.asset.providerRequestId, idempotencyKey: `${other.asset.providerRequestId}:request:actual` },
+      { jobAttemptId: other.asset.sourceJobAttemptId },
+      { generationJobId: other.asset.generationJobId },
+      { projectId: other.asset.projectId },
+      { providerConfigurationId: other.asset.providerConfigurationId },
+      { provider: "other-media" },
+      { model: "mock-v2" },
+      { idempotencyKey: `${asset.providerRequestId}:request:estimated` },
+      { kind: "ESTIMATED" },
+      { currency: "CNY" },
+      { amountDecimal: "0.01000000" },
+    ];
+    for (const variant of variants) {
+      await expect(guard(asset, { ...cost, ...variant })).rejects.toMatchObject({ code: "COST_CONFLICT" });
+    }
+  });
+
+  it("refuses when the stored job, attempt or configuration is not this frozen reference request", async () => {
+    for (const overrides of [{ kind: "MEDIA_IMAGE" }, { capability: "video.generate" },
+      { attemptSnapshot: { ...snapshot, seed: "drift" } }]) {
+      const { asset, cost } = await bound(overrides);
+      await expect(guard(asset, cost)).rejects.toMatchObject({ code: "COST_CONFLICT" });
+    }
+    const { asset, cost } = await bound();
+    await expect(guard({ ...asset, characterRevisionId: "44444444-4444-4444-8444-444444444444" }, cost))
+      .rejects.toMatchObject({ code: "COST_CONFLICT" });
+    await pool.query("UPDATE job_attempt SET provider_client_request_key = 'other' WHERE id = $1", [asset.sourceJobAttemptId]);
+    await expect(guard(asset, cost)).rejects.toMatchObject({ code: "COST_CONFLICT" });
+  });
+
+  it("refuses when an estimate exists for the request or its estimate key is taken", async () => {
+    for (const key of ["other-estimate", "estimated-key"]) {
+      const { asset, cost } = await bound();
+      await pool.query(
+        `INSERT INTO cost_ledger (workspace_id, project_id, generation_job_id, job_attempt_id, idempotency_key,
+           provider_configuration_id, provider_request_id, currency, amount_decimal, kind, basis, unit_type, unit_quantity,
+           unit_price_snapshot, provider, model)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'USD', 0, $8, 'PROVIDER_REPORTED', 'request', 1, 0, 'mock-media', 'mock-v1')`,
+        [asset.workspaceId, asset.projectId, asset.generationJobId, asset.sourceJobAttemptId,
+          key === "other-estimate" ? "other-estimate" : `${asset.providerRequestId}:request:estimated`,
+          asset.providerConfigurationId, asset.providerRequestId, key === "other-estimate" ? "ESTIMATED" : "ACTUAL"]);
+      await expect(guard(asset, cost)).rejects.toMatchObject({ code: "COST_CONFLICT" });
+    }
+  });
+});
+
 describe.runIf(draftAuthorized)("CharacterReferenceStore on the authorized reference draft", () => {
   let workspaceId: string;
   let projectId: string;
@@ -104,21 +209,22 @@ describe.runIf(draftAuthorized)("CharacterReferenceStore on the authorized refer
     return String((await pool.query<{ id: string }>(sql, values)).rows[0]!.id);
   }
 
-  async function reference(characterRevisionId: string, key: string): Promise<string> {
+  /** createdAt is fixed at insert: asset provenance (including created_at) is immutable afterwards. */
+  async function reference(characterRevisionId: string, key: string, createdAt?: string): Promise<string> {
     return one(
       `INSERT INTO asset (workspace_id, project_id, kind, storage_provider, object_key, mime_type, byte_size,
-         checksum_sha256, source_kind, reference_role, source_character_revision_id)
-       VALUES ($1, $2, 'IMAGE', 'mock-object-store', $3, 'image/png', 1, $4, 'UPLOAD', 'character_reference', $5)
+         checksum_sha256, source_kind, reference_role, source_character_revision_id, created_at)
+       VALUES ($1, $2, 'IMAGE', 'mock-object-store', $3, 'image/png', 1, $4, 'UPLOAD', 'character_reference', $5,
+         COALESCE($6::timestamptz, now()))
        RETURNING id`,
-      [workspaceId, projectId, key, hash, characterRevisionId],
+      [workspaceId, projectId, key, hash, characterRevisionId, createdAt ?? null],
     );
   }
 
   const tx = <T>(work: (client: PoolClient) => Promise<T>) => store.transaction(work);
 
   beforeAll(async () => {
-    const draft = await readFile(join(__dirname, "..", "prisma", "drafts", "20261005000200_character_reference_image.sql"), "utf8");
-    await pool.query(draft);
+    await applyReferenceDraft();
     workspaceId = await one("INSERT INTO workspace (name) VALUES ('reference') RETURNING id", []);
     projectId = await one("INSERT INTO project (workspace_id, title) VALUES ($1, 'reference') RETURNING id", [workspaceId]);
     characterId = await one("INSERT INTO character (workspace_id, project_id, name) VALUES ($1, $2, 'lin') RETURNING id",
@@ -160,11 +266,16 @@ describe.runIf(draftAuthorized)("CharacterReferenceStore on the authorized refer
     await expect(tx((client) => store.selectInTransaction(client, { workspaceId, characterId, assetId: good,
       expectedSelectedAssetId: null, selectedBy: "owner", traceId: "t" })))
       .rejects.toMatchObject({ code: "REFERENCE_SELECTION_CONFLICT", details: { currentAssetId: good } });
-    expect((await store.listForCharacter(workspaceId, characterId)).selection).toMatchObject({ assetId: good, usable: true });
+    // The reference is good, but the strict video gate also needs the character revision approved (closeout item 2).
+    const selectedListing = await store.listForCharacter(workspaceId, characterId);
+    expect(selectedListing.selection).toMatchObject({ assetId: good, usable: false, asset: { id: good } });
+    expect(selectedListing.videoReadiness).toEqual({ usable: false, blockers: ["CHARACTER_REVISION_NOT_APPROVED"] });
     await tx((client) => assertFrozenReferencesUsable(client, workspaceId,
       [{ characterRevisionId: revisionId, assetId: good, checksumSha256: hash }]));
     await pool.query("UPDATE asset SET status = 'STALE', row_version = row_version + 1 WHERE id = $1", [good]);
-    expect((await store.listForCharacter(workspaceId, characterId)).selection).toMatchObject({ assetId: good, usable: false });
+    const staleListing = await store.listForCharacter(workspaceId, characterId);
+    expect(staleListing.selection).toMatchObject({ assetId: good, usable: false });
+    expect(staleListing.videoReadiness.blockers).toEqual(["CHARACTER_REVISION_NOT_APPROVED", "REFERENCE_NOT_ACTIVE"]);
     await expect(tx((client) => assertFrozenReferencesUsable(client, workspaceId,
       [{ characterRevisionId: revisionId, assetId: good, checksumSha256: hash }])))
       .rejects.toMatchObject({ code: "CHARACTER_REFERENCE_REQUIRED" });
@@ -197,5 +308,153 @@ describe.runIf(draftAuthorized)("CharacterReferenceStore on the authorized refer
     const status = Object.fromEntries(rows.map((row) => [row.id, row.status]));
     expect(status).toMatchObject({ [a]: "ACTIVE", [b]: "ACTIVE", [video]: "STALE", [composite]: "STALE", [unrelated]: "ACTIVE" });
     expect(rows.find((row) => row.id === a)?.review_status).toBe("APPROVED");
+  });
+
+  it("reads a selection older than the newest 100 references by id, in scope only (closeout item 1)", async () => {
+    const approve = (assetId: string) => tx((client) => store.reviewInTransaction(client, { workspaceId, assetId,
+      reviewedBy: "owner", traceId: "t", decision: "APPROVED", expectedRowVersion: 1, contentHash: hash, note: null }));
+    const oldest = await reference(revisionId, "refs/page-oldest.png", new Date(Date.now() - 86_400_000).toISOString());
+    await approve(oldest);
+    const current = (await store.listForCharacter(workspaceId, characterId)).selection?.assetId ?? null;
+    await tx((client) => store.selectInTransaction(client, { workspaceId, characterId, assetId: oldest,
+      expectedSelectedAssetId: current, selectedBy: "owner", traceId: "t" }));
+    for (let index = 0; index < 120; index += 1) await reference(revisionId, `refs/page-${index}.png`);
+    const listing = await store.listForCharacter(workspaceId, characterId);
+    expect(listing.items).toHaveLength(100);
+    expect(listing.hasMore).toBe(true);
+    expect(listing.items.some((item) => item.id === oldest)).toBe(false);
+    expect(listing.selection).toMatchObject({ assetId: oldest, asset: { id: oldest, reviewStatus: "APPROVED" } });
+    // Only the unapproved character revision blocks it; the reference is found and usable on its own.
+    expect(listing.videoReadiness.blockers).toEqual(["CHARACTER_REVISION_NOT_APPROVED"]);
+    // Another workspace cannot list this character at all.
+    const stranger = await one("INSERT INTO workspace (name) VALUES ('stranger') RETURNING id", []);
+    await expect(store.listForCharacter(stranger, characterId)).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+});
+
+describe.runIf(draftAuthorized)("completeGeneration with a mismatched cost leaves nothing behind (closeout item 7)", () => {
+  const jobs = new JobPersistenceService(pool);
+
+  beforeAll(async () => {
+    await applyReferenceDraft();
+  });
+
+  async function one(sql: string, values: unknown[]): Promise<string> {
+    return String((await pool.query<{ id: string }>(sql, values)).rows[0]!.id);
+  }
+
+  /** An approved story and script, a current character revision drawn from that script, and a RUNNING reference job. */
+  async function runningReferenceJob() {
+    const workspaceId = await one("INSERT INTO workspace (name) VALUES ('reference-complete') RETURNING id", []);
+    const projectId = await one("INSERT INTO project (workspace_id, title) VALUES ($1, 'reference-complete') RETURNING id", [workspaceId]);
+    const storyId = await one(
+      `INSERT INTO story_revision (workspace_id, project_id, revision_no, content_json, content_hash, created_by)
+       VALUES ($1, $2, 1, '{}'::jsonb, $3, 'test') RETURNING id`, [workspaceId, projectId, hash]);
+    await pool.query(`UPDATE story_revision SET review_status = 'APPROVED', reviewed_by = 'editor', reviewed_at = now(),
+      reviewed_content_hash = content_hash WHERE id = $1`, [storyId]);
+    await pool.query("UPDATE project SET current_story_revision_id = $1, approved_story_revision_id = $1 WHERE id = $2", [storyId, projectId]);
+    const episodeId = await one(
+      "INSERT INTO episode (workspace_id, project_id, episode_no, title) VALUES ($1, $2, 1, 'Episode 1') RETURNING id",
+      [workspaceId, projectId]);
+    const scriptId = await one(
+      `INSERT INTO script_revision (workspace_id, project_id, episode_id, revision_no, source_story_revision_id, content_json,
+         content_hash, created_by) VALUES ($1, $2, $3, 1, $4, '{}'::jsonb, $5, 'test') RETURNING id`,
+      [workspaceId, projectId, episodeId, storyId, hash]);
+    await pool.query(`UPDATE script_revision SET review_status = 'APPROVED', reviewed_by = 'editor', reviewed_at = now(),
+      reviewed_content_hash = content_hash WHERE id = $1`, [scriptId]);
+    await pool.query("UPDATE episode SET current_script_revision_id = $1, approved_script_revision_id = $1 WHERE id = $2",
+      [scriptId, episodeId]);
+    const characterId = await one("INSERT INTO character (workspace_id, project_id, name) VALUES ($1, $2, 'lin') RETURNING id",
+      [workspaceId, projectId]);
+    const characterRevisionId = await one(
+      `INSERT INTO character_revision (workspace_id, project_id, character_id, revision_no, content_json, content_hash, created_by)
+       VALUES ($1, $2, $3, 1, '{}', $4, 'author') RETURNING id`, [workspaceId, projectId, characterId, hash]);
+    await pool.query(
+      `INSERT INTO character_revision_script_source (workspace_id, project_id, character_revision_id, script_revision_id)
+       VALUES ($1, $2, $3, $4)`, [workspaceId, projectId, characterRevisionId, scriptId]);
+    await pool.query("UPDATE character SET current_revision_id = $1 WHERE id = $2", [characterRevisionId, characterId]);
+    const providerConfigurationId = await one(
+      `INSERT INTO provider_configuration (workspace_id, provider_key, capability, default_timeout_ms)
+       VALUES ($1, 'mock-media', 'image.generate', 30000) RETURNING id`, [workspaceId]);
+    const snapshot = { schema: "m3.mock.character-reference.v1", characterRevisionId, characterContentHash: hash, seed: null,
+      bypassCache: false, outcome: "success", executionMode: "sync", capability: "image.generate" };
+    const workflowRunId = await one(
+      `INSERT INTO workflow_run (workspace_id, project_id, type, requested_by, input_snapshot)
+       VALUES ($1, $2, 'MEDIA_CHARACTER_REFERENCE', 'test', '{}'::jsonb) RETURNING id`, [workspaceId, projectId]);
+    const jobId = await one(
+      `INSERT INTO generation_job (workspace_id, project_id, workflow_run_id, kind, input_hash, input_snapshot)
+       VALUES ($1, $2, $3, 'MEDIA_CHARACTER_REFERENCE', $4, $5::jsonb) RETURNING id`,
+      [workspaceId, projectId, workflowRunId, hash, JSON.stringify(snapshot)]);
+    const providerRequestId = `mock-media|sync|image.generate|${jobId}:1`;
+    const attemptId = await one(
+      `INSERT INTO job_attempt (workspace_id, generation_job_id, attempt_no, provider_configuration_id, provider_request_id,
+         provider_client_request_key, request_snapshot)
+       VALUES ($1, $2, 1, $3, $4, $5, $6::jsonb) RETURNING id`,
+      [workspaceId, jobId, providerConfigurationId, providerRequestId, `${jobId}:1`, JSON.stringify(snapshot)]);
+    await pool.query("UPDATE generation_job SET state = 'RUNNING' WHERE id = $1", [jobId]);
+    const objectKey = `mock-references/${projectId}/${characterRevisionId}/${hash}.png`;
+    const actualCost = { workspaceId, projectId, generationJobId: jobId, jobAttemptId: attemptId, providerConfigurationId,
+      providerRequestId, idempotencyKey: `${providerRequestId}:request:actual`, currency: "USD", amountDecimal: "0.00000000",
+      kind: "ACTUAL", basis: "PROVIDER_REPORTED", unitType: "request", unitQuantity: "1.00000000",
+      unitPriceSnapshot: "0.00000000", provider: "mock-media", model: "mock-v1" } as const;
+    const input = { workspaceId, projectId, jobId, attemptId, characterRevisionId, providerConfigurationId, providerRequestId,
+      objectKey, byteSize: 1, checksumSha256: hash, width: 1, height: 1, traceId: "complete-test", actualCost };
+    return { input, workflowRunId };
+  }
+
+  /** Everything a completion writes: asset, dependency, cost, job and attempt state, events and the run status. */
+  async function written(ids: { jobId: string; attemptId: string; objectKey: string; workflowRunId: string }) {
+    const count = async (sql: string, values: unknown[]) => Number((await pool.query<{ n: number }>(sql, values)).rows[0]!.n);
+    const job = (await pool.query<QueryResultRow>(
+      "SELECT state, progress, row_version, completed_at FROM generation_job WHERE id = $1", [ids.jobId])).rows[0]!;
+    const attempt = (await pool.query<QueryResultRow>(
+      "SELECT finished_at, response_snapshot FROM job_attempt WHERE id = $1", [ids.attemptId])).rows[0]!;
+    const run = (await pool.query<QueryResultRow>("SELECT status FROM workflow_run WHERE id = $1", [ids.workflowRunId])).rows[0]!;
+    return {
+      assets: await count("SELECT count(*)::int AS n FROM asset WHERE object_key = $1 OR source_generation_job_id = $2",
+        [ids.objectKey, ids.jobId]),
+      dependencies: await count(
+        `SELECT count(*)::int AS n FROM asset_revision_dependency dependency JOIN asset ON asset.id = dependency.dependent_asset_id
+          WHERE asset.source_generation_job_id = $1`, [ids.jobId]),
+      costs: await count("SELECT count(*)::int AS n FROM cost_ledger WHERE generation_job_id = $1", [ids.jobId]),
+      events: await count("SELECT count(*)::int AS n FROM domain_event WHERE payload_json->>'jobId' = $1", [ids.jobId]),
+      job: { state: job.state, progress: job.progress, rowVersion: Number(job.row_version), completed: job.completed_at !== null },
+      attempt: { finished: attempt.finished_at !== null, response: attempt.response_snapshot },
+      runStatus: run.status,
+    };
+  }
+
+  it("refuses before any write and rolls the whole completion back; the matching cost then succeeds once", async () => {
+    const { input, workflowRunId } = await runningReferenceJob();
+    const ids = { jobId: input.jobId, attemptId: input.attemptId, objectKey: input.objectKey, workflowRunId };
+    const before = await written(ids);
+    expect(before).toMatchObject({ assets: 0, dependencies: 0, costs: 0, job: { state: "RUNNING", completed: false },
+      attempt: { finished: false, response: null } });
+
+    for (const mismatch of [{ model: "mock-v2" }, { jobAttemptId: "55555555-5555-4555-8555-555555555555" },
+      { amountDecimal: "0.01000000" }]) {
+      await expect(store.completeGeneration(jobs, { ...input, actualCost: { ...input.actualCost, ...mismatch } }))
+        .rejects.toMatchObject({ code: "COST_CONFLICT" });
+      // Nothing partial: no asset, dependency or cost row; job, attempt, events and run status exactly as before.
+      expect(await written(ids)).toEqual(before);
+    }
+
+    const asset = await store.completeGeneration(jobs, input);
+    expect(asset).toMatchObject({ characterRevisionId: input.characterRevisionId, checksumSha256: hash });
+    const after = await written(ids);
+    expect(after).toMatchObject({ assets: 1, dependencies: 1, costs: 1,
+      job: { state: "SUCCEEDED", progress: 100, rowVersion: before.job.rowVersion + 1, completed: true },
+      attempt: { finished: true, response: { outputAssetIds: [asset!.id] } } });
+    expect(after.events).toBe(before.events + 1);
+    const cost = (await pool.query<QueryResultRow>(
+      "SELECT kind, amount_decimal::text AS amount, idempotency_key, provider, model FROM cost_ledger WHERE generation_job_id = $1",
+      [input.jobId])).rows[0]!;
+    expect(cost).toMatchObject({ kind: "ACTUAL", idempotency_key: input.actualCost.idempotencyKey, provider: "mock-media",
+      model: "mock-v1" });
+    expect(Number(cost.amount)).toBe(0);
+
+    // A redelivered completion of the finished job writes nothing more.
+    await expect(store.completeGeneration(jobs, input)).rejects.toMatchObject({ code: "JOB_TERMINAL" });
+    expect(await written(ids)).toEqual(after);
   });
 });

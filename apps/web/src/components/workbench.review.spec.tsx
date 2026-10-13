@@ -35,6 +35,8 @@ interface Sim {
   holdGetPart: string | null;
   failGetPart: string | null;
   characterPostGate: Promise<void> | null;
+  /** Holds a character reference generation POST until resolved; it then answers 202 and a QUEUED reference run exists. */
+  referencePostGate: Promise<void> | null;
   scenePostGate: Promise<void> | null;
   shotPostGate: Promise<void> | null;
   withLocation: boolean;
@@ -49,6 +51,7 @@ interface Sim {
   imageAssets: Record<string, Array<Record<string, unknown>>>;
   mediaImage: boolean;
   mediaTask: boolean;
+  referenceTaskState: string | null;
   mediaTaskState: string;
   mediaTaskErrorCode: string | null;
   mediaRetryResponse: { status: number; body: unknown } | null;
@@ -106,6 +109,7 @@ function createSim(): Sim {
     holdGetPart: null,
     failGetPart: null,
     characterPostGate: null,
+    referencePostGate: null,
     scenePostGate: null,
     shotPostGate: null,
     withLocation: false,
@@ -120,6 +124,7 @@ function createSim(): Sim {
     imageAssets: {},
     mediaImage: false,
     mediaTask: false,
+    referenceTaskState: null,
     mediaTaskState: "FAILED",
     mediaTaskErrorCode: "MOCK_IMAGE_OUTPUT_INVALID",
     mediaRetryResponse: null,
@@ -344,6 +349,14 @@ function createSim(): Sim {
       if (sim.failWorkflowRead === sim.workflowReads || sim.failWorkflowReads.includes(sim.workflowReads)) {
         return fail(500, "REFRESH_FAILED", "任务刷新失败");
       }
+      if (sim.referenceTaskState) {
+        return json([{
+          id: "reference-run", type: "MEDIA_CHARACTER_REFERENCE", status: sim.referenceTaskState,
+          createdAt: "2026-09-30T00:00:00.000Z",
+          jobs: [{ id: "reference-job", kind: "MEDIA_CHARACTER_REFERENCE", state: sim.referenceTaskState, errorCode: null,
+            errorMessage: null, sourceShotRevisionId: null, attempts: [] }],
+        }]);
+      }
       if (sim.mediaTask) {
         return json([{
           id: "media-run",
@@ -563,6 +576,23 @@ function createSim(): Sim {
           jobKind: "MEDIA_IMAGE", inputHash: "ab".repeat(32), newCost: "none" }, 200);
       }
       return json({ workflowRunId: "media-run", jobId: "media-job" }, 202);
+    }
+    const referenceList = /^\/api\/v1\/characters\/([^/]+)\/reference-images$/.exec(path);
+    if (referenceList && method === "GET") {
+      const id = referenceList[1] === CHAR_B ? CHAR_B : CHAR_A;
+      const approved = id === CHAR_A && characterStatus === "APPROVED";
+      return json({ characterId: id, currentRevisionId: id === CHAR_B ? "rev-b1" : characterRevId, selection: null,
+        videoReadiness: { usable: false,
+          blockers: approved ? ["REFERENCE_NOT_SELECTED"] : ["CHARACTER_REVISION_NOT_APPROVED", "REFERENCE_NOT_SELECTED"] },
+        items: [], hasMore: false });
+    }
+    if (/^\/api\/v1\/character-revisions\/[^/]+\/reference-images\/generate$/.test(path) && method === "POST") {
+      if (sim.referencePostGate) await sim.referencePostGate;
+      sim.referenceTaskState = "QUEUED";
+      return json({ workflowRunId: "reference-run", jobId: "reference-job", dispatchSeq: 1 }, 202);
+    }
+    if (path === "/api/v1/generation-jobs/reference-job" && method === "GET") {
+      return json({ id: "reference-job", state: sim.referenceTaskState ?? "QUEUED", errorCode: null, errorMessage: null });
     }
     return fail(404, "NOT_FOUND", path);
   };
@@ -1489,6 +1519,55 @@ describe("workbench review interactions against a simulated API", () => {
     fireEvent.click(retry);
     expect(sim.calls.filter((call) => call.url.endsWith("/retry"))).toHaveLength(0);
   });
+
+  it("re-reads reference readiness after the character is approved on the same revision (Codex review on d3f504e)", async () => {
+    const sim = createSim();
+    install(sim);
+    renderAt("focus=character");
+    await openCharacter(CHAR_A);
+    expect(await screen.findByText("角色当前版本尚未审核通过")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "提交审核" }));
+    fireEvent.click(await screen.findByRole("button", { name: "通过" }));
+    expect((await screen.findAllByText(/已通过 APPROVED/)).length).toBeGreaterThan(0);
+    await waitFor(() => expect(screen.queryByText("角色当前版本尚未审核通过")).toBeNull());
+  }, 15000);
+
+  it("lists a reference job accepted after the user switched character, and follows it (Codex review on b6aef4a)", async () => {
+    const sim = createSim();
+    let release!: () => void;
+    sim.referencePostGate = new Promise<void>((resolve) => { release = resolve; });
+    install(sim);
+    renderAt("focus=character");
+    await openCharacter(CHAR_A);
+    fireEvent.click(await screen.findByRole("button", { name: "为当前版本生成参考图" }));
+    await waitFor(() => expect(postsEnding(sim, "/reference-images/generate")).toHaveLength(1));
+    // Switch to another character in the same project before the 202 arrives.
+    await openCharacter(CHAR_B);
+    await screen.findByRole("button", { name: "为当前版本生成参考图" });
+    const before = sim.workflowReads;
+    release();
+    // Nothing was running, so only the acceptance can make the page read the runs again.
+    await waitFor(() => expect(sim.workflowReads).toBeGreaterThan(before));
+    fireEvent.click(screen.getByRole("button", { name: "任务" }));
+    expect(await screen.findByText("角色参考图 · 进行中 QUEUED")).toBeTruthy();
+    // Character B's panel does not adopt character A's job.
+    expect(screen.queryByText(/参考图任务 referenc/)).toBeNull();
+  }, 15000);
+
+  it("lists a character reference generation in the task area without a retry, and keeps polling it while it runs (closeout item 5)", async () => {
+    const sim = createSim();
+    sim.referenceTaskState = "RUNNING";
+    install(sim);
+    renderAt(`focus=shot&episode=1&scene=scene-1&shot=${SHOT_A}`);
+    fireEvent.click(await screen.findByRole("button", { name: "任务" }));
+    expect(await screen.findByText(/角色参考图 · /)).toBeTruthy();
+    expect(screen.queryByText("没有参考图任务")).toBeNull();
+    const reads = sim.workflowReads;
+    await waitFor(() => expect(sim.workflowReads).toBeGreaterThan(reads), { timeout: 5000 });
+    const card = screen.getByText(/角色参考图 · /).closest("li")!;
+    expect(card.textContent).not.toContain("重试");
+    expect(card.querySelector("button")?.textContent).toBe("取消");
+  }, 15000);
 
   it.each([
     ["FAILED", "MOCK_IMAGE_RUNTIME_FAILED"],

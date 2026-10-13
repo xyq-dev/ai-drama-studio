@@ -152,6 +152,7 @@ export {
   assertFixedMockImageSnapshot,
   assertSyncActualCost,
   guardSynchronousMockImageCost,
+  guardSynchronousMockReferenceCost,
   providerCostMatches,
   recordProviderActualCost,
   type ProviderActualCostInput,

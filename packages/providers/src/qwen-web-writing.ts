@@ -1,5 +1,5 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
-import { WRITING_PROMPT_VERSION, parseQwenWritingInput, type QwenWritingInput } from "@ai-drama/contracts";
+import { QWEN_WRITING_INPUT_MAX_BYTES, WRITING_PROMPT_VERSION, parseQwenWritingInput, qwenWritingInputByteLength, type QwenWritingInput } from "@ai-drama/contracts";
 import { buildEpisodeDraftInstruction, buildStoryPlanInstruction } from "@ai-drama/domain";
 import { QWEN_CHAT_MAX_TOKENS, QWEN_CHAT_MODEL_ENV, QWEN_CHAT_TIMEOUT_MS, buildQwenChatBody, qwenFailureMessage, readQwenApiKey, redactSecret, resolveQwenChatEndpoint, selectedQwenModel, sendQwenChat, type QwenTransport } from "./qwen-chat";
 import { acceptPreparedCandidate } from "./qwen-writing";
@@ -237,7 +237,13 @@ function hashInput(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
+/** Refused before any reservation, send or record: the UTF-8 bytes of the serialized input exceed the cap. */
+export const QWEN_WEB_INPUT_TOO_LARGE = "QWEN_WEB_INPUT_TOO_LARGE";
+
 export async function runQwenWebWriting(options: RunQwenWebWritingInput): Promise<QwenWebWritingResult> {
+  if (qwenWritingInputByteLength(options.input) > QWEN_WRITING_INPUT_MAX_BYTES) {
+    return { status: 413, code: QWEN_WEB_INPUT_TOO_LARGE, requestCount: 0, record: null };
+  }
   const parsed = parseQwenWritingInput(options.input);
   if (!parsed.ok) return { status: 400, code: "invalid_input", requestCount: 0, record: null };
   const model = selectedQwenModel({ [QWEN_CHAT_MODEL_ENV]: options.requestedModel });

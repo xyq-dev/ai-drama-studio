@@ -4,6 +4,7 @@ import { QWEN_WRITING_DEFAULT_MODEL } from "./qwen-writing";
 import {
   InMemoryQwenWebStore,
   QWEN_WEB_EXECUTOR_LEASE_MS,
+  QWEN_WEB_INPUT_TOO_LARGE,
   QWEN_WEB_LOST_AFTER_SEND,
   QWEN_WEB_LOST_BEFORE_SEND,
   QWEN_WEB_REPLAY_POLICY,
@@ -352,5 +353,26 @@ describe("qwen web writing", () => {
     expect(result.code).toBe("completed");
     expect(calls).toHaveLength(1);
     expect(calls[0]).not.toContain("untrusted caller body");
+  });
+
+  it("refuses an input over 256,000 UTF-8 bytes before reserving or sending, and keeps the same key usable", async () => {
+    const store = new InMemoryQwenWebStore();
+    const sent = transportOf(200, completion(PLAN));
+    let reservations = 0;
+    const reserve = store.reserve.bind(store);
+    store.reserve = async (...args) => { reservations += 1; return reserve(...args); };
+    const note = "\u0001".repeat(1_000);
+    const episode = { schema: "qwen.writing.input.v1", mode: "episode", episodeNo: 1, premise: note, genre: note,
+      audience: note, characters: note, confirmedStory: "\u0001".repeat(20_000), currentText: "\u0001".repeat(20_000),
+      revisionRequest: note, mustKeep: note, mustKeepDialogue: note, mustKeepEnding: note };
+    const refused = await base(store, sent.transport, episode, "big-key");
+    expect(refused).toEqual({ status: 413, code: QWEN_WEB_INPUT_TOO_LARGE, requestCount: 0, record: null });
+    expect(reservations).toBe(0);
+    expect(await store.findByKey("workspace-1", "operator-1", "big-key")).toBeNull();
+    expect(sent.calls).toEqual([]);
+    // Nothing was recorded under the key, so a corrected input on the same key is a first request.
+    const corrected = await base(store, sent.transport, INPUT, "big-key");
+    expect(corrected.code).toBe("completed");
+    expect(sent.calls).toHaveLength(1);
   });
 });

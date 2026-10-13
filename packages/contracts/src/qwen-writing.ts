@@ -8,6 +8,20 @@ export const QWEN_WRITING_RECEIPT_SCHEMA = "qwen.writing.receipt.v1" as const;
 /** Large enough for a legal long story plus the other bounded notes. */
 export const QWEN_WRITING_INPUT_MAX_BYTES = 256_000;
 
+/**
+ * The metered object for the 256,000-byte cap: the input serialized as compact JSON, counted in UTF-8 bytes. The
+ * CLI reads the same serialization from its input file; the browser sends exactly this text as `input` and the API
+ * re-serializes the parsed value to the same bytes. String length is not a byte count (CJK is 3 bytes, emoji 4).
+ */
+export function qwenWritingInputByteLength(input: unknown): number {
+  const text = JSON.stringify(input);
+  return text === undefined ? 0 : new TextEncoder().encode(text).byteLength;
+}
+
+export function qwenWritingInputWithinLimit(input: unknown): boolean {
+  return qwenWritingInputByteLength(input) <= QWEN_WRITING_INPUT_MAX_BYTES;
+}
+
 const note = z.string().max(WRITING_NOTE_MAX_CHARS).refine((value) => !value.includes("\u0000"), "文本含有空字符");
 const body = z.string().max(WRITING_BODY_MAX_CHARS).refine((value) => !value.includes("\u0000"), "文本含有空字符");
 const episodeNo = z.union([z.literal(1), z.literal(2), z.literal(3)]);

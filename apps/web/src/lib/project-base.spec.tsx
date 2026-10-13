@@ -2,7 +2,7 @@
 // useProjectBase against a stubbed fetch with controllable answers and fake timers. No browser or server.
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { POLL_MS, useProjectBase, type WorkflowRun } from "./project-base";
+import { POLL_MS, REFERENCE_WORKFLOW_TYPE, useProjectBase, type WorkflowRun } from "./project-base";
 
 const P1 = "11111111-1111-4111-8111-111111111111";
 const P2 = "22222222-2222-4222-8222-222222222222";
@@ -601,5 +601,111 @@ describe("a superseded workflow poll failure does not restart the backoff (PR #5
     await advance(60_000);
     expect(server.calls.length).toBe(reads);
     unmount();
+  });
+});
+
+function referenceRun(state: string): WorkflowRun {
+  return { id: "run-reference", type: REFERENCE_WORKFLOW_TYPE, status: state, createdAt: "2026-10-13T00:00:00.000Z",
+    jobs: [{ id: "job-reference", kind: REFERENCE_WORKFLOW_TYPE, state, errorCode: null, errorMessage: null }] };
+}
+
+describe("a character reference job accepted while nothing runs reaches the task list (PR #49 review 1)", () => {
+  it("idle, the panel's acceptance callback rereads: the job is listed and followed to its end without touching text or media", async () => {
+    const server: Server = { runs: [], project: [], calls: [] };
+    install(server);
+    const { result } = renderHook(() => useProjectBase(P1, "失败"));
+    await settle();
+    // Nothing runs: the poll chain has ended, and on its own nothing would read the runs again.
+    await advance(30_000);
+    const idleReads = runsReads(server);
+    expect(result.current.workflows).toHaveLength(0);
+    // The reference panel got its 202 and calls back with its project (EntityPane wires it to reloadForProject).
+    server.runs = [referenceRun("QUEUED")];
+    act(() => { result.current.reloadForProject(P1); });
+    await settle();
+    expect(runsReads(server)).toBe(idleReads + 1);
+    expect(result.current.workflows.map((run) => run.type)).toEqual([REFERENCE_WORKFLOW_TYPE]);
+    const epochs = { image: result.current.imageEpoch, refresh: result.current.refreshEpoch,
+      reference: result.current.referenceEpoch };
+    // Followed like other tasks until terminal.
+    server.runs = [referenceRun("SUCCEEDED")];
+    await advance(POLL_MS);
+    expect(result.current.workflows[0]?.status).toBe("SUCCEEDED");
+    // The reference panel is told (referenceEpoch); text entities and shot media are not reloaded for it.
+    expect(result.current.imageEpoch).toBe(epochs.image);
+    expect(result.current.refreshEpoch).toBe(epochs.refresh);
+    expect(result.current.referenceEpoch).toBe(epochs.reference + 1);
+    const reads = server.calls.length;
+    await advance(60_000);
+    expect(server.calls.length).toBe(reads);
+  });
+});
+
+describe("a reference run this page did not accept still refreshes the panel when it ends (Codex review on 0541b1b)", () => {
+  it("found RUNNING on entry (another tab, or a reload): its terminal state bumps referenceEpoch once", async () => {
+    const server: Server = { runs: [referenceRun("RUNNING")], project: [], calls: [] };
+    install(server);
+    const { result } = renderHook(() => useProjectBase(P1, "失败"));
+    await settle();
+    const start = { reference: result.current.referenceEpoch, image: result.current.imageEpoch, refresh: result.current.refreshEpoch };
+    await advance(POLL_MS);
+    expect(result.current.referenceEpoch).toBe(start.reference);
+    server.runs = [referenceRun("FAILED")];
+    await advance(POLL_MS);
+    expect(result.current.referenceEpoch).toBe(start.reference + 1);
+    expect(result.current.imageEpoch).toBe(start.image);
+    expect(result.current.refreshEpoch).toBe(start.refresh);
+    // Terminal on entry or seen again: no further bumps.
+    await advance(60_000);
+    expect(result.current.referenceEpoch).toBe(start.reference + 1);
+  });
+
+  it("a run first seen already terminal bumps it once (Codex review on eaea3dd)", async () => {
+    const server: Server = { runs: [referenceRun("SUCCEEDED")], project: [], calls: [] };
+    install(server);
+    const { result } = renderHook(() => useProjectBase(P1, "失败"));
+    await settle();
+    expect(result.current.referenceEpoch).toBe(1);
+    await act(async () => { await result.current.reloadBase(); });
+    expect(result.current.referenceEpoch).toBe(1);
+  });
+
+  it("a job started and finished in another tab while this one was hidden is picked up on return", async () => {
+    const server: Server = { runs: [], project: [], calls: [] };
+    install(server);
+    const { result } = renderHook(() => useProjectBase(P1, "失败"));
+    await settle();
+    setVisibility("hidden");
+    // Meanwhile another tab submits a reference job and it completes; this tab never saw it running.
+    server.runs = [referenceRun("SUCCEEDED")];
+    const before = result.current.referenceEpoch;
+    setVisibility("visible");
+    await settle();
+    expect(result.current.workflows[0]?.status).toBe("SUCCEEDED");
+    expect(result.current.referenceEpoch).toBe(before + 1);
+  });
+});
+
+describe("reloadForProject only rereads the project still shown (Codex review on b6aef4a)", () => {
+  it("drops a late acceptance for a project the page has left, so old data never replaces the new project's", async () => {
+    const server: Server = { runs: [], project: [], calls: [] };
+    install(server);
+    const { result, rerender } = renderHook(({ id }) => useProjectBase(id, "失败"), { initialProps: { id: P1 } });
+    await settle();
+    const lateCallback = result.current.reloadForProject;
+    rerender({ id: P2 });
+    await settle();
+    expect(result.current.project?.id).toBe(P2);
+    const reads = server.calls.length;
+    // The P1 panel's 202 arrives now, through the callback it was given while P1 was shown.
+    act(() => { lateCallback(P1); });
+    await settle();
+    expect(server.calls.length).toBe(reads);
+    expect(result.current.project?.id).toBe(P2);
+    // For the project shown, it rereads.
+    act(() => { result.current.reloadForProject(P2); });
+    await settle();
+    expect(server.calls.slice(reads)).toContain(`/api/v1/projects/${P2}/workflow-runs`);
+    expect(result.current.project?.id).toBe(P2);
   });
 });

@@ -1,7 +1,8 @@
 import { z } from "zod";
-import type { QwenWritingInput } from "@ai-drama/contracts";
+import { qwenWritingInputWithinLimit, type QwenWritingInput } from "@ai-drama/contracts";
 import { PersistenceError, type PostgresQwenWebStore, type QwenWebStoredRecord, type RuntimeStore } from "@ai-drama/database";
 import {
+  QWEN_WEB_INPUT_TOO_LARGE,
   QWEN_WEB_MAX_CONCURRENCY_DEFAULT,
   QWEN_WEB_MAX_REQUESTS_DEFAULT,
   QWEN_WEB_REPLAY_POLICY,
@@ -80,18 +81,21 @@ export class QwenWebService {
     return this.deps.clock ? this.deps.clock() : new Date();
   }
 
+  /**
+   * The switch, the operator token and the provider config are decided first, with no database access: an
+   * unauthorized caller never triggers a structure probe and cannot learn whether the draft tables exist.
+   */
   private async decide(presentedToken: string | undefined) {
-    const storageReady = this.deps.enabled && this.deps.nodeEnv !== "production"
-      ? await this.deps.store.storageReady()
-      : false;
-    return qwenWebAccessDecision({
+    const access = {
       nodeEnv: this.deps.nodeEnv,
       enabled: this.deps.enabled,
-      storageReady,
       providerReady: this.deps.provider.ok,
       configuredToken: this.deps.operatorToken,
       presentedToken: presentedToken ?? null,
-    });
+    };
+    const authorized = qwenWebAccessDecision({ ...access, storageReady: true });
+    if (authorized.status !== 200) return authorized;
+    return qwenWebAccessDecision({ ...access, storageReady: await this.deps.store.storageReady() });
   }
 
   async status(presentedToken: string | undefined) {
@@ -131,6 +135,10 @@ export class QwenWebService {
     await this.deps.projects.getProject(this.deps.workspaceId, projectId);
     const parsed = requestBodySchema.safeParse(body);
     if (!parsed.success) throw new PersistenceError("VALIDATION_ERROR", "Request body must be { input }");
+    // Same metered bytes as the browser check; nothing is reserved, sent or recorded for an oversized input.
+    if (!qwenWritingInputWithinLimit(parsed.data.input)) {
+      return { status: 413, body: { code: QWEN_WEB_INPUT_TOO_LARGE } };
+    }
     await this.maintain();
     const provider = this.deps.provider;
     const result = await runQwenWebWriting({

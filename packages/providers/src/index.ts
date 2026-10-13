@@ -44,6 +44,7 @@ export {
 export { runQwenWriting, type QwenWritingResult } from "./qwen-writing";
 export {
   QWEN_WEB_EXECUTOR_LEASE_MS,
+  QWEN_WEB_INPUT_TOO_LARGE,
   QWEN_WEB_LOST_AFTER_SEND,
   QWEN_WEB_LOST_BEFORE_SEND,
   QWEN_WEB_MAX_CONCURRENCY_DEFAULT,
