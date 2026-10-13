@@ -211,6 +211,11 @@ Migration：**不需要**。没有新增或执行 Migration，`packages/database
 
 意见：参考图任务若在别的标签页受理，或页面在任务运行中刷新，面板没有本地任务可跟踪；项目任务轮询虽然看到它到终态，但参考图分支刻意不发任何刷新信号，新图要手动刷新才出现。核实：成立，属于第 5 项「完成刷新」的缺口（PR 之前完全没有完成刷新，不是回归）。修复：`noteWorkflowTransitions` 对参考图运行报告 `referenceBecameTerminal`（只在观察到由进行中变为终态时，首次看到即为终态不算）；`useProjectBase` 暴露 `referenceEpoch`；`EntityPane` 把它传给面板的 `refreshEpoch`，变化时重读列表（挂载时的初始值不重复读取）。工作台与新手流程两处挂载都已传入。文本与镜头媒体仍不因参考图任务重读。测试：hook（入口即 RUNNING 的别处任务到 FAILED 时 epoch +1、只 +1；入口即终态不 +1；受理路径 SUCCEEDED 时 +1）、面板（epoch 变化重读、不变不读）、浏览器桩脚本新增「别处受理任务完成后重读列表且面板未跟踪该任务」1280/390。去掉 epoch 递增与面板重读后 3 例失败。
 
+### Codex 对 `eaea3dd` 的两条意见
+
+1. **首次看到即为终态的参考图任务不刷新面板**：例如本页隐藏期间另一个标签页提交并完成了任务，返回可见时的重读第一次看到它就是 SUCCEEDED。成立，已修：与镜头媒体的 `firstTerminalMedia` 一致，参考图运行首次看到即为终态也计一次 `referenceEpoch`，之后重复读取不再递增。测试：首次即终态 +1 且重读不再 +1；隐藏期间别处完成、返回可见后 +1。去掉该条件后两例失败。
+2. **成本守卫拒绝前已写入图片对象**：Worker 的 `persist()` 先 `objects.put` 再进入 `completeGeneration` 事务，守卫拒绝时数据库无残留，但本地 Mock 对象目录留下一张该任务的 PNG。核实：现象属实，但不在本 PR 修改：(a) `main` 上镜头图片 `persistMockImageOutput` 是同一顺序（先写对象，再在事务内执行 `guardSynchronousMockImageCost`），这是 Mock 媒体既有的「先写对象、后提交」设计，任何事务内拒绝（含旧实现已有的 ESTIMATED/币种/金额拒绝、血缘不符）都会留下对象；(b) 成本信封由 Mock 适配器生成，身份不符只在适配器缺陷时出现；(c) `LocalMockObjects` 在 production 下被禁止，对象键按任务与校验和确定，重试覆盖同一键，不影响任何已提交数据。改变顺序需要同时调整两条 Mock 媒体持久化路径，超出本 PR 范围，登记为遗留风险。
+
 ### M3 lifecycle 失败归因
 
 两次运行（本分支 [38332871876](https://github.com/xyq-dev/ai-drama-studio/actions/runs/38332871876)、未改动的 `main` `65c91af` [38334586101](https://github.com/xyq-dev/ai-drama-studio/actions/runs/38334586101)）都在步骤「Run real page, API, worker, and database acceptance」的 `node scripts/m3-av-e2e/run.mjs` 失败，输出相同：`compose FAILED COMPOSE_PROBE_FAILED Local compose renderer exited 3`。之前的 node:test 结果 `fail 0`。该工作流没有安装 FFmpeg 的步骤，而 M4 three-episode 工作流安装固定版本 FFmpeg 并通过同一脚本。结论：基线既有问题，不在本 PR 修复。
