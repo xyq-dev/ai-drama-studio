@@ -115,12 +115,12 @@ Migration：无。两份草案未修改、未执行。Paid calls=NO，Deploy=NO�
 
 | 项 | 实现位置 | 状态 |
 | --- | --- | --- |
-| 选定参考图超出 100 条分页 | `listForCharacter` 页仍为 100（多取 1 条得 `hasMore`）；选定项按选择记录 ID 在工作区/项目/角色/参考图角色内单独读取 | 已修。假客户端单测；真实库用例依赖参考图草案，未执行 |
-| 「可用于视频」与严格视频门一致 | 领域 `characterReferenceVideoBlockers`，列表与严格门共用；返回 `videoReadiness.blockers`，页面逐条显示；每项 `selectable` 由服务端判定，旧服务端缺该字段时按原页面规则（当前版本、ACTIVE、APPROVED），明确为 false 时不放开 | 已修。领域与组件测试；真实库用例依赖草案，未执行 |
+| 选定参考图超出 100 条分页 | `listForCharacter` 页仍为 100（多取 1 条得 `hasMore`）；选定项按选择记录 ID 在工作区/项目/角色/参考图角色内单独读取 | 已修。假客户端单测；真实库草案段用例 2026-10-13 在本机隔离 PostgreSQL 16.4（施加参考图草案的临时测试库）通过；CI 不施加草案、不执行该段 |
+| 「可用于视频」与严格视频门一致 | 领域 `characterReferenceVideoBlockers`，列表与严格门共用；返回 `videoReadiness.blockers`，页面逐条显示；每项 `selectable` 由服务端判定，旧服务端缺该字段时按原页面规则（当前版本、ACTIVE、APPROVED），明确为 false 时不放开 | 已修。领域与组件测试；真实库草案段用例同上，本机隔离库通过 |
 | 千问先鉴权再探测存储 | `QwenWebService.decide`：开关、令牌、Provider 先判定，通过后才 `storageReady()` | 已修。无效令牌下探测、预约、维护、transport 次数均为 0 |
 | 千问输入 256,000 字节 | `qwenWritingInputByteLength`（`input` 紧凑 JSON 的 UTF-8 字节）；网页在唯一发送点 `send()` 检查，新请求与恢复的旧请求（重新读取、同一冻结指令重放）同一口径；API 在维护/预约前 413 `QWEN_WEB_INPUT_TOO_LARGE`；`runQwenWebWriting` 再检查 | 已修。不依赖草案 |
-| 参考图任务可见与完成刷新 | 角色页按 `/generation-jobs/:id` 串行跟踪；受理（202）后回调重读项目任务（`onJobAccepted` → `reloadBase`），空闲时也能出现并被跟踪；`lib/project-base.ts` 把 `MEDIA_CHARACTER_REFERENCE` 纳入跟踪但不触发文本或镜头媒体重读；任务区「角色参考图任务」 | 已修。happy-dom 组件与 hook 测试；真实 Chromium（API 为路由桩）1280/390 为 10-07 旧基线结果，合入后未重跑 |
+| 参考图任务可见与完成刷新 | 角色页按 `/generation-jobs/:id` 串行跟踪；受理（202）后回调重读项目任务（`onJobAccepted` → `reloadBase`），空闲时也能出现并被跟踪；`lib/project-base.ts` 把 `MEDIA_CHARACTER_REFERENCE` 纳入跟踪但不触发文本或镜头媒体重读；任务区「角色参考图任务」 | 已修。happy-dom 组件与 hook 测试；`scripts/character-reference-web-stub-check.mjs`：生产构建 + 真实 Chromium + **本地桩 API**（非端到端）1280/390 通过受理刷新、轮询、成功与失败状态；真实 API/Worker/数据库的浏览器验收未执行 |
 | 恢复循环错误隔离 | `recovery-modules.ts`；参考图恢复逐行隔离、汇总上报；reconcile 不再重叠、错误上报 | 已修。不依赖草案 |
-| 参考图成本身份 | `guardSynchronousMockReferenceCost`，在任何写入前校验 | 已修。守卫在 CI 真实 PostgreSQL 上执行（不需草案）；`completeGeneration` 全事务回滚用例依赖草案，未写入执行 |
+| 参考图成本身份 | `guardSynchronousMockReferenceCost`，在任何写入前校验 | 已修。守卫在 CI 真实 PostgreSQL 上执行（不需草案）；`completeGeneration` 成本不符时整事务回滚（资产/依赖/成本/任务/尝试/事件/运行状态均无变化）、匹配时成功一次、重放 `JOB_TERMINAL` 不再写入：本机隔离库通过（草案段，CI 不执行） |
 
 Migration：无。两份草案未修改、未执行。Paid calls=NO，Deploy=NO。

@@ -186,3 +186,23 @@ Migration：**不需要**。没有新增或执行 Migration，`packages/database
 ### Migration
 
 不需要。`packages/database/prisma` 与 `origin/main` 无差异，本轮未编写或执行 Migration。
+
+## 2026-10-13 合并前复核与补测
+
+起点 `ae20cc9`（与远端一致），`origin/main` 仍为 `65c91af`，无需再合入。复核范围为 PR 相对 `origin/main` 的全部差异（含旧提交的后端修复），未发现本 PR 引入的实质问题；只修了下面一处测试缺陷，产品代码未改。
+
+### 草案段的含义与执行
+
+「草案段」指 `character-reference-store.integration.spec.ts` 中 `CHARACTER_REFERENCE_DRAFT_SQL_AUTHORIZED=true` 才运行的用例：它在测试开头 `DROP SCHEMA public` 重建的临时库上执行 `prisma/drafts/20261005000200_character_reference_image.sql`，不是正式 Migration，不涉及生产库、新业务开关或付费调用，且直接覆盖第 1、2、7 项。本轮在本机临时 PostgreSQL 16.4（官方便携二进制，仅在临时目录、127.0.0.1:55432、库 `ai_drama_pr49_test`）上执行。CI 不设置该变量，CI 上这些用例为跳过，不计为通过。
+
+- 首次执行发现既有用例「超过 100 张仍按 ID 读取选定项」本身有缺陷：用 `UPDATE asset SET created_at` 构造旧图，被资产不可变触发器拒绝（`asset records are immutable`）。改为插入时指定 `created_at`，产品代码不变。修复后草案段 4 例全部通过。
+- 新增「completeGeneration with a mismatched cost leaves nothing behind」：在真实表上建立已审核故事与剧本、来源于该剧本的当前角色修订、RUNNING 的参考图任务与 attempt，调用真实 `CharacterReferenceStore.completeGeneration`。模型、attempt、金额三种成本不符均返回 `COST_CONFLICT`，且资产、依赖、成本行、任务状态与 row_version、attempt、领域事件、运行状态与调用前完全相同；匹配成本成功一次（资产 1、依赖 1、ACTUAL 1、任务 SUCCEEDED、事件 +1）；同一完成重放返回 `JOB_TERMINAL` 且没有任何新增写入。去掉守卫调用后该例失败（不符成本被接受并写入资产），恢复后通过。
+- 结果：草案开启 12/12 通过；CI 模式（不开草案）7 通过、5 跳过。
+
+### 浏览器检查（桩 API，非端到端）
+
+新增 `scripts/character-reference-web-stub-check.mjs`：`pnpm build` 的生产构建 + `next start` + 真实 Chromium（Playwright 1.55.1）；`/api/v1` 由同端口的本地桩 HTTP 服务按脚本状态应答（登录关闭），没有 API、Worker 或数据库。1280 与 390 px 均通过：空闲时不轮询；受理（202）后立即重读 `/workflow-runs` 并在任务区列出 QUEUED；RUNNING 时面板任务轮询与任务区轮询都继续；SUCCEEDED 重读参考图列表、任务区显示成功；之后停止轮询；第二次生成 FAILED 时面板显示错误码、任务区显示失败；无横向溢出、无页面错误。去掉 `onJobAccepted` 接线并重新构建后，该脚本在「受理后立即重读」处失败。真实 API/Worker/数据库的浏览器验收本机缺 Redis，未执行。
+
+### M3 lifecycle 失败归因
+
+两次运行（本分支 [38332871876](https://github.com/xyq-dev/ai-drama-studio/actions/runs/38332871876)、未改动的 `main` `65c91af` [38334586101](https://github.com/xyq-dev/ai-drama-studio/actions/runs/38334586101)）都在步骤「Run real page, API, worker, and database acceptance」的 `node scripts/m3-av-e2e/run.mjs` 失败，输出相同：`compose FAILED COMPOSE_PROBE_FAILED Local compose renderer exited 3`。之前的 node:test 结果 `fail 0`。该工作流没有安装 FFmpeg 的步骤，而 M4 three-episode 工作流安装固定版本 FFmpeg 并通过同一脚本。结论：基线既有问题，不在本 PR 修复。
