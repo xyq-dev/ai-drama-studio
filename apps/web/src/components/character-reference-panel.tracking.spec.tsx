@@ -330,3 +330,36 @@ describe("a reference job the panel did not accept (Codex review on 0541b1b)", (
     expect(http.queue).toHaveLength(0);
   });
 });
+
+describe("readiness follows the character's review state (Codex review on d3f504e)", () => {
+  it("re-reads the list when the current revision's review state changes, once per change", async () => {
+    const http = controlledFetch();
+    const props = { projectId: PROJECT, characterId: CHARACTER, currentRevisionId: CURRENT };
+    const view = render(<CharacterReferencePanel {...props} revisionState="DRAFT|CURRENT|1|" />);
+    await answer(await http.list(), listing(CHARACTER, [], {
+      videoReadiness: { usable: false, blockers: ["CHARACTER_REVISION_NOT_APPROVED", "REFERENCE_NOT_SELECTED"] } }));
+    expect(screen.getByText("角色当前版本尚未审核通过")).toBeTruthy();
+    view.rerender(<CharacterReferencePanel {...props} revisionState="DRAFT|CURRENT|1|" />);
+    await flush();
+    expect(http.queue).toHaveLength(0);
+    // Approved in the revision column while this panel stays mounted.
+    view.rerender(<CharacterReferencePanel {...props} revisionState={`APPROVED|CURRENT|3|${CURRENT}`} />);
+    await answer(await http.list(), listing(CHARACTER, [], {
+      videoReadiness: { usable: false, blockers: ["REFERENCE_NOT_SELECTED"] } }));
+    expect(screen.queryByText("角色当前版本尚未审核通过")).toBeNull();
+    expect(http.queue).toHaveLength(0);
+  });
+
+  it("a new revision reads once through its own reset, not twice", async () => {
+    const http = controlledFetch();
+    const NEXT = "44444444-4444-4444-8444-444444444444";
+    const view = render(<CharacterReferencePanel projectId={PROJECT} characterId={CHARACTER} currentRevisionId={CURRENT}
+      revisionState="APPROVED|CURRENT|3|x" />);
+    await answer(await http.list(), listing(CHARACTER, []));
+    view.rerender(<CharacterReferencePanel projectId={PROJECT} characterId={CHARACTER} currentRevisionId={NEXT}
+      revisionState="DRAFT|CURRENT|1|x" />);
+    await answer(await http.list(), listing(CHARACTER, []));
+    await flush();
+    expect(http.queue).toHaveLength(0);
+  });
+});

@@ -1341,7 +1341,8 @@ export function EntityPane(props: {
         ) : null}
         {props.kind === "character" && selected && history?.aggregate.entityId === selected && current ? (
           <CharacterReferencePanel projectId={props.project.id} characterId={selected} currentRevisionId={current.id}
-            onJobAccepted={props.onReferenceAccepted} refreshEpoch={props.referenceEpoch} />
+            onJobAccepted={props.onReferenceAccepted} refreshEpoch={props.referenceEpoch}
+            revisionState={`${current.reviewStatus}|${current.freshnessStatus}|${current.reviewVersion}|${history.aggregate.approvedRevisionId ?? ""}`} />
         ) : null}
         <NewEntityForm
           project={props.project}

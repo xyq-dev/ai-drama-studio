@@ -94,6 +94,8 @@ export function CharacterReferencePanel(props: {
    * so a job this panel did not accept itself (another tab, or a reload while it ran) still shows its result.
    */
   refreshEpoch?: number;
+  /** The current revision's review and freshness state; a change (approve, reject, stale) re-reads videoReadiness. */
+  revisionState?: string;
 }) {
   const [listing, setListing] = useState<ReferenceListing | null>(null);
   const [unavailable, setUnavailable] = useState(false);
@@ -145,13 +147,18 @@ export function CharacterReferencePanel(props: {
     };
   }, [load, props.projectId, props.currentRevisionId]);
 
-  // A reference run finished somewhere: re-read the list. The first value is the mount's own read.
-  const seenEpoch = useRef(props.refreshEpoch);
+  // Re-read the list when a reference run finished somewhere (refreshEpoch) or the current revision's review state
+  // changed (revisionState): the server derives videoReadiness from both. The mount, and a change of project,
+  // character or revision, already read through the effect above, so those only record the new key.
+  const refreshKey = `${props.refreshEpoch ?? ""}|${props.revisionState ?? ""}`;
+  const seenRefresh = useRef({ key: refreshKey, scope: `${props.projectId}|${props.characterId}|${props.currentRevisionId}` });
   useEffect(() => {
-    if (props.refreshEpoch === seenEpoch.current) return;
-    seenEpoch.current = props.refreshEpoch;
+    const seen = seenRefresh.current;
+    const currentScope = `${props.projectId}|${props.characterId}|${props.currentRevisionId}`;
+    seenRefresh.current = { key: refreshKey, scope: currentScope };
+    if (seen.key === refreshKey || seen.scope !== currentScope) return;
     void load();
-  }, [props.refreshEpoch, load]);
+  }, [refreshKey, props.projectId, props.characterId, props.currentRevisionId, load]);
 
   // Follows the accepted generation job: serial reads, stop at a terminal state, pause while hidden.
   const jobId = job?.id ?? null;

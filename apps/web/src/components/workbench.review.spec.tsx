@@ -580,8 +580,11 @@ function createSim(): Sim {
     const referenceList = /^\/api\/v1\/characters\/([^/]+)\/reference-images$/.exec(path);
     if (referenceList && method === "GET") {
       const id = referenceList[1] === CHAR_B ? CHAR_B : CHAR_A;
+      const approved = id === CHAR_A && characterStatus === "APPROVED";
       return json({ characterId: id, currentRevisionId: id === CHAR_B ? "rev-b1" : characterRevId, selection: null,
-        videoReadiness: { usable: false, blockers: ["REFERENCE_NOT_SELECTED"] }, items: [], hasMore: false });
+        videoReadiness: { usable: false,
+          blockers: approved ? ["REFERENCE_NOT_SELECTED"] : ["CHARACTER_REVISION_NOT_APPROVED", "REFERENCE_NOT_SELECTED"] },
+        items: [], hasMore: false });
     }
     if (/^\/api\/v1\/character-revisions\/[^/]+\/reference-images\/generate$/.test(path) && method === "POST") {
       if (sim.referencePostGate) await sim.referencePostGate;
@@ -1516,6 +1519,18 @@ describe("workbench review interactions against a simulated API", () => {
     fireEvent.click(retry);
     expect(sim.calls.filter((call) => call.url.endsWith("/retry"))).toHaveLength(0);
   });
+
+  it("re-reads reference readiness after the character is approved on the same revision (Codex review on d3f504e)", async () => {
+    const sim = createSim();
+    install(sim);
+    renderAt("focus=character");
+    await openCharacter(CHAR_A);
+    expect(await screen.findByText("角色当前版本尚未审核通过")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "提交审核" }));
+    fireEvent.click(await screen.findByRole("button", { name: "通过" }));
+    expect((await screen.findAllByText(/已通过 APPROVED/)).length).toBeGreaterThan(0);
+    await waitFor(() => expect(screen.queryByText("角色当前版本尚未审核通过")).toBeNull());
+  }, 15000);
 
   it("lists a reference job accepted after the user switched character, and follows it (Codex review on b6aef4a)", async () => {
     const sim = createSim();
