@@ -203,6 +203,10 @@ Migration：**不需要**。没有新增或执行 Migration，`packages/database
 
 新增 `scripts/character-reference-web-stub-check.mjs`：`pnpm build` 的生产构建 + `next start` + 真实 Chromium（Playwright 1.55.1）；`/api/v1` 由同端口的本地桩 HTTP 服务按脚本状态应答（登录关闭），没有 API、Worker 或数据库。1280 与 390 px 均通过：空闲时不轮询；受理（202）后立即重读 `/workflow-runs` 并在任务区列出 QUEUED；RUNNING 时面板任务轮询与任务区轮询都继续；SUCCEEDED 重读参考图列表、任务区显示成功；之后停止轮询；第二次生成 FAILED 时面板显示错误码、任务区显示失败；无横向溢出、无页面错误。去掉 `onJobAccepted` 接线并重新构建后，该脚本在「受理后立即重读」处失败。真实 API/Worker/数据库的浏览器验收本机缺 Redis，未执行。
 
+### Codex 对 `ae20cc9` 的新意见
+
+意见：恢复的超限旧记录被 `send()` 拒绝后仍停在 `sending`，页面一直只提供必然失败的「重新读取」，普通请求又被「结果未确定」拦住。核实：成立（勾选确认后「发起新的调用」其实仍可用，但界面与状态误导）。修复：`send()` 拒绝时，对无法再读取结果的记录（`sending`，或无请求 ID 的 `reserved`/`submitted`）结算为 `unknown` 并写回 sessionStorage；不标为 `rejected`，因为上限生效前的页面可能已发出并产生费用。已结算的记录不改。结算后不再显示重新读取，新调用仍需勾选确认、使用新请求标识。两条恢复路径的回归用例补充了这些断言，去掉结算步骤后两例失败。
+
 ### M3 lifecycle 失败归因
 
 两次运行（本分支 [38332871876](https://github.com/xyq-dev/ai-drama-studio/actions/runs/38332871876)、未改动的 `main` `65c91af` [38334586101](https://github.com/xyq-dev/ai-drama-studio/actions/runs/38334586101)）都在步骤「Run real page, API, worker, and database acceptance」的 `node scripts/m3-av-e2e/run.mjs` 失败，输出相同：`compose FAILED COMPOSE_PROBE_FAILED Local compose renderer exited 3`。之前的 node:test 结果 `fail 0`。该工作流没有安装 FFmpeg 的步骤，而 M4 three-episode 工作流安装固定版本 FFmpeg 并通过同一脚本。结论：基线既有问题，不在本 PR 修复。
