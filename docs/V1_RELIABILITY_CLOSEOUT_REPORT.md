@@ -216,6 +216,10 @@ Migration：**不需要**。没有新增或执行 Migration，`packages/database
 1. **首次看到即为终态的参考图任务不刷新面板**：例如本页隐藏期间另一个标签页提交并完成了任务，返回可见时的重读第一次看到它就是 SUCCEEDED。成立，已修：与镜头媒体的 `firstTerminalMedia` 一致，参考图运行首次看到即为终态也计一次 `referenceEpoch`，之后重复读取不再递增。测试：首次即终态 +1 且重读不再 +1；隐藏期间别处完成、返回可见后 +1。去掉该条件后两例失败。
 2. **成本守卫拒绝前已写入图片对象**：Worker 的 `persist()` 先 `objects.put` 再进入 `completeGeneration` 事务，守卫拒绝时数据库无残留，但本地 Mock 对象目录留下一张该任务的 PNG。核实：现象属实，但不在本 PR 修改：(a) `main` 上镜头图片 `persistMockImageOutput` 是同一顺序（先写对象，再在事务内执行 `guardSynchronousMockImageCost`），这是 Mock 媒体既有的「先写对象、后提交」设计，任何事务内拒绝（含旧实现已有的 ESTIMATED/币种/金额拒绝、血缘不符）都会留下对象；(b) 成本信封由 Mock 适配器生成，身份不符只在适配器缺陷时出现；(c) `LocalMockObjects` 在 production 下被禁止，对象键按任务与校验和确定，重试覆盖同一键，不影响任何已提交数据。改变顺序需要同时调整两条 Mock 媒体持久化路径，超出本 PR 范围，登记为遗留风险。
 
+### Codex 对 `b6aef4a` 的意见
+
+意见：发起生成后、202 返回前切换到同一作品的另一角色或修订，面板的作用域守卫直接返回，`onJobAccepted` 不再调用，已受理的任务不进任务区、也不被项目轮询。成立，已修：面板对每一次受理都以受理时的作品 ID 调用最新的回调（`onJobAccepted(projectId)`），在作用域检查之前；面板自身的提示与任务跟踪仍只属于原作用域，新角色的面板不接管旧任务。接收方改为 `useProjectBase.reloadForProject(projectId)`：只有该作品仍是当前显示作品时才重读。若作品已切换则丢弃，因为执行旧作品的读取会以旧数据取代新作品的读取（共享的请求序号）。`EntityPane` 新增 `onReferenceAccepted`，工作台与新手流程都传入 `reloadForProject`。测试：面板（切换角色后仍回调原作品 ID、不跟踪旧任务；切换作品后回调原作品 ID）、hook（离开的作品的迟到回调不读取、不改写新作品；当前作品会重读）、工作台模拟 API（受理被挂起时切到角色乙，放行后重读任务并在任务区列出 QUEUED，乙的面板不显示甲的任务）。把回调移回作用域检查之后，或去掉作品检查，对应用例失败。
+
 ### M3 lifecycle 失败归因
 
 两次运行（本分支 [38332871876](https://github.com/xyq-dev/ai-drama-studio/actions/runs/38332871876)、未改动的 `main` `65c91af` [38334586101](https://github.com/xyq-dev/ai-drama-studio/actions/runs/38334586101)）都在步骤「Run real page, API, worker, and database acceptance」的 `node scripts/m3-av-e2e/run.mjs` 失败，输出相同：`compose FAILED COMPOSE_PROBE_FAILED Local compose renderer exited 3`。之前的 node:test 结果 `fail 0`。该工作流没有安装 FFmpeg 的步骤，而 M4 three-episode 工作流安装固定版本 FFmpeg 并通过同一脚本。结论：基线既有问题，不在本 PR 修复。
