@@ -612,6 +612,17 @@ describe("workspace Qwen requests", () => {
     const alert = await screen.findByText(/字节（按 UTF-8 计），超过 256,000 字节上限/);
     expect(alert.textContent).toMatch(/输入为 3\d\d,\d{3} 字节/);
     expect(client.request).toHaveBeenCalledTimes(1);
+    // Codex review on ae20cc9: the refused record must not stay "sending" (a replay that can never succeed). Its outcome
+    // cannot be read any more and it may have been sent before the cap, so it settles as unknown, not rejected.
+    expect(await screen.findByText(/原请求的输入超过上限，无法再用原请求标识读取结果/)).toBeTruthy();
+    const settled = JSON.parse(sessionStorage.getItem(name) ?? "null") as { state: string; key: string };
+    expect(settled.state).toBe("unknown");
+    expect(screen.queryByRole("button", { name: "用原请求标识重新读取" })).toBeNull();
+    // A new call is still possible after the usual confirmation, with a new key and the current (in-limit) input.
+    fireEvent.click(screen.getByRole("checkbox", { name: "我确认发起一次新的调用，可能另外产生费用" }));
+    fireEvent.click(screen.getByRole("button", { name: "发起新的调用" }));
+    await waitFor(() => expect(client.request).toHaveBeenCalledTimes(2));
+    expect(client.request.mock.calls[1]?.[2]).not.toBe(settled.key);
   });
 
   it("shows the server's byte-cap refusal without changing the request record", async () => {

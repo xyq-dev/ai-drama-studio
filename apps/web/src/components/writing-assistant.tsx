@@ -409,6 +409,26 @@ export function WritingAssistant(props: {
     }
   }
 
+  /**
+   * A stored request that can never be replayed (its input is over the cap, so the server refuses it before reading
+   * its record) and has no request id to query: its outcome cannot be learned any more. A page from before the cap
+   * may have sent it, so it is not "rejected" (nothing charged) but "unknown"; that ends the replay offer and a new
+   * call needs the usual confirmation. Settled records are left as they are.
+   */
+  function settleUnreadable(record: WorkspaceRequest) {
+    const unreadable = record.state === "sending"
+      || ((record.state === "reserved" || record.state === "submitted") && !record.requestId);
+    if (!unreadable) return;
+    const stored = readWorkspaceRequest(record.projectId, record.entityKey);
+    if (stored && stored.key !== record.key) return;
+    const updated: WorkspaceRequest = { ...record, state: "unknown" };
+    writeWorkspaceRequest(updated);
+    if (record.projectId === identityRef.current.projectId && record.entityKey === identityRef.current.entityKey) {
+      setWorkspaceRecord(updated);
+      setRequestNote("原请求的输入超过上限，无法再用原请求标识读取结果。它可能已在上限生效前发出并产生费用，结果按未知处理；如需新的调用，请确认后发起。");
+    }
+  }
+
   async function send(record: WorkspaceRequest) {
     if (!props.workspaceQwen) return;
     // Every path that transmits a stored input passes here, so a record frozen before the byte cap existed (and
@@ -416,6 +436,7 @@ export function WritingAssistant(props: {
     const bytes = qwenWritingInputByteLength(record.input);
     if (bytes > QWEN_WRITING_INPUT_MAX_BYTES) {
       setError(inputTooLargeText(bytes));
+      settleUnreadable(record);
       return;
     }
     const permit = takePermit();
