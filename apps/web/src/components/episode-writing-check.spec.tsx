@@ -1,0 +1,99 @@
+// @vitest-environment happy-dom
+// Simulated interface tests. fetch is mocked; this file does not start a browser, the API or a model.
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { EpisodeOutline, TitleConcept, TitleWritingRunView, TitleWritingStepView } from "@ai-drama/contracts";
+import { TitleWritingClient } from "../lib/title-writing-client";
+import { TitleWritingRun } from "./title-writing-run";
+
+const P1 = "22222222-2222-4222-8222-222222222222";
+const RUN = "66666666-6666-4666-8666-666666666666";
+
+const concept: TitleConcept = {
+  schema: "ads.writing.title-concept.v1", genre: "都市", logline: "一句话", synopsis: "梗概", protagonistGoal: "目标", opposition: "阻力",
+  coreConflict: "冲突", direction: "走向", characters: [{ name: "林夏", role: "主角", profile: "p" }, { name: "周岩", role: "r", profile: "p" }],
+  relationships: [{ name: "林夏与周岩", pressure: "x" }],
+};
+
+function outline(goalOfTwo: string): EpisodeOutline {
+  return { schema: "ads.writing.episode-outline.v1", episodes: [1, 2, 3].map((episodeNo) => ({ episodeNo, title: `集名${String(episodeNo)}`,
+    entryState: `开场${String(episodeNo)}`, goal: episodeNo === 2 ? goalOfTwo : `目标${String(episodeNo)}`, action: `行动${String(episodeNo)}`,
+    turn: `转折${String(episodeNo)}`, result: `结果${String(episodeNo)}`, handoff: `交接${String(episodeNo)}` })) };
+}
+
+function run(plan: EpisodeOutline | null, overrides: Partial<TitleWritingRunView> = {}): TitleWritingRunView {
+  const step = (stepKey: TitleWritingStepView["stepKey"], output: TitleWritingStepView["output"]): TitleWritingStepView => ({
+    stepKey, state: output ? "completed" : "pending", attemptNo: output ? 1 : 0, errorCode: null, output, text: null,
+    scriptSave: stepKey.startsWith("episode:") ? "pending" : null, scriptRevisionId: null });
+  return {
+    runId: RUN, projectId: P1, title: "夜班证词", inputVersion: 1, episodeCount: 3, settings: { episodeCount: 3, episodeSeconds: 90, style: "" },
+    providerKey: "qwen", model: "q-1", state: "partial", errorCode: null, cancelRequested: false, callCap: 8, callsUsed: 2, storySave: "saved",
+    storyRevisionId: null, storyText: null, calls: [], createdAt: "2026-10-08T00:00:00Z", updatedAt: "2026-10-08T00:00:00Z",
+    steps: [step("concept", concept), step("outline", plan), step("episode:1", null), step("episode:2", null), step("episode:3", null)],
+    ...overrides,
+  };
+}
+
+function serve(view: TitleWritingRunView) {
+  const calls: Array<{ method: string; url: string }> = [];
+  const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+    calls.push({ method: init?.method ?? "GET", url });
+    return new Response(JSON.stringify({ run: view }), { status: 200, headers: { "content-type": "application/json" } });
+  });
+  return { calls, client: new TitleWritingClient(fetchImpl) };
+}
+
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
+
+describe("编剧检查 on the episode plan of a run", () => {
+  it("an old run without a prompt version still shows its plan; the check opens on demand, by episode, without any request", async () => {
+    const { client, calls } = serve(run(outline("目标1")));
+    render(<TitleWritingRun projectId={P1} client={client} />);
+    await screen.findByRole("heading", { name: "分集大纲" });
+    expect(screen.getByText("进入状态：开场1")).toBeTruthy();
+    expect(screen.queryByText(/加入编剧要求的提示词/)).toBeNull();
+    const requestsBefore = calls.length;
+    const button = screen.getByRole("button", { name: "编剧检查" });
+    expect(button.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText(/待人工判断 \d+ 项/)).toBeNull();
+
+    fireEvent.click(button);
+    expect(screen.getByRole("button", { name: "收起编剧检查" }).getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText(/明确缺项 0 项 · 待人工判断 \d+ 项 · 当前无法判断 0 项/)).toBeTruthy();
+    // Episode 2 repeats episode 1's goal: a question for a person, located at episode 2, with both fields quoted.
+    const second = screen.getByRole("region", { name: "第 2 集 集名2的检查结果" });
+    expect(within(second).getByText("本集是否在重复上一集的冲突？")).toBeTruthy();
+    expect(within(second).getByText(/第 1 集 goal（目标）：“目标1”/)).toBeTruthy();
+    expect(within(second).getByRole("link", { name: "查看这一集大纲" }).getAttribute("href")).toBe("#outline-episode-2");
+    expect(document.getElementById("outline-episode-2")).not.toBeNull();
+    // The check reads what is on the page: no request, and the plan text is unchanged.
+    expect(calls.length).toBe(requestsBefore);
+    expect(screen.getByText("目标：目标1", { selector: "li#outline-episode-2 p" })).toBeTruthy();
+    expect(screen.queryByText(/检查通过|已通过|总分|得分|爆款/)).toBeNull();
+  });
+
+  it("an empty field is a missing item of its episode", async () => {
+    const { client } = serve(run(outline("   ")));
+    render(<TitleWritingRun projectId={P1} client={client} />);
+    fireEvent.click(await screen.findByRole("button", { name: "编剧检查" }));
+    expect(screen.getByText(/明确缺项 1 项/)).toBeTruthy();
+    const second = screen.getByRole("region", { name: "第 2 集 集名2的检查结果" });
+    expect(within(second).getByText("明确缺项")).toBeTruthy();
+    expect(within(second).getByText(/第 2 集 goal（目标）：（空）/)).toBeTruthy();
+  });
+
+  it("a run with prompt v3 says so; a run without an outline shows no check", async () => {
+    const guided = serve(run(outline("目标2"), { inputVersion: 2, promptVersion: "ads.title-writing.prompt.v3" }));
+    render(<TitleWritingRun projectId={P1} client={guided.client} />);
+    const note = await screen.findByText(/加入编剧要求的提示词（ads.title-writing.prompt.v3）/);
+    expect(note.textContent).toContain("各集剧本按本次创作保存的分集大纲生成；大纲生成后没有人工确认步骤");
+    cleanup();
+    const early = serve(run(null));
+    render(<TitleWritingRun projectId={P1} client={early.client} />);
+    await waitFor(() => expect(screen.getByRole("heading", { name: "故事策划" })).toBeTruthy());
+    expect(screen.queryByRole("button", { name: "编剧检查" })).toBeNull();
+  });
+});

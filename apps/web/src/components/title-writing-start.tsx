@@ -13,6 +13,7 @@ import {
   type StartBody,
   type TitleWritingOptionsView,
 } from "../lib/title-writing-client";
+import { EpisodeWritingGuidance } from "./episode-writing-guidance";
 import styles from "./title-writing.module.css";
 
 const studio = new StudioClient();
@@ -408,6 +409,7 @@ export function TitleWritingStart() {
           ) : null}
         </div>
       </details>
+      <EpisodeWritingGuidance />
       <div className={styles.actions}>
         <button className={styles.primary} type="button" disabled={busy || !optionsLoaded} onClick={() => void start()}>
           {busy ? "正在启动…" : pending ? "重试上次请求" : "AI 一键创作"}

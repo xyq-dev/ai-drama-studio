@@ -24,6 +24,7 @@ import {
   hashTitleResume,
   isScriptBreakdownRun,
   newTitleRun,
+  sameStartBeforeGuidance,
   titleRunView,
   type TitleRunBundle,
   type TitleWritingEngine,
@@ -224,7 +225,8 @@ export class TitleWritingService {
         ? failure(429, created.code, { requiredCalls: created.requiredCalls, remainingCalls: created.remainingCalls })
         : failure(429, created.code);
     }
-    if (created.kind === "conflict") return failure(409, "IDEMPOTENCY_KEY_REUSED");
+    // A start stored before prompt v3 and replayed after the upgrade is the same request, not a reused key.
+    if (created.kind === "conflict" && !sameStartBeforeGuidance(created.bundle.run, run)) return failure(409, "IDEMPOTENCY_KEY_REUSED");
     // One AI task per work. Only a running title run is offered to be opened; a running script breakdown is named as the
     // other task and its run id is not exposed as a title run (the writing page could not show it).
     if (created.kind === "active") {

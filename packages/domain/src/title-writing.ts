@@ -3,6 +3,7 @@ import {
   EPISODE_OUTLINE_SCHEMA,
   EPISODE_OUTLINE_SCHEMA_V2,
   TITLE_CONCEPT_SCHEMA,
+  TITLE_WRITING_PROMPT_VERSION_V3,
   WRITING_BODY_MAX_CHARS,
   episodeOutlineSchema,
   episodeOutlineV2Schema,
@@ -81,7 +82,38 @@ function settingsLinesV2(input: TitleWritingFrozenInputV2): string[] {
   ];
 }
 
-/** v2 prompts: the same steps and fields as v1, for exactly the run's N episodes. */
+/**
+ * Writing requirements added by prompt v3. They ask for answers inside the existing fields (no new field, same schema
+ * and limits) and are never sent for a run frozen with prompt v2.
+ */
+const GUIDED_CONCEPT_LINES = [
+  `编剧要求（${TITLE_WRITING_PROMPT_VERSION_V3}）：`,
+  "protagonistGoal 写主角具体、能通过行动完成的目标；opposition 写清谁出于什么利益阻止主角。",
+  "direction 先用一句话写整部期待：观众希望主角最终得到什么（例如尊严恢复、被理解、关系修复、真相揭晓），再写各集走向。",
+  "关键结果来自主角的选择和行动，不靠旁人突然解围。人物设定按剧名和人物本身设计，不按性别或题材套用固定模式。",
+];
+
+const GUIDED_OUTLINE_LINES = [
+  `编剧要求（${TITLE_WRITING_PROMPT_VERSION_V3}）：每集都要能回答下列问题，写进对应字段，不新增字段，每个字段控制在 150 字以内。`,
+  "entryState：本集开场的局面，以及谁出于什么利益阻止主角。",
+  "goal：主角本集要完成的具体目标。",
+  "action：主角为此采取的行动；本集关键结果来自主角的选择。",
+  "turn：谁获得了什么新信息，它如何改变行动、关系或判断；反转要有前文依据。",
+  "result：相比开场局面发生了什么变化，本集兑现给观众的回报（解决一部分问题）。",
+  "handoff：结尾留下的、与主线相关的问题，以及下一集如何回应它；最后一集写清主线问题如何收束。",
+  "冲突逐集升级：增加代价、缩短时间或提高选择难度。不同集不重复同一冲突，不靠重复羞辱或人物故意不沟通拖延剧情。",
+];
+
+const GUIDED_EPISODE_LINES = [
+  `编剧要求（${TITLE_WRITING_PROMPT_VERSION_V3}）：本集按本次创作保存的分集大纲执行。`,
+  "保留本集大纲中主角的目标、行动和结果，以及前文埋下的伏笔。",
+  "不凭空新增解围人物或决定性证据；关键信息必须来自故事策划、分集大纲或前面各集。",
+  "不改变人物身份、关系和大纲中的结局走向。",
+  "不靠重复羞辱或人物故意不沟通拖延剧情，不重复前面各集已经解决的冲突。",
+  "台词表达人物意图，不重复解释已经演出来的信息。handoffFacts 包括本集结尾留下的问题。",
+];
+
+/** v2 prompts: the same steps and fields as v1, for exactly the run's N episodes. Prompt v3 adds the guided lines. */
 function buildTitleWritingPromptV2(
   stepKey: TitleWritingStepKey,
   input: TitleWritingFrozenInputV2,
@@ -89,6 +121,7 @@ function buildTitleWritingPromptV2(
 ): TitleWritingPrompt {
   const count = input.settings.episodeCount;
   const numbers = Array.from({ length: count }, (_, index) => String(index + 1)).join("、");
+  const guided = input.promptVersion === TITLE_WRITING_PROMPT_VERSION_V3;
   if (stepKey === "concept") {
     return {
       stepKey,
@@ -98,6 +131,7 @@ function buildTitleWritingPromptV2(
         "任务：只根据剧名完成故事策划。创作者没有提供其他设定，题材、人物、梗概和走向都由你补全。",
         ...settingsLinesV2(input),
         `要求：人物有明确目标、阻力和代价；核心冲突能在人物关系里持续发生；故事能在 ${String(count)} 集内讲完并留有余味。`,
+        ...(guided ? GUIDED_CONCEPT_LINES : []),
         `输出 json，schema 字段必须是 "${TITLE_CONCEPT_SCHEMA}"。`,
         `字段：genre（题材）、logline（一句话故事）、synopsis（故事梗概）、protagonistGoal、opposition、coreConflict、direction（${String(count)} 集故事走向）、characters[2-6]{name,role,profile}、relationships[1-6]{name,pressure}。`,
         `示例结构：{"schema":"${TITLE_CONCEPT_SCHEMA}","genre":"…","logline":"…","synopsis":"…","protagonistGoal":"…","opposition":"…","coreConflict":"…","direction":"…","characters":[{"name":"…","role":"…","profile":"…"}],"relationships":[{"name":"甲与乙","pressure":"…"}]}`,
@@ -117,6 +151,7 @@ function buildTitleWritingPromptV2(
         conceptBlock(context.concept),
         `输出 json，schema 字段必须是 "${EPISODE_OUTLINE_SCHEMA_V2}"。episodes 正好 ${String(count)} 项，episodeNo 依次为 ${numbers}，不能缺集、重复或多出。`,
         "每项字段：episodeNo、title、entryState（进入状态）、goal、action、turn（转折）、result、handoff（交给下一集的事实）。相邻集的 handoff 与下一集的 entryState 要能接上。",
+        ...(guided ? GUIDED_OUTLINE_LINES : []),
         `示例结构：{"schema":"${EPISODE_OUTLINE_SCHEMA_V2}","episodes":[{"episodeNo":1,"title":"…","entryState":"…","goal":"…","action":"…","turn":"…","result":"…","handoff":"…"}]}`,
       ].join("\n"),
     };
@@ -149,6 +184,7 @@ function buildTitleWritingPromptV2(
       `本集大纲：${JSON.stringify(outlineEpisode)}`,
       ...(handoffs.length > 0 ? ["前面各集已写定的交接事实：", ...handoffs] : ["这是第一集。"]),
       ...(position ? [position] : []),
+      ...(guided ? GUIDED_EPISODE_LINES : []),
       `screenplay 写完整单集剧本，包含场景、动作、对白和必要的声音标记，约 ${String(target)} 字以内。每个场景都要推动信息、关系或风险变化。`,
       `输出 json，schema 字段必须是 "${EPISODE_DRAFT_SCHEMA}"，episodeNo 必须是 ${String(episodeNo)}。`,
       "字段：title、screenplay、scenes[1-12]{heading,action,dialogue,sound}、handoffFacts[1-8]（下一集必须继承的事实）。没有对白或声音时填空字符串。",

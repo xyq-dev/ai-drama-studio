@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { EpisodeOutline, TitleConcept } from "@ai-drama/contracts";
+import { TITLE_WRITING_PROMPT_VERSION_V3, type EpisodeOutline, type TitleConcept } from "@ai-drama/contracts";
 import {
   TitleWritingClient,
   TitleWritingError,
@@ -19,6 +19,8 @@ import {
   type TitleWritingRunView,
 } from "../lib/title-writing-client";
 import { BeginnerShell } from "./beginner-shell";
+import { EpisodeWritingCheck, outlineEpisodeAnchor } from "./episode-writing-check";
+import { EpisodeWritingGuidance } from "./episode-writing-guidance";
 import styles from "./title-writing.module.css";
 
 export const TITLE_WRITING_POLL_MS = 2_000;
@@ -98,9 +100,11 @@ function OutlineView({ outline }: { outline: EpisodeOutline }) {
   return (
     <ol className={styles.outline}>
       {outline.episodes.map((episode) => (
-        <li key={episode.episodeNo}>
+        <li key={episode.episodeNo} id={outlineEpisodeAnchor(episode.episodeNo)}>
           <p className={styles.outlineTitle}>第 {episode.episodeNo} 集 {episode.title}</p>
+          <p>进入状态：{episode.entryState}</p>
           <p>目标：{episode.goal}</p>
+          <p>行动：{episode.action}</p>
           <p>转折：{episode.turn}</p>
           <p>结果：{episode.result}</p>
           <p>交给下一集：{episode.handoff}</p>
@@ -386,7 +390,14 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
             {outline ? (
               <section className={styles.card} aria-labelledby="outline-title">
                 <h2 id="outline-title" className={styles.sectionTitle}>分集大纲</h2>
+                {run.promptVersion === TITLE_WRITING_PROMPT_VERSION_V3 ? (
+                  <p className={styles.helper}>
+                    这次创作使用了加入编剧要求的提示词（{TITLE_WRITING_PROMPT_VERSION_V3}）。各集剧本按本次创作保存的分集大纲生成；大纲生成后没有人工确认步骤，需要调整可在剧本草稿里修改。
+                  </p>
+                ) : null}
                 <OutlineView outline={outline} />
+                <EpisodeWritingCheck concept={concept ?? null} outline={outline} episodeCount={run.episodeCount ?? outline.episodes.length} />
+                <EpisodeWritingGuidance />
               </section>
             ) : null}
 

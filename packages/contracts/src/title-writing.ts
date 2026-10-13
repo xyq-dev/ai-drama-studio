@@ -18,6 +18,13 @@ export const EPISODE_OUTLINE_SCHEMA = "ads.writing.episode-outline.v1" as const;
 export const EPISODE_OUTLINE_SCHEMA_V2 = "ads.writing.episode-outline.v2" as const;
 export const TITLE_WRITING_PROMPT_VERSION = "ads.title-writing.prompt.v1" as const;
 export const TITLE_WRITING_PROMPT_VERSION_V2 = "ads.title-writing.prompt.v2" as const;
+/**
+ * Prompts of a v2 input with the episode writing guidance: the same steps, fields, schemas and limits as prompt v2,
+ * with added writing requirements (emotional promise, per-episode obstacle, protagonist action, change, payoff, new
+ * information, ending question) and constraints that keep each episode to the run's own outline. New v2 runs freeze
+ * this version; runs frozen with prompt v2 keep the v2 text byte for byte.
+ */
+export const TITLE_WRITING_PROMPT_VERSION_V3 = "ads.title-writing.prompt.v3" as const;
 
 export const TITLE_WRITING_PROVIDER_KEYS = ["qwen", "openai", "deepseek"] as const;
 export type TitleWritingProviderKey = (typeof TITLE_WRITING_PROVIDER_KEYS)[number];
@@ -106,10 +113,13 @@ export interface TitleWritingFrozenInputV1 {
   model: string;
 }
 
-/** Frozen, hashed input of one v2 run. N and the target seconds were copied from the project's episode plan. */
+/**
+ * Frozen, hashed input of one v2 run. N and the target seconds were copied from the project's episode plan. Runs
+ * created before the writing guidance carry prompt v2; newer runs carry prompt v3.
+ */
 export interface TitleWritingFrozenInputV2 {
   schema: typeof TITLE_WRITING_INPUT_SCHEMA_V2;
-  promptVersion: typeof TITLE_WRITING_PROMPT_VERSION_V2;
+  promptVersion: typeof TITLE_WRITING_PROMPT_VERSION_V2 | typeof TITLE_WRITING_PROMPT_VERSION_V3;
   title: string;
   settings: TitleWritingSettings;
   providerKey: TitleWritingProviderKey;
@@ -361,6 +371,8 @@ export interface TitleWritingRunView {
   title: string;
   /** 1 for a v1 run (three episodes, as stored), 2 for a run frozen from the project's episode plan. */
   inputVersion: 1 | 2;
+  /** The prompt version frozen with the run. Absent in answers of an API from before the writing guidance. */
+  promptVersion?: string;
   /** N of this run: its outline has N episodes and it has N episode steps. */
   episodeCount: number;
   settings: TitleWritingSettings;
