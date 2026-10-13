@@ -411,6 +411,13 @@ export function WritingAssistant(props: {
 
   async function send(record: WorkspaceRequest) {
     if (!props.workspaceQwen) return;
+    // Every path that transmits a stored input passes here, so a record frozen before the byte cap existed (and
+    // restored from sessionStorage) is held to the same metered limit as a new request and is never sent.
+    const bytes = qwenWritingInputByteLength(record.input);
+    if (bytes > QWEN_WRITING_INPUT_MAX_BYTES) {
+      setError(inputTooLargeText(bytes));
+      return;
+    }
     const permit = takePermit();
     setQwenBusy(true);
     try {

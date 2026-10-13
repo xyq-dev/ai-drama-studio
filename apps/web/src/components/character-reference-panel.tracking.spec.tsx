@@ -224,3 +224,71 @@ describe("character reference video readiness (closeout items 1 and 2)", () => {
     expect(screen.queryByRole("list", { name: "不可用于视频的原因" })).toBeNull();
   });
 });
+
+describe("the task list hears about an accepted generation (PR #49 review 1)", () => {
+  it("calls onJobAccepted once on 202, and not for a refused generation", async () => {
+    const http = controlledFetch();
+    const accepted = vi.fn();
+    render(<CharacterReferencePanel projectId={PROJECT} characterId={CHARACTER} currentRevisionId={CURRENT} onJobAccepted={accepted} />);
+    await answer(await http.list(), listing(CHARACTER, []));
+    fireEvent.click(screen.getByRole("button", { name: "为当前版本生成参考图" }));
+    await answer(await http.generate(), { error: { code: "CHARACTER_REVISION_STALE", message: "角色版本已失效" } }, 409);
+    expect(accepted).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "为当前版本生成参考图" }));
+    await answer(await http.generate(), { workflowRunId: "run", jobId: JOB, dispatchSeq: 1 }, 202);
+    expect(accepted).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not call back for an acceptance that arrives after the character changed", async () => {
+    const http = controlledFetch();
+    const accepted = vi.fn();
+    const view = render(<CharacterReferencePanel projectId={PROJECT} characterId={CHARACTER} currentRevisionId={CURRENT} onJobAccepted={accepted} />);
+    await answer(await http.list(), listing(CHARACTER, []));
+    fireEvent.click(screen.getByRole("button", { name: "为当前版本生成参考图" }));
+    const late = await http.generate();
+    view.rerender(<CharacterReferencePanel projectId={PROJECT} characterId={OTHER_CHARACTER} currentRevisionId={CURRENT} onJobAccepted={accepted} />);
+    await answer(await http.list(OTHER_CHARACTER), listing(OTHER_CHARACTER, []));
+    await answer(late, { workflowRunId: "run", jobId: JOB, dispatchSeq: 1 }, 202);
+    expect(accepted).not.toHaveBeenCalled();
+  });
+});
+
+describe("selection when an older server leaves selectable out (PR #49 review 2)", () => {
+  const A = "55555555-5555-4555-8555-555555555555";
+  const B = "66666666-6666-4666-8666-666666666666";
+  const C = "77777777-7777-4777-8777-777777777777";
+  const OLD = "33333333-3333-4333-8333-333333333333";
+
+  function withoutSelectable(id: string, overrides: Record<string, unknown> = {}) {
+    const { selectable: _omitted, ...rest } = asset(id, overrides);
+    return rest;
+  }
+
+  function selectButton(id: string) {
+    const card = screen.getByText(new RegExp(`^${id.slice(0, 8)}`)).closest("li")!;
+    return Array.from(card.querySelectorAll("button")).at(-1) as HTMLButtonElement;
+  }
+
+  it("falls back to the earlier rule: an ACTIVE, APPROVED image of the current revision stays selectable", async () => {
+    const http = controlledFetch();
+    render(<CharacterReferencePanel projectId={PROJECT} characterId={CHARACTER} currentRevisionId={CURRENT} />);
+    const { videoReadiness: _absent, ...older } = listing(CHARACTER, [
+      withoutSelectable(A),
+      withoutSelectable(B, { reviewStatus: "DRAFT" }),
+      withoutSelectable(C, { characterRevisionId: OLD }),
+    ]);
+    await answer(await http.list(), older);
+    expect(selectButton(A).disabled).toBe(false);
+    expect(selectButton(A).textContent).toBe("选为视频参考");
+    expect(selectButton(B).disabled).toBe(true);
+    expect(selectButton(C).disabled).toBe(true);
+  });
+
+  it("never opens an image the server marked not selectable", async () => {
+    const http = controlledFetch();
+    render(<CharacterReferencePanel projectId={PROJECT} characterId={CHARACTER} currentRevisionId={CURRENT} />);
+    await answer(await http.list(), listing(CHARACTER, [asset(A, { selectable: false })]));
+    expect(selectButton(A).disabled).toBe(true);
+    expect(selectButton(A).textContent).toBe("不可选定（需通过且属于当前版本）");
+  });
+});

@@ -2,7 +2,7 @@
 // useProjectBase against a stubbed fetch with controllable answers and fake timers. No browser or server.
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { POLL_MS, useProjectBase, type WorkflowRun } from "./project-base";
+import { POLL_MS, REFERENCE_WORKFLOW_TYPE, useProjectBase, type WorkflowRun } from "./project-base";
 
 const P1 = "11111111-1111-4111-8111-111111111111";
 const P2 = "22222222-2222-4222-8222-222222222222";
@@ -601,5 +601,39 @@ describe("a superseded workflow poll failure does not restart the backoff (PR #5
     await advance(60_000);
     expect(server.calls.length).toBe(reads);
     unmount();
+  });
+});
+
+function referenceRun(state: string): WorkflowRun {
+  return { id: "run-reference", type: REFERENCE_WORKFLOW_TYPE, status: state, createdAt: "2026-10-13T00:00:00.000Z",
+    jobs: [{ id: "job-reference", kind: REFERENCE_WORKFLOW_TYPE, state, errorCode: null, errorMessage: null }] };
+}
+
+describe("a character reference job accepted while nothing runs reaches the task list (PR #49 review 1)", () => {
+  it("idle, the panel's acceptance callback rereads: the job is listed and followed to its end without touching text or media", async () => {
+    const server: Server = { runs: [], project: [], calls: [] };
+    install(server);
+    const { result } = renderHook(() => useProjectBase(P1, "失败"));
+    await settle();
+    // Nothing runs: the poll chain has ended, and on its own nothing would read the runs again.
+    await advance(30_000);
+    const idleReads = runsReads(server);
+    expect(result.current.workflows).toHaveLength(0);
+    // The reference panel got its 202 and calls back with the project reread (what EntityPane wires to onSaved).
+    server.runs = [referenceRun("QUEUED")];
+    await act(async () => { await result.current.reloadBase(); });
+    expect(runsReads(server)).toBe(idleReads + 1);
+    expect(result.current.workflows.map((run) => run.type)).toEqual([REFERENCE_WORKFLOW_TYPE]);
+    const epochs = { image: result.current.imageEpoch, refresh: result.current.refreshEpoch };
+    // Followed like other tasks until terminal.
+    server.runs = [referenceRun("SUCCEEDED")];
+    await advance(POLL_MS);
+    expect(result.current.workflows[0]?.status).toBe("SUCCEEDED");
+    // Its own panel rereads the reference list; text entities and shot media are not reloaded for it.
+    expect(result.current.imageEpoch).toBe(epochs.image);
+    expect(result.current.refreshEpoch).toBe(epochs.refresh);
+    const reads = server.calls.length;
+    await advance(60_000);
+    expect(server.calls.length).toBe(reads);
   });
 });

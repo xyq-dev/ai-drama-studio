@@ -12,7 +12,7 @@ interface ReferenceAsset {
   reviewNote: string | null;
   rowVersion: number;
   createdAt: string;
-  /** The selection endpoint's own rule, decided by the server. */
+  /** The selection endpoint's own rule, decided by the server; absent only from an older server. */
   selectable?: boolean;
 }
 
@@ -42,6 +42,15 @@ const JOB_TEXT: Record<string, string> = { QUEUED: "排队中", RUNNING: "生成
 const TERMINAL = new Set(["SUCCEEDED", "FAILED", "CANCELED"]);
 const POLL_MS = 1500;
 
+/**
+ * The server's answer when it gives one. An older server leaves `selectable` out; then the rule that server's own UI
+ * applied holds (an ACTIVE, APPROVED image of the current revision), so an explicit false is never overridden.
+ */
+function selectableByServer(item: ReferenceAsset, currentRevisionId: string | null): boolean {
+  if (typeof item.selectable === "boolean") return item.selectable;
+  return item.characterRevisionId === currentRevisionId && item.status === "ACTIVE" && item.reviewStatus === "APPROVED";
+}
+
 function pageHidden(): boolean {
   return document.visibilityState === "hidden";
 }
@@ -70,7 +79,13 @@ const BLOCKER_TEXT: Record<string, string> = {
  * read at a time, pausing while the page is hidden, and re-reads the list when it succeeds. A change of project,
  * character or revision, or unmounting, makes every in-flight answer for the old one stale.
  */
-export function CharacterReferencePanel(props: { projectId: string; characterId: string; currentRevisionId: string }) {
+export function CharacterReferencePanel(props: {
+  projectId: string;
+  characterId: string;
+  currentRevisionId: string;
+  /** A generation was accepted (202): the task list rereads the project's runs so it can show and follow the job. */
+  onJobAccepted?: () => void;
+}) {
   const [listing, setListing] = useState<ReferenceListing | null>(null);
   const [unavailable, setUnavailable] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -185,6 +200,7 @@ export function CharacterReferencePanel(props: { projectId: string; characterId:
       setNote(success);
       if (generation && typeof result.body?.jobId === "string") {
         setJob({ id: result.body.jobId, state: "QUEUED", errorCode: null, errorMessage: null, owner });
+        props.onJobAccepted?.();
       } else {
         await load();
       }
@@ -243,7 +259,7 @@ export function CharacterReferencePanel(props: { projectId: string; characterId:
       <ul className="mt-3 grid gap-3 sm:grid-cols-2">
         {listing?.items.map((item) => {
           const current = item.characterRevisionId === listing.currentRevisionId;
-          const selectable = item.selectable === true && item.id !== selectedId;
+          const selectable = selectableByServer(item, listing.currentRevisionId) && item.id !== selectedId;
           return (
             <li key={item.id} className="min-w-0 rounded border p-2 text-sm">
               <img className="h-24 w-24 rounded border object-contain [image-rendering:pixelated]" src={`/api/v1/assets/${item.id}/content`} alt={`参考图 ${item.id.slice(0, 8)}`} />

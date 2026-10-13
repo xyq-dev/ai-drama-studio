@@ -1334,7 +1334,8 @@ export function EntityPane(props: {
           </div>
         ) : null}
         {props.kind === "character" && selected && history?.aggregate.entityId === selected && current ? (
-          <CharacterReferencePanel projectId={props.project.id} characterId={selected} currentRevisionId={current.id} />
+          <CharacterReferencePanel projectId={props.project.id} characterId={selected} currentRevisionId={current.id}
+            onJobAccepted={() => void props.onSaved().catch(() => undefined)} />
         ) : null}
         <NewEntityForm
           project={props.project}

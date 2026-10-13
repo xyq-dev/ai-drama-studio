@@ -587,6 +587,33 @@ describe("workspace Qwen requests", () => {
     expect(Object.keys(sessionStorage).some((name) => name.startsWith("ads-writing-qwen:"))).toBe(false);
   });
 
+  it.each([
+    ["用原请求标识重新读取", "the replay button"],
+    ["向工作区请求候选", "the same-frozen replay"],
+  ])("holds a restored request stored before the byte cap to the same limit: %s (PR #49 review 3)", async (label) => {
+    const client = fakeQwen({ outcomes: [] });
+    client.request.mockImplementationOnce(() => Promise.reject(new TypeError("network down")));
+    const first = render(createElement(WritingAssistant, { ...storyProps(), workspaceQwen: client }));
+    await readyAssistant();
+    fireEvent.click(screen.getByRole("button", { name: "准备创作指令" }));
+    fireEvent.click(screen.getByRole("button", { name: "向工作区请求候选" }));
+    expect(await screen.findByText(/连接中断，结果未知/)).toBeTruthy();
+    first.unmount();
+    // A version-1 record written by a page from before the cap: same key and frozen instruction, oversized input.
+    const name = "ads-writing-qwen:project-1:story";
+    const stored = JSON.parse(sessionStorage.getItem(name) ?? "null") as { version: number; input: Record<string, unknown> };
+    expect(stored.version).toBe(1);
+    stored.input = { ...stored.input, premise: "".repeat(50_000) };
+    sessionStorage.setItem(name, JSON.stringify(stored));
+
+    render(createElement(WritingAssistant, { ...storyProps(), workspaceQwen: client }));
+    await readyAssistant();
+    fireEvent.click(screen.getByRole("button", { name: label }));
+    const alert = await screen.findByText(/字节（按 UTF-8 计），超过 256,000 字节上限/);
+    expect(alert.textContent).toMatch(/输入为 3\d\d,\d{3} 字节/);
+    expect(client.request).toHaveBeenCalledTimes(1);
+  });
+
   it("shows the server's byte-cap refusal without changing the request record", async () => {
     const client = fakeQwen({ outcomes: [Promise.resolve({ ok: false, httpStatus: 413, code: "QWEN_WEB_INPUT_TOO_LARGE" } as Outcome)] });
     render(createElement(WritingAssistant, { ...storyProps(), workspaceQwen: client }));
