@@ -619,9 +619,10 @@ describe("a character reference job accepted while nothing runs reaches the task
     await advance(30_000);
     const idleReads = runsReads(server);
     expect(result.current.workflows).toHaveLength(0);
-    // The reference panel got its 202 and calls back with the project reread (what EntityPane wires to onSaved).
+    // The reference panel got its 202 and calls back with its project (EntityPane wires it to reloadForProject).
     server.runs = [referenceRun("QUEUED")];
-    await act(async () => { await result.current.reloadBase(); });
+    act(() => { result.current.reloadForProject(P1); });
+    await settle();
     expect(runsReads(server)).toBe(idleReads + 1);
     expect(result.current.workflows.map((run) => run.type)).toEqual([REFERENCE_WORKFLOW_TYPE]);
     const epochs = { image: result.current.imageEpoch, refresh: result.current.refreshEpoch,
@@ -682,5 +683,29 @@ describe("a reference run this page did not accept still refreshes the panel whe
     await settle();
     expect(result.current.workflows[0]?.status).toBe("SUCCEEDED");
     expect(result.current.referenceEpoch).toBe(before + 1);
+  });
+});
+
+describe("reloadForProject only rereads the project still shown (Codex review on b6aef4a)", () => {
+  it("drops a late acceptance for a project the page has left, so old data never replaces the new project's", async () => {
+    const server: Server = { runs: [], project: [], calls: [] };
+    install(server);
+    const { result, rerender } = renderHook(({ id }) => useProjectBase(id, "失败"), { initialProps: { id: P1 } });
+    await settle();
+    const lateCallback = result.current.reloadForProject;
+    rerender({ id: P2 });
+    await settle();
+    expect(result.current.project?.id).toBe(P2);
+    const reads = server.calls.length;
+    // The P1 panel's 202 arrives now, through the callback it was given while P1 was shown.
+    act(() => { lateCallback(P1); });
+    await settle();
+    expect(server.calls.length).toBe(reads);
+    expect(result.current.project?.id).toBe(P2);
+    // For the project shown, it rereads.
+    act(() => { result.current.reloadForProject(P2); });
+    await settle();
+    expect(server.calls.slice(reads)).toContain(`/api/v1/projects/${P2}/workflow-runs`);
+    expect(result.current.project?.id).toBe(P2);
   });
 });

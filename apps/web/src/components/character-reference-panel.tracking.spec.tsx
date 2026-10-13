@@ -237,9 +237,10 @@ describe("the task list hears about an accepted generation (PR #49 review 1)", (
     fireEvent.click(screen.getByRole("button", { name: "为当前版本生成参考图" }));
     await answer(await http.generate(), { workflowRunId: "run", jobId: JOB, dispatchSeq: 1 }, 202);
     expect(accepted).toHaveBeenCalledTimes(1);
+    expect(accepted).toHaveBeenCalledWith(PROJECT);
   });
 
-  it("does not call back for an acceptance that arrives after the character changed", async () => {
+  it("still reports an acceptance that arrives after the character changed, but does not follow it here (Codex review on b6aef4a)", async () => {
     const http = controlledFetch();
     const accepted = vi.fn();
     const view = render(<CharacterReferencePanel projectId={PROJECT} characterId={CHARACTER} currentRevisionId={CURRENT} onJobAccepted={accepted} />);
@@ -249,7 +250,28 @@ describe("the task list hears about an accepted generation (PR #49 review 1)", (
     view.rerender(<CharacterReferencePanel projectId={PROJECT} characterId={OTHER_CHARACTER} currentRevisionId={CURRENT} onJobAccepted={accepted} />);
     await answer(await http.list(OTHER_CHARACTER), listing(OTHER_CHARACTER, []));
     await answer(late, { workflowRunId: "run", jobId: JOB, dispatchSeq: 1 }, 202);
-    expect(accepted).not.toHaveBeenCalled();
+    // The job exists on the server: the project's task list must hear of it.
+    expect(accepted).toHaveBeenCalledTimes(1);
+    expect(accepted).toHaveBeenCalledWith(PROJECT);
+    // The old character's job is neither shown nor followed in the new character's panel.
+    expect(screen.queryByText(/参考图任务 cccccccc/)).toBeNull();
+    await flush();
+    expect(http.reads()).toBe(0);
+  });
+
+  it("reports an acceptance with the project it was made in, even after the project changed", async () => {
+    const http = controlledFetch();
+    const accepted = vi.fn();
+    const OTHER_PROJECT = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const view = render(<CharacterReferencePanel projectId={PROJECT} characterId={CHARACTER} currentRevisionId={CURRENT} onJobAccepted={accepted} />);
+    await answer(await http.list(), listing(CHARACTER, []));
+    fireEvent.click(screen.getByRole("button", { name: "为当前版本生成参考图" }));
+    const late = await http.generate();
+    view.rerender(<CharacterReferencePanel projectId={OTHER_PROJECT} characterId={OTHER_CHARACTER} currentRevisionId={CURRENT} onJobAccepted={accepted} />);
+    await answer(await http.list(OTHER_CHARACTER), listing(OTHER_CHARACTER, []));
+    await answer(late, { workflowRunId: "run", jobId: JOB, dispatchSeq: 1 }, 202);
+    // The receiver (useProjectBase.reloadForProject) drops it: PROJECT is no longer the one shown.
+    expect(accepted).toHaveBeenCalledWith(PROJECT);
   });
 });
 

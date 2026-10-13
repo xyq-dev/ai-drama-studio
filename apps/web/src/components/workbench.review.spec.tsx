@@ -35,6 +35,8 @@ interface Sim {
   holdGetPart: string | null;
   failGetPart: string | null;
   characterPostGate: Promise<void> | null;
+  /** Holds a character reference generation POST until resolved; it then answers 202 and a QUEUED reference run exists. */
+  referencePostGate: Promise<void> | null;
   scenePostGate: Promise<void> | null;
   shotPostGate: Promise<void> | null;
   withLocation: boolean;
@@ -107,6 +109,7 @@ function createSim(): Sim {
     holdGetPart: null,
     failGetPart: null,
     characterPostGate: null,
+    referencePostGate: null,
     scenePostGate: null,
     shotPostGate: null,
     withLocation: false,
@@ -573,6 +576,20 @@ function createSim(): Sim {
           jobKind: "MEDIA_IMAGE", inputHash: "ab".repeat(32), newCost: "none" }, 200);
       }
       return json({ workflowRunId: "media-run", jobId: "media-job" }, 202);
+    }
+    const referenceList = /^\/api\/v1\/characters\/([^/]+)\/reference-images$/.exec(path);
+    if (referenceList && method === "GET") {
+      const id = referenceList[1] === CHAR_B ? CHAR_B : CHAR_A;
+      return json({ characterId: id, currentRevisionId: id === CHAR_B ? "rev-b1" : characterRevId, selection: null,
+        videoReadiness: { usable: false, blockers: ["REFERENCE_NOT_SELECTED"] }, items: [], hasMore: false });
+    }
+    if (/^\/api\/v1\/character-revisions\/[^/]+\/reference-images\/generate$/.test(path) && method === "POST") {
+      if (sim.referencePostGate) await sim.referencePostGate;
+      sim.referenceTaskState = "QUEUED";
+      return json({ workflowRunId: "reference-run", jobId: "reference-job", dispatchSeq: 1 }, 202);
+    }
+    if (path === "/api/v1/generation-jobs/reference-job" && method === "GET") {
+      return json({ id: "reference-job", state: sim.referenceTaskState ?? "QUEUED", errorCode: null, errorMessage: null });
     }
     return fail(404, "NOT_FOUND", path);
   };
@@ -1499,6 +1516,28 @@ describe("workbench review interactions against a simulated API", () => {
     fireEvent.click(retry);
     expect(sim.calls.filter((call) => call.url.endsWith("/retry"))).toHaveLength(0);
   });
+
+  it("lists a reference job accepted after the user switched character, and follows it (Codex review on b6aef4a)", async () => {
+    const sim = createSim();
+    let release!: () => void;
+    sim.referencePostGate = new Promise<void>((resolve) => { release = resolve; });
+    install(sim);
+    renderAt("focus=character");
+    await openCharacter(CHAR_A);
+    fireEvent.click(await screen.findByRole("button", { name: "为当前版本生成参考图" }));
+    await waitFor(() => expect(postsEnding(sim, "/reference-images/generate")).toHaveLength(1));
+    // Switch to another character in the same project before the 202 arrives.
+    await openCharacter(CHAR_B);
+    await screen.findByRole("button", { name: "为当前版本生成参考图" });
+    const before = sim.workflowReads;
+    release();
+    // Nothing was running, so only the acceptance can make the page read the runs again.
+    await waitFor(() => expect(sim.workflowReads).toBeGreaterThan(before));
+    fireEvent.click(screen.getByRole("button", { name: "任务" }));
+    expect(await screen.findByText("角色参考图 · 进行中 QUEUED")).toBeTruthy();
+    // Character B's panel does not adopt character A's job.
+    expect(screen.queryByText(/参考图任务 referenc/)).toBeNull();
+  }, 15000);
 
   it("lists a character reference generation in the task area without a retry, and keeps polling it while it runs (closeout item 5)", async () => {
     const sim = createSim();

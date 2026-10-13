@@ -259,6 +259,18 @@ export function useProjectBase(projectId: string, failureText: string) {
   /** The public reread: same rules as loadBase, without the applied flag callers do not need. */
   const reloadBase = useCallback(async () => { await loadBase(); }, [loadBase]);
 
+  /** The project shown now, for callbacks that outlive the render that made them. */
+  const shownProject = useRef(projectId);
+  shownProject.current = projectId;
+  /**
+   * Rereads the base only while `forProject` is still the project shown. A late callback for a project the page has
+   * left is dropped: running the old project's read would supersede the new project's reads with old data.
+   */
+  const reloadForProject = useCallback((forProject: string) => {
+    if (forProject !== shownProject.current) return;
+    void loadBase().catch(() => undefined);
+  }, [loadBase]);
+
   // The initial load of a project (a project change or mount). Its loading and error are settled by reloadBase for
   // whichever request is current at the time; a project change or an unmount invalidates requests in flight.
   useEffect(() => {
@@ -405,5 +417,5 @@ export function useProjectBase(projectId: string, failureText: string) {
   }, [projectId]);
 
   return { project, episodes, stories, characters, locations, workflows, allRuns, loading, error, setError, refreshEpoch,
-    imageEpoch, referenceEpoch, reloadBase, more, keepScopedPages, refreshFailed, refreshPaused, retryNow };
+    imageEpoch, referenceEpoch, reloadBase, reloadForProject, more, keepScopedPages, refreshFailed, refreshPaused, retryNow };
 }

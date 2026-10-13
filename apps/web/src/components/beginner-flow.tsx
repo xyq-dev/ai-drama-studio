@@ -534,7 +534,7 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
               <EntityPane project={project} kind={castKind} page={castKind === "character" ? characters : locations} episodes={episodes}
                 focus={castFocus && castFocus.kind === castKind ? castFocus : null}
                 onMore={() => void base.more(castKind === "character" ? "characters" : "locations")} onSaved={reloadBase} onStatus={onStatus}
-                referenceEpoch={base.referenceEpoch} />
+                referenceEpoch={base.referenceEpoch} onReferenceAccepted={base.reloadForProject} />
             </>
           ) : null}
 

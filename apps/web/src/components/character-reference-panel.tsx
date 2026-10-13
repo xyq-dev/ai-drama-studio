@@ -83,8 +83,12 @@ export function CharacterReferencePanel(props: {
   projectId: string;
   characterId: string;
   currentRevisionId: string;
-  /** A generation was accepted (202): the task list rereads the project's runs so it can show and follow the job. */
-  onJobAccepted?: () => void;
+  /**
+   * A generation was accepted (202) in this project: the task list rereads the project's runs so it can show and follow
+   * the job. Called for every acceptance, also one that arrives after this panel moved to another character or
+   * revision (the job exists all the same); the receiver rereads only if that project is still the one shown.
+   */
+  onJobAccepted?: (projectId: string) => void;
   /**
    * Bumped by the project's task poll when a reference run reaches a terminal state. The list is re-read on each change,
    * so a job this panel did not accept itself (another tab, or a reload while it ran) still shows its result.
@@ -103,6 +107,9 @@ export function CharacterReferencePanel(props: {
   const request = useRef(0);
   /** Bumped on every change of project, character or revision and on unmount. */
   const scope = useRef(0);
+  /** The latest acceptance callback, so an answer that outlives a render (or this panel) reaches the current one. */
+  const accepted = useRef(props.onJobAccepted);
+  accepted.current = props.onJobAccepted;
 
   const load = useCallback(async () => {
     const owner = scope.current;
@@ -202,6 +209,7 @@ export function CharacterReferencePanel(props: {
 
   async function write(action: string, path: string, body: unknown, success: string, generation = false) {
     const owner = scope.current;
+    const projectId = props.projectId;
     const key = keys.current[action] ?? crypto.randomUUID();
     keys.current[action] = key;
     setBusy(true);
@@ -209,11 +217,13 @@ export function CharacterReferencePanel(props: {
     try {
       const result = await client.write<{ jobId?: string }>({ path, body, idempotencyKey: key });
       delete keys.current[action];
+      const acceptedJob = generation && typeof result.body?.jobId === "string" ? result.body.jobId : null;
+      // The server accepted the job whatever this panel shows now; the project's task list must hear of it.
+      if (acceptedJob) accepted.current?.(projectId);
       if (owner !== scope.current) return;
       setNote(success);
-      if (generation && typeof result.body?.jobId === "string") {
-        setJob({ id: result.body.jobId, state: "QUEUED", errorCode: null, errorMessage: null, owner });
-        props.onJobAccepted?.();
+      if (acceptedJob) {
+        setJob({ id: acceptedJob, state: "QUEUED", errorCode: null, errorMessage: null, owner });
       } else {
         await load();
       }
