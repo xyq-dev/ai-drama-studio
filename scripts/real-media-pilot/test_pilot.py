@@ -135,7 +135,7 @@ class PilotTests(unittest.TestCase):
         self.assertEqual(evidence["providerRecords"]["image"]["taskId"], "image-task")
         self.assertEqual(evidence["providerRecords"]["tts"]["submissionRequestId"], "tts-request")
         self.assertNotIn("secret", json.dumps(evidence))
-        self.assertNotIn("Signature", (self.root / "state.json").read_text())
+        self.assertNotIn("Signature", (self.root / "state.json").read_text(encoding="utf-8"))
         self.transport.calls.clear()
         self.transport.downloads.clear()
         self.runner(resume=True, allow_paid=False).run()
@@ -148,7 +148,7 @@ class PilotTests(unittest.TestCase):
         def checked(method, path, body=None):
             if method == "POST":
                 name = {pilot.IMAGE_PATH: "image", pilot.VIDEO_PATH: "video", pilot.TTS_PATH: "tts"}[path]
-                state = json.loads((self.root / "state.json").read_text())
+                state = json.loads((self.root / "state.json").read_text(encoding="utf-8"))
                 self.assertEqual(state["stages"][name]["status"], "SUBMITTING")
             return original(method, path, body)
 
@@ -165,7 +165,7 @@ class PilotTests(unittest.TestCase):
         with self.assertRaisesRegex(pilot.PilotError, "SUBMISSION_UNKNOWN"):
             self.runner(resume=True).run()
         self.assertEqual(len(self.transport.calls), 1)
-        self.assertNotIn("secret", (self.root / "state.json").read_text())
+        self.assertNotIn("secret", (self.root / "state.json").read_text(encoding="utf-8"))
 
     def test_submitting_after_process_interruption_does_not_post(self):
         runner = self.runner()
@@ -202,7 +202,7 @@ class PilotTests(unittest.TestCase):
         self.transport.task_status = "UNKNOWN"
         with self.assertRaisesRegex(pilot.PilotError, "TASK_UNKNOWN"):
             self.runner().run()
-        state = json.loads((self.root / "state.json").read_text())
+        state = json.loads((self.root / "state.json").read_text(encoding="utf-8"))
         self.assertEqual(state["stages"]["image"], {"status": "UNKNOWN", "taskId": "image-task",
             "submissionRequestId": "submit-request", "lastQueryRequestId": "poll-request",
             "reportedUsage": {"image_count": 1, "video_duration": 5}})
