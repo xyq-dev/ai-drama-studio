@@ -37,7 +37,13 @@ export function EpisodeWritingCheck({ concept, outline, episodeCount }: {
             {EPISODE_WRITING_KIND_LABELS.missing} {result.counts.missing} 项 · {EPISODE_WRITING_KIND_LABELS.manual} {result.counts.manual} 项 ·{" "}
             {EPISODE_WRITING_KIND_LABELS.undetermined} {result.counts.undetermined} 项
           </p>
-          {result.counts.missing === 0 ? <p className={styles.helper}>没有发现明确缺项。这只说明字段都有内容，下面的人工检查项仍需要你判断。</p> : null}
+          {result.counts.missing === 0 ? (
+            <p className={styles.helper}>
+              没有发现明确缺项，这不代表故事合格。
+              {result.counts.undetermined > 0 ? `另有 ${String(result.counts.undetermined)} 项因相关内容为空或只是占位文字，当前无法判断。` : ""}
+              {result.counts.manual > 0 ? "待人工判断的项仍需要你判断。" : ""}
+            </p>
+          ) : null}
           {result.groups.map((group) => (
             <section key={group.episodeNo ?? "story"} className={styles.checkGroup} aria-label={`${group.label}的检查结果`}>
               <h3 className={styles.checkGroupTitle}>

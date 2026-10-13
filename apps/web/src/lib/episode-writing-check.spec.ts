@@ -95,6 +95,41 @@ describe("what cannot be read is not judged", () => {
     expect(escalation.evidence).toBe("第 1 集 turn（转折）：“…”；第 2 集 turn（转折）：“…”");
   });
 
+  it("agency needs a written action and result: either one empty or a placeholder leaves it undetermined, citing both", () => {
+    for (const [changed, expected] of [[{ result: "待定" }, "第 1 集 result（结果）：“待定”"], [{ action: "…" }, "第 1 集 action（行动）：“…”"],
+      [{ result: "" }, "第 1 集 result（结果）：（空）"]] as const) {
+      const findings = flat(checkEpisodePlan(concept, outline([{ ...complete(1), ...changed }]), 1));
+      expect(findings.some((item) => item.id === "1:manual:agency")).toBe(false);
+      const agency = findings.find((item) => item.id === "1:undetermined:agency")!;
+      expect(agency.evidence).toContain("第 1 集 action（行动）");
+      expect(agency.evidence).toContain("第 1 集 result（结果）");
+      expect(agency.evidence).toContain(expected);
+    }
+  });
+
+  it("follow-up needs this handoff and the next opening: a placeholder or an absent next episode leaves it undetermined", () => {
+    const placeholderNext = flat(checkEpisodePlan(concept, outline([complete(1), { ...complete(2), entryState: "待定" }]), 2));
+    expect(placeholderNext.some((item) => item.id === "1:manual:followup")).toBe(false);
+    expect(placeholderNext.find((item) => item.id === "1:undetermined:followup")?.evidence)
+      .toBe("第 1 集 handoff（交给下一集）：“问题1”；第 2 集 entryState（进入状态）：“待定”");
+    const placeholderHandoff = flat(checkEpisodePlan(concept, outline([{ ...complete(1), handoff: "无" }, complete(2)]), 2));
+    expect(placeholderHandoff.find((item) => item.id === "1:undetermined:followup")?.evidence)
+      .toBe("第 1 集 handoff（交给下一集）：“无”；第 2 集 entryState（进入状态）：“开场局面2，表姐拦着”");
+    const absentNext = flat(checkEpisodePlan(concept, outline([complete(1)]), 2));
+    expect(absentNext.find((item) => item.id === "1:undetermined:followup")?.evidence).toBe("第 1 集 handoff（交给下一集）：“问题1”；分集大纲里没有第 2 集。");
+  });
+
+  it("closure needs the last handoff and the story direction: a placeholder or no concept leaves it undetermined", () => {
+    const placeholderDirection = flat(checkEpisodePlan({ ...concept, direction: "待定" }, outline([complete(1)]), 1));
+    expect(placeholderDirection.some((item) => item.id === "1:manual:closure")).toBe(false);
+    expect(placeholderDirection.find((item) => item.id === "1:undetermined:closure")?.evidence)
+      .toBe("第 1 集 handoff（交给下一集）：“问题1”；故事策划 direction（故事走向）：“待定”");
+    const placeholderHandoff = flat(checkEpisodePlan(concept, outline([{ ...complete(1), handoff: "TBD" }]), 1));
+    expect(placeholderHandoff.find((item) => item.id === "1:undetermined:closure")?.evidence).toContain("第 1 集 handoff（交给下一集）：“TBD”");
+    const noConcept = flat(checkEpisodePlan(null, outline([complete(1)]), 1));
+    expect(noConcept.find((item) => item.id === "1:undetermined:closure")?.evidence).toBe("第 1 集 handoff（交给下一集）：“问题1”；这次创作没有可读的故事策划。");
+  });
+
   it("findings are only missing, manual or undetermined; there is no pass state and no score", () => {
     const check = checkEpisodePlan(concept, outline([1, 2].map(complete)), 2);
     expect(new Set(flat(check).map((item) => item.kind))).toEqual(new Set(["manual"]));
@@ -110,6 +145,13 @@ describe("semantic hints stay human questions", () => {
     expect(repeat.kind).toBe("manual");
     expect(repeat.evidence).toContain("第 1 集 goal");
     expect(repeat.evidence).toContain("第 2 集 goal");
+  });
+
+  it("written agency, follow-up and closure stay questions for a person, citing every field they compare", () => {
+    const findings = flat(checkEpisodePlan(concept, outline([1, 2].map(complete)), 2));
+    expect(findings.find((item) => item.id === "1:manual:agency")?.evidence).toBe("第 1 集 action（行动）：“行动1”；第 1 集 result（结果）：“结果1”");
+    expect(findings.find((item) => item.id === "1:manual:followup")?.evidence).toBe("第 1 集 handoff（交给下一集）：“问题1”；第 2 集 entryState（进入状态）：“开场局面2，表姐拦着”");
+    expect(findings.find((item) => item.id === "2:manual:closure")?.evidence).toBe("第 2 集 handoff（交给下一集）：“问题2”；故事策划 direction（故事走向）：“观众期待她拿回配方并保住面馆。第一集……”");
   });
 
   it("with valid turns on both sides the escalation stays a question for a person", () => {

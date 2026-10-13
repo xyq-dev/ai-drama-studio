@@ -63,6 +63,7 @@ describe("编剧检查 on the episode plan of a run", () => {
     fireEvent.click(button);
     expect(screen.getByRole("button", { name: "收起编剧检查" }).getAttribute("aria-expanded")).toBe("true");
     expect(screen.getByText(/明确缺项 0 项 · 待人工判断 \d+ 项 · 当前无法判断 0 项/)).toBeTruthy();
+    expect(screen.getByText("没有发现明确缺项，这不代表故事合格。待人工判断的项仍需要你判断。")).toBeTruthy();
     // Episode 2 repeats episode 1's goal: a question for a person, located at episode 2, with both fields quoted.
     const second = screen.getByRole("region", { name: "第 2 集 集名2的检查结果" });
     expect(within(second).getByText("本集是否在重复上一集的冲突？")).toBeTruthy();
@@ -73,6 +74,17 @@ describe("编剧检查 on the episode plan of a run", () => {
     expect(calls.length).toBe(requestsBefore);
     expect(screen.getByText("目标：目标1", { selector: "li#outline-episode-2 p" })).toBeTruthy();
     expect(screen.queryByText(/检查通过|已通过|总分|得分|爆款/)).toBeNull();
+  });
+
+  it("no missing item does not claim the fields are all written when some questions are undetermined", async () => {
+    const plan = outline("目标2");
+    plan.episodes[1] = { ...plan.episodes[1]!, turn: "…" };
+    const { client } = serve(run(plan));
+    render(<TitleWritingRun projectId={P1} client={client} />);
+    fireEvent.click(await screen.findByRole("button", { name: "编剧检查" }));
+    expect(screen.getByText(/明确缺项 0 项 · 待人工判断 \d+ 项 · 当前无法判断 3 项/)).toBeTruthy();
+    expect(screen.queryByText(/字段都有内容/)).toBeNull();
+    expect(screen.getByText(/没有发现明确缺项，这不代表故事合格。另有 3 项因相关内容为空或只是占位文字，当前无法判断。/)).toBeTruthy();
   });
 
   it("an empty field is a missing item of its episode", async () => {

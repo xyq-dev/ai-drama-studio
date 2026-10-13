@@ -165,11 +165,12 @@ function episodeFindings(episode: EpisodeOutlineEpisode, previous: EpisodeOutlin
       why: "阻止者的利益越具体，冲突越可信；只有“被刁难”而没有原因时，冲突容易变成重复羞辱。",
       suggestion: "如果读不出阻止者和他的利益，在进入状态里补一句，例如“表姐怕遗嘱公开后失去房子，抢先藏起钥匙”。" });
   }
-  if (!blank("action")) {
-    findings.push({ id: `${String(no)}:manual:agency`, episodeNo: no, kind: "manual", question: "本集关键结果是否来自主角的选择和行动？",
-      evidence: `${field(episode, "action")}；${field(episode, "result")}`, why: "结果如果靠旁人解围或巧合，主角显得被动，回报也不够有力。",
-      suggestion: "核对结果能否追溯到行动；不能时，把关键一步改成主角自己做出的选择。" });
-  }
+  // Agency compares the action with the result: without both there is nothing to trace.
+  const traceable = !blank("action") && !blank("result");
+  findings.push({ id: `${String(no)}:${traceable ? "manual" : "undetermined"}:agency`, episodeNo: no, kind: traceable ? "manual" : "undetermined",
+    question: "本集关键结果是否来自主角的选择和行动？", evidence: `${field(episode, "action")}；${field(episode, "result")}`,
+    why: traceable ? "结果如果靠旁人解围或巧合，主角显得被动，回报也不够有力。" : "行动和结果没有都写出来，无法判断结果是否来自主角的行动。",
+    suggestion: traceable ? "核对结果能否追溯到行动；不能时，把关键一步改成主角自己做出的选择。" : "补写本集主角的行动和结果，再核对两者能否对上。" });
   if (blank("turn")) {
     findings.push({ id: `${String(no)}:undetermined:information`, episodeNo: no, kind: "undetermined", question: "谁获得了什么新信息？反转是否有前置依据？",
       evidence: field(episode, "turn"), why: "转折是空的，无法判断信息差和反转。", suggestion: "在转折里写明谁知道了什么，以及它改变了谁的行动、关系或判断。" });
@@ -196,14 +197,22 @@ function episodeFindings(episode: EpisodeOutlineEpisode, previous: EpisodeOutlin
       suggestion: comparable ? "核对本集是否增加了代价、缩短了时间或提高了选择难度；没有时补其中一项。"
         : "在两集的转折里写明各自的代价或压力，再比较是否升级。" });
   }
-  if (!blank("handoff")) {
-    findings.push(isLast
-      ? { id: `${String(no)}:manual:closure`, episodeNo: no, kind: "manual", question: "最后一集是否回应了整部期待和主线问题？",
-        evidence: field(episode, "handoff"), why: "结尾不回应整部期待，前面的铺垫就没有兑现。",
-        suggestion: "对照故事走向里的整部期待，核对结尾是否写清主角最终得到或失去了什么。" }
-      : { id: `${String(no)}:manual:followup`, episodeNo: no, kind: "manual", question: "结尾的问题在下一集怎样回应？",
-        evidence: `${field(episode, "handoff")}${next ? `；${field(next, "entryState")}` : ""}`,
-        why: "下一集接不上结尾问题时，续看理由就落空了。", suggestion: "核对下一集的进入状态或目标是否承接了这个问题；接不上时改写其中一处。" });
+  if (isLast) {
+    // Closure compares the last handoff with the story's promise in the direction.
+    const promise = concept ? quoted("故事策划 direction（故事走向）", concept.direction) : "这次创作没有可读的故事策划。";
+    const closable = !blank("handoff") && concept !== null && !blankOrPlaceholder(concept.direction);
+    findings.push({ id: `${String(no)}:${closable ? "manual" : "undetermined"}:closure`, episodeNo: no, kind: closable ? "manual" : "undetermined",
+      question: "最后一集是否回应了整部期待和主线问题？", evidence: `${field(episode, "handoff")}；${promise}`,
+      why: closable ? "结尾不回应整部期待，前面的铺垫就没有兑现。" : "最后一集的结尾或故事走向没有写出来，无法判断结尾是否回应了整部期待。",
+      suggestion: closable ? "对照故事走向里的整部期待，核对结尾是否写清主角最终得到或失去了什么。" : "补写故事走向里的整部期待和最后一集的结尾，再核对两者。" });
+  } else {
+    // Follow-up compares this handoff with the next episode's opening.
+    const opening = next ? field(next, "entryState") : `分集大纲里没有第 ${String(no + 1)} 集。`;
+    const followed = !blank("handoff") && next !== undefined && !blankOrPlaceholder(next.entryState);
+    findings.push({ id: `${String(no)}:${followed ? "manual" : "undetermined"}:followup`, episodeNo: no, kind: followed ? "manual" : "undetermined",
+      question: "结尾的问题在下一集怎样回应？", evidence: `${field(episode, "handoff")}；${opening}`,
+      why: followed ? "下一集接不上结尾问题时，续看理由就落空了。" : "本集结尾或下一集开场没有写出来，无法判断两集是否接上。",
+      suggestion: followed ? "核对下一集的进入状态或目标是否承接了这个问题；接不上时改写其中一处。" : "补写本集的结尾问题和下一集的进入状态，再核对两者是否接上。" });
   }
   return findings;
 }
