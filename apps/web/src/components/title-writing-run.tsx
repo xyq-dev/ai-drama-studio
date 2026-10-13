@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { TITLE_WRITING_PROMPT_VERSION_V3, type EpisodeOutline, type TitleConcept } from "@ai-drama/contracts";
+import { TITLE_WRITING_PROMPT_VERSION_V3, TITLE_WRITING_PROMPT_VERSION_V4, type EpisodeOutline, type TitleConcept } from "@ai-drama/contracts";
 import {
   TitleWritingClient,
   TitleWritingError,
@@ -390,9 +390,9 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
             {outline ? (
               <section className={styles.card} aria-labelledby="outline-title">
                 <h2 id="outline-title" className={styles.sectionTitle}>分集大纲</h2>
-                {run.promptVersion === TITLE_WRITING_PROMPT_VERSION_V3 ? (
+                {run.promptVersion === TITLE_WRITING_PROMPT_VERSION_V3 || run.promptVersion === TITLE_WRITING_PROMPT_VERSION_V4 ? (
                   <p className={styles.helper}>
-                    这次创作使用了加入编剧要求的提示词（{TITLE_WRITING_PROMPT_VERSION_V3}）。各集剧本按本次创作保存的分集大纲生成；大纲生成后没有人工确认步骤，需要调整可在剧本草稿里修改。
+                    这次创作使用了加入编剧要求的提示词（{run.promptVersion}）。各集剧本按本次创作保存的分集大纲生成；大纲生成后没有人工确认步骤，需要调整可在剧本草稿里修改。
                   </p>
                 ) : null}
                 <OutlineView outline={outline} />

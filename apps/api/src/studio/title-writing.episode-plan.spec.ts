@@ -6,6 +6,7 @@ import {
   TITLE_WRITING_PROMPT_VERSION,
   TITLE_WRITING_PROMPT_VERSION_V2,
   TITLE_WRITING_PROMPT_VERSION_V3,
+  TITLE_WRITING_PROMPT_VERSION_V4,
   type TitleCallRecord,
   type TitleWritingFrozenInputV2,
 } from "@ai-drama/contracts";
@@ -374,36 +375,45 @@ describe("v2 keeps the uncertain-call, cancel and resume rules", () => {
   });
 });
 
-describe("the writing guidance is prompt v3 of new v2 runs only", () => {
-  it("a new v2 run freezes prompt v3 and sends the guided prompts with the same steps and request count", async () => {
+describe("the writing guidance is prompt v4 of new v2 runs only", () => {
+  it("a new v2 run freezes prompt v4 and sends the guided prompts with the same steps and request count", async () => {
     const { service, settle, seen, read } = setup({ episodeCount: 3, targetEpisodeSeconds: 90 });
     const started = await service.start(P1, { title: "夜班证词" }, TOKEN, CONTEXT("k"));
     expect(started.status).toBe(201);
     const runId = (started.body as RunBody).run.runId;
-    expect((started.body as { run: { promptVersion?: string } }).run.promptVersion).toBe(TITLE_WRITING_PROMPT_VERSION_V3);
+    expect((started.body as { run: { promptVersion?: string } }).run.promptVersion).toBe(TITLE_WRITING_PROMPT_VERSION_V4);
     await settle();
     expect((await read(runId)).run).toMatchObject({ state: "completed", callsUsed: 5 });
     expect(seen.map((item) => item.step)).toEqual(["concept", "outline", ...episodeKeys(3)]);
-    for (const item of seen) expect(item.user).toContain(TITLE_WRITING_PROMPT_VERSION_V3);
+    for (const item of seen) expect(item.user).toContain(TITLE_WRITING_PROMPT_VERSION_V4);
     expect(seen.find((item) => item.step === "episode:2")!.user).toContain("不凭空新增解围人物或决定性证据");
+    expect(seen.find((item) => item.step === "episode:2")!.user).toContain("下一集必须承接的事实");
+    expect(seen.find((item) => item.step === "episode:3")!.user).toContain("handoffFacts 记录结局事实");
+    expect(seen.find((item) => item.step === "episode:3")!.user).not.toContain("handoffFacts 包括本集结尾留下的");
   });
 
-  it("a stored prompt v2 run keeps the v2 text, and its start replayed after the upgrade returns it instead of a conflict", async () => {
+  it.each([
+    { version: TITLE_WRITING_PROMPT_VERSION_V2, heading: null },
+    { version: TITLE_WRITING_PROMPT_VERSION_V3, heading: TITLE_WRITING_PROMPT_VERSION_V3 },
+  ] as const)("a stored $version run keeps its own text, and its start replayed after the upgrade returns it instead of a conflict", async ({ version, heading }) => {
     const { service, settle, seen, store } = setup({ episodeCount: 3, targetEpisodeSeconds: 90 });
     const first = await service.start(P1, { title: "夜班证词" }, TOKEN, CONTEXT("before-upgrade"));
     const runId = (first.body as RunBody).run.runId;
-    // The run as an API from before prompt v3 stored it: the same input with prompt v2 and that input's hash.
+    // The run as an API from before the upgrade stored it: the same input with its prompt version and that input's hash.
     const stored = store.runs.find((item) => item.id === runId)!;
-    const input = { ...(stored.input as TitleWritingFrozenInputV2), promptVersion: TITLE_WRITING_PROMPT_VERSION_V2 };
+    const input = { ...(stored.input as TitleWritingFrozenInputV2), promptVersion: version };
     stored.input = input;
     stored.inputHash = hashTitleWritingInput(P1, input);
     await settle();
     expect(seen).toHaveLength(5);
-    for (const item of seen) expect(item.user).not.toContain(TITLE_WRITING_PROMPT_VERSION_V3);
+    for (const item of seen) expect(/编剧要求（(ads\.title-writing\.prompt\.v\d+)）/.exec(item.user)?.[1] ?? null).toBe(heading);
+    for (const item of seen) expect(item.user).not.toContain(TITLE_WRITING_PROMPT_VERSION_V4);
+    // A stored v3 run still asks its last episode for an ending question, exactly as before.
+    if (version === TITLE_WRITING_PROMPT_VERSION_V3) expect(seen.find((item) => item.step === "episode:3")!.user).toContain("handoffFacts 包括本集结尾留下的问题。");
     const replay = await service.start(P1, { title: "夜班证词" }, TOKEN, CONTEXT("before-upgrade"));
     expect(replay.status).toBe(200);
     expect((replay.body as RunBody).run.runId).toBe(runId);
-    expect((replay.body as { run: { promptVersion?: string } }).run.promptVersion).toBe(TITLE_WRITING_PROMPT_VERSION_V2);
+    expect((replay.body as { run: { promptVersion?: string } }).run.promptVersion).toBe(version);
     expect(store.runs).toHaveLength(1);
     // Another input under the same key is still a reused key.
     expect((await service.start(P1, { title: "另一个剧名" }, TOKEN, CONTEXT("before-upgrade"))).body).toMatchObject({ error: { code: "IDEMPOTENCY_KEY_REUSED" } });

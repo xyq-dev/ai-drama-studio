@@ -103,6 +103,10 @@ describe("编剧检查 on the episode plan of a run", () => {
     const note = await screen.findByText(/加入编剧要求的提示词（ads.title-writing.prompt.v3）/);
     expect(note.textContent).toContain("各集剧本按本次创作保存的分集大纲生成；大纲生成后没有人工确认步骤");
     cleanup();
+    const latest = serve(run(outline("目标2"), { inputVersion: 2, promptVersion: "ads.title-writing.prompt.v4" }));
+    render(<TitleWritingRun projectId={P1} client={latest.client} />);
+    expect(await screen.findByText(/加入编剧要求的提示词（ads.title-writing.prompt.v4）/)).toBeTruthy();
+    cleanup();
     const early = serve(run(null));
     render(<TitleWritingRun projectId={P1} client={early.client} />);
     await waitFor(() => expect(screen.getByRole("heading", { name: "故事策划" })).toBeTruthy());

@@ -33,6 +33,7 @@ import {
   TITLE_WRITING_PROMPT_VERSION,
   TITLE_WRITING_PROMPT_VERSION_V2,
   TITLE_WRITING_PROMPT_VERSION_V3,
+  TITLE_WRITING_PROMPT_VERSION_V4,
   currentUncertainCallIds,
   isTitleWritingInputV2,
   titleWritingCallCapFor,
@@ -134,14 +135,14 @@ export function newTitleRun(options: {
   model: string;
   now: Date;
   /**
-   * 2 freezes the project's episode plan (N, target seconds) with the guided prompt v3; 1, the default, is the
-   * unchanged three-episode input. Runs already stored with prompt v2 keep it.
+   * 2 freezes the project's episode plan (N, target seconds) with the guided prompt v4; 1, the default, is the
+   * unchanged three-episode input. Runs already stored with prompt v2 or v3 keep it.
    */
   version?: 1 | 2;
 }): TitleRunRecord {
   const common = { title: options.title, settings: options.settings, providerKey: options.providerKey, model: options.model };
   const input: TitleWritingFrozenInput = options.version === 2
-    ? { schema: TITLE_WRITING_INPUT_SCHEMA_V2, promptVersion: TITLE_WRITING_PROMPT_VERSION_V3, ...common }
+    ? { schema: TITLE_WRITING_INPUT_SCHEMA_V2, promptVersion: TITLE_WRITING_PROMPT_VERSION_V4, ...common }
     : { schema: TITLE_WRITING_INPUT_SCHEMA, promptVersion: TITLE_WRITING_PROMPT_VERSION, ...common };
   const createdAt = options.now.toISOString();
   return {
@@ -167,18 +168,23 @@ export function newTitleRun(options: {
   };
 }
 
+/** Prompt versions a v2 run was frozen with before the current one, oldest first. */
+const EARLIER_V2_PROMPT_VERSIONS = [TITLE_WRITING_PROMPT_VERSION_V2, TITLE_WRITING_PROMPT_VERSION_V3] as const;
+
 /**
- * True when a stored run is the same start request frozen before prompt v3 existed: its hash is that of the attempted
- * v2 input with prompt v2 instead of v3. A start sent before an upgrade and replayed after it then returns its run
- * instead of an idempotency conflict; the stored run keeps prompt v2.
+ * True when a stored run is the same start request frozen with an earlier prompt version: its hash is that of the
+ * attempted v2 input with the stored prompt v2 or v3 instead of v4. A start sent before an upgrade and replayed after it
+ * then returns its run instead of an idempotency conflict; the stored run keeps its own prompt version.
  */
 export function sameStartBeforeGuidance(stored: TitleRunRecord, attempted: TitleRunRecord): boolean {
   const input = attempted.input;
-  if (isScriptBreakdownInput(input) || !isTitleWritingInputV2(input) || input.promptVersion !== TITLE_WRITING_PROMPT_VERSION_V3) return false;
+  if (isScriptBreakdownInput(input) || !isTitleWritingInputV2(input) || input.promptVersion !== TITLE_WRITING_PROMPT_VERSION_V4) return false;
   const before = titleInputOf(stored);
-  if (!before || !isTitleWritingInputV2(before) || before.promptVersion !== TITLE_WRITING_PROMPT_VERSION_V2) return false;
+  if (!before || !isTitleWritingInputV2(before)) return false;
+  const earlier = EARLIER_V2_PROMPT_VERSIONS.find((version) => version === before.promptVersion);
+  if (!earlier) return false;
   return stored.projectId === attempted.projectId
-    && stored.inputHash === hashTitleWritingInput(attempted.projectId, { ...input, promptVersion: TITLE_WRITING_PROMPT_VERSION_V2 });
+    && stored.inputHash === hashTitleWritingInput(attempted.projectId, { ...input, promptVersion: earlier });
 }
 
 /** The title input of a run, or null for a script breakdown run. */

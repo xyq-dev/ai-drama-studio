@@ -25,6 +25,12 @@ export const TITLE_WRITING_PROMPT_VERSION_V2 = "ads.title-writing.prompt.v2" as 
  * this version; runs frozen with prompt v2 keep the v2 text byte for byte.
  */
 export const TITLE_WRITING_PROMPT_VERSION_V3 = "ads.title-writing.prompt.v3" as const;
+/**
+ * Prompt v3 with position-aware episode endings: a non-final episode still leaves its ending question and the facts the
+ * next episode inherits; the only or last episode closes the main story and its handoffFacts record the ending instead.
+ * Same steps, fields, schemas and limits. New v2 runs freeze this version; runs frozen with prompt v2 or v3 keep theirs.
+ */
+export const TITLE_WRITING_PROMPT_VERSION_V4 = "ads.title-writing.prompt.v4" as const;
 
 export const TITLE_WRITING_PROVIDER_KEYS = ["qwen", "openai", "deepseek"] as const;
 export type TitleWritingProviderKey = (typeof TITLE_WRITING_PROVIDER_KEYS)[number];
@@ -115,11 +121,12 @@ export interface TitleWritingFrozenInputV1 {
 
 /**
  * Frozen, hashed input of one v2 run. N and the target seconds were copied from the project's episode plan. Runs
- * created before the writing guidance carry prompt v2; newer runs carry prompt v3.
+ * created before the writing guidance carry prompt v2, runs created before the position-aware endings carry prompt v3;
+ * newer runs carry prompt v4.
  */
 export interface TitleWritingFrozenInputV2 {
   schema: typeof TITLE_WRITING_INPUT_SCHEMA_V2;
-  promptVersion: typeof TITLE_WRITING_PROMPT_VERSION_V2 | typeof TITLE_WRITING_PROMPT_VERSION_V3;
+  promptVersion: typeof TITLE_WRITING_PROMPT_VERSION_V2 | typeof TITLE_WRITING_PROMPT_VERSION_V3 | typeof TITLE_WRITING_PROMPT_VERSION_V4;
   title: string;
   settings: TitleWritingSettings;
   providerKey: TitleWritingProviderKey;
