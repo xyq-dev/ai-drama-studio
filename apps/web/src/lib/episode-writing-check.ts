@@ -79,8 +79,10 @@ function quoted(label: string, value: string | undefined | null): string {
   return text.length === 0 ? `${label}：（空）` : `${label}：“${excerpt(text)}”`;
 }
 
-function field(episode: EpisodeOutlineEpisode, key: keyof typeof FIELD_LABELS): string {
-  return quoted(`第 ${String(episode.episodeNo)} 集 ${key}（${FIELD_LABELS[key]}）`, episode[key]);
+function field(episode: EpisodeOutlineEpisode, key: keyof typeof FIELD_LABELS, isLast = false): string {
+  // The last episode's handoff has nothing to hand over: it closes the story.
+  const label = key === "handoff" && isLast ? "全剧收尾" : FIELD_LABELS[key];
+  return quoted(`第 ${String(episode.episodeNo)} 集 ${key}（${label}）`, episode[key]);
 }
 
 interface Requirement {
@@ -88,6 +90,8 @@ interface Requirement {
   question: string;
   why: string;
   suggestion: string;
+  /** What the same field is for in the last episode, when that differs. */
+  last?: { question: string; why: string; suggestion: string };
 }
 
 /** The per-episode questions an existing field answers directly; an empty one is an objective gap. */
@@ -101,12 +105,15 @@ const REQUIRED: Requirement[] = [
   { key: "result", question: "相比开场，局面发生什么变化？", why: "没有结果，本集给观众的回报和留给下一集的处境都不清楚。",
     suggestion: "写本集结束时局面的变化，并写清本集解决了哪一部分问题。" },
   { key: "handoff", question: "结尾留下什么与主线相关的问题？", why: "没有交接内容，下一集缺少开场依据，观众也缺少续看理由。",
-    suggestion: "写一个与主线相关、下一集会回应的问题，例如“对方手里还有第二份录音”。" },
+    suggestion: "写一个与主线相关、下一集会回应的问题，例如“对方手里还有第二份录音”。",
+    last: { question: "最后一集怎样收束主线、回应整部期待？", why: "最后一集没有收尾内容，主线的结果和整部期待都没有交代。",
+      suggestion: "写清主线问题怎样了结、主角最终得到或失去了什么，并回应故事走向里的整部期待。" } },
 ];
 
-function missing(episodeNo: number, requirement: Requirement, episode: EpisodeOutlineEpisode): EpisodeWritingFinding {
-  return { id: `${String(episodeNo)}:missing:${requirement.key}`, episodeNo, kind: "missing", question: requirement.question,
-    evidence: field(episode, requirement.key), why: requirement.why, suggestion: requirement.suggestion };
+function missing(episodeNo: number, requirement: Requirement, episode: EpisodeOutlineEpisode, isLast: boolean): EpisodeWritingFinding {
+  const text = isLast && requirement.last ? requirement.last : requirement;
+  return { id: `${String(episodeNo)}:missing:${requirement.key}`, episodeNo, kind: "missing", question: text.question,
+    evidence: field(episode, requirement.key, isLast), why: text.why, suggestion: text.suggestion };
 }
 
 function storyFindings(concept: TitleConcept | null): EpisodeWritingFinding[] {
@@ -139,7 +146,7 @@ function episodeFindings(episode: EpisodeOutlineEpisode, previous: EpisodeOutlin
   const no = episode.episodeNo;
   const findings: EpisodeWritingFinding[] = [];
   const blank = (key: keyof typeof FIELD_LABELS) => blankOrPlaceholder(episode[key]);
-  for (const requirement of REQUIRED) if (blank(requirement.key)) findings.push(missing(no, requirement, episode));
+  for (const requirement of REQUIRED) if (blank(requirement.key)) findings.push(missing(no, requirement, episode, isLast));
   // Identical text is a hint, not proof: the change may be written elsewhere (action, turn) or meant as a reversal.
   if (!blank("entryState") && !blank("result") && normalized(episode.entryState) === normalized(episode.result)) {
     findings.push({ id: `${String(no)}:manual:change`, episodeNo: no, kind: "manual", question: "相比开场，本集是否发生了实质变化？",
@@ -188,8 +195,9 @@ function episodeFindings(episode: EpisodeOutlineEpisode, previous: EpisodeOutlin
     findings.push({ id: `${String(no)}:manual:repeat`, episodeNo: no, kind: "manual", question: "本集是否在重复上一集的冲突？",
       evidence: `${field(previous, "goal")}；${field(episode, "goal")}（两集目标文字相同）`,
       why: "为凑集数重复同一冲突，会让观众觉得剧情原地踏步。", suggestion: "让本集目标推进一步，或者提高代价、缩短时间、加大选择难度。" });
-  } else if (previous) {
-    // Escalation compares the two turns: without both there is nothing to compare.
+  }
+  if (previous) {
+    // Escalation compares the two turns, whether or not the goals repeat: without both there is nothing to compare.
     const comparable = !blank("turn") && !blankOrPlaceholder(previous.turn);
     findings.push({ id: `${String(no)}:${comparable ? "manual" : "undetermined"}:escalation`, episodeNo: no, kind: comparable ? "manual" : "undetermined",
       question: "相比上一集，冲突是否升级？", evidence: `${field(previous, "turn")}；${field(episode, "turn")}`,
@@ -202,7 +210,7 @@ function episodeFindings(episode: EpisodeOutlineEpisode, previous: EpisodeOutlin
     const promise = concept ? quoted("故事策划 direction（故事走向）", concept.direction) : "这次创作没有可读的故事策划。";
     const closable = !blank("handoff") && concept !== null && !blankOrPlaceholder(concept.direction);
     findings.push({ id: `${String(no)}:${closable ? "manual" : "undetermined"}:closure`, episodeNo: no, kind: closable ? "manual" : "undetermined",
-      question: "最后一集是否回应了整部期待和主线问题？", evidence: `${field(episode, "handoff")}；${promise}`,
+      question: "最后一集是否回应了整部期待和主线问题？", evidence: `${field(episode, "handoff", true)}；${promise}`,
       why: closable ? "结尾不回应整部期待，前面的铺垫就没有兑现。" : "最后一集的结尾或故事走向没有写出来，无法判断结尾是否回应了整部期待。",
       suggestion: closable ? "对照故事走向里的整部期待，核对结尾是否写清主角最终得到或失去了什么。" : "补写故事走向里的整部期待和最后一集的结尾，再核对两者。" });
   } else {

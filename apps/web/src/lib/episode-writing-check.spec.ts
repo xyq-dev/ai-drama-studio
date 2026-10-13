@@ -55,6 +55,21 @@ describe("objective gaps come from the structured fields", () => {
     expect(change.evidence).toContain("第 1 集 result（结果）：“开场局面1，表姐拦着”");
   });
 
+  it("a missing handoff asks the last episode to close the story and an earlier one to set up the next episode", () => {
+    for (const handoff of ["", "待定"]) {
+      const findings = flat(checkEpisodePlan(concept, outline([{ ...complete(1), handoff }, { ...complete(2), handoff }]), 2));
+      const earlier = findings.find((item) => item.id === "1:missing:handoff")!;
+      const last = findings.find((item) => item.id === "2:missing:handoff")!;
+      expect(earlier.question).toBe("结尾留下什么与主线相关的问题？");
+      expect(earlier.evidence).toContain("第 1 集 handoff（交给下一集）");
+      expect(`${earlier.why}${earlier.suggestion}`).toContain("下一集");
+      expect(last.question).toBe("最后一集怎样收束主线、回应整部期待？");
+      expect(last.evidence).toContain("第 2 集 handoff（全剧收尾）");
+      for (const text of [last.question, last.why, last.suggestion, last.evidence]) expect(text).not.toMatch(/下一集|续看|留下.*问题/);
+      expect(`${last.why}${last.suggestion}`).toMatch(/收束|整部期待/);
+    }
+  });
+
   it("an episode the outline does not have is missing for that number; nothing is invented", () => {
     const check = checkEpisodePlan(concept, outline([complete(1), complete(2)]), 3);
     expect(check.groups.at(-1)).toMatchObject({ episodeNo: 3, findings: [{ id: "3:missing:episode", kind: "missing" }] });
@@ -123,11 +138,11 @@ describe("what cannot be read is not judged", () => {
     const placeholderDirection = flat(checkEpisodePlan({ ...concept, direction: "待定" }, outline([complete(1)]), 1));
     expect(placeholderDirection.some((item) => item.id === "1:manual:closure")).toBe(false);
     expect(placeholderDirection.find((item) => item.id === "1:undetermined:closure")?.evidence)
-      .toBe("第 1 集 handoff（交给下一集）：“问题1”；故事策划 direction（故事走向）：“待定”");
+      .toBe("第 1 集 handoff（全剧收尾）：“问题1”；故事策划 direction（故事走向）：“待定”");
     const placeholderHandoff = flat(checkEpisodePlan(concept, outline([{ ...complete(1), handoff: "TBD" }]), 1));
-    expect(placeholderHandoff.find((item) => item.id === "1:undetermined:closure")?.evidence).toContain("第 1 集 handoff（交给下一集）：“TBD”");
+    expect(placeholderHandoff.find((item) => item.id === "1:undetermined:closure")?.evidence).toContain("第 1 集 handoff（全剧收尾）：“TBD”");
     const noConcept = flat(checkEpisodePlan(null, outline([complete(1)]), 1));
-    expect(noConcept.find((item) => item.id === "1:undetermined:closure")?.evidence).toBe("第 1 集 handoff（交给下一集）：“问题1”；这次创作没有可读的故事策划。");
+    expect(noConcept.find((item) => item.id === "1:undetermined:closure")?.evidence).toBe("第 1 集 handoff（全剧收尾）：“问题1”；这次创作没有可读的故事策划。");
   });
 
   it("findings are only missing, manual or undetermined; there is no pass state and no score", () => {
@@ -151,7 +166,20 @@ describe("semantic hints stay human questions", () => {
     const findings = flat(checkEpisodePlan(concept, outline([1, 2].map(complete)), 2));
     expect(findings.find((item) => item.id === "1:manual:agency")?.evidence).toBe("第 1 集 action（行动）：“行动1”；第 1 集 result（结果）：“结果1”");
     expect(findings.find((item) => item.id === "1:manual:followup")?.evidence).toBe("第 1 集 handoff（交给下一集）：“问题1”；第 2 集 entryState（进入状态）：“开场局面2，表姐拦着”");
-    expect(findings.find((item) => item.id === "2:manual:closure")?.evidence).toBe("第 2 集 handoff（交给下一集）：“问题2”；故事策划 direction（故事走向）：“观众期待她拿回配方并保住面馆。第一集……”");
+    expect(findings.find((item) => item.id === "2:manual:closure")?.evidence).toBe("第 2 集 handoff（全剧收尾）：“问题2”；故事策划 direction（故事走向）：“观众期待她拿回配方并保住面馆。第一集……”");
+  });
+
+  it("a repeated goal is checked for repetition and, independently, for escalation", () => {
+    const repeated = (turn: string) => flat(checkEpisodePlan(concept, outline([complete(1), { ...complete(2), goal: complete(1).goal, turn }]), 2))
+      .filter((item) => item.episodeNo === 2);
+    const written = repeated("对方拿出第二份录音");
+    expect(written.find((item) => item.id === "2:manual:repeat")?.evidence).toBe("第 1 集 goal（目标）：“目标1”；第 2 集 goal（目标）：“目标1”（两集目标文字相同）");
+    expect(written.find((item) => item.id === "2:manual:escalation")?.evidence).toBe("第 1 集 turn（转折）：“转折1”；第 2 集 turn（转折）：“对方拿出第二份录音”");
+    const placeholder = repeated("待定");
+    expect(placeholder.find((item) => item.id === "2:manual:repeat")?.kind).toBe("manual");
+    expect(placeholder.find((item) => item.id === "2:undetermined:escalation")?.kind).toBe("undetermined");
+    expect(placeholder.some((item) => item.id === "2:manual:escalation")).toBe(false);
+    for (const findings of [written, placeholder]) expect(new Set(findings.map((item) => item.id)).size).toBe(findings.length);
   });
 
   it("with valid turns on both sides the escalation stays a question for a person", () => {
