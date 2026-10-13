@@ -308,4 +308,3 @@ describe("a reference job the panel did not accept (Codex review on 0541b1b)", (
     expect(http.queue).toHaveLength(0);
   });
 });
-
