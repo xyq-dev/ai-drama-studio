@@ -1,4 +1,6 @@
 /** Browser client for the server-side web Qwen writing route. The provider key never reaches the browser. */
+import { withSession } from "./site-session";
+
 export interface QwenWebStatus {
   code: string;
   ready: boolean;
@@ -69,7 +71,7 @@ function outcome(response: Response, body: unknown): QwenWebOutcome {
 }
 
 export function createQwenWebClient(fetchImpl?: FetchLike, prefix = "/api/v1"): QwenWebClient {
-  const send: FetchLike = (input, init) => (fetchImpl ?? globalThis.fetch)(input, { ...init, cache: "no-store" });
+  const send: FetchLike = (input, init) => withSession(fetchImpl ?? globalThis.fetch.bind(globalThis))(input, { ...init, cache: "no-store" });
   return {
     async status(token) {
       const response = await send(`${prefix}/writing/qwen-candidates/status`, {

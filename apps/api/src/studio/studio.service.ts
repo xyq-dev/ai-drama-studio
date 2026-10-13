@@ -35,9 +35,20 @@ import { assertReadableMockImage, readBoundedMockPng } from "./mock-image-conten
 import { readCompositeContent, readVerifiedCompositeBytes } from "./compose-content";
 import { episodeExportBody, exportIdentity, holdEpisodeExportLatch, parseExpectedContentHash } from "./episode-export";
 
+/**
+ * A project may be created with an episode plan (episodeCount 1–6 and targetEpisodeSeconds 60 or 90, both or neither).
+ * Without one it is a three-episode project with no recorded target, exactly as before the plan existed. The plan is
+ * fixed at creation: no route changes it afterwards.
+ */
 const projectBodySchema = z.object({
   title: z.string().min(1).max(200),
   premise: z.string().max(4000).default(""),
+  episodeCount: z.number().int().min(1).max(6).optional(),
+  targetEpisodeSeconds: z.union([z.literal(60), z.literal(90)]).optional(),
+}).superRefine((value, context) => {
+  if ((value.episodeCount === undefined) !== (value.targetEpisodeSeconds === undefined)) {
+    context.addIssue({ code: "custom", path: ["episodeCount"], message: "episodeCount and targetEpisodeSeconds are set together" });
+  }
 });
 
 const mockWorkflowSchema = z.object({
@@ -89,6 +100,11 @@ const shotBodySchema = z.object({
   action: z.string().max(4000),
   dialogue: z.string().max(4000).nullable().optional(),
   durationHint: z.string().max(200).nullable().optional(),
+  /**
+   * Whole planned seconds 1–15, × 1000 (the editor's unit). A writing plan, never a measured length. Needs the script
+   * breakdown migration. Omitted and null both mean "not set".
+   */
+  plannedDurationMs: z.number().int().min(1000).max(15000).multipleOf(1000).nullable().optional(),
   promptText: z.string().max(8000),
 });
 
@@ -152,8 +168,15 @@ export class StudioService {
 
   async createProject(body: unknown, context: StudioContext) {
     const input = parse(projectBodySchema, rejectClientWorkspace(body));
-    return this.jobs.runIdempotent(this.scope(context, "POST", "/projects", input), 201, (client) =>
-      insertProject(client, { workspaceId: this.workspaceId, title: input.title, premise: input.premise }),
+    const plan = input.episodeCount !== undefined && input.targetEpisodeSeconds !== undefined
+      ? { episodeCount: input.episodeCount, targetEpisodeSeconds: input.targetEpisodeSeconds } : undefined;
+    // A request without a plan keeps the identity it always had, so a replay recorded before the plan existed still matches.
+    const identity = plan ? { title: input.title, premise: input.premise, ...plan } : { title: input.title, premise: input.premise };
+    if (plan && !await this.store.episodePlanReady()) {
+      throw new PersistenceError("EPISODE_PLAN_UNAVAILABLE", "Episode plan storage is not migrated; nothing was created");
+    }
+    return this.jobs.runIdempotent(this.scope(context, "POST", "/projects", identity), 201, (client) =>
+      insertProject(client, { workspaceId: this.workspaceId, title: input.title, premise: input.premise, ...(plan ? { plan } : {}) }),
     );
   }
 
@@ -161,8 +184,10 @@ export class StudioService {
     return this.store.listProjects(this.workspaceId, 20, cursor);
   }
 
+  /** The project with its episode plan: episodeCount (three without a plan) and targetEpisodeSeconds (null when unknown). */
   async getProject(projectId: string) {
-    return this.store.getProject(this.workspaceId, projectId);
+    const project = await this.store.getProject(this.workspaceId, projectId);
+    return { ...project, ...await this.store.getProjectEpisodePlan(this.workspaceId, projectId) };
   }
 
   getProjectCostSummary(projectId: string) {
@@ -350,17 +375,21 @@ export class StudioService {
     if (shotId) await this.textChain.listShotRevisions(this.workspaceId, projectId, sceneId, shotId);
     const input = parse(shotBodySchema, rejectClientWorkspace(body));
     const expectedVersion = parseAggregateVersion(ifMatch);
-    const request = {
-      ...input, sourceSceneRevisionId: input.sourceSceneRevisionId.toLowerCase(),
+    const { plannedDurationMs, ...rest } = input;
+    // An omitted and an explicit null planned duration both mean "no planned duration". Such a request keeps the
+    // identity it had before the field existed, so a replay of a write recorded by the released server still matches.
+    const identity = {
+      ...rest, sourceSceneRevisionId: input.sourceSceneRevisionId.toLowerCase(),
       dialogue: input.dialogue ?? null, durationHint: input.durationHint ?? null,
+      ...(plannedDurationMs == null ? {} : { plannedDurationMs }),
       expectedVersion,
     };
     const route = shotId
       ? `/projects/${projectId}/episodes/${episodeId}/scenes/${sceneId}/shots/${shotId}/revisions`
       : `/projects/${projectId}/episodes/${episodeId}/scenes/${sceneId}/shots`;
-    return this.jobs.runIdempotent(this.scope(context, "POST", route, request), 201,
+    return this.jobs.runIdempotent(this.scope(context, "POST", route, identity), 201,
       (client) => this.textChain.createShotScopedInTransaction(client, {
-        ...request, workspaceId: this.workspaceId, projectId, sceneId, shotId,
+        ...identity, plannedDurationMs: plannedDurationMs ?? null, workspaceId: this.workspaceId, projectId, sceneId, shotId,
         createdBy: context.actorId, traceId: context.traceId,
       }));
   }
@@ -1121,6 +1150,14 @@ export class StudioService {
       providerKey: "mock",
       capability: "mock.generate",
       outcomes: ["success", "retryable_failure", "terminal_failure", "cancel", "delayed"],
+      /**
+       * Whether local composition is switched on here, decided by the same conditions the compose routes check.
+       * Booleans only: no paths, directories or credentials. Each route still validates every request itself.
+       */
+      compose: {
+        shot: this.localComposeEnabled && this.mockAvEnabled && Boolean(this.mediaAssets),
+        episode: this.episodeComposeEnabled && Boolean(this.mediaAssets),
+      },
     };
   }
 

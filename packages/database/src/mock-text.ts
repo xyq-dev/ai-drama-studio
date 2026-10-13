@@ -1,9 +1,18 @@
 import { assertProductionEpisodeSet } from "@ai-drama/domain";
-import { sceneBatchOutputSchema, shotBatchOutputSchema, type SceneBatchOutput,
+import { MOCK_TEXT_MAX_EPISODES, sceneBatchOutputSchema, shotBatchOutputSchema, type SceneBatchOutput,
   type ShotBatchOutput, type TextGenerationRequest } from "@ai-drama/contracts";
 import type { PoolClient, QueryResultRow } from "pg";
+import { projectEpisodePlanIn } from "./episode-plan";
 import { PersistenceError, type DatabasePool } from "./job-service";
 import { TextChainService } from "./text-chain";
+
+/**
+ * A frozen Mock batch covers every episode of the project, one to six. Whether it is exactly the project's episodes
+ * 1..N is checked against the current sources when it is persisted.
+ */
+function batchSize(items: unknown): boolean {
+  return Array.isArray(items) && items.length >= 1 && items.length <= MOCK_TEXT_MAX_EPISODES;
+}
 
 export interface MockSceneSource {
   episodeId: string;
@@ -58,12 +67,10 @@ export class MockTextService {
         typeof snapshot.projectId !== "string") {
       throw new PersistenceError("VALIDATION_ERROR", "Invalid frozen text snapshot");
     }
-    if (snapshot.schema === "m2.mock.scenes.v1" &&
-        (!Array.isArray(snapshot.episodes) || snapshot.episodes.length !== 3)) {
+    if (snapshot.schema === "m2.mock.scenes.v1" && !batchSize(snapshot.episodes)) {
       throw new PersistenceError("VALIDATION_ERROR", "Invalid frozen Scene snapshot");
     }
-    if (snapshot.schema === "m2.mock.shots.v1" &&
-        (!Array.isArray(snapshot.scenes) || snapshot.scenes.length !== 3)) {
+    if (snapshot.schema === "m2.mock.shots.v1" && !batchSize(snapshot.scenes)) {
       throw new PersistenceError("VALIDATION_ERROR", "Invalid frozen Shot snapshot");
     }
     if (snapshot.schema !== "m2.mock.scenes.v1" && snapshot.schema !== "m2.mock.shots.v1") {
@@ -123,15 +130,16 @@ export class MockTextService {
         WHERE e.workspace_id = $1 AND e.project_id = $2 ORDER BY e.episode_no`,
       [workspaceId, projectId],
     );
+    const { episodeCount } = await projectEpisodePlanIn(client, workspaceId, projectId);
     try {
-      assertProductionEpisodeSet(rows.rows.map((row) => Number(row.episode_no)));
+      assertProductionEpisodeSet(rows.rows.map((row) => Number(row.episode_no)), episodeCount);
     } catch {
-      throw new PersistenceError("EPISODE_SET_INVALID", "Production requires episodes 1, 2, and 3");
+      throw new PersistenceError("EPISODE_SET_INVALID", `Production requires exactly episodes 1 to ${String(episodeCount)}`);
     }
     if (rows.rows.some((row) => !row.current_script_revision_id ||
         row.current_script_revision_id !== row.approved_script_revision_id ||
         row.review_status !== "APPROVED" || row.freshness_status !== "CURRENT")) {
-      throw new PersistenceError("SCRIPT_REVIEW_REQUIRED", "All three current scripts must be approved and current");
+      throw new PersistenceError("SCRIPT_REVIEW_REQUIRED", "Every episode's current script must be approved and current");
     }
     return rows.rows.map((row) => ({
       episodeId: row.id, episodeNo: Number(row.episode_no),
@@ -161,7 +169,7 @@ export class MockTextService {
           AND revision.ordinal = 1 AND scene.approved_revision_id = revision.id`,
       [workspaceId, projectId],
     );
-    if (scenes.rows.length !== 3 || episodes.some((episode) => {
+    if (scenes.rows.length !== episodes.length || episodes.some((episode) => {
       const scene = scenes.rows.find((row) => row.episode_id === episode.episodeId);
       return !scene || scene.review_status !== "APPROVED" || scene.freshness_status !== "CURRENT" ||
         scene.script_usable !== true;
@@ -178,7 +186,7 @@ export class MockTextService {
   async persistShots(client: PoolClient, workspaceId: string, snapshot: MockShotSnapshot,
     output: ShotBatchOutput, traceId: string) {
     if (!snapshot || snapshot.schema !== "m2.mock.shots.v1" || snapshot.outcome !== "success" ||
-        !Array.isArray(snapshot.scenes) || snapshot.scenes.length !== 3) {
+        !batchSize(snapshot.scenes)) {
       throw new PersistenceError("VALIDATION_ERROR", "Invalid Mock Shot snapshot");
     }
     const parsed = shotBatchOutputSchema.safeParse(output);
@@ -227,7 +235,7 @@ export class MockTextService {
   async persistScenes(client: PoolClient, workspaceId: string, snapshot: MockSceneSnapshot,
     output: SceneBatchOutput, traceId: string) {
     if (snapshot.schema !== "m2.mock.scenes.v1" || snapshot.outcome !== "success" ||
-        !Array.isArray(snapshot.episodes) || snapshot.episodes.length !== 3) {
+        !batchSize(snapshot.episodes)) {
       throw new PersistenceError("VALIDATION_ERROR", "Invalid Mock Scene snapshot");
     }
     const parsed = sceneBatchOutputSchema.safeParse(output);

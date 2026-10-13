@@ -311,6 +311,16 @@ describe("Mock media manual retry", () => {
         inputSnapshot: {}, traceId: "compose" });
       await jobs.cancelJob({ workspaceId: world.workspaceId, jobId: compose.jobId, traceId: "cancel" });
       await expect(retry(world, compose.jobId)).rejects.toMatchObject({ code: "JOB_NOT_RETRYABLE" });
+      // The job view names the episode an episode compose froze, and nothing for any other job.
+      const episodeId = randomUUID();
+      const episodeCompose = await jobs.createWorkflowJob({ workspaceId: world.workspaceId, projectId: world.projectId,
+        type: "MEDIA_COMPOSE", requestedBy: "test", kind: "MEDIA_COMPOSE", inputHash: "ce".repeat(32),
+        inputSnapshot: { schema: "m4.episode.compose.v1", input: { episodeId } }, traceId: "episode-compose" });
+      expect((await store.getJob(world.workspaceId, episodeCompose.jobId)).composeEpisodeId).toBe(episodeId);
+      expect((await store.getJob(world.workspaceId, compose.jobId)).composeEpisodeId).toBeNull();
+      expect((await store.getJob(world.workspaceId, succeeded.jobId)).composeEpisodeId).toBeNull();
+      const listed = (await store.listWorkflows(world.workspaceId, world.projectId)).flatMap((run) => run.jobs);
+      expect(listed.find((job) => job.id === episodeCompose.jobId)?.composeEpisodeId).toBe(episodeId);
     } finally {
       await rm(objectDir, { recursive: true, force: true });
     }

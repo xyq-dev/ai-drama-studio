@@ -1,5 +1,6 @@
-import { Body, Controller, Get, Head, Headers, Inject, Param, Post, Query, Req, Res, StreamableFile } from "@nestjs/common";
+import { Body, Controller, Get, Head, Headers, Inject, Optional, Param, Post, Query, Req, Res, StreamableFile } from "@nestjs/common";
 import { PersistenceError, RuntimeStore } from "@ai-drama/database";
+import { SITE_AUTH, type RequestHeaders, type SiteAuthState } from "../auth/site-auth";
 import { RUNTIME_STORE, STUDIO_SERVICE } from "./tokens";
 import { attachmentDisposition } from "./episode-export";
 import { StudioService, createTraceId, type StudioContext } from "./studio.service";
@@ -37,7 +38,9 @@ interface SseResponse {
 }
 
 interface SseRequest {
+  headers: RequestHeaders;
   on(event: "close", listener: () => void): void;
+  removeListener(event: "close", listener: () => void): void;
 }
 
 @Controller()
@@ -793,7 +796,19 @@ export class EventsController {
   constructor(
     @Inject(STUDIO_SERVICE) private readonly studio: StudioService,
     @Inject(RUNTIME_STORE) private readonly store: RuntimeStore,
+    @Optional() @Inject(SITE_AUTH) private readonly site: SiteAuthState | null = null,
   ) {}
+
+  /**
+   * Whether the stream may still send. With the site login on, it is bound to the session that opened the stream and
+   * turns false once that session is logged out or expires; checking it never counts as activity. With the login
+   * off (or not wired, as in module tests), the stream behaves as before. Null: refuse to open.
+   */
+  private streamAuthorization(headers: RequestHeaders): (() => boolean) | null {
+    if (!this.site || this.site.kind === "disabled") return () => true;
+    if (this.site.kind !== "enabled") return null;
+    return this.site.auth.watch(headers);
+  }
 
   @Get("events")
   async events(
@@ -801,12 +816,19 @@ export class EventsController {
     @Res() response: SseResponse,
     @Headers("last-event-id") lastEventHeader?: string,
   ): Promise<void> {
+    const authorized = this.streamAuthorization(request.headers);
+    if (!authorized) {
+      response.status(401).json({ error: { code: "AUTH_REQUIRED", message: "请先登录。", traceId: "sse" } });
+      return;
+    }
     let closed = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    request.on("close", () => {
+    const onClose = (): void => {
       closed = true;
       if (timer) clearTimeout(timer);
-    });
+      timer = undefined;
+    };
+    request.on("close", onClose);
 
     const cursor = lastEventHeader && lastEventHeader.length > 0 ? lastEventHeader : "0";
     try {
@@ -830,33 +852,50 @@ export class EventsController {
     response.flushHeaders();
 
     let current = cursor;
+    /** Idempotent: ends the stream once, stops the timer and drops the close listener. */
+    const stop = (): void => {
+      if (closed) return;
+      closed = true;
+      if (timer) clearTimeout(timer);
+      timer = undefined;
+      request.removeListener("close", onClose);
+      response.end();
+    };
     const send = async (): Promise<void> => {
+      if (!authorized()) {
+        stop();
+        return;
+      }
       const events = await this.store.listEventsAfter(this.studio.workspace, current, 100);
       if (closed) return;
+      // The session may have ended while the read was in flight: nothing from that read is sent.
+      if (!authorized()) {
+        stop();
+        return;
+      }
       for (const event of events) {
         if (BigInt(event.eventId) <= BigInt(current)) continue;
         current = event.eventId;
-        response.write(`id: ${event.eventId}\n`);
-        response.write(`event: ${event.eventType}\n`);
+        response.write(`id: ${event.eventId}
+`);
+        response.write(`event: ${event.eventType}
+`);
         response.write(
           `data: ${JSON.stringify({
             eventId: event.eventId,
             occurredAt: event.occurredAt,
             traceId: event.traceId,
             data: event.data,
-          })}\n\n`,
+          })}
+
+`,
         );
       }
-    };
-    const stop = (): void => {
-      if (closed) return;
-      closed = true;
-      if (timer) clearTimeout(timer);
-      response.end();
     };
     const schedule = (): void => {
       if (closed) return;
       timer = setTimeout(() => {
+        timer = undefined;
         void send().then(schedule).catch(stop);
       }, 250);
     };

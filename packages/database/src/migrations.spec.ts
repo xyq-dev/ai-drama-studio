@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -37,6 +38,30 @@ describe("runMigrations", () => {
     expect(query.mock.calls.filter(([sql]) => sql === "BEGIN")).toHaveLength(2);
     expect(query.mock.calls.filter(([sql]) => sql === "COMMIT")).toHaveLength(2);
     expect(release).toHaveBeenCalledOnce();
+  });
+
+  it("applies only the migrations before a named one when asked, and the rest on a later unrestricted run", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "ai-drama-migrations-"));
+    for (const name of ["0001_first", "0002_second", "0003_third"]) {
+      await mkdir(join(directory, name));
+      await writeFile(join(directory, name, "migration.sql"), `SELECT '${name}';\n`);
+    }
+    const recorded: string[] = [];
+    const query = vi.fn(async (sql: string, values?: unknown[]) => {
+      if (sql.startsWith("INSERT INTO schema_migration")) recorded.push(String(values?.[0]));
+      if (sql.startsWith("SELECT name")) {
+        return { rows: recorded.map((name) => ({ name, checksum: createHash("sha256").update(`SELECT '${name}';\n`).digest("hex") })) };
+      }
+      return { rows: [] };
+    });
+
+    const staged = await runMigrations(createPool(query).pool, directory, { before: "0002_second" });
+    expect(staged).toEqual({ applied: ["0001_first"], alreadyApplied: [] });
+    expect(query.mock.calls.map(([sql]) => sql)).not.toContain("SELECT '0002_second';\n");
+
+    const rest = await runMigrations(createPool(query).pool, directory);
+    expect(rest).toEqual({ applied: ["0002_second", "0003_third"], alreadyApplied: ["0001_first"] });
+    expect(await runMigrations(createPool(query).pool, directory)).toEqual({ applied: [], alreadyApplied: ["0001_first", "0002_second", "0003_third"] });
   });
 
   it("rejects modification of an applied migration and releases its session", async () => {

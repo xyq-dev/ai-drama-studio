@@ -1,5 +1,7 @@
 "use client";
 
+import { CreatorShell } from "./creator-shell";
+
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { canAdopt, type FrozenWritingContext, type WritingTargetSnapshot } from "@ai-drama/domain/writing-assistant";
 import { MAX_MANUAL_MEDIA_RETRIES, mediaRetryDecision, type MediaRetryRejection } from "@ai-drama/domain/media-retry";
@@ -8,8 +10,21 @@ import { WritingAssistant } from "./writing-assistant";
 import { CharacterReferencePanel } from "./character-reference-panel";
 import { EpisodeComposePreflight } from "./episode-compose-preflight";
 import { ProjectCostSummary } from "./project-cost-summary";
+import { ScriptBreakdownPanel } from "./script-breakdown-panel";
 import { ApiError, StudioClient } from "../lib/studio-client";
 import { createQwenWebClient } from "../lib/qwen-web-client";
+import {
+  MEDIA_WORKFLOW_TYPES,
+  REFERENCE_WORKFLOW_TYPE,
+  projectEpisodeNumbers,
+  useProjectBase,
+  type Aggregate,
+  type EpisodeRecord,
+  type ProjectRecord,
+  type StoryRevision,
+  type WorkflowAttempt,
+  type WorkflowRun,
+} from "../lib/project-base";
 import {
   LIMITS,
   TEXT_WORKFLOW_TYPES,
@@ -35,7 +50,6 @@ import {
   rememberActiveDraft,
   reviewActions,
   reviewRequest,
-  shouldPoll,
   shouldApplyLoad,
   sourceUsable,
   stableJson,
@@ -47,13 +61,14 @@ import {
 const client = new StudioClient();
 const qwenWebClient = createQwenWebClient();
 const EMPTY_CONTENT: Record<string, unknown> = { text: "" };
-const BODY_FIELD = "mt-1 w-full min-h-48 max-h-[70vh] resize-y rounded border border-neutral-300 px-3 py-2";
+const BODY_FIELD = "creator-body-field mt-1 w-full min-h-48 max-h-[70vh] resize-y rounded border border-neutral-300 px-3 py-2";
 
 function mediaTaskLabel(type: string): string {
   if (type === "MEDIA_VIDEO") return "Mock 视频";
   if (type === "MEDIA_TTS") return "Mock 配音";
   if (type === "MEDIA_SUBTITLE") return "Mock 字幕";
   if (type === "MEDIA_MUSIC") return "Mock 音乐";
+  if (type === "MEDIA_COMPOSE") return "本地合成";
   return "Mock 图片";
 }
 
@@ -64,10 +79,6 @@ function taskStatusLabel(state: string): string {
   return `进行中 ${state}`;
 }
 
-const MEDIA_WORKFLOW_TYPES = new Set(["MEDIA_IMAGE", "MEDIA_VIDEO", "MEDIA_TTS", "MEDIA_SUBTITLE", "MEDIA_MUSIC"]);
-/** Character reference generation. Shown and followed like other tasks; its own panel re-reads the reference list. */
-const REFERENCE_WORKFLOW_TYPE = "MEDIA_CHARACTER_REFERENCE";
-
 const MEDIA_RETRY_REASONS: Record<MediaRetryRejection, string> = {
   NOT_MEDIA: "不是 Mock 媒体任务",
   COMPOSE: "合成需重新预检后提交",
@@ -76,65 +87,6 @@ const MEDIA_RETRY_REASONS: Record<MediaRetryRejection, string> = {
   UNKNOWN_OUTCOME: "结果未知，可能已执行，请在镜头页再次生成",
   ERROR_NOT_RETRYABLE: "该错误重试也不会改变结果",
 };
-
-function trackedWorkflow(run: { type: string }): boolean {
-  return TEXT_WORKFLOW_TYPES.has(run.type) || MEDIA_WORKFLOW_TYPES.has(run.type) || run.type === REFERENCE_WORKFLOW_TYPE;
-}
-
-function noteWorkflowTransitions(
-  runs: readonly WorkflowRun[],
-  known: Map<string, string>,
-): { mediaBecameTerminal: boolean; textBecameTerminal: boolean } {
-  let mediaBecameTerminal = false;
-  let textBecameTerminal = false;
-  for (const run of runs) {
-    // A reference run refreshes its own panel; it neither reloads text entities nor shot media.
-    if (run.type === REFERENCE_WORKFLOW_TYPE) {
-      known.set(run.id, run.status);
-      continue;
-    }
-    const previous = known.get(run.id);
-    const terminal = !shouldPoll(run.status, false);
-    const becameTerminal = previous !== undefined && shouldPoll(previous, false) && terminal;
-    const media = MEDIA_WORKFLOW_TYPES.has(run.type);
-    const firstTerminalMedia = previous === undefined && media && terminal;
-    if ((becameTerminal || firstTerminalMedia) && media) mediaBecameTerminal = true;
-    if (becameTerminal && !media) textBecameTerminal = true;
-    known.set(run.id, run.status);
-  }
-  return { mediaBecameTerminal, textBecameTerminal };
-}
-
-interface ProjectRecord {
-  id: string;
-  title: string;
-  premise: string;
-  version: number;
-  status: string;
-}
-
-interface EpisodeRecord {
-  id: string;
-  episodeNo: number;
-  title: string;
-  rowVersion: number;
-  currentScriptRevisionId: string | null;
-  approvedScriptRevisionId: string | null;
-  currentScriptReviewStatus: string | null;
-  currentScriptFreshnessStatus: string | null;
-}
-
-interface StoryRevision {
-  id: string;
-  revisionNo: number;
-  content: unknown;
-  reviewStatus: string;
-  freshnessStatus: string;
-  reviewVersion: number;
-  staleReason: string | null;
-  staleFromRef: string | null;
-  reviewNote: string | null;
-}
 
 interface ScriptRevision {
   id: string;
@@ -146,14 +98,6 @@ interface ScriptRevision {
   reviewVersion: number;
 }
 
-interface Aggregate {
-  entityId: string;
-  rowVersion: number;
-  currentRevisionId: string | null;
-  approvedRevisionId: string | null;
-  currentRevision: { reviewStatus: string; freshnessStatus: string; reviewVersion: number } | null;
-}
-
 interface EntityRevision {
   id: string;
   revisionNo: number;
@@ -162,6 +106,7 @@ interface EntityRevision {
   reviewStatus: string;
   freshnessStatus: string;
   reviewVersion: number;
+  reviewNote?: string | null;
 }
 
 interface SceneRevision {
@@ -188,40 +133,28 @@ interface ShotRevision {
   action: string;
   dialogue: string | null;
   durationHint: string | null;
+  /** Planned seconds × 1000 (a writing plan, not a measured length); null when none was planned. */
+  plannedDurationMs?: number | null;
   promptText: string;
   reviewStatus: string;
   freshnessStatus: string;
   reviewVersion: number;
 }
 
-interface WorkflowAttempt {
-  attemptNo: number;
-  providerKey: string | null;
-  model: string | null;
-  status: "running" | "finished";
-  errorCode: string | null;
-  durationMs: number | null;
-  inputHash: string | null;
-  cost: { status: "recorded"; amount: string; currency: string; kind: string }
-    | { status: "unknown"; amount: null; currency: null; kind: null };
+/** Planned seconds typed in a shot form: "" is no plan; anything else must be a whole number of seconds from 1 to 15. */
+export function plannedDurationOf(seconds: string): { ok: true; ms: number | null } | { ok: false } {
+  const trimmed = seconds.trim();
+  if (trimmed.length === 0) return { ok: true, ms: null };
+  if (!/^\d{1,2}$/.test(trimmed)) return { ok: false };
+  const value = Number(trimmed);
+  return value >= 1 && value <= 15 ? { ok: true, ms: value * 1000 } : { ok: false };
 }
 
-interface WorkflowJob {
-  id: string;
-  kind: string;
-  state: string;
-  errorCode: string | null;
-  errorMessage: string | null;
-  sourceShotRevisionId?: string | null;
-  attempts?: WorkflowAttempt[];
-}
-
-interface WorkflowRun {
-  id: string;
-  type: string;
-  status: string;
-  createdAt: string;
-  jobs: WorkflowJob[];
+function plannedSecondsText(record: Record<string, unknown> | null, current: number | null | undefined): string {
+  if (record && "plannedDurationMs" in record) {
+    return typeof record.plannedDurationMs === "number" ? String(record.plannedDurationMs / 1000) : "";
+  }
+  return typeof current === "number" ? String(current / 1000) : "";
 }
 
 type Focus =
@@ -270,7 +203,7 @@ const InspectContext = createContext<{
 
 function EditorGrid({ children }: { children: ReactNode }) {
   const { visible } = useContext(InspectContext);
-  return <div className={`grid gap-4 ${visible ? "xl:grid-cols-[minmax(0,1fr)_20rem]" : ""}`}>{children}</div>;
+  return <div className={`creator-editor-grid grid gap-4 ${visible ? "xl:grid-cols-[minmax(0,1fr)_20rem]" : ""}`}>{children}</div>;
 }
 
 function InspectSlot({ children }: { children: ReactNode }) {
@@ -296,15 +229,10 @@ function focusQuery(focus: Focus): string {
 }
 
 export function Workbench({ projectId }: { projectId: string }) {
-  const [project, setProject] = useState<ProjectRecord | null>(null);
-  const [episodes, setEpisodes] = useState<EpisodeRecord[]>([]);
-  const [stories, setStories] = useState<PageState<StoryRevision> | null>(null);
-  const [characters, setCharacters] = useState<PageState<Aggregate> | null>(null);
-  const [locations, setLocations] = useState<PageState<Aggregate> | null>(null);
-  const [workflows, setWorkflows] = useState<WorkflowRun[]>([]);
+  const base = useProjectBase(projectId, "工作台加载失败");
+  const { project, episodes, stories, characters, locations, workflows, loading, error, refreshEpoch, imageEpoch,
+    reloadBase } = base;
   const [focus, setFocus] = useState<Focus>({ kind: "story" });
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [navOpen, setNavOpen] = useState(false);
   const [wide, setWide] = useState(false);
   const [narrowOpen, setNarrowOpen] = useState(false);
@@ -337,34 +265,6 @@ export function Workbench({ projectId }: { projectId: string }) {
   );
   const [tasksOpen, setTasksOpen] = useState(false);
   const [saveState, setSaveState] = useState("尚未修改");
-  const [refreshEpoch, setRefreshEpoch] = useState(0);
-  const [imageEpoch, setImageEpoch] = useState(0);
-  const baseToken = useRef(0);
-  const workflowStatus = useRef(new Map<string, string>());
-
-  const reloadBase = useCallback(async () => {
-    const request = ++baseToken.current;
-    const [nextProject, episodePage, storyPage, characterPage, locationPage, runs] = await Promise.all([
-      client.get<ProjectRecord>(`/projects/${projectId}`),
-      client.get<{ items: EpisodeRecord[] }>(`/projects/${projectId}/episodes`),
-      client.get<{ items: StoryRevision[]; nextCursor: string | null }>(`/projects/${projectId}/stories`),
-      client.get<{ items: Aggregate[]; nextCursor: string | null }>(`/projects/${projectId}/characters`),
-      client.get<{ items: Aggregate[]; nextCursor: string | null }>(`/projects/${projectId}/locations`),
-      client.get<WorkflowRun[]>(`/projects/${projectId}/workflow-runs`),
-    ]);
-    if (!shouldApplyLoad(request, baseToken.current)) return;
-    const tracked = runs.filter(trackedWorkflow);
-    const transition = noteWorkflowTransitions(tracked, workflowStatus.current);
-    setProject(nextProject);
-    setEpisodes(episodePage.items);
-    setStories(applyPage(null, { scope: projectId, items: storyPage.items, nextCursor: storyPage.nextCursor, append: false }));
-    setCharacters(applyPage(null, { scope: projectId, items: characterPage.items, nextCursor: characterPage.nextCursor, append: false }));
-    setLocations(applyPage(null, { scope: projectId, items: locationPage.items, nextCursor: locationPage.nextCursor, append: false }));
-    setWorkflows(tracked);
-    if (transition.mediaBecameTerminal) setImageEpoch((value) => value + 1);
-    if (transition.textBecameTerminal) setRefreshEpoch((value) => value + 1);
-  }, [projectId]);
-
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const kind = params.get("focus");
@@ -376,70 +276,21 @@ export function Workbench({ projectId }: { projectId: string }) {
     else if (kind === "scene" && sceneId) setFocus({ kind, episodeNo, sceneId });
     else if (kind === "shot" && sceneId && shotId) setFocus({ kind, episodeNo, sceneId, shotId });
     else if (kind === "character" || kind === "location" || kind === "story") setFocus({ kind });
-    setLoading(true);
-    void reloadBase().catch((caught: unknown) => {
-      setError(caught instanceof ApiError ? caught.detail : "工作台加载失败");
-    }).finally(() => setLoading(false));
-  }, [reloadBase]);
+  }, []);
 
   useEffect(() => {
     const query = focusQuery(focus);
     window.history.replaceState(null, "", `/projects/${projectId}?${query}`);
   }, [focus, projectId]);
 
-  useEffect(() => {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const tick = () => {
-      const hidden = document.visibilityState === "hidden";
-      const active = workflows.some((run) => shouldPoll(run.status, hidden));
-      if (!active) return;
-      const request = baseToken.current;
-      void client.get<WorkflowRun[]>(`/projects/${projectId}/workflow-runs`).then((runs) => {
-        if (!shouldApplyLoad(request, baseToken.current)) return;
-        const tracked = runs.filter(trackedWorkflow);
-        const transition = noteWorkflowTransitions(tracked, workflowStatus.current);
-        setWorkflows(tracked);
-        if (transition.mediaBecameTerminal) setImageEpoch((value) => value + 1);
-        if (transition.textBecameTerminal) {
-          setRefreshEpoch((value) => value + 1);
-          void reloadBase().catch(() => undefined);
-        }
-      }).catch(() => undefined);
-      timer = setTimeout(tick, 2000);
-    };
-    timer = setTimeout(tick, 2000);
-    const onVisible = () => {
-      if (document.visibilityState !== "visible") return;
-      setRefreshEpoch((value) => value + 1);
-      void reloadBase().catch(() => undefined);
-    };
-    document.addEventListener("visibilitychange", onVisible);
-    return () => {
-      if (timer) clearTimeout(timer);
-      document.removeEventListener("visibilitychange", onVisible);
-    };
-  }, [projectId, reloadBase, workflows]);
-
   function choose(next: Focus) {
     setFocus(next);
     setNavOpen(false);
-    setCharacters((current) => current && current.scope === projectId ? current : null);
-    setLocations((current) => current && current.scope === projectId ? current : null);
+    base.keepScopedPages();
   }
 
-  async function more(kind: "stories" | "characters" | "locations") {
-    const current = kind === "stories" ? stories : kind === "characters" ? characters : locations;
-    if (!current?.nextCursor) return;
-    const request = baseToken.current;
-    const path = kind === "stories"
-      ? `/projects/${projectId}/stories?cursor=${encodeURIComponent(current.nextCursor)}`
-      : `/projects/${projectId}/${kind}?cursor=${encodeURIComponent(current.nextCursor)}`;
-    const body = await client.get<{ items: never[]; nextCursor: string | null }>(path);
-    if (!shouldApplyLoad(request, baseToken.current)) return;
-    const incoming = { scope: projectId, items: body.items, nextCursor: body.nextCursor, append: true };
-    if (kind === "stories") setStories((page) => applyPage(page, incoming));
-    if (kind === "characters") setCharacters((page) => applyPage(page, incoming));
-    if (kind === "locations") setLocations((page) => applyPage(page, incoming));
+  function more(kind: "stories" | "characters" | "locations") {
+    return base.more(kind);
   }
 
   const storyCurrent = currentStoryRevision(stories?.items ?? []);
@@ -447,9 +298,11 @@ export function Workbench({ projectId }: { projectId: string }) {
 
   return (
     <InspectContext.Provider value={inspect}>
-    <div className="min-h-screen bg-neutral-100 text-neutral-900">
-      <header className="flex flex-wrap items-center gap-3 border-b border-neutral-200 bg-white px-4 py-3">
-        <a className="text-sm underline" href="/studio">创作中心</a>
+    <CreatorShell activePath="/studio">
+    <main className="creator-workbench min-h-screen bg-neutral-100 text-neutral-900">
+      <header className="creator-workbench-header flex flex-wrap items-center gap-3 border-b border-neutral-200 bg-white px-4 py-3">
+        <a className="text-sm underline" href="/studio">我的作品</a>
+        <a className="text-sm underline" href={`/projects/${projectId}/create`}>新手模式</a>
         <div className="min-w-0">
           <p className="text-xs text-neutral-600">作品</p>
           <h1 className="text-lg font-semibold [overflow-wrap:anywhere]">{project?.title ?? "加载中"}</h1>
@@ -462,13 +315,13 @@ export function Workbench({ projectId }: { projectId: string }) {
       </header>
       {error ? <p className="px-4 py-2 text-sm" role="alert">{error}</p> : null}
       {loading ? <p className="px-4 py-6 text-sm">正在加载工作台</p> : null}
-      <div className="grid lg:grid-cols-[16rem_minmax(0,1fr)]">
-        <nav className={`${navOpen ? "fixed inset-y-0 left-0 z-20 w-72 overflow-auto bg-white p-4 shadow-xl" : "hidden"} lg:static lg:block lg:bg-transparent lg:p-4 lg:shadow-none`} aria-label="创作步骤">
+      <div className="creator-workbench-layout grid lg:grid-cols-[16rem_minmax(0,1fr)]">
+        <nav className={`creator-workbench-directory ${navOpen ? "fixed inset-y-0 left-0 z-20 w-72 overflow-auto bg-white p-4 shadow-xl" : "hidden"} lg:static lg:block lg:bg-transparent lg:p-4 lg:shadow-none`} aria-label="创作步骤">
           <button className="mb-3 text-sm underline lg:hidden" type="button" onClick={() => setNavOpen(false)}>关闭目录</button>
           <p className="px-2 pt-2 text-xs text-neutral-600">故事与剧本</p>
-          <button className="block w-full rounded px-2 py-2 text-left hover:bg-white" type="button" onClick={() => choose({ kind: "story" })}>故事</button>
-          <p className="px-2 pt-3 text-xs text-neutral-600">当前试制范围固定为三集</p>
-          {[1, 2, 3].map((episodeNo) => {
+          <button className="block w-full rounded px-2 py-2 text-left hover:bg-white" type="button" aria-current={focus.kind === "story" ? "page" : undefined} onClick={() => choose({ kind: "story" })}>故事</button>
+          <p className="px-2 pt-3 text-xs text-neutral-600">本作品共 {projectEpisodeNumbers(project).length} 集</p>
+          {projectEpisodeNumbers(project).map((episodeNo) => {
             const episode = episodes.find((item) => item.episodeNo === episodeNo);
             return (
               <div key={episodeNo}>
@@ -476,6 +329,7 @@ export function Workbench({ projectId }: { projectId: string }) {
                   className="block w-full rounded px-2 py-2 text-left hover:bg-white disabled:text-neutral-400"
                   type="button"
                   disabled={!episode}
+                  aria-current={focus.kind === "script" && focus.episodeNo === episodeNo ? "page" : undefined}
                   onClick={() => choose({ kind: "script", episodeNo })}
                 >
                   {episode ? `第 ${episodeNo} 集` : `第 ${episodeNo} 集（故事通过后出现）`}
@@ -484,12 +338,12 @@ export function Workbench({ projectId }: { projectId: string }) {
             );
           })}
           <p className="mt-4 px-2 text-xs text-neutral-600">角色与场地</p>
-          <button className="block w-full rounded px-2 py-2 text-left hover:bg-white" type="button" onClick={() => choose({ kind: "character" })}>角色</button>
-          <button className="block w-full rounded px-2 py-2 text-left hover:bg-white" type="button" onClick={() => choose({ kind: "location" })}>场地</button>
+          <button className="block w-full rounded px-2 py-2 text-left hover:bg-white" type="button" aria-current={focus.kind === "character" ? "page" : undefined} onClick={() => choose({ kind: "character" })}>角色</button>
+          <button className="block w-full rounded px-2 py-2 text-left hover:bg-white" type="button" aria-current={focus.kind === "location" ? "page" : undefined} onClick={() => choose({ kind: "location" })}>场地</button>
           <p className="mt-4 px-2 text-xs text-neutral-600">分镜与素材</p>
           <p className="px-2 py-2 text-sm text-neutral-600">打开某一集后，在正文里进入场景和镜头。这里不提供可保存的集数、风格或时长选项。</p>
           <p className="mt-4 px-2 text-xs text-neutral-600">合成与导出</p>
-          {[1, 2, 3].map((episodeNo) => {
+          {projectEpisodeNumbers(project).map((episodeNo) => {
             const episode = episodes.find((item) => item.episodeNo === episodeNo);
             if (!episode) return null;
             return (
@@ -497,6 +351,7 @@ export function Workbench({ projectId }: { projectId: string }) {
                 key={`compose-${episodeNo}`}
                 className="block w-full rounded px-2 py-2 text-left hover:bg-white"
                 type="button"
+                aria-current={focus.kind === "episode-compose" && focus.episodeNo === episodeNo ? "page" : undefined}
                 onClick={() => choose({ kind: "episode-compose", episodeNo })}
               >
                 多镜编排 · 第 {episodeNo} 集
@@ -504,9 +359,9 @@ export function Workbench({ projectId }: { projectId: string }) {
             );
           })}
         </nav>
-        <section className="min-w-0 p-4">
+        <section className="creator-workbench-content min-w-0 p-4">
           {project ? (
-            <article className="mb-4 rounded-lg bg-white p-4">
+            <article className="creator-project-summary mb-4 rounded-lg bg-white p-4">
               <h2 className="font-medium">作品</h2>
               <p className="mt-2 text-sm">标题：{project.title}</p>
               <p className="text-sm">梗概：{project.premise || "无"}</p>
@@ -584,12 +439,13 @@ export function Workbench({ projectId }: { projectId: string }) {
           onChanged={reloadBase}
         />
       ) : null}
-    </div>
+    </main>
+    </CreatorShell>
     </InspectContext.Provider>
   );
 }
 
-function StoryPane(props: {
+export function StoryPane(props: {
   project: ProjectRecord;
   stories: PageState<StoryRevision> | null;
   onMore: () => void;
@@ -624,6 +480,9 @@ function StoryPane(props: {
           });
         }}
         onSaved={props.onSaved}
+        assistantUnavailableReason={projectEpisodeNumbers(props.project).length !== 3
+          ? "故事编剧助手目前仅支持三集作品。当前作品的故事可以在下方直接修改并保存新版本。"
+          : undefined}
         assistant={{
           mode: "story",
           episodeNo: null,
@@ -657,7 +516,7 @@ function StoryPane(props: {
   );
 }
 
-function ScriptPane(props: {
+export function ScriptPane(props: {
   projectId: string;
   projectVersion: number;
   episode: EpisodeRecord | null;
@@ -743,6 +602,9 @@ function ScriptPane(props: {
               ifMatch: draft.ifMatch ?? undefined,
             });
           }}
+          assistantUnavailableReason={episode.episodeNo > 3
+            ? "分集编剧助手目前仅支持第 1–3 集。这一集的剧本可以在下方直接修改并保存新版本。"
+            : undefined}
           assistant={{
             mode: "episode",
             episodeNo: episode.episodeNo,
@@ -795,6 +657,22 @@ function ScriptPane(props: {
         />
         </InspectSlot>
       </EditorGrid>
+      <ScriptBreakdownPanel
+        refreshEpoch={props.refreshEpoch}
+        projectId={props.projectId}
+        episodeId={episode.id}
+        episodeNo={episode.episodeNo}
+        scriptReady={episode.currentScriptRevisionId !== null
+          && episode.currentScriptRevisionId === episode.approvedScriptRevisionId
+          && episode.currentScriptReviewStatus === "APPROVED"
+          && episode.currentScriptFreshnessStatus === "CURRENT"}
+        sceneCount={scenes?.items.length ?? 0}
+        onOpenScene={props.onOpenScene}
+        onChanged={async () => {
+          await props.onSaved();
+          await load();
+        }}
+      />
       <SceneList
         projectId={props.projectId}
         episode={props.episode}
@@ -910,9 +788,9 @@ function SceneList(props: {
   }
 
   return (
-    <section className="rounded-lg bg-white p-4">
+    <section className="creator-section rounded-lg bg-white p-4">
       <h2 className="font-medium">场景</h2>
-      <p className="mt-1 text-sm text-neutral-600">Mock 生成场景处理固定三集。前置条件由服务端判断：来源剧本需已通过且为 CURRENT。不会覆盖已经占用的 ordinal 1，也不是一键重新生成。</p>
+      <p className="mt-1 text-sm text-neutral-600">Mock 生成场景一次处理本作品的全部各集。前置条件由服务端判断：来源剧本需已通过且为 CURRENT。不会覆盖已经占用的 ordinal 1，也不是一键重新生成。</p>
       {props.page?.items.length === 0 ? <p className="mt-3 text-sm">这一集还没有场景</p> : null}
       <ul className="mt-3 space-y-2">
         {props.page?.items.map((scene) => (
@@ -1037,6 +915,7 @@ function ContentEditor(props: {
   onStatus: (value: string) => void;
   onSubmit: (content: Record<string, unknown>, draft: { idempotencyKey: string; ifMatch: number | null }, sourceId: string | null) => Promise<void>;
   onSaved: () => Promise<void>;
+  assistantUnavailableReason?: string;
   assistant?: {
     mode: "story" | "episode";
     episodeNo: number | null;
@@ -1217,9 +1096,9 @@ function ContentEditor(props: {
   }
 
   return (
-    <form className="rounded-lg bg-white p-4" onSubmit={(event) => { event.preventDefault(); void save(false); }}>
+    <form className="creator-editor-card rounded-lg bg-white p-4" onSubmit={(event) => { event.preventDefault(); void save(false); }}>
       <h2 className="font-medium">{props.title}</h2>
-      {props.assistant ? (
+      {props.assistantUnavailableReason ? <p className="mt-2 text-sm" role="status">{props.assistantUnavailableReason}</p> : props.assistant ? (
         <WritingAssistant
           mode={props.assistant.mode}
           projectId={props.projectId}
@@ -1319,7 +1198,7 @@ function ContentEditor(props: {
   );
 }
 
-function EntityPane(props: {
+export function EntityPane(props: {
   project: ProjectRecord;
   kind: "character" | "location";
   page: PageState<Aggregate> | null;
@@ -1327,8 +1206,12 @@ function EntityPane(props: {
   onMore: () => void;
   onSaved: () => Promise<void>;
   onStatus: (value: string) => void;
+  /** Open this entity (for example the one a review returned); a new nonce opens it again. */
+  focus?: { entityId: string; nonce: number } | null;
 }) {
   const [selected, setSelected] = useState<string | null>(null);
+  const editorRef = useRef<HTMLDivElement>(null);
+  const focusPending = useRef(false);
   const [history, setHistory] = useState<{ aggregate: Aggregate; items: EntityRevision[] } | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [historyToken, setHistoryToken] = useState(0);
@@ -1348,6 +1231,14 @@ function EntityPane(props: {
   useEffect(() => {
     setSelected(null);
   }, [props.kind, props.project.id]);
+
+  const focusEntityId = props.focus?.entityId ?? null;
+  const focusNonce = props.focus?.nonce ?? 0;
+  useEffect(() => {
+    if (!focusEntityId) return;
+    focusPending.current = true;
+    setSelected(focusEntityId);
+  }, [focusEntityId, focusNonce, props.kind]);
 
   useEffect(() => {
     setHistory(null);
@@ -1370,18 +1261,27 @@ function EntityPane(props: {
   }, [historyToken, props.kind, props.project.id, selected]);
 
   const current = history?.items.find((item) => item.id === history.aggregate.currentRevisionId) ?? null;
+  const shownEntity = selected && history?.aggregate.entityId === selected && current ? selected : null;
+
+  // A focused entity scrolls its own editor into view once its versions are read: never the new-entity form.
+  useEffect(() => {
+    if (!focusPending.current || !shownEntity || shownEntity !== focusEntityId) return;
+    focusPending.current = false;
+    editorRef.current?.scrollIntoView({ block: "start" });
+    editorRef.current?.querySelector<HTMLElement>("textarea, input")?.focus();
+  }, [shownEntity, focusEntityId]);
 
   return (
     <EditorGrid>
       <div className="space-y-4">
-        <section className="rounded-lg bg-white p-4">
+        <section className="creator-section rounded-lg bg-white p-4">
           <h2 className="font-medium">{props.kind === "character" ? "角色" : "场地"}</h2>
           {describeRevision(props.page?.items.length ? { id: "list" } : null) === "empty" ? <p className="mt-2 text-sm">列表为空</p> : null}
-          <ul className="mt-2 space-y-2">
+          <ul className="creator-entity-list mt-2 space-y-2">
             {props.page?.items.map((item) => (
               <li key={item.entityId}>
-                <button className="underline" type="button" onClick={() => setSelected(item.entityId)}>
-                  {item.entityId.slice(0, 8)} · {item.currentRevision ? REVIEW_TEXT[item.currentRevision.reviewStatus] ?? item.currentRevision.reviewStatus : "currentRevision 为空"} · {item.currentRevision ? FRESH_TEXT[item.currentRevision.freshnessStatus] ?? item.currentRevision.freshnessStatus : "无新鲜度"}
+                <button className="underline" type="button" aria-pressed={selected === item.entityId} onClick={() => setSelected(item.entityId)}>
+                  {item.entityId.slice(0, 8)}{item.name ? ` · ${item.name}` : ""} · {item.currentRevision ? REVIEW_TEXT[item.currentRevision.reviewStatus] ?? item.currentRevision.reviewStatus : "currentRevision 为空"} · {item.currentRevision ? FRESH_TEXT[item.currentRevision.freshnessStatus] ?? item.currentRevision.freshnessStatus : "无新鲜度"}
                 </button>
               </li>
             ))}
@@ -1390,7 +1290,16 @@ function EntityPane(props: {
         </section>
         {historyError ? <p role="alert">{historyError}</p> : null}
         {selected && !history && !historyError ? <p className="text-sm">正在加载版本</p> : null}
-        {selected && history?.aggregate.entityId === selected && current ? (
+        {shownEntity && history && current ? (
+          <div ref={editorRef} data-entity-editor={shownEntity} className="space-y-2">
+          {current.reviewStatus === "REJECTED" ? (
+            <p className="rounded-lg border border-red-700 bg-white p-3 text-sm" role="note">
+              退回原因：{current.reviewNote ? current.reviewNote : "审核时没有写原因"}。修改后保存新版本，再提交审核。
+            </p>
+          ) : null}
+          {current.freshnessStatus === "STALE" ? (
+            <p className="rounded-lg border border-red-700 bg-white p-3 text-sm" role="note">来源剧本已更新，这一版不能再批准。请修改后保存新版本。</p>
+          ) : null}
           <ContentEditor
             title="当前版本"
             projectId={props.project.id}
@@ -1422,6 +1331,7 @@ function EntityPane(props: {
               setHistoryToken((value) => value + 1);
             }}
           />
+          </div>
         ) : null}
         {props.kind === "character" && selected && history?.aggregate.entityId === selected && current ? (
           <CharacterReferencePanel projectId={props.project.id} characterId={selected} currentRevisionId={current.id} />
@@ -1444,7 +1354,7 @@ function EntityPane(props: {
             freshnessStatus: item.freshnessStatus,
             reviewVersion: item.reviewVersion,
             source: item.sourceScriptRevisionId,
-            note: null,
+            note: item.reviewNote ?? null,
             staleReason: null,
             body: item.content,
           }))}
@@ -1521,7 +1431,7 @@ function NewEntityForm(props: {
   }
 
   return (
-    <form className="rounded-lg bg-white p-4" onSubmit={(event) => { event.preventDefault(); void save(); }}>
+    <form className="creator-editor-card rounded-lg bg-white p-4" onSubmit={(event) => { event.preventDefault(); void save(); }}>
       <h2 className="font-medium">新建{props.kind === "character" ? "角色" : "场地"}</h2>
       <label className="mt-2 block text-sm" htmlFor="entity-name">名称</label>
       <input id="entity-name" className="w-full rounded border px-2 py-1" maxLength={LIMITS.name} value={name} onChange={(event) => { setName(event.target.value); remember(event.target.value, text); }} required />
@@ -1534,7 +1444,7 @@ function NewEntityForm(props: {
   );
 }
 
-function ScenePane(props: {
+export function ScenePane(props: {
   projectId: string;
   episode: EpisodeRecord | null;
   sceneId: string;
@@ -1545,6 +1455,10 @@ function ScenePane(props: {
   onSaved: () => Promise<void>;
   onStatus: (value: string) => void;
   onOpenShot: (shotId: string) => void;
+  /** Compose accepted, finished or reviewed under this scene; the advanced workbench does not need it. */
+  onMediaChanged?: () => void;
+  /** Why a new single-shot compose cannot start now (capability pending, unread or off); null or absent: it can. */
+  shotComposeBlocked?: string | null;
 }) {
   const [history, setHistory] = useState<{ aggregate: Aggregate; items: SceneRevision[] } | null>(null);
   const [shots, setShots] = useState<PageState<Aggregate> | null>(null);
@@ -1665,7 +1579,7 @@ function ScenePane(props: {
       approvedId: location.approvedRevisionId,
       revisionId: location.currentRevisionId ?? "",
     });
-    return location.currentRevisionId ? [{ id: location.currentRevisionId, label: location.entityId.slice(0, 8), ...usable }] : [];
+    return location.currentRevisionId ? [{ id: location.currentRevisionId, label: location.name ? `${location.entityId.slice(0, 8)} · ${location.name}` : location.entityId.slice(0, 8), ...usable }] : [];
   });
 
   return (
@@ -1713,7 +1627,7 @@ function ScenePane(props: {
           </InspectSlot>
         </EditorGrid>
       ) : <p>场景没有当前版本</p>}
-      <section className="rounded-lg bg-white p-4">
+      <section className="creator-section rounded-lg bg-white p-4">
         <h2 className="font-medium">镜头</h2>
         {shots?.items.length === 0 ? <p className="mt-2 text-sm">还没有镜头</p> : null}
         <ul className="mt-2 space-y-2">
@@ -1780,7 +1694,8 @@ function ScenePane(props: {
             onAccepted={props.onSaved}
             onReused={() => setReuseEpoch((value) => value + 1)}
           />
-          <ComposePreflight revisionId={shotCurrent.id} refreshEpoch={props.imageEpoch + reuseEpoch} />
+          <ComposePreflight revisionId={shotCurrent.id} refreshEpoch={props.imageEpoch + reuseEpoch} onChanged={props.onMediaChanged}
+            blocked={props.shotComposeBlocked ?? null} />
           </div>
           <InspectSlot>
           <RevisionColumn
@@ -1946,7 +1861,7 @@ function SceneForm(props: {
   }, body()) : [];
 
   return (
-    <form className="rounded-lg bg-white p-4" onSubmit={(event) => { event.preventDefault(); void save(false); }}>
+    <form className="creator-editor-card rounded-lg bg-white p-4" onSubmit={(event) => { event.preventDefault(); void save(false); }}>
       <h2 className="font-medium">{props.current.heading}</h2>
       <label className="mt-2 block" htmlFor="edit-heading">标题</label>
       <input id="edit-heading" className="w-full rounded border px-2 py-1" maxLength={LIMITS.heading} value={heading} onChange={(event) => { setHeading(event.target.value); remember({ ...body(), heading: event.target.value }); }} />
@@ -2112,6 +2027,7 @@ function ShotForm(props: {
   const [action, setAction] = useState(typeof seeded?.action === "string" ? seeded.action : props.current.action);
   const [dialogue, setDialogue] = useState(keptText(seeded, "dialogue", props.current.dialogue ?? ""));
   const [durationHint, setDurationHint] = useState(keptText(seeded, "durationHint", props.current.durationHint ?? ""));
+  const [plannedSeconds, setPlannedSeconds] = useState(plannedSecondsText(seeded, props.current.plannedDurationMs));
   const [promptText, setPromptText] = useState(typeof seeded?.promptText === "string" ? seeded.promptText : props.current.promptText);
   const [ordinal, setOrdinal] = useState(typeof seeded?.ordinal === "number" ? String(seeded.ordinal) : String(props.current.ordinal));
   const [sourceId, setSourceId] = useState(initialSource);
@@ -2129,7 +2045,8 @@ function ShotForm(props: {
   }
   const selectedSource = props.sources.find((item) => item.id === sourceId) ?? null;
 
-  function body(nextSource = sourceId) {
+  function body(nextSource = sourceId, nextPlanned = plannedSeconds) {
+    const planned = plannedDurationOf(nextPlanned);
     return {
       sourceSceneRevisionId: nextSource,
       ordinal: Number(ordinal),
@@ -2138,6 +2055,7 @@ function ShotForm(props: {
       action,
       dialogue: dialogue.trim().length > 0 ? dialogue : null,
       durationHint: durationHint.trim().length > 0 ? durationHint : null,
+      plannedDurationMs: planned.ok ? planned.ms : null,
       promptText,
     };
   }
@@ -2159,12 +2077,13 @@ function ShotForm(props: {
     setAction(typeof record?.action === "string" ? record.action : props.current.action);
     setDialogue(keptText(record, "dialogue", props.current.dialogue ?? ""));
     setDurationHint(keptText(record, "durationHint", props.current.durationHint ?? ""));
+    setPlannedSeconds(plannedSecondsText(record, props.current.plannedDurationMs));
     setPromptText(typeof record?.promptText === "string" ? record.promptText : props.current.promptText);
     setOrdinal(typeof record?.ordinal === "number" ? String(record.ordinal) : String(props.current.ordinal));
     const storedSource = keptText(record, "sourceSceneRevisionId", props.current.sourceSceneRevisionId);
     const usable = props.sources.find((item) => item.id === storedSource && item.usable);
     setSourceId(usable?.id ?? "");
-  }, [props.current.action, props.current.camera, props.current.dialogue, props.current.durationHint, props.current.id, props.current.ordinal, props.current.promptText, props.current.shotType, props.current.sourceSceneRevisionId, props.projectId, props.shot.entityId, props.shot.rowVersion, props.sources, shotEntityKey]);
+  }, [props.current.action, props.current.camera, props.current.dialogue, props.current.durationHint, props.current.plannedDurationMs, props.current.id, props.current.ordinal, props.current.promptText, props.current.shotType, props.current.sourceSceneRevisionId, props.projectId, props.shot.entityId, props.shot.rowVersion, props.sources, shotEntityKey]);
 
   async function beginConflict(message: string) {
     setConflict(message);
@@ -2189,6 +2108,10 @@ function ShotForm(props: {
     if (!force && (conflict || drift.blocked)) return;
     if (!selectedSource?.usable) {
       setError(selectedSource?.reason || "来源需要是当前、已批准且 CURRENT。");
+      return;
+    }
+    if (!plannedDurationOf(plannedSeconds).ok) {
+      setError("预计时长需为 1–15 的整数秒，或留空。");
       return;
     }
     const nextBody = body();
@@ -2220,7 +2143,7 @@ function ShotForm(props: {
   }
 
   return (
-    <form className="rounded-lg bg-white p-4" onSubmit={(event) => { event.preventDefault(); void save(false); }}>
+    <form className="creator-editor-card rounded-lg bg-white p-4" onSubmit={(event) => { event.preventDefault(); void save(false); }}>
       <h2 className="font-medium">镜头 {props.current.ordinal}</h2>
       <label htmlFor="shot-type">景别</label>
       <input id="shot-type" className="w-full rounded border px-2 py-1" maxLength={LIMITS.shotType} value={shotType} onChange={(event) => { setShotType(event.target.value); remember({ ...body(), shotType: event.target.value }); }} />
@@ -2232,6 +2155,8 @@ function ShotForm(props: {
       <textarea id="shot-dialogue" className={BODY_FIELD} maxLength={LIMITS.dialogue} value={dialogue} onChange={(event) => { setDialogue(event.target.value); remember({ ...body(), dialogue: event.target.value.trim().length > 0 ? event.target.value : null }); }} />
       <label htmlFor="shot-duration">时长提示</label>
       <input id="shot-duration" className="w-full rounded border px-2 py-1" maxLength={LIMITS.durationHint} value={durationHint} onChange={(event) => { setDurationHint(event.target.value); remember({ ...body(), durationHint: event.target.value.trim().length > 0 ? event.target.value : null }); }} />
+      <label htmlFor="shot-planned">预计时长（秒，计划值，不是成片时长）</label>
+      <input id="shot-planned" className="w-full rounded border px-2 py-1" inputMode="numeric" value={plannedSeconds} onChange={(event) => { setPlannedSeconds(event.target.value); remember(body(sourceId, event.target.value)); }} />
       <label htmlFor="shot-prompt">提示词</label>
       <textarea id="shot-prompt" className={BODY_FIELD} maxLength={LIMITS.promptText} value={promptText} onChange={(event) => { setPromptText(event.target.value); remember({ ...body(), promptText: event.target.value }); }} />
       <label htmlFor="shot-ordinal">序号</label>
@@ -2339,10 +2264,10 @@ function RevisionColumn(props: {
   }
 
   return (
-    <aside className="min-w-0 rounded-lg bg-white p-4 [overflow-wrap:anywhere]">
+    <aside className="creator-review-card min-w-0 rounded-lg bg-white p-4 [overflow-wrap:anywhere]">
       <h2 className="font-medium">版本</h2>
       {props.items.length === 0 ? <p className="mt-2 text-sm">没有历史版本</p> : null}
-      <ul className="mt-2 space-y-2 text-sm">
+      <ul className="creator-revision-list mt-2 space-y-2 text-sm">
         {props.items.map((item) => (
           <li key={item.id} className={item.id === props.currentId ? "font-medium" : ""}>
             第 {item.revisionNo} 版 · {REVIEW_TEXT[item.reviewStatus] ?? item.reviewStatus} · {FRESH_TEXT[item.freshnessStatus] ?? item.freshnessStatus}
@@ -2369,7 +2294,7 @@ function RevisionColumn(props: {
         </div>
       )}
       {current ? (
-        <div className="mt-4">
+        <div className="creator-review-actions mt-4">
           <h3 className="font-medium">审核</h3>
           <p className="text-sm">{REVIEW_TEXT[current.reviewStatus] ?? current.reviewStatus}，新鲜度 {FRESH_TEXT[current.freshnessStatus] ?? current.freshnessStatus}。已通过不等于新鲜。</p>
           {current.staleReason ? <p className="text-sm">过期原因 {current.staleReason}</p> : null}
@@ -2644,8 +2569,8 @@ function ShotImagePanel(props: {
   const musicHistory = historyAssets.filter((asset) => asset.kind === "MUSIC");
 
   return (
-    <div className="min-w-0 space-y-4">
-      <section className="min-w-0 rounded-lg bg-white p-4">
+    <div className="creator-media-grid min-w-0 space-y-4">
+      <section className="creator-media-card min-w-0 rounded-lg bg-white p-4">
         <h2 className="font-medium">Mock 图片</h2>
         <p className="mt-2 text-sm [overflow-wrap:anywhere]">演示素材。确定性 1×1 Mock 测试图。seed 只写入快照，不改变像素。这不是真实 AI 图片，也不会写入 MinIO。</p>
         <label className="mt-2 block text-sm" htmlFor="mock-image-seed">seed（可选）</label>
@@ -2661,7 +2586,7 @@ function ShotImagePanel(props: {
         <AssetList title="当前版本图片" empty="没有图片" assets={imageCurrent} previewErrors={previewErrors} onPreviewError={previewError} />
         <AssetList title="历史版本图片" empty="没有图片" assets={imageHistory} previewErrors={previewErrors} onPreviewError={previewError} />
       </section>
-      <section className="min-w-0 rounded-lg bg-white p-4">
+      <section className="creator-media-card min-w-0 rounded-lg bg-white p-4">
         <h2 className="font-medium">Mock 视频</h2>
         <p className="mt-2 text-sm [overflow-wrap:anywhere]">演示素材。固定 16×16 黑色 1 秒测试视频。seed 和已保存提示词只进入审计快照，不改变画面。这不是真实 AI 视频，也不会写入 MinIO。</p>
         <label className="mt-2 block text-sm" htmlFor="mock-video-seed">seed（可选）</label>
@@ -2677,7 +2602,7 @@ function ShotImagePanel(props: {
         <AssetList title="当前版本视频" empty="没有视频" assets={videoCurrent} previewErrors={previewErrors} onPreviewError={previewError} />
         <AssetList title="历史版本视频" empty="没有视频" assets={videoHistory} previewErrors={previewErrors} onPreviewError={previewError} />
       </section>
-      <section className="min-w-0 rounded-lg bg-white p-4">
+      <section className="creator-media-card min-w-0 rounded-lg bg-white p-4">
         <h2 className="font-medium">Mock 配音</h2>
         <p className="mt-2 text-sm [overflow-wrap:anywhere]">演示素材。固定 100ms 单声道静音。已保存并审核的对白只作为来源审计，fixture 不会朗读它。这不是真实 TTS，也不会写入 MinIO。</p>
         <label className="mt-2 block text-sm" htmlFor="mock-speech-seed">seed（可选）</label>
@@ -2692,7 +2617,7 @@ function ShotImagePanel(props: {
         <AssetList title="当前版本配音" empty="没有配音" assets={speechCurrent} previewErrors={previewErrors} onPreviewError={previewError} />
         <AssetList title="历史版本配音" empty="没有配音" assets={speechHistory} previewErrors={previewErrors} onPreviewError={previewError} />
       </section>
-      <section className="min-w-0 rounded-lg bg-white p-4">
+      <section className="creator-media-card min-w-0 rounded-lg bg-white p-4">
         <h2 className="font-medium">Mock 字幕</h2>
         <p className="mt-2 text-sm [overflow-wrap:anywhere]">演示素材。固定测试字幕，内容不随已保存对白变化。seed 只写入快照。这不是真实字幕生成，也不会写入 MinIO。</p>
         <label className="mt-2 block text-sm" htmlFor="mock-subtitle-seed">seed（可选）</label>
@@ -2707,7 +2632,7 @@ function ShotImagePanel(props: {
         <AssetList title="当前版本字幕" empty="没有字幕" assets={subtitleCurrent} previewErrors={previewErrors} onPreviewError={previewError} />
         <AssetList title="历史版本字幕" empty="没有字幕" assets={subtitleHistory} previewErrors={previewErrors} onPreviewError={previewError} />
       </section>
-      <section className="min-w-0 rounded-lg bg-white p-4">
+      <section className="creator-media-card min-w-0 rounded-lg bg-white p-4">
         <h2 className="font-medium">Mock 音乐</h2>
         <p className="mt-2 text-sm [overflow-wrap:anywhere]">演示素材。固定 100ms 静音，kind 为 MUSIC，与配音 AUDIO 分开。已保存提示词只进入审计快照，不会变成音乐。这不是真实音乐生成，也不会写入 MinIO。</p>
         <label className="mt-2 block text-sm" htmlFor="mock-music-seed">seed（可选）</label>
@@ -2737,7 +2662,7 @@ function AssetList(props: {
   onPreviewError: (id: string) => void;
 }) {
   return (
-    <div className="mt-4 min-w-0">
+    <div className="creator-asset-library mt-4 min-w-0">
       <h3 className="font-medium">{props.title}</h3>
       {props.assets.length === 0 ? <p className="mt-2 text-sm">{props.empty}</p> : null}
       <ul className="mt-2 space-y-3">
@@ -2745,7 +2670,7 @@ function AssetList(props: {
           const preview = canPreviewAsset(asset);
           const src = `/api/v1/assets/${asset.id}/content`;
           return (
-            <li key={asset.id} className="min-w-0 rounded border p-3 text-sm [overflow-wrap:anywhere]">
+            <li key={asset.id} className="creator-asset-card min-w-0 rounded border p-3 text-sm [overflow-wrap:anywhere]">
               <p>资产 {asset.id}</p>
               <p>状态 {asset.status} · 审核 {asset.reviewStatus} · {asset.kind} · {asset.width ?? "无"}×{asset.height ?? "无"} · {asset.durationMs ?? "无"} ms · {asset.byteSize} 字节</p>
               <p>来源镜头版本 {asset.sourceShotRevisionId ?? "无"} · 来源任务 {asset.sourceGenerationJobId ?? "无"}</p>
@@ -2841,7 +2766,7 @@ function AttemptList(props: { attempts?: WorkflowAttempt[] }) {
   );
 }
 
-function TaskDrawer(props: {
+export function TaskDrawer(props: {
   projectId: string;
   runs: WorkflowRun[];
   onClose: () => void;
@@ -2883,14 +2808,14 @@ function TaskDrawer(props: {
   }
 
   const textRuns = props.runs.filter((run) => TEXT_WORKFLOW_TYPES.has(run.type));
-  const mediaRuns = props.runs.filter((run) => MEDIA_WORKFLOW_TYPES.has(run.type));
+  const mediaRuns = props.runs.filter((run) => MEDIA_WORKFLOW_TYPES.has(run.type) || run.type === "MEDIA_COMPOSE");
   const referenceRuns = props.runs.filter((run) => run.type === REFERENCE_WORKFLOW_TYPE);
 
   return (
-    <div className="fixed inset-y-0 right-0 z-30 w-full max-w-md overflow-auto bg-white p-4 shadow-xl">
+    <div className="creator-task-drawer fixed inset-y-0 right-0 z-30 w-full max-w-md overflow-auto bg-white p-4 shadow-xl">
       <button className="text-sm underline" type="button" onClick={props.onClose}>关闭任务</button>
       <h2 className="mt-3 font-medium">Mock 文本任务</h2>
-      <p className="mt-2 text-sm">Mock 生成场景和 Mock 生成镜头都只处理固定三集，不是一键重新生成，也不会覆盖已占用的 ordinal 1。场景要求三集剧本均已通过且为 CURRENT；镜头还要求对应场景已通过且为 CURRENT。服务端拒绝时以返回原因为准。返回 202 只表示受理，结果从任务和实体查询读取。</p>
+      <p className="mt-2 text-sm">Mock 生成场景和 Mock 生成镜头一次处理本作品的全部各集（每集一个模板场景和镜头，不是按剧本真实拆分），不是一键重新生成，也不会覆盖已占用的 ordinal 1。场景要求每一集剧本均已通过且为 CURRENT；镜头还要求对应场景已通过且为 CURRENT。服务端拒绝时以返回原因为准。返回 202 只表示受理，结果从任务和实体查询读取。</p>
       <div className="mt-3 flex gap-2">
         <button className="rounded bg-red-700 px-3 py-2 text-white" type="button" onClick={() => void start("mock-scenes")}>Mock 生成场景</button>
         <button className="rounded bg-red-700 px-3 py-2 text-white" type="button" onClick={() => void start("mock-shots")}>Mock 生成镜头</button>

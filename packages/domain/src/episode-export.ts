@@ -1,6 +1,6 @@
 import { DomainError } from "./errors";
 import { COMPOSE_OUTPUT_MAX_BYTES } from "./compose-render";
-import { canonicalInputHash } from "./text-chain";
+import { MAX_PRODUCTION_EPISODES, canonicalInputHash } from "./text-chain";
 import { type EpisodeComposeSegment } from "./episode-compose-preflight";
 import {
   EPISODE_COMPOSE_JOB_SCHEMA,
@@ -123,7 +123,7 @@ export function assertEpisodeExportRecord(input: {
   if (input.asset.workspaceId !== input.workspaceId || input.asset.projectId !== input.projectId) {
     throw new DomainError("COMPOSE_INPUT_INVALID", "Composite is outside this project");
   }
-  if (!Number.isInteger(input.episodeNo) || input.episodeNo < 1 || input.episodeNo > 3) {
+  if (!Number.isInteger(input.episodeNo) || input.episodeNo < 1 || input.episodeNo > MAX_PRODUCTION_EPISODES) {
     throw new DomainError("COMPOSE_INPUT_INVALID", "Episode number is not usable");
   }
   const asset = input.asset;
@@ -389,7 +389,7 @@ export function buildEpisodeExportManifest(facts: EpisodeExportFacts, verifiedAt
 }
 
 export function episodeExportFilenameStem(episodeNo: number, assetId: string): string {
-  if (!Number.isInteger(episodeNo) || episodeNo < 1 || episodeNo > 3) {
+  if (!Number.isInteger(episodeNo) || episodeNo < 1 || episodeNo > MAX_PRODUCTION_EPISODES) {
     throw new DomainError("COMPOSE_INPUT_INVALID", "Episode number is not usable");
   }
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(assetId)) {

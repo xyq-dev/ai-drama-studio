@@ -1,0 +1,146 @@
+name: Unified site login
+
+# One login for the whole site, verified end to end in a job-scoped environment: real Chrome -> Caddy running the
+# candidate site config (infra/caddy, no basic_auth) -> production Next -> real API (dist/main.js) -> a new, empty
+# PostgreSQL database. Test-only credentials are generated per run. No provider keys, no model calls, no deployment.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "apps/api/**"
+      - "apps/web/**"
+      - "packages/**"
+      - "infra/caddy/**"
+      - "scripts/site-login-acceptance.mjs"
+      - "scripts/site-auth-password*"
+      - "scripts/render-caddy-site*"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/site-login.yml"
+  push:
+    branches: [main, feat/unified-admin-login]
+    paths:
+      - "apps/api/**"
+      - "apps/web/**"
+      - "packages/**"
+      - "infra/caddy/**"
+      - "scripts/site-login-acceptance.mjs"
+      - "scripts/site-auth-password*"
+      - "scripts/render-caddy-site*"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/site-login.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: site-login-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CADDY_VERSION: 2.8.4
+
+jobs:
+  site-login:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.0
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.21.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Validate and generate Prisma
+        env:
+          DATABASE_URL: postgresql://prisma-offline@127.0.0.1:1/prisma_offline_placeholder
+        run: |
+          pnpm --filter @ai-drama/database prisma:validate
+          pnpm --filter @ai-drama/database prisma:generate
+
+      - name: Build (Web proxies /api/v1 to the acceptance API on loopback)
+        env:
+          NEXT_PUBLIC_API_BASE_URL: http://127.0.0.1:3201
+        run: pnpm build
+
+      - name: Operator scripts (password hash, Caddy template, vault bootstrap)
+        run: node --test scripts/site-auth-password.test.mjs scripts/render-caddy-site.test.mjs scripts/admin-models-init.test.mjs
+
+      - name: Install Chromium and CJK font
+        run: |
+          pnpm exec playwright install --with-deps chromium
+          sudo apt-get update
+          sudo apt-get install -y fonts-noto-cjk
+
+      - name: Install Caddy (pinned release, checksum verified)
+        run: |
+          base="https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}"
+          archive="caddy_${CADDY_VERSION}_linux_amd64.tar.gz"
+          curl -fsSLO "${base}/${archive}"
+          curl -fsSLO "${base}/caddy_${CADDY_VERSION}_checksums.txt"
+          grep " ${archive}\$" "caddy_${CADDY_VERSION}_checksums.txt" | sha512sum -c -
+          mkdir -p "${RUNNER_TEMP}/caddy"
+          tar -xzf "${archive}" -C "${RUNNER_TEMP}/caddy" caddy
+          "${RUNNER_TEMP}/caddy/caddy" version
+
+      - name: Validate the rendered production-shaped site block
+        run: |
+          node scripts/render-caddy-site.mjs --site drama.example.test --upstream 127.0.0.1:3000 > "${RUNNER_TEMP}/site.Caddyfile"
+          "${RUNNER_TEMP}/caddy/caddy" validate --config "${RUNNER_TEMP}/site.Caddyfile" --adapter caddyfile
+          ! grep -Eiq '^[[:space:]]*(basic_?auth|basicauth)' "${RUNNER_TEMP}/site.Caddyfile"
+
+      - name: Create a new, empty acceptance database
+        run: |
+          name="ads_site_login_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+          psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE ${name}"
+          echo "SITE_LOGIN_DATABASE=${name}" >> "$GITHUB_ENV"
+
+      - name: Real browser through Caddy, real API and session
+        env:
+          SITE_LOGIN_ACCEPTANCE: isolated
+          DATABASE_URL: postgresql://postgres@127.0.0.1:5432/${{ env.SITE_LOGIN_DATABASE }}
+          REDIS_URL: redis://127.0.0.1:6379
+          CADDY_BIN: ${{ runner.temp }}/caddy/caddy
+          SITE_LOGIN_EVIDENCE_DIR: ${{ runner.temp }}/site-login-evidence
+          SITE_LOGIN_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: node scripts/site-login-acceptance.mjs
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: site-login-evidence
+          path: ${{ runner.temp }}/site-login-evidence
+          if-no-files-found: warn
+          retention-days: 14

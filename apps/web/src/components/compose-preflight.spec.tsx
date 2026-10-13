@@ -228,3 +228,30 @@ describe("compose preflight selection", () => {
     expect((screen.getByLabelText("合成视频") as HTMLSelectElement).value).toBe("");
   });
 });
+
+describe("compose preflight closed by the capability gate (PR #53 review 3)", () => {
+  it("keeps preflight and submit closed while blocked, still lists existing cuts, and keeps the selection when opened", async () => {
+    const posts: string[] = [];
+    const composite = { ...asset("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", REVISION_A, "COMPOSITE", "video/mp4", "APPROVED"), rowVersion: 2, checksumSha256: HASH_A };
+    const fetchImpl = (input: string, init?: RequestInit) => {
+      if (init?.method === "POST") posts.push(input);
+      if (input.includes("/assets")) return Promise.resolve(json({ items: [asset(VIDEO_A, REVISION_A), composite] }));
+      return Promise.resolve(json(preflightBody(HASH_A)));
+    };
+    const client = new StudioClient(fetchImpl);
+    const view = render(createElement(ComposePreflight, { revisionId: REVISION_A, refreshEpoch: 0, client, blocked: "正在检查单镜合成是否开启，检查完成前不能开始新的合成。" }));
+    await waitFor(() => expect(screen.getByRole("option", { name: VIDEO_A })).toBeTruthy());
+    fireEvent.change(screen.getByLabelText("合成视频"), { target: { value: VIDEO_A } });
+    expect(screen.getByText(/检查完成前不能开始新的合成/)).toBeTruthy();
+    const preflight = screen.getByRole("button", { name: "预检合成输入" }) as HTMLButtonElement;
+    expect(preflight.disabled).toBe(true);
+    fireEvent.click(preflight);
+    expect((screen.getByRole("button", { name: "开始合成" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(posts).toEqual([]);
+    // The approved cut made earlier is still shown.
+    await waitFor(() => expect(document.querySelector(`[data-composite-id="${composite.id}"]`)).toBeTruthy());
+    view.rerender(createElement(ComposePreflight, { revisionId: REVISION_A, refreshEpoch: 0, client, blocked: null }));
+    expect((screen.getByLabelText("合成视频") as HTMLSelectElement).value).toBe(VIDEO_A);
+    expect((screen.getByRole("button", { name: "预检合成输入" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+});

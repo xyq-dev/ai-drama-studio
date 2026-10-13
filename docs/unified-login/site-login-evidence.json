@@ -1,0 +1,98 @@
+{
+  "kind": "real-browser-real-api-real-caddy",
+  "caddyConfig": "infra/caddy/site.Caddyfile.template (tls internal)",
+  "database": "new, empty",
+  "headSha": "08026f9cca7c19b60f2d6c7f5dadeb072d02d2cc",
+  "routeFulfill": false,
+  "mockFetch": false,
+  "modelCalls": 0,
+  "checks": {
+    "migrations": [
+      "20260924000100_m1b_job_core",
+      "20260925000100_m2a_text_chain",
+      "20260928000100_script_dependency_scopes",
+      "20260928000200_m3a_media_assets",
+      "20260928000300_m3b_job_shot_lineage",
+      "20261008000100_title_writing"
+    ],
+    "anonymousApi": {
+      "GET /api/v1/projects": 401,
+      "POST /api/v1/projects": 401,
+      "GET /api/v1/projects/c79777f5-0224-4461-92cc-4fb3ab6d7540/stories": 401,
+      "GET /api/v1/assets/c79777f5-0224-4461-92cc-4fb3ab6d7540/content": 401,
+      "GET /api/v1/projects/c79777f5-0224-4461-92cc-4fb3ab6d7540/episodes/c79777f5-0224-4461-92cc-4fb3ab6d7540/composites/c79777f5-0224-4461-92cc-4fb3ab6d7540/download": 401,
+      "GET /api/v1/admin/models": 401,
+      "GET /api/v1/writing/title-runs/options": 401,
+      "POST /api/v1/projects/c79777f5-0224-4461-92cc-4fb3ab6d7540/title-runs": 401
+    },
+    "anonymousPages": "307 to /login with returnTo",
+    "legacyToken": "refused",
+    "cookies": {
+      "session": "HttpOnly Secure SameSite=Lax Path=/",
+      "csrf": "readable Secure SameSite=Strict Path=/"
+    },
+    "createdWork": true,
+    "realRouteWithAndWithoutSession": {
+      "path": "/api/v1/projects/:projectId/stories",
+      "signedIn": 200,
+      "anonymous": 401
+    },
+    "refreshKeepsSession": true,
+    "titleWritingAfterLogin": "TITLE_WRITING_DISABLED",
+    "crossSiteWrite": {
+      "evilOrigin": 403,
+      "missingCsrf": 403
+    },
+    "browserStorage": {
+      "localKeys": 0,
+      "sessionKeys": 0,
+      "sessionCookieReadable": false
+    },
+    "logout": "revoked; pages and API need the login again"
+  },
+  "screenshots": [
+    {
+      "name": "desktop-login",
+      "width": 1440,
+      "scroll": 1440
+    },
+    {
+      "name": "desktop-create",
+      "width": 1440,
+      "scroll": 1440
+    },
+    {
+      "name": "desktop-studio",
+      "width": 1440,
+      "scroll": 1440
+    },
+    {
+      "name": "desktop-admin-models",
+      "width": 1440,
+      "scroll": 1440
+    },
+    {
+      "name": "mobile-studio",
+      "width": 390,
+      "scroll": 390
+    },
+    {
+      "name": "mobile-admin-models",
+      "width": 390,
+      "scroll": 390
+    },
+    {
+      "name": "mobile-navigation",
+      "width": 390,
+      "scroll": 390
+    },
+    {
+      "name": "mobile-login-expired",
+      "width": 390,
+      "scroll": 390
+    }
+  ],
+  "pageErrors": [],
+  "basicAuthChallenges": [],
+  "success": true
+}

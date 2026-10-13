@@ -3,6 +3,7 @@ import { Pool, type PoolClient } from "pg";
 export {
   runMigrations,
   type MigrationClient,
+  type MigrationOptions,
   type MigrationPool,
   type MigrationResult,
 } from "./migrations";
@@ -169,3 +170,19 @@ export {
   type MockSmProvisionConfig,
   type MockSmProvisionResult,
 } from "./provision-mock-sm";
+export { PostgresTitleWritingStore, SCRIPT_BREAKDOWN_COLUMNS, SCRIPT_BREAKDOWN_MIGRATION, TITLE_WRITING_MIGRATION, TITLE_WRITING_TABLES } from "./title-writing-store";
+export {
+  EPISODE_PLAN_COLUMNS,
+  EPISODE_PLAN_MIGRATION,
+  EpisodePlanStore,
+  LEGACY_EPISODE_PLAN,
+  episodePlanReadyIn,
+  projectEpisodePlanIn,
+  type ProjectEpisodePlan,
+} from "./episode-plan";
+export {
+  TITLE_WRITING_ACCEPTANCE_NAME_PATTERN,
+  checkTitleWritingAcceptanceEnv,
+  verifyTitleWritingAcceptanceDatabase,
+  type TitleWritingAcceptanceDecision,
+} from "./title-writing-acceptance-guard";

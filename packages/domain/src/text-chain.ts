@@ -35,13 +35,27 @@ export function assertReviewTransition(from: ReviewStatus, to: ReviewStatus): vo
   }
 }
 
-export function assertProductionEpisodeSet(episodeNumbers: readonly number[]): void {
+/** A project's episode plan allows one to six episodes; a project without a plan has the three above. */
+export const MAX_PRODUCTION_EPISODES = 6;
+
+/** The episode numbers 1..count of a project with that many episodes. */
+export function productionEpisodeNumbers(count: number): number[] {
+  if (!Number.isInteger(count) || count < 1 || count > MAX_PRODUCTION_EPISODES) {
+    throw new DomainError("EPISODE_SET_INVALID", "Episode count must be 1 to 6");
+  }
+  return Array.from({ length: count }, (_, index) => index + 1);
+}
+
+/** Exactly episodes 1..expectedCount, each once. Without a count this is the three-episode scope. */
+export function assertProductionEpisodeSet(episodeNumbers: readonly number[], expectedCount: number = PRODUCTION_EPISODE_NUMBERS.length): void {
+  const expected = productionEpisodeNumbers(expectedCount);
   const present = new Set(episodeNumbers);
   const matches =
-    present.size === PRODUCTION_EPISODE_NUMBERS.length &&
-    PRODUCTION_EPISODE_NUMBERS.every((episodeNo) => present.has(episodeNo));
+    episodeNumbers.length === expected.length &&
+    present.size === expected.length &&
+    expected.every((episodeNo) => present.has(episodeNo));
   if (!matches) {
-    throw new DomainError("EPISODE_SET_INVALID", "Production requires exactly episodes 1, 2, and 3");
+    throw new DomainError("EPISODE_SET_INVALID", `Production requires exactly episodes 1 to ${String(expectedCount)}`);
   }
 }
 

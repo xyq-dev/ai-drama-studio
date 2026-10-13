@@ -846,12 +846,22 @@ describe("workbench review interactions against a simulated API", () => {
     fireEvent.change(within(editor).getByLabelText("正文"), { target: { value: "第一" } });
     fireEvent.click(within(editor).getByRole("button", { name: "保存新版本" }));
     fireEvent.change(within(formOf("当前版本")).getByLabelText("正文"), { target: { value: "第二" } });
+    expect(postsEnding(sim, `/characters/${CHAR_A}/revisions`)).toHaveLength(1);
+    expect(postsEnding(sim, `/characters/${CHAR_A}/revisions`)[0]?.body).toMatchObject({ content: { text: "第一" } });
+    expect(draftFor(`character:${CHAR_A}`)?.payload).toMatchObject({ text: "第二" });
+    // "第二" already exists before the reply. Wait for the acknowledgement AND the
+    // refreshed revision before remounting, so late save callbacks are actually covered.
     release();
-    await screen.findByDisplayValue("第二");
+    await screen.findByText("已保存");
+    await screen.findByText(/已看到的并发版本 2/);
+    expect((within(formOf("当前版本")).getByLabelText("正文") as HTMLTextAreaElement).value).toBe("第二");
+    expect(draftFor(`character:${CHAR_A}`)?.payload).toMatchObject({ text: "第二" });
     view.unmount();
     renderAt("focus=character");
     await openCharacter(CHAR_A);
-    await waitFor(() => expect((within(formOf("当前版本")).getByLabelText("正文") as HTMLTextAreaElement).value).toBe("第二"));
+    await screen.findByText(/已看到的并发版本 2/);
+    expect((within(formOf("当前版本")).getByLabelText("正文") as HTMLTextAreaElement).value).toBe("第二");
+    expect(postsEnding(sim, `/characters/${CHAR_A}/revisions`)).toHaveLength(1);
   });
 
   it("blocks a normal save after 409 and confirms only the snapshot already shown", async () => {

@@ -25,6 +25,11 @@ const apiEnvSchema = z.object({
   QWEN_WEB_WRITING_ENABLED: z.enum(["true", "false"]).default("false"),
   M3_CHARACTER_REFERENCE_GATE: z.enum(["legacy", "strict"]).default("legacy"),
   QWEN_WEB_OPERATOR_TOKEN: z.string().min(16).max(200).optional(),
+  TITLE_WRITING_ENABLED: z.enum(["true", "false"]).default("false"),
+  TITLE_WRITING_OPERATOR_TOKEN: z.string().min(16).max(200).optional(),
+  TITLE_WRITING_DEFAULT_PROVIDER: z.enum(["qwen", "openai", "deepseek"]).optional(),
+  TITLE_WRITING_MAX_CALLS_PER_DAY: z.coerce.number().int().min(1).max(500).default(30),
+  TITLE_WRITING_MAX_ACTIVE_RUNS: z.coerce.number().int().min(1).max(10).default(1),
 });
 
 export class EnvValidationError extends Error {
@@ -67,10 +72,53 @@ export interface ApiEnv {
   DASHSCOPE_API_KEY?: string;
   BAILIAN_BASE_URL?: string;
   QWEN_WEB_MODEL?: string;
+  /** Title-driven writing. Default off and forced off in production. */
+  TITLE_WRITING_ENABLED: boolean;
+  TITLE_WRITING_OPERATOR_TOKEN?: string;
+  TITLE_WRITING_DEFAULT_PROVIDER?: "qwen" | "openai" | "deepseek";
+  TITLE_WRITING_MAX_CALLS_PER_DAY: number;
+  TITLE_WRITING_MAX_ACTIVE_RUNS: number;
+  /** Process environment only, never the .env file. Server-side secrets and model allowlists. */
+  TITLE_WRITING_QWEN_MODELS?: string;
+  OPENAI_API_KEY?: string;
+  TITLE_WRITING_OPENAI_MODELS?: string;
+  DEEPSEEK_API_KEY?: string;
+  TITLE_WRITING_DEEPSEEK_MODELS?: string;
+  /** Administrator bootstrap is process-only. Saved model secrets live in the encrypted configuration vault. */
+  MODEL_ADMIN_ENABLED?: string;
+  /** No longer used (replaced by the site login); read only to warn that it can be removed. */
+  MODEL_ADMIN_TOKEN?: string;
+  MODEL_ADMIN_MASTER_KEY?: string;
+  MODEL_ADMIN_CONFIG_PATH?: string;
+  /** No longer used; read only to warn that it can be removed. */
+  MODEL_ADMIN_PUBLIC_ORIGIN?: string;
+  /** Site login (src/auth). Process environment only, never the .env file or NEXT_PUBLIC_*. */
+  SITE_AUTH_ENABLED?: string;
+  SITE_AUTH_USERNAME?: string;
+  SITE_AUTH_PASSWORD_HASH?: string;
+  SITE_AUTH_PUBLIC_ORIGIN?: string;
 }
 
 /** Provider secrets and endpoints are accepted only from the process environment. */
-const PROCESS_ONLY_KEYS = ["DASHSCOPE_API_KEY", "BAILIAN_BASE_URL", "QWEN_WEB_MODEL"] as const;
+const PROCESS_ONLY_KEYS = [
+  "DASHSCOPE_API_KEY",
+  "BAILIAN_BASE_URL",
+  "QWEN_WEB_MODEL",
+  "TITLE_WRITING_QWEN_MODELS",
+  "OPENAI_API_KEY",
+  "TITLE_WRITING_OPENAI_MODELS",
+  "DEEPSEEK_API_KEY",
+  "TITLE_WRITING_DEEPSEEK_MODELS",
+  "MODEL_ADMIN_ENABLED",
+  "MODEL_ADMIN_TOKEN",
+  "MODEL_ADMIN_MASTER_KEY",
+  "MODEL_ADMIN_CONFIG_PATH",
+  "MODEL_ADMIN_PUBLIC_ORIGIN",
+  "SITE_AUTH_ENABLED",
+  "SITE_AUTH_USERNAME",
+  "SITE_AUTH_PASSWORD_HASH",
+  "SITE_AUTH_PUBLIC_ORIGIN",
+] as const;
 
 const API_KEYS = [
   "NODE_ENV",
@@ -97,6 +145,11 @@ const API_KEYS = [
   "QWEN_WEB_WRITING_ENABLED",
   "QWEN_WEB_OPERATOR_TOKEN",
   "M3_CHARACTER_REFERENCE_GATE",
+  "TITLE_WRITING_ENABLED",
+  "TITLE_WRITING_OPERATOR_TOKEN",
+  "TITLE_WRITING_DEFAULT_PROVIDER",
+  "TITLE_WRITING_MAX_CALLS_PER_DAY",
+  "TITLE_WRITING_MAX_ACTIVE_RUNS",
 ] as const;
 
 function pickEnv(
@@ -143,6 +196,9 @@ export function loadApiEnv(
     const value = processEnv[key];
     if (value !== undefined && value.length > 0) processOnly[key] = value;
   }
+  // The login switch keeps an explicitly empty value: "SITE_AUTH_ENABLED=" is a broken setting, not "unset", and the
+  // site login refuses access for it instead of treating it as switched off. Other variables keep dropping "".
+  if (processEnv.SITE_AUTH_ENABLED === "") processOnly.SITE_AUTH_ENABLED = "";
   return {
     ...parsed.data,
     ...processOnly,
@@ -154,5 +210,6 @@ export function loadApiEnv(
     M4_LOCAL_COMPOSE_ENABLED: parsed.data.M4_LOCAL_COMPOSE_ENABLED === "true",
     M4_LOCAL_EPISODE_COMPOSE_ENABLED: parsed.data.M4_LOCAL_EPISODE_COMPOSE_ENABLED === "true",
     QWEN_WEB_WRITING_ENABLED: parsed.data.QWEN_WEB_WRITING_ENABLED === "true",
+    TITLE_WRITING_ENABLED: parsed.data.TITLE_WRITING_ENABLED === "true",
   };
 }

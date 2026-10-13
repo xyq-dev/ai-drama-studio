@@ -221,7 +221,9 @@ export {
 } from "./attempt-presentation";
 export {
   FRESHNESS_STATUSES,
+  MAX_PRODUCTION_EPISODES,
   PRODUCTION_EPISODE_NUMBERS,
+  productionEpisodeNumbers,
   REVIEW_STATUSES,
   assertProductionEpisodeSet,
   assertReviewTransition,
@@ -230,3 +232,30 @@ export {
   type FreshnessStatus,
   type ReviewStatus,
 } from "./text-chain";
+export {
+  TITLE_WRITING_SYSTEM_PROMPT,
+  buildTitleWritingPrompt,
+  episodeNoOf,
+  formatTitleEpisode,
+  formatTitleStory,
+  screenplayCharTarget,
+  validateTitleWritingOutput,
+  type TitleWritingContext,
+  type TitleWritingPrompt,
+  type TitleWritingSchemaKind,
+  type TitleWritingValidation,
+} from "./title-writing";
+export {
+  SCRIPT_BREAKDOWN_SYSTEM_PROMPT,
+  breakdownDialogueText,
+  breakdownShotPromptText,
+  buildScriptBreakdownPrompt,
+  lineInScript,
+  normalizeForMatch,
+  plannedTotalSeconds,
+  scriptTextOf,
+  shotsOfScene,
+  validateScriptBreakdownOutput,
+  type ScriptBreakdownPrompt,
+  type ScriptBreakdownValidation,
+} from "./script-breakdown";

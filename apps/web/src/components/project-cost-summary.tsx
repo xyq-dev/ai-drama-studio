@@ -72,9 +72,9 @@ export function ProjectCostSummary(props: { projectId: string; client?: StudioCl
   }
 
   return (
-    <section className="mt-3 min-w-0 border-t pt-3" aria-label="已记录成本">
+    <section className="creator-cost-summary mt-3 min-w-0 border-t pt-3" aria-label="已记录成本">
       <button
-        className="rounded border px-3 py-1 text-sm"
+        className="ui-button ui-button-secondary"
         type="button"
         aria-expanded={open}
         onClick={() => {
@@ -105,7 +105,7 @@ export function ProjectCostSummary(props: { projectId: string; client?: StudioCl
                   </li>
                 ))}
               </ul>
-              <button className="mt-2 rounded border px-3 py-1" type="button" onClick={() => void load("refresh")}>刷新已记录成本</button>
+              <button className="ui-button ui-button-secondary mt-2" type="button" onClick={() => void load("refresh")}>刷新已记录成本</button>
             </div>
           ) : null}
         </div>

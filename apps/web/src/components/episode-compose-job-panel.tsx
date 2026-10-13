@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { StudioClient } from "../lib/studio-client";
 import { ApiError } from "../lib/studio-client";
+import { useChangeNotice } from "../lib/use-change-notice";
 
 export interface EpisodeComposeBody {
   compositeAssetIds: string[];
@@ -13,6 +14,10 @@ export interface EpisodeComposeJobPanelProps {
   episodeId: string;
   body: EpisodeComposeBody | null;
   onReviewed?: () => void;
+  /** Called when a compose is accepted, reaches a terminal state, or a composite is reviewed. */
+  onChanged?: () => void;
+  /** A new compose (or a resend of an unconfirmed one) cannot start now; the list, review and downloads stay. */
+  startBlocked?: boolean;
 }
 
 interface JobView {
@@ -95,6 +100,7 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [job, setJob] = useState<JobView | null>(null);
+  const notifyChanged = useChangeNotice(job, props.onChanged);
   const [items, setItems] = useState<CompositeItem[]>([]);
   const [listError, setListError] = useState<string | null>(null);
   const [held, setHeld] = useState<HeldSubmit | null>(null);
@@ -263,6 +269,7 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
   }, [job?.id, job?.state, props.client]);
 
   async function start() {
+    if (props.startBlocked) return;
     const current = held?.identity === identity && held.unresolved ? held : null;
     const body = current?.body ?? props.body;
     if (!body) return;
@@ -288,6 +295,7 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
       readGen.current += 1;
       setHeld({ ...request, unresolved: false });
       setJob({ id: jobId, state: result.body.state ?? "QUEUED", errorMessage: null });
+      notifyChanged();
     } catch (caught) {
       if (epoch.current !== token) return;
       const definite = caught instanceof ApiError && DEFINITE_COMPOSE_REJECTION.has(caught.code);
@@ -426,6 +434,7 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
         reviewedContentHash: result.body.contentHash,
       } : entry));
       props.onReviewed?.();
+      notifyChanged();
     } catch (caught) {
       if (epoch.current !== token || listEpoch.current !== listToken) return;
       setError(caught instanceof ApiError ? caught.detail : "审核没有完成");
@@ -434,8 +443,8 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
 
   const canStart = Boolean(props.body) || Boolean(held?.identity === identity && held.unresolved);
   return (
-    <section className="mt-4 min-w-0" aria-label="集级合成">
-      <button className="rounded bg-neutral-900 px-3 py-2 text-sm text-white disabled:bg-neutral-400" type="button" disabled={!canStart || busy} onClick={() => void start()}>开始多镜合成</button>
+    <section className="creator-episode-results mt-4 min-w-0" aria-label="集级合成">
+      <button className="rounded bg-neutral-900 px-3 py-2 text-sm text-white disabled:bg-neutral-400" type="button" disabled={!canStart || busy || Boolean(props.startBlocked)} onClick={() => void start()}>开始多镜合成</button>
       {job ? <p className="mt-2 text-sm" role="status">多镜合成已受理 {job.state}</p> : null}
       {error ? <p className="mt-2 text-sm" role="alert">{error}</p> : null}
       {listError ? <button className="mt-2 rounded border px-3 py-1 text-sm" type="button" onClick={() => setReload((value) => value + 1)}>重新查询成片</button> : null}
@@ -445,7 +454,7 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
         {items.map((item) => (
           <li
             key={item.assetId}
-            className="min-w-0 rounded border p-2 text-sm"
+            className="creator-composite-card min-w-0 rounded border p-2 text-sm"
             data-composite-id={item.assetId}
             data-asset-status={item.status}
             data-review-status={item.reviewStatus}
@@ -456,7 +465,7 @@ export function EpisodeComposeJobPanel(props: EpisodeComposeJobPanelProps) {
             <ol>
               {(item.segments ?? []).map((segment) => <li key={`${item.assetId}:${segment.position}:${segment.assetId}`}>{segment.position}. {segment.shotId}</li>)}
             </ol>
-            <video className="mt-2 aspect-[9/16] w-full bg-black" controls src={`/api/v1/assets/${item.assetId}/content`} />
+            <video className="creator-composite-player mt-2 aspect-[9/16] w-full bg-black" controls src={`/api/v1/assets/${item.assetId}/content`} />
             {item.status === "ACTIVE" && item.reviewStatus === "APPROVED" ? (
               <div className="mt-2 flex flex-wrap gap-2">
                 <button className="rounded border px-2 py-1" type="button" disabled={pendingDownloads[item.assetId] !== undefined} onClick={() => void download(item, "mp4")}>

@@ -6,12 +6,17 @@ import { AppModule } from "./app.module";
 import { EnvValidationError, loadApiEnv } from "./config/env";
 import { findRepoRoot, readEnvFile } from "./config/env-file";
 import { SafeExceptionFilter } from "./http/safe-exception.filter";
+import { setAdminResponseHeaders } from "./admin/admin-auth";
 
 async function bootstrap(): Promise<void> {
   const root = findRepoRoot(__dirname);
   const env = loadApiEnv(process.env, readEnvFile(join(root, ".env")));
   const app = await NestFactory.create(AppModule.register(env), {
     logger: ["error", "warn", "log"],
+  });
+  app.use("/api/v1/admin", (_request: unknown, response: { setHeader(name: string, value: string): void }, next: () => void) => {
+    setAdminResponseHeaders(response);
+    next();
   });
   // A legal web Qwen writing input is at most 256,000 bytes (QWEN_WRITING_INPUT_MAX_BYTES); the default is 100kb.
   // useBodyParser comes from the Express adapter; its typings need @types/express, which the API does not carry.

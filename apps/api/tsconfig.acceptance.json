@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "skipLibCheck": true
+  },
+  "include": [
+    "src/studio/script-breakdown.acceptance.spec.ts",
+    "src/studio/script-breakdown.media-acceptance.spec.ts"
+  ],
+  "exclude": ["dist"]
+}

@@ -1,0 +1,240 @@
+{
+  "before": {
+    "kind": "visual-only with mock client API; not backend acceptance",
+    "browser": "140.0.7339.186",
+    "results": [
+      {
+        "name": "long-premise",
+        "width": 1440,
+        "route": "/projects/11111111-1111-4111-8111-111111111111?focus=story",
+        "scenario": "ready",
+        "scrollWidth": 36437,
+        "height": 1098,
+        "premiseLength": 4000,
+        "rawPremisePresent": true,
+        "premiseACount": 4000,
+        "summaryBox": {
+          "left": 420,
+          "right": 1416
+        },
+        "summaryOverflowX": "visible",
+        "summaryOverflowY": "visible",
+        "summaryTextOverflow": "clip",
+        "overflowWrap": "normal",
+        "bodyOverflowX": "visible",
+        "textLines": 2,
+        "maxTextRight": 36437,
+        "minTextLeft": 437
+      },
+      {
+        "name": "long-premise",
+        "width": 390,
+        "route": "/projects/11111111-1111-4111-8111-111111111111?focus=story",
+        "scenario": "ready",
+        "scrollWidth": 36033,
+        "height": 1269,
+        "premiseLength": 4000,
+        "rawPremisePresent": true,
+        "premiseACount": 4000,
+        "summaryBox": {
+          "left": 16,
+          "right": 374
+        },
+        "summaryOverflowX": "visible",
+        "summaryOverflowY": "visible",
+        "summaryTextOverflow": "clip",
+        "overflowWrap": "normal",
+        "bodyOverflowX": "visible",
+        "textLines": 2,
+        "maxTextRight": 36033,
+        "minTextLeft": 33
+      }
+    ],
+    "errors": [],
+    "requests": [
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111",
+        "mode": "ready"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/episodes",
+        "mode": "ready"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/stories",
+        "mode": "ready"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/characters",
+        "mode": "ready"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/locations",
+        "mode": "ready"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/workflow-runs",
+        "mode": "ready"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111",
+        "mode": "ready"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/episodes",
+        "mode": "ready"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/stories",
+        "mode": "ready"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/characters",
+        "mode": "ready"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/locations",
+        "mode": "ready"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/workflow-runs",
+        "mode": "ready"
+      }
+    ],
+    "phase": "before",
+    "sourceSha": "de9f8b88760d5945a2c073b5dbe69edfebede937",
+    "nextBuildId": "PwW9cPx3pHjfRprQx1KXl",
+    "fixture": "project.premise = \"A\".repeat(4000); ordinary title; all client API responses mocked",
+    "acceptance": "Observed regression: both widths must overflow before fix; this phase intentionally asserts the defect is present."
+  },
+  "after": {
+    "kind": "visual-only with mock client API; not backend acceptance",
+    "phase": "after",
+    "nextBuildId": "GnfKZDZ1T8PnQEIfV-Kcj",
+    "fixture": "project.premise = A.repeat(4000); ordinary title",
+    "browser": "140.0.7339.186",
+    "results": [
+      {
+        "name": "long-premise",
+        "width": 1440,
+        "route": "/projects/11111111-1111-4111-8111-111111111111?focus=story",
+        "scenario": "ready",
+        "scrollWidth": 1440,
+        "height": 1838,
+        "premiseLength": 4000,
+        "rawPremisePresent": true,
+        "premiseACount": 4000,
+        "summaryBox": {
+          "left": 420,
+          "right": 1416
+        },
+        "summaryOverflowX": "visible",
+        "summaryOverflowY": "visible",
+        "summaryTextOverflow": "clip",
+        "overflowWrap": "anywhere",
+        "bodyOverflowX": "visible",
+        "textLines": 39,
+        "maxTextRight": 1391,
+        "minTextLeft": 437
+      },
+      {
+        "name": "long-premise",
+        "width": 390,
+        "route": "/projects/11111111-1111-4111-8111-111111111111?focus=story",
+        "scenario": "ready",
+        "scrollWidth": 390,
+        "height": 3489,
+        "premiseLength": 4000,
+        "rawPremisePresent": true,
+        "premiseACount": 4000,
+        "summaryBox": {
+          "left": 16,
+          "right": 374
+        },
+        "summaryOverflowX": "visible",
+        "summaryOverflowY": "visible",
+        "summaryTextOverflow": "clip",
+        "overflowWrap": "anywhere",
+        "bodyOverflowX": "visible",
+        "textLines": 113,
+        "maxTextRight": 357,
+        "minTextLeft": 33
+      }
+    ],
+    "errors": [],
+    "requests": [
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111",
+        "mode": "ready"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/episodes",
+        "mode": "ready"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/stories",
+        "mode": "ready"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/characters",
+        "mode": "ready"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/locations",
+        "mode": "ready"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/workflow-runs",
+        "mode": "ready"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111",
+        "mode": "ready"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/episodes",
+        "mode": "ready"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/stories",
+        "mode": "ready"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/characters",
+        "mode": "ready"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/locations",
+        "mode": "ready"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:3187/api/v1/projects/11111111-1111-4111-8111-111111111111/workflow-runs",
+        "mode": "ready"
+      }
+    ]
+  }
+}

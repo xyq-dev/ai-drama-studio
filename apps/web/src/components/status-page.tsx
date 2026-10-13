@@ -1,44 +1,37 @@
 import type { StatusView } from "../lib/load-status";
 
 export function StatusPage({ view }: { view: StatusView }) {
+  const services = [
+    { name: "Web", description: "创作页面", value: view.webStatus },
+    { name: "Core API", description: "作品与创作操作", value: view.apiStatus },
+    { name: "PostgreSQL", description: "作品数据", value: view.postgres },
+    { name: "Redis", description: "任务队列连接", value: view.redis },
+    { name: "MinIO", description: "对象存储连接", value: view.objectStorage },
+  ];
   return (
-    <main className="mx-auto max-w-xl bg-[#0B0E14] px-6 py-10 text-[#F4F6FA]">
-      <h1 className="text-2xl font-semibold">服务状态</h1>
-      <p className="mt-2 text-sm text-[#AAB3C5]">
-        <a className="underline" href="/">返回首页</a>
-        <span> · </span>
-        <a className="underline" href="/studio">创作中心</a>
-      </p>
-      <dl className="mt-6 space-y-3">
+    <main className="creator-page secondary-page">
+      <header className="creator-page-heading secondary-page-heading">
         <div>
-          <dt className="text-sm text-neutral-500">当前环境</dt>
-          <dd>{view.environment}</dd>
+          <p className="secondary-eyebrow">帮助与支持</p>
+          <h1>服务状态</h1>
+          <p className="secondary-description">查看当前连接状态。生成任务的进度请回到作品中查看。</p>
         </div>
-        <div>
-          <dt className="text-sm text-neutral-500">Web</dt>
-          <dd>{view.webStatus}</dd>
-        </div>
-        <div>
-          <dt className="text-sm text-neutral-500">Core API</dt>
-          <dd>{view.apiStatus}</dd>
-        </div>
-        <div>
-          <dt className="text-sm text-neutral-500">PostgreSQL</dt>
-          <dd>{view.postgres}</dd>
-        </div>
-        <div>
-          <dt className="text-sm text-neutral-500">Redis</dt>
-          <dd>{view.redis}</dd>
-        </div>
-        <div>
-          <dt className="text-sm text-neutral-500">MinIO</dt>
-          <dd>{view.objectStorage}</dd>
-        </div>
-        <div>
-          <dt className="text-sm text-neutral-500">最后检查时间</dt>
-          <dd>{view.checkedAt}</dd>
-        </div>
-      </dl>
+        <a className="ui-button ui-button-secondary" href="/studio">我的作品</a>
+      </header>
+      <section className="ui-card secondary-status-card" aria-label="服务检查结果">
+        <div className="secondary-section-heading"><h2>连接检查</h2><a href="/">返回首页</a></div>
+        <dl className="secondary-status-list">
+          <div><dt><span>当前环境</span></dt><dd>{view.environment}</dd></div>
+          {services.map((service) => (
+            <div key={service.name}>
+              <dt><span>{service.name}</span><small>{service.description}</small></dt>
+              <dd>{service.value}</dd>
+            </div>
+          ))}
+          <div><dt><span>最后检查时间</span></dt><dd>{view.checkedAt}</dd></div>
+        </dl>
+      </section>
+      <p className="ui-notice secondary-status-note">这里只显示服务检查结果，不表示素材已生成或作品已完成。</p>
     </main>
   );
 }
