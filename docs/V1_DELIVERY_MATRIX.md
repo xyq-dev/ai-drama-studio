@@ -116,7 +116,7 @@ Migration：无。两份草案未修改、未执行。Paid calls=NO，Deploy=NO�
 | 项 | 实现位置 | 状态 |
 | --- | --- | --- |
 | 选定参考图超出 100 条分页 | `listForCharacter` 页仍为 100（多取 1 条得 `hasMore`）；选定项按选择记录 ID 在工作区/项目/角色/参考图角色内单独读取 | 已修。假客户端单测；真实库草案段用例 2026-10-13 在本机隔离 PostgreSQL 16.4（施加参考图草案的临时测试库）通过；CI 不施加草案、不执行该段 |
-| 「可用于视频」与严格视频门一致 | 领域 `characterReferenceVideoBlockers`，列表与严格门共用；返回 `videoReadiness.blockers`，页面逐条显示；每项 `selectable` 由服务端判定，旧服务端缺该字段时按原页面规则（当前版本、ACTIVE、APPROVED），明确为 false 时不放开 | 已修。领域与组件测试；真实库草案段用例同上，本机隔离库通过 |
+| 「可用于视频」与严格视频门一致 | 领域 `characterReferenceVideoBlockers`，列表与严格门共用；返回 `videoReadiness.blockers`，页面逐条显示，角色当前修订的审核或新鲜度变化（同一修订被通过、退回、失效）时面板重读；每项 `selectable` 由服务端判定，旧服务端缺该字段时按原页面规则（当前版本、ACTIVE、APPROVED），明确为 false 时不放开 | 已修。领域与组件测试；真实库草案段用例同上，本机隔离库通过 |
 | 千问先鉴权再探测存储 | `QwenWebService.decide`：开关、令牌、Provider 先判定，通过后才 `storageReady()` | 已修。无效令牌下探测、预约、维护、transport 次数均为 0 |
 | 千问输入 256,000 字节 | `qwenWritingInputByteLength`（`input` 紧凑 JSON 的 UTF-8 字节）；网页在唯一发送点 `send()` 检查，新请求与恢复的旧请求（重新读取、同一冻结指令重放）同一口径；恢复的超限旧记录无法再读取结果，结算为 `unknown`（不是 `rejected`），不再提供重新读取，新调用仍需确认；API 在维护/预约前 413 `QWEN_WEB_INPUT_TOO_LARGE`；`runQwenWebWriting` 再检查 | 已修。不依赖草案 |
 | 参考图任务可见与完成刷新 | 角色页按 `/generation-jobs/:id` 串行跟踪；受理（202）后回调重读项目任务（`onJobAccepted(projectId)` → `reloadForProject`，即使受理到达前已切换角色或修订也会回调；只在该作品仍是当前显示作品时重读），空闲时也能出现并被跟踪；`lib/project-base.ts` 把 `MEDIA_CHARACTER_REFERENCE` 纳入跟踪但不触发文本或镜头媒体重读，到终态（或首次看到即为终态）时递增 `referenceEpoch`，面板据此重读列表（含别处受理、刷新前已在运行、本页隐藏期间完成的任务）；任务区「角色参考图任务」 | 已修。happy-dom 组件与 hook 测试；`scripts/character-reference-web-stub-check.mjs`：生产构建 + 真实 Chromium + **本地桩 API**（非端到端）1280/390 通过受理刷新、轮询、成功与失败状态、别处受理任务完成后重读列表；真实 API/Worker/数据库的浏览器验收未执行 |
