@@ -659,11 +659,28 @@ describe("a reference run this page did not accept still refreshes the panel whe
     expect(result.current.referenceEpoch).toBe(start.reference + 1);
   });
 
-  it("a run already terminal when first seen does not bump it", async () => {
+  it("a run first seen already terminal bumps it once (Codex review on eaea3dd)", async () => {
     const server: Server = { runs: [referenceRun("SUCCEEDED")], project: [], calls: [] };
     install(server);
     const { result } = renderHook(() => useProjectBase(P1, "失败"));
     await settle();
-    expect(result.current.referenceEpoch).toBe(0);
+    expect(result.current.referenceEpoch).toBe(1);
+    await act(async () => { await result.current.reloadBase(); });
+    expect(result.current.referenceEpoch).toBe(1);
+  });
+
+  it("a job started and finished in another tab while this one was hidden is picked up on return", async () => {
+    const server: Server = { runs: [], project: [], calls: [] };
+    install(server);
+    const { result } = renderHook(() => useProjectBase(P1, "失败"));
+    await settle();
+    setVisibility("hidden");
+    // Meanwhile another tab submits a reference job and it completes; this tab never saw it running.
+    server.runs = [referenceRun("SUCCEEDED")];
+    const before = result.current.referenceEpoch;
+    setVisibility("visible");
+    await settle();
+    expect(result.current.workflows[0]?.status).toBe("SUCCEEDED");
+    expect(result.current.referenceEpoch).toBe(before + 1);
   });
 });

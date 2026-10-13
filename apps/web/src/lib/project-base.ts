@@ -97,7 +97,7 @@ export const MEDIA_WORKFLOW_TYPES = new Set(["MEDIA_IMAGE", "MEDIA_VIDEO", "MEDI
 /**
  * Character reference generation. Shown and followed like other tasks. Reaching a terminal state reloads neither text
  * entities nor shot media; it bumps referenceEpoch so a mounted reference panel re-reads its list, also for a job it
- * did not accept itself (another tab, or a reload while the job ran).
+ * did not accept itself (another tab, a reload while the job ran, or a job that finished while this tab was hidden).
  */
 export const REFERENCE_WORKFLOW_TYPE = "MEDIA_CHARACTER_REFERENCE";
 
@@ -117,7 +117,9 @@ export function noteWorkflowTransitions(
     const terminal = !shouldPoll(run.status, false);
     const becameTerminal = previous !== undefined && shouldPoll(previous, false) && terminal;
     if (run.type === REFERENCE_WORKFLOW_TYPE) {
-      if (becameTerminal) referenceBecameTerminal = true;
+      // Like media: a run first seen already terminal (finished in another tab while this one was hidden or not yet
+      // loaded) counts too, so a mounted panel re-reads. A run is counted once; later reads of it change nothing.
+      if (becameTerminal || (previous === undefined && terminal)) referenceBecameTerminal = true;
       known.set(run.id, run.status);
       continue;
     }
