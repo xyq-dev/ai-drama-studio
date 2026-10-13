@@ -410,6 +410,7 @@ export function Workbench({ projectId }: { projectId: string }) {
               onMore={() => void more(focus.kind === "character" ? "characters" : "locations")}
               onSaved={reloadBase}
               onStatus={setSaveState}
+              referenceEpoch={base.referenceEpoch}
             />
           ) : null}
           {project && (focus.kind === "scene" || focus.kind === "shot") ? (
@@ -1208,6 +1209,8 @@ export function EntityPane(props: {
   onStatus: (value: string) => void;
   /** Open this entity (for example the one a review returned); a new nonce opens it again. */
   focus?: { entityId: string; nonce: number } | null;
+  /** From useProjectBase: changes when a tracked character reference run reaches a terminal state. */
+  referenceEpoch?: number;
 }) {
   const [selected, setSelected] = useState<string | null>(null);
   const editorRef = useRef<HTMLDivElement>(null);
@@ -1335,7 +1338,7 @@ export function EntityPane(props: {
         ) : null}
         {props.kind === "character" && selected && history?.aggregate.entityId === selected && current ? (
           <CharacterReferencePanel projectId={props.project.id} characterId={selected} currentRevisionId={current.id}
-            onJobAccepted={() => void props.onSaved().catch(() => undefined)} />
+            onJobAccepted={() => void props.onSaved().catch(() => undefined)} refreshEpoch={props.referenceEpoch} />
         ) : null}
         <NewEntityForm
           project={props.project}

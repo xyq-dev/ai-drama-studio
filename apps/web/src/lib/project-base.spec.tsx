@@ -624,16 +624,46 @@ describe("a character reference job accepted while nothing runs reaches the task
     await act(async () => { await result.current.reloadBase(); });
     expect(runsReads(server)).toBe(idleReads + 1);
     expect(result.current.workflows.map((run) => run.type)).toEqual([REFERENCE_WORKFLOW_TYPE]);
-    const epochs = { image: result.current.imageEpoch, refresh: result.current.refreshEpoch };
+    const epochs = { image: result.current.imageEpoch, refresh: result.current.refreshEpoch,
+      reference: result.current.referenceEpoch };
     // Followed like other tasks until terminal.
     server.runs = [referenceRun("SUCCEEDED")];
     await advance(POLL_MS);
     expect(result.current.workflows[0]?.status).toBe("SUCCEEDED");
-    // Its own panel rereads the reference list; text entities and shot media are not reloaded for it.
+    // The reference panel is told (referenceEpoch); text entities and shot media are not reloaded for it.
     expect(result.current.imageEpoch).toBe(epochs.image);
     expect(result.current.refreshEpoch).toBe(epochs.refresh);
+    expect(result.current.referenceEpoch).toBe(epochs.reference + 1);
     const reads = server.calls.length;
     await advance(60_000);
     expect(server.calls.length).toBe(reads);
+  });
+});
+
+describe("a reference run this page did not accept still refreshes the panel when it ends (Codex review on 0541b1b)", () => {
+  it("found RUNNING on entry (another tab, or a reload): its terminal state bumps referenceEpoch once", async () => {
+    const server: Server = { runs: [referenceRun("RUNNING")], project: [], calls: [] };
+    install(server);
+    const { result } = renderHook(() => useProjectBase(P1, "失败"));
+    await settle();
+    const start = { reference: result.current.referenceEpoch, image: result.current.imageEpoch, refresh: result.current.refreshEpoch };
+    await advance(POLL_MS);
+    expect(result.current.referenceEpoch).toBe(start.reference);
+    server.runs = [referenceRun("FAILED")];
+    await advance(POLL_MS);
+    expect(result.current.referenceEpoch).toBe(start.reference + 1);
+    expect(result.current.imageEpoch).toBe(start.image);
+    expect(result.current.refreshEpoch).toBe(start.refresh);
+    // Terminal on entry or seen again: no further bumps.
+    await advance(60_000);
+    expect(result.current.referenceEpoch).toBe(start.reference + 1);
+  });
+
+  it("a run already terminal when first seen does not bump it", async () => {
+    const server: Server = { runs: [referenceRun("SUCCEEDED")], project: [], calls: [] };
+    install(server);
+    const { result } = renderHook(() => useProjectBase(P1, "失败"));
+    await settle();
+    expect(result.current.referenceEpoch).toBe(0);
   });
 });

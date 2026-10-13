@@ -292,3 +292,20 @@ describe("selection when an older server leaves selectable out (PR #49 review 2)
     expect(selectButton(A).textContent).toBe("不可选定（需通过且属于当前版本）");
   });
 });
+
+describe("a reference job the panel did not accept (Codex review on 0541b1b)", () => {
+  it("re-reads the list when refreshEpoch changes, and not when it stays the same", async () => {
+    const http = controlledFetch();
+    const view = render(<CharacterReferencePanel projectId={PROJECT} characterId={CHARACTER} currentRevisionId={CURRENT} refreshEpoch={0} />);
+    await answer(await http.list(), listing(CHARACTER, []));
+    view.rerender(<CharacterReferencePanel projectId={PROJECT} characterId={CHARACTER} currentRevisionId={CURRENT} refreshEpoch={0} />);
+    await flush();
+    expect(http.queue).toHaveLength(0);
+    // The project's task poll saw a reference run (accepted elsewhere) reach SUCCEEDED.
+    view.rerender(<CharacterReferencePanel projectId={PROJECT} characterId={CHARACTER} currentRevisionId={CURRENT} refreshEpoch={1} />);
+    await answer(await http.list(), listing(CHARACTER, [asset("55555555-5555-4555-8555-555555555555")]));
+    expect(screen.getByText("55555555")).toBeTruthy();
+    expect(http.queue).toHaveLength(0);
+  });
+});
+

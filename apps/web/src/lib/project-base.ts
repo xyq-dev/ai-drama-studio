@@ -94,7 +94,11 @@ export interface WorkflowRun {
 }
 
 export const MEDIA_WORKFLOW_TYPES = new Set(["MEDIA_IMAGE", "MEDIA_VIDEO", "MEDIA_TTS", "MEDIA_SUBTITLE", "MEDIA_MUSIC"]);
-/** Character reference generation. Shown and followed like other tasks; its own panel re-reads the reference list. */
+/**
+ * Character reference generation. Shown and followed like other tasks. Reaching a terminal state reloads neither text
+ * entities nor shot media; it bumps referenceEpoch so a mounted reference panel re-reads its list, also for a job it
+ * did not accept itself (another tab, or a reload while the job ran).
+ */
 export const REFERENCE_WORKFLOW_TYPE = "MEDIA_CHARACTER_REFERENCE";
 
 export function trackedWorkflow(run: { type: string }): boolean {
@@ -104,25 +108,26 @@ export function trackedWorkflow(run: { type: string }): boolean {
 export function noteWorkflowTransitions(
   runs: readonly WorkflowRun[],
   known: Map<string, string>,
-): { mediaBecameTerminal: boolean; textBecameTerminal: boolean } {
+): { mediaBecameTerminal: boolean; textBecameTerminal: boolean; referenceBecameTerminal: boolean } {
   let mediaBecameTerminal = false;
   let textBecameTerminal = false;
+  let referenceBecameTerminal = false;
   for (const run of runs) {
-    // A reference run refreshes its own panel; it neither reloads text entities nor shot media.
-    if (run.type === REFERENCE_WORKFLOW_TYPE) {
-      known.set(run.id, run.status);
-      continue;
-    }
     const previous = known.get(run.id);
     const terminal = !shouldPoll(run.status, false);
     const becameTerminal = previous !== undefined && shouldPoll(previous, false) && terminal;
+    if (run.type === REFERENCE_WORKFLOW_TYPE) {
+      if (becameTerminal) referenceBecameTerminal = true;
+      known.set(run.id, run.status);
+      continue;
+    }
     const media = MEDIA_WORKFLOW_TYPES.has(run.type);
     const firstTerminalMedia = previous === undefined && media && terminal;
     if ((becameTerminal || firstTerminalMedia) && media) mediaBecameTerminal = true;
     if (becameTerminal && !media) textBecameTerminal = true;
     known.set(run.id, run.status);
   }
-  return { mediaBecameTerminal, textBecameTerminal };
+  return { mediaBecameTerminal, textBecameTerminal, referenceBecameTerminal };
 }
 
 const client = new StudioClient();
@@ -148,6 +153,8 @@ export function useProjectBase(projectId: string, failureText: string) {
   const [error, setError] = useState<string | null>(null);
   const [refreshEpoch, setRefreshEpoch] = useState(0);
   const [imageEpoch, setImageEpoch] = useState(0);
+  /** Bumped when a tracked character reference run reaches a terminal state. */
+  const [referenceEpoch, setReferenceEpoch] = useState(0);
   const baseToken = useRef(0);
   /** True from a project's first request until the current request settles; only then does loading end. */
   const initialPending = useRef(false);
@@ -240,6 +247,7 @@ export function useProjectBase(projectId: string, failureText: string) {
     const transition = applyRuns(runs);
     if (transition.mediaBecameTerminal || transition.composeFinished) setImageEpoch((value) => value + 1);
     if (transition.textBecameTerminal) setRefreshEpoch((value) => value + 1);
+    if (transition.referenceBecameTerminal) setReferenceEpoch((value) => value + 1);
     // The failure run is over (whoever asked for this read), and a newly accepted job may need following although the
     // chain had stopped. A superseded read never gets here, so an old success cannot end a newer failure run.
     succeededRef.current();
@@ -303,6 +311,7 @@ export function useProjectBase(projectId: string, failureText: string) {
       if (stopped || !shouldApplyLoad(request, baseToken.current)) return false;
       const transition = applyRuns(runs);
       if (transition.mediaBecameTerminal || transition.composeFinished) setImageEpoch((value) => value + 1);
+      if (transition.referenceBecameTerminal) setReferenceEpoch((value) => value + 1);
       if (transition.textBecameTerminal) {
         setRefreshEpoch((value) => value + 1);
         void reloadBase().catch(() => undefined);
@@ -394,5 +403,5 @@ export function useProjectBase(projectId: string, failureText: string) {
   }, [projectId]);
 
   return { project, episodes, stories, characters, locations, workflows, allRuns, loading, error, setError, refreshEpoch,
-    imageEpoch, reloadBase, more, keepScopedPages, refreshFailed, refreshPaused, retryNow };
+    imageEpoch, referenceEpoch, reloadBase, more, keepScopedPages, refreshFailed, refreshPaused, retryNow };
 }

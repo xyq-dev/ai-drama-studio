@@ -9,6 +9,8 @@
  * - the task list rereads /workflow-runs right after the acceptance and lists the reference task;
  * - both the panel's job poll and the task poll follow it; SUCCEEDED rereads the reference list and the task shows
  *   成功; a later FAILED job shows its code in the panel and 失败 in the task list; polling stops after terminal states;
+ * - a job accepted elsewhere (another tab) that is RUNNING when the page loads: when it succeeds, the task poll tells
+ *   the panel and the reference list is re-read, although the panel never followed that job itself;
  * - no horizontal overflow.
  *
  * Needs `pnpm build` first. Run: node scripts/character-reference-web-stub-check.mjs
@@ -209,6 +211,30 @@ async function scenario(browser, width) {
   await page.close();
 }
 
+async function externalJob(browser, width) {
+  state.runs = [];
+  state.jobs.clear();
+  state.assets = [];
+  // Accepted in another tab before this page loaded.
+  const id = "dddddddd-dddd-4ddd-8ddd-000000000001";
+  state.jobs.set(id, { id, state: "RUNNING", errorCode: null, createdAt: new Date().toISOString() });
+  state.runs = [...state.jobs.values()].map(run);
+  const page = await browser.newPage({ viewport: { width, height: 900 } });
+  await page.goto(`${webOrigin}/projects/${PROJECT}?focus=character`);
+  await page.getByRole("button", { name: "林" }).click();
+  await page.getByRole("region", { name: "角色参考图" }).waitFor();
+  await page.getByText("还没有参考图").waitFor();
+  const listReads = reads(new RegExp(`/characters/${CHARACTER}/reference-images$`));
+  state.assets = [{ id: "66666666-6666-4666-8666-666666666666", characterRevisionId: REVISION, checksumSha256: HASH,
+    status: "ACTIVE", reviewStatus: "DRAFT", reviewNote: null, rowVersion: 1, createdAt: new Date().toISOString(), selectable: false }];
+  setJob(id, "SUCCEEDED");
+  await page.getByText("66666666", { exact: true }).waitFor();
+  check(reads(new RegExp(`/characters/${CHARACTER}/reference-images$`)) > listReads,
+    `${width}px: a job accepted elsewhere re-reads the reference list when it succeeds`);
+  check(reads(JOBS) === 0, `${width}px: the panel did not follow that job itself (no /generation-jobs reads)`);
+  await page.close();
+}
+
 await new Promise((resolve, reject) => api.once("error", reject).listen(apiPort, "127.0.0.1", resolve));
 let web;
 let browser;
@@ -216,6 +242,11 @@ try {
   web = await startWeb();
   browser = await chromium.launch();
   for (const width of [1280, 390]) await scenario(browser, width);
+  state.log = [];
+  for (const width of [1280, 390]) {
+    state.log = [];
+    await externalJob(browser, width);
+  }
   console.log(`requests the stub could not answer: ${state.unknown.length ? [...new Set(state.unknown)].join(", ") : "none"}`);
   console.log("character reference web stub check passed (stub API, not end-to-end)");
 } finally {

@@ -85,6 +85,11 @@ export function CharacterReferencePanel(props: {
   currentRevisionId: string;
   /** A generation was accepted (202): the task list rereads the project's runs so it can show and follow the job. */
   onJobAccepted?: () => void;
+  /**
+   * Bumped by the project's task poll when a reference run reaches a terminal state. The list is re-read on each change,
+   * so a job this panel did not accept itself (another tab, or a reload while it ran) still shows its result.
+   */
+  refreshEpoch?: number;
 }) {
   const [listing, setListing] = useState<ReferenceListing | null>(null);
   const [unavailable, setUnavailable] = useState(false);
@@ -132,6 +137,14 @@ export function CharacterReferencePanel(props: {
       scope.current += 1;
     };
   }, [load, props.projectId, props.currentRevisionId]);
+
+  // A reference run finished somewhere: re-read the list. The first value is the mount's own read.
+  const seenEpoch = useRef(props.refreshEpoch);
+  useEffect(() => {
+    if (props.refreshEpoch === seenEpoch.current) return;
+    seenEpoch.current = props.refreshEpoch;
+    void load();
+  }, [props.refreshEpoch, load]);
 
   // Follows the accepted generation job: serial reads, stop at a terminal state, pause while hidden.
   const jobId = job?.id ?? null;
