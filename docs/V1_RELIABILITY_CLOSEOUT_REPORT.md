@@ -201,11 +201,15 @@ Migration：**不需要**。没有新增或执行 Migration，`packages/database
 
 ### 浏览器检查（桩 API，非端到端）
 
-新增 `scripts/character-reference-web-stub-check.mjs`：`pnpm build` 的生产构建 + `next start` + 真实 Chromium（Playwright 1.55.1）；`/api/v1` 由同端口的本地桩 HTTP 服务按脚本状态应答（登录关闭），没有 API、Worker 或数据库。1280 与 390 px 均通过：空闲时不轮询；受理（202）后立即重读 `/workflow-runs` 并在任务区列出 QUEUED；RUNNING 时面板任务轮询与任务区轮询都继续；SUCCEEDED 重读参考图列表、任务区显示成功；之后停止轮询；第二次生成 FAILED 时面板显示错误码、任务区显示失败；无横向溢出、无页面错误。去掉 `onJobAccepted` 接线并重新构建后，该脚本在「受理后立即重读」处失败。真实 API/Worker/数据库的浏览器验收本机缺 Redis，未执行。
+新增 `scripts/character-reference-web-stub-check.mjs`：`pnpm build` 的生产构建 + `next start` + 真实 Chromium（Playwright 1.55.1）；`/api/v1` 由同端口的本地桩 HTTP 服务按脚本状态应答（登录关闭），没有 API、Worker 或数据库。1280 与 390 px 均通过（含后来补充的别处受理任务场景）：空闲时不轮询；受理（202）后立即重读 `/workflow-runs` 并在任务区列出 QUEUED；RUNNING 时面板任务轮询与任务区轮询都继续；SUCCEEDED 重读参考图列表、任务区显示成功；之后停止轮询；第二次生成 FAILED 时面板显示错误码、任务区显示失败；无横向溢出、无页面错误。去掉 `onJobAccepted` 接线并重新构建后，该脚本在「受理后立即重读」处失败。真实 API/Worker/数据库的浏览器验收本机缺 Redis，未执行。
 
 ### Codex 对 `ae20cc9` 的新意见
 
 意见：恢复的超限旧记录被 `send()` 拒绝后仍停在 `sending`，页面一直只提供必然失败的「重新读取」，普通请求又被「结果未确定」拦住。核实：成立（勾选确认后「发起新的调用」其实仍可用，但界面与状态误导）。修复：`send()` 拒绝时，对无法再读取结果的记录（`sending`，或无请求 ID 的 `reserved`/`submitted`）结算为 `unknown` 并写回 sessionStorage；不标为 `rejected`，因为上限生效前的页面可能已发出并产生费用。已结算的记录不改。结算后不再显示重新读取，新调用仍需勾选确认、使用新请求标识。两条恢复路径的回归用例补充了这些断言，去掉结算步骤后两例失败。
+
+### Codex 对 `0541b1b` 的新意见
+
+意见：参考图任务若在别的标签页受理，或页面在任务运行中刷新，面板没有本地任务可跟踪；项目任务轮询虽然看到它到终态，但参考图分支刻意不发任何刷新信号，新图要手动刷新才出现。核实：成立，属于第 5 项「完成刷新」的缺口（PR 之前完全没有完成刷新，不是回归）。修复：`noteWorkflowTransitions` 对参考图运行报告 `referenceBecameTerminal`（只在观察到由进行中变为终态时，首次看到即为终态不算）；`useProjectBase` 暴露 `referenceEpoch`；`EntityPane` 把它传给面板的 `refreshEpoch`，变化时重读列表（挂载时的初始值不重复读取）。工作台与新手流程两处挂载都已传入。文本与镜头媒体仍不因参考图任务重读。测试：hook（入口即 RUNNING 的别处任务到 FAILED 时 epoch +1、只 +1；入口即终态不 +1；受理路径 SUCCEEDED 时 +1）、面板（epoch 变化重读、不变不读）、浏览器桩脚本新增「别处受理任务完成后重读列表且面板未跟踪该任务」1280/390。去掉 epoch 递增与面板重读后 3 例失败。
 
 ### M3 lifecycle 失败归因
 
