@@ -108,7 +108,7 @@ Migration：**不需要**。没有新增或执行 Migration，`packages/database
 
 ## CI
 
-见 PR #49 当前 HEAD 的检查。代码提交 `c595aed` 的结果：
+以下是 2026-10-07 旧基线（`2fb19ac`）上代码提交 `c595aed` 的结果，**不代表合入 `main` 之后的代码**；合入后的结论只以 PR #49 当前 HEAD 的检查为准（见下节）：
 
 | 工作流 | 结论 | Run |
 | --- | --- | --- |
@@ -142,3 +142,47 @@ Migration：**不需要**。没有新增或执行 Migration，`packages/database
 3. 有真实 API 与数据库的浏览器验收（生成→跟踪→刷新）待 CI 或授权环境。
 4. `RuntimeReconciler` 内文本链恢复步骤之间仍是顺序且相互可跳过的旧结构，本轮只隔离了媒体与参考图两路，未扩大范围。
 5. Codex 独立 Review 处理意见后再合并。
+
+## 2026-10-13 合入 main 与评审处理
+
+| 项目 | 值 |
+| --- | --- |
+| 起始 HEAD | `89415cd`（与 `origin/fix/v1-reliability-closeout` 一致，无他人后续提交） |
+| 合入 | `origin/main` `65c91af5d7483c2907c8bb54e2fc8f2d6fc35fde`（PR #66 合并），普通 merge，未 rebase |
+| 冲突 | `apps/web/src/components/workbench.tsx`、`docs/V1_DELIVERY_MATRIX.md`，逐段融合，未整文件取一方 |
+
+### 七项在最新 main 上的核验
+
+`2fb19ac..65c91af` 区间内，`main` 对七项涉及的后端文件（`character-reference-store.ts`、`mock-media-cost.ts`、`qwen-web.service.ts`、`qwen-web-writing.ts`、`start-runtime.ts`、`mock-character-reference.ts`、领域与 contracts 中的对应模块）以及 `character-reference-panel.tsx` 均无改动。逐项读 `origin/main` 代码确认缺陷仍在：列表只在 100 条页内 `find` 选定项（1、2）；`decide` 先 `storageReady()` 再判令牌（3）；`QwenWebService.request` 无字节上限（4）；面板无任务跟踪、工作台跟踪类型不含参考图（5）；恢复为两个连续 `await` 且 reconcile `catch(() => undefined)`（6）；`completeGeneration` 无参考图成本身份校验（7）。七项均为「最新主分支仍存在」，修复全部保留，没有已被 `main` 修复或因架构变化失效的项。
+
+架构变化只影响第 5 项的网页挂载点：`main`（PR #50）把工作台的数据加载、任务跟踪与轮询抽到 `apps/web/src/lib/project-base.ts`（`useProjectBase`，工作台与新手流程共用）。合入时 `workbench.tsx` 采用 `main` 的结构，参考图类型 `REFERENCE_WORKFLOW_TYPE`、`trackedWorkflow` 与 `noteWorkflowTransitions` 的参考图分支移到 `project-base.ts`；任务区保留 `main` 新增的合成任务（`MEDIA_COMPOSE`）并加回「角色参考图任务」。新手流程的任务区接收全部任务，因此也会显示参考图任务。
+
+### Codex 评审三条（`89415cd`）
+
+1. **接受参考图任务后未刷新 `/workflow-runs`**：在 `main` 结构下仍成立（空闲时轮询链已停，只有重读项目才会唤醒）。修复：面板新增可选 `onJobAccepted`，仅在 202 受理且作用域未变时调用；`EntityPane` 传入 `props.onSaved`（即 `reloadBase`），重读成功后由 `useProjectBase` 既有的唤醒逻辑跟踪新任务；参考图任务到终态不触发文本或镜头媒体重读。测试：`project-base.spec.tsx`（空闲→受理回调重读→列出并跟踪到 SUCCEEDED→epoch 不变→停止读取）、`character-reference-panel.tracking.spec.tsx`（202 回调一次、409 不回调、切换角色后迟到的 202 不回调）。
+2. **旧版 API 不返回 `selectable` 时全部不可选**：仍成立。修复：`selectable` 为布尔值时以服务端为准（明确 false 不放开）；缺失时回到原页面规则（属于当前版本、ACTIVE、APPROVED）。测试：缺字段时当前版本已通过可选、DRAFT 与旧版本不可选；`selectable: false` 的已通过图仍不可选。
+3. **恢复旧请求绕过 256,000 字节上限**：仍成立（同一冻结指令重放分支与「用原请求标识重新读取」都直接调用 `send`）。修复：检查移入唯一发送点 `send()`，复用 `qwenWritingInputByteLength` / `QWEN_WRITING_INPUT_MAX_BYTES`，与新请求及服务端同一口径；准备阶段的检查保留，超限时仍不生成请求标识。测试：以 sessionStorage 中的 version-1 旧记录（超限输入）分别走两条恢复路径，均提示字节数且不发送。
+
+三条的 5 个行为用例在去掉对应修复后全部失败，恢复修复后通过（本机临时回退验证，未提交）。
+
+### 本轮重点复核（只读，无代码改动）
+
+- 按 ID 读取选定项：作用域为 workspace + 角色所在 project + 角色（经来源修订）+ `reference_role`；project 由按 workspace 查得的角色行给出，不取客户端值。列表 `selectable` 与 `selectInTransaction` 规则一致（修订 CURRENT + `selectedReferenceUsable`）。
+- 参考图成本守卫：只做身份与绑定比较，不因已有 ACTUAL 行拒绝；重复写入仍由 `recordProviderActualCost` / `providerCostMatches` 判定幂等；守卫在任何 INSERT 之前，拒绝时随事务回滚。
+- Worker 恢复：reconcile 只由定时器在 `status.running = true` 之后触发；`reconciling` 防重叠；参考图已绑定请求只 `inspect` 不再 `submit`；终态竞争不上报。
+- 千问：`decide` 先在不访问数据库的情况下判定开关、令牌与 Provider，未授权请求不探测存储、不预约、不维护、不调用 transport；字节上限在维护与预约之前。
+
+### 本机验证（Node 24.21.0，合入后的工作区）
+
+| 命令 | 结果 |
+| --- | --- |
+| `pnpm typecheck` | 14/14 通过 |
+| `pnpm lint` | 9/9 通过 |
+| `pnpm test` | 全部通过：contracts 42、domain 135、database 94、providers 160、api 220（43 跳过，需数据库的既有跳过）、worker 79、web 590、health 7、comfyui-adapter 4 |
+| 定向：本轮新增评审回归、`character-reference-cost` / `listing`、`recovery-modules`、`start-runtime-media`、`mock-character-reference`、`qwen-web.service`、`qwen-web-writing` | 通过（包含在上行） |
+
+**未在本机执行**：`character-reference-store.integration.spec.ts` 等真实 PostgreSQL 集成（本机无 Docker/PostgreSQL，以 CI 的隔离库结果为准）；参考图与千问草案段（未授权，未执行）；Chromium 路由桩验收未在合入后重跑；真实 API + 数据库的浏览器端到端。
+
+### Migration
+
+不需要。`packages/database/prisma` 与 `origin/main` 无差异，本轮未编写或执行 Migration。
