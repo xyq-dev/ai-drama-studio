@@ -1200,7 +1200,7 @@ function ContentEditor(props: {
   );
 }
 
-export function EntityPane(props: {
+interface EntityPaneProps {
   project: ProjectRecord;
   kind: "character" | "location";
   page: PageState<Aggregate> | null;
@@ -1214,7 +1214,18 @@ export function EntityPane(props: {
   referenceEpoch?: number;
   /** From useProjectBase (reloadForProject): a reference generation was accepted in this project. */
   onReferenceAccepted?: (projectId: string) => void;
-}) {
+}
+
+/**
+ * The selection, history and editor of one project's characters or locations. Another project or kind is another
+ * scope: it starts from a fresh state in the same render, so nothing of the previous scope is shown and no effect
+ * clears a choice made after mount.
+ */
+export function EntityPane(props: EntityPaneProps) {
+  return <EntityScope key={`${props.project.id}:${props.kind}`} {...props} />;
+}
+
+function EntityScope(props: EntityPaneProps) {
   const [selected, setSelected] = useState<string | null>(null);
   const editorRef = useRef<HTMLDivElement>(null);
   const focusPending = useRef(false);
@@ -1234,10 +1245,6 @@ export function EntityPane(props: {
   });
   const usableSource = sources.find((source) => source.usable) ?? null;
 
-  useEffect(() => {
-    setSelected(null);
-  }, [props.kind, props.project.id]);
-
   const focusEntityId = props.focus?.entityId ?? null;
   const focusNonce = props.focus?.nonce ?? 0;
   useEffect(() => {
@@ -1249,7 +1256,7 @@ export function EntityPane(props: {
   useEffect(() => {
     setHistory(null);
     setHistoryError(null);
-  }, [props.kind, props.project.id, selected]);
+  }, [selected]);
 
   useEffect(() => {
     if (!selected) return;
