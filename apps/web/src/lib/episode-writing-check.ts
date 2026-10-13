@@ -9,7 +9,8 @@ import type { EpisodeOutline, EpisodeOutlineEpisode, TitleConcept } from "@ai-dr
  * - manual: a question only a person can judge (protagonist agency, payoff, cause, escalation, and textual hints such
  *   as an opening and result written identically or a goal repeated from the previous episode), shown with the field
  *   text it should be judged on;
- * - undetermined: the fields that would answer it are not there to read.
+ * - undetermined: the fields that would answer it are not there to read (empty or a placeholder). A question is only
+ *   manual when it has written text to judge.
  * Complete fields do not mean a good story.
  */
 export type EpisodeWritingFindingKind = "missing" | "manual" | "undetermined";
@@ -125,9 +126,11 @@ function storyFindings(concept: TitleConcept | null): EpisodeWritingFinding[] {
       evidence: quoted("故事策划 opposition（阻力）", concept.opposition), why: "没有明确的阻力，冲突只能靠误会或巧合维持。",
       suggestion: "写清阻止者是谁、为了保住什么利益，例如“副总怕账目暴露，抢先把责任推给主角”。" });
   }
-  findings.push({ id: "story:manual:promise", episodeNo: null, kind: "manual", question: "整部期待是否明确：观众希望主角最终得到什么？",
-    evidence: quoted("故事策划 direction（故事走向）", concept.direction), why: "整部期待决定观众为什么一路看下去，各集回报都应朝它推进。",
-    suggestion: "在故事走向开头用一句话写明，例如“观众期待她当众洗清污名，并决定是否原谅家人”。" });
+  const promise = { question: "整部期待是否明确：观众希望主角最终得到什么？", evidence: quoted("故事策划 direction（故事走向）", concept.direction),
+    suggestion: "在故事走向开头用一句话写明，例如“观众期待她当众洗清污名，并决定是否原谅家人”。" };
+  findings.push(blankOrPlaceholder(concept.direction)
+    ? { id: "story:undetermined:promise", episodeNo: null, kind: "undetermined", ...promise, why: "故事走向是空的或只是占位文字，无法核对整部期待。" }
+    : { id: "story:manual:promise", episodeNo: null, kind: "manual", ...promise, why: "整部期待决定观众为什么一路看下去，各集回报都应朝它推进。" });
   return findings;
 }
 
@@ -151,8 +154,14 @@ function episodeFindings(episode: EpisodeOutlineEpisode, previous: EpisodeOutlin
       evidence: `${field(episode, "entryState")}；${field(episode, "turn")}`, why: "能写阻力的两处都是空的，无法核对。",
       suggestion: "在进入状态里写明本集的阻止者和他的利益。" });
   } else {
+    // The evidence is what the judgment reads: the written opening, the written turn and the story's opposition.
+    const read = [
+      ...(blank("entryState") ? [] : [field(episode, "entryState")]),
+      ...(blank("turn") ? [] : [field(episode, "turn")]),
+      ...(concept && !blankOrPlaceholder(concept.opposition) ? [`整部阻力：“${excerpt(concept.opposition)}”`] : []),
+    ];
     findings.push({ id: `${String(no)}:manual:obstacle`, episodeNo: no, kind: "manual", question: "本集谁出于什么利益阻止主角？",
-      evidence: `${field(episode, "entryState")}${concept && !blankOrPlaceholder(concept.opposition) ? `；整部阻力：“${excerpt(concept.opposition)}”` : ""}`,
+      evidence: read.join("；"),
       why: "阻止者的利益越具体，冲突越可信；只有“被刁难”而没有原因时，冲突容易变成重复羞辱。",
       suggestion: "如果读不出阻止者和他的利益，在进入状态里补一句，例如“表姐怕遗嘱公开后失去房子，抢先藏起钥匙”。" });
   }
@@ -179,9 +188,13 @@ function episodeFindings(episode: EpisodeOutlineEpisode, previous: EpisodeOutlin
       evidence: `${field(previous, "goal")}；${field(episode, "goal")}（两集目标文字相同）`,
       why: "为凑集数重复同一冲突，会让观众觉得剧情原地踏步。", suggestion: "让本集目标推进一步，或者提高代价、缩短时间、加大选择难度。" });
   } else if (previous) {
-    findings.push({ id: `${String(no)}:manual:escalation`, episodeNo: no, kind: "manual", question: "相比上一集，冲突是否升级？",
-      evidence: `${field(previous, "turn")}；${field(episode, "turn")}`, why: "冲突不升级时，后面的集数容易重复前面的套路。",
-      suggestion: "核对本集是否增加了代价、缩短了时间或提高了选择难度；没有时补其中一项。" });
+    // Escalation compares the two turns: without both there is nothing to compare.
+    const comparable = !blank("turn") && !blankOrPlaceholder(previous.turn);
+    findings.push({ id: `${String(no)}:${comparable ? "manual" : "undetermined"}:escalation`, episodeNo: no, kind: comparable ? "manual" : "undetermined",
+      question: "相比上一集，冲突是否升级？", evidence: `${field(previous, "turn")}；${field(episode, "turn")}`,
+      why: comparable ? "冲突不升级时，后面的集数容易重复前面的套路。" : "两集的转折没有都写出来，无法比较冲突是否升级。",
+      suggestion: comparable ? "核对本集是否增加了代价、缩短了时间或提高了选择难度；没有时补其中一项。"
+        : "在两集的转折里写明各自的代价或压力，再比较是否升级。" });
   }
   if (!blank("handoff")) {
     findings.push(isLast

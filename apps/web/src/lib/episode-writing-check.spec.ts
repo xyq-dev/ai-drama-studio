@@ -81,6 +81,20 @@ describe("what cannot be read is not judged", () => {
     expect(of(findings, "undetermined").map((item) => item.id)).toEqual(["1:undetermined:obstacle", "1:undetermined:information"]);
   });
 
+  it("a placeholder story direction leaves the emotional promise undetermined, not a question for a person", () => {
+    const story = checkEpisodePlan({ ...concept, direction: "待定" }, outline([complete(1)]), 1).groups[0]!;
+    expect(story.findings.map((item) => [item.id, item.kind])).toEqual([["story:undetermined:promise", "undetermined"]]);
+    expect(story.findings[0]!.evidence).toBe("故事策划 direction（故事走向）：“待定”");
+  });
+
+  it("adjacent episodes with different goals and placeholder turns leave the escalation undetermined", () => {
+    const findings = flat(checkEpisodePlan(concept, outline([{ ...complete(1), turn: "…" }, { ...complete(2), turn: "…" }]), 2));
+    expect(findings.some((item) => item.id === "2:manual:escalation")).toBe(false);
+    const escalation = findings.find((item) => item.id === "2:undetermined:escalation")!;
+    expect(escalation.kind).toBe("undetermined");
+    expect(escalation.evidence).toBe("第 1 集 turn（转折）：“…”；第 2 集 turn（转折）：“…”");
+  });
+
   it("findings are only missing, manual or undetermined; there is no pass state and no score", () => {
     const check = checkEpisodePlan(concept, outline([1, 2].map(complete)), 2);
     expect(new Set(flat(check).map((item) => item.kind))).toEqual(new Set(["manual"]));
@@ -96,6 +110,23 @@ describe("semantic hints stay human questions", () => {
     expect(repeat.kind).toBe("manual");
     expect(repeat.evidence).toContain("第 1 集 goal");
     expect(repeat.evidence).toContain("第 2 集 goal");
+  });
+
+  it("with valid turns on both sides the escalation stays a question for a person", () => {
+    const findings = flat(checkEpisodePlan(concept, outline([1, 2].map(complete)), 2));
+    expect(findings.find((item) => item.id === "2:manual:escalation")?.evidence).toBe("第 1 集 turn（转折）：“转折1”；第 2 集 turn（转折）：“转折2”");
+  });
+
+  it("an obstacle read from the turn cites that turn, with the episode, field and text", () => {
+    const placeholderStory = { ...concept, opposition: "待定" };
+    const episode = { ...complete(2), entryState: "待定", turn: "房东突然收回钥匙，要求林夏当天搬走" };
+    const obstacle = flat(checkEpisodePlan(placeholderStory, outline([complete(1), episode]), 2)).find((item) => item.id === "2:manual:obstacle")!;
+    expect(obstacle.kind).toBe("manual");
+    expect(obstacle.evidence).toContain("第 2 集 turn（转折）：“房东突然收回钥匙，要求林夏当天搬走”");
+    expect(obstacle.evidence).not.toContain("整部阻力");
+    // Valid evidence is kept: a written opening and the story's opposition stay next to the turn.
+    const full = flat(checkEpisodePlan(concept, outline([complete(1)]), 1)).find((item) => item.id === "1:manual:obstacle")!;
+    expect(full.evidence).toBe("第 1 集 entryState（进入状态）：“开场局面1，表姐拦着”；第 1 集 turn（转折）：“转折1”；整部阻力：“表姐想独占面馆，抢先改了租约”");
   });
 });
 
