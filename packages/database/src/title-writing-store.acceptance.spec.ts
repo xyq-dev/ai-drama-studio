@@ -15,6 +15,11 @@ import {
   EPISODE_DRAFT_SCHEMA,
   EPISODE_OUTLINE_SCHEMA,
   TITLE_CONCEPT_SCHEMA,
+  TITLE_WRITING_INPUT_SCHEMA_V2,
+  TITLE_WRITING_PROMPT_VERSION,
+  TITLE_WRITING_PROMPT_VERSION_V2,
+  TITLE_WRITING_PROMPT_VERSION_V3,
+  TITLE_WRITING_PROMPT_VERSION_V4,
   TITLE_WRITING_CANCELED_BEFORE_SEND,
   type TitleCallFinish,
   type TitleCallRecord,
@@ -479,11 +484,15 @@ describe("R2: resume confirmation and idempotency", () => {
 });
 
 describe("R7: scripts go into episodes only after the person approved this run's story", () => {
-  it("refuses before approval, then writes all three once; a replay adds no version", async () => {
+  it.each([TITLE_WRITING_PROMPT_VERSION, TITLE_WRITING_PROMPT_VERSION_V2, TITLE_WRITING_PROMPT_VERSION_V3, TITLE_WRITING_PROMPT_VERSION_V4])("%s refuses before approval, then writes all three once with frozen headings; a replay adds no version", async (promptVersion) => {
     await stopRunning();
     const ws = await newWorkspace("place");
     const project = await newProject(ws, "place");
     const record = run(ws, project, "place");
+    if (promptVersion !== TITLE_WRITING_PROMPT_VERSION) {
+      record.input = { schema: TITLE_WRITING_INPUT_SCHEMA_V2, promptVersion, title: "剧名",
+        settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey: "qwen", model: "q-1" };
+    }
     await store.createRun(record, { maxActiveRuns: 5 });
     await completeRun(record);
     expect((await store.placeScripts(ws, project, record.id, { acceptStoryChanged: false }, "editor", now())).kind).toBe("story_not_approved");
@@ -498,6 +507,12 @@ describe("R7: scripts go into episodes only after the person approved this run's
     expect(scripts.rows.every((row) => row.source_story_revision_id === approved && row.review_status === "DRAFT")).toBe(true);
     expect((await store.placeScripts(ws, project, record.id, { acceptStoryChanged: false }, "editor", now())).kind).toBe("ok");
     expect(await scriptCount(project)).toBe(3);
+    const saved = await pool.query<{ episode_no: number; content_json: { text: string } }>(
+      "SELECT e.episode_no, s.content_json FROM script_revision s JOIN episode e ON e.id = s.episode_id WHERE s.project_id = $1 ORDER BY e.episode_no", [project]);
+    for (const row of saved.rows) {
+      const heading = promptVersion === TITLE_WRITING_PROMPT_VERSION_V4 && row.episode_no === 3 ? "本集结局事实" : "下一集需要继承的事实";
+      expect(row.content_json.text).toContain(`\n${heading}\n- `);
+    }
   });
 
   it("an episode that already has a script is a conflict and is not overwritten; the others are written", async () => {

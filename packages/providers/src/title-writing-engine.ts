@@ -251,9 +251,9 @@ export function storyTextOf(bundle: TitleRunBundle): string | null {
   }
 }
 
-function stepText(step: TitleStepRecord): string | null {
+function stepText(step: TitleStepRecord, input: TitleWritingFrozenInput): string | null {
   if (step.state !== "completed" || !step.output) return null;
-  if (episodeNoOf(step.stepKey) !== null) return formatTitleEpisode(step.output as EpisodeDraftCandidate);
+  if (episodeNoOf(step.stepKey) !== null) return formatTitleEpisode(step.output as EpisodeDraftCandidate, input);
   return null;
 }
 
@@ -287,7 +287,7 @@ export function titleRunView(bundle: TitleRunBundle): TitleWritingRunView {
       errorCode: step.errorCode,
       // A title run never has a breakdown step, so its outputs are title outputs.
       output: step.state === "completed" ? step.output as TitleWritingStepView["output"] : null,
-      text: stepText(step),
+      text: stepText(step, input),
       scriptSave: step.scriptSave,
       scriptRevisionId: step.scriptRevisionId,
     })),
@@ -905,7 +905,7 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
         continue;
       }
       const id = randomUUID();
-      episode.scripts.push({ id, text: formatTitleEpisode(step.output as EpisodeDraftCandidate), sourceStoryId: approved });
+      episode.scripts.push({ id, text: formatTitleEpisode(step.output as EpisodeDraftCandidate, run.input as TitleWritingFrozenInput), sourceStoryId: approved });
       episode.currentScriptId = id;
       Object.assign(step, { scriptSave: "saved", scriptRevisionId: id, updatedAt: nowIso });
     }

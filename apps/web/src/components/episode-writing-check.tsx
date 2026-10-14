@@ -11,7 +11,7 @@ export function outlineEpisodeAnchor(episodeNo: number): string {
 }
 
 /**
- * The "编剧检查" entry of an episode plan. It only reads the concept and outline already on the page: it sends no
+ * The "编剧检查" entry of an episode plan. It only reads the loaded concept and outline: it sends no
  * request, calls no model and changes no content. Results are grouped by episode and never add up to a score.
  */
 export function EpisodeWritingCheck({ concept, outline, episodeCount }: {
@@ -31,7 +31,7 @@ export function EpisodeWritingCheck({ concept, outline, episodeCount }: {
       {open && result ? (
         <div id={panelId} className={styles.checkPanel}>
           <p className={styles.helper}>
-            只读取上面的故事策划和分集大纲字段，不调用模型、不产生费用，也不修改内容。字段齐全不代表故事质量合格，结果也不预测播放效果。
+            只读取本次创作已加载的故事策划和分集大纲数据，包括页面未逐项展示的主角目标和阻力，不调用模型、不产生费用，也不修改内容。字段齐全不代表故事质量合格，结果也不预测播放效果。
           </p>
           <p className={styles.checkCounts} role="status">
             {EPISODE_WRITING_KIND_LABELS.missing} {result.counts.missing} 项 · {EPISODE_WRITING_KIND_LABELS.manual} {result.counts.manual} 项 ·{" "}

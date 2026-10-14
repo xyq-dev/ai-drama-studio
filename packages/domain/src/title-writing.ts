@@ -415,6 +415,8 @@ export function formatTitleStory(title: string, concept: TitleConcept, outline: 
   return text;
 }
 
-export function formatTitleEpisode(draft: EpisodeDraftCandidate): string {
-  return formatEpisodeDraft(draft);
+export function formatTitleEpisode(draft: EpisodeDraftCandidate, input: TitleWritingFrozenInput): string {
+  const finale = input.promptVersion === TITLE_WRITING_PROMPT_VERSION_V4
+    && draft.episodeNo === titleWritingEpisodeCount(input);
+  return formatEpisodeDraft(draft, finale ? "本集结局事实" : "下一集需要继承的事实");
 }

@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { EpisodeOutline, TitleConcept, TitleWritingRunView, TitleWritingStepView } from "@ai-drama/contracts";
 import { TitleWritingClient } from "../lib/title-writing-client";
+import { EpisodeWritingGuidance } from "./episode-writing-guidance";
 import { TitleWritingRun } from "./title-writing-run";
 
 const P1 = "22222222-2222-4222-8222-222222222222";
@@ -61,6 +62,8 @@ describe("编剧检查 on the episode plan of a run", () => {
     expect(screen.queryByText(/待人工判断 \d+ 项/)).toBeNull();
 
     fireEvent.click(button);
+    expect(screen.getByText(/包括页面未逐项展示的主角目标和阻力/)).toBeTruthy();
+    expect(screen.queryByText(/只读取上面的/)).toBeNull();
     expect(screen.getByRole("button", { name: "收起编剧检查" }).getAttribute("aria-expanded")).toBe("true");
     expect(screen.getByText(/明确缺项 0 项 · 待人工判断 \d+ 项 · 当前无法判断 0 项/)).toBeTruthy();
     expect(screen.getByText("没有发现明确缺项，这不代表故事合格。待人工判断的项仍需要你判断。")).toBeTruthy();
@@ -112,4 +115,12 @@ describe("编剧检查 on the episode plan of a run", () => {
     await waitFor(() => expect(screen.getByRole("heading", { name: "故事策划" })).toBeTruthy());
     expect(screen.queryByRole("button", { name: "编剧检查" })).toBeNull();
   });
+});
+
+
+it("qualifies next-episode advice and explains closure on the shared guidance panel", () => {
+  render(<EpisodeWritingGuidance defaultOpen />);
+  expect(screen.getByText(/非最后一集解决一部分问题/)).toBeTruthy();
+  expect(screen.getByText(/单集作品或最后一集应收束主线、回应整部期待，不再新留悬念/)).toBeTruthy();
+  expect(screen.getByText(/终集：凭录音洗清冤屈/)).toBeTruthy();
 });

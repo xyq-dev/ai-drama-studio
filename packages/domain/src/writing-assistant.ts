@@ -329,7 +329,7 @@ export function formatStoryPlan(plan: StoryPlanCandidate): string {
   return assertFormatted(lines.join("\n").trimEnd());
 }
 
-export function formatEpisodeDraft(draft: EpisodeDraftCandidate): string {
+export function formatEpisodeDraft(draft: EpisodeDraftCandidate, handoffHeading: "下一集需要继承的事实" | "本集结局事实" = "下一集需要继承的事实"): string {
   const lines = [
     `第 ${draft.episodeNo} 集 ${draft.title}`,
     "",
@@ -346,7 +346,7 @@ export function formatEpisodeDraft(draft: EpisodeDraftCandidate): string {
       "",
     );
   }
-  lines.push("下一集需要继承的事实");
+  lines.push(handoffHeading);
   for (const fact of draft.handoffFacts) lines.push(`- ${fact}`);
   return assertFormatted(lines.join("\n").trimEnd());
 }

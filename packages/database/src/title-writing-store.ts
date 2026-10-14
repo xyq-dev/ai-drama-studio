@@ -659,7 +659,7 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
           projectId,
           episodeId: String(episode.id),
           sourceStoryRevisionId: approved,
-          content: { text: formatTitleEpisode(step.output as EpisodeDraftCandidate) },
+          content: { text: formatTitleEpisode(step.output as EpisodeDraftCandidate, run.input as TitleWritingFrozenInput) },
           createdBy: actorId,
           expectedVersion: Number(episode.row_version),
           traceId: `title-writing:${runId}`,

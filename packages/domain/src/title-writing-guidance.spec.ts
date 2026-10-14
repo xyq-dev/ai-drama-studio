@@ -14,7 +14,7 @@ import {
   titleWritingJsonSchemas,
   type TitleWritingFrozenInput,
 } from "@ai-drama/contracts";
-import { buildTitleWritingPrompt, validateTitleWritingOutput } from "./title-writing";
+import { buildTitleWritingPrompt, formatTitleEpisode, validateTitleWritingOutput } from "./title-writing";
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 type V2Prompt = typeof TITLE_WRITING_PROMPT_VERSION_V2 | typeof TITLE_WRITING_PROMPT_VERSION_V3 | typeof TITLE_WRITING_PROMPT_VERSION_V4;
@@ -217,5 +217,35 @@ describe("prompt v4 words the episode ending by position", () => {
     expect(validateTitleWritingOutput("episode:1", JSON.stringify(episode(1)), v4).ok).toBe(true);
     expect(validateTitleWritingOutput("episode:1", JSON.stringify({ ...episode(1), handoffFacts: [] }), v4).ok).toBe(false);
     expect(validateTitleWritingOutput("outline", JSON.stringify(outline(1)), v4).ok).toBe(true);
+  });
+});
+
+
+describe("episode formatting respects frozen prompt semantics", () => {
+  const oldText = (n: number) => `第 ${n} 集 t\n\ns\n\n场景\nh\n动作：a\n对白：无\n声音：无\n\n下一集需要继承的事实\n- f`;
+
+  it.each([TITLE_WRITING_PROMPT_VERSION_V2, TITLE_WRITING_PROMPT_VERSION_V3])("keeps %s text byte-identical for every position", (version) => {
+    for (let count = 1; count <= 6; count++) {
+      for (let n = 1; n <= count; n++) expect(formatTitleEpisode(episode(n), input(version, count))).toBe(oldText(n));
+    }
+  });
+
+  it("keeps v1 text byte-identical", () => {
+    const frozen: TitleWritingFrozenInput = { ...input(TITLE_WRITING_PROMPT_VERSION_V2),
+      schema: TITLE_WRITING_INPUT_SCHEMA, promptVersion: TITLE_WRITING_PROMPT_VERSION,
+      settings: { episodeCount: 3, episodeSeconds: 90, style: "" } };
+    for (const n of [1, 2, 3]) expect(formatTitleEpisode(episode(n), frozen)).toBe(oldText(n));
+  });
+
+  it("labels only v4 finales as closure without rewriting the creator's content", () => {
+    for (let count = 1; count <= 6; count++) {
+      for (let n = 1; n <= count; n++) {
+        const draft = { ...episode(n), screenplay: "原文提到下一集需要继承的事实", handoffFacts: ["下一集需要继承的事实是原文"] };
+        const text = formatTitleEpisode(draft, input(TITLE_WRITING_PROMPT_VERSION_V4, count));
+        expect(text).toContain(n === count ? "\n本集结局事实\n- " : "\n下一集需要继承的事实\n- ");
+        expect(text).toContain(draft.screenplay);
+        expect(text).toContain(`- ${draft.handoffFacts[0]}`);
+      }
+    }
   });
 });

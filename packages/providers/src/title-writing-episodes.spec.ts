@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { TITLE_WRITING_INPUT_SCHEMA_V2, type TitleWritingProviderKey } from "@ai-drama/contracts";
+import { TITLE_WRITING_INPUT_SCHEMA_V2, TITLE_WRITING_PROMPT_VERSION_V2, TITLE_WRITING_PROMPT_VERSION_V3, TITLE_WRITING_PROMPT_VERSION_V4, type TitleWritingProviderKey } from "@ai-drama/contracts";
 import { titleWritingProviderConfigs, type WritingProviderConfig, type WritingTransport } from "./text-writing";
 import { InMemoryTitleWritingStore, TitleWritingEngine, initialSteps, newTitleRun, titleRunView } from "./title-writing-engine";
 import { fixtureChatTransport, type FixtureExchange } from "./title-writing-fixtures";
@@ -64,5 +64,31 @@ describe("v2 runs in the engine", () => {
     now += 5000;
     await engine.maintain();
     expect(seen).toHaveLength(6);
+  });
+});
+
+
+describe("frozen episode semantics reach both the view and saved scripts", () => {
+  it.each([TITLE_WRITING_PROMPT_VERSION_V2, TITLE_WRITING_PROMPT_VERSION_V3, TITLE_WRITING_PROMPT_VERSION_V4])("formats %s consistently", async (promptVersion) => {
+    for (const count of [1, 3]) {
+      const store = new InMemoryTitleWritingStore();
+      store.addProject(WS, P1, count);
+      const record = v2Run(count, new Date());
+      record.input = { ...record.input, schema: TITLE_WRITING_INPUT_SCHEMA_V2, promptVersion,
+        title: TITLE, settings: { episodeCount: count, episodeSeconds: 60, style: "" }, providerKey: "qwen", model: "q-1" };
+      await store.createRun(record, { maxActiveRuns: 1 });
+      const engine = new TitleWritingEngine({ workspaceId: WS, store, providers: providers(), transport: fixtureChatTransport(TITLE), maxCallsPerDay: 30 });
+      await engine.drive(record.id);
+      const view = titleRunView((await store.getRunById(WS, record.id))!);
+      expect(view.state).toBe("completed");
+      store.approveCurrentStory(P1);
+      expect((await store.placeScripts(WS, P1, record.id, { acceptStoryChanged: false }, "a", new Date().toISOString())).kind).toBe("ok");
+      for (let n = 1; n <= count; n++) {
+        const text = view.steps.find((step) => step.stepKey === `episode:${n}`)!.text;
+        const heading = promptVersion === TITLE_WRITING_PROMPT_VERSION_V4 && n === count ? "本集结局事实" : "下一集需要继承的事实";
+        expect(text).toContain(`\n${heading}\n- `);
+        expect(store.projects.get(P1)!.episodes.get(n)!.scripts[0]!.text).toBe(text);
+      }
+    }
   });
 });
