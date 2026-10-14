@@ -2,13 +2,14 @@ import { randomBytes } from "node:crypto";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createPostgresPool, PostgresTitleWritingStore, RuntimeStore, TITLE_WRITING_TABLES, type PostgresPool,
 } from "@ai-drama/database";
 import type { TitleWritingOptionsView } from "@ai-drama/contracts";
 import { loadApiEnv, type ApiEnv } from "../config/env";
 import { StudioRuntime } from "../studio/studio.runtime";
+import { hashPassword } from "../auth/password-hash";
 
 vi.mock("@ai-drama/database", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@ai-drama/database")>();
@@ -45,6 +46,11 @@ describe.skipIf(process.platform === "win32")("StudioRuntime managed model start
   let metadataFailure: Error | undefined;
   let queryFailure: Error | undefined;
   let outbound: ReturnType<typeof vi.fn>;
+  let passwordHash = "";
+
+  beforeAll(async () => {
+    passwordHash = await hashPassword("test-only-production-site-password", { log2N: 15, r: 8, p: 1, saltBytes: 16, keyBytes: 32 });
+  });
 
   beforeEach(() => {
     running = false;
@@ -179,6 +185,21 @@ describe.skipIf(process.platform === "win32")("StudioRuntime managed model start
       enabled: false, code: "TITLE_WRITING_DISABLED", defaultProvider: "openai", maxCallsPerDay: 8, maxActiveRuns: 2,
     });
   });
+
+  it.each([
+    [true, "true", "true", true, false],
+    [false, "true", "true", false, true],
+    [true, "false", "true", false, true],
+    [true, "true", "false", false, false],
+  ] as const)("projects actual production authorization in the model console (%s, %s, %s)",
+    async (allowProduction, siteLogin, enabledSwitch, enabled, productionBlocked) => {
+      const env = await environment();
+      const runtime = await open({ ...env, NODE_ENV: "production", TITLE_WRITING_ALLOW_PRODUCTION: allowProduction,
+        TITLE_WRITING_ENABLED: enabledSwitch === "true", SITE_AUTH_ENABLED: siteLogin, SITE_AUTH_PASSWORD_HASH: passwordHash,
+        SITE_AUTH_PUBLIC_ORIGIN: "https://drama.example.test" });
+      expect(await options(runtime)).toMatchObject({ enabled, code: enabled ? "TITLE_WRITING_READY" : "TITLE_WRITING_DISABLED" });
+      expect((await runtime.adminModels!.view()).titleWriting).toEqual({ enabled, productionBlocked, operatorConfigured: true });
+    });
 
   it("leaves legacy environment configuration unchanged when admin bootstrap is absent", async () => {
     const runtime = await open(loadApiEnv(BASE));
