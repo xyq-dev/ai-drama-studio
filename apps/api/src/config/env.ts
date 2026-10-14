@@ -30,6 +30,7 @@ const apiEnvSchema = z.object({
   TITLE_WRITING_DEFAULT_PROVIDER: z.enum(["qwen", "openai", "deepseek"]).optional(),
   TITLE_WRITING_MAX_CALLS_PER_DAY: z.coerce.number().int().min(1).max(500).default(30),
   TITLE_WRITING_MAX_ACTIVE_RUNS: z.coerce.number().int().min(1).max(10).default(1),
+  TITLE_WRITING_ALLOW_PRODUCTION: z.enum(["true", "false"]).default("false"),
 });
 
 export class EnvValidationError extends Error {
@@ -72,12 +73,14 @@ export interface ApiEnv {
   DASHSCOPE_API_KEY?: string;
   BAILIAN_BASE_URL?: string;
   QWEN_WEB_MODEL?: string;
-  /** Title-driven writing. Default off and forced off in production. */
+  /** Title-driven writing. Default off; production also needs explicit authorization and a valid site login. */
   TITLE_WRITING_ENABLED: boolean;
   TITLE_WRITING_OPERATOR_TOKEN?: string;
   TITLE_WRITING_DEFAULT_PROVIDER?: "qwen" | "openai" | "deepseek";
   TITLE_WRITING_MAX_CALLS_PER_DAY: number;
   TITLE_WRITING_MAX_ACTIVE_RUNS: number;
+  /** Process-only production authorization for title writing only. Defaults false and rejects invalid values. */
+  TITLE_WRITING_ALLOW_PRODUCTION: boolean;
   /** Process environment only, never the .env file. Server-side secrets and model allowlists. */
   TITLE_WRITING_QWEN_MODELS?: string;
   OPENAI_API_KEY?: string;
@@ -183,7 +186,11 @@ export function loadApiEnv(
   processEnv: Record<string, string | undefined>,
   fileEnv: Record<string, string> = {},
 ): ApiEnv {
-  const parsed = apiEnvSchema.safeParse(pickEnv(processEnv, fileEnv));
+  const parsed = apiEnvSchema.safeParse({
+    ...pickEnv(processEnv, fileEnv),
+    // A release directory's .env must never authorize paid production execution.
+    TITLE_WRITING_ALLOW_PRODUCTION: processEnv.TITLE_WRITING_ALLOW_PRODUCTION,
+  });
   if (!parsed.success) {
     const fields = parsed.error.issues.map((issue) => issue.path.map(String).join(".") || "environment");
     throw new EnvValidationError(fields);
@@ -211,5 +218,6 @@ export function loadApiEnv(
     M4_LOCAL_EPISODE_COMPOSE_ENABLED: parsed.data.M4_LOCAL_EPISODE_COMPOSE_ENABLED === "true",
     QWEN_WEB_WRITING_ENABLED: parsed.data.QWEN_WEB_WRITING_ENABLED === "true",
     TITLE_WRITING_ENABLED: parsed.data.TITLE_WRITING_ENABLED === "true",
+    TITLE_WRITING_ALLOW_PRODUCTION: parsed.data.TITLE_WRITING_ALLOW_PRODUCTION === "true",
   };
 }

@@ -22,6 +22,9 @@ import type {
 /** The frozen input of a run of either kind: a title run (v1 or v2) or a script breakdown run. */
 export type TitleRunInput = TitleWritingFrozenInput | ScriptBreakdownFrozenInput;
 
+/** The independently authorized kinds executed by the shared writing engine. */
+export type TitleRunKind = "title" | "script_breakdown";
+
 /** Storage contract of title writing runs, shared by the run engine (providers) and the PostgreSQL store (database). */
 export interface TitleRunRecord {
   id: string;
@@ -239,7 +242,8 @@ export interface TitleWritingStore {
   findResume(workspaceId: string, projectId: string, runId: string, resumeKey: string): Promise<{ requestHash: string } | null>;
   /** Fences expired executors of this workspace: reserved calls were never sent, submitted calls become unknown. */
   recoverExpired(workspaceId: string, nowIso: string): Promise<number>;
-  listClaimable(workspaceId: string, nowIso: string, limit: number): Promise<string[]>;
+  /** Optional kind policy is applied before the limit; omitted means both kinds, empty means neither. */
+  listClaimable(workspaceId: string, nowIso: string, limit: number, allowedRunKinds?: readonly TitleRunKind[]): Promise<string[]>;
   /**
    * After the story was approved by a person: writes each saved screenplay into an episode that has no script yet.
    * plan_mismatch: the project's episodes are not exactly 1..N of this run; nothing is written.

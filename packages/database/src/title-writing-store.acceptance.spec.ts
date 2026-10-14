@@ -360,6 +360,21 @@ describe("PostgresTitleWritingStore on the migrated tables", () => {
 });
 
 describe("R3: one workspace never touches another", () => {
+  it("filters claimable kinds on the seven-migration schema without the optional run_kind column", async () => {
+    const ws = await newWorkspace("title-kind-before-breakdown");
+    const otherWs = await newWorkspace("title-kind-other");
+    const record = run(ws, await newProject(ws, "title-kind"), "kind-filter");
+    expect((await store.createRun(record, { maxActiveRuns: 5 })).kind).toBe("created");
+    expect((await pool.query("SELECT 1 FROM information_schema.columns WHERE table_name = 'title_writing_run' AND column_name = 'run_kind'")).rowCount).toBe(0);
+    expect(await store.listClaimable(ws, now(), 5, ["title"])).toEqual([record.id]);
+    expect(await store.listClaimable(ws, now(), 5, ["script_breakdown"])).toEqual([]);
+    expect(await store.listClaimable(ws, now(), 5, [])).toEqual([]);
+    expect(await store.listClaimable(ws, now(), 5)).toEqual([record.id]);
+    expect(await store.listClaimable(otherWs, now(), 5, ["title"])).toEqual([]);
+    expect((await store.getRunById(ws, record.id))!.run).toMatchObject({ executorId: null, callsUsed: 0 });
+    evidence.runKindBeforeBreakdown = { titleListed: true, breakdownExcluded: true, absentRunKindColumn: true };
+  });
+
   it("recovery, listing, claim, read, submit and finish of workspace A skip workspace B's runs", async () => {
     await stopRunning();
     const wa = await newWorkspace("ws-a");

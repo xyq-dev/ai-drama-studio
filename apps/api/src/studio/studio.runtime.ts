@@ -13,9 +13,10 @@ import {
   createPostgresPool,
   type PostgresPool,
 } from "@ai-drama/database";
-import { sampleVideoGenerationEnabled, type QwenWritingInput } from "@ai-drama/contracts";
+import { sampleVideoGenerationEnabled, type QwenWritingInput, type TitleRunKind } from "@ai-drama/contracts";
 import { TitleWritingEngine, createQwenFetchTransport, qwenWebProviderConfig, titleWritingProviderConfigs } from "@ai-drama/providers";
 import type { ApiEnv } from "../config/env";
+import { siteAuthFromEnv } from "../auth/site-auth.config";
 import { QwenWebService } from "./qwen-web.service";
 import { ScriptBreakdownService } from "./script-breakdown.service";
 import { StudioService } from "./studio.service";
@@ -79,6 +80,7 @@ export class StudioRuntime implements OnModuleDestroy {
     const textChain = new TextChainService(pool);
     const absoluteDir = env.MOCK_OBJECT_DIR && isAbsolute(env.MOCK_OBJECT_DIR) ? env.MOCK_OBJECT_DIR : null;
     const nonProduction = env.NODE_ENV !== "production";
+    const siteLoginValid = siteAuthFromEnv(env).kind === "enabled";
     const mockImageEnabled = nonProduction && env.M3_MOCK_IMAGE_ENABLED && Boolean(absoluteDir);
     const mockAvEnabled = nonProduction && env.M3_MOCK_AV_ENABLED && Boolean(absoluteDir);
     const mockSmEnabled = nonProduction && env.M3_MOCK_SUBTITLE_MUSIC_ENABLED && Boolean(absoluteDir);
@@ -123,6 +125,13 @@ export class StudioRuntime implements OnModuleDestroy {
     const titleProviders = managed ? managedProviderConfigs(managed) : titleWritingProviderConfigs(env);
     const maxCallsPerDay = managed?.maxCallsPerDay ?? env.TITLE_WRITING_MAX_CALLS_PER_DAY;
     const maxActiveRuns = managed?.maxActiveRuns ?? env.TITLE_WRITING_MAX_ACTIVE_RUNS;
+    const titleWritingEnabled = env.TITLE_WRITING_ENABLED;
+    const titleWritingAllowProduction = env.TITLE_WRITING_ALLOW_PRODUCTION && siteLoginValid;
+    const scriptBreakdownEnabled = nonProduction && env.TITLE_WRITING_ENABLED;
+    // The shared recovery engine must enforce the same authorization as the HTTP services, for each run kind.
+    const allowedRunKinds: TitleRunKind[] = [];
+    if (titleWritingEnabled && (nonProduction || titleWritingAllowProduction)) allowedRunKinds.push("title");
+    if (scriptBreakdownEnabled) allowedRunKinds.push("script_breakdown");
     // Only the real fetch transport is wired. A missing configuration never falls back to a Mock answer. One engine
     // drives runs of both kinds, so recovery and the per-run in-process guard cover title writing and breakdowns alike.
     const titleEngine = new TitleWritingEngine({
@@ -131,13 +140,14 @@ export class StudioRuntime implements OnModuleDestroy {
       providers: titleProviders,
       transport: createQwenFetchTransport(),
       maxCallsPerDay,
+      allowedRunKinds,
     });
-    const writingEnabled = env.NODE_ENV !== "production" && env.TITLE_WRITING_ENABLED;
     const defaultProvider = managed ? managed.defaultProvider : env.TITLE_WRITING_DEFAULT_PROVIDER ?? null;
     const titleWriting = new TitleWritingService({
       workspaceId,
       nodeEnv: env.NODE_ENV,
-      enabled: writingEnabled,
+      enabled: titleWritingEnabled,
+      allowProduction: titleWritingAllowProduction,
       operatorToken: env.TITLE_WRITING_OPERATOR_TOKEN ?? null,
       defaultProvider,
       providers: titleProviders,
@@ -150,7 +160,7 @@ export class StudioRuntime implements OnModuleDestroy {
     const scriptBreakdown = new ScriptBreakdownService({
       workspaceId,
       nodeEnv: env.NODE_ENV,
-      enabled: writingEnabled,
+      enabled: scriptBreakdownEnabled,
       operatorToken: env.TITLE_WRITING_OPERATOR_TOKEN ?? null,
       defaultProvider,
       providers: titleProviders,

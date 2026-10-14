@@ -13,6 +13,20 @@ const valid = {
 };
 
 describe("loadApiEnv", () => {
+  it("accepts production title authorization only from the process environment", () => {
+    expect(loadApiEnv(valid, { TITLE_WRITING_ALLOW_PRODUCTION: "true" }).TITLE_WRITING_ALLOW_PRODUCTION).toBe(false);
+    expect(loadApiEnv({ ...valid, TITLE_WRITING_ALLOW_PRODUCTION: "false" },
+      { TITLE_WRITING_ALLOW_PRODUCTION: "true" }).TITLE_WRITING_ALLOW_PRODUCTION).toBe(false);
+    expect(loadApiEnv({ ...valid, TITLE_WRITING_ALLOW_PRODUCTION: "true" },
+      { TITLE_WRITING_ALLOW_PRODUCTION: "false" }).TITLE_WRITING_ALLOW_PRODUCTION).toBe(true);
+    expect(loadApiEnv(valid, { TITLE_WRITING_ALLOW_PRODUCTION: "yes" }).TITLE_WRITING_ALLOW_PRODUCTION).toBe(false);
+  });
+
+  it.each(["", "yes", "TRUE", "1"])("rejects invalid process production authorization: %j", (value) => {
+    expect(() => loadApiEnv({ ...valid, TITLE_WRITING_ALLOW_PRODUCTION: value }))
+      .toThrow(/TITLE_WRITING_ALLOW_PRODUCTION/);
+  });
+
   it("rejects missing required fields by name", () => {
     expect(() => loadApiEnv({})).toThrow(/DATABASE_URL/);
   });

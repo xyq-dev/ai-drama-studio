@@ -306,6 +306,7 @@ export {
   type TitleStepRecord,
   type TitleWritingStore,
   type TitleRunInput,
+  type TitleRunKind,
   type ScriptBreakdownDetails,
   type ScriptBreakdownPlacement,
   type ScriptBreakdownPlacementOutcome,

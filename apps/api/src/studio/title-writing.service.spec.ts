@@ -25,6 +25,7 @@ const CONTEXT = (key?: string) => ({ actorId: "server-owner", traceId: "t", ...(
 
 function setup(options: {
   enabled?: boolean;
+  allowProduction?: boolean;
   nodeEnv?: "development" | "test" | "production";
   env?: TitleWritingProviderEnv;
   storageReady?: boolean;
@@ -48,6 +49,7 @@ function setup(options: {
     workspaceId: WS,
     nodeEnv: options.nodeEnv ?? "test",
     enabled: options.enabled ?? true,
+    allowProduction: options.allowProduction ?? false,
     operatorToken: options.operatorToken === undefined ? TOKEN : options.operatorToken,
     defaultProvider: null,
     providers,
@@ -97,6 +99,13 @@ describe("title writing options", () => {
     expect((await setup({ storageReady: false }).service.options()).body).toMatchObject({ code: "TITLE_WRITING_STORAGE_UNAVAILABLE" });
     expect((await setup({ env: {} }).service.options()).body).toMatchObject({ code: "TITLE_WRITING_PROVIDER_UNCONFIGURED", defaultProvider: null });
   });
+
+  it("allows title writing in production only when explicitly authorized", async () => {
+    expect((await setup({ nodeEnv: "production", allowProduction: false }).service.options()).body)
+      .toMatchObject({ code: "TITLE_WRITING_DISABLED", enabled: false });
+    expect((await setup({ nodeEnv: "production", allowProduction: true }).service.options()).body)
+      .toMatchObject({ code: "TITLE_WRITING_READY", enabled: true });
+  });
 });
 
 describe("starting a run", () => {
@@ -114,6 +123,18 @@ describe("starting a run", () => {
     expect(text).not.toContain(SECRET);
     expect(text).not.toContain("k1");
     expect(text).not.toContain("executor");
+  });
+
+  it("starts in production only when explicitly authorized", async () => {
+    const blocked = setup({ nodeEnv: "production", allowProduction: false });
+    expect((await blocked.service.start(P1, { title: "夜班证词" }, TOKEN, CONTEXT("k"))).status).toBe(404);
+    await blocked.settle();
+    expect(blocked.seen).toHaveLength(0);
+
+    const authorized = setup({ nodeEnv: "production", allowProduction: true });
+    expect((await authorized.service.start(P1, { title: "夜班证词" }, TOKEN, CONTEXT("k-prod"))).status).toBe(201);
+    await authorized.settle();
+    expect(authorized.seen).toHaveLength(5);
   });
 
   it.each([
@@ -297,7 +318,13 @@ describe("environment", () => {
 
   it("is off by default with conservative caps", () => {
     const env = loadApiEnv(base);
-    expect(env).toMatchObject({ TITLE_WRITING_ENABLED: false, TITLE_WRITING_MAX_CALLS_PER_DAY: 30, TITLE_WRITING_MAX_ACTIVE_RUNS: 1 });
+    expect(env).toMatchObject({ TITLE_WRITING_ENABLED: false, TITLE_WRITING_ALLOW_PRODUCTION: false, TITLE_WRITING_MAX_CALLS_PER_DAY: 30, TITLE_WRITING_MAX_ACTIVE_RUNS: 1 });
+  });
+
+  it("parses the production authorization switch strictly, never defaulting to allow", () => {
+    expect(loadApiEnv({ ...base, TITLE_WRITING_ALLOW_PRODUCTION: "true" }).TITLE_WRITING_ALLOW_PRODUCTION).toBe(true);
+    expect(loadApiEnv({ ...base, TITLE_WRITING_ALLOW_PRODUCTION: "false" }).TITLE_WRITING_ALLOW_PRODUCTION).toBe(false);
+    expect(() => loadApiEnv({ ...base, TITLE_WRITING_ALLOW_PRODUCTION: "yes" })).toThrow(/Invalid environment/);
   });
 
   it("reads provider keys and model allowlists only from the process environment", () => {

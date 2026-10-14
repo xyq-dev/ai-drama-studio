@@ -375,6 +375,27 @@ afterAll(async () => {
 });
 
 describe("script breakdown on PostgreSQL", () => {
+  it("filters disabled breakdowns before LIMIT without changing their leases or calls", async () => {
+    const { ws, project, episodes } = await work(1);
+    const breakdown = await startBreakdown(ws, project, episodes[0]!.id);
+    const titleProject = await tx(async (client) => (await insertProject(client, { workspaceId: ws, title: "恢复标题任务", premise: "" })).id);
+    const frozen: TitleWritingFrozenInput = { schema: TITLE_WRITING_INPUT_SCHEMA, promptVersion: TITLE_WRITING_PROMPT_VERSION, title: "恢复标题任务",
+      settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey: "qwen", model: "q-1" };
+    // Make the title later than the breakdown so LIMIT 1 without kind filtering would miss it.
+    const at = new Date(Date.parse(breakdown.updatedAt) + 1_000).toISOString();
+    const title: TitleRunRecord = { id: randomUUID(), workspaceId: ws, projectId: titleProject, actorId: "server-owner", idempotencyKey: "kind-filter-title",
+      inputHash: canonicalInputHash({ projectId: titleProject, input: frozen }), input: frozen, state: "running", errorCode: null, cancelRequestedAt: null,
+      executorId: null, leaseUntil: null, callCap: 8, callsUsed: 0, storySave: "pending", storyRevisionId: null, createdAt: at, updatedAt: at };
+    expect((await store.createRun(title, { maxActiveRuns: 10 })).kind).toBe("created");
+    const beforeRead = await store.getRunById(ws, breakdown.id);
+    expect(await store.listClaimable(ws, now(), 1)).toEqual([breakdown.id]);
+    expect(await store.listClaimable(ws, now(), 1, ["title"])).toEqual([title.id]);
+    expect(await store.listClaimable(ws, now(), 1, ["script_breakdown"])).toEqual([breakdown.id]);
+    expect(await store.listClaimable(ws, now(), 1, [])).toEqual([]);
+    expect(await store.getRunById(ws, breakdown.id)).toEqual(beforeRead);
+    evidence.runKindFiltering = { beforeLimit: true, disabledRunUnchanged: true };
+  });
+
   it("before the migration: storage not ready, title writing reads unchanged", () => {
     expect(released.applied.at(-1)).toBe("20261011000100_episode_plan");
     expect(before).toEqual({ ready: false, latestTitleRunId: history.runId, keyLookupRunId: history.runId });

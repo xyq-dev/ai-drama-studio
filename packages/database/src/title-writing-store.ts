@@ -14,6 +14,7 @@ import {
   type ScriptBreakdownSceneView,
   type ScriptBreakdownSourceRead,
   type TitleRunInput,
+  type TitleRunKind,
   titleWritingEpisodeCount,
   titleWritingStepKeysFor,
   type EpisodeDraftCandidate,
@@ -589,12 +590,14 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
     });
   }
 
-  async listClaimable(workspaceId: string, nowIso: string, limit: number): Promise<string[]> {
+  async listClaimable(workspaceId: string, nowIso: string, limit: number, allowedRunKinds?: readonly TitleRunKind[]): Promise<string[]> {
     const result = await this.query(
       `SELECT id FROM title_writing_run
         WHERE workspace_id = $3 AND state = 'running' AND (executor_id IS NULL OR lease_until <= $1)
+          AND (CASE WHEN input_json ->> 'schema' = $5 THEN 'script_breakdown' ELSE 'title' END) = ANY($4::text[])
         ORDER BY updated_at LIMIT $2`,
-      [nowIso, limit, workspaceId],
+      // The frozen schema exists before the breakdown migration; never depend on its optional run_kind column here.
+      [nowIso, limit, workspaceId, allowedRunKinds ?? ["title", "script_breakdown"], SCRIPT_BREAKDOWN_INPUT_SCHEMA],
     );
     return result.rows.map((row) => String(row.id));
   }

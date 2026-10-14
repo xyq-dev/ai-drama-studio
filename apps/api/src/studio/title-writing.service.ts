@@ -36,6 +36,8 @@ export interface TitleWritingDependencies {
   workspaceId: string;
   nodeEnv: "development" | "test" | "production";
   enabled: boolean;
+  /** Explicit production authorization, pre-gated by the runtime on TITLE_WRITING_ALLOW_PRODUCTION and a valid site login. */
+  allowProduction?: boolean;
   operatorToken: string | null;
   defaultProvider: TitleWritingProviderKey | null;
   providers: Record<TitleWritingProviderKey, WritingProviderConfig>;
@@ -106,7 +108,7 @@ export class TitleWritingService {
   }
 
   private active(): boolean {
-    return this.deps.enabled && this.deps.nodeEnv !== "production";
+    return this.deps.enabled && (this.deps.nodeEnv !== "production" || this.deps.allowProduction === true);
   }
 
   private schedule(runId: string): void {
