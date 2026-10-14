@@ -79,9 +79,9 @@ function quoted(label: string, value: string | undefined | null): string {
   return text.length === 0 ? `${label}：（空）` : `${label}：“${excerpt(text)}”`;
 }
 
-function field(episode: EpisodeOutlineEpisode, key: keyof typeof FIELD_LABELS, isLast = false): string {
-  // The last episode's handoff has nothing to hand over: it closes the story.
-  const label = key === "handoff" && isLast ? "全剧收尾" : FIELD_LABELS[key];
+function field(episode: EpisodeOutlineEpisode, key: keyof typeof FIELD_LABELS, isLast = false, finaleClosure = true): string {
+  // Only guided prompts define the final handoff as closure; legacy fields keep neutral semantics.
+  const label = key === "handoff" && isLast ? (finaleClosure ? "全剧收尾" : "结尾记录") : FIELD_LABELS[key];
   return quoted(`第 ${String(episode.episodeNo)} 集 ${key}（${label}）`, episode[key]);
 }
 
@@ -110,10 +110,13 @@ const REQUIRED: Requirement[] = [
       suggestion: "写清主线问题怎样了结、主角最终得到或失去了什么，并回应故事走向里的整部期待。" } },
 ];
 
-function missing(episodeNo: number, requirement: Requirement, episode: EpisodeOutlineEpisode, isLast: boolean): EpisodeWritingFinding {
-  const text = isLast && requirement.last ? requirement.last : requirement;
+function missing(episodeNo: number, requirement: Requirement, episode: EpisodeOutlineEpisode, isLast: boolean, finaleClosure: boolean): EpisodeWritingFinding {
+  const text = isLast && requirement.last ? (finaleClosure ? requirement.last : {
+    question: "最后一集的结尾记录是什么？", why: "结尾记录为空，无法核对本集留下的信息。",
+    suggestion: "补写本集结尾已经发生的事实；旧版本字段不强制承担全剧收束。",
+  }) : requirement;
   return { id: `${String(episodeNo)}:missing:${requirement.key}`, episodeNo, kind: "missing", question: text.question,
-    evidence: field(episode, requirement.key, isLast), why: text.why, suggestion: text.suggestion };
+    evidence: field(episode, requirement.key, isLast, finaleClosure), why: text.why, suggestion: text.suggestion };
 }
 
 function storyFindings(concept: TitleConcept | null): EpisodeWritingFinding[] {
@@ -142,11 +145,11 @@ function storyFindings(concept: TitleConcept | null): EpisodeWritingFinding[] {
 }
 
 function episodeFindings(episode: EpisodeOutlineEpisode, previous: EpisodeOutlineEpisode | undefined, next: EpisodeOutlineEpisode | undefined,
-  concept: TitleConcept | null, isLast: boolean): EpisodeWritingFinding[] {
+  concept: TitleConcept | null, isLast: boolean, finaleClosure: boolean): EpisodeWritingFinding[] {
   const no = episode.episodeNo;
   const findings: EpisodeWritingFinding[] = [];
   const blank = (key: keyof typeof FIELD_LABELS) => blankOrPlaceholder(episode[key]);
-  for (const requirement of REQUIRED) if (blank(requirement.key)) findings.push(missing(no, requirement, episode, isLast));
+  for (const requirement of REQUIRED) if (blank(requirement.key)) findings.push(missing(no, requirement, episode, isLast, finaleClosure));
   // Identical text is a hint, not proof: the change may be written elsewhere (action, turn) or meant as a reversal.
   if (!blank("entryState") && !blank("result") && normalized(episode.entryState) === normalized(episode.result)) {
     findings.push({ id: `${String(no)}:manual:change`, episodeNo: no, kind: "manual", question: "相比开场，本集是否发生了实质变化？",
@@ -210,9 +213,13 @@ function episodeFindings(episode: EpisodeOutlineEpisode, previous: EpisodeOutlin
     const promise = concept ? quoted("故事策划 direction（故事走向）", concept.direction) : "这次创作没有可读的故事策划。";
     const closable = !blank("handoff") && concept !== null && !blankOrPlaceholder(concept.direction);
     findings.push({ id: `${String(no)}:${closable ? "manual" : "undetermined"}:closure`, episodeNo: no, kind: closable ? "manual" : "undetermined",
-      question: "最后一集是否回应了整部期待和主线问题？", evidence: `${field(episode, "handoff", true)}；${promise}`,
-      why: closable ? "结尾不回应整部期待，前面的铺垫就没有兑现。" : "最后一集的结尾或故事走向没有写出来，无法判断结尾是否回应了整部期待。",
-      suggestion: closable ? "对照故事走向里的整部期待，核对结尾是否写清主角最终得到或失去了什么。" : "补写故事走向里的整部期待和最后一集的结尾，再核对两者。" });
+      question: finaleClosure ? "最后一集是否回应了整部期待和主线问题？" : "结尾记录是否与故事走向一致？", evidence: `${field(episode, "handoff", true, finaleClosure)}；${promise}`,
+      why: finaleClosure
+        ? (closable ? "结尾不回应整部期待，前面的铺垫就没有兑现。" : "最后一集的结尾或故事走向没有写出来，无法判断结尾是否回应了整部期待。")
+        : "旧版本的结尾字段记录后续信息，不强制承担全剧收束；这里只核对记录与故事走向是否一致。",
+      suggestion: finaleClosure
+        ? (closable ? "对照故事走向里的整部期待，核对结尾是否写清主角最终得到或失去了什么。" : "补写故事走向里的整部期待和最后一集的结尾，再核对两者。")
+        : (closable ? "核对结尾记录与故事走向是否矛盾，不要求把旧字段改写成全剧结局。" : "补齐结尾记录和故事走向，再核对两者是否一致。") });
   } else {
     // Follow-up compares this handoff with the next episode's opening.
     const opening = next ? field(next, "entryState") : `分集大纲里没有第 ${String(no + 1)} 集。`;
@@ -229,7 +236,7 @@ function episodeFindings(episode: EpisodeOutlineEpisode, previous: EpisodeOutlin
  * Checks a plan of expectedCount episodes. An episode the outline does not have is reported as missing for that
  * episode number; nothing is invented for it.
  */
-export function checkEpisodePlan(concept: TitleConcept | null, outline: EpisodeOutline | null, expectedCount: number): EpisodeWritingCheck {
+export function checkEpisodePlan(concept: TitleConcept | null, outline: EpisodeOutline | null, expectedCount: number, finaleClosure = true): EpisodeWritingCheck {
   const groups: EpisodeWritingGroup[] = [{ episodeNo: null, label: "整部", findings: storyFindings(concept) }];
   const episodes = outline?.episodes ?? [];
   const byNo = new Map(episodes.map((episode) => [episode.episodeNo, episode]));
@@ -239,12 +246,14 @@ export function checkEpisodePlan(concept: TitleConcept | null, outline: EpisodeO
     if (!episode) {
       groups.push({ episodeNo: no, label: `第 ${String(no)} 集`, findings: [{ id: `${String(no)}:missing:episode`, episodeNo: no, kind: "missing",
         question: "这一集有分集计划吗？", evidence: outline ? `分集大纲里没有第 ${String(no)} 集。` : "这次创作没有可读的分集大纲。",
-        why: "没有分集计划，这一集的目标、行动和结尾都无从核对。", suggestion: no === count ? "先补齐这一集的目标、行动、结果，以及主线如何收束、整部期待如何回应。" : "先补齐这一集的目标、行动、结果和结尾问题。" }] });
+        why: "没有分集计划，这一集的目标、行动和结尾都无从核对。", suggestion: no === count
+          ? (finaleClosure ? "先补齐这一集的目标、行动、结果，以及主线如何收束、整部期待如何回应。" : "先补齐这一集的目标、行动、结果和结尾记录。")
+          : "先补齐这一集的目标、行动、结果和结尾问题。" }] });
       continue;
     }
     const title = blankOrPlaceholder(episode.title) ? "" : ` ${episode.title.trim()}`;
     groups.push({ episodeNo: no, label: `第 ${String(no)} 集${title}`,
-      findings: episodeFindings(episode, byNo.get(no - 1), byNo.get(no + 1), concept, no === count) });
+      findings: episodeFindings(episode, byNo.get(no - 1), byNo.get(no + 1), concept, no === count, finaleClosure) });
   }
   const counts = { missing: 0, manual: 0, undetermined: 0 };
   for (const group of groups) for (const finding of group.findings) counts[finding.kind] += 1;

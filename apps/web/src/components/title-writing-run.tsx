@@ -107,7 +107,7 @@ function OutlineView({ outline, episodeCount, guided }: { outline: EpisodeOutlin
           <p>行动：{episode.action}</p>
           <p>转折：{episode.turn}</p>
           <p>结果：{episode.result}</p>
-          <p>{guided && episode.episodeNo === episodeCount ? "全剧收尾" : "交给下一集"}：{episode.handoff}</p>
+          <p>{episode.episodeNo === episodeCount ? (guided ? "全剧收尾" : "结尾记录") : "交给下一集"}：{episode.handoff}</p>
         </li>
       ))}
     </ol>
@@ -399,7 +399,8 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
                   <OutlineView outline={outline} episodeCount={run.episodeCount ?? run.settings.episodeCount}
                     guided={run.promptVersion === TITLE_WRITING_PROMPT_VERSION_V3 || run.promptVersion === TITLE_WRITING_PROMPT_VERSION_V4} />
                 ) : <p className={styles.helper}>本次创作尚未生成可读的分集大纲，可打开编剧检查查看缺失的计划。</p>}
-                <EpisodeWritingCheck concept={concept ?? null} outline={outline ?? null} episodeCount={run.episodeCount ?? run.settings.episodeCount} />
+                <EpisodeWritingCheck concept={concept ?? null} outline={outline ?? null} episodeCount={run.episodeCount ?? run.settings.episodeCount}
+                  finaleClosure={run.promptVersion === TITLE_WRITING_PROMPT_VERSION_V3 || run.promptVersion === TITLE_WRITING_PROMPT_VERSION_V4} />
                 <EpisodeWritingGuidance />
               </section>
             ) : null}

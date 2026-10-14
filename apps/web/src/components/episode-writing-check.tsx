@@ -14,14 +14,15 @@ export function outlineEpisodeAnchor(episodeNo: number): string {
  * The "编剧检查" entry of an episode plan. It only reads the loaded concept and outline: it sends no
  * request, calls no model and changes no content. Results are grouped by episode and never add up to a score.
  */
-export function EpisodeWritingCheck({ concept, outline, episodeCount }: {
+export function EpisodeWritingCheck({ concept, outline, episodeCount, finaleClosure }: {
   concept: TitleConcept | null;
   outline: EpisodeOutline | null;
   episodeCount: number;
+  finaleClosure: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const panelId = useId();
-  const result = useMemo(() => (open ? checkEpisodePlan(concept, outline, episodeCount) : null), [open, concept, outline, episodeCount]);
+  const result = useMemo(() => (open ? checkEpisodePlan(concept, outline, episodeCount, finaleClosure) : null), [open, concept, outline, episodeCount, finaleClosure]);
 
   return (
     <div className={styles.writingCheck}>

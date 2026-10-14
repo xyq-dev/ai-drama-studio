@@ -141,10 +141,10 @@ describe("outline closure labels", () => {
     }
   });
 
-  it("keeps legacy labels and does not mistake a partial outline for the finale", async () => {
+  it("uses neutral legacy labels and does not mistake a partial outline for the finale", async () => {
     const old = serve(run(outline("目标2")));
     render(<TitleWritingRun projectId={P1} client={old.client} />);
-    expect(await screen.findByText("交给下一集：交接3")).toBeTruthy();
+    expect(await screen.findByText("结尾记录：交接3")).toBeTruthy();
     cleanup();
     const plan = outline("目标2");
     plan.episodes = plan.episodes.slice(0, 1);
@@ -157,7 +157,7 @@ describe("outline closure labels", () => {
 
 describe("missing outline check on stopped runs", () => {
   it.each(["failed", "canceled", "needs_attention", "partial", "completed"] as const)("makes %s run gaps inspectable without requests or dead anchors", async (state) => {
-    const { client, calls } = serve(run(null, { state, episodeCount: 6 }));
+    const { client, calls } = serve(run(null, { state, episodeCount: 6, promptVersion: "ads.title-writing.prompt.v4" }));
     render(<TitleWritingRun projectId={P1} client={client} />);
     const button = await screen.findByRole("button", { name: "编剧检查" });
     const before = calls.length;
@@ -176,4 +176,22 @@ describe("missing outline check on stopped runs", () => {
     fireEvent.click(await screen.findByRole("button", { name: "编剧检查" }));
     expect(screen.getByText(/明确缺项 \d+ 项 · 待人工判断/).textContent).toContain("明确缺项 1 项");
   });
+});
+
+
+it.each([undefined, "ads.title-writing.prompt.v1", "ads.title-writing.prompt.v2"])("keeps legacy %s finale evidence and advice neutral", async (promptVersion) => {
+  for (const handoff of ["旧版后续信息", "待定"]) {
+    const plan = outline("目标2");
+    plan.episodes[2]!.handoff = handoff;
+    const { client } = serve(run(plan, { promptVersion }));
+    render(<TitleWritingRun projectId={P1} client={client} />);
+    fireEvent.click(await screen.findByRole("button", { name: "编剧检查" }));
+    expect(screen.getByText(`结尾记录：${handoff}`)).toBeTruthy();
+    const last = screen.getByRole("region", { name: "第 3 集 集名3的检查结果" });
+    expect(within(last).getByText("结尾记录是否与故事走向一致？")).toBeTruthy();
+    expect(within(last).queryByText(/最后一集是否回应了整部期待|最后一集怎样收束主线|handoff（全剧收尾）/)).toBeNull();
+    expect(within(last).getAllByText(/handoff（结尾记录）/).length).toBeGreaterThan(0);
+    if (handoff === "待定") expect(within(last).getByText("最后一集的结尾记录是什么？")).toBeTruthy();
+    cleanup();
+  }
 });
