@@ -171,7 +171,9 @@ function buildTitleWritingPromptV2(
         "已保存的故事策划（json）：",
         conceptBlock(context.concept),
         `输出 json，schema 字段必须是 "${EPISODE_OUTLINE_SCHEMA_V2}"。episodes 正好 ${String(count)} 项，episodeNo 依次为 ${numbers}，不能缺集、重复或多出。`,
-        "每项字段：episodeNo、title、entryState（进入状态）、goal、action、turn（转折）、result、handoff（交给下一集的事实）。相邻集的 handoff 与下一集的 entryState 要能接上。",
+        input.promptVersion === TITLE_WRITING_PROMPT_VERSION_V4
+          ? "每项字段：episodeNo、title、entryState（进入状态）、goal、action、turn（转折）、result、handoff（本集结尾事实：非最后一集记录交给下一集的事实，最后一集记录主线如何收束；单集也是最后一集）。仅非最后一集的 handoff 与下一集的 entryState 要能接上。"
+          : "每项字段：episodeNo、title、entryState（进入状态）、goal、action、turn（转折）、result、handoff（交给下一集的事实）。相邻集的 handoff 与下一集的 entryState 要能接上。",
         ...(guided ? guidedOutlineLines(guided) : []),
         `示例结构：{"schema":"${EPISODE_OUTLINE_SCHEMA_V2}","episodes":[{"episodeNo":1,"title":"…","entryState":"…","goal":"…","action":"…","turn":"…","result":"…","handoff":"…"}]}`,
       ].join("\n"),

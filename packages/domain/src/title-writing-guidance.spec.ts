@@ -184,16 +184,19 @@ describe("prompt v4 words the episode ending by position", () => {
     }
   });
 
-  it("keeps every other v3 line under the v4 heading; only the episode handoff wording changes", () => {
+  it("keeps every other v3 line under the v4 heading; only ending field wording changes", () => {
     const relabel = (text: string) => text.replaceAll(TITLE_WRITING_PROMPT_VERSION_V3, TITLE_WRITING_PROMPT_VERSION_V4);
     const v3Handoff = "台词表达人物意图，不重复解释已经演出来的信息。handoffFacts 包括本集结尾留下的问题。";
     const v3Fields = "字段：title、screenplay、scenes[1-12]{heading,action,dialogue,sound}、handoffFacts[1-8]（下一集必须继承的事实）。没有对白或声音时填空字符串。";
     for (const count of [1, 3]) {
       const v3 = everyStep(input(TITLE_WRITING_PROMPT_VERSION_V3, count), count, EPISODE_OUTLINE_SCHEMA_V2);
       const v4 = everyStep(input(TITLE_WRITING_PROMPT_VERSION_V4, count), count, EPISODE_OUTLINE_SCHEMA_V2);
-      // Concept and outline: the v3 text under the v4 heading, including the outline's own last-episode rule.
+      // Concept stays unchanged; outline field wording distinguishes final closure from handoff.
       expect(v4[0]).toEqual({ ...v3[0], user: relabel(v3[0]!.user) });
-      expect(v4[1]).toEqual({ ...v3[1], user: relabel(v3[1]!.user) });
+      const oldOutlineFields = "每项字段：episodeNo、title、entryState（进入状态）、goal、action、turn（转折）、result、handoff（交给下一集的事实）。相邻集的 handoff 与下一集的 entryState 要能接上。";
+      const newOutlineFields = "每项字段：episodeNo、title、entryState（进入状态）、goal、action、turn（转折）、result、handoff（本集结尾事实：非最后一集记录交给下一集的事实，最后一集记录主线如何收束；单集也是最后一集）。仅非最后一集的 handoff 与下一集的 entryState 要能接上。";
+      expect(v4[1]).toEqual({ ...v3[1], user: relabel(v3[1]!.user).replace(oldOutlineFields, newOutlineFields) });
+      expect(v4[1]!.user).not.toContain("handoff（交给下一集的事实）");
       expect(v4[1]!.user).toContain("最后一集写清主线问题如何收束");
       v4.slice(2).forEach((prompt, index) => {
         const final = index === count - 1;
