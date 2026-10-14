@@ -48,7 +48,7 @@ export function EpisodeWritingCheck({ concept, outline, episodeCount }: {
             <section key={group.episodeNo ?? "story"} className={styles.checkGroup} aria-label={`${group.label}的检查结果`}>
               <h3 className={styles.checkGroupTitle}>
                 {group.label}
-                {group.episodeNo !== null ? <a className={styles.textLink} href={`#${outlineEpisodeAnchor(group.episodeNo)}`}>查看这一集大纲</a> : null}
+                {group.episodeNo !== null && outline?.episodes.some((episode) => episode.episodeNo === group.episodeNo) ? <a className={styles.textLink} href={`#${outlineEpisodeAnchor(group.episodeNo)}`}>查看这一集大纲</a> : null}
               </h3>
               <ul className={styles.checkList}>
                 {group.findings.map((finding) => (

@@ -239,7 +239,7 @@ export function checkEpisodePlan(concept: TitleConcept | null, outline: EpisodeO
     if (!episode) {
       groups.push({ episodeNo: no, label: `第 ${String(no)} 集`, findings: [{ id: `${String(no)}:missing:episode`, episodeNo: no, kind: "missing",
         question: "这一集有分集计划吗？", evidence: outline ? `分集大纲里没有第 ${String(no)} 集。` : "这次创作没有可读的分集大纲。",
-        why: "没有分集计划，这一集的目标、行动和结尾都无从核对。", suggestion: "先补齐这一集的目标、行动、结果和结尾问题。" }] });
+        why: "没有分集计划，这一集的目标、行动和结尾都无从核对。", suggestion: no === count ? "先补齐这一集的目标、行动、结果，以及主线如何收束、整部期待如何回应。" : "先补齐这一集的目标、行动、结果和结尾问题。" }] });
       continue;
     }
     const title = blankOrPlaceholder(episode.title) ? "" : ` ${episode.title.trim()}`;

@@ -100,7 +100,7 @@ describe("编剧检查 on the episode plan of a run", () => {
     expect(within(second).getByText(/第 2 集 goal（目标）：（空）/)).toBeTruthy();
   });
 
-  it("a run with prompt v3 says so; a run without an outline shows no check", async () => {
+  it("guided runs name their prompt; a running run without an outline does not report gaps prematurely", async () => {
     const guided = serve(run(outline("目标2"), { inputVersion: 2, promptVersion: "ads.title-writing.prompt.v3" }));
     render(<TitleWritingRun projectId={P1} client={guided.client} />);
     const note = await screen.findByText(/加入编剧要求的提示词（ads.title-writing.prompt.v3）/);
@@ -110,7 +110,7 @@ describe("编剧检查 on the episode plan of a run", () => {
     render(<TitleWritingRun projectId={P1} client={latest.client} />);
     expect(await screen.findByText(/加入编剧要求的提示词（ads.title-writing.prompt.v4）/)).toBeTruthy();
     cleanup();
-    const early = serve(run(null));
+    const early = serve(run(null, { state: "running" }));
     render(<TitleWritingRun projectId={P1} client={early.client} />);
     await waitFor(() => expect(screen.getByRole("heading", { name: "故事策划" })).toBeTruthy());
     expect(screen.queryByRole("button", { name: "编剧检查" })).toBeNull();
@@ -123,4 +123,57 @@ it("qualifies next-episode advice and explains closure on the shared guidance pa
   expect(screen.getByText(/非最后一集解决一部分问题/)).toBeTruthy();
   expect(screen.getByText(/单集作品或最后一集应收束主线、回应整部期待，不再新留悬念/)).toBeTruthy();
   expect(screen.getByText(/终集：凭录音洗清冤屈/)).toBeTruthy();
+});
+
+
+describe("outline closure labels", () => {
+  it.each(["ads.title-writing.prompt.v3", "ads.title-writing.prompt.v4"])("%s labels the actual final episode and single-episode plan as closure", async (promptVersion) => {
+    for (const count of [1, 3, 6]) {
+      const plan: EpisodeOutline = { schema: "ads.writing.episode-outline.v2", episodes: Array.from({ length: count }, (_, index) => ({
+        ...outline("目标2").episodes[0]!, episodeNo: index + 1, title: `集名${index + 1}`, handoff: `交接${index + 1}` })) };
+      const { client } = serve(run(plan, { inputVersion: 2, promptVersion, episodeCount: count }));
+      render(<TitleWritingRun projectId={P1} client={client} />);
+      await screen.findByRole("heading", { name: "分集大纲" });
+      expect(screen.getByText(`全剧收尾：交接${count}`)).toBeTruthy();
+      expect(screen.queryByText(`交给下一集：交接${count}`)).toBeNull();
+      for (let n = 1; n < count; n++) expect(screen.getByText(`交给下一集：交接${n}`)).toBeTruthy();
+      cleanup();
+    }
+  });
+
+  it("keeps legacy labels and does not mistake a partial outline for the finale", async () => {
+    const old = serve(run(outline("目标2")));
+    render(<TitleWritingRun projectId={P1} client={old.client} />);
+    expect(await screen.findByText("交给下一集：交接3")).toBeTruthy();
+    cleanup();
+    const plan = outline("目标2");
+    plan.episodes = plan.episodes.slice(0, 1);
+    const { client } = serve(run(plan, { inputVersion: 2, promptVersion: "ads.title-writing.prompt.v4", episodeCount: 3 }));
+    render(<TitleWritingRun projectId={P1} client={client} />);
+    expect(await screen.findByText("交给下一集：交接1")).toBeTruthy();
+    expect(screen.queryByText(/全剧收尾：/)).toBeNull();
+  });
+});
+
+describe("missing outline check on stopped runs", () => {
+  it.each(["failed", "canceled", "needs_attention", "partial", "completed"] as const)("makes %s run gaps inspectable without requests or dead anchors", async (state) => {
+    const { client, calls } = serve(run(null, { state, episodeCount: 6 }));
+    render(<TitleWritingRun projectId={P1} client={client} />);
+    const button = await screen.findByRole("button", { name: "编剧检查" });
+    const before = calls.length;
+    fireEvent.click(button);
+    expect(screen.getByText(/明确缺项 \d+ 项 · 待人工判断/).textContent).toContain("明确缺项 6 项");
+    expect(screen.getAllByText("这次创作没有可读的分集大纲。")).toHaveLength(6);
+    expect(within(screen.getByRole("region", { name: "第 6 集的检查结果" })).getByText(/主线如何收束、整部期待如何回应/)).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "查看这一集大纲" })).toBeNull();
+    expect(calls.length).toBe(before);
+  });
+
+  it("falls back to frozen settings when the optional episodeCount view field is absent", async () => {
+    const { client } = serve(run(null, { state: "failed", episodeCount: undefined,
+      settings: { episodeCount: 1, episodeSeconds: 90, style: "" } }));
+    render(<TitleWritingRun projectId={P1} client={client} />);
+    fireEvent.click(await screen.findByRole("button", { name: "编剧检查" }));
+    expect(screen.getByText(/明确缺项 \d+ 项 · 待人工判断/).textContent).toContain("明确缺项 1 项");
+  });
 });

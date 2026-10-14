@@ -96,7 +96,7 @@ function ConceptView({ concept }: { concept: TitleConcept }) {
   );
 }
 
-function OutlineView({ outline }: { outline: EpisodeOutline }) {
+function OutlineView({ outline, episodeCount, guided }: { outline: EpisodeOutline; episodeCount: number; guided: boolean }) {
   return (
     <ol className={styles.outline}>
       {outline.episodes.map((episode) => (
@@ -107,7 +107,7 @@ function OutlineView({ outline }: { outline: EpisodeOutline }) {
           <p>行动：{episode.action}</p>
           <p>转折：{episode.turn}</p>
           <p>结果：{episode.result}</p>
-          <p>交给下一集：{episode.handoff}</p>
+          <p>{guided && episode.episodeNo === episodeCount ? "全剧收尾" : "交给下一集"}：{episode.handoff}</p>
         </li>
       ))}
     </ol>
@@ -387,16 +387,19 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
               </section>
             ) : null}
 
-            {outline ? (
+            {outline || run.state !== "running" ? (
               <section className={styles.card} aria-labelledby="outline-title">
                 <h2 id="outline-title" className={styles.sectionTitle}>分集大纲</h2>
-                {run.promptVersion === TITLE_WRITING_PROMPT_VERSION_V3 || run.promptVersion === TITLE_WRITING_PROMPT_VERSION_V4 ? (
+                {outline && (run.promptVersion === TITLE_WRITING_PROMPT_VERSION_V3 || run.promptVersion === TITLE_WRITING_PROMPT_VERSION_V4) ? (
                   <p className={styles.helper}>
                     这次创作使用了加入编剧要求的提示词（{run.promptVersion}）。各集剧本按本次创作保存的分集大纲生成；大纲生成后没有人工确认步骤，需要调整可在剧本草稿里修改。
                   </p>
                 ) : null}
-                <OutlineView outline={outline} />
-                <EpisodeWritingCheck concept={concept ?? null} outline={outline} episodeCount={run.episodeCount ?? outline.episodes.length} />
+                {outline ? (
+                  <OutlineView outline={outline} episodeCount={run.episodeCount ?? run.settings.episodeCount}
+                    guided={run.promptVersion === TITLE_WRITING_PROMPT_VERSION_V3 || run.promptVersion === TITLE_WRITING_PROMPT_VERSION_V4} />
+                ) : <p className={styles.helper}>本次创作尚未生成可读的分集大纲，可打开编剧检查查看缺失的计划。</p>}
+                <EpisodeWritingCheck concept={concept ?? null} outline={outline ?? null} episodeCount={run.episodeCount ?? run.settings.episodeCount} />
                 <EpisodeWritingGuidance />
               </section>
             ) : null}
