@@ -93,10 +93,12 @@
 - 代码回滚到不含本迁移的版本时，**保留新增表**：旧代码不读它们，`migrate` 也只会把它当作已记录的迁移（旧版本目录里没有它，不会报错）。功能保持 `TITLE_WRITING_ENABLED` 关闭。
 - 若将来确需删除这些表，需单独授权和 Review，不属于本发布。
 
-## 5. 功能开关（不变）
+## 5. 功能开关（默认关闭，生产需显式授权）
 
 - 默认关闭：`TITLE_WRITING_ENABLED` 默认 `false`。
-- `NODE_ENV=production` 时强制关闭（`studio.runtime.ts`：`enabled = NODE_ENV !== "production" && TITLE_WRITING_ENABLED`），即使设置为 `true`。
+- 非 production：`enabled = NODE_ENV !== "production" && TITLE_WRITING_ENABLED`（原行为不变）。
+- production：仅当 `TITLE_WRITING_ENABLED=true`、进程环境中的 `TITLE_WRITING_ALLOW_PRODUCTION=true`（严格 `true`/`false`，默认 `false`，忽略仓库 `.env`，空值或非法值拒绝启动）且站点登录配置有效（`siteAuthFromEnv(env).kind === "enabled"`）时才启用标题创作；否则继续返回 `TITLE_WRITING_DISABLED`。
+- 剧本拆解仍只在非 production 下受 `TITLE_WRITING_ENABLED` 控制，新授权开关**不会**开启拆解或其他付费功能。共用执行引擎也按任务类型限制直接执行及后台恢复，生产下不会恢复拆解任务；关闭总开关后不恢复付费执行。
 - **不要**通过把线上 `NODE_ENV` 改成 `development` 来启用功能。执行迁移只是让存储就绪，不代表功能上线。
 
 ## 6. 验收如何改为走正式迁移链

@@ -10,6 +10,7 @@ import {
   type TitleRunBundle,
   type TitleRunCreation,
   type TitleRunCreationLimits,
+  type TitleRunKind,
   type TitleRunRecord,
   type TitleScriptPlacement,
   type TitleStepRecord,
@@ -318,6 +319,8 @@ export interface TitleWritingEngineDeps {
   providers: Record<TitleWritingProviderKey, WritingProviderConfig>;
   transport: WritingTransport;
   maxCallsPerDay: number;
+  /** Execution authorization, including recovery. Omitted keeps both existing run kinds; empty disables sending. */
+  allowedRunKinds?: readonly TitleRunKind[];
   adapters?: Readonly<Record<TitleWritingProviderKey, WritingAdapter>>;
   clock?: () => Date;
   executorId?: string;
@@ -338,10 +341,12 @@ export class TitleWritingEngine {
   readonly executorId: string;
   readonly workspaceId: string;
   private readonly running = new Set<string>();
+  private readonly allowedRunKinds: readonly TitleRunKind[];
 
   constructor(private readonly deps: TitleWritingEngineDeps) {
     this.executorId = deps.executorId ?? `title-writing:${randomUUID()}`;
     this.workspaceId = deps.workspaceId;
+    this.allowedRunKinds = [...(deps.allowedRunKinds ?? ["title", "script_breakdown"])];
   }
 
   private now(): Date {
@@ -352,11 +357,18 @@ export class TitleWritingEngine {
     return new Date(from.getTime() + (this.deps.leaseMs ?? TITLE_WRITING_LEASE_MS)).toISOString();
   }
 
+  private allows(run: TitleRunRecord): boolean {
+    return this.allowedRunKinds.includes(isScriptBreakdownInput(run.input) ? "script_breakdown" : "title");
+  }
+
   /** Runs until the run reaches a resting state or another executor owns it. Safe to call repeatedly. */
   async drive(runId: string): Promise<void> {
     if (this.running.has(runId)) return;
     this.running.add(runId);
     try {
+      // Gate before claiming: a disabled kind must never take a lease, reserve a call or write a stored answer.
+      const existing = await this.deps.store.getRunById(this.deps.workspaceId, runId);
+      if (!existing || existing.run.workspaceId !== this.deps.workspaceId || !this.allows(existing.run)) return;
       const claimedAt = this.now();
       if (!await this.deps.store.claimRun(this.deps.workspaceId, runId, this.executorId, claimedAt.toISOString(), this.lease(claimedAt))) return;
       while (await this.advance(runId)) {
@@ -371,7 +383,7 @@ export class TitleWritingEngine {
   async maintain(limit = 5): Promise<void> {
     const nowIso = this.now().toISOString();
     await this.deps.store.recoverExpired(this.deps.workspaceId, nowIso);
-    const runIds = await this.deps.store.listClaimable(this.deps.workspaceId, nowIso, limit);
+    const runIds = await this.deps.store.listClaimable(this.deps.workspaceId, nowIso, limit, this.allowedRunKinds);
     for (const runId of runIds) await this.drive(runId);
   }
 
@@ -382,7 +394,7 @@ export class TitleWritingEngine {
 
   private async advance(runId: string): Promise<boolean> {
     const bundle = await this.deps.store.getRunById(this.deps.workspaceId, runId);
-    if (!bundle || bundle.run.workspaceId !== this.deps.workspaceId || bundle.run.state !== "running"
+    if (!bundle || bundle.run.workspaceId !== this.deps.workspaceId || !this.allows(bundle.run) || bundle.run.state !== "running"
       || bundle.run.executorId !== this.executorId) return false;
     const { run } = bundle;
     const anyCompleted = bundle.steps.some((step) => step.state === "completed");
@@ -876,10 +888,11 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
     return recovered;
   }
 
-  async listClaimable(workspaceId: string, nowIso: string, limit: number): Promise<string[]> {
+  async listClaimable(workspaceId: string, nowIso: string, limit: number, allowedRunKinds?: readonly TitleRunKind[]): Promise<string[]> {
     return this.runs
       .filter((run) => run.workspaceId === workspaceId && run.state === "running"
-        && (run.executorId === null || expired(run.leaseUntil, nowIso)))
+        && (run.executorId === null || expired(run.leaseUntil, nowIso))
+        && (allowedRunKinds === undefined || allowedRunKinds.includes(isScriptBreakdownInput(run.input) ? "script_breakdown" : "title")))
       .slice(0, limit)
       .map((run) => run.id);
   }

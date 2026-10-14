@@ -71,13 +71,17 @@ export class AdminModelsService implements AdminModelsBackend {
     private readonly state: AdminModelsView["titleWriting"],
   ) {}
 
-  static async open(env: ApiEnv, bootstrap: AdminBootstrap, isIdle: () => Promise<boolean>): Promise<AdminModelsService> {
+  static async open(env: ApiEnv, bootstrap: AdminBootstrap, isIdle: () => Promise<boolean>,
+    titleWritingState: Pick<AdminModelsView["titleWriting"], "enabled" | "productionBlocked"> = {
+      enabled: env.NODE_ENV !== "production" && env.TITLE_WRITING_ENABLED,
+      productionBlocked: env.NODE_ENV === "production",
+    }): Promise<AdminModelsService> {
     const vault = await ModelConfigVault.open({ path: bootstrap.path, masterKey: bootstrap.masterKey, initial: initialModelSettings(env) });
     // This runs before the API accepts requests or starts recovery. No live hot swap.
     const result = await vault.activateIfIdle(isIdle);
     return new AdminModelsService(vault, result.active, result.deferred, {
-      enabled: env.NODE_ENV !== "production" && env.TITLE_WRITING_ENABLED,
-      productionBlocked: env.NODE_ENV === "production",
+      // The runtime passes the same computed authorization used by the service and recovery engine.
+      ...titleWritingState,
       operatorConfigured: Boolean(env.TITLE_WRITING_OPERATOR_TOKEN),
     });
   }

@@ -69,7 +69,8 @@
 
 | 变量 | 用途 |
 | --- | --- |
-| `TITLE_WRITING_ENABLED` | 总开关，默认 `false`；生产强制关闭（与千问网页调用一致，待审查后再开）。 |
+| `TITLE_WRITING_ENABLED` | 总开关，默认 `false`；生产默认关闭。 |
+| `TITLE_WRITING_ALLOW_PRODUCTION` | 仅进程环境读取的标题创作生产授权开关，忽略仓库 `.env`；默认 `false`，严格 `true`/`false`，空值或非法值拒绝启动。生产下还需 `TITLE_WRITING_ENABLED=true` 和有效站点登录配置；不授权拆解或其他付费功能，包括后台恢复。 |
 | `TITLE_WRITING_OPERATOR_TOKEN` | 发起、续跑时的操作者令牌（16–200 字符）。 |
 | `TITLE_WRITING_DEFAULT_PROVIDER` | `qwen` / `openai` / `deepseek`。 |
 | `TITLE_WRITING_MAX_CALLS_PER_DAY` | 工作区 24 小时调用上限，默认 30。 |

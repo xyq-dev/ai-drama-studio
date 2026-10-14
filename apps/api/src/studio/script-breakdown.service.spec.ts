@@ -28,7 +28,7 @@ type Override = (step: FixtureStep, attempt: number) => { status: number; body: 
 
 const SCRIPT = "第 1 集\n场 1 便利店 夜\n林夏盯着监控。\n林夏：这不是我。\n场 2 天台 夜\n周野推开铁门。\n周野：你来了。";
 
-function setup(options: { enabled?: boolean; breakdownReady?: boolean; override?: Override; maxCallsPerDay?: number; approved?: boolean } = {}) {
+function setup(options: { enabled?: boolean; nodeEnv?: "development" | "test" | "production"; breakdownReady?: boolean; override?: Override; maxCallsPerDay?: number; approved?: boolean } = {}) {
   const store = new InMemoryTitleWritingStore();
   store.breakdownReady = options.breakdownReady ?? true;
   const episode = store.addBreakdownEpisode({ workspaceId: WS, projectId: P1, episodeNo: 1, text: SCRIPT, approved: options.approved ?? true, targetEpisodeSeconds: 60 });
@@ -44,7 +44,7 @@ function setup(options: { enabled?: boolean; breakdownReady?: boolean; override?
       return { id: projectId } as never;
     },
   };
-  const common = { workspaceId: WS, nodeEnv: "test" as const, enabled: options.enabled ?? true, operatorToken: TOKEN, defaultProvider: null, providers,
+  const common = { workspaceId: WS, nodeEnv: options.nodeEnv ?? "test", enabled: options.enabled ?? true, operatorToken: TOKEN, defaultProvider: null, providers,
     store, engine, maxCallsPerDay, maxActiveRuns: 1, schedule: (work: () => Promise<void>) => { pending.push(work); } };
   const service = new ScriptBreakdownService({ ...common, projects });
   const title = new TitleWritingService({ ...common, projects: { ...projects,
@@ -62,6 +62,7 @@ describe("starting a script breakdown", () => {
   it("refuses before anything is created or sent: switch off, wrong token, storage not migrated, missing key", async () => {
     for (const [options, token, key, status, code] of [
       [{ enabled: false }, TOKEN, "k", 404, "TITLE_WRITING_DISABLED"],
+      [{ nodeEnv: "production" as const }, TOKEN, "k", 404, "TITLE_WRITING_DISABLED"],
       [{}, "wrong-token-0000000000", "k", 403, "TITLE_WRITING_FORBIDDEN"],
       [{ breakdownReady: false }, TOKEN, "k", 503, "SCRIPT_BREAKDOWN_STORAGE_UNAVAILABLE"],
       [{}, TOKEN, "", 400, "VALIDATION_ERROR"],
