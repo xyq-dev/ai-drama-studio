@@ -218,3 +218,25 @@ describe("old plans and the original content", () => {
     expect(["报警", "他走了"].some(blankOrPlaceholder)).toBe(false);
   });
 });
+
+
+it("recognizes punctuated placeholders without discarding meaningful surrounding sentences", () => {
+  for (const text of ["待定。", "TBD!", "（待补充）", "“暂无”", " N/A! ", "【TODO】", "？！", "“”"]) {
+    expect(blankOrPlaceholder(text), text).toBe(true);
+  }
+  for (const text of ["待定后再商议。", "“找到配方”", "结果是：待定。", "100%", "T.B.D 是人物代号"]) {
+    expect(blankOrPlaceholder(text), text).toBe(false);
+  }
+});
+
+it("punctuated placeholders are gaps or undetermined comparisons, with original evidence preserved", () => {
+  const findings = flat(checkEpisodePlan({ ...concept, direction: "“待定。”" },
+    outline([{ ...complete(1), action: "TBD!", result: "（待补充）", turn: "待定。", handoff: "N/A!" }]), 1));
+  expect(findings.some((item) => item.id === "1:missing:action")).toBe(true);
+  expect(findings.some((item) => item.id === "1:missing:result")).toBe(true);
+  expect(findings.some((item) => item.id === "1:missing:handoff")).toBe(true);
+  expect(findings.find((item) => item.id === "1:undetermined:agency")?.evidence).toContain("TBD!");
+  expect(findings.some((item) => item.id === "1:undetermined:information")).toBe(true);
+  expect(findings.some((item) => item.id === "1:undetermined:closure")).toBe(true);
+  expect(findings.some((item) => item.id === "story:undetermined:promise")).toBe(true);
+});

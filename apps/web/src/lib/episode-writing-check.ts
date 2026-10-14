@@ -66,7 +66,9 @@ export function blankOrPlaceholder(value: string | undefined | null): boolean {
   const text = normalized(value);
   if (text.length === 0) return true;
   if (/^[.。…·\-—_?？!！,，、~～*]+$/.test(text)) return true;
-  return PLACEHOLDERS.has(text);
+  // Strip only surrounding punctuation: keep internal separators such as the slash in n/a.
+  const unwrapped = text.replace(/^\p{P}+|\p{P}+$/gu, "");
+  return unwrapped.length === 0 || PLACEHOLDERS.has(unwrapped);
 }
 
 function excerpt(value: string): string {
