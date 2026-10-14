@@ -106,6 +106,7 @@ export {
   hashTitleWritingInput,
   initialSteps,
   newTitleRun,
+  sameStartBeforeGuidance,
   storyTextOf,
   titleRunView,
   uncertainCallIdsOf,

@@ -32,6 +32,8 @@ import {
   TITLE_WRITING_INPUT_SCHEMA_V2,
   TITLE_WRITING_PROMPT_VERSION,
   TITLE_WRITING_PROMPT_VERSION_V2,
+  TITLE_WRITING_PROMPT_VERSION_V3,
+  TITLE_WRITING_PROMPT_VERSION_V4,
   currentUncertainCallIds,
   isTitleWritingInputV2,
   titleWritingCallCapFor,
@@ -132,12 +134,15 @@ export function newTitleRun(options: {
   providerKey: TitleWritingProviderKey;
   model: string;
   now: Date;
-  /** 2 freezes the project's episode plan (N, target seconds); 1, the default, is the unchanged three-episode input. */
+  /**
+   * 2 freezes the project's episode plan (N, target seconds) with the guided prompt v4; 1, the default, is the
+   * unchanged three-episode input. Runs already stored with prompt v2 or v3 keep it.
+   */
   version?: 1 | 2;
 }): TitleRunRecord {
   const common = { title: options.title, settings: options.settings, providerKey: options.providerKey, model: options.model };
   const input: TitleWritingFrozenInput = options.version === 2
-    ? { schema: TITLE_WRITING_INPUT_SCHEMA_V2, promptVersion: TITLE_WRITING_PROMPT_VERSION_V2, ...common }
+    ? { schema: TITLE_WRITING_INPUT_SCHEMA_V2, promptVersion: TITLE_WRITING_PROMPT_VERSION_V4, ...common }
     : { schema: TITLE_WRITING_INPUT_SCHEMA, promptVersion: TITLE_WRITING_PROMPT_VERSION, ...common };
   const createdAt = options.now.toISOString();
   return {
@@ -161,6 +166,25 @@ export function newTitleRun(options: {
     createdAt,
     updatedAt: createdAt,
   };
+}
+
+/** Prompt versions a v2 run was frozen with before the current one, oldest first. */
+const EARLIER_V2_PROMPT_VERSIONS = [TITLE_WRITING_PROMPT_VERSION_V2, TITLE_WRITING_PROMPT_VERSION_V3] as const;
+
+/**
+ * True when a stored run is the same start request frozen with an earlier prompt version: its hash is that of the
+ * attempted v2 input with the stored prompt v2 or v3 instead of v4. A start sent before an upgrade and replayed after it
+ * then returns its run instead of an idempotency conflict; the stored run keeps its own prompt version.
+ */
+export function sameStartBeforeGuidance(stored: TitleRunRecord, attempted: TitleRunRecord): boolean {
+  const input = attempted.input;
+  if (isScriptBreakdownInput(input) || !isTitleWritingInputV2(input) || input.promptVersion !== TITLE_WRITING_PROMPT_VERSION_V4) return false;
+  const before = titleInputOf(stored);
+  if (!before || !isTitleWritingInputV2(before)) return false;
+  const earlier = EARLIER_V2_PROMPT_VERSIONS.find((version) => version === before.promptVersion);
+  if (!earlier) return false;
+  return stored.projectId === attempted.projectId
+    && stored.inputHash === hashTitleWritingInput(attempted.projectId, { ...input, promptVersion: earlier });
 }
 
 /** The title input of a run, or null for a script breakdown run. */
@@ -227,9 +251,9 @@ export function storyTextOf(bundle: TitleRunBundle): string | null {
   }
 }
 
-function stepText(step: TitleStepRecord): string | null {
+function stepText(step: TitleStepRecord, input: TitleWritingFrozenInput): string | null {
   if (step.state !== "completed" || !step.output) return null;
-  if (episodeNoOf(step.stepKey) !== null) return formatTitleEpisode(step.output as EpisodeDraftCandidate);
+  if (episodeNoOf(step.stepKey) !== null) return formatTitleEpisode(step.output as EpisodeDraftCandidate, input);
   return null;
 }
 
@@ -243,6 +267,7 @@ export function titleRunView(bundle: TitleRunBundle): TitleWritingRunView {
     projectId: run.projectId,
     title: input.title,
     inputVersion: isTitleWritingInputV2(input) ? 2 : 1,
+    promptVersion: input.promptVersion,
     episodeCount: titleWritingEpisodeCount(input),
     settings: input.settings,
     providerKey: input.providerKey,
@@ -262,7 +287,7 @@ export function titleRunView(bundle: TitleRunBundle): TitleWritingRunView {
       errorCode: step.errorCode,
       // A title run never has a breakdown step, so its outputs are title outputs.
       output: step.state === "completed" ? step.output as TitleWritingStepView["output"] : null,
-      text: stepText(step),
+      text: stepText(step, input),
       scriptSave: step.scriptSave,
       scriptRevisionId: step.scriptRevisionId,
     })),
@@ -880,7 +905,7 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
         continue;
       }
       const id = randomUUID();
-      episode.scripts.push({ id, text: formatTitleEpisode(step.output as EpisodeDraftCandidate), sourceStoryId: approved });
+      episode.scripts.push({ id, text: formatTitleEpisode(step.output as EpisodeDraftCandidate, run.input as TitleWritingFrozenInput), sourceStoryId: approved });
       episode.currentScriptId = id;
       Object.assign(step, { scriptSave: "saved", scriptRevisionId: id, updatedAt: nowIso });
     }

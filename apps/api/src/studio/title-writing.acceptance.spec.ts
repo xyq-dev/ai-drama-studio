@@ -17,7 +17,13 @@ import { join } from "node:path";
 import type { INestApplication } from "@nestjs/common";
 import { Test } from "@nestjs/testing";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { TitleWritingRunView } from "@ai-drama/contracts";
+import {
+  TITLE_WRITING_PROMPT_VERSION_V2,
+  TITLE_WRITING_PROMPT_VERSION_V3,
+  TITLE_WRITING_PROMPT_VERSION_V4,
+  type TitleWritingFrozenInputV2,
+  type TitleWritingRunView,
+} from "@ai-drama/contracts";
 import {
   PostgresTitleWritingStore,
   TextChainService,
@@ -30,7 +36,14 @@ import {
   runMigrations,
   verifyTitleWritingAcceptanceDatabase,
 } from "@ai-drama/database";
-import { TITLE_WRITING_LEASE_MS, TitleWritingEngine, newTitleRun, titleWritingProviderConfigs, type WritingTransport } from "@ai-drama/providers";
+import {
+  TITLE_WRITING_LEASE_MS,
+  TitleWritingEngine,
+  hashTitleWritingInput,
+  newTitleRun,
+  titleWritingProviderConfigs,
+  type WritingTransport,
+} from "@ai-drama/providers";
 import {
   chatAnswer,
   fixtureConcept,
@@ -72,7 +85,8 @@ const scenarios = evidence.scenarios as Record<string, unknown>;
 // Model double: records every request, answers from fixtures, and can be told per title and attempt to fail.
 
 type Plan = { status: number; body: unknown } | "throw" | "hang" | { hold: Promise<void> };
-interface Sent { title: string; step: FixtureStep; attempt: number; endpoint: string; keyMatches: boolean }
+/** prompt: the version heading the writing requirements the prompt carried (v3 or v4), null for v1/v2 prompts. */
+interface Sent { title: string; step: FixtureStep; attempt: number; endpoint: string; keyMatches: boolean; prompt: string | null }
 
 const sent: Sent[] = [];
 const plans = new Map<string, (step: FixtureStep, attempt: number) => Plan | undefined>();
@@ -95,7 +109,8 @@ const transport: WritingTransport = async (request) => {
   const attempt = (attempts.get(key) ?? 0) + 1;
   attempts.set(key, attempt);
   const authorization = (request.headers as Record<string, string>).Authorization ?? (request.headers as Record<string, string>).authorization;
-  sent.push({ title, step, attempt, endpoint: `${endpoint.host}${endpoint.pathname}`, keyMatches: authorization === `Bearer ${STUB_KEY}` });
+  sent.push({ title, step, attempt, endpoint: `${endpoint.host}${endpoint.pathname}`, keyMatches: authorization === `Bearer ${STUB_KEY}`,
+    prompt: /编剧要求（(ads\.title-writing\.prompt\.v\d+)）/.exec(user)?.[1] ?? null });
   const plan = plans.get(title)?.(step, attempt);
   if (plan === "throw") throw new TypeError("fetch failed");
   if (plan === "hang") {
@@ -626,6 +641,62 @@ describe("title writing over real HTTP and PostgreSQL, model stubbed", () => {
     expect(sends(title)).toBe(1);
     scenarios.lateAnswerAfterFence = { projectId, runId: record.id, sends: 1, callRows: 1, call: "unknown/executor_lost", nextStepStarted: false,
       clock: "logical (lease + 1 s); no process was killed" };
+  });
+
+  it.each([
+    { stored: TITLE_WRITING_PROMPT_VERSION_V2, title: "跨版本重放验收", sentPrompt: null, scenario: "promptUpgradeReplay" },
+    { stored: TITLE_WRITING_PROMPT_VERSION_V3, title: "跨版本重放验收三", sentPrompt: TITLE_WRITING_PROMPT_VERSION_V3, scenario: "promptV3UpgradeReplay" },
+  ] as const)("a start stored with $stored before the upgrade, replayed concurrently over HTTP, returns that run; nothing new is stored or sent", async ({ stored: storedPrompt, title, sentPrompt, scenario }) => {
+    const created = await http(main, "POST", "/projects", { body: { title, premise: "", episodeCount: 3, targetEpisodeSeconds: 60 },
+      headers: { "idempotency-key": randomUUID() } });
+    expect(created.status).toBe(201);
+    const projectId = created.body.id as string;
+    const key = randomUUID();
+    // The run as the API before the upgrade stored it for this request: same workspace, actor ("server-owner" over HTTP),
+    // key and business input, frozen with the earlier prompt version and hashed with it.
+    const store = new PostgresTitleWritingStore(pool, new TextChainService(pool));
+    const fresh = newTitleRun({ workspaceId: WORKSPACE, projectId, actorId: "server-owner", idempotencyKey: key, title,
+      settings: { episodeCount: 3, episodeSeconds: 60, style: "" }, providerKey: "qwen", model: STUB_MODEL, now: new Date(), version: 2 });
+    const input: TitleWritingFrozenInputV2 = { ...(fresh.input as TitleWritingFrozenInputV2), promptVersion: storedPrompt };
+    const before = { ...fresh, input, inputHash: hashTitleWritingInput(projectId, input) };
+    expect((await store.createRun(before, { maxActiveRuns: 10 })).kind).toBe("created");
+    await new TitleWritingEngine({ workspaceId: WORKSPACE, store, providers: stubProviders(), transport, maxCallsPerDay: 200 }).drive(before.id);
+    expect(sends(title)).toBe(5);
+    expect(sent.filter((item) => item.title === title).every((item) => item.prompt === sentPrompt)).toBe(true);
+    const snapshot = async () => (await q<{ id: string; input_hash: string; input_json: unknown; calls_used: number; steps: number; calls: number }>(
+      `SELECT run.id, run.input_hash, run.input_json, run.calls_used,
+              (SELECT count(*)::int FROM title_writing_step step WHERE step.run_id = run.id) AS steps,
+              (SELECT count(*)::int FROM title_writing_call call WHERE call.run_id = run.id) AS calls
+         FROM title_writing_run run WHERE run.project_id = $1 ORDER BY run.created_at`, [projectId])).rows;
+    const stored = await snapshot();
+    expect(stored).toHaveLength(1);
+    expect(stored[0]).toMatchObject({ id: before.id, input_hash: before.inputHash, calls_used: 5, steps: 5, calls: 5 });
+    expect((stored[0]!.input_json as { promptVersion: string }).promptVersion).toBe(storedPrompt);
+
+    // The page replays its saved request after the upgrade, five times at once: each gets the stored run.
+    const body = { title, settings: { episodeCount: 3, episodeSeconds: 60 } };
+    const replays = await Promise.all(Array.from({ length: 5 }, () =>
+      http(main, "POST", `/projects/${projectId}/title-runs`, { body, headers: operator(key) })));
+    expect(replays.map((item) => item.status)).toEqual([200, 200, 200, 200, 200]);
+    expect(new Set(replays.map((item) => item.body.run.runId))).toEqual(new Set([before.id]));
+    expect(replays.every((item) => item.body.run.promptVersion === storedPrompt)).toBe(true);
+    // The same key with another business input is still a reused key.
+    const other = await http(main, "POST", `/projects/${projectId}/title-runs`, { body: { ...body, title: `${title}改` }, headers: operator(key) });
+    expect([other.status, other.body.error.code]).toEqual([409, "IDEMPOTENCY_KEY_REUSED"]);
+    // Nothing was created, reserved or sent: same rows, same hash and snapshot, same calls.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(await snapshot()).toEqual(stored);
+    expect(sends(title)).toBe(5);
+
+    // A new key on the same work after the upgrade is a new run frozen with prompt v4.
+    const next = await http(main, "POST", `/projects/${projectId}/title-runs`, { body, headers: operator(randomUUID()) });
+    expect(next.status).toBe(201);
+    expect(next.body.run.promptVersion).toBe(TITLE_WRITING_PROMPT_VERSION_V4);
+    await until(projectId, (run) => run.runId === next.body.run.runId && resting(run));
+    expect(sent.filter((item) => item.title === title).slice(5).every((item) => item.prompt === TITLE_WRITING_PROMPT_VERSION_V4)).toBe(true);
+    expect(sends(title)).toBe(10);
+    scenarios[scenario] = { projectId, storedPrompt, runId: before.id, concurrentReplays: replays.map((item) => item.status), otherInput: other.status,
+      runsAfterReplay: 1, callsAfterReplay: 5, sendsAfterReplay: 5, newRunPrompt: next.body.run.promptVersion };
   });
 
   it("the stub was the only model endpoint and saw only the stub key", () => {

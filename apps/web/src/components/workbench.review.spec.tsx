@@ -3,7 +3,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Workbench } from "./workbench";
+import { EntityPane, Workbench } from "./workbench";
 
 const PROJECT = "project-1";
 const CHAR_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -766,6 +766,22 @@ function draftFor(part: string): { idempotencyKey: string; ifMatch: number | nul
   return null;
 }
 
+/** Holds the GET whose path ends with `part` until released; `answered` settles once the simulated API has replied. */
+function holdHistory(sim: Sim, part: string): { release: () => void; answered: Promise<void> } {
+  let release!: () => void;
+  sim.holdGetPart = part;
+  sim.holdGet = new Promise<void>((resolve) => { release = resolve; });
+  let answer!: () => void;
+  const answered = new Promise<void>((resolve) => { answer = resolve; });
+  const reply = sim.fetch;
+  sim.fetch = async (input, init) => {
+    const response = await reply(input, init);
+    if ((String(input).split("?")[0] ?? "").endsWith(part)) answer();
+    return response;
+  };
+  return { release, answered };
+}
+
 async function openCharacter(id: string): Promise<HTMLFormElement> {
   const button = await screen.findByRole("button", { name: new RegExp(id.slice(0, 8)) });
   fireEvent.click(button);
@@ -818,6 +834,110 @@ describe("workbench review interactions against a simulated API", () => {
     expect(await screen.findByText("版本加载失败")).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "当前版本" })).toBeNull();
     expect(screen.queryByDisplayValue("角色甲")).toBeNull();
+  });
+
+  it("keeps a character chosen in the same task the list first appears, reads its history and shows it", async () => {
+    const sim = createSim();
+    install(sim);
+    renderAt("focus=character");
+    // Click from the DOM mutation that first adds the list: before the pane's own effects have run.
+    await new Promise<void>((resolve) => {
+      const observer = new MutationObserver(() => {
+        const button = screen.queryByRole("button", { name: new RegExp(CHAR_A.slice(0, 8)) });
+        if (!button) return;
+        observer.disconnect();
+        fireEvent.click(button);
+        resolve();
+      });
+      observer.observe(document.body, { subtree: true, childList: true });
+    });
+    const editor = await screen.findByRole("heading", { name: "当前版本" });
+    expect(screen.getByRole("button", { name: new RegExp(CHAR_A.slice(0, 8)) }).getAttribute("aria-pressed")).toBe("true");
+    expect(sim.calls.filter((call) => call.method === "GET" && call.url.endsWith(`/characters/${CHAR_A}/revisions`))).toHaveLength(1);
+    expect((within(editor.closest("form")!).getByLabelText("正文") as HTMLTextAreaElement).value).toBe("角色甲");
+  });
+
+  it("keeps the chosen character when the project base is read again", async () => {
+    const sim = createSim();
+    install(sim);
+    renderAt("focus=character");
+    await openCharacter(CHAR_A);
+    const listReads = () => sim.calls.filter((call) => call.method === "GET" && call.url === `/api/v1/projects/${PROJECT}/characters`).length;
+    const before = listReads();
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    await waitFor(() => expect(listReads()).toBeGreaterThan(before));
+    await waitFor(() => expect(screen.getByRole("heading", { name: "当前版本" })).toBeTruthy());
+    expect(screen.getByRole("button", { name: new RegExp(CHAR_A.slice(0, 8)) }).getAttribute("aria-pressed")).toBe("true");
+    expect((within(formOf("当前版本")).getByLabelText("正文") as HTMLTextAreaElement).value).toBe("角色甲");
+  });
+
+  it("drops the choice when the kind changes, and a late history answer of the old kind shows nothing", async () => {
+    const sim = createSim();
+    const { release, answered } = holdHistory(sim, `/characters/${CHAR_A}/revisions`);
+    install(sim);
+    renderAt("focus=character");
+    fireEvent.click(await screen.findByRole("button", { name: new RegExp(CHAR_A.slice(0, 8)) }));
+    expect(await screen.findByText("正在加载版本")).toBeTruthy();
+    fireEvent.click(within(screen.getByRole("navigation", { name: "创作步骤" })).getByRole("button", { name: "场地" }));
+    await screen.findByRole("heading", { name: "新建场地" });
+    release();
+    await answered;
+    await act(async () => undefined);
+    expect(screen.queryByRole("heading", { name: "当前版本" })).toBeNull();
+    expect(screen.queryByText("正在加载版本")).toBeNull();
+    fireEvent.click(within(screen.getByRole("navigation", { name: "创作步骤" })).getByRole("button", { name: "角色" }));
+    await screen.findByRole("heading", { name: "新建角色" });
+    expect(screen.getByRole("button", { name: new RegExp(CHAR_A.slice(0, 8)) }).getAttribute("aria-pressed")).toBe("false");
+    expect(screen.queryByRole("heading", { name: "当前版本" })).toBeNull();
+    expect(screen.getByText("选择一个对象后显示版本。")).toBeTruthy();
+  });
+
+  it("drops the choice when the project changes, and the old project's late history answer shows nothing", async () => {
+    const sim = createSim();
+    const { release, answered } = holdHistory(sim, `/characters/${CHAR_A}/revisions`);
+    install(sim);
+    type Props = Parameters<typeof EntityPane>[0];
+    const pane = (projectId: string, entityIds: string[]) => createElement(EntityPane, {
+      project: { id: projectId, title: projectId, premise: "", version: 1, status: "ACTIVE" },
+      kind: "character",
+      page: { scope: projectId, items: entityIds.map((id) => listAggregate(id)), nextCursor: null } as Props["page"],
+      episodes: [], onMore: () => undefined, onSaved: async () => undefined, onStatus: () => undefined,
+    });
+    const view = render(pane(PROJECT, [CHAR_A, CHAR_B]));
+    fireEvent.click(screen.getByRole("button", { name: new RegExp(CHAR_A.slice(0, 8)) }));
+    expect(screen.getByText("正在加载版本")).toBeTruthy();
+    view.rerender(pane("project-2", [CHAR_B]));
+    expect(screen.queryByText("正在加载版本")).toBeNull();
+    release();
+    await answered;
+    await act(async () => undefined);
+    expect(screen.queryByRole("heading", { name: "当前版本" })).toBeNull();
+    expect(screen.getByRole("button", { name: new RegExp(CHAR_B.slice(0, 8)) }).getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(screen.getByRole("button", { name: new RegExp(CHAR_B.slice(0, 8)) }));
+    expect((within(await screen.findByRole("heading", { name: "当前版本" }).then((node) => node.closest("form")!)).getByLabelText("正文") as HTMLTextAreaElement).value).toBe("角色乙");
+    expect(sim.calls.filter((call) => call.method === "GET" && call.url.includes("/revisions")).map((call) => call.url)).toEqual([
+      `/api/v1/projects/${PROJECT}/characters/${CHAR_A}/revisions`, `/api/v1/projects/project-2/characters/${CHAR_B}/revisions`,
+    ]);
+  });
+
+  it("opens a focused entity on mount and again for a new nonce in the same scope", async () => {
+    const sim = createSim();
+    install(sim);
+    type Props = Parameters<typeof EntityPane>[0];
+    const pane = (focus: Props["focus"]) => createElement(EntityPane, {
+      project: { id: PROJECT, title: PROJECT, premise: "", version: 1, status: "ACTIVE" },
+      kind: "character",
+      page: { scope: PROJECT, items: [listAggregate(CHAR_A), listAggregate(CHAR_B)], nextCursor: null } as Props["page"],
+      episodes: [], onMore: () => undefined, onSaved: async () => undefined, onStatus: () => undefined, focus,
+    });
+    const view = render(pane({ entityId: CHAR_B, nonce: 1 }));
+    expect((within((await screen.findByRole("heading", { name: "当前版本" })).closest("form")!).getByLabelText("正文") as HTMLTextAreaElement).value).toBe("角色乙");
+    await waitFor(() => expect(document.activeElement?.closest("[data-entity-editor]")?.getAttribute("data-entity-editor")).toBe(CHAR_B));
+    fireEvent.click(screen.getByRole("button", { name: new RegExp(CHAR_A.slice(0, 8)) }));
+    await waitFor(() => expect((within(formOf("当前版本")).getByLabelText("正文") as HTMLTextAreaElement).value).toBe("角色甲"));
+    view.rerender(pane({ entityId: CHAR_B, nonce: 2 }));
+    await waitFor(() => expect((within(formOf("当前版本")).getByLabelText("正文") as HTMLTextAreaElement).value).toBe("角色乙"));
+    expect(screen.getByRole("button", { name: new RegExp(CHAR_B.slice(0, 8)) }).getAttribute("aria-pressed")).toBe("true");
   });
 
   it("restores a new-entity draft for its own kind and drops the other kind", async () => {
