@@ -597,7 +597,9 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
       // Unheld runs only: a live lease is left to its executor. The kind comes from the frozen schema, never from the
       // optional run_kind column, so this works on the migration chain before the breakdown migration.
       const unheld = await client.query<Row>(
-        `SELECT id, cancel_requested_at FROM title_writing_run
+        `SELECT id, cancel_requested_at, story_save, input_json ->> 'schema' = $4 AS breakdown,
+                (to_jsonb(title_writing_run) ->> 'breakdown_save') AS breakdown_save
+           FROM title_writing_run
           WHERE workspace_id = $2 AND state = 'running' AND (executor_id IS NULL OR lease_until <= $1)
             AND (CASE WHEN input_json ->> 'schema' = $4 THEN 'script_breakdown' ELSE 'title' END) = ANY($3::text[])
           ORDER BY updated_at LIMIT 50 FOR UPDATE SKIP LOCKED`,
@@ -636,10 +638,19 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
           await client.query("UPDATE title_writing_step SET state = 'canceled', updated_at = $2 WHERE run_id = $1 AND state = 'pending'",
             [runId, nowIso]);
         } else {
-          const unknown = await client.query<Row>(
-            "SELECT error_code FROM title_writing_step WHERE run_id = $1 AND state = 'unknown' ORDER BY ordinal LIMIT 1", [runId]);
-          const found = unknown.rows[0];
-          if (found) errorCode = found.error_code === null ? "uncertain_call" : String(found.error_code);
+          const open = await client.query<Row>(
+            "SELECT count(*)::int AS open FROM title_writing_step WHERE run_id = $1 AND state <> 'completed'", [runId]);
+          const saved = (row.breakdown === true ? row.breakdown_save : row.story_save) === "saved";
+          if (Number(open.rows[0]?.open ?? 1) === 0 && saved) {
+            // The executor saved the result and stopped before finishing the run: it is done, nothing is sent or saved again.
+            state = "completed";
+            errorCode = null;
+          } else {
+            const unknown = await client.query<Row>(
+              "SELECT error_code FROM title_writing_step WHERE run_id = $1 AND state = 'unknown' ORDER BY ordinal LIMIT 1", [runId]);
+            const found = unknown.rows[0];
+            if (found) errorCode = found.error_code === null ? "uncertain_call" : String(found.error_code);
+          }
         }
         await client.query(
           `UPDATE title_writing_run SET state = $2, error_code = $3, executor_id = NULL, lease_until = NULL, updated_at = $4

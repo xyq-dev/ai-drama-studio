@@ -249,7 +249,9 @@ export interface TitleWritingStore {
    * Stops running runs of the given switched-off kinds of this workspace that no executor holds (unclaimed or with an
    * expired lease), without any send, so they no longer hold an active-run slot. Each run is settled under its row lock
    * like a fenced executor: reserved calls were never sent, submitted calls become unknown and the run needs attention;
-   * otherwise a requested cancel ends as canceled and anything else needs attention with TITLE_WRITING_RUN_KIND_DISABLED.
+   * otherwise a requested cancel ends as canceled, a run whose steps all completed and whose result was already saved
+   * ends as completed (its executor stopped before finishing it), and anything else needs attention with
+   * TITLE_WRITING_RUN_KIND_DISABLED.
    * Runs held under a live lease are left alone. Call records, uncertain calls and their cost are kept.
    */
   retireDisabledRuns(workspaceId: string, nowIso: string, disabledKinds: readonly TitleRunKind[]): Promise<number>;

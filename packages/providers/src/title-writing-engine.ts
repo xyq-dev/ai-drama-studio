@@ -923,6 +923,11 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
         state = "canceled";
         errorCode = null;
         for (const step of steps.filter((item) => item.state === "pending")) Object.assign(step, { state: "canceled", updatedAt: nowIso });
+      } else if (steps.every((step) => step.state === "completed")
+        && (isScriptBreakdownInput(run.input) ? run.breakdownSave : run.storySave) === "saved") {
+        // The executor saved the result and stopped before finishing the run: it is done, nothing is sent or saved again.
+        state = "completed";
+        errorCode = null;
       } else if (unknownStep) {
         errorCode = unknownStep.errorCode ?? "uncertain_call";
       }

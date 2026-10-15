@@ -892,6 +892,49 @@ describe("stopping runs of a switched-off kind on the seven-migration schema", (
       canceled: "canceled", liveLease: "untouched", otherWorkspace: "untouched", absentRunKindColumn: true };
   });
 
+  it("completes a title run whose story was saved before its executor stopped, without a send or a second story", async () => {
+    const ws = await newWorkspace("retire-saved");
+    const saved = run(ws, await newProject(ws, "saved"), "saved");
+    const unsaved = run(ws, await newProject(ws, "unsaved"), "unsaved");
+    for (const record of [saved, unsaved]) {
+      expect((await store.createRun(record, { maxActiveRuns: 50 })).kind).toBe("created");
+      // The real store path up to the end: every step reserved, submitted and finished, then (for one run) the story saved.
+      expect(await store.claimRun(ws, record.id, "dead", now(), later(60_000))).toBe(true);
+      for (const [stepKey, output] of OUTPUTS) {
+        const item = call(record, "dead", stepKey);
+        expect(await store.reserveCall(item, wide, now(), later(60_000))).toEqual({ kind: "reserved" });
+        expect(await store.markCallSubmitted(ws, item.id, "dead", now(), later(60_000))).toBe("submitted");
+        expect(await store.finishCall(ws, item.id, "dead", completed(output), now())).toBe(true);
+      }
+    }
+    // The executor stops right after the save commits: finishRun never runs.
+    expect(await store.saveStory(ws, saved.id, "dead", "故事正文", "server-owner", now())).toBe("saved");
+    const stopped = (await store.getRunById(ws, saved.id))!;
+    expect(stopped.run).toMatchObject({ state: "running", storySave: "saved", executorId: "dead" });
+    const evidenceOf = async () => ({
+      calls: (await pool.query("SELECT id, state, error_code, usage_json, billing_status, provider_request_id FROM title_writing_call WHERE workspace_id = $1 ORDER BY id", [ws])).rows,
+      stories: (await pool.query("SELECT id FROM story_revision WHERE workspace_id = $1 ORDER BY id", [ws])).rows,
+      steps: (await pool.query("SELECT run_id, step_key, state, output_hash FROM title_writing_step WHERE run_id = ANY($1::uuid[]) ORDER BY run_id, step_key", [[saved.id, unsaved.id]])).rows,
+    });
+    const before = await evidenceOf();
+    expect(before.stories).toHaveLength(1);
+
+    expect(await store.retireDisabledRuns(ws, later(120_000), ["title"])).toBe(2);
+
+    expect((await store.getRunById(ws, saved.id))!.run).toMatchObject({ state: "completed", errorCode: null, executorId: null, leaseUntil: null,
+      storySave: "saved", storyRevisionId: stopped.run.storyRevisionId, callsUsed: stopped.run.callsUsed });
+    // Steps all completed but no story saved yet: the original rule still applies; a resume saves it later.
+    expect((await store.getRunById(ws, unsaved.id))!.run).toMatchObject({ state: "needs_attention", errorCode: TITLE_WRITING_RUN_KIND_DISABLED,
+      storySave: "pending" });
+    expect(await evidenceOf()).toEqual(before);
+    // Switched back on: nothing to claim and nothing to resume for the completed run.
+    expect(await store.listClaimable(ws, later(120_000), 50)).toEqual([]);
+    expect((await store.prepareResume(ws, saved.projectId, saved.id, resumeRequest(saved.id, "after-complete", []), now())).kind).toBe("not_resumable");
+    expect(await store.retireDisabledRuns(ws, later(120_000), ["title"])).toBe(0);
+    expect(await evidenceOf()).toEqual(before);
+    evidence.retireSavedTitle = { completed: true, storiesUnchanged: true, callsUnchanged: true, unsavedNeedsAttention: true };
+  });
+
   it("frees the only active slot under a cap of one so another start succeeds, and the stopped run resumes later", async () => {
     const ws = await newWorkspace("retire-cap");
     // This schema holds title runs only, so the switched-off kind here is "title"; the store logic is the same per kind.

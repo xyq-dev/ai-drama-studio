@@ -220,3 +220,94 @@ describe("stopping runs of a switched-off kind", () => {
     expect(retire).not.toHaveBeenCalled();
   });
 });
+
+describe("a run whose result was saved before its executor stopped", () => {
+  /**
+   * Drives a run through the real engine and the real save (story or breakdown) and stops the executor right after the
+   * save: the finishing write is lost, so the run is still running with an expired lease. Nothing is faked but that write.
+   */
+  async function crashedAfterSave(kind: TitleRunKind, stopBeforeSave = false) {
+    let now = Date.now();
+    const clock = () => new Date(now);
+    const store = new InMemoryTitleWritingStore();
+    const seen: FixtureExchange[] = [];
+    const transport = fixtureChatTransport(TITLE, { seen });
+    const run = kind === "title" ? await title(store) : await breakdown(store);
+    if (stopBeforeSave) vi.spyOn(store, "saveBreakdown").mockResolvedValueOnce("lost");
+    else vi.spyOn(store, "finishRun").mockResolvedValueOnce(false);
+    await new TitleWritingEngine({ workspaceId: WS, store, providers, maxCallsPerDay: 100, transport, clock, leaseMs: 1_000 }).drive(run.id);
+    vi.restoreAllMocks();
+    const stopped = (await store.getRunById(WS, run.id))!;
+    expect(stopped.run.state).toBe("running");
+    expect(stopped.steps.every((step) => step.state === "completed")).toBe(true);
+    now += 5_000;
+    const engine = (allowedRunKinds: readonly TitleRunKind[]) => new TitleWritingEngine({ workspaceId: WS, store, providers, maxCallsPerDay: 100,
+      transport, clock, leaseMs: 1_000, allowedRunKinds });
+    const written = () => ({ stories: [...store.projects.values()].reduce((total, item) => total + item.stories.length, 0),
+      scenes: store.scenes.length, revisions: store.scenes.reduce((total, item) => total + item.revisions.length, 0), shots: store.shots.length });
+    return { store, seen, run, stopped, engine, written };
+  }
+
+  it.each(["title", "script_breakdown"] as const)("a %s run ends completed without a send, a second save or a new revision", async (kind) => {
+    const { store, seen, run, stopped, engine, written } = await crashedAfterSave(kind);
+    expect(kind === "title" ? stopped.run.storySave : stopped.run.breakdownSave).toBe("saved");
+    const sends = seen.length;
+    const before = written();
+    const save = vi.spyOn(store, kind === "title" ? "saveStory" : "saveBreakdown");
+
+    await engine(kind === "title" ? ["script_breakdown"] : ["title"]).maintain();
+
+    const after = (await store.getRunById(WS, run.id))!;
+    expect(after.run).toMatchObject({ state: "completed", errorCode: null, executorId: null, leaseUntil: null, callsUsed: stopped.run.callsUsed,
+      storySave: stopped.run.storySave, storyRevisionId: stopped.run.storyRevisionId, breakdownSave: stopped.run.breakdownSave });
+    expect(after.steps).toEqual(stopped.steps);
+    expect(after.calls).toEqual(stopped.calls);
+    expect(seen).toHaveLength(sends);
+    expect(save).not.toHaveBeenCalled();
+    expect(written()).toEqual(before);
+
+    // Switched back on: nothing is claimed, sent or written again, and there is nothing to resume.
+    await engine(["title", "script_breakdown"]).maintain();
+    expect(seen).toHaveLength(sends);
+    expect(save).not.toHaveBeenCalled();
+    expect(written()).toEqual(before);
+    expect((await store.getRunById(WS, run.id))!.calls).toEqual(stopped.calls);
+    expect(await store.prepareResume(WS, run.projectId, run.id,
+      { resumeKey: "after", requestHash: "e".repeat(64), confirmedCallIds: [], maxActiveRuns: 1 }, new Date().toISOString())).toEqual({ kind: "not_resumable" });
+  });
+
+  it("a breakdown whose answer was stored but not yet saved still stops for a later resume, which saves it without a send", async () => {
+    const { store, seen, run, stopped, engine, written } = await crashedAfterSave("script_breakdown", true);
+    expect(stopped.run.breakdownSave).toBe("pending");
+    const sends = seen.length;
+    const before = written();
+    await engine(["title"]).maintain();
+    expect((await store.getRunById(WS, run.id))!.run).toMatchObject({ state: "needs_attention", errorCode: TITLE_WRITING_RUN_KIND_DISABLED });
+    expect(written()).toEqual(before);
+    expect((await store.prepareResume(WS, run.projectId, run.id,
+      { resumeKey: "after", requestHash: "e".repeat(64), confirmedCallIds: [], maxActiveRuns: 1 }, new Date().toISOString())).kind).toBe("ok");
+    await engine(["title", "script_breakdown"]).maintain();
+    const done = (await store.getRunById(WS, run.id))!;
+    expect(done.run).toMatchObject({ state: "completed", breakdownSave: "saved" });
+    expect(done.calls).toEqual(stopped.calls);
+    expect(seen).toHaveLength(sends);
+  });
+
+  it("a requested cancel still ends as canceled, as the engine would", async () => {
+    const { store, run, engine } = await crashedAfterSave("script_breakdown");
+    await store.requestCancel(WS, run.projectId, run.id, new Date().toISOString());
+    await engine(["title"]).maintain();
+    expect((await store.getRunById(WS, run.id))!.run).toMatchObject({ state: "canceled", breakdownSave: "saved" });
+  });
+
+  it("a live lease is still left to its executor", async () => {
+    const { store, run, stopped } = await crashedAfterSave("script_breakdown");
+    // Past the stopped executor's lease, another executor takes the run under a lease that is still live.
+    const later = new Date(Date.now() + 10_000).toISOString();
+    expect(await store.claimRun(WS, run.id, "alive", later, new Date(Date.now() + 600_000).toISOString())).toBe(true);
+    const held = await store.getRunById(WS, run.id);
+    expect(await store.retireDisabledRuns(WS, later, ["script_breakdown"])).toBe(0);
+    expect(await store.getRunById(WS, run.id)).toEqual(held);
+    expect(held!.calls).toEqual(stopped.calls);
+  });
+});
