@@ -12,7 +12,7 @@
 | 编辑保存为新版本、If-Match、幂等 | 场景/镜头修订接口和工作台编辑表单 | 直接复用；镜头表单增加“预计时长（秒）”。未填与显式 `null` 都表示没有预计时长，请求身份不含该字段，与增加字段前记录的幂等回执一致；填写的时长计入身份。API 只接受 1–15 整秒（`plannedDurationMs` 为 1000 的整数倍，1000–15000），与编辑器一致；新建和修改都拒绝 1501 等非整秒值 |
 | 源剧本修改后的失效 | `staleFromScript`：场景整版依赖剧本，新剧本版本成为当前版本时，旧场景和其镜头标为 `STALE` | 直接复用，不新写失效逻辑 |
 | 付费模型调用、额度、取消、租约恢复、结果未知不重发 | 标题创作的 `title_writing_run / step / call / resume` 与 `TitleWritingEngine` | 复用：新增运行种类 `script_breakdown`，只有一个步骤 `breakdown` |
-| 模型配置、操作者令牌、开关 | `TITLE_WRITING_ENABLED`、`X-Operator-Token`、服务端模型白名单 | 直接复用，没有新的模型入口 |
+| 模型配置、操作者令牌、开关 | `TITLE_WRITING_ENABLED`、`X-Operator-Token`、服务端模型白名单 | 直接复用，没有新的模型入口。拆解另需 `SCRIPT_BREAKDOWN_ENABLED=true`（默认 `false`），且只在非 production 下生效；只开标题创作时拆解保持关闭，后台也不恢复拆解任务 |
 
 ### 1.1 关键约束与取舍：镜头必须等场景批准后才写入
 

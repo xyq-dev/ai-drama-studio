@@ -83,7 +83,8 @@ export class StudioRuntime implements OnModuleDestroy {
     const siteLoginValid = siteAuthFromEnv(env).kind === "enabled";
     const titleWritingAllowProduction = env.TITLE_WRITING_ALLOW_PRODUCTION && siteLoginValid;
     const titleWritingEnabled = env.TITLE_WRITING_ENABLED && (nonProduction || titleWritingAllowProduction);
-    const scriptBreakdownEnabled = nonProduction && env.TITLE_WRITING_ENABLED;
+    // Script breakdown has its own switch: turning on title writing never starts or resumes a breakdown.
+    const scriptBreakdownEnabled = nonProduction && env.TITLE_WRITING_ENABLED && env.SCRIPT_BREAKDOWN_ENABLED;
     const mockImageEnabled = nonProduction && env.M3_MOCK_IMAGE_ENABLED && Boolean(absoluteDir);
     const mockAvEnabled = nonProduction && env.M3_MOCK_AV_ENABLED && Boolean(absoluteDir);
     const mockSmEnabled = nonProduction && env.M3_MOCK_SUBTITLE_MUSIC_ENABLED && Boolean(absoluteDir);

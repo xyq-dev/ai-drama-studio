@@ -31,6 +31,7 @@ const apiEnvSchema = z.object({
   TITLE_WRITING_MAX_CALLS_PER_DAY: z.coerce.number().int().min(1).max(500).default(30),
   TITLE_WRITING_MAX_ACTIVE_RUNS: z.coerce.number().int().min(1).max(10).default(1),
   TITLE_WRITING_ALLOW_PRODUCTION: z.enum(["true", "false"]).default("false"),
+  SCRIPT_BREAKDOWN_ENABLED: z.enum(["true", "false"]).default("false"),
 });
 
 export class EnvValidationError extends Error {
@@ -81,6 +82,8 @@ export interface ApiEnv {
   TITLE_WRITING_MAX_ACTIVE_RUNS: number;
   /** Process-only production authorization for title writing only. Defaults false and rejects invalid values. */
   TITLE_WRITING_ALLOW_PRODUCTION: boolean;
+  /** Script breakdown switch. Default off; also needs TITLE_WRITING_ENABLED and stays off in production. */
+  SCRIPT_BREAKDOWN_ENABLED: boolean;
   /** Process environment only, never the .env file. Server-side secrets and model allowlists. */
   TITLE_WRITING_QWEN_MODELS?: string;
   OPENAI_API_KEY?: string;
@@ -153,6 +156,7 @@ const API_KEYS = [
   "TITLE_WRITING_DEFAULT_PROVIDER",
   "TITLE_WRITING_MAX_CALLS_PER_DAY",
   "TITLE_WRITING_MAX_ACTIVE_RUNS",
+  "SCRIPT_BREAKDOWN_ENABLED",
 ] as const;
 
 function pickEnv(
@@ -219,5 +223,6 @@ export function loadApiEnv(
     QWEN_WEB_WRITING_ENABLED: parsed.data.QWEN_WEB_WRITING_ENABLED === "true",
     TITLE_WRITING_ENABLED: parsed.data.TITLE_WRITING_ENABLED === "true",
     TITLE_WRITING_ALLOW_PRODUCTION: parsed.data.TITLE_WRITING_ALLOW_PRODUCTION === "true",
+    SCRIPT_BREAKDOWN_ENABLED: parsed.data.SCRIPT_BREAKDOWN_ENABLED === "true",
   };
 }

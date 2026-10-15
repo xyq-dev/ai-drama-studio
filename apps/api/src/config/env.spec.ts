@@ -27,6 +27,17 @@ describe("loadApiEnv", () => {
       .toThrow(/TITLE_WRITING_ALLOW_PRODUCTION/);
   });
 
+  it("reads the script breakdown switch as a strict boolean that defaults off", () => {
+    expect(loadApiEnv(valid).SCRIPT_BREAKDOWN_ENABLED).toBe(false);
+    expect(loadApiEnv({ ...valid, SCRIPT_BREAKDOWN_ENABLED: "true" }).SCRIPT_BREAKDOWN_ENABLED).toBe(true);
+    expect(loadApiEnv({ ...valid, SCRIPT_BREAKDOWN_ENABLED: "false" }).SCRIPT_BREAKDOWN_ENABLED).toBe(false);
+    expect(loadApiEnv(valid, { SCRIPT_BREAKDOWN_ENABLED: "true" }).SCRIPT_BREAKDOWN_ENABLED).toBe(true);
+  });
+
+  it.each(["", "yes", "TRUE", "1"])("rejects an invalid script breakdown switch: %j", (value) => {
+    expect(() => loadApiEnv({ ...valid, SCRIPT_BREAKDOWN_ENABLED: value })).toThrow(/SCRIPT_BREAKDOWN_ENABLED/);
+  });
+
   it("rejects missing required fields by name", () => {
     expect(() => loadApiEnv({})).toThrow(/DATABASE_URL/);
   });
