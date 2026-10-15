@@ -498,6 +498,51 @@ describe("script breakdown on PostgreSQL", () => {
     evidence.retireSavedBreakdown = { completed: true, revisionsUnchanged: true, callsUnchanged: true, unsavedNeedsAttention: true };
   });
 
+  it.each([
+    { refusal: "source_changed", code: "breakdown_source_changed" },
+    { refusal: "conflict", code: "breakdown_conflict" },
+  ] as const)("ends a breakdown whose save was $refusal before its executor stopped with $code, without a send or a second save", async ({ refusal, code }) => {
+    const { ws, project, storyId, episodes } = await work(1);
+    const episode = episodes[0]!;
+    const record = await startBreakdown(ws, project, episode.id);
+    const executor = await answer(record, outputOf(1, 1, null));
+    // A person changes the source before the save: a newer script, or a manual scene in the episode.
+    if (refusal === "source_changed") {
+      await writeScript(ws, project, storyId, episode.id, scriptOf(1, 3));
+    } else {
+      const row = await episodeRow(episode.id);
+      await tx((client) => chain.createSceneRevisionInTransaction(client, { workspaceId: ws, projectId: project, episodeId: episode.id,
+        sourceScriptRevisionId: row.current_script_revision_id!, ordinal: 1, heading: "人工场景", summary: "人工", createdBy: "editor",
+        expectedVersion: row.row_version }));
+    }
+    // The real save refuses it, and the executor stops before finishRun.
+    expect(await store.saveBreakdown(ws, record.id, executor, "server-owner", now())).toBe(refusal);
+    const stopped = (await store.getRunById(ws, record.id))!;
+    expect(stopped.run).toMatchObject({ state: "running", breakdownSave: refusal, executorId: executor });
+    const evidenceOf = async () => ({
+      calls: (await pool.query("SELECT id, state, error_code, usage_json, billing_status, provider_request_id FROM title_writing_call WHERE workspace_id = $1 ORDER BY id", [ws])).rows,
+      steps: (await pool.query("SELECT step_key, state, output_hash FROM title_writing_step WHERE run_id = $1 ORDER BY step_key", [record.id])).rows,
+      scenes: (await pool.query("SELECT id, current_revision_id, archived_at FROM scene WHERE workspace_id = $1 ORDER BY id", [ws])).rows,
+      sceneRevisions: (await pool.query("SELECT id FROM scene_revision WHERE workspace_id = $1 ORDER BY id", [ws])).rows,
+      shots: (await pool.query("SELECT id FROM shot WHERE workspace_id = $1 ORDER BY id", [ws])).rows,
+      shotRevisions: (await pool.query("SELECT id FROM shot_revision WHERE workspace_id = $1 ORDER BY id", [ws])).rows,
+    });
+    const before = await evidenceOf();
+
+    expect(await store.retireDisabledRuns(ws, later(120_000), ["script_breakdown"])).toBe(1);
+
+    expect((await store.getRunById(ws, record.id))!.run).toMatchObject({ state: "needs_attention", errorCode: code, executorId: null,
+      leaseUntil: null, breakdownSave: refusal, callsUsed: stopped.run.callsUsed });
+    expect(await evidenceOf()).toEqual(before);
+    // Switched back on: nothing to claim, nothing to resume, nothing written again.
+    expect(await store.listClaimable(ws, later(120_000), 50)).toEqual([]);
+    expect((await resumeOf(ws, project, record.id)).kind).toBe("not_resumable");
+    expect(await store.retireDisabledRuns(ws, later(120_000), ["script_breakdown"])).toBe(0);
+    expect(await evidenceOf()).toEqual(before);
+    evidence[refusal === "conflict" ? "retireConflictBreakdown" : "retireSourceChangedBreakdown"] = { errorCode: code, revisionsUnchanged: true,
+      callsUnchanged: true };
+  });
+
   it("frees the slot a stranded breakdown held under a cap of one, so a title can start", async () => {
     const { ws, project, episodes } = await work(1);
     await startBreakdown(ws, project, episodes[0]!.id);

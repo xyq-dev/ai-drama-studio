@@ -935,6 +935,48 @@ describe("stopping runs of a switched-off kind on the seven-migration schema", (
     evidence.retireSavedTitle = { completed: true, storiesUnchanged: true, callsUnchanged: true, unsavedNeedsAttention: true };
   });
 
+  it("ends a title run whose story save was refused before its executor stopped with story_conflict, without a send or a second save", async () => {
+    const ws = await newWorkspace("retire-conflict");
+    const project = await newProject(ws, "conflict");
+    // Another run already saved this project's story and finished.
+    const first = run(ws, project, "first");
+    expect((await store.createRun(first, { maxActiveRuns: 50 })).kind).toBe("created");
+    expect(await store.claimRun(ws, first.id, "first", now(), later(60_000))).toBe(true);
+    expect(await store.saveStory(ws, first.id, "first", "先保存的故事", "server-owner", now())).toBe("saved");
+    expect(await store.finishRun(ws, first.id, "first", "completed", null, now())).toBe(true);
+    const refused = run(ws, project, "refused", "34".repeat(32));
+    expect((await store.createRun(refused, { maxActiveRuns: 50 })).kind).toBe("created");
+    expect(await store.claimRun(ws, refused.id, "dead", now(), later(60_000))).toBe(true);
+    for (const [stepKey, output] of OUTPUTS) {
+      const item = call(refused, "dead", stepKey);
+      expect(await store.reserveCall(item, wide, now(), later(60_000))).toEqual({ kind: "reserved" });
+      expect(await store.markCallSubmitted(ws, item.id, "dead", now(), later(60_000))).toBe("submitted");
+      expect(await store.finishCall(ws, item.id, "dead", completed(output), now())).toBe(true);
+    }
+    // The real save refuses it, and the executor stops before finishRun.
+    expect(await store.saveStory(ws, refused.id, "dead", "故事正文", "server-owner", now())).toBe("conflict");
+    const stopped = (await store.getRunById(ws, refused.id))!;
+    expect(stopped.run).toMatchObject({ state: "running", storySave: "conflict", executorId: "dead" });
+    const evidenceOf = async () => ({
+      calls: (await pool.query("SELECT id, state, error_code, usage_json, billing_status, provider_request_id FROM title_writing_call WHERE workspace_id = $1 ORDER BY id", [ws])).rows,
+      stories: (await pool.query("SELECT id, content_json FROM story_revision WHERE workspace_id = $1 ORDER BY id", [ws])).rows,
+      project: (await pool.query("SELECT version, current_story_revision_id FROM project WHERE id = $1", [project])).rows,
+      steps: (await pool.query("SELECT step_key, state, output_hash FROM title_writing_step WHERE run_id = $1 ORDER BY step_key", [refused.id])).rows,
+    });
+    const before = await evidenceOf();
+    expect(before.stories).toHaveLength(1);
+
+    expect(await store.retireDisabledRuns(ws, later(120_000), ["title"])).toBe(1);
+
+    expect((await store.getRunById(ws, refused.id))!.run).toMatchObject({ state: "needs_attention", errorCode: "story_conflict", executorId: null,
+      leaseUntil: null, storySave: "conflict", storyRevisionId: stopped.run.storyRevisionId, callsUsed: stopped.run.callsUsed });
+    expect(await evidenceOf()).toEqual(before);
+    expect(await store.listClaimable(ws, later(120_000), 50)).toEqual([]);
+    expect(await store.retireDisabledRuns(ws, later(120_000), ["title"])).toBe(0);
+    expect(await evidenceOf()).toEqual(before);
+    evidence.retireRefusedTitle = { errorCode: "story_conflict", storiesUnchanged: true, callsUnchanged: true };
+  });
+
   it("frees the only active slot under a cap of one so another start succeeds, and the stopped run resumes later", async () => {
     const ws = await newWorkspace("retire-cap");
     // This schema holds title runs only, so the switched-off kind here is "title"; the store logic is the same per kind.

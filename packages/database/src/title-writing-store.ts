@@ -4,6 +4,7 @@ import {
   SCRIPT_BREAKDOWN_STEP_KEY,
   TITLE_WRITING_CANCELED_BEFORE_SEND,
   TITLE_WRITING_RUN_KIND_DISABLED,
+  settledSaveOutcome,
   currentUncertainCallIds,
   isScriptBreakdownInput,
   type ScriptBreakdownDetails,
@@ -640,11 +641,13 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
         } else {
           const open = await client.query<Row>(
             "SELECT count(*)::int AS open FROM title_writing_step WHERE run_id = $1 AND state <> 'completed'", [runId]);
-          const saved = (row.breakdown === true ? row.breakdown_save : row.story_save) === "saved";
-          if (Number(open.rows[0]?.open ?? 1) === 0 && saved) {
-            // The executor saved the result and stopped before finishing the run: it is done, nothing is sent or saved again.
-            state = "completed";
-            errorCode = null;
+          const settled = Number(open.rows[0]?.open ?? 1) === 0
+            ? settledSaveOutcome(row.breakdown === true, row.breakdown === true ? row.breakdown_save : row.story_save)
+            : null;
+          if (settled) {
+            // The executor settled the save and stopped before finishing the run: end it as the engine would, nothing is
+            // sent or saved again.
+            ({ state, errorCode } = settled);
           } else {
             const unknown = await client.query<Row>(
               "SELECT error_code FROM title_writing_step WHERE run_id = $1 AND state = 'unknown' ORDER BY ordinal LIMIT 1", [runId]);

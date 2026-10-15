@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   TITLE_WRITING_CANCELED_BEFORE_SEND,
   TITLE_WRITING_RUN_KIND_DISABLED,
+  settledSaveOutcome,
   type TitleCallFinish,
   type TitleCallRecord,
   type TitleCallReservation,
@@ -915,6 +916,10 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
       }
       const steps = this.steps.filter((item) => item.runId === run.id).sort((left, right) => left.ordinal - right.ordinal);
       const unknownStep = steps.find((step) => step.state === "unknown");
+      const breakdown = isScriptBreakdownInput(run.input);
+      const settled = steps.every((step) => step.state === "completed")
+        ? settledSaveOutcome(breakdown, breakdown ? run.breakdownSave : run.storySave)
+        : null;
       let state: Exclude<TitleWritingRunState, "running"> = "needs_attention";
       let errorCode: string | null = TITLE_WRITING_RUN_KIND_DISABLED;
       if (uncertain) {
@@ -923,11 +928,10 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
         state = "canceled";
         errorCode = null;
         for (const step of steps.filter((item) => item.state === "pending")) Object.assign(step, { state: "canceled", updatedAt: nowIso });
-      } else if (steps.every((step) => step.state === "completed")
-        && (isScriptBreakdownInput(run.input) ? run.breakdownSave : run.storySave) === "saved") {
-        // The executor saved the result and stopped before finishing the run: it is done, nothing is sent or saved again.
-        state = "completed";
-        errorCode = null;
+      } else if (settled) {
+        // The executor settled the save and stopped before finishing the run: end it as the engine would, nothing is
+        // sent or saved again.
+        ({ state, errorCode } = settled);
       } else if (unknownStep) {
         errorCode = unknownStep.errorCode ?? "uncertain_call";
       }
