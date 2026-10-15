@@ -292,6 +292,8 @@ export {
 } from "./title-writing";
 export {
   TITLE_WRITING_CANCELED_BEFORE_SEND,
+  TITLE_WRITING_RUN_KIND_DISABLED,
+  settledSaveOutcome,
   type TitleCallFinish,
   type TitleCallRecord,
   type TitleCallReservation,

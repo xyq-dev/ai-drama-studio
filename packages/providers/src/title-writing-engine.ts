@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   TITLE_WRITING_CANCELED_BEFORE_SEND,
+  TITLE_WRITING_RUN_KIND_DISABLED,
+  settledSaveOutcome,
   type TitleCallFinish,
   type TitleCallRecord,
   type TitleCallReservation,
@@ -90,6 +92,7 @@ export const TITLE_WRITING_MAX_ACTIVE_RUNS_DEFAULT = 1;
 export const TITLE_WRITING_LEASE_MS = TEXT_WRITING_TIMEOUT_MS * 2;
 export const TITLE_WRITING_LOST_BEFORE_SEND = "executor_lost_before_send";
 export const TITLE_WRITING_LOST_AFTER_SEND = "executor_lost";
+const RUN_KINDS: readonly TitleRunKind[] = ["title", "script_breakdown"];
 
 export type {
   TitleResumeRequest,
@@ -383,6 +386,10 @@ export class TitleWritingEngine {
   async maintain(limit = 5): Promise<void> {
     const nowIso = this.now().toISOString();
     await this.deps.store.recoverExpired(this.deps.workspaceId, nowIso);
+    // A switched-off kind is never driven again, so its unheld runs are stopped here without a send instead of
+    // holding an active-run slot forever. Runs under a live lease are left to their executor.
+    const disabledKinds = RUN_KINDS.filter((kind) => !this.allowedRunKinds.includes(kind));
+    if (disabledKinds.length > 0) await this.deps.store.retireDisabledRuns(this.deps.workspaceId, nowIso, disabledKinds);
     const runIds = await this.deps.store.listClaimable(this.deps.workspaceId, nowIso, limit, this.allowedRunKinds);
     for (const runId of runIds) await this.drive(runId);
   }
@@ -886,6 +893,51 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
         : { executorId: null, leaseUntil: null, updatedAt: nowIso });
     }
     return recovered;
+  }
+
+  async retireDisabledRuns(workspaceId: string, nowIso: string, disabledKinds: readonly TitleRunKind[]): Promise<number> {
+    let retired = 0;
+    for (const run of this.runs) {
+      if (run.workspaceId !== workspaceId || run.state !== "running"
+        || !disabledKinds.includes(isScriptBreakdownInput(run.input) ? "script_breakdown" : "title")
+        || (run.executorId !== null && !expired(run.leaseUntil, nowIso))) continue;
+      retired += 1;
+      let uncertain = false;
+      for (const call of this.calls.filter((item) => item.runId === run.id)) {
+        const step = this.requireStep(run.id, call.stepKey);
+        if (call.state === "reserved") {
+          Object.assign(call, { state: "rejected", errorCode: TITLE_WRITING_LOST_BEFORE_SEND, finishedAt: nowIso });
+          Object.assign(step, { state: "pending", updatedAt: nowIso });
+        } else if (call.state === "submitted") {
+          Object.assign(call, { state: "unknown", errorCode: TITLE_WRITING_LOST_AFTER_SEND, finishedAt: nowIso });
+          Object.assign(step, { state: "unknown", errorCode: TITLE_WRITING_LOST_AFTER_SEND, updatedAt: nowIso });
+          uncertain = true;
+        }
+      }
+      const steps = this.steps.filter((item) => item.runId === run.id).sort((left, right) => left.ordinal - right.ordinal);
+      const unknownStep = steps.find((step) => step.state === "unknown");
+      const breakdown = isScriptBreakdownInput(run.input);
+      const settled = steps.every((step) => step.state === "completed")
+        ? settledSaveOutcome(breakdown, breakdown ? run.breakdownSave : run.storySave)
+        : null;
+      let state: Exclude<TitleWritingRunState, "running"> = "needs_attention";
+      let errorCode: string | null = TITLE_WRITING_RUN_KIND_DISABLED;
+      if (uncertain) {
+        errorCode = TITLE_WRITING_LOST_AFTER_SEND;
+      } else if (run.cancelRequestedAt !== null) {
+        state = "canceled";
+        errorCode = null;
+        for (const step of steps.filter((item) => item.state === "pending")) Object.assign(step, { state: "canceled", updatedAt: nowIso });
+      } else if (settled) {
+        // The executor settled the save and stopped before finishing the run: end it as the engine would, nothing is
+        // sent or saved again.
+        ({ state, errorCode } = settled);
+      } else if (unknownStep) {
+        errorCode = unknownStep.errorCode ?? "uncertain_call";
+      }
+      Object.assign(run, { state, errorCode, executorId: null, leaseUntil: null, updatedAt: nowIso });
+    }
+    return retired;
   }
 
   async listClaimable(workspaceId: string, nowIso: string, limit: number, allowedRunKinds?: readonly TitleRunKind[]): Promise<string[]> {

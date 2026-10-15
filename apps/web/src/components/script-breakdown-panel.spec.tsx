@@ -49,12 +49,12 @@ function run(overrides: Partial<ScriptBreakdownRunView> = {}): ScriptBreakdownRu
 
 interface Seen { method: string; url: string; headers: Record<string, string>; body: unknown }
 
-function harness(latest: ScriptBreakdownRunView | null, answers: Array<Response | Error> = []) {
+function harness(latest: ScriptBreakdownRunView | null, answers: Array<Response | Error> = [], options: ScriptBreakdownOptionsView = OPTIONS) {
   const seen: Seen[] = [];
   const fetchImpl = vi.fn(async (input: string, init?: RequestInit) => {
     const headers = Object.fromEntries([...new Headers(init?.headers).entries()].map(([name, value]) => [name.toLowerCase(), value]));
     seen.push({ method: init?.method ?? "GET", url: input, headers, body: init?.body ? JSON.parse(String(init.body)) : null });
-    if (input.endsWith("/writing/script-breakdowns/options")) return json(OPTIONS);
+    if (input.endsWith("/writing/script-breakdowns/options")) return json(options);
     if (input.endsWith("/latest-saved")) return json({ run: null });
     if (input.endsWith("/latest")) return json({ run: latest });
     const next = answers.shift();
@@ -85,6 +85,22 @@ describe("AI breakdown panel", () => {
     expect((screen.getByTestId("breakdown-limits")).textContent).toContain("每集 1–8 场、1–20 镜");
     expect((screen.getByTestId("breakdown-limits")).textContent).toContain("也不会改用固定模板");
     expect(h.seen.filter((item) => item.method === "POST")).toHaveLength(0);
+  });
+
+  it("says only script breakdown is off when the server reports it disabled, and cannot start", async () => {
+    const h = harness(null, [], { ...OPTIONS, enabled: false, code: "TITLE_WRITING_DISABLED" });
+    panel(h);
+    const blocked = await screen.findByTestId("breakdown-blocked");
+    await waitFor(() => expect(blocked.textContent).toContain("剧本拆解尚未开启。"));
+    expect(blocked.textContent).not.toContain("AI 写作");
+    expect((screen.getByRole("button", { name: "生成场景与分镜" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(h.seen.filter((item) => item.method === "POST")).toHaveLength(0);
+  });
+
+  it("explains a run stopped because breakdown was switched off on the server", async () => {
+    panel(harness(run({ state: "needs_attention", errorCode: "run_kind_disabled", step: { state: "pending", attemptNo: 0, errorCode: null },
+      output: null, save: "pending", scenes: [], callsUsed: 0 })));
+    expect(await screen.findByText(/剧本拆解已在服务端关闭，任务已停止，没有发出新的调用/)).toBeTruthy();
   });
 
   it("asks before replacing scenes, then starts once with the token, key and replacement in the request", async () => {
@@ -162,7 +178,7 @@ describe("AI breakdown panel", () => {
 
   it("names every refusal code in words and never shows a bare provider message", () => {
     for (const code of ["invalid_json", "invalid_output", "episode_mismatch", "duplicate_key", "missing_reference", "dialogue_not_in_script",
-      "duration_out_of_range", "truncated", "breakdown_source_changed", "breakdown_conflict", "executor_lost"]) {
+      "duration_out_of_range", "truncated", "breakdown_source_changed", "breakdown_conflict", "executor_lost", "run_kind_disabled"]) {
       expect(breakdownErrorText(code)).not.toContain(code);
     }
     expect(breakdownErrorText(null)).toBeNull();

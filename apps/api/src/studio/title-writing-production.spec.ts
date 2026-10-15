@@ -85,6 +85,7 @@ describe("production title writing authorization through StudioRuntime.open", ()
     ["origin missing", { TITLE_WRITING_ALLOW_PRODUCTION: "true", SITE_AUTH_PUBLIC_ORIGIN: undefined }, false],
     ["insecure origin", { TITLE_WRITING_ALLOW_PRODUCTION: "true", SITE_AUTH_PUBLIC_ORIGIN: "http://127.0.0.1:3001" }, false],
     ["explicit authorization and valid login", { TITLE_WRITING_ALLOW_PRODUCTION: "true" }, true],
+    ["breakdown switch on", { TITLE_WRITING_ALLOW_PRODUCTION: "true", SCRIPT_BREAKDOWN_ENABLED: "true" }, true],
   ] as const)("%s", async (_label, overrides, enabled) => {
     const runtime = await open(overrides);
     expect((await runtime.titleWriting!.options()).body).toMatchObject({
@@ -134,8 +135,10 @@ describe("production title writing authorization through StudioRuntime.open", ()
     });
     const claim = vi.spyOn(PostgresTitleWritingStore.prototype, "claimRun").mockResolvedValue(false);
     const reserve = vi.spyOn(PostgresTitleWritingStore.prototype, "reserveCall");
+    const retire = vi.spyOn(PostgresTitleWritingStore.prototype, "retireDisabledRuns").mockResolvedValue(1);
     await runtime.titleWriting!.maintain();
     expect(recover).toHaveBeenCalledOnce();
+    expect(retire).toHaveBeenCalledExactlyOnceWith(WORKSPACE, expect.any(String), ["script_breakdown"]);
     expect(list).toHaveBeenCalledWith(WORKSPACE, expect.any(String), 5, ["title"]);
     expect(claim.mock.calls.map((args) => args[1])).toEqual([title.id]);
     expect(reserve).not.toHaveBeenCalled();
@@ -149,19 +152,79 @@ describe("production title writing authorization through StudioRuntime.open", ()
     const recover = vi.spyOn(PostgresTitleWritingStore.prototype, "recoverExpired").mockResolvedValue(0);
     const list = vi.spyOn(PostgresTitleWritingStore.prototype, "listClaimable");
     const claim = vi.spyOn(PostgresTitleWritingStore.prototype, "claimRun");
+    const retire = vi.spyOn(PostgresTitleWritingStore.prototype, "retireDisabledRuns");
     await runtime.titleWriting!.maintain();
     expect(recover).toHaveBeenCalledOnce();
+    expect(retire).not.toHaveBeenCalled();
     expect(list).not.toHaveBeenCalled();
     expect(claim).not.toHaveBeenCalled();
   });
 
-  it.each(["development", "test"])("retains both original run kinds in %s without production authorization or login", async (nodeEnv) => {
-    const runtime = await open({ NODE_ENV: nodeEnv, SITE_AUTH_ENABLED: undefined });
+  it.each(["development", "test"])("retains both run kinds in %s when both switches are on, without authorization or login", async (nodeEnv) => {
+    const runtime = await open({ NODE_ENV: nodeEnv, SITE_AUTH_ENABLED: undefined, SCRIPT_BREAKDOWN_ENABLED: "true" });
     expect((await runtime.titleWriting!.options()).body).toMatchObject({ enabled: true });
     expect((await runtime.scriptBreakdown!.options()).body).toMatchObject({ enabled: true });
     vi.spyOn(PostgresTitleWritingStore.prototype, "recoverExpired").mockResolvedValue(0);
     const list = vi.spyOn(PostgresTitleWritingStore.prototype, "listClaimable").mockResolvedValue([]);
+    const retire = vi.spyOn(PostgresTitleWritingStore.prototype, "retireDisabledRuns");
     await runtime.titleWriting!.maintain();
+    expect(retire).not.toHaveBeenCalled();
     expect(list).toHaveBeenCalledWith(WORKSPACE, expect.any(String), 5, ["title", "script_breakdown"]);
+  });
+
+  describe.each(["development", "test"])("script breakdown switch in %s", (nodeEnv) => {
+    const local = { NODE_ENV: nodeEnv, SITE_AUTH_ENABLED: undefined };
+
+    it.each([
+      ["unset", {}],
+      ["false", { SCRIPT_BREAKDOWN_ENABLED: "false" }],
+    ] as const)("offers only title writing when the breakdown switch is %s", async (_label, overrides) => {
+      const runtime = await open({ ...local, ...overrides });
+      expect((await runtime.titleWriting!.options()).body).toMatchObject({ enabled: true, code: "TITLE_WRITING_READY" });
+      expect((await runtime.scriptBreakdown!.options()).body).toMatchObject({ enabled: false, code: "TITLE_WRITING_DISABLED" });
+      expect(await runtime.scriptBreakdown!.start(PROJECT, EPISODE, {}, TOKEN,
+        { actorId: "owner", traceId: "test", idempotencyKey: "breakdown-start" }))
+        .toMatchObject({ status: 404, body: { error: { code: "TITLE_WRITING_DISABLED" } } });
+      expect(await runtime.scriptBreakdown!.resume(PROJECT, EPISODE, EPISODE, {}, TOKEN,
+        { actorId: "owner", traceId: "test", idempotencyKey: "breakdown-resume" }))
+        .toMatchObject({ status: 404, body: { error: { code: "TITLE_WRITING_DISABLED" } } });
+    });
+
+    it("filters recovery to title runs while the breakdown switch is off", async () => {
+      const runtime = await open(local);
+      const breakdown = newScriptBreakdownRun({ workspaceId: WORKSPACE, projectId: PROJECT, actorId: "owner",
+        idempotencyKey: "breakdown", requestHash: "a".repeat(64), now: new Date(), input: {
+          episodeId: EPISODE, episodeNo: 1, scriptRevisionId: EPISODE, scriptRevisionNo: 1, scriptContentHash: "b".repeat(64),
+          scriptText: "已有剧本", targetEpisodeSeconds: 90, characters: [], replace: { scenes: [], shots: [] },
+          providerKey: "deepseek", model: "test-only-deepseek-model",
+        } });
+      vi.spyOn(PostgresTitleWritingStore.prototype, "recoverExpired").mockResolvedValue(0);
+      const list = vi.spyOn(PostgresTitleWritingStore.prototype, "listClaimable").mockResolvedValue([breakdown.id]);
+      vi.spyOn(PostgresTitleWritingStore.prototype, "getRunById").mockImplementation(async (workspaceId, id): Promise<TitleRunBundle | null> =>
+        breakdown.id === id && breakdown.workspaceId === workspaceId ? { run: breakdown, steps: [], calls: [] } : null);
+      const claim = vi.spyOn(PostgresTitleWritingStore.prototype, "claimRun").mockResolvedValue(false);
+      const reserve = vi.spyOn(PostgresTitleWritingStore.prototype, "reserveCall");
+      const retire = vi.spyOn(PostgresTitleWritingStore.prototype, "retireDisabledRuns").mockResolvedValue(1);
+      await runtime.titleWriting!.maintain();
+      // Unheld breakdowns are stopped without a send before claimable runs are listed.
+      expect(retire).toHaveBeenCalledExactlyOnceWith(WORKSPACE, expect.any(String), ["script_breakdown"]);
+      expect(retire.mock.invocationCallOrder[0]).toBeLessThan(list.mock.invocationCallOrder[0]!);
+      expect(list).toHaveBeenCalledWith(WORKSPACE, expect.any(String), 5, ["title"]);
+      // Even a store that returns a breakdown run cannot get it claimed by the shared engine.
+      expect(claim).not.toHaveBeenCalled();
+      expect(reserve).not.toHaveBeenCalled();
+    });
+
+    it("turns both off when title writing is off, whatever the breakdown switch says", async () => {
+      const runtime = await open({ ...local, TITLE_WRITING_ENABLED: "false", SCRIPT_BREAKDOWN_ENABLED: "true" });
+      expect((await runtime.titleWriting!.options()).body).toMatchObject({ enabled: false, code: "TITLE_WRITING_DISABLED" });
+      expect((await runtime.scriptBreakdown!.options()).body).toMatchObject({ enabled: false, code: "TITLE_WRITING_DISABLED" });
+      vi.spyOn(PostgresTitleWritingStore.prototype, "recoverExpired").mockResolvedValue(0);
+      const list = vi.spyOn(PostgresTitleWritingStore.prototype, "listClaimable");
+      const retire = vi.spyOn(PostgresTitleWritingStore.prototype, "retireDisabledRuns");
+      await runtime.titleWriting!.maintain();
+      expect(retire).not.toHaveBeenCalled();
+      expect(list).not.toHaveBeenCalled();
+    });
   });
 });
