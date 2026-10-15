@@ -894,13 +894,14 @@ describe("stopping runs of a switched-off kind on the seven-migration schema", (
 
   it("frees the only active slot under a cap of one so another start succeeds, and the stopped run resumes later", async () => {
     const ws = await newWorkspace("retire-cap");
+    // This schema holds title runs only, so the switched-off kind here is "title"; the store logic is the same per kind.
     const stranded = run(ws, await newProject(ws, "stranded"), "stranded");
     expect((await store.createRun(stranded, { maxActiveRuns: 1 })).kind).toBe("created");
-    await pool.query("UPDATE title_writing_run SET input_json = jsonb_set(input_json, '{schema}', to_jsonb($2::text)) WHERE id = $1",
-      [stranded.id, SCRIPT_BREAKDOWN_INPUT_SCHEMA]);
     const next = run(ws, await newProject(ws, "next"), "next");
     expect(await store.createRun(next, { maxActiveRuns: 1 })).toEqual({ kind: "blocked", code: "TITLE_WRITING_ACTIVE_RUN_CAP" });
-    expect(await store.retireDisabledRuns(ws, now(), ["script_breakdown"])).toBe(1);
+    expect(await store.retireDisabledRuns(ws, now(), ["script_breakdown"])).toBe(0);
+    expect(await store.createRun(next, { maxActiveRuns: 1 })).toEqual({ kind: "blocked", code: "TITLE_WRITING_ACTIVE_RUN_CAP" });
+    expect(await store.retireDisabledRuns(ws, now(), ["title"])).toBe(1);
     expect((await store.createRun(next, { maxActiveRuns: 1 })).kind).toBe("created");
     expect((await pool.query("SELECT 1 FROM title_writing_call WHERE workspace_id = $1", [ws])).rowCount).toBe(0);
     await pool.query("UPDATE title_writing_run SET state = 'failed' WHERE id = $1", [next.id]);
