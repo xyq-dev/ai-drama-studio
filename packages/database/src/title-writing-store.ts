@@ -3,6 +3,7 @@ import {
   SCRIPT_BREAKDOWN_INPUT_SCHEMA,
   SCRIPT_BREAKDOWN_STEP_KEY,
   TITLE_WRITING_CANCELED_BEFORE_SEND,
+  TITLE_WRITING_RUN_KIND_DISABLED,
   currentUncertainCallIds,
   isScriptBreakdownInput,
   type ScriptBreakdownDetails,
@@ -587,6 +588,66 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
         );
       }
       return expired.rows.length;
+    });
+  }
+
+  async retireDisabledRuns(workspaceId: string, nowIso: string, disabledKinds: readonly TitleRunKind[]): Promise<number> {
+    if (disabledKinds.length === 0) return 0;
+    return this.transaction(async (client) => {
+      // Unheld runs only: a live lease is left to its executor. The kind comes from the frozen schema, never from the
+      // optional run_kind column, so this works on the migration chain before the breakdown migration.
+      const unheld = await client.query<Row>(
+        `SELECT id, cancel_requested_at FROM title_writing_run
+          WHERE workspace_id = $2 AND state = 'running' AND (executor_id IS NULL OR lease_until <= $1)
+            AND (CASE WHEN input_json ->> 'schema' = $4 THEN 'script_breakdown' ELSE 'title' END) = ANY($3::text[])
+          ORDER BY updated_at LIMIT 50 FOR UPDATE SKIP LOCKED`,
+        [nowIso, workspaceId, disabledKinds, SCRIPT_BREAKDOWN_INPUT_SCHEMA],
+      );
+      for (const row of unheld.rows) {
+        const runId = String(row.id);
+        const neverSent = await client.query<Row>(
+          `UPDATE title_writing_call SET state = 'rejected', error_code = 'executor_lost_before_send', finished_at = $2
+            WHERE run_id = $1 AND state = 'reserved' RETURNING step_key`,
+          [runId, nowIso],
+        );
+        for (const call of neverSent.rows) {
+          await client.query("UPDATE title_writing_step SET state = 'pending', updated_at = $3 WHERE run_id = $1 AND step_key = $2",
+            [runId, call.step_key, nowIso]);
+        }
+        const maybeSent = await client.query<Row>(
+          `UPDATE title_writing_call SET state = 'unknown', error_code = 'executor_lost', finished_at = $2
+            WHERE run_id = $1 AND state = 'submitted' RETURNING step_key`,
+          [runId, nowIso],
+        );
+        for (const call of maybeSent.rows) {
+          await client.query(
+            `UPDATE title_writing_step SET state = 'unknown', error_code = 'executor_lost', updated_at = $3
+              WHERE run_id = $1 AND step_key = $2`,
+            [runId, call.step_key, nowIso],
+          );
+        }
+        let state: Exclude<TitleWritingRunState, "running"> = "needs_attention";
+        let errorCode: string | null = TITLE_WRITING_RUN_KIND_DISABLED;
+        if (maybeSent.rows.length > 0) {
+          errorCode = "executor_lost";
+        } else if (row.cancel_requested_at !== null) {
+          state = "canceled";
+          errorCode = null;
+          await client.query("UPDATE title_writing_step SET state = 'canceled', updated_at = $2 WHERE run_id = $1 AND state = 'pending'",
+            [runId, nowIso]);
+        } else {
+          const unknown = await client.query<Row>(
+            "SELECT error_code FROM title_writing_step WHERE run_id = $1 AND state = 'unknown' ORDER BY ordinal LIMIT 1", [runId]);
+          const found = unknown.rows[0];
+          if (found) errorCode = found.error_code === null ? "uncertain_call" : String(found.error_code);
+        }
+        await client.query(
+          `UPDATE title_writing_run SET state = $2, error_code = $3, executor_id = NULL, lease_until = NULL, updated_at = $4
+            WHERE id = $1`,
+          [runId, state, errorCode, nowIso],
+        );
+      }
+      return unheld.rows.length;
     });
   }
 

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import type { TitleRunKind } from "@ai-drama/contracts";
+import { TITLE_WRITING_RUN_KIND_DISABLED, type TitleCallRecord, type TitleRunKind, type TitleRunRecord } from "@ai-drama/contracts";
 import { InMemoryTitleWritingStore, TitleWritingEngine, newTitleRun } from "./title-writing-engine";
 import { newScriptBreakdownRun } from "./script-breakdown-run";
 import { fixtureChatTransport, type FixtureExchange } from "./title-writing-fixtures";
@@ -31,13 +31,13 @@ async function title(store: InMemoryTitleWritingStore, workspaceId = WS) {
   return run;
 }
 
-async function breakdown(store: InMemoryTitleWritingStore) {
+async function breakdown(store: InMemoryTitleWritingStore, workspaceId = WS) {
   const projectId = randomUUID();
-  const episode = store.addBreakdownEpisode({ workspaceId: WS, projectId, episodeNo: 1,
+  const episode = store.addBreakdownEpisode({ workspaceId, projectId, episodeNo: 1,
     text: "第 1 集\n场 1 便利店 夜\n林夏盯着监控。\n林夏：这不是我。" });
-  const source = await store.breakdownSource(WS, projectId, episode.episodeId);
+  const source = await store.breakdownSource(workspaceId, projectId, episode.episodeId);
   if (source.kind !== "ok") throw new Error(source.kind);
-  const run = newScriptBreakdownRun({ workspaceId: WS, projectId, actorId: "owner", idempotencyKey: randomUUID(),
+  const run = newScriptBreakdownRun({ workspaceId, projectId, actorId: "owner", idempotencyKey: randomUUID(),
     requestHash: "f".repeat(64), now: new Date(), input: {
       episodeId: episode.episodeId, episodeNo: 1, scriptRevisionId: source.scriptRevisionId, scriptRevisionNo: source.scriptRevisionNo,
       scriptContentHash: source.scriptContentHash, scriptText: (source.scriptContent as { text: string }).text,
@@ -48,16 +48,21 @@ async function breakdown(store: InMemoryTitleWritingStore) {
 }
 
 describe("shared writing engine run-kind authorization", () => {
-  it("refuses a disabled breakdown before claiming, reserving or sending, including maintenance", async () => {
+  it("refuses a disabled breakdown before claiming, reserving or sending; maintenance stops it without a send", async () => {
     const { store, seen, engine, claim, reserve } = setup(["title"]);
     const run = await breakdown(store);
-    const before = await store.getRunById(WS, run.id);
+    const before = (await store.getRunById(WS, run.id))!;
     await engine.drive(run.id);
+    expect(await store.getRunById(WS, run.id)).toEqual(before);
     await engine.maintain();
     expect(claim).not.toHaveBeenCalled();
     expect(reserve).not.toHaveBeenCalled();
     expect(seen).toEqual([]);
-    expect(await store.getRunById(WS, run.id)).toEqual(before);
+    const after = (await store.getRunById(WS, run.id))!;
+    expect(after.run).toMatchObject({ state: "needs_attention", errorCode: TITLE_WRITING_RUN_KIND_DISABLED, executorId: null,
+      leaseUntil: null, callsUsed: 0, cancelRequestedAt: null, input: before.run.input, breakdownSave: "pending" });
+    expect(after.steps).toEqual(before.steps);
+    expect(after.calls).toEqual([]);
   });
 
   it("filters disabled runs before the maintenance limit so a later title still completes", async () => {
@@ -70,7 +75,11 @@ describe("shared writing engine run-kind authorization", () => {
     expect(claim.mock.calls.map((args) => args[1])).toEqual([allowed.id]);
     expect(reserve.mock.calls.every(([call]) => call.runId === allowed.id)).toBe(true);
     expect((await store.getRunById(WS, allowed.id))!.run.state).toBe("completed");
-    for (const run of blocked) expect((await store.getRunById(WS, run.id))!.run).toMatchObject({ executorId: null, callsUsed: 0, state: "running" });
+    for (const run of blocked) {
+      const after = (await store.getRunById(WS, run.id))!;
+      expect(after.run).toMatchObject({ executorId: null, callsUsed: 0, state: "needs_attention", errorCode: TITLE_WRITING_RUN_KIND_DISABLED });
+      expect(after.calls).toEqual([]);
+    }
   });
 
   it("an empty policy blocks both kinds, including direct execution", async () => {
@@ -105,5 +114,109 @@ describe("shared writing engine run-kind authorization", () => {
     expect(reserve).not.toHaveBeenCalled();
     expect(seen).toEqual([]);
     expect(await store.getRunById(OTHER_WS, run.id)).toEqual(before);
+  });
+});
+
+const PAST = () => new Date(Date.now() - 120_000).toISOString();
+const PAST_LEASE = () => new Date(Date.now() - 60_000).toISOString();
+const LIVE_LEASE = () => new Date(Date.now() + 600_000).toISOString();
+const UNKNOWN_USAGE = { status: "unknown", inputTokens: null, outputTokens: null, totalTokens: null } as const;
+
+function breakdownCall(run: TitleRunRecord, executorId: string, at: string): TitleCallRecord {
+  return { id: randomUUID(), runId: run.id, workspaceId: run.workspaceId, stepKey: "breakdown", attemptNo: 1, providerKey: "qwen", model: "q-1",
+    requestHash: "c".repeat(64), state: "reserved", executorId, providerRequestId: null, responseModel: null, usage: { ...UNKNOWN_USAGE },
+    errorCode: null, createdAt: at, finishedAt: null };
+}
+
+/** A breakdown claimed by an executor that then stopped, with its call reserved and maybe submitted. */
+async function abandoned(store: InMemoryTitleWritingStore, submitted: boolean, workspaceId = WS, leaseUntil = PAST_LEASE()) {
+  const run = await breakdown(store, workspaceId);
+  const at = PAST();
+  expect(await store.claimRun(workspaceId, run.id, "dead", at, leaseUntil)).toBe(true);
+  const call = breakdownCall(run, "dead", at);
+  expect(await store.reserveCall(call, { sinceIso: "2000-01-01T00:00:00.000Z", maxCallsPerDay: 100 }, at, leaseUntil)).toEqual({ kind: "reserved" });
+  if (submitted) expect(await store.markCallSubmitted(workspaceId, call.id, "dead", at, leaseUntil)).toBe("submitted");
+  return { run, call };
+}
+
+describe("stopping runs of a switched-off kind", () => {
+  it("settles each unheld disabled breakdown without a send and leaves live leases and other workspaces alone", async () => {
+    const { store, seen, engine, claim, reserve } = setup(["title"]);
+    const unclaimed = await breakdown(store);
+    const reserved = await abandoned(store, false);
+    const submitted = await abandoned(store, true);
+    const canceled = await breakdown(store);
+    await store.requestCancel(WS, canceled.projectId, canceled.id, new Date().toISOString());
+    const held = await abandoned(store, false, WS, LIVE_LEASE());
+    const other = await breakdown(store, OTHER_WS);
+    const heldBefore = await store.getRunById(WS, held.run.id);
+    const otherBefore = await store.getRunById(OTHER_WS, other.id);
+    claim.mockClear();
+    reserve.mockClear();
+    const callsBefore = store.calls.length;
+
+    await engine.maintain();
+
+    expect(seen).toEqual([]);
+    expect(claim).not.toHaveBeenCalled();
+    expect(reserve).not.toHaveBeenCalled();
+    expect(store.calls).toHaveLength(callsBefore);
+    expect((await store.getRunById(WS, unclaimed.id))!.run).toMatchObject({ state: "needs_attention", errorCode: TITLE_WRITING_RUN_KIND_DISABLED });
+    const released = (await store.getRunById(WS, reserved.run.id))!;
+    expect(released.run).toMatchObject({ state: "needs_attention", errorCode: TITLE_WRITING_RUN_KIND_DISABLED, executorId: null, leaseUntil: null });
+    expect(released.steps).toEqual([expect.objectContaining({ state: "pending" })]);
+    expect(released.calls).toEqual([expect.objectContaining({ id: reserved.call.id, state: "rejected", errorCode: "executor_lost_before_send" })]);
+    const uncertain = (await store.getRunById(WS, submitted.run.id))!;
+    expect(uncertain.run).toMatchObject({ state: "needs_attention", errorCode: "executor_lost", executorId: null });
+    expect(uncertain.steps).toEqual([expect.objectContaining({ state: "unknown", errorCode: "executor_lost" })]);
+    expect(uncertain.calls).toEqual([expect.objectContaining({ id: submitted.call.id, state: "unknown", errorCode: "executor_lost", usage: UNKNOWN_USAGE })]);
+    const stopped = (await store.getRunById(WS, canceled.id))!;
+    expect(stopped.run).toMatchObject({ state: "canceled", errorCode: null });
+    expect(stopped.steps).toEqual([expect.objectContaining({ state: "canceled" })]);
+    expect(await store.getRunById(WS, held.run.id)).toEqual(heldBefore);
+    expect(await store.getRunById(OTHER_WS, other.id)).toEqual(otherBefore);
+  });
+
+  it("settles open calls itself when called directly, before any recovery pass, and never stops another kind", async () => {
+    const store = new InMemoryTitleWritingStore();
+    const reserved = await abandoned(store, false);
+    const submitted = await abandoned(store, true);
+    const titleRun = await title(store);
+    const now = new Date().toISOString();
+    expect(await store.retireDisabledRuns(WS, now, ["script_breakdown"])).toBe(2);
+    const released = (await store.getRunById(WS, reserved.run.id))!;
+    expect(released.calls[0]).toMatchObject({ state: "rejected", errorCode: "executor_lost_before_send" });
+    expect(released.run).toMatchObject({ state: "needs_attention", errorCode: TITLE_WRITING_RUN_KIND_DISABLED });
+    const uncertain = (await store.getRunById(WS, submitted.run.id))!;
+    expect(uncertain.calls[0]).toMatchObject({ state: "unknown", errorCode: "executor_lost", usage: UNKNOWN_USAGE });
+    expect(uncertain.run).toMatchObject({ state: "needs_attention", errorCode: "executor_lost" });
+    expect((await store.getRunById(WS, titleRun.id))!.run).toMatchObject({ state: "running" });
+    expect(await store.retireDisabledRuns(WS, now, [])).toBe(0);
+    expect(await store.retireDisabledRuns(WS, now, ["script_breakdown"])).toBe(0);
+  });
+
+  it("frees the slot under the default cap of one so a new title can start, and the stopped run can resume later", async () => {
+    const { store, seen, engine } = setup(["title"]);
+    const stranded = await breakdown(store);
+    const projectId = randomUUID();
+    store.addProject(WS, projectId);
+    const next = newTitleRun({ workspaceId: WS, projectId, actorId: "owner", idempotencyKey: randomUUID(), title: TITLE,
+      settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey: "qwen", model: "q-1", now: new Date() });
+    expect(await store.createRun(next, { maxActiveRuns: 1 })).toEqual({ kind: "blocked", code: "TITLE_WRITING_ACTIVE_RUN_CAP" });
+    await engine.maintain();
+    expect(seen).toEqual([]);
+    expect((await store.createRun(next, { maxActiveRuns: 1 })).kind).toBe("created");
+    await engine.maintain();
+    expect((await store.getRunById(WS, next.id))!.run.state).toBe("completed");
+    // Nothing a later resume needs was dropped: once the switch is back on it continues from the frozen input.
+    expect((await store.prepareResume(WS, stranded.projectId, stranded.id,
+      { resumeKey: "later", requestHash: "e".repeat(64), confirmedCallIds: [], maxActiveRuns: 1 }, new Date().toISOString())).kind).toBe("ok");
+  });
+
+  it("does not stop anything while every kind is allowed", async () => {
+    const { store, engine } = setup(["title", "script_breakdown"]);
+    const retire = vi.spyOn(store, "retireDisabledRuns");
+    await engine.maintain();
+    expect(retire).not.toHaveBeenCalled();
   });
 });

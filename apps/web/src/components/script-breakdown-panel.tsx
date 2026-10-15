@@ -46,6 +46,7 @@ export const BREAKDOWN_ERROR_TEXT: Record<string, string> = {
   breakdown_conflict: "这一集的场景或镜头已改变，本次拆解不能继续写入。已有结果保留，没有覆盖任何新版本；请重新生成。",
   executor_lost: "服务中断时调用已发出，结果未知，可能已经计费。确认后才会重新发送。",
   executor_lost_before_send: "服务中断时调用还没有发出。",
+  run_kind_disabled: "剧本拆解已在服务端关闭，任务已停止，没有发出新的调用。重新开启后可以续跑。",
   canceled_before_send: "在发送前取消，没有发出调用。",
   TITLE_WRITING_DAILY_CAP: "最近 24 小时的调用次数已用完。",
   TITLE_WRITING_RUN_CAP: "这次拆解的调用次数已用完。",
@@ -252,7 +253,7 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
     : readError ? "请先重新读取本集任务状态。"
     : !props.scriptReady ? "剧本批准后才能拆解（剧本门槛不变）。"
     : !options ? optionsError ? "功能配置读取失败，请先“重新读取功能配置”。" : "正在读取拆解设置。"
-      : !ready ? options.code === "TITLE_WRITING_DISABLED" ? "AI 写作没有开启。"
+      : !ready ? options.code === "TITLE_WRITING_DISABLED" ? "剧本拆解尚未开启。"
         : options.code === "SCRIPT_BREAKDOWN_STORAGE_UNAVAILABLE" ? "剧本拆解的数据库迁移还没有执行。"
           : options.code === "TITLE_WRITING_PROVIDER_UNCONFIGURED" ? "模型服务还没有配置完整。" : "服务端还不能开始拆解。"
         : running ? "这一集的拆解正在进行。"

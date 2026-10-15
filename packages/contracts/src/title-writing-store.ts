@@ -118,6 +118,9 @@ export type TitleCallSubmission = "submitted" | "canceled" | "lost";
 /** Error code of a reserved call closed because the run was canceled before it was sent. Nothing was sent. */
 export const TITLE_WRITING_CANCELED_BEFORE_SEND = "canceled_before_send";
 
+/** Error code of a run stopped because its kind is switched off. Nothing new was sent; a resume can continue it. */
+export const TITLE_WRITING_RUN_KIND_DISABLED = "run_kind_disabled";
+
 export interface TitleCallFinish {
   state: "completed" | "rejected" | "unknown";
   errorCode: string | null;
@@ -242,6 +245,14 @@ export interface TitleWritingStore {
   findResume(workspaceId: string, projectId: string, runId: string, resumeKey: string): Promise<{ requestHash: string } | null>;
   /** Fences expired executors of this workspace: reserved calls were never sent, submitted calls become unknown. */
   recoverExpired(workspaceId: string, nowIso: string): Promise<number>;
+  /**
+   * Stops running runs of the given switched-off kinds of this workspace that no executor holds (unclaimed or with an
+   * expired lease), without any send, so they no longer hold an active-run slot. Each run is settled under its row lock
+   * like a fenced executor: reserved calls were never sent, submitted calls become unknown and the run needs attention;
+   * otherwise a requested cancel ends as canceled and anything else needs attention with TITLE_WRITING_RUN_KIND_DISABLED.
+   * Runs held under a live lease are left alone. Call records, uncertain calls and their cost are kept.
+   */
+  retireDisabledRuns(workspaceId: string, nowIso: string, disabledKinds: readonly TitleRunKind[]): Promise<number>;
   /** Optional kind policy is applied before the limit; omitted means both kinds, empty means neither. */
   listClaimable(workspaceId: string, nowIso: string, limit: number, allowedRunKinds?: readonly TitleRunKind[]): Promise<string[]>;
   /**

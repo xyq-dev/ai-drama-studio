@@ -98,7 +98,7 @@
 - 默认关闭：`TITLE_WRITING_ENABLED` 默认 `false`。
 - 非 production：`enabled = NODE_ENV !== "production" && TITLE_WRITING_ENABLED`（原行为不变）。
 - production：仅当 `TITLE_WRITING_ENABLED=true`、进程环境中的 `TITLE_WRITING_ALLOW_PRODUCTION=true`（严格 `true`/`false`，默认 `false`，忽略仓库 `.env`，空值或非法值拒绝启动）且站点登录配置有效（`siteAuthFromEnv(env).kind === "enabled"`）时才启用标题创作；否则继续返回 `TITLE_WRITING_DISABLED`。
-- 剧本拆解只在非 production 下、且 `TITLE_WRITING_ENABLED=true` 与 `SCRIPT_BREAKDOWN_ENABLED=true`（默认 `false`）同时成立时开启，新授权开关**不会**开启拆解或其他付费功能。共用执行引擎也按任务类型限制直接执行及后台恢复，生产下不会恢复拆解任务；关闭总开关后不恢复付费执行。
+- 剧本拆解只在非 production 下、且 `TITLE_WRITING_ENABLED=true` 与 `SCRIPT_BREAKDOWN_ENABLED=true`（默认 `false`）同时成立时开启（关闭时，后台维护以无外呼的方式把无人持有的拆解任务移出 running：未发出的预留调用释放，已发出的保持 unknown，已请求取消的结束为 canceled，其余为 needs_attention/`run_kind_disabled`；有效租约不抢占），新授权开关**不会**开启拆解或其他付费功能。共用执行引擎也按任务类型限制直接执行及后台恢复，生产下不会恢复拆解任务；关闭总开关后不恢复付费执行。
 - **不要**通过把线上 `NODE_ENV` 改成 `development` 来启用功能。执行迁移只是让存储就绪，不代表功能上线。
 
 ## 6. 验收如何改为走正式迁移链

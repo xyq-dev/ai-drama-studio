@@ -135,8 +135,10 @@ describe("production title writing authorization through StudioRuntime.open", ()
     });
     const claim = vi.spyOn(PostgresTitleWritingStore.prototype, "claimRun").mockResolvedValue(false);
     const reserve = vi.spyOn(PostgresTitleWritingStore.prototype, "reserveCall");
+    const retire = vi.spyOn(PostgresTitleWritingStore.prototype, "retireDisabledRuns").mockResolvedValue(1);
     await runtime.titleWriting!.maintain();
     expect(recover).toHaveBeenCalledOnce();
+    expect(retire).toHaveBeenCalledExactlyOnceWith(WORKSPACE, expect.any(String), ["script_breakdown"]);
     expect(list).toHaveBeenCalledWith(WORKSPACE, expect.any(String), 5, ["title"]);
     expect(claim.mock.calls.map((args) => args[1])).toEqual([title.id]);
     expect(reserve).not.toHaveBeenCalled();
@@ -150,8 +152,10 @@ describe("production title writing authorization through StudioRuntime.open", ()
     const recover = vi.spyOn(PostgresTitleWritingStore.prototype, "recoverExpired").mockResolvedValue(0);
     const list = vi.spyOn(PostgresTitleWritingStore.prototype, "listClaimable");
     const claim = vi.spyOn(PostgresTitleWritingStore.prototype, "claimRun");
+    const retire = vi.spyOn(PostgresTitleWritingStore.prototype, "retireDisabledRuns");
     await runtime.titleWriting!.maintain();
     expect(recover).toHaveBeenCalledOnce();
+    expect(retire).not.toHaveBeenCalled();
     expect(list).not.toHaveBeenCalled();
     expect(claim).not.toHaveBeenCalled();
   });
@@ -162,7 +166,9 @@ describe("production title writing authorization through StudioRuntime.open", ()
     expect((await runtime.scriptBreakdown!.options()).body).toMatchObject({ enabled: true });
     vi.spyOn(PostgresTitleWritingStore.prototype, "recoverExpired").mockResolvedValue(0);
     const list = vi.spyOn(PostgresTitleWritingStore.prototype, "listClaimable").mockResolvedValue([]);
+    const retire = vi.spyOn(PostgresTitleWritingStore.prototype, "retireDisabledRuns");
     await runtime.titleWriting!.maintain();
+    expect(retire).not.toHaveBeenCalled();
     expect(list).toHaveBeenCalledWith(WORKSPACE, expect.any(String), 5, ["title", "script_breakdown"]);
   });
 
@@ -198,7 +204,11 @@ describe("production title writing authorization through StudioRuntime.open", ()
         breakdown.id === id && breakdown.workspaceId === workspaceId ? { run: breakdown, steps: [], calls: [] } : null);
       const claim = vi.spyOn(PostgresTitleWritingStore.prototype, "claimRun").mockResolvedValue(false);
       const reserve = vi.spyOn(PostgresTitleWritingStore.prototype, "reserveCall");
+      const retire = vi.spyOn(PostgresTitleWritingStore.prototype, "retireDisabledRuns").mockResolvedValue(1);
       await runtime.titleWriting!.maintain();
+      // Unheld breakdowns are stopped without a send before claimable runs are listed.
+      expect(retire).toHaveBeenCalledExactlyOnceWith(WORKSPACE, expect.any(String), ["script_breakdown"]);
+      expect(retire.mock.invocationCallOrder[0]).toBeLessThan(list.mock.invocationCallOrder[0]!);
       expect(list).toHaveBeenCalledWith(WORKSPACE, expect.any(String), 5, ["title"]);
       // Even a store that returns a breakdown run cannot get it claimed by the shared engine.
       expect(claim).not.toHaveBeenCalled();
@@ -211,7 +221,9 @@ describe("production title writing authorization through StudioRuntime.open", ()
       expect((await runtime.scriptBreakdown!.options()).body).toMatchObject({ enabled: false, code: "TITLE_WRITING_DISABLED" });
       vi.spyOn(PostgresTitleWritingStore.prototype, "recoverExpired").mockResolvedValue(0);
       const list = vi.spyOn(PostgresTitleWritingStore.prototype, "listClaimable");
+      const retire = vi.spyOn(PostgresTitleWritingStore.prototype, "retireDisabledRuns");
       await runtime.titleWriting!.maintain();
+      expect(retire).not.toHaveBeenCalled();
       expect(list).not.toHaveBeenCalled();
     });
   });

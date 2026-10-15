@@ -21,6 +21,8 @@ import {
   TITLE_WRITING_PROMPT_VERSION_V3,
   TITLE_WRITING_PROMPT_VERSION_V4,
   TITLE_WRITING_CANCELED_BEFORE_SEND,
+  TITLE_WRITING_RUN_KIND_DISABLED,
+  SCRIPT_BREAKDOWN_INPUT_SCHEMA,
   type TitleCallFinish,
   type TitleCallRecord,
   type TitleResumeRequest,
@@ -817,6 +819,94 @@ describe("lease recovery: never sent versus maybe sent", () => {
     expect(billing).toEqual([{ billing_status: "unknown" }]);
     evidence.recoverySplit = { reserved: "rejected/executor_lost_before_send, step pending, claimable", submitted: "unknown/executor_lost, needs_attention",
       lateSubmit: "lost", lateFinish: false };
+  });
+});
+
+describe("stopping runs of a switched-off kind on the seven-migration schema", () => {
+  it("settles every unheld run of the kind without a send; live leases, other kinds and other workspaces stay as they were", async () => {
+    const ws = await newWorkspace("retire-kind");
+    const otherWs = await newWorkspace("retire-kind-other");
+    expect((await pool.query("SELECT 1 FROM information_schema.columns WHERE table_name = 'title_writing_run' AND column_name = 'run_kind'")).rowCount).toBe(0);
+    const base = Date.now();
+    const setupAt = instant(base, 0);
+    const leaseUntil = instant(base, 60_000);
+    const expired = instant(base, 120_000);
+    const created = async (workspaceId: string, label: string) => {
+      const record = run(workspaceId, await newProject(workspaceId, label), label);
+      expect((await store.createRun(record, { maxActiveRuns: 50 })).kind).toBe("created");
+      return record;
+    };
+    const unclaimed = await created(ws, "unclaimed");
+    const reserved = await created(ws, "reserved");
+    const submitted = await created(ws, "submitted");
+    const canceled = await created(ws, "canceled");
+    const held = await created(ws, "held");
+    const otherKind = await created(ws, "other-kind");
+    const otherWorkspace = await created(otherWs, "other-workspace");
+    // The kind is read from the frozen schema only; this schema has no run_kind column to read it from.
+    await pool.query("UPDATE title_writing_run SET input_json = jsonb_set(input_json, '{schema}', to_jsonb($2::text)) WHERE id = $1",
+      [otherKind.id, SCRIPT_BREAKDOWN_INPUT_SCHEMA]);
+    for (const record of [reserved, submitted]) expect(await store.claimRun(ws, record.id, "dead", setupAt, leaseUntil)).toBe(true);
+    expect(await store.claimRun(ws, held.id, "alive", setupAt, instant(base, 600_000))).toBe(true);
+    const unsent = call(reserved, "dead");
+    expect(await store.reserveCall(unsent, wide, setupAt, leaseUntil)).toEqual({ kind: "reserved" });
+    const sent = call(submitted, "dead");
+    expect(await store.reserveCall(sent, wide, setupAt, leaseUntil)).toEqual({ kind: "reserved" });
+    expect(await store.markCallSubmitted(ws, sent.id, "dead", setupAt, leaseUntil)).toBe("submitted");
+    const live = call(held, "alive");
+    expect(await store.reserveCall(live, wide, setupAt, instant(base, 600_000))).toEqual({ kind: "reserved" });
+    await store.requestCancel(ws, canceled.projectId, canceled.id, setupAt);
+    const untouched = async () => (await pool.query("SELECT * FROM title_writing_run WHERE id = ANY($1::uuid[]) ORDER BY id",
+      [[held.id, otherKind.id, otherWorkspace.id]])).rows;
+    const callsBefore = await pool.query("SELECT id FROM title_writing_call WHERE workspace_id = $1 ORDER BY id", [ws]);
+    const before = await untouched();
+
+    expect(await store.retireDisabledRuns(ws, expired, [])).toBe(0);
+    expect(await store.retireDisabledRuns(ws, expired, ["title"])).toBe(4);
+
+    expect((await store.getRunById(ws, unclaimed.id))!.run).toMatchObject({ state: "needs_attention", errorCode: TITLE_WRITING_RUN_KIND_DISABLED,
+      executorId: null, leaseUntil: null, callsUsed: 0 });
+    const released = (await store.getRunById(ws, reserved.id))!;
+    expect(released.run).toMatchObject({ state: "needs_attention", errorCode: TITLE_WRITING_RUN_KIND_DISABLED, executorId: null, leaseUntil: null });
+    expect(released.steps.find((step) => step.stepKey === "concept")).toMatchObject({ state: "pending" });
+    expect(released.calls).toEqual([expect.objectContaining({ id: unsent.id, state: "rejected", errorCode: "executor_lost_before_send" })]);
+    const uncertain = (await store.getRunById(ws, submitted.id))!;
+    expect(uncertain.run).toMatchObject({ state: "needs_attention", errorCode: "executor_lost", executorId: null });
+    expect(uncertain.steps.find((step) => step.stepKey === "concept")).toMatchObject({ state: "unknown", errorCode: "executor_lost" });
+    expect(uncertain.calls).toEqual([expect.objectContaining({ id: sent.id, state: "unknown", errorCode: "executor_lost", usage: USAGE_UNKNOWN })]);
+    const stopped = (await store.getRunById(ws, canceled.id))!;
+    expect(stopped.run).toMatchObject({ state: "canceled", errorCode: null });
+    expect(stopped.steps.every((step) => step.state === "canceled")).toBe(true);
+    expect(await untouched()).toEqual(before);
+    expect((await pool.query("SELECT id FROM title_writing_call WHERE workspace_id = $1 ORDER BY id", [ws])).rows).toEqual(callsBefore.rows);
+    const billing = (await pool.query<{ billing_status: string }>("SELECT DISTINCT billing_status FROM title_writing_call WHERE workspace_id = $1", [ws])).rows;
+    expect(billing).toEqual([{ billing_status: "unknown" }]);
+    expect(await store.retireDisabledRuns(ws, expired, ["title"])).toBe(0);
+
+    // The breakdown-kind row is found by its frozen schema alone.
+    expect(await store.retireDisabledRuns(ws, expired, ["script_breakdown"])).toBe(1);
+    expect((await store.getRunById(ws, otherKind.id))!.run).toMatchObject({ state: "needs_attention", errorCode: TITLE_WRITING_RUN_KIND_DISABLED });
+    expect((await store.getRunById(ws, held.id))!.run).toMatchObject({ state: "running", executorId: "alive" });
+    expect((await store.getRunById(otherWs, otherWorkspace.id))!.run).toMatchObject({ state: "running", executorId: null });
+    evidence.retireDisabledBeforeBreakdown = { unclaimed: "needs_attention", reserved: "rejected unsent, step pending", submitted: "unknown kept",
+      canceled: "canceled", liveLease: "untouched", otherWorkspace: "untouched", absentRunKindColumn: true };
+  });
+
+  it("frees the only active slot under a cap of one so another start succeeds, and the stopped run resumes later", async () => {
+    const ws = await newWorkspace("retire-cap");
+    const stranded = run(ws, await newProject(ws, "stranded"), "stranded");
+    expect((await store.createRun(stranded, { maxActiveRuns: 1 })).kind).toBe("created");
+    await pool.query("UPDATE title_writing_run SET input_json = jsonb_set(input_json, '{schema}', to_jsonb($2::text)) WHERE id = $1",
+      [stranded.id, SCRIPT_BREAKDOWN_INPUT_SCHEMA]);
+    const next = run(ws, await newProject(ws, "next"), "next");
+    expect(await store.createRun(next, { maxActiveRuns: 1 })).toEqual({ kind: "blocked", code: "TITLE_WRITING_ACTIVE_RUN_CAP" });
+    expect(await store.retireDisabledRuns(ws, now(), ["script_breakdown"])).toBe(1);
+    expect((await store.createRun(next, { maxActiveRuns: 1 })).kind).toBe("created");
+    expect((await pool.query("SELECT 1 FROM title_writing_call WHERE workspace_id = $1", [ws])).rowCount).toBe(0);
+    await pool.query("UPDATE title_writing_run SET state = 'failed' WHERE id = $1", [next.id]);
+    expect((await store.prepareResume(ws, stranded.projectId, stranded.id, { ...resumeRequest(stranded.id, "after-retire", []), maxActiveRuns: 1 },
+      now())).kind).toBe("ok");
+    evidence.retireFreesSlot = { blockedBefore: true, createdAfter: true, resumable: true };
   });
 });
 
