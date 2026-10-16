@@ -608,6 +608,7 @@ export function ScriptPane(props: {
           assistant={{
             mode: "episode",
             episodeNo: episode.episodeNo,
+            episodeId: episode.id,
             premise: props.premise,
             confirmedMaterials: textOf(props.storyCurrent?.content ?? null),
             loaded: scripts !== null && !currentNotLoaded,
@@ -919,6 +920,7 @@ function ContentEditor(props: {
   assistant?: {
     mode: "story" | "episode";
     episodeNo: number | null;
+    episodeId?: string | null;
     premise: string;
     confirmedMaterials: string;
     loaded: boolean;
@@ -1104,6 +1106,7 @@ function ContentEditor(props: {
           projectId={props.projectId}
           entityKey={props.entityKey}
           episodeNo={props.assistant.episodeNo}
+          episodeId={props.assistant.episodeId ?? null}
           premise={props.assistant.premise}
           confirmedMaterials={props.assistant.confirmedMaterials}
           loaded={props.assistant.loaded}

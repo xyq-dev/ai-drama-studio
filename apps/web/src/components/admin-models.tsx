@@ -3,8 +3,8 @@
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import {
-  TITLE_WRITING_PROVIDER_LABELS, adminLimitsUpdateSchema, adminProviderUpdateSchema,
-  type AdminModelsView, type AdminProviderView, type TitleWritingProviderKey,
+  TITLE_WRITING_DEFAULT_MODELS, TITLE_WRITING_PROVIDER_LABELS, adminLimitsUpdateSchema, adminProviderUpdateSchema, anthropicKeyProblem,
+  claudeSetupState, type AdminModelsView, type AdminProviderView, type ClaudeSetupState, type TitleWritingProviderKey,
 } from "@ai-drama/contracts";
 import { AdminApiError, createAdminModelsClient } from "../lib/admin-models-client";
 import { ModelPicker, modelDraftFor, modelProblem, orderedModels, type ModelDraft } from "./admin-model-picker";
@@ -45,6 +45,30 @@ function messageFor(error: unknown): string {
   if (error.status === 429) return "验证请求过于频繁，请稍后再试。";
   return "网络连接或回执异常，操作结果尚未确认。请重新读取配置，不要直接重复提交。";
 }
+/** What the administrator is told about Claude. "Saved" is never shown as "can write", and nothing here says READY. */
+export function claudeStatusText(state: ClaudeSetupState, migrations: string[]): { title: string; detail: string; tone: "neutral" | "success" | "warning" } {
+  switch (state) {
+    case "key_missing":
+      return { title: "尚未配置 Claude API Key", detail: "在下面填写 Anthropic 控制台创建的 API Key 即可；模型、端点和请求参数由系统提供。", tone: "warning" };
+    case "pending_restart":
+      return { title: "Claude API Key 已保存，等待 API 重启后生效", detail: "保存不等于可以创作。请由服务器部署流程（Hermes）受控重启 API，重启后本页会显示新的状态。", tone: "warning" };
+    case "activation_deferred":
+      return { title: "Claude 配置已保存，应用已推迟", detail: "有创作任务尚未结束，服务继续使用原有配置。任务结束后需要再次重启 API。", tone: "warning" };
+    case "incomplete":
+      return { title: "Claude 配置项未齐全", detail: "当前生效配置缺少密钥或模型。请重新保存 Claude API Key。", tone: "warning" };
+    case "feature_off":
+      return { title: "Claude 配置已生效，但 AI 创作开关未开启", detail: "服务端 TITLE_WRITING_ENABLED 未开启（或生产环境未授权），暂时不能创作。", tone: "warning" };
+    case "operator_missing":
+      return { title: "Claude 配置已生效，但没有可用的调用授权", detail: "站点登录未启用，且没有设置操作者令牌。", tone: "warning" };
+    case "storage_unknown":
+      return { title: "Claude 配置已生效，数据库状态暂时无法读取", detail: "请稍后重新读取配置。", tone: "warning" };
+    case "migration_missing":
+      return { title: "Claude 配置已生效，但数据库迁移尚未执行", detail: `需要执行：${migrations.join("、") || "标题创作数据表"}。迁移需要单独授权，由服务器部署流程执行。`, tone: "warning" };
+    default:
+      return { title: "Claude 可以用于创作", detail: "配置已生效、功能已开启、数据库已就绪。这不代表已经完成真实调用验证；费用以 Anthropic 账单为准。", tone: "success" };
+  }
+}
+
 function Badge({ children, tone = "neutral" }: { children: ReactNode; tone?: "neutral" | "success" | "warning" }) {
   return <span className={`${styles.badge} ${styles[tone]}`}>{children}</span>;
 }
@@ -73,6 +97,9 @@ export function AdminModels() {
   const [mustReload, setMustReload] = useState(false);
   const [busy, setBusy] = useState("");
   const [showModelProblem, setShowModelProblem] = useState(false);
+  // The Claude quick setup: only the key. Kept apart from the advanced provider form and cleared after every submit.
+  const [claudeKey, setClaudeKey] = useState("");
+  const [claudeError, setClaudeError] = useState("");
   // Bumped whenever a server view is installed, so the picker's own search text, errors and hints start over too.
   const [viewEpoch, setViewEpoch] = useState(0);
   const busyRef = useRef("");
@@ -90,7 +117,7 @@ export function AdminModels() {
     busyRef.current = ""; setBusy("");
   }
   function forgetSecrets() {
-    setApiKey(""); setSecretAction("keep"); setClearConfirmed(false); setSecretNotice("");
+    setApiKey(""); setSecretAction("keep"); setClearConfirmed(false); setSecretNotice(""); setClaudeKey(""); setClaudeError("");
   }
   function endSession(message: string) {
     generation.current += 1;
@@ -259,6 +286,40 @@ export function AdminModels() {
     } finally { if (epoch === generation.current) setApiKey(""); finish(epoch); }
   }
 
+  /** Saves only the Claude key; the server adds the default model and makes Claude the default when none is set. */
+  async function saveClaudeKey(event: FormEvent) {
+    event.preventDefault();
+    if (!session || !view || !canEdit || busyRef.current) return;
+    const key = claudeKey.trim();
+    const problem = key.length === 0 ? "empty" : anthropicKeyProblem(key);
+    if (problem !== null) {
+      setClaudeError(problem === "empty" ? "请填写 Claude API Key。"
+        : "这不是 Anthropic 控制台创建的 API Key（应以 sk-ant-api 开头）。Claude Code 或订阅账号的登录凭据不能使用。");
+      setClaudeKey("");
+      return;
+    }
+    const current = view.saved.providers.find((provider) => provider.providerKey === "anthropic");
+    const parsed = adminProviderUpdateSchema.safeParse({ expectedRevision: view.savedRevision, models: current?.models ?? [], secretAction: "replace", apiKey: key });
+    if (!parsed.success) { setClaudeError("密钥格式不正确（8–256 个字符，不能包含空格）。"); setClaudeKey(""); return; }
+    const epoch = begin("claude");
+    if (epoch === null) return;
+    setError(""); setNotice(""); setClaudeError("");
+    try {
+      const next = await client.provider("anthropic", parsed.data);
+      if (epoch !== generation.current) return;
+      installView(next);
+      setNotice(`Claude API Key 已保存。${next.pendingRestart ? "需要重启 API 后生效，重启前还不能用 Claude 创作。" : "以当前生效配置为准。"}没有发起模型调用。`);
+    } catch (caught) {
+      if (epoch !== generation.current) return;
+      if (caught instanceof AdminApiError && caught.status === 401) endSession("管理员会话已过期，请重新验证。");
+      else {
+        setClaudeError(caught instanceof AdminApiError && caught.code === "ADMIN_CONFIG_KEY_FORMAT"
+          ? "服务端拒绝：这不是 Anthropic 控制台创建的 API Key。没有保存任何内容。" : messageFor(caught));
+        if (caught instanceof AdminApiError && (caught.status === 409 || caught.status === 0)) setMustReload(true);
+      }
+    } finally { if (epoch === generation.current) setClaudeKey(""); finish(epoch); }
+  }
+
   async function saveLimits(event: FormEvent) {
     event.preventDefault();
     if (!session || !view || !canEdit || busyRef.current) return;
@@ -306,6 +367,9 @@ export function AdminModels() {
           {view.pendingRestart && <div className={styles.warning} role="status"><strong>配置已保存，等待 API 重启生效</strong><p>请由服务器管理员按发布流程重启 API。本页面不会重启服务，也不会自动启用 AI 创作。</p></div>}
           {view.retired && <div className={styles.warning} role="status"><strong>千问与 DeepSeek 已退役</strong><p>{view.retired.providers.length > 0 ? `原配置中的${view.retired.providers.map((key) => TITLE_WRITING_PROVIDER_LABELS[key]).join("、")}设置不再生效，也不会再发出调用。` : "原配置中没有千问或 DeepSeek 的设置。"}{view.retired.retiredDefault ? `原默认供应商${TITLE_WRITING_PROVIDER_LABELS[view.retired.retiredDefault]}已取消，请重新选择默认供应商。` : ""}{view.retired.backupKept ? "原加密配置已在服务器上单独备份，供回滚使用。" : "首次保存时，原加密配置会先在服务器上单独备份。"}历史作品和调用记录不受影响。</p></div>}
           {view.activationDeferred && <div className={styles.warning} role="status"><strong>有创作任务尚未结束，配置应用已推迟</strong><p>服务继续使用原有的生效配置，避免改变正在执行或恢复中的模型请求。请在任务结束后联系服务器管理员处理。</p></div>}
+          <ClaudeQuickSetup view={view} claudeKey={claudeKey} claudeError={claudeError} canEdit={canEdit} busy={busy}
+            onKey={(value) => { setClaudeKey(value); setClaudeError(""); }} onSubmit={(event) => void saveClaudeKey(event)} />
+          <h2 className={styles.advancedHeading}>高级设置：模型供应商、模型与调用规则</h2>
           <div className={styles.workspace}>
             <aside className={styles.providerRail} aria-label="模型供应商"><div className={styles.railHeading}><h2>模型供应商</h2><span>02</span></div>
               {PROVIDERS.map((provider) => { const settings = view.saved.providers.find((item) => item.providerKey === provider.key); return <button key={provider.key} type="button" className={`${styles.providerButton} ${selected === provider.key ? styles.providerSelected : ""}`} aria-pressed={selected === provider.key} disabled={!!busy} onClick={() => changeProvider(provider.key)}>
@@ -348,4 +412,34 @@ export function AdminModels() {
       <footer className={styles.footer}><span>红果创作 · 管理员控制台</span><span>保存配置不等于启用 AI，也不代表真实模型验收通过。</span></footer>
     </main>
   </div>;
+}
+
+/** Only the key: the default model, endpoint, headers, thinking and structured output come from the server. */
+function ClaudeQuickSetup(props: {
+  view: AdminModelsView;
+  claudeKey: string;
+  claudeError: string;
+  canEdit: boolean;
+  busy: string;
+  onKey: (value: string) => void;
+  onSubmit: (event: FormEvent) => void;
+}) {
+  const setup = claudeSetupState(props.view);
+  const status = claudeStatusText(setup.state, setup.migrations);
+  const saved = props.view.saved.providers.find((provider) => provider.providerKey === "anthropic");
+  return <section className={`${styles.card} ${styles.quickSetup}`} aria-label="Claude 快速配置" data-testid="claude-quick-setup">
+    <div className={styles.cardHeading}><div><span className={styles.eyebrow}>只需填写 API Key</span><h2>Claude 快速配置</h2>
+      <p>模型默认使用 {TITLE_WRITING_DEFAULT_MODELS.anthropic.join("、")}；端点、协议头、思考与结构化输出参数由系统提供。</p></div>
+      <Badge tone={saved?.keyConfigured ? "success" : "neutral"}>{saved?.keyConfigured ? "密钥已保存 · 不可读取" : "等待配置"}</Badge></div>
+    <div className={status.tone === "success" ? styles.success : styles.warning} role="status" data-testid="claude-status" data-state={setup.state}>
+      <strong>{status.title}</strong><p>{status.detail}</p></div>
+    <form onSubmit={props.onSubmit}><fieldset className={styles.fieldset} disabled={!props.canEdit}>
+      <label className={styles.field}>Claude API Key<input name="claude-api-key" type="password" autoComplete="off" spellCheck={false} value={props.claudeKey}
+        onChange={(event) => props.onKey(event.target.value)} maxLength={256} placeholder={saved?.keyConfigured ? "已保存；填写新的 Key 会替换它" : "sk-ant-api…"} />
+        <small>只接受 Anthropic 控制台创建的 API Key；不接受 Claude Code、订阅账号或浏览器会话的凭据。提交后输入框会清空，页面不会再显示密钥。</small></label>
+      {props.claudeError && <p className={styles.claudeError} role="alert">{props.claudeError}</p>}
+      <div className={styles.formFooter}><p>只保存配置<br /><span>不联网测试 · 不产生模型费用 · 保存后需重启 API 生效</span></p>
+        <button className={styles.primary} type="submit" disabled={!props.canEdit || !props.claudeKey.trim()}>{props.busy === "claude" ? "正在保存…" : "保存 Claude API Key"}<span aria-hidden="true">→</span></button></div>
+    </fieldset></form>
+  </section>;
 }

@@ -1,7 +1,9 @@
-import { Body, Controller, Get, Headers, Inject, Param, Post, Res } from "@nestjs/common";
+import { Body, Controller, Get, Headers, Inject, Optional, Param, Post, Res } from "@nestjs/common";
 import { PersistenceError } from "@ai-drama/database";
 import { TITLE_WRITING_SERVICE } from "./tokens";
 import { createTraceId } from "./studio.service";
+import { operatorProof } from "./operator-access";
+import { SITE_AUTH, type RequestHeaders, type SiteAuthState } from "../auth/site-auth";
 import type { TitleWritingResult, TitleWritingService } from "./title-writing.service";
 
 const UUID_PARAM_PIPE = {
@@ -21,7 +23,10 @@ interface StatusResponse {
 /** Title-driven writing routes. Responses are private and never cached; error bodies use { error: { code, message } }. */
 @Controller()
 export class TitleWritingController {
-  constructor(@Inject(TITLE_WRITING_SERVICE) private readonly writing: TitleWritingService) {}
+  constructor(
+    @Inject(TITLE_WRITING_SERVICE) private readonly writing: TitleWritingService,
+    @Optional() @Inject(SITE_AUTH) private readonly site: SiteAuthState | null = null,
+  ) {}
 
   @Get("writing/title-runs/options")
   options(@Res({ passthrough: true }) response: StatusResponse) {
@@ -33,11 +38,11 @@ export class TitleWritingController {
     @Param("projectId", UUID_PARAM_PIPE) projectId: string,
     @Body() body: unknown,
     @Res({ passthrough: true }) response: StatusResponse,
-    @Headers("x-operator-token") operatorToken?: string,
+    @Headers() headers: RequestHeaders,
     @Headers("idempotency-key") idempotencyKey?: string,
     @Headers("x-trace-id") traceHeader?: string,
   ) {
-    return this.send(response, this.writing.start(projectId, body, operatorToken,
+    return this.send(response, this.writing.start(projectId, body, operatorProof(this.site, headers),
       { actorId: "server-owner", traceId: createTraceId(traceHeader), idempotencyKey }));
   }
 
@@ -70,11 +75,11 @@ export class TitleWritingController {
     @Param("runId", UUID_PARAM_PIPE) runId: string,
     @Body() body: unknown,
     @Res({ passthrough: true }) response: StatusResponse,
-    @Headers("x-operator-token") operatorToken?: string,
+    @Headers() headers: RequestHeaders,
     @Headers("idempotency-key") idempotencyKey?: string,
     @Headers("x-trace-id") traceHeader?: string,
   ) {
-    return this.send(response, this.writing.resume(projectId, runId, body, operatorToken,
+    return this.send(response, this.writing.resume(projectId, runId, body, operatorProof(this.site, headers),
       { actorId: "server-owner", traceId: createTraceId(traceHeader), idempotencyKey }));
   }
 

@@ -6,7 +6,8 @@
   },
   "include": [
     "src/studio/script-breakdown.acceptance.spec.ts",
-    "src/studio/script-breakdown.media-acceptance.spec.ts"
+    "src/studio/script-breakdown.media-acceptance.spec.ts",
+    "src/studio/writing-online.browser-acceptance.spec.ts"
   ],
   "exclude": ["dist"]
 }

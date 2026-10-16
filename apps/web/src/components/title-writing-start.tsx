@@ -13,6 +13,7 @@ import {
   isEntityId,
   normalizeOptions,
   optionsUnavailableReason,
+  tokenRequired,
   type StartBody,
   type TitleWritingOptionsView,
 } from "../lib/title-writing-client";
@@ -227,6 +228,8 @@ export function TitleWritingStart() {
   const planUnavailable = optionsLoaded && options && !unavailable && options.episodePlanReady !== true
     ? "集数和时长设置还没有在服务器上就绪（数据库迁移尚未执行），暂时不能用 AI 一键创作新作品。可以先手动创作。" : null;
   const readyProviders = options?.providers.filter((item) => item.ready) ?? [];
+  // With the site login on, the signed-in administrator authorizes the call; no token field is shown or sent.
+  const needsToken = tokenRequired(options);
   const chosen = readyProviders.find((item) => item.providerKey === providerKey) ?? null;
   const locked = busy || pending !== null;
 
@@ -264,7 +267,7 @@ export function TitleWritingStart() {
       }
       const projectId = current.projectId!;
       try {
-        await writing.start(projectId, current.request, { token: token.trim(), idempotencyKey: current.runKey });
+        await writing.start(projectId, current.request, { token: needsToken ? token.trim() : "", idempotencyKey: current.runKey });
       } catch (caught) {
         // Another start of this work is already running: show that one instead of starting a second.
         if (!(caught instanceof TitleWritingError && caught.code === "TITLE_WRITING_RUN_ACTIVE")) throw caught;
@@ -293,7 +296,7 @@ export function TitleWritingStart() {
       setError(planUnavailable);
       return false;
     }
-    if (token.trim().length === 0) {
+    if (needsToken && token.trim().length === 0) {
       setError("请先在「配置与权限」填写操作者令牌。它只用于确认这次调用由你发起，不属于故事内容。");
       tokenRef.current?.focus();
       return false;
@@ -446,10 +449,16 @@ export function TitleWritingStart() {
             开始前剩余次数少于正常需要的次数时，不会创建任务。费用以服务商账单为准，本页不估算金额。
           </p>
         ) : null}
-        <label className={styles.label} htmlFor="ai-token">操作者令牌</label>
-        <input ref={tokenRef} id="ai-token" className={styles.input} type="password" autoComplete="off" value={token}
-          disabled={busy} onChange={(event) => setToken(event.target.value)} />
-        <p className={styles.helper}>只保存在本页内存，用来确认这次可能计费的调用由你发起；不写入浏览器存储，也不进入故事内容。模型密钥只在服务端。</p>
+        {needsToken ? (
+          <>
+            <label className={styles.label} htmlFor="ai-token">操作者令牌</label>
+            <input ref={tokenRef} id="ai-token" className={styles.input} type="password" autoComplete="off" value={token}
+              disabled={busy} onChange={(event) => setToken(event.target.value)} />
+            <p className={styles.helper}>只保存在本页内存，用来确认这次可能计费的调用由你发起；不写入浏览器存储，也不进入故事内容。模型密钥只在服务端。</p>
+          </>
+        ) : (
+          <p className={styles.helper}>调用权限由当前管理员登录确认，不需要填写操作者令牌。模型密钥只在服务端。</p>
+        )}
       </section>
     </section>
   );

@@ -422,7 +422,11 @@ export class ModelConfigVault {
     if (expected === Number.MAX_SAFE_INTEGER) throw storageError();
   }
 
-  async updateProvider(key: TitleWritingProviderKey, body: AdminProviderUpdate): Promise<void> {
+  /**
+   * claimDefault: when no default provider is saved and this provider ends up with a key and models, it becomes the
+   * default in the same write (the console's "only the Claude key" setup). An existing default is never replaced.
+   */
+  async updateProvider(key: TitleWritingProviderKey, body: AdminProviderUpdate, options: { claimDefault?: boolean } = {}): Promise<void> {
     const parsed = adminProviderUpdateSchema.safeParse(body);
     if (!adminProviderKeySchema.safeParse(key).success || !parsed.success || (parsed.data.baseUrl !== undefined && !validEndpoint(key, parsed.data.baseUrl))) throw inputError();
     const input = parsed.data;
@@ -433,6 +437,9 @@ export class ModelConfigVault {
       if (input.baseUrl !== undefined) provider.baseUrl = input.baseUrl;
       if (input.secretAction === "replace") provider.apiKey = input.apiKey!;
       if (input.secretAction === "clear") provider.apiKey = null;
+      if (options.claimDefault && doc.saved.defaultProvider === null && provider.apiKey !== null && provider.models.length > 0) {
+        doc.saved.defaultProvider = key;
+      }
       doc.saved.revision += 1;
       doc.audit = [...doc.audit, { action: "provider_updated" as const, providerKey: key, revision: doc.saved.revision, at: new Date().toISOString() }].slice(-50);
       await this.persist(doc);

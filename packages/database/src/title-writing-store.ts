@@ -43,6 +43,7 @@ import { projectEpisodePlanIn } from "./episode-plan";
 import { WRITING_PROVIDER_MIGRATION } from "./migrations";
 import { PersistenceError, type DatabasePool } from "./job-service";
 import type { TextChainService } from "./text-chain";
+import { recentWritingCalls, writingCallLockKey } from "./writing-candidate-store";
 
 /**
  * The migration that creates the title writing tables (prisma/migrations/20261008000100_title_writing). It replaced the
@@ -256,11 +257,8 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
         // count without the call lock (lock order stays run lock -> run row, as before) and reserves nothing: each
         // send still reserves its call atomically in reserveCall.
         const { sinceIso, maxCallsPerDay, requiredCalls } = limits.quota;
-        const recent = await client.query<Row>(
-          "SELECT count(*)::int AS recent FROM title_writing_call WHERE workspace_id = $1 AND created_at >= $2",
-          [run.workspaceId, sinceIso],
-        );
-        const remainingCalls = Math.max(0, maxCallsPerDay - Number(recent.rows[0]?.recent ?? 0));
+        // Online candidates share the daily cap with title writing calls.
+        const remainingCalls = Math.max(0, maxCallsPerDay - await recentWritingCalls(client, run.workspaceId, sinceIso));
         if (remainingCalls < requiredCalls) return { kind: "blocked", code: "TITLE_WRITING_DAILY_QUOTA_LOW", requiredCalls, remainingCalls };
       }
       const breakdown = isScriptBreakdownInput(run.input) ? run.input : null;
@@ -344,7 +342,7 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
 
   async reserveCall(call: TitleCallRecord, limits: { sinceIso: string; maxCallsPerDay: number }, nowIso: string, leaseUntil: string): Promise<TitleCallReservation> {
     return this.transaction(async (client) => {
-      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`title_writing_call:${call.workspaceId}`]);
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [writingCallLockKey(call.workspaceId)]);
       const run = await this.ownedRun(client, call.workspaceId, call.runId, call.executorId, nowIso);
       if (!run) return { kind: "lost" };
       if (run.cancelRequestedAt !== null) return { kind: "canceled" };
@@ -355,11 +353,8 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
         if (!await this.breakdownSceneSetCurrent(client, call.workspaceId, run.projectId, run.input)) return { kind: "conflict" };
       }
       if (run.callsUsed >= run.callCap) return { kind: "blocked", code: "TITLE_WRITING_RUN_CAP" };
-      const recent = await client.query<Row>(
-        "SELECT count(*)::int AS recent FROM title_writing_call WHERE workspace_id = $1 AND created_at >= $2",
-        [call.workspaceId, limits.sinceIso],
-      );
-      if (Number(recent.rows[0]?.recent ?? 0) >= limits.maxCallsPerDay) return { kind: "blocked", code: "TITLE_WRITING_DAILY_CAP" };
+      // One rolling cap for every paid text call of the workspace: title writing calls and online candidates.
+      if (await recentWritingCalls(client, call.workspaceId, limits.sinceIso) >= limits.maxCallsPerDay) return { kind: "blocked", code: "TITLE_WRITING_DAILY_CAP" };
       const step = await client.query(
         `UPDATE title_writing_step SET state = 'reserved', attempt_no = $3, error_code = NULL, updated_at = $4
           WHERE run_id = $1 AND step_key = $2 AND state = 'pending'`,

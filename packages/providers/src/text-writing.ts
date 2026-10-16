@@ -1,4 +1,4 @@
-import type { TitleWritingProviderKey } from "@ai-drama/contracts";
+import { TITLE_WRITING_DEFAULT_MODELS, anthropicKeyProblem, type TitleWritingProviderKey } from "@ai-drama/contracts";
 import {
   ResponseBodyError,
   decodeResponseBytes,
@@ -427,9 +427,16 @@ function readKey(value: string | undefined): string | null {
 function configOf(providerKey: TitleWritingProviderKey, url: string, key: string | undefined, keyName: string,
   modelList: string | undefined, modelsName: string): WritingProviderConfig {
   const missing: string[] = [];
-  const apiKey = readKey(key);
+  let apiKey = readKey(key);
+  // Claude takes an Anthropic Console API key only: an Anthropic credential of another kind (a Claude Code / subscription
+  // OAuth token, an Admin API key) is never sent, even if configured. The console checks the full key shape on input.
+  if (apiKey && providerKey === "anthropic" && anthropicKeyProblem(apiKey) === "not_api_key") apiKey = null;
   if (!apiKey) missing.push(keyName);
-  const models = parseModelList(modelList);
+  // No model list but a key: the provider's documented default list (Claude only), so a key alone is a full setup.
+  const defaults = TITLE_WRITING_DEFAULT_MODELS[providerKey];
+  const listed = parseModelList(modelList);
+  const models: { ok: true; models: string[] } | { ok: false } = listed.ok || (modelList ?? "").trim().length > 0 || defaults.length === 0
+    ? listed : { ok: true, models: [...defaults] };
   if (!models.ok) missing.push(modelsName);
   return apiKey && models.ok
     ? { providerKey, ok: true, url, apiKey, models: models.models, missing: [] }

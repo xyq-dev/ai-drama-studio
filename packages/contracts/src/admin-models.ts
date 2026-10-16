@@ -59,7 +59,17 @@ export interface AdminModelsView {
   pendingRestart: boolean;
   activationDeferred: boolean;
   source: "environment" | "managed";
-  titleWriting: { enabled: boolean; productionBlocked: boolean; operatorConfigured: boolean };
+  /**
+   * operatorConfigured: TITLE_WRITING_OPERATOR_TOKEN is set (needed only without the site login). siteOperator: the site
+   * login is on, so the signed-in administrator may start paid calls without any token.
+   */
+  titleWriting: { enabled: boolean; productionBlocked: boolean; operatorConfigured: boolean; siteOperator?: boolean };
+  /**
+   * Whether the database can store what the features need, read when the view is built: the title writing tables, Claude
+   * runs (20261016000100_writing_provider_anthropic) and online candidates (20261016000200_writing_candidate). Null when
+   * it could not be read.
+   */
+  storage?: { titleWriting: boolean; claude: boolean; candidates: boolean } | null;
   saved: AdminSettingsView;
   active: AdminSettingsView;
   audit: AdminAuditView[];
@@ -70,4 +80,44 @@ export interface AdminModelsView {
    * is now unset and must be chosen again).
    */
   retired?: { providers: TitleWritingStoredProviderKey[]; retiredDefault: TitleWritingStoredProviderKey | null; backupKept: boolean };
+}
+
+/**
+ * What stands between the administrator and writing with Claude, in the order it has to be resolved. Each state is
+ * distinct: a saved key is not an applied key, an applied key is not a migrated database, and none of them is a
+ * verified model call.
+ */
+export type ClaudeSetupState =
+  | "key_missing"
+  | "pending_restart"
+  | "activation_deferred"
+  | "incomplete"
+  | "feature_off"
+  | "operator_missing"
+  | "storage_unknown"
+  | "migration_missing"
+  | "ready";
+
+export function claudeSetupState(view: AdminModelsView): { state: ClaudeSetupState; migrations: string[] } {
+  const saved = view.saved.providers.find((provider) => provider.providerKey === "anthropic");
+  const active = view.active.providers.find((provider) => provider.providerKey === "anthropic");
+  const none = { migrations: [] as string[] };
+  if (!saved?.keyConfigured) return { state: "key_missing", ...none };
+  if (!active?.ready) {
+    if (view.activationDeferred) return { state: "activation_deferred", ...none };
+    if (view.pendingRestart) return { state: "pending_restart", ...none };
+    return { state: "incomplete", ...none };
+  }
+  // A saved change (a replaced key, other models) is not in use until the restart applies it: never "ready" meanwhile.
+  if (view.activationDeferred) return { state: "activation_deferred", ...none };
+  if (view.pendingRestart) return { state: "pending_restart", ...none };
+  if (!view.titleWriting.enabled) return { state: "feature_off", ...none };
+  if (!view.titleWriting.siteOperator && !view.titleWriting.operatorConfigured) return { state: "operator_missing", ...none };
+  if (!view.storage) return { state: "storage_unknown", ...none };
+  const migrations = [
+    ...(view.storage.claude ? [] : ["20261016000100_writing_provider_anthropic"]),
+    ...(view.storage.candidates ? [] : ["20261016000200_writing_candidate"]),
+  ];
+  if (!view.storage.titleWriting || migrations.length > 0) return { state: "migration_missing", migrations };
+  return { state: "ready", migrations };
 }

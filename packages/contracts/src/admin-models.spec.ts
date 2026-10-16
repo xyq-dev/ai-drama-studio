@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { adminLimitsUpdateSchema, adminProviderKeySchema, adminProviderUpdateSchema } from "./admin-models";
+import { adminLimitsUpdateSchema, adminProviderKeySchema, adminProviderUpdateSchema, claudeSetupState, type AdminModelsView } from "./admin-models";
+import { anthropicKeyProblem } from "./title-writing";
 
 const provider = { expectedRevision: 0, models: ["test-model:2026"], secretAction: "keep" };
 const limits = { expectedRevision: 0, defaultProvider: "anthropic", maxCallsPerDay: 8, maxActiveRuns: 1 };
@@ -56,5 +57,42 @@ describe("admin model configuration request contracts", () => {
     expect(adminLimitsUpdateSchema.safeParse({ ...limits, defaultProvider: "custom-provider" }).success).toBe(false);
     expect(adminLimitsUpdateSchema.safeParse({ ...limits, defaultProvider: null }).success).toBe(true);
     expect(adminLimitsUpdateSchema.safeParse({ ...limits, maxCallsPerDay: 500, maxActiveRuns: 10 }).success).toBe(true);
+  });
+});
+
+describe("Claude setup state", () => {
+  const provider = (keyConfigured: boolean, ready: boolean) => ({ providerKey: "anthropic" as const, label: "Claude", models: ["claude-opus-5-5"],
+    baseUrl: "https://api.anthropic.com/v1/messages", keyConfigured, ready, missing: ready ? [] : ["ANTHROPIC_API_KEY"] });
+  const settings = (keyConfigured: boolean, ready: boolean) => ({ defaultProvider: null, maxCallsPerDay: 30, maxActiveRuns: 1,
+    providers: [provider(keyConfigured, ready)] });
+  const view = (patch: Partial<AdminModelsView> = {}): AdminModelsView => ({
+    savedRevision: 1, activeRevision: 1, pendingRestart: false, activationDeferred: false, source: "managed",
+    titleWriting: { enabled: true, productionBlocked: false, operatorConfigured: false, siteOperator: true },
+    saved: settings(true, true), active: settings(true, true), audit: [], validation: "local_only",
+    storage: { titleWriting: true, claude: true, candidates: true }, ...patch,
+  });
+
+  it("names exactly one state, in the order it must be resolved; saved is never ready", () => {
+    expect(claudeSetupState(view({ saved: settings(false, false), active: settings(false, false) })).state).toBe("key_missing");
+    expect(claudeSetupState(view({ pendingRestart: true, active: settings(false, false) })).state).toBe("pending_restart");
+    expect(claudeSetupState(view({ pendingRestart: true, activationDeferred: true, active: settings(false, false) })).state).toBe("activation_deferred");
+    expect(claudeSetupState(view({ active: settings(true, false) })).state).toBe("incomplete");
+    // Active and ready with the old key, a new key saved: not "ready" until the restart applies it.
+    expect(claudeSetupState(view({ pendingRestart: true })).state).toBe("pending_restart");
+    expect(claudeSetupState(view({ pendingRestart: true, activationDeferred: true })).state).toBe("activation_deferred");
+    expect(claudeSetupState(view({ titleWriting: { enabled: false, productionBlocked: false, operatorConfigured: false, siteOperator: true } })).state).toBe("feature_off");
+    expect(claudeSetupState(view({ titleWriting: { enabled: true, productionBlocked: false, operatorConfigured: false, siteOperator: false } })).state).toBe("operator_missing");
+    expect(claudeSetupState(view({ storage: null })).state).toBe("storage_unknown");
+    expect(claudeSetupState(view({ storage: { titleWriting: true, claude: false, candidates: false } })))
+      .toEqual({ state: "migration_missing", migrations: ["20261016000100_writing_provider_anthropic", "20261016000200_writing_candidate"] });
+    expect(claudeSetupState(view()).state).toBe("ready");
+  });
+
+  it("accepts only Anthropic Console API keys", () => {
+    expect(anthropicKeyProblem("sk-ant-api03-abcdefghijklmnopqrstuvwxyz")).toBeNull();
+    expect(anthropicKeyProblem("sk-ant-oat01-abcdefghijklmnopqrstuvwxyz")).toBe("not_api_key");
+    expect(anthropicKeyProblem("sk-ant-admin01-abcdefghijklmnopqrstuvwxyz")).toBe("not_api_key");
+    expect(anthropicKeyProblem("sk-proj-abcdefghijklmnopqrstuvwxyz")).toBe("not_anthropic_key");
+    expect(anthropicKeyProblem("sk-ant-api03-short")).toBe("not_api_key");
   });
 });

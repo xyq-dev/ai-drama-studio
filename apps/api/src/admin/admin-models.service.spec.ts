@@ -5,7 +5,10 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadApiEnv } from "../config/env";
 import { adminBootstrap } from "./admin-bootstrap";
+import { claudeSetupState } from "@ai-drama/contracts";
 import { AdminModelsService, managedProviderConfigs } from "./admin-models.service";
+
+const CLAUDE_KEY = "sk-ant-api03-test-only-not-a-real-key-0123456789";
 
 const base = {
   DATABASE_URL: "postgresql://unused:unused@127.0.0.1:55432/unused",
@@ -97,6 +100,43 @@ describe.skipIf(process.platform === "win32")("managed models runtime (real encr
     await first.updateLimits({ expectedRevision: 0, defaultProvider: null, maxCallsPerDay: 8, maxActiveRuns: 1 });
     await expect(AdminModelsService.open(env, bootstrap, async () => { throw new Error("database unavailable"); })).rejects.toThrow();
     expect((await first.view()).activeRevision).toBe(0);
+  });
+  it("a Claude key alone is a complete setup: default model, Claude as default, applied only after a restart", async () => {
+    const { env, bootstrap } = await fixture({ TITLE_WRITING_ENABLED: "true" });
+    const storage = vi.fn(async () => ({ titleWriting: true, claude: true, candidates: false }));
+    const first = await AdminModelsService.open(env, bootstrap, async () => true, { enabled: true, productionBlocked: false, siteOperator: true }, storage);
+    expect(claudeSetupState(await first.view()).state).toBe("key_missing");
+    const saved = await first.updateProvider("anthropic", { expectedRevision: 0, models: [], secretAction: "replace", apiKey: CLAUDE_KEY });
+    const claude = saved.saved.providers.find((item) => item.providerKey === "anthropic")!;
+    expect(claude).toMatchObject({ keyConfigured: true, models: ["claude-opus-5-5"], ready: true });
+    expect(saved.saved.defaultProvider).toBe("anthropic");
+    // Saved is not applied: the running API still has no Claude, and the console says so.
+    expect(saved.pendingRestart).toBe(true);
+    expect(claudeSetupState(saved).state).toBe("pending_restart");
+    expect(JSON.stringify(saved)).not.toContain(CLAUDE_KEY);
+    expect(await readFile(bootstrap.path, "utf8")).not.toContain(CLAUDE_KEY);
+    // OpenAI is untouched: its key and models stay as they were.
+    expect(saved.saved.providers.find((item) => item.providerKey === "openai")).toMatchObject({ keyConfigured: true, models: ["approved-model"] });
+    const restarted = await AdminModelsService.open(env, bootstrap, async () => true, { enabled: true, productionBlocked: false, siteOperator: true }, storage);
+    const view = await restarted.view();
+    expect(managedProviderConfigs(restarted.runtimeSettings()).anthropic).toMatchObject({ ok: true, models: ["claude-opus-5-5"] });
+    expect(restarted.runtimeSettings().defaultProvider).toBe("anthropic");
+    expect(view.storage).toEqual({ titleWriting: true, claude: true, candidates: false });
+    expect(claudeSetupState(view)).toEqual({ state: "migration_missing", migrations: ["20261016000200_writing_candidate"] });
+    storage.mockResolvedValue({ titleWriting: true, claude: true, candidates: true });
+    expect(claudeSetupState(await restarted.view()).state).toBe("ready");
+  });
+  it("refuses anything but an Anthropic Console API key before saving, and never replaces a default already chosen", async () => {
+    const { env, bootstrap } = await fixture();
+    const service = await AdminModelsService.open(env, bootstrap, async () => true);
+    for (const apiKey of ["sk-ant-oat01-claude-code-oauth-token-abcdef", "sk-ant-admin01-admin-key-abcdefghij", "sk-proj-openai-like-key-abcdef"]) {
+      await expect(service.updateProvider("anthropic", { expectedRevision: 0, models: [], secretAction: "replace", apiKey })).rejects.toMatchObject({ code: "ADMIN_CONFIG_KEY_FORMAT", status: 400 });
+    }
+    expect((await service.view()).savedRevision).toBe(0);
+    await service.updateLimits({ expectedRevision: 0, defaultProvider: "openai", maxCallsPerDay: 30, maxActiveRuns: 1 });
+    const saved = await service.updateProvider("anthropic", { expectedRevision: 1, models: ["claude-sonnet-5-5"], secretAction: "replace", apiKey: CLAUDE_KEY });
+    expect(saved.saved.defaultProvider).toBe("openai");
+    expect(saved.saved.providers.find((item) => item.providerKey === "anthropic")?.models).toEqual(["claude-sonnet-5-5"]);
   });
   it("cannot enable production calls by configuring a valid provider", async () => {
     const { env, bootstrap } = await fixture({ NODE_ENV: "production", TITLE_WRITING_ENABLED: "true" });

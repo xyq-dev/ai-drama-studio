@@ -1,5 +1,6 @@
-import type {
-  AdminLimitsUpdate, AdminModelsView, AdminProviderUpdate, AdminSettingsView, TitleWritingProviderKey,
+import {
+  TITLE_WRITING_DEFAULT_MODELS, anthropicKeyProblem,
+  type AdminLimitsUpdate, type AdminModelsView, type AdminProviderUpdate, type AdminSettingsView, type TitleWritingProviderKey,
 } from "@ai-drama/contracts";
 import {
   ANTHROPIC_MESSAGES_URL, OPENAI_RESPONSES_URL, parseModelList, titleWritingProviderConfigs,
@@ -7,6 +8,7 @@ import {
 import type { ApiEnv } from "../config/env";
 import type { AdminBootstrap } from "./admin-bootstrap";
 import type { AdminModelsBackend } from "./admin-models.controller";
+import { AdminHttpError } from "./admin-auth";
 import { ModelConfigVault, type ManagedModelSettings } from "./model-config-vault";
 
 const PROVIDERS = ["openai", "anthropic"] as const;
@@ -64,13 +66,16 @@ export class AdminModelsService implements AdminModelsBackend {
     private readonly effective: ManagedModelSettings,
     private readonly deferred: boolean,
     private readonly state: AdminModelsView["titleWriting"],
+    private readonly storage: (() => Promise<NonNullable<AdminModelsView["storage"]>>) | null = null,
   ) {}
 
   static async open(env: ApiEnv, bootstrap: AdminBootstrap, isIdle: () => Promise<boolean>,
-    titleWritingState: Pick<AdminModelsView["titleWriting"], "enabled" | "productionBlocked"> = {
+    titleWritingState: Pick<AdminModelsView["titleWriting"], "enabled" | "productionBlocked" | "siteOperator"> = {
       enabled: env.NODE_ENV !== "production" && env.TITLE_WRITING_ENABLED,
       productionBlocked: env.NODE_ENV === "production",
-    }): Promise<AdminModelsService> {
+    },
+    /** Reads whether the database can store title runs, Claude runs and online candidates. Never writes. */
+    storage: (() => Promise<NonNullable<AdminModelsView["storage"]>>) | null = null): Promise<AdminModelsService> {
     const vault = await ModelConfigVault.open({ path: bootstrap.path, masterKey: bootstrap.masterKey, initial: initialModelSettings(env) });
     // This runs before the API accepts requests or starts recovery. No live hot swap.
     const result = await vault.activateIfIdle(isIdle);
@@ -78,7 +83,7 @@ export class AdminModelsService implements AdminModelsBackend {
       // The runtime passes the same computed authorization used by the service and recovery engine.
       ...titleWritingState,
       operatorConfigured: Boolean(env.TITLE_WRITING_OPERATOR_TOKEN),
-    });
+    }, storage);
   }
 
   /** Server-only startup copy; never returned by the controller. */
@@ -92,14 +97,35 @@ export class AdminModelsService implements AdminModelsBackend {
       pendingRestart: doc.saved.revision !== this.effective.revision, activationDeferred: this.deferred,
       source: doc.saved.revision === 0 ? "environment" : "managed",
       saved: settingsView(doc.saved), active: settingsView(this.effective), titleWriting: { ...this.state },
-      audit: doc.audit, validation: "local_only",
+      audit: doc.audit, validation: "local_only", storage: await this.readStorage(),
       ...(retired ? { retired: { providers: retired.providers as NonNullable<AdminModelsView["retired"]>["providers"],
         retiredDefault: retired.retiredDefault as NonNullable<AdminModelsView["retired"]>["retiredDefault"], backupKept: retired.backupKept } } : {}),
     };
   }
 
+  private async readStorage(): Promise<AdminModelsView["storage"]> {
+    if (!this.storage) return null;
+    try {
+      return await this.storage();
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * A Claude key alone is a complete setup: without a model list the documented default model is saved with it, and
+   * with no default provider saved Claude becomes the default in the same write. The key must have the shape of an
+   * Anthropic Console API key; a Claude Code / subscription token or an Admin key is refused before anything is saved.
+   */
   async updateProvider(providerKey: TitleWritingProviderKey, body: AdminProviderUpdate): Promise<AdminModelsView> {
-    await this.vault.updateProvider(providerKey, body);
+    if (providerKey === "anthropic" && body.secretAction === "replace" && (body.apiKey === undefined || anthropicKeyProblem(body.apiKey) !== null)) {
+      throw new AdminHttpError(400, "ADMIN_CONFIG_KEY_FORMAT");
+    }
+    const defaults = TITLE_WRITING_DEFAULT_MODELS[providerKey];
+    // Only when a key is entered: saving an empty list with the key kept is how the list is emptied (not ready).
+    const update = body.secretAction === "replace" && body.models.length === 0 && defaults.length > 0
+      ? { ...body, models: [...defaults] } : body;
+    await this.vault.updateProvider(providerKey, update, { claimDefault: providerKey === "anthropic" });
     return this.view();
   }
 

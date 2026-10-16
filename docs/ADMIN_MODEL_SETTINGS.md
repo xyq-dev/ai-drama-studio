@@ -5,6 +5,8 @@
 千问与 DeepSeek 已退役：后台没有它们的入口，也不能设为默认供应商；历史任务仍按真实供应商显示。详见 [`OPENAI_CLAUDE_WRITING.md`](OPENAI_CLAUDE_WRITING.md)。
 媒体 Provider 的配置不受影响。保存配置不会调用模型、不会自动启用标题创作、不会修改数据库。
 
+> 2026-10-16 起页面顶部有「Claude 快速配置」：只填 Claude API Key 即可，默认模型 `claude-opus-5-5` 与 Claude 默认供应商由服务端补全，状态逐项区分「已保存 / 等待重启 / 迁移未执行 / 开关未开 / 可以创作」。站点登录开启时，登录的管理员就是付费调用的操作者，不再需要操作者令牌。见 [`OPENAI_CLAUDE_WRITING.md`](OPENAI_CLAUDE_WRITING.md)。
+
 ## 用户操作与真实含义
 
 1. 使用站点统一登录（`/login`，见 [`UNIFIED_ADMIN_LOGIN.md`](UNIFIED_ADMIN_LOGIN.md)）进入；不再有独立的管理员访问令牌。登录账号不是供应商 API Key，也不是标题创作操作者令牌。

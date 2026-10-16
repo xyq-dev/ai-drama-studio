@@ -79,9 +79,19 @@ export const BASE_MIGRATIONS = [
  */
 export const WRITING_PROVIDER_MIGRATION = "20261016000100_writing_provider_anthropic";
 
-/** The only migrations a guarded single run may apply, each with the migrations it requires. */
+/**
+ * Creates writing_candidate_request, the online candidates of the workbench writing assistant. Independent of the script
+ * breakdown and the provider migration: it can be applied alone on a database with the base migrations.
+ */
+export const WRITING_CANDIDATE_MIGRATION = "20261016000200_writing_candidate";
+
+/**
+ * The only migrations a guarded single run may apply, each with the migrations it requires. Each is applied by its own
+ * command; none of them takes the script breakdown (or anything else pending) along.
+ */
 export const GUARDED_SINGLE_MIGRATIONS: Readonly<Record<string, readonly string[]>> = {
   [WRITING_PROVIDER_MIGRATION]: BASE_MIGRATIONS,
+  [WRITING_CANDIDATE_MIGRATION]: BASE_MIGRATIONS,
 };
 
 export async function runMigrations(

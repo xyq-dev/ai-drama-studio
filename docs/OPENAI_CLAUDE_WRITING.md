@@ -25,6 +25,31 @@
 - OpenAI 保持原有 Responses API 请求与解析不变。
 - 请求总会带 `output_config.effort` 与自适应思考：白名单只应填写支持二者和结构化输出的当前模型（上面列出的四个）。填写不支持的旧模型（例如 Claude Haiku 4.5）时，每次调用会被 400 拒绝并记为 `bad_request`，不会循环重发。
 
+## 只填写 Claude API Key（2026-10-16 第二轮）
+
+- 后台 `/admin/models` 顶部「Claude 快速配置」只有一个输入框：Claude API Key。保存时服务端：
+  - 只接受 Anthropic 控制台创建的 API Key（`sk-ant-api…`，`anthropicKeyProblem`）；Claude Code / 订阅 OAuth（`sk-ant-oat…`）、Admin Key（`sk-ant-admin…`）等在保存前以 `ADMIN_CONFIG_KEY_FORMAT`（400）拒绝，不写入任何内容。服务端运行时也不会用这类凭据发送。
+  - 没有模型列表时写入默认模型 `TITLE_WRITING_DEFAULT_MODELS.anthropic = ["claude-opus-5-5"]`（2026-10-16 核对官方模型页，支持结构化输出、effort、自适应思考）；环境变量方式只设 `ANTHROPIC_API_KEY` 也得到同一默认模型。OpenAI 仍需显式模型列表，不猜测。
+  - 尚未保存默认供应商时，同一次写入把 Claude 设为默认；已选的默认不被替换。没有可用默认时按 `TITLE_WRITING_PROVIDER_PREFERENCE`（Claude 优先）选择。失败后从不换模型或供应商。
+- 状态（`claudeSetupState`）逐项区分，从不显示 READY：尚未配置 Claude API Key → 已保存、等待 API 重启后生效 → 应用已推迟（有任务在跑）→ 配置项未齐全 → 功能开关未开启 → 没有调用授权 → 数据库迁移未执行（列出迁移名）→ 可以创作（并注明不代表真实调用验证）。配置生效机制不变：保存只写 vault，API 重启时（空闲才）应用；重启由部署流程（Hermes）负责，网页不提供重启或执行命令的能力。
+- 模型、端点等仍在下方「高级设置」中，可不操作。在高级设置里保留密钥、清空模型列表即可让 Claude 不就绪；只有填写新密钥时才自动补默认模型。
+- 发布注意：只用环境变量配置、没有 `TITLE_WRITING_DEFAULT_PROVIDER` 时，若环境里有 `ANTHROPIC_API_KEY`，升级后 Claude（默认模型）就绪并成为默认，新任务不再默认用 OpenAI。环境变量路径只拒绝 Anthropic 的非 API 凭据（OAuth / Admin），后台输入则要求完整的 `sk-ant-api…` 形状。
+
+## 调用授权：管理员登录即操作者
+
+- 站点登录开启（`SITE_AUTH_ENABLED=true`）时，站点只有一个账号——同时掌管模型后台的管理员。带有效会话、精确站点 Origin 和会话 CSRF 令牌的写请求（由站点登录自己的 `authorizeWrite` 在控制器里再次校验）就是付费调用的操作者；页面不再显示操作者令牌输入框，也不发送 `X-Operator-Token`。服务端的 `TITLE_WRITING_OPERATOR_TOKEN` 不会下发给浏览器。
+- 站点登录未开启（本地开发、隔离验收）时仍需操作者令牌（定长比较）。没有取消付费调用鉴权，也没有把匿名访问升级为操作者；按钮禁用不是鉴权。
+- 适用于标题创作、剧本拆解（仍关闭）和工作台在线候选（`apps/api/src/studio/operator-access.ts`）。
+
+## 工作台在线候选（故事 / 单集）
+
+- 编剧助手新增「在线生成候选」：故事（三集作品）与第 1–3 集剧本。手工复制指令、粘贴/导入 JSON、比较、采纳的流程保留。
+- 流程：读取可用供应商与默认模型 → 用户填写要求后点击生成（按钮锁定、双击只发一次）→ 服务端校验并冻结输入、供应商、模型、目标实体（作品/集）和基础版本（来源版本 + If-Match），写入 `reserved` → 后台发送一次 → 结果用与手工导入相同的 `parseWritingImport`/`formatWritingImport` 校验 → 页面轮询，显示候选和差异 → 用户点击「采纳到草稿」→ 用原有「保存新版本」保存。不自动生成、采纳、覆盖或加版本。
+- 接口：`GET /api/v1/writing/candidates/options`、`POST /api/v1/projects/:projectId/writing/candidates`（需 `Idempotency-Key`）、`GET /api/v1/projects/:projectId/writing/candidates?mode=story|episode[&episodeId=]`（该对象最近 10 条）、`GET /api/v1/projects/:projectId/writing/candidates/:requestId`。响应不含幂等键、操作者、执行者、密钥；费用恒为 unknown。
+- 规则：同键同内容返回原请求、不重发；同键不同内容 409 `IDEMPOTENCY_KEY_REUSED`；同一对象同时只允许一个进行中的请求（409 `WRITING_CANDIDATE_ACTIVE`）；最近一次结果未知时，新请求必须带上该请求 id 的确认（409 `WRITING_CANDIDATE_NEEDS_CONFIRMATION`）；目标集/基础版本不属于该作品时 409 `WRITING_CANDIDATE_TARGET_INVALID`；每日调用次数与标题创作共用一个滚动 24 小时上限（同一 advisory lock）；与标题创作的调用记录一样，按记录条数计，没有发出就被关闭的请求也计入（保守）。超时、断线、5xx、重定向记为 unknown，不自动重发；租约过期：未发送 → rejected（executor_lost_before_send），可能已发送 → unknown（executor_lost）。
+- 页面：请求在发送前写入本标签页 sessionStorage；刷新或回执丢失后只读取原请求或用同一键重放；切换作品/集或迟到的回答不会写到其他对象；输入或编辑基线变化后候选仍可查看，但 `canAdopt` 拒绝覆盖新草稿。历史记录可只读查看已生成的候选。
+- 旧工作区千问：其服务端表只存在于未执行的草案（`prisma/drafts/20261005000100_qwen_web_writing.sql`），任何数据库都没有服务端历史；本标签页的旧请求记录仍只读说明，不发送、不查询、不删除。
+
 ## 退役与历史
 
 - 新建任务、续跑重新发送、后台更新、默认供应商、可执行 registry（`WRITING_ADAPTERS`、`titleWritingProviderConfigs`）只有 `openai`、`anthropic`。不会把旧供应商的请求改投 OpenAI 或 Claude。
@@ -69,6 +94,19 @@ SELECT c.id, c.provider_key, c.state FROM title_writing_call c
 
 锁：两表 ACCESS EXCLUSIVE，持续到该迁移事务结束，新 CHECK 各扫描一次表，请在空闲窗口执行。业务库/测试站执行仍需单独授权。
 
+## 数据库迁移 `20261016000200_writing_candidate`
+
+只新建 `writing_candidate_request` 表及其索引（含「每个对象最多一个进行中请求」的唯一部分索引），不改任何已有表、约束或数据。只依赖基础七迁移，与剧本拆解、供应商迁移互不依赖。锁：建表的两个外键对 `project`、`episode` 取 SHARE ROW EXCLUSIVE 直到事务结束（阻塞写、不阻塞读），不扫描数据。没有 down 迁移；旧代码忽略此表。未执行时：在线候选显示未就绪，请求在任何写入/发送前 503 `WRITING_CANDIDATE_STORAGE_UNAVAILABLE`；标题创作和手工导入不受影响。
+
+只执行这一个迁移：
+
+```bash
+DATABASE_URL=<业务库连接串，只在进程环境中> \
+  pnpm --filter @ai-drama/database migrate -- --only 20261016000200_writing_candidate
+```
+
+两个受保护迁移各自单独执行（推荐顺序：先供应商迁移，再候选迁移），都不会带上 `20261012000100_script_breakdown`。验证：`writing-candidate.acceptance.spec.ts`（七迁移库 / 已有拆解库、失败回滚、幂等、后续默认迁移）与 CI 中按发布顺序执行两个真实命令的步骤。
+
 ## 模型后台配置（vault）升级与回滚
 
 - 新格式 v2（`ai-drama-studio.admin-model-vault.v2`）只含 `openai`、`anthropic`。读取旧 v1（三家）文件时用同一主密钥、各自的 AAD 解密并在内存中转换：OpenAI 的密钥、模型顺序、端点保留；Claude 未配置；千问/DeepSeek 设置不再生效；若原默认是千问/DeepSeek，默认改为“未指定”（不静默切换）；saved/active 版本号不变，待重启状态不变；审计历史原样保留并追加 `format_upgraded`。
@@ -79,9 +117,9 @@ SELECT c.id, c.provider_key, c.state FROM title_writing_call c
 
 1. 用已审查、主线 CI 通过的完整 SHA 构建；保留现有代码目录、`models.enc`、`.initialized`、主密钥和环境文件的回滚点。
 2. 只读核对上面的旧供应商 running/reserved/submitted 任务。
-3. 迁移（需授权）：用上面的 `--only` 命令。未授权时可以先发布代码：Claude 显示未就绪并拒绝，OpenAI 不受影响。
+3. 迁移（需授权）：用上面的两个 `--only` 命令（供应商迁移、候选迁移）。未授权时可以先发布代码：Claude 标题创作与在线候选显示未就绪并拒绝，OpenAI 标题创作不受影响。
 4. 先停旧 API，再启新 API（不要两个 API 同时运行），再切换 Web。`NODE_ENV` 保持 `development`，标题创作开关不变，`SCRIPT_BREAKDOWN_ENABLED` 保持关闭。Worker 和媒体服务不需要因此切换。
-5. 后台配置 Claude 的 API Key 与模型（或在 API 进程环境中设置 `ANTHROPIC_API_KEY`、`TITLE_WRITING_ANTHROPIC_MODELS`），保存后重启 API 生效。
+5. 管理员在后台「Claude 快速配置」只填 API Key（模型等由系统提供），保存后由部署流程受控重启 API 生效；重启后后台状态应从「等待 API 重启」变为「可以创作」或指出缺少的迁移/开关。
 
 回滚兼容性（不能笼统“一键回滚”）：
 

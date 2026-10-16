@@ -40,7 +40,8 @@ export function parsePasswordHash(value: string): ParsedPasswordHash | null {
   return parsed;
 }
 
-export async function hashPassword(password: string, parameters = PASSWORD_HASH_DEFAULTS): Promise<string> {
+export async function hashPassword(password: string,
+  parameters: { log2N: number; r: number; p: number; saltBytes: number; keyBytes: number } = PASSWORD_HASH_DEFAULTS): Promise<string> {
   const salt = randomBytes(parameters.saltBytes);
   const key = await scrypt(password, salt, parameters.keyBytes,
     { N: 2 ** parameters.log2N, r: parameters.r, p: parameters.p, maxmem: MAX_MEMORY });

@@ -604,14 +604,14 @@ describe("choosing the provider of a new start", () => {
   const error = (result: { body: unknown }) => (result.body as { error?: { code: string; details?: unknown } }).error;
   const defaultOf = async (service: ScriptBreakdownService) => ((await service.options()).body as { defaultProvider: string | null }).defaultProvider;
 
-  it("uses the configured default only when it is ready, otherwise the first ready provider, the same one options reports", async () => {
+  it("uses the configured default only when it is ready, otherwise the first ready provider (Claude first), the same one options reports", async () => {
     const { store, episode, settle, runOf, seen, reconfigured } = setup();
     const fallback = reconfigured(CLAUDE_DOWN, "anthropic");
     expect(await defaultOf(fallback)).toBe("openai");
     const started = await fallback.start(P1, episode.episodeId, {}, TOKEN, CONTEXT(randomUUID()));
     expect([started.status, runOf(started).providerKey, runOf(started).model]).toEqual([201, "openai", "d-1"]);
     await settle();
-    for (const [defaultProvider, expected] of [["anthropic", "anthropic"], ["openai", "openai"], [null, "openai"]] as const) {
+    for (const [defaultProvider, expected] of [["anthropic", "anthropic"], ["openai", "openai"], [null, "anthropic"]] as const) {
       const service = reconfigured(BOTH, defaultProvider);
       expect(await defaultOf(service)).toBe(expected);
       const next = await service.start(P1, episode.episodeId, { replaceExisting: true }, TOKEN, CONTEXT(randomUUID()));
@@ -619,7 +619,7 @@ describe("choosing the provider of a new start", () => {
       await settle();
     }
     // This engine only reaches Claude (the OpenAI runs stop before a send); what matters here is what each run froze.
-    expect([store.runs.map((run) => run.input.providerKey), seen.length]).toEqual([["openai", "anthropic", "openai", "openai"], 1]);
+    expect([store.runs.map((run) => run.input.providerKey), seen.length]).toEqual([["openai", "anthropic", "openai", "anthropic"], 2]);
   });
 
   it("never swaps a provider named in the request, refuses when none is ready, and checks the model against the chosen provider", async () => {

@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createElement } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { StoryPlanCandidate, WritingTargetSnapshot } from "@ai-drama/domain/writing-assistant";
 import { Workbench } from "./workbench";
 import { WritingAssistant } from "./writing-assistant";
@@ -41,6 +41,11 @@ function json(body: unknown, status = 200): Promise<Response> {
   }));
 }
 
+// The online panel reads its settings and records on open; unless a test says otherwise they answer "switched off".
+beforeEach(() => {
+  vi.stubGlobal("fetch", onlineReadsOnly());
+});
+
 afterEach(() => {
   cleanup();
   sessionStorage.clear();
@@ -79,9 +84,11 @@ describe("writing assistant beside the editor", () => {
     window.history.replaceState(null, "", "/projects/project-1?focus=story");
     render(createElement(Workbench, { projectId: "project-1" }));
     fireEvent.click(await screen.findByRole("button", { name: "编剧助手" }));
-    // The retired workspace Qwen entry is gone: the assistant only prepares instructions and imports candidates.
-    expect(screen.getByText("本轮通过外部 AI 创作，网页不会自动调用模型。")).toBeTruthy();
+    // The retired workspace Qwen entry is gone. Online candidates are the OpenAI/Claude panel; manual import stays.
+    expect(screen.getByText("可以在线生成候选，也可以复制指令到外部 AI 后导入。网页不会自动生成、采纳或保存。")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "向工作区请求候选" })).toBeNull();
+    // This server answered no online configuration (404): no token field, and nothing is sent.
+    expect(await screen.findByText("没能读取在线创作的服务端配置。仍可使用下方的复制指令与导入。")).toBeTruthy();
     expect(screen.queryByLabelText("操作者令牌")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "准备创作指令" }));
     const instruction = await screen.findByLabelText("创作指令") as HTMLTextAreaElement;
@@ -378,9 +385,29 @@ function storyTarget(): WritingTargetSnapshot {
   };
 }
 
+/** The online panel's reads only: settings (here: switched off) and the target's records. Never a write, never a retired route. */
+function onlineReadsOnly() {
+  return vi.fn((input: string, init?: RequestInit) => {
+    const url = String(input);
+    if ((init?.method ?? "GET") !== "GET") return json({ error: { code: "UNEXPECTED", message: url } }, 500);
+    if (url === "/api/v1/writing/candidates/options") {
+      return json({ enabled: false, code: "WRITING_CANDIDATE_DISABLED", storageReady: true, operatorTokenRequired: false, defaultProvider: null,
+        providers: [], maxCallsPerDay: 30, billing: "unknown" });
+    }
+    if (url.startsWith("/api/v1/projects/project-1/writing/candidates?")) return json({ items: [] });
+    return json({ error: { code: "NOT_FOUND", message: url } }, 404);
+  });
+}
+
+function onlyOnlineReads(fetch: ReturnType<typeof vi.fn>) {
+  const calls = fetch.mock.calls.map(([url, init]) => `${(init as RequestInit | undefined)?.method ?? "GET"} ${String(url)}`);
+  expect(calls.every((call) => call.startsWith("GET /api/v1/writing/candidates/options") || call.startsWith("GET /api/v1/projects/project-1/writing/candidates?"))).toBe(true);
+  expect(calls.some((call) => /qwen/i.test(call))).toBe(false);
+}
+
 describe("the retired workspace Qwen route", () => {
-  it("offers no way to call a model: no token field, no request, query or new-call button, and no network use", async () => {
-    const fetch = vi.fn();
+  it("offers no way to reach it: no Qwen request, query or new-call button; the only network use is the online panel's reads", async () => {
+    const fetch = onlineReadsOnly();
     vi.stubGlobal("fetch", fetch);
     render(createElement(WritingAssistant, storyProps()));
     fireEvent.click(screen.getByRole("button", { name: "编剧助手" }));
@@ -388,9 +415,12 @@ describe("the retired workspace Qwen route", () => {
     for (const name of ["向工作区请求候选", "检查工作区调用", "用原请求标识重新读取", "查询请求状态", "发起新的调用"]) {
       expect(screen.queryByRole("button", { name })).toBeNull();
     }
+    expect(await screen.findByTestId("online-unavailable")).toBeTruthy();
+    // Switched off on the server: the online button stays disabled and no token is asked for.
+    expect((screen.getByRole("button", { name: "在线生成故事候选" }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.queryByLabelText("操作者令牌")).toBeNull();
     expect(screen.queryByText(/工作区千问/)).toBeNull();
-    expect(fetch).not.toHaveBeenCalled();
+    onlyOnlineReads(fetch);
   });
 
   it.each([
@@ -400,16 +430,17 @@ describe("the retired workspace Qwen route", () => {
     ["completed", "它当时已经完成；费用未知。"],
     ["rejected", "它当时被拒绝，没有候选。"],
   ])("tells what became of a %s request this tab sent earlier, without sending, replaying or deleting it", async (state, note) => {
-    const fetch = vi.fn();
+    const fetch = onlineReadsOnly();
     vi.stubGlobal("fetch", fetch);
     const record = JSON.stringify({ version: 1, projectId: "project-1", entityKey: "story", key: "11111111-1111-4111-8111-111111111111",
       fingerprint: "f", frozen: { inputFingerprint: "f" }, input: { schema: "qwen.writing.input.v1" }, requestId: null, state, candidateGone: false });
     sessionStorage.setItem("ads-writing-qwen:project-1:story", record);
     render(createElement(WritingAssistant, storyProps()));
     fireEvent.click(screen.getByRole("button", { name: "编剧助手" }));
-    expect(screen.getByRole("status").textContent).toBe(`工作区千问调用已经退役，网页不会再发送、重放或查询这条请求。${note}`);
+    expect(screen.getByText(`工作区千问调用已经退役，网页不会再发送、重放或查询这条请求。${note}`)).toBeTruthy();
     expect(sessionStorage.getItem("ads-writing-qwen:project-1:story")).toBe(record);
-    expect(fetch).not.toHaveBeenCalled();
+    await screen.findByTestId("online-unavailable");
+    onlyOnlineReads(fetch);
   });
 
   it("shows nothing for another work's record, and the note follows the work that is open", async () => {

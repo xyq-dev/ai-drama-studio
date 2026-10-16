@@ -3,6 +3,7 @@ import { Pool, type PoolClient } from "pg";
 export {
   BASE_MIGRATIONS,
   GUARDED_SINGLE_MIGRATIONS,
+  WRITING_CANDIDATE_MIGRATION,
   WRITING_PROVIDER_MIGRATION,
   runMigrations,
   type MigrationClient,
@@ -180,3 +181,9 @@ export {
   verifyTitleWritingAcceptanceDatabase,
   type TitleWritingAcceptanceDecision,
 } from "./title-writing-acceptance-guard";
+export {
+  PostgresWritingCandidateStore,
+  WRITING_CANDIDATE_COLUMNS,
+  recentWritingCalls,
+  writingCallLockKey,
+} from "./writing-candidate-store";

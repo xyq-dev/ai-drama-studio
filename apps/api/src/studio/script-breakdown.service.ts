@@ -1,9 +1,9 @@
-import { timingSafeEqual } from "node:crypto";
 import {
   SCRIPT_BREAKDOWN_CALL_CAP,
   SCRIPT_BREAKDOWN_LIMITS,
   SCRIPT_BREAKDOWN_REQUIRED_CALLS,
   TITLE_WRITING_PROVIDER_KEYS,
+  TITLE_WRITING_PROVIDER_PREFERENCE,
   TITLE_WRITING_PROVIDER_LABELS,
   isActiveTitleWritingProvider,
   scriptBreakdownPlaceSchema,
@@ -28,6 +28,7 @@ import {
   type WritingProviderConfig,
 } from "@ai-drama/providers";
 import type { StudioContext } from "./studio.service";
+import { operatorAllowed, operatorConfigured, type OperatorProof } from "./operator-access";
 import { PROVIDER_MIGRATION_GAP } from "./title-writing.service";
 
 export interface ScriptBreakdownDependencies {
@@ -36,6 +37,8 @@ export interface ScriptBreakdownDependencies {
   /** The title writing switch: a breakdown is the same kind of paid text call and is never enabled on its own. */
   enabled: boolean;
   operatorToken: string | null;
+  /** The site login is on: its signed-in administrator is the operator (see operator-access.ts). */
+  siteOperator?: boolean;
   defaultProvider: TitleWritingProviderKey | null;
   providers: Record<TitleWritingProviderKey, WritingProviderConfig>;
   store: TitleWritingStore;
@@ -55,7 +58,7 @@ export interface ScriptBreakdownResult {
 
 const MESSAGES: Record<string, string> = {
   TITLE_WRITING_DISABLED: "AI 写作没有开启，不能拆解。仍可手动编写场景和镜头。",
-  TITLE_WRITING_FORBIDDEN: "操作者令牌不正确，没有启动任何调用。",
+  TITLE_WRITING_FORBIDDEN: "没有调用权限（需要管理员登录，或在未启用站点登录时提供正确的操作者令牌），没有启动任何调用。",
   TITLE_WRITING_STORAGE_UNAVAILABLE: "写作任务存储还没有就绪（数据库表未创建），没有启动任何调用。",
   SCRIPT_BREAKDOWN_STORAGE_UNAVAILABLE: "剧本拆解的数据库迁移还没有执行，没有启动任何调用。",
   TITLE_WRITING_PROVIDER_UNCONFIGURED: "所选模型服务还没有配置完整，没有启动任何调用。",
@@ -88,12 +91,6 @@ function failure(status: number, code: string, details?: Record<string, unknown>
   return { status, body: { error: { code, message: MESSAGES[code] ?? "请求失败", ...(details ? { details } : {}) } } };
 }
 
-function sameToken(configured: string, presented: string | undefined): boolean {
-  if (presented === undefined) return false;
-  const left = Buffer.from(configured, "utf8");
-  const right = Buffer.from(presented, "utf8");
-  return left.length === right.length && timingSafeEqual(left, right);
-}
 
 /**
  * Episode-scoped script breakdown. Starting and resuming may cost money: they need the title writing switch, the
@@ -136,7 +133,7 @@ export class ScriptBreakdownService {
     const ready = async (key: TitleWritingProviderKey) => this.deps.providers[key].ok && await this.deps.store.providerStorageReady(key);
     const configured = this.deps.defaultProvider;
     if (configured && await ready(configured)) return configured;
-    for (const key of TITLE_WRITING_PROVIDER_KEYS) if (await ready(key)) return key;
+    for (const key of TITLE_WRITING_PROVIDER_PREFERENCE) if (await ready(key)) return key;
     return null;
   }
 
@@ -154,16 +151,16 @@ export class ScriptBreakdownService {
         missing: [...(config.ok ? [] : config.missing), ...(storageReady && !stored ? [PROVIDER_MIGRATION_GAP] : [])],
       };
     }));
-    const firstReady = providers.find((item) => item.ready)?.providerKey ?? null;
+    const firstReady = TITLE_WRITING_PROVIDER_PREFERENCE.find((key) => providers.find((item) => item.providerKey === key)?.ready) ?? null;
     const code = !this.active() ? "TITLE_WRITING_DISABLED"
-      : !this.deps.operatorToken ? "TITLE_WRITING_FORBIDDEN"
+      : !operatorConfigured(this.deps) ? "TITLE_WRITING_FORBIDDEN"
         : !storageReady ? "SCRIPT_BREAKDOWN_STORAGE_UNAVAILABLE"
           : firstReady === null ? "TITLE_WRITING_PROVIDER_UNCONFIGURED" : "SCRIPT_BREAKDOWN_READY";
     const body: ScriptBreakdownOptionsView = {
       enabled: this.active(),
       code,
       storageReady,
-      operatorTokenRequired: true,
+      operatorTokenRequired: this.deps.siteOperator !== true,
       defaultProvider: await this.readyDefault(),
       providers,
       maxCallsPerDay: this.deps.maxCallsPerDay,
@@ -175,9 +172,9 @@ export class ScriptBreakdownService {
   }
 
   /** Switch, token, then storage: every refusal happens before any reservation or provider send. */
-  private async gate(token: string | undefined): Promise<ScriptBreakdownResult | null> {
+  private async gate(token: OperatorProof | string | undefined): Promise<ScriptBreakdownResult | null> {
     if (!this.active()) return failure(404, "TITLE_WRITING_DISABLED");
-    if (!this.deps.operatorToken || !sameToken(this.deps.operatorToken, token)) return failure(403, "TITLE_WRITING_FORBIDDEN");
+    if (!operatorAllowed(this.deps, token)) return failure(403, "TITLE_WRITING_FORBIDDEN");
     if (!await this.deps.store.storageReady()) return failure(503, "TITLE_WRITING_STORAGE_UNAVAILABLE");
     if (!await this.deps.store.breakdownStorageReady()) return failure(503, "SCRIPT_BREAKDOWN_STORAGE_UNAVAILABLE");
     return null;
@@ -200,7 +197,7 @@ export class ScriptBreakdownService {
     return { status, body: { run: scriptBreakdownRunView(bundle, details) } };
   }
 
-  async start(projectId: string, episodeId: string, body: unknown, token: string | undefined, context: StudioContext): Promise<ScriptBreakdownResult> {
+  async start(projectId: string, episodeId: string, body: unknown, token: OperatorProof | string | undefined, context: StudioContext): Promise<ScriptBreakdownResult> {
     const refused = await this.gate(token);
     if (refused) return refused;
     if (!context.idempotencyKey || context.idempotencyKey.length > 200) return failure(400, "VALIDATION_ERROR", { field: "Idempotency-Key" });
@@ -223,7 +220,7 @@ export class ScriptBreakdownService {
     // A new request takes the current settings: the provider it names, else the ready default options() reports. Both are
     // frozen into the run; replays (above), resumes and recovery keep them.
     // A retired provider is refused for a new request; only a replay (answered above) may still name one.
-    const providerKey = parsed.data.providerKey ?? await this.readyDefault() ?? this.deps.defaultProvider ?? TITLE_WRITING_PROVIDER_KEYS[0];
+    const providerKey = parsed.data.providerKey ?? await this.readyDefault() ?? this.deps.defaultProvider ?? TITLE_WRITING_PROVIDER_PREFERENCE[0]!;
     if (!isActiveTitleWritingProvider(providerKey)) {
       return failure(409, "TITLE_WRITING_PROVIDER_RETIRED", { providerKey, label: TITLE_WRITING_PROVIDER_LABELS[providerKey] });
     }
@@ -328,7 +325,7 @@ export class ScriptBreakdownService {
   }
 
   /** Same rules as title writing: an uncertain call is resent only after the person confirmed exactly that call. */
-  async resume(projectId: string, episodeId: string, runId: string, body: unknown, token: string | undefined, context: StudioContext): Promise<ScriptBreakdownResult> {
+  async resume(projectId: string, episodeId: string, runId: string, body: unknown, token: OperatorProof | string | undefined, context: StudioContext): Promise<ScriptBreakdownResult> {
     const refused = await this.gate(token);
     if (refused) return refused;
     if (!context.idempotencyKey || context.idempotencyKey.length > 200) return failure(400, "VALIDATION_ERROR", { field: "Idempotency-Key" });
