@@ -16,6 +16,9 @@
  * the pages. The only API writes outside the browser are the conflict preparation (a person's script on one episode),
  * and reads that check what the pages did. SQL here is read-only after setup. The only network interference is one
  * resume answer that is passed to the server unchanged and, once the server has accepted it, cut off on its way back.
+ * Flow D also answers two script breakdown reads in the browser (the settings, from the real answer with storageReady
+ * turned false, and the latest task with a storage 503), to show the test site's combination: breakdown off, its migration
+ * not applied. It only reads; it never clicks a breakdown action.
  */
 import "reflect-metadata";
 import { type ChildProcess, spawn } from "node:child_process";
@@ -639,6 +642,95 @@ describe("title writing in a real browser, real web and API, isolated PostgreSQL
       calls: calls.map((row) => `${row.step_key}#${String(row.attempt_no)} ${row.state}`), stubSends: sends(UNKNOWN_TITLE),
       tokenOrKeyInBrowserStorage: false,
     };
+  }, 240_000);
+
+  it("D: script breakdown off with its storage not migrated: the panel says it is off in either answer order, start stays disabled, nothing is written", async () => {
+    const projectId = (flows.main as { projectId: string } | undefined)?.projectId;
+    expect(projectId, "flow A made the work this flow reads").toBeTruthy();
+    // This API's own answers: title writing ready, script breakdown off (its switch defaults off).
+    expect(await apiGet("/writing/title-runs/options")).toMatchObject({ code: "TITLE_WRITING_READY" });
+    expect(await apiGet("/writing/script-breakdowns/options")).toMatchObject({ code: "TITLE_WRITING_DISABLED", enabled: false });
+    const sizes = [["desktop-1280", { width: 1280, height: 800 }], ["390", PHONE]] as const;
+    const panel = page.locator("section", { has: page.getByRole("heading", { name: "AI 拆解场景与分镜" }) });
+    const writesBefore = pageWrites.length;
+    const sendsBefore = sent.length;
+    const runsBefore = await runRows(projectId!);
+    const seen: Record<string, unknown> = {};
+
+    for (const order of ["settings-first", "task-read-first"] as const) {
+      const gate = deferred();
+      let settingsCode: unknown = null;
+      await page.route("**/api/v1/writing/script-breakdowns/options", async (route) => {
+        const real = await route.fetch();
+        const body = await real.json() as Record<string, unknown>;
+        settingsCode = body.code;
+        if (order === "task-read-first") await gate.promise;
+        await route.fulfill({ status: real.status(), contentType: "application/json", body: JSON.stringify({ ...body, storageReady: false }) });
+      });
+      await page.route("**/script-breakdowns/latest", async (route) => {
+        if (order === "settings-first") await gate.promise;
+        await route.fulfill({ status: 503, contentType: "application/json",
+          body: JSON.stringify({ error: { code: "SCRIPT_BREAKDOWN_STORAGE_UNAVAILABLE", message: "剧本拆解的数据库迁移还没有执行，没有启动任何调用。" } }) });
+      });
+      await page.goto(`${WEB}/projects/${projectId!}?focus=script&episode=1`, { waitUntil: "domcontentloaded" });
+      await panel.first().waitFor({ timeout: 30_000 });
+      const blocked = panel.getByTestId("breakdown-blocked");
+      if (order === "settings-first") {
+        // Said as soon as the settings are read, while the task read is still unanswered.
+        await expect.poll(async () => await blocked.textContent(), { timeout: 30_000 }).toBe("剧本拆解尚未开启。");
+      } else {
+        // The task read failed and the settings are unread: the page does not claim the feature is off (or ready).
+        await panel.getByRole("alert").waitFor({ timeout: 30_000 });
+        expect(await panel.getByText("剧本拆解尚未开启").count()).toBe(0);
+      }
+      expect(await panel.getByRole("button", { name: "生成场景与分镜" }).isDisabled()).toBe(true);
+      gate.release();
+      await panel.getByTestId("breakdown-history-error").waitFor({ timeout: 30_000 });
+      await expect.poll(async () => await blocked.textContent(), { timeout: 30_000 }).toBe("剧本拆解尚未开启。");
+      expect(settingsCode).toBe("TITLE_WRITING_DISABLED");
+
+      for (const [label, size] of sizes) {
+        await page.setViewportSize(size);
+        const start = panel.getByRole("button", { name: "生成场景与分镜" });
+        expect(await blocked.textContent()).toBe("剧本拆解尚未开启。");
+        expect(await start.isDisabled()).toBe(true);
+        expect(await panel.getByTestId("breakdown-history-error").textContent()).toContain("剧本拆解的数据存储还没有就绪");
+        expect(await panel.getByRole("alert").count()).toBe(0);
+        expect(await panel.getByText("请先重新读取本集任务状态").count()).toBe(0);
+        expect(await panel.getByText("这一集还没有拆解过。").count()).toBe(0);
+        const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+        expect(overflow, `breakdown off ${label}: horizontal overflow`).toBeLessThanOrEqual(0);
+        for (const target of [blocked, start]) {
+          await target.scrollIntoViewIfNeeded();
+          const box = await target.boundingBox();
+          expect(box, `breakdown off ${label}: no box`).not.toBeNull();
+          expect(box!.x >= -1 && box!.x + box!.width <= size.width + 1, `breakdown off ${label}: outside the viewport`).toBe(true);
+          const covered = await target.evaluate((node) => {
+            const rect = node.getBoundingClientRect();
+            const hit = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+            return !(hit && (hit === node || node.contains(hit)));
+          });
+          expect(covered, `breakdown off ${label}: covered`).toBe(false);
+        }
+        if (shotsDir) {
+          const file = `11-breakdown-off-${order}-${label}.png`;
+          await page.screenshot({ path: join(shotsDir, file), fullPage: true });
+          (evidence.screenshots as string[]).push(file);
+        }
+      }
+      await page.setViewportSize(DESKTOP);
+      seen[order] = { blocked: await blocked.textContent(), startDisabled: await panel.getByRole("button", { name: "生成场景与分镜" }).isDisabled(),
+        history: await panel.getByTestId("breakdown-history-error").textContent() };
+      await page.unrouteAll({ behavior: "wait" });
+    }
+
+    expect(seen["task-read-first"]).toEqual(seen["settings-first"]);
+    expect(pageWrites.slice(writesBefore)).toEqual([]);
+    expect(sent.length).toBe(sendsBefore);
+    expect(await runRows(projectId!)).toEqual(runsBefore);
+    (evidence.networkInterference as unknown[]).push({ where: "GET /api/v1/writing/script-breakdowns/options and GET …/script-breakdowns/latest (flow D)",
+      how: "settings: the real answer (TITLE_WRITING_DISABLED) with storageReady false; latest: 503 SCRIPT_BREAKDOWN_STORAGE_UNAVAILABLE; each order held until the other was shown" });
+    flows.breakdownOff = { projectId, orders: seen, viewports: sizes.map(([label]) => label), pageWrites: 0, stubSends: 0, runsUnchanged: true };
   }, 240_000);
 
   it("no page error was raised and every model request went to the stub with the stub key", () => {
