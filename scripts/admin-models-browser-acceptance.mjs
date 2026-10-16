@@ -20,7 +20,8 @@ const output = resolve(root, process.env.ADMIN_MODELS_EVIDENCE_DIR || "docs/admi
 // Generated per run, test-only; passed to the fixture server through its environment, never written to evidence.
 const password = `test-only-${randomBytes(18).toString("base64url")}`;
 process.env.ADMIN_MODELS_TEST_PASSWORD = password;
-const fakeKey = "sk-admin-browser-fake-key";
+// Shaped like an Anthropic Console API key (the console refuses anything else for Claude); not a real key.
+const fakeKey = "sk-ant-api03-admin-browser-fake-key-not-real";
 const processes = [];
 let browser;
 const evidence = {
@@ -106,6 +107,13 @@ try {
   // Exactly two providers: OpenAI and Claude. The retired Qwen and DeepSeek have no entry at all.
   assert.equal(await page.getByRole("button", { name: /^千问/ }).count(), 0);
   assert.equal(await page.getByRole("button", { name: /^DeepSeek/ }).count(), 0);
+  // Claude quick setup: says the key is missing, and refuses a Claude Code / subscription token without saving anything.
+  assert.equal(await page.getByTestId("claude-status").getAttribute("data-state"), "key_missing");
+  await page.getByLabel(/^Claude API Key/).fill("sk-ant-oat01-claude-code-oauth-token-not-real");
+  await page.getByRole("button", { name: /保存 Claude API Key/ }).click();
+  await page.getByRole("alert").filter({ hasText: /Claude Code 或订阅账号的登录凭据不能使用/ }).waitFor();
+  assert.equal((await readView(page)).savedRevision, 0);
+  assert.equal(await page.getByLabel(/^Claude API Key/).inputValue(), "");
   await page.getByRole("button", { name: /^Claude/ }).click();
   await page.getByRole("region", { name: "Claude设置" }).waitFor();
   assert.equal(await page.getByLabel(/^服务端点/).getAttribute("readonly"), "");

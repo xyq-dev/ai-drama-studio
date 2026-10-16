@@ -199,7 +199,8 @@ describe.skipIf(process.platform === "win32")("StudioRuntime managed model start
         TITLE_WRITING_ENABLED: enabledSwitch === "true", SITE_AUTH_ENABLED: siteLogin, SITE_AUTH_PASSWORD_HASH: passwordHash,
         SITE_AUTH_PUBLIC_ORIGIN: "https://drama.example.test" });
       expect(await options(runtime)).toMatchObject({ enabled, code: enabled ? "TITLE_WRITING_READY" : "TITLE_WRITING_DISABLED" });
-      expect((await runtime.adminModels!.view()).titleWriting).toEqual({ enabled, productionBlocked, operatorConfigured: true });
+      // siteOperator: the site login (when valid) makes the signed-in administrator the operator.
+      expect((await runtime.adminModels!.view()).titleWriting).toEqual({ enabled, productionBlocked, operatorConfigured: true, siteOperator: siteLogin === "true" });
     });
 
   it("leaves legacy environment configuration unchanged when admin bootstrap is absent", async () => {
@@ -273,7 +274,8 @@ describe.skipIf(process.platform === "win32")("StudioRuntime managed model start
     const clear = vi.spyOn(globalThis, "clearInterval");
     const runtime = await open(await environment());
     const timers = interval.mock.results.filter((result) => result.type === "return").map((result) => result.value);
-    expect(timers).toHaveLength(1);
+    // Title writing recovery and online candidate recovery.
+    expect(timers).toHaveLength(2);
     await close(runtime);
     for (const timer of timers) expect(clear).toHaveBeenCalledWith(timer);
     expect(pools.at(-1)!.end).toHaveBeenCalledExactlyOnceWith();
@@ -303,7 +305,7 @@ describe.skipIf(process.platform === "win32")("StudioRuntime managed model start
     expect(view.providers.map((provider) => provider.providerKey)).toEqual(["openai", "anthropic"]);
     // The retired default is not used, and nothing switches to it; the first ready active provider is offered instead.
     expect(view).toMatchObject({ defaultProvider: "openai", maxCallsPerDay: 9 });
-    expect(view.providers.find((provider) => provider.providerKey === "anthropic")).toMatchObject({ ready: false, missing: ["ANTHROPIC_API_KEY", "TITLE_WRITING_ANTHROPIC_MODELS"] });
+    expect(view.providers.find((provider) => provider.providerKey === "anthropic")).toMatchObject({ ready: false, missing: ["ANTHROPIC_API_KEY"] });
     const admin = await runtime.adminModels!.view();
     expect(admin.retired).toEqual({ providers: ["qwen"], retiredDefault: "qwen", backupKept: false });
     expect(admin.saved.providers.map((provider) => provider.providerKey)).toEqual(["openai", "anthropic"]);
