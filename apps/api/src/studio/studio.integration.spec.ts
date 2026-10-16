@@ -156,38 +156,26 @@ describe("M1-C API and SSE integration", () => {
     expect(after.rows[0]?.count).toBe(before.rows[0]?.count);
   });
 
-  it("refuses web Qwen requests before any send while the draft request table is absent", async () => {
+  it("has no web Qwen route any more, even with the retired switch, token and key still in the environment", async () => {
     const project = await fetch(`${base}/api/v1/projects`, {
       method: "POST",
       headers: { "content-type": "application/json", "idempotency-key": "qwen-web-project" },
-      body: JSON.stringify({ title: "qwen web", premise: "storage gate" }),
+      body: JSON.stringify({ title: "qwen web", premise: "retired route" }),
     });
     const created = (await project.json()) as { id: string };
-    const forbidden = await fetch(`${base}/api/v1/writing/qwen-candidates/status`, {
-      headers: { "x-operator-token": "not-the-operator-token" },
-    });
-    expect(forbidden.status).toBe(403);
-    const status = await fetch(`${base}/api/v1/writing/qwen-candidates/status`, {
-      headers: { "x-operator-token": QWEN_OPERATOR_TOKEN },
-    });
-    expect(status.status).toBe(503);
-    expect(status.headers.get("cache-control")).toBe("private, no-store");
-    const statusBody = await status.json() as Record<string, unknown>;
-    expect(statusBody).toMatchObject({ code: "QWEN_WEB_STORAGE_UNAVAILABLE", ready: false, model: null });
-    expect(JSON.stringify(statusBody)).not.toContain("sk-integration-placeholder-key");
-    const request = await fetch(`${base}/api/v1/projects/${created.id}/writing/qwen-candidates`, {
-      method: "POST",
-      headers: { "content-type": "application/json", "idempotency-key": "qwen-web-1",
-        "x-operator-token": QWEN_OPERATOR_TOKEN },
-      body: JSON.stringify({ input: { schema: "qwen.writing.input.v1", mode: "story", premise: "p", genre: "g",
-        audience: "a", characters: "c", mustKeep: "k", mustNotChange: "n", currentText: "" } }),
-    });
-    expect(request.status).toBe(503);
-    expect(await request.json()).toEqual({ code: "QWEN_WEB_STORAGE_UNAVAILABLE" });
+    const headers = { "content-type": "application/json", "idempotency-key": "qwen-web-1", "x-operator-token": QWEN_OPERATOR_TOKEN };
+    for (const [method, path] of [
+      ["GET", "/api/v1/writing/qwen-candidates/status"],
+      ["POST", `/api/v1/projects/${created.id}/writing/qwen-candidates`],
+      ["GET", `/api/v1/projects/${created.id}/writing/qwen-candidates/${created.id}`],
+      ["POST", "/api/v1/writing/qwen-candidates"],
+    ] as const) {
+      const response = await fetch(`${base}${path}`, { method, headers, ...(method === "POST" ? { body: JSON.stringify({ input: {} }) } : {}) });
+      expect(response.status, path).toBe(404);
+      expect(await response.text()).not.toContain("sk-integration-placeholder-key");
+    }
     const table = await sql<{ name: string | null }>("SELECT to_regclass('public.qwen_writing_request')::text AS name");
     expect(table.rows[0]?.name).toBeNull();
-    const placeholder = await fetch(`${base}/api/v1/writing/qwen-candidates`, { method: "POST" });
-    expect(placeholder.status).toBe(404);
   });
 
   it("replays an idempotency key and rejects a hash conflict", async () => {

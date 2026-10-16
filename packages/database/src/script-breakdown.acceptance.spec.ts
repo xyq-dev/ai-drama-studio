@@ -42,7 +42,7 @@ import { runMigrations, type MigrationResult } from "./migrations";
 import { insertProject } from "./runtime-store";
 import { TextChainService } from "./text-chain";
 import { checkTitleWritingAcceptanceEnv, verifyTitleWritingAcceptanceDatabase } from "./title-writing-acceptance-guard";
-import { PostgresTitleWritingStore, SCRIPT_BREAKDOWN_MIGRATION } from "./title-writing-store";
+import { PostgresTitleWritingStore, SCRIPT_BREAKDOWN_MIGRATION, WRITING_PROVIDER_MIGRATION } from "./title-writing-store";
 
 const decision = checkTitleWritingAcceptanceEnv(process.env);
 if (!decision.ok) throw new Error(`Script breakdown acceptance refused: ${decision.reason}`);
@@ -361,9 +361,10 @@ beforeAll(async () => {
     keyLookupRunId: (await store.findRunByKey(history.ws, "server-owner", "history"))?.run.id ?? null,
   };
   rowsBefore = await rowDigests();
-  upgrade = await runMigrations(pool);
+  // The breakdown release alone; the later, independent provider migration is covered by its own acceptance.
+  upgrade = await runMigrations(pool, undefined, { before: WRITING_PROVIDER_MIGRATION });
   rowsAfter = await rowDigests();
-  redeploy = await runMigrations(pool);
+  redeploy = await runMigrations(pool, undefined, { before: WRITING_PROVIDER_MIGRATION });
   Object.assign(evidence, { released: released.applied, upgrade: upgrade.applied, redeploy: redeploy.applied, before });
 });
 
