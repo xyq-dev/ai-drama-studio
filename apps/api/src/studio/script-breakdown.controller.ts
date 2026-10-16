@@ -1,7 +1,9 @@
-import { Body, Controller, Get, Headers, Inject, Param, Post, Res } from "@nestjs/common";
+import { Body, Controller, Get, Headers, Inject, Optional, Param, Post, Res } from "@nestjs/common";
 import { PersistenceError } from "@ai-drama/database";
 import { SCRIPT_BREAKDOWN_SERVICE } from "./tokens";
 import { createTraceId } from "./studio.service";
+import { operatorProof } from "./operator-access";
+import { SITE_AUTH, type RequestHeaders, type SiteAuthState } from "../auth/site-auth";
 import type { ScriptBreakdownResult, ScriptBreakdownService } from "./script-breakdown.service";
 
 const UUID_PARAM_PIPE = {
@@ -23,7 +25,10 @@ const BASE = "projects/:projectId/episodes/:episodeId/script-breakdowns";
 /** Script breakdown routes. Responses are private and never cached; error bodies use { error: { code, message } }. */
 @Controller()
 export class ScriptBreakdownController {
-  constructor(@Inject(SCRIPT_BREAKDOWN_SERVICE) private readonly breakdown: ScriptBreakdownService) {}
+  constructor(
+    @Inject(SCRIPT_BREAKDOWN_SERVICE) private readonly breakdown: ScriptBreakdownService,
+    @Optional() @Inject(SITE_AUTH) private readonly site: SiteAuthState | null = null,
+  ) {}
 
   @Get("writing/script-breakdowns/options")
   options(@Res({ passthrough: true }) response: StatusResponse) {
@@ -36,11 +41,11 @@ export class ScriptBreakdownController {
     @Param("episodeId", UUID_PARAM_PIPE) episodeId: string,
     @Body() body: unknown,
     @Res({ passthrough: true }) response: StatusResponse,
-    @Headers("x-operator-token") operatorToken?: string,
+    @Headers() headers: RequestHeaders,
     @Headers("idempotency-key") idempotencyKey?: string,
     @Headers("x-trace-id") traceHeader?: string,
   ) {
-    return this.send(response, this.breakdown.start(projectId, episodeId, body, operatorToken,
+    return this.send(response, this.breakdown.start(projectId, episodeId, body, operatorProof(this.site, headers),
       { actorId: "server-owner", traceId: createTraceId(traceHeader), idempotencyKey }));
   }
 
@@ -90,11 +95,11 @@ export class ScriptBreakdownController {
     @Param("runId", UUID_PARAM_PIPE) runId: string,
     @Body() body: unknown,
     @Res({ passthrough: true }) response: StatusResponse,
-    @Headers("x-operator-token") operatorToken?: string,
+    @Headers() headers: RequestHeaders,
     @Headers("idempotency-key") idempotencyKey?: string,
     @Headers("x-trace-id") traceHeader?: string,
   ) {
-    return this.send(response, this.breakdown.resume(projectId, episodeId, runId, body, operatorToken,
+    return this.send(response, this.breakdown.resume(projectId, episodeId, runId, body, operatorProof(this.site, headers),
       { actorId: "server-owner", traceId: createTraceId(traceHeader), idempotencyKey }));
   }
 

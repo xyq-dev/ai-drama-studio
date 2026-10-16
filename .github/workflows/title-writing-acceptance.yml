@@ -147,6 +147,65 @@ jobs:
           TITLE_WRITING_ACCEPTANCE_EVIDENCE_DIR="${RUNNER_TEMP}/title-acceptance-evidence" \
           pnpm --filter @ai-drama/database writing-provider:acceptance
 
+      - name: Run the online candidate migration acceptance on a base-seven database (guarded, deny by default)
+        # The seven base migrations, a title writing run, then the guarded single migration: only the candidate migration
+        # is applied (the breakdown and provider migrations stay pending), title writing history is unchanged, a failure
+        # rolls back, the store's key, target, open-request, unknown-confirmation, shared daily cap and lease rules hold
+        # on the real tables, a rerun does nothing, and a later default migrate takes the rest.
+        run: |
+          name="ads_title_acceptance_candidate_base_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+          psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE ${name}"
+          WRITING_CANDIDATE_ACCEPTANCE_SCENARIO=base \
+          TITLE_WRITING_ACCEPTANCE_AUTHORIZED=true \
+          TITLE_WRITING_ACCEPTANCE_DATABASE_NAME="${name}" \
+          TITLE_WRITING_ACCEPTANCE_DATABASE_URL="postgresql://postgres@127.0.0.1:5432/${name}" \
+          TITLE_WRITING_ACCEPTANCE_EVIDENCE_DIR="${RUNNER_TEMP}/title-acceptance-evidence" \
+          pnpm --filter @ai-drama/database writing-candidate:acceptance
+
+      - name: Run the online candidate migration acceptance on a database with the script breakdown (guarded, deny by default)
+        run: |
+          name="ads_title_acceptance_candidate_breakdown_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+          psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE ${name}"
+          WRITING_CANDIDATE_ACCEPTANCE_SCENARIO=breakdown \
+          TITLE_WRITING_ACCEPTANCE_AUTHORIZED=true \
+          TITLE_WRITING_ACCEPTANCE_DATABASE_NAME="${name}" \
+          TITLE_WRITING_ACCEPTANCE_DATABASE_URL="postgresql://postgres@127.0.0.1:5432/${name}" \
+          TITLE_WRITING_ACCEPTANCE_EVIDENCE_DIR="${RUNNER_TEMP}/title-acceptance-evidence" \
+          pnpm --filter @ai-drama/database writing-candidate:acceptance
+
+      - name: Run the two guarded release commands in release order on a base-seven database
+        # Exactly the release commands: provider migration, then candidate migration, each alone. The script breakdown
+        # must stay unapplied and a rerun must apply nothing (--only refusing the breakdown is checked in the next step).
+        run: |
+          name="ads_title_acceptance_release_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+          url="postgresql://postgres@127.0.0.1:5432/${name}"
+          psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE ${name}"
+          # The seven base migrations a business database has today (the state the release starts from).
+          WRITING_RELEASE_DATABASE_URL="${url}" node -e "
+            const { createPostgresPool, runMigrations } = require('./packages/database/dist/index.js');
+            (async () => {
+              const pool = createPostgresPool({ connectionString: process.env.WRITING_RELEASE_DATABASE_URL, connectionTimeoutMs: 5000, statementTimeoutMs: 30000, queryTimeoutMs: 30000 });
+              const result = await runMigrations(pool, undefined, { before: '20261012000100_script_breakdown' });
+              console.log('base-seven: ' + result.applied.length);
+              if (result.applied.length !== 7) process.exitCode = 1;
+              await pool.end();
+            })().catch((error) => { console.error(error.message); process.exitCode = 1; });"
+          provider="$(DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate -- --only 20261016000100_writing_provider_anthropic)"
+          echo "provider: ${provider}"
+          printf '%s\n' "${provider}" | grep -Eq "(^|[^0-9])Applied 1 migration\(s\)\.$"
+          printf '%s\n' "${provider}" | grep -q '"leftPending":\["20261012000100_script_breakdown","20261016000200_writing_candidate"\]'
+          candidate="$(DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate -- --only 20261016000200_writing_candidate)"
+          echo "candidate: ${candidate}"
+          printf '%s\n' "${candidate}" | grep -Eq "(^|[^0-9])Applied 1 migration\(s\)\.$"
+          printf '%s\n' "${candidate}" | grep -q '"leftPending":\["20261012000100_script_breakdown"\]'
+          again="$(DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate -- --only 20261016000200_writing_candidate)"
+          printf '%s\n' "${again}" | grep -Eq "(^|[^0-9])Applied 0 migration\(s\)\.$"
+          breakdown="$(psql -h 127.0.0.1 -U postgres -d "${name}" -v ON_ERROR_STOP=1 -At -c "SELECT count(*) FROM schema_migration WHERE name = '20261012000100_script_breakdown'")"
+          test "${breakdown}" = "0"
+          table="$(psql -h 127.0.0.1 -U postgres -d "${name}" -v ON_ERROR_STOP=1 -At -c "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'writing_candidate_request'")"
+          test "${table}" = "1"
+          psql -h 127.0.0.1 -U postgres -d "${name}" -v ON_ERROR_STOP=1 -At -c "SELECT name FROM schema_migration ORDER BY name"
+
       - name: Run the guarded release command for the provider migration
         # The real release command (migrate -- --only <provider migration>). On a new, empty database it must refuse
         # without creating anything (the base migrations are missing); on the migrated base-seven acceptance database it
@@ -171,15 +230,15 @@ jobs:
 
       - name: Run the deploy migration command on a new database, then again
         # The real deploy command (pnpm --filter @ai-drama/database migrate) on a second database of this job's container.
-        # It must apply all nine migrations once and nothing the second time; the four title writing tables and the
-        # script breakdown scene table must exist, and both provider CHECKs must allow anthropic.
+        # It must apply all ten migrations once and nothing the second time; the four title writing tables, the script
+        # breakdown scene table and the online candidate table must exist, and both provider CHECKs must allow anthropic.
         run: |
           name="ads_title_acceptance_deploy_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
           url="postgresql://postgres@127.0.0.1:5432/${name}"
           psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE ${name}"
           first="$(DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate)"
           echo "first run: ${first}"
-          printf '%s\n' "${first}" | grep -Eq "(^|[^0-9])Applied 9 migration\(s\)\.$"
+          printf '%s\n' "${first}" | grep -Eq "(^|[^0-9])Applied 10 migration\(s\)\.$"
           second="$(DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate)"
           echo "second run: ${second}"
           printf '%s\n' "${second}" | grep -Eq "(^|[^0-9])Applied 0 migration\(s\)\.$"
@@ -189,19 +248,22 @@ jobs:
           test "${breakdown}" = "1"
           anthropic="$(psql -h 127.0.0.1 -U postgres -d "${name}" -v ON_ERROR_STOP=1 -At -c "SELECT count(*) FROM pg_constraint WHERE conname IN ('title_writing_run_provider_key_check', 'title_writing_call_provider_key_check') AND pg_get_constraintdef(oid) LIKE '%anthropic%'")"
           test "${anthropic}" = "2"
+          candidates="$(psql -h 127.0.0.1 -U postgres -d "${name}" -v ON_ERROR_STOP=1 -At -c "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'writing_candidate_request'")"
+          test "${candidates}" = "1"
           psql -h 127.0.0.1 -U postgres -d "${name}" -v ON_ERROR_STOP=1 -At -c "SELECT name FROM schema_migration ORDER BY name"
 
       - name: Run the deploy migration command again on the upgraded acceptance database
         # The store acceptance upgraded this database, with its title writing data, to the episode plan release. The real
-        # deploy command must add exactly the script breakdown and provider migrations, and a second run must find nothing.
+        # deploy command must add exactly the script breakdown, provider and candidate migrations, and a second run must
+        # find nothing.
         run: |
           name="ads_title_acceptance_store_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
           url="postgresql://postgres@127.0.0.1:5432/${name}"
           again="$(DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate)"
           echo "redeploy: ${again}"
-          printf '%s\n' "${again}" | grep -Eq "(^|[^0-9])Applied 2 migration\(s\)\.$"
-          last="$(psql -h 127.0.0.1 -U postgres -d "${name}" -v ON_ERROR_STOP=1 -At -c "SELECT string_agg(name, ',' ORDER BY name) FROM (SELECT name FROM schema_migration ORDER BY name DESC LIMIT 2) AS latest")"
-          test "${last}" = "20261012000100_script_breakdown,20261016000100_writing_provider_anthropic"
+          printf '%s\n' "${again}" | grep -Eq "(^|[^0-9])Applied 3 migration\(s\)\.$"
+          last="$(psql -h 127.0.0.1 -U postgres -d "${name}" -v ON_ERROR_STOP=1 -At -c "SELECT string_agg(name, ',' ORDER BY name) FROM (SELECT name FROM schema_migration ORDER BY name DESC LIMIT 3) AS latest")"
+          test "${last}" = "20261012000100_script_breakdown,20261016000100_writing_provider_anthropic,20261016000200_writing_candidate"
           final="$(DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate)"
           echo "final redeploy: ${final}"
           printf '%s\n' "${final}" | grep -Eq "(^|[^0-9])Applied 0 migration\(s\)\.$"
@@ -502,6 +564,97 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: title-writing-browser-acceptance-evidence
+          path: ${{ runner.temp }}/title-acceptance-evidence
+          if-no-files-found: warn
+          retention-days: 14
+
+  online-browser:
+    name: Online writing browser acceptance (site login, story/episode candidates, model stub)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.0
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.21.0
+          cache: pnpm
+
+      - name: Install JavaScript dependencies (engine-strict)
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Chrome for Testing
+        run: pnpm exec playwright install --with-deps chrome
+
+      - name: Validate and generate Prisma
+        env:
+          # The schema file names env("DATABASE_URL"). validate/generate never connect; this placeholder points nowhere
+          # and is set for this step only, so the acceptance steps never see a DATABASE_URL.
+          DATABASE_URL: postgresql://prisma-offline@127.0.0.1:1/prisma_offline_placeholder
+        run: |
+          pnpm --filter @ai-drama/database prisma:validate
+          pnpm --filter @ai-drama/database prisma:generate
+
+      - name: Build JavaScript workspace
+        # The web build compiles its /api/v1 rewrite to the default upstream 127.0.0.1:3001, where the acceptance API listens.
+        run: pnpm build
+
+      - name: Create a new, empty acceptance database
+        run: |
+          name="ads_title_acceptance_online_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+          psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE ${name}"
+          psql -h 127.0.0.1 -U postgres -d "${name}" -v ON_ERROR_STOP=1 -At -c "SELECT 'database=' || current_database() || ' server=' || current_setting('server_version') || ' user_tables=' || (SELECT count(*) FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog', 'information_schema'))"
+
+      - name: Pin model provider hosts to loopback on this runner
+        # A second layer under the stub transport: even an unintercepted request cannot reach a provider from this job.
+        run: |
+          echo "127.0.0.1 api.openai.com api.anthropic.com" | sudo tee -a /etc/hosts > /dev/null
+          for host in api.openai.com api.anthropic.com; do getent hosts "$host"; done
+
+      - name: Run the online writing browser acceptance (guarded, deny by default)
+        run: |
+          name="ads_title_acceptance_online_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+          TITLE_WRITING_ACCEPTANCE_AUTHORIZED=true \
+          TITLE_WRITING_ACCEPTANCE_DATABASE_NAME="${name}" \
+          TITLE_WRITING_ACCEPTANCE_DATABASE_URL="postgresql://postgres@127.0.0.1:5432/${name}" \
+          TITLE_WRITING_ACCEPTANCE_EVIDENCE_DIR="${RUNNER_TEMP}/title-acceptance-evidence" \
+          pnpm --filter @ai-drama/api writing-online:browser-acceptance
+
+      - name: Check that nothing is left listening
+        if: always()
+        run: |
+          # The acceptance closes its API (3001) and web (3010) itself; a leftover listener fails the job.
+          if ss -ltn | grep -E ':(3001|3010)\s'; then echo "a listener was left behind"; exit 1; fi
+          echo "no listener on 3001 or 3010"
+
+      - name: Upload evidence (JSON and screenshots; no trace, no HAR)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: writing-online-browser-acceptance-evidence
           path: ${{ runner.temp }}/title-acceptance-evidence
           if-no-files-found: warn
           retention-days: 14

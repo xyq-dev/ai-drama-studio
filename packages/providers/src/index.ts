@@ -107,3 +107,16 @@ export {
   newScriptBreakdownRun,
   scriptBreakdownRunView,
 } from "./script-breakdown-run";
+export {
+  InMemoryWritingCandidateStore,
+  WRITING_CANDIDATE_LEASE_MS,
+  WRITING_CANDIDATE_LOST_AFTER_SEND,
+  WRITING_CANDIDATE_LOST_BEFORE_SEND,
+  WritingCandidateExecutor,
+  buildWritingCandidatePrompt,
+  hashWritingCandidate,
+  newWritingCandidate,
+  validateWritingCandidate,
+  writingCandidateView,
+  type WritingCandidateExecutorDeps,
+} from "./writing-candidate";

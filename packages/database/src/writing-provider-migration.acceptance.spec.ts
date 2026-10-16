@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { TitleCallRecord, TitleRunRecord, TitleWritingStoredProviderKey } from "@ai-drama/contracts";
-import { BASE_MIGRATIONS, WRITING_PROVIDER_MIGRATION, runMigrations, type MigrationResult } from "./migrations";
+import { BASE_MIGRATIONS, WRITING_CANDIDATE_MIGRATION, WRITING_PROVIDER_MIGRATION, runMigrations, type MigrationResult } from "./migrations";
 import { TextChainService } from "./text-chain";
 import { checkTitleWritingAcceptanceEnv, verifyTitleWritingAcceptanceDatabase } from "./title-writing-acceptance-guard";
 import { PostgresTitleWritingStore, SCRIPT_BREAKDOWN_MIGRATION } from "./title-writing-store";
@@ -139,7 +139,8 @@ describe(`provider migration on the ${scenario} schema`, () => {
   it("the guarded command applies the provider migration alone; the breakdown is not applied or enabled by it", async () => {
     applied = await runMigrations(pool, undefined, { only });
     expect(applied.applied).toEqual([WRITING_PROVIDER_MIGRATION]);
-    expect(applied.leftPending).toEqual(scenario === "base" ? [SCRIPT_BREAKDOWN_MIGRATION] : []);
+    // The independent candidate migration stays pending too: the guarded command applies exactly one migration.
+    expect(applied.leftPending).toEqual(scenario === "base" ? [SCRIPT_BREAKDOWN_MIGRATION, WRITING_CANDIDATE_MIGRATION] : [WRITING_CANDIDATE_MIGRATION]);
     const ledger = await ledgerNames();
     expect(ledger).toEqual(scenario === "base" ? [...BASE_MIGRATIONS, WRITING_PROVIDER_MIGRATION]
       : [...BASE_MIGRATIONS, SCRIPT_BREAKDOWN_MIGRATION, WRITING_PROVIDER_MIGRATION]);
@@ -193,7 +194,7 @@ describe(`provider migration on the ${scenario} schema`, () => {
 
   it("a later default migrate takes the remaining migrations without repeating this one, and Claude runs stay readable", async () => {
     const later = await runMigrations(pool);
-    expect(later.applied).toEqual(scenario === "base" ? [SCRIPT_BREAKDOWN_MIGRATION] : []);
+    expect(later.applied).toEqual(scenario === "base" ? [SCRIPT_BREAKDOWN_MIGRATION, WRITING_CANDIDATE_MIGRATION] : [WRITING_CANDIDATE_MIGRATION]);
     expect(later.alreadyApplied).toContain(WRITING_PROVIDER_MIGRATION);
     expect(await store.breakdownStorageReady()).toBe(true);
     expect(await store.providerStorageReady("anthropic")).toBe(true);

@@ -2,6 +2,7 @@
 /**
  * The writing assistant inside the real Workbench, after the workspace Qwen route was retired: a handwritten candidate
  * (not a model result) is imported, previewed and adopted without any POST, and nothing is ever sent to the retired route.
+ * The manual import works the same beside the online panel (online candidates are covered in writing-assistant-online.spec).
  */
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createElement } from "react";
@@ -63,8 +64,10 @@ describe("writing assistant wiring in the Workbench", () => {
     window.history.replaceState(null, "", "/projects/project-1?focus=story");
     render(createElement(Workbench, { projectId: "project-1" }));
     fireEvent.click(await screen.findByRole("button", { name: "编剧助手" }));
-    expect(screen.getByText("本轮通过外部 AI 创作，网页不会自动调用模型。")).toBeTruthy();
+    expect(screen.getByText("可以在线生成候选，也可以复制指令到外部 AI 后导入。网页不会自动生成、采纳或保存。")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "向工作区请求候选" })).toBeNull();
+    // The online panel only read its settings (not served here): nothing was sent and nothing reached a retired route.
+    expect(await screen.findByTestId("online-unavailable")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "生成" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "准备创作指令" }));
     expect(await screen.findByLabelText("创作指令")).toBeTruthy();

@@ -55,6 +55,35 @@ export function isActiveTitleWritingProvider(key: string): key is TitleWritingPr
   return (TITLE_WRITING_PROVIDER_KEYS as readonly string[]).includes(key);
 }
 
+/**
+ * The model list a provider gets when a key is configured and no model list is (the administrator only fills in the key).
+ * Claude: the Claude API ID claude-opus-5-5, checked 2026-10-16 at
+ * https://platform.claude.com/docs/en/about-claude/models/overview and listed as supporting structured outputs, effort
+ * and adaptive thinking — every capability the Claude request uses. A pinned API ID, never a CLI alias. OpenAI keeps
+ * needing its own explicit list, as before.
+ */
+export const TITLE_WRITING_DEFAULT_MODELS: Readonly<Record<TitleWritingProviderKey, readonly string[]>> = {
+  openai: [],
+  anthropic: ["claude-opus-5-5"],
+};
+
+/**
+ * Which ready provider is offered when no default provider is configured (or the configured one is not ready): Claude
+ * first. Only a choice offered before a request; a failed request is never moved to another provider.
+ */
+export const TITLE_WRITING_PROVIDER_PREFERENCE: readonly TitleWritingProviderKey[] = ["anthropic", "openai"];
+
+/**
+ * Why a value cannot be a Claude (Anthropic API) key, or null when it has the shape of one. Only keys created in the
+ * Anthropic Console (sk-ant-api…) are accepted. Claude Code / subscription OAuth tokens (sk-ant-oat…), Admin API keys
+ * (sk-ant-admin…) and session values are refused: the site never calls Claude with a development tool's login.
+ */
+export function anthropicKeyProblem(value: string): "not_anthropic_key" | "not_api_key" | null {
+  if (!value.startsWith("sk-ant-")) return "not_anthropic_key";
+  if (!/^sk-ant-api\d*-[A-Za-z0-9_-]{8,}$/u.test(value)) return "not_api_key";
+  return null;
+}
+
 /** The v1 scope: three episodes (domain PRODUCTION_EPISODE_NUMBERS). */
 export const TITLE_WRITING_EPISODE_COUNT = 3 as const;
 export const TITLE_WRITING_DEFAULT_EPISODE_SECONDS = 90;
@@ -466,7 +495,11 @@ export interface TitleWritingOptionsView {
   enabled: boolean;
   code: string;
   storageReady: boolean;
-  operatorTokenRequired: true;
+  /**
+   * False when the signed-in site administrator is the operator (the site login is on): the page sends no token and the
+   * server checks the session, origin and CSRF token instead. True only when the API runs without the site login.
+   */
+  operatorTokenRequired: boolean;
   defaultProvider: TitleWritingProviderKey | null;
   providers: TitleWritingProviderOption[];
   maxCallsPerDay: number;

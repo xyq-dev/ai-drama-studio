@@ -31,6 +31,7 @@ function setup(options: {
   storageReady?: boolean;
   override?: (step: FixtureStep, attempt: number) => { status: number; body: unknown } | "hang" | "throw" | undefined;
   operatorToken?: string | null;
+  siteOperator?: boolean;
   /** Episode plans by project; a project without one is a three-episode project with no target. */
   plans?: Record<string, { episodeCount: number; targetEpisodeSeconds: number }>;
   planReady?: boolean;
@@ -51,6 +52,7 @@ function setup(options: {
     enabled: options.enabled ?? true,
     allowProduction: options.allowProduction ?? false,
     operatorToken: options.operatorToken === undefined ? TOKEN : options.operatorToken,
+    siteOperator: options.siteOperator ?? false,
     defaultProvider: null,
     providers,
     store,
@@ -108,6 +110,27 @@ describe("title writing options", () => {
   });
 });
 
+describe("who may start a paid run", () => {
+  it("with the site login on, the administrator's session authorizes the start; no token is asked for or needed", async () => {
+    const { service, settle } = setup({ siteOperator: true, operatorToken: null });
+    expect((await service.options()).body).toMatchObject({ code: "TITLE_WRITING_READY", operatorTokenRequired: false });
+    const refused = await service.start(P1, { title: "夜班证词" }, { session: false, token: undefined }, CONTEXT("k0"));
+    expect([refused.status, errorCode(refused.body)]).toEqual([403, "TITLE_WRITING_FORBIDDEN"]);
+    const started = await service.start(P1, { title: "夜班证词" }, { session: true, token: undefined }, CONTEXT("k1"));
+    expect(started.status).toBe(201);
+    await settle();
+  });
+
+  it("without the site login a session claim is worth nothing and the token is still required", async () => {
+    const { service, store } = setup();
+    expect((await service.options()).body).toMatchObject({ operatorTokenRequired: true });
+    const refused = await service.start(P1, { title: "夜班证词" }, { session: true, token: undefined }, CONTEXT("k1"));
+    expect([refused.status, errorCode(refused.body)]).toEqual([403, "TITLE_WRITING_FORBIDDEN"]);
+    expect(store.runs).toHaveLength(0);
+    expect((await setup({ operatorToken: null }).service.options()).body).toMatchObject({ code: "TITLE_WRITING_FORBIDDEN" });
+  });
+});
+
 describe("starting a run", () => {
   it("starts from the title alone and the run completes on the server", async () => {
     const { service, settle, seen, store } = setup();
@@ -116,8 +139,8 @@ describe("starting a run", () => {
     await settle();
     const latest = await service.latest(P1);
     const run = (latest.body as { run: { state: string; storySave: string; providerKey: string; model: string } }).run;
-    // No default configured: the first ready provider in the fixed order (OpenAI) and its first allowlisted model.
-    expect(run).toMatchObject({ state: "completed", storySave: "saved", providerKey: "openai", model: "d-1" });
+    // No default configured: the first ready provider in the preference order (Claude) and its first allowlisted model.
+    expect(run).toMatchObject({ state: "completed", storySave: "saved", providerKey: "anthropic", model: "q-1" });
     expect(seen).toHaveLength(5);
     expect(store.projects.get(P1)!.stories[0]?.reviewStatus).toBe("DRAFT");
     const text = JSON.stringify(latest.body);

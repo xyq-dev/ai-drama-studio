@@ -4,8 +4,9 @@ import { EventsController, StudioController } from "./studio.controller";
 import { StudioRuntime } from "./studio.runtime";
 import { ScriptBreakdownController } from "./script-breakdown.controller";
 import { TitleWritingController } from "./title-writing.controller";
+import { WritingCandidateController } from "./writing-candidate.controller";
 import {
-  RUNTIME_STORE, SCRIPT_BREAKDOWN_SERVICE, STUDIO_RUNTIME, STUDIO_SERVICE, TITLE_WRITING_SERVICE,
+  RUNTIME_STORE, SCRIPT_BREAKDOWN_SERVICE, STUDIO_RUNTIME, STUDIO_SERVICE, TITLE_WRITING_SERVICE, WRITING_CANDIDATE_SERVICE,
 } from "./tokens";
 import { ADMIN_MODELS_SERVICE, AdminModelsController } from "../admin/admin-models.controller";
 
@@ -15,7 +16,8 @@ export class StudioModule {
     return {
       module: StudioModule,
       controllers: [
-        StudioController, EventsController, TitleWritingController, ScriptBreakdownController, AdminModelsController,
+        StudioController, EventsController, TitleWritingController, ScriptBreakdownController, WritingCandidateController,
+        AdminModelsController,
       ],
       providers: [
         {
@@ -36,6 +38,11 @@ export class StudioModule {
           provide: SCRIPT_BREAKDOWN_SERVICE,
           inject: [STUDIO_RUNTIME],
           useFactory: (runtime: StudioRuntime) => runtime.scriptBreakdown,
+        },
+        {
+          provide: WRITING_CANDIDATE_SERVICE,
+          inject: [STUDIO_RUNTIME],
+          useFactory: (runtime: StudioRuntime) => runtime.writingCandidates,
         },
         {
           provide: RUNTIME_STORE,

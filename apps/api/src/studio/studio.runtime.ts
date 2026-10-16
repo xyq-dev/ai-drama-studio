@@ -6,6 +6,7 @@ import {
   MediaAssetStore,
   MockTextService,
   PostgresTitleWritingStore,
+  PostgresWritingCandidateStore,
   RuntimeStore,
   TextChainService,
   closePostgresPool,
@@ -13,12 +14,13 @@ import {
   type PostgresPool,
 } from "@ai-drama/database";
 import { sampleVideoGenerationEnabled, type TitleRunKind } from "@ai-drama/contracts";
-import { TitleWritingEngine, createFetchTransport, titleWritingProviderConfigs } from "@ai-drama/providers";
+import { TitleWritingEngine, WritingCandidateExecutor, createFetchTransport, titleWritingProviderConfigs } from "@ai-drama/providers";
 import type { ApiEnv } from "../config/env";
 import { siteAuthFromEnv } from "../auth/site-auth.config";
 import { ScriptBreakdownService } from "./script-breakdown.service";
 import { StudioService } from "./studio.service";
 import { TitleWritingService } from "./title-writing.service";
+import { WritingCandidateService } from "./writing-candidate.service";
 import { adminBootstrap } from "../admin/admin-bootstrap";
 import { AdminModelsService, managedProviderConfigs } from "../admin/admin-models.service";
 
@@ -31,6 +33,7 @@ export class StudioRuntime implements OnModuleDestroy {
   readonly service: StudioService;
   readonly titleWriting: TitleWritingService | null;
   private readonly titleMaintenance: NodeJS.Timeout | null;
+  private readonly candidateMaintenance: NodeJS.Timeout | null;
 
   constructor(
     readonly pool: PostgresPool,
@@ -42,6 +45,8 @@ export class StudioRuntime implements OnModuleDestroy {
     readonly adminConsoleEnabled = false,
     /** Script breakdown: same switch, token, providers, quota and engine as title writing. */
     readonly scriptBreakdown: ScriptBreakdownService | null = null,
+    /** Online candidates of the workbench writing assistant: same switch, operator, providers and daily cap. */
+    readonly writingCandidates: WritingCandidateService | null = null,
   ) {
     this.service = service;
     this.store = store;
@@ -51,6 +56,11 @@ export class StudioRuntime implements OnModuleDestroy {
       ? setInterval(() => { void titleWriting.maintain().catch(() => undefined); }, TITLE_WRITING_MAINTENANCE_MS)
       : null;
     this.titleMaintenance?.unref();
+    // Expired candidate leases become rejected (never sent) or unknown (maybe sent); nothing is ever resent.
+    this.candidateMaintenance = writingCandidates
+      ? setInterval(() => { void writingCandidates.maintain().catch(() => undefined); }, TITLE_WRITING_MAINTENANCE_MS)
+      : null;
+    this.candidateMaintenance?.unref();
   }
 
   static async open(env: ApiEnv): Promise<StudioRuntime> {
@@ -80,6 +90,7 @@ export class StudioRuntime implements OnModuleDestroy {
     const localComposeEnabled = composeSwitch && Boolean(absoluteDir && composeObjectDir);
     const episodeComposeEnabled = composeSwitch && env.M4_LOCAL_EPISODE_COMPOSE_ENABLED && Boolean(composeObjectDir);
     const titleStore = new PostgresTitleWritingStore(pool, textChain);
+    const candidateStore = new PostgresWritingCandidateStore(pool);
     let adminModels: AdminModelsService | null;
     try {
       adminModels = admin ? await AdminModelsService.open(env, admin, async () => {
@@ -95,7 +106,12 @@ export class StudioRuntime implements OnModuleDestroy {
           [workspaceId],
         ) as { rows: { running: boolean }[] };
         return result.rows[0]?.running === false;
-      }, { enabled: titleWritingEnabled, productionBlocked: !nonProduction && !titleWritingAllowProduction }) : null;
+      }, { enabled: titleWritingEnabled, productionBlocked: !nonProduction && !titleWritingAllowProduction, siteOperator: siteLoginValid },
+      async () => ({
+        titleWriting: await titleStore.storageReady(),
+        claude: await titleStore.providerStorageReady("anthropic"),
+        candidates: await candidateStore.storageReady(),
+      })) : null;
     } catch (error) {
       await closePostgresPool(pool);
       throw error;
@@ -125,6 +141,7 @@ export class StudioRuntime implements OnModuleDestroy {
       enabled: titleWritingEnabled,
       allowProduction: titleWritingAllowProduction,
       operatorToken: env.TITLE_WRITING_OPERATOR_TOKEN ?? null,
+      siteOperator: siteLoginValid,
       defaultProvider,
       providers: titleProviders,
       store: titleStore,
@@ -138,6 +155,7 @@ export class StudioRuntime implements OnModuleDestroy {
       nodeEnv: env.NODE_ENV,
       enabled: scriptBreakdownEnabled,
       operatorToken: env.TITLE_WRITING_OPERATOR_TOKEN ?? null,
+      siteOperator: siteLoginValid,
       defaultProvider,
       providers: titleProviders,
       store: titleStore,
@@ -145,6 +163,20 @@ export class StudioRuntime implements OnModuleDestroy {
       projects: store,
       maxCallsPerDay,
       maxActiveRuns,
+    });
+    const writingCandidates = new WritingCandidateService({
+      workspaceId,
+      nodeEnv: env.NODE_ENV,
+      enabled: titleWritingEnabled,
+      allowProduction: titleWritingAllowProduction,
+      operatorToken: env.TITLE_WRITING_OPERATOR_TOKEN ?? null,
+      siteOperator: siteLoginValid,
+      defaultProvider,
+      providers: titleProviders,
+      store: candidateStore,
+      executor: new WritingCandidateExecutor({ workspaceId, store: candidateStore, providers: titleProviders, transport: createFetchTransport() }),
+      projects: store,
+      maxCallsPerDay,
     });
     return new StudioRuntime(pool,
       new StudioService(jobs, store, textChain, workspaceId, new MockTextService(pool), new MediaAssetStore(pool),
@@ -157,11 +189,12 @@ export class StudioRuntime implements OnModuleDestroy {
         }),
         new CharacterReferenceStore(pool),
         env.M3_CHARACTER_REFERENCE_GATE), store, titleWriting,
-      adminModels, admin?.enabled ?? false, scriptBreakdown);
+      adminModels, admin?.enabled ?? false, scriptBreakdown, writingCandidates);
   }
 
   async onModuleDestroy(): Promise<void> {
     if (this.titleMaintenance) clearInterval(this.titleMaintenance);
+    if (this.candidateMaintenance) clearInterval(this.candidateMaintenance);
     await closePostgresPool(this.pool);
   }
 }

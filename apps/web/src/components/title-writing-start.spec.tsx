@@ -363,3 +363,25 @@ describe("the episode plan of a new work", () => {
     expect(calls.filter((call) => call.method === "POST")).toEqual([]);
   });
 });
+
+describe("the site login authorizes the call", () => {
+  beforeEach(() => { window.sessionStorage.clear(); });
+  afterEach(() => { cleanup(); vi.unstubAllGlobals(); window.sessionStorage.clear(); });
+
+  it("shows no token field and sends no X-Operator-Token when the server says the session is enough", async () => {
+    const assign = vi.spyOn(window.location, "assign").mockImplementation(() => undefined);
+    const { calls } = server((call) => call.url === "/api/v1/projects"
+      ? json({ id: P1, title: "夜班证词", premise: "", version: 1, status: "ACTIVE" }, 201)
+      : json(finished(), 201), { options: options({ operatorTokenRequired: false }) });
+    render(<TitleWritingStart />);
+    const button = await screen.findByRole("button", { name: "AI 一键创作" });
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
+    expect(screen.queryByLabelText("操作者令牌")).toBeNull();
+    expect(screen.getByText("调用权限由当前管理员登录确认，不需要填写操作者令牌。模型密钥只在服务端。")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("剧名"), { target: { value: "夜班证词" } });
+    fireEvent.click(button);
+    await waitFor(() => expect(runPosts(calls)).toHaveLength(1));
+    expect(Object.keys(runPosts(calls)[0]!.headers).map((name) => name.toLowerCase())).not.toContain("x-operator-token");
+    await waitFor(() => expect(assign).toHaveBeenCalledWith(`/projects/${P1}/writing`));
+  });
+});

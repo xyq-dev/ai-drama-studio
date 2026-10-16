@@ -1,10 +1,12 @@
 import {
+  STORY_PLAN_SCHEMA,
   EPISODE_DRAFT_SCHEMA,
   EPISODE_OUTLINE_SCHEMA,
   EPISODE_OUTLINE_SCHEMA_V2,
   TITLE_CONCEPT_SCHEMA,
   type EpisodeDraftCandidate,
   type EpisodeOutline,
+  type StoryPlanCandidate,
   type TitleConcept,
   type TitleWritingStepKey,
 } from "@ai-drama/contracts";
@@ -162,6 +164,32 @@ export function messagesAnswer(value: unknown, stopReason = "end_turn") {
 /** The answer in the wire format of the endpoint a request was sent to. */
 export function providerAnswer(url: string, value: unknown) {
   return url === ANTHROPIC_MESSAGES_URL ? messagesAnswer(value) : responsesAnswer(value);
+}
+
+/** A story plan candidate of the model double. Every text says it is the double's sample, not a model's writing. */
+export function fixtureStoryPlan(tag = "模型替身样例"): StoryPlanCandidate {
+  return {
+    schema: STORY_PLAN_SCHEMA,
+    logline: `${tag}：夜班店员守住一份被改过的记录`,
+    protagonistGoal: "守住班次记录",
+    opposition: "店长能改时间",
+    coreConflict: "解释会被当成承认",
+    relationships: [{ name: "店员与店长", pressure: "店员不能供出同事" }],
+    episodes: ([1, 2, 3] as const).map((episodeNo) => ({
+      episodeNo, entryState: `${tag}·进入${episodeNo}`, goal: `目标${episodeNo}`, action: `行动${episodeNo}`, turn: `转折${episodeNo}`,
+      result: `结果${episodeNo}`, handoff: `交接${episodeNo}`,
+    })),
+  };
+}
+
+/**
+ * The online candidate the double answers for a prompt: the story plan for 模式：故事策划, otherwise the draft of the
+ * episode the prompt asks for (episodeNo 必须是 N).
+ */
+export function fixtureCandidateFromPrompt(userPrompt: string): StoryPlanCandidate | EpisodeDraftCandidate {
+  if (userPrompt.includes("模式：故事策划")) return fixtureStoryPlan();
+  const episodeNo = Number(/episodeNo 必须是 (\d)/.exec(userPrompt)?.[1] ?? "1");
+  return fixtureEpisode(episodeNo);
 }
 
 /** Breakdown answers for the same stubbed acceptances. */

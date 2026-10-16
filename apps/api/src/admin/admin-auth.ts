@@ -8,6 +8,7 @@ const ERROR_MESSAGES = {
   ADMIN_CONFIG_CONFLICT: "配置已更新，请重新读取后再保存。",
   ADMIN_CONFIG_STORAGE_UNAVAILABLE: "安全配置存储暂不可用。",
   ADMIN_CONFIG_INVALID: "模型配置无效，请检查输入。",
+  ADMIN_CONFIG_KEY_FORMAT: "这不是 Anthropic 控制台创建的 API Key（应以 sk-ant-api 开头）。Claude Code 或订阅账号的登录凭据不能使用。没有保存任何内容。",
   ADMIN_INTERNAL_ERROR: "管理员请求暂时无法完成。",
 } as const;
 

@@ -260,6 +260,72 @@ describe("administrator model settings behind the site login", () => {
   });
 });
 
+describe("Claude quick setup: only the API key", () => {
+  const unconfigured = () => {
+    const view = modelView();
+    for (const settings of [view.saved, view.active]) {
+      settings.defaultProvider = null as never;
+      settings.providers[0] = { ...settings.providers[0]!, models: [], keyConfigured: false, ready: false, missing: ["ANTHROPIC_API_KEY"] };
+    }
+    return view;
+  };
+  const CLAUDE = "sk-ant-api03-test-only-not-a-real-key-0123456789";
+
+  it("says the key is missing, refuses a Claude Code token locally, and saves only the key with no model choice", async () => {
+    let current = unconfigured();
+    const calls = server((call) => {
+      if (call.method === "PUT") {
+        const saved = structuredClone(current);
+        saved.savedRevision = 5; saved.pendingRestart = true; saved.saved.defaultProvider = "anthropic";
+        saved.saved.providers[0] = { ...saved.saved.providers[0]!, models: ["claude-opus-5-5"], keyConfigured: true, ready: true, missing: [] };
+        current = saved;
+        return json(saved);
+      }
+      return call.url.endsWith("/auth/session") ? json(session()) : json(current);
+    });
+    render(<AdminModels />);
+    const status = await screen.findByTestId("claude-status");
+    expect(status.dataset.state).toBe("key_missing");
+    expect(status.textContent).toContain("尚未配置 Claude API Key");
+    expect(screen.getByText(/模型默认使用 claude-opus-5-5/)).toBeTruthy();
+    const input = screen.getByLabelText(/^Claude API Key/) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "sk-ant-oat01-claude-code-oauth-token-abcdef" } });
+    fireEvent.click(screen.getByRole("button", { name: /保存 Claude API Key/ }));
+    expect(await screen.findByText(/Claude Code 或订阅账号的登录凭据不能使用/)).toBeTruthy();
+    expect(input.value).toBe("");
+    expect(calls.filter((call) => call.method === "PUT")).toHaveLength(0);
+    fireEvent.change(input, { target: { value: CLAUDE } });
+    fireEvent.click(screen.getByRole("button", { name: /保存 Claude API Key/ }));
+    await waitFor(() => expect(screen.getByTestId("claude-status").dataset.state).toBe("pending_restart"));
+    const put = calls.find((call) => call.method === "PUT")!;
+    expect(put.url).toBe("/api/v1/admin/models/providers/anthropic");
+    expect(put.body).toEqual({ expectedRevision: 4, models: [], secretAction: "replace", apiKey: CLAUDE });
+    expect(csrfOf(put)).toBe(CSRF);
+    // Saved is not usable yet: the page says a restart is needed, never READY, and the key is gone from the page.
+    expect(screen.getByTestId("claude-status").textContent).toContain("等待 API 重启后生效");
+    expect(screen.queryByText(/READY/)).toBeNull();
+    expect((screen.getByLabelText(/^Claude API Key/) as HTMLInputElement).value).toBe("");
+    expect(document.body.innerHTML).not.toContain(CLAUDE);
+    expect(JSON.stringify({ ...window.localStorage, ...window.sessionStorage })).not.toContain(CLAUDE);
+  });
+
+  it("keeps saved, applied, feature switch, migrations and ready apart", async () => {
+    const applied = modelView({ titleWriting: { enabled: true, productionBlocked: false, operatorConfigured: false, siteOperator: true },
+      storage: { titleWriting: true, claude: false, candidates: true } });
+    server((call) => call.url.endsWith("/auth/session") ? json(session()) : json(applied));
+    render(<AdminModels />);
+    const status = await screen.findByTestId("claude-status");
+    expect(status.dataset.state).toBe("migration_missing");
+    expect(status.textContent).toContain("20261016000100_writing_provider_anthropic");
+    cleanup();
+    server((call) => call.url.endsWith("/auth/session") ? json(session()) : json({ ...applied, storage: { titleWriting: true, claude: true, candidates: true } }));
+    render(<AdminModels />);
+    const ready = await screen.findByTestId("claude-status");
+    expect(ready.dataset.state).toBe("ready");
+    expect(ready.textContent).toContain("不代表已经完成真实调用验证");
+  });
+});
+
 describe("model picker on the provider settings", () => {
   const puts = (calls: Call[]) => calls.filter((call) => call.method === "PUT");
   const codes = (region: ReturnType<typeof within>) => region.getAllByRole("checkbox")

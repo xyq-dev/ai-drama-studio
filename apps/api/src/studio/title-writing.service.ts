@@ -1,4 +1,3 @@
-import { timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import {
   TITLE_WRITING_DEFAULT_EPISODE_COUNT,
@@ -8,6 +7,7 @@ import {
   TITLE_WRITING_MIN_EPISODES,
   TITLE_WRITING_PROVIDER_KEYS,
   TITLE_WRITING_PROVIDER_LABELS,
+  TITLE_WRITING_PROVIDER_PREFERENCE,
   isActiveTitleWritingProvider,
   titleWritingRequiredCalls,
   titleWritingResumeSchema,
@@ -34,6 +34,7 @@ import {
   type WritingProviderConfig,
 } from "@ai-drama/providers";
 import type { StudioContext } from "./studio.service";
+import { operatorAllowed, operatorConfigured, type OperatorProof } from "./operator-access";
 
 export interface TitleWritingDependencies {
   workspaceId: string;
@@ -42,6 +43,8 @@ export interface TitleWritingDependencies {
   /** Explicit production authorization, pre-gated by the runtime on TITLE_WRITING_ALLOW_PRODUCTION and a valid site login. */
   allowProduction?: boolean;
   operatorToken: string | null;
+  /** The site login is on: its signed-in administrator is the operator (see operator-access.ts). */
+  siteOperator?: boolean;
   defaultProvider: TitleWritingProviderKey | null;
   providers: Record<TitleWritingProviderKey, WritingProviderConfig>;
   store: TitleWritingStore;
@@ -62,7 +65,7 @@ export interface TitleWritingResult {
 
 const MESSAGES: Record<string, string> = {
   TITLE_WRITING_DISABLED: "AI 一键创作没有开启。仍可手动创作。",
-  TITLE_WRITING_FORBIDDEN: "操作者令牌不正确，没有启动任何调用。",
+  TITLE_WRITING_FORBIDDEN: "没有调用权限（需要管理员登录，或在未启用站点登录时提供正确的操作者令牌），没有启动任何调用。",
   TITLE_WRITING_STORAGE_UNAVAILABLE: "创作任务存储还没有就绪（数据库表未创建），没有启动任何调用。",
   TITLE_WRITING_PROVIDER_UNCONFIGURED: "所选模型服务还没有配置完整，没有启动任何调用。",
   TITLE_WRITING_PROVIDER_RETIRED: "这个模型服务已经退役，不能再发起新的创作或重新发送调用。历史记录仍然保留，可以查看。",
@@ -89,12 +92,6 @@ function failure(status: number, code: string, details?: Record<string, unknown>
   return { status, body: { error: { code, message: MESSAGES[code] ?? "请求失败", ...(details ? { details } : {}) } } };
 }
 
-function sameToken(configured: string, presented: string | undefined): boolean {
-  if (presented === undefined) return false;
-  const left = Buffer.from(configured, "utf8");
-  const right = Buffer.from(presented, "utf8");
-  return left.length === right.length && timingSafeEqual(left, right);
-}
 
 /** Named in an option's missing list while the database cannot store runs of that provider. Never a value. */
 export const PROVIDER_MIGRATION_GAP = "WRITING_PROVIDER_MIGRATION";
@@ -144,18 +141,19 @@ export class TitleWritingService {
         missing,
       };
     }));
-    const firstReady = providers.find((item) => item.ready)?.providerKey ?? null;
+    // Without a ready configured default, Claude is offered first (TITLE_WRITING_PROVIDER_PREFERENCE).
+    const firstReady = TITLE_WRITING_PROVIDER_PREFERENCE.find((key) => providers.find((item) => item.providerKey === key)?.ready) ?? null;
     const configuredDefault = this.deps.defaultProvider && providers.find((item) => item.providerKey === this.deps.defaultProvider)?.ready
       ? this.deps.defaultProvider : null;
     const code = !this.active() ? "TITLE_WRITING_DISABLED"
-      : !this.deps.operatorToken ? "TITLE_WRITING_FORBIDDEN"
+      : !operatorConfigured(this.deps) ? "TITLE_WRITING_FORBIDDEN"
         : !storageReady ? "TITLE_WRITING_STORAGE_UNAVAILABLE"
           : firstReady === null ? "TITLE_WRITING_PROVIDER_UNCONFIGURED" : "TITLE_WRITING_READY";
     const body: TitleWritingOptionsView = {
       enabled: this.active(),
       code,
       storageReady,
-      operatorTokenRequired: true,
+      operatorTokenRequired: this.deps.siteOperator !== true,
       defaultProvider: configuredDefault ?? firstReady,
       providers,
       maxCallsPerDay: this.deps.maxCallsPerDay,
@@ -176,9 +174,9 @@ export class TitleWritingService {
   }
 
   /** Switch, token, then storage: every refusal happens before any reservation or provider send. */
-  private async gate(token: string | undefined): Promise<TitleWritingResult | null> {
+  private async gate(token: OperatorProof | string | undefined): Promise<TitleWritingResult | null> {
     if (!this.active()) return failure(404, "TITLE_WRITING_DISABLED");
-    if (!this.deps.operatorToken || !sameToken(this.deps.operatorToken, token)) return failure(403, "TITLE_WRITING_FORBIDDEN");
+    if (!operatorAllowed(this.deps, token)) return failure(403, "TITLE_WRITING_FORBIDDEN");
     if (!await this.deps.store.storageReady()) return failure(503, "TITLE_WRITING_STORAGE_UNAVAILABLE");
     return null;
   }
@@ -194,7 +192,7 @@ export class TitleWritingService {
     return bundle && !isScriptBreakdownRun(bundle.run) ? { status, body: { run: titleRunView(bundle) } } : failure(404, "NOT_FOUND");
   }
 
-  async start(projectId: string, body: unknown, token: string | undefined, context: StudioContext): Promise<TitleWritingResult> {
+  async start(projectId: string, body: unknown, token: OperatorProof | string | undefined, context: StudioContext): Promise<TitleWritingResult> {
     const refused = await this.gate(token);
     if (refused) return refused;
     if (!context.idempotencyKey || context.idempotencyKey.length > 200) return failure(400, "VALIDATION_ERROR", { field: "Idempotency-Key" });
@@ -210,7 +208,7 @@ export class TitleWritingService {
     const previous = await this.deps.store.findRunByKey(this.deps.workspaceId, context.actorId, context.idempotencyKey);
     const replayed = previous && previous.run.projectId === projectId && !isScriptBreakdownRun(previous.run) ? previous.run.input : null;
     const providerKey = parsed.data.providerKey ?? replayed?.providerKey ?? this.deps.defaultProvider
-      ?? TITLE_WRITING_PROVIDER_KEYS.find((key) => this.deps.providers[key].ok) ?? TITLE_WRITING_PROVIDER_KEYS[0];
+      ?? TITLE_WRITING_PROVIDER_PREFERENCE.find((key) => this.deps.providers[key].ok) ?? TITLE_WRITING_PROVIDER_PREFERENCE[0]!;
     let model = parsed.data.model ?? replayed?.model;
     if (!previous) {
       // New requests only: a retired provider is refused here, never moved to another provider.
@@ -324,7 +322,7 @@ export class TitleWritingService {
    * the store transaction. The Idempotency-Key identifies this one action; a replay after a lost receipt returns the
    * current run and never resets or sends anything again.
    */
-  async resume(projectId: string, runId: string, body: unknown, token: string | undefined, context: StudioContext): Promise<TitleWritingResult> {
+  async resume(projectId: string, runId: string, body: unknown, token: OperatorProof | string | undefined, context: StudioContext): Promise<TitleWritingResult> {
     const refused = await this.gate(token);
     if (refused) return refused;
     if (!context.idempotencyKey || context.idempotencyKey.length > 200) return failure(400, "VALIDATION_ERROR", { field: "Idempotency-Key" });

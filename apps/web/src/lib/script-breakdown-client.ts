@@ -8,7 +8,7 @@ import {
   type ScriptBreakdownRunView,
 } from "@ai-drama/contracts";
 import { withSession } from "./site-session";
-import { TitleWritingError, TitleWritingUnconfirmedError, isEntityId } from "./title-writing-client";
+import { TitleWritingError, TitleWritingUnconfirmedError, isEntityId, operatorHeader } from "./title-writing-client";
 
 export type { ScriptBreakdownOptionsView, ScriptBreakdownPlacementOutcome, ScriptBreakdownRunView };
 
@@ -108,7 +108,7 @@ export class ScriptBreakdownClient {
     const result = await this.call<unknown>(this.base(projectId, episodeId), {
       method: "POST",
       headers: { Accept: "application/json", "Content-Type": "application/json", "Idempotency-Key": options.idempotencyKey,
-        "X-Operator-Token": options.token },
+        ...operatorHeader(options.token) },
       body: JSON.stringify(body),
     });
     const run = breakdownReceiptRun(result.body, projectId, episodeId);
@@ -149,7 +149,7 @@ export class ScriptBreakdownClient {
     options: { confirmUncertainCallIds: readonly string[]; token: string; idempotencyKey: string }): Promise<ScriptBreakdownRunView> {
     const result = await this.call<unknown>(`${this.base(projectId, episodeId)}/${runId}/resume`, {
       method: "POST",
-      headers: { Accept: "application/json", "Content-Type": "application/json", "X-Operator-Token": options.token,
+      headers: { Accept: "application/json", "Content-Type": "application/json", ...operatorHeader(options.token),
         "Idempotency-Key": options.idempotencyKey },
       body: JSON.stringify({ confirmUncertainCallIds: options.confirmUncertainCallIds }),
     });

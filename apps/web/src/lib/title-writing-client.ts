@@ -88,7 +88,7 @@ export class TitleWritingClient {
     const result = await this.call<unknown>(`/projects/${projectId}/title-runs`, {
       method: "POST",
       headers: { Accept: "application/json", "Content-Type": "application/json", "Idempotency-Key": options.idempotencyKey,
-        "X-Operator-Token": options.token },
+        ...operatorHeader(options.token) },
       body: JSON.stringify(body),
     });
     const run = startReceiptRun(result.body, projectId);
@@ -113,7 +113,7 @@ export class TitleWritingClient {
   async resume(projectId: string, runId: string, options: { confirmUncertainCallIds: readonly string[]; token: string; idempotencyKey: string }): Promise<TitleWritingRunView> {
     return (await this.call<{ run: TitleWritingRunView }>(`/projects/${projectId}/title-runs/${runId}/resume`, {
       method: "POST",
-      headers: { Accept: "application/json", "Content-Type": "application/json", "X-Operator-Token": options.token,
+      headers: { Accept: "application/json", "Content-Type": "application/json", ...operatorHeader(options.token),
         "Idempotency-Key": options.idempotencyKey },
       body: JSON.stringify({ confirmUncertainCallIds: options.confirmUncertainCallIds }),
     })).body.run;
@@ -128,6 +128,19 @@ export class TitleWritingClient {
   }
 }
 
+/**
+ * The operator token header, only when the page has one. With the site login on, the signed-in administrator is the
+ * operator and no token is sent (the session cookie and CSRF header do the work).
+ */
+export function operatorHeader(token: string): Record<string, string> {
+  return token.length > 0 ? { "X-Operator-Token": token } : {};
+}
+
+/** Whether this server wants a token typed into the page (false when the site login authorizes the operator). */
+export function tokenRequired(options: { operatorTokenRequired?: unknown } | null): boolean {
+  return options?.operatorTokenRequired !== false;
+}
+
 /** Reads a possibly malformed options body: anything unexpected counts as "not ready". */
 export function normalizeOptions(value: unknown): TitleWritingOptionsView | null {
   if (!value || typeof value !== "object") return null;
@@ -138,14 +151,16 @@ export function normalizeOptions(value: unknown): TitleWritingOptionsView | null
 
 /** A configuration gap as shown to a person: variable names as they are, the provider migration in words. */
 export function gapText(name: string): string {
-  return name === "WRITING_PROVIDER_MIGRATION" ? "数据库迁移 20261016000100_writing_provider_anthropic 尚未执行" : name;
+  if (name === "WRITING_PROVIDER_MIGRATION") return "数据库迁移 20261016000100_writing_provider_anthropic 尚未执行";
+  if (name === "ANTHROPIC_API_KEY") return "尚未配置 Claude API Key";
+  return name;
 }
 
 export function optionsUnavailableReason(options: TitleWritingOptionsView | null): string | null {
   if (!options) return "没能读取 AI 创作的服务端配置。可以稍后重试，或先手动创作。";
   if (options.code === "TITLE_WRITING_READY") return null;
   if (options.code === "TITLE_WRITING_DISABLED") return "AI 一键创作没有在服务端开启（TITLE_WRITING_ENABLED）。可以先手动创作。";
-  if (options.code === "TITLE_WRITING_FORBIDDEN") return "服务端还没有设置操作者令牌（TITLE_WRITING_OPERATOR_TOKEN）。可以先手动创作。";
+  if (options.code === "TITLE_WRITING_FORBIDDEN") return "服务端还没有可用的调用授权（未启用站点登录，也没有设置 TITLE_WRITING_OPERATOR_TOKEN）。可以先手动创作。";
   if (options.code === "TITLE_WRITING_STORAGE_UNAVAILABLE") return "创作任务的数据库表还没有创建（服务器尚未执行数据库迁移）。可以先手动创作。";
   if (options.code === "TITLE_WRITING_PROVIDER_UNCONFIGURED") {
     const missing = options.providers.map((item) => `${item.label}：${item.missing.map(gapText).join("、")}`).join("；");

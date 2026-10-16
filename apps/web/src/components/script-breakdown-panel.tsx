@@ -8,7 +8,7 @@ import {
   type ScriptBreakdownPlacementOutcome,
   type ScriptBreakdownRunView,
 } from "../lib/script-breakdown-client";
-import { TitleWritingError } from "../lib/title-writing-client";
+import { TitleWritingError, tokenRequired } from "../lib/title-writing-client";
 
 import { clearBreakdownPending, readBreakdownPending, writeBreakdownPending, type BreakdownPendingStart, type BreakdownPendingResume } from "../lib/script-breakdown-pending";
 
@@ -134,6 +134,9 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
   const [pendingResume, setPendingResume] = useState<BreakdownPendingResume | null>(null);
   const [optionsError, setOptionsError] = useState(false);
   const [optionsLoading, setOptionsLoading] = useState(false);
+  // With the site login on, the signed-in administrator authorizes the call: no token is asked for or sent.
+  const needsToken = tokenRequired(options);
+  const tokenMissing = needsToken && token.trim().length === 0;
   /** The server refused a start because the episode has scenes, which the parent's count may not show yet. */
   const [scenesExist, setScenesExist] = useState(false);
   /**
@@ -282,7 +285,7 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
   // take its identity's place. For a new start, what the server's settings say (off, storage, provider) comes before what
   // this page could not read or has not filled in: a failed task read or a missing token is not why it cannot start.
   const startBlocked = identityError ? "无法恢复请求身份，请先解决浏览器会话存储问题。"
-    : pendingStart ? (token.trim().length === 0 ? "请填写操作者令牌。" : null)
+    : pendingStart ? (tokenMissing ? "请填写操作者令牌。" : null)
     : pendingResume ? "请先确认上次续跑结果，之后才能发起新的生成。"
     : featureBlocked ? featureBlocked
     : readError ? "请先重新读取本集任务状态。"
@@ -290,7 +293,7 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
     : !options ? optionsError ? "功能配置读取失败，请先“重新读取功能配置”。" : "正在读取拆解设置。"
       : running ? "这一集的拆解正在进行。"
         : needsReplace && !replaceExisting ? "这一集已有场景，勾选“用新结果取代”后才能开始。"
-          : token.trim().length === 0 ? "请填写操作者令牌。" : null;
+          : tokenMissing ? "请填写操作者令牌。" : null;
   // The settings' own state is shown as soon as they are read, without waiting for the task read.
   const blockedShown = startBlocked !== null && (loaded || startBlocked === featureBlocked);
 
@@ -343,7 +346,7 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
     try { writeBreakdownPending(props.projectId, props.episodeId, pending); }
     catch { setIdentityError(true); setMessage("无法保存请求身份，未发送请求。请先解决浏览器会话存储问题。"); return; }
     setPendingStart(pending); setPlacement(null);
-    void act(null, () => client.start(props.projectId, props.episodeId, pending.body, { token: token.trim(), idempotencyKey: pending.key }),
+    void act(null, () => client.start(props.projectId, props.episodeId, pending.body, { token: needsToken ? token.trim() : "", idempotencyKey: pending.key }),
       "服务端回应无法确认是否已开始。再次点击只会重放同一个请求，不会新建任务。", {
         accepted: () => clearPending(pending),
         failed: (caught) => {
@@ -377,7 +380,7 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
   const resumable = run !== null && resumeMode !== null;
 
   function resume() {
-    if (!run || !resumable || pendingResume || identityError || operation.current || token.trim().length === 0 || (uncertain.length > 0 && !confirmUncertain)) return;
+    if (!run || !resumable || pendingResume || identityError || operation.current || tokenMissing || (uncertain.length > 0 && !confirmUncertain)) return;
     const pending: BreakdownPendingResume = { kind: "resume", runId: run.runId, confirmed: uncertain, key: crypto.randomUUID() };
     try {
       // Never overwrite a stored identity this page does not hold yet (written meanwhile): it is offered for confirmation.
@@ -387,7 +390,7 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
     } catch { setIdentityError(true); setMessage("无法保存续跑身份，未发送请求。请先解决浏览器会话存储问题。"); return; }
     setPendingResume(pending);
     void act(run.runId, () => client.resume(props.projectId, props.episodeId, pending.runId,
-      { confirmUncertainCallIds: pending.confirmed, token: token.trim(), idempotencyKey: pending.key }),
+      { confirmUncertainCallIds: pending.confirmed, token: needsToken ? token.trim() : "", idempotencyKey: pending.key }),
       "请求没有得到回应。请用“确认上次续跑结果”重放同一个续跑请求。", {
         accepted: () => { clearPending(pending); setConfirmedFor(null); },
         // A new resume refused is settled; a lost answer or a 5xx keeps it for confirmation.
@@ -402,9 +405,9 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
    */
   function confirmResume() {
     const pending = pendingResume;
-    if (!pending || identityError || operation.current || token.trim().length === 0) return;
+    if (!pending || identityError || operation.current || tokenMissing) return;
     void act(null, () => client.resume(props.projectId, props.episodeId, pending.runId,
-      { confirmUncertainCallIds: pending.confirmed, token: token.trim(), idempotencyKey: pending.key }),
+      { confirmUncertainCallIds: pending.confirmed, token: needsToken ? token.trim() : "", idempotencyKey: pending.key }),
       "请求没有得到回应。再次确认只会重放同一个续跑请求。", {
         detached: true,
         accepted: () => { clearPending(pending); setConfirmedFor(null); },
@@ -515,9 +518,13 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
             <span>用新结果取代这一集现有的场景及其镜头（旧版本保留为历史，不删除；依赖它们的图片和视频会标为过期）</span>
           </label>
         ) : null}
-        <label className="text-sm" htmlFor={`breakdown-token-${props.episodeId}`}>操作者令牌</label>
-        <input id={`breakdown-token-${props.episodeId}`} className="rounded border px-2 py-1" type="password" autoComplete="off" value={token}
-          disabled={busy} onChange={(event) => setToken(event.target.value)} />
+        {needsToken ? (
+          <>
+            <label className="text-sm" htmlFor={`breakdown-token-${props.episodeId}`}>操作者令牌</label>
+            <input id={`breakdown-token-${props.episodeId}`} className="rounded border px-2 py-1" type="password" autoComplete="off" value={token}
+              disabled={busy} onChange={(event) => setToken(event.target.value)} />
+          </>
+        ) : null}
         <div className="flex flex-wrap gap-2">
           <button className="rounded bg-neutral-900 px-3 py-2 text-white disabled:opacity-50" type="button" disabled={busy || !loaded || startBlocked !== null}
             onClick={() => void start()}>
@@ -542,7 +549,7 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
                 : `另一条续跑请求（任务 ${pendingResume.runId.slice(0, 8)}）的结果还没有确认，它不是下面显示的任务。`}
               确认会用原请求标识和原内容重放这条请求：服务端已经受理过的，不会重复执行；上次没有送达的，按原内容提交这一次。确认之前，本页不能发起新的生成或续跑。
             </p>
-            <button className="rounded border px-3 py-2" type="button" disabled={busy || identityError || token.trim().length === 0}
+            <button className="rounded border px-3 py-2" type="button" disabled={busy || identityError || tokenMissing}
               onClick={() => void confirmResume()}>
               确认上次续跑结果
             </button>
@@ -572,7 +579,7 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
               <p className="text-sm [overflow-wrap:anywhere]" data-testid="breakdown-save-only">
                 模型答案已经生成并通过校验，但在写入场景前停止了。保存已有结果不会再次调用模型，也不增加调用次数；来源剧本仍须是本集当前已批准的版本。
               </p>
-              <button className="rounded border px-3 py-2" type="button" disabled={busy || identityError || token.trim().length === 0} onClick={() => void resume()}>
+              <button className="rounded border px-3 py-2" type="button" disabled={busy || identityError || tokenMissing} onClick={() => void resume()}>
                 保存已有结果（不再调用模型）
               </button>
             </div>
@@ -585,7 +592,7 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
                 </label>
               ) : null}
               <button className="rounded border px-3 py-2" type="button"
-                disabled={busy || identityError || token.trim().length === 0 || (uncertain.length > 0 && !confirmUncertain)} onClick={() => void resume()}>
+                disabled={busy || identityError || tokenMissing || (uncertain.length > 0 && !confirmUncertain)} onClick={() => void resume()}>
                 续跑（重新发送一次调用）
               </button>
             </div>

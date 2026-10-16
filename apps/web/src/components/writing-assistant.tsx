@@ -16,6 +16,8 @@ import {
   type WritingTargetSnapshot,
 } from "@ai-drama/domain/writing-assistant";
 import { lineDiff } from "../lib/studio-model";
+import { OnlineCandidatePanel } from "./writing-assistant-online";
+import type { WritingCandidateClient } from "../lib/writing-candidate-client";
 import { appendOnce, assistantNote, readProjectDirection } from "../lib/creative-direction-link";
 import type { DirectionDraft } from "../lib/creative-taxonomy";
 
@@ -119,6 +121,9 @@ export function WritingAssistant(props: {
   projectId: string;
   entityKey: string;
   episodeNo: number | null;
+  /** The episode an episode-mode assistant writes for; online candidates are bound to it. Null for the story. */
+  episodeId?: string | null;
+  candidateClient?: WritingCandidateClient;
   premise: string;
   confirmedMaterials: string;
   loaded: boolean;
@@ -232,6 +237,33 @@ export function WritingAssistant(props: {
     }
   }
 
+  /** The online request from the inputs as they are now: the same checks and frozen context as preparing an instruction. */
+  function prepareOnline() {
+    if (!props.loaded) return { error: "目标数据尚未加载成功" };
+    if (props.mode === "episode" && !draftRef.current.confirmed) return { error: "请先确认使用当前已加载的故事与分集材料" };
+    const current = draftRef.current;
+    try {
+      const request = props.mode === "story" ? storyRequest(props, current) : episodeRequest(props, current);
+      // The same builder as the manual instruction validates every field before anything is sent.
+      if (props.mode === "story") buildStoryPlanInstruction(request as ReturnType<typeof storyRequest>);
+      else buildEpisodeDraftInstruction(request as ReturnType<typeof episodeRequest>);
+      const frozen = freezeWritingContext({ ...props.capture(), loaded: true }, inputFingerprint(props, current));
+      return { request, frozen };
+    } catch (caught) {
+      return { error: caught instanceof DomainError ? caught.message : "在线请求没有准备好" };
+    }
+  }
+
+  /** A validated online candidate: shown with the context it was asked for, never adopted here. */
+  function acceptOnline(imported: WritingImport, frozen: FrozenWritingContext) {
+    generation.current += 1;
+    prepareGeneration.current += 1;
+    persist({ ...draftRef.current, frozen, imported });
+    setError(null);
+    setDifferences([]);
+    setAdoptNote(null);
+  }
+
   async function copyInstruction() {
     if (!draft.instruction) return;
     try {
@@ -322,7 +354,7 @@ export function WritingAssistant(props: {
 
   return (
     <section className="creator-writing-assistant mt-4 min-w-0 rounded border border-neutral-300 p-3" aria-label="编剧助手">
-      <p className="text-sm">本轮通过外部 AI 创作，网页不会自动调用模型。</p>
+      <p className="text-sm">可以在线生成候选，也可以复制指令到外部 AI 后导入。网页不会自动生成、采纳或保存。</p>
       <button className="creator-assistant-toggle mt-2 text-sm underline" type="button" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
         {open ? "收起编剧助手" : "编剧助手"}
       </button>
@@ -349,9 +381,14 @@ export function WritingAssistant(props: {
             <textarea className="mt-1 w-full rounded border px-2 py-1" maxLength={WRITING_NOTE_MAX_CHARS} rows={2} value={draft.mustKeep} onChange={(event) => update({ mustKeep: event.target.value })} />
           </label>
           {props.mode === "story" ? (
-            <label className="block text-sm">禁止改动
-              <textarea className="mt-1 w-full rounded border px-2 py-1" maxLength={WRITING_NOTE_MAX_CHARS} rows={2} value={draft.mustNotChange} onChange={(event) => update({ mustNotChange: event.target.value })} />
-            </label>
+            <>
+              <label className="block text-sm">禁止改动
+                <textarea className="mt-1 w-full rounded border px-2 py-1" maxLength={WRITING_NOTE_MAX_CHARS} rows={2} value={draft.mustNotChange} onChange={(event) => update({ mustNotChange: event.target.value })} />
+              </label>
+              <label className="block text-sm">修改要求（可不填）
+                <textarea className="mt-1 w-full rounded border px-2 py-1" maxLength={WRITING_NOTE_MAX_CHARS} rows={2} value={draft.revisionRequest} onChange={(event) => update({ revisionRequest: event.target.value })} />
+              </label>
+            </>
           ) : (
             <>
               <p className="text-sm">当前集：第 {props.episodeNo} 集</p>
@@ -371,6 +408,16 @@ export function WritingAssistant(props: {
               </label>
             </>
           )}
+          <OnlineCandidatePanel
+            mode={props.mode}
+            projectId={props.projectId}
+            entityKey={props.entityKey}
+            episodeId={props.episodeId ?? null}
+            {...(props.candidateClient ? { client: props.candidateClient } : {})}
+            prepare={prepareOnline}
+            onCandidate={acceptOnline}
+          />
+          <h3 className="font-medium">或者：复制指令到外部 AI，再导入候选</h3>
           <button className="rounded border px-3 py-1 text-sm" type="button" onClick={prepare}>准备创作指令</button>
           {retiredRequest ? <p className="text-sm" role="status">{retiredWorkspaceNote(retiredRequest)}</p> : null}
           {draft.instruction ? (
@@ -440,6 +487,8 @@ function storyRequest(
     characters: draft.characters,
     mustKeep: draft.mustKeep,
     mustNotChange: draft.mustNotChange,
+    // Only when written, so that a story request without one keeps its earlier fingerprint.
+    ...(draft.revisionRequest.length > 0 ? { revisionRequest: draft.revisionRequest } : {}),
     currentText: liveText(props),
   };
 }

@@ -292,12 +292,31 @@ describe("fetch transport", () => {
 });
 
 describe("server configuration", () => {
-  it("only OpenAI and Claude exist; names of missing variables are reported and models are never guessed", () => {
+  it("only OpenAI and Claude exist; names of missing variables are reported; only Claude has a documented default model", () => {
     const configs = titleWritingProviderConfigs({});
     expect(Object.keys(configs).sort()).toEqual(["anthropic", "openai"]);
     expect(configs.openai).toEqual({ providerKey: "openai", ok: false, models: [], missing: ["OPENAI_API_KEY", "TITLE_WRITING_OPENAI_MODELS"] });
-    expect(configs.anthropic).toEqual({ providerKey: "anthropic", ok: false, models: [], missing: ["ANTHROPIC_API_KEY", "TITLE_WRITING_ANTHROPIC_MODELS"] });
+    // Claude without a model list uses TITLE_WRITING_DEFAULT_MODELS; the key is still missing, so it is not ready.
+    expect(configs.anthropic).toEqual({ providerKey: "anthropic", ok: false, models: ["claude-opus-5-5"], missing: ["ANTHROPIC_API_KEY"] });
     expect(Object.keys(WRITING_ADAPTERS).sort()).toEqual(["anthropic", "openai"]);
+  });
+
+  it("a Claude key alone is a complete setup with the default model; an explicit list still wins", () => {
+    expect(titleWritingProviderConfigs({ ANTHROPIC_API_KEY: KEY }).anthropic)
+      .toMatchObject({ ok: true, url: ANTHROPIC_MESSAGES_URL, models: ["claude-opus-5-5"] });
+    expect(titleWritingProviderConfigs({ ANTHROPIC_API_KEY: KEY, TITLE_WRITING_ANTHROPIC_MODELS: "  " }).anthropic)
+      .toMatchObject({ ok: true, models: ["claude-opus-5-5"] });
+    expect(titleWritingProviderConfigs({ ANTHROPIC_API_KEY: KEY, TITLE_WRITING_ANTHROPIC_MODELS: "claude-sonnet-5-5" }).anthropic)
+      .toMatchObject({ ok: true, models: ["claude-sonnet-5-5"] });
+    // OpenAI keeps needing its own list: a key alone is not ready and no model is guessed.
+    expect(titleWritingProviderConfigs({ OPENAI_API_KEY: KEY }).openai).toEqual({ providerKey: "openai", ok: false, models: [], missing: ["TITLE_WRITING_OPENAI_MODELS"] });
+  });
+
+  it("never sends with an Anthropic credential that is not an API key (Claude Code / subscription OAuth, Admin key)", () => {
+    for (const credential of ["sk-ant-oat01-abcdefghijklmnopqrstuvwxyz", "sk-ant-admin01-abcdefghijklmnopqrstuvwxyz", "sk-ant-sid01-abcdefghijklmnop"]) {
+      expect(titleWritingProviderConfigs({ ANTHROPIC_API_KEY: credential }).anthropic).toMatchObject({ ok: false, missing: ["ANTHROPIC_API_KEY"] });
+    }
+    expect(titleWritingProviderConfigs({ ANTHROPIC_API_KEY: "sk-ant-api03-abcdefghijklmnopqrstuvwxyz" }).anthropic).toMatchObject({ ok: true });
   });
 
   it("uses the fixed endpoints and the configured allowlist", () => {

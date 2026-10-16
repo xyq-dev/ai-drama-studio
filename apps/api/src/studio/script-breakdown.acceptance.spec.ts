@@ -21,6 +21,7 @@ import {
   JobPersistenceService,
   PostgresTitleWritingStore,
   SCRIPT_BREAKDOWN_MIGRATION,
+  WRITING_CANDIDATE_MIGRATION,
   WRITING_PROVIDER_MIGRATION,
   TextChainService,
   checkTitleWritingAcceptanceEnv,
@@ -252,7 +253,7 @@ beforeAll(async () => {
     throw new Error(`Script breakdown API acceptance refused: ${verified.reason}`);
   }
   const applied = (await runMigrations(pool)).applied;
-  expect(applied.slice(-2)).toEqual([SCRIPT_BREAKDOWN_MIGRATION, WRITING_PROVIDER_MIGRATION]);
+  expect(applied.slice(-3)).toEqual([SCRIPT_BREAKDOWN_MIGRATION, WRITING_PROVIDER_MIGRATION, WRITING_CANDIDATE_MIGRATION]);
   evidence.migrationsApplied = applied;
   await q("INSERT INTO workspace (id, name, status) VALUES ($1, 'breakdown-acceptance', 'ACTIVE')", [WORKSPACE]);
   main = await boot();

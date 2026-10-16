@@ -231,7 +231,11 @@ export interface ScriptBreakdownOptionsView {
   enabled: boolean;
   code: string;
   storageReady: boolean;
-  operatorTokenRequired: true;
+  /**
+   * False when the signed-in site administrator is the operator (the site login is on): the page sends no token and the
+   * server checks the session, origin and CSRF token instead. True only when the API runs without the site login.
+   */
+  operatorTokenRequired: boolean;
   defaultProvider: TitleWritingProviderKey | null;
   providers: TitleWritingProviderOption[];
   maxCallsPerDay: number;

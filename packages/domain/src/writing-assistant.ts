@@ -30,6 +30,8 @@ export interface StoryPlanRequest {
   characters: string;
   mustKeep: string;
   mustNotChange: string;
+  /** Optional; only an online or prepared request that names one carries it, so older fingerprints stay the same. */
+  revisionRequest?: string;
   currentText: string;
 }
 
@@ -128,26 +130,39 @@ export function writingInputFingerprint(value: unknown): string {
   return `${WRITING_PROMPT_VERSION}|${stableWritingJson(value)}`;
 }
 
-function header(mode: string): string[] {
+/**
+ * Who sends the instruction: the person to an external AI (copied from the page), or the site's own server to OpenAI or
+ * Claude (online candidate). Only the second header line differs; rules, fields and output schema are the same.
+ */
+export type WritingInstructionChannel = "external" | "online";
+
+const CHANNEL_LINE: Record<WritingInstructionChannel, string> = {
+  external: "本轮通过外部 AI 创作，网页不会自动调用模型。",
+  online: "本轮由网站服务端调用模型生成候选。候选只供创作者比较，由创作者决定是否采纳并手动保存。",
+};
+
+function header(mode: string, channel: WritingInstructionChannel): string[] {
   return [
     `提示词版本：${WRITING_PROMPT_VERSION}`,
-    "本轮通过外部 AI 创作，网页不会自动调用模型。",
+    CHANNEL_LINE[channel],
     `模式：${mode}`,
     "只返回一个 JSON 对象，不要使用 Markdown 代码围栏。",
     "不要包含 projectId、If-Match、reviewStatus、HTML、URL 或工具调用。",
   ];
 }
 
-export function buildStoryPlanInstruction(request: StoryPlanRequest): string {
+export function buildStoryPlanInstruction(request: StoryPlanRequest, channel: WritingInstructionChannel = "external"): string {
   assertNote("梗概", request.premise);
   assertNote("题材", request.genre);
   assertNote("目标观众", request.audience);
   assertNote("人物设定", request.characters);
   assertNote("必须保留", request.mustKeep);
   assertNote("禁止改动", request.mustNotChange);
+  const revision = request.revisionRequest ?? "";
+  assertNote("修改要求", revision);
   assertBody(request.currentText);
   return [
-    ...header("故事策划"),
+    ...header("故事策划", channel),
     "创作建议：",
     STORY_RULES,
     "作品梗概：",
@@ -162,6 +177,7 @@ export function buildStoryPlanInstruction(request: StoryPlanRequest): string {
     request.mustKeep,
     "禁止改动：",
     request.mustNotChange,
+    ...(revision.length > 0 ? ["修改要求：", revision] : []),
     "当前正文：",
     request.currentText,
     "请输出 schema 为 ads.writing.story-plan.v1 的 JSON。",
@@ -171,7 +187,7 @@ export function buildStoryPlanInstruction(request: StoryPlanRequest): string {
   ].join("\n");
 }
 
-export function buildEpisodeDraftInstruction(request: EpisodeDraftRequest): string {
+export function buildEpisodeDraftInstruction(request: EpisodeDraftRequest, channel: WritingInstructionChannel = "external"): string {
   if (request.episodeNo !== 1 && request.episodeNo !== 2 && request.episodeNo !== 3) {
     throw new DomainError("WRITING_EPISODE_MISMATCH", "当前试制只接受第 1、2、3 集");
   }
@@ -186,7 +202,7 @@ export function buildEpisodeDraftInstruction(request: EpisodeDraftRequest): stri
   assertNote("必须保留的结局", request.mustKeepEnding);
   assertBody(request.currentText);
   return [
-    ...header("单集写作"),
+    ...header("单集写作", channel),
     "创作建议：",
     EPISODE_RULES,
     `当前集：第 ${request.episodeNo} 集`,

@@ -121,6 +121,8 @@ describe("category direction into a new work", () => {
   });
 
   it("offers the bound direction only to its own project's story assistant", async () => {
+    // The online panel reads its settings on open; nothing is served here, so it stays unavailable and sends nothing.
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(json({ error: { code: "NOT_FOUND", message: "not served" } }, 404))));
     window.localStorage.setItem(projectDirectionKey(PROJECT_ID), JSON.stringify({ version: 1, projectId: PROJECT_ID, direction: DIRECTION }));
     const view = render(createElement(WritingAssistant, assistantProps("other-project")));
     fireEvent.click(screen.getByRole("button", { name: "编剧助手" }));

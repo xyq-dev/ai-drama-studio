@@ -15,6 +15,7 @@ import {
   stepLabel,
   stepStateText,
   targetText,
+  tokenRequired,
   uncertainCallIds,
   type TitleWritingRunView,
 } from "../lib/title-writing-client";
@@ -132,6 +133,8 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
   const [readError, setReadError] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<ActionMessage | null>(null);
   const [token, setToken] = useState("");
+  // Until the server says otherwise a token is asked for; with the site login on the administrator's session suffices.
+  const [needsToken, setNeedsToken] = useState(true);
   // The uncertain calls the person confirmed, as a sorted id list. It only counts while it equals what is shown now.
   const [confirmedFor, setConfirmedFor] = useState<string | null>(null);
   const resumeAction = useRef<ResumeAction | null>(null);
@@ -280,13 +283,23 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
   // The run on screen is always the run of the action that failed: another run or work clears the message.
   const message = actionMessage && !(run && actionMessage.moot?.(run)) ? actionMessage.text : null;
 
+  // Read once a resume is on offer: only then does the page need to know whether to ask for a token.
+  const resumable = run ? canResume(run) : false;
+  useEffect(() => {
+    if (!resumable) return;
+    let alive = true;
+    const reading = typeof client.options === "function" ? client.options() : null;
+    void reading?.then((value) => { if (alive) setNeedsToken(tokenRequired(value)); }).catch(() => undefined);
+    return () => { alive = false; };
+  }, [client, resumable]);
+
   function resume(current: TitleWritingRunView) {
     const confirmed = uncertain ? uncertainIds : [];
     const previous = resumeAction.current;
     const action = previous && previous.runId === current.runId && previous.confirmedFor === uncertainKey
       ? previous : { runId: current.runId, confirmedFor: uncertainKey, key: crypto.randomUUID() };
     resumeAction.current = action;
-    void act(current.runId, () => client.resume(projectId, current.runId, { confirmUncertainCallIds: confirmed, token: token.trim(), idempotencyKey: action.key }),
+    void act(current.runId, () => client.resume(projectId, current.runId, { confirmUncertainCallIds: confirmed, token: needsToken ? token.trim() : "", idempotencyKey: action.key }),
       "没有确认续跑是否已被受理（网络或服务异常）。再次点击会重放同一个续跑请求。", {
         accepted: () => { resumeAction.current = null; setConfirmedFor(null); },
         failed: (caught) => {
@@ -368,10 +381,14 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
                       我知道「结果不确定」的那一步可能已经产生费用，确认重新发送。
                     </label>
                   ) : null}
-                  <label className={styles.label} htmlFor="resume-token">操作者令牌</label>
-                  <input id="resume-token" className={styles.input} type="password" autoComplete="off" value={token}
-                    onChange={(event) => setToken(event.target.value)} />
-                  <button className={styles.primary} type="button" disabled={busy || token.trim().length === 0 || (uncertain && !confirmUncertain)}
+                  {needsToken ? (
+                    <>
+                      <label className={styles.label} htmlFor="resume-token">操作者令牌</label>
+                      <input id="resume-token" className={styles.input} type="password" autoComplete="off" value={token}
+                        onChange={(event) => setToken(event.target.value)} />
+                    </>
+                  ) : <p className={styles.helper}>调用权限由当前管理员登录确认。</p>}
+                  <button className={styles.primary} type="button" disabled={busy || (needsToken && token.trim().length === 0) || (uncertain && !confirmUncertain)}
                     onClick={() => resume(run)}>
                     继续创作
                   </button>
