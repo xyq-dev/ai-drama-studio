@@ -651,7 +651,8 @@ describe("title writing in a real browser, real web and API, isolated PostgreSQL
     expect(await apiGet("/writing/title-runs/options")).toMatchObject({ code: "TITLE_WRITING_READY" });
     expect(await apiGet("/writing/script-breakdowns/options")).toMatchObject({ code: "TITLE_WRITING_DISABLED", enabled: false });
     const sizes = [["desktop-1280", { width: 1280, height: 800 }], ["390", PHONE]] as const;
-    const panel = page.locator("section", { has: page.getByRole("heading", { name: "AI 拆解场景与分镜" }) });
+    // The panel's own section (labelled by its heading), not the workbench section around it, which has alerts of its own.
+    const panel = page.locator('section[aria-labelledby^="breakdown-"]');
     const writesBefore = pageWrites.length;
     const sendsBefore = sent.length;
     const runsBefore = await runRows(projectId!);
@@ -673,7 +674,7 @@ describe("title writing in a real browser, real web and API, isolated PostgreSQL
           body: JSON.stringify({ error: { code: "SCRIPT_BREAKDOWN_STORAGE_UNAVAILABLE", message: "剧本拆解的数据库迁移还没有执行，没有启动任何调用。" } }) });
       });
       await page.goto(`${WEB}/projects/${projectId!}?focus=script&episode=1`, { waitUntil: "domcontentloaded" });
-      await panel.first().waitFor({ timeout: 30_000 });
+      await panel.waitFor({ timeout: 30_000 });
       const blocked = panel.getByTestId("breakdown-blocked");
       if (order === "settings-first") {
         // Said as soon as the settings are read, while the task read is still unanswered.

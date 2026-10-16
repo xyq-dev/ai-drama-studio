@@ -1241,6 +1241,7 @@ describe("the feature switch is the main state, whatever the task read says", ()
     const failures: Array<[Answer, string]> = [
       [() => json({ error: { code: "INTERNAL", message: "x" } }, 500), "拆解状态暂时无法读取"],
       [() => json({ error: { code: "UNAUTHORIZED", message: "x" } }, 401), "没有读取拆解状态的权限（HTTP 401）"],
+      [() => json({ error: { code: "FORBIDDEN", message: "x" } }, 403), "没有读取拆解状态的权限（HTTP 403）"],
       [() => { throw new TypeError("network down"); }, "拆解状态暂时无法读取"],
     ];
     for (const [answer, text] of failures) {
