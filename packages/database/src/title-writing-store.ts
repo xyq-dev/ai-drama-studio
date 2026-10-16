@@ -21,6 +21,7 @@ import {
   titleWritingStepKeysFor,
   type EpisodeDraftCandidate,
   type TitleWritingFrozenInput,
+  type TitleWritingProviderKey,
   type TitleWritingRunState,
   type TitleWritingStepKey,
   type TitleCallFinish,
@@ -39,6 +40,7 @@ import {
 } from "@ai-drama/contracts";
 import { breakdownDialogueText, breakdownShotPromptText, formatTitleEpisode, shotsOfScene } from "@ai-drama/domain";
 import { projectEpisodePlanIn } from "./episode-plan";
+import { WRITING_PROVIDER_MIGRATION } from "./migrations";
 import { PersistenceError, type DatabasePool } from "./job-service";
 import type { TextChainService } from "./text-chain";
 
@@ -75,6 +77,13 @@ export const TITLE_WRITING_TABLES = {
  * scene link table (prisma/migrations/20261012000100_script_breakdown). Title writing never needs it.
  */
 export const SCRIPT_BREAKDOWN_MIGRATION = "20261012000100_script_breakdown";
+
+/**
+ * The migration that lets runs and calls store provider_key 'anthropic' (prisma/migrations/20261016000100_writing_provider_anthropic).
+ * OpenAI runs never need it. Until it is recorded and both provider CHECKs allow 'anthropic', a Claude run is refused
+ * before anything is written, reserved or sent.
+ */
+export { WRITING_PROVIDER_MIGRATION };
 
 export const SCRIPT_BREAKDOWN_COLUMNS = {
   title_writing_run: ["run_kind", "episode_id", "source_script_revision_id", "breakdown_save"],
@@ -172,6 +181,7 @@ function toCall(row: Row): TitleCallRecord {
 export class PostgresTitleWritingStore implements TitleWritingStore {
   // Once applied a migration stays applied, so only a positive answer is remembered.
   private breakdownReadyConfirmed = false;
+  private anthropicReadyConfirmed = false;
 
   constructor(private readonly pool: DatabasePool, private readonly textChain: TextChainService) {}
 
@@ -185,6 +195,28 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
       );
       const present = new Set(result.rows.map((row) => `${String(row.table_name)}.${String(row.column_name)}`));
       return Object.entries(TITLE_WRITING_TABLES).every(([table, columns]) => columns.every((column) => present.has(`${table}.${column}`)));
+    } catch {
+      return false;
+    }
+  }
+
+  async providerStorageReady(providerKey: TitleWritingProviderKey): Promise<boolean> {
+    if (!(await this.storageReady())) return false;
+    if (providerKey !== "anthropic" || this.anthropicReadyConfirmed) return true;
+    try {
+      const table = await this.query("SELECT to_regclass('schema_migration') IS NOT NULL AS present", []);
+      if (table.rows[0]?.present !== true) return false;
+      const recorded = await this.query("SELECT 1 FROM schema_migration WHERE name = $1", [WRITING_PROVIDER_MIGRATION]);
+      if (!recorded.rows[0]) return false;
+      // The ledger alone is not trusted: both live CHECKs must name anthropic.
+      const checks = await this.query(
+        `SELECT count(*)::int AS allowed FROM pg_constraint
+          WHERE conrelid IN (to_regclass('title_writing_run'), to_regclass('title_writing_call')) AND contype = 'c'
+            AND pg_get_constraintdef(oid) LIKE '%provider_key%' AND pg_get_constraintdef(oid) LIKE '%''anthropic''%'`,
+        [],
+      );
+      this.anthropicReadyConfirmed = Number(checks.rows[0]?.allowed) === 2;
+      return this.anthropicReadyConfirmed;
     } catch {
       return false;
     }

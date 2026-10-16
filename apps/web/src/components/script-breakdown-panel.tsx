@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { currentUncertainCallIds, type ScriptBreakdownOutput } from "@ai-drama/contracts";
+import { currentUncertainCallIds, isActiveTitleWritingProvider, type ScriptBreakdownOutput } from "@ai-drama/contracts";
 import {
   ScriptBreakdownClient,
   type ScriptBreakdownOptionsView,
@@ -19,6 +19,8 @@ const refused = (caught: unknown): caught is TitleWritingError => caught instanc
 const defaultClient = new ScriptBreakdownClient();
 /** Resume refusals that come after the server found no receipt for the key and that the same request can never pass. */
 const RESUME_RELEASED_BY = new Set(["TITLE_WRITING_CONFIRMATION_STALE", "TITLE_WRITING_NEEDS_CONFIRMATION", "SCRIPT_BREAKDOWN_SOURCE_CHANGED",
+  // The run's provider is retired: it can never send again, so this resume can never pass.
+  "TITLE_WRITING_PROVIDER_RETIRED",
   "SCRIPT_BREAKDOWN_CONFLICT", "TITLE_WRITING_NOT_RESUMABLE"]);
 const POLL_MS = 2_000;
 /** The server's switch for script breakdown is off: the page's main state, whatever else it could or could not read. */
@@ -72,6 +74,15 @@ export const BREAKDOWN_ERROR_TEXT: Record<string, string> = {
 export function breakdownErrorText(code: string | null): string | null {
   if (!code) return null;
   return BREAKDOWN_ERROR_TEXT[code] ?? `未完成（${code}）`;
+}
+
+/** A breakdown of a retired provider that stopped for want of a provider is said to be retired, not misconfigured. */
+function runErrorText(run: { providerKey: string; errorCode: string | null; step: { errorCode: string | null } }): string | null {
+  const code = run.errorCode ?? run.step.errorCode;
+  if (code === "provider_unconfigured" && !isActiveTitleWritingProvider(run.providerKey)) {
+    return "这次拆解使用的模型服务已经退役，不会再发出请求，也不会改用其他模型；已有结果、调用记录和未知费用都保留。";
+  }
+  return breakdownErrorText(code);
 }
 
 const REVIEW_TEXT: Record<string, string> = { DRAFT: "待审核", IN_REVIEW: "审核中", APPROVED: "已通过", REJECTED: "已退回" };
@@ -344,6 +355,10 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
             clearPending(pending);
             setScenesExist(true);
             setReplaceExisting(false);
+          } else if (refused(caught) && caught.code === "TITLE_WRITING_PROVIDER_RETIRED") {
+            // Also after the key lookup: no task exists for this key, and its retired provider can never send. Release the
+            // identity so the episode is not blocked; a new start takes an active provider and a new key.
+            clearPending(pending);
           } else if (refused(caught) && !pendingStart) clearPending(pending);
         },
       });
@@ -544,8 +559,8 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
             {" · "}来源：<SourceLabel run={run} />
             {" · "}模型 {run.model}{" · "}调用 {run.callsUsed}/{run.callCap}
           </p>
-          {breakdownErrorText(run.errorCode ?? run.step.errorCode) ? (
-            <p className="text-sm text-amber-800 [overflow-wrap:anywhere]" role="status">{breakdownErrorText(run.errorCode ?? run.step.errorCode)}</p>
+          {runErrorText(run) ? (
+            <p className="text-sm text-amber-800 [overflow-wrap:anywhere]" role="status">{runErrorText(run)}</p>
           ) : null}
           <SourceNotice run={run} testId="breakdown-outdated" />
           {resumable && pendingResume ? (

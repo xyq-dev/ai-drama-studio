@@ -27,6 +27,7 @@ import type { ScriptBreakdownPlacementOutcome, ScriptBreakdownRunView } from "@a
 import {
   PostgresTitleWritingStore,
   SCRIPT_BREAKDOWN_MIGRATION,
+  WRITING_PROVIDER_MIGRATION,
   TextChainService,
   checkTitleWritingAcceptanceEnv,
   closePostgresPool,
@@ -36,7 +37,7 @@ import {
   verifyTitleWritingAcceptanceDatabase,
 } from "@ai-drama/database";
 import { TitleWritingEngine, titleWritingProviderConfigs, type WritingTransport } from "@ai-drama/providers";
-import { breakdownPromptParts, chatAnswer, fixtureBreakdownFromPrompt } from "@ai-drama/providers/title-writing-fixtures";
+import { breakdownPromptParts, messagesAnswer, fixtureBreakdownFromPrompt } from "@ai-drama/providers/title-writing-fixtures";
 import { AppModule } from "../app.module";
 import { loadApiEnv } from "../config/env";
 import { SafeExceptionFilter } from "../http/safe-exception.filter";
@@ -58,7 +59,7 @@ const REPO = resolve(__dirname, "../../../..");
 const WORKSPACE = randomUUID();
 const OPERATOR_TOKEN = `acceptance-${randomUUID()}`;
 const STUB_KEY = `stub-not-a-provider-key-${randomUUID()}`;
-const STUB_MODEL = "qwen-acceptance-stub";
+const STUB_MODEL = "claude-acceptance-stub";
 const WORKER_PORT = "3112";
 const POLL_MS = 500;
 
@@ -78,26 +79,26 @@ const exchanges: Array<{ method: string; path: string; status: number; code: str
 // Model double: answers each breakdown prompt from the script copy inside it.
 const sent: Array<{ episodeNo: number; keyMatches: boolean; endpoint: string }> = [];
 const transport: WritingTransport = async (request) => {
-  const body = JSON.parse(request.body) as { messages?: Array<{ role: string; content: string }> };
-  const user = body.messages?.find((message) => message.role === "user")?.content ?? "";
+  const body = JSON.parse(request.body) as { messages?: Array<{ role: string; content: string }>; input?: string };
+  // Claude carries the prompt in messages, OpenAI in input.
+  const user = body.messages?.find((message) => message.role === "user")?.content ?? body.input ?? "";
   const parts = breakdownPromptParts(user);
   const headers = request.headers as Record<string, string>;
   const endpoint = new URL(request.url);
-  sent.push({ episodeNo: parts.episodeNo, keyMatches: (headers.Authorization ?? headers.authorization) === `Bearer ${STUB_KEY}`,
+  sent.push({ episodeNo: parts.episodeNo, keyMatches: (headers["x-api-key"] === STUB_KEY || (headers.Authorization ?? headers.authorization) === `Bearer ${STUB_KEY}`),
     endpoint: `${endpoint.host}${endpoint.pathname}` });
   return {
     status: 200,
-    headers: { get: (name: string) => name.toLowerCase() === "x-request-id" ? `stub-${String(sent.length)}` : null },
-    body: new TextEncoder().encode(JSON.stringify(chatAnswer(fixtureBreakdownFromPrompt(user)))),
+    headers: { get: (name: string) => ["x-request-id", "request-id"].includes(name.toLowerCase()) ? `stub-${String(sent.length)}` : null },
+    body: new TextEncoder().encode(JSON.stringify(messagesAnswer(fixtureBreakdownFromPrompt(user)))),
   };
 };
 
 function breakdownService(runtime: StudioRuntime): ScriptBreakdownService {
-  const providers = titleWritingProviderConfigs({ DASHSCOPE_API_KEY: STUB_KEY, BAILIAN_BASE_URL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    TITLE_WRITING_QWEN_MODELS: STUB_MODEL });
+  const providers = titleWritingProviderConfigs({ ANTHROPIC_API_KEY: STUB_KEY, TITLE_WRITING_ANTHROPIC_MODELS: STUB_MODEL });
   const store = new PostgresTitleWritingStore(runtime.pool, new TextChainService(runtime.pool));
   return new ScriptBreakdownService({
-    workspaceId: WORKSPACE, nodeEnv: "test", enabled: true, operatorToken: OPERATOR_TOKEN, defaultProvider: "qwen", providers, store,
+    workspaceId: WORKSPACE, nodeEnv: "test", enabled: true, operatorToken: OPERATOR_TOKEN, defaultProvider: "anthropic", providers, store,
     engine: new TitleWritingEngine({ workspaceId: WORKSPACE, store, providers, transport, maxCallsPerDay: 50, timeoutMs: 1_500 }),
     projects: runtime.store, maxCallsPerDay: 50, maxActiveRuns: 10,
   });
@@ -474,7 +475,7 @@ beforeAll(async () => {
     evidence: evidenceRoot ? join(evidenceRoot, "script-breakdown-media") : null };
   for (const dir of [dirs.mock, dirs.composeWork, dirs.composeObjects, dirs.evidence]) if (dir) await mkdir(dir, { recursive: true });
   const applied = (await runMigrations(pool)).applied;
-  expect(applied.at(-1)).toBe(SCRIPT_BREAKDOWN_MIGRATION);
+  expect(applied.slice(-2)).toEqual([SCRIPT_BREAKDOWN_MIGRATION, WRITING_PROVIDER_MIGRATION]);
   evidence.database = { name: decision.databaseName, migrationsApplied: applied };
   // Acceptance data in the new database: the workspace row and the existing Mock video/speech provider provisioning.
   await q("INSERT INTO workspace (id, name, status) VALUES ($1, 'r2-media-acceptance', 'ACTIVE')", [WORKSPACE]);

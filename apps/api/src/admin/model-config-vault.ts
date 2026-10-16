@@ -4,14 +4,26 @@ import * as fs from "node:fs/promises";
 import { dirname, isAbsolute, resolve, sep } from "node:path";
 import { z } from "zod";
 import {
+  TITLE_WRITING_PROVIDER_KEYS, TITLE_WRITING_RETIRED_PROVIDER_KEYS, TITLE_WRITING_STORED_PROVIDER_KEYS,
   adminLimitsUpdateSchema, adminProviderKeySchema, adminProviderUpdateSchema,
   type AdminAuditView, type AdminLimitsUpdate, type AdminProviderUpdate, type TitleWritingProviderKey,
+  type TitleWritingRetiredProviderKey,
 } from "@ai-drama/contracts";
-import { DEEPSEEK_CHAT_URL, OPENAI_RESPONSES_URL, resolveQwenChatEndpoint } from "@ai-drama/providers";
+import { ANTHROPIC_MESSAGES_URL, OPENAI_RESPONSES_URL } from "@ai-drama/providers";
 
-const FORMAT = "ai-drama-studio.admin-model-vault.v1";
+/**
+ * v1 held qwen, openai and deepseek. v2 holds openai and anthropic (Claude). A v1 file is still read (same master key,
+ * same AES-256-GCM integrity, its own AAD) and converted in memory; the first write after that keeps the original v1
+ * ciphertext as an exclusive backup file before the v2 file replaces it, so a rollback can restore it byte for byte.
+ */
+const FORMAT_V1 = "ai-drama-studio.admin-model-vault.v1";
+const FORMAT = "ai-drama-studio.admin-model-vault.v2";
+const AAD_V1 = Buffer.from(FORMAT_V1, "utf8");
 const AAD = Buffer.from(FORMAT, "utf8");
-const INITIALIZED = Buffer.from(`${FORMAT}.initialized\n`, "utf8");
+/** The durable marker keeps its v1 text: it only proves the vault was initialized. */
+const INITIALIZED = Buffer.from(`${FORMAT_V1}.initialized\n`, "utf8");
+/** Name suffix of the kept v1 file. Never overwritten once written. */
+export const V1_BACKUP_SUFFIX = ".v1-retired-providers.bak";
 const MAX_BYTES = 256 * 1024;
 const SECRET_SCHEMA = z.string().min(8).max(256).regex(/^\S+$/u).nullable();
 const revisionSchema = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
@@ -25,19 +37,43 @@ const settingsSchema = z.object({
   defaultProvider: adminProviderKeySchema.nullable(),
   maxCallsPerDay: z.number().int().min(1).max(500),
   maxActiveRuns: z.number().int().min(1).max(10),
-  providers: z.object({ qwen: providerSchema, openai: providerSchema, deepseek: providerSchema }).strict(),
+  providers: z.object({ openai: providerSchema, anthropic: providerSchema }).strict(),
 }).strict();
 const documentSchema = z.object({
   active: settingsSchema,
   saved: settingsSchema,
   audit: z.array(z.object({
-    at: z.string().datetime(), action: z.enum(["provider_updated", "limits_updated", "activated"]),
-    providerKey: adminProviderKeySchema.optional(), revision: revisionSchema,
+    at: z.string().datetime(), action: z.enum(["provider_updated", "limits_updated", "activated", "format_upgraded"]),
+    // Entries written before the retirement may name a retired provider; they stay as recorded.
+    providerKey: z.enum(TITLE_WRITING_STORED_PROVIDER_KEYS).optional(), revision: revisionSchema,
   }).strict()).max(50),
+  /** Names only: which retired providers had settings in the v1 file and whether one was the default. */
+  retired: z.object({
+    providers: z.array(z.enum(TITLE_WRITING_RETIRED_PROVIDER_KEYS)).max(TITLE_WRITING_RETIRED_PROVIDER_KEYS.length),
+    retiredDefault: z.enum(TITLE_WRITING_RETIRED_PROVIDER_KEYS).nullable(),
+  }).strict().optional(),
 }).strict();
 const envelopeSchema = z.object({
-  format: z.literal(FORMAT), nonce: z.string(), tag: z.string(), ciphertext: z.string(),
+  format: z.enum([FORMAT_V1, FORMAT]), nonce: z.string(), tag: z.string(), ciphertext: z.string(),
 }).strict();
+
+// The retired v1 layout, read only to convert it.
+const v1SettingsSchema = z.object({
+  revision: revisionSchema,
+  defaultProvider: z.enum(["qwen", "openai", "deepseek"]).nullable(),
+  maxCallsPerDay: z.number().int().min(1).max(500),
+  maxActiveRuns: z.number().int().min(1).max(10),
+  providers: z.object({ qwen: providerSchema, openai: providerSchema, deepseek: providerSchema }).strict(),
+}).strict();
+const v1DocumentSchema = z.object({
+  active: v1SettingsSchema,
+  saved: v1SettingsSchema,
+  audit: z.array(z.object({
+    at: z.string().datetime(), action: z.enum(["provider_updated", "limits_updated", "activated"]),
+    providerKey: z.enum(["qwen", "openai", "deepseek"]).optional(), revision: revisionSchema,
+  }).strict()).max(50),
+}).strict();
+type V1Settings = z.infer<typeof v1SettingsSchema>;
 
 /** Public errors intentionally contain neither filesystem paths nor rejected input. */
 export class AdminConfigError extends Error {
@@ -54,11 +90,17 @@ export interface ManagedModelSettings {
   maxActiveRuns: number;
   providers: Record<TitleWritingProviderKey, { apiKey: string | null; baseUrl: string; models: string[] }>;
 }
+/** What a conversion from v1 left out. Names only. */
+export interface RetiredProviderNote {
+  providers: TitleWritingRetiredProviderKey[];
+  retiredDefault: TitleWritingRetiredProviderKey | null;
+}
 /** Server-only document. Never serialize this object into an HTTP response or log. */
 export interface ManagedModelDocument {
   active: ManagedModelSettings;
   saved: ManagedModelSettings;
   audit: AdminAuditView[];
+  retired?: RetiredProviderNote;
 }
 
 function storageError(): AdminConfigError {
@@ -70,22 +112,59 @@ function inputError(): AdminConfigError {
 function codeOf(error: unknown): string | undefined {
   return typeof error === "object" && error !== null && "code" in error ? String(error.code) : undefined;
 }
+const ENDPOINTS: Readonly<Record<TitleWritingProviderKey, string>> = { openai: OPENAI_RESPONSES_URL, anthropic: ANTHROPIC_MESSAGES_URL };
 function validEndpoint(key: TitleWritingProviderKey, url: string): boolean {
-  if (key === "qwen") return url === "" || resolveQwenChatEndpoint(url).ok;
-  return url === (key === "openai" ? OPENAI_RESPONSES_URL : DEEPSEEK_CHAT_URL);
+  return url === ENDPOINTS[key];
 }
 function checkedDocument(input: unknown): ManagedModelDocument {
   const result = documentSchema.safeParse(input);
   if (!result.success) throw storageError();
-  const doc = result.data;
+  const doc = result.data as ManagedModelDocument;
   if (doc.active.revision > doc.saved.revision || doc.audit.some((item) => item.revision > doc.saved.revision)) throw storageError();
   for (const settings of [doc.active, doc.saved]) {
-    for (const key of ["qwen", "openai", "deepseek"] as const) {
+    for (const key of TITLE_WRITING_PROVIDER_KEYS) {
       if (!validEndpoint(key, settings.providers[key].baseUrl)) throw storageError();
     }
   }
   if (doc.active.revision === doc.saved.revision && JSON.stringify(doc.active) !== JSON.stringify(doc.saved)) throw storageError();
   return doc;
+}
+
+/**
+ * The v1 settings as v2: OpenAI keeps its key, models and endpoint; Claude starts unconfigured; the qwen and deepseek
+ * entries are left out (they stay only in the kept v1 file) and a retired default becomes no default. Revisions are
+ * kept, so the saved/active difference (a pending restart) is the same as before.
+ */
+function convertSettings(v1: V1Settings): ManagedModelSettings {
+  return {
+    revision: v1.revision,
+    defaultProvider: v1.defaultProvider === "openai" ? "openai" : null,
+    maxCallsPerDay: v1.maxCallsPerDay,
+    maxActiveRuns: v1.maxActiveRuns,
+    providers: {
+      openai: { ...v1.providers.openai, models: [...v1.providers.openai.models] },
+      anthropic: { apiKey: null, baseUrl: ANTHROPIC_MESSAGES_URL, models: [] },
+    },
+  };
+}
+function convertedDocument(input: unknown): ManagedModelDocument {
+  const result = v1DocumentSchema.safeParse(input);
+  if (!result.success) throw storageError();
+  const v1 = result.data;
+  const used = (key: TitleWritingRetiredProviderKey) => [v1.active, v1.saved]
+    .some((settings) => settings.providers[key].apiKey !== null || settings.providers[key].models.length > 0 || settings.defaultProvider === key);
+  // The default the saved settings name, else the one still active: either way a retired default is reported.
+  const savedDefault = v1.saved.defaultProvider === "qwen" || v1.saved.defaultProvider === "deepseek" ? v1.saved.defaultProvider : v1.active.defaultProvider;
+  // A v1 document with equal revisions has equal settings, so the converted ones are equal too.
+  return checkedDocument({
+    active: convertSettings(v1.active),
+    saved: convertSettings(v1.saved),
+    audit: v1.audit.map((item) => ({ ...item })),
+    retired: {
+      providers: TITLE_WRITING_RETIRED_PROVIDER_KEYS.filter(used),
+      retiredDefault: savedDefault === "qwen" || savedDefault === "deepseek" ? savedDefault : null,
+    },
+  });
 }
 function strictBase64(value: string, size?: number): Buffer {
   if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) throw storageError();
@@ -104,6 +183,8 @@ export class ModelConfigVault {
   private readonly file: string;
   private readonly initial: ManagedModelDocument;
   private observedFile = false;
+  /** The exact bytes of the file while it is still a v1 file; kept before the first v2 write replaces it. */
+  private v1Bytes: Buffer | null = null;
   private queue: Promise<void> = Promise.resolve();
 
   private constructor(options: { path: string; masterKey: Buffer; initial: ManagedModelSettings }) {
@@ -160,9 +241,9 @@ export class ModelConfigVault {
     } finally { await marker.close(); }
   }
 
-  async read(): Promise<ManagedModelDocument> { return this.readDocument(false); }
+  async read(): Promise<ManagedModelDocument> { return this.readDocument(false, false); }
 
-  private async readDocument(allowUninitialized: boolean): Promise<ManagedModelDocument> {
+  private async readDocument(allowUninitialized: boolean, underLock: boolean): Promise<ManagedModelDocument> {
     try {
       await this.checkDirectory();
       const initialized = await this.markerPresent();
@@ -185,13 +266,19 @@ export class ModelConfigVault {
           offset += chunk.bytesRead;
         }
         if (offset > MAX_BYTES) throw storageError();
-        const envelope = envelopeSchema.parse(JSON.parse(bytes.subarray(0, offset).toString("utf8")));
+        const raw = Buffer.from(bytes.subarray(0, offset));
+        const envelope = envelopeSchema.parse(JSON.parse(raw.toString("utf8")));
+        const v1 = envelope.format === FORMAT_V1;
         const decipher = createDecipheriv("aes-256-gcm", this.masterKey, strictBase64(envelope.nonce, 12));
-        decipher.setAAD(AAD);
+        decipher.setAAD(v1 ? AAD_V1 : AAD);
         decipher.setAuthTag(strictBase64(envelope.tag, 16));
         const plaintext = Buffer.concat([decipher.update(strictBase64(envelope.ciphertext)), decipher.final()]);
         try {
-          const doc = checkedDocument(JSON.parse(plaintext.toString("utf8")));
+          const parsed = JSON.parse(plaintext.toString("utf8")) as unknown;
+          const doc = v1 ? convertedDocument(parsed) : checkedDocument(parsed);
+          // Only a read under the writer lock decides what the next write must back up; an unlocked read (a view)
+          // racing the first v2 write must not bring the old bytes back.
+          if (underLock) this.v1Bytes = v1 ? raw : null;
           this.observedFile = true;
           return doc;
         } finally { plaintext.fill(0); }
@@ -212,9 +299,69 @@ export class ModelConfigVault {
     } finally { plaintext.fill(0); }
   }
 
+  /**
+   * Writes the document. Over a v1 file, the original v1 bytes are first kept in a backup file of their own (created
+   * exclusively, 0600, never overwritten), and only then does the v2 file replace the v1 file atomically. A failure
+   * before the rename leaves the v1 file in place, so the previous configuration still opens.
+   */
   private async persist(doc: ManagedModelDocument): Promise<void> {
-    await this.atomicWrite(this.file, this.serialize(doc));
+    let next = doc;
+    if (this.v1Bytes) {
+      await this.keepV1Backup(this.v1Bytes);
+      next = { ...doc, audit: [...doc.audit, { action: "format_upgraded" as const, revision: doc.saved.revision, at: new Date().toISOString() }].slice(-50) };
+    }
+    await this.atomicWrite(this.file, this.serialize(next));
+    this.v1Bytes = null;
     this.observedFile = true;
+  }
+
+  /** The kept v1 file. An existing backup is never replaced; it must hold exactly these bytes. */
+  private async keepV1Backup(bytes: Buffer): Promise<void> {
+    const target = `${this.file}${V1_BACKUP_SUFFIX}`;
+    let existing: fs.FileHandle | undefined;
+    try { existing = await fs.open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
+    catch (error) {
+      if (codeOf(error) !== "ENOENT") throw error;
+    }
+    if (existing) {
+      try {
+        const info = await existing.stat();
+        if (!info.isFile() || info.nlink !== 1 || (info.mode & 0o777) !== 0o600 || (process.geteuid && info.uid !== process.geteuid())
+          || info.size !== bytes.length) throw storageError();
+        const kept = Buffer.alloc(bytes.length);
+        let offset = 0;
+        while (offset < kept.length) {
+          const chunk = await existing.read(kept, offset, kept.length - offset, offset);
+          if (!chunk.bytesRead) break;
+          offset += chunk.bytesRead;
+        }
+        if (offset !== kept.length || !kept.equals(bytes)) throw storageError();
+        return;
+      } finally { await existing.close(); }
+    }
+    await this.exclusiveWrite(target, bytes);
+  }
+
+  private async exclusiveWrite(target: string, bytes: Buffer): Promise<void> {
+    await this.checkDirectory();
+    const handle = await fs.open(target, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    try {
+      await handle.writeFile(bytes);
+      await handle.sync();
+    } finally { await handle.close(); }
+    const directory = await fs.open(dirname(this.file), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    try { await directory.sync(); } finally { await directory.close(); }
+  }
+
+  /** Names only: what the v1 conversion left out, and whether the original v1 file is kept. */
+  async retiredNote(): Promise<{ providers: string[]; retiredDefault: string | null; backupKept: boolean } | null> {
+    const doc = await this.read();
+    if (!doc.retired) return null;
+    let backupKept: boolean;
+    try {
+      backupKept = (await fs.lstat(`${this.file}${V1_BACKUP_SUFFIX}`)).isFile();
+    } catch { backupKept = false; }
+    return { providers: [...doc.retired.providers], retiredDefault: doc.retired.retiredDefault, backupKept };
   }
 
   private async atomicWrite(target: string, bytes: Buffer): Promise<void> {
@@ -255,7 +402,7 @@ export class ModelConfigVault {
         }
         await lock.writeFile(JSON.stringify({ pid: process.pid, at: new Date().toISOString() }));
         await lock.sync();
-        result = await operation(await this.readDocument(allowUninitialized));
+        result = await operation(await this.readDocument(allowUninitialized, true));
       } catch (error) {
         failure = error instanceof AdminConfigError ? error : storageError();
       }

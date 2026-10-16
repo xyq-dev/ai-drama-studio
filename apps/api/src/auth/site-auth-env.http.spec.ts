@@ -104,11 +104,11 @@ describe("SITE_AUTH_ENABLED from the process environment, end to end", () => {
   });
 
   it("does not change how other process-only variables treat an empty value", () => {
-    const env = loadApiEnv({ ...BASE, SITE_AUTH_ENABLED: "", SITE_AUTH_PASSWORD_HASH: "", MODEL_ADMIN_ENABLED: "", DASHSCOPE_API_KEY: "" });
+    const env = loadApiEnv({ ...BASE, SITE_AUTH_ENABLED: "", SITE_AUTH_PASSWORD_HASH: "", MODEL_ADMIN_ENABLED: "", OPENAI_API_KEY: "" });
     expect(env.SITE_AUTH_ENABLED).toBe("");
     expect(env.SITE_AUTH_PASSWORD_HASH).toBeUndefined();
     expect(env.MODEL_ADMIN_ENABLED).toBeUndefined();
-    expect(env.DASHSCOPE_API_KEY).toBeUndefined();
+    expect(env.OPENAI_API_KEY).toBeUndefined();
   });
 
   it("ignores the switch in the .env file (process environment only)", () => {

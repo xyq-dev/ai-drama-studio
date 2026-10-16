@@ -1,12 +1,11 @@
 import { Module, type DynamicModule } from "@nestjs/common";
 import type { ApiEnv } from "../config/env";
-import { QwenWebController } from "./qwen-web.controller";
 import { EventsController, StudioController } from "./studio.controller";
 import { StudioRuntime } from "./studio.runtime";
 import { ScriptBreakdownController } from "./script-breakdown.controller";
 import { TitleWritingController } from "./title-writing.controller";
 import {
-  QWEN_WEB_SERVICE, RUNTIME_STORE, SCRIPT_BREAKDOWN_SERVICE, STUDIO_RUNTIME, STUDIO_SERVICE, TITLE_WRITING_SERVICE,
+  RUNTIME_STORE, SCRIPT_BREAKDOWN_SERVICE, STUDIO_RUNTIME, STUDIO_SERVICE, TITLE_WRITING_SERVICE,
 } from "./tokens";
 import { ADMIN_MODELS_SERVICE, AdminModelsController } from "../admin/admin-models.controller";
 
@@ -16,7 +15,7 @@ export class StudioModule {
     return {
       module: StudioModule,
       controllers: [
-        StudioController, EventsController, QwenWebController, TitleWritingController, ScriptBreakdownController, AdminModelsController,
+        StudioController, EventsController, TitleWritingController, ScriptBreakdownController, AdminModelsController,
       ],
       providers: [
         {
@@ -27,11 +26,6 @@ export class StudioModule {
           provide: STUDIO_SERVICE,
           inject: [STUDIO_RUNTIME],
           useFactory: (runtime: StudioRuntime) => runtime.service,
-        },
-        {
-          provide: QWEN_WEB_SERVICE,
-          inject: [STUDIO_RUNTIME],
-          useFactory: (runtime: StudioRuntime) => runtime.qwenWeb,
         },
         {
           provide: TITLE_WRITING_SERVICE,

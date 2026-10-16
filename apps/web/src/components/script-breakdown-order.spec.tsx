@@ -17,8 +17,8 @@ function json(payload: unknown, status = 200): Response {
 }
 
 const OPTIONS: ScriptBreakdownOptionsView = {
-  enabled: true, code: "SCRIPT_BREAKDOWN_READY", storageReady: true, operatorTokenRequired: true, defaultProvider: "qwen",
-  providers: [{ providerKey: "qwen", label: "千问", ready: true, models: ["q-1"], defaultModel: "q-1", missing: [] }],
+  enabled: true, code: "SCRIPT_BREAKDOWN_READY", storageReady: true, operatorTokenRequired: true, defaultProvider: "anthropic",
+  providers: [{ providerKey: "anthropic", label: "Claude", ready: true, models: ["q-1"], defaultModel: "q-1", missing: [] }],
   maxCallsPerDay: 30, callCapPerRun: 3, billing: "unknown", limits: SCRIPT_BREAKDOWN_LIMITS,
 };
 
@@ -26,7 +26,7 @@ function run(overrides: Partial<ScriptBreakdownRunView> = {}): ScriptBreakdownRu
   return {
     runId: RUN, projectId: P1, episodeId: E1, episodeNo: 2, scriptRevisionId: "88888888-8888-4888-8888-888888888888", scriptRevisionNo: 3,
     targetEpisodeSeconds: 60, characters: [{ key: "C1", characterId: "99999999-9999-4999-8999-999999999999", revisionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", name: "林夏" }],
-    replacedScenes: 0, providerKey: "qwen", model: "q-1", state: "completed", errorCode: null, cancelRequested: false, callCap: 3, callsUsed: 1,
+    replacedScenes: 0, providerKey: "anthropic", model: "q-1", state: "completed", errorCode: null, cancelRequested: false, callCap: 3, callsUsed: 1,
     step: { state: "completed", attemptNo: 1, errorCode: null },
     output: {
       schema: "ads.script-breakdown.output.v1", episodeNo: 2,
@@ -186,7 +186,7 @@ describe("pending request recovery and source refresh", () => {
     const callId = "99999999-aaaa-4aaa-aaaa-aaaaaaaaaaaa";
     const uncertain = run({ state: "needs_attention", save: "pending", output: null, scenes: [],
       step: { state: "unknown", attemptNo: 1, errorCode: "executor_lost" }, calls: [{
-        callId, stepKey: "breakdown", attemptNo: 1, state: "unknown", providerKey: "qwen", model: "q-1",
+        callId, stepKey: "breakdown", attemptNo: 1, state: "unknown", providerKey: "anthropic", model: "q-1",
         outcome: null, rejectionCode: null, usage: null, billing: "unknown", createdAt: "2026-10-12T00:00:00Z",
       }] as unknown as ScriptBreakdownRunView["calls"] });
     const sent: Array<{ key: string; body: string }> = [];

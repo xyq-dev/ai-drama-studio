@@ -46,9 +46,8 @@
 .providerButton:not(:disabled):hover { background: var(--studio-card); border-color: var(--studio-input-line); }
 .providerButton.providerSelected { background: var(--studio-card); border-color: var(--studio-accent); box-shadow: 0 2px 8px rgb(159 63 49 / .035); }
 .providerMark { width: 40px; height: 40px; border: 1px solid var(--studio-line); border-radius: 11px; flex: none; display: grid; place-items: center; font-size: 23px; line-height: 1; font-weight: 700; }
-.qwen { background: #f3efff; color: #6850a6; border-color: #e5dcf8; }
 .openai { background: #edf3ed; color: #315b4c; border-color: #dce6dc; }
-.deepseek { background: #edf3fc; color: #3661a0; border-color: #dce5f4; }
+.anthropic { background: #f8efe8; color: #8a4b2a; border-color: #eedccf; }
 .providerInfo { display: flex; flex: 1; min-width: 0; flex-direction: column; }
 .providerInfo strong { font-size: 15px; }
 .providerInfo small { font-size: 10px; color: var(--studio-muted); }

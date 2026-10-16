@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createCipheriv, randomBytes } from "node:crypto";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,7 +17,7 @@ vi.mock("@ai-drama/database", async (importOriginal) => {
 });
 
 const WORKSPACE = "11111111-1111-4111-8111-111111111111";
-const LEGACY_KEY = "sk-test-legacy-qwen-secret";
+const LEGACY_KEY = "sk-test-environment-claude-secret";
 const SAVED_KEY = "sk-test-managed-openai-secret";
 const BASE = {
   NODE_ENV: "test",
@@ -25,10 +25,9 @@ const BASE = {
   REDIS_URL: "redis://127.0.0.1:1", S3_ENDPOINT: "http://127.0.0.1:1", S3_REGION: "us-east-1",
   S3_BUCKET: "test", S3_ACCESS_KEY_ID: "unused", S3_SECRET_ACCESS_KEY: "unused", APP_WORKSPACE_ID: WORKSPACE,
   TITLE_WRITING_ENABLED: "true", TITLE_WRITING_OPERATOR_TOKEN: "test-only-title-operator-token",
-  TITLE_WRITING_DEFAULT_PROVIDER: "qwen", TITLE_WRITING_MAX_CALLS_PER_DAY: "30", TITLE_WRITING_MAX_ACTIVE_RUNS: "1",
-  DASHSCOPE_API_KEY: LEGACY_KEY,
-  BAILIAN_BASE_URL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-  TITLE_WRITING_QWEN_MODELS: "legacy-qwen-model",
+  TITLE_WRITING_DEFAULT_PROVIDER: "anthropic", TITLE_WRITING_MAX_CALLS_PER_DAY: "30", TITLE_WRITING_MAX_ACTIVE_RUNS: "1",
+  ANTHROPIC_API_KEY: LEGACY_KEY,
+  TITLE_WRITING_ANTHROPIC_MODELS: "environment-claude-model",
 };
 
 interface FakePool extends PostgresPool {
@@ -59,6 +58,8 @@ describe.skipIf(process.platform === "win32")("StudioRuntime managed model start
     queryFailure = undefined;
     vi.spyOn(RuntimeStore.prototype, "requireActiveWorkspace").mockResolvedValue(WORKSPACE);
     vi.spyOn(PostgresTitleWritingStore.prototype, "storageReady").mockResolvedValue(true);
+    // The provider migration is applied in this fake database; its own readiness query is covered by the store acceptance.
+    vi.spyOn(PostgresTitleWritingStore.prototype, "providerStorageReady").mockResolvedValue(true);
     vi.mocked(createPostgresPool).mockImplementation(() => {
       const pool: FakePool = {
         query: vi.fn(async (sql: string, values?: unknown[]) => {
@@ -140,7 +141,7 @@ describe.skipIf(process.platform === "win32")("StudioRuntime managed model start
       expectedRevision: 1, defaultProvider: "openai", maxCallsPerDay: 8, maxActiveRuns: 2,
     });
     // Saving must not mutate the already-instantiated service or execution engine's provider/caps.
-    expect(await options(current)).toMatchObject({ defaultProvider: "qwen", maxCallsPerDay: 30, maxActiveRuns: 1 });
+    expect(await options(current)).toMatchObject({ defaultProvider: "anthropic", maxCallsPerDay: 30, maxActiveRuns: 1 });
     expect((await options(current)).providers.find((provider) => provider.providerKey === "openai")?.ready).toBe(false);
     await close(current);
   }
@@ -151,8 +152,8 @@ describe.skipIf(process.platform === "win32")("StudioRuntime managed model start
     running = true;
     const restarted = await open(env);
     const view = await options(restarted);
-    expect(view).toMatchObject({ enabled: true, defaultProvider: "qwen", maxCallsPerDay: 30, maxActiveRuns: 1 });
-    expect(view.providers.find((provider) => provider.providerKey === "qwen")?.models).toEqual(["legacy-qwen-model"]);
+    expect(view).toMatchObject({ enabled: true, defaultProvider: "anthropic", maxCallsPerDay: 30, maxActiveRuns: 1 });
+    expect(view.providers.find((provider) => provider.providerKey === "anthropic")?.models).toEqual(["environment-claude-model"]);
     expect(view.providers.find((provider) => provider.providerKey === "openai")?.ready).toBe(false);
     expect(await restarted.adminModels!.view()).toMatchObject({
       pendingRestart: true, activationDeferred: true, activeRevision: 0, savedRevision: 2,
@@ -205,7 +206,7 @@ describe.skipIf(process.platform === "win32")("StudioRuntime managed model start
     const runtime = await open(loadApiEnv(BASE));
     expect(runtime.adminConsoleEnabled).toBe(false);
     expect(runtime.adminModels).toBeNull();
-    expect(await options(runtime)).toMatchObject({ defaultProvider: "qwen", maxCallsPerDay: 30, maxActiveRuns: 1 });
+    expect(await options(runtime)).toMatchObject({ defaultProvider: "anthropic", maxCallsPerDay: 30, maxActiveRuns: 1 });
     expect(pools.at(-1)!.query).not.toHaveBeenCalled();
   });
 
@@ -229,7 +230,7 @@ describe.skipIf(process.platform === "win32")("StudioRuntime managed model start
     queryFailure = undefined;
     running = true;
     const restarted = await open(env);
-    expect(await options(restarted)).toMatchObject({ defaultProvider: "qwen", maxCallsPerDay: 30 });
+    expect(await options(restarted)).toMatchObject({ defaultProvider: "anthropic", maxCallsPerDay: 30 });
     expect((await restarted.adminModels!.view()).activeRevision).toBe(0);
   });
 
@@ -250,7 +251,7 @@ describe.skipIf(process.platform === "win32")("StudioRuntime managed model start
     metadataFailure = undefined;
     running = true;
     const recovered = await open(env);
-    expect(await options(recovered)).toMatchObject({ defaultProvider: "qwen", maxCallsPerDay: 30, maxActiveRuns: 1 });
+    expect(await options(recovered)).toMatchObject({ defaultProvider: "anthropic", maxCallsPerDay: 30, maxActiveRuns: 1 });
     expect(await recovered.adminModels!.view()).toMatchObject({ activeRevision: 0, savedRevision: 2, activationDeferred: true });
   });
 
@@ -276,5 +277,42 @@ describe.skipIf(process.platform === "win32")("StudioRuntime managed model start
     await close(runtime);
     for (const timer of timers) expect(clear).toHaveBeenCalledWith(timer);
     expect(pools.at(-1)!.end).toHaveBeenCalledExactlyOnceWith();
+  });
+
+  it("starts on a vault saved by the released three-provider console: only OpenAI and Claude, no retired default, nothing sent", async () => {
+    const env = await environment();
+    const path = env.MODEL_ADMIN_CONFIG_PATH!;
+    const masterKey = Buffer.from(env.MODEL_ADMIN_MASTER_KEY!, "hex");
+    const settings = {
+      revision: 1, defaultProvider: "qwen", maxCallsPerDay: 9, maxActiveRuns: 1,
+      providers: {
+        qwen: { apiKey: "sk-retired-qwen-secret-0123", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", models: ["qwen-old"] },
+        openai: { apiKey: SAVED_KEY, baseUrl: "https://api.openai.com/v1/responses", models: ["managed-openai-model"] },
+        deepseek: { apiKey: null, baseUrl: "https://api.deepseek.com/chat/completions", models: [] },
+      },
+    };
+    const nonce = randomBytes(12);
+    const cipher = createCipheriv("aes-256-gcm", masterKey, nonce);
+    cipher.setAAD(Buffer.from("ai-drama-studio.admin-model-vault.v1"));
+    const ciphertext = Buffer.concat([cipher.update(JSON.stringify({ active: settings, saved: settings, audit: [] })), cipher.final()]);
+    await writeFile(path, JSON.stringify({ format: "ai-drama-studio.admin-model-vault.v1", nonce: nonce.toString("base64"),
+      tag: cipher.getAuthTag().toString("base64"), ciphertext: ciphertext.toString("base64") }), { mode: 0o600 });
+    await writeFile(`${path}.initialized`, "ai-drama-studio.admin-model-vault.v1.initialized\n", { mode: 0o600 });
+    const runtime = await open(env);
+    const view = await options(runtime);
+    expect(view.providers.map((provider) => provider.providerKey)).toEqual(["openai", "anthropic"]);
+    // The retired default is not used, and nothing switches to it; the first ready active provider is offered instead.
+    expect(view).toMatchObject({ defaultProvider: "openai", maxCallsPerDay: 9 });
+    expect(view.providers.find((provider) => provider.providerKey === "anthropic")).toMatchObject({ ready: false, missing: ["ANTHROPIC_API_KEY", "TITLE_WRITING_ANTHROPIC_MODELS"] });
+    const admin = await runtime.adminModels!.view();
+    expect(admin.retired).toEqual({ providers: ["qwen"], retiredDefault: "qwen", backupKept: false });
+    expect(admin.saved.providers.map((provider) => provider.providerKey)).toEqual(["openai", "anthropic"]);
+    expect(JSON.stringify(admin)).not.toContain("sk-retired-qwen-secret");
+    expect(JSON.stringify(admin)).not.toContain(SAVED_KEY);
+  });
+
+  it("starts with a retired default provider in the environment and offers no default until one is chosen", async () => {
+    const runtime = await open(loadApiEnv({ ...BASE, TITLE_WRITING_DEFAULT_PROVIDER: "qwen", ANTHROPIC_API_KEY: undefined }));
+    expect(await options(runtime)).toMatchObject({ code: "TITLE_WRITING_PROVIDER_UNCONFIGURED", defaultProvider: null });
   });
 });

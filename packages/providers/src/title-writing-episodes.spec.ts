@@ -11,12 +11,12 @@ const TITLE = "夜班证词";
 
 function providers(): Record<TitleWritingProviderKey, WritingProviderConfig> {
   return titleWritingProviderConfigs({
-    DASHSCOPE_API_KEY: "sk-test-secret-0123456789", BAILIAN_BASE_URL: "https://dashscope.aliyuncs.com/compatible-mode/v1", TITLE_WRITING_QWEN_MODELS: "q-1",
+    ANTHROPIC_API_KEY: "sk-test-secret-0123456789", TITLE_WRITING_ANTHROPIC_MODELS: "q-1",
   });
 }
 
 const v2Run = (episodeCount: number, now: Date) => newTitleRun({ workspaceId: WS, projectId: P1, actorId: "a", idempotencyKey: "k", title: TITLE,
-  settings: { episodeCount, episodeSeconds: 60, style: "" }, providerKey: "qwen", model: "q-1", now, version: 2 });
+  settings: { episodeCount, episodeSeconds: 60, style: "" }, providerKey: "anthropic", model: "q-1", now, version: 2 });
 
 describe("v2 runs in the engine", () => {
   it("freeze the v2 input, N+2 steps and the cap N+5; the view reports version 2 and N", () => {
@@ -75,7 +75,7 @@ describe("frozen episode semantics reach both the view and saved scripts", () =>
       store.addProject(WS, P1, count);
       const record = v2Run(count, new Date());
       record.input = { ...record.input, schema: TITLE_WRITING_INPUT_SCHEMA_V2, promptVersion,
-        title: TITLE, settings: { episodeCount: count, episodeSeconds: 60, style: "" }, providerKey: "qwen", model: "q-1" };
+        title: TITLE, settings: { episodeCount: count, episodeSeconds: 60, style: "" }, providerKey: "anthropic", model: "q-1" };
       await store.createRun(record, { maxActiveRuns: 1 });
       const engine = new TitleWritingEngine({ workspaceId: WS, store, providers: providers(), transport: fixtureChatTransport(TITLE), maxCallsPerDay: 30 });
       await engine.drive(record.id);

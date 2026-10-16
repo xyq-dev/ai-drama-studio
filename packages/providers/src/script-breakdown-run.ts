@@ -12,7 +12,7 @@ import {
   type TitleRunBundle,
   type TitleRunRecord,
   type TitleWritingCallView,
-  type TitleWritingProviderKey,
+  type TitleWritingStoredProviderKey,
 } from "@ai-drama/contracts";
 import { canonicalInputHash, plannedTotalSeconds } from "@ai-drama/domain";
 
@@ -23,7 +23,7 @@ import { canonicalInputHash, plannedTotalSeconds } from "@ai-drama/domain";
  * finds its original run instead of conflicting or creating a second one.
  */
 export function hashScriptBreakdownRequest(projectId: string, request: {
-  episodeId: string; providerKey: TitleWritingProviderKey | null; model: string | null; replaceExisting: boolean;
+  episodeId: string; providerKey: TitleWritingStoredProviderKey | null; model: string | null; replaceExisting: boolean;
 }): string {
   return canonicalInputHash({ kind: "script_breakdown", projectId, request });
 }

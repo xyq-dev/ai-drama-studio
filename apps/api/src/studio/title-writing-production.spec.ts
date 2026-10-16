@@ -20,9 +20,9 @@ const BASE = {
   NODE_ENV: "production", DATABASE_URL: "postgresql://unused:unused@127.0.0.1:1/no-database",
   REDIS_URL: "redis://127.0.0.1:1", S3_ENDPOINT: "http://127.0.0.1:1", S3_REGION: "us-east-1",
   S3_BUCKET: "test", S3_ACCESS_KEY_ID: "unused", S3_SECRET_ACCESS_KEY: "unused", APP_WORKSPACE_ID: WORKSPACE,
-  TITLE_WRITING_ENABLED: "true", TITLE_WRITING_OPERATOR_TOKEN: TOKEN, TITLE_WRITING_DEFAULT_PROVIDER: "deepseek",
+  TITLE_WRITING_ENABLED: "true", TITLE_WRITING_OPERATOR_TOKEN: TOKEN, TITLE_WRITING_DEFAULT_PROVIDER: "openai",
   TITLE_WRITING_MAX_CALLS_PER_DAY: "3", TITLE_WRITING_MAX_ACTIVE_RUNS: "1",
-  DEEPSEEK_API_KEY: "sk-test-only-production-writing", TITLE_WRITING_DEEPSEEK_MODELS: "test-only-deepseek-model",
+  OPENAI_API_KEY: "sk-test-only-production-writing", TITLE_WRITING_OPENAI_MODELS: "test-only-openai-model",
 };
 let passwordHash = "";
 
@@ -90,7 +90,7 @@ describe("production title writing authorization through StudioRuntime.open", ()
     const runtime = await open(overrides);
     expect((await runtime.titleWriting!.options()).body).toMatchObject({
       enabled, code: enabled ? "TITLE_WRITING_READY" : "TITLE_WRITING_DISABLED",
-      defaultProvider: "deepseek", storageReady: true, episodePlanReady: true,
+      defaultProvider: "openai", storageReady: true, episodePlanReady: true,
       maxCallsPerDay: 3, maxActiveRuns: 1,
     });
     expect((await runtime.scriptBreakdown!.options()).body).toMatchObject({ enabled: false, code: "TITLE_WRITING_DISABLED" });
@@ -119,13 +119,13 @@ describe("production title writing authorization through StudioRuntime.open", ()
   it("filters recovery to title runs and refuses a breakdown even if a store returns it", async () => {
     const runtime = await open({ TITLE_WRITING_ALLOW_PRODUCTION: "true" });
     const title = newTitleRun({ workspaceId: WORKSPACE, projectId: PROJECT, actorId: "owner", idempotencyKey: "title",
-      title: "夜班证词", settings: { episodeCount: 1, episodeSeconds: 90, style: "" }, providerKey: "deepseek",
-      model: "test-only-deepseek-model", now: new Date(), version: 2 });
+      title: "夜班证词", settings: { episodeCount: 1, episodeSeconds: 90, style: "" }, providerKey: "openai",
+      model: "test-only-openai-model", now: new Date(), version: 2 });
     const breakdown = newScriptBreakdownRun({ workspaceId: WORKSPACE, projectId: PROJECT, actorId: "owner",
       idempotencyKey: "breakdown", requestHash: "a".repeat(64), now: new Date(), input: {
         episodeId: EPISODE, episodeNo: 1, scriptRevisionId: EPISODE, scriptRevisionNo: 1, scriptContentHash: "b".repeat(64),
         scriptText: "已有剧本", targetEpisodeSeconds: 90, characters: [], replace: { scenes: [], shots: [] },
-        providerKey: "deepseek", model: "test-only-deepseek-model",
+        providerKey: "openai", model: "test-only-openai-model",
       } });
     const recover = vi.spyOn(PostgresTitleWritingStore.prototype, "recoverExpired").mockResolvedValue(0);
     const list = vi.spyOn(PostgresTitleWritingStore.prototype, "listClaimable").mockResolvedValue([breakdown.id, title.id]);
@@ -196,7 +196,7 @@ describe("production title writing authorization through StudioRuntime.open", ()
         idempotencyKey: "breakdown", requestHash: "a".repeat(64), now: new Date(), input: {
           episodeId: EPISODE, episodeNo: 1, scriptRevisionId: EPISODE, scriptRevisionNo: 1, scriptContentHash: "b".repeat(64),
           scriptText: "已有剧本", targetEpisodeSeconds: 90, characters: [], replace: { scenes: [], shots: [] },
-          providerKey: "deepseek", model: "test-only-deepseek-model",
+          providerKey: "openai", model: "test-only-openai-model",
         } });
       vi.spyOn(PostgresTitleWritingStore.prototype, "recoverExpired").mockResolvedValue(0);
       const list = vi.spyOn(PostgresTitleWritingStore.prototype, "listClaimable").mockResolvedValue([breakdown.id]);

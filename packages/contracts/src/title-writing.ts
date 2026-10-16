@@ -32,8 +32,28 @@ export const TITLE_WRITING_PROMPT_VERSION_V3 = "ads.title-writing.prompt.v3" as 
  */
 export const TITLE_WRITING_PROMPT_VERSION_V4 = "ads.title-writing.prompt.v4" as const;
 
-export const TITLE_WRITING_PROVIDER_KEYS = ["qwen", "openai", "deepseek"] as const;
+/** The providers a new run, a resume that sends, an administrator update and a default may name. */
+export const TITLE_WRITING_PROVIDER_KEYS = ["openai", "anthropic"] as const;
 export type TitleWritingProviderKey = (typeof TITLE_WRITING_PROVIDER_KEYS)[number];
+/**
+ * Retired providers. Runs and calls stored with them stay readable with their real provider and model, and a lost
+ * receipt of a request made with them is still answered from the stored run; nothing new is created or sent for them.
+ */
+export const TITLE_WRITING_RETIRED_PROVIDER_KEYS = ["qwen", "deepseek"] as const;
+export type TitleWritingRetiredProviderKey = (typeof TITLE_WRITING_RETIRED_PROVIDER_KEYS)[number];
+/** Every provider a stored run or call may carry. */
+export const TITLE_WRITING_STORED_PROVIDER_KEYS = [...TITLE_WRITING_PROVIDER_KEYS, ...TITLE_WRITING_RETIRED_PROVIDER_KEYS] as const;
+export type TitleWritingStoredProviderKey = (typeof TITLE_WRITING_STORED_PROVIDER_KEYS)[number];
+export const TITLE_WRITING_PROVIDER_LABELS: Readonly<Record<TitleWritingStoredProviderKey, string>> = {
+  openai: "OpenAI",
+  anthropic: "Claude",
+  qwen: "千问（已退役）",
+  deepseek: "DeepSeek（已退役）",
+};
+
+export function isActiveTitleWritingProvider(key: string): key is TitleWritingProviderKey {
+  return (TITLE_WRITING_PROVIDER_KEYS as readonly string[]).includes(key);
+}
 
 /** The v1 scope: three episodes (domain PRODUCTION_EPISODE_NUMBERS). */
 export const TITLE_WRITING_EPISODE_COUNT = 3 as const;
@@ -99,7 +119,9 @@ export interface TitleWritingSettings {
  */
 export const titleWritingStartSchema = z.object({
   title: titleText,
-  providerKey: z.enum(TITLE_WRITING_PROVIDER_KEYS).optional(),
+  // A retired key is parsed only so that a lost receipt of an earlier start can still be answered; the server never
+  // creates a run or sends a call for it.
+  providerKey: z.enum(TITLE_WRITING_STORED_PROVIDER_KEYS).optional(),
   model: z.string().regex(MODEL_ID).optional(),
   settings: z.object({
     episodeCount: episodeCountSchema.optional(),
@@ -115,7 +137,7 @@ export interface TitleWritingFrozenInputV1 {
   promptVersion: typeof TITLE_WRITING_PROMPT_VERSION;
   title: string;
   settings: TitleWritingSettings;
-  providerKey: TitleWritingProviderKey;
+  providerKey: TitleWritingStoredProviderKey;
   model: string;
 }
 
@@ -129,7 +151,7 @@ export interface TitleWritingFrozenInputV2 {
   promptVersion: typeof TITLE_WRITING_PROMPT_VERSION_V2 | typeof TITLE_WRITING_PROMPT_VERSION_V3 | typeof TITLE_WRITING_PROMPT_VERSION_V4;
   title: string;
   settings: TitleWritingSettings;
-  providerKey: TitleWritingProviderKey;
+  providerKey: TitleWritingStoredProviderKey;
   model: string;
 }
 
@@ -346,7 +368,7 @@ export interface TitleWritingCallView {
   callId: string;
   stepKey: TitleWritingStepKey;
   attemptNo: number;
-  providerKey: TitleWritingProviderKey;
+  providerKey: TitleWritingStoredProviderKey;
   model: string;
   responseModel: string | null;
   providerRequestId: string | null;
@@ -383,7 +405,7 @@ export interface TitleWritingRunView {
   /** N of this run: its outline has N episodes and it has N episode steps. */
   episodeCount: number;
   settings: TitleWritingSettings;
-  providerKey: TitleWritingProviderKey;
+  providerKey: TitleWritingStoredProviderKey;
   model: string;
   state: TitleWritingRunState;
   errorCode: string | null;

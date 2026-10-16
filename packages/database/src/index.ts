@@ -1,6 +1,9 @@
 import { Pool, type PoolClient } from "pg";
 
 export {
+  BASE_MIGRATIONS,
+  GUARDED_SINGLE_MIGRATIONS,
+  WRITING_PROVIDER_MIGRATION,
   runMigrations,
   type MigrationClient,
   type MigrationOptions,
@@ -139,15 +142,6 @@ export {
   type PreparedReferenceGeneration,
   type StrictVideoReference,
 } from "./character-reference-store";
-export {
-  PostgresQwenWebStore,
-  QWEN_WEB_REQUIRED_COLUMNS,
-  QWEN_WEB_TABLE,
-  type QwenWebStoredFinish,
-  type QwenWebStoredRecord,
-  type QwenWebStoredReservation,
-  type QwenWebStoredState,
-} from "./qwen-web-store";
 export {
   assertFixedMockImageSnapshot,
   assertSyncActualCost,

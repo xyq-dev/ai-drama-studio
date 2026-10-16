@@ -1,7 +1,10 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { titleWritingCallCap, titleWritingRequiredCalls, type TitleWritingProviderKey } from "@ai-drama/contracts";
+import {
+  TITLE_WRITING_PROVIDER_LABELS, TITLE_WRITING_STORED_PROVIDER_KEYS, titleWritingCallCap, titleWritingRequiredCalls,
+  type TitleWritingProviderKey, type TitleWritingStoredProviderKey,
+} from "@ai-drama/contracts";
 import { ApiError, StudioClient } from "../lib/studio-client";
 import {
   TitleWritingClient,
@@ -23,7 +26,11 @@ const TITLE_MAX = 60;
 /** A new work's episode plan: the server freezes exactly these into the work and its writing run. */
 const EPISODE_COUNTS = [1, 2, 3, 4, 5, 6];
 const SECONDS: ReadonlyArray<{ value: number; label: string }> = [{ value: 60, label: "约 1 分钟" }, { value: 90, label: "约 1.5 分钟" }];
-const PROVIDERS: readonly TitleWritingProviderKey[] = ["qwen", "openai", "deepseek"];
+/**
+ * A stored start may name a retired provider: it stays readable and can still be replayed (the server answers from the
+ * run it created, or refuses without creating anything); it is never dropped as damaged.
+ */
+const STORED_PROVIDERS: readonly string[] = TITLE_WRITING_STORED_PROVIDER_KEYS;
 
 /**
  * One start whose result is not confirmed yet: the frozen request exactly as sent, and the keys of both writes.
@@ -58,7 +65,7 @@ function isPendingStart(value: unknown): value is PendingStart {
     && (draft.projectId === null || typeof draft.projectId === "string")
     && !!request && typeof request.title === "string" && !!request.settings
     && typeof request.settings.episodeSeconds === "number" && typeof request.settings.style === "string"
-    && (request.providerKey === undefined || PROVIDERS.includes(request.providerKey))
+    && (request.providerKey === undefined || STORED_PROVIDERS.includes(request.providerKey))
     && (request.model === undefined || typeof request.model === "string");
   if (!common) return false;
   if ((value as { version?: unknown }).version === 2) return true;
@@ -130,6 +137,13 @@ function startError(caught: unknown, projectCreated: boolean): string {
       return `${work}这部作品正在进行剧本拆解，标题创作暂时不能开始。本次请求没有创建任务，也没有发出模型调用。等拆解结束后，可以重试上次请求（使用同一个请求标识）。`;
     }
     if (caught.code === "TITLE_WRITING_PROVIDER_UNCONFIGURED") return `${work}所选模型服务没有配置完整${missing ? `（缺少 ${missing}）` : ""}，本次请求没有被受理。${previous}`;
+    if (caught.code === "TITLE_WRITING_PROVIDER_RETIRED") {
+      // Refused only after the server found no run for this request identity: nothing was created or sent, now or before.
+      return `${work}上次请求选择的模型服务（${String(caught.details?.label ?? caught.details?.providerKey ?? "")}）已经退役。服务端没有找到这次请求创建的任务，也没有发出模型调用。可以放弃上次请求，改用 OpenAI 或 Claude 重新开始。`;
+    }
+    if (caught.code === "TITLE_WRITING_PROVIDER_STORAGE_UNAVAILABLE") {
+      return `${work}所选模型服务的数据库迁移还没有执行，本次请求没有创建任务，也没有发出模型调用。可以改用其他已就绪的模型服务。`;
+    }
     if (caught.code === "TITLE_WRITING_DAILY_QUOTA_LOW") {
       const required = Number(caught.details?.requiredCalls);
       const remaining = Number(caught.details?.remainingCalls);
@@ -152,7 +166,8 @@ export function TitleWritingStart() {
   const [episodeCount, setEpisodeCount] = useState(3);
   const [seconds, setSeconds] = useState(90);
   const [style, setStyle] = useState("");
-  const [providerKey, setProviderKey] = useState<TitleWritingProviderKey | "">("");
+  // A replayed start may still carry a retired provider; the picker only ever offers ready active providers.
+  const [providerKey, setProviderKey] = useState<TitleWritingStoredProviderKey | "">("");
   const [model, setModel] = useState("");
   const [token, setToken] = useState("");
   const [pending, setPending] = useState<PendingStart | null>(null);
@@ -391,7 +406,8 @@ export function TitleWritingStart() {
             disabled={locked} onChange={(event) => setStyle(event.target.value)} />
           {pending?.request.providerKey ? (
             <p className={styles.fixed}>
-              模型服务：{options?.providers.find((item) => item.providerKey === pending.request.providerKey)?.label ?? pending.request.providerKey}
+              模型服务：{options?.providers.find((item) => item.providerKey === pending.request.providerKey)?.label
+                ?? TITLE_WRITING_PROVIDER_LABELS[pending.request.providerKey as TitleWritingStoredProviderKey] ?? pending.request.providerKey}
               {" · "}{pending.request.model ?? "默认模型"}（上次提交的选择）
             </p>
           ) : readyProviders.length > 0 ? (

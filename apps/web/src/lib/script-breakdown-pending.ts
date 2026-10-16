@@ -1,3 +1,4 @@
+import { TITLE_WRITING_STORED_PROVIDER_KEYS } from "@ai-drama/contracts";
 import type { BreakdownStartBody } from "./script-breakdown-client";
 import { isEntityId } from "./title-writing-client";
 
@@ -15,7 +16,8 @@ export function readBreakdownPending(projectId: string, episodeId: string, kind:
   const value = JSON.parse(raw) as Partial<BreakdownPending>;
   if (value.kind !== kind || !isEntityId(value.key)) throw new Error("Invalid pending request");
   if (value.kind === "start" && value.body && typeof value.body.replaceExisting === "boolean"
-    && ["qwen", "openai", "deepseek"].includes(value.body.providerKey ?? "") && typeof value.body.model === "string") return value as BreakdownPendingStart;
+    // A retired provider's stored start stays readable so its receipt can still be fetched; it is never dropped.
+    && (TITLE_WRITING_STORED_PROVIDER_KEYS as readonly string[]).includes(value.body.providerKey ?? "") && typeof value.body.model === "string") return value as BreakdownPendingStart;
   if (value.kind === "resume" && isEntityId(value.runId) && Array.isArray(value.confirmed) && value.confirmed.every(isEntityId)) return value as BreakdownPendingResume;
   throw new Error("Invalid pending request");
 }

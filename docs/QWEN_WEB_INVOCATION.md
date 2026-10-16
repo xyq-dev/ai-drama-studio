@@ -1,5 +1,7 @@
 # 千问网页调用
 
+> **已退役（2026-10-16）**：本文描述的千问代码、命令与网页路由已经删除，API 不再读取相关变量，也不能再发起千问调用。文本创作只使用 OpenAI 与 Claude，见 [`OPENAI_CLAUDE_WRITING.md`](OPENAI_CLAUDE_WRITING.md)。本文仅作历史记录。
+
 本机 `qwen:writing` 仍可生成 `candidate.json`，由创作者粘贴到编剧助手。
 
 ## 实现状态（feat/v1-remaining-delivery）

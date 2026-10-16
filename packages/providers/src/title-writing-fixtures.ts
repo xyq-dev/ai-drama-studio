@@ -9,7 +9,7 @@ import {
   type TitleWritingStepKey,
 } from "@ai-drama/contracts";
 import { fixtureBreakdownFromPrompt, isBreakdownPrompt } from "./script-breakdown-fixtures";
-import type { WritingTransport } from "./text-writing";
+import { ANTHROPIC_MESSAGES_URL, type WritingTransport } from "./text-writing";
 
 /**
  * Controllable provider double for tests and the local acceptance run. It is never wired into the API runtime:
@@ -94,8 +94,9 @@ export interface FixtureExchange {
 }
 
 /**
- * An OpenAI-compatible chat transport (Qwen / DeepSeek wire format) that answers each step with valid JSON unless
- * an override returns a different HTTP answer for that step and attempt.
+ * A transport that speaks the protocol of the endpoint it is called for: the OpenAI Responses API or the Claude
+ * Messages API. It answers each step with valid JSON unless an override returns a different HTTP answer for that step
+ * and attempt. An override body may be built with providerAnswer() for the endpoint's own wire format.
  */
 export function fixtureChatTransport(title: string, options: {
   seen?: FixtureExchange[];
@@ -117,24 +118,50 @@ export function fixtureChatTransport(title: string, options: {
         request.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
       });
     }
-    const answer = custom ?? { status: 200, body: chatAnswer(step === "concept" ? fixtureConcept(title)
+    const answer = custom ?? { status: 200, body: providerAnswer(request.url, step === "concept" ? fixtureConcept(title)
       : step === "outline" ? fixtureOutline(fixtureOutlineCountOf(user))
         : step === "breakdown" ? fixtureBreakdownFromPrompt(user) : fixtureEpisode(Number(step.slice(-1)))) };
+    const requestIdHeader = request.url === ANTHROPIC_MESSAGES_URL ? "request-id" : "x-request-id";
     return {
       status: answer.status,
-      headers: { get: (name: string) => name.toLowerCase() === "x-request-id" ? `fixture-${step}-${String(attempt)}` : null },
+      headers: { get: (name: string) => name.toLowerCase() === requestIdHeader ? `fixture-${step}-${String(attempt)}` : null },
       body: new TextEncoder().encode(typeof answer.body === "string" ? answer.body : JSON.stringify(answer.body)),
     };
   };
 }
 
-export function chatAnswer(value: unknown, finish = "stop") {
+/** A completed OpenAI Responses answer carrying the value as its only output text. */
+export function responsesAnswer(value: unknown, options: { status?: "completed" | "incomplete"; reason?: string } = {}) {
   return {
-    id: "fixture",
+    id: "resp_fixture",
     model: "fixture-model",
-    choices: [{ message: { role: "assistant", content: typeof value === "string" ? value : JSON.stringify(value) }, finish_reason: finish }],
-    usage: { prompt_tokens: 100, completion_tokens: 200, total_tokens: 300 },
+    status: options.status ?? "completed",
+    ...(options.status === "incomplete" ? { incomplete_details: { reason: options.reason ?? "max_output_tokens" } } : {}),
+    output: [{ type: "message", content: [{ type: "output_text", text: typeof value === "string" ? value : JSON.stringify(value) }] }],
+    usage: { input_tokens: 100, output_tokens: 200, total_tokens: 300 },
   };
+}
+
+/** A Claude Messages answer: an omitted thinking block, then the value as the only text block. */
+export function messagesAnswer(value: unknown, stopReason = "end_turn") {
+  return {
+    id: "msg_fixture",
+    type: "message",
+    role: "assistant",
+    model: "fixture-model",
+    content: [
+      { type: "thinking", thinking: "", signature: "fixture-signature" },
+      { type: "text", text: typeof value === "string" ? value : JSON.stringify(value) },
+    ],
+    stop_reason: stopReason,
+    stop_sequence: null,
+    usage: { input_tokens: 80, cache_creation_input_tokens: 0, cache_read_input_tokens: 20, output_tokens: 200 },
+  };
+}
+
+/** The answer in the wire format of the endpoint a request was sent to. */
+export function providerAnswer(url: string, value: unknown) {
+  return url === ANTHROPIC_MESSAGES_URL ? messagesAnswer(value) : responsesAnswer(value);
 }
 
 /** Breakdown answers for the same stubbed acceptances. */

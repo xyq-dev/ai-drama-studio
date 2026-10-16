@@ -32,6 +32,7 @@ import {
   createPostgresPool,
   EPISODE_PLAN_MIGRATION,
   SCRIPT_BREAKDOWN_MIGRATION,
+  WRITING_PROVIDER_MIGRATION,
   TITLE_WRITING_MIGRATION,
   runMigrations,
   verifyTitleWritingAcceptanceDatabase,
@@ -45,7 +46,7 @@ import {
   type WritingTransport,
 } from "@ai-drama/providers";
 import {
-  chatAnswer,
+  messagesAnswer,
   fixtureConcept,
   fixtureEpisode,
   fixtureOutline,
@@ -70,8 +71,7 @@ const WORKSPACE = "11111111-1111-4111-8111-111111111111";
 const OPERATOR_TOKEN = `acceptance-${randomUUID()}`;
 // Not a key of any provider account: the stub never sends it anywhere.
 const STUB_KEY = `stub-not-a-provider-key-${randomUUID()}`;
-const QWEN_BASE = "https://dashscope.aliyuncs.com/compatible-mode/v1";
-const STUB_MODEL = "qwen-acceptance-stub";
+const STUB_MODEL = "claude-acceptance-stub";
 
 const pool = createPostgresPool({ connectionString: acceptanceUrl, connectionTimeoutMs: 2_000, statementTimeoutMs: 10_000, queryTimeoutMs: 10_000 });
 /** Typed rows from the acceptance pool (PostgresPool.query is untyped). */
@@ -100,8 +100,9 @@ function deferred(): { promise: Promise<void>; release: () => void } {
 
 const transport: WritingTransport = async (request) => {
   const endpoint = new URL(request.url);
-  const body = JSON.parse(request.body) as { messages?: Array<{ role: string; content: string }> };
-  const user = body.messages?.find((message) => message.role === "user")?.content ?? "";
+  const body = JSON.parse(request.body) as { messages?: Array<{ role: string; content: string }>; input?: string };
+  // Claude carries the prompt in messages, OpenAI in input.
+  const user = body.messages?.find((message) => message.role === "user")?.content ?? body.input ?? "";
   const title = /剧名：(.+)/.exec(user)?.[1]?.trim();
   if (!title) throw new Error("stub: a prompt without a title");
   const step = fixtureStepOf(user);
@@ -109,7 +110,7 @@ const transport: WritingTransport = async (request) => {
   const attempt = (attempts.get(key) ?? 0) + 1;
   attempts.set(key, attempt);
   const authorization = (request.headers as Record<string, string>).Authorization ?? (request.headers as Record<string, string>).authorization;
-  sent.push({ title, step, attempt, endpoint: `${endpoint.host}${endpoint.pathname}`, keyMatches: authorization === `Bearer ${STUB_KEY}`,
+  sent.push({ title, step, attempt, endpoint: `${endpoint.host}${endpoint.pathname}`, keyMatches: (request.headers as Record<string, string>)["x-api-key"] === STUB_KEY || authorization === `Bearer ${STUB_KEY}`,
     prompt: /编剧要求（(ads\.title-writing\.prompt\.v\d+)）/.exec(user)?.[1] ?? null });
   const plan = plans.get(title)?.(step, attempt);
   if (plan === "throw") throw new TypeError("fetch failed");
@@ -119,11 +120,11 @@ const transport: WritingTransport = async (request) => {
     });
   }
   if (plan && "hold" in plan) await plan.hold;
-  const answer = plan && "status" in plan ? plan : { status: 200, body: chatAnswer(step === "concept" ? fixtureConcept(title)
+  const answer = plan && "status" in plan ? plan : { status: 200, body: messagesAnswer(step === "concept" ? fixtureConcept(title)
     : step === "outline" ? fixtureOutline(fixtureOutlineCountOf(user)) : fixtureEpisode(Number(step.slice(-1)))) };
   return {
     status: answer.status,
-    headers: { get: (name: string) => name.toLowerCase() === "x-request-id" ? `stub-${step}-${String(attempt)}` : null },
+    headers: { get: (name: string) => ["x-request-id", "request-id"].includes(name.toLowerCase()) ? `stub-${step}-${String(attempt)}` : null },
     body: new TextEncoder().encode(JSON.stringify(answer.body)),
   };
 };
@@ -131,7 +132,7 @@ const transport: WritingTransport = async (request) => {
 const sends = (title: string) => sent.filter((item) => item.title === title).length;
 
 function stubProviders() {
-  return titleWritingProviderConfigs({ DASHSCOPE_API_KEY: STUB_KEY, BAILIAN_BASE_URL: QWEN_BASE, TITLE_WRITING_QWEN_MODELS: STUB_MODEL });
+  return titleWritingProviderConfigs({ ANTHROPIC_API_KEY: STUB_KEY, TITLE_WRITING_ANTHROPIC_MODELS: STUB_MODEL });
 }
 
 /** The service the controller uses: real store on the runtime's pool, engine with the stub transport. */
@@ -143,7 +144,7 @@ function titleService(runtime: StudioRuntime, enabled: boolean): TitleWritingSer
     nodeEnv: "test",
     enabled,
     operatorToken: OPERATOR_TOKEN,
-    defaultProvider: "qwen",
+    defaultProvider: "anthropic",
     providers,
     store,
     // timeoutMs only shortens how long the stub's "hang" is waited for; the product cap and lease are unchanged.
@@ -324,7 +325,7 @@ describe("title writing over real HTTP and PostgreSQL, model stubbed", () => {
 
     const upgrade = await runMigrations(pool);
     // Today's chain after the title writing migration also adds the episode plan and script breakdown migrations.
-    expect(upgrade.applied).toEqual([TITLE_WRITING_MIGRATION, EPISODE_PLAN_MIGRATION, SCRIPT_BREAKDOWN_MIGRATION]);
+    expect(upgrade.applied).toEqual([TITLE_WRITING_MIGRATION, EPISODE_PLAN_MIGRATION, SCRIPT_BREAKDOWN_MIGRATION, WRITING_PROVIDER_MIGRATION]);
     evidence.upgradeApplied = upgrade.applied;
     const ready = await http(main, "GET", "/writing/title-runs/options");
     expect(ready.body).toMatchObject({ code: "TITLE_WRITING_READY", storageReady: true, billing: "unknown" });
@@ -572,7 +573,7 @@ describe("title writing over real HTTP and PostgreSQL, model stubbed", () => {
 
     const cut = "截断验收";
     const cutProject = await createProject(cut);
-    plans.set(cut, (step, attempt) => step === "outline" && attempt === 1 ? { status: 200, body: chatAnswer(fixtureOutline(), "length") } : undefined);
+    plans.set(cut, (step, attempt) => step === "outline" && attempt === 1 ? { status: 200, body: messagesAnswer(fixtureOutline(), "max_tokens") } : undefined);
     const cutRun = (await startRun(cutProject, cut)).body.run.runId;
     const partial = await until(cutProject, resting);
     expect(partial.state).toBe("partial");
@@ -619,7 +620,7 @@ describe("title writing over real HTTP and PostgreSQL, model stubbed", () => {
     const store = new PostgresTitleWritingStore(pool, new TextChainService(pool));
     const startedAt = new Date();
     const record = newTitleRun({ workspaceId: WORKSPACE, projectId, actorId: "acceptance", idempotencyKey: randomUUID(), title,
-      settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey: "qwen", model: STUB_MODEL, now: startedAt });
+      settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey: "anthropic", model: STUB_MODEL, now: startedAt });
     expect((await store.createRun(record, { maxActiveRuns: 10 })).kind).toBe("created");
     const engineA = new TitleWritingEngine({ workspaceId: WORKSPACE, store, providers, transport, maxCallsPerDay: 200, executorId: "acceptance-a",
       clock: () => startedAt });
@@ -656,7 +657,7 @@ describe("title writing over real HTTP and PostgreSQL, model stubbed", () => {
     // key and business input, frozen with the earlier prompt version and hashed with it.
     const store = new PostgresTitleWritingStore(pool, new TextChainService(pool));
     const fresh = newTitleRun({ workspaceId: WORKSPACE, projectId, actorId: "server-owner", idempotencyKey: key, title,
-      settings: { episodeCount: 3, episodeSeconds: 60, style: "" }, providerKey: "qwen", model: STUB_MODEL, now: new Date(), version: 2 });
+      settings: { episodeCount: 3, episodeSeconds: 60, style: "" }, providerKey: "anthropic", model: STUB_MODEL, now: new Date(), version: 2 });
     const input: TitleWritingFrozenInputV2 = { ...(fresh.input as TitleWritingFrozenInputV2), promptVersion: storedPrompt };
     const before = { ...fresh, input, inputHash: hashTitleWritingInput(projectId, input) };
     expect((await store.createRun(before, { maxActiveRuns: 10 })).kind).toBe("created");
@@ -701,7 +702,7 @@ describe("title writing over real HTTP and PostgreSQL, model stubbed", () => {
 
   it("the stub was the only model endpoint and saw only the stub key", () => {
     expect(sent.length).toBeGreaterThan(0);
-    expect([...new Set(sent.map((item) => item.endpoint))]).toEqual(["dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"]);
+    expect([...new Set(sent.map((item) => item.endpoint))]).toEqual(["api.anthropic.com/v1/messages"]);
     expect(sent.every((item) => item.keyMatches)).toBe(true);
   });
 });

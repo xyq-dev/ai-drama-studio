@@ -7,6 +7,8 @@ import {
   TITLE_WRITING_MAX_EPISODES,
   TITLE_WRITING_MIN_EPISODES,
   TITLE_WRITING_PROVIDER_KEYS,
+  TITLE_WRITING_PROVIDER_LABELS,
+  isActiveTitleWritingProvider,
   titleWritingRequiredCalls,
   titleWritingResumeSchema,
   titleWritingSettingsSchema,
@@ -24,6 +26,7 @@ import {
   hashTitleResume,
   isScriptBreakdownRun,
   newTitleRun,
+  providerConfigFor,
   sameStartBeforeGuidance,
   titleRunView,
   type TitleRunBundle,
@@ -62,6 +65,8 @@ const MESSAGES: Record<string, string> = {
   TITLE_WRITING_FORBIDDEN: "操作者令牌不正确，没有启动任何调用。",
   TITLE_WRITING_STORAGE_UNAVAILABLE: "创作任务存储还没有就绪（数据库表未创建），没有启动任何调用。",
   TITLE_WRITING_PROVIDER_UNCONFIGURED: "所选模型服务还没有配置完整，没有启动任何调用。",
+  TITLE_WRITING_PROVIDER_RETIRED: "这个模型服务已经退役，不能再发起新的创作或重新发送调用。历史记录仍然保留，可以查看。",
+  TITLE_WRITING_PROVIDER_STORAGE_UNAVAILABLE: "所选模型服务的数据库迁移还没有执行，没有创建任务，也没有发出调用。",
   TITLE_WRITING_MODEL_UNAVAILABLE: "所选模型不在服务端允许的列表中。",
   TITLE_WRITING_RUN_ACTIVE: "这部作品已有一次创作正在进行。",
   TITLE_WRITING_OTHER_TASK_ACTIVE: "这部作品正在进行剧本拆解，标题创作暂时不能开始。没有创建任务，也没有发出调用。",
@@ -90,6 +95,9 @@ function sameToken(configured: string, presented: string | undefined): boolean {
   const right = Buffer.from(presented, "utf8");
   return left.length === right.length && timingSafeEqual(left, right);
 }
+
+/** Named in an option's missing list while the database cannot store runs of that provider. Never a value. */
+export const PROVIDER_MIGRATION_GAP = "WRITING_PROVIDER_MIGRATION";
 
 const placeSchema = z.object({ acceptStoryChanged: z.boolean().default(false) }).strict();
 
@@ -122,19 +130,23 @@ export class TitleWritingService {
 
   async options(): Promise<TitleWritingResult> {
     const storageReady = await this.deps.store.storageReady();
-    const providers = TITLE_WRITING_PROVIDER_KEYS.map((providerKey) => {
+    const providers = await Promise.all(TITLE_WRITING_PROVIDER_KEYS.map(async (providerKey) => {
       const config = this.deps.providers[providerKey];
+      // A provider whose runs the database cannot store yet (Claude before its migration) is not offered as ready.
+      const stored = storageReady && await this.deps.store.providerStorageReady(providerKey);
+      const missing = [...(config.ok ? [] : config.missing), ...(storageReady && !stored ? [PROVIDER_MIGRATION_GAP] : [])];
       return {
         providerKey,
         label: WRITING_ADAPTERS[providerKey].label,
-        ready: config.ok,
+        ready: config.ok && (!storageReady || stored),
         models: config.models,
         defaultModel: config.models[0] ?? null,
-        missing: config.ok ? [] : config.missing,
+        missing,
       };
-    });
+    }));
     const firstReady = providers.find((item) => item.ready)?.providerKey ?? null;
-    const configuredDefault = this.deps.defaultProvider && this.deps.providers[this.deps.defaultProvider].ok ? this.deps.defaultProvider : null;
+    const configuredDefault = this.deps.defaultProvider && providers.find((item) => item.providerKey === this.deps.defaultProvider)?.ready
+      ? this.deps.defaultProvider : null;
     const code = !this.active() ? "TITLE_WRITING_DISABLED"
       : !this.deps.operatorToken ? "TITLE_WRITING_FORBIDDEN"
         : !storageReady ? "TITLE_WRITING_STORAGE_UNAVAILABLE"
@@ -191,12 +203,34 @@ export class TitleWritingService {
     if (!parsed.success) return failure(400, "VALIDATION_ERROR", { field: parsed.error.issues[0]?.path.join(".") ?? "body" });
     const frozen = await this.frozenSettings(projectId, parsed.data.settings);
     if ("refusal" in frozen) return frozen.refusal;
-    const providerKey = parsed.data.providerKey ?? this.deps.defaultProvider
-      ?? TITLE_WRITING_PROVIDER_KEYS.find((key) => this.deps.providers[key].ok) ?? "qwen";
-    const provider = this.deps.providers[providerKey];
-    if (!provider.ok) return failure(503, "TITLE_WRITING_PROVIDER_UNCONFIGURED", { providerKey, missing: provider.missing });
-    const model = parsed.data.model ?? provider.models[0]!;
-    if (!provider.models.includes(model)) return failure(400, "TITLE_WRITING_MODEL_UNAVAILABLE", { providerKey });
+    // A request identity already used is answered from its stored run (createRun below returns it, or refuses a different
+    // input), whatever the providers are now: a lost receipt of a start made with a provider that was retired or
+    // switched off since must stay recoverable and must never create a second run. Where the replayed body left the
+    // provider or model to the server, the stored run's own choice is used. No gate below writes or sends for a replay.
+    const previous = await this.deps.store.findRunByKey(this.deps.workspaceId, context.actorId, context.idempotencyKey);
+    const replayed = previous && previous.run.projectId === projectId && !isScriptBreakdownRun(previous.run) ? previous.run.input : null;
+    const providerKey = parsed.data.providerKey ?? replayed?.providerKey ?? this.deps.defaultProvider
+      ?? TITLE_WRITING_PROVIDER_KEYS.find((key) => this.deps.providers[key].ok) ?? TITLE_WRITING_PROVIDER_KEYS[0];
+    let model = parsed.data.model ?? replayed?.model;
+    if (!previous) {
+      // New requests only: a retired provider is refused here, never moved to another provider.
+      if (!isActiveTitleWritingProvider(providerKey)) {
+        return failure(409, "TITLE_WRITING_PROVIDER_RETIRED", { providerKey, label: TITLE_WRITING_PROVIDER_LABELS[providerKey] });
+      }
+      const provider = this.deps.providers[providerKey];
+      if (!provider.ok) return failure(503, "TITLE_WRITING_PROVIDER_UNCONFIGURED", { providerKey, missing: provider.missing });
+      model ??= provider.models[0]!;
+      if (!provider.models.includes(model)) return failure(400, "TITLE_WRITING_MODEL_UNAVAILABLE", { providerKey });
+      if (!await this.deps.store.providerStorageReady(providerKey)) {
+        return failure(503, "TITLE_WRITING_PROVIDER_STORAGE_UNAVAILABLE", { providerKey, missing: [PROVIDER_MIGRATION_GAP] });
+      }
+    }
+    if (model === undefined) {
+      const config = providerConfigFor(this.deps.providers, providerKey);
+      model = config?.models[0];
+    }
+    // A replayed key whose body names no model and whose provider has no models left can only be compared, never sent.
+    if (model === undefined) return failure(409, "IDEMPOTENCY_KEY_REUSED");
     const startedAt = this.now();
     const run = newTitleRun({
       workspaceId: this.deps.workspaceId,
@@ -299,16 +333,18 @@ export class TitleWritingService {
     if (!parsed.success) return failure(400, "VALIDATION_ERROR", { field: parsed.error.issues[0]?.path.join(".") ?? "body" });
     const existing = await this.deps.store.getRun(this.deps.workspaceId, projectId, runId);
     if (!existing || isScriptBreakdownRun(existing.run)) return failure(404, "NOT_FOUND");
-    const provider = this.deps.providers[existing.run.input.providerKey];
-    if (!provider.ok || !provider.models.includes(existing.run.input.model)) {
-      return failure(503, "TITLE_WRITING_PROVIDER_UNCONFIGURED", { providerKey: existing.run.input.providerKey, missing: provider.ok ? [] : provider.missing });
-    }
+    // The store decides under the run lock, after its replay check, whether this resume would send a call: only then
+    // must the run's own provider and model be ready. A replayed resume and a resume that only saves an answer already
+    // stored need no provider. A retired provider is never ready, so its run is never sent for again.
+    const runProvider = existing.run.input.providerKey;
+    const provider = providerConfigFor(this.deps.providers, runProvider);
     const confirmed = parsed.data.confirmUncertainCallIds;
     const prepared = await this.deps.store.prepareResume(this.deps.workspaceId, projectId, runId, {
       resumeKey: context.idempotencyKey,
       requestHash: hashTitleResume(runId, confirmed),
       confirmedCallIds: confirmed,
       maxActiveRuns: this.deps.maxActiveRuns,
+      providerReady: provider !== null && provider.ok && provider.models.includes(existing.run.input.model),
     }, this.now().toISOString());
     if (prepared.kind === "replayed") return this.found(prepared.bundle);
     if (prepared.kind !== "ok") {
@@ -318,6 +354,11 @@ export class TitleWritingService {
       if (prepared.kind === "needs_confirmation") return failure(409, "TITLE_WRITING_NEEDS_CONFIRMATION");
       if (prepared.kind === "stale_confirmation") return failure(409, "TITLE_WRITING_CONFIRMATION_STALE");
       if (prepared.kind === "key_conflict") return failure(409, "IDEMPOTENCY_KEY_REUSED");
+      if (prepared.kind === "provider_unconfigured") {
+        return isActiveTitleWritingProvider(runProvider)
+          ? failure(503, "TITLE_WRITING_PROVIDER_UNCONFIGURED", { providerKey: runProvider, missing: provider && !provider.ok ? provider.missing : [] })
+          : failure(409, "TITLE_WRITING_PROVIDER_RETIRED", { providerKey: runProvider, label: TITLE_WRITING_PROVIDER_LABELS[runProvider] });
+      }
       return failure(409, "TITLE_WRITING_NOT_RESUMABLE");
     }
     this.schedule(runId);

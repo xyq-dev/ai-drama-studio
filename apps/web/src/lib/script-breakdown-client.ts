@@ -1,10 +1,11 @@
 import {
+  TITLE_WRITING_PROVIDER_KEYS,
+  type TitleWritingStoredProviderKey,
   scriptBreakdownOutputSchema,
   type ScriptBreakdownOutput,
   type ScriptBreakdownOptionsView,
   type ScriptBreakdownPlacementOutcome,
   type ScriptBreakdownRunView,
-  type TitleWritingProviderKey,
 } from "@ai-drama/contracts";
 import { withSession } from "./site-session";
 import { TitleWritingError, TitleWritingUnconfirmedError, isEntityId } from "./title-writing-client";
@@ -54,14 +55,14 @@ export function optionsOf(body: unknown): ScriptBreakdownOptionsView | null {
   if (typeof body.code !== "string" || typeof body.callCapPerRun !== "number" || typeof body.maxCallsPerDay !== "number") return null;
   if (!["scriptMaxChars", "minScenes", "maxScenes", "minShots", "maxShots", "maxShotsPerScene", "minShotSeconds", "maxShotSeconds", "minTotalSeconds", "maxTotalSeconds", "maxCharacters"]
     .every((key) => typeof (body.limits as Record<string, unknown>)[key] === "number")) return null;
-  if (!body.providers.every((item) => record(item) && typeof item.providerKey === "string" && ["qwen", "openai", "deepseek"].includes(item.providerKey)
+  if (!body.providers.every((item) => record(item) && typeof item.providerKey === "string" && (TITLE_WRITING_PROVIDER_KEYS as readonly string[]).includes(item.providerKey)
     && typeof item.ready === "boolean" && Array.isArray(item.models) && item.models.every((model) => typeof model === "string")
     && nullableString(item.defaultModel))) return null;
   return body as unknown as ScriptBreakdownOptionsView;
 }
 
 export interface BreakdownStartBody {
-  providerKey?: TitleWritingProviderKey;
+  providerKey?: TitleWritingStoredProviderKey;
   model?: string;
   replaceExisting: boolean;
 }

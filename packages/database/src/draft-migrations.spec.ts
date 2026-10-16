@@ -3,7 +3,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { EPISODE_PLAN_COLUMNS, EPISODE_PLAN_MIGRATION } from "./episode-plan";
-import { SCRIPT_BREAKDOWN_COLUMNS, SCRIPT_BREAKDOWN_MIGRATION, TITLE_WRITING_MIGRATION, TITLE_WRITING_TABLES } from "./title-writing-store";
+import { SCRIPT_BREAKDOWN_COLUMNS, SCRIPT_BREAKDOWN_MIGRATION, TITLE_WRITING_MIGRATION, TITLE_WRITING_TABLES, WRITING_PROVIDER_MIGRATION } from "./title-writing-store";
 
 const drafts = join(__dirname, "..", "prisma", "drafts");
 const applied = join(__dirname, "..", "prisma", "migrations");
@@ -66,7 +66,7 @@ describe("title writing formal migration", () => {
   it("is applied after every earlier migration, and the draft is marked superseded and not applied", async () => {
     const names = (await readdir(applied)).filter((name) => /^\d+_/.test(name)).sort();
     expect(names.indexOf(TITLE_WRITING_MIGRATION)).toBe(Object.keys(RELEASED).indexOf(TITLE_WRITING_MIGRATION));
-    expect(names).toEqual([...Object.keys(RELEASED), SCRIPT_BREAKDOWN_MIGRATION]);
+    expect(names).toEqual([...Object.keys(RELEASED), SCRIPT_BREAKDOWN_MIGRATION, WRITING_PROVIDER_MIGRATION]);
     const draft = await readFile(draftPath, "utf8");
     expect(draft.split("\n")[0]).toBe("-- SUPERSEDED DRAFT. Do not apply. Kept only as the record of what passed the isolated acceptances.");
     expect(draft).toContain(`prisma/migrations/${TITLE_WRITING_MIGRATION}/migration.sql`);
@@ -141,10 +141,10 @@ describe("episode plan migration", () => {
 describe("script breakdown migration", () => {
   const migrationPath = join(applied, SCRIPT_BREAKDOWN_MIGRATION, "migration.sql");
 
-  it("is the last migration, after every released one", async () => {
+  it("follows every released migration; only the independent provider migration sorts after it", async () => {
     const names = (await readdir(applied)).filter((name) => /^\d+_/.test(name)).sort();
-    expect(names.at(-1)).toBe(SCRIPT_BREAKDOWN_MIGRATION);
-    expect(names.slice(0, -1)).toEqual(Object.keys(RELEASED));
+    expect(names.slice(0, -2)).toEqual(Object.keys(RELEASED));
+    expect(names.slice(-2)).toEqual([SCRIPT_BREAKDOWN_MIGRATION, WRITING_PROVIDER_MIGRATION]);
   });
 
   it("only expands: adds columns, one table, one index and wider CHECKs, and writes, rewrites or drops no data", async () => {

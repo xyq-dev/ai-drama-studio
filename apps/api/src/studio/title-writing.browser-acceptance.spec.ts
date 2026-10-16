@@ -39,13 +39,14 @@ import {
   createPostgresPool,
   EPISODE_PLAN_MIGRATION,
   SCRIPT_BREAKDOWN_MIGRATION,
+  WRITING_PROVIDER_MIGRATION,
   TITLE_WRITING_MIGRATION,
   runMigrations,
   verifyTitleWritingAcceptanceDatabase,
 } from "@ai-drama/database";
 import { TitleWritingEngine, titleWritingProviderConfigs, type WritingTransport } from "@ai-drama/providers";
 import {
-  chatAnswer,
+  messagesAnswer,
   fixtureConcept,
   fixtureEpisode,
   fixtureOutline,
@@ -76,8 +77,7 @@ const API = `http://127.0.0.1:${String(API_PORT)}`;
 const OPERATOR_TOKEN = `acceptance-${randomUUID()}`;
 // Not a key of any provider account: the stub never sends it anywhere.
 const STUB_KEY = `stub-not-a-provider-key-${randomUUID()}`;
-const QWEN_BASE = "https://dashscope.aliyuncs.com/compatible-mode/v1";
-const STUB_MODEL = "qwen-acceptance-stub";
+const STUB_MODEL = "claude-acceptance-stub";
 // Every title says on screen that its text is the model double's fixture, not something a model wrote.
 const MAIN_TITLE = "模型替身样例·夜班证词";
 const CONFLICT_TITLE = "模型替身样例·已有剧本";
@@ -111,8 +111,9 @@ function deferred(): { promise: Promise<void>; release: () => void } {
 
 const transport: WritingTransport = async (request) => {
   const endpoint = new URL(request.url);
-  const body = JSON.parse(request.body) as { messages?: Array<{ role: string; content: string }> };
-  const user = body.messages?.find((message) => message.role === "user")?.content ?? "";
+  const body = JSON.parse(request.body) as { messages?: Array<{ role: string; content: string }>; input?: string };
+  // Claude carries the prompt in messages, OpenAI in input.
+  const user = body.messages?.find((message) => message.role === "user")?.content ?? body.input ?? "";
   const title = /剧名：(.+)/.exec(user)?.[1]?.trim();
   if (!title) throw new Error("stub: a prompt without a title");
   const step = fixtureStepOf(user);
@@ -120,14 +121,14 @@ const transport: WritingTransport = async (request) => {
   const attempt = (attempts.get(key) ?? 0) + 1;
   attempts.set(key, attempt);
   const headers = request.headers as Record<string, string>;
-  sent.push({ title, step, attempt, endpoint: `${endpoint.host}${endpoint.pathname}`, keyMatches: (headers.Authorization ?? headers.authorization) === `Bearer ${STUB_KEY}` });
+  sent.push({ title, step, attempt, endpoint: `${endpoint.host}${endpoint.pathname}`, keyMatches: (headers["x-api-key"] === STUB_KEY || (headers.Authorization ?? headers.authorization) === `Bearer ${STUB_KEY}`) });
   const plan = plans.get(title)?.(step, attempt);
   if (plan && "hold" in plan) await plan.hold;
-  const answer = plan && "status" in plan ? plan : { status: 200, body: chatAnswer(step === "concept" ? fixtureConcept(title)
+  const answer = plan && "status" in plan ? plan : { status: 200, body: messagesAnswer(step === "concept" ? fixtureConcept(title)
     : step === "outline" ? fixtureOutline(fixtureOutlineCountOf(user)) : fixtureEpisode(Number(step.slice(-1)))) };
   return {
     status: answer.status,
-    headers: { get: (name: string) => name.toLowerCase() === "x-request-id" ? `stub-${step}-${String(attempt)}` : null },
+    headers: { get: (name: string) => ["x-request-id", "request-id"].includes(name.toLowerCase()) ? `stub-${step}-${String(attempt)}` : null },
     body: new TextEncoder().encode(JSON.stringify(answer.body)),
   };
 };
@@ -135,14 +136,14 @@ const transport: WritingTransport = async (request) => {
 const sends = (title: string) => sent.filter((item) => item.title === title).length;
 
 function titleService(runtime: StudioRuntime): TitleWritingService {
-  const providers = titleWritingProviderConfigs({ DASHSCOPE_API_KEY: STUB_KEY, BAILIAN_BASE_URL: QWEN_BASE, TITLE_WRITING_QWEN_MODELS: STUB_MODEL });
+  const providers = titleWritingProviderConfigs({ ANTHROPIC_API_KEY: STUB_KEY, TITLE_WRITING_ANTHROPIC_MODELS: STUB_MODEL });
   const store = new PostgresTitleWritingStore(runtime.pool, new TextChainService(runtime.pool));
   return new TitleWritingService({
     workspaceId: WORKSPACE,
     nodeEnv: "test",
     enabled: true,
     operatorToken: OPERATOR_TOKEN,
-    defaultProvider: "qwen",
+    defaultProvider: "anthropic",
     providers,
     store,
     engine: new TitleWritingEngine({ workspaceId: WORKSPACE, store, providers, transport, maxCallsPerDay: 200, timeoutMs: 30_000 }),
@@ -286,7 +287,7 @@ async function capture(name: string, ready: Locator, primary?: Locator): Promise
 /** Fills the start form on /create and starts; returns the work the page navigated to. */
 async function startOnPage(title: string): Promise<string> {
   await page.goto(`${WEB}/create`, { waitUntil: "domcontentloaded" });
-  await page.getByText("服务端已配置：千问").waitFor({ timeout: 30_000 });
+  await page.getByText("服务端已配置：Claude").waitFor({ timeout: 30_000 });
   await page.locator("#ai-title").fill(title);
   await page.locator("#ai-token").fill(OPERATOR_TOKEN);
   const navigated = page.waitForURL(/\/projects\/[0-9a-f-]{36}\/writing$/, { timeout: 30_000 });
@@ -370,7 +371,7 @@ beforeAll(async () => {
   evidence.database = { name: identity.name, serverVersion: identity.version, tablesBeforeWrite: identity.tables };
   // A new database through the normal chain: every released migration, the title writing one and the episode plan one.
   const migrated = await runMigrations(pool);
-  expect(migrated.applied.slice(-3)).toEqual([TITLE_WRITING_MIGRATION, EPISODE_PLAN_MIGRATION, SCRIPT_BREAKDOWN_MIGRATION]);
+  expect(migrated.applied.slice(-4)).toEqual([TITLE_WRITING_MIGRATION, EPISODE_PLAN_MIGRATION, SCRIPT_BREAKDOWN_MIGRATION, WRITING_PROVIDER_MIGRATION]);
   evidence.migrationsApplied = migrated.applied;
   await q("INSERT INTO workspace (id, name, status) VALUES ($1, 'title-browser-acceptance', 'ACTIVE')", [WORKSPACE]);
   if (shotsDir) await mkdir(shotsDir, { recursive: true });
@@ -436,10 +437,10 @@ describe("title writing in a real browser, real web and API, isolated PostgreSQL
     plans.set(MAIN_TITLE, (step, attempt) => step === "episode:1" && attempt === 1 ? { hold: gate.promise } : undefined);
 
     await page.goto(`${WEB}/create`, { waitUntil: "domcontentloaded" });
-    await page.getByText("服务端已配置：千问").waitFor({ timeout: 30_000 });
+    await page.getByText("服务端已配置：Claude").waitFor({ timeout: 30_000 });
     await page.locator("#ai-title").fill(MAIN_TITLE);
     await page.locator("#ai-token").fill(OPERATOR_TOKEN);
-    await capture("01-start", page.getByText("服务端已配置：千问"), page.getByRole("button", { name: "AI 一键创作" }));
+    await capture("01-start", page.getByText("服务端已配置：Claude"), page.getByRole("button", { name: "AI 一键创作" }));
     const before = pageWrites.length;
     const navigated = page.waitForURL(/\/projects\/[0-9a-f-]{36}\/writing$/, { timeout: 30_000 });
     await page.getByRole("button", { name: "AI 一键创作" }).click();
@@ -737,6 +738,6 @@ describe("title writing in a real browser, real web and API, isolated PostgreSQL
   it("no page error was raised and every model request went to the stub with the stub key", () => {
     expect(pageErrors).toEqual([]);
     expect(sent.every((item) => item.keyMatches)).toBe(true);
-    expect(new Set(sent.map((item) => item.endpoint))).toEqual(new Set(["dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"]));
+    expect(new Set(sent.map((item) => item.endpoint))).toEqual(new Set(["api.anthropic.com/v1/messages"]));
   });
 });

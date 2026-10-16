@@ -5,7 +5,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { StoryPlanCandidate, WritingTargetSnapshot } from "@ai-drama/domain/writing-assistant";
 import { Workbench } from "./workbench";
 import { WritingAssistant } from "./writing-assistant";
-import type { QwenWebClient } from "../lib/qwen-web-client";
 
 /** Handwritten fixture. This is not a model result. */
 const STORY_PLAN: StoryPlanCandidate = {
@@ -80,8 +79,10 @@ describe("writing assistant beside the editor", () => {
     window.history.replaceState(null, "", "/projects/project-1?focus=story");
     render(createElement(Workbench, { projectId: "project-1" }));
     fireEvent.click(await screen.findByRole("button", { name: "编剧助手" }));
-    expect(screen.getByText("可以通过外部 AI 创作后导入；服务端开启时，也可以由操作者向工作区千问请求候选。候选仍须比较、采纳到草稿，再手动保存。费用未知不会被写成 0。")).toBeTruthy();
-    expect((screen.getByRole("button", { name: "向工作区请求候选" }) as HTMLButtonElement).disabled).toBe(true);
+    // The retired workspace Qwen entry is gone: the assistant only prepares instructions and imports candidates.
+    expect(screen.getByText("本轮通过外部 AI 创作，网页不会自动调用模型。")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "向工作区请求候选" })).toBeNull();
+    expect(screen.queryByLabelText("操作者令牌")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "准备创作指令" }));
     const instruction = await screen.findByLabelText("创作指令") as HTMLTextAreaElement;
     expect(instruction.value).toContain("ads.writing.prompt.v1");
@@ -377,297 +378,50 @@ function storyTarget(): WritingTargetSnapshot {
   };
 }
 
-describe("workspace Qwen requests", () => {
-  it("keeps the workspace button disabled until the server reports the route ready", async () => {
-    const client = fakeQwen({ statusCode: "QWEN_WEB_STORAGE_UNAVAILABLE" });
-    render(createElement(WritingAssistant, { ...storyProps(), workspaceQwen: client }));
+describe("the retired workspace Qwen route", () => {
+  it("offers no way to call a model: no token field, no request, query or new-call button, and no network use", async () => {
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    render(createElement(WritingAssistant, storyProps()));
     fireEvent.click(screen.getByRole("button", { name: "编剧助手" }));
-    const button = screen.getByRole("button", { name: "向工作区请求候选" }) as HTMLButtonElement;
-    expect(button.disabled).toBe(true);
-    fireEvent.click(screen.getByRole("button", { name: "检查工作区调用" }));
-    expect(await screen.findByText("操作者令牌不正确")).toBeTruthy();
-    expect(client.status).not.toHaveBeenCalled();
-    fireEvent.change(screen.getByLabelText("操作者令牌"), { target: { value: "token-1234567890ab" } });
-    fireEvent.click(screen.getByRole("button", { name: "检查工作区调用" }));
-    expect(await screen.findByText("请求存储尚未就绪，服务端拒绝调用")).toBeTruthy();
-    expect(button.disabled).toBe(true);
-    fireEvent.click(button);
-    expect(client.request).not.toHaveBeenCalled();
-    expect(sessionStorage.getItem("ads-writing:project-1:story") ?? "").not.toContain("token-1234567890ab");
-  });
-
-  it("requests one candidate for the frozen input, replays the same key and does not save it", async () => {
-    const client = fakeQwen({ outcomes: [completed(), completed()] });
-    const onAdopt = vi.fn(() => true);
-    render(createElement(WritingAssistant, { ...storyProps({ onAdopt }), workspaceQwen: client }));
-    await readyAssistant();
-    fireEvent.click(screen.getByRole("button", { name: "向工作区请求候选" }));
-    expect(await screen.findByText("请先准备创作指令")).toBeTruthy();
-    expect(client.request).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "准备创作指令" }));
-    fireEvent.click(screen.getByRole("button", { name: "向工作区请求候选" }));
-    expect(await screen.findByText("候选已放进预览。费用未知。还要人工比较、采纳到草稿，再手动保存。")).toBeTruthy();
-    expect((screen.getByLabelText("候选正文") as HTMLTextAreaElement).value).toContain("手写测试候选");
-    expect(onAdopt).not.toHaveBeenCalled();
-    const [projectId, input, key, token] = client.request.mock.calls[0]!;
-    expect(projectId).toBe("project-1");
-    expect(input).toMatchObject({ schema: "qwen.writing.input.v1", mode: "story", premise: "夜班" });
-    expect(token).toBe("token-1234567890ab");
-    fireEvent.click(screen.getByRole("button", { name: "向工作区请求候选" }));
-    await waitFor(() => expect(client.request).toHaveBeenCalledTimes(2));
-    expect(client.request.mock.calls[1]?.[2]).toBe(key);
-  });
-
-  it("refuses a request after the input drifted from the frozen instruction", async () => {
-    const client = fakeQwen({ outcomes: [completed()] });
-    render(createElement(WritingAssistant, { ...storyProps(), workspaceQwen: client }));
-    await readyAssistant();
-    fireEvent.click(screen.getByRole("button", { name: "准备创作指令" }));
-    fireEvent.change(screen.getByLabelText("题材"), { target: { value: "改成喜剧" } });
-    fireEvent.click(screen.getByRole("button", { name: "向工作区请求候选" }));
-    expect(await screen.findByText("输入已变化，请重新准备创作指令")).toBeTruthy();
-    expect(client.request).not.toHaveBeenCalled();
-  });
-
-  it("keeps an unknown result without resending and needs an explicit confirmation for a new key", async () => {
-    const client = fakeQwen({ outcomes: [result("unknown"), completed()] });
-    render(createElement(WritingAssistant, { ...storyProps(), workspaceQwen: client }));
-    await readyAssistant();
-    fireEvent.click(screen.getByRole("button", { name: "准备创作指令" }));
-    fireEvent.click(screen.getByRole("button", { name: "向工作区请求候选" }));
-    expect(await screen.findByText(/结果未知：服务商可能已经处理并产生费用/)).toBeTruthy();
-    const fresh = screen.getByRole("button", { name: "发起新的调用" }) as HTMLButtonElement;
-    expect(fresh.disabled).toBe(true);
-    fireEvent.click(screen.getByLabelText("我确认发起一次新的调用，可能另外产生费用"));
-    fireEvent.click(screen.getByRole("button", { name: "发起新的调用" }));
-    await waitFor(() => expect(client.request).toHaveBeenCalledTimes(2));
-    expect(client.request.mock.calls[1]?.[2]).not.toBe(client.request.mock.calls[0]?.[2]);
-    expect(await screen.findByText("候选已放进预览。费用未知。还要人工比较、采纳到草稿，再手动保存。")).toBeTruthy();
-  });
-
-  it("queries a request that is still running instead of sending again", async () => {
-    const client = fakeQwen({ outcomes: [result("submitted")], lookups: [completed()] });
-    render(createElement(WritingAssistant, { ...storyProps(), workspaceQwen: client }));
-    await readyAssistant();
-    fireEvent.click(screen.getByRole("button", { name: "准备创作指令" }));
-    fireEvent.click(screen.getByRole("button", { name: "向工作区请求候选" }));
-    expect(await screen.findByText("请求仍在处理。可以稍后查询，不会重复调用。")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "查询请求状态" }));
-    expect(await screen.findByText("候选已放进预览。费用未知。还要人工比较、采纳到草稿，再手动保存。")).toBeTruthy();
-    expect(client.get).toHaveBeenCalledWith("project-1", "request-1", "token-1234567890ab");
-    expect(client.request).toHaveBeenCalledTimes(1);
-  });
-
-  it("drops a late response after the project changed", async () => {
-    let release!: (value: unknown) => void;
-    const client = fakeQwen({ outcomes: [] });
-    client.request.mockImplementation(() => new Promise((resolve) => { release = resolve; }) as never);
-    const view = render(createElement(WritingAssistant, { ...storyProps(), workspaceQwen: client }));
-    await readyAssistant();
-    fireEvent.click(screen.getByRole("button", { name: "准备创作指令" }));
-    fireEvent.click(screen.getByRole("button", { name: "向工作区请求候选" }));
-    await waitFor(() => expect(client.request).toHaveBeenCalledTimes(1));
-    view.rerender(createElement(WritingAssistant, { ...storyProps(), projectId: "project-2", workspaceQwen: client }));
-    release(await completed());
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(screen.queryByText("候选已放进预览。费用未知。还要人工比较、采纳到草稿，再手动保存。")).toBeNull();
-    expect(screen.queryByLabelText("候选正文")).toBeNull();
-  });
-
-  it("does not import an old request's candidate into a newly prepared instruction (review P1)", async () => {
-    const client = fakeQwen({ outcomes: [result("submitted")], lookups: [completed()] });
-    const onAdopt = vi.fn(() => true);
-    render(createElement(WritingAssistant, { ...storyProps({ onAdopt }), workspaceQwen: client }));
-    await readyAssistant();
-    fireEvent.click(screen.getByRole("button", { name: "准备创作指令" }));
-    fireEvent.click(screen.getByRole("button", { name: "向工作区请求候选" }));
-    expect(await screen.findByText("请求仍在处理。可以稍后查询，不会重复调用。")).toBeTruthy();
-    fireEvent.change(screen.getByLabelText("题材"), { target: { value: "改成温情" } });
-    fireEvent.click(screen.getByRole("button", { name: "准备创作指令" }));
-    fireEvent.click(screen.getByRole("button", { name: "查询请求状态" }));
-    expect(await screen.findByText(/这个请求属于之前准备的指令/)).toBeTruthy();
-    expect(client.get).toHaveBeenCalledTimes(1);
-    expect(screen.queryByLabelText("候选正文")).toBeNull();
-    expect(screen.queryByRole("button", { name: "采纳到草稿" })).toBeNull();
-    expect(onAdopt).not.toHaveBeenCalled();
-  });
-
-  it("keeps an unknown request's key across a remount and needs confirmation to rotate it (review P1)", async () => {
-    const client = fakeQwen({ outcomes: [result("unknown"), result("unknown"), completed()] });
-    const first = render(createElement(WritingAssistant, { ...storyProps(), workspaceQwen: client }));
-    await readyAssistant();
-    fireEvent.click(screen.getByRole("button", { name: "准备创作指令" }));
-    fireEvent.click(screen.getByRole("button", { name: "向工作区请求候选" }));
-    expect(await screen.findByText(/结果未知：服务商可能已经处理并产生费用/)).toBeTruthy();
-    const firstKey = client.request.mock.calls[0]?.[2];
-    first.unmount();
-
-    render(createElement(WritingAssistant, { ...storyProps(), workspaceQwen: client }));
-    await readyAssistant();
-    expect(screen.getByText(/上次请求结果未知/)).toBeTruthy();
-    expect(screen.getByLabelText("我确认发起一次新的调用，可能另外产生费用")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "向工作区请求候选" }));
-    await waitFor(() => expect(client.request).toHaveBeenCalledTimes(2));
-    expect(client.request.mock.calls[1]?.[2]).toBe(firstKey);
-    expect(client.request.mock.calls[1]?.[1]).toEqual(client.request.mock.calls[0]?.[1]);
-
-    fireEvent.change(screen.getByLabelText("题材"), { target: { value: "改成温情" } });
-    fireEvent.click(screen.getByRole("button", { name: "准备创作指令" }));
-    fireEvent.click(screen.getByRole("button", { name: "向工作区请求候选" }));
-    expect(await screen.findByText(/上一次请求的结果还没有确定/)).toBeTruthy();
-    expect(client.request).toHaveBeenCalledTimes(2);
-    fireEvent.click(screen.getByLabelText("我确认发起一次新的调用，可能另外产生费用"));
-    fireEvent.click(screen.getByRole("button", { name: "发起新的调用" }));
-    await waitFor(() => expect(client.request).toHaveBeenCalledTimes(3));
-    expect(client.request.mock.calls[2]?.[2]).not.toBe(firstKey);
-    expect(JSON.stringify({ ...sessionStorage })).not.toContain("token-1234567890ab");
-  });
-
-  it("replays a lost answer with the persisted key and body after a refresh (review P1)", async () => {
-    const client = fakeQwen({ outcomes: [] });
-    client.request.mockImplementationOnce(() => Promise.reject(new TypeError("network down")));
-    const first = render(createElement(WritingAssistant, { ...storyProps(), workspaceQwen: client }));
-    await readyAssistant();
-    fireEvent.click(screen.getByRole("button", { name: "准备创作指令" }));
-    fireEvent.click(screen.getByRole("button", { name: "向工作区请求候选" }));
-    expect(await screen.findByText(/连接中断，结果未知/)).toBeTruthy();
-    const lostKey = client.request.mock.calls[0]?.[2];
-    const stored = JSON.parse(sessionStorage.getItem("ads-writing-qwen:project-1:story") ?? "null") as { key: string; state: string };
-    expect(stored).toMatchObject({ key: lostKey, state: "sending" });
-    first.unmount();
-
-    render(createElement(WritingAssistant, { ...storyProps(), workspaceQwen: client }));
-    await readyAssistant();
-    expect(screen.getByText(/上次请求没有收到回执/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "用原请求标识重新读取" }));
-    expect(await screen.findByText("候选已放进预览。费用未知。还要人工比较、采纳到草稿，再手动保存。")).toBeTruthy();
-    expect(client.request.mock.calls[1]?.[2]).toBe(lostKey);
-    expect(client.request.mock.calls[1]?.[1]).toEqual(client.request.mock.calls[0]?.[1]);
-  });
-
-  it("does not send when the request identity cannot be saved first", async () => {
-    const client = fakeQwen({ outcomes: [completed()] });
-    render(createElement(WritingAssistant, { ...storyProps(), workspaceQwen: client }));
-    await readyAssistant();
-    fireEvent.click(screen.getByRole("button", { name: "准备创作指令" }));
-    const original = window.sessionStorage.setItem.bind(window.sessionStorage);
-    const setItem = vi.spyOn(window.sessionStorage, "setItem").mockImplementation((name: string, value: string) => {
-      if (name.startsWith("ads-writing-qwen:")) throw new Error("quota");
-      original(name, value);
-    });
-    fireEvent.click(screen.getByRole("button", { name: "向工作区请求候选" }));
-    expect(await screen.findByText("无法在本页保存请求标识，没有发送请求。")).toBeTruthy();
-    expect(client.request).not.toHaveBeenCalled();
-    setItem.mockRestore();
-  });
-
-  it("warns before sending and never creates a request identity for an input over 256,000 UTF-8 bytes", async () => {
-    // Every field within its character limit (20,000 per body, 1,000 per note), 45,000 characters in all, but
-    // \u0001 serializes to six bytes: about 270,000 UTF-8 bytes. String length would have let it through.
-    const control = (count: number) => "\u0001".repeat(count);
-    const client = fakeQwen({ outcomes: [completed()] });
-    render(createElement(WritingAssistant, {
-      ...storyProps(), mode: "episode", entityKey: "script:episode-1", episodeNo: 1, premise: control(1_000),
-      confirmedMaterials: control(20_000), capture: () => ({ ...storyTarget(), entityKey: "script:episode-1", mode: "episode" as const, episodeNo: 1,
-        currentText: control(20_000) }),
-      workspaceQwen: client,
-    }));
-    await readyAssistant();
-    for (const label of ["题材", "目标观众", "人物设定", "修改要求"]) {
-      fireEvent.change(screen.getByLabelText(label), { target: { value: control(1_000) } });
+    for (const name of ["向工作区请求候选", "检查工作区调用", "用原请求标识重新读取", "查询请求状态", "发起新的调用"]) {
+      expect(screen.queryByRole("button", { name })).toBeNull();
     }
-    fireEvent.click(screen.getByRole("checkbox", { name: "确认使用当前已加载的故事与分集材料" }));
-    fireEvent.click(screen.getByRole("button", { name: "准备创作指令" }));
-    const alert = await screen.findByText(/字节（按 UTF-8 计），超过 256,000 字节上限/);
-    expect(alert.textContent).toMatch(/输入为 27\d,\d{3} 字节/);
-    const button = screen.getByRole("button", { name: "向工作区请求候选" }) as HTMLButtonElement;
-    expect(button.disabled).toBe(true);
-    fireEvent.click(button);
-    expect(client.request).not.toHaveBeenCalled();
-    expect(Object.keys(sessionStorage).some((name) => name.startsWith("ads-writing-qwen:"))).toBe(false);
+    expect(screen.queryByLabelText("操作者令牌")).toBeNull();
+    expect(screen.queryByText(/工作区千问/)).toBeNull();
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it.each([
-    ["用原请求标识重新读取", "the replay button"],
-    ["向工作区请求候选", "the same-frozen replay"],
-  ])("holds a restored request stored before the byte cap to the same limit: %s (PR #49 review 3)", async (label) => {
-    const client = fakeQwen({ outcomes: [] });
-    client.request.mockImplementationOnce(() => Promise.reject(new TypeError("network down")));
-    const first = render(createElement(WritingAssistant, { ...storyProps(), workspaceQwen: client }));
-    await readyAssistant();
-    fireEvent.click(screen.getByRole("button", { name: "准备创作指令" }));
-    fireEvent.click(screen.getByRole("button", { name: "向工作区请求候选" }));
-    expect(await screen.findByText(/连接中断，结果未知/)).toBeTruthy();
-    first.unmount();
-    // A version-1 record written by a page from before the cap: same key and frozen instruction, oversized input.
-    const name = "ads-writing-qwen:project-1:story";
-    const stored = JSON.parse(sessionStorage.getItem(name) ?? "null") as { version: number; input: Record<string, unknown> };
-    expect(stored.version).toBe(1);
-    stored.input = { ...stored.input, premise: "".repeat(50_000) };
-    sessionStorage.setItem(name, JSON.stringify(stored));
-
-    render(createElement(WritingAssistant, { ...storyProps(), workspaceQwen: client }));
-    await readyAssistant();
-    fireEvent.click(screen.getByRole("button", { name: label }));
-    const alert = await screen.findByText(/字节（按 UTF-8 计），超过 256,000 字节上限/);
-    expect(alert.textContent).toMatch(/输入为 3\d\d,\d{3} 字节/);
-    expect(client.request).toHaveBeenCalledTimes(1);
-    // Codex review on ae20cc9: the refused record must not stay "sending" (a replay that can never succeed). Its outcome
-    // cannot be read any more and it may have been sent before the cap, so it settles as unknown, not rejected.
-    expect(await screen.findByText(/原请求的输入超过上限，无法再用原请求标识读取结果/)).toBeTruthy();
-    const settled = JSON.parse(sessionStorage.getItem(name) ?? "null") as { state: string; key: string };
-    expect(settled.state).toBe("unknown");
-    expect(screen.queryByRole("button", { name: "用原请求标识重新读取" })).toBeNull();
-    // A new call is still possible after the usual confirmation, with a new key and the current (in-limit) input.
-    fireEvent.click(screen.getByRole("checkbox", { name: "我确认发起一次新的调用，可能另外产生费用" }));
-    fireEvent.click(screen.getByRole("button", { name: "发起新的调用" }));
-    await waitFor(() => expect(client.request).toHaveBeenCalledTimes(2));
-    expect(client.request.mock.calls[1]?.[2]).not.toBe(settled.key);
+    ["unknown", "它的结果没有确认：服务商可能已经处理并产生费用，费用未知。"],
+    ["sending", "它的结果没有确认：服务商可能已经处理并产生费用，费用未知。"],
+    ["submitted", "它的结果没有确认：服务商可能已经处理并产生费用，费用未知。"],
+    ["completed", "它当时已经完成；费用未知。"],
+    ["rejected", "它当时被拒绝，没有候选。"],
+  ])("tells what became of a %s request this tab sent earlier, without sending, replaying or deleting it", async (state, note) => {
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    const record = JSON.stringify({ version: 1, projectId: "project-1", entityKey: "story", key: "11111111-1111-4111-8111-111111111111",
+      fingerprint: "f", frozen: { inputFingerprint: "f" }, input: { schema: "qwen.writing.input.v1" }, requestId: null, state, candidateGone: false });
+    sessionStorage.setItem("ads-writing-qwen:project-1:story", record);
+    render(createElement(WritingAssistant, storyProps()));
+    fireEvent.click(screen.getByRole("button", { name: "编剧助手" }));
+    expect(screen.getByRole("status").textContent).toBe(`工作区千问调用已经退役，网页不会再发送、重放或查询这条请求。${note}`);
+    expect(sessionStorage.getItem("ads-writing-qwen:project-1:story")).toBe(record);
+    expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("shows the server's byte-cap refusal without changing the request record", async () => {
-    const client = fakeQwen({ outcomes: [Promise.resolve({ ok: false, httpStatus: 413, code: "QWEN_WEB_INPUT_TOO_LARGE" } as Outcome)] });
-    render(createElement(WritingAssistant, { ...storyProps(), workspaceQwen: client }));
-    await readyAssistant();
-    fireEvent.click(screen.getByRole("button", { name: "准备创作指令" }));
-    fireEvent.click(screen.getByRole("button", { name: "向工作区请求候选" }));
-    expect(await screen.findByText("输入超过 256,000 字节上限，服务端没有预约或发送")).toBeTruthy();
-    expect(client.request).toHaveBeenCalledTimes(1);
+  it("shows nothing for another work's record, and the note follows the work that is open", async () => {
+    sessionStorage.setItem("ads-writing-qwen:project-2:story", JSON.stringify({ version: 1, projectId: "project-2", entityKey: "story",
+      key: "k", fingerprint: "f", frozen: {}, input: {}, requestId: null, state: "unknown", candidateGone: false }));
+    const view = render(createElement(WritingAssistant, storyProps()));
+    fireEvent.click(screen.getByRole("button", { name: "编剧助手" }));
+    expect(screen.queryByText(/工作区千问调用已经退役/)).toBeNull();
+    view.rerender(createElement(WritingAssistant, { ...storyProps(), projectId: "project-2" }));
+    expect(await screen.findByText(/工作区千问调用已经退役/)).toBeTruthy();
   });
 });
-
-type Outcome = Awaited<ReturnType<QwenWebClient["request"]>>;
-
-function result(state: "completed" | "unknown" | "submitted" | "rejected", candidateJson: string | null = null): Promise<Outcome> {
-  return Promise.resolve({
-    ok: true, httpStatus: state === "unknown" ? 502 : 200, requestCount: 1,
-    request: { requestId: "request-1", projectId: "project-1", mode: "story", episodeNo: null, state,
-      errorCode: state === "unknown" ? "timeout" : null, providerResult: state === "unknown" ? "unknown" : "completed",
-      candidateJson, candidateExpiresAt: null, candidateExpired: false, billingStatus: "unknown" },
-  } as Outcome);
-}
-
-function completed(): Promise<Outcome> {
-  return result("completed", JSON.stringify(STORY_PLAN));
-}
-
-function fakeQwen(options: { statusCode?: string; outcomes?: Array<Promise<Outcome>>; lookups?: Array<Promise<Outcome>> }) {
-  const outcomes = [...(options.outcomes ?? [])];
-  const lookups = [...(options.lookups ?? [])];
-  const code = options.statusCode ?? "QWEN_WEB_READY";
-  return {
-    status: vi.fn(async (_token: string) => ({ code, ready: code === "QWEN_WEB_READY", model: "qwen-test", retentionDays: 7 })),
-    request: vi.fn((_projectId: string, _input: unknown, _key: string, _token: string) => outcomes.shift() ?? completed()),
-    get: vi.fn((_projectId: string, _requestId: string, _token: string) => lookups.shift() ?? completed()),
-  };
-}
-
-async function readyAssistant() {
-  fireEvent.click(screen.getByRole("button", { name: "编剧助手" }));
-  fireEvent.change(screen.getByLabelText("操作者令牌"), { target: { value: "token-1234567890ab" } });
-  fireEvent.click(screen.getByRole("button", { name: "检查工作区调用" }));
-  expect(await screen.findByText("工作区调用可用，模型 qwen-test")).toBeTruthy();
-}
 
 function storyProps(extra?: Partial<{ onAdopt: (text: string) => boolean; readFile: (file: File) => Promise<ArrayBuffer> }>) {
   return {

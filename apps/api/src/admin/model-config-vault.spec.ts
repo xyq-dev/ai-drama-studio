@@ -1,10 +1,10 @@
-import { createCipheriv, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AdminLimitsUpdate, AdminProviderUpdate } from "@ai-drama/contracts";
-import { ModelConfigVault, type ManagedModelSettings } from "./model-config-vault";
+import { ModelConfigVault, V1_BACKUP_SUFFIX, type ManagedModelSettings } from "./model-config-vault";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
@@ -12,18 +12,18 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 });
 
 const SECRET = "sk-vault-private-test-123456789";
-const FORMAT = "ai-drama-studio.admin-model-vault.v1";
+const FORMAT = "ai-drama-studio.admin-model-vault.v2";
+const FORMAT_V1 = "ai-drama-studio.admin-model-vault.v1";
 const FILES = ["model-config.enc", "model-config.enc.initialized"];
 const initial = (): ManagedModelSettings => ({
-  revision: 0, defaultProvider: "qwen", maxCallsPerDay: 30, maxActiveRuns: 1,
+  revision: 0, defaultProvider: "anthropic", maxCallsPerDay: 30, maxActiveRuns: 1,
   providers: {
-    qwen: { apiKey: null, baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", models: ["qwen-test"] },
     openai: { apiKey: null, baseUrl: "https://api.openai.com/v1/responses", models: [] },
-    deepseek: { apiKey: null, baseUrl: "https://api.deepseek.com/chat/completions", models: [] },
+    anthropic: { apiKey: null, baseUrl: "https://api.anthropic.com/v1/messages", models: ["claude-test"] },
   },
 });
 const update = (expectedRevision = 0): AdminProviderUpdate => ({
-  expectedRevision, secretAction: "replace", apiKey: SECRET, models: ["qwen-test"],
+  expectedRevision, secretAction: "replace", apiKey: SECRET, models: ["claude-test"],
 });
 const directories: string[] = [];
 
@@ -39,12 +39,60 @@ async function harness() {
     reopen: () => ModelConfigVault.open({ path, masterKey, initial: initial() }) };
 }
 
-async function seal(path: string, masterKey: Buffer, value: unknown, aad = FORMAT) {
+async function seal(path: string, masterKey: Buffer, value: unknown, aad = FORMAT, format = FORMAT) {
   const nonce = randomBytes(12);
   const cipher = createCipheriv("aes-256-gcm", masterKey, nonce);
   cipher.setAAD(Buffer.from(aad));
   const ciphertext = Buffer.concat([cipher.update(JSON.stringify(value)), cipher.final()]);
-  await fs.writeFile(path, JSON.stringify({ format: FORMAT, nonce: nonce.toString("base64"), tag: cipher.getAuthTag().toString("base64"), ciphertext: ciphertext.toString("base64") }), { mode: 0o600 });
+  await fs.writeFile(path, JSON.stringify({ format, nonce: nonce.toString("base64"), tag: cipher.getAuthTag().toString("base64"), ciphertext: ciphertext.toString("base64") }), { mode: 0o600 });
+}
+
+/** What the released (v1) code reads: the v1 envelope, the v1 AAD and the v1 document. */
+function openV1(bytes: Buffer, masterKey: Buffer): Record<string, unknown> {
+  const envelope = JSON.parse(bytes.toString("utf8")) as { format: string; nonce: string; tag: string; ciphertext: string };
+  expect(envelope.format).toBe(FORMAT_V1);
+  const decipher = createDecipheriv("aes-256-gcm", masterKey, Buffer.from(envelope.nonce, "base64"));
+  decipher.setAAD(Buffer.from(FORMAT_V1));
+  decipher.setAuthTag(Buffer.from(envelope.tag, "base64"));
+  return JSON.parse(Buffer.concat([decipher.update(Buffer.from(envelope.ciphertext, "base64")), decipher.final()]).toString("utf8")) as Record<string, unknown>;
+}
+
+const QWEN_SECRET = "sk-retired-qwen-secret-0123456789";
+const DEEPSEEK_SECRET = "sk-retired-deepseek-secret-012345";
+const OPENAI_SECRET = "sk-kept-openai-secret-0123456789";
+/** A configuration as the released three-provider console saved it: saved revision 3, active 2 (a restart pending). */
+function v1Document() {
+  const settings = (revision: number, defaultProvider: string) => ({
+    revision, defaultProvider, maxCallsPerDay: 12, maxActiveRuns: 2,
+    providers: {
+      qwen: { apiKey: QWEN_SECRET, baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", models: ["qwen3.7-plus-2026-05-26"] },
+      openai: { apiKey: OPENAI_SECRET, baseUrl: "https://api.openai.com/v1/responses", models: ["gpt-6-luna", "gpt-6-astra"] },
+      deepseek: { apiKey: DEEPSEEK_SECRET, baseUrl: "https://api.deepseek.com/chat/completions", models: ["deepseek-flash"] },
+    },
+  });
+  return {
+    active: settings(2, "qwen"),
+    saved: settings(3, "qwen"),
+    audit: [
+      { at: "2026-10-10T00:00:00.000Z", action: "provider_updated", providerKey: "qwen", revision: 1 },
+      { at: "2026-10-10T00:01:00.000Z", action: "provider_updated", providerKey: "openai", revision: 2 },
+      { at: "2026-10-10T00:02:00.000Z", action: "activated", revision: 2 },
+      { at: "2026-10-10T00:03:00.000Z", action: "provider_updated", providerKey: "deepseek", revision: 3 },
+    ],
+  };
+}
+
+/** A private directory holding a v1 vault file and its marker, exactly as the released code left it. */
+async function v1Harness() {
+  const directory = await fs.mkdtemp(join(tmpdir(), "ads-admin-vault-v1-"));
+  directories.push(directory);
+  await fs.chmod(directory, 0o700);
+  const path = join(directory, "model-config.enc");
+  const masterKey = randomBytes(32);
+  await seal(path, masterKey, v1Document(), FORMAT_V1, FORMAT_V1);
+  await fs.writeFile(`${path}.initialized`, `${FORMAT_V1}.initialized\n`, { mode: 0o600 });
+  const original = await fs.readFile(path);
+  return { directory, path, masterKey, original, open: () => ModelConfigVault.open({ path, masterKey, initial: initial() }) };
 }
 
 afterEach(async () => {
@@ -62,9 +110,9 @@ describe.skipIf(process.platform === "win32")("ModelConfigVault real private fil
     vi.stubGlobal("fetch", fetch);
     const h = await harness();
     const one = await h.vault.read();
-    one.saved.providers.qwen.models.push("not-saved");
-    h.settings.providers.qwen.apiKey = "mutated-external-secret";
-    expect((await h.vault.read()).saved.providers.qwen).toEqual(initial().providers.qwen);
+    one.saved.providers.anthropic.models.push("not-saved");
+    h.settings.providers.anthropic.apiKey = "mutated-external-secret";
+    expect((await h.vault.read()).saved.providers.anthropic).toEqual(initial().providers.anthropic);
     expect(await fs.readdir(h.directory)).toEqual(FILES);
     expect((await fs.stat(`${h.path}.initialized`)).mode & 0o777).toBe(0o600);
     expect(fetch).not.toHaveBeenCalled();
@@ -72,24 +120,24 @@ describe.skipIf(process.platform === "win32")("ModelConfigVault real private fil
 
   it("encrypts all saved settings, uses 600 files, and restores them after restart", async () => {
     const h = await harness();
-    await h.vault.updateProvider("qwen", update());
+    await h.vault.updateProvider("anthropic", update());
     const encrypted = await fs.readFile(h.path, "utf8");
-    for (const plaintext of [SECRET, "qwen-test", "maxCallsPerDay", "dashscope.aliyuncs.com"]) expect(encrypted).not.toContain(plaintext);
+    for (const plaintext of [SECRET, "claude-test", "maxCallsPerDay", "api.anthropic.com"]) expect(encrypted).not.toContain(plaintext);
     expect((await fs.stat(h.path)).mode & 0o777).toBe(0o600);
     const doc = await (await h.reopen()).read();
     expect(doc.saved.revision).toBe(1);
-    expect(doc.saved.providers.qwen.apiKey).toBe(SECRET);
-    expect(doc.active.providers.qwen.apiKey).toBeNull();
-    expect(doc.audit).toEqual([expect.objectContaining({ action: "provider_updated", revision: 1, providerKey: "qwen" })]);
+    expect(doc.saved.providers.anthropic.apiKey).toBe(SECRET);
+    expect(doc.active.providers.anthropic.apiKey).toBeNull();
+    expect(doc.audit).toEqual([expect.objectContaining({ action: "provider_updated", revision: 1, providerKey: "anthropic" })]);
     expect(JSON.stringify(doc.audit)).not.toContain(SECRET);
     expect(await fs.readdir(h.directory)).toEqual(FILES);
   });
 
   it("uses a fresh GCM nonce for every save", async () => {
     const h = await harness();
-    await h.vault.updateProvider("qwen", update());
+    await h.vault.updateProvider("anthropic", update());
     const first = JSON.parse(await fs.readFile(h.path, "utf8"));
-    await h.vault.updateProvider("qwen", { ...update(1), secretAction: "keep", apiKey: undefined });
+    await h.vault.updateProvider("anthropic", { ...update(1), secretAction: "keep", apiKey: undefined });
     const second = JSON.parse(await fs.readFile(h.path, "utf8"));
     expect(first.nonce).not.toBe(second.nonce);
     expect(Buffer.from(first.nonce, "base64")).toHaveLength(12);
@@ -97,7 +145,7 @@ describe.skipIf(process.platform === "win32")("ModelConfigVault real private fil
 
   it("does not fall back to initial settings for wrong master keys or altered authentication tags", async () => {
     const h = await harness();
-    await h.vault.updateProvider("qwen", update());
+    await h.vault.updateProvider("anthropic", update());
     await expect(ModelConfigVault.open({ path: h.path, masterKey: randomBytes(32), initial: initial() }))
       .rejects.toMatchObject({ status: 503, code: "ADMIN_CONFIG_STORAGE_UNAVAILABLE" });
     const before = await fs.readFile(h.path, "utf8");
@@ -105,7 +153,7 @@ describe.skipIf(process.platform === "win32")("ModelConfigVault real private fil
     envelope.tag = randomBytes(16).toString("base64");
     await fs.writeFile(h.path, JSON.stringify(envelope));
     await expect(h.reopen()).rejects.toMatchObject({ status: 503 });
-    await expect(h.vault.updateProvider("qwen", update(1))).rejects.toMatchObject({ status: 503 });
+    await expect(h.vault.updateProvider("anthropic", update(1))).rejects.toMatchObject({ status: 503 });
     expect(await fs.readFile(h.path, "utf8")).toBe(JSON.stringify(envelope));
   });
 
@@ -151,7 +199,7 @@ describe.skipIf(process.platform === "win32")("ModelConfigVault real private fil
     await fs.chmod(h.directory, 0o755);
     await expect(h.reopen()).rejects.toMatchObject({ status: 503 });
     await fs.chmod(h.directory, 0o700);
-    await h.vault.updateProvider("qwen", update());
+    await h.vault.updateProvider("anthropic", update());
     await fs.chmod(h.path, 0o644);
     await expect(h.reopen()).rejects.toMatchObject({ status: 503 });
     await fs.chmod(h.path, 0o600);
@@ -168,36 +216,36 @@ describe.skipIf(process.platform === "win32")("ModelConfigVault real private fil
 
   it("does not silently revert to environment settings if an observed vault is removed", async () => {
     const h = await harness();
-    await h.vault.updateProvider("qwen", update());
+    await h.vault.updateProvider("anthropic", update());
     await fs.unlink(h.path);
     await expect(h.vault.read()).rejects.toMatchObject({ status: 503 });
-    await expect(h.vault.updateProvider("qwen", update())).rejects.toMatchObject({ status: 503 });
+    await expect(h.vault.updateProvider("anthropic", update())).rejects.toMatchObject({ status: 503 });
     await expect(h.reopen()).rejects.toMatchObject({ status: 503 });
     expect(await fs.readdir(h.directory)).toEqual(["model-config.enc.initialized"]);
   });
 
   it("refuses a missing vault after restart instead of reviving credentials from the environment", async () => {
     const h = await harness();
-    await h.vault.updateProvider("qwen", update());
+    await h.vault.updateProvider("anthropic", update());
     await h.vault.activateIfIdle(async () => true);
-    await h.vault.updateProvider("qwen", { expectedRevision: 1, models: [], secretAction: "clear" });
+    await h.vault.updateProvider("anthropic", { expectedRevision: 1, models: [], secretAction: "clear" });
     await h.vault.activateIfIdle(async () => true);
     await fs.unlink(h.path);
     const obsoleteEnvironment = initial();
-    obsoleteEnvironment.providers.qwen.apiKey = SECRET;
+    obsoleteEnvironment.providers.anthropic.apiKey = SECRET;
     await expect(ModelConfigVault.open({ path: h.path, masterKey: h.masterKey, initial: obsoleteEnvironment })).rejects.toMatchObject({ status: 503 });
     expect(await fs.readdir(h.directory)).toEqual(["model-config.enc.initialized"]);
   });
 
   it("recovers an interrupted first initialization only from the verified ciphertext", async () => {
     const h = await harness();
-    await h.vault.updateProvider("qwen", update());
+    await h.vault.updateProvider("anthropic", update());
     await fs.unlink(`${h.path}.initialized`);
     await expect(h.vault.read()).rejects.toMatchObject({ status: 503 });
     const changedEnvironment = initial();
-    changedEnvironment.providers.qwen.apiKey = "different-environment-key";
+    changedEnvironment.providers.anthropic.apiKey = "different-environment-key";
     const recovered = await ModelConfigVault.open({ path: h.path, masterKey: h.masterKey, initial: changedEnvironment });
-    expect((await recovered.read()).saved.providers.qwen.apiKey).toBe(SECRET);
+    expect((await recovered.read()).saved.providers.anthropic.apiKey).toBe(SECRET);
     expect(await fs.readdir(h.directory)).toEqual(FILES);
     await fs.writeFile(`${h.path}.initialized`, "corrupt marker");
     await expect(h.reopen()).rejects.toMatchObject({ status: 503 });
@@ -213,18 +261,18 @@ describe.skipIf(process.platform === "win32")("ModelConfigVault real private fil
       return rename(from, to);
     });
     const first = initial();
-    first.providers.qwen.apiKey = SECRET;
+    first.providers.anthropic.apiKey = SECRET;
     await expect(ModelConfigVault.open({ path: h.path, masterKey: h.masterKey, initial: first })).rejects.toMatchObject({ status: 503 });
     expect(await fs.readdir(h.directory)).toEqual(["model-config.enc"]);
     vi.mocked(fs.rename).mockReset();
     const recovered = await h.reopen();
-    expect((await recovered.read()).active.providers.qwen.apiKey).toBe(SECRET);
+    expect((await recovered.read()).active.providers.anthropic.apiKey).toBe(SECRET);
     expect(await fs.readdir(h.directory)).toEqual(FILES);
   });
 
   it("serializes same-instance writes and rejects stale revisions", async () => {
     const h = await harness();
-    const results = await Promise.allSettled([h.vault.updateProvider("qwen", update()), h.vault.updateProvider("qwen", update())]);
+    const results = await Promise.allSettled([h.vault.updateProvider("anthropic", update()), h.vault.updateProvider("anthropic", update())]);
     expect(results.filter((entry) => entry.status === "fulfilled")).toHaveLength(1);
     expect(results.find((entry) => entry.status === "rejected")).toMatchObject({ reason: { status: 409, code: "ADMIN_CONFIG_CONFLICT" } });
     expect((await h.vault.read()).saved.revision).toBe(1);
@@ -233,41 +281,42 @@ describe.skipIf(process.platform === "win32")("ModelConfigVault real private fil
   it("uses an exclusive filesystem lock for CAS across independent vault instances", async () => {
     const h = await harness();
     const other = await h.reopen();
-    const results = await Promise.allSettled([h.vault.updateProvider("qwen", update()), other.updateProvider("qwen", update())]);
+    const results = await Promise.allSettled([h.vault.updateProvider("anthropic", update()), other.updateProvider("anthropic", update())]);
     expect(results.filter((entry) => entry.status === "fulfilled")).toHaveLength(1);
     expect(results.find((entry) => entry.status === "rejected")).toMatchObject({ reason: { status: 409 } });
     expect((await h.vault.read()).saved.revision).toBe(1);
-    await expect(other.updateProvider("qwen", update())).rejects.toMatchObject({ code: "ADMIN_CONFIG_CONFLICT" });
+    await expect(other.updateProvider("anthropic", update())).rejects.toMatchObject({ code: "ADMIN_CONFIG_CONFLICT" });
     expect(await fs.readdir(h.directory)).toEqual(FILES);
   });
 
   it("never steals a leftover writer lock", async () => {
     const h = await harness();
     await fs.writeFile(`${h.path}.lock`, "old lock", { mode: 0o600 });
-    await expect(h.vault.updateProvider("qwen", update())).rejects.toMatchObject({ status: 409, code: "ADMIN_CONFIG_BUSY" });
+    await expect(h.vault.updateProvider("anthropic", update())).rejects.toMatchObject({ status: 409, code: "ADMIN_CONFIG_BUSY" });
     expect(await fs.readFile(`${h.path}.lock`, "utf8")).toBe("old lock");
   });
 
   it("keeps, replaces, and clears secrets explicitly, without applying them to the active settings", async () => {
     const h = await harness();
-    await h.vault.updateProvider("qwen", update());
-    await h.vault.updateProvider("qwen", { expectedRevision: 1, secretAction: "keep", models: ["another-model"] });
-    expect((await h.vault.read()).saved.providers.qwen.apiKey).toBe(SECRET);
-    await h.vault.updateProvider("qwen", { expectedRevision: 2, secretAction: "clear", models: [] });
+    await h.vault.updateProvider("anthropic", update());
+    await h.vault.updateProvider("anthropic", { expectedRevision: 1, secretAction: "keep", models: ["another-model"] });
+    expect((await h.vault.read()).saved.providers.anthropic.apiKey).toBe(SECRET);
+    await h.vault.updateProvider("anthropic", { expectedRevision: 2, secretAction: "clear", models: [] });
     const doc = await h.vault.read();
-    expect(doc.saved.providers.qwen).toMatchObject({ apiKey: null, models: [] });
+    expect(doc.saved.providers.anthropic).toMatchObject({ apiKey: null, models: [] });
     expect(doc.active.revision).toBe(0);
-    await expect(h.vault.updateProvider("qwen", { expectedRevision: 3, secretAction: "keep", models: [], apiKey: SECRET })).rejects.toMatchObject({ status: 400 });
+    await expect(h.vault.updateProvider("anthropic", { expectedRevision: 3, secretAction: "keep", models: [], apiKey: SECRET })).rejects.toMatchObject({ status: 400 });
   });
 
   it.each([
-    ["qwen", "http://dashscope.aliyuncs.com/compatible-mode/v1"],
-    ["qwen", "https://127.0.0.1/compatible-mode/v1"],
-    ["qwen", "https://dashscope.aliyuncs.com.attacker.test/compatible-mode/v1"],
-    ["qwen", "https://secret@dashscope.aliyuncs.com/compatible-mode/v1"],
-    ["qwen", "https://dashscope.aliyuncs.com/compatible-mode/v1?key=secret"],
+    ["anthropic", "http://api.anthropic.com/v1/messages"],
+    ["anthropic", "https://127.0.0.1/v1/messages"],
+    ["anthropic", "https://api.anthropic.com.attacker.test/v1/messages"],
+    ["anthropic", "https://secret@api.anthropic.com/v1/messages"],
+    ["anthropic", "https://api.anthropic.com/v1/messages?key=secret"],
+    ["anthropic", ""],
     ["openai", "https://example.com/v1/responses"],
-    ["deepseek", "https://api.deepseek.com/chat/completions#secret"],
+    ["openai", "https://api.openai.com/v1/responses#secret"],
   ] as const)("rejects endpoint override %s %s", async (key, baseUrl) => {
     const h = await harness();
     await expect(h.vault.updateProvider(key, { ...update(), baseUrl })).rejects.toMatchObject({ status: 400 });
@@ -276,8 +325,12 @@ describe.skipIf(process.platform === "win32")("ModelConfigVault real private fil
 
   it("accepts only allowed incomplete settings and refuses enable/token/unknown fields", async () => {
     const h = await harness();
-    await h.vault.updateProvider("qwen", { expectedRevision: 0, models: [], baseUrl: "", secretAction: "clear" });
-    expect((await h.vault.read()).saved.providers.qwen).toEqual({ models: [], baseUrl: "", apiKey: null });
+    await h.vault.updateProvider("anthropic", { expectedRevision: 0, models: [], secretAction: "clear" });
+    expect((await h.vault.read()).saved.providers.anthropic).toEqual({ models: [], baseUrl: "https://api.anthropic.com/v1/messages", apiKey: null });
+    // The retired providers cannot be edited at all.
+    for (const retired of ["qwen", "deepseek"]) {
+      await expect(h.vault.updateProvider(retired as "openai", update(1))).rejects.toMatchObject({ status: 400 });
+    }
     const limits: AdminLimitsUpdate = { expectedRevision: 1, defaultProvider: null, maxCallsPerDay: 8, maxActiveRuns: 1 };
     await expect(h.vault.updateLimits({ ...limits, enabled: true } as AdminLimitsUpdate)).rejects.toMatchObject({ status: 400 });
     await expect(h.vault.updateLimits({ ...limits, operatorToken: SECRET } as AdminLimitsUpdate)).rejects.toMatchObject({ status: 400 });
@@ -288,15 +341,15 @@ describe.skipIf(process.platform === "win32")("ModelConfigVault real private fil
 
   it("preserves the old ciphertext and cleans temporary/lock files when atomic replacement fails", async () => {
     const h = await harness();
-    await h.vault.updateProvider("qwen", update());
+    await h.vault.updateProvider("anthropic", update());
     const before = await fs.readFile(h.path);
     const rename = vi.mocked(fs.rename).mockRejectedValueOnce(Object.assign(new Error(`path=${h.path}, secret=${SECRET}`), { code: "EIO" }));
-    await expect(h.vault.updateProvider("qwen", { expectedRevision: 1, models: [], secretAction: "clear" }))
+    await expect(h.vault.updateProvider("anthropic", { expectedRevision: 1, models: [], secretAction: "clear" }))
       .rejects.toMatchObject({ status: 503, message: "模型配置存储不可用，请联系管理员。" });
     expect(await fs.readFile(h.path)).toEqual(before);
     expect(await fs.readdir(h.directory)).toEqual(FILES);
     rename.mockReset();
-    await h.vault.updateProvider("qwen", { expectedRevision: 1, models: [], secretAction: "clear" });
+    await h.vault.updateProvider("anthropic", { expectedRevision: 1, models: [], secretAction: "clear" });
     expect((await h.vault.read()).saved.revision).toBe(2);
   });
 
@@ -308,7 +361,7 @@ describe.skipIf(process.platform === "win32")("ModelConfigVault real private fil
       if (args[0] === h.directory) vi.spyOn(handle, "sync").mockRejectedValueOnce(new Error("EIO"));
       return handle;
     });
-    await expect(h.vault.updateProvider("qwen", update())).rejects.toMatchObject({ status: 503 });
+    await expect(h.vault.updateProvider("anthropic", update())).rejects.toMatchObject({ status: 503 });
     spy.mockReset();
     // A reported write failure can be ambiguous after rename. CAS/read resolves it without replaying secrets.
     expect((await h.vault.read()).saved.revision).toBe(1);
@@ -317,15 +370,15 @@ describe.skipIf(process.platform === "win32")("ModelConfigVault real private fil
 
   it("keeps old active credentials while a run can recover, then activates only at an idle startup", async () => {
     const h = await harness();
-    await h.vault.updateProvider("qwen", update());
+    await h.vault.updateProvider("anthropic", update());
     const notIdle = vi.fn(async () => false);
     const deferred = await (await h.reopen()).activateIfIdle(notIdle);
     expect(deferred).toMatchObject({ deferred: true, active: { revision: 0 } });
-    expect(deferred.active.providers.qwen.apiKey).toBeNull();
+    expect(deferred.active.providers.anthropic.apiKey).toBeNull();
     expect((await h.vault.read()).saved.revision).toBe(1);
     const activated = await (await h.reopen()).activateIfIdle(async () => true);
     expect(activated).toMatchObject({ deferred: false, active: { revision: 1 } });
-    expect(activated.active.providers.qwen.apiKey).toBe(SECRET);
+    expect(activated.active.providers.anthropic.apiKey).toBe(SECRET);
     const noPending = vi.fn(async () => false);
     await (await h.reopen()).activateIfIdle(noPending);
     expect(noPending).not.toHaveBeenCalled();
@@ -334,7 +387,7 @@ describe.skipIf(process.platform === "win32")("ModelConfigVault real private fil
 
   it("does not activate pending settings if the running-job check fails", async () => {
     const h = await harness();
-    await h.vault.updateProvider("qwen", update());
+    await h.vault.updateProvider("anthropic", update());
     await expect(h.vault.activateIfIdle(async () => { throw new Error("database disconnected"); })).rejects.toMatchObject({ status: 503 });
     expect((await h.vault.read()).active.revision).toBe(0);
     expect(await fs.readdir(h.directory)).toEqual(FILES);
@@ -343,12 +396,164 @@ describe.skipIf(process.platform === "win32")("ModelConfigVault real private fil
   it("bounds audit history without recording keys or model strings", async () => {
     const h = await harness();
     for (let revision = 0; revision < 55; revision++) {
-      await h.vault.updateProvider("qwen", update(revision));
+      await h.vault.updateProvider("anthropic", update(revision));
     }
     const doc = await h.vault.read();
     expect(doc.audit).toHaveLength(50);
     expect(doc.audit[0]?.revision).toBe(6);
     expect(JSON.stringify(doc.audit)).not.toContain(SECRET);
-    expect(JSON.stringify(doc.audit)).not.toContain("qwen-test");
+    expect(JSON.stringify(doc.audit)).not.toContain("claude-test");
+  });
+});
+
+describe.skipIf(process.platform === "win32")("ModelConfigVault upgrade of a released three-provider (v1) file", () => {
+  it("reads a v1 file with the same master key, converting it in memory without writing anything", async () => {
+    const h = await v1Harness();
+    const vault = await h.open();
+    const doc = await vault.read();
+    // OpenAI keeps its key, models, order and endpoint; Claude starts unconfigured; the retired default is unset.
+    expect(doc.saved).toEqual({ revision: 3, defaultProvider: null, maxCallsPerDay: 12, maxActiveRuns: 2, providers: {
+      openai: { apiKey: OPENAI_SECRET, baseUrl: "https://api.openai.com/v1/responses", models: ["gpt-6-luna", "gpt-6-astra"] },
+      anthropic: { apiKey: null, baseUrl: "https://api.anthropic.com/v1/messages", models: [] },
+    } });
+    // The pending restart is kept: active is still revision 2.
+    expect(doc.active.revision).toBe(2);
+    expect(doc.active.defaultProvider).toBeNull();
+    // The audit history keeps its retired provider names as recorded.
+    expect(doc.audit.map((item) => [item.action, item.providerKey ?? null, item.revision])).toEqual([
+      ["provider_updated", "qwen", 1], ["provider_updated", "openai", 2], ["activated", null, 2], ["provider_updated", "deepseek", 3],
+    ]);
+    expect(doc.retired).toEqual({ providers: ["qwen", "deepseek"], retiredDefault: "qwen" });
+    // The retired secrets are not part of the live document.
+    expect(JSON.stringify(doc)).not.toContain(QWEN_SECRET);
+    expect(JSON.stringify(doc)).not.toContain(DEEPSEEK_SECRET);
+    expect(await vault.retiredNote()).toEqual({ providers: ["qwen", "deepseek"], retiredDefault: "qwen", backupKept: false });
+    // Opening and reading wrote nothing: the released code can still read the file.
+    expect(await fs.readFile(h.path)).toEqual(h.original);
+    expect(await fs.readdir(h.directory)).toEqual(FILES);
+    expect((openV1(await fs.readFile(h.path), h.masterKey).saved as { defaultProvider: string }).defaultProvider).toBe("qwen");
+  });
+
+  it("the first save keeps the exact v1 file as a private backup, then writes v2 atomically", async () => {
+    const h = await v1Harness();
+    const vault = await h.open();
+    await vault.updateProvider("anthropic", { expectedRevision: 3, secretAction: "replace", apiKey: SECRET, models: ["claude-opus-5-5"] });
+    const backup = `${h.path}${V1_BACKUP_SUFFIX}`;
+    expect((await fs.readdir(h.directory)).sort()).toEqual([...FILES, `model-config.enc${V1_BACKUP_SUFFIX}`].sort());
+    expect(await fs.readFile(backup)).toEqual(h.original);
+    expect((await fs.stat(backup)).mode & 0o777).toBe(0o600);
+    // The backup is still ciphertext, readable only with the master key, with every retired secret intact.
+    for (const secret of [QWEN_SECRET, DEEPSEEK_SECRET, OPENAI_SECRET, SECRET]) expect((await fs.readFile(backup)).toString()).not.toContain(secret);
+    const restoredV1 = openV1(await fs.readFile(backup), h.masterKey) as { saved: { providers: { qwen: { apiKey: string } } } };
+    expect(restoredV1.saved.providers.qwen.apiKey).toBe(QWEN_SECRET);
+    // The live file is v2 now, with the upgrade recorded and nothing secret in the audit.
+    expect(JSON.parse(await fs.readFile(h.path, "utf8")).format).toBe(FORMAT);
+    const doc = await (await h.open()).read();
+    expect(doc.saved).toMatchObject({ revision: 4, defaultProvider: null });
+    expect(doc.saved.providers.anthropic).toEqual({ apiKey: SECRET, baseUrl: "https://api.anthropic.com/v1/messages", models: ["claude-opus-5-5"] });
+    expect(doc.saved.providers.openai.apiKey).toBe(OPENAI_SECRET);
+    expect(doc.active.revision).toBe(2);
+    expect(doc.audit.slice(-2).map((item) => [item.action, item.providerKey ?? null, item.revision]))
+      .toEqual([["provider_updated", "anthropic", 4], ["format_upgraded", null, 4]]);
+    expect(doc.retired).toEqual({ providers: ["qwen", "deepseek"], retiredDefault: "qwen" });
+    expect(await (await h.open()).retiredNote()).toMatchObject({ backupKept: true });
+    expect(JSON.stringify(doc)).not.toContain(QWEN_SECRET);
+    // Later saves never touch the backup again.
+    await (await h.open()).updateLimits({ expectedRevision: 4, defaultProvider: "anthropic", maxCallsPerDay: 12, maxActiveRuns: 2 });
+    expect(await fs.readFile(backup)).toEqual(h.original);
+  });
+
+  it("restoring the backup is a byte-for-byte rollback to the released file", async () => {
+    const h = await v1Harness();
+    await (await h.open()).updateLimits({ expectedRevision: 3, defaultProvider: "openai", maxCallsPerDay: 12, maxActiveRuns: 2 });
+    await fs.copyFile(`${h.path}${V1_BACKUP_SUFFIX}`, h.path);
+    expect(await fs.readFile(h.path)).toEqual(h.original);
+    expect(openV1(await fs.readFile(h.path), h.masterKey)).toEqual(v1Document());
+    // The restored file still opens in this version too (converted again in memory).
+    expect((await (await h.open()).read()).saved.revision).toBe(3);
+  });
+
+  it("activating the pending v1 settings at an idle startup upgrades the same way and keeps the retired default unset", async () => {
+    const h = await v1Harness();
+    const result = await (await h.open()).activateIfIdle(async () => true);
+    expect(result).toMatchObject({ deferred: false, active: { revision: 3, defaultProvider: null } });
+    expect(result.active.providers.openai.apiKey).toBe(OPENAI_SECRET);
+    expect(await fs.readFile(`${h.path}${V1_BACKUP_SUFFIX}`)).toEqual(h.original);
+    expect((await (await h.open()).read()).audit.slice(-2).map((item) => item.action)).toEqual(["activated", "format_upgraded"]);
+  });
+
+  it("a deferred activation over a v1 file writes nothing", async () => {
+    const h = await v1Harness();
+    const result = await (await h.open()).activateIfIdle(async () => false);
+    expect(result).toMatchObject({ deferred: true, active: { revision: 2, defaultProvider: null } });
+    expect(await fs.readFile(h.path)).toEqual(h.original);
+    expect(await fs.readdir(h.directory)).toEqual(FILES);
+  });
+
+  it("a failed replace leaves the v1 file in place; the retry reuses the same backup", async () => {
+    const h = await v1Harness();
+    const vault = await h.open();
+    const rename = vi.mocked(fs.rename).mockImplementationOnce(async () => { throw Object.assign(new Error(`EIO ${h.path} ${QWEN_SECRET}`), { code: "EIO" }); });
+    const failure = await vault.updateLimits({ expectedRevision: 3, defaultProvider: "openai", maxCallsPerDay: 12, maxActiveRuns: 2 }).catch((error: Error) => error);
+    expect(failure).toMatchObject({ status: 503, message: "模型配置存储不可用，请联系管理员。" });
+    expect(String(failure)).not.toContain(QWEN_SECRET);
+    rename.mockReset();
+    expect(await fs.readFile(h.path)).toEqual(h.original);
+    expect(await fs.readFile(`${h.path}${V1_BACKUP_SUFFIX}`)).toEqual(h.original);
+    await vault.updateLimits({ expectedRevision: 3, defaultProvider: "openai", maxCallsPerDay: 12, maxActiveRuns: 2 });
+    expect((await (await h.open()).read()).saved).toMatchObject({ revision: 4, defaultProvider: "openai" });
+    expect(await fs.readFile(`${h.path}${V1_BACKUP_SUFFIX}`)).toEqual(h.original);
+  });
+
+  it("never overwrites a different existing backup: the write is refused and the v1 file stays", async () => {
+    const h = await v1Harness();
+    await fs.writeFile(`${h.path}${V1_BACKUP_SUFFIX}`, "an older backup", { mode: 0o600 });
+    await expect((await h.open()).updateLimits({ expectedRevision: 3, defaultProvider: null, maxCallsPerDay: 12, maxActiveRuns: 2 }))
+      .rejects.toMatchObject({ status: 503 });
+    expect(await fs.readFile(`${h.path}${V1_BACKUP_SUFFIX}`, "utf8")).toBe("an older backup");
+    expect(await fs.readFile(h.path)).toEqual(h.original);
+  });
+
+  it("a v1 file with a wrong key, a v2 AAD or a malformed document is refused, never replaced by environment settings", async () => {
+    const h = await v1Harness();
+    await expect(ModelConfigVault.open({ path: h.path, masterKey: randomBytes(32), initial: initial() })).rejects.toMatchObject({ status: 503 });
+    await seal(h.path, h.masterKey, v1Document(), FORMAT, FORMAT_V1);
+    await expect(h.open()).rejects.toMatchObject({ status: 503 });
+    await seal(h.path, h.masterKey, { ...v1Document(), enabled: true }, FORMAT_V1, FORMAT_V1);
+    await expect(h.open()).rejects.toMatchObject({ status: 503 });
+    const unknownProvider = v1Document();
+    (unknownProvider.saved as { defaultProvider: string }).defaultProvider = "gemini";
+    await seal(h.path, h.masterKey, unknownProvider, FORMAT_V1, FORMAT_V1);
+    await expect(h.open()).rejects.toMatchObject({ status: 503 });
+    expect(await fs.readdir(h.directory)).toEqual(FILES);
+  });
+
+  it("reports a retired default that only the still-active settings name", async () => {
+    const h = await v1Harness();
+    const doc = v1Document();
+    (doc.saved as { defaultProvider: string }).defaultProvider = "openai";
+    await seal(h.path, h.masterKey, doc, FORMAT_V1, FORMAT_V1);
+    const converted = await (await h.open()).read();
+    expect([converted.saved.defaultProvider, converted.active.defaultProvider]).toEqual(["openai", null]);
+    expect(converted.retired?.retiredDefault).toBe("qwen");
+  });
+
+  it("an unlocked read racing the upgrade cannot make a later write record a second upgrade", async () => {
+    const h = await v1Harness();
+    const vault = await h.open();
+    const view = vault.read();
+    await vault.updateLimits({ expectedRevision: 3, defaultProvider: "openai", maxCallsPerDay: 12, maxActiveRuns: 2 });
+    await view;
+    await vault.updateLimits({ expectedRevision: 4, defaultProvider: "openai", maxCallsPerDay: 11, maxActiveRuns: 2 });
+    expect((await vault.read()).audit.filter((item) => item.action === "format_upgraded")).toHaveLength(1);
+  });
+
+  it("a v1 file whose saved and active revisions agree converts to equal saved and active settings", async () => {
+    const h = await v1Harness();
+    const same = v1Document();
+    same.active = structuredClone(same.saved);
+    await seal(h.path, h.masterKey, same, FORMAT_V1, FORMAT_V1);
+    const doc = await (await h.open()).read();
+    expect(doc.active).toEqual(doc.saved);
   });
 });

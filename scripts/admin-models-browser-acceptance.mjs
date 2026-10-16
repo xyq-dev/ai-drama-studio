@@ -103,14 +103,20 @@ try {
   assert.ok(session && session.httpOnly && session.sameSite === "Lax" && session.path === "/");
   const before = await readView(page);
   assert.equal(before.savedRevision, 0);
-  await page.getByLabel(/^服务端点/).fill("https://dashscope.aliyuncs.com/compatible-mode/v1");
+  // Exactly two providers: OpenAI and Claude. The retired Qwen and DeepSeek have no entry at all.
+  assert.equal(await page.getByRole("button", { name: /^千问/ }).count(), 0);
+  assert.equal(await page.getByRole("button", { name: /^DeepSeek/ }).count(), 0);
+  await page.getByRole("button", { name: /^Claude/ }).click();
+  await page.getByRole("region", { name: "Claude设置" }).waitFor();
+  assert.equal(await page.getByLabel(/^服务端点/).getAttribute("readonly"), "");
+  assert.equal(await page.getByLabel(/^服务端点/).inputValue(), "https://api.anthropic.com/v1/messages");
   // Model picker by keyboard: search, Tab to the matching candidate, Space to select; Enter adds a custom ID
   // without submitting the form; the default is chosen explicitly and saved as the first entry.
   const search = page.getByRole("searchbox", { name: "搜索可用模型" });
-  await search.fill("3.8-flash");
+  await search.fill("haiku");
   await search.press("Tab");
   await page.keyboard.press("Space");
-  assert.equal(await page.getByRole("checkbox", { name: /qwen3\.8-flash/ }).isChecked(), true);
+  assert.equal(await page.getByRole("checkbox", { name: /claude-haiku-5-5/ }).isChecked(), true);
   await search.fill("");
   await page.getByText("高级设置", { exact: true }).click();
   await page.getByLabel(/^添加自定义模型 ID/).fill("browser-test-model");
@@ -122,13 +128,14 @@ try {
   await page.getByRole("radio", { name: "填写 / 替换", exact: true }).check();
   await page.getByLabel(/^新的 API Key/).fill(fakeKey);
   await page.getByRole("button", { name: "校验并保存配置", exact: true }).click();
-  await page.getByRole("status").filter({ hasText: /^千问配置已保存/ }).waitFor();
+  await page.getByRole("status").filter({ hasText: /^Claude配置已保存/ }).waitFor();
   assert.equal(await page.getByLabel(/^新的 API Key/).count(), 0);
   const saved = await readView(page);
   assert.equal(saved.savedRevision, 1); assert.equal(saved.activeRevision, 0); assert.equal(saved.pendingRestart, true);
-  assert.equal(saved.saved.providers.find((provider) => provider.providerKey === "qwen").keyConfigured, true);
-  assert.deepEqual(saved.saved.providers.find((provider) => provider.providerKey === "qwen").models, ["browser-test-model", "qwen3.8-flash"]);
-  assert.equal(saved.active.providers.find((provider) => provider.providerKey === "qwen").keyConfigured, false);
+  assert.deepEqual(saved.saved.providers.map((provider) => provider.providerKey), ["openai", "anthropic"]);
+  assert.equal(saved.saved.providers.find((provider) => provider.providerKey === "anthropic").keyConfigured, true);
+  assert.deepEqual(saved.saved.providers.find((provider) => provider.providerKey === "anthropic").models, ["browser-test-model", "claude-haiku-5-5"]);
+  assert.equal(saved.active.providers.find((provider) => provider.providerKey === "anthropic").keyConfigured, false);
   await capture(page, "desktop-models-saved");
   await page.reload();
   await page.getByRole("button", { name: "校验并保存配置", exact: true }).waitFor();
@@ -152,28 +159,30 @@ try {
   await page.getByRole("region", { name: "OpenAI设置" }).waitFor();
   assert.equal(await page.getByLabel(/^服务端点/).getAttribute("readonly"), "");
   // OpenAI shows only its own candidates; a selection without a default is shown as still needing one.
-  assert.equal(await page.getByRole("checkbox", { name: /qwen/ }).count(), 0);
+  assert.equal(await page.getByRole("checkbox", { name: /claude/ }).count(), 0);
   await page.getByRole("checkbox", { name: /gpt-6-luna/ }).check();
   await page.getByText("请从已选的可用模型中选择默认模型。").waitFor();
   await capture(page, "mobile-openai");
-  await page.getByRole("button", { name: /^千问/ }).click();
+  await page.getByRole("button", { name: /^Claude/ }).click();
   await page.getByRole("radio", { name: "清除密钥", exact: true }).check();
   assert.equal(await page.getByRole("button", { name: "校验并保存配置", exact: true }).isDisabled(), true);
   await page.getByRole("checkbox", { name: /我确认清除/ }).check();
   // The form is now submittable (valid models, confirmed clear): Enter in the search box must still only filter.
   const clearSearch = page.getByRole("searchbox", { name: "搜索可用模型" });
-  await clearSearch.fill("max");
+  await clearSearch.fill("fable");
   await clearSearch.press("Enter");
   await delay(500);
   assert.equal((await readView(page)).savedRevision, 1, "Enter in the model search must not submit the form");
   assert.equal(requests.filter((request) => request.method === "PUT").length, 1);
   await clearSearch.fill("");
   await page.getByRole("button", { name: "校验并保存配置", exact: true }).click();
-  await page.getByRole("status").filter({ hasText: /^千问配置已保存/ }).waitFor();
+  await page.getByRole("status").filter({ hasText: /^Claude配置已保存/ }).waitFor();
   const cleared = await readView(page);
   assert.equal(cleared.savedRevision, 2);
-  assert.equal(cleared.saved.providers.find((provider) => provider.providerKey === "qwen").keyConfigured, false);
-  await page.getByRole("combobox", { name: /^默认供应商/ }).selectOption("qwen");
+  assert.equal(cleared.saved.providers.find((provider) => provider.providerKey === "anthropic").keyConfigured, false);
+  assert.deepEqual(await page.getByRole("combobox", { name: /^默认供应商/ }).locator("option").evaluateAll((options) => options.map((option) => option.value)),
+    ["", "openai", "anthropic"]);
+  await page.getByRole("combobox", { name: /^默认供应商/ }).selectOption("anthropic");
   await page.getByLabel(/^每日最多调用次数/).fill("8");
   await page.getByRole("button", { name: "保存调用规则", exact: true }).click();
   await page.getByRole("status").filter({ hasText: /^调用规则已保存/ }).waitFor();
@@ -187,7 +196,7 @@ try {
   assert.deepEqual(evidence.errors, []);
   evidence.checks.save = { savedRevision: 1, activeRevision: 0, pendingRestart: true, secretNotReturned: true };
   evidence.checks.modelPicker = { keyboardSelect: true, customIdByEnter: true, searchEnterDoesNotSubmit: true,
-    savedModels: ["browser-test-model", "qwen3.8-flash"] };
+    savedModels: ["browser-test-model", "claude-haiku-5-5"], providers: ["openai", "anthropic"], retiredEntries: 0 };
   evidence.checks.clear = { explicitConfirmation: true, keyConfigured: false, revision: 2 };
   evidence.checks.limits = { daily: 8, savedRevision: 3, activeRevision: 0, titleWritingEnabled: false };
   evidence.checks.logout = { protectedReadAfterLogout: 401, reloginReadsSavedConfig: true };

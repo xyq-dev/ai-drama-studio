@@ -30,7 +30,7 @@
 | Method / Path | 请求与响应 | 限制 |
 | --- | --- | --- |
 | `GET /admin/models` | `AdminModelsView`：saved/active、revision、待重启/暂缓、审计、标题创作只读门控 | 站点会话；只回keyConfigured，不返回密钥或尾号 |
-| `PUT /admin/models/providers/:providerKey` | `{expectedRevision,models,baseUrl?,secretAction,apiKey?}` → 更新后View | key∈qwen/openai/deepseek；secretAction∈keep/replace/clear；仅replace携带apiKey |
+| `PUT /admin/models/providers/:providerKey` | `{expectedRevision,models,baseUrl?,secretAction,apiKey?}` → 更新后View | key∈openai/anthropic（qwen/deepseek 已退役，返回 400）；secretAction∈keep/replace/clear；仅replace携带apiKey |
 | `PUT /admin/models/limits` | `{expectedRevision,defaultProvider,maxCallsPerDay,maxActiveRuns}` → 更新后View | defaultProvider可null；每日1–500、并发1–10；次数不是金额预算 |
 
 PUT需站点会话、固定Origin、JSON、`X-CSRF-Token`与最新revision，CAS失败409 `ADMIN_CONFIG_CONFLICT`；存储忙409 `ADMIN_CONFIG_BUSY`；
