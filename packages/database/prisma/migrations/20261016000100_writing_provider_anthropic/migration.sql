@@ -6,8 +6,9 @@
 -- that migration does not touch these two constraints, so the two can be applied in either order.
 -- Locks: ALTER TABLE takes ACCESS EXCLUSIVE on title_writing_run and title_writing_call for the length of this one
 -- migration transaction, and each new CHECK scans its table once while validating. Run it in a quiet window.
--- No down migration. Old code keeps reading every row; it cannot send for an anthropic run (it has no such provider)
--- and stops that run as provider_unconfigured. Roll back code, not this migration.
+-- No down migration. Old code keeps reading every row but has no anthropic provider: its engine fails on such a run
+-- (repeatedly, without any send) and leaves it running. Before a code rollback, let Claude runs finish or keep
+-- TITLE_WRITING_ENABLED off on the old code. Roll back code, not this migration.
 
 -- The unnamed column CHECKs of 20261008000100_title_writing are found by their definition, not by a generated name; the
 -- migration stops unless each table has exactly one provider_key CHECK of the three original values.

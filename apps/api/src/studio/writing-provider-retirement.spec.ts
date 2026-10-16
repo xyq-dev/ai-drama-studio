@@ -116,6 +116,16 @@ describe("Claude before and after the provider migration", () => {
     expect([openai.status, runOf(openai).providerKey]).toEqual([201, "openai"]);
   });
 
+  it("a breakdown never offers or picks Claude as its default before the migration, even when it is the configured default", async () => {
+    const { breakdown, store, episode, settle } = setup({ anthropicReady: false, defaultProvider: "anthropic" });
+    expect(((await breakdown.options()).body as { defaultProvider: string | null }).defaultProvider).toBe("openai");
+    const started = await breakdown.start(episode.projectId, episode.episodeId, {}, TOKEN, CONTEXT(randomUUID()));
+    expect([started.status, (started.body as { run: ScriptBreakdownRunView }).run.providerKey]).toEqual([201, "openai"]);
+    await settle();
+    store.anthropicReady = true;
+    expect(((await breakdown.options()).body as { defaultProvider: string | null }).defaultProvider).toBe("anthropic");
+  });
+
   it("after it, a Claude run freezes its provider and model, speaks the Messages API and saves the story with unknown cost", async () => {
     const { title, store, seen, settle } = setup();
     const started = await title.start(P1, { title: TITLE, providerKey: "anthropic", model: "claude-sonnet-5-5" }, TOKEN, CONTEXT("claude-1"));

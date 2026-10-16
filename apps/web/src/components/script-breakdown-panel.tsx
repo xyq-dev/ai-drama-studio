@@ -355,6 +355,10 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
             clearPending(pending);
             setScenesExist(true);
             setReplaceExisting(false);
+          } else if (refused(caught) && caught.code === "TITLE_WRITING_PROVIDER_RETIRED") {
+            // Also after the key lookup: no task exists for this key, and its retired provider can never send. Release the
+            // identity so the episode is not blocked; a new start takes an active provider and a new key.
+            clearPending(pending);
           } else if (refused(caught) && !pendingStart) clearPending(pending);
         },
       });

@@ -23,6 +23,7 @@
 - 错误：401/403 认证；402 `billing_error` → 额度/余额；429 限流（含花费上限）；400/404/413/422 请求无效；500/504/529 及 3xx、超时、断线、超大响应 → 结果未知（可能已计费，不自动重发）。请求 ID 取 `request-id` 头或错误体 `request_id`。
 - 安全边界与 OpenAI 相同：服务端固定并校验端点（配置的 URL 不等于官方端点时一律不发送）、密钥只在请求头、日志和错误响应不含密钥、响应 1 MiB 上限、120 秒超时、手动重定向不跟随、每次调用只发送一次、不自动重试/换模型/换供应商。未使用 SDK（因此没有 SDK 默认重试）。
 - OpenAI 保持原有 Responses API 请求与解析不变。
+- 请求总会带 `output_config.effort` 与自适应思考：白名单只应填写支持二者和结构化输出的当前模型（上面列出的四个）。填写不支持的旧模型（例如 Claude Haiku 4.5）时，每次调用会被 400 拒绝并记为 `bad_request`，不会循环重发。
 
 ## 退役与历史
 
@@ -85,7 +86,8 @@ SELECT c.id, c.provider_key, c.state FROM title_writing_call c
 回滚兼容性（不能笼统“一键回滚”）：
 
 - 代码回滚前，如果 vault 已写成 v2，旧 API 读不了 v2（会拒绝启动）：先停 API，再用 `.v1-retired-providers.bak` 覆盖配置文件（会丢弃升级后在后台做的修改），再启动旧版本。
-- 迁移不回滚。旧代码可以读取含 `anthropic` 的行；对这类任务，旧引擎会在 `this.deps.providers["anthropic"]` 上读到空值而出错，因此回滚前应确认没有 running 的 Claude 任务，或回滚后保持 `TITLE_WRITING_ENABLED=false`，以前向修复处理。禁止删除新任务或降级数据库来制造兼容。
+- 迁移不回滚。旧代码可以读取含 `anthropic` 的行；对这类任务，旧引擎会在 `this.deps.providers["anthropic"]` 上读到空值而出错（不会发送，但每次维护都重复出错并让任务保持 running），因此回滚前应确认没有 running 的 Claude 任务，或回滚后保持 `TITLE_WRITING_ENABLED=false`，以前向修复处理。禁止删除新任务或降级数据库来制造兼容。
+- 旧代码不接受 `TITLE_WRITING_DEFAULT_PROVIDER=anthropic`（启动时环境校验失败），也不读取 `ANTHROPIC_*`：回滚代码时同时把该变量恢复为旧值或删除。
 - 旧代码仍能发起千问调用；如果回滚，确认是否继续允许，必要时在旧版本关闭标题创作开关。
 
 ## 验证

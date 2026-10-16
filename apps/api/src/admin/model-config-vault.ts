@@ -153,7 +153,8 @@ function convertedDocument(input: unknown): ManagedModelDocument {
   const v1 = result.data;
   const used = (key: TitleWritingRetiredProviderKey) => [v1.active, v1.saved]
     .some((settings) => settings.providers[key].apiKey !== null || settings.providers[key].models.length > 0 || settings.defaultProvider === key);
-  const savedDefault = v1.saved.defaultProvider;
+  // The default the saved settings name, else the one still active: either way a retired default is reported.
+  const savedDefault = v1.saved.defaultProvider === "qwen" || v1.saved.defaultProvider === "deepseek" ? v1.saved.defaultProvider : v1.active.defaultProvider;
   // A v1 document with equal revisions has equal settings, so the converted ones are equal too.
   return checkedDocument({
     active: convertSettings(v1.active),
@@ -240,9 +241,9 @@ export class ModelConfigVault {
     } finally { await marker.close(); }
   }
 
-  async read(): Promise<ManagedModelDocument> { return this.readDocument(false); }
+  async read(): Promise<ManagedModelDocument> { return this.readDocument(false, false); }
 
-  private async readDocument(allowUninitialized: boolean): Promise<ManagedModelDocument> {
+  private async readDocument(allowUninitialized: boolean, underLock: boolean): Promise<ManagedModelDocument> {
     try {
       await this.checkDirectory();
       const initialized = await this.markerPresent();
@@ -275,7 +276,9 @@ export class ModelConfigVault {
         try {
           const parsed = JSON.parse(plaintext.toString("utf8")) as unknown;
           const doc = v1 ? convertedDocument(parsed) : checkedDocument(parsed);
-          this.v1Bytes = v1 ? raw : null;
+          // Only a read under the writer lock decides what the next write must back up; an unlocked read (a view)
+          // racing the first v2 write must not bring the old bytes back.
+          if (underLock) this.v1Bytes = v1 ? raw : null;
           this.observedFile = true;
           return doc;
         } finally { plaintext.fill(0); }
@@ -323,10 +326,16 @@ export class ModelConfigVault {
     if (existing) {
       try {
         const info = await existing.stat();
-        if (!info.isFile() || info.nlink !== 1 || (info.mode & 0o777) !== 0o600 || info.size !== bytes.length) throw storageError();
+        if (!info.isFile() || info.nlink !== 1 || (info.mode & 0o777) !== 0o600 || (process.geteuid && info.uid !== process.geteuid())
+          || info.size !== bytes.length) throw storageError();
         const kept = Buffer.alloc(bytes.length);
-        await existing.read(kept, 0, kept.length, 0);
-        if (!kept.equals(bytes)) throw storageError();
+        let offset = 0;
+        while (offset < kept.length) {
+          const chunk = await existing.read(kept, offset, kept.length - offset, offset);
+          if (!chunk.bytesRead) break;
+          offset += chunk.bytesRead;
+        }
+        if (offset !== kept.length || !kept.equals(bytes)) throw storageError();
         return;
       } finally { await existing.close(); }
     }
@@ -393,7 +402,7 @@ export class ModelConfigVault {
         }
         await lock.writeFile(JSON.stringify({ pid: process.pid, at: new Date().toISOString() }));
         await lock.sync();
-        result = await operation(await this.readDocument(allowUninitialized));
+        result = await operation(await this.readDocument(allowUninitialized, true));
       } catch (error) {
         failure = error instanceof AdminConfigError ? error : storageError();
       }

@@ -528,6 +528,26 @@ describe.skipIf(process.platform === "win32")("ModelConfigVault upgrade of a rel
     expect(await fs.readdir(h.directory)).toEqual(FILES);
   });
 
+  it("reports a retired default that only the still-active settings name", async () => {
+    const h = await v1Harness();
+    const doc = v1Document();
+    (doc.saved as { defaultProvider: string }).defaultProvider = "openai";
+    await seal(h.path, h.masterKey, doc, FORMAT_V1, FORMAT_V1);
+    const converted = await (await h.open()).read();
+    expect([converted.saved.defaultProvider, converted.active.defaultProvider]).toEqual(["openai", null]);
+    expect(converted.retired?.retiredDefault).toBe("qwen");
+  });
+
+  it("an unlocked read racing the upgrade cannot make a later write record a second upgrade", async () => {
+    const h = await v1Harness();
+    const vault = await h.open();
+    const view = vault.read();
+    await vault.updateLimits({ expectedRevision: 3, defaultProvider: "openai", maxCallsPerDay: 12, maxActiveRuns: 2 });
+    await view;
+    await vault.updateLimits({ expectedRevision: 4, defaultProvider: "openai", maxCallsPerDay: 11, maxActiveRuns: 2 });
+    expect((await vault.read()).audit.filter((item) => item.action === "format_upgraded")).toHaveLength(1);
+  });
+
   it("a v1 file whose saved and active revisions agree converts to equal saved and active settings", async () => {
     const h = await v1Harness();
     const same = v1Document();

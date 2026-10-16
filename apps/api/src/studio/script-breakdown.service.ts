@@ -131,10 +131,13 @@ export class ScriptBreakdownService {
    * default when it is ready, otherwise the first ready provider in the fixed order; null when none is ready. A provider
    * the request names is used as named, never replaced by this.
    */
-  private readyDefault(): TitleWritingProviderKey | null {
+  private async readyDefault(): Promise<TitleWritingProviderKey | null> {
+    // Ready means configured and storable: Claude before its migration is not offered or chosen as the default.
+    const ready = async (key: TitleWritingProviderKey) => this.deps.providers[key].ok && await this.deps.store.providerStorageReady(key);
     const configured = this.deps.defaultProvider;
-    if (configured && this.deps.providers[configured].ok) return configured;
-    return TITLE_WRITING_PROVIDER_KEYS.find((key) => this.deps.providers[key].ok) ?? null;
+    if (configured && await ready(configured)) return configured;
+    for (const key of TITLE_WRITING_PROVIDER_KEYS) if (await ready(key)) return key;
+    return null;
   }
 
   async options(): Promise<ScriptBreakdownResult> {
@@ -161,7 +164,7 @@ export class ScriptBreakdownService {
       code,
       storageReady,
       operatorTokenRequired: true,
-      defaultProvider: this.readyDefault(),
+      defaultProvider: await this.readyDefault(),
       providers,
       maxCallsPerDay: this.deps.maxCallsPerDay,
       callCapPerRun: SCRIPT_BREAKDOWN_CALL_CAP,
@@ -220,7 +223,7 @@ export class ScriptBreakdownService {
     // A new request takes the current settings: the provider it names, else the ready default options() reports. Both are
     // frozen into the run; replays (above), resumes and recovery keep them.
     // A retired provider is refused for a new request; only a replay (answered above) may still name one.
-    const providerKey = parsed.data.providerKey ?? this.readyDefault() ?? this.deps.defaultProvider ?? TITLE_WRITING_PROVIDER_KEYS[0];
+    const providerKey = parsed.data.providerKey ?? await this.readyDefault() ?? this.deps.defaultProvider ?? TITLE_WRITING_PROVIDER_KEYS[0];
     if (!isActiveTitleWritingProvider(providerKey)) {
       return failure(409, "TITLE_WRITING_PROVIDER_RETIRED", { providerKey, label: TITLE_WRITING_PROVIDER_LABELS[providerKey] });
     }

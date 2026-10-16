@@ -363,6 +363,20 @@ describe("start identity: confirming a sent start, reading settings again, relea
     expect([s.posts()[0]!.headers["idempotency-key"], s.posts()[0]!.body]).toEqual([OLD_KEY, body]);
   });
 
+  it("releases a restored start of a retired provider that the server proves never ran, so the episode is not blocked", async () => {
+    restore({ replaceExisting: false, providerKey: "qwen", model: "qwen-old-model" });
+    const s = server([() => json(UNCONFIGURED)], [() => json({ error: { code: "TITLE_WRITING_PROVIDER_RETIRED",
+      message: "这个模型服务已经退役，不能再发起新的拆解或重新发送调用。", details: { providerKey: "qwen" } } }, 409)]);
+    render(panelFor(s.client));
+    await enterToken();
+    await waitFor(() => expect(s.optionReads()).toBe(1));
+    fireEvent.click(button("确认上次启动结果"));
+    expect(await screen.findByText(/这个模型服务已经退役/)).toBeTruthy();
+    expect(s.posts()).toHaveLength(1);
+    expect(stored()).toBeNull();
+    expect(screen.queryByTestId("breakdown-pending-start")).toBeNull();
+  });
+
   it("confirms a restored start with its own key and body although its provider is no longer configured", async () => {
     const body = { replaceExisting: false, providerKey: "openai", model: "d-1" };
     restore(body);
