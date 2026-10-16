@@ -100,8 +100,9 @@ function deferred(): { promise: Promise<void>; release: () => void } {
 
 const transport: WritingTransport = async (request) => {
   const endpoint = new URL(request.url);
-  const body = JSON.parse(request.body) as { messages?: Array<{ role: string; content: string }> };
-  const user = body.messages?.find((message) => message.role === "user")?.content ?? "";
+  const body = JSON.parse(request.body) as { messages?: Array<{ role: string; content: string }>; input?: string };
+  // Claude carries the prompt in messages, OpenAI in input.
+  const user = body.messages?.find((message) => message.role === "user")?.content ?? body.input ?? "";
   const title = /剧名：(.+)/.exec(user)?.[1]?.trim();
   if (!title) throw new Error("stub: a prompt without a title");
   const step = fixtureStepOf(user);

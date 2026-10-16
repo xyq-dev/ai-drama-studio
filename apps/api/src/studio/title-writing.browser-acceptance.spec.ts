@@ -111,8 +111,9 @@ function deferred(): { promise: Promise<void>; release: () => void } {
 
 const transport: WritingTransport = async (request) => {
   const endpoint = new URL(request.url);
-  const body = JSON.parse(request.body) as { messages?: Array<{ role: string; content: string }> };
-  const user = body.messages?.find((message) => message.role === "user")?.content ?? "";
+  const body = JSON.parse(request.body) as { messages?: Array<{ role: string; content: string }>; input?: string };
+  // Claude carries the prompt in messages, OpenAI in input.
+  const user = body.messages?.find((message) => message.role === "user")?.content ?? body.input ?? "";
   const title = /剧名：(.+)/.exec(user)?.[1]?.trim();
   if (!title) throw new Error("stub: a prompt without a title");
   const step = fixtureStepOf(user);
@@ -286,7 +287,7 @@ async function capture(name: string, ready: Locator, primary?: Locator): Promise
 /** Fills the start form on /create and starts; returns the work the page navigated to. */
 async function startOnPage(title: string): Promise<string> {
   await page.goto(`${WEB}/create`, { waitUntil: "domcontentloaded" });
-  await page.getByText("服务端已配置：千问").waitFor({ timeout: 30_000 });
+  await page.getByText("服务端已配置：Claude").waitFor({ timeout: 30_000 });
   await page.locator("#ai-title").fill(title);
   await page.locator("#ai-token").fill(OPERATOR_TOKEN);
   const navigated = page.waitForURL(/\/projects\/[0-9a-f-]{36}\/writing$/, { timeout: 30_000 });
@@ -436,10 +437,10 @@ describe("title writing in a real browser, real web and API, isolated PostgreSQL
     plans.set(MAIN_TITLE, (step, attempt) => step === "episode:1" && attempt === 1 ? { hold: gate.promise } : undefined);
 
     await page.goto(`${WEB}/create`, { waitUntil: "domcontentloaded" });
-    await page.getByText("服务端已配置：千问").waitFor({ timeout: 30_000 });
+    await page.getByText("服务端已配置：Claude").waitFor({ timeout: 30_000 });
     await page.locator("#ai-title").fill(MAIN_TITLE);
     await page.locator("#ai-token").fill(OPERATOR_TOKEN);
-    await capture("01-start", page.getByText("服务端已配置：千问"), page.getByRole("button", { name: "AI 一键创作" }));
+    await capture("01-start", page.getByText("服务端已配置：Claude"), page.getByRole("button", { name: "AI 一键创作" }));
     const before = pageWrites.length;
     const navigated = page.waitForURL(/\/projects\/[0-9a-f-]{36}\/writing$/, { timeout: 30_000 });
     await page.getByRole("button", { name: "AI 一键创作" }).click();

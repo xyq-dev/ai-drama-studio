@@ -79,8 +79,9 @@ const exchanges: Array<{ method: string; path: string; status: number; code: str
 // Model double: answers each breakdown prompt from the script copy inside it.
 const sent: Array<{ episodeNo: number; keyMatches: boolean; endpoint: string }> = [];
 const transport: WritingTransport = async (request) => {
-  const body = JSON.parse(request.body) as { messages?: Array<{ role: string; content: string }> };
-  const user = body.messages?.find((message) => message.role === "user")?.content ?? "";
+  const body = JSON.parse(request.body) as { messages?: Array<{ role: string; content: string }>; input?: string };
+  // Claude carries the prompt in messages, OpenAI in input.
+  const user = body.messages?.find((message) => message.role === "user")?.content ?? body.input ?? "";
   const parts = breakdownPromptParts(user);
   const headers = request.headers as Record<string, string>;
   const endpoint = new URL(request.url);

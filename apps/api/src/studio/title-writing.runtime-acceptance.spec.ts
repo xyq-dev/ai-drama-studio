@@ -100,8 +100,8 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
   const raw = await readBody(request);
   if (request.method === "POST" && url.pathname.startsWith("/model/")) {
-    const body = JSON.parse(raw) as { messages?: Array<{ role: string; content: string }> };
-    const user = body.messages?.find((message) => message.role === "user")?.content ?? "";
+    const body = JSON.parse(raw) as { messages?: Array<{ role: string; content: string }>; input?: string };
+    const user = body.messages?.find((message) => message.role === "user")?.content ?? body.input ?? "";
     const title = /剧名：(.+)/.exec(user)?.[1]?.trim() ?? "";
     const step = fixtureStepOf(user);
     const key = `${title}|${step}`;
