@@ -21,6 +21,22 @@ const defaultClient = new ScriptBreakdownClient();
 const RESUME_RELEASED_BY = new Set(["TITLE_WRITING_CONFIRMATION_STALE", "TITLE_WRITING_NEEDS_CONFIRMATION", "SCRIPT_BREAKDOWN_SOURCE_CHANGED",
   "SCRIPT_BREAKDOWN_CONFLICT", "TITLE_WRITING_NOT_RESUMABLE"]);
 const POLL_MS = 2_000;
+/** The server's switch for script breakdown is off: the page's main state, whatever else it could or could not read. */
+const DISABLED_TEXT = "剧本拆解尚未开启。";
+
+interface ReadError { alert: string; cause: string }
+
+/** Why this episode's breakdown state could not be read, without turning a refusal, a 503 or a lost answer into one another. */
+function readErrorOf(caught: unknown): ReadError {
+  if (caught instanceof TitleWritingError && caught.code === "SCRIPT_BREAKDOWN_STORAGE_UNAVAILABLE") {
+    return { alert: "剧本拆解的数据存储还没有就绪，本集拆解状态无法读取。已显示的内容可能不是最新状态。", cause: "剧本拆解的数据存储还没有就绪" };
+  }
+  if (caught instanceof TitleWritingError && (caught.status === 401 || caught.status === 403)) {
+    const status = String(caught.status);
+    return { alert: `没有读取拆解状态的权限（HTTP ${status}），请确认登录状态后再读取。已显示的内容可能不是最新状态。`, cause: `没有读取权限（HTTP ${status}）` };
+  }
+  return { alert: "拆解状态暂时无法读取，稍后刷新再试。已显示的内容可能不是最新状态。", cause: "服务暂时没有给出可用的回应" };
+}
 
 const STATE_TEXT: Record<string, string> = {
   running: "进行中",
@@ -101,7 +117,7 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [cancelFailed, setCancelFailed] = useState(false);
-  const [readError, setReadError] = useState<string | null>(null);
+  const [readError, setReadError] = useState<ReadError | null>(null);
   const [identityError, setIdentityError] = useState(false);
   const [pendingStart, setPendingStart] = useState<BreakdownPendingStart | null>(null);
   const [pendingResume, setPendingResume] = useState<BreakdownPendingResume | null>(null);
@@ -170,7 +186,7 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
           if (reads.current !== scope) return;
           if (scope.again) continue;
           setLoaded(true);
-          if (failure) { setReadError("拆解状态暂时无法读取，稍后刷新再试。已显示的内容可能不是最新状态。"); return; }
+          if (failure) { setReadError(readErrorOf(failure)); return; }
           const finished = shown.current.runId === next?.runId && shown.current.state === "running" && next?.state !== "running";
           show(next);
           if (!next) { setSaved(null); setSavedError(false); }
@@ -242,23 +258,30 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
   const running = run?.state === "running";
   const limits = options?.limits;
   const ready = options?.code === "SCRIPT_BREAKDOWN_READY";
+  // Only a settings answer this page holds says the feature is off; settings not read yet or unreadable say nothing.
+  const disabled = options?.code === "TITLE_WRITING_DISABLED";
+  const featureBlocked = !options || ready ? null
+    : disabled ? DISABLED_TEXT
+      : options.code === "SCRIPT_BREAKDOWN_STORAGE_UNAVAILABLE" ? "剧本拆解的数据库迁移还没有执行。"
+        : options.code === "TITLE_WRITING_PROVIDER_UNCONFIGURED" ? "模型服务还没有配置完整。" : "服务端还不能开始拆解。";
   const needsReplace = props.sceneCount > 0 || scenesExist;
   // Confirming a start already sent replays its stored key and body: the current settings, defaults or a failed settings
   // read cannot block it (the server answers it from the run that key created). Only a new start must pass every gate.
   // A resume whose answer was lost blocks every new request of this page until it is confirmed: a new start or resume would
-  // take its identity's place.
+  // take its identity's place. For a new start, what the server's settings say (off, storage, provider) comes before what
+  // this page could not read or has not filled in: a failed task read or a missing token is not why it cannot start.
   const startBlocked = identityError ? "无法恢复请求身份，请先解决浏览器会话存储问题。"
     : pendingStart ? (token.trim().length === 0 ? "请填写操作者令牌。" : null)
     : pendingResume ? "请先确认上次续跑结果，之后才能发起新的生成。"
+    : featureBlocked ? featureBlocked
     : readError ? "请先重新读取本集任务状态。"
     : !props.scriptReady ? "剧本批准后才能拆解（剧本门槛不变）。"
     : !options ? optionsError ? "功能配置读取失败，请先“重新读取功能配置”。" : "正在读取拆解设置。"
-      : !ready ? options.code === "TITLE_WRITING_DISABLED" ? "剧本拆解尚未开启。"
-        : options.code === "SCRIPT_BREAKDOWN_STORAGE_UNAVAILABLE" ? "剧本拆解的数据库迁移还没有执行。"
-          : options.code === "TITLE_WRITING_PROVIDER_UNCONFIGURED" ? "模型服务还没有配置完整。" : "服务端还不能开始拆解。"
-        : running ? "这一集的拆解正在进行。"
-          : needsReplace && !replaceExisting ? "这一集已有场景，勾选“用新结果取代”后才能开始。"
-            : token.trim().length === 0 ? "请填写操作者令牌。" : null;
+      : running ? "这一集的拆解正在进行。"
+        : needsReplace && !replaceExisting ? "这一集已有场景，勾选“用新结果取代”后才能开始。"
+          : token.trim().length === 0 ? "请填写操作者令牌。" : null;
+  // The settings' own state is shown as soon as they are read, without waiting for the task read.
+  const blockedShown = startBlocked !== null && (loaded || startBlocked === featureBlocked);
 
   async function act(runId: string | null, work: () => Promise<ScriptBreakdownRunView>, fallback: string,
     hooks: { accepted?: () => void; failed?: (caught: unknown) => void; changed?: boolean; cancel?: boolean; detached?: boolean } = {}) {
@@ -431,6 +454,8 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
 
   // Only a confirmed stop/terminal snapshot makes a cancel failure irrelevant; an ordinary poll does not.
   const visibleMessage = cancelFailed && run && (run.cancelRequested || run.state !== "running") ? null : message;
+  // While the feature is off a failed task read is secondary: it is said, but it is not why nothing can start.
+  const alertText = visibleMessage ?? (disabled ? null : readError?.alert ?? null);
   const pendingShots = hasPendingShots(run);
 
   return (
@@ -450,9 +475,19 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
       {options ? (
         <p className="mt-1 text-sm text-neutral-600">每次拆解调用上限 {options.callCapPerRun} 次（计入最近 24 小时 {options.maxCallsPerDay} 次的共同额度，不是自动重试次数），费用未知。结果未知的调用不会自动重发。</p>
       ) : null}
-      {visibleMessage || readError ? <div className="mt-2 text-sm text-red-700 [overflow-wrap:anywhere]" role="alert">
-        <p>{visibleMessage ?? readError}</p>{readError ? <button type="button" onClick={refresh}>重新读取</button> : null}
+      {/* Said here whenever the line under the start button gives another reason (a request still to confirm). */}
+      {disabled && startBlocked !== featureBlocked ? (
+        <p className="mt-2 text-sm text-neutral-700" role="status" data-testid="breakdown-disabled">{DISABLED_TEXT}</p>
+      ) : null}
+      {alertText ? <div className="mt-2 text-sm text-red-700 [overflow-wrap:anywhere]" role="alert">
+        <p>{alertText}</p>{readError && !disabled ? <button type="button" onClick={refresh}>重新读取</button> : null}
       </div> : null}
+      {disabled && readError ? (
+        <div className="mt-2 text-sm text-neutral-600 [overflow-wrap:anywhere]" role="status" data-testid="breakdown-history-error">
+          <p>历史拆解记录暂时无法读取（{readError.cause}）{run ? "，下面显示的可能不是最新状态" : ""}。这与停用无关：重新读取只读取记录，不会开启拆解，也不会创建任务或调用模型。</p>
+          <button type="button" className="underline" onClick={refresh}>重新读取历史记录</button>
+        </div>
+      ) : null}
       {optionsError ? <div className="mt-2 text-sm text-red-700 [overflow-wrap:anywhere]" role="status" data-testid="breakdown-options-error">
         <p>功能配置暂时无法读取。已有任务、结果和未确认的请求不受影响；重新读取只读取配置，不会创建任务或调用模型。</p>
         <button type="button" className="underline disabled:opacity-50" disabled={optionsLoading} onClick={loadOptions}>重新读取功能配置</button>
@@ -498,7 +533,7 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
             </button>
           </div>
         ) : null}
-        {startBlocked && loaded ? <p className="text-sm text-neutral-600" data-testid="breakdown-blocked">{startBlocked}</p> : null}
+        {blockedShown ? <p className="text-sm text-neutral-600" data-testid="breakdown-blocked">{startBlocked}</p> : null}
       </div>
 
       {run ? (
@@ -546,7 +581,7 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
           ) : null}
           {placement ? <PlacementSummary outcome={placement} /> : null}
         </div>
-      ) : loaded ? <p className="mt-3 text-sm text-neutral-600">这一集还没有拆解过。</p> : null}
+      ) : loaded && !readError ? <p className="mt-3 text-sm text-neutral-600">这一集还没有拆解过。</p> : null}
 
       {savedError ? (
         <div className="mt-4 text-sm text-red-700 [overflow-wrap:anywhere]" role="status" data-testid="breakdown-saved-error">
