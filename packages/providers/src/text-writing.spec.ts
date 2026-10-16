@@ -16,7 +16,7 @@ import {
   type WritingTransport,
 } from "./text-writing";
 
-const KEY = "sk-test-secret-0123456789";
+const KEY = "sk-ant-api03-test-secret-0123456789";
 const REQUEST: WritingRequest = {
   model: "model-a",
   system: "系统 json",
@@ -111,9 +111,36 @@ describe("request mapping stays inside each adapter", () => {
     expect(seen[1]!.url).toBe(ANTHROPIC_MESSAGES_URL);
     expect(seen[1]!.headers).toEqual({ "x-api-key": KEY, "anthropic-version": "2023-06-01", "Content-Type": "application/json" });
     expect(seen[1]!.headers).not.toHaveProperty("Authorization");
+    expect(seen[1]!.headers).not.toHaveProperty("anthropic-workspace-id");
     for (const request of seen) {
       expect(request.body).not.toContain(KEY);
       expect(request.url).not.toContain(KEY);
+    }
+  });
+
+  it("every Console key kind goes as x-api-key, the workspace header only when configured, no OAuth or Claude Code identity", async () => {
+    const keys = ["sk-ant-api03-fake-legacy-key-for-tests-only", "sk-ant-usr-fake-personal-key-for-tests-only", "sk-ant-svc-fake-service-key-for-tests-only"];
+    const seen: Array<Record<string, string>> = [];
+    const capture: WritingTransport = async (request) => { seen.push(request.headers); return { status: 401, headers: { get: () => null }, body: null }; };
+    for (const apiKey of keys) {
+      await sendWriting({ adapter: claude, url: claude.url, apiKey, request: REQUEST, transport: capture });
+      await sendWriting({ adapter: claude, url: claude.url, apiKey, workspaceId: "wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ", request: REQUEST, transport: capture });
+    }
+    // OpenAI never sends a workspace header, even if one is passed.
+    await sendWriting({ adapter: openai, url: openai.url, apiKey: KEY, workspaceId: "wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ", request: REQUEST, transport: capture });
+    expect(seen).toHaveLength(7);
+    keys.forEach((apiKey, index) => {
+      expect(seen[index * 2]).toEqual({ "x-api-key": apiKey, "anthropic-version": "2023-06-01", "Content-Type": "application/json" });
+      expect(seen[index * 2 + 1]).toEqual({ "x-api-key": apiKey, "anthropic-version": "2023-06-01", "Content-Type": "application/json",
+        "anthropic-workspace-id": "wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ" });
+    });
+    expect(seen[6]).toEqual({ Authorization: `Bearer ${KEY}`, "Content-Type": "application/json" });
+    for (const headers of seen.slice(0, 6)) {
+      const names = Object.keys(headers).map((name) => name.toLowerCase());
+      expect(names).not.toContain("authorization");
+      expect(names).not.toContain("anthropic-beta");
+      expect(names).not.toContain("x-app");
+      expect(names).not.toContain("user-agent");
     }
   });
 
@@ -222,7 +249,7 @@ describe("claude output parsing", () => {
 
 describe("error classification", () => {
   it.each([
-    [401, "auth", "rejected"], [403, "auth", "rejected"], [429, "rate_limited", "rejected"], [400, "bad_request", "rejected"],
+    [401, "auth", "rejected"], [429, "rate_limited", "rejected"], [400, "bad_request", "rejected"],
     [404, "bad_request", "rejected"], [413, "bad_request", "rejected"], [422, "bad_request", "rejected"],
     [500, "server_error", "unknown"], [503, "server_error", "unknown"], [504, "server_error", "unknown"], [529, "server_error", "unknown"],
     [302, "redirect_rejected", "unknown"], [0, "redirect_rejected", "unknown"],
@@ -230,6 +257,34 @@ describe("error classification", () => {
     for (const adapter of [openai, claude]) {
       expect(await send(adapter, reply(status, null))).toMatchObject({ outcome, errorCode: code, content: null });
     }
+  });
+
+  it("HTTP 403 stays auth for OpenAI and is a permission refusal for Claude", async () => {
+    expect(await send(openai, reply(403, null))).toMatchObject({ outcome: "rejected", errorCode: "auth" });
+    expect(await send(claude, reply(403, { type: "error", error: { type: "permission_error", message: "x" } })))
+      .toMatchObject({ outcome: "rejected", errorCode: "permission" });
+  });
+
+  it("Claude workspace answers are named as such, never as a key format, balance or generic request problem", async () => {
+    const required = { type: "error", error: { type: "invalid_request_error",
+      message: "anthropic-workspace-id is required when authenticating with an identity-linked API key; send the id of the workspace this request acts in." },
+      request_id: "req_011CSHoEeqs5C35K2UUqR7Fy" };
+    expect(await send(claude, reply(400, required))).toMatchObject({ outcome: "rejected", errorCode: "workspace_required", providerRequestId: "req_011CSHoEeqs5C35K2UUqR7Fy" });
+    expect(await send(claude, reply(400, { type: "error", error: { type: "invalid_request_error", message: "anthropic-workspace-id header must be a valid workspace ID." } })))
+      .toMatchObject({ outcome: "rejected", errorCode: "workspace_invalid" });
+    expect(await send(claude, reply(404, { type: "error", error: { type: "not_found_error", message: "Workspace `wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ` not found." } })))
+      .toMatchObject({ outcome: "rejected", errorCode: "workspace_invalid" });
+    // An unknown model is still a bad request, and other 400s are not turned into workspace problems.
+    expect((await send(claude, reply(404, { type: "error", error: { type: "not_found_error", message: "model: claude-x" } }))).errorCode).toBe("bad_request");
+    expect((await send(claude, reply(400, { type: "error", error: { type: "invalid_request_error", message: "max_tokens: too large" } }))).errorCode).toBe("bad_request");
+    // OpenAI keeps its own classification of the same bodies.
+    expect((await send(openai, reply(400, required))).errorCode).toBe("bad_request");
+  });
+
+  it("a Claude 400 saying the credit balance is too low is a balance problem", async () => {
+    expect(await send(claude, reply(400, { type: "error", error: { type: "invalid_request_error",
+      message: "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits." } })))
+      .toMatchObject({ outcome: "rejected", errorCode: "quota" });
   });
 
   it("balance signals map to quota: OpenAI insufficient_quota, Claude 402 billing_error", async () => {
@@ -312,11 +367,27 @@ describe("server configuration", () => {
     expect(titleWritingProviderConfigs({ OPENAI_API_KEY: KEY }).openai).toEqual({ providerKey: "openai", ok: false, models: [], missing: ["TITLE_WRITING_OPENAI_MODELS"] });
   });
 
-  it("never sends with an Anthropic credential that is not an API key (Claude Code / subscription OAuth, Admin key)", () => {
-    for (const credential of ["sk-ant-oat01-abcdefghijklmnopqrstuvwxyz", "sk-ant-admin01-abcdefghijklmnopqrstuvwxyz", "sk-ant-sid01-abcdefghijklmnop"]) {
+  it("reads the Claude key with the console's rule: Console keys of every kind, nothing else", () => {
+    for (const credential of ["sk-ant-oat01-abcdefghijklmnopqrstuvwxyz", "sk-ant-ort01-abcdefghijklmnopqrstuvwxyz", "sk-ant-admin01-abcdefghijklmnopqrstuvwxyz",
+      "sk-ant-sid01-abcdefghijklmnop", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.c2lnbmF0dXJl", "sk-ant-xyz-abcdefghijklmnop", "sk-proj-abcdefghijklmnop",
+      "stub-not-a-provider-key-0123456789", `sk-ant-api03-${"a".repeat(260)}`]) {
       expect(titleWritingProviderConfigs({ ANTHROPIC_API_KEY: credential }).anthropic).toMatchObject({ ok: false, missing: ["ANTHROPIC_API_KEY"] });
     }
-    expect(titleWritingProviderConfigs({ ANTHROPIC_API_KEY: "sk-ant-api03-abcdefghijklmnopqrstuvwxyz" }).anthropic).toMatchObject({ ok: true });
+    for (const apiKey of ["sk-ant-api03-abcdefghijklmnopqrstuvwxyz", "sk-ant-usr-fake-personal-key-for-tests-only", "sk-ant-svc-fake-service-key-for-tests-only"]) {
+      expect(titleWritingProviderConfigs({ ANTHROPIC_API_KEY: apiKey }).anthropic).toMatchObject({ ok: true, apiKey, workspaceId: null });
+    }
+  });
+
+  it("an optional workspace id is passed through as configured; a malformed one makes Claude not ready instead of being dropped", () => {
+    expect(titleWritingProviderConfigs({ ANTHROPIC_API_KEY: KEY, ANTHROPIC_WORKSPACE_ID: "wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ" }).anthropic)
+      .toMatchObject({ ok: true, workspaceId: "wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ" });
+    expect(titleWritingProviderConfigs({ ANTHROPIC_API_KEY: KEY, ANTHROPIC_WORKSPACE_ID: "" }).anthropic).toMatchObject({ ok: true, workspaceId: null });
+    for (const workspace of ["default", "wrkspc_x\r\nX-Evil: 1", "wrkspc_ab", KEY]) {
+      expect(titleWritingProviderConfigs({ ANTHROPIC_API_KEY: KEY, ANTHROPIC_WORKSPACE_ID: workspace }).anthropic)
+        .toMatchObject({ ok: false, missing: ["ANTHROPIC_WORKSPACE_ID"] });
+    }
+    // OpenAI has no workspace and is unaffected.
+    expect(titleWritingProviderConfigs({ OPENAI_API_KEY: KEY, TITLE_WRITING_OPENAI_MODELS: "o-1", ANTHROPIC_WORKSPACE_ID: "bad" }).openai).toMatchObject({ ok: true });
   });
 
   it("uses the fixed endpoints and the configured allowlist", () => {

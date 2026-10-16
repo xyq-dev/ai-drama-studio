@@ -71,7 +71,7 @@ const WORKSPACE = "11111111-1111-4111-8111-111111111111";
 // Generated per run, held in memory, never printed or written to the evidence.
 const OPERATOR_TOKEN = `acceptance-${randomUUID()}`;
 // Not a key of any provider account: the stub never sends it anywhere.
-const STUB_KEY = `stub-not-a-provider-key-${randomUUID()}`;
+const STUB_KEY = `sk-ant-api03-stub-not-a-provider-key-${randomUUID()}`;
 const STUB_MODEL = "claude-acceptance-stub";
 
 const pool = createPostgresPool({ connectionString: acceptanceUrl, connectionTimeoutMs: 2_000, statementTimeoutMs: 10_000, queryTimeoutMs: 10_000 });

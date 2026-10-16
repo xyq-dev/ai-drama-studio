@@ -269,7 +269,8 @@ describe("Claude quick setup: only the API key", () => {
     }
     return view;
   };
-  const CLAUDE = "sk-ant-api03-test-only-not-a-real-key-0123456789";
+  // A personal Console key (sk-ant-usr-), the kind the earlier sk-ant-api-only rule refused. Fake, test only.
+  const CLAUDE = "sk-ant-usr-fake-personal-key-for-tests-only";
 
   it("says the key is missing, refuses a Claude Code token locally, and saves only the key with no model choice", async () => {
     let current = unconfigured();
@@ -291,9 +292,15 @@ describe("Claude quick setup: only the API key", () => {
     const input = screen.getByLabelText(/^Claude API Key/) as HTMLInputElement;
     fireEvent.change(input, { target: { value: "sk-ant-oat01-claude-code-oauth-token-abcdef" } });
     fireEvent.click(screen.getByRole("button", { name: /保存 Claude API Key/ }));
-    expect(await screen.findByText(/Claude Code 或订阅账号的登录凭据不能使用/)).toBeTruthy();
+    expect(await screen.findByText(/不能用于调用 Claude API 的凭据/)).toBeTruthy();
     expect(input.value).toBe("");
+    fireEvent.change(input, { target: { value: "sk-proj-openai-like-key-abcdef" } });
+    fireEvent.click(screen.getByRole("button", { name: /保存 Claude API Key/ }));
+    expect(await screen.findByText(/Claude API Key 的格式不受支持/)).toBeTruthy();
     expect(calls.filter((call) => call.method === "PUT")).toHaveLength(0);
+    // The page never claims a Console key must start with sk-ant-api.
+    expect(document.body.textContent).not.toMatch(/sk-ant-api 开头/);
+    expect(screen.getByTestId("claude-workspace-hint").textContent).toBe("通常只需填写 API Key。若密钥未限定 Workspace，请在高级设置填写 Workspace ID，或创建限定 Workspace 的密钥。");
     fireEvent.change(input, { target: { value: CLAUDE } });
     fireEvent.click(screen.getByRole("button", { name: /保存 Claude API Key/ }));
     await waitFor(() => expect(screen.getByTestId("claude-status").dataset.state).toBe("pending_restart"));
@@ -307,6 +314,69 @@ describe("Claude quick setup: only the API key", () => {
     expect((screen.getByLabelText(/^Claude API Key/) as HTMLInputElement).value).toBe("");
     expect(document.body.innerHTML).not.toContain(CLAUDE);
     expect(JSON.stringify({ ...window.localStorage, ...window.sessionStorage })).not.toContain(CLAUDE);
+  });
+
+  it("accepts a service account key with an optional workspace id, and checks the workspace id locally first", async () => {
+    let current = unconfigured();
+    const calls = server((call) => {
+      if (call.method === "PUT") {
+        const saved = structuredClone(current);
+        saved.savedRevision = 5; saved.pendingRestart = true;
+        saved.saved.providers[0] = { ...saved.saved.providers[0]!, models: ["claude-opus-5-5"], keyConfigured: true, ready: true, missing: [],
+          workspaceId: "wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ" };
+        current = saved;
+        return json(saved);
+      }
+      return call.url.endsWith("/auth/session") ? json(session()) : json(current);
+    });
+    render(<AdminModels />);
+    await screen.findByTestId("claude-status");
+    expect(screen.getByTestId("claude-workspace-current").textContent).toContain("未设置");
+    const key = "sk-ant-svc-fake-service-key-for-tests-only";
+    fireEvent.change(screen.getByLabelText(/^Claude API Key/), { target: { value: key } });
+    fireEvent.change(screen.getByLabelText(/^Workspace ID/), { target: { value: "default" } });
+    fireEvent.click(screen.getByRole("button", { name: /保存 Claude API Key/ }));
+    expect(await screen.findByText(/Workspace ID 格式不正确/)).toBeTruthy();
+    expect(calls.filter((call) => call.method === "PUT")).toHaveLength(0);
+    fireEvent.change(screen.getByLabelText(/^Workspace ID/), { target: { value: "wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ" } });
+    fireEvent.click(screen.getByRole("button", { name: /保存 Claude API Key/ }));
+    await waitFor(() => expect(screen.getByTestId("claude-status").dataset.state).toBe("pending_restart"));
+    expect(calls.find((call) => call.method === "PUT")!.body).toEqual({ expectedRevision: 4, models: [], secretAction: "replace", apiKey: key,
+      workspaceAction: "replace", workspaceId: "wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ" });
+    expect(screen.getByTestId("claude-workspace-current").textContent).toContain("wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ");
+    expect(document.body.innerHTML).not.toContain(key);
+  });
+
+  it("with a saved key: clears only the workspace id, and shows the server's credential refusals as they are", async () => {
+    let current = unconfigured();
+    for (const settings of [current.saved, current.active]) {
+      settings.providers[0] = { ...settings.providers[0]!, models: ["claude-opus-5-5"], keyConfigured: true, ready: true, missing: [],
+        workspaceId: "wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ" };
+    }
+    let refuse = true;
+    const calls = server((call) => {
+      if (call.method === "PUT" && refuse) return json({ error: { code: "ADMIN_CONFIG_KEY_KIND", message: "x" } }, 400);
+      if (call.method === "PUT") {
+        const saved = structuredClone(current);
+        saved.savedRevision = 5; saved.pendingRestart = true;
+        saved.saved.providers[0] = { ...saved.saved.providers[0]!, workspaceId: null };
+        current = saved;
+        return json(saved);
+      }
+      return call.url.endsWith("/auth/session") ? json(session()) : json(current);
+    });
+    render(<AdminModels />);
+    await screen.findByTestId("claude-status");
+    // A shape the page accepts but the server refuses as the wrong credential kind: its text, not a generic one.
+    fireEvent.change(screen.getByLabelText(/^Claude API Key/), { target: { value: "sk-ant-usr-fake-personal-key-for-tests-only" } });
+    fireEvent.click(screen.getByRole("button", { name: /保存 Claude API Key/ }));
+    expect(await screen.findByText(/服务端拒绝：这是一种不能用于调用 Claude API 的凭据/)).toBeTruthy();
+    refuse = false;
+    fireEvent.click(screen.getByLabelText("清除已保存的 Workspace ID"));
+    fireEvent.click(screen.getByRole("button", { name: /保存 Workspace 设置/ }));
+    await waitFor(() => expect(screen.getByTestId("claude-workspace-current").textContent).toContain("未设置"));
+    const puts = calls.filter((call) => call.method === "PUT");
+    expect(puts.at(-1)!.body).toEqual({ expectedRevision: 4, models: ["claude-opus-5-5"], secretAction: "keep", workspaceAction: "clear" });
   });
 
   it("keeps saved, applied, feature switch, migrations and ready apart", async () => {

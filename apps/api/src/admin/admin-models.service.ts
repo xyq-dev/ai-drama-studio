@@ -1,5 +1,5 @@
 import {
-  TITLE_WRITING_DEFAULT_MODELS, anthropicKeyProblem,
+  TITLE_WRITING_DEFAULT_MODELS, anthropicKeyProblem, anthropicWorkspaceIdValid,
   type AdminLimitsUpdate, type AdminModelsView, type AdminProviderUpdate, type AdminSettingsView, type TitleWritingProviderKey,
 } from "@ai-drama/contracts";
 import {
@@ -30,7 +30,9 @@ export function initialModelSettings(env: ApiEnv): ManagedModelSettings {
     maxActiveRuns: env.TITLE_WRITING_MAX_ACTIVE_RUNS,
     providers: {
       openai: { apiKey: key(env.OPENAI_API_KEY), models: models(env.TITLE_WRITING_OPENAI_MODELS), baseUrl: OPENAI_RESPONSES_URL },
-      anthropic: { apiKey: key(env.ANTHROPIC_API_KEY), models: models(env.TITLE_WRITING_ANTHROPIC_MODELS), baseUrl: ANTHROPIC_MESSAGES_URL },
+      anthropic: { apiKey: key(env.ANTHROPIC_API_KEY), models: models(env.TITLE_WRITING_ANTHROPIC_MODELS), baseUrl: ANTHROPIC_MESSAGES_URL,
+        // Only a well-formed id seeds a new vault; the console shows and edits it from then on.
+        ...(env.ANTHROPIC_WORKSPACE_ID && anthropicWorkspaceIdValid(env.ANTHROPIC_WORKSPACE_ID) ? { workspaceId: env.ANTHROPIC_WORKSPACE_ID } : {}) },
     },
   };
 }
@@ -42,6 +44,7 @@ export function managedProviderConfigs(settings: ManagedModelSettings) {
     TITLE_WRITING_OPENAI_MODELS: settings.providers.openai.models.join(","),
     ANTHROPIC_API_KEY: settings.providers.anthropic.apiKey ?? undefined,
     TITLE_WRITING_ANTHROPIC_MODELS: settings.providers.anthropic.models.join(","),
+    ANTHROPIC_WORKSPACE_ID: settings.providers.anthropic.workspaceId,
   });
 }
 
@@ -55,7 +58,8 @@ function settingsView(settings: ManagedModelSettings): AdminSettingsView {
       const provider = settings.providers[providerKey];
       const config = configs[providerKey];
       return { providerKey, label: LABELS[providerKey], models: [...provider.models], baseUrl: provider.baseUrl,
-        keyConfigured: provider.apiKey !== null, ready: config.ok, missing: [...config.missing] };
+        keyConfigured: provider.apiKey !== null, ...(providerKey === "anthropic" ? { workspaceId: provider.workspaceId ?? null } : {}),
+        ready: config.ok, missing: [...config.missing] };
     }),
   };
 }
@@ -114,12 +118,19 @@ export class AdminModelsService implements AdminModelsBackend {
 
   /**
    * A Claude key alone is a complete setup: without a model list the documented default model is saved with it, and
-   * with no default provider saved Claude becomes the default in the same write. The key must have the shape of an
-   * Anthropic Console API key; a Claude Code / subscription token or an Admin key is refused before anything is saved.
+   * with no default provider saved Claude becomes the default in the same write. The key must have the shape of a
+   * Claude Console API key (sk-ant-api…, sk-ant-usr…, sk-ant-svc…); a subscription / Claude Code token, an Admin key,
+   * a session value or a JWT is refused as a credential of the wrong kind, anything else as an unsupported format.
+   * Neither check says the key works: only the provider can answer that.
    */
   async updateProvider(providerKey: TitleWritingProviderKey, body: AdminProviderUpdate): Promise<AdminModelsView> {
-    if (providerKey === "anthropic" && body.secretAction === "replace" && (body.apiKey === undefined || anthropicKeyProblem(body.apiKey) !== null)) {
-      throw new AdminHttpError(400, "ADMIN_CONFIG_KEY_FORMAT");
+    if (providerKey === "anthropic" && body.secretAction === "replace") {
+      const problem = body.apiKey === undefined ? "unsupported_format" : anthropicKeyProblem(body.apiKey);
+      if (problem === "not_api_credential") throw new AdminHttpError(400, "ADMIN_CONFIG_KEY_KIND");
+      if (problem !== null) throw new AdminHttpError(400, "ADMIN_CONFIG_KEY_FORMAT");
+    }
+    if (providerKey === "anthropic" && body.workspaceAction === "replace" && !anthropicWorkspaceIdValid(body.workspaceId ?? "")) {
+      throw new AdminHttpError(400, "ADMIN_CONFIG_WORKSPACE_FORMAT");
     }
     const defaults = TITLE_WRITING_DEFAULT_MODELS[providerKey];
     // Only when a key is entered: saving an empty list with the key kept is how the list is emptied (not ready).

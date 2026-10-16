@@ -24,7 +24,7 @@ import { PROVIDER_MIGRATION_GAP, TitleWritingService } from "./title-writing.ser
 const WS = "11111111-1111-4111-8111-111111111111";
 const P1 = "22222222-2222-4222-8222-222222222222";
 const TOKEN = "operator-token-0123456789";
-const KEY = "sk-test-not-a-real-key-000";
+const KEY = "sk-ant-api03-test-not-a-real-key-000";
 const TITLE = "夜班证词";
 const SCRIPT = "第 1 集\n场 1 便利店 夜\n林夏盯着监控。\n林夏：这不是我。\n场 2 天台 夜\n周野推开铁门。\n周野：你来了。";
 const CONTEXT = (key?: string) => ({ actorId: "server-owner", traceId: "t", ...(key ? { idempotencyKey: key } : {}) });

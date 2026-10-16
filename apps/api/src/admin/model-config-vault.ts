@@ -6,6 +6,7 @@ import { z } from "zod";
 import {
   TITLE_WRITING_PROVIDER_KEYS, TITLE_WRITING_RETIRED_PROVIDER_KEYS, TITLE_WRITING_STORED_PROVIDER_KEYS,
   adminLimitsUpdateSchema, adminProviderKeySchema, adminProviderUpdateSchema,
+  ANTHROPIC_WORKSPACE_ID_SHAPE, workspaceUpdateOf,
   type AdminAuditView, type AdminLimitsUpdate, type AdminProviderUpdate, type TitleWritingProviderKey,
   type TitleWritingRetiredProviderKey,
 } from "@ai-drama/contracts";
@@ -27,10 +28,15 @@ export const V1_BACKUP_SUFFIX = ".v1-retired-providers.bak";
 const MAX_BYTES = 256 * 1024;
 const SECRET_SCHEMA = z.string().min(8).max(256).regex(/^\S+$/u).nullable();
 const revisionSchema = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
+/**
+ * workspaceId (Claude only) is written only when set, so a vault that never had one keeps exactly the fields an older
+ * release reads; older files without it read as "no workspace".
+ */
 const providerSchema = z.object({
   apiKey: SECRET_SCHEMA,
   baseUrl: z.string().max(512),
   models: adminProviderUpdateSchema.shape.models,
+  workspaceId: z.string().regex(ANTHROPIC_WORKSPACE_ID_SHAPE).optional(),
 }).strict();
 const settingsSchema = z.object({
   revision: revisionSchema,
@@ -88,7 +94,7 @@ export interface ManagedModelSettings {
   defaultProvider: TitleWritingProviderKey | null;
   maxCallsPerDay: number;
   maxActiveRuns: number;
-  providers: Record<TitleWritingProviderKey, { apiKey: string | null; baseUrl: string; models: string[] }>;
+  providers: Record<TitleWritingProviderKey, { apiKey: string | null; baseUrl: string; models: string[]; workspaceId?: string }>;
 }
 /** What a conversion from v1 left out. Names only. */
 export interface RetiredProviderNote {
@@ -125,6 +131,7 @@ function checkedDocument(input: unknown): ManagedModelDocument {
     for (const key of TITLE_WRITING_PROVIDER_KEYS) {
       if (!validEndpoint(key, settings.providers[key].baseUrl)) throw storageError();
     }
+    if (settings.providers.openai.workspaceId !== undefined) throw storageError();
   }
   if (doc.active.revision === doc.saved.revision && JSON.stringify(doc.active) !== JSON.stringify(doc.saved)) throw storageError();
   return doc;
@@ -430,6 +437,10 @@ export class ModelConfigVault {
     const parsed = adminProviderUpdateSchema.safeParse(body);
     if (!adminProviderKeySchema.safeParse(key).success || !parsed.success || (parsed.data.baseUrl !== undefined && !validEndpoint(key, parsed.data.baseUrl))) throw inputError();
     const input = parsed.data;
+    const workspace = workspaceUpdateOf(input);
+    // Only Claude has a workspace; its id must have the documented shape (it becomes a request header).
+    if (typeof workspace === "string" && workspace !== "keep" && (key !== "anthropic" || !ANTHROPIC_WORKSPACE_ID_SHAPE.test(workspace))) throw inputError();
+    if (key !== "anthropic" && input.workspaceAction !== undefined && input.workspaceAction !== "keep") throw inputError();
     return this.locked(async (doc) => {
       this.assertRevision(doc, input.expectedRevision);
       const provider = doc.saved.providers[key];
@@ -437,6 +448,9 @@ export class ModelConfigVault {
       if (input.baseUrl !== undefined) provider.baseUrl = input.baseUrl;
       if (input.secretAction === "replace") provider.apiKey = input.apiKey!;
       if (input.secretAction === "clear") provider.apiKey = null;
+      // A replaced or cleared key drops the previous workspace unless this update names one.
+      if (workspace === null) delete provider.workspaceId;
+      else if (workspace !== "keep") provider.workspaceId = workspace;
       if (options.claimDefault && doc.saved.defaultProvider === null && provider.apiKey !== null && provider.models.length > 0) {
         doc.saved.defaultProvider = key;
       }

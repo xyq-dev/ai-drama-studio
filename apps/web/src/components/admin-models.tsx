@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import {
-  TITLE_WRITING_DEFAULT_MODELS, TITLE_WRITING_PROVIDER_LABELS, adminLimitsUpdateSchema, adminProviderUpdateSchema, anthropicKeyProblem,
+  TITLE_WRITING_DEFAULT_MODELS, TITLE_WRITING_PROVIDER_LABELS, adminLimitsUpdateSchema, adminProviderUpdateSchema, anthropicKeyProblem, anthropicWorkspaceIdValid,
   claudeSetupState, type AdminModelsView, type AdminProviderView, type ClaudeSetupState, type TitleWritingProviderKey,
 } from "@ai-drama/contracts";
 import { AdminApiError, createAdminModelsClient } from "../lib/admin-models-client";
@@ -34,12 +34,21 @@ function limitsFor(view: AdminModelsView): LimitsDraft {
   return { defaultProvider: view.saved.defaultProvider ?? "", maxCallsPerDay: String(view.saved.maxCallsPerDay),
     maxActiveRuns: String(view.saved.maxActiveRuns) };
 }
+/** The local checks and the server's refusals use the same three distinct texts. None says the key is valid. */
+const CREDENTIAL_ERRORS: Record<string, string> = {
+  ADMIN_CONFIG_KEY_FORMAT: "Claude API Key 的格式不受支持。请粘贴在 Claude Console 的 API keys 页面创建的完整密钥。没有保存任何内容。",
+  ADMIN_CONFIG_KEY_KIND: "这是一种不能用于调用 Claude API 的凭据（例如 Claude Code 或订阅账号的登录令牌、Admin Key、浏览器会话或 JWT）。请改用 Claude Console 创建的 API Key。没有保存任何内容。",
+  ADMIN_CONFIG_WORKSPACE_FORMAT: "Workspace ID 格式不正确，应为 Claude Console 工作区页面 ID 列中的 wrkspc_… 值。没有保存任何内容。",
+};
+export const CLAUDE_WORKSPACE_HINT = "通常只需填写 API Key。若密钥未限定 Workspace，请在高级设置填写 Workspace ID，或创建限定 Workspace 的密钥。";
+
 function messageFor(error: unknown): string {
   if (!(error instanceof AdminApiError)) return "暂时无法完成请求，请重新读取配置后再试。";
   if (error.status === 409) return error.code === "ADMIN_CONFIG_BUSY"
     ? "配置正在被其他操作更新，请稍后重新读取。本次没有自动重试保存。"
     : "配置已被其他管理员修改。本页草稿已保留，请重新读取最新配置后再编辑。";
   if (error.status === 503) return "管理员配置存储暂不可用，请联系服务器管理员检查初始化与存储状态。";
+  if (error.status === 400 && CREDENTIAL_ERRORS[error.code]) return CREDENTIAL_ERRORS[error.code]!;
   if (error.status === 400) return "配置格式不正确，请检查模型 ID、端点和密钥后再保存。";
   if (error.status === 403) return "本次操作未获授权，请退出后重新验证管理员身份。";
   if (error.status === 429) return "验证请求过于频繁，请稍后再试。";
@@ -49,13 +58,13 @@ function messageFor(error: unknown): string {
 export function claudeStatusText(state: ClaudeSetupState, migrations: string[]): { title: string; detail: string; tone: "neutral" | "success" | "warning" } {
   switch (state) {
     case "key_missing":
-      return { title: "尚未配置 Claude API Key", detail: "在下面填写 Anthropic 控制台创建的 API Key 即可；模型、端点和请求参数由系统提供。", tone: "warning" };
+      return { title: "尚未配置 Claude API Key", detail: "在下面填写 Claude Console 创建的 API Key 即可；模型、端点和请求参数由系统提供。", tone: "warning" };
     case "pending_restart":
       return { title: "Claude API Key 已保存，等待 API 重启后生效", detail: "保存不等于可以创作。请由服务器部署流程（Hermes）受控重启 API，重启后本页会显示新的状态。", tone: "warning" };
     case "activation_deferred":
       return { title: "Claude 配置已保存，应用已推迟", detail: "有创作任务尚未结束，服务继续使用原有配置。任务结束后需要再次重启 API。", tone: "warning" };
     case "incomplete":
-      return { title: "Claude 配置项未齐全", detail: "当前生效配置缺少密钥或模型。请重新保存 Claude API Key。", tone: "warning" };
+      return { title: "Claude 配置项未齐全", detail: "当前生效配置缺少可用的密钥、模型或有效的 Workspace ID。请重新保存 Claude API Key。", tone: "warning" };
     case "feature_off":
       return { title: "Claude 配置已生效，但 AI 创作开关未开启", detail: "服务端 TITLE_WRITING_ENABLED 未开启（或生产环境未授权），暂时不能创作。", tone: "warning" };
     case "operator_missing":
@@ -100,6 +109,9 @@ export function AdminModels() {
   // The Claude quick setup: only the key. Kept apart from the advanced provider form and cleared after every submit.
   const [claudeKey, setClaudeKey] = useState("");
   const [claudeError, setClaudeError] = useState("");
+  // Optional anthropic-workspace-id: a new value, or clearing the saved one. Not a secret, but reset with the key.
+  const [claudeWorkspace, setClaudeWorkspace] = useState("");
+  const [claudeWorkspaceClear, setClaudeWorkspaceClear] = useState(false);
   // Bumped whenever a server view is installed, so the picker's own search text, errors and hints start over too.
   const [viewEpoch, setViewEpoch] = useState(0);
   const busyRef = useRef("");
@@ -118,6 +130,7 @@ export function AdminModels() {
   }
   function forgetSecrets() {
     setApiKey(""); setSecretAction("keep"); setClearConfirmed(false); setSecretNotice(""); setClaudeKey(""); setClaudeError("");
+    setClaudeWorkspace(""); setClaudeWorkspaceClear(false);
   }
   function endSession(message: string) {
     generation.current += 1;
@@ -274,7 +287,8 @@ export function AdminModels() {
       const updated = next.saved.providers.find((provider) => provider.providerKey === providerKey);
       if (updated) setDrafts((old) => ({ ...old, [providerKey]: draftFor(updated) }));
       setSecretAction("keep"); setClearConfirmed(false);
-      setNotice(`${meta.label}配置已保存。${next.pendingRestart ? "等待 API 重启后应用。" : "以当前生效配置为准。"}没有发起模型调用。`);
+      const droppedWorkspace = providerKey === "anthropic" && replaced && Boolean(view.saved.providers.find((item) => item.providerKey === "anthropic")?.workspaceId);
+      setNotice(`${meta.label}配置已保存。${droppedWorkspace ? "原 Workspace ID 已随旧密钥清除，如新密钥需要请在 Claude 快速配置中重新填写。" : ""}${next.pendingRestart ? "等待 API 重启后应用。" : "以当前生效配置为准。"}没有发起模型调用。`);
     } catch (caught) {
       if (epoch !== generation.current) return;
       if (caught instanceof AdminApiError && caught.status === 401) endSession("管理员会话已过期，请重新验证。");
@@ -286,21 +300,33 @@ export function AdminModels() {
     } finally { if (epoch === generation.current) setApiKey(""); finish(epoch); }
   }
 
-  /** Saves only the Claude key; the server adds the default model and makes Claude the default when none is set. */
+  /**
+   * Saves the Claude key (the server adds the default model and makes Claude the default when none is set), optionally
+   * with a workspace id. A new key never keeps the previous key's workspace: it is saved with the id typed here or with
+   * none. Without a new key, only the workspace id is set or cleared and the saved key is kept.
+   */
   async function saveClaudeKey(event: FormEvent) {
     event.preventDefault();
     if (!session || !view || !canEdit || busyRef.current) return;
     const key = claudeKey.trim();
-    const problem = key.length === 0 ? "empty" : anthropicKeyProblem(key);
+    const workspace = claudeWorkspace.trim();
+    const current = view.saved.providers.find((provider) => provider.providerKey === "anthropic");
+    if (key.length === 0 && !(current?.keyConfigured && (workspace.length > 0 || claudeWorkspaceClear))) {
+      setClaudeError("请填写 Claude API Key。"); return;
+    }
+    const problem = key.length === 0 ? null : anthropicKeyProblem(key);
     if (problem !== null) {
-      setClaudeError(problem === "empty" ? "请填写 Claude API Key。"
-        : "这不是 Anthropic 控制台创建的 API Key（应以 sk-ant-api 开头）。Claude Code 或订阅账号的登录凭据不能使用。");
+      setClaudeError(CREDENTIAL_ERRORS[problem === "not_api_credential" ? "ADMIN_CONFIG_KEY_KIND" : "ADMIN_CONFIG_KEY_FORMAT"]!);
       setClaudeKey("");
       return;
     }
-    const current = view.saved.providers.find((provider) => provider.providerKey === "anthropic");
-    const parsed = adminProviderUpdateSchema.safeParse({ expectedRevision: view.savedRevision, models: current?.models ?? [], secretAction: "replace", apiKey: key });
+    if (workspace.length > 0 && !anthropicWorkspaceIdValid(workspace)) { setClaudeError(CREDENTIAL_ERRORS.ADMIN_CONFIG_WORKSPACE_FORMAT!); return; }
+    const workspaceUpdate = workspace.length > 0 ? { workspaceAction: "replace" as const, workspaceId: workspace }
+      : claudeWorkspaceClear ? { workspaceAction: "clear" as const } : {};
+    const parsed = adminProviderUpdateSchema.safeParse({ expectedRevision: view.savedRevision, models: current?.models ?? [],
+      ...(key.length > 0 ? { secretAction: "replace", apiKey: key } : { secretAction: "keep" }), ...workspaceUpdate });
     if (!parsed.success) { setClaudeError("密钥格式不正确（8–256 个字符，不能包含空格）。"); setClaudeKey(""); return; }
+    const droppedWorkspace = key.length > 0 && workspace.length === 0 && Boolean(current?.workspaceId);
     const epoch = begin("claude");
     if (epoch === null) return;
     setError(""); setNotice(""); setClaudeError("");
@@ -308,13 +334,14 @@ export function AdminModels() {
       const next = await client.provider("anthropic", parsed.data);
       if (epoch !== generation.current) return;
       installView(next);
-      setNotice(`Claude API Key 已保存。${next.pendingRestart ? "需要重启 API 后生效，重启前还不能用 Claude 创作。" : "以当前生效配置为准。"}没有发起模型调用。`);
+      const savedWhat = key.length > 0 ? "Claude API Key 已保存。" : workspace.length > 0 ? "Workspace ID 已保存。" : "Workspace ID 已清除。";
+      setNotice(`${savedWhat}${droppedWorkspace ? "原 Workspace ID 已随旧密钥清除。" : ""}${next.pendingRestart ? "需要重启 API 后生效，重启前还不能用 Claude 创作。" : "以当前生效配置为准。"}没有发起模型调用，格式检查不代表密钥有效或余额充足。`);
     } catch (caught) {
       if (epoch !== generation.current) return;
       if (caught instanceof AdminApiError && caught.status === 401) endSession("管理员会话已过期，请重新验证。");
       else {
-        setClaudeError(caught instanceof AdminApiError && caught.code === "ADMIN_CONFIG_KEY_FORMAT"
-          ? "服务端拒绝：这不是 Anthropic 控制台创建的 API Key。没有保存任何内容。" : messageFor(caught));
+        setClaudeError(caught instanceof AdminApiError && CREDENTIAL_ERRORS[caught.code]
+          ? `服务端拒绝：${CREDENTIAL_ERRORS[caught.code]!}` : messageFor(caught));
         if (caught instanceof AdminApiError && (caught.status === 409 || caught.status === 0)) setMustReload(true);
       }
     } finally { if (epoch === generation.current) setClaudeKey(""); finish(epoch); }
@@ -368,6 +395,9 @@ export function AdminModels() {
           {view.retired && <div className={styles.warning} role="status"><strong>千问与 DeepSeek 已退役</strong><p>{view.retired.providers.length > 0 ? `原配置中的${view.retired.providers.map((key) => TITLE_WRITING_PROVIDER_LABELS[key]).join("、")}设置不再生效，也不会再发出调用。` : "原配置中没有千问或 DeepSeek 的设置。"}{view.retired.retiredDefault ? `原默认供应商${TITLE_WRITING_PROVIDER_LABELS[view.retired.retiredDefault]}已取消，请重新选择默认供应商。` : ""}{view.retired.backupKept ? "原加密配置已在服务器上单独备份，供回滚使用。" : "首次保存时，原加密配置会先在服务器上单独备份。"}历史作品和调用记录不受影响。</p></div>}
           {view.activationDeferred && <div className={styles.warning} role="status"><strong>有创作任务尚未结束，配置应用已推迟</strong><p>服务继续使用原有的生效配置，避免改变正在执行或恢复中的模型请求。请在任务结束后联系服务器管理员处理。</p></div>}
           <ClaudeQuickSetup view={view} claudeKey={claudeKey} claudeError={claudeError} canEdit={canEdit} busy={busy}
+            workspace={claudeWorkspace} workspaceClear={claudeWorkspaceClear}
+            onWorkspace={(value) => { setClaudeWorkspace(value); setClaudeWorkspaceClear(false); setClaudeError(""); }}
+            onWorkspaceClear={(value) => { setClaudeWorkspaceClear(value); if (value) setClaudeWorkspace(""); setClaudeError(""); }}
             onKey={(value) => { setClaudeKey(value); setClaudeError(""); }} onSubmit={(event) => void saveClaudeKey(event)} />
           <h2 className={styles.advancedHeading}>高级设置：模型供应商、模型与调用规则</h2>
           <div className={styles.workspace}>
@@ -421,6 +451,10 @@ function ClaudeQuickSetup(props: {
   claudeError: string;
   canEdit: boolean;
   busy: string;
+  workspace: string;
+  workspaceClear: boolean;
+  onWorkspace: (value: string) => void;
+  onWorkspaceClear: (value: boolean) => void;
   onKey: (value: string) => void;
   onSubmit: (event: FormEvent) => void;
 }) {
@@ -435,11 +469,23 @@ function ClaudeQuickSetup(props: {
       <strong>{status.title}</strong><p>{status.detail}</p></div>
     <form onSubmit={props.onSubmit}><fieldset className={styles.fieldset} disabled={!props.canEdit}>
       <label className={styles.field}>Claude API Key<input name="claude-api-key" type="password" autoComplete="off" spellCheck={false} value={props.claudeKey}
-        onChange={(event) => props.onKey(event.target.value)} maxLength={256} placeholder={saved?.keyConfigured ? "已保存；填写新的 Key 会替换它" : "sk-ant-api…"} />
-        <small>只接受 Anthropic 控制台创建的 API Key；不接受 Claude Code、订阅账号或浏览器会话的凭据。提交后输入框会清空，页面不会再显示密钥。</small></label>
+        onChange={(event) => props.onKey(event.target.value)} maxLength={256} placeholder={saved?.keyConfigured ? "已保存；填写新的 Key 会替换它" : "sk-ant-…"} />
+        <small>填写在 Claude Console（platform.claude.com）API keys 页面创建的密钥，个人密钥、服务账号密钥均可；不接受 Claude Code 或订阅账号的登录令牌、Admin Key、浏览器会话。格式检查只说明可以保存，不代表密钥有效或余额充足。提交后输入框会清空，页面不会再显示密钥。</small></label>
+      <p className={styles.workspaceHint} data-testid="claude-workspace-hint">{CLAUDE_WORKSPACE_HINT}</p>
+      <details className={styles.workspaceAdvanced} open={Boolean(saved?.workspaceId) || undefined}>
+        <summary>高级设置（可不填）：Workspace ID</summary>
+        <p data-testid="claude-workspace-current">当前：{saved?.workspaceId ? <code>{saved.workspaceId}</code> : "未设置（请求不携带 Workspace）"}</p>
+        <label className={styles.field}>Workspace ID<input name="claude-workspace-id" type="text" autoComplete="off" spellCheck={false} value={props.workspace}
+          onChange={(event) => props.onWorkspace(event.target.value)} maxLength={128} placeholder="wrkspc_…" />
+          <small>Claude Console 工作区页面 ID 列中的值。保存新的 API Key 时，若这里不填写，原 Workspace ID 会一并清除。</small></label>
+        {saved?.workspaceId && <label className={styles.checkLine}><input type="checkbox" checked={props.workspaceClear}
+          onChange={(event) => props.onWorkspaceClear(event.target.checked)} />清除已保存的 Workspace ID</label>}
+      </details>
       {props.claudeError && <p className={styles.claudeError} role="alert">{props.claudeError}</p>}
       <div className={styles.formFooter}><p>只保存配置<br /><span>不联网测试 · 不产生模型费用 · 保存后需重启 API 生效</span></p>
-        <button className={styles.primary} type="submit" disabled={!props.canEdit || !props.claudeKey.trim()}>{props.busy === "claude" ? "正在保存…" : "保存 Claude API Key"}<span aria-hidden="true">→</span></button></div>
+        <button className={styles.primary} type="submit" disabled={!props.canEdit || !(props.claudeKey.trim()
+          || (saved?.keyConfigured && (props.workspace.trim() || props.workspaceClear)))}>{props.busy === "claude" ? "正在保存…"
+          : props.claudeKey.trim() || !saved?.keyConfigured ? "保存 Claude API Key" : "保存 Workspace 设置"}<span aria-hidden="true">→</span></button></div>
     </fieldset></form>
   </section>;
 }

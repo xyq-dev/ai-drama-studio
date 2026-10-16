@@ -12,7 +12,7 @@ import { titleWritingProviderConfigs, type WritingTransport } from "./text-writi
  */
 const WS = "11111111-1111-4111-8111-111111111111";
 const TITLE = "夜班证词";
-const KEY = "sk-test-secret-0123456789";
+const KEY = "sk-ant-api03-test-secret-0123456789";
 const providers = titleWritingProviderConfigs({
   OPENAI_API_KEY: KEY, TITLE_WRITING_OPENAI_MODELS: "o-1", ANTHROPIC_API_KEY: KEY, TITLE_WRITING_ANTHROPIC_MODELS: "claude-opus-5-5",
 });

@@ -86,6 +86,8 @@ export interface ApiEnv {
   /** Claude through the official Anthropic API. A real API key only; never a Claude Code or subscription credential. */
   ANTHROPIC_API_KEY?: string;
   TITLE_WRITING_ANTHROPIC_MODELS?: string;
+  /** Optional anthropic-workspace-id (wrkspc_…) for a Claude key not scoped to one workspace. Same name as the SDKs use. */
+  ANTHROPIC_WORKSPACE_ID?: string;
   /** Administrator bootstrap is process-only. Saved model secrets live in the encrypted configuration vault. */
   MODEL_ADMIN_ENABLED?: string;
   /** No longer used (replaced by the site login); read only to warn that it can be removed. */
@@ -108,6 +110,7 @@ const PROCESS_ONLY_KEYS = [
   "TITLE_WRITING_OPENAI_MODELS",
   "ANTHROPIC_API_KEY",
   "TITLE_WRITING_ANTHROPIC_MODELS",
+  "ANTHROPIC_WORKSPACE_ID",
   "MODEL_ADMIN_ENABLED",
   "MODEL_ADMIN_TOKEN",
   "MODEL_ADMIN_MASTER_KEY",

@@ -17,7 +17,7 @@ vi.mock("@ai-drama/database", async (importOriginal) => {
 });
 
 const WORKSPACE = "11111111-1111-4111-8111-111111111111";
-const LEGACY_KEY = "sk-test-environment-claude-secret";
+const LEGACY_KEY = "sk-ant-api03-test-environment-claude-secret";
 const SAVED_KEY = "sk-test-managed-openai-secret";
 const BASE = {
   NODE_ENV: "test",

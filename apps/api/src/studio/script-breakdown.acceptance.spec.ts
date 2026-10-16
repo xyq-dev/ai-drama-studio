@@ -46,7 +46,7 @@ const acceptanceUrl = decision.url;
 
 const WORKSPACE = "11111111-1111-4111-8111-111111111111";
 const OPERATOR_TOKEN = `acceptance-${randomUUID()}`;
-const STUB_KEY = `stub-not-a-provider-key-${randomUUID()}`;
+const STUB_KEY = `sk-ant-api03-stub-not-a-provider-key-${randomUUID()}`;
 const STUB_MODEL = "claude-acceptance-stub";
 
 const pool = createPostgresPool({ connectionString: acceptanceUrl, connectionTimeoutMs: 2_000, statementTimeoutMs: 10_000, queryTimeoutMs: 10_000 });

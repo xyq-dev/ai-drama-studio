@@ -16,7 +16,7 @@ import { messagesAnswer, fixtureChatTransport, fixtureConcept, fixtureOutline, t
 const WS = "11111111-1111-4111-8111-111111111111";
 const P1 = "22222222-2222-4222-8222-222222222222";
 const P2 = "33333333-3333-4333-8333-333333333333";
-const KEY = "sk-test-secret-0123456789";
+const KEY = "sk-ant-api03-test-secret-0123456789";
 const TITLE = "夜班证词";
 
 function providers(): Record<TitleWritingProviderKey, WritingProviderConfig> {
@@ -435,5 +435,26 @@ describe("title-driven writing run", () => {
     await engine.drive(runId);
     expect((await store.getRunById(WS, runId))!.run).toMatchObject({ state: "needs_attention", errorCode: "provider_unconfigured" });
     expect(seen).toHaveLength(0);
+  });
+});
+
+describe("Claude Console keys and the optional workspace reach every title writing request", () => {
+  it("a personal sk-ant-usr key with a workspace id: every step sends x-api-key and anthropic-workspace-id, nothing else", async () => {
+    const usrKey = "sk-ant-usr-fake-personal-key-for-tests-only";
+    const store = new InMemoryTitleWritingStore();
+    store.addProject(WS, P1);
+    const headers: Array<Record<string, string>> = [];
+    const inner = fixtureChatTransport(TITLE);
+    const transport: WritingTransport = async (request) => { headers.push(request.headers); return inner(request); };
+    const configs = titleWritingProviderConfigs({ ANTHROPIC_API_KEY: usrKey, TITLE_WRITING_ANTHROPIC_MODELS: "q-1", ANTHROPIC_WORKSPACE_ID: "wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ" });
+    const engine = new TitleWritingEngine({ workspaceId: WS, store, providers: configs, transport, maxCallsPerDay: 30, timeoutMs: 20 });
+    const created = await store.createRun(newTitleRun({ workspaceId: WS, projectId: P1, actorId: "server-owner", idempotencyKey: "usr-1", title: TITLE,
+      settings: { episodeCount: 3, episodeSeconds: TITLE_WRITING_DEFAULT_EPISODE_SECONDS, style: "" }, providerKey: "anthropic", model: "q-1", now: new Date() }), { maxActiveRuns: 1 });
+    await engine.drive(created.kind === "blocked" ? "" : created.bundle.run.id);
+    expect(headers).toHaveLength(5);
+    for (const sent of headers) {
+      expect(sent).toEqual({ "x-api-key": usrKey, "anthropic-version": "2023-06-01", "Content-Type": "application/json",
+        "anthropic-workspace-id": "wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ" });
+    }
   });
 });

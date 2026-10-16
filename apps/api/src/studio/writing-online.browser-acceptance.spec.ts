@@ -73,7 +73,9 @@ const API = `http://127.0.0.1:${String(API_PORT)}`;
 // Generated per run, held in memory, typed into the login form only; never printed or written to the evidence.
 const PASSWORD = `acceptance-${randomUUID()}`;
 // Not a key of any provider account: the stub never sends it anywhere.
-const STUB_KEY = `sk-ant-api03-stub-not-a-provider-key-${randomUUID()}`;
+// A personal Claude Console key shape (sk-ant-usr-) with a workspace id, as a key not scoped to one workspace needs.
+const STUB_KEY = `sk-ant-usr-stub-not-a-provider-key-${randomUUID()}`;
+const STUB_WORKSPACE = "wrkspc_01OnlineAcceptanceStubWorkspace";
 const TITLE = "模型替身样例·在线候选";
 const ONLINE_MARK = "（模型替身样例·在线候选改写）";
 const DESKTOP = { width: 1280, height: 800 };
@@ -101,7 +103,11 @@ const transport: WritingTransport = async (request) => {
   const body = JSON.parse(request.body) as { messages?: Array<{ role: string; content: string }>; input?: string };
   const user = body.messages?.find((message) => message.role === "user")?.content ?? body.input ?? "";
   const headers = request.headers as Record<string, string>;
-  const keyMatches = headers["x-api-key"] === STUB_KEY || (headers.Authorization ?? headers.authorization) === `Bearer ${STUB_KEY}`;
+  // Claude: x-api-key and the configured workspace, never a bearer token. OpenAI: its bearer token and no workspace.
+  const names = Object.keys(headers).map((name) => name.toLowerCase());
+  const keyMatches = endpoint.host === "api.anthropic.com"
+    ? headers["x-api-key"] === STUB_KEY && headers["anthropic-workspace-id"] === STUB_WORKSPACE && !names.includes("authorization")
+    : headers.Authorization === `Bearer ${STUB_KEY}` && !names.includes("anthropic-workspace-id") && !names.includes("x-api-key");
   let kind: string;
   let value: unknown;
   let planned: { status: number; body: unknown } | undefined;
@@ -129,7 +135,8 @@ const transport: WritingTransport = async (request) => {
 const sends = (prefix: string) => sent.filter((item) => item.kind.startsWith(prefix)).length;
 
 /** Claude with only its key (the default model), OpenAI with its key and list: the configuration an administrator gives. */
-const providers = titleWritingProviderConfigs({ ANTHROPIC_API_KEY: STUB_KEY, OPENAI_API_KEY: STUB_KEY, TITLE_WRITING_OPENAI_MODELS: "openai-acceptance-stub" });
+const providers = titleWritingProviderConfigs({ ANTHROPIC_API_KEY: STUB_KEY, ANTHROPIC_WORKSPACE_ID: STUB_WORKSPACE,
+  OPENAI_API_KEY: STUB_KEY, TITLE_WRITING_OPENAI_MODELS: "openai-acceptance-stub" });
 
 function titleService(runtime: StudioRuntime): TitleWritingService {
   const store = new PostgresTitleWritingStore(runtime.pool, new TextChainService(runtime.pool));

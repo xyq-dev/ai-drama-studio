@@ -59,7 +59,7 @@ if (!/^redis:\/\//.test(redisUrl) || !LOOPBACK.has(new URL(redisUrl).hostname)) 
 const REPO = resolve(__dirname, "../../../..");
 const WORKSPACE = randomUUID();
 const OPERATOR_TOKEN = `acceptance-${randomUUID()}`;
-const STUB_KEY = `stub-not-a-provider-key-${randomUUID()}`;
+const STUB_KEY = `sk-ant-api03-stub-not-a-provider-key-${randomUUID()}`;
 const STUB_MODEL = "claude-acceptance-stub";
 const WORKER_PORT = "3112";
 const POLL_MS = 500;

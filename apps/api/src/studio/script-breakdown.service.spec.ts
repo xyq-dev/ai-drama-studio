@@ -20,7 +20,7 @@ const WS = "11111111-1111-4111-8111-111111111111";
 const P1 = "22222222-2222-4222-8222-222222222222";
 const TOKEN = "operator-token-0123456789";
 const ENV: TitleWritingProviderEnv = {
-  ANTHROPIC_API_KEY: "sk-test-not-a-real-key-000", TITLE_WRITING_ANTHROPIC_MODELS: "q-1",
+  ANTHROPIC_API_KEY: "sk-ant-api03-test-not-a-real-key-000", TITLE_WRITING_ANTHROPIC_MODELS: "q-1",
 };
 const CONTEXT = (key?: string) => ({ actorId: "server-owner", traceId: "t", idempotencyKey: key });
 type Override = (step: FixtureStep, attempt: number) => { status: number; body: unknown } | "hang" | "throw" | undefined;

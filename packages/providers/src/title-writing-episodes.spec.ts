@@ -11,7 +11,7 @@ const TITLE = "夜班证词";
 
 function providers(): Record<TitleWritingProviderKey, WritingProviderConfig> {
   return titleWritingProviderConfigs({
-    ANTHROPIC_API_KEY: "sk-test-secret-0123456789", TITLE_WRITING_ANTHROPIC_MODELS: "q-1",
+    ANTHROPIC_API_KEY: "sk-ant-api03-test-secret-0123456789", TITLE_WRITING_ANTHROPIC_MODELS: "q-1",
   });
 }
 
