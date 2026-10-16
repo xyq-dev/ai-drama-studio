@@ -205,13 +205,14 @@ describe.skipIf(process.platform === "win32")("managed models runtime (real encr
       expect(Object.keys(settings.providers.openai).sort()).toEqual(["apiKey", "baseUrl", "models"]);
     }
   });
-  it("a workspace id from the environment seeds a new vault only when well formed", async () => {
+  it("a workspace id from the environment seeds a new vault; a malformed one seeds no Claude key rather than a key that fails", async () => {
     const good = await fixture({ ANTHROPIC_API_KEY: "sk-ant-usr-fake-personal-key-for-tests-only", ANTHROPIC_WORKSPACE_ID: "wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ" });
     const service = await AdminModelsService.open(good.env, good.bootstrap, async () => true);
     expect(managedProviderConfigs(service.runtimeSettings()).anthropic).toMatchObject({ ok: true, workspaceId: "wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ" });
     const bad = await fixture({ ANTHROPIC_API_KEY: "sk-ant-usr-fake-personal-key-for-tests-only", ANTHROPIC_WORKSPACE_ID: "not-a-workspace" });
     const other = await AdminModelsService.open(bad.env, bad.bootstrap, async () => true);
-    expect(managedProviderConfigs(other.runtimeSettings()).anthropic).toMatchObject({ ok: true, workspaceId: null });
+    expect(managedProviderConfigs(other.runtimeSettings()).anthropic).toMatchObject({ ok: false, missing: ["ANTHROPIC_API_KEY"] });
+    expect(claudeSetupState(await other.view()).state).toBe("key_missing");
   });
   it("cannot enable production calls by configuring a valid provider", async () => {
     const { env, bootstrap } = await fixture({ NODE_ENV: "production", TITLE_WRITING_ENABLED: "true" });

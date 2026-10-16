@@ -23,6 +23,10 @@ function models(value: string | undefined): string[] {
 }
 
 export function initialModelSettings(env: ApiEnv): ManagedModelSettings {
+  // A malformed environment workspace id cannot be stored; seeding the Claude key without it would look ready and fail
+  // every call, so neither is seeded and the console asks for the key (with the workspace id in its advanced setting).
+  const workspace = env.ANTHROPIC_WORKSPACE_ID;
+  const workspaceBroken = Boolean(workspace) && !anthropicWorkspaceIdValid(workspace!);
   return {
     revision: 0,
     defaultProvider: env.TITLE_WRITING_DEFAULT_PROVIDER ?? null,
@@ -30,9 +34,8 @@ export function initialModelSettings(env: ApiEnv): ManagedModelSettings {
     maxActiveRuns: env.TITLE_WRITING_MAX_ACTIVE_RUNS,
     providers: {
       openai: { apiKey: key(env.OPENAI_API_KEY), models: models(env.TITLE_WRITING_OPENAI_MODELS), baseUrl: OPENAI_RESPONSES_URL },
-      anthropic: { apiKey: key(env.ANTHROPIC_API_KEY), models: models(env.TITLE_WRITING_ANTHROPIC_MODELS), baseUrl: ANTHROPIC_MESSAGES_URL,
-        // Only a well-formed id seeds a new vault; the console shows and edits it from then on.
-        ...(env.ANTHROPIC_WORKSPACE_ID && anthropicWorkspaceIdValid(env.ANTHROPIC_WORKSPACE_ID) ? { workspaceId: env.ANTHROPIC_WORKSPACE_ID } : {}) },
+      anthropic: { apiKey: workspaceBroken ? null : key(env.ANTHROPIC_API_KEY), models: models(env.TITLE_WRITING_ANTHROPIC_MODELS),
+        baseUrl: ANTHROPIC_MESSAGES_URL, ...(workspace && !workspaceBroken ? { workspaceId: workspace } : {}) },
     },
   };
 }

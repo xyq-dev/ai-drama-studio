@@ -12,7 +12,7 @@
 1. 使用站点统一登录（`/login`，见 [`UNIFIED_ADMIN_LOGIN.md`](UNIFIED_ADMIN_LOGIN.md)）进入；不再有独立的管理员访问令牌。登录账号不是供应商 API Key，也不是标题创作操作者令牌。
 2. 选择供应商，在「可用模型」中勾选（可按名称或 ID 搜索，最多 10 个），再在「默认模型」中从已选模型里选一个。
    两家地址都固定为官方端点（OpenAI `https://api.openai.com/v1/responses`，Claude `https://api.anthropic.com/v1/messages`），不能填写转发或代理地址。
-   Claude 只接受 Claude Console 创建的 API Key（`sk-ant-api…`、个人密钥 `sk-ant-usr…`、服务账号密钥 `sk-ant-svc…`），不接受 Claude Code 登录、订阅账号、Admin Key 或浏览器会话中的凭据；格式通过不代表密钥有效。未限定 Workspace 的密钥可在快速配置的高级设置填写 Workspace ID（2026-10-17，见 [`OPENAI_CLAUDE_WRITING.md`](OPENAI_CLAUDE_WRITING.md)）。
+   Claude 只接受 Claude Console 创建的 API Key（`sk-ant-api…`、个人密钥 `sk-ant-usr…`、服务账号密钥 `sk-ant-svc…`），不接受 Claude Code 登录、订阅账号、Admin Key 或浏览器会话中的凭据；格式通过不代表密钥有效。未限定 Workspace 的密钥可在快速配置的高级设置填写 Workspace ID；环境变量 `ANTHROPIC_WORKSPACE_ID` 与密钥一样只用于初始化新的加密配置，之后以后台为准（2026-10-17，见 [`OPENAI_CLAUDE_WRITING.md`](OPENAI_CLAUDE_WRITING.md)）。
    - 保存时仍是原来的 `models` 数组，默认模型排第一位（API 一直以第一项为默认值），没有新增字段。
    - 取消勾选默认模型后，默认模型变为空，必须重新选择才能保存；页面不会自动换成别的模型。
    - 「至少一个模型」只检查当前保存的这一家供应商；其他供应商可以保持未配置、空列表。当前供应商没有选择模型时提示「请选择至少一个模型」并阻止保存，唯一例外是同时选择「清除密钥」：这是清空该供应商配置的方式，提交 `models: []`、`secretAction: "clear"`（与原契约一致）。已有模型时清除密钥不受影响。服务端校验不变，仍接受空列表。

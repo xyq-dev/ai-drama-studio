@@ -287,7 +287,7 @@ export function AdminModels() {
       const updated = next.saved.providers.find((provider) => provider.providerKey === providerKey);
       if (updated) setDrafts((old) => ({ ...old, [providerKey]: draftFor(updated) }));
       setSecretAction("keep"); setClearConfirmed(false);
-      const droppedWorkspace = providerKey === "anthropic" && replaced && Boolean(view.saved.providers.find((item) => item.providerKey === "anthropic")?.workspaceId);
+      const droppedWorkspace = providerKey === "anthropic" && secretAction !== "keep" && Boolean(view.saved.providers.find((item) => item.providerKey === "anthropic")?.workspaceId);
       setNotice(`${meta.label}配置已保存。${droppedWorkspace ? "原 Workspace ID 已随旧密钥清除，如新密钥需要请在 Claude 快速配置中重新填写。" : ""}${next.pendingRestart ? "等待 API 重启后应用。" : "以当前生效配置为准。"}没有发起模型调用。`);
     } catch (caught) {
       if (epoch !== generation.current) return;
@@ -472,9 +472,9 @@ function ClaudeQuickSetup(props: {
         onChange={(event) => props.onKey(event.target.value)} maxLength={256} placeholder={saved?.keyConfigured ? "已保存；填写新的 Key 会替换它" : "sk-ant-…"} />
         <small>填写在 Claude Console（platform.claude.com）API keys 页面创建的密钥，个人密钥、服务账号密钥均可；不接受 Claude Code 或订阅账号的登录令牌、Admin Key、浏览器会话。格式检查只说明可以保存，不代表密钥有效或余额充足。提交后输入框会清空，页面不会再显示密钥。</small></label>
       <p className={styles.workspaceHint} data-testid="claude-workspace-hint">{CLAUDE_WORKSPACE_HINT}</p>
-      <details className={styles.workspaceAdvanced} open={Boolean(saved?.workspaceId) || undefined}>
+      <p className={styles.workspaceHint} data-testid="claude-workspace-current">Workspace ID：{saved?.workspaceId ? <code>{saved.workspaceId}</code> : "未设置（请求不携带 Workspace）"}</p>
+      <details className={styles.workspaceAdvanced}>
         <summary>高级设置（可不填）：Workspace ID</summary>
-        <p data-testid="claude-workspace-current">当前：{saved?.workspaceId ? <code>{saved.workspaceId}</code> : "未设置（请求不携带 Workspace）"}</p>
         <label className={styles.field}>Workspace ID<input name="claude-workspace-id" type="text" autoComplete="off" spellCheck={false} value={props.workspace}
           onChange={(event) => props.onWorkspace(event.target.value)} maxLength={128} placeholder="wrkspc_…" />
           <small>Claude Console 工作区页面 ID 列中的值。保存新的 API Key 时，若这里不填写，原 Workspace ID 会一并清除。</small></label>

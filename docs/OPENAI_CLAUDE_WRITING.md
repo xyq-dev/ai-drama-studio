@@ -49,7 +49,7 @@
   - 不从密钥猜 Workspace，不自动选择任何 Workspace，不调用 Admin API。未配置时不发送该头；配置后标题创作与工作台在线候选的每个 Claude 请求都携带。OpenAI 从不发送。
   - 保存语义（`workspaceAction`）：省略 = 保留，但填写新 Key 或清除 Key 时一并清除（新 Key 不继承旧 Key 的 Workspace）；`replace` + `workspaceId` = 设置；`clear` = 清除；新 Key 配 `keep` 被拒绝。只改 Workspace 时保留已保存的 Key。与 Key 一样保存后需重启 API 生效（saved / active 分别显示）。
   - vault：`workspaceId` 是 Claude 条目的可选字段，只在有值时写入；旧 vault 没有该字段照常读取，不删除、不重建、不更换主密钥。回滚到本版本之前：若设置过 Workspace，先在后台清除它再回滚，否则旧版本读取 vault 会失败。
-  - 环境变量：`ANTHROPIC_WORKSPACE_ID`（与官方 SDK 同名，只从进程环境读取）。环境变量直配时格式错误 → Claude 不就绪（缺 `ANTHROPIC_WORKSPACE_ID`），不会静默丢弃；首次初始化 vault 时只采用格式正确的值。
+  - 环境变量：`ANTHROPIC_WORKSPACE_ID`（与官方 SDK 同名，只从进程环境读取）。环境变量直配时格式错误 → Claude 不就绪（缺 `ANTHROPIC_WORKSPACE_ID`），不会静默丢弃；首次初始化 vault 时若该值格式错误，Claude 密钥也不写入（后台显示尚未配置，由管理员在后台填写），避免「看似就绪、每次调用都失败」；vault 已存在后环境变量不再生效。
   - 服务商答复「缺少 Workspace」「Workspace 无效 / 不存在 / 无权访问」时，页面分别提示，不再统一报为密钥格式或余额问题。不需要数据库迁移（`error_code` 是文本列）。
 
 ## 调用授权：管理员登录即操作者
