@@ -470,7 +470,7 @@ function ClaudeQuickSetup(props: {
     <form onSubmit={props.onSubmit}><fieldset className={styles.fieldset} disabled={!props.canEdit}>
       <label className={styles.field}>Claude API Key<input name="claude-api-key" type="password" autoComplete="off" spellCheck={false} value={props.claudeKey}
         onChange={(event) => props.onKey(event.target.value)} maxLength={256} placeholder={saved?.keyConfigured ? "已保存；填写新的 Key 会替换它" : "sk-ant-…"} />
-        <small>填写在 Claude Console（platform.claude.com）API keys 页面创建的密钥，个人密钥、服务账号密钥均可；不接受 Claude Code 或订阅账号的登录令牌、Admin Key、浏览器会话。格式检查只说明可以保存，不代表密钥有效或余额充足。提交后输入框会清空，页面不会再显示密钥。</small></label>
+        <small>填写在 Claude Console（platform.claude.com）API keys 页面创建的密钥，个人密钥、服务账号密钥均可；不接受 Claude Code 或订阅账号的登录凭据、Admin Key、浏览器会话。格式检查只说明可以保存，不代表密钥有效或余额充足。提交后输入框会清空，页面不会再显示密钥。</small></label>
       <p className={styles.workspaceHint} data-testid="claude-workspace-hint">{CLAUDE_WORKSPACE_HINT}</p>
       <p className={styles.workspaceHint} data-testid="claude-workspace-current">Workspace ID：{saved?.workspaceId ? <code>{saved.workspaceId}</code> : "未设置（请求不携带 Workspace）"}</p>
       <details className={styles.workspaceAdvanced}>
