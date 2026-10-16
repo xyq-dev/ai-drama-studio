@@ -18,7 +18,7 @@ const PB = "88888888-8888-4888-8888-888888888888";
 const PB2 = "88888888-8888-4888-8888-000000000002";
 const TOKEN = "operator-token-0123456789";
 const CONFIGURED: TitleWritingProviderEnv = {
-  ANTHROPIC_API_KEY: "sk-test-secret-abcdefghijkl", TITLE_WRITING_ANTHROPIC_MODELS: "q-1",
+  ANTHROPIC_API_KEY: "sk-ant-api03-test-secret-abcdefghijkl", TITLE_WRITING_ANTHROPIC_MODELS: "q-1",
 };
 const SETTINGS = { episodeCount: 3 as const, episodeSeconds: 90, style: "" };
 /** Projects without an episode plan: three episodes, no target, as every project before the plan existed. */

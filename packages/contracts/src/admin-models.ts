@@ -10,11 +10,32 @@ export const adminProviderUpdateSchema = z.object({
   baseUrl: z.string().max(512).optional(),
   secretAction: z.enum(["keep", "replace", "clear"]),
   apiKey: z.string().min(8).max(256).regex(/^\S+$/u).optional(),
+  /**
+   * Claude only: the optional anthropic-workspace-id. Omitted: kept, except that a replaced or cleared key also clears
+   * it (a new key never inherits the previous key's workspace). "keep" with a replaced key is refused. The shape is
+   * checked by the console service (ADMIN_CONFIG_WORKSPACE_FORMAT) and again by the vault.
+   */
+  workspaceAction: z.enum(["keep", "replace", "clear"]).optional(),
+  workspaceId: z.string().min(1).max(128).optional(),
 }).strict().superRefine((value, ctx) => {
   if ((value.secretAction === "replace") !== (value.apiKey !== undefined)) {
     ctx.addIssue({ code: "custom", path: ["apiKey"], message: "Secret action and value do not match" });
   }
+  if ((value.workspaceAction === "replace") !== (value.workspaceId !== undefined)) {
+    ctx.addIssue({ code: "custom", path: ["workspaceId"], message: "Workspace action and value do not match" });
+  }
+  if (value.secretAction !== "keep" && value.workspaceAction === "keep") {
+    ctx.addIssue({ code: "custom", path: ["workspaceAction"], message: "A new key does not keep the previous workspace" });
+  }
 });
+
+/** What a provider update does to the saved workspace id: "keep" leaves it, null clears it, a string replaces it. */
+export function workspaceUpdateOf(body: AdminProviderUpdate): "keep" | null | string {
+  if (body.workspaceAction === "replace") return body.workspaceId!;
+  if (body.workspaceAction === "clear") return null;
+  if (body.workspaceAction === "keep") return "keep";
+  return body.secretAction === "keep" ? "keep" : null;
+}
 export const adminLimitsUpdateSchema = z.object({
   expectedRevision: revision,
   defaultProvider: adminProviderKeySchema.nullable(),
@@ -35,6 +56,8 @@ export interface AdminProviderView {
   models: string[];
   baseUrl: string;
   keyConfigured: boolean;
+  /** Claude only: the configured workspace id (an identifier, not a secret), or null when requests send none. */
+  workspaceId?: string | null;
   ready: boolean;
   missing: string[];
 }

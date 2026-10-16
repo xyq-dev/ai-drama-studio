@@ -15,7 +15,7 @@ const P1 = "22222222-2222-4222-8222-222222222222";
 
 function providers(): Record<TitleWritingProviderKey, WritingProviderConfig> {
   return titleWritingProviderConfigs({
-    ANTHROPIC_API_KEY: "sk-test-secret-0123456789", TITLE_WRITING_ANTHROPIC_MODELS: "q-1",
+    ANTHROPIC_API_KEY: "sk-ant-api03-test-secret-0123456789", TITLE_WRITING_ANTHROPIC_MODELS: "q-1",
   });
 }
 

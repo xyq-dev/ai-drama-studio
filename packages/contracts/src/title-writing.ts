@@ -74,14 +74,44 @@ export const TITLE_WRITING_DEFAULT_MODELS: Readonly<Record<TitleWritingProviderK
 export const TITLE_WRITING_PROVIDER_PREFERENCE: readonly TitleWritingProviderKey[] = ["anthropic", "openai"];
 
 /**
- * Why a value cannot be a Claude (Anthropic API) key, or null when it has the shape of one. Only keys created in the
- * Anthropic Console (sk-ant-api…) are accepted. Claude Code / subscription OAuth tokens (sk-ant-oat…), Admin API keys
- * (sk-ant-admin…) and session values are refused: the site never calls Claude with a development tool's login.
+ * Claude API keys created in the Claude Console, checked 2026-10-17 against
+ * https://platform.claude.com/docs/en/manage-claude/authentication (personal keys, service account keys and legacy
+ * workspace keys all authenticate Messages API requests) and the official TypeScript SDK 0.135.0 (sends any key as
+ * x-api-key without reading its prefix). The documentation names only the sk-ant-api… form; personal keys created
+ * with "Linked account = yourself" start sk-ant-usr- (observed on a real Console key) and service account keys
+ * sk-ant-svc- (reported by tools that fixed the same misclassification). Unknown sk-ant- kinds are not accepted.
  */
-export function anthropicKeyProblem(value: string): "not_anthropic_key" | "not_api_key" | null {
-  if (!value.startsWith("sk-ant-")) return "not_anthropic_key";
-  if (!/^sk-ant-api\d*-[A-Za-z0-9_-]{8,}$/u.test(value)) return "not_api_key";
-  return null;
+const ANTHROPIC_API_KEY_SHAPE = /^sk-ant-(?:api|usr|svc)\d*-[A-Za-z0-9_-]{8,}$/u;
+/**
+ * Anthropic credentials that are not Messages API keys: subscription / Claude Code OAuth access and refresh tokens
+ * (sk-ant-oat…, sk-ant-ort…), Admin API keys (sk-ant-admin…) and browser session values (sk-ant-sid…).
+ */
+const ANTHROPIC_NON_API_CREDENTIAL = /^sk-ant-(?:oat|ort|admin|sid)\d*-/u;
+/** A JSON Web Token (federation or session tokens): never a static API key. */
+const JWT_SHAPE = /^eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*\./u;
+export const ANTHROPIC_API_KEY_MAX_LENGTH = 256;
+
+/**
+ * Why a value cannot be configured as a Claude API key, or null when it has the shape of one. A null answer only means
+ * the value may be saved as a key: it says nothing about whether the key is valid, funded or allowed to use a model.
+ * - not_api_credential: a known Anthropic credential of another kind (OAuth / setup token, Admin key, session) or a JWT.
+ * - unsupported_format: anything else (another vendor's key, an unknown sk-ant- kind, spaces, control or other
+ *   characters a header must not carry, too short or too long). The value itself is never altered.
+ */
+export function anthropicKeyProblem(value: string): "unsupported_format" | "not_api_credential" | null {
+  if (value.length > ANTHROPIC_API_KEY_MAX_LENGTH) return "unsupported_format";
+  if (ANTHROPIC_NON_API_CREDENTIAL.test(value) || JWT_SHAPE.test(value)) return "not_api_credential";
+  return ANTHROPIC_API_KEY_SHAPE.test(value) ? null : "unsupported_format";
+}
+
+/**
+ * A Claude Console workspace id (the ID column of platform.claude.com/settings/workspaces, e.g. wrkspc_01Jw…). Only an
+ * identifier, not a secret; sent as anthropic-workspace-id when configured. Keys scoped to one workspace need none;
+ * keys not scoped to a workspace must name one on every request.
+ */
+export const ANTHROPIC_WORKSPACE_ID_SHAPE = /^wrkspc_[A-Za-z0-9_-]{4,100}$/u;
+export function anthropicWorkspaceIdValid(value: string): boolean {
+  return ANTHROPIC_WORKSPACE_ID_SHAPE.test(value);
 }
 
 /** The v1 scope: three episodes (domain PRODUCTION_EPISODE_NUMBERS). */

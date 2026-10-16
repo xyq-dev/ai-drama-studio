@@ -9,7 +9,7 @@ import { titleWritingProviderConfigs } from "./text-writing";
 const WS = "11111111-1111-4111-8111-111111111111";
 const OTHER_WS = "22222222-2222-4222-8222-222222222222";
 const TITLE = "夜班证词";
-const providers = titleWritingProviderConfigs({ ANTHROPIC_API_KEY: "test-only-key", TITLE_WRITING_ANTHROPIC_MODELS: "q-1"});
+const providers = titleWritingProviderConfigs({ ANTHROPIC_API_KEY: "sk-ant-api03-test-only-key", TITLE_WRITING_ANTHROPIC_MODELS: "q-1"});
 
 function setup(allowedRunKinds?: readonly TitleRunKind[]) {
   const store = new InMemoryTitleWritingStore();

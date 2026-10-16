@@ -96,7 +96,10 @@ export function candidateStateText(view: Pick<WritingCandidateView, "state" | "e
 
 export function candidateErrorText(code: string | null): string {
   const known: Record<string, string> = {
-    auth: "模型服务拒绝了密钥",
+    auth: "模型服务认证失败，密钥无效、已停用或已过期",
+    permission: "密钥没有该工作区或该模型的使用权限",
+    workspace_required: "密钥未限定 Workspace，需要在后台填写 Workspace ID",
+    workspace_invalid: "Workspace ID 无效或无权访问",
     quota: "模型服务账户余额或额度不足",
     rate_limited: "模型服务限流",
     bad_request: "模型服务认为请求无效",

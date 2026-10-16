@@ -494,6 +494,7 @@ export class TitleWritingEngine {
       adapter,
       url: provider.url,
       apiKey: provider.apiKey,
+      workspaceId: provider.workspaceId,
       request,
       transport: this.deps.transport,
       ...(this.deps.timeoutMs !== undefined ? { timeoutMs: this.deps.timeoutMs } : {}),

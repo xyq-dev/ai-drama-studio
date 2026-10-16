@@ -21,7 +21,7 @@ function setup(override?: (step: FixtureStep, attempt: number) => "hang" | { sta
   store.addProject(WS, P1);
   const seen: FixtureExchange[] = [];
   const providers = titleWritingProviderConfigs({
-    ANTHROPIC_API_KEY: "sk-test-secret-0123456789", TITLE_WRITING_ANTHROPIC_MODELS: "q-1",
+    ANTHROPIC_API_KEY: "sk-ant-api03-test-secret-0123456789", TITLE_WRITING_ANTHROPIC_MODELS: "q-1",
   });
   const engine = new TitleWritingEngine({ workspaceId: WS, store, providers, maxCallsPerDay: 30, timeoutMs: 20,
     transport: transport ?? fixtureChatTransport("夜班证词", { seen, ...(override ? { override } : {}) }) });

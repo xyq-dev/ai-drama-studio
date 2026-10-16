@@ -224,6 +224,7 @@ export class WritingCandidateExecutor {
       adapter,
       url: provider.url,
       apiKey: provider.apiKey,
+      workspaceId: provider.workspaceId,
       request: {
         model: input.model,
         system: prompt.system,

@@ -53,7 +53,7 @@ const API = `http://127.0.0.1:${String(API_PORT)}/api/v1`;
 // Generated per run, held in memory, given only to the API child's environment; never printed or written to evidence.
 const OPERATOR_TOKEN = `acceptance-${randomUUID()}`;
 // Not a key of any provider account; it only lets the stub check that the API sent its configured key.
-const FAKE_KEY = `stub-not-a-provider-key-${randomUUID()}`;
+const FAKE_KEY = `sk-ant-api03-stub-not-a-provider-key-${randomUUID()}`;
 const STUB_MODEL = "claude-acceptance-stub";
 const PRODUCT_LEASE_MS = 240_000;
 const MAINTENANCE_MS = 15_000;

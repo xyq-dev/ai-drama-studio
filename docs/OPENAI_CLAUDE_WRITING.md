@@ -20,7 +20,7 @@
   - 不发送预填、工具、`temperature/top_p/top_k`、流式。
 - 解析：只接受 `stop_reason: "end_turn"` 且恰好一个 `text` 块（可前置 `thinking`/`redacted_thinking`，被跳过）。`refusal` → 拒绝；`max_tokens`/`model_context_window_exceeded`/`pause_turn` → 截断；`tool_use`、多个文本块、引用、空文本、非 JSON → 无效输出。思考文本、拒绝文本和不完整 JSON 永远不会被当成剧本。
 - 用量：输入 = `input_tokens + cache_creation_input_tokens + cache_read_input_tokens`；输出 = `output_tokens`（已含思考，不重复加）；缺失或异常时用量为未知，不写 0。费用仍是 `unknown`。
-- 错误：401/403 认证；402 `billing_error` → 额度/余额；429 限流（含花费上限）；400/404/413/422 请求无效；500/504/529 及 3xx、超时、断线、超大响应 → 结果未知（可能已计费，不自动重发）。请求 ID 取 `request-id` 头或错误体 `request_id`。
+- 错误：401 认证（`auth`）；403 权限（`permission`）；Workspace 缺失（400 `anthropic-workspace-id is required…`）→ `workspace_required`；Workspace 无效、不存在或无权访问（400 `…must be a valid workspace ID.` / 404 ``Workspace `<id>` not found.``）→ `workspace_invalid`；402 `billing_error` 或 400 `credit balance is too low` → 额度/余额；429 限流（含花费上限）；400/404/413/422 请求无效；500/504/529 及 3xx、超时、断线、超大响应 → 结果未知（可能已计费，不自动重发）。请求 ID 取 `request-id` 头或错误体 `request_id`。
 - 安全边界与 OpenAI 相同：服务端固定并校验端点（配置的 URL 不等于官方端点时一律不发送）、密钥只在请求头、日志和错误响应不含密钥、响应 1 MiB 上限、120 秒超时、手动重定向不跟随、每次调用只发送一次、不自动重试/换模型/换供应商。未使用 SDK（因此没有 SDK 默认重试）。
 - OpenAI 保持原有 Responses API 请求与解析不变。
 - 请求总会带 `output_config.effort` 与自适应思考：白名单只应填写支持二者和结构化输出的当前模型（上面列出的四个）。填写不支持的旧模型（例如 Claude Haiku 4.5）时，每次调用会被 400 拒绝并记为 `bad_request`，不会循环重发。
@@ -28,12 +28,29 @@
 ## 只填写 Claude API Key（2026-10-16 第二轮）
 
 - 后台 `/admin/models` 顶部「Claude 快速配置」只有一个输入框：Claude API Key。保存时服务端：
-  - 只接受 Anthropic 控制台创建的 API Key（`sk-ant-api…`，`anthropicKeyProblem`）；Claude Code / 订阅 OAuth（`sk-ant-oat…`）、Admin Key（`sk-ant-admin…`）等在保存前以 `ADMIN_CONFIG_KEY_FORMAT`（400）拒绝，不写入任何内容。服务端运行时也不会用这类凭据发送。
+  - 只接受 Claude Console 创建的 API Key（规则见下文「Claude API Key 的格式与 Workspace」）；不适用的凭据与不支持的格式在保存前分别以 `ADMIN_CONFIG_KEY_KIND` / `ADMIN_CONFIG_KEY_FORMAT`（400）拒绝，不写入任何内容。服务端运行时用同一规则读取，也不会用这类凭据发送。
   - 没有模型列表时写入默认模型 `TITLE_WRITING_DEFAULT_MODELS.anthropic = ["claude-opus-5-5"]`（2026-10-16 核对官方模型页，支持结构化输出、effort、自适应思考）；环境变量方式只设 `ANTHROPIC_API_KEY` 也得到同一默认模型。OpenAI 仍需显式模型列表，不猜测。
   - 尚未保存默认供应商时，同一次写入把 Claude 设为默认；已选的默认不被替换。没有可用默认时按 `TITLE_WRITING_PROVIDER_PREFERENCE`（Claude 优先）选择。失败后从不换模型或供应商。
 - 状态（`claudeSetupState`）逐项区分，从不显示 READY：尚未配置 Claude API Key → 已保存、等待 API 重启后生效 → 应用已推迟（有任务在跑）→ 配置项未齐全 → 功能开关未开启 → 没有调用授权 → 数据库迁移未执行（列出迁移名）→ 可以创作（并注明不代表真实调用验证）。配置生效机制不变：保存只写 vault，API 重启时（空闲才）应用；重启由部署流程（Hermes）负责，网页不提供重启或执行命令的能力。
 - 模型、端点等仍在下方「高级设置」中，可不操作。在高级设置里保留密钥、清空模型列表即可让 Claude 不就绪；只有填写新密钥时才自动补默认模型。
-- 发布注意：只用环境变量配置、没有 `TITLE_WRITING_DEFAULT_PROVIDER` 时，若环境里有 `ANTHROPIC_API_KEY`，升级后 Claude（默认模型）就绪并成为默认，新任务不再默认用 OpenAI。环境变量路径只拒绝 Anthropic 的非 API 凭据（OAuth / Admin），后台输入则要求完整的 `sk-ant-api…` 形状。
+- 发布注意：只用环境变量配置、没有 `TITLE_WRITING_DEFAULT_PROVIDER` 时，若环境里有 `ANTHROPIC_API_KEY`，升级后 Claude（默认模型）就绪并成为默认，新任务不再默认用 OpenAI。环境变量与后台输入使用同一个密钥规则（2026-10-17 起）。
+
+## Claude API Key 的格式与 Workspace（2026-10-17）
+
+依据：[Authentication](https://platform.claude.com/docs/en/manage-claude/authentication)（2026-10-17 核对）与官方 TypeScript SDK 0.135.0。官方文档把 API Key 分为个人密钥、服务账号密钥和（旧）Workspace 密钥，三者都可调用 Messages API；文档示例只写出 `sk-ant-api…` 形式，SDK 不检查前缀，统一以 `x-api-key` 发送。此前本项目把 `sk-ant-api` 当成唯一格式，导致 Console 新建的个人密钥（`sk-ant-usr-…`）被误拒。
+
+- 接受（`anthropicKeyProblem` 返回 null，前端、后台 API、环境变量、vault 读取后的运行时配置共用同一函数）：`sk-ant-api…`（旧格式，含 `sk-ant-api03-`）、`sk-ant-usr…`（个人密钥，用户在 Console 创建的真实密钥即此前缀）、`sk-ant-svc…`（服务账号密钥；前缀依据是修复同一误判的第三方工具，官方文档未列出前缀）。形状为 `sk-ant-(api|usr|svc)[数字]-` 后接至少 8 个 `[A-Za-z0-9_-]`，总长不超过 256。密钥原样保存和发送，不修剪、不改写中间内容。
+- 拒绝为「不适用的凭据类型」（`not_api_credential` → `ADMIN_CONFIG_KEY_KIND`）：订阅 / Claude Code OAuth 与 setup-token（`sk-ant-oat…`）、OAuth 刷新令牌（`sk-ant-ort…`）、Admin API 专用密钥（`sk-ant-admin…`）、浏览器会话（`sk-ant-sid…`）、JWT（`eyJ….….…`）。
+- 拒绝为「格式不支持」（`unsupported_format` → `ADMIN_CONFIG_KEY_FORMAT`）：其他厂商密钥、未知的 `sk-ant-` 种类、空白 / 换行 / 控制字符 / 非 ASCII、过短或超过 256 字符。不会放行任意 `sk-ant-*` 或任意非空字符串。
+- 格式通过只表示「允许作为 API Key 保存」，不代表密钥有效、余额充足或有模型权限；这些只有服务商能回答，调用时分别记为 `auth`（401）、`permission`（403）、`quota`、`workspace_required` / `workspace_invalid`。
+- 请求认证不变：`x-api-key`（官方仍支持）+ `anthropic-version`；不发送 `Authorization: Bearer`、OAuth beta 头、Claude Code user-agent 或 `x-app`；不读取或复用开发工具的订阅会话。端点固定、不重试、不跟随重定向、不换供应商。
+- Workspace：限定了 Workspace 的密钥可省略；未限定 Workspace 的个人 / 服务账号密钥必须在每个请求携带 `anthropic-workspace-id`。
+  - 快速配置默认只填 Key；「高级设置（可不填）：Workspace ID」可填写 Console 工作区页面 ID 列的 `wrkspc_…`（`^wrkspc_[A-Za-z0-9_-]{4,100}$`，非法值以 `ADMIN_CONFIG_WORKSPACE_FORMAT` 拒绝）。页面说明：「通常只需填写 API Key。若密钥未限定 Workspace，请在高级设置填写 Workspace ID，或创建限定 Workspace 的密钥。」
+  - 不从密钥猜 Workspace，不自动选择任何 Workspace，不调用 Admin API。未配置时不发送该头；配置后标题创作与工作台在线候选的每个 Claude 请求都携带。OpenAI 从不发送。
+  - 保存语义（`workspaceAction`）：省略 = 保留，但填写新 Key 或清除 Key 时一并清除（新 Key 不继承旧 Key 的 Workspace）；`replace` + `workspaceId` = 设置；`clear` = 清除；新 Key 配 `keep` 被拒绝。只改 Workspace 时保留已保存的 Key。与 Key 一样保存后需重启 API 生效（saved / active 分别显示）。
+  - vault：`workspaceId` 是 Claude 条目的可选字段，只在有值时写入；旧 vault 没有该字段照常读取，不删除、不重建、不更换主密钥。回滚到本版本之前：若设置过 Workspace，先在后台清除它再回滚，否则旧版本读取 vault 会失败。
+  - 环境变量：`ANTHROPIC_WORKSPACE_ID`（与官方 SDK 同名，只从进程环境读取）。环境变量直配时格式错误 → Claude 不就绪（缺 `ANTHROPIC_WORKSPACE_ID`），不会静默丢弃；首次初始化 vault 时若该值格式错误，Claude 密钥也不写入（后台显示尚未配置，由管理员在后台填写），避免「看似就绪、每次调用都失败」；vault 已存在后环境变量不再生效。
+  - 服务商答复「缺少 Workspace」「Workspace 无效 / 不存在 / 无权访问」时，页面分别提示，不再统一报为密钥格式或余额问题。不需要数据库迁移（`error_code` 是文本列）。
 
 ## 调用授权：管理员登录即操作者
 

@@ -77,7 +77,7 @@ const API = `http://127.0.0.1:${String(API_PORT)}`;
 // Generated per run, held in memory, typed into password fields only; never printed or written to the evidence.
 const OPERATOR_TOKEN = `acceptance-${randomUUID()}`;
 // Not a key of any provider account: the stub never sends it anywhere.
-const STUB_KEY = `stub-not-a-provider-key-${randomUUID()}`;
+const STUB_KEY = `sk-ant-api03-stub-not-a-provider-key-${randomUUID()}`;
 const STUB_MODEL = "claude-acceptance-stub";
 // Every title says on screen that its text is the model double's fixture, not something a model wrote.
 const MAIN_TITLE = "模型替身样例·夜班证词";

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { adminLimitsUpdateSchema, adminProviderKeySchema, adminProviderUpdateSchema, claudeSetupState, type AdminModelsView } from "./admin-models";
-import { anthropicKeyProblem } from "./title-writing";
+import {
+  adminLimitsUpdateSchema, adminProviderKeySchema, adminProviderUpdateSchema, claudeSetupState, workspaceUpdateOf, type AdminModelsView,
+} from "./admin-models";
+import { anthropicKeyProblem, anthropicWorkspaceIdValid } from "./title-writing";
 
 const provider = { expectedRevision: 0, models: ["test-model:2026"], secretAction: "keep" };
 const limits = { expectedRevision: 0, defaultProvider: "anthropic", maxCallsPerDay: 8, maxActiveRuns: 1 };
@@ -88,11 +90,48 @@ describe("Claude setup state", () => {
     expect(claudeSetupState(view()).state).toBe("ready");
   });
 
-  it("accepts only Anthropic Console API keys", () => {
-    expect(anthropicKeyProblem("sk-ant-api03-abcdefghijklmnopqrstuvwxyz")).toBeNull();
-    expect(anthropicKeyProblem("sk-ant-oat01-abcdefghijklmnopqrstuvwxyz")).toBe("not_api_key");
-    expect(anthropicKeyProblem("sk-ant-admin01-abcdefghijklmnopqrstuvwxyz")).toBe("not_api_key");
-    expect(anthropicKeyProblem("sk-proj-abcdefghijklmnopqrstuvwxyz")).toBe("not_anthropic_key");
-    expect(anthropicKeyProblem("sk-ant-api03-short")).toBe("not_api_key");
+  it("accepts the Claude Console key kinds: legacy sk-ant-api, personal sk-ant-usr and service account sk-ant-svc (fake test keys)", () => {
+    for (const key of ["sk-ant-api03-abcdefghijklmnopqrstuvwxyz", "sk-ant-api-abcdefghijklmnop", "sk-ant-usr-fake-personal-key-for-tests-only",
+      "sk-ant-usr01-fake_personal_key_for_tests", "sk-ant-svc-fake-service-key-for-tests-only", `sk-ant-usr-${"a".repeat(245)}`]) {
+      expect(anthropicKeyProblem(key)).toBeNull();
+    }
+  });
+
+  it("names a known credential of another kind separately from an unsupported format, and never accepts any sk-ant- value", () => {
+    for (const credential of ["sk-ant-oat01-abcdefghijklmnopqrstuvwxyz", "sk-ant-oat-abcdefghijklmnop", "sk-ant-ort01-abcdefghijklmnopqrstuvwxyz",
+      "sk-ant-admin01-abcdefghijklmnopqrstuvwxyz", "sk-ant-sid01-abcdefghijklmnop", "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1c2VyIn0.c2ln"]) {
+      expect(anthropicKeyProblem(credential)).toBe("not_api_credential");
+    }
+    for (const value of ["", "sk-proj-abcdefghijklmnopqrstuvwxyz", "sk-ant-abcdefghijklmnopqrstuvwxyz", "sk-ant-xyz-abcdefghijklmnop",
+      "sk-ant-api03-short", "sk-ant-usr-", "sk-ant-usr-abc def ghi jkl", "sk-ant-usr-abcdefgh\r\nX-Evil: 1", " sk-ant-usr-abcdefghijkl",
+      "sk-ant-usr-abcdefghijkl ", "sk-ant-usr-abcdefgh.ijkl", "sk-ant-usr-密钥密钥密钥密钥", "Bearer sk-ant-usr-abcdefghijkl",
+      `sk-ant-usr-${"a".repeat(246)}`]) {
+      expect(anthropicKeyProblem(value), value).toBe("unsupported_format");
+    }
+  });
+
+  it("a workspace id has the Console shape; a new key never keeps the previous key's workspace", () => {
+    expect(anthropicWorkspaceIdValid("wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ")).toBe(true);
+    for (const value of ["", "default", "wrkspc_", "wrkspc_ab", "wrkspc_01Jw Qvzr", "wrkspc_01Jw\r\nX: 1", "sk-ant-usr-abcdefghijkl"]) {
+      expect(anthropicWorkspaceIdValid(value)).toBe(false);
+    }
+    const base = { expectedRevision: 0, models: [] };
+    const parse = (body: Record<string, unknown>) => adminProviderUpdateSchema.safeParse({ ...base, ...body });
+    expect(parse({ secretAction: "keep", workspaceAction: "keep" }).success).toBe(true);
+    expect(parse({ secretAction: "replace", apiKey: "sk-ant-usr-abcdefghijkl", workspaceAction: "keep" }).success).toBe(false);
+    expect(parse({ secretAction: "clear", workspaceAction: "keep" }).success).toBe(false);
+    expect(parse({ secretAction: "keep", workspaceAction: "replace" }).success).toBe(false);
+    expect(parse({ secretAction: "keep", workspaceId: "wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ" }).success).toBe(false);
+    const update = (body: Record<string, unknown>) => {
+      const parsed = parse(body);
+      if (!parsed.success) throw new Error("invalid");
+      return workspaceUpdateOf(parsed.data);
+    };
+    expect(update({ secretAction: "keep" })).toBe("keep");
+    expect(update({ secretAction: "replace", apiKey: "sk-ant-usr-abcdefghijkl" })).toBeNull();
+    expect(update({ secretAction: "clear" })).toBeNull();
+    expect(update({ secretAction: "keep", workspaceAction: "clear" })).toBeNull();
+    expect(update({ secretAction: "replace", apiKey: "sk-ant-usr-abcdefghijkl", workspaceAction: "replace", workspaceId: "wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ" }))
+      .toBe("wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ");
   });
 });

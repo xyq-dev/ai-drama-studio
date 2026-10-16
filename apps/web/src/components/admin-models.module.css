@@ -226,6 +226,11 @@
 /* Claude quick setup: the one field an administrator needs, above the advanced provider settings. */
 .quickSetup { margin-bottom: 22px; }
 .claudeError { color: var(--studio-error); font-weight: 600; font-size: 13px; margin: 0 0 12px; overflow-wrap: anywhere; }
+.workspaceHint { margin: 0 0 12px; font-size: 13px; color: var(--studio-muted, inherit); overflow-wrap: anywhere; }
+.workspaceAdvanced { margin: 0 0 14px; font-size: 13px; overflow-wrap: anywhere; }
+.workspaceAdvanced summary { cursor: pointer; font-weight: 600; margin-bottom: 8px; }
+.workspaceAdvanced code { overflow-wrap: anywhere; }
+.checkLine { display: flex; gap: 8px; align-items: center; font-size: 13px; margin: 4px 0 8px; }
 .success strong { display: block; font-weight: 700; font-size: 14px; }
 .success p { margin-top: 4px; font-size: 13px; }
 .advancedHeading { font-size: 16px; font-weight: 700; margin: 30px 0 14px; letter-spacing: -.02em; }

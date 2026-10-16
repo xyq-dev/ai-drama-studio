@@ -232,7 +232,10 @@ export function runHeadline(run: TitleWritingRunView): string {
 }
 
 const ERRORS: Record<string, string> = {
-  auth: "模型服务拒绝了服务端密钥（鉴权失败）。请检查服务端配置。",
+  auth: "模型服务认证失败（401）：密钥无效、已停用、已过期或被删除。请在后台重新填写可用的 API Key。",
+  permission: "模型服务拒绝了这次请求（403）：密钥所属账号或服务账号没有该工作区或该模型的使用权限。",
+  workspace_required: "这个 Claude API Key 没有限定 Workspace，需要在后台高级设置填写 Workspace ID，或改用限定 Workspace 的密钥。",
+  workspace_invalid: "配置的 Workspace ID 无效、不存在，或密钥所属账号无权访问该 Workspace。请在后台核对 Workspace ID。",
   quota: "模型账户的余额或额度不足。",
   rate_limited: "请求太频繁，被模型服务限流了。",
   bad_request: "模型服务认为请求参数无效。",

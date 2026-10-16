@@ -1,4 +1,6 @@
-import { TITLE_WRITING_DEFAULT_MODELS, anthropicKeyProblem, type TitleWritingProviderKey } from "@ai-drama/contracts";
+import {
+  TITLE_WRITING_DEFAULT_MODELS, anthropicKeyProblem, anthropicWorkspaceIdValid, type TitleWritingProviderKey,
+} from "@ai-drama/contracts";
 import {
   ResponseBodyError,
   decodeResponseBytes,
@@ -27,6 +29,11 @@ import {
  *   input_tokens + cache_creation_input_tokens + cache_read_input_tokens is the total input and output_tokens already
  *   includes thinking; 402 billing_error, 429 rate_limit_error, 500 api_error, 504 timeout_error, 529 overloaded_error;
  *   request-id response header.
+ * - Claude authentication (2026-10-17, platform.claude.com/docs/en/manage-claude/authentication): personal, service
+ *   account and workspace keys all work with x-api-key (still supported beside Authorization: Bearer). A key not scoped
+ *   to a workspace must send anthropic-workspace-id; without it the API answers 400 invalid_request_error
+ *   "anthropic-workspace-id is required…", an invalid id 400 "…must be a valid workspace ID.", and an unknown or
+ *   inaccessible workspace 404 not_found_error "Workspace `<id>` not found.". No OAuth or Claude Code header is sent.
  */
 export type { WritingTransport } from "./http-transport";
 
@@ -57,7 +64,13 @@ export type WritingErrorCode =
   | "server_error"
   | "redirect_rejected"
   | "response_too_large"
-  | "provider_error";
+  | "provider_error"
+  /** Claude: 403 permission_error. The key authenticated but may not do this (workspace role, model access). */
+  | "permission"
+  /** Claude: the key is not scoped to a workspace and no anthropic-workspace-id was configured. */
+  | "workspace_required"
+  /** Claude: the configured workspace id is not valid, does not exist or the key's identity has no access to it. */
+  | "workspace_invalid";
 
 /**
  * answered: the provider returned content (still unvalidated). rejected: the provider definitely answered without
@@ -104,7 +117,7 @@ export interface WritingAdapter {
   /** The one official endpoint. sendWriting refuses any other URL before sending. */
   readonly url: string;
   /** Authentication and protocol headers. The key appears only here, never in the body or a result. */
-  headers(apiKey: string): Record<string, string>;
+  headers(apiKey: string, workspaceId?: string | null): Record<string, string>;
   buildBody(request: WritingRequest): string;
   parseAnswer(raw: string, secret: string): ParsedAnswer;
   classifyStatus(status: number, bodyText: string): { code: WritingErrorCode; outcome: "rejected" | "unknown" };
@@ -284,11 +297,22 @@ function claudeAnswer(raw: string, secret: string): ParsedAnswer {
   return { ...base, errorCode: null, content: text };
 }
 
+/** The type and message of a Claude error body ({type: "error", error: {type, message}}), empty when absent. */
+function claudeError(bodyText: string): { type: string; message: string } {
+  const error = jsonObject(bodyText)?.error;
+  if (!error || typeof error !== "object" || Array.isArray(error)) return { type: "", message: "" };
+  const record = error as Record<string, unknown>;
+  return { type: typeof record.type === "string" ? record.type : "", message: typeof record.message === "string" ? record.message.slice(0, 500) : "" };
+}
+
 export const anthropicWritingAdapter: WritingAdapter = {
   providerKey: "anthropic",
   label: "Claude",
   url: ANTHROPIC_MESSAGES_URL,
-  headers: (apiKey) => ({ "x-api-key": apiKey, "anthropic-version": ANTHROPIC_VERSION, "Content-Type": "application/json" }),
+  // x-api-key for every Console key kind (api, usr, svc); never Authorization: Bearer, never an OAuth beta, user-agent or
+  // x-app header. The workspace header only when one is configured.
+  headers: (apiKey, workspaceId) => ({ "x-api-key": apiKey, "anthropic-version": ANTHROPIC_VERSION, "Content-Type": "application/json",
+    ...(workspaceId ? { "anthropic-workspace-id": workspaceId } : {}) }),
   buildBody(request) {
     return JSON.stringify({
       model: request.model,
@@ -300,8 +324,14 @@ export const anthropicWritingAdapter: WritingAdapter = {
     });
   },
   parseAnswer: claudeAnswer,
-  classifyStatus(status) {
+  classifyStatus(status, bodyText) {
     if (status === 402) return { code: "quota", outcome: "rejected" };
+    const error = claudeError(bodyText);
+    if (status === 400 && /anthropic-workspace-id is required/iu.test(error.message)) return { code: "workspace_required", outcome: "rejected" };
+    if (status === 400 && /anthropic-workspace-id header must be a valid workspace id/iu.test(error.message)) return { code: "workspace_invalid", outcome: "rejected" };
+    if (status === 404 && /^workspace\b.*\bnot found/iu.test(error.message)) return { code: "workspace_invalid", outcome: "rejected" };
+    if (status === 400 && error.type === "invalid_request_error" && /credit balance is too low/iu.test(error.message)) return { code: "quota", outcome: "rejected" };
+    if (status === 403) return { code: "permission", outcome: "rejected" };
     // 529 overloaded and 504 timeout are server errors: the request may have run, so the outcome stays unknown.
     return commonStatus(status);
   },
@@ -342,6 +372,8 @@ export async function sendWriting(options: {
   adapter: WritingAdapter;
   url: string;
   apiKey: string;
+  /** Claude only: anthropic-workspace-id, sent when configured. */
+  workspaceId?: string | null;
   request: WritingRequest;
   transport: WritingTransport;
   timeoutMs?: number;
@@ -361,7 +393,7 @@ export async function sendWriting(options: {
     const response = await options.transport({
       url: adapter.url,
       method: "POST",
-      headers: adapter.headers(apiKey),
+      headers: adapter.headers(apiKey, options.workspaceId ?? null),
       body: adapter.buildBody(options.request),
       signal: controller.signal,
     });
@@ -400,7 +432,9 @@ export async function sendWriting(options: {
 }
 
 export type WritingProviderConfig =
-  | { providerKey: TitleWritingProviderKey; ok: true; url: string; apiKey: string; models: string[]; missing: [] }
+  | { providerKey: TitleWritingProviderKey; ok: true; url: string; apiKey: string; models: string[]; missing: [];
+    /** Claude only: the anthropic-workspace-id to send, or null to send none (a key scoped to one workspace). */
+    workspaceId?: string | null }
   | { providerKey: TitleWritingProviderKey; ok: false; models: string[]; missing: string[] };
 
 /** Only the active providers' variables. Retired providers' variables are ignored and never read. */
@@ -409,6 +443,8 @@ export interface TitleWritingProviderEnv {
   TITLE_WRITING_OPENAI_MODELS?: string;
   ANTHROPIC_API_KEY?: string;
   TITLE_WRITING_ANTHROPIC_MODELS?: string;
+  /** Optional. Needed only for a Claude key that is not scoped to one workspace. */
+  ANTHROPIC_WORKSPACE_ID?: string;
 }
 
 /** Comma-separated model allowlist. The first entry is the default. Model names are never guessed. */
@@ -425,21 +461,24 @@ function readKey(value: string | undefined): string | null {
 }
 
 function configOf(providerKey: TitleWritingProviderKey, url: string, key: string | undefined, keyName: string,
-  modelList: string | undefined, modelsName: string): WritingProviderConfig {
+  modelList: string | undefined, modelsName: string, workspace?: { value: string | undefined; name: string }): WritingProviderConfig {
   const missing: string[] = [];
   let apiKey = readKey(key);
-  // Claude takes an Anthropic Console API key only: an Anthropic credential of another kind (a Claude Code / subscription
-  // OAuth token, an Admin API key) is never sent, even if configured. The console checks the full key shape on input.
-  if (apiKey && providerKey === "anthropic" && anthropicKeyProblem(apiKey) === "not_api_key") apiKey = null;
+  // Claude takes a Claude Console API key only, with the same rule as the console input: a credential of another kind
+  // (subscription / Claude Code OAuth, Admin key, session, JWT) or an unsupported shape is never sent, even if configured.
+  if (apiKey && providerKey === "anthropic" && anthropicKeyProblem(apiKey) !== null) apiKey = null;
   if (!apiKey) missing.push(keyName);
+  // An invalid workspace id is a gap, never dropped silently: sending without it would not act in the chosen workspace.
+  const workspaceId = workspace?.value ? workspace.value : null;
+  if (workspace && workspaceId !== null && !anthropicWorkspaceIdValid(workspaceId)) missing.push(workspace.name);
   // No model list but a key: the provider's documented default list (Claude only), so a key alone is a full setup.
   const defaults = TITLE_WRITING_DEFAULT_MODELS[providerKey];
   const listed = parseModelList(modelList);
   const models: { ok: true; models: string[] } | { ok: false } = listed.ok || (modelList ?? "").trim().length > 0 || defaults.length === 0
     ? listed : { ok: true, models: [...defaults] };
   if (!models.ok) missing.push(modelsName);
-  return apiKey && models.ok
-    ? { providerKey, ok: true, url, apiKey, models: models.models, missing: [] }
+  return apiKey && models.ok && missing.length === 0
+    ? { providerKey, ok: true, url, apiKey, models: models.models, missing: [], workspaceId }
     : { providerKey, ok: false, models: models.ok ? models.models : [], missing };
 }
 
@@ -449,7 +488,8 @@ export function titleWritingProviderConfigs(env: TitleWritingProviderEnv): Recor
     openai: configOf("openai", OPENAI_RESPONSES_URL, env.OPENAI_API_KEY, "OPENAI_API_KEY",
       env.TITLE_WRITING_OPENAI_MODELS, "TITLE_WRITING_OPENAI_MODELS"),
     anthropic: configOf("anthropic", ANTHROPIC_MESSAGES_URL, env.ANTHROPIC_API_KEY, "ANTHROPIC_API_KEY",
-      env.TITLE_WRITING_ANTHROPIC_MODELS, "TITLE_WRITING_ANTHROPIC_MODELS"),
+      env.TITLE_WRITING_ANTHROPIC_MODELS, "TITLE_WRITING_ANTHROPIC_MODELS",
+      { value: env.ANTHROPIC_WORKSPACE_ID, name: "ANTHROPIC_WORKSPACE_ID" }),
   };
 }
 

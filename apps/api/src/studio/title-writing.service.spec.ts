@@ -16,7 +16,7 @@ const P1 = "22222222-2222-4222-8222-222222222222";
 const P2 = "33333333-3333-4333-8333-333333333333";
 const MISSING = "44444444-4444-4444-8444-444444444444";
 const TOKEN = "operator-token-0123456789";
-const SECRET = "sk-live-secret-abcdefghijkl";
+const SECRET = "sk-ant-api03-live-secret-abcdefghijkl";
 const CONFIGURED: TitleWritingProviderEnv = {
   ANTHROPIC_API_KEY: SECRET, TITLE_WRITING_ANTHROPIC_MODELS: "q-1,q-2",
   OPENAI_API_KEY: SECRET, TITLE_WRITING_OPENAI_MODELS: "d-1",

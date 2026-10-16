@@ -20,8 +20,10 @@ const output = resolve(root, process.env.ADMIN_MODELS_EVIDENCE_DIR || "docs/admi
 // Generated per run, test-only; passed to the fixture server through its environment, never written to evidence.
 const password = `test-only-${randomBytes(18).toString("base64url")}`;
 process.env.ADMIN_MODELS_TEST_PASSWORD = password;
-// Shaped like an Anthropic Console API key (the console refuses anything else for Claude); not a real key.
-const fakeKey = "sk-ant-api03-admin-browser-fake-key-not-real";
+// Shaped like Claude Console API keys (a personal sk-ant-usr- and a service account sk-ant-svc- key); not real keys.
+const fakeKey = "sk-ant-usr-admin-browser-fake-key-not-real";
+const fakeServiceKey = "sk-ant-svc-admin-browser-fake-key-not-real";
+const fakeWorkspace = "wrkspc_01AdminBrowserFakeWorkspace";
 const processes = [];
 let browser;
 const evidence = {
@@ -111,7 +113,9 @@ try {
   assert.equal(await page.getByTestId("claude-status").getAttribute("data-state"), "key_missing");
   await page.getByLabel(/^Claude API Key/).fill("sk-ant-oat01-claude-code-oauth-token-not-real");
   await page.getByRole("button", { name: /保存 Claude API Key/ }).click();
-  await page.getByRole("alert").filter({ hasText: /Claude Code 或订阅账号的登录凭据不能使用/ }).waitFor();
+  await page.getByRole("alert").filter({ hasText: /不能用于调用 Claude API 的凭据/ }).waitFor();
+  assert.equal(await page.getByText(/sk-ant-api 开头/).count(), 0);
+  await page.getByTestId("claude-workspace-hint").filter({ hasText: "通常只需填写 API Key。若密钥未限定 Workspace，请在高级设置填写 Workspace ID，或创建限定 Workspace 的密钥。" }).waitFor();
   assert.equal((await readView(page)).savedRevision, 0);
   assert.equal(await page.getByLabel(/^Claude API Key/).inputValue(), "");
   await page.getByRole("button", { name: /^Claude/ }).click();
@@ -197,6 +201,21 @@ try {
   const limits = await readView(page);
   assert.equal(limits.savedRevision, 3); assert.equal(limits.saved.maxCallsPerDay, 8); assert.equal(limits.activeRevision, 0);
   assert.equal(limits.titleWriting.enabled, false);
+  // Quick setup at 390 px: a service account key with an optional workspace id, saved through the real site login.
+  await page.getByLabel(/^Claude API Key/).fill(fakeServiceKey);
+  await page.getByText("高级设置（可不填）：Workspace ID").click();
+  await page.getByLabel(/^Workspace ID/).fill(fakeWorkspace);
+  await page.getByRole("button", { name: /保存 Claude API Key/ }).click();
+  await page.getByRole("status").filter({ hasText: /^Claude API Key 已保存。/ }).waitFor();
+  const workspaceSaved = await readView(page);
+  assert.equal(workspaceSaved.savedRevision, 4); assert.equal(workspaceSaved.activeRevision, 0);
+  assert.equal(workspaceSaved.saved.providers.find((provider) => provider.providerKey === "anthropic").workspaceId, fakeWorkspace);
+  assert.equal(workspaceSaved.saved.providers.find((provider) => provider.providerKey === "anthropic").keyConfigured, true);
+  assert.equal(await page.getByTestId("claude-status").getAttribute("data-state"), "pending_restart");
+  await page.getByTestId("claude-workspace-current").filter({ hasText: fakeWorkspace }).waitFor();
+  assert.equal((await page.content()).includes(fakeServiceKey), false);
+  await capture(page, "mobile-claude-workspace");
+  evidence.checks.workspace = { keyKind: "sk-ant-svc", workspaceSaved: true, savedRevision: 4, activeRevision: 0, pendingRestart: true };
   await page.getByRole("button", { name: "退出", exact: true }).click();
   await page.waitForURL(/\/login\?/);
   await page.getByRole("heading", { name: "登录红果创作", exact: true }).waitFor();

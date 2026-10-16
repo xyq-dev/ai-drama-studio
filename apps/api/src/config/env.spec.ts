@@ -76,6 +76,9 @@ describe("loadApiEnv", () => {
     const fromProcess = loadApiEnv({ ...valid, ANTHROPIC_API_KEY: "sk-ant-process-secret", TITLE_WRITING_ANTHROPIC_MODELS: "claude-opus-5-5" });
     expect(fromProcess.ANTHROPIC_API_KEY).toBe("sk-ant-process-secret");
     expect(fromProcess.TITLE_WRITING_ANTHROPIC_MODELS).toBe("claude-opus-5-5");
+    // The optional workspace id follows the same rule.
+    expect(loadApiEnv(valid, { ANTHROPIC_WORKSPACE_ID: "wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ" }).ANTHROPIC_WORKSPACE_ID).toBeUndefined();
+    expect(loadApiEnv({ ...valid, ANTHROPIC_WORKSPACE_ID: "wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ" }).ANTHROPIC_WORKSPACE_ID).toBe("wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ");
   });
 
   it("does not read the retired Qwen and DeepSeek variables at all, from the process or a file", () => {
