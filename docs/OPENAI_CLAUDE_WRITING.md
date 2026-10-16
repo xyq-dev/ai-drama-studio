@@ -32,7 +32,8 @@
   - 没有模型列表时写入默认模型 `TITLE_WRITING_DEFAULT_MODELS.anthropic = ["claude-opus-5-5"]`（2026-10-16 核对官方模型页，支持结构化输出、effort、自适应思考）；环境变量方式只设 `ANTHROPIC_API_KEY` 也得到同一默认模型。OpenAI 仍需显式模型列表，不猜测。
   - 尚未保存默认供应商时，同一次写入把 Claude 设为默认；已选的默认不被替换。没有可用默认时按 `TITLE_WRITING_PROVIDER_PREFERENCE`（Claude 优先）选择。失败后从不换模型或供应商。
 - 状态（`claudeSetupState`）逐项区分，从不显示 READY：尚未配置 Claude API Key → 已保存、等待 API 重启后生效 → 应用已推迟（有任务在跑）→ 配置项未齐全 → 功能开关未开启 → 没有调用授权 → 数据库迁移未执行（列出迁移名）→ 可以创作（并注明不代表真实调用验证）。配置生效机制不变：保存只写 vault，API 重启时（空闲才）应用；重启由部署流程（Hermes）负责，网页不提供重启或执行命令的能力。
-- 模型、端点等仍在下方「高级设置」中，可不操作。
+- 模型、端点等仍在下方「高级设置」中，可不操作。在高级设置里保留密钥、清空模型列表即可让 Claude 不就绪；只有填写新密钥时才自动补默认模型。
+- 发布注意：只用环境变量配置、没有 `TITLE_WRITING_DEFAULT_PROVIDER` 时，若环境里有 `ANTHROPIC_API_KEY`，升级后 Claude（默认模型）就绪并成为默认，新任务不再默认用 OpenAI。环境变量路径只拒绝 Anthropic 的非 API 凭据（OAuth / Admin），后台输入则要求完整的 `sk-ant-api…` 形状。
 
 ## 调用授权：管理员登录即操作者
 
@@ -45,7 +46,7 @@
 - 编剧助手新增「在线生成候选」：故事（三集作品）与第 1–3 集剧本。手工复制指令、粘贴/导入 JSON、比较、采纳的流程保留。
 - 流程：读取可用供应商与默认模型 → 用户填写要求后点击生成（按钮锁定、双击只发一次）→ 服务端校验并冻结输入、供应商、模型、目标实体（作品/集）和基础版本（来源版本 + If-Match），写入 `reserved` → 后台发送一次 → 结果用与手工导入相同的 `parseWritingImport`/`formatWritingImport` 校验 → 页面轮询，显示候选和差异 → 用户点击「采纳到草稿」→ 用原有「保存新版本」保存。不自动生成、采纳、覆盖或加版本。
 - 接口：`GET /api/v1/writing/candidates/options`、`POST /api/v1/projects/:projectId/writing/candidates`（需 `Idempotency-Key`）、`GET /api/v1/projects/:projectId/writing/candidates?mode=story|episode[&episodeId=]`（该对象最近 10 条）、`GET /api/v1/projects/:projectId/writing/candidates/:requestId`。响应不含幂等键、操作者、执行者、密钥；费用恒为 unknown。
-- 规则：同键同内容返回原请求、不重发；同键不同内容 409 `IDEMPOTENCY_KEY_REUSED`；同一对象同时只允许一个进行中的请求（409 `WRITING_CANDIDATE_ACTIVE`）；最近一次结果未知时，新请求必须带上该请求 id 的确认（409 `WRITING_CANDIDATE_NEEDS_CONFIRMATION`）；目标集/基础版本不属于该作品时 409 `WRITING_CANDIDATE_TARGET_INVALID`；每日调用次数与标题创作共用一个滚动 24 小时上限（同一 advisory lock）。超时、断线、5xx、重定向记为 unknown，不自动重发；租约过期：未发送 → rejected（executor_lost_before_send），可能已发送 → unknown（executor_lost）。
+- 规则：同键同内容返回原请求、不重发；同键不同内容 409 `IDEMPOTENCY_KEY_REUSED`；同一对象同时只允许一个进行中的请求（409 `WRITING_CANDIDATE_ACTIVE`）；最近一次结果未知时，新请求必须带上该请求 id 的确认（409 `WRITING_CANDIDATE_NEEDS_CONFIRMATION`）；目标集/基础版本不属于该作品时 409 `WRITING_CANDIDATE_TARGET_INVALID`；每日调用次数与标题创作共用一个滚动 24 小时上限（同一 advisory lock）；与标题创作的调用记录一样，按记录条数计，没有发出就被关闭的请求也计入（保守）。超时、断线、5xx、重定向记为 unknown，不自动重发；租约过期：未发送 → rejected（executor_lost_before_send），可能已发送 → unknown（executor_lost）。
 - 页面：请求在发送前写入本标签页 sessionStorage；刷新或回执丢失后只读取原请求或用同一键重放；切换作品/集或迟到的回答不会写到其他对象；输入或编辑基线变化后候选仍可查看，但 `canAdopt` 拒绝覆盖新草稿。历史记录可只读查看已生成的候选。
 - 旧工作区千问：其服务端表只存在于未执行的草案（`prisma/drafts/20261005000100_qwen_web_writing.sql`），任何数据库都没有服务端历史；本标签页的旧请求记录仍只读说明，不发送、不查询、不删除。
 

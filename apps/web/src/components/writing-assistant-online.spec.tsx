@@ -180,6 +180,22 @@ describe("online candidates in the writing assistant", () => {
     expect(server.requests.size).toBe(1);
   });
 
+  it("a replay refused by the access gate (login or operator) keeps the unconfirmed request for a later replay", async () => {
+    const server = fakeServer({ dropFirstAnswer: true });
+    vi.stubGlobal("fetch", server.fetch);
+    render(createElement(WritingAssistant, props()));
+    await openAssistant();
+    fireEvent.click(screen.getByRole("button", { name: "在线生成故事候选" }));
+    await screen.findByText(/没有确认这次请求是否已被受理/);
+    const stored = sessionStorage.getItem(`ads-writing-online:${P1}:story`);
+    expect(stored).toContain("\"requestId\":null");
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: { code: "WRITING_CANDIDATE_FORBIDDEN", message: "没有调用权限。" } }), { status: 403 })));
+    fireEvent.click(screen.getByRole("button", { name: "确认上次请求" }));
+    expect(await screen.findByText(/请求记录已保留/)).toBeTruthy();
+    expect(sessionStorage.getItem(`ads-writing-online:${P1}:story`)).toBe(stored);
+    expect(screen.getByRole("button", { name: "确认上次请求" })).toBeTruthy();
+  });
+
   it("after a reload it reads the request this tab sent and never sends it again", async () => {
     const server = fakeServer({ pendingReads: 2 });
     vi.stubGlobal("fetch", server.fetch);

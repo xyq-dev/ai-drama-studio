@@ -11,7 +11,6 @@ import {
 import type { RuntimeStore } from "@ai-drama/database";
 import {
   WRITING_ADAPTERS,
-  hashWritingCandidate,
   newWritingCandidate,
   writingCandidateView,
   type WritingCandidateExecutor,
@@ -166,7 +165,7 @@ export class WritingCandidateService {
     });
     if (previous) {
       const replay = build(start.providerKey ?? previous.input.providerKey, start.model ?? previous.input.model);
-      return previous.projectId === projectId && hashWritingCandidate(replay.input) === previous.requestHash
+      return previous.projectId === projectId && replay.requestHash === previous.requestHash
         ? this.found(previous, projectId) : failure(409, "IDEMPOTENCY_KEY_REUSED");
     }
     const providerKey = start.providerKey ?? this.readyDefault();

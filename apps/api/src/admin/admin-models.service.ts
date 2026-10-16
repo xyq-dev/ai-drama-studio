@@ -122,7 +122,8 @@ export class AdminModelsService implements AdminModelsBackend {
       throw new AdminHttpError(400, "ADMIN_CONFIG_KEY_FORMAT");
     }
     const defaults = TITLE_WRITING_DEFAULT_MODELS[providerKey];
-    const update = body.secretAction !== "clear" && body.models.length === 0 && defaults.length > 0
+    // Only when a key is entered: saving an empty list with the key kept is how the list is emptied (not ready).
+    const update = body.secretAction === "replace" && body.models.length === 0 && defaults.length > 0
       ? { ...body, models: [...defaults] } : body;
     await this.vault.updateProvider(providerKey, update, { claimDefault: providerKey === "anthropic" });
     return this.view();

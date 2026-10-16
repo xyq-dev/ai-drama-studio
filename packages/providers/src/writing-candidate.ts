@@ -48,8 +48,9 @@ export const WRITING_CANDIDATE_LOST_AFTER_SEND = "executor_lost";
 
 const UNKNOWN_USAGE = { status: "unknown", inputTokens: null, outputTokens: null, totalTokens: null } as const;
 
-export function hashWritingCandidate(input: WritingCandidateFrozenInput): string {
-  return canonicalInputHash({ kind: "writing_candidate", input });
+/** The request identity: the frozen input and the uncertain request it confirmed (both decide what may be sent). */
+export function hashWritingCandidate(input: WritingCandidateFrozenInput, confirmedRequestId: string | null = null): string {
+  return canonicalInputHash({ kind: "writing_candidate", input, confirmedRequestId });
 }
 
 export function newWritingCandidate(options: {
@@ -87,7 +88,7 @@ export function newWritingCandidate(options: {
     projectId: options.projectId,
     actorId: options.actorId,
     idempotencyKey: options.idempotencyKey,
-    requestHash: hashWritingCandidate(input),
+    requestHash: hashWritingCandidate(input, options.confirmedRequestId),
     input,
     state: "reserved",
     executorId: options.executorId,

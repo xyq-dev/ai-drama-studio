@@ -77,6 +77,9 @@ describe("Claude setup state", () => {
     expect(claudeSetupState(view({ pendingRestart: true, active: settings(false, false) })).state).toBe("pending_restart");
     expect(claudeSetupState(view({ pendingRestart: true, activationDeferred: true, active: settings(false, false) })).state).toBe("activation_deferred");
     expect(claudeSetupState(view({ active: settings(true, false) })).state).toBe("incomplete");
+    // Active and ready with the old key, a new key saved: not "ready" until the restart applies it.
+    expect(claudeSetupState(view({ pendingRestart: true })).state).toBe("pending_restart");
+    expect(claudeSetupState(view({ pendingRestart: true, activationDeferred: true })).state).toBe("activation_deferred");
     expect(claudeSetupState(view({ titleWriting: { enabled: false, productionBlocked: false, operatorConfigured: false, siteOperator: true } })).state).toBe("feature_off");
     expect(claudeSetupState(view({ titleWriting: { enabled: true, productionBlocked: false, operatorConfigured: false, siteOperator: false } })).state).toBe("operator_missing");
     expect(claudeSetupState(view({ storage: null })).state).toBe("storage_unknown");

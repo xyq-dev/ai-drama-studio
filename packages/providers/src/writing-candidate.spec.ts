@@ -181,6 +181,8 @@ describe("request identity and the store's rules", () => {
     ];
     for (const variant of variants) expect(hashWritingCandidate(variant)).not.toBe(base.requestHash);
     expect(hashWritingCandidate(make("episode", "another-key").input)).toBe(base.requestHash);
+    // The confirmed uncertain request is part of the identity too.
+    expect(hashWritingCandidate(base.input, "77777777-7777-4777-8777-777777777777")).not.toBe(base.requestHash);
     const text = JSON.stringify(writingCandidateView(base));
     for (const hidden of ["k1", "server-owner", "exec-1"]) expect(text).not.toContain(hidden);
     expect(writingCandidateView(base)).toMatchObject({ billing: "unknown", providerLabel: "Claude", base: { ifMatch: 3 } });

@@ -108,6 +108,9 @@ export function claudeSetupState(view: AdminModelsView): { state: ClaudeSetupSta
     if (view.pendingRestart) return { state: "pending_restart", ...none };
     return { state: "incomplete", ...none };
   }
+  // A saved change (a replaced key, other models) is not in use until the restart applies it: never "ready" meanwhile.
+  if (view.activationDeferred) return { state: "activation_deferred", ...none };
+  if (view.pendingRestart) return { state: "pending_restart", ...none };
   if (!view.titleWriting.enabled) return { state: "feature_off", ...none };
   if (!view.titleWriting.siteOperator && !view.titleWriting.operatorConfigured) return { state: "operator_missing", ...none };
   if (!view.storage) return { state: "storage_unknown", ...none };

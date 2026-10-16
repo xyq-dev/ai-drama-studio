@@ -72,9 +72,15 @@ function writeRecord(record: OnlineRecord): boolean {
   }
 }
 
-/** Only refusals the server decided (a code from the API) end a request; a lost answer keeps it for a replay. */
+/**
+ * Only refusals the server makes after looking the key up end a request (it then knows no request was stored under it,
+ * or refused this input). A lost answer, a 5xx, or a refusal of the access gate (401 login, 403 operator, 404 switched
+ * off) keep the record: those come before the key lookup, so an earlier send of the same key may still exist.
+ */
+const AFTER_KEY_LOOKUP = new Set(["WRITING_CANDIDATE_ACTIVE", "WRITING_CANDIDATE_NEEDS_CONFIRMATION", "WRITING_CANDIDATE_TARGET_INVALID",
+  "WRITING_CANDIDATE_DAILY_CAP", "WRITING_CANDIDATE_MODEL_UNAVAILABLE", "IDEMPOTENCY_KEY_REUSED", "VALIDATION_ERROR"]);
 function decided(error: unknown): error is TitleWritingError {
-  return error instanceof TitleWritingError && error.code !== "REQUEST_FAILED" && error.status < 500;
+  return error instanceof TitleWritingError && AFTER_KEY_LOOKUP.has(error.code);
 }
 
 export function candidateImport(view: WritingCandidateView): WritingImport | null {
@@ -196,6 +202,13 @@ export function OnlineCandidatePanel(props: {
         view = await client.get(props.projectId, requestId);
       } catch (caught) {
         if (!current(mine, forIdentity)) return;
+        if (caught instanceof TitleWritingError && caught.status === 401) {
+          // The login ended: stop reading. The request stays recorded and is read again after logging in and reopening.
+          setMessage("登录已过期，暂停读取请求结果。请求本身不会因此重发；重新登录后打开编剧助手会继续读取。");
+          setSending(false);
+          sendingRef.current = false;
+          return;
+        }
         setMessage(caught instanceof TitleWritingError && caught.status === 404
           ? "服务端没有找到这次请求。"
           : "暂时没能读取请求结果。请求本身不会因此重发，稍后会再次读取。");
@@ -287,7 +300,9 @@ export function OnlineCandidatePanel(props: {
         void loadHistory(mine, forIdentity);
         return;
       }
-      setMessage("没有确认这次请求是否已被受理（网络或服务异常）。再次点击会用同一个请求标识确认，不会重复发送。");
+      setMessage(caught instanceof TitleWritingError && caught.status < 500 && caught.code !== "REQUEST_FAILED"
+        ? `${caught.detail}请求记录已保留：恢复登录或权限后，再次点击会用同一个请求标识确认，不会重复发送。`
+        : "没有确认这次请求是否已被受理（网络或服务异常）。再次点击会用同一个请求标识确认，不会重复发送。");
     }
   }
 
@@ -402,7 +417,7 @@ export function OnlineCandidatePanel(props: {
         </div>
       ) : null}
       <button className="mt-2 rounded bg-neutral-900 px-3 py-1 text-sm text-white disabled:opacity-50" type="button"
-        disabled={unconfirmed ? sending : blocked} onClick={() => void generate()}>
+        disabled={unconfirmed ? sending || (needsToken && token.trim().length === 0) : blocked} onClick={() => void generate()}>
         {sending ? "正在生成…" : unconfirmed ? "确认上次请求" : props.mode === "story" ? "在线生成故事候选" : "在线生成本集候选"}
       </button>
       {message ? <p className="mt-2 text-sm [overflow-wrap:anywhere]" role="status" data-testid="online-message">{message}</p> : null}
