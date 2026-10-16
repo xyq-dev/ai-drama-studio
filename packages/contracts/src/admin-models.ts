@@ -1,7 +1,8 @@
 import { z } from "zod";
-import type { TitleWritingProviderKey } from "./title-writing";
+import { TITLE_WRITING_PROVIDER_KEYS, type TitleWritingProviderKey, type TitleWritingStoredProviderKey } from "./title-writing";
 
-export const adminProviderKeySchema = z.enum(["qwen", "openai", "deepseek"]);
+/** Only the active providers can be edited or made the default. Retired providers have no console entry. */
+export const adminProviderKeySchema = z.enum(TITLE_WRITING_PROVIDER_KEYS);
 const revision = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 export const adminProviderUpdateSchema = z.object({
   expectedRevision: revision,
@@ -45,8 +46,10 @@ export interface AdminSettingsView {
 }
 export interface AdminAuditView {
   at: string;
-  action: "provider_updated" | "limits_updated" | "activated";
-  providerKey?: TitleWritingProviderKey;
+  /** format_upgraded: the stored configuration was converted to the two-provider format; the original was kept. */
+  action: "provider_updated" | "limits_updated" | "activated" | "format_upgraded";
+  /** Entries written before the retirement may name a retired provider; they are history and stay as recorded. */
+  providerKey?: TitleWritingStoredProviderKey;
   revision: number;
 }
 /** Secret values, prefixes and fingerprints must never be added to this public view. */
@@ -61,4 +64,10 @@ export interface AdminModelsView {
   active: AdminSettingsView;
   audit: AdminAuditView[];
   validation: "local_only";
+  /**
+   * Present after a configuration of the retired three-provider format was read: what the conversion left out. Names
+   * only; no secret, prefix or fingerprint. retiredDefault is the retired provider that was the default (the default
+   * is now unset and must be chosen again).
+   */
+  retired?: { providers: TitleWritingStoredProviderKey[]; retiredDefault: TitleWritingStoredProviderKey | null; backupKept: boolean };
 }

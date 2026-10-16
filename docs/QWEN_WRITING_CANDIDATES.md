@@ -1,5 +1,7 @@
 # 千问编剧候选
 
+> **已退役（2026-10-16）**：本文描述的千问代码、命令与网页路由已经删除，API 不再读取相关变量，也不能再发起千问调用。文本创作只使用 OpenAI 与 Claude，见 [`OPENAI_CLAUDE_WRITING.md`](OPENAI_CLAUDE_WRITING.md)。本文仅作历史记录。
+
 本工具在本机生成网页编剧助手可导入的候选文件。它有两个模式：
 
 - 故事策划，候选 schema 为 `ads.writing.story-plan.v1`

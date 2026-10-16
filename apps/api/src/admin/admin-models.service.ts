@@ -2,15 +2,15 @@ import type {
   AdminLimitsUpdate, AdminModelsView, AdminProviderUpdate, AdminSettingsView, TitleWritingProviderKey,
 } from "@ai-drama/contracts";
 import {
-  DEEPSEEK_CHAT_URL, OPENAI_RESPONSES_URL, parseModelList, resolveQwenChatEndpoint, titleWritingProviderConfigs,
+  ANTHROPIC_MESSAGES_URL, OPENAI_RESPONSES_URL, parseModelList, titleWritingProviderConfigs,
 } from "@ai-drama/providers";
 import type { ApiEnv } from "../config/env";
 import type { AdminBootstrap } from "./admin-bootstrap";
 import type { AdminModelsBackend } from "./admin-models.controller";
 import { ModelConfigVault, type ManagedModelSettings } from "./model-config-vault";
 
-const PROVIDERS = ["qwen", "openai", "deepseek"] as const;
-const LABELS = { qwen: "千问 · 百炼", openai: "OpenAI", deepseek: "DeepSeek" };
+const PROVIDERS = ["openai", "anthropic"] as const;
+const LABELS = { openai: "OpenAI", anthropic: "Claude" };
 
 function key(value: string | undefined): string | null {
   return value && value.length >= 8 && value.length <= 256 && !/\s/u.test(value) ? value : null;
@@ -27,10 +27,8 @@ export function initialModelSettings(env: ApiEnv): ManagedModelSettings {
     maxCallsPerDay: env.TITLE_WRITING_MAX_CALLS_PER_DAY,
     maxActiveRuns: env.TITLE_WRITING_MAX_ACTIVE_RUNS,
     providers: {
-      qwen: { apiKey: key(env.DASHSCOPE_API_KEY), models: models(env.TITLE_WRITING_QWEN_MODELS),
-        baseUrl: env.BAILIAN_BASE_URL && resolveQwenChatEndpoint(env.BAILIAN_BASE_URL).ok ? env.BAILIAN_BASE_URL : "" },
       openai: { apiKey: key(env.OPENAI_API_KEY), models: models(env.TITLE_WRITING_OPENAI_MODELS), baseUrl: OPENAI_RESPONSES_URL },
-      deepseek: { apiKey: key(env.DEEPSEEK_API_KEY), models: models(env.TITLE_WRITING_DEEPSEEK_MODELS), baseUrl: DEEPSEEK_CHAT_URL },
+      anthropic: { apiKey: key(env.ANTHROPIC_API_KEY), models: models(env.TITLE_WRITING_ANTHROPIC_MODELS), baseUrl: ANTHROPIC_MESSAGES_URL },
     },
   };
 }
@@ -38,13 +36,10 @@ export function initialModelSettings(env: ApiEnv): ManagedModelSettings {
 /** Explicit projection: managed clear never falls back to a stale environment secret. */
 export function managedProviderConfigs(settings: ManagedModelSettings) {
   return titleWritingProviderConfigs({
-    DASHSCOPE_API_KEY: settings.providers.qwen.apiKey ?? undefined,
-    BAILIAN_BASE_URL: settings.providers.qwen.baseUrl || undefined,
-    TITLE_WRITING_QWEN_MODELS: settings.providers.qwen.models.join(","),
     OPENAI_API_KEY: settings.providers.openai.apiKey ?? undefined,
     TITLE_WRITING_OPENAI_MODELS: settings.providers.openai.models.join(","),
-    DEEPSEEK_API_KEY: settings.providers.deepseek.apiKey ?? undefined,
-    TITLE_WRITING_DEEPSEEK_MODELS: settings.providers.deepseek.models.join(","),
+    ANTHROPIC_API_KEY: settings.providers.anthropic.apiKey ?? undefined,
+    TITLE_WRITING_ANTHROPIC_MODELS: settings.providers.anthropic.models.join(","),
   });
 }
 
@@ -91,12 +86,15 @@ export class AdminModelsService implements AdminModelsBackend {
 
   async view(): Promise<AdminModelsView> {
     const doc = await this.vault.read();
+    const retired = await this.vault.retiredNote();
     return {
       savedRevision: doc.saved.revision, activeRevision: this.effective.revision,
       pendingRestart: doc.saved.revision !== this.effective.revision, activationDeferred: this.deferred,
       source: doc.saved.revision === 0 ? "environment" : "managed",
       saved: settingsView(doc.saved), active: settingsView(this.effective), titleWriting: { ...this.state },
       audit: doc.audit, validation: "local_only",
+      ...(retired ? { retired: { providers: retired.providers as NonNullable<AdminModelsView["retired"]>["providers"],
+        retiredDefault: retired.retiredDefault as NonNullable<AdminModelsView["retired"]>["retiredDefault"], backupKept: retired.backupKept } } : {}),
     };
   }
 

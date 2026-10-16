@@ -30,7 +30,7 @@ import {
   verifyTitleWritingAcceptanceDatabase,
 } from "@ai-drama/database";
 import { TitleWritingEngine, titleWritingProviderConfigs, type WritingTransport } from "@ai-drama/providers";
-import { breakdownPromptParts, chatAnswer, fixtureBreakdownFromPrompt } from "@ai-drama/providers/title-writing-fixtures";
+import { breakdownPromptParts, fixtureBreakdownFromPrompt, messagesAnswer, providerAnswer } from "@ai-drama/providers/title-writing-fixtures";
 import { AppModule } from "../app.module";
 import { loadApiEnv } from "../config/env";
 import { SafeExceptionFilter } from "../http/safe-exception.filter";
@@ -45,7 +45,7 @@ const acceptanceUrl = decision.url;
 const WORKSPACE = "11111111-1111-4111-8111-111111111111";
 const OPERATOR_TOKEN = `acceptance-${randomUUID()}`;
 const STUB_KEY = `stub-not-a-provider-key-${randomUUID()}`;
-const STUB_MODEL = "qwen-acceptance-stub";
+const STUB_MODEL = "claude-acceptance-stub";
 
 const pool = createPostgresPool({ connectionString: acceptanceUrl, connectionTimeoutMs: 2_000, statementTimeoutMs: 10_000, queryTimeoutMs: 10_000 });
 async function q<T>(sql: string, values: unknown[] = []): Promise<{ rows: T[]; rowCount: number | null }> {
@@ -65,20 +65,19 @@ const transport: WritingTransport = async (request) => {
   const parts = breakdownPromptParts(user);
   const headers = request.headers as Record<string, string>;
   const endpoint = new URL(request.url);
-  sent.push({ episodeNo: parts.episodeNo, script: parts.script, keyMatches: (headers.Authorization ?? headers.authorization) === `Bearer ${STUB_KEY}`,
+  sent.push({ episodeNo: parts.episodeNo, script: parts.script, keyMatches: (headers["x-api-key"] === STUB_KEY || (headers.Authorization ?? headers.authorization) === `Bearer ${STUB_KEY}`),
     endpoint: `${endpoint.host}${endpoint.pathname}` });
   const marker = /标记：(\S+)/.exec(parts.script)?.[1] ?? "";
-  const answer = await overrides.get(marker)?.(user) ?? { status: 200, body: chatAnswer(fixtureBreakdownFromPrompt(user)) };
+  const answer = await overrides.get(marker)?.(user) ?? { status: 200, body: providerAnswer(request.url, fixtureBreakdownFromPrompt(user)) };
   return {
     status: answer.status,
-    headers: { get: (name: string) => name.toLowerCase() === "x-request-id" ? `stub-${String(sent.length)}` : null },
+    headers: { get: (name: string) => ["x-request-id", "request-id"].includes(name.toLowerCase()) ? `stub-${String(sent.length)}` : null },
     body: new TextEncoder().encode(JSON.stringify(answer.body)),
   };
 };
 
 /** Provider settings as the server reads them from its environment; only the stub key is ever configured. */
-const stubProviders = (extra: Parameters<typeof titleWritingProviderConfigs>[0] = {}) => titleWritingProviderConfigs({ DASHSCOPE_API_KEY: STUB_KEY,
-  BAILIAN_BASE_URL: "https://dashscope.aliyuncs.com/compatible-mode/v1", TITLE_WRITING_QWEN_MODELS: STUB_MODEL, ...extra });
+const stubProviders = (extra: Parameters<typeof titleWritingProviderConfigs>[0] = {}) => titleWritingProviderConfigs({ ANTHROPIC_API_KEY: STUB_KEY, TITLE_WRITING_ANTHROPIC_MODELS: STUB_MODEL, ...extra });
 
 /** The service's dependencies, kept so a scenario can change the provider settings an administrator controls. */
 let breakdownDeps: ScriptBreakdownDependencies;
@@ -87,7 +86,7 @@ function breakdownService(runtime: StudioRuntime): ScriptBreakdownService {
   const providers = stubProviders();
   const store = new PostgresTitleWritingStore(runtime.pool, new TextChainService(runtime.pool));
   breakdownDeps = {
-    workspaceId: WORKSPACE, nodeEnv: "test", enabled: true, operatorToken: OPERATOR_TOKEN, defaultProvider: "qwen", providers, store,
+    workspaceId: WORKSPACE, nodeEnv: "test", enabled: true, operatorToken: OPERATOR_TOKEN, defaultProvider: "anthropic", providers, store,
     engine: new TitleWritingEngine({ workspaceId: WORKSPACE, store, providers, transport, maxCallsPerDay: 200, timeoutMs: 1_500 }),
     projects: runtime.store, maxCallsPerDay: 200, maxActiveRuns: 10,
   };
@@ -322,7 +321,7 @@ describe("script breakdown over real HTTP and PostgreSQL, model stubbed", () => 
   it("fails an invalid answer with nothing written and no template, and replaces scenes only with consent", async () => {
     const { projectId, episodes } = await work(1, "invalid");
     const episode = episodes[0]!;
-    overrides.set("invalid-1", () => ({ status: 200, body: chatAnswer({ schema: "ads.script-breakdown.output.v1", episodeNo: 3, scenes: [], shots: [] }) }));
+    overrides.set("invalid-1", () => ({ status: 200, body: messagesAnswer({ schema: "ads.script-breakdown.output.v1", episodeNo: 3, scenes: [], shots: [] }) }));
     await http("POST", base(projectId, episode.id), { body: {}, headers: operator() });
     const failed = await settled(projectId, episode.id);
     expect([failed.state, failed.step.errorCode, failed.save, failed.output]).toEqual(["failed", "episode_mismatch", "pending", null]);
@@ -385,7 +384,7 @@ describe("script breakdown over real HTTP and PostgreSQL, model stubbed", () => 
     const failed: Record<number, string> = {};
     for (const episode of episodes) {
       const marker = `resume-${String(episode.episodeNo)}`;
-      overrides.set(marker, () => ({ status: 200, body: chatAnswer({ schema: "ads.script-breakdown.output.v1", episodeNo: episode.episodeNo, scenes: [], shots: [] }) }));
+      overrides.set(marker, () => ({ status: 200, body: messagesAnswer({ schema: "ads.script-breakdown.output.v1", episodeNo: episode.episodeNo, scenes: [], shots: [] }) }));
       expect((await http("POST", base(projectId, episode.id), { body: {}, headers: operator() })).status).toBe(201);
       const run = await settled(projectId, episode.id);
       expect([run.state, run.callsUsed]).toEqual(["failed", 1]);
@@ -476,15 +475,15 @@ describe("script breakdown over real HTTP and PostgreSQL, model stubbed", () => 
     const original = { providers: breakdownDeps.providers, defaultProvider: breakdownDeps.defaultProvider };
     try {
       for (const [providers, defaultProvider] of [
-        [stubProviders({ TITLE_WRITING_QWEN_MODELS: `qwen-acceptance-other,${STUB_MODEL}` }), "qwen"],
-        [stubProviders({ DEEPSEEK_API_KEY: STUB_KEY, TITLE_WRITING_DEEPSEEK_MODELS: "deepseek-acceptance-stub" }), "deepseek"],
+        [stubProviders({ TITLE_WRITING_ANTHROPIC_MODELS: `claude-acceptance-other,${STUB_MODEL}` }), "anthropic"],
+        [stubProviders({ OPENAI_API_KEY: STUB_KEY, TITLE_WRITING_OPENAI_MODELS: "openai-acceptance-stub" }), "openai"],
         [titleWritingProviderConfigs({}), null],
       ] as const) {
         breakdownDeps.providers = providers;
         breakdownDeps.defaultProvider = defaultProvider;
         const replay = await http("POST", base(projectId, episode.id), { body: {}, headers: operator(idempotencyKey) });
         expect([replay.status, replay.body.run?.runId, replay.body.run?.providerKey, replay.body.run?.model], JSON.stringify(replay.body))
-          .toEqual([200, done.runId, "qwen", STUB_MODEL]);
+          .toEqual([200, done.runId, "anthropic", STUB_MODEL]);
       }
       // Still unconfigured: other content under the key is refused; a new request is checked against the current settings.
       const other = await http("POST", base(projectId, episode.id), { body: { replaceExisting: true }, headers: operator(idempotencyKey) });
@@ -536,7 +535,7 @@ describe("script breakdown over real HTTP and PostgreSQL, model stubbed", () => 
 
   it("replays an accepted resume after the provider was disabled or the source changed, and handles concurrent identical requests once", async () => {
     const { projectId, storyId, episodes } = await work(2, "rreplay");
-    const invalid = (episodeNo: number) => () => ({ status: 200, body: chatAnswer({ schema: "ads.script-breakdown.output.v1", episodeNo, scenes: [], shots: [] }) });
+    const invalid = (episodeNo: number) => () => ({ status: 200, body: messagesAnswer({ schema: "ads.script-breakdown.output.v1", episodeNo, scenes: [], shots: [] }) });
     const failedRun = async (episode: { id: string; episodeNo: number }) => {
       expect((await http("POST", base(projectId, episode.id), { body: {}, headers: operator() })).status).toBe(201);
       const run = await settled(projectId, episode.id);
@@ -602,13 +601,13 @@ describe("script breakdown over real HTTP and PostgreSQL, model stubbed", () => 
       const promise = new Promise<void>((resolve) => { release = resolve; });
       return { promise, release };
     };
-    overrides.set("rrace-1", () => ({ status: 200, body: chatAnswer({ schema: "ads.script-breakdown.output.v1", episodeNo: 1, scenes: [], shots: [] }) }));
+    overrides.set("rrace-1", () => ({ status: 200, body: messagesAnswer({ schema: "ads.script-breakdown.output.v1", episodeNo: 1, scenes: [], shots: [] }) }));
     expect((await http("POST", base(projectId, episode.id), { body: {}, headers: operator() })).status).toBe(201);
     const run = await settled(projectId, episode.id);
     expect(run.state).toBe("failed");
     // The resumed call is held at the model double until the replay has answered, so the run is really running then.
     const model = deferred();
-    overrides.set("rrace-1", async (user) => { await model.promise; return { status: 200, body: chatAnswer(fixtureBreakdownFromPrompt(user)) }; });
+    overrides.set("rrace-1", async (user) => { await model.promise; return { status: 200, body: messagesAnswer(fixtureBreakdownFromPrompt(user)) }; });
     // Request B reads the failed run, then waits before its receipt lookup until request A has committed the resume.
     const resumeKey = randomUUID();
     const store = breakdownDeps.store;
@@ -683,7 +682,7 @@ describe("script breakdown over real HTTP and PostgreSQL, model stubbed", () => 
 
   it("saves an answer that arrived before a cancel without the provider or another call, once, and refuses it after a source change", async () => {
     const { projectId, storyId, episodes } = await work(2, "saveonly");
-    const valid = (user: string) => ({ status: 200, body: chatAnswer(fixtureBreakdownFromPrompt(user)) });
+    const valid = (user: string) => ({ status: 200, body: messagesAnswer(fixtureBreakdownFromPrompt(user)) });
     // The cancel is sent through the API while the call is out and is committed before the answer comes back.
     const cancelWhileOut = (episodeId: string) => async (user: string) => {
       const running = await latest(projectId, episodeId);
@@ -760,7 +759,7 @@ describe("script breakdown over real HTTP and PostgreSQL, model stubbed", () => 
     await approveScene(projectId, episode!.id, sceneId);
 
     // B: the model's answer is refused. Latest is B; the saved breakdown is still A, with its approved scene's shots pending.
-    overrides.set("saved-1", () => ({ status: 200, body: chatAnswer({ schema: "ads.script-breakdown.output.v1", episodeNo: 3, scenes: [], shots: [] }) }));
+    overrides.set("saved-1", () => ({ status: 200, body: messagesAnswer({ schema: "ads.script-breakdown.output.v1", episodeNo: 3, scenes: [], shots: [] }) }));
     expect((await http("POST", base(projectId, episode!.id), { body: { replaceExisting: true }, headers: operator() })).status).toBe(201);
     const b = await settled(projectId, episode!.id);
     overrides.delete("saved-1");
@@ -787,7 +786,7 @@ describe("script breakdown over real HTTP and PostgreSQL, model stubbed", () => 
     // C runs: A stays the saved one while C is running, and C becomes it only once C is saved.
     let release!: () => void;
     const held = new Promise<void>((resolve) => { release = resolve; });
-    overrides.set("saved-1", async (user) => { await held; return { status: 200, body: chatAnswer(fixtureBreakdownFromPrompt(user)) }; });
+    overrides.set("saved-1", async (user) => { await held; return { status: 200, body: messagesAnswer(fixtureBreakdownFromPrompt(user)) }; });
     try {
       expect((await http("POST", base(projectId, episode!.id), { body: { replaceExisting: true }, headers: operator() })).status).toBe(201);
       const running = (await latest(projectId, episode!.id))!;
@@ -830,7 +829,7 @@ describe("script breakdown over real HTTP and PostgreSQL, model stubbed", () => 
       if (shouldPause) { shouldPause = false; reached.release(); await gate.promise; }
       return reserve(...args);
     };
-    overrides.set("placement-guard-1", () => ({ status: 200, body: chatAnswer({ schema: "ads.script-breakdown.output.v1", episodeNo: 1, scenes: [], shots: [] }) }));
+    overrides.set("placement-guard-1", () => ({ status: 200, body: messagesAnswer({ schema: "ads.script-breakdown.output.v1", episodeNo: 1, scenes: [], shots: [] }) }));
     try {
       // B has frozen episode 1 but has not reserved a call. Direct callers must obey the same guard as the page.
       expect((await http("POST", base(projectId, episode!.id), { body: { replaceExisting: true }, headers: operator() })).status).toBe(201);
@@ -889,35 +888,35 @@ describe("script breakdown over real HTTP and PostgreSQL, model stubbed", () => 
     // The engine reads the same provider settings object, so it reaches the stub through the provider chosen here.
     const original = { ...breakdownDeps.providers };
     const originalDefault = breakdownDeps.defaultProvider;
-    const deepseekOnly = titleWritingProviderConfigs({ DEEPSEEK_API_KEY: STUB_KEY, TITLE_WRITING_DEEPSEEK_MODELS: "deepseek-acceptance-stub" });
+    const openaiOnly = titleWritingProviderConfigs({ OPENAI_API_KEY: STUB_KEY, TITLE_WRITING_OPENAI_MODELS: "openai-acceptance-stub" });
     const runs = async () => Number((await q<{ n: number }>("SELECT count(*)::int AS n FROM title_writing_run WHERE project_id = $1", [projectId])).rows[0]!.n);
     const before = sent.length;
     try {
-      Object.assign(breakdownDeps.providers, { qwen: deepseekOnly.qwen, deepseek: deepseekOnly.deepseek });
-      breakdownDeps.defaultProvider = "qwen";
+      Object.assign(breakdownDeps.providers, { anthropic: openaiOnly.anthropic, openai: openaiOnly.openai });
+      breakdownDeps.defaultProvider = "anthropic";
       const options = await http("GET", "/writing/script-breakdowns/options");
-      expect([options.body.code, options.body.defaultProvider]).toEqual(["SCRIPT_BREAKDOWN_READY", "deepseek"]);
-      const named = await http("POST", base(projectId, episode.id), { body: { providerKey: "qwen" }, headers: operator() });
-      expect([named.status, named.body.error.code, named.body.error.details.providerKey]).toEqual([503, "TITLE_WRITING_PROVIDER_UNCONFIGURED", "qwen"]);
+      expect([options.body.code, options.body.defaultProvider]).toEqual(["SCRIPT_BREAKDOWN_READY", "openai"]);
+      const named = await http("POST", base(projectId, episode.id), { body: { providerKey: "anthropic" }, headers: operator() });
+      expect([named.status, named.body.error.code, named.body.error.details.providerKey]).toEqual([503, "TITLE_WRITING_PROVIDER_UNCONFIGURED", "anthropic"]);
       const model = await http("POST", base(projectId, episode.id), { body: { model: STUB_MODEL }, headers: operator() });
-      expect([model.status, model.body.error.code, model.body.error.details]).toEqual([400, "TITLE_WRITING_MODEL_UNAVAILABLE", { providerKey: "deepseek" }]);
+      expect([model.status, model.body.error.code, model.body.error.details]).toEqual([400, "TITLE_WRITING_MODEL_UNAVAILABLE", { providerKey: "openai" }]);
       expect(await runs()).toBe(0);
       const idempotencyKey = randomUUID();
       const started = await http("POST", base(projectId, episode.id), { body: {}, headers: operator(idempotencyKey) });
-      expect([started.status, started.body.run.providerKey, started.body.run.model]).toEqual([201, options.body.defaultProvider, "deepseek-acceptance-stub"]);
+      expect([started.status, started.body.run.providerKey, started.body.run.model]).toEqual([201, options.body.defaultProvider, "openai-acceptance-stub"]);
       const done = await settled(projectId, episode.id);
-      expect([done.state, done.save, done.providerKey]).toEqual(["completed", "saved", "deepseek"]);
+      expect([done.state, done.save, done.providerKey]).toEqual(["completed", "saved", "openai"]);
       // The configured default is ready again and the other provider is gone: the same request and key is the same run.
       Object.assign(breakdownDeps.providers, original);
       const replay = await http("POST", base(projectId, episode.id), { body: {}, headers: operator(idempotencyKey) });
-      expect([replay.status, replay.body.run.runId, replay.body.run.providerKey]).toEqual([200, done.runId, "deepseek"]);
+      expect([replay.status, replay.body.run.runId, replay.body.run.providerKey]).toEqual([200, done.runId, "openai"]);
     } finally {
       Object.assign(breakdownDeps.providers, original);
       breakdownDeps.defaultProvider = originalDefault;
     }
     expect([sent.length - before, await runs()]).toEqual([1, 1]);
-    expect(sent.at(-1)!.endpoint).toContain("deepseek");
-    scenarios.defaultProviderFallback = { optionsDefault: "deepseek", frozen: "deepseek", namedUnready: 503, foreignModel: 400, replayAfterChange: 200, sends: 1 };
+    expect(sent.at(-1)!.endpoint).toBe("api.openai.com/v1/responses");
+    scenarios.defaultProviderFallback = { optionsDefault: "openai", frozen: "openai", namedUnready: 503, foreignModel: 400, replayAfterChange: 200, sends: 1 };
   });
 
   it("never reaches a provider: every send went to the stub with the stub key", () => {

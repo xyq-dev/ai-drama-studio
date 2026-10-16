@@ -5,7 +5,6 @@ import {
   CharacterReferenceStore,
   MediaAssetStore,
   MockTextService,
-  PostgresQwenWebStore,
   PostgresTitleWritingStore,
   RuntimeStore,
   TextChainService,
@@ -13,18 +12,16 @@ import {
   createPostgresPool,
   type PostgresPool,
 } from "@ai-drama/database";
-import { sampleVideoGenerationEnabled, type QwenWritingInput, type TitleRunKind } from "@ai-drama/contracts";
-import { TitleWritingEngine, createQwenFetchTransport, qwenWebProviderConfig, titleWritingProviderConfigs } from "@ai-drama/providers";
+import { sampleVideoGenerationEnabled, type TitleRunKind } from "@ai-drama/contracts";
+import { TitleWritingEngine, createFetchTransport, titleWritingProviderConfigs } from "@ai-drama/providers";
 import type { ApiEnv } from "../config/env";
 import { siteAuthFromEnv } from "../auth/site-auth.config";
-import { QwenWebService } from "./qwen-web.service";
 import { ScriptBreakdownService } from "./script-breakdown.service";
 import { StudioService } from "./studio.service";
 import { TitleWritingService } from "./title-writing.service";
 import { adminBootstrap } from "../admin/admin-bootstrap";
 import { AdminModelsService, managedProviderConfigs } from "../admin/admin-models.service";
 
-const QWEN_WEB_MAINTENANCE_MS = 60_000;
 /** Title writing recovery pass. Only expired leases are fenced, so a live run is never touched. */
 const TITLE_WRITING_MAINTENANCE_MS = 15_000;
 
@@ -32,17 +29,13 @@ const TITLE_WRITING_MAINTENANCE_MS = 15_000;
 export class StudioRuntime implements OnModuleDestroy {
   readonly store: RuntimeStore;
   readonly service: StudioService;
-  readonly qwenWeb: QwenWebService;
   readonly titleWriting: TitleWritingService | null;
-  private readonly maintenance: NodeJS.Timeout | null;
   private readonly titleMaintenance: NodeJS.Timeout | null;
 
   constructor(
     readonly pool: PostgresPool,
     service: StudioService,
     store: RuntimeStore,
-    qwenWeb: QwenWebService,
-    qwenWebActive = false,
     titleWriting: TitleWritingService | null = null,
     readonly adminModels: AdminModelsService | null = null,
     /** Whether the model console routes are open (MODEL_ADMIN_ENABLED); access itself needs the site login. */
@@ -52,13 +45,7 @@ export class StudioRuntime implements OnModuleDestroy {
   ) {
     this.service = service;
     this.store = store;
-    this.qwenWeb = qwenWeb;
     this.titleWriting = titleWriting;
-    // Recovery fences only expired executor leases, so a periodic pass cannot touch a live request.
-    this.maintenance = qwenWebActive
-      ? setInterval(() => { void qwenWeb.maintain().catch(() => undefined); }, QWEN_WEB_MAINTENANCE_MS)
-      : null;
-    this.maintenance?.unref();
     // After a restart, runs whose executor lease expired are fenced and, while the feature is on, continued.
     this.titleMaintenance = titleWriting
       ? setInterval(() => { void titleWriting.maintain().catch(() => undefined); }, TITLE_WRITING_MAINTENANCE_MS)
@@ -92,18 +79,6 @@ export class StudioRuntime implements OnModuleDestroy {
     const composeSwitch = nonProduction && env.M4_LOCAL_COMPOSE_ENABLED;
     const localComposeEnabled = composeSwitch && Boolean(absoluteDir && composeObjectDir);
     const episodeComposeEnabled = composeSwitch && env.M4_LOCAL_EPISODE_COMPOSE_ENABLED && Boolean(composeObjectDir);
-    const qwenWebEnabled = env.NODE_ENV !== "production" && env.QWEN_WEB_WRITING_ENABLED;
-    const qwenProvider = qwenWebProviderConfig(env);
-    const qwenWeb = new QwenWebService({
-      workspaceId,
-      nodeEnv: env.NODE_ENV,
-      enabled: qwenWebEnabled,
-      operatorToken: env.QWEN_WEB_OPERATOR_TOKEN ?? null,
-      provider: qwenProvider,
-      store: new PostgresQwenWebStore<QwenWritingInput>(pool),
-      projects: store,
-      transport: createQwenFetchTransport(),
-    });
     const titleStore = new PostgresTitleWritingStore(pool, textChain);
     let adminModels: AdminModelsService | null;
     try {
@@ -139,7 +114,7 @@ export class StudioRuntime implements OnModuleDestroy {
       workspaceId,
       store: titleStore,
       providers: titleProviders,
-      transport: createQwenFetchTransport(),
+      transport: createFetchTransport(),
       maxCallsPerDay,
       allowedRunKinds,
     });
@@ -181,12 +156,11 @@ export class StudioRuntime implements OnModuleDestroy {
           directoryReady: Boolean(absoluteDir),
         }),
         new CharacterReferenceStore(pool),
-        env.M3_CHARACTER_REFERENCE_GATE), store, qwenWeb, qwenWebEnabled && qwenProvider.ok, titleWriting,
+        env.M3_CHARACTER_REFERENCE_GATE), store, titleWriting,
       adminModels, admin?.enabled ?? false, scriptBreakdown);
   }
 
   async onModuleDestroy(): Promise<void> {
-    if (this.maintenance) clearInterval(this.maintenance);
     if (this.titleMaintenance) clearInterval(this.titleMaintenance);
     await closePostgresPool(this.pool);
   }

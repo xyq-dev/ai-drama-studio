@@ -2,7 +2,9 @@
 
 本文件只记录事实与待决定项，不选择供应商，不开通服务，不代表真实 Adapter 已完成。
 
-## 已选定：文本（千问 / 阿里云百炼 OpenAI 兼容接口）
+> 2026-10-16 起文本创作只使用 OpenAI 与 Claude（[`OPENAI_CLAUDE_WRITING.md`](OPENAI_CLAUDE_WRITING.md)）。下面的千问小节是历史记录，其代码与入口已删除。
+
+## 已退役：文本（千问 / 阿里云百炼 OpenAI 兼容接口）
 
 已有代码：`packages/providers/src/qwen-chat.ts`（单次非流式请求、官方主机白名单、响应上限、5xx/超时/断连记为 unknown、密钥脱敏）、本机 `qwen:trial` / `qwen:writing`、网页路由（见 [`QWEN_WEB_INVOCATION.md`](QWEN_WEB_INVOCATION.md)）。离线契约测试使用手写响应和可注入 transport，不访问网络。
 

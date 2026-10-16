@@ -165,33 +165,6 @@ export const textAdapterResultSchema = z.discriminatedUnion("kind", [
 ]);
 export type TextAdapterResult = z.infer<typeof textAdapterResultSchema>;
 
-export {
-  QWEN_TEXT_TRIAL_DRAFT_SCHEMA,
-  QWEN_TEXT_TRIAL_INPUT_SCHEMA,
-  QWEN_TEXT_TRIAL_LIMITS,
-  QWEN_TEXT_TRIAL_RECEIPT_SCHEMA,
-  parseQwenTextTrialDraft,
-  parseQwenTextTrialInput,
-  qwenTextTrialDraftSchema,
-  qwenTextTrialInputSchema,
-  qwenTextTrialReceiptSchema,
-  type QwenTextTrialDraft,
-  type QwenTextTrialInput,
-  type QwenTextTrialReceipt,
-} from "./qwen-text-trial";
-export {
-  QWEN_WRITING_INPUT_MAX_BYTES,
-  QWEN_WRITING_INPUT_SCHEMA,
-  QWEN_WRITING_RECEIPT_SCHEMA,
-  parseQwenWritingInput,
-  qwenWritingInputByteLength,
-  qwenWritingInputSchema,
-  qwenWritingInputWithinLimit,
-  qwenWritingReceiptSchema,
-  type QwenWritingInput,
-  type QwenWritingReceipt,
-} from "./qwen-writing";
-
 /** Only replay-safe synchronous adapters are supported by the M2 recovery contract. */
 export interface TextGenerationAdapter {
   readonly providerKey: string;
@@ -250,6 +223,10 @@ export {
   TITLE_WRITING_PROMPT_VERSION_V3,
   TITLE_WRITING_PROMPT_VERSION_V4,
   TITLE_WRITING_PROVIDER_KEYS,
+  TITLE_WRITING_PROVIDER_LABELS,
+  TITLE_WRITING_RETIRED_PROVIDER_KEYS,
+  TITLE_WRITING_STORED_PROVIDER_KEYS,
+  isActiveTitleWritingProvider,
   TITLE_WRITING_STEP_KEYS,
   TITLE_WRITING_TITLE_MAX_CHARS,
   episodeOutlineV2Schema,
@@ -278,6 +255,8 @@ export {
   type TitleWritingFrozenInput,
   type TitleWritingOptionsView,
   type TitleWritingProviderKey,
+  type TitleWritingRetiredProviderKey,
+  type TitleWritingStoredProviderKey,
   type TitleWritingProviderOption,
   type TitleWritingRunState,
   type TitleWritingRunView,

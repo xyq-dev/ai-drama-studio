@@ -5,6 +5,7 @@ import type {
   TitleWritingCallState,
   TitleWritingFrozenInput,
   TitleWritingProviderKey,
+  TitleWritingStoredProviderKey,
   TitleWritingRunState,
   TitleWritingScriptSave,
   TitleWritingStepKey,
@@ -69,7 +70,7 @@ export interface TitleCallRecord {
   workspaceId: string;
   stepKey: TitleWritingStepKey;
   attemptNo: number;
-  providerKey: TitleWritingProviderKey;
+  providerKey: TitleWritingStoredProviderKey;
   model: string;
   requestHash: string;
   state: TitleWritingCallState;
@@ -226,6 +227,12 @@ export type TitleScriptPlacement =
  */
 export interface TitleWritingStore {
   storageReady(): Promise<boolean>;
+  /**
+   * Whether runs and calls of this provider can be stored. openai always can once storageReady(); anthropic only after
+   * the provider migration (20261016000100_writing_provider_anthropic) is recorded and the provider CHECKs allow it.
+   * Callers refuse a new run of an unready provider before any write, reservation or send.
+   */
+  providerStorageReady(providerKey: TitleWritingProviderKey): Promise<boolean>;
   /**
    * Idempotency lookup, input comparison, active-run checks, the start quota check and insert of the run with its
    * N+2 steps (five for v1): one atomic step.

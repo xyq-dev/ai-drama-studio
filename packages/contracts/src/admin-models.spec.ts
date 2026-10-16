@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { adminLimitsUpdateSchema, adminProviderKeySchema, adminProviderUpdateSchema } from "./admin-models";
 
 const provider = { expectedRevision: 0, models: ["test-model:2026"], secretAction: "keep" };
-const limits = { expectedRevision: 0, defaultProvider: "qwen", maxCallsPerDay: 8, maxActiveRuns: 1 };
+const limits = { expectedRevision: 0, defaultProvider: "anthropic", maxCallsPerDay: 8, maxActiveRuns: 1 };
 
 describe("admin model configuration request contracts", () => {
   it("requires explicit keep/replace/clear operations, including keeping an empty model list", () => {
@@ -47,6 +47,12 @@ describe("admin model configuration request contracts", () => {
       expect(adminLimitsUpdateSchema.safeParse({ ...limits, maxActiveRuns }).success).toBe(false);
     }
     expect(adminProviderKeySchema.safeParse("custom-provider").success).toBe(false);
+    // Retired providers have no console entry and can never become the default again.
+    for (const retired of ["qwen", "deepseek"]) {
+      expect(adminProviderKeySchema.safeParse(retired).success).toBe(false);
+      expect(adminLimitsUpdateSchema.safeParse({ ...limits, defaultProvider: retired }).success).toBe(false);
+    }
+    expect(adminProviderKeySchema.options).toEqual(["openai", "anthropic"]);
     expect(adminLimitsUpdateSchema.safeParse({ ...limits, defaultProvider: "custom-provider" }).success).toBe(false);
     expect(adminLimitsUpdateSchema.safeParse({ ...limits, defaultProvider: null }).success).toBe(true);
     expect(adminLimitsUpdateSchema.safeParse({ ...limits, maxCallsPerDay: 500, maxActiveRuns: 10 }).success).toBe(true);

@@ -122,17 +122,64 @@ jobs:
           TITLE_WRITING_ACCEPTANCE_EVIDENCE_DIR="${RUNNER_TEMP}/title-acceptance-evidence" \
           pnpm --filter @ai-drama/database script-breakdown:acceptance
 
+      - name: Run the provider migration acceptance on a base-seven database (guarded, deny by default)
+        # The seven migrations a business database has today, historical qwen/deepseek/openai runs, then the guarded
+        # single migration: only the provider migration is applied, the script breakdown stays unapplied, history is
+        # unchanged, a failure rolls back, a rerun does nothing, and a later default migrate still applies the breakdown.
+        run: |
+          name="ads_title_acceptance_provider_base_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+          psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE ${name}"
+          WRITING_PROVIDER_ACCEPTANCE_SCENARIO=base \
+          TITLE_WRITING_ACCEPTANCE_AUTHORIZED=true \
+          TITLE_WRITING_ACCEPTANCE_DATABASE_NAME="${name}" \
+          TITLE_WRITING_ACCEPTANCE_DATABASE_URL="postgresql://postgres@127.0.0.1:5432/${name}" \
+          TITLE_WRITING_ACCEPTANCE_EVIDENCE_DIR="${RUNNER_TEMP}/title-acceptance-evidence" \
+          pnpm --filter @ai-drama/database writing-provider:acceptance
+
+      - name: Run the provider migration acceptance on a database with the script breakdown (guarded, deny by default)
+        run: |
+          name="ads_title_acceptance_provider_breakdown_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+          psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE ${name}"
+          WRITING_PROVIDER_ACCEPTANCE_SCENARIO=breakdown \
+          TITLE_WRITING_ACCEPTANCE_AUTHORIZED=true \
+          TITLE_WRITING_ACCEPTANCE_DATABASE_NAME="${name}" \
+          TITLE_WRITING_ACCEPTANCE_DATABASE_URL="postgresql://postgres@127.0.0.1:5432/${name}" \
+          TITLE_WRITING_ACCEPTANCE_EVIDENCE_DIR="${RUNNER_TEMP}/title-acceptance-evidence" \
+          pnpm --filter @ai-drama/database writing-provider:acceptance
+
+      - name: Run the guarded release command for the provider migration
+        # The real release command (migrate -- --only <provider migration>). On a new, empty database it must refuse
+        # without creating anything (the base migrations are missing); on the migrated base-seven acceptance database it
+        # must find the migration already applied and do nothing; a migration outside the guarded list is refused.
+        run: |
+          name="ads_title_acceptance_provider_cli_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+          url="postgresql://postgres@127.0.0.1:5432/${name}"
+          psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE ${name}"
+          if DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate -- --only 20261016000100_writing_provider_anthropic; then
+            echo "the guarded command applied something on an empty database"; exit 1
+          fi
+          tables="$(psql -h 127.0.0.1 -U postgres -d "${name}" -v ON_ERROR_STOP=1 -At -c "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'")"
+          test "${tables}" = "0"
+          if DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate -- --only 20261012000100_script_breakdown; then
+            echo "a migration outside the guarded list was accepted"; exit 1
+          fi
+          base="ads_title_acceptance_provider_base_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+          rerun="$(DATABASE_URL="postgresql://postgres@127.0.0.1:5432/${base}" pnpm --silent --filter @ai-drama/database migrate -- --only 20261016000100_writing_provider_anthropic)"
+          echo "rerun: ${rerun}"
+          printf '%s\n' "${rerun}" | grep -Eq "(^|[^0-9])Applied 0 migration\(s\)\.$"
+          printf '%s\n' "${rerun}" | grep -q '"alreadyApplied":\["20261016000100_writing_provider_anthropic"\]'
+
       - name: Run the deploy migration command on a new database, then again
         # The real deploy command (pnpm --filter @ai-drama/database migrate) on a second database of this job's container.
-        # It must apply all eight migrations once and nothing the second time; the four title writing tables and the
-        # script breakdown scene table must exist.
+        # It must apply all nine migrations once and nothing the second time; the four title writing tables and the
+        # script breakdown scene table must exist, and both provider CHECKs must allow anthropic.
         run: |
           name="ads_title_acceptance_deploy_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
           url="postgresql://postgres@127.0.0.1:5432/${name}"
           psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE ${name}"
           first="$(DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate)"
           echo "first run: ${first}"
-          printf '%s\n' "${first}" | grep -Eq "(^|[^0-9])Applied 8 migration\(s\)\.$"
+          printf '%s\n' "${first}" | grep -Eq "(^|[^0-9])Applied 9 migration\(s\)\.$"
           second="$(DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate)"
           echo "second run: ${second}"
           printf '%s\n' "${second}" | grep -Eq "(^|[^0-9])Applied 0 migration\(s\)\.$"
@@ -140,19 +187,21 @@ jobs:
           test "${tables}" = "4"
           breakdown="$(psql -h 127.0.0.1 -U postgres -d "${name}" -v ON_ERROR_STOP=1 -At -c "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'script_breakdown_scene'")"
           test "${breakdown}" = "1"
+          anthropic="$(psql -h 127.0.0.1 -U postgres -d "${name}" -v ON_ERROR_STOP=1 -At -c "SELECT count(*) FROM pg_constraint WHERE conname IN ('title_writing_run_provider_key_check', 'title_writing_call_provider_key_check') AND pg_get_constraintdef(oid) LIKE '%anthropic%'")"
+          test "${anthropic}" = "2"
           psql -h 127.0.0.1 -U postgres -d "${name}" -v ON_ERROR_STOP=1 -At -c "SELECT name FROM schema_migration ORDER BY name"
 
       - name: Run the deploy migration command again on the upgraded acceptance database
         # The store acceptance upgraded this database, with its title writing data, to the episode plan release. The real
-        # deploy command must add exactly the script breakdown migration, and a second run must find nothing to do.
+        # deploy command must add exactly the script breakdown and provider migrations, and a second run must find nothing.
         run: |
           name="ads_title_acceptance_store_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
           url="postgresql://postgres@127.0.0.1:5432/${name}"
           again="$(DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate)"
           echo "redeploy: ${again}"
-          printf '%s\n' "${again}" | grep -Eq "(^|[^0-9])Applied 1 migration\(s\)\.$"
-          last="$(psql -h 127.0.0.1 -U postgres -d "${name}" -v ON_ERROR_STOP=1 -At -c "SELECT name FROM schema_migration ORDER BY name DESC LIMIT 1")"
-          test "${last}" = "20261012000100_script_breakdown"
+          printf '%s\n' "${again}" | grep -Eq "(^|[^0-9])Applied 2 migration\(s\)\.$"
+          last="$(psql -h 127.0.0.1 -U postgres -d "${name}" -v ON_ERROR_STOP=1 -At -c "SELECT string_agg(name, ',' ORDER BY name) FROM (SELECT name FROM schema_migration ORDER BY name DESC LIMIT 2) AS latest")"
+          test "${last}" = "20261012000100_script_breakdown,20261016000100_writing_provider_anthropic"
           final="$(DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate)"
           echo "final redeploy: ${final}"
           printf '%s\n' "${final}" | grep -Eq "(^|[^0-9])Applied 0 migration\(s\)\.$"
@@ -334,8 +383,8 @@ jobs:
       - name: Pin model provider hosts to loopback on this runner
         # A second layer under the in-process model stub: even an unintercepted request cannot reach a provider.
         run: |
-          echo "127.0.0.1 dashscope.aliyuncs.com dashscope-intl.aliyuncs.com api.openai.com api.deepseek.com" | sudo tee -a /etc/hosts > /dev/null
-          for host in dashscope.aliyuncs.com api.openai.com api.deepseek.com; do getent hosts "$host"; done
+          echo "127.0.0.1 dashscope.aliyuncs.com dashscope-intl.aliyuncs.com api.openai.com api.deepseek.com api.anthropic.com" | sudo tee -a /etc/hosts > /dev/null
+          for host in dashscope.aliyuncs.com api.openai.com api.deepseek.com api.anthropic.com; do getent hosts "$host"; done
 
       - name: Create a new, empty acceptance database
         run: |
@@ -511,8 +560,8 @@ jobs:
       - name: Pin model provider hosts to loopback on this runner
         # A second layer under the test preload: even an unintercepted request cannot reach a provider from this job.
         run: |
-          echo "127.0.0.1 dashscope.aliyuncs.com dashscope-intl.aliyuncs.com api.openai.com api.deepseek.com" | sudo tee -a /etc/hosts > /dev/null
-          for host in dashscope.aliyuncs.com api.openai.com api.deepseek.com; do getent hosts "$host"; done
+          echo "127.0.0.1 dashscope.aliyuncs.com dashscope-intl.aliyuncs.com api.openai.com api.deepseek.com api.anthropic.com" | sudo tee -a /etc/hosts > /dev/null
+          for host in dashscope.aliyuncs.com api.openai.com api.deepseek.com api.anthropic.com; do getent hosts "$host"; done
 
       - name: Create a new, empty acceptance database
         run: |

@@ -19,7 +19,7 @@ import {
   type TitleWritingProviderEnv,
 } from "@ai-drama/providers";
 import {
-  chatAnswer,
+  messagesAnswer,
   fixtureChatTransport,
   fixtureConcept,
   fixtureEpisode,
@@ -37,8 +37,7 @@ const WS = "11111111-1111-4111-8111-111111111111";
 const P1 = "22222222-2222-4222-8222-222222222222";
 const TOKEN = "operator-token-0123456789";
 const ENV: TitleWritingProviderEnv = {
-  DASHSCOPE_API_KEY: "sk-test-not-a-real-key-000", BAILIAN_BASE_URL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-  TITLE_WRITING_QWEN_MODELS: "q-1",
+  ANTHROPIC_API_KEY: "sk-test-not-a-real-key-000", TITLE_WRITING_ANTHROPIC_MODELS: "q-1",
 };
 const CONTEXT = (key: string) => ({ actorId: "server-owner", traceId: "t", idempotencyKey: key });
 type Plan = { episodeCount: number; targetEpisodeSeconds: number } | null;
@@ -85,7 +84,7 @@ function setup(plan: Plan, options: { planReady?: boolean; override?: Override; 
 function spendCalls(store: InMemoryTitleWritingStore, count: number): void {
   for (let index = 0; index < count; index += 1) {
     store.calls.push({
-      id: randomUUID(), runId: randomUUID(), workspaceId: WS, stepKey: "concept", attemptNo: 1, providerKey: "qwen", model: "q-1",
+      id: randomUUID(), runId: randomUUID(), workspaceId: WS, stepKey: "concept", attemptNo: 1, providerKey: "anthropic", model: "q-1",
       requestHash: "0".repeat(64), state: "completed", executorId: "earlier", providerRequestId: null, responseModel: null,
       usage: { status: "unknown", inputTokens: null, outputTokens: null, totalTokens: null }, errorCode: null,
       createdAt: new Date(Date.now() - 60_000).toISOString(), finishedAt: new Date(Date.now() - 59_000).toISOString(),
@@ -164,7 +163,7 @@ describe("a project without a plan keeps the v1 run unchanged", () => {
     await settle();
     const run = store.runs[0]!;
     expect(run.input).toEqual({ schema: TITLE_WRITING_INPUT_SCHEMA, promptVersion: TITLE_WRITING_PROMPT_VERSION, title: "夜班证词",
-      settings: { episodeCount: 3, episodeSeconds: seconds, style: "悬疑" }, providerKey: "qwen", model: "q-1" });
+      settings: { episodeCount: 3, episodeSeconds: seconds, style: "悬疑" }, providerKey: "anthropic", model: "q-1" });
     expect(run.inputHash).toBe(hashTitleWritingInput(P1, run.input));
     expect(run.callCap).toBe(8);
     expect(seen.map((item) => item.step)).toEqual(["concept", "outline", "episode:1", "episode:2", "episode:3"]);
@@ -260,15 +259,15 @@ describe("the start quota check", () => {
 
 describe("v2 outputs are checked against N before any later request", () => {
   const plan = { episodeCount: 4, targetEpisodeSeconds: 90 };
-  const outline = (episodes: Array<{ episodeNo: number }>) => ({ status: 200, body: chatAnswer({ ...fixtureOutline(4), episodes }) });
+  const outline = (episodes: Array<{ episodeNo: number }>) => ({ status: 200, body: messagesAnswer({ ...fixtureOutline(4), episodes }) });
 
   it.each([
     ["missing an episode", () => outline(fixtureOutline(4).episodes.slice(0, 3))],
     ["one episode too many", () => outline([...fixtureOutline(4).episodes, { ...fixtureOutline(4).episodes[0]!, episodeNo: 5 }])],
     ["a repeated episode", () => outline(fixtureOutline(4).episodes.map((episode, index) => ({ ...episode, episodeNo: index === 3 ? 3 : episode.episodeNo })))],
     ["out of order", () => outline([...fixtureOutline(4).episodes].reverse())],
-    ["the v1 outline schema", () => ({ status: 200, body: chatAnswer({ ...fixtureOutline(4), schema: "ads.writing.episode-outline.v1" }) })],
-    ["not JSON", () => ({ status: 200, body: chatAnswer("第一集：……") })],
+    ["the v1 outline schema", () => ({ status: 200, body: messagesAnswer({ ...fixtureOutline(4), schema: "ads.writing.episode-outline.v1" }) })],
+    ["not JSON", () => ({ status: 200, body: messagesAnswer("第一集：……") })],
   ])("an outline %s is rejected and no episode is requested", async (_label, answer) => {
     const { service, settle, seen, read } = setup(plan, { override: (step) => step === "outline" ? answer() : undefined });
     const started = await service.start(P1, { title: "夜班证词" }, TOKEN, CONTEXT("k"));
@@ -280,7 +279,7 @@ describe("v2 outputs are checked against N before any later request", () => {
   });
 
   it("a truncated outline is rejected and never continued", async () => {
-    const { service, settle, seen, read } = setup(plan, { override: (step) => step === "outline" ? { status: 200, body: chatAnswer(fixtureOutline(4), "length") } : undefined });
+    const { service, settle, seen, read } = setup(plan, { override: (step) => step === "outline" ? { status: 200, body: messagesAnswer(fixtureOutline(4), "max_tokens") } : undefined });
     const started = await service.start(P1, { title: "夜班证词" }, TOKEN, CONTEXT("k"));
     await settle();
     expect((await read((started.body as RunBody).run.runId)).run.steps[1]).toMatchObject({ state: "rejected", errorCode: "truncated" });
@@ -288,7 +287,7 @@ describe("v2 outputs are checked against N before any later request", () => {
   });
 
   it("an episode answer for another episode number is rejected", async () => {
-    const { service, settle, seen, read } = setup(plan, { override: (step) => step === "episode:2" ? { status: 200, body: chatAnswer(fixtureEpisode(4)) } : undefined });
+    const { service, settle, seen, read } = setup(plan, { override: (step) => step === "episode:2" ? { status: 200, body: messagesAnswer(fixtureEpisode(4)) } : undefined });
     const started = await service.start(P1, { title: "夜班证词" }, TOKEN, CONTEXT("k"));
     await settle();
     const run = (await read((started.body as RunBody).run.runId)).run;
@@ -305,8 +304,8 @@ describe("v2 outputs are checked against N before any later request", () => {
     const outlineAnswer = { ...fixtureOutline(6), episodes: fixtureOutline(6).episodes.map((episode) => ({ ...episode, title: long(40),
       entryState: long(400), goal: long(400), action: long(400), turn: long(400), result: long(400), handoff: long(400) })) };
     const { service, settle, seen, read } = setup({ episodeCount: 6, targetEpisodeSeconds: 90 }, {
-      override: (step) => step === "concept" ? { status: 200, body: chatAnswer(concept) }
-        : step === "outline" ? { status: 200, body: chatAnswer(outlineAnswer) } : undefined,
+      override: (step) => step === "concept" ? { status: 200, body: messagesAnswer(concept) }
+        : step === "outline" ? { status: 200, body: messagesAnswer(outlineAnswer) } : undefined,
     });
     const started = await service.start(P1, { title: "夜班证词" }, TOKEN, CONTEXT("k"));
     await settle();

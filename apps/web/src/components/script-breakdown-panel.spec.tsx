@@ -19,8 +19,8 @@ function json(payload: unknown, status = 200): Response {
 }
 
 const OPTIONS: ScriptBreakdownOptionsView = {
-  enabled: true, code: "SCRIPT_BREAKDOWN_READY", storageReady: true, operatorTokenRequired: true, defaultProvider: "qwen",
-  providers: [{ providerKey: "qwen", label: "千问", ready: true, models: ["q-1"], defaultModel: "q-1", missing: [] }],
+  enabled: true, code: "SCRIPT_BREAKDOWN_READY", storageReady: true, operatorTokenRequired: true, defaultProvider: "anthropic",
+  providers: [{ providerKey: "anthropic", label: "Claude", ready: true, models: ["q-1"], defaultModel: "q-1", missing: [] }],
   maxCallsPerDay: 30, callCapPerRun: 3, billing: "unknown", limits: SCRIPT_BREAKDOWN_LIMITS,
 };
 
@@ -28,7 +28,7 @@ function run(overrides: Partial<ScriptBreakdownRunView> = {}): ScriptBreakdownRu
   return {
     runId: RUN, projectId: P1, episodeId: E1, episodeNo: 2, scriptRevisionId: "88888888-8888-4888-8888-888888888888", scriptRevisionNo: 3,
     targetEpisodeSeconds: 60, characters: [{ key: "C1", characterId: "99999999-9999-4999-8999-999999999999", revisionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", name: "林夏" }],
-    replacedScenes: 0, providerKey: "qwen", model: "q-1", state: "completed", errorCode: null, cancelRequested: false, callCap: 3, callsUsed: 1,
+    replacedScenes: 0, providerKey: "anthropic", model: "q-1", state: "completed", errorCode: null, cancelRequested: false, callCap: 3, callsUsed: 1,
     step: { state: "completed", attemptNo: 1, errorCode: null },
     output: {
       schema: "ads.script-breakdown.output.v1", episodeNo: 2,
@@ -115,7 +115,7 @@ describe("AI breakdown panel", () => {
     await screen.findByText(/状态：进行中/);
     const post = h.seen.find((item) => item.method === "POST")!;
     expect(post.url).toBe(`/api/v1/projects/${P1}/episodes/${E1}/script-breakdowns`);
-    expect(post.body).toEqual({ replaceExisting: true, providerKey: "qwen", model: "q-1" });
+    expect(post.body).toEqual({ replaceExisting: true, providerKey: "anthropic", model: "q-1" });
     expect(post.headers["x-operator-token"]).toBe(TOKEN);
     expect(post.headers["idempotency-key"]).toMatch(/^[0-9a-f-]{36}$/);
   });
@@ -214,7 +214,7 @@ describe("source validity and resume entry", () => {
   const SAME_SCRIPT = "88888888-8888-4888-8888-888888888888";
   const pendingStepRun = (overrides: Partial<ScriptBreakdownRunView> = {}) => run({ state: "failed", errorCode: "TITLE_WRITING_DAILY_CAP",
     step: { state: "pending", attemptNo: 0, errorCode: null }, output: null, plannedTotalSeconds: null, save: "pending", scenes: [], callsUsed: 0, ...overrides });
-  const unknownCall = { callId: "99999999-aaaa-4aaa-aaaa-aaaaaaaaaaaa", stepKey: "breakdown", attemptNo: 1, state: "unknown", providerKey: "qwen", model: "q-1",
+  const unknownCall = { callId: "99999999-aaaa-4aaa-aaaa-aaaaaaaaaaaa", stepKey: "breakdown", attemptNo: 1, state: "unknown", providerKey: "anthropic", model: "q-1",
     outcome: null, rejectionCode: null, usage: null, billing: "unknown", createdAt: "2026-10-12T00:00:00Z" } as unknown as ScriptBreakdownRunView["calls"][number];
   const newResume = () => screen.queryByRole<HTMLButtonElement>("button", { name: "续跑（重新发送一次调用）" });
 
@@ -306,7 +306,7 @@ describe("start identity: confirming a sent start, reading settings again, relea
   const restore = (body: Record<string, unknown>, key = OLD_KEY, episodeId = E1) =>
     window.sessionStorage.setItem(storageKey(episodeId), JSON.stringify({ kind: "start", key, body }));
   const UNCONFIGURED: ScriptBreakdownOptionsView = { ...OPTIONS, code: "TITLE_WRITING_PROVIDER_UNCONFIGURED", defaultProvider: null,
-    providers: [{ providerKey: "qwen", label: "千问", ready: false, models: [], defaultModel: null, missing: ["DASHSCOPE_API_KEY"] }] };
+    providers: [{ providerKey: "anthropic", label: "Claude", ready: false, models: [], defaultModel: null, missing: ["ANTHROPIC_API_KEY"] }] };
   const existing = () => json({ error: { code: "SCRIPT_BREAKDOWN_EXISTING_SCENES", message: "这一集已经有场景。确认用新结果取代后才能拆解（旧版本会保留）。",
     details: { sceneCount: 2, shotCount: 0 } } }, 409);
   const started = () => json({ run: run({ state: "running", step: { state: "submitted", attemptNo: 1, errorCode: null }, output: null,
@@ -348,8 +348,23 @@ describe("start identity: confirming a sent start, reading settings again, relea
   const enterToken = async () => fireEvent.change(await screen.findByLabelText("操作者令牌"), { target: { value: TOKEN } });
   const button = (name: string) => screen.getByRole<HTMLButtonElement>("button", { name });
 
+  it.each(["qwen", "deepseek"])("keeps a restored start of the retired provider %s and confirms it only with its own key and body", async (retired) => {
+    const body = { replaceExisting: false, providerKey: retired, model: `${retired}-old-model` };
+    restore(body);
+    const s = server([() => json(UNCONFIGURED)], [() => json({ run: { ...run(), providerKey: retired, model: `${retired}-old-model` } }, 200)]);
+    render(panelFor(s.client));
+    await enterToken();
+    await waitFor(() => expect(s.optionReads()).toBe(1));
+    // Not dropped as damaged: the identity is shown and can only be replayed, never re-sent to another provider.
+    expect(screen.getByTestId("breakdown-pending-start").textContent).toContain("确认只会重放上次的同一个请求");
+    fireEvent.click(button("确认上次启动结果"));
+    await screen.findByText(/状态：已完成/);
+    expect(s.posts()).toHaveLength(1);
+    expect([s.posts()[0]!.headers["idempotency-key"], s.posts()[0]!.body]).toEqual([OLD_KEY, body]);
+  });
+
   it("confirms a restored start with its own key and body although its provider is no longer configured", async () => {
-    const body = { replaceExisting: false, providerKey: "deepseek", model: "d-1" };
+    const body = { replaceExisting: false, providerKey: "openai", model: "d-1" };
     restore(body);
     const s = server([() => json(UNCONFIGURED)], [() => json({ run: run() }, 200)]);
     render(panelFor(s.client));
@@ -367,7 +382,7 @@ describe("start identity: confirming a sent start, reading settings again, relea
   });
 
   it("lets a restored start be confirmed while the settings cannot be read, but never starts a new request without them", async () => {
-    restore({ replaceExisting: false, providerKey: "qwen", model: "q-1" });
+    restore({ replaceExisting: false, providerKey: "anthropic", model: "q-1" });
     const s = server([() => new Response("down", { status: 502 })], [() => json({ run: run() }, 200)]);
     render(panelFor(s.client));
     await enterToken();
@@ -408,7 +423,7 @@ describe("start identity: confirming a sent start, reading settings again, relea
 
   for (const origin of ["sent from this page", "restored after a reload"] as const) {
     it(`releases a start ${origin} once the server refuses it for existing scenes, and asks for consent before a new key`, async () => {
-      if (origin === "restored after a reload") restore({ replaceExisting: false, providerKey: "qwen", model: "q-1" });
+      if (origin === "restored after a reload") restore({ replaceExisting: false, providerKey: "anthropic", model: "q-1" });
       const s = server([() => json(OPTIONS)], [existing, started]);
       render(panelFor(s.client));
       await enterToken();
@@ -429,14 +444,14 @@ describe("start identity: confirming a sent start, reading settings again, relea
       await screen.findByText(/状态：进行中/);
       const second = s.posts()[1]!;
       expect(second.headers["idempotency-key"]).not.toBe(firstKey);
-      expect(second.body).toEqual({ replaceExisting: true, providerKey: "qwen", model: "q-1" });
+      expect(second.body).toEqual({ replaceExisting: true, providerKey: "anthropic", model: "q-1" });
       expect(s.posts()).toHaveLength(2);
       expect(stored()).toBeNull();
     });
   }
 
   it("keeps a restored start's identity through a lost answer, a gateway error, a 5xx and a non-definitive refusal, sending once per click", async () => {
-    const body = { replaceExisting: false, providerKey: "qwen", model: "q-1" };
+    const body = { replaceExisting: false, providerKey: "anthropic", model: "q-1" };
     restore(body);
     const slow = held<Response>();
     const s = server([() => json(OPTIONS)], [
@@ -476,13 +491,13 @@ describe("start identity: confirming a sent start, reading settings again, relea
     await waitFor(() => expect(s.posts()).toHaveLength(1));
     const e1Key = stored()!.key;
     // Episode 2 holds its own restored start; the panel switches to it before episode 1's answer arrives.
-    restore({ replaceExisting: true, providerKey: "qwen", model: "q-1" }, E2_KEY, E2);
+    restore({ replaceExisting: true, providerKey: "anthropic", model: "q-1" }, E2_KEY, E2);
     mounted.rerender(panelFor(s.client, E2));
     expect(await screen.findByRole("button", { name: "确认上次启动结果" })).toBeTruthy();
     late.resolve(existing());
     await new Promise((resolve) => setTimeout(resolve, 20));
     // The answer belongs to no current request: nothing is released, and episode 2 is untouched.
-    expect(stored(E2)).toEqual({ kind: "start", key: E2_KEY, body: { replaceExisting: true, providerKey: "qwen", model: "q-1" } });
+    expect(stored(E2)).toEqual({ kind: "start", key: E2_KEY, body: { replaceExisting: true, providerKey: "anthropic", model: "q-1" } });
     expect(stored(E1)?.key).toBe(e1Key);
     expect(screen.queryByRole("alert")).toBeNull();
     expect(screen.getByRole("button", { name: "确认上次启动结果" })).toBeTruthy();
@@ -492,7 +507,7 @@ describe("start identity: confirming a sent start, reading settings again, relea
 });
 
 describe("saving an answer that a cancel left unsaved", () => {
-  const completedCall = { callId: "99999999-bbbb-4bbb-8bbb-bbbbbbbbbbbb", stepKey: "breakdown", attemptNo: 1, state: "completed", providerKey: "qwen",
+  const completedCall = { callId: "99999999-bbbb-4bbb-8bbb-bbbbbbbbbbbb", stepKey: "breakdown", attemptNo: 1, state: "completed", providerKey: "anthropic",
     model: "q-1", outcome: null, rejectionCode: null, usage: null, billing: "unknown", createdAt: "2026-10-12T00:00:00Z" } as unknown as ScriptBreakdownRunView["calls"][number];
   const unsaved = (overrides: Partial<ScriptBreakdownRunView> = {}) => run({ state: "canceled", save: "pending", scenes: [],
     step: { state: "completed", attemptNo: 1, errorCode: null }, calls: [completedCall], ...overrides });
@@ -536,7 +551,7 @@ describe("follow-up refresh and restored resume identities", () => {
   const NEW_CALL = "99999999-cccc-4ccc-8ccc-cccccccccccc";
   const RESUME_KEY = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
   const resumeStorage = `ads:breakdown:${P1}:${E1}:resume:v1`;
-  const unknownCall = (callId: string, attemptNo: number) => ({ callId, stepKey: "breakdown", attemptNo, state: "unknown", providerKey: "qwen", model: "q-1",
+  const unknownCall = (callId: string, attemptNo: number) => ({ callId, stepKey: "breakdown", attemptNo, state: "unknown", providerKey: "anthropic", model: "q-1",
     outcome: null, rejectionCode: null, usage: null, billing: "unknown", createdAt: "2026-10-12T00:00:00Z" }) as unknown as ScriptBreakdownRunView["calls"][number];
   const uncertain = (callId: string, attemptNo: number) => run({ state: "needs_attention", save: "pending", output: null, scenes: [],
     step: { state: "unknown", attemptNo, errorCode: "executor_lost" }, calls: [unknownCall(callId, attemptNo)] });
@@ -1083,7 +1098,7 @@ describe("the latest saved breakdown stays reachable while a newer run has not s
       const s = server();
       const storage = `ads:breakdown:${P1}:${E1}:start:v1`;
       const pending = { kind: "start", key: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
-        body: { providerKey: "qwen", model: "q-1", replaceExisting: true } };
+        body: { providerKey: "anthropic", model: "q-1", replaceExisting: true } };
       window.sessionStorage.setItem(storage, JSON.stringify(pending));
       s.state.latest = () => json({ run: oldLatest === "saved A" ? savedA() : NOT_SAVED[0]![1]() });
       s.state.saved = () => json({ run: savedA() });
@@ -1343,7 +1358,7 @@ describe("the feature switch is the main state, whatever the task read says", ()
 
   it("G: off keeps a restored start's identity: confirmed only on click, with its own key and body, once", async () => {
     const storage = `ads:breakdown:${P1}:${E1}:start:v1`;
-    const pending = { kind: "start", key: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", body: { providerKey: "qwen", model: "q-1", replaceExisting: false } };
+    const pending = { kind: "start", key: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", body: { providerKey: "anthropic", model: "q-1", replaceExisting: false } };
     window.sessionStorage.setItem(storage, JSON.stringify(pending));
     const s = server(() => json(DISABLED), storage503);
     s.state.posts.push(() => json({ run: run() }, 200));

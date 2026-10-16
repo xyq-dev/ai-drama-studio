@@ -49,6 +49,7 @@ import {
   type TitleWritingCallView,
   type TitleWritingFrozenInput,
   type TitleWritingProviderKey,
+  type TitleWritingStoredProviderKey,
   type TitleWritingRunState,
   type TitleWritingRunView,
   type TitleWritingSettings,
@@ -73,6 +74,7 @@ import {
   TEXT_WRITING_MAX_OUTPUT_TOKENS,
   TEXT_WRITING_TIMEOUT_MS,
   WRITING_ADAPTERS,
+  providerConfigFor,
   sendWriting,
   type WritingAdapter,
   type WritingExchange,
@@ -88,7 +90,7 @@ import {
 export const TITLE_WRITING_CALL_CAP_PER_RUN = 8;
 export const TITLE_WRITING_MAX_CALLS_PER_DAY_DEFAULT = 30;
 export const TITLE_WRITING_MAX_ACTIVE_RUNS_DEFAULT = 1;
-/** The executor lease covers the capped send time twice over, as in the Qwen web writing store. */
+/** The executor lease covers the capped send time twice over. */
 export const TITLE_WRITING_LEASE_MS = TEXT_WRITING_TIMEOUT_MS * 2;
 export const TITLE_WRITING_LOST_BEFORE_SEND = "executor_lost_before_send";
 export const TITLE_WRITING_LOST_AFTER_SEND = "executor_lost";
@@ -135,7 +137,8 @@ export function newTitleRun(options: {
   idempotencyKey: string;
   title: string;
   settings: TitleWritingSettings;
-  providerKey: TitleWritingProviderKey;
+  /** A retired key only rebuilds a stored start to compare a replay; the services never create a run with one. */
+  providerKey: TitleWritingStoredProviderKey;
   model: string;
   now: Date;
   /**
@@ -415,8 +418,11 @@ export class TitleWritingEngine {
       // A call of this run is still open under another lease; recovery decides its fate.
       return false;
     }
-    const provider = this.deps.providers[run.input.providerKey];
-    if (!provider.ok || !provider.models.includes(run.input.model)) {
+    // A run of a retired provider (qwen, deepseek) has no configuration or adapter: it stops here before any reservation
+    // or send, and is never moved to another provider or model.
+    const provider = providerConfigFor(this.deps.providers, run.input.providerKey);
+    const adapter = provider ? (this.deps.adapters ?? WRITING_ADAPTERS)[provider.providerKey] : undefined;
+    if (!provider || !adapter || !provider.ok || !provider.models.includes(run.input.model)) {
       return this.finish(runId, "needs_attention", "provider_unconfigured");
     }
     const titleInput = titleInputOf(run);
@@ -425,7 +431,6 @@ export class TitleWritingEngine {
     if (titleInput && isTitleWritingInputV2(titleInput) && episodeNoOf(next.stepKey) !== null && storyTextOf(bundle) === null) {
       return this.finish(runId, "needs_attention", "story_too_large");
     }
-    const adapter = (this.deps.adapters ?? WRITING_ADAPTERS)[run.input.providerKey];
     let prompt: { system: string; user: string };
     let schema: { name: string; schema: Record<string, unknown> };
     if (titleInput) {
@@ -652,6 +657,11 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
   readonly resumes: Array<{ runId: string; key: string; requestHash: string; confirmedCallIds: string[]; createdAt: string }> = [];
   ready = true;
   breakdownReady = true;
+  /**
+   * Stands in for the provider migration: while false, the provider CHECKs of an unmigrated database reject an anthropic
+   * run or call the way PostgreSQL would, and providerStorageReady("anthropic") is false.
+   */
+  anthropicReady = true;
   readonly breakdownEpisodes = new Map<string, MemoryBreakdownEpisode>();
   readonly scenes: MemoryScene[] = [];
   readonly shots: MemoryShot[] = [];
@@ -689,6 +699,16 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
     return this.ready;
   }
 
+  async providerStorageReady(providerKey: TitleWritingProviderKey): Promise<boolean> {
+    return this.ready && (providerKey !== "anthropic" || this.anthropicReady);
+  }
+
+  /** The provider_key CHECK of title_writing_run and title_writing_call before and after the provider migration. */
+  private checkProviderKey(providerKey: string): void {
+    const allowed = this.anthropicReady ? ["qwen", "openai", "deepseek", "anthropic"] : ["qwen", "openai", "deepseek"];
+    if (!allowed.includes(providerKey)) throw new Error("new row violates check constraint provider_key");
+  }
+
   private bundle(run: TitleRunRecord): TitleRunBundle {
     return structuredClone({
       run,
@@ -712,6 +732,7 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
       const remainingCalls = Math.max(0, maxCallsPerDay - recent);
       if (remainingCalls < requiredCalls) return { kind: "blocked", code: "TITLE_WRITING_DAILY_QUOTA_LOW", requiredCalls, remainingCalls };
     }
+    this.checkProviderKey(run.input.providerKey);
     this.runs.push(structuredClone(run));
     this.steps.push(...initialSteps(run));
     return { kind: "created", bundle: this.bundle(this.requireRun(run.id)) };
@@ -762,6 +783,7 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
     if (recent >= limits.maxCallsPerDay) return { kind: "blocked", code: "TITLE_WRITING_DAILY_CAP" };
     const step = this.requireStep(call.runId, call.stepKey);
     if (step.state !== "pending") return { kind: "lost" };
+    this.checkProviderKey(call.providerKey);
     this.calls.push(structuredClone(call));
     Object.assign(step, { state: "reserved", attemptNo: call.attemptNo, errorCode: null, updatedAt: nowIso });
     Object.assign(run, { callsUsed: run.callsUsed + 1, leaseUntil, updatedAt: nowIso });

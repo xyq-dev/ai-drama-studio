@@ -18,7 +18,7 @@ const PB = "88888888-8888-4888-8888-888888888888";
 const PB2 = "88888888-8888-4888-8888-000000000002";
 const TOKEN = "operator-token-0123456789";
 const CONFIGURED: TitleWritingProviderEnv = {
-  DASHSCOPE_API_KEY: "sk-test-secret-abcdefghijkl", BAILIAN_BASE_URL: "https://dashscope.aliyuncs.com/compatible-mode/v1", TITLE_WRITING_QWEN_MODELS: "q-1",
+  ANTHROPIC_API_KEY: "sk-test-secret-abcdefghijkl", TITLE_WRITING_ANTHROPIC_MODELS: "q-1",
 };
 const SETTINGS = { episodeCount: 3 as const, episodeSeconds: 90, style: "" };
 /** Projects without an episode plan: three episodes, no target, as every project before the plan existed. */
@@ -44,18 +44,18 @@ function workspace(store: InMemoryTitleWritingStore, workspaceId: string, option
 async function seedWorkspaceB(store: InMemoryTitleWritingStore, clock: () => Date) {
   store.addProject(WB, PB);
   store.addProject(WB, PB2);
-  const sent = newTitleRun({ workspaceId: WB, projectId: PB, actorId: "b", idempotencyKey: "sent", title: "乙", providerKey: "qwen", model: "q-1",
+  const sent = newTitleRun({ workspaceId: WB, projectId: PB, actorId: "b", idempotencyKey: "sent", title: "乙", providerKey: "anthropic", model: "q-1",
     settings: SETTINGS, now: clock() });
   await store.createRun(sent, { maxActiveRuns: 5 });
   const lease = new Date(clock().getTime() + 1000).toISOString();
   expect(await store.claimRun(WB, sent.id, "dead-b", clock().toISOString(), lease)).toBe(true);
   const callId = "77777777-7777-4777-8777-777777777777";
-  await store.reserveCall({ id: callId, runId: sent.id, workspaceId: WB, stepKey: "concept", attemptNo: 1, providerKey: "qwen", model: "q-1",
+  await store.reserveCall({ id: callId, runId: sent.id, workspaceId: WB, stepKey: "concept", attemptNo: 1, providerKey: "anthropic", model: "q-1",
     requestHash: "h", state: "reserved", executorId: "dead-b", providerRequestId: null, responseModel: null,
     usage: { status: "unknown", inputTokens: null, outputTokens: null, totalTokens: null }, errorCode: null, createdAt: clock().toISOString(),
     finishedAt: null }, { sinceIso: "2000-01-01T00:00:00Z", maxCallsPerDay: 30 }, clock().toISOString(), lease);
   expect(await store.markCallSubmitted(WB, callId, "dead-b", clock().toISOString(), lease)).toBe("submitted");
-  const idle = newTitleRun({ workspaceId: WB, projectId: PB2, actorId: "b", idempotencyKey: "idle", title: "乙二", providerKey: "qwen", model: "q-1",
+  const idle = newTitleRun({ workspaceId: WB, projectId: PB2, actorId: "b", idempotencyKey: "idle", title: "乙二", providerKey: "anthropic", model: "q-1",
     settings: SETTINGS, now: clock() });
   await store.createRun(idle, { maxActiveRuns: 5 });
   return { sent, idle };
@@ -78,7 +78,7 @@ describe("title writing maintenance stays inside its workspace", () => {
     const store = new InMemoryTitleWritingStore();
     store.addProject(WA, PA);
     const b = await seedWorkspaceB(store, clock);
-    const own = newTitleRun({ workspaceId: WA, projectId: PA, actorId: "a", idempotencyKey: "own", title: "甲", providerKey: "qwen", model: "q-1",
+    const own = newTitleRun({ workspaceId: WA, projectId: PA, actorId: "a", idempotencyKey: "own", title: "甲", providerKey: "anthropic", model: "q-1",
       settings: SETTINGS, now: clock() });
     await store.createRun(own, { maxActiveRuns: 5 });
     const a = workspace(store, WA, { enabled: true, env: CONFIGURED, clock });
@@ -110,7 +110,7 @@ describe("title writing maintenance stays inside its workspace", () => {
     const store = new InMemoryTitleWritingStore();
     store.addProject(WA, PA);
     const b = await seedWorkspaceB(store, clock);
-    const own = newTitleRun({ workspaceId: WA, projectId: PA, actorId: "a", idempotencyKey: "own", title: "甲", providerKey: "qwen", model: "q-1",
+    const own = newTitleRun({ workspaceId: WA, projectId: PA, actorId: "a", idempotencyKey: "own", title: "甲", providerKey: "anthropic", model: "q-1",
       settings: SETTINGS, now: clock() });
     await store.createRun(own, { maxActiveRuns: 5 });
     const before = snapshotOf(store, WA);

@@ -9,8 +9,7 @@ import { titleWritingProviderConfigs } from "./text-writing";
 const WS = "11111111-1111-4111-8111-111111111111";
 const OTHER_WS = "22222222-2222-4222-8222-222222222222";
 const TITLE = "夜班证词";
-const providers = titleWritingProviderConfigs({ DASHSCOPE_API_KEY: "test-only-key", TITLE_WRITING_QWEN_MODELS: "q-1",
-  BAILIAN_BASE_URL: "https://dashscope.aliyuncs.com/compatible-mode/v1" });
+const providers = titleWritingProviderConfigs({ ANTHROPIC_API_KEY: "test-only-key", TITLE_WRITING_ANTHROPIC_MODELS: "q-1"});
 
 function setup(allowedRunKinds?: readonly TitleRunKind[]) {
   const store = new InMemoryTitleWritingStore();
@@ -26,7 +25,7 @@ async function title(store: InMemoryTitleWritingStore, workspaceId = WS) {
   const projectId = randomUUID();
   store.addProject(workspaceId, projectId);
   const run = newTitleRun({ workspaceId, projectId, actorId: "owner", idempotencyKey: randomUUID(), title: TITLE,
-    settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey: "qwen", model: "q-1", now: new Date() });
+    settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey: "anthropic", model: "q-1", now: new Date() });
   expect((await store.createRun(run, { maxActiveRuns: 10 })).kind).toBe("created");
   return run;
 }
@@ -41,7 +40,7 @@ async function breakdown(store: InMemoryTitleWritingStore, workspaceId = WS) {
     requestHash: "f".repeat(64), now: new Date(), input: {
       episodeId: episode.episodeId, episodeNo: 1, scriptRevisionId: source.scriptRevisionId, scriptRevisionNo: source.scriptRevisionNo,
       scriptContentHash: source.scriptContentHash, scriptText: (source.scriptContent as { text: string }).text,
-      targetEpisodeSeconds: source.targetEpisodeSeconds, characters: [], replace: { scenes: [], shots: [] }, providerKey: "qwen", model: "q-1",
+      targetEpisodeSeconds: source.targetEpisodeSeconds, characters: [], replace: { scenes: [], shots: [] }, providerKey: "anthropic", model: "q-1",
     } });
   expect((await store.createRun(run, { maxActiveRuns: 10 })).kind).toBe("created");
   return run;
@@ -123,7 +122,7 @@ const LIVE_LEASE = () => new Date(Date.now() + 600_000).toISOString();
 const UNKNOWN_USAGE = { status: "unknown", inputTokens: null, outputTokens: null, totalTokens: null } as const;
 
 function breakdownCall(run: TitleRunRecord, executorId: string, at: string): TitleCallRecord {
-  return { id: randomUUID(), runId: run.id, workspaceId: run.workspaceId, stepKey: "breakdown", attemptNo: 1, providerKey: "qwen", model: "q-1",
+  return { id: randomUUID(), runId: run.id, workspaceId: run.workspaceId, stepKey: "breakdown", attemptNo: 1, providerKey: "anthropic", model: "q-1",
     requestHash: "c".repeat(64), state: "reserved", executorId, providerRequestId: null, responseModel: null, usage: { ...UNKNOWN_USAGE },
     errorCode: null, createdAt: at, finishedAt: null };
 }
@@ -201,7 +200,7 @@ describe("stopping runs of a switched-off kind", () => {
     const projectId = randomUUID();
     store.addProject(WS, projectId);
     const next = newTitleRun({ workspaceId: WS, projectId, actorId: "owner", idempotencyKey: randomUUID(), title: TITLE,
-      settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey: "qwen", model: "q-1", now: new Date() });
+      settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey: "anthropic", model: "q-1", now: new Date() });
     expect(await store.createRun(next, { maxActiveRuns: 1 })).toEqual({ kind: "blocked", code: "TITLE_WRITING_ACTIVE_RUN_CAP" });
     await engine.maintain();
     expect(seen).toEqual([]);

@@ -45,7 +45,7 @@ import {
 } from "@ai-drama/database";
 import { TitleWritingEngine, titleWritingProviderConfigs, type WritingTransport } from "@ai-drama/providers";
 import {
-  chatAnswer,
+  messagesAnswer,
   fixtureConcept,
   fixtureEpisode,
   fixtureOutline,
@@ -76,8 +76,7 @@ const API = `http://127.0.0.1:${String(API_PORT)}`;
 const OPERATOR_TOKEN = `acceptance-${randomUUID()}`;
 // Not a key of any provider account: the stub never sends it anywhere.
 const STUB_KEY = `stub-not-a-provider-key-${randomUUID()}`;
-const QWEN_BASE = "https://dashscope.aliyuncs.com/compatible-mode/v1";
-const STUB_MODEL = "qwen-acceptance-stub";
+const STUB_MODEL = "claude-acceptance-stub";
 // Every title says on screen that its text is the model double's fixture, not something a model wrote.
 const MAIN_TITLE = "模型替身样例·夜班证词";
 const CONFLICT_TITLE = "模型替身样例·已有剧本";
@@ -120,14 +119,14 @@ const transport: WritingTransport = async (request) => {
   const attempt = (attempts.get(key) ?? 0) + 1;
   attempts.set(key, attempt);
   const headers = request.headers as Record<string, string>;
-  sent.push({ title, step, attempt, endpoint: `${endpoint.host}${endpoint.pathname}`, keyMatches: (headers.Authorization ?? headers.authorization) === `Bearer ${STUB_KEY}` });
+  sent.push({ title, step, attempt, endpoint: `${endpoint.host}${endpoint.pathname}`, keyMatches: (headers["x-api-key"] === STUB_KEY || (headers.Authorization ?? headers.authorization) === `Bearer ${STUB_KEY}`) });
   const plan = plans.get(title)?.(step, attempt);
   if (plan && "hold" in plan) await plan.hold;
-  const answer = plan && "status" in plan ? plan : { status: 200, body: chatAnswer(step === "concept" ? fixtureConcept(title)
+  const answer = plan && "status" in plan ? plan : { status: 200, body: messagesAnswer(step === "concept" ? fixtureConcept(title)
     : step === "outline" ? fixtureOutline(fixtureOutlineCountOf(user)) : fixtureEpisode(Number(step.slice(-1)))) };
   return {
     status: answer.status,
-    headers: { get: (name: string) => name.toLowerCase() === "x-request-id" ? `stub-${step}-${String(attempt)}` : null },
+    headers: { get: (name: string) => ["x-request-id", "request-id"].includes(name.toLowerCase()) ? `stub-${step}-${String(attempt)}` : null },
     body: new TextEncoder().encode(JSON.stringify(answer.body)),
   };
 };
@@ -135,14 +134,14 @@ const transport: WritingTransport = async (request) => {
 const sends = (title: string) => sent.filter((item) => item.title === title).length;
 
 function titleService(runtime: StudioRuntime): TitleWritingService {
-  const providers = titleWritingProviderConfigs({ DASHSCOPE_API_KEY: STUB_KEY, BAILIAN_BASE_URL: QWEN_BASE, TITLE_WRITING_QWEN_MODELS: STUB_MODEL });
+  const providers = titleWritingProviderConfigs({ ANTHROPIC_API_KEY: STUB_KEY, TITLE_WRITING_ANTHROPIC_MODELS: STUB_MODEL });
   const store = new PostgresTitleWritingStore(runtime.pool, new TextChainService(runtime.pool));
   return new TitleWritingService({
     workspaceId: WORKSPACE,
     nodeEnv: "test",
     enabled: true,
     operatorToken: OPERATOR_TOKEN,
-    defaultProvider: "qwen",
+    defaultProvider: "anthropic",
     providers,
     store,
     engine: new TitleWritingEngine({ workspaceId: WORKSPACE, store, providers, transport, maxCallsPerDay: 200, timeoutMs: 30_000 }),
@@ -737,6 +736,6 @@ describe("title writing in a real browser, real web and API, isolated PostgreSQL
   it("no page error was raised and every model request went to the stub with the stub key", () => {
     expect(pageErrors).toEqual([]);
     expect(sent.every((item) => item.keyMatches)).toBe(true);
-    expect(new Set(sent.map((item) => item.endpoint))).toEqual(new Set(["dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"]));
+    expect(new Set(sent.map((item) => item.endpoint))).toEqual(new Set(["api.anthropic.com/v1/messages"]));
   });
 });

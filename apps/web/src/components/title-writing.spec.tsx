@@ -17,11 +17,10 @@ function json(payload: unknown, status = 200): Response {
 
 function options(overrides: Partial<TitleWritingOptionsView> = {}): TitleWritingOptionsView {
   return {
-    enabled: true, code: "TITLE_WRITING_READY", storageReady: true, operatorTokenRequired: true, defaultProvider: "qwen",
+    enabled: true, code: "TITLE_WRITING_READY", storageReady: true, operatorTokenRequired: true, defaultProvider: "anthropic",
     providers: [
-      { providerKey: "qwen", label: "千问", ready: true, models: ["q-1", "q-2"], defaultModel: "q-1", missing: [] },
       { providerKey: "openai", label: "OpenAI", ready: false, models: [], defaultModel: null, missing: ["OPENAI_API_KEY", "TITLE_WRITING_OPENAI_MODELS"] },
-      { providerKey: "deepseek", label: "DeepSeek", ready: true, models: ["d-1"], defaultModel: "d-1", missing: [] },
+      { providerKey: "anthropic", label: "Claude", ready: true, models: ["q-1", "q-2"], defaultModel: "q-1", missing: [] },
     ],
     maxCallsPerDay: 30, maxActiveRuns: 1, callCapPerRun: 8, billing: "unknown",
     defaults: { episodeCount: 3, episodeSeconds: 90, style: "" },
@@ -110,7 +109,7 @@ describe("AI 一键创作 on the start page", () => {
     expect(posts.map((call) => call.url)).toEqual(["/api/v1/projects", `/api/v1/projects/${P1}/title-runs`]);
     // The work carries the default plan (3 episodes, about 1.5 minutes); the run asks for the same plan.
     expect(posts[0]?.body).toEqual({ title: "夜班证词", premise: "", episodeCount: 3, targetEpisodeSeconds: 90 });
-    expect(posts[1]?.body).toEqual({ title: "夜班证词", providerKey: "qwen", model: "q-1", settings: { episodeCount: 3, episodeSeconds: 90, style: "" } });
+    expect(posts[1]?.body).toEqual({ title: "夜班证词", providerKey: "anthropic", model: "q-1", settings: { episodeCount: 3, episodeSeconds: 90, style: "" } });
     expect(posts[1]?.headers["X-Operator-Token"]).toBe(TOKEN);
     expect(posts[1]?.headers["Idempotency-Key"]).toBeTruthy();
     expect(JSON.stringify(posts.map((call) => call.body))).not.toContain(TOKEN);
@@ -138,7 +137,7 @@ describe("AI 一键创作 on the start page", () => {
         providers: options().providers.map((item) => ({ ...item, ready: false, models: [], defaultModel: null, missing: [`${item.providerKey.toUpperCase()}_KEY`] })) }))
       : json({ items: [], nextCursor: null }));
     render(<BeginnerStart active="/create" />);
-    expect((await screen.findByText(/还没有可用的模型服务/)).textContent).toContain("千问：QWEN_KEY");
+    expect((await screen.findByText(/还没有可用的模型服务/)).textContent).toContain("Claude：ANTHROPIC_KEY");
     fireEvent.change(screen.getByLabelText("剧名"), { target: { value: "夜班证词" } });
     fireEvent.change(screen.getByLabelText("操作者令牌"), { target: { value: TOKEN } });
     fireEvent.click(screen.getByRole("button", { name: "AI 一键创作" }));
@@ -275,6 +274,15 @@ describe("progress and results page", () => {
     expect(await screen.findByText("没有覆盖已有故事")).toBeTruthy();
     expect(screen.getByText(/AI 没有覆盖它/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "继续创作" })).toBeNull();
+  });
+
+  it.each([["qwen", "千问（已退役）"], ["deepseek", "DeepSeek（已退役）"]] as const)("a %s run from before the retirement shows its real provider and says it is retired, never misconfigured", async (providerKey, label) => {
+    server(() => json({ run: run({ state: "needs_attention", errorCode: "provider_unconfigured", providerKey, model: `${providerKey}-old` },
+      ["completed", "pending", "pending", "pending", "pending"]) }));
+    render(<TitleWritingRun projectId={P1} client={new TitleWritingClient()} />);
+    expect(await screen.findByText(new RegExp(`模型：${label.replace(/[()（）]/g, ".")} · ${providerKey}-old`))).toBeTruthy();
+    expect(screen.getByText(/这次创作使用的模型服务已经退役，不会再发出请求，也不会改用其他模型/)).toBeTruthy();
+    expect(screen.queryByText(/没有配置完整/)).toBeNull();
   });
 
   it("cancel asks the server and shows the stopping state from its answer", async () => {

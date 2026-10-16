@@ -7,7 +7,7 @@ import {
 import { titleWritingProviderConfigs, type WritingProviderConfig, type WritingTransport } from "./text-writing";
 import { InMemoryTitleWritingStore, TitleWritingEngine, initialSteps, type MemoryBreakdownEpisode } from "./title-writing-engine";
 import { hashScriptBreakdownRequest, newScriptBreakdownRun, scriptBreakdownRunView } from "./script-breakdown-run";
-import { chatAnswer, fixtureChatTransport, type FixtureExchange } from "./title-writing-fixtures";
+import { messagesAnswer, fixtureChatTransport, type FixtureExchange } from "./title-writing-fixtures";
 import { breakdownPromptParts, fixtureBreakdown } from "./script-breakdown-fixtures";
 
 const WS = "11111111-1111-4111-8111-111111111111";
@@ -15,7 +15,7 @@ const P1 = "22222222-2222-4222-8222-222222222222";
 
 function providers(): Record<TitleWritingProviderKey, WritingProviderConfig> {
   return titleWritingProviderConfigs({
-    DASHSCOPE_API_KEY: "sk-test-secret-0123456789", BAILIAN_BASE_URL: "https://dashscope.aliyuncs.com/compatible-mode/v1", TITLE_WRITING_QWEN_MODELS: "q-1",
+    ANTHROPIC_API_KEY: "sk-test-secret-0123456789", TITLE_WRITING_ANTHROPIC_MODELS: "q-1",
   });
 }
 
@@ -33,14 +33,14 @@ async function start(store: InMemoryTitleWritingStore, episode: MemoryBreakdownE
   if (source.kind !== "ok") throw new Error(source.kind);
   const record = newScriptBreakdownRun({
     workspaceId: WS, projectId: P1, actorId: "owner", idempotencyKey: options.key ?? `k-${episode.episodeId}`,
-    requestHash: hashScriptBreakdownRequest(P1, { episodeId: episode.episodeId, providerKey: "qwen", model: "q-1", replaceExisting: options.replaceExisting ?? false }),
+    requestHash: hashScriptBreakdownRequest(P1, { episodeId: episode.episodeId, providerKey: "anthropic", model: "q-1", replaceExisting: options.replaceExisting ?? false }),
     now: options.now ?? new Date(),
     input: {
       episodeId: episode.episodeId, episodeNo: source.episodeNo, scriptRevisionId: source.scriptRevisionId,
       scriptRevisionNo: source.scriptRevisionNo, scriptContentHash: source.scriptContentHash,
       scriptText: (source.scriptContent as { text: string }).text, targetEpisodeSeconds: source.targetEpisodeSeconds,
       characters: source.characters.map((item, index) => ({ key: `C${String(index + 1)}`, ...item })),
-      replace: { scenes: source.scenes, shots: source.shots }, providerKey: "qwen", model: "q-1",
+      replace: { scenes: source.scenes, shots: source.shots }, providerKey: "anthropic", model: "q-1",
     },
   });
   const created = await store.createRun(record, { maxActiveRuns: 1, quota: { sinceIso: "2000-01-01T00:00:00.000Z", maxCallsPerDay: 30, requiredCalls: 1 } });
@@ -67,12 +67,12 @@ describe("script breakdown runs", () => {
     const episode = store.addBreakdownEpisode({ workspaceId: WS, projectId: P1, episodeNo: 1, text: scriptOf(1, 2) });
     const record = newScriptBreakdownRun({ workspaceId: WS, projectId: P1, actorId: "a", idempotencyKey: "k", requestHash: "f".repeat(64), now: new Date(),
       input: { episodeId: episode.episodeId, episodeNo: 1, scriptRevisionId: episode.currentScriptId!, scriptRevisionNo: 1, scriptContentHash: "0".repeat(64),
-        scriptText: "x", targetEpisodeSeconds: null, characters: [], replace: { scenes: [], shots: [] }, providerKey: "qwen", model: "q-1" } });
+        scriptText: "x", targetEpisodeSeconds: null, characters: [], replace: { scenes: [], shots: [] }, providerKey: "anthropic", model: "q-1" } });
     expect(record.callCap).toBe(SCRIPT_BREAKDOWN_CALL_CAP);
     expect(record.breakdownSave).toBe("pending");
     expect(initialSteps(record).map((step) => [step.stepKey, step.ordinal, step.scriptSave])).toEqual([["breakdown", 0, null]]);
-    const a = hashScriptBreakdownRequest(P1, { episodeId: episode.episodeId, providerKey: "qwen", model: "q-1", replaceExisting: false });
-    expect(hashScriptBreakdownRequest(P1, { episodeId: episode.episodeId, providerKey: "qwen", model: "q-1", replaceExisting: true })).not.toBe(a);
+    const a = hashScriptBreakdownRequest(P1, { episodeId: episode.episodeId, providerKey: "anthropic", model: "q-1", replaceExisting: false });
+    expect(hashScriptBreakdownRequest(P1, { episodeId: episode.episodeId, providerKey: "anthropic", model: "q-1", replaceExisting: true })).not.toBe(a);
   });
 
   for (const count of [1, 3, 6]) {
@@ -180,7 +180,7 @@ describe("script breakdown runs", () => {
       const record = await start(store, episode);
       const seen: FixtureExchange[] = [];
       const answer = mutate(fixtureBreakdown(1, scriptOf(1, 2)));
-      await engineFor(store, fixtureChatTransport("t", { seen, override: () => ({ status: 200, body: chatAnswer(answer) }) })).drive(record.id);
+      await engineFor(store, fixtureChatTransport("t", { seen, override: () => ({ status: 200, body: messagesAnswer(answer) }) })).drive(record.id);
       const result = await view(store, record.id);
       expect([result.state, result.step.state, result.step.errorCode, result.save]).toEqual(["failed", "rejected", code, "pending"]);
       expect(result.output).toBeNull();
@@ -195,7 +195,7 @@ describe("script breakdown runs", () => {
     const record = await start(store, episode);
     const seen: FixtureExchange[] = [];
     const truncated = JSON.stringify(fixtureBreakdown(1, scriptOf(1, 2))).slice(0, 80);
-    await engineFor(store, fixtureChatTransport("t", { seen, override: () => ({ status: 200, body: chatAnswer(truncated, "length") }) })).drive(record.id);
+    await engineFor(store, fixtureChatTransport("t", { seen, override: () => ({ status: 200, body: messagesAnswer(truncated, "max_tokens") }) })).drive(record.id);
     const result = await view(store, record.id);
     expect([result.state, result.step.errorCode]).toEqual(["failed", "truncated"]);
     expect(seen).toHaveLength(1);
@@ -288,7 +288,7 @@ describe("writing proposed shots", () => {
       await store.placeBreakdownShots(WS, P1, episode.episodeId, savedRun.id,
         { acceptSceneChanged: false }, "owner", new Date().toISOString());
       const run = await start(store, episode, { key: "replacement", replaceExisting: true });
-      if (resume) await engineFor(store, fixtureChatTransport("t", { override: () => ({ status: 200, body: chatAnswer("not json") }) })).drive(run.id);
+      if (resume) await engineFor(store, fixtureChatTransport("t", { override: () => ({ status: 200, body: messagesAnswer("not json") }) })).drive(run.id);
       const beforeCalls = structuredClone(store.calls);
       const beforeResumes = structuredClone(store.resumes);
       const beforeCallsUsed = (await store.getRunById(WS, run.id))!.run.callsUsed;
@@ -322,7 +322,7 @@ describe("writing proposed shots", () => {
   it("rechecks the frozen scene set again after a successful resume and before reservation", async () => {
     const { store, episode } = await saved();
     const run = await start(store, episode, { key: "replacement", replaceExisting: true });
-    await engineFor(store, fixtureChatTransport("t", { override: () => ({ status: 200, body: chatAnswer("not json") }) })).drive(run.id);
+    await engineFor(store, fixtureChatTransport("t", { override: () => ({ status: 200, body: messagesAnswer("not json") }) })).drive(run.id);
     expect((await store.prepareResume(WS, P1, run.id, { resumeKey: "accepted-resume", requestHash: "a".repeat(64),
       confirmedCallIds: [], maxActiveRuns: 1 }, new Date().toISOString())).kind).toBe("ok");
     const callsBefore = structuredClone(store.calls);

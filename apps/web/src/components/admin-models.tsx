@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import {
-  adminLimitsUpdateSchema, adminProviderUpdateSchema,
+  TITLE_WRITING_PROVIDER_LABELS, adminLimitsUpdateSchema, adminProviderUpdateSchema,
   type AdminModelsView, type AdminProviderView, type TitleWritingProviderKey,
 } from "@ai-drama/contracts";
 import { AdminApiError, createAdminModelsClient } from "../lib/admin-models-client";
@@ -11,10 +11,10 @@ import { ModelPicker, modelDraftFor, modelProblem, orderedModels, type ModelDraf
 import { goToLogin, loginUrl, logout as siteLogout, readSession, type SiteSession } from "../lib/site-session";
 import styles from "./admin-models.module.css";
 
-const PROVIDERS: Array<{ key: TitleWritingProviderKey; label: string; mark: string; description: string }> = [
-  { key: "qwen", label: "千问", mark: "千", description: "阿里云百炼" },
-  { key: "openai", label: "OpenAI", mark: "O", description: "Responses API" },
-  { key: "deepseek", label: "DeepSeek", mark: "D", description: "Chat Completions API" },
+/** The two active providers, each with its one fixed official endpoint. Qwen and DeepSeek are retired and have no entry. */
+const PROVIDERS: Array<{ key: TitleWritingProviderKey; label: string; mark: string; description: string; endpoint: string }> = [
+  { key: "openai", label: "OpenAI", mark: "O", description: "Responses API", endpoint: "https://api.openai.com/v1/responses" },
+  { key: "anthropic", label: "Claude", mark: "C", description: "Anthropic Messages API", endpoint: "https://api.anthropic.com/v1/messages" },
 ];
 type ProviderDraft = ModelDraft & { baseUrl: string };
 type LimitsDraft = { defaultProvider: string; maxCallsPerDay: string; maxActiveRuns: string };
@@ -60,7 +60,7 @@ export function AdminModels() {
   const [session, setSession] = useState<SiteSession | null>(null);
   const [loginError, setLoginError] = useState("");
   const [view, setView] = useState<AdminModelsView | null>(null);
-  const [selected, setSelected] = useState<TitleWritingProviderKey>("qwen");
+  const [selected, setSelected] = useState<TitleWritingProviderKey>("openai");
   const [drafts, setDrafts] = useState<Record<string, ProviderDraft>>({});
   const [limits, setLimits] = useState<LimitsDraft>({ defaultProvider: "", maxCallsPerDay: "30", maxActiveRuns: "1" });
   const [secretAction, setSecretAction] = useState<"keep" | "replace" | "clear">("keep");
@@ -230,7 +230,6 @@ export function AdminModels() {
     const parsed = adminProviderUpdateSchema.safeParse({
       expectedRevision: view.savedRevision,
       models: orderedModels(draft),
-      ...(selected === "qwen" ? { baseUrl: draft.baseUrl.trim() } : {}),
       secretAction, ...(secretAction === "replace" ? { apiKey: apiKey.trim() } : {}),
     });
     if (!parsed.success || (secretAction === "clear" && !clearConfirmed)) {
@@ -291,7 +290,7 @@ export function AdminModels() {
     <main id="admin-content" className={styles.main}>
       {auth !== "signedin" ? <div className={styles.loginLayout}>
         <section className={styles.loginIntro}><span className={styles.eyebrow}>红果 · 创作基础设施</span><h1>为好故事，<br />接上合适的模型。</h1><p>在一处管理创作使用的模型、访问密钥和调用规则。创作者专注于故事，配置交给管理员。</p>
-          <div className={styles.loginFacts}><div><span>01</span><strong>三家供应商</strong><p>千问、OpenAI 与 DeepSeek</p></div><div><span>02</span><strong>密钥只写不读</strong><p>保存后不会从接口回传</p></div><div><span>03</span><strong>手动保存配置</strong><p>保存不会触发付费调用</p></div></div></section>
+          <div className={styles.loginFacts}><div><span>01</span><strong>两家供应商</strong><p>OpenAI 与 Claude</p></div><div><span>02</span><strong>密钥只写不读</strong><p>保存后不会从接口回传</p></div><div><span>03</span><strong>手动保存配置</strong><p>保存不会触发付费调用</p></div></div></section>
         <section className={styles.loginCard} aria-label="管理员登录"><div className={styles.lock}><LockIcon /></div><span className={styles.eyebrow}>受保护的管理入口</span><h2>管理员登录</h2><p>模型后台与创作页面使用同一个账号登录，登录后即可进入。</p>
           {auth === "checking" ? <p role="status" className={styles.loading}>正在检查登录状态…</p>
             : auth === "unavailable" ? <><div className={styles.warning} role="alert">{loginError || "管理员后台尚未就绪，请联系服务器管理员完成认证与安全存储初始化。"}</div><button className={styles.secondary} disabled={!!busy} onClick={() => void checkSession()}>重新检查后台状态</button></>
@@ -305,9 +304,10 @@ export function AdminModels() {
         {!view ? <section className={styles.card}><p>{busy ? "正在读取模型配置…" : "模型配置尚未读取。"}</p><button className={styles.secondary} onClick={() => void reload()} disabled={!!busy}>重新读取配置</button></section> : <>
           <section className={styles.overview} aria-label="配置概况"><div><span>已保存版本</span><strong>v{view.savedRevision}</strong><small>{view.source === "managed" ? "管理员配置" : "服务器环境配置"}</small></div><div><span>当前生效版本</span><strong>v{view.activeRevision}</strong><small>{view.pendingRestart ? "新配置尚未应用" : "与已保存配置一致"}</small></div><div><span>标题 AI 创作</span><strong className={styles.smallStrong}>{view.titleWriting.enabled ? "已开启" : "未开启"}</strong><small>{view.titleWriting.productionBlocked ? "生产环境强制关闭" : "由服务器功能开关控制"}</small></div><div><span>操作者授权</span><strong className={styles.smallStrong}>{view.titleWriting.operatorConfigured ? "已配置" : "未配置"}</strong><small>与站点登录账号分别管理</small></div></section>
           {view.pendingRestart && <div className={styles.warning} role="status"><strong>配置已保存，等待 API 重启生效</strong><p>请由服务器管理员按发布流程重启 API。本页面不会重启服务，也不会自动启用 AI 创作。</p></div>}
+          {view.retired && <div className={styles.warning} role="status"><strong>千问与 DeepSeek 已退役</strong><p>{view.retired.providers.length > 0 ? `原配置中的${view.retired.providers.map((key) => TITLE_WRITING_PROVIDER_LABELS[key]).join("、")}设置不再生效，也不会再发出调用。` : "原配置中没有千问或 DeepSeek 的设置。"}{view.retired.retiredDefault ? `原默认供应商${TITLE_WRITING_PROVIDER_LABELS[view.retired.retiredDefault]}已取消，请重新选择默认供应商。` : ""}{view.retired.backupKept ? "原加密配置已在服务器上单独备份，供回滚使用。" : "首次保存时，原加密配置会先在服务器上单独备份。"}历史作品和调用记录不受影响。</p></div>}
           {view.activationDeferred && <div className={styles.warning} role="status"><strong>有创作任务尚未结束，配置应用已推迟</strong><p>服务继续使用原有的生效配置，避免改变正在执行或恢复中的模型请求。请在任务结束后联系服务器管理员处理。</p></div>}
           <div className={styles.workspace}>
-            <aside className={styles.providerRail} aria-label="模型供应商"><div className={styles.railHeading}><h2>模型供应商</h2><span>03</span></div>
+            <aside className={styles.providerRail} aria-label="模型供应商"><div className={styles.railHeading}><h2>模型供应商</h2><span>02</span></div>
               {PROVIDERS.map((provider) => { const settings = view.saved.providers.find((item) => item.providerKey === provider.key); return <button key={provider.key} type="button" className={`${styles.providerButton} ${selected === provider.key ? styles.providerSelected : ""}`} aria-pressed={selected === provider.key} disabled={!!busy} onClick={() => changeProvider(provider.key)}>
                 <span className={`${styles.providerMark} ${styles[provider.key]}`} aria-hidden="true">{provider.mark}</span><span className={styles.providerInfo}><strong>{provider.label}</strong><small>{provider.description}</small><span className={styles.providerState}>{settings?.keyConfigured ? "密钥已配置" : "密钥未配置"}</span></span><span className={styles.providerArrow} aria-hidden="true">↗</span></button>; })}
               <div className={styles.railNote}><LockIcon /><strong>密钥不会回传</strong><p>页面只显示是否配置，不显示密钥、前缀或末尾字符。</p></div>
@@ -317,8 +317,8 @@ export function AdminModels() {
               <div className={styles.activeSummary}><span>当前生效</span><strong>{active?.ready ? "配置项齐全" : "配置项未齐全"}</strong><span>{active?.models.length ? active.models.join("、") : "尚未指定模型"}</span><small>配置项齐全不代表供应商连通或模型已验收。</small></div>
               <form onSubmit={(event) => void saveProvider(event)}>
                 <fieldset className={styles.fieldset} disabled={!canEdit}>
-                  <label className={styles.field}>服务端点{selected === "qwen" ? <input type="url" value={draft.baseUrl} onChange={(event) => changeDraft({ baseUrl: event.target.value })} placeholder="填写账户地域对应的官方兼容模式端点" spellCheck={false} autoComplete="off" maxLength={512} /> : <input type="text" readOnly value={selected === "openai" ? "https://api.openai.com/v1/responses" : "https://api.deepseek.com/chat/completions"} />}
-                    <small>{selected === "qwen" ? "仅支持已允许的百炼官方 HTTPS 端点，路径为 /compatible-mode/v1。" : "固定为供应商官方端点，不能填写转发或代理地址。"}</small></label>
+                  <label className={styles.field}>服务端点<input type="text" readOnly value={meta.endpoint} />
+                    <small>{selected === "anthropic" ? "固定为 Anthropic 官方 Messages API 端点，不能填写转发或代理地址。只接受 Anthropic 控制台创建的 API Key，不接受 Claude Code 或订阅账号的登录凭据。" : "固定为供应商官方端点，不能填写转发或代理地址。"}</small></label>
                   <ModelPicker key={`${selected}:${viewEpoch}`} providerKey={selected} draft={draft} showProblem={showModelProblem} clearing={secretAction === "clear"}
                     onChange={(next) => changeDraft({ models: next.models, defaultModel: next.defaultModel, custom: next.custom, pendingCustom: next.pendingCustom })} />
                   <div className={styles.secretBlock}><div className={styles.sectionLabel}><strong>API 密钥</strong><Badge>{saved?.keyConfigured ? "已保存 · 不可读取" : "尚未保存"}</Badge></div>
@@ -340,7 +340,7 @@ export function AdminModels() {
               <label className={styles.field}>同时创作任务数<input type="number" min="1" max="10" step="1" value={limits.maxActiveRuns} onChange={(event) => setLimits({ ...limits, maxActiveRuns: event.target.value })} /><small>1–10 个；不会终止已经运行的任务。</small></label>
             </div><div className={styles.formFooter}><p>当前生效：{PROVIDERS.find((provider) => provider.key === view.active.defaultProvider)?.label ?? "未指定"} · 每日 {view.active.maxCallsPerDay} 次 · 同时 {view.active.maxActiveRuns} 个<span className={styles.block}>金额费用未知时保持 unknown，不显示为 0。</span></p><button className={styles.secondary} type="submit" disabled={!canEdit}>{busy === "limits" ? "正在保存…" : "保存调用规则"}</button></div></fieldset></form>
           </section>
-          <section className={styles.bottomGrid}><div className={styles.card}><h2>最近配置活动</h2><p className={styles.footnote}>只记录操作类型和版本，不记录密钥内容。</p>{view.audit.length ? <ol className={styles.audit}>{view.audit.slice(-8).reverse().map((item, index) => <li key={`${item.at}-${index}`}><span className={styles.auditDot} /><div><strong>{item.action === "activated" ? "配置已应用" : item.action === "limits_updated" ? "调用规则已保存" : `${PROVIDERS.find((provider) => provider.key === item.providerKey)?.label ?? "供应商"}配置已保存`}</strong><time dateTime={item.at}>{new Date(item.at).toLocaleString("zh-CN", { hour12: false })}</time></div><span>v{item.revision}</span></li>)}</ol> : <p className={styles.empty}>还没有管理员配置记录</p>}</div>
+          <section className={styles.bottomGrid}><div className={styles.card}><h2>最近配置活动</h2><p className={styles.footnote}>只记录操作类型和版本，不记录密钥内容。</p>{view.audit.length ? <ol className={styles.audit}>{view.audit.slice(-8).reverse().map((item, index) => <li key={`${item.at}-${index}`}><span className={styles.auditDot} /><div><strong>{item.action === "activated" ? "配置已应用" : item.action === "limits_updated" ? "调用规则已保存" : item.action === "format_upgraded" ? "配置已升级为 OpenAI 与 Claude 两家（原配置已备份）" : `${item.providerKey ? TITLE_WRITING_PROVIDER_LABELS[item.providerKey] : "供应商"}配置已保存`}</strong><time dateTime={item.at}>{new Date(item.at).toLocaleString("zh-CN", { hour12: false })}</time></div><span>v{item.revision}</span></li>)}</ol> : <p className={styles.empty}>还没有管理员配置记录</p>}</div>
             <div className={styles.card}><h2>读取最新配置</h2><p className={styles.footnote}>保存采用版本校验，其他管理员的修改不会被静默覆盖。重新读取会清空本页所有未保存内容和密钥输入。</p>{dirty && <label className={styles.confirm}><input type="checkbox" checked={reloadConfirmed} onChange={(event) => setReloadConfirmed(event.target.checked)} disabled={!!busy} />我确认放弃本页未保存的修改</label>}<button type="button" className={styles.secondary} onClick={() => void reload()} disabled={!!busy || (dirty && !reloadConfirmed)}>{busy === "read" ? "正在读取…" : "重新读取最新配置"}</button><p className={styles.footnote}>站点登录密码、AI 操作者令牌及功能开关仍由服务器管理员管理。</p></div>
           </section>
         </>}

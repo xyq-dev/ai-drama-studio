@@ -1,7 +1,7 @@
 import {
+  type TitleWritingStoredProviderKey,
   currentUncertainCallIds,
   type TitleWritingOptionsView,
-  type TitleWritingProviderKey,
   type TitleWritingRunView,
   type TitleWritingStepKey,
   type TitleWritingStepState,
@@ -47,7 +47,8 @@ export function startReceiptRun(body: unknown, projectId: string): TitleWritingR
 
 export interface StartBody {
   title: string;
-  providerKey?: TitleWritingProviderKey;
+  /** A stored start of a retired provider keeps its key so that its replay is the same request. */
+  providerKey?: TitleWritingStoredProviderKey;
   model?: string;
   /** episodeCount and episodeSeconds must equal the work's episode plan; the server freezes the plan, not these. */
   settings?: { episodeCount?: number; episodeSeconds?: number; style?: string };
@@ -135,6 +136,11 @@ export function normalizeOptions(value: unknown): TitleWritingOptionsView | null
   return record as TitleWritingOptionsView;
 }
 
+/** A configuration gap as shown to a person: variable names as they are, the provider migration in words. */
+export function gapText(name: string): string {
+  return name === "WRITING_PROVIDER_MIGRATION" ? "数据库迁移 20261016000100_writing_provider_anthropic 尚未执行" : name;
+}
+
 export function optionsUnavailableReason(options: TitleWritingOptionsView | null): string | null {
   if (!options) return "没能读取 AI 创作的服务端配置。可以稍后重试，或先手动创作。";
   if (options.code === "TITLE_WRITING_READY") return null;
@@ -142,7 +148,7 @@ export function optionsUnavailableReason(options: TitleWritingOptionsView | null
   if (options.code === "TITLE_WRITING_FORBIDDEN") return "服务端还没有设置操作者令牌（TITLE_WRITING_OPERATOR_TOKEN）。可以先手动创作。";
   if (options.code === "TITLE_WRITING_STORAGE_UNAVAILABLE") return "创作任务的数据库表还没有创建（服务器尚未执行数据库迁移）。可以先手动创作。";
   if (options.code === "TITLE_WRITING_PROVIDER_UNCONFIGURED") {
-    const missing = options.providers.map((item) => `${item.label}：${item.missing.join("、")}`).join("；");
+    const missing = options.providers.map((item) => `${item.label}：${item.missing.map(gapText).join("、")}`).join("；");
     return `还没有可用的模型服务。缺少的服务端配置：${missing}。可以先手动创作。`;
   }
   return "AI 一键创作暂不可用。可以先手动创作。";

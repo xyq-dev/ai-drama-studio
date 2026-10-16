@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { TITLE_WRITING_DEFAULT_EPISODE_SECONDS, type TitleWritingProviderKey } from "@ai-drama/contracts";
-import { titleWritingProviderConfigs, type WritingProviderConfig, type WritingTransport } from "./text-writing";
+import { ANTHROPIC_MESSAGES_URL, titleWritingProviderConfigs, type WritingProviderConfig, type WritingTransport } from "./text-writing";
 import {
   InMemoryTitleWritingStore,
   TITLE_WRITING_CALL_CAP_PER_RUN,
@@ -11,7 +11,7 @@ import {
   titleRunView,
   uncertainCallIdsOf,
 } from "./title-writing-engine";
-import { chatAnswer, fixtureChatTransport, fixtureConcept, fixtureOutline, type FixtureExchange, type FixtureStep } from "./title-writing-fixtures";
+import { messagesAnswer, fixtureChatTransport, fixtureConcept, fixtureOutline, type FixtureExchange, type FixtureStep } from "./title-writing-fixtures";
 
 const WS = "11111111-1111-4111-8111-111111111111";
 const P1 = "22222222-2222-4222-8222-222222222222";
@@ -21,8 +21,8 @@ const TITLE = "夜班证词";
 
 function providers(): Record<TitleWritingProviderKey, WritingProviderConfig> {
   return titleWritingProviderConfigs({
-    DASHSCOPE_API_KEY: KEY, BAILIAN_BASE_URL: "https://dashscope.aliyuncs.com/compatible-mode/v1", TITLE_WRITING_QWEN_MODELS: "q-1",
-    DEEPSEEK_API_KEY: KEY, TITLE_WRITING_DEEPSEEK_MODELS: "d-1",
+    ANTHROPIC_API_KEY: KEY, TITLE_WRITING_ANTHROPIC_MODELS: "q-1",
+    OPENAI_API_KEY: KEY, TITLE_WRITING_OPENAI_MODELS: "d-1",
   });
 }
 
@@ -43,7 +43,7 @@ function setup(options: {
   const run = (projectId = P1, key = "key-1", title = TITLE) => newTitleRun({
     workspaceId: WS, projectId, actorId: "server-owner", idempotencyKey: key, title,
     settings: { episodeCount: 3, episodeSeconds: TITLE_WRITING_DEFAULT_EPISODE_SECONDS, style: "" },
-    providerKey: options.providerKey ?? "qwen", model: options.model ?? "q-1", now: new Date(),
+    providerKey: options.providerKey ?? "anthropic", model: options.model ?? "q-1", now: new Date(),
   });
   return { store, engine, seen, run };
 }
@@ -137,7 +137,7 @@ describe("title-driven writing run", () => {
 
   it("an invalid model answer is rejected, never saved, and the run is partial with completed steps kept", async () => {
     const { store, engine, run, seen } = setup({
-      override: (step) => step === "episode:2" ? { status: 200, body: chatAnswer({ schema: "ads.writing.episode-draft.v1", episodeNo: 3 }) } : undefined,
+      override: (step) => step === "episode:2" ? { status: 200, body: messagesAnswer({ schema: "ads.writing.episode-draft.v1", episodeNo: 3 }) } : undefined,
     });
     const created = await store.createRun(run(), { maxActiveRuns: 1 });
     const runId = created.kind === "blocked" ? "" : created.bundle.run.id;
@@ -153,10 +153,10 @@ describe("title-driven writing run", () => {
   });
 
   it.each([
-    ["a wrong episode number", chatAnswer({ ...JSON.parse(JSON.stringify({ schema: "ads.writing.episode-draft.v1", episodeNo: 2, title: "x", screenplay: "x", scenes: [{ heading: "a", action: "b", dialogue: "", sound: "" }], handoffFacts: ["x"] })) }), "episode_mismatch"],
-    ["an empty object", chatAnswer({}), "invalid_output"],
-    ["unparsable text", chatAnswer("不是 JSON"), "invalid_output"],
-    ["HTML in the text", chatAnswer({ schema: "ads.writing.episode-draft.v1", episodeNo: 1, title: "<b>x</b>", screenplay: "x", scenes: [{ heading: "a", action: "b", dialogue: "", sound: "" }], handoffFacts: ["x"] }), "unsafe_content"],
+    ["a wrong episode number", messagesAnswer({ ...JSON.parse(JSON.stringify({ schema: "ads.writing.episode-draft.v1", episodeNo: 2, title: "x", screenplay: "x", scenes: [{ heading: "a", action: "b", dialogue: "", sound: "" }], handoffFacts: ["x"] })) }), "episode_mismatch"],
+    ["an empty object", messagesAnswer({}), "invalid_output"],
+    ["unparsable text", messagesAnswer("不是 JSON"), "invalid_output"],
+    ["HTML in the text", messagesAnswer({ schema: "ads.writing.episode-draft.v1", episodeNo: 1, title: "<b>x</b>", screenplay: "x", scenes: [{ heading: "a", action: "b", dialogue: "", sound: "" }], handoffFacts: ["x"] }), "unsafe_content"],
   ])("rejects %s", async (_label, body, code) => {
     const { store, engine, run } = setup({ override: (step) => step === "episode:1" ? { status: 200, body } : undefined });
     const created = await store.createRun(run(), { maxActiveRuns: 1 });
@@ -167,7 +167,7 @@ describe("title-driven writing run", () => {
 
   it("a concept whose narrative fields are only whitespace is rejected and the outline never starts", async () => {
     const blank = { ...fixtureConcept(TITLE), logline: "  ", synopsis: "\n\n", coreConflict: "\t" };
-    const { store, engine, run, seen } = setup({ override: (step) => step === "concept" ? { status: 200, body: chatAnswer(blank) } : undefined });
+    const { store, engine, run, seen } = setup({ override: (step) => step === "concept" ? { status: 200, body: messagesAnswer(blank) } : undefined });
     const created = await store.createRun(run(), { maxActiveRuns: 1 });
     const runId = created.kind === "blocked" ? "" : created.bundle.run.id;
     await engine.drive(runId);
@@ -179,7 +179,7 @@ describe("title-driven writing run", () => {
 
   it("an outline whose episode text is only whitespace is rejected and no episode starts", async () => {
     const { store, engine, run, seen } = setup({ override: (step) => step === "outline"
-      ? { status: 200, body: chatAnswer({ ...fixtureOutline(), episodes: fixtureOutline().episodes.map((episode) => ({ ...episode, goal: " \n " })) }) }
+      ? { status: 200, body: messagesAnswer({ ...fixtureOutline(), episodes: fixtureOutline().episodes.map((episode) => ({ ...episode, goal: " \n " })) }) }
       : undefined });
     const created = await store.createRun(run(), { maxActiveRuns: 1 });
     const runId = created.kind === "blocked" ? "" : created.bundle.run.id;
@@ -190,7 +190,7 @@ describe("title-driven writing run", () => {
 
   it("an outline missing an episode is rejected", async () => {
     const { store, engine, run } = setup({ override: (step) => step === "outline"
-      ? { status: 200, body: chatAnswer({ schema: "ads.writing.episode-outline.v1", episodes: [] }) } : undefined });
+      ? { status: 200, body: messagesAnswer({ schema: "ads.writing.episode-outline.v1", episodes: [] }) } : undefined });
     const created = await store.createRun(run(), { maxActiveRuns: 1 });
     const runId = created.kind === "blocked" ? "" : created.bundle.run.id;
     await engine.drive(runId);
@@ -236,7 +236,7 @@ describe("title-driven writing run", () => {
     const { store, engine, run, seen } = setup({ override: () => ({ status: 503, body: {} }) });
     const created = await store.createRun(run(), { maxActiveRuns: 1 });
     await engine.drive(created.kind === "blocked" ? "" : created.bundle.run.id);
-    expect(new Set(seen.map((item) => item.url))).toEqual(new Set(["https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"]));
+    expect(new Set(seen.map((item) => item.url))).toEqual(new Set([ANTHROPIC_MESSAGES_URL]));
   });
 
   it("resuming a partial run sends only the rejected and later steps", async () => {
@@ -304,7 +304,7 @@ describe("title-driven writing run", () => {
     };
     const engine = new TitleWritingEngine({ workspaceId: WS, store, providers: providers(), transport, maxCallsPerDay: 30 });
     const record = newTitleRun({ workspaceId: WS, projectId: P1, actorId: "a", idempotencyKey: "k", title: TITLE,
-      settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey: "qwen", model: "q-1", now: new Date() });
+      settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey: "anthropic", model: "q-1", now: new Date() });
     await store.createRun(record, { maxActiveRuns: 1 });
     cancel = async () => { await store.requestCancel(WS, P1, record.id, new Date().toISOString()); };
     await engine.drive(record.id);
@@ -323,12 +323,12 @@ describe("title-driven writing run", () => {
     const store = new InMemoryTitleWritingStore();
     store.addProject(WS, P1);
     const record = newTitleRun({ workspaceId: WS, projectId: P1, actorId: "a", idempotencyKey: "k", title: TITLE,
-      settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey: "qwen", model: "q-1", now: clock() });
+      settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey: "anthropic", model: "q-1", now: clock() });
     await store.createRun(record, { maxActiveRuns: 1 });
     // A crashed executor: claimed, reserved the concept call and marked it submitted, then died.
     expect(await store.claimRun(WS, record.id, "dead", clock().toISOString(), new Date(now + 1000).toISOString())).toBe(true);
     const callId = "44444444-4444-4444-8444-444444444444";
-    await store.reserveCall({ id: callId, runId: record.id, workspaceId: WS, stepKey: "concept", attemptNo: 1, providerKey: "qwen",
+    await store.reserveCall({ id: callId, runId: record.id, workspaceId: WS, stepKey: "concept", attemptNo: 1, providerKey: "anthropic",
       model: "q-1", requestHash: "h", state: "reserved", executorId: "dead", providerRequestId: null, responseModel: null,
       usage: { status: "unknown", inputTokens: null, outputTokens: null, totalTokens: null }, errorCode: null,
       createdAt: clock().toISOString(), finishedAt: null }, { sinceIso: "2026-10-07T00:00:00Z", maxCallsPerDay: 30 },
@@ -347,11 +347,11 @@ describe("title-driven writing run", () => {
 
     // Never sent: recovery frees the step and the next maintenance pass continues the run.
     const second = newTitleRun({ workspaceId: WS, projectId: P1, actorId: "a", idempotencyKey: "k2", title: TITLE,
-      settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey: "qwen", model: "q-1", now: clock() });
+      settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey: "anthropic", model: "q-1", now: clock() });
     await store.createRun(second, { maxActiveRuns: 1 });
     await store.claimRun(WS, second.id, "dead", clock().toISOString(), new Date(now + 1000).toISOString());
     await store.reserveCall({ id: "55555555-5555-4555-8555-555555555555", runId: second.id, workspaceId: WS, stepKey: "concept",
-      attemptNo: 1, providerKey: "qwen", model: "q-1", requestHash: "h", state: "reserved", executorId: "dead",
+      attemptNo: 1, providerKey: "anthropic", model: "q-1", requestHash: "h", state: "reserved", executorId: "dead",
       providerRequestId: null, responseModel: null, usage: { status: "unknown", inputTokens: null, outputTokens: null, totalTokens: null },
       errorCode: null, createdAt: clock().toISOString(), finishedAt: null }, { sinceIso: "2026-10-07T00:00:00Z", maxCallsPerDay: 30 },
     clock().toISOString(), new Date(now + 1000).toISOString());
@@ -367,7 +367,7 @@ describe("title-driven writing run", () => {
     const store = new InMemoryTitleWritingStore();
     store.addProject(WS, P1);
     const record = newTitleRun({ workspaceId: WS, projectId: P1, actorId: "a", idempotencyKey: "k", title: TITLE,
-      settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey: "qwen", model: "q-1", now: clock() });
+      settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey: "anthropic", model: "q-1", now: clock() });
     await store.createRun(record, { maxActiveRuns: 1 });
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });

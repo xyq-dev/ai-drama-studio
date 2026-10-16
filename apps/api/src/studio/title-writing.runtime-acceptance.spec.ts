@@ -35,7 +35,7 @@ import {
   runMigrations,
   verifyTitleWritingAcceptanceDatabase,
 } from "@ai-drama/database";
-import { chatAnswer, fixtureConcept, fixtureEpisode, fixtureOutline, fixtureStepOf, type FixtureStep } from "@ai-drama/providers/title-writing-fixtures";
+import { messagesAnswer, fixtureConcept, fixtureEpisode, fixtureOutline, fixtureStepOf, type FixtureStep } from "@ai-drama/providers/title-writing-fixtures";
 
 // Refuse before any connection is opened.
 const decision = checkTitleWritingAcceptanceEnv(process.env);
@@ -52,8 +52,7 @@ const API = `http://127.0.0.1:${String(API_PORT)}/api/v1`;
 const OPERATOR_TOKEN = `acceptance-${randomUUID()}`;
 // Not a key of any provider account; it only lets the stub check that the API sent its configured key.
 const FAKE_KEY = `stub-not-a-provider-key-${randomUUID()}`;
-const QWEN_BASE = "https://dashscope.aliyuncs.com/compatible-mode/v1";
-const STUB_MODEL = "qwen-acceptance-stub";
+const STUB_MODEL = "claude-acceptance-stub";
 const PRODUCT_LEASE_MS = 240_000;
 const MAINTENANCE_MS = 15_000;
 
@@ -107,16 +106,16 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     const key = `${title}|${step}`;
     const attempt = (attempts.get(key) ?? 0) + 1;
     attempts.set(key, attempt);
-    sent.push({ title, step, attempt, endpoint: url.pathname.slice("/model/".length), keyMatches: request.headers.authorization === `Bearer ${FAKE_KEY}`,
+    sent.push({ title, step, attempt, endpoint: url.pathname.slice("/model/".length), keyMatches: request.headers["x-api-key"] === FAKE_KEY || request.headers.authorization === `Bearer ${FAKE_KEY}`,
       at: new Date().toISOString() });
     const plan = plans.get(title)?.(step, attempt);
     if (plan === "hold") {
       held.push(response);
       return;
     }
-    const answer = plan ?? { status: 200, body: chatAnswer(step === "concept" ? fixtureConcept(title)
+    const answer = plan ?? { status: 200, body: messagesAnswer(step === "concept" ? fixtureConcept(title)
       : step === "outline" ? fixtureOutline() : fixtureEpisode(Number(step.slice(-1)) as 1 | 2 | 3)) };
-    response.writeHead(answer.status, { "content-type": "application/json", "x-request-id": `stub-${step}-${String(attempt)}` });
+    response.writeHead(answer.status, { "content-type": "application/json", "request-id": `stub-${step}-${String(attempt)}` });
     response.end(JSON.stringify(answer.body));
     return;
   }
@@ -182,13 +181,11 @@ function apiEnv(label: string, overrides: Record<string, string | undefined>): N
 const ENABLED: Record<string, string> = {
   TITLE_WRITING_ENABLED: "true",
   TITLE_WRITING_OPERATOR_TOKEN: OPERATOR_TOKEN,
-  TITLE_WRITING_DEFAULT_PROVIDER: "qwen",
+  TITLE_WRITING_DEFAULT_PROVIDER: "anthropic",
   // Configuration, not rules: room for the parallel crash scenarios. Lease, recovery and caps per run are unchanged.
   TITLE_WRITING_MAX_CALLS_PER_DAY: "100",
   TITLE_WRITING_MAX_ACTIVE_RUNS: "5",
-  DASHSCOPE_API_KEY: FAKE_KEY,
-  BAILIAN_BASE_URL: QWEN_BASE,
-  TITLE_WRITING_QWEN_MODELS: STUB_MODEL,
+  ANTHROPIC_API_KEY: FAKE_KEY, TITLE_WRITING_ANTHROPIC_MODELS: STUB_MODEL,
 };
 
 async function startApi(label: string, purpose: string, overrides: Record<string, string | undefined>): Promise<Generation> {
@@ -351,7 +348,7 @@ beforeAll(async () => {
     testedSha: process.env.GITHUB_SHA ?? null, runId: process.env.GITHUB_RUN_ID ?? null, runAttempt: process.env.GITHUB_RUN_ATTEMPT ?? null,
     job: process.env.GITHUB_JOB ?? null };
   // A second layer under the preload: on the runner the provider hosts resolve to loopback, so no request can reach them.
-  const resolved = await Promise.all(["dashscope.aliyuncs.com", "api.openai.com", "api.deepseek.com"].map(async (host) =>
+  const resolved = await Promise.all(["dashscope.aliyuncs.com", "api.openai.com", "api.deepseek.com", "api.anthropic.com"].map(async (host) =>
     [host, (await lookup(host).catch(() => ({ address: "unresolved" }))).address] as const));
   evidence.providerHostsResolveTo = Object.fromEntries(resolved);
   expect(resolved.every(([, address]) => address === "127.0.0.1" || address === "::1" || address === "unresolved")).toBe(true);
@@ -409,7 +406,7 @@ describe("title writing on the real runtime, killed and restarted, model stubbed
   it("refuses as configured, through the normal entry point, before anything is sent", async () => {
     const results: Record<string, unknown> = {};
     // Off by default: the title writing variables are simply absent.
-    let api = await startApi("off-by-default", "TITLE_WRITING_ENABLED unset", { DASHSCOPE_API_KEY: FAKE_KEY, BAILIAN_BASE_URL: QWEN_BASE, TITLE_WRITING_QWEN_MODELS: STUB_MODEL,
+    let api = await startApi("off-by-default", "TITLE_WRITING_ENABLED unset", { ANTHROPIC_API_KEY: FAKE_KEY, TITLE_WRITING_ANTHROPIC_MODELS: STUB_MODEL,
       TITLE_WRITING_OPERATOR_TOKEN: OPERATOR_TOKEN });
     let projectId = await createProject("运行时默认关闭");
     let refused = await start(projectId, "运行时默认关闭");
@@ -443,8 +440,7 @@ describe("title writing on the real runtime, killed and restarted, model stubbed
     evidence.migration = { upgradeApplied: upgrade.applied, redeployApplied: again.applied };
 
     // After the migration the feature is still off by default, and the API starts and refuses as before.
-    api = await startApi("off-after-migration", "TITLE_WRITING_ENABLED unset, after the migration", { DASHSCOPE_API_KEY: FAKE_KEY,
-      BAILIAN_BASE_URL: QWEN_BASE, TITLE_WRITING_QWEN_MODELS: STUB_MODEL, TITLE_WRITING_OPERATOR_TOKEN: OPERATOR_TOKEN });
+    api = await startApi("off-after-migration", "TITLE_WRITING_ENABLED unset, after the migration", { ANTHROPIC_API_KEY: FAKE_KEY, TITLE_WRITING_ANTHROPIC_MODELS: STUB_MODEL, TITLE_WRITING_OPERATOR_TOKEN: OPERATOR_TOKEN });
     projectId = await createProject("运行时迁移后默认关闭");
     refused = await start(projectId, "运行时迁移后默认关闭");
     expect([refused.status, refused.body.error?.code]).toEqual([404, "TITLE_WRITING_DISABLED"]);
@@ -460,7 +456,7 @@ describe("title writing on the real runtime, killed and restarted, model stubbed
     await stopApi(api, "SIGTERM");
 
     // Provider configuration missing.
-    api = await startApi("no-provider", "enabled, DASHSCOPE_API_KEY unset", { ...ENABLED, DASHSCOPE_API_KEY: undefined });
+    api = await startApi("no-provider", "enabled, ANTHROPIC_API_KEY unset", { ...ENABLED, ANTHROPIC_API_KEY: undefined });
     projectId = await createProject("运行时缺供应商配置");
     refused = await start(projectId, "运行时缺供应商配置");
     expect([refused.status, refused.body.error?.code]).toEqual([503, "TITLE_WRITING_PROVIDER_UNCONFIGURED"]);
@@ -664,6 +660,6 @@ describe("title writing on the real runtime, killed and restarted, model stubbed
     // A normal stop of the restarted API ends the run of this file.
     await stopApi(current!, "SIGTERM");
     expect(sent.every((item) => item.keyMatches)).toBe(true);
-    expect(new Set(sent.map((item) => item.endpoint))).toEqual(new Set(["dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"]));
+    expect(new Set(sent.map((item) => item.endpoint))).toEqual(new Set(["api.anthropic.com/v1/messages"]));
   }, 120_000);
 });

@@ -1,18 +1,20 @@
 # 管理员模型配置
 
 入口：`/admin/models`（`/admin` 跳转）。这是独立的管理员入口，不加入创作者导航。
-支持标题创作的千问、OpenAI、DeepSeek 密钥、官方端点、模型白名单、默认供应商、每日调用次数和同时运行数。
-已有网页千问助手、CLI、媒体 Provider 的配置不受影响。保存配置不会调用模型、不会自动启用标题创作、不会修改数据库。
+支持标题创作的 OpenAI 与 Claude（Anthropic 官方 API）两家：密钥、固定官方端点、模型白名单、默认供应商、每日调用次数和同时运行数。
+千问与 DeepSeek 已退役：后台没有它们的入口，也不能设为默认供应商；历史任务仍按真实供应商显示。详见 [`OPENAI_CLAUDE_WRITING.md`](OPENAI_CLAUDE_WRITING.md)。
+媒体 Provider 的配置不受影响。保存配置不会调用模型、不会自动启用标题创作、不会修改数据库。
 
 ## 用户操作与真实含义
 
 1. 使用站点统一登录（`/login`，见 [`UNIFIED_ADMIN_LOGIN.md`](UNIFIED_ADMIN_LOGIN.md)）进入；不再有独立的管理员访问令牌。登录账号不是供应商 API Key，也不是标题创作操作者令牌。
 2. 选择供应商，在「可用模型」中勾选（可按名称或 ID 搜索，最多 10 个），再在「默认模型」中从已选模型里选一个。
-   千问需填写地域匹配的官方 compatible-mode 地址；OpenAI/DeepSeek 地址固定。
+   两家地址都固定为官方端点（OpenAI `https://api.openai.com/v1/responses`，Claude `https://api.anthropic.com/v1/messages`），不能填写转发或代理地址。
+   Claude 只接受 Anthropic 控制台创建的 API Key，不接受 Claude Code 登录、订阅账号或浏览器会话中的凭据。
    - 保存时仍是原来的 `models` 数组，默认模型排第一位（API 一直以第一项为默认值），没有新增字段。
    - 取消勾选默认模型后，默认模型变为空，必须重新选择才能保存；页面不会自动换成别的模型。
    - 「至少一个模型」只检查当前保存的这一家供应商；其他供应商可以保持未配置、空列表。当前供应商没有选择模型时提示「请选择至少一个模型」并阻止保存，唯一例外是同时选择「清除密钥」：这是清空该供应商配置的方式，提交 `models: []`、`secretAction: "clear"`（与原契约一致）。已有模型时清除密钥不受影响。服务端校验不变，仍接受空列表。
-   - 候选列表只在 `apps/web/src/lib/admin-model-catalog.ts` 维护，按各适配器的请求方式（千问 json_object + 关闭思考、OpenAI Responses + 严格 json_schema、DeepSeek json_object + 关闭思考）对照官方文档筛选，文件头注明核对日期和来源。候选只是选项：不代表账户或地域已开通，也都没有经过本项目真实调用；页面不显示价格、速度或排名。
+   - 候选列表只在 `apps/web/src/lib/admin-model-catalog.ts` 维护，按各适配器的请求方式（OpenAI Responses + 严格 json_schema；Claude Messages + output_config.format json_schema + 自适应思考）对照官方文档筛选，文件头注明核对日期和来源。候选只是选项：不代表账户或地域已开通，也都没有经过本项目真实调用；页面不显示价格、速度或排名。
    - 候选以外的模型在「高级设置 → 添加自定义模型 ID」填写。已保存但不在候选列表中的 ID 显示为「自定义模型」并原样保留。
    - 页面不向供应商拉取模型列表，也不做连通性测试。服务端白名单与格式校验不变。
 3. 密钥操作有「保持」「替换」「清除」，清除需勾选确认。服务端只返回是否已配置，不返回密钥、尾号或摘要。
@@ -27,7 +29,8 @@
 
 ## 存储与运行边界
 
-- 无新表、字段或 Migration。AES-256-GCM 密文文件包含 active/saved 和最近50条不含配置值的审计元数据。
+- 本页配置本身无新表或字段。AES-256-GCM 密文文件包含 active/saved 和最近50条不含配置值的审计元数据。
+- 文件格式 v2 只含 OpenAI 与 Claude。读取旧版（v1，三家）文件时用同一主密钥在内存中转换，不写盘；第一次保存或启动时应用待生效配置时，先把原 v1 密文原样复制为 `<文件>.v1-retired-providers.bak`（600，独占创建，不覆盖），再原子替换为 v2。回滚旧代码前必须用该备份还原，见 [`OPENAI_CLAUDE_WRITING.md`](OPENAI_CLAUDE_WRITING.md)。
 - 仅支持单台 Linux、单个 API 实例、单工作区。**先停旧 API，再启新 API；不支持滚动重叠或多个 API 共用配置文件。**
   文件锁只保证配置写入，不能代替跨实例的任务调度屏障。外部模型已有的租约与恢复语义保持不变。
 - 私有目录必须是 API 实际用户所有、权限700，文件600；不允许符号链接或硬链接。Windows ACL未实现，Windows启用时明确拒绝；默认不启用时现有应用不受影响。

@@ -14,9 +14,9 @@ describe("administrator browser transport (site login)", () => {
   it("sends the site session CSRF token only in the mutation header and does not request provider APIs", async () => {
     document.cookie = `ads_csrf=${CSRF}; Path=/`;
     const fetch = vi.fn(async (_input: string, _init?: RequestInit) => new Response("{}"));
-    await createAdminModelsClient(fetch).provider("qwen", { expectedRevision: 4, models: ["account-model"], secretAction: "keep" });
+    await createAdminModelsClient(fetch).provider("anthropic", { expectedRevision: 4, models: ["account-model"], secretAction: "keep" });
     const [url, init] = fetch.mock.calls[0]!;
-    expect(url).toBe("/api/v1/admin/models/providers/qwen");
+    expect(url).toBe("/api/v1/admin/models/providers/anthropic");
     expect(init).toMatchObject({ method: "PUT", cache: "no-store" });
     const headers = new Headers(init!.headers);
     expect(headers.get("X-CSRF-Token")).toBe(CSRF);

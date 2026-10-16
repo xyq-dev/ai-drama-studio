@@ -1,6 +1,6 @@
 import { z } from "zod";
-import type { TitleWritingCallView, TitleWritingProviderKey, TitleWritingProviderOption, TitleWritingRunState, TitleWritingStepState } from "./title-writing";
-import { TITLE_WRITING_PROVIDER_KEYS } from "./title-writing";
+import type { TitleWritingCallView, TitleWritingProviderKey, TitleWritingStoredProviderKey, TitleWritingProviderOption, TitleWritingRunState, TitleWritingStepState } from "./title-writing";
+import { TITLE_WRITING_STORED_PROVIDER_KEYS } from "./title-writing";
 import { WRITING_BODY_MAX_CHARS } from "./writing-assistant";
 
 /**
@@ -71,7 +71,7 @@ export interface ScriptBreakdownFrozenInput {
   characters: ScriptBreakdownCharacter[];
   /** The episode's scenes and shots when the run started. They are replaced only if still exactly these versions. */
   replace: { scenes: Array<{ sceneId: string; rowVersion: number }>; shots: Array<{ shotId: string; rowVersion: number }> };
-  providerKey: TitleWritingProviderKey;
+  providerKey: TitleWritingStoredProviderKey;
   model: string;
 }
 
@@ -83,7 +83,7 @@ const MODEL_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 
 /** Start request body. The episode comes from the route; the script, characters and scenes are read by the server. */
 export const scriptBreakdownStartSchema = z.object({
-  providerKey: z.enum(TITLE_WRITING_PROVIDER_KEYS).optional(),
+  providerKey: z.enum(TITLE_WRITING_STORED_PROVIDER_KEYS).optional(),
   model: z.string().regex(MODEL_ID).optional(),
   /** Required when the episode already has scenes: the new result replaces them (old versions are kept). */
   replaceExisting: z.boolean().default(false),
@@ -206,7 +206,7 @@ export interface ScriptBreakdownRunView {
   targetEpisodeSeconds: number | null;
   characters: Array<{ key: string; characterId: string; revisionId: string; name: string }>;
   replacedScenes: number;
-  providerKey: TitleWritingProviderKey;
+  providerKey: TitleWritingStoredProviderKey;
   model: string;
   state: TitleWritingRunState;
   errorCode: string | null;

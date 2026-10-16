@@ -18,8 +18,8 @@ const MISSING = "44444444-4444-4444-8444-444444444444";
 const TOKEN = "operator-token-0123456789";
 const SECRET = "sk-live-secret-abcdefghijkl";
 const CONFIGURED: TitleWritingProviderEnv = {
-  DASHSCOPE_API_KEY: SECRET, BAILIAN_BASE_URL: "https://dashscope.aliyuncs.com/compatible-mode/v1", TITLE_WRITING_QWEN_MODELS: "q-1,q-2",
-  DEEPSEEK_API_KEY: SECRET, TITLE_WRITING_DEEPSEEK_MODELS: "d-1",
+  ANTHROPIC_API_KEY: SECRET, TITLE_WRITING_ANTHROPIC_MODELS: "q-1,q-2",
+  OPENAI_API_KEY: SECRET, TITLE_WRITING_OPENAI_MODELS: "d-1",
 };
 const CONTEXT = (key?: string) => ({ actorId: "server-owner", traceId: "t", ...(key ? { idempotencyKey: key } : {}) });
 
@@ -84,10 +84,10 @@ describe("title writing options", () => {
     const result = await service.options();
     const body = result.body as { code: string; providers: Array<{ providerKey: string; ready: boolean; models: string[]; missing: string[] }> };
     expect(body.code).toBe("TITLE_WRITING_READY");
+    // Exactly the two active providers, in their fixed order; no retired provider is ever offered.
     expect(body.providers).toEqual([
-      expect.objectContaining({ providerKey: "qwen", ready: true, models: ["q-1", "q-2"], missing: [] }),
-      expect.objectContaining({ providerKey: "openai", ready: false, missing: ["OPENAI_API_KEY", "TITLE_WRITING_OPENAI_MODELS"] }),
-      expect.objectContaining({ providerKey: "deepseek", ready: true, models: ["d-1"] }),
+      expect.objectContaining({ providerKey: "openai", label: "OpenAI", ready: false, models: ["d-1"], missing: ["OPENAI_API_KEY"] }),
+      expect.objectContaining({ providerKey: "anthropic", label: "Claude", ready: true, models: ["q-1", "q-2"], missing: [] }),
     ]);
     expect(JSON.stringify(result.body)).not.toContain(SECRET);
     expect(JSON.stringify(result.body)).not.toContain(TOKEN);
@@ -116,7 +116,8 @@ describe("starting a run", () => {
     await settle();
     const latest = await service.latest(P1);
     const run = (latest.body as { run: { state: string; storySave: string; providerKey: string; model: string } }).run;
-    expect(run).toMatchObject({ state: "completed", storySave: "saved", providerKey: "qwen", model: "q-1" });
+    // No default configured: the first ready provider in the fixed order (OpenAI) and its first allowlisted model.
+    expect(run).toMatchObject({ state: "completed", storySave: "saved", providerKey: "openai", model: "d-1" });
     expect(seen).toHaveLength(5);
     expect(store.projects.get(P1)!.stories[0]?.reviewStatus).toBe("DRAFT");
     const text = JSON.stringify(latest.body);
@@ -155,7 +156,7 @@ describe("starting a run", () => {
   });
 
   it("names the missing variables of the chosen provider and never falls back to another one", async () => {
-    const { service, seen, store } = setup();
+    const { service, seen, store } = setup({ env: { ANTHROPIC_API_KEY: SECRET, TITLE_WRITING_ANTHROPIC_MODELS: "q-1,q-2" } });
     const result = await service.start(P1, { title: "夜班证词", providerKey: "openai" }, TOKEN, CONTEXT("k"));
     expect(result.status).toBe(503);
     expect(result.body).toMatchObject({ error: { code: "TITLE_WRITING_PROVIDER_UNCONFIGURED", details: { providerKey: "openai",
@@ -177,10 +178,10 @@ describe("starting a run", () => {
 
   it("uses a chosen provider and model from the allowlist", async () => {
     const { service, settle, seen } = setup();
-    const result = await service.start(P1, { title: "夜班证词", providerKey: "deepseek", model: "d-1" }, TOKEN, CONTEXT("k"));
+    const result = await service.start(P1, { title: "夜班证词", providerKey: "openai", model: "d-1" }, TOKEN, CONTEXT("k"));
     expect(result.status).toBe(201);
     await settle();
-    expect(new Set(seen.map((item) => item.url))).toEqual(new Set(["https://api.deepseek.com/chat/completions"]));
+    expect(new Set(seen.map((item) => item.url))).toEqual(new Set(["https://api.openai.com/v1/responses"]));
     expect(seen.every((item) => item.body.model === "d-1")).toBe(true);
   });
 
@@ -330,7 +331,7 @@ describe("environment", () => {
   it("reads provider keys and model allowlists only from the process environment", () => {
     const fromFile = loadApiEnv(base, { OPENAI_API_KEY: SECRET, DEEPSEEK_API_KEY: SECRET, TITLE_WRITING_OPENAI_MODELS: "o-1" });
     expect(fromFile.OPENAI_API_KEY).toBeUndefined();
-    expect(fromFile.DEEPSEEK_API_KEY).toBeUndefined();
+    expect((fromFile as unknown as Record<string, unknown>).DEEPSEEK_API_KEY).toBeUndefined();
     expect(fromFile.TITLE_WRITING_OPENAI_MODELS).toBeUndefined();
     const fromProcess = loadApiEnv({ ...base, OPENAI_API_KEY: SECRET, TITLE_WRITING_OPENAI_MODELS: "o-1", TITLE_WRITING_ENABLED: "true" });
     expect(fromProcess).toMatchObject({ OPENAI_API_KEY: SECRET, TITLE_WRITING_OPENAI_MODELS: "o-1", TITLE_WRITING_ENABLED: true });
