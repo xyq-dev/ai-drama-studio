@@ -720,7 +720,8 @@ export interface AutoCreationStore {
   finishCall(workspaceId: string, callId: string, executorId: string, patch: AutoCallFinish, nowIso: string): Promise<boolean>;
   /** Machine draft only: a DRAFT story revision when the project has no current story, recorded on the run atomically. */
   saveStory(workspaceId: string, runId: string, executorId: string, storyText: string, quality: Exclude<AutoCreationQuality, "pending">, nowIso: string): Promise<"saved" | "conflict" | "lost">;
-  finishRun(workspaceId: string, runId: string, executorId: string, state: Exclude<TitleWritingRunState, "running">, errorCode: string | null, nowIso: string): Promise<boolean>;
+  /** Ends a run held by this executor. quality, when given, records the final review even though nothing was saved. */
+  finishRun(workspaceId: string, runId: string, executorId: string, state: Exclude<TitleWritingRunState, "running">, errorCode: string | null, nowIso: string, quality?: Exclude<AutoCreationQuality, "pending">): Promise<boolean>;
   requestCancel(workspaceId: string, projectId: string, runId: string, nowIso: string): Promise<AutoRunBundle | null>;
   prepareResume(workspaceId: string, projectId: string, runId: string, request: { resumeKey: string; requestHash: string; confirmedCallIds: readonly string[]; maxActiveRuns: number; providerReady: boolean }, nowIso: string): Promise<AutoResumePreparation>;
   recoverExpired(workspaceId: string, nowIso: string): Promise<number>;

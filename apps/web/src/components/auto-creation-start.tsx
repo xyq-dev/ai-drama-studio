@@ -156,8 +156,12 @@ export function AutoCreationStart() {
   const budgetProblem = budgetParsed.kind === "invalid" ? "调用预算必须是整数。"
     : budgetValue < normal ? `调用预算至少要 ${String(normal)} 次（正常流程所需）。`
       : budgetValue > hardCap ? `调用预算最多 ${String(hardCap)} 次。` : null;
+  const forbiddenThemes = forbidden.split(/[,，、]/u).map((item) => item.trim()).filter(Boolean);
+  // A hard constraint is never dropped: more than five themes, or a theme over 20 characters, is refused instead.
   const constraintProblem = charactersParsed.kind === "invalid" ? "出场人物最多人数必须是 1–8 的整数，或留空由 AI 决定。"
-    : locationsParsed.kind === "invalid" ? "地点最多个数必须是 1–6 的整数，或留空由 AI 决定。" : null;
+    : locationsParsed.kind === "invalid" ? "地点最多个数必须是 1–6 的整数，或留空由 AI 决定。"
+      : forbiddenThemes.length > 5 ? `禁止的题材或元素最多 5 项（现在 ${String(forbiddenThemes.length)} 项），请合并或删减后再开始。`
+        : forbiddenThemes.some((item) => item.length > 20) ? "每项禁止的题材或元素最多 20 字。" : null;
   const locked = busy || pending !== null;
 
   async function send(draft: PendingAutoStart) {
@@ -212,7 +216,7 @@ export function AutoCreationStart() {
       idea: idea.trim(),
       constraints: {
         genre: genre.trim(), audience: audience.trim(), maxCharacters: valueOr(charactersParsed, null), maxLocations: valueOr(locationsParsed, null),
-        forbiddenThemes: forbidden.split(/[,，、]/u).map((item) => item.trim()).filter(Boolean).slice(0, 5), endingRequirement: ending.trim(),
+        forbiddenThemes, endingRequirement: ending.trim(),
       },
       materials: materialText.trim().length > 0
         ? [{ title: materialTitle.trim() || "我的资料", kind: "notes", text: materialText, rightsConfirmed: true }] : [],

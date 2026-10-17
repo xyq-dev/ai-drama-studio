@@ -76,8 +76,12 @@ describe("research sources and claims", () => {
       .toMatchObject({ ok: false, code: "unsourced_number" });
     expect(validateAutoStageOutput("research", research({ opportunities: ["完播率可达 40%"] }), input(), context()))
       .toMatchObject({ ok: false, code: "unsourced_number" });
-    // Episode counts, seconds and ids are not market claims.
-    expect(numberTokens("1 集 60 秒，9:16，见 F1、S-KB-CRAFT")).toEqual([]);
+    // The run's own episode count and length, 9:16 and ids are not market claims; any other duration is.
+    expect(numberTokens("1 集 60 秒，9:16，见 F1、S-KB-CRAFT", [[1, "集"], [60, "秒"], [1, "分钟"]])).toEqual([]);
+    expect(numberTokens("用户每天观看60分钟", [[1, "集"], [60, "秒"], [1, "分钟"]])).toEqual(["60"]);
+    expect(validateAutoStageOutput("research", research({ opportunities: ["用户每天观看60分钟"] }), input(), context()))
+      .toMatchObject({ ok: false, code: "unsourced_number" });
+    expect(validateAutoStageOutput("research", research({ opportunities: ["约 60 秒一集正好讲完一次反击"] }), input(), context()).ok).toBe(true);
   });
 
   it("两 and other Chinese numerals are number claims too", () => {
@@ -86,6 +90,17 @@ describe("research sources and claims", () => {
     }
     expect(validateAutoStageOutput("research", research({ opportunities: ["两成用户会追更"] }), input(), context()))
       .toMatchObject({ ok: false, code: "unsourced_number" });
+  });
+
+  it("a number is supported only by the same whole number in the source, not by digits inside another", () => {
+    const page = { url: "https://support.oceanengine.com/a", status: "read" as const, title: "t", text: "该说明发布于2018年，介绍了短剧的基本形态。",
+      publishedAt: "2026-09-01T00:00:00.000Z", fetchedAt: NOW, note: "" };
+    const sources = collectSources(input(), [page], NOW);
+    const cited = sources.sources.find((item) => item.locator === page.url)!.sourceId;
+    const ctx = { sources, episodes: new Map(), reviews: [] };
+    expect(validateAutoStageOutput("research", research({ observations: [{ id: "O1", statement: "主要观众18岁以上", sourceIds: [cited] }] }), input(), ctx))
+      .toMatchObject({ ok: false, code: "unsourced_number", detail: "18" });
+    expect(validateAutoStageOutput("research", research({ observations: [{ id: "O1", statement: "说明发布于2018年", sourceIds: [cited] }] }), input(), ctx).ok).toBe(true);
   });
 
   it("in limited mode an audience is never sourced, even when it cites a readable but undated market page", () => {

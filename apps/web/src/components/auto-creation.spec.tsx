@@ -96,6 +96,17 @@ describe("AI 自动创作 start card", () => {
       expect(calls.filter((call) => call.method === "POST")).toHaveLength(0);
     });
 
+  it("more than five forbidden themes are refused, never silently dropped", async () => {
+    const calls = server(options());
+    render(<AutoCreationStart />);
+    const button = await screen.findByRole("button", { name: "AI 自动创作" });
+    await waitFor(() => expect(screen.getByTestId("auto-provider-target").textContent).toContain("DeepSeek"));
+    fireEvent.change(document.getElementById("auto-forbidden")!, { target: { value: "复仇,出轨,暴力,赌博,穿越,鬼怪" } });
+    fireEvent.click(button);
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("最多 5 项"));
+    expect(calls.filter((call) => call.method === "POST")).toHaveLength(0);
+  });
+
   it("with the default blocked and exactly one other provider ready, the person can choose it explicitly", async () => {
     const calls = server(options({ providers: [
       { providerKey: "deepseek", label: "DeepSeek", ready: false, models: [], defaultModel: null, missing: ["DEEPSEEK_API_KEY"] },
@@ -160,6 +171,16 @@ describe("AI 自动创作 run page", () => {
     expect(screen.getByTestId("auto-video-status").textContent).toContain("未开始");
     expect(screen.getByTestId("auto-open-issues").textContent).toContain("开场没有主动选择");
     expect(screen.getByTestId("auto-download-md").getAttribute("href")).toBe(`/api/v1/projects/${P1}/auto-runs/${RUN}/package?format=markdown`);
+  });
+
+  it("shows which episodes were written into the work and which were kept because a script already existed", async () => {
+    const stage = (stageKey: string, scriptSave: "saved" | "conflict") => ({ stageKey, kind: "episode" as const, state: "completed" as const, attemptNo: 1,
+      errorCode: null, output: null, upstreamChanged: false, supersededBy: null, scriptSave, scriptRevisionId: null });
+    vi.stubGlobal("fetch", vi.fn(async (input: string) => input.endsWith("/auto-runs/latest")
+      ? json({ run: run({ episodeCount: 2, stages: [stage("episode:1", "saved"), stage("episode:2", "conflict")] }) }) : json(options())));
+    render(<AutoCreationRun projectId={P1} />);
+    await waitFor(() => expect(screen.getByTestId("auto-script-save-episode:1").textContent).toContain("已写入"));
+    expect(screen.getByTestId("auto-script-save-episode:2").textContent).toContain("没有覆盖");
   });
 
   it("after a person edited the story in review, placement asks for an explicit confirmation and then sends it", async () => {

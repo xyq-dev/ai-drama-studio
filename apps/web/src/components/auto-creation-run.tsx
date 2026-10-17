@@ -237,6 +237,10 @@ export function AutoCreationRun({ projectId, client = defaultClient }: { project
                 <span className={styles.stepState}>{autoStageStateText(stage.state)}{stage.attemptNo > 1 ? `（第 ${String(stage.attemptNo)} 次）` : ""}</span>
                 {stage.supersededBy ? <span className={styles.helper}>已被 {autoStageLabel(stage.supersededBy)} 取代</span> : null}
                 {stage.upstreamChanged ? <span className={styles.warning}>上游内容已修改，这一版需要复核</span> : null}
+                {stage.scriptSave === "saved" ? <span className={styles.helper} data-testid={`auto-script-save-${stage.stageKey}`}>已写入作品分集草稿</span> : null}
+                {stage.scriptSave === "conflict" ? (
+                  <span className={styles.warning} data-testid={`auto-script-save-${stage.stageKey}`}>这一集作品里已有剧本，没有覆盖（AI 版本保留在剧本包中）</span>
+                ) : null}
                 {stage.errorCode && stage.state !== "completed" ? <span className={styles.stepError}>{autoErrorText(stage.errorCode)}</span> : null}
               </li>
             ))}

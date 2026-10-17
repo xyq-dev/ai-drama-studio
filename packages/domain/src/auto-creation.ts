@@ -322,11 +322,14 @@ function normalize(value: string): string {
 }
 
 /** Number claims: digits, percentages and Chinese numerals with a unit. Episode counts, seconds and IDs are allowed. */
-export function numberTokens(value: string): string[] {
+export function numberTokens(value: string, exempt: ReadonlyArray<readonly [number, string]> = []): string[] {
+  // Only the run's own structure is exempt (its episode count and target length): any other count of episodes,
+  // scenes, seconds or minutes is a quantitative claim and needs a source.
   const stripped = value
     .replace(/\b[FOHDCLPRK]\d{1,2}\b/g, " ")
     .replace(/S-[A-Z]+(?:-[A-Z0-9]+)*/g, " ")
-    .replace(/\d+\s*(?:集|秒|分钟|分|场)/g, " ")
+    .replace(/(\d+(?:\.\d+)?)\s*(集|秒|分钟)/g, (whole, number: string, unit: string) =>
+      exempt.some(([value, exemptUnit]) => value === Number(number) && exemptUnit === unit) ? " " : whole)
     .replace(/9\s*[:：]\s*16/g, " ");
   const tokens = stripped.match(/\d+(?:\.\d+)?\s*%?|[0-9０-９]+|百分之[〇零一二两三四五六七八九十百]+|[〇零一二两三四五六七八九十百千]+(?:成|万|亿|岁|倍|分之)/gu) ?? [];
   return tokens.map((token) => token.replace(/\s+/g, ""));
@@ -349,7 +352,13 @@ function zodFailure(error: { issues: Array<{ path: PropertyKey[]; message: strin
   return { ok: false, code: "invalid_output", detail: issue ? `${issue.path.map(String).join(".")}: ${issue.message}` : undefined };
 }
 
-function checkResearch(output: AutoResearch, context: AutoCreationContext): AutoValidation {
+/** The numbers a run's own settings put in text, with their units: N 集, the target seconds and minutes. */
+function structuralNumbers(input: AutoCreationFrozenInput): Array<readonly [number, string]> {
+  return [[input.episodeCount, "集"], [input.episodeSeconds, "秒"], [input.episodeSeconds / 60, "分钟"]];
+}
+
+function checkResearch(input: AutoCreationFrozenInput, output: AutoResearch, context: AutoCreationContext): AutoValidation {
+  const exempt = structuralNumbers(input);
   const readable = new Map(readableSources(context.sources!).map((source) => [source.sourceId, source] as const));
   const known = new Set(context.sources!.sources.map((source) => source.sourceId));
   const cite = (ids: readonly string[]): AutoValidation | null => {
@@ -360,8 +369,9 @@ function checkResearch(output: AutoResearch, context: AutoCreationContext): Auto
     return null;
   };
   const sourced = (statement: string, ids: readonly string[]): AutoValidation | null => {
-    const excerpts = normalize(ids.map((id) => readable.get(id)?.excerpt ?? "").join(""));
-    const missing = numberTokens(statement).find((token) => !excerpts.includes(normalize(token)));
+    // Whole tokens on both sides: "18" is not supported by an excerpt that only has "2018".
+    const supported = new Set(ids.flatMap((id) => numberTokens(readable.get(id)?.excerpt ?? "")).map(normalize));
+    const missing = numberTokens(statement, exempt).find((token) => !supported.has(normalize(token)));
     return missing ? { ok: false, code: "unsourced_number", detail: missing } : null;
   };
   const ids = [...output.facts.map((item) => item.id), ...output.observations.map((item) => item.id), ...output.hypotheses.map((item) => item.id)];
@@ -387,7 +397,7 @@ function checkResearch(output: AutoResearch, context: AutoCreationContext): Auto
   const audienceNumbers = sourced(audienceText, output.audience.sourceIds);
   if (audienceNumbers) return audienceNumbers;
   for (const statement of [...output.hypotheses.flatMap((item) => [item.statement, item.howToVerify]), ...output.opportunities]) {
-    const token = numberTokens(statement)[0];
+    const token = numberTokens(statement, exempt)[0];
     if (token) return { ok: false, code: "unsourced_number", detail: token };
   }
   // Limited mode means no readable, dated, recent market source: an audience can then only be a hypothesis.
@@ -643,7 +653,7 @@ export function validateAutoStageOutput(stageKey: string, content: string, input
   if (creative && textsOf(value).some((item) => UNSAFE.test(item) || RESERVED.test(item))) return { ok: false, code: "unsafe_content" };
   if (kind === "research") {
     const parsed = autoResearchSchema.safeParse(value);
-    return parsed.success ? checkResearch(parsed.data, context) : zodFailure(parsed.error);
+    return parsed.success ? checkResearch(input, parsed.data, context) : zodFailure(parsed.error);
   }
   if (kind === "directions") {
     const parsed = autoDirectionsSchema.safeParse(value);
@@ -801,6 +811,16 @@ export function formatAutoStory(runId: string, quality: "passed" | "needs_work",
   return text.length <= WRITING_BODY_MAX_CHARS ? text : null;
 }
 
+/** Scripts are written into the work only after a person approved the story, so a placed script proves that review. */
+export function scriptsPlacedAfterApproval(stages: readonly AutoStageRecord[]): boolean {
+  return stages.some((stage) => stage.scriptSave === "saved");
+}
+
+/** Blocking problems no episode revision can fix (setting or outline level). */
+export function blockingOutsideEpisodes(review: AutoReviewOutput): boolean {
+  return openIssues(review).some((item) => !/^episode:\d$/.test(item.target));
+}
+
 /** The script package is complete when every stage of the run completed (a later save conflict does not undo it). */
 export function autoPackageComplete(stages: readonly AutoStageRecord[]): boolean {
   return stages.length > 0 && stages.every((stage) => stage.state === "completed")
@@ -838,7 +858,7 @@ export function autoPackageJson(meta: AutoPackageMeta, stages: readonly AutoStag
     status: {
       scriptPackage: autoPackageComplete(stages) ? "ready" : "incomplete",
       video: "not_started",
-      humanReview: "not_reviewed",
+      humanReview: scriptsPlacedAfterApproval(stages) ? "approved_before_script_placement" : "not_confirmed",
       publication: "not_allowed_without_human_review",
     },
     input: { idea: meta.input.idea, constraints: meta.input.constraints, episodeCount: meta.input.episodeCount,
@@ -872,7 +892,7 @@ export function autoPackageMarkdown(meta: AutoPackageMeta, stages: readonly Auto
   push("## 状态", "",
     `- 剧本包：${autoPackageComplete(stages) ? "已完成" : "未完成"}；机器质量检查：${meta.quality === "passed" ? "通过（内部参考）" : meta.quality === "needs_work" ? "待完善" : "未完成"}`,
     "- 视频成片：未开始（本功能只交付剧本与生产准备包，不生成图片、语音或视频）",
-    "- 人工审核：未进行；对外发布：需要人工审核后另行决定",
+    `- 人工审核：${scriptsPlacedAfterApproval(stages) ? "故事已由人工审核通过，分集剧本已写入作品草稿" : "本剧本包没有人工审核通过的记录"}；对外发布：需要人工审核后另行决定`,
     `- 模型：${meta.input.providerKey} · ${meta.input.model}；调用 ${String(meta.callsUsed)} / ${String(meta.callCap)} 次；修改轮次 ${String(meta.revisionRoundsUsed)}；费用：未知（以服务商账单为准）`,
     `- 版本：${meta.input.promptVersion}、${meta.input.selectionRules}、${meta.input.checksVersion}`, "");
   if (context.sources) {

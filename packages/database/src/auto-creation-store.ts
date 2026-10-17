@@ -393,12 +393,13 @@ export class PostgresAutoCreationStore implements AutoCreationStore {
     });
   }
 
-  async finishRun(workspaceId: string, runId: string, executorId: string, state: Exclude<TitleWritingRunState, "running">, errorCode: string | null, nowIso: string): Promise<boolean> {
+  async finishRun(workspaceId: string, runId: string, executorId: string, state: Exclude<TitleWritingRunState, "running">, errorCode: string | null, nowIso: string, quality?: Exclude<AutoCreationQuality, "pending">): Promise<boolean> {
     return this.transaction(async (client) => {
       const updated = await client.query(
-        `UPDATE auto_creation_run SET state = $3, error_code = $4, executor_id = NULL, lease_until = NULL, updated_at = $5
+        `UPDATE auto_creation_run SET state = $3, error_code = $4, executor_id = NULL, lease_until = NULL, updated_at = $5,
+             quality = COALESCE($7, quality)
           WHERE id = $1 AND workspace_id = $6 AND state = 'running' AND executor_id = $2`,
-        [runId, executorId, state, errorCode, nowIso, workspaceId]);
+        [runId, executorId, state, errorCode, nowIso, workspaceId, quality ?? null]);
       if (updated.rowCount !== 1) return false;
       if (state === "canceled") {
         await client.query("UPDATE auto_creation_stage SET state = 'canceled', updated_at = $2 WHERE run_id = $1 AND state = 'pending'", [runId, nowIso]);
@@ -429,9 +430,13 @@ export class PostgresAutoCreationStore implements AutoCreationStore {
       if (run.state === "running") return { kind: "active" };
       if (run.state === "completed") return { kind: "not_resumable" };
       const titles = await client.query<Row>("SELECT to_regclass('title_writing_run') IS NOT NULL AS present");
-      const titleRunning = titles.rows[0]?.present === true
-        ? Number((await client.query<Row>("SELECT count(*)::int AS n FROM title_writing_run WHERE workspace_id = $1 AND state = 'running'", [workspaceId])).rows[0]?.n ?? 0)
-        : 0;
+      const titleProjects = titles.rows[0]?.present === true
+        ? (await client.query<Row>("SELECT project_id FROM title_writing_run WHERE workspace_id = $1 AND state = 'running'", [workspaceId])).rows
+          .map((item) => String(item.project_id))
+        : [];
+      // Never alongside a title writing run on the same work (the start paths refuse the same overlap).
+      if (titleProjects.includes(projectId)) return { kind: "active" };
+      const titleRunning = titleProjects.length;
       const autoRunning = Number((await client.query<Row>("SELECT count(*)::int AS n FROM auto_creation_run WHERE workspace_id = $1 AND state = 'running'",
         [workspaceId])).rows[0]?.n ?? 0);
       if (titleRunning + autoRunning >= request.maxActiveRuns) return { kind: "active_cap" };
@@ -500,6 +505,11 @@ export class PostgresAutoCreationStore implements AutoCreationStore {
       if (!runRow) return { kind: "not_found" };
       const run = toRun(runRow);
       if (run.state === "running" || scripts.length !== run.input.episodeCount) return { kind: "not_ready" };
+      // Only a complete package (every stage, the final review included) is ever placed.
+      const unfinished = await client.query<Row>(
+        `SELECT count(*) FILTER (WHERE state <> 'completed')::int AS open, count(*) FILTER (WHERE stage_key LIKE 'review:%')::int AS reviews
+           FROM auto_creation_stage WHERE run_id = $1`, [runId]);
+      if (Number(unfinished.rows[0]?.open ?? 1) !== 0 || Number(unfinished.rows[0]?.reviews ?? 0) === 0) return { kind: "not_ready" };
       // Project → episode, the order of the script editor's save.
       const locked = await client.query("SELECT id FROM project WHERE id = $1 AND workspace_id = $2 FOR UPDATE", [projectId, workspaceId]);
       if (!locked.rows[0]) return { kind: "not_found" };

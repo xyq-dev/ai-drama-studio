@@ -269,7 +269,7 @@ describe("AI automatic creation in a real browser (site login, built web, real A
     const response = await page.request.get(`${WEB}/api/v1/projects/${firstProject}/auto-runs/${(await q<{ id: string }>("SELECT id FROM auto_creation_run WHERE project_id = $1", [firstProject]))[0]!.id}/package?format=json`);
     expect(response.headers()["content-disposition"]).toContain("attachment");
     const json = await response.json() as { status: Record<string, string>; episodes: unknown[]; research: { sources: { researchMode: string } } };
-    expect(json.status).toMatchObject({ scriptPackage: "ready", video: "not_started", humanReview: "not_reviewed" });
+    expect(json.status).toMatchObject({ scriptPackage: "ready", video: "not_started", humanReview: "not_confirmed" });
     expect(json.research.sources.researchMode).toBe("limited");
     // The database: one run, six calls, billing unknown, a DRAFT story authored by the machine run.
     const run = (await q<{ id: string; state: string; quality: string; calls_used: number; provider_key: string; model: string }>(

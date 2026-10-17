@@ -274,6 +274,28 @@ describe(`automatic creation on PostgreSQL (${scenario} schema)`, () => {
     expect(run.calls.filter((call) => call.stageKey === "outline").map((call) => call.state)).toEqual(["unknown", "completed"]);
   });
 
+  it("a stopped run is not resumed while a title writing run is active on the same work", async () => {
+    plan = {};
+    failNext = "research";
+    const { svc, settle } = service({ maxActiveRuns: 5 });
+    const id = await project(1);
+    const started = await svc.start(id, {}, TOKEN, ctx("overlap"));
+    await settle();
+    const runId = runOf(started.body).runId;
+    expect(runOf((await svc.get(id, runId)).body).state).toBe("needs_attention");
+    const at = new Date().toISOString();
+    const titleRun = { id: randomUUID(), workspaceId, projectId: id, actorId: "server-owner", idempotencyKey: randomUUID(), inputHash: "cd".repeat(32),
+      input: { schema: "ads.title-writing.input.v1", promptVersion: "ads.title-writing.prompt.v1", title: "重叠", settings: { episodeCount: 3, episodeSeconds: 90, style: "" },
+        providerKey: "openai", model: "o-1" },
+      state: "running", errorCode: null, cancelRequestedAt: null, executorId: null, leaseUntil: null, callCap: 8, callsUsed: 0, storySave: "pending",
+      storyRevisionId: null, createdAt: at, updatedAt: at } as TitleRunRecord;
+    expect((await titles.createRun(titleRun, { maxActiveRuns: 5 })).kind).toBe("created");
+    const uncertain = runOf((await svc.get(id, runId)).body).calls.filter((call) => call.state === "unknown").map((call) => call.callId);
+    const refused = await svc.resume(id, runId, { confirmUncertainCallIds: uncertain }, TOKEN, ctx("overlap-resume"));
+    expect(refused.body).toMatchObject({ error: { code: "AUTO_CREATION_RUN_ACTIVE" } });
+    await q("UPDATE title_writing_run SET state = 'canceled' WHERE id = $1", [titleRun.id]);
+  });
+
   it("after a person approves the story, scripts are written once; a person's own script is kept", async () => {
     plan = {};
     const { svc, settle } = service();

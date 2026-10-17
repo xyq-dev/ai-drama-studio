@@ -330,8 +330,54 @@ describe("automatic creation engine", () => {
     expect(episodes.get(1)!.scripts).toHaveLength(1);
     await store.placeScripts(WS, P1, run.id, scripts, { acceptStoryChanged: false }, "server-owner", new Date().toISOString());
     expect(episodes.get(1)!.scripts).toHaveLength(1);
-    const view = autoRunView((await store.getRunById(WS, run.id))!);
+    const placedBundle = (await store.getRunById(WS, run.id))!;
+    const view = autoRunView(placedBundle);
     expect(view.stages.filter((stage) => stage.kind === "episode").map((stage) => stage.scriptSave)).toEqual(["saved", "conflict", "saved"]);
+    // The exported package now records the person's approval that placement required.
+    const meta = { runId: run.id, projectId: P1, input: placedBundle.run.input, quality: placedBundle.run.quality, state: placedBundle.run.state,
+      callsUsed: placedBundle.run.callsUsed, callCap: placedBundle.run.callCap, revisionRoundsUsed: placedBundle.run.revisionRoundsUsed,
+      storySave: placedBundle.run.storySave, generatedAt: new Date().toISOString() };
+    expect((autoPackageJson(meta, placedBundle.stages) as { status: { humanReview: string } }).status.humanReview).toBe("approved_before_script_placement");
+    expect(autoPackageMarkdown(meta, placedBundle.stages)).toContain("故事已由人工审核通过");
+  });
+
+  it("a blocking setting-level issue is not answered with paid episode rounds: needs work, unrevisable", async () => {
+    const { run, engine, seen, view } = await setup({ plan: { review: { highIssueRounds: [1, 2, 3], bibleIssueRounds: [1] } } });
+    await engine.drive(run.id);
+    const result = await view();
+    expect(result).toMatchObject({ state: "completed", quality: "needs_work", errorCode: "unrevisable_issues", revisionRoundsUsed: 0 });
+    expect(seen.some((item) => item.stage.startsWith("revise:"))).toBe(false);
+    expect(result.openIssues.map((item) => item.target)).toContain("bible");
+  });
+
+  it("a run ended without a save still records its final review quality", async () => {
+    const { store, run, engine } = await setup();
+    await store.claimRun(WS, run.id, engine.executorId, new Date(START).toISOString(), new Date(START + 60_000).toISOString());
+    await store.finishRun(WS, run.id, engine.executorId, "needs_attention", "story_too_large", new Date(START).toISOString(), "needs_work");
+    expect(store.runs.find((item) => item.id === run.id)).toMatchObject({ quality: "needs_work", errorCode: "story_too_large" });
+  });
+
+  it("scripts of an incomplete package (its review never completed) are never placed", async () => {
+    const { store, run, engine } = await setup({ episodeCount: 1, override: (stage) => stage === "review:1" ? { status: 400, body: { error: "bad" } } : undefined });
+    await engine.drive(run.id);
+    const bundle = (await store.getRunById(WS, run.id))!;
+    expect(bundle.run.state).toBe("partial");
+    store.writeHumanStory(P1, "人工写的故事");
+    store.approveCurrentStory(P1);
+    const placed = await store.placeScripts(WS, P1, run.id, autoScriptsOf(bundle), { acceptStoryChanged: true }, "server-owner", new Date().toISOString());
+    expect(placed.kind).toBe("not_ready");
+    expect(store.projects.get(P1)!.episodes.get(1)!.scripts).toHaveLength(0);
+  });
+
+  it("a stopped run is not resumed while a title writing run is active on the same work", async () => {
+    const { store, run } = await setup();
+    await store.requestCancel(WS, P1, run.id, new Date().toISOString());
+    const engine = new AutoCreationEngine({ workspaceId: WS, store, providers: providers(), maxCallsPerDay: 100, transport: autoFixtureTransport() });
+    await engine.drive(run.id);
+    store.titleRunning.set(P1, "title-run");
+    const resumed = await store.prepareResume(WS, P1, run.id, { resumeKey: "r", requestHash: hashAutoResume(run.id, []), confirmedCallIds: [],
+      maxActiveRuns: 5, providerReady: true }, new Date().toISOString());
+    expect(resumed.kind).toBe("active");
   });
 
   it("an episode whose script would exceed the editor's limit is refused, never cut", async () => {
@@ -370,7 +416,7 @@ describe("automatic creation engine", () => {
     const meta = { runId: run.id, projectId: P1, input: bundle.run.input, quality: bundle.run.quality, state: bundle.run.state, callsUsed: bundle.run.callsUsed,
       callCap: bundle.run.callCap, revisionRoundsUsed: bundle.run.revisionRoundsUsed, storySave: bundle.run.storySave, generatedAt: new Date().toISOString() };
     const json = autoPackageJson(meta, bundle.stages) as { status: Record<string, string>; episodes: Array<{ version: string }>; revisions: unknown[]; production: { shots: unknown[] } };
-    expect(json.status).toEqual({ scriptPackage: "ready", video: "not_started", humanReview: "not_reviewed", publication: "not_allowed_without_human_review" });
+    expect(json.status).toEqual({ scriptPackage: "ready", video: "not_started", humanReview: "not_confirmed", publication: "not_allowed_without_human_review" });
     expect(json.episodes.map((item) => item.version)).toEqual(["revise:1:episode:1"]);
     expect(json.revisions).toHaveLength(1);
     expect(json.production.shots.length).toBeGreaterThan(0);

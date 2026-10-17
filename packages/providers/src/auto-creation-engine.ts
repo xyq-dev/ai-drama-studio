@@ -42,7 +42,9 @@ import {
 } from "@ai-drama/contracts";
 import {
   autoContextFromStages,
+  autoPackageComplete,
   autoStageDependencies,
+  blockingOutsideEpisodes,
   buildAutoCreationPrompt,
   canonicalInputHash,
   collectSources,
@@ -317,8 +319,9 @@ export class AutoCreationEngine {
     for (const runId of await this.deps.store.listClaimable(this.workspaceId, nowIso, limit)) await this.drive(runId);
   }
 
-  private async finish(runId: string, state: Exclude<TitleWritingRunState, "running">, errorCode: string | null): Promise<false> {
-    await this.deps.store.finishRun(this.workspaceId, runId, this.executorId, state, errorCode, this.now().toISOString());
+  private async finish(runId: string, state: Exclude<TitleWritingRunState, "running">, errorCode: string | null,
+    quality?: Exclude<AutoCreationQuality, "pending">): Promise<false> {
+    await this.deps.store.finishRun(this.workspaceId, runId, this.executorId, state, errorCode, this.now().toISOString(), quality);
     return false;
   }
 
@@ -432,7 +435,10 @@ export class AutoCreationEngine {
     if (!review.passed) {
       const targets = revisionTargets(review, run.input.episodeCount);
       const roundsLeft = round <= run.input.revisionRounds && run.revisionRoundsUsed < round;
-      if (targets.length > 0 && roundsLeft) {
+      // A blocking setting or outline problem makes a pass impossible whatever the episodes say: no paid round for it.
+      if (blockingOutsideEpisodes(review)) {
+        errorCode = "unrevisable_issues";
+      } else if (targets.length > 0 && roundsLeft) {
         // The whole round must fit the run's own budget before any of it is planned.
         if (run.storySave === "pending" && run.callsUsed + targets.length + 1 <= run.callCap) {
           const keys = [...targets.map((episodeNo) => `revise:${String(round)}:episode:${String(episodeNo)}`), `review:${String(round + 1)}`];
@@ -446,7 +452,7 @@ export class AutoCreationEngine {
     if (run.storySave === "saved") return this.finish(run.id, "completed", errorCode);
     if (run.storySave === "conflict") return this.finish(run.id, "needs_attention", "story_conflict");
     const text = formatAutoStory(run.id, quality, autoContextFromStages(stages));
-    if (text === null) return this.finish(run.id, "needs_attention", "story_too_large");
+    if (text === null) return this.finish(run.id, "needs_attention", "story_too_large", quality);
     const saved = await this.deps.store.saveStory(this.workspaceId, run.id, this.executorId, text, quality, this.now().toISOString());
     if (saved === "lost") return false;
     if (saved === "conflict") return this.finish(run.id, "needs_attention", "story_conflict");
@@ -682,13 +688,13 @@ export class InMemoryAutoCreationStore implements AutoCreationStore {
     return "saved";
   }
 
-  async finishRun(workspaceId: string, runId: string, executorId: string, state: Exclude<TitleWritingRunState, "running">, errorCode: string | null, nowIso: string): Promise<boolean> {
+  async finishRun(workspaceId: string, runId: string, executorId: string, state: Exclude<TitleWritingRunState, "running">, errorCode: string | null, nowIso: string, quality?: Exclude<AutoCreationQuality, "pending">): Promise<boolean> {
     const run = this.run(runId);
     if (run.workspaceId !== workspaceId || run.state !== "running" || run.executorId !== executorId) return false;
     if (state === "canceled") {
       for (const stage of this.stages.filter((item) => item.runId === runId && item.state === "pending")) Object.assign(stage, { state: "canceled", updatedAt: nowIso });
     }
-    Object.assign(run, { state, errorCode, executorId: null, leaseUntil: null, updatedAt: nowIso });
+    Object.assign(run, { state, errorCode, executorId: null, leaseUntil: null, updatedAt: nowIso, ...(quality ? { quality } : {}) });
     return true;
   }
 
@@ -706,6 +712,8 @@ export class InMemoryAutoCreationStore implements AutoCreationStore {
     if (previous) return previous.requestHash === request.requestHash ? { kind: "replayed", bundle: this.bundle(run) } : { kind: "key_conflict" };
     if (run.state === "running") return { kind: "active" };
     if (run.state === "completed") return { kind: "not_resumable" };
+    // Never alongside a title writing run on the same work.
+    if (this.titleRunning.has(projectId)) return { kind: "active" };
     if (this.runs.filter((item) => item.workspaceId === workspaceId && item.state === "running").length + this.titleRunning.size >= request.maxActiveRuns) return { kind: "active_cap" };
     const stages = this.stages.filter((item) => item.runId === runId);
     const uncertain = autoUncertainCallIds(stages, this.calls.filter((item) => item.runId === runId));
@@ -754,7 +762,9 @@ export class InMemoryAutoCreationStore implements AutoCreationStore {
   async placeScripts(workspaceId: string, projectId: string, runId: string, scripts: ReadonlyArray<{ episodeNo: number; stageKey: string; text: string }>, options: { acceptStoryChanged: boolean }, actorId: string, nowIso: string): Promise<AutoScriptPlacement> {
     const run = this.runs.find((item) => item.id === runId && item.workspaceId === workspaceId && item.projectId === projectId);
     if (!run) return { kind: "not_found" };
-    if (run.state === "running" || scripts.length !== run.input.episodeCount) return { kind: "not_ready" };
+    // Only a complete package (every stage, the final review included) is ever placed.
+    if (run.state === "running" || scripts.length !== run.input.episodeCount
+      || !autoPackageComplete(this.stages.filter((stage) => stage.runId === runId))) return { kind: "not_ready" };
     const project = this.projects.get(projectId)!;
     if (!project.approvedStoryId || project.currentStoryId !== project.approvedStoryId) return { kind: "story_not_approved" };
     if (project.approvedStoryId !== run.storyRevisionId && !options.acceptStoryChanged) return { kind: "story_changed" };

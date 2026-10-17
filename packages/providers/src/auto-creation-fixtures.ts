@@ -188,6 +188,8 @@ export interface AutoReviewPlan {
   highIssueRounds?: number[];
   /** An issue whose quote is not in the text (kept, never acted on). */
   unverifiedIssue?: boolean;
+  /** A verified high-severity issue on the bible in these rounds (no episode revision can fix it). */
+  bibleIssueRounds?: number[];
 }
 
 export function fixtureAutoReview(round: number, plan: AutoReviewPlan = {}): AutoReview {
@@ -195,6 +197,10 @@ export function fixtureAutoReview(round: number, plan: AutoReviewPlan = {}): Aut
   if (plan.highIssueRounds?.includes(round)) {
     issues.push({ id: "R1", dimension: "conflictAction", severity: "high", target: "episode:1",
       evidence: "陈默把餐盒放在门口", problem: "开场动作没有体现陈默的主动选择。", suggestion: "让陈默主动请求签名并说明理由。" });
+  }
+  if (plan.bibleIssueRounds?.includes(round)) {
+    issues.push({ id: "R3", dimension: "motivation", severity: "high", target: "bible",
+      evidence: "完成虚报的指标", problem: "反派动机单薄。", suggestion: "补充赵强的压力来源。" });
   }
   if (plan.unverifiedIssue) {
     issues.push({ id: "R2", dimension: "dialogue", severity: "high", target: "episode:1",
