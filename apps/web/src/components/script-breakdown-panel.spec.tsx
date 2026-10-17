@@ -1188,6 +1188,21 @@ describe("the feature switch is the main state, whatever the task read says", ()
     };
   }
 
+  it("A2: off with a storage 503 history read and an unusable configured default: still only the off text, start disabled, nothing sent", async () => {
+    const s = server(() => json({ ...DISABLED, defaultProvider: "deepseek", providers: [
+      { providerKey: "openai", label: "OpenAI", ready: true, models: ["d-1"], defaultModel: "d-1", missing: [] },
+      { providerKey: "deepseek", label: "DeepSeek", ready: false, models: [], defaultModel: null, missing: ["DEEPSEEK_API_KEY"] }] }), storage503);
+    render(panelFor(s));
+    await waitFor(() => expect(screen.queryByTestId("breakdown-history-error")).not.toBeNull());
+    const view = disabledView();
+    expect(view.blocked).toBe("剧本拆解尚未开启。");
+    expect(view.alert).toBeNull();
+    expect(view.startDisabled).toBe(true);
+    fireEvent.click(startButton());
+    await settle();
+    expect(s.posts()).toEqual([]);
+  });
+
   it("A: says it is off (not 'read again') when off and the task read is a storage 503, keeps start disabled and sends nothing", async () => {
     const s = server(() => json(DISABLED), storage503);
     render(panelFor(s));
@@ -1405,4 +1420,75 @@ describe("the feature switch is the main state, whatever the task read says", ()
     expect(s.posts()).toHaveLength(0);
     expect(JSON.parse(window.sessionStorage.getItem(storage)!)).toEqual(pending);
   });
+});
+
+describe("the provider a new breakdown goes to", () => {
+  const option = (providerKey: "openai" | "anthropic" | "deepseek", label: string, missing: string[], models: string[]) => ({
+    providerKey, label, ready: missing.length === 0, models, defaultModel: models[0] ?? null, missing });
+  const OPENAI_READY = option("openai", "OpenAI", [], ["d-1"]);
+  const CLAUDE_READY = option("anthropic", "Claude", [], ["q-1"]);
+  const startButton = () => screen.getByRole<HTMLButtonElement>("button", { name: /生成场景与分镜|确认上次启动结果/ });
+  const posts = (h: ReturnType<typeof harness>) => h.seen.filter((item) => item.method === "POST");
+  const PENDING_KEY = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+
+  async function opened(options: ScriptBreakdownOptionsView, answers: Array<Response | Error> = []) {
+    const h = harness(null, answers, options);
+    panel(h);
+    fireEvent.change(await screen.findByLabelText("操作者令牌"), { target: { value: TOKEN } });
+    return h;
+  }
+
+  it("a configured default DeepSeek without a key is kept: its gap is shown, start is disabled and nothing goes to OpenAI", async () => {
+    const h = await opened({ ...OPTIONS, defaultProvider: "deepseek",
+      providers: [OPENAI_READY, option("deepseek", "DeepSeek", ["DEEPSEEK_API_KEY"], ["deepseek-flash"])] });
+    const blocked = await screen.findByTestId("breakdown-blocked");
+    await waitFor(() => expect(blocked.textContent).toContain("DeepSeek：尚未配置 DeepSeek API Key"));
+    expect(blocked.textContent).toContain("不会自动改用其他模型服务");
+    expect(startButton().disabled).toBe(true);
+    fireEvent.click(startButton());
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(posts(h)).toHaveLength(0);
+  });
+
+  it("a configured default Claude that is not ready is not replaced by the providers that are", async () => {
+    const h = await opened({ ...OPTIONS, defaultProvider: "anthropic",
+      providers: [OPENAI_READY, option("anthropic", "Claude", ["WRITING_PROVIDER_MIGRATION"], ["q-1"]), option("deepseek", "DeepSeek", [], ["deepseek-flash"])] });
+    const blocked = await screen.findByTestId("breakdown-blocked");
+    await waitFor(() => expect(blocked.textContent).toContain("Claude：数据库迁移 20261016000100_writing_provider_anthropic 尚未执行"));
+    expect(startButton().disabled).toBe(true);
+    fireEvent.click(startButton());
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(posts(h)).toHaveLength(0);
+  });
+
+  it("a ready configured default is sent once and frozen in the request identity", async () => {
+    const h = await opened({ ...OPTIONS, defaultProvider: "deepseek", providers: [OPENAI_READY, option("deepseek", "DeepSeek", [], ["deepseek-flash"])] },
+      [json({ run: run({ providerKey: "deepseek", model: "deepseek-flash" }) }, 201)]);
+    await waitFor(() => expect(startButton().disabled).toBe(false));
+    fireEvent.click(startButton());
+    await screen.findByText(/状态：已完成/);
+    expect(posts(h).map((item) => item.body)).toEqual([{ replaceExisting: false, providerKey: "deepseek", model: "deepseek-flash" }]);
+  });
+
+  it("without a configured default the ready provider is still recommended and sent", async () => {
+    const h = await opened({ ...OPTIONS, defaultProvider: null, providers: [OPENAI_READY, option("deepseek", "DeepSeek", ["DEEPSEEK_API_KEY"], [])] },
+      [json({ run: run({ providerKey: "openai", model: "d-1" }) }, 201)]);
+    await waitFor(() => expect(startButton().disabled).toBe(false));
+    fireEvent.click(startButton());
+    await screen.findByText(/状态：已完成/);
+    expect(posts(h).map((item) => item.body)).toEqual([{ replaceExisting: false, providerKey: "openai", model: "d-1" }]);
+  });
+
+  it("an unconfirmed start is still confirmed with its own key and body while the current default cannot be used", async () => {
+    const body = { replaceExisting: false, providerKey: "anthropic", model: "q-1" };
+    window.sessionStorage.setItem(`ads:breakdown:${P1}:${E1}:start:v1`, JSON.stringify({ kind: "start", key: PENDING_KEY, body }));
+    const h = await opened({ ...OPTIONS, defaultProvider: "deepseek",
+      providers: [CLAUDE_READY, option("deepseek", "DeepSeek", ["DEEPSEEK_API_KEY"], ["deepseek-flash"])] }, [json({ run: run() }, 200)]);
+    await waitFor(() => expect(startButton().textContent).toBe("确认上次启动结果"));
+    await waitFor(() => expect(startButton().disabled).toBe(false));
+    fireEvent.click(startButton());
+    await screen.findByText(/状态：已完成/);
+    expect(posts(h).map((item) => [item.headers["idempotency-key"], item.body])).toEqual([[PENDING_KEY, body]]);
+  });
+
 });

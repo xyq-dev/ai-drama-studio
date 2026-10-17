@@ -176,14 +176,15 @@ export function providerGapText(option: { label: string; missing: readonly strin
  * ready is never replaced: the person has to choose another ready provider explicitly.
  */
 export function providerTarget<T extends { providerKey: string; label: string; ready: boolean; missing: readonly string[] }>(
-  providers: readonly T[], providerKey: string, explicit: boolean,
+  providers: readonly T[], providerKey: string, explicit: boolean, choosable = true,
 ): { kind: "ready"; option: T } | { kind: "blocked"; reason: string } | { kind: "none" } {
   const option = providers.find((item) => item.providerKey === providerKey);
   if (!option) return { kind: "none" };
   if (option.ready) return { kind: "ready", option };
   return { kind: "blocked", reason: explicit
     ? `所选模型服务暂不可用。${providerGapText(option)}。`
-    : `默认模型服务暂不可用，没有发出调用，也不会自动改用其他模型服务。${providerGapText(option)}。可以在高级设置中明确选择其他已就绪的模型服务。` };
+    : `默认模型服务暂不可用，没有发出调用，也不会自动改用其他模型服务。${providerGapText(option)}。${choosable
+      ? "可以在高级设置中明确选择其他已就绪的模型服务。" : "请管理员补齐后再开始。"}` };
 }
 
 export function optionsUnavailableReason(options: TitleWritingOptionsView | null): string | null {
