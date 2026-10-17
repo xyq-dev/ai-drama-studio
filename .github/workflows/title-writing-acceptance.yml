@@ -269,7 +269,7 @@ jobs:
 
       - name: Run the deploy migration command again on the upgraded acceptance database
         # The store acceptance upgraded this database, with its title writing data, to the episode plan release. The real
-        # deploy command must add exactly the script breakdown, provider and candidate migrations, and a second run must
+        # deploy command must add exactly the script breakdown, provider, candidate and DeepSeek candidate migrations, and a second run must
         # find nothing.
         run: |
           name="ads_title_acceptance_store_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
