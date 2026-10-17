@@ -28,6 +28,7 @@ import {
   PostgresTitleWritingStore,
   SCRIPT_BREAKDOWN_MIGRATION,
   WRITING_CANDIDATE_DEEPSEEK_MIGRATION,
+  AUTO_CREATION_MIGRATION,
   WRITING_CANDIDATE_MIGRATION,
   WRITING_PROVIDER_MIGRATION,
   TextChainService,
@@ -477,7 +478,8 @@ beforeAll(async () => {
     evidence: evidenceRoot ? join(evidenceRoot, "script-breakdown-media") : null };
   for (const dir of [dirs.mock, dirs.composeWork, dirs.composeObjects, dirs.evidence]) if (dir) await mkdir(dir, { recursive: true });
   const applied = (await runMigrations(pool)).applied;
-  expect(applied.slice(-4)).toEqual([SCRIPT_BREAKDOWN_MIGRATION, WRITING_PROVIDER_MIGRATION, WRITING_CANDIDATE_MIGRATION, WRITING_CANDIDATE_DEEPSEEK_MIGRATION]);
+  expect(applied.slice(-5)).toEqual([SCRIPT_BREAKDOWN_MIGRATION, WRITING_PROVIDER_MIGRATION, WRITING_CANDIDATE_MIGRATION, WRITING_CANDIDATE_DEEPSEEK_MIGRATION,
+    AUTO_CREATION_MIGRATION]);
   evidence.database = { name: decision.databaseName, migrationsApplied: applied };
   // Acceptance data in the new database: the workspace row and the existing Mock video/speech provider provisioning.
   await q("INSERT INTO workspace (id, name, status) VALUES ($1, 'r2-media-acceptance', 'ACTIVE')", [WORKSPACE]);
