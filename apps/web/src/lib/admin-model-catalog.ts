@@ -15,6 +15,9 @@ import type { TitleWritingProviderKey } from "@ai-drama/contracts";
  *   https://platform.claude.com/docs/en/build-with-claude/effort . Every current ID is a pinned snapshot.
  *   claude-opus-5-5 is also the model Claude Code was running when this was written; that is a coincidence of names,
  *   not a link: the site calls the API with its own Anthropic API key only.
+ * - DeepSeek (Chat Completions, response_format json_object, thinking disabled), 2026-10-17: the model name
+ *   deepseek-flash (DeepSeek-V4.1-Flash) at https://api-docs.deepseek.com/quick_start/pricing/ , listed with JSON
+ *   output. One stable default only; the retired deepseek-chat / deepseek-reasoner names are not offered.
  *
  * Not claimed: that an account has a model enabled, that any candidate has been called by this project, or any price,
  * speed or ranking. Notes repeat only the provider's own description.
@@ -32,6 +35,9 @@ export const MODEL_CANDIDATES: Readonly<Record<TitleWritingProviderKey, readonly
     { id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5", note: "官方说明：速度与智能的最佳平衡" },
     { id: "claude-haiku-5-5", name: "Claude Haiku 5.5", note: "官方说明：适合大批量、对延迟敏感的任务" },
     { id: "claude-fable-5-1", name: "Claude Fable 5.1", note: "官方说明：适合高难度推理与长周期任务" },
+  ],
+  deepseek: [
+    { id: "deepseek-flash", name: "DeepSeek Flash", note: "官方模型版本：DeepSeek-V4.1-Flash，支持 JSON 输出" },
   ],
 };
 

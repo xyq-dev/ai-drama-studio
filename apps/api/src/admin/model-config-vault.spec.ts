@@ -4,22 +4,24 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AdminLimitsUpdate, AdminProviderUpdate } from "@ai-drama/contracts";
-import { ModelConfigVault, V1_BACKUP_SUFFIX, type ManagedModelSettings } from "./model-config-vault";
+import { DEEPSEEK_BACKUP_SUFFIX, ModelConfigVault, V1_BACKUP_SUFFIX, type ManagedModelSettings } from "./model-config-vault";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
-  return { ...actual, rename: vi.fn(actual.rename), open: vi.fn(actual.open) };
+  return { ...actual, rename: vi.fn(actual.rename), open: vi.fn(actual.open), link: vi.fn(actual.link) };
 });
 
 const SECRET = "sk-vault-private-test-123456789";
 const FORMAT = "ai-drama-studio.admin-model-vault.v2";
 const FORMAT_V1 = "ai-drama-studio.admin-model-vault.v1";
 const FILES = ["model-config.enc", "model-config.enc.initialized"];
+const DEEPSEEK_URL = "https://api.deepseek.com/chat/completions";
 const initial = (): ManagedModelSettings => ({
   revision: 0, defaultProvider: "anthropic", maxCallsPerDay: 30, maxActiveRuns: 1,
   providers: {
     openai: { apiKey: null, baseUrl: "https://api.openai.com/v1/responses", models: [] },
     anthropic: { apiKey: null, baseUrl: "https://api.anthropic.com/v1/messages", models: ["claude-test"] },
+    deepseek: { apiKey: null, baseUrl: DEEPSEEK_URL, models: [] },
   },
 });
 const update = (expectedRevision = 0): AdminProviderUpdate => ({
@@ -99,6 +101,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
   vi.mocked(fs.rename).mockReset();
   vi.mocked(fs.open).mockReset();
+  vi.mocked(fs.link).mockReset();
   vi.unstubAllGlobals();
   await Promise.all(directories.splice(0).map((directory) => fs.rm(directory, { recursive: true, force: true })));
 });
@@ -327,10 +330,8 @@ describe.skipIf(process.platform === "win32")("ModelConfigVault real private fil
     const h = await harness();
     await h.vault.updateProvider("anthropic", { expectedRevision: 0, models: [], secretAction: "clear" });
     expect((await h.vault.read()).saved.providers.anthropic).toEqual({ models: [], baseUrl: "https://api.anthropic.com/v1/messages", apiKey: null });
-    // The retired providers cannot be edited at all.
-    for (const retired of ["qwen", "deepseek"]) {
-      await expect(h.vault.updateProvider(retired as "openai", update(1))).rejects.toMatchObject({ status: 400 });
-    }
+    // The retired provider cannot be edited at all.
+    await expect(h.vault.updateProvider("qwen" as "openai", update(1))).rejects.toMatchObject({ status: 400 });
     const limits: AdminLimitsUpdate = { expectedRevision: 1, defaultProvider: null, maxCallsPerDay: 8, maxActiveRuns: 1 };
     await expect(h.vault.updateLimits({ ...limits, enabled: true } as AdminLimitsUpdate)).rejects.toMatchObject({ status: 400 });
     await expect(h.vault.updateLimits({ ...limits, operatorToken: SECRET } as AdminLimitsUpdate)).rejects.toMatchObject({ status: 400 });
@@ -412,9 +413,11 @@ describe.skipIf(process.platform === "win32")("ModelConfigVault upgrade of a rel
     const vault = await h.open();
     const doc = await vault.read();
     // OpenAI keeps its key, models, order and endpoint; Claude starts unconfigured; the retired default is unset.
+    // DeepSeek is active again, but its v1 key and models are never carried over: it starts unconfigured.
     expect(doc.saved).toEqual({ revision: 3, defaultProvider: null, maxCallsPerDay: 12, maxActiveRuns: 2, providers: {
       openai: { apiKey: OPENAI_SECRET, baseUrl: "https://api.openai.com/v1/responses", models: ["gpt-6-luna", "gpt-6-astra"] },
       anthropic: { apiKey: null, baseUrl: "https://api.anthropic.com/v1/messages", models: [] },
+      deepseek: { apiKey: null, baseUrl: DEEPSEEK_URL, models: [] },
     } });
     // The pending restart is kept: active is still revision 2.
     expect(doc.active.revision).toBe(2);
@@ -555,5 +558,211 @@ describe.skipIf(process.platform === "win32")("ModelConfigVault upgrade of a rel
     await seal(h.path, h.masterKey, same, FORMAT_V1, FORMAT_V1);
     const doc = await (await h.open()).read();
     expect(doc.active).toEqual(doc.saved);
+  });
+});
+
+/** What the release before DeepSeek reads: the v2 envelope and document, with exactly the openai and anthropic entries. */
+function openV2(bytes: Buffer, masterKey: Buffer): { active: Record<string, unknown>; saved: Record<string, unknown> } {
+  const envelope = JSON.parse(bytes.toString("utf8")) as { format: string; nonce: string; tag: string; ciphertext: string };
+  expect(envelope.format).toBe(FORMAT);
+  const decipher = createDecipheriv("aes-256-gcm", masterKey, Buffer.from(envelope.nonce, "base64"));
+  decipher.setAAD(Buffer.from(FORMAT));
+  decipher.setAuthTag(Buffer.from(envelope.tag, "base64"));
+  return JSON.parse(Buffer.concat([decipher.update(Buffer.from(envelope.ciphertext, "base64")), decipher.final()]).toString("utf8")) as never;
+}
+/** True when the release before DeepSeek could read this file: no DeepSeek entry and no DeepSeek default in either settings. */
+function readableByPreviousRelease(bytes: Buffer, masterKey: Buffer): boolean {
+  const doc = openV2(bytes, masterKey);
+  return [doc.active, doc.saved].every((settings) => {
+    const record = settings as { defaultProvider: unknown; providers: Record<string, unknown> };
+    return record.defaultProvider !== "deepseek" && Object.keys(record.providers).sort().join(",") === "anthropic,openai";
+  });
+}
+const DEEPSEEK_KEY = "fake-deepseek-vault-test-key-0123";
+
+describe.skipIf(process.platform === "win32")("ModelConfigVault with DeepSeek active again (two-provider v2 file upgraded in place)", () => {
+  it("a file written before DeepSeek is read without any write, and DeepSeek reads as unconfigured", async () => {
+    const h = await harness();
+    await h.vault.updateProvider("anthropic", update());
+    const before = await fs.readFile(h.path);
+    expect(readableByPreviousRelease(before, h.masterKey)).toBe(true);
+    const doc = await (await h.reopen()).read();
+    expect(doc.saved.providers.deepseek).toEqual({ apiKey: null, baseUrl: DEEPSEEK_URL, models: [] });
+    expect(doc.active.providers.deepseek).toEqual({ apiKey: null, baseUrl: DEEPSEEK_URL, models: [] });
+    expect(await fs.readFile(h.path)).toEqual(before);
+    expect(await fs.readdir(h.directory)).toEqual(FILES);
+  });
+
+  it("saves that leave DeepSeek unset keep the file readable by the previous release and make no backup", async () => {
+    const h = await harness();
+    await h.vault.updateProvider("anthropic", update());
+    await h.vault.updateProvider("openai", { expectedRevision: 1, secretAction: "replace", apiKey: SECRET, models: ["gpt-6-luna"] });
+    await h.vault.updateLimits({ expectedRevision: 2, defaultProvider: "openai", maxCallsPerDay: 9, maxActiveRuns: 1 });
+    await h.vault.activateIfIdle(async () => true);
+    expect(readableByPreviousRelease(await fs.readFile(h.path), h.masterKey)).toBe(true);
+    expect(await fs.readdir(h.directory)).toEqual(FILES);
+  });
+
+  it("the first DeepSeek save keeps the exact earlier file as a private backup, once, and makes DeepSeek the default", async () => {
+    const h = await harness();
+    await h.vault.updateProvider("anthropic", { ...update(), workspaceAction: "replace", workspaceId: "wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ" });
+    const original = await fs.readFile(h.path);
+    await h.vault.updateProvider("deepseek", { expectedRevision: 1, secretAction: "replace", apiKey: DEEPSEEK_KEY, models: ["deepseek-flash"] },
+      { makeDefault: true });
+    const backup = `${h.path}${DEEPSEEK_BACKUP_SUFFIX}`;
+    expect((await fs.readdir(h.directory)).sort()).toEqual([...FILES, `model-config.enc${DEEPSEEK_BACKUP_SUFFIX}`].sort());
+    expect(await fs.readFile(backup)).toEqual(original);
+    expect((await fs.stat(backup)).mode & 0o777).toBe(0o600);
+    expect(readableByPreviousRelease(await fs.readFile(backup), h.masterKey)).toBe(true);
+    // The live file now needs this release; the key stays ciphertext only.
+    const live = await fs.readFile(h.path);
+    expect(live.toString()).not.toContain(DEEPSEEK_KEY);
+    expect(readableByPreviousRelease(live, h.masterKey)).toBe(false);
+    const doc = await (await h.reopen()).read();
+    expect(doc.saved).toMatchObject({ revision: 2, defaultProvider: "deepseek" });
+    expect(doc.saved.providers.deepseek).toEqual({ apiKey: DEEPSEEK_KEY, baseUrl: DEEPSEEK_URL, models: ["deepseek-flash"] });
+    // Claude's key and workspace, OpenAI and the active (pending restart) settings are untouched.
+    expect(doc.saved.providers.anthropic).toEqual({ apiKey: SECRET, baseUrl: "https://api.anthropic.com/v1/messages", models: ["claude-test"],
+      workspaceId: "wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ" });
+    expect(doc.active).toMatchObject({ revision: 0, defaultProvider: "anthropic" });
+    expect(doc.active.providers.deepseek.apiKey).toBeNull();
+    expect(doc.audit.at(-1)).toMatchObject({ action: "provider_updated", providerKey: "deepseek", revision: 2 });
+    expect(JSON.stringify(doc.audit)).not.toContain(DEEPSEEK_KEY);
+    // A later save never replaces the kept backup.
+    const reopened = await h.reopen();
+    await reopened.updateProvider("deepseek", { expectedRevision: 2, secretAction: "replace", apiKey: `${DEEPSEEK_KEY}-2`, models: ["deepseek-flash"] }, { makeDefault: true });
+    expect(await fs.readFile(backup)).toEqual(original);
+    // Activation copies DeepSeek into the active settings at the next start.
+    const active = await (await h.reopen()).activateIfIdle(async () => true);
+    expect(active.active).toMatchObject({ revision: 3, defaultProvider: "deepseek" });
+    expect(active.active.providers.deepseek.apiKey).toBe(`${DEEPSEEK_KEY}-2`);
+  });
+
+  it("clearing the DeepSeek key also clears its models and its default, so the file is readable by the previous release again", async () => {
+    const h = await harness();
+    await h.vault.updateProvider("deepseek", { expectedRevision: 0, secretAction: "replace", apiKey: DEEPSEEK_KEY, models: ["deepseek-flash"] }, { makeDefault: true });
+    await h.vault.activateIfIdle(async () => true);
+    await h.vault.updateProvider("deepseek", { expectedRevision: 1, secretAction: "clear", models: ["deepseek-flash"] });
+    let doc = await h.vault.read();
+    expect(doc.saved.defaultProvider).toBeNull();
+    expect(doc.saved.providers.deepseek).toEqual({ apiKey: null, baseUrl: DEEPSEEK_URL, models: [] });
+    // Active still holds DeepSeek until the restart applies the cleared settings.
+    expect(readableByPreviousRelease(await fs.readFile(h.path), h.masterKey)).toBe(false);
+    await h.vault.activateIfIdle(async () => true);
+    doc = await h.vault.read();
+    expect(doc.active.providers.deepseek.apiKey).toBeNull();
+    expect(readableByPreviousRelease(await fs.readFile(h.path), h.masterKey)).toBe(true);
+  });
+
+  it("refuses a DeepSeek default without a DeepSeek key, a DeepSeek workspace and another endpoint, writing nothing", async () => {
+    const h = await harness();
+    const before = await fs.readFile(h.path);
+    await expect(h.vault.updateLimits({ expectedRevision: 0, defaultProvider: "deepseek", maxCallsPerDay: 9, maxActiveRuns: 1 })).rejects.toMatchObject({ status: 400 });
+    await expect(h.vault.updateProvider("deepseek", { expectedRevision: 0, secretAction: "replace", apiKey: DEEPSEEK_KEY, models: ["deepseek-flash"],
+      workspaceAction: "replace", workspaceId: "wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ" })).rejects.toMatchObject({ status: 400 });
+    await expect(h.vault.updateProvider("deepseek", { expectedRevision: 0, secretAction: "replace", apiKey: DEEPSEEK_KEY, models: ["deepseek-flash"],
+      baseUrl: "https://proxy.example.test/chat/completions" })).rejects.toMatchObject({ status: 400 });
+    expect(await fs.readFile(h.path)).toEqual(before);
+    expect(await fs.readdir(h.directory)).toEqual(FILES);
+  });
+
+  it("a v1 file never brings its old DeepSeek key back, even when DeepSeek is saved again later", async () => {
+    const h = await v1Harness();
+    const vault = await h.open();
+    await vault.updateProvider("deepseek", { expectedRevision: 3, secretAction: "replace", apiKey: DEEPSEEK_KEY, models: ["deepseek-flash"] }, { makeDefault: true });
+    const doc = await (await h.open()).read();
+    expect(doc.saved.providers.deepseek.apiKey).toBe(DEEPSEEK_KEY);
+    expect(JSON.stringify(doc)).not.toContain(DEEPSEEK_SECRET);
+    // The v1 file is kept as its own backup; it is not the file from before DeepSeek, so no second backup is made from it.
+    expect(await fs.readFile(`${h.path}${V1_BACKUP_SUFFIX}`)).toEqual(h.original);
+    expect((await fs.readdir(h.directory)).sort()).toEqual([...FILES, `model-config.enc${V1_BACKUP_SUFFIX}`].sort());
+    expect(doc.retired).toEqual({ providers: ["qwen", "deepseek"], retiredDefault: "qwen" });
+  });
+});
+
+describe.skipIf(process.platform === "win32")("ModelConfigVault: the backup from before DeepSeek is complete and intact, or nothing is replaced", () => {
+  const BACKUP = `model-config.enc${DEEPSEEK_BACKUP_SUFFIX}`;
+  const saveDeepseek = (vault: ModelConfigVault, expectedRevision: number, apiKey = DEEPSEEK_KEY) =>
+    vault.updateProvider("deepseek", { expectedRevision, secretAction: "replace", apiKey, models: ["deepseek-flash"] }, { makeDefault: true });
+
+  /** A vault with a saved Claude key and Workspace ID, so a refused write can be seen to keep every other setting. */
+  async function prepared() {
+    const h = await harness();
+    await h.vault.updateProvider("anthropic", { ...update(), workspaceAction: "replace", workspaceId: "wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ" });
+    return { ...h, original: await fs.readFile(h.path) };
+  }
+
+  /** The live file is the one from before the refused save, readable, with its revisions and settings unchanged. */
+  async function liveKept(h: Awaited<ReturnType<typeof prepared>>) {
+    expect(await fs.readFile(h.path)).toEqual(h.original);
+    const doc = await (await h.reopen()).read();
+    expect([doc.saved.revision, doc.active.revision]).toEqual([1, 0]);
+    expect(doc.saved.providers.anthropic).toMatchObject({ apiKey: SECRET, workspaceId: "wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ" });
+    expect(doc.saved.providers.deepseek.apiKey).toBeNull();
+    expect((await fs.readdir(h.directory)).filter((name) => name.endsWith(".tmp") || name.endsWith(".lock"))).toEqual([]);
+  }
+
+  it.each([
+    ["an empty file", async (path: string) => { await fs.writeFile(path, Buffer.alloc(0), { mode: 0o600 }); }],
+    ["a truncated copy", async (path: string, original: Buffer) => { await fs.writeFile(path, original.subarray(0, Math.floor(original.length / 2)), { mode: 0o600 }); }],
+    ["a world-readable copy", async (path: string, original: Buffer) => { await fs.writeFile(path, original, { mode: 0o600 }); await fs.chmod(path, 0o644); }],
+    ["a symbolic link", async (path: string, _original: Buffer, live: string) => { await fs.symlink(live, path); }],
+    ["a copy under another master key", async (path: string) => {
+      const other = await harness();
+      await other.vault.updateProvider("anthropic", update());
+      await fs.writeFile(path, await fs.readFile(other.path), { mode: 0o600 });
+    }],
+  ] as const)("refuses to go on over %s at the backup name, and keeps the live configuration whole", async (_name, make) => {
+    const h = await prepared();
+    await make(`${h.path}${DEEPSEEK_BACKUP_SUFFIX}`, h.original, h.path);
+    const before = await fs.lstat(`${h.path}${DEEPSEEK_BACKUP_SUFFIX}`);
+    await expect(saveDeepseek(h.vault, 1)).rejects.toMatchObject({ status: 503 });
+    await liveKept(h);
+    // The damaged backup is not overwritten either.
+    const after = await fs.lstat(`${h.path}${DEEPSEEK_BACKUP_SUFFIX}`);
+    expect([after.size, after.mode, after.isSymbolicLink()]).toEqual([before.size, before.mode, before.isSymbolicLink()]);
+  });
+
+  it("refuses a backup of this vault that already holds DeepSeek (not readable by the release before it)", async () => {
+    const h = await prepared();
+    await saveDeepseek(h.vault, 1);
+    const withDeepseek = await fs.readFile(h.path);
+    // Back to the shape without DeepSeek, then replace the kept backup with a file of this vault that holds DeepSeek.
+    await h.vault.updateProvider("deepseek", { expectedRevision: 2, secretAction: "clear", models: [] });
+    await h.vault.activateIfIdle(async () => true);
+    const live = await fs.readFile(h.path);
+    await fs.rm(`${h.path}${DEEPSEEK_BACKUP_SUFFIX}`);
+    await fs.writeFile(`${h.path}${DEEPSEEK_BACKUP_SUFFIX}`, withDeepseek, { mode: 0o600 });
+    await expect(saveDeepseek(h.vault, 3)).rejects.toMatchObject({ status: 503 });
+    expect(await fs.readFile(h.path)).toEqual(live);
+    expect(await fs.readFile(`${h.path}${DEEPSEEK_BACKUP_SUFFIX}`)).toEqual(withDeepseek);
+  });
+
+  it("a backup that fails while being written is never published: the next save writes it whole, then saves", async () => {
+    const h = await prepared();
+    vi.mocked(fs.link).mockRejectedValueOnce(Object.assign(new Error("disk full"), { code: "ENOSPC" }));
+    await expect(saveDeepseek(h.vault, 1)).rejects.toMatchObject({ status: 503 });
+    await liveKept(h);
+    expect((await fs.readdir(h.directory)).sort()).toEqual([...FILES].sort());
+    await saveDeepseek(h.vault, 1);
+    expect(await fs.readFile(`${h.path}${DEEPSEEK_BACKUP_SUFFIX}`)).toEqual(h.original);
+    expect((await fs.stat(`${h.path}${DEEPSEEK_BACKUP_SUFFIX}`)).mode & 0o777).toBe(0o600);
+    expect((await fs.stat(`${h.path}${DEEPSEEK_BACKUP_SUFFIX}`)).nlink).toBe(1);
+    expect((await fs.readdir(h.directory)).sort()).toEqual([...FILES, BACKUP].sort());
+    const doc = await (await h.reopen()).read();
+    expect([doc.saved.revision, doc.saved.defaultProvider, doc.saved.providers.deepseek.apiKey]).toEqual([2, "deepseek", DEEPSEEK_KEY]);
+  });
+
+  it("keeps the earliest intact backup although the live file changed since: it is checked, not compared with the live bytes", async () => {
+    const h = await prepared();
+    await saveDeepseek(h.vault, 1);
+    await h.vault.updateProvider("deepseek", { expectedRevision: 2, secretAction: "clear", models: [] });
+    await h.vault.updateLimits({ expectedRevision: 3, defaultProvider: "openai", maxCallsPerDay: 11, maxActiveRuns: 1 });
+    await h.vault.activateIfIdle(async () => true);
+    expect(await fs.readFile(h.path)).not.toEqual(h.original);
+    await saveDeepseek(h.vault, 4, `${DEEPSEEK_KEY}-2`);
+    expect(await fs.readFile(`${h.path}${DEEPSEEK_BACKUP_SUFFIX}`)).toEqual(h.original);
+    const doc = await (await h.reopen()).read();
+    expect([doc.saved.revision, doc.saved.defaultProvider, doc.saved.providers.deepseek.apiKey]).toEqual([5, "deepseek", `${DEEPSEEK_KEY}-2`]);
   });
 });

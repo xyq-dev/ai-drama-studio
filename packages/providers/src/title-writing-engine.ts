@@ -2,6 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   TITLE_WRITING_CANCELED_BEFORE_SEND,
   TITLE_WRITING_RUN_KIND_DISABLED,
+  frozenProviderAdapter,
+  isLegacyDeepseekRun,
   settledSaveOutcome,
   type TitleCallFinish,
   type TitleCallRecord,
@@ -142,12 +144,18 @@ export function newTitleRun(options: {
   model: string;
   now: Date;
   /**
+   * Only to rebuild a start stored before the DeepSeek adapter mark existed, so that its replay is compared with the
+   * input it was stored with; never used to create a run.
+   */
+  withoutAdapterMark?: boolean;
+  /**
    * 2 freezes the project's episode plan (N, target seconds) with the guided prompt v4; 1, the default, is the
    * unchanged three-episode input. Runs already stored with prompt v2 or v3 keep it.
    */
   version?: 1 | 2;
 }): TitleRunRecord {
-  const common = { title: options.title, settings: options.settings, providerKey: options.providerKey, model: options.model };
+  const common = { title: options.title, settings: options.settings, providerKey: options.providerKey, model: options.model,
+    ...(options.withoutAdapterMark ? {} : frozenProviderAdapter(options.providerKey)) };
   const input: TitleWritingFrozenInput = options.version === 2
     ? { schema: TITLE_WRITING_INPUT_SCHEMA_V2, promptVersion: TITLE_WRITING_PROMPT_VERSION_V4, ...common }
     : { schema: TITLE_WRITING_INPUT_SCHEMA, promptVersion: TITLE_WRITING_PROMPT_VERSION, ...common };
@@ -287,6 +295,7 @@ export function titleRunView(bundle: TitleRunBundle): TitleWritingRunView {
     storySave: run.storySave,
     storyRevisionId: run.storyRevisionId,
     storyText: storyTextOf(bundle),
+    legacyProviderRun: isLegacyDeepseekRun(input),
     steps: [...bundle.steps].sort((left, right) => left.ordinal - right.ordinal).map((step) => ({
       stepKey: step.stepKey,
       state: step.state,
@@ -418,8 +427,13 @@ export class TitleWritingEngine {
       // A call of this run is still open under another lease; recovery decides its fate.
       return false;
     }
-    // A run of a retired provider (qwen, deepseek) has no configuration or adapter: it stops here before any reservation
-    // or send, and is never moved to another provider or model.
+    // A DeepSeek run stored before the retirement is never sent for again, even now that DeepSeek is configured: an
+    // upgrade must not revive it. It stops before any reservation or send and keeps its provider, model and calls.
+    if (isLegacyDeepseekRun(run.input)) {
+      return this.finish(runId, "needs_attention", "legacy_provider_run");
+    }
+    // A run of a retired provider (qwen) has no configuration or adapter: it stops here before any reservation or send,
+    // and is never moved to another provider or model. Nor is a run whose frozen model is no longer allowed.
     const provider = providerConfigFor(this.deps.providers, run.input.providerKey);
     const adapter = provider ? (this.deps.adapters ?? WRITING_ADAPTERS)[provider.providerKey] : undefined;
     if (!provider || !adapter || !provider.ok || !provider.models.includes(run.input.model)) {
@@ -663,6 +677,8 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
    * run or call the way PostgreSQL would, and providerStorageReady("anthropic") is false.
    */
   anthropicReady = true;
+  /** Stands in for the live CHECKs naming deepseek (they have since the first title writing migration). */
+  deepseekReady = true;
   readonly breakdownEpisodes = new Map<string, MemoryBreakdownEpisode>();
   readonly scenes: MemoryScene[] = [];
   readonly shots: MemoryShot[] = [];
@@ -701,7 +717,7 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
   }
 
   async providerStorageReady(providerKey: TitleWritingProviderKey): Promise<boolean> {
-    return this.ready && (providerKey !== "anthropic" || this.anthropicReady);
+    return this.ready && (providerKey !== "anthropic" || this.anthropicReady) && (providerKey !== "deepseek" || this.deepseekReady);
   }
 
   /** The provider_key CHECK of title_writing_run and title_writing_call before and after the provider migration. */

@@ -184,11 +184,11 @@ describe("an unconfirmed start", () => {
     expect(runPosts(calls).map((call) => [call.body, call.headers["Idempotency-Key"]])).toEqual([[legacy.request, legacy.runKey]]);
   });
 
-  it.each(["qwen", "deepseek"])("a stored request of the retired provider %s is kept, shown with its real provider and replayed unchanged", async (retired) => {
+  it.each(["qwen"])("a stored request of the retired provider %s is kept, shown with its real provider and replayed unchanged", async (retired) => {
     const stored = { version: 2, request: { title: "旧剧名", providerKey: retired, model: `${retired}-old`, settings: { episodeSeconds: 90, style: "" } },
       projectKey: "11111111-aaaa-4aaa-8aaa-111111111111", projectId: P1, runKey: "22222222-bbbb-4bbb-8bbb-222222222222" };
     window.sessionStorage.setItem(DRAFT_KEY, JSON.stringify(stored));
-    const label = retired === "qwen" ? "千问（已退役）" : "DeepSeek（已退役）";
+    const label = "千问（已退役）";
     const { calls } = server(() => json({ error: { code: "TITLE_WRITING_PROVIDER_RETIRED", message: "x", details: { providerKey: retired, label } } }, 409));
     const { button } = await mount();
     expect(button.textContent).toBe("重试上次请求");
@@ -383,5 +383,38 @@ describe("the site login authorizes the call", () => {
     await waitFor(() => expect(runPosts(calls)).toHaveLength(1));
     expect(Object.keys(runPosts(calls)[0]!.headers).map((name) => name.toLowerCase())).not.toContain("x-operator-token");
     await waitFor(() => expect(assign).toHaveBeenCalledWith(`/projects/${P1}/writing`));
+  });
+});
+
+describe("the provider a start goes to", () => {
+  const DEEPSEEK_DOWN = { providerKey: "deepseek" as const, label: "DeepSeek", ready: false, models: ["deepseek-flash"], defaultModel: "deepseek-flash",
+    missing: ["WRITING_PROVIDER_MIGRATION"] };
+
+  it("names the provider and model actually used, from the server's real configuration", async () => {
+    server(() => json(finished(), 201), { options: options({ defaultProvider: "anthropic" }) });
+    await mount();
+    expect(screen.getByTestId("ai-provider-target").textContent).toBe("本次发送给：Claude · q-1");
+    expect(screen.getByText(/服务端已配置：OpenAI、Claude。/)).toBeTruthy();
+  });
+
+  it("a configured default that is not ready blocks the start with its reason; another provider is used only when chosen", async () => {
+    const { calls } = server((call) => call.url === "/api/v1/projects" ? json({ id: P1 }, 201) : json(finished(), 201),
+      { options: options({ defaultProvider: "deepseek", providers: [...options().providers, DEEPSEEK_DOWN] }) });
+    const { button } = await mount();
+    const blocked = screen.getByTestId("ai-provider-blocked");
+    expect(blocked.textContent).toContain("默认模型服务暂不可用，没有发出调用，也不会自动改用其他模型服务");
+    expect(blocked.textContent).toContain("DeepSeek：数据库迁移 20261016000100_writing_provider_anthropic 尚未执行");
+    expect(screen.queryByTestId("ai-provider-target")).toBeNull();
+    fireEvent.change(screen.getByLabelText("剧名"), { target: { value: "夜班证词" } });
+    fireEvent.click(button);
+    expect((await screen.findByRole("alert")).textContent).toContain("默认模型服务暂不可用");
+    expect([projectPosts(calls).length, runPosts(calls).length]).toEqual([0, 0]);
+    const select = screen.getByLabelText("模型服务") as HTMLSelectElement;
+    expect(select.value).toBe("deepseek");
+    fireEvent.change(select, { target: { value: "anthropic" } });
+    expect(screen.getByTestId("ai-provider-target").textContent).toBe("本次发送给：Claude · q-1");
+    fireEvent.click(button);
+    await waitFor(() => expect(runPosts(calls)).toHaveLength(1));
+    expect(runPosts(calls)[0]!.body).toMatchObject({ providerKey: "anthropic", model: "q-1" });
   });
 });

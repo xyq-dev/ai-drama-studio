@@ -183,6 +183,7 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
   // Once applied a migration stays applied, so only a positive answer is remembered.
   private breakdownReadyConfirmed = false;
   private anthropicReadyConfirmed = false;
+  private deepseekReadyConfirmed = false;
 
   constructor(private readonly pool: DatabasePool, private readonly textChain: TextChainService) {}
 
@@ -203,6 +204,7 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
 
   async providerStorageReady(providerKey: TitleWritingProviderKey): Promise<boolean> {
     if (!(await this.storageReady())) return false;
+    if (providerKey === "deepseek") return this.deepseekStorageReady();
     if (providerKey !== "anthropic" || this.anthropicReadyConfirmed) return true;
     try {
       const table = await this.query("SELECT to_regclass('schema_migration') IS NOT NULL AS present", []);
@@ -218,6 +220,26 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
       );
       this.anthropicReadyConfirmed = Number(checks.rows[0]?.allowed) === 2;
       return this.anthropicReadyConfirmed;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * DeepSeek runs need no migration: the provider CHECKs have named deepseek since 20261008000100_title_writing and the
+   * Claude migration kept it. The live CHECKs are still read, so a database changed by hand is refused, not written.
+   */
+  private async deepseekStorageReady(): Promise<boolean> {
+    if (this.deepseekReadyConfirmed) return true;
+    try {
+      const checks = await this.query(
+        `SELECT count(*)::int AS allowed FROM pg_constraint
+          WHERE conrelid IN (to_regclass('title_writing_run'), to_regclass('title_writing_call')) AND contype = 'c'
+            AND pg_get_constraintdef(oid) LIKE '%provider_key%' AND pg_get_constraintdef(oid) LIKE '%''deepseek''%'`,
+        [],
+      );
+      this.deepseekReadyConfirmed = Number(checks.rows[0]?.allowed) === 2;
+      return this.deepseekReadyConfirmed;
     } catch {
       return false;
     }

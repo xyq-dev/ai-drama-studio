@@ -1,5 +1,5 @@
 import {
-  TITLE_WRITING_DEFAULT_MODELS, anthropicKeyProblem, anthropicWorkspaceIdValid, type TitleWritingProviderKey,
+  TITLE_WRITING_DEFAULT_MODELS, anthropicKeyProblem, anthropicWorkspaceIdValid, deepseekKeyProblem, type TitleWritingProviderKey,
 } from "@ai-drama/contracts";
 import {
   ResponseBodyError,
@@ -13,8 +13,9 @@ import {
  * result shape and one error classification; every vendor difference (endpoint, authentication headers, body,
  * structured-output format, thinking, stop reasons and usage) stays inside its adapter.
  *
- * Only two providers are active: OpenAI and Claude (Anthropic). Runs stored with the retired qwen or deepseek keys stay
- * readable, but no adapter, endpoint or configuration exists for them any more, so nothing can be sent for them.
+ * Three providers are active: DeepSeek, Claude (Anthropic) and OpenAI. Runs stored with the retired qwen key stay
+ * readable, but no adapter, endpoint or configuration exists for it, so nothing can be sent for them. DeepSeek runs
+ * stored before its retirement stay readable and are never sent for again (isLegacyDeepseekRun).
  *
  * Checked against the official documentation:
  * - OpenAI (2026-10-08): POST https://api.openai.com/v1/responses, Bearer key, text.format json_schema (name, schema,
@@ -34,6 +35,15 @@ import {
  *   to a workspace must send anthropic-workspace-id; without it the API answers 400 invalid_request_error
  *   "anthropic-workspace-id is required…", an invalid id 400 "…must be a valid workspace ID.", and an unknown or
  *   inaccessible workspace 404 not_found_error "Workspace `<id>` not found.". No OAuth or Claude Code header is sent.
+ * - DeepSeek (2026-10-17, api-docs.deepseek.com: first_api_call, api/create-chat-completion, guides/json_mode,
+ *   guides/thinking_mode, quick_start/pricing, quick_start/error_codes): POST https://api.deepseek.com/chat/completions
+ *   with Authorization: Bearer; model deepseek-flash; thinking {type: "enabled" | "disabled"} (enabled by default);
+ *   response_format {type: "json_object"} needs the word "json" in the prompt, does not take a schema and "may
+ *   occasionally return empty content"; max_tokens 1–393216 (non-thinking default 8K); finish_reason stop / length /
+ *   content_filter / tool_calls / insufficient_system_resource / aborted; message content and (thinking only)
+ *   reasoning_content; usage prompt_tokens (= prompt_cache_hit_tokens + prompt_cache_miss_tokens), completion_tokens
+ *   (includes completion_tokens_details.reasoning_tokens) and total_tokens; 400 invalid format, 401 authentication,
+ *   402 insufficient balance, 422 invalid parameters, 429 rate limit, 500 server error, 503 overloaded.
  */
 export type { WritingTransport } from "./http-transport";
 
@@ -50,6 +60,7 @@ export const ANTHROPIC_VERSION = "2023-06-01";
  */
 export const ANTHROPIC_THINKING_HEADROOM_TOKENS = 4_096;
 export const ANTHROPIC_EFFORT = "low";
+export const DEEPSEEK_CHAT_COMPLETIONS_URL = "https://api.deepseek.com/chat/completions";
 
 export type WritingErrorCode =
   | "auth"
@@ -338,9 +349,96 @@ export const anthropicWritingAdapter: WritingAdapter = {
   requestIdHeaders: ["request-id"],
 };
 
+/**
+ * DeepSeek's JSON output takes no schema, so the request names the schema in the system message, after the frozen
+ * system prompt (which itself is unchanged), together with the word "json" the mode requires. The answer is still
+ * checked against the same zod schemas and domain rules as every other provider's: parsable JSON is not enough.
+ */
+export function deepseekSystemMessage(system: string, schemaName: string, jsonSchema: Record<string, unknown>): string {
+  return `${system}\n\n输出格式（json）：只输出一个 JSON 对象，不要输出 Markdown 代码块、解释或其他文字。`
+    + `该对象必须符合下面名为 ${schemaName} 的 JSON Schema：\n${JSON.stringify(jsonSchema)}`;
+}
+
+function deepseekUsage(value: unknown): WritingUsage {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return UNKNOWN_USAGE;
+  const record = value as Record<string, unknown>;
+  const input = count(record.prompt_tokens);
+  const output = count(record.completion_tokens);
+  if (input === null || output === null) return UNKNOWN_USAGE;
+  // prompt_tokens already counts cache hits and misses, and completion_tokens already counts reasoning tokens: neither
+  // is added again. Figures that contradict each other leave the usage unknown rather than guessed.
+  const hit = record.prompt_cache_hit_tokens;
+  const miss = record.prompt_cache_miss_tokens;
+  if (hit !== undefined || miss !== undefined) {
+    const hits = count(hit);
+    const misses = count(miss);
+    if (hits === null || misses === null || hits + misses !== input) return UNKNOWN_USAGE;
+  }
+  const total = record.total_tokens === undefined ? input + output : count(record.total_tokens);
+  if (total === null || total !== input + output) return UNKNOWN_USAGE;
+  return { status: "present", inputTokens: input, outputTokens: output, totalTokens: total };
+}
+
+function deepseekAnswer(raw: string, secret: string): ParsedAnswer {
+  const body = jsonObject(raw);
+  if (!body) return { errorCode: "invalid_output", content: null, responseModel: null, bodyRequestId: null, usage: UNKNOWN_USAGE };
+  const base = { responseModel: safeModel(body.model), bodyRequestId: safeId(body.id, secret), usage: deepseekUsage(body.usage) };
+  const choices = Array.isArray(body.choices) ? body.choices : null;
+  if (!choices || choices.length !== 1) return { ...base, errorCode: "invalid_output", content: null };
+  const choice = choices[0] && typeof choices[0] === "object" && !Array.isArray(choices[0]) ? choices[0] as Record<string, unknown> : null;
+  const message = choice?.message && typeof choice.message === "object" && !Array.isArray(choice.message)
+    ? choice.message as Record<string, unknown> : null;
+  if (!choice || !message) return { ...base, errorCode: "invalid_output", content: null };
+  const finish = choice.finish_reason;
+  if (finish === "content_filter" || (typeof message.refusal === "string" && message.refusal.length > 0)) {
+    return { ...base, errorCode: "refusal", content: null };
+  }
+  if (finish === "length") return { ...base, errorCode: "truncated", content: null };
+  // The provider stopped the answer itself: an answer without usable content, not a finished one.
+  if (finish === "insufficient_system_resource" || finish === "aborted") return { ...base, errorCode: "server_error", content: null };
+  // tool_calls or anything unknown: not a finished answer to this request (no tool is offered).
+  if (finish !== "stop") return { ...base, errorCode: "invalid_output", content: null };
+  if (Array.isArray(message.tool_calls) && message.tool_calls.length > 0) return { ...base, errorCode: "invalid_output", content: null };
+  // Only the final content is the answer. reasoning_content is never read, stored, shown or joined to it.
+  const content = message.content;
+  if (typeof content !== "string" || content.trim().length === 0) return { ...base, errorCode: "invalid_output", content: null };
+  return { ...base, errorCode: null, content };
+}
+
+export const deepseekWritingAdapter: WritingAdapter = {
+  providerKey: "deepseek",
+  label: "DeepSeek",
+  url: DEEPSEEK_CHAT_COMPLETIONS_URL,
+  headers: (apiKey) => ({ Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }),
+  buildBody(request) {
+    return JSON.stringify({
+      model: request.model,
+      messages: [
+        { role: "system", content: deepseekSystemMessage(request.system, request.schemaName, request.jsonSchema) },
+        { role: "user", content: request.user },
+      ],
+      // Thinking off: the step is a structured rewrite within one 120 s request, reasoning would only add cost and time,
+      // and JSON output is documented without it. The visible answer gets the shared output budget.
+      thinking: { type: "disabled" },
+      response_format: { type: "json_object" },
+      max_tokens: request.maxOutputTokens,
+      stream: false,
+    });
+  },
+  parseAnswer: deepseekAnswer,
+  classifyStatus(status) {
+    if (status === 402) return { code: "quota", outcome: "rejected" };
+    // 401 authentication, 422 invalid parameters, 429 rate limit, 500 / 503: the shared meaning (5xx stays unknown).
+    return commonStatus(status);
+  },
+  // DeepSeek documents no request id header; the body id is used.
+  requestIdHeaders: [],
+};
+
 export const WRITING_ADAPTERS: Readonly<Record<TitleWritingProviderKey, WritingAdapter>> = {
   openai: openAiWritingAdapter,
   anthropic: anthropicWritingAdapter,
+  deepseek: deepseekWritingAdapter,
 };
 
 function headerRequestId(adapter: WritingAdapter, headers: { get(name: string): string | null }, secret: string): string | null {
@@ -437,8 +535,14 @@ export type WritingProviderConfig =
     workspaceId?: string | null }
   | { providerKey: TitleWritingProviderKey; ok: false; models: string[]; missing: string[] };
 
-/** Only the active providers' variables. Retired providers' variables are ignored and never read. */
+/**
+ * Only the active providers' variables. Retired providers' variables are ignored and never read. The DeepSeek pair is
+ * filled only from the encrypted console configuration: the API never reads DeepSeek variables from its environment,
+ * so a key left there from before the retirement is never used again.
+ */
 export interface TitleWritingProviderEnv {
+  DEEPSEEK_API_KEY?: string;
+  TITLE_WRITING_DEEPSEEK_MODELS?: string;
   OPENAI_API_KEY?: string;
   TITLE_WRITING_OPENAI_MODELS?: string;
   ANTHROPIC_API_KEY?: string;
@@ -467,11 +571,12 @@ function configOf(providerKey: TitleWritingProviderKey, url: string, key: string
   // Claude takes a Claude Console API key only, with the same rule as the console input: a credential of another kind
   // (subscription / Claude Code OAuth, Admin key, session, JWT) or an unsupported shape is never sent, even if configured.
   if (apiKey && providerKey === "anthropic" && anthropicKeyProblem(apiKey) !== null) apiKey = null;
+  if (apiKey && providerKey === "deepseek" && deepseekKeyProblem(apiKey) !== null) apiKey = null;
   if (!apiKey) missing.push(keyName);
   // An invalid workspace id is a gap, never dropped silently: sending without it would not act in the chosen workspace.
   const workspaceId = workspace?.value ? workspace.value : null;
   if (workspace && workspaceId !== null && !anthropicWorkspaceIdValid(workspaceId)) missing.push(workspace.name);
-  // No model list but a key: the provider's documented default list (Claude only), so a key alone is a full setup.
+  // No model list but a key: the provider's documented default list (Claude, DeepSeek), so a key alone is a full setup.
   const defaults = TITLE_WRITING_DEFAULT_MODELS[providerKey];
   const listed = parseModelList(modelList);
   const models: { ok: true; models: string[] } | { ok: false } = listed.ok || (modelList ?? "").trim().length > 0 || defaults.length === 0
@@ -490,6 +595,8 @@ export function titleWritingProviderConfigs(env: TitleWritingProviderEnv): Recor
     anthropic: configOf("anthropic", ANTHROPIC_MESSAGES_URL, env.ANTHROPIC_API_KEY, "ANTHROPIC_API_KEY",
       env.TITLE_WRITING_ANTHROPIC_MODELS, "TITLE_WRITING_ANTHROPIC_MODELS",
       { value: env.ANTHROPIC_WORKSPACE_ID, name: "ANTHROPIC_WORKSPACE_ID" }),
+    deepseek: configOf("deepseek", DEEPSEEK_CHAT_COMPLETIONS_URL, env.DEEPSEEK_API_KEY, "DEEPSEEK_API_KEY",
+      env.TITLE_WRITING_DEEPSEEK_MODELS, "TITLE_WRITING_DEEPSEEK_MODELS"),
   };
 }
 

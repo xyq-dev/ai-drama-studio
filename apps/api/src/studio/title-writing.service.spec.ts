@@ -86,10 +86,11 @@ describe("title writing options", () => {
     const result = await service.options();
     const body = result.body as { code: string; providers: Array<{ providerKey: string; ready: boolean; models: string[]; missing: string[] }> };
     expect(body.code).toBe("TITLE_WRITING_READY");
-    // Exactly the two active providers, in their fixed order; no retired provider is ever offered.
+    // Exactly the three active providers, in their fixed order; no retired provider is ever offered.
     expect(body.providers).toEqual([
       expect.objectContaining({ providerKey: "openai", label: "OpenAI", ready: false, models: ["d-1"], missing: ["OPENAI_API_KEY"] }),
       expect.objectContaining({ providerKey: "anthropic", label: "Claude", ready: true, models: ["q-1", "q-2"], missing: [] }),
+      expect.objectContaining({ providerKey: "deepseek", label: "DeepSeek", ready: false, models: ["deepseek-flash"], missing: ["DEEPSEEK_API_KEY"] }),
     ]);
     expect(JSON.stringify(result.body)).not.toContain(SECRET);
     expect(JSON.stringify(result.body)).not.toContain(TOKEN);

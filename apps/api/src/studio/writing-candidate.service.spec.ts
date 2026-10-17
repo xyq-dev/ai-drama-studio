@@ -2,13 +2,15 @@ import { describe, expect, it } from "vitest";
 import { PersistenceError } from "@ai-drama/database";
 import {
   ANTHROPIC_MESSAGES_URL,
+  DEEPSEEK_CHAT_COMPLETIONS_URL,
   InMemoryWritingCandidateStore,
   WritingCandidateExecutor,
   titleWritingProviderConfigs,
   type TitleWritingProviderEnv,
   type WritingTransport,
 } from "@ai-drama/providers";
-import { fixtureCandidateFromPrompt, messagesAnswer, responsesAnswer } from "@ai-drama/providers/title-writing-fixtures";
+import { chatCompletionsAnswer, fixtureCandidateFromPrompt, messagesAnswer, responsesAnswer } from "@ai-drama/providers/title-writing-fixtures";
+import { CANDIDATE_PROVIDER_MIGRATION_GAP } from "./writing-candidate.service";
 import { SiteAuth } from "../auth/site-auth";
 import { hashPassword } from "../auth/password-hash";
 import { operatorProof } from "./operator-access";
@@ -45,12 +47,15 @@ function setup(options: {
   storageReady?: boolean;
   operatorToken?: string | null;
   siteOperator?: boolean;
-  defaultProvider?: "openai" | "anthropic" | null;
+  defaultProvider?: "openai" | "anthropic" | "deepseek" | null;
   answer?: (url: string) => { status: number; body: unknown } | undefined;
   maxCallsPerDay?: number;
+  deepseekStorageReady?: boolean;
+  configurationPending?: () => Promise<boolean>;
 } = {}) {
   const store = new InMemoryWritingCandidateStore();
   store.ready = options.storageReady ?? true;
+  store.deepseekReady = options.deepseekStorageReady ?? true;
   store.targets.set(`${P1}:story`, { episodeId: null, episodeNo: null, revisions: [STORY_REV], episodeCount: 3 });
   store.targets.set(`${P1}:${E2}`, { episodeId: E2, episodeNo: 2, revisions: [], episodeCount: 3 });
   store.targets.set(`${P2}:story`, { episodeId: null, episodeNo: null, revisions: [], episodeCount: 6 });
@@ -58,11 +63,12 @@ function setup(options: {
   const sent: Array<{ url: string; headers: Record<string, string> }> = [];
   const transport: WritingTransport = async (request) => {
     sent.push({ url: request.url, headers: request.headers as Record<string, string> });
-    const body = JSON.parse(request.body) as { messages?: Array<{ content: string }>; input?: string };
-    const user = body.messages?.[0]?.content ?? body.input ?? "";
+    const body = JSON.parse(request.body) as { messages?: Array<{ role: string; content: string }>; input?: string };
+    const user = body.messages?.find((message) => message.role === "user")?.content ?? body.input ?? "";
     const planned = options.answer?.(request.url);
-    const answer = planned ?? { status: 200, body: request.url === ANTHROPIC_MESSAGES_URL
-      ? messagesAnswer(fixtureCandidateFromPrompt(user)) : responsesAnswer(fixtureCandidateFromPrompt(user)) };
+    const candidate = fixtureCandidateFromPrompt(user);
+    const answer = planned ?? { status: 200, body: request.url === ANTHROPIC_MESSAGES_URL ? messagesAnswer(candidate)
+      : request.url === DEEPSEEK_CHAT_COMPLETIONS_URL ? chatCompletionsAnswer(candidate) : responsesAnswer(candidate) };
     return { status: answer.status, headers: { get: () => null }, body: new TextEncoder().encode(JSON.stringify(answer.body)) };
   };
   // Sends start only when the test settles, so a request stays open (reserved) until then.
@@ -85,6 +91,7 @@ function setup(options: {
       },
     },
     maxCallsPerDay: options.maxCallsPerDay ?? 30,
+    ...(options.configurationPending ? { configurationPending: options.configurationPending } : {}),
     schedule: (work) => { pending.push(work); },
   });
   const settle = async () => { while (pending.length > 0) await pending.shift()!(); };
@@ -271,5 +278,109 @@ describe("asking, reading and replaying", () => {
     expect(episodes.items.map((item) => item.mode)).toEqual(["episode"]);
     expect((await service.list(P1, { mode: "episode" })).status).toBe(400);
     expect((await service.get(P2, String(requestOf(story).requestId))).status).toBe(404);
+  });
+});
+
+describe("DeepSeek online candidates", () => {
+  const DEEPSEEK_KEY = "fake-deepseek-candidate-key-0123456789";
+  const WITH_DEEPSEEK: TitleWritingProviderEnv = { ...CONFIGURED, DEEPSEEK_API_KEY: DEEPSEEK_KEY };
+
+  it("story and episode candidates go to DeepSeek only, once each, with the default model and an unknown cost; nothing is written to the work", async () => {
+    const { service, store, sent, settle } = setup({ env: WITH_DEEPSEEK, defaultProvider: "deepseek" });
+    const story = await service.start(P1, STORY, TOKEN, CONTEXT("ds-story"));
+    expect([story.status, requestOf(story).providerKey, requestOf(story).model, requestOf(story).state]).toEqual([202, "deepseek", "deepseek-flash", "reserved"]);
+    const episode = await service.start(P1, { ...EPISODE, providerKey: "deepseek" }, TOKEN, CONTEXT("ds-episode"));
+    expect(episode.status).toBe(202);
+    await settle();
+    expect(sent.map((item) => item.url)).toEqual([DEEPSEEK_CHAT_COMPLETIONS_URL, DEEPSEEK_CHAT_COMPLETIONS_URL]);
+    for (const item of sent) expect(item.headers).toEqual({ Authorization: `Bearer ${DEEPSEEK_KEY}`, "Content-Type": "application/json" });
+    for (const record of store.records.values()) {
+      expect(record).toMatchObject({ state: "completed", errorCode: null, providerRequestId: "ds_fixture",
+        usage: { status: "present", inputTokens: 100, outputTokens: 200, totalTokens: 300 } });
+      expect(record.input).toMatchObject({ providerKey: "deepseek", model: "deepseek-flash" });
+      expect(record.candidate).not.toBeNull();
+    }
+    const view = requestOf(await service.get(P1, requestOf(story).requestId as string));
+    expect(view).toMatchObject({ providerLabel: "DeepSeek", billing: "unknown", state: "completed" });
+    expect(JSON.stringify(view)).not.toContain(DEEPSEEK_KEY);
+    // A replay of the same key answers the stored request: no second request, no second send.
+    const replay = await service.start(P1, STORY, TOKEN, CONTEXT("ds-story"));
+    await settle();
+    expect([replay.status, requestOf(replay).requestId]).toEqual([200, requestOf(story).requestId]);
+    expect(sent).toHaveLength(2);
+    expect(store.records.size).toBe(2);
+  });
+
+  it("a DeepSeek failure stays a DeepSeek failure: rejected or unknown, never resent and never moved to Claude or OpenAI", async () => {
+    for (const [status, state, code] of [[402, "rejected", "quota"], [401, "rejected", "auth"], [429, "rejected", "rate_limited"], [503, "unknown", "server_error"]] as const) {
+      const { service, store, sent, settle } = setup({ env: WITH_DEEPSEEK, answer: () => ({ status, body: { error: { message: "x" } } }) });
+      const started = await service.start(P1, { ...STORY, providerKey: "deepseek" }, TOKEN, CONTEXT(`fail-${String(status)}`));
+      expect(started.status).toBe(202);
+      await settle();
+      await service.maintain();
+      expect(sent.map((item) => item.url)).toEqual([DEEPSEEK_CHAT_COMPLETIONS_URL]);
+      expect([...store.records.values()].map((record) => [record.state, record.errorCode, record.usage.status])).toEqual([[state, code, "unknown"]]);
+    }
+  });
+
+  it("without the DeepSeek candidate migration it is not offered as ready and a request is refused before anything is stored or sent", async () => {
+    const { service, store, sent, settle } = setup({ env: WITH_DEEPSEEK, defaultProvider: "deepseek", deepseekStorageReady: false });
+    const options = (await service.options()).body as { defaultProvider: string | null; providers: Array<{ providerKey: string; ready: boolean; missing: string[] }> };
+    expect(options.providers.find((item) => item.providerKey === "deepseek")).toMatchObject({ ready: false, missing: [CANDIDATE_PROVIDER_MIGRATION_GAP] });
+    // The configured default stays the default although it cannot be used: it is never replaced by a ready provider.
+    expect(options.defaultProvider).toBe("deepseek");
+    expect(options).toMatchObject({ code: "WRITING_CANDIDATE_READY" });
+    for (const [key, body] of [["no-migration", { ...STORY, providerKey: "deepseek" }], ["omitted", STORY]] as const) {
+      const refused = await service.start(P1, body, TOKEN, CONTEXT(key));
+      expect([refused.status, errorOf(refused).code, errorOf(refused).details]).toEqual([503, "WRITING_CANDIDATE_PROVIDER_STORAGE_UNAVAILABLE",
+        { providerKey: "deepseek", missing: [CANDIDATE_PROVIDER_MIGRATION_GAP] }]);
+    }
+    await settle();
+    expect(store.records.size).toBe(0);
+    expect(sent).toHaveLength(0);
+    // Claude is used only when the request names it.
+    const claude = await service.start(P1, { ...STORY, providerKey: "anthropic" }, TOKEN, CONTEXT("explicit-claude"));
+    expect([claude.status, requestOf(claude).providerKey]).toEqual([202, "anthropic"]);
+    await settle();
+    expect(sent.map((item) => item.url)).toEqual([ANTHROPIC_MESSAGES_URL]);
+  });
+
+  it("without any configured default, the first ready provider is used and named in the options", async () => {
+    const { service, sent, settle } = setup({ env: WITH_DEEPSEEK, defaultProvider: null, deepseekStorageReady: false });
+    expect(((await service.options()).body as { defaultProvider: string | null }).defaultProvider).toBe("anthropic");
+    const started = await service.start(P1, STORY, TOKEN, CONTEXT("no-default"));
+    expect([started.status, requestOf(started).providerKey]).toEqual([202, "anthropic"]);
+    await settle();
+    expect(sent).toHaveLength(1);
+  });
+
+  it("with no provider ready at all the options say so, still naming the configured default and every gap", async () => {
+    const { service } = setup({ env: {}, defaultProvider: null });
+    const body = (await service.options()).body as { code: string; defaultProvider: string | null; providers: Array<{ providerKey: string; missing: string[] }> };
+    expect(body.code).toBe("WRITING_CANDIDATE_PROVIDER_UNCONFIGURED");
+    expect(body.defaultProvider).toBeNull();
+    expect(body.providers.map((item) => [item.providerKey, item.missing])).toEqual([
+      ["openai", ["OPENAI_API_KEY", "TITLE_WRITING_OPENAI_MODELS"]], ["anthropic", ["ANTHROPIC_API_KEY"]], ["deepseek", ["DEEPSEEK_API_KEY"]],
+    ]);
+  });
+
+  it("reports a configuration saved in the console that waits for the restart, without letting it gate anything", async () => {
+    expect(((await setup({ env: WITH_DEEPSEEK }).service.options()).body as { configurationPending?: boolean }).configurationPending).toBe(false);
+    const { service, store, sent, settle } = setup({ env: WITH_DEEPSEEK, configurationPending: async () => true });
+    expect(((await service.options()).body as { configurationPending?: boolean }).configurationPending).toBe(true);
+    // A failing check reads as not pending; it never blocks or changes a request.
+    expect(((await setup({ env: WITH_DEEPSEEK, configurationPending: async () => { throw new Error("vault busy"); } }).service.options()).body as
+      { configurationPending?: boolean }).configurationPending).toBe(false);
+    expect((await service.start(P1, { ...STORY, providerKey: "deepseek" }, TOKEN, CONTEXT("pending-ok"))).status).toBe(202);
+    await settle();
+    expect([store.records.size, sent.length]).toEqual([1, 1]);
+  });
+
+  it("without a DeepSeek key a request naming DeepSeek is refused with the gap named, and nothing is stored or sent", async () => {
+    const { service, store, sent, settle } = setup({ defaultProvider: "deepseek" });
+    const refused = await service.start(P1, { ...STORY, providerKey: "deepseek" }, TOKEN, CONTEXT("no-key"));
+    expect([refused.status, errorOf(refused).code, errorOf(refused).details?.missing]).toEqual([503, "WRITING_CANDIDATE_PROVIDER_UNCONFIGURED", ["DEEPSEEK_API_KEY"]]);
+    await settle();
+    expect([store.records.size, sent.length]).toEqual([0, 0]);
   });
 });

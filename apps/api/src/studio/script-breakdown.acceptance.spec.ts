@@ -21,6 +21,7 @@ import {
   JobPersistenceService,
   PostgresTitleWritingStore,
   SCRIPT_BREAKDOWN_MIGRATION,
+  WRITING_CANDIDATE_DEEPSEEK_MIGRATION,
   WRITING_CANDIDATE_MIGRATION,
   WRITING_PROVIDER_MIGRATION,
   TextChainService,
@@ -253,7 +254,7 @@ beforeAll(async () => {
     throw new Error(`Script breakdown API acceptance refused: ${verified.reason}`);
   }
   const applied = (await runMigrations(pool)).applied;
-  expect(applied.slice(-3)).toEqual([SCRIPT_BREAKDOWN_MIGRATION, WRITING_PROVIDER_MIGRATION, WRITING_CANDIDATE_MIGRATION]);
+  expect(applied.slice(-4)).toEqual([SCRIPT_BREAKDOWN_MIGRATION, WRITING_PROVIDER_MIGRATION, WRITING_CANDIDATE_MIGRATION, WRITING_CANDIDATE_DEEPSEEK_MIGRATION]);
   evidence.migrationsApplied = applied;
   await q("INSERT INTO workspace (id, name, status) VALUES ($1, 'breakdown-acceptance', 'ACTIVE')", [WORKSPACE]);
   main = await boot();
@@ -885,7 +886,7 @@ describe("script breakdown over real HTTP and PostgreSQL, model stubbed", () => 
     }
   });
 
-  it("starts a request that names no provider on the ready provider options reports, and freezes it for a replay", async () => {
+  it("never replaces a configured default that is not ready; without one, starts on the ready provider options reports and freezes it", async () => {
     const { projectId, episodes } = await work(1, "fallback");
     const episode = episodes[0]!;
     // The engine reads the same provider settings object, so it reaches the stub through the provider chosen here.
@@ -896,7 +897,16 @@ describe("script breakdown over real HTTP and PostgreSQL, model stubbed", () => 
     const before = sent.length;
     try {
       Object.assign(breakdownDeps.providers, { anthropic: openaiOnly.anthropic, openai: openaiOnly.openai });
+      // The configured default (Claude) has no key: it stays the default, and a request without a provider is refused
+      // before anything is written instead of going to OpenAI.
       breakdownDeps.defaultProvider = "anthropic";
+      const configured = await http("GET", "/writing/script-breakdowns/options");
+      expect([configured.body.code, configured.body.defaultProvider]).toEqual(["SCRIPT_BREAKDOWN_READY", "anthropic"]);
+      const refused = await http("POST", base(projectId, episode.id), { body: {}, headers: operator() });
+      expect([refused.status, refused.body.error.code, refused.body.error.details.providerKey]).toEqual([503, "TITLE_WRITING_PROVIDER_UNCONFIGURED", "anthropic"]);
+      expect(await runs()).toBe(0);
+      // Without a configured default, the first ready provider is the one options reports and a start uses.
+      breakdownDeps.defaultProvider = null;
       const options = await http("GET", "/writing/script-breakdowns/options");
       expect([options.body.code, options.body.defaultProvider]).toEqual(["SCRIPT_BREAKDOWN_READY", "openai"]);
       const named = await http("POST", base(projectId, episode.id), { body: { providerKey: "anthropic" }, headers: operator() });

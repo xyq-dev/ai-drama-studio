@@ -8,7 +8,7 @@ import {
   type ScriptBreakdownPlacementOutcome,
   type ScriptBreakdownRunView,
 } from "../lib/script-breakdown-client";
-import { TitleWritingError, tokenRequired } from "../lib/title-writing-client";
+import { TitleWritingError, providerTarget, tokenRequired } from "../lib/title-writing-client";
 
 import { clearBreakdownPending, readBreakdownPending, writeBreakdownPending, type BreakdownPendingStart, type BreakdownPendingResume } from "../lib/script-breakdown-pending";
 
@@ -77,9 +77,10 @@ export function breakdownErrorText(code: string | null): string | null {
 }
 
 /** A breakdown of a retired provider that stopped for want of a provider is said to be retired, not misconfigured. */
-function runErrorText(run: { providerKey: string; errorCode: string | null; step: { errorCode: string | null } }): string | null {
+function runErrorText(run: { providerKey: string; errorCode: string | null; legacyProviderRun?: boolean; step: { errorCode: string | null } }): string | null {
   const code = run.errorCode ?? run.step.errorCode;
-  if (code === "provider_unconfigured" && !isActiveTitleWritingProvider(run.providerKey)) {
+  if ((code === "provider_unconfigured" && !isActiveTitleWritingProvider(run.providerKey))
+    || code === "legacy_provider_run" || (code === "provider_unconfigured" && run.legacyProviderRun === true)) {
     return "这次拆解使用的模型服务已经退役，不会再发出请求，也不会改用其他模型；已有结果、调用记录和未知费用都保留。";
   }
   return breakdownErrorText(code);
@@ -279,6 +280,14 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
       : options.code === "SCRIPT_BREAKDOWN_STORAGE_UNAVAILABLE" ? "剧本拆解的数据库迁移还没有执行。"
         : options.code === "TITLE_WRITING_PROVIDER_UNCONFIGURED" ? "模型服务还没有配置完整。" : "服务端还不能开始拆解。";
   const needsReplace = props.sceneCount > 0 || scenesExist;
+  // The provider of a new start: the default the server reports, as it is. A configured default that cannot be used now
+  // blocks a new start with its own gaps and is never replaced by another ready provider (this panel offers no choice).
+  // Only an answer without any default (an older API) falls back to the first ready provider.
+  const target = !options ? null
+    : options.defaultProvider ? providerTarget(options.providers, options.defaultProvider, false, false)
+      : (() => { const first = options.providers.find((item) => item.ready); return first ? { kind: "ready" as const, option: first } : null; })();
+  const newStartProvider = target?.kind === "ready" && target.option.defaultModel ? target.option : null;
+  const providerBlocked = target?.kind === "blocked" ? target.reason : null;
   // Confirming a start already sent replays its stored key and body: the current settings, defaults or a failed settings
   // read cannot block it (the server answers it from the run that key created). Only a new start must pass every gate.
   // A resume whose answer was lost blocks every new request of this page until it is confirmed: a new start or resume would
@@ -288,14 +297,16 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
     : pendingStart ? (tokenMissing ? "请填写操作者令牌。" : null)
     : pendingResume ? "请先确认上次续跑结果，之后才能发起新的生成。"
     : featureBlocked ? featureBlocked
+    : providerBlocked ? providerBlocked
     : readError ? "请先重新读取本集任务状态。"
     : !props.scriptReady ? "剧本批准后才能拆解（剧本门槛不变）。"
     : !options ? optionsError ? "功能配置读取失败，请先“重新读取功能配置”。" : "正在读取拆解设置。"
       : running ? "这一集的拆解正在进行。"
         : needsReplace && !replaceExisting ? "这一集已有场景，勾选“用新结果取代”后才能开始。"
-          : tokenMissing ? "请填写操作者令牌。" : null;
+          : tokenMissing ? "请填写操作者令牌。"
+            : !newStartProvider ? "模型服务还没有配置完整。" : null;
   // The settings' own state is shown as soon as they are read, without waiting for the task read.
-  const blockedShown = startBlocked !== null && (loaded || startBlocked === featureBlocked);
+  const blockedShown = startBlocked !== null && (loaded || startBlocked === featureBlocked || startBlocked === providerBlocked);
 
   async function act(runId: string | null, work: () => Promise<ScriptBreakdownRunView>, fallback: string,
     hooks: { accepted?: () => void; failed?: (caught: unknown) => void; changed?: boolean; cancel?: boolean; detached?: boolean } = {}) {
@@ -338,11 +349,11 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
 
   function start() {
     if (startBlocked || operation.current) return;
-    const provider = options?.providers.find((item) => item.providerKey === options.defaultProvider && item.ready)
-      ?? options?.providers.find((item) => item.ready);
-    if (!pendingStart && !provider?.defaultModel) return;
+    // A pending start is confirmed with its own key and body; only a new start takes the current provider, and the same
+    // check as startBlocked: never another provider in place of the configured default.
+    if (!pendingStart && !newStartProvider) return;
     const pending: BreakdownPendingStart = pendingStart ?? { kind: "start", key: crypto.randomUUID(),
-      body: { replaceExisting, providerKey: provider!.providerKey, model: provider!.defaultModel! } };
+      body: { replaceExisting, providerKey: newStartProvider!.providerKey, model: newStartProvider!.defaultModel! } };
     try { writeBreakdownPending(props.projectId, props.episodeId, pending); }
     catch { setIdentityError(true); setMessage("无法保存请求身份，未发送请求。请先解决浏览器会话存储问题。"); return; }
     setPendingStart(pending); setPlacement(null);

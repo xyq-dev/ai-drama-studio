@@ -89,10 +89,11 @@ export interface AdminModelsView {
   titleWriting: { enabled: boolean; productionBlocked: boolean; operatorConfigured: boolean; siteOperator?: boolean };
   /**
    * Whether the database can store what the features need, read when the view is built: the title writing tables, Claude
-   * runs (20261016000100_writing_provider_anthropic) and online candidates (20261016000200_writing_candidate). Null when
-   * it could not be read.
+   * runs (20261016000100_writing_provider_anthropic), online candidates (20261016000200_writing_candidate) and DeepSeek
+   * candidates (20261017000100_writing_candidate_deepseek; DeepSeek title runs need no migration). Null when it could not
+   * be read. deepseek is absent in views of an API that predates it.
    */
-  storage?: { titleWriting: boolean; claude: boolean; candidates: boolean } | null;
+  storage?: { titleWriting: boolean; claude: boolean; candidates: boolean; deepseek?: boolean } | null;
   saved: AdminSettingsView;
   active: AdminSettingsView;
   audit: AdminAuditView[];
@@ -122,8 +123,13 @@ export type ClaudeSetupState =
   | "ready";
 
 export function claudeSetupState(view: AdminModelsView): { state: ClaudeSetupState; migrations: string[] } {
-  const saved = view.saved.providers.find((provider) => provider.providerKey === "anthropic");
-  const active = view.active.providers.find((provider) => provider.providerKey === "anthropic");
+  return providerSetupState(view, "anthropic");
+}
+
+/** The same states for any active provider. Only the migrations a provider's runs and candidates need are named. */
+export function providerSetupState(view: AdminModelsView, providerKey: TitleWritingProviderKey): { state: ClaudeSetupState; migrations: string[] } {
+  const saved = view.saved.providers.find((provider) => provider.providerKey === providerKey);
+  const active = view.active.providers.find((provider) => provider.providerKey === providerKey);
   const none = { migrations: [] as string[] };
   if (!saved?.keyConfigured) return { state: "key_missing", ...none };
   if (!active?.ready) {
@@ -138,8 +144,9 @@ export function claudeSetupState(view: AdminModelsView): { state: ClaudeSetupSta
   if (!view.titleWriting.siteOperator && !view.titleWriting.operatorConfigured) return { state: "operator_missing", ...none };
   if (!view.storage) return { state: "storage_unknown", ...none };
   const migrations = [
-    ...(view.storage.claude ? [] : ["20261016000100_writing_provider_anthropic"]),
+    ...(providerKey !== "anthropic" || view.storage.claude ? [] : ["20261016000100_writing_provider_anthropic"]),
     ...(view.storage.candidates ? [] : ["20261016000200_writing_candidate"]),
+    ...(providerKey !== "deepseek" || view.storage.deepseek === true ? [] : ["20261017000100_writing_candidate_deepseek"]),
   ];
   if (!view.storage.titleWriting || migrations.length > 0) return { state: "migration_missing", migrations };
   return { state: "ready", migrations };

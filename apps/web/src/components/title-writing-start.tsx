@@ -13,6 +13,7 @@ import {
   isEntityId,
   normalizeOptions,
   optionsUnavailableReason,
+  providerTarget,
   tokenRequired,
   type StartBody,
   type TitleWritingOptionsView,
@@ -140,7 +141,7 @@ function startError(caught: unknown, projectCreated: boolean): string {
     if (caught.code === "TITLE_WRITING_PROVIDER_UNCONFIGURED") return `${work}所选模型服务没有配置完整${missing ? `（缺少 ${missing}）` : ""}，本次请求没有被受理。${previous}`;
     if (caught.code === "TITLE_WRITING_PROVIDER_RETIRED") {
       // Refused only after the server found no run for this request identity: nothing was created or sent, now or before.
-      return `${work}上次请求选择的模型服务（${String(caught.details?.label ?? caught.details?.providerKey ?? "")}）已经退役。服务端没有找到这次请求创建的任务，也没有发出模型调用。可以放弃上次请求，改用 OpenAI 或 Claude 重新开始。`;
+      return `${work}上次请求选择的模型服务（${String(caught.details?.label ?? caught.details?.providerKey ?? "")}）已经退役。服务端没有找到这次请求创建的任务，也没有发出模型调用。可以放弃上次请求，改用 DeepSeek、Claude 或 OpenAI 重新开始。`;
     }
     if (caught.code === "TITLE_WRITING_PROVIDER_STORAGE_UNAVAILABLE") {
       return `${work}所选模型服务的数据库迁移还没有执行，本次请求没有创建任务，也没有发出模型调用。可以改用其他已就绪的模型服务。`;
@@ -169,6 +170,8 @@ export function TitleWritingStart() {
   const [style, setStyle] = useState("");
   // A replayed start may still carry a retired provider; the picker only ever offers ready active providers.
   const [providerKey, setProviderKey] = useState<TitleWritingStoredProviderKey | "">("");
+  // True once the person picked a provider themselves; the configured default is never replaced on their behalf.
+  const [providerExplicit, setProviderExplicit] = useState(false);
   const [model, setModel] = useState("");
   const [token, setToken] = useState("");
   const [pending, setPending] = useState<PendingStart | null>(null);
@@ -230,11 +233,14 @@ export function TitleWritingStart() {
   const readyProviders = options?.providers.filter((item) => item.ready) ?? [];
   // With the site login on, the signed-in administrator authorizes the call; no token field is shown or sent.
   const needsToken = tokenRequired(options);
-  const chosen = readyProviders.find((item) => item.providerKey === providerKey) ?? null;
+  // A configured default that is not ready stays chosen and blocks the start until the person picks a ready one.
+  const target = options ? providerTarget(options.providers, providerKey, providerExplicit) : { kind: "none" as const };
+  const chosen = target.kind === "ready" ? target.option : null;
   const locked = busy || pending !== null;
 
   function chooseProvider(next: TitleWritingProviderKey) {
     setProviderKey(next);
+    setProviderExplicit(true);
     setModel(readyProviders.find((item) => item.providerKey === next)?.defaultModel ?? "");
   }
 
@@ -317,6 +323,10 @@ export function TitleWritingStart() {
       return;
     }
     if (!checkReady(null)) return;
+    if (target.kind === "blocked") {
+      setError(target.reason);
+      return;
+    }
     const draft: PendingStart = {
       version: 3,
       plan: { episodeCount, targetEpisodeSeconds: seconds },
@@ -418,6 +428,7 @@ export function TitleWritingStart() {
               <label className={styles.label} htmlFor="ai-provider">模型服务</label>
               <select id="ai-provider" className={styles.input} value={providerKey} disabled={locked}
                 onChange={(event) => chooseProvider(event.target.value as TitleWritingProviderKey)}>
+                {target.kind === "blocked" ? <option value={providerKey} disabled>{options?.providers.find((item) => item.providerKey === providerKey)?.label}（暂不可用）</option> : null}
                 {readyProviders.map((item) => <option key={item.providerKey} value={item.providerKey}>{item.label}</option>)}
               </select>
               <label className={styles.label} htmlFor="ai-model">模型</label>
@@ -447,6 +458,14 @@ export function TitleWritingStart() {
           <p className={styles.helper}>
             服务端已配置：{readyProviders.map((item) => item.label).join("、")}。最近 24 小时最多 {options.maxCallsPerDay} 次模型调用；
             开始前剩余次数少于正常需要的次数时，不会创建任务。费用以服务商账单为准，本页不估算金额。
+          </p>
+        ) : null}
+        {options && !unavailable && !pending && chosen ? (
+          <p className={styles.helper} data-testid="ai-provider-target">本次发送给：{chosen.label} · {model || chosen.defaultModel}</p>
+        ) : null}
+        {options && !unavailable && !pending && target.kind === "blocked" ? (
+          <p className={styles.warning} role="status" data-testid="ai-provider-blocked">
+            {options.configurationPending ? "后台已保存新的模型配置，需要服务器重启 API 后才会生效。" : null}{target.reason}
           </p>
         ) : null}
         {needsToken ? (

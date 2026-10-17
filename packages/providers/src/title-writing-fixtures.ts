@@ -11,7 +11,7 @@ import {
   type TitleWritingStepKey,
 } from "@ai-drama/contracts";
 import { fixtureBreakdownFromPrompt, isBreakdownPrompt } from "./script-breakdown-fixtures";
-import { ANTHROPIC_MESSAGES_URL, type WritingTransport } from "./text-writing";
+import { ANTHROPIC_MESSAGES_URL, DEEPSEEK_CHAT_COMPLETIONS_URL, type WritingTransport } from "./text-writing";
 
 /**
  * Controllable provider double for tests and the local acceptance run. It is never wired into the API runtime:
@@ -96,8 +96,8 @@ export interface FixtureExchange {
 }
 
 /**
- * A transport that speaks the protocol of the endpoint it is called for: the OpenAI Responses API or the Claude
- * Messages API. It answers each step with valid JSON unless an override returns a different HTTP answer for that step
+ * A transport that speaks the protocol of the endpoint it is called for: the OpenAI Responses API, the Claude
+ * Messages API or the DeepSeek Chat Completions API. It answers each step with valid JSON unless an override returns a different HTTP answer for that step
  * and attempt. An override body may be built with providerAnswer() for the endpoint's own wire format.
  */
 export function fixtureChatTransport(title: string, options: {
@@ -123,10 +123,11 @@ export function fixtureChatTransport(title: string, options: {
     const answer = custom ?? { status: 200, body: providerAnswer(request.url, step === "concept" ? fixtureConcept(title)
       : step === "outline" ? fixtureOutline(fixtureOutlineCountOf(user))
         : step === "breakdown" ? fixtureBreakdownFromPrompt(user) : fixtureEpisode(Number(step.slice(-1)))) };
-    const requestIdHeader = request.url === ANTHROPIC_MESSAGES_URL ? "request-id" : "x-request-id";
+    // DeepSeek documents no request id header: its id comes from the body.
+    const requestIdHeader = request.url === ANTHROPIC_MESSAGES_URL ? "request-id" : request.url === DEEPSEEK_CHAT_COMPLETIONS_URL ? null : "x-request-id";
     return {
       status: answer.status,
-      headers: { get: (name: string) => name.toLowerCase() === requestIdHeader ? `fixture-${step}-${String(attempt)}` : null },
+      headers: { get: (name: string) => requestIdHeader !== null && name.toLowerCase() === requestIdHeader ? `fixture-${step}-${String(attempt)}` : null },
       body: new TextEncoder().encode(typeof answer.body === "string" ? answer.body : JSON.stringify(answer.body)),
     };
   };
@@ -161,8 +162,21 @@ export function messagesAnswer(value: unknown, stopReason = "end_turn") {
   };
 }
 
+/** A DeepSeek Chat Completions answer: the value as the only choice's content (no reasoning, thinking is off). */
+export function chatCompletionsAnswer(value: unknown, finishReason = "stop") {
+  return {
+    id: "ds_fixture",
+    object: "chat.completion",
+    model: "fixture-model",
+    choices: [{ index: 0, finish_reason: finishReason,
+      message: { role: "assistant", content: typeof value === "string" ? value : JSON.stringify(value) } }],
+    usage: { prompt_tokens: 100, prompt_cache_hit_tokens: 20, prompt_cache_miss_tokens: 80, completion_tokens: 200, total_tokens: 300 },
+  };
+}
+
 /** The answer in the wire format of the endpoint a request was sent to. */
 export function providerAnswer(url: string, value: unknown) {
+  if (url === DEEPSEEK_CHAT_COMPLETIONS_URL) return chatCompletionsAnswer(value);
   return url === ANTHROPIC_MESSAGES_URL ? messagesAnswer(value) : responsesAnswer(value);
 }
 

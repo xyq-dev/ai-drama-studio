@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { TitleWritingCallView, TitleWritingProviderKey, TitleWritingStoredProviderKey, TitleWritingProviderOption, TitleWritingRunState, TitleWritingStepState } from "./title-writing";
-import { TITLE_WRITING_STORED_PROVIDER_KEYS } from "./title-writing";
+import { TITLE_WRITING_STORED_PROVIDER_KEYS, type DEEPSEEK_PROVIDER_ADAPTER } from "./title-writing";
 import { WRITING_BODY_MAX_CHARS } from "./writing-assistant";
 
 /**
@@ -73,6 +73,8 @@ export interface ScriptBreakdownFrozenInput {
   replace: { scenes: Array<{ sceneId: string; rowVersion: number }>; shots: Array<{ shotId: string; rowVersion: number }> };
   providerKey: TitleWritingStoredProviderKey;
   model: string;
+  /** DeepSeek runs created by the current server only (DEEPSEEK_PROVIDER_ADAPTER). Absent on every older run. */
+  providerAdapter?: typeof DEEPSEEK_PROVIDER_ADAPTER;
 }
 
 export function isScriptBreakdownInput(input: unknown): input is ScriptBreakdownFrozenInput {
@@ -223,6 +225,8 @@ export interface ScriptBreakdownRunView {
   /** The episode's script now, to tell whether this run's source is still the current one. */
   episodeScript: { currentRevisionId: string | null; currentRevisionNo: number | null; approved: boolean };
   calls: TitleWritingCallView[];
+  /** True for a DeepSeek run stored before the retirement: it is never sent for again. Absent from older APIs. */
+  legacyProviderRun?: boolean;
   createdAt: string;
   updatedAt: string;
 }

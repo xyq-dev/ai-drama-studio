@@ -149,11 +149,42 @@ export function normalizeOptions(value: unknown): TitleWritingOptionsView | null
   return record as TitleWritingOptionsView;
 }
 
-/** A configuration gap as shown to a person: variable names as they are, the provider migration in words. */
+const GAP_TEXT: Readonly<Record<string, string>> = {
+  WRITING_PROVIDER_MIGRATION: "数据库迁移 20261016000100_writing_provider_anthropic 尚未执行（需由服务器部署流程单独执行）",
+  WRITING_CANDIDATE_DEEPSEEK_MIGRATION: "数据库迁移 20261017000100_writing_candidate_deepseek 尚未执行（需由服务器部署流程单独执行）",
+  ANTHROPIC_API_KEY: "尚未配置 Claude API Key",
+  ANTHROPIC_WORKSPACE_ID: "Claude Workspace ID 格式不正确",
+  TITLE_WRITING_ANTHROPIC_MODELS: "尚未配置 Claude 模型",
+  OPENAI_API_KEY: "尚未配置 OpenAI API Key",
+  TITLE_WRITING_OPENAI_MODELS: "尚未配置 OpenAI 模型",
+  DEEPSEEK_API_KEY: "尚未配置 DeepSeek API Key（只能在模型后台填写）",
+  TITLE_WRITING_DEEPSEEK_MODELS: "尚未配置 DeepSeek 模型",
+};
+
+/** A configuration gap as shown to a person: known names in words, anything else as the name itself; never a value. */
 export function gapText(name: string): string {
-  if (name === "WRITING_PROVIDER_MIGRATION") return "数据库迁移 20261016000100_writing_provider_anthropic 尚未执行";
-  if (name === "ANTHROPIC_API_KEY") return "尚未配置 Claude API Key";
-  return name;
+  return GAP_TEXT[name] ?? name;
+}
+
+/** Why one provider cannot be used now, in words. */
+export function providerGapText(option: { label: string; missing: readonly string[] }): string {
+  return `${option.label}：${option.missing.length > 0 ? option.missing.map(gapText).join("、") : "暂不可用"}`;
+}
+
+/**
+ * The provider a request will go to, or why the configured default cannot be used. A configured default that is not
+ * ready is never replaced: the person has to choose another ready provider explicitly.
+ */
+export function providerTarget<T extends { providerKey: string; label: string; ready: boolean; missing: readonly string[] }>(
+  providers: readonly T[], providerKey: string, explicit: boolean, choosable = true,
+): { kind: "ready"; option: T } | { kind: "blocked"; reason: string } | { kind: "none" } {
+  const option = providers.find((item) => item.providerKey === providerKey);
+  if (!option) return { kind: "none" };
+  if (option.ready) return { kind: "ready", option };
+  return { kind: "blocked", reason: explicit
+    ? `所选模型服务暂不可用。${providerGapText(option)}。`
+    : `默认模型服务暂不可用，没有发出调用，也不会自动改用其他模型服务。${providerGapText(option)}。${choosable
+      ? "可以在高级设置中明确选择其他已就绪的模型服务。" : "请管理员补齐后再开始。"}` };
 }
 
 export function optionsUnavailableReason(options: TitleWritingOptionsView | null): string | null {
@@ -164,7 +195,8 @@ export function optionsUnavailableReason(options: TitleWritingOptionsView | null
   if (options.code === "TITLE_WRITING_STORAGE_UNAVAILABLE") return "创作任务的数据库表还没有创建（服务器尚未执行数据库迁移）。可以先手动创作。";
   if (options.code === "TITLE_WRITING_PROVIDER_UNCONFIGURED") {
     const missing = options.providers.map((item) => `${item.label}：${item.missing.map(gapText).join("、")}`).join("；");
-    return `还没有可用的模型服务。缺少的服务端配置：${missing}。可以先手动创作。`;
+    const pending = options.configurationPending ? "后台已保存新的模型配置，需要服务器重启 API 后才会生效。" : "";
+    return `${pending}还没有可用的模型服务。缺少的服务端配置：${missing}。可以先手动创作。`;
   }
   return "AI 一键创作暂不可用。可以先手动创作。";
 }
@@ -254,7 +286,8 @@ const ERRORS: Record<string, string> = {
   executor_lost: "服务重启时这一步已经发出，结果和费用不确定，不会自动重发。",
   executor_lost_before_send: "服务重启时这一步还没有发出。",
   canceled_before_send: "停止请求先到达，这一步没有发出。",
-  provider_unconfigured: "这次创作使用的模型服务现在没有配置完整，没有发出请求。",
+  provider_unconfigured: "这次创作使用的模型服务现在没有配置完整，或冻结的模型已不在允许列表中，没有发出请求，也不会改用其他模型。",
+  legacy_provider_run: "这次任务是 DeepSeek 退役前创建的旧任务，不会再发出请求，也不会改用新的 DeepSeek 模型或其他供应商；已有结果、调用记录和未知费用都保留。如需继续，请新建任务。",
   story_conflict: "作品里已经有故事，没有覆盖。生成的故事保留在下方。",
   story_too_large: "整理后的故事超过长度上限，没有保存。",
   TITLE_WRITING_DAILY_CAP: "最近 24 小时的调用次数已达服务端上限，已完成的内容保留。",

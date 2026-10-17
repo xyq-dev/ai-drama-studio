@@ -23,6 +23,8 @@ process.env.ADMIN_MODELS_TEST_PASSWORD = password;
 // Shaped like Claude Console API keys (a personal sk-ant-usr- and a service account sk-ant-svc- key); not real keys.
 const fakeKey = "sk-ant-usr-admin-browser-fake-key-not-real";
 const fakeServiceKey = "sk-ant-svc-admin-browser-fake-key-not-real";
+// DeepSeek documents no key prefix; clearly fake, never a real key.
+const fakeDeepseekKey = "fake-deepseek-admin-browser-key-not-real";
 const fakeWorkspace = "wrkspc_01AdminBrowserFakeWorkspace";
 const processes = [];
 let browser;
@@ -106,9 +108,17 @@ try {
   assert.ok(session && session.httpOnly && session.sameSite === "Lax" && session.path === "/");
   const before = await readView(page);
   assert.equal(before.savedRevision, 0);
-  // Exactly two providers: OpenAI and Claude. The retired Qwen and DeepSeek have no entry at all.
+  // Exactly three providers: DeepSeek, Claude and OpenAI. The retired Qwen has no entry at all.
   assert.equal(await page.getByRole("button", { name: /^千问/ }).count(), 0);
-  assert.equal(await page.getByRole("button", { name: /^DeepSeek/ }).count(), 0);
+  assert.equal(await page.getByRole("button", { name: /^DeepSeek DeepSeek Chat Completions API/ }).count(), 1);
+  // DeepSeek quick setup: only the key; saving it makes DeepSeek the default for new requests; an impossible key is
+  // refused on the page without saving anything.
+  assert.equal(await page.getByTestId("deepseek-status").getAttribute("data-state"), "key_missing");
+  await page.getByTestId("deepseek-default-notice").filter({ hasText: "保存 DeepSeek 快速配置会将 DeepSeek 设为新创作的默认供应商；只影响新发起的请求，不改变已有任务" }).waitFor();
+  await page.getByLabel(/^DeepSeek API Key/).fill("short-key");
+  await page.getByRole("button", { name: /保存 DeepSeek API Key/ }).click();
+  await page.getByRole("alert").filter({ hasText: /DeepSeek API Key 的格式不受支持/ }).waitFor();
+  assert.equal(await page.getByLabel(/^DeepSeek API Key/).inputValue(), "");
   // Claude quick setup: says the key is missing, and refuses a Claude Code / subscription token without saving anything.
   assert.equal(await page.getByTestId("claude-status").getAttribute("data-state"), "key_missing");
   await page.getByLabel(/^Claude API Key/).fill("sk-ant-oat01-claude-code-oauth-token-not-real");
@@ -144,7 +154,7 @@ try {
   assert.equal(await page.getByLabel(/^新的 API Key/).count(), 0);
   const saved = await readView(page);
   assert.equal(saved.savedRevision, 1); assert.equal(saved.activeRevision, 0); assert.equal(saved.pendingRestart, true);
-  assert.deepEqual(saved.saved.providers.map((provider) => provider.providerKey), ["openai", "anthropic"]);
+  assert.deepEqual(saved.saved.providers.map((provider) => provider.providerKey), ["openai", "anthropic", "deepseek"]);
   assert.equal(saved.saved.providers.find((provider) => provider.providerKey === "anthropic").keyConfigured, true);
   assert.deepEqual(saved.saved.providers.find((provider) => provider.providerKey === "anthropic").models, ["browser-test-model", "claude-haiku-5-5"]);
   assert.equal(saved.active.providers.find((provider) => provider.providerKey === "anthropic").keyConfigured, false);
@@ -193,7 +203,7 @@ try {
   assert.equal(cleared.savedRevision, 2);
   assert.equal(cleared.saved.providers.find((provider) => provider.providerKey === "anthropic").keyConfigured, false);
   assert.deepEqual(await page.getByRole("combobox", { name: /^默认供应商/ }).locator("option").evaluateAll((options) => options.map((option) => option.value)),
-    ["", "openai", "anthropic"]);
+    ["", "deepseek", "anthropic", "openai"]);
   await page.getByRole("combobox", { name: /^默认供应商/ }).selectOption("anthropic");
   await page.getByLabel(/^每日最多调用次数/).fill("8");
   await page.getByRole("button", { name: "保存调用规则", exact: true }).click();
@@ -216,6 +226,23 @@ try {
   assert.equal((await page.content()).includes(fakeServiceKey), false);
   await capture(page, "mobile-claude-workspace");
   evidence.checks.workspace = { keyKind: "sk-ant-svc", workspaceSaved: true, savedRevision: 4, activeRevision: 0, pendingRestart: true };
+  // DeepSeek quick setup at 390 px: the key alone; DeepSeek becomes the saved default; Claude's key and workspace stay.
+  await page.getByLabel(/^DeepSeek API Key/).fill(fakeDeepseekKey);
+  await page.getByRole("button", { name: /保存 DeepSeek API Key/ }).click();
+  await page.getByRole("status").filter({ hasText: /^DeepSeek API Key 已保存，DeepSeek 已设为新创作的默认供应商。/ }).waitFor();
+  const deepseekSaved = await readView(page);
+  assert.equal(deepseekSaved.savedRevision, 5); assert.equal(deepseekSaved.activeRevision, 0); assert.equal(deepseekSaved.pendingRestart, true);
+  assert.equal(deepseekSaved.saved.defaultProvider, "deepseek");
+  const deepseekEntry = deepseekSaved.saved.providers.find((provider) => provider.providerKey === "deepseek");
+  assert.equal(deepseekEntry.keyConfigured, true); assert.deepEqual(deepseekEntry.models, ["deepseek-flash"]);
+  assert.equal(deepseekEntry.baseUrl, "https://api.deepseek.com/chat/completions");
+  assert.equal(deepseekSaved.saved.providers.find((provider) => provider.providerKey === "anthropic").workspaceId, fakeWorkspace);
+  assert.equal(await page.getByTestId("deepseek-status").getAttribute("data-state"), "pending_restart");
+  assert.equal(await page.getByLabel(/^DeepSeek API Key/).inputValue(), "");
+  assert.equal((await page.content()).includes(fakeDeepseekKey), false);
+  assert.equal(JSON.stringify(deepseekSaved).includes(fakeDeepseekKey), false);
+  await capture(page, "mobile-deepseek-quick-setup");
+  evidence.checks.deepseek = { savedRevision: 5, activeRevision: 0, pendingRestart: true, defaultProvider: "deepseek", model: "deepseek-flash", secretNotReturned: true };
   await page.getByRole("button", { name: "退出", exact: true }).click();
   await page.waitForURL(/\/login\?/);
   await page.getByRole("heading", { name: "登录红果创作", exact: true }).waitFor();
@@ -223,7 +250,7 @@ try {
   assert.deepEqual(evidence.errors, []);
   evidence.checks.save = { savedRevision: 1, activeRevision: 0, pendingRestart: true, secretNotReturned: true };
   evidence.checks.modelPicker = { keyboardSelect: true, customIdByEnter: true, searchEnterDoesNotSubmit: true,
-    savedModels: ["browser-test-model", "claude-haiku-5-5"], providers: ["openai", "anthropic"], retiredEntries: 0 };
+    savedModels: ["browser-test-model", "claude-haiku-5-5"], providers: ["openai", "anthropic", "deepseek"], retiredEntries: 0 };
   evidence.checks.clear = { explicitConfirmation: true, keyConfigured: false, revision: 2 };
   evidence.checks.limits = { daily: 8, savedRevision: 3, activeRevision: 0, titleWritingEnabled: false };
   evidence.checks.logout = { protectedReadAfterLogout: 401, reloginReadsSavedConfig: true };

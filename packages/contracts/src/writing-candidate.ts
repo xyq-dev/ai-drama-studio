@@ -155,6 +155,11 @@ export interface WritingCandidateFinish {
 export interface WritingCandidateStore {
   storageReady(): Promise<boolean>;
   /**
+   * Whether requests of this provider can be stored: openai and anthropic once storageReady(), deepseek only after
+   * 20261017000100_writing_candidate_deepseek. Callers refuse an unready provider before any write, reservation or send.
+   */
+  providerStorageReady(providerKey: TitleWritingProviderKey): Promise<boolean>;
+  /**
    * Looks the key up first (a replay returns the stored request whatever the limits are now). A new request checks
    * the target, the open request of the target, an unknown result to be confirmed and the shared rolling 24 h call cap,
    * and is written as reserved under the given executor and lease, all in one transaction.
@@ -204,8 +209,15 @@ export interface WritingCandidateOptionsView {
   code: string;
   storageReady: boolean;
   operatorTokenRequired: boolean;
+  /**
+   * The configured default provider even when it cannot be used now (its providers entry says why), else the first
+   * ready provider. A configured default that is not ready is never replaced by another provider: a request without a
+   * provider is refused until it is ready or the person explicitly names another one.
+   */
   defaultProvider: TitleWritingProviderKey | null;
   providers: TitleWritingProviderOption[];
+  /** A model configuration was saved in the console and waits for the API restart to apply it. Absent from older APIs. */
+  configurationPending?: boolean;
   maxCallsPerDay: number;
   billing: "unknown";
 }

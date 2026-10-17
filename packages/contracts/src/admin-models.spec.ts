@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
-  adminLimitsUpdateSchema, adminProviderKeySchema, adminProviderUpdateSchema, claudeSetupState, workspaceUpdateOf, type AdminModelsView,
+  adminLimitsUpdateSchema, adminProviderKeySchema, adminProviderUpdateSchema, claudeSetupState, providerSetupState, workspaceUpdateOf,
+  type AdminModelsView,
 } from "./admin-models";
-import { anthropicKeyProblem, anthropicWorkspaceIdValid } from "./title-writing";
+import {
+  DEEPSEEK_PROVIDER_ADAPTER, TITLE_WRITING_DEFAULT_MODELS, frozenProviderAdapter, titleWritingStartSchema, TITLE_WRITING_PROVIDER_KEYS, TITLE_WRITING_RETIRED_PROVIDER_KEYS,
+  anthropicKeyProblem, anthropicWorkspaceIdValid, deepseekKeyProblem, isActiveTitleWritingProvider, isLegacyDeepseekRun,
+} from "./title-writing";
 
 const provider = { expectedRevision: 0, models: ["test-model:2026"], secretAction: "keep" };
 const limits = { expectedRevision: 0, defaultProvider: "anthropic", maxCallsPerDay: 8, maxActiveRuns: 1 };
@@ -50,12 +54,11 @@ describe("admin model configuration request contracts", () => {
       expect(adminLimitsUpdateSchema.safeParse({ ...limits, maxActiveRuns }).success).toBe(false);
     }
     expect(adminProviderKeySchema.safeParse("custom-provider").success).toBe(false);
-    // Retired providers have no console entry and can never become the default again.
-    for (const retired of ["qwen", "deepseek"]) {
-      expect(adminProviderKeySchema.safeParse(retired).success).toBe(false);
-      expect(adminLimitsUpdateSchema.safeParse({ ...limits, defaultProvider: retired }).success).toBe(false);
-    }
-    expect(adminProviderKeySchema.options).toEqual(["openai", "anthropic"]);
+    // The retired provider has no console entry and can never become the default again; DeepSeek is active again.
+    expect(adminProviderKeySchema.safeParse("qwen").success).toBe(false);
+    expect(adminLimitsUpdateSchema.safeParse({ ...limits, defaultProvider: "qwen" }).success).toBe(false);
+    expect(adminLimitsUpdateSchema.safeParse({ ...limits, defaultProvider: "deepseek" }).success).toBe(true);
+    expect(adminProviderKeySchema.options).toEqual(["openai", "anthropic", "deepseek"]);
     expect(adminLimitsUpdateSchema.safeParse({ ...limits, defaultProvider: "custom-provider" }).success).toBe(false);
     expect(adminLimitsUpdateSchema.safeParse({ ...limits, defaultProvider: null }).success).toBe(true);
     expect(adminLimitsUpdateSchema.safeParse({ ...limits, maxCallsPerDay: 500, maxActiveRuns: 10 }).success).toBe(true);
@@ -133,5 +136,57 @@ describe("Claude setup state", () => {
     expect(update({ secretAction: "keep", workspaceAction: "clear" })).toBeNull();
     expect(update({ secretAction: "replace", apiKey: "sk-ant-usr-abcdefghijkl", workspaceAction: "replace", workspaceId: "wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ" }))
       .toBe("wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ");
+  });
+});
+
+describe("DeepSeek, active again", () => {
+  it("is one of exactly three active providers with one documented default model; qwen stays retired", () => {
+    expect(TITLE_WRITING_PROVIDER_KEYS).toEqual(["openai", "anthropic", "deepseek"]);
+    expect(TITLE_WRITING_RETIRED_PROVIDER_KEYS).toEqual(["qwen"]);
+    expect(isActiveTitleWritingProvider("deepseek")).toBe(true);
+    expect(isActiveTitleWritingProvider("qwen")).toBe(false);
+    expect(TITLE_WRITING_DEFAULT_MODELS.deepseek).toEqual(["deepseek-flash"]);
+  });
+
+  it("a key needs no prefix, only a plausible length and header-safe characters (fake test keys)", () => {
+    for (const key of ["sk-0123456789abcdef0123456789abcdef", "fake-deepseek-key-for-tests", "x".repeat(16), "y".repeat(256)]) {
+      expect(deepseekKeyProblem(key)).toBeNull();
+    }
+    for (const key of ["", "short-key", "x".repeat(15), "y".repeat(257), "sk-fake key-with-space", "sk-fake-key\nX-Injected: 1",
+      "sk-fake-key-\u0000-nul-123456", "sk-fake-key-\u5bc6\u94a5-1234567890", " sk-fake-key-leading-space"]) {
+      expect(deepseekKeyProblem(key)).toBe("unsupported_format");
+    }
+  });
+
+  it("a DeepSeek run is legacy unless its frozen input carries the server-written adapter mark; no date decides it", () => {
+    expect(DEEPSEEK_PROVIDER_ADAPTER).toBe("deepseek.chat-completions.v1");
+    expect(frozenProviderAdapter("deepseek")).toEqual({ providerAdapter: DEEPSEEK_PROVIDER_ADAPTER });
+    for (const other of ["openai", "anthropic", "qwen"]) expect(frozenProviderAdapter(other)).toEqual({});
+    expect(isLegacyDeepseekRun({ providerKey: "deepseek" })).toBe(true);
+    expect(isLegacyDeepseekRun({ providerKey: "deepseek", providerAdapter: "deepseek.chat-completions.v0" })).toBe(true);
+    expect(isLegacyDeepseekRun({ providerKey: "deepseek", providerAdapter: DEEPSEEK_PROVIDER_ADAPTER })).toBe(false);
+    for (const other of ["openai", "anthropic", "qwen"]) expect(isLegacyDeepseekRun({ providerKey: other })).toBe(false);
+  });
+
+  it("a start body cannot carry the adapter mark: only the server writes it", () => {
+    expect(titleWritingStartSchema.safeParse({ title: "剧名", providerKey: "deepseek", providerAdapter: DEEPSEEK_PROVIDER_ADAPTER }).success).toBe(false);
+    expect(titleWritingStartSchema.safeParse({ title: "剧名", providerKey: "deepseek" }).success).toBe(true);
+  });
+
+  it("the setup state names the DeepSeek candidate migration only for DeepSeek, and never the Claude one", () => {
+    const entry = (providerKey: "anthropic" | "deepseek") => ({ providerKey, label: providerKey, models: ["m"], baseUrl: "u", keyConfigured: true, ready: true, missing: [] });
+    const settings = { defaultProvider: "deepseek" as const, maxCallsPerDay: 30, maxActiveRuns: 1, providers: [entry("anthropic"), entry("deepseek")] };
+    const view: AdminModelsView = {
+      savedRevision: 2, activeRevision: 2, pendingRestart: false, activationDeferred: false, source: "managed",
+      titleWriting: { enabled: true, productionBlocked: false, operatorConfigured: false, siteOperator: true },
+      saved: settings, active: settings, audit: [], validation: "local_only",
+      storage: { titleWriting: true, claude: false, candidates: true, deepseek: false },
+    };
+    expect(providerSetupState(view, "deepseek")).toEqual({ state: "migration_missing", migrations: ["20261017000100_writing_candidate_deepseek"] });
+    expect(providerSetupState(view, "anthropic")).toEqual({ state: "migration_missing", migrations: ["20261016000100_writing_provider_anthropic"] });
+    // A view from an API that predates the DeepSeek probe never says DeepSeek is ready.
+    expect(providerSetupState({ ...view, storage: { titleWriting: true, claude: true, candidates: true } }, "deepseek").state).toBe("migration_missing");
+    expect(providerSetupState({ ...view, storage: { titleWriting: true, claude: true, candidates: true, deepseek: true } }, "deepseek").state).toBe("ready");
+    expect(providerSetupState({ ...view, pendingRestart: true }, "deepseek").state).toBe("pending_restart");
   });
 });

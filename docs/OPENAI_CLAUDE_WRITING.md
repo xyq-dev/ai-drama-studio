@@ -1,13 +1,14 @@
-# OpenAI 与 Claude 文本创作
+# OpenAI、Claude 与 DeepSeek 文本创作
 
-2026-10-16 起，所有在线文本创作入口（标题一键创作、剧本拆解）、编剧流程和模型后台只提供两家供应商：
+2026-10-17 起，所有在线文本创作入口（标题一键创作、工作台在线候选、剧本拆解）、编剧流程和模型后台只提供三家供应商：
 
 | 供应商 | 内部 key | 界面名称 | 官方端点（固定，服务端校验） | 认证 |
 | --- | --- | --- | --- | --- |
-| OpenAI | `openai` | OpenAI | `POST https://api.openai.com/v1/responses` | `Authorization: Bearer` |
+| DeepSeek | `deepseek` | DeepSeek | `POST https://api.deepseek.com/chat/completions` | `Authorization: Bearer` |
 | Claude | `anthropic` | Claude | `POST https://api.anthropic.com/v1/messages` | `x-api-key` + `anthropic-version: 2023-06-01` |
+| OpenAI | `openai` | OpenAI | `POST https://api.openai.com/v1/responses` | `Authorization: Bearer` |
 
-千问（`qwen`）与 DeepSeek（`deepseek`）已退役。媒体处理、Mock 媒体、FFmpeg 等非文本业务不受影响。
+DeepSeek 于 2026-10-16 退役、2026-10-17 以新适配器重新接入（新 Key、默认模型 `deepseek-flash`、退役前的旧任务不再发送调用），详见 [`DEEPSEEK_WRITING.md`](DEEPSEEK_WRITING.md)。千问（`qwen`）仍为退役。媒体处理、Mock 媒体、FFmpeg 等非文本业务不受影响。下文“退役与历史”中关于 DeepSeek 的描述只适用于 2026-10-16 至 2026-10-17 的版本。
 
 ## Claude 的接入方式
 
@@ -69,7 +70,7 @@
 
 ## 退役与历史
 
-- 新建任务、续跑重新发送、后台更新、默认供应商、可执行 registry（`WRITING_ADAPTERS`、`titleWritingProviderConfigs`）只有 `openai`、`anthropic`。不会把旧供应商的请求改投 OpenAI 或 Claude。
+- 新建任务、续跑重新发送、后台更新、默认供应商、可执行 registry（`WRITING_ADAPTERS`、`titleWritingProviderConfigs`）只有 `openai`、`anthropic`，以及 2026-10-17 起重新接入的 `deepseek`（见 [`DEEPSEEK_WRITING.md`](DEEPSEEK_WRITING.md)；退役前创建的 DeepSeek 任务没有适配器标识，以 `legacy_provider_run` 停止，不再发送；只需保存已存答案时仍可保存）。不会把旧供应商的请求改投其他供应商。
 - 删除：千问/DeepSeek 适配器，`qwen-chat`、`qwen-text-trial`、`qwen-writing`、`qwen-web-writing` 模块，`qwen:trial`/`qwen:writing` 命令，工作区千问网页路由（`/writing/qwen-candidates`）、其服务、存储和网页客户端，以及对应环境变量的读取。通用 HTTP、限长读取、UTF-8 解码和密钥脱敏移到中立的 `packages/providers/src/http-transport.ts`。
 - 历史可读：`TITLE_WRITING_STORED_PROVIDER_KEYS` 仍包含 `qwen`、`deepseek`。历史任务、冻结输入、输入哈希、模型、调用身份、请求 ID、token、费用未知状态、审计都原样保留并按真实供应商显示（“千问（已退役）”“DeepSeek（已退役）”）。没有改标、清空或补零。
 - 旧的未确认请求：

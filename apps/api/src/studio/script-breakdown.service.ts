@@ -6,6 +6,7 @@ import {
   TITLE_WRITING_PROVIDER_PREFERENCE,
   TITLE_WRITING_PROVIDER_LABELS,
   isActiveTitleWritingProvider,
+  isLegacyDeepseekRun,
   scriptBreakdownPlaceSchema,
   scriptBreakdownStartSchema,
   titleWritingResumeSchema,
@@ -65,6 +66,8 @@ const MESSAGES: Record<string, string> = {
   TITLE_WRITING_PROVIDER_RETIRED: "这个模型服务已经退役，不能再发起新的拆解或重新发送调用。历史记录仍然保留，可以查看。",
   TITLE_WRITING_PROVIDER_STORAGE_UNAVAILABLE: "所选模型服务的数据库迁移还没有执行，没有创建任务，也没有发出调用。",
   TITLE_WRITING_MODEL_UNAVAILABLE: "所选模型不在服务端允许的列表中。",
+  TITLE_WRITING_LEGACY_RUN: "这次任务是 DeepSeek 退役前创建的旧任务，不会再发出请求，也不会改用新的 DeepSeek 模型或其他供应商；已有结果、调用记录和未知费用都保留。如需继续，请新建任务。",
+  TITLE_WRITING_RUN_MODEL_UNAVAILABLE: "这次任务冻结的模型已不在服务端允许的列表中，不会改用其他模型，没有发出调用。",
   TITLE_WRITING_RUN_ACTIVE: "这部作品已有一个 AI 任务正在进行，请等它结束。",
   TITLE_WRITING_ACTIVE_RUN_CAP: "同时进行的 AI 任务已达上限，请等当前任务结束。",
   TITLE_WRITING_DAILY_QUOTA_LOW: "最近 24 小时的调用次数已用完，没有创建任务，也没有发出任何调用。",
@@ -125,14 +128,13 @@ export class ScriptBreakdownService {
 
   /**
    * The provider a new start uses when the request names none, and the default that options() reports: the configured
-   * default when it is ready, otherwise the first ready provider in the fixed order; null when none is ready. A provider
-   * the request names is used as named, never replaced by this.
+   * default as it is (a start is refused while it is not ready; it is never replaced by another provider), otherwise the
+   * first ready provider in the fixed order; null when there is neither. A provider the request names is used as named.
    */
   private async readyDefault(): Promise<TitleWritingProviderKey | null> {
-    // Ready means configured and storable: Claude before its migration is not offered or chosen as the default.
+    if (this.deps.defaultProvider) return this.deps.defaultProvider;
+    // Ready means configured and storable: Claude before its migration is not offered as the first ready provider.
     const ready = async (key: TitleWritingProviderKey) => this.deps.providers[key].ok && await this.deps.store.providerStorageReady(key);
-    const configured = this.deps.defaultProvider;
-    if (configured && await ready(configured)) return configured;
     for (const key of TITLE_WRITING_PROVIDER_PREFERENCE) if (await ready(key)) return key;
     return null;
   }
@@ -350,6 +352,7 @@ export class ScriptBreakdownService {
     // The store decides from the run's persisted steps, under its lock, whether this resume sends again: only then must the
     // provider be ready. A run that stopped after its answer was stored only saves it (no call, no reservation).
     const runProvider = existing.run.input.providerKey;
+    const legacy = isLegacyDeepseekRun(existing.run.input);
     // A retired provider has no configuration, so it is never ready and its run is never sent for again.
     const provider = providerConfigFor(this.deps.providers, runProvider);
     const prepared = await this.deps.store.prepareResume(this.deps.workspaceId, projectId, runId, {
@@ -357,7 +360,8 @@ export class ScriptBreakdownService {
       requestHash,
       confirmedCallIds: confirmed,
       maxActiveRuns: this.deps.maxActiveRuns,
-      providerReady: provider !== null && provider.ok && provider.models.includes(existing.run.input.model),
+      // A DeepSeek run from before the retirement is never sent for again (only an answer already stored may be saved).
+      providerReady: !legacy && provider !== null && provider.ok && provider.models.includes(existing.run.input.model),
     }, this.now().toISOString());
     if (prepared.kind === "replayed") return this.view(prepared.bundle);
     if (prepared.kind !== "ok") {
@@ -370,6 +374,10 @@ export class ScriptBreakdownService {
       if (prepared.kind === "source_changed") return failure(409, "SCRIPT_BREAKDOWN_SOURCE_CHANGED");
       if (prepared.kind === "conflict") return failure(409, "SCRIPT_BREAKDOWN_CONFLICT");
       if (prepared.kind === "provider_unconfigured") {
+        if (legacy) return failure(409, "TITLE_WRITING_LEGACY_RUN", { providerKey: runProvider, model: existing.run.input.model });
+        if (provider?.ok && !provider.models.includes(existing.run.input.model)) {
+          return failure(409, "TITLE_WRITING_RUN_MODEL_UNAVAILABLE", { providerKey: runProvider, model: existing.run.input.model });
+        }
         return isActiveTitleWritingProvider(runProvider)
           ? failure(503, "TITLE_WRITING_PROVIDER_UNCONFIGURED", { providerKey: runProvider, missing: provider && !provider.ok ? provider.missing : [] })
           : failure(409, "TITLE_WRITING_PROVIDER_RETIRED", { providerKey: runProvider, label: TITLE_WRITING_PROVIDER_LABELS[runProvider] });

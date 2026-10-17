@@ -86,12 +86,19 @@ export const WRITING_PROVIDER_MIGRATION = "20261016000100_writing_provider_anthr
 export const WRITING_CANDIDATE_MIGRATION = "20261016000200_writing_candidate";
 
 /**
+ * Lets writing_candidate_request store provider_key 'deepseek'. Needs the candidate table; independent of the script
+ * breakdown and the Claude provider migration. DeepSeek title runs need no migration.
+ */
+export const WRITING_CANDIDATE_DEEPSEEK_MIGRATION = "20261017000100_writing_candidate_deepseek";
+
+/**
  * The only migrations a guarded single run may apply, each with the migrations it requires. Each is applied by its own
  * command; none of them takes the script breakdown (or anything else pending) along.
  */
 export const GUARDED_SINGLE_MIGRATIONS: Readonly<Record<string, readonly string[]>> = {
   [WRITING_PROVIDER_MIGRATION]: BASE_MIGRATIONS,
   [WRITING_CANDIDATE_MIGRATION]: BASE_MIGRATIONS,
+  [WRITING_CANDIDATE_DEEPSEEK_MIGRATION]: [...BASE_MIGRATIONS, WRITING_CANDIDATE_MIGRATION],
 };
 
 export async function runMigrations(

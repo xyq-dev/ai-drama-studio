@@ -1,17 +1,21 @@
 /// <reference lib="dom" />
 /**
- * Online writing in a real browser with the site login on: the administrator signs in once and then starts a title run,
- * asks for an episode candidate (Claude) and a story candidate (OpenAI), adopts each into the editor draft and saves it
- * with the editor's own "保存新版本" — without ever typing an operator token. A real browser drives the built Next app,
- * which reaches the real Nest API through its same-origin /api/v1 rewrite; the API runs on a new, empty, disposable
- * PostgreSQL database with the full migration chain (a fresh install). NOT part of `test` or `integration`: run only with
- * `pnpm --filter @ai-drama/api writing-online:browser-acceptance` and the title writing acceptance guard variables.
+ * Online writing in a real browser with the site login on: the administrator signs in once and then starts a title run
+ * with DeepSeek (the default after its quick setup), asks for an episode candidate (DeepSeek), an episode candidate from
+ * Claude and a story candidate from OpenAI (both chosen in the advanced settings), adopts candidates into the editor draft
+ * and saves them with the editor's own "保存新版本" — without ever typing an operator token. A real browser drives the
+ * built Next app, which reaches the real Nest API through its same-origin /api/v1 rewrite; the API runs on a new, empty,
+ * disposable PostgreSQL database with the test site's migration combination: the seven base migrations, then the guarded
+ * Claude, candidate and DeepSeek candidate migrations, and the script breakdown migration NOT applied. NOT part of `test`
+ * or `integration`: run only with `pnpm --filter @ai-drama/api writing-online:browser-acceptance` and the title writing
+ * acceptance guard variables.
  *
  * What is real: Chrome, the built web app and its rewrite and page protection, the site login (scrypt hash, session
  * cookie, CSRF token, origin check), the Nest controllers (operator proof from the session), the services, both
  * PostgreSQL stores and the text chain. What is not: the model. The title and candidate services the controllers use are
- * built here with a stub transport that answers in each provider's own wire format (Claude Messages, OpenAI Responses),
- * records every request and never opens a network connection. Its texts say they are the double's samples.
+ * built here with a stub transport that answers in each provider's own wire format (DeepSeek Chat Completions, Claude
+ * Messages, OpenAI Responses), records every request and never opens a network connection. Its texts say they are the
+ * double's samples.
  */
 import "reflect-metadata";
 import { type ChildProcess, spawn } from "node:child_process";
@@ -24,10 +28,15 @@ import { Test } from "@nestjs/testing";
 import { type Browser, type BrowserContext, type Locator, type Page, chromium } from "playwright";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  BASE_MIGRATIONS,
+  GUARDED_SINGLE_MIGRATIONS,
   PostgresTitleWritingStore,
   PostgresWritingCandidateStore,
+  SCRIPT_BREAKDOWN_MIGRATION,
   TextChainService,
+  WRITING_CANDIDATE_DEEPSEEK_MIGRATION,
   WRITING_CANDIDATE_MIGRATION,
+  WRITING_PROVIDER_MIGRATION,
   checkTitleWritingAcceptanceEnv,
   closePostgresPool,
   createPostgresPool,
@@ -35,7 +44,6 @@ import {
   verifyTitleWritingAcceptanceDatabase,
 } from "@ai-drama/database";
 import {
-  ANTHROPIC_MESSAGES_URL,
   TitleWritingEngine,
   WritingCandidateExecutor,
   titleWritingProviderConfigs,
@@ -76,6 +84,8 @@ const PASSWORD = `acceptance-${randomUUID()}`;
 // A personal Claude Console key shape (sk-ant-usr-) with a workspace id, as a key not scoped to one workspace needs.
 const STUB_KEY = `sk-ant-usr-stub-not-a-provider-key-${randomUUID()}`;
 const STUB_WORKSPACE = "wrkspc_01OnlineAcceptanceStubWorkspace";
+// DeepSeek has its own key (no prefix is documented); also not a key of any account.
+const DEEPSEEK_STUB_KEY = `stub-deepseek-not-a-provider-key-${randomUUID()}`;
 const TITLE = "模型替身样例·在线候选";
 const ONLINE_MARK = "（模型替身样例·在线候选改写）";
 const DESKTOP = { width: 1280, height: 800 };
@@ -93,21 +103,26 @@ const flows = evidence.flows as Record<string, unknown>;
 // ---------------------------------------------------------------------------------------------------------------
 // Model double: one transport for title steps and online candidates, in the wire format of the endpoint addressed.
 
-interface Sent { kind: string; endpoint: string; keyMatches: boolean }
+interface Sent { kind: string; endpoint: string; keyMatches: boolean; model: string }
 const sent: Sent[] = [];
 /** The next candidate answers of an episode: a status and body to return instead of the fixture. */
 const episodePlans = new Map<number, Array<{ status: number; body: unknown }>>();
 
 const transport: WritingTransport = async (request) => {
   const endpoint = new URL(request.url);
-  const body = JSON.parse(request.body) as { messages?: Array<{ role: string; content: string }>; input?: string };
+  const body = JSON.parse(request.body) as { messages?: Array<{ role: string; content: string }>; input?: string; model?: string;
+    thinking?: unknown; response_format?: unknown };
   const user = body.messages?.find((message) => message.role === "user")?.content ?? body.input ?? "";
   const headers = request.headers as Record<string, string>;
   // Claude: x-api-key and the configured workspace, never a bearer token. OpenAI: its bearer token and no workspace.
+  // DeepSeek: its own bearer key, thinking off and JSON output, and no other provider's header or key.
   const names = Object.keys(headers).map((name) => name.toLowerCase());
   const keyMatches = endpoint.host === "api.anthropic.com"
     ? headers["x-api-key"] === STUB_KEY && headers["anthropic-workspace-id"] === STUB_WORKSPACE && !names.includes("authorization")
-    : headers.Authorization === `Bearer ${STUB_KEY}` && !names.includes("anthropic-workspace-id") && !names.includes("x-api-key");
+    : endpoint.host === "api.deepseek.com"
+      ? headers.Authorization === `Bearer ${DEEPSEEK_STUB_KEY}` && !names.includes("anthropic-workspace-id") && !names.includes("x-api-key")
+        && JSON.stringify(body.thinking) === JSON.stringify({ type: "disabled" }) && JSON.stringify(body.response_format) === JSON.stringify({ type: "json_object" })
+      : headers.Authorization === `Bearer ${STUB_KEY}` && !names.includes("anthropic-workspace-id") && !names.includes("x-api-key");
   let kind: string;
   let value: unknown;
   let planned: { status: number; body: unknown } | undefined;
@@ -124,7 +139,7 @@ const transport: WritingTransport = async (request) => {
     kind = `title:${step}`;
     value = step === "concept" ? fixtureConcept(title) : step === "outline" ? fixtureOutline(fixtureOutlineCountOf(user)) : fixtureEpisode(Number(step.slice(-1)));
   }
-  sent.push({ kind, endpoint: `${endpoint.host}${endpoint.pathname}`, keyMatches });
+  sent.push({ kind, endpoint: `${endpoint.host}${endpoint.pathname}`, keyMatches, model: String(body.model ?? "") });
   const answer = planned ?? { status: 200, body: providerAnswer(request.url, value) };
   return {
     status: answer.status,
@@ -133,15 +148,22 @@ const transport: WritingTransport = async (request) => {
   };
 };
 const sends = (prefix: string) => sent.filter((item) => item.kind.startsWith(prefix)).length;
+const DEEPSEEK_ENDPOINT = "api.deepseek.com/chat/completions";
+const CLAUDE_ENDPOINT = "api.anthropic.com/v1/messages";
+const OPENAI_ENDPOINT = "api.openai.com/v1/responses";
 
-/** Claude with only its key (the default model), OpenAI with its key and list: the configuration an administrator gives. */
+/**
+ * DeepSeek and Claude with only their keys (their default models), OpenAI with its key and list: the configuration an
+ * administrator gives. DeepSeek is the default, as its quick setup saves it.
+ */
 const providers = titleWritingProviderConfigs({ ANTHROPIC_API_KEY: STUB_KEY, ANTHROPIC_WORKSPACE_ID: STUB_WORKSPACE,
-  OPENAI_API_KEY: STUB_KEY, TITLE_WRITING_OPENAI_MODELS: "openai-acceptance-stub" });
+  OPENAI_API_KEY: STUB_KEY, TITLE_WRITING_OPENAI_MODELS: "openai-acceptance-stub", DEEPSEEK_API_KEY: DEEPSEEK_STUB_KEY });
+const DEFAULT_PROVIDER = "deepseek" as const;
 
 function titleService(runtime: StudioRuntime): TitleWritingService {
   const store = new PostgresTitleWritingStore(runtime.pool, new TextChainService(runtime.pool));
   return new TitleWritingService({
-    workspaceId: WORKSPACE, nodeEnv: "test", enabled: true, operatorToken: null, siteOperator: true, defaultProvider: null, providers, store,
+    workspaceId: WORKSPACE, nodeEnv: "test", enabled: true, operatorToken: null, siteOperator: true, defaultProvider: DEFAULT_PROVIDER, providers, store,
     engine: new TitleWritingEngine({ workspaceId: WORKSPACE, store, providers, transport, maxCallsPerDay: 200, timeoutMs: 30_000 }),
     projects: runtime.store, maxCallsPerDay: 200, maxActiveRuns: 10,
   });
@@ -150,7 +172,7 @@ function titleService(runtime: StudioRuntime): TitleWritingService {
 function candidateService(runtime: StudioRuntime): WritingCandidateService {
   const store = new PostgresWritingCandidateStore(runtime.pool);
   return new WritingCandidateService({
-    workspaceId: WORKSPACE, nodeEnv: "test", enabled: true, operatorToken: null, siteOperator: true, defaultProvider: null, providers, store,
+    workspaceId: WORKSPACE, nodeEnv: "test", enabled: true, operatorToken: null, siteOperator: true, defaultProvider: DEFAULT_PROVIDER, providers, store,
     executor: new WritingCandidateExecutor({ workspaceId: WORKSPACE, store, providers, transport, timeoutMs: 30_000 }),
     projects: runtime.store, maxCallsPerDay: 200,
   });
@@ -168,7 +190,8 @@ const pageErrors: string[] = [];
 const pageWrites: Array<{ method: string; path: string; key: string | null; token: boolean }> = [];
 
 function redact(text: string): string {
-  return text.split(PASSWORD).join("[password]").split(STUB_KEY).join("[stub-key]").split(acceptanceUrl).join("[database-url]");
+  return text.split(PASSWORD).join("[password]").split(STUB_KEY).join("[stub-key]").split(DEEPSEEK_STUB_KEY).join("[deepseek-stub-key]")
+    .split(acceptanceUrl).join("[database-url]");
 }
 
 async function bootApi(): Promise<INestApplication> {
@@ -300,9 +323,17 @@ beforeAll(async () => {
     await closePostgresPool(pool);
     throw new Error(`Writing online browser acceptance refused: ${verified.reason}`);
   }
-  const migrated = await runMigrations(pool);
-  expect(migrated.applied.at(-1)).toBe(WRITING_CANDIDATE_MIGRATION);
-  evidence.migrationsApplied = migrated.applied;
+  // The test site's combination, built the way its release applies it: the base seven, then each guarded migration on
+  // its own; the script breakdown migration stays unapplied.
+  expect((await runMigrations(pool, undefined, { before: SCRIPT_BREAKDOWN_MIGRATION })).applied).toEqual([...BASE_MIGRATIONS]);
+  for (const name of [WRITING_PROVIDER_MIGRATION, WRITING_CANDIDATE_MIGRATION, WRITING_CANDIDATE_DEEPSEEK_MIGRATION]) {
+    const guarded = await runMigrations(pool, undefined, { only: { name, requires: GUARDED_SINGLE_MIGRATIONS[name]! } });
+    expect(guarded.applied).toEqual([name]);
+  }
+  const ledger = (await q<{ name: string }>("SELECT name FROM schema_migration ORDER BY name")).map((row) => row.name);
+  expect(ledger).toEqual([...BASE_MIGRATIONS, WRITING_PROVIDER_MIGRATION, WRITING_CANDIDATE_MIGRATION, WRITING_CANDIDATE_DEEPSEEK_MIGRATION]);
+  expect(ledger).not.toContain(SCRIPT_BREAKDOWN_MIGRATION);
+  evidence.migrationsApplied = ledger;
   await q("INSERT INTO workspace (id, name, status) VALUES ($1, 'writing-online-browser-acceptance', 'ACTIVE')", [WORKSPACE]);
   if (shotsDir) await mkdir(shotsDir, { recursive: true });
 
@@ -355,7 +386,7 @@ afterAll(async () => {
     for (const file of await readdir(evidenceDir, { recursive: true })) {
       if (!String(file).endsWith(".json")) continue;
       const text = await readFile(join(evidenceDir, String(file)), "utf8");
-      if (text.includes(PASSWORD) || text.includes(STUB_KEY) || text.includes(acceptanceUrl)) problems.push(`secret in ${String(file)}`);
+      if (text.includes(PASSWORD) || text.includes(STUB_KEY) || text.includes(DEEPSEEK_STUB_KEY) || text.includes(acceptanceUrl)) problems.push(`secret in ${String(file)}`);
     }
   }
   if (problems.length > 0) throw new Error(`writing online browser acceptance cleanup: ${problems.join("; ")}`);
@@ -371,7 +402,8 @@ describe("online writing in a real browser with the site login, real web and API
     await page.getByLabel("密码").fill(PASSWORD);
     await page.getByRole("button", { name: "登录", exact: true }).click();
     await page.waitForURL(`${WEB}/create`, { timeout: 30_000 });
-    await page.getByText(/服务端已配置：OpenAI、Claude/).waitFor({ timeout: 30_000 });
+    await page.getByText(/服务端已配置：OpenAI、Claude、DeepSeek。/).waitFor({ timeout: 30_000 });
+    expect(await page.getByText(/千问/).count()).toBe(0);
     expect(await page.locator("#ai-token").count()).toBe(0);
     await page.getByText("调用权限由当前管理员登录确认，不需要填写操作者令牌。模型密钥只在服务端。").waitFor();
     await page.locator("#ai-title").fill(TITLE);
@@ -382,9 +414,16 @@ describe("online writing in a real browser with the site login, real web and API
     projectId = /\/projects\/([0-9a-f-]{36})\/writing$/.exec(page.url())![1]!;
     await expect.poll(async () => await headline().textContent(), { timeout: 60_000, interval: 250 }).toBe("创作完成");
     expect(sends("title:")).toBe(5);
-    // The default provider without a configured default is Claude, with the model a key alone gives it.
+    // The configured default is DeepSeek, with the model a key alone gives it; every step went to DeepSeek only.
     const run = (await q<{ provider_key: string; model: string }>("SELECT provider_key, model FROM title_writing_run WHERE project_id = $1", [projectId]))[0]!;
-    expect(run).toEqual({ provider_key: "anthropic", model: "claude-opus-5-5" });
+    expect(run).toEqual({ provider_key: "deepseek", model: "deepseek-flash" });
+    expect(sent.filter((item) => item.kind.startsWith("title:")).map((item) => [item.endpoint, item.model])).toEqual(Array(5).fill([DEEPSEEK_ENDPOINT, "deepseek-flash"]));
+    const calls = await q<{ provider_key: string; model: string; state: string; billing_status: string; usage: string }>(
+      `SELECT c.provider_key, c.model, c.state, c.billing_status, c.usage_json::text AS usage FROM title_writing_call c
+        JOIN title_writing_run r ON r.id = c.run_id WHERE r.project_id = $1`, [projectId]);
+    expect(calls).toHaveLength(5);
+    expect(calls.every((call) => call.provider_key === "deepseek" && call.model === "deepseek-flash" && call.state === "completed"
+      && call.billing_status === "unknown" && call.usage.includes("\"totalTokens\": 300"))).toBe(true);
     expect(pageWrites.filter((write) => write.token)).toEqual([]);
 
     // The person reviews the story, then places the scripts (the existing human gates are unchanged).
@@ -402,14 +441,14 @@ describe("online writing in a real browser with the site login, real web and API
     flows.title = { projectId, provider: run, stubSends: sends("title:"), operatorTokenHeaders: 0 };
   }, 240_000);
 
-  it("B: an episode candidate from Claude is previewed, compared, adopted only on click and saved as a new version", async () => {
+  it("B: an episode candidate from DeepSeek is previewed, compared, adopted only on click and saved as a new version", async () => {
     const before = await scriptRows(projectId, 1);
     expect(before).toHaveLength(1);
     await page.goto(`${WEB}/projects/${projectId}?focus=script&episode=1`, { waitUntil: "domcontentloaded" });
     const card = editor("第 1 集剧本");
     await card.getByRole("button", { name: "编剧助手" }).click();
     const panel = card.getByTestId("online-candidate");
-    await expect.poll(async () => await panel.getByTestId("online-provider").textContent(), { timeout: 30_000 }).toContain("Claude · claude-opus-5-5");
+    await expect.poll(async () => await panel.getByTestId("online-provider").textContent(), { timeout: 30_000 }).toContain("DeepSeek · deepseek-flash");
     expect(await panel.getByLabel("操作者令牌").count()).toBe(0);
     const generate = panel.getByRole("button", { name: "在线生成本集候选" });
     // Not yet confirmed: refused on the page, nothing sent.
@@ -447,19 +486,21 @@ describe("online writing in a real browser with the site login, real web and API
     await page.reload({ waitUntil: "domcontentloaded" });
     await expect.poll(async () => await editorText(editor("第 1 集剧本")), { timeout: 30_000 }).toContain(ONLINE_MARK);
     await editor("第 1 集剧本").getByRole("button", { name: "编剧助手" }).click();
-    await editor("第 1 集剧本").getByText(/Claude claude-opus-5-5 · 已生成/).waitFor({ timeout: 30_000 });
+    await editor("第 1 集剧本").getByText(/DeepSeek deepseek-flash · 已生成/).waitFor({ timeout: 30_000 });
     expect(sends("candidate:")).toBe(1);
-    expect(await candidateRows(projectId)).toEqual([{ mode: "episode", episode_no: 1, provider_key: "anthropic", model: "claude-opus-5-5", state: "completed",
+    expect(sent.filter((item) => item.kind === "candidate:episode:1").map((item) => item.endpoint)).toEqual([DEEPSEEK_ENDPOINT]);
+    expect(await candidateRows(projectId)).toEqual([{ mode: "episode", episode_no: 1, provider_key: "deepseek", model: "deepseek-flash", state: "completed",
       error_code: null, billing_status: "unknown" }]);
     flows.episode = { projectId, scriptRevisions: { before: 1, after: 2 }, candidatePosts: candidatePosts().length, stubSends: sends("candidate:episode:1") };
   }, 240_000);
 
   it("C: an unknown result is shown as possibly charged, is never resent on reload, and a new request needs the confirmation", async () => {
-    episodePlans.set(2, [{ status: 529, body: { type: "error", error: { type: "overloaded_error", message: "stub" } } }]);
+    // DeepSeek 503 (server overloaded): the request may have run, so the result is unknown and never resent.
+    episodePlans.set(2, [{ status: 503, body: { error: { message: "stub overloaded", type: "server_error" } } }]);
     await page.goto(`${WEB}/projects/${projectId}?focus=script&episode=2`, { waitUntil: "domcontentloaded" });
     let card = editor("第 2 集剧本");
     await card.getByRole("button", { name: "编剧助手" }).click();
-    await expect.poll(async () => await card.getByTestId("online-provider").textContent(), { timeout: 30_000 }).toContain("Claude");
+    await expect.poll(async () => await card.getByTestId("online-provider").textContent(), { timeout: 30_000 }).toContain("DeepSeek");
     await card.getByLabel("确认使用当前已加载的故事与分集材料").check();
     await card.getByRole("button", { name: "在线生成本集候选" }).click();
     await card.getByText(/结果不确定：模型服务可能已经处理并产生费用，系统不会自动重发/).waitFor({ timeout: 30_000 });
@@ -481,7 +522,31 @@ describe("online writing in a real browser with the site login, real web and API
     expect(sends("candidate:episode:2")).toBe(2);
     const rows = (await candidateRows(projectId)).filter((row) => row.episode_no === 2);
     expect(rows.map((row) => `${row.state}/${row.error_code ?? "-"}/${row.billing_status}`)).toEqual(["unknown/server_error/unknown", "completed/-/unknown"]);
-    flows.unknown = { rows, stubSends: sends("candidate:episode:2"), resentOnReload: false };
+    expect(sent.filter((item) => item.kind === "candidate:episode:2").map((item) => item.endpoint)).toEqual([DEEPSEEK_ENDPOINT, DEEPSEEK_ENDPOINT]);
+    flows.unknown = { rows, stubSends: sends("candidate:episode:2"), resentOnReload: false, movedToAnotherProvider: false };
+  }, 240_000);
+
+  it("C2: Claude chosen in the advanced settings answers an episode candidate with its own key and workspace; nothing is adopted", async () => {
+    const before = await scriptRows(projectId, 3);
+    await page.goto(`${WEB}/projects/${projectId}?focus=script&episode=3`, { waitUntil: "domcontentloaded" });
+    const card = editor("第 3 集剧本");
+    await card.getByRole("button", { name: "编剧助手" }).click();
+    const panel = card.getByTestId("online-candidate");
+    await expect.poll(async () => await panel.getByTestId("online-provider").textContent(), { timeout: 30_000 }).toContain("DeepSeek");
+    await panel.getByText("高级设置（可不填）").click();
+    const choices = await panel.getByLabel("模型服务").locator("option").allTextContents();
+    expect(choices).toEqual(["OpenAI", "Claude", "DeepSeek"]);
+    await panel.getByLabel("模型服务").selectOption("anthropic");
+    await expect.poll(async () => await panel.getByTestId("online-provider").textContent()).toContain("Claude · claude-opus-5-5");
+    await card.getByLabel("确认使用当前已加载的故事与分集材料").check();
+    await panel.getByRole("button", { name: "在线生成本集候选" }).click();
+    await card.getByLabel("候选正文").waitFor({ timeout: 30_000 });
+    expect(sent.filter((item) => item.kind === "candidate:episode:3").map((item) => [item.endpoint, item.keyMatches])).toEqual([[CLAUDE_ENDPOINT, true]]);
+    expect(await scriptRows(projectId, 3)).toEqual(before);
+    const row = (await candidateRows(projectId)).filter((item) => item.episode_no === 3);
+    expect(row).toEqual([{ mode: "episode", episode_no: 3, provider_key: "anthropic", model: "claude-opus-5-5", state: "completed", error_code: null,
+      billing_status: "unknown" }]);
+    flows.claudeCandidate = { provider: "anthropic", adopted: false };
   }, 240_000);
 
   it("D: a story candidate from OpenAI (chosen in the advanced settings) is adopted and saved; the breakdown stays off", async () => {
@@ -490,7 +555,7 @@ describe("online writing in a real browser with the site login, real web and API
     const card = editor("故事");
     await card.getByRole("button", { name: "编剧助手" }).click();
     const panel = card.getByTestId("online-candidate");
-    await expect.poll(async () => await panel.getByTestId("online-provider").textContent(), { timeout: 30_000 }).toContain("Claude");
+    await expect.poll(async () => await panel.getByTestId("online-provider").textContent(), { timeout: 30_000 }).toContain("DeepSeek");
     await panel.getByText("高级设置（可不填）").click();
     await panel.getByLabel("模型服务").selectOption("openai");
     await expect.poll(async () => await panel.getByTestId("online-provider").textContent()).toContain("OpenAI · openai-acceptance-stub");
@@ -521,15 +586,23 @@ describe("online writing in a real browser with the site login, real web and API
   it("E: the browser never holds a key or token, every model request went to a stub with the stub key, and no page error was raised", async () => {
     const stored = await page.evaluate(() => JSON.stringify({ local: { ...window.localStorage }, session: { ...window.sessionStorage }, cookie: document.cookie }));
     const cookies = JSON.stringify(await context!.cookies());
-    expect(stored.includes(STUB_KEY) || cookies.includes(STUB_KEY)).toBe(false);
+    for (const secret of [STUB_KEY, DEEPSEEK_STUB_KEY]) expect(stored.includes(secret) || cookies.includes(secret)).toBe(false);
     const options = await page.evaluate(async () => await (await fetch("/api/v1/writing/candidates/options")).text());
-    expect(options.includes(STUB_KEY)).toBe(false);
-    expect(JSON.parse(options)).toMatchObject({ code: "WRITING_CANDIDATE_READY", operatorTokenRequired: false, defaultProvider: "anthropic" });
+    expect(options.includes(STUB_KEY) || options.includes(DEEPSEEK_STUB_KEY)).toBe(false);
+    expect(JSON.parse(options)).toMatchObject({ code: "WRITING_CANDIDATE_READY", operatorTokenRequired: false, defaultProvider: "deepseek" });
+    expect((JSON.parse(options) as { providers: Array<{ providerKey: string; ready: boolean }> }).providers.map((item) => [item.providerKey, item.ready]))
+      .toEqual([["openai", true], ["anthropic", true], ["deepseek", true]]);
+    const titleOptions = await page.evaluate(async () => await (await fetch("/api/v1/writing/title-runs/options")).text());
+    expect(JSON.parse(titleOptions)).toMatchObject({ code: "TITLE_WRITING_READY", defaultProvider: "deepseek" });
     expect(pageWrites.filter((write) => write.token)).toEqual([]);
     expect(pageErrors).toEqual([]);
     expect(sent.every((item) => item.keyMatches)).toBe(true);
-    expect(new Set(sent.map((item) => item.endpoint))).toEqual(new Set(["api.anthropic.com/v1/messages", "api.openai.com/v1/responses"]));
-    expect(sent.filter((item) => item.endpoint === new URL(ANTHROPIC_MESSAGES_URL).host + new URL(ANTHROPIC_MESSAGES_URL).pathname).length).toBe(sent.length - 1);
+    expect(new Set(sent.map((item) => item.endpoint))).toEqual(new Set([DEEPSEEK_ENDPOINT, CLAUDE_ENDPOINT, OPENAI_ENDPOINT]));
+    // Exactly the sends the flows asked for: 5 title steps, episode 1 once, episode 2 twice (unknown, then confirmed) on
+    // DeepSeek; one Claude and one OpenAI candidate. Reloads and failures sent nothing more.
+    expect(sent.filter((item) => item.endpoint === DEEPSEEK_ENDPOINT)).toHaveLength(8);
+    expect(sent.filter((item) => item.endpoint === CLAUDE_ENDPOINT)).toHaveLength(1);
+    expect(sent.filter((item) => item.endpoint === OPENAI_ENDPOINT)).toHaveLength(1);
     (evidence.checks as Record<string, unknown>).browser = { keyInStorageOrCookies: false, operatorTokenHeaders: 0, pageErrors: 0 };
   });
 });

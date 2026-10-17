@@ -1,5 +1,6 @@
 import type { PoolClient, QueryResult, QueryResultRow } from "pg";
 import type {
+  TitleWritingProviderKey,
   TitleWritingUsageView,
   WritingCandidateCreation,
   WritingCandidateFinish,
@@ -11,7 +12,7 @@ import type {
   WritingCandidateStore,
 } from "@ai-drama/contracts";
 import type { DatabasePool } from "./job-service";
-import { WRITING_CANDIDATE_MIGRATION } from "./migrations";
+import { WRITING_CANDIDATE_DEEPSEEK_MIGRATION, WRITING_CANDIDATE_MIGRATION } from "./migrations";
 
 export { WRITING_CANDIDATE_MIGRATION };
 
@@ -86,8 +87,30 @@ export function writingCallLockKey(workspaceId: string): string {
 export class PostgresWritingCandidateStore implements WritingCandidateStore {
   // Once applied a migration stays applied, so only a positive answer is remembered.
   private readyConfirmed = false;
+  private deepseekConfirmed = false;
 
   constructor(private readonly pool: DatabasePool) {}
+
+  /**
+   * openai and anthropic once storageReady(); deepseek only after 20261017000100_writing_candidate_deepseek is recorded
+   * and the live provider_key CHECK names deepseek (the ledger alone is not trusted).
+   */
+  async providerStorageReady(providerKey: TitleWritingProviderKey): Promise<boolean> {
+    if (!(await this.storageReady())) return false;
+    if (providerKey !== "deepseek" || this.deepseekConfirmed) return true;
+    try {
+      const recorded = await this.query("SELECT 1 FROM schema_migration WHERE name = $1", [WRITING_CANDIDATE_DEEPSEEK_MIGRATION]);
+      if (!recorded.rows[0]) return false;
+      const checks = await this.query(
+        `SELECT count(*)::int AS allowed FROM pg_constraint
+          WHERE conrelid = to_regclass('writing_candidate_request') AND contype = 'c'
+            AND pg_get_constraintdef(oid) LIKE '%provider_key%' AND pg_get_constraintdef(oid) LIKE '%''deepseek''%'`, []);
+      this.deepseekConfirmed = Number(checks.rows[0]?.allowed) === 1;
+      return this.deepseekConfirmed;
+    } catch {
+      return false;
+    }
+  }
 
   async storageReady(): Promise<boolean> {
     if (this.readyConfirmed) return true;

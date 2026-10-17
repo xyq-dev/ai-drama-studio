@@ -17,7 +17,7 @@ import {
   type FrozenWritingContext,
   type WritingImport,
 } from "@ai-drama/domain/writing-assistant";
-import { TitleWritingError, tokenRequired } from "../lib/title-writing-client";
+import { TitleWritingError, providerGapText, providerTarget, tokenRequired } from "../lib/title-writing-client";
 import {
   WritingCandidateClient,
   candidateErrorText,
@@ -78,7 +78,8 @@ function writeRecord(record: OnlineRecord): boolean {
  * off) keep the record: those come before the key lookup, so an earlier send of the same key may still exist.
  */
 const AFTER_KEY_LOOKUP = new Set(["WRITING_CANDIDATE_ACTIVE", "WRITING_CANDIDATE_NEEDS_CONFIRMATION", "WRITING_CANDIDATE_TARGET_INVALID",
-  "WRITING_CANDIDATE_DAILY_CAP", "WRITING_CANDIDATE_MODEL_UNAVAILABLE", "IDEMPOTENCY_KEY_REUSED", "VALIDATION_ERROR"]);
+  "WRITING_CANDIDATE_DAILY_CAP", "WRITING_CANDIDATE_MODEL_UNAVAILABLE", "WRITING_CANDIDATE_PROVIDER_STORAGE_UNAVAILABLE", "IDEMPOTENCY_KEY_REUSED",
+  "VALIDATION_ERROR"]);
 function decided(error: unknown): error is TitleWritingError {
   return error instanceof TitleWritingError && AFTER_KEY_LOOKUP.has(error.code);
 }
@@ -95,9 +96,11 @@ export function candidateImport(view: WritingCandidateView): WritingImport | nul
   }
 }
 
-function unavailableText(options: WritingCandidateOptionsView | null, failed: boolean): string | null {
+/** Why online candidates cannot be asked for, from the providers' own gaps: never a fixed provider, a value or a log. */
+export function unavailableText(options: WritingCandidateOptionsView | null, failed: boolean): string | null {
   if (failed) return "没能读取在线创作的服务端配置。仍可使用下方的复制指令与导入。";
   if (!options) return null;
+  const pending = options.configurationPending ? "后台已保存新的模型配置，需要服务器重启 API 后才会生效。" : "";
   switch (options.code) {
     case "WRITING_CANDIDATE_READY":
       return null;
@@ -106,9 +109,13 @@ function unavailableText(options: WritingCandidateOptionsView | null, failed: bo
     case "WRITING_CANDIDATE_FORBIDDEN":
       return "服务端没有可用的调用授权（未启用站点登录，也没有设置操作者令牌）。";
     case "WRITING_CANDIDATE_STORAGE_UNAVAILABLE":
-      return "在线候选的数据库迁移（20261016000200_writing_candidate）尚未执行，暂时不能在线生成。";
-    case "WRITING_CANDIDATE_PROVIDER_UNCONFIGURED":
-      return "尚未配置 Claude API Key。请管理员在模型后台填写后，由服务器重启 API 生效。";
+      return "在线候选的数据库迁移（20261016000200_writing_candidate）尚未执行，暂时不能在线生成。需由服务器部署流程单独执行。";
+    case "WRITING_CANDIDATE_PROVIDER_UNCONFIGURED": {
+      // With a default: only its own reason, so nobody is sent to configure another provider. Without one: every gap.
+      const preferred = options.providers.find((item) => item.providerKey === options.defaultProvider);
+      const gaps = (preferred ? [preferred] : options.providers).map(providerGapText).join("；");
+      return `${pending}暂时没有可用的模型服务。${gaps}。`;
+    }
     default:
       return "在线创作暂时不可用。";
   }
@@ -143,6 +150,8 @@ export function OnlineCandidatePanel(props: {
   const [historyError, setHistoryError] = useState(false);
   const [viewing, setViewing] = useState<string | null>(null);
   const [providerKey, setProviderKey] = useState<TitleWritingProviderKey | "">("");
+  // True once the person picked a provider themselves; the configured default is never replaced on their behalf.
+  const [providerExplicit, setProviderExplicit] = useState(false);
   const [model, setModel] = useState("");
   const [token, setToken] = useState("");
   const [uncertainId, setUncertainId] = useState<string | null>(null);
@@ -253,6 +262,7 @@ export function OnlineCandidatePanel(props: {
       setOptions(value);
       const chosen = value.defaultProvider;
       setProviderKey(chosen ?? "");
+      setProviderExplicit(false);
       setModel(value.providers.find((item) => item.providerKey === chosen)?.defaultModel ?? "");
     }).catch(() => { if (current(mine, forIdentity)) setOptionsFailed(true); });
     void loadHistory(mine, forIdentity);
@@ -268,7 +278,9 @@ export function OnlineCandidatePanel(props: {
   }, [identity]);
 
   const readyProviders = options?.providers.filter((item) => item.ready) ?? [];
-  const chosen = readyProviders.find((item) => item.providerKey === providerKey) ?? null;
+  // A configured default that is not ready stays chosen and blocks sending until the person picks a ready one.
+  const target = options ? providerTarget(options.providers, providerKey, providerExplicit) : { kind: "none" as const };
+  const chosen = target.kind === "ready" ? target.option : null;
   const needsToken = tokenRequired(options);
   const unavailable = unavailableText(options, optionsFailed);
   const unconfirmed = record !== null && record.requestId === null;
@@ -377,6 +389,11 @@ export function OnlineCandidatePanel(props: {
       {options && !unavailable && chosen ? (
         <p className="text-sm" data-testid="online-provider">使用 {chosen.label} · {model || chosen.defaultModel}。费用以服务商账单为准，本页不估算金额。</p>
       ) : null}
+      {options && !unavailable && target.kind === "blocked" ? (
+        <p className="text-sm" role="status" data-testid="online-provider-blocked">
+          {options.configurationPending ? "后台已保存新的模型配置，需要服务器重启 API 后才会生效。" : null}{target.reason}
+        </p>
+      ) : null}
       {options && !unavailable && readyProviders.length > 0 ? (
         <details className="text-sm">
           <summary>高级设置（可不填）</summary>
@@ -385,8 +402,10 @@ export function OnlineCandidatePanel(props: {
               onChange={(event) => {
                 const next = event.target.value as TitleWritingProviderKey;
                 setProviderKey(next);
+                setProviderExplicit(true);
                 setModel(readyProviders.find((item) => item.providerKey === next)?.defaultModel ?? "");
               }}>
+              {target.kind === "blocked" ? <option value={providerKey} disabled>{options.providers.find((item) => item.providerKey === providerKey)?.label}（暂不可用）</option> : null}
               {readyProviders.map((item) => <option key={item.providerKey} value={item.providerKey}>{item.label}</option>)}
             </select>
           </label>

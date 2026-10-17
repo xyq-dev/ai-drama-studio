@@ -93,11 +93,14 @@ describe("loadApiEnv", () => {
   });
 
   it("keeps an API with a retired default provider starting, without any default, and names the retired one", () => {
-    for (const retired of ["qwen", "deepseek"] as const) {
-      const env = loadApiEnv({ ...valid, TITLE_WRITING_DEFAULT_PROVIDER: retired });
-      expect(env.TITLE_WRITING_DEFAULT_PROVIDER).toBeUndefined();
-      expect(env.TITLE_WRITING_RETIRED_DEFAULT_PROVIDER).toBe(retired);
-    }
+    const env = loadApiEnv({ ...valid, TITLE_WRITING_DEFAULT_PROVIDER: "qwen" });
+    expect(env.TITLE_WRITING_DEFAULT_PROVIDER).toBeUndefined();
+    expect(env.TITLE_WRITING_RETIRED_DEFAULT_PROVIDER).toBe("qwen");
+    // DeepSeek is active again: it may be named as the default, but its key still comes only from the console.
+    const deepseek = loadApiEnv({ ...valid, TITLE_WRITING_DEFAULT_PROVIDER: "deepseek", DEEPSEEK_API_KEY: "fake-deepseek-env-key-0123456789" });
+    expect(deepseek.TITLE_WRITING_DEFAULT_PROVIDER).toBe("deepseek");
+    expect(deepseek.TITLE_WRITING_RETIRED_DEFAULT_PROVIDER).toBeUndefined();
+    expect(deepseek).not.toHaveProperty("DEEPSEEK_API_KEY");
     expect(loadApiEnv({ ...valid, TITLE_WRITING_DEFAULT_PROVIDER: "anthropic" }).TITLE_WRITING_DEFAULT_PROVIDER).toBe("anthropic");
     expect(() => loadApiEnv({ ...valid, TITLE_WRITING_DEFAULT_PROVIDER: "gemini" })).toThrow("TITLE_WRITING_DEFAULT_PROVIDER");
   });

@@ -173,9 +173,10 @@ jobs:
           TITLE_WRITING_ACCEPTANCE_EVIDENCE_DIR="${RUNNER_TEMP}/title-acceptance-evidence" \
           pnpm --filter @ai-drama/database writing-candidate:acceptance
 
-      - name: Run the two guarded release commands in release order on a base-seven database
-        # Exactly the release commands: provider migration, then candidate migration, each alone. The script breakdown
-        # must stay unapplied and a rerun must apply nothing (--only refusing the breakdown is checked in the next step).
+      - name: Run the three guarded release commands in release order on a base-seven database
+        # Exactly the release commands: provider migration, candidate migration, then the DeepSeek candidate migration, each
+        # alone. The DeepSeek one is refused with zero writes before the candidate migration. The script breakdown must
+        # stay unapplied and a rerun must apply nothing (--only refusing the breakdown is checked in the next step).
         run: |
           name="ads_title_acceptance_release_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
           url="postgresql://postgres@127.0.0.1:5432/${name}"
@@ -193,13 +194,25 @@ jobs:
           provider="$(DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate -- --only 20261016000100_writing_provider_anthropic)"
           echo "provider: ${provider}"
           printf '%s\n' "${provider}" | grep -Eq "(^|[^0-9])Applied 1 migration\(s\)\.$"
-          printf '%s\n' "${provider}" | grep -q '"leftPending":\["20261012000100_script_breakdown","20261016000200_writing_candidate"\]'
+          printf '%s\n' "${provider}" | grep -q '"leftPending":\["20261012000100_script_breakdown","20261016000200_writing_candidate","20261017000100_writing_candidate_deepseek"\]'
+          # Before the candidate table exists the DeepSeek command refuses and records nothing.
+          if DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate -- --only 20261017000100_writing_candidate_deepseek; then exit 1; fi
+          early="$(psql -h 127.0.0.1 -U postgres -d "${name}" -v ON_ERROR_STOP=1 -At -c "SELECT count(*) FROM schema_migration WHERE name = '20261017000100_writing_candidate_deepseek'")"
+          test "${early}" = "0"
           candidate="$(DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate -- --only 20261016000200_writing_candidate)"
           echo "candidate: ${candidate}"
           printf '%s\n' "${candidate}" | grep -Eq "(^|[^0-9])Applied 1 migration\(s\)\.$"
-          printf '%s\n' "${candidate}" | grep -q '"leftPending":\["20261012000100_script_breakdown"\]'
+          printf '%s\n' "${candidate}" | grep -q '"leftPending":\["20261012000100_script_breakdown","20261017000100_writing_candidate_deepseek"\]'
           again="$(DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate -- --only 20261016000200_writing_candidate)"
           printf '%s\n' "${again}" | grep -Eq "(^|[^0-9])Applied 0 migration\(s\)\.$"
+          deepseek="$(DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate -- --only 20261017000100_writing_candidate_deepseek)"
+          echo "deepseek: ${deepseek}"
+          printf '%s\n' "${deepseek}" | grep -Eq "(^|[^0-9])Applied 1 migration\(s\)\.$"
+          printf '%s\n' "${deepseek}" | grep -q '"leftPending":\["20261012000100_script_breakdown"\]'
+          deepseekAgain="$(DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate -- --only 20261017000100_writing_candidate_deepseek)"
+          printf '%s\n' "${deepseekAgain}" | grep -Eq "(^|[^0-9])Applied 0 migration\(s\)\.$"
+          check="$(psql -h 127.0.0.1 -U postgres -d "${name}" -v ON_ERROR_STOP=1 -At -c "SELECT count(*) FROM pg_constraint WHERE conrelid = 'writing_candidate_request'::regclass AND contype = 'c' AND pg_get_constraintdef(oid) LIKE '%provider_key%' AND pg_get_constraintdef(oid) LIKE '%deepseek%'")"
+          test "${check}" = "1"
           breakdown="$(psql -h 127.0.0.1 -U postgres -d "${name}" -v ON_ERROR_STOP=1 -At -c "SELECT count(*) FROM schema_migration WHERE name = '20261012000100_script_breakdown'")"
           test "${breakdown}" = "0"
           table="$(psql -h 127.0.0.1 -U postgres -d "${name}" -v ON_ERROR_STOP=1 -At -c "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'writing_candidate_request'")"
@@ -238,7 +251,7 @@ jobs:
           psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE ${name}"
           first="$(DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate)"
           echo "first run: ${first}"
-          printf '%s\n' "${first}" | grep -Eq "(^|[^0-9])Applied 10 migration\(s\)\.$"
+          printf '%s\n' "${first}" | grep -Eq "(^|[^0-9])Applied 11 migration\(s\)\.$"
           second="$(DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate)"
           echo "second run: ${second}"
           printf '%s\n' "${second}" | grep -Eq "(^|[^0-9])Applied 0 migration\(s\)\.$"
@@ -250,20 +263,22 @@ jobs:
           test "${anthropic}" = "2"
           candidates="$(psql -h 127.0.0.1 -U postgres -d "${name}" -v ON_ERROR_STOP=1 -At -c "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'writing_candidate_request'")"
           test "${candidates}" = "1"
+          deepseek="$(psql -h 127.0.0.1 -U postgres -d "${name}" -v ON_ERROR_STOP=1 -At -c "SELECT count(*) FROM pg_constraint WHERE conname = 'writing_candidate_request_provider_key_check' AND pg_get_constraintdef(oid) LIKE '%deepseek%'")"
+          test "${deepseek}" = "1"
           psql -h 127.0.0.1 -U postgres -d "${name}" -v ON_ERROR_STOP=1 -At -c "SELECT name FROM schema_migration ORDER BY name"
 
       - name: Run the deploy migration command again on the upgraded acceptance database
         # The store acceptance upgraded this database, with its title writing data, to the episode plan release. The real
-        # deploy command must add exactly the script breakdown, provider and candidate migrations, and a second run must
+        # deploy command must add exactly the script breakdown, provider, candidate and DeepSeek candidate migrations, and a second run must
         # find nothing.
         run: |
           name="ads_title_acceptance_store_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
           url="postgresql://postgres@127.0.0.1:5432/${name}"
           again="$(DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate)"
           echo "redeploy: ${again}"
-          printf '%s\n' "${again}" | grep -Eq "(^|[^0-9])Applied 3 migration\(s\)\.$"
-          last="$(psql -h 127.0.0.1 -U postgres -d "${name}" -v ON_ERROR_STOP=1 -At -c "SELECT string_agg(name, ',' ORDER BY name) FROM (SELECT name FROM schema_migration ORDER BY name DESC LIMIT 3) AS latest")"
-          test "${last}" = "20261012000100_script_breakdown,20261016000100_writing_provider_anthropic,20261016000200_writing_candidate"
+          printf '%s\n' "${again}" | grep -Eq "(^|[^0-9])Applied 4 migration\(s\)\.$"
+          last="$(psql -h 127.0.0.1 -U postgres -d "${name}" -v ON_ERROR_STOP=1 -At -c "SELECT string_agg(name, ',' ORDER BY name) FROM (SELECT name FROM schema_migration ORDER BY name DESC LIMIT 4) AS latest")"
+          test "${last}" = "20261012000100_script_breakdown,20261016000100_writing_provider_anthropic,20261016000200_writing_candidate,20261017000100_writing_candidate_deepseek"
           final="$(DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate)"
           echo "final redeploy: ${final}"
           printf '%s\n' "${final}" | grep -Eq "(^|[^0-9])Applied 0 migration\(s\)\.$"
