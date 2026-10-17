@@ -54,6 +54,8 @@ export interface TitleWritingDependencies {
   projects: Pick<RuntimeStore, "getProject" | "getProjectEpisodePlan" | "episodePlanReady">;
   maxCallsPerDay: number;
   maxActiveRuns: number;
+  /** Whether the model console holds saved settings waiting for the API restart (options only; never gates a send). */
+  configurationPending?: () => Promise<boolean>;
   clock?: () => Date;
   /** Starts server-side work without holding the HTTP request. Tests may run it inline. */
   schedule?: (work: () => Promise<void>) => void;
@@ -146,8 +148,8 @@ export class TitleWritingService {
     }));
     // Without a ready configured default, Claude is offered first (TITLE_WRITING_PROVIDER_PREFERENCE).
     const firstReady = TITLE_WRITING_PROVIDER_PREFERENCE.find((key) => providers.find((item) => item.providerKey === key)?.ready) ?? null;
-    const configuredDefault = this.deps.defaultProvider && providers.find((item) => item.providerKey === this.deps.defaultProvider)?.ready
-      ? this.deps.defaultProvider : null;
+    // A configured default is reported even when it is not ready: the page shows why and never substitutes another one.
+    const configuredDefault = this.deps.defaultProvider ?? null;
     const code = !this.active() ? "TITLE_WRITING_DISABLED"
       : !operatorConfigured(this.deps) ? "TITLE_WRITING_FORBIDDEN"
         : !storageReady ? "TITLE_WRITING_STORAGE_UNAVAILABLE"
@@ -159,6 +161,7 @@ export class TitleWritingService {
       operatorTokenRequired: this.deps.siteOperator !== true,
       defaultProvider: configuredDefault ?? firstReady,
       providers,
+      configurationPending: await this.configurationPending(),
       maxCallsPerDay: this.deps.maxCallsPerDay,
       maxActiveRuns: this.deps.maxActiveRuns,
       callCapPerRun: TITLE_WRITING_CALL_CAP_PER_RUN,
@@ -174,6 +177,15 @@ export class TitleWritingService {
       episodePlanReady: await this.deps.projects.episodePlanReady(),
     };
     return { status: 200, body };
+  }
+
+  /** Whether the console holds saved settings the API has not applied yet. Unknown counts as not pending. */
+  private async configurationPending(): Promise<boolean> {
+    try {
+      return this.deps.configurationPending ? await this.deps.configurationPending() : false;
+    } catch {
+      return false;
+    }
   }
 
   /** Switch, token, then storage: every refusal happens before any reservation or provider send. */
@@ -244,6 +256,9 @@ export class TitleWritingService {
       model,
       now: startedAt,
       version: frozen.version,
+      // A start stored before the DeepSeek adapter mark existed is compared with the input it was stored with, so its
+      // replay is still answered from that run instead of being refused as a different request.
+      withoutAdapterMark: replayed !== null && replayed.providerAdapter === undefined,
     });
     // The store looks the key up first: a replay of an existing run is returned whatever the quota is now. A new v2
     // run needs N+2 calls left in the rolling 24 hours; this reserves nothing. v1 keeps its existing per-call checks.
@@ -338,7 +353,7 @@ export class TitleWritingService {
     // must the run's own provider and model be ready. A replayed resume and a resume that only saves an answer already
     // stored need no provider. A retired provider is never ready, so its run is never sent for again.
     const runProvider = existing.run.input.providerKey;
-    const legacy = isLegacyDeepseekRun({ providerKey: runProvider, createdAt: existing.run.createdAt });
+    const legacy = isLegacyDeepseekRun(existing.run.input);
     const provider = providerConfigFor(this.deps.providers, runProvider);
     const confirmed = parsed.data.confirmUncertainCallIds;
     const prepared = await this.deps.store.prepareResume(this.deps.workspaceId, projectId, runId, {

@@ -34,6 +34,8 @@ export interface WritingCandidateDependencies {
   projects: Pick<RuntimeStore, "getProject">;
   /** The shared rolling 24 h cap of every paid text call of the workspace. */
   maxCallsPerDay: number;
+  /** Whether the model console holds saved settings waiting for the API restart (options only; never gates a send). */
+  configurationPending?: () => Promise<boolean>;
   clock?: () => Date;
   /** Starts the send without holding the HTTP request. Tests may run it inline. */
   schedule?: (work: () => Promise<void>) => void;
@@ -104,11 +106,22 @@ export class WritingCandidateService {
     return this.deps.providers[providerKey].ok && await this.deps.store.providerStorageReady(providerKey);
   }
 
-  private async readyDefault(): Promise<TitleWritingProviderKey | null> {
-    const configured = this.deps.defaultProvider;
-    if (configured && await this.providerReady(configured)) return configured;
+  /**
+   * The provider a request without one uses: the configured default as it is (a request is refused while it is not
+   * ready; it is never replaced by another provider), else the first ready provider; null when there is neither.
+   */
+  private async defaultChoice(): Promise<TitleWritingProviderKey | null> {
+    if (this.deps.defaultProvider) return this.deps.defaultProvider;
     for (const key of TITLE_WRITING_PROVIDER_PREFERENCE) if (await this.providerReady(key)) return key;
     return null;
+  }
+
+  private async configurationPending(): Promise<boolean> {
+    try {
+      return this.deps.configurationPending ? await this.deps.configurationPending() : false;
+    } catch {
+      return false;
+    }
   }
 
   async options(): Promise<WritingCandidateResult> {
@@ -121,11 +134,12 @@ export class WritingCandidateService {
       return { providerKey, label: WRITING_ADAPTERS[providerKey].label, ready: config.ok && (!storageReady || stored), models: config.models,
         defaultModel: config.models[0] ?? null, missing };
     }));
-    const defaultProvider = await this.readyDefault();
+    const defaultProvider = await this.defaultChoice();
+    const anyReady = providers.some((item) => item.ready);
     const code = !this.active() ? "WRITING_CANDIDATE_DISABLED"
       : !operatorConfigured(this.deps) ? "WRITING_CANDIDATE_FORBIDDEN"
         : !storageReady ? "WRITING_CANDIDATE_STORAGE_UNAVAILABLE"
-          : defaultProvider === null ? "WRITING_CANDIDATE_PROVIDER_UNCONFIGURED" : "WRITING_CANDIDATE_READY";
+          : !anyReady ? "WRITING_CANDIDATE_PROVIDER_UNCONFIGURED" : "WRITING_CANDIDATE_READY";
     const body: WritingCandidateOptionsView = {
       enabled: this.active(),
       code,
@@ -133,6 +147,7 @@ export class WritingCandidateService {
       operatorTokenRequired: this.deps.siteOperator !== true,
       defaultProvider,
       providers,
+      configurationPending: await this.configurationPending(),
       maxCallsPerDay: this.deps.maxCallsPerDay,
       billing: "unknown",
     };
@@ -181,7 +196,7 @@ export class WritingCandidateService {
       return previous.projectId === projectId && replay.requestHash === previous.requestHash
         ? this.found(previous, projectId) : failure(409, "IDEMPOTENCY_KEY_REUSED");
     }
-    const providerKey = start.providerKey ?? await this.readyDefault();
+    const providerKey = start.providerKey ?? await this.defaultChoice();
     if (providerKey === null) return failure(503, "WRITING_CANDIDATE_PROVIDER_UNCONFIGURED", { missing: [] });
     const provider = this.deps.providers[providerKey];
     if (!provider.ok) return failure(503, "WRITING_CANDIDATE_PROVIDER_UNCONFIGURED", { providerKey, missing: provider.missing });

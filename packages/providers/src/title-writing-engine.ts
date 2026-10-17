@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   TITLE_WRITING_CANCELED_BEFORE_SEND,
   TITLE_WRITING_RUN_KIND_DISABLED,
+  frozenProviderAdapter,
   isLegacyDeepseekRun,
   settledSaveOutcome,
   type TitleCallFinish,
@@ -143,12 +144,18 @@ export function newTitleRun(options: {
   model: string;
   now: Date;
   /**
+   * Only to rebuild a start stored before the DeepSeek adapter mark existed, so that its replay is compared with the
+   * input it was stored with; never used to create a run.
+   */
+  withoutAdapterMark?: boolean;
+  /**
    * 2 freezes the project's episode plan (N, target seconds) with the guided prompt v4; 1, the default, is the
    * unchanged three-episode input. Runs already stored with prompt v2 or v3 keep it.
    */
   version?: 1 | 2;
 }): TitleRunRecord {
-  const common = { title: options.title, settings: options.settings, providerKey: options.providerKey, model: options.model };
+  const common = { title: options.title, settings: options.settings, providerKey: options.providerKey, model: options.model,
+    ...(options.withoutAdapterMark ? {} : frozenProviderAdapter(options.providerKey)) };
   const input: TitleWritingFrozenInput = options.version === 2
     ? { schema: TITLE_WRITING_INPUT_SCHEMA_V2, promptVersion: TITLE_WRITING_PROMPT_VERSION_V4, ...common }
     : { schema: TITLE_WRITING_INPUT_SCHEMA, promptVersion: TITLE_WRITING_PROMPT_VERSION, ...common };
@@ -288,6 +295,7 @@ export function titleRunView(bundle: TitleRunBundle): TitleWritingRunView {
     storySave: run.storySave,
     storyRevisionId: run.storyRevisionId,
     storyText: storyTextOf(bundle),
+    legacyProviderRun: isLegacyDeepseekRun(input),
     steps: [...bundle.steps].sort((left, right) => left.ordinal - right.ordinal).map((step) => ({
       stepKey: step.stepKey,
       state: step.state,
@@ -421,7 +429,7 @@ export class TitleWritingEngine {
     }
     // A DeepSeek run stored before the retirement is never sent for again, even now that DeepSeek is configured: an
     // upgrade must not revive it. It stops before any reservation or send and keeps its provider, model and calls.
-    if (isLegacyDeepseekRun({ providerKey: run.input.providerKey, createdAt: run.createdAt })) {
+    if (isLegacyDeepseekRun(run.input)) {
       return this.finish(runId, "needs_attention", "legacy_provider_run");
     }
     // A run of a retired provider (qwen) has no configuration or adapter: it stops here before any reservation or send,

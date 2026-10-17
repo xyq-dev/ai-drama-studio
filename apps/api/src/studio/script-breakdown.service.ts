@@ -128,14 +128,13 @@ export class ScriptBreakdownService {
 
   /**
    * The provider a new start uses when the request names none, and the default that options() reports: the configured
-   * default when it is ready, otherwise the first ready provider in the fixed order; null when none is ready. A provider
-   * the request names is used as named, never replaced by this.
+   * default as it is (a start is refused while it is not ready; it is never replaced by another provider), otherwise the
+   * first ready provider in the fixed order; null when there is neither. A provider the request names is used as named.
    */
   private async readyDefault(): Promise<TitleWritingProviderKey | null> {
-    // Ready means configured and storable: Claude before its migration is not offered or chosen as the default.
+    if (this.deps.defaultProvider) return this.deps.defaultProvider;
+    // Ready means configured and storable: Claude before its migration is not offered as the first ready provider.
     const ready = async (key: TitleWritingProviderKey) => this.deps.providers[key].ok && await this.deps.store.providerStorageReady(key);
-    const configured = this.deps.defaultProvider;
-    if (configured && await ready(configured)) return configured;
     for (const key of TITLE_WRITING_PROVIDER_PREFERENCE) if (await ready(key)) return key;
     return null;
   }
@@ -353,7 +352,7 @@ export class ScriptBreakdownService {
     // The store decides from the run's persisted steps, under its lock, whether this resume sends again: only then must the
     // provider be ready. A run that stopped after its answer was stored only saves it (no call, no reservation).
     const runProvider = existing.run.input.providerKey;
-    const legacy = isLegacyDeepseekRun({ providerKey: runProvider, createdAt: existing.run.createdAt });
+    const legacy = isLegacyDeepseekRun(existing.run.input);
     // A retired provider has no configuration, so it is never ready and its run is never sent for again.
     const provider = providerConfigFor(this.deps.providers, runProvider);
     const prepared = await this.deps.store.prepareResume(this.deps.workspaceId, projectId, runId, {

@@ -101,6 +101,11 @@ export class AdminModelsService implements AdminModelsBackend {
   /** Server-only startup copy; never returned by the controller. */
   runtimeSettings(): ManagedModelSettings { return structuredClone(this.effective); }
 
+  /** Whether saved settings wait for the restart. Reads only the revision numbers; never a secret. */
+  async pendingRestart(): Promise<boolean> {
+    return (await this.vault.read()).saved.revision !== this.effective.revision;
+  }
+
   async view(): Promise<AdminModelsView> {
     const doc = await this.vault.read();
     const retired = await this.vault.retiredNote();

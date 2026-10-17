@@ -4,6 +4,8 @@ import {
   SCRIPT_BREAKDOWN_INPUT_SCHEMA,
   SCRIPT_BREAKDOWN_PROMPT_VERSION,
   SCRIPT_BREAKDOWN_STEP_KEY,
+  frozenProviderAdapter,
+  isLegacyDeepseekRun,
   isScriptBreakdownInput,
   type ScriptBreakdownDetails,
   type ScriptBreakdownFrozenInput,
@@ -41,6 +43,8 @@ export function newScriptBreakdownRun(options: {
     schema: SCRIPT_BREAKDOWN_INPUT_SCHEMA,
     promptVersion: SCRIPT_BREAKDOWN_PROMPT_VERSION,
     ...options.input,
+    // Written by the server for every DeepSeek run it creates; a stored replay is compared by its request hash only.
+    ...frozenProviderAdapter(options.input.providerKey),
   };
   const createdAt = options.now.toISOString();
   return {
@@ -89,6 +93,7 @@ export function scriptBreakdownRunView(bundle: TitleRunBundle, details: ScriptBr
     replacedScenes: input.replace.scenes.length,
     providerKey: input.providerKey,
     model: input.model,
+    legacyProviderRun: isLegacyDeepseekRun(input),
     state: run.state,
     errorCode: run.errorCode,
     cancelRequested: run.cancelRequestedAt !== null,

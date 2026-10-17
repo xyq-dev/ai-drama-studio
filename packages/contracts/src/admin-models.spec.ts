@@ -4,7 +4,7 @@ import {
   type AdminModelsView,
 } from "./admin-models";
 import {
-  DEEPSEEK_REACTIVATED_AT, TITLE_WRITING_DEFAULT_MODELS, TITLE_WRITING_PROVIDER_KEYS, TITLE_WRITING_RETIRED_PROVIDER_KEYS,
+  DEEPSEEK_PROVIDER_ADAPTER, TITLE_WRITING_DEFAULT_MODELS, frozenProviderAdapter, titleWritingStartSchema, TITLE_WRITING_PROVIDER_KEYS, TITLE_WRITING_RETIRED_PROVIDER_KEYS,
   anthropicKeyProblem, anthropicWorkspaceIdValid, deepseekKeyProblem, isActiveTitleWritingProvider, isLegacyDeepseekRun,
 } from "./title-writing";
 
@@ -158,13 +158,19 @@ describe("DeepSeek, active again", () => {
     }
   });
 
-  it("a DeepSeek run created before the reactivation is a legacy run; one created after it is not; other providers never are", () => {
-    expect(DEEPSEEK_REACTIVATED_AT).toBe("2026-10-17T00:00:00.000Z");
-    expect(isLegacyDeepseekRun({ providerKey: "deepseek", createdAt: "2026-10-09T08:00:00.000Z" })).toBe(true);
-    expect(isLegacyDeepseekRun({ providerKey: "deepseek", createdAt: "2026-10-16T23:59:59.999Z" })).toBe(true);
-    expect(isLegacyDeepseekRun({ providerKey: "deepseek", createdAt: "2026-10-17T00:00:00.000Z" })).toBe(false);
-    expect(isLegacyDeepseekRun({ providerKey: "anthropic", createdAt: "2026-10-09T08:00:00.000Z" })).toBe(false);
-    expect(isLegacyDeepseekRun({ providerKey: "qwen", createdAt: "2026-10-09T08:00:00.000Z" })).toBe(false);
+  it("a DeepSeek run is legacy unless its frozen input carries the server-written adapter mark; no date decides it", () => {
+    expect(DEEPSEEK_PROVIDER_ADAPTER).toBe("deepseek.chat-completions.v1");
+    expect(frozenProviderAdapter("deepseek")).toEqual({ providerAdapter: DEEPSEEK_PROVIDER_ADAPTER });
+    for (const other of ["openai", "anthropic", "qwen"]) expect(frozenProviderAdapter(other)).toEqual({});
+    expect(isLegacyDeepseekRun({ providerKey: "deepseek" })).toBe(true);
+    expect(isLegacyDeepseekRun({ providerKey: "deepseek", providerAdapter: "deepseek.chat-completions.v0" })).toBe(true);
+    expect(isLegacyDeepseekRun({ providerKey: "deepseek", providerAdapter: DEEPSEEK_PROVIDER_ADAPTER })).toBe(false);
+    for (const other of ["openai", "anthropic", "qwen"]) expect(isLegacyDeepseekRun({ providerKey: other })).toBe(false);
+  });
+
+  it("a start body cannot carry the adapter mark: only the server writes it", () => {
+    expect(titleWritingStartSchema.safeParse({ title: "剧名", providerKey: "deepseek", providerAdapter: DEEPSEEK_PROVIDER_ADAPTER }).success).toBe(false);
+    expect(titleWritingStartSchema.safeParse({ title: "剧名", providerKey: "deepseek" }).success).toBe(true);
   });
 
   it("the setup state names the DeepSeek candidate migration only for DeepSeek, and never the Claude one", () => {

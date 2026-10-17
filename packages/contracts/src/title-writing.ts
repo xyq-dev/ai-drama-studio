@@ -36,7 +36,7 @@ export const TITLE_WRITING_PROMPT_VERSION_V4 = "ads.title-writing.prompt.v4" as 
  * The providers a new run, a resume that sends, an administrator update and a default may name. DeepSeek, retired on
  * 2026-10-16, is active again from 2026-10-17 with a new adapter, a new key entered in the console and a new default
  * model; runs stored before that keep their own provider, model and calls and are never sent for again
- * (isLegacyDeepseekRun).
+ * (isLegacyDeepseekRun: a DeepSeek run without the server-written DEEPSEEK_PROVIDER_ADAPTER mark).
  */
 export const TITLE_WRITING_PROVIDER_KEYS = ["openai", "anthropic", "deepseek"] as const;
 export type TitleWritingProviderKey = (typeof TITLE_WRITING_PROVIDER_KEYS)[number];
@@ -63,13 +63,24 @@ export const TITLE_WRITING_PROVIDER_LABELS: Readonly<Record<TitleWritingStoredPr
 };
 
 /**
- * DeepSeek runs created before this instant were made before the retirement (the code in between could not create
- * any). Such a run is never driven, resumed or sent for again, whatever is configured now: it keeps its frozen provider,
- * model, input, hash, calls and unknown costs, and a lost receipt of its start is still answered from it.
+ * The adapter a DeepSeek run is frozen for. Only the server writes it, into the frozen input of every DeepSeek run it
+ * creates (newTitleRun, newScriptBreakdownRun); no start body can carry it (the start schemas are strict). Runs stored
+ * before the retirement never had it.
  */
-export const DEEPSEEK_REACTIVATED_AT = "2026-10-17T00:00:00.000Z";
-export function isLegacyDeepseekRun(run: { providerKey: string; createdAt: string }): boolean {
-  return run.providerKey === "deepseek" && Date.parse(run.createdAt) < Date.parse(DEEPSEEK_REACTIVATED_AT);
+export const DEEPSEEK_PROVIDER_ADAPTER = "deepseek.chat-completions.v1" as const;
+
+/** The frozen-input mark of a provider's current adapter: only DeepSeek has one. */
+export function frozenProviderAdapter(providerKey: string): { providerAdapter?: typeof DEEPSEEK_PROVIDER_ADAPTER } {
+  return providerKey === "deepseek" ? { providerAdapter: DEEPSEEK_PROVIDER_ADAPTER } : {};
+}
+
+/**
+ * A DeepSeek run stored by the code before the retirement: its frozen input has no adapter mark. Such a run is never
+ * driven or sent for again, whatever is configured now; it keeps its frozen provider, model, input, hash, calls and
+ * unknown costs, an answer it already stored can still be saved, and a lost receipt of its start is still answered.
+ */
+export function isLegacyDeepseekRun(input: { providerKey: string; providerAdapter?: unknown }): boolean {
+  return input.providerKey === "deepseek" && input.providerAdapter !== DEEPSEEK_PROVIDER_ADAPTER;
 }
 
 export function isActiveTitleWritingProvider(key: string): key is TitleWritingProviderKey {
@@ -236,6 +247,8 @@ export interface TitleWritingFrozenInputV1 {
   settings: TitleWritingSettings;
   providerKey: TitleWritingStoredProviderKey;
   model: string;
+  /** DeepSeek runs created by the current server only (DEEPSEEK_PROVIDER_ADAPTER). Absent on every older run. */
+  providerAdapter?: typeof DEEPSEEK_PROVIDER_ADAPTER;
 }
 
 /**
@@ -250,6 +263,8 @@ export interface TitleWritingFrozenInputV2 {
   settings: TitleWritingSettings;
   providerKey: TitleWritingStoredProviderKey;
   model: string;
+  /** DeepSeek runs created by the current server only (DEEPSEEK_PROVIDER_ADAPTER). Absent on every older run. */
+  providerAdapter?: typeof DEEPSEEK_PROVIDER_ADAPTER;
 }
 
 export type TitleWritingFrozenInput = TitleWritingFrozenInputV1 | TitleWritingFrozenInputV2;
@@ -514,6 +529,8 @@ export interface TitleWritingRunView {
   storyText: string | null;
   steps: TitleWritingStepView[];
   calls: TitleWritingCallView[];
+  /** True for a DeepSeek run stored before the retirement: it is never sent for again. Absent from older APIs. */
+  legacyProviderRun?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -568,8 +585,15 @@ export interface TitleWritingOptionsView {
    * server checks the session, origin and CSRF token instead. True only when the API runs without the site login.
    */
   operatorTokenRequired: boolean;
+  /**
+   * The configured default provider even when it cannot be used now (its providers entry says why), else the first
+   * ready provider. A configured default that is not ready is never replaced by another provider: a request without a
+   * provider is refused until it is ready or the person explicitly names another one.
+   */
   defaultProvider: TitleWritingProviderKey | null;
   providers: TitleWritingProviderOption[];
+  /** A model configuration was saved in the console and waits for the API restart to apply it. Absent from older APIs. */
+  configurationPending?: boolean;
   maxCallsPerDay: number;
   maxActiveRuns: number;
   /** The v1 cap, also the cap of a three-episode v2 run. A v2 run's own cap is N+5 (titleWritingCallCap). */

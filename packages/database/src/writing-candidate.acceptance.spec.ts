@@ -239,11 +239,31 @@ describe(`online candidate migration and store on the ${scenario} schema`, () =>
     await expect(store.create(record(deepseekInput()), LIMITS)).rejects.toThrow();
     const rowsBefore = JSON.stringify((await pool.query("SELECT * FROM writing_candidate_request ORDER BY id")).rows);
     const ledgerBefore = await ledgerNames();
-    // A second provider CHECK that the migration does not expect: it stops, rolls back and records nothing.
-    await pool.query("ALTER TABLE writing_candidate_request ADD CONSTRAINT acceptance_extra_provider_check CHECK (provider_key IN ('openai', 'anthropic'))");
-    await expect(runMigrations(pool, undefined, { only: deepseekOnly })).rejects.toThrow("expected exactly one provider_key CHECK");
+    const providerChecks = async () => (await pool.query<{ name: string; def: string }>(`SELECT conname AS name, pg_get_constraintdef(oid) AS def
+      FROM pg_constraint WHERE conrelid = 'writing_candidate_request'::regclass AND contype = 'c' AND pg_get_constraintdef(oid) LIKE '%provider_key%'
+      ORDER BY conname`)).rows;
+    const released = await providerChecks();
+    expect(released.map((row) => row.def)).toEqual(["CHECK ((provider_key = ANY (ARRAY['openai'::text, 'anthropic'::text])))"]);
+    // A second CHECK on provider_key (a copy, or any other rule on it): the migration stops, rolls back, records nothing.
+    for (const extra of ["CHECK (provider_key IN ('openai', 'anthropic'))", "CHECK (provider_key <> 'qwen')"]) {
+      await pool.query(`ALTER TABLE writing_candidate_request ADD CONSTRAINT acceptance_extra_provider_check ${extra}`);
+      await expect(runMigrations(pool, undefined, { only: deepseekOnly })).rejects.toThrow("expected exactly one provider_key CHECK");
+      expect(await ledgerNames()).toEqual(ledgerBefore);
+      expect((await providerChecks()).length).toBe(2);
+      await pool.query("ALTER TABLE writing_candidate_request DROP CONSTRAINT acceptance_extra_provider_check");
+    }
+    // A single CHECK that limits provider_key together with another column: dropping it would lose the other limit, so
+    // the migration stops instead, and the compound CHECK is still in place afterwards.
+    await pool.query(`ALTER TABLE writing_candidate_request DROP CONSTRAINT ${released[0]!.name}`);
+    await pool.query(`ALTER TABLE writing_candidate_request ADD CONSTRAINT acceptance_compound_check
+      CHECK (provider_key IN ('openai', 'anthropic') AND length(model) <= 128)`);
+    await expect(runMigrations(pool, undefined, { only: deepseekOnly })).rejects.toThrow("unexpected provider_key CHECK");
     expect(await ledgerNames()).toEqual(ledgerBefore);
-    await pool.query("ALTER TABLE writing_candidate_request DROP CONSTRAINT acceptance_extra_provider_check");
+    expect((await providerChecks()).map((row) => row.name)).toEqual(["acceptance_compound_check"]);
+    // The released baseline again (its definition, under the generated-style name), which migrates.
+    await pool.query("ALTER TABLE writing_candidate_request DROP CONSTRAINT acceptance_compound_check");
+    await pool.query(`ALTER TABLE writing_candidate_request ADD CONSTRAINT ${released[0]!.name} CHECK (provider_key IN ('openai', 'anthropic'))`);
+    expect(await providerChecks()).toEqual(released);
     const deepseekApplied = await runMigrations(pool, undefined, { only: deepseekOnly });
     expect(deepseekApplied).toEqual({ applied: [DEEPSEEK], alreadyApplied: [],
       leftPending: scenario === "base" ? [SCRIPT_BREAKDOWN_MIGRATION, WRITING_PROVIDER_MIGRATION] : [WRITING_PROVIDER_MIGRATION] });

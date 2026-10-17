@@ -27,7 +27,15 @@
 
 - 只在 `/admin/models` 的「DeepSeek 快速配置」填写官方 API Key（DeepSeek 开放平台创建）。不需要 URL、Workspace、操作者令牌或模型列表。
 - 格式检查不要求任何前缀（官方未公布）：16–256 个可打印 ASCII 字符、无空格/换行/控制字符/非 ASCII。通过只表示“可以保存”，认证与余额以 DeepSeek 实际响应为准。
-- **保存 DeepSeek 快速配置会把 DeepSeek 设为新创作的默认供应商**（页面在保存前写明），只影响新请求，不改变已有任务。OpenAI、Claude 的 Key、Claude Workspace、模型和限额保持不变。
+- **保存 DeepSeek Key 会把 DeepSeek 设为新创作的默认供应商**——快速配置和高级设置的供应商表单都是如此，两处都在保存前写明；在高级设置里清除 DeepSeek Key 会把“默认=DeepSeek”改为暂不指定。只影响新请求，不改变已有任务。OpenAI、Claude 的 Key、Claude Workspace、模型和限额保持不变。
+- 供应商表单保存后若服务端默认供应商变了，“默认选择与使用限额”表单随之同步；如果管理员已在该表单里改过默认但未保存，则保留其选择并明确提示，不静默覆盖；其他未保存的限额保持不变。
+
+### 默认供应商规则
+
+- 管理员明确设置的默认供应商，即使因缺 Key、配置待生效或缺迁移而暂不可用，也仍是默认：options 照常返回它，页面显示它不可用的具体原因并阻止按默认发送，不会自动改用 Claude 或 OpenAI。用户在页面上明确选择其他已就绪的供应商后，才按该选择发送；API 请求省略 provider 时同样不替换（503，写明缺项）。
+- 没有设置默认供应商时，才按 Claude → OpenAI → DeepSeek 推荐第一个已就绪的供应商；创作页显示“本次发送给：<供应商> · <模型>”，在线候选显示“使用 <供应商> · <模型>”。
+- 已创建的请求按冻结的供应商和模型重放，不重新选择。
+- options 增加 `configurationPending`：后台已保存、等待 API 重启生效时为 true，页面单独说明，不与“未配置”混淆。
 - 与其他供应商一样：保存只改 saved，API 重启（空闲时）才进入 active；后台分别显示“已保存/已生效”，不把保存当成调用验证成功。启动时的空闲判定现在同时等待进行中的标题任务和进行中的在线候选。
 - **不读取环境变量中的 `DEEPSEEK_*`**：服务器上可能残留退役前的 `DEEPSEEK_API_KEY`，它不会被读取或复活；DeepSeek 只能在后台配置。环境变量里的 `TITLE_WRITING_DEFAULT_PROVIDER=deepseek` 可以解析，但新建 vault 时因没有 DeepSeek Key 而不作为默认。
 - 旧 v1（三家）配置中的 DeepSeek Key 不会被沿用或从 `.v1-retired-providers.bak` 恢复；需要重新填写。
@@ -35,7 +43,10 @@
 ### vault 兼容、备份与回滚
 
 - 格式仍是 v2。`deepseek` 条目（以及 DeepSeek 默认供应商）**只在 DeepSeek 有 Key 时写入**；没有 DeepSeek 的文件与上一版本（`4d52afc`）读取的字段完全一致，读取不写盘。
-- 第一次把 DeepSeek 写入“上一版本可读”的文件之前，先把该文件按字节独占复制为 `<配置文件>.v2-before-deepseek.bak`（600，只写一次，已存在则保留最早的一份），再原子替换。
+- 第一次把 DeepSeek 写入“上一版本可读”的文件之前，先保存该文件的字节作为 `<配置文件>.v2-before-deepseek.bak`，再原子替换 live 文件：
+  - 备份先写入独占创建的私有临时文件（600）并同步，再用 `link` 发布到最终文件名（不会覆盖已有文件），然后同步目录。任何一步失败都不会在最终文件名留下空或截断的文件，live 文件不变，下次保存会重新写备份。
+  - 已有备份只在“完好”时保留并继续：普通文件、非符号链接、单一链接、属主为当前用户、权限 600、大小在 1–256 KiB、v2 信封可用主密钥解密并通过 GCM 校验、内容是上一版本可读的结构（不含 DeepSeek）。保留最早的完好备份，不要求与之后变化的 live 文件逐字节相同。
+  - 备份为空、截断、权限不对、是符号链接、无法用主密钥解密或已含 DeepSeek 时，拒绝本次保存（503），不替换 live 文件，也不覆盖该备份；需由管理员人工检查。
 - 清除 DeepSeek Key 会同时清空其模型，并把“默认供应商=DeepSeek”改为未指定，使文件回到上一版本可读的形状；DeepSeek 没有 Key 时不能设为默认（后台与服务端都会拒绝）。
 - 回滚到上一版本前二选一：
   1. 在后台清除 DeepSeek Key 并保存，等空闲时重启 API 使 active 也不含 DeepSeek（推荐，保留其他修改）；或
@@ -44,9 +55,12 @@
 
 ## 旧 DeepSeek 任务保护
 
-- `DEEPSEEK_REACTIVATED_AT = 2026-10-17T00:00:00Z`：在此之前创建的 DeepSeek 任务是退役前的旧任务（退役期间的代码不可能新建 DeepSeek 任务）。
+- 新版本服务端为它创建的每个 DeepSeek 任务（标题与拆解）在冻结输入中写入适配器标识 `providerAdapter: "deepseek.chat-completions.v1"`（`DEEPSEEK_PROVIDER_ADAPTER`）。标识只由服务端写入，启动请求体是严格 schema，客户端不能携带或伪造它。**没有该标识的 DeepSeek 任务就是退役前的旧任务**，不以日期判断。
+- 不回填、不修改历史冻结输入、哈希、模型、调用记录或费用。同 key 重放一个无标识的旧启动时，服务端按旧形状（不加标识）重建输入再比较，因此仍返回原任务，不会误判冲突或重复创建；拆解任务按请求哈希比较，不受标识影响。
 - 引擎在预约之前把这类任务停为 `needs_attention / legacy_provider_run`：维护、领取、启动恢复都不会因为 DeepSeek 已配置（即使白名单包含其冻结模型）而续跑或发送。已提交的调用保持未知结果与未知费用；有效租约不接管；取消优先；全部步骤已完成的任务按原逻辑保存，不重复保存、不新增修订。
-- 显式续跑：旧任务返回 409 `TITLE_WRITING_LEGACY_RUN`（附冻结的 provider 与 model），不改用 `deepseek-flash` 或其他供应商。新任务的冻结模型不在当前白名单时返回 409 `TITLE_WRITING_RUN_MODEL_UNAVAILABLE`，不替换模型。
+- 显式续跑：需要重新发送调用时，旧任务返回 409 `TITLE_WRITING_LEGACY_RUN`（附冻结的 provider 与 model），不改用 `deepseek-flash` 或其他供应商；只需保存已存答案的续跑照常完成（不发送、只保存一次）。新任务的冻结模型不在当前白名单时返回 409 `TITLE_WRITING_RUN_MODEL_UNAVAILABLE`，不替换模型。
+- 带标识的新任务照常参与重启恢复（租约过期后由维护流程继续，只发往 DeepSeek）。
+- 运行视图增加 `legacyProviderRun`，页面据此（而不是日期）说明“退役前创建的旧任务”。
 - 同键重放（标题任务与候选）先按原身份回答，与供应商当前状态无关，不重复创建、不重复发送。
 - 页面把旧任务说明为“DeepSeek 退役前创建的旧任务，不会再发出请求”，不显示为“配置不完整”。
 - 旧在线候选不存在（候选表原 CHECK 不允许 deepseek）。
@@ -61,7 +75,7 @@
 
 新迁移 `20261017000100_writing_candidate_deepseek`：
 
-- 只扩展：按定义找到 `writing_candidate_request` 上恰好一个只含 `openai`、`anthropic` 的 provider CHECK（否则 `RAISE` 整体回滚），替换为具名 `writing_candidate_request_provider_key_check CHECK (provider_key IN ('openai','anthropic','deepseek'))`。不写任何行，不碰其他表，不放宽为任意字符串（`qwen` 仍被拒绝）。
+- 只扩展：`writing_candidate_request` 上必须恰好有一个提到 `provider_key` 的 CHECK，且其定义必须**完全等于**已发布的 `CHECK ((provider_key = ANY (ARRAY['openai'::text, 'anthropic'::text])))`；否则（复合 CHECK 同时限制其他字段、或还有其他引用 provider_key 的 CHECK）`RAISE` 整体回滚，什么都不删除，不会丢失其他限制。通过后替换为具名 `writing_candidate_request_provider_key_check CHECK (provider_key IN ('openai','anthropic','deepseek'))`。不写任何行，不碰其他表，不放宽为任意字符串（`qwen` 仍被拒绝）。
 - 依赖：基础七迁移 + `20261016000200_writing_candidate`（在 `GUARDED_SINGLE_MIGRATIONS` 中声明）；缺少时受保护命令在执行任何语句前退出、零写入。与剧本拆解迁移、Claude 迁移无关，不会带上拆解迁移。
 - 锁：`writing_candidate_request` ACCESS EXCLUSIVE 直到事务结束，新 CHECK 扫描该表一次；请在空闲窗口执行。没有 down 迁移；旧代码从不写 `deepseek`，回滚代码时保留此约束。
 - 未执行时：DeepSeek 标题创作照常可用；DeepSeek 在线候选显示缺少 `WRITING_CANDIDATE_DEEPSEEK_MIGRATION`，请求在任何写入/预约/发送之前 503 `WRITING_CANDIDATE_PROVIDER_STORAGE_UNAVAILABLE`；后台 DeepSeek 状态显示需要执行的迁移名。

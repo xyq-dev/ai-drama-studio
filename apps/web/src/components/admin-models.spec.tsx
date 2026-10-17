@@ -507,6 +507,100 @@ describe("DeepSeek quick setup: only the API key", () => {
   });
 });
 
+describe("the default provider after a provider save in the advanced settings", () => {
+  const KEY_DS = "fake-deepseek-advanced-test-key-0123";
+  const entry = (configured: boolean) => ({ providerKey: "deepseek" as const, label: "DeepSeek", models: configured ? ["deepseek-flash"] : [],
+    baseUrl: "https://api.deepseek.com/chat/completions", keyConfigured: configured, ready: configured, missing: configured ? [] : ["DEEPSEEK_API_KEY"] });
+  const viewWith = (configured: boolean, defaultProvider: "anthropic" | "deepseek" | null, revision = 4) => {
+    const view = modelView();
+    view.savedRevision = revision;
+    for (const settings of [view.saved, view.active]) {
+      settings.providers.push(entry(configured));
+      settings.defaultProvider = defaultProvider as never;
+    }
+    return view;
+  };
+  const deepseekForm = () => within(screen.getByRole("region", { name: "DeepSeek设置" }));
+  const limitsPuts = (calls: Array<{ method: string; url: string; body: Record<string, unknown> | null }>) =>
+    calls.filter((call) => call.method === "PUT" && call.url.endsWith("/limits"));
+
+  async function openDeepseek() {
+    await screen.findByRole("heading", { name: "模型配置" });
+    fireEvent.click(screen.getByRole("button", { name: /^DeepSeek DeepSeek Chat Completions API/ }));
+    await screen.findByRole("region", { name: "DeepSeek设置" });
+  }
+
+  it("says before saving that a new key makes DeepSeek the default; after it the rules follow, and saving only a limit keeps DeepSeek", async () => {
+    let current = viewWith(false, "anthropic");
+    const calls = server((call) => {
+      if (call.method === "PUT" && call.url.endsWith("/providers/deepseek")) { current = viewWith(true, "deepseek", 5); current.pendingRestart = true; return json(current); }
+      if (call.method === "PUT" && call.url.endsWith("/limits")) { current = { ...current, savedRevision: 6 }; return json(current); }
+      return call.url.endsWith("/auth/session") ? json(session()) : json(current);
+    });
+    render(<AdminModels />);
+    await openDeepseek();
+    expect(screen.getByTestId("deepseek-advanced-default-notice").textContent).toContain("在这里保存新的 DeepSeek API Key 同样会把 DeepSeek 设为新创作的默认供应商");
+    fireEvent.click(deepseekForm().getByRole("checkbox", { name: /deepseek-flash/ }));
+    fireEvent.change(deepseekForm().getByRole("combobox", { name: /^默认模型/ }), { target: { value: "deepseek-flash" } });
+    chooseSecret("填写 / 替换");
+    fireEvent.change(keyInput(), { target: { value: KEY_DS } });
+    save();
+    await screen.findByText(/默认供应商已改为 DeepSeek，调用规则已同步。/);
+    expect((screen.getByRole("combobox", { name: /^默认供应商/ }) as HTMLSelectElement).value).toBe("deepseek");
+    fireEvent.change(screen.getByLabelText(/^每日最多调用次数/), { target: { value: "9" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存调用规则" }));
+    await waitFor(() => expect(limitsPuts(calls)).toHaveLength(1));
+    expect(limitsPuts(calls)[0]!.body).toMatchObject({ defaultProvider: "deepseek", maxCallsPerDay: 9 });
+    expect(document.body.innerHTML).not.toContain(KEY_DS);
+  });
+
+  it("keeps a default the person had changed but not saved, says so, and keeps their other unsaved limits", async () => {
+    let current = viewWith(false, "anthropic");
+    const calls = server((call) => {
+      if (call.method === "PUT" && call.url.endsWith("/providers/deepseek")) { current = viewWith(true, "deepseek", 5); return json(current); }
+      if (call.method === "PUT" && call.url.endsWith("/limits")) return json({ ...current, savedRevision: 6 });
+      return call.url.endsWith("/auth/session") ? json(session()) : json(current);
+    });
+    render(<AdminModels />);
+    await openDeepseek();
+    fireEvent.change(screen.getByRole("combobox", { name: /^默认供应商/ }), { target: { value: "openai" } });
+    fireEvent.change(screen.getByLabelText(/^每日最多调用次数/), { target: { value: "12" } });
+    fireEvent.click(deepseekForm().getByRole("checkbox", { name: /deepseek-flash/ }));
+    fireEvent.change(deepseekForm().getByRole("combobox", { name: /^默认模型/ }), { target: { value: "deepseek-flash" } });
+    chooseSecret("填写 / 替换");
+    fireEvent.change(keyInput(), { target: { value: KEY_DS } });
+    save();
+    await screen.findByText(/服务端已保存的默认供应商变为「DeepSeek」；你在调用规则中尚未保存的选择「OpenAI」已保留/);
+    expect((screen.getByRole("combobox", { name: /^默认供应商/ }) as HTMLSelectElement).value).toBe("openai");
+    expect((screen.getByLabelText(/^每日最多调用次数/) as HTMLInputElement).value).toBe("12");
+    fireEvent.click(screen.getByRole("button", { name: "保存调用规则" }));
+    await waitFor(() => expect(limitsPuts(calls)).toHaveLength(1));
+    expect(limitsPuts(calls)[0]!.body).toMatchObject({ defaultProvider: "openai", maxCallsPerDay: 12 });
+  });
+
+  it("clearing the DeepSeek key unsets the DeepSeek default in the rules too, so saving the rules is not blocked", async () => {
+    let current = viewWith(true, "deepseek");
+    const calls = server((call) => {
+      if (call.method === "PUT" && call.url.endsWith("/providers/deepseek")) { current = viewWith(false, null, 5); return json(current); }
+      if (call.method === "PUT" && call.url.endsWith("/limits")) return json({ ...current, savedRevision: 6 });
+      return call.url.endsWith("/auth/session") ? json(session()) : json(current);
+    });
+    render(<AdminModels />);
+    await openDeepseek();
+    expect((screen.getByRole("combobox", { name: /^默认供应商/ }) as HTMLSelectElement).value).toBe("deepseek");
+    chooseSecret("清除密钥");
+    fireEvent.click(screen.getByRole("checkbox", { name: /我确认清除/ }));
+    save();
+    await screen.findByText(/默认供应商已改为暂不指定，调用规则已同步。/);
+    expect((screen.getByRole("combobox", { name: /^默认供应商/ }) as HTMLSelectElement).value).toBe("");
+    fireEvent.change(screen.getByLabelText(/^每日最多调用次数/), { target: { value: "7" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存调用规则" }));
+    await waitFor(() => expect(limitsPuts(calls)).toHaveLength(1));
+    expect(limitsPuts(calls)[0]!.body).toMatchObject({ defaultProvider: null, maxCallsPerDay: 7 });
+    expect(screen.queryByText(/DeepSeek 还没有保存 API Key，不能设为默认供应商/)).toBeNull();
+  });
+});
+
 describe("model picker on the provider settings", () => {
   const puts = (calls: Call[]) => calls.filter((call) => call.method === "PUT");
   const codes = (region: ReturnType<typeof within>) => region.getAllByRole("checkbox")

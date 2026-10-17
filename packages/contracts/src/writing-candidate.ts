@@ -209,8 +209,15 @@ export interface WritingCandidateOptionsView {
   code: string;
   storageReady: boolean;
   operatorTokenRequired: boolean;
+  /**
+   * The configured default provider even when it cannot be used now (its providers entry says why), else the first
+   * ready provider. A configured default that is not ready is never replaced by another provider: a request without a
+   * provider is refused until it is ready or the person explicitly names another one.
+   */
   defaultProvider: TitleWritingProviderKey | null;
   providers: TitleWritingProviderOption[];
+  /** A model configuration was saved in the console and waits for the API restart to apply it. Absent from older APIs. */
+  configurationPending?: boolean;
   maxCallsPerDay: number;
   billing: "unknown";
 }

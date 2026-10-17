@@ -14,7 +14,7 @@ import {
   newTitleRun,
   titleWritingProviderConfigs,
 } from "@ai-drama/providers";
-import { fixtureChatTransport, type FixtureExchange } from "@ai-drama/providers/title-writing-fixtures";
+import { fixtureChatTransport, fixtureConcept, fixtureEpisode, fixtureOutline, type FixtureExchange } from "@ai-drama/providers/title-writing-fixtures";
 import { ScriptBreakdownService } from "./script-breakdown.service";
 import { PROVIDER_MIGRATION_GAP, TitleWritingService } from "./title-writing.service";
 
@@ -28,8 +28,11 @@ const P1 = "22222222-2222-4222-8222-222222222222";
 const TOKEN = "operator-token-0123456789";
 const KEY = "sk-ant-api03-test-not-a-real-key-000";
 const DEEPSEEK_KEY = "fake-deepseek-test-key-not-real-000";
-/** Before DEEPSEEK_REACTIVATED_AT: when the released code stored the old runs. */
-const BEFORE_RETIREMENT = new Date("2026-10-15T08:00:00Z");
+/**
+ * When the stored old runs are dated: after any release date on purpose. Only the missing adapter mark in their frozen
+ * input (the code before the retirement never wrote one) makes them legacy.
+ */
+const STORED_AT = new Date("2026-11-01T08:00:00Z");
 const TITLE = "夜班证词";
 const SCRIPT = "第 1 集\n场 1 便利店 夜\n林夏盯着监控。\n林夏：这不是我。\n场 2 天台 夜\n周野推开铁门。\n周野：你来了。";
 const CONTEXT = (key?: string) => ({ actorId: "server-owner", traceId: "t", ...(key ? { idempotencyKey: key } : {}) });
@@ -74,7 +77,9 @@ const errorOf = (result: { body: unknown }) => (result.body as { error?: { code:
 /** A title run stored by the released code with a retired provider, under the given request identity. */
 async function storedRetiredRun(store: InMemoryTitleWritingStore, providerKey: "qwen" | "deepseek", idempotencyKey: string) {
   const run = newTitleRun({ workspaceId: WS, projectId: P1, actorId: "server-owner", idempotencyKey, title: TITLE,
-    settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey, model: `${providerKey}-old-model`, now: BEFORE_RETIREMENT });
+    settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey, model: `${providerKey}-old-model`, now: STORED_AT,
+    withoutAdapterMark: true });
+  expect(run.input).not.toHaveProperty("providerAdapter");
   expect((await store.createRun(run, { maxActiveRuns: 10 })).kind).toBe("created");
   return run;
 }
@@ -128,10 +133,15 @@ describe("Claude before and after the provider migration", () => {
     expect([openai.status, runOf(openai).providerKey]).toEqual([201, "openai"]);
   });
 
-  it("a breakdown never offers or picks Claude as its default before the migration, even when it is the configured default", async () => {
+  it("a breakdown keeps the configured Claude default before the migration: refused, not replaced; another provider only when named", async () => {
     const { breakdown, store, episode, settle } = setup({ anthropicReady: false, defaultProvider: "anthropic" });
-    expect(((await breakdown.options()).body as { defaultProvider: string | null }).defaultProvider).toBe("openai");
-    const started = await breakdown.start(episode.projectId, episode.episodeId, {}, TOKEN, CONTEXT(randomUUID()));
+    const options = (await breakdown.options()).body as { defaultProvider: string | null; providers: Array<{ providerKey: string; ready: boolean }> };
+    expect(options.defaultProvider).toBe("anthropic");
+    expect(options.providers.find((item) => item.providerKey === "anthropic")?.ready).toBe(false);
+    const refused = await breakdown.start(episode.projectId, episode.episodeId, {}, TOKEN, CONTEXT(randomUUID()));
+    expect([refused.status, errorOf(refused)?.code]).toEqual([503, "TITLE_WRITING_PROVIDER_STORAGE_UNAVAILABLE"]);
+    expect(store.runs).toEqual([]);
+    const started = await breakdown.start(episode.projectId, episode.episodeId, { providerKey: "openai" }, TOKEN, CONTEXT(randomUUID()));
     expect([started.status, (started.body as { run: ScriptBreakdownRunView }).run.providerKey]).toEqual([201, "openai"]);
     await settle();
     store.anthropicReady = true;
@@ -213,6 +223,10 @@ describe("DeepSeek, active again", () => {
 
   it("without a DeepSeek key a start naming it is refused before anything is written, and is never moved to Claude or OpenAI", async () => {
     const { title, store, seen, settle } = setup({ defaultProvider: "deepseek" });
+    // The page is told the configured default and why it cannot be used; Claude is not offered in its place.
+    const options = (await title.options()).body as { code: string; defaultProvider: string | null; providers: Array<{ providerKey: string; ready: boolean }> };
+    expect([options.code, options.defaultProvider]).toEqual(["TITLE_WRITING_READY", "deepseek"]);
+    expect(options.providers.find((item) => item.providerKey === "deepseek")?.ready).toBe(false);
     for (const body of [{ title: TITLE, providerKey: "deepseek" }, { title: TITLE }]) {
       const result = await title.start(P1, body, TOKEN, CONTEXT(randomUUID()));
       expect([result.status, errorOf(result)?.code, errorOf(result)?.details?.providerKey]).toEqual([503, "TITLE_WRITING_PROVIDER_UNCONFIGURED", "deepseek"]);
@@ -343,5 +357,76 @@ describe("a DeepSeek run left running by the retirement", () => {
     await engine.maintain();
     expect(seen).toHaveLength(0);
     expect(store.calls).toEqual([]);
+  });
+});
+
+describe("old DeepSeek runs: no new call, but what they already have is still answered and saved", () => {
+  it("a start body cannot forge the adapter mark", async () => {
+    const { title, store, seen } = setup({ deepseek: true });
+    const forged = await title.start(P1, { title: TITLE, providerKey: "deepseek", providerAdapter: "deepseek.chat-completions.v1" }, TOKEN, CONTEXT(randomUUID()));
+    expect([forged.status, errorOf(forged)?.code]).toEqual([400, "VALIDATION_ERROR"]);
+    expect([store.runs.length, seen.length]).toEqual([0, 0]);
+  });
+
+  it("a replay of an old start (stored without the mark) returns that run; a new start is marked and sends", async () => {
+    const { title, store, seen, settle } = setup({ deepseek: true });
+    const key = randomUUID();
+    const stored = await storedRetiredRun(store, "deepseek", key);
+    for (const body of [{ title: TITLE, providerKey: "deepseek", model: "deepseek-old-model" }, { title: TITLE }]) {
+      const replay = await title.start(P1, body, TOKEN, CONTEXT(key));
+      expect([replay.status, runOf(replay).runId, runOf(replay).legacyProviderRun]).toEqual([200, stored.id, true]);
+    }
+    await settle();
+    expect([store.runs.length, seen.length]).toEqual([1, 0]);
+    expect(store.runs[0]!.input).not.toHaveProperty("providerAdapter");
+    expect(store.runs[0]!.inputHash).toBe(stored.inputHash);
+  });
+
+  it("an explicit resume that would send is refused; one that only saves the answers already stored completes without a send", async () => {
+    const { title, store, seen, settle } = setup({ deepseek: true });
+    const stored = await storedRetiredRun(store, "deepseek", randomUUID());
+    // Every step was answered before the retirement and the run stopped before its save.
+    const outputs: Record<string, unknown> = { concept: fixtureConcept(TITLE), outline: fixtureOutline(), "episode:1": fixtureEpisode(1),
+      "episode:2": fixtureEpisode(2), "episode:3": fixtureEpisode(3) };
+    const run = store.runs.find((item) => item.id === stored.id)!;
+    const steps = store.steps.filter((step) => step.runId === stored.id);
+    // First: one step still to answer. A resume would send, so it is refused with the reason and changes nothing.
+    for (const step of steps) if (step.stepKey !== "episode:3") Object.assign(step, { state: "completed", output: outputs[step.stepKey], outputHash: "c".repeat(64) });
+    Object.assign(run, { state: "needs_attention", errorCode: "legacy_provider_run" });
+    const before = structuredClone({ runs: store.runs, steps: store.steps, calls: store.calls });
+    const refused = await title.resume(P1, stored.id, {}, TOKEN, CONTEXT(randomUUID()));
+    expect([refused.status, errorOf(refused)?.code, errorOf(refused)?.details?.model]).toEqual([409, "TITLE_WRITING_LEGACY_RUN", "deepseek-old-model"]);
+    expect({ runs: store.runs, steps: store.steps, calls: store.calls }).toEqual(before);
+    // Then: every answer stored. The resume only saves; nothing is sent and the story is written once.
+    Object.assign(steps.find((step) => step.stepKey === "episode:3")!, { state: "completed", output: outputs["episode:3"], outputHash: "c".repeat(64) });
+    const accepted = await title.resume(P1, stored.id, {}, TOKEN, CONTEXT(randomUUID()));
+    expect(accepted.status).toBe(200);
+    await settle();
+    expect(runOf(await title.get(P1, stored.id))).toMatchObject({ state: "completed", storySave: "saved", providerKey: "deepseek",
+      model: "deepseek-old-model", legacyProviderRun: true });
+    expect(seen).toHaveLength(0);
+    expect(store.calls).toEqual([]);
+    expect(store.projects.get(P1)!.stories).toHaveLength(1);
+  });
+
+  it("an old breakdown is never sent for; a new DeepSeek breakdown is marked", async () => {
+    const { breakdown, store, episode, seen, settle } = setup({ deepseek: true, defaultProvider: "deepseek" });
+    const started = await breakdown.start(episode.projectId, episode.episodeId, {}, TOKEN, CONTEXT(randomUUID()));
+    expect(started.status).toBe(201);
+    expect(store.runs[0]!.input).toMatchObject({ providerKey: "deepseek", providerAdapter: "deepseek.chat-completions.v1" });
+    expect((started.body as { run: ScriptBreakdownRunView }).run.legacyProviderRun).toBe(false);
+    await settle();
+    // The same breakdown as the code before the retirement stored it (no mark): recovery stops it without a send.
+    const old = store.runs[0]!;
+    const sends = seen.length;
+    const legacy = { ...structuredClone(old), id: randomUUID(), idempotencyKey: randomUUID(), state: "running" as const, errorCode: null, executorId: null, leaseUntil: null };
+    delete (legacy.input as { providerAdapter?: string }).providerAdapter;
+    store.runs.push(legacy);
+    for (const step of store.steps.filter((item) => item.runId === old.id)) store.steps.push({ ...structuredClone(step), runId: legacy.id, state: "pending", output: null, outputHash: null });
+    const engine = new TitleWritingEngine({ workspaceId: WS, store, providers: providerConfigs(true), transport: fixtureChatTransport(TITLE, { seen }),
+      maxCallsPerDay: 100, allowedRunKinds: ["title", "script_breakdown"] });
+    await engine.maintain();
+    expect(store.runs.find((item) => item.id === legacy.id)).toMatchObject({ state: "needs_attention", errorCode: "legacy_provider_run" });
+    expect(seen).toHaveLength(sends);
   });
 });

@@ -8,7 +8,7 @@ import { DEEPSEEK_BACKUP_SUFFIX, ModelConfigVault, V1_BACKUP_SUFFIX, type Manage
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
-  return { ...actual, rename: vi.fn(actual.rename), open: vi.fn(actual.open) };
+  return { ...actual, rename: vi.fn(actual.rename), open: vi.fn(actual.open), link: vi.fn(actual.link) };
 });
 
 const SECRET = "sk-vault-private-test-123456789";
@@ -101,6 +101,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
   vi.mocked(fs.rename).mockReset();
   vi.mocked(fs.open).mockReset();
+  vi.mocked(fs.link).mockReset();
   vi.unstubAllGlobals();
   await Promise.all(directories.splice(0).map((directory) => fs.rm(directory, { recursive: true, force: true })));
 });
@@ -676,5 +677,92 @@ describe.skipIf(process.platform === "win32")("ModelConfigVault with DeepSeek ac
     expect(await fs.readFile(`${h.path}${V1_BACKUP_SUFFIX}`)).toEqual(h.original);
     expect((await fs.readdir(h.directory)).sort()).toEqual([...FILES, `model-config.enc${V1_BACKUP_SUFFIX}`].sort());
     expect(doc.retired).toEqual({ providers: ["qwen", "deepseek"], retiredDefault: "qwen" });
+  });
+});
+
+describe.skipIf(process.platform === "win32")("ModelConfigVault: the backup from before DeepSeek is complete and intact, or nothing is replaced", () => {
+  const BACKUP = `model-config.enc${DEEPSEEK_BACKUP_SUFFIX}`;
+  const saveDeepseek = (vault: ModelConfigVault, expectedRevision: number, apiKey = DEEPSEEK_KEY) =>
+    vault.updateProvider("deepseek", { expectedRevision, secretAction: "replace", apiKey, models: ["deepseek-flash"] }, { makeDefault: true });
+
+  /** A vault with a saved Claude key and Workspace ID, so a refused write can be seen to keep every other setting. */
+  async function prepared() {
+    const h = await harness();
+    await h.vault.updateProvider("anthropic", { ...update(), workspaceAction: "replace", workspaceId: "wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ" });
+    return { ...h, original: await fs.readFile(h.path) };
+  }
+
+  /** The live file is the one from before the refused save, readable, with its revisions and settings unchanged. */
+  async function liveKept(h: Awaited<ReturnType<typeof prepared>>) {
+    expect(await fs.readFile(h.path)).toEqual(h.original);
+    const doc = await (await h.reopen()).read();
+    expect([doc.saved.revision, doc.active.revision]).toEqual([1, 0]);
+    expect(doc.saved.providers.anthropic).toMatchObject({ apiKey: SECRET, workspaceId: "wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ" });
+    expect(doc.saved.providers.deepseek.apiKey).toBeNull();
+    expect((await fs.readdir(h.directory)).filter((name) => name.endsWith(".tmp") || name.endsWith(".lock"))).toEqual([]);
+  }
+
+  it.each([
+    ["an empty file", async (path: string) => { await fs.writeFile(path, Buffer.alloc(0), { mode: 0o600 }); }],
+    ["a truncated copy", async (path: string, original: Buffer) => { await fs.writeFile(path, original.subarray(0, Math.floor(original.length / 2)), { mode: 0o600 }); }],
+    ["a world-readable copy", async (path: string, original: Buffer) => { await fs.writeFile(path, original, { mode: 0o600 }); await fs.chmod(path, 0o644); }],
+    ["a symbolic link", async (path: string, _original: Buffer, live: string) => { await fs.symlink(live, path); }],
+    ["a copy under another master key", async (path: string) => {
+      const other = await harness();
+      await other.vault.updateProvider("anthropic", update());
+      await fs.writeFile(path, await fs.readFile(other.path), { mode: 0o600 });
+    }],
+  ] as const)("refuses to go on over %s at the backup name, and keeps the live configuration whole", async (_name, make) => {
+    const h = await prepared();
+    await make(`${h.path}${DEEPSEEK_BACKUP_SUFFIX}`, h.original, h.path);
+    const before = await fs.lstat(`${h.path}${DEEPSEEK_BACKUP_SUFFIX}`);
+    await expect(saveDeepseek(h.vault, 1)).rejects.toMatchObject({ status: 503 });
+    await liveKept(h);
+    // The damaged backup is not overwritten either.
+    const after = await fs.lstat(`${h.path}${DEEPSEEK_BACKUP_SUFFIX}`);
+    expect([after.size, after.mode, after.isSymbolicLink()]).toEqual([before.size, before.mode, before.isSymbolicLink()]);
+  });
+
+  it("refuses a backup of this vault that already holds DeepSeek (not readable by the release before it)", async () => {
+    const h = await prepared();
+    await saveDeepseek(h.vault, 1);
+    const withDeepseek = await fs.readFile(h.path);
+    // Back to the shape without DeepSeek, then replace the kept backup with a file of this vault that holds DeepSeek.
+    await h.vault.updateProvider("deepseek", { expectedRevision: 2, secretAction: "clear", models: [] });
+    await h.vault.activateIfIdle(async () => true);
+    const live = await fs.readFile(h.path);
+    await fs.rm(`${h.path}${DEEPSEEK_BACKUP_SUFFIX}`);
+    await fs.writeFile(`${h.path}${DEEPSEEK_BACKUP_SUFFIX}`, withDeepseek, { mode: 0o600 });
+    await expect(saveDeepseek(h.vault, 3)).rejects.toMatchObject({ status: 503 });
+    expect(await fs.readFile(h.path)).toEqual(live);
+    expect(await fs.readFile(`${h.path}${DEEPSEEK_BACKUP_SUFFIX}`)).toEqual(withDeepseek);
+  });
+
+  it("a backup that fails while being written is never published: the next save writes it whole, then saves", async () => {
+    const h = await prepared();
+    vi.mocked(fs.link).mockRejectedValueOnce(Object.assign(new Error("disk full"), { code: "ENOSPC" }));
+    await expect(saveDeepseek(h.vault, 1)).rejects.toMatchObject({ status: 503 });
+    await liveKept(h);
+    expect((await fs.readdir(h.directory)).sort()).toEqual([...FILES].sort());
+    await saveDeepseek(h.vault, 1);
+    expect(await fs.readFile(`${h.path}${DEEPSEEK_BACKUP_SUFFIX}`)).toEqual(h.original);
+    expect((await fs.stat(`${h.path}${DEEPSEEK_BACKUP_SUFFIX}`)).mode & 0o777).toBe(0o600);
+    expect((await fs.stat(`${h.path}${DEEPSEEK_BACKUP_SUFFIX}`)).nlink).toBe(1);
+    expect((await fs.readdir(h.directory)).sort()).toEqual([...FILES, BACKUP].sort());
+    const doc = await (await h.reopen()).read();
+    expect([doc.saved.revision, doc.saved.defaultProvider, doc.saved.providers.deepseek.apiKey]).toEqual([2, "deepseek", DEEPSEEK_KEY]);
+  });
+
+  it("keeps the earliest intact backup although the live file changed since: it is checked, not compared with the live bytes", async () => {
+    const h = await prepared();
+    await saveDeepseek(h.vault, 1);
+    await h.vault.updateProvider("deepseek", { expectedRevision: 2, secretAction: "clear", models: [] });
+    await h.vault.updateLimits({ expectedRevision: 3, defaultProvider: "openai", maxCallsPerDay: 11, maxActiveRuns: 1 });
+    await h.vault.activateIfIdle(async () => true);
+    expect(await fs.readFile(h.path)).not.toEqual(h.original);
+    await saveDeepseek(h.vault, 4, `${DEEPSEEK_KEY}-2`);
+    expect(await fs.readFile(`${h.path}${DEEPSEEK_BACKUP_SUFFIX}`)).toEqual(h.original);
+    const doc = await (await h.reopen()).read();
+    expect([doc.saved.revision, doc.saved.defaultProvider, doc.saved.providers.deepseek.apiKey]).toEqual([5, "deepseek", `${DEEPSEEK_KEY}-2`]);
   });
 });

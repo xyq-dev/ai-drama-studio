@@ -40,6 +40,8 @@ interface ServerOptions {
   dropFirstAnswer?: boolean;
   /** Hold every GET of a request until released. */
   holdReads?: Promise<void>;
+  /** The options answer instead of the ready Claude one. */
+  optionsBody?: Record<string, unknown>;
 }
 
 /** A fake API: the request is stored before its answer; the same key returns the same request. */
@@ -52,6 +54,7 @@ function fakeServer(options: ServerOptions = {}) {
     const method = init?.method ?? "GET";
     const headers = new Headers(init?.headers);
     if (url === "/api/v1/writing/candidates/options") {
+      if (options.optionsBody) return json(options.optionsBody);
       return json({ enabled: true, code: "WRITING_CANDIDATE_READY", storageReady: true, operatorTokenRequired: options.tokenRequired ?? false,
         defaultProvider: "anthropic", maxCallsPerDay: 30, billing: "unknown", providers: [
           { providerKey: "openai", label: "OpenAI", ready: false, models: [], defaultModel: null, missing: ["OPENAI_API_KEY"] },
@@ -295,5 +298,72 @@ describe("online candidates in the writing assistant", () => {
     await waitFor(() => expect(server.posts).toHaveLength(1));
     expect(server.posts[0]!.body).toMatchObject({ mode: "episode", episodeId: E2,
       request: { episodeNo: 2, confirmedStory: "已确认的故事", revisionRequest: "节奏更紧", mustKeepDialogue: "店长：你自己看时间。" } });
+  });
+});
+
+describe("why online candidates cannot be asked for, from the real providers and gaps", () => {
+  const provider = (providerKey: string, label: string, missing: string[], models: string[] = []) => ({ providerKey, label, ready: missing.length === 0,
+    models, defaultModel: models[0] ?? null, missing });
+  const optionsWith = (code: string, defaultProvider: string | null, providers: unknown[], extra: Record<string, unknown> = {}) => ({
+    enabled: true, code, storageReady: true, operatorTokenRequired: false, defaultProvider, maxCallsPerDay: 30, billing: "unknown", providers, ...extra });
+  const NO_KEYS = [provider("openai", "OpenAI", ["OPENAI_API_KEY", "TITLE_WRITING_OPENAI_MODELS"]), provider("anthropic", "Claude", ["ANTHROPIC_API_KEY"]),
+    provider("deepseek", "DeepSeek", ["DEEPSEEK_API_KEY"])];
+
+  async function open(optionsBody: Record<string, unknown>) {
+    const server = fakeServer({ optionsBody });
+    vi.stubGlobal("fetch", server.fetch);
+    render(createElement(WritingAssistant, props()));
+    fireEvent.click(screen.getByRole("button", { name: "编剧助手" }));
+    return server;
+  }
+
+  it("no provider has a key: every provider's own gap is named, not a fixed request to configure Claude", async () => {
+    const server = await open(optionsWith("WRITING_CANDIDATE_PROVIDER_UNCONFIGURED", null, NO_KEYS));
+    const text = (await screen.findByTestId("online-unavailable")).textContent ?? "";
+    expect(text).toContain("OpenAI：尚未配置 OpenAI API Key、尚未配置 OpenAI 模型");
+    expect(text).toContain("Claude：尚未配置 Claude API Key");
+    expect(text).toContain("DeepSeek：尚未配置 DeepSeek API Key");
+    expect(screen.queryByTestId("online-provider")).toBeNull();
+    expect(server.posts).toHaveLength(0);
+  });
+
+  it("only DeepSeek is configured and its candidate migration is missing: the migration is named, no key or other provider is asked for", async () => {
+    await open(optionsWith("WRITING_CANDIDATE_PROVIDER_UNCONFIGURED", "deepseek", [NO_KEYS[0], NO_KEYS[1],
+      provider("deepseek", "DeepSeek", ["WRITING_CANDIDATE_DEEPSEEK_MIGRATION"], ["deepseek-flash"])]));
+    const text = (await screen.findByTestId("online-unavailable")).textContent ?? "";
+    expect(text).toContain("DeepSeek：数据库迁移 20261017000100_writing_candidate_deepseek 尚未执行");
+    expect(text).not.toMatch(/API Key|Claude|OpenAI/);
+  });
+
+  it("a saved configuration that waits for the restart is said so, apart from what is missing", async () => {
+    await open(optionsWith("WRITING_CANDIDATE_PROVIDER_UNCONFIGURED", "deepseek", NO_KEYS, { configurationPending: true }));
+    const text = (await screen.findByTestId("online-unavailable")).textContent ?? "";
+    expect(text).toContain("后台已保存新的模型配置，需要服务器重启 API 后才会生效。");
+    expect(text).toContain("DeepSeek：尚未配置 DeepSeek API Key");
+  });
+
+  it("the candidate storage itself is not ready: its own migration is named", async () => {
+    await open(optionsWith("WRITING_CANDIDATE_STORAGE_UNAVAILABLE", null, NO_KEYS, { storageReady: false }));
+    expect((await screen.findByTestId("online-unavailable")).textContent).toContain("20261016000200_writing_candidate");
+  });
+
+  it("the configured default DeepSeek is not ready while Claude is: nothing is sent until Claude is chosen explicitly", async () => {
+    const server = await open(optionsWith("WRITING_CANDIDATE_READY", "deepseek", [NO_KEYS[0],
+      provider("anthropic", "Claude", [], ["claude-opus-5-5"]), provider("deepseek", "DeepSeek", ["WRITING_CANDIDATE_DEEPSEEK_MIGRATION"], ["deepseek-flash"])]));
+    const blocked = await screen.findByTestId("online-provider-blocked");
+    expect(blocked.textContent).toContain("默认模型服务暂不可用，没有发出调用，也不会自动改用其他模型服务");
+    expect(blocked.textContent).toContain("20261017000100_writing_candidate_deepseek");
+    expect(screen.queryByTestId("online-provider")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "在线生成故事候选" }));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(server.posts).toHaveLength(0);
+    const select = screen.getByLabelText("模型服务") as HTMLSelectElement;
+    expect(select.value).toBe("deepseek");
+    expect([...select.options].map((option) => [option.value, option.disabled])).toEqual([["deepseek", true], ["anthropic", false]]);
+    fireEvent.change(select, { target: { value: "anthropic" } });
+    expect((await screen.findByTestId("online-provider")).textContent).toContain("Claude · claude-opus-5-5");
+    fireEvent.click(screen.getByRole("button", { name: "在线生成故事候选" }));
+    await waitFor(() => expect(server.posts).toHaveLength(1));
+    expect(server.posts[0]!.body).toMatchObject({ providerKey: "anthropic", model: "claude-opus-5-5" });
   });
 });

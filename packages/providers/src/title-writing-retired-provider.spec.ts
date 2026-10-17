@@ -6,9 +6,9 @@ import { fixtureChatTransport, type FixtureExchange } from "./title-writing-fixt
 import { titleWritingProviderConfigs, type WritingTransport } from "./text-writing";
 
 /**
- * Runs and calls stored with the retired qwen key, and DeepSeek runs stored before DeepSeek's retirement (created before
- * DEEPSEEK_REACTIVATED_AT). DeepSeek is configured and active again here, with the old run's own model allowed, to show
- * that only the run's age stops it. Whatever state such a run is in, the engine never reserves, sends, moves it to
+ * Runs and calls stored with the retired qwen key, and DeepSeek runs stored before DeepSeek's retirement (their frozen
+ * input has no adapter mark). DeepSeek is configured and active again here, with the old run's own model allowed, and the
+ * runs are dated after any release date, to show that only the missing mark stops them. Whatever state such a run is in, the engine never reserves, sends, moves it to
  * another provider or model, or writes a second save or version; it keeps every stored fact (provider, model, input
  * hash, call identity, unknown cost).
  */
@@ -23,7 +23,7 @@ const providers = titleWritingProviderConfigs({
 const STOP: Record<LegacyProviderKey, string> = { qwen: "provider_unconfigured", deepseek: "legacy_provider_run" };
 const EMPTY_USAGE = { status: "unknown" as const, inputTokens: null, outputTokens: null, totalTokens: null };
 
-function harness(start = Date.parse("2026-10-16T00:00:00Z")) {
+function harness(start = Date.parse("2026-10-20T00:00:00Z")) {
   let now = start;
   const clock = () => new Date(now);
   const store = new InMemoryTitleWritingStore();
@@ -39,8 +39,10 @@ function harness(start = Date.parse("2026-10-16T00:00:00Z")) {
 
 async function storedRun(store: InMemoryTitleWritingStore, providerKey: LegacyProviderKey, clock: () => Date, projectId = randomUUID()) {
   if (!store.projects.has(projectId)) store.addProject(WS, projectId);
+  // As the code before the retirement stored it: no adapter mark in the frozen input.
   const run = newTitleRun({ workspaceId: WS, projectId, actorId: "owner", idempotencyKey: randomUUID(), title: TITLE,
-    settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey, model: `${providerKey}-model`, now: clock() });
+    settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey, model: `${providerKey}-model`, now: clock(), withoutAdapterMark: true });
+  expect(run.input).not.toHaveProperty("providerAdapter");
   expect((await store.createRun(run, { maxActiveRuns: 10 })).kind).toBe("created");
   return run;
 }
@@ -251,5 +253,49 @@ describe("DeepSeek runs created after the reactivation", () => {
     expect((await store.getRunById(WS, run.id))!.run).toMatchObject({ state: "needs_attention", errorCode: "provider_unconfigured",
       input: expect.objectContaining({ model: "deepseek-v4-pro" }) });
     expect(sends).toEqual([]);
+  });
+});
+
+describe("DeepSeek runs are told apart by the server-written adapter mark, not by a date", () => {
+  it("a new run carries the mark in its frozen, hashed input", () => {
+    const run = newTitleRun({ workspaceId: WS, projectId: randomUUID(), actorId: "owner", idempotencyKey: randomUUID(), title: TITLE,
+      settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey: "deepseek", model: "deepseek-flash", now: new Date("2026-10-20T00:00:00Z") });
+    expect(run.input).toMatchObject({ providerKey: "deepseek", providerAdapter: "deepseek.chat-completions.v1" });
+    for (const providerKey of ["openai", "anthropic"] as const) {
+      expect(newTitleRun({ workspaceId: WS, projectId: randomUUID(), actorId: "owner", idempotencyKey: randomUUID(), title: TITLE,
+        settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey, model: "m", now: new Date() }).input).not.toHaveProperty("providerAdapter");
+    }
+  });
+
+  it("an unmarked run dated well after any release, with its model allowed, is still never reserved or sent by maintenance", async () => {
+    const { store, engine, sends, reserve, clock } = harness(Date.parse("2026-12-01T00:00:00Z"));
+    const projectId = randomUUID();
+    store.addProject(WS, projectId);
+    const run = newTitleRun({ workspaceId: WS, projectId, actorId: "owner", idempotencyKey: randomUUID(), title: TITLE,
+      settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey: "deepseek", model: "deepseek-flash", now: clock(), withoutAdapterMark: true });
+    await store.createRun(run, { maxActiveRuns: 10 });
+    await engine.maintain();
+    await engine.maintain();
+    expect((await store.getRunById(WS, run.id))!.run).toMatchObject({ state: "needs_attention", errorCode: "legacy_provider_run", callsUsed: 0 });
+    expect(reserve).not.toHaveBeenCalled();
+    expect(sends).toEqual([]);
+  });
+
+  it("a marked run whose executor died recovers after its lease and finishes with DeepSeek only", async () => {
+    const { store, engine, sends, clock, advance } = harness(Date.parse("2026-12-01T00:00:00Z"));
+    const projectId = randomUUID();
+    store.addProject(WS, projectId);
+    const run = newTitleRun({ workspaceId: WS, projectId, actorId: "owner", idempotencyKey: randomUUID(), title: TITLE,
+      settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey: "deepseek", model: "deepseek-flash", now: clock() });
+    await store.createRun(run, { maxActiveRuns: 10 });
+    // A previous process claimed it and died before reserving anything.
+    expect(await store.claimRun(WS, run.id, "dead", clock().toISOString(), new Date(clock().getTime() + 1000).toISOString())).toBe(true);
+    await engine.maintain();
+    expect(sends).toEqual([]);
+    advance(5_000);
+    await engine.maintain();
+    expect((await store.getRunById(WS, run.id))!.run).toMatchObject({ state: "completed", storySave: "saved" });
+    expect(new Set(sends)).toEqual(new Set(["https://api.deepseek.com/chat/completions"]));
+    expect(sends).toHaveLength(5);
   });
 });

@@ -286,7 +286,7 @@ describe("progress and results page", () => {
   });
 
   it.each(["provider_unconfigured", "legacy_provider_run"])("a DeepSeek run from before the retirement (%s) shows its real model and says it is an old run that is never sent again", async (errorCode) => {
-    server(() => json({ run: run({ state: "needs_attention", errorCode, providerKey: "deepseek", model: "deepseek-chat" },
+    server(() => json({ run: run({ state: "needs_attention", errorCode, providerKey: "deepseek", model: "deepseek-chat", legacyProviderRun: true },
       ["completed", "pending", "pending", "pending", "pending"]) }));
     render(<TitleWritingRun projectId={P1} client={new TitleWritingClient()} />);
     expect(await screen.findByText(/模型：DeepSeek · deepseek-chat/)).toBeTruthy();
@@ -296,7 +296,7 @@ describe("progress and results page", () => {
 
   it("a DeepSeek run created after the reactivation that stops for want of a provider says so, without calling it retired", async () => {
     server(() => json({ run: run({ state: "needs_attention", errorCode: "provider_unconfigured", providerKey: "deepseek", model: "deepseek-flash",
-      createdAt: "2026-10-18T00:00:00Z" }, ["completed", "pending", "pending", "pending", "pending"]) }));
+      legacyProviderRun: false }, ["completed", "pending", "pending", "pending", "pending"]) }));
     render(<TitleWritingRun projectId={P1} client={new TitleWritingClient()} />);
     expect(await screen.findByText(/模型：DeepSeek · deepseek-flash/)).toBeTruthy();
     expect(screen.getByText(/没有配置完整，或冻结的模型已不在允许列表中/)).toBeTruthy();

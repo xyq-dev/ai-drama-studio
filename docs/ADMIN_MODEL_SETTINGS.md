@@ -32,7 +32,7 @@
 ## 存储与运行边界
 
 - 本页配置本身无新表或字段。AES-256-GCM 密文文件包含 active/saved 和最近50条不含配置值的审计元数据。
-- 文件格式 v2 只含 OpenAI 与 Claude。读取旧版（v1，三家）文件时用同一主密钥在内存中转换，不写盘；第一次保存或启动时应用待生效配置时，先把原 v1 密文原样复制为 `<文件>.v1-retired-providers.bak`（600，独占创建，不覆盖），再原子替换为 v2。回滚旧代码前必须用该备份还原，见 [`OPENAI_CLAUDE_WRITING.md`](OPENAI_CLAUDE_WRITING.md)。DeepSeek 条目只在有 Key 时写入；第一次写入 DeepSeek 前把原文件复制为 `<文件>.v2-before-deepseek.bak`（只写一次）；回滚到不认识 DeepSeek 的版本前，先在后台清除 DeepSeek Key 并空闲重启，或用该备份还原，见 [`DEEPSEEK_WRITING.md`](DEEPSEEK_WRITING.md)。
+- 文件格式 v2 只含 OpenAI 与 Claude。读取旧版（v1，三家）文件时用同一主密钥在内存中转换，不写盘；第一次保存或启动时应用待生效配置时，先把原 v1 密文原样复制为 `<文件>.v1-retired-providers.bak`（600，独占创建，不覆盖），再原子替换为 v2。回滚旧代码前必须用该备份还原，见 [`OPENAI_CLAUDE_WRITING.md`](OPENAI_CLAUDE_WRITING.md)。DeepSeek 条目只在有 Key 时写入；第一次写入 DeepSeek 前把原文件完整写入并发布为 `<文件>.v2-before-deepseek.bak`（只写一次；已有备份损坏或不兼容时拒绝保存，不替换 live 文件）；回滚到不认识 DeepSeek 的版本前，先在后台清除 DeepSeek Key 并空闲重启，或用该备份还原，见 [`DEEPSEEK_WRITING.md`](DEEPSEEK_WRITING.md)。
 - 仅支持单台 Linux、单个 API 实例、单工作区。**先停旧 API，再启新 API；不支持滚动重叠或多个 API 共用配置文件。**
   文件锁只保证配置写入，不能代替跨实例的任务调度屏障。外部模型已有的租约与恢复语义保持不变。
 - 私有目录必须是 API 实际用户所有、权限700，文件600；不允许符号链接或硬链接。Windows ACL未实现，Windows启用时明确拒绝；默认不启用时现有应用不受影响。

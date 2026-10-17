@@ -604,13 +604,20 @@ describe("choosing the provider of a new start", () => {
   const error = (result: { body: unknown }) => (result.body as { error?: { code: string; details?: unknown } }).error;
   const defaultOf = async (service: ScriptBreakdownService) => ((await service.options()).body as { defaultProvider: string | null }).defaultProvider;
 
-  it("uses the configured default only when it is ready, otherwise the first ready provider (Claude first), the same one options reports", async () => {
+  it("uses the configured default as it is and never replaces it; without one, the first ready provider (Claude first)", async () => {
     const { store, episode, settle, runOf, seen, reconfigured } = setup();
-    const fallback = reconfigured(CLAUDE_DOWN, "anthropic");
-    expect(await defaultOf(fallback)).toBe("openai");
-    const started = await fallback.start(P1, episode.episodeId, {}, TOKEN, CONTEXT(randomUUID()));
+    // The configured default (Claude) is not ready: it is still the default, a start without a provider is refused
+    // before anything is written, and OpenAI is used only when the request names it.
+    const unready = reconfigured(CLAUDE_DOWN, "anthropic");
+    expect(await defaultOf(unready)).toBe("anthropic");
+    const refused = await unready.start(P1, episode.episodeId, {}, TOKEN, CONTEXT(randomUUID()));
+    expect([refused.status, error(refused)]).toEqual([503,
+      expect.objectContaining({ code: "TITLE_WRITING_PROVIDER_UNCONFIGURED", details: expect.objectContaining({ providerKey: "anthropic" }) })]);
+    expect(store.runs).toEqual([]);
+    const started = await unready.start(P1, episode.episodeId, { providerKey: "openai" }, TOKEN, CONTEXT(randomUUID()));
     expect([started.status, runOf(started).providerKey, runOf(started).model]).toEqual([201, "openai", "d-1"]);
     await settle();
+    expect(await defaultOf(reconfigured(CLAUDE_DOWN, null))).toBe("openai");
     for (const [defaultProvider, expected] of [["anthropic", "anthropic"], ["openai", "openai"], [null, "anthropic"]] as const) {
       const service = reconfigured(BOTH, defaultProvider);
       expect(await defaultOf(service)).toBe(expected);
@@ -628,7 +635,7 @@ describe("choosing the provider of a new start", () => {
     for (const [service, body, status, expected] of [
       [fallback, { providerKey: "anthropic" }, 503, { code: "TITLE_WRITING_PROVIDER_UNCONFIGURED", details: expect.objectContaining({ providerKey: "anthropic" }) }],
       [reconfigured({}, "anthropic"), {}, 503, { code: "TITLE_WRITING_PROVIDER_UNCONFIGURED" }],
-      [fallback, { model: "q-1" }, 400, { code: "TITLE_WRITING_MODEL_UNAVAILABLE", details: { providerKey: "openai" } }],
+      [reconfigured(CLAUDE_DOWN, null), { model: "q-1" }, 400, { code: "TITLE_WRITING_MODEL_UNAVAILABLE", details: { providerKey: "openai" } }],
       [fallback, { providerKey: "openai", model: "q-1" }, 400, { code: "TITLE_WRITING_MODEL_UNAVAILABLE", details: { providerKey: "openai" } }],
     ] as const) {
       const refused = await service.start(P1, episode.episodeId, body, TOKEN, CONTEXT(randomUUID()));
@@ -642,7 +649,8 @@ describe("choosing the provider of a new start", () => {
     // This engine reaches only Claude, so the OpenAI run stops before its call is reserved and can be resumed.
     const { store, episode, settle, runOf, seen, reconfigured } = setup();
     const key = randomUUID();
-    const first = runOf(await reconfigured(CLAUDE_DOWN, "anthropic").start(P1, episode.episodeId, {}, TOKEN, CONTEXT(key)));
+    // No default configured: the first ready provider (OpenAI) is chosen and frozen.
+    const first = runOf(await reconfigured(CLAUDE_DOWN, null).start(P1, episode.episodeId, {}, TOKEN, CONTEXT(key)));
     expect([first.providerKey, first.model]).toEqual(["openai", "d-1"]);
     await settle();
     // The configured default became ready (and the other one went away): the same request and key is the same run.

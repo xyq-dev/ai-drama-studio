@@ -365,7 +365,7 @@ export class ModelConfigVault {
     const bytes = this.serialize(next);
     // The first time DeepSeek reaches a file the release before it can read, that file is kept first (once).
     if (this.beforeDeepseekBytes && mentionsDeepseek(compactDocument(checkedDocument(structuredClone(next))) as { active: unknown; saved: unknown })) {
-      await this.keepOnce(`${this.file}${DEEPSEEK_BACKUP_SUFFIX}`, this.beforeDeepseekBytes);
+      await this.keepDeepseekBackup(this.beforeDeepseekBytes);
     }
     await this.atomicWrite(this.file, bytes);
     this.v1Bytes = null;
@@ -373,15 +373,62 @@ export class ModelConfigVault {
     this.observedFile = true;
   }
 
-  /** An exclusive 0600 copy of these bytes, unless a copy already exists (the earliest one is the one kept). */
-  private async keepOnce(target: string, bytes: Buffer): Promise<void> {
-    try {
-      await fs.lstat(target);
-      return;
-    } catch (error) {
-      if (codeOf(error) !== "ENOENT") throw error;
-    }
+  /**
+   * The file from before DeepSeek, kept once. The earliest backup is kept, whatever the live file holds by now, but
+   * only if it is intact: a private regular file of this user (0600, one link, no symlink) within the size limit, a
+   * v2 envelope that decrypts and authenticates with the master key, and a document the release before DeepSeek reads
+   * (no DeepSeek entry or default). A damaged or incompatible backup stops the write: the live file is not replaced
+   * and the backup is not overwritten. Without a backup, these bytes are published complete (exclusiveWrite).
+   */
+  private async keepDeepseekBackup(bytes: Buffer): Promise<void> {
+    const target = `${this.file}${DEEPSEEK_BACKUP_SUFFIX}`;
+    if (await this.intactDeepseekBackup(target)) return;
     await this.exclusiveWrite(target, bytes);
+    // What was published is checked like a backup found later.
+    if (!(await this.intactDeepseekBackup(target))) throw storageError();
+  }
+
+  /** False when there is no backup; true when it is intact; a storage error for anything else at that name. */
+  private async intactDeepseekBackup(target: string): Promise<boolean> {
+    try {
+      const info = await fs.lstat(target);
+      if (info.isSymbolicLink() || !info.isFile()) throw storageError();
+    } catch (error) {
+      if (codeOf(error) === "ENOENT") return false;
+      throw storageError();
+    }
+    try {
+      const handle = await fs.open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      let raw: Buffer;
+      try {
+        const info = await handle.stat();
+        if (!info.isFile() || info.nlink !== 1 || (info.mode & 0o777) !== 0o600 || (process.geteuid && info.uid !== process.geteuid())
+          || info.size === 0 || info.size > MAX_BYTES) throw storageError();
+        const bytes = Buffer.alloc(info.size + 1);
+        let offset = 0;
+        while (offset < bytes.length) {
+          const chunk = await handle.read(bytes, offset, bytes.length - offset, offset);
+          if (!chunk.bytesRead) break;
+          offset += chunk.bytesRead;
+        }
+        if (offset !== info.size) throw storageError();
+        raw = Buffer.from(bytes.subarray(0, offset));
+      } finally { await handle.close(); }
+      const envelope = envelopeSchema.parse(JSON.parse(raw.toString("utf8")));
+      if (envelope.format !== FORMAT) throw storageError();
+      const decipher = createDecipheriv("aes-256-gcm", this.masterKey, strictBase64(envelope.nonce, 12));
+      decipher.setAAD(AAD);
+      decipher.setAuthTag(strictBase64(envelope.tag, 16));
+      const plaintext = Buffer.concat([decipher.update(strictBase64(envelope.ciphertext)), decipher.final()]);
+      try {
+        const parsed = JSON.parse(plaintext.toString("utf8")) as { active: unknown; saved: unknown };
+        checkedDocument(parsed);
+        if (mentionsDeepseek(parsed)) throw storageError();
+      } finally { plaintext.fill(0); }
+      return true;
+    } catch {
+      throw storageError();
+    }
   }
 
   /** The kept v1 file. An existing backup is never replaced; it must hold exactly these bytes. */
@@ -411,13 +458,26 @@ export class ModelConfigVault {
     await this.exclusiveWrite(target, bytes);
   }
 
+  /**
+   * Publishes a backup only once it is complete: the bytes go to a private temporary file (exclusive, 0600), are synced,
+   * and are then linked to the final name, which never replaces an existing file (EEXIST fails the write). A failure at
+   * any point leaves no file at the final name, so the next save writes the backup again.
+   */
   private async exclusiveWrite(target: string, bytes: Buffer): Promise<void> {
     await this.checkDirectory();
-    const handle = await fs.open(target, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    const temporary = `${target}.${randomUUID()}.tmp`;
+    let created = false;
     try {
-      await handle.writeFile(bytes);
-      await handle.sync();
-    } finally { await handle.close(); }
+      const handle = await fs.open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+      created = true;
+      try {
+        await handle.writeFile(bytes);
+        await handle.sync();
+      } finally { await handle.close(); }
+      await fs.link(temporary, target);
+    } finally {
+      if (created) await fs.unlink(temporary).catch(() => undefined);
+    }
     const directory = await fs.open(dirname(this.file), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
     try { await directory.sync(); } finally { await directory.close(); }
   }

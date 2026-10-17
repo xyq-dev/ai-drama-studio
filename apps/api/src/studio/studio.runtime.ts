@@ -147,6 +147,8 @@ export class StudioRuntime implements OnModuleDestroy {
       allowedRunKinds,
     });
     const defaultProvider = managed ? managed.defaultProvider : env.TITLE_WRITING_DEFAULT_PROVIDER ?? null;
+    // Options say when the console holds saved settings this API has not applied yet (never a value, never a gate).
+    const configurationPending = adminModels ? async () => await adminModels!.pendingRestart() : undefined;
     const titleWriting = new TitleWritingService({
       workspaceId,
       nodeEnv: env.NODE_ENV,
@@ -161,6 +163,7 @@ export class StudioRuntime implements OnModuleDestroy {
       projects: store,
       maxCallsPerDay,
       maxActiveRuns,
+      ...(configurationPending ? { configurationPending } : {}),
     });
     const scriptBreakdown = new ScriptBreakdownService({
       workspaceId,
@@ -189,6 +192,7 @@ export class StudioRuntime implements OnModuleDestroy {
       executor: new WritingCandidateExecutor({ workspaceId, store: candidateStore, providers: titleProviders, transport: createFetchTransport() }),
       projects: store,
       maxCallsPerDay,
+      ...(configurationPending ? { configurationPending } : {}),
     });
     return new StudioRuntime(pool,
       new StudioService(jobs, store, textChain, workspaceId, new MockTextService(pool), new MediaAssetStore(pool),

@@ -208,8 +208,12 @@ describe("the DeepSeek candidate migration", () => {
       expect(statements).not.toContain(forbidden);
     }
     expect(statements).not.toMatch(/provider_key\s*(~|LIKE|IS NOT NULL)/);
-    // It stops unless exactly one CHECK of the original two values exists (found by definition, not a generated name).
-    expect(statements).toContain("RAISE EXCEPTION");
+    // It stops unless the table has exactly one CHECK on provider_key and that CHECK is exactly the released one: a
+    // compound or further CHECK is never dropped (found by definition, not by a generated name).
+    expect(statements).toContain("RAISE EXCEPTION 'expected exactly one provider_key CHECK");
+    expect(statements).toContain("RAISE EXCEPTION 'unexpected provider_key CHECK");
+    expect(statements).toContain("CHECK ((provider_key = ANY (ARRAY[''openai''::text, ''anthropic''::text])))");
+    expect(statements.match(/DROP CONSTRAINT/g)).toHaveLength(1);
   });
 
   it("on the test-site combination (base seven, Claude, candidates; breakdown not applied) applies only itself and leaves the breakdown pending", async () => {

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { currentUncertainCallIds, isActiveTitleWritingProvider, isLegacyDeepseekRun, type ScriptBreakdownOutput } from "@ai-drama/contracts";
+import { currentUncertainCallIds, isActiveTitleWritingProvider, type ScriptBreakdownOutput } from "@ai-drama/contracts";
 import {
   ScriptBreakdownClient,
   type ScriptBreakdownOptionsView,
@@ -77,10 +77,10 @@ export function breakdownErrorText(code: string | null): string | null {
 }
 
 /** A breakdown of a retired provider that stopped for want of a provider is said to be retired, not misconfigured. */
-function runErrorText(run: { providerKey: string; errorCode: string | null; createdAt: string; step: { errorCode: string | null } }): string | null {
+function runErrorText(run: { providerKey: string; errorCode: string | null; legacyProviderRun?: boolean; step: { errorCode: string | null } }): string | null {
   const code = run.errorCode ?? run.step.errorCode;
   if ((code === "provider_unconfigured" && !isActiveTitleWritingProvider(run.providerKey))
-    || code === "legacy_provider_run" || (code === "provider_unconfigured" && isLegacyDeepseekRun(run))) {
+    || code === "legacy_provider_run" || (code === "provider_unconfigured" && run.legacyProviderRun === true)) {
     return "这次拆解使用的模型服务已经退役，不会再发出请求，也不会改用其他模型；已有结果、调用记录和未知费用都保留。";
   }
   return breakdownErrorText(code);

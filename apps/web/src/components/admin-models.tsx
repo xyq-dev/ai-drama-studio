@@ -43,6 +43,8 @@ const CREDENTIAL_ERRORS: Record<string, string> = {
   ADMIN_CONFIG_DEEPSEEK_KEY_FORMAT: "DeepSeek API Key 的格式不受支持：应为 DeepSeek 开放平台 API keys 页面创建的完整密钥，长度 16–256 个字符，不能包含空格、换行或其他特殊字符。没有保存任何内容。",
 };
 export const DEEPSEEK_DEFAULT_NOTICE = "保存 DeepSeek 快速配置会将 DeepSeek 设为新创作的默认供应商；只影响新发起的请求，不改变已有任务，也不会把失败的请求改用其他供应商。";
+/** The same rule for the advanced provider form, said before saving there. */
+export const DEEPSEEK_ADVANCED_NOTICE = "在这里保存新的 DeepSeek API Key 同样会把 DeepSeek 设为新创作的默认供应商；清除 DeepSeek API Key 会取消以 DeepSeek 为默认（改为暂不指定）。只影响新发起的请求。";
 export const CLAUDE_WORKSPACE_HINT = "通常只需填写 API Key。若密钥未限定 Workspace，请在高级设置填写 Workspace ID，或创建限定 Workspace 的密钥。";
 
 function messageFor(error: unknown): string {
@@ -321,8 +323,22 @@ export function AdminModels() {
       if (updated) setDrafts((old) => ({ ...old, [providerKey]: draftFor(updated) }));
       setSecretAction("keep"); setClearConfirmed(false);
       const droppedWorkspace = providerKey === "anthropic" && secretAction !== "keep" && Boolean(view.saved.providers.find((item) => item.providerKey === "anthropic")?.workspaceId);
-      const deepseekDefault = providerKey === "deepseek" && replaced ? "DeepSeek 已设为新创作的默认供应商。" : "";
-      setNotice(`${meta.label}配置已保存。${deepseekDefault}${droppedWorkspace ? "原 Workspace ID 已随旧密钥清除，如新密钥需要请在 Claude 快速配置中重新填写。" : ""}${next.pendingRestart ? "等待 API 重启后应用。" : "以当前生效配置为准。"}没有发起模型调用。`);
+      // A provider save can change the saved default (a DeepSeek key makes DeepSeek the default; clearing it unsets
+      // that default). The rules form follows the server unless the person changed its default themselves: then their
+      // choice is kept and said so, never silently overwritten either way. Other unsaved limits are kept as they are.
+      const defaultBefore = view.saved.defaultProvider ?? "";
+      const defaultAfter = next.saved.defaultProvider ?? "";
+      const nameOf = (key: string) => PROVIDERS.find((item) => item.key === key)?.label ?? "暂不指定";
+      let defaultNote = "";
+      if (defaultBefore !== defaultAfter) {
+        if (limits.defaultProvider === defaultBefore) {
+          setLimits((old) => ({ ...old, defaultProvider: defaultAfter }));
+          defaultNote = defaultAfter ? `默认供应商已改为 ${nameOf(defaultAfter)}，调用规则已同步。` : "默认供应商已改为暂不指定，调用规则已同步。";
+        } else {
+          defaultNote = `服务端已保存的默认供应商变为「${nameOf(defaultAfter)}」；你在调用规则中尚未保存的选择「${nameOf(limits.defaultProvider)}」已保留，保存调用规则时会以它为准。`;
+        }
+      }
+      setNotice(`${meta.label}配置已保存。${defaultNote}${droppedWorkspace ? "原 Workspace ID 已随旧密钥清除，如新密钥需要请在 Claude 快速配置中重新填写。" : ""}${next.pendingRestart ? "等待 API 重启后应用。" : "以当前生效配置为准。"}没有发起模型调用。`);
     } catch (caught) {
       if (epoch !== generation.current) return;
       if (caught instanceof AdminApiError && caught.status === 401) endSession("管理员会话已过期，请重新验证。");
@@ -482,11 +498,12 @@ export function AdminModels() {
                 <fieldset className={styles.fieldset} disabled={!canEdit}>
                   <label className={styles.field}>服务端点<input type="text" readOnly value={meta.endpoint} />
                     <small>{selected === "anthropic" ? "固定为 Anthropic 官方 Messages API 端点，不能填写转发或代理地址。只接受 Anthropic 控制台创建的 API Key，不接受 Claude Code 或订阅账号的登录凭据。"
-                      : selected === "deepseek" ? `固定为 DeepSeek 官方 Chat Completions 端点，不能填写转发或代理地址。${DEEPSEEK_DEFAULT_NOTICE}`
+                      : selected === "deepseek" ? "固定为 DeepSeek 官方 Chat Completions 端点，不能填写转发或代理地址。"
                         : "固定为供应商官方端点，不能填写转发或代理地址。"}</small></label>
                   <ModelPicker key={`${selected}:${viewEpoch}`} providerKey={selected} draft={draft} showProblem={showModelProblem} clearing={secretAction === "clear"}
                     onChange={(next) => changeDraft({ models: next.models, defaultModel: next.defaultModel, custom: next.custom, pendingCustom: next.pendingCustom })} />
                   <div className={styles.secretBlock}><div className={styles.sectionLabel}><strong>API 密钥</strong><Badge>{saved?.keyConfigured ? "已保存 · 不可读取" : "尚未保存"}</Badge></div>
+                    {selected === "deepseek" && <p className={styles.footnote} data-testid="deepseek-advanced-default-notice">{DEEPSEEK_ADVANCED_NOTICE}</p>}
                     <fieldset className={styles.secretActions}><legend>本次密钥操作</legend>{([{ value: "keep", label: "保留现有" }, { value: "replace", label: "填写 / 替换" }, { value: "clear", label: "清除密钥" }] as const).map((action) => <label key={action.value} className={secretAction === action.value ? styles.radioSelected : ""}><input type="radio" name="secret-action" value={action.value} checked={secretAction === action.value} onChange={() => { setSecretAction(action.value); setApiKey(""); setClearConfirmed(false); setSecretNotice(""); }} />{action.label}</label>)}</fieldset>
                     {secretAction === "replace" && <label className={styles.field}>新的 API Key<input name="provider-api-key" type="password" autoComplete="off" spellCheck={false} value={apiKey} onChange={(event) => setApiKey(event.target.value)} maxLength={256} placeholder="仅本次提交使用，保存后不会显示" /><small>不会保存在浏览器本地存储。提交结束后，无论成功或失败，输入框都会清空。</small></label>}
                     {secretAction === "clear" && <label className={styles.confirm}><input type="checkbox" checked={clearConfirmed} onChange={(event) => setClearConfirmed(event.target.checked)} />我确认清除该供应商已保存的密钥；配置应用后将无法用它发起新调用。</label>}
