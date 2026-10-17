@@ -57,13 +57,14 @@ function toRecord(row: Row): WritingCandidateRecord {
 }
 
 /**
- * Calls made in the rolling window by title writing and by online candidates together: one daily cap covers every
- * paid text call of the workspace. Either table may not exist yet (its migration not applied); it then counts zero.
+ * Calls made in the rolling window by title writing, online candidates and automatic creation together: one daily cap
+ * covers every paid text call of the workspace. A table may not exist yet (its migration not applied); it then counts zero.
  * Callers hold the workspace call lock (title_writing_call:<workspace>), so the count and their insert are atomic.
  */
 export async function recentWritingCalls(client: PoolClient, workspaceId: string, sinceIso: string): Promise<number> {
   const present = await client.query<Row>(
-    "SELECT to_regclass('title_writing_call') IS NOT NULL AS title, to_regclass('writing_candidate_request') IS NOT NULL AS candidate",
+    `SELECT to_regclass('title_writing_call') IS NOT NULL AS title, to_regclass('writing_candidate_request') IS NOT NULL AS candidate,
+            to_regclass('auto_creation_call') IS NOT NULL AS auto`,
   );
   let total = 0;
   if (present.rows[0]?.title === true) {
@@ -75,6 +76,11 @@ export async function recentWritingCalls(client: PoolClient, workspaceId: string
     const candidates = await client.query<Row>(
       "SELECT count(*)::int AS recent FROM writing_candidate_request WHERE workspace_id = $1 AND created_at >= $2", [workspaceId, sinceIso]);
     total += Number(candidates.rows[0]?.recent ?? 0);
+  }
+  if (present.rows[0]?.auto === true) {
+    const autos = await client.query<Row>(
+      "SELECT count(*)::int AS recent FROM auto_creation_call WHERE workspace_id = $1 AND created_at >= $2", [workspaceId, sinceIso]);
+    total += Number(autos.rows[0]?.recent ?? 0);
   }
   return total;
 }

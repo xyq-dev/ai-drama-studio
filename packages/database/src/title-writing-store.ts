@@ -273,7 +273,13 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
       );
       const sameProject = active.rows.find((row) => String(row.project_id) === run.projectId);
       if (sameProject) return { kind: "active", bundle: (await this.load(client, sameProject))! };
-      if (active.rows.length >= limits.maxActiveRuns) return { kind: "blocked", code: "TITLE_WRITING_ACTIVE_RUN_CAP" };
+      // Running automatic creation runs share the concurrency cap, and a work one of them is writing takes no other run.
+      const autoTable = await client.query<Row>("SELECT to_regclass('auto_creation_run') IS NOT NULL AS present");
+      const autoRunning = autoTable.rows[0]?.present === true
+        ? (await client.query<Row>("SELECT project_id FROM auto_creation_run WHERE workspace_id = $1 AND state = 'running'", [run.workspaceId])).rows
+        : [];
+      if (autoRunning.some((row) => String(row.project_id) === run.projectId)
+        || active.rows.length + autoRunning.length >= limits.maxActiveRuns) return { kind: "blocked", code: "TITLE_WRITING_ACTIVE_RUN_CAP" };
       if (limits.quota) {
         // A start check only, after the key lookup so a replay is never refused by it. It reads the rolling 24-hour
         // count without the call lock (lock order stays run lock -> run row, as before) and reserves nothing: each
