@@ -259,3 +259,5 @@ export {
   type ScriptBreakdownPrompt,
   type ScriptBreakdownValidation,
 } from "./script-breakdown";
+export * from "./auto-creation";
+export * from "./auto-creation-sources";

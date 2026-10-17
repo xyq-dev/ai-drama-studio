@@ -1,0 +1,294 @@
+import {
+  AUTO_CREATION_BIBLE_SCHEMA,
+  AUTO_CREATION_DIRECTIONS_SCHEMA,
+  AUTO_CREATION_EPISODE_SCHEMA,
+  AUTO_CREATION_OUTLINE_SCHEMA,
+  AUTO_CREATION_RESEARCH_SCHEMA,
+  AUTO_CREATION_REVIEW_SCHEMA,
+  AUTO_REVIEW_DIMENSIONS,
+  type AutoBible,
+  type AutoDirections,
+  type AutoEpisode,
+  type AutoOutline,
+  type AutoResearch,
+  type AutoReview,
+} from "@ai-drama/contracts";
+import { ANTHROPIC_MESSAGES_URL, DEEPSEEK_CHAT_COMPLETIONS_URL, type WritingTransport } from "./text-writing";
+
+/**
+ * Controllable model double for automatic creation (tests and stubbed acceptances only; the runtime never wires it).
+ * Every text says it is the double's sample. Stages are recognised from the provider-neutral prompt text.
+ */
+
+export type AutoFixtureStage = "research" | "directions" | "bible" | "outline" | `episode:${number}` | `revise:${number}:episode:${number}` | `review:${number}`;
+
+export function autoFixtureStageOf(user: string): AutoFixtureStage {
+  if (user.includes("任务：基于资料完成研究与创作定位")) return "research";
+  if (user.includes("任务：提出 2–3 个")) return "directions";
+  if (user.includes("任务：按选定方向写故事设定档案")) return "bible";
+  if (user.includes("任务：把故事分成")) return "outline";
+  const review = /审阅轮次：第 (\d) 轮/.exec(user)?.[1];
+  if (review) return `review:${review}` as AutoFixtureStage;
+  const revise = /任务：定向修改第 (\d) 集（第 (\d) 轮修改）/.exec(user);
+  if (revise) return `revise:${revise[2]!}:episode:${revise[1]!}` as AutoFixtureStage;
+  const episode = /任务：写第 (\d) 集剧本/.exec(user)?.[1];
+  if (episode) return `episode:${episode}` as AutoFixtureStage;
+  throw new Error("unrecognised auto creation prompt");
+}
+
+export function autoFixtureEpisodeCount(user: string): number {
+  return Number(/集数：(\d) 集；/.exec(user)?.[1] ?? "1");
+}
+
+/** The JSON of a data block the prompt carries, e.g. the issues a revision must answer. */
+export function autoFixtureBlock(user: string, label: string): unknown {
+  const start = user.indexOf(`<<<${label}\n`);
+  if (start < 0) return null;
+  const from = start + label.length + 4;
+  const end = user.indexOf(`\n${label}>>>`, from);
+  return JSON.parse(user.slice(from, end)) as unknown;
+}
+
+export function fixtureAutoResearch(options: { fabricatedNumber?: boolean; citeCraft?: boolean } = {}): AutoResearch {
+  return {
+    schema: AUTO_CREATION_RESEARCH_SCHEMA,
+    facts: options.citeCraft === false ? [] : [{
+      id: "F1",
+      statement: "项目知识库的写作方法要求关键结果来自主角的选择和行动。",
+      sourceIds: ["S-KB-CRAFT"],
+      evidence: "关键结果来自主角的选择和行动，不靠旁人突然解围。",
+    }],
+    observations: [],
+    hypotheses: [{
+      id: "H1",
+      statement: options.fabricatedNumber ? "模型替身样例：约 70% 的观众偏爱逆袭题材。" : "模型替身样例：通勤碎片时间的观众可能偏爱一集内有明确兑现的故事。",
+      howToVerify: "用真实投放或观看数据验证。",
+    }],
+    audience: {
+      primary: "模型替身样例：通勤和睡前刷短剧的成年观众（假设）",
+      viewingNeeds: ["一集内看到结果"],
+      emotionalAppeals: ["被看见", "扳回一局"],
+      basis: "hypothesis",
+      sourceIds: [],
+    },
+    contentStructure: [{ pattern: "主角主动选择推动结果", why: "知识库要求关键结果来自主角的行动。", sourceIds: ["S-KB-CRAFT"] }],
+    opportunities: ["小人物在一个夜晚完成一次反击"],
+    limitations: ["官方入口页面没有读到正文，受众判断都是假设。"],
+    appliedConstraints: ["单集、约一分钟"],
+  };
+}
+
+export function fixtureAutoDirections(): AutoDirections {
+  const base = {
+    protagonist: "外卖骑手陈默", goal: "在午夜前拿回被扣的工资", obstacle: "站长掌握他的考勤记录", stakes: "失去工作和房租",
+    coreEmotion: "憋屈后的扬眉吐气", differentiation: "用一张手写送餐单反击", difficultyNote: "两处室内场景",
+    audienceFit: "符合一集内兑现的假设 H1", evidenceIds: ["F1", "H1"],
+  };
+  return {
+    schema: AUTO_CREATION_DIRECTIONS_SCHEMA,
+    candidates: [
+      { id: "D1", title: "午夜工资单", logline: "模型替身样例：骑手用一张手写送餐单在午夜前拿回工资。", productionDifficulty: "low",
+        ratings: { audienceFit: 4, conflictStrength: 4, originality: 3, feasibility: 5, constraintFit: 5 }, ...base },
+      { id: "D2", title: "雨夜的差评", logline: "模型替身样例：骑手为一条恶意差评追到顾客家门口。", productionDifficulty: "medium",
+        ratings: { audienceFit: 3, conflictStrength: 4, originality: 4, feasibility: 3, constraintFit: 4 }, ...base },
+      { id: "D3", title: "天台上的订单", logline: "模型替身样例：骑手在天台拦下一份写着求救的订单。", productionDifficulty: "high",
+        ratings: { audienceFit: 4, conflictStrength: 5, originality: 4, feasibility: 2, constraintFit: 3 }, ...base },
+    ],
+  };
+}
+
+export function fixtureAutoBible(): AutoBible {
+  return {
+    schema: AUTO_CREATION_BIBLE_SCHEMA,
+    title: "午夜工资单",
+    logline: "模型替身样例：被克扣工资的骑手陈默，用一张手写送餐单在午夜前当众拿回工资。",
+    synopsis: "模型替身样例：站长赵强篡改考勤扣下陈默的工资。陈默翻出自己每单手写的送餐记录，在站点例会上对质，最终拿回工资并让赵强的造假被总部看见。",
+    story: {
+      protagonistId: "C1",
+      desire: "拿回自己挣的钱，交上房租",
+      weakness: "不敢和上级争",
+      goal: "午夜前拿回被扣的工资",
+      stakes: "交不上房租会被赶出出租屋",
+      obstacles: ["赵强掌握系统考勤", "同事不敢作证"],
+      keyChoices: [{ choice: "陈默决定当众拿出手写送餐单", consequence: "他和赵强彻底撕破脸" }],
+      twist: { reveal: "手写单上的顾客签名正是总部巡查员", setups: ["开场陈默请顾客在单子上签名"] },
+      payoffs: ["陈默第一次当众说出不公平"],
+      ending: "陈默拿回工资，巡查员当场让赵强停职，陈默把手写单折好放回口袋。",
+      causalChain: ["赵强篡改考勤", "陈默发现工资被扣", "陈默翻出手写单", "巡查员认出自己的签名", "赵强被停职"],
+    },
+    characters: [
+      { id: "C1", name: "陈默", identity: "外卖骑手", goal: "拿回工资", weakness: "不敢顶撞上级", motivation: "要交房租", voice: "话少，句子短", presence: "on_screen" },
+      { id: "C2", name: "赵强", identity: "站长", goal: "掩盖克扣", weakness: "爱面子", motivation: "完成虚报的指标", voice: "官腔，爱打断人", presence: "on_screen" },
+      { id: "C3", name: "林姐", identity: "总部巡查员", goal: "查清站点账目", weakness: "不轻易表态", motivation: "核实投诉", voice: "平静，问得具体", presence: "on_screen" },
+      { id: "C4", name: "房东", identity: "陈默的房东", goal: "收房租", weakness: "急躁", motivation: "自己也要还贷", voice: "电话里催促", presence: "mentioned" },
+    ],
+    relationships: [
+      { from: "C1", to: "C2", relation: "下属与站长", change: "从忍气吞声到当面对质" },
+      { from: "C3", to: "C1", relation: "顾客与骑手", change: "从陌生人到证人" },
+    ],
+    locations: [
+      { id: "L1", name: "站点办公室", intExt: "INT", timeOfDay: "夜", layout: "一张长桌，墙上挂考勤屏", productionNotes: "一盏顶灯即可" },
+      { id: "L2", name: "小区楼道", intExt: "INT", timeOfDay: "夜", layout: "狭窄楼道，门口放餐盒", productionNotes: "注意收音" },
+    ],
+    props: [{ id: "P1", name: "手写送餐单", ownerId: "C1", purpose: "记录每单签名", change: "从被嘲笑的废纸到关键证据" }],
+  };
+}
+
+export function fixtureAutoOutline(count: number): AutoOutline {
+  return {
+    schema: AUTO_CREATION_OUTLINE_SCHEMA,
+    episodes: Array.from({ length: count }, (_, index) => ({
+      episodeNo: index + 1,
+      title: count === 1 ? "午夜工资单" : `午夜工资单（${String(index + 1)}）`,
+      opening: "模型替身样例：陈默发现工资被扣。",
+      goal: "拿回工资",
+      obstacle: "赵强否认",
+      action: "陈默拿出手写单",
+      turn: "签名人是巡查员",
+      result: index + 1 === count ? "陈默拿回工资" : "陈默找到证人",
+      newInformation: "手写单签名的主人身份",
+      emotionShift: "憋屈到扬眉吐气",
+      handoff: index + 1 === count ? "结局：赵强停职，陈默交上房租" : "陈默要说服证人出面",
+      characterIds: ["C1", "C2", "C3"],
+      locationIds: ["L1"],
+    })),
+    resolution: "陈默拿回工资，赵强停职。",
+  };
+}
+
+/** A sixty-second episode within every limit, or one with six scenes when tooManyScenes (a deterministic finding). */
+export function fixtureAutoEpisode(episodeNo: number, options: { tooManyScenes?: boolean; tag?: string } = {}): AutoEpisode {
+  const tag = options.tag ?? "模型替身样例";
+  const scene = (sceneNo: number, seconds: number) => ({
+    sceneNo,
+    locationId: sceneNo === 1 ? "L2" : "L1",
+    timeOfDay: "夜",
+    characterIds: sceneNo === 1 ? ["C1", "C3"] : ["C1", "C2", "C3"],
+    action: sceneNo === 1 ? `${tag}：陈默把餐盒放在门口，请顾客在手写单上签名。` : `${tag}：第 ${String(sceneNo)} 场，陈默把手写单拍在长桌上。`,
+    dialogue: sceneNo === 1
+      ? [{ characterId: "C3", line: "签哪儿？", delivery: "平静" }, { characterId: "C1", line: "这里，谢谢。", delivery: "" }]
+      : [{ characterId: "C1", line: `第 ${String(episodeNo)} 集第 ${String(sceneNo)} 场：这是我每一单的记录。`, delivery: "压着火" }],
+    sound: sceneNo === 1 ? "楼道感应灯咔嗒一声" : "",
+    shots: Array.from({ length: Math.ceil(seconds / 10) }, (_, index) => ({ shotNo: index + 1, framing: index === 0 ? "近景" : "中景",
+      description: index === 0 ? "手写单特写" : "陈默与对手的反应", seconds: Math.min(10, seconds - index * 10) })),
+    assetNeeds: sceneNo === 1 ? ["手写送餐单道具"] : [],
+  });
+  const count = options.tooManyScenes ? 6 : 3;
+  return {
+    schema: AUTO_CREATION_EPISODE_SCHEMA,
+    episodeNo,
+    title: "午夜工资单",
+    scenes: Array.from({ length: count }, (_, index) => scene(index + 1, Math.round(60 / count))),
+    handoffFacts: [`第 ${String(episodeNo)} 集结束时陈默拿到了巡查员的签名。`],
+  };
+}
+
+export interface AutoReviewPlan {
+  /** Verified high-severity issue on episode 1 in these rounds (a revision is then due). */
+  highIssueRounds?: number[];
+  /** An issue whose quote is not in the text (kept, never acted on). */
+  unverifiedIssue?: boolean;
+}
+
+export function fixtureAutoReview(round: number, plan: AutoReviewPlan = {}): AutoReview {
+  const issues: AutoReview["issues"] = [];
+  if (plan.highIssueRounds?.includes(round)) {
+    issues.push({ id: "R1", dimension: "conflictAction", severity: "high", target: "episode:1",
+      evidence: "陈默把餐盒放在门口", problem: "开场动作没有体现陈默的主动选择。", suggestion: "让陈默主动请求签名并说明理由。" });
+  }
+  if (plan.unverifiedIssue) {
+    issues.push({ id: "R2", dimension: "dialogue", severity: "high", target: "episode:1",
+      evidence: "这句话并不在剧本里", problem: "（替身）编造的引用。", suggestion: "无" });
+  }
+  return {
+    schema: AUTO_CREATION_REVIEW_SCHEMA,
+    verdict: issues.some((item) => item.severity === "high") ? "revise" : "pass",
+    dimensions: AUTO_REVIEW_DIMENSIONS.map((key) => ({ key, assessment: `模型替身样例：${key} 检查说明。`, internalScore: 4 })),
+    issues,
+  };
+}
+
+export interface AutoFixturePlan {
+  review?: AutoReviewPlan;
+  /** The first draft of these episodes has six scenes (over the sixty-second limit). */
+  longEpisodes?: number[];
+  /** Every revision still has six scenes (so the run ends at needs work). */
+  revisionsStayLong?: boolean;
+  fabricatedNumber?: boolean;
+}
+
+/** The double's answer for one prompt. */
+export function autoFixtureAnswer(user: string, plan: AutoFixturePlan = {}): unknown {
+  const stage = autoFixtureStageOf(user);
+  const count = autoFixtureEpisodeCount(user);
+  if (stage === "research") return fixtureAutoResearch({ fabricatedNumber: plan.fabricatedNumber });
+  if (stage === "directions") return fixtureAutoDirections();
+  if (stage === "bible") return fixtureAutoBible();
+  if (stage === "outline") return fixtureAutoOutline(count);
+  if (stage.startsWith("review:")) return fixtureAutoReview(Number(stage.split(":")[1]), plan.review);
+  const episodeNo = Number(stage.split(":").at(-1));
+  if (stage.startsWith("revise:")) {
+    const issues = (autoFixtureBlock(user, "需要解决的问题") as Array<{ id: string }> | null) ?? [];
+    return { ...fixtureAutoEpisode(episodeNo, { tooManyScenes: plan.revisionsStayLong, tag: "模型替身样例（修订）" }),
+      changes: issues.map((issue) => ({ issueId: issue.id, change: "按问题定向修改。" })) };
+  }
+  return fixtureAutoEpisode(episodeNo, { tooManyScenes: plan.longEpisodes?.includes(episodeNo) });
+}
+
+function wire(url: string, value: unknown): unknown {
+  const textValue = JSON.stringify(value);
+  if (url === DEEPSEEK_CHAT_COMPLETIONS_URL) {
+    return { id: "ds_auto_fixture", object: "chat.completion", model: "fixture-model",
+      choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: textValue } }],
+      usage: { prompt_tokens: 100, prompt_cache_hit_tokens: 0, prompt_cache_miss_tokens: 100, completion_tokens: 200, total_tokens: 300 } };
+  }
+  if (url === ANTHROPIC_MESSAGES_URL) {
+    return { id: "msg_auto_fixture", type: "message", role: "assistant", model: "fixture-model",
+      content: [{ type: "text", text: textValue }], stop_reason: "end_turn", stop_sequence: null,
+      usage: { input_tokens: 100, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 200 } };
+  }
+  return { id: "resp_auto_fixture", model: "fixture-model", status: "completed",
+    output: [{ type: "message", content: [{ type: "output_text", text: textValue }] }],
+    usage: { input_tokens: 100, output_tokens: 200, total_tokens: 300 } };
+}
+
+export interface AutoFixtureExchange {
+  stage: AutoFixtureStage;
+  url: string;
+  user: string;
+  system: string;
+}
+
+/** A transport speaking each endpoint's own wire format, answering every automatic creation stage. */
+export function autoFixtureTransport(options: {
+  plan?: AutoFixturePlan;
+  seen?: AutoFixtureExchange[];
+  override?: (stage: AutoFixtureStage, attempt: number) => { status: number; body: unknown } | "hang" | "throw" | undefined;
+} = {}): WritingTransport {
+  const attempts = new Map<string, number>();
+  return async (request) => {
+    const body = JSON.parse(request.body) as Record<string, unknown>;
+    const messages = body.messages as Array<{ role: string; content: unknown }> | undefined;
+    const contentText = (value: unknown): string => typeof value === "string" ? value
+      : Array.isArray(value) ? value.map((part) => (part as { text?: string }).text ?? "").join("") : "";
+    const user = contentText(messages?.find((message) => message.role === "user")?.content) || String(body.input ?? "");
+    const system = contentText(messages?.find((message) => message.role === "system")?.content) || String(body.instructions ?? body.system ?? "");
+    const stage = autoFixtureStageOf(user);
+    const attempt = (attempts.get(stage) ?? 0) + 1;
+    attempts.set(stage, attempt);
+    options.seen?.push({ stage, url: request.url, user, system });
+    const custom = options.override?.(stage, attempt);
+    if (custom === "throw") throw new TypeError("fetch failed");
+    if (custom === "hang") {
+      return new Promise((_, reject) => {
+        request.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+      });
+    }
+    const answer = custom ?? { status: 200, body: wire(request.url, autoFixtureAnswer(user, options.plan)) };
+    return {
+      status: answer.status,
+      headers: { get: (name: string) => name.toLowerCase() === "x-request-id" ? `auto-fixture-${stage}-${String(attempt)}` : null },
+      body: new TextEncoder().encode(typeof answer.body === "string" ? answer.body : JSON.stringify(answer.body)),
+    };
+  };
+}

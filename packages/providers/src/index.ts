@@ -123,3 +123,17 @@ export {
   writingCandidateView,
   type WritingCandidateExecutorDeps,
 } from "./writing-candidate";
+export {
+  AUTO_CREATION_LEASE_MS,
+  AutoCreationEngine,
+  InMemoryAutoCreationStore,
+  autoRunView,
+  autoScriptsOf,
+  autoUncertainCallIds,
+  currentEpisodeVersions,
+  hashAutoCreationInput,
+  hashAutoResume,
+  newAutoRun,
+  type AutoCreationEngineDeps,
+} from "./auto-creation-engine";
+export { RESEARCH_FETCH_MAX_BYTES, RESEARCH_FETCH_TIMEOUT_MS, blockedAddress, createResearchFetcher, urlProblem, type ResearchFetchDeps } from "./research-fetch";
