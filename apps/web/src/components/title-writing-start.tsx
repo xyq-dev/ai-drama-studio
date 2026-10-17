@@ -140,7 +140,7 @@ function startError(caught: unknown, projectCreated: boolean): string {
     if (caught.code === "TITLE_WRITING_PROVIDER_UNCONFIGURED") return `${work}所选模型服务没有配置完整${missing ? `（缺少 ${missing}）` : ""}，本次请求没有被受理。${previous}`;
     if (caught.code === "TITLE_WRITING_PROVIDER_RETIRED") {
       // Refused only after the server found no run for this request identity: nothing was created or sent, now or before.
-      return `${work}上次请求选择的模型服务（${String(caught.details?.label ?? caught.details?.providerKey ?? "")}）已经退役。服务端没有找到这次请求创建的任务，也没有发出模型调用。可以放弃上次请求，改用 OpenAI 或 Claude 重新开始。`;
+      return `${work}上次请求选择的模型服务（${String(caught.details?.label ?? caught.details?.providerKey ?? "")}）已经退役。服务端没有找到这次请求创建的任务，也没有发出模型调用。可以放弃上次请求，改用 DeepSeek、Claude 或 OpenAI 重新开始。`;
     }
     if (caught.code === "TITLE_WRITING_PROVIDER_STORAGE_UNAVAILABLE") {
       return `${work}所选模型服务的数据库迁移还没有执行，本次请求没有创建任务，也没有发出模型调用。可以改用其他已就绪的模型服务。`;

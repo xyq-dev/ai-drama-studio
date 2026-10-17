@@ -229,7 +229,8 @@ export interface TitleWritingStore {
   storageReady(): Promise<boolean>;
   /**
    * Whether runs and calls of this provider can be stored. openai always can once storageReady(); anthropic only after
-   * the provider migration (20261016000100_writing_provider_anthropic) is recorded and the provider CHECKs allow it.
+   * the provider migration (20261016000100_writing_provider_anthropic) is recorded and the provider CHECKs allow it;
+   * deepseek needs no migration, but the live CHECKs must name it.
    * Callers refuse a new run of an unready provider before any write, reservation or send.
    */
   providerStorageReady(providerKey: TitleWritingProviderKey): Promise<boolean>;

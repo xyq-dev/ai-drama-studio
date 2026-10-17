@@ -4,10 +4,12 @@ import { createFetchTransport } from "./http-transport";
 import {
   ANTHROPIC_MESSAGES_URL,
   ANTHROPIC_THINKING_HEADROOM_TOKENS,
+  DEEPSEEK_CHAT_COMPLETIONS_URL,
   OPENAI_RESPONSES_URL,
   TEXT_WRITING_MAX_RESPONSE_BYTES,
   WRITING_ADAPTERS,
   claudeJsonSchema,
+  deepseekSystemMessage,
   providerConfigFor,
   sendWriting,
   titleWritingProviderConfigs,
@@ -27,6 +29,9 @@ const REQUEST: WritingRequest = {
 };
 const openai = WRITING_ADAPTERS.openai;
 const claude = WRITING_ADAPTERS.anthropic;
+const deepseek = WRITING_ADAPTERS.deepseek;
+/** A clearly fake DeepSeek key: DeepSeek documents no prefix. Never a real key. */
+const DEEPSEEK_KEY = "fake-deepseek-test-key-0123456789";
 
 function reply(status: number, body: unknown, headers: Record<string, string> = {}): WritingTransport {
   return async () => ({
@@ -302,7 +307,7 @@ describe("error classification", () => {
   });
 
   it("timeouts and disconnects are unknown and are not retried", async () => {
-    for (const adapter of [openai, claude]) {
+    for (const adapter of [openai, claude, deepseek]) {
       let calls = 0;
       const hang: WritingTransport = (request) => { calls += 1; return new Promise((_, reject) => {
         request.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
@@ -318,7 +323,7 @@ describe("error classification", () => {
 
   it("an oversized body is stopped and its outcome stays unknown", async () => {
     const huge: WritingTransport = async () => ({ status: 200, headers: { get: () => null }, body: new Uint8Array(TEXT_WRITING_MAX_RESPONSE_BYTES + 1) });
-    for (const adapter of [openai, claude]) expect(await send(adapter, huge)).toMatchObject({ outcome: "unknown", errorCode: "response_too_large" });
+    for (const adapter of [openai, claude, deepseek]) expect(await send(adapter, huge)).toMatchObject({ outcome: "unknown", errorCode: "response_too_large" });
   });
 
   it("a request id that contains the key is dropped", async () => {
@@ -347,13 +352,24 @@ describe("fetch transport", () => {
 });
 
 describe("server configuration", () => {
-  it("only OpenAI and Claude exist; names of missing variables are reported; only Claude has a documented default model", () => {
+  it("only DeepSeek, Claude and OpenAI exist; names of missing variables are reported; Claude and DeepSeek have a documented default model", () => {
     const configs = titleWritingProviderConfigs({});
-    expect(Object.keys(configs).sort()).toEqual(["anthropic", "openai"]);
+    expect(Object.keys(configs).sort()).toEqual(["anthropic", "deepseek", "openai"]);
     expect(configs.openai).toEqual({ providerKey: "openai", ok: false, models: [], missing: ["OPENAI_API_KEY", "TITLE_WRITING_OPENAI_MODELS"] });
     // Claude without a model list uses TITLE_WRITING_DEFAULT_MODELS; the key is still missing, so it is not ready.
     expect(configs.anthropic).toEqual({ providerKey: "anthropic", ok: false, models: ["claude-opus-5-5"], missing: ["ANTHROPIC_API_KEY"] });
-    expect(Object.keys(WRITING_ADAPTERS).sort()).toEqual(["anthropic", "openai"]);
+    expect(configs.deepseek).toEqual({ providerKey: "deepseek", ok: false, models: ["deepseek-flash"], missing: ["DEEPSEEK_API_KEY"] });
+    expect(Object.keys(WRITING_ADAPTERS).sort()).toEqual(["anthropic", "deepseek", "openai"]);
+  });
+
+  it("a DeepSeek key alone is a complete setup with deepseek-flash; the key is checked without any prefix rule", () => {
+    expect(titleWritingProviderConfigs({ DEEPSEEK_API_KEY: DEEPSEEK_KEY }).deepseek)
+      .toEqual({ providerKey: "deepseek", ok: true, url: DEEPSEEK_CHAT_COMPLETIONS_URL, apiKey: DEEPSEEK_KEY, models: ["deepseek-flash"], missing: [], workspaceId: null });
+    for (const bad of ["short-key", "fake key with spaces 0123", "fake-deepseek-key-\u5bc6\u94a5-0123", `${"x".repeat(257)}`]) {
+      expect(titleWritingProviderConfigs({ DEEPSEEK_API_KEY: bad }).deepseek).toMatchObject({ ok: false, missing: ["DEEPSEEK_API_KEY"] });
+    }
+    expect(titleWritingProviderConfigs({ DEEPSEEK_API_KEY: DEEPSEEK_KEY, TITLE_WRITING_DEEPSEEK_MODELS: "bad model" }).deepseek)
+      .toMatchObject({ ok: false, missing: ["TITLE_WRITING_DEEPSEEK_MODELS"] });
   });
 
   it("a Claude key alone is a complete setup with the default model; an explicit list still wins", () => {
@@ -399,23 +415,148 @@ describe("server configuration", () => {
     expect(configs.anthropic).toMatchObject({ ok: true, url: ANTHROPIC_MESSAGES_URL, models: ["claude-opus-5-5", "claude-sonnet-5-5"] });
   });
 
-  it("the retired providers' variables are ignored, and a malformed allowlist or key is not ready", () => {
+  it("the retired provider's variables are ignored, and a malformed allowlist or key is not ready", () => {
     const configs = titleWritingProviderConfigs({
       DASHSCOPE_API_KEY: KEY, BAILIAN_BASE_URL: "https://dashscope.aliyuncs.com/compatible-mode/v1", TITLE_WRITING_QWEN_MODELS: "q-1",
-      DEEPSEEK_API_KEY: KEY, TITLE_WRITING_DEEPSEEK_MODELS: "d-1",
       ANTHROPIC_API_KEY: "has space key", TITLE_WRITING_ANTHROPIC_MODELS: "bad model",
     } as Parameters<typeof titleWritingProviderConfigs>[0]);
-    expect(Object.keys(configs).sort()).toEqual(["anthropic", "openai"]);
+    expect(Object.keys(configs).sort()).toEqual(["anthropic", "deepseek", "openai"]);
     expect(configs.anthropic).toMatchObject({ ok: false, missing: ["ANTHROPIC_API_KEY", "TITLE_WRITING_ANTHROPIC_MODELS"] });
+    expect(configs.deepseek).toMatchObject({ ok: false, missing: ["DEEPSEEK_API_KEY"] });
   });
 
   it("a stored run of a retired provider gets no configuration, so nothing can be sent for it", () => {
     const configs = titleWritingProviderConfigs({ OPENAI_API_KEY: KEY, TITLE_WRITING_OPENAI_MODELS: "o-1" });
     expect(providerConfigFor(configs, "qwen")).toBeNull();
-    expect(providerConfigFor(configs, "deepseek")).toBeNull();
     expect(providerConfigFor(configs, "__proto__")).toBeNull();
+    // DeepSeek is active again: its entry exists (not ready without a key); a legacy run is stopped by the engine.
+    expect(providerConfigFor(configs, "deepseek")).toMatchObject({ providerKey: "deepseek", ok: false });
     expect(providerConfigFor(configs, "openai")).toMatchObject({ ok: true });
     // Even a configuration object that still carries an old entry is not used for it.
     expect(providerConfigFor({ ...configs, qwen: configs.openai }, "qwen")).toBeNull();
+  });
+});
+
+describe("DeepSeek adapter (official Chat Completions, checked 2026-10-17)", () => {
+  const chat = (content: unknown, extra: Record<string, unknown> = {}, finish: unknown = "stop", message: Record<string, unknown> = {}) => ({
+    id: "ds-req-1", object: "chat.completion", model: "deepseek-flash",
+    choices: [{ index: 0, finish_reason: finish, message: { role: "assistant", content, ...message } }],
+    usage: { prompt_tokens: 120, prompt_cache_hit_tokens: 20, prompt_cache_miss_tokens: 100, completion_tokens: 80, total_tokens: 200,
+      completion_tokens_details: { reasoning_tokens: 0 } },
+    ...extra,
+  });
+  const dsSend = (transport: WritingTransport, extra: { timeoutMs?: number } = {}) =>
+    sendWriting({ adapter: deepseek, url: deepseek.url, apiKey: DEEPSEEK_KEY, request: REQUEST, transport, ...extra });
+
+  it("sends one POST to the fixed endpoint with a Bearer key, thinking disabled, JSON output and the shared output budget", async () => {
+    const seen: Array<{ url: string; method: string; headers: Record<string, string>; body: string }> = [];
+    const result = await dsSend(async (request) => { seen.push(request); return { status: 200, headers: { get: () => null }, body: new TextEncoder().encode(JSON.stringify(chat("{\"ok\":true}"))) }; });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.url).toBe("https://api.deepseek.com/chat/completions");
+    expect(seen[0]!.method).toBe("POST");
+    expect(seen[0]!.headers).toEqual({ Authorization: `Bearer ${DEEPSEEK_KEY}`, "Content-Type": "application/json" });
+    const body = JSON.parse(seen[0]!.body) as Record<string, unknown>;
+    expect(Object.keys(body).sort()).toEqual(["max_tokens", "messages", "model", "response_format", "stream", "thinking"]);
+    expect(body).toMatchObject({ model: "model-a", thinking: { type: "disabled" }, response_format: { type: "json_object" }, max_tokens: 4096, stream: false });
+    // No OpenAI Responses or Claude parameter, and the key never travels in the body.
+    for (const foreign of ["instructions", "input", "text", "store", "max_output_tokens", "output_config", "system", "tools", "reasoning_effort", "temperature"]) {
+      expect(body).not.toHaveProperty(foreign);
+    }
+    expect(seen[0]!.body).not.toContain(DEEPSEEK_KEY);
+    const messages = body.messages as Array<{ role: string; content: string }>;
+    expect(messages.map((item) => item.role)).toEqual(["system", "user"]);
+    // The frozen system prompt is kept as is; the schema and the word json the mode needs follow it.
+    expect(messages[0]!.content.startsWith(REQUEST.system)).toBe(true);
+    expect(messages[0]!.content).toBe(deepseekSystemMessage(REQUEST.system, REQUEST.schemaName, REQUEST.jsonSchema));
+    expect(messages[0]!.content).toContain("json");
+    expect(messages[0]!.content).toContain(JSON.stringify(REQUEST.jsonSchema));
+    expect(messages[1]!.content).toBe(REQUEST.user);
+    expect(result).toEqual({ outcome: "answered", errorCode: null, content: "{\"ok\":true}", responseModel: "deepseek-flash", providerRequestId: "ds-req-1",
+      usage: { status: "present", inputTokens: 120, outputTokens: 80, totalTokens: 200 } });
+  });
+
+  it("uses only the final content: reasoning_content is never returned, stored or joined to it", async () => {
+    const result = await dsSend(reply(200, chat("{\"a\":1}", {}, "stop", { reasoning_content: "secret chain of thought" })));
+    expect(result).toMatchObject({ outcome: "answered", content: "{\"a\":1}" });
+    expect(JSON.stringify(result)).not.toContain("secret chain of thought");
+  });
+
+  it("empty content, truncation, refusal, tool calls, stopped answers and malformed bodies are never an answer", async () => {
+    const cases: Array<[unknown, string]> = [
+      [chat(""), "invalid_output"],
+      [chat("   "), "invalid_output"],
+      [chat(null), "invalid_output"],
+      [chat("{\"partial\":", {}, "length"), "truncated"],
+      [chat("blocked", {}, "content_filter"), "refusal"],
+      [chat("{}", {}, "stop", { refusal: "I can't help" }), "refusal"],
+      [chat(null, {}, "tool_calls", { tool_calls: [{ id: "c1", type: "function", function: { name: "x", arguments: "{}" } }] }), "invalid_output"],
+      [chat("{}", {}, "stop", { tool_calls: [{ id: "c1", type: "function", function: { name: "x", arguments: "{}" } }] }), "invalid_output"],
+      [chat("{}", {}, "insufficient_system_resource"), "server_error"],
+      [chat("{}", {}, "aborted"), "server_error"],
+      [chat("{}", {}, "something_new"), "invalid_output"],
+      [{ ...chat("{}"), choices: [] }, "invalid_output"],
+      [{ ...chat("{}"), choices: [chat("{}").choices[0], chat("{}").choices[0]] }, "invalid_output"],
+      ["not json at all", "invalid_output"],
+    ];
+    for (const [body, code] of cases) {
+      const result = await dsSend(reply(200, body));
+      expect(result).toMatchObject({ outcome: "rejected", errorCode: code, content: null });
+    }
+  });
+
+  it("does not trust parsable JSON alone: the answer is still a string for the caller's schema checks", async () => {
+    // JSON mode may wrap or return any JSON; the adapter hands over the text and the zod / domain checks decide.
+    expect(await dsSend(reply(200, chat("[1,2,3]")))).toMatchObject({ outcome: "answered", content: "[1,2,3]" });
+    expect(await dsSend(reply(200, chat("```json\n{}\n```")))).toMatchObject({ outcome: "answered", content: "```json\n{}\n```" });
+  });
+
+  it("usage: cache hits are part of prompt_tokens and reasoning is part of completion_tokens, never added twice; a contradiction is unknown", async () => {
+    const usage = async (value: unknown) => (await dsSend(reply(200, chat("{}", { usage: value })))).usage;
+    expect(await usage({ prompt_tokens: 10, completion_tokens: 5, total_tokens: 15, prompt_cache_hit_tokens: 4, prompt_cache_miss_tokens: 6,
+      completion_tokens_details: { reasoning_tokens: 3 } })).toEqual({ status: "present", inputTokens: 10, outputTokens: 5, totalTokens: 15 });
+    expect(await usage({ prompt_tokens: 10, completion_tokens: 5 })).toEqual({ status: "present", inputTokens: 10, outputTokens: 5, totalTokens: 15 });
+    for (const bad of [undefined, null, {}, { prompt_tokens: 10 }, { prompt_tokens: 10, completion_tokens: 5, total_tokens: 99 },
+      { prompt_tokens: 10, completion_tokens: 5, prompt_cache_hit_tokens: 4, prompt_cache_miss_tokens: 4 },
+      { prompt_tokens: 10, completion_tokens: 5, prompt_cache_hit_tokens: 4 }, { prompt_tokens: -1, completion_tokens: 5 }, { prompt_tokens: 1.5, completion_tokens: 5 }]) {
+      expect(await usage(bad)).toEqual({ status: "unknown", inputTokens: null, outputTokens: null, totalTokens: null });
+    }
+  });
+
+  it("errors: 401 auth, 402 balance, 400 / 422 invalid, 429 rate limit are refused; 500 / 503 and redirects stay unknown", async () => {
+    const cases: Array<[number, string, string]> = [
+      [401, "auth", "rejected"], [402, "quota", "rejected"], [400, "bad_request", "rejected"], [422, "bad_request", "rejected"],
+      [429, "rate_limited", "rejected"], [500, "server_error", "unknown"], [503, "server_error", "unknown"], [302, "redirect_rejected", "unknown"],
+      [403, "auth", "rejected"],
+    ];
+    for (const [status, code, outcome] of cases) {
+      let calls = 0;
+      const result = await dsSend(async () => { calls += 1; return { status, headers: { get: () => null },
+        body: new TextEncoder().encode(JSON.stringify({ error: { message: `bad key ${DEEPSEEK_KEY}`, type: "authentication_error" } })) }; });
+      expect(result).toMatchObject({ outcome, errorCode: code, content: null });
+      expect(calls).toBe(1);
+      expect(JSON.stringify(result)).not.toContain(DEEPSEEK_KEY);
+    }
+  });
+
+  it("refuses any other URL before sending, and the fetch transport never follows a redirect", async () => {
+    let calls = 0;
+    const refused = await sendWriting({ adapter: deepseek, url: "https://api.deepseek.com/v1/chat/completions", apiKey: DEEPSEEK_KEY, request: REQUEST,
+      transport: async () => { calls += 1; return { status: 200, headers: { get: () => null }, body: null }; } });
+    expect(refused).toMatchObject({ outcome: "rejected", errorCode: "provider_error" });
+    expect(calls).toBe(0);
+    const inits: RequestInit[] = [];
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      inits.push(init);
+      return new Response(null, { status: 301, headers: { location: "https://elsewhere.example.com" } });
+    }) as unknown as typeof fetch;
+    expect(await dsSend(createFetchTransport(fetchImpl))).toMatchObject({ outcome: "unknown", errorCode: "redirect_rejected" });
+    expect(inits).toHaveLength(1);
+    expect(inits[0]!.redirect).toBe("manual");
+  });
+
+  it("a response id or body that contains the key is never returned", async () => {
+    const result = await dsSend(reply(200, chat("{}", { id: `id-${DEEPSEEK_KEY}` })));
+    expect(result.providerRequestId).toBeNull();
+    expect(JSON.stringify(result)).not.toContain(DEEPSEEK_KEY);
   });
 });

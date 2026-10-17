@@ -31,6 +31,7 @@ import {
   createPostgresPool,
   EPISODE_PLAN_MIGRATION,
   SCRIPT_BREAKDOWN_MIGRATION,
+  WRITING_CANDIDATE_DEEPSEEK_MIGRATION,
   WRITING_CANDIDATE_MIGRATION,
   WRITING_PROVIDER_MIGRATION,
   TITLE_WRITING_MIGRATION,
@@ -436,7 +437,8 @@ describe("title writing on the real runtime, killed and restarted, model stubbed
     // The deploy step: the normal chain applies the title writing migration and, after it, the episode plan and script
     // breakdown migrations; a second run applies nothing.
     const upgrade = await runMigrations(pool);
-    expect(upgrade.applied).toEqual([TITLE_WRITING_MIGRATION, EPISODE_PLAN_MIGRATION, SCRIPT_BREAKDOWN_MIGRATION, WRITING_PROVIDER_MIGRATION, WRITING_CANDIDATE_MIGRATION]);
+    expect(upgrade.applied).toEqual([TITLE_WRITING_MIGRATION, EPISODE_PLAN_MIGRATION, SCRIPT_BREAKDOWN_MIGRATION, WRITING_PROVIDER_MIGRATION, WRITING_CANDIDATE_MIGRATION,
+      WRITING_CANDIDATE_DEEPSEEK_MIGRATION]);
     const again = await runMigrations(pool);
     expect(again.applied).toEqual([]);
     evidence.migration = { upgradeApplied: upgrade.applied, redeployApplied: again.applied };

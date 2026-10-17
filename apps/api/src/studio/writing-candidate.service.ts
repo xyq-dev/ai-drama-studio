@@ -50,6 +50,7 @@ const MESSAGES: Record<string, string> = {
   WRITING_CANDIDATE_STORAGE_UNAVAILABLE: "在线候选的数据库迁移还没有执行，没有保存请求，也没有发出调用。",
   WRITING_CANDIDATE_PROVIDER_UNCONFIGURED: "所选模型服务还没有配置完整，没有发出调用。",
   WRITING_CANDIDATE_MODEL_UNAVAILABLE: "所选模型不在服务端允许的列表中。",
+  WRITING_CANDIDATE_PROVIDER_STORAGE_UNAVAILABLE: "所选模型服务的在线候选数据库迁移还没有执行，没有保存请求，也没有发出调用。",
   WRITING_CANDIDATE_ACTIVE: "这个编辑对象已有一次在线生成正在进行，请等它结束。没有发出新的调用。",
   WRITING_CANDIDATE_NEEDS_CONFIRMATION: "上一次在线生成的结果不确定，可能已经产生费用。请先确认后再发起新的生成。",
   WRITING_CANDIDATE_TARGET_INVALID: "编辑对象或它的版本与这部作品不一致，没有发出调用。",
@@ -62,6 +63,9 @@ const MESSAGES: Record<string, string> = {
 function failure(status: number, code: string, details?: Record<string, unknown>): WritingCandidateResult {
   return { status, body: { error: { code, message: MESSAGES[code] ?? "请求失败", ...(details ? { details } : {}) } } };
 }
+
+/** Named in an option's missing list while the database cannot store candidates of that provider. Never a value. */
+export const CANDIDATE_PROVIDER_MIGRATION_GAP = "WRITING_CANDIDATE_DEEPSEEK_MIGRATION";
 
 const listQuerySchema = z.object({
   mode: z.enum(["story", "episode"]),
@@ -95,20 +99,29 @@ export class WritingCandidateService {
     setImmediate(() => { void work().catch(() => undefined); });
   }
 
-  private readyDefault(): TitleWritingProviderKey | null {
+  /** Configured, and its requests can be stored (DeepSeek needs its own candidate migration). */
+  private async providerReady(providerKey: TitleWritingProviderKey): Promise<boolean> {
+    return this.deps.providers[providerKey].ok && await this.deps.store.providerStorageReady(providerKey);
+  }
+
+  private async readyDefault(): Promise<TitleWritingProviderKey | null> {
     const configured = this.deps.defaultProvider;
-    if (configured && this.deps.providers[configured].ok) return configured;
-    return TITLE_WRITING_PROVIDER_PREFERENCE.find((key) => this.deps.providers[key].ok) ?? null;
+    if (configured && await this.providerReady(configured)) return configured;
+    for (const key of TITLE_WRITING_PROVIDER_PREFERENCE) if (await this.providerReady(key)) return key;
+    return null;
   }
 
   async options(): Promise<WritingCandidateResult> {
     const storageReady = await this.deps.store.storageReady();
-    const providers = TITLE_WRITING_PROVIDER_KEYS.map((providerKey) => {
+    const providers = await Promise.all(TITLE_WRITING_PROVIDER_KEYS.map(async (providerKey) => {
       const config = this.deps.providers[providerKey];
-      return { providerKey, label: WRITING_ADAPTERS[providerKey].label, ready: config.ok, models: config.models,
-        defaultModel: config.models[0] ?? null, missing: config.ok ? [] : config.missing };
-    });
-    const defaultProvider = this.readyDefault();
+      // A provider whose requests the database cannot store yet is not offered as ready, and the gap is named.
+      const stored = storageReady && await this.deps.store.providerStorageReady(providerKey);
+      const missing = [...(config.ok ? [] : config.missing), ...(storageReady && !stored ? [CANDIDATE_PROVIDER_MIGRATION_GAP] : [])];
+      return { providerKey, label: WRITING_ADAPTERS[providerKey].label, ready: config.ok && (!storageReady || stored), models: config.models,
+        defaultModel: config.models[0] ?? null, missing };
+    }));
+    const defaultProvider = await this.readyDefault();
     const code = !this.active() ? "WRITING_CANDIDATE_DISABLED"
       : !operatorConfigured(this.deps) ? "WRITING_CANDIDATE_FORBIDDEN"
         : !storageReady ? "WRITING_CANDIDATE_STORAGE_UNAVAILABLE"
@@ -168,12 +181,15 @@ export class WritingCandidateService {
       return previous.projectId === projectId && replay.requestHash === previous.requestHash
         ? this.found(previous, projectId) : failure(409, "IDEMPOTENCY_KEY_REUSED");
     }
-    const providerKey = start.providerKey ?? this.readyDefault();
+    const providerKey = start.providerKey ?? await this.readyDefault();
     if (providerKey === null) return failure(503, "WRITING_CANDIDATE_PROVIDER_UNCONFIGURED", { missing: [] });
     const provider = this.deps.providers[providerKey];
     if (!provider.ok) return failure(503, "WRITING_CANDIDATE_PROVIDER_UNCONFIGURED", { providerKey, missing: provider.missing });
     const model = start.model ?? provider.models[0]!;
     if (!provider.models.includes(model)) return failure(400, "WRITING_CANDIDATE_MODEL_UNAVAILABLE", { providerKey });
+    if (!await this.deps.store.providerStorageReady(providerKey)) {
+      return failure(503, "WRITING_CANDIDATE_PROVIDER_STORAGE_UNAVAILABLE", { providerKey, missing: [CANDIDATE_PROVIDER_MIGRATION_GAP] });
+    }
     const created = await this.deps.store.create(build(providerKey, model), {
       sinceIso: new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString(),
       maxCallsPerDay: this.deps.maxCallsPerDay,

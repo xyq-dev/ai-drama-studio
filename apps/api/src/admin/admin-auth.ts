@@ -10,6 +10,7 @@ const ERROR_MESSAGES = {
   ADMIN_CONFIG_INVALID: "模型配置无效，请检查输入。",
   ADMIN_CONFIG_KEY_FORMAT: "Claude API Key 的格式不受支持。请粘贴在 Claude Console（platform.claude.com）的 API keys 页面创建的完整密钥。没有保存任何内容。",
   ADMIN_CONFIG_KEY_KIND: "这是一种不能用于调用 Claude API 的凭据（例如 Claude Code 或订阅账号的登录令牌、Admin Key、浏览器会话或 JWT）。请改用 Claude Console 创建的 API Key。没有保存任何内容。",
+  ADMIN_CONFIG_DEEPSEEK_KEY_FORMAT: "DeepSeek API Key 的格式不受支持：应为 DeepSeek 开放平台（platform.deepseek.com）API keys 页面创建的完整密钥，长度 16–256 个字符，不能包含空格、换行或其他特殊字符。没有保存任何内容。",
   ADMIN_CONFIG_WORKSPACE_FORMAT: "Workspace ID 格式不正确，应为 Claude Console 工作区页面 ID 列中的 wrkspc_… 值。没有保存任何内容。",
   ADMIN_INTERNAL_ERROR: "管理员请求暂时无法完成。",
 } as const;

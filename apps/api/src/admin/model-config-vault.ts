@@ -4,18 +4,24 @@ import * as fs from "node:fs/promises";
 import { dirname, isAbsolute, resolve, sep } from "node:path";
 import { z } from "zod";
 import {
-  TITLE_WRITING_PROVIDER_KEYS, TITLE_WRITING_RETIRED_PROVIDER_KEYS, TITLE_WRITING_STORED_PROVIDER_KEYS,
+  TITLE_WRITING_PROVIDER_KEYS, TITLE_WRITING_STORED_PROVIDER_KEYS, TITLE_WRITING_V1_LEFT_OUT_PROVIDER_KEYS,
   adminLimitsUpdateSchema, adminProviderKeySchema, adminProviderUpdateSchema,
   ANTHROPIC_WORKSPACE_ID_SHAPE, workspaceUpdateOf,
   type AdminAuditView, type AdminLimitsUpdate, type AdminProviderUpdate, type TitleWritingProviderKey,
-  type TitleWritingRetiredProviderKey,
+  type TitleWritingV1LeftOutProviderKey,
 } from "@ai-drama/contracts";
-import { ANTHROPIC_MESSAGES_URL, OPENAI_RESPONSES_URL } from "@ai-drama/providers";
+import { ANTHROPIC_MESSAGES_URL, DEEPSEEK_CHAT_COMPLETIONS_URL, OPENAI_RESPONSES_URL } from "@ai-drama/providers";
 
 /**
- * v1 held qwen, openai and deepseek. v2 holds openai and anthropic (Claude). A v1 file is still read (same master key,
- * same AES-256-GCM integrity, its own AAD) and converted in memory; the first write after that keeps the original v1
- * ciphertext as an exclusive backup file before the v2 file replaces it, so a rollback can restore it byte for byte.
+ * v1 held qwen, openai and deepseek. v2 holds openai and anthropic (Claude) and, since 2026-10-17, an optional deepseek
+ * entry. A v1 file is still read (same master key, same AES-256-GCM integrity, its own AAD) and converted in memory; the
+ * first write after that keeps the original v1 ciphertext as an exclusive backup file before the v2 file replaces it, so
+ * a rollback can restore it byte for byte. The v1 DeepSeek settings are never carried over.
+ *
+ * The deepseek entry (and a DeepSeek default) is written only while DeepSeek has a key, so a file without it keeps
+ * exactly what the release before it reads. The first write that adds DeepSeek to such a file first keeps that file's
+ * bytes as an exclusive backup (DEEPSEEK_BACKUP_SUFFIX), once; clearing the DeepSeek key returns the file to the older
+ * shape.
  */
 const FORMAT_V1 = "ai-drama-studio.admin-model-vault.v1";
 const FORMAT = "ai-drama-studio.admin-model-vault.v2";
@@ -25,6 +31,8 @@ const AAD = Buffer.from(FORMAT, "utf8");
 const INITIALIZED = Buffer.from(`${FORMAT_V1}.initialized\n`, "utf8");
 /** Name suffix of the kept v1 file. Never overwritten once written. */
 export const V1_BACKUP_SUFFIX = ".v1-retired-providers.bak";
+/** Name suffix of the kept file from before DeepSeek was first saved. Written once, never overwritten. */
+export const DEEPSEEK_BACKUP_SUFFIX = ".v2-before-deepseek.bak";
 const MAX_BYTES = 256 * 1024;
 const SECRET_SCHEMA = z.string().min(8).max(256).regex(/^\S+$/u).nullable();
 const revisionSchema = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
@@ -43,7 +51,7 @@ const settingsSchema = z.object({
   defaultProvider: adminProviderKeySchema.nullable(),
   maxCallsPerDay: z.number().int().min(1).max(500),
   maxActiveRuns: z.number().int().min(1).max(10),
-  providers: z.object({ openai: providerSchema, anthropic: providerSchema }).strict(),
+  providers: z.object({ openai: providerSchema, anthropic: providerSchema, deepseek: providerSchema.optional() }).strict(),
 }).strict();
 const documentSchema = z.object({
   active: settingsSchema,
@@ -55,8 +63,8 @@ const documentSchema = z.object({
   }).strict()).max(50),
   /** Names only: which retired providers had settings in the v1 file and whether one was the default. */
   retired: z.object({
-    providers: z.array(z.enum(TITLE_WRITING_RETIRED_PROVIDER_KEYS)).max(TITLE_WRITING_RETIRED_PROVIDER_KEYS.length),
-    retiredDefault: z.enum(TITLE_WRITING_RETIRED_PROVIDER_KEYS).nullable(),
+    providers: z.array(z.enum(TITLE_WRITING_V1_LEFT_OUT_PROVIDER_KEYS)).max(TITLE_WRITING_V1_LEFT_OUT_PROVIDER_KEYS.length),
+    retiredDefault: z.enum(TITLE_WRITING_V1_LEFT_OUT_PROVIDER_KEYS).nullable(),
   }).strict().optional(),
 }).strict();
 const envelopeSchema = z.object({
@@ -98,8 +106,8 @@ export interface ManagedModelSettings {
 }
 /** What a conversion from v1 left out. Names only. */
 export interface RetiredProviderNote {
-  providers: TitleWritingRetiredProviderKey[];
-  retiredDefault: TitleWritingRetiredProviderKey | null;
+  providers: TitleWritingV1LeftOutProviderKey[];
+  retiredDefault: TitleWritingV1LeftOutProviderKey | null;
 }
 /** Server-only document. Never serialize this object into an HTTP response or log. */
 export interface ManagedModelDocument {
@@ -118,20 +126,50 @@ function inputError(): AdminConfigError {
 function codeOf(error: unknown): string | undefined {
   return typeof error === "object" && error !== null && "code" in error ? String(error.code) : undefined;
 }
-const ENDPOINTS: Readonly<Record<TitleWritingProviderKey, string>> = { openai: OPENAI_RESPONSES_URL, anthropic: ANTHROPIC_MESSAGES_URL };
+const ENDPOINTS: Readonly<Record<TitleWritingProviderKey, string>> = {
+  openai: OPENAI_RESPONSES_URL, anthropic: ANTHROPIC_MESSAGES_URL, deepseek: DEEPSEEK_CHAT_COMPLETIONS_URL,
+};
 function validEndpoint(key: TitleWritingProviderKey, url: string): boolean {
   return url === ENDPOINTS[key];
+}
+/** DeepSeek as a file without its entry reads: no key, no models, the official endpoint. */
+function noDeepseek(): ManagedModelSettings["providers"]["deepseek"] {
+  return { apiKey: null, baseUrl: DEEPSEEK_CHAT_COMPLETIONS_URL, models: [] };
+}
+function deepseekUnset(provider: { apiKey: string | null; models: string[]; baseUrl: string; workspaceId?: string }): boolean {
+  return provider.apiKey === null && provider.models.length === 0 && provider.baseUrl === DEEPSEEK_CHAT_COMPLETIONS_URL
+    && provider.workspaceId === undefined;
+}
+/** Whether a stored document needs the DeepSeek-aware release: a DeepSeek entry or a DeepSeek default. */
+function mentionsDeepseek(doc: { active: unknown; saved: unknown }): boolean {
+  return [doc.active, doc.saved].some((settings) => {
+    const record = settings as { defaultProvider?: unknown; providers?: Record<string, unknown> } | null;
+    return record?.defaultProvider === "deepseek" || Object.prototype.hasOwnProperty.call(record?.providers ?? {}, "deepseek");
+  });
+}
+/** The stored shape: an unset DeepSeek entry is left out, so the file stays readable by the release before it. */
+function compactDocument(doc: ManagedModelDocument): unknown {
+  const compact = (settings: ManagedModelSettings) => {
+    const { deepseek, ...others } = settings.providers;
+    return { ...settings, providers: deepseekUnset(deepseek) ? others : { ...others, deepseek } };
+  };
+  return { ...doc, active: compact(doc.active), saved: compact(doc.saved) };
 }
 function checkedDocument(input: unknown): ManagedModelDocument {
   const result = documentSchema.safeParse(input);
   if (!result.success) throw storageError();
   const doc = result.data as ManagedModelDocument;
+  for (const settings of [doc.active, doc.saved]) {
+    settings.providers.deepseek ??= noDeepseek();
+    // A DeepSeek default always comes with a DeepSeek key: clearing the key also clears that default.
+    if (settings.defaultProvider === "deepseek" && settings.providers.deepseek.apiKey === null) throw storageError();
+  }
   if (doc.active.revision > doc.saved.revision || doc.audit.some((item) => item.revision > doc.saved.revision)) throw storageError();
   for (const settings of [doc.active, doc.saved]) {
     for (const key of TITLE_WRITING_PROVIDER_KEYS) {
       if (!validEndpoint(key, settings.providers[key].baseUrl)) throw storageError();
     }
-    if (settings.providers.openai.workspaceId !== undefined) throw storageError();
+    if (settings.providers.openai.workspaceId !== undefined || settings.providers.deepseek.workspaceId !== undefined) throw storageError();
   }
   if (doc.active.revision === doc.saved.revision && JSON.stringify(doc.active) !== JSON.stringify(doc.saved)) throw storageError();
   return doc;
@@ -151,6 +189,8 @@ function convertSettings(v1: V1Settings): ManagedModelSettings {
     providers: {
       openai: { ...v1.providers.openai, models: [...v1.providers.openai.models] },
       anthropic: { apiKey: null, baseUrl: ANTHROPIC_MESSAGES_URL, models: [] },
+      // The v1 DeepSeek key and models are left behind on purpose: DeepSeek starts unconfigured and needs a new key.
+      deepseek: noDeepseek(),
     },
   };
 }
@@ -158,7 +198,7 @@ function convertedDocument(input: unknown): ManagedModelDocument {
   const result = v1DocumentSchema.safeParse(input);
   if (!result.success) throw storageError();
   const v1 = result.data;
-  const used = (key: TitleWritingRetiredProviderKey) => [v1.active, v1.saved]
+  const used = (key: TitleWritingV1LeftOutProviderKey) => [v1.active, v1.saved]
     .some((settings) => settings.providers[key].apiKey !== null || settings.providers[key].models.length > 0 || settings.defaultProvider === key);
   // The default the saved settings name, else the one still active: either way a retired default is reported.
   const savedDefault = v1.saved.defaultProvider === "qwen" || v1.saved.defaultProvider === "deepseek" ? v1.saved.defaultProvider : v1.active.defaultProvider;
@@ -168,7 +208,7 @@ function convertedDocument(input: unknown): ManagedModelDocument {
     saved: convertSettings(v1.saved),
     audit: v1.audit.map((item) => ({ ...item })),
     retired: {
-      providers: TITLE_WRITING_RETIRED_PROVIDER_KEYS.filter(used),
+      providers: TITLE_WRITING_V1_LEFT_OUT_PROVIDER_KEYS.filter(used),
       retiredDefault: savedDefault === "qwen" || savedDefault === "deepseek" ? savedDefault : null,
     },
   });
@@ -192,6 +232,8 @@ export class ModelConfigVault {
   private observedFile = false;
   /** The exact bytes of the file while it is still a v1 file; kept before the first v2 write replaces it. */
   private v1Bytes: Buffer | null = null;
+  /** The exact bytes of a v2 file without DeepSeek, read under the writer lock; kept before a write adds DeepSeek. */
+  private beforeDeepseekBytes: Buffer | null = null;
   private queue: Promise<void> = Promise.resolve();
 
   private constructor(options: { path: string; masterKey: Buffer; initial: ManagedModelSettings }) {
@@ -285,7 +327,10 @@ export class ModelConfigVault {
           const doc = v1 ? convertedDocument(parsed) : checkedDocument(parsed);
           // Only a read under the writer lock decides what the next write must back up; an unlocked read (a view)
           // racing the first v2 write must not bring the old bytes back.
-          if (underLock) this.v1Bytes = v1 ? raw : null;
+          if (underLock) {
+            this.v1Bytes = v1 ? raw : null;
+            this.beforeDeepseekBytes = !v1 && !mentionsDeepseek(parsed as { active: unknown; saved: unknown }) ? raw : null;
+          }
           this.observedFile = true;
           return doc;
         } finally { plaintext.fill(0); }
@@ -297,7 +342,7 @@ export class ModelConfigVault {
     const nonce = randomBytes(12);
     const cipher = createCipheriv("aes-256-gcm", this.masterKey, nonce);
     cipher.setAAD(AAD);
-    const plaintext = Buffer.from(JSON.stringify(checkedDocument(doc)), "utf8");
+    const plaintext = Buffer.from(JSON.stringify(compactDocument(checkedDocument(structuredClone(doc)))), "utf8");
     try {
       const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
       const result = Buffer.from(JSON.stringify({ format: FORMAT, nonce: nonce.toString("base64"), tag: cipher.getAuthTag().toString("base64"), ciphertext: encrypted.toString("base64") }), "utf8");
@@ -317,9 +362,26 @@ export class ModelConfigVault {
       await this.keepV1Backup(this.v1Bytes);
       next = { ...doc, audit: [...doc.audit, { action: "format_upgraded" as const, revision: doc.saved.revision, at: new Date().toISOString() }].slice(-50) };
     }
-    await this.atomicWrite(this.file, this.serialize(next));
+    const bytes = this.serialize(next);
+    // The first time DeepSeek reaches a file the release before it can read, that file is kept first (once).
+    if (this.beforeDeepseekBytes && mentionsDeepseek(compactDocument(checkedDocument(structuredClone(next))) as { active: unknown; saved: unknown })) {
+      await this.keepOnce(`${this.file}${DEEPSEEK_BACKUP_SUFFIX}`, this.beforeDeepseekBytes);
+    }
+    await this.atomicWrite(this.file, bytes);
     this.v1Bytes = null;
+    this.beforeDeepseekBytes = null;
     this.observedFile = true;
+  }
+
+  /** An exclusive 0600 copy of these bytes, unless a copy already exists (the earliest one is the one kept). */
+  private async keepOnce(target: string, bytes: Buffer): Promise<void> {
+    try {
+      await fs.lstat(target);
+      return;
+    } catch (error) {
+      if (codeOf(error) !== "ENOENT") throw error;
+    }
+    await this.exclusiveWrite(target, bytes);
   }
 
   /** The kept v1 file. An existing backup is never replaced; it must hold exactly these bytes. */
@@ -433,7 +495,7 @@ export class ModelConfigVault {
    * claimDefault: when no default provider is saved and this provider ends up with a key and models, it becomes the
    * default in the same write (the console's "only the Claude key" setup). An existing default is never replaced.
    */
-  async updateProvider(key: TitleWritingProviderKey, body: AdminProviderUpdate, options: { claimDefault?: boolean } = {}): Promise<void> {
+  async updateProvider(key: TitleWritingProviderKey, body: AdminProviderUpdate, options: { claimDefault?: boolean; makeDefault?: boolean } = {}): Promise<void> {
     const parsed = adminProviderUpdateSchema.safeParse(body);
     if (!adminProviderKeySchema.safeParse(key).success || !parsed.success || (parsed.data.baseUrl !== undefined && !validEndpoint(key, parsed.data.baseUrl))) throw inputError();
     const input = parsed.data;
@@ -448,12 +510,20 @@ export class ModelConfigVault {
       if (input.baseUrl !== undefined) provider.baseUrl = input.baseUrl;
       if (input.secretAction === "replace") provider.apiKey = input.apiKey!;
       if (input.secretAction === "clear") provider.apiKey = null;
+      // DeepSeek without a key keeps nothing and is not the default, so the file returns to the shape the release
+      // before it reads.
+      if (key === "deepseek" && provider.apiKey === null) {
+        provider.models = [];
+        if (doc.saved.defaultProvider === "deepseek") doc.saved.defaultProvider = null;
+      }
       // A replaced or cleared key drops the previous workspace unless this update names one.
       if (workspace === null) delete provider.workspaceId;
       else if (workspace !== "keep") provider.workspaceId = workspace;
       if (options.claimDefault && doc.saved.defaultProvider === null && provider.apiKey !== null && provider.models.length > 0) {
         doc.saved.defaultProvider = key;
       }
+      // makeDefault: the DeepSeek quick setup makes DeepSeek the default for new requests, replacing another default.
+      if (options.makeDefault && provider.apiKey !== null && provider.models.length > 0) doc.saved.defaultProvider = key;
       doc.saved.revision += 1;
       doc.audit = [...doc.audit, { action: "provider_updated" as const, providerKey: key, revision: doc.saved.revision, at: new Date().toISOString() }].slice(-50);
       await this.persist(doc);
@@ -466,6 +536,8 @@ export class ModelConfigVault {
     const { expectedRevision, ...limits } = parsed.data;
     return this.locked(async (doc) => {
       this.assertRevision(doc, expectedRevision);
+      // DeepSeek can be the default only while it has a key (its quick setup saves both at once).
+      if (limits.defaultProvider === "deepseek" && doc.saved.providers.deepseek.apiKey === null) throw inputError();
       doc.saved = { ...doc.saved, ...limits, revision: doc.saved.revision + 1 };
       doc.audit = [...doc.audit, { action: "limits_updated" as const, revision: doc.saved.revision, at: new Date().toISOString() }].slice(-50);
       await this.persist(doc);

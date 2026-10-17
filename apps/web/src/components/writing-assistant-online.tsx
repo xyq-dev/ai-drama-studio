@@ -78,7 +78,8 @@ function writeRecord(record: OnlineRecord): boolean {
  * off) keep the record: those come before the key lookup, so an earlier send of the same key may still exist.
  */
 const AFTER_KEY_LOOKUP = new Set(["WRITING_CANDIDATE_ACTIVE", "WRITING_CANDIDATE_NEEDS_CONFIRMATION", "WRITING_CANDIDATE_TARGET_INVALID",
-  "WRITING_CANDIDATE_DAILY_CAP", "WRITING_CANDIDATE_MODEL_UNAVAILABLE", "IDEMPOTENCY_KEY_REUSED", "VALIDATION_ERROR"]);
+  "WRITING_CANDIDATE_DAILY_CAP", "WRITING_CANDIDATE_MODEL_UNAVAILABLE", "WRITING_CANDIDATE_PROVIDER_STORAGE_UNAVAILABLE", "IDEMPOTENCY_KEY_REUSED",
+  "VALIDATION_ERROR"]);
 function decided(error: unknown): error is TitleWritingError {
   return error instanceof TitleWritingError && AFTER_KEY_LOOKUP.has(error.code);
 }

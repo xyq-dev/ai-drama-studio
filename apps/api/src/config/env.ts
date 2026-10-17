@@ -25,7 +25,7 @@ const apiEnvSchema = z.object({
   M3_CHARACTER_REFERENCE_GATE: z.enum(["legacy", "strict"]).default("legacy"),
   TITLE_WRITING_ENABLED: z.enum(["true", "false"]).default("false"),
   TITLE_WRITING_OPERATOR_TOKEN: z.string().min(16).max(200).optional(),
-  // A retired default (qwen, deepseek) is still parsed so an existing deployment starts; it is never used as a default.
+  // A retired default (qwen) is still parsed so an existing deployment starts; it is never used as a default.
   TITLE_WRITING_DEFAULT_PROVIDER: z.enum(["openai", "anthropic", "qwen", "deepseek"]).optional(),
   TITLE_WRITING_MAX_CALLS_PER_DAY: z.coerce.number().int().min(1).max(500).default(30),
   TITLE_WRITING_MAX_ACTIVE_RUNS: z.coerce.number().int().min(1).max(10).default(1),
@@ -71,9 +71,9 @@ export interface ApiEnv {
   TITLE_WRITING_ENABLED: boolean;
   TITLE_WRITING_OPERATOR_TOKEN?: string;
   /** Only an active provider. A retired value leaves this unset (no default, to be chosen) and is named below. */
-  TITLE_WRITING_DEFAULT_PROVIDER?: "openai" | "anthropic";
+  TITLE_WRITING_DEFAULT_PROVIDER?: "openai" | "anthropic" | "deepseek";
   /** The retired provider the environment still names as default; reported, never used. */
-  TITLE_WRITING_RETIRED_DEFAULT_PROVIDER?: "qwen" | "deepseek";
+  TITLE_WRITING_RETIRED_DEFAULT_PROVIDER?: "qwen";
   TITLE_WRITING_MAX_CALLS_PER_DAY: number;
   TITLE_WRITING_MAX_ACTIVE_RUNS: number;
   /** Process-only production authorization for title writing only. Defaults false and rejects invalid values. */
@@ -104,7 +104,11 @@ export interface ApiEnv {
 }
 
 /** Provider secrets and endpoints are accepted only from the process environment. */
-/** The retired providers' variables (DASHSCOPE_*, BAILIAN_*, QWEN_*, DEEPSEEK_*) are not read at all. */
+/**
+ * The retired providers' variables (DASHSCOPE_*, BAILIAN_*, QWEN_*) are not read at all, and neither are DEEPSEEK_*:
+ * DeepSeek is configured in the model console only, so a key left in an environment file from before the retirement is
+ * never used again.
+ */
 const PROCESS_ONLY_KEYS = [
   "OPENAI_API_KEY",
   "TITLE_WRITING_OPENAI_MODELS",
@@ -207,8 +211,8 @@ export function loadApiEnv(
   const { TITLE_WRITING_DEFAULT_PROVIDER: defaultProvider, ...rest } = parsed.data;
   return {
     ...rest,
-    ...(defaultProvider === "openai" || defaultProvider === "anthropic" ? { TITLE_WRITING_DEFAULT_PROVIDER: defaultProvider } : {}),
-    ...(defaultProvider === "qwen" || defaultProvider === "deepseek" ? { TITLE_WRITING_RETIRED_DEFAULT_PROVIDER: defaultProvider } : {}),
+    ...(defaultProvider === "openai" || defaultProvider === "anthropic" || defaultProvider === "deepseek" ? { TITLE_WRITING_DEFAULT_PROVIDER: defaultProvider } : {}),
+    ...(defaultProvider === "qwen" ? { TITLE_WRITING_RETIRED_DEFAULT_PROVIDER: defaultProvider } : {}),
     ...processOnly,
     S3_FORCE_PATH_STYLE: parsed.data.S3_FORCE_PATH_STYLE === "true",
     M3_MOCK_IMAGE_ENABLED: parsed.data.M3_MOCK_IMAGE_ENABLED === "true",

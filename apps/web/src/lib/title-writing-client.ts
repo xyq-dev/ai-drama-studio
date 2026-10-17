@@ -153,6 +153,8 @@ export function normalizeOptions(value: unknown): TitleWritingOptionsView | null
 export function gapText(name: string): string {
   if (name === "WRITING_PROVIDER_MIGRATION") return "数据库迁移 20261016000100_writing_provider_anthropic 尚未执行";
   if (name === "ANTHROPIC_API_KEY") return "尚未配置 Claude API Key";
+  if (name === "DEEPSEEK_API_KEY") return "尚未配置 DeepSeek API Key（只能在模型后台填写）";
+  if (name === "WRITING_CANDIDATE_DEEPSEEK_MIGRATION") return "数据库迁移 20261017000100_writing_candidate_deepseek 尚未执行";
   return name;
 }
 
@@ -254,7 +256,8 @@ const ERRORS: Record<string, string> = {
   executor_lost: "服务重启时这一步已经发出，结果和费用不确定，不会自动重发。",
   executor_lost_before_send: "服务重启时这一步还没有发出。",
   canceled_before_send: "停止请求先到达，这一步没有发出。",
-  provider_unconfigured: "这次创作使用的模型服务现在没有配置完整，没有发出请求。",
+  provider_unconfigured: "这次创作使用的模型服务现在没有配置完整，或冻结的模型已不在允许列表中，没有发出请求，也不会改用其他模型。",
+  legacy_provider_run: "这次任务是 DeepSeek 退役前创建的旧任务，不会再发出请求，也不会改用新的 DeepSeek 模型或其他供应商；已有结果、调用记录和未知费用都保留。如需继续，请新建任务。",
   story_conflict: "作品里已经有故事，没有覆盖。生成的故事保留在下方。",
   story_too_large: "整理后的故事超过长度上限，没有保存。",
   TITLE_WRITING_DAILY_CAP: "最近 24 小时的调用次数已达服务端上限，已完成的内容保留。",

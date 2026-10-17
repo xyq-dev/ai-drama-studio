@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { TITLE_WRITING_PROMPT_VERSION_V3, TITLE_WRITING_PROMPT_VERSION_V4, TITLE_WRITING_PROVIDER_LABELS, isActiveTitleWritingProvider, type EpisodeOutline, type TitleConcept } from "@ai-drama/contracts";
+import { TITLE_WRITING_PROMPT_VERSION_V3, TITLE_WRITING_PROMPT_VERSION_V4, TITLE_WRITING_PROVIDER_LABELS, isActiveTitleWritingProvider, isLegacyDeepseekRun, type EpisodeOutline, type TitleConcept } from "@ai-drama/contracts";
 import {
   TitleWritingClient,
   TitleWritingError,
@@ -32,8 +32,10 @@ const PROVIDER_LABELS: Readonly<Record<string, string>> = TITLE_WRITING_PROVIDER
 const RETIRED_STOP = "这次创作使用的模型服务已经退役，不会再发出请求，也不会改用其他模型；已有结果、调用记录和未知费用都保留。";
 
 /** A run of a retired provider that stopped for want of a provider is said to be retired, not misconfigured. */
-function runErrorText(run: { providerKey: string; errorCode: string | null }): string | null {
+function runErrorText(run: { providerKey: string; errorCode: string | null; createdAt: string }): string | null {
   if (run.errorCode === "provider_unconfigured" && !isActiveTitleWritingProvider(run.providerKey)) return RETIRED_STOP;
+  // A DeepSeek run stopped by the retirement stays a retired run now that DeepSeek is active again.
+  if (run.errorCode === "provider_unconfigured" && isLegacyDeepseekRun(run)) return errorText("legacy_provider_run");
   return errorText(run.errorCode);
 }
 

@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   TITLE_WRITING_CANCELED_BEFORE_SEND,
   TITLE_WRITING_RUN_KIND_DISABLED,
+  isLegacyDeepseekRun,
   settledSaveOutcome,
   type TitleCallFinish,
   type TitleCallRecord,
@@ -418,8 +419,13 @@ export class TitleWritingEngine {
       // A call of this run is still open under another lease; recovery decides its fate.
       return false;
     }
-    // A run of a retired provider (qwen, deepseek) has no configuration or adapter: it stops here before any reservation
-    // or send, and is never moved to another provider or model.
+    // A DeepSeek run stored before the retirement is never sent for again, even now that DeepSeek is configured: an
+    // upgrade must not revive it. It stops before any reservation or send and keeps its provider, model and calls.
+    if (isLegacyDeepseekRun({ providerKey: run.input.providerKey, createdAt: run.createdAt })) {
+      return this.finish(runId, "needs_attention", "legacy_provider_run");
+    }
+    // A run of a retired provider (qwen) has no configuration or adapter: it stops here before any reservation or send,
+    // and is never moved to another provider or model. Nor is a run whose frozen model is no longer allowed.
     const provider = providerConfigFor(this.deps.providers, run.input.providerKey);
     const adapter = provider ? (this.deps.adapters ?? WRITING_ADAPTERS)[provider.providerKey] : undefined;
     if (!provider || !adapter || !provider.ok || !provider.models.includes(run.input.model)) {
@@ -663,6 +669,8 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
    * run or call the way PostgreSQL would, and providerStorageReady("anthropic") is false.
    */
   anthropicReady = true;
+  /** Stands in for the live CHECKs naming deepseek (they have since the first title writing migration). */
+  deepseekReady = true;
   readonly breakdownEpisodes = new Map<string, MemoryBreakdownEpisode>();
   readonly scenes: MemoryScene[] = [];
   readonly shots: MemoryShot[] = [];
@@ -701,7 +709,7 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
   }
 
   async providerStorageReady(providerKey: TitleWritingProviderKey): Promise<boolean> {
-    return this.ready && (providerKey !== "anthropic" || this.anthropicReady);
+    return this.ready && (providerKey !== "anthropic" || this.anthropicReady) && (providerKey !== "deepseek" || this.deepseekReady);
   }
 
   /** The provider_key CHECK of title_writing_run and title_writing_call before and after the provider migration. */

@@ -261,10 +261,16 @@ export class InMemoryWritingCandidateStore implements WritingCandidateStore {
   /** Calls counted against the shared daily cap besides candidate requests (title writing calls). */
   otherCalls: string[] = [];
   ready = true;
+  /** Stands in for 20261017000100_writing_candidate_deepseek: while false, DeepSeek requests cannot be stored. */
+  deepseekReady = true;
   readonly targets = new Map<string, { episodeId: string | null; episodeNo: number | null; revisions: string[]; episodeCount: number }>();
 
   storageReady(): Promise<boolean> {
     return Promise.resolve(this.ready);
+  }
+
+  providerStorageReady(providerKey: TitleWritingProviderKey): Promise<boolean> {
+    return Promise.resolve(this.ready && (providerKey !== "deepseek" || this.deepseekReady));
   }
 
   private find(predicate: (record: WritingCandidateRecord) => boolean): WritingCandidateRecord | undefined {
@@ -278,6 +284,8 @@ export class InMemoryWritingCandidateStore implements WritingCandidateStore {
       return Promise.resolve(existing.requestHash === record.requestHash && existing.projectId === record.projectId
         ? { kind: "existing", record: structuredClone(existing) } : { kind: "conflict" });
     }
+    // The provider_key CHECK of writing_candidate_request, before and after the DeepSeek migration.
+    if (record.input.providerKey === "deepseek" && !this.deepseekReady) throw new Error("new row violates check constraint provider_key");
     const target = [...this.targets.entries()].find(([key, value]) => key.startsWith(`${record.projectId}:`) && value.episodeId === record.input.episodeId);
     if (!target) return Promise.resolve({ kind: "target_invalid", reason: "episode" });
     const [, found] = target;

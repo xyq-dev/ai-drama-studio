@@ -276,13 +276,31 @@ describe("progress and results page", () => {
     expect(screen.queryByRole("button", { name: "继续创作" })).toBeNull();
   });
 
-  it.each([["qwen", "千问（已退役）"], ["deepseek", "DeepSeek（已退役）"]] as const)("a %s run from before the retirement shows its real provider and says it is retired, never misconfigured", async (providerKey, label) => {
-    server(() => json({ run: run({ state: "needs_attention", errorCode: "provider_unconfigured", providerKey, model: `${providerKey}-old` },
+  it("a qwen run from before the retirement shows its real provider and says it is retired, never misconfigured", async () => {
+    server(() => json({ run: run({ state: "needs_attention", errorCode: "provider_unconfigured", providerKey: "qwen", model: "qwen-old" },
       ["completed", "pending", "pending", "pending", "pending"]) }));
     render(<TitleWritingRun projectId={P1} client={new TitleWritingClient()} />);
-    expect(await screen.findByText(new RegExp(`模型：${label.replace(/[()（）]/g, ".")} · ${providerKey}-old`))).toBeTruthy();
+    expect(await screen.findByText(/模型：千问.已退役. · qwen-old/)).toBeTruthy();
     expect(screen.getByText(/这次创作使用的模型服务已经退役，不会再发出请求，也不会改用其他模型/)).toBeTruthy();
     expect(screen.queryByText(/没有配置完整/)).toBeNull();
+  });
+
+  it.each(["provider_unconfigured", "legacy_provider_run"])("a DeepSeek run from before the retirement (%s) shows its real model and says it is an old run that is never sent again", async (errorCode) => {
+    server(() => json({ run: run({ state: "needs_attention", errorCode, providerKey: "deepseek", model: "deepseek-chat" },
+      ["completed", "pending", "pending", "pending", "pending"]) }));
+    render(<TitleWritingRun projectId={P1} client={new TitleWritingClient()} />);
+    expect(await screen.findByText(/模型：DeepSeek · deepseek-chat/)).toBeTruthy();
+    expect(screen.getByText(/DeepSeek 退役前创建的旧任务，不会再发出请求，也不会改用新的 DeepSeek 模型或其他供应商/)).toBeTruthy();
+    expect(screen.queryByText(/没有配置完整/)).toBeNull();
+  });
+
+  it("a DeepSeek run created after the reactivation that stops for want of a provider says so, without calling it retired", async () => {
+    server(() => json({ run: run({ state: "needs_attention", errorCode: "provider_unconfigured", providerKey: "deepseek", model: "deepseek-flash",
+      createdAt: "2026-10-18T00:00:00Z" }, ["completed", "pending", "pending", "pending", "pending"]) }));
+    render(<TitleWritingRun projectId={P1} client={new TitleWritingClient()} />);
+    expect(await screen.findByText(/模型：DeepSeek · deepseek-flash/)).toBeTruthy();
+    expect(screen.getByText(/没有配置完整，或冻结的模型已不在允许列表中/)).toBeTruthy();
+    expect(screen.queryByText(/已经退役/)).toBeNull();
   });
 
   it("cancel asks the server and shows the stopping state from its answer", async () => {

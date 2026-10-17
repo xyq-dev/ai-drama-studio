@@ -154,11 +154,10 @@ describe("administrator model settings real HTTP boundary (site login)", () => {
     const { headers } = await signedIn();
     for (const [path, body] of [
       ["/admin/models/providers/unknown", UPDATE],
-      // The retired providers have no console entry: a request naming them is refused before storage is touched.
+      // The retired provider has no console entry: a request naming it is refused before storage is touched. DeepSeek is
+      // active again and reaches the service, which checks its key before storage (admin-models.service.spec.ts).
       ["/admin/models/providers/qwen", UPDATE],
-      ["/admin/models/providers/deepseek", UPDATE],
       ["/admin/models/limits", { ...LIMITS, defaultProvider: "qwen" }],
-      ["/admin/models/limits", { ...LIMITS, defaultProvider: "deepseek" }],
       ["/admin/models/providers/anthropic", { ...UPDATE, secretAction: "keep" }],
       ["/admin/models/providers/anthropic", { ...UPDATE, models: ["https://secret.test/model"] }],
       ["/admin/models/limits", { ...LIMITS, maxActiveRuns: 0 }],

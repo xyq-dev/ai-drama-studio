@@ -1,9 +1,9 @@
 import {
-  TITLE_WRITING_DEFAULT_MODELS, anthropicKeyProblem, anthropicWorkspaceIdValid,
+  TITLE_WRITING_DEFAULT_MODELS, anthropicKeyProblem, anthropicWorkspaceIdValid, deepseekKeyProblem,
   type AdminLimitsUpdate, type AdminModelsView, type AdminProviderUpdate, type AdminSettingsView, type TitleWritingProviderKey,
 } from "@ai-drama/contracts";
 import {
-  ANTHROPIC_MESSAGES_URL, OPENAI_RESPONSES_URL, parseModelList, titleWritingProviderConfigs,
+  ANTHROPIC_MESSAGES_URL, DEEPSEEK_CHAT_COMPLETIONS_URL, OPENAI_RESPONSES_URL, parseModelList, titleWritingProviderConfigs,
 } from "@ai-drama/providers";
 import type { ApiEnv } from "../config/env";
 import type { AdminBootstrap } from "./admin-bootstrap";
@@ -11,8 +11,8 @@ import type { AdminModelsBackend } from "./admin-models.controller";
 import { AdminHttpError } from "./admin-auth";
 import { ModelConfigVault, type ManagedModelSettings } from "./model-config-vault";
 
-const PROVIDERS = ["openai", "anthropic"] as const;
-const LABELS = { openai: "OpenAI", anthropic: "Claude" };
+const PROVIDERS = ["openai", "anthropic", "deepseek"] as const;
+const LABELS = { openai: "OpenAI", anthropic: "Claude", deepseek: "DeepSeek" };
 
 function key(value: string | undefined): string | null {
   return value && value.length >= 8 && value.length <= 256 && !/\s/u.test(value) ? value : null;
@@ -29,13 +29,16 @@ export function initialModelSettings(env: ApiEnv): ManagedModelSettings {
   const workspaceBroken = Boolean(workspace) && !anthropicWorkspaceIdValid(workspace!);
   return {
     revision: 0,
-    defaultProvider: env.TITLE_WRITING_DEFAULT_PROVIDER ?? null,
+    // DeepSeek has no key in a new vault, so it cannot be its default yet.
+    defaultProvider: env.TITLE_WRITING_DEFAULT_PROVIDER === "deepseek" ? null : env.TITLE_WRITING_DEFAULT_PROVIDER ?? null,
     maxCallsPerDay: env.TITLE_WRITING_MAX_CALLS_PER_DAY,
     maxActiveRuns: env.TITLE_WRITING_MAX_ACTIVE_RUNS,
     providers: {
       openai: { apiKey: key(env.OPENAI_API_KEY), models: models(env.TITLE_WRITING_OPENAI_MODELS), baseUrl: OPENAI_RESPONSES_URL },
       anthropic: { apiKey: workspaceBroken ? null : key(env.ANTHROPIC_API_KEY), models: models(env.TITLE_WRITING_ANTHROPIC_MODELS),
         baseUrl: ANTHROPIC_MESSAGES_URL, ...(workspace && !workspaceBroken ? { workspaceId: workspace } : {}) },
+      // Never from the environment: a DEEPSEEK_* variable left from before the retirement must not come back to life.
+      deepseek: { apiKey: null, models: [], baseUrl: DEEPSEEK_CHAT_COMPLETIONS_URL },
     },
   };
 }
@@ -48,6 +51,8 @@ export function managedProviderConfigs(settings: ManagedModelSettings) {
     ANTHROPIC_API_KEY: settings.providers.anthropic.apiKey ?? undefined,
     TITLE_WRITING_ANTHROPIC_MODELS: settings.providers.anthropic.models.join(","),
     ANTHROPIC_WORKSPACE_ID: settings.providers.anthropic.workspaceId,
+    DEEPSEEK_API_KEY: settings.providers.deepseek.apiKey ?? undefined,
+    TITLE_WRITING_DEEPSEEK_MODELS: settings.providers.deepseek.models.join(","),
   });
 }
 
@@ -135,11 +140,19 @@ export class AdminModelsService implements AdminModelsBackend {
     if (providerKey === "anthropic" && body.workspaceAction === "replace" && !anthropicWorkspaceIdValid(body.workspaceId ?? "")) {
       throw new AdminHttpError(400, "ADMIN_CONFIG_WORKSPACE_FORMAT");
     }
+    // DeepSeek documents no key format: only a plausible length and header-safe characters are required.
+    if (providerKey === "deepseek" && body.secretAction === "replace" && (body.apiKey === undefined || deepseekKeyProblem(body.apiKey) !== null)) {
+      throw new AdminHttpError(400, "ADMIN_CONFIG_DEEPSEEK_KEY_FORMAT");
+    }
     const defaults = TITLE_WRITING_DEFAULT_MODELS[providerKey];
     // Only when a key is entered: saving an empty list with the key kept is how the list is emptied (not ready).
     const update = body.secretAction === "replace" && body.models.length === 0 && defaults.length > 0
       ? { ...body, models: [...defaults] } : body;
-    await this.vault.updateProvider(providerKey, update, { claimDefault: providerKey === "anthropic" });
+    // Saving a DeepSeek key makes DeepSeek the default for new requests (the console says so before saving).
+    await this.vault.updateProvider(providerKey, update, {
+      claimDefault: providerKey === "anthropic",
+      makeDefault: providerKey === "deepseek" && body.secretAction === "replace",
+    });
     return this.view();
   }
 

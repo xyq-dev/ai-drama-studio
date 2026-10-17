@@ -396,6 +396,117 @@ describe("Claude quick setup: only the API key", () => {
   });
 });
 
+describe("DeepSeek quick setup: only the API key", () => {
+  // Clearly fake, test only. DeepSeek documents no key prefix, so none is required.
+  const DEEPSEEK = "fake-deepseek-console-test-key-0123456789";
+  const deepseekEntry = (configured: boolean) => ({ providerKey: "deepseek" as const, label: "DeepSeek", models: configured ? ["deepseek-flash"] : [],
+    baseUrl: "https://api.deepseek.com/chat/completions", keyConfigured: configured, ready: configured, missing: configured ? [] : ["DEEPSEEK_API_KEY"] });
+  const withDeepseek = (configured: boolean) => {
+    const view = modelView();
+    for (const settings of [view.saved, view.active]) settings.providers.push(deepseekEntry(configured));
+    return view;
+  };
+
+  it("asks only for the key, says saving makes it the default for new requests, refuses impossible keys locally and saves only the key", async () => {
+    let current = withDeepseek(false);
+    const calls = server((call) => {
+      if (call.method === "PUT") {
+        const saved = structuredClone(current);
+        saved.savedRevision = 5; saved.pendingRestart = true; saved.saved.defaultProvider = "deepseek";
+        saved.saved.providers[2] = deepseekEntry(true);
+        current = saved;
+        return json(saved);
+      }
+      return call.url.endsWith("/auth/session") ? json(session()) : json(current);
+    });
+    render(<AdminModels />);
+    const status = await screen.findByTestId("deepseek-status");
+    expect(status.dataset.state).toBe("key_missing");
+    expect(status.textContent).toContain("尚未配置 DeepSeek API Key");
+    const section = within(screen.getByRole("region", { name: "DeepSeek 快速配置" }));
+    expect(section.getByText(/模型默认使用 deepseek-flash/)).toBeTruthy();
+    expect(screen.getByTestId("deepseek-default-notice").textContent).toContain("保存 DeepSeek 快速配置会将 DeepSeek 设为新创作的默认供应商；只影响新发起的请求，不改变已有任务");
+    // Only the key: no URL, workspace, operator token or model list to fill in.
+    expect(section.queryAllByRole("textbox")).toHaveLength(0);
+    expect(section.queryByLabelText(/Workspace|URL|令牌|模型/)).toBeNull();
+    const input = section.getByLabelText(/^DeepSeek API Key/) as HTMLInputElement;
+    expect(input.type).toBe("password");
+    for (const bad of ["short-key", "fake deepseek key with spaces 0123", `${"x".repeat(15)}`]) {
+      fireEvent.change(input, { target: { value: bad } });
+      fireEvent.click(section.getByRole("button", { name: /保存 DeepSeek API Key/ }));
+      expect(await section.findByText(/DeepSeek API Key 的格式不受支持/)).toBeTruthy();
+      expect(input.value).toBe("");
+    }
+    expect(calls.filter((call) => call.method === "PUT")).toHaveLength(0);
+    fireEvent.change(input, { target: { value: DEEPSEEK } });
+    fireEvent.click(section.getByRole("button", { name: /保存 DeepSeek API Key/ }));
+    await waitFor(() => expect(screen.getByTestId("deepseek-status").dataset.state).toBe("pending_restart"));
+    const put = calls.find((call) => call.method === "PUT")!;
+    expect(put.url).toBe("/api/v1/admin/models/providers/deepseek");
+    expect(put.body).toEqual({ expectedRevision: 4, models: [], secretAction: "replace", apiKey: DEEPSEEK });
+    expect(csrfOf(put)).toBe(CSRF);
+    expect(document.body.textContent).toContain("DeepSeek 已设为新创作的默认供应商");
+    expect(screen.getByTestId("deepseek-status").textContent).toContain("等待 API 重启后生效");
+    expect(document.body.textContent).toContain("没有发起模型调用，格式检查不代表密钥有效或余额充足");
+    expect((screen.getByLabelText(/^DeepSeek API Key/) as HTMLInputElement).value).toBe("");
+    expect(document.body.innerHTML).not.toContain(DEEPSEEK);
+    expect(JSON.stringify({ ...window.localStorage, ...window.sessionStorage })).not.toContain(DEEPSEEK);
+    // Claude's quick setup and its key are untouched.
+    expect(calls.filter((call) => call.method === "PUT")).toHaveLength(1);
+  });
+
+  it("shows the server's refusal as it is and keeps nothing typed", async () => {
+    const calls = server((call) => {
+      if (call.method === "PUT") return json({ error: { code: "ADMIN_CONFIG_DEEPSEEK_KEY_FORMAT", message: "x" } }, 400);
+      return call.url.endsWith("/auth/session") ? json(session()) : json(withDeepseek(false));
+    });
+    render(<AdminModels />);
+    const section = within(await screen.findByRole("region", { name: "DeepSeek 快速配置" }));
+    const input = section.getByLabelText(/^DeepSeek API Key/) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: DEEPSEEK } });
+    fireEvent.click(section.getByRole("button", { name: /保存 DeepSeek API Key/ }));
+    expect(await section.findByText(/服务端拒绝：DeepSeek API Key 的格式不受支持/)).toBeTruthy();
+    expect(input.value).toBe("");
+    expect(calls.filter((call) => call.method === "PUT")).toHaveLength(1);
+    expect(document.body.innerHTML).not.toContain(DEEPSEEK);
+  });
+
+  it("keeps saved, applied, migration and ready apart, and names only the DeepSeek candidate migration", async () => {
+    const view = withDeepseek(true);
+    view.titleWriting = { enabled: true, productionBlocked: false, operatorConfigured: false, siteOperator: true };
+    view.storage = { titleWriting: true, claude: true, candidates: true, deepseek: false };
+    server((call) => call.url.endsWith("/auth/session") ? json(session()) : json(view));
+    render(<AdminModels />);
+    const status = await screen.findByTestId("deepseek-status");
+    expect(status.dataset.state).toBe("migration_missing");
+    expect(status.textContent).toContain("20261017000100_writing_candidate_deepseek");
+    expect(status.textContent).not.toContain("20261016000100_writing_provider_anthropic");
+    expect(screen.getByTestId("claude-status").dataset.state).toBe("ready");
+    cleanup();
+    view.storage = { titleWriting: true, claude: true, candidates: true, deepseek: true };
+    server((call) => call.url.endsWith("/auth/session") ? json(session()) : json(view));
+    render(<AdminModels />);
+    const ready = await screen.findByTestId("deepseek-status");
+    expect(ready.dataset.state).toBe("ready");
+    expect(ready.textContent).toContain("这不代表已经完成真实调用验证；费用以 DeepSeek 账单为准");
+  });
+
+  it("lists exactly DeepSeek, Claude and OpenAI, and will not make DeepSeek the default before it has a key", async () => {
+    const calls = server((call) => call.url.endsWith("/auth/session") ? json(session()) : json(withDeepseek(false)));
+    render(<AdminModels />);
+    await screen.findByRole("heading", { name: "模型配置" });
+    const rail = within(screen.getByRole("complementary", { name: "模型供应商" }));
+    expect(rail.getAllByRole("button").map((button) => button.querySelector("strong")?.textContent)).toEqual(["DeepSeek", "Claude", "OpenAI"]);
+    expect(document.body.textContent).not.toMatch(/千问/);
+    const select = screen.getByRole("combobox", { name: /^默认供应商/ }) as HTMLSelectElement;
+    expect([...select.options].map((option) => option.value)).toEqual(["", "deepseek", "anthropic", "openai"]);
+    fireEvent.change(select, { target: { value: "deepseek" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存调用规则" }));
+    expect(await screen.findByText(/DeepSeek 还没有保存 API Key，不能设为默认供应商/)).toBeTruthy();
+    expect(calls.filter((call) => call.method === "PUT")).toHaveLength(0);
+  });
+});
+
 describe("model picker on the provider settings", () => {
   const puts = (calls: Call[]) => calls.filter((call) => call.method === "PUT");
   const codes = (region: ReturnType<typeof within>) => region.getAllByRole("checkbox")

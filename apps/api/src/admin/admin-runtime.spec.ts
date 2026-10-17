@@ -42,6 +42,8 @@ describe.skipIf(process.platform === "win32")("StudioRuntime managed model start
   const pools: FakePool[] = [];
   let running = false;
   let tableMissing = false;
+  let candidateTableMissing = false;
+  let candidateOpen = false;
   let metadataFailure: Error | undefined;
   let queryFailure: Error | undefined;
   let outbound: ReturnType<typeof vi.fn>;
@@ -54,6 +56,8 @@ describe.skipIf(process.platform === "win32")("StudioRuntime managed model start
   beforeEach(() => {
     running = false;
     tableMissing = false;
+    candidateTableMissing = false;
+    candidateOpen = false;
     metadataFailure = undefined;
     queryFailure = undefined;
     vi.spyOn(RuntimeStore.prototype, "requireActiveWorkspace").mockResolvedValue(WORKSPACE);
@@ -66,6 +70,15 @@ describe.skipIf(process.platform === "win32")("StudioRuntime managed model start
           if (sql.includes("to_regclass") && sql.includes("title_writing_run")) {
             if (metadataFailure) throw metadataFailure;
             return { rows: [{ missing: tableMissing }] };
+          }
+          // The activation check also waits for open online candidates (they send with the active configuration).
+          if (sql.includes("to_regclass('writing_candidate_request') IS NULL")) {
+            if (metadataFailure) throw metadataFailure;
+            return { rows: [{ missing: candidateTableMissing }] };
+          }
+          if (sql.includes("FROM writing_candidate_request") && sql.includes("state IN ('reserved', 'submitted')") && values?.[0] === WORKSPACE) {
+            if (queryFailure) throw queryFailure;
+            return { rows: [{ open: candidateOpen }] };
           }
           if (sql.includes("information_schema.columns")) {
             if (metadataFailure) throw metadataFailure;
@@ -302,15 +315,55 @@ describe.skipIf(process.platform === "win32")("StudioRuntime managed model start
     await writeFile(`${path}.initialized`, "ai-drama-studio.admin-model-vault.v1.initialized\n", { mode: 0o600 });
     const runtime = await open(env);
     const view = await options(runtime);
-    expect(view.providers.map((provider) => provider.providerKey)).toEqual(["openai", "anthropic"]);
+    expect(view.providers.map((provider) => provider.providerKey)).toEqual(["openai", "anthropic", "deepseek"]);
+    // DeepSeek is active again but its v1 key is never carried over: it waits for a new key from the console.
+    expect(view.providers.find((provider) => provider.providerKey === "deepseek")).toMatchObject({ ready: false, missing: ["DEEPSEEK_API_KEY"] });
     // The retired default is not used, and nothing switches to it; the first ready active provider is offered instead.
     expect(view).toMatchObject({ defaultProvider: "openai", maxCallsPerDay: 9 });
     expect(view.providers.find((provider) => provider.providerKey === "anthropic")).toMatchObject({ ready: false, missing: ["ANTHROPIC_API_KEY"] });
     const admin = await runtime.adminModels!.view();
     expect(admin.retired).toEqual({ providers: ["qwen"], retiredDefault: "qwen", backupKept: false });
-    expect(admin.saved.providers.map((provider) => provider.providerKey)).toEqual(["openai", "anthropic"]);
+    expect(admin.saved.providers.map((provider) => provider.providerKey)).toEqual(["openai", "anthropic", "deepseek"]);
     expect(JSON.stringify(admin)).not.toContain("sk-retired-qwen-secret");
     expect(JSON.stringify(admin)).not.toContain(SAVED_KEY);
+  });
+
+  it("defers activation while an online candidate is still open, and applies it once none is", async () => {
+    const env = await environment();
+    await savePending(env);
+    candidateOpen = true;
+    const busy = await open(env);
+    expect(await busy.adminModels!.view()).toMatchObject({ pendingRestart: true, activationDeferred: true, activeRevision: 0 });
+    expect(await options(busy)).toMatchObject({ defaultProvider: "anthropic", maxCallsPerDay: 30 });
+    await close(busy);
+    candidateOpen = false;
+    const idle = await open(env);
+    expect(await idle.adminModels!.view()).toMatchObject({ pendingRestart: false, activationDeferred: false, activeRevision: 2 });
+    // A database without the candidate table has no open candidate either.
+    candidateTableMissing = true;
+    await close(idle);
+    expect((await (await open(env)).adminModels!.view()).activeRevision).toBe(2);
+  });
+
+  it("a DeepSeek key saved in the console is applied only at the next idle start, becomes the default and is never sent here", async () => {
+    const env = await environment();
+    const current = await open(env);
+    const saved = await current.adminModels!.updateProvider("deepseek", { expectedRevision: 0, models: [], secretAction: "replace",
+      apiKey: "fake-deepseek-runtime-key-0123456789" });
+    expect(saved).toMatchObject({ pendingRestart: true, savedRevision: 1 });
+    expect(saved.saved.defaultProvider).toBe("deepseek");
+    expect(saved.saved.providers.find((provider) => provider.providerKey === "deepseek")).toMatchObject({ keyConfigured: true, models: ["deepseek-flash"] });
+    expect(JSON.stringify(saved)).not.toContain("fake-deepseek-runtime-key");
+    // The running service keeps its configuration until the restart.
+    expect((await options(current)).providers.find((provider) => provider.providerKey === "deepseek")).toMatchObject({ ready: false });
+    await close(current);
+    const restarted = await open(env);
+    const view = await options(restarted);
+    expect(view.defaultProvider).toBe("deepseek");
+    expect(view.providers.find((provider) => provider.providerKey === "deepseek")).toMatchObject({ ready: true, models: ["deepseek-flash"], missing: [] });
+    // Claude from the environment seed is kept as it was.
+    expect(view.providers.find((provider) => provider.providerKey === "anthropic")).toMatchObject({ ready: true, models: ["environment-claude-model"] });
+    expect(JSON.stringify(view)).not.toContain("fake-deepseek-runtime-key");
   });
 
   it("starts with a retired default provider in the environment and offers no default until one is chosen", async () => {

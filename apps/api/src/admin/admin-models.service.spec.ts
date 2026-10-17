@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadApiEnv } from "../config/env";
 import { adminBootstrap } from "./admin-bootstrap";
-import { claudeSetupState } from "@ai-drama/contracts";
+import { claudeSetupState, providerSetupState } from "@ai-drama/contracts";
 import { AdminModelsService, managedProviderConfigs } from "./admin-models.service";
 import { ModelConfigVault } from "./model-config-vault";
 
@@ -198,7 +198,8 @@ describe.skipIf(process.platform === "win32")("managed models runtime (real encr
     // With no workspace the stored provider entry has exactly the fields an older release reads (rollback stays possible).
     const vault = await ModelConfigVault.open({ path: bootstrap.path, masterKey: bootstrap.masterKey, initial: { revision: 0, defaultProvider: null,
       maxCallsPerDay: 30, maxActiveRuns: 1, providers: { openai: { apiKey: null, baseUrl: "https://api.openai.com/v1/responses", models: [] },
-        anthropic: { apiKey: null, baseUrl: "https://api.anthropic.com/v1/messages", models: [] } } } });
+        anthropic: { apiKey: null, baseUrl: "https://api.anthropic.com/v1/messages", models: [] },
+        deepseek: { apiKey: null, baseUrl: "https://api.deepseek.com/chat/completions", models: [] } } } });
     const stored = await vault.read();
     for (const settings of [stored.saved, stored.active]) {
       expect(Object.keys(settings.providers.anthropic).sort()).toEqual(["apiKey", "baseUrl", "models"]);
@@ -214,6 +215,58 @@ describe.skipIf(process.platform === "win32")("managed models runtime (real encr
     expect(managedProviderConfigs(other.runtimeSettings()).anthropic).toMatchObject({ ok: false, missing: ["ANTHROPIC_API_KEY"] });
     expect(claudeSetupState(await other.view()).state).toBe("key_missing");
   });
+  it("DeepSeek quick setup: only the key; the default model and the default provider come with it; nothing else changes", async () => {
+    const { env, bootstrap } = await fixture({ ANTHROPIC_API_KEY: CLAUDE_KEY, TITLE_WRITING_DEFAULT_PROVIDER: "anthropic" });
+    const open = () => AdminModelsService.open(env, bootstrap, async () => true);
+    let service = await open();
+    const key = "fake-deepseek-service-key-0123456789";
+    let view = await service.updateProvider("deepseek", { expectedRevision: 0, models: [], secretAction: "replace", apiKey: key });
+    const deepseekOf = (which: "saved" | "active") => view[which].providers.find((item) => item.providerKey === "deepseek")!;
+    expect(deepseekOf("saved")).toMatchObject({ keyConfigured: true, models: ["deepseek-flash"], baseUrl: "https://api.deepseek.com/chat/completions", ready: true });
+    expect(deepseekOf("saved")).not.toHaveProperty("workspaceId");
+    expect(view.saved.defaultProvider).toBe("deepseek");
+    // Saved is not applied: the running configuration and its default stay until the restart.
+    expect(view).toMatchObject({ pendingRestart: true, savedRevision: 1, activeRevision: 0 });
+    expect(view.active.defaultProvider).toBe("anthropic");
+    expect(deepseekOf("active")).toMatchObject({ keyConfigured: false, ready: false });
+    expect(providerSetupState(view, "deepseek").state).toBe("pending_restart");
+    expect(JSON.stringify(view)).not.toContain(key);
+    // Claude and OpenAI keep their keys and models.
+    expect(view.saved.providers.find((item) => item.providerKey === "anthropic")).toMatchObject({ keyConfigured: true });
+    expect(view.saved.providers.find((item) => item.providerKey === "openai")).toMatchObject({ keyConfigured: true, models: ["approved-model"] });
+    service = await open();
+    view = await service.view();
+    expect(view).toMatchObject({ pendingRestart: false, activeRevision: 1 });
+    expect(view.active.defaultProvider).toBe("deepseek");
+    expect(managedProviderConfigs(service.runtimeSettings()).deepseek).toEqual({ providerKey: "deepseek", ok: true,
+      url: "https://api.deepseek.com/chat/completions", apiKey: key, models: ["deepseek-flash"], missing: [], workspaceId: null });
+    expect(managedProviderConfigs(service.runtimeSettings()).anthropic).toMatchObject({ ok: true, apiKey: CLAUDE_KEY });
+  });
+
+  it("refuses a DeepSeek key that cannot be one before anything is written, and a DeepSeek default without a key", async () => {
+    const { env, bootstrap } = await fixture();
+    const service = await AdminModelsService.open(env, bootstrap, async () => true);
+    const before = await readFile(bootstrap.path);
+    for (const apiKey of ["short-key", "fake-deepseek-key-with-\u5bc6-0123", `${"x".repeat(257)}`]) {
+      await expect(service.updateProvider("deepseek", { expectedRevision: 0, models: [], secretAction: "replace", apiKey }))
+        .rejects.toMatchObject({ status: 400, code: "ADMIN_CONFIG_DEEPSEEK_KEY_FORMAT" });
+    }
+    await expect(service.updateLimits({ expectedRevision: 0, defaultProvider: "deepseek", maxCallsPerDay: 30, maxActiveRuns: 1 }))
+      .rejects.toMatchObject({ status: 400 });
+    expect(await readFile(bootstrap.path)).toEqual(before);
+  });
+
+  it("never seeds DeepSeek from the environment: a key left from before the retirement is not read, and a DeepSeek default waits for a key", async () => {
+    const { env, bootstrap } = await fixture({ DEEPSEEK_API_KEY: "fake-old-deepseek-env-key-0123456789", TITLE_WRITING_DEEPSEEK_MODELS: "deepseek-chat",
+      TITLE_WRITING_DEFAULT_PROVIDER: "deepseek" });
+    const service = await AdminModelsService.open(env, bootstrap, async () => true);
+    const view = await service.view();
+    expect(view.saved.defaultProvider).toBeNull();
+    expect(view.saved.providers.find((item) => item.providerKey === "deepseek")).toMatchObject({ keyConfigured: false, models: [], ready: false });
+    expect(managedProviderConfigs(service.runtimeSettings()).deepseek).toMatchObject({ ok: false, missing: ["DEEPSEEK_API_KEY"] });
+    expect(providerSetupState(view, "deepseek").state).toBe("key_missing");
+  });
+
   it("cannot enable production calls by configuring a valid provider", async () => {
     const { env, bootstrap } = await fixture({ NODE_ENV: "production", TITLE_WRITING_ENABLED: "true" });
     const service = await AdminModelsService.open(env, bootstrap, async () => true);

@@ -219,4 +219,4 @@ Windows 上可以执行静态检查 `pnpm run doctor` 和模拟测试 `pnpm veri
 
 ## 9. 千问命令与网页入口已退役
 
-原 `pnpm qwen:writing`、`pnpm qwen:trial` 本机命令和工作区千问网页调用已经删除；API 不再读取 `DASHSCOPE_API_KEY`、`BAILIAN_BASE_URL` 或任何 `QWEN_*`、`DEEPSEEK_*` 变量。文本创作只使用 OpenAI 与 Claude，见 [`OPENAI_CLAUDE_WRITING.md`](OPENAI_CLAUDE_WRITING.md)。编剧助手仍可准备指令、粘贴或导入外部候选、预览、采纳和「保存新版本」。[`QWEN_WRITING_CANDIDATES.md`](QWEN_WRITING_CANDIDATES.md) 与 [`QWEN_WEB_INVOCATION.md`](QWEN_WEB_INVOCATION.md) 只作历史记录。
+原 `pnpm qwen:writing`、`pnpm qwen:trial` 本机命令和工作区千问网页调用已经删除；API 不再读取 `DASHSCOPE_API_KEY`、`BAILIAN_BASE_URL` 或任何 `QWEN_*`、`DEEPSEEK_*` 变量。文本创作使用 DeepSeek、Claude 与 OpenAI，见 [`OPENAI_CLAUDE_WRITING.md`](OPENAI_CLAUDE_WRITING.md)；DeepSeek 只能在模型后台配置，见 [`DEEPSEEK_WRITING.md`](DEEPSEEK_WRITING.md)。编剧助手仍可准备指令、粘贴或导入外部候选、预览、采纳和「保存新版本」。[`QWEN_WRITING_CANDIDATES.md`](QWEN_WRITING_CANDIDATES.md) 与 [`QWEN_WEB_INVOCATION.md`](QWEN_WEB_INVOCATION.md) 只作历史记录。

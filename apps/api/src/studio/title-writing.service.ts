@@ -9,6 +9,7 @@ import {
   TITLE_WRITING_PROVIDER_LABELS,
   TITLE_WRITING_PROVIDER_PREFERENCE,
   isActiveTitleWritingProvider,
+  isLegacyDeepseekRun,
   titleWritingRequiredCalls,
   titleWritingResumeSchema,
   titleWritingSettingsSchema,
@@ -71,6 +72,8 @@ const MESSAGES: Record<string, string> = {
   TITLE_WRITING_PROVIDER_RETIRED: "这个模型服务已经退役，不能再发起新的创作或重新发送调用。历史记录仍然保留，可以查看。",
   TITLE_WRITING_PROVIDER_STORAGE_UNAVAILABLE: "所选模型服务的数据库迁移还没有执行，没有创建任务，也没有发出调用。",
   TITLE_WRITING_MODEL_UNAVAILABLE: "所选模型不在服务端允许的列表中。",
+  TITLE_WRITING_LEGACY_RUN: "这次任务是 DeepSeek 退役前创建的旧任务，不会再发出请求，也不会改用新的 DeepSeek 模型或其他供应商；已有结果、调用记录和未知费用都保留。如需继续，请新建任务。",
+  TITLE_WRITING_RUN_MODEL_UNAVAILABLE: "这次任务冻结的模型已不在服务端允许的列表中，不会改用其他模型，没有发出调用。",
   TITLE_WRITING_RUN_ACTIVE: "这部作品已有一次创作正在进行。",
   TITLE_WRITING_OTHER_TASK_ACTIVE: "这部作品正在进行剧本拆解，标题创作暂时不能开始。没有创建任务，也没有发出调用。",
   TITLE_WRITING_ACTIVE_RUN_CAP: "同时进行的创作已达上限，请等当前创作结束。",
@@ -335,6 +338,7 @@ export class TitleWritingService {
     // must the run's own provider and model be ready. A replayed resume and a resume that only saves an answer already
     // stored need no provider. A retired provider is never ready, so its run is never sent for again.
     const runProvider = existing.run.input.providerKey;
+    const legacy = isLegacyDeepseekRun({ providerKey: runProvider, createdAt: existing.run.createdAt });
     const provider = providerConfigFor(this.deps.providers, runProvider);
     const confirmed = parsed.data.confirmUncertainCallIds;
     const prepared = await this.deps.store.prepareResume(this.deps.workspaceId, projectId, runId, {
@@ -342,7 +346,8 @@ export class TitleWritingService {
       requestHash: hashTitleResume(runId, confirmed),
       confirmedCallIds: confirmed,
       maxActiveRuns: this.deps.maxActiveRuns,
-      providerReady: provider !== null && provider.ok && provider.models.includes(existing.run.input.model),
+      // A DeepSeek run from before the retirement is never sent for again (only an answer already stored may be saved).
+      providerReady: !legacy && provider !== null && provider.ok && provider.models.includes(existing.run.input.model),
     }, this.now().toISOString());
     if (prepared.kind === "replayed") return this.found(prepared.bundle);
     if (prepared.kind !== "ok") {
@@ -353,6 +358,10 @@ export class TitleWritingService {
       if (prepared.kind === "stale_confirmation") return failure(409, "TITLE_WRITING_CONFIRMATION_STALE");
       if (prepared.kind === "key_conflict") return failure(409, "IDEMPOTENCY_KEY_REUSED");
       if (prepared.kind === "provider_unconfigured") {
+        if (legacy) return failure(409, "TITLE_WRITING_LEGACY_RUN", { providerKey: runProvider, model: existing.run.input.model });
+        if (provider?.ok && !provider.models.includes(existing.run.input.model)) {
+          return failure(409, "TITLE_WRITING_RUN_MODEL_UNAVAILABLE", { providerKey: runProvider, model: existing.run.input.model });
+        }
         return isActiveTitleWritingProvider(runProvider)
           ? failure(503, "TITLE_WRITING_PROVIDER_UNCONFIGURED", { providerKey: runProvider, missing: provider && !provider.ok ? provider.missing : [] })
           : failure(409, "TITLE_WRITING_PROVIDER_RETIRED", { providerKey: runProvider, label: TITLE_WRITING_PROVIDER_LABELS[runProvider] });

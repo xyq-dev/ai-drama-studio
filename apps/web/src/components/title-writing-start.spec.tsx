@@ -184,11 +184,11 @@ describe("an unconfirmed start", () => {
     expect(runPosts(calls).map((call) => [call.body, call.headers["Idempotency-Key"]])).toEqual([[legacy.request, legacy.runKey]]);
   });
 
-  it.each(["qwen", "deepseek"])("a stored request of the retired provider %s is kept, shown with its real provider and replayed unchanged", async (retired) => {
+  it.each(["qwen"])("a stored request of the retired provider %s is kept, shown with its real provider and replayed unchanged", async (retired) => {
     const stored = { version: 2, request: { title: "旧剧名", providerKey: retired, model: `${retired}-old`, settings: { episodeSeconds: 90, style: "" } },
       projectKey: "11111111-aaaa-4aaa-8aaa-111111111111", projectId: P1, runKey: "22222222-bbbb-4bbb-8bbb-222222222222" };
     window.sessionStorage.setItem(DRAFT_KEY, JSON.stringify(stored));
-    const label = retired === "qwen" ? "千问（已退役）" : "DeepSeek（已退役）";
+    const label = "千问（已退役）";
     const { calls } = server(() => json({ error: { code: "TITLE_WRITING_PROVIDER_RETIRED", message: "x", details: { providerKey: retired, label } } }, 409));
     const { button } = await mount();
     expect(button.textContent).toBe("重试上次请求");

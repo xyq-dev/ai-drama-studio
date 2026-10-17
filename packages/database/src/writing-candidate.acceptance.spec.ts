@@ -8,7 +8,10 @@
  * - "breakdown": the same plus the script breakdown migration.
  * The guarded single-migration command applies the candidate migration alone; nothing else is applied or enabled, and the
  * title writing history is unchanged. The store's rules (key, target, open request, unknown confirmation, the daily cap
- * shared with title writing calls, leases and recovery) are then checked on the real tables.
+ * shared with title writing calls, leases and recovery) are then checked on the real tables. Then the DeepSeek candidate
+ * migration (20261017000100_writing_candidate_deepseek) is applied by its own guarded command: it refuses and rolls back
+ * on an unexpected CHECK, widens the provider CHECK by deepseek only, keeps every stored request, and leaves the rest
+ * pending.
  */
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -16,7 +19,10 @@ import { join } from "node:path";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { TitleRunRecord, WritingCandidateFrozenInput, WritingCandidateRecord } from "@ai-drama/contracts";
-import { BASE_MIGRATIONS, WRITING_CANDIDATE_MIGRATION, WRITING_PROVIDER_MIGRATION, runMigrations, type MigrationResult } from "./migrations";
+import {
+  BASE_MIGRATIONS, GUARDED_SINGLE_MIGRATIONS, WRITING_CANDIDATE_DEEPSEEK_MIGRATION, WRITING_CANDIDATE_MIGRATION, WRITING_PROVIDER_MIGRATION,
+  runMigrations, type MigrationResult,
+} from "./migrations";
 import { TextChainService } from "./text-chain";
 import { checkTitleWritingAcceptanceEnv, verifyTitleWritingAcceptanceDatabase } from "./title-writing-acceptance-guard";
 import { PostgresTitleWritingStore, SCRIPT_BREAKDOWN_MIGRATION } from "./title-writing-store";
@@ -30,6 +36,8 @@ const pool = new Pool({ connectionString: decision.url, max: 6, application_name
 const store = new PostgresWritingCandidateStore(pool);
 const titles = new PostgresTitleWritingStore(pool, new TextChainService(pool));
 const only = { name: WRITING_CANDIDATE_MIGRATION, requires: BASE_MIGRATIONS };
+const DEEPSEEK = WRITING_CANDIDATE_DEEPSEEK_MIGRATION;
+const deepseekOnly = { name: DEEPSEEK, requires: GUARDED_SINGLE_MIGRATIONS[DEEPSEEK]! };
 /** Identities, counts and outcomes only: never the connection URL, a password, a token or a key. */
 const evidence: Record<string, unknown> = { scenario };
 
@@ -146,7 +154,7 @@ describe(`online candidate migration and store on the ${scenario} schema`, () =>
   it("the guarded command applies it alone; the breakdown and the provider migration are not applied or enabled by it", async () => {
     applied = await runMigrations(pool, undefined, { only });
     expect(applied.applied).toEqual([WRITING_CANDIDATE_MIGRATION]);
-    expect(applied.leftPending).toEqual(scenario === "base" ? [SCRIPT_BREAKDOWN_MIGRATION, WRITING_PROVIDER_MIGRATION] : [WRITING_PROVIDER_MIGRATION]);
+    expect(applied.leftPending).toEqual(scenario === "base" ? [SCRIPT_BREAKDOWN_MIGRATION, WRITING_PROVIDER_MIGRATION, DEEPSEEK] : [WRITING_PROVIDER_MIGRATION, DEEPSEEK]);
     expect(await ledgerNames()).toEqual([...(evidence.startingLedger as string[]), WRITING_CANDIDATE_MIGRATION].sort());
     expect(await titles.breakdownStorageReady()).toBe(scenario === "breakdown");
     expect(await titles.providerStorageReady("anthropic")).toBe(false);
@@ -224,11 +232,49 @@ describe(`online candidate migration and store on the ${scenario} schema`, () =>
     await expect(pool.query("UPDATE writing_candidate_request SET billing_status = 'paid' WHERE workspace_id = $1", [workspaceId])).rejects.toThrow();
   });
 
+  it("the DeepSeek candidate migration: zero writes on an unexpected CHECK, then only the provider CHECK widens, every row kept", async () => {
+    expect(await store.providerStorageReady("deepseek")).toBe(false);
+    expect(await store.providerStorageReady("anthropic")).toBe(true);
+    const deepseekInput = () => input("story", { providerKey: "deepseek", model: "deepseek-flash" });
+    await expect(store.create(record(deepseekInput()), LIMITS)).rejects.toThrow();
+    const rowsBefore = JSON.stringify((await pool.query("SELECT * FROM writing_candidate_request ORDER BY id")).rows);
+    const ledgerBefore = await ledgerNames();
+    // A second provider CHECK that the migration does not expect: it stops, rolls back and records nothing.
+    await pool.query("ALTER TABLE writing_candidate_request ADD CONSTRAINT acceptance_extra_provider_check CHECK (provider_key IN ('openai', 'anthropic'))");
+    await expect(runMigrations(pool, undefined, { only: deepseekOnly })).rejects.toThrow("expected exactly one provider_key CHECK");
+    expect(await ledgerNames()).toEqual(ledgerBefore);
+    await pool.query("ALTER TABLE writing_candidate_request DROP CONSTRAINT acceptance_extra_provider_check");
+    const deepseekApplied = await runMigrations(pool, undefined, { only: deepseekOnly });
+    expect(deepseekApplied).toEqual({ applied: [DEEPSEEK], alreadyApplied: [],
+      leftPending: scenario === "base" ? [SCRIPT_BREAKDOWN_MIGRATION, WRITING_PROVIDER_MIGRATION] : [WRITING_PROVIDER_MIGRATION] });
+    expect(await ledgerNames()).toEqual([...ledgerBefore, DEEPSEEK].sort());
+    expect(JSON.stringify((await pool.query("SELECT * FROM writing_candidate_request ORDER BY id")).rows)).toBe(rowsBefore);
+    expect(await titleHistory()).toBe(historyBefore);
+    expect(await titles.providerStorageReady("anthropic")).toBe(false);
+    expect(await titles.breakdownStorageReady()).toBe(scenario === "breakdown");
+    const checks = await pool.query<{ def: string }>(`SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint
+      WHERE conrelid = 'writing_candidate_request'::regclass AND contype = 'c' AND pg_get_constraintdef(oid) LIKE '%provider_key%'`);
+    expect(checks.rows).toHaveLength(1);
+    expect(checks.rows[0]!.def).toMatch(/'openai'.*'anthropic'.*'deepseek'/);
+    expect(await store.providerStorageReady("deepseek")).toBe(true);
+    const stored = record(deepseekInput());
+    expect(await store.create(stored, LIMITS)).toMatchObject({ kind: "created", record: { id: stored.id, input: { providerKey: "deepseek", model: "deepseek-flash" } } });
+    expect(await store.markSubmitted(workspaceId, stored.id, "exec-a", new Date().toISOString(), new Date(Date.now() + 60_000).toISOString())).toBe(true);
+    expect(await store.finish(workspaceId, stored.id, "exec-a", { state: "rejected", errorCode: "quota", providerRequestId: "ds-1", responseModel: null,
+      usage: { status: "unknown", inputTokens: null, outputTokens: null, totalTokens: null }, candidate: null }, new Date().toISOString())).toBe(true);
+    // The retired qwen stays refused at the database; DeepSeek is the only value added.
+    await expect(store.create(record(input("story", { providerKey: "qwen" as never })), LIMITS)).rejects.toThrow();
+    const again = await runMigrations(pool, undefined, { only: deepseekOnly });
+    expect(again).toEqual({ applied: [], alreadyApplied: [DEEPSEEK], leftPending: deepseekApplied.leftPending });
+    evidence.deepseek = { refusedOnUnexpectedCheck: true, applied: deepseekApplied, secondRun: again, rowsKept: true };
+  });
+
   it("running it again changes nothing, and a later default migrate takes the rest without repeating it", async () => {
+    const pending = applied.leftPending!.filter((name) => name !== DEEPSEEK);
     const again = await runMigrations(pool, undefined, { only });
-    expect(again).toEqual({ applied: [], alreadyApplied: [WRITING_CANDIDATE_MIGRATION], leftPending: applied.leftPending });
+    expect(again).toEqual({ applied: [], alreadyApplied: [WRITING_CANDIDATE_MIGRATION], leftPending: pending });
     const later = await runMigrations(pool);
-    expect(later.applied).toEqual(applied.leftPending);
+    expect(later.applied).toEqual(pending);
     expect(later.alreadyApplied).toContain(WRITING_CANDIDATE_MIGRATION);
     expect(await store.storageReady()).toBe(true);
     expect(await titles.providerStorageReady("anthropic")).toBe(true);

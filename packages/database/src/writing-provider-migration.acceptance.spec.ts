@@ -15,7 +15,9 @@ import { join } from "node:path";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { TitleCallRecord, TitleRunRecord, TitleWritingStoredProviderKey } from "@ai-drama/contracts";
-import { BASE_MIGRATIONS, WRITING_CANDIDATE_MIGRATION, WRITING_PROVIDER_MIGRATION, runMigrations, type MigrationResult } from "./migrations";
+import {
+  BASE_MIGRATIONS, WRITING_CANDIDATE_DEEPSEEK_MIGRATION, WRITING_CANDIDATE_MIGRATION, WRITING_PROVIDER_MIGRATION, runMigrations, type MigrationResult,
+} from "./migrations";
 import { TextChainService } from "./text-chain";
 import { checkTitleWritingAcceptanceEnv, verifyTitleWritingAcceptanceDatabase } from "./title-writing-acceptance-guard";
 import { PostgresTitleWritingStore, SCRIPT_BREAKDOWN_MIGRATION } from "./title-writing-store";
@@ -140,7 +142,8 @@ describe(`provider migration on the ${scenario} schema`, () => {
     applied = await runMigrations(pool, undefined, { only });
     expect(applied.applied).toEqual([WRITING_PROVIDER_MIGRATION]);
     // The independent candidate migration stays pending too: the guarded command applies exactly one migration.
-    expect(applied.leftPending).toEqual(scenario === "base" ? [SCRIPT_BREAKDOWN_MIGRATION, WRITING_CANDIDATE_MIGRATION] : [WRITING_CANDIDATE_MIGRATION]);
+    expect(applied.leftPending).toEqual(scenario === "base" ? [SCRIPT_BREAKDOWN_MIGRATION, WRITING_CANDIDATE_MIGRATION, WRITING_CANDIDATE_DEEPSEEK_MIGRATION]
+      : [WRITING_CANDIDATE_MIGRATION, WRITING_CANDIDATE_DEEPSEEK_MIGRATION]);
     const ledger = await ledgerNames();
     expect(ledger).toEqual(scenario === "base" ? [...BASE_MIGRATIONS, WRITING_PROVIDER_MIGRATION]
       : [...BASE_MIGRATIONS, SCRIPT_BREAKDOWN_MIGRATION, WRITING_PROVIDER_MIGRATION]);
@@ -169,6 +172,8 @@ describe(`provider migration on the ${scenario} schema`, () => {
 
   it("after it, a Claude run and call are stored; any other provider value is still refused", async () => {
     expect(await store.providerStorageReady("anthropic")).toBe(true);
+    // DeepSeek title runs need no migration: both CHECKs have named deepseek since the first title writing migration.
+    expect(await store.providerStorageReady("deepseek")).toBe(true);
     const projectId = await one("INSERT INTO project (workspace_id, title) VALUES ($1, $2) RETURNING id", [workspaceId, "迁移后的 Claude"]);
     const run = titleRun(workspaceId, projectId, "anthropic", "claude-opus-5-5");
     expect((await store.createRun(run, { maxActiveRuns: 10 })).kind).toBe("created");
@@ -194,7 +199,8 @@ describe(`provider migration on the ${scenario} schema`, () => {
 
   it("a later default migrate takes the remaining migrations without repeating this one, and Claude runs stay readable", async () => {
     const later = await runMigrations(pool);
-    expect(later.applied).toEqual(scenario === "base" ? [SCRIPT_BREAKDOWN_MIGRATION, WRITING_CANDIDATE_MIGRATION] : [WRITING_CANDIDATE_MIGRATION]);
+    expect(later.applied).toEqual(scenario === "base" ? [SCRIPT_BREAKDOWN_MIGRATION, WRITING_CANDIDATE_MIGRATION, WRITING_CANDIDATE_DEEPSEEK_MIGRATION]
+      : [WRITING_CANDIDATE_MIGRATION, WRITING_CANDIDATE_DEEPSEEK_MIGRATION]);
     expect(later.alreadyApplied).toContain(WRITING_PROVIDER_MIGRATION);
     expect(await store.breakdownStorageReady()).toBe(true);
     expect(await store.providerStorageReady("anthropic")).toBe(true);

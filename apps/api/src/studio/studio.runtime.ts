@@ -105,12 +105,24 @@ export class StudioRuntime implements OnModuleDestroy {
           "SELECT EXISTS(SELECT 1 FROM title_writing_run WHERE workspace_id = $1 AND state = 'running') AS running",
           [workspaceId],
         ) as { rows: { running: boolean }[] };
-        return result.rows[0]?.running === false;
+        if (result.rows[0]?.running !== false) return false;
+        // An open online candidate is sending with the active configuration too: activation waits for it as well.
+        const candidates = await pool.query(
+          "SELECT to_regclass('writing_candidate_request') IS NULL AS missing",
+        ) as { rows: { missing: boolean }[] };
+        if (candidates.rows[0]?.missing === true) return true;
+        if (candidates.rows[0]?.missing !== false) throw new Error("Writing candidate activation probe unavailable");
+        const open = await pool.query(
+          "SELECT EXISTS(SELECT 1 FROM writing_candidate_request WHERE workspace_id = $1 AND state IN ('reserved', 'submitted')) AS open",
+          [workspaceId],
+        ) as { rows: { open: boolean }[] };
+        return open.rows[0]?.open === false;
       }, { enabled: titleWritingEnabled, productionBlocked: !nonProduction && !titleWritingAllowProduction, siteOperator: siteLoginValid },
       async () => ({
         titleWriting: await titleStore.storageReady(),
         claude: await titleStore.providerStorageReady("anthropic"),
         candidates: await candidateStore.storageReady(),
+        deepseek: await candidateStore.providerStorageReady("deepseek"),
       })) : null;
     } catch (error) {
       await closePostgresPool(pool);

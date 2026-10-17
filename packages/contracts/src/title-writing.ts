@@ -32,24 +32,45 @@ export const TITLE_WRITING_PROMPT_VERSION_V3 = "ads.title-writing.prompt.v3" as 
  */
 export const TITLE_WRITING_PROMPT_VERSION_V4 = "ads.title-writing.prompt.v4" as const;
 
-/** The providers a new run, a resume that sends, an administrator update and a default may name. */
-export const TITLE_WRITING_PROVIDER_KEYS = ["openai", "anthropic"] as const;
+/**
+ * The providers a new run, a resume that sends, an administrator update and a default may name. DeepSeek, retired on
+ * 2026-10-16, is active again from 2026-10-17 with a new adapter, a new key entered in the console and a new default
+ * model; runs stored before that keep their own provider, model and calls and are never sent for again
+ * (isLegacyDeepseekRun).
+ */
+export const TITLE_WRITING_PROVIDER_KEYS = ["openai", "anthropic", "deepseek"] as const;
 export type TitleWritingProviderKey = (typeof TITLE_WRITING_PROVIDER_KEYS)[number];
 /**
  * Retired providers. Runs and calls stored with them stay readable with their real provider and model, and a lost
  * receipt of a request made with them is still answered from the stored run; nothing new is created or sent for them.
  */
-export const TITLE_WRITING_RETIRED_PROVIDER_KEYS = ["qwen", "deepseek"] as const;
+export const TITLE_WRITING_RETIRED_PROVIDER_KEYS = ["qwen"] as const;
 export type TitleWritingRetiredProviderKey = (typeof TITLE_WRITING_RETIRED_PROVIDER_KEYS)[number];
+/**
+ * The providers the first (three-provider) model configuration held besides OpenAI. Converting such a file leaves both
+ * out, and the note of what was left out keeps naming them: DeepSeek's old key is never carried over or restored.
+ */
+export const TITLE_WRITING_V1_LEFT_OUT_PROVIDER_KEYS = ["qwen", "deepseek"] as const;
+export type TitleWritingV1LeftOutProviderKey = (typeof TITLE_WRITING_V1_LEFT_OUT_PROVIDER_KEYS)[number];
 /** Every provider a stored run or call may carry. */
 export const TITLE_WRITING_STORED_PROVIDER_KEYS = [...TITLE_WRITING_PROVIDER_KEYS, ...TITLE_WRITING_RETIRED_PROVIDER_KEYS] as const;
 export type TitleWritingStoredProviderKey = (typeof TITLE_WRITING_STORED_PROVIDER_KEYS)[number];
 export const TITLE_WRITING_PROVIDER_LABELS: Readonly<Record<TitleWritingStoredProviderKey, string>> = {
   openai: "OpenAI",
   anthropic: "Claude",
+  deepseek: "DeepSeek",
   qwen: "千问（已退役）",
-  deepseek: "DeepSeek（已退役）",
 };
+
+/**
+ * DeepSeek runs created before this instant were made before the retirement (the code in between could not create
+ * any). Such a run is never driven, resumed or sent for again, whatever is configured now: it keeps its frozen provider,
+ * model, input, hash, calls and unknown costs, and a lost receipt of its start is still answered from it.
+ */
+export const DEEPSEEK_REACTIVATED_AT = "2026-10-17T00:00:00.000Z";
+export function isLegacyDeepseekRun(run: { providerKey: string; createdAt: string }): boolean {
+  return run.providerKey === "deepseek" && Date.parse(run.createdAt) < Date.parse(DEEPSEEK_REACTIVATED_AT);
+}
 
 export function isActiveTitleWritingProvider(key: string): key is TitleWritingProviderKey {
   return (TITLE_WRITING_PROVIDER_KEYS as readonly string[]).includes(key);
@@ -65,13 +86,30 @@ export function isActiveTitleWritingProvider(key: string): key is TitleWritingPr
 export const TITLE_WRITING_DEFAULT_MODELS: Readonly<Record<TitleWritingProviderKey, readonly string[]>> = {
   openai: [],
   anthropic: ["claude-opus-5-5"],
+  // DeepSeek: deepseek-flash (DeepSeek-V4.1-Flash), checked 2026-10-17 at https://api-docs.deepseek.com/ and
+  // https://api-docs.deepseek.com/quick_start/pricing/ ("Use deepseek-flash as the model name"; JSON output supported).
+  // The retired deepseek-chat / deepseek-reasoner list is not restored.
+  deepseek: ["deepseek-flash"],
 };
 
 /**
  * Which ready provider is offered when no default provider is configured (or the configured one is not ready): Claude
- * first. Only a choice offered before a request; a failed request is never moved to another provider.
+ * first. Only a choice offered before a request; a failed request is never moved to another provider. Saving the
+ * DeepSeek quick setup makes DeepSeek the configured default.
  */
-export const TITLE_WRITING_PROVIDER_PREFERENCE: readonly TitleWritingProviderKey[] = ["anthropic", "openai"];
+export const TITLE_WRITING_PROVIDER_PREFERENCE: readonly TitleWritingProviderKey[] = ["anthropic", "openai", "deepseek"];
+
+export const DEEPSEEK_API_KEY_MIN_LENGTH = 16;
+export const DEEPSEEK_API_KEY_MAX_LENGTH = 256;
+/**
+ * Whether a value can be saved as a DeepSeek API key. DeepSeek documents no key format, so no prefix is required: only
+ * a length that a key can have and printable ASCII without spaces (a value that can travel in an Authorization header
+ * unchanged). Null only means the value may be saved; whether it is valid or funded only DeepSeek can answer.
+ */
+export function deepseekKeyProblem(value: string): "unsupported_format" | null {
+  if (value.length < DEEPSEEK_API_KEY_MIN_LENGTH || value.length > DEEPSEEK_API_KEY_MAX_LENGTH) return "unsupported_format";
+  return /^[\x21-\x7e]+$/u.test(value) ? null : "unsupported_format";
+}
 
 /**
  * Claude API keys created in the Claude Console, checked 2026-10-17 against
