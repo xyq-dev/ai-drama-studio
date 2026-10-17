@@ -9,6 +9,7 @@ import { LIMITS, draftStorageKey, nextDraft, readDraft, releaseSubmittedDraft, w
 import { BeginnerShell } from "./beginner-shell";
 import { InspirationPicker, type DirectionState } from "./inspiration-picker";
 import { TitleWritingStart } from "./title-writing-start";
+import { AutoCreationStart } from "./auto-creation-start";
 import styles from "./creator-entry.module.css";
 
 interface ProjectItem {
@@ -252,6 +253,7 @@ export function BeginnerStart({ active }: { active: "/create" | undefined }) {
 
         <div className={styles.startLayout}>
           <div className={styles.startContent}>
+            <AutoCreationStart />
             <TitleWritingStart />
             <section id="manual-start" className={styles.formCard} aria-label="写下想法">
               <label id="idea-label" className={styles.fieldLabel} htmlFor="idea">你想拍一个什么样的故事？</label>
