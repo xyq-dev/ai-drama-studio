@@ -451,6 +451,8 @@ export class PostgresAutoCreationStore implements AutoCreationStore {
       if (redo.length === 0 && run.storySave !== "pending") return { kind: "not_resumable" };
       const sends = redo.some((stage) => stage.stageKey !== "sources") || stages.some((stage) => stage.state === "pending" && stage.stageKey !== "sources");
       if (sends && !request.providerReady) return { kind: "provider_unconfigured" };
+      // The run's frozen call budget is spent: resetting a stage could only stop again before the send.
+      if (sends && run.callsUsed >= run.callCap) return { kind: "budget_exhausted" };
       await client.query(
         `INSERT INTO auto_creation_resume (run_id, workspace_id, idempotency_key, request_hash, confirmed_call_ids, created_at)
          VALUES ($1, $2, $3, $4, $5::jsonb, $6)`, [runId, workspaceId, request.resumeKey, request.requestHash, JSON.stringify(confirmed), nowIso]);

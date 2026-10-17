@@ -724,6 +724,7 @@ export class InMemoryAutoCreationStore implements AutoCreationStore {
     if (redo.length === 0 && run.storySave !== "pending") return { kind: "not_resumable" };
     const sends = redo.some((stage) => stage.stageKey !== "sources") || stages.some((stage) => stage.state === "pending" && stage.stageKey !== "sources");
     if (sends && !request.providerReady) return { kind: "provider_unconfigured" };
+    if (sends && run.callsUsed >= run.callCap) return { kind: "budget_exhausted" };
     this.resumes.push({ runId, key: request.resumeKey, requestHash: request.requestHash });
     for (const stage of redo) Object.assign(stage, { state: "pending", updatedAt: nowIso });
     Object.assign(run, { state: "running", errorCode: null, cancelRequestedAt: null, executorId: null, leaseUntil: null, updatedAt: nowIso });

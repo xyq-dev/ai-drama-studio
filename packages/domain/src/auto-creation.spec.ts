@@ -8,7 +8,7 @@ import {
   type AutoCreationFrozenInput,
   type AutoDirection,
 } from "@ai-drama/contracts";
-import { builtInSources, collectSources } from "./auto-creation-sources";
+import { OCEAN_ENGINE_ENTRY_URLS, builtInSources, collectSources } from "./auto-creation-sources";
 import { buildAutoCreationPrompt, numberTokens, selectDirection, validateAutoStageOutput, type AutoCreationContext } from "./auto-creation";
 
 function input(overrides: Partial<AutoCreationFrozenInput> = {}): AutoCreationFrozenInput {
@@ -52,8 +52,8 @@ describe("research sources and claims", () => {
     expect(builtInSources().filter((item) => item.topic === "market").every((item) => item.status !== "read")).toBe(true);
   });
 
-  it("a dated, recent, readable market page makes the run sourced; an undated one does not", () => {
-    const page = { url: "https://support.oceanengine.com/a", status: "read" as const, title: "t", text: "某平台公开说明：短剧单集时长通常在一到三分钟。", fetchedAt: NOW, note: "" };
+  it("a dated, recent, readable official market page makes the run sourced; an undated one does not", () => {
+    const page = { url: OCEAN_ENGINE_ENTRY_URLS[0], status: "read" as const, title: "t", text: "某平台公开说明：短剧单集时长通常在一到三分钟。", fetchedAt: NOW, note: "" };
     expect(collectSources(input(), [{ ...page, publishedAt: "2026-09-01T00:00:00.000Z" }], NOW).researchMode).toBe("sourced");
     expect(collectSources(input(), [{ ...page, publishedAt: null }], NOW).researchMode).toBe("limited");
   });
@@ -82,6 +82,19 @@ describe("research sources and claims", () => {
     expect(validateAutoStageOutput("research", research({ opportunities: ["用户每天观看60分钟"] }), input(), context()))
       .toMatchObject({ ok: false, code: "unsourced_number" });
     expect(validateAutoStageOutput("research", research({ opportunities: ["约 60 秒一集正好讲完一次反击"] }), input(), context()).ok).toBe(true);
+  });
+
+  it("a page a person named is reference material: even dated and recent, it never makes a run sourced", () => {
+    const page = { url: "https://support.oceanengine.com/help/any", status: "read" as const, title: "帮助", text: "账号设置说明。".repeat(20),
+      publishedAt: "2026-10-01T00:00:00.000Z", fetchedAt: NOW, note: "" };
+    const sources = collectSources(input({ researchFetch: true, referenceUrls: [page.url] }), [page], NOW);
+    expect(sources.researchMode).toBe("limited");
+    expect(sources.sources.find((item) => item.locator === page.url)).toMatchObject({ kind: "public_page", topic: "reference" });
+  });
+
+  it("limitations carry no unsourced number either", () => {
+    expect(validateAutoStageOutput("research", research({ limitations: ["平台数据显示80%的用户会追更"] }), input(), context()))
+      .toMatchObject({ ok: false, code: "unsourced_number" });
   });
 
   it("两 and other Chinese numerals are number claims too", () => {

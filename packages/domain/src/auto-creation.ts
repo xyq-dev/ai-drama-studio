@@ -396,7 +396,8 @@ function checkResearch(input: AutoCreationFrozenInput, output: AutoResearch, con
   const audienceText = [output.audience.primary, ...output.audience.viewingNeeds, ...output.audience.emotionalAppeals].join("\n");
   const audienceNumbers = sourced(audienceText, output.audience.sourceIds);
   if (audienceNumbers) return audienceNumbers;
-  for (const statement of [...output.hypotheses.flatMap((item) => [item.statement, item.howToVerify]), ...output.opportunities]) {
+  // Uncited fields: hypotheses, how to verify them, opportunities and limitations carry no number at all.
+  for (const statement of [...output.hypotheses.flatMap((item) => [item.statement, item.howToVerify]), ...output.opportunities, ...output.limitations]) {
     const token = numberTokens(statement, exempt)[0];
     if (token) return { ok: false, code: "unsourced_number", detail: token };
   }

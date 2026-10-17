@@ -89,6 +89,7 @@ const MESSAGES: Record<string, string> = {
   AUTO_CREATION_NEEDS_CONFIRMATION: "有结果不确定的调用，可能已经计费。确认后才会重新发送。",
   AUTO_CREATION_CONFIRMATION_STALE: "确认的不确定调用和现在的不一致，没有重新发送。请重新查看后再确认。",
   AUTO_CREATION_NOT_RESUMABLE: "这次创作没有需要续跑的阶段。",
+  AUTO_CREATION_BUDGET_EXHAUSTED: "这次创作冻结的调用预算已经用完，续跑也无法发送，没有重置任何阶段。已有成果仍可查看和下载；如需继续，请新建创作。",
   AUTO_CREATION_STORY_NOT_APPROVED: "故事还没有通过人工审核，剧本暂不能写入分集。机器质量检查不能代替人工审核。",
   AUTO_CREATION_STORY_CHANGED: "人工审核通过的故事和生成剧本时用的故事不同，请确认后再写入。",
   AUTO_CREATION_NOT_READY: "剧本包还没有完成。",
@@ -336,6 +337,7 @@ export class AutoCreationService {
       if (prepared.kind === "needs_confirmation") return failure(409, "AUTO_CREATION_NEEDS_CONFIRMATION");
       if (prepared.kind === "stale_confirmation") return failure(409, "AUTO_CREATION_CONFIRMATION_STALE");
       if (prepared.kind === "key_conflict") return failure(409, "IDEMPOTENCY_KEY_REUSED");
+      if (prepared.kind === "budget_exhausted") return failure(409, "AUTO_CREATION_BUDGET_EXHAUSTED", { callsUsed: existing.run.callsUsed, callCap: existing.run.callCap });
       if (prepared.kind === "provider_unconfigured") {
         if (legacy) return failure(409, "AUTO_CREATION_LEGACY_RUN", { providerKey: input.providerKey, model: input.model });
         if (provider?.ok) return failure(409, "AUTO_CREATION_RUN_MODEL_UNAVAILABLE", { providerKey: input.providerKey, model: input.model });

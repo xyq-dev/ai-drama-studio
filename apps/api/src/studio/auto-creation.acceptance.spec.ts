@@ -296,6 +296,27 @@ describe(`automatic creation on PostgreSQL (${scenario} schema)`, () => {
     await q("UPDATE title_writing_run SET state = 'canceled' WHERE id = $1", [titleRun.id]);
   });
 
+  it("a stopped title run is not resumed while an automatic run is writing the same work", async () => {
+    const hold: Array<() => Promise<void>> = [];
+    const { svc, settle } = service({ maxActiveRuns: 5, hold });
+    const id = await project(1);
+    // A title run on this work that stopped before any story existed.
+    const at = new Date().toISOString();
+    const titleRun = { id: randomUUID(), workspaceId, projectId: id, actorId: "server-owner", idempotencyKey: randomUUID(), inputHash: "ef".repeat(32),
+      input: { schema: "ads.title-writing.input.v1", promptVersion: "ads.title-writing.prompt.v1", title: "先停", settings: { episodeCount: 3, episodeSeconds: 90, style: "" },
+        providerKey: "openai", model: "o-1" },
+      state: "running", errorCode: null, cancelRequestedAt: null, executorId: null, leaseUntil: null, callCap: 8, callsUsed: 0, storySave: "pending",
+      storyRevisionId: null, createdAt: at, updatedAt: at } as TitleRunRecord;
+    expect((await titles.createRun(titleRun, { maxActiveRuns: 5 })).kind).toBe("created");
+    await q("UPDATE title_writing_run SET state = 'canceled' WHERE id = $1", [titleRun.id]);
+    const started = await svc.start(id, {}, TOKEN, ctx("auto-over-title"));
+    expect(started.status).toBe(201);
+    const resumed = await titles.prepareResume(workspaceId, id, titleRun.id, { resumeKey: randomUUID(), requestHash: "ab".repeat(32), confirmedCallIds: [],
+      maxActiveRuns: 5, providerReady: true }, new Date().toISOString());
+    expect(resumed.kind).toBe("active");
+    await settle();
+  });
+
   it("after a person approves the story, scripts are written once; a person's own script is kept", async () => {
     plan = {};
     const { svc, settle } = service();

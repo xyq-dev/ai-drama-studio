@@ -687,7 +687,7 @@ export interface AutoCallFinish {
 export type AutoResumePreparation =
   | { kind: "ok" | "replayed"; bundle: AutoRunBundle }
   | { kind: "not_found" | "active" | "active_cap" | "needs_confirmation" | "stale_confirmation" | "key_conflict" | "not_resumable"
-    | "provider_unconfigured" };
+    | "provider_unconfigured" | "budget_exhausted" };
 
 export type AutoScriptPlacement =
   | { kind: "ok"; bundle: AutoRunBundle }

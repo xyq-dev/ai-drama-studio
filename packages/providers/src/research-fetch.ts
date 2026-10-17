@@ -18,6 +18,8 @@ export interface ResearchFetchDeps {
   lookup?: (host: string) => Promise<Array<{ address: string; family: number }>>;
   get?: (url: URL, address: string, family: number, timeoutMs: number, maxBytes: number) => Promise<{ status: number; contentType: string; body: string }>;
   clock?: () => Date;
+  /** Per-URL deadline covering DNS and the request; RESEARCH_FETCH_TIMEOUT_MS by default (tests shorten it). */
+  timeoutMs?: number;
 }
 
 function ipv4Blocked(address: string): boolean {
@@ -143,8 +145,16 @@ function pageText(html: string): { title: string | null; text: string; published
   return { title, text, publishedAt: parsed };
 }
 
+/** Rejects when the work has not settled within ms (the work itself is abandoned, never awaited further). */
+function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("timeout")), ms); });
+  return Promise.race([work, deadline]).finally(() => clearTimeout(timer));
+}
+
 /** Reads each URL once. Failures are recorded as what they are; nothing is retried. */
 export function createResearchFetcher(deps: ResearchFetchDeps): (urls: readonly string[]) => Promise<FetchedPage[]> {
+  const timeoutMs = deps.timeoutMs ?? RESEARCH_FETCH_TIMEOUT_MS;
   const lookup = deps.lookup ?? (async (host: string) => dnsLookup(host, { all: true, verbatim: true }));
   const get = deps.get ?? defaultGet;
   return async (urls) => {
@@ -158,11 +168,13 @@ export function createResearchFetcher(deps: ResearchFetchDeps): (urls: readonly 
         continue;
       }
       const url = new URL(raw);
+      // One deadline per URL, DNS included: the lookup and the request share RESEARCH_FETCH_TIMEOUT_MS.
+      const startedAt = Date.now();
       let addresses: Array<{ address: string; family: number }>;
       try {
-        addresses = await lookup(url.hostname);
+        addresses = await withDeadline(lookup(url.hostname), timeoutMs);
       } catch {
-        pages.push({ ...base, status: "unreadable", note: "域名解析失败，没有读取。" });
+        pages.push({ ...base, status: "unreadable", note: "域名解析失败或超时，没有读取。" });
         continue;
       }
       if (addresses.length === 0 || addresses.some((item) => blockedAddress(item.address))) {
@@ -171,7 +183,8 @@ export function createResearchFetcher(deps: ResearchFetchDeps): (urls: readonly 
       }
       const target = addresses[0]!;
       try {
-        const response = await get(url, target.address, target.family, RESEARCH_FETCH_TIMEOUT_MS, RESEARCH_FETCH_MAX_BYTES);
+        const remaining = Math.max(1, timeoutMs - (Date.now() - startedAt));
+        const response = await withDeadline(get(url, target.address, target.family, remaining, RESEARCH_FETCH_MAX_BYTES), remaining);
         if (response.status >= 300 && response.status < 400) {
           pages.push({ ...base, status: "blocked", note: `页面返回重定向（${String(response.status)}），没有跟随。` });
           continue;

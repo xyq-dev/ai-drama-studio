@@ -158,7 +158,9 @@ function pageSource(sourceId: string, kind: AutoCreationSource["kind"], page: Fe
     fetchedAt: page.fetchedAt,
     readScope: excerpt.length > 0 ? "full_text" : "none",
     status: excerpt.length > 0 ? page.status : page.status === "read" ? "unreadable" : page.status,
-    topic: "market",
+    // Only the known official entries are market material; a page a person named is reference material, so a dated
+    // help or craft page can never make a run "sourced".
+    topic: kind === "official_page" ? "market" : "reference",
     excerpt,
     contentHash: excerpt.length > 0 ? sha256(excerpt) : null,
     limitations: page.note,

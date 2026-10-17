@@ -369,6 +369,20 @@ describe("automatic creation engine", () => {
     expect(store.projects.get(P1)!.episodes.get(1)!.scripts).toHaveLength(0);
   });
 
+  it("a resume that would need a send is refused once the frozen budget is spent; nothing is reset", async () => {
+    const { store, run, engine, seen } = await setup({ callBudget: autoCreationNormalCalls(1), override: (stage) => stage === "review:1" ? "throw" : undefined });
+    await engine.drive(run.id);
+    const bundle = (await store.getRunById(WS, run.id))!;
+    expect(bundle.run).toMatchObject({ state: "needs_attention", callsUsed: autoCreationNormalCalls(1), callCap: autoCreationNormalCalls(1) });
+    const uncertain = autoUncertainCallIds(bundle.stages, bundle.calls);
+    const resumed = await store.prepareResume(WS, P1, run.id, { resumeKey: "r", requestHash: hashAutoResume(run.id, uncertain), confirmedCallIds: uncertain,
+      maxActiveRuns: 5, providerReady: true }, new Date().toISOString());
+    expect(resumed.kind).toBe("budget_exhausted");
+    expect(store.resumes).toHaveLength(0);
+    expect((await store.getRunById(WS, run.id))!.stages.find((stage) => stage.stageKey === "review:1")!.state).toBe("unknown");
+    expect(seen).toHaveLength(autoCreationNormalCalls(1));
+  });
+
   it("a stopped run is not resumed while a title writing run is active on the same work", async () => {
     const { store, run } = await setup();
     await store.requestCancel(WS, P1, run.id, new Date().toISOString());

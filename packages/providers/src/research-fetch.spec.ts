@@ -40,6 +40,26 @@ describe("research page reads", () => {
     expect(requested).toBe(0);
   });
 
+  it("one per-URL deadline covers a DNS lookup that never answers", async () => {
+    let requested = 0;
+    const fetch = createResearchFetcher({ allowedHosts: HOSTS, timeoutMs: 50, lookup: () => new Promise(() => undefined),
+      get: async () => { requested += 1; return { status: 200, contentType: "text/html", body: "" }; } });
+    const started = Date.now();
+    const [page] = await fetch(["https://support.oceanengine.com/a"]);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(page).toMatchObject({ status: "unreadable" });
+    expect(requested).toBe(0);
+  });
+
+  it("the same deadline stops a response that keeps trickling", async () => {
+    const fetch = createResearchFetcher({ allowedHosts: HOSTS, timeoutMs: 50, lookup: async () => [{ address: "203.0.113.10", family: 4 }],
+      get: () => new Promise(() => undefined) });
+    const started = Date.now();
+    const [page] = await fetch(["https://support.oceanengine.com/a"]);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(page).toMatchObject({ status: "unreadable" });
+  });
+
   it("connects to the checked address, never follows redirects and records script shells as unread", async () => {
     const used: string[] = [];
     const answers = [

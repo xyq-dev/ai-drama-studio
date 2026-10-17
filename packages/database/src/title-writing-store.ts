@@ -550,7 +550,13 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
       const running = await client.query<Row>(
         "SELECT project_id FROM title_writing_run WHERE workspace_id = $1 AND state = 'running'", [workspaceId]);
       if (running.rows.some((item) => String(item.project_id) === projectId)) return { kind: "active" };
-      if (running.rows.length >= request.maxActiveRuns) return { kind: "active_cap" };
+      // Running automatic creation runs share the cap, and a work one of them is writing takes no other run.
+      const autoTable = await client.query<Row>("SELECT to_regclass('auto_creation_run') IS NOT NULL AS present");
+      const autoRunning = autoTable.rows[0]?.present === true
+        ? (await client.query<Row>("SELECT project_id FROM auto_creation_run WHERE workspace_id = $1 AND state = 'running'", [workspaceId])).rows
+        : [];
+      if (autoRunning.some((item) => String(item.project_id) === projectId)) return { kind: "active" };
+      if (running.rows.length + autoRunning.length >= request.maxActiveRuns) return { kind: "active_cap" };
       const steps = (await client.query<Row>(`SELECT ${STEP_COLUMNS} FROM title_writing_step WHERE run_id = $1`, [runId])).rows.map(toStep);
       const calls = (await client.query<Row>("SELECT id, step_key, attempt_no, state FROM title_writing_call WHERE run_id = $1", [runId])).rows
         .map((item) => ({ callId: String(item.id), stepKey: item.step_key as TitleWritingStepKey, attemptNo: Number(item.attempt_no),
