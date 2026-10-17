@@ -251,7 +251,7 @@ jobs:
           psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE ${name}"
           first="$(DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate)"
           echo "first run: ${first}"
-          printf '%s\n' "${first}" | grep -Eq "(^|[^0-9])Applied 10 migration\(s\)\.$"
+          printf '%s\n' "${first}" | grep -Eq "(^|[^0-9])Applied 11 migration\(s\)\.$"
           second="$(DATABASE_URL="${url}" pnpm --silent --filter @ai-drama/database migrate)"
           echo "second run: ${second}"
           printf '%s\n' "${second}" | grep -Eq "(^|[^0-9])Applied 0 migration\(s\)\.$"
@@ -263,6 +263,8 @@ jobs:
           test "${anthropic}" = "2"
           candidates="$(psql -h 127.0.0.1 -U postgres -d "${name}" -v ON_ERROR_STOP=1 -At -c "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'writing_candidate_request'")"
           test "${candidates}" = "1"
+          deepseek="$(psql -h 127.0.0.1 -U postgres -d "${name}" -v ON_ERROR_STOP=1 -At -c "SELECT count(*) FROM pg_constraint WHERE conname = 'writing_candidate_request_provider_key_check' AND pg_get_constraintdef(oid) LIKE '%deepseek%'")"
+          test "${deepseek}" = "1"
           psql -h 127.0.0.1 -U postgres -d "${name}" -v ON_ERROR_STOP=1 -At -c "SELECT name FROM schema_migration ORDER BY name"
 
       - name: Run the deploy migration command again on the upgraded acceptance database
