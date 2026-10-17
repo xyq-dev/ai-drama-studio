@@ -112,6 +112,8 @@ export class StudioRuntime implements OnModuleDestroy {
         const presence = await pool.query(
           "SELECT to_regclass('title_writing_run') IS NULL AS missing",
         ) as { rows: { missing: boolean }[] };
+        // The automatic creation migration requires the base migrations, title writing included: no title table, no
+        // automatic run either.
         if (presence.rows[0]?.missing === true) return true;
         if (presence.rows[0]?.missing !== false) throw new Error("Title writing activation probe unavailable");
         const result = await pool.query(
@@ -123,14 +125,16 @@ export class StudioRuntime implements OnModuleDestroy {
         const candidates = await pool.query(
           "SELECT to_regclass('writing_candidate_request') IS NULL AS missing",
         ) as { rows: { missing: boolean }[] };
-        if (candidates.rows[0]?.missing === true) return true;
-        if (candidates.rows[0]?.missing !== false) throw new Error("Writing candidate activation probe unavailable");
-        const open = await pool.query(
-          "SELECT EXISTS(SELECT 1 FROM writing_candidate_request WHERE workspace_id = $1 AND state IN ('reserved', 'submitted')) AS open",
-          [workspaceId],
-        ) as { rows: { open: boolean }[] };
-        if (open.rows[0]?.open !== false) return false;
-        // A running automatic creation run sends with the active configuration as well.
+        if (candidates.rows[0]?.missing !== true) {
+          if (candidates.rows[0]?.missing !== false) throw new Error("Writing candidate activation probe unavailable");
+          const open = await pool.query(
+            "SELECT EXISTS(SELECT 1 FROM writing_candidate_request WHERE workspace_id = $1 AND state IN ('reserved', 'submitted')) AS open",
+            [workspaceId],
+          ) as { rows: { open: boolean }[] };
+          if (open.rows[0]?.open !== false) return false;
+        }
+        // A running automatic creation run sends with the active configuration as well. Its table is independent of the
+        // candidate table: each optional table is probed on its own before the workspace counts as idle.
         const autos = await pool.query("SELECT to_regclass('auto_creation_run') IS NULL AS missing") as { rows: { missing: boolean }[] };
         if (autos.rows[0]?.missing === true) return true;
         if (autos.rows[0]?.missing !== false) throw new Error("Auto creation activation probe unavailable");

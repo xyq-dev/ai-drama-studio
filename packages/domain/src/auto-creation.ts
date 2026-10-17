@@ -328,7 +328,7 @@ export function numberTokens(value: string): string[] {
     .replace(/S-[A-Z]+(?:-[A-Z0-9]+)*/g, " ")
     .replace(/\d+\s*(?:集|秒|分钟|分|场)/g, " ")
     .replace(/9\s*[:：]\s*16/g, " ");
-  const tokens = stripped.match(/\d+(?:\.\d+)?\s*%?|[0-9０-９]+|百分之[一二三四五六七八九十百零]+|[一二三四五六七八九十百千]+(?:成|万|亿|岁)/gu) ?? [];
+  const tokens = stripped.match(/\d+(?:\.\d+)?\s*%?|[0-9０-９]+|百分之[〇零一二两三四五六七八九十百]+|[〇零一二两三四五六七八九十百千]+(?:成|万|亿|岁|倍|分之)/gu) ?? [];
   return tokens.map((token) => token.replace(/\s+/g, ""));
 }
 
@@ -390,8 +390,8 @@ function checkResearch(output: AutoResearch, context: AutoCreationContext): Auto
     const token = numberTokens(statement)[0];
     if (token) return { ok: false, code: "unsourced_number", detail: token };
   }
-  if (context.sources!.researchMode === "limited" && output.audience.basis === "sourced"
-    && !output.audience.sourceIds.every((id) => readable.get(id)?.topic === "market")) {
+  // Limited mode means no readable, dated, recent market source: an audience can then only be a hypothesis.
+  if (context.sources!.researchMode === "limited" && output.audience.basis === "sourced") {
     return { ok: false, code: "unsourced_claim", detail: "audience" };
   }
   return { ok: true, output };
@@ -507,6 +507,7 @@ function checkEpisode(stageKey: string, output: AutoEpisode, context: AutoCreati
     }
     if (scene.shots.some((shot, index) => shot.shotNo !== index + 1)) return { ok: false, code: "invalid_output", detail: "shotNo" };
   }
+  if (formatAutoEpisode(output, bible).length > WRITING_BODY_MAX_CHARS) return { ok: false, code: "too_large", detail: "script" };
   return { ok: true, output };
 }
 
@@ -751,7 +752,8 @@ export function formatAutoEpisode(episode: AutoEpisode, bible: AutoBible): strin
     lines.push("");
   }
   lines.push(`交接事实：${episode.handoffFacts.join("；")}`);
-  return lines.join("\n").slice(0, WRITING_BODY_MAX_CHARS);
+  // Never cut: validation refuses an episode whose text would not fit (checkEpisode).
+  return lines.join("\n");
 }
 
 export const AUTO_DRAFT_BANNER = "【AI 自动创作草稿｜机器生成，机器质量检查不等于人工审核，未经人工审核不得发布】";
@@ -799,6 +801,12 @@ export function formatAutoStory(runId: string, quality: "passed" | "needs_work",
   return text.length <= WRITING_BODY_MAX_CHARS ? text : null;
 }
 
+/** The script package is complete when every stage of the run completed (a later save conflict does not undo it). */
+export function autoPackageComplete(stages: readonly AutoStageRecord[]): boolean {
+  return stages.length > 0 && stages.every((stage) => stage.state === "completed")
+    && stages.some((stage) => autoStageKind(stage.stageKey) === "review");
+}
+
 export interface AutoPackageMeta {
   runId: string;
   projectId: string;
@@ -828,7 +836,7 @@ export function autoPackageJson(meta: AutoPackageMeta, stages: readonly AutoStag
       billing: "unknown",
     },
     status: {
-      scriptPackage: meta.state === "completed" ? "ready" : "incomplete",
+      scriptPackage: autoPackageComplete(stages) ? "ready" : "incomplete",
       video: "not_started",
       humanReview: "not_reviewed",
       publication: "not_allowed_without_human_review",
@@ -862,7 +870,7 @@ export function autoPackageMarkdown(meta: AutoPackageMeta, stages: readonly Auto
   const bible = context.bible;
   push(`# ${bible?.title ?? "AI 自动创作"}（成品剧本包）`, "", `> ${AUTO_DRAFT_BANNER}`, "");
   push("## 状态", "",
-    `- 剧本包：${meta.state === "completed" ? "已完成" : "未完成"}；机器质量检查：${meta.quality === "passed" ? "通过（内部参考）" : meta.quality === "needs_work" ? "待完善" : "未完成"}`,
+    `- 剧本包：${autoPackageComplete(stages) ? "已完成" : "未完成"}；机器质量检查：${meta.quality === "passed" ? "通过（内部参考）" : meta.quality === "needs_work" ? "待完善" : "未完成"}`,
     "- 视频成片：未开始（本功能只交付剧本与生产准备包，不生成图片、语音或视频）",
     "- 人工审核：未进行；对外发布：需要人工审核后另行决定",
     `- 模型：${meta.input.providerKey} · ${meta.input.model}；调用 ${String(meta.callsUsed)} / ${String(meta.callCap)} 次；修改轮次 ${String(meta.revisionRoundsUsed)}；费用：未知（以服务商账单为准）`,

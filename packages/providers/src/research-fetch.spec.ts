@@ -22,6 +22,15 @@ describe("research page reads", () => {
     expect(blockedAddress("106.55.24.179")).toBe(false);
   });
 
+  it("decodes every IPv6 form that carries an IPv4 address before judging it", () => {
+    for (const address of ["::ffff:a00:1", "::ffff:7f00:1", "::ffff:a9fe:a9fe", "0:0:0:0:0:ffff:7f00:0001", "::ffff:127.0.0.1",
+      "::7f00:1", "64:ff9b::a00:1", "2002:a00:1::", "fec0::1", "ff02::1", "2001:db8::1"]) {
+      expect(blockedAddress(address), address).toBe(true);
+    }
+    expect(blockedAddress("::ffff:6a37:18b3")).toBe(false); // 106.55.24.179
+    expect(blockedAddress("2400:3200::1")).toBe(false);
+  });
+
   it("an allowed host resolving to a private address is never requested", async () => {
     let requested = 0;
     const fetch = createResearchFetcher({ allowedHosts: HOSTS, lookup: async () => [{ address: "10.0.0.5", family: 4 }],

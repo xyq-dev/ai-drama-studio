@@ -72,10 +72,16 @@ function clearPending(draft: PendingAutoStart): void {
   }
 }
 
-function numberOrNull(value: string): number | null {
-  const parsed = Number(value);
-  return value.trim() === "" || !Number.isInteger(parsed) ? null : parsed;
+/** An optional whole number: empty is "not set"; anything else must be an integer within the range, or it is invalid. */
+function wholeNumber(value: string, min: number, max: number): { kind: "empty" } | { kind: "ok"; value: number } | { kind: "invalid" } {
+  const trimmed = value.trim();
+  if (trimmed === "") return { kind: "empty" };
+  if (!/^\d+$/u.test(trimmed)) return { kind: "invalid" };
+  const parsed = Number(trimmed);
+  return parsed >= min && parsed <= max ? { kind: "ok", value: parsed } : { kind: "invalid" };
 }
+
+const valueOr = <T,>(parsed: ReturnType<typeof wholeNumber>, fallback: T): number | T => parsed.kind === "ok" ? parsed.value : fallback;
 
 function startError(caught: unknown, projectCreated: boolean): string {
   const work = projectCreated ? "作品已经创建。" : "";
@@ -142,9 +148,16 @@ export function AutoCreationStart() {
   const normal = autoCreationNormalCalls(episodeCount);
   const worst = autoCreationWorstCalls(episodeCount, rounds);
   const hardCap = autoCreationHardCap(episodeCount, rounds);
-  const budgetValue = numberOrNull(budget) ?? hardCap;
-  const budgetProblem = budgetValue < normal ? `调用预算至少要 ${String(normal)} 次（正常流程所需）。`
-    : budgetValue > hardCap ? `调用预算最多 ${String(hardCap)} 次。` : null;
+  const budgetParsed = wholeNumber(budget, 1, 60);
+  const budgetValue = valueOr(budgetParsed, hardCap);
+  const charactersParsed = wholeNumber(maxCharacters, 1, 8);
+  const locationsParsed = wholeNumber(maxLocations, 1, 6);
+  // Every number is checked before anything is created: an invalid value is never treated as "not set".
+  const budgetProblem = budgetParsed.kind === "invalid" ? "调用预算必须是整数。"
+    : budgetValue < normal ? `调用预算至少要 ${String(normal)} 次（正常流程所需）。`
+      : budgetValue > hardCap ? `调用预算最多 ${String(hardCap)} 次。` : null;
+  const constraintProblem = charactersParsed.kind === "invalid" ? "出场人物最多人数必须是 1–8 的整数，或留空由 AI 决定。"
+    : locationsParsed.kind === "invalid" ? "地点最多个数必须是 1–6 的整数，或留空由 AI 决定。" : null;
   const locked = busy || pending !== null;
 
   async function send(draft: PendingAutoStart) {
@@ -192,12 +205,13 @@ export function AutoCreationStart() {
     if (unavailable) return setError(unavailable);
     if (target.kind === "blocked") return setError(target.reason);
     if (budgetProblem) return setError(budgetProblem);
+    if (constraintProblem) return setError(constraintProblem);
     if (needsToken && token.trim().length === 0) return setError("请先填写操作者令牌。");
     if (materialText.trim().length > 0 && !materialRights) return setError("请确认你拥有这份资料的使用权限，或清空资料。");
     const request: AutoStartBody = {
       idea: idea.trim(),
       constraints: {
-        genre: genre.trim(), audience: audience.trim(), maxCharacters: numberOrNull(maxCharacters), maxLocations: numberOrNull(maxLocations),
+        genre: genre.trim(), audience: audience.trim(), maxCharacters: valueOr(charactersParsed, null), maxLocations: valueOr(locationsParsed, null),
         forbiddenThemes: forbidden.split(/[,，、]/u).map((item) => item.trim()).filter(Boolean).slice(0, 5), endingRequirement: ending.trim(),
       },
       materials: materialText.trim().length > 0
@@ -286,12 +300,12 @@ export function AutoCreationStart() {
             <input type="checkbox" checked={materialRights} disabled={locked} onChange={(event) => setMaterialRights(event.target.checked)} />
             我拥有这份资料的使用权限。AI 只分析结构和需求，不复制台词、人物组合或具体情节。
           </label>
-          {readyProviders.length > 1 ? (
+          {readyProviders.length > 1 || (target.kind === "blocked" && readyProviders.length > 0) ? (
             <>
               <label className={styles.label} htmlFor="auto-provider">模型服务</label>
               <select id="auto-provider" className={styles.input} value={providerKey} disabled={locked}
                 onChange={(event) => { setProviderKey(event.target.value as TitleWritingProviderKey); setProviderExplicit(true); }}>
-                {target.kind === "blocked" ? <option value={providerKey} disabled>{providerKey}（暂不可用）</option> : null}
+                {target.kind === "blocked" ? <option value={providerKey} disabled>{options?.providers.find((item) => item.providerKey === providerKey)?.label ?? providerKey}（暂不可用）</option> : null}
                 {readyProviders.map((item) => <option key={item.providerKey} value={item.providerKey}>{item.label}</option>)}
               </select>
             </>
@@ -318,6 +332,7 @@ export function AutoCreationStart() {
           </ul>
         ) : null}
         {budgetProblem ? <p className={styles.warning} role="status">{budgetProblem}</p> : null}
+        {constraintProblem ? <p className={styles.warning} role="status">{constraintProblem}</p> : null}
         {needsToken && options && !unavailable ? (
           <>
             <label className={styles.label} htmlFor="auto-token">AI 自动创作的操作者令牌</label>

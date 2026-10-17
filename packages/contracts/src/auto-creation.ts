@@ -390,7 +390,8 @@ export type AutoEpisode = z.infer<ReturnType<typeof autoEpisodeSchema>>;
 
 export function autoRevisionSchema(episodeCount: number) {
   return autoEpisodeSchema(episodeCount).extend({
-    changes: z.array(z.object({ issueId: z.string().regex(/^(R[1-9]|R10|K[1-9][0-9]?)$/), change: text(1, 150) }).strict()).min(1).max(10),
+    // R1–R10 from the AI review; K1… from the deterministic checks, which have no fixed count.
+    changes: z.array(z.object({ issueId: z.string().regex(/^(R[1-9]|R10|K[1-9][0-9]{0,3})$/), change: text(1, 150) }).strict()).min(1).max(10),
   }).strict();
 }
 export type AutoRevision = z.infer<ReturnType<typeof autoRevisionSchema>>;
@@ -572,7 +573,7 @@ export function autoCreationJsonSchema(kind: AutoCreationStageKind, episodeCount
       return { name: "auto_episode", schema: episode };
     case "revise":
       return { name: "auto_revision", schema: { ...episode, required: [...episode.required, "changes"], properties: {
-        ...episode.properties, changes: arr(obj({ issueId: str(3), change: str(150) }), 1, 10) } } };
+        ...episode.properties, changes: arr(obj({ issueId: str(5), change: str(150) }), 1, 10) } } };
     case "review":
       return { name: "auto_review", schema: obj({
         schema: enumOf([AUTO_CREATION_REVIEW_SCHEMA]),

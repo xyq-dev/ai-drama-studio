@@ -5,6 +5,7 @@ import {
   autoCreationWorstCalls,
   autoCreationInitialStageKeys,
   autoCreationConstraintsSchema,
+  autoRevisionSchema,
   type AutoCreationConstraints,
   type AutoCreationFrozenInput,
   type TitleWritingProviderKey,
@@ -12,7 +13,8 @@ import {
 import { AUTO_DRAFT_BANNER, autoPackageJson, autoPackageMarkdown, AUTO_CREATION_SYSTEM_PROMPTS } from "@ai-drama/domain";
 import { titleWritingProviderConfigs, type WritingProviderConfig } from "./text-writing";
 import { AutoCreationEngine, InMemoryAutoCreationStore, autoRunView, autoScriptsOf, autoUncertainCallIds, hashAutoResume, newAutoRun } from "./auto-creation-engine";
-import { autoFixtureTransport, type AutoFixtureExchange, type AutoFixturePlan } from "./auto-creation-fixtures";
+import { autoFixtureTransport, fixtureAutoEpisode, type AutoFixtureExchange, type AutoFixturePlan } from "./auto-creation-fixtures";
+import { messagesAnswer } from "./title-writing-fixtures";
 
 const WS = "11111111-1111-4111-8111-111111111111";
 const P1 = "22222222-2222-4222-8222-222222222222";
@@ -303,8 +305,14 @@ describe("automatic creation engine", () => {
     };
     await engine.drive(run.id);
     const result = await view();
-    expect(result).toMatchObject({ state: "needs_attention", errorCode: "story_conflict", storySave: "conflict" });
+    expect(result).toMatchObject({ state: "needs_attention", errorCode: "story_conflict", storySave: "conflict", packageStatus: "ready" });
     expect(store.projects.get(P1)!.stories.map((item) => item.text)).toEqual(["人工写的故事"]);
+    // The downloaded package says the same as the view: every stage completed, so the script package is ready.
+    const bundle = (await store.getRunById(WS, run.id))!;
+    const json = autoPackageJson({ runId: run.id, projectId: P1, input: bundle.run.input, quality: bundle.run.quality, state: bundle.run.state,
+      callsUsed: bundle.run.callsUsed, callCap: bundle.run.callCap, revisionRoundsUsed: bundle.run.revisionRoundsUsed, storySave: bundle.run.storySave,
+      generatedAt: new Date().toISOString() }, bundle.stages) as { status: { scriptPackage: string } };
+    expect(json.status.scriptPackage).toBe("ready");
   });
 
   it("scripts are written only after a person approves the story; a person's script is never overwritten; a repeat writes nothing", async () => {
@@ -324,6 +332,25 @@ describe("automatic creation engine", () => {
     expect(episodes.get(1)!.scripts).toHaveLength(1);
     const view = autoRunView((await store.getRunById(WS, run.id))!);
     expect(view.stages.filter((stage) => stage.kind === "episode").map((stage) => stage.scriptSave)).toEqual(["saved", "conflict", "saved"]);
+  });
+
+  it("an episode whose script would exceed the editor's limit is refused, never cut", async () => {
+    const long = "很".repeat(299);
+    const big = fixtureAutoEpisode(1);
+    big.scenes = Array.from({ length: 10 }, (_, index) => ({ ...big.scenes[1]!, sceneNo: index + 1, action: long,
+      dialogue: Array.from({ length: 8 }, () => ({ characterId: "C1", line: "很".repeat(80), delivery: "压着火" })),
+      shots: Array.from({ length: 6 }, (_, shot) => ({ shotNo: shot + 1, framing: "近景", description: "很".repeat(120), seconds: 1 })),
+      assetNeeds: ["很".repeat(60), "很".repeat(60), "很".repeat(60), "很".repeat(60)] }));
+    const { run, engine, view } = await setup({ override: (stage) => stage === "episode:1"
+      ? { status: 200, body: messagesAnswer(big) } : undefined });
+    await engine.drive(run.id);
+    const result = await view();
+    expect(result.stages.find((stage) => stage.stageKey === "episode:1")).toMatchObject({ state: "rejected", errorCode: "too_large", output: null });
+  });
+
+  it("deterministic finding ids past K99 can still be answered by a revision", () => {
+    expect(autoRevisionSchema(1).shape.changes.element.shape.issueId.safeParse("K120").success).toBe(true);
+    expect(autoRevisionSchema(1).shape.changes.element.shape.issueId.safeParse("X1").success).toBe(false);
   });
 
   it("an issue whose quote is not in the text is kept but never blocks or drives a revision", async () => {

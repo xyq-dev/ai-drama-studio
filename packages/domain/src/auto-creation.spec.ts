@@ -80,6 +80,25 @@ describe("research sources and claims", () => {
     expect(numberTokens("1 集 60 秒，9:16，见 F1、S-KB-CRAFT")).toEqual([]);
   });
 
+  it("两 and other Chinese numerals are number claims too", () => {
+    for (const statement of ["两成观众偏爱复仇", "单集两万播放", "百分之六十", "三十岁以上"]) {
+      expect(numberTokens(statement).length, statement).toBeGreaterThan(0);
+    }
+    expect(validateAutoStageOutput("research", research({ opportunities: ["两成用户会追更"] }), input(), context()))
+      .toMatchObject({ ok: false, code: "unsourced_number" });
+  });
+
+  it("in limited mode an audience is never sourced, even when it cites a readable but undated market page", () => {
+    const page = { url: "https://support.oceanengine.com/a", status: "read" as const, title: "t", text: "公开说明：短剧观众常在通勤时观看。",
+      publishedAt: null, fetchedAt: NOW, note: "" };
+    const sources = collectSources(input(), [page], NOW);
+    expect(sources.researchMode).toBe("limited");
+    const cited = sources.sources.find((item) => item.locator === page.url)!.sourceId;
+    const result = validateAutoStageOutput("research", research({ audience: { primary: "通勤观众", viewingNeeds: ["x"], emotionalAppeals: ["y"], basis: "sourced",
+      sourceIds: [cited] } }), input(), { sources, episodes: new Map(), reviews: [] });
+    expect(result).toMatchObject({ ok: false, code: "unsourced_claim" });
+  });
+
   it("an audience marked sourced in limited mode is refused", () => {
     expect(validateAutoStageOutput("research", research({ audience: { primary: "x", viewingNeeds: ["x"], emotionalAppeals: ["y"], basis: "sourced", sourceIds: ["S-KB-CRAFT"] } }), input(), context()))
       .toMatchObject({ ok: false, code: "unsourced_claim" });

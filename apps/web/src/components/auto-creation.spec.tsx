@@ -84,6 +84,34 @@ describe("AI 自动创作 start card", () => {
     expect(calls.filter((call) => call.method === "POST")).toHaveLength(0);
   });
 
+  it.each([["auto-budget", "3.5", "整数"], ["auto-budget", "abc", "整数"], ["auto-characters", "abc", "1–8"], ["auto-characters", "9", "1–8"], ["auto-locations", "0", "1–6"]])(
+    "an invalid %s value %s is refused before anything is created", async (id, value, message) => {
+      const calls = server(options());
+      render(<AutoCreationStart />);
+      const button = await screen.findByRole("button", { name: "AI 自动创作" });
+      await waitFor(() => expect(screen.getByTestId("auto-provider-target").textContent).toContain("DeepSeek"));
+      fireEvent.change(document.getElementById(id)!, { target: { value } });
+      fireEvent.click(button);
+      await waitFor(() => expect(screen.getByRole("alert").textContent).toContain(message));
+      expect(calls.filter((call) => call.method === "POST")).toHaveLength(0);
+    });
+
+  it("with the default blocked and exactly one other provider ready, the person can choose it explicitly", async () => {
+    const calls = server(options({ providers: [
+      { providerKey: "deepseek", label: "DeepSeek", ready: false, models: [], defaultModel: null, missing: ["DEEPSEEK_API_KEY"] },
+      { providerKey: "anthropic", label: "Claude", ready: true, models: ["claude-opus-5-5"], defaultModel: "claude-opus-5-5", missing: [] },
+    ] }), (call) => call.url === "/api/v1/projects" ? json({ id: P1 }, 201) : json({ run: { runId: RUN, projectId: P1, state: "running" } }, 201));
+    vi.stubGlobal("location", { ...window.location, assign: vi.fn() });
+    render(<AutoCreationStart />);
+    const button = await screen.findByRole("button", { name: "AI 自动创作" });
+    const select = await screen.findByLabelText("模型服务");
+    fireEvent.change(select, { target: { value: "anthropic" } });
+    await waitFor(() => expect(screen.getByTestId("auto-provider-target").textContent).toContain("Claude · claude-opus-5-5"));
+    fireEvent.click(button);
+    await waitFor(() => expect(calls.filter((call) => call.method === "POST")).toHaveLength(2));
+    expect(calls.filter((call) => call.method === "POST")[1]!.body).toMatchObject({ providerKey: "anthropic" });
+  });
+
   it("creates the work with its plan, then starts the run with the frozen request and its own key", async () => {
     const calls = server(options(), (call) => call.url === "/api/v1/projects"
       ? json({ id: P1 }, 201)
@@ -132,5 +160,26 @@ describe("AI 自动创作 run page", () => {
     expect(screen.getByTestId("auto-video-status").textContent).toContain("未开始");
     expect(screen.getByTestId("auto-open-issues").textContent).toContain("开场没有主动选择");
     expect(screen.getByTestId("auto-download-md").getAttribute("href")).toBe(`/api/v1/projects/${P1}/auto-runs/${RUN}/package?format=markdown`);
+  });
+
+  it("after a person edited the story in review, placement asks for an explicit confirmation and then sends it", async () => {
+    const bodies: unknown[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string, init?: RequestInit) => {
+      if (input.endsWith("/auto-runs/latest")) return json({ run: run() });
+      if (input.endsWith("/scripts")) {
+        const body = JSON.parse(String(init?.body)) as { acceptStoryChanged: boolean };
+        bodies.push(body);
+        return body.acceptStoryChanged ? json({ run: run() }) : json({ error: { code: "AUTO_CREATION_STORY_CHANGED", message: "故事已改" } }, 409);
+      }
+      return json(options());
+    }));
+    render(<AutoCreationRun projectId={P1} />);
+    const place = await screen.findByRole("button", { name: "写入分集剧本草稿" });
+    fireEvent.click(place);
+    const confirm = await screen.findByTestId("auto-accept-story-changed");
+    expect((place as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(confirm.querySelector("input")!);
+    fireEvent.click(place);
+    await waitFor(() => expect(bodies).toEqual([{ acceptStoryChanged: false }, { acceptStoryChanged: true }]));
   });
 });

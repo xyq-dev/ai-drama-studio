@@ -68,6 +68,9 @@ export function AutoCreationRun({ projectId, client = defaultClient }: { project
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
+  // The approved story differs from the one the scripts were written from (a person edited it in review).
+  const [storyChanged, setStoryChanged] = useState(false);
+  const [acceptStoryChanged, setAcceptStoryChanged] = useState(false);
   const [needsToken, setNeedsToken] = useState(false);
   const [token, setToken] = useState("");
   const reading = useRef(false);
@@ -107,6 +110,7 @@ export function AutoCreationRun({ projectId, client = defaultClient }: { project
       setRun(await work());
       setConfirmed(false);
     } catch (caught) {
+      if (caught instanceof TitleWritingError && caught.code === "AUTO_CREATION_STORY_CHANGED") setStoryChanged(true);
       setActionError(caught instanceof TitleWritingError ? caught.detail : fallback);
       // An unanswered resume keeps its key so that a retry is the same action.
       await read();
@@ -212,9 +216,15 @@ export function AutoCreationRun({ projectId, client = defaultClient }: { project
         {run.storySave === "saved" && run.state !== "running" ? (
           <p className={styles.helper}>
             故事经人工审核通过后，可以把各集剧本一次写入作品：
-            <button className={styles.textLink} type="button" disabled={busy}
-              onClick={() => void act(() => client.placeScripts(projectId, run.runId, false), "写入没有确认。")}>写入分集剧本草稿</button>
+            <button className={styles.textLink} type="button" disabled={busy || (storyChanged && !acceptStoryChanged)}
+              onClick={() => void act(() => client.placeScripts(projectId, run.runId, storyChanged && acceptStoryChanged), "写入没有确认。")}>写入分集剧本草稿</button>
           </p>
+        ) : null}
+        {storyChanged && run.storySave === "saved" ? (
+          <label className={styles.check} data-testid="auto-accept-story-changed">
+            <input type="checkbox" checked={acceptStoryChanged} onChange={(event) => setAcceptStoryChanged(event.target.checked)} />
+            审核通过的故事和生成剧本时用的故事不同（审核时改过）。我确认仍按 AI 生成的分集剧本写入草稿，之后再自行修改。
+          </label>
         ) : null}
         {actionError ? <p className={styles.error} role="alert">{actionError}</p> : null}
 

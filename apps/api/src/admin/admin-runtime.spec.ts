@@ -309,6 +309,16 @@ describe.skipIf(process.platform === "win32")("StudioRuntime managed model start
     expect(await applied.adminModels!.view()).toMatchObject({ activeRevision: 2, activationDeferred: false });
   });
 
+  it("still waits for a running automatic creation run on a database without the candidate table", async () => {
+    const env = await environment();
+    await savePending(env);
+    candidateTableMissing = true;
+    autoTableMissing = false;
+    autoRunning = true;
+    const deferred = await open(env);
+    expect(await deferred.adminModels!.view()).toMatchObject({ activeRevision: 0, activationDeferred: true });
+  });
+
   it("clears all maintenance timers and closes the pool on runtime teardown", async () => {
     const interval = vi.spyOn(globalThis, "setInterval");
     const clear = vi.spyOn(globalThis, "clearInterval");

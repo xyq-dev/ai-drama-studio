@@ -33,17 +33,48 @@ function ipv4Blocked(address: string): boolean {
     || (a === 198 && (b === 18 || b === 19));
 }
 
-/** True for every address a server-side read must never reach. */
+/** The eight 16-bit groups of an IPv6 address in any textual form (zero compression, embedded IPv4), or null. */
+export function ipv6Groups(address: string): number[] | null {
+  let text = address.toLowerCase().replace(/%.*$/u, "");
+  const dotted = /(\d+\.\d+\.\d+\.\d+)$/u.exec(text)?.[1];
+  if (dotted) {
+    const parts = dotted.split(".").map(Number);
+    if (parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return null;
+    text = `${text.slice(0, -dotted.length)}${((parts[0]! << 8) | parts[1]!).toString(16)}:${((parts[2]! << 8) | parts[3]!).toString(16)}`;
+  }
+  const halves = text.split("::");
+  if (halves.length > 2) return null;
+  const head = halves[0] ? halves[0].split(":") : [];
+  const tail = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
+  const fill = halves.length === 2 ? 8 - head.length - tail.length : 0;
+  if (fill < 0 || (halves.length === 1 && head.length !== 8)) return null;
+  const groups = [...head, ...Array<string>(fill).fill("0"), ...tail].map((group) => /^[0-9a-f]{1,4}$/u.test(group) ? parseInt(group, 16) : NaN);
+  return groups.length === 8 && groups.every((group) => Number.isInteger(group)) ? groups : null;
+}
+
+/**
+ * True for every address a server-side read must never reach. IPv6 is decoded to its groups first, so every textual
+ * form of an IPv4-mapped (::ffff:0:0/96), IPv4-compatible (::/96) or NAT64 (64:ff9b::/96) address is judged by the IPv4
+ * address it carries.
+ */
 export function blockedAddress(address: string): boolean {
   const family = isIP(address);
   if (family === 4) return ipv4Blocked(address);
   if (family !== 6) return true;
-  const lower = address.toLowerCase();
-  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(lower)?.[1];
-  if (mapped) return ipv4Blocked(mapped);
-  return lower === "::" || lower === "::1" || lower.startsWith("fc") || lower.startsWith("fd") || lower.startsWith("fe8")
-    || lower.startsWith("fe9") || lower.startsWith("fea") || lower.startsWith("feb") || lower.startsWith("ff")
-    || lower.startsWith("fd00:ec2") || lower.startsWith("64:ff9b");
+  const groups = ipv6Groups(address);
+  if (!groups) return true;
+  const embedded = () => `${String(groups[6]! >> 8)}.${String(groups[6]! & 255)}.${String(groups[7]! >> 8)}.${String(groups[7]! & 255)}`;
+  const zeros = (count: number) => groups.slice(0, count).every((group) => group === 0);
+  if (zeros(5) && groups[5] === 0xffff) return ipv4Blocked(embedded());
+  if (zeros(6)) return true; // ::, ::1 and the deprecated IPv4-compatible block
+  if (groups[0] === 0x64 && groups[1] === 0xff9b) return true; // NAT64 can reach any IPv4 address
+  const first = groups[0]!;
+  return (first & 0xfe00) === 0xfc00 // unique local fc00::/7
+    || (first & 0xffc0) === 0xfe80 // link-local fe80::/10
+    || (first & 0xffc0) === 0xfec0 // site-local fec0::/10
+    || (first & 0xff00) === 0xff00 // multicast
+    || (first === 0x2001 && groups[1] === 0x0db8) // documentation
+    || first === 0x2002; // 6to4 can embed private IPv4
 }
 
 /** Why a URL may not be read, or null. */
@@ -87,6 +118,10 @@ function defaultGet(url: URL, address: string, family: number, timeoutMs: number
         body: Buffer.concat(chunks).toString("utf8") }));
       response.on("error", reject);
     });
+    // An absolute deadline: the socket timeout above only measures inactivity, and a trickling server must not hold
+    // the stage open past timeoutMs.
+    const deadline = setTimeout(() => req.destroy(new Error("timeout")), timeoutMs);
+    req.on("close", () => clearTimeout(deadline));
     req.on("timeout", () => req.destroy(new Error("timeout")));
     req.on("error", reject);
     req.end();
