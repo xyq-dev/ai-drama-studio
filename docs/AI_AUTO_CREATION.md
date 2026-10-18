@@ -113,9 +113,9 @@ DATABASE_URL=<业务库连接串，只在进程环境中> pnpm --filter @ai-dram
 
 | 项 | 结果 |
 | --- | --- |
-| 单元/组件 | contracts 45、domain 157、providers 238（自动创作引擎 21、页面读取 4）、database 113、api 309、web 694 |
+| 单元/组件 | contracts 45、domain 162、providers 248（自动创作引擎 26、页面读取 7）、database 114、api 309、web 703 |
 | 注入缺陷 | 关闭修改目标、去掉数字守卫、去掉整轮预算检查、默认供应商被静默替换、不核对事实引文：对应测试均失败 |
-| PostgreSQL 16（一次性库，本机 embedded） | `auto-creation:acceptance` 在测试站组合 / 基础七个 / 含拆解三种起点各 11/11 |
+| PostgreSQL 16（一次性库，本机 embedded） | `auto-creation:acceptance` 在测试站组合 / 基础七个 / 含拆解三种起点各 13/13（CI 一次性 PostgreSQL 16）|
 | 真实浏览器 | `auto-creation:browser-acceptance` 3/3：Chrome + 构建后的 Web + 真实 API + 站点登录 + 一次性库，1280 与 390 |
 | 回归 | 标题 API 15、标题浏览器 5、在线写作浏览器 6、拆解 API 19、候选/供应商/标题存储迁移验收均通过 |
 
