@@ -362,6 +362,7 @@ export class AutoCreationService {
     if (placed.kind !== "ok") {
       if (placed.kind === "not_found") return failure(404, "NOT_FOUND");
       if (placed.kind === "not_ready") return failure(409, "AUTO_CREATION_NOT_READY");
+      if (placed.kind === "story_not_saved") return failure(409, "AUTO_CREATION_STORY_NOT_SAVED");
       if (placed.kind === "story_not_approved") return failure(409, "AUTO_CREATION_STORY_NOT_APPROVED");
       if (placed.kind === "plan_mismatch") return failure(409, "AUTO_CREATION_PLAN_MISMATCH");
       return failure(409, "AUTO_CREATION_STORY_CHANGED");

@@ -684,6 +684,18 @@ export interface AutoCallFinish {
   usage: TitleWritingUsageView;
 }
 
+/**
+ * Stop reasons a resume cannot change: every stage completed and the stored outputs could only end the same way again
+ * (the same story is formatted again and is still too large). Such a run is final; its package stays readable.
+ */
+export const AUTO_CREATION_FINAL_ERROR_CODES: readonly string[] = ["story_too_large"];
+
+/** True when nothing is left to redo and the run's stop reason is final: a resume would only stop the same way. */
+export function autoRunSettledForGood(run: { errorCode: string | null }, stages: ReadonlyArray<{ state: string }>): boolean {
+  return run.errorCode !== null && AUTO_CREATION_FINAL_ERROR_CODES.includes(run.errorCode)
+    && stages.length > 0 && stages.every((stage) => stage.state === "completed");
+}
+
 export type AutoResumePreparation =
   | { kind: "ok" | "replayed"; bundle: AutoRunBundle }
   | { kind: "not_found" | "active" | "active_cap" | "needs_confirmation" | "stale_confirmation" | "key_conflict" | "not_resumable"
@@ -691,7 +703,7 @@ export type AutoResumePreparation =
 
 export type AutoScriptPlacement =
   | { kind: "ok"; bundle: AutoRunBundle }
-  | { kind: "not_found" | "not_ready" | "story_not_approved" | "story_changed" | "plan_mismatch" };
+  | { kind: "not_found" | "not_ready" | "story_not_saved" | "story_not_approved" | "story_changed" | "plan_mismatch" };
 
 /**
  * Storage of automatic creation runs. Every method is scoped to one workspace. Calls are reserved under the same

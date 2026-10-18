@@ -183,6 +183,127 @@ describe("AI 自动创作 run page", () => {
     expect(screen.getByTestId("auto-script-save-episode:2").textContent).toContain("没有覆盖");
   });
 
+  function uncertainRun(callIds: string[]): AutoCreationRunView {
+    const call = (callId: string, attemptNo: number, state: "unknown" | "completed") => ({ callId, stageKey: "review:1", attemptNo, providerKey: "deepseek" as const,
+      model: "deepseek-flash", responseModel: null, providerRequestId: null, state, errorCode: state === "unknown" ? "timeout" : null,
+      usage: { status: "unknown" as const, inputTokens: null, outputTokens: null, totalTokens: null }, billingStatus: "unknown" as const,
+      createdAt: "2026-10-18T00:00:00Z", finishedAt: null });
+    return run({ state: "needs_attention", errorCode: "timeout", quality: "pending", storySave: "pending", storyRevisionId: null, packageStatus: "in_progress",
+      stages: [{ stageKey: "review:1", kind: "review", state: "unknown", attemptNo: callIds.length, errorCode: "timeout", output: null, upstreamChanged: false,
+        supersededBy: null, scriptSave: null, scriptRevisionId: null }],
+      calls: callIds.map((callId, index) => call(callId, index + 1, index + 1 === callIds.length ? "unknown" : "completed")) } as Partial<AutoCreationRunView>);
+  }
+
+  it("a resume whose answer was lost is replayed with its own key and confirmations, even after another call became uncertain", async () => {
+    const A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    let latest = uncertainRun([A]);
+    const resumes: Array<{ key: string | null; body: unknown; token: string | null }> = [];
+    let lose = true;
+    vi.stubGlobal("fetch", vi.fn(async (input: string, init?: RequestInit) => {
+      if (input.endsWith("/auto-runs/latest")) return json({ run: latest });
+      if (input.endsWith("/resume")) {
+        const headers = new Headers(init?.headers);
+        resumes.push({ key: headers.get("Idempotency-Key"), body: JSON.parse(String(init?.body)), token: headers.get("X-Operator-Token") });
+        if (lose) {
+          // The server accepted the resume with [A]; the answer never arrived. The run went on and call B became uncertain.
+          lose = false;
+          latest = uncertainRun([A, B]);
+          throw new TypeError("network down");
+        }
+        return json({ run: latest });
+      }
+      return json(options({ operatorTokenRequired: true }));
+    }));
+    const view = render(<AutoCreationRun projectId={P1} />);
+    fireEvent.click(await screen.findByRole("checkbox"));
+    fireEvent.change(await screen.findByLabelText("操作者令牌"), { target: { value: "operator-secret-token" } });
+    fireEvent.click(screen.getByRole("button", { name: "从已保存的阶段继续" }));
+    await waitFor(() => expect(resumes).toHaveLength(1));
+    expect(resumes[0]!.body).toEqual({ confirmUncertainCallIds: [A] });
+    // The pending resume survives a reload; no credential is ever stored.
+    await waitFor(() => expect(screen.getByTestId("auto-resume-pending").textContent).toContain(A));
+    const stored = Object.keys(window.sessionStorage).map((key) => window.sessionStorage.getItem(key) ?? "").join("\n");
+    expect(stored).toContain(resumes[0]!.key!);
+    expect(stored).not.toContain("operator-secret-token");
+    view.unmount();
+    render(<AutoCreationRun projectId={P1} />);
+    const retry = await screen.findByRole("button", { name: "重试上次继续请求" });
+    expect(screen.getByTestId("auto-resume-pending").textContent).toContain(A);
+    fireEvent.change(await screen.findByLabelText("操作者令牌"), { target: { value: "operator-secret-token" } });
+    fireEvent.click(retry);
+    fireEvent.click(retry);
+    await waitFor(() => expect(resumes).toHaveLength(2));
+    // The same action: its own key and its own confirmation list, never the new uncertain call.
+    expect(resumes[1]).toEqual({ key: resumes[0]!.key, body: { confirmUncertainCallIds: [A] }, token: "operator-secret-token" });
+    // Answered: the identity is cleared, and only now may a new resume confirm B under a new key.
+    await waitFor(() => expect(screen.queryByTestId("auto-resume-pending")).toBeNull());
+    expect(screen.getByText(/有 1 次调用结果不确定（bbbbbbbb/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(screen.getByRole("button", { name: "从已保存的阶段继续" }));
+    await waitFor(() => expect(resumes).toHaveLength(3));
+    expect(resumes[2]!.body).toEqual({ confirmUncertainCallIds: [B] });
+    expect(resumes[2]!.key).not.toBe(resumes[0]!.key);
+    expect(Object.keys(window.sessionStorage).some((key) => (window.sessionStorage.getItem(key) ?? "").includes(resumes[0]!.key!))).toBe(false);
+  });
+
+  it("a pending resume belongs to its own work and run: another work never sends it", async () => {
+    const A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const P2 = "33333333-3333-4333-8333-333333333333";
+    const resumes: string[] = [];
+    let fail = true;
+    vi.stubGlobal("fetch", vi.fn(async (input: string) => {
+      if (input.endsWith("/auto-runs/latest")) return json({ run: { ...uncertainRun([A]), projectId: input.includes(P2) ? P2 : P1 } });
+      if (input.endsWith("/resume")) {
+        resumes.push(input);
+        if (fail) throw new TypeError("network down");
+        return json({ run: uncertainRun([A]) });
+      }
+      return json(options());
+    }));
+    const view = render(<AutoCreationRun projectId={P1} />);
+    fireEvent.click(await screen.findByRole("checkbox"));
+    fireEvent.click(screen.getByRole("button", { name: "从已保存的阶段继续" }));
+    await waitFor(() => expect(screen.getByTestId("auto-resume-pending")).toBeTruthy());
+    view.unmount();
+    fail = false;
+    render(<AutoCreationRun projectId={P2} />);
+    await screen.findByRole("button", { name: "从已保存的阶段继续" });
+    expect(screen.queryByTestId("auto-resume-pending")).toBeNull();
+    expect(resumes).toHaveLength(1);
+  });
+
+  it("a definite refusal ends the pending resume; a run stopped for good offers no resume but keeps its downloads", async () => {
+    const A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let answer: Response | "throw" = "throw";
+    vi.stubGlobal("fetch", vi.fn(async (input: string) => {
+      if (input.endsWith("/auto-runs/latest")) return json({ run: uncertainRun([A]) });
+      if (input.endsWith("/resume")) {
+        if (answer === "throw") throw new TypeError("network down");
+        return answer;
+      }
+      return json(options());
+    }));
+    render(<AutoCreationRun projectId={P1} />);
+    fireEvent.click(await screen.findByRole("checkbox"));
+    fireEvent.click(screen.getByRole("button", { name: "从已保存的阶段继续" }));
+    const retry = await screen.findByRole("button", { name: "重试上次继续请求" });
+    answer = json({ error: { code: "AUTO_CREATION_CONFIRMATION_STALE", message: "确认已过期" } }, 409);
+    fireEvent.click(retry);
+    await waitFor(() => expect(screen.queryByTestId("auto-resume-pending")).toBeNull());
+    cleanup();
+
+    const final = run({ state: "needs_attention", errorCode: "story_too_large", quality: "passed", storySave: "pending", storyRevisionId: null,
+      stages: [{ stageKey: "review:1", kind: "review", state: "completed", attemptNo: 1, errorCode: null, output: null, upstreamChanged: false,
+        supersededBy: null, scriptSave: null, scriptRevisionId: null }] } as Partial<AutoCreationRunView>);
+    vi.stubGlobal("fetch", vi.fn(async (input: string) => input.endsWith("/auto-runs/latest") ? json({ run: final }) : json(options())));
+    render(<AutoCreationRun projectId={P1} />);
+    await screen.findByTestId("auto-download-md");
+    expect(screen.queryByRole("button", { name: "从已保存的阶段继续" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "写入分集剧本草稿" })).toBeNull();
+    expect(screen.getByRole("status").textContent).toContain("再次继续也只会得到同样的结果");
+  });
+
   it("after a person edited the story in review, placement asks for an explicit confirmation and then sends it", async () => {
     const bodies: unknown[] = [];
     vi.stubGlobal("fetch", vi.fn(async (input: string, init?: RequestInit) => {

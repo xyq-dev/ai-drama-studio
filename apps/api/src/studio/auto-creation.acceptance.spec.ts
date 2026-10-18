@@ -70,9 +70,9 @@ const transport = autoFixtureTransport({ seen, plan: new Proxy({}, { get: (_targ
     return undefined;
   } });
 
-function service(options: { maxCallsPerDay?: number; maxActiveRuns?: number; hold?: Array<() => Promise<void>> } = {}) {
+function service(options: { maxCallsPerDay?: number; maxActiveRuns?: number; hold?: Array<() => Promise<void>>; engineStore?: PostgresAutoCreationStore } = {}) {
   const maxCallsPerDay = options.maxCallsPerDay ?? 500;
-  const engine = new AutoCreationEngine({ workspaceId, store, providers, transport, maxCallsPerDay, timeoutMs: 30_000 });
+  const engine = new AutoCreationEngine({ workspaceId, store: options.engineStore ?? store, providers, transport, maxCallsPerDay, timeoutMs: 30_000 });
   const pending = options.hold ?? [];
   const svc = new AutoCreationService({
     workspaceId, enabled: true, operatorToken: TOKEN, defaultProvider: "deepseek", providers, store, engine, projects: runtime,
@@ -353,6 +353,99 @@ describe(`automatic creation on PostgreSQL (${scenario} schema)`, () => {
     expect(scripts.map((row) => row.episode_no)).toEqual([1, 2, 3]);
     expect(scripts[1]!.text).toBe("人工写的第二集");
     expect((await q<{ review_status: string }>("SELECT review_status FROM script_revision WHERE project_id = $1", [id])).every((row) => row.review_status === "DRAFT")).toBe(true);
+  });
+
+  /** A person's review through the text chain's own transitions: DRAFT → IN_REVIEW → APPROVED of the current story. */
+  async function approveCurrentStory(projectId: string): Promise<string> {
+    const readStory = async () => (await q<{ id: string; review_version: number }>(
+      "SELECT sr.id, sr.review_version FROM story_revision sr JOIN project p ON p.current_story_revision_id = sr.id WHERE p.id = $1", [projectId]))[0]!;
+    const readVersion = async () => (await q<{ version: number }>("SELECT version FROM project WHERE id = $1", [projectId]))[0]!.version;
+    let story = await readStory();
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await textChain.transitionReviewInTransaction(client, { table: "story_revision", revisionId: story.id, workspaceId,
+        expectedVersion: await readVersion(), expectedReviewVersion: story.review_version, to: "IN_REVIEW", reviewNote: null, traceId: "acceptance" });
+      await client.query("COMMIT");
+    } finally {
+      client.release();
+    }
+    story = await readStory();
+    await textChain.approveStory({ workspaceId, projectId, revisionId: story.id, expectedVersion: await readVersion(),
+      expectedReviewVersion: story.review_version, reviewedBy: "acceptance-person" });
+    return story.id;
+  }
+
+  /** Every stage completed, the save lost once, then the run ended the way the engine ends it (finishRun under its lease). */
+  async function endedBeforeSave(state: "needs_attention" | "canceled", errorCode: string | null) {
+    plan = {};
+    const lostSave = Object.create(store, { saveStory: { value: async () => "lost" as const } }) as PostgresAutoCreationStore;
+    const { svc, engine, settle } = service({ engineStore: lostSave });
+    const id = await project(1);
+    const runId = runOf((await svc.start(id, {}, TOKEN, ctx(`ended-${randomUUID()}`))).body).runId;
+    await settle();
+    expect(await store.finishRun(workspaceId, runId, engine.executorId, state, errorCode, new Date().toISOString(), state === "canceled" ? undefined : "passed")).toBe(true);
+    const row = (await q<{ story_save: string; story_revision_id: string | null }>("SELECT story_save, story_revision_id FROM auto_creation_run WHERE id = $1", [runId]))[0]!;
+    expect(row).toEqual({ story_save: "pending", story_revision_id: null });
+    expect((await q<{ n: number }>("SELECT count(*)::int AS n FROM auto_creation_stage WHERE run_id = $1 AND state <> 'completed'", [runId]))[0]!.n).toBe(0);
+    return { id, runId };
+  }
+
+  const snapshot = async (runId: string) => JSON.stringify({
+    run: await q("SELECT state, error_code, story_save, calls_used, updated_at FROM auto_creation_run WHERE id = $1", [runId]),
+    stages: await q("SELECT stage_key, state, attempt_no, script_save, updated_at FROM auto_creation_stage WHERE run_id = $1 ORDER BY stage_key", [runId]),
+    resumes: await q("SELECT idempotency_key FROM auto_creation_resume WHERE run_id = $1", [runId]),
+  });
+
+  it("a story too large to save is final: resumes are refused with no record or reset, and no script lands on another approved story", async () => {
+    const { id, runId } = await endedBeforeSave("needs_attention", "story_too_large");
+    const { svc } = service();
+    const sendsBefore = seen.length;
+    const before = await snapshot(runId);
+    for (const key of ["final-1", "final-2"]) {
+      const resumed = await svc.resume(id, runId, {}, TOKEN, ctx(key));
+      expect(resumed.status).toBe(409);
+      expect(resumed.body).toMatchObject({ error: { code: "AUTO_CREATION_NOT_RESUMABLE" } });
+    }
+    expect(await snapshot(runId)).toBe(before);
+    // A person writes and approves their own story; the run's scripts still never attach to it, accepted or not.
+    const version = (await q<{ version: number }>("SELECT version FROM project WHERE id = $1", [id]))[0]!.version;
+    await textChain.createStoryRevision({ workspaceId, projectId: id, content: { text: "人工写的故事" }, createdBy: "acceptance-person", expectedVersion: version });
+    await approveCurrentStory(id);
+    for (const acceptStoryChanged of [false, true]) {
+      expect((await svc.placeScripts(id, runId, { acceptStoryChanged }, ctx("p"))).body).toMatchObject({ error: { code: "AUTO_CREATION_STORY_NOT_SAVED" } });
+    }
+    expect((await q<{ n: number }>("SELECT count(*)::int AS n FROM script_revision WHERE project_id = $1", [id]))[0]!.n).toBe(0);
+    expect(await snapshot(runId)).toBe(before);
+    expect((await svc.package(id, runId, "json")).status).toBe(200);
+    expect(seen.length).toBe(sendsBefore);
+  });
+
+  it("a run stopped after its last stage but before the save resumes into the save alone, with no send", async () => {
+    const { id, runId } = await endedBeforeSave("canceled", null);
+    const { svc, settle } = service();
+    const sendsBefore = seen.length;
+    expect((await svc.resume(id, runId, {}, TOKEN, ctx("save-only"))).status).toBe(200);
+    await settle();
+    expect((await q("SELECT state, story_save FROM auto_creation_run WHERE id = $1", [runId]))[0]).toEqual({ state: "completed", story_save: "saved" });
+    expect(seen.length).toBe(sendsBefore);
+  });
+
+  it("a story conflict keeps the person's story and never places the run's scripts on it", async () => {
+    plan = {};
+    const hold: Array<() => Promise<void>> = [];
+    const { svc, settle } = service({ hold });
+    const id = await project(1);
+    const runId = runOf((await svc.start(id, {}, TOKEN, ctx("conflict"))).body).runId;
+    // The person saves a story while the run is still waiting to work.
+    const version = (await q<{ version: number }>("SELECT version FROM project WHERE id = $1", [id]))[0]!.version;
+    await textChain.createStoryRevision({ workspaceId, projectId: id, content: { text: "人工写的故事" }, createdBy: "acceptance-person", expectedVersion: version });
+    await settle();
+    expect((await q("SELECT state, error_code, story_save FROM auto_creation_run WHERE id = $1", [runId]))[0])
+      .toEqual({ state: "needs_attention", error_code: "story_conflict", story_save: "conflict" });
+    await approveCurrentStory(id);
+    expect((await svc.placeScripts(id, runId, { acceptStoryChanged: true }, ctx("p"))).body).toMatchObject({ error: { code: "AUTO_CREATION_STORY_NOT_SAVED" } });
+    expect((await q<{ n: number }>("SELECT count(*)::int AS n FROM script_revision WHERE project_id = $1", [id]))[0]!.n).toBe(0);
   });
 
   it("the script breakdown stays off and unchanged; no breakdown table appears unless it was already applied", async () => {

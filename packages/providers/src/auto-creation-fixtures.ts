@@ -134,6 +134,16 @@ export function fixtureAutoBible(): AutoBible {
   };
 }
 
+/** A setting with one person on screen (C1) and one only mentioned (C2), for a one-person cast limit. */
+export function fixtureAutoSoloBible(): AutoBible {
+  const bible = fixtureAutoBible();
+  return {
+    ...bible,
+    characters: [bible.characters[0]!, { ...bible.characters[3]!, id: "C2" }],
+    relationships: [{ from: "C1", to: "C2", relation: "租客与房东", change: "从拖欠到交上房租" }],
+  };
+}
+
 export function fixtureAutoOutline(count: number): AutoOutline {
   return {
     schema: AUTO_CREATION_OUTLINE_SCHEMA,
@@ -183,6 +193,19 @@ export function fixtureAutoEpisode(episodeNo: number, options: { tooManyScenes?:
   };
 }
 
+/** The solo setting's episode: only C1 speaks; the draft also puts the mentioned C2 on screen when mentionedOnScreen. */
+export function fixtureAutoSoloEpisode(episodeNo: number, options: { mentionedOnScreen?: boolean; tag?: string } = {}): AutoEpisode {
+  const episode = fixtureAutoEpisode(episodeNo, { tag: options.tag });
+  return {
+    ...episode,
+    scenes: episode.scenes.map((scene) => ({
+      ...scene,
+      characterIds: options.mentionedOnScreen && scene.sceneNo === 2 ? ["C1", "C2"] : ["C1"],
+      dialogue: [{ characterId: "C1", line: `第 ${String(episodeNo)} 集第 ${String(scene.sceneNo)} 场：这是我每一单的记录。`, delivery: "" }],
+    })),
+  };
+}
+
 export interface AutoReviewPlan {
   /** Verified high-severity issue on episode 1 in these rounds (a revision is then due). */
   highIssueRounds?: number[];
@@ -221,6 +244,8 @@ export interface AutoFixturePlan {
   /** Every revision still has six scenes (so the run ends at needs work). */
   revisionsStayLong?: boolean;
   fabricatedNumber?: boolean;
+  /** One person on screen and one mentioned; the first drafts put the mentioned one on screen, revisions do not. */
+  soloCast?: boolean;
 }
 
 /** The double's answer for one prompt. */
@@ -229,15 +254,20 @@ export function autoFixtureAnswer(user: string, plan: AutoFixturePlan = {}): unk
   const count = autoFixtureEpisodeCount(user);
   if (stage === "research") return fixtureAutoResearch({ fabricatedNumber: plan.fabricatedNumber });
   if (stage === "directions") return fixtureAutoDirections();
-  if (stage === "bible") return fixtureAutoBible();
-  if (stage === "outline") return fixtureAutoOutline(count);
+  if (stage === "bible") return plan.soloCast ? fixtureAutoSoloBible() : fixtureAutoBible();
+  if (stage === "outline") {
+    const outline = fixtureAutoOutline(count);
+    return plan.soloCast ? { ...outline, episodes: outline.episodes.map((episode) => ({ ...episode, characterIds: ["C1"] })) } : outline;
+  }
   if (stage.startsWith("review:")) return fixtureAutoReview(Number(stage.split(":")[1]), plan.review);
   const episodeNo = Number(stage.split(":").at(-1));
   if (stage.startsWith("revise:")) {
     const issues = (autoFixtureBlock(user, "需要解决的问题") as Array<{ id: string }> | null) ?? [];
-    return { ...fixtureAutoEpisode(episodeNo, { tooManyScenes: plan.revisionsStayLong, tag: "模型替身样例（修订）" }),
-      changes: issues.map((issue) => ({ issueId: issue.id, change: "按问题定向修改。" })) };
+    const revised = plan.soloCast ? fixtureAutoSoloEpisode(episodeNo, { tag: "模型替身样例（修订）" })
+      : fixtureAutoEpisode(episodeNo, { tooManyScenes: plan.revisionsStayLong, tag: "模型替身样例（修订）" });
+    return { ...revised, changes: issues.map((issue) => ({ issueId: issue.id, change: "按问题定向修改。" })) };
   }
+  if (plan.soloCast) return fixtureAutoSoloEpisode(episodeNo, { mentionedOnScreen: true });
   return fixtureAutoEpisode(episodeNo, { tooManyScenes: plan.longEpisodes?.includes(episodeNo) });
 }
 

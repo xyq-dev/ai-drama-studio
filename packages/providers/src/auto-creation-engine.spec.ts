@@ -341,6 +341,18 @@ describe("automatic creation engine", () => {
     expect(autoPackageMarkdown(meta, placedBundle.stages)).toContain("故事已由人工审核通过");
   });
 
+  it("a cast over the limit caused by one episode is revised in that episode, not stopped as a setting problem", async () => {
+    // Valid setting: C1 on screen, C2 only mentioned, at most one person. The draft puts C2 on screen.
+    const { run, engine, seen, view } = await setup({ constraints: { maxCharacters: 1 }, plan: { soloCast: true } });
+    await engine.drive(run.id);
+    const result = await view();
+    const firstReview = result.stages.find((stage) => stage.stageKey === "review:1")!.output as { deterministic: Array<{ check: string; target: string }> };
+    expect(firstReview.deterministic.map((item) => [item.check, item.target])).toEqual([["mentioned_on_screen", "episode:1"], ["character_count", "episode:1"]]);
+    expect(seen.map((item) => item.stage)).toEqual(["research", "directions", "bible", "outline", "episode:1", "review:1", "revise:1:episode:1", "review:2"]);
+    expect(result).toMatchObject({ state: "completed", quality: "passed", errorCode: null, revisionRoundsUsed: 1, storySave: "saved" });
+    expect(result.callsUsed).toBeLessThanOrEqual(result.callCap);
+  });
+
   it("a blocking setting-level issue is not answered with paid episode rounds: needs work, unrevisable", async () => {
     const { run, engine, seen, view } = await setup({ plan: { review: { highIssueRounds: [1, 2, 3], bibleIssueRounds: [1] } } });
     await engine.drive(run.id);
@@ -366,6 +378,68 @@ describe("automatic creation engine", () => {
     store.approveCurrentStory(P1);
     const placed = await store.placeScripts(WS, P1, run.id, autoScriptsOf(bundle), { acceptStoryChanged: true }, "server-owner", new Date().toISOString());
     expect(placed.kind).toBe("not_ready");
+    expect(store.projects.get(P1)!.episodes.get(1)!.scripts).toHaveLength(0);
+  });
+
+  /** Every stage completed and nothing saved: the save is lost once, then the run is ended the way the engine ends it. */
+  async function endedBeforeSave(state: "needs_attention" | "canceled", errorCode: string | null) {
+    const context = await setup();
+    const { store, run, engine } = context;
+    const save = store.saveStory.bind(store);
+    store.saveStory = async () => "lost";
+    await engine.drive(run.id);
+    store.saveStory = save;
+    expect(await store.finishRun(WS, run.id, engine.executorId, state, errorCode, new Date(START).toISOString(), state === "canceled" ? undefined : "passed")).toBe(true);
+    const bundle = (await store.getRunById(WS, run.id))!;
+    expect(bundle.stages.every((stage) => stage.state === "completed")).toBe(true);
+    expect(bundle.run).toMatchObject({ storySave: "pending", storyRevisionId: null });
+    return { ...context, bundle };
+  }
+
+  it("a story too large to save is final: a resume is refused before any record or reset, and the package stays readable", async () => {
+    const { store, run, seen, bundle, view } = await endedBeforeSave("needs_attention", "story_too_large");
+    const before = JSON.stringify(bundle);
+    for (const key of ["r1", "r2"]) {
+      const resumed = await store.prepareResume(WS, P1, run.id, { resumeKey: key, requestHash: hashAutoResume(run.id, []), confirmedCallIds: [],
+        maxActiveRuns: 5, providerReady: true }, new Date().toISOString());
+      expect(resumed.kind).toBe("not_resumable");
+    }
+    expect(store.resumes).toHaveLength(0);
+    expect(JSON.stringify(await store.getRunById(WS, run.id))).toBe(before);
+    expect((await view()).packageStatus).toBe("ready");
+    expect(seen).toHaveLength(autoCreationNormalCalls(1));
+  });
+
+  it("a run stopped after its last stage but before the save resumes into the save alone, with no send", async () => {
+    const { store, run, engine, seen, view } = await endedBeforeSave("canceled", null);
+    const resumed = await store.prepareResume(WS, P1, run.id, { resumeKey: "r", requestHash: hashAutoResume(run.id, []), confirmedCallIds: [],
+      maxActiveRuns: 5, providerReady: true }, new Date().toISOString());
+    expect(resumed.kind).toBe("ok");
+    await engine.drive(run.id);
+    expect(await view()).toMatchObject({ state: "completed", storySave: "saved" });
+    expect(seen).toHaveLength(autoCreationNormalCalls(1));
+  });
+
+  it("scripts are never attached to another approved story when the run's own story was never saved", async () => {
+    const tooLarge = await endedBeforeSave("needs_attention", "story_too_large");
+    tooLarge.store.writeHumanStory(P1, "人工写的故事");
+    tooLarge.store.approveCurrentStory(P1);
+    for (const acceptStoryChanged of [false, true]) {
+      const placed = await tooLarge.store.placeScripts(WS, P1, tooLarge.run.id, autoScriptsOf(tooLarge.bundle), { acceptStoryChanged }, "server-owner", new Date().toISOString());
+      expect(placed.kind).toBe("story_not_saved");
+    }
+    expect(tooLarge.store.projects.get(P1)!.episodes.get(1)!.scripts).toHaveLength(0);
+    expect((await tooLarge.store.getRunById(WS, tooLarge.run.id))!.stages.every((stage) => stage.scriptSave === null || stage.scriptSave === "pending")).toBe(true);
+
+    // A story conflict is the same: the person's story was kept and the run's own story was never saved.
+    const { store, run, engine } = await setup();
+    store.writeHumanStory(P1, "人工写的故事");
+    await engine.drive(run.id);
+    store.approveCurrentStory(P1);
+    const bundle = (await store.getRunById(WS, run.id))!;
+    expect(bundle.run.storySave).toBe("conflict");
+    const placed = await store.placeScripts(WS, P1, run.id, autoScriptsOf(bundle), { acceptStoryChanged: true }, "server-owner", new Date().toISOString());
+    expect(placed.kind).toBe("story_not_saved");
     expect(store.projects.get(P1)!.episodes.get(1)!.scripts).toHaveLength(0);
   });
 

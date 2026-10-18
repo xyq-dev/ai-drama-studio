@@ -111,6 +111,14 @@ function isRecent(publishedAt: string | null, nowIso: string): boolean {
 }
 
 /**
+ * Market material that can support a "sourced" conclusion: an official entry that was read, with a publication date
+ * within AUTO_CREATION_RECENT_DAYS of when it was read. Craft notes, reference pages and people's materials never are.
+ */
+export function isMarketSource(source: AutoCreationSource | undefined, nowIso: string = source?.fetchedAt ?? ""): boolean {
+  return source !== undefined && source.topic === "market" && source.status === "read" && source.excerpt.length > 0 && isRecent(source.publishedAt, nowIso);
+}
+
+/**
  * The snapshot of one run: built-in entries (official ones replaced by this run's reads when reading was on), pages
  * the run read, and the person's own materials. A run is "sourced" only with a readable, dated, recent market source.
  */
@@ -138,7 +146,7 @@ export function collectSources(input: AutoCreationFrozenInput, pages: readonly F
       limitations: `${material.text.length > EXCERPT_MAX ? `只引用前 ${String(EXCERPT_MAX)} 字。` : ""}使用者声明拥有使用权限的文字资料；只分析结构与需求，不复制台词、人物组合或具体情节。没有画面或音频。`,
     });
   });
-  const marketReadable = sources.some((source) => source.topic === "market" && source.status === "read" && isRecent(source.publishedAt, nowIso));
+  const marketReadable = sources.some((source) => isMarketSource(source, nowIso));
   const notes = [
     "没有视频画面或音频理解能力：所有参考内容只按文字（正文、简介或字幕）分析，没有观看任何视频。",
     ...(input.researchFetch ? [] : ["服务端没有开启公开页面读取，本次只使用内置资料快照和你提供的资料。"]),

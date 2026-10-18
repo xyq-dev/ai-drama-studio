@@ -1,6 +1,6 @@
 import { lookup as dnsLookup } from "node:dns/promises";
 import { request as httpsRequest } from "node:https";
-import { isIP } from "node:net";
+import { isIP, type LookupFunction } from "node:net";
 import type { FetchedPage } from "@ai-drama/domain";
 
 /**
@@ -96,13 +96,47 @@ export function urlProblem(raw: string, allowedHosts: readonly string[]): string
   return null;
 }
 
-function defaultGet(url: URL, address: string, family: number, timeoutMs: number, maxBytes: number) {
+/**
+ * A lookup that always answers with the checked address, in both forms Node uses: a single address, or (with
+ * `all: true`, which address family auto-selection sends) an array of addresses.
+ */
+export function pinnedLookup(address: string, family: number): LookupFunction {
+  return (_host, options, callback) => {
+    if (options.all) {
+      (callback as unknown as (error: null, addresses: Array<{ address: string; family: number }>) => void)(null, [{ address, family }]);
+      return;
+    }
+    callback(null, address, family);
+  };
+}
+
+/**
+ * The real read: node:https pinned to the checked address. `trust` only adds a CA for tests against a local server;
+ * certificates are always verified for the URL's host name.
+ */
+export function researchHttpsGet(url: URL, address: string, family: number, timeoutMs: number, maxBytes: number, trust: { ca?: string } = {}) {
   return new Promise<{ status: number; contentType: string; body: string }>((resolve, reject) => {
+    let settled = false;
+    const settle = (error: Error | null, answer?: { status: number; contentType: string; body: string }) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      if (error) reject(error);
+      else resolve(answer!);
+    };
+    // Stopping always settles as a failure first: a destroyed response may still emit "end" with a partial body.
+    const stop = (reason: string) => {
+      settle(new Error(reason));
+      req.destroy(new Error(reason));
+    };
     const req = httpsRequest(url, {
+      ...(trust.ca ? { ca: trust.ca } : {}),
       method: "GET",
       headers: { Accept: "text/html,text/plain;q=0.9", "User-Agent": "ai-drama-studio-research/1" },
-      // Pinned to the address that was checked; the certificate is still verified for the host name.
-      lookup: (_host, _options, callback) => callback(null, address, family),
+      // Pinned to the address that was checked; the certificate is still verified for the host name. No pooled socket
+      // (agent: false), so a connection made for another address is never reused.
+      lookup: pinnedLookup(address, family),
+      agent: false,
       servername: url.hostname,
       timeout: timeoutMs,
     }, (response) => {
@@ -111,21 +145,26 @@ function defaultGet(url: URL, address: string, family: number, timeoutMs: number
       response.on("data", (chunk: Buffer) => {
         size += chunk.length;
         if (size > maxBytes) {
-          req.destroy(new Error("response_too_large"));
+          stop("response_too_large");
           return;
         }
         chunks.push(chunk);
       });
-      response.on("end", () => resolve({ status: response.statusCode ?? 0, contentType: String(response.headers["content-type"] ?? ""),
-        body: Buffer.concat(chunks).toString("utf8") }));
-      response.on("error", reject);
+      response.on("end", () => {
+        if (!response.complete) {
+          settle(new Error("incomplete_response"));
+          return;
+        }
+        settle(null, { status: response.statusCode ?? 0, contentType: String(response.headers["content-type"] ?? ""),
+          body: Buffer.concat(chunks).toString("utf8") });
+      });
+      response.on("error", (error) => settle(error));
     });
     // An absolute deadline: the socket timeout above only measures inactivity, and a trickling server must not hold
     // the stage open past timeoutMs.
-    const deadline = setTimeout(() => req.destroy(new Error("timeout")), timeoutMs);
-    req.on("close", () => clearTimeout(deadline));
-    req.on("timeout", () => req.destroy(new Error("timeout")));
-    req.on("error", reject);
+    const deadline = setTimeout(() => stop("timeout"), timeoutMs);
+    req.on("timeout", () => stop("timeout"));
+    req.on("error", (error) => settle(error));
     req.end();
   });
 }
@@ -156,7 +195,7 @@ function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
 export function createResearchFetcher(deps: ResearchFetchDeps): (urls: readonly string[]) => Promise<FetchedPage[]> {
   const timeoutMs = deps.timeoutMs ?? RESEARCH_FETCH_TIMEOUT_MS;
   const lookup = deps.lookup ?? (async (host: string) => dnsLookup(host, { all: true, verbatim: true }));
-  const get = deps.get ?? defaultGet;
+  const get = deps.get ?? ((url: URL, address: string, family: number, timeoutMs: number, maxBytes: number) => researchHttpsGet(url, address, family, timeoutMs, maxBytes));
   return async (urls) => {
     const pages: FetchedPage[] = [];
     for (const raw of urls) {

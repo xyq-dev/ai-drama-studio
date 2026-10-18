@@ -1,5 +1,11 @@
-import { describe, expect, it } from "vitest";
-import { blockedAddress, createResearchFetcher, urlProblem } from "./research-fetch";
+import { readFileSync } from "node:fs";
+import { createServer, type Server } from "node:https";
+import type { AddressInfo } from "node:net";
+import { getDefaultAutoSelectFamily, setDefaultAutoSelectFamily } from "node:net";
+import { join } from "node:path";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { afterEach, describe, expect, it } from "vitest";
+import { blockedAddress, createResearchFetcher, researchHttpsGet, urlProblem } from "./research-fetch";
 
 const HOSTS = ["support.oceanengine.com"];
 
@@ -74,5 +80,76 @@ describe("research page reads", () => {
     expect(pages.map((page) => page.status)).toEqual(["blocked", "unreadable", "read"]);
     expect(pages[2]!.publishedAt).toBe("2026-09-01T00:00:00.000Z");
     expect(pages[1]!.text).toBe("");
+  });
+});
+
+// The real node:https path, not an injected get: a local TLS server for research.test (a name that never resolves), a
+// test-only CA, and the connection pinned to 127.0.0.1. This is what runs in production when reading is switched on.
+describe("research page reads over node:https", () => {
+  const fixtures = join(__dirname, "test-fixtures", "research-tls");
+  const ca = readFileSync(join(fixtures, "ca.crt"), "utf8");
+  const servers: Server[] = [];
+  const autoSelect = getDefaultAutoSelectFamily();
+
+  afterEach(async () => {
+    setDefaultAutoSelectFamily(autoSelect);
+    await Promise.all(servers.splice(0).map((server) => new Promise((resolve) => {
+      server.closeAllConnections();
+      server.close(resolve);
+    })));
+  });
+
+  async function serve(handler: (request: IncomingMessage, response: ServerResponse) => void): Promise<number> {
+    const server = createServer({ key: readFileSync(join(fixtures, "server.key")), cert: readFileSync(join(fixtures, "server.crt")) }, handler);
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    return (server.address() as AddressInfo).port;
+  }
+
+  it("reads through the pinned address with the address family auto-selection on and off (Node calls lookup with all: true)", async () => {
+    const port = await serve((request, response) => {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end(`<p>${request.headers.host ?? ""}</p>`);
+    });
+    for (const auto of [true, false]) {
+      setDefaultAutoSelectFamily(auto);
+      const answer = await researchHttpsGet(new URL(`https://research.test:${String(port)}/page`), "127.0.0.1", 4, 2_000, 1024, { ca });
+      expect(answer, `autoSelectFamily=${String(auto)}`).toEqual({ status: 200, contentType: "text/html; charset=utf-8", body: `<p>research.test:${String(port)}</p>` });
+    }
+  });
+
+  it("verifies the certificate for the host name, never for the pinned address", async () => {
+    const port = await serve((_request, response) => response.end("x"));
+    await expect(researchHttpsGet(new URL(`https://other.test:${String(port)}/`), "127.0.0.1", 4, 2_000, 1024, { ca })).rejects.toThrow(/other\.test|altnames/);
+    // Without the test CA the same server is untrusted: verification is never switched off.
+    await expect(researchHttpsGet(new URL(`https://research.test:${String(port)}/`), "127.0.0.1", 4, 2_000, 1024)).rejects.toThrow();
+  });
+
+  it("returns a redirect as it is, without following it", async () => {
+    let hits = 0;
+    const port = await serve((_request, response) => {
+      hits += 1;
+      response.writeHead(302, { location: "https://research.test/elsewhere" });
+      response.end();
+    });
+    const answer = await researchHttpsGet(new URL(`https://research.test:${String(port)}/`), "127.0.0.1", 4, 2_000, 1024, { ca });
+    expect(answer.status).toBe(302);
+    expect(hits).toBe(1);
+  });
+
+  it("an absolute deadline stops a response that keeps trickling, and the size cap stops a large one", async () => {
+    const port = await serve((request, response) => {
+      response.writeHead(200, { "content-type": "text/plain" });
+      if (request.url === "/large") {
+        response.end("x".repeat(4096));
+        return;
+      }
+      const timer = setInterval(() => response.write("x"), 20);
+      response.on("close", () => clearInterval(timer));
+    });
+    const started = Date.now();
+    await expect(researchHttpsGet(new URL(`https://research.test:${String(port)}/slow`), "127.0.0.1", 4, 300, 1024 * 1024, { ca })).rejects.toThrow("timeout");
+    expect(Date.now() - started).toBeLessThan(2_000);
+    await expect(researchHttpsGet(new URL(`https://research.test:${String(port)}/large`), "127.0.0.1", 4, 2_000, 1024, { ca })).rejects.toThrow("response_too_large");
   });
 });

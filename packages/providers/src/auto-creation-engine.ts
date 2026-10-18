@@ -7,6 +7,7 @@ import {
   AUTO_CREATION_SELECTION_RULES,
   TITLE_WRITING_CANCELED_BEFORE_SEND,
   autoCreationHardCap,
+  autoRunSettledForGood,
   autoCreationJsonSchema,
   autoCreationNormalCalls,
   autoCreationRevisionsPerRound,
@@ -721,7 +722,7 @@ export class InMemoryAutoCreationStore implements AutoCreationStore {
     if (uncertain.length > 0 && confirmed.length === 0) return { kind: "needs_confirmation" };
     if (uncertain.length !== confirmed.length || uncertain.some((id, index) => id !== confirmed[index])) return { kind: "stale_confirmation" };
     const redo = stages.filter((stage) => stage.state === "unknown" || stage.state === "rejected" || stage.state === "canceled");
-    if (redo.length === 0 && run.storySave !== "pending") return { kind: "not_resumable" };
+    if (redo.length === 0 && (run.storySave !== "pending" || autoRunSettledForGood(run, stages))) return { kind: "not_resumable" };
     const sends = redo.some((stage) => stage.stageKey !== "sources") || stages.some((stage) => stage.state === "pending" && stage.stageKey !== "sources");
     if (sends && !request.providerReady) return { kind: "provider_unconfigured" };
     if (sends && run.callsUsed >= run.callCap) return { kind: "budget_exhausted" };
@@ -767,6 +768,10 @@ export class InMemoryAutoCreationStore implements AutoCreationStore {
     if (run.state === "running" || scripts.length !== run.input.episodeCount
       || !autoPackageComplete(this.stages.filter((stage) => stage.runId === runId))) return { kind: "not_ready" };
     const project = this.projects.get(projectId)!;
+    // The run's own story must have been saved; accepting a later edit never stands in for that story.
+    if (run.storySave !== "saved" || run.storyRevisionId === null || !project.stories.some((story) => story.id === run.storyRevisionId)) {
+      return { kind: "story_not_saved" };
+    }
     if (!project.approvedStoryId || project.currentStoryId !== project.approvedStoryId) return { kind: "story_not_approved" };
     if (project.approvedStoryId !== run.storyRevisionId && !options.acceptStoryChanged) return { kind: "story_changed" };
     if (project.episodeCount !== run.input.episodeCount || project.episodes.size !== run.input.episodeCount) return { kind: "plan_mismatch" };

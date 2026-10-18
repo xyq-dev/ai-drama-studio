@@ -18,6 +18,10 @@ import {
   AutoCreationClient,
   autoCanResume,
   autoErrorText,
+  autoResumeRefused,
+  clearPendingResume,
+  readPendingResume,
+  savePendingResume,
   autoHeadline,
   autoStageLabel,
   autoStageStateText,
@@ -25,6 +29,7 @@ import {
   normalizeAutoOptions,
   stageOf,
   type AutoCreationRunView,
+  type PendingAutoResume,
 } from "../lib/auto-creation-client";
 import { BeginnerShell } from "./beginner-shell";
 import styles from "./title-writing.module.css";
@@ -74,7 +79,23 @@ export function AutoCreationRun({ projectId, client = defaultClient }: { project
   const [needsToken, setNeedsToken] = useState(false);
   const [token, setToken] = useState("");
   const reading = useRef(false);
-  const resumeKey = useRef<string | null>(null);
+  const acting = useRef(false);
+  // The resume whose answer has not arrived, for this work and run only (restored after a reload).
+  const [pendingResume, setPendingResume] = useState<PendingAutoResume | null>(null);
+  const runId = run?.runId ?? null;
+  const runState = run?.state ?? null;
+
+  useEffect(() => {
+    setPendingResume(runId ? readPendingResume(projectId, runId) : null);
+  }, [projectId, runId]);
+
+  useEffect(() => {
+    // A completed run has nothing left to resume; a remembered request for it is moot.
+    if (runState === "completed" && pendingResume) {
+      clearPendingResume(pendingResume);
+      setPendingResume(null);
+    }
+  }, [runState, pendingResume]);
 
   const read = useCallback(async () => {
     if (reading.current) return;
@@ -103,7 +124,8 @@ export function AutoCreationRun({ projectId, client = defaultClient }: { project
   }, [run?.state, read]);
 
   async function act(work: () => Promise<AutoCreationRunView>, fallback: string) {
-    if (busy) return;
+    if (acting.current) return;
+    acting.current = true;
     setBusy(true);
     setActionError(null);
     try {
@@ -112,9 +134,10 @@ export function AutoCreationRun({ projectId, client = defaultClient }: { project
     } catch (caught) {
       if (caught instanceof TitleWritingError && caught.code === "AUTO_CREATION_STORY_CHANGED") setStoryChanged(true);
       setActionError(caught instanceof TitleWritingError ? caught.detail : fallback);
-      // An unanswered resume keeps its key so that a retry is the same action.
+      // An unanswered resume keeps its identity (key and confirmations) so that a retry is the same action.
       await read();
     } finally {
+      acting.current = false;
       setBusy(false);
     }
   }
@@ -145,13 +168,29 @@ export function AutoCreationRun({ projectId, client = defaultClient }: { project
   const rejected = run.stages.find((stage) => stage.state === "rejected" || stage.state === "unknown");
 
   function resume() {
-    resumeKey.current ??= crypto.randomUUID();
-    const key = resumeKey.current;
+    if (acting.current) return;
+    const identity: PendingAutoResume = pendingResume
+      ?? { version: 1, projectId, runId: run!.runId, key: crypto.randomUUID(), confirmUncertainCallIds: [...uncertain] };
+    if (!pendingResume) {
+      // Best effort across reloads; within this page the identity is kept either way.
+      savePendingResume(identity);
+      setPendingResume(identity);
+    }
     void act(async () => {
-      const next = await client.resume(projectId, run!.runId, { confirmUncertainCallIds: uncertain, token: needsToken ? token.trim() : "", idempotencyKey: key });
-      resumeKey.current = null;
-      return next;
-    }, "没有确认是否已续跑。重试会使用同一个请求标识。");
+      try {
+        const next = await client.resume(projectId, identity.runId, { confirmUncertainCallIds: identity.confirmUncertainCallIds,
+          token: needsToken ? token.trim() : "", idempotencyKey: identity.key });
+        clearPendingResume(identity);
+        setPendingResume(null);
+        return next;
+      } catch (caught) {
+        if (autoResumeRefused(caught)) {
+          clearPendingResume(identity);
+          setPendingResume(null);
+        }
+        throw caught;
+      }
+    }, "没有确认是否已继续。重试会原样发送同一个请求（同一个请求标识和同一组确认）。");
   }
 
   return (
@@ -203,14 +242,21 @@ export function AutoCreationRun({ projectId, client = defaultClient }: { project
           <section className={styles.resume} aria-labelledby="auto-resume-title">
             <h2 id="auto-resume-title" className={styles.sectionTitle}>继续</h2>
             {rejected ? <p>停在「{autoStageLabel(rejected.stageKey)}」：{autoErrorText(rejected.errorCode)}</p> : null}
-            {uncertain.length > 0 ? (
+            {pendingResume ? (
+              <p className={styles.warning} data-testid="auto-resume-pending">
+                上一次继续请求没有收到确认{pendingResume.confirmUncertainCallIds.length > 0 ? `（确认重发的调用：${pendingResume.confirmUncertainCallIds.join("、")}）` : ""}。
+                重试会原样发送同一个请求，不会换成新的确认；收到结果后才能发起新的继续。
+              </p>
+            ) : uncertain.length > 0 ? (
               <label className={styles.check}>
                 <input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} />
                 有 {uncertain.length} 次调用结果不确定（{uncertain.join("、")}），可能已经计费。我确认可能重复计费，重新发送这一步。
               </label>
             ) : null}
             {needsToken ? <input className={styles.input} aria-label="操作者令牌" type="password" value={token} onChange={(event) => setToken(event.target.value)} /> : null}
-            <button className={styles.primary} type="button" disabled={busy || (uncertain.length > 0 && !confirmed)} onClick={resume}>从已保存的阶段继续</button>
+            <button className={styles.primary} type="button" disabled={busy || (!pendingResume && uncertain.length > 0 && !confirmed)} onClick={resume}>
+              {pendingResume ? "重试上次继续请求" : "从已保存的阶段继续"}
+            </button>
           </section>
         ) : null}
         {run.storySave === "saved" && run.state !== "running" ? (

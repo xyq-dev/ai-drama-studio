@@ -1,6 +1,7 @@
 import type { PoolClient, QueryResult, QueryResultRow } from "pg";
 import {
   TITLE_WRITING_CANCELED_BEFORE_SEND,
+  autoRunSettledForGood,
   autoStageKind,
   currentUncertainCallIds,
   type AutoCallFinish,
@@ -448,7 +449,8 @@ export class PostgresAutoCreationStore implements AutoCreationStore {
       if (uncertain.length > 0 && confirmed.length === 0) return { kind: "needs_confirmation" };
       if (uncertain.length !== confirmed.length || uncertain.some((id, index) => id !== confirmed[index])) return { kind: "stale_confirmation" };
       const redo = stages.filter((stage) => stage.state === "unknown" || stage.state === "rejected" || stage.state === "canceled");
-      if (redo.length === 0 && run.storySave !== "pending") return { kind: "not_resumable" };
+      // Nothing to redo and nothing a second save could change (a story too large to save stays too large): final.
+      if (redo.length === 0 && (run.storySave !== "pending" || autoRunSettledForGood(run, stages))) return { kind: "not_resumable" };
       const sends = redo.some((stage) => stage.stageKey !== "sources") || stages.some((stage) => stage.state === "pending" && stage.stageKey !== "sources");
       if (sends && !request.providerReady) return { kind: "provider_unconfigured" };
       // The run's frozen call budget is spent: resetting a stage could only stop again before the send.
@@ -512,6 +514,10 @@ export class PostgresAutoCreationStore implements AutoCreationStore {
         `SELECT count(*) FILTER (WHERE state <> 'completed')::int AS open, count(*) FILTER (WHERE stage_key LIKE 'review:%')::int AS reviews
            FROM auto_creation_stage WHERE run_id = $1`, [runId]);
       if (Number(unfinished.rows[0]?.open ?? 1) !== 0 || Number(unfinished.rows[0]?.reviews ?? 0) === 0) return { kind: "not_ready" };
+      // The run's own story must have been saved into this work; accepting a later edit never stands in for that story.
+      if (run.storySave !== "saved" || run.storyRevisionId === null) return { kind: "story_not_saved" };
+      const own = await client.query("SELECT 1 FROM story_revision WHERE id = $1 AND project_id = $2 AND workspace_id = $3", [run.storyRevisionId, projectId, workspaceId]);
+      if (!own.rows[0]) return { kind: "story_not_saved" };
       // Project → episode, the order of the script editor's save.
       const locked = await client.query("SELECT id FROM project WHERE id = $1 AND workspace_id = $2 FOR UPDATE", [projectId, workspaceId]);
       if (!locked.rows[0]) return { kind: "not_found" };

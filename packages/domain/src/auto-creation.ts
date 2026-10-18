@@ -40,7 +40,7 @@ import {
   type AutoStageOutput,
   type AutoStageRecord,
 } from "@ai-drama/contracts";
-import { readableSources } from "./auto-creation-sources";
+import { isMarketSource, readableSources } from "./auto-creation-sources";
 import { canonicalInputHash } from "./text-chain";
 
 /**
@@ -321,18 +321,57 @@ function normalize(value: string): string {
   return value.replace(/\s+/g, "");
 }
 
-/** Number claims: digits, percentages and Chinese numerals with a unit. Episode counts, seconds and IDs are allowed. */
+const CN_DIGITS = "〇零一二两三四五六七八九十百千";
+const CN_VALUES: Readonly<Record<string, number>> = { 〇: 0, 零: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
+const CN_UNITS: Readonly<Record<string, number>> = { 十: 10, 百: 100, 千: 1000 };
+/** Units that make any Chinese numeral a claim, 一 included (一成 is ten percent). */
+const CN_STRONG_UNITS = "成|万|亿|岁|倍|分之";
+/** Measure words of people, times, money and durations. A bare 一 before them is the article (一个夜晚), not a claim. */
+const CN_COUNT_UNITS = "小时|分钟|名|人|位|个|次|遍|元|块|集|场|天|周|年|月|户|家|条|部|份|秒";
+/** Words of a viewing or market statistic: in such a clause the run's own length is not what is being described. */
+const MARKET_MARKERS = /用户|观众|受众|人均|平均|日均|每天|每日|每周|每月|完播|留存|占比/u;
+const PLAN_NUMBER = new RegExp(`(\\d+(?:\\.\\d+)?|[${CN_DIGITS}]+)\\s*(集|秒|分钟)`, "gu");
+const NUMBER_TOKEN = new RegExp([
+  "(?<![第\\d.])\\d+(?:\\.\\d+)?\\s*%?",
+  "[０-９]+",
+  `百分之[${CN_DIGITS}]+`,
+  `(?<![第${CN_DIGITS}])[${CN_DIGITS}]+(?:${CN_STRONG_UNITS}|${CN_COUNT_UNITS})`,
+].join("|"), "gu");
+
+/** The value of a simple Chinese numeral (up to the thousands), or null. */
+function chineseValue(text: string): number | null {
+  let total = 0;
+  let current: number | null = null;
+  for (const char of text) {
+    if (char in CN_VALUES) current = CN_VALUES[char]!;
+    else if (char in CN_UNITS) {
+      total += (current ?? 1) * CN_UNITS[char]!;
+      current = null;
+    } else return null;
+  }
+  return total + (current ?? 0);
+}
+
+/**
+ * Number claims: digits, percentages and Chinese numerals with a unit, each as one whole number. Ordinals (第三集), ids
+ * and 9:16 are not claims. The run's own structure (its episode count and target length) is exempt only in a clause
+ * that is not about viewers or the market: 每天观看60秒 is a statistic even when the run is sixty seconds long.
+ */
 export function numberTokens(value: string, exempt: ReadonlyArray<readonly [number, string]> = []): string[] {
-  // Only the run's own structure is exempt (its episode count and target length): any other count of episodes,
-  // scenes, seconds or minutes is a quantitative claim and needs a source.
   const stripped = value
     .replace(/\b[FOHDCLPRK]\d{1,2}\b/g, " ")
     .replace(/S-[A-Z]+(?:-[A-Z0-9]+)*/g, " ")
-    .replace(/(\d+(?:\.\d+)?)\s*(集|秒|分钟)/g, (whole, number: string, unit: string) =>
-      exempt.some(([value, exemptUnit]) => value === Number(number) && exemptUnit === unit) ? " " : whole)
-    .replace(/9\s*[:：]\s*16/g, " ");
-  const tokens = stripped.match(/\d+(?:\.\d+)?\s*%?|[0-9０-９]+|百分之[〇零一二两三四五六七八九十百]+|[〇零一二两三四五六七八九十百千]+(?:成|万|亿|岁|倍|分之)/gu) ?? [];
-  return tokens.map((token) => token.replace(/\s+/g, ""));
+    .replace(/9\s*[:：]\s*16/g, " ")
+    .replace(/一成不变/gu, " ")
+    .split(/(?<=[，。；;！？!?,\n])/u)
+    .map((clause) => MARKET_MARKERS.test(clause) ? clause : clause.replace(PLAN_NUMBER, (whole, number: string, unit: string) => {
+      const amount = /^\d/u.test(number) ? Number(number) : chineseValue(number);
+      return exempt.some(([exemptValue, exemptUnit]) => exemptValue === amount && exemptUnit === unit) ? " " : whole;
+    }))
+    .join("");
+  const tokens = stripped.match(NUMBER_TOKEN) ?? [];
+  return tokens.map((token) => token.replace(/\s+/g, ""))
+    .filter((token) => !new RegExp(`^一(?:${CN_COUNT_UNITS})$`, "u").test(token));
 }
 
 function textsOf(value: unknown): string[] {
@@ -379,8 +418,9 @@ function checkResearch(input: AutoCreationFrozenInput, output: AutoResearch, con
   for (const fact of output.facts) {
     const problem = cite(fact.sourceIds) ?? sourced(fact.statement, fact.sourceIds);
     if (problem) return problem;
-    const excerpt = normalize(fact.sourceIds.map((id) => readable.get(id)!.excerpt).join("\n"));
-    if (!excerpt.includes(normalize(fact.evidence))) return { ok: false, code: "evidence_not_in_source", detail: fact.id };
+    // Each cited source on its own: a quote made by joining the end of one source to the start of another is no quote.
+    const quote = normalize(fact.evidence);
+    if (!fact.sourceIds.some((id) => normalize(readable.get(id)!.excerpt).includes(quote))) return { ok: false, code: "evidence_not_in_source", detail: fact.id };
   }
   for (const observation of output.observations) {
     const problem = cite(observation.sourceIds) ?? sourced(observation.statement, observation.sourceIds);
@@ -392,7 +432,11 @@ function checkResearch(input: AutoCreationFrozenInput, output: AutoResearch, con
   }
   const audienceProblem = cite(output.audience.sourceIds);
   if (audienceProblem) return audienceProblem;
-  if (output.audience.basis === "sourced" && output.audience.sourceIds.length === 0) return { ok: false, code: "unsourced_claim", detail: "audience" };
+  // "Sourced" is judged by what the audience itself cites: at least one recent, readable market source. Craft notes,
+  // reference pages and undated or old pages cannot carry the label on their own, whatever the run's mode.
+  if (output.audience.basis === "sourced" && !output.audience.sourceIds.some((id) => isMarketSource(readable.get(id)))) {
+    return { ok: false, code: "unsourced_claim", detail: "audience" };
+  }
   const audienceText = [output.audience.primary, ...output.audience.viewingNeeds, ...output.audience.emotionalAppeals].join("\n");
   const audienceNumbers = sourced(audienceText, output.audience.sourceIds);
   if (audienceNumbers) return audienceNumbers;
@@ -595,7 +639,19 @@ export function deterministicFindings(input: AutoCreationFrozenInput, context: A
     if (hit) findings.push({ check: "forbidden_theme", target, severity: "high", detail: `出现了用户禁止的题材或元素「${hit}」。` });
   }
   if (input.constraints.maxCharacters !== null && allOnScreen.size > input.constraints.maxCharacters) {
-    findings.push({ check: "character_count", target: "bible", severity: "high", detail: `各集共有 ${String(allOnScreen.size)} 个出场人物，超过最多 ${String(input.constraints.maxCharacters)} 人的要求。` });
+    const max = input.constraints.maxCharacters;
+    const detail = `各集共有 ${String(allOnScreen.size)} 个出场人物，超过最多 ${String(max)} 人的要求。`;
+    // The setting's own cast is checked when it is written, so an excess within a valid setting comes from episodes
+    // putting people on screen the setting does not: those episodes are the fix. Only an over-limit setting is the setting's.
+    const settingCast = new Set(bible.characters.filter((item) => item.presence === "on_screen").map((item) => item.id));
+    const causes = settingCast.size <= max
+      ? [...context.episodes.entries()].filter(([, value]) => value.episode.scenes.some((scene) => scene.characterIds.some((id) => !settingCast.has(id))))
+        .map(([episodeNo]) => episodeNo).sort((a, b) => a - b)
+      : [];
+    if (causes.length === 0) findings.push({ check: "character_count", target: "bible", severity: "high", detail });
+    for (const episodeNo of causes) {
+      findings.push({ check: "character_count", target: `episode:${String(episodeNo)}`, severity: "high", detail: `${detail}本集让设定中仅被提及的人物出场。` });
+    }
   }
   if (input.constraints.maxLocations !== null && allLocations.size > input.constraints.maxLocations) {
     findings.push({ check: "location_count", target: "bible", severity: "high", detail: `各集共用 ${String(allLocations.size)} 个地点，超过最多 ${String(input.constraints.maxLocations)} 个的要求。` });

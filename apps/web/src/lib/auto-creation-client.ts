@@ -2,6 +2,7 @@ import {
   AUTO_REVIEW_DIMENSION_LABELS,
   autoStageEpisodeNo,
   autoStageRound,
+  autoRunSettledForGood,
   currentUncertainCallIds,
   type AutoCreationOptionsView,
   type AutoCreationRunView,
@@ -88,11 +89,15 @@ export class AutoCreationClient {
   }
 
   async resume(projectId: string, runId: string, options: { confirmUncertainCallIds: readonly string[]; token: string; idempotencyKey: string }): Promise<AutoCreationRunView> {
-    return (await this.call<{ run: AutoCreationRunView }>(`/projects/${projectId}/auto-runs/${runId}/resume`, {
+    const result = await this.call<unknown>(`/projects/${projectId}/auto-runs/${runId}/resume`, {
       method: "POST",
       headers: { Accept: "application/json", "Content-Type": "application/json", ...operatorHeader(options.token), "Idempotency-Key": options.idempotencyKey },
       body: JSON.stringify({ confirmUncertainCallIds: options.confirmUncertainCallIds }),
-    })).body.run;
+    });
+    // Only a receipt naming this run confirms the resume; anything else leaves it unconfirmed.
+    const run = autoStartReceiptRun(result.body, projectId);
+    if (!run || run.runId !== runId) throw new TitleWritingUnconfirmedError(result.status);
+    return run;
   }
 
   async placeScripts(projectId: string, runId: string, acceptStoryChanged: boolean): Promise<AutoCreationRunView> {
@@ -189,7 +194,7 @@ const ERRORS: Record<string, string> = {
   legacy_provider_run: "这是 DeepSeek 退役前的旧任务，不会再发出请求。",
   prompt_too_large: "这一步的输入超过了输入长度上限，没有发送。",
   story_conflict: "作品里已经有故事（可能是你写的），没有覆盖。剧本包仍可查看和下载。",
-  story_too_large: "整理后的故事超过保存上限，没有保存。",
+  story_too_large: "整理后的故事超过保存上限，没有保存，再次继续也只会得到同样的结果。剧本包仍可查看和下载；分集剧本不会写入作品。",
   revision_rounds_exhausted: "已用完允许的修改轮次，仍有问题未解决，标记为「待完善」。",
   revision_budget_exhausted: "剩余调用预算不够完成一整轮修改，没有开始修改，标记为「待完善」。",
   unrevisable_issues: "剩余问题出在故事设定或大纲上，定向修改单集无法解决，标记为「待完善」。",
@@ -210,9 +215,68 @@ export function autoUncertainIds(run: AutoCreationRunView): string[] {
   );
 }
 
+/**
+ * One resume whose answer never arrived: its key and the exact confirmations it sent are one identity. A retry sends
+ * both unchanged; a new identity is made only after the server answered or definitely refused. No credential is kept.
+ */
+export interface PendingAutoResume {
+  version: 1;
+  projectId: string;
+  runId: string;
+  key: string;
+  confirmUncertainCallIds: string[];
+}
+
+const RESUME_STORAGE_PREFIX = "auto-creation:resume:";
+
+function resumeStorageKey(projectId: string, runId: string): string {
+  return `${RESUME_STORAGE_PREFIX}${projectId}:${runId}`;
+}
+
+export function readPendingResume(projectId: string, runId: string): PendingAutoResume | null {
+  try {
+    const raw = window.sessionStorage.getItem(resumeStorageKey(projectId, runId));
+    const parsed = raw ? JSON.parse(raw) as Partial<PendingAutoResume> : null;
+    if (!parsed || parsed.version !== 1 || parsed.projectId !== projectId || parsed.runId !== runId || typeof parsed.key !== "string"
+      || !Array.isArray(parsed.confirmUncertainCallIds) || !parsed.confirmUncertainCallIds.every((id) => typeof id === "string")) return null;
+    return parsed as PendingAutoResume;
+  } catch {
+    return null;
+  }
+}
+
+/** Written and read back before the request that uses it; false means only this page remembers it. */
+export function savePendingResume(pending: PendingAutoResume): boolean {
+  try {
+    const text = JSON.stringify(pending);
+    window.sessionStorage.setItem(resumeStorageKey(pending.projectId, pending.runId), text);
+    return window.sessionStorage.getItem(resumeStorageKey(pending.projectId, pending.runId)) === text;
+  } catch {
+    return false;
+  }
+}
+
+export function clearPendingResume(pending: PendingAutoResume): void {
+  try {
+    if (readPendingResume(pending.projectId, pending.runId)?.key === pending.key) window.sessionStorage.removeItem(resumeStorageKey(pending.projectId, pending.runId));
+  } catch {
+    // Nothing to keep.
+  }
+}
+
+/**
+ * True when the server answered with a refusal it explains, so it did not apply this resume (a resume the server
+ * accepted is answered with the run on every replay). A lost answer, a gateway error or an unexplained failure is not.
+ */
+export function autoResumeRefused(error: unknown): boolean {
+  return error instanceof TitleWritingError && error.code !== "REQUEST_FAILED" && (error.status < 500 || error.code.startsWith("AUTO_CREATION_"));
+}
+
 export function autoCanResume(run: AutoCreationRunView): boolean {
   if (run.state === "running" || run.state === "completed") return false;
   if (run.storySave === "conflict" && run.stages.every((stage) => stage.state === "completed")) return false;
+  // Final stops (a story too large to save): a resume would only stop the same way; the package stays downloadable.
+  if (autoRunSettledForGood(run, run.stages)) return false;
   return true;
 }
 
