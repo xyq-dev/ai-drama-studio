@@ -40,6 +40,8 @@ interface World {
   /** Revisions answered for a character or location id. */
   revisions?: Record<string, unknown>;
   scenes?: unknown[];
+  /** The work's latest automatic creation run (GET /auto-runs/latest). */
+  autoRun?: unknown;
 }
 
 /** GET /providers/capabilities: a compose switch object, a failure status, or the default (both on). */
@@ -81,6 +83,7 @@ function install(worlds: Record<string, World>) {
       }
       return json({ id, title: world.title, premise: "梗概", version: 3, status: "ACTIVE" });
     }
+    if (path.endsWith("/auto-runs/latest")) return json({ run: world.autoRun ?? null });
     if (path.endsWith("/episodes")) return json({ items: world.episodes });
     if (path.endsWith("/stories")) return json({ items: world.story ? [world.story] : [], nextCursor: null });
     if (path.endsWith("/workflow-runs")) return json(world.runs ?? []);
@@ -148,6 +151,24 @@ describe("beginner flow", () => {
     fireEvent.click(primary);
     expect(Element.prototype.scrollIntoView).toHaveBeenCalled();
     expect(screen.getByRole("link", { name: "高级编辑" }).getAttribute("href")).toBe(`/projects/${P1}?focus=story`);
+  });
+
+  it("a work made by automatic creation always offers the way back to its run; reading it starts nothing", async () => {
+    const autoRun = { runId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", projectId: P1, state: "completed", quality: "passed", cancelRequested: false,
+      storySave: "saved", stages: [{ stageKey: "episode:1", state: "completed", scriptSave: null }] };
+    const calls = install({ [P1]: { title: "夜班", story: story("DRAFT"), episodes: [], autoRun }, [P2]: { title: "手写", story: null, episodes: [] } });
+    const view = render(<BeginnerFlow projectId={P1} />);
+    const entry = await screen.findByTestId("auto-run-entry");
+    expect(within(entry).getByRole("link", { name: "回到 AI 自动创作任务" }).getAttribute("href")).toBe(`/projects/${P1}/auto`);
+    expect(entry.textContent).toContain("故事人工审核通过后，回到任务里把分集剧本写入作品");
+    // Only reads: no start, resume, cancel or placement request.
+    expect(calls.filter((call) => call.includes("auto-runs")).every((call) => call.startsWith("GET ") && call.endsWith("/auto-runs/latest"))).toBe(true);
+    view.unmount();
+    // A work without a run shows no entry.
+    render(<BeginnerFlow projectId={P2} />);
+    await screen.findByRole("heading", { name: "第 1 步 · 定故事" });
+    await waitFor(() => expect(calls.some((call) => call.includes(`${P2}/auto-runs/latest`))).toBe(true));
+    expect(screen.queryByTestId("auto-run-entry")).toBeNull();
   });
 
   it("shows each episode's real state and keeps review to the shown episode", async () => {

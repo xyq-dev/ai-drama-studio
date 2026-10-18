@@ -28,6 +28,7 @@ import {
   type AutoCreationQuality,
   type AutoCreationRunView,
   type AutoCreationStore,
+  type AutoResumeBlock,
   type AutoResumePreparation,
   type AutoReviewOutput,
   type AutoRunBundle,
@@ -166,8 +167,25 @@ export function currentEpisodeVersions(stages: readonly AutoStageRecord[]): Reco
   return result;
 }
 
+/**
+ * Whether a stopped run can be continued as it stands. Its next stage is the first one not completed; a resume resets
+ * only the stages to redo, so that stage's request is built from the same frozen input and saved stages as it would be
+ * after the resume. researchFetch: whether this server reads public pages now.
+ */
+export function autoResumeBlock(bundle: AutoRunBundle, options: { researchFetch: boolean }): AutoResumeBlock | null {
+  const { run } = bundle;
+  if (run.state === "running" || run.state === "completed") return null;
+  const stages = [...bundle.stages].sort((a, b) => a.ordinal - b.ordinal);
+  if (autoRunSettledForGood(run, stages)) return "story_too_large";
+  const next = stages.find((stage) => stage.state !== "completed");
+  if (!next) return null;
+  if (next.stageKey === "sources") return run.input.researchFetch && !options.researchFetch ? "research_fetch_unavailable" : null;
+  const prompt = buildAutoCreationPrompt(next.stageKey, run.input, autoContextFromStages(stages));
+  return prompt.system.length + prompt.user.length > AUTO_CREATION_PROMPT_MAX_CHARS ? "prompt_too_large" : null;
+}
+
 /** Public view: no executor, key, hashes of requests, raw responses or credentials. */
-export function autoRunView(bundle: AutoRunBundle): AutoCreationRunView {
+export function autoRunView(bundle: AutoRunBundle, options: { researchFetch?: boolean } = {}): AutoCreationRunView {
   const { run } = bundle;
   const input = run.input;
   const stages = [...bundle.stages].sort((a, b) => a.ordinal - b.ordinal);
@@ -246,6 +264,8 @@ export function autoRunView(bundle: AutoRunBundle): AutoCreationRunView {
       usage: call.usage, billingStatus: "unknown", createdAt: call.createdAt, finishedAt: call.finishedAt,
     })),
     legacyProviderRun: isLegacyDeepseekRun(input),
+    // Without the server's research setting, a frozen read is assumed available (the resume itself checks it).
+    resumeBlock: autoResumeBlock(bundle, { researchFetch: options.researchFetch ?? true }),
     createdAt: run.createdAt,
     updatedAt: run.updatedAt,
   };
@@ -340,6 +360,9 @@ export class AutoCreationEngine {
     if (next.state === "reserved" || next.state === "submitted") return false;
     if (next.state === "canceled") return this.finish(runId, "canceled", null);
     if (next.stageKey === "sources") {
+      // A run that froze a public page read is never completed without it: its reference URLs would silently go
+      // missing from the sources. It stops before the snapshot, keeping its input, and continues once the read is back.
+      if (run.input.researchFetch && !this.deps.fetchPages) return this.finish(runId, "needs_attention", "research_fetch_unavailable");
       const urls = run.input.researchFetch ? [...new Set([...(this.deps.defaultResearchUrls ?? []), ...run.input.referenceUrls])] : [];
       const pages = urls.length > 0 && this.deps.fetchPages ? await this.deps.fetchPages(urls) : [];
       const output = collectSources(run.input, pages, this.now().toISOString());
@@ -706,7 +729,7 @@ export class InMemoryAutoCreationStore implements AutoCreationStore {
     return this.bundle(run);
   }
 
-  async prepareResume(workspaceId: string, projectId: string, runId: string, request: { resumeKey: string; requestHash: string; confirmedCallIds: readonly string[]; maxActiveRuns: number; providerReady: boolean }, nowIso: string): Promise<AutoResumePreparation> {
+  async prepareResume(workspaceId: string, projectId: string, runId: string, request: { resumeKey: string; requestHash: string; confirmedCallIds: readonly string[]; maxActiveRuns: number; providerReady: boolean; blocked: boolean }, nowIso: string): Promise<AutoResumePreparation> {
     const run = this.runs.find((item) => item.id === runId && item.workspaceId === workspaceId && item.projectId === projectId);
     if (!run) return { kind: "not_found" };
     const previous = this.resumes.find((item) => item.runId === runId && item.key === request.resumeKey);
@@ -723,6 +746,7 @@ export class InMemoryAutoCreationStore implements AutoCreationStore {
     if (uncertain.length !== confirmed.length || uncertain.some((id, index) => id !== confirmed[index])) return { kind: "stale_confirmation" };
     const redo = stages.filter((stage) => stage.state === "unknown" || stage.state === "rejected" || stage.state === "canceled");
     if (redo.length === 0 && (run.storySave !== "pending" || autoRunSettledForGood(run, stages))) return { kind: "not_resumable" };
+    if (request.blocked) return { kind: "blocked" };
     const sends = redo.some((stage) => stage.stageKey !== "sources") || stages.some((stage) => stage.state === "pending" && stage.stageKey !== "sources");
     if (sends && !request.providerReady) return { kind: "provider_unconfigured" };
     if (sends && run.callsUsed >= run.callCap) return { kind: "budget_exhausted" };

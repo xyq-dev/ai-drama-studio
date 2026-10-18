@@ -699,7 +699,15 @@ export function autoRunSettledForGood(run: { errorCode: string | null }, stages:
 export type AutoResumePreparation =
   | { kind: "ok" | "replayed"; bundle: AutoRunBundle }
   | { kind: "not_found" | "active" | "active_cap" | "needs_confirmation" | "stale_confirmation" | "key_conflict" | "not_resumable"
-    | "provider_unconfigured" | "budget_exhausted" };
+    | "provider_unconfigured" | "budget_exhausted" | "blocked" };
+
+/**
+ * Why a stopped run cannot be continued as it stands, or null. prompt_too_large: the next stage's request, built from
+ * the frozen input and the saved stages, is over the prompt limit (a resume would stop the same way, so none is
+ * accepted); research_fetch_unavailable: the run froze a public page read the server no longer offers (a resume is
+ * possible again once the read is back); story_too_large: the final stop of a run whose story cannot be saved.
+ */
+export type AutoResumeBlock = "prompt_too_large" | "research_fetch_unavailable" | "story_too_large";
 
 export type AutoScriptPlacement =
   | { kind: "ok"; bundle: AutoRunBundle }
@@ -735,7 +743,8 @@ export interface AutoCreationStore {
   /** Ends a run held by this executor. quality, when given, records the final review even though nothing was saved. */
   finishRun(workspaceId: string, runId: string, executorId: string, state: Exclude<TitleWritingRunState, "running">, errorCode: string | null, nowIso: string, quality?: Exclude<AutoCreationQuality, "pending">): Promise<boolean>;
   requestCancel(workspaceId: string, projectId: string, runId: string, nowIso: string): Promise<AutoRunBundle | null>;
-  prepareResume(workspaceId: string, projectId: string, runId: string, request: { resumeKey: string; requestHash: string; confirmedCallIds: readonly string[]; maxActiveRuns: number; providerReady: boolean }, nowIso: string): Promise<AutoResumePreparation>;
+  /** blocked: the caller found the run cannot be continued as it stands (AutoResumeBlock); refused before any write. */
+  prepareResume(workspaceId: string, projectId: string, runId: string, request: { resumeKey: string; requestHash: string; confirmedCallIds: readonly string[]; maxActiveRuns: number; providerReady: boolean; blocked: boolean }, nowIso: string): Promise<AutoResumePreparation>;
   recoverExpired(workspaceId: string, nowIso: string): Promise<number>;
   listClaimable(workspaceId: string, nowIso: string, limit: number): Promise<string[]>;
   /** After a person approved the story: each episode's current version into an episode without a script. */
@@ -821,6 +830,8 @@ export interface AutoCreationRunView {
   stages: AutoCreationStageView[];
   calls: AutoCreationCallView[];
   legacyProviderRun: boolean;
+  /** Set when this stopped run cannot be continued as it stands; the page then offers no resume. */
+  resumeBlock: AutoResumeBlock | null;
   createdAt: string;
   updatedAt: string;
 }

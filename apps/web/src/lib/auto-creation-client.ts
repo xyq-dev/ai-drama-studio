@@ -192,7 +192,8 @@ const ERRORS: Record<string, string> = {
   executor_lost: "服务重启时这一步已经发出，结果未知，不会自动重发。",
   provider_unconfigured: "这次创作冻结的模型服务现在不可用，没有发出请求，也不会改用其他模型服务。",
   legacy_provider_run: "这是 DeepSeek 退役前的旧任务，不会再发出请求。",
-  prompt_too_large: "这一步的输入超过了输入长度上限，没有发送。",
+  prompt_too_large: "这一步的输入超过了输入长度上限，没有发送；按已保存的成果再次继续也只会停在这里。剧本包仍可查看和下载。",
+  research_fetch_unavailable: "这次创作开始时选择了读取公开页面，但服务端现在关闭了页面读取：没有整理资料，也没有发出调用，参考网址保留在任务里。恢复页面读取后可以继续。",
   story_conflict: "作品里已经有故事（可能是你写的），没有覆盖。剧本包仍可查看和下载。",
   story_too_large: "整理后的故事超过保存上限，没有保存，再次继续也只会得到同样的结果。剧本包仍可查看和下载；分集剧本不会写入作品。",
   revision_rounds_exhausted: "已用完允许的修改轮次，仍有问题未解决，标记为「待完善」。",
@@ -277,7 +278,8 @@ export function autoCanResume(run: AutoCreationRunView): boolean {
   if (run.storySave === "conflict" && run.stages.every((stage) => stage.state === "completed")) return false;
   // Final stops (a story too large to save): a resume would only stop the same way; the package stays downloadable.
   if (autoRunSettledForGood(run, run.stages)) return false;
-  return true;
+  // The server found the next request cannot be built (or a frozen page read is off): a resume would be refused.
+  return (run.resumeBlock ?? null) === null;
 }
 
 export function stageOf(run: AutoCreationRunView, stageKey: string): AutoCreationStageView | undefined {

@@ -242,7 +242,7 @@ describe("automatic creation engine", () => {
     const uncertain = autoUncertainCallIds(bundle.stages, bundle.calls);
     expect(uncertain).toHaveLength(1);
     const request = (confirmed: string[], key: string) => ({ resumeKey: key, requestHash: hashAutoResume(run.id, confirmed), confirmedCallIds: confirmed,
-      maxActiveRuns: 1, providerReady: true });
+      maxActiveRuns: 1, providerReady: true, blocked: false });
     expect((await store.prepareResume(WS, P1, run.id, request([], "r-0"), new Date(START).toISOString())).kind).toBe("needs_confirmation");
     expect((await store.prepareResume(WS, P1, run.id, request(uncertain, "r-1"), new Date(START).toISOString())).kind).toBe("ok");
     await engine.drive(run.id);
@@ -401,7 +401,7 @@ describe("automatic creation engine", () => {
     const before = JSON.stringify(bundle);
     for (const key of ["r1", "r2"]) {
       const resumed = await store.prepareResume(WS, P1, run.id, { resumeKey: key, requestHash: hashAutoResume(run.id, []), confirmedCallIds: [],
-        maxActiveRuns: 5, providerReady: true }, new Date().toISOString());
+        maxActiveRuns: 5, providerReady: true, blocked: false }, new Date().toISOString());
       expect(resumed.kind).toBe("not_resumable");
     }
     expect(store.resumes).toHaveLength(0);
@@ -413,7 +413,7 @@ describe("automatic creation engine", () => {
   it("a run stopped after its last stage but before the save resumes into the save alone, with no send", async () => {
     const { store, run, engine, seen, view } = await endedBeforeSave("canceled", null);
     const resumed = await store.prepareResume(WS, P1, run.id, { resumeKey: "r", requestHash: hashAutoResume(run.id, []), confirmedCallIds: [],
-      maxActiveRuns: 5, providerReady: true }, new Date().toISOString());
+      maxActiveRuns: 5, providerReady: true, blocked: false }, new Date().toISOString());
     expect(resumed.kind).toBe("ok");
     await engine.drive(run.id);
     expect(await view()).toMatchObject({ state: "completed", storySave: "saved" });
@@ -450,7 +450,7 @@ describe("automatic creation engine", () => {
     expect(bundle.run).toMatchObject({ state: "needs_attention", callsUsed: autoCreationNormalCalls(1), callCap: autoCreationNormalCalls(1) });
     const uncertain = autoUncertainCallIds(bundle.stages, bundle.calls);
     const resumed = await store.prepareResume(WS, P1, run.id, { resumeKey: "r", requestHash: hashAutoResume(run.id, uncertain), confirmedCallIds: uncertain,
-      maxActiveRuns: 5, providerReady: true }, new Date().toISOString());
+      maxActiveRuns: 5, providerReady: true, blocked: false }, new Date().toISOString());
     expect(resumed.kind).toBe("budget_exhausted");
     expect(store.resumes).toHaveLength(0);
     expect((await store.getRunById(WS, run.id))!.stages.find((stage) => stage.stageKey === "review:1")!.state).toBe("unknown");
@@ -464,7 +464,7 @@ describe("automatic creation engine", () => {
     await engine.drive(run.id);
     store.titleRunning.set(P1, "title-run");
     const resumed = await store.prepareResume(WS, P1, run.id, { resumeKey: "r", requestHash: hashAutoResume(run.id, []), confirmedCallIds: [],
-      maxActiveRuns: 5, providerReady: true }, new Date().toISOString());
+      maxActiveRuns: 5, providerReady: true, blocked: false }, new Date().toISOString());
     expect(resumed.kind).toBe("active");
   });
 

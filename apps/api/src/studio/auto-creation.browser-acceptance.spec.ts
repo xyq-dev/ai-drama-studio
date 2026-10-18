@@ -282,6 +282,60 @@ describe("AI automatic creation in a real browser (site login, built web, real A
     (evidence.flows as Record<string, unknown>).A = { stubSends: seen.length, run: run[0], stories };
   }, 240_000);
 
+  it("A2: from the finished run to the story review, approved there, back to the run through the work's own entry, scripts written", async () => {
+    expect(firstProject).not.toBe("");
+    const sendsBefore = seen.length;
+    const runId = (await q<{ id: string }>("SELECT id FROM auto_creation_run WHERE project_id = $1", [firstProject]))[0]!.id;
+    await page.goto(`${WEB}/projects/${firstProject}/auto`, { waitUntil: "domcontentloaded" });
+    await expect.poll(async () => await headline().textContent(), { timeout: 30_000 }).toBe("剧本包已完成（机器质量检查通过）");
+    // The run's own link opens the story review of the work.
+    await page.getByRole("link", { name: "去作品中人工审核故事" }).click();
+    await page.waitForURL(`${WEB}/projects/${firstProject}/create?step=story`, { timeout: 30_000 });
+    await page.getByRole("heading", { name: "第 1 步 · 定故事" }).waitFor({ timeout: 30_000 });
+    const entry = page.getByTestId("auto-run-entry");
+    await entry.waitFor({ timeout: 30_000 });
+    // A person reviews: 提交审核, then 通过, in the version column of the story actually shown.
+    const column = page.getByRole("complementary", { name: "检查面板" }).first();
+    for (const [name, to] of [["提交审核", "IN_REVIEW"], ["通过", "APPROVED"]] as const) {
+      const action = column.getByRole("button", { name, exact: true });
+      await action.waitFor({ timeout: 20_000 });
+      const answered = page.waitForResponse((response) => response.request().method() === "POST" && response.url().includes("/review"), { timeout: 20_000 });
+      await action.click();
+      expect((await answered).status(), `story review to ${to}`).toBe(200);
+    }
+    expect((await q<{ review_status: string }>("SELECT sr.review_status FROM story_revision sr JOIN project p ON p.current_story_revision_id = sr.id WHERE p.id = $1",
+      [firstProject]))[0]!.review_status).toBe("APPROVED");
+    // The entry stays after a refresh, and after signing in again with the work opened directly.
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await entry.waitFor({ timeout: 30_000 });
+    await context!.clearCookies();
+    await page.goto(`${WEB}/projects/${firstProject}/create`, { waitUntil: "domcontentloaded" });
+    await page.waitForURL(/\/login\?returnTo=/, { timeout: 30_000 });
+    await page.getByLabel("账号").fill("admin");
+    await page.getByLabel("密码").fill(PASSWORD);
+    await page.getByRole("button", { name: "登录", exact: true }).click();
+    await page.waitForURL(`${WEB}/projects/${firstProject}/create`, { timeout: 30_000 });
+    await entry.waitFor({ timeout: 30_000 });
+    await viewports("02b-auto-entry-on-work", entry, entry.getByRole("link", { name: "回到 AI 自动创作任务" }));
+    // Back through the page's own link, not history or a typed address.
+    await entry.getByRole("link", { name: "回到 AI 自动创作任务" }).click();
+    await page.waitForURL(`${WEB}/projects/${firstProject}/auto`, { timeout: 30_000 });
+    await expect.poll(async () => await headline().textContent(), { timeout: 30_000 }).toBe("剧本包已完成（机器质量检查通过）");
+    const placed = page.waitForResponse((response) => response.request().method() === "POST" && response.url().includes(`/auto-runs/${runId}/scripts`), { timeout: 20_000 });
+    await page.getByRole("button", { name: "写入分集剧本草稿" }).click();
+    expect((await placed).status()).toBe(200);
+    await page.getByTestId("auto-script-save-episode:1").waitFor({ timeout: 20_000 });
+    // Refresh: the placement is stored, and nothing was sent to a model.
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect.poll(async () => await page.getByTestId("auto-script-save-episode:1").textContent(), { timeout: 30_000 }).toContain("已写入作品分集草稿");
+    // Written by the person who placed them (a DRAFT, to be reviewed like any script), once.
+    const scripts = await q<{ review_status: string }>("SELECT review_status FROM script_revision WHERE project_id = $1", [firstProject]);
+    expect(scripts).toEqual([{ review_status: "DRAFT" }]);
+    expect((await q<{ script_save: string }>("SELECT script_save FROM auto_creation_stage WHERE run_id = $1 AND stage_key = 'episode:1'", [runId]))[0]!.script_save).toBe("saved");
+    expect(seen.length).toBe(sendsBefore);
+    (evidence.flows as Record<string, unknown>).A2 = { byPage: ["去作品中人工审核故事", "提交审核", "通过", "reload", "sign in again", "回到 AI 自动创作任务", "写入分集剧本草稿", "reload"], scripts, stubSends: 0 };
+  }, 240_000);
+
   it("B: a one-line idea and hard constraints at 390px; a review issue is revised once; every record is persisted", async () => {
     plan = { review: { highIssueRounds: [1] } };
     const before = seen.length;

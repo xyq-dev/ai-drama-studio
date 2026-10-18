@@ -431,6 +431,54 @@ describe(`automatic creation on PostgreSQL (${scenario} schema)`, () => {
     expect(seen.length).toBe(sendsBefore);
   });
 
+  /** A run left as the old prompt left it: every stage up to the episodes completed, the review never sent, stopped at prompt_too_large. */
+  async function stoppedBeforeReview(episodeCount: number) {
+    plan = {};
+    const stopAtReview = Object.create(store, { reserveCall: { value: async (...args: Parameters<PostgresAutoCreationStore["reserveCall"]>) => {
+      const [call, , nowIso] = args;
+      if (call.stageKey !== "review:1") return store.reserveCall(...args);
+      expect(await store.finishRun(workspaceId, call.runId, call.executorId, "needs_attention", "prompt_too_large", nowIso)).toBe(true);
+      return { kind: "lost" as const };
+    } } }) as PostgresAutoCreationStore;
+    const { svc, settle } = service({ engineStore: stopAtReview });
+    const id = await project(episodeCount);
+    const runId = runOf((await svc.start(id, {}, TOKEN, ctx(`before-review-${randomUUID()}`))).body).runId;
+    await settle();
+    expect((await q("SELECT state, error_code, calls_used FROM auto_creation_run WHERE id = $1", [runId]))[0])
+      .toEqual({ state: "needs_attention", error_code: "prompt_too_large", calls_used: episodeCount + 4 });
+    return { id, runId };
+  }
+
+  it("a stopped run whose next request cannot be built is refused with no record, no reset and no send", async () => {
+    const { id, runId } = await stoppedBeforeReview(2);
+    // Saved episodes larger than any review prompt can carry (a run stored before the review input budget).
+    await q("UPDATE auto_creation_stage SET output_json = jsonb_set(output_json, '{scenes,0,action}', to_jsonb(repeat('长', 45000))) WHERE run_id = $1 AND stage_key = 'episode:1'", [runId]);
+    const { svc, settle } = service();
+    expect(runOf((await svc.get(id, runId)).body).resumeBlock).toBe("prompt_too_large");
+    const sendsBefore = seen.length;
+    const before = await snapshot(runId);
+    for (const key of ["blocked-1", "blocked-1", "blocked-2"]) {
+      const resumed = await svc.resume(id, runId, {}, TOKEN, ctx(key));
+      expect(resumed.status).toBe(409);
+      expect(resumed.body).toMatchObject({ error: { code: "AUTO_CREATION_PROMPT_TOO_LARGE" } });
+    }
+    await settle();
+    expect(await snapshot(runId)).toBe(before);
+    expect(seen.length).toBe(sendsBefore);
+  });
+
+  it("a run the old prompt stopped before its review now continues into the review alone, reusing its saved stages", async () => {
+    const { id, runId } = await stoppedBeforeReview(2);
+    const { svc, settle } = service();
+    const sendsBefore = seen.length;
+    expect(runOf((await svc.get(id, runId)).body).resumeBlock).toBeNull();
+    expect((await svc.resume(id, runId, {}, TOKEN, ctx("after-budget"))).status).toBe(200);
+    await settle();
+    expect(seen.slice(sendsBefore).map((item) => item.stage)).toEqual(["review:1"]);
+    expect((await q("SELECT state, story_save, calls_used FROM auto_creation_run WHERE id = $1", [runId]))[0])
+      .toEqual({ state: "completed", story_save: "saved", calls_used: 7 });
+  });
+
   it("a story conflict keeps the person's story and never places the run's scripts on it", async () => {
     plan = {};
     const hold: Array<() => Promise<void>> = [];

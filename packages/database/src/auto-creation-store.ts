@@ -417,7 +417,7 @@ export class PostgresAutoCreationStore implements AutoCreationStore {
     return this.getRun(workspaceId, projectId, runId);
   }
 
-  async prepareResume(workspaceId: string, projectId: string, runId: string, request: { resumeKey: string; requestHash: string; confirmedCallIds: readonly string[]; maxActiveRuns: number; providerReady: boolean }, nowIso: string): Promise<AutoResumePreparation> {
+  async prepareResume(workspaceId: string, projectId: string, runId: string, request: { resumeKey: string; requestHash: string; confirmedCallIds: readonly string[]; maxActiveRuns: number; providerReady: boolean; blocked: boolean }, nowIso: string): Promise<AutoResumePreparation> {
     return this.transaction(async (client) => {
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [runLockKey(workspaceId)]);
       const row = (await client.query<Row>(`SELECT ${RUN_COLUMNS} FROM auto_creation_run WHERE id = $1 AND workspace_id = $2 AND project_id = $3 FOR UPDATE`,
@@ -451,6 +451,7 @@ export class PostgresAutoCreationStore implements AutoCreationStore {
       const redo = stages.filter((stage) => stage.state === "unknown" || stage.state === "rejected" || stage.state === "canceled");
       // Nothing to redo and nothing a second save could change (a story too large to save stays too large): final.
       if (redo.length === 0 && (run.storySave !== "pending" || autoRunSettledForGood(run, stages))) return { kind: "not_resumable" };
+      if (request.blocked) return { kind: "blocked" };
       const sends = redo.some((stage) => stage.stageKey !== "sources") || stages.some((stage) => stage.state === "pending" && stage.stageKey !== "sources");
       if (sends && !request.providerReady) return { kind: "provider_unconfigured" };
       // The run's frozen call budget is spent: resetting a stage could only stop again before the send.

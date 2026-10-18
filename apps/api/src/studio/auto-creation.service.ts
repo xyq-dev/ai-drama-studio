@@ -27,6 +27,7 @@ import { builtInSources, autoPackageJson, autoPackageMarkdown } from "@ai-drama/
 import {
   TEXT_WRITING_MAX_OUTPUT_TOKENS,
   WRITING_ADAPTERS,
+  autoResumeBlock,
   autoRunView,
   autoScriptsOf,
   hashAutoResume,
@@ -89,6 +90,8 @@ const MESSAGES: Record<string, string> = {
   AUTO_CREATION_NEEDS_CONFIRMATION: "有结果不确定的调用，可能已经计费。确认后才会重新发送。",
   AUTO_CREATION_CONFIRMATION_STALE: "确认的不确定调用和现在的不一致，没有重新发送。请重新查看后再确认。",
   AUTO_CREATION_NOT_RESUMABLE: "这次创作没有需要续跑的阶段。",
+  AUTO_CREATION_PROMPT_TOO_LARGE: "按已保存的成果，下一步的输入超过了输入长度上限，续跑也只会停在同一步，没有续跑，也没有重置任何阶段。已有成果仍可查看和下载；如需继续，请新建创作。",
+  AUTO_CREATION_RESEARCH_UNAVAILABLE: "这次创作在开始时选择了读取公开页面，但服务端现在关闭了页面读取，没有续跑，也没有重置任何阶段。参考网址保留在任务里；恢复页面读取后可以继续。",
   AUTO_CREATION_BUDGET_EXHAUSTED: "这次创作冻结的调用预算已经用完，续跑也无法发送，没有重置任何阶段。已有成果仍可查看和下载；如需继续，请新建创作。",
   AUTO_CREATION_STORY_NOT_APPROVED: "故事还没有通过人工审核，剧本暂不能写入分集。机器质量检查不能代替人工审核。",
   AUTO_CREATION_STORY_CHANGED: "人工审核通过的故事和生成剧本时用的故事不同，请确认后再写入。",
@@ -200,8 +203,12 @@ export class AutoCreationService {
     return null;
   }
 
+  private view(bundle: AutoRunBundle) {
+    return autoRunView(bundle, { researchFetch: this.deps.research.fetchEnabled });
+  }
+
   private found(bundle: AutoRunBundle | null, status = 200): AutoCreationResult {
-    return bundle ? { status, body: { run: autoRunView(bundle) } } : failure(404, "NOT_FOUND");
+    return bundle ? { status, body: { run: this.view(bundle) } } : failure(404, "NOT_FOUND");
   }
 
   async start(projectId: string, body: unknown, token: OperatorProof | string | undefined, context: StudioContext): Promise<AutoCreationResult> {
@@ -294,7 +301,7 @@ export class AutoCreationService {
     const refused = await this.readable(projectId);
     if (refused) return refused;
     const bundle = await this.deps.store.latestRun(this.deps.workspaceId, projectId);
-    return { status: 200, body: { run: bundle ? autoRunView(bundle) : null } };
+    return { status: 200, body: { run: bundle ? this.view(bundle) : null } };
   }
 
   async get(projectId: string, runId: string): Promise<AutoCreationResult> {
@@ -322,12 +329,16 @@ export class AutoCreationService {
     const legacy = isLegacyDeepseekRun(input);
     const provider = providerConfigFor(this.deps.providers, input.providerKey);
     const confirmed = parsed.data.confirmUncertainCallIds;
+    // A stopped run is not running, so its saved stages cannot change before the store decides; a replayed key is
+    // still answered first. A run final for good (story_too_large) is refused by the store itself.
+    const block = autoResumeBlock(existing, { researchFetch: this.deps.research.fetchEnabled });
     const prepared = await this.deps.store.prepareResume(this.deps.workspaceId, projectId, runId, {
       resumeKey: context.idempotencyKey,
       requestHash: hashAutoResume(runId, confirmed),
       confirmedCallIds: confirmed,
       maxActiveRuns: this.deps.maxActiveRuns,
       providerReady: !legacy && provider !== null && provider.ok && provider.models.includes(input.model),
+      blocked: block === "prompt_too_large" || block === "research_fetch_unavailable",
     }, this.now().toISOString());
     if (prepared.kind === "replayed") return this.found(prepared.bundle);
     if (prepared.kind !== "ok") {
@@ -337,6 +348,9 @@ export class AutoCreationService {
       if (prepared.kind === "needs_confirmation") return failure(409, "AUTO_CREATION_NEEDS_CONFIRMATION");
       if (prepared.kind === "stale_confirmation") return failure(409, "AUTO_CREATION_CONFIRMATION_STALE");
       if (prepared.kind === "key_conflict") return failure(409, "IDEMPOTENCY_KEY_REUSED");
+      if (prepared.kind === "blocked") {
+        return block === "research_fetch_unavailable" ? failure(503, "AUTO_CREATION_RESEARCH_UNAVAILABLE") : failure(409, "AUTO_CREATION_PROMPT_TOO_LARGE");
+      }
       if (prepared.kind === "budget_exhausted") return failure(409, "AUTO_CREATION_BUDGET_EXHAUSTED", { callsUsed: existing.run.callsUsed, callCap: existing.run.callCap });
       if (prepared.kind === "provider_unconfigured") {
         if (legacy) return failure(409, "AUTO_CREATION_LEGACY_RUN", { providerKey: input.providerKey, model: input.model });

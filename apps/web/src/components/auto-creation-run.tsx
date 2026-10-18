@@ -235,7 +235,7 @@ export function AutoCreationRun({ projectId, client = defaultClient }: { project
               <a className={styles.secondary} href={client.packageUrl(projectId, run.runId, "json")} download data-testid="auto-download-json">下载结构化数据（JSON）</a>
             </>
           ) : null}
-          {run.storySave === "saved" ? <a className={styles.textLink} href={`/projects/${projectId}/create`}>去作品中人工审核故事</a> : null}
+          {run.storySave === "saved" ? <a className={styles.textLink} href={`/projects/${projectId}/create?step=story`}>去作品中人工审核故事</a> : null}
         </div>
 
         {autoCanResume(run) ? (

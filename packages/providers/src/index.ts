@@ -127,6 +127,7 @@ export {
   AUTO_CREATION_LEASE_MS,
   AutoCreationEngine,
   InMemoryAutoCreationStore,
+  autoResumeBlock,
   autoRunView,
   autoScriptsOf,
   autoUncertainCallIds,

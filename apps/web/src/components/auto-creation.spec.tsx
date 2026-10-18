@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AutoCreationOptionsView, AutoCreationRunView } from "@ai-drama/contracts";
 import { AutoCreationStart } from "./auto-creation-start";
 import { AutoCreationRun } from "./auto-creation-run";
+import { AutoRunEntry } from "./auto-run-entry";
 
 const P1 = "22222222-2222-4222-8222-222222222222";
 const RUN = "66666666-6666-4666-8666-666666666666";
@@ -156,7 +157,7 @@ describe("AI 自动创作 run page", () => {
       storySave: "saved", storyRevisionId: "77777777-7777-4777-8777-777777777777", packageStatus: "ready", videoStatus: "not_started",
       currentEpisodes: {}, stages: [{ stageKey: "sources", kind: "sources", state: "completed", attemptNo: 0, errorCode: null, output: null,
         upstreamChanged: false, supersededBy: null, scriptSave: null, scriptRevisionId: null }],
-      calls: [], legacyProviderRun: false, createdAt: "2026-10-18T00:00:00Z", updatedAt: "2026-10-18T00:00:00Z",
+      calls: [], legacyProviderRun: false, resumeBlock: null, createdAt: "2026-10-18T00:00:00Z", updatedAt: "2026-10-18T00:00:00Z",
       ...overrides,
     };
   }
@@ -302,6 +303,46 @@ describe("AI 自动创作 run page", () => {
     expect(screen.queryByRole("button", { name: "从已保存的阶段继续" })).toBeNull();
     expect(screen.queryByRole("button", { name: "写入分集剧本草稿" })).toBeNull();
     expect(screen.getByRole("status").textContent).toContain("再次继续也只会得到同样的结果");
+  });
+
+  it("a run the server cannot continue as it stands offers no resume and says why; its package stays downloadable", async () => {
+    for (const [resumeBlock, errorCode, text] of [
+      ["prompt_too_large", "prompt_too_large", "再次继续也只会停在这里"],
+      ["research_fetch_unavailable", "research_fetch_unavailable", "恢复页面读取后可以继续"],
+    ] as const) {
+      const blocked = run({ state: "needs_attention", errorCode, quality: "pending", storySave: "pending", storyRevisionId: null, packageStatus: "incomplete",
+        resumeBlock, stages: [{ stageKey: "review:1", kind: "review", state: "pending", attemptNo: 0, errorCode: null, output: null, upstreamChanged: false,
+          supersededBy: null, scriptSave: null, scriptRevisionId: null }] } as Partial<AutoCreationRunView>);
+      const fetches: string[] = [];
+      vi.stubGlobal("fetch", vi.fn(async (input: string, init?: RequestInit) => {
+        fetches.push(`${init?.method ?? "GET"} ${input}`);
+        return input.endsWith("/auto-runs/latest") ? json({ run: blocked }) : json(options());
+      }));
+      render(<AutoCreationRun projectId={P1} />);
+      await screen.findByTestId("auto-download-md");
+      expect(screen.getByRole("status").textContent).toContain(text);
+      expect(screen.queryByRole("button", { name: "从已保存的阶段继续" })).toBeNull();
+      expect(fetches.some((item) => item.startsWith("POST"))).toBe(false);
+      cleanup();
+    }
+  });
+
+  it("the entry on the work reads the run only and leads back to it", async () => {
+    const fetches: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string, init?: RequestInit) => {
+      fetches.push(`${init?.method ?? "GET"} ${input}`);
+      return json({ run: run({ state: "completed", quality: "passed", storySave: "saved" }) });
+    }));
+    render(<AutoRunEntry projectId={P1} />);
+    const link = await screen.findByRole("link", { name: "回到 AI 自动创作任务" });
+    expect(link.getAttribute("href")).toBe(`/projects/${P1}/auto`);
+    expect(fetches).toEqual([`GET /api/v1/projects/${P1}/auto-runs/latest`]);
+    cleanup();
+    // Unreadable (storage not migrated, network down): no entry, no error on the work's page.
+    vi.stubGlobal("fetch", vi.fn(async () => json({ error: { code: "AUTO_CREATION_STORAGE_UNAVAILABLE", message: "x" } }, 503)));
+    render(<AutoRunEntry projectId={P1} />);
+    await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalled());
+    expect(screen.queryByTestId("auto-run-entry")).toBeNull();
   });
 
   it("after a person edited the story in review, placement asks for an explicit confirmation and then sends it", async () => {

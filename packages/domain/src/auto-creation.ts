@@ -136,6 +136,73 @@ export function shotSecondsRange(seconds: number): { min: number; max: number } 
 }
 
 // ---------------------------------------------------------------------------------------------------------------
+// The cumulative review input budget. Every review reads the setting, the outline and the current version of every
+// episode in full; those texts share one budget so that whatever was accepted can always be reviewed (and revised)
+// within AUTO_CREATION_PROMPT_MAX_CHARS. The rest of the limit is kept for the instructions, the user's constraints,
+// the check summary and the previous round's issues (a review), or the instructions and issues of a revision.
+
+/** JSON characters the setting, the outline and every current episode may take together. */
+export const AUTO_REVIEW_CONTENT_BUDGET_CHARS = 28_000;
+/** Most characters of the check summary in a review prompt (repeated results are grouped to stay within it). */
+export const AUTO_REVIEW_FINDINGS_MAX_CHARS = 3_000;
+
+/** The room each text is guaranteed before it is written: the setting, the outline, and every episode alike. */
+export function autoReviewQuotas(input: AutoCreationFrozenInput): { bible: number; outline: number; episode: number } {
+  const bible = 8_000;
+  const outline = 400 + 900 * input.episodeCount;
+  return { bible, outline, episode: Math.floor((AUTO_REVIEW_CONTENT_BUDGET_CHARS - bible - outline) / input.episodeCount) };
+}
+
+/** The size a text takes in a review prompt: its JSON, as data() writes it (a revision without its change list). */
+export function autoReviewSize(value: unknown): number {
+  if (value && typeof value === "object" && "changes" in value) {
+    const { changes: _changes, ...rest } = value as Record<string, unknown>;
+    return JSON.stringify(rest).length;
+  }
+  return JSON.stringify(value).length;
+}
+
+function reviewItemOf(stageKey: string): string | null {
+  const kind = autoStageKind(stageKey);
+  if (kind === "bible" || kind === "outline") return kind;
+  if (kind === "episode" || kind === "revise") return `episode:${String(autoStageEpisodeNo(stageKey))}`;
+  return null;
+}
+
+/**
+ * The most JSON characters the output of this stage may have: the budget minus what every other text already takes
+ * (its accepted size) or is guaranteed (its quota, while not written yet). A revision is measured in place of the
+ * version it replaces. An earlier text may use room a later one does not need, never the room a later one is owed.
+ */
+export function autoReviewRoom(stageKey: string, input: AutoCreationFrozenInput, context: AutoCreationContext): number {
+  const self = reviewItemOf(stageKey);
+  const quotas = autoReviewQuotas(input);
+  let used = 0;
+  if (self !== "bible") used += context.bible ? autoReviewSize(context.bible) : quotas.bible;
+  if (self !== "outline") used += context.outline ? autoReviewSize(context.outline) : quotas.outline;
+  for (let episodeNo = 1; episodeNo <= input.episodeCount; episodeNo += 1) {
+    if (self === `episode:${String(episodeNo)}`) continue;
+    const current = context.episodes.get(episodeNo);
+    used += current ? autoReviewSize(current.episode) : quotas.episode;
+  }
+  return AUTO_REVIEW_CONTENT_BUDGET_CHARS - used;
+}
+
+/** What the prompt asks of a text's length: its room, or for a new episode its fair part of the room left. */
+function roomLine(stageKey: string, input: AutoCreationFrozenInput, context: AutoCreationContext): string {
+  const room = autoReviewRoom(stageKey, input, context);
+  let asked = room;
+  if (autoStageKind(stageKey) === "episode") {
+    const quota = autoReviewQuotas(input).episode;
+    const later = Array.from({ length: input.episodeCount }, (_, index) => index + 1)
+      .filter((episodeNo) => episodeNo > autoStageEpisodeNo(stageKey)! && !context.episodes.has(episodeNo)).length;
+    // The room left beyond the later episodes' quotas is shared evenly with them.
+    asked = Math.min(room, quota + Math.floor(Math.max(0, room - quota) / (later + 1)));
+  }
+  return `长度上限：整个 json 不超过约 ${String(Math.max(0, asked))} 字符（含键名和标点；超出会被拒收），为后面的分集和审阅留出空间；不要为了凑字数注水，也不要把结尾写断。`;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
 // Prompts.
 
 export interface AutoCreationPrompt {
@@ -238,6 +305,7 @@ export function buildAutoCreationPrompt(stageKey: string, input: AutoCreationFro
       "characters 用稳定编号 C1、C2…，presence 区分 on_screen（出场）和 mentioned（仅被提及）；locations 用 L1、L2…，写内外景、时间、空间关系和制作限制；props 用 P1…，写归属、用途和前后变化。",
       "关系 from/to 只能引用已有人物编号。不要超过用户的人物和地点数量限制。",
       `schema 固定为 "${AUTO_CREATION_BIBLE_SCHEMA}"；title 是你为作品拟的剧名。`,
+      roomLine(stageKey, input, context),
       data("选定方向", direction),
       data("选择理由", context.directions!.selection.reasons),
       data("受众与结构要点", { audience: context.research!.audience, contentStructure: context.research!.contentStructure }),
@@ -250,6 +318,7 @@ export function buildAutoCreationPrompt(stageKey: string, input: AutoCreationFro
       "非最后一集可以留自然悬念；最后一集（单集即唯一一集）必须完成主线兑现。resolution 写主线如何收束。",
       "只使用设定档案里的人物和地点编号，人物只能是 on_screen 的。",
       `schema 固定为 "${AUTO_CREATION_OUTLINE_SCHEMA}"。`,
+      roomLine(stageKey, input, context),
       data("故事设定档案（已冻结）", context.bible),
     ];
   } else if (kind === "episode") {
@@ -259,6 +328,7 @@ export function buildAutoCreationPrompt(stageKey: string, input: AutoCreationFro
       `任务：写第 ${String(episodeNo)} 集剧本，严格按已冻结的设定档案、本集大纲和前面各集的交接事实。`,
       "不新增人物或地点，不改名，不改变关系；人物只能知道他在前文中已经得知的信息；不重复前面已解决的冲突。",
       ...episodeShape(input, episodeNo),
+      roomLine(stageKey, input, context),
       data("故事设定档案（已冻结）", context.bible),
       data("本集大纲", context.outline!.episodes.find((item) => item.episodeNo === episodeNo)),
       data("主线收束", context.outline!.resolution),
@@ -268,14 +338,15 @@ export function buildAutoCreationPrompt(stageKey: string, input: AutoCreationFro
     const episodeNo = autoStageEpisodeNo(stageKey)!;
     const round = autoStageRound(stageKey)!;
     const review = context.reviews.find((item) => autoStageRound(item.stageKey) === round)!.review;
-    const issues = revisionIssuesFor(review, episodeNo);
+    const issues = revisionIssueBlock(review, episodeNo);
     lines = [
       ...head,
       `任务：定向修改第 ${String(episodeNo)} 集（第 ${String(round)} 轮修改），只解决下面列出的问题，其余内容尽量保持不变。`,
       "保持人物编号、地点编号、关系和结局走向；交接事实尽量与原版一致，以免影响后续各集。",
       "changes 逐条写你针对哪个问题编号做了什么修改。",
       ...episodeShape(input, episodeNo),
-      `schema 固定为 "${AUTO_CREATION_EPISODE_SCHEMA}"，另加 changes 数组。`,
+      `schema 固定为 "${AUTO_CREATION_EPISODE_SCHEMA}"，另加 changes 数组；changes 的 issueId 用下面问题的编号（ids 里的任一个），最多 10 条。`,
+      roomLine(stageKey, input, context),
       data("需要解决的问题", issues),
       data("当前剧本", context.episodes.get(episodeNo)!.episode),
       data("故事设定档案（已冻结）", context.bible),
@@ -293,11 +364,11 @@ export function buildAutoCreationPrompt(stageKey: string, input: AutoCreationFro
       "issues：只写需要修改的具体问题；target 为 bible、outline 或 episode:集号；severity 为 high（不改就不合格）、medium、low；evidence 逐字摘自 target 的文本。",
       "verdict：没有 high 问题时为 pass，否则为 revise。",
       `schema 固定为 "${AUTO_CREATION_REVIEW_SCHEMA}"；问题编号 R1–R10。`,
-      data("程序检查已发现的问题（供参考，不必重复）", findings),
+      data("程序检查已发现的问题（供参考，不必重复；同类结果已合并计数，完整列表由程序保存）", findingsSummary(findings)),
       data("待审：设定档案 bible", context.bible),
       data("待审：分集大纲 outline", context.outline),
       ...[...context.episodes.entries()].sort(([a], [b]) => a - b).map(([episodeNo, value]) => data(`待审：episode:${String(episodeNo)}`, value.episode)),
-      ...(context.reviews.length > 0 ? [data("上一轮问题与修改记录", context.reviews.at(-1)!.review.issues)] : []),
+      ...(context.reviews.length > 0 ? [data("上一轮审阅提出的问题", previousIssues(context.reviews.at(-1)!.review))] : []),
     ];
   }
   return { kind, system: AUTO_CREATION_SYSTEM_PROMPTS[kind], user: lines.join("\n") };
@@ -576,13 +647,78 @@ function revisionIssuesFor(review: AutoReviewOutput, episodeNo: number): Array<{
   ];
 }
 
-/** Text of a review target, for evidence checks. */
-export function reviewTargetText(target: string, context: AutoCreationContext): string {
-  if (target === "bible") return textsOf(context.bible ?? {}).join("\n");
-  if (target === "outline") return textsOf(context.outline ?? {}).join("\n");
+/**
+ * The issues a revision prompt lists: each AI issue on its own, the check results of one kind grouped with all their
+ * ids (any of them may be answered) and the first result's wording. Nothing is dropped: every id stays answerable.
+ */
+function revisionIssueBlock(review: AutoReviewOutput, episodeNo: number): Array<{ ids: string[]; severity: string; detail: string }> {
+  const target = `episode:${String(episodeNo)}`;
+  const groups = new Map<string, AutoCheckFinding[]>();
+  for (const item of review.deterministic.filter((finding) => finding.target === target)) {
+    groups.set(item.check, [...(groups.get(item.check) ?? []), item]);
+  }
+  return [
+    ...[...groups.values()].map((items) => ({
+      ids: items.map((item) => item.id),
+      severity: items.some((item) => item.severity === "high") ? "high" : "medium",
+      detail: items.length > 1 ? `${items[0]!.detail}（同类共 ${String(items.length)} 条）` : items[0]!.detail,
+    })),
+    ...review.issues.filter((item) => item.evidenceVerified && item.target === target && item.severity !== "low")
+      .map((item) => ({ ids: [item.id], severity: item.severity, detail: `${item.problem}（原文：${item.evidence}；建议：${item.suggestion}）` })),
+  ];
+}
+
+/**
+ * The check results a review prompt shows, within AUTO_REVIEW_FINDINGS_MAX_CHARS: the full list when it fits, else one
+ * line per kind and target with its count and an example, else one line per kind with its targets. The stored review
+ * always keeps every result; only the prompt's copy is summarised.
+ */
+export function findingsSummary(findings: readonly AutoCheckFinding[]): unknown[] {
+  const fits = (value: unknown[]) => JSON.stringify(value).length <= AUTO_REVIEW_FINDINGS_MAX_CHARS;
+  if (fits([...findings])) return [...findings];
+  const group = (key: (item: AutoCheckFinding) => string) => {
+    const groups = new Map<string, AutoCheckFinding[]>();
+    for (const item of findings) groups.set(key(item), [...(groups.get(key(item)) ?? []), item]);
+    return [...groups.values()];
+  };
+  const severity = (items: AutoCheckFinding[]) => items.some((item) => item.severity === "high") ? "high" : "medium";
+  const byTarget = group((item) => `${item.target}|${item.check}`).map((items) => ({
+    target: items[0]!.target, check: items[0]!.check, severity: severity(items), count: items.length, example: items[0]!.detail }));
+  if (fits(byTarget)) return byTarget;
+  const byCheck = group((item) => item.check).map((items) => ({
+    check: items[0]!.check, severity: severity(items), count: items.length, targets: [...new Set(items.map((item) => item.target))], example: items[0]!.detail }));
+  if (fits(byCheck)) return byCheck;
+  return byCheck.map(({ example: _example, ...rest }) => rest);
+}
+
+/** The previous round's issues as the next review reads them: what was asked, where, how serious. */
+function previousIssues(review: AutoReviewOutput): unknown[] {
+  return review.issues.map((item) => ({ id: item.id, target: item.target, severity: item.severity, problem: item.problem }));
+}
+
+function reviewTargetValue(target: string, context: AutoCreationContext): unknown {
+  if (target === "bible") return context.bible;
+  if (target === "outline") return context.outline;
   const episodeNo = /^episode:(\d)$/.exec(target)?.[1];
-  const episode = episodeNo ? context.episodes.get(Number(episodeNo))?.episode : undefined;
-  return episode ? textsOf(episode).join("\n") : "";
+  return episodeNo ? context.episodes.get(Number(episodeNo))?.episode : undefined;
+}
+
+/** Text of a review target, for display. Its fields are joined, so it never proves a quote (see evidenceInTarget). */
+export function reviewTargetText(target: string, context: AutoCreationContext): string {
+  const value = reviewTargetValue(target, context);
+  return value === undefined ? "" : textsOf(value).join("\n");
+}
+
+/**
+ * True when the quote is found whole in one text field of the target (whitespace ignored). Fields, list items and
+ * objects are never joined: a line followed by its delivery, or the end of one field and the start of the next, is not
+ * a quote of anything.
+ */
+export function evidenceInTarget(target: string, evidence: string, context: AutoCreationContext): boolean {
+  const quote = normalize(evidence);
+  const value = reviewTargetValue(target, context);
+  if (quote.length === 0 || value === undefined) return false;
+  return textsOf(value).some((field) => normalize(field).includes(quote));
 }
 
 /**
@@ -664,10 +800,7 @@ function checkReview(input: AutoCreationFrozenInput, review: ReturnType<typeof a
   if (new Set(keys).size !== keys.length) return { ok: false, code: "duplicate_id" };
   const ids = review.issues.map((item) => item.id);
   if (new Set(ids).size !== ids.length) return { ok: false, code: "duplicate_id" };
-  const issues: AutoReviewIssue[] = review.issues.map((issue) => {
-    const textOf = normalize(reviewTargetText(issue.target, context));
-    return { ...issue, evidenceVerified: textOf.length > 0 && textOf.includes(normalize(issue.evidence)) };
-  });
+  const issues: AutoReviewIssue[] = review.issues.map((issue) => ({ ...issue, evidenceVerified: evidenceInTarget(issue.target, issue.evidence, context) }));
   const deterministic = deterministicFindings(input, context);
   const passed = deterministic.every((item) => item.severity !== "high")
     && issues.every((item) => !(item.evidenceVerified && item.severity === "high"));
@@ -696,6 +829,12 @@ function checkRevision(stageKey: string, output: AutoRevision, context: AutoCrea
   return { ok: true, output };
 }
 
+/** An accepted text must leave every later text its room: otherwise the review could not read everything. Refused, never cut. */
+function withinReviewBudget(stageKey: string, checked: AutoValidation, input: AutoCreationFrozenInput, context: AutoCreationContext): AutoValidation {
+  if (!checked.ok) return checked;
+  return autoReviewSize(checked.output) <= autoReviewRoom(stageKey, input, context) ? checked : { ok: false, code: "too_large", detail: "review_budget" };
+}
+
 /** Parses and checks a provider answer for one stage. Only an ok result may be stored as the stage's output. */
 export function validateAutoStageOutput(stageKey: string, content: string, input: AutoCreationFrozenInput, context: AutoCreationContext): AutoValidation {
   if (content.length > 60_000) return { ok: false, code: "too_large" };
@@ -718,19 +857,19 @@ export function validateAutoStageOutput(stageKey: string, content: string, input
   }
   if (kind === "bible") {
     const parsed = autoBibleSchema.safeParse(value);
-    return parsed.success ? checkBible(input, parsed.data) : zodFailure(parsed.error);
+    return parsed.success ? withinReviewBudget(stageKey, checkBible(input, parsed.data), input, context) : zodFailure(parsed.error);
   }
   if (kind === "outline") {
     const parsed = autoOutlineSchema(input.episodeCount).safeParse(value);
-    return parsed.success ? checkOutline(input, parsed.data, context) : zodFailure(parsed.error);
+    return parsed.success ? withinReviewBudget(stageKey, checkOutline(input, parsed.data, context), input, context) : zodFailure(parsed.error);
   }
   if (kind === "episode") {
     const parsed = autoEpisodeSchema(input.episodeCount).safeParse(value);
-    return parsed.success ? checkEpisode(stageKey, parsed.data, context) : zodFailure(parsed.error);
+    return parsed.success ? withinReviewBudget(stageKey, checkEpisode(stageKey, parsed.data, context), input, context) : zodFailure(parsed.error);
   }
   if (kind === "revise") {
     const parsed = autoRevisionSchema(input.episodeCount).safeParse(value);
-    return parsed.success ? checkRevision(stageKey, parsed.data, context) : zodFailure(parsed.error);
+    return parsed.success ? withinReviewBudget(stageKey, checkRevision(stageKey, parsed.data, context), input, context) : zodFailure(parsed.error);
   }
   if (kind === "review") {
     if (textsOf(value).some((item) => /<\s*script/i.test(item))) return { ok: false, code: "unsafe_content" };

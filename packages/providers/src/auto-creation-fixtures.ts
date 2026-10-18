@@ -144,6 +144,19 @@ export function fixtureAutoSoloBible(): AutoBible {
   };
 }
 
+/** A setting with one person on screen (C1) and seven only mentioned (C2–C8), for many repeated check results. */
+export function fixtureAutoCrowdedBible(): AutoBible {
+  const bible = fixtureAutoBible();
+  const mentioned = ["赵强", "林姐", "房东", "老周", "小吴", "阿梅", "表哥"].map((name, index) => ({
+    id: `C${String(index + 2)}`, name, identity: "被提及的人", goal: "不出场", weakness: "无", motivation: "无", voice: "无", presence: "mentioned" as const,
+  }));
+  return {
+    ...bible,
+    characters: [bible.characters[0]!, ...mentioned],
+    relationships: [{ from: "C1", to: "C2", relation: "下属与站长", change: "从忍气吞声到当面对质" }],
+  };
+}
+
 export function fixtureAutoOutline(count: number): AutoOutline {
   return {
     schema: AUTO_CREATION_OUTLINE_SCHEMA,
@@ -206,6 +219,34 @@ export function fixtureAutoSoloEpisode(episodeNo: number, options: { mentionedOn
   };
 }
 
+/**
+ * The crowded setting's episode: five short scenes, every one listing all eight people although only C1 is on screen.
+ * Valid output (schema and references); each scene yields seven "mentioned on screen" check results, and from the second
+ * episode on one "repeated line" result: 235 results over six episodes.
+ */
+export function fixtureAutoCrowdedEpisode(episodeNo: number, options: { tag?: string; padding?: number } = {}): AutoEpisode {
+  const tag = options.tag ?? "模型替身样例";
+  const pad = "夜".repeat(options.padding ?? 0);
+  return {
+    schema: AUTO_CREATION_EPISODE_SCHEMA,
+    episodeNo,
+    title: `午夜工资单（${String(episodeNo)}）`,
+    scenes: Array.from({ length: 5 }, (_, index) => ({
+      sceneNo: index + 1,
+      locationId: "L1",
+      timeOfDay: "夜",
+      characterIds: ["C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8"],
+      action: `${tag}：第 ${String(episodeNo)} 集第 ${String(index + 1)} 场，陈默把手写单拍在长桌上。${index === 0 ? pad : ""}`,
+      // The same line in every episode: episodes 2–6 each repeat episode 1 (a medium check result per scene).
+      dialogue: [{ characterId: "C1", line: `第 ${String(index + 1)} 场：这是我每一单的记录。`, delivery: "压着火" }],
+      sound: "",
+      shots: [{ shotNo: 1, framing: "中景", description: "陈默与长桌", seconds: 12 }],
+      assetNeeds: [],
+    })),
+    handoffFacts: [`第 ${String(episodeNo)} 集结束时陈默还在等工资。`],
+  };
+}
+
 export interface AutoReviewPlan {
   /** Verified high-severity issue on episode 1 in these rounds (a revision is then due). */
   highIssueRounds?: number[];
@@ -213,6 +254,10 @@ export interface AutoReviewPlan {
   unverifiedIssue?: boolean;
   /** A verified high-severity issue on the bible in these rounds (no episode revision can fix it). */
   bibleIssueRounds?: number[];
+  /** A high issue on episode 1 quoting a dialogue line joined to its delivery (two fields, so no quote). */
+  joinedEvidenceRounds?: number[];
+  /** A high issue on the bible quoting the end of the desire joined to the start of the weakness. */
+  joinedBibleEvidenceRounds?: number[];
 }
 
 export function fixtureAutoReview(round: number, plan: AutoReviewPlan = {}): AutoReview {
@@ -224,6 +269,14 @@ export function fixtureAutoReview(round: number, plan: AutoReviewPlan = {}): Aut
   if (plan.bibleIssueRounds?.includes(round)) {
     issues.push({ id: "R3", dimension: "motivation", severity: "high", target: "bible",
       evidence: "完成虚报的指标", problem: "反派动机单薄。", suggestion: "补充赵强的压力来源。" });
+  }
+  if (plan.joinedEvidenceRounds?.includes(round)) {
+    issues.push({ id: "R4", dimension: "dialogue", severity: "high", target: "episode:1",
+      evidence: "签哪儿？平静", problem: "（替身）跨字段拼接的引用。", suggestion: "无" });
+  }
+  if (plan.joinedBibleEvidenceRounds?.includes(round)) {
+    issues.push({ id: "R5", dimension: "characters", severity: "high", target: "bible",
+      evidence: "交上房租不敢和上级争", problem: "（替身）跨字段拼接的引用。", suggestion: "无" });
   }
   if (plan.unverifiedIssue) {
     issues.push({ id: "R2", dimension: "dialogue", severity: "high", target: "episode:1",
@@ -246,6 +299,10 @@ export interface AutoFixturePlan {
   fabricatedNumber?: boolean;
   /** One person on screen and one mentioned; the first drafts put the mentioned one on screen, revisions do not. */
   soloCast?: boolean;
+  /** One person on screen, seven mentioned, and every scene of every draft lists all eight (hundreds of check results). */
+  crowdedCast?: boolean;
+  /** Extra characters in the first scene of every crowded draft (a longer, still valid episode). */
+  crowdedPadding?: number;
 }
 
 /** The double's answer for one prompt. */
@@ -254,20 +311,24 @@ export function autoFixtureAnswer(user: string, plan: AutoFixturePlan = {}): unk
   const count = autoFixtureEpisodeCount(user);
   if (stage === "research") return fixtureAutoResearch({ fabricatedNumber: plan.fabricatedNumber });
   if (stage === "directions") return fixtureAutoDirections();
-  if (stage === "bible") return plan.soloCast ? fixtureAutoSoloBible() : fixtureAutoBible();
+  if (stage === "bible") return plan.soloCast ? fixtureAutoSoloBible() : plan.crowdedCast ? fixtureAutoCrowdedBible() : fixtureAutoBible();
   if (stage === "outline") {
     const outline = fixtureAutoOutline(count);
-    return plan.soloCast ? { ...outline, episodes: outline.episodes.map((episode) => ({ ...episode, characterIds: ["C1"] })) } : outline;
+    return plan.soloCast || plan.crowdedCast ? { ...outline, episodes: outline.episodes.map((episode) => ({ ...episode, characterIds: ["C1"] })) } : outline;
   }
   if (stage.startsWith("review:")) return fixtureAutoReview(Number(stage.split(":")[1]), plan.review);
   const episodeNo = Number(stage.split(":").at(-1));
   if (stage.startsWith("revise:")) {
-    const issues = (autoFixtureBlock(user, "需要解决的问题") as Array<{ id: string }> | null) ?? [];
+    // Each entry names the issue ids it covers (repeated check results are grouped); an older prompt used one id.
+    const issues = (autoFixtureBlock(user, "需要解决的问题") as Array<{ id?: string; ids?: string[] }> | null) ?? [];
+    const ids = issues.flatMap((issue) => issue.ids ?? (issue.id ? [issue.id] : [])).slice(0, 10);
     const revised = plan.soloCast ? fixtureAutoSoloEpisode(episodeNo, { tag: "模型替身样例（修订）" })
-      : fixtureAutoEpisode(episodeNo, { tooManyScenes: plan.revisionsStayLong, tag: "模型替身样例（修订）" });
-    return { ...revised, changes: issues.map((issue) => ({ issueId: issue.id, change: "按问题定向修改。" })) };
+      : plan.crowdedCast ? fixtureAutoCrowdedEpisode(episodeNo, { tag: "模型替身样例（修订）", padding: plan.crowdedPadding })
+        : fixtureAutoEpisode(episodeNo, { tooManyScenes: plan.revisionsStayLong, tag: "模型替身样例（修订）" });
+    return { ...revised, changes: ids.map((issueId) => ({ issueId, change: "按问题定向修改。" })) };
   }
   if (plan.soloCast) return fixtureAutoSoloEpisode(episodeNo, { mentionedOnScreen: true });
+  if (plan.crowdedCast) return fixtureAutoCrowdedEpisode(episodeNo, { padding: plan.crowdedPadding });
   return fixtureAutoEpisode(episodeNo, { tooManyScenes: plan.longEpisodes?.includes(episodeNo) });
 }
 
