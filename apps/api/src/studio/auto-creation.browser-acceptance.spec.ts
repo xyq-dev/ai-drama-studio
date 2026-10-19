@@ -308,6 +308,9 @@ describe("AI automatic creation in a real browser (site login, built web, real A
     // The entry stays after a refresh, and after signing in again with the work opened directly.
     await page.reload({ waitUntil: "domcontentloaded" });
     await entry.waitFor({ timeout: 30_000 });
+    // Leave the work first: a request of the open page answered 401 after the cookies are gone sends that page to the
+    // login on its own, which would race (and abort) the direct navigation below.
+    await page.goto("about:blank");
     await context!.clearCookies();
     await page.goto(`${WEB}/projects/${firstProject}/create`, { waitUntil: "domcontentloaded" });
     await page.waitForURL(/\/login\?returnTo=/, { timeout: 30_000 });
