@@ -337,6 +337,41 @@ describe("AI 自动创作 run page", () => {
     expect(screen.getByTestId("auto-download-md").getAttribute("href")).toBe(`/api/v1/projects/${P1}/auto-runs/${RUN}/package?format=markdown`);
   });
 
+  it("a research answer refused by the checks names the stage, the rule and the field, and is never called a key problem", async () => {
+    const refused = "unsourced_number@limitations[0]:digits";
+    const failed = run({
+      state: "failed", errorCode: "unsourced_number", quality: "pending", storySave: "pending", storyRevisionId: null, packageStatus: "incomplete",
+      callsUsed: 1, callCap: 6, openIssues: [],
+      stages: [
+        { stageKey: "sources", kind: "sources", state: "completed", attemptNo: 0, errorCode: null, output: null, upstreamChanged: false, supersededBy: null, scriptSave: null, scriptRevisionId: null },
+        { stageKey: "research", kind: "research", state: "rejected", attemptNo: 1, errorCode: refused, output: null, upstreamChanged: false, supersededBy: null, scriptSave: null, scriptRevisionId: null },
+      ],
+    });
+    vi.stubGlobal("fetch", vi.fn(async (input: string) => input.endsWith("/auto-runs/latest") ? json({ run: failed }) : json(options())));
+    render(<AutoCreationRun projectId={P1} />);
+    await waitFor(() => expect(screen.getByTestId("auto-headline").textContent).toBe("没有完成"));
+    const stop = screen.getByText(/^停在「/u).textContent!;
+    expect(stop).toContain("研究");
+    expect(stop).toContain("资料中找不到的数字");
+    expect(stop).toContain("limitations[0]");
+    expect(stop).toContain("阿拉伯数字");
+    const note = screen.getByTestId("auto-output-refused").textContent!;
+    expect(note).toContain("不是密钥或账户问题");
+    expect(note).toContain("新的计费调用");
+    expect(screen.getByTestId("auto-quality").textContent).toContain("未完成");
+    expect(document.body.textContent).not.toContain("认证失败");
+  });
+
+  it("a key problem is not described as a refused answer", async () => {
+    const failed = run({ state: "failed", errorCode: "auth", quality: "pending", storySave: "pending", storyRevisionId: null, packageStatus: "incomplete", openIssues: [],
+      stages: [{ stageKey: "research", kind: "research", state: "rejected", attemptNo: 1, errorCode: "auth", output: null, upstreamChanged: false, supersededBy: null, scriptSave: null, scriptRevisionId: null }] });
+    vi.stubGlobal("fetch", vi.fn(async (input: string) => input.endsWith("/auto-runs/latest") ? json({ run: failed }) : json(options())));
+    render(<AutoCreationRun projectId={P1} />);
+    await waitFor(() => expect(screen.getByTestId("auto-headline").textContent).toBe("没有完成"));
+    expect(screen.queryByTestId("auto-output-refused")).toBeNull();
+    expect(document.body.textContent).toContain("认证失败");
+  });
+
   it("shows which episodes were written into the work and which were kept because a script already existed", async () => {
     const stage = (stageKey: string, scriptSave: "saved" | "conflict") => ({ stageKey, kind: "episode" as const, state: "completed" as const, attemptNo: 1,
       errorCode: null, output: null, upstreamChanged: false, supersededBy: null, scriptSave, scriptRevisionId: null });

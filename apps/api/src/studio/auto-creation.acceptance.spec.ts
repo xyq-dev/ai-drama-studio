@@ -189,6 +189,52 @@ describe(`automatic creation on PostgreSQL (${scenario} schema)`, () => {
     evidence.oneEpisode = { runId: run.runId, calls: run.callsUsed, stages: run.stages.map((stage) => stage.stageKey) };
   });
 
+  it("the failed test-site shape (1 episode, 60 s, no rounds, budget 6, empty idea) completes every stage, saves a DRAFT and exports", async () => {
+    plan = {};
+    const { svc, settle } = service();
+    const id = await project(1);
+    const before = seen.length;
+    const started = await svc.start(id, { revisionRounds: 0, callBudget: 6 }, TOKEN, ctx("zero-rounds"));
+    expect(started.status).toBe(201);
+    await settle();
+    const run = runOf((await svc.get(id, runOf(started.body).runId)).body);
+    expect(run).toMatchObject({ state: "completed", quality: "passed", callsUsed: 6, callCap: 6, revisionRoundsUsed: 0, storySave: "saved", packageStatus: "ready" });
+    expect(seen.slice(before).map((item) => item.stage)).toEqual(["research", "directions", "bible", "outline", "episode:1", "review:1"]);
+    expect((await q<{ review_status: string }>("SELECT review_status FROM story_revision WHERE project_id = $1", [id]))).toEqual([{ review_status: "DRAFT" }]);
+    const markdown = await svc.package(id, run.runId, "markdown");
+    expect(markdown.status).toBe(200);
+    expect(markdown.download?.text).toContain("资料有限策划模式");
+    expect(markdown.download?.text).toContain("AI 自动创作草稿");
+    expect((await svc.package(id, run.runId, "json")).status).toBe(200);
+    evidence.zeroRounds = { runId: run.runId, calls: run.callsUsed, callCap: run.callCap };
+  });
+
+  it("a research answer the checks refuse: one call, nothing after it, the rule and field stored, no answer text kept", async () => {
+    plan = { fabricatedNumber: true };
+    const { svc, settle } = service();
+    const id = await project(1);
+    const before = seen.length;
+    const started = await svc.start(id, { revisionRounds: 0, callBudget: 6 }, TOKEN, ctx("refused-research"));
+    await settle();
+    const run = runOf((await svc.get(id, runOf(started.body).runId)).body);
+    expect(run).toMatchObject({ state: "failed", errorCode: "unsourced_number", callsUsed: 1 });
+    expect(seen.length - before).toBe(1);
+    const stages = await q<{ stage_key: string; state: string; error_code: string | null; output_json: unknown }>(
+      "SELECT stage_key, state, error_code, output_json FROM auto_creation_stage WHERE run_id = $1 AND stage_key = 'research'", [run.runId]);
+    expect(stages).toEqual([{ stage_key: "research", state: "rejected", error_code: "unsourced_number@hypotheses[0].statement:percent", output_json: null }]);
+    const calls = await q<{ error_code: string }>("SELECT error_code FROM auto_creation_call WHERE run_id = $1", [run.runId]);
+    expect(calls).toEqual([{ error_code: "unsourced_number@hypotheses[0].statement:percent" }]);
+    // The refused answer is in no table of the run.
+    const stored = await q<{ text: string }>(
+      `SELECT concat_ws(' ', (SELECT string_agg(row_to_json(s)::text, ' ') FROM auto_creation_stage s WHERE s.run_id = $1),
+        (SELECT string_agg(row_to_json(c)::text, ' ') FROM auto_creation_call c WHERE c.run_id = $1),
+        (SELECT row_to_json(r)::text FROM auto_creation_run r WHERE r.id = $1)) AS text`, [run.runId]);
+    expect(stored[0]!.text).not.toContain("70%");
+    expect((await q<{ n: number }>("SELECT count(*)::int AS n FROM story_revision WHERE project_id = $1", [id]))[0]!.n).toBe(0);
+    plan = {};
+    evidence.refusedResearch = { runId: run.runId, stageError: stages[0]!.error_code };
+  });
+
   it("three episodes with a verified issue: one targeted revision and a second review; six episodes: the maximum completes", async () => {
     plan = { review: { highIssueRounds: [1] } };
     const { svc, settle } = service();

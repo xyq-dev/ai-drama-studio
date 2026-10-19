@@ -4,6 +4,8 @@ import {
   AUTO_CREATION_INPUT_SCHEMA,
   AUTO_CREATION_PROMPT_MAX_CHARS,
   AUTO_CREATION_PROMPT_VERSION,
+  autoErrorCodeWith,
+  autoErrorParts,
   AUTO_CREATION_SELECTION_RULES,
   TITLE_WRITING_CANCELED_BEFORE_SEND,
   autoCreationHardCap,
@@ -356,7 +358,8 @@ export class AutoCreationEngine {
     const next = stages.find((stage) => stage.state !== "completed");
     if (!next) return this.afterStages(bundle, stages);
     if (next.state === "unknown") return this.finish(runId, "needs_attention", next.errorCode ?? "uncertain_call");
-    if (next.state === "rejected") return this.finish(runId, anyCompleted ? "partial" : "failed", next.errorCode);
+    // The run keeps the bare rule; the stage and its call keep where it was (see autoErrorCodeWith).
+    if (next.state === "rejected") return this.finish(runId, anyCompleted ? "partial" : "failed", next.errorCode === null ? null : autoErrorParts(next.errorCode).code);
     if (next.state === "reserved" || next.state === "submitted") return false;
     if (next.state === "canceled") return this.finish(runId, "canceled", null);
     if (next.stageKey === "sources") {
@@ -435,7 +438,8 @@ export class AutoCreationEngine {
       patch = checked.ok
         ? { state: "completed", errorCode: null, output: checked.output, outputHash: canonicalInputHash(checked.output),
           dependsOn: autoStageDependencies(next.stageKey, stages), ...common }
-        : { state: "rejected", errorCode: checked.code, output: null, outputHash: null, dependsOn: null, ...common };
+        // A refused answer is never stored, only its rule, field path and token kind: no model text.
+        : { state: "rejected", errorCode: autoErrorCodeWith(checked.code, checked.field, checked.category), output: null, outputHash: null, dependsOn: null, ...common };
     } else {
       patch = { state: exchange.outcome === "unknown" ? "unknown" : "rejected", errorCode: exchange.errorCode ?? "invalid_output",
         output: null, outputHash: null, dependsOn: null, ...common };

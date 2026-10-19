@@ -118,8 +118,36 @@ describe("automatic creation engine", () => {
     await engine.drive(run.id);
     const result = await view();
     expect(result.state).toBe("failed");
-    expect(result.stages.find((stage) => stage.stageKey === "research")).toMatchObject({ state: "rejected", errorCode: "unsourced_number" });
+    // The stage and its call name the rule, the field and the kind of token; the run keeps the bare rule.
+    expect(result.stages.find((stage) => stage.stageKey === "research")).toMatchObject({
+      state: "rejected", errorCode: "unsourced_number@hypotheses[0].statement:percent", output: null });
+    expect(result.calls).toHaveLength(1);
+    expect(result.calls[0]!.errorCode).toBe("unsourced_number@hypotheses[0].statement:percent");
+    expect(result.errorCode).toBe("unsourced_number");
+    // The refused text is kept nowhere in the view.
+    expect(JSON.stringify(result)).not.toContain("70%");
     expect(seen).toHaveLength(1);
+    // Maintenance afterwards sends nothing: no retry, no format repair.
+    await engine.maintain();
+    expect(seen).toHaveLength(1);
+  });
+
+  it("DeepSeek, one sixty-second episode, no revision rounds and a budget of six: every stage, a DRAFT, the package", async () => {
+    const deepseek = titleWritingProviderConfigs({ DEEPSEEK_API_KEY: "sk-deepseek-test-0123456789", TITLE_WRITING_DEEPSEEK_MODELS: "m-1" });
+    const { store, run, engine, seen, view } = await setup({ providers: deepseek, providerKey: "deepseek", revisionRounds: 0, callBudget: 6 });
+    await engine.drive(run.id);
+    const result = await view();
+    expect(result).toMatchObject({ state: "completed", quality: "passed", callsUsed: 6, callCap: 6, storySave: "saved", packageStatus: "ready" });
+    expect(seen.map((item) => item.stage)).toEqual(["research", "directions", "bible", "outline", "episode:1", "review:1"]);
+    expect(new Set(seen.map((item) => item.url))).toEqual(new Set(["https://api.deepseek.com/chat/completions"]));
+    // The research prompt states the number contract that the check enforces.
+    expect(seen[0]!.user).toContain("不写任何数字");
+    expect(store.projects.get(P1)!.stories[0]).toMatchObject({ reviewStatus: "DRAFT" });
+    const bundle = (await store.getRunById(WS, run.id))!;
+    const meta = { runId: run.id, projectId: P1, input: bundle.run.input, quality: "passed", state: "completed", callsUsed: 6, callCap: 6,
+      revisionRoundsUsed: 0, storySave: "saved", generatedAt: "2026-10-18T00:00:00.000Z" };
+    expect(autoPackageJson(meta, bundle.stages)).toMatchObject({ status: { scriptPackage: "ready" } });
+    expect(autoPackageMarkdown(meta, bundle.stages)).toContain("资料有限策划模式");
   });
 
   it("the source snapshot records the official entries as unread and claims no video viewing", async () => {

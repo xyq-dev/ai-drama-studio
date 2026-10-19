@@ -207,6 +207,150 @@ describe("research checks after the final review", () => {
   });
 });
 
+// The failed real run (1 episode, 60 s, no rounds, budget 6, empty idea, limited mode) was refused at research with
+// unsourced_number; its answer was not kept, so the text that tripped the check is NOT known. Every answer below is a
+// SYNTHETIC sample written for these tests, not the model's real output.
+describe("research contract in limited mode (synthetic samples)", () => {
+  const limitedAnswer = (overrides: Record<string, unknown> = {}) => research({
+    facts: [],
+    observations: [{ id: "O1", statement: "写作方法资料强调关键结果来自主角自己的选择。", sourceIds: ["S-KB-CRAFT"] }],
+    hypotheses: [
+      { id: "H1", statement: "碎片时间的观众可能更愿意看一集内有明确兑现的故事。", howToVerify: "上线后用真实观看数据对比有无兑现的版本。" },
+      { id: "H2", statement: "小人物讨回公道的题材可能更容易引起共鸣。", howToVerify: "用小范围投放比较不同题材的完播情况。" },
+    ],
+    audience: { primary: "在通勤和睡前刷短剧的成年观众（待验证假设）", viewingNeeds: ["一集内看到结果"], emotionalAppeals: ["扳回一局"], basis: "hypothesis", sourceIds: [] },
+    contentStructure: [{ pattern: "主角主动选择推动结果", why: "写作方法资料要求关键结果来自主角的行动。", sourceIds: ["S-KB-CRAFT"] }],
+    opportunities: ["约 60 秒一集正好讲完一次反击"],
+    limitations: ["官方市场条目没有读到正文，受众和题材判断都是待验证假设，不是实时市场结论。"],
+    appliedConstraints: ["共 1 集，每集约 60 秒", "竖屏 9:16"],
+    ...overrides,
+  });
+
+  it("a purely qualitative plan without market material passes", () => {
+    expect(validateAutoStageOutput("research", limitedAnswer(), input(), context())).toMatchObject({ ok: true });
+  });
+
+  it("the prompt no longer invites the numbers the check refuses, and shows no dates of unread entries", () => {
+    const prompt = buildAutoCreationPrompt("research", input(), context());
+    // Old wording: any number seen anywhere in the data area could be "quoted"; source metadata is not an excerpt.
+    expect(prompt.system).not.toContain("只能原样引用资料区里出现过的内容");
+    expect(prompt.user).toContain("不写任何数字");
+    expect(prompt.user).toContain("资料有限策划模式");
+    expect(prompt.user).toContain("facts 和 observations 可以是空数组");
+    // The unread official entries are listed by id and status only: their fetch date is not offered for quoting.
+    const unread = prompt.user.slice(prompt.user.indexOf("<<<无法读取的资料"));
+    expect(unread).not.toMatch(/\d{4}-\d{2}-\d{2}/u);
+  });
+
+  it("dates, counts of sources, verification plans and craft rules of thumb with numbers are still refused, with their field", () => {
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{ limitations: ["官方条目在2026-10-18请求时只得到空壳。"] }, "limitations[0]"],
+      [{ limitations: ["只有 1 条可读资料，没有市场数据。"] }, "limitations[0]"],
+      [{ hypotheses: [{ id: "H1", statement: "可能偏爱反击题材。", howToVerify: "上线后统计 7 天完播率。" }] }, "hypotheses[0].howToVerify"],
+      [{ opportunities: ["开场前3秒抛出冲突"] }, "opportunities[0]"],
+      [{ hypotheses: [{ id: "H1", statement: "主要观众可能是25-40岁女性。", howToVerify: "看数据。" }] }, "hypotheses[0].statement"],
+    ];
+    for (const [overrides, field] of cases) {
+      expect(validateAutoStageOutput("research", limitedAnswer(overrides), input(), context()), field)
+        .toMatchObject({ ok: false, code: "unsourced_number", field });
+    }
+  });
+
+  it("each refusal names its rule and field and a token class, never the model's text", () => {
+    const result = validateAutoStageOutput("research", limitedAnswer({ opportunities: ["完播率可达 40%"] }), input(), context());
+    expect(result).toMatchObject({ ok: false, code: "unsourced_number", field: "opportunities[0]", category: "percent" });
+    expect(validateAutoStageOutput("research", limitedAnswer({ limitations: ["三百人愿意付费"] }), input(), context()))
+      .toMatchObject({ ok: false, field: "limitations[0]", category: "chinese_numeral" });
+    expect(validateAutoStageOutput("research", limitedAnswer({ facts: [{ id: "F1", statement: "x", sourceIds: ["S-KB-CRAFT"], evidence: "知识库里没有这句话" }] }), input(), context()))
+      .toMatchObject({ ok: false, code: "evidence_not_in_source", field: "facts[0].evidence" });
+    expect(validateAutoStageOutput("research", limitedAnswer({ observations: [{ id: "O1", statement: "x", sourceIds: ["S-OE-1"] }] }), input(), context()))
+      .toMatchObject({ ok: false, code: "unread_source", field: "observations[0].sourceIds" });
+    expect(validateAutoStageOutput("research", "{\"schema\":1}", input(), context())).toMatchObject({ ok: false, code: "invalid_output", field: "schema" });
+  });
+
+  it("the applied constraints are checked like every other uncited field: no market statistic hides there", () => {
+    for (const statement of ["目标观众中 70% 为女性", "用户平均每天观看 60 秒", "两成观众偏爱复仇"]) {
+      expect(validateAutoStageOutput("research", limitedAnswer({ appliedConstraints: [statement] }), input(), context()), statement)
+        .toMatchObject({ ok: false, code: "unsourced_number", field: "appliedConstraints[0]" });
+    }
+  });
+
+  it("the run's own cast and location limits may be restated, only about characters and places and only at their frozen value", () => {
+    const frozen = input({ constraints: autoCreationConstraintsSchema.parse({ maxCharacters: 4, maxLocations: 3 }) });
+    for (const statement of ["出场人物最多 4 人", "最多四个人物", "地点最多 3 个", "最多三处地点"]) {
+      expect(validateAutoStageOutput("research", limitedAnswer({ appliedConstraints: [statement] }), frozen, context()), statement).toMatchObject({ ok: true });
+    }
+    for (const statement of ["出场人物最多 5 人", "最多 4 名观众", "4 个人物覆盖观众的四成", "地点最多 4 个", "最多 4 人"]) {
+      expect(validateAutoStageOutput("research", limitedAnswer({ appliedConstraints: [statement] }), frozen, context()), statement)
+        .toMatchObject({ ok: false, code: "unsourced_number" });
+    }
+    // Review finding: a ranking or market number equal to a limit is never taken for the limit.
+    const capped = input({ constraints: autoCreationConstraintsSchema.parse({ maxCharacters: 3, maxLocations: 3 }) });
+    for (const statement of ["榜单前3个短剧都以办公室场景为主", "该角色在人气榜排名第3名", "前3个短剧的人物都很少", "角色的工资3个月没发",
+      "3个爆款都只用一个地点", "热度第一的作品只有三个人物", "资料里3个角色定位最常见", "3个场景化营销案例证明有效", "角色共3人次", "角色3个小时"]) {
+      expect(numberTokens(statement, [[3, "人物上限"], [3, "地点上限"]]).length, statement).toBeGreaterThan(0);
+      expect(validateAutoStageOutput("research", limitedAnswer({ limitations: [statement] }), capped, context()), statement)
+        .toMatchObject({ ok: false, code: "unsourced_number" });
+    }
+    // 目前/之前 are no ranking: the run's own length stays restatable there.
+    expect(validateAutoStageOutput("research", limitedAnswer({ appliedConstraints: ["目前一共 1 集，每集约 60 秒"] }), capped, context())).toMatchObject({ ok: true });
+    // Without a frozen limit there is nothing to restate.
+    expect(validateAutoStageOutput("research", limitedAnswer({ appliedConstraints: ["出场人物最多 4 人"] }), input(), context()))
+      .toMatchObject({ ok: false, code: "unsourced_number" });
+  });
+
+  it("an ordinal with a space is an ordinal, not a claim; a count is still a count", () => {
+    expect(numberTokens("第 3 集揭开真相，第 二 场交代目标")).toEqual([]);
+    expect(validateAutoStageOutput("research", limitedAnswer({ opportunities: ["第 3 集揭开真相"], appliedConstraints: ["共 6 集，每集约 60 秒"] }), input({ episodeCount: 6 }), context())).toMatchObject({ ok: true });
+    expect(numberTokens("3 集揭开真相")).toEqual(["3"]);
+  });
+
+  it("a ranking is a claim even as an ordinal; a source with the same ranking supports it", () => {
+    for (const statement of ["该题材排名第一", "复仇剧在榜单上位列第 3"]) {
+      expect(validateAutoStageOutput("research", limitedAnswer({ opportunities: [statement] }), input(), context()), statement)
+        .toMatchObject({ ok: false, code: "unsourced_number", field: "opportunities[0]", category: "rank" });
+    }
+    const frozen = input({ materials: [{ title: "榜单笔记", kind: "notes" as const, text: "样本榜单中复仇剧排名第三。", rightsConfirmed: true as const }] });
+    const ctx = { sources: collectSources(frozen, [], NOW), episodes: new Map(), reviews: [] };
+    expect(validateAutoStageOutput("research", limitedAnswer({ observations: [{ id: "O1", statement: "样本里复仇剧排名第三", sourceIds: ["S-USER-1"] }] }), frozen, ctx))
+      .toMatchObject({ ok: true });
+    expect(validateAutoStageOutput("research", limitedAnswer({ observations: [{ id: "O1", statement: "样本里复仇剧排名第一", sourceIds: ["S-USER-1"] }] }), frozen, ctx))
+      .toMatchObject({ ok: false, code: "unsourced_number", category: "rank" });
+    // Outside a ranking an ordinal stays a position.
+    expect(numberTokens("第一场就交代目标")).toEqual([]);
+  });
+
+  it("a number from one source cannot be carried by citing another", () => {
+    const materials = [
+      { title: "甲", kind: "notes" as const, text: "样本里有 12 部复仇短剧。", rightsConfirmed: true as const },
+      { title: "乙", kind: "notes" as const, text: "样本里女性主角居多。", rightsConfirmed: true as const },
+    ];
+    const frozen = input({ materials });
+    const ctx = { sources: collectSources(frozen, [], NOW), episodes: new Map(), reviews: [] };
+    expect(validateAutoStageOutput("research", limitedAnswer({ observations: [{ id: "O1", statement: "样本里有 12 部复仇短剧", sourceIds: ["S-USER-2"] }] }), frozen, ctx))
+      .toMatchObject({ ok: false, code: "unsourced_number", field: "observations[0].statement" });
+    expect(validateAutoStageOutput("research", limitedAnswer({ observations: [{ id: "O1", statement: "样本里有 12 部复仇短剧", sourceIds: ["S-USER-1"] }] }), frozen, ctx))
+      .toMatchObject({ ok: true });
+  });
+});
+
+describe("directions: no market statistic in the audience fit", () => {
+  it("a direction's audience fit carries no unsourced number; a story's own numbers elsewhere are fine", () => {
+    const ctx = { ...context(), research: JSON.parse(research()) as never };
+    const directions = (audienceFit: string) => JSON.stringify({
+      schema: "ads.auto-creation.directions.v1",
+      candidates: ["D1", "D2"].map((id) => ({
+        id, title: id, logline: `${id}：骑手被扣了三个月工资，要在午夜前讨回`, protagonist: "p", goal: "g", obstacle: "o", stakes: "s", coreEmotion: "e",
+        differentiation: "d", productionDifficulty: "low", difficultyNote: "n", audienceFit, evidenceIds: ["H1"],
+        ratings: { audienceFit: 4, conflictStrength: 4, originality: 4, feasibility: 4, constraintFit: 4 },
+      })),
+    });
+    expect(validateAutoStageOutput("directions", directions("契合 25–35 岁女性观众"), input(), ctx))
+      .toMatchObject({ ok: false, code: "unsourced_number", field: "candidates[0].audienceFit" });
+    expect(validateAutoStageOutput("directions", directions("契合想看小人物扳回一局的观众（假设 H1）"), input(), ctx)).toMatchObject({ ok: true });
+  });
+});
+
 describe("deterministic findings: where a problem comes from", () => {
   const bible = {
     schema: "ads.auto-creation.bible.v1", title: "t", logline: "l", synopsis: "s",

@@ -374,6 +374,60 @@ describe("AI automatic creation in a real browser (site login, built web, real A
     await page.setViewportSize(DESKTOP);
   }, 240_000);
 
+  /** Starts from the card with no idea, no revision rounds and a budget of six; returns the new work. */
+  async function startZeroRounds(): Promise<string> {
+    await page.goto(`${WEB}/create`, { waitUntil: "domcontentloaded" });
+    const card = page.getByTestId("auto-creation-start");
+    await card.waitFor({ timeout: 30_000 });
+    await expect.poll(async () => await page.getByTestId("auto-provider-target").textContent(), { timeout: 30_000 }).toContain("DeepSeek");
+    await card.getByText("高级设置", { exact: false }).click();
+    await page.locator("#auto-rounds").selectOption("0");
+    await page.locator("#auto-budget").fill("6");
+    expect(await page.getByTestId("auto-calls").textContent()).toContain("本次预算上限 6 次");
+    const navigated = page.waitForURL(/\/projects\/[0-9a-f-]{36}\/auto$/, { timeout: 30_000 });
+    await card.getByRole("button", { name: "AI 自动创作" }).click();
+    await navigated;
+    return /\/projects\/([0-9a-f-]{36})\/auto$/.exec(page.url())![1]!;
+  }
+
+  it("B2: the failed test-site shape (no rounds, budget 6) keeps running after the page is left, and is read back unchanged", async () => {
+    plan = {};
+    const before = seen.length;
+    const projectId = await startZeroRounds();
+    // Leave at once; the run belongs to the server, not to the page.
+    await page.goto(`${WEB}/create`, { waitUntil: "domcontentloaded" });
+    await waitFor("the run to finish without the page", async () =>
+      (await q<{ state: string }>("SELECT state FROM auto_creation_run WHERE project_id = $1", [projectId]))[0]?.state === "completed");
+    await page.goto(`${WEB}/projects/${projectId}/auto`, { waitUntil: "domcontentloaded" });
+    await expect.poll(async () => await headline().textContent(), { timeout: 30_000 }).toBe("剧本包已完成（机器质量检查通过）");
+    expect(await page.getByTestId("auto-call-count").textContent()).toContain("已用 6 / 预算 6 次");
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect.poll(async () => await headline().textContent(), { timeout: 30_000 }).toBe("剧本包已完成（机器质量检查通过）");
+    expect(seen.length - before).toBe(6);
+    expect((await q<{ review_status: string }>("SELECT review_status FROM story_revision WHERE project_id = $1", [projectId]))).toEqual([{ review_status: "DRAFT" }]);
+    (evidence.flows as Record<string, unknown>).B2 = { stubSends: seen.length - before };
+  }, 240_000);
+
+  it("B3: a research answer the checks refuse stops after one call; the page names the stage, rule and field, not the key", async () => {
+    plan = { fabricatedNumber: true };
+    const before = seen.length;
+    const projectId = await startZeroRounds();
+    await expect.poll(async () => await headline().textContent(), { timeout: 90_000, interval: 300 }).toBe("没有完成");
+    const refused = page.getByTestId("auto-output-refused");
+    await refused.waitFor({ timeout: 30_000 });
+    expect(await refused.textContent()).toContain("不是密钥或账户问题");
+    expect(await page.getByText(/^停在「/u).textContent()).toContain("hypotheses[0].statement");
+    await viewports("04-auto-research-refused", refused, page.getByTestId("auto-headline"));
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect.poll(async () => await headline().textContent(), { timeout: 30_000 }).toBe("没有完成");
+    expect(seen.length - before).toBe(1);
+    const stage = (await q<{ error_code: string; output_json: unknown }>(
+      "SELECT s.error_code, s.output_json FROM auto_creation_stage s JOIN auto_creation_run r ON r.id = s.run_id WHERE r.project_id = $1 AND s.stage_key = 'research'", [projectId]))[0]!;
+    expect(stage).toEqual({ error_code: "unsourced_number@hypotheses[0].statement:percent", output_json: null });
+    plan = {};
+    (evidence.flows as Record<string, unknown>).B3 = { stubSends: seen.length - before, stageError: stage.error_code };
+  }, 240_000);
+
   it("C: no page errors and no real model was called", () => {
     expect(pageErrors).toEqual([]);
     expect(new Set(seen.map((item) => item.url))).toEqual(new Set(["https://api.deepseek.com/chat/completions"]));
