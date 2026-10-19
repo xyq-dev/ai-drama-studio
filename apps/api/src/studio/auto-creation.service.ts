@@ -278,6 +278,9 @@ export class AutoCreationService {
       authorization: { mode: "auto", proof: this.deps.siteOperator === true && proof.session ? "site_session" : "operator_token",
         initiatedBy: context.actorId, executor: "auto-creation-engine" },
       now: startedAt,
+      // A replay is compared with the versions its run was frozen with (an older run keeps its own); every request field
+      // still takes part in the hash, so changed content under the key stays a conflict.
+      ...(replayed ? { versions: { promptVersion: replayed.promptVersion, checksVersion: replayed.checksVersion } } : {}),
     });
     const created = await this.deps.store.createRun(run, autoCreationInitialStageKeys(plan.episodeCount), {
       maxActiveRuns: this.deps.maxActiveRuns,

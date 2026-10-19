@@ -18,6 +18,7 @@ import {
   AutoCreationClient,
   autoCanResume,
   autoErrorText,
+  autoOutputRefused,
   autoResumeRefused,
   clearPendingResume,
   readPendingResume,
@@ -242,6 +243,11 @@ export function AutoCreationRun({ projectId, client = defaultClient }: { project
           <section className={styles.resume} aria-labelledby="auto-resume-title">
             <h2 id="auto-resume-title" className={styles.sectionTitle}>继续</h2>
             {rejected ? <p>停在「{autoStageLabel(rejected.stageKey)}」：{autoErrorText(rejected.errorCode)}</p> : null}
+            {rejected && autoOutputRefused(rejected.errorCode) ? (
+              <p className={styles.helper} data-testid="auto-output-refused">
+                这是模型回答没有通过程序检查，不是密钥或账户问题，不需要更换密钥。继续会重新发送这一步，是一次新的计费调用，模型仍可能给出不合格的回答；程序不会自动重发或修格式。
+              </p>
+            ) : null}
             {pendingResume ? (
               <p className={styles.warning} data-testid="auto-resume-pending">
                 上一次继续请求没有收到确认{pendingResume.confirmUncertainCallIds.length > 0 ? `（确认重发的调用：${pendingResume.confirmUncertainCallIds.join("、")}）` : ""}。

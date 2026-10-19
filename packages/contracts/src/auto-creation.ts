@@ -22,9 +22,15 @@ import {
  * Every version below is frozen into a run's input; a stored run keeps the meaning it was created with.
  */
 export const AUTO_CREATION_INPUT_SCHEMA = "ads.auto-creation.input.v1" as const;
-export const AUTO_CREATION_PROMPT_VERSION = "ads.auto-creation.prompt.v1" as const;
+/** v2: the research contract says which fields may carry a number and which never do (no dates, counts or plans). */
+export const AUTO_CREATION_PROMPT_VERSION = "ads.auto-creation.prompt.v2" as const;
+/** Every prompt version a stored run may carry. A resumed run is sent with the current prompts. */
+export type AutoCreationPromptVersion = "ads.auto-creation.prompt.v1" | typeof AUTO_CREATION_PROMPT_VERSION;
 export const AUTO_CREATION_SELECTION_RULES = "ads.auto-creation.selection-rules.v1" as const;
-export const AUTO_CREATION_CHECKS_VERSION = "ads.auto-creation.checks.v1" as const;
+/** v2: the applied constraints and a direction's audience fit are number-checked; spaced ordinals are not claims. */
+export const AUTO_CREATION_CHECKS_VERSION = "ads.auto-creation.checks.v2" as const;
+/** Every checks version a stored run or review may carry. */
+export type AutoCreationChecksVersion = "ads.auto-creation.checks.v1" | typeof AUTO_CREATION_CHECKS_VERSION;
 export const AUTO_CREATION_RESEARCH_SCHEMA = "ads.auto-creation.research.v1" as const;
 export const AUTO_CREATION_DIRECTIONS_SCHEMA = "ads.auto-creation.directions.v1" as const;
 export const AUTO_CREATION_BIBLE_SCHEMA = "ads.auto-creation.bible.v1" as const;
@@ -186,9 +192,9 @@ export interface AutoCreationSource {
 /** The frozen, hashed input of one run. */
 export interface AutoCreationFrozenInput {
   schema: typeof AUTO_CREATION_INPUT_SCHEMA;
-  promptVersion: typeof AUTO_CREATION_PROMPT_VERSION;
+  promptVersion: AutoCreationPromptVersion;
   selectionRules: typeof AUTO_CREATION_SELECTION_RULES;
-  checksVersion: typeof AUTO_CREATION_CHECKS_VERSION;
+  checksVersion: AutoCreationChecksVersion;
   idea: string;
   constraints: AutoCreationConstraints;
   materials: AutoCreationMaterial[];
@@ -461,7 +467,7 @@ export interface AutoReviewIssue {
 /** A review stage's stored output: the model's review with verified evidence, and the code's own findings. */
 export interface AutoReviewOutput {
   schema: typeof AUTO_CREATION_REVIEW_SCHEMA;
-  checksVersion: typeof AUTO_CREATION_CHECKS_VERSION;
+  checksVersion: AutoCreationChecksVersion;
   verdict: "pass" | "revise";
   dimensions: AutoReview["dimensions"];
   issues: AutoReviewIssue[];
@@ -689,6 +695,23 @@ export interface AutoCallFinish {
  * (the same story is formatted again and is still too large). Such a run is final; its package stays readable.
  */
 export const AUTO_CREATION_FINAL_ERROR_CODES: readonly string[] = ["story_too_large"];
+
+/**
+ * A refused answer's stored error: its rule, and where it is, as `code@field:category` (e.g.
+ * `unsourced_number@limitations[0]:digits`). Field paths name schema keys and indexes only and the category names a
+ * kind of token, so no text of the model is ever stored. A run's own error keeps the bare rule.
+ */
+export function autoErrorCodeWith(code: string, field?: string, category?: string): string {
+  const safeField = field?.replace(/[^A-Za-z0-9_.[\]]/g, "").slice(0, 80);
+  const safeCategory = category?.replace(/[^a-z_]/g, "").slice(0, 40);
+  return `${code}${safeField ? `@${safeField}` : ""}${safeCategory ? `:${safeCategory}` : ""}`;
+}
+
+/** The parts of a stored error code. A bare code (every code before checks v2) has no field or category. */
+export function autoErrorParts(stored: string): { code: string; field: string | null; category: string | null } {
+  const match = /^([^@:]+)(?:@([^:]+))?(?::(.+))?$/.exec(stored);
+  return match ? { code: match[1]!, field: match[2] ?? null, category: match[3] ?? null } : { code: stored, field: null, category: null };
+}
 
 /** True when nothing is left to redo and the run's stop reason is final: a resume would only stop the same way. */
 export function autoRunSettledForGood(run: { errorCode: string | null }, stages: ReadonlyArray<{ state: string }>): boolean {

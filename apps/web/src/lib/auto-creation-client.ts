@@ -1,5 +1,6 @@
 import {
   AUTO_REVIEW_DIMENSION_LABELS,
+  autoErrorParts,
   autoStageEpisodeNo,
   autoStageRound,
   autoRunSettledForGood,
@@ -204,9 +205,26 @@ const ERRORS: Record<string, string> = {
   canceled_before_send: "停止请求先到达，这一步没有发出。",
 };
 
-export function autoErrorText(code: string | null): string | null {
-  if (code === null) return null;
-  return ERRORS[code] ?? `出现了未识别的问题（${code}）。`;
+/** Rules an answer broke: the model answered, the answer was checked and refused. Never a key or account problem. */
+const OUTPUT_CHECK_CODES = new Set(["unsourced_number", "unsourced_claim", "unknown_source", "unread_source", "evidence_not_in_source",
+  "constraint_violation", "dangling_reference", "duplicate_id", "duplicate_direction", "episode_mismatch", "invalid_output", "unsafe_content", "too_large"]);
+
+const CATEGORY_TEXT: Record<string, string> = {
+  digits: "阿拉伯数字", percent: "百分比或成数", rank: "排名名次", chinese_numeral: "中文数字", fullwidth_digits: "全角数字",
+};
+
+/** A stored code (rule, and since checks v2 the field and the kind of token) as the page says it. */
+export function autoErrorText(stored: string | null): string | null {
+  if (stored === null) return null;
+  const { code, field, category } = autoErrorParts(stored);
+  const base = ERRORS[code] ?? `出现了未识别的问题（${code}）。`;
+  if (!field && !category) return base;
+  return `${base}位置：${field ?? "未知字段"}${category ? `（${CATEGORY_TEXT[category] ?? category}）` : ""}。`;
+}
+
+/** True when the model's answer was refused by the checks (not a key, quota or network problem). */
+export function autoOutputRefused(stored: string | null): boolean {
+  return stored !== null && OUTPUT_CHECK_CODES.has(autoErrorParts(stored).code);
 }
 
 export function autoUncertainIds(run: AutoCreationRunView): string[] {

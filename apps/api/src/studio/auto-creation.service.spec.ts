@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { autoCreationHardCap, autoCreationNormalCalls, type AutoCreationOptionsView, type AutoCreationRunView, type TitleWritingProviderKey } from "@ai-drama/contracts";
+import { AUTO_CREATION_CHECKS_VERSION, AUTO_CREATION_PROMPT_VERSION, autoCreationHardCap, autoCreationNormalCalls, type AutoCreationOptionsView, type AutoCreationRunView, type TitleWritingProviderKey } from "@ai-drama/contracts";
 import { PersistenceError } from "@ai-drama/database";
 import type { FetchedPage } from "@ai-drama/domain";
-import { AutoCreationEngine, InMemoryAutoCreationStore, titleWritingProviderConfigs, type TitleWritingProviderEnv } from "@ai-drama/providers";
+import { AutoCreationEngine, InMemoryAutoCreationStore, hashAutoCreationInput, titleWritingProviderConfigs, type TitleWritingProviderEnv } from "@ai-drama/providers";
 import { autoFixtureTransport, type AutoFixtureExchange, type AutoFixturePlan } from "@ai-drama/providers/title-writing-fixtures";
 import { AutoCreationService } from "./auto-creation.service";
 
@@ -81,6 +81,13 @@ function snapshot(store: InMemoryAutoCreationStore, runId: string) {
     calls: store.calls.filter((item) => item.runId === runId), resumes: store.resumes.filter((item) => item.runId === runId) });
 }
 
+/** Leaves a stored run as the v1 code froze it: the v1 versions in its input and the hash that code computed over them. */
+function asStoredByV1(store: InMemoryAutoCreationStore, runId: string) {
+  const run = store.runs.find((item) => item.id === runId)!;
+  run.input = { ...run.input, promptVersion: "ads.auto-creation.prompt.v1", checksVersion: "ads.auto-creation.checks.v1" };
+  run.inputHash = hashAutoCreationInput(run.projectId, run.input);
+}
+
 const errorCode = (body: unknown) => (body as { error?: { code?: string } }).error?.code;
 
 describe("automatic creation API", () => {
@@ -109,6 +116,48 @@ describe("automatic creation API", () => {
     expect(seen).toHaveLength(autoCreationNormalCalls(1));
     expect(store.runs).toHaveLength(1);
     expect(errorCode((await service.start(P1, { idea: "别的想法" }, TOKEN, CONTEXT("k-1"))).body)).toBe("IDEMPOTENCY_KEY_REUSED");
+  });
+
+  it("a run frozen by the v1 code answers its own key and request after the upgrade: 200, the same run, nothing written or sent", async () => {
+    const { service, seen, settle, store, pending } = setup();
+    const request = { revisionRounds: 0, callBudget: 6 };
+    const started = await service.start(P1, request, TOKEN, CONTEXT("k-v1"));
+    const runId = (started.body as { run: AutoCreationRunView }).run.runId;
+    await settle();
+    asStoredByV1(store, runId);
+    const before = snapshot(store, runId);
+    const sent = seen.length;
+    const replay = await service.start(P1, request, TOKEN, CONTEXT("k-v1"));
+    expect(replay.status).toBe(200);
+    expect((replay.body as { run: AutoCreationRunView }).run.runId).toBe(runId);
+    expect(pending).toHaveLength(0);
+    await settle();
+    expect(seen).toHaveLength(sent);
+    expect(store.runs).toHaveLength(1);
+    expect(snapshot(store, runId)).toEqual(before);
+    expect(before.run!.input).toMatchObject({ promptVersion: "ads.auto-creation.prompt.v1", checksVersion: "ads.auto-creation.checks.v1" });
+    // Other business content under the same key is still another request.
+    for (const changed of [{ ...request, idea: "别的想法" }, { ...request, callBudget: 7 }, { ...request, model: "o-1", providerKey: "openai" }, {}]) {
+      expect(errorCode((await service.start(P1, changed, TOKEN, CONTEXT("k-v1"))).body)).toBe("IDEMPOTENCY_KEY_REUSED");
+    }
+    // The versions are the server's: a request naming them is refused, not matched.
+    expect((await service.start(P1, { ...request, promptVersion: "ads.auto-creation.prompt.v1" }, TOKEN, CONTEXT("k-v1"))).status).toBe(400);
+    // Another person's same key never reaches this run.
+    const other = await service.start(P1, request, TOKEN, { ...CONTEXT("k-v1"), actorId: "someone-else" });
+    expect(other.status).toBe(409);
+    expect(errorCode(other.body)).toBe("AUTO_CREATION_PROJECT_NOT_EMPTY");
+    expect(pending).toHaveLength(0);
+    expect(seen).toHaveLength(sent);
+    expect(snapshot(store, runId)).toEqual(before);
+  });
+
+  it("a new run freezes the current versions, and its own replay stays 200", async () => {
+    const { service, settle, store } = setup();
+    const started = await service.start(P1, {}, TOKEN, CONTEXT("k-v2"));
+    expect(started.status).toBe(201);
+    await settle();
+    expect(store.runs[0]!.input).toMatchObject({ promptVersion: AUTO_CREATION_PROMPT_VERSION, checksVersion: AUTO_CREATION_CHECKS_VERSION });
+    expect((await service.start(P1, {}, TOKEN, CONTEXT("k-v2"))).status).toBe(200);
   });
 
   it("a second key on the same work is refused while it runs and afterwards (never overwritten)", async () => {
