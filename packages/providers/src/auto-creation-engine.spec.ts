@@ -120,9 +120,9 @@ describe("automatic creation engine", () => {
     expect(result.state).toBe("failed");
     // The stage and its call name the rule, the field and the kind of token; the run keeps the bare rule.
     expect(result.stages.find((stage) => stage.stageKey === "research")).toMatchObject({
-      state: "rejected", errorCode: "unsourced_number@hypotheses[0].statement:percent", output: null });
+      state: "rejected", errorCode: "unsourced_number@hypotheses[0].statement:percent+market_statistic+proportion", output: null });
     expect(result.calls).toHaveLength(1);
-    expect(result.calls[0]!.errorCode).toBe("unsourced_number@hypotheses[0].statement:percent");
+    expect(result.calls[0]!.errorCode).toBe("unsourced_number@hypotheses[0].statement:percent+market_statistic+proportion");
     expect(result.errorCode).toBe("unsourced_number");
     // The refused text is kept nowhere in the view.
     expect(JSON.stringify(result)).not.toContain("70%");
@@ -141,13 +141,57 @@ describe("automatic creation engine", () => {
     expect(seen.map((item) => item.stage)).toEqual(["research", "directions", "bible", "outline", "episode:1", "review:1"]);
     expect(new Set(seen.map((item) => item.url))).toEqual(new Set(["https://api.deepseek.com/chat/completions"]));
     // The research prompt states the number contract that the check enforces.
-    expect(seen[0]!.user).toContain("不写任何数字");
+    expect(seen[0]!.user).toContain("市场和受众统计只能来自资料");
     expect(store.projects.get(P1)!.stories[0]).toMatchObject({ reviewStatus: "DRAFT" });
     const bundle = (await store.getRunById(WS, run.id))!;
     const meta = { runId: run.id, projectId: P1, input: bundle.run.input, quality: "passed", state: "completed", callsUsed: 6, callCap: 6,
       revisionRoundsUsed: 0, storySave: "saved", generatedAt: "2026-10-18T00:00:00.000Z" };
     expect(autoPackageJson(meta, bundle.stages)).toMatchObject({ status: { scriptPackage: "ready" } });
     expect(autoPackageMarkdown(meta, bundle.stages)).toContain("资料有限策划模式");
+  });
+
+  it("checks v3: research and directions that count their own story and plans complete the budget-six run to a DRAFT", async () => {
+    const deepseek = titleWritingProviderConfigs({ DEEPSEEK_API_KEY: "sk-deepseek-test-0123456789", TITLE_WRITING_DEEPSEEK_MODELS: "m-1" });
+    const { store, run, engine, seen, view } = await setup({ providers: deepseek, providerKey: "deepseek", revisionRounds: 0, callBudget: 6,
+      plan: { creativeQuantities: true } });
+    await engine.drive(run.id);
+    const result = await view();
+    expect(result).toMatchObject({ state: "completed", quality: "passed", callsUsed: 6, callCap: 6, storySave: "saved", packageStatus: "ready", errorCode: null });
+    expect(seen.map((item) => item.stage)).toEqual(["research", "directions", "bible", "outline", "episode:1", "review:1"]);
+    // The accepted research kept its quantities word for word: nothing was cut or rewritten to pass.
+    const research = result.stages.find((stage) => stage.stageKey === "research")!.output as { hypotheses: Array<{ statement: string; howToVerify: string }> };
+    expect(research.hypotheses[0]!.statement).toContain("两个互不信任的人");
+    expect(research.hypotheses[1]!.howToVerify).toContain("观察七天");
+    expect((result.stages.find((stage) => stage.stageKey === "directions")!.output as { candidates: Array<{ difficultyNote: string }> }).candidates[0]!.difficultyNote)
+      .toContain("3 个人物");
+    expect(store.projects.get(P1)!.stories[0]).toMatchObject({ reviewStatus: "DRAFT" });
+    await engine.maintain();
+    expect(seen).toHaveLength(6);
+  });
+
+  it("checks v3: a share hidden in a verification plan is refused at research with its field and rule; nothing after it is sent", async () => {
+    const { run, engine, seen, view } = await setup({ revisionRounds: 0, callBudget: 6, plan: { hiddenStatistic: true } });
+    await engine.drive(run.id);
+    const result = await view();
+    expect(result).toMatchObject({ state: "failed", errorCode: "unsourced_number", callsUsed: 1 });
+    const code = "unsourced_number@hypotheses[0].howToVerify:percent+market_statistic+proportion";
+    expect(result.stages.find((stage) => stage.stageKey === "research")).toMatchObject({ state: "rejected", errorCode: code, output: null });
+    expect(result.calls.map((call) => call.errorCode)).toEqual([code]);
+    expect(JSON.stringify(result)).not.toContain("六成");
+    expect(seen.map((item) => item.stage)).toEqual(["research"]);
+    await engine.maintain();
+    expect(seen).toHaveLength(1);
+  });
+
+  it("checks v3: three episodes with creative research, one revision round, within budget and through the second review", async () => {
+    const { run, engine, seen, view } = await setup({ episodeCount: 3, revisionRounds: 2, plan: { creativeQuantities: true, review: { highIssueRounds: [1] } } });
+    await engine.drive(run.id);
+    const result = await view();
+    expect(result).toMatchObject({ state: "completed", quality: "passed", revisionRoundsUsed: 1, callsUsed: autoCreationNormalCalls(3) + 2 });
+    expect(result.callsUsed).toBeLessThanOrEqual(result.callCap);
+    expect(seen.map((item) => item.stage)).toEqual(["research", "directions", "bible", "outline", "episode:1", "episode:2", "episode:3", "review:1",
+      "revise:1:episode:1", "review:2"]);
+    expect(Object.keys(result.currentEpisodes).sort()).toEqual(["episode:1", "episode:2", "episode:3"]);
   });
 
   it("the source snapshot records the official entries as unread and claims no video viewing", async () => {

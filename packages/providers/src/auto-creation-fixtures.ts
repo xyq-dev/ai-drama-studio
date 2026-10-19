@@ -49,6 +49,25 @@ export function autoFixtureBlock(user: string, label: string): unknown {
   return JSON.parse(user.slice(from, end)) as unknown;
 }
 
+/**
+ * A limited-mode research answer that counts its own story and plans the way checks v3 accept (两个互不信任的人, 三次误会,
+ * 拟比较两个版本, 上线后观察七天). hiddenStatistic puts one unsourced share inside the verification plan instead.
+ */
+export function fixtureAutoCreativeResearch(options: { hiddenStatistic?: boolean; episodeCount?: number } = {}): AutoResearch {
+  const base = fixtureAutoResearch({ citeCraft: false });
+  return {
+    ...base,
+    hypotheses: [
+      { id: "H1", statement: "模型替身样例：两个互不信任的人被迫共同寻找真相，这种设定可能带来悬念。",
+        howToVerify: options.hiddenStatistic ? "拟比较两个版本，女性观众占比约六成。" : "受众是否喜欢这种结尾，计划比较两个版本后再判断。" },
+      { id: "H2", statement: "模型替身样例：通过三次误会逐步揭露人物动机，是本故事拟采用的创作方案。", howToVerify: "计划上线后观察七天，待验证观众是否更喜欢两次反转的版本。" },
+    ],
+    audience: { ...base.audience, primary: "模型替身样例：拟面向通勤时刷剧的成年观众（待验证，不是平台真实用户画像）" },
+    opportunities: ["主角二十八岁，三天内必须讨回工资，开场前 3 秒抛出冲突"],
+    appliedConstraints: [`共 ${String(options.episodeCount ?? 1)} 集，每集约 60 秒`, "只写 3 个出场人物"],
+  };
+}
+
 export function fixtureAutoResearch(options: { fabricatedNumber?: boolean; citeCraft?: boolean } = {}): AutoResearch {
   return {
     schema: AUTO_CREATION_RESEARCH_SCHEMA,
@@ -94,6 +113,16 @@ export function fixtureAutoDirections(): AutoDirections {
       { id: "D3", title: "天台上的订单", logline: "模型替身样例：骑手在天台拦下一份写着求救的订单。", productionDifficulty: "high",
         ratings: { audienceFit: 4, conflictStrength: 5, originality: 4, feasibility: 2, constraintFit: 3 }, ...base },
     ],
+  };
+}
+
+/** Directions whose notes count their own story (两次反转, 两处室内场景, 3 个人物) and whose audience fit is a marked judgement. */
+export function fixtureAutoCreativeDirections(): AutoDirections {
+  const directions = fixtureAutoDirections();
+  return {
+    ...directions,
+    candidates: directions.candidates.map((candidate) => ({ ...candidate, differentiation: "用两次反转代替常见的三角恋", difficultyNote: "只需两处室内场景和 3 个人物",
+      audienceFit: "两次反转可能契合想看小人物扳回一局的观众，待验证 H1", evidenceIds: ["H1"] })),
   };
 }
 
@@ -297,6 +326,10 @@ export interface AutoFixturePlan {
   /** Every revision still has six scenes (so the run ends at needs work). */
   revisionsStayLong?: boolean;
   fabricatedNumber?: boolean;
+  /** Research and directions that count their own story and plans (checks v3 accepts them). */
+  creativeQuantities?: boolean;
+  /** Like creativeQuantities, with an unsourced share hidden in a verification plan (refused). */
+  hiddenStatistic?: boolean;
   /** One person on screen and one mentioned; the first drafts put the mentioned one on screen, revisions do not. */
   soloCast?: boolean;
   /** One person on screen, seven mentioned, and every scene of every draft lists all eight (hundreds of check results). */
@@ -309,8 +342,11 @@ export interface AutoFixturePlan {
 export function autoFixtureAnswer(user: string, plan: AutoFixturePlan = {}): unknown {
   const stage = autoFixtureStageOf(user);
   const count = autoFixtureEpisodeCount(user);
-  if (stage === "research") return fixtureAutoResearch({ fabricatedNumber: plan.fabricatedNumber });
-  if (stage === "directions") return fixtureAutoDirections();
+  if (stage === "research") {
+    return plan.creativeQuantities || plan.hiddenStatistic ? fixtureAutoCreativeResearch({ hiddenStatistic: plan.hiddenStatistic, episodeCount: count })
+      : fixtureAutoResearch({ fabricatedNumber: plan.fabricatedNumber });
+  }
+  if (stage === "directions") return plan.creativeQuantities ? fixtureAutoCreativeDirections() : fixtureAutoDirections();
   if (stage === "bible") return plan.soloCast ? fixtureAutoSoloBible() : plan.crowdedCast ? fixtureAutoCrowdedBible() : fixtureAutoBible();
   if (stage === "outline") {
     const outline = fixtureAutoOutline(count);

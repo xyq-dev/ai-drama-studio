@@ -40,6 +40,7 @@ import {
   type AutoStageOutput,
   type AutoStageRecord,
 } from "@ai-drama/contracts";
+import { frozenAudiencePhrase, numberKind, numberTokens, uncitedNumberFinding, type AutoNumberFrame } from "./auto-creation-numbers";
 import { isMarketSource, readableSources } from "./auto-creation-sources";
 import { canonicalInputHash } from "./text-chain";
 
@@ -280,14 +281,18 @@ export function buildAutoCreationPrompt(stageKey: string, input: AutoCreationFro
       "任务：基于资料完成研究与创作定位。",
       "facts：只写资料区里能逐字找到依据的事实，evidence 逐字摘录 sourceIds 所指资料的原文；资料不足时 facts 为空数组。",
       "observations：基于参考资料样本的观察，必须写 sourceIds。",
-      "hypotheses：你的判断和推测，写明如何验证；没有来源的受众判断都放在这里。",
+      "hypotheses：你的判断和推测，写明如何验证（howToVerify 是将来的验证计划，不是已经做过的调查）；没有来源的受众判断都放在这里。",
       "audience：主要目标观众、观看需求、情绪诉求；只有每一项都有资料支持时 basis 才能是 sourced，否则是 hypothesis。",
       "contentStructure：可借鉴的内容结构（人物动机、冲突机制、节奏、情绪兑现），只提炼方法，不复制原作。",
       "opportunities：适合本次创作的机会；limitations：资料缺失和局限；appliedConstraints：本次采用的约束。",
-      "数字规则（程序会逐字检查，违反即整份拒收，不会重试）：facts、observations、带 sourceIds 的 contentStructure 和 audience 里的数字，必须是所引资料摘录正文里原样出现的完整数字。"
-        + "hypotheses（含 howToVerify）、opportunities、limitations、appliedConstraints、不带 sourceIds 的 contentStructure 和没有来源的 audience：不写任何数字，"
-        + "阿拉伯数字和中文数字都不行，包括年份日期、资料条数、百分比、年龄、人数、天数、秒数和次数；改用文字表述（如“官方条目没有读到正文”“只有一份写作方法资料”“开场立刻抛出冲突”“多次反转”）。"
-        + "唯一例外：可以照抄上面用户硬约束里的集数、每集时长和人物、地点上限（如“共 1 集，每集约 60 秒”），但不能与观众、平均、占比等统计说法写在同一句里。",
+      "数字规则（程序按数字的含义逐句检查，违反即整份拒收，不会重试）：",
+      "1. 市场和受众统计只能来自资料：受众人数、年龄或年龄段、性别或地域比例、百分比、几成、播放量、热度、排名、观看时长和频次、收入等，只能出现在 facts、observations、带 sourceIds 的 contentStructure 和 audience 里，"
+        + "并且必须是所引资料摘录正文里原样出现的完整数字。写进 hypotheses、howToVerify、opportunities、limitations、appliedConstraints 也不行，标成“假设”“计划”“建议”也不行。",
+      "2. 本作品的创作设定可以写数量：虚构人物数（“两个互不信任的人”）、剧情次数（“三次误会”“两次反转”）、虚构人物年龄（“主角二十八岁”）、故事内期限（“三天内”）、开场秒数（“前 3 秒”）。"
+        + "人物数、地点数不能超过用户的上限，集数和每集时长只能写用户硬约束里的值（如“共 1 集，每集约 60 秒”）。",
+      "3. 验证计划可以写数量和天数，但必须写成将来的计划或待验证的问题：“拟比较两个版本”“计划上线后观察七天”“待验证观众是否更喜欢两次反转的版本”。"
+        + "同一句里既提到观众、用户或市场又带数量时，必须写明“是否、可能、待验证、计划、拟”等；不要写“数据显示、调查发现、已测试、测得”这类已经得到结果的说法。",
+      "4. 拟定的目标人群用文字描述（如“拟面向通勤时刷剧的成年观众”），不写年龄段或比例；用户在硬约束里指定的目标观众可以原样照抄。不写日期和资料条数（写“官方条目没有读到正文”“只有一份写作方法资料”）。",
       "资料有限策划模式（没有可读取的近期市场资料）时：facts 和 observations 可以是空数组，audience.basis 必须是 hypothesis 且 sourceIds 为空，"
         + "受众偏好、题材方向和创作建议都写成待验证的假设；不能得出经过验证的实时市场结论，也不要为了填满字段编造市场事实或数字。",
       `schema 固定为 "${AUTO_CREATION_RESEARCH_SCHEMA}"；编号用 F1、O1、H1 这样的格式。`,
@@ -298,7 +303,8 @@ export function buildAutoCreationPrompt(stageKey: string, input: AutoCreationFro
       ...head,
       "任务：提出 2–3 个有实质差异的原创方向（不同主角处境、不同核心冲突或不同情绪），用于自动选择。",
       "每个方向写一句话故事、主角、目标、阻碍、失败代价、核心情绪、差异点、拍摄或生成难度及说明、与目标观众和资料的关系（evidenceIds 引用研究里的 F/O/H 编号）。",
-      "audienceFit（与目标观众和资料的关系）不写任何数字（年龄、占比、人数等都不行，程序会拒收），只用文字说明并引用研究编号；一句话故事等故事内容里的数字不受此限。",
+      "数字规则与研究阶段相同：differentiation、difficultyNote 可以写本作品的创作数量（“两次反转”“两处室内场景”“三个人物”，人物和地点不超过用户上限），不写任何市场或受众统计；"
+        + "audienceFit（与目标观众和资料的关系）写成待验证的判断并引用研究编号（如“可能契合想看小人物扳回一局的观众，待验证 H1”），不写年龄、占比、人数；一句话故事等故事内容里的数字不受此限。",
       "ratings 是你对每个方向的 1–5 分内部自评（受众契合、冲突强度、原创性、可执行性、约束契合），只用于内部比较。",
       "任何方向都不能包含用户禁止的题材或元素。",
       `schema 固定为 "${AUTO_CREATION_DIRECTIONS_SCHEMA}"；编号 D1、D2、D3。`,
@@ -386,10 +392,12 @@ export function buildAutoCreationPrompt(stageKey: string, input: AutoCreationFro
 // Output checks.
 
 /**
- * A refusal names its rule (code) and, where known, the field (schema keys and indexes, e.g. limitations[0]) and a
- * category (the kind of token, or the schema issue). detail is for tests and may hold model text: it is never stored.
+ * A refusal names its rule (code) and, where known, the field (schema keys and indexes, e.g. limitations[0]), a
+ * category (the kind of token, or the schema issue) and, for a number, what it was taken for (semantic) and the
+ * sub-rule. detail is for tests and may hold model text: it is never stored.
  */
-export type AutoValidation = { ok: true; output: AutoStageOutput } | { ok: false; code: string; detail?: string; field?: string; category?: string };
+export type AutoValidation = { ok: true; output: AutoStageOutput }
+  | { ok: false; code: string; detail?: string; field?: string; category?: string; semantic?: string; rule?: string };
 
 const UNSAFE = /https?:\/\/|www\.|<\s*\/?\s*(script|iframe|html|a\s)/i;
 const RESERVED = /projectId|reviewStatus|APPROVED|CURRENT/;
@@ -402,104 +410,6 @@ function parseJson(content: string): unknown {
 
 function normalize(value: string): string {
   return value.replace(/\s+/g, "");
-}
-
-const CN_DIGITS = "〇零一二两三四五六七八九十百千";
-const CN_VALUES: Readonly<Record<string, number>> = { 〇: 0, 零: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
-const CN_UNITS: Readonly<Record<string, number>> = { 十: 10, 百: 100, 千: 1000 };
-/** Units that make any Chinese numeral a claim, 一 included (一成 is ten percent). */
-const CN_STRONG_UNITS = "成|万|亿|岁|倍|分之";
-/** Measure words of people, times, money and durations. A bare 一 before them is the article (一个夜晚), not a claim. */
-const CN_COUNT_UNITS = "小时|分钟|名|人|位|个|次|遍|元|块|集|场|天|周|年|月|户|家|条|部|份|秒";
-/** Words of a viewing or market statistic: in such a clause the run's own length is not what is being described. */
-const MARKET_MARKERS = /用户|观众|受众|人均|平均|日均|每天|每日|每周|每月|完播|留存|占比/u;
-const PLAN_NUMBER = new RegExp(`(\\d+(?:\\.\\d+)?|[${CN_DIGITS}]+)\\s*(集|秒|分钟)`, "gu");
-/** Ordinals, spaced or not: 第 3 集, 第二场, 播放量第 3. */
-const ORDINAL = new RegExp(`第\\s*(?:\\d+|[${CN_DIGITS}]+)`, "gu");
-/**
- * The ordinals that are a position in the work or the plan, never a place in a ranking: one followed by its own unit
- * (第 3 集, 第二场, 第 2 轮, 第一次, 第一时间), or an item number opening a clause (第一，…). Any other 第N is a place
- * (第三名, 播放量第 3) and needs a source.
- */
-const STRUCTURAL_ORDINAL = new RegExp(`${ORDINAL.source}\\s*(?=集|场|幕|章|节|季|话|回|段|镜|轮|稿|版|步|句|秒|分钟|次|个|时间|眼|人称|视角|印象|反应)`
-  + `|^\\s*${ORDINAL.source}\\s*(?=[，,、：:])`, "gu");
-const RANK_MARKERS = /排名|排行|榜|名列|位列|位居|热度|人气|冠军/u;
-/** A clause with any of these is about viewers, a market or a ranking: no number in it is the run's own setting. */
-const NO_EXEMPTION = new RegExp(`${MARKET_MARKERS.source}|${RANK_MARKERS.source}|爆款|热门|播放|(?<![目之提此])前\\s*(?:\\d|[${CN_DIGITS}])`, "u");
-/** Marks an ordinal of a ranking so it is matched as one whole token (名次第三), in a statement and in a source alike. */
-const RANK_PREFIX = "名次";
-/** A number the run's own frozen input puts in text: its value and its unit (集, 秒, 分钟), or the limit it states. */
-export type AutoExemptNumber = readonly [value: number, unit: "集" | "秒" | "分钟" | "人物上限" | "地点上限"];
-
-function limitPattern(words: string, units: string): RegExp {
-  const number = `\\d+|[${CN_DIGITS}]+`;
-  const limitWords = "\\s|最多|至多|不超过|上限为?|限制为?|限为|为|共|：|:";
-  // After the word: only limit words between it and the number. Before the word: only right after a limit word.
-  return new RegExp(`(?:${words})(?:${limitWords})*(${number})\\s*(?:${units})(?![\\d${CN_DIGITS}月年天周次小时])`
-    + `|(?:最多|至多|不超过|上限|限)\\s*(${number})\\s*(?:${units})?\\s*(?:出场)?(?:${words})(?!化)`, "gu");
-}
-
-/**
- * A cast or location limit is restated only with the number right next to its own word: 人物最多 4 人, 最多四个人物,
- * 地点最多 3 个, 三处地点. A number elsewhere in a clause that merely mentions characters or places is not the limit.
- */
-const LIMIT_PATTERNS: Readonly<Record<"人物上限" | "地点上限", RegExp>> = {
-  人物上限: limitPattern("人物|角色", "人|名|位|个"),
-  地点上限: limitPattern("地点|场景|场地", "个|处"),
-};
-const NUMBER_TOKEN = new RegExp([
-  `名次第(?:\\d+|[${CN_DIGITS}]+)`,
-  "(?<![第\\d.])\\d+(?:\\.\\d+)?\\s*%?",
-  "[０-９]+",
-  `百分之[${CN_DIGITS}]+`,
-  `(?<![第${CN_DIGITS}])[${CN_DIGITS}]+(?:${CN_STRONG_UNITS}|${CN_COUNT_UNITS})`,
-].join("|"), "gu");
-
-/** The value of a simple Chinese numeral (up to the thousands), or null. */
-function chineseValue(text: string): number | null {
-  let total = 0;
-  let current: number | null = null;
-  for (const char of text) {
-    if (char in CN_VALUES) current = CN_VALUES[char]!;
-    else if (char in CN_UNITS) {
-      total += (current ?? 1) * CN_UNITS[char]!;
-      current = null;
-    } else return null;
-  }
-  return total + (current ?? 0);
-}
-
-/**
- * Number claims: digits, percentages and Chinese numerals with a unit, each as one whole number. Ordinals (第三集), ids
- * and 9:16 are not claims. The run's own structure (its episode count and target length) is exempt only in a clause
- * that is not about viewers or the market: 每天观看60秒 is a statistic even when the run is sixty seconds long.
- */
-export function numberTokens(value: string, exempt: ReadonlyArray<AutoExemptNumber> = []): string[] {
-  const stripped = value
-    .replace(/\b[FOHDCLPRK]\d{1,2}\b/g, " ")
-    .replace(/S-[A-Z]+(?:-[A-Z0-9]+)*/g, " ")
-    .replace(/9\s*[:：]\s*16/g, " ")
-    .replace(/一成不变/gu, " ")
-    .split(/(?<=[，。；;！？!?,\n])/u)
-    // A structural ordinal (第 3 集) is a position, outside a ranking clause. Every other ordinal is a place (排名第三,
-    // 播放量第 3, 口碑第一): a claim, kept whole as 名次第三 so a source and a statement match it the same way.
-    .map((clause) => (RANK_MARKERS.test(clause) ? clause : clause.replace(STRUCTURAL_ORDINAL, " "))
-      .replace(ORDINAL, (ordinal) => ` ${RANK_PREFIX}${ordinal.replace(/\s+/gu, "")} `))
-    .map((clause) => {
-      if (NO_EXEMPTION.test(clause)) return clause;
-      const valueOf = (number: string) => /^\d/u.test(number) ? Number(number) : chineseValue(number);
-      let kept = clause.replace(PLAN_NUMBER, (whole, number: string, unit: string) =>
-        exempt.some(([exemptValue, exemptUnit]) => exemptValue === valueOf(number) && exemptUnit === unit) ? " " : whole);
-      for (const [limit, pattern] of Object.entries(LIMIT_PATTERNS)) {
-        kept = kept.replace(pattern, (whole, before: string | undefined, after: string | undefined) =>
-          exempt.some(([exemptValue, exemptUnit]) => exemptUnit === limit && exemptValue === valueOf(before ?? after ?? "")) ? " " : whole);
-      }
-      return kept;
-    })
-    .join("");
-  const tokens = stripped.match(NUMBER_TOKEN) ?? [];
-  return tokens.map((token) => token.replace(/\s+/g, ""))
-    .filter((token) => !new RegExp(`^一(?:${CN_COUNT_UNITS})$`, "u").test(token));
 }
 
 function textsOf(value: unknown): string[] {
@@ -525,35 +435,40 @@ function fieldPath(path: readonly PropertyKey[]): string {
   return path.map((part) => typeof part === "number" ? `[${String(part)}]` : `.${String(part)}`).join("").replace(/^\./u, "");
 }
 
-/** The kind of a refused number, for diagnosis without the text: rank, percent, Chinese numeral, full-width or plain digits. */
-function tokenCategory(token: string): string {
-  if (token.startsWith(RANK_PREFIX)) return "rank";
-  if (/%|％|百分之|成$/u.test(token)) return "percent";
-  if (/^[０-９]/u.test(token)) return "fullwidth_digits";
-  return /^\d/u.test(token) ? "digits" : "chinese_numeral";
+/**
+ * What an uncited text is judged against: the numbers the run's frozen input puts in text (N 集, the target seconds
+ * and minutes, the cast and location limits when set, only right next to their own word and never in a viewing,
+ * market or ranking clause), the person's audience constraint, and the limits a story quantity must keep.
+ */
+function numberFrame(input: AutoCreationFrozenInput): AutoNumberFrame {
+  const { maxCharacters, maxLocations } = input.constraints;
+  return {
+    exempt: [
+      [input.episodeCount, "集"], [input.episodeSeconds, "秒"], [input.episodeSeconds / 60, "分钟"],
+      ...(maxCharacters === null ? [] : [[maxCharacters, "人物上限"] as const]),
+      ...(maxLocations === null ? [] : [[maxLocations, "地点上限"] as const]),
+    ],
+    frozenAudience: frozenAudiencePhrase(input.constraints.audience),
+    episodeCount: input.episodeCount,
+    episodeSeconds: input.episodeSeconds,
+    maxCharacters,
+    maxLocations,
+  };
 }
 
 /**
- * The numbers a run's own frozen input puts in text: N 集, the target seconds and minutes, and the cast and location
- * limits when set (only right next to their own word). Never in a viewing, market or ranking clause.
+ * The first number an uncited text may not carry, as a refusal naming its field, the kind of token, what it was taken
+ * for and the sub-rule. A story quantity breaking a frozen setting is a constraint violation; every other is unsourced.
  */
-function structuralNumbers(input: AutoCreationFrozenInput): AutoExemptNumber[] {
-  const { maxCharacters, maxLocations } = input.constraints;
-  return [
-    [input.episodeCount, "集"], [input.episodeSeconds, "秒"], [input.episodeSeconds / 60, "分钟"],
-    ...(maxCharacters === null ? [] : [[maxCharacters, "人物上限"] as const]),
-    ...(maxLocations === null ? [] : [[maxLocations, "地点上限"] as const]),
-  ];
-}
-
-/** The first number in an uncited text, which may carry none but the run's own settings. */
-function uncitedNumber(statement: string, field: string, exempt: ReadonlyArray<AutoExemptNumber>): AutoValidation | null {
-  const token = numberTokens(statement, exempt)[0];
-  return token ? { ok: false, code: "unsourced_number", detail: token, field, category: tokenCategory(token) } : null;
+function uncitedNumber(statement: string, field: string, frame: AutoNumberFrame, market = false): AutoValidation | null {
+  const finding = uncitedNumberFinding(statement, frame, { market });
+  if (!finding) return null;
+  return { ok: false, code: finding.semantic === "frozen_conflict" ? "constraint_violation" : "unsourced_number", detail: finding.token, field,
+    category: finding.kind, semantic: finding.semantic, rule: finding.rule };
 }
 
 function checkResearch(input: AutoCreationFrozenInput, output: AutoResearch, context: AutoCreationContext): AutoValidation {
-  const exempt = structuralNumbers(input);
+  const frame = numberFrame(input);
   const readable = new Map(readableSources(context.sources!).map((source) => [source.sourceId, source] as const));
   const known = new Set(context.sources!.sources.map((source) => source.sourceId));
   const cite = (ids: readonly string[], field: string): AutoValidation | null => {
@@ -566,8 +481,9 @@ function checkResearch(input: AutoCreationFrozenInput, output: AutoResearch, con
   const sourced = (statement: string, ids: readonly string[], field: string): AutoValidation | null => {
     // Whole tokens on both sides: "18" is not supported by an excerpt that only has "2018".
     const supported = new Set(ids.flatMap((id) => numberTokens(readable.get(id)?.excerpt ?? "")).map(normalize));
-    const missing = numberTokens(statement, exempt).find((token) => !supported.has(normalize(token)));
-    return missing ? { ok: false, code: "unsourced_number", detail: missing, field, category: tokenCategory(missing) } : null;
+    const missing = numberTokens(statement, frame.exempt).find((token) => !supported.has(normalize(token)));
+    return missing ? { ok: false, code: "unsourced_number", detail: missing, field, category: numberKind(missing), semantic: "unsourced",
+      rule: "not_in_cited_excerpt" } : null;
   };
   const ids = [...output.facts.map((item) => item.id), ...output.observations.map((item) => item.id), ...output.hypotheses.map((item) => item.id)];
   if (new Set(ids).size !== ids.length) return { ok: false, code: "duplicate_id" };
@@ -586,8 +502,10 @@ function checkResearch(input: AutoCreationFrozenInput, output: AutoResearch, con
     if (problem) return problem;
   }
   for (const [index, item] of output.contentStructure.entries()) {
-    const problem = cite(item.sourceIds, `contentStructure[${String(index)}].sourceIds`)
-      ?? sourced(`${item.pattern}${item.why}`, item.sourceIds, `contentStructure[${String(index)}]`);
+    const at = `contentStructure[${String(index)}]`;
+    // A cited structure takes its numbers from its sources; an uncited one is a writing method, judged like a hypothesis.
+    const problem = cite(item.sourceIds, `${at}.sourceIds`) ?? (item.sourceIds.length > 0 ? sourced(`${item.pattern}\n${item.why}`, item.sourceIds, at)
+      : uncitedNumber(item.pattern, `${at}.pattern`, frame) ?? uncitedNumber(item.why, `${at}.why`, frame));
     if (problem) return problem;
   }
   const audienceProblem = cite(output.audience.sourceIds, "audience.sourceIds");
@@ -597,11 +515,21 @@ function checkResearch(input: AutoCreationFrozenInput, output: AutoResearch, con
   if (output.audience.basis === "sourced" && !output.audience.sourceIds.some((id) => isMarketSource(readable.get(id)))) {
     return { ok: false, code: "unsourced_claim", detail: "audience", field: "audience.basis" };
   }
-  const audienceText = [output.audience.primary, ...output.audience.viewingNeeds, ...output.audience.emotionalAppeals].join("\n");
-  const audienceNumbers = sourced(audienceText, output.audience.sourceIds, "audience");
-  if (audienceNumbers) return audienceNumbers;
-  // Uncited fields carry no number but the run's own settings: hypotheses and how to verify them, opportunities,
-  // limitations, and the applied constraints (a statistic is no constraint, whatever field it is put in).
+  const audienceTexts: Array<[string, string]> = [["audience.primary", output.audience.primary],
+    ...output.audience.viewingNeeds.map((item, index): [string, string] => [`audience.viewingNeeds[${String(index)}]`, item]),
+    ...output.audience.emotionalAppeals.map((item, index): [string, string] => [`audience.emotionalAppeals[${String(index)}]`, item])];
+  if (output.audience.sourceIds.length > 0) {
+    const audienceNumbers = sourced(audienceTexts.map(([, text]) => text).join("\n"), output.audience.sourceIds, "audience");
+    if (audienceNumbers) return audienceNumbers;
+  } else {
+    // An uncited audience is about viewers throughout: a quantity there must be a story or plan one, marked as pending.
+    for (const [field, text] of audienceTexts) {
+      const problem = uncitedNumber(text, field, frame, true);
+      if (problem) return problem;
+    }
+  }
+  // Uncited fields carry a number only when it counts the work or a plan (auto-creation-numbers.ts): hypotheses and
+  // how to verify them, opportunities, limitations and the applied constraints alike. No field label exempts a statistic.
   const uncited: Array<[string, string]> = [
     ...output.hypotheses.flatMap((item, index): Array<[string, string]> => [
       [item.statement, `hypotheses[${String(index)}].statement`], [item.howToVerify, `hypotheses[${String(index)}].howToVerify`]]),
@@ -610,7 +538,7 @@ function checkResearch(input: AutoCreationFrozenInput, output: AutoResearch, con
     ...output.appliedConstraints.map((item, index): [string, string] => [item, `appliedConstraints[${String(index)}]`]),
   ];
   for (const [statement, field] of uncited) {
-    const problem = uncitedNumber(statement, field, exempt);
+    const problem = uncitedNumber(statement, field, frame);
     if (problem) return problem;
   }
   // Limited mode means no readable, dated, recent market source: an audience can then only be a hypothesis.
@@ -666,12 +594,16 @@ function checkDirections(input: AutoCreationFrozenInput, output: ReturnType<type
   if (new Set(output.candidates.map((item) => normalize(item.logline))).size !== output.candidates.length) return { ok: false, code: "duplicate_direction" };
   const research = context.research!;
   const known = new Set([...research.facts, ...research.observations, ...research.hypotheses].map((item) => item.id));
-  const exempt = structuralNumbers(input);
+  const frame = numberFrame(input);
   for (const [index, candidate] of output.candidates.entries()) {
+    const at = `candidates[${String(index)}]`;
     const dangling = candidate.evidenceIds.find((id) => !known.has(id));
-    if (dangling) return { ok: false, code: "dangling_reference", detail: `${candidate.id}:${dangling}`, field: `candidates[${String(index)}].evidenceIds` };
-    // How a direction fits its audience is a research claim, not story: no market statistic moves here from research.
-    const problem = uncitedNumber(candidate.audienceFit, `candidates[${String(index)}].audienceFit`, exempt);
+    if (dangling) return { ok: false, code: "dangling_reference", detail: `${candidate.id}:${dangling}`, field: `${at}.evidenceIds` };
+    // A direction's notes are judged like research: its differentiation and difficulty may count its own story, never a
+    // statistic; how it fits its audience is about viewers throughout. The story itself (logline, goal…) is free.
+    const problem = uncitedNumber(candidate.differentiation, `${at}.differentiation`, frame)
+      ?? uncitedNumber(candidate.difficultyNote, `${at}.difficultyNote`, frame)
+      ?? uncitedNumber(candidate.audienceFit, `${at}.audienceFit`, frame, true);
     if (problem) return problem;
   }
   const selection = selectDirection(input, output.candidates);
@@ -1202,13 +1134,17 @@ export function autoPackageMarkdown(meta: AutoPackageMeta, stages: readonly Auto
   if (context.research) {
     const research = context.research;
     push("## 受众与市场分析", "");
+    if (context.sources?.researchMode === "limited") {
+      push("> 资料有限：没有可读取的近期市场资料。受众和题材判断都是待验证的假设，验证计划尚未执行；不是实时市场验证，也不是平台真实用户画像。", "");
+    }
     push("**有来源的事实**", "", ...(research.facts.length > 0 ? research.facts.map((item) => `- ${item.id} ${item.statement}（来源 ${item.sourceIds.join("、")}：「${item.evidence}」）`) : ["- 无（没有可引用的资料）"]), "");
     push("**基于样本的观察**", "", ...(research.observations.length > 0 ? research.observations.map((item) => `- ${item.id} ${item.statement}（来源 ${item.sourceIds.join("、")}）`) : ["- 无"]), "");
-    push("**待验证的假设**", "", ...research.hypotheses.map((item) => `- ${item.id} ${item.statement}（验证方式：${item.howToVerify}）`), "");
-    push(`**目标观众（${research.audience.basis === "sourced" ? "有来源" : "假设"}）**：${research.audience.primary}`,
+    push("**待验证的假设与验证计划**（计划尚未执行，不是调查结果）", "", ...research.hypotheses.map((item) => `- ${item.id} 假设：${item.statement}；验证计划：${item.howToVerify}`), "");
+    push(`**目标观众（${research.audience.basis === "sourced" ? "有来源" : "待验证的拟定人群，不是平台真实用户画像"}）**：${research.audience.primary}`,
       `- 观看需求：${research.audience.viewingNeeds.join("；")}`, `- 情绪诉求：${research.audience.emotionalAppeals.join("；")}`, "");
     push("**内容结构**", "", ...research.contentStructure.map((item) => `- ${item.pattern}：${item.why}${item.sourceIds.length > 0 ? `（${item.sourceIds.join("、")}）` : ""}`), "");
-    push(`**机会**：${research.opportunities.join("；")}`, `**局限**：${research.limitations.join("；")}`, "");
+    push(`**机会**：${research.opportunities.join("；")}`, `**局限**：${research.limitations.join("；")}`,
+      ...(research.appliedConstraints.length > 0 ? [`**采用的约束**：${research.appliedConstraints.join("；")}`] : []), "");
   }
   if (context.directions) {
     push("## 选题比较与最终方向", "");

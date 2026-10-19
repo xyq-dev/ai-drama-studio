@@ -352,7 +352,7 @@ describe("AI 自动创作 run page", () => {
     await waitFor(() => expect(screen.getByTestId("auto-headline").textContent).toBe("没有完成"));
     const stop = screen.getByText(/^停在「/u).textContent!;
     expect(stop).toContain("研究");
-    expect(stop).toContain("资料中找不到的数字");
+    expect(stop).toContain("没有通过真实性检查");
     expect(stop).toContain("limitations[0]");
     expect(stop).toContain("阿拉伯数字");
     const note = screen.getByTestId("auto-output-refused").textContent!;
@@ -360,6 +360,55 @@ describe("AI 自动创作 run page", () => {
     expect(note).toContain("新的计费调用");
     expect(screen.getByTestId("auto-quality").textContent).toContain("未完成");
     expect(document.body.textContent).not.toContain("认证失败");
+  });
+
+  it("checks v3: a refusal says what the number was taken for and the sub-rule, never blames the model or the key outright", async () => {
+    const stage = (errorCode: string) => ({ stageKey: "research", kind: "research" as const, state: "rejected" as const, attemptNo: 1, errorCode, output: null,
+      upstreamChanged: false, supersededBy: null, scriptSave: null, scriptRevisionId: null });
+    for (const [code, expected] of [
+      ["unsourced_number@hypotheses[0].statement:chinese_numeral+market_statistic+audience_count", ["hypotheses[0].statement", "中文数字", "市场或受众统计", "观众或用户人数", "不说明模型一定编造"]],
+      ["unsourced_number@hypotheses[0].howToVerify:digits+result_claim+unmarked_audience_judgement", ["hypotheses[0].howToVerify", "已经得到的调查或观众结论", "没有写明待验证或计划"]],
+      ["constraint_violation@appliedConstraints[0]:digits+frozen_conflict+cast_over_limit", ["appliedConstraints[0]", "冻结的硬约束", "人物数超过上限"]],
+      ["unsourced_number@limitations[0]:digits+unclassified+date_or_range", ["limitations[0]", "无法确认是创作设定还是统计", "日期或数值范围"]],
+    ] as const) {
+      cleanup();
+      const failed = run({ state: "failed", errorCode: code.split("@")[0]!, quality: "pending", storySave: "pending", storyRevisionId: null, packageStatus: "incomplete",
+        callsUsed: 1, callCap: 6, openIssues: [], stages: [stage(code)] });
+      vi.stubGlobal("fetch", vi.fn(async (input: string) => input.endsWith("/auto-runs/latest") ? json({ run: failed }) : json(options())));
+      render(<AutoCreationRun projectId={P1} />);
+      await waitFor(() => expect(screen.getByTestId("auto-headline").textContent).toBe("没有完成"));
+      const stop = screen.getByText(/^停在「/u).textContent!;
+      for (const text of expected) expect(stop, code).toContain(text);
+      expect(screen.getByTestId("auto-output-refused").textContent).toContain("不需要更换密钥");
+      expect(document.body.textContent).not.toContain("认证失败");
+    }
+  });
+
+  it("limited research shows facts, hypotheses and their unexecuted plans apart, and never claims a market validation", async () => {
+    const research = {
+      schema: "ads.auto-creation.research.v1", facts: [], observations: [],
+      hypotheses: [{ id: "H1", statement: "两个互不信任的人被迫共同寻找真相，这种设定可能带来悬念。", howToVerify: "计划比较两个版本后再判断。" }],
+      audience: { primary: "拟面向通勤时刷剧的成年观众（待验证）", viewingNeeds: ["一集内看到结果"], emotionalAppeals: ["扳回一局"], basis: "hypothesis", sourceIds: [] },
+      contentStructure: [{ pattern: "主角主动", why: "知识库", sourceIds: ["S-KB-CRAFT"] }],
+      opportunities: ["三天内讨回工资"], limitations: ["官方条目没有读到正文"], appliedConstraints: ["共 1 集，每集约 60 秒"],
+    };
+    const done = run({ stages: [
+      { stageKey: "sources", kind: "sources", state: "completed", attemptNo: 0, errorCode: null, output: null, upstreamChanged: false, supersededBy: null, scriptSave: null, scriptRevisionId: null },
+      { stageKey: "research", kind: "research", state: "completed", attemptNo: 1, errorCode: null, output: research as never, upstreamChanged: false, supersededBy: null, scriptSave: null, scriptRevisionId: null },
+    ] });
+    vi.stubGlobal("fetch", vi.fn(async (input: string) => input.endsWith("/auto-runs/latest") ? json({ run: done }) : json(options())));
+    render(<AutoCreationRun projectId={P1} />);
+    const limited = await screen.findByTestId("auto-research-limited");
+    expect(limited.textContent).toContain("待验证的假设");
+    expect(limited.textContent).toContain("验证计划尚未执行");
+    expect(limited.textContent).toContain("不是实时市场验证");
+    const detail = screen.getByTestId("auto-research-detail").textContent!;
+    expect(detail).toContain("无（没有可引用的资料）");
+    expect(screen.getByTestId("auto-hypotheses").textContent).toContain("H1 假设：两个互不信任的人");
+    expect(screen.getByTestId("auto-hypotheses").textContent).toContain("验证计划：计划比较两个版本后再判断。");
+    expect(screen.getByTestId("auto-audience").textContent).toContain("不是平台真实用户画像");
+    expect(detail).toContain("采用的约束：共 1 集，每集约 60 秒");
+    expect(document.body.textContent).not.toMatch(/市场验证(已)?完成|已完成市场验证/u);
   });
 
   it("a key problem is not described as a refused answer", async () => {

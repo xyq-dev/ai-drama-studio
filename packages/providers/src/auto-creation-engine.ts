@@ -444,7 +444,7 @@ export class AutoCreationEngine {
         ? { state: "completed", errorCode: null, output: checked.output, outputHash: canonicalInputHash(checked.output),
           dependsOn: autoStageDependencies(next.stageKey, stages), ...common }
         // A refused answer is never stored, only its rule, field path and token kind: no model text.
-        : { state: "rejected", errorCode: autoErrorCodeWith(checked.code, checked.field, checked.category), output: null, outputHash: null, dependsOn: null, ...common };
+        : { state: "rejected", errorCode: autoErrorCodeWith(checked.code, checked.field, checked.category, checked.semantic, checked.rule), output: null, outputHash: null, dependsOn: null, ...common };
     } else {
       patch = { state: exchange.outcome === "unknown" ? "unknown" : "rejected", errorCode: exchange.errorCode ?? "invalid_output",
         output: null, outputHash: null, dependsOn: null, ...common };

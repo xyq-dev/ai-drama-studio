@@ -10,7 +10,8 @@ import {
 } from "@ai-drama/contracts";
 import { OCEAN_ENGINE_ENTRY_URLS, builtInSources, collectSources } from "./auto-creation-sources";
 import type { AutoBible, AutoEpisode } from "@ai-drama/contracts";
-import { buildAutoCreationPrompt, deterministicFindings, numberTokens, selectDirection, validateAutoStageOutput, type AutoCreationContext } from "./auto-creation";
+import { buildAutoCreationPrompt, deterministicFindings, selectDirection, validateAutoStageOutput, type AutoCreationContext } from "./auto-creation";
+import { numberTokens } from "./auto-creation-numbers";
 
 function input(overrides: Partial<AutoCreationFrozenInput> = {}): AutoCreationFrozenInput {
   return {
@@ -234,7 +235,8 @@ describe("research contract in limited mode (synthetic samples)", () => {
     const prompt = buildAutoCreationPrompt("research", input(), context());
     // Old wording: any number seen anywhere in the data area could be "quoted"; source metadata is not an excerpt.
     expect(prompt.system).not.toContain("只能原样引用资料区里出现过的内容");
-    expect(prompt.user).toContain("不写任何数字");
+    expect(prompt.user).toContain("市场和受众统计只能来自资料");
+    expect(prompt.user).toContain("不写日期和资料条数");
     expect(prompt.user).toContain("资料有限策划模式");
     expect(prompt.user).toContain("facts 和 observations 可以是空数组");
     // The unread official entries are listed by id and status only: their fetch date is not offered for quoting.
@@ -242,18 +244,24 @@ describe("research contract in limited mode (synthetic samples)", () => {
     expect(unread).not.toMatch(/\d{4}-\d{2}-\d{2}/u);
   });
 
-  it("dates, counts of sources, verification plans and craft rules of thumb with numbers are still refused, with their field", () => {
+  it("dates, counts of sources and age ranges are still refused, with their field", () => {
     const cases: Array<[Record<string, unknown>, string]> = [
       [{ limitations: ["官方条目在2026-10-18请求时只得到空壳。"] }, "limitations[0]"],
       [{ limitations: ["只有 1 条可读资料，没有市场数据。"] }, "limitations[0]"],
-      [{ hypotheses: [{ id: "H1", statement: "可能偏爱反击题材。", howToVerify: "上线后统计 7 天完播率。" }] }, "hypotheses[0].howToVerify"],
-      [{ opportunities: ["开场前3秒抛出冲突"] }, "opportunities[0]"],
       [{ hypotheses: [{ id: "H1", statement: "主要观众可能是25-40岁女性。", howToVerify: "看数据。" }] }, "hypotheses[0].statement"],
     ];
     for (const [overrides, field] of cases) {
       expect(validateAutoStageOutput("research", limitedAnswer(overrides), input(), context()), field)
         .toMatchObject({ ok: false, code: "unsourced_number", field });
     }
+  });
+
+  it("checks v3: a future observation window and a position inside the episode are the work's plan, not a claim", () => {
+    // Refused under checks v2 (no number at all in uncited fields). Their meaning is a plan (上线后 … 7 天) and a moment
+    // of this episode within its frozen length; see auto-creation-semantics.spec.ts for the statistics still refused.
+    expect(validateAutoStageOutput("research", limitedAnswer({ hypotheses: [{ id: "H1", statement: "可能偏爱反击题材。", howToVerify: "上线后统计 7 天完播率。" }] }),
+      input(), context())).toMatchObject({ ok: true });
+    expect(validateAutoStageOutput("research", limitedAnswer({ opportunities: ["开场前3秒抛出冲突"] }), input(), context())).toMatchObject({ ok: true });
   });
 
   it("each refusal names its rule and field and a token class, never the model's text", () => {
@@ -280,22 +288,31 @@ describe("research contract in limited mode (synthetic samples)", () => {
     for (const statement of ["出场人物最多 4 人", "最多四个人物", "地点最多 3 个", "最多三处地点"]) {
       expect(validateAutoStageOutput("research", limitedAnswer({ appliedConstraints: [statement] }), frozen, context()), statement).toMatchObject({ ok: true });
     }
-    for (const statement of ["出场人物最多 5 人", "最多 4 名观众", "4 个人物覆盖观众的四成", "地点最多 4 个", "最多 4 人"]) {
+    for (const statement of ["最多 4 名观众", "4 个人物覆盖观众的四成", "地点最多 4 个"]) {
       expect(validateAutoStageOutput("research", limitedAnswer({ appliedConstraints: [statement] }), frozen, context()), statement)
         .toMatchObject({ ok: false, code: "unsourced_number" });
     }
+    // checks v3: a cast over the frozen limit is named for what it breaks; a cast within it may be written as design.
+    expect(validateAutoStageOutput("research", limitedAnswer({ appliedConstraints: ["出场人物最多 5 人"] }), frozen, context()))
+      .toMatchObject({ ok: false, code: "constraint_violation", semantic: "frozen_conflict", rule: "cast_over_limit" });
+    expect(validateAutoStageOutput("research", limitedAnswer({ appliedConstraints: ["最多 4 人"] }), frozen, context())).toMatchObject({ ok: true });
     // Review finding: a ranking or market number equal to a limit is never taken for the limit.
     const capped = input({ constraints: autoCreationConstraintsSchema.parse({ maxCharacters: 3, maxLocations: 3 }) });
-    for (const statement of ["榜单前3个短剧都以办公室场景为主", "该角色在人气榜排名第3名", "前3个短剧的人物都很少", "角色的工资3个月没发",
-      "3个爆款都只用一个地点", "热度第一的作品只有三个人物", "资料里3个角色定位最常见", "3个场景化营销案例证明有效", "角色共3人次", "角色3个小时"]) {
+    for (const statement of ["榜单前3个短剧都以办公室场景为主", "该角色在人气榜排名第3名", "前3个短剧的人物都很少",
+      "3个爆款都只用一个地点", "热度第一的作品只有三个人物", "资料里3个角色定位最常见", "3个场景化营销案例证明有效", "角色共3人次"]) {
       expect(numberTokens(statement, [[3, "人物上限"], [3, "地点上限"]]).length, statement).toBeGreaterThan(0);
       expect(validateAutoStageOutput("research", limitedAnswer({ limitations: [statement] }), capped, context()), statement)
         .toMatchObject({ ok: false, code: "unsourced_number" });
     }
+    // checks v3: story durations are story, not a cast limit and not a statistic.
+    for (const statement of ["角色的工资3个月没发", "角色3个小时"]) {
+      expect(validateAutoStageOutput("research", limitedAnswer({ limitations: [statement] }), capped, context()), statement).toMatchObject({ ok: true });
+    }
     // 目前/之前 are no ranking: the run's own length stays restatable there.
     expect(validateAutoStageOutput("research", limitedAnswer({ appliedConstraints: ["目前一共 1 集，每集约 60 秒"] }), capped, context())).toMatchObject({ ok: true });
-    // Without a frozen limit there is nothing to restate.
-    expect(validateAutoStageOutput("research", limitedAnswer({ appliedConstraints: ["出场人物最多 4 人"] }), input(), context()))
+    // Without a frozen limit a cast size is a design choice within the setting's own maximum (checks v3); past it, no cast.
+    expect(validateAutoStageOutput("research", limitedAnswer({ appliedConstraints: ["出场人物最多 4 人"] }), input(), context())).toMatchObject({ ok: true });
+    expect(validateAutoStageOutput("research", limitedAnswer({ appliedConstraints: ["出场人物最多 12 人"] }), input(), context()))
       .toMatchObject({ ok: false, code: "unsourced_number" });
   });
 
