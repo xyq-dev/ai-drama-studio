@@ -143,6 +143,169 @@ describe("AI 自动创作 start card", () => {
   });
 });
 
+describe("AI 自动创作 start card with a start whose result is not confirmed", () => {
+  const PROJECT_KEY = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const RUN_KEY = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+
+  function frozen(overrides: Record<string, unknown> = {}) {
+    return {
+      idea: "外卖骑手讨回工资",
+      constraints: { genre: "都市", audience: "上班族", maxCharacters: 4, maxLocations: 3, forbiddenThemes: ["鬼怪", "穿越"], endingRequirement: "圆满" },
+      materials: [{ title: "我的笔记", kind: "notes", text: "骑手的一天", rightsConfirmed: true }],
+      episodeCount: 6, episodeSeconds: 90, revisionRounds: 2, callBudget: 21, providerKey: "deepseek", model: "deepseek-flash",
+      ...overrides,
+    };
+  }
+
+  function storePending(request: Record<string, unknown>, projectId: string | null = null) {
+    window.sessionStorage.setItem("auto-creation:start", JSON.stringify({
+      version: 1, title: "外卖骑手讨回工资", request, projectKey: PROJECT_KEY, projectId, runKey: RUN_KEY,
+    }));
+  }
+
+  /** Records each write's idempotency key along with its body. */
+  function keyedServer(current: AutoCreationOptionsView) {
+    const calls: Array<Call & { key: string | null }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string, init?: RequestInit) => {
+      const key = new Headers(init?.headers).get("Idempotency-Key");
+      calls.push({ method: init?.method ?? "GET", url: input, body: typeof init?.body === "string" ? JSON.parse(init.body) : null, key });
+      if (input.endsWith("/writing/auto-runs/options")) return json(current);
+      if (input === "/api/v1/projects") return json({ id: P1 }, 201);
+      return json({ run: { runId: RUN, projectId: P1, state: "running" } }, 201);
+    }));
+    return calls;
+  }
+
+  const select = (label: string) => screen.getByLabelText(label) as HTMLSelectElement;
+  const input = (id: string) => document.getElementById(id) as HTMLInputElement;
+
+  it("shows the call counts of the request that will be replayed: six episodes, two rounds, budget 21", async () => {
+    storePending(frozen());
+    server(options());
+    render(<AutoCreationStart />);
+    await screen.findByRole("button", { name: "重试上次请求" });
+    await waitFor(() => expect(screen.getByTestId("auto-provider-target").textContent).toContain("DeepSeek"));
+    const calls = screen.getByTestId("auto-calls").textContent;
+    expect(calls).toContain("正常 11 次");
+    expect(calls).toContain("最多 2 轮修改");
+    expect(calls).toContain("最坏 19 次");
+    expect(calls).toContain("本次预算上限 21 次");
+    expect(select("集数").value).toBe("6");
+    expect(select("每集时长").value).toBe("90");
+    expect(select("最多修改轮次").value).toBe("2");
+    expect(input("auto-budget").value).toBe("21");
+    // Every other shown setting is the frozen one too.
+    expect(input("auto-idea").value).toBe("外卖骑手讨回工资");
+    expect(input("auto-genre").value).toBe("都市");
+    expect(input("auto-audience").value).toBe("上班族");
+    expect(input("auto-characters").value).toBe("4");
+    expect(input("auto-locations").value).toBe("3");
+    expect(input("auto-forbidden").value).toBe("鬼怪，穿越");
+    expect(input("auto-ending").value).toBe("圆满");
+    expect(input("auto-material-title").value).toBe("我的笔记");
+    expect((screen.getByLabelText("资料文字") as HTMLTextAreaElement).value).toBe("骑手的一天");
+  });
+
+  it("a custom revision count and budget survive a reload instead of returning to the defaults", async () => {
+    storePending(frozen({ revisionRounds: 1, callBudget: 15 }));
+    server(options());
+    render(<AutoCreationStart />);
+    await waitFor(() => expect(screen.getByTestId("auto-calls").textContent).toContain("本次预算上限 15 次"));
+    expect(screen.getByTestId("auto-calls").textContent).toContain("最多 1 轮修改");
+    expect(screen.getByTestId("auto-calls").textContent).toContain("最坏 15 次");
+    expect(select("最多修改轮次").value).toBe("1");
+    expect(input("auto-budget").value).toBe("15");
+  });
+
+  it("a changed server default never replaces the provider and model of the pending request", async () => {
+    storePending(frozen());
+    server(options({ defaultProvider: "anthropic" }));
+    render(<AutoCreationStart />);
+    await waitFor(() => expect(screen.getByTestId("auto-provider-target").textContent).toContain("DeepSeek · deepseek-flash"));
+    expect(screen.getByTestId("auto-provider-target").textContent).not.toContain("Claude");
+    expect(select("模型服务").value).toBe("deepseek");
+    expect(screen.queryByTestId("auto-provider-changed")).toBeNull();
+  });
+
+  it("a provider no longer ready is still shown as the request's own, with the change said separately", async () => {
+    storePending(frozen());
+    server(options({ providers: [
+      { providerKey: "deepseek", label: "DeepSeek", ready: false, models: [], defaultModel: null, missing: ["DEEPSEEK_API_KEY"] },
+      { providerKey: "anthropic", label: "Claude", ready: true, models: ["claude-opus-5-5"], defaultModel: "claude-opus-5-5", missing: [] },
+    ] }));
+    render(<AutoCreationStart />);
+    await waitFor(() => expect(screen.getByTestId("auto-provider-target").textContent).toContain("DeepSeek · deepseek-flash"));
+    expect(screen.getByTestId("auto-provider-changed").textContent).toContain("不会改用其他");
+  });
+
+  it("a request with no provider, no materials and open constraints is shown as it is, without a provider of today's", async () => {
+    const request = frozen({ constraints: { genre: "", audience: "", maxCharacters: null, maxLocations: null, forbiddenThemes: [], endingRequirement: "" }, materials: [] });
+    delete (request as { providerKey?: string }).providerKey;
+    delete (request as { model?: string }).model;
+    storePending(request);
+    server(options());
+    render(<AutoCreationStart />);
+    await waitFor(() => expect(screen.getByTestId("auto-provider-target").textContent).toContain("原请求没有指定模型服务"));
+    expect(screen.getByTestId("auto-provider-target").textContent).not.toContain("DeepSeek");
+    expect(screen.queryByTestId("auto-provider-changed")).toBeNull();
+    expect(select("模型服务").value).toBe("");
+    expect(input("auto-characters").value).toBe("");
+    expect(input("auto-forbidden").value).toBe("");
+    expect((screen.getByLabelText("资料文字") as HTMLTextAreaElement).value).toBe("");
+    expect(screen.getByTestId("auto-calls").textContent).toContain("本次预算上限 21 次");
+  });
+
+  it("a stored request missing parts still shows the card, so it can be given up", async () => {
+    const request = frozen();
+    delete (request as { constraints?: unknown }).constraints;
+    delete (request as { materials?: unknown }).materials;
+    storePending(request);
+    server(options());
+    render(<AutoCreationStart />);
+    await waitFor(() => expect(screen.getByTestId("auto-calls").textContent).toContain("正常 11 次"));
+    fireEvent.click(screen.getByRole("button", { name: "放弃上次请求，重新填写" }));
+    await screen.findByRole("button", { name: "AI 自动创作" });
+    expect(window.sessionStorage.getItem("auto-creation:start")).toBeNull();
+  });
+
+  it("the retry sends exactly the frozen request with its own keys, once however often it is clicked", async () => {
+    const request = frozen();
+    storePending(request);
+    const calls = keyedServer(options({ defaultProvider: "anthropic" }));
+    const assign = vi.fn();
+    vi.stubGlobal("location", { ...window.location, assign });
+    render(<AutoCreationStart />);
+    const button = await screen.findByRole("button", { name: "重试上次请求" });
+    await waitFor(() => expect(screen.getByTestId("auto-provider-target").textContent).toContain("DeepSeek"));
+    fireEvent.click(button);
+    fireEvent.click(button);
+    await waitFor(() => expect(assign).toHaveBeenCalledWith(`/projects/${P1}/auto`));
+    const posts = calls.filter((call) => call.method === "POST");
+    expect(posts.map((call) => [call.url, call.key])).toEqual([["/api/v1/projects", PROJECT_KEY], [`/api/v1/projects/${P1}/auto-runs`, RUN_KEY]]);
+    expect(posts[0]!.body).toEqual({ title: "外卖骑手讨回工资", premise: request.idea, episodeCount: 6, targetEpisodeSeconds: 90 });
+    expect(posts[1]!.body).toEqual(request);
+  });
+
+  it("after the pending request is given up, the summary follows the form again", async () => {
+    storePending(frozen());
+    server(options());
+    render(<AutoCreationStart />);
+    await waitFor(() => expect(screen.getByTestId("auto-calls").textContent).toContain("正常 11 次"));
+    fireEvent.click(screen.getByRole("button", { name: "放弃上次请求，重新填写" }));
+    await screen.findByRole("button", { name: "AI 自动创作" });
+    expect(screen.getByTestId("auto-calls").textContent).toContain("正常 6 次");
+    expect(select("集数").disabled).toBe(false);
+    fireEvent.change(select("集数"), { target: { value: "3" } });
+    fireEvent.change(select("最多修改轮次"), { target: { value: "0" } });
+    expect(screen.getByTestId("auto-calls").textContent).toContain("正常 8 次");
+    expect(screen.getByTestId("auto-calls").textContent).toContain("最坏 8 次");
+    expect(screen.getByTestId("auto-calls").textContent).toContain("本次预算上限 10 次");
+    fireEvent.change(input("auto-budget"), { target: { value: "9" } });
+    expect(screen.getByTestId("auto-calls").textContent).toContain("本次预算上限 9 次");
+    expect(window.sessionStorage.getItem("auto-creation:start")).toBeNull();
+  });
+});
+
 describe("AI 自动创作 run page", () => {
   function run(overrides: Partial<AutoCreationRunView> = {}): AutoCreationRunView {
     return {

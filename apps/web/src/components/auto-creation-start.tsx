@@ -83,6 +83,42 @@ function wholeNumber(value: string, min: number, max: number): { kind: "empty" }
 
 const valueOr = <T,>(parsed: ReturnType<typeof wholeNumber>, fallback: T): number | T => parsed.kind === "ok" ? parsed.value : fallback;
 
+/** Every setting the card shows, in the form's own terms; built from the form, or from a frozen request. */
+interface ShownSettings {
+  idea: string;
+  episodeCount: number;
+  seconds: number;
+  genre: string;
+  audience: string;
+  maxCharacters: string;
+  maxLocations: string;
+  forbidden: string;
+  ending: string;
+  rounds: number;
+  budget: string;
+  materialTitle: string;
+  materialText: string;
+  materialRights: boolean;
+  providerKey: string;
+}
+
+/** The frozen request as the card shows it: what a retry replays, never the current form or the current server defaults. */
+function frozenSettings(request: AutoStartBody): ShownSettings {
+  // Read from browser storage: a missing part shows as empty instead of breaking the card (and its way to give up).
+  const constraints: Partial<AutoStartBody["constraints"]> = request.constraints ?? {};
+  const material = request.materials?.[0];
+  return {
+    idea: request.idea ?? "", episodeCount: request.episodeCount, seconds: request.episodeSeconds,
+    genre: constraints.genre ?? "", audience: constraints.audience ?? "",
+    maxCharacters: typeof constraints.maxCharacters === "number" ? String(constraints.maxCharacters) : "",
+    maxLocations: typeof constraints.maxLocations === "number" ? String(constraints.maxLocations) : "",
+    forbidden: constraints.forbiddenThemes?.join("，") ?? "", ending: constraints.endingRequirement ?? "",
+    rounds: request.revisionRounds, budget: String(request.callBudget),
+    materialTitle: material?.title ?? "", materialText: material?.text ?? "", materialRights: material !== undefined,
+    providerKey: request.providerKey ?? "",
+  };
+}
+
 function startError(caught: unknown, projectCreated: boolean): string {
   const work = projectCreated ? "作品已经创建。" : "";
   if (caught instanceof TitleWritingError) {
@@ -145,23 +181,38 @@ export function AutoCreationStart() {
   const chosen = target.kind === "ready" ? target.option : null;
   const readyProviders = options?.providers.filter((item) => item.ready) ?? [];
   const needsToken = tokenRequired(options);
-  const normal = autoCreationNormalCalls(episodeCount);
-  const worst = autoCreationWorstCalls(episodeCount, rounds);
-  const hardCap = autoCreationHardCap(episodeCount, rounds);
+  // While a start is pending, the card shows the request a retry replays; loaded options and defaults never change it.
+  const frozen = pending?.request ?? null;
+  const shown: ShownSettings = frozen ? frozenSettings(frozen) : {
+    idea, episodeCount, seconds, genre, audience, maxCharacters, maxLocations, forbidden, ending, rounds, budget,
+    materialTitle, materialText, materialRights, providerKey,
+  };
+  const frozenProvider = frozen?.providerKey ? options?.providers.find((item) => item.providerKey === frozen.providerKey) ?? null : null;
+  const providerChanged = frozen?.providerKey && options
+    ? !frozenProvider?.ready || (frozen.model !== undefined && !(frozenProvider.models ?? []).includes(frozen.model)) : false;
+  const normal = autoCreationNormalCalls(shown.episodeCount);
+  const worst = autoCreationWorstCalls(shown.episodeCount, shown.rounds);
+  const hardCap = autoCreationHardCap(shown.episodeCount, shown.rounds);
   const budgetParsed = wholeNumber(budget, 1, 60);
-  const budgetValue = valueOr(budgetParsed, hardCap);
+  const budgetValue = frozen ? frozen.callBudget : valueOr(budgetParsed, hardCap);
   const charactersParsed = wholeNumber(maxCharacters, 1, 8);
   const locationsParsed = wholeNumber(maxLocations, 1, 6);
   // Every number is checked before anything is created: an invalid value is never treated as "not set".
-  const budgetProblem = budgetParsed.kind === "invalid" ? "调用预算必须是整数。"
+  // A frozen request was checked when it was made and is replayed as it is, so only the form is checked here.
+  const budgetProblem = frozen ? null : budgetParsed.kind === "invalid" ? "调用预算必须是整数。"
     : budgetValue < normal ? `调用预算至少要 ${String(normal)} 次（正常流程所需）。`
       : budgetValue > hardCap ? `调用预算最多 ${String(hardCap)} 次。` : null;
   const forbiddenThemes = forbidden.split(/[,，、]/u).map((item) => item.trim()).filter(Boolean);
   // A hard constraint is never dropped: more than five themes, or a theme over 20 characters, is refused instead.
-  const constraintProblem = charactersParsed.kind === "invalid" ? "出场人物最多人数必须是 1–8 的整数，或留空由 AI 决定。"
+  const constraintProblem = frozen ? null : charactersParsed.kind === "invalid" ? "出场人物最多人数必须是 1–8 的整数，或留空由 AI 决定。"
     : locationsParsed.kind === "invalid" ? "地点最多个数必须是 1–6 的整数，或留空由 AI 决定。"
       : forbiddenThemes.length > 5 ? `禁止的题材或元素最多 5 项（现在 ${String(forbiddenThemes.length)} 项），请合并或删减后再开始。`
         : forbiddenThemes.some((item) => item.length > 20) ? "每项禁止的题材或元素最多 20 字。" : null;
+  const providerText = frozen
+    ? frozen.providerKey ? `${frozenProvider?.label ?? frozen.providerKey} · ${frozen.model ?? ""}` : "原请求没有指定模型服务"
+    : chosen ? `${chosen.label} · ${chosen.defaultModel ?? ""}` : target.kind === "blocked" ? target.reason : "未选择";
+  // The provider select shows the request's own provider even when it is no longer among the ready ones.
+  const strayProvider = frozen ? !readyProviders.some((item) => item.providerKey === shown.providerKey) : target.kind === "blocked";
   const locked = busy || pending !== null;
 
   async function send(draft: PendingAutoStart) {
@@ -258,19 +309,19 @@ export function AutoCreationStart() {
         </div>
       ) : null}
       <label className={styles.label} htmlFor="auto-idea">一句话想法（可不填）</label>
-      <input id="auto-idea" className={styles.input} maxLength={300} placeholder="不填则由 AI 根据资料自主策划" value={pending?.request.idea ?? idea}
+      <input id="auto-idea" className={styles.input} maxLength={300} placeholder="不填则由 AI 根据资料自主策划" value={shown.idea}
         disabled={locked} onChange={(event) => setIdea(event.target.value)} />
       <div className={styles.planGrid}>
         <div>
           <label className={styles.label} htmlFor="auto-episodes">集数</label>
-          <select id="auto-episodes" className={styles.input} value={pending?.request.episodeCount ?? episodeCount} disabled={locked}
+          <select id="auto-episodes" className={styles.input} value={shown.episodeCount} disabled={locked}
             onChange={(event) => setEpisodeCount(Number(event.target.value))}>
             {EPISODE_COUNTS.map((value) => <option key={value} value={value}>{value} 集</option>)}
           </select>
         </div>
         <div>
           <label className={styles.label} htmlFor="auto-seconds">每集时长</label>
-          <select id="auto-seconds" className={styles.input} value={pending?.request.episodeSeconds ?? seconds} disabled={locked}
+          <select id="auto-seconds" className={styles.input} value={shown.seconds} disabled={locked}
             onChange={(event) => setSeconds(Number(event.target.value))}>
             {SECONDS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
           </select>
@@ -280,36 +331,36 @@ export function AutoCreationStart() {
         <summary>高级设置（可不填，留空由 AI 决定；填写的内容是必须遵守的硬约束）</summary>
         <div className={styles.moreGrid}>
           <label className={styles.label} htmlFor="auto-genre">题材</label>
-          <input id="auto-genre" className={styles.input} maxLength={20} value={genre} disabled={locked} onChange={(event) => setGenre(event.target.value)} />
+          <input id="auto-genre" className={styles.input} maxLength={20} value={shown.genre} disabled={locked} onChange={(event) => setGenre(event.target.value)} />
           <label className={styles.label} htmlFor="auto-audience">目标观众</label>
-          <input id="auto-audience" className={styles.input} maxLength={40} value={audience} disabled={locked} onChange={(event) => setAudience(event.target.value)} />
+          <input id="auto-audience" className={styles.input} maxLength={40} value={shown.audience} disabled={locked} onChange={(event) => setAudience(event.target.value)} />
           <label className={styles.label} htmlFor="auto-characters">出场人物最多（人）</label>
-          <input id="auto-characters" className={styles.input} inputMode="numeric" value={maxCharacters} disabled={locked} onChange={(event) => setMaxCharacters(event.target.value)} />
+          <input id="auto-characters" className={styles.input} inputMode="numeric" value={shown.maxCharacters} disabled={locked} onChange={(event) => setMaxCharacters(event.target.value)} />
           <label className={styles.label} htmlFor="auto-locations">地点最多（个）</label>
-          <input id="auto-locations" className={styles.input} inputMode="numeric" value={maxLocations} disabled={locked} onChange={(event) => setMaxLocations(event.target.value)} />
+          <input id="auto-locations" className={styles.input} inputMode="numeric" value={shown.maxLocations} disabled={locked} onChange={(event) => setMaxLocations(event.target.value)} />
           <label className={styles.label} htmlFor="auto-forbidden">禁止的题材或元素（用逗号分隔）</label>
-          <input id="auto-forbidden" className={styles.input} maxLength={110} value={forbidden} disabled={locked} onChange={(event) => setForbidden(event.target.value)} />
+          <input id="auto-forbidden" className={styles.input} maxLength={110} value={shown.forbidden} disabled={locked} onChange={(event) => setForbidden(event.target.value)} />
           <label className={styles.label} htmlFor="auto-ending">结局要求</label>
-          <input id="auto-ending" className={styles.input} maxLength={100} value={ending} disabled={locked} onChange={(event) => setEnding(event.target.value)} />
+          <input id="auto-ending" className={styles.input} maxLength={100} value={shown.ending} disabled={locked} onChange={(event) => setEnding(event.target.value)} />
           <label className={styles.label} htmlFor="auto-rounds">最多修改轮次</label>
-          <select id="auto-rounds" className={styles.input} value={rounds} disabled={locked} onChange={(event) => setRounds(Number(event.target.value))}>
+          <select id="auto-rounds" className={styles.input} value={shown.rounds} disabled={locked} onChange={(event) => setRounds(Number(event.target.value))}>
             {[0, 1, 2].map((value) => <option key={value} value={value}>{value} 轮</option>)}
           </select>
           <label className={styles.label} htmlFor="auto-budget">调用预算（次，默认 {hardCap}）</label>
-          <input id="auto-budget" className={styles.input} inputMode="numeric" placeholder={String(hardCap)} value={budget} disabled={locked} onChange={(event) => setBudget(event.target.value)} />
+          <input id="auto-budget" className={styles.input} inputMode="numeric" placeholder={String(hardCap)} value={shown.budget} disabled={locked} onChange={(event) => setBudget(event.target.value)} />
           <label className={styles.label} htmlFor="auto-material-title">我的参考资料（剧本、字幕或笔记文字，可不填）</label>
-          <input id="auto-material-title" className={styles.input} maxLength={60} placeholder="资料名称" value={materialTitle} disabled={locked} onChange={(event) => setMaterialTitle(event.target.value)} />
-          <textarea className={styles.input} aria-label="资料文字" rows={3} maxLength={6000} value={materialText} disabled={locked} onChange={(event) => setMaterialText(event.target.value)} />
+          <input id="auto-material-title" className={styles.input} maxLength={60} placeholder="资料名称" value={shown.materialTitle} disabled={locked} onChange={(event) => setMaterialTitle(event.target.value)} />
+          <textarea className={styles.input} aria-label="资料文字" rows={3} maxLength={6000} value={shown.materialText} disabled={locked} onChange={(event) => setMaterialText(event.target.value)} />
           <label className={styles.check}>
-            <input type="checkbox" checked={materialRights} disabled={locked} onChange={(event) => setMaterialRights(event.target.checked)} />
+            <input type="checkbox" checked={shown.materialRights} disabled={locked} onChange={(event) => setMaterialRights(event.target.checked)} />
             我拥有这份资料的使用权限。AI 只分析结构和需求，不复制台词、人物组合或具体情节。
           </label>
-          {readyProviders.length > 1 || (target.kind === "blocked" && readyProviders.length > 0) ? (
+          {readyProviders.length > 1 || (strayProvider && readyProviders.length > 0) ? (
             <>
               <label className={styles.label} htmlFor="auto-provider">模型服务</label>
-              <select id="auto-provider" className={styles.input} value={providerKey} disabled={locked}
+              <select id="auto-provider" className={styles.input} value={shown.providerKey} disabled={locked}
                 onChange={(event) => { setProviderKey(event.target.value as TitleWritingProviderKey); setProviderExplicit(true); }}>
-                {target.kind === "blocked" ? <option value={providerKey} disabled>{options?.providers.find((item) => item.providerKey === providerKey)?.label ?? providerKey}（暂不可用）</option> : null}
+                {strayProvider ? <option value={shown.providerKey} disabled>{options?.providers.find((item) => item.providerKey === shown.providerKey)?.label ?? shown.providerKey}{shown.providerKey ? "（暂不可用）" : "原请求未指定"}</option> : null}
                 {readyProviders.map((item) => <option key={item.providerKey} value={item.providerKey}>{item.label}</option>)}
               </select>
             </>
@@ -323,8 +374,11 @@ export function AutoCreationStart() {
         {unavailable ? <p className={styles.warning} role="status">{unavailable}</p> : null}
         {options && !unavailable ? (
           <ul className={autoStyles.list}>
-            <li data-testid="auto-provider-target">模型：{chosen ? `${chosen.label} · ${chosen.defaultModel ?? ""}` : target.kind === "blocked" ? target.reason : "未选择"}（所有阶段使用同一个模型，不会自动改用其他服务）</li>
-            <li data-testid="auto-calls">调用次数：正常 {normal} 次；含最多 {rounds} 轮修改（每轮最多改 {autoCreationRevisionsPerRound(episodeCount)} 集并复查）最坏 {worst} 次；
+            <li data-testid="auto-provider-target">模型：{providerText}（所有阶段使用同一个模型，不会自动改用其他服务）</li>
+            {providerChanged ? (
+              <li data-testid="auto-provider-changed">服务端当前配置已变化：原请求的模型服务或模型现在不可用。重试仍原样发送原请求，由服务端决定是否接受，不会改用其他服务或模型。</li>
+            ) : null}
+            <li data-testid="auto-calls">调用次数：正常 {normal} 次；含最多 {shown.rounds} 轮修改（每轮最多改 {autoCreationRevisionsPerRound(shown.episodeCount)} 集并复查）最坏 {worst} 次；
               包括你确认的续跑重发（{AUTO_CREATION_RESEND_ALLOWANCE} 次）在内，本次预算上限 {budgetValue} 次，不会超出。</li>
             <li>每次输出上限 {options.maxOutputTokensPerCall} tokens，输入不超过约 {options.maxPromptChars} 字。费用以服务商账单为准，本页不估算金额（费用未知）。</li>
             <li>管理员限额：最近 24 小时最多 {options.maxCallsPerDay} 次调用（与其他 AI 创作共用），同时最多 {options.maxActiveRuns} 个创作任务。</li>
