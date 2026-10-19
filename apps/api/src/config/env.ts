@@ -31,6 +31,10 @@ const apiEnvSchema = z.object({
   TITLE_WRITING_MAX_ACTIVE_RUNS: z.coerce.number().int().min(1).max(10).default(1),
   TITLE_WRITING_ALLOW_PRODUCTION: z.enum(["true", "false"]).default("false"),
   SCRIPT_BREAKDOWN_ENABLED: z.enum(["true", "false"]).default("false"),
+  AUTO_CREATION_ENABLED: z.enum(["true", "false"]).default("false"),
+  AUTO_CREATION_RESEARCH_FETCH: z.enum(["true", "false"]).default("false"),
+  AUTO_CREATION_RESEARCH_HOSTS: z.string().max(500)
+    .regex(/^[a-z0-9.-]+(,[a-z0-9.-]+)*$/u, "comma-separated lower-case host names").optional(),
 });
 
 export class EnvValidationError extends Error {
@@ -80,6 +84,11 @@ export interface ApiEnv {
   TITLE_WRITING_ALLOW_PRODUCTION: boolean;
   /** Script breakdown switch. Default off; also needs TITLE_WRITING_ENABLED and stays off in production. */
   SCRIPT_BREAKDOWN_ENABLED: boolean;
+  /** AI automatic creation; also needs title writing to be on (same production gate, providers and operator). */
+  AUTO_CREATION_ENABLED: boolean;
+  /** Whether runs read public pages of the allowed hosts for their research snapshot. Off by default. */
+  AUTO_CREATION_RESEARCH_FETCH: boolean;
+  AUTO_CREATION_RESEARCH_HOSTS?: string;
   /** Process environment only, never the .env file. Server-side secrets and model allowlists. */
   OPENAI_API_KEY?: string;
   TITLE_WRITING_OPENAI_MODELS?: string;
@@ -155,6 +164,9 @@ const API_KEYS = [
   "TITLE_WRITING_MAX_CALLS_PER_DAY",
   "TITLE_WRITING_MAX_ACTIVE_RUNS",
   "SCRIPT_BREAKDOWN_ENABLED",
+  "AUTO_CREATION_ENABLED",
+  "AUTO_CREATION_RESEARCH_FETCH",
+  "AUTO_CREATION_RESEARCH_HOSTS",
 ] as const;
 
 function pickEnv(
@@ -224,5 +236,7 @@ export function loadApiEnv(
     TITLE_WRITING_ENABLED: parsed.data.TITLE_WRITING_ENABLED === "true",
     TITLE_WRITING_ALLOW_PRODUCTION: parsed.data.TITLE_WRITING_ALLOW_PRODUCTION === "true",
     SCRIPT_BREAKDOWN_ENABLED: parsed.data.SCRIPT_BREAKDOWN_ENABLED === "true",
+    AUTO_CREATION_ENABLED: parsed.data.AUTO_CREATION_ENABLED === "true",
+    AUTO_CREATION_RESEARCH_FETCH: parsed.data.AUTO_CREATION_RESEARCH_FETCH === "true",
   };
 }

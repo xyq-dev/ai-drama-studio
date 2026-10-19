@@ -44,6 +44,9 @@ describe.skipIf(process.platform === "win32")("StudioRuntime managed model start
   let tableMissing = false;
   let candidateTableMissing = false;
   let candidateOpen = false;
+  // Automatic creation tables are absent unless a test says otherwise (servers before its migration).
+  let autoTableMissing = true;
+  let autoRunning = false;
   let metadataFailure: Error | undefined;
   let queryFailure: Error | undefined;
   let outbound: ReturnType<typeof vi.fn>;
@@ -58,6 +61,8 @@ describe.skipIf(process.platform === "win32")("StudioRuntime managed model start
     tableMissing = false;
     candidateTableMissing = false;
     candidateOpen = false;
+    autoTableMissing = true;
+    autoRunning = false;
     metadataFailure = undefined;
     queryFailure = undefined;
     vi.spyOn(RuntimeStore.prototype, "requireActiveWorkspace").mockResolvedValue(WORKSPACE);
@@ -79,6 +84,15 @@ describe.skipIf(process.platform === "win32")("StudioRuntime managed model start
           if (sql.includes("FROM writing_candidate_request") && sql.includes("state IN ('reserved', 'submitted')") && values?.[0] === WORKSPACE) {
             if (queryFailure) throw queryFailure;
             return { rows: [{ open: candidateOpen }] };
+          }
+          // The activation check also waits for running automatic creation runs.
+          if (sql.includes("to_regclass('auto_creation_run') IS NULL")) {
+            if (metadataFailure) throw metadataFailure;
+            return { rows: [{ missing: autoTableMissing }] };
+          }
+          if (sql.includes("FROM auto_creation_run") && sql.includes("state = 'running'") && values?.[0] === WORKSPACE) {
+            if (queryFailure) throw queryFailure;
+            return { rows: [{ running: autoRunning }] };
           }
           if (sql.includes("information_schema.columns")) {
             if (metadataFailure) throw metadataFailure;
@@ -282,13 +296,36 @@ describe.skipIf(process.platform === "win32")("StudioRuntime managed model start
     expect(pools.at(-1)!.query.mock.calls.some(([sql]) => sql.includes("state = 'running'"))).toBe(false);
   });
 
+  it("defers activation while an automatic creation run is running, and applies it once none is", async () => {
+    const env = await environment();
+    await savePending(env);
+    autoTableMissing = false;
+    autoRunning = true;
+    const deferred = await open(env);
+    expect(await deferred.adminModels!.view()).toMatchObject({ activeRevision: 0, activationDeferred: true });
+    await close(deferred);
+    autoRunning = false;
+    const applied = await open(env);
+    expect(await applied.adminModels!.view()).toMatchObject({ activeRevision: 2, activationDeferred: false });
+  });
+
+  it("still waits for a running automatic creation run on a database without the candidate table", async () => {
+    const env = await environment();
+    await savePending(env);
+    candidateTableMissing = true;
+    autoTableMissing = false;
+    autoRunning = true;
+    const deferred = await open(env);
+    expect(await deferred.adminModels!.view()).toMatchObject({ activeRevision: 0, activationDeferred: true });
+  });
+
   it("clears all maintenance timers and closes the pool on runtime teardown", async () => {
     const interval = vi.spyOn(globalThis, "setInterval");
     const clear = vi.spyOn(globalThis, "clearInterval");
     const runtime = await open(await environment());
     const timers = interval.mock.results.filter((result) => result.type === "return").map((result) => result.value);
-    // Title writing recovery and online candidate recovery.
-    expect(timers).toHaveLength(2);
+    // Title writing recovery, online candidate recovery and automatic creation recovery.
+    expect(timers).toHaveLength(3);
     await close(runtime);
     for (const timer of timers) expect(clear).toHaveBeenCalledWith(timer);
     expect(pools.at(-1)!.end).toHaveBeenCalledExactlyOnceWith();

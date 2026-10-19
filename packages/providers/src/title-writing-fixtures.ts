@@ -208,3 +208,4 @@ export function fixtureCandidateFromPrompt(userPrompt: string): StoryPlanCandida
 
 /** Breakdown answers for the same stubbed acceptances. */
 export { breakdownPromptParts, fixtureBreakdown, fixtureBreakdownFromPrompt } from "./script-breakdown-fixtures";
+export * from "./auto-creation-fixtures";

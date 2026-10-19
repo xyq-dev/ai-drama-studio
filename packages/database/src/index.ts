@@ -6,6 +6,7 @@ export {
   WRITING_CANDIDATE_MIGRATION,
   WRITING_CANDIDATE_DEEPSEEK_MIGRATION,
   WRITING_PROVIDER_MIGRATION,
+  AUTO_CREATION_MIGRATION,
   runMigrations,
   type MigrationClient,
   type MigrationOptions,
@@ -166,6 +167,7 @@ export {
   type MockSmProvisionConfig,
   type MockSmProvisionResult,
 } from "./provision-mock-sm";
+export { AUTO_CREATION_TABLES, PostgresAutoCreationStore } from "./auto-creation-store";
 export { PostgresTitleWritingStore, SCRIPT_BREAKDOWN_COLUMNS, SCRIPT_BREAKDOWN_MIGRATION, TITLE_WRITING_MIGRATION, TITLE_WRITING_TABLES } from "./title-writing-store";
 export {
   EPISODE_PLAN_COLUMNS,

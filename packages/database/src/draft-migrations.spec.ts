@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { EPISODE_PLAN_COLUMNS, EPISODE_PLAN_MIGRATION } from "./episode-plan";
 import { SCRIPT_BREAKDOWN_COLUMNS, SCRIPT_BREAKDOWN_MIGRATION, TITLE_WRITING_MIGRATION, TITLE_WRITING_TABLES, WRITING_PROVIDER_MIGRATION } from "./title-writing-store";
-import { WRITING_CANDIDATE_DEEPSEEK_MIGRATION, WRITING_CANDIDATE_MIGRATION } from "./migrations";
+import { AUTO_CREATION_MIGRATION, WRITING_CANDIDATE_DEEPSEEK_MIGRATION, WRITING_CANDIDATE_MIGRATION } from "./migrations";
 
 const drafts = join(__dirname, "..", "prisma", "drafts");
 const applied = join(__dirname, "..", "prisma", "migrations");
@@ -68,7 +68,7 @@ describe("title writing formal migration", () => {
     const names = (await readdir(applied)).filter((name) => /^\d+_/.test(name)).sort();
     expect(names.indexOf(TITLE_WRITING_MIGRATION)).toBe(Object.keys(RELEASED).indexOf(TITLE_WRITING_MIGRATION));
     expect(names).toEqual([...Object.keys(RELEASED), SCRIPT_BREAKDOWN_MIGRATION, WRITING_PROVIDER_MIGRATION, WRITING_CANDIDATE_MIGRATION,
-      WRITING_CANDIDATE_DEEPSEEK_MIGRATION]);
+      WRITING_CANDIDATE_DEEPSEEK_MIGRATION, AUTO_CREATION_MIGRATION]);
     const draft = await readFile(draftPath, "utf8");
     expect(draft.split("\n")[0]).toBe("-- SUPERSEDED DRAFT. Do not apply. Kept only as the record of what passed the isolated acceptances.");
     expect(draft).toContain(`prisma/migrations/${TITLE_WRITING_MIGRATION}/migration.sql`);
@@ -143,10 +143,11 @@ describe("episode plan migration", () => {
 describe("script breakdown migration", () => {
   const migrationPath = join(applied, SCRIPT_BREAKDOWN_MIGRATION, "migration.sql");
 
-  it("follows every released migration; only the independent provider and candidate migrations sort after it", async () => {
+  it("follows every released migration; only the independent provider, candidate and automatic creation migrations sort after it", async () => {
     const names = (await readdir(applied)).filter((name) => /^\d+_/.test(name)).sort();
-    expect(names.slice(0, -4)).toEqual(Object.keys(RELEASED));
-    expect(names.slice(-4)).toEqual([SCRIPT_BREAKDOWN_MIGRATION, WRITING_PROVIDER_MIGRATION, WRITING_CANDIDATE_MIGRATION, WRITING_CANDIDATE_DEEPSEEK_MIGRATION]);
+    expect(names.slice(0, -5)).toEqual(Object.keys(RELEASED));
+    expect(names.slice(-5)).toEqual([SCRIPT_BREAKDOWN_MIGRATION, WRITING_PROVIDER_MIGRATION, WRITING_CANDIDATE_MIGRATION, WRITING_CANDIDATE_DEEPSEEK_MIGRATION,
+    AUTO_CREATION_MIGRATION]);
   });
 
   it("only expands: adds columns, one table, one index and wider CHECKs, and writes, rewrites or drops no data", async () => {
@@ -203,3 +204,20 @@ const RELEASED: Record<string, string> = {
   "20261008000100_title_writing": "b3931d041dc4f9c1bbaf43fa69e9cfce069465272da9c80173da282271f32671",
   "20261011000100_episode_plan": "93c7f7a0f3236e9a9d08307a59fac02af5bd763851b98ffbec608ce198b424f1",
 };
+
+describe("automatic creation migration", () => {
+  it("only creates auto_creation_ tables and indexes, writes no rows and touches no existing table", async () => {
+    const sql = statements(await readFile(join(applied, AUTO_CREATION_MIGRATION, "migration.sql"), "utf8"));
+    const each = sql.split(";").map((item) => item.trim()).filter(Boolean);
+    expect(each.every((item) => /^CREATE (TABLE|INDEX|UNIQUE INDEX) auto_creation_\w+ /.test(item))).toBe(true);
+    const created = [...sql.matchAll(/^CREATE (?:UNIQUE )?(TABLE|INDEX) (\w+)(?: ON (\w+))?/gim)];
+    expect(created.filter((match) => match[1] === "TABLE").map((match) => match[2]))
+      .toEqual(["auto_creation_run", "auto_creation_stage", "auto_creation_call", "auto_creation_resume"]);
+    expect(created.every((match) => match[3] === undefined || match[3].startsWith("auto_creation_"))).toBe(true);
+    // ON DELETE CASCADE belongs to the new tables' own foreign keys.
+    expect(sql.replaceAll("ON DELETE CASCADE", "")).not.toMatch(/\b(INSERT|UPDATE|DELETE|TRUNCATE|DROP|ALTER|RENAME)\b/i);
+    expect(sql).toContain("CHECK (billing_status = 'unknown')");
+    expect(sql).not.toMatch(/amount\w*\s+(numeric|decimal)/i);
+    expect(sql).not.toContain("title_writing_step");
+  });
+});

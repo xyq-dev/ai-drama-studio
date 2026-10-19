@@ -41,6 +41,7 @@ import {
 import { safeUnsavedDrafts, saveText } from "../lib/unsaved-drafts";
 import { currentStoryRevision } from "../lib/studio-model";
 import { BeginnerShell } from "./beginner-shell";
+import { AutoRunEntry } from "./auto-run-entry";
 import { EntityPane, ScenePane, ScriptPane, StoryPane, TaskDrawer } from "./workbench";
 import { EpisodeComposePreflight } from "./episode-compose-preflight";
 import { ProjectCostSummary } from "./project-cost-summary";
@@ -418,6 +419,7 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
             <a className="text-[#5F5D66] underline" href={advancedHref()}>高级编辑</a>
           </div>
         </div>
+        <AutoRunEntry projectId={projectId} />
         {leaving ? (
           <div className="mt-3 rounded-[12px] border border-[var(--studio-accent)] bg-white p-4" role="alert">
             <p className="font-medium">还有未保存的修改</p>

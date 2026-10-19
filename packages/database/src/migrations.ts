@@ -92,6 +92,12 @@ export const WRITING_CANDIDATE_MIGRATION = "20261016000200_writing_candidate";
 export const WRITING_CANDIDATE_DEEPSEEK_MIGRATION = "20261017000100_writing_candidate_deepseek";
 
 /**
+ * Creates the automatic creation tables (auto_creation_run, _stage, _call, _resume). Additive and independent of the
+ * script breakdown, provider and candidate migrations: it can be applied alone on a database with the base migrations.
+ */
+export const AUTO_CREATION_MIGRATION = "20261019000100_auto_creation";
+
+/**
  * The only migrations a guarded single run may apply, each with the migrations it requires. Each is applied by its own
  * command; none of them takes the script breakdown (or anything else pending) along.
  */
@@ -99,6 +105,7 @@ export const GUARDED_SINGLE_MIGRATIONS: Readonly<Record<string, readonly string[
   [WRITING_PROVIDER_MIGRATION]: BASE_MIGRATIONS,
   [WRITING_CANDIDATE_MIGRATION]: BASE_MIGRATIONS,
   [WRITING_CANDIDATE_DEEPSEEK_MIGRATION]: [...BASE_MIGRATIONS, WRITING_CANDIDATE_MIGRATION],
+  [AUTO_CREATION_MIGRATION]: BASE_MIGRATIONS,
 };
 
 export async function runMigrations(
