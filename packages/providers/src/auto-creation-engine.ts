@@ -108,12 +108,17 @@ export function newAutoRun(options: {
   model: string;
   authorization: AutoCreationAuthorization;
   now: Date;
+  /**
+   * The versions an earlier run under the same key was frozen with, so its replay is compared as that run was hashed.
+   * Server side only, read from the stored run; a new run takes the current versions.
+   */
+  versions?: Pick<AutoCreationFrozenInput, "promptVersion" | "checksVersion">;
 }): AutoRunRecord {
   const input: AutoCreationFrozenInput = {
     schema: AUTO_CREATION_INPUT_SCHEMA,
-    promptVersion: AUTO_CREATION_PROMPT_VERSION,
+    promptVersion: options.versions?.promptVersion ?? AUTO_CREATION_PROMPT_VERSION,
     selectionRules: AUTO_CREATION_SELECTION_RULES,
-    checksVersion: AUTO_CREATION_CHECKS_VERSION,
+    checksVersion: options.versions?.checksVersion ?? AUTO_CREATION_CHECKS_VERSION,
     idea: options.idea,
     constraints: options.constraints,
     materials: options.materials,

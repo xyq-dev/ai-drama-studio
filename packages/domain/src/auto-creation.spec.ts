@@ -320,6 +320,28 @@ describe("research contract in limited mode (synthetic samples)", () => {
     expect(numberTokens("第一场就交代目标")).toEqual([]);
   });
 
+  it("only a structural position is an exempt ordinal: an unsourced place in any ranking is refused, a sourced one supported", () => {
+    // Final review finding: these passed once ordinals were cleared before the ranking words were looked at.
+    for (const statement of ["该题材播放量第 3", "该题材销量第 3", "该题材口碑第 1", "该题材播放量第3", "该题材口碑第一", "复仇剧销量第 三 名"]) {
+      expect(validateAutoStageOutput("research", limitedAnswer({ opportunities: [statement] }), input(), context()), statement)
+        .toMatchObject({ ok: false, code: "unsourced_number", field: "opportunities[0]", category: "rank" });
+    }
+    for (const statement of ["第 3 集揭开真相", "第 二 场交代目标", "第三集揭开真相", "第一场就交代目标", "第一，开场就抛出冲突", "第 2 轮审阅之后再定", "主角第一次反击", "第一个反转放在开场", "第一时间抛出冲突"]) {
+      expect(validateAutoStageOutput("research", limitedAnswer({ opportunities: [statement], appliedConstraints: ["共 6 集，每集约 60 秒"] }),
+        input({ episodeCount: 6 }), context()), statement).toMatchObject({ ok: true });
+    }
+    // In a ranking clause even a structural-looking ordinal is a place.
+    expect(validateAutoStageOutput("research", limitedAnswer({ opportunities: ["热度第 3 集"] }), input({ episodeCount: 6 }), context()))
+      .toMatchObject({ ok: false, code: "unsourced_number", field: "opportunities[0]", category: "rank" });
+    // The same place in the cited excerpt supports it, whether written with or without a space; another place does not.
+    const frozen = input({ materials: [{ title: "销量笔记", kind: "notes" as const, text: "样本里该题材销量第 3。", rightsConfirmed: true as const }] });
+    const ctx = { sources: collectSources(frozen, [], NOW), episodes: new Map(), reviews: [] };
+    expect(validateAutoStageOutput("research", limitedAnswer({ observations: [{ id: "O1", statement: "样本里该题材销量第3", sourceIds: ["S-USER-1"] }] }), frozen, ctx))
+      .toMatchObject({ ok: true });
+    expect(validateAutoStageOutput("research", limitedAnswer({ observations: [{ id: "O1", statement: "样本里该题材销量第 4", sourceIds: ["S-USER-1"] }] }), frozen, ctx))
+      .toMatchObject({ ok: false, code: "unsourced_number", field: "observations[0].statement", category: "rank" });
+  });
+
   it("a number from one source cannot be carried by citing another", () => {
     const materials = [
       { title: "甲", kind: "notes" as const, text: "样本里有 12 部复仇短剧。", rightsConfirmed: true as const },

@@ -14,6 +14,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   autoCreationNormalCalls,
   autoCreationWorstCalls,
+  type AutoCreationFrozenInput,
   type AutoCreationRunView,
   type TitleRunRecord,
 } from "@ai-drama/contracts";
@@ -35,7 +36,7 @@ import {
   runMigrations,
   verifyTitleWritingAcceptanceDatabase,
 } from "@ai-drama/database";
-import { AutoCreationEngine, titleWritingProviderConfigs } from "@ai-drama/providers";
+import { AutoCreationEngine, hashAutoCreationInput, titleWritingProviderConfigs } from "@ai-drama/providers";
 import { autoFixtureTransport, type AutoFixtureExchange, type AutoFixturePlan } from "@ai-drama/providers/title-writing-fixtures";
 import { AutoCreationService } from "./auto-creation.service";
 
@@ -207,6 +208,45 @@ describe(`automatic creation on PostgreSQL (${scenario} schema)`, () => {
     expect(markdown.download?.text).toContain("AI 自动创作草稿");
     expect((await svc.package(id, run.runId, "json")).status).toBe(200);
     evidence.zeroRounds = { runId: run.runId, calls: run.callsUsed, callCap: run.callCap };
+  });
+
+  it("a run stored by the v1 code: its own key and request replay 200 with nothing written or sent; other content or work is 409", async () => {
+    plan = {};
+    const { svc, settle, pending } = service();
+    const id = await project(1);
+    const request = { revisionRounds: 0, callBudget: 6 };
+    const started = await svc.start(id, request, TOKEN, ctx("stored-v1"));
+    await settle();
+    const runId = runOf(started.body).runId;
+    // The row as the v1 code wrote it: the v1 versions in its frozen input and the hash computed over that input.
+    const [row] = await q<{ input_json: AutoCreationFrozenInput }>("SELECT input_json FROM auto_creation_run WHERE id = $1", [runId]);
+    const v1 = { ...row!.input_json, promptVersion: "ads.auto-creation.prompt.v1", checksVersion: "ads.auto-creation.checks.v1" } as AutoCreationFrozenInput;
+    await q("UPDATE auto_creation_run SET input_json = $2, input_hash = $3 WHERE id = $1", [runId, JSON.stringify(v1), hashAutoCreationInput(id, v1)]);
+    const rows = async () => JSON.stringify({
+      run: await q("SELECT * FROM auto_creation_run WHERE id = $1", [runId]),
+      stages: await q("SELECT * FROM auto_creation_stage WHERE run_id = $1 ORDER BY ordinal", [runId]),
+      calls: await q("SELECT * FROM auto_creation_call WHERE run_id = $1 ORDER BY created_at, id", [runId]),
+      runs: await q("SELECT id FROM auto_creation_run WHERE project_id = $1", [id]),
+      stories: await q("SELECT id FROM story_revision WHERE project_id = $1", [id]),
+    });
+    const before = await rows();
+    const sent = seen.length;
+    const replay = await svc.start(id, request, TOKEN, ctx("stored-v1"));
+    expect(replay.status).toBe(200);
+    expect(runOf(replay.body).runId).toBe(runId);
+    expect(pending).toHaveLength(0);
+    for (const changed of [{ ...request, idea: "别的想法" }, { ...request, revisionRounds: 1 }, {}]) {
+      const refused = await svc.start(id, changed, TOKEN, ctx("stored-v1"));
+      expect([refused.status, (refused.body as { error?: { code?: string } }).error?.code]).toEqual([409, "IDEMPOTENCY_KEY_REUSED"]);
+    }
+    // The same key on another work is not this run.
+    const elsewhere = await svc.start(await project(1), request, TOKEN, ctx("stored-v1"));
+    expect([elsewhere.status, (elsewhere.body as { error?: { code?: string } }).error?.code]).toEqual([409, "IDEMPOTENCY_KEY_REUSED"]);
+    await settle();
+    expect(seen.length).toBe(sent);
+    expect(await rows()).toBe(before);
+    expect((await q<{ input_hash: string }>("SELECT input_hash FROM auto_creation_run WHERE id = $1", [runId]))[0]!.input_hash).toBe(hashAutoCreationInput(id, v1));
+    evidence.v1Replay = { runId, status: replay.status, newCalls: seen.length - sent };
   });
 
   it("a research answer the checks refuse: one call, nothing after it, the rule and field stored, no answer text kept", async () => {

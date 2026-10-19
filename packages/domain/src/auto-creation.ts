@@ -414,8 +414,15 @@ const CN_COUNT_UNITS = "小时|分钟|名|人|位|个|次|遍|元|块|集|场|�
 /** Words of a viewing or market statistic: in such a clause the run's own length is not what is being described. */
 const MARKET_MARKERS = /用户|观众|受众|人均|平均|日均|每天|每日|每周|每月|完播|留存|占比/u;
 const PLAN_NUMBER = new RegExp(`(\\d+(?:\\.\\d+)?|[${CN_DIGITS}]+)\\s*(集|秒|分钟)`, "gu");
-/** Ordinals, spaced or not (第 3 集, 第二场): a position, not a claim, unless the clause is about a ranking. */
+/** Ordinals, spaced or not: 第 3 集, 第二场, 播放量第 3. */
 const ORDINAL = new RegExp(`第\\s*(?:\\d+|[${CN_DIGITS}]+)`, "gu");
+/**
+ * The ordinals that are a position in the work or the plan, never a place in a ranking: one followed by its own unit
+ * (第 3 集, 第二场, 第 2 轮, 第一次, 第一时间), or an item number opening a clause (第一，…). Any other 第N is a place
+ * (第三名, 播放量第 3) and needs a source.
+ */
+const STRUCTURAL_ORDINAL = new RegExp(`${ORDINAL.source}\\s*(?=集|场|幕|章|节|季|话|回|段|镜|轮|稿|版|步|句|秒|分钟|次|个|时间|眼|人称|视角|印象|反应)`
+  + `|^\\s*${ORDINAL.source}\\s*(?=[，,、：:])`, "gu");
 const RANK_MARKERS = /排名|排行|榜|名列|位列|位居|热度|人气|冠军/u;
 /** A clause with any of these is about viewers, a market or a ranking: no number in it is the run's own setting. */
 const NO_EXEMPTION = new RegExp(`${MARKET_MARKERS.source}|${RANK_MARKERS.source}|爆款|热门|播放|(?<![目之提此])前\\s*(?:\\d|[${CN_DIGITS}])`, "u");
@@ -474,8 +481,10 @@ export function numberTokens(value: string, exempt: ReadonlyArray<AutoExemptNumb
     .replace(/9\s*[:：]\s*16/g, " ")
     .replace(/一成不变/gu, " ")
     .split(/(?<=[，。；;！？!?,\n])/u)
-    // An ordinal is a position (第 3 集), except in a ranking (排名第三): that is a claim, kept whole as 第三.
-    .map((clause) => RANK_MARKERS.test(clause) ? clause.replace(ORDINAL, (ordinal) => ` ${RANK_PREFIX}${ordinal.replace(/\s+/gu, "")} `) : clause.replace(ORDINAL, " "))
+    // A structural ordinal (第 3 集) is a position, outside a ranking clause. Every other ordinal is a place (排名第三,
+    // 播放量第 3, 口碑第一): a claim, kept whole as 名次第三 so a source and a statement match it the same way.
+    .map((clause) => (RANK_MARKERS.test(clause) ? clause : clause.replace(STRUCTURAL_ORDINAL, " "))
+      .replace(ORDINAL, (ordinal) => ` ${RANK_PREFIX}${ordinal.replace(/\s+/gu, "")} `))
     .map((clause) => {
       if (NO_EXEMPTION.test(clause)) return clause;
       const valueOf = (number: string) => /^\d/u.test(number) ? Number(number) : chineseValue(number);
