@@ -312,6 +312,91 @@ describe("C. the application is checked as uncited text, whatever it cites", () 
   });
 });
 
+describe("E. a verdict or an investigation inside the story is the story (PR #81 review)", () => {
+  /** The statement in application.pattern and application.why, each with reference=null and with a valid reference. */
+  const placements = (text: string): Array<[string, Item]> => [
+    ["pattern, reference=null", apply(text, "自主创作设计。", null)],
+    ["pattern, reference", apply(text, "写作方法。")],
+    ["why, reference=null", apply("主角主动选择。", text, null)],
+    ["why, reference", apply("主角主动选择。", text)],
+  ];
+  const fieldOf = (placement: string) => `contentStructure[0].application.${placement.startsWith("why") ? "why" : "pattern"}`;
+
+  // Each was refused on ea5f749: a verdict word anywhere in the clause made counted people a source of feedback.
+  it.each([
+    "三名学生因一条差评联手追查真相。",
+    "三名骑手遭遇恶意差评后决定寻找证据。",
+    "两名店员因为一条好评反目成仇。",
+    "三名骑手收到差评后联手查清真相。",
+  ])("a verdict that drives the plot keeps the cast a cast: %s", (text) => {
+    for (const [placement, item] of placements(text)) expect(check([item]), placement).toMatchObject({ ok: true });
+  });
+
+  it.each([
+    "三名学生都给了好评。",
+    "三名学生看过剧本后都给了好评。",
+    "三名学生被邀请试看后打了高分。",
+    "三名学生因为喜欢这个结尾都给了好评。",
+    "三名学生收到剧本都给了好评。",
+    // Independent incremental review: the first version of this fix let these through as plot.
+    "三名学生收到剧本后好评不断。",
+    "三名学生收到样片后点赞。",
+    "三名学生因为试映好评如潮。",
+    "三名学生被感动后好评连连。",
+    "三名学生因样片好评。",
+    "三名学生由于剧情好叫好。",
+    "三名学生被圈粉后高分推荐。",
+    "三名学生因好评而决定续看。",
+    "三名学生收到一个好评后决定再看一遍。",
+    "五名学生都说好看。",
+    "三名骑手试看后都给了差评。",
+  ])("counted people giving a verdict on the work are still refused: %s", (text) => {
+    for (const [placement, item] of placements(text)) {
+      expect(check([item]), placement).toMatchObject({ ok: false, code: "unsourced_number", semantic: "result_claim", field: fieldOf(placement) });
+    }
+  });
+
+  // Each was refused on ea5f749: only a character right before the result wording was read as the story.
+  it.each([
+    "主角的调查发现站长伪造账本。",
+    "女主的调查发现邻居隐瞒了身份。",
+    "主角调查发现站长伪造账本。",
+    "主角的调查发现这种毒药无色无味。",
+    "主角的调查发现了真相。",
+  ])("a character's own investigation is the story: %s", (text) => {
+    for (const [placement, item] of placements(text)) expect(check([item]), placement).toMatchObject({ ok: true });
+  });
+
+  it.each([
+    "主角的调查发现观众偏爱反转。",
+    "女主的调查发现，观众更喜欢这种结尾。",
+    "调查证明观众更喜欢这种结尾。",
+    "主角的调查证明这种结尾最受欢迎。",
+    "受众对主角的调研证明这种结构有效。",
+    "观众对主角的调查表明这种结构最有效。",
+    "用户关于女主的调查显示这种开场更抓人。",
+    "同类短剧中主角的调查证明这种结构有效。",
+    "观众眼中主角的调查证明这种结构有效。",
+    "其他的调查发现观众更喜欢反转。",
+    "主角的调查证明这种结构有效。",
+    "她的调查证明这个结局最好。",
+    "主角的调查发现这种开场留得住人。",
+    "主角的调查显示这种节奏最抓人。",
+    "主角调查证明本剧的设定最有效。",
+    "她的调查证明这个故事最感人。",
+    "主角的调查发现这种反转很有用。",
+    "主角的调查证明这个人设最受用。",
+    "主角的调查发现这个结果很感动。",
+    "她的调查证明这种钩子很灵。",
+    "主角的调查发现这条支线很妙。",
+    "他的调查发现这个悬念够狠。",
+  ])("a finding about viewers stays refused, whoever investigates: %s", (text) => {
+    for (const [placement, item] of placements(text)) {
+      expect(check([item]), placement).toMatchObject({ ok: false, code: "unsourced_claim", field: fieldOf(placement) });
+    }
+  });
+});
+
 describe("D. stored v1 research is read, shown and exported as it was", () => {
   const v1: AutoStoredResearch = {
     schema: AUTO_CREATION_RESEARCH_SCHEMA_V1,
