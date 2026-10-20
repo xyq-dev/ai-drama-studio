@@ -211,6 +211,8 @@ const OUTPUT_CHECK_CODES = new Set(["unsourced_number", "unsourced_claim", "unkn
 
 const CATEGORY_TEXT: Record<string, string> = {
   digits: "阿拉伯数字", percent: "百分比或成数", rank: "排名名次", chinese_numeral: "中文数字", fullwidth_digits: "全角数字",
+  // research v3: the settings and the source gaps are the server's record; an answer may not carry them or any other extra field.
+  unrecognized_keys: "回答多出了不允许的字段；用户设定和资料局限由服务端记录，模型不能填写",
 };
 
 /** What the check took the number for (checks v3). */

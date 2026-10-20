@@ -5,14 +5,16 @@ import {
   AUTO_CREATION_OUTLINE_SCHEMA,
   AUTO_CREATION_RESEARCH_SCHEMA,
   AUTO_CREATION_RESEARCH_SCHEMA_V1,
+  AUTO_CREATION_RESEARCH_SCHEMA_V2,
   AUTO_CREATION_REVIEW_SCHEMA,
   AUTO_REVIEW_DIMENSIONS,
   type AutoBible,
   type AutoDirections,
   type AutoEpisode,
   type AutoOutline,
-  type AutoResearch,
+  type AutoResearchAnswer,
   type AutoResearchV1,
+  type AutoResearchV2,
   type AutoReview,
 } from "@ai-drama/contracts";
 import { ANTHROPIC_MESSAGES_URL, DEEPSEEK_CHAT_COMPLETIONS_URL, type WritingTransport } from "./text-writing";
@@ -51,11 +53,16 @@ export function autoFixtureBlock(user: string, label: string): unknown {
   return JSON.parse(user.slice(from, end)) as unknown;
 }
 
+/** Story quantities of the double the checks cannot place (no_role): kept as unverified notices since checks v5. */
+export const AUTO_FIXTURE_UNPLACED = { money: "主角只剩五十元，必须在午夜前讨回工资。", puzzle: "失踪者留下三块拼图，主角逐场拼出真相。" } as const;
+
 /**
  * A limited-mode research answer that counts its own story and plans the way checks v3 accept (两个互不信任的人, 三次误会,
  * 拟比较两个版本, 上线后观察七天). hiddenStatistic puts one unsourced share inside the verification plan instead.
+ * unplaced adds story quantities with no recognised role (五十元, 三块拼图); statisticAfterUnplaced adds, after them in
+ * the same opportunity, an unsourced share (refused even so).
  */
-export function fixtureAutoCreativeResearch(options: { hiddenStatistic?: boolean; episodeCount?: number } = {}): AutoResearch {
+export function fixtureAutoCreativeResearch(options: { hiddenStatistic?: boolean; episodeCount?: number; unplaced?: boolean; statisticAfterUnplaced?: boolean } = {}): AutoResearchAnswer {
   const base = fixtureAutoResearch({ citeCraft: false });
   return {
     ...base,
@@ -64,6 +71,8 @@ export function fixtureAutoCreativeResearch(options: { hiddenStatistic?: boolean
       { reference: { sourceId: "S-KB-CRAFT", quote: "关键结果来自主角的选择和行动" },
         application: { pattern: "模型替身样例：计划用两次反转推动主角主动选择。", why: "这是本作品的创作设计。" } },
       { reference: null, application: { pattern: "模型替身样例：三名骑手被迫合作，三天内找出真相。", why: "自主创作设计，没有对应的方法资料。" } },
+      ...(options.unplaced || options.statisticAfterUnplaced
+        ? [{ reference: null, application: { pattern: AUTO_FIXTURE_UNPLACED.puzzle, why: "自主创作设计：用实物线索推动主角行动。" } }] : []),
     ],
     hypotheses: [
       { id: "H1", statement: "模型替身样例：两个互不信任的人被迫共同寻找真相，这种设定可能带来悬念。",
@@ -71,15 +80,17 @@ export function fixtureAutoCreativeResearch(options: { hiddenStatistic?: boolean
       { id: "H2", statement: "模型替身样例：通过三次误会逐步揭露人物动机，是本故事拟采用的创作方案。", howToVerify: "计划上线后观察七天，待验证观众是否更喜欢两次反转的版本。" },
     ],
     audience: { ...base.audience, primary: "模型替身样例：拟面向通勤时刷剧的成年观众（待验证，不是平台真实用户画像）" },
-    opportunities: ["主角二十八岁，三天内必须讨回工资，开场前 3 秒抛出冲突"],
-    appliedConstraints: [`共 ${String(options.episodeCount ?? 1)} 集，每集约 60 秒`, "只写 3 个出场人物"],
+    opportunities: [
+      `主角二十八岁，三天内必须讨回工资，开场前 3 秒抛出冲突，共 ${String(options.episodeCount ?? 1)} 集，每集约 60 秒`,
+      ...(options.statisticAfterUnplaced ? [`${AUTO_FIXTURE_UNPLACED.money}七成观众偏爱反转。`] : options.unplaced ? [AUTO_FIXTURE_UNPLACED.money] : []),
+    ],
   };
 }
 
 /** Craft wording no source has: a quote the checks refuse (never dropped or set to null to pass). */
 export const AUTO_FIXTURE_FORGED_QUOTE = "反转次数以两次为最佳";
 
-export function fixtureAutoResearch(options: { fabricatedNumber?: boolean; citeCraft?: boolean; forgedQuote?: boolean; structureStatistic?: boolean } = {}): AutoResearch {
+export function fixtureAutoResearch(options: { fabricatedNumber?: boolean; citeCraft?: boolean; forgedQuote?: boolean; structureStatistic?: boolean } = {}): AutoResearchAnswer {
   return {
     schema: AUTO_CREATION_RESEARCH_SCHEMA,
     facts: options.citeCraft === false ? [] : [{
@@ -107,15 +118,21 @@ export function fixtureAutoResearch(options: { fabricatedNumber?: boolean; citeC
         why: "知识库要求关键结果来自主角的行动。" },
     }],
     opportunities: ["小人物在一个夜晚完成一次反击"],
-    limitations: ["官方入口页面没有读到正文，受众判断都是假设。"],
-    appliedConstraints: ["单集、约一分钟"],
   };
+}
+
+/** What research before v3 had the model write (the gaps and the settings): history only. */
+const LEGACY_RESEARCH_FIELDS = { limitations: ["官方入口页面没有读到正文，受众判断都是假设。"], appliedConstraints: ["单集、约一分钟"] };
+
+/** Research as the v2 code stored it (the model restated the gaps and settings): history only, never a new answer. */
+export function fixtureAutoResearchV2(): AutoResearchV2 {
+  return { ...fixtureAutoResearch(), ...LEGACY_RESEARCH_FIELDS, schema: AUTO_CREATION_RESEARCH_SCHEMA_V2 };
 }
 
 /** Research as the v1 code stored it (pattern, why and sourceIds in one item): history only, never a new answer. */
 export function fixtureAutoResearchV1(): AutoResearchV1 {
   const { contentStructure: _structure, ...rest } = fixtureAutoResearch();
-  return { ...rest, schema: AUTO_CREATION_RESEARCH_SCHEMA_V1,
+  return { ...rest, ...LEGACY_RESEARCH_FIELDS, schema: AUTO_CREATION_RESEARCH_SCHEMA_V1,
     contentStructure: [{ pattern: "主角主动选择推动结果", why: "知识库要求关键结果来自主角的行动。", sourceIds: ["S-KB-CRAFT"] }] };
 }
 
@@ -138,12 +155,16 @@ export function fixtureAutoDirections(): AutoDirections {
   };
 }
 
-/** Directions whose notes count their own story (两次反转, 两处室内场景, 3 个人物) and whose audience fit is a marked judgement. */
-export function fixtureAutoCreativeDirections(): AutoDirections {
+/**
+ * Directions whose notes count their own story (两次反转, 两处室内场景, 3 个人物) and whose audience fit is a marked judgement.
+ * unplaced: the chosen direction's difference also counts something the checks cannot place (三块拼图).
+ */
+export function fixtureAutoCreativeDirections(options: { unplaced?: boolean } = {}): AutoDirections {
   const directions = fixtureAutoDirections();
   return {
     ...directions,
-    candidates: directions.candidates.map((candidate) => ({ ...candidate, differentiation: "用两次反转代替常见的三角恋", difficultyNote: "只需两处室内场景和 3 个人物",
+    candidates: directions.candidates.map((candidate, index) => ({ ...candidate,
+      differentiation: options.unplaced && index === 0 ? "用两次反转和三块拼图代替常见的三角恋" : "用两次反转代替常见的三角恋", difficultyNote: "只需两处室内场景和 3 个人物",
       audienceFit: "两次反转可能契合想看小人物扳回一局的观众，待验证 H1", evidenceIds: ["H1"] })),
   };
 }
@@ -356,6 +377,12 @@ export interface AutoFixturePlan {
   creativeQuantities?: boolean;
   /** Like creativeQuantities, with an unsourced share hidden in a verification plan (refused). */
   hiddenStatistic?: boolean;
+  /** Like creativeQuantities, with story quantities the checks cannot place (五十元, 三块拼图): unverified notices, not refusals. */
+  unplacedQuantities?: boolean;
+  /** Like unplacedQuantities, with 七成观众偏爱反转 after 五十元 in the same opportunity (refused: the notice opens nothing). */
+  statisticAfterUnplaced?: boolean;
+  /** A research answer that also writes the server's appliedConstraints and limitations (refused by the strict answer schema). */
+  serverFieldsInAnswer?: boolean;
   /** One person on screen and one mentioned; the first drafts put the mentioned one on screen, revisions do not. */
   soloCast?: boolean;
   /** One person on screen, seven mentioned, and every scene of every draft lists all eight (hundreds of check results). */
@@ -369,10 +396,15 @@ export function autoFixtureAnswer(user: string, plan: AutoFixturePlan = {}): unk
   const stage = autoFixtureStageOf(user);
   const count = autoFixtureEpisodeCount(user);
   if (stage === "research") {
-    return plan.creativeQuantities || plan.hiddenStatistic ? fixtureAutoCreativeResearch({ hiddenStatistic: plan.hiddenStatistic, episodeCount: count })
+    const research = plan.creativeQuantities || plan.hiddenStatistic || plan.unplacedQuantities || plan.statisticAfterUnplaced
+      ? fixtureAutoCreativeResearch({ hiddenStatistic: plan.hiddenStatistic, episodeCount: count, unplaced: plan.unplacedQuantities,
+        statisticAfterUnplaced: plan.statisticAfterUnplaced })
       : fixtureAutoResearch({ fabricatedNumber: plan.fabricatedNumber, forgedQuote: plan.forgedQuote, structureStatistic: plan.structureStatistic });
+    return plan.serverFieldsInAnswer ? { ...research, ...LEGACY_RESEARCH_FIELDS } : research;
   }
-  if (stage === "directions") return plan.creativeQuantities ? fixtureAutoCreativeDirections() : fixtureAutoDirections();
+  if (stage === "directions") {
+    return plan.creativeQuantities || plan.unplacedQuantities ? fixtureAutoCreativeDirections({ unplaced: plan.unplacedQuantities }) : fixtureAutoDirections();
+  }
   if (stage === "bible") return plan.soloCast ? fixtureAutoSoloBible() : plan.crowdedCast ? fixtureAutoCrowdedBible() : fixtureAutoBible();
   if (stage === "outline") {
     const outline = fixtureAutoOutline(count);

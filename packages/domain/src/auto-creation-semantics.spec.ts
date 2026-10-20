@@ -36,9 +36,7 @@ function limited(overrides: Record<string, unknown> = {}): string {
     hypotheses: [{ id: "H1", statement: "碎片时间的观众可能更愿意看一集内有明确兑现的故事。", howToVerify: "上线后用真实观看数据对比。" }],
     audience: { primary: "在通勤和睡前刷短剧的成年观众（待验证假设）", viewingNeeds: ["一集内看到结果"], emotionalAppeals: ["扳回一局"], basis: "hypothesis", sourceIds: [] },
     contentStructure: [{ reference: { sourceId: "S-KB-CRAFT", quote: "关键结果来自主角的选择和行动" }, application: { pattern: "主角主动选择推动结果", why: "写作方法资料要求关键结果来自主角的行动。" } }],
-    opportunities: ["小人物在一个夜晚完成一次反击"],
-    limitations: ["官方市场条目没有读到正文，受众和题材判断都是待验证假设。"],
-    appliedConstraints: ["共 1 集，每集约 60 秒"],
+    opportunities: ["小人物在一个夜晚完成一次反击", "共 1 集，每集约 60 秒"],
     ...overrides,
   });
 }
@@ -104,13 +102,13 @@ describe("A. creative quantities and plans are not market claims", () => {
   it("a chosen target group in words passes; the user's own audience constraint may be restated with its numbers", () => {
     expect(validateAutoStageOutput("research", limited(hypothesis("拟面向通勤时刷剧的成年观众开展创作。")), input(), context())).toMatchObject({ ok: true });
     const frozen = input({ constraints: autoCreationConstraintsSchema.parse({ audience: "25-35岁都市女性" }) });
-    expect(validateAutoStageOutput("research", limited({ appliedConstraints: ["目标观众：25-35岁都市女性（用户指定）"] }), frozen, context(frozen))).toMatchObject({ ok: true });
+    expect(validateAutoStageOutput("research", limited({ opportunities: ["目标观众：25-35岁都市女性（用户指定）"] }), frozen, context(frozen))).toMatchObject({ ok: true });
   });
 
   it("ordinals, frozen settings and limits keep working, and a cast within the frozen limit may be designed", () => {
     const frozen = input({ episodeCount: 6, constraints: autoCreationConstraintsSchema.parse({ maxCharacters: 4, maxLocations: 3 }) });
     for (const statement of ["第 3 集揭开真相", "第二场交代目标", "共 6 集，每集约 60 秒", "出场人物最多 4 人", "三处地点", "只写两个主角和一个反派"]) {
-      expect(validateAutoStageOutput("research", limited({ appliedConstraints: [statement] }), frozen, context(frozen)), statement).toMatchObject({ ok: true });
+      expect(validateAutoStageOutput("research", limited({ opportunities: [statement] }), frozen, context(frozen)), statement).toMatchObject({ ok: true });
     }
   });
 
@@ -145,7 +143,7 @@ describe("the v3 prompt and the v3 checks say the same thing", () => {
     expect(prompt).toContain(`不写“${refused}”`);
     expect(validateAutoStageOutput("research", limited(hypothesis(`${refused}。`)), input(), context()))
       .toMatchObject({ ok: false, semantic: "result_claim", rule: "unmarked_audience_judgement" });
-    expect(prompt).toContain("提示版本：ads.auto-creation.prompt.v4");
+    expect(prompt).toContain("提示版本：ads.auto-creation.prompt.v5");
   });
 });
 
@@ -162,8 +160,8 @@ describe("B. market facts and statistics still need a readable source, wherever 
     ["观看行为", "hypotheses[0].statement", hypothesis("用户平均每天观看 40 分钟。")],
     ["观看频次", "hypotheses[0].statement", hypothesis("观众每周看三次短剧。")],
     ["计划里的统计", "hypotheses[0].howToVerify", hypothesis("可能偏爱复仇。", "计划比较两个版本，已知女性观众占 60%。")],
-    ["约束里的统计", "appliedConstraints[0]", { appliedConstraints: ["面向占比六成的女性观众"] }],
-    ["局限里的统计", "limitations[0]", { limitations: ["平台用户以 18 岁以上为主"] }],
+    ["机会里的占比", "opportunities[0]", { opportunities: ["面向占比六成的女性观众"] }],
+    ["机会里的年龄", "opportunities[0]", { opportunities: ["平台用户以 18 岁以上为主"] }],
     ["机会里的统计", "opportunities[0]", { opportunities: ["复仇题材播放量是其他题材的两倍"] }],
     ["拟定人群写成年龄段", "hypotheses[0].statement", hypothesis("拟面向 18-24 岁的大学生观众。")],
   ])("%s is refused at its field", (_label, field, overrides) => {
@@ -174,7 +172,7 @@ describe("B. market facts and statistics still need a readable source, wherever 
   it.each([
     ["调查结论", hypothesis("调查显示两个版本中反转版更受欢迎。")],
     ["已测得", hypothesis("已经测试过两个版本，观众更喜欢反转版。")],
-    ["资料里常见（无待验证标记）", { limitations: ["资料里3个角色定位最常见"] }],
+    ["资料里常见（无待验证标记）", { opportunities: ["资料里3个角色定位最常见"] }],
     ["观众判断写成结论", hypothesis("观众更喜欢两次反转的版本。")],
   ])("a quantity written as a measured or settled audience finding is refused (%s)", (_label, overrides) => {
     expect(validateAutoStageOutput("research", limited(overrides as Record<string, unknown>), input(), context()))
@@ -191,7 +189,7 @@ describe("B. market facts and statistics still need a readable source, wherever 
   it("a market number equal to a frozen setting is still a market number", () => {
     const frozen = input({ constraints: autoCreationConstraintsSchema.parse({ maxCharacters: 3, maxLocations: 3 }) });
     for (const statement of ["用户平均每天观看 60 秒", "观众每天观看 1 集", "前 3 个短剧都只有三个人物", "热度第一的作品只有三个人物", "最多 3 名观众"]) {
-      expect(validateAutoStageOutput("research", limited({ appliedConstraints: [statement] }), frozen, context(frozen)), statement)
+      expect(validateAutoStageOutput("research", limited({ opportunities: [statement] }), frozen, context(frozen)), statement)
         .toMatchObject({ ok: false, code: "unsourced_number" });
     }
   });
@@ -243,13 +241,15 @@ describe("B. market facts and statistics still need a readable source, wherever 
     }
   });
 
-  it("dates and counts of sources are still refused, now as numbers with no creative role", () => {
-    for (const statement of ["官方条目在2026-10-18请求时只得到空壳。", "只有 1 条可读资料。"]) {
-      expect(validateAutoStageOutput("research", limited({ limitations: [statement] }), input(), context()), statement)
-        .toMatchObject({ ok: false, code: "unsourced_number", semantic: "unclassified" });
-    }
+  it("dates are still refused; a count with no role is an unverified notice since checks v5, never in a market sentence", () => {
+    expect(validateAutoStageOutput("research", limited({ opportunities: ["官方条目在2026-10-18请求时只得到空壳。"] }), input(), context()))
+      .toMatchObject({ ok: false, code: "unsourced_number", semantic: "unclassified", rule: "date_or_range" });
+    // Product change (checks v5): refused as unclassified+no_role before; the source gaps are the server's record now,
+    // and a number the checks cannot place in creative text is kept as written with a notice.
+    const counted = validateAutoStageOutput("research", limited({ opportunities: ["只有 1 条可读资料。"] }), input(), context());
+    expect(counted).toMatchObject({ ok: true, output: { unverified: [{ field: "opportunities[0]", token: "1", rule: "no_role" }] } });
     // A sentence that names the market reads every number in it as a market number (the market carries over its commas).
-    expect(validateAutoStageOutput("research", limited({ limitations: ["只有 1 条可读资料，没有市场数据。"] }), input(), context()))
+    expect(validateAutoStageOutput("research", limited({ opportunities: ["只有 1 条可读资料，没有市场数据。"] }), input(), context()))
       .toMatchObject({ ok: false, code: "unsourced_number", semantic: "market_statistic" });
   });
 
@@ -281,8 +281,6 @@ describe("C. a pending marker covers only its own judgement; the frozen audience
     ["hypotheses[0].statement", hypothesis(statement)],
     ["hypotheses[0].howToVerify", hypothesis("可能偏爱一集内兑现的故事。", statement)],
     ["opportunities[0]", { opportunities: [statement] }],
-    ["limitations[0]", { limitations: [statement] }],
-    ["appliedConstraints[0]", { appliedConstraints: [statement] }],
     ["contentStructure[0].application.why", { contentStructure: [{ reference: null, application: { pattern: "主角主动选择推动结果", why: statement } }] }],
     // A quoted method beside it sources nothing written in the application.
     ["contentStructure[0].application.why", { contentStructure: [{ reference: { sourceId: "S-KB-CRAFT", quote: "关键结果来自主角的选择和行动" }, application: { pattern: "主角主动选择推动结果", why: statement } }] }],

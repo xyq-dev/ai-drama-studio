@@ -452,8 +452,25 @@ function countedNoun(tail: string): { group: NounGroup; noun: string } | null {
     const found = nounAt(window, at);
     if (found) return found;
   }
+  // 名 and 位 count people by themselves (三名骑士, 两位母亲): people however they are named, judged like counted trades.
+  if (classifier === "名" || classifier === "位") return { group: "cast", noun: OCCUPATION_NOUN };
   const unit = UNIT_CLASSIFIERS[classifier];
   return unit ? { group: unit, noun: classifier } : null;
+}
+
+/**
+ * A count named by the cast or place word before it, with only limit words between (人物最多 5 个, 地点上限 4, 场景不超过
+ * 4 个): the cast or the places, so a frozen limit is checked, never a number with no role (checks v5 keeps those).
+ */
+const LIMIT_WORDS_BEFORE = "(?:最多|至多|不超过|上限为?|限制为?|限为|为|共|：|:)*$";
+const LIMIT_NOUN_BEFORE: ReadonlyArray<readonly [NounGroup, RegExp]> = [
+  ["cast", new RegExp(`(?:人物|角色)${LIMIT_WORDS_BEFORE}`, "u")],
+  ["location", new RegExp(`(?:地点|场景|场地)${LIMIT_WORDS_BEFORE}`, "u")],
+];
+
+function limitNoun(before: string): { group: NounGroup; noun: string } | null {
+  const found = LIMIT_NOUN_BEFORE.find(([, pattern]) => pattern.test(before));
+  return found ? { group: found[0], noun: found[0] === "cast" ? "人物" : "地点" } : null;
 }
 
 const DURATION = /^(?:多|余|来)?(?:个)?(秒钟|秒|分钟|个小时|小时|天|个星期|星期|周|个月|年)/u;
@@ -566,8 +583,14 @@ function roleOf(hit: NumberHit, clause: string, clauses: readonly string[], mark
     // The run's own episode count was removed already where it may be restated.
     return market ? refuse("market_statistic", "viewing_count") : refuse("frozen_conflict", "episode_count");
   }
-  const counted = countedNoun(tail);
-  if (!counted) return market ? refuse("market_statistic", "market_clause") : refuse("unclassified", "no_role");
+  const counted = countedNoun(tail) ?? limitNoun(before);
+  if (!counted) {
+    if (market) return refuse("market_statistic", "market_clause");
+    // Counted people of any name giving a verdict (八名试映嘉宾都给了好评, 五位资深编剧都认为这种结构最抓人) are a reported
+    // reaction, as counted trades are: never a number with no role, which checks v5 keeps as an unverified notice.
+    if (givenVerdict(clause) || (WEAK_VERDICT.test(clause) && WORK.test(clause))) return refuse("result_claim", "measured_result");
+    return refuse("unclassified", "no_role");
+  }
   if (counted.group === "audience") return refuse("market_statistic", "audience_count");
   if (counted.group === "cast") {
     // People counted in a clause about viewers or the market are viewers (三百人愿意付费), not a cast.
@@ -595,6 +618,19 @@ function roleOf(hit: NumberHit, clause: string, clauses: readonly string[], mark
  * statistic, a measured result, a frozen conflict) is reported before one refused only for an unmarked judgement.
  */
 export function uncitedNumberFinding(text: string, frame: AutoNumberFrame, options: { market?: boolean } = {}): AutoNumberFinding | null {
+  return uncitedNumberReading(text, frame, options).refusal;
+}
+
+/**
+ * Every number of an uncited text read to the end (checks v5). unverified: creative text (a hypothesis, a plan, a
+ * structure's application, an opportunity, a direction's notes) where a number with no recognised role (unclassified,
+ * no_role) is kept as unverified instead of refused; the reading goes on past it, so any later number in the same
+ * clause, sentence or text is still judged and refused for what it is. Only that one sub-rule is kept: dates, counts out
+ * of range, statistics, measured results, frozen conflicts and unmarked judgements are refused as before.
+ */
+export function uncitedNumberReading(text: string, frame: AutoNumberFrame, options: { market?: boolean; unverified?: boolean } = {}):
+  { refusal: AutoNumberFinding | null; unverified: AutoNumberFinding[] } {
+  const unverified: AutoNumberFinding[] = [];
   let unmarked: AutoNumberFinding | null = null;
   for (const clauses of sentencesOf(text, frame.exempt, frame.frozenAudience)) {
     // Viewers, the market and a measured result named anywhere in the sentence carry over its commas (数据显示，三个人里…).
@@ -604,12 +640,19 @@ export function uncitedNumberFinding(text: string, frame: AutoNumberFrame, optio
     for (const clause of clauses) {
       const market = sentenceMarket;
       const proportion = market ? PROPORTION_WORDS.exec(clause)?.[0] : undefined;
-      if (proportion) return { token: proportion, kind: "percent", semantic: "market_statistic", rule: "proportion" };
+      if (proportion) return { refusal: { token: proportion, kind: "percent", semantic: "market_statistic", rule: "proportion" }, unverified };
       const ratio = RATIO.exec(clause)?.[0] ?? RATIO_WRITTEN.exec(clause)?.[0];
-      if (ratio) return { token: ratio, kind: numberKind(ratio), semantic: "market_statistic", rule: "proportion" };
+      if (ratio) return { refusal: { token: ratio, kind: numberKind(ratio), semantic: "market_statistic", rule: "proportion" }, unverified };
       for (const hit of hitsOf(clause, market)) {
         const role = roleOf(hit, clause, clauses, market, frame);
-        if (!role.allowed) return { token: hit.token, kind: numberKind(hit.token), semantic: role.semantic, rule: role.rule };
+        if (!role.allowed) {
+          const finding: AutoNumberFinding = { token: hit.token, kind: numberKind(hit.token), semantic: role.semantic, rule: role.rule };
+          if (options.unverified === true && role.semantic === "unclassified" && role.rule === "no_role") {
+            unverified.push(finding);
+            continue;
+          }
+          return { refusal: finding, unverified };
+        }
         // A story or plan quantity next to viewers or the market reads as a finding unless its judgement says it is pending.
         if (market && role.rule !== "story_age" && !pendingJudgement(clause, clauses)) {
           unmarked ??= { token: hit.token, kind: numberKind(hit.token), semantic: "result_claim", rule: "unmarked_audience_judgement" };
@@ -617,7 +660,7 @@ export function uncitedNumberFinding(text: string, frame: AutoNumberFrame, optio
       }
     }
   }
-  return unmarked;
+  return { refusal: unmarked, unverified };
 }
 
 /** The user's own audience constraint as a restatable phrase: only when it carries no share, magnitude or ranking. */
