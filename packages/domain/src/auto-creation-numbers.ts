@@ -100,11 +100,25 @@ const SETTLED_QUALIFIER = /^(?:我们|团队|本剧|制作方)?(?:计划|拟|打
  * investigation's wording: 其他调查发现…, 观众对主角的调研证明…, 主角的数据显示… and 她调查发现观众… are findings.
  */
 /**
- * What a finding about the work's own design names or how it judges (这种结构有效, 这个故事最感人, 这种反转很有用): never a
- * character's plot discovery. Any evaluation counts, a degree word (很, 够, 太…) included, so a plot finding that judges
- * (这种毒药最致命) is refused too.
+ * A finding that names the work's own design or uses a word that only evaluates (这种结构有效, 这个人设最受用): never a
+ * character's plot discovery. Whole words only: 好友, 灵堂, 更多 and 更衣室 are no evaluation.
  */
-const WORK_VERDICT = /结尾|结局|结构|开场|开头|版本|剧本|剧情|故事|题材|写法|节奏|设定|人设|反转|桥段|套路|钩子|支线|冲突|悬念|本剧|该剧|此剧|这部剧|最|更|很|够|太|挺|非常|十分|特别|极|有效|有用|受用|管用|奏效|感人|感动|动人|好|妙|灵|带劲|抓人|吸引|留得住|吸睛|成功/u;
+const WORK_VERDICT = /结尾|结局|结构|开场|开头|版本|剧本|剧情|故事|题材|写法|节奏|设定|人设|反转|桥段|套路|钩子|支线|冲突|悬念|本剧|该剧|此剧|这部剧|有效|有用|受用|管用|奏效|感人|感动|动人|带劲|抓人|吸引人|留得住|吸睛|好用|好使|灵验|灵光|精妙|绝伦|灵招|妙招|绝招|高招/u;
+/**
+ * An evaluation by its structure, not by a single character wherever it stands. A degree word in predicate position,
+ * after a subject in the same part (这招很灵, 先抑后扬更胜一筹, 上述手法最具感染力, 这样写更能留住人); at the start of the
+ * finding, or before a quantity or a time (更多线索, 更衣室藏着证据, 最后一页, 最早), it judges nothing. An evaluating word
+ * ending its part (该招灵, 其手法妙, 反派越狠越好, 这种做法成功了), or an evaluating character carried on (妙不可言, 灵得出奇,
+ * 妙极了). 好友, 灵堂 and 真相 are none of these.
+ */
+const EVALUATION = new RegExp([
+  "(?<=[^，,。])(?:最为|更为|极其|极为|非常|十分|特别|最|更|很|太|够|极|挺)(?!多|少|后|初|终|近|早|先)",
+  "(?<=[^，,。])相当(?!于)",
+  "(?:超|真|蛮|颇)(?:好|灵|妙|棒|赞|精彩|厉害|出彩)",
+  "^(?:最|更)[^，,。]{0,3}的(?:是|就是)",
+  "(?:灵|妙|好|棒|成功|好用|管用|奏效)(?:了|啊|吧|呀|的|呢|嘛|哉)?$|绝了$",
+  "(?:灵|妙|绝)(?:不可言|得|极|透)",
+].join("|"), "u");
 const STORY_FINDER = /^(?:主人公|主角|女主|男主|配角|反派|[她他])的?$/u;
 /** Verbs of a verification plan (对比两个版本, 收集反馈): a plan by its wording, not by its field. */
 const PLAN_VERBS = /对比(?!过)|统计(?!显示|表明|发现)|收集|邀请|跟踪|追踪|试看|投放(?!过)|测试(?!显示|发现|表明|过)|观察(?!到)|比较(?=[两二三几\d]|不同|各)|上线后/u;
@@ -632,7 +646,7 @@ export function settledMarketClaim(text: string): boolean {
       // What was found: the rest of the sentence, past its commas (他调查发现，观众更喜欢反转).
       const after = clause.slice(found.index + found[0].length) + clauses.slice(index + 1).join("");
       const story = STORY_FINDER.test(before) && found[0].startsWith("调查") && !MARKET_CLAUSE.test(after) && !preference(after)
-        && !WORK_VERDICT.test(after);
+        && !WORK_VERDICT.test(after) && !after.split(/[，,]/u).some((part) => EVALUATION.test(part));
       return !SETTLED_QUALIFIER.test(before) && !story;
     });
   });

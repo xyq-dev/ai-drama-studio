@@ -361,7 +361,6 @@ describe("E. a verdict or an investigation inside the story is the story (PR #81
     "主角的调查发现站长伪造账本。",
     "女主的调查发现邻居隐瞒了身份。",
     "主角调查发现站长伪造账本。",
-    "主角的调查发现这种毒药无色无味。",
     "主角的调查发现了真相。",
   ])("a character's own investigation is the story: %s", (text) => {
     for (const [placement, item] of placements(text)) expect(check([item]), placement).toMatchObject({ ok: true });
@@ -394,6 +393,140 @@ describe("E. a verdict or an investigation inside the story is the story (PR #81
     for (const [placement, item] of placements(text)) {
       expect(check([item]), placement).toMatchObject({ ok: false, code: "unsourced_claim", field: fieldOf(placement) });
     }
+  });
+});
+
+describe("F. an ordinary word with 好, 灵, 更 or 最 in it is no evaluation (PR #81 final review)", () => {
+  const placements = (text: string): Array<[string, Item]> => [
+    ["pattern, reference=null", apply(text, "自主创作设计。", null)],
+    ["pattern, reference", apply(text, "写作方法。")],
+    ["why, reference=null", apply("主角主动选择。", text, null)],
+    ["why, reference", apply("主角主动选择。", text)],
+  ];
+
+  // Each passed on ea5f749 and was refused on d2c04a9: a single character matched anywhere in the finding.
+  it.each([
+    "主角调查发现好友伪造账本。",
+    "主角调查发现灵堂暗藏机关。",
+    "主角调查发现更多线索。",
+    "主角调查发现更衣室藏着证据。",
+    "主角的调查发现好友伪造账本。",
+    "主角的调查发现最后一页被撕掉。",
+    "主角调查发现站长此后改了名字。",
+    "主角调查发现站长从此以后搬了家。",
+    "主角调查发现站长应该早就知情。",
+    "主角的调查发现了真相。",
+    "主角调查发现站长的好友伪造账本。",
+    "主角调查发现站长因此改了口供。",
+    "主角调查发现那时站长不在场。",
+    "主角的调查发现这种毒药无色无味。",
+    "主角调查发现这封信是伪造的。",
+    "主角调查发现那个人是站长的弟弟。",
+    "主角调查发现此事与站长有关。",
+    "主角调查发现站长把账本藏在那里。",
+    "主角调查发现站长好强的控制欲来自童年。",
+    "主角调查发现站长比他强。",
+    "主角调查发现站长下手狠。",
+    "主角调查发现站长赶尽杀绝。",
+    "主角调查发现药已见效。",
+    "主角调查发现站长超市的账本被改。",
+    "主角调查发现邻居超速逃逸。",
+    "主角调查发现站长相当于共犯。",
+    "主角调查发现站长尤其怕水。",
+  ])("a plot finding with such a word stays the story: %s", (text) => {
+    for (const [placement, item] of placements(text)) expect(check([item]), placement).toMatchObject({ ok: true });
+  });
+
+  it.each([
+    "主角的调查发现观众偏爱反转。",
+    "主角的调查证明这种结构有效。",
+    "她的调查证明这个故事最感人。",
+    "主角的调查发现这种反转很灵。",
+    "主角的调查发现这种反转够狠。",
+    "主角的调查发现这个结果很感动。",
+    // Final review: evaluations with no listed demonstrative, other degree words, a degree after the predicate, a long tail.
+    "主角的调查发现这招很灵。",
+    "主角的调查发现那种手法很灵。",
+    "主角的调查发现这一招很灵。",
+    "主角的调查发现这手法挺妙。",
+    "主角的调查发现这样安排非常精彩。",
+    "主角的调查发现此法妙极了。",
+    "主角的调查发现这种手法极妙。",
+    "主角的调查发现这种手法超灵。",
+    "主角的调查发现这种手法真灵。",
+    "主角的调查发现这种安排好极了。",
+    "主角的调查发现这种手法灵得很。",
+    "主角的调查发现这种手法很吸引年轻人。",
+    "主角的调查发现这种手法很灵并且值得保留。",
+    "主角的调查发现这种安排的效果最为明显不过了。",
+    "主角的调查发现这种手法好用。",
+    "主角的调查发现这种做法成功了。",
+    // Final review, second pass: judgements with no degree word, or a degree word before an unlisted evaluation.
+    "主角的调查发现这招灵。",
+    "主角的调查发现这种安排妙不可言。",
+    "主角的调查发现这种安排更胜一筹。",
+    "主角的调查发现这种手法更为高效。",
+    "主角的调查发现这种手法最具感染力。",
+    "主角的调查发现这样写更能留住人。",
+    "主角的调查发现这种手法够味。",
+    "主角的调查发现这种手法很快就见效了。",
+    "主角的调查发现反派越狠越好。",
+    // Final review, third pass: other determiners, connectives, or no determiner at all.
+    "主角的调查发现该招灵。",
+    "主角的调查发现其手法妙。",
+    "主角的调查发现某种安排更胜一筹。",
+    "主角的调查发现上述手法最具感染力。",
+    "主角的调查发现本招妙不可言。",
+    "主角的调查发现那时的安排更胜一筹。",
+    "主角的调查发现如此安排更胜一筹。",
+    "主角的调查发现那天的招数灵。",
+    "主角的调查发现先抑后扬更胜一筹。",
+    "主角的调查发现先抑后扬灵得出奇。",
+    "主角的调查发现先抑后扬屡试屡灵。",
+    "主角的调查发现开门见山更能留住人。",
+    "主角的调查发现慢热开局更为高效。",
+    // Final review, fourth pass.
+    "主角的调查发现最妙的是先抑后扬。",
+    "主角的调查发现更胜一筹的是开门见山。",
+    "主角的调查发现先抑后扬更加精彩。",
+    "主角的调查发现先抑后扬真好看。",
+    "主角的调查发现开门见山蛮灵的。",
+    "主角的调查发现这招灵呢。",
+    "主角的调查发现这招灵验。",
+    "主角的调查发现这才是灵招。",
+    "主角的调查发现这招精妙绝伦。",
+    "主角的调查发现这招绝了。",
+  ])("a finding that judges the work or the market is still refused: %s", (text) => {
+    for (const [placement, item] of placements(text)) {
+      expect(check([item]), placement).toMatchObject({ ok: false, code: "unsourced_claim", field: `contentStructure[0].application.${placement.startsWith("why") ? "why" : "pattern"}` });
+    }
+  });
+});
+
+describe("F2. documented gaps: a craft conclusion with no listed word, structure or demonstrative passes (docs §3.3 漏检)", () => {
+  it.each(["主角的调查发现开门见山效果显著。", "主角的调查发现先抑后扬有感染力。", "主角的调查发现开门见山更多人爱。",
+    "主角的调查发现先抑后扬屡试不爽。", "主角的调查发现这种手法尤其出彩。", "主角的调查发现先抑后扬更早见效。",
+    "主角的调查发现最妙之处在于先抑后扬。", "主角的调查发现最灵的一招是先抑后扬。", "主角的调查发现更好的办法是先抑后扬。",
+    "主角的调查发现这招灵哦。"])("%s", (text) => {
+    expect(check([apply(text)])).toMatchObject({ ok: true });
+  });
+});
+
+describe("F3. documented over-refusals of plot findings (docs §3.3 多拒)", () => {
+  it.each([
+    "主角调查发现这把刀很锋利。",
+    "主角调查发现站长很害怕。",
+    "主角调查发现站长此后更加小心。",
+    "主角调查发现站长躲进更衣室。",
+    "主角调查发现站长的病好了。",
+    "主角调查发现这个人很可疑。",
+    "主角调查发现凶手很狡猾。",
+    "主角调查发现站长最好的朋友是凶手。",
+    "主角调查发现邻居与站长有冲突。",
+    "主角的调查发现站长篡改了剧本。",
+    "主角调查发现站长拿到了绝招。",
+  ])("%s", (text) => {
+    expect(check([apply(text)])).toMatchObject({ ok: false, code: "unsourced_claim" });
   });
 });
 
