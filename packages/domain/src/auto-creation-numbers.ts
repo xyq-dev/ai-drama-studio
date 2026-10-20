@@ -9,7 +9,9 @@
  * a market statistic (shares, magnitudes, rankings, audience counts and ages, viewing durations and rates), a quantity
  * written as a measured result, a story quantity breaking a frozen setting, or a number with no recognised role. A
  * clause about viewers or the market that carries a story or plan quantity must say it is pending (是否, 可能, 待验证,
- * 计划, 拟…), else it reads as a finding. The judgement is deterministic and names its rule; nothing here sends.
+ * 计划, 拟…) in that clause, else it reads as a finding; a plan word in one clause never unlocks a finding in another.
+ * The person's own audience constraint may be restated as the work's chosen target, never as evidence about real
+ * viewers. The judgement is deterministic and names its rule; nothing here sends.
  */
 
 /** A number the run's own frozen input puts in text: its value and its unit (集, 秒, 分钟), or the limit it states. */
@@ -78,15 +80,60 @@ const RATIO = new RegExp(`(?:\\d+|[${CN_DIGITS}]+)(?:多|余)?[个位名部条][
 const RATIO_WRITTEN = new RegExp(`(?:\\d+|[${CN_DIGITS}]+)(?:比|[:：])(?:\\d+|[${CN_DIGITS}]+)`, "u");
 /** A quantity presented as measured: never in an uncited text, whatever it counts. Judged on the whole sentence. */
 const RESULT = new RegExp([
-  "(?:数据|调查|统计|测试|实测|结果|研究|报告|样本|资料|后台|平台|调研)(?:显示|表明|证明|发现|指出|证实)",
-  "测得|实测|测过|试过|投放过|上线过|跑过|对比过|比较过|胜出|跑赢",
-  "已(?:经)?(?:比较|对比|测试|验证|观察|统计|调查|投放|测出|证明|证实|上线)",
+  "(?:数据|调查|统计|测试|实测|结果|研究|报告|样本|资料|后台|平台|调研)(?:显示|表明|证明|发现|指出|证实|确认)",
+  "测得|实测|测过|试过|投放过|上线过|跑过|对比过|比较过|胜出|跑赢|记录显示|收集到|跟踪下来",
+  "已(?:经)?(?:比较|对比|测试|验证|观察|统计|调查|投放|测出|证明|证实|确认|上线)",
   "(?:经过?|通过)[^，。]{0,4}?(?:测试|验证|统计|调查|调研|投放|试看)",
 ].join("|"), "u");
 /** Verbs of a verification plan (对比两个版本, 收集反馈): a plan by its wording, not by its field. */
 const PLAN_VERBS = /对比(?!过)|统计(?!显示|表明|发现)|收集|邀请|跟踪|追踪|试看|投放(?!过)|测试(?!显示|发现|表明|过)|观察(?!到)|比较(?=[两二三几\d]|不同|各)|上线后/u;
 /** Wording that keeps an audience judgement pending or makes it a plan. 目标 is no such word (目标观众 is a target, not a doubt). */
-const PENDING = new RegExp(`是否|能否|会不会|可能|或许|也许|待验证|待检验|有待|需验证|需要验证|假设|推测|猜测|预计|预期|计划|(?<![模虚])拟|打算|准备|如果|若|假如|设想|之后再|再判断|再决定|尚未|${PLAN_VERBS.source}`, "u");
+/** Doubt about a judgement, an open question a plan asks included (看哪个更受欢迎); 不可能, 无论哪种…都 and a bare 哪种 are none. */
+const DOUBT = /是否|能否|会不会|(?<!不)可能|或许|也许|待验证|待检验|有待|需验证|需要验证|假设|推测|猜测|预计|预期|如果|若|假如|设想|之后再|再判断|再决定|尚未|(?:看|比较|对比|观察|测试|统计|判断|了解)[^，。；]{0,6}?(?<!无论|不管|不论)哪(?:个|一个|种|一种|版|一版|些)(?![^，。；]{0,4}?[都也])/u;
+/** Plan wording: a plan states what will be done, not a doubt about what viewers think. */
+const PLAN = new RegExp(`计划|(?<![模虚])拟|打算|准备|${PLAN_VERBS.source}`, "u");
+const PENDING = new RegExp(`${DOUBT.source}|${PLAN.source}`, "u");
+/**
+ * What an audience prefers or how a work was received, a verdict between versions included (三次反转的版本口碑最好,
+ * 版本胜过…): a finding unless doubted in its own clause.
+ */
+const PREFERENCE = new RegExp([
+  "更(?:喜欢|爱|愿意|受欢迎|买账)|偏爱|爱看|喜欢看|买单|买账|追捧|反响|口碑|最受(?:欢迎|追捧|喜爱|关注|好评)|最吸引|受欢迎",
+  "(?:版本|剧本|剧情|结尾|开场|开头|设定|方案)[^，。；]{0,4}?(?:最好|更好|最佳|胜过|不如|更强|最强)",
+].join("|"), "u");
+/**
+ * A reception a plan collects or compares, as the last thing in its clause (收集观众口碑, 比较两个版本的观众反响): the
+ * plan's object, no finding. Anything after it (…口碑最好, …口碑就知道) is read as written.
+ */
+const PLAN_OBJECT = new RegExp(`(?:${PLAN.source}|了解|看看)[^，。；]{0,12}?(?:反响|口碑|反馈)(?:反馈)?(?=[，,。；;！？!?]?$)`, "gu");
+/**
+ * A character's own taste or standing (女主爱看言情小说, 主角口碑很差, 她想买单): the story, not its audience. Only with the
+ * character right before the word, and never about a version, a script or a plot (女主三次反转的版本口碑最好).
+ */
+const CHARACTER_TASTE = /(?:主人公|主角|女主|男主|配角|反派|[她他](?!们))[^，。；的]{0,4}?(?:爱看|喜欢看|口碑|买单|买账|反响)/u;
+const NOT_A_CHARACTER = /版本|剧本|剧情|设定|故事|方案/u;
+const AUDIENCE_NOUN = new RegExp(AUDIENCE_NOUNS, "u");
+
+/** Whether a clause states what an audience prefers: not a character's own taste, not what a plan collects. */
+function preference(clause: string): boolean {
+  if (CHARACTER_TASTE.test(clause) && !NOT_A_CHARACTER.test(clause) && !AUDIENCE_NOUN.test(clause)) return false;
+  return PREFERENCE.test(clause.replace(PLAN_OBJECT, GAP));
+}
+
+/** Wording that restates the person's audience constraint as the work's chosen target (目标观众：…, 拟面向…, 用户指定). */
+const AUDIENCE_TARGET = /目标(?:观众|用户|人群|受众)|^(?:受众|观众|人群)[：:]|面向|针对|适合|邀请|(?:用户|人工)指定|拟定|用户约束|硬约束|用户设定|设定的/u;
+/**
+ * Wording anywhere in the sentence that turns a restated target into evidence about real viewers: a source or the
+ * platform (数据显示, 本平台的受众, 抖音上的目标观众), or a profile, majority or ranking (多为, 付费最多的人群, 普遍爱看).
+ */
+const AUDIENCE_SOURCE = /平台|数据|统计|后台|样本|投放|抖音|快手|视频号|红果|小红书|B站|微博/u;
+const AUDIENCE_PROFILE = /画像|真实用户|调研|调查|报告|行业|多为|大多|多数|大部分|主力|主体|最多|最高|最常见|普遍|头部|付费|占比|居多|偏多|为多|增长|舍得|花钱|消费|上的(?:目标)?(?:观众|用户|受众|人群)/u;
+/** Wording that claims who the real viewers are, read only in the target's own clause (核心受众为…); elsewhere 主要看点 is craft. */
+const AUDIENCE_PROFILE_NEAR = /主要|核心|集中|为主|真实|实际/u;
+/** A disclaimer that the target is no profile or finding (不是平台真实用户画像, 非平台统计结果) claims none. */
+const PROFILE_DISCLAIMER = /(?:不是|并非|不代表|不等于|不依赖|不基于|没有|非)[^，。；]{0,8}?(?:画像|结果|数据|统计|调研)/gu;
+/** The only notes a restatement may carry in brackets: where the target came from, never a source (问卷所得, 同类剧观众). */
+const TARGET_NOTE = /^(?:用户指定|用户约束|硬约束|用户设定|用户填写|拟定|目标|创作目标|待验证|尚待验证)$/u;
 
 const PLAN_NUMBER = new RegExp(`(\\d+(?:\\.\\d+)?|[${CN_DIGITS}]+)\\s*(集|秒|分钟)`, "gu");
 /** Ordinals, spaced or not: 第 3 集, 第二场, 播放量第 3. */
@@ -169,7 +216,10 @@ function numberValue(numeral: string): number | null {
  * The clauses of a text as the checks read them: ids, 9:16 and look-alike words removed, whitespace dropped (约 三 成
  * is 约三成), ordinals settled (a structural one removed, a ranking one kept whole as 名次第N), and the run's own
  * settings removed where a clause is not about viewers or the market (每天观看60秒 is a statistic even for a sixty-
- * second run). A person's own audience constraint, restated verbatim, is removed the same way.
+ * second run). A person's own audience constraint, restated verbatim, is removed only as the chosen target: in a clause
+ * that names it so (目标观众：…, 拟面向…) or holds it alone, with no profile claim in that clause (核心受众为…), in a
+ * sentence that claims nothing measured or about real viewers with it (数据显示…, 根据调研…, 本平台的受众…, …多为…).
+ * The constraint is the person's choice, never a source.
  */
 function sentencesOf(value: string, exempt: ReadonlyArray<AutoExemptNumber>, frozenAudience = ""): string[][] {
   return value
@@ -179,8 +229,35 @@ function sentencesOf(value: string, exempt: ReadonlyArray<AutoExemptNumber>, fro
     .replace(/9\s*[:：]\s*16/g, " ")
     .replace(/％/gu, "%")
     .split(/(?<=[。；;！？!?\n])/u)
-    .map((sentence) => sentence.split(/(?<=[，,])/u).map((raw) => clauseOf(raw, exempt, frozenAudience)))
+    .map((sentence) => {
+      const target = restatableAudience(sentence, frozenAudience);
+      return sentence.split(/(?<=[，,])/u).map((raw) => clauseOf(raw, exempt, target));
+    })
     .filter((sentence) => sentence.some((clause) => clause.length > 0));
+}
+
+/** The frozen audience phrase when this sentence may restate it as the chosen target, else "" (nothing is removed). */
+function restatableAudience(sentence: string, frozenAudience: string): string {
+  if (frozenAudience.length < 2) return "";
+  const compact = sentence.replace(/\s+/gu, "");
+  if (!compact.includes(frozenAudience)) return "";
+  const rest = compact.split(frozenAudience).join(GAP).replace(PROFILE_DISCLAIMER, GAP);
+  if (RESULT.test(rest)) return "";
+  // A source or the platform in a plan clause of its own (计划在平台投放两个版本) is where the plan runs; a profile,
+  // majority or ranking word is a claim about the target in any clause (拟抢占这一付费最多的人群).
+  return rest.split(/(?<=[，,])/u).some((clause) => AUDIENCE_PROFILE.test(clause)
+    || (AUDIENCE_SOURCE.test(clause) && (clause.includes(GAP) || !PLAN.test(clause)))) ? "" : frozenAudience;
+}
+
+/** Whether a clause restates the frozen audience as the target: named so, or the phrase alone (a short note in brackets aside). */
+function restatesTarget(clause: string, frozenAudience: string): boolean {
+  if (frozenAudience.length < 2 || !clause.includes(frozenAudience)) return false;
+  const rest = clause.split(frozenAudience).join(GAP).replace(PROFILE_DISCLAIMER, GAP);
+  if (AUDIENCE_PROFILE_NEAR.test(rest)) return false;
+  const notes = [...rest.matchAll(/[（(]([^）)]*)[）)]/gu)].map((note) => note[1]!);
+  if (notes.some((note) => !TARGET_NOTE.test(note))) return false;
+  const bare = rest.replace(/[（(][^）)]*[）)]/gu, "");
+  return AUDIENCE_TARGET.test(bare) || bare.replace(/[\p{P}\s〓]/gu, "").length === 0;
 }
 
 function clausesOf(value: string, exempt: ReadonlyArray<AutoExemptNumber>, frozenAudience = ""): string[] {
@@ -190,7 +267,7 @@ function clausesOf(value: string, exempt: ReadonlyArray<AutoExemptNumber>, froze
 function clauseOf(raw: string, exempt: ReadonlyArray<AutoExemptNumber>, frozenAudience: string): string {
   return [raw]
     .map((clause) => clause.replace(/\s+/gu, "").replace(ORDINARY_WORDS, GAP))
-    .map((clause) => (frozenAudience.length >= 2 ? clause.split(frozenAudience).join(GAP) : clause))
+    .map((clause) => (restatesTarget(clause, frozenAudience) ? clause.split(frozenAudience).join(GAP) : clause))
     // In a ranking clause no ordinal is a position; in a viewing clause 第 30 秒 is a viewing moment, not the story's.
     .map((clause) => (RANK_MARKERS.test(clause) ? clause : clause.replace(MARKET_CLAUSE.test(clause) ? STRUCTURAL_ORDINAL_IN_MARKET : STRUCTURAL_ORDINAL, GAP))
       .replace(ORDINAL, (ordinal) => `${GAP}${RANK_PREFIX}${ordinal}${GAP}`))
@@ -348,8 +425,26 @@ function refuse(semantic: AutoNumberSemantic, rule: string): Role {
   return { allowed: false, semantic, rule };
 }
 
-/** The role of one number in an uncited clause. */
-function roleOf(hit: NumberHit, clause: string, sentence: string, market: boolean, frame: AutoNumberFrame): Role {
+/**
+ * Whether the judgement a number belongs to is marked pending. A clause naming viewers or the market, or stating what an
+ * audience prefers (更喜欢, 买账, 反响), is its own judgement and needs its own marker: a marker never crosses a comma to
+ * unlock another clause's finding (计划比较两个版本，观众更喜欢三次反转的剧本 is a plan and a finding). A preference
+ * needs a doubt (是否, 可能, 待验证…); a plan word beside it (计划比较两个版本观众更喜欢…, 上线后观众更喜欢…) is no doubt
+ * about it. A story or plan clause is covered by its own marker, else by a marker in every judgement beside it.
+ */
+function pendingJudgement(clause: string, clauses: readonly string[]): boolean {
+  const judgement = (text: string) => MARKET_CLAUSE.test(text) || preference(text);
+  const marked = (text: string) => (preference(text) ? DOUBT.test(text) : PENDING.test(text));
+  if (judgement(clause)) return marked(clause);
+  // Its own plan word covers a plan clause, but not beside an undoubted preference (拟比较两个版本，观众更喜欢反转多的剧本).
+  if (PENDING.test(clause)) return !clauses.some((other) => preference(other) && !DOUBT.test(other));
+  const judgements = clauses.filter(judgement);
+  return judgements.length > 0 && judgements.every(marked);
+}
+
+/** The role of one number in an uncited clause, read with the other clauses of its sentence. */
+function roleOf(hit: NumberHit, clause: string, clauses: readonly string[], market: boolean, frame: AutoNumberFrame): Role {
+  const sentence = clauses.join("");
   const kind = numberKind(hit.token);
   if (kind === "rank") return refuse("market_statistic", "ranking");
   const tail = clause.slice(hit.numeralEnd);
@@ -379,12 +474,13 @@ function roleOf(hit: NumberHit, clause: string, sentence: string, market: boolea
       // A moment of this episode asked about as pending (观众是否会在前 3 秒被吸引) is the episode's timeline.
       if (unit === "秒" || unit === "秒钟" || unit === "分钟") {
         const seconds = value === null ? Infinity : unit === "分钟" ? value * 60 : value;
-        const moment = /(?:前|开头|开场|头)$/u.test(before) && seconds <= frame.episodeSeconds && PENDING.test(sentence);
+        const moment = /(?:前|开头|开场|头)$/u.test(before) && seconds <= frame.episodeSeconds && pendingJudgement(clause, clauses);
         return moment ? { allowed: true, rule: "story_time" } : refuse("market_statistic", "viewing_duration");
       }
       // Days of observation only in a plan's wording (上线后观察七天); a hedge alone (可能三天内流失) is a claim.
       const days = value === null ? null : planDays(value, unit);
-      if (days === null || !PLAN_VERBS.test(sentence)) return refuse("market_statistic", "viewing_duration");
+      // A day count in a clause with no market word may take its plan verb from the next one (上线七天后，计划比较…).
+      if (days === null || !PLAN_VERBS.test(MARKET_CLAUSE.test(clause) ? clause : sentence)) return refuse("market_statistic", "viewing_duration");
       if (days > PLAN_MAX_DAYS) return refuse("market_statistic", "long_observation");
       return { allowed: true, rule: "plan_duration" };
     }
@@ -419,13 +515,16 @@ function roleOf(hit: NumberHit, clause: string, sentence: string, market: boolea
 
 /**
  * The first number an uncited text may not carry, or null. market: the whole text is about viewers (an uncited
- * audience, a direction's audience fit), so every clause is read as a market clause.
+ * audience, a direction's audience fit), so every clause is read as a market clause. A number refused for what it is (a
+ * statistic, a measured result, a frozen conflict) is reported before one refused only for an unmarked judgement.
  */
 export function uncitedNumberFinding(text: string, frame: AutoNumberFrame, options: { market?: boolean } = {}): AutoNumberFinding | null {
+  let unmarked: AutoNumberFinding | null = null;
   for (const clauses of sentencesOf(text, frame.exempt, frame.frozenAudience)) {
     // Viewers, the market and a measured result named anywhere in the sentence carry over its commas (数据显示，三个人里…).
     const sentence = clauses.join("");
-    const sentenceMarket = options.market === true || MARKET_CLAUSE.test(sentence);
+    // A stated audience preference makes the sentence about viewers even with no market word (大家更喜欢三次反转的剧本).
+    const sentenceMarket = options.market === true || MARKET_CLAUSE.test(sentence) || clauses.some(preference);
     for (const clause of clauses) {
       const market = sentenceMarket;
       const proportion = market ? PROPORTION_WORDS.exec(clause)?.[0] : undefined;
@@ -433,16 +532,16 @@ export function uncitedNumberFinding(text: string, frame: AutoNumberFrame, optio
       const ratio = RATIO.exec(clause)?.[0] ?? RATIO_WRITTEN.exec(clause)?.[0];
       if (ratio) return { token: ratio, kind: numberKind(ratio), semantic: "market_statistic", rule: "proportion" };
       for (const hit of hitsOf(clause, market)) {
-        const role = roleOf(hit, clause, sentence, market, frame);
+        const role = roleOf(hit, clause, clauses, market, frame);
         if (!role.allowed) return { token: hit.token, kind: numberKind(hit.token), semantic: role.semantic, rule: role.rule };
-        // A story or plan quantity next to viewers or the market reads as a finding unless the sentence says it is pending.
-        if (market && role.rule !== "story_age" && !PENDING.test(sentence)) {
-          return { token: hit.token, kind: numberKind(hit.token), semantic: "result_claim", rule: "unmarked_audience_judgement" };
+        // A story or plan quantity next to viewers or the market reads as a finding unless its judgement says it is pending.
+        if (market && role.rule !== "story_age" && !pendingJudgement(clause, clauses)) {
+          unmarked ??= { token: hit.token, kind: numberKind(hit.token), semantic: "result_claim", rule: "unmarked_audience_judgement" };
         }
       }
     }
   }
-  return null;
+  return unmarked;
 }
 
 /** The user's own audience constraint as a restatable phrase: only when it carries no share, magnitude or ranking. */

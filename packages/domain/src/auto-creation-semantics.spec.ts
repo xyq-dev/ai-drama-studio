@@ -134,12 +134,17 @@ describe("A. creative quantities and plans are not market claims", () => {
 describe("the v3 prompt and the v3 checks say the same thing", () => {
   it("every example quantity the research prompt offers passes the check; the statistics it names are refused", () => {
     const prompt = buildAutoCreationPrompt("research", input(), context()).user;
+    // The one sentence the prompt gives as what not to write: a plan clause beside an unmarked audience finding.
+    const refused = "计划比较两个版本，观众更喜欢三次反转的剧本";
     const examples = [...prompt.matchAll(/“([^”]+)”/gu)].map((match) => match[1]!)
-      .filter((text) => !["假设", "计划", "建议", "是否、可能、待验证、计划、拟"].includes(text));
+      .filter((text) => !["假设", "计划", "建议", "是否、可能、待验证", "计划、拟", refused].includes(text));
     expect(examples.length).toBeGreaterThan(8);
     for (const example of examples) {
       expect(validateAutoStageOutput("research", limited(hypothesis(`${example}，待验证。`)), input(), context()), example).toMatchObject({ ok: true });
     }
+    expect(prompt).toContain(`不写“${refused}”`);
+    expect(validateAutoStageOutput("research", limited(hypothesis(`${refused}。`)), input(), context()))
+      .toMatchObject({ ok: false, semantic: "result_claim", rule: "unmarked_audience_judgement" });
     expect(prompt).toContain("提示版本：ads.auto-creation.prompt.v3");
   });
 });
@@ -264,5 +269,252 @@ describe("B. market facts and statistics still need a readable source, wherever 
       .toMatchObject({ ok: false, code: "unsourced_number", field: "candidates[0].difficultyNote" });
     expect(validateAutoStageOutput("directions", directions({ audienceFit: "两次反转契合观众" }), input(), ctx))
       .toMatchObject({ ok: false, code: "unsourced_number", field: "candidates[0].audienceFit", semantic: "result_claim" });
+  });
+});
+
+describe("C. a pending marker covers only its own judgement; the frozen audience is a target, never evidence (PR #80 review)", () => {
+  const research = (frozen: AutoCreationFrozenInput, overrides: Record<string, unknown>) =>
+    validateAutoStageOutput("research", limited(overrides), frozen, context(frozen));
+  const audience = (primary: string) => ({ audience: { primary, viewingNeeds: ["x"], emotionalAppeals: ["y"], basis: "hypothesis", sourceIds: [] } });
+  /** Every uncited research field the checks read, holding the one statement. */
+  const uncitedFields = (statement: string): Array<[string, Record<string, unknown>]> => [
+    ["hypotheses[0].statement", hypothesis(statement)],
+    ["hypotheses[0].howToVerify", hypothesis("可能偏爱一集内兑现的故事。", statement)],
+    ["opportunities[0]", { opportunities: [statement] }],
+    ["limitations[0]", { limitations: [statement] }],
+    ["appliedConstraints[0]", { appliedConstraints: [statement] }],
+    ["contentStructure[0].why", { contentStructure: [{ pattern: "主角主动选择推动结果", why: statement, sourceIds: [] }] }],
+    ["audience.primary", audience(statement)],
+  ];
+  const directions = (fields: Record<string, string>) => JSON.stringify({
+    schema: AUTO_CREATION_DIRECTIONS_SCHEMA,
+    candidates: ["D1", "D2"].map((id) => ({
+      id, title: id, logline: `${id}：一个故事`, protagonist: "p", goal: "g", obstacle: "o", stakes: "s", coreEmotion: "e",
+      differentiation: "d", productionDifficulty: "low", difficultyNote: "n", audienceFit: "契合想看小人物扳回一局的观众（假设 H1）", evidenceIds: ["H1"],
+      ratings: { audienceFit: 4, conflictStrength: 4, originality: 4, feasibility: 4, constraintFit: 4 }, ...fields,
+    })),
+  });
+
+  // Each passed the reviewed head (5046fb6): a plan word anywhere in the sentence unlocked the audience finding next to it.
+  const unlocked = [
+    "计划比较两个版本，观众更喜欢三次反转的剧本。",
+    "计划观察七天，观众已经喜欢三次反转的剧本。",
+    "拟比较两个版本，观众更喜欢反转多的剧本。",
+  ];
+  it.each(unlocked.flatMap((statement) => uncitedFields(statement).map(([field, overrides]) => [statement, field, overrides] as const)))(
+    "a plan in one clause does not unlock the finding in another: %s in %s", (_statement, field, overrides) => {
+      expect(research(input(), overrides)).toMatchObject({ ok: false, code: "unsourced_number", field, semantic: "result_claim" });
+    });
+
+  it("a plan does not unlock a finding in a direction's notes either", () => {
+    const ctx = { ...context(), research: JSON.parse(limited()) as never };
+    for (const field of ["differentiation", "difficultyNote", "audienceFit"]) {
+      expect(validateAutoStageOutput("directions", directions({ [field]: unlocked[0]! }), input(), ctx), field)
+        .toMatchObject({ ok: false, code: "unsourced_number", field: `candidates[0].${field}`, semantic: "result_claim" });
+    }
+  });
+
+  it.each([
+    "待验证观众是否更喜欢两次反转的版本。",
+    "受众是否喜欢这种结尾，计划比较两个版本后再判断。",
+    "计划上线后观察七天，再比较两个版本的反馈。",
+    "观众可能更喜欢反转，主角经历三次误会。",
+    "主角经历三次误会，观众是否买账还待验证。",
+  ])("a pending judgement next to a plan or a story quantity still passes: %s", (statement) => {
+    for (const [field, overrides] of uncitedFields(statement)) {
+      expect(research(input(), overrides), field).toMatchObject({ ok: true });
+    }
+  });
+
+  const frozen = input({ constraints: autoCreationConstraintsSchema.parse({ audience: "25-35岁的女性" }) });
+
+  // Each passed the reviewed head: the frozen phrase was removed before the sentence was read, numbers and all.
+  const asEvidence = [
+    "数据显示，本平台的受众主要是25-35岁的女性。",
+    "已通过调研确认，核心受众为25-35岁的女性。",
+    "本平台的受众主要是25-35岁的女性。",
+    "调研确认核心受众为25-35岁的女性。",
+    "目标观众是25-35岁的女性，这是平台真实用户画像。",
+  ];
+  it.each(asEvidence.flatMap((statement) => uncitedFields(statement).map(([field, overrides]) => [statement, field, overrides] as const)))(
+    "the frozen audience is no evidence: %s in %s", (_statement, field, overrides) => {
+      expect(research(frozen, overrides)).toMatchObject({ ok: false, code: "unsourced_number", field });
+    });
+
+  it("the frozen audience is no evidence in a direction's notes either", () => {
+    const ctx = { ...context(frozen), research: JSON.parse(limited()) as never };
+    for (const field of ["differentiation", "difficultyNote", "audienceFit"]) {
+      for (const statement of asEvidence.slice(0, 2)) {
+        expect(validateAutoStageOutput("directions", directions({ [field]: statement }), frozen, ctx), `${field}: ${statement}`)
+          .toMatchObject({ ok: false, code: "unsourced_number", field: `candidates[0].${field}` });
+      }
+    }
+  });
+
+  it.each([
+    "拟面向25-35岁的女性创作，尚待验证。",
+    "目标观众：25-35岁的女性（用户指定）。",
+    "本作品针对25-35岁的女性，是否喜欢待验证。",
+  ])("the frozen audience restated as the chosen target passes: %s", (statement) => {
+    for (const [field, overrides] of uncitedFields(statement)) {
+      expect(research(frozen, overrides), field).toMatchObject({ ok: true });
+    }
+    const ctx = { ...context(frozen), research: JSON.parse(limited()) as never };
+    expect(validateAutoStageOutput("directions", directions({ audienceFit: statement, differentiation: statement }), frozen, ctx)).toMatchObject({ ok: true });
+  });
+
+  // The independent review of this fix: false refusals it introduced first, then bypasses it left (frozen audience 25-35岁的女性).
+  it.each([
+    ["面向成年观众，计划比较两个版本。", input()],
+    ["目标观众是通勤上班族，可能偏爱两次反转。", input()],
+    ["面向想看逆袭的观众，主角可能经历两次反转。", input()],
+    ["契合想看逆袭的观众，拟设计两次反转。", input()],
+    ["上线七天后，计划比较两个版本的观众留存。", input()],
+    ["上线三天后，计划收集观众评论。", input()],
+    ["拟比较两个版本，看观众是否更喜欢三次反转。", input()],
+    ["目标观众：25-35岁的女性，可能偏爱两次反转。", frozen],
+    ["25-35岁的女性", frozen],
+    ["受众：25-35岁的女性", frozen],
+    ["25-35岁的女性（用户约束）", frozen],
+    ["用户设定的受众：25-35岁的女性", frozen],
+    ["目标受众：25-35岁的女性（硬约束）", frozen],
+    ["适合25-35岁的女性", frozen],
+    ["目标观众：25-35岁的女性（用户指定），主要看点是逆袭。", frozen],
+    ["拟面向25-35岁的女性创作，核心冲突是职场逆袭。", frozen],
+    ["拟面向25-35岁的女性，以女主成长为主线。", frozen],
+    ["目标观众为25-35岁的女性（用户指定），故事集中在一个夜晚。", frozen],
+    // 实际 in another clause is craft; a story count beside it in audience.primary would need its own pending marker.
+    ["面向25-35岁的女性，实际拍摄只用室内场景。", frozen],
+    ["目标观众为25-35岁的女性（用户指定），非平台统计结果。", frozen],
+  ] as const)("review: %s passes in every uncited field", (statement, frozenInput) => {
+    for (const [field, overrides] of uncitedFields(statement)) {
+      expect(research(frozenInput, overrides), field).toMatchObject({ ok: true });
+    }
+  });
+
+  it.each([
+    ["行业报告称目标观众多为25-35岁的女性。", frozen],
+    ["根据调研，目标观众是25-35岁的女性。", frozen],
+    ["调研结果：目标观众为25-35岁的女性。", frozen],
+    ["后台数据里目标观众是25-35岁的女性。", frozen],
+    ["短剧用户里，目标观众25-35岁的女性最多。", frozen],
+    ["目标观众是25-35岁的女性，是短剧付费最多的人群。", frozen],
+    ["用户指定的25-35岁的女性是这类剧的头部人群。", frozen],
+    ["目标观众为25-35岁的女性，她们普遍爱看逆袭剧。", frozen],
+    ["目标观众：25-35岁的女性，是复仇剧最常见的观众。", frozen],
+    ["核心受众为25-35岁的女性。", frozen],
+    ["计划比较两个版本观众更喜欢三次反转的剧本。", input()],
+    ["计划比较两个版本：观众更喜欢三次反转的剧本。", input()],
+    ["计划比较两个版本、观众更喜欢三次反转的剧本。", input()],
+    ["计划比较两个版本——观众更喜欢三次反转的剧本。", input()],
+    ["计划比较两个版本 观众更喜欢三次反转的剧本。", input()],
+    ["（计划比较两个版本）观众更喜欢三次反转的剧本。", input()],
+    ["观众更喜欢三次反转的剧本（计划比较两个版本）。", input()],
+    ["上线后观众更喜欢三次反转的剧本。", input()],
+    ["观众对比后更喜欢三次反转的剧本。", input()],
+    ["观众统计后更喜欢三次反转的剧本。", input()],
+    ["观众准备好为三次反转买单。", input()],
+    ["三次反转的剧本反响最好，观众是否买账待验证。", input()],
+    ["三次反转的剧本最受追捧，观众是否喜欢待验证。", input()],
+    ["观众爱看逆袭，两次反转的设定可能更有张力。", input()],
+  ] as const)("review: %s is refused in every uncited field", (statement, frozenInput) => {
+    for (const [field, overrides] of uncitedFields(statement)) {
+      expect(research(frozenInput, overrides), field).toMatchObject({ ok: false, code: "unsourced_number", field });
+    }
+  });
+
+  // The second pass of the review: verification plans and story text it found refused, then bypasses it found left.
+  it.each([
+    ["计划比较两个版本的观众反响。", input()],
+    ["计划比较两个版本，观察观众反响。", input()],
+    ["拟比较两个版本，收集观众口碑。", input()],
+    ["上线后观察七天，收集观众的口碑反馈。", input()],
+    ["计划比较两个版本，看观众更喜欢哪一个。", input()],
+    ["拟测试两个结尾，看哪个更受欢迎。", input()],
+    ["女主爱看言情小说，计划比较两个版本的开场。", input()],
+    ["主角口碑很差，观众可能同情她，她要经历三次误会。", input()],
+    ["反派在村里口碑很好，观众是否会识破待验证，拟设计两次反转。", input()],
+    ["主角想买单却被拒绝两次，观众可能会共情。", input()],
+    ["观众是否喜欢反转待验证，女主最受婆婆刁难，经历两次反转。", input()],
+    ["目标观众：25-35岁的女性（用户指定），计划上线后统计两个版本的完播率。", frozen],
+    ["拟面向25-35岁的女性，计划在平台投放两个版本。", frozen],
+    ["目标观众：25-35岁的女性，计划收集两个版本的观看数据。", frozen],
+    ["目标观众：25-35岁的女性（用户指定），故事不依赖真实平台数据。", frozen],
+    ["邀请25-35岁的女性试看两个版本，收集反馈。", frozen],
+  ] as const)("review, second pass: %s passes in every uncited field", (statement, frozenInput) => {
+    for (const [field, overrides] of uncitedFields(statement)) {
+      expect(research(frozenInput, overrides), field).toMatchObject({ ok: true });
+    }
+  });
+
+  it.each([
+    ["三次反转的剧本反响最好。", input()],
+    ["三次反转的剧本口碑最好。", input()],
+    ["大家更喜欢三次反转的剧本。", input()],
+    ["年轻女性偏爱三次反转的剧本。", input()],
+    ["三次反转的剧本最受追捧。", input()],
+    ["大家更喜欢三次反转的剧本，计划比较两个版本。", input()],
+    ["观众不可能不喜欢三次反转的剧本。", input()],
+    ["抖音受众：25-35岁的女性", frozen],
+    ["复仇剧受众：25-35岁的女性", frozen],
+    ["短剧受众：25-35岁的女性", frozen],
+    ["受众：25-35岁的女性居多", frozen],
+    ["目标观众：25-35岁的女性为多", frozen],
+    ["抖音上的目标观众是25-35岁的女性。", frozen],
+    ["目标观众：25-35岁的女性，这一人群增长最快", frozen],
+    ["适合25-35岁的女性，她们最舍得花钱", frozen],
+    ["25-35岁的女性（问卷所得）", frozen],
+    ["25-35岁的女性（以往爆款）", frozen],
+    ["目标观众：25-35岁的女性（同类剧观众）", frozen],
+  ] as const)("review, second pass: %s is refused in every uncited field", (statement, frozenInput) => {
+    for (const [field, overrides] of uncitedFields(statement)) {
+      expect(research(frozenInput, overrides), field).toMatchObject({ ok: false, code: "unsourced_number", field });
+    }
+  });
+
+  // The third pass of the review: each exemption of the second pass reopened a finding; they now fail closed.
+  it("review, third pass: a character's own standing with a pronoun passes", () => {
+    for (const [field, overrides] of uncitedFields("观众可能同情主角，她在村里口碑很差，经历三次误会。")) {
+      expect(research(input(), overrides), field).toMatchObject({ ok: true });
+    }
+  });
+
+  it.each([
+    ["收集到的观众口碑最好的是三次反转的剧本。", input()],
+    ["跟踪下来三次反转的版本口碑最好。", input()],
+    ["上线后三次反转的版本口碑最好。", input()],
+    ["了解到三次反转的版本口碑更好。", input()],
+    ["看看口碑就知道三次反转的剧本最好。", input()],
+    ["记录显示三次反转的版本反响最好。", input()],
+    ["对比两个版本的口碑，三次反转的版本最好。", input()],
+    ["对比两个版本的口碑后三次反转的版本胜过两次反转的版本。", input()],
+    ["三次反转的主角最受追捧。", input()],
+    ["女主三次反转的版本口碑最好。", input()],
+    ["两个主角的版本更受追捧。", input()],
+    ["主角经历三次反转的版本更买账。", input()],
+    ["主角三次反转的剧情反响最好，观众是否买账待验证。", input()],
+    ["无论哪种观众都更喜欢三次反转的剧本。", input()],
+    ["哪个版本都不如三次反转的版本受欢迎。", input()],
+    ["哪些人都偏爱三次反转的剧本。", input()],
+    ["观众不管哪一版都更爱三次反转。", input()],
+    ["有三次反转的角色设定最吸引人。", input()],
+    ["他们买单三次反转。", input()],
+    ["哪种结尾观众最终还是更爱三次反转。", input()],
+    ["目标观众：25-35岁的女性，准备抓住这一平台主力人群。", frozen],
+    ["面向25-35岁的女性，拟抢占这一付费最多的人群。", frozen],
+    ["目标观众：25-35岁的女性，计划沿用抖音上占比最高的人群。", frozen],
+    ["目标观众：25-35岁的女性，主角就是平台的主力用户。", frozen],
+    ["拟面向25-35岁的女性，计划服务这一消费主力。", frozen],
+    ["目标观众：25-35岁的女性，拟针对行业头部人群。", frozen],
+    ["目标观众：25-35岁的女性，计划沿用调研里的主力人群。", frozen],
+  ] as const)("review, third pass: %s is refused in every uncited field", (statement, frozenInput) => {
+    for (const [field, overrides] of uncitedFields(statement)) {
+      expect(research(frozenInput, overrides), field).toMatchObject({ ok: false, code: "unsourced_number", field });
+    }
+  });
+
+  it("without the frozen constraint the same target sentence is still an audience age", () => {
+    expect(research(input(), hypothesis("拟面向25-35岁的女性创作，尚待验证。")))
+      .toMatchObject({ ok: false, code: "unsourced_number", semantic: "market_statistic", rule: "audience_age" });
   });
 });
