@@ -85,6 +85,41 @@ const RESULT = new RegExp([
   "已(?:经)?(?:比较|对比|测试|验证|观察|统计|调查|投放|测出|证明|证实|确认|上线)",
   "(?:经过?|通过)[^，。]{0,4}?(?:测试|验证|统计|调查|调研|投放|试看)",
 ].join("|"), "u");
+/** Settled wordings without a result verb of RESULT (据统计, 实践证明, 业内公认). */
+const SETTLED = /据(?:统计|调查|调研|数据|测算|观察)|(?:实践|事实|经验|研究)(?:证明|表明)|业内公认|行业公认|公认|普遍认为|众所周知/u;
+/** Settled wordings about the market by themselves, with or without a viewer or market word (业内公认这种结构最有效). */
+const SETTLED_MARKET = /据(?:统计|调查|调研|数据|测算)|业内公认|行业公认/u;
+/**
+ * A plan or a doubt that is all the clause says before its result wording, which keeps it pending (计划通过试看验证…,
+ * 若数据显示…). Anything else before it (期待的…, 女将军题材, 若即若离的感情线) qualifies nothing.
+ */
+const SETTLED_QUALIFIER = /^(?:我们|团队|本剧|制作方)?(?:计划|拟|打算|准备|将要|如果|若|假如|假设|设想)(?:在[^，,。]{0,8}?[后前时])?(?:先|再|要|用|以)?$/u;
+/**
+ * A character as the subject right before a result wording, finding something that is not about viewers or the market
+ * (主角调查发现站长在说谎, 主角的调查发现站长伪造账本): the story, not a finding. Only the character, alone before an
+ * investigation's wording: 其他调查发现…, 观众对主角的调研证明…, 主角的数据显示… and 她调查发现观众… are findings.
+ */
+/**
+ * A finding that names the work's own design or uses a word that only evaluates (这种结构有效, 这个人设最受用): never a
+ * character's plot discovery. Whole words only: 好友, 灵堂, 更多 and 更衣室 are no evaluation.
+ */
+const WORK_VERDICT = /结尾|结局|结构|开场|开头|版本|剧本|剧情|故事|题材|写法|节奏|设定|人设|反转|桥段|套路|钩子|支线|冲突|悬念|本剧|该剧|此剧|这部剧|有效|有用|受用|管用|奏效|感人|感动|动人|带劲|抓人|吸引人|留得住|吸睛|好用|好使|灵验|灵光|精妙|绝伦|灵招|妙招|绝招|高招/u;
+/**
+ * An evaluation by its structure, not by a single character wherever it stands. A degree word in predicate position,
+ * after a subject in the same part (这招很灵, 先抑后扬更胜一筹, 上述手法最具感染力, 这样写更能留住人); at the start of the
+ * finding, or before a quantity or a time (更多线索, 更衣室藏着证据, 最后一页, 最早), it judges nothing. An evaluating word
+ * ending its part (该招灵, 其手法妙, 反派越狠越好, 这种做法成功了), or an evaluating character carried on (妙不可言, 灵得出奇,
+ * 妙极了). 好友, 灵堂 and 真相 are none of these.
+ */
+const EVALUATION = new RegExp([
+  "(?<=[^，,。])(?:最为|更为|极其|极为|非常|十分|特别|最|更|很|太|够|极|挺)(?!多|少|后|初|终|近|早|先)",
+  "(?<=[^，,。])相当(?!于)",
+  "(?:超|真|蛮|颇)(?:好|灵|妙|棒|赞|精彩|厉害|出彩)",
+  "^(?:最|更)[^，,。]{0,3}的(?:是|就是)",
+  "(?:灵|妙|好|棒|成功|好用|管用|奏效)(?:了|啊|吧|呀|的|呢|嘛|哉)?$|绝了$",
+  "(?:灵|妙|绝)(?:不可言|得|极|透)",
+].join("|"), "u");
+const STORY_FINDER = /^(?:主人公|主角|女主|男主|配角|反派|[她他])的?$/u;
 /** Verbs of a verification plan (对比两个版本, 收集反馈): a plan by its wording, not by its field. */
 const PLAN_VERBS = /对比(?!过)|统计(?!显示|表明|发现)|收集|邀请|跟踪|追踪|试看|投放(?!过)|测试(?!显示|发现|表明|过)|观察(?!到)|比较(?=[两二三几\d]|不同|各)|上线后/u;
 /** Wording that keeps an audience judgement pending or makes it a plan. 目标 is no such word (目标观众 is a target, not a doubt). */
@@ -360,6 +395,29 @@ const NOUNS: ReadonlyArray<readonly [NounGroup, readonly string[]]> = [
     "支线", "视角", "时间线", "故事", "人设", "设定", "桥段", "版本", "方案", "方向", "选题", "标题", "节点", "情绪", "愿望", "约定", "承诺", "条件"]],
 ];
 const NOUN_STOP = /[\d０-９，。；;！？!?,、：:（）()「」“”"'〓\s]/u;
+/**
+ * Common trades and roles of a short drama's people, right after a count's classifier. In a clause about viewers or the
+ * market they are counted as 人, so a count of them there is still an audience count (三名学生观众).
+ */
+const OCCUPATION_NOUN = "职业人物";
+/**
+ * Counted people giving a verdict are a source, not a cast: a verdict by itself (三名学生都给了好评, 五名学生都说好看,
+ * 三位老师一致推荐), or a weaker one about the work or a way of writing it (三个记者都夸这个结尾, 五名主播都用这种开场). A
+ * story's own people may still think, agree, deny or recommend (两名警察认为主角是凶手, 两个同事互相推荐对方背锅), and a
+ * sentence may still name the work or a way (本剧让三名骑手被迫合作, 三名骑手用这种方式逃脱).
+ */
+const VERDICT = /好评|差评|高分|低分|打分|评分|点赞|叫好|说好看|都说好(?!一起)|一致推荐|一致认可|都推荐|都认可|都满意|称赞/u;
+const WEAK_VERDICT = /夸|赞|认可|推荐|满意|都说|都觉得|都认为|都用|都在用|都选|买单|爱看/u;
+/**
+ * A verdict the story is about rather than one the counted people give (三名学生因一条差评联手追查真相, 三名骑手遭遇恶意
+ * 差评后决定寻找证据): a verdict noun right after a cause or an event, with at most a fixed modifier between, and a plot
+ * consequence right after it. Anything else (收到剧本后好评不断, 因样片好评, 被感动后好评连连) is their verdict.
+ */
+const PLOT_CAUSE = /(?:因为?|由于|遭遇|遇到|收到)(?:一条|一则|一个|几条|一份|恶意|匿名|顾客的|客户的|网友的)?$/u;
+const PLOT_VERDICT_NOUN = /^(?:好评|差评|高分|低分)/u;
+const PLOT_CONSEQUENCE = /^(?:后|之后|而)|^(?:联手|决定|反目|追查|寻找|报复|陷入|失去|翻脸|结下|被开除|被停职|丢了)/u;
+const WORK = /结尾|结局|结构|开场|开头|版本|剧本|剧情|题材|写法|节奏|设定|本剧|该剧|此剧|这部剧|这种|这类|这个/u;
+const OCCUPATION = /^(?:骑手|外卖员|快递员|司机|医生|护士|警察|律师|老师|教师|学生|厨师|保安|保镖|服务员|店员|员工|职员|工人|记者|主播|网红|秘书|助理|经理|老板|总裁|室友|同事|邻居|乘客|租客|房客|房东|顾客|嫌疑人|证人|绑匪|小偷|保姆|村民|士兵|侦探|选手|歌手|女孩|男孩|少女|少年)/u;
 
 function nounAt(text: string, at: number): { group: NounGroup; noun: string } | null {
   for (const [group, nouns] of NOUNS) {
@@ -379,6 +437,8 @@ function countedNoun(tail: string): { group: NounGroup; noun: string } | null {
   let end = 0;
   while (end < rest.length && end < 12 && !NOUN_STOP.test(rest[end]!)) end += 1;
   const window = rest.slice(0, end);
+  // People named by their trade or role right after the count (三名骑手, 两个室友) are a cast; see OCCUPATION_NOUN.
+  if (OCCUPATION.test(window)) return { group: "cast", noun: OCCUPATION_NOUN };
   const de = window.lastIndexOf("的", 9);
   if (de >= 0) {
     const head = nounAt(window, de + 1);
@@ -443,6 +503,18 @@ function pendingJudgement(clause: string, clauses: readonly string[]): boolean {
 }
 
 /** The role of one number in an uncited clause, read with the other clauses of its sentence. */
+/** Whether a clause has a verdict its people give, not only one that befalls them in the story (三名学生因一条差评…). */
+function givenVerdict(clause: string): boolean {
+  const all = new RegExp(VERDICT.source, "gu");
+  for (let found = all.exec(clause); found !== null; found = all.exec(clause)) {
+    const rest = clause.slice(found.index);
+    const plot = PLOT_CAUSE.test(clause.slice(0, found.index)) && PLOT_VERDICT_NOUN.test(rest)
+      && PLOT_CONSEQUENCE.test(rest.slice(2)) && !/看|追更|付费|充值|买单/u.test(rest);
+    if (!plot) return true;
+  }
+  return false;
+}
+
 function roleOf(hit: NumberHit, clause: string, clauses: readonly string[], market: boolean, frame: AutoNumberFrame): Role {
   const sentence = clauses.join("");
   const kind = numberKind(hit.token);
@@ -499,7 +571,11 @@ function roleOf(hit: NumberHit, clause: string, clauses: readonly string[], mark
   if (counted.group === "audience") return refuse("market_statistic", "audience_count");
   if (counted.group === "cast") {
     // People counted in a clause about viewers or the market are viewers (三百人愿意付费), not a cast.
-    if (market && counted.noun === "人") return refuse("market_statistic", "audience_count");
+    if (market && (counted.noun === "人" || counted.noun === OCCUPATION_NOUN)) return refuse("market_statistic", "audience_count");
+    // Counted trades that judge or recommend are a reported reaction, not a story's cast.
+    if (counted.noun === OCCUPATION_NOUN && (givenVerdict(clause) || (WEAK_VERDICT.test(clause) && WORK.test(clause)))) {
+      return refuse("result_claim", "measured_result");
+    }
     if (value === null || value > CAST_SCHEMA_MAX) return market ? refuse("market_statistic", "audience_count") : refuse("unclassified", "count_out_of_range");
     if (frame.maxCharacters !== null && value > frame.maxCharacters) return refuse("frozen_conflict", "cast_over_limit");
     return { allowed: true, rule: "story_cast" };
@@ -553,4 +629,25 @@ export function frozenAudiencePhrase(audience: string): string {
     return kind === "rank" || kind === "percent" || /^(?:%|成|[十百千]?[万亿]|倍)/u.test(clause.slice(hit.numeralEnd)) || /[万亿倍]$/u.test(hit.token);
   }));
   return statistic ? "" : phrase;
+}
+
+/**
+ * Whether a text states a measured or settled finding about viewers or the market, numbers or not (调查证明观众更喜欢反转,
+ * 已验证这类结尾受欢迎): a clause with a result's wording and no pending mark, in a sentence about viewers or the market.
+ */
+export function settledMarketClaim(text: string): boolean {
+  return text.replace(INVISIBLE, "").replace(/\s+/gu, "").split(/[。；;！？!?]/u).some((sentence) => {
+    const clauses = sentence.split(/(?<=[，,])/u);
+    const market = MARKET_CLAUSE.test(sentence) || clauses.some(preference) || SETTLED_MARKET.test(sentence);
+    return market && clauses.some((clause, index) => {
+      const found = RESULT.exec(clause) ?? SETTLED.exec(clause);
+      if (found === null) return false;
+      const before = clause.slice(0, found.index);
+      // What was found: the rest of the sentence, past its commas (他调查发现，观众更喜欢反转).
+      const after = clause.slice(found.index + found[0].length) + clauses.slice(index + 1).join("");
+      const story = STORY_FINDER.test(before) && found[0].startsWith("调查") && !MARKET_CLAUSE.test(after) && !preference(after)
+        && !WORK_VERDICT.test(after) && !after.split(/[，,]/u).some((part) => EVALUATION.test(part));
+      return !SETTLED_QUALIFIER.test(before) && !story;
+    });
+  });
 }

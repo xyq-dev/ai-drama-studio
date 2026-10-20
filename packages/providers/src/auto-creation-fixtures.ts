@@ -4,6 +4,7 @@ import {
   AUTO_CREATION_EPISODE_SCHEMA,
   AUTO_CREATION_OUTLINE_SCHEMA,
   AUTO_CREATION_RESEARCH_SCHEMA,
+  AUTO_CREATION_RESEARCH_SCHEMA_V1,
   AUTO_CREATION_REVIEW_SCHEMA,
   AUTO_REVIEW_DIMENSIONS,
   type AutoBible,
@@ -11,6 +12,7 @@ import {
   type AutoEpisode,
   type AutoOutline,
   type AutoResearch,
+  type AutoResearchV1,
   type AutoReview,
 } from "@ai-drama/contracts";
 import { ANTHROPIC_MESSAGES_URL, DEEPSEEK_CHAT_COMPLETIONS_URL, type WritingTransport } from "./text-writing";
@@ -57,6 +59,12 @@ export function fixtureAutoCreativeResearch(options: { hiddenStatistic?: boolean
   const base = fixtureAutoResearch({ citeCraft: false });
   return {
     ...base,
+    // The test-site refusal's shape, now split: the method as quoted (no count in it) and this work's two reversals.
+    contentStructure: [
+      { reference: { sourceId: "S-KB-CRAFT", quote: "关键结果来自主角的选择和行动" },
+        application: { pattern: "模型替身样例：计划用两次反转推动主角主动选择。", why: "这是本作品的创作设计。" } },
+      { reference: null, application: { pattern: "模型替身样例：三名骑手被迫合作，三天内找出真相。", why: "自主创作设计，没有对应的方法资料。" } },
+    ],
     hypotheses: [
       { id: "H1", statement: "模型替身样例：两个互不信任的人被迫共同寻找真相，这种设定可能带来悬念。",
         howToVerify: options.hiddenStatistic ? "拟比较两个版本，女性观众占比约六成。" : "受众是否喜欢这种结尾，计划比较两个版本后再判断。" },
@@ -68,7 +76,10 @@ export function fixtureAutoCreativeResearch(options: { hiddenStatistic?: boolean
   };
 }
 
-export function fixtureAutoResearch(options: { fabricatedNumber?: boolean; citeCraft?: boolean } = {}): AutoResearch {
+/** Craft wording no source has: a quote the checks refuse (never dropped or set to null to pass). */
+export const AUTO_FIXTURE_FORGED_QUOTE = "反转次数以两次为最佳";
+
+export function fixtureAutoResearch(options: { fabricatedNumber?: boolean; citeCraft?: boolean; forgedQuote?: boolean; structureStatistic?: boolean } = {}): AutoResearch {
   return {
     schema: AUTO_CREATION_RESEARCH_SCHEMA,
     facts: options.citeCraft === false ? [] : [{
@@ -90,11 +101,22 @@ export function fixtureAutoResearch(options: { fabricatedNumber?: boolean; citeC
       basis: "hypothesis",
       sourceIds: [],
     },
-    contentStructure: [{ pattern: "主角主动选择推动结果", why: "知识库要求关键结果来自主角的行动。", sourceIds: ["S-KB-CRAFT"] }],
+    contentStructure: [{
+      reference: { sourceId: "S-KB-CRAFT", quote: options.forgedQuote ? AUTO_FIXTURE_FORGED_QUOTE : "关键结果来自主角的选择和行动" },
+      application: { pattern: options.structureStatistic ? "模型替身样例：约三成观众偏爱两次反转，所以主角主动选择。" : "主角主动选择推动结果",
+        why: "知识库要求关键结果来自主角的行动。" },
+    }],
     opportunities: ["小人物在一个夜晚完成一次反击"],
     limitations: ["官方入口页面没有读到正文，受众判断都是假设。"],
     appliedConstraints: ["单集、约一分钟"],
   };
+}
+
+/** Research as the v1 code stored it (pattern, why and sourceIds in one item): history only, never a new answer. */
+export function fixtureAutoResearchV1(): AutoResearchV1 {
+  const { contentStructure: _structure, ...rest } = fixtureAutoResearch();
+  return { ...rest, schema: AUTO_CREATION_RESEARCH_SCHEMA_V1,
+    contentStructure: [{ pattern: "主角主动选择推动结果", why: "知识库要求关键结果来自主角的行动。", sourceIds: ["S-KB-CRAFT"] }] };
 }
 
 export function fixtureAutoDirections(): AutoDirections {
@@ -326,6 +348,10 @@ export interface AutoFixturePlan {
   /** Every revision still has six scenes (so the run ends at needs work). */
   revisionsStayLong?: boolean;
   fabricatedNumber?: boolean;
+  /** A structure quote found in no source (refused at research). */
+  forgedQuote?: boolean;
+  /** A share in a structure's application beside a real quote (refused at research). */
+  structureStatistic?: boolean;
   /** Research and directions that count their own story and plans (checks v3 accepts them). */
   creativeQuantities?: boolean;
   /** Like creativeQuantities, with an unsourced share hidden in a verification plan (refused). */
@@ -344,7 +370,7 @@ export function autoFixtureAnswer(user: string, plan: AutoFixturePlan = {}): unk
   const count = autoFixtureEpisodeCount(user);
   if (stage === "research") {
     return plan.creativeQuantities || plan.hiddenStatistic ? fixtureAutoCreativeResearch({ hiddenStatistic: plan.hiddenStatistic, episodeCount: count })
-      : fixtureAutoResearch({ fabricatedNumber: plan.fabricatedNumber });
+      : fixtureAutoResearch({ fabricatedNumber: plan.fabricatedNumber, forgedQuote: plan.forgedQuote, structureStatistic: plan.structureStatistic });
   }
   if (stage === "directions") return plan.creativeQuantities ? fixtureAutoCreativeDirections() : fixtureAutoDirections();
   if (stage === "bible") return plan.soloCast ? fixtureAutoSoloBible() : plan.crowdedCast ? fixtureAutoCrowdedBible() : fixtureAutoBible();

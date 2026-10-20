@@ -11,6 +11,8 @@ import {
   AUTO_RATING_KEYS,
   AUTO_REVIEW_DIMENSIONS,
   AUTO_REVIEW_DIMENSION_LABELS,
+  AUTO_STRUCTURE_QUOTE_MAX,
+  AUTO_STRUCTURE_QUOTE_MIN,
   WRITING_BODY_MAX_CHARS,
   autoBibleSchema,
   autoDirectionsSchema,
@@ -22,6 +24,7 @@ import {
   autoStageEpisodeNo,
   autoStageKind,
   autoStageRound,
+  autoStructureViews,
   autoCreationRevisionsPerRound,
   type AutoBible,
   type AutoCheckFinding,
@@ -39,8 +42,9 @@ import {
   type AutoSourcesOutput,
   type AutoStageOutput,
   type AutoStageRecord,
+  type AutoStoredResearch,
 } from "@ai-drama/contracts";
-import { frozenAudiencePhrase, numberKind, numberTokens, uncitedNumberFinding, type AutoNumberFrame } from "./auto-creation-numbers";
+import { frozenAudiencePhrase, numberKind, numberTokens, settledMarketClaim, uncitedNumberFinding, type AutoNumberFrame } from "./auto-creation-numbers";
 import { isMarketSource, readableSources } from "./auto-creation-sources";
 import { canonicalInputHash } from "./text-chain";
 
@@ -89,7 +93,8 @@ export const AUTO_REVIEW_RUBRIC: Readonly<Record<string, string>> = {
 
 export interface AutoCreationContext {
   sources?: AutoSourcesOutput;
-  research?: AutoResearch;
+  /** Research as stored: v1 from before the structure split, read as it was. */
+  research?: AutoStoredResearch;
   directions?: AutoDirectionsOutput;
   bible?: AutoBible;
   outline?: AutoOutline;
@@ -106,7 +111,7 @@ export function autoContextFromStages(stages: readonly AutoStageRecord[]): AutoC
   for (const stage of done) {
     const kind = autoStageKind(stage.stageKey);
     if (kind === "sources") context.sources = stage.output as AutoSourcesOutput;
-    else if (kind === "research") context.research = stage.output as AutoResearch;
+    else if (kind === "research") context.research = stage.output as AutoStoredResearch;
     else if (kind === "directions") context.directions = stage.output as AutoDirectionsOutput;
     else if (kind === "bible") context.bible = stage.output as AutoBible;
     else if (kind === "outline") context.outline = stage.output as AutoOutline;
@@ -257,6 +262,15 @@ function chosenDirection(context: AutoCreationContext): AutoDirection {
   return directions.candidates.find((item) => item.id === directions.selection.chosenId)!;
 }
 
+const STRUCTURE_NOTE = "研究里的内容结构：“参考方法原文”是资料原文，“本剧应用设计”是本作品自己的创作设计，不是资料或市场结论；“历史版本”是旧格式，没有区分两者。";
+
+/** A research's content structures for a later prompt: the quoted method and the work's own design apart, by name. */
+function structureForPrompt(research: AutoStoredResearch): unknown[] {
+  return autoStructureViews(research).map((item) => item.version === "v1"
+    ? { 历史版本: { pattern: item.pattern, why: item.why, sourceIds: item.sourceIds } }
+    : { 参考方法原文: item.reference ?? "无（自主创作设计）", 本剧应用设计: item.application });
+}
+
 function episodeShape(input: AutoCreationFrozenInput, episodeNo: number): string[] {
   const range = shotSecondsRange(input.episodeSeconds);
   const last = episodeNo === input.episodeCount;
@@ -283,11 +297,15 @@ export function buildAutoCreationPrompt(stageKey: string, input: AutoCreationFro
       "observations：基于参考资料样本的观察，必须写 sourceIds。",
       "hypotheses：你的判断和推测，写明如何验证（howToVerify 是将来的验证计划，不是已经做过的调查）；没有来源的受众判断都放在这里。",
       "audience：主要目标观众、观看需求、情绪诉求；只有每一项都有资料支持时 basis 才能是 sourced，否则是 hypothesis。",
-      "contentStructure：可借鉴的内容结构（人物动机、冲突机制、节奏、情绪兑现），只提炼方法，不复制原作。",
+      "contentStructure：可借鉴的内容结构（人物动机、冲突机制、节奏、情绪兑现），只提炼方法，不复制原作。每条分开写两部分：",
+      `- reference：你实际读到的方法原文。sourceId 写一条可引用资料的编号，quote 从这一条资料的摘录正文里逐字摘一段连续原文（${String(AUTO_STRUCTURE_QUOTE_MIN)}–${String(AUTO_STRUCTURE_QUOTE_MAX)} 字，不改字，不拼接两处或两条资料，不截断数字）；`
+        + "没有合适的方法资料时 reference 写 null，表示这一条是自主创作设计，不要伪装成引用。",
+      "- application：本剧怎样应用（pattern 写本剧的结构设计，why 写理由），是本作品的原创设计，可以写本剧的创作数量（如“计划用两次反转推动主角主动选择”），这些数量不需要出现在 quote 里；"
+        + "但 application 不是资料的结论：引用不能替它说明观众比例、排名、“调查证明”“已验证”等市场或受众说法，市场事实只写进 facts 和 observations。",
       "opportunities：适合本次创作的机会；limitations：资料缺失和局限；appliedConstraints：本次采用的约束。",
       "数字规则（程序按数字的含义逐句检查，违反即整份拒收，不会重试）：",
-      "1. 市场和受众统计只能来自资料：受众人数、年龄或年龄段、性别或地域比例、百分比、几成、播放量、热度、排名、观看时长和频次、收入等，只能出现在 facts、observations、带 sourceIds 的 contentStructure 和 audience 里，"
-        + "并且必须是所引资料摘录正文里原样出现的完整数字。写进 hypotheses、howToVerify、opportunities、limitations、appliedConstraints 也不行，标成“假设”“计划”“建议”也不行。",
+      "1. 市场和受众统计只能来自资料：受众人数、年龄或年龄段、性别或地域比例、百分比、几成、播放量、热度、排名、观看时长和频次、收入等，只能出现在 facts、observations 和带 sourceIds 的 audience 里，"
+        + "并且必须是所引资料摘录正文里原样出现的完整数字。写进 hypotheses、howToVerify、contentStructure 的 application、opportunities、limitations、appliedConstraints 也不行，标成“假设”“计划”“建议”也不行。",
       "2. 本作品的创作设定可以写数量：虚构人物数（“两个互不信任的人”）、剧情次数（“三次误会”“两次反转”）、虚构人物年龄（“主角二十八岁”）、故事内期限（“三天内”）、开场秒数（“前 3 秒”）。"
         + "人物数、地点数不能超过用户的上限，集数和每集时长只能写用户硬约束里的值（如“共 1 集，每集约 60 秒”）。",
       "3. 验证计划可以写数量和天数，但必须写成将来的计划或待验证的问题：“拟比较两个版本”“计划上线后观察七天”“待验证观众是否更喜欢两次反转的版本”。"
@@ -308,7 +326,8 @@ export function buildAutoCreationPrompt(stageKey: string, input: AutoCreationFro
       "ratings 是你对每个方向的 1–5 分内部自评（受众契合、冲突强度、原创性、可执行性、约束契合），只用于内部比较。",
       "任何方向都不能包含用户禁止的题材或元素。",
       `schema 固定为 "${AUTO_CREATION_DIRECTIONS_SCHEMA}"；编号 D1、D2、D3。`,
-      data("研究结论", context.research),
+      STRUCTURE_NOTE,
+      data("研究结论", { ...context.research!, contentStructure: structureForPrompt(context.research!) }),
     ];
   } else if (kind === "bible") {
     const direction = chosenDirection(context);
@@ -322,7 +341,8 @@ export function buildAutoCreationPrompt(stageKey: string, input: AutoCreationFro
       roomLine(stageKey, input, context),
       data("选定方向", direction),
       data("选择理由", context.directions!.selection.reasons),
-      data("受众与结构要点", { audience: context.research!.audience, contentStructure: context.research!.contentStructure }),
+      STRUCTURE_NOTE,
+      data("受众与结构要点", { audience: context.research!.audience, contentStructure: structureForPrompt(context.research!) }),
     ];
   } else if (kind === "outline") {
     lines = [
@@ -467,6 +487,41 @@ function uncitedNumber(statement: string, field: string, frame: AutoNumberFrame,
     category: finding.kind, semantic: finding.semantic, rule: finding.rule };
 }
 
+/** Characters a written number is made of: a quote that starts or ends next to one of them cuts that number. */
+const NUMERAL_CHAR = /[0-9０-９零〇一二两三四五六七八九十百千万亿.．]/u;
+/** What may stand right after a quote that ends on a numeral: the end of a sentence or clause, never more of it. */
+const AFTER_NUMBER_OK = /[。；;！？!?、：:）)」”"'\s]/u;
+/**
+ * A separator that may join two numerals into one number (1,800, 25-35, 25－35, 1/3, 3：1, 25至35, 3比1): any symbol
+ * or punctuation but a sentence or clause end, and 至, 到 or 比.
+ */
+const NUMBER_JOINER = /[至到比]|[^\p{Script=Han}\p{L}\p{N}。；;！？!?、\s（(「“"'）)」”]/u;
+
+/**
+ * Whether a quote (both without whitespace) stands in the excerpt with no number cut at either edge: 一次反转 is no
+ * quote of 二十一次反转, nor 60秒 of 160秒, nor …七 of 七成. Every number inside a contiguous quote is then the excerpt's own.
+ */
+function quotedWhole(excerpt: string, quote: string): boolean {
+  for (let at = excerpt.indexOf(quote); at >= 0; at = excerpt.indexOf(quote, at + 1)) {
+    const before = excerpt[at - 1] ?? "";
+    // A quote opening on a separator of a number (,800 of 1,800, -35 of 25-35) opens inside that number too.
+    const opensOnNumber = NUMERAL_CHAR.test(quote[0]!) || (NUMBER_JOINER.test(quote[0]!) && NUMERAL_CHAR.test(quote[1] ?? ""));
+    const cutBefore = opensOnNumber && (NUMERAL_CHAR.test(before) || /[A-Za-z]/u.test(before)
+      || (NUMBER_JOINER.test(before) && NUMERAL_CHAR.test(excerpt[at - 2] ?? "")));
+    const end = at + quote.length;
+    // A quote ending on a numeral must end where the excerpt's sentence or clause does: 10 of 10w, 90 of 90后, 七 of 七成,
+    // 1 of 1,800 are all cuts. A comma counts as an end only when no digit follows it.
+    const after = excerpt[end] ?? "";
+    const last = quote.at(-1)!;
+    // Ending on a separator right after a numeral (约1, of 1,800) ends inside the number unless no numeral follows.
+    if (NUMBER_JOINER.test(last) && NUMERAL_CHAR.test(quote.at(-2) ?? "") && NUMERAL_CHAR.test(after)) continue;
+    const cutAfter = after !== "" && NUMERAL_CHAR.test(last)
+      && !(AFTER_NUMBER_OK.test(after) || (/[,，]/u.test(after) && !/[0-9０-９]/u.test(excerpt[end + 1] ?? "")));
+    if (!cutBefore && !cutAfter) return true;
+  }
+  return false;
+}
+
 function checkResearch(input: AutoCreationFrozenInput, output: AutoResearch, context: AutoCreationContext): AutoValidation {
   const frame = numberFrame(input);
   const readable = new Map(readableSources(context.sources!).map((source) => [source.sourceId, source] as const));
@@ -478,10 +533,10 @@ function checkResearch(input: AutoCreationFrozenInput, output: AutoResearch, con
     }
     return null;
   };
-  const sourced = (statement: string, ids: readonly string[], field: string): AutoValidation | null => {
+  const sourced = (statement: string, ids: readonly string[], field: string, exempt = frame.exempt): AutoValidation | null => {
     // Whole tokens on both sides: "18" is not supported by an excerpt that only has "2018".
     const supported = new Set(ids.flatMap((id) => numberTokens(readable.get(id)?.excerpt ?? "")).map(normalize));
-    const missing = numberTokens(statement, frame.exempt).find((token) => !supported.has(normalize(token)));
+    const missing = numberTokens(statement, exempt).find((token) => !supported.has(normalize(token)));
     return missing ? { ok: false, code: "unsourced_number", detail: missing, field, category: numberKind(missing), semantic: "unsourced",
       rule: "not_in_cited_excerpt" } : null;
   };
@@ -503,10 +558,21 @@ function checkResearch(input: AutoCreationFrozenInput, output: AutoResearch, con
   }
   for (const [index, item] of output.contentStructure.entries()) {
     const at = `contentStructure[${String(index)}]`;
-    // A cited structure takes its numbers from its sources; an uncited one is a writing method, judged like a hypothesis.
-    const problem = cite(item.sourceIds, `${at}.sourceIds`) ?? (item.sourceIds.length > 0 ? sourced(`${item.pattern}\n${item.why}`, item.sourceIds, at)
-      : uncitedNumber(item.pattern, `${at}.pattern`, frame) ?? uncitedNumber(item.why, `${at}.why`, frame));
-    if (problem) return problem;
+    // The reference is a method as read: one readable source, its quote found there whole, every number in it a whole
+    // number of that excerpt (八十 cut out of 一百八十 is no quote). A wrong quote refuses the answer; it is never dropped.
+    if (item.reference) {
+      const { sourceId, quote } = item.reference;
+      const problem = cite([sourceId], `${at}.reference.sourceId`)
+        ?? (quotedWhole(normalize(readable.get(sourceId)!.excerpt), normalize(quote)) ? sourced(quote, [sourceId], `${at}.reference.quote`, [])
+          : { ok: false, code: "evidence_not_in_source", detail: sourceId, field: `${at}.reference.quote` });
+      if (problem) return problem;
+    }
+    // The application is the work's own design, cited or not: a reference sources none of its numbers or findings.
+    for (const [text, field] of [[item.application.pattern, `${at}.application.pattern`], [item.application.why, `${at}.application.why`]] as const) {
+      const problem = uncitedNumber(text, field, frame)
+        ?? (settledMarketClaim(text) ? { ok: false, code: "unsourced_claim", detail: "application", field } satisfies AutoValidation : null);
+      if (problem) return problem;
+    }
   }
   const audienceProblem = cite(output.audience.sourceIds, "audience.sourceIds");
   if (audienceProblem) return audienceProblem;
@@ -1142,7 +1208,12 @@ export function autoPackageMarkdown(meta: AutoPackageMeta, stages: readonly Auto
     push("**待验证的假设与验证计划**（计划尚未执行，不是调查结果）", "", ...research.hypotheses.map((item) => `- ${item.id} 假设：${item.statement}；验证计划：${item.howToVerify}`), "");
     push(`**目标观众（${research.audience.basis === "sourced" ? "有来源" : "待验证的拟定人群，不是平台真实用户画像"}）**：${research.audience.primary}`,
       `- 观看需求：${research.audience.viewingNeeds.join("；")}`, `- 情绪诉求：${research.audience.emotionalAppeals.join("；")}`, "");
-    push("**内容结构**", "", ...research.contentStructure.map((item) => `- ${item.pattern}：${item.why}${item.sourceIds.length > 0 ? `（${item.sourceIds.join("、")}）` : ""}`), "");
+    push("**内容结构**（参考方法原文是资料原文；本剧应用设计是本作品的创作设计，不是资料或市场结论）", "",
+      ...autoStructureViews(research).flatMap((item, index) => item.version === "v1"
+        ? [`- 结构 ${String(index + 1)}（历史版本，未区分参考原文与本剧应用）：${item.pattern}：${item.why}${item.sourceIds.length > 0 ? `（${item.sourceIds.join("、")}）` : ""}`]
+        : [`- 结构 ${String(index + 1)}`,
+          `  - 参考方法原文：${item.reference ? `${item.reference.sourceId}「${item.reference.quote}」` : "无（自主创作设计）"}`,
+          `  - 本剧应用设计：${item.application.pattern}：${item.application.why}`]), "");
     push(`**机会**：${research.opportunities.join("；")}`, `**局限**：${research.limitations.join("；")}`,
       ...(research.appliedConstraints.length > 0 ? [`**采用的约束**：${research.appliedConstraints.join("；")}`] : []), "");
   }

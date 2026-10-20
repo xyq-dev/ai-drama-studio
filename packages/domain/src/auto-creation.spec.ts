@@ -30,7 +30,7 @@ function research(overrides: Record<string, unknown> = {}) {
     facts: [], observations: [],
     hypotheses: [{ id: "H1", statement: "观众可能偏爱一集内兑现。", howToVerify: "看真实数据。" }],
     audience: { primary: "成年观众（假设）", viewingNeeds: ["看到结果"], emotionalAppeals: ["扳回一局"], basis: "hypothesis", sourceIds: [] },
-    contentStructure: [{ pattern: "主角主动", why: "知识库要求", sourceIds: ["S-KB-CRAFT"] }],
+    contentStructure: [{ reference: { sourceId: "S-KB-CRAFT", quote: "关键结果来自主角的选择和行动" }, application: { pattern: "主角主动", why: "知识库要求" } }],
     opportunities: ["小人物反击"], limitations: ["没有市场数据"], appliedConstraints: [],
     ...overrides,
   });
@@ -220,7 +220,7 @@ describe("research contract in limited mode (synthetic samples)", () => {
       { id: "H2", statement: "小人物讨回公道的题材可能更容易引起共鸣。", howToVerify: "用小范围投放比较不同题材的完播情况。" },
     ],
     audience: { primary: "在通勤和睡前刷短剧的成年观众（待验证假设）", viewingNeeds: ["一集内看到结果"], emotionalAppeals: ["扳回一局"], basis: "hypothesis", sourceIds: [] },
-    contentStructure: [{ pattern: "主角主动选择推动结果", why: "写作方法资料要求关键结果来自主角的行动。", sourceIds: ["S-KB-CRAFT"] }],
+    contentStructure: [{ reference: { sourceId: "S-KB-CRAFT", quote: "关键结果来自主角的选择和行动" }, application: { pattern: "主角主动选择推动结果", why: "写作方法资料要求关键结果来自主角的行动。" } }],
     opportunities: ["约 60 秒一集正好讲完一次反击"],
     limitations: ["官方市场条目没有读到正文，受众和题材判断都是待验证假设，不是实时市场结论。"],
     appliedConstraints: ["共 1 集，每集约 60 秒", "竖屏 9:16"],

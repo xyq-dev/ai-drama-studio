@@ -418,11 +418,26 @@ describe("AI automatic creation in a real browser (site login, built web, real A
     expect(await page.getByTestId("auto-call-count").textContent()).toContain("已用 6 / 预算 6 次");
     expect(await page.getByTestId("auto-creation-run").locator("header").textContent()).toContain("deepseek-flash");
     await viewports("03b-auto-research-limited", page.getByTestId("auto-research-detail"), page.getByTestId("auto-download-md"));
+    // Research v2: the quoted method and this work's own design are shown apart, a missing quote as self-designed.
+    expect(await page.getByTestId("auto-structure-reference").allTextContents()).toEqual([
+      "参考方法原文：S-KB-CRAFT「关键结果来自主角的选择和行动」", "参考方法原文：无（自主创作设计）"]);
+    expect(await page.getByTestId("auto-structure-application").allTextContents()).toEqual([
+      "本剧应用设计：模型替身样例：计划用两次反转推动主角主动选择。：这是本作品的创作设计。",
+      "本剧应用设计：模型替身样例：三名骑手被迫合作，三天内找出真相。：自主创作设计，没有对应的方法资料。"]);
+    await viewports("03c-auto-research-structure", page.getByTestId("auto-structure"), page.getByTestId("auto-download-md"));
+    for (const size of [DESKTOP, PHONE]) {
+      await page.setViewportSize(size);
+      // Long quotes wrap inside the list: nothing in it is wider than the list itself.
+      expect(await page.getByTestId("auto-structure").evaluate((node) => node.scrollWidth - node.clientWidth), `structure ${String(size.width)}`).toBeLessThanOrEqual(0);
+    }
+    await page.setViewportSize(DESKTOP);
     const [download] = await Promise.all([page.waitForEvent("download"), page.getByTestId("auto-download-md").click()]);
     const packagePath = join(shotsDir ?? ROOT, "auto-package-creative.md");
     await download.saveAs(packagePath);
     const text = await readFile(packagePath, "utf8");
     expect(text).toContain("验证计划：计划上线后观察七天");
+    expect(text).toContain("  - 参考方法原文：S-KB-CRAFT「关键结果来自主角的选择和行动」");
+    expect(text).toContain("  - 本剧应用设计：模型替身样例：计划用两次反转推动主角主动选择。");
     expect(text).toContain("资料有限：没有可读取的近期市场资料");
     // The story review entry stays reachable from the run.
     await page.getByRole("link", { name: "去作品中人工审核故事" }).waitFor();
