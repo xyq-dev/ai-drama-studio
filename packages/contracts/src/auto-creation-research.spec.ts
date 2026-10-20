@@ -77,13 +77,19 @@ describe("research v3 answer contract", () => {
   });
 
   it("a notice is named by its place for a reader; outputs before checks v5 have none", () => {
-    expect(autoNoticePlace("hypotheses[0].statement")).toBe("假设 H1");
-    expect(autoNoticePlace("hypotheses[1].howToVerify")).toBe("验证计划 H2");
-    expect(autoNoticePlace("contentStructure[2].application.why")).toBe("结构 3 的本剧应用设计");
-    expect(autoNoticePlace("opportunities[0]")).toBe("机会 1");
+    // By position; never an id made from the index (a research needs unique ids, not ids in order).
+    expect(autoNoticePlace("hypotheses[0].statement")).toBe("第1条假设");
+    expect(autoNoticePlace("hypotheses[1].howToVerify")).toBe("第2条假设的验证计划");
+    // With the research, the model's own id is kept beside the position.
+    const research = { hypotheses: [{ id: "H3" }, { id: "H1" }] };
+    expect(autoNoticePlace("hypotheses[0].statement", research)).toBe("第1条假设（H3）");
+    expect(autoNoticePlace("hypotheses[1].howToVerify", research)).toBe("第2条假设（H1）的验证计划");
+    expect(autoNoticePlace("contentStructure[2].application.why")).toBe("第3条内容结构的本剧应用设计");
+    expect(autoNoticePlace("opportunities[0]")).toBe("第1条机会");
+    // A direction keeps its id: the directions check holds the ids to D1, D2… in order.
     expect(autoNoticePlace("candidates[1].difficultyNote")).toBe("方向 D2 的难度说明");
     const notice = { origin: "server_check", field: "opportunities[0]", token: "五十元", semantic: "unclassified", rule: "no_role", note: AUTO_UNVERIFIED_NOTE } as const;
-    expect(autoNoticeText(notice)).toBe("机会 1中的「五十元」：程序未能判定数字含义，未核实；只属于创作假设或设计，不是有来源的事实或市场结论。");
+    expect(autoNoticeText(notice)).toBe("第1条机会中的「五十元」：程序未能判定数字含义，未核实；只属于创作假设或设计，不是有来源的事实或市场结论。");
     expect(autoUnverifiedOf({ ...v3, unverified: [notice] })).toEqual([notice]);
     expect(autoUnverifiedOf(v2)).toEqual([]);
     expect(autoUnverifiedOf(null)).toEqual([]);

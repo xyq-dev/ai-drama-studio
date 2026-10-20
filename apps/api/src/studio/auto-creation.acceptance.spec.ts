@@ -495,13 +495,13 @@ describe(`automatic creation on PostgreSQL (${scenario} schema)`, () => {
       executedWith: { promptVersion: "ads.auto-creation.prompt.v5", checksVersion: "ads.auto-creation.checks.v5" } });
     expect((outputs.directions as { unverified: Array<{ field: string }> }).unverified.map((item) => item.field)).toEqual(["candidates[0].differentiation"]);
     // Later prompts carry the notices as unverified.
-    expect(seen.slice(before)[1]!.user).toContain("机会 2中的「五十元」：程序未能判定数字含义，未核实");
+    expect(seen.slice(before)[1]!.user).toContain("第2条机会中的「五十元」：程序未能判定数字含义，未核实");
     expect(seen.slice(before)[2]!.user).toContain("<<<选定方向的未核实提示（只属于创作设计，不是事实）");
     expect((await q<{ review_status: string }>("SELECT review_status FROM story_revision WHERE project_id = $1", [id]))).toEqual([{ review_status: "DRAFT" }]);
     const markdown = (await svc.package(id, runId, "markdown")).download!.text;
     expect(markdown).toContain("**用户设定与资料记录**（来自用户设定和服务端记录，不是 AI 调研结论）");
     expect(markdown).toContain("- 用户设定｜出场人物上限：最多 3 人");
-    expect(markdown).toContain("- 机会 2中的「五十元」：程序未能判定数字含义，未核实");
+    expect(markdown).toContain("- 第2条机会中的「五十元」：程序未能判定数字含义，未核实");
     expect(markdown).toContain("- 未核实提示：方向 D1 的差异点中的「三块」");
     expect(markdown).toContain("资料有限：没有可读取的近期市场资料");
     expect(markdown.replaceAll("或已验证的市场结论", "")).not.toMatch(/已验证|已核实|市场验证(已)?完成/u);

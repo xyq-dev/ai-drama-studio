@@ -400,19 +400,28 @@ export function autoUnverifiedOf(output: object | null | undefined): AutoUnverif
   return Array.isArray(notices) ? notices as AutoUnverifiedNotice[] : [];
 }
 
-/** Where a notice is, as a person reads it: 假设 H1, 验证计划 H1, 结构 2 的本剧应用设计, 机会 1, 方向 D2 的差异点. */
-export function autoNoticePlace(field: string): string {
-  const index = Number(/\[(\d+)\]/u.exec(field)?.[1] ?? "0") + 1;
-  if (field.startsWith("hypotheses[")) return `${field.endsWith("howToVerify") ? "验证计划" : "假设"} H${String(index)}`;
-  if (field.startsWith("contentStructure[")) return `结构 ${String(index)} 的本剧应用设计`;
-  if (field.startsWith("opportunities[")) return `机会 ${String(index)}`;
-  if (field.startsWith("candidates[")) return `方向 D${String(index)} 的${field.endsWith("difficultyNote") ? "难度说明" : "差异点"}`;
+/**
+ * Where a notice is, as a person reads it: by the item's position (第1条假设, 第1条假设的验证计划, 第2条内容结构的本剧应用设计,
+ * 第1条机会), never an id made from the index: a research needs unique ids, not ids in order, so the model's own id is
+ * added when the research is given (第1条假设（H3）). A direction keeps its id, which the directions check holds to D1, D2…
+ * in order.
+ */
+export function autoNoticePlace(field: string, research?: { hypotheses?: ReadonlyArray<{ id: string }> } | null): string {
+  const index = Number(/\[(\d+)\]/u.exec(field)?.[1] ?? "0");
+  const nth = `第${String(index + 1)}条`;
+  if (field.startsWith("hypotheses[")) {
+    const id = research?.hypotheses?.[index]?.id;
+    return `${nth}假设${id ? `（${id}）` : ""}${field.endsWith("howToVerify") ? "的验证计划" : ""}`;
+  }
+  if (field.startsWith("contentStructure[")) return `${nth}内容结构的本剧应用设计`;
+  if (field.startsWith("opportunities[")) return `${nth}机会`;
+  if (field.startsWith("candidates[")) return `方向 D${String(index + 1)} 的${field.endsWith("difficultyNote") ? "难度说明" : "差异点"}`;
   return field;
 }
 
-/** A notice as one line: where, the number, and that it is unverified. */
-export function autoNoticeText(notice: AutoUnverifiedNotice): string {
-  return `${autoNoticePlace(notice.field)}中的「${notice.token}」：${notice.note}；只属于创作假设或设计，不是有来源的事实或市场结论。`;
+/** A notice as one line: where, the number, and that it is unverified. Give the research to name a hypothesis by its id too. */
+export function autoNoticeText(notice: AutoUnverifiedNotice, research?: { hypotheses?: ReadonlyArray<{ id: string }> } | null): string {
+  return `${autoNoticePlace(notice.field, research)}中的「${notice.token}」：${notice.note}；只属于创作假设或设计，不是有来源的事实或市场结论。`;
 }
 
 /**

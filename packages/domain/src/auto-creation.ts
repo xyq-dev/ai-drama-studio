@@ -300,7 +300,7 @@ function researchForPrompt(research: AutoStoredResearch): unknown {
       未读取: material.unread.map((item) => ({ sourceId: item.sourceId, title: item.title, status: item.status })),
       缺失说明: material.gaps,
     },
-    未核实提示: unverified.map(autoNoticeText),
+    未核实提示: unverified.map((notice) => autoNoticeText(notice, research)),
   };
 }
 
@@ -378,12 +378,12 @@ export function buildAutoCreationPrompt(stageKey: string, input: AutoCreationFro
       `schema 固定为 "${AUTO_CREATION_BIBLE_SCHEMA}"；title 是你为作品拟的剧名。`,
       roomLine(stageKey, input, context),
       data("选定方向", direction),
-      ...(directionNotices.length > 0 ? [data("选定方向的未核实提示（只属于创作设计，不是事实）", directionNotices.map(autoNoticeText))] : []),
+      ...(directionNotices.length > 0 ? [data("选定方向的未核实提示（只属于创作设计，不是事实）", directionNotices.map((notice) => autoNoticeText(notice)))] : []),
       data("选择理由", context.directions!.selection.reasons),
       STRUCTURE_NOTE,
       IDENTITY_NOTE,
       data("受众与结构要点", { audience: context.research!.audience, contentStructure: structureForPrompt(context.research!),
-        ...(researchNotices.length > 0 ? { 未核实提示: researchNotices.map(autoNoticeText) } : {}) }),
+        ...(researchNotices.length > 0 ? { 未核实提示: researchNotices.map((notice) => autoNoticeText(notice, context.research)) } : {}) }),
     ];
   } else if (kind === "outline") {
     lines = [
@@ -485,10 +485,11 @@ function forbiddenHit(input: AutoCreationFrozenInput, value: unknown): string | 
   return input.constraints.forbiddenThemes.find((term) => all.includes(term)) ?? null;
 }
 
-function zodFailure(error: { issues: Array<{ path: PropertyKey[]; message: string; code?: string; keys?: string[] }> }): AutoValidation {
+function zodFailure(error: { issues: Array<{ path: PropertyKey[]; message: string; code?: string; keys?: string[] }> }, research = false): AutoValidation {
   const issue = error.issues[0];
-  // A key the server writes (or v3 took out of the answer) is named in the stored code; any other extra key is model text.
-  const serverKey = issue?.code === "unrecognized_keys"
+  // A research key the server writes (or v3 took out of the answer) is named in the stored code; any other extra key,
+  // and every extra key of another stage, is model text and is not.
+  const serverKey = research && issue?.code === "unrecognized_keys"
     ? issue.keys?.find((key) => (AUTO_RESEARCH_SERVER_KEYS as readonly string[]).includes(key)) : undefined;
   const path = issue ? [...issue.path, ...(serverKey ? [serverKey] : [])] : [];
   return { ok: false, code: "invalid_output", detail: issue ? `${issue.path.map(String).join(".")}: ${issue.message}` : undefined,
@@ -1043,7 +1044,7 @@ export function validateAutoStageOutput(stageKey: string, content: string, input
   if (creative && textsOf(value).some((item) => UNSAFE.test(item) || RESERVED.test(item))) return { ok: false, code: "unsafe_content" };
   if (kind === "research") {
     const parsed = autoResearchAnswerSchema.safeParse(value);
-    return parsed.success ? checkResearch(input, parsed.data, context) : zodFailure(parsed.error);
+    return parsed.success ? checkResearch(input, parsed.data, context) : zodFailure(parsed.error, true);
   }
   if (kind === "directions") {
     const parsed = autoDirectionsSchema.safeParse(value);
@@ -1338,7 +1339,7 @@ export function autoPackageMarkdown(meta: AutoPackageMeta, stages: readonly Auto
         ...material.unread.map((item) => `- 未读取：${item.sourceId}「${item.title}」（${item.status}）：${item.note}`),
         ...material.gaps.map((gap) => `- 缺失说明：${gap}`), "");
       push(`**未核实提示**（${AUTO_UNVERIFIED_NOTE}；相关文字只属于创作假设或设计，不是有来源的事实、平台用户画像或已验证的市场结论）`, "",
-        ...(notices.length > 0 ? notices.map((item) => `- ${autoNoticeText(item)}`) : ["- 无"]), "");
+        ...(notices.length > 0 ? notices.map((item) => `- ${autoNoticeText(item, research)}`) : ["- 无"]), "");
     } else {
       push(`**局限**（AI 填写，历史版本）：${research.limitations.join("；")}`,
         ...(research.appliedConstraints.length > 0 ? [`**采用的约束**（AI 复述，历史版本）：${research.appliedConstraints.join("；")}`] : []), "");

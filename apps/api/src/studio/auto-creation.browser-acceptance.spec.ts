@@ -486,8 +486,8 @@ describe("AI automatic creation in a real browser (site login, built web, real A
     await notices.waitFor({ timeout: 30_000 });
     const listed = await notices.locator("li").allTextContents();
     expect(listed).toEqual([
-      "结构 3 的本剧应用设计中的「三块」：程序未能判定数字含义，未核实；只属于创作假设或设计，不是有来源的事实或市场结论。",
-      "机会 2中的「五十元」：程序未能判定数字含义，未核实；只属于创作假设或设计，不是有来源的事实或市场结论。",
+      "第3条内容结构的本剧应用设计中的「三块」：程序未能判定数字含义，未核实；只属于创作假设或设计，不是有来源的事实或市场结论。",
+      "第2条机会中的「五十元」：程序未能判定数字含义，未核实；只属于创作假设或设计，不是有来源的事实或市场结论。",
     ]);
     // The model's words stand as written, marked where a notice is.
     expect(await page.getByTestId("auto-opportunities").textContent()).toContain("主角只剩五十元，必须在午夜前讨回工资。（含未核实数字）");
@@ -510,7 +510,7 @@ describe("AI automatic creation in a real browser (site login, built web, real A
     await download.saveAs(packagePath);
     const text = await readFile(packagePath, "utf8");
     expect(text).toContain("**未核实提示**（程序未能判定数字含义，未核实");
-    expect(text).toContain("- 机会 2中的「五十元」：程序未能判定数字含义，未核实");
+    expect(text).toContain("- 第2条机会中的「五十元」：程序未能判定数字含义，未核实");
     expect(text).toContain("**用户设定与资料记录**（来自用户设定和服务端记录，不是 AI 调研结论）");
     // Read back after a reload: the same notices, nothing sent.
     const sent = seen.length;

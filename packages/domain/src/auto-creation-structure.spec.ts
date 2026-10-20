@@ -306,14 +306,18 @@ describe("C. the application is checked as uncited text, whatever it cites", () 
     // as written with a notice that the number is unverified.
     expect(check([apply("三个骑士被迫合作。")])).toMatchObject({ ok: true,
       output: { unverified: [{ field: "contentStructure[0].application.pattern", token: "三个", semantic: "unclassified", rule: "no_role" }] } });
-    // 名 and 位 count people by themselves: a cast, within the frozen limit or a frozen conflict, never a notice.
-    for (const text of ["三名骑士被迫合作。", "两位母亲争夺孩子。", "三个人物被迫合作。"]) {
-      expect(check([apply(text)]), text).toMatchObject({ ok: true, output: { unverified: [] } });
+    // A classifier alone does not say what is counted (三位数密码, 两位小数): 名 and 位 are no cast by themselves, so these
+    // are notices too (PR #82 review); only a named cast (人物, 角色, the listed trades, 人) is held to the frozen limit.
+    for (const [text, token] of [["三名骑士被迫合作。", "三名"], ["两位母亲争夺孩子。", "两位"]] as const) {
+      expect(check([apply(text)]), text).toMatchObject({ ok: true, output: { unverified: [{ token, rule: "no_role" }] } });
     }
+    expect(check([apply("三个人物被迫合作。")])).toMatchObject({ ok: true, output: { unverified: [] } });
     const pair = input({ constraints: autoCreationConstraintsSchema.parse({ maxCharacters: 2 }) });
-    expect(check([apply("三名骑士被迫合作。")], pair)).toMatchObject({ ok: false, code: "constraint_violation", rule: "cast_over_limit" });
-    // With 个 nothing says these are people: kept with a notice; the setting stage still refuses a cast over the limit.
-    expect(check([apply("三个骑士被迫合作。")], pair)).toMatchObject({ ok: true, output: { unverified: [{ token: "三个" }] } });
+    expect(check([apply("三个人物被迫合作。")], pair)).toMatchObject({ ok: false, code: "constraint_violation", rule: "cast_over_limit" });
+    // Unnamed: kept with a notice; the setting stage still refuses a cast over the limit.
+    for (const text of ["三个骑士被迫合作。", "三名骑士被迫合作。"]) {
+      expect(check([apply(text)], pair), text).toMatchObject({ ok: true, output: { unverified: [{ rule: "no_role" }] } });
+    }
     // A settled wording in a story sentence about a popular character is refused too (only over-refuses).
     expect(check([apply("事实证明最受欢迎的店员才是真凶。")])).toMatchObject({ ok: false, code: "unsourced_claim" });
   });

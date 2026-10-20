@@ -484,8 +484,8 @@ describe("AI 自动创作 run page", () => {
     expect(screen.getByTestId("auto-hypotheses").textContent).toContain("H1 假设：主角只剩五十元，必须在午夜前讨回工资。（含未核实数字）");
     expect(screen.getAllByTestId("auto-unverified-mark")).toHaveLength(2);
     expect([...screen.getByTestId("auto-unverified").querySelectorAll("li")].map((item) => item.textContent)).toEqual([
-      "假设 H1中的「五十元」：程序未能判定数字含义，未核实；只属于创作假设或设计，不是有来源的事实或市场结论。",
-      "结构 1 的本剧应用设计中的「三块」：程序未能判定数字含义，未核实；只属于创作假设或设计，不是有来源的事实或市场结论。",
+      "第1条假设（H1）中的「五十元」：程序未能判定数字含义，未核实；只属于创作假设或设计，不是有来源的事实或市场结论。",
+      "第1条内容结构的本剧应用设计中的「三块」：程序未能判定数字含义，未核实；只属于创作假设或设计，不是有来源的事实或市场结论。",
     ]);
     // Only the chosen direction's notice is shown with it.
     expect(screen.getByTestId("auto-direction-unverified").textContent).toBe("未核实提示：方向 D2 的差异点中的「三块」：程序未能判定数字含义，未核实；只属于创作假设或设计，不是有来源的事实或市场结论。");
@@ -503,8 +503,29 @@ describe("AI 自动创作 run page", () => {
     await waitFor(() => expect(screen.getByTestId("auto-headline").textContent).toBe("没有完成"));
     const stop = screen.getByText(/^停在「/u).textContent!;
     expect(stop).toContain("appliedConstraints");
-    expect(stop).toContain("用户设定和资料局限由服务端记录，模型不能填写");
+    expect(stop).toContain("模型回答包含契约不允许的额外字段；用户设定与资料局限由服务端记录，模型不能填写");
     expect(screen.getByTestId("auto-output-refused").textContent).toContain("不是密钥或账户问题");
+  });
+
+  it("an extra field in another stage, or an unnamed one in research, gets the general wording, never the research one", async () => {
+    for (const [stageKey, kind, code] of [
+      ["bible", "bible", "invalid_output:unrecognized_keys"],
+      ["directions", "directions", "invalid_output@candidates[0]:unrecognized_keys"],
+      ["episode:1", "episode", "invalid_output@scenes[0]:unrecognized_keys"],
+      ["research", "research", "invalid_output:unrecognized_keys"],
+    ] as const) {
+      cleanup();
+      const failed = run({ state: "failed", errorCode: "invalid_output", quality: "pending", storySave: "pending", storyRevisionId: null, packageStatus: "incomplete",
+        callsUsed: 1, callCap: 6, openIssues: [], stages: [{ stageKey, kind, state: "rejected", attemptNo: 1, errorCode: code, output: null,
+          upstreamChanged: false, supersededBy: null, scriptSave: null, scriptRevisionId: null }] });
+      vi.stubGlobal("fetch", vi.fn(async (input: string) => input.endsWith("/auto-runs/latest") ? json({ run: failed }) : json(options())));
+      render(<AutoCreationRun projectId={P1} />);
+      await waitFor(() => expect(screen.getByTestId("auto-headline").textContent).toBe("没有完成"));
+      const stop = screen.getByText(/^停在「/u).textContent!;
+      expect(stop, code).toContain("模型回答包含契约不允许的额外字段");
+      expect(stop, code).not.toContain("服务端记录");
+      expect(screen.getByTestId("auto-output-refused").textContent).toContain("不是密钥或账户问题");
+    }
   });
 
   it("a key problem is not described as a refused answer", async () => {

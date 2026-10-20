@@ -452,26 +452,31 @@ function countedNoun(tail: string): { group: NounGroup; noun: string } | null {
     const found = nounAt(window, at);
     if (found) return found;
   }
-  // 名 and 位 count people by themselves (三名骑士, 两位母亲): people however they are named, judged like counted trades.
-  if (classifier === "名" || classifier === "位") return { group: "cast", noun: OCCUPATION_NOUN };
   const unit = UNIT_CLASSIFIERS[classifier];
   return unit ? { group: unit, noun: classifier } : null;
 }
 
 /**
- * A count named by the cast or place word before it, with only limit words between (人物最多 5 个, 地点上限 4, 场景不超过
- * 4 个): the cast or the places, so a frozen limit is checked, never a number with no role (checks v5 keeps those).
+ * A limit stated on the cast or the places (人物最多 5 个, 地点上限 4, 场景不超过 4 个, 角色上限：5): the cast or place
+ * word, a limit word, the number, then at most a classifier of people or places before the clause ends. Only then is the
+ * count a cast or the places, so a frozen limit is checked, never a number with no role. 场景为三块拼图 or 角色为五十元
+ * states no limit: the count there is of something else.
  */
-const LIMIT_WORDS_BEFORE = "(?:最多|至多|不超过|上限为?|限制为?|限为|为|共|：|:)*$";
+const LIMIT_WORDS_BEFORE = "(?:最多|至多|不超过|上限|限制|限|共)(?:为|是|：|:)?$";
 const LIMIT_NOUN_BEFORE: ReadonlyArray<readonly [NounGroup, RegExp]> = [
   ["cast", new RegExp(`(?:人物|角色)${LIMIT_WORDS_BEFORE}`, "u")],
   ["location", new RegExp(`(?:地点|场景|场地)${LIMIT_WORDS_BEFORE}`, "u")],
 ];
+const LIMIT_TAIL = /^(?:多|余)?(?:个|名|位|人|处|间)?(?=$|[，,。；;、）)！？!?])/u;
 
-function limitNoun(before: string): { group: NounGroup; noun: string } | null {
+function limitNoun(before: string, tail: string): { group: NounGroup; noun: string } | null {
+  if (!LIMIT_TAIL.test(tail)) return null;
   const found = LIMIT_NOUN_BEFORE.find(([, pattern]) => pattern.test(before));
   return found ? { group: found[0], noun: found[0] === "cast" ? "人物" : "地点" } : null;
 }
+
+/** A count of people (三位专家, 八名试映嘉宾, 五个网友): only these classifiers count those who could give a verdict. */
+const PEOPLE_COUNTER = /^(?:多|余)?[名位个]/u;
 
 const DURATION = /^(?:多|余|来)?(?:个)?(秒钟|秒|分钟|个小时|小时|天|个星期|星期|周|个月|年)/u;
 /** A character named right before an age: 主角二十八岁, 女主 32 岁, 主角是二十八岁. */
@@ -583,12 +588,15 @@ function roleOf(hit: NumberHit, clause: string, clauses: readonly string[], mark
     // The run's own episode count was removed already where it may be restated.
     return market ? refuse("market_statistic", "viewing_count") : refuse("frozen_conflict", "episode_count");
   }
-  const counted = countedNoun(tail) ?? limitNoun(before);
+  const counted = countedNoun(tail) ?? limitNoun(before, tail);
   if (!counted) {
     if (market) return refuse("market_statistic", "market_clause");
     // Counted people of any name giving a verdict (八名试映嘉宾都给了好评, 五位资深编剧都认为这种结构最抓人) are a reported
     // reaction, as counted trades are: never a number with no role, which checks v5 keeps as an unverified notice.
-    if (givenVerdict(clause) || (WEAK_VERDICT.test(clause) && WORK.test(clause))) return refuse("result_claim", "measured_result");
+    // The verdict must come after the count and the count must be of people: 五十元购买一条差评 counts no reviewer.
+    if (PEOPLE_COUNTER.test(tail) && (givenVerdict(tail) || (WEAK_VERDICT.test(tail) && WORK.test(tail)))) {
+      return refuse("result_claim", "measured_result");
+    }
     return refuse("unclassified", "no_role");
   }
   if (counted.group === "audience") return refuse("market_statistic", "audience_count");

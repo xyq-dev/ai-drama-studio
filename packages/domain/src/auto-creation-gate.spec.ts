@@ -170,7 +170,7 @@ describe("3. a notice opens nothing: every later number, quote, claim and settin
   it("a frozen conflict after a notice: episodes, length, cast and places", () => {
     const frozen = input({ constraints: autoCreationConstraintsSchema.parse({ maxCharacters: 2, maxLocations: 1 }) });
     for (const [statement, rule] of [[`${MONEY}共 3 集讲完。`, "episode_count"], [`${MONEY}每集约 90 秒。`, "over_length"],
-      [`${MONEY}三名骑士被迫合作。`, "cast_over_limit"], [`${MONEY}地点最多 3 个。`, "locations_over_limit"], [`${PUZZLE}人物最多 5 个。`, "cast_over_limit"]] as const) {
+      [`${MONEY}三个人物被迫合作。`, "cast_over_limit"], [`${MONEY}地点最多 3 个。`, "locations_over_limit"], [`${PUZZLE}人物最多 5 个。`, "cast_over_limit"]] as const) {
       expect(check({ opportunities: [statement] }, frozen), statement).toMatchObject({ ok: false, code: "constraint_violation", semantic: "frozen_conflict", rule });
     }
   });
@@ -217,8 +217,8 @@ describe("4. later prompts and the package keep a notice a hypothesis or design,
     const stages = [stage("sources", 0, collectSources(input(), [], NOW)), stage("research", 1, research())];
     const prompt = buildAutoCreationPrompt("directions", input(), autoContextFromStages(stages)).user;
     expect(prompt).toContain("\"资料记录\":{\"说明\":\"服务端按本次资料快照记录，不是 AI 调研结论\"");
-    expect(prompt).toContain("\"未核实提示\":[\"结构 1 的本剧应用设计中的「三块」：程序未能判定数字含义，未核实");
-    expect(prompt).toContain("机会 1中的「五十元」：程序未能判定数字含义，未核实");
+    expect(prompt).toContain("\"未核实提示\":[\"第1条内容结构的本剧应用设计中的「三块」：程序未能判定数字含义，未核实");
+    expect(prompt).toContain("第1条机会中的「五十元」：程序未能判定数字含义，未核实");
     expect(prompt).toContain("不能写成事实、平台用户画像或已验证的市场结论");
     expect(prompt).not.toContain("\"serverRecord\"");
     // No fetch date of an unread entry is offered for quoting.
@@ -236,7 +236,7 @@ describe("4. later prompts and the package keep a notice a hypothesis or design,
     expect(markdown).toContain("**用户设定与资料记录**（来自用户设定和服务端记录，不是 AI 调研结论）");
     expect(markdown).toContain("- 资料模式：资料有限策划模式（不是实时市场验证）");
     expect(markdown).toContain("- 未读取：S-OE-1「巨量引擎帮助中心条目（标题未能读取）」（unreadable）");
-    expect(markdown).toContain("- 结构 1 的本剧应用设计中的「三块」：程序未能判定数字含义，未核实");
+    expect(markdown).toContain("- 第1条内容结构的本剧应用设计中的「三块」：程序未能判定数字含义，未核实");
     expect(markdown).not.toContain("**局限**");
     const json = autoPackageJson(meta, stages) as { research: { analysis: AutoResearch; identity: Record<string, string> } };
     expect(json.research.analysis).toEqual(research());
@@ -263,6 +263,95 @@ describe("5. structural protections are unchanged", () => {
     expect(validateAutoStageOutput("bible", bible(3, 1), frozen, ctx)).toMatchObject({ ok: false, code: "constraint_violation", detail: "maxCharacters" });
     expect(validateAutoStageOutput("bible", bible(2, 2), frozen, ctx)).toMatchObject({ ok: false, code: "constraint_violation", detail: "maxLocations" });
     expect(validateAutoStageOutput("bible", bible(2, 1), frozen, ctx)).toMatchObject({ ok: true });
+  });
+});
+
+describe("6. PR #82 review: a count is a cast, a place or a verdict only when it counts one; a notice names its item's place", () => {
+  const CRAFT_REF = { sourceId: "S-KB-CRAFT", quote: "关键结果来自主角的选择和行动" };
+  /** The statement in every creative field the review named: hypothesis, opportunity, and an application with and without a reference. */
+  const places = (statement: string): Array<[string, Record<string, unknown>]> => [
+    ["hypotheses[0].statement", hypothesis(statement)],
+    ["hypotheses[0].howToVerify", hypothesis("碎片时间的观众可能偏爱一集内兑现。", statement)],
+    ["opportunities[0]", { opportunities: [statement] }],
+    ["contentStructure[0].application.pattern", structure(statement)],
+    ["contentStructure[0].application.why", structure("实物线索推动主角行动", statement)],
+    ["contentStructure[0].application.pattern", { contentStructure: [{ reference: CRAFT_REF, application: { pattern: statement, why: "本剧设计。" } }] }],
+    ["contentStructure[0].application.why", { contentStructure: [{ reference: CRAFT_REF, application: { pattern: "实物线索推动主角行动", why: statement } }] }],
+  ];
+  const cast2 = input({ constraints: autoCreationConstraintsSchema.parse({ maxCharacters: 2 }) });
+  const place2 = input({ constraints: autoCreationConstraintsSchema.parse({ maxLocations: 2 }) });
+
+  it.each([
+    // 1. 位 alone says nothing of people: digits of a code, decimal places.
+    ["主角破解三位数密码。", "三位", cast2],
+    ["账本金额保留两位小数，主角发现差额。", "两位", cast2],
+    // 2. The amount counts no reviewer: the bad review is a prop of the plot.
+    ["主角用五十元购买一条差评作为追凶线索。", "五十元", input()],
+    // 3. 场景为 / 角色为 before a count of something else is no place or cast.
+    ["场景为三块拼图散落在桌上。", "三块", place2],
+    ["角色为五十元奖金冒险。", "五十元", cast2],
+  ] as const)("%s is kept with an unverified notice in every creative field", (statement, token, frozen) => {
+    for (const [field, overrides] of places(statement)) {
+      const result = check(overrides, frozen);
+      expect(result, `${field}: ${statement}`).toMatchObject({ ok: true, output: { unverified: [{ field, token, semantic: "unclassified", rule: "no_role" }] } });
+      expect(textsOf((result as { output: AutoResearch }).output)).toContain(statement);
+    }
+  });
+
+  it.each([
+    ["三位专家一致推荐。", input(), "result_claim"],
+    ["八名试映嘉宾都给了好评。", input(), "result_claim"],
+    ["三名学生都给了好评。", input(), "result_claim"],
+    ["五位资深编剧都认为这种结构最抓人。", input(), "result_claim"],
+    ["约三成观众偏爱反转。", input(), "market_statistic"],
+    ["主角破解三位数密码，七成观众偏爱反转。", cast2, "market_statistic"],
+    ["主角用五十元购买一条差评作为追凶线索。三位专家一致推荐。", input(), "result_claim"],
+  ] as const)("still refused in every creative field: %s", (statement, frozen, semantic) => {
+    for (const [field, overrides] of places(statement)) {
+      expect(check(overrides, frozen), `${field}: ${statement}`).toMatchObject({ ok: false, code: "unsourced_number", field, semantic });
+    }
+  });
+
+  it.each([
+    ["地点最多 4 个。", input({ constraints: autoCreationConstraintsSchema.parse({ maxLocations: 3 }) }), "locations_over_limit"],
+    ["场景不超过 3 个。", place2, "locations_over_limit"],
+    ["人物上限 3 人。", cast2, "cast_over_limit"],
+    ["角色上限 5。", cast2, "cast_over_limit"],
+    ["三个人物被迫合作。", cast2, "cast_over_limit"],
+    ["场景为三块拼图散落在桌上，地点最多 3 个。", place2, "locations_over_limit"],
+  ] as const)("a real limit conflict is still a frozen conflict in every creative field: %s", (statement, frozen, rule) => {
+    for (const [field, overrides] of places(statement)) {
+      expect(check(overrides, frozen), `${field}: ${statement}`).toMatchObject({ ok: false, code: "constraint_violation", field, rule });
+    }
+  });
+
+  it("4. a notice names the item by its position and keeps the model's own id; ids need not follow the order", () => {
+    const stage = (stageKey: string, ordinal: number, output: unknown): AutoStageRecord => ({ runId: "r", stageKey, ordinal, state: "completed", attemptNo: 1,
+      errorCode: null, output: output as AutoStageRecord["output"], outputHash: "h", dependsOn: null, scriptSave: null, scriptRevisionId: null, updatedAt: NOW });
+    const meta = { runId: "r", projectId: "p", input: input(), quality: "pending", state: "running", callsUsed: 1, callCap: 6, revisionRoundsUsed: 0,
+      storySave: "pending", generatedAt: NOW };
+    for (const [hypotheses, expected] of [
+      [[{ id: "H3", statement: MONEY, howToVerify: "计划试看。" }], "第1条假设（H3）中的「五十元」"],
+      [[{ id: "H3", statement: "可能偏爱一集内兑现。", howToVerify: "计划试看。" }, { id: "H1", statement: MONEY, howToVerify: "计划试看。" }], "第2条假设（H1）中的「五十元」"],
+      [[{ id: "H3", statement: "可能偏爱一集内兑现。", howToVerify: `计划先试看${MONEY}` }], "第1条假设（H3）的验证计划中的「五十元」"],
+    ] as const) {
+      const result = check({ hypotheses });
+      expect(result.ok).toBe(true);
+      const research = (result as { output: AutoResearch }).output;
+      const stages = [stage("sources", 0, collectSources(input(), [], NOW)), stage("research", 1, research)];
+      const markdown = autoPackageMarkdown(meta, stages);
+      const prompt = buildAutoCreationPrompt("directions", input(), autoContextFromStages(stages)).user;
+      for (const text of [markdown, prompt]) {
+        expect(text).toContain(expected);
+        expect(text).not.toMatch(/假设 H\d中的/u);
+      }
+    }
+    // Other items by position; a direction keeps its id, which the directions check holds to D1, D2… in order.
+    const opportunity = (check({ ...structure(PUZZLE), opportunities: ["小人物反击", MONEY] }) as { output: AutoResearch }).output;
+    const stages = [stage("sources", 0, collectSources(input(), [], NOW)), stage("research", 1, opportunity)];
+    const markdown = autoPackageMarkdown(meta, stages);
+    expect(markdown).toContain("- 第1条内容结构的本剧应用设计中的「三块」");
+    expect(markdown).toContain("- 第2条机会中的「五十元」");
   });
 });
 

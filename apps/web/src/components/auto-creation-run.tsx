@@ -385,7 +385,7 @@ export function AutoCreationRun({ projectId, client = defaultClient }: { project
                 </ul>
                 <p className={styles.helper}>未核实提示（{AUTO_UNVERIFIED_NOTE}；相关文字只属于创作假设或设计，不是有来源的事实、平台用户画像或已验证的市场结论）</p>
                 <ul className={autoStyles.list} data-testid="auto-unverified">
-                  {researchNotices.length > 0 ? researchNotices.map((item) => <li key={`${item.field}:${item.token}`} className={styles.warning}>{autoNoticeText(item)}</li>) : <li>无</li>}
+                  {researchNotices.length > 0 ? researchNotices.map((item) => <li key={`${item.field}:${item.token}`} className={styles.warning}>{autoNoticeText(item, research)}</li>) : <li>无</li>}
                 </ul>
               </>
             ) : null}

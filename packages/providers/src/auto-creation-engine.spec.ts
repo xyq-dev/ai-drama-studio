@@ -288,13 +288,13 @@ describe("automatic creation engine", () => {
       rule: "no_role", note: "程序未能判定数字含义，未核实" }]);
     // Later prompts carry each notice as unverified, never as a finding.
     const directionsPrompt = seen.find((item) => item.stage === "directions")!.user;
-    expect(directionsPrompt).toContain("\"未核实提示\":[\"结构 3 的本剧应用设计中的「三块」：程序未能判定数字含义，未核实；只属于创作假设或设计，不是有来源的事实或市场结论。\"");
-    expect(directionsPrompt).toContain("机会 2中的「五十元」：程序未能判定数字含义，未核实");
+    expect(directionsPrompt).toContain("\"未核实提示\":[\"第3条内容结构的本剧应用设计中的「三块」：程序未能判定数字含义，未核实；只属于创作假设或设计，不是有来源的事实或市场结论。\"");
+    expect(directionsPrompt).toContain("第2条机会中的「五十元」：程序未能判定数字含义，未核实");
     expect(directionsPrompt).toContain("不是 AI 调研结论");
     const biblePrompt = seen.find((item) => item.stage === "bible")!.user;
     expect(biblePrompt).toContain("<<<选定方向的未核实提示（只属于创作设计，不是事实）");
     expect(biblePrompt).toContain("方向 D1 的差异点中的「三块」：程序未能判定数字含义，未核实");
-    expect(biblePrompt).toContain("结构 3 的本剧应用设计中的「三块」");
+    expect(biblePrompt).toContain("第3条内容结构的本剧应用设计中的「三块」");
     expect(store.projects.get(P1)!.stories[0]).toMatchObject({ reviewStatus: "DRAFT" });
     // The package shows them apart and never as verified.
     const bundle = (await store.getRunById(WS, run.id))!;
@@ -303,7 +303,7 @@ describe("automatic creation engine", () => {
     const markdown = autoPackageMarkdown(meta, bundle.stages);
     expect(markdown).toContain("**用户设定与资料记录**（来自用户设定和服务端记录，不是 AI 调研结论）");
     expect(markdown).toContain("- 用户设定｜出场人物上限：最多 3 人");
-    expect(markdown).toContain("- 机会 2中的「五十元」：程序未能判定数字含义，未核实");
+    expect(markdown).toContain("- 第2条机会中的「五十元」：程序未能判定数字含义，未核实");
     expect(markdown).toContain(`${AUTO_FIXTURE_UNPLACED.money}〔含未核实数字，见下方未核实提示〕`);
     expect(markdown).toContain("- 未核实提示：方向 D1 的差异点中的「三块」");
     // Nothing calls them verified; the one 已验证 is the disclaimer saying they are not.
