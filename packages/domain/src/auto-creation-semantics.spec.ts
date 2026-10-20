@@ -35,7 +35,7 @@ function limited(overrides: Record<string, unknown> = {}): string {
     observations: [{ id: "O1", statement: "写作方法资料强调关键结果来自主角自己的选择。", sourceIds: ["S-KB-CRAFT"] }],
     hypotheses: [{ id: "H1", statement: "碎片时间的观众可能更愿意看一集内有明确兑现的故事。", howToVerify: "上线后用真实观看数据对比。" }],
     audience: { primary: "在通勤和睡前刷短剧的成年观众（待验证假设）", viewingNeeds: ["一集内看到结果"], emotionalAppeals: ["扳回一局"], basis: "hypothesis", sourceIds: [] },
-    contentStructure: [{ pattern: "主角主动选择推动结果", why: "写作方法资料要求关键结果来自主角的行动。", sourceIds: ["S-KB-CRAFT"] }],
+    contentStructure: [{ reference: { sourceId: "S-KB-CRAFT", quote: "关键结果来自主角的选择和行动" }, application: { pattern: "主角主动选择推动结果", why: "写作方法资料要求关键结果来自主角的行动。" } }],
     opportunities: ["小人物在一个夜晚完成一次反击"],
     limitations: ["官方市场条目没有读到正文，受众和题材判断都是待验证假设。"],
     appliedConstraints: ["共 1 集，每集约 60 秒"],
@@ -145,7 +145,7 @@ describe("the v3 prompt and the v3 checks say the same thing", () => {
     expect(prompt).toContain(`不写“${refused}”`);
     expect(validateAutoStageOutput("research", limited(hypothesis(`${refused}。`)), input(), context()))
       .toMatchObject({ ok: false, semantic: "result_claim", rule: "unmarked_audience_judgement" });
-    expect(prompt).toContain("提示版本：ads.auto-creation.prompt.v3");
+    expect(prompt).toContain("提示版本：ads.auto-creation.prompt.v4");
   });
 });
 
@@ -283,7 +283,9 @@ describe("C. a pending marker covers only its own judgement; the frozen audience
     ["opportunities[0]", { opportunities: [statement] }],
     ["limitations[0]", { limitations: [statement] }],
     ["appliedConstraints[0]", { appliedConstraints: [statement] }],
-    ["contentStructure[0].why", { contentStructure: [{ pattern: "主角主动选择推动结果", why: statement, sourceIds: [] }] }],
+    ["contentStructure[0].application.why", { contentStructure: [{ reference: null, application: { pattern: "主角主动选择推动结果", why: statement } }] }],
+    // A quoted method beside it sources nothing written in the application.
+    ["contentStructure[0].application.why", { contentStructure: [{ reference: { sourceId: "S-KB-CRAFT", quote: "关键结果来自主角的选择和行动" }, application: { pattern: "主角主动选择推动结果", why: statement } }] }],
     ["audience.primary", audience(statement)],
   ];
   const directions = (fields: Record<string, string>) => JSON.stringify({

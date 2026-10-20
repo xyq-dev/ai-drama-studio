@@ -25,20 +25,28 @@ export const AUTO_CREATION_INPUT_SCHEMA = "ads.auto-creation.input.v1" as const;
 /**
  * v2: the research contract says which fields may carry a number and which never do (no dates, counts or plans).
  * v3: numbers by meaning: story quantities and future plans may be written, market statistics only from cited excerpts.
+ * v4: a content structure is a quoted method (reference) apart from this work's own design (application), research v2.
  */
-export const AUTO_CREATION_PROMPT_VERSION = "ads.auto-creation.prompt.v3" as const;
+export const AUTO_CREATION_PROMPT_VERSION = "ads.auto-creation.prompt.v4" as const;
 /** Every prompt version a stored run may carry. A resumed run is sent with the current prompts. */
-export type AutoCreationPromptVersion = "ads.auto-creation.prompt.v1" | "ads.auto-creation.prompt.v2" | typeof AUTO_CREATION_PROMPT_VERSION;
+export type AutoCreationPromptVersion = "ads.auto-creation.prompt.v1" | "ads.auto-creation.prompt.v2" | "ads.auto-creation.prompt.v3"
+  | typeof AUTO_CREATION_PROMPT_VERSION;
 export const AUTO_CREATION_SELECTION_RULES = "ads.auto-creation.selection-rules.v1" as const;
 /**
  * v2: the applied constraints and a direction's audience fit are number-checked; spaced ordinals are not claims.
  * v3: an uncited number is judged by what it counts (story, plan, frozen setting or statistic); a direction's notes
  * are checked too; refusals name what the number was taken for and the sub-rule.
+ * v4: a structure's quote must be found whole in the one source it cites; its application is checked as uncited text,
+ * whatever it cites.
  */
-export const AUTO_CREATION_CHECKS_VERSION = "ads.auto-creation.checks.v3" as const;
+export const AUTO_CREATION_CHECKS_VERSION = "ads.auto-creation.checks.v4" as const;
 /** Every checks version a stored run or review may carry. */
-export type AutoCreationChecksVersion = "ads.auto-creation.checks.v1" | "ads.auto-creation.checks.v2" | typeof AUTO_CREATION_CHECKS_VERSION;
-export const AUTO_CREATION_RESEARCH_SCHEMA = "ads.auto-creation.research.v1" as const;
+export type AutoCreationChecksVersion = "ads.auto-creation.checks.v1" | "ads.auto-creation.checks.v2" | "ads.auto-creation.checks.v3"
+  | typeof AUTO_CREATION_CHECKS_VERSION;
+/** v2: each content structure keeps the quoted method (reference) apart from this work's design (application). */
+export const AUTO_CREATION_RESEARCH_SCHEMA = "ads.auto-creation.research.v2" as const;
+/** Research stored before v2 (pattern, why and sourceIds in one item): read, shown and exported as it was, never sent. */
+export const AUTO_CREATION_RESEARCH_SCHEMA_V1 = "ads.auto-creation.research.v1" as const;
 export const AUTO_CREATION_DIRECTIONS_SCHEMA = "ads.auto-creation.directions.v1" as const;
 export const AUTO_CREATION_BIBLE_SCHEMA = "ads.auto-creation.bible.v1" as const;
 export const AUTO_CREATION_OUTLINE_SCHEMA = "ads.auto-creation.outline.v1" as const;
@@ -242,8 +250,7 @@ const hypothesisSchema = z.object({
   howToVerify: text(1, 150),
 }).strict();
 
-export const autoResearchSchema = z.object({
-  schema: z.literal(AUTO_CREATION_RESEARCH_SCHEMA),
+const researchFields = {
   facts: z.array(factSchema).max(8),
   observations: z.array(observationSchema).max(8),
   hypotheses: z.array(hypothesisSchema).min(1).max(8),
@@ -255,16 +262,72 @@ export const autoResearchSchema = z.object({
     basis: z.enum(["sourced", "hypothesis"]),
     sourceIds: z.array(z.string().max(40)).max(5),
   }).strict(),
+  opportunities: shortList(5, 120).min(1),
+  limitations: shortList(5, 150).min(1),
+  appliedConstraints: shortList(8, 120),
+};
+
+/** The longest method quote a structure may carry: one short passage, so quotes never crowd out the answer. */
+export const AUTO_STRUCTURE_QUOTE_MAX = 80;
+/** The shortest: a few words are no passage, they would be found in almost any text. */
+export const AUTO_STRUCTURE_QUOTE_MIN = 6;
+
+/**
+ * One content structure (research v2). reference: the method as actually read, a verbatim passage of one readable
+ * source, or null when the structure is the work's own design. application: how this work uses it, the work's own
+ * design: its story quantities are the work's, never something the reference supports.
+ */
+export const autoContentStructureSchema = z.object({
+  reference: z.object({
+    sourceId: z.string().max(40),
+    // The length a quote is matched with: whitespace does not count.
+    quote: text(1, AUTO_STRUCTURE_QUOTE_MAX)
+      .refine((value) => value.replace(/\s+/gu, "").length >= AUTO_STRUCTURE_QUOTE_MIN, "引用原文太短"),
+  }).strict().nullable(),
+  application: z.object({
+    pattern: text(1, 120),
+    why: text(1, 200),
+  }).strict(),
+}).strict();
+export type AutoContentStructure = z.infer<typeof autoContentStructureSchema>;
+
+/** Research v2, what a research stage answers from prompt v4 on. */
+export const autoResearchSchema = z.object({
+  schema: z.literal(AUTO_CREATION_RESEARCH_SCHEMA),
+  ...researchFields,
+  contentStructure: z.array(autoContentStructureSchema).min(1).max(6),
+}).strict();
+export type AutoResearch = z.infer<typeof autoResearchSchema>;
+
+/** Research v1 as stored before v2: never accepted from a provider any more, only read back. */
+export const autoResearchV1Schema = z.object({
+  schema: z.literal(AUTO_CREATION_RESEARCH_SCHEMA_V1),
+  ...researchFields,
   contentStructure: z.array(z.object({
     pattern: text(1, 120),
     why: text(1, 200),
     sourceIds: z.array(z.string().max(40)).max(3),
   }).strict()).min(1).max(6),
-  opportunities: shortList(5, 120).min(1),
-  limitations: shortList(5, 150).min(1),
-  appliedConstraints: shortList(8, 120),
 }).strict();
-export type AutoResearch = z.infer<typeof autoResearchSchema>;
+export type AutoResearchV1 = z.infer<typeof autoResearchV1Schema>;
+
+/** A research stage's stored output, whichever version wrote it. */
+export type AutoStoredResearch = AutoResearch | AutoResearchV1;
+
+/**
+ * A content structure as shown and exported. A v1 item keeps its pattern, why and source ids as stored: it never had
+ * a quote, and none is made up for it.
+ */
+export type AutoStructureView =
+  | { version: "v2"; reference: { sourceId: string; quote: string } | null; application: { pattern: string; why: string } }
+  | { version: "v1"; pattern: string; why: string; sourceIds: string[] };
+
+export function autoStructureViews(research: AutoStoredResearch): AutoStructureView[] {
+  if (research.schema === AUTO_CREATION_RESEARCH_SCHEMA_V1) {
+    return research.contentStructure.map((item) => ({ version: "v1", pattern: item.pattern, why: item.why, sourceIds: item.sourceIds }));
+  }
+  return research.contentStructure.map((item) => ({ version: "v2", reference: item.reference, application: item.application }));
+}
 
 const RATING = z.number().int().min(1).max(5);
 export const AUTO_RATING_KEYS = ["audienceFit", "conflictStrength", "originality", "feasibility", "constraintFit"] as const;
@@ -493,7 +556,7 @@ export interface AutoSourcesOutput {
   notes: string[];
 }
 
-export type AutoStageOutput = AutoSourcesOutput | AutoResearch | AutoDirectionsOutput | AutoBible | AutoOutline | AutoEpisode
+export type AutoStageOutput = AutoSourcesOutput | AutoStoredResearch | AutoDirectionsOutput | AutoBible | AutoOutline | AutoEpisode
   | AutoRevision | AutoReviewOutput;
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -537,7 +600,10 @@ export function autoCreationJsonSchema(kind: AutoCreationStageKind, episodeCount
         hypotheses: arr(obj({ id: str(2), statement: str(200), howToVerify: str(150) }), 1, 8),
         audience: obj({ primary: str(120), viewingNeeds: strs(5, 60, 1), emotionalAppeals: strs(5, 60, 1),
           basis: enumOf(["sourced", "hypothesis"]), sourceIds: strs(5, 40) }),
-        contentStructure: arr(obj({ pattern: str(120), why: str(200), sourceIds: strs(3, 40) }), 1, 6),
+        contentStructure: arr(obj({
+          reference: { anyOf: [obj({ sourceId: str(40), quote: str(AUTO_STRUCTURE_QUOTE_MAX) }), { type: "null" }] },
+          application: obj({ pattern: str(120), why: str(200) }),
+        }), 1, 6),
         opportunities: strs(5, 120, 1),
         limitations: strs(5, 150, 1),
         appliedConstraints: strs(8, 120),

@@ -13,7 +13,7 @@ import {
 import { AUTO_DRAFT_BANNER, autoPackageJson, autoPackageMarkdown, AUTO_CREATION_SYSTEM_PROMPTS } from "@ai-drama/domain";
 import { titleWritingProviderConfigs, type WritingProviderConfig } from "./text-writing";
 import { AutoCreationEngine, InMemoryAutoCreationStore, autoRunView, autoScriptsOf, autoUncertainCallIds, hashAutoResume, newAutoRun } from "./auto-creation-engine";
-import { autoFixtureTransport, fixtureAutoEpisode, type AutoFixtureExchange, type AutoFixturePlan } from "./auto-creation-fixtures";
+import { autoFixtureTransport, fixtureAutoEpisode, fixtureAutoResearchV1, type AutoFixtureExchange, type AutoFixturePlan } from "./auto-creation-fixtures";
 import { messagesAnswer } from "./title-writing-fixtures";
 
 const WS = "11111111-1111-4111-8111-111111111111";
@@ -181,6 +181,79 @@ describe("automatic creation engine", () => {
     expect(seen.map((item) => item.stage)).toEqual(["research"]);
     await engine.maintain();
     expect(seen).toHaveLength(1);
+  });
+
+  it("research v2: a quoted method and this work's two reversals apart complete the budget-six run; later prompts name the two apart", async () => {
+    const deepseek = titleWritingProviderConfigs({ DEEPSEEK_API_KEY: "sk-deepseek-test-0123456789", TITLE_WRITING_DEEPSEEK_MODELS: "m-1" });
+    const { store, run, engine, seen, view } = await setup({ providers: deepseek, providerKey: "deepseek", revisionRounds: 0, callBudget: 6,
+      plan: { creativeQuantities: true } });
+    await engine.drive(run.id);
+    const result = await view();
+    expect(result).toMatchObject({ state: "completed", quality: "passed", callsUsed: 6, callCap: 6, storySave: "saved", errorCode: null });
+    expect(seen.map((item) => item.stage)).toEqual(["research", "directions", "bible", "outline", "episode:1", "review:1"]);
+    expect(seen[0]!.user).toContain("提示版本：ads.auto-creation.prompt.v4");
+    const research = result.stages.find((stage) => stage.stageKey === "research")!.output as { schema: string; contentStructure: unknown[] };
+    expect(research.schema).toBe("ads.auto-creation.research.v2");
+    expect(research.contentStructure).toEqual([
+      { reference: { sourceId: "S-KB-CRAFT", quote: "关键结果来自主角的选择和行动" },
+        application: { pattern: "模型替身样例：计划用两次反转推动主角主动选择。", why: "这是本作品的创作设计。" } },
+      { reference: null, application: { pattern: "模型替身样例：三名骑手被迫合作，三天内找出真相。", why: "自主创作设计，没有对应的方法资料。" } },
+    ]);
+    for (const stage of ["directions", "bible"]) {
+      const user = seen.find((item) => item.stage === stage)!.user;
+      expect(user).toContain("\"参考方法原文\":{\"sourceId\":\"S-KB-CRAFT\"");
+      expect(user).toContain("\"参考方法原文\":\"无（自主创作设计）\"");
+      expect(user).toContain("\"本剧应用设计\":{\"pattern\":\"模型替身样例：计划用两次反转推动主角主动选择。\"");
+    }
+    expect(store.projects.get(P1)!.stories[0]).toMatchObject({ reviewStatus: "DRAFT" });
+  });
+
+  it.each([
+    [{ forgedQuote: true }, "evidence_not_in_source@contentStructure[0].reference.quote", "反转次数以两次为最佳"],
+    [{ structureStatistic: true }, "unsourced_number@contentStructure[0].application.pattern:percent+market_statistic+proportion", "约三成"],
+  ] as const)("research v2: a refused structure (%o) stops at research; nothing is dropped, nothing after it is sent", async (plan, code, text) => {
+    const { run, engine, seen, view } = await setup({ revisionRounds: 0, callBudget: 6, plan });
+    await engine.drive(run.id);
+    const result = await view();
+    expect(result).toMatchObject({ state: "failed", callsUsed: 1 });
+    expect(result.stages.find((stage) => stage.stageKey === "research")).toMatchObject({ state: "rejected", errorCode: code, output: null });
+    expect(result.calls.map((call) => call.errorCode)).toEqual([code]);
+    expect(JSON.stringify(result)).not.toContain(text);
+    expect(seen.map((item) => item.stage)).toEqual(["research"]);
+    await engine.maintain();
+    expect(seen).toHaveLength(1);
+  });
+
+  it("a run whose research was completed as v1 continues without resending it; later prompts and the package read it as history", async () => {
+    let failDirections = true;
+    const { store, run, engine, seen, view } = await setup({ revisionRounds: 0,
+      override: (stage) => stage === "directions" && failDirections ? { status: 400, body: { error: "bad" } } : undefined });
+    await engine.drive(run.id);
+    expect((await view()).stages.find((stage) => stage.stageKey === "directions")!.state).toBe("rejected");
+    // As the v1 code left it: its versions frozen, its research stored in the old shape. Neither is rewritten below.
+    const stored = store.runs.find((item) => item.id === run.id)!;
+    Object.assign(stored.input, { promptVersion: "ads.auto-creation.prompt.v3", checksVersion: "ads.auto-creation.checks.v3" });
+    const researchStage = store.stages.find((stage) => stage.runId === run.id && stage.stageKey === "research")!;
+    researchStage.output = fixtureAutoResearchV1();
+    const frozen = JSON.stringify(stored.input);
+    failDirections = false;
+    const sent = seen.length;
+    const resumed = await store.prepareResume(WS, P1, run.id, { resumeKey: "r", requestHash: hashAutoResume(run.id, []), confirmedCallIds: [],
+      maxActiveRuns: 5, providerReady: true, blocked: false }, new Date(START).toISOString());
+    expect(resumed.kind).toBe("ok");
+    await engine.drive(run.id);
+    const result = await view();
+    expect(result).toMatchObject({ state: "completed", storySave: "saved" });
+    expect(seen.slice(sent).map((item) => item.stage)).toEqual(["directions", "bible", "outline", "episode:1", "review:1"]);
+    expect(seen.slice(sent)[0]!.user).toContain("\"历史版本\":{\"pattern\":\"主角主动选择推动结果\"");
+    expect(seen.slice(sent)[0]!.user).not.toContain("参考方法原文\":");
+    expect(result.stages.find((stage) => stage.stageKey === "research")!.output).toEqual(fixtureAutoResearchV1());
+    expect(JSON.stringify(store.runs.find((item) => item.id === run.id)!.input)).toBe(frozen);
+    const bundle = (await store.getRunById(WS, run.id))!;
+    const meta = { runId: run.id, projectId: P1, input: bundle.run.input, quality: bundle.run.quality, state: bundle.run.state, callsUsed: bundle.run.callsUsed,
+      callCap: bundle.run.callCap, revisionRoundsUsed: 0, storySave: bundle.run.storySave, generatedAt: new Date(START).toISOString() };
+    expect(autoPackageMarkdown(meta, bundle.stages)).toContain("（历史版本，未区分参考原文与本剧应用）：主角主动选择推动结果");
+    expect((autoPackageJson(meta, bundle.stages) as { research: { analysis: unknown } }).research.analysis).toEqual(fixtureAutoResearchV1());
   });
 
   it("checks v3: three episodes with creative research, one revision round, within budget and through the second review", async () => {

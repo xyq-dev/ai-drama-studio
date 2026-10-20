@@ -3,11 +3,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   TITLE_WRITING_PROVIDER_LABELS,
+  autoStructureViews,
   type AutoBible,
   type AutoDirectionsOutput,
   type AutoEpisode,
   type AutoOutline,
-  type AutoResearch,
+  type AutoStoredResearch,
   type AutoReviewOutput,
   type AutoRevision,
   type AutoSourcesOutput,
@@ -157,7 +158,7 @@ export function AutoCreationRun({ projectId, client = defaultClient }: { project
   }
 
   const sources = stageOf(run, "sources")?.output as AutoSourcesOutput | null | undefined;
-  const research = stageOf(run, "research")?.output as AutoResearch | null | undefined;
+  const research = stageOf(run, "research")?.output as AutoStoredResearch | null | undefined;
   const directions = stageOf(run, "directions")?.output as AutoDirectionsOutput | null | undefined;
   const bible = (stageOf(run, "bible")?.output as AutoBible | null | undefined) ?? undefined;
   const outline = stageOf(run, "outline")?.output as AutoOutline | null | undefined;
@@ -338,6 +339,20 @@ export function AutoCreationRun({ projectId, client = defaultClient }: { project
               <li>局限：{research.limitations.join("；")}</li>
               {research.appliedConstraints.length > 0 ? <li>采用的约束：{research.appliedConstraints.join("；")}</li> : null}
             </ul>
+            <p className={styles.helper}>内容结构（参考方法原文是资料原文；本剧应用设计是本作品的创作设计，不是资料或市场结论）</p>
+            <ol className={autoStyles.list} data-testid="auto-structure">
+              {autoStructureViews(research).map((item, index) => item.version === "v1" ? (
+                <li key={index} data-testid="auto-structure-legacy">
+                  历史版本（未区分参考原文与本剧应用）：{item.pattern}：{item.why}{item.sourceIds.length > 0 ? `（${item.sourceIds.join("、")}）` : ""}
+                </li>
+              ) : (
+                <li key={index}>
+                  <span data-testid="auto-structure-reference">参考方法原文：{item.reference ? `${item.reference.sourceId}「${item.reference.quote}」` : "无（自主创作设计）"}</span>
+                  <br />
+                  <span data-testid="auto-structure-application">本剧应用设计：{item.application.pattern}：{item.application.why}</span>
+                </li>
+              ))}
+            </ol>
           </section>
         ) : null}
 

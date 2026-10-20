@@ -409,6 +409,35 @@ describe("AI 自动创作 run page", () => {
     expect(screen.getByTestId("auto-audience").textContent).toContain("不是平台真实用户画像");
     expect(detail).toContain("采用的约束：共 1 集，每集约 60 秒");
     expect(document.body.textContent).not.toMatch(/市场验证(已)?完成|已完成市场验证/u);
+    // Stored v1 research: shown as it was, marked as history, with no quote made up for it.
+    expect(screen.getByTestId("auto-structure-legacy").textContent).toBe("历史版本（未区分参考原文与本剧应用）：主角主动：知识库（S-KB-CRAFT）");
+    expect(screen.queryByTestId("auto-structure-reference")).toBeNull();
+  });
+
+  it("research v2 shows each structure's quoted method and this work's own design apart; no quote reads as self-designed", async () => {
+    const research = {
+      schema: "ads.auto-creation.research.v2", facts: [], observations: [],
+      hypotheses: [{ id: "H1", statement: "可能带来悬念。", howToVerify: "计划比较两个版本后再判断。" }],
+      audience: { primary: "拟面向通勤时刷剧的成年观众（待验证）", viewingNeeds: ["一集内看到结果"], emotionalAppeals: ["扳回一局"], basis: "hypothesis", sourceIds: [] },
+      contentStructure: [
+        { reference: { sourceId: "S-KB-CRAFT", quote: "关键结果来自主角的选择和行动" }, application: { pattern: "计划用两次反转推动主角主动选择。", why: "这是本作品的创作设计。" } },
+        { reference: null, application: { pattern: "三名骑手被迫合作。", why: "自主设计。" } },
+      ],
+      opportunities: ["三天内讨回工资"], limitations: ["官方条目没有读到正文"], appliedConstraints: [],
+    };
+    const done = run({ stages: [
+      { stageKey: "sources", kind: "sources", state: "completed", attemptNo: 0, errorCode: null, output: null, upstreamChanged: false, supersededBy: null, scriptSave: null, scriptRevisionId: null },
+      { stageKey: "research", kind: "research", state: "completed", attemptNo: 1, errorCode: null, output: research as never, upstreamChanged: false, supersededBy: null, scriptSave: null, scriptRevisionId: null },
+    ] });
+    vi.stubGlobal("fetch", vi.fn(async (input: string) => input.endsWith("/auto-runs/latest") ? json({ run: done }) : json(options())));
+    render(<AutoCreationRun projectId={P1} />);
+    await screen.findByTestId("auto-structure");
+    expect(screen.getAllByTestId("auto-structure-reference").map((item) => item.textContent)).toEqual([
+      "参考方法原文：S-KB-CRAFT「关键结果来自主角的选择和行动」", "参考方法原文：无（自主创作设计）"]);
+    expect(screen.getAllByTestId("auto-structure-application").map((item) => item.textContent)).toEqual([
+      "本剧应用设计：计划用两次反转推动主角主动选择。：这是本作品的创作设计。", "本剧应用设计：三名骑手被迫合作。：自主设计。"]);
+    expect(screen.queryByTestId("auto-structure-legacy")).toBeNull();
+    expect(screen.getByTestId("auto-research-limited").textContent).toContain("不是平台真实用户画像");
   });
 
   it("a key problem is not described as a refused answer", async () => {

@@ -37,7 +37,7 @@ import {
   verifyTitleWritingAcceptanceDatabase,
 } from "@ai-drama/database";
 import { AutoCreationEngine, hashAutoCreationInput, titleWritingProviderConfigs } from "@ai-drama/providers";
-import { autoFixtureTransport, type AutoFixtureExchange, type AutoFixturePlan } from "@ai-drama/providers/title-writing-fixtures";
+import { autoFixtureTransport, fixtureAutoResearchV1, type AutoFixtureExchange, type AutoFixturePlan } from "@ai-drama/providers/title-writing-fixtures";
 import { AutoCreationService } from "./auto-creation.service";
 
 const decision = checkTitleWritingAcceptanceEnv(process.env);
@@ -291,22 +291,35 @@ describe(`automatic creation on PostgreSQL (${scenario} schema)`, () => {
     expect(run).toMatchObject({ state: "completed", quality: "passed", callsUsed: 6, callCap: 6, storySave: "saved", packageStatus: "ready", errorCode: null,
       providerKey: "deepseek", model: "deepseek-flash", researchMode: "limited" });
     expect(seen.slice(before).map((item) => item.stage)).toEqual(["research", "directions", "bible", "outline", "episode:1", "review:1"]);
-    expect(seen.slice(before)[0]!.user).toContain("提示版本：ads.auto-creation.prompt.v3");
+    expect(seen.slice(before)[0]!.user).toContain("提示版本：ads.auto-creation.prompt.v4");
     expect((await q<{ input_json: AutoCreationFrozenInput }>("SELECT input_json FROM auto_creation_run WHERE id = $1", [runId]))[0]!.input_json)
-      .toMatchObject({ promptVersion: "ads.auto-creation.prompt.v3", checksVersion: "ads.auto-creation.checks.v3" });
+      .toMatchObject({ promptVersion: "ads.auto-creation.prompt.v4", checksVersion: "ads.auto-creation.checks.v4" });
     // The stored research is the accepted answer as sent: its quantities are there word for word.
     const research = (await q<{ output_json: { hypotheses: Array<{ statement: string; howToVerify: string }> } }>(
       "SELECT output_json FROM auto_creation_stage WHERE run_id = $1 AND stage_key = 'research'", [runId]))[0]!.output_json;
     expect(research.hypotheses.map((item) => item.statement).join("")).toContain("两个互不信任的人");
     expect(research.hypotheses.map((item) => item.howToVerify).join("")).toContain("观察七天");
+    // Research v2: the quoted method has no count; this work's two reversals and three riders are its own design.
+    const structure = (await q<{ output_json: { schema: string; contentStructure: unknown[] } }>(
+      "SELECT output_json FROM auto_creation_stage WHERE run_id = $1 AND stage_key = 'research'", [runId]))[0]!.output_json;
+    expect(structure.schema).toBe("ads.auto-creation.research.v2");
+    expect(structure.contentStructure).toEqual([
+      { reference: { sourceId: "S-KB-CRAFT", quote: "关键结果来自主角的选择和行动" },
+        application: { pattern: "模型替身样例：计划用两次反转推动主角主动选择。", why: "这是本作品的创作设计。" } },
+      { reference: null, application: { pattern: "模型替身样例：三名骑手被迫合作，三天内找出真相。", why: "自主创作设计，没有对应的方法资料。" } },
+    ]);
     expect((await q<{ review_status: string }>("SELECT review_status FROM story_revision WHERE project_id = $1", [id]))).toEqual([{ review_status: "DRAFT" }]);
     const markdown = (await svc.package(id, runId, "markdown")).download!.text;
+    expect(markdown).toContain("  - 参考方法原文：S-KB-CRAFT「关键结果来自主角的选择和行动」");
+    expect(markdown).toContain("  - 本剧应用设计：模型替身样例：计划用两次反转推动主角主动选择。：这是本作品的创作设计。");
+    expect(markdown).toContain("  - 参考方法原文：无（自主创作设计）");
     expect(markdown).toContain("资料有限：没有可读取的近期市场资料");
     expect(markdown).toContain("验证计划：计划上线后观察七天");
     expect(markdown).toContain("不是平台真实用户画像");
     expect(markdown).not.toMatch(/市场验证(已)?完成|已完成市场验证/u);
-    const json = JSON.parse((await svc.package(id, runId, "json")).download!.text) as { research: { analysis: { hypotheses: unknown[] } } };
+    const json = JSON.parse((await svc.package(id, runId, "json")).download!.text) as { research: { analysis: { hypotheses: unknown[]; contentStructure: unknown[] } } };
     expect(json.research.analysis.hypotheses).toHaveLength(2);
+    expect(json.research.analysis.contentStructure).toEqual(structure.contentStructure);
     // Read again as a reload would: the same run, nothing sent.
     const sent = seen.length;
     expect(runOf((await svc.latest(id)).body)).toMatchObject({ runId, state: "completed", callsUsed: 6 });
@@ -368,7 +381,7 @@ describe(`automatic creation on PostgreSQL (${scenario} schema)`, () => {
     expect((await svc.resume(id, runId, {}, TOKEN, ctx("v2-resume"))).status).toBe(200);
     await settle();
     expect(seen.slice(sent).map((item) => item.stage)).toEqual(["research", "directions", "bible", "outline", "episode:1", "review:1"]);
-    expect(seen.slice(sent)[0]!.user).toContain("提示版本：ads.auto-creation.prompt.v3");
+    expect(seen.slice(sent)[0]!.user).toContain("提示版本：ads.auto-creation.prompt.v4");
     const run = runOf((await svc.get(id, runId)).body);
     expect(run).toMatchObject({ state: "completed", quality: "passed", callsUsed: 7, callCap: 8, storySave: "saved" });
     expect(run.calls.filter((call) => call.stageKey === "research").map((call) => [call.state, call.errorCode]))
@@ -382,6 +395,100 @@ describe(`automatic creation on PostgreSQL (${scenario} schema)`, () => {
     expect(seen.length).toBe(sent + 6);
     plan = {};
     evidence.v2RefusedResume = { runId, calls: run.callsUsed };
+  });
+
+  it.each([
+    ["forgedQuote", "evidence_not_in_source@contentStructure[0].reference.quote", "反转次数以两次为最佳"],
+    ["structureStatistic", "unsourced_number@contentStructure[0].application.pattern:percent+market_statistic+proportion", "约三成"],
+  ] as const)("research v2: a %s structure is refused at research alone; nothing dropped, nothing stored, nothing after it sent", async (flag, code, text) => {
+    plan = { [flag]: true };
+    const { svc, settle } = service();
+    const id = await project(1);
+    const before = seen.length;
+    const started = await svc.start(id, { revisionRounds: 0, callBudget: 6 }, TOKEN, ctx(`structure-${flag}`));
+    await settle();
+    const runId = runOf(started.body).runId;
+    expect(runOf((await svc.get(id, runId)).body)).toMatchObject({ state: "failed", callsUsed: 1 });
+    expect(seen.slice(before).map((item) => item.stage)).toEqual(["research"]);
+    expect(await q("SELECT stage_key, state, error_code, output_json FROM auto_creation_stage WHERE run_id = $1 AND state <> 'pending' AND stage_key <> 'sources'", [runId]))
+      .toEqual([{ stage_key: "research", state: "rejected", error_code: code, output_json: null }]);
+    expect(await q("SELECT error_code FROM auto_creation_call WHERE run_id = $1", [runId])).toEqual([{ error_code: code }]);
+    expect(JSON.stringify(await q("SELECT * FROM auto_creation_stage WHERE run_id = $1", [runId]))).not.toContain(text);
+    expect((await q<{ n: number }>("SELECT count(*)::int AS n FROM story_revision WHERE project_id = $1", [id]))[0]!.n).toBe(0);
+    plan = {};
+    (evidence.structureRefused ??= {} as Record<string, unknown>);
+    (evidence.structureRefused as Record<string, unknown>)[flag] = { runId, stageError: code };
+  });
+
+  it("research v1 history: a completed v3 run with v1 research reads, exports and replays unchanged; nothing is rewritten or sent", async () => {
+    plan = {};
+    const { svc, settle, pending } = service();
+    const id = await project(1);
+    const request = { revisionRounds: 0, callBudget: 6 };
+    const started = await svc.start(id, request, TOKEN, ctx("v1-research-history"));
+    await settle();
+    const runId = runOf(started.body).runId;
+    // As the v3 code stored it: its versions and hash, and research in the v1 shape.
+    const [row] = await q<{ input_json: AutoCreationFrozenInput }>("SELECT input_json FROM auto_creation_run WHERE id = $1", [runId]);
+    const v3 = { ...row!.input_json, promptVersion: "ads.auto-creation.prompt.v3", checksVersion: "ads.auto-creation.checks.v3" } as AutoCreationFrozenInput;
+    await q("UPDATE auto_creation_run SET input_json = $2, input_hash = $3 WHERE id = $1", [runId, JSON.stringify(v3), hashAutoCreationInput(id, v3)]);
+    await q("UPDATE auto_creation_stage SET output_json = $2 WHERE run_id = $1 AND stage_key = 'research'", [runId, JSON.stringify(fixtureAutoResearchV1())]);
+    const rows = async () => JSON.stringify({
+      run: await q("SELECT * FROM auto_creation_run WHERE id = $1", [runId]),
+      stages: await q("SELECT * FROM auto_creation_stage WHERE run_id = $1 ORDER BY ordinal", [runId]),
+      calls: await q("SELECT * FROM auto_creation_call WHERE run_id = $1 ORDER BY created_at, id", [runId]),
+      stories: await q("SELECT id FROM story_revision WHERE project_id = $1", [id]),
+    });
+    const before = await rows();
+    const sent = seen.length;
+    const view = runOf((await svc.get(id, runId)).body);
+    expect(view.stages.find((stage) => stage.stageKey === "research")!.output).toEqual(fixtureAutoResearchV1());
+    const markdown = (await svc.package(id, runId, "markdown")).download!.text;
+    expect(markdown).toContain("- 结构 1（历史版本，未区分参考原文与本剧应用）：主角主动选择推动结果：知识库要求关键结果来自主角的行动。（S-KB-CRAFT）");
+    expect(markdown).not.toContain("参考方法原文：");
+    const json = JSON.parse((await svc.package(id, runId, "json")).download!.text) as { research: { analysis: unknown } };
+    expect(json.research.analysis).toEqual(fixtureAutoResearchV1());
+    const replay = await svc.start(id, request, TOKEN, ctx("v1-research-history"));
+    expect([replay.status, runOf(replay.body).runId]).toEqual([200, runId]);
+    expect(pending).toHaveLength(0);
+    await settle();
+    expect(seen.length).toBe(sent);
+    expect(await rows()).toBe(before);
+    evidence.v1ResearchHistory = { runId, replay: replay.status, newCalls: seen.length - sent };
+  });
+
+  it("research v1 history: a v3 run stopped after its v1 research resumes without resending research; later prompts read it as history", async () => {
+    plan = {};
+    failNext = "directions";
+    const { svc, settle } = service();
+    const id = await project(1);
+    // Budget 8: one episode, no rounds, plus the confirmed resend of the uncertain directions call.
+    const started = await svc.start(id, { revisionRounds: 0, callBudget: 8 }, TOKEN, ctx("v1-research-resume"));
+    await settle();
+    const runId = runOf(started.body).runId;
+    expect(runOf((await svc.get(id, runId)).body).state).toBe("needs_attention");
+    const [row] = await q<{ input_json: AutoCreationFrozenInput }>("SELECT input_json FROM auto_creation_run WHERE id = $1", [runId]);
+    const v3 = { ...row!.input_json, promptVersion: "ads.auto-creation.prompt.v3", checksVersion: "ads.auto-creation.checks.v3" } as AutoCreationFrozenInput;
+    await q("UPDATE auto_creation_run SET input_json = $2, input_hash = $3 WHERE id = $1", [runId, JSON.stringify(v3), hashAutoCreationInput(id, v3)]);
+    await q("UPDATE auto_creation_stage SET output_json = $2 WHERE run_id = $1 AND stage_key = 'research'", [runId, JSON.stringify(fixtureAutoResearchV1())]);
+    const sent = seen.length;
+    const uncertain = runOf((await svc.get(id, runId)).body).calls.filter((call) => call.state === "unknown").map((call) => call.callId);
+    expect(uncertain).toHaveLength(1);
+    expect((await svc.resume(id, runId, { confirmUncertainCallIds: uncertain }, TOKEN, ctx("v1-research-resume-1"))).status).toBe(200);
+    await settle();
+    expect(seen.slice(sent).map((item) => item.stage)).toEqual(["directions", "bible", "outline", "episode:1", "review:1"]);
+    expect(seen.slice(sent)[0]!.user).toContain("\"历史版本\":{\"pattern\":\"主角主动选择推动结果\"");
+    expect(seen.slice(sent)[0]!.user).not.toContain("参考方法原文\":");
+    const run = runOf((await svc.get(id, runId)).body);
+    expect(run).toMatchObject({ state: "completed", storySave: "saved", callsUsed: 7, callCap: 8 });
+    expect(run.calls.filter((call) => call.stageKey === "research")).toHaveLength(1);
+    const after = (await q<{ input_json: AutoCreationFrozenInput; input_hash: string }>("SELECT input_json, input_hash FROM auto_creation_run WHERE id = $1", [runId]))[0]!;
+    expect(after.input_json).toEqual(v3);
+    expect(after.input_hash).toBe(hashAutoCreationInput(id, v3));
+    expect((await q<{ output_json: unknown }>("SELECT output_json FROM auto_creation_stage WHERE run_id = $1 AND stage_key = 'research'", [runId]))[0]!.output_json)
+      .toEqual(fixtureAutoResearchV1());
+    expect((await q<{ review_status: string }>("SELECT review_status FROM story_revision WHERE project_id = $1", [id]))).toEqual([{ review_status: "DRAFT" }]);
+    evidence.v1ResearchResume = { runId, calls: run.callsUsed, resent: seen.slice(sent).map((item) => item.stage) };
   });
 
   it("three episodes with a verified issue: one targeted revision and a second review; six episodes: the maximum completes", async () => {
