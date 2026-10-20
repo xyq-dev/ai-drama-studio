@@ -22,15 +22,22 @@ import {
  * Every version below is frozen into a run's input; a stored run keeps the meaning it was created with.
  */
 export const AUTO_CREATION_INPUT_SCHEMA = "ads.auto-creation.input.v1" as const;
-/** v2: the research contract says which fields may carry a number and which never do (no dates, counts or plans). */
-export const AUTO_CREATION_PROMPT_VERSION = "ads.auto-creation.prompt.v2" as const;
+/**
+ * v2: the research contract says which fields may carry a number and which never do (no dates, counts or plans).
+ * v3: numbers by meaning: story quantities and future plans may be written, market statistics only from cited excerpts.
+ */
+export const AUTO_CREATION_PROMPT_VERSION = "ads.auto-creation.prompt.v3" as const;
 /** Every prompt version a stored run may carry. A resumed run is sent with the current prompts. */
-export type AutoCreationPromptVersion = "ads.auto-creation.prompt.v1" | typeof AUTO_CREATION_PROMPT_VERSION;
+export type AutoCreationPromptVersion = "ads.auto-creation.prompt.v1" | "ads.auto-creation.prompt.v2" | typeof AUTO_CREATION_PROMPT_VERSION;
 export const AUTO_CREATION_SELECTION_RULES = "ads.auto-creation.selection-rules.v1" as const;
-/** v2: the applied constraints and a direction's audience fit are number-checked; spaced ordinals are not claims. */
-export const AUTO_CREATION_CHECKS_VERSION = "ads.auto-creation.checks.v2" as const;
+/**
+ * v2: the applied constraints and a direction's audience fit are number-checked; spaced ordinals are not claims.
+ * v3: an uncited number is judged by what it counts (story, plan, frozen setting or statistic); a direction's notes
+ * are checked too; refusals name what the number was taken for and the sub-rule.
+ */
+export const AUTO_CREATION_CHECKS_VERSION = "ads.auto-creation.checks.v3" as const;
 /** Every checks version a stored run or review may carry. */
-export type AutoCreationChecksVersion = "ads.auto-creation.checks.v1" | typeof AUTO_CREATION_CHECKS_VERSION;
+export type AutoCreationChecksVersion = "ads.auto-creation.checks.v1" | "ads.auto-creation.checks.v2" | typeof AUTO_CREATION_CHECKS_VERSION;
 export const AUTO_CREATION_RESEARCH_SCHEMA = "ads.auto-creation.research.v1" as const;
 export const AUTO_CREATION_DIRECTIONS_SCHEMA = "ads.auto-creation.directions.v1" as const;
 export const AUTO_CREATION_BIBLE_SCHEMA = "ads.auto-creation.bible.v1" as const;
@@ -698,19 +705,25 @@ export const AUTO_CREATION_FINAL_ERROR_CODES: readonly string[] = ["story_too_la
 
 /**
  * A refused answer's stored error: its rule, and where it is, as `code@field:category` (e.g.
- * `unsourced_number@limitations[0]:digits`). Field paths name schema keys and indexes only and the category names a
- * kind of token, so no text of the model is ever stored. A run's own error keeps the bare rule.
+ * `unsourced_number@limitations[0]:digits`), and since checks v3 for a number also what it was taken for and the
+ * sub-rule: `unsourced_number@hypotheses[0].statement:chinese_numeral+market_statistic+audience_count`. Field paths
+ * name schema keys and indexes only; the other parts are fixed slugs. No text of the model is ever stored. A run's own
+ * error keeps the bare rule.
  */
-export function autoErrorCodeWith(code: string, field?: string, category?: string): string {
+export function autoErrorCodeWith(code: string, field?: string, category?: string, semantic?: string, rule?: string): string {
+  const slug = (value?: string) => value?.replace(/[^a-z_]/g, "").slice(0, 40) ?? "";
   const safeField = field?.replace(/[^A-Za-z0-9_.[\]]/g, "").slice(0, 80);
-  const safeCategory = category?.replace(/[^a-z_]/g, "").slice(0, 40);
-  return `${code}${safeField ? `@${safeField}` : ""}${safeCategory ? `:${safeCategory}` : ""}`;
+  const parts = [slug(category), slug(semantic), slug(rule)];
+  const tail = parts[0] ? (parts[1] ? parts.filter(Boolean).join("+") : parts[0]) : "";
+  return `${code}${safeField ? `@${safeField}` : ""}${tail ? `:${tail}` : ""}`;
 }
 
-/** The parts of a stored error code. A bare code (every code before checks v2) has no field or category. */
-export function autoErrorParts(stored: string): { code: string; field: string | null; category: string | null } {
+/** The parts of a stored error code. A bare code (every code before checks v2) has no field or category; v2 codes no semantic or rule. */
+export function autoErrorParts(stored: string): { code: string; field: string | null; category: string | null; semantic: string | null; rule: string | null } {
   const match = /^([^@:]+)(?:@([^:]+))?(?::(.+))?$/.exec(stored);
-  return match ? { code: match[1]!, field: match[2] ?? null, category: match[3] ?? null } : { code: stored, field: null, category: null };
+  if (!match) return { code: stored, field: null, category: null, semantic: null, rule: null };
+  const [category, semantic, rule] = (match[3] ?? "").split("+");
+  return { code: match[1]!, field: match[2] ?? null, category: category || null, semantic: semantic || null, rule: rule || null };
 }
 
 /** True when nothing is left to redo and the run's stop reason is final: a resume would only stop the same way. */

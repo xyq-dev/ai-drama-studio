@@ -210,17 +210,19 @@ describe(`automatic creation on PostgreSQL (${scenario} schema)`, () => {
     evidence.zeroRounds = { runId: run.runId, calls: run.callsUsed, callCap: run.callCap };
   });
 
-  it("a run stored by the v1 code: its own key and request replay 200 with nothing written or sent; other content or work is 409", async () => {
+  // v2 is what the deployed baseline (cf1ef29) freezes; v1 came before it. Neither is rehashed under v3.
+  it.each(["v1", "v2"] as const)("a run stored by the %s code: its own key and request replay 200 with nothing written or sent; other content or work is 409", async (version) => {
     plan = {};
     const { svc, settle, pending } = service();
     const id = await project(1);
     const request = { revisionRounds: 0, callBudget: 6 };
-    const started = await svc.start(id, request, TOKEN, ctx("stored-v1"));
+    const key = `stored-${version}`;
+    const started = await svc.start(id, request, TOKEN, ctx(key));
     await settle();
     const runId = runOf(started.body).runId;
-    // The row as the v1 code wrote it: the v1 versions in its frozen input and the hash computed over that input.
+    // The row as that code wrote it: its versions in the frozen input and the hash computed over that input.
     const [row] = await q<{ input_json: AutoCreationFrozenInput }>("SELECT input_json FROM auto_creation_run WHERE id = $1", [runId]);
-    const v1 = { ...row!.input_json, promptVersion: "ads.auto-creation.prompt.v1", checksVersion: "ads.auto-creation.checks.v1" } as AutoCreationFrozenInput;
+    const v1 = { ...row!.input_json, promptVersion: `ads.auto-creation.prompt.${version}`, checksVersion: `ads.auto-creation.checks.${version}` } as AutoCreationFrozenInput;
     await q("UPDATE auto_creation_run SET input_json = $2, input_hash = $3 WHERE id = $1", [runId, JSON.stringify(v1), hashAutoCreationInput(id, v1)]);
     const rows = async () => JSON.stringify({
       run: await q("SELECT * FROM auto_creation_run WHERE id = $1", [runId]),
@@ -231,22 +233,22 @@ describe(`automatic creation on PostgreSQL (${scenario} schema)`, () => {
     });
     const before = await rows();
     const sent = seen.length;
-    const replay = await svc.start(id, request, TOKEN, ctx("stored-v1"));
+    const replay = await svc.start(id, request, TOKEN, ctx(key));
     expect(replay.status).toBe(200);
     expect(runOf(replay.body).runId).toBe(runId);
     expect(pending).toHaveLength(0);
     for (const changed of [{ ...request, idea: "别的想法" }, { ...request, revisionRounds: 1 }, {}]) {
-      const refused = await svc.start(id, changed, TOKEN, ctx("stored-v1"));
+      const refused = await svc.start(id, changed, TOKEN, ctx(key));
       expect([refused.status, (refused.body as { error?: { code?: string } }).error?.code]).toEqual([409, "IDEMPOTENCY_KEY_REUSED"]);
     }
     // The same key on another work is not this run.
-    const elsewhere = await svc.start(await project(1), request, TOKEN, ctx("stored-v1"));
+    const elsewhere = await svc.start(await project(1), request, TOKEN, ctx(key));
     expect([elsewhere.status, (elsewhere.body as { error?: { code?: string } }).error?.code]).toEqual([409, "IDEMPOTENCY_KEY_REUSED"]);
     await settle();
     expect(seen.length).toBe(sent);
     expect(await rows()).toBe(before);
     expect((await q<{ input_hash: string }>("SELECT input_hash FROM auto_creation_run WHERE id = $1", [runId]))[0]!.input_hash).toBe(hashAutoCreationInput(id, v1));
-    evidence.v1Replay = { runId, status: replay.status, newCalls: seen.length - sent };
+    evidence[`${version}Replay`] = { runId, status: replay.status, newCalls: seen.length - sent };
   });
 
   it("a research answer the checks refuse: one call, nothing after it, the rule and field stored, no answer text kept", async () => {
@@ -261,9 +263,10 @@ describe(`automatic creation on PostgreSQL (${scenario} schema)`, () => {
     expect(seen.length - before).toBe(1);
     const stages = await q<{ stage_key: string; state: string; error_code: string | null; output_json: unknown }>(
       "SELECT stage_key, state, error_code, output_json FROM auto_creation_stage WHERE run_id = $1 AND stage_key = 'research'", [run.runId]);
-    expect(stages).toEqual([{ stage_key: "research", state: "rejected", error_code: "unsourced_number@hypotheses[0].statement:percent", output_json: null }]);
+    const code = "unsourced_number@hypotheses[0].statement:percent+market_statistic+proportion";
+    expect(stages).toEqual([{ stage_key: "research", state: "rejected", error_code: code, output_json: null }]);
     const calls = await q<{ error_code: string }>("SELECT error_code FROM auto_creation_call WHERE run_id = $1", [run.runId]);
-    expect(calls).toEqual([{ error_code: "unsourced_number@hypotheses[0].statement:percent" }]);
+    expect(calls).toEqual([{ error_code: code }]);
     // The refused answer is in no table of the run.
     const stored = await q<{ text: string }>(
       `SELECT concat_ws(' ', (SELECT string_agg(row_to_json(s)::text, ' ') FROM auto_creation_stage s WHERE s.run_id = $1),
@@ -275,8 +278,114 @@ describe(`automatic creation on PostgreSQL (${scenario} schema)`, () => {
     evidence.refusedResearch = { runId: run.runId, stageError: stages[0]!.error_code };
   });
 
+  it("checks v3: the test-site shape with story and plan quantities in its research completes, saves a DRAFT, exports and reads back", async () => {
+    plan = { creativeQuantities: true };
+    const { svc, settle } = service();
+    const id = await project(1);
+    const before = seen.length;
+    const started = await svc.start(id, { revisionRounds: 0, callBudget: 6 }, TOKEN, ctx("creative"));
+    expect(started.status).toBe(201);
+    await settle();
+    const runId = runOf(started.body).runId;
+    const run = runOf((await svc.get(id, runId)).body);
+    expect(run).toMatchObject({ state: "completed", quality: "passed", callsUsed: 6, callCap: 6, storySave: "saved", packageStatus: "ready", errorCode: null,
+      providerKey: "deepseek", model: "deepseek-flash", researchMode: "limited" });
+    expect(seen.slice(before).map((item) => item.stage)).toEqual(["research", "directions", "bible", "outline", "episode:1", "review:1"]);
+    expect(seen.slice(before)[0]!.user).toContain("提示版本：ads.auto-creation.prompt.v3");
+    expect((await q<{ input_json: AutoCreationFrozenInput }>("SELECT input_json FROM auto_creation_run WHERE id = $1", [runId]))[0]!.input_json)
+      .toMatchObject({ promptVersion: "ads.auto-creation.prompt.v3", checksVersion: "ads.auto-creation.checks.v3" });
+    // The stored research is the accepted answer as sent: its quantities are there word for word.
+    const research = (await q<{ output_json: { hypotheses: Array<{ statement: string; howToVerify: string }> } }>(
+      "SELECT output_json FROM auto_creation_stage WHERE run_id = $1 AND stage_key = 'research'", [runId]))[0]!.output_json;
+    expect(research.hypotheses.map((item) => item.statement).join("")).toContain("两个互不信任的人");
+    expect(research.hypotheses.map((item) => item.howToVerify).join("")).toContain("观察七天");
+    expect((await q<{ review_status: string }>("SELECT review_status FROM story_revision WHERE project_id = $1", [id]))).toEqual([{ review_status: "DRAFT" }]);
+    const markdown = (await svc.package(id, runId, "markdown")).download!.text;
+    expect(markdown).toContain("资料有限：没有可读取的近期市场资料");
+    expect(markdown).toContain("验证计划：计划上线后观察七天");
+    expect(markdown).toContain("不是平台真实用户画像");
+    expect(markdown).not.toMatch(/市场验证(已)?完成|已完成市场验证/u);
+    const json = JSON.parse((await svc.package(id, runId, "json")).download!.text) as { research: { analysis: { hypotheses: unknown[] } } };
+    expect(json.research.analysis.hypotheses).toHaveLength(2);
+    // Read again as a reload would: the same run, nothing sent.
+    const sent = seen.length;
+    expect(runOf((await svc.latest(id)).body)).toMatchObject({ runId, state: "completed", callsUsed: 6 });
+    expect(seen.length).toBe(sent);
+    plan = {};
+    evidence.creativeQuantities = { runId, calls: run.callsUsed, stages: seen.slice(before).map((item) => item.stage) };
+  });
+
+  it("checks v3: a share hidden in a verification plan is refused at research alone, named by field, rule and meaning", async () => {
+    plan = { hiddenStatistic: true };
+    const { svc, settle } = service();
+    const id = await project(1);
+    const before = seen.length;
+    const started = await svc.start(id, { revisionRounds: 0, callBudget: 6 }, TOKEN, ctx("hidden-statistic"));
+    await settle();
+    const runId = runOf(started.body).runId;
+    expect(runOf((await svc.get(id, runId)).body)).toMatchObject({ state: "failed", errorCode: "unsourced_number", callsUsed: 1 });
+    expect(seen.slice(before).map((item) => item.stage)).toEqual(["research"]);
+    const code = "unsourced_number@hypotheses[0].howToVerify:percent+market_statistic+proportion";
+    expect(await q("SELECT stage_key, state, error_code, output_json FROM auto_creation_stage WHERE run_id = $1 AND state <> 'pending' AND stage_key <> 'sources'", [runId]))
+      .toEqual([{ stage_key: "research", state: "rejected", error_code: code, output_json: null }]);
+    expect(await q("SELECT error_code FROM auto_creation_call WHERE run_id = $1", [runId])).toEqual([{ error_code: code }]);
+    expect(JSON.stringify(await q("SELECT * FROM auto_creation_stage WHERE run_id = $1", [runId]))).not.toContain("六成");
+    expect((await q<{ n: number }>("SELECT count(*)::int AS n FROM story_revision WHERE project_id = $1", [id]))[0]!.n).toBe(0);
+    plan = {};
+    evidence.hiddenStatistic = { runId, stageError: code };
+  });
+
+  it("checks v3: a v2 run refused at research resumes under the current checks; its frozen input and hash stay; a stale confirmation writes nothing", async () => {
+    plan = { hiddenStatistic: true };
+    const { svc, settle } = service();
+    const id = await project(1);
+    // Budget 8: the hard cap of one episode with no rounds (6 normal calls + 2 confirmed resends).
+    const started = await svc.start(id, { revisionRounds: 0, callBudget: 8 }, TOKEN, ctx("v2-refused"));
+    await settle();
+    const runId = runOf(started.body).runId;
+    const [row] = await q<{ input_json: AutoCreationFrozenInput }>("SELECT input_json FROM auto_creation_run WHERE id = $1", [runId]);
+    const v2 = { ...row!.input_json, promptVersion: "ads.auto-creation.prompt.v2", checksVersion: "ads.auto-creation.checks.v2" } as AutoCreationFrozenInput;
+    // As the deployed code stored the real refusal: the v2 versions, and the v2 diagnosis on the stage and its call.
+    const v2Code = "unsourced_number@hypotheses[0].statement:chinese_numeral";
+    await q("UPDATE auto_creation_run SET input_json = $2, input_hash = $3 WHERE id = $1", [runId, JSON.stringify(v2), hashAutoCreationInput(id, v2)]);
+    await q("UPDATE auto_creation_stage SET error_code = $2 WHERE run_id = $1 AND stage_key = 'research'", [runId, v2Code]);
+    await q("UPDATE auto_creation_call SET error_code = $2 WHERE run_id = $1", [runId, v2Code]);
+    const state = async () => JSON.stringify({
+      run: await q("SELECT state, error_code, calls_used, updated_at, input_hash FROM auto_creation_run WHERE id = $1", [runId]),
+      stages: await q("SELECT stage_key, state, attempt_no, error_code, updated_at FROM auto_creation_stage WHERE run_id = $1 ORDER BY ordinal", [runId]),
+      calls: await q("SELECT id, state, error_code FROM auto_creation_call WHERE run_id = $1 ORDER BY created_at, id", [runId]),
+      resumes: await q("SELECT idempotency_key FROM auto_creation_resume WHERE run_id = $1", [runId]),
+    });
+    const before = await state();
+    const sent = seen.length;
+    // A confirmation of a call that is not uncertain is refused before any write.
+    const stale = await svc.resume(id, runId, { confirmUncertainCallIds: [randomUUID()] }, TOKEN, ctx("v2-stale"));
+    expect(stale.status).toBeGreaterThanOrEqual(400);
+    await settle();
+    expect(await state()).toBe(before);
+    expect(seen.length).toBe(sent);
+    plan = { creativeQuantities: true };
+    expect((await svc.resume(id, runId, {}, TOKEN, ctx("v2-resume"))).status).toBe(200);
+    await settle();
+    expect(seen.slice(sent).map((item) => item.stage)).toEqual(["research", "directions", "bible", "outline", "episode:1", "review:1"]);
+    expect(seen.slice(sent)[0]!.user).toContain("提示版本：ads.auto-creation.prompt.v3");
+    const run = runOf((await svc.get(id, runId)).body);
+    expect(run).toMatchObject({ state: "completed", quality: "passed", callsUsed: 7, callCap: 8, storySave: "saved" });
+    expect(run.calls.filter((call) => call.stageKey === "research").map((call) => [call.state, call.errorCode]))
+      .toEqual([["rejected", v2Code], ["completed", null]]);
+    const after = (await q<{ input_json: AutoCreationFrozenInput; input_hash: string }>("SELECT input_json, input_hash FROM auto_creation_run WHERE id = $1", [runId]))[0]!;
+    expect(after.input_json).toMatchObject({ promptVersion: "ads.auto-creation.prompt.v2", checksVersion: "ads.auto-creation.checks.v2" });
+    expect(after.input_hash).toBe(hashAutoCreationInput(id, v2));
+    // The resume key replays to the run and sends nothing.
+    expect((await svc.resume(id, runId, {}, TOKEN, ctx("v2-resume"))).status).toBe(200);
+    await settle();
+    expect(seen.length).toBe(sent + 6);
+    plan = {};
+    evidence.v2RefusedResume = { runId, calls: run.callsUsed };
+  });
+
   it("three episodes with a verified issue: one targeted revision and a second review; six episodes: the maximum completes", async () => {
-    plan = { review: { highIssueRounds: [1] } };
+    plan = { review: { highIssueRounds: [1] }, creativeQuantities: true };
     const { svc, settle } = service();
     const three = await project(3);
     const started = await svc.start(three, {}, TOKEN, ctx("three"));

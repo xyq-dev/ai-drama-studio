@@ -81,10 +81,10 @@ function snapshot(store: InMemoryAutoCreationStore, runId: string) {
     calls: store.calls.filter((item) => item.runId === runId), resumes: store.resumes.filter((item) => item.runId === runId) });
 }
 
-/** Leaves a stored run as the v1 code froze it: the v1 versions in its input and the hash that code computed over them. */
-function asStoredByV1(store: InMemoryAutoCreationStore, runId: string) {
+/** Leaves a stored run as older code froze it: that code's versions in its input and the hash it computed over them. */
+function asStoredBy(store: InMemoryAutoCreationStore, runId: string, version: "v1" | "v2") {
   const run = store.runs.find((item) => item.id === runId)!;
-  run.input = { ...run.input, promptVersion: "ads.auto-creation.prompt.v1", checksVersion: "ads.auto-creation.checks.v1" };
+  run.input = { ...run.input, promptVersion: `ads.auto-creation.prompt.${version}`, checksVersion: `ads.auto-creation.checks.${version}` };
   run.inputHash = hashAutoCreationInput(run.projectId, run.input);
 }
 
@@ -118,13 +118,14 @@ describe("automatic creation API", () => {
     expect(errorCode((await service.start(P1, { idea: "别的想法" }, TOKEN, CONTEXT("k-1"))).body)).toBe("IDEMPOTENCY_KEY_REUSED");
   });
 
-  it("a run frozen by the v1 code answers its own key and request after the upgrade: 200, the same run, nothing written or sent", async () => {
+  // v2 is what the deployed baseline (cf1ef29) freezes; v1 came before it. Neither is rehashed under v3.
+  it.each(["v1", "v2"] as const)("a run frozen by the %s code answers its own key and request after the upgrade: 200, the same run, nothing written or sent", async (version) => {
     const { service, seen, settle, store, pending } = setup();
     const request = { revisionRounds: 0, callBudget: 6 };
     const started = await service.start(P1, request, TOKEN, CONTEXT("k-v1"));
     const runId = (started.body as { run: AutoCreationRunView }).run.runId;
     await settle();
-    asStoredByV1(store, runId);
+    asStoredBy(store, runId, version);
     const before = snapshot(store, runId);
     const sent = seen.length;
     const replay = await service.start(P1, request, TOKEN, CONTEXT("k-v1"));
@@ -135,13 +136,13 @@ describe("automatic creation API", () => {
     expect(seen).toHaveLength(sent);
     expect(store.runs).toHaveLength(1);
     expect(snapshot(store, runId)).toEqual(before);
-    expect(before.run!.input).toMatchObject({ promptVersion: "ads.auto-creation.prompt.v1", checksVersion: "ads.auto-creation.checks.v1" });
+    expect(before.run!.input).toMatchObject({ promptVersion: `ads.auto-creation.prompt.${version}`, checksVersion: `ads.auto-creation.checks.${version}` });
     // Other business content under the same key is still another request.
     for (const changed of [{ ...request, idea: "别的想法" }, { ...request, callBudget: 7 }, { ...request, model: "o-1", providerKey: "openai" }, {}]) {
       expect(errorCode((await service.start(P1, changed, TOKEN, CONTEXT("k-v1"))).body)).toBe("IDEMPOTENCY_KEY_REUSED");
     }
     // The versions are the server's: a request naming them is refused, not matched.
-    expect((await service.start(P1, { ...request, promptVersion: "ads.auto-creation.prompt.v1" }, TOKEN, CONTEXT("k-v1"))).status).toBe(400);
+    expect((await service.start(P1, { ...request, promptVersion: `ads.auto-creation.prompt.${version}` }, TOKEN, CONTEXT("k-v1"))).status).toBe(400);
     // Another person's same key never reaches this run.
     const other = await service.start(P1, request, TOKEN, { ...CONTEXT("k-v1"), actorId: "someone-else" });
     expect(other.status).toBe(409);

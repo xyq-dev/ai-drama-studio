@@ -315,15 +315,29 @@ export function AutoCreationRun({ projectId, client = defaultClient }: { project
         ) : null}
 
         {research ? (
-          <section className={autoStyles.section} aria-labelledby="auto-research-title">
+          <section className={autoStyles.section} aria-labelledby="auto-research-title" data-testid="auto-research-detail">
             <h2 id="auto-research-title" className={styles.sectionTitle}>研究与受众分析</h2>
+            {run.researchMode === "limited" ? (
+              <p className={styles.warning} data-testid="auto-research-limited">
+                资料有限：没有可读取的近期市场资料。下面的受众和题材判断都是待验证的假设，验证计划尚未执行；这不是实时市场验证，也不是平台真实用户画像。
+              </p>
+            ) : null}
             <p className={styles.helper}>有来源的事实</p>
-            <ul className={autoStyles.list}>{research.facts.length > 0 ? research.facts.map((item) => <li key={item.id}>{item.statement}（{item.sourceIds.join("、")}：「{item.evidence}」）</li>) : <li>无</li>}</ul>
+            <ul className={autoStyles.list}>{research.facts.length > 0 ? research.facts.map((item) => <li key={item.id}>{item.statement}（{item.sourceIds.join("、")}：「{item.evidence}」）</li>) : <li>无（没有可引用的资料）</li>}</ul>
             <p className={styles.helper}>基于样本的观察</p>
             <ul className={autoStyles.list}>{research.observations.length > 0 ? research.observations.map((item) => <li key={item.id}>{item.statement}（{item.sourceIds.join("、")}）</li>) : <li>无</li>}</ul>
-            <p className={styles.helper}>待验证的假设</p>
-            <ul className={autoStyles.list}>{research.hypotheses.map((item) => <li key={item.id}>{item.statement}（验证：{item.howToVerify}）</li>)}</ul>
-            <p>目标观众（{research.audience.basis === "sourced" ? "有来源" : "假设"}）：{research.audience.primary}；观看需求：{research.audience.viewingNeeds.join("、")}；情绪诉求：{research.audience.emotionalAppeals.join("、")}</p>
+            <p className={styles.helper}>待验证的假设与验证计划（计划尚未执行，不是调查结果）</p>
+            <ul className={autoStyles.list} data-testid="auto-hypotheses">
+              {research.hypotheses.map((item) => <li key={item.id}>{item.id} 假设：{item.statement}<br />验证计划：{item.howToVerify}</li>)}
+            </ul>
+            <p data-testid="auto-audience">
+              目标观众（{research.audience.basis === "sourced" ? "有来源" : "待验证的拟定人群，不是平台真实用户画像"}）：{research.audience.primary}；观看需求：{research.audience.viewingNeeds.join("、")}；情绪诉求：{research.audience.emotionalAppeals.join("、")}
+            </p>
+            <ul className={autoStyles.list}>
+              <li>机会：{research.opportunities.join("；")}</li>
+              <li>局限：{research.limitations.join("；")}</li>
+              {research.appliedConstraints.length > 0 ? <li>采用的约束：{research.appliedConstraints.join("；")}</li> : null}
+            </ul>
           </section>
         ) : null}
 

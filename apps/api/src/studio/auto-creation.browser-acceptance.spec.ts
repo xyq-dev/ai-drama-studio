@@ -14,7 +14,7 @@ import "reflect-metadata";
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { INestApplication } from "@nestjs/common";
 import { Test } from "@nestjs/testing";
@@ -390,8 +390,8 @@ describe("AI automatic creation in a real browser (site login, built web, real A
     return /\/projects\/([0-9a-f-]{36})\/auto$/.exec(page.url())![1]!;
   }
 
-  it("B2: the failed test-site shape (no rounds, budget 6) keeps running after the page is left, and is read back unchanged", async () => {
-    plan = {};
+  it("B2: the failed test-site shape (no rounds, budget 6) with story and plan quantities in its research keeps running after the page is left, and is read back unchanged", async () => {
+    plan = { creativeQuantities: true };
     const before = seen.length;
     const projectId = await startZeroRounds();
     // Leave at once; the run belongs to the server, not to the page.
@@ -405,25 +405,51 @@ describe("AI automatic creation in a real browser (site login, built web, real A
     await expect.poll(async () => await headline().textContent(), { timeout: 30_000 }).toBe("剧本包已完成（机器质量检查通过）");
     expect(seen.length - before).toBe(6);
     expect((await q<{ review_status: string }>("SELECT review_status FROM story_revision WHERE project_id = $1", [projectId]))).toEqual([{ review_status: "DRAFT" }]);
-    (evidence.flows as Record<string, unknown>).B2 = { stubSends: seen.length - before };
+    // Limited research is shown as such: facts, hypotheses and their unexecuted plans apart; no market validation claimed.
+    const limited = page.getByTestId("auto-research-limited");
+    await limited.waitFor({ timeout: 30_000 });
+    expect(await limited.textContent()).toContain("不是实时市场验证");
+    const hypotheses = await page.getByTestId("auto-hypotheses").textContent();
+    expect(hypotheses).toContain("两个互不信任的人");
+    expect(hypotheses).toContain("验证计划：计划上线后观察七天");
+    expect(await page.getByTestId("auto-audience").textContent()).toContain("不是平台真实用户画像");
+    expect(await page.getByTestId("auto-research-detail").textContent()).toContain("无（没有可引用的资料）");
+    expect(await page.locator("body").textContent()).not.toMatch(/市场验证(已)?完成|已完成市场验证/u);
+    expect(await page.getByTestId("auto-call-count").textContent()).toContain("已用 6 / 预算 6 次");
+    expect(await page.getByTestId("auto-creation-run").locator("header").textContent()).toContain("deepseek-flash");
+    await viewports("03b-auto-research-limited", page.getByTestId("auto-research-detail"), page.getByTestId("auto-download-md"));
+    const [download] = await Promise.all([page.waitForEvent("download"), page.getByTestId("auto-download-md").click()]);
+    const packagePath = join(shotsDir ?? ROOT, "auto-package-creative.md");
+    await download.saveAs(packagePath);
+    const text = await readFile(packagePath, "utf8");
+    expect(text).toContain("验证计划：计划上线后观察七天");
+    expect(text).toContain("资料有限：没有可读取的近期市场资料");
+    // The story review entry stays reachable from the run.
+    await page.getByRole("link", { name: "去作品中人工审核故事" }).waitFor();
+    (evidence.flows as Record<string, unknown>).B2 = { stubSends: seen.length - before, creativeQuantities: true };
   }, 240_000);
 
-  it("B3: a research answer the checks refuse stops after one call; the page names the stage, rule and field, not the key", async () => {
-    plan = { fabricatedNumber: true };
+  it("B3: a share hidden in a verification plan stops research after one call; the page names the stage, field, meaning and rule, not the key", async () => {
+    plan = { hiddenStatistic: true };
     const before = seen.length;
     const projectId = await startZeroRounds();
     await expect.poll(async () => await headline().textContent(), { timeout: 90_000, interval: 300 }).toBe("没有完成");
     const refused = page.getByTestId("auto-output-refused");
     await refused.waitFor({ timeout: 30_000 });
     expect(await refused.textContent()).toContain("不是密钥或账户问题");
-    expect(await page.getByText(/^停在「/u).textContent()).toContain("hypotheses[0].statement");
+    const stop = await page.getByText(/^停在「/u).textContent();
+    expect(stop).toContain("hypotheses[0].howToVerify");
+    expect(stop).toContain("市场或受众统计");
+    expect(stop).toContain("比例或成数");
+    expect(stop).toContain("不说明模型一定编造");
+    expect(await refused.textContent()).toContain("不需要更换密钥");
     await viewports("04-auto-research-refused", refused, page.getByTestId("auto-headline"));
     await page.reload({ waitUntil: "domcontentloaded" });
     await expect.poll(async () => await headline().textContent(), { timeout: 30_000 }).toBe("没有完成");
     expect(seen.length - before).toBe(1);
     const stage = (await q<{ error_code: string; output_json: unknown }>(
       "SELECT s.error_code, s.output_json FROM auto_creation_stage s JOIN auto_creation_run r ON r.id = s.run_id WHERE r.project_id = $1 AND s.stage_key = 'research'", [projectId]))[0]!;
-    expect(stage).toEqual({ error_code: "unsourced_number@hypotheses[0].statement:percent", output_json: null });
+    expect(stage).toEqual({ error_code: "unsourced_number@hypotheses[0].howToVerify:percent+market_statistic+proportion", output_json: null });
     plan = {};
     (evidence.flows as Record<string, unknown>).B3 = { stubSends: seen.length - before, stageError: stage.error_code };
   }, 240_000);

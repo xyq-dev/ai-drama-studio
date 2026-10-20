@@ -168,12 +168,12 @@ export function autoHeadline(run: AutoCreationRunView): string {
 }
 
 const ERRORS: Record<string, string> = {
-  unsourced_number: "研究结论里出现了资料中找不到的数字，已拒收（不允许编造市场数据），后续阶段没有发送。",
+  unsourced_number: "回答里有一个数字没有通过真实性检查，已拒收，后续阶段没有发送。这不说明模型一定编造了数据，也可能是写法让程序无法确认它是创作设定；下面写明了位置和判断类别。",
   unsourced_claim: "研究结论把没有来源的判断标成了有来源，已拒收。",
   unknown_source: "研究结论引用了不存在的资料编号，已拒收。",
   unread_source: "研究结论引用了没有读到正文的资料，已拒收。",
   evidence_not_in_source: "研究结论的引文在资料中找不到，已拒收。",
-  constraint_violation: "结果违反了你的硬约束（人物数、地点数或禁止题材），已拒收，没有保存。",
+  constraint_violation: "结果违反了冻结的硬约束（集数、每集时长、人物数、地点数或禁止题材），已拒收，没有保存。",
   dangling_reference: "结果引用了设定中不存在的人物、地点或编号，已拒收。",
   duplicate_id: "结果里有重复的编号，已拒收。",
   duplicate_direction: "几个选题方向实质相同，已拒收。",
@@ -213,13 +213,33 @@ const CATEGORY_TEXT: Record<string, string> = {
   digits: "阿拉伯数字", percent: "百分比或成数", rank: "排名名次", chinese_numeral: "中文数字", fullwidth_digits: "全角数字",
 };
 
-/** A stored code (rule, and since checks v2 the field and the kind of token) as the page says it. */
+/** What the check took the number for (checks v3). */
+const SEMANTIC_TEXT: Record<string, string> = {
+  market_statistic: "判断为市场或受众统计，需要可读资料来源",
+  result_claim: "判断为写成了已经得到的调查或观众结论，而不是待验证的假设或计划",
+  frozen_conflict: "判断为创作数量，但与冻结的集数、时长或人物、地点上限冲突",
+  unclassified: "无法确认是创作设定还是统计（如日期、资料条数），按无来源数字处理",
+  unsourced: "所引资料的摘录正文里没有这个数字",
+};
+
+const RULE_TEXT: Record<string, string> = {
+  proportion: "比例或成数", magnitude: "数量级或倍数", ranking: "排名", audience_count: "观众或用户人数", audience_age: "受众年龄或年龄段",
+  rate_or_average: "平均值或每天、每周的频次", viewing_duration: "观看时长", viewing_count: "观看集数", long_observation: "过长的观察期",
+  market_clause: "与观众或市场写在同一句", measured_result: "写成已测得的结果", unmarked_audience_judgement: "观众判断没有写明待验证或计划",
+  cast_over_limit: "人物数超过上限", locations_over_limit: "地点数超过上限", episode_count: "集数与冻结值不同", over_length: "时长超过每集目标",
+  date_or_range: "日期或数值范围", no_role: "没有对应的创作或计划含义", count_out_of_range: "数量超出合理的创作范围",
+  not_in_cited_excerpt: "引用资料中找不到",
+};
+
+/** A stored code (rule; since checks v2 the field and the kind of token; since v3 what it was taken for and the sub-rule) as the page says it. */
 export function autoErrorText(stored: string | null): string | null {
   if (stored === null) return null;
-  const { code, field, category } = autoErrorParts(stored);
+  const { code, field, category, semantic, rule } = autoErrorParts(stored);
   const base = ERRORS[code] ?? `出现了未识别的问题（${code}）。`;
   if (!field && !category) return base;
-  return `${base}位置：${field ?? "未知字段"}${category ? `（${CATEGORY_TEXT[category] ?? category}）` : ""}。`;
+  const kind = category ? `（${CATEGORY_TEXT[category] ?? category}）` : "";
+  const meaning = semantic ? `；${SEMANTIC_TEXT[semantic] ?? semantic}${rule ? `：${RULE_TEXT[rule] ?? rule}` : ""}` : "";
+  return `${base}位置：${field ?? "未知字段"}${kind}${meaning}。`;
 }
 
 /** True when the model's answer was refused by the checks (not a key, quota or network problem). */
