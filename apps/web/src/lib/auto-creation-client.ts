@@ -1,4 +1,5 @@
 import {
+  AUTO_RESEARCH_SERVER_KEYS,
   AUTO_REVIEW_DIMENSION_LABELS,
   autoErrorParts,
   autoStageEpisodeNo,
@@ -211,6 +212,8 @@ const OUTPUT_CHECK_CODES = new Set(["unsourced_number", "unsourced_claim", "unkn
 
 const CATEGORY_TEXT: Record<string, string> = {
   digits: "阿拉伯数字", percent: "百分比或成数", rank: "排名名次", chinese_numeral: "中文数字", fullwidth_digits: "全角数字",
+  // Every strict stage: the answer carries a field its contract does not allow.
+  unrecognized_keys: "模型回答包含契约不允许的额外字段",
 };
 
 /** What the check took the number for (checks v3). */
@@ -237,7 +240,9 @@ export function autoErrorText(stored: string | null): string | null {
   const { code, field, category, semantic, rule } = autoErrorParts(stored);
   const base = ERRORS[code] ?? `出现了未识别的问题（${code}）。`;
   if (!field && !category) return base;
-  const kind = category ? `（${CATEGORY_TEXT[category] ?? category}）` : "";
+  // research v3: only a key the server keeps for itself is explained as the server's record.
+  const serverKey = category === "unrecognized_keys" && (AUTO_RESEARCH_SERVER_KEYS as readonly string[]).includes(field ?? "");
+  const kind = category ? `（${CATEGORY_TEXT[category] ?? category}${serverKey ? "；用户设定与资料局限由服务端记录，模型不能填写" : ""}）` : "";
   const meaning = semantic ? `；${SEMANTIC_TEXT[semantic] ?? semantic}${rule ? `：${RULE_TEXT[rule] ?? rule}` : ""}` : "";
   return `${base}位置：${field ?? "未知字段"}${kind}${meaning}。`;
 }

@@ -14,17 +14,21 @@ import {
   AUTO_STRUCTURE_QUOTE_MAX,
   AUTO_STRUCTURE_QUOTE_MIN,
   WRITING_BODY_MAX_CHARS,
+  AUTO_RESEARCH_SERVER_KEYS,
+  AUTO_UNVERIFIED_NOTE,
   autoBibleSchema,
   autoDirectionsSchema,
   autoEpisodeSchema,
+  autoNoticeText,
   autoOutlineSchema,
-  autoResearchSchema,
+  autoResearchAnswerSchema,
   autoReviewSchema,
   autoRevisionSchema,
   autoStageEpisodeNo,
   autoStageKind,
   autoStageRound,
   autoStructureViews,
+  autoUnverifiedOf,
   autoCreationRevisionsPerRound,
   type AutoBible,
   type AutoCheckFinding,
@@ -34,7 +38,8 @@ import {
   type AutoDirectionsOutput,
   type AutoEpisode,
   type AutoOutline,
-  type AutoResearch,
+  type AutoResearchAnswer,
+  type AutoResearchServerRecord,
   type AutoReviewIssue,
   type AutoReviewOutput,
   type AutoRevision,
@@ -43,8 +48,11 @@ import {
   type AutoStageOutput,
   type AutoStageRecord,
   type AutoStoredResearch,
+  type AutoUnverifiedNotice,
 } from "@ai-drama/contracts";
-import { frozenAudiencePhrase, numberKind, numberTokens, settledMarketClaim, uncitedNumberFinding, type AutoNumberFrame } from "./auto-creation-numbers";
+import {
+  frozenAudiencePhrase, numberKind, numberTokens, settledMarketClaim, uncitedNumberReading, type AutoNumberFinding, type AutoNumberFrame,
+} from "./auto-creation-numbers";
 import { isMarketSource, readableSources } from "./auto-creation-sources";
 import { canonicalInputHash } from "./text-chain";
 
@@ -263,12 +271,37 @@ function chosenDirection(context: AutoCreationContext): AutoDirection {
 }
 
 const STRUCTURE_NOTE = "研究里的内容结构：“参考方法原文”是资料原文，“本剧应用设计”是本作品自己的创作设计，不是资料或市场结论；“历史版本”是旧格式，没有区分两者。";
+const IDENTITY_NOTE = "研究里只有 facts 和 observations 有来源；hypotheses、没有来源的 audience、本剧应用设计和 opportunities 是 AI 的创作假设与设计，验证计划尚未执行；"
+  + "“资料记录”来自服务端记录，不是 AI 调研结论；“未核实提示”标出的数字程序未能判定含义，未核实：相关文字只能当作创作假设或设计，不能写成事实、平台用户画像或已验证的市场结论。";
 
 /** A research's content structures for a later prompt: the quoted method and the work's own design apart, by name. */
 function structureForPrompt(research: AutoStoredResearch): unknown[] {
   return autoStructureViews(research).map((item) => item.version === "v1"
     ? { 历史版本: { pattern: item.pattern, why: item.why, sourceIds: item.sourceIds } }
     : { 参考方法原文: item.reference ?? "无（自主创作设计）", 本剧应用设计: item.application });
+}
+
+/**
+ * A research for a later prompt. v3 keeps the server's record and notices apart from the answer, by name: the material
+ * as recorded (no fetch dates: a date is no quotable fact) and every notice as unverified. Older research as stored.
+ */
+function researchForPrompt(research: AutoStoredResearch): unknown {
+  const contentStructure = structureForPrompt(research);
+  if (research.schema !== AUTO_CREATION_RESEARCH_SCHEMA) return { ...research, contentStructure };
+  const { serverRecord, unverified, ...answer } = research;
+  const { material } = serverRecord;
+  return {
+    ...answer,
+    contentStructure,
+    资料记录: {
+      说明: "服务端按本次资料快照记录，不是 AI 调研结论",
+      资料模式: material.researchMode === "limited" ? "资料有限策划模式（不是实时市场验证）" : "有可读取的近期市场资料",
+      已读取: material.read.map((item) => ({ sourceId: item.sourceId, title: item.title, readScope: item.readScope })),
+      未读取: material.unread.map((item) => ({ sourceId: item.sourceId, title: item.title, status: item.status })),
+      缺失说明: material.gaps,
+    },
+    未核实提示: unverified.map((notice) => autoNoticeText(notice, research)),
+  };
 }
 
 function episodeShape(input: AutoCreationFrozenInput, episodeNo: number): string[] {
@@ -302,15 +335,16 @@ export function buildAutoCreationPrompt(stageKey: string, input: AutoCreationFro
         + "没有合适的方法资料时 reference 写 null，表示这一条是自主创作设计，不要伪装成引用。",
       "- application：本剧怎样应用（pattern 写本剧的结构设计，why 写理由），是本作品的原创设计，可以写本剧的创作数量（如“计划用两次反转推动主角主动选择”），这些数量不需要出现在 quote 里；"
         + "但 application 不是资料的结论：引用不能替它说明观众比例、排名、“调查证明”“已验证”等市场或受众说法，市场事实只写进 facts 和 observations。",
-      "opportunities：适合本次创作的机会；limitations：资料缺失和局限；appliedConstraints：本次采用的约束。",
+      "opportunities：适合本次创作的机会。",
+      "不要输出 limitations、appliedConstraints，也不要另写字段复述用户设定或资料局限：集数、时长、题材、目标观众、人物和地点上限、禁止题材、结局要求，以及资料读取范围、读取失败和缺失情况，由服务端按冻结设定和资料快照记录。回答里多出任何字段都会整份拒收。",
       "数字规则（程序按数字的含义逐句检查，违反即整份拒收，不会重试）：",
       "1. 市场和受众统计只能来自资料：受众人数、年龄或年龄段、性别或地域比例、百分比、几成、播放量、热度、排名、观看时长和频次、收入等，只能出现在 facts、observations 和带 sourceIds 的 audience 里，"
-        + "并且必须是所引资料摘录正文里原样出现的完整数字。写进 hypotheses、howToVerify、contentStructure 的 application、opportunities、limitations、appliedConstraints 也不行，标成“假设”“计划”“建议”也不行。",
+        + "并且必须是所引资料摘录正文里原样出现的完整数字。写进 hypotheses、howToVerify、contentStructure 的 application、opportunities 也不行，标成“假设”“计划”“建议”也不行。",
       "2. 本作品的创作设定可以写数量：虚构人物数（“两个互不信任的人”）、剧情次数（“三次误会”“两次反转”）、虚构人物年龄（“主角二十八岁”）、故事内期限（“三天内”）、开场秒数（“前 3 秒”）。"
         + "人物数、地点数不能超过用户的上限，集数和每集时长只能写用户硬约束里的值（如“共 1 集，每集约 60 秒”）。",
       "3. 验证计划可以写数量和天数，但必须写成将来的计划或待验证的问题：“拟比较两个版本”“计划上线后观察七天”“待验证观众是否更喜欢两次反转的版本”。"
         + "同一句里既提到观众、用户或市场又带数量时，提到观众、用户或市场的那一部分（逗号隔开的分句）本身必须写明“是否、可能、待验证”等；别的分句里的“计划、拟”不能替它说明（不写“计划比较两个版本，观众更喜欢三次反转的剧本”，写“计划比较两个版本，待验证观众是否更喜欢三次反转的剧本”）；不要写“数据显示、调查发现、已测试、测得”这类已经得到结果的说法。",
-      "4. 拟定的目标人群用文字描述（如“拟面向通勤时刷剧的成年观众”），不写年龄段或比例；用户在硬约束里指定的目标观众可以原样照抄，但只能写成创作目标（如“目标观众：……（用户指定）”“拟面向……创作”），不能写成平台用户画像、主要或核心受众，也不能写成数据或调研的结论。不写日期和资料条数（写“官方条目没有读到正文”“只有一份写作方法资料”）。",
+      "4. 拟定的目标人群用文字描述（如“拟面向通勤时刷剧的成年观众”），不写年龄段或比例；用户在硬约束里指定的目标观众可以原样照抄，但只能写成创作目标（如“目标观众：……（用户指定）”“拟面向……创作”），不能写成平台用户画像、主要或核心受众，也不能写成数据或调研的结论。不写日期和资料条数。",
       "资料有限策划模式（没有可读取的近期市场资料）时：facts 和 observations 可以是空数组，audience.basis 必须是 hypothesis 且 sourceIds 为空，"
         + "受众偏好、题材方向和创作建议都写成待验证的假设；不能得出经过验证的实时市场结论，也不要为了填满字段编造市场事实或数字。",
       `schema 固定为 "${AUTO_CREATION_RESEARCH_SCHEMA}"；编号用 F1、O1、H1 这样的格式。`,
@@ -327,10 +361,14 @@ export function buildAutoCreationPrompt(stageKey: string, input: AutoCreationFro
       "任何方向都不能包含用户禁止的题材或元素。",
       `schema 固定为 "${AUTO_CREATION_DIRECTIONS_SCHEMA}"；编号 D1、D2、D3。`,
       STRUCTURE_NOTE,
-      data("研究结论", { ...context.research!, contentStructure: structureForPrompt(context.research!) }),
+      IDENTITY_NOTE,
+      data("研究结论", researchForPrompt(context.research!)),
     ];
   } else if (kind === "bible") {
     const direction = chosenDirection(context);
+    const directionIndex = context.directions!.candidates.indexOf(direction);
+    const directionNotices = autoUnverifiedOf(context.directions).filter((item) => item.field.startsWith(`candidates[${String(directionIndex)}].`));
+    const researchNotices = autoUnverifiedOf(context.research).filter((item) => item.field.startsWith("contentStructure["));
     lines = [
       ...head,
       "任务：按选定方向写故事设定档案，先定主线、关键因果和结局，再展开人物、关系、地点与道具。",
@@ -340,9 +378,12 @@ export function buildAutoCreationPrompt(stageKey: string, input: AutoCreationFro
       `schema 固定为 "${AUTO_CREATION_BIBLE_SCHEMA}"；title 是你为作品拟的剧名。`,
       roomLine(stageKey, input, context),
       data("选定方向", direction),
+      ...(directionNotices.length > 0 ? [data("选定方向的未核实提示（只属于创作设计，不是事实）", directionNotices.map((notice) => autoNoticeText(notice)))] : []),
       data("选择理由", context.directions!.selection.reasons),
       STRUCTURE_NOTE,
-      data("受众与结构要点", { audience: context.research!.audience, contentStructure: structureForPrompt(context.research!) }),
+      IDENTITY_NOTE,
+      data("受众与结构要点", { audience: context.research!.audience, contentStructure: structureForPrompt(context.research!),
+        ...(researchNotices.length > 0 ? { 未核实提示: researchNotices.map((notice) => autoNoticeText(notice, context.research)) } : {}) }),
     ];
   } else if (kind === "outline") {
     lines = [
@@ -444,10 +485,15 @@ function forbiddenHit(input: AutoCreationFrozenInput, value: unknown): string | 
   return input.constraints.forbiddenThemes.find((term) => all.includes(term)) ?? null;
 }
 
-function zodFailure(error: { issues: Array<{ path: PropertyKey[]; message: string; code?: string }> }): AutoValidation {
+function zodFailure(error: { issues: Array<{ path: PropertyKey[]; message: string; code?: string; keys?: string[] }> }, research = false): AutoValidation {
   const issue = error.issues[0];
+  // A research key the server writes (or v3 took out of the answer) is named in the stored code; any other extra key,
+  // and every extra key of another stage, is model text and is not.
+  const serverKey = research && issue?.code === "unrecognized_keys"
+    ? issue.keys?.find((key) => (AUTO_RESEARCH_SERVER_KEYS as readonly string[]).includes(key)) : undefined;
+  const path = issue ? [...issue.path, ...(serverKey ? [serverKey] : [])] : [];
   return { ok: false, code: "invalid_output", detail: issue ? `${issue.path.map(String).join(".")}: ${issue.message}` : undefined,
-    field: issue ? fieldPath(issue.path) : undefined, category: issue?.code };
+    field: issue ? fieldPath(path) : undefined, category: issue?.code };
 }
 
 /** A schema path as a field name: keys joined by dots, indexes in brackets (scenes[2].dialogue[0].line). */
@@ -481,10 +527,57 @@ function numberFrame(input: AutoCreationFrozenInput): AutoNumberFrame {
  * for and the sub-rule. A story quantity breaking a frozen setting is a constraint violation; every other is unsourced.
  */
 function uncitedNumber(statement: string, field: string, frame: AutoNumberFrame, market = false): AutoValidation | null {
-  const finding = uncitedNumberFinding(statement, frame, { market });
-  if (!finding) return null;
+  const finding = uncitedNumberReading(statement, frame, { market }).refusal;
+  return finding ? numberRefusal(finding, field) : null;
+}
+
+function numberRefusal(finding: AutoNumberFinding, field: string): AutoValidation {
   return { ok: false, code: finding.semantic === "frozen_conflict" ? "constraint_violation" : "unsourced_number", detail: finding.token, field,
     category: finding.kind, semantic: finding.semantic, rule: finding.rule };
+}
+
+/**
+ * Uncited creative text (a hypothesis, its plan, a structure's application, an opportunity, a direction's notes),
+ * checks v5: a number with no recognised role is added to the notices, the text is kept as written and the reading goes
+ * on; any other number is refused as uncitedNumber refuses it.
+ */
+function creativeNumber(statement: string, field: string, frame: AutoNumberFrame, notices: AutoUnverifiedNotice[]): AutoValidation | null {
+  const reading = uncitedNumberReading(statement, frame, { unverified: true });
+  notices.push(...reading.unverified.map((finding): AutoUnverifiedNotice => ({
+    origin: "server_check", field, token: finding.token, semantic: "unclassified", rule: "no_role", note: AUTO_UNVERIFIED_NOTE })));
+  return reading.refusal ? numberRefusal(reading.refusal, field) : null;
+}
+
+/**
+ * The server's record of a research (v3): the person's settings as frozen (a limit not set is left out, none is made
+ * up) and the material as the run's snapshot recorded it. Built from trusted data only: never number-checked.
+ */
+export function autoResearchServerRecord(input: AutoCreationFrozenInput, sources: AutoSourcesOutput): AutoResearchServerRecord {
+  const c = input.constraints;
+  const items: AutoResearchServerRecord["settings"]["items"] = [
+    { key: "episodes", label: "集数", value: `共 ${String(input.episodeCount)} 集` },
+    { key: "seconds", label: "每集时长", value: `约 ${String(input.episodeSeconds)} 秒，竖屏 9:16（写作目标，不是成片实测长度）` },
+    ...(c.genre ? [{ key: "genre" as const, label: "题材", value: c.genre }] : []),
+    ...(c.audience ? [{ key: "audience" as const, label: "目标观众", value: `${c.audience}（用户指定的创作目标，不是平台用户画像）` }] : []),
+    ...(c.maxCharacters === null ? [] : [{ key: "maxCharacters" as const, label: "出场人物上限", value: `最多 ${String(c.maxCharacters)} 人` }]),
+    ...(c.maxLocations === null ? [] : [{ key: "maxLocations" as const, label: "地点上限", value: `最多 ${String(c.maxLocations)} 个` }]),
+    ...(c.forbiddenThemes.length > 0 ? [{ key: "forbiddenThemes" as const, label: "禁止题材或元素", value: c.forbiddenThemes.join("、") }] : []),
+    ...(c.endingRequirement ? [{ key: "endingRequirement" as const, label: "结局要求", value: c.endingRequirement }] : []),
+  ];
+  const readable = readableSources(sources);
+  return {
+    origin: "server_record",
+    executedWith: { promptVersion: AUTO_CREATION_PROMPT_VERSION, checksVersion: AUTO_CREATION_CHECKS_VERSION, researchSchema: AUTO_CREATION_RESEARCH_SCHEMA },
+    settings: { origin: "user_setting", items },
+    material: {
+      origin: "source_snapshot",
+      researchMode: sources.researchMode,
+      read: readable.map((source) => ({ sourceId: source.sourceId, title: source.title, readScope: source.readScope, topic: source.topic, note: source.limitations })),
+      unread: sources.sources.filter((source) => !readable.includes(source))
+        .map((source) => ({ sourceId: source.sourceId, title: source.title, status: source.status, note: source.limitations })),
+      gaps: [...sources.notes],
+    },
+  };
 }
 
 /** Characters a written number is made of: a quote that starts or ends next to one of them cuts that number. */
@@ -522,8 +615,9 @@ function quotedWhole(excerpt: string, quote: string): boolean {
   return false;
 }
 
-function checkResearch(input: AutoCreationFrozenInput, output: AutoResearch, context: AutoCreationContext): AutoValidation {
+function checkResearch(input: AutoCreationFrozenInput, output: AutoResearchAnswer, context: AutoCreationContext): AutoValidation {
   const frame = numberFrame(input);
+  const notices: AutoUnverifiedNotice[] = [];
   const readable = new Map(readableSources(context.sources!).map((source) => [source.sourceId, source] as const));
   const known = new Set(context.sources!.sources.map((source) => source.sourceId));
   const cite = (ids: readonly string[], field: string): AutoValidation | null => {
@@ -569,7 +663,7 @@ function checkResearch(input: AutoCreationFrozenInput, output: AutoResearch, con
     }
     // The application is the work's own design, cited or not: a reference sources none of its numbers or findings.
     for (const [text, field] of [[item.application.pattern, `${at}.application.pattern`], [item.application.why, `${at}.application.why`]] as const) {
-      const problem = uncitedNumber(text, field, frame)
+      const problem = creativeNumber(text, field, frame, notices)
         ?? (settledMarketClaim(text) ? { ok: false, code: "unsourced_claim", detail: "application", field } satisfies AutoValidation : null);
       if (problem) return problem;
     }
@@ -595,23 +689,23 @@ function checkResearch(input: AutoCreationFrozenInput, output: AutoResearch, con
     }
   }
   // Uncited fields carry a number only when it counts the work or a plan (auto-creation-numbers.ts): hypotheses and
-  // how to verify them, opportunities, limitations and the applied constraints alike. No field label exempts a statistic.
+  // how to verify them, and opportunities alike. No field label exempts a statistic. A number with no role there is an
+  // unverified notice, and every later field is still checked.
   const uncited: Array<[string, string]> = [
     ...output.hypotheses.flatMap((item, index): Array<[string, string]> => [
       [item.statement, `hypotheses[${String(index)}].statement`], [item.howToVerify, `hypotheses[${String(index)}].howToVerify`]]),
     ...output.opportunities.map((item, index): [string, string] => [item, `opportunities[${String(index)}]`]),
-    ...output.limitations.map((item, index): [string, string] => [item, `limitations[${String(index)}]`]),
-    ...output.appliedConstraints.map((item, index): [string, string] => [item, `appliedConstraints[${String(index)}]`]),
   ];
   for (const [statement, field] of uncited) {
-    const problem = uncitedNumber(statement, field, frame);
+    const problem = creativeNumber(statement, field, frame, notices);
     if (problem) return problem;
   }
   // Limited mode means no readable, dated, recent market source: an audience can then only be a hypothesis.
   if (context.sources!.researchMode === "limited" && output.audience.basis === "sourced") {
     return { ok: false, code: "unsourced_claim", detail: "audience", field: "audience.basis" };
   }
-  return { ok: true, output };
+  // The settings and the material are the server's record, not the model's; the notices are the server's too.
+  return { ok: true, output: { ...output, serverRecord: autoResearchServerRecord(input, context.sources!), unverified: notices } };
 }
 
 const SELECTION_WEIGHTS: Readonly<Record<(typeof AUTO_RATING_KEYS)[number], number>> = {
@@ -661,20 +755,22 @@ function checkDirections(input: AutoCreationFrozenInput, output: ReturnType<type
   const research = context.research!;
   const known = new Set([...research.facts, ...research.observations, ...research.hypotheses].map((item) => item.id));
   const frame = numberFrame(input);
+  const notices: AutoUnverifiedNotice[] = [];
   for (const [index, candidate] of output.candidates.entries()) {
     const at = `candidates[${String(index)}]`;
     const dangling = candidate.evidenceIds.find((id) => !known.has(id));
     if (dangling) return { ok: false, code: "dangling_reference", detail: `${candidate.id}:${dangling}`, field: `${at}.evidenceIds` };
     // A direction's notes are judged like research: its differentiation and difficulty may count its own story, never a
-    // statistic; how it fits its audience is about viewers throughout. The story itself (logline, goal…) is free.
-    const problem = uncitedNumber(candidate.differentiation, `${at}.differentiation`, frame)
-      ?? uncitedNumber(candidate.difficultyNote, `${at}.difficultyNote`, frame)
+    // statistic (a number with no role there is an unverified notice); how it fits its audience is about viewers
+    // throughout. The story itself (logline, goal…) is free.
+    const problem = creativeNumber(candidate.differentiation, `${at}.differentiation`, frame, notices)
+      ?? creativeNumber(candidate.difficultyNote, `${at}.difficultyNote`, frame, notices)
       ?? uncitedNumber(candidate.audienceFit, `${at}.audienceFit`, frame, true);
     if (problem) return problem;
   }
   const selection = selectDirection(input, output.candidates);
   if (!selection) return { ok: false, code: "constraint_violation", detail: "forbidden_theme" };
-  return { ok: true, output: { ...output, selection } };
+  return { ok: true, output: { ...output, selection, unverified: notices } };
 }
 
 function checkBible(input: AutoCreationFrozenInput, output: AutoBible): AutoValidation {
@@ -947,8 +1043,8 @@ export function validateAutoStageOutput(stageKey: string, content: string, input
   const creative = kind !== "research" && kind !== "review";
   if (creative && textsOf(value).some((item) => UNSAFE.test(item) || RESERVED.test(item))) return { ok: false, code: "unsafe_content" };
   if (kind === "research") {
-    const parsed = autoResearchSchema.safeParse(value);
-    return parsed.success ? checkResearch(input, parsed.data, context) : zodFailure(parsed.error);
+    const parsed = autoResearchAnswerSchema.safeParse(value);
+    return parsed.success ? checkResearch(input, parsed.data, context) : zodFailure(parsed.error, true);
   }
   if (kind === "directions") {
     const parsed = autoDirectionsSchema.safeParse(value);
@@ -1135,6 +1231,21 @@ export interface AutoPackageMeta {
   generatedAt: string;
 }
 
+/** What each part of a stored research is, for a reader of the JSON package. */
+export const AUTO_RESEARCH_IDENTITY: Readonly<Record<string, string>> = {
+  facts: "有来源的事实：evidence 逐字引用所引资料",
+  observations: "基于资料样本的观察，带来源",
+  hypotheses: "AI 创作假设，未经验证；howToVerify 是尚未执行的验证计划",
+  audience: "basis 为 sourced 才有来源；否则是待验证的拟定人群，不是平台真实用户画像",
+  contentStructure: "reference 是资料原文；application 是本作品的创作设计，不是资料或市场结论",
+  opportunities: "AI 创作判断",
+  serverRecord: "用户设定（冻结输入）与服务端资料记录（资料快照），不是 AI 调研结论",
+  unverified: `服务端提示：${AUTO_UNVERIFIED_NOTE}；相关文字只属于创作假设或设计，不是有来源的事实或已验证的市场结论`,
+  limitations: "历史版本（research v1/v2）由 AI 填写的资料局限",
+  appliedConstraints: "历史版本（research v1/v2）由 AI 复述的约束",
+  researchMode: "limited 表示资料有限策划模式，不是实时市场验证",
+};
+
 /** The machine-readable package: every structured result with its sources, choices, checks and revisions. */
 export function autoPackageJson(meta: AutoPackageMeta, stages: readonly AutoStageRecord[]): Record<string, unknown> {
   const context = autoContextFromStages(stages);
@@ -1158,7 +1269,7 @@ export function autoPackageJson(meta: AutoPackageMeta, stages: readonly AutoStag
     },
     input: { idea: meta.input.idea, constraints: meta.input.constraints, episodeCount: meta.input.episodeCount,
       episodeSeconds: meta.input.episodeSeconds, materials: meta.input.materials.map((item) => ({ title: item.title, kind: item.kind })) },
-    research: { sources: context.sources ?? null, analysis: context.research ?? null },
+    research: { sources: context.sources ?? null, analysis: context.research ?? null, identity: AUTO_RESEARCH_IDENTITY },
     directions: context.directions ?? null,
     bible: context.bible ?? null,
     outline: context.outline ?? null,
@@ -1203,9 +1314,13 @@ export function autoPackageMarkdown(meta: AutoPackageMeta, stages: readonly Auto
     if (context.sources?.researchMode === "limited") {
       push("> 资料有限：没有可读取的近期市场资料。受众和题材判断都是待验证的假设，验证计划尚未执行；不是实时市场验证，也不是平台真实用户画像。", "");
     }
+    const notices = autoUnverifiedOf(research);
+    // Text a notice is on keeps its words; the mark only says it holds a number the checks could not place.
+    const mark = (prefix: string) => notices.some((item) => item.field.startsWith(prefix)) ? "〔含未核实数字，见下方未核实提示〕" : "";
     push("**有来源的事实**", "", ...(research.facts.length > 0 ? research.facts.map((item) => `- ${item.id} ${item.statement}（来源 ${item.sourceIds.join("、")}：「${item.evidence}」）`) : ["- 无（没有可引用的资料）"]), "");
     push("**基于样本的观察**", "", ...(research.observations.length > 0 ? research.observations.map((item) => `- ${item.id} ${item.statement}（来源 ${item.sourceIds.join("、")}）`) : ["- 无"]), "");
-    push("**待验证的假设与验证计划**（计划尚未执行，不是调查结果）", "", ...research.hypotheses.map((item) => `- ${item.id} 假设：${item.statement}；验证计划：${item.howToVerify}`), "");
+    push("**AI 创作假设与验证计划**（假设未经验证；验证计划尚未执行，不是调查结果）", "", ...research.hypotheses.map((item, index) =>
+      `- ${item.id} 假设：${item.statement}${mark(`hypotheses[${String(index)}].statement`)}；验证计划：${item.howToVerify}${mark(`hypotheses[${String(index)}].howToVerify`)}`), "");
     push(`**目标观众（${research.audience.basis === "sourced" ? "有来源" : "待验证的拟定人群，不是平台真实用户画像"}）**：${research.audience.primary}`,
       `- 观看需求：${research.audience.viewingNeeds.join("；")}`, `- 情绪诉求：${research.audience.emotionalAppeals.join("；")}`, "");
     push("**内容结构**（参考方法原文是资料原文；本剧应用设计是本作品的创作设计，不是资料或市场结论）", "",
@@ -1213,19 +1328,35 @@ export function autoPackageMarkdown(meta: AutoPackageMeta, stages: readonly Auto
         ? [`- 结构 ${String(index + 1)}（历史版本，未区分参考原文与本剧应用）：${item.pattern}：${item.why}${item.sourceIds.length > 0 ? `（${item.sourceIds.join("、")}）` : ""}`]
         : [`- 结构 ${String(index + 1)}`,
           `  - 参考方法原文：${item.reference ? `${item.reference.sourceId}「${item.reference.quote}」` : "无（自主创作设计）"}`,
-          `  - 本剧应用设计：${item.application.pattern}：${item.application.why}`]), "");
-    push(`**机会**：${research.opportunities.join("；")}`, `**局限**：${research.limitations.join("；")}`,
-      ...(research.appliedConstraints.length > 0 ? [`**采用的约束**：${research.appliedConstraints.join("；")}`] : []), "");
+          `  - 本剧应用设计：${item.application.pattern}：${item.application.why}${mark(`contentStructure[${String(index)}].`)}`]), "");
+    push(`**机会**（AI 创作判断）：${research.opportunities.map((item, index) => `${item}${mark(`opportunities[${String(index)}]`)}`).join("；")}`, "");
+    if (research.schema === AUTO_CREATION_RESEARCH_SCHEMA) {
+      const { settings, material } = research.serverRecord;
+      push("**用户设定与资料记录**（来自用户设定和服务端记录，不是 AI 调研结论）", "",
+        ...settings.items.map((item) => `- 用户设定｜${item.label}：${item.value}`),
+        `- 资料模式：${material.researchMode === "limited" ? "资料有限策划模式（不是实时市场验证）" : "有可读取的近期市场资料"}`,
+        ...material.read.map((item) => `- 已读取：${item.sourceId}「${item.title}」（${item.readScope}）：${item.note}`),
+        ...material.unread.map((item) => `- 未读取：${item.sourceId}「${item.title}」（${item.status}）：${item.note}`),
+        ...material.gaps.map((gap) => `- 缺失说明：${gap}`), "");
+      push(`**未核实提示**（${AUTO_UNVERIFIED_NOTE}；相关文字只属于创作假设或设计，不是有来源的事实、平台用户画像或已验证的市场结论）`, "",
+        ...(notices.length > 0 ? notices.map((item) => `- ${autoNoticeText(item, research)}`) : ["- 无"]), "");
+    } else {
+      push(`**局限**（AI 填写，历史版本）：${research.limitations.join("；")}`,
+        ...(research.appliedConstraints.length > 0 ? [`**采用的约束**（AI 复述，历史版本）：${research.appliedConstraints.join("；")}`] : []), "");
+    }
   }
   if (context.directions) {
     push("## 选题比较与最终方向", "");
-    for (const item of context.directions.candidates) {
+    const directionNotices = autoUnverifiedOf(context.directions);
+    for (const [index, item] of context.directions.candidates.entries()) {
       const score = context.directions.selection.scores.find((entry) => entry.id === item.id);
+      const notices = directionNotices.filter((notice) => notice.field.startsWith(`candidates[${String(index)}].`));
       push(`### ${item.id} ${item.title}${item.id === context.directions.selection.chosenId ? "（已选）" : ""}`, "",
         `- 一句话故事：${item.logline}`, `- 主角：${item.protagonist}；目标：${item.goal}；阻碍：${item.obstacle}；失败代价：${item.stakes}`,
         `- 核心情绪：${item.coreEmotion}；差异点：${item.differentiation}`,
         `- 难度：${item.productionDifficulty}（${item.difficultyNote}）；与观众和资料：${item.audienceFit}`,
-        `- 内部得分：${score ? score.score.toFixed(2) : "-"}${score?.excluded ? `（排除：${score.excluded}）` : ""}`, "");
+        `- 内部得分：${score ? score.score.toFixed(2) : "-"}${score?.excluded ? `（排除：${score.excluded}）` : ""}`,
+        ...notices.map((notice) => `- 未核实提示：${autoNoticeText(notice)}`), "");
     }
     push("**选择理由**", "", ...context.directions.selection.reasons.map((reason) => `- ${reason}`), "");
   }

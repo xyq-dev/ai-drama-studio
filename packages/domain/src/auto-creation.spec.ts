@@ -31,7 +31,7 @@ function research(overrides: Record<string, unknown> = {}) {
     hypotheses: [{ id: "H1", statement: "观众可能偏爱一集内兑现。", howToVerify: "看真实数据。" }],
     audience: { primary: "成年观众（假设）", viewingNeeds: ["看到结果"], emotionalAppeals: ["扳回一局"], basis: "hypothesis", sourceIds: [] },
     contentStructure: [{ reference: { sourceId: "S-KB-CRAFT", quote: "关键结果来自主角的选择和行动" }, application: { pattern: "主角主动", why: "知识库要求" } }],
-    opportunities: ["小人物反击"], limitations: ["没有市场数据"], appliedConstraints: [],
+    opportunities: ["小人物反击"],
     ...overrides,
   });
 }
@@ -94,8 +94,8 @@ describe("research sources and claims", () => {
     expect(sources.sources.find((item) => item.locator === page.url)).toMatchObject({ kind: "public_page", topic: "reference" });
   });
 
-  it("limitations carry no unsourced number either", () => {
-    expect(validateAutoStageOutput("research", research({ limitations: ["平台数据显示80%的用户会追更"] }), input(), context()))
+  it("opportunities carry no unsourced number either (research v3 has no model-written limitations)", () => {
+    expect(validateAutoStageOutput("research", research({ opportunities: ["平台数据显示80%的用户会追更"] }), input(), context()))
       .toMatchObject({ ok: false, code: "unsourced_number" });
   });
 
@@ -221,9 +221,7 @@ describe("research contract in limited mode (synthetic samples)", () => {
     ],
     audience: { primary: "在通勤和睡前刷短剧的成年观众（待验证假设）", viewingNeeds: ["一集内看到结果"], emotionalAppeals: ["扳回一局"], basis: "hypothesis", sourceIds: [] },
     contentStructure: [{ reference: { sourceId: "S-KB-CRAFT", quote: "关键结果来自主角的选择和行动" }, application: { pattern: "主角主动选择推动结果", why: "写作方法资料要求关键结果来自主角的行动。" } }],
-    opportunities: ["约 60 秒一集正好讲完一次反击"],
-    limitations: ["官方市场条目没有读到正文，受众和题材判断都是待验证假设，不是实时市场结论。"],
-    appliedConstraints: ["共 1 集，每集约 60 秒", "竖屏 9:16"],
+    opportunities: ["约 60 秒一集正好讲完一次反击", "共 1 集，每集约 60 秒，竖屏 9:16"],
     ...overrides,
   });
 
@@ -246,8 +244,8 @@ describe("research contract in limited mode (synthetic samples)", () => {
 
   it("dates, counts of sources and age ranges are still refused, with their field", () => {
     const cases: Array<[Record<string, unknown>, string]> = [
-      [{ limitations: ["官方条目在2026-10-18请求时只得到空壳。"] }, "limitations[0]"],
-      [{ limitations: ["只有 1 条可读资料，没有市场数据。"] }, "limitations[0]"],
+      [{ opportunities: ["官方条目在2026-10-18请求时只得到空壳。"] }, "opportunities[0]"],
+      [{ opportunities: ["只有 1 条可读资料，没有市场数据。"] }, "opportunities[0]"],
       [{ hypotheses: [{ id: "H1", statement: "主要观众可能是25-40岁女性。", howToVerify: "看数据。" }] }, "hypotheses[0].statement"],
     ];
     for (const [overrides, field] of cases) {
@@ -267,8 +265,8 @@ describe("research contract in limited mode (synthetic samples)", () => {
   it("each refusal names its rule and field and a token class, never the model's text", () => {
     const result = validateAutoStageOutput("research", limitedAnswer({ opportunities: ["完播率可达 40%"] }), input(), context());
     expect(result).toMatchObject({ ok: false, code: "unsourced_number", field: "opportunities[0]", category: "percent" });
-    expect(validateAutoStageOutput("research", limitedAnswer({ limitations: ["三百人愿意付费"] }), input(), context()))
-      .toMatchObject({ ok: false, field: "limitations[0]", category: "chinese_numeral" });
+    expect(validateAutoStageOutput("research", limitedAnswer({ opportunities: ["三百人愿意付费"] }), input(), context()))
+      .toMatchObject({ ok: false, field: "opportunities[0]", category: "chinese_numeral" });
     expect(validateAutoStageOutput("research", limitedAnswer({ facts: [{ id: "F1", statement: "x", sourceIds: ["S-KB-CRAFT"], evidence: "知识库里没有这句话" }] }), input(), context()))
       .toMatchObject({ ok: false, code: "evidence_not_in_source", field: "facts[0].evidence" });
     expect(validateAutoStageOutput("research", limitedAnswer({ observations: [{ id: "O1", statement: "x", sourceIds: ["S-OE-1"] }] }), input(), context()))
@@ -276,49 +274,55 @@ describe("research contract in limited mode (synthetic samples)", () => {
     expect(validateAutoStageOutput("research", "{\"schema\":1}", input(), context())).toMatchObject({ ok: false, code: "invalid_output", field: "schema" });
   });
 
-  it("the applied constraints are checked like every other uncited field: no market statistic hides there", () => {
+  it("a restated setting in an uncited field hides no market statistic (the settings themselves are the server's record since v3)", () => {
     for (const statement of ["目标观众中 70% 为女性", "用户平均每天观看 60 秒", "两成观众偏爱复仇"]) {
-      expect(validateAutoStageOutput("research", limitedAnswer({ appliedConstraints: [statement] }), input(), context()), statement)
-        .toMatchObject({ ok: false, code: "unsourced_number", field: "appliedConstraints[0]" });
+      expect(validateAutoStageOutput("research", limitedAnswer({ opportunities: [statement] }), input(), context()), statement)
+        .toMatchObject({ ok: false, code: "unsourced_number", field: "opportunities[0]" });
     }
   });
 
   it("the run's own cast and location limits may be restated, only about characters and places and only at their frozen value", () => {
     const frozen = input({ constraints: autoCreationConstraintsSchema.parse({ maxCharacters: 4, maxLocations: 3 }) });
     for (const statement of ["出场人物最多 4 人", "最多四个人物", "地点最多 3 个", "最多三处地点"]) {
-      expect(validateAutoStageOutput("research", limitedAnswer({ appliedConstraints: [statement] }), frozen, context()), statement).toMatchObject({ ok: true });
+      expect(validateAutoStageOutput("research", limitedAnswer({ opportunities: [statement] }), frozen, context()), statement).toMatchObject({ ok: true });
     }
-    for (const statement of ["最多 4 名观众", "4 个人物覆盖观众的四成", "地点最多 4 个"]) {
-      expect(validateAutoStageOutput("research", limitedAnswer({ appliedConstraints: [statement] }), frozen, context()), statement)
+    for (const statement of ["最多 4 名观众", "4 个人物覆盖观众的四成"]) {
+      expect(validateAutoStageOutput("research", limitedAnswer({ opportunities: [statement] }), frozen, context()), statement)
         .toMatchObject({ ok: false, code: "unsourced_number" });
     }
+    // checks v5: a bare count after the place or cast word is that count (it was refused only as a number with no role
+    // before, which is now an unverified notice): over the frozen limit it is a frozen conflict, never a notice.
+    for (const statement of ["地点最多 4 个", "场景不超过 4 个", "人物最多 5 个", "角色上限 5"]) {
+      const result = validateAutoStageOutput("research", limitedAnswer({ opportunities: [statement] }), frozen, context());
+      expect(result, statement).toMatchObject({ ok: false, code: "constraint_violation", semantic: "frozen_conflict" });
+    }
     // checks v3: a cast over the frozen limit is named for what it breaks; a cast within it may be written as design.
-    expect(validateAutoStageOutput("research", limitedAnswer({ appliedConstraints: ["出场人物最多 5 人"] }), frozen, context()))
+    expect(validateAutoStageOutput("research", limitedAnswer({ opportunities: ["出场人物最多 5 人"] }), frozen, context()))
       .toMatchObject({ ok: false, code: "constraint_violation", semantic: "frozen_conflict", rule: "cast_over_limit" });
-    expect(validateAutoStageOutput("research", limitedAnswer({ appliedConstraints: ["最多 4 人"] }), frozen, context())).toMatchObject({ ok: true });
+    expect(validateAutoStageOutput("research", limitedAnswer({ opportunities: ["最多 4 人"] }), frozen, context())).toMatchObject({ ok: true });
     // Review finding: a ranking or market number equal to a limit is never taken for the limit.
     const capped = input({ constraints: autoCreationConstraintsSchema.parse({ maxCharacters: 3, maxLocations: 3 }) });
     for (const statement of ["榜单前3个短剧都以办公室场景为主", "该角色在人气榜排名第3名", "前3个短剧的人物都很少",
       "3个爆款都只用一个地点", "热度第一的作品只有三个人物", "资料里3个角色定位最常见", "3个场景化营销案例证明有效", "角色共3人次"]) {
       expect(numberTokens(statement, [[3, "人物上限"], [3, "地点上限"]]).length, statement).toBeGreaterThan(0);
-      expect(validateAutoStageOutput("research", limitedAnswer({ limitations: [statement] }), capped, context()), statement)
+      expect(validateAutoStageOutput("research", limitedAnswer({ opportunities: [statement] }), capped, context()), statement)
         .toMatchObject({ ok: false, code: "unsourced_number" });
     }
     // checks v3: story durations are story, not a cast limit and not a statistic.
     for (const statement of ["角色的工资3个月没发", "角色3个小时"]) {
-      expect(validateAutoStageOutput("research", limitedAnswer({ limitations: [statement] }), capped, context()), statement).toMatchObject({ ok: true });
+      expect(validateAutoStageOutput("research", limitedAnswer({ opportunities: [statement] }), capped, context()), statement).toMatchObject({ ok: true });
     }
     // 目前/之前 are no ranking: the run's own length stays restatable there.
-    expect(validateAutoStageOutput("research", limitedAnswer({ appliedConstraints: ["目前一共 1 集，每集约 60 秒"] }), capped, context())).toMatchObject({ ok: true });
+    expect(validateAutoStageOutput("research", limitedAnswer({ opportunities: ["目前一共 1 集，每集约 60 秒"] }), capped, context())).toMatchObject({ ok: true });
     // Without a frozen limit a cast size is a design choice within the setting's own maximum (checks v3); past it, no cast.
-    expect(validateAutoStageOutput("research", limitedAnswer({ appliedConstraints: ["出场人物最多 4 人"] }), input(), context())).toMatchObject({ ok: true });
-    expect(validateAutoStageOutput("research", limitedAnswer({ appliedConstraints: ["出场人物最多 12 人"] }), input(), context()))
+    expect(validateAutoStageOutput("research", limitedAnswer({ opportunities: ["出场人物最多 4 人"] }), input(), context())).toMatchObject({ ok: true });
+    expect(validateAutoStageOutput("research", limitedAnswer({ opportunities: ["出场人物最多 12 人"] }), input(), context()))
       .toMatchObject({ ok: false, code: "unsourced_number" });
   });
 
   it("an ordinal with a space is an ordinal, not a claim; a count is still a count", () => {
     expect(numberTokens("第 3 集揭开真相，第 二 场交代目标")).toEqual([]);
-    expect(validateAutoStageOutput("research", limitedAnswer({ opportunities: ["第 3 集揭开真相"], appliedConstraints: ["共 6 集，每集约 60 秒"] }), input({ episodeCount: 6 }), context())).toMatchObject({ ok: true });
+    expect(validateAutoStageOutput("research", limitedAnswer({ opportunities: ["第 3 集揭开真相"] }), input({ episodeCount: 6 }), context())).toMatchObject({ ok: true });
     expect(numberTokens("3 集揭开真相")).toEqual(["3"]);
   });
 
@@ -344,7 +348,7 @@ describe("research contract in limited mode (synthetic samples)", () => {
         .toMatchObject({ ok: false, code: "unsourced_number", field: "opportunities[0]", category: "rank" });
     }
     for (const statement of ["第 3 集揭开真相", "第 二 场交代目标", "第三集揭开真相", "第一场就交代目标", "第一，开场就抛出冲突", "第 2 轮审阅之后再定", "主角第一次反击", "第一个反转放在开场", "第一时间抛出冲突"]) {
-      expect(validateAutoStageOutput("research", limitedAnswer({ opportunities: [statement], appliedConstraints: ["共 6 集，每集约 60 秒"] }),
+      expect(validateAutoStageOutput("research", limitedAnswer({ opportunities: [statement] }),
         input({ episodeCount: 6 }), context()), statement).toMatchObject({ ok: true });
     }
     // In a ranking clause even a structural-looking ordinal is a place.

@@ -2,8 +2,12 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  AUTO_CREATION_RESEARCH_SCHEMA,
+  AUTO_UNVERIFIED_NOTE,
   TITLE_WRITING_PROVIDER_LABELS,
+  autoNoticeText,
   autoStructureViews,
+  autoUnverifiedOf,
   type AutoBible,
   type AutoDirectionsOutput,
   type AutoEpisode,
@@ -166,6 +170,12 @@ export function AutoCreationRun({ projectId, client = defaultClient }: { project
   const revisions = run.stages.filter((stage) => stage.kind === "revise" && stage.output);
   const uncertain = autoUncertainIds(run);
   const chosen = directions?.candidates.find((item) => item.id === directions.selection.chosenId);
+  // Server notices (checks v5): a number the checks could not place, kept as written and marked unverified where it stands.
+  const researchNotices = autoUnverifiedOf(research);
+  const noticeMark = (prefix: string) => researchNotices.some((item) => item.field.startsWith(prefix))
+    ? <span className={styles.warning} data-testid="auto-unverified-mark">（含未核实数字）</span> : null;
+  const chosenIndex = directions && chosen ? directions.candidates.indexOf(chosen) : -1;
+  const directionNotices = autoUnverifiedOf(directions).filter((item) => item.field.startsWith(`candidates[${String(chosenIndex)}].`));
   const runError = autoErrorText(run.errorCode);
   const rejected = run.stages.find((stage) => stage.state === "rejected" || stage.state === "unknown");
 
@@ -327,17 +337,26 @@ export function AutoCreationRun({ projectId, client = defaultClient }: { project
             <ul className={autoStyles.list}>{research.facts.length > 0 ? research.facts.map((item) => <li key={item.id}>{item.statement}（{item.sourceIds.join("、")}：「{item.evidence}」）</li>) : <li>无（没有可引用的资料）</li>}</ul>
             <p className={styles.helper}>基于样本的观察</p>
             <ul className={autoStyles.list}>{research.observations.length > 0 ? research.observations.map((item) => <li key={item.id}>{item.statement}（{item.sourceIds.join("、")}）</li>) : <li>无</li>}</ul>
-            <p className={styles.helper}>待验证的假设与验证计划（计划尚未执行，不是调查结果）</p>
+            <p className={styles.helper}>AI 创作假设与验证计划（假设未经验证；验证计划尚未执行，不是调查结果）</p>
             <ul className={autoStyles.list} data-testid="auto-hypotheses">
-              {research.hypotheses.map((item) => <li key={item.id}>{item.id} 假设：{item.statement}<br />验证计划：{item.howToVerify}</li>)}
+              {research.hypotheses.map((item, index) => (
+                <li key={item.id}>
+                  {item.id} 假设：{item.statement}{noticeMark(`hypotheses[${String(index)}].statement`)}
+                  <br />验证计划：{item.howToVerify}{noticeMark(`hypotheses[${String(index)}].howToVerify`)}
+                </li>
+              ))}
             </ul>
             <p data-testid="auto-audience">
               目标观众（{research.audience.basis === "sourced" ? "有来源" : "待验证的拟定人群，不是平台真实用户画像"}）：{research.audience.primary}；观看需求：{research.audience.viewingNeeds.join("、")}；情绪诉求：{research.audience.emotionalAppeals.join("、")}
             </p>
-            <ul className={autoStyles.list}>
-              <li>机会：{research.opportunities.join("；")}</li>
-              <li>局限：{research.limitations.join("；")}</li>
-              {research.appliedConstraints.length > 0 ? <li>采用的约束：{research.appliedConstraints.join("；")}</li> : null}
+            <ul className={autoStyles.list} data-testid="auto-opportunities">
+              {research.opportunities.map((item, index) => <li key={index}>机会（AI 创作判断）：{item}{noticeMark(`opportunities[${String(index)}]`)}</li>)}
+              {research.schema === AUTO_CREATION_RESEARCH_SCHEMA ? null : (
+                <>
+                  <li data-testid="auto-legacy-limitations">局限（AI 填写，历史版本）：{research.limitations.join("；")}</li>
+                  {research.appliedConstraints.length > 0 ? <li>采用的约束（AI 复述，历史版本）：{research.appliedConstraints.join("；")}</li> : null}
+                </>
+              )}
             </ul>
             <p className={styles.helper}>内容结构（参考方法原文是资料原文；本剧应用设计是本作品的创作设计，不是资料或市场结论）</p>
             <ol className={autoStyles.list} data-testid="auto-structure">
@@ -350,9 +369,26 @@ export function AutoCreationRun({ projectId, client = defaultClient }: { project
                   <span data-testid="auto-structure-reference">参考方法原文：{item.reference ? `${item.reference.sourceId}「${item.reference.quote}」` : "无（自主创作设计）"}</span>
                   <br />
                   <span data-testid="auto-structure-application">本剧应用设计：{item.application.pattern}：{item.application.why}</span>
+                  {noticeMark(`contentStructure[${String(index)}].`)}
                 </li>
               ))}
             </ol>
+            {research.schema === AUTO_CREATION_RESEARCH_SCHEMA ? (
+              <>
+                <p className={styles.helper}>用户设定与资料记录（来自用户设定和服务端记录，不是 AI 调研结论）</p>
+                <ul className={autoStyles.list} data-testid="auto-server-record">
+                  {research.serverRecord.settings.items.map((item) => <li key={item.key}>用户设定｜{item.label}：{item.value}</li>)}
+                  <li>资料模式：{research.serverRecord.material.researchMode === "limited" ? "资料有限策划模式（不是实时市场验证）" : "有可读取的近期市场资料"}</li>
+                  {research.serverRecord.material.read.map((item) => <li key={item.sourceId}>已读取：{item.sourceId}「{item.title}」（{item.readScope}）</li>)}
+                  {research.serverRecord.material.unread.map((item) => <li key={item.sourceId}>未读取：{item.sourceId}「{item.title}」（{item.status}）</li>)}
+                  {research.serverRecord.material.gaps.map((gap) => <li key={gap}>缺失说明：{gap}</li>)}
+                </ul>
+                <p className={styles.helper}>未核实提示（{AUTO_UNVERIFIED_NOTE}；相关文字只属于创作假设或设计，不是有来源的事实、平台用户画像或已验证的市场结论）</p>
+                <ul className={autoStyles.list} data-testid="auto-unverified">
+                  {researchNotices.length > 0 ? researchNotices.map((item) => <li key={`${item.field}:${item.token}`} className={styles.warning}>{autoNoticeText(item, research)}</li>) : <li>无</li>}
+                </ul>
+              </>
+            ) : null}
           </section>
         ) : null}
 
@@ -361,6 +397,11 @@ export function AutoCreationRun({ projectId, client = defaultClient }: { project
             <h2 id="auto-direction-title" className={styles.sectionTitle}>已选方向：{chosen.title}</h2>
             <p>{chosen.logline}</p>
             <ul className={autoStyles.list}>{directions.selection.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
+            {directionNotices.length > 0 ? (
+              <ul className={autoStyles.list} data-testid="auto-direction-unverified">
+                {directionNotices.map((item) => <li key={`${item.field}:${item.token}`} className={styles.warning}>未核实提示：{autoNoticeText(item)}</li>)}
+              </ul>
+            ) : null}
             <details className={styles.more}>
               <summary>查看全部 {directions.candidates.length} 个方向</summary>
               <ul className={autoStyles.list}>

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   AUTO_CREATION_RESEARCH_SCHEMA,
   AUTO_CREATION_RESEARCH_SCHEMA_V1,
+  AUTO_CREATION_RESEARCH_SCHEMA_V2,
   autoCreationConstraintsSchema,
   type AutoCreationFrozenInput,
   type AutoStageRecord,
@@ -52,8 +53,6 @@ function answer(structures: Item[], schema: string = AUTO_CREATION_RESEARCH_SCHE
     audience: { primary: "拟面向通勤时刷剧的成年观众（待验证）", viewingNeeds: ["一集内看到结果"], emotionalAppeals: ["扳回一局"], basis: "hypothesis", sourceIds: [] },
     contentStructure: structures,
     opportunities: ["小人物在一个夜晚完成一次反击"],
-    limitations: ["官方市场条目没有读到正文，受众判断都是待验证假设。"],
-    appliedConstraints: ["共 1 集，每集约 60 秒"],
   });
 }
 
@@ -302,11 +301,23 @@ describe("C. the application is checked as uncited text, whatever it cites", () 
     expect(check([apply("九名骑手轮番登场。")])).toMatchObject({ ok: false, code: "unsourced_number", rule: "count_out_of_range" });
   });
 
-  it("the trade list is finite: an unlisted word after a count keeps its old reading (a known over-refusal), 人物 passes", () => {
-    expect(check([apply("三个骑士被迫合作。")])).toMatchObject({ ok: false, code: "unsourced_number", semantic: "unclassified", rule: "no_role" });
-    expect(check([apply("三名骑士被迫合作。")])).toMatchObject({ ok: false, code: "unsourced_number", semantic: "unclassified", rule: "no_role" });
-    expect(check([apply("三个人物被迫合作。")])).toMatchObject({ ok: true });
-    expect(check([apply("两位母亲争夺孩子。")])).toMatchObject({ ok: false, code: "unsourced_number", rule: "no_role" });
+  it("the trade list is finite: an unlisted word after a count has no role, an unverified notice since checks v5; 人物 passes plainly", () => {
+    // Product change (checks v5): these were refused as unclassified+no_role (a known over-refusal); the text is now kept
+    // as written with a notice that the number is unverified.
+    expect(check([apply("三个骑士被迫合作。")])).toMatchObject({ ok: true,
+      output: { unverified: [{ field: "contentStructure[0].application.pattern", token: "三个", semantic: "unclassified", rule: "no_role" }] } });
+    // A classifier alone does not say what is counted (三位数密码, 两位小数): 名 and 位 are no cast by themselves, so these
+    // are notices too (PR #82 review); only a named cast (人物, 角色, the listed trades, 人) is held to the frozen limit.
+    for (const [text, token] of [["三名骑士被迫合作。", "三名"], ["两位母亲争夺孩子。", "两位"]] as const) {
+      expect(check([apply(text)]), text).toMatchObject({ ok: true, output: { unverified: [{ token, rule: "no_role" }] } });
+    }
+    expect(check([apply("三个人物被迫合作。")])).toMatchObject({ ok: true, output: { unverified: [] } });
+    const pair = input({ constraints: autoCreationConstraintsSchema.parse({ maxCharacters: 2 }) });
+    expect(check([apply("三个人物被迫合作。")], pair)).toMatchObject({ ok: false, code: "constraint_violation", rule: "cast_over_limit" });
+    // Unnamed: kept with a notice; the setting stage still refuses a cast over the limit.
+    for (const text of ["三个骑士被迫合作。", "三名骑士被迫合作。"]) {
+      expect(check([apply(text)], pair), text).toMatchObject({ ok: true, output: { unverified: [{ rule: "no_role" }] } });
+    }
     // A settled wording in a story sentence about a popular character is refused too (only over-refuses).
     expect(check([apply("事实证明最受欢迎的店员才是真凶。")])).toMatchObject({ ok: false, code: "unsourced_claim" });
   });
@@ -539,7 +550,7 @@ describe("D. stored v1 research is read, shown and exported as it was", () => {
     contentStructure: [{ pattern: "主角主动选择推动结果", why: "知识库要求关键结果来自主角的行动。", sourceIds: ["S-KB-CRAFT"] }],
     opportunities: ["小人物反击"], limitations: ["没有市场数据"], appliedConstraints: [],
   };
-  const v2: AutoStoredResearch = { ...v1, schema: AUTO_CREATION_RESEARCH_SCHEMA, contentStructure: [
+  const v2: AutoStoredResearch = { ...v1, schema: AUTO_CREATION_RESEARCH_SCHEMA_V2, contentStructure: [
     { reference: CRAFT, application: { pattern: "计划用两次反转推动主角主动选择。", why: "本作品的创作设计。" } },
     { reference: null, application: { pattern: "三名骑手被迫合作。", why: "自主设计。" } },
   ] };

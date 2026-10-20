@@ -407,7 +407,10 @@ describe("AI 自动创作 run page", () => {
     expect(screen.getByTestId("auto-hypotheses").textContent).toContain("H1 假设：两个互不信任的人");
     expect(screen.getByTestId("auto-hypotheses").textContent).toContain("验证计划：计划比较两个版本后再判断。");
     expect(screen.getByTestId("auto-audience").textContent).toContain("不是平台真实用户画像");
-    expect(detail).toContain("采用的约束：共 1 集，每集约 60 秒");
+    // Stored v1/v2 research: the model's own limits and constraints, shown as it wrote them and marked as history.
+    expect(detail).toContain("采用的约束（AI 复述，历史版本）：共 1 集，每集约 60 秒");
+    expect(screen.getByTestId("auto-legacy-limitations").textContent).toBe("局限（AI 填写，历史版本）：官方条目没有读到正文");
+    expect(screen.queryByTestId("auto-server-record")).toBeNull();
     expect(document.body.textContent).not.toMatch(/市场验证(已)?完成|已完成市场验证/u);
     // Stored v1 research: shown as it was, marked as history, with no quote made up for it.
     expect(screen.getByTestId("auto-structure-legacy").textContent).toBe("历史版本（未区分参考原文与本剧应用）：主角主动：知识库（S-KB-CRAFT）");
@@ -438,6 +441,91 @@ describe("AI 自动创作 run page", () => {
       "本剧应用设计：计划用两次反转推动主角主动选择。：这是本作品的创作设计。", "本剧应用设计：三名骑手被迫合作。：自主设计。"]);
     expect(screen.queryByTestId("auto-structure-legacy")).toBeNull();
     expect(screen.getByTestId("auto-research-limited").textContent).toContain("不是平台真实用户画像");
+  });
+
+  it("research v3 shows the answer, the server's record and the unverified notices apart; nothing reads as verified", async () => {
+    const notice = (field: string, token: string) => ({ origin: "server_check", field, token, semantic: "unclassified", rule: "no_role", note: "程序未能判定数字含义，未核实" });
+    const research = {
+      schema: "ads.auto-creation.research.v3", facts: [], observations: [],
+      hypotheses: [{ id: "H1", statement: "主角只剩五十元，必须在午夜前讨回工资。", howToVerify: "计划上线后观察七天再判断。" }],
+      audience: { primary: "拟面向通勤时刷剧的成年观众（待验证）", viewingNeeds: ["一集内看到结果"], emotionalAppeals: ["扳回一局"], basis: "hypothesis", sourceIds: [] },
+      contentStructure: [{ reference: null, application: { pattern: "失踪者留下三块拼图，主角逐场拼出真相。", why: "自主创作设计。" } }],
+      opportunities: ["小人物在一个夜晚完成一次反击"],
+      serverRecord: { origin: "server_record",
+        executedWith: { promptVersion: "ads.auto-creation.prompt.v5", checksVersion: "ads.auto-creation.checks.v5", researchSchema: "ads.auto-creation.research.v3" },
+        settings: { origin: "user_setting", items: [{ key: "episodes", label: "集数", value: "共 1 集" }, { key: "maxCharacters", label: "出场人物上限", value: "最多 3 人" }] },
+        material: { origin: "source_snapshot", researchMode: "limited",
+          read: [{ sourceId: "S-KB-CRAFT", title: "短剧写作方法", readScope: "full_text", topic: "craft", note: "只涉及故事结构" }],
+          unread: [{ sourceId: "S-OE-1", title: "巨量引擎帮助中心条目", status: "unreadable", note: "空壳" }],
+          gaps: ["没有可读取的近期市场资料：本次为「资料有限策划模式」，不是实时市场验证。"] } },
+      unverified: [notice("hypotheses[0].statement", "五十元"), notice("contentStructure[0].application.pattern", "三块")],
+    };
+    const directions = {
+      schema: "ads.auto-creation.directions.v1",
+      candidates: ["D1", "D2"].map((id) => ({ id, title: `方向${id}`, logline: `${id}：一个故事`, protagonist: "p", goal: "g", obstacle: "o", stakes: "s", coreEmotion: "e",
+        differentiation: "用三块拼图代替三角恋", productionDifficulty: "low", difficultyNote: "n", audienceFit: "a", evidenceIds: [],
+        ratings: { audienceFit: 4, conflictStrength: 4, originality: 4, feasibility: 4, constraintFit: 4 } })),
+      selection: { rules: "ads.auto-creation.selection-rules.v1", chosenId: "D2", scores: [{ id: "D1", score: 4, excluded: null }, { id: "D2", score: 4, excluded: null }], reasons: ["理由"] },
+      unverified: [notice("candidates[0].differentiation", "三块"), notice("candidates[1].differentiation", "三块")],
+    };
+    const done = run({ stages: [
+      { stageKey: "sources", kind: "sources", state: "completed", attemptNo: 0, errorCode: null, output: null, upstreamChanged: false, supersededBy: null, scriptSave: null, scriptRevisionId: null },
+      { stageKey: "research", kind: "research", state: "completed", attemptNo: 1, errorCode: null, output: research as never, upstreamChanged: false, supersededBy: null, scriptSave: null, scriptRevisionId: null },
+      { stageKey: "directions", kind: "directions", state: "completed", attemptNo: 1, errorCode: null, output: directions as never, upstreamChanged: false, supersededBy: null, scriptSave: null, scriptRevisionId: null },
+    ] });
+    vi.stubGlobal("fetch", vi.fn(async (input: string) => input.endsWith("/auto-runs/latest") ? json({ run: done }) : json(options())));
+    render(<AutoCreationRun projectId={P1} />);
+    const record = await screen.findByTestId("auto-server-record");
+    expect(record.textContent).toContain("用户设定｜出场人物上限：最多 3 人");
+    expect(record.textContent).toContain("资料模式：资料有限策划模式（不是实时市场验证）");
+    expect(record.textContent).toContain("未读取：S-OE-1「巨量引擎帮助中心条目」（unreadable）");
+    expect(screen.getByTestId("auto-research-detail").textContent).toContain("用户设定与资料记录（来自用户设定和服务端记录，不是 AI 调研结论）");
+    // The model's text is shown as written, with a mark where a notice is; the notices are listed on their own.
+    expect(screen.getByTestId("auto-hypotheses").textContent).toContain("H1 假设：主角只剩五十元，必须在午夜前讨回工资。（含未核实数字）");
+    expect(screen.getAllByTestId("auto-unverified-mark")).toHaveLength(2);
+    expect([...screen.getByTestId("auto-unverified").querySelectorAll("li")].map((item) => item.textContent)).toEqual([
+      "第1条假设（H1）中的「五十元」：程序未能判定数字含义，未核实；只属于创作假设或设计，不是有来源的事实或市场结论。",
+      "第1条内容结构的本剧应用设计中的「三块」：程序未能判定数字含义，未核实；只属于创作假设或设计，不是有来源的事实或市场结论。",
+    ]);
+    // Only the chosen direction's notice is shown with it.
+    expect(screen.getByTestId("auto-direction-unverified").textContent).toBe("未核实提示：方向 D2 的差异点中的「三块」：程序未能判定数字含义，未核实；只属于创作假设或设计，不是有来源的事实或市场结论。");
+    expect(screen.queryByTestId("auto-legacy-limitations")).toBeNull();
+    expect(document.body.textContent).not.toMatch(/市场验证(已)?完成|已完成市场验证|已核实/u);
+  });
+
+  it("research v3: an answer that writes the server's fields is refused as an extra field, named, never a key problem", async () => {
+    const code = "invalid_output@appliedConstraints:unrecognized_keys";
+    const failed = run({ state: "failed", errorCode: "invalid_output", quality: "pending", storySave: "pending", storyRevisionId: null, packageStatus: "incomplete",
+      callsUsed: 1, callCap: 6, openIssues: [], stages: [{ stageKey: "research", kind: "research", state: "rejected", attemptNo: 1, errorCode: code, output: null,
+        upstreamChanged: false, supersededBy: null, scriptSave: null, scriptRevisionId: null }] });
+    vi.stubGlobal("fetch", vi.fn(async (input: string) => input.endsWith("/auto-runs/latest") ? json({ run: failed }) : json(options())));
+    render(<AutoCreationRun projectId={P1} />);
+    await waitFor(() => expect(screen.getByTestId("auto-headline").textContent).toBe("没有完成"));
+    const stop = screen.getByText(/^停在「/u).textContent!;
+    expect(stop).toContain("appliedConstraints");
+    expect(stop).toContain("模型回答包含契约不允许的额外字段；用户设定与资料局限由服务端记录，模型不能填写");
+    expect(screen.getByTestId("auto-output-refused").textContent).toContain("不是密钥或账户问题");
+  });
+
+  it("an extra field in another stage, or an unnamed one in research, gets the general wording, never the research one", async () => {
+    for (const [stageKey, kind, code] of [
+      ["bible", "bible", "invalid_output:unrecognized_keys"],
+      ["directions", "directions", "invalid_output@candidates[0]:unrecognized_keys"],
+      ["episode:1", "episode", "invalid_output@scenes[0]:unrecognized_keys"],
+      ["research", "research", "invalid_output:unrecognized_keys"],
+    ] as const) {
+      cleanup();
+      const failed = run({ state: "failed", errorCode: "invalid_output", quality: "pending", storySave: "pending", storyRevisionId: null, packageStatus: "incomplete",
+        callsUsed: 1, callCap: 6, openIssues: [], stages: [{ stageKey, kind, state: "rejected", attemptNo: 1, errorCode: code, output: null,
+          upstreamChanged: false, supersededBy: null, scriptSave: null, scriptRevisionId: null }] });
+      vi.stubGlobal("fetch", vi.fn(async (input: string) => input.endsWith("/auto-runs/latest") ? json({ run: failed }) : json(options())));
+      render(<AutoCreationRun projectId={P1} />);
+      await waitFor(() => expect(screen.getByTestId("auto-headline").textContent).toBe("没有完成"));
+      const stop = screen.getByText(/^停在「/u).textContent!;
+      expect(stop, code).toContain("模型回答包含契约不允许的额外字段");
+      expect(stop, code).not.toContain("服务端记录");
+      expect(screen.getByTestId("auto-output-refused").textContent).toContain("不是密钥或账户问题");
+    }
   });
 
   it("a key problem is not described as a refused answer", async () => {

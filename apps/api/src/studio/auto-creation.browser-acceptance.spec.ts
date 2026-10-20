@@ -469,6 +469,62 @@ describe("AI automatic creation in a real browser (site login, built web, real A
     (evidence.flows as Record<string, unknown>).B3 = { stubSends: seen.length - before, stageError: stage.error_code };
   }, 240_000);
 
+  it("B4: checks v5, numbers the checks cannot place: the run continues in the background, the notices and the server's record are shown apart and exported", async () => {
+    plan = { unplacedQuantities: true };
+    const before = seen.length;
+    const projectId = await startZeroRounds();
+    // Leave at once; the run belongs to the server, not to the page.
+    await page.goto(`${WEB}/create`, { waitUntil: "domcontentloaded" });
+    await waitFor("the run to finish without the page", async () =>
+      (await q<{ state: string }>("SELECT state FROM auto_creation_run WHERE project_id = $1", [projectId]))[0]?.state === "completed");
+    await page.goto(`${WEB}/projects/${projectId}/auto`, { waitUntil: "domcontentloaded" });
+    await expect.poll(async () => await headline().textContent(), { timeout: 30_000 }).toBe("剧本包已完成（机器质量检查通过）");
+    expect(seen.length - before).toBe(6);
+    expect(await page.getByTestId("auto-call-count").textContent()).toContain("已用 6 / 预算 6 次");
+    expect((await q<{ review_status: string }>("SELECT review_status FROM story_revision WHERE project_id = $1", [projectId]))).toEqual([{ review_status: "DRAFT" }]);
+    const notices = page.getByTestId("auto-unverified");
+    await notices.waitFor({ timeout: 30_000 });
+    const listed = await notices.locator("li").allTextContents();
+    expect(listed).toEqual([
+      "第3条内容结构的本剧应用设计中的「三块」：程序未能判定数字含义，未核实；只属于创作假设或设计，不是有来源的事实或市场结论。",
+      "第2条机会中的「五十元」：程序未能判定数字含义，未核实；只属于创作假设或设计，不是有来源的事实或市场结论。",
+    ]);
+    // The model's words stand as written, marked where a notice is.
+    expect(await page.getByTestId("auto-opportunities").textContent()).toContain("主角只剩五十元，必须在午夜前讨回工资。（含未核实数字）");
+    const record = await page.getByTestId("auto-server-record").textContent();
+    expect(record).toContain("用户设定｜集数：共 1 集");
+    expect(record).toContain("资料模式：资料有限策划模式（不是实时市场验证）");
+    expect(await page.getByTestId("auto-research-detail").textContent()).toContain("用户设定与资料记录（来自用户设定和服务端记录，不是 AI 调研结论）");
+    expect(await page.getByTestId("auto-direction-unverified").textContent()).toContain("方向 D1 的差异点中的「三块」");
+    expect(await page.locator("body").textContent()).not.toMatch(/市场验证(已)?完成|已完成市场验证|已核实/u);
+    await viewports("03d-auto-research-unverified", notices, page.getByTestId("auto-download-md"));
+    for (const size of [DESKTOP, PHONE]) {
+      await page.setViewportSize(size);
+      for (const id of ["auto-unverified", "auto-server-record", "auto-direction-unverified"]) {
+        expect(await page.getByTestId(id).evaluate((node) => node.scrollWidth - node.clientWidth), `${id} ${String(size.width)}`).toBeLessThanOrEqual(0);
+      }
+    }
+    await page.setViewportSize(DESKTOP);
+    const [download] = await Promise.all([page.waitForEvent("download"), page.getByTestId("auto-download-md").click()]);
+    const packagePath = join(shotsDir ?? ROOT, "auto-package-unverified.md");
+    await download.saveAs(packagePath);
+    const text = await readFile(packagePath, "utf8");
+    expect(text).toContain("**未核实提示**（程序未能判定数字含义，未核实");
+    expect(text).toContain("- 第2条机会中的「五十元」：程序未能判定数字含义，未核实");
+    expect(text).toContain("**用户设定与资料记录**（来自用户设定和服务端记录，不是 AI 调研结论）");
+    // Read back after a reload: the same notices, nothing sent.
+    const sent = seen.length;
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect.poll(async () => await headline().textContent(), { timeout: 30_000 }).toBe("剧本包已完成（机器质量检查通过）");
+    expect(await page.getByTestId("auto-unverified").locator("li").allTextContents()).toEqual(listed);
+    expect(seen.length).toBe(sent);
+    const stored = (await q<{ output_json: { unverified: unknown[] } }>(
+      "SELECT s.output_json FROM auto_creation_stage s JOIN auto_creation_run r ON r.id = s.run_id WHERE r.project_id = $1 AND s.stage_key = 'research'", [projectId]))[0]!;
+    expect(stored.output_json.unverified).toHaveLength(2);
+    plan = {};
+    (evidence.flows as Record<string, unknown>).B4 = { stubSends: seen.length - before, notices: listed.length };
+  }, 240_000);
+
   it("C: no page errors and no real model was called", () => {
     expect(pageErrors).toEqual([]);
     expect(new Set(seen.map((item) => item.url))).toEqual(new Set(["https://api.deepseek.com/chat/completions"]));

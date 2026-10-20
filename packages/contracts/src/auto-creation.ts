@@ -26,11 +26,12 @@ export const AUTO_CREATION_INPUT_SCHEMA = "ads.auto-creation.input.v1" as const;
  * v2: the research contract says which fields may carry a number and which never do (no dates, counts or plans).
  * v3: numbers by meaning: story quantities and future plans may be written, market statistics only from cited excerpts.
  * v4: a content structure is a quoted method (reference) apart from this work's own design (application), research v2.
+ * v5: the research answer no longer restates the settings or the source gaps (the server records them), research v3.
  */
-export const AUTO_CREATION_PROMPT_VERSION = "ads.auto-creation.prompt.v4" as const;
+export const AUTO_CREATION_PROMPT_VERSION = "ads.auto-creation.prompt.v5" as const;
 /** Every prompt version a stored run may carry. A resumed run is sent with the current prompts. */
 export type AutoCreationPromptVersion = "ads.auto-creation.prompt.v1" | "ads.auto-creation.prompt.v2" | "ads.auto-creation.prompt.v3"
-  | typeof AUTO_CREATION_PROMPT_VERSION;
+  | "ads.auto-creation.prompt.v4" | typeof AUTO_CREATION_PROMPT_VERSION;
 export const AUTO_CREATION_SELECTION_RULES = "ads.auto-creation.selection-rules.v1" as const;
 /**
  * v2: the applied constraints and a direction's audience fit are number-checked; spaced ordinals are not claims.
@@ -38,13 +39,21 @@ export const AUTO_CREATION_SELECTION_RULES = "ads.auto-creation.selection-rules.
  * are checked too; refusals name what the number was taken for and the sub-rule.
  * v4: a structure's quote must be found whole in the one source it cites; its application is checked as uncited text,
  * whatever it cites.
+ * v5: in uncited creative text (a hypothesis, its plan, a structure's application, an opportunity, a direction's notes)
+ * a number the code cannot place (unclassified, no_role) is kept as an unverified notice instead of refusing the answer;
+ * every other refusal stands, and the rest of the answer is still checked.
  */
-export const AUTO_CREATION_CHECKS_VERSION = "ads.auto-creation.checks.v4" as const;
+export const AUTO_CREATION_CHECKS_VERSION = "ads.auto-creation.checks.v5" as const;
 /** Every checks version a stored run or review may carry. */
 export type AutoCreationChecksVersion = "ads.auto-creation.checks.v1" | "ads.auto-creation.checks.v2" | "ads.auto-creation.checks.v3"
-  | typeof AUTO_CREATION_CHECKS_VERSION;
-/** v2: each content structure keeps the quoted method (reference) apart from this work's design (application). */
-export const AUTO_CREATION_RESEARCH_SCHEMA = "ads.auto-creation.research.v2" as const;
+  | "ads.auto-creation.checks.v4" | typeof AUTO_CREATION_CHECKS_VERSION;
+/**
+ * v3: the model's answer carries no settings and no source gaps; the server adds its own record of both (serverRecord)
+ * and its unverified notices (unverified), apart from the answer.
+ */
+export const AUTO_CREATION_RESEARCH_SCHEMA = "ads.auto-creation.research.v3" as const;
+/** Research stored before v3 (the model restated the settings and gaps): read, shown and exported as it was, never sent. */
+export const AUTO_CREATION_RESEARCH_SCHEMA_V2 = "ads.auto-creation.research.v2" as const;
 /** Research stored before v2 (pattern, why and sourceIds in one item): read, shown and exported as it was, never sent. */
 export const AUTO_CREATION_RESEARCH_SCHEMA_V1 = "ads.auto-creation.research.v1" as const;
 export const AUTO_CREATION_DIRECTIONS_SCHEMA = "ads.auto-creation.directions.v1" as const;
@@ -263,6 +272,10 @@ const researchFields = {
     sourceIds: z.array(z.string().max(40)).max(5),
   }).strict(),
   opportunities: shortList(5, 120).min(1),
+};
+
+/** What research before v3 had the model write: the gaps of its material and the settings it applied. */
+const legacyResearchFields = {
   limitations: shortList(5, 150).min(1),
   appliedConstraints: shortList(8, 120),
 };
@@ -291,18 +304,85 @@ export const autoContentStructureSchema = z.object({
 }).strict();
 export type AutoContentStructure = z.infer<typeof autoContentStructureSchema>;
 
-/** Research v2, what a research stage answers from prompt v4 on. */
-export const autoResearchSchema = z.object({
+/**
+ * The model's research answer (research v3, prompt v5 on): facts, observations, hypotheses with their plans, the
+ * audience, content structures and opportunities. Strict: the server's own fields (the settings, the source gaps, the
+ * notices) and the old limitations and appliedConstraints are refused if a model sends them, never dropped.
+ */
+export const autoResearchAnswerSchema = z.object({
   schema: z.literal(AUTO_CREATION_RESEARCH_SCHEMA),
   ...researchFields,
   contentStructure: z.array(autoContentStructureSchema).min(1).max(6),
 }).strict();
-export type AutoResearch = z.infer<typeof autoResearchSchema>;
+export type AutoResearchAnswer = z.infer<typeof autoResearchAnswerSchema>;
+
+/** Keys of a stored research the server writes, and the keys v3 took out of the answer: a model sending one is refused. */
+export const AUTO_RESEARCH_SERVER_KEYS = ["serverRecord", "unverified", "limitations", "appliedConstraints"] as const;
+
+/** One of the person's settings as the server restates it from the frozen input. Only settings that were set. */
+export interface AutoSettingRecord {
+  key: "episodes" | "seconds" | "genre" | "audience" | "maxCharacters" | "maxLocations" | "forbiddenThemes" | "endingRequirement";
+  label: string;
+  value: string;
+}
+
+/**
+ * What the server itself records with a research (v3): the person's settings from the frozen input and the material
+ * from the run's source snapshot (mode, what was read and how far, what could not be read, what is missing). Written
+ * by code from trusted data, never by the model and never number-checked; not a finding of the research.
+ */
+export interface AutoResearchServerRecord {
+  origin: "server_record";
+  /** The versions this research was actually produced with (a resumed older run records the current ones here). */
+  executedWith: { promptVersion: string; checksVersion: string; researchSchema: typeof AUTO_CREATION_RESEARCH_SCHEMA };
+  /** From the frozen input: the person's settings, not an AI conclusion. */
+  settings: { origin: "user_setting"; items: AutoSettingRecord[] };
+  /** From the source snapshot. */
+  material: {
+    origin: "source_snapshot";
+    researchMode: "sourced" | "limited";
+    read: Array<{ sourceId: string; title: string; readScope: AutoCreationSource["readScope"]; topic: AutoCreationSource["topic"]; note: string }>;
+    unread: Array<{ sourceId: string; title: string; status: AutoCreationSource["status"]; note: string }>;
+    gaps: string[];
+  };
+}
+
+/** What every unverified notice says. */
+export const AUTO_UNVERIFIED_NOTE = "程序未能判定数字含义，未核实";
+
+/**
+ * A server notice on uncited creative text (a hypothesis, its plan, a structure's application, an opportunity, a
+ * direction's notes): a number the checks could not give a role (unclassified, no_role). The text stays as written;
+ * the notice says it is unverified and keeps it a hypothesis or design. Never written by a model or a client.
+ */
+export interface AutoUnverifiedNotice {
+  origin: "server_check";
+  /** Schema keys and indexes, e.g. hypotheses[0].statement or candidates[1].differentiation. */
+  field: string;
+  /** The number as written in that field. */
+  token: string;
+  semantic: "unclassified";
+  rule: "no_role";
+  note: typeof AUTO_UNVERIFIED_NOTE;
+}
+
+/** Research v3 as stored: the model's answer, the server's record and the server's notices, each apart. */
+export type AutoResearch = AutoResearchAnswer & { serverRecord: AutoResearchServerRecord; unverified: AutoUnverifiedNotice[] };
+
+/** Research v2 as stored before v3: never accepted from a provider any more, only read back. */
+export const autoResearchV2Schema = z.object({
+  schema: z.literal(AUTO_CREATION_RESEARCH_SCHEMA_V2),
+  ...researchFields,
+  ...legacyResearchFields,
+  contentStructure: z.array(autoContentStructureSchema).min(1).max(6),
+}).strict();
+export type AutoResearchV2 = z.infer<typeof autoResearchV2Schema>;
 
 /** Research v1 as stored before v2: never accepted from a provider any more, only read back. */
 export const autoResearchV1Schema = z.object({
   schema: z.literal(AUTO_CREATION_RESEARCH_SCHEMA_V1),
   ...researchFields,
+  ...legacyResearchFields,
   contentStructure: z.array(z.object({
     pattern: text(1, 120),
     why: text(1, 200),
@@ -312,7 +392,37 @@ export const autoResearchV1Schema = z.object({
 export type AutoResearchV1 = z.infer<typeof autoResearchV1Schema>;
 
 /** A research stage's stored output, whichever version wrote it. */
-export type AutoStoredResearch = AutoResearch | AutoResearchV1;
+export type AutoStoredResearch = AutoResearch | AutoResearchV2 | AutoResearchV1;
+
+/** The notices of a stored research or directions output: none before checks v5. */
+export function autoUnverifiedOf(output: object | null | undefined): AutoUnverifiedNotice[] {
+  const notices = output && "unverified" in output ? output.unverified : undefined;
+  return Array.isArray(notices) ? notices as AutoUnverifiedNotice[] : [];
+}
+
+/**
+ * Where a notice is, as a person reads it: by the item's position (第1条假设, 第1条假设的验证计划, 第2条内容结构的本剧应用设计,
+ * 第1条机会), never an id made from the index: a research needs unique ids, not ids in order, so the model's own id is
+ * added when the research is given (第1条假设（H3）). A direction keeps its id, which the directions check holds to D1, D2…
+ * in order.
+ */
+export function autoNoticePlace(field: string, research?: { hypotheses?: ReadonlyArray<{ id: string }> } | null): string {
+  const index = Number(/\[(\d+)\]/u.exec(field)?.[1] ?? "0");
+  const nth = `第${String(index + 1)}条`;
+  if (field.startsWith("hypotheses[")) {
+    const id = research?.hypotheses?.[index]?.id;
+    return `${nth}假设${id ? `（${id}）` : ""}${field.endsWith("howToVerify") ? "的验证计划" : ""}`;
+  }
+  if (field.startsWith("contentStructure[")) return `${nth}内容结构的本剧应用设计`;
+  if (field.startsWith("opportunities[")) return `${nth}机会`;
+  if (field.startsWith("candidates[")) return `方向 D${String(index + 1)} 的${field.endsWith("difficultyNote") ? "难度说明" : "差异点"}`;
+  return field;
+}
+
+/** A notice as one line: where, the number, and that it is unverified. Give the research to name a hypothesis by its id too. */
+export function autoNoticeText(notice: AutoUnverifiedNotice, research?: { hypotheses?: ReadonlyArray<{ id: string }> } | null): string {
+  return `${autoNoticePlace(notice.field, research)}中的「${notice.token}」：${notice.note}；只属于创作假设或设计，不是有来源的事实或市场结论。`;
+}
 
 /**
  * A content structure as shown and exported. A v1 item keeps its pattern, why and source ids as stored: it never had
@@ -366,6 +476,8 @@ export interface AutoSelection {
 
 export interface AutoDirectionsOutput extends AutoDirections {
   selection: AutoSelection;
+  /** The server's unverified notices on the directions' notes (checks v5); absent before. */
+  unverified?: AutoUnverifiedNotice[];
 }
 
 const ID_C = z.string().regex(/^C[1-8]$/);
@@ -605,8 +717,6 @@ export function autoCreationJsonSchema(kind: AutoCreationStageKind, episodeCount
           application: obj({ pattern: str(120), why: str(200) }),
         }), 1, 6),
         opportunities: strs(5, 120, 1),
-        limitations: strs(5, 150, 1),
-        appliedConstraints: strs(8, 120),
       }) };
     case "directions":
       return { name: "auto_directions", schema: obj({
