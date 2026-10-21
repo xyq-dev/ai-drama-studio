@@ -27,11 +27,13 @@ export const AUTO_CREATION_INPUT_SCHEMA = "ads.auto-creation.input.v1" as const;
  * v3: numbers by meaning: story quantities and future plans may be written, market statistics only from cited excerpts.
  * v4: a content structure is a quoted method (reference) apart from this work's own design (application), research v2.
  * v5: the research answer no longer restates the settings or the source gaps (the server records them), research v3.
+ * v6: the research prompt follows the run's saved source snapshot: limited asks for creative positioning and hypotheses
+ * only (no findings, no audience sources), sourced keeps the cited findings; research v4.
  */
-export const AUTO_CREATION_PROMPT_VERSION = "ads.auto-creation.prompt.v5" as const;
+export const AUTO_CREATION_PROMPT_VERSION = "ads.auto-creation.prompt.v6" as const;
 /** Every prompt version a stored run may carry. A resumed run is sent with the current prompts. */
 export type AutoCreationPromptVersion = "ads.auto-creation.prompt.v1" | "ads.auto-creation.prompt.v2" | "ads.auto-creation.prompt.v3"
-  | "ads.auto-creation.prompt.v4" | typeof AUTO_CREATION_PROMPT_VERSION;
+  | "ads.auto-creation.prompt.v4" | "ads.auto-creation.prompt.v5" | typeof AUTO_CREATION_PROMPT_VERSION;
 export const AUTO_CREATION_SELECTION_RULES = "ads.auto-creation.selection-rules.v1" as const;
 /**
  * v2: the applied constraints and a direction's audience fit are number-checked; spaced ordinals are not claims.
@@ -42,16 +44,24 @@ export const AUTO_CREATION_SELECTION_RULES = "ads.auto-creation.selection-rules.
  * v5: in uncited creative text (a hypothesis, its plan, a structure's application, an opportunity, a direction's notes)
  * a number the code cannot place (unclassified, no_role) is kept as an unverified notice instead of refusing the answer;
  * every other refusal stands, and the rest of the answer is still checked.
+ * v6: a research answer is parsed with the contract of the run's saved research mode (limited or sourced); a limited
+ * answer carrying a finding or an audience source field is refused whole, and a direction cites only research ids that exist.
  */
-export const AUTO_CREATION_CHECKS_VERSION = "ads.auto-creation.checks.v5" as const;
+export const AUTO_CREATION_CHECKS_VERSION = "ads.auto-creation.checks.v6" as const;
 /** Every checks version a stored run or review may carry. */
 export type AutoCreationChecksVersion = "ads.auto-creation.checks.v1" | "ads.auto-creation.checks.v2" | "ads.auto-creation.checks.v3"
-  | "ads.auto-creation.checks.v4" | typeof AUTO_CREATION_CHECKS_VERSION;
+  | "ads.auto-creation.checks.v4" | "ads.auto-creation.checks.v5" | typeof AUTO_CREATION_CHECKS_VERSION;
 /**
- * v3: the model's answer carries no settings and no source gaps; the server adds its own record of both (serverRecord)
- * and its unverified notices (unverified), apart from the answer.
+ * v4: the answer contract follows the run's saved research mode. limited: the model writes hypotheses, the audience as
+ * text, content structures and opportunities only; the server assembles the rest (no facts, no observations, the
+ * audience a hypothesis with no sources) and records that market evidence is unavailable. sourced: v3's answer.
  */
-export const AUTO_CREATION_RESEARCH_SCHEMA = "ads.auto-creation.research.v3" as const;
+export const AUTO_CREATION_RESEARCH_SCHEMA = "ads.auto-creation.research.v4" as const;
+/**
+ * Research stored by research v3 (one answer contract whatever the mode; the server's record and notices apart from it):
+ * read, shown and exported as it was, never sent.
+ */
+export const AUTO_CREATION_RESEARCH_SCHEMA_V3 = "ads.auto-creation.research.v3" as const;
 /** Research stored before v3 (the model restated the settings and gaps): read, shown and exported as it was, never sent. */
 export const AUTO_CREATION_RESEARCH_SCHEMA_V2 = "ads.auto-creation.research.v2" as const;
 /** Research stored before v2 (pattern, why and sourceIds in one item): read, shown and exported as it was, never sent. */
@@ -304,10 +314,14 @@ export const autoContentStructureSchema = z.object({
 }).strict();
 export type AutoContentStructure = z.infer<typeof autoContentStructureSchema>;
 
+/** Which answer contract a research is sent and checked with: the run's saved source snapshot's mode, never a model's or a client's. */
+export type AutoResearchMode = "sourced" | "limited";
+
 /**
- * The model's research answer (research v3, prompt v5 on): facts, observations, hypotheses with their plans, the
- * audience, content structures and opportunities. Strict: the server's own fields (the settings, the source gaps, the
- * notices) and the old limitations and appliedConstraints are refused if a model sends them, never dropped.
+ * The model's research answer when the snapshot has recent market material (research v4 sourced, prompt v6 on): facts,
+ * observations, hypotheses with their plans, the audience with its basis and sources, content structures and
+ * opportunities. Strict: the server's own fields (the settings, the source gaps, the notices) and the old limitations
+ * and appliedConstraints are refused if a model sends them, never dropped.
  */
 export const autoResearchAnswerSchema = z.object({
   schema: z.literal(AUTO_CREATION_RESEARCH_SCHEMA),
@@ -316,8 +330,50 @@ export const autoResearchAnswerSchema = z.object({
 }).strict();
 export type AutoResearchAnswer = z.infer<typeof autoResearchAnswerSchema>;
 
+/**
+ * The model's research answer when the snapshot has no recent market material (research v4 limited): creative
+ * hypotheses with their plans, the proposed audience as text, content structures (a method quote may still cite craft
+ * or the person's material) and opportunities. Strict: facts, observations, the audience's basis and sources and every
+ * server field are refused whole, even empty, never dropped or moved: the server writes them (autoAssembleLimitedResearch).
+ */
+export const autoResearchLimitedAnswerSchema = z.object({
+  schema: z.literal(AUTO_CREATION_RESEARCH_SCHEMA),
+  hypotheses: researchFields.hypotheses,
+  audience: z.object({
+    primary: text(1, 120),
+    viewingNeeds: shortList(5, 60).min(1),
+    emotionalAppeals: shortList(5, 60).min(1),
+  }).strict(),
+  contentStructure: z.array(autoContentStructureSchema).min(1).max(6),
+  opportunities: researchFields.opportunities,
+}).strict();
+export type AutoResearchLimitedAnswer = z.infer<typeof autoResearchLimitedAnswerSchema>;
+
+/** The answer schema of a research mode: the one the prompt asks for and the provider's JSON Schema enforces. */
+export function autoResearchAnswerSchemaFor(mode: AutoResearchMode) {
+  return mode === "limited" ? autoResearchLimitedAnswerSchema : autoResearchAnswerSchema;
+}
+
 /** Keys of a stored research the server writes, and the keys v3 took out of the answer: a model sending one is refused. */
 export const AUTO_RESEARCH_SERVER_KEYS = ["serverRecord", "unverified", "limitations", "appliedConstraints"] as const;
+/** Fields a limited answer never carries: the server writes facts, observations and the audience's basis and sources. */
+export const AUTO_RESEARCH_LIMITED_FORBIDDEN = ["facts", "observations", "audience.basis", "audience.sourceIds"] as const;
+
+/**
+ * The research a limited answer stands for once the strict schema accepted it: the server writes no finding (facts and
+ * observations empty) and an audience that is a hypothesis with no sources. Nothing of the answer is dropped or moved.
+ */
+export function autoAssembleLimitedResearch(answer: AutoResearchLimitedAnswer): AutoResearchAnswer {
+  return {
+    schema: answer.schema,
+    facts: [],
+    observations: [],
+    hypotheses: answer.hypotheses,
+    audience: { ...answer.audience, basis: "hypothesis", sourceIds: [] },
+    contentStructure: answer.contentStructure,
+    opportunities: answer.opportunities,
+  };
+}
 
 /** One of the person's settings as the server restates it from the frozen input. Only settings that were set. */
 export interface AutoSettingRecord {
@@ -327,14 +383,14 @@ export interface AutoSettingRecord {
 }
 
 /**
- * What the server itself records with a research (v3): the person's settings from the frozen input and the material
+ * What the server itself records with a research (v3 on): the person's settings from the frozen input and the material
  * from the run's source snapshot (mode, what was read and how far, what could not be read, what is missing). Written
  * by code from trusted data, never by the model and never number-checked; not a finding of the research.
  */
-export interface AutoResearchServerRecord {
+export interface AutoResearchServerRecordV3 {
   origin: "server_record";
-  /** The versions this research was actually produced with (a resumed older run records the current ones here). */
-  executedWith: { promptVersion: string; checksVersion: string; researchSchema: typeof AUTO_CREATION_RESEARCH_SCHEMA };
+  /** The versions this research was actually produced with (a resumed older run records the versions it ran with). */
+  executedWith: { promptVersion: string; checksVersion: string; researchSchema: typeof AUTO_CREATION_RESEARCH_SCHEMA_V3 };
   /** From the frozen input: the person's settings, not an AI conclusion. */
   settings: { origin: "user_setting"; items: AutoSettingRecord[] };
   /** From the source snapshot. */
@@ -345,6 +401,22 @@ export interface AutoResearchServerRecord {
     unread: Array<{ sourceId: string; title: string; status: AutoCreationSource["status"]; note: string }>;
     gaps: string[];
   };
+}
+
+/** What a market evidence record says, by status. */
+export const AUTO_MARKET_EVIDENCE_NOTES = {
+  unavailable: "市场证据不可用：本次资料快照没有符合条件的近期市场资料。受众、题材与创作建议是 AI 创作策划和待验证假设，验证计划尚未执行，不是市场验证结论。",
+  available: "有可读取的市场资料：事实与观察逐条引用所读资料的原文。",
+} as const;
+
+/**
+ * The server's record of research v4: v3's record, the answer contract it was produced with (the snapshot's mode) and
+ * whether market evidence was available. A limited research says so here; its material still lists the craft and the
+ * person's materials actually read, and what could not be read.
+ */
+export interface AutoResearchServerRecord extends Omit<AutoResearchServerRecordV3, "executedWith"> {
+  executedWith: { promptVersion: string; checksVersion: string; researchSchema: typeof AUTO_CREATION_RESEARCH_SCHEMA; answerContract: AutoResearchMode };
+  marketEvidence: { origin: "source_snapshot"; status: "unavailable" | "available"; note: string };
 }
 
 /** What every unverified notice says. */
@@ -366,8 +438,15 @@ export interface AutoUnverifiedNotice {
   note: typeof AUTO_UNVERIFIED_NOTE;
 }
 
-/** Research v3 as stored: the model's answer, the server's record and the server's notices, each apart. */
+/**
+ * Research v4 as stored: the answer (a limited one as the server assembled it), the server's record and the server's
+ * notices, each apart.
+ */
 export type AutoResearch = AutoResearchAnswer & { serverRecord: AutoResearchServerRecord; unverified: AutoUnverifiedNotice[] };
+
+/** Research v3 as stored before v4: never accepted from a provider any more, only read back. */
+export type AutoResearchV3 = Omit<AutoResearchAnswer, "schema"> & { schema: typeof AUTO_CREATION_RESEARCH_SCHEMA_V3;
+  serverRecord: AutoResearchServerRecordV3; unverified: AutoUnverifiedNotice[] };
 
 /** Research v2 as stored before v3: never accepted from a provider any more, only read back. */
 export const autoResearchV2Schema = z.object({
@@ -392,7 +471,17 @@ export const autoResearchV1Schema = z.object({
 export type AutoResearchV1 = z.infer<typeof autoResearchV1Schema>;
 
 /** A research stage's stored output, whichever version wrote it. */
-export type AutoStoredResearch = AutoResearch | AutoResearchV2 | AutoResearchV1;
+export type AutoStoredResearch = AutoResearch | AutoResearchV3 | AutoResearchV2 | AutoResearchV1;
+
+/** Research the server recorded apart from the answer (v3 and v4): its record is never the AI's restatement. v1 and v2 are. */
+export function autoResearchHasServerRecord(research: AutoStoredResearch): research is AutoResearch | AutoResearchV3 {
+  return research.schema === AUTO_CREATION_RESEARCH_SCHEMA || research.schema === AUTO_CREATION_RESEARCH_SCHEMA_V3;
+}
+
+/** The market evidence record of a stored research: v4 only; older research never recorded it apart. */
+export function autoResearchMarketEvidence(research: AutoStoredResearch): AutoResearchServerRecord["marketEvidence"] | null {
+  return research.schema === AUTO_CREATION_RESEARCH_SCHEMA ? research.serverRecord.marketEvidence : null;
+}
 
 /** The notices of a stored research or directions output: none before checks v5. */
 export function autoUnverifiedOf(output: object | null | undefined): AutoUnverifiedNotice[] {
@@ -688,7 +777,12 @@ const int = (minimum: number, maximum: number) => ({ type: "integer", minimum, m
 const enumOf = (values: readonly (string | number)[]) =>
   ({ type: typeof values[0] === "number" ? "integer" : "string", enum: [...values] }) as const;
 
-export function autoCreationJsonSchema(kind: AutoCreationStageKind, episodeCount: number): { name: string; schema: Record<string, unknown> } {
+/**
+ * The JSON Schema sent with a stage. A research stage needs the run's saved research mode: the limited schema has no
+ * facts, observations or audience basis and sources, so the provider is held to the same contract as the prompt and
+ * the zod check. Without a mode no research schema is built (the engine stops before reserving a call).
+ */
+export function autoCreationJsonSchema(kind: AutoCreationStageKind, episodeCount: number, researchMode: AutoResearchMode | null = null): { name: string; schema: Record<string, unknown> } {
   const numbers = Array.from({ length: episodeCount }, (_, index) => index + 1);
   const episode = obj({
     schema: enumOf([AUTO_CREATION_EPISODE_SCHEMA]),
@@ -704,20 +798,34 @@ export function autoCreationJsonSchema(kind: AutoCreationStageKind, episodeCount
     handoffFacts: strs(6, 150, 1),
   });
   switch (kind) {
-    case "research":
-      return { name: "auto_research", schema: obj({
+    case "research": {
+      if (researchMode !== "limited" && researchMode !== "sourced") throw new Error("a research schema needs the run's saved research mode");
+      const hypotheses = arr(obj({ id: str(2), statement: str(200), howToVerify: str(150) }), 1, 8);
+      const contentStructure = arr(obj({
+        reference: { anyOf: [obj({ sourceId: str(40), quote: str(AUTO_STRUCTURE_QUOTE_MAX) }), { type: "null" }] },
+        application: obj({ pattern: str(120), why: str(200) }),
+      }), 1, 6);
+      const opportunities = strs(5, 120, 1);
+      if (researchMode === "limited") {
+        return { name: "auto_research_limited", schema: obj({
+          schema: enumOf([AUTO_CREATION_RESEARCH_SCHEMA]),
+          hypotheses,
+          audience: obj({ primary: str(120), viewingNeeds: strs(5, 60, 1), emotionalAppeals: strs(5, 60, 1) }),
+          contentStructure,
+          opportunities,
+        }) };
+      }
+      return { name: "auto_research_sourced", schema: obj({
         schema: enumOf([AUTO_CREATION_RESEARCH_SCHEMA]),
         facts: arr(obj({ id: str(2), statement: str(200), sourceIds: strs(3, 40, 1), evidence: str(200) }), 0, 8),
         observations: arr(obj({ id: str(2), statement: str(200), sourceIds: strs(3, 40, 1) }), 0, 8),
-        hypotheses: arr(obj({ id: str(2), statement: str(200), howToVerify: str(150) }), 1, 8),
+        hypotheses,
         audience: obj({ primary: str(120), viewingNeeds: strs(5, 60, 1), emotionalAppeals: strs(5, 60, 1),
           basis: enumOf(["sourced", "hypothesis"]), sourceIds: strs(5, 40) }),
-        contentStructure: arr(obj({
-          reference: { anyOf: [obj({ sourceId: str(40), quote: str(AUTO_STRUCTURE_QUOTE_MAX) }), { type: "null" }] },
-          application: obj({ pattern: str(120), why: str(200) }),
-        }), 1, 6),
-        opportunities: strs(5, 120, 1),
+        contentStructure,
+        opportunities,
       }) };
+    }
     case "directions":
       return { name: "auto_directions", schema: obj({
         schema: enumOf([AUTO_CREATION_DIRECTIONS_SCHEMA]),
@@ -917,9 +1025,10 @@ export type AutoResumePreparation =
  * Why a stopped run cannot be continued as it stands, or null. prompt_too_large: the next stage's request, built from
  * the frozen input and the saved stages, is over the prompt limit (a resume would stop the same way, so none is
  * accepted); research_fetch_unavailable: the run froze a public page read the server no longer offers (a resume is
- * possible again once the read is back); story_too_large: the final stop of a run whose story cannot be saved.
+ * possible again once the read is back); story_too_large: the final stop of a run whose story cannot be saved;
+ * research_sources_missing: the research is next but the run has no valid saved source snapshot to take its contract from.
  */
-export type AutoResumeBlock = "prompt_too_large" | "research_fetch_unavailable" | "story_too_large";
+export type AutoResumeBlock = "prompt_too_large" | "research_fetch_unavailable" | "story_too_large" | "research_sources_missing";
 
 export type AutoScriptPlacement =
   | { kind: "ok"; bundle: AutoRunBundle }

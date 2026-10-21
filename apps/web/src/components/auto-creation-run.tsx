@@ -2,10 +2,11 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  AUTO_CREATION_RESEARCH_SCHEMA,
   AUTO_UNVERIFIED_NOTE,
   TITLE_WRITING_PROVIDER_LABELS,
   autoNoticeText,
+  autoResearchHasServerRecord,
+  autoResearchMarketEvidence,
   autoStructureViews,
   autoUnverifiedOf,
   type AutoBible,
@@ -172,6 +173,8 @@ export function AutoCreationRun({ projectId, client = defaultClient }: { project
   const chosen = directions?.candidates.find((item) => item.id === directions.selection.chosenId);
   // Server notices (checks v5): a number the checks could not place, kept as written and marked unverified where it stands.
   const researchNotices = autoUnverifiedOf(research);
+  // research v4: whether market evidence was available, as the server recorded it; null for older research.
+  const market = research ? autoResearchMarketEvidence(research) : null;
   const noticeMark = (prefix: string) => researchNotices.some((item) => item.field.startsWith(prefix))
     ? <span className={styles.warning} data-testid="auto-unverified-mark">（含未核实数字）</span> : null;
   const chosenIndex = directions && chosen ? directions.candidates.indexOf(chosen) : -1;
@@ -215,7 +218,7 @@ export function AutoCreationRun({ projectId, client = defaultClient }: { project
             <li>模型：{PROVIDER_LABELS[run.providerKey] ?? run.providerKey} · {run.model}（冻结，不会改用其他服务）</li>
             <li data-testid="auto-call-count">调用：已用 {run.callsUsed} / 预算 {run.callCap} 次（正常 {run.budget.normalCalls}，最坏 {run.budget.worstCalls}）；修改轮次 {run.revisionRoundsUsed} / {run.budget.revisionRounds}；费用未知</li>
             <li>规模：{run.episodeCount} 集 · 每集目标约 {run.episodeSeconds} 秒（写作目标，不是成片实测）</li>
-            <li data-testid="auto-research">研究：{run.researchMode === "limited" ? "资料有限策划模式（不是实时市场验证）" : run.researchMode === "sourced" ? "有近期市场资料" : "尚未整理"}</li>
+            <li data-testid="auto-research">研究：{run.researchMode === "limited" ? "AI 创作策划（受众待验证，市场证据不可用；不是实时市场验证）" : run.researchMode === "sourced" ? "有可读取的市场资料" : "尚未整理"}</li>
             {run.idea ? <li>你的想法：{run.idea}</li> : <li>你没有提供想法，由 AI 自主策划。</li>}
           </ul>
         </header>
@@ -327,16 +330,22 @@ export function AutoCreationRun({ projectId, client = defaultClient }: { project
 
         {research ? (
           <section className={autoStyles.section} aria-labelledby="auto-research-title" data-testid="auto-research-detail">
-            <h2 id="auto-research-title" className={styles.sectionTitle}>研究与受众分析</h2>
+            <h2 id="auto-research-title" className={styles.sectionTitle}>{market?.status === "unavailable" ? "AI 创作策划" : "研究与受众分析"}</h2>
             {run.researchMode === "limited" ? (
               <p className={styles.warning} data-testid="auto-research-limited">
-                资料有限：没有可读取的近期市场资料。下面的受众和题材判断都是待验证的假设，验证计划尚未执行；这不是实时市场验证，也不是平台真实用户画像。
+                AI 创作策划：没有符合条件的近期市场资料，市场证据不可用。下面的受众和题材判断都是待验证的创作假设，验证计划尚未执行；方法引用只是写作方法，不是市场证据。这不是实时市场验证，也不是平台真实用户画像；文本剧本包完成不代表做过市场验证。
               </p>
             ) : null}
-            <p className={styles.helper}>有来源的事实</p>
-            <ul className={autoStyles.list}>{research.facts.length > 0 ? research.facts.map((item) => <li key={item.id}>{item.statement}（{item.sourceIds.join("、")}：「{item.evidence}」）</li>) : <li>无（没有可引用的资料）</li>}</ul>
-            <p className={styles.helper}>基于样本的观察</p>
-            <ul className={autoStyles.list}>{research.observations.length > 0 ? research.observations.map((item) => <li key={item.id}>{item.statement}（{item.sourceIds.join("、")}）</li>) : <li>无</li>}</ul>
+            {market?.status === "unavailable" ? (
+              <p className={styles.helper} data-testid="auto-market-evidence">市场证据：不可用（服务端记录）。{market.note}</p>
+            ) : (
+              <>
+                <p className={styles.helper}>有来源的事实</p>
+                <ul className={autoStyles.list} data-testid="auto-facts">{research.facts.length > 0 ? research.facts.map((item) => <li key={item.id}>{item.statement}（{item.sourceIds.join("、")}：「{item.evidence}」）</li>) : <li>无（没有可引用的资料）</li>}</ul>
+                <p className={styles.helper}>基于样本的观察</p>
+                <ul className={autoStyles.list}>{research.observations.length > 0 ? research.observations.map((item) => <li key={item.id}>{item.statement}（{item.sourceIds.join("、")}）</li>) : <li>无</li>}</ul>
+              </>
+            )}
             <p className={styles.helper}>AI 创作假设与验证计划（假设未经验证；验证计划尚未执行，不是调查结果）</p>
             <ul className={autoStyles.list} data-testid="auto-hypotheses">
               {research.hypotheses.map((item, index) => (
@@ -347,11 +356,11 @@ export function AutoCreationRun({ projectId, client = defaultClient }: { project
               ))}
             </ul>
             <p data-testid="auto-audience">
-              目标观众（{research.audience.basis === "sourced" ? "有来源" : "待验证的拟定人群，不是平台真实用户画像"}）：{research.audience.primary}；观看需求：{research.audience.viewingNeeds.join("、")}；情绪诉求：{research.audience.emotionalAppeals.join("、")}
+              目标观众（{research.audience.basis === "sourced" ? "有来源" : "受众待验证：拟定人群，不是平台真实用户画像"}）：{research.audience.primary}；观看需求：{research.audience.viewingNeeds.join("、")}；情绪诉求：{research.audience.emotionalAppeals.join("、")}
             </p>
             <ul className={autoStyles.list} data-testid="auto-opportunities">
               {research.opportunities.map((item, index) => <li key={index}>机会（AI 创作判断）：{item}{noticeMark(`opportunities[${String(index)}]`)}</li>)}
-              {research.schema === AUTO_CREATION_RESEARCH_SCHEMA ? null : (
+              {autoResearchHasServerRecord(research) ? null : (
                 <>
                   <li data-testid="auto-legacy-limitations">局限（AI 填写，历史版本）：{research.limitations.join("；")}</li>
                   {research.appliedConstraints.length > 0 ? <li>采用的约束（AI 复述，历史版本）：{research.appliedConstraints.join("；")}</li> : null}
@@ -373,12 +382,13 @@ export function AutoCreationRun({ projectId, client = defaultClient }: { project
                 </li>
               ))}
             </ol>
-            {research.schema === AUTO_CREATION_RESEARCH_SCHEMA ? (
+            {autoResearchHasServerRecord(research) ? (
               <>
                 <p className={styles.helper}>用户设定与资料记录（来自用户设定和服务端记录，不是 AI 调研结论）</p>
                 <ul className={autoStyles.list} data-testid="auto-server-record">
                   {research.serverRecord.settings.items.map((item) => <li key={item.key}>用户设定｜{item.label}：{item.value}</li>)}
-                  <li>资料模式：{research.serverRecord.material.researchMode === "limited" ? "资料有限策划模式（不是实时市场验证）" : "有可读取的近期市场资料"}</li>
+                  <li>资料模式：{research.serverRecord.material.researchMode === "limited" ? "AI 创作策划（市场证据不可用，不是实时市场验证）" : "有可读取的市场资料"}</li>
+                  {market ? <li data-testid="auto-server-market">市场证据：{market.status === "unavailable" ? "不可用" : "可用"}（{market.note}）</li> : null}
                   {research.serverRecord.material.read.map((item) => <li key={item.sourceId}>已读取：{item.sourceId}「{item.title}」（{item.readScope}）</li>)}
                   {research.serverRecord.material.unread.map((item) => <li key={item.sourceId}>未读取：{item.sourceId}「{item.title}」（{item.status}）</li>)}
                   {research.serverRecord.material.gaps.map((gap) => <li key={gap}>缺失说明：{gap}</li>)}

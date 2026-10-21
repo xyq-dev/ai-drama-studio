@@ -71,7 +71,7 @@ describe("research v3 answer contract", () => {
     // A stored v2 research is no answer either, and a v3 answer is no stored v2.
     expect(autoResearchAnswerSchema.safeParse(v2).success).toBe(false);
     expect(autoResearchV2Schema.safeParse(v3).success).toBe(false);
-    const json = autoCreationJsonSchema("research", 1).schema as Json;
+    const json = autoCreationJsonSchema("research", 1, "sourced").schema as Json;
     expect(Object.keys(json.properties!)).not.toContain("limitations");
     expect(Object.keys(json.properties!)).not.toContain("appliedConstraints");
   });
@@ -98,7 +98,7 @@ describe("research v3 answer contract", () => {
 
 describe("research v2 structure contract (kept by v3)", () => {
   it("the provider JSON Schema has the zod schema's keys, nesting and nullable reference, every object closed", () => {
-    const json = autoCreationJsonSchema("research", 1).schema as Json;
+    const json = autoCreationJsonSchema("research", 1, "sourced").schema as Json;
     expect(jsonShape(json)).toEqual(zodShape(autoResearchAnswerSchema));
     expect(json.properties!.schema!.enum).toEqual([AUTO_CREATION_RESEARCH_SCHEMA]);
     const item = json.properties!.contentStructure!;

@@ -384,7 +384,7 @@ export function AutoCreationStart() {
             <li>管理员限额：最近 24 小时最多 {options.maxCallsPerDay} 次调用（与其他 AI 创作共用），同时最多 {options.maxActiveRuns} 个创作任务。</li>
             <li data-testid="auto-research-mode">研究方式：内置资料快照 {research?.builtInSources} 条（其中可读的市场资料 {research?.readableMarketSources} 条）
               {research?.fetchEnabled ? `，并读取公开页面（${research.allowedHosts.join("、")}）` : "；服务端未开启公开页面读取"}；没有视频画面分析能力，只分析文字。
-              {research?.expectedMode === "limited" ? "预计为「资料有限策划模式」：受众判断是待验证假设，不是实时市场验证。" : null}</li>
+              {research?.expectedMode === "limited" ? "预计为「AI 创作策划」：市场证据不可用，受众待验证；方法资料和你的资料仍可作为方法引用，不是实时市场验证。最终以开始后服务端保存的资料快照为准。" : null}</li>
             <li>每集时长是写作目标，不代表成片长度。完成后保存为「AI 自动生成草稿」，机器质量检查不等于人工审核，也不会自动发布。</li>
             <li>本功能只交付剧本包和生产准备包；当前没有接入真实图片、语音、视频服务，不会生成成片。</li>
           </ul>

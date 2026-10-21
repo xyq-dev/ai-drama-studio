@@ -92,6 +92,7 @@ const MESSAGES: Record<string, string> = {
   AUTO_CREATION_NOT_RESUMABLE: "这次创作没有需要续跑的阶段。",
   AUTO_CREATION_PROMPT_TOO_LARGE: "按已保存的成果，下一步的输入超过了输入长度上限，续跑也只会停在同一步，没有续跑，也没有重置任何阶段。已有成果仍可查看和下载；如需继续，请新建创作。",
   AUTO_CREATION_RESEARCH_UNAVAILABLE: "这次创作在开始时选择了读取公开页面，但服务端现在关闭了页面读取，没有续跑，也没有重置任何阶段。参考网址保留在任务里；恢复页面读取后可以继续。",
+  AUTO_CREATION_RESEARCH_SOURCES_MISSING: "下一步是研究，但这次创作没有有效的已保存资料快照，无法确定研究契约（资料有限或有市场资料），没有续跑，也没有发出调用；不会默认按有市场资料处理。",
   AUTO_CREATION_BUDGET_EXHAUSTED: "这次创作冻结的调用预算已经用完，续跑也无法发送，没有重置任何阶段。已有成果仍可查看和下载；如需继续，请新建创作。",
   AUTO_CREATION_STORY_NOT_APPROVED: "故事还没有通过人工审核，剧本暂不能写入分集。机器质量检查不能代替人工审核。",
   AUTO_CREATION_STORY_CHANGED: "人工审核通过的故事和生成剧本时用的故事不同，请确认后再写入。",
@@ -341,7 +342,7 @@ export class AutoCreationService {
       confirmedCallIds: confirmed,
       maxActiveRuns: this.deps.maxActiveRuns,
       providerReady: !legacy && provider !== null && provider.ok && provider.models.includes(input.model),
-      blocked: block === "prompt_too_large" || block === "research_fetch_unavailable",
+      blocked: block === "prompt_too_large" || block === "research_fetch_unavailable" || block === "research_sources_missing",
     }, this.now().toISOString());
     if (prepared.kind === "replayed") return this.found(prepared.bundle);
     if (prepared.kind !== "ok") {
@@ -352,7 +353,8 @@ export class AutoCreationService {
       if (prepared.kind === "stale_confirmation") return failure(409, "AUTO_CREATION_CONFIRMATION_STALE");
       if (prepared.kind === "key_conflict") return failure(409, "IDEMPOTENCY_KEY_REUSED");
       if (prepared.kind === "blocked") {
-        return block === "research_fetch_unavailable" ? failure(503, "AUTO_CREATION_RESEARCH_UNAVAILABLE") : failure(409, "AUTO_CREATION_PROMPT_TOO_LARGE");
+        if (block === "research_fetch_unavailable") return failure(503, "AUTO_CREATION_RESEARCH_UNAVAILABLE");
+        return block === "research_sources_missing" ? failure(409, "AUTO_CREATION_RESEARCH_SOURCES_MISSING") : failure(409, "AUTO_CREATION_PROMPT_TOO_LARGE");
       }
       if (prepared.kind === "budget_exhausted") return failure(409, "AUTO_CREATION_BUDGET_EXHAUSTED", { callsUsed: existing.run.callsUsed, callCap: existing.run.callCap });
       if (prepared.kind === "provider_unconfigured") {

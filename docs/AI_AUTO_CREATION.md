@@ -21,7 +21,7 @@
 | 阶段键 | 内容 | 是否调用模型 |
 | --- | --- | --- |
 | `sources` | 资料快照：内置条目 + 本次读取的公开页面（开关开启时）+ 用户声明有权使用的文字资料 | 否 |
-| `research` | 有来源的事实 / 基于样本的观察 / 待验证假设、受众与观看需求、内容结构、机会；用户设定与资料局限由服务端记录（research.v3，见 3.4） | 是 |
+| `research` | 按已保存资料快照的模式二选一（research.v4，见 3.5）：limited 为 AI 创作策划（创作假设与验证计划、拟定受众、方法参考与本剧应用、机会），sourced 另含有来源的事实与观察；用户设定、资料局限与市场证据是否可用由服务端记录 | 是 |
 | `directions` | 2–3 个原创方向 + 内部自评；**程序按规则 `selection-rules.v1` 选择**并记录理由 | 是 |
 | `bible` | 剧名、梗概、主线（欲望/弱点/目标/代价/阻碍/选择与后果/有伏笔的反转/兑现/结局/因果链）、人物 C1..、关系、地点 L1..、道具 P1.. | 是 |
 | `outline` | 每集开场、目标、阻碍、行动、转折、结果、新信息、情绪变化、交接；主线收束 | 是 |
@@ -29,7 +29,7 @@
 | `review:r` | 独立审阅提示与 10 项评价标准；问题须带**逐字原文证据**；程序检查结果并入 | 是 |
 | `revise:r:episode:k` | 只修指出的问题，记录逐条修改 | 是 |
 
-提示词版本 `ads.auto-creation.prompt.v5`、检查版本 `ads.auto-creation.checks.v5`、研究输出 `ads.auto-creation.research.v3`（见 3.4；此前 v4 / v4 / research.v2 见 3.3，v3 / v3 / research.v1 自 2026-10-20 起，2026-10-19 起为 v2，之前为 v1）、选择规则 `ads.auto-creation.selection-rules.v1`、输入 `ads.auto-creation.input.v1`。任务输入里冻结的是**开始时**的版本号；已完成的阶段不会重算，但旧任务续跑时，之后发送的阶段使用当前的提示词和检查（代码里没有按版本分支）。
+提示词版本 `ads.auto-creation.prompt.v6`、检查版本 `ads.auto-creation.checks.v6`、研究输出 `ads.auto-creation.research.v4`（见 3.5；此前 v5 / v5 / research.v3 见 3.4，v4 / v4 / research.v2 见 3.3，v3 / v3 / research.v1 自 2026-10-20 起，2026-10-19 起为 v2，之前为 v1）、选择规则 `ads.auto-creation.selection-rules.v1`、输入 `ads.auto-creation.input.v1`。任务输入里冻结的是**开始时**的版本号；已完成的阶段不会重算，但旧任务续跑时，之后发送的阶段使用当前的提示词和检查（代码里没有按版本分支）。
 
 ## 3. 研究层：只说真正读到的
 
@@ -159,6 +159,42 @@ contentStructure: [{ reference: { sourceId, quote } | null, application: { patte
 - 「主角欠下二十万」仍按数量级拒收，「五十元的版本」这类「的」后计数到作品名词时按作品计数，超过 30 仍拒收（只会多拒）。
 - 真实模型是否会按 prompt.v5 不再写约束和局限、是否会写出这类数字，离线测试不能证明，需要受限的真实验收。
 
+### 3.5 按资料能力拆分研究回答契约（2026-10-21，prompt.v6 / checks.v6 / research.v4）
+
+**证据边界**：线上任务（runId `d33694aa-c70c-40a3-93ae-a4a63a8ab021`）在研究阶段被 `unsourced_number@observations[0].statement:chinese_numeral+unsourced+not_in_cited_excerpt` 拒收。被拒原文按设计没有保存，**原句不知道**，不能断定模型编造了统计。能从源码确认的是契约本身：资料有限时 research.v3 仍要求同一份回答带 facts、observations、audience.basis / sourceIds，模型只能拿写作方法或用户资料去写「观察」，而观察里的任何数字都必须出自所引摘录。本轮不再扩充数字或自然语言词表，也不加付费语义裁判，而是让资料有限时模型根本不写这些字段。
+
+**模式只来自服务端资料快照**：唯一依据是本任务 `sources` 阶段已完成并保存的 `researchMode`（`autoResearchModeOf`）。
+
+- `limited`：没有符合条件的近期市场资料。**不等于没有资料**：写作方法（S-KB-CRAFT）和用户资料仍可读取、引用。开启页面读取但市场页面都读取失败时也是 limited；不能凭 `researchFetch=false` 推断。
+- `sourced`：有符合条件的近期市场资料（官方入口、已读取、带发布日期、一年内）。
+- 模式不由模型或客户端选择；重启、恢复、续跑都用本任务已保存的快照，不按当前开关重判。系统提示、用户提示、**实际发送的 JSON Schema**（`autoCreationJsonSchema(kind, episodeCount, researchMode)`，引擎按同一模式传入）、Zod 校验和服务端组装用同一个模式。研究阶段没有有效快照时，在预约和发送前停止（`needs_attention / research_sources_missing`，续跑同样拒绝 `AUTO_CREATION_RESEARCH_SOURCES_MISSING`），不默认按 sourced 处理。
+
+**limited：AI 创作策划**。提示改为「创作定位与待验证假设（AI 创作策划）」，模型回答（`autoResearchLimitedAnswerSchema`，供应商 Schema 名 `auto_research_limited`）**只有**：
+
+| 字段 | 内容 |
+| --- | --- |
+| `schema` | `ads.auto-creation.research.v4` |
+| `hypotheses` | 创作假设与待执行的验证计划（H 编号） |
+| `audience` | 只有 `primary`、`viewingNeeds`、`emotionalAppeals`：拟定的目标观众、观看需求、情绪诉求文字 |
+| `contentStructure` | 方法参考 `reference`（实际读到的方法或用户资料原文，没有合适引用时为 null，不强制全部为 null）与本剧应用设计 `application` |
+| `opportunities` | 创作机会 |
+
+- 模型**不能**输出 `facts`、`observations`、`audience.basis`、`audience.sourceIds`、`serverRecord`、`unverified`、`limitations`、`appliedConstraints` 或任何未定义字段；即使是空数组或默认值也按 strict schema 整份拒收，**不会**先接受再删除、覆盖、改写或转移。拒收码写明模式与固定字段：`invalid_output@facts:unrecognized_keys+limited_contract+forbidden_field`（`audience.basis`、`audience.sourceIds`、`observations` 与服务端键同理；同时有几个时按 facts、observations、audience.basis、audience.sourceIds、服务端键的顺序取第一个）。不记录被拒正文，不自动修复或重试。
+- 提示里删除了要求返回 facts/observations、F/O 编号和 audience.basis/sourceIds 的旧指令，不是把「可以为空」改成「必须为空」；限定提示不出现这些字段名。数字规则第 1 条改为「本次没有市场资料，任何字段都不能写市场和受众统计」，第 2–4 条（本剧创作数量、将来的验证计划、拟定人群用文字）与 sourced 相同。
+- 合法回答通过后，服务端组装统一的研究成果（`autoAssembleLimitedResearch`）：`facts=[]`、`observations=[]`、`audience.basis="hypothesis"`、`audience.sourceIds=[]`，再照常检查引文、连续原文、数字边界、application 与冻结约束（这些检查都没有放宽）。服务端记录 `serverRecord.marketEvidence = { status: "unavailable", note: "市场证据不可用：…" }` 和 `executedWith.answerContract = "limited"`，并保留实际已读的写作方法、用户资料和读取局限；`serverRecord`、`executedWith`、`unverified` 仍只由服务端生成。
+
+**sourced**：保留 research.v3 的回答（facts、observations、audience 的 basis / sourceIds 与全部严格校验，供应商 Schema 名 `auto_research_sourced`），不顺带放宽；服务端记录 `marketEvidence.status = "available"`、`answerContract = "sourced"`。
+
+**后续选题**：选题提示列出研究里实际存在的编号（limited 的 v4 研究只有 H 编号），`evidenceIds` 只能引用这些编号，悬空编号仍按 `dangling_reference` 拒收；limited 研究的 facts/observations 为空不代表研究失败。真实性、冻结约束和 no_role 未核实提示的规则不变，没有扩充词表。
+
+**页面、提示与导出**：limited 统一写「AI 创作策划」「受众待验证」「市场证据不可用」：研究区标题为「AI 创作策划」，不再列空的事实/观察，而是「市场证据：不可用（服务端记录）」；方法引用、创作假设、验证计划与市场证据分开，并写明「方法引用只是写作方法，不是市场证据」「文本剧本包完成不代表做过市场验证」。sourced 写「有可读取的市场资料」并展示实际证据。Markdown 剧本包同样处理（limited 的研究章节为「AI 创作策划（受众待验证·市场证据不可用）」）；JSON 剧本包原样保存研究输出，`research.identity` 说明 `answerContract` 与 `marketEvidence`。
+
+**历史兼容**：research.v3 的常量（`AUTO_CREATION_RESEARCH_SCHEMA_V3`）、类型（`AutoResearchV3`、`AutoResearchServerRecordV3`）与读取保留。原来「`schema === AUTO_CREATION_RESEARCH_SCHEMA` 才有服务端记录」的判断改为 `autoResearchHasServerRecord`（v3 与 v4 都有）：升级后 v3 不会落进 v1/v2 分支去读不存在的 limitations / appliedConstraints，它的服务端记录也不会被标成 AI 复述；`autoResearchMarketEvidence` 只对 v4 返回记录，不为旧研究补造。v1/v2/v3 历史成果原样读取、显示、导出，不回填、不改写；原键原请求重放零新建、零调度、零发送；已完成的研究直接复用不重发；旧任务显式续跑到未完成的研究时使用新契约，`executedWith` 记录实际版本，冻结输入、哈希、调用和费用不变；原预算不足按原规则处理（`budget_exhausted`，不清调用、不提高预算）；历史失败任务不会自动重跑。
+
+**不变**：单集正常流程仍为六次模型调用，阶段不增减；预算、日限额、并发、预约、租约、取消、幂等和结果未知的恢复不变；不自动重试、不换供应商或模型；故事仍为 DRAFT，人工审核与写入分集剧本的门槛不变；不生成媒体。新字段存在既有 JSONB 输出里，Migration 编写 0、执行 0。
+
+**限制**：离线验收全部使用模型替身；替身按提示要求的契约作答，所以离线通过**不代表真实模型必然成功**——真实模型是否只写这五个字段、是否会在创作文字里写出被拒的数字，需要受限的真实验收确认。
+
 ## 4. 质量检查与有限修改
 
 - 程序检查（`deterministicFindings`）：缺集、场次上限（60 秒 ≤5 场，90 秒 ≤7 场）、台词字数（≈5 字/秒）、镜头计划秒数在目标 60%–140%、仅被提及的人物出场、禁止题材、全剧出场人物数和地点数上限、跨集重复台词（提示级）。问题按真实来源归属：设定本身的出场人物在生成时已核对上限，所以合法设定下的人物超限只能来自分集让「仅被提及」的人物出场，这时问题指向那几集，可以在已授权的轮次和预算内定向修改并复查；只有设定本身超限才算设定问题。schema、编号、悬空引用、硬约束（人物/地点数、禁止题材）、整理后超过编辑器 2 万字上限的分集在**生成时**就拒收（不截断）。
@@ -251,5 +287,7 @@ DATABASE_URL=<业务库连接串，只在进程环境中> pnpm --filter @ai-dram
 | 2026-10-20 PR #81 评价单字匹配回归（本机 Windows + Node 24.21） | 「主角调查发现好友伪造账本」「…灵堂暗藏机关」「…更多线索」「…更衣室藏着证据」在 d2c04a9 上被拒、ea5f749 上通过：新增回归先在 d2c04a9 上确认 6 项失败（6 项拒收对照通过），均走完整 `validateAutoStageOutput`，覆盖 application.pattern / why、reference=null 与有效引用；去掉任意位置单字匹配，改为按位置判断的评价结构，五个市场或作品结论仍拒收；独立增量审查对最终代码共七轮复核（264 条输入，与 d2c04a9、ea5f749 逐条对比），确认必需正反例全部成立、文档没有错误陈述，审查列出的剩余表外写法已写入多拒/漏检并由测试固定；domain 725；`pnpm verify` 通过；真实模型与媒体调用 0 次 |
 | 2026-10-20 研究关卡 research.v3 / checks.v5（本机 Windows + Node 24.21） | 在 main 2d2679a 上用完整 `validateAutoStageOutput` 复现（合成样本，非线上原文）：「主角只剩五十元」在 hypotheses / appliedConstraints、「三块拼图」在 application 都被拒为 `…:chinese_numeral+unclassified+no_role`，模型自写的 appliedConstraints 被接受；新增 `auto-creation-gate.spec.ts`（服务端记录、strict 拒收服务端字段、未核实提示、提示之后的统计/结果/冻结冲突/伪引用仍拒、下游与导出不升级、结构化保护）在 main 上 29/30 失败（唯一通过的是不变的设定阶段上限检查）；审计 main 上只因 no_role 被拒的全部测试样本，补上冻结上限复述、「名/位」人物计数、计数人群给评价三处保护（三处的范围均由下一行的终审修正收窄）；`pnpm verify` 通过（domain 739、providers 280、contracts 50、web 724、api 315 另 87 跳过）；PostgreSQL 16 embedded 三种起点各 35/35（新增 v5 完整六阶段与导出重读、提示后统计与服务端字段各只发 1 次、线上拒收形态的 v4 任务人工续跑、v4 原键重放、research v2 历史读取导出重放）；真实浏览器 7/7（B4：离开页面后台完成、1280 / 390 提示与记录分开显示无溢出、下载、刷新一致）；Migration 编写 0、执行 0；真实模型与媒体调用 0 次 |
 | 2026-10-21 PR #82 终审四项修正（本机 Windows + Node 24.21） | 在 91a4edc 上先用完整 `validateAutoStageOutput` 复现（6 项失败，13 项拒收对照通过）：人物上限 2 时「主角破解三位数密码」被拒为 `cast_over_limit`（只凭量词「位」当人物）；「主角用五十元购买一条差评作为追凶线索」被拒为 `result_claim`（评价词没有关联被计数的人）；地点上限 2 时「场景为三块拼图散落在桌上」、人物上限 2 时「角色为五十元奖金冒险」被当成地点或人物（「为」不是上限）；第一条假设编号 H3 时提示写成「假设 H1」。修正：去掉「名/位」后备人物判定；评价保护只在数字后是数人量词且评价在计数之后时生效；上限推断要求限定词与相容量词；提示按条目位置称呼并附模型自己的假设编号。多余字段的页面说明改为通用，只在研究阶段的服务端键上补充研究说明（域侧也只在研究阶段命名服务端键）。以上各句在假设、验证计划、机会、application.pattern / why（reference 为 null 与有效引用）都覆盖；拒收对照（专家推荐、学生好评、无来源比例、真实上限冲突、提示后夹带比例）保持；domain 758、contracts 50、providers 280、web 自动创作 35 |
+
+| 2026-10-21 研究契约按资料能力拆分 research.v4 / prompt.v6 / checks.v6（本机 Windows + Node 24.21，模型替身） | 见第 3.5 节与 `docs/AUTO_CREATION_RESEARCH_CAPABILITIES_REPORT.md`；新增 `packages/contracts/src/auto-creation-capabilities.spec.ts`（limited/sourced 两份 JSON Schema 与 Zod 逐键一致、limited 拒收禁止字段即使为空、服务端组装、v3 历史判断）与 `packages/providers/src/auto-creation-capabilities.spec.ts`（捕获引擎实际发给 OpenAI / Claude / DeepSeek 的请求体核对 Schema 与提示、四种资料组合、limited 完整六阶段、注入字段各只发 1 次、sourced 合法与非法事实、v3 历史续跑不重发、原键重放、已保存快照决定续跑契约、预算不足不续跑、无有效快照不预约） |
 
 本功能**未**做：真实模型调用、真实图片/语音/视频、剧本拆解与分镜生产数据写入、业务库或测试站迁移。
