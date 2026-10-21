@@ -238,7 +238,7 @@ describe("AI automatic creation in a real browser (site login, built web, real A
     await expect.poll(async () => await page.getByTestId("auto-provider-target").textContent(), { timeout: 30_000 }).toContain("DeepSeek · deepseek-flash");
     expect(await page.getByTestId("auto-calls").textContent()).toContain("正常 6 次");
     expect(await page.getByTestId("auto-calls").textContent()).toContain("最坏 10 次");
-    expect(await page.getByTestId("auto-research-mode").textContent()).toContain("资料有限策划模式");
+    expect(await page.getByTestId("auto-research-mode").textContent()).toContain("AI 创作策划");
     expect(await page.locator("#auto-episodes").inputValue()).toBe("1");
     expect(await page.locator("#auto-seconds").inputValue()).toBe("60");
     // The original title-driven entry is still on the page.
@@ -259,7 +259,7 @@ describe("AI automatic creation in a real browser (site login, built web, real A
     expect(await page.getByTestId("auto-quality").textContent()).toContain("不是人工审核");
     expect(await page.getByTestId("auto-video-status").textContent()).toContain("未开始");
     expect(await page.getByTestId("auto-call-count").textContent()).toContain("已用 6 / 预算 12 次");
-    expect(await page.getByTestId("auto-research").textContent()).toContain("资料有限策划模式");
+    expect(await page.getByTestId("auto-research").textContent()).toContain("AI 创作策划（受众待验证，市场证据不可用");
     await page.getByTestId("auto-direction").getByText("午夜工资单").first().waitFor();
     await viewports("02-auto-run-done", page.getByTestId("auto-status"), page.getByTestId("auto-download-md"));
     // Downloads through the same-origin rewrite.
@@ -412,8 +412,12 @@ describe("AI automatic creation in a real browser (site login, built web, real A
     const hypotheses = await page.getByTestId("auto-hypotheses").textContent();
     expect(hypotheses).toContain("两个互不信任的人");
     expect(hypotheses).toContain("验证计划：计划上线后观察七天");
-    expect(await page.getByTestId("auto-audience").textContent()).toContain("不是平台真实用户画像");
-    expect(await page.getByTestId("auto-research-detail").textContent()).toContain("无（没有可引用的资料）");
+    expect(await page.getByTestId("auto-audience").textContent()).toContain("受众待验证：拟定人群，不是平台真实用户画像");
+    // research v4 limited: no findings at all, the server's record says market evidence is unavailable; the method quote stays.
+    expect(await page.getByTestId("auto-market-evidence").textContent()).toContain("市场证据：不可用（服务端记录）");
+    expect(await page.getByTestId("auto-server-market").textContent()).toContain("市场证据：不可用");
+    expect(await page.getByTestId("auto-facts").count()).toBe(0);
+    expect(await page.locator("#auto-research-title").textContent()).toBe("AI 创作策划");
     expect(await page.locator("body").textContent()).not.toMatch(/市场验证(已)?完成|已完成市场验证/u);
     expect(await page.getByTestId("auto-call-count").textContent()).toContain("已用 6 / 预算 6 次");
     expect(await page.getByTestId("auto-creation-run").locator("header").textContent()).toContain("deepseek-flash");
@@ -438,7 +442,29 @@ describe("AI automatic creation in a real browser (site login, built web, real A
     expect(text).toContain("验证计划：计划上线后观察七天");
     expect(text).toContain("  - 参考方法原文：S-KB-CRAFT「关键结果来自主角的选择和行动」");
     expect(text).toContain("  - 本剧应用设计：模型替身样例：计划用两次反转推动主角主动选择。");
-    expect(text).toContain("资料有限：没有可读取的近期市场资料");
+    expect(text).toContain("AI 创作策划：没有符合条件的近期市场资料，市场证据不可用");
+    expect(text).toContain("**市场证据**：不可用（服务端记录）");
+    // The JSON download is the stored research as it is, and reads back the same after a reload.
+    const stored = (await q<{ output_json: unknown }>(
+      "SELECT s.output_json FROM auto_creation_stage s JOIN auto_creation_run r ON r.id = s.run_id WHERE r.project_id = $1 AND s.stage_key = 'research'", [projectId]))[0]!.output_json;
+    const jsonOf = async () => {
+      const [file] = await Promise.all([page.waitForEvent("download"), page.getByTestId("auto-download-json").click()]);
+      const path = join(shotsDir ?? ROOT, "auto-package-creative.json");
+      await file.saveAs(path);
+      return JSON.parse(await readFile(path, "utf8")) as { research: { analysis: unknown } };
+    };
+    const firstJson = await jsonOf();
+    expect(firstJson.research.analysis).toEqual(stored);
+    expect(firstJson.research.analysis).toMatchObject({ schema: "ads.auto-creation.research.v4", facts: [], observations: [],
+      serverRecord: { executedWith: { answerContract: "limited" }, marketEvidence: { status: "unavailable" } } });
+    const sentBeforeReload = seen.length;
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect.poll(async () => await headline().textContent(), { timeout: 30_000 }).toBe("剧本包已完成（机器质量检查通过）");
+    expect((await jsonOf()).research.analysis).toEqual(firstJson.research.analysis);
+    const [again] = await Promise.all([page.waitForEvent("download"), page.getByTestId("auto-download-md").click()]);
+    await again.saveAs(`${packagePath}.again`);
+    expect(await readFile(`${packagePath}.again`, "utf8")).toBe(text);
+    expect(seen.length).toBe(sentBeforeReload);
     // The story review entry stays reachable from the run.
     await page.getByRole("link", { name: "去作品中人工审核故事" }).waitFor();
     (evidence.flows as Record<string, unknown>).B2 = { stubSends: seen.length - before, creativeQuantities: true };
@@ -493,7 +519,8 @@ describe("AI automatic creation in a real browser (site login, built web, real A
     expect(await page.getByTestId("auto-opportunities").textContent()).toContain("主角只剩五十元，必须在午夜前讨回工资。（含未核实数字）");
     const record = await page.getByTestId("auto-server-record").textContent();
     expect(record).toContain("用户设定｜集数：共 1 集");
-    expect(record).toContain("资料模式：资料有限策划模式（不是实时市场验证）");
+    expect(record).toContain("资料模式：AI 创作策划（市场证据不可用，不是实时市场验证）");
+    expect(record).toContain("市场证据：不可用");
     expect(await page.getByTestId("auto-research-detail").textContent()).toContain("用户设定与资料记录（来自用户设定和服务端记录，不是 AI 调研结论）");
     expect(await page.getByTestId("auto-direction-unverified").textContent()).toContain("方向 D1 的差异点中的「三块」");
     expect(await page.locator("body").textContent()).not.toMatch(/市场验证(已)?完成|已完成市场验证|已核实/u);
@@ -523,6 +550,28 @@ describe("AI automatic creation in a real browser (site login, built web, real A
     expect(stored.output_json.unverified).toHaveLength(2);
     plan = {};
     (evidence.flows as Record<string, unknown>).B4 = { stubSends: seen.length - before, notices: listed.length };
+  }, 240_000);
+
+  it("B5: a limited answer carrying a sourced field stops research after one call; the page names the field and the limited contract", async () => {
+    plan = { limitedInjection: ["facts"] };
+    const before = seen.length;
+    const projectId = await startZeroRounds();
+    await expect.poll(async () => await headline().textContent(), { timeout: 90_000, interval: 300 }).toBe("没有完成");
+    const refused = page.getByTestId("auto-output-refused");
+    await refused.waitFor({ timeout: 30_000 });
+    const stop = await page.getByText(/^停在「/u).textContent();
+    expect(stop).toContain("位置：facts");
+    expect(stop).toContain("本次是 AI 创作策划（市场证据不可用）");
+    expect(await refused.textContent()).toContain("不需要更换密钥");
+    await viewports("04b-auto-research-limited-contract", refused, page.getByTestId("auto-headline"));
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect.poll(async () => await headline().textContent(), { timeout: 30_000 }).toBe("没有完成");
+    expect(seen.length - before).toBe(1);
+    const stage = (await q<{ error_code: string; output_json: unknown }>(
+      "SELECT s.error_code, s.output_json FROM auto_creation_stage s JOIN auto_creation_run r ON r.id = s.run_id WHERE r.project_id = $1 AND s.stage_key = 'research'", [projectId]))[0]!;
+    expect(stage).toEqual({ error_code: "invalid_output@facts:unrecognized_keys+limited_contract+forbidden_field", output_json: null });
+    plan = {};
+    (evidence.flows as Record<string, unknown>).B5 = { stubSends: seen.length - before, stageError: stage.error_code };
   }, 240_000);
 
   it("C: no page errors and no real model was called", () => {

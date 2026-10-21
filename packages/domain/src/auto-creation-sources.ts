@@ -150,7 +150,7 @@ export function collectSources(input: AutoCreationFrozenInput, pages: readonly F
   const notes = [
     "没有视频画面或音频理解能力：所有参考内容只按文字（正文、简介或字幕）分析，没有观看任何视频。",
     ...(input.researchFetch ? [] : ["服务端没有开启公开页面读取，本次只使用内置资料快照和你提供的资料。"]),
-    ...(marketReadable ? [] : ["没有可读取的近期市场资料：本次为「资料有限策划模式」，受众与市场判断都是待验证假设，不是实时市场验证。"]),
+    ...(marketReadable ? [] : ["没有符合条件的近期市场资料：本次为「AI 创作策划」，市场证据不可用，受众与题材判断都是待验证假设，不是实时市场验证；方法资料和你的资料仍可作为方法引用。"]),
   ];
   return { schema: "ads.auto-creation.sources.v1", sources, researchMode: marketReadable ? "sourced" : "limited", notes };
 }

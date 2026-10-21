@@ -196,6 +196,7 @@ const ERRORS: Record<string, string> = {
   legacy_provider_run: "这是 DeepSeek 退役前的旧任务，不会再发出请求。",
   prompt_too_large: "这一步的输入超过了输入长度上限，没有发送；按已保存的成果再次继续也只会停在这里。剧本包仍可查看和下载。",
   research_fetch_unavailable: "这次创作开始时选择了读取公开页面，但服务端现在关闭了页面读取：没有整理资料，也没有发出调用，参考网址保留在任务里。恢复页面读取后可以继续。",
+  research_sources_missing: "下一步是研究，但这次创作没有有效的已保存资料快照，无法确定研究契约：没有发出调用，也不会默认按有市场资料处理。",
   story_conflict: "作品里已经有故事（可能是你写的），没有覆盖。剧本包仍可查看和下载。",
   story_too_large: "整理后的故事超过保存上限，没有保存，再次继续也只会得到同样的结果。剧本包仍可查看和下载；分集剧本不会写入作品。",
   revision_rounds_exhausted: "已用完允许的修改轮次，仍有问题未解决，标记为「待完善」。",
@@ -223,6 +224,7 @@ const SEMANTIC_TEXT: Record<string, string> = {
   frozen_conflict: "判断为创作数量，但与冻结的集数、时长或人物、地点上限冲突",
   unclassified: "无法确认是创作设定还是统计（如日期、资料条数），按无来源数字处理",
   unsourced: "所引资料的摘录正文里没有这个数字",
+  limited_contract: "本次是 AI 创作策划（市场证据不可用），这个字段由服务端写入，模型回答不能包含，空值也不行",
 };
 
 const RULE_TEXT: Record<string, string> = {
@@ -232,6 +234,7 @@ const RULE_TEXT: Record<string, string> = {
   cast_over_limit: "人物数超过上限", locations_over_limit: "地点数超过上限", episode_count: "集数与冻结值不同", over_length: "时长超过每集目标",
   date_or_range: "日期或数值范围", no_role: "没有对应的创作或计划含义", count_out_of_range: "数量超出合理的创作范围",
   not_in_cited_excerpt: "引用资料中找不到",
+  forbidden_field: "资料有限契约不允许的字段",
 };
 
 /** A stored code (rule; since checks v2 the field and the kind of token; since v3 what it was taken for and the sub-rule) as the page says it. */

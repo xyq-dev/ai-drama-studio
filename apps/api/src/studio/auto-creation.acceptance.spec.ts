@@ -38,7 +38,7 @@ import {
 } from "@ai-drama/database";
 import { AutoCreationEngine, hashAutoCreationInput, titleWritingProviderConfigs } from "@ai-drama/providers";
 import {
-  AUTO_FIXTURE_UNPLACED, autoFixtureTransport, fixtureAutoResearchV1, fixtureAutoResearchV2, type AutoFixtureExchange, type AutoFixturePlan,
+  AUTO_FIXTURE_UNPLACED, autoFixtureTransport, fixtureAutoResearchV1, fixtureAutoResearchV2, fixtureAutoResearchV3, type AutoFixtureExchange, type AutoFixturePlan,
 } from "@ai-drama/providers/title-writing-fixtures";
 import { AutoCreationService } from "./auto-creation.service";
 
@@ -206,14 +206,14 @@ describe(`automatic creation on PostgreSQL (${scenario} schema)`, () => {
     expect((await q<{ review_status: string }>("SELECT review_status FROM story_revision WHERE project_id = $1", [id]))).toEqual([{ review_status: "DRAFT" }]);
     const markdown = await svc.package(id, run.runId, "markdown");
     expect(markdown.status).toBe(200);
-    expect(markdown.download?.text).toContain("资料有限策划模式");
+    expect(markdown.download?.text).toContain("AI 创作策划（市场证据不可用");
     expect(markdown.download?.text).toContain("AI 自动创作草稿");
     expect((await svc.package(id, run.runId, "json")).status).toBe(200);
     evidence.zeroRounds = { runId: run.runId, calls: run.callsUsed, callCap: run.callCap };
   });
 
   // v2 is what the deployed baseline (cf1ef29) freezes; v1 came before it. Neither is rehashed under v3.
-  it.each(["v1", "v2", "v4"] as const)("a run stored by the %s code: its own key and request replay 200 with nothing written or sent; other content or work is 409", async (version) => {
+  it.each(["v1", "v2", "v4", "v5"] as const)("a run stored by the %s code: its own key and request replay 200 with nothing written or sent; other content or work is 409", async (version) => {
     plan = {};
     const { svc, settle, pending } = service();
     const id = await project(1);
@@ -293,9 +293,9 @@ describe(`automatic creation on PostgreSQL (${scenario} schema)`, () => {
     expect(run).toMatchObject({ state: "completed", quality: "passed", callsUsed: 6, callCap: 6, storySave: "saved", packageStatus: "ready", errorCode: null,
       providerKey: "deepseek", model: "deepseek-flash", researchMode: "limited" });
     expect(seen.slice(before).map((item) => item.stage)).toEqual(["research", "directions", "bible", "outline", "episode:1", "review:1"]);
-    expect(seen.slice(before)[0]!.user).toContain("提示版本：ads.auto-creation.prompt.v5");
+    expect(seen.slice(before)[0]!.user).toContain("提示版本：ads.auto-creation.prompt.v6");
     expect((await q<{ input_json: AutoCreationFrozenInput }>("SELECT input_json FROM auto_creation_run WHERE id = $1", [runId]))[0]!.input_json)
-      .toMatchObject({ promptVersion: "ads.auto-creation.prompt.v5", checksVersion: "ads.auto-creation.checks.v5" });
+      .toMatchObject({ promptVersion: "ads.auto-creation.prompt.v6", checksVersion: "ads.auto-creation.checks.v6" });
     // The stored research is the accepted answer as sent: its quantities are there word for word.
     const research = (await q<{ output_json: { hypotheses: Array<{ statement: string; howToVerify: string }> } }>(
       "SELECT output_json FROM auto_creation_stage WHERE run_id = $1 AND stage_key = 'research'", [runId]))[0]!.output_json;
@@ -304,7 +304,7 @@ describe(`automatic creation on PostgreSQL (${scenario} schema)`, () => {
     // Research v2 on: the quoted method has no count; this work's two reversals and three riders are its own design.
     const structure = (await q<{ output_json: { schema: string; contentStructure: unknown[] } }>(
       "SELECT output_json FROM auto_creation_stage WHERE run_id = $1 AND stage_key = 'research'", [runId]))[0]!.output_json;
-    expect(structure.schema).toBe("ads.auto-creation.research.v3");
+    expect(structure.schema).toBe("ads.auto-creation.research.v4");
     expect(structure.contentStructure).toEqual([
       { reference: { sourceId: "S-KB-CRAFT", quote: "关键结果来自主角的选择和行动" },
         application: { pattern: "模型替身样例：计划用两次反转推动主角主动选择。", why: "这是本作品的创作设计。" } },
@@ -315,7 +315,7 @@ describe(`automatic creation on PostgreSQL (${scenario} schema)`, () => {
     expect(markdown).toContain("  - 参考方法原文：S-KB-CRAFT「关键结果来自主角的选择和行动」");
     expect(markdown).toContain("  - 本剧应用设计：模型替身样例：计划用两次反转推动主角主动选择。：这是本作品的创作设计。");
     expect(markdown).toContain("  - 参考方法原文：无（自主创作设计）");
-    expect(markdown).toContain("资料有限：没有可读取的近期市场资料");
+    expect(markdown).toContain("AI 创作策划：没有符合条件的近期市场资料，市场证据不可用");
     expect(markdown).toContain("验证计划：计划上线后观察七天");
     expect(markdown).toContain("不是平台真实用户画像");
     expect(markdown).not.toMatch(/市场验证(已)?完成|已完成市场验证/u);
@@ -383,7 +383,7 @@ describe(`automatic creation on PostgreSQL (${scenario} schema)`, () => {
     expect((await svc.resume(id, runId, {}, TOKEN, ctx("v2-resume"))).status).toBe(200);
     await settle();
     expect(seen.slice(sent).map((item) => item.stage)).toEqual(["research", "directions", "bible", "outline", "episode:1", "review:1"]);
-    expect(seen.slice(sent)[0]!.user).toContain("提示版本：ads.auto-creation.prompt.v5");
+    expect(seen.slice(sent)[0]!.user).toContain("提示版本：ads.auto-creation.prompt.v6");
     const run = runOf((await svc.get(id, runId)).body);
     expect(run).toMatchObject({ state: "completed", quality: "passed", callsUsed: 7, callCap: 8, storySave: "saved" });
     expect(run.calls.filter((call) => call.stageKey === "research").map((call) => [call.state, call.errorCode]))
@@ -425,6 +425,7 @@ describe(`automatic creation on PostgreSQL (${scenario} schema)`, () => {
   it.each([
     ["v1", "v3", fixtureAutoResearchV1()],
     ["v2", "v4", fixtureAutoResearchV2()],
+    ["v3", "v5", fixtureAutoResearchV3()],
   ] as const)("research %s history: a completed run of prompt %s reads, exports and replays unchanged; nothing is rewritten or sent", async (shape, version, stored) => {
     plan = {};
     const { svc, settle, pending } = service();
@@ -455,10 +456,19 @@ describe(`automatic creation on PostgreSQL (${scenario} schema)`, () => {
     } else {
       expect(markdown).toContain("  - 参考方法原文：S-KB-CRAFT「关键结果来自主角的选择和行动」");
     }
-    // The model's own limits and constraints of that version, shown as history; no server record is made up for it.
-    expect(markdown).toContain("**局限**（AI 填写，历史版本）：官方入口页面没有读到正文，受众判断都是假设。");
-    expect(markdown).toContain("**采用的约束**（AI 复述，历史版本）：单集、约一分钟");
-    expect(markdown).not.toContain("**用户设定与资料记录**");
+    if (shape === "v3") {
+      // research v3 kept the server's record apart: shown as the server's, never as the AI's history; no market evidence made up.
+      expect(markdown).toContain("**用户设定与资料记录**（来自用户设定和服务端记录，不是 AI 调研结论）");
+      expect(markdown).toContain("- 已读取：S-KB-CRAFT「短剧写作方法（项目知识库，改编自 drama-skills MIT 版本）」（full_text）");
+      expect(markdown).toContain("**有来源的事实**");
+      expect(markdown).not.toContain("**局限**");
+      expect(markdown).not.toContain("- 市场证据：");
+    } else {
+      // The model's own limits and constraints of that version, shown as history; no server record is made up for it.
+      expect(markdown).toContain("**局限**（AI 填写，历史版本）：官方入口页面没有读到正文，受众判断都是假设。");
+      expect(markdown).toContain("**采用的约束**（AI 复述，历史版本）：单集、约一分钟");
+      expect(markdown).not.toContain("**用户设定与资料记录**");
+    }
     const json = JSON.parse((await svc.package(id, runId, "json")).download!.text) as { research: { analysis: unknown } };
     expect(json.research.analysis).toEqual(stored);
     const replay = await svc.start(id, request, TOKEN, ctx(`${shape}-research-history`));
@@ -487,12 +497,13 @@ describe(`automatic creation on PostgreSQL (${scenario} schema)`, () => {
       "SELECT stage_key, output_json FROM auto_creation_stage WHERE run_id = $1 AND stage_key IN ('research', 'directions')", [runId]))
       .map((row) => [row.stage_key, row.output_json]));
     const research = outputs.research as { schema: string; opportunities: string[]; unverified: Array<{ field: string; token: string }>; serverRecord: Record<string, unknown> };
-    expect(research.schema).toBe("ads.auto-creation.research.v3");
+    expect(research.schema).toBe("ads.auto-creation.research.v4");
     expect(research.opportunities).toContain(AUTO_FIXTURE_UNPLACED.money);
     expect(research.unverified.map((item) => [item.field, item.token])).toEqual([["contentStructure[2].application.pattern", "三块"], ["opportunities[1]", "五十元"]]);
     expect(research).not.toHaveProperty("appliedConstraints");
     expect(research.serverRecord).toMatchObject({ origin: "server_record", settings: { origin: "user_setting" }, material: { origin: "source_snapshot", researchMode: "limited" },
-      executedWith: { promptVersion: "ads.auto-creation.prompt.v5", checksVersion: "ads.auto-creation.checks.v5" } });
+      executedWith: { promptVersion: "ads.auto-creation.prompt.v6", checksVersion: "ads.auto-creation.checks.v6", answerContract: "limited" },
+      marketEvidence: { status: "unavailable" } });
     expect((outputs.directions as { unverified: Array<{ field: string }> }).unverified.map((item) => item.field)).toEqual(["candidates[0].differentiation"]);
     // Later prompts carry the notices as unverified.
     expect(seen.slice(before)[1]!.user).toContain("第2条机会中的「五十元」：程序未能判定数字含义，未核实");
@@ -503,7 +514,7 @@ describe(`automatic creation on PostgreSQL (${scenario} schema)`, () => {
     expect(markdown).toContain("- 用户设定｜出场人物上限：最多 3 人");
     expect(markdown).toContain("- 第2条机会中的「五十元」：程序未能判定数字含义，未核实");
     expect(markdown).toContain("- 未核实提示：方向 D1 的差异点中的「三块」");
-    expect(markdown).toContain("资料有限：没有可读取的近期市场资料");
+    expect(markdown).toContain("AI 创作策划：没有符合条件的近期市场资料，市场证据不可用");
     expect(markdown.replaceAll("或已验证的市场结论", "")).not.toMatch(/已验证|已核实|市场验证(已)?完成/u);
     const json = (await svc.package(id, runId, "json")).download!.text;
     expect((JSON.parse(json) as { research: { analysis: unknown } }).research.analysis).toEqual(research);
@@ -521,7 +532,8 @@ describe(`automatic creation on PostgreSQL (${scenario} schema)`, () => {
 
   it.each([
     ["statisticAfterUnplaced", "unsourced_number@opportunities[1]:percent+market_statistic+proportion", "七成"],
-    ["serverFieldsInAnswer", "invalid_output@limitations:unrecognized_keys", "官方入口页面没有读到正文"],
+    ["serverFieldsInAnswer", "invalid_output@limitations:unrecognized_keys+limited_contract+forbidden_field", "官方入口页面没有读到正文"],
+    ["ignoreLimitedContract", "invalid_output@facts:unrecognized_keys+limited_contract+forbidden_field", "项目知识库的写作方法要求关键结果来自主角的选择和行动"],
   ] as const)("checks v5: %s is refused at research alone; one send, nothing stored, nothing after it", async (flag, code, text) => {
     plan = { [flag]: true };
     const { svc, settle } = service();
@@ -548,7 +560,7 @@ describe(`automatic creation on PostgreSQL (${scenario} schema)`, () => {
     (evidence.v5Refused as Record<string, unknown>)[flag] = { runId, stageError: code };
   });
 
-  it("the online refusal's shape: a v4 run refused at research stays stopped until a person resumes it; then research v3 completes and the frozen v4 stays", async () => {
+  it("the online refusal's shape: a v4 run refused at research stays stopped until a person resumes it; then research v4 completes and the frozen v4 stays", async () => {
     plan = { serverFieldsInAnswer: true };
     const { svc, settle } = service();
     const id = await project(1);
@@ -572,12 +584,12 @@ describe(`automatic creation on PostgreSQL (${scenario} schema)`, () => {
     expect((await svc.resume(id, runId, {}, TOKEN, ctx("v4-resume"))).status).toBe(200);
     await settle();
     expect(seen.slice(sent).map((item) => item.stage)).toEqual(["research", "directions", "bible", "outline", "episode:1", "review:1"]);
-    expect(seen.slice(sent)[0]!.user).toContain("提示版本：ads.auto-creation.prompt.v5");
+    expect(seen.slice(sent)[0]!.user).toContain("提示版本：ads.auto-creation.prompt.v6");
     const run = runOf((await svc.get(id, runId)).body);
     expect(run).toMatchObject({ state: "completed", callsUsed: 7, callCap: 8, storySave: "saved", promptVersion: "ads.auto-creation.prompt.v4" });
     expect(run.calls.filter((call) => call.stageKey === "research").map((call) => [call.state, call.errorCode])).toEqual([["rejected", v4Code], ["completed", null]]);
-    expect(run.stages.find((stage) => stage.stageKey === "research")!.output).toMatchObject({ schema: "ads.auto-creation.research.v3",
-      serverRecord: { executedWith: { promptVersion: "ads.auto-creation.prompt.v5", checksVersion: "ads.auto-creation.checks.v5" } } });
+    expect(run.stages.find((stage) => stage.stageKey === "research")!.output).toMatchObject({ schema: "ads.auto-creation.research.v4",
+      serverRecord: { executedWith: { promptVersion: "ads.auto-creation.prompt.v6", checksVersion: "ads.auto-creation.checks.v6", answerContract: "limited" } } });
     const after = (await q<{ input_json: AutoCreationFrozenInput; input_hash: string }>("SELECT input_json, input_hash FROM auto_creation_run WHERE id = $1", [runId]))[0]!;
     expect(after.input_json).toEqual(v4);
     expect(after.input_hash).toBe(hashAutoCreationInput(id, v4));

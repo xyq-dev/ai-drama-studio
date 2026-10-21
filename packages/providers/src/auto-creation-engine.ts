@@ -47,6 +47,7 @@ import {
 import {
   autoContextFromStages,
   autoPackageComplete,
+  autoResearchModeOf,
   autoStageDependencies,
   blockingOutsideEpisodes,
   buildAutoCreationPrompt,
@@ -187,7 +188,9 @@ export function autoResumeBlock(bundle: AutoRunBundle, options: { researchFetch:
   const next = stages.find((stage) => stage.state !== "completed");
   if (!next) return null;
   if (next.stageKey === "sources") return run.input.researchFetch && !options.researchFetch ? "research_fetch_unavailable" : null;
-  const prompt = buildAutoCreationPrompt(next.stageKey, run.input, autoContextFromStages(stages));
+  const context = autoContextFromStages(stages);
+  if (autoStageKind(next.stageKey) === "research" && autoResearchModeOf(context.sources) === null) return "research_sources_missing";
+  const prompt = buildAutoCreationPrompt(next.stageKey, run.input, context);
   return prompt.system.length + prompt.user.length > AUTO_CREATION_PROMPT_MAX_CHARS ? "prompt_too_large" : null;
 }
 
@@ -384,11 +387,18 @@ export class AutoCreationEngine {
       return this.finish(runId, "needs_attention", "provider_unconfigured");
     }
     const context = autoContextFromStages(stages);
+    // The research contract is chosen by the run's own saved snapshot, never by the current options: without a valid
+    // one nothing is reserved or sent, and no mode is assumed.
+    const researchMode = autoResearchModeOf(context.sources);
+    if (autoStageKind(next.stageKey) === "research" && researchMode === null) {
+      return this.finish(runId, "needs_attention", "research_sources_missing");
+    }
     const prompt = buildAutoCreationPrompt(next.stageKey, run.input, context);
     if (prompt.system.length + prompt.user.length > AUTO_CREATION_PROMPT_MAX_CHARS) {
       return this.finish(runId, "needs_attention", "prompt_too_large");
     }
-    const schema = autoCreationJsonSchema(prompt.kind, run.input.episodeCount);
+    // The same mode builds the prompt, the JSON Schema sent here and the zod check of the answer.
+    const schema = autoCreationJsonSchema(prompt.kind, run.input.episodeCount, prompt.kind === "research" ? researchMode : null);
     const request = {
       model: run.input.model,
       system: prompt.system,

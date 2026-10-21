@@ -5,7 +5,7 @@ import {
   autoCreationConstraintsSchema,
   type AutoCreationFrozenInput,
 } from "@ai-drama/contracts";
-import { collectSources } from "./auto-creation-sources";
+import { OCEAN_ENGINE_ENTRY_URLS, collectSources } from "./auto-creation-sources";
 import { buildAutoCreationPrompt, validateAutoStageOutput, type AutoCreationContext } from "./auto-creation";
 
 // Research semantics (checks v3): a number is judged by what it counts. The failed real run (DeepSeek, 1 episode, 60 s,
@@ -27,9 +27,15 @@ function context(frozen = input()): AutoCreationContext {
   return { sources: collectSources(frozen, [], NOW), episodes: new Map(), reviews: [] };
 }
 
-/** A legal limited-mode answer: no facts, an observation of the craft entry, every audience judgement a hypothesis. */
-function limited(overrides: Record<string, unknown> = {}): string {
-  return JSON.stringify({
+/** A recent, readable market page (synthetic, no number in it): the snapshot is then sourced. */
+function sourcedContext(frozen = input()): AutoCreationContext {
+  return { sources: collectSources(frozen, [{ url: OCEAN_ENGINE_ENTRY_URLS[0], status: "read", title: "合成市场样本页", text: "合成样本：本页只描述题材趋势，没有统计数字。",
+    publishedAt: "2026-09-01T00:00:00.000Z", fetchedAt: NOW, note: "合成样本" }], NOW), episodes: new Map(), reviews: [] };
+}
+
+/** The full v3-shaped answer: the sourced contract (an observation of the craft entry, every audience judgement a hypothesis). */
+function full(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
     schema: AUTO_CREATION_RESEARCH_SCHEMA,
     facts: [],
     observations: [{ id: "O1", statement: "写作方法资料强调关键结果来自主角自己的选择。", sourceIds: ["S-KB-CRAFT"] }],
@@ -38,7 +44,24 @@ function limited(overrides: Record<string, unknown> = {}): string {
     contentStructure: [{ reference: { sourceId: "S-KB-CRAFT", quote: "关键结果来自主角的选择和行动" }, application: { pattern: "主角主动选择推动结果", why: "写作方法资料要求关键结果来自主角的行动。" } }],
     opportunities: ["小人物在一个夜晚完成一次反击", "共 1 集，每集约 60 秒"],
     ...overrides,
-  });
+  };
+}
+
+/** A legal answer to the sourced contract. */
+function sourced(overrides: Record<string, unknown> = {}): string {
+  return JSON.stringify(full(overrides));
+}
+
+/** A legal limited-mode answer (research v4): the same creative parts, none of the sourced contract's fields. */
+function limited(overrides: Record<string, unknown> = {}): string {
+  const { facts: _facts, observations: _observations, audience, ...rest } = full(overrides) as { audience: Record<string, unknown> } & Record<string, unknown>;
+  const { basis: _basis, sourceIds: _sourceIds, ...text } = audience;
+  return JSON.stringify({ ...rest, audience: text });
+}
+
+/** The limited answer as the server stores it: no findings, the audience a hypothesis with no sources. */
+function limitedStored(): unknown {
+  return { ...full(), observations: [] };
 }
 
 const hypothesis = (statement: string, howToVerify = "上线后用真实观看数据对比。") => ({ hypotheses: [{ id: "H1", statement, howToVerify }] });
@@ -113,7 +136,7 @@ describe("A. creative quantities and plans are not market claims", () => {
   });
 
   it("a direction may count its own story elements in its notes; its audience fit stays a marked judgement", () => {
-    const research = JSON.parse(limited()) as never;
+    const research = limitedStored() as never;
     const directions = (fields: Record<string, string>) => JSON.stringify({
       schema: AUTO_CREATION_DIRECTIONS_SCHEMA,
       candidates: ["D1", "D2"].map((id) => ({
@@ -143,7 +166,7 @@ describe("the v3 prompt and the v3 checks say the same thing", () => {
     expect(prompt).toContain(`不写“${refused}”`);
     expect(validateAutoStageOutput("research", limited(hypothesis(`${refused}。`)), input(), context()))
       .toMatchObject({ ok: false, semantic: "result_claim", rule: "unmarked_audience_judgement" });
-    expect(prompt).toContain("提示版本：ads.auto-creation.prompt.v5");
+    expect(prompt).toContain("提示版本：ads.auto-creation.prompt.v6");
   });
 });
 
@@ -236,7 +259,7 @@ describe("B. market facts and statistics still need a readable source, wherever 
 
   it("review bypass in a cited observation: a number the craft excerpt does not carry is refused however it is written", () => {
     for (const statement of ["八十%的观众偏爱主角主动选择。", "三十多万观众偏爱主角主动选择。"]) {
-      expect(validateAutoStageOutput("research", limited({ observations: [{ id: "O1", statement, sourceIds: ["S-KB-CRAFT"] }] }), input(), context()), statement)
+      expect(validateAutoStageOutput("research", sourced({ observations: [{ id: "O1", statement, sourceIds: ["S-KB-CRAFT"] }] }), input(), sourcedContext()), statement)
         .toMatchObject({ ok: false, code: "unsourced_number" });
     }
   });
@@ -254,7 +277,7 @@ describe("B. market facts and statistics still need a readable source, wherever 
   });
 
   it("a direction's notes cannot carry a statistic either", () => {
-    const ctx = { ...context(), research: JSON.parse(limited()) as never };
+    const ctx = { ...context(), research: limitedStored() as never };
     const directions = (fields: Record<string, string>) => JSON.stringify({
       schema: AUTO_CREATION_DIRECTIONS_SCHEMA,
       candidates: ["D1", "D2"].map((id) => ({
@@ -307,7 +330,7 @@ describe("C. a pending marker covers only its own judgement; the frozen audience
     });
 
   it("a plan does not unlock a finding in a direction's notes either", () => {
-    const ctx = { ...context(), research: JSON.parse(limited()) as never };
+    const ctx = { ...context(), research: limitedStored() as never };
     for (const field of ["differentiation", "difficultyNote", "audienceFit"]) {
       expect(validateAutoStageOutput("directions", directions({ [field]: unlocked[0]! }), input(), ctx), field)
         .toMatchObject({ ok: false, code: "unsourced_number", field: `candidates[0].${field}`, semantic: "result_claim" });
@@ -342,7 +365,7 @@ describe("C. a pending marker covers only its own judgement; the frozen audience
     });
 
   it("the frozen audience is no evidence in a direction's notes either", () => {
-    const ctx = { ...context(frozen), research: JSON.parse(limited()) as never };
+    const ctx = { ...context(frozen), research: limitedStored() as never };
     for (const field of ["differentiation", "difficultyNote", "audienceFit"]) {
       for (const statement of asEvidence.slice(0, 2)) {
         expect(validateAutoStageOutput("directions", directions({ [field]: statement }), frozen, ctx), `${field}: ${statement}`)
@@ -359,7 +382,7 @@ describe("C. a pending marker covers only its own judgement; the frozen audience
     for (const [field, overrides] of uncitedFields(statement)) {
       expect(research(frozen, overrides), field).toMatchObject({ ok: true });
     }
-    const ctx = { ...context(frozen), research: JSON.parse(limited()) as never };
+    const ctx = { ...context(frozen), research: limitedStored() as never };
     expect(validateAutoStageOutput("directions", directions({ audienceFit: statement, differentiation: statement }), frozen, ctx)).toMatchObject({ ok: true });
   });
 

@@ -7,7 +7,7 @@ import {
   type AutoResearch,
   type AutoStageRecord,
 } from "@ai-drama/contracts";
-import { collectSources } from "./auto-creation-sources";
+import { OCEAN_ENGINE_ENTRY_URLS, collectSources } from "./auto-creation-sources";
 import {
   autoContextFromStages, autoPackageJson, autoPackageMarkdown, autoResearchServerRecord, buildAutoCreationPrompt, validateAutoStageOutput, type AutoCreationContext,
 } from "./auto-creation";
@@ -36,8 +36,21 @@ function context(frozen = input()): AutoCreationContext {
   return { sources: collectSources(frozen, [], NOW), episodes: new Map(), reviews: [] };
 }
 
-/** A legal limited-mode v3 answer. */
+/** A recent, readable market page (synthetic, no number in it): the snapshot is then sourced. */
+function sourcedContext(frozen = input()): AutoCreationContext {
+  return { sources: collectSources(frozen, [{ url: OCEAN_ENGINE_ENTRY_URLS[0], status: "read", title: "合成市场样本页", text: "合成样本：本页只描述题材趋势，没有统计数字。",
+    publishedAt: "2026-09-01T00:00:00.000Z", fetchedAt: NOW, note: "合成样本" }], NOW), episodes: new Map(), reviews: [] };
+}
+
+/** A legal answer to the limited contract (research v4): none of the sourced contract's fields. */
 function answer(overrides: Record<string, unknown> = {}): string {
+  const { facts: _facts, observations: _observations, audience, ...rest } = JSON.parse(sourcedAnswer(overrides)) as { audience: Record<string, unknown> } & Record<string, unknown>;
+  const { basis: _basis, sourceIds: _sourceIds, ...text } = audience;
+  return JSON.stringify({ ...rest, audience: text });
+}
+
+/** A legal answer to the sourced contract (the v3 shape: an observation of the craft entry, the audience a hypothesis). */
+function sourcedAnswer(overrides: Record<string, unknown> = {}): string {
   return JSON.stringify({
     schema: AUTO_CREATION_RESEARCH_SCHEMA,
     facts: [],
@@ -51,6 +64,9 @@ function answer(overrides: Record<string, unknown> = {}): string {
 }
 
 const check = (overrides: Record<string, unknown>, frozen = input()) => validateAutoStageOutput("research", answer(overrides), frozen, context(frozen));
+const checkSourced = (overrides: Record<string, unknown>, frozen = input()) => validateAutoStageOutput("research", sourcedAnswer(overrides), frozen, sourcedContext(frozen));
+/** The limited contract with fields added on top as written: nothing stripped. */
+const checkRaw = (extra: Record<string, unknown>) => validateAutoStageOutput("research", JSON.stringify({ ...JSON.parse(answer()) as object, ...extra }), input(), context());
 const structure = (pattern: string, why = "自主创作设计。") => ({ contentStructure: [{ reference: null, application: { pattern, why } }] });
 const hypothesis = (statement: string, howToVerify = "计划上线后观察七天再判断。") => ({ hypotheses: [{ id: "H1", statement, howToVerify }] });
 
@@ -61,7 +77,10 @@ describe("1. the settings and the source gaps are the server's record, from the 
     const result = check({}, frozen);
     expect(result.ok).toBe(true);
     const output = (result as { output: AutoResearch }).output;
-    expect(JSON.parse(answer())).toEqual(Object.fromEntries(Object.entries(output).filter(([key]) => key !== "serverRecord" && key !== "unverified")));
+    // The limited answer as written, and what the server assembles around it: no finding, the audience a hypothesis.
+    const written = JSON.parse(answer()) as { audience: object };
+    expect({ ...written, facts: [], observations: [], audience: { ...written.audience, basis: "hypothesis", sourceIds: [] } })
+      .toEqual(Object.fromEntries(Object.entries(output).filter(([key]) => key !== "serverRecord" && key !== "unverified")));
     expect(output.unverified).toEqual([]);
     expect(output.serverRecord).toEqual(autoResearchServerRecord(frozen, context(frozen).sources!));
     expect(output.serverRecord.settings).toEqual({ origin: "user_setting", items: [
@@ -148,7 +167,7 @@ describe("2. a number with no recognised role in creative text is an unverified 
   });
 
   it("a cited text or an audience gets no notice: those numbers still need their source or a pending mark", () => {
-    expect(check({ observations: [{ id: "O1", statement: MONEY, sourceIds: ["S-KB-CRAFT"] }] }))
+    expect(checkSourced({ observations: [{ id: "O1", statement: MONEY, sourceIds: ["S-KB-CRAFT"] }] }))
       .toMatchObject({ ok: false, code: "unsourced_number", semantic: "unsourced", field: "observations[0].statement" });
     expect(check({ audience: { primary: "只剩五十元的年轻人（待验证）", viewingNeeds: ["x"], emotionalAppeals: ["y"], basis: "hypothesis", sourceIds: [] } }))
       .toMatchObject({ ok: false, code: "unsourced_number", field: "audience.primary" });
@@ -183,12 +202,15 @@ describe("3. a notice opens nothing: every later number, quote, claim and settin
       .toMatchObject({ ok: false, code: "unread_source", field: "contentStructure[1].reference.sourceId" });
     expect(check(later({ reference: null, application: { pattern: "调查证明观众更喜欢反转。", why: "w" } })))
       .toMatchObject({ ok: false, code: "unsourced_claim", field: "contentStructure[1].application.pattern" });
-    expect(check({ ...structure(PUZZLE), facts: [{ id: "F1", statement: "x", sourceIds: ["S-KB-CRAFT"], evidence: "知识库里没有这句话" }] }))
+    expect(checkSourced({ ...structure(PUZZLE), facts: [{ id: "F1", statement: "x", sourceIds: ["S-KB-CRAFT"], evidence: "知识库里没有这句话" }] }))
       .toMatchObject({ ok: false, code: "evidence_not_in_source", field: "facts[0].evidence" });
   });
 
-  it("a sourced audience in limited mode, a duplicate id and a schema error after a notice", () => {
-    expect(check({ ...structure(PUZZLE), audience: { primary: "成年观众", viewingNeeds: ["x"], emotionalAppeals: ["y"], basis: "sourced", sourceIds: ["S-KB-CRAFT"] } }))
+  it("a sourced audience, a duplicate id and a schema error after a notice", () => {
+    // research v4: a limited answer has no audience basis at all (refused whole); a sourced one may not claim it from craft.
+    expect(checkRaw({ ...structure(PUZZLE), audience: { primary: "成年观众", viewingNeeds: ["x"], emotionalAppeals: ["y"], basis: "sourced", sourceIds: ["S-KB-CRAFT"] } }))
+      .toMatchObject({ ok: false, code: "invalid_output", field: "audience.basis", semantic: "limited_contract", rule: "forbidden_field" });
+    expect(checkSourced({ ...structure(PUZZLE), audience: { primary: "成年观众", viewingNeeds: ["x"], emotionalAppeals: ["y"], basis: "sourced", sourceIds: ["S-KB-CRAFT"] } }))
       .toMatchObject({ ok: false, code: "unsourced_claim", field: "audience.basis" });
     expect(check({ ...structure(PUZZLE), hypotheses: [{ id: "H1", statement: MONEY, howToVerify: "计划试看。" }, { id: "H1", statement: "s", howToVerify: "h" }] }))
       .toMatchObject({ ok: false, code: "duplicate_id" });
@@ -234,7 +256,7 @@ describe("4. later prompts and the package keep a notice a hypothesis or design,
     expect(markdown).toContain(`**机会**（AI 创作判断）：${MONEY}〔含未核实数字，见下方未核实提示〕`);
     expect(markdown).toContain(`  - 本剧应用设计：${PUZZLE}：自主创作设计。〔含未核实数字，见下方未核实提示〕`);
     expect(markdown).toContain("**用户设定与资料记录**（来自用户设定和服务端记录，不是 AI 调研结论）");
-    expect(markdown).toContain("- 资料模式：资料有限策划模式（不是实时市场验证）");
+    expect(markdown).toContain("- 资料模式：AI 创作策划（市场证据不可用，不是实时市场验证）");
     expect(markdown).toContain("- 未读取：S-OE-1「巨量引擎帮助中心条目（标题未能读取）」（unreadable）");
     expect(markdown).toContain("- 第1条内容结构的本剧应用设计中的「三块」：程序未能判定数字含义，未核实");
     expect(markdown).not.toContain("**局限**");

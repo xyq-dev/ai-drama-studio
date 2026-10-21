@@ -14,14 +14,20 @@ import {
   AUTO_STRUCTURE_QUOTE_MAX,
   AUTO_STRUCTURE_QUOTE_MIN,
   WRITING_BODY_MAX_CHARS,
+  AUTO_MARKET_EVIDENCE_NOTES,
+  AUTO_RESEARCH_LIMITED_FORBIDDEN,
   AUTO_RESEARCH_SERVER_KEYS,
   AUTO_UNVERIFIED_NOTE,
+  autoAssembleLimitedResearch,
   autoBibleSchema,
   autoDirectionsSchema,
   autoEpisodeSchema,
   autoNoticeText,
   autoOutlineSchema,
   autoResearchAnswerSchema,
+  autoResearchHasServerRecord,
+  autoResearchLimitedAnswerSchema,
+  autoResearchMarketEvidence,
   autoReviewSchema,
   autoRevisionSchema,
   autoStageEpisodeNo,
@@ -39,6 +45,7 @@ import {
   type AutoEpisode,
   type AutoOutline,
   type AutoResearchAnswer,
+  type AutoResearchMode,
   type AutoResearchServerRecord,
   type AutoReviewIssue,
   type AutoReviewOutput,
@@ -131,6 +138,15 @@ export function autoContextFromStages(stages: readonly AutoStageRecord[]): AutoC
     } else if (kind === "review") context.reviews.push({ stageKey: stage.stageKey, review: stage.output as AutoReviewOutput });
   }
   return context;
+}
+
+/**
+ * The research mode of a run's saved source snapshot, or null when there is no valid one. The only thing a research's
+ * contract (prompt, JSON Schema, zod schema, assembly) is chosen by: never the current options, a model or a client.
+ */
+export function autoResearchModeOf(sources: AutoSourcesOutput | undefined): AutoResearchMode | null {
+  if (!sources || sources.schema !== "ads.auto-creation.sources.v1" || !Array.isArray(sources.sources)) return null;
+  return sources.researchMode === "limited" || sources.researchMode === "sourced" ? sources.researchMode : null;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -254,7 +270,9 @@ function sourcesBlock(sources: AutoSourcesOutput): string {
   const unreadable = sources.sources.filter((source) => !readable.some((item) => item.sourceId === source.sourceId))
     .map((source) => ({ sourceId: source.sourceId, title: source.title, status: source.status }));
   return [
-    `研究模式：${sources.researchMode === "limited" ? "资料有限策划模式（没有可读取的近期市场资料）" : "有可读取的近期市场资料"}`,
+    `研究模式：${sources.researchMode === "limited"
+      ? "AI 创作策划（没有符合条件的近期市场资料，市场证据不可用；下面可引用的方法资料和用户资料仍可作为方法引用）"
+      : "有可读取的市场资料"}`,
     data("可引用资料（不可信外部文本）", readable),
     data("无法读取的资料（不能引用）", unreadable),
   ].join("\n");
@@ -273,6 +291,18 @@ function chosenDirection(context: AutoCreationContext): AutoDirection {
 const STRUCTURE_NOTE = "研究里的内容结构：“参考方法原文”是资料原文，“本剧应用设计”是本作品自己的创作设计，不是资料或市场结论；“历史版本”是旧格式，没有区分两者。";
 const IDENTITY_NOTE = "研究里只有 facts 和 observations 有来源；hypotheses、没有来源的 audience、本剧应用设计和 opportunities 是 AI 的创作假设与设计，验证计划尚未执行；"
   + "“资料记录”来自服务端记录，不是 AI 调研结论；“未核实提示”标出的数字程序未能判定含义，未核实：相关文字只能当作创作假设或设计，不能写成事实、平台用户画像或已验证的市场结论。";
+const LIMITED_IDENTITY_NOTE = "这是 AI 创作策划：本次市场证据不可用，研究里没有有来源的市场结论；hypotheses、受众（待验证）、本剧应用设计和 opportunities 都是 AI 的创作假设与设计，验证计划尚未执行；"
+  + "“参考方法原文”只是方法引用，不是市场证据；“资料记录”来自服务端记录，不是 AI 调研结论；“未核实提示”标出的数字程序未能判定含义，未核实：相关文字只能当作创作假设或设计，不能写成事实、平台用户画像或已验证的市场结论。";
+
+/** What a later prompt says the research is: a limited v4 research has no findings at all, so it says so. */
+function identityNote(research: AutoStoredResearch): string {
+  return autoResearchMarketEvidence(research)?.status === "unavailable" ? LIMITED_IDENTITY_NOTE : IDENTITY_NOTE;
+}
+
+/** The research ids a direction may cite: only those the stored research has (a limited v4 research has H ids only). */
+function researchIds(research: AutoStoredResearch): string[] {
+  return [...research.facts, ...research.observations, ...research.hypotheses].map((item) => item.id);
+}
 
 /** A research's content structures for a later prompt: the quoted method and the work's own design apart, by name. */
 function structureForPrompt(research: AutoStoredResearch): unknown[] {
@@ -282,26 +312,39 @@ function structureForPrompt(research: AutoStoredResearch): unknown[] {
 }
 
 /**
- * A research for a later prompt. v3 keeps the server's record and notices apart from the answer, by name: the material
- * as recorded (no fetch dates: a date is no quotable fact) and every notice as unverified. Older research as stored.
+ * A research for a later prompt. v3 and v4 keep the server's record and notices apart from the answer, by name: the
+ * material as recorded (no fetch dates: a date is no quotable fact) and every notice as unverified; v4 adds whether
+ * market evidence was available, and a limited v4 research is given without the findings it never had. Older research
+ * as stored.
  */
 function researchForPrompt(research: AutoStoredResearch): unknown {
   const contentStructure = structureForPrompt(research);
-  if (research.schema !== AUTO_CREATION_RESEARCH_SCHEMA) return { ...research, contentStructure };
+  if (!autoResearchHasServerRecord(research)) return { ...research, contentStructure };
   const { serverRecord, unverified, ...answer } = research;
   const { material } = serverRecord;
-  return {
-    ...answer,
-    contentStructure,
-    资料记录: {
-      说明: "服务端按本次资料快照记录，不是 AI 调研结论",
-      资料模式: material.researchMode === "limited" ? "资料有限策划模式（不是实时市场验证）" : "有可读取的近期市场资料",
-      已读取: material.read.map((item) => ({ sourceId: item.sourceId, title: item.title, readScope: item.readScope })),
-      未读取: material.unread.map((item) => ({ sourceId: item.sourceId, title: item.title, status: item.status })),
-      缺失说明: material.gaps,
-    },
-    未核实提示: unverified.map((notice) => autoNoticeText(notice, research)),
+  const market = autoResearchMarketEvidence(research);
+  const record = {
+    说明: "服务端按本次资料快照记录，不是 AI 调研结论",
+    资料模式: material.researchMode === "limited" ? "AI 创作策划（市场证据不可用，不是实时市场验证）" : "有可读取的市场资料",
+    ...(market ? { 市场证据: market.note } : {}),
+    已读取: material.read.map((item) => ({ sourceId: item.sourceId, title: item.title, readScope: item.readScope })),
+    未读取: material.unread.map((item) => ({ sourceId: item.sourceId, title: item.title, status: item.status })),
+    缺失说明: material.gaps,
   };
+  const notices = unverified.map((notice) => autoNoticeText(notice, research));
+  if (market?.status === "unavailable") {
+    const { primary, viewingNeeds, emotionalAppeals } = answer.audience;
+    return {
+      schema: answer.schema,
+      hypotheses: answer.hypotheses,
+      audience: { 说明: "受众待验证：AI 拟定的目标观众，不是平台真实用户画像", primary, viewingNeeds, emotionalAppeals },
+      contentStructure,
+      opportunities: answer.opportunities,
+      资料记录: record,
+      未核实提示: notices,
+    };
+  }
+  return { ...answer, contentStructure, 资料记录: record, 未核实提示: notices };
 }
 
 function episodeShape(input: AutoCreationFrozenInput, episodeNo: number): string[] {
@@ -316,6 +359,71 @@ function episodeShape(input: AutoCreationFrozenInput, episodeNo: number): string
   ];
 }
 
+/** How a content structure is written, in both research contracts: a method as read, apart from this work's design. */
+const STRUCTURE_LINES = [
+  "contentStructure：可借鉴的内容结构（人物动机、冲突机制、节奏、情绪兑现），只提炼方法，不复制原作。每条分开写两部分：",
+  `- reference：你实际读到的方法原文。sourceId 写一条可引用资料的编号，quote 从这一条资料的摘录正文里逐字摘一段连续原文（${String(AUTO_STRUCTURE_QUOTE_MIN)}–${String(AUTO_STRUCTURE_QUOTE_MAX)} 字，不改字，不拼接两处或两条资料，不截断数字）；`
+    + "没有合适的方法资料时 reference 写 null，表示这一条是自主创作设计，不要伪装成引用。",
+  "- application：本剧怎样应用（pattern 写本剧的结构设计，why 写理由），是本作品的原创设计，可以写本剧的创作数量（如“计划用两次反转推动主角主动选择”），这些数量不需要出现在 quote 里；"
+    + "但 application 不是资料的结论：引用不能替它说明观众比例、排名、“调查证明”“已验证”等市场或受众说法。",
+];
+
+/** The settings and the material are the server's record in both contracts. */
+const SERVER_RECORD_LINE = "不要另写字段复述用户设定或资料局限：集数、时长、题材、目标观众、人物和地点上限、禁止题材、结局要求，以及资料读取范围、读取失败和缺失情况，由服务端按冻结设定和资料快照记录。";
+
+/** Number rules 2–4: the work's own quantities, plans, and the proposed audience. The same in both contracts. */
+const NUMBER_RULES_CREATIVE = [
+  "2. 本作品的创作设定可以写数量：虚构人物数（“两个互不信任的人”）、剧情次数（“三次误会”“两次反转”）、虚构人物年龄（“主角二十八岁”）、故事内期限（“三天内”）、开场秒数（“前 3 秒”）。"
+    + "人物数、地点数不能超过用户的上限，集数和每集时长只能写用户硬约束里的值（如“共 1 集，每集约 60 秒”）。",
+  "3. 验证计划可以写数量和天数，但必须写成将来的计划或待验证的问题：“拟比较两个版本”“计划上线后观察七天”“待验证观众是否更喜欢两次反转的版本”。"
+    + "同一句里既提到观众、用户或市场又带数量时，提到观众、用户或市场的那一部分（逗号隔开的分句）本身必须写明“是否、可能、待验证”等；别的分句里的“计划、拟”不能替它说明（不写“计划比较两个版本，观众更喜欢三次反转的剧本”，写“计划比较两个版本，待验证观众是否更喜欢三次反转的剧本”）；不要写“数据显示、调查发现、已测试、测得”这类已经得到结果的说法。",
+  "4. 拟定的目标人群用文字描述（如“拟面向通勤时刷剧的成年观众”），不写年龄段或比例；用户在硬约束里指定的目标观众可以原样照抄，但只能写成创作目标（如“目标观众：……（用户指定）”“拟面向……创作”），不能写成平台用户画像、主要或核心受众，也不能写成数据或调研的结论。不写日期和资料条数。",
+];
+
+/**
+ * The research contract with recent market material (sourced): cited facts and observations, an audience that may be
+ * sourced, and the creative parts. Unchanged in substance from prompt v5.
+ */
+function sourcedResearchLines(): string[] {
+  return [
+    "任务：基于资料完成研究与创作定位。",
+    "facts：只写资料区里能逐字找到依据的事实，evidence 逐字摘录 sourceIds 所指资料的原文；资料不足时 facts 为空数组。",
+    "observations：基于参考资料样本的观察，必须写 sourceIds。",
+    "hypotheses：你的判断和推测，写明如何验证（howToVerify 是将来的验证计划，不是已经做过的调查）；没有来源的受众判断都放在这里。",
+    "audience：主要目标观众、观看需求、情绪诉求；只有每一项都有资料支持时 basis 才能是 sourced，否则是 hypothesis。",
+    ...STRUCTURE_LINES,
+    "市场事实只写进 facts 和 observations。",
+    "opportunities：适合本次创作的机会。",
+    `不要输出 limitations、appliedConstraints；${SERVER_RECORD_LINE}回答里多出任何字段都会整份拒收。`,
+    "数字规则（程序按数字的含义逐句检查，违反即整份拒收，不会重试）：",
+    "1. 市场和受众统计只能来自资料：受众人数、年龄或年龄段、性别或地域比例、百分比、几成、播放量、热度、排名、观看时长和频次、收入等，只能出现在 facts、observations 和带 sourceIds 的 audience 里，"
+      + "并且必须是所引资料摘录正文里原样出现的完整数字。写进 hypotheses、howToVerify、contentStructure 的 application、opportunities 也不行，标成“假设”“计划”“建议”也不行。",
+    ...NUMBER_RULES_CREATIVE,
+    `schema 固定为 "${AUTO_CREATION_RESEARCH_SCHEMA}"；编号用 F1、O1、H1 这样的格式。`,
+  ];
+}
+
+/**
+ * The research contract without recent market material (limited): creative positioning and hypotheses to verify. It
+ * asks for nothing the answer may not carry and names no field of the sourced contract: the server writes those.
+ */
+function limitedResearchLines(): string[] {
+  return [
+    "任务：创作定位与待验证假设（AI 创作策划）。",
+    "本次资料快照没有符合条件的近期市场资料，市场证据不可用，由服务端记录；你不需要也不能给出市场结论，只完成创作策划。方法资料和用户资料仍可在 contentStructure 里作为方法引用。",
+    "回答只包含 schema、hypotheses、audience、contentStructure、opportunities 五个字段；audience 只包含 primary、viewingNeeds、emotionalAppeals 三项。多出任何字段都会整份拒收，即使是空数组或默认值也一样。",
+    "hypotheses：创作假设（受众偏好、题材方向、创作建议都写成待验证的假设），每条写明验证计划（howToVerify 是将来的验证计划，不是已经做过的调查）；编号用 H1、H2 这样的格式。",
+    "audience：拟定的目标观众（primary）、观看需求（viewingNeeds）、情绪诉求（emotionalAppeals），用文字写成待验证的创作目标，不是平台用户画像或市场结论。",
+    ...STRUCTURE_LINES,
+    "opportunities：适合本次创作的机会（AI 创作判断）。",
+    SERVER_RECORD_LINE,
+    "数字规则（程序按数字的含义逐句检查，违反即整份拒收，不会重试）：",
+    "1. 本次没有市场资料：受众人数、年龄或年龄段、性别或地域比例、百分比、几成、播放量、热度、排名、观看时长和频次、收入等市场和受众统计，任何字段都不能写，标成“假设”“计划”“建议”也不行；不要为了显得有依据编造市场事实或数字。",
+    ...NUMBER_RULES_CREATIVE,
+    `schema 固定为 "${AUTO_CREATION_RESEARCH_SCHEMA}"。`,
+  ];
+}
+
 /** The prompt of one stage, built only from the frozen input and completed earlier stages. */
 export function buildAutoCreationPrompt(stageKey: string, input: AutoCreationFrozenInput, context: AutoCreationContext): AutoCreationPrompt {
   const kind = autoStageKind(stageKey);
@@ -323,45 +431,23 @@ export function buildAutoCreationPrompt(stageKey: string, input: AutoCreationFro
   const head = [`提示版本：${AUTO_CREATION_PROMPT_VERSION}`, ideaLine(input), ...constraintLines(input)];
   let lines: string[];
   if (kind === "research") {
-    lines = [
-      ...head,
-      "任务：基于资料完成研究与创作定位。",
-      "facts：只写资料区里能逐字找到依据的事实，evidence 逐字摘录 sourceIds 所指资料的原文；资料不足时 facts 为空数组。",
-      "observations：基于参考资料样本的观察，必须写 sourceIds。",
-      "hypotheses：你的判断和推测，写明如何验证（howToVerify 是将来的验证计划，不是已经做过的调查）；没有来源的受众判断都放在这里。",
-      "audience：主要目标观众、观看需求、情绪诉求；只有每一项都有资料支持时 basis 才能是 sourced，否则是 hypothesis。",
-      "contentStructure：可借鉴的内容结构（人物动机、冲突机制、节奏、情绪兑现），只提炼方法，不复制原作。每条分开写两部分：",
-      `- reference：你实际读到的方法原文。sourceId 写一条可引用资料的编号，quote 从这一条资料的摘录正文里逐字摘一段连续原文（${String(AUTO_STRUCTURE_QUOTE_MIN)}–${String(AUTO_STRUCTURE_QUOTE_MAX)} 字，不改字，不拼接两处或两条资料，不截断数字）；`
-        + "没有合适的方法资料时 reference 写 null，表示这一条是自主创作设计，不要伪装成引用。",
-      "- application：本剧怎样应用（pattern 写本剧的结构设计，why 写理由），是本作品的原创设计，可以写本剧的创作数量（如“计划用两次反转推动主角主动选择”），这些数量不需要出现在 quote 里；"
-        + "但 application 不是资料的结论：引用不能替它说明观众比例、排名、“调查证明”“已验证”等市场或受众说法，市场事实只写进 facts 和 observations。",
-      "opportunities：适合本次创作的机会。",
-      "不要输出 limitations、appliedConstraints，也不要另写字段复述用户设定或资料局限：集数、时长、题材、目标观众、人物和地点上限、禁止题材、结局要求，以及资料读取范围、读取失败和缺失情况，由服务端按冻结设定和资料快照记录。回答里多出任何字段都会整份拒收。",
-      "数字规则（程序按数字的含义逐句检查，违反即整份拒收，不会重试）：",
-      "1. 市场和受众统计只能来自资料：受众人数、年龄或年龄段、性别或地域比例、百分比、几成、播放量、热度、排名、观看时长和频次、收入等，只能出现在 facts、observations 和带 sourceIds 的 audience 里，"
-        + "并且必须是所引资料摘录正文里原样出现的完整数字。写进 hypotheses、howToVerify、contentStructure 的 application、opportunities 也不行，标成“假设”“计划”“建议”也不行。",
-      "2. 本作品的创作设定可以写数量：虚构人物数（“两个互不信任的人”）、剧情次数（“三次误会”“两次反转”）、虚构人物年龄（“主角二十八岁”）、故事内期限（“三天内”）、开场秒数（“前 3 秒”）。"
-        + "人物数、地点数不能超过用户的上限，集数和每集时长只能写用户硬约束里的值（如“共 1 集，每集约 60 秒”）。",
-      "3. 验证计划可以写数量和天数，但必须写成将来的计划或待验证的问题：“拟比较两个版本”“计划上线后观察七天”“待验证观众是否更喜欢两次反转的版本”。"
-        + "同一句里既提到观众、用户或市场又带数量时，提到观众、用户或市场的那一部分（逗号隔开的分句）本身必须写明“是否、可能、待验证”等；别的分句里的“计划、拟”不能替它说明（不写“计划比较两个版本，观众更喜欢三次反转的剧本”，写“计划比较两个版本，待验证观众是否更喜欢三次反转的剧本”）；不要写“数据显示、调查发现、已测试、测得”这类已经得到结果的说法。",
-      "4. 拟定的目标人群用文字描述（如“拟面向通勤时刷剧的成年观众”），不写年龄段或比例；用户在硬约束里指定的目标观众可以原样照抄，但只能写成创作目标（如“目标观众：……（用户指定）”“拟面向……创作”），不能写成平台用户画像、主要或核心受众，也不能写成数据或调研的结论。不写日期和资料条数。",
-      "资料有限策划模式（没有可读取的近期市场资料）时：facts 和 observations 可以是空数组，audience.basis 必须是 hypothesis 且 sourceIds 为空，"
-        + "受众偏好、题材方向和创作建议都写成待验证的假设；不能得出经过验证的实时市场结论，也不要为了填满字段编造市场事实或数字。",
-      `schema 固定为 "${AUTO_CREATION_RESEARCH_SCHEMA}"；编号用 F1、O1、H1 这样的格式。`,
-      sourcesBlock(context.sources!),
-    ];
+    const mode = autoResearchModeOf(context.sources);
+    if (mode === null) throw new Error("a research prompt needs the run's saved source snapshot");
+    lines = [...head, ...(mode === "limited" ? limitedResearchLines() : sourcedResearchLines()), sourcesBlock(context.sources!)];
   } else if (kind === "directions") {
+    const ids = researchIds(context.research!);
     lines = [
       ...head,
       "任务：提出 2–3 个有实质差异的原创方向（不同主角处境、不同核心冲突或不同情绪），用于自动选择。",
-      "每个方向写一句话故事、主角、目标、阻碍、失败代价、核心情绪、差异点、拍摄或生成难度及说明、与目标观众和资料的关系（evidenceIds 引用研究里的 F/O/H 编号）。",
+      "每个方向写一句话故事、主角、目标、阻碍、失败代价、核心情绪、差异点、拍摄或生成难度及说明、与目标观众和资料的关系。",
+      `evidenceIds 只能引用研究里实际存在的编号：${ids.length > 0 ? ids.join("、") : "无"}；不要写其他编号。`,
       "数字规则与研究阶段相同：differentiation、difficultyNote 可以写本作品的创作数量（“两次反转”“两处室内场景”“三个人物”，人物和地点不超过用户上限），不写任何市场或受众统计；"
         + "audienceFit（与目标观众和资料的关系）写成待验证的判断并引用研究编号（如“可能契合想看小人物扳回一局的观众，待验证 H1”），不写年龄、占比、人数；一句话故事等故事内容里的数字不受此限。",
       "ratings 是你对每个方向的 1–5 分内部自评（受众契合、冲突强度、原创性、可执行性、约束契合），只用于内部比较。",
       "任何方向都不能包含用户禁止的题材或元素。",
       `schema 固定为 "${AUTO_CREATION_DIRECTIONS_SCHEMA}"；编号 D1、D2、D3。`,
       STRUCTURE_NOTE,
-      IDENTITY_NOTE,
+      identityNote(context.research!),
       data("研究结论", researchForPrompt(context.research!)),
     ];
   } else if (kind === "bible") {
@@ -381,7 +467,7 @@ export function buildAutoCreationPrompt(stageKey: string, input: AutoCreationFro
       ...(directionNotices.length > 0 ? [data("选定方向的未核实提示（只属于创作设计，不是事实）", directionNotices.map((notice) => autoNoticeText(notice)))] : []),
       data("选择理由", context.directions!.selection.reasons),
       STRUCTURE_NOTE,
-      IDENTITY_NOTE,
+      identityNote(context.research!),
       data("受众与结构要点", { audience: context.research!.audience, contentStructure: structureForPrompt(context.research!),
         ...(researchNotices.length > 0 ? { 未核实提示: researchNotices.map((notice) => autoNoticeText(notice, context.research)) } : {}) }),
     ];
@@ -485,15 +571,38 @@ function forbiddenHit(input: AutoCreationFrozenInput, value: unknown): string | 
   return input.constraints.forbiddenThemes.find((term) => all.includes(term)) ?? null;
 }
 
-function zodFailure(error: { issues: Array<{ path: PropertyKey[]; message: string; code?: string; keys?: string[] }> }, research = false): AutoValidation {
-  const issue = error.issues[0];
-  // A research key the server writes (or v3 took out of the answer) is named in the stored code; any other extra key,
-  // and every extra key of another stage, is model text and is not.
-  const serverKey = research && issue?.code === "unrecognized_keys"
-    ? issue.keys?.find((key) => (AUTO_RESEARCH_SERVER_KEYS as readonly string[]).includes(key)) : undefined;
-  const path = issue ? [...issue.path, ...(serverKey ? [serverKey] : [])] : [];
+type ZodIssueLike = { path: PropertyKey[]; message: string; code?: string; keys?: string[] };
+
+/**
+ * A refused schema check. research: the contract the answer was parsed with. A research key the server writes (or v3
+ * took out of the answer), and in a limited answer a field of the sourced contract (facts, observations, the audience's
+ * basis and sources), is a fixed name: the stored code names it, for a limited answer with the mode and the rule
+ * (invalid_output@facts:unrecognized_keys+limited_contract+forbidden_field). Any other extra key, and every extra key
+ * of another stage, is model text and is not named.
+ */
+function zodFailure(error: { issues: ZodIssueLike[] }, research: AutoResearchMode | null = null): AutoValidation {
+  const fixed = (issue: ZodIssueLike): string | undefined => {
+    if (research === null || issue.code !== "unrecognized_keys") return undefined;
+    const at = fieldPath(issue.path);
+    return issue.keys?.find((key) => (AUTO_RESEARCH_SERVER_KEYS as readonly string[]).includes(key) && at === "")
+      ?? (research === "limited"
+        ? issue.keys?.find((key) => (AUTO_RESEARCH_LIMITED_FORBIDDEN as readonly string[]).includes(at ? `${at}.${key}` : key)) : undefined);
+  };
+  // A fixed field outranks whatever else the answer got wrong: it says which contract was broken. Among several, the
+  // first in the contract's own order (facts, observations, audience.basis, audience.sourceIds, then the server keys).
+  const order: readonly string[] = [...AUTO_RESEARCH_LIMITED_FORBIDDEN, ...AUTO_RESEARCH_SERVER_KEYS];
+  const rank = (item: ZodIssueLike) => {
+    const at = fieldPath(item.path);
+    const key = fixed(item)!;
+    return order.indexOf(at ? `${at}.${key}` : key);
+  };
+  const issue = error.issues.filter((item) => fixed(item) !== undefined).sort((a, b) => rank(a) - rank(b))[0] ?? error.issues[0];
+  const key = issue ? fixed(issue) : undefined;
+  const path = issue ? [...issue.path, ...(key ? [key] : [])] : [];
+  const limitedField = research === "limited" && key !== undefined;
   return { ok: false, code: "invalid_output", detail: issue ? `${issue.path.map(String).join(".")}: ${issue.message}` : undefined,
-    field: issue ? fieldPath(path) : undefined, category: issue?.code };
+    field: issue ? fieldPath(path) : undefined, category: issue?.code,
+    ...(limitedField ? { semantic: "limited_contract", rule: "forbidden_field" } : {}) };
 }
 
 /** A schema path as a field name: keys joined by dots, indexes in brackets (scenes[2].dialogue[0].line). */
@@ -549,8 +658,9 @@ function creativeNumber(statement: string, field: string, frame: AutoNumberFrame
 }
 
 /**
- * The server's record of a research (v3): the person's settings as frozen (a limit not set is left out, none is made
- * up) and the material as the run's snapshot recorded it. Built from trusted data only: never number-checked.
+ * The server's record of a research (v4): the person's settings as frozen (a limit not set is left out, none is made
+ * up), the material as the run's snapshot recorded it, the answer contract (the snapshot's mode) and whether market
+ * evidence was available. Built from trusted data only: never number-checked.
  */
 export function autoResearchServerRecord(input: AutoCreationFrozenInput, sources: AutoSourcesOutput): AutoResearchServerRecord {
   const c = input.constraints;
@@ -565,9 +675,13 @@ export function autoResearchServerRecord(input: AutoCreationFrozenInput, sources
     ...(c.endingRequirement ? [{ key: "endingRequirement" as const, label: "结局要求", value: c.endingRequirement }] : []),
   ];
   const readable = readableSources(sources);
+  const available = sources.researchMode === "sourced";
   return {
     origin: "server_record",
-    executedWith: { promptVersion: AUTO_CREATION_PROMPT_VERSION, checksVersion: AUTO_CREATION_CHECKS_VERSION, researchSchema: AUTO_CREATION_RESEARCH_SCHEMA },
+    executedWith: { promptVersion: AUTO_CREATION_PROMPT_VERSION, checksVersion: AUTO_CREATION_CHECKS_VERSION, researchSchema: AUTO_CREATION_RESEARCH_SCHEMA,
+      answerContract: sources.researchMode },
+    marketEvidence: { origin: "source_snapshot", status: available ? "available" : "unavailable",
+      note: available ? AUTO_MARKET_EVIDENCE_NOTES.available : AUTO_MARKET_EVIDENCE_NOTES.unavailable },
     settings: { origin: "user_setting", items },
     material: {
       origin: "source_snapshot",
@@ -1043,8 +1157,16 @@ export function validateAutoStageOutput(stageKey: string, content: string, input
   const creative = kind !== "research" && kind !== "review";
   if (creative && textsOf(value).some((item) => UNSAFE.test(item) || RESERVED.test(item))) return { ok: false, code: "unsafe_content" };
   if (kind === "research") {
+    // The contract is the saved snapshot's: the same mode chose the prompt and the JSON Schema that was sent.
+    const mode = autoResearchModeOf(context.sources);
+    if (mode === null) return { ok: false, code: "research_sources_missing" };
+    if (mode === "limited") {
+      const parsed = autoResearchLimitedAnswerSchema.safeParse(value);
+      // Accepted whole first; only then does the server write what a limited research has none of.
+      return parsed.success ? checkResearch(input, autoAssembleLimitedResearch(parsed.data), context) : zodFailure(parsed.error, mode);
+    }
     const parsed = autoResearchAnswerSchema.safeParse(value);
-    return parsed.success ? checkResearch(input, parsed.data, context) : zodFailure(parsed.error, true);
+    return parsed.success ? checkResearch(input, parsed.data, context) : zodFailure(parsed.error, mode);
   }
   if (kind === "directions") {
     const parsed = autoDirectionsSchema.safeParse(value);
@@ -1239,11 +1361,12 @@ export const AUTO_RESEARCH_IDENTITY: Readonly<Record<string, string>> = {
   audience: "basis 为 sourced 才有来源；否则是待验证的拟定人群，不是平台真实用户画像",
   contentStructure: "reference 是资料原文；application 是本作品的创作设计，不是资料或市场结论",
   opportunities: "AI 创作判断",
-  serverRecord: "用户设定（冻结输入）与服务端资料记录（资料快照），不是 AI 调研结论",
+  serverRecord: "用户设定（冻结输入）与服务端资料记录（资料快照），不是 AI 调研结论；research v4 另记回答契约（answerContract）和市场证据是否可用（marketEvidence）",
+  answerContract: "research v4：limited 是 AI 创作策划（模型只写创作假设、拟定受众、方法参考与本剧应用、机会；facts、observations 为空，受众待验证，均由服务端写入），sourced 是有可读取市场资料时的引用契约",
   unverified: `服务端提示：${AUTO_UNVERIFIED_NOTE}；相关文字只属于创作假设或设计，不是有来源的事实或已验证的市场结论`,
   limitations: "历史版本（research v1/v2）由 AI 填写的资料局限",
   appliedConstraints: "历史版本（research v1/v2）由 AI 复述的约束",
-  researchMode: "limited 表示资料有限策划模式，不是实时市场验证",
+  researchMode: "limited 表示 AI 创作策划、市场证据不可用（仍可能读取了方法资料或用户资料），不是实时市场验证；sourced 表示有可读取的市场资料",
 };
 
 /** The machine-readable package: every structured result with its sources, choices, checks and revisions. */
@@ -1302,7 +1425,7 @@ export function autoPackageMarkdown(meta: AutoPackageMeta, stages: readonly Auto
     `- 模型：${meta.input.providerKey} · ${meta.input.model}；调用 ${String(meta.callsUsed)} / ${String(meta.callCap)} 次；修改轮次 ${String(meta.revisionRoundsUsed)}；费用：未知（以服务商账单为准）`,
     `- 版本：${meta.input.promptVersion}、${meta.input.selectionRules}、${meta.input.checksVersion}`, "");
   if (context.sources) {
-    push("## 研究资料与限制", "", `研究模式：${context.sources.researchMode === "limited" ? "资料有限策划模式（不是实时市场验证）" : "有近期市场资料"}`, "");
+    push("## 研究资料与限制", "", `研究模式：${context.sources.researchMode === "limited" ? "AI 创作策划（市场证据不可用，不是实时市场验证）" : "有可读取的市场资料"}`, "");
     for (const source of context.sources.sources) {
       push(`- ${source.sourceId}｜${source.title}｜${source.locator}｜获取 ${source.fetchedAt.slice(0, 10)}${source.publishedAt ? `｜发布 ${source.publishedAt.slice(0, 10)}` : ""}｜读取：${source.readScope}｜状态：${source.status}｜局限：${source.limitations}`);
     }
@@ -1310,18 +1433,24 @@ export function autoPackageMarkdown(meta: AutoPackageMeta, stages: readonly Auto
   }
   if (context.research) {
     const research = context.research;
-    push("## 受众与市场分析", "");
+    const market = autoResearchMarketEvidence(research);
+    push(market?.status === "unavailable" ? "## AI 创作策划（受众待验证·市场证据不可用）" : "## 受众与市场分析", "");
     if (context.sources?.researchMode === "limited") {
-      push("> 资料有限：没有可读取的近期市场资料。受众和题材判断都是待验证的假设，验证计划尚未执行；不是实时市场验证，也不是平台真实用户画像。", "");
+      push("> AI 创作策划：没有符合条件的近期市场资料，市场证据不可用。受众和题材判断都是待验证的创作假设，验证计划尚未执行；方法引用只是写作方法，不是市场证据；不是实时市场验证，也不是平台真实用户画像。文本剧本包完成不代表做过市场验证。", "");
     }
     const notices = autoUnverifiedOf(research);
     // Text a notice is on keeps its words; the mark only says it holds a number the checks could not place.
     const mark = (prefix: string) => notices.some((item) => item.field.startsWith(prefix)) ? "〔含未核实数字，见下方未核实提示〕" : "";
-    push("**有来源的事实**", "", ...(research.facts.length > 0 ? research.facts.map((item) => `- ${item.id} ${item.statement}（来源 ${item.sourceIds.join("、")}：「${item.evidence}」）`) : ["- 无（没有可引用的资料）"]), "");
-    push("**基于样本的观察**", "", ...(research.observations.length > 0 ? research.observations.map((item) => `- ${item.id} ${item.statement}（来源 ${item.sourceIds.join("、")}）`) : ["- 无"]), "");
+    if (market?.status === "unavailable") {
+      // A limited v4 research never had findings: the server's record says why, instead of an empty list of facts.
+      push(`**市场证据**：不可用（服务端记录）。${market.note}`, "");
+    } else {
+      push("**有来源的事实**", "", ...(research.facts.length > 0 ? research.facts.map((item) => `- ${item.id} ${item.statement}（来源 ${item.sourceIds.join("、")}：「${item.evidence}」）`) : ["- 无（没有可引用的资料）"]), "");
+      push("**基于样本的观察**", "", ...(research.observations.length > 0 ? research.observations.map((item) => `- ${item.id} ${item.statement}（来源 ${item.sourceIds.join("、")}）`) : ["- 无"]), "");
+    }
     push("**AI 创作假设与验证计划**（假设未经验证；验证计划尚未执行，不是调查结果）", "", ...research.hypotheses.map((item, index) =>
       `- ${item.id} 假设：${item.statement}${mark(`hypotheses[${String(index)}].statement`)}；验证计划：${item.howToVerify}${mark(`hypotheses[${String(index)}].howToVerify`)}`), "");
-    push(`**目标观众（${research.audience.basis === "sourced" ? "有来源" : "待验证的拟定人群，不是平台真实用户画像"}）**：${research.audience.primary}`,
+    push(`**目标观众（${research.audience.basis === "sourced" ? "有来源" : "受众待验证：拟定人群，不是平台真实用户画像"}）**：${research.audience.primary}`,
       `- 观看需求：${research.audience.viewingNeeds.join("；")}`, `- 情绪诉求：${research.audience.emotionalAppeals.join("；")}`, "");
     push("**内容结构**（参考方法原文是资料原文；本剧应用设计是本作品的创作设计，不是资料或市场结论）", "",
       ...autoStructureViews(research).flatMap((item, index) => item.version === "v1"
@@ -1330,11 +1459,12 @@ export function autoPackageMarkdown(meta: AutoPackageMeta, stages: readonly Auto
           `  - 参考方法原文：${item.reference ? `${item.reference.sourceId}「${item.reference.quote}」` : "无（自主创作设计）"}`,
           `  - 本剧应用设计：${item.application.pattern}：${item.application.why}${mark(`contentStructure[${String(index)}].`)}`]), "");
     push(`**机会**（AI 创作判断）：${research.opportunities.map((item, index) => `${item}${mark(`opportunities[${String(index)}]`)}`).join("；")}`, "");
-    if (research.schema === AUTO_CREATION_RESEARCH_SCHEMA) {
+    if (autoResearchHasServerRecord(research)) {
       const { settings, material } = research.serverRecord;
       push("**用户设定与资料记录**（来自用户设定和服务端记录，不是 AI 调研结论）", "",
         ...settings.items.map((item) => `- 用户设定｜${item.label}：${item.value}`),
-        `- 资料模式：${material.researchMode === "limited" ? "资料有限策划模式（不是实时市场验证）" : "有可读取的近期市场资料"}`,
+        `- 资料模式：${material.researchMode === "limited" ? "AI 创作策划（市场证据不可用，不是实时市场验证）" : "有可读取的市场资料"}`,
+        ...(market ? [`- 市场证据：${market.status === "unavailable" ? "不可用" : "可用"}（${market.note}）`] : []),
         ...material.read.map((item) => `- 已读取：${item.sourceId}「${item.title}」（${item.readScope}）：${item.note}`),
         ...material.unread.map((item) => `- 未读取：${item.sourceId}「${item.title}」（${item.status}）：${item.note}`),
         ...material.gaps.map((gap) => `- 缺失说明：${gap}`), "");

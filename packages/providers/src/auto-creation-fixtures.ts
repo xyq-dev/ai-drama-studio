@@ -6,6 +6,7 @@ import {
   AUTO_CREATION_RESEARCH_SCHEMA,
   AUTO_CREATION_RESEARCH_SCHEMA_V1,
   AUTO_CREATION_RESEARCH_SCHEMA_V2,
+  AUTO_CREATION_RESEARCH_SCHEMA_V3,
   AUTO_CREATION_REVIEW_SCHEMA,
   AUTO_REVIEW_DIMENSIONS,
   type AutoBible,
@@ -13,8 +14,10 @@ import {
   type AutoEpisode,
   type AutoOutline,
   type AutoResearchAnswer,
+  type AutoResearchLimitedAnswer,
   type AutoResearchV1,
   type AutoResearchV2,
+  type AutoResearchV3,
   type AutoReview,
 } from "@ai-drama/contracts";
 import { ANTHROPIC_MESSAGES_URL, DEEPSEEK_CHAT_COMPLETIONS_URL, type WritingTransport } from "./text-writing";
@@ -27,7 +30,7 @@ import { ANTHROPIC_MESSAGES_URL, DEEPSEEK_CHAT_COMPLETIONS_URL, type WritingTran
 export type AutoFixtureStage = "research" | "directions" | "bible" | "outline" | `episode:${number}` | `revise:${number}:episode:${number}` | `review:${number}`;
 
 export function autoFixtureStageOf(user: string): AutoFixtureStage {
-  if (user.includes("任务：基于资料完成研究与创作定位")) return "research";
+  if (user.includes("任务：基于资料完成研究与创作定位") || user.includes("任务：创作定位与待验证假设")) return "research";
   if (user.includes("任务：提出 2–3 个")) return "directions";
   if (user.includes("任务：按选定方向写故事设定档案")) return "bible";
   if (user.includes("任务：把故事分成")) return "outline";
@@ -38,6 +41,17 @@ export function autoFixtureStageOf(user: string): AutoFixtureStage {
   const episode = /任务：写第 (\d) 集剧本/.exec(user)?.[1];
   if (episode) return `episode:${episode}` as AutoFixtureStage;
   throw new Error("unrecognised auto creation prompt");
+}
+
+/** The research contract a prompt asks for: limited (AI creative planning) or sourced. */
+export function autoFixtureResearchMode(user: string): "limited" | "sourced" {
+  return user.includes("任务：创作定位与待验证假设") ? "limited" : "sourced";
+}
+
+/** The research ids a directions prompt allows (evidenceIds 只能引用研究里实际存在的编号：H1、H2), or null for an older prompt. */
+export function autoFixtureAllowedIds(user: string): string[] | null {
+  const line = /evidenceIds 只能引用研究里实际存在的编号：([^；\n]*)；/u.exec(user)?.[1];
+  return line === undefined ? null : line === "无" ? [] : line.split("、");
 }
 
 export function autoFixtureEpisodeCount(user: string): number {
@@ -87,6 +101,27 @@ export function fixtureAutoCreativeResearch(options: { hiddenStatistic?: boolean
   };
 }
 
+/** Fields a limited answer may not carry; the double adds them only when a plan says so (each refused whole). */
+export type AutoFixtureLimitedInjection = "facts" | "observations" | "audience.basis" | "audience.sourceIds";
+
+/**
+ * A research answer as the double writes it for a limited prompt: the same creative parts, none of the sourced
+ * contract's fields. inject adds the named ones back with empty or default values (the strict schema refuses each).
+ */
+export function fixtureAutoLimitedResearch(answer: AutoResearchAnswer, inject: readonly AutoFixtureLimitedInjection[] = []): AutoResearchLimitedAnswer & Record<string, unknown> {
+  const { primary, viewingNeeds, emotionalAppeals } = answer.audience;
+  return {
+    schema: answer.schema,
+    ...(inject.includes("facts") ? { facts: [] } : {}),
+    ...(inject.includes("observations") ? { observations: [] } : {}),
+    hypotheses: answer.hypotheses,
+    audience: { primary, viewingNeeds, emotionalAppeals,
+      ...(inject.includes("audience.basis") ? { basis: "hypothesis" } : {}), ...(inject.includes("audience.sourceIds") ? { sourceIds: [] } : {}) },
+    contentStructure: answer.contentStructure,
+    opportunities: answer.opportunities,
+  };
+}
+
 /** Craft wording no source has: a quote the checks refuse (never dropped or set to null to pass). */
 export const AUTO_FIXTURE_FORGED_QUOTE = "反转次数以两次为最佳";
 
@@ -123,6 +158,27 @@ export function fixtureAutoResearch(options: { fabricatedNumber?: boolean; citeC
 
 /** What research before v3 had the model write (the gaps and the settings): history only. */
 const LEGACY_RESEARCH_FIELDS = { limitations: ["官方入口页面没有读到正文，受众判断都是假设。"], appliedConstraints: ["单集、约一分钟"] };
+
+/**
+ * Research as the v3 code stored it (one answer contract in every mode, a craft fact in a limited run, the server's
+ * record without an answer contract or market evidence): history only, never a new answer.
+ */
+export function fixtureAutoResearchV3(): AutoResearchV3 {
+  return {
+    ...fixtureAutoResearch(),
+    schema: AUTO_CREATION_RESEARCH_SCHEMA_V3,
+    serverRecord: {
+      origin: "server_record",
+      executedWith: { promptVersion: "ads.auto-creation.prompt.v5", checksVersion: "ads.auto-creation.checks.v5", researchSchema: AUTO_CREATION_RESEARCH_SCHEMA_V3 },
+      settings: { origin: "user_setting", items: [{ key: "episodes", label: "集数", value: "共 1 集" }] },
+      material: { origin: "source_snapshot", researchMode: "limited",
+        read: [{ sourceId: "S-KB-CRAFT", title: "短剧写作方法（项目知识库，改编自 drama-skills MIT 版本）", readScope: "full_text", topic: "craft", note: "只涉及写作方法。" }],
+        unread: [{ sourceId: "S-OE-1", title: "巨量引擎帮助中心条目（标题未能读取）", status: "unreadable", note: "没有读取正文。" }],
+        gaps: ["没有可读取的近期市场资料（v3 历史样本）。"] },
+    },
+    unverified: [],
+  };
+}
 
 /** Research as the v2 code stored it (the model restated the gaps and settings): history only, never a new answer. */
 export function fixtureAutoResearchV2(): AutoResearchV2 {
@@ -383,6 +439,16 @@ export interface AutoFixturePlan {
   statisticAfterUnplaced?: boolean;
   /** A research answer that also writes the server's appliedConstraints and limitations (refused by the strict answer schema). */
   serverFieldsInAnswer?: boolean;
+  /** For a limited prompt: fields of the sourced contract the double adds anyway, empty or default (refused whole). */
+  limitedInjection?: AutoFixtureLimitedInjection[];
+  /** For a limited prompt: answer with the sourced contract's whole research (the craft fact F1 and all) instead. */
+  ignoreLimitedContract?: boolean;
+  /** Every structure is this work's own design (reference null): for a snapshot with nothing readable to quote. */
+  noReferences?: boolean;
+  /** The craft fact quotes wording its source does not have (refused in a sourced run). */
+  forgedFactEvidence?: boolean;
+  /** The craft fact also states a share its source does not carry (refused in a sourced run). */
+  unsourcedFactNumber?: boolean;
   /** One person on screen and one mentioned; the first drafts put the mentioned one on screen, revisions do not. */
   soloCast?: boolean;
   /** One person on screen, seven mentioned, and every scene of every draft lists all eight (hundreds of check results). */
@@ -400,10 +466,24 @@ export function autoFixtureAnswer(user: string, plan: AutoFixturePlan = {}): unk
       ? fixtureAutoCreativeResearch({ hiddenStatistic: plan.hiddenStatistic, episodeCount: count, unplaced: plan.unplacedQuantities,
         statisticAfterUnplaced: plan.statisticAfterUnplaced })
       : fixtureAutoResearch({ fabricatedNumber: plan.fabricatedNumber, forgedQuote: plan.forgedQuote, structureStatistic: plan.structureStatistic });
-    return plan.serverFieldsInAnswer ? { ...research, ...LEGACY_RESEARCH_FIELDS } : research;
+    const adjusted: AutoResearchAnswer = {
+      ...research,
+      facts: research.facts.map((fact) => ({ ...fact,
+        ...(plan.forgedFactEvidence ? { evidence: "知识库里没有这句话" } : {}),
+        ...(plan.unsourcedFactNumber ? { statement: `${fact.statement}七成观众偏爱这种写法。` } : {}) })),
+      contentStructure: plan.noReferences ? research.contentStructure.map((item) => ({ ...item, reference: null })) : research.contentStructure,
+    };
+    // The double follows the contract the prompt asks for, unless a plan says to break it.
+    const answer = autoFixtureResearchMode(user) === "limited" && !plan.ignoreLimitedContract
+      ? fixtureAutoLimitedResearch(adjusted, plan.limitedInjection) : adjusted;
+    return plan.serverFieldsInAnswer ? { ...answer, ...LEGACY_RESEARCH_FIELDS } : answer;
   }
   if (stage === "directions") {
-    return plan.creativeQuantities || plan.unplacedQuantities ? fixtureAutoCreativeDirections({ unplaced: plan.unplacedQuantities }) : fixtureAutoDirections();
+    const directions = plan.creativeQuantities || plan.unplacedQuantities ? fixtureAutoCreativeDirections({ unplaced: plan.unplacedQuantities }) : fixtureAutoDirections();
+    // A direction cites only the ids the prompt lists (a limited research has H ids only).
+    const allowed = autoFixtureAllowedIds(user);
+    return allowed === null ? directions
+      : { ...directions, candidates: directions.candidates.map((candidate) => ({ ...candidate, evidenceIds: candidate.evidenceIds.filter((id) => allowed.includes(id)) })) };
   }
   if (stage === "bible") return plan.soloCast ? fixtureAutoSoloBible() : plan.crowdedCast ? fixtureAutoCrowdedBible() : fixtureAutoBible();
   if (stage === "outline") {

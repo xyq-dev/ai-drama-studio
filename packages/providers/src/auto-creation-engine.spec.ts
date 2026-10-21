@@ -142,14 +142,14 @@ describe("automatic creation engine", () => {
     expect(result).toMatchObject({ state: "completed", quality: "passed", callsUsed: 6, callCap: 6, storySave: "saved", packageStatus: "ready" });
     expect(seen.map((item) => item.stage)).toEqual(["research", "directions", "bible", "outline", "episode:1", "review:1"]);
     expect(new Set(seen.map((item) => item.url))).toEqual(new Set(["https://api.deepseek.com/chat/completions"]));
-    // The research prompt states the number contract that the check enforces.
-    expect(seen[0]!.user).toContain("市场和受众统计只能来自资料");
+    // The research prompt states the number contract that the check enforces (the limited one: no market material).
+    expect(seen[0]!.user).toContain("本次没有市场资料：受众人数、年龄或年龄段");
     expect(store.projects.get(P1)!.stories[0]).toMatchObject({ reviewStatus: "DRAFT" });
     const bundle = (await store.getRunById(WS, run.id))!;
     const meta = { runId: run.id, projectId: P1, input: bundle.run.input, quality: "passed", state: "completed", callsUsed: 6, callCap: 6,
       revisionRoundsUsed: 0, storySave: "saved", generatedAt: "2026-10-18T00:00:00.000Z" };
     expect(autoPackageJson(meta, bundle.stages)).toMatchObject({ status: { scriptPackage: "ready" } });
-    expect(autoPackageMarkdown(meta, bundle.stages)).toContain("资料有限策划模式");
+    expect(autoPackageMarkdown(meta, bundle.stages)).toContain("AI 创作策划（市场证据不可用");
   });
 
   it("checks v3: research and directions that count their own story and plans complete the budget-six run to a DRAFT", async () => {
@@ -193,9 +193,9 @@ describe("automatic creation engine", () => {
     const result = await view();
     expect(result).toMatchObject({ state: "completed", quality: "passed", callsUsed: 6, callCap: 6, storySave: "saved", errorCode: null });
     expect(seen.map((item) => item.stage)).toEqual(["research", "directions", "bible", "outline", "episode:1", "review:1"]);
-    expect(seen[0]!.user).toContain("提示版本：ads.auto-creation.prompt.v5");
+    expect(seen[0]!.user).toContain("提示版本：ads.auto-creation.prompt.v6");
     const research = result.stages.find((stage) => stage.stageKey === "research")!.output as { schema: string; contentStructure: unknown[] };
-    expect(research.schema).toBe("ads.auto-creation.research.v3");
+    expect(research.schema).toBe("ads.auto-creation.research.v4");
     expect(research.contentStructure).toEqual([
       { reference: { sourceId: "S-KB-CRAFT", quote: "关键结果来自主角的选择和行动" },
         application: { pattern: "模型替身样例：计划用两次反转推动主角主动选择。", why: "这是本作品的创作设计。" } },
@@ -266,8 +266,9 @@ describe("automatic creation engine", () => {
     const result = await view();
     expect(result).toMatchObject({ state: "completed", quality: "passed", callsUsed: 6, callCap: 6, storySave: "saved", errorCode: null });
     expect(seen.map((item) => item.stage)).toEqual(["research", "directions", "bible", "outline", "episode:1", "review:1"]);
-    // The research prompt no longer asks the model for the settings or the gaps.
-    expect(seen[0]!.user).toContain("不要输出 limitations、appliedConstraints");
+    // The research prompt no longer asks the model for the settings or the gaps; the limited one names its five fields only.
+    expect(seen[0]!.user).toContain("回答只包含 schema、hypotheses、audience、contentStructure、opportunities 五个字段");
+    expect(seen[0]!.user).toContain("由服务端按冻结设定和资料快照记录");
     const research = result.stages.find((stage) => stage.stageKey === "research")!.output as Record<string, unknown> & {
       opportunities: string[]; contentStructure: Array<{ application: { pattern: string } }>; unverified: unknown[]; serverRecord: Record<string, unknown> };
     // The model's text is kept word for word; the notices are the server's, apart from it.
@@ -280,7 +281,9 @@ describe("automatic creation engine", () => {
     expect(research).not.toHaveProperty("limitations");
     expect(research).not.toHaveProperty("appliedConstraints");
     expect(research.serverRecord).toMatchObject({ origin: "server_record",
-      executedWith: { promptVersion: "ads.auto-creation.prompt.v5", checksVersion: "ads.auto-creation.checks.v5", researchSchema: "ads.auto-creation.research.v3" },
+      executedWith: { promptVersion: "ads.auto-creation.prompt.v6", checksVersion: "ads.auto-creation.checks.v6", researchSchema: "ads.auto-creation.research.v4",
+        answerContract: "limited" },
+      marketEvidence: { origin: "source_snapshot", status: "unavailable" },
       settings: { origin: "user_setting", items: [{ key: "episodes", value: "共 1 集" }, { key: "seconds" }, { key: "maxCharacters", value: "最多 3 人" }] },
       material: { origin: "source_snapshot", researchMode: "limited" } });
     const directions = result.stages.find((stage) => stage.stageKey === "directions")!.output as { unverified: unknown[] };
@@ -315,7 +318,7 @@ describe("automatic creation engine", () => {
 
   it.each([
     [{ statisticAfterUnplaced: true }, "unsourced_number@opportunities[1]:percent+market_statistic+proportion", "七成"],
-    [{ serverFieldsInAnswer: true }, "invalid_output@limitations:unrecognized_keys", "官方入口页面没有读到正文"],
+    [{ serverFieldsInAnswer: true }, "invalid_output@limitations:unrecognized_keys+limited_contract+forbidden_field", "官方入口页面没有读到正文"],
   ] as const)("checks v5: %o is refused at research once; nothing stored, nothing after it sent", async (plan, code, text) => {
     const { run, engine, seen, view } = await setup({ revisionRounds: 0, callBudget: 6, plan });
     await engine.drive(run.id);
@@ -330,7 +333,7 @@ describe("automatic creation engine", () => {
     expect(seen).toHaveLength(1);
   });
 
-  it("an older run resumed into its research uses research v3 and records that version; its frozen versions and hash stay", async () => {
+  it("an older run resumed into its research uses research v4 and records that version; its frozen versions and hash stay", async () => {
     let failResearch = true;
     // The default budget: the hard cap, which keeps room for a resend a person confirms.
     const { store, run, engine, seen, view } = await setup({ revisionRounds: 0, plan: { unplacedQuantities: true },
@@ -347,9 +350,9 @@ describe("automatic creation engine", () => {
     await engine.drive(run.id);
     const result = await view();
     expect(result).toMatchObject({ state: "completed", storySave: "saved", promptVersion: "ads.auto-creation.prompt.v4" });
-    expect(seen.filter((item) => item.stage === "research").at(-1)!.user).toContain("提示版本：ads.auto-creation.prompt.v5");
-    expect(result.stages.find((stage) => stage.stageKey === "research")!.output).toMatchObject({ schema: "ads.auto-creation.research.v3",
-      serverRecord: { executedWith: { promptVersion: "ads.auto-creation.prompt.v5", checksVersion: "ads.auto-creation.checks.v5" } } });
+    expect(seen.filter((item) => item.stage === "research").at(-1)!.user).toContain("提示版本：ads.auto-creation.prompt.v6");
+    expect(result.stages.find((stage) => stage.stageKey === "research")!.output).toMatchObject({ schema: "ads.auto-creation.research.v4",
+      serverRecord: { executedWith: { promptVersion: "ads.auto-creation.prompt.v6", checksVersion: "ads.auto-creation.checks.v6", answerContract: "limited" } } });
     expect(JSON.stringify(store.runs.find((item) => item.id === run.id)!.input)).toBe(frozen);
     expect(store.runs.find((item) => item.id === run.id)!.inputHash).toBe(hash);
   });
@@ -397,7 +400,7 @@ describe("automatic creation engine", () => {
     expect(official).toHaveLength(3);
     expect(official.every((item) => item.status === "unreadable" && item.readScope === "none" && item.excerpt === "")).toBe(true);
     expect(sources.notes.join("")).toContain("没有观看任何视频");
-    expect(sources.notes.join("")).toContain("资料有限策划模式");
+    expect(sources.notes.join("")).toContain("AI 创作策划");
   });
 
   it.each([3, 6])("%i episodes: each episode reads the earlier episodes' handoff facts and the run completes", async (count) => {
@@ -776,10 +779,10 @@ describe("automatic creation engine", () => {
     expect(json.revisions).toHaveLength(1);
     expect(json.production.shots.length).toBeGreaterThan(0);
     const markdown = autoPackageMarkdown(meta, bundle.stages);
-    for (const heading of ["## 研究资料与限制", "## 受众与市场分析", "## 选题比较与最终方向", "## 故事、人物、地点与分集大纲", "## 逐集剧本", "## 检查与修改记录", "## 生产准备"]) {
+    for (const heading of ["## 研究资料与限制", "## AI 创作策划（受众待验证·市场证据不可用）", "## 选题比较与最终方向", "## 故事、人物、地点与分集大纲", "## 逐集剧本", "## 检查与修改记录", "## 生产准备"]) {
       expect(markdown).toContain(heading);
     }
     expect(markdown).toContain("视频成片：未开始");
-    expect(markdown).toContain("资料有限策划模式");
+    expect(markdown).toContain("AI 创作策划（市场证据不可用");
   });
 });

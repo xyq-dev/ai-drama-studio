@@ -43,17 +43,21 @@ function context(frozen = input()): AutoCreationContext {
 
 type Item = { reference: { sourceId: string; quote: string } | null; application: { pattern: string; why: string } };
 
-/** A legal limited-mode answer with the given content structures. */
+/** A legal limited-mode answer (research v4: none of the sourced contract's fields) with the given content structures. */
 function answer(structures: Item[], schema: string = AUTO_CREATION_RESEARCH_SCHEMA): string {
   return JSON.stringify({
     schema,
-    facts: [],
-    observations: [],
     hypotheses: [{ id: "H1", statement: "碎片时间的观众可能更愿意看一集内有明确兑现的故事。", howToVerify: "计划上线后观察七天再判断。" }],
-    audience: { primary: "拟面向通勤时刷剧的成年观众（待验证）", viewingNeeds: ["一集内看到结果"], emotionalAppeals: ["扳回一局"], basis: "hypothesis", sourceIds: [] },
+    audience: { primary: "拟面向通勤时刷剧的成年观众（待验证）", viewingNeeds: ["一集内看到结果"], emotionalAppeals: ["扳回一局"] },
     contentStructure: structures,
     opportunities: ["小人物在一个夜晚完成一次反击"],
   });
+}
+
+/** The same answer as research v1–v3 wrote it (facts, observations, the audience's basis and sources): history only. */
+function legacyAnswer(structures: unknown[], schema: string): string {
+  const value = JSON.parse(answer([], schema)) as { audience: object };
+  return JSON.stringify({ ...value, facts: [], observations: [], audience: { ...value.audience, basis: "hypothesis", sourceIds: [] }, contentStructure: structures });
 }
 
 const check = (structures: Item[], frozen = input()) => validateAutoStageOutput("research", answer(structures), frozen, context(frozen));
@@ -61,8 +65,7 @@ const apply = (pattern: string, why = "这是本作品的创作设计。", refer
 
 describe("A. the method quoted and the work's own design are two things", () => {
   it("the synthetic repro of the test-site refusal: v1 refused 两次 only because it cited; v1 is no longer accepted from a provider", () => {
-    const v1 = (sourceIds: string[]) => JSON.stringify({ ...JSON.parse(answer([])) as object, schema: AUTO_CREATION_RESEARCH_SCHEMA_V1,
-      contentStructure: [{ pattern: "计划用两次反转推动主角主动选择。", why: "这是本作品的创作设计。", sourceIds }] });
+    const v1 = (sourceIds: string[]) => legacyAnswer([{ pattern: "计划用两次反转推动主角主动选择。", why: "这是本作品的创作设计。", sourceIds }], AUTO_CREATION_RESEARCH_SCHEMA_V1);
     // On main (14758ea, checks v3) the cited item was refused as unsourced_number@contentStructure[0]:chinese_numeral+unsourced+not_in_cited_excerpt
     // and the uncited one passed (scratchpad before-fix log). Now neither old shape is taken: a new answer must keep the two apart.
     for (const ids of [["S-KB-CRAFT"], []]) {
