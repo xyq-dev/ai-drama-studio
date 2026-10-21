@@ -489,7 +489,9 @@ const AGE_BUCKET = /^(?:多|余|来)?(?:周)?岁(?:以上|以下|之间|上下|�
  * A duration in a clause about viewers (checks v7) is one of three. A: the work's own length, named so right before it
  * (本剧60秒的故事, 每集约 60 秒的节奏, 本集60秒内): judged against the frozen setting, never by an equal value alone.
  * B: a viewing time, read from its own wording: a habit or a majority in the clause (通常, 一般, 大部分), a viewing verb
- * right before it (观看60秒, 看了60秒) or a viewer leaving right after it (60秒后退出, 60秒就划走); averages, rates and
+ * right before it (观看60秒, 看了60秒), also across a work reference it takes as its object (观看本剧60秒, 看了本集60秒:
+ * how long they watch the work, unless the duration describes a noun after it, 观看本剧60秒的故事), or a viewer leaving
+ * right after it (60秒后退出, 60秒就划走); averages, rates and
  * measured results are refused before (RATE, RESULT). C: a pending question whose duration names neither, within the
  * frozen length (观众能否在60秒内理解人物冲突): kept as written with a notice that its meaning is unconfirmed.
  */
@@ -498,8 +500,20 @@ const WORK_AFTER = /^(?:钟)?(?=$|[，,。；;！？!?]|的|内|里|中|篇幅|�
 const VIEWING_HABIT = /通常|一般|往往|普遍|经常|常常|总是|习惯|大部分|大多|多数|大都/u;
 const VIEWING_BEFORE = /(?:观看|看了|看|播放|停留|刷|浏览|坚持|待)(?:了)?(?:约|大约|大概|不到|超过|仅|只)?$/u;
 const VIEWING_AFTER = /^(?:钟)?(?:左右|上下)?(?:后|之后|以后|就|便|即|内就|不到)*(?:会)?(?:退出|流失|划走|离开|关闭|跳出|弃剧|放弃|走掉|离场|停止|关掉|不看)/u;
-/** 每集 right before the work's length is the work's own unit, not a viewing rate (每集约 60 秒的节奏). */
-const EPISODE_LENGTH = /每集(?=(?:的)?(?:时长|篇幅|长度|片长)?(?:为|是|只有|仅|共|控制在)?(?:约|大约|大概)?(?:\d|[〇零一二两三四五六七八九十百]))/gu;
+/**
+ * 每集 right before a number of seconds or minutes is the work's own unit, not a viewing rate (每集约 60 秒的节奏). It
+ * exempts only that duration: every other number of the clause is still read with 每集 as a rate (把每集60秒的故事观看3次).
+ */
+const EPISODE_LENGTH = /每集(?:的)?(?:时长|篇幅|长度|片长)?(?:为|是|只有|仅|共|控制在)?(?:约|大约|大概)?$/u;
+/** A work-length duration that attributes a noun after it (本剧60秒的故事, 本剧60秒版本), not a time spent watching. */
+const WORK_ATTRIBUTE = /^(?:钟)?(?:的|篇幅|时长|版本|长度)/u;
+
+/** The clause RATE reads for one number: 每集 is masked only before this number when it is the work's length in seconds. */
+function rateText(clause: string, before: string, tail: string): string {
+  const unit = EPISODE_LENGTH.exec(before);
+  if (!unit || !/^(?:多|余|来)?(?:秒钟|秒|分钟)/u.test(tail)) return clause;
+  return before.slice(0, unit.index) + GAP + clause.slice(unit.index + 2);
+}
 
 /** Days a plan's duration takes, or null for a duration no plan uses (seconds, minutes, hours, years). */
 function planDays(value: number, unit: string): number | null {
@@ -562,11 +576,11 @@ function roleOf(hit: NumberHit, clause: string, clauses: readonly string[], mark
   if (/^(?:多|余|来)?(?:[十百千]?[万亿]|倍|人次)/u.test(tail) || /[万亿倍]$/u.test(hit.token)) return refuse("market_statistic", "magnitude");
   if (/^后/u.test(tail)) return refuse("market_statistic", "audience_age");
   if (RESULT.test(sentence)) return refuse("result_claim", "measured_result");
-  if (market && RATE.test(clause.replace(EPISODE_LENGTH, GAP))) return refuse("market_statistic", "rate_or_average");
+  const before = clause.slice(0, hit.start);
+  if (market && RATE.test(rateText(clause, before, tail))) return refuse("market_statistic", "rate_or_average");
   if (/^(?:比|[:：])/u.test(tail)) return refuse("market_statistic", "proportion");
   const value = hit.value;
   // Dates and ranges: 2026-10-18, 10 月, 25-35 岁. A range of ages is an age distribution.
-  const before = clause.slice(0, hit.start);
   if (/^[-–~]|^(?:年\d|月|日|号)/u.test(tail) || (/年/u.test(tail.slice(0, 1)) && (value ?? 0) >= 1000)) {
     return /[-–~]\d+(?:周)?岁/u.test(tail) || /岁/u.test(tail.slice(0, 6)) ? refuse("market_statistic", "audience_age") : refuse("unclassified", "date_or_range");
   }
@@ -587,7 +601,10 @@ function roleOf(hit: NumberHit, clause: string, clauses: readonly string[], mark
         // B: a habit, a viewing verb or a viewer leaving makes it a viewing time, whatever it is next to or marked as.
         if (VIEWING_HABIT.test(clause) || VIEWING_AFTER.test(after)) return refuse("market_statistic", "viewing_duration");
         // A: the work's own length. The whole run (本剧, 全剧) may also be all its episodes together.
-        if (WORK_BEFORE.test(before) && WORK_AFTER.test(after)) {
+        const work = WORK_BEFORE.exec(before);
+        // A viewing verb taking the work as its object measures the watching (观看本剧60秒), equal to the frozen value or not.
+        if (work && VIEWING_BEFORE.test(before.slice(0, work.index)) && !WORK_ATTRIBUTE.test(after)) return refuse("market_statistic", "viewing_duration");
+        if (work && WORK_AFTER.test(after)) {
           const whole = /(?:本剧|该剧|此剧|这部剧|本片|全剧)/u.test(before) ? frame.episodeSeconds * frame.episodeCount : frame.episodeSeconds;
           if (seconds === frame.episodeSeconds || seconds === whole) return { allowed: true, rule: "work_length" };
           return seconds > Math.max(whole, frame.episodeSeconds) ? refuse("frozen_conflict", "over_length") : refuse("frozen_conflict", "length_changed");

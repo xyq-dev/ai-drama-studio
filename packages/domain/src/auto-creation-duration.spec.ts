@@ -197,3 +197,50 @@ describe("C. the same duration checks in every uncited creative field", () => {
     }
   });
 });
+
+describe("PR #84 review: a work reference never exempts a viewing time, and the work's unit never exempts another number", () => {
+  const legal: readonly (readonly [string, "none" | "notice"])[] = [
+    ["待验证观众是否喜欢本剧60秒的紧凑叙事。", "none"],
+    ["观众可能愿意看完本剧60秒的故事。", "none"],
+    ["待验证：观众能否在60秒内理解人物冲突。", "notice"],
+    ["观众是否会在前3秒被吸引。", "none"],
+    ["待验证观众能否接受本剧每集约60秒的节奏。", "none"],
+    // A viewing verb alone is no refusal: here the duration describes the story it is followed by.
+    ["待验证观众是否愿意观看本剧60秒的故事。", "none"],
+  ];
+  const refused: readonly (readonly [string, string])[] = [
+    // A viewing verb before 本剧 / 本集 makes the duration how long they watch, equal to the frozen 60 秒 or not.
+    ["假设观众观看本剧60秒。", "viewing_duration"],
+    ["待验证：观众看了本集60秒。", "viewing_duration"],
+    // 每集60秒 is the work's length; the count of viewings beside it is still a rate.
+    ["假设观众会把每集60秒的故事观看3次。", "rate_or_average"],
+    ["假设观众会把每集60秒的故事重复观看3次。", "rate_or_average"],
+    ["假设观众每集观看3次。", "rate_or_average"],
+  ];
+  const fields = [
+    ["hypotheses[0].statement", (text: string) => hypothesis(text)],
+    ["contentStructure[0].application.why", (text: string) => ({ contentStructure: [{ ...STRUCTURE, application: { pattern: "主角主动选择推动结果", why: text } }] })],
+    ["contentStructure[0].application.pattern", (text: string) => ({ contentStructure: [{ reference: null, application: { pattern: text, why: "本剧自主设计。" } }] })],
+  ] as const;
+
+  it.each(fields)("%s: refused as before checks v7, never a notice", (field, at) => {
+    for (const [text, rule] of refused) {
+      expect(research(limited(at(text))), text).toMatchObject({ ok: false, code: "unsourced_number", field, semantic: "market_statistic", rule });
+    }
+  });
+
+  it.each(fields)("%s: the legal samples keep passing", (field, at) => {
+    for (const [text, expected] of legal) {
+      const result = research(limited(at(text)));
+      if (expected === "none") expect(result, text).toMatchObject({ ok: true, output: { unverified: [] } });
+      else expect(result, text).toMatchObject({ ok: true, output: { unverified: [{ field, rule: "duration_unconfirmed" }] } });
+    }
+  });
+
+  it("the sourced contract refuses them the same way", () => {
+    const frozen = input();
+    for (const [text, rule] of refused) {
+      expect(validateAutoStageOutput("research", sourced(hypothesis(text)), frozen, sourcedContext(frozen)), text).toMatchObject({ ok: false, rule });
+    }
+  });
+});
