@@ -345,7 +345,7 @@ describe("F. history: research v3 is read as it was; an old run's next research 
       transport: autoFixtureTransport({ seen: first.seen }), leaseMs: 240_000 });
     await later.drive(first.run.id);
     expect(first.seen.at(-6)!.user).toContain("任务：基于资料完成研究与创作定位");
-    expect((await first.research()).output).toMatchObject({ serverRecord: { executedWith: { promptVersion: "ads.auto-creation.prompt.v6", answerContract: "sourced" } } });
+    expect((await first.research()).output).toMatchObject({ serverRecord: { executedWith: { promptVersion: "ads.auto-creation.prompt.v7", answerContract: "sourced" } } });
   });
 
   it("an old run whose budget is spent is not resumed: nothing reset, nothing sent", async () => {
@@ -366,5 +366,58 @@ describe("F. history: research v3 is read as it was; an old run's next research 
     expect(await view()).toMatchObject({ state: "needs_attention", errorCode: "research_sources_missing", callsUsed: 0, calls: [] });
     expect(seen).toHaveLength(0);
     expect(autoResumeBlock(await bundle(), { researchFetch: true })).toBe("research_sources_missing");
+  });
+});
+
+describe("durations (checks v7): the work's own length passes, an unplaced duration is a notice, a viewing time is refused", () => {
+  it("one sixty-second episode, no rounds, a budget of six: six calls, a DRAFT story; the notice keeps its identity in prompts and packages", async () => {
+    const { store, run, engine, seen, view, bundle, meta, research } = await setup({ plan: { durations: "creative" }, callBudget: 6 });
+    await engine.drive(run.id);
+    const result = await view();
+    expect(result).toMatchObject({ state: "completed", quality: "passed", callsUsed: 6, callCap: 6, storySave: "saved", researchMode: "limited" });
+    expect(seen.map((item) => item.stage)).toEqual(["research", "directions", "bible", "outline", "episode:1", "review:1"]);
+    expect(store.projects.get(P1)!.stories[0]).toMatchObject({ reviewStatus: "DRAFT" });
+    expect(store.projects.get(P1)!.approvedStoryId).toBeNull();
+    const stored = (await research()).output as AutoResearch;
+    // Kept as written: nothing cut, rewritten or moved; the work's length has no notice, the unplaced duration has one.
+    expect(stored.hypotheses.map((item) => item.statement)).toEqual(["待验证观众是否喜欢本剧60秒的紧凑叙事。", "待验证：观众能否在60秒内理解人物冲突。"]);
+    expect(stored.unverified).toEqual([{ origin: "server_check", field: "hypotheses[1].statement", token: "60", semantic: "unclassified",
+      rule: "duration_unconfirmed", note: "程序无法确认时长含义（不是已判定的观看统计），未核实" }]);
+    expect(stored).toMatchObject({ facts: [], observations: [], audience: { basis: "hypothesis", sourceIds: [] },
+      serverRecord: { executedWith: { promptVersion: "ads.auto-creation.prompt.v7", checksVersion: "ads.auto-creation.checks.v7", answerContract: "limited" },
+        marketEvidence: { status: "unavailable" } } });
+    const notice = "第2条假设（H2）中的「60」：程序无法确认时长含义（不是已判定的观看统计），未核实；只属于创作假设或设计，不是有来源的事实或市场结论。";
+    // Later prompts carry it as a notice beside a hypothesis, never as a finding.
+    for (const stage of ["directions"]) {
+      const user = seen.find((item) => item.stage === stage)!.user;
+      expect(user).toContain(notice);
+      expect(user).toContain("“未核实提示”标出的数字或时长程序未能判定含义，未核实");
+    }
+    const first = autoPackageMarkdown(await meta(), (await bundle()).stages);
+    expect(autoPackageMarkdown(await meta(), (await bundle()).stages)).toBe(first);
+    expect(first).toContain(`- ${notice}`);
+    expect(first).toContain("**未核实提示**（程序未能判定数字或时长含义，未核实；");
+    expect(first).toContain("H2 假设：待验证：观众能否在60秒内理解人物冲突。〔含未核实数字，见下方未核实提示〕");
+    expect(first).not.toContain("**有来源的事实**");
+    const json = autoPackageJson(await meta(), (await bundle()).stages) as { research: { analysis: AutoResearch; identity: Record<string, string> } };
+    expect(json.research.analysis).toEqual(stored);
+    expect(json.research.identity.unverified).toContain("duration_unconfirmed：时长含义，不是已判定的观看统计");
+    expect(JSON.stringify(autoPackageJson(await meta(), (await bundle()).stages))).toBe(JSON.stringify(json));
+    await engine.maintain();
+    expect(seen).toHaveLength(6);
+  });
+
+  it("an actual viewing time is refused at research: sent once, nothing after it, the refused text stored nowhere", async () => {
+    const { run, engine, seen, view } = await setup({ plan: { durations: "viewing" } });
+    await engine.drive(run.id);
+    const result = await view();
+    const code = "unsourced_number@hypotheses[0].statement:digits+market_statistic+viewing_duration";
+    expect(result).toMatchObject({ state: "failed", callsUsed: 1 });
+    expect(result.stages.find((stage) => stage.stageKey === "research")).toMatchObject({ state: "rejected", errorCode: code, output: null });
+    expect(result.calls.map((call) => call.errorCode)).toEqual([code]);
+    expect(JSON.stringify(result)).not.toContain("模型替身样例");
+    await engine.maintain();
+    await engine.drive(run.id);
+    expect(seen.map((item) => item.stage)).toEqual(["research"]);
   });
 });

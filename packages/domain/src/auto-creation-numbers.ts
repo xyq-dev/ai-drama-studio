@@ -485,6 +485,22 @@ const CHARACTER_BEFORE = /(?:主人公|主角|女主角?|男主角?|配角|反�
 const AUDIENCE_PEOPLE = /^的?(?:女性|男性|女生|男生|女人|男人|人|年轻人|群体|人群|观众|用户|受众|粉丝|网友|她们|他们|上班族|学生|宝妈|白领|中年人|老人)/u;
 const AGE_BUCKET = /^(?:多|余|来)?(?:周)?岁(?:以上|以下|之间|上下|到|至|-|~|–)/u;
 
+/**
+ * A duration in a clause about viewers (checks v7) is one of three. A: the work's own length, named so right before it
+ * (本剧60秒的故事, 每集约 60 秒的节奏, 本集60秒内): judged against the frozen setting, never by an equal value alone.
+ * B: a viewing time, read from its own wording: a habit or a majority in the clause (通常, 一般, 大部分), a viewing verb
+ * right before it (观看60秒, 看了60秒) or a viewer leaving right after it (60秒后退出, 60秒就划走); averages, rates and
+ * measured results are refused before (RATE, RESULT). C: a pending question whose duration names neither, within the
+ * frozen length (观众能否在60秒内理解人物冲突): kept as written with a notice that its meaning is unconfirmed.
+ */
+const WORK_BEFORE = /(?:本剧|本集|该剧|此剧|这部剧|这集|本片|全剧|单集|整集|每集)(?:的)?(?:时长|篇幅|长度|片长)?(?:为|是|只有|仅|共|控制在)?(?:约|大约|大概)?$/u;
+const WORK_AFTER = /^(?:钟)?(?=$|[，,。；;！？!?]|的|内|里|中|篇幅|时长|版本|长度)/u;
+const VIEWING_HABIT = /通常|一般|往往|普遍|经常|常常|总是|习惯|大部分|大多|多数|大都/u;
+const VIEWING_BEFORE = /(?:观看|看了|看|播放|停留|刷|浏览|坚持|待)(?:了)?(?:约|大约|大概|不到|超过|仅|只)?$/u;
+const VIEWING_AFTER = /^(?:钟)?(?:左右|上下)?(?:后|之后|以后|就|便|即|内就|不到)*(?:会)?(?:退出|流失|划走|离开|关闭|跳出|弃剧|放弃|走掉|离场|停止|关掉|不看)/u;
+/** 每集 right before the work's length is the work's own unit, not a viewing rate (每集约 60 秒的节奏). */
+const EPISODE_LENGTH = /每集(?=(?:的)?(?:时长|篇幅|长度|片长)?(?:为|是|只有|仅|共|控制在)?(?:约|大约|大概)?(?:\d|[〇零一二两三四五六七八九十百]))/gu;
+
 /** Days a plan's duration takes, or null for a duration no plan uses (seconds, minutes, hours, years). */
 function planDays(value: number, unit: string): number | null {
   if (unit === "天") return value;
@@ -546,7 +562,7 @@ function roleOf(hit: NumberHit, clause: string, clauses: readonly string[], mark
   if (/^(?:多|余|来)?(?:[十百千]?[万亿]|倍|人次)/u.test(tail) || /[万亿倍]$/u.test(hit.token)) return refuse("market_statistic", "magnitude");
   if (/^后/u.test(tail)) return refuse("market_statistic", "audience_age");
   if (RESULT.test(sentence)) return refuse("result_claim", "measured_result");
-  if (market && RATE.test(clause)) return refuse("market_statistic", "rate_or_average");
+  if (market && RATE.test(clause.replace(EPISODE_LENGTH, GAP))) return refuse("market_statistic", "rate_or_average");
   if (/^(?:比|[:：])/u.test(tail)) return refuse("market_statistic", "proportion");
   const value = hit.value;
   // Dates and ranges: 2026-10-18, 10 月, 25-35 岁. A range of ages is an age distribution.
@@ -565,11 +581,23 @@ function roleOf(hit: NumberHit, clause: string, clauses: readonly string[], mark
   if (duration) {
     const unit = duration[1]!;
     if (market) {
-      // A moment of this episode asked about as pending (观众是否会在前 3 秒被吸引) is the episode's timeline.
       if (unit === "秒" || unit === "秒钟" || unit === "分钟") {
         const seconds = value === null ? Infinity : unit === "分钟" ? value * 60 : value;
-        const moment = /(?:前|开头|开场|头)$/u.test(before) && seconds <= frame.episodeSeconds && pendingJudgement(clause, clauses);
-        return moment ? { allowed: true, rule: "story_time" } : refuse("market_statistic", "viewing_duration");
+        const after = tail.slice(duration[0].length);
+        // B: a habit, a viewing verb or a viewer leaving makes it a viewing time, whatever it is next to or marked as.
+        if (VIEWING_HABIT.test(clause) || VIEWING_AFTER.test(after)) return refuse("market_statistic", "viewing_duration");
+        // A: the work's own length. The whole run (本剧, 全剧) may also be all its episodes together.
+        if (WORK_BEFORE.test(before) && WORK_AFTER.test(after)) {
+          const whole = /(?:本剧|该剧|此剧|这部剧|本片|全剧)/u.test(before) ? frame.episodeSeconds * frame.episodeCount : frame.episodeSeconds;
+          if (seconds === frame.episodeSeconds || seconds === whole) return { allowed: true, rule: "work_length" };
+          return seconds > Math.max(whole, frame.episodeSeconds) ? refuse("frozen_conflict", "over_length") : refuse("frozen_conflict", "length_changed");
+        }
+        if (VIEWING_BEFORE.test(before)) return refuse("market_statistic", "viewing_duration");
+        if (seconds > frame.episodeSeconds || !pendingJudgement(clause, clauses)) return refuse("market_statistic", "viewing_duration");
+        // A moment of this episode asked about as pending (观众是否会在前 3 秒被吸引) is the episode's timeline.
+        if (/(?:前|开头|开场|头)$/u.test(before)) return { allowed: true, rule: "story_time" };
+        // C: pending, within the frozen length, naming neither the work nor a viewing time.
+        return refuse("unclassified", "duration_unconfirmed");
       }
       // Days of observation only in a plan's wording (上线后观察七天); a hedge alone (可能三天内流失) is a claim.
       const days = value === null ? null : planDays(value, unit);
@@ -629,12 +657,17 @@ export function uncitedNumberFinding(text: string, frame: AutoNumberFrame, optio
   return uncitedNumberReading(text, frame, options).refusal;
 }
 
+/** The sub-rules kept as an unverified notice in creative text: no role (checks v5), a duration's meaning unconfirmed (checks v7). */
+export const AUTO_UNVERIFIED_RULES = ["no_role", "duration_unconfirmed"] as const;
+const UNVERIFIED_RULES: ReadonlySet<string> = new Set(AUTO_UNVERIFIED_RULES);
+
 /**
  * Every number of an uncited text read to the end (checks v5). unverified: creative text (a hypothesis, a plan, a
  * structure's application, an opportunity, a direction's notes) where a number with no recognised role (unclassified,
- * no_role) is kept as unverified instead of refused; the reading goes on past it, so any later number in the same
- * clause, sentence or text is still judged and refused for what it is. Only that one sub-rule is kept: dates, counts out
- * of range, statistics, measured results, frozen conflicts and unmarked judgements are refused as before.
+ * no_role) or a pending duration whose meaning the code cannot confirm (duration_unconfirmed, checks v7) is kept as
+ * unverified instead of refused; the reading goes on past it, so any later number in the same clause, sentence or text is
+ * still judged and refused for what it is. Only those sub-rules are kept: dates, counts out of range, statistics, viewing
+ * times, measured results, frozen conflicts and unmarked judgements are refused as before.
  */
 export function uncitedNumberReading(text: string, frame: AutoNumberFrame, options: { market?: boolean; unverified?: boolean } = {}):
   { refusal: AutoNumberFinding | null; unverified: AutoNumberFinding[] } {
@@ -655,7 +688,7 @@ export function uncitedNumberReading(text: string, frame: AutoNumberFrame, optio
         const role = roleOf(hit, clause, clauses, market, frame);
         if (!role.allowed) {
           const finding: AutoNumberFinding = { token: hit.token, kind: numberKind(hit.token), semantic: role.semantic, rule: role.rule };
-          if (options.unverified === true && role.semantic === "unclassified" && role.rule === "no_role") {
+          if (options.unverified === true && role.semantic === "unclassified" && UNVERIFIED_RULES.has(role.rule)) {
             unverified.push(finding);
             continue;
           }

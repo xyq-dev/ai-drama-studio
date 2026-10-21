@@ -29,7 +29,7 @@
 | `review:r` | 独立审阅提示与 10 项评价标准；问题须带**逐字原文证据**；程序检查结果并入 | 是 |
 | `revise:r:episode:k` | 只修指出的问题，记录逐条修改 | 是 |
 
-提示词版本 `ads.auto-creation.prompt.v6`、检查版本 `ads.auto-creation.checks.v6`、研究输出 `ads.auto-creation.research.v4`（见 3.5；此前 v5 / v5 / research.v3 见 3.4，v4 / v4 / research.v2 见 3.3，v3 / v3 / research.v1 自 2026-10-20 起，2026-10-19 起为 v2，之前为 v1）、选择规则 `ads.auto-creation.selection-rules.v1`、输入 `ads.auto-creation.input.v1`。任务输入里冻结的是**开始时**的版本号；已完成的阶段不会重算，但旧任务续跑时，之后发送的阶段使用当前的提示词和检查（代码里没有按版本分支）。
+提示词版本 `ads.auto-creation.prompt.v7`、检查版本 `ads.auto-creation.checks.v7`、研究输出 `ads.auto-creation.research.v4`（v7 / v7 见 3.6，研究回答结构不变；v6 / v6 / research.v4 见 3.5；此前 v5 / v5 / research.v3 见 3.4，v4 / v4 / research.v2 见 3.3，v3 / v3 / research.v1 自 2026-10-20 起，2026-10-19 起为 v2，之前为 v1）、选择规则 `ads.auto-creation.selection-rules.v1`、输入 `ads.auto-creation.input.v1`。任务输入里冻结的是**开始时**的版本号；已完成的阶段不会重算，但旧任务续跑时，之后发送的阶段使用当前的提示词和检查（代码里没有按版本分支）。
 
 ## 3. 研究层：只说真正读到的
 
@@ -195,6 +195,33 @@ contentStructure: [{ reference: { sourceId, quote } | null, application: { patte
 
 **限制**：离线验收全部使用模型替身；替身按提示要求的契约作答，所以离线通过**不代表真实模型必然成功**——真实模型是否只写这五个字段、是否会在创作文字里写出被拒的数字，需要受限的真实验收确认。
 
+### 3.6 时长按所指对象区分：本剧篇幅、观看时长与无法确认的时长（2026-10-21，prompt.v7 / checks.v7）
+
+**证据边界**：线上任务（runId `1af794d3-5a55-4a8b-b64b-d1f18a5b06ff`）的研究阶段被 `unsourced_number@hypotheses[0].statement:digits+market_statistic+viewing_duration` 拒收。被拒正文按设计没有保存，**线上原句仍不知道**，本节不猜测它。Codex 在当前源码上用完整 `validateAutoStageOutput("research", …)` 确认下列**合成样本**被误拒，本轮先在未修复的 main（b804437）上复现：三句都返回与线上相同的 `digits+market_statistic+viewing_duration`，「观众是否会在前3秒被吸引」通过。
+
+1. 待验证观众是否喜欢本剧60秒的紧凑叙事。
+2. 观众可能愿意看完本剧60秒的故事。
+3. 待验证：观众能否在60秒内理解人物冲突。
+
+**误拒原因**：提到观众或市场的分句不会移除冻结设定里的数字（「每天观看60秒」即使任务是 60 秒也是统计），所以句中的 60 秒进入时长判断；而旧规则在观众分句里只放行紧跟在「前 / 开头 / 开场」后的秒数，其他秒数或分钟一律判为观看时长，不看它指的是本剧还是观众的观看行为。
+
+**三类时长**（只在提到观众或市场的分句里，秒、秒钟、分钟；`packages/domain/src/auto-creation-numbers.ts`）：
+
+| 类 | 怎样识别 | 结果 |
+| --- | --- | --- |
+| A 本剧篇幅 | 时长紧跟在指本剧的词后（本剧、本集、这部剧、该剧、全剧、单集、整集、每集，可带「的时长 / 篇幅」「为 / 是」「约」），后面是分句结束、「的」「内」「篇幅」「版本」等 | 按冻结设定检查：等于每集时长（「本剧 / 全剧」也可等于全部集数合计）才通过（`work_length`）；超过为 `frozen_conflict+over_length`，变短为 `frozen_conflict+length_changed`（整份拒收，`constraint_violation`）。数值等于冻结值**不能单独**豁免：不指向本剧的 60 秒照样按 B/C 判断；通过后观众分句仍须写明「是否 / 可能 / 待验证」等，否则按 `unmarked_audience_judgement` 拒收 |
+| B 观看时长与测量结果 | 分句里有习惯或多数的说法（通常、一般、往往、普遍、经常、大部分、多数…）；时长前紧跟观看动词（观看、看了、看、播放、停留、刷…）；或时长后紧跟观众离开（后退出、后流失、就划走、弃剧…）。平均值与频次（平均、每天、人均…）和已得结果（数据显示、实测、已测试…）在此之前已由原规则拒收 | 硬拒，`market_statistic+viewing_duration`（或原来的 `rate_or_average` / `measured_result`）；写成「假设」「计划」「可能」也不豁免；与冻结时长相同也拒收 |
+| C 无法确认 | 不属于 A、B，也不是开场时刻（前 3 秒）的时长：分句写明待验证（是否、能否、可能、待验证…），且不超过冻结的每集时长 | 在无来源的创作字段里原文保留，生成服务端提示 `semantic=unclassified`、`rule=duration_unconfirmed`、note「程序无法确认时长含义（不是已判定的观看统计），未核实」；没有写明待验证或超过冻结时长的，仍按 `viewing_duration` 拒收 |
+
+- 「每集」后紧跟时长时是本剧的单位，不再当作频次（「本剧每集约 60 秒的节奏」）；「观众每集观看…」「平均每集…」仍是频次或观看行为。
+- **适用范围**：与 3.4 的 no_role 未核实提示相同的无来源创作字段——hypotheses 的 statement 与 howToVerify、contentStructure 的 application（pattern / why，reference 有效或为 null 都一样）、opportunities、选题方向的 differentiation / difficultyNote；limited 与 sourced 两种契约一样。没有来源的 audience 文字和方向的 audienceFit 本来就整段按观众文字检查、没有未核实出口：A 照样通过，C 在那里以 `unclassified+duration_unconfirmed` 拒收（诊断写明是「无法确认」，不是「已判为统计」），B 照旧拒收。有来源的事实与观察的数字、来源和引文检查不变。
+- **提示不提前结束检查**：C 只是记录，同一分句、同一句、后面的字段照旧逐个判断；之后出现「七成观众」、实测结果、平均值或冻结冲突，整份拒收。
+- **身份**：C 提示不是校验为真，也不是市场结论。它和 no_role 提示存在同一个 `unverified` 列表里；后续选题提示、页面和 Markdown / JSON 剧本包都按「未核实提示」显示，各条用自己的 note。列表标题在含时长提示时为「程序未能判定数字或时长含义，未核实」，全是 no_role 时保持原来的「程序未能判定数字含义，未核实」，所以旧任务的页面和导出不变；旧 no_role 提示与旧拒收诊断照原样读取，不改历史记录。新拒收子规则 `length_changed`、`duration_unconfirmed` 在页面有对应说明，`viewing_duration` 的说明写明「观众实际看多久、看多久后退出」。
+- **提示 v7**：数字规则第 2 条补一句：提到观众时写本剧时长，要写明是本剧的篇幅（如「待验证观众是否喜欢本剧 60 秒的故事」），不写观众实际看了多久、看多久后退出、通常或平均看多久。研究回答结构没有变化，research 仍为 v4，不重做契约；limited 仍只能回答五个根字段，模型不能填写 facts、observations 或服务端字段，不删除、截断或改写回答。
+- **历史**：已保存的研究原样读取、显示和导出；原键原请求重放（含 v6 写入的任务）零新建、零调度、零发送；冻结输入、哈希、调用和费用不变；已完成的阶段直接复用；旧失败任务不会自动重跑；显式续跑仍受原预算和确认规则约束，`executedWith` 记录实际执行的 v7。没有新增模型裁判、自动纠错、重试、额外调用或供应商回退；预算、日限额、并发、预约、租约、幂等和未知调用恢复不变；故事仍为 DRAFT，人工审核门槛不变。Migration 编写 0、执行 0。
+
+**仍有歧义**：判断按措辞，不理解语义。C 的范围是「程序无法确认」，并不说明这句话一定是创作问题；A 只认紧挨着的本剧指代词，「这个故事的 60 秒」「短剧 60 秒」这类说法不算 A，会落到 C 或 B；B 的习惯词与观看动词也是有限列表，没有列出的观看说法（如「撑过 60 秒」）若写明待验证会成为 C 提示而不是拒收；多集任务里「本剧 60 秒」可能指单集也可能指全剧，两者都按冻结值接受。离线测试全部使用合成样本和模型替身，**不证明真实模型必然成功**。
+
 ## 4. 质量检查与有限修改
 
 - 程序检查（`deterministicFindings`）：缺集、场次上限（60 秒 ≤5 场，90 秒 ≤7 场）、台词字数（≈5 字/秒）、镜头计划秒数在目标 60%–140%、仅被提及的人物出场、禁止题材、全剧出场人物数和地点数上限、跨集重复台词（提示级）。问题按真实来源归属：设定本身的出场人物在生成时已核对上限，所以合法设定下的人物超限只能来自分集让「仅被提及」的人物出场，这时问题指向那几集，可以在已授权的轮次和预算内定向修改并复查；只有设定本身超限才算设定问题。schema、编号、悬空引用、硬约束（人物/地点数、禁止题材）、整理后超过编辑器 2 万字上限的分集在**生成时**就拒收（不截断）。
@@ -288,6 +315,7 @@ DATABASE_URL=<业务库连接串，只在进程环境中> pnpm --filter @ai-dram
 | 2026-10-20 研究关卡 research.v3 / checks.v5（本机 Windows + Node 24.21） | 在 main 2d2679a 上用完整 `validateAutoStageOutput` 复现（合成样本，非线上原文）：「主角只剩五十元」在 hypotheses / appliedConstraints、「三块拼图」在 application 都被拒为 `…:chinese_numeral+unclassified+no_role`，模型自写的 appliedConstraints 被接受；新增 `auto-creation-gate.spec.ts`（服务端记录、strict 拒收服务端字段、未核实提示、提示之后的统计/结果/冻结冲突/伪引用仍拒、下游与导出不升级、结构化保护）在 main 上 29/30 失败（唯一通过的是不变的设定阶段上限检查）；审计 main 上只因 no_role 被拒的全部测试样本，补上冻结上限复述、「名/位」人物计数、计数人群给评价三处保护（三处的范围均由下一行的终审修正收窄）；`pnpm verify` 通过（domain 739、providers 280、contracts 50、web 724、api 315 另 87 跳过）；PostgreSQL 16 embedded 三种起点各 35/35（新增 v5 完整六阶段与导出重读、提示后统计与服务端字段各只发 1 次、线上拒收形态的 v4 任务人工续跑、v4 原键重放、research v2 历史读取导出重放）；真实浏览器 7/7（B4：离开页面后台完成、1280 / 390 提示与记录分开显示无溢出、下载、刷新一致）；Migration 编写 0、执行 0；真实模型与媒体调用 0 次 |
 | 2026-10-21 PR #82 终审四项修正（本机 Windows + Node 24.21） | 在 91a4edc 上先用完整 `validateAutoStageOutput` 复现（6 项失败，13 项拒收对照通过）：人物上限 2 时「主角破解三位数密码」被拒为 `cast_over_limit`（只凭量词「位」当人物）；「主角用五十元购买一条差评作为追凶线索」被拒为 `result_claim`（评价词没有关联被计数的人）；地点上限 2 时「场景为三块拼图散落在桌上」、人物上限 2 时「角色为五十元奖金冒险」被当成地点或人物（「为」不是上限）；第一条假设编号 H3 时提示写成「假设 H1」。修正：去掉「名/位」后备人物判定；评价保护只在数字后是数人量词且评价在计数之后时生效；上限推断要求限定词与相容量词；提示按条目位置称呼并附模型自己的假设编号。多余字段的页面说明改为通用，只在研究阶段的服务端键上补充研究说明（域侧也只在研究阶段命名服务端键）。以上各句在假设、验证计划、机会、application.pattern / why（reference 为 null 与有效引用）都覆盖；拒收对照（专家推荐、学生好评、无来源比例、真实上限冲突、提示后夹带比例）保持；domain 758、contracts 50、providers 280、web 自动创作 35 |
 
+| 2026-10-21 时长按所指对象区分 prompt.v7 / checks.v7（本机 Windows + Node 24.21，模型替身） | 见第 3.6 节与 `docs/AUTO_CREATION_DURATION_CLASSIFICATION_REPORT.md`；在 main b804437 上复现三条合成样本被拒为 `digits+market_statistic+viewing_duration`，新增 `packages/domain/src/auto-creation-duration.spec.ts`（完整 `validateAutoStageOutput`，42 项）在未修复代码上 26 项失败，修复后全部通过；providers 新增 1 集 60 秒 0 轮预算 6 完整六阶段（本剧时长通过、无法确认的时长成为提示并在选题提示、Markdown 与 JSON 中保持身份）与明确观看时长拒收（只发 1 次、之后零发送、不存正文）；`pnpm verify` 通过（contracts 66、domain 800、providers 308、web 729、api 315 另 87 跳过）；PostgreSQL 16 embedded 一次性库三种起点各 41/41；真实浏览器 8/8；Migration 编写 0、执行 0；真实模型与媒体调用 0 次 |
 | 2026-10-21 研究契约按资料能力拆分 research.v4 / prompt.v6 / checks.v6（本机 Windows + Node 24.21，模型替身） | 见第 3.5 节与 `docs/AUTO_CREATION_RESEARCH_CAPABILITIES_REPORT.md`；新增 `packages/contracts/src/auto-creation-capabilities.spec.ts`（limited/sourced 两份 JSON Schema 与 Zod 逐键一致、limited 拒收禁止字段即使为空、服务端组装、v3 历史判断）与 `packages/providers/src/auto-creation-capabilities.spec.ts`（捕获引擎实际发给 OpenAI / Claude / DeepSeek 的请求体核对 Schema 与提示、四种资料组合、limited 完整六阶段、注入字段各只发 1 次、sourced 合法与非法事实、v3 历史续跑不重发、原键重放、已保存快照决定续跑契约、预算不足不续跑、无有效快照不预约） |
 
 本功能**未**做：真实模型调用、真实图片/语音/视频、剧本拆解与分镜生产数据写入、业务库或测试站迁移。

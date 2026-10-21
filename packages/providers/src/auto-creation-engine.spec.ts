@@ -193,7 +193,7 @@ describe("automatic creation engine", () => {
     const result = await view();
     expect(result).toMatchObject({ state: "completed", quality: "passed", callsUsed: 6, callCap: 6, storySave: "saved", errorCode: null });
     expect(seen.map((item) => item.stage)).toEqual(["research", "directions", "bible", "outline", "episode:1", "review:1"]);
-    expect(seen[0]!.user).toContain("提示版本：ads.auto-creation.prompt.v6");
+    expect(seen[0]!.user).toContain("提示版本：ads.auto-creation.prompt.v7");
     const research = result.stages.find((stage) => stage.stageKey === "research")!.output as { schema: string; contentStructure: unknown[] };
     expect(research.schema).toBe("ads.auto-creation.research.v4");
     expect(research.contentStructure).toEqual([
@@ -281,7 +281,7 @@ describe("automatic creation engine", () => {
     expect(research).not.toHaveProperty("limitations");
     expect(research).not.toHaveProperty("appliedConstraints");
     expect(research.serverRecord).toMatchObject({ origin: "server_record",
-      executedWith: { promptVersion: "ads.auto-creation.prompt.v6", checksVersion: "ads.auto-creation.checks.v6", researchSchema: "ads.auto-creation.research.v4",
+      executedWith: { promptVersion: "ads.auto-creation.prompt.v7", checksVersion: "ads.auto-creation.checks.v7", researchSchema: "ads.auto-creation.research.v4",
         answerContract: "limited" },
       marketEvidence: { origin: "source_snapshot", status: "unavailable" },
       settings: { origin: "user_setting", items: [{ key: "episodes", value: "共 1 集" }, { key: "seconds" }, { key: "maxCharacters", value: "最多 3 人" }] },
@@ -350,9 +350,9 @@ describe("automatic creation engine", () => {
     await engine.drive(run.id);
     const result = await view();
     expect(result).toMatchObject({ state: "completed", storySave: "saved", promptVersion: "ads.auto-creation.prompt.v4" });
-    expect(seen.filter((item) => item.stage === "research").at(-1)!.user).toContain("提示版本：ads.auto-creation.prompt.v6");
+    expect(seen.filter((item) => item.stage === "research").at(-1)!.user).toContain("提示版本：ads.auto-creation.prompt.v7");
     expect(result.stages.find((stage) => stage.stageKey === "research")!.output).toMatchObject({ schema: "ads.auto-creation.research.v4",
-      serverRecord: { executedWith: { promptVersion: "ads.auto-creation.prompt.v6", checksVersion: "ads.auto-creation.checks.v6", answerContract: "limited" } } });
+      serverRecord: { executedWith: { promptVersion: "ads.auto-creation.prompt.v7", checksVersion: "ads.auto-creation.checks.v7", answerContract: "limited" } } });
     expect(JSON.stringify(store.runs.find((item) => item.id === run.id)!.input)).toBe(frozen);
     expect(store.runs.find((item) => item.id === run.id)!.inputHash).toBe(hash);
   });

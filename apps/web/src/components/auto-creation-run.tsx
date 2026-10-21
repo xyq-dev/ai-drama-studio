@@ -2,12 +2,12 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  AUTO_UNVERIFIED_NOTE,
   TITLE_WRITING_PROVIDER_LABELS,
   autoNoticeText,
   autoResearchHasServerRecord,
   autoResearchMarketEvidence,
   autoStructureViews,
+  autoUnverifiedHeading,
   autoUnverifiedOf,
   type AutoBible,
   type AutoDirectionsOutput,
@@ -393,7 +393,7 @@ export function AutoCreationRun({ projectId, client = defaultClient }: { project
                   {research.serverRecord.material.unread.map((item) => <li key={item.sourceId}>未读取：{item.sourceId}「{item.title}」（{item.status}）</li>)}
                   {research.serverRecord.material.gaps.map((gap) => <li key={gap}>缺失说明：{gap}</li>)}
                 </ul>
-                <p className={styles.helper}>未核实提示（{AUTO_UNVERIFIED_NOTE}；相关文字只属于创作假设或设计，不是有来源的事实、平台用户画像或已验证的市场结论）</p>
+                <p className={styles.helper}>未核实提示（{autoUnverifiedHeading(researchNotices)}；相关文字只属于创作假设或设计，不是有来源的事实、平台用户画像或已验证的市场结论）</p>
                 <ul className={autoStyles.list} data-testid="auto-unverified">
                   {researchNotices.length > 0 ? researchNotices.map((item) => <li key={`${item.field}:${item.token}`} className={styles.warning}>{autoNoticeText(item, research)}</li>) : <li>无</li>}
                 </ul>
