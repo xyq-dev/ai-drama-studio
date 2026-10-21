@@ -501,18 +501,34 @@ const VIEWING_HABIT = /通常|一般|往往|普遍|经常|常常|总是|习惯|�
 const VIEWING_BEFORE = /(?:观看|看了|看|播放|停留|刷|浏览|坚持|待)(?:了)?(?:约|大约|大概|不到|超过|仅|只)?$/u;
 const VIEWING_AFTER = /^(?:钟)?(?:左右|上下)?(?:后|之后|以后|就|便|即|内就|不到)*(?:会)?(?:退出|流失|划走|离开|关闭|跳出|弃剧|放弃|走掉|离场|停止|关掉|不看)/u;
 /**
- * 每集 right before a number of seconds or minutes is the work's own unit, not a viewing rate (每集约 60 秒的节奏). It
- * exempts only that duration: every other number of the clause is still read with 每集 as a rate (把每集60秒的故事观看3次).
+ * 每集 right before a number of seconds or minutes is the work's own unit, not a viewing rate (每集约 60 秒的节奏). For
+ * another number of the clause it is the work's unit only when that number counts a named story thing (每集60秒内发生
+ * 两次反转); a bare count of times beside it is still read with 每集 as a rate (把每集60秒的故事观看3次).
  */
-const EPISODE_LENGTH = /每集(?:的)?(?:时长|篇幅|长度|片长)?(?:为|是|只有|仅|共|控制在)?(?:约|大约|大概)?$/u;
+const EPISODE_LENGTH_WORDS = "每集(?:的)?(?:时长|篇幅|长度|片长)?(?:为|是|只有|仅|共|控制在)?(?:约|大约|大概)?";
+const EPISODE_LENGTH = new RegExp(`${EPISODE_LENGTH_WORDS}$`, "u");
+const EPISODE_LENGTH_ANY = new RegExp(`每集(?=${EPISODE_LENGTH_WORDS.slice(2)}[\\d〇零一二两三四五六七八九十百]+(?:多|余|来)?(?:秒钟|秒|分钟))`, "gu");
 /** A work-length duration that attributes a noun after it (本剧60秒的故事, 本剧60秒版本), not a time spent watching. */
 const WORK_ATTRIBUTE = /^(?:钟)?(?:的|篇幅|时长|版本|长度)/u;
 
-/** The clause RATE reads for one number: 每集 is masked only before this number when it is the work's length in seconds. */
+/**
+ * The clause RATE reads for one number. A duration masks the 每集 right before it. Another number masks every 每集 that
+ * is a work length only when it counts a named story thing: the noun it counts (反转, 误会, 人物), not a bare classifier.
+ */
 function rateText(clause: string, before: string, tail: string): string {
-  const unit = EPISODE_LENGTH.exec(before);
-  if (!unit || !/^(?:多|余|来)?(?:秒钟|秒|分钟)/u.test(tail)) return clause;
-  return before.slice(0, unit.index) + GAP + clause.slice(unit.index + 2);
+  if (/^(?:多|余|来)?(?:秒钟|秒|分钟)/u.test(tail)) {
+    const unit = EPISODE_LENGTH.exec(before);
+    return unit ? before.slice(0, unit.index) + GAP + clause.slice(unit.index + 2) : clause;
+  }
+  return countsStoryNoun(tail) ? clause.replace(EPISODE_LENGTH_ANY, GAP) : clause;
+}
+
+/** Whether a count names a story thing it counts (两次反转, 三个人物), not only a classifier of times (观看3次). */
+function countsStoryNoun(tail: string): boolean {
+  const counted = countedNoun(tail);
+  if (!counted || counted.group === "audience") return false;
+  const classifier = new RegExp(`^(?:${CLASSIFIERS})`, "u").exec(tail)?.[0];
+  return !(classifier !== undefined && counted.noun === classifier && UNIT_CLASSIFIERS[classifier] !== undefined);
 }
 
 /** Days a plan's duration takes, or null for a duration no plan uses (seconds, minutes, hours, years). */

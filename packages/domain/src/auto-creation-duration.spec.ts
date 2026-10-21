@@ -244,3 +244,29 @@ describe("PR #84 review: a work reference never exempts a viewing time, and the 
     }
   });
 });
+
+describe("PR #84 incremental review: 每集 as the work's unit is read by what the other number counts", () => {
+  const story = "待验证观众是否喜欢本剧每集60秒内发生两次反转的故事。";
+  const fields = [
+    ["hypotheses[0].statement", (text: string) => hypothesis(text)],
+    ["contentStructure[0].application.why", (text: string) => ({ contentStructure: [{ ...STRUCTURE, application: { pattern: "主角主动选择推动结果", why: text } }] })],
+    ["contentStructure[0].application.pattern", (text: string) => ({ contentStructure: [{ reference: null, application: { pattern: text, why: "本剧自主设计。" } }] })],
+  ] as const;
+
+  it.each(fields)("%s: a count of story events inside the episode's length is creative design, no notice", (_field, at) => {
+    expect(research(limited(at(story)))).toMatchObject({ ok: true, output: { unverified: [] } });
+  });
+
+  it.each(fields)("%s: a count of viewings beside the work's length is still a rate", (field, at) => {
+    for (const text of ["假设观众会把每集60秒的故事观看3次。", "假设观众会把每集60秒的故事重复观看3次。", "假设观众每集观看3次。"]) {
+      expect(research(limited(at(text))), text).toMatchObject({ ok: false, code: "unsourced_number", field, semantic: "market_statistic", rule: "rate_or_average" });
+    }
+  });
+
+  it("the sourced contract reads them the same way", () => {
+    const frozen = input();
+    expect(validateAutoStageOutput("research", sourced(hypothesis(story)), frozen, sourcedContext(frozen))).toMatchObject({ ok: true, output: { unverified: [] } });
+    expect(validateAutoStageOutput("research", sourced(hypothesis("假设观众会把每集60秒的故事观看3次。")), frozen, sourcedContext(frozen)))
+      .toMatchObject({ ok: false, rule: "rate_or_average" });
+  });
+});
