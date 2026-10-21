@@ -229,10 +229,11 @@ const SEMANTIC_TEXT: Record<string, string> = {
 
 const RULE_TEXT: Record<string, string> = {
   proportion: "比例或成数", magnitude: "数量级或倍数", ranking: "排名", audience_count: "观众或用户人数", audience_age: "受众年龄或年龄段",
-  rate_or_average: "平均值或每天、每周的频次", viewing_duration: "观看时长", viewing_count: "观看集数", long_observation: "过长的观察期",
+  rate_or_average: "平均值或每天、每周的频次", viewing_duration: "观看时长（观众实际看多久、看多久后退出）", viewing_count: "观看集数", long_observation: "过长的观察期",
   market_clause: "与观众或市场写在同一句", measured_result: "写成已测得的结果", unmarked_audience_judgement: "观众判断没有写明待验证或计划",
-  cast_over_limit: "人物数超过上限", locations_over_limit: "地点数超过上限", episode_count: "集数与冻结值不同", over_length: "时长超过每集目标",
+  cast_over_limit: "人物数超过上限", locations_over_limit: "地点数超过上限", episode_count: "集数与冻结值不同", over_length: "时长超过每集目标", length_changed: "本剧时长与冻结的每集时长不同",
   date_or_range: "日期或数值范围", no_role: "没有对应的创作或计划含义", count_out_of_range: "数量超出合理的创作范围",
+  duration_unconfirmed: "程序无法确认这个时长是本剧篇幅还是观看时长（受众文字里不能保留为未核实提示）",
   not_in_cited_excerpt: "引用资料中找不到",
   forbidden_field: "资料有限契约不允许的字段",
 };

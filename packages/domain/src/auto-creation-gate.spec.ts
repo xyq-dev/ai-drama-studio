@@ -263,7 +263,7 @@ describe("4. later prompts and the package keep a notice a hypothesis or design,
     const json = autoPackageJson(meta, stages) as { research: { analysis: AutoResearch; identity: Record<string, string> } };
     expect(json.research.analysis).toEqual(research());
     expect(json.research.identity.serverRecord).toContain("不是 AI 调研结论");
-    expect(json.research.identity.unverified).toContain("程序未能判定数字含义，未核实");
+    expect(json.research.identity.unverified).toContain("程序未能判定数字或时长含义，未核实");
   });
 });
 

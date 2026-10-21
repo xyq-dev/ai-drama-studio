@@ -58,6 +58,21 @@ export function autoFixtureEpisodeCount(user: string): number {
   return Number(/集数：(\d) 集；/.exec(user)?.[1] ?? "1");
 }
 
+export function autoFixtureEpisodeSeconds(user: string): number {
+  return Number(/每集目标时长约 (\d+) 秒/.exec(user)?.[1] ?? "60");
+}
+
+/** The double's hypotheses of the durations plan (synthetic samples, not a real model's answer). */
+export function fixtureAutoDurationHypotheses(kind: "creative" | "viewing", seconds: number): AutoResearchAnswer["hypotheses"] {
+  if (kind === "viewing") {
+    return [{ id: "H1", statement: `模型替身样例：观众通常观看${String(seconds)}秒后退出。`, howToVerify: "上线后用真实观看数据验证。" }];
+  }
+  return [
+    { id: "H1", statement: `待验证观众是否喜欢本剧${String(seconds)}秒的紧凑叙事。`, howToVerify: "计划比较两个版本的试看反馈。" },
+    { id: "H2", statement: `待验证：观众能否在${String(seconds)}秒内理解人物冲突。`, howToVerify: "计划邀请试看者复述人物关系。" },
+  ];
+}
+
 /** The JSON of a data block the prompt carries, e.g. the issues a revision must answer. */
 export function autoFixtureBlock(user: string, label: string): unknown {
   const start = user.indexOf(`<<<${label}\n`);
@@ -449,6 +464,12 @@ export interface AutoFixturePlan {
   forgedFactEvidence?: boolean;
   /** The craft fact also states a share its source does not carry (refused in a sourced run). */
   unsourcedFactNumber?: boolean;
+  /**
+   * Research hypotheses with the prompt's own episode length (checks v7). creative: the work's length (本剧60秒的紧凑叙事)
+   * and a pending question whose duration the checks cannot place (an unverified notice). viewing: an actual viewing
+   * time as a habit (refused).
+   */
+  durations?: "creative" | "viewing";
   /** One person on screen and one mentioned; the first drafts put the mentioned one on screen, revisions do not. */
   soloCast?: boolean;
   /** One person on screen, seven mentioned, and every scene of every draft lists all eight (hundreds of check results). */
@@ -472,6 +493,7 @@ export function autoFixtureAnswer(user: string, plan: AutoFixturePlan = {}): unk
         ...(plan.forgedFactEvidence ? { evidence: "知识库里没有这句话" } : {}),
         ...(plan.unsourcedFactNumber ? { statement: `${fact.statement}七成观众偏爱这种写法。` } : {}) })),
       contentStructure: plan.noReferences ? research.contentStructure.map((item) => ({ ...item, reference: null })) : research.contentStructure,
+      ...(plan.durations ? { hypotheses: fixtureAutoDurationHypotheses(plan.durations, autoFixtureEpisodeSeconds(user)) } : {}),
     };
     // The double follows the contract the prompt asks for, unless a plan says to break it.
     const answer = autoFixtureResearchMode(user) === "limited" && !plan.ignoreLimitedContract

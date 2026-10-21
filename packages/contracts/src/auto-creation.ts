@@ -29,11 +29,12 @@ export const AUTO_CREATION_INPUT_SCHEMA = "ads.auto-creation.input.v1" as const;
  * v5: the research answer no longer restates the settings or the source gaps (the server records them), research v3.
  * v6: the research prompt follows the run's saved source snapshot: limited asks for creative positioning and hypotheses
  * only (no findings, no audience sources), sourced keeps the cited findings; research v4.
+ * v7: the number rules say how to write the work's own length (本剧 60 秒的故事) and that a viewing time is never written.
  */
-export const AUTO_CREATION_PROMPT_VERSION = "ads.auto-creation.prompt.v6" as const;
+export const AUTO_CREATION_PROMPT_VERSION = "ads.auto-creation.prompt.v7" as const;
 /** Every prompt version a stored run may carry. A resumed run is sent with the current prompts. */
 export type AutoCreationPromptVersion = "ads.auto-creation.prompt.v1" | "ads.auto-creation.prompt.v2" | "ads.auto-creation.prompt.v3"
-  | "ads.auto-creation.prompt.v4" | "ads.auto-creation.prompt.v5" | typeof AUTO_CREATION_PROMPT_VERSION;
+  | "ads.auto-creation.prompt.v4" | "ads.auto-creation.prompt.v5" | "ads.auto-creation.prompt.v6" | typeof AUTO_CREATION_PROMPT_VERSION;
 export const AUTO_CREATION_SELECTION_RULES = "ads.auto-creation.selection-rules.v1" as const;
 /**
  * v2: the applied constraints and a direction's audience fit are number-checked; spaced ordinals are not claims.
@@ -46,11 +47,14 @@ export const AUTO_CREATION_SELECTION_RULES = "ads.auto-creation.selection-rules.
  * every other refusal stands, and the rest of the answer is still checked.
  * v6: a research answer is parsed with the contract of the run's saved research mode (limited or sourced); a limited
  * answer carrying a finding or an audience source field is refused whole, and a direction cites only research ids that exist.
+ * v7: a duration in a clause about viewers is judged by what it measures: the work's own length (本剧60秒) against the
+ * frozen setting, a viewing time (通常观看60秒后退出) refused as before, and a pending question whose duration names
+ * neither (观众能否在60秒内理解人物冲突) kept in creative text as an unverified notice (duration_unconfirmed).
  */
-export const AUTO_CREATION_CHECKS_VERSION = "ads.auto-creation.checks.v6" as const;
+export const AUTO_CREATION_CHECKS_VERSION = "ads.auto-creation.checks.v7" as const;
 /** Every checks version a stored run or review may carry. */
 export type AutoCreationChecksVersion = "ads.auto-creation.checks.v1" | "ads.auto-creation.checks.v2" | "ads.auto-creation.checks.v3"
-  | "ads.auto-creation.checks.v4" | "ads.auto-creation.checks.v5" | typeof AUTO_CREATION_CHECKS_VERSION;
+  | "ads.auto-creation.checks.v4" | "ads.auto-creation.checks.v5" | "ads.auto-creation.checks.v6" | typeof AUTO_CREATION_CHECKS_VERSION;
 /**
  * v4: the answer contract follows the run's saved research mode. limited: the model writes hypotheses, the audience as
  * text, content structures and opportunities only; the server assembles the rest (no facts, no observations, the
@@ -419,23 +423,32 @@ export interface AutoResearchServerRecord extends Omit<AutoResearchServerRecordV
   marketEvidence: { origin: "source_snapshot"; status: "unavailable" | "available"; note: string };
 }
 
-/** What every unverified notice says. */
+/** What a no_role notice says (checks v5 on). */
 export const AUTO_UNVERIFIED_NOTE = "程序未能判定数字含义，未核实";
+/** What a duration_unconfirmed notice says (checks v7 on): not a viewing statistic, not checked true either. */
+export const AUTO_UNVERIFIED_DURATION_NOTE = "程序无法确认时长含义（不是已判定的观看统计），未核实";
+/** What every kind of notice is, for a heading over them all. */
+export const AUTO_UNVERIFIED_SUMMARY = "程序未能判定数字或时长含义，未核实";
 
 /**
  * A server notice on uncited creative text (a hypothesis, its plan, a structure's application, an opportunity, a
- * direction's notes): a number the checks could not give a role (unclassified, no_role). The text stays as written;
- * the notice says it is unverified and keeps it a hypothesis or design. Never written by a model or a client.
+ * direction's notes): a number the checks could not give a role (unclassified, no_role), or a duration in a pending
+ * question the checks could not tie to the work or to a viewing time (unclassified, duration_unconfirmed, checks v7).
+ * The text stays as written; the notice says it is unverified and keeps it a hypothesis or design, never a market
+ * finding. Never written by a model or a client. A stored notice is read as it was written.
  */
-export interface AutoUnverifiedNotice {
+export type AutoUnverifiedNotice = {
   origin: "server_check";
   /** Schema keys and indexes, e.g. hypotheses[0].statement or candidates[1].differentiation. */
   field: string;
   /** The number as written in that field. */
   token: string;
   semantic: "unclassified";
-  rule: "no_role";
-  note: typeof AUTO_UNVERIFIED_NOTE;
+} & ({ rule: "no_role"; note: typeof AUTO_UNVERIFIED_NOTE } | { rule: "duration_unconfirmed"; note: typeof AUTO_UNVERIFIED_DURATION_NOTE });
+
+/** The heading over a list of notices: as before when every one is no_role, so an older run reads and exports as it did. */
+export function autoUnverifiedHeading(notices: readonly AutoUnverifiedNotice[]): string {
+  return notices.some((notice) => notice.rule === "duration_unconfirmed") ? AUTO_UNVERIFIED_SUMMARY : AUTO_UNVERIFIED_NOTE;
 }
 
 /**

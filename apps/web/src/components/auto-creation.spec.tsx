@@ -370,6 +370,10 @@ describe("AI 自动创作 run page", () => {
       ["unsourced_number@hypotheses[0].howToVerify:digits+result_claim+unmarked_audience_judgement", ["hypotheses[0].howToVerify", "已经得到的调查或观众结论", "没有写明待验证或计划"]],
       ["constraint_violation@appliedConstraints[0]:digits+frozen_conflict+cast_over_limit", ["appliedConstraints[0]", "冻结的硬约束", "人物数超过上限"]],
       ["unsourced_number@limitations[0]:digits+unclassified+date_or_range", ["limitations[0]", "无法确认是创作设定还是统计", "日期或数值范围"]],
+      // checks v7: a viewing time, a duration the code cannot place in a text with no notice exit, and a changed length.
+      ["unsourced_number@hypotheses[0].statement:digits+market_statistic+viewing_duration", ["hypotheses[0].statement", "市场或受众统计", "观众实际看多久、看多久后退出"]],
+      ["unsourced_number@audience.viewingNeeds[0]:digits+unclassified+duration_unconfirmed", ["audience.viewingNeeds[0]", "程序无法确认这个时长是本剧篇幅还是观看时长"]],
+      ["constraint_violation@hypotheses[0].statement:digits+frozen_conflict+length_changed", ["hypotheses[0].statement", "冻结的硬约束", "本剧时长与冻结的每集时长不同"]],
     ] as const) {
       cleanup();
       const failed = run({ state: "failed", errorCode: code.split("@")[0]!, quality: "pending", storySave: "pending", storyRevisionId: null, packageStatus: "incomplete",
@@ -486,6 +490,8 @@ describe("AI 自动创作 run page", () => {
     // The model's text is shown as written, with a mark where a notice is; the notices are listed on their own.
     expect(screen.getByTestId("auto-hypotheses").textContent).toContain("H1 假设：主角只剩五十元，必须在午夜前讨回工资。（含未核实数字）");
     expect(screen.getAllByTestId("auto-unverified-mark")).toHaveLength(2);
+    // Every notice of this older run is no_role: its heading reads as it did.
+    expect(screen.getByText(/^未核实提示（/u).textContent).toContain("未核实提示（程序未能判定数字含义，未核实；");
     expect([...screen.getByTestId("auto-unverified").querySelectorAll("li")].map((item) => item.textContent)).toEqual([
       "第1条假设（H1）中的「五十元」：程序未能判定数字含义，未核实；只属于创作假设或设计，不是有来源的事实或市场结论。",
       "第1条内容结构的本剧应用设计中的「三块」：程序未能判定数字含义，未核实；只属于创作假设或设计，不是有来源的事实或市场结论。",
@@ -539,6 +545,40 @@ describe("AI 自动创作 run page", () => {
       expect(screen.queryByTestId("auto-research-limited")).toBeNull();
     }
     expect(screen.queryByTestId("auto-legacy-limitations")).toBeNull();
+    expect(document.body.textContent).not.toMatch(/市场验证(已)?完成|已完成市场验证|已核实/u);
+  });
+
+  it("checks v7: a duration notice is listed with its own note beside an older no_role one; the text stays as written and nothing reads as verified", async () => {
+    const research = {
+      schema: "ads.auto-creation.research.v4", facts: [], observations: [],
+      hypotheses: [{ id: "H1", statement: "待验证：观众能否在60秒内理解人物冲突。", howToVerify: "计划邀请试看者复述人物关系。" }],
+      audience: { primary: "拟面向通勤时刷剧的成年观众（待验证）", viewingNeeds: ["一集内看到结果"], emotionalAppeals: ["扳回一局"], basis: "hypothesis", sourceIds: [] },
+      contentStructure: [{ reference: null, application: { pattern: "失踪者留下三块拼图，主角逐场拼出真相。", why: "自主创作设计。" } }],
+      opportunities: ["小人物在一个夜晚完成一次反击"],
+      serverRecord: { origin: "server_record",
+        executedWith: { promptVersion: "ads.auto-creation.prompt.v7", checksVersion: "ads.auto-creation.checks.v7", researchSchema: "ads.auto-creation.research.v4", answerContract: "limited" },
+        marketEvidence: { origin: "source_snapshot", status: "unavailable", note: "市场证据不可用：本次资料快照没有符合条件的近期市场资料。" },
+        settings: { origin: "user_setting", items: [{ key: "episodes", label: "集数", value: "共 1 集" }] },
+        material: { origin: "source_snapshot", researchMode: "limited", read: [], unread: [], gaps: [] } },
+      unverified: [
+        { origin: "server_check", field: "hypotheses[0].statement", token: "60", semantic: "unclassified", rule: "duration_unconfirmed", note: "程序无法确认时长含义（不是已判定的观看统计），未核实" },
+        { origin: "server_check", field: "contentStructure[0].application.pattern", token: "三块", semantic: "unclassified", rule: "no_role", note: "程序未能判定数字含义，未核实" },
+      ],
+    };
+    const done = run({ researchMode: "limited", stages: [
+      { stageKey: "sources", kind: "sources", state: "completed", attemptNo: 0, errorCode: null, output: null, upstreamChanged: false, supersededBy: null, scriptSave: null, scriptRevisionId: null },
+      { stageKey: "research", kind: "research", state: "completed", attemptNo: 1, errorCode: null, output: research as never, upstreamChanged: false, supersededBy: null, scriptSave: null, scriptRevisionId: null },
+    ] });
+    vi.stubGlobal("fetch", vi.fn(async (input: string) => input.endsWith("/auto-runs/latest") ? json({ run: done }) : json(options())));
+    render(<AutoCreationRun projectId={P1} />);
+    await screen.findByTestId("auto-research-detail");
+    expect(screen.getByTestId("auto-hypotheses").textContent).toContain("H1 假设：待验证：观众能否在60秒内理解人物冲突。（含未核实数字）");
+    expect(screen.getByText(/^未核实提示（/u).textContent).toContain("未核实提示（程序未能判定数字或时长含义，未核实；");
+    expect([...screen.getByTestId("auto-unverified").querySelectorAll("li")].map((item) => item.textContent)).toEqual([
+      "第1条假设（H1）中的「60」：程序无法确认时长含义（不是已判定的观看统计），未核实；只属于创作假设或设计，不是有来源的事实或市场结论。",
+      "第1条内容结构的本剧应用设计中的「三块」：程序未能判定数字含义，未核实；只属于创作假设或设计，不是有来源的事实或市场结论。",
+    ]);
+    expect(screen.queryByTestId("auto-facts")).toBeNull();
     expect(document.body.textContent).not.toMatch(/市场验证(已)?完成|已完成市场验证|已核实/u);
   });
 

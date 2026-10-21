@@ -17,7 +17,9 @@ import {
   AUTO_MARKET_EVIDENCE_NOTES,
   AUTO_RESEARCH_LIMITED_FORBIDDEN,
   AUTO_RESEARCH_SERVER_KEYS,
+  AUTO_UNVERIFIED_DURATION_NOTE,
   AUTO_UNVERIFIED_NOTE,
+  AUTO_UNVERIFIED_SUMMARY,
   autoAssembleLimitedResearch,
   autoBibleSchema,
   autoDirectionsSchema,
@@ -34,6 +36,7 @@ import {
   autoStageKind,
   autoStageRound,
   autoStructureViews,
+  autoUnverifiedHeading,
   autoUnverifiedOf,
   autoCreationRevisionsPerRound,
   type AutoBible,
@@ -290,9 +293,9 @@ function chosenDirection(context: AutoCreationContext): AutoDirection {
 
 const STRUCTURE_NOTE = "研究里的内容结构：“参考方法原文”是资料原文，“本剧应用设计”是本作品自己的创作设计，不是资料或市场结论；“历史版本”是旧格式，没有区分两者。";
 const IDENTITY_NOTE = "研究里只有 facts 和 observations 有来源；hypotheses、没有来源的 audience、本剧应用设计和 opportunities 是 AI 的创作假设与设计，验证计划尚未执行；"
-  + "“资料记录”来自服务端记录，不是 AI 调研结论；“未核实提示”标出的数字程序未能判定含义，未核实：相关文字只能当作创作假设或设计，不能写成事实、平台用户画像或已验证的市场结论。";
+  + "“资料记录”来自服务端记录，不是 AI 调研结论；“未核实提示”标出的数字或时长程序未能判定含义，未核实：相关文字只能当作创作假设或设计，不能写成事实、平台用户画像或已验证的市场结论。";
 const LIMITED_IDENTITY_NOTE = "这是 AI 创作策划：本次市场证据不可用，研究里没有有来源的市场结论；hypotheses、受众（待验证）、本剧应用设计和 opportunities 都是 AI 的创作假设与设计，验证计划尚未执行；"
-  + "“参考方法原文”只是方法引用，不是市场证据；“资料记录”来自服务端记录，不是 AI 调研结论；“未核实提示”标出的数字程序未能判定含义，未核实：相关文字只能当作创作假设或设计，不能写成事实、平台用户画像或已验证的市场结论。";
+  + "“参考方法原文”只是方法引用，不是市场证据；“资料记录”来自服务端记录，不是 AI 调研结论；“未核实提示”标出的数字或时长程序未能判定含义，未核实：相关文字只能当作创作假设或设计，不能写成事实、平台用户画像或已验证的市场结论。";
 
 /** What a later prompt says the research is: a limited v4 research has no findings at all, so it says so. */
 function identityNote(research: AutoStoredResearch): string {
@@ -374,7 +377,8 @@ const SERVER_RECORD_LINE = "不要另写字段复述用户设定或资料局限�
 /** Number rules 2–4: the work's own quantities, plans, and the proposed audience. The same in both contracts. */
 const NUMBER_RULES_CREATIVE = [
   "2. 本作品的创作设定可以写数量：虚构人物数（“两个互不信任的人”）、剧情次数（“三次误会”“两次反转”）、虚构人物年龄（“主角二十八岁”）、故事内期限（“三天内”）、开场秒数（“前 3 秒”）。"
-    + "人物数、地点数不能超过用户的上限，集数和每集时长只能写用户硬约束里的值（如“共 1 集，每集约 60 秒”）。",
+    + "人物数、地点数不能超过用户的上限，集数和每集时长只能写用户硬约束里的值（如“共 1 集，每集约 60 秒”）。"
+    + "提到观众时写本剧时长，要写明是本剧的篇幅（如“待验证观众是否喜欢本剧 60 秒的故事”）；不写观众实际看了多久、看多久后退出、通常或平均看多久，这些是观看统计。",
   "3. 验证计划可以写数量和天数，但必须写成将来的计划或待验证的问题：“拟比较两个版本”“计划上线后观察七天”“待验证观众是否更喜欢两次反转的版本”。"
     + "同一句里既提到观众、用户或市场又带数量时，提到观众、用户或市场的那一部分（逗号隔开的分句）本身必须写明“是否、可能、待验证”等；别的分句里的“计划、拟”不能替它说明（不写“计划比较两个版本，观众更喜欢三次反转的剧本”，写“计划比较两个版本，待验证观众是否更喜欢三次反转的剧本”）；不要写“数据显示、调查发现、已测试、测得”这类已经得到结果的说法。",
   "4. 拟定的目标人群用文字描述（如“拟面向通勤时刷剧的成年观众”），不写年龄段或比例；用户在硬约束里指定的目标观众可以原样照抄，但只能写成创作目标（如“目标观众：……（用户指定）”“拟面向……创作”），不能写成平台用户画像、主要或核心受众，也不能写成数据或调研的结论。不写日期和资料条数。",
@@ -652,8 +656,9 @@ function numberRefusal(finding: AutoNumberFinding, field: string): AutoValidatio
  */
 function creativeNumber(statement: string, field: string, frame: AutoNumberFrame, notices: AutoUnverifiedNotice[]): AutoValidation | null {
   const reading = uncitedNumberReading(statement, frame, { unverified: true });
-  notices.push(...reading.unverified.map((finding): AutoUnverifiedNotice => ({
-    origin: "server_check", field, token: finding.token, semantic: "unclassified", rule: "no_role", note: AUTO_UNVERIFIED_NOTE })));
+  notices.push(...reading.unverified.map((finding): AutoUnverifiedNotice => finding.rule === "duration_unconfirmed"
+    ? { origin: "server_check", field, token: finding.token, semantic: "unclassified", rule: "duration_unconfirmed", note: AUTO_UNVERIFIED_DURATION_NOTE }
+    : { origin: "server_check", field, token: finding.token, semantic: "unclassified", rule: "no_role", note: AUTO_UNVERIFIED_NOTE }));
   return reading.refusal ? numberRefusal(reading.refusal, field) : null;
 }
 
@@ -1363,7 +1368,7 @@ export const AUTO_RESEARCH_IDENTITY: Readonly<Record<string, string>> = {
   opportunities: "AI 创作判断",
   serverRecord: "用户设定（冻结输入）与服务端资料记录（资料快照），不是 AI 调研结论；research v4 另记回答契约（answerContract）和市场证据是否可用（marketEvidence）",
   answerContract: "research v4：limited 是 AI 创作策划（模型只写创作假设、拟定受众、方法参考与本剧应用、机会；facts、observations 为空，受众待验证，均由服务端写入），sourced 是有可读取市场资料时的引用契约",
-  unverified: `服务端提示：${AUTO_UNVERIFIED_NOTE}；相关文字只属于创作假设或设计，不是有来源的事实或已验证的市场结论`,
+  unverified: `服务端提示：${AUTO_UNVERIFIED_SUMMARY}（no_role：数字含义；duration_unconfirmed：时长含义，不是已判定的观看统计）；相关文字只属于创作假设或设计，不是有来源的事实或已验证的市场结论`,
   limitations: "历史版本（research v1/v2）由 AI 填写的资料局限",
   appliedConstraints: "历史版本（research v1/v2）由 AI 复述的约束",
   researchMode: "limited 表示 AI 创作策划、市场证据不可用（仍可能读取了方法资料或用户资料），不是实时市场验证；sourced 表示有可读取的市场资料",
@@ -1468,7 +1473,7 @@ export function autoPackageMarkdown(meta: AutoPackageMeta, stages: readonly Auto
         ...material.read.map((item) => `- 已读取：${item.sourceId}「${item.title}」（${item.readScope}）：${item.note}`),
         ...material.unread.map((item) => `- 未读取：${item.sourceId}「${item.title}」（${item.status}）：${item.note}`),
         ...material.gaps.map((gap) => `- 缺失说明：${gap}`), "");
-      push(`**未核实提示**（${AUTO_UNVERIFIED_NOTE}；相关文字只属于创作假设或设计，不是有来源的事实、平台用户画像或已验证的市场结论）`, "",
+      push(`**未核实提示**（${autoUnverifiedHeading(notices)}；相关文字只属于创作假设或设计，不是有来源的事实、平台用户画像或已验证的市场结论）`, "",
         ...(notices.length > 0 ? notices.map((item) => `- ${autoNoticeText(item, research)}`) : ["- 无"]), "");
     } else {
       push(`**局限**（AI 填写，历史版本）：${research.limitations.join("；")}`,

@@ -213,7 +213,7 @@ describe(`automatic creation on PostgreSQL (${scenario} schema)`, () => {
   });
 
   // v2 is what the deployed baseline (cf1ef29) freezes; v1 came before it. Neither is rehashed under v3.
-  it.each(["v1", "v2", "v4", "v5"] as const)("a run stored by the %s code: its own key and request replay 200 with nothing written or sent; other content or work is 409", async (version) => {
+  it.each(["v1", "v2", "v4", "v5", "v6"] as const)("a run stored by the %s code: its own key and request replay 200 with nothing written or sent; other content or work is 409", async (version) => {
     plan = {};
     const { svc, settle, pending } = service();
     const id = await project(1);
@@ -293,9 +293,9 @@ describe(`automatic creation on PostgreSQL (${scenario} schema)`, () => {
     expect(run).toMatchObject({ state: "completed", quality: "passed", callsUsed: 6, callCap: 6, storySave: "saved", packageStatus: "ready", errorCode: null,
       providerKey: "deepseek", model: "deepseek-flash", researchMode: "limited" });
     expect(seen.slice(before).map((item) => item.stage)).toEqual(["research", "directions", "bible", "outline", "episode:1", "review:1"]);
-    expect(seen.slice(before)[0]!.user).toContain("提示版本：ads.auto-creation.prompt.v6");
+    expect(seen.slice(before)[0]!.user).toContain("提示版本：ads.auto-creation.prompt.v7");
     expect((await q<{ input_json: AutoCreationFrozenInput }>("SELECT input_json FROM auto_creation_run WHERE id = $1", [runId]))[0]!.input_json)
-      .toMatchObject({ promptVersion: "ads.auto-creation.prompt.v6", checksVersion: "ads.auto-creation.checks.v6" });
+      .toMatchObject({ promptVersion: "ads.auto-creation.prompt.v7", checksVersion: "ads.auto-creation.checks.v7" });
     // The stored research is the accepted answer as sent: its quantities are there word for word.
     const research = (await q<{ output_json: { hypotheses: Array<{ statement: string; howToVerify: string }> } }>(
       "SELECT output_json FROM auto_creation_stage WHERE run_id = $1 AND stage_key = 'research'", [runId]))[0]!.output_json;
@@ -383,7 +383,7 @@ describe(`automatic creation on PostgreSQL (${scenario} schema)`, () => {
     expect((await svc.resume(id, runId, {}, TOKEN, ctx("v2-resume"))).status).toBe(200);
     await settle();
     expect(seen.slice(sent).map((item) => item.stage)).toEqual(["research", "directions", "bible", "outline", "episode:1", "review:1"]);
-    expect(seen.slice(sent)[0]!.user).toContain("提示版本：ads.auto-creation.prompt.v6");
+    expect(seen.slice(sent)[0]!.user).toContain("提示版本：ads.auto-creation.prompt.v7");
     const run = runOf((await svc.get(id, runId)).body);
     expect(run).toMatchObject({ state: "completed", quality: "passed", callsUsed: 7, callCap: 8, storySave: "saved" });
     expect(run.calls.filter((call) => call.stageKey === "research").map((call) => [call.state, call.errorCode]))
@@ -480,6 +480,43 @@ describe(`automatic creation on PostgreSQL (${scenario} schema)`, () => {
     evidence[`${shape}ResearchHistory`] = { runId, replay: replay.status, newCalls: seen.length - sent };
   });
 
+  it("checks v7: the work's own length passes, an unplaced duration is a notice; 1 episode, 60 s, 0 rounds, budget 6 completes, exports and reads back", async () => {
+    plan = { durations: "creative" };
+    const { svc, settle } = service();
+    const id = await project(1);
+    const before = seen.length;
+    const started = await svc.start(id, { revisionRounds: 0, callBudget: 6 }, TOKEN, ctx("durations"));
+    expect(started.status).toBe(201);
+    await settle();
+    const runId = runOf(started.body).runId;
+    expect(runOf((await svc.get(id, runId)).body)).toMatchObject({ state: "completed", quality: "passed", callsUsed: 6, callCap: 6, storySave: "saved",
+      packageStatus: "ready", researchMode: "limited" });
+    expect(seen.slice(before).map((item) => item.stage)).toEqual(["research", "directions", "bible", "outline", "episode:1", "review:1"]);
+    const research = (await q<{ output_json: { hypotheses: Array<{ statement: string }>; unverified: unknown[]; facts: unknown[] } }>(
+      "SELECT output_json FROM auto_creation_stage WHERE run_id = $1 AND stage_key = 'research'", [runId]))[0]!.output_json;
+    expect(research.hypotheses.map((item) => item.statement)).toEqual(["待验证观众是否喜欢本剧60秒的紧凑叙事。", "待验证：观众能否在60秒内理解人物冲突。"]);
+    expect(research.unverified).toEqual([{ origin: "server_check", field: "hypotheses[1].statement", token: "60", semantic: "unclassified", rule: "duration_unconfirmed",
+      note: "程序无法确认时长含义（不是已判定的观看统计），未核实" }]);
+    expect(research.facts).toEqual([]);
+    const notice = "第2条假设（H2）中的「60」：程序无法确认时长含义（不是已判定的观看统计），未核实";
+    expect(seen.slice(before)[1]!.user).toContain(notice);
+    expect((await q<{ review_status: string }>("SELECT review_status FROM story_revision WHERE project_id = $1", [id]))).toEqual([{ review_status: "DRAFT" }]);
+    const markdown = (await svc.package(id, runId, "markdown")).download!.text;
+    expect(markdown).toContain(`- ${notice}`);
+    expect(markdown).toContain("**未核实提示**（程序未能判定数字或时长含义，未核实；");
+    expect(markdown).not.toContain("**有来源的事实**");
+    expect(markdown.replaceAll("或已验证的市场结论", "")).not.toMatch(/已验证|已核实|市场验证(已)?完成/u);
+    const json = (await svc.package(id, runId, "json")).download!.text;
+    expect((JSON.parse(json) as { research: { analysis: unknown } }).research.analysis).toEqual(research);
+    const sent = seen.length;
+    expect((await svc.package(id, runId, "markdown")).download!.text).toBe(markdown);
+    const undated = (text: string) => text.replace(/"generatedAt": ?"[^"]+"/u, "");
+    expect(undated((await svc.package(id, runId, "json")).download!.text)).toBe(undated(json));
+    expect(seen.length).toBe(sent);
+    plan = {};
+    evidence.durations = { runId, calls: 6, notices: research.unverified.length, stages: seen.slice(before, sent).map((item) => item.stage) };
+  });
+
   it("checks v5: numbers the checks cannot place stay with unverified notices; 1 episode, 60 s, 0 rounds, budget 6 completes, exports and reads back", async () => {
     plan = { unplacedQuantities: true };
     const { svc, settle } = service();
@@ -502,7 +539,7 @@ describe(`automatic creation on PostgreSQL (${scenario} schema)`, () => {
     expect(research.unverified.map((item) => [item.field, item.token])).toEqual([["contentStructure[2].application.pattern", "三块"], ["opportunities[1]", "五十元"]]);
     expect(research).not.toHaveProperty("appliedConstraints");
     expect(research.serverRecord).toMatchObject({ origin: "server_record", settings: { origin: "user_setting" }, material: { origin: "source_snapshot", researchMode: "limited" },
-      executedWith: { promptVersion: "ads.auto-creation.prompt.v6", checksVersion: "ads.auto-creation.checks.v6", answerContract: "limited" },
+      executedWith: { promptVersion: "ads.auto-creation.prompt.v7", checksVersion: "ads.auto-creation.checks.v7", answerContract: "limited" },
       marketEvidence: { status: "unavailable" } });
     expect((outputs.directions as { unverified: Array<{ field: string }> }).unverified.map((item) => item.field)).toEqual(["candidates[0].differentiation"]);
     // Later prompts carry the notices as unverified.
@@ -534,8 +571,10 @@ describe(`automatic creation on PostgreSQL (${scenario} schema)`, () => {
     ["statisticAfterUnplaced", "unsourced_number@opportunities[1]:percent+market_statistic+proportion", "七成"],
     ["serverFieldsInAnswer", "invalid_output@limitations:unrecognized_keys+limited_contract+forbidden_field", "官方入口页面没有读到正文"],
     ["ignoreLimitedContract", "invalid_output@facts:unrecognized_keys+limited_contract+forbidden_field", "项目知识库的写作方法要求关键结果来自主角的选择和行动"],
+    // checks v7: an actual viewing time, the frozen 60 秒 itself, is still refused.
+    ["durations", "unsourced_number@hypotheses[0].statement:digits+market_statistic+viewing_duration", "观众通常观看60秒后退出"],
   ] as const)("checks v5: %s is refused at research alone; one send, nothing stored, nothing after it", async (flag, code, text) => {
-    plan = { [flag]: true };
+    plan = flag === "durations" ? { durations: "viewing" } : { [flag]: true };
     const { svc, settle } = service();
     const id = await project(1);
     const before = seen.length;
@@ -584,12 +623,12 @@ describe(`automatic creation on PostgreSQL (${scenario} schema)`, () => {
     expect((await svc.resume(id, runId, {}, TOKEN, ctx("v4-resume"))).status).toBe(200);
     await settle();
     expect(seen.slice(sent).map((item) => item.stage)).toEqual(["research", "directions", "bible", "outline", "episode:1", "review:1"]);
-    expect(seen.slice(sent)[0]!.user).toContain("提示版本：ads.auto-creation.prompt.v6");
+    expect(seen.slice(sent)[0]!.user).toContain("提示版本：ads.auto-creation.prompt.v7");
     const run = runOf((await svc.get(id, runId)).body);
     expect(run).toMatchObject({ state: "completed", callsUsed: 7, callCap: 8, storySave: "saved", promptVersion: "ads.auto-creation.prompt.v4" });
     expect(run.calls.filter((call) => call.stageKey === "research").map((call) => [call.state, call.errorCode])).toEqual([["rejected", v4Code], ["completed", null]]);
     expect(run.stages.find((stage) => stage.stageKey === "research")!.output).toMatchObject({ schema: "ads.auto-creation.research.v4",
-      serverRecord: { executedWith: { promptVersion: "ads.auto-creation.prompt.v6", checksVersion: "ads.auto-creation.checks.v6", answerContract: "limited" } } });
+      serverRecord: { executedWith: { promptVersion: "ads.auto-creation.prompt.v7", checksVersion: "ads.auto-creation.checks.v7", answerContract: "limited" } } });
     const after = (await q<{ input_json: AutoCreationFrozenInput; input_hash: string }>("SELECT input_json, input_hash FROM auto_creation_run WHERE id = $1", [runId]))[0]!;
     expect(after.input_json).toEqual(v4);
     expect(after.input_hash).toBe(hashAutoCreationInput(id, v4));
