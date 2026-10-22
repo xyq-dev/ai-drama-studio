@@ -1,0 +1,59 @@
+name: Real media pilot offline checks
+
+on:
+  pull_request:
+    paths:
+      - "scripts/real-media-pilot/**"
+      - "services/media-worker/src/media_worker/compose_cli.py"
+      - "services/media-worker/src/media_worker/encode_measurement.py"
+      - ".github/workflows/real-media-pilot.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "scripts/real-media-pilot/**"
+      - "services/media-worker/src/media_worker/compose_cli.py"
+      - "services/media-worker/src/media_worker/encode_measurement.py"
+      - ".github/workflows/real-media-pilot.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: real-media-pilot-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    strategy:
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run offline provider and recovery tests
+        run: python -m unittest discover -s scripts/real-media-pilot -p test_pilot.py -v
+
+  compose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pinned FFmpeg
+        run: |
+          sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list || true
+          sudo apt-get update -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ffmpeg=7:6.1.1-3ubuntu5
+          test "$(dpkg-query -W -f '${Version}' ffmpeg)" = "7:6.1.1-3ubuntu5"
+          ffmpeg -version
+          ffprobe -version
+      - name: Compose synthetic media with the existing renderer
+        run: python -m unittest discover -s scripts/real-media-pilot -p test_compose_smoke.py -v
