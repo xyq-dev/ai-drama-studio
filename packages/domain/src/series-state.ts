@@ -337,8 +337,9 @@ export function seriesFinalState(snapshot: SeriesSnapshot, states = seriesBatchS
   const basis = seriesFinalBasis(snapshot, states);
   // The work's story is no longer the plan's: no earlier pass or review stands for the current work (the output is kept).
   if (seriesStoryBinding(snapshot).status === "changed") return { status: output ? "stale" : "none", output, basis };
-  if (basis && seriesDecisionFor(snapshot, "final", basis)) return { status: "cleared", output, basis };
+  // A person's review revalidates or overrides a final review that ran; it never stands in for the first one.
   if (!output) return { status: "none", output, basis };
+  if (basis && seriesDecisionFor(snapshot, "final", basis)) return { status: "cleared", output, basis };
   // Every dependency the final review read must still be the current one (its summaries' versions, ledger, plan, story).
   const stale = !basis || !plan || Object.entries(basis).some(([key, hash]) => output!.reviewed[key] !== hash);
   return { status: stale ? "stale" : output.passed ? "passed" : "needs_revision", output, basis };
@@ -357,6 +358,16 @@ export function seriesFinalBasis(snapshot: SeriesSnapshot, states = seriesBatchS
     });
   }
   return basis;
+}
+
+/**
+ * What a person's final review covers now: the final basis, offered only once a model final review completed (a person
+ * reviews its result again; it never replaces the first final review) and while the work's story is the plan's. The
+ * basis itself (seriesFinalBasis) stays available to the first final review job.
+ */
+export function seriesFinalDecisionBasis(snapshot: SeriesSnapshot, states = seriesBatchStates(snapshot)): Record<string, string> | null {
+  if (seriesStoryBinding(snapshot).status === "changed") return null;
+  return seriesFinalState(snapshot, states).output ? seriesFinalBasis(snapshot, states) : null;
 }
 
 export function seriesFinalBlockers(snapshot: SeriesSnapshot, states = seriesBatchStates(snapshot)): string[] {
@@ -404,7 +415,7 @@ export function seriesPlacementState(snapshot: SeriesSnapshot, batchNo: number, 
  */
 export function seriesDecisionBasis(snapshot: SeriesSnapshot, target: string): Record<string, string> | null {
   if (target === "plan") return seriesPlanDecisionBasis(snapshot);
-  if (target === "final") return seriesStoryBinding(snapshot).status === "changed" ? null : seriesFinalBasis(snapshot);
+  if (target === "final") return seriesFinalDecisionBasis(snapshot);
   const batchNo = /^batch:(\d+)$/.exec(target)?.[1];
   return batchNo ? seriesBatchStates(snapshot)[Number(batchNo) - 1]?.decisionBasis ?? null : null;
 }
@@ -914,8 +925,8 @@ export interface SeriesView {
   /** What keeps the series from being complete now (seriesAttention), in order. */
   attention: string[];
   /**
-   * decisionBasis: what a person's final review covers now (null until every episode and the last ledger exist, and
-   * while plan and story wait to be bound again). previousPassed: an earlier final review passed, but it no longer
+   * decisionBasis: what a person's final review covers now (null until a model final review has run, every episode and
+   * the last ledger exist, and while plan and story wait to be bound again). previousPassed: an earlier final review passed, but it no longer
    * stands for the current dependencies (status stale).
    */
   final: { status: SeriesFinalStatus; output: SeriesReviewOutput | null; blockers: string[]; decisionBasis: Record<string, string> | null; previousPassed: boolean };
@@ -999,7 +1010,7 @@ export function seriesView(snapshot: SeriesSnapshot): SeriesView {
     },
     attention: written > 0 ? seriesAttention(snapshot, states) : [],
     final: { status: final.status, output: final.output, blockers: states.every((item) => item.written === item.size) ? seriesFinalBlockers(snapshot, states) : ["episodes_incomplete"],
-      decisionBasis: binding.status === "changed" ? null : final.basis, previousPassed: final.status === "stale" && final.output?.passed === true },
+      decisionBasis: binding.status === "changed" || final.output === null ? null : final.basis, previousPassed: final.status === "stale" && final.output?.passed === true },
     next: { batchNo: nextBatch, blockers: nextBatch === null ? [] : seriesBatchBlockers(snapshot, nextBatch, states) },
     budget: { normalCalls: seriesNormalCalls(n), planCalls: seriesPlanCalls(n), planAndFirstBatchCalls: seriesPlanCalls(n) + seriesBatchCalls(n, 1),
       callsUsed: snapshot.grants.reduce((total, item) => total + item.callsUsed, 0), billing: "unknown" },
@@ -1013,6 +1024,13 @@ export function seriesView(snapshot: SeriesSnapshot): SeriesView {
       tableRead: "not_recorded", liveTiming: "not_recorded", media: "not_started",
     },
   };
+}
+
+/** A model version's text as a script: formatted with the setting of the plan revision its job was frozen on. */
+function seriesStageText(snapshot: SeriesSnapshot, ref: SeriesVersionRef, episode: SeriesEpisode): string {
+  const run = ref.kind === "stage" ? snapshot.jobs.find((job) => job.run.id === ref.runId)?.run : undefined;
+  const plan = snapshot.plans.find((item) => item.id === run?.input.planRevisionId) ?? seriesCurrentPlan(snapshot)!;
+  return formatSeriesEpisode(episode, plan.content.setting);
 }
 
 export interface SeriesPackageMeta {
@@ -1085,7 +1103,9 @@ export function seriesPackageJson(snapshot: SeriesSnapshot, meta: SeriesPackageM
         ref: version.ref,
         title: version.episode?.title ?? null,
         summary: seriesSummaryOf(snapshot, version),
-        text: version.script ? version.script.text : formatSeriesEpisode(version.episode!, plan!.content.setting),
+        // The workbench's saved text whenever there is one (a person's edit or a placed model version); else the model version
+        // formatted with the plan revision its job was written on, never with a newer plan.
+        text: version.placedScript ? version.placedScript.text : seriesStageText(snapshot, version.ref, version.episode!),
         structured: version.episode,
         workbench: version.placedScript ? { scriptRevisionId: version.placedScript.id, reviewStatus: version.placedScript.reviewStatus,
           freshnessStatus: version.placedScript.freshnessStatus, contentHash: version.placedScript.contentHash } : null,
@@ -1098,7 +1118,7 @@ export function seriesPackageJson(snapshot: SeriesSnapshot, meta: SeriesPackageM
           ? { note: "已批准稿与当前稿不同，分别标明。", scriptRevisionId: approved.id, contentHash: approved.contentHash, text: approved.text } : null,
         unadoptedModelDraft: model && version && model.stage.outputHash !== version.ref.hash
           ? { note: "未采纳的模型稿：来源为系列任务，不是工作台当前稿。", runId: model.run.id, stageKey: model.stage.stageKey, outputHash: model.stage.outputHash,
-            text: formatSeriesEpisode(model.stage.output as unknown as SeriesEpisode, plan!.content.setting) } : null,
+            text: seriesStageText(snapshot, stageRef(episodeNo, model.run, model.stage), model.stage.output as unknown as SeriesEpisode) } : null,
       };
     })),
     continuity: states.map((state) => ({

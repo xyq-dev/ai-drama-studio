@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { seriesScopeCalls, type SeriesScope } from "@ai-drama/contracts";
 import { PersistenceError } from "@ai-drama/database";
-import type { SeriesView } from "@ai-drama/domain";
+import { seriesFinalBasis, type SeriesView } from "@ai-drama/domain";
 import { InMemorySeriesWritingStore, SeriesWritingEngine, titleWritingProviderConfigs } from "@ai-drama/providers";
 import { seriesFixtureTransport, type SeriesFixtureExchange } from "@ai-drama/providers/title-writing-fixtures";
 import { SeriesWritingService } from "./series-writing.service";
@@ -813,5 +813,119 @@ describe("round 3, 11: the final review stands only for the summaries it read", 
     expect((await decide(s, view.projectId, "final", page.final.decisionBasis)).status).toBe(201);
     expect((await current(s, view.projectId)).completion).toBe("text_complete");
     expect(s.seen.length).toBe(sent);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Round 4 (review of 9fd5e2f): the first final review is never a person's, and the package exports the saved text.
+
+describe("round 4, 1: a person's review never stands in for the first model final review", () => {
+  it("3 episodes, plan and batch 1 only: no final review ran, so no final basis is offered and a final decision is refused with nothing written", async () => {
+    const s = setup();
+    const view = await work(s, 3);
+    await grant(s, view, { plan: true, batchFrom: 1, batchTo: 1, final: false });
+    const page = await current(s, view.projectId);
+    expect(page.final).toMatchObject({ status: "none", output: null, decisionBasis: null });
+    expect(page.completion).toBe("partial");
+    expect(s.store.stages.filter((stage) => stage.stageKey === "final_review")).toHaveLength(0);
+    // What the page could have sent: the basis a final review would read (the store never offers it as a decision basis).
+    const basis = seriesFinalBasis((await s.store.snapshot(WS, view.projectId))!);
+    expect(basis).not.toBeNull();
+    const sent = s.seen.length;
+    const refused = await decide(s, view.projectId, "final", basis);
+    expect(refused.status).toBe(409);
+    expect(s.store.decisions).toHaveLength(0);
+    expect(s.seen.length).toBe(sent);
+    expect((await current(s, view.projectId))).toMatchObject({ completion: "partial", final: { status: "none" } });
+  });
+
+  it("a final decision recorded without any final review output (as an older server could) never completes the series", async () => {
+    const s = setup();
+    const view = await work(s, 3);
+    await grant(s, view, { plan: true, batchFrom: 1, batchTo: 1, final: false });
+    const snapshot = (await s.store.snapshot(WS, view.projectId))!;
+    s.store.decisions.push({ id: randomUUID(), seriesId: snapshot.series.id, target: "final", basis: seriesFinalBasis(snapshot)!, note: "旧记录", createdBy: "server-owner",
+      createdAt: new Date(START).toISOString() });
+    const page = await current(s, view.projectId);
+    expect(page.final.status).toBe("none");
+    expect(page.completion).toBe("partial");
+    expect(page.attention).toContain("final_review_missing");
+  });
+
+  it("the first final review is still sent from that basis; a later change makes it stale and a person's review then clears it", async () => {
+    const s = setup();
+    const view = await work(s, 3);
+    await grant(s, view, { plan: true, batchFrom: 1, batchTo: 1, final: false });
+    let page = await current(s, view.projectId);
+    const sent = s.seen.length;
+    expect((await grant(s, page, { plan: false, batchFrom: null, batchTo: null, final: true })).status).toBe(201);
+    expect(stagesOf(s, sent)).toEqual(["final_review"]);
+    page = await current(s, view.projectId);
+    expect(page).toMatchObject({ completion: "text_complete", final: { status: "passed" } });
+    expect(page.final.decisionBasis).not.toBeNull();
+    s.store.approveCurrentStory(view.projectId);
+    s.store.writeHumanScript(view.projectId, 2, "人工修改后的第 2 集");
+    expect((await confirmLedger(s, view.projectId, 1)).status).toBe(201);
+    page = await current(s, view.projectId);
+    expect((await decide(s, view.projectId, "batch:1", page.batches[0]!.decisionBasis)).status).toBe(201);
+    page = await current(s, view.projectId);
+    expect(page.final.status).toBe("stale");
+    expect((await decide(s, view.projectId, "final", page.final.decisionBasis)).status).toBe(201);
+    expect((await current(s, view.projectId))).toMatchObject({ completion: "text_complete", final: { status: "cleared" } });
+  });
+});
+
+const stagesOf = (s: Setup, from: number) => s.seen.slice(from).map((item) => item.stage);
+
+describe("round 4, 2: the current package exports the text actually saved, and model drafts on their own plan", () => {
+  async function renamedAfterBatch() {
+    const s = setup();
+    const view = await work(s, 6);
+    await grant(s, view, { plan: true, batchFrom: 1, batchTo: 1, final: false });
+    s.store.approveCurrentStory(view.projectId);
+    let page = await current(s, view.projectId);
+    const content = structuredClone(page.plan!.content);
+    content.setting.characters = content.setting.characters.map((item) => item.id === "C1" ? { ...item, name: "林大满" } : item);
+    expect((await s.service.savePlan(view.projectId, { basePlanRevisionId: page.plan!.revisionId, baseStoryRevisionId: page.story.current!.revisionId,
+      story: "adopt_current", content }, CONTEXT())).status).toBe(201);
+    page = await current(s, view.projectId);
+    return { s, view, page };
+  }
+
+  type PackEpisode = { episodeNo: number; current: { source: string; text: string; workbench: { scriptRevisionId: string; contentHash: string } | null } | null;
+    unadoptedModelDraft: { text: string } | null };
+  const pack = async (s: Setup, projectId: string) => (JSON.parse((await s.service.package(projectId, "json")).download!.text) as { episodes: PackEpisode[] }).episodes;
+
+  it("a model draft not in the workbench is formatted with the plan revision its job was written on", async () => {
+    const { s, view } = await renamedAfterBatch();
+    const episodes = await pack(s, view.projectId);
+    expect(episodes[0]!.current).toMatchObject({ source: "model_version_not_in_workbench" });
+    expect(episodes[0]!.current!.text).toContain("林小满");
+    expect(episodes[0]!.current!.text).not.toContain("林大满");
+  });
+
+  it("a placed script is exported as its saved text in JSON and Markdown, byte for byte; an unadopted model draft keeps its own plan", async () => {
+    const { s, view } = await renamedAfterBatch();
+    expect((await confirmLedger(s, view.projectId, 1)).status).toBe(201);
+    let page = await current(s, view.projectId);
+    expect((await decide(s, view.projectId, "batch:1", page.batches[0]!.decisionBasis)).status).toBe(201);
+    expect((await s.service.placeBatch(view.projectId, 1, {}, CONTEXT())).body).toMatchObject({ placed: 3 });
+    const project = s.store.projects.get(view.projectId)!;
+    const saved = [1, 2, 3].map((episodeNo) => project.episodes.get(episodeNo)!.scripts[0]!);
+    let episodes = await pack(s, view.projectId);
+    for (const [index, script] of saved.entries()) {
+      expect(episodes[index]!.current).toMatchObject({ source: "model_version_in_workbench", workbench: { scriptRevisionId: script.id, contentHash: script.contentHash } });
+      expect(episodes[index]!.current!.text).toBe(script.text);
+    }
+    const markdown = (await s.service.package(view.projectId, "markdown")).download!.text;
+    for (const script of saved) expect(markdown).toContain("```text\n" + script.text + "\n```");
+    // A person's edit of episode 1: the person's text is current; the model's stays apart, on its own plan's names.
+    s.store.writeHumanScript(view.projectId, 1, "人工修改后的第 1 集全文");
+    episodes = await pack(s, view.projectId);
+    expect(episodes[0]!.current).toMatchObject({ source: "workbench_manual_revision", text: "人工修改后的第 1 集全文" });
+    expect(episodes[0]!.unadoptedModelDraft!.text).toContain("林小满");
+    expect(episodes[0]!.unadoptedModelDraft!.text).not.toContain("林大满");
+    page = await current(s, view.projectId);
+    expect(page.episodes[0]!.version!.kind).toBe("script");
   });
 });

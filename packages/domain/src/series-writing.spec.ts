@@ -203,3 +203,40 @@ describe("round 3: relationships, dependencies and a person's ledger", () => {
     expect(checkSeriesLedgerContent(plan, moved, 3).ok).toBe(true);
   });
 });
+
+describe("round 4: a forbidden theme is matched in creative text only, never in schema ids, references or enums", () => {
+  const forbidding = (...terms: string[]): SeriesFrozenInput => ({ ...input, constraints: { ...input.constraints, forbiddenThemes: terms } });
+  const ctx = () => seriesContextFromPlan(input, plan, "0".repeat(64));
+  const withLedger = () => ({ ...ctx(), baseLedger: seriesInitialLedger(plan) });
+
+  it.each<[string, string, unknown, () => ReturnType<typeof ctx>]>([
+    ["series (the schema literal of a setting)", "setting", setting, ctx],
+    ["C1 (a person's id and the protagonist reference)", "setting", setting, ctx],
+    ["INT (a location's interior/exterior enum)", "setting", setting, ctx],
+    ["continue (an episode's ending enum)", "episode:1", episode(1), withLedger],
+    ["plant (a continuity foreshadowing action)", "episode:2", episode(2), withLedger],
+    ["L1 (a scene's location reference)", "outline:2", { schema: SERIES_OUTLINE_SCHEMA, chunkNo: 2, episodes: [7, 8, 9].map(outline) }, ctx],
+  ])("forbidding %s does not refuse a valid output", (label, stageKey, value, context) => {
+    const term = label.split(" ")[0]!;
+    expect(validateSeriesStageOutput(stageKey, JSON.stringify(value), forbidding(term), context(), autoInput).ok).toBe(true);
+  });
+
+  it("the same words in creative text are still refused, field by field (core.ending is text, an episode's ending is not)", () => {
+    const refusedFor = (term: string, stageKey: string, value: unknown, context = ctx()) =>
+      validateSeriesStageOutput(stageKey, JSON.stringify(value), forbidding(term), context, autoInput);
+    expect(refusedFor("continue", "setting", { ...setting, core: { ...setting.core, ending: "故事 continue 下去" } })).toMatchObject({ ok: false, code: "constraint_violation" });
+    expect(refusedFor("INT", "setting", { ...setting, locations: [{ ...setting.locations[0]!, description: "INT 风格的店面" }] })).toMatchObject({ ok: false, code: "constraint_violation" });
+    expect(refusedFor("C1", "episode:1", episode(1, { scenes: [{ ...episode(1).scenes[0]!, dialogue: [{ characterId: "C1", line: "C1 是谁", delivery: "" }] }] }), withLedger()))
+      .toMatchObject({ ok: false, code: "constraint_violation" });
+    expect(refusedFor("plant", "episode:1", episode(1, { scenes: [{ ...episode(1).scenes[0]!, action: "她把 plant 放在柜台" }] }), withLedger()))
+      .toMatchObject({ ok: false, code: "constraint_violation" });
+    expect(refusedFor("series", "arc", { ...arc, finale: { ...arc.finale, resolution: "一部 series 的收束" } })).toMatchObject({ ok: false, code: "constraint_violation" });
+  });
+
+  it("a person's plan follows the same rule: schema and ids never match, its creative text does", () => {
+    expect(checkSeriesPlanContent(forbidding("series", "C1", "INT", "FS1"), plan).ok).toBe(true);
+    expect(checkSeriesPlanContent(forbidding("series"), { ...plan, setting: { ...setting, synopsis: "一部 series 样例" } }))
+      .toMatchObject({ ok: false, code: "constraint_violation", detail: "forbidden_theme" });
+    expect(checkSeriesPlanContent(forbidding("承接"), plan)).toMatchObject({ ok: false, code: "constraint_violation" });
+  });
+});

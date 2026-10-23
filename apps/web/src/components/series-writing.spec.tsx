@@ -293,3 +293,81 @@ describe("round 3 on the page: resume idempotency and placement", () => {
     expect(row.textContent).toContain("暂不能写入");
   });
 });
+
+describe("round 4 on the page: the plan editor keeps the revision it was opened on", () => {
+  function revised(base: SeriesView, revisionNo: number, content: unknown): SeriesView {
+    const next = structuredClone(base);
+    next.plan = { ...next.plan!, revisionId: `plan-revision-${String(revisionNo)}`, revisionNo, origin: "manual", status: "unreviewed",
+      content: content as NonNullable<SeriesView["plan"]>["content"] };
+    return next;
+  }
+  const editor = () => screen.getByLabelText("规划 JSON") as HTMLTextAreaElement;
+  const open = () => { fireEvent.focus(editor()); return JSON.parse(editor().value) as NonNullable<SeriesView["plan"]>["content"]; };
+  const type = (content: unknown) => fireEvent.change(editor(), { target: { value: JSON.stringify(content, null, 2) } });
+
+  it("A. two saves of one's own edits in a row: the second starts from the saved first revision and keeps its change", async () => {
+    let latest = structuredClone(view);
+    const posts: Array<{ basePlanRevisionId: string; content: NonNullable<SeriesView["plan"]>["content"] }> = [];
+    server((method, url, body) => {
+      if (method === "GET" && url.endsWith(`/projects/${P1}/series`)) return json({ series: latest });
+      if (method === "POST" && url.endsWith("/series/plan-revisions")) {
+        const request = body as (typeof posts)[number];
+        posts.push(request);
+        latest = revised(latest, latest.plan!.revisionNo + 1, request.content);
+        return json({ series: latest }, 201);
+      }
+      return undefined;
+    });
+    render(<SeriesWritingPage projectId={P1} />);
+    await screen.findByTestId("series-plan");
+    const first = open();
+    first.setting.logline = "第一次人工修改的一句话故事";
+    type(first);
+    fireEvent.click(screen.getByRole("button", { name: "保存为新修订" }));
+    await waitFor(() => expect(posts).toHaveLength(1));
+    await waitFor(() => expect(screen.getByTestId("series-plan-status").textContent).toContain("修订 2"));
+    const second = open();
+    expect(second.setting.logline).toBe("第一次人工修改的一句话故事");
+    second.setting.synopsis = "第二次人工修改的梗概";
+    type(second);
+    fireEvent.click(screen.getByRole("button", { name: "保存为新修订" }));
+    await waitFor(() => expect(posts).toHaveLength(2));
+    expect(posts[0]!.basePlanRevisionId).toBe(view.plan!.revisionId);
+    expect(posts[1]!.basePlanRevisionId).toBe("plan-revision-2");
+    expect(posts[1]!.content.setting).toMatchObject({ logline: "第一次人工修改的一句话故事", synopsis: "第二次人工修改的梗概" });
+  });
+
+  it("B. another page saves a new plan while the editor is open: the warning shows, the old edit is sent on its own basis and refused, the text is kept", async () => {
+    const running = structuredClone(view);
+    running.grants = running.grants.map((item) => ({ ...item, state: "running" as const }));
+    running.activeGrantId = running.grants[0]!.grantId;
+    let latest = running;
+    const posts: Array<{ basePlanRevisionId: string; baseStoryRevisionId: string | null }> = [];
+    server((method, url, body) => {
+      if (method === "GET" && url.endsWith(`/projects/${P1}/series`)) return json({ series: latest });
+      if (method === "POST" && url.endsWith("/series/plan-revisions")) {
+        posts.push(body as (typeof posts)[number]);
+        return json({ error: { code: "SERIES_EDIT_CONFLICT", message: "保存时发现已有更新的修订，没有覆盖。" } }, 409);
+      }
+      return undefined;
+    });
+    render(<SeriesWritingPage projectId={P1} />);
+    await screen.findByTestId("series-plan");
+    const mine = open();
+    mine.setting.logline = "我在旧修订上的修改";
+    type(mine);
+    // Another page saved revision 2 (and the job finished); the next background read brings it.
+    const other = structuredClone(view.plan!.content);
+    other.setting.logline = "另一页面保存的一句话故事";
+    latest = revised(view, 2, other);
+    await waitFor(() => expect(screen.getByTestId("series-plan-status").textContent).toContain("修订 2"), { timeout: 5_000 });
+    fireEvent.click(screen.getByRole("button", { name: "保存为新修订" }));
+    await screen.findByTestId("series-error");
+    expect(posts).toHaveLength(1);
+    // Sent on the revision the editor was opened on, never on the newer one the person did not see.
+    expect(posts[0]!.basePlanRevisionId).toBe(view.plan!.revisionId);
+    expect(posts[0]!.baseStoryRevisionId).toBe(view.story.current?.revisionId ?? null);
+    expect(screen.getByTestId("series-plan-changed").textContent).toContain("已经变化");
+    expect(editor().value).toContain("我在旧修订上的修改");
+  });
+});

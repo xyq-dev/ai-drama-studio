@@ -576,8 +576,48 @@ function sameIdSet(ids: readonly string[], planned: ReadonlySet<string>): boolea
   return !duplicate(ids) && ids.length === planned.size && ids.every((id) => planned.has(id));
 }
 
-function forbiddenHit(input: SeriesFrozenInput, value: unknown): string | null {
-  const all = textsOf(value).join("\n");
+/**
+ * The creative text of each output, by field path ("[]" walks an array). Schema literals, ids, references and protocol
+ * enums are not text, so a forbidden theme never matches them; the same word in a text field always does. Paths, not
+ * field names: core.ending is text while an episode's ending is an enum, scenes[].action is text while a continuity
+ * foreshadowing action is an enum.
+ */
+const SETTING_TEXT = [
+  "title", "logline", "synopsis", "core.desire", "core.weakness", "core.goal", "core.coreConflict", "core.failureCost", "core.ending",
+  "core.keyChoices[].choice", "core.keyChoices[].consequence", "core.majorTurns[].turn",
+  "characters[].name", "characters[].identity", "characters[].goal", "characters[].weakness", "characters[].arc", "characters[].voice", "characters[].initialWhereabouts",
+  "relationships[].relation", "relationships[].arc", "secrets[].content", "locations[].name", "locations[].description", "props[].name", "props[].purpose",
+];
+const ARC_TEXT = ["phases[].title", "phases[].goal", "phases[].turningPoint", "foreshadowing[].content", "finale.resolution"];
+const OUTLINE_EPISODE_TEXT = ["title", "goal", "obstacle", "choice", "turn", "result", "endState", "nextHook"];
+const EPISODE_TEXT = [
+  "title", "summary", "scenes[].timeOfDay", "scenes[].action", "scenes[].dialogue[].line", "scenes[].dialogue[].delivery", "scenes[].sound", "scenes[].keyVisual",
+  "handoffFacts[]", "continuity.characters[].whereabouts", "continuity.characters[].knows[]", "continuity.characters[].unaware[]",
+  "continuity.relationships[].state", "continuity.props[].state", "continuity.conflicts[].content",
+];
+const prefixed = (prefix: string, paths: readonly string[]) => paths.map((path) => `${prefix}.${path}`);
+const CREATIVE_TEXT: Readonly<Record<string, readonly string[]>> = {
+  setting: SETTING_TEXT,
+  arc: ARC_TEXT,
+  outline: prefixed("episodes[]", OUTLINE_EPISODE_TEXT),
+  episode: EPISODE_TEXT,
+  plan: [...prefixed("setting", SETTING_TEXT), ...prefixed("arc", ARC_TEXT), ...prefixed("outlines[]", OUTLINE_EPISODE_TEXT)],
+};
+
+function textsAt(value: unknown, path: string): string[] {
+  const [head, ...rest] = path.split(".");
+  const many = head!.endsWith("[]");
+  const key = many ? head!.slice(0, -2) : head!;
+  const field = value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>)[key] : undefined;
+  const items = many ? (Array.isArray(field) ? field : []) : [field];
+  return items.flatMap((item) => rest.length > 0 ? textsAt(item, rest.join(".")) : typeof item === "string" ? [item] : []);
+}
+
+/** The first forbidden theme found in the creative text of an output of this kind (setting, arc, outline, episode or a whole plan). */
+function forbiddenHit(input: SeriesFrozenInput, kind: string, value: unknown): string | null {
+  // A kind without a table is scanned whole, as before: never less strict than the old check.
+  const paths = CREATIVE_TEXT[kind];
+  const all = (paths ? paths.flatMap((path) => textsAt(value, path)) : textsOf(value)).join("\n");
   return input.constraints.forbiddenThemes.find((term) => all.includes(term)) ?? null;
 }
 
@@ -765,7 +805,7 @@ export function validateSeriesStageOutput(stageKey: string, content: string, inp
   if (review ? textsOf(value).some((item) => /<\s*script/i.test(item)) : textsOf(value).some((item) => UNSAFE.test(item) || RESERVED.test(item))) {
     return refuse("unsafe_content");
   }
-  if (!review && forbiddenHit(input, value) !== null) return refuse("constraint_violation", undefined, "forbidden_theme");
+  if (!review && forbiddenHit(input, kind, value) !== null) return refuse("constraint_violation", undefined, "forbidden_theme");
   const n = input.episodeCount;
   if (kind === "setting") {
     const parsed = seriesSettingSchema(n).safeParse(value);
@@ -1047,7 +1087,7 @@ export function formatSeriesStory(planRevisionId: string, plan: SeriesPlanConten
 /** A person's plan revision: the setting, arc and every outline pass the same checks and budgets as the model's. */
 export function checkSeriesPlanContent(input: SeriesFrozenInput, content: SeriesPlanContent): SeriesValidation {
   if (textsOf(content).some((item) => UNSAFE.test(item) || RESERVED.test(item))) return refuse("unsafe_content");
-  if (forbiddenHit(input, content) !== null) return refuse("constraint_violation", undefined, "forbidden_theme");
+  if (forbiddenHit(input, "plan", content) !== null) return refuse("constraint_violation", undefined, "forbidden_theme");
   if (seriesSize(content.setting) > SERIES_BUDGETS.setting) return refuse("too_large", "setting", "setting_budget");
   const setting = checkSetting(input, content.setting);
   if (!setting.ok) return setting;

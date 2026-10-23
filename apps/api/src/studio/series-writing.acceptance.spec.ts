@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { autoCreationNormalCalls, seriesBatchCount, seriesNormalCalls, seriesScopeCalls, type SeriesScope } from "@ai-drama/contracts";
-import type { SeriesView } from "@ai-drama/domain";
+import { seriesFinalBasis, type SeriesView } from "@ai-drama/domain";
 import {
   AUTO_CREATION_MIGRATION,
   BASE_MIGRATIONS,
@@ -1073,5 +1073,61 @@ describe(`round 3 on PostgreSQL (${scenario} schema)`, () => {
     const after = viewOf((await service().svc.get(view.projectId)).body);
     expect(after.batches[0]!.ledger.status).toBe("pending_confirmation");
     expect(after.batches[0]!.changedEpisodes).toEqual([2]);
+  });
+});
+
+describe(`round 4 on PostgreSQL (${scenario} schema)`, () => {
+  it("1. with no final review ever run, a final decision is refused: 409, no decision row, no call; the series stays partial", async () => {
+    plan = {};
+    const { svc, settle } = service();
+    const view = await createSeries(svc, 3);
+    await grant(svc, view, { plan: true, batchFrom: 1, batchTo: 1, final: false });
+    await settle();
+    const page = viewOf((await svc.get(view.projectId)).body);
+    expect(page.final).toMatchObject({ status: "none", decisionBasis: null });
+    const basis = seriesFinalBasis((await store.snapshot(workspaceId, view.projectId))!);
+    expect(basis).not.toBeNull();
+    const sent = seen.length;
+    const refused = await svc.decide(view.projectId, { target: "final", note: "没有总检的人工复核", expectedBasis: basis }, ctx("final"));
+    expect(refused.status).toBe(409);
+    expect(await count("SELECT count(*)::int AS n FROM series_writing_decision WHERE series_id = $1", [view.seriesId])).toBe(0);
+    expect(await count("SELECT count(*)::int AS n FROM series_writing_call WHERE series_id = $1 AND stage_key = 'final_review'", [view.seriesId])).toBe(0);
+    expect(seen.length).toBe(sent);
+    expect(viewOf((await svc.get(view.projectId)).body).completion).toBe("partial");
+  });
+
+  it("2. the package exports each placed script's saved text exactly, and an unplaced model draft on its own plan revision", async () => {
+    plan = {};
+    const { svc, settle } = service();
+    const view = await createSeries(svc, 6);
+    await grant(svc, view, { plan: true, batchFrom: 1, batchTo: 1, final: false });
+    await settle();
+    await approveCurrentStory(view.projectId);
+    let current = viewOf((await svc.get(view.projectId)).body);
+    const content = structuredClone(current.plan!.content);
+    content.setting.characters = content.setting.characters.map((item) => item.id === "C1" ? { ...item, name: "林大满" } : item);
+    current = viewOf((await svc.savePlan(view.projectId, { basePlanRevisionId: current.plan!.revisionId, baseStoryRevisionId: current.story.current!.revisionId,
+      story: "adopt_current", content }, ctx("plan"))).body);
+    type Pack = { episodes: Array<{ current: { source: string; text: string; workbench: { scriptRevisionId: string } | null } | null }> };
+    const pack = async () => JSON.parse((await svc.package(view.projectId, "json")).download!.text) as Pack;
+    const before = await pack();
+    expect(before.episodes[0]!.current).toMatchObject({ source: "model_version_not_in_workbench" });
+    expect(before.episodes[0]!.current!.text).toContain("林小满");
+    expect(before.episodes[0]!.current!.text).not.toContain("林大满");
+    const batch = current.batches[0]!;
+    current = viewOf((await svc.saveLedger(view.projectId, { batchNo: 1, baseLedgerRevisionId: batch.ledger.revision!.id, content: batch.ledger.revision!.content,
+      summaries: current.episodes.slice(0, 3).map((item) => ({ episodeNo: item.episodeNo, summary: "人工确认的概要" })), expectedBasis: batch.ledgerBasis }, ctx("l"))).body);
+    expect((await svc.decide(view.projectId, { target: "batch:1", note: "按新规划复核", expectedBasis: current.batches[0]!.decisionBasis }, ctx("d"))).status).toBe(201);
+    expect((await svc.placeBatch(view.projectId, 1, {}, ctx("p"))).body).toMatchObject({ placed: 3 });
+    const saved = await q<{ id: string; content_json: { text: string } }>(
+      "SELECT s.id, s.content_json FROM script_revision s JOIN episode e ON e.id = s.episode_id WHERE e.project_id = $1 ORDER BY e.episode_no", [view.projectId]);
+    expect(saved).toHaveLength(3);
+    const after = await pack();
+    const markdown = (await svc.package(view.projectId, "markdown")).download!.text;
+    for (const [index, row] of saved.entries()) {
+      expect(after.episodes[index]!.current).toMatchObject({ source: "model_version_in_workbench", workbench: { scriptRevisionId: row.id } });
+      expect(after.episodes[index]!.current!.text).toBe(row.content_json.text);
+      expect(markdown).toContain("```text\n" + row.content_json.text + "\n```");
+    }
   });
 });

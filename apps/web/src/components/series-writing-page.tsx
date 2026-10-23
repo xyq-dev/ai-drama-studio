@@ -81,7 +81,8 @@ export function SeriesWritingPage({ projectId, client = defaultClient }: { proje
   const [ledgerForm, setLedgerForm] = useState<{ batchNo: number; baseLedgerRevisionId: string | null; basis: Record<string, string> } | null>(null);
   const ledgerBatch = ledgerForm?.batchNo ?? null;
   const [ledgerText, setLedgerText] = useState("");
-  const [planText, setPlanText] = useState("");
+  // The plan editor: its text and the plan and story revisions it was opened on (frozen; a newer view never replaces them).
+  const [planForm, setPlanForm] = useState<{ text: string; basePlanRevisionId: string; baseStoryRevisionId: string | null } | null>(null);
   const [note, setNote] = useState("");
   const [finalNote, setFinalNote] = useState("");
   const reading = useRef(false);
@@ -256,14 +257,25 @@ export function SeriesWritingPage({ projectId, client = defaultClient }: { proje
     void act(() => client.savePlan(projectId, { basePlanRevisionId: plan!.revisionId, baseStoryRevisionId: view!.story.current?.revisionId ?? null, story, content }), success);
   }
 
+  function openPlanEditor() {
+    if (planForm || !plan) return;
+    setPlanForm({ text: JSON.stringify(plan.content, null, 2), basePlanRevisionId: plan.revisionId, baseStoryRevisionId: view!.story.current?.revisionId ?? null });
+  }
+
+  /** Sent on the revisions the editor was opened on: anything saved since makes the server refuse, the text is kept. */
   function saveEditedPlan() {
+    if (!planForm) return;
+    const form = planForm;
     let content: unknown;
     try {
-      content = JSON.parse(planText);
+      content = JSON.parse(form.text);
     } catch {
       return setActionError("规划不是有效的 JSON，没有保存。");
     }
-    savePlan(content, "from_plan", "规划已另存为新修订，并形成对应的故事新草稿（需要重新审核）；基于旧规划的批次需要确认台账并复核。");
+    void act(() => client.savePlan(projectId, { basePlanRevisionId: form.basePlanRevisionId, baseStoryRevisionId: form.baseStoryRevisionId, story: "from_plan", content }),
+      "规划已另存为新修订，并形成对应的故事新草稿（需要重新审核）；基于旧规划的批次需要确认台账并复核。")
+      // Saved: the editor closes; opened again it starts from the revision just saved.
+      .then((accepted) => { if (accepted) setPlanForm(null); });
   }
 
   return (
@@ -471,9 +483,15 @@ export function SeriesWritingPage({ projectId, client = defaultClient }: { proje
               <details className={styles.more}>
                 <summary>人工修改规划（另存为新修订）</summary>
                 <p className={styles.helper}>保存规划会同时形成对应的故事新草稿，需要重新人工审核；原规划、原故事和审核记录都保留。若作品故事在你打开页面后被另存，保存会被拒绝，不会覆盖。</p>
-                <textarea className={`${styles.input} ${series.code}`} rows={10} value={planText} onFocus={() => { if (!planText) setPlanText(JSON.stringify(plan.content, null, 2)); }}
-                  onChange={(event) => setPlanText(event.target.value)} aria-label="规划 JSON" />
-                <div className={styles.actions}><button className={styles.secondary} type="button" disabled={busy || running !== null} onClick={saveEditedPlan}>保存为新修订</button></div>
+                {planForm && (planForm.basePlanRevisionId !== plan.revisionId || planForm.baseStoryRevisionId !== (view.story.current?.revisionId ?? null)) ? (
+                  <p className={styles.warning} role="status" data-testid="series-plan-changed">打开编辑后，规划或作品故事已经变化：这份编辑仍按打开时的修订提交，服务端会拒绝，不会覆盖别人保存的内容。请取消后重新打开、核对再保存。</p>
+                ) : null}
+                <textarea className={`${styles.input} ${series.code}`} rows={10} value={planForm?.text ?? ""} onFocus={openPlanEditor}
+                  onChange={(event) => { const text = event.target.value; setPlanForm((form) => form ? { ...form, text } : form); }} aria-label="规划 JSON" />
+                <div className={styles.actions}>
+                  <button className={styles.secondary} type="button" disabled={busy || running !== null || planForm === null} onClick={saveEditedPlan}>保存为新修订</button>
+                  {planForm ? <button className={styles.secondary} type="button" disabled={busy} onClick={() => setPlanForm(null)}>取消编辑</button> : null}
+                </div>
               </details>
             </>
           )}
