@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   SERIES_NEVER_SENT_ERROR_CODES,
+  SERIES_UPSTREAM_BEFORE_SEND,
   TITLE_WRITING_CANCELED_BEFORE_SEND,
   currentUncertainCallIds,
   seriesBatchRange,
@@ -9,6 +10,7 @@ import {
   type SeriesCallFinish,
   type SeriesCallRecord,
   type SeriesCallReservation,
+  type SeriesCallSubmission,
   type SeriesDecisionRecord,
   type SeriesGrantCreation,
   type SeriesGrantRecord,
@@ -268,6 +270,10 @@ export class InMemorySeriesWritingStore implements SeriesWritingStore {
     return found;
   }
 
+  private seriesOf(run: SeriesJobRecord): SeriesRecord {
+    return this.series.find((item) => item.id === run.seriesId)!;
+  }
+
   /** A later job (by sequence) of the same kind and batch exists in the series. */
   private superseded(run: SeriesJobRecord): boolean {
     return this.jobs.some((job) => job.seriesId === run.seriesId && job.kind === run.kind && job.batchNo === run.batchNo && job.seq > run.seq);
@@ -303,6 +309,9 @@ export class InMemorySeriesWritingStore implements SeriesWritingStore {
     if (run.cancelRequestedAt !== null || grant.cancelRequestedAt !== null) return { kind: "canceled" };
     // Taken over by a later job of the same batch or final review: never another send.
     if (this.superseded(run)) return { kind: "blocked", code: "upstream_job_superseded" };
+    // What the job was frozen on, read again in this same step: a story or previous episode saved since stops the send.
+    const upstream = seriesJobUpstreamChange(this.snapshotOf(this.seriesOf(run)), run);
+    if (upstream) return { kind: "upstream", code: upstream };
     if (run.callsUsed >= run.callCap) return { kind: "blocked", code: "SERIES_JOB_CAP" };
     if (grant.callsUsed >= grant.callBudget) return { kind: "blocked", code: "SERIES_GRANT_BUDGET" };
     if (this.recent(call.workspaceId, limits.sinceIso) >= limits.maxCallsPerDay) return { kind: "blocked", code: "SERIES_DAILY_CAP" };
@@ -315,7 +324,7 @@ export class InMemorySeriesWritingStore implements SeriesWritingStore {
     return { kind: "reserved" };
   }
 
-  async markCallSubmitted(workspaceId: string, callId: string, executorId: string, nowIso: string, leaseUntil: string): Promise<"submitted" | "canceled" | "lost"> {
+  async markCallSubmitted(workspaceId: string, callId: string, executorId: string, nowIso: string, leaseUntil: string): Promise<SeriesCallSubmission> {
     const call = this.calls.find((item) => item.id === callId);
     if (!call) return "lost";
     const run = this.job(call.runId);
@@ -326,6 +335,15 @@ export class InMemorySeriesWritingStore implements SeriesWritingStore {
       Object.assign(stage, { state: "canceled", updatedAt: nowIso });
       this.release(run);
       return "canceled";
+    }
+    // The last check before the send (this step is the admission point): a dependency changed since the reservation
+    // closes the call as never sent and gives its reservation back once (the call record stays).
+    const upstream = seriesJobUpstreamChange(this.snapshotOf(this.seriesOf(run)), run);
+    if (upstream) {
+      Object.assign(call, { state: "rejected", errorCode: SERIES_UPSTREAM_BEFORE_SEND, finishedAt: nowIso });
+      Object.assign(stage, { state: "pending", updatedAt: nowIso });
+      this.release(run);
+      return { upstream };
     }
     call.state = "submitted";
     Object.assign(stage, { state: "submitted", updatedAt: nowIso });

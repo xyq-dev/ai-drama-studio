@@ -82,7 +82,13 @@ export const SERIES_FINDINGS_MAX_CHARS = 3_000;
  * closed by a cancel before its send. Such a call is kept for the record and counted nowhere: not in its job, its grant
  * or the shared daily cap.
  */
-export const SERIES_NEVER_SENT_ERROR_CODES = ["executor_lost_before_send", "canceled_before_send"] as const;
+/**
+ * Calls that were never sent: given back by recovery, closed by a cancel before the send, or closed at the last check
+ * before the send because the job's frozen plan, story, ledger or previous episode changed (counted nowhere).
+ */
+export const SERIES_NEVER_SENT_ERROR_CODES = ["executor_lost_before_send", "canceled_before_send", "upstream_changed_before_send"] as const;
+/** A reserved call closed at the last check before its send: what the job was frozen on is no longer current. */
+export const SERIES_UPSTREAM_BEFORE_SEND = "upstream_changed_before_send";
 
 /**
  * Field budgets (characters of the JSON as stored, or of the compact line an outline is shown as). Each accepted text
@@ -1026,7 +1032,16 @@ export type SeriesGrantCreation =
   | { kind: "blocked"; code: "SERIES_ACTIVE_RUN_CAP" }
   | { kind: "daily_quota_low"; requiredCalls: number; remainingCalls: number };
 
-export type SeriesCallReservation = { kind: "reserved" } | { kind: "lost" } | { kind: "canceled" } | { kind: "blocked"; code: string };
+export type SeriesCallReservation = { kind: "reserved" } | { kind: "lost" } | { kind: "canceled" } | { kind: "blocked"; code: string }
+  /** What the job was frozen on changed (seriesJobUpstreamChange, read under the lock): nothing reserved, nothing counted. */
+  | { kind: "upstream"; code: string };
+
+/**
+ * The send admission: submitted (the commit of this transition is the point after which a person's save counts as a
+ * change after the send), canceled, lost, or upstream (closed as never sent and given back: the job's frozen
+ * dependencies changed before this point).
+ */
+export type SeriesCallSubmission = "submitted" | "canceled" | "lost" | { upstream: string };
 
 export interface SeriesCallFinish {
   state: "completed" | "rejected" | "unknown";
@@ -1109,9 +1124,13 @@ export interface SeriesWritingStore {
   getJob(workspaceId: string, jobId: string): Promise<SeriesJobBundle | null>;
   claimJob(workspaceId: string, jobId: string, executorId: string, nowIso: string, leaseUntil: string): Promise<boolean>;
   completeLocalStage(workspaceId: string, jobId: string, executorId: string, stageKey: string, output: SeriesStageOutput, outputHash: string, nowIso: string): Promise<boolean>;
-  /** Reserves one send against the job's cap, the grant's budget and the shared daily cap, under the workspace call lock. */
+  /**
+   * Reserves one send against the job's cap, the grant's budget and the shared daily cap, under the workspace call lock,
+   * only while the job's frozen dependencies are still current (read again under the work's row lock).
+   */
   reserveCall(call: SeriesCallRecord, limits: { sinceIso: string; maxCallsPerDay: number }, nowIso: string, leaseUntil: string): Promise<SeriesCallReservation>;
-  markCallSubmitted(workspaceId: string, callId: string, executorId: string, nowIso: string, leaseUntil: string): Promise<"submitted" | "canceled" | "lost">;
+  /** The last check before the send, under the same locks: a changed dependency closes the reservation as never sent. */
+  markCallSubmitted(workspaceId: string, callId: string, executorId: string, nowIso: string, leaseUntil: string): Promise<SeriesCallSubmission>;
   finishCall(workspaceId: string, callId: string, executorId: string, patch: SeriesCallFinish, nowIso: string): Promise<boolean>;
   /** Stops a job (and its grant) without completing it. */
   finishJob(workspaceId: string, jobId: string, executorId: string, state: Exclude<SeriesRunState, "running" | "completed">, errorCode: string | null, nowIso: string): Promise<boolean>;

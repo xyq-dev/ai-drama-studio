@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { seriesScopeCalls, type SeriesScope } from "@ai-drama/contracts";
 import { PersistenceError } from "@ai-drama/database";
-import { seriesFinalBasis, type SeriesView } from "@ai-drama/domain";
+import { seriesFinalBasis, seriesJobUpstreamChange, type SeriesView } from "@ai-drama/domain";
 import { InMemorySeriesWritingStore, SeriesWritingEngine, titleWritingProviderConfigs } from "@ai-drama/providers";
 import { seriesFixtureTransport, type SeriesFixtureExchange, type SeriesFixturePlan } from "@ai-drama/providers/title-writing-fixtures";
 import { SeriesWritingService } from "./series-writing.service";
@@ -1037,5 +1037,104 @@ describe("round 5: a grant's remaining work taken over by a later grant is never
     expect(done).toEqual({ kind: "grant_stopped", reason: "upstream_job_superseded" });
     expect(s.store.ledgers).toHaveLength(ledgers);
     expect(s.store.jobs.find((job) => job.id === oldJob.id)).toMatchObject({ state: "needs_attention", errorCode: "upstream_job_superseded" });
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Round 6 (review of 47f4bb5): the frozen story and previous episode are checked again at the last steps before a send.
+
+describe("round 6: a send is admitted only while the job's frozen story and previous episode are still current", () => {
+  type Step = "reserveCall" | "markCallSubmitted" | "finishCall";
+  /** Runs `change` once, right before the store step (a person's save landing between the engine's snapshot and that step). */
+  function before(s: Setup, step: Step, change: () => void) {
+    const store = s.store as unknown as Record<Step, (...args: unknown[]) => Promise<unknown>>;
+    const original = store[step].bind(s.store);
+    let armed = true;
+    store[step] = async (...args: unknown[]) => {
+      if (armed) { armed = false; change(); }
+      return original(...args);
+    };
+  }
+
+  /** Plan and batch 1 written, the story approved (episodes exist): batch 2 is next and freezes the story and episode 3. */
+  async function readyForBatch2() {
+    const s = setup();
+    const view = await work(s, 9);
+    await grant(s, view, { plan: true, batchFrom: 1, batchTo: 1, final: false });
+    s.store.approveCurrentStory(view.projectId);
+    return { s, view, page: await current(s, view.projectId) };
+  }
+
+  const daily = (s: Setup) => (s.store as unknown as { recent(workspaceId: string, sinceIso: string): number }).recent(WS, new Date(START - 86_400_000).toISOString());
+  const counters = (s: Setup) => {
+    const grantRow = s.store.grants.at(-1)!;
+    const job = s.store.jobs.filter((item) => item.grantId === grantRow.id).at(-1)!;
+    return { grant: grantRow.callsUsed, job: job.callsUsed, daily: daily(s), calls: s.store.calls.length };
+  };
+  const changes: Record<string, (s: Setup, projectId: string) => void> = {
+    story: (s, projectId) => { s.store.writeHumanStory(projectId, "工作台在发送前另存的故事"); },
+    "previous episode": (s, projectId) => { s.store.writeHumanScript(projectId, 3, "工作台在发送前改写的第 3 集"); },
+  };
+
+  it.each(["story", "previous episode"])("A/B. the %s changes after the snapshot, before the reservation: nothing reserved, nothing sent, no budget used", async (what) => {
+    const { s, view, page } = await readyForBatch2();
+    const sent = s.seen.length;
+    const callsBefore = s.store.calls.length;
+    const dailyBefore = daily(s);
+    before(s, "reserveCall", () => changes[what]!(s, view.projectId));
+    expect((await grant(s, page, { plan: false, batchFrom: 2, batchTo: 2, final: false })).status).toBe(201);
+    expect(s.seen.length).toBe(sent);
+    expect(s.store.calls).toHaveLength(callsBefore);
+    expect(counters(s)).toMatchObject({ grant: 0, job: 0, daily: dailyBefore });
+    const job = s.store.jobs.at(-1)!;
+    const reason = seriesJobUpstreamChange((await s.store.snapshot(WS, view.projectId))!, job);
+    expect(reason).not.toBeNull();
+    expect(job).toMatchObject({ state: "needs_attention", errorCode: reason });
+    expect(s.store.grants.at(-1)).toMatchObject({ state: "stopped", stopReason: reason });
+  });
+
+  it.each(["story", "previous episode"])("C. the %s changes after the reservation, before the send: the call is kept as never sent and the job, grant and daily counts are given back", async (what) => {
+    const { s, view, page } = await readyForBatch2();
+    const sent = s.seen.length;
+    const dailyBefore = daily(s);
+    before(s, "markCallSubmitted", () => changes[what]!(s, view.projectId));
+    expect((await grant(s, page, { plan: false, batchFrom: 2, batchTo: 2, final: false })).status).toBe(201);
+    expect(s.seen.length).toBe(sent);
+    const call = s.store.calls.at(-1)!;
+    expect(call).toMatchObject({ stageKey: "episode:4", state: "rejected", errorCode: "upstream_changed_before_send", providerRequestId: null });
+    expect(counters(s)).toMatchObject({ grant: 0, job: 0, daily: dailyBefore });
+    const job = s.store.jobs.at(-1)!;
+    expect(s.store.stages.find((stage) => stage.runId === job.id && stage.stageKey === "episode:4")).toMatchObject({ state: "pending", output: null });
+    const reason = seriesJobUpstreamChange((await s.store.snapshot(WS, view.projectId))!, job);
+    expect(job).toMatchObject({ state: "needs_attention", errorCode: reason });
+    // E. Recovery, a second pass and the late executor give nothing back again and submit nothing.
+    s.tick(600_000);
+    await s.store.recoverExpired(WS, new Date(START + 600_000).toISOString());
+    await s.engine("executor-b").maintain();
+    expect(await s.store.markCallSubmitted(WS, call.id, call.executorId, new Date(START).toISOString(), new Date(START + 240_000).toISOString())).toBe("lost");
+    expect(await s.store.finishCall(WS, call.id, call.executorId, { state: "completed", errorCode: null, output: null, outputHash: null, dependsOn: null,
+      providerRequestId: null, responseModel: null, usage: call.usage }, new Date(START).toISOString())).toBe(false);
+    expect(counters(s)).toMatchObject({ grant: 0, job: 0, daily: dailyBefore });
+    expect(s.store.calls.at(-1)).toMatchObject({ state: "rejected", errorCode: "upstream_changed_before_send" });
+    expect(s.seen.length).toBe(sent);
+  });
+
+  it("F. an edit after the call was sent: nothing is given back, nothing is resent, and the next send stops on the upstream change", async () => {
+    const { s, view, page } = await readyForBatch2();
+    const sent = s.seen.length;
+    before(s, "finishCall", () => changes.story!(s, view.projectId));
+    expect((await grant(s, page, { plan: false, batchFrom: 2, batchTo: 2, final: false })).status).toBe(201);
+    expect(s.seen.slice(sent).map((item) => item.stage)).toEqual(["episode:4"]);
+    expect(s.store.calls.at(-1)).toMatchObject({ stageKey: "episode:4", state: "completed" });
+    expect(counters(s)).toMatchObject({ grant: 1, job: 1 });
+    expect(s.store.jobs.at(-1)).toMatchObject({ state: "needs_attention", errorCode: "upstream_story_changed" });
+  });
+
+  it("G. with nothing changed the batch is sent once per stage, as before", async () => {
+    const { s, page } = await readyForBatch2();
+    const sent = s.seen.length;
+    expect((await grant(s, page, { plan: false, batchFrom: 2, batchTo: 2, final: false })).status).toBe(201);
+    expect(s.seen.slice(sent).map((item) => item.stage)).toEqual(["episode:4", "episode:5", "episode:6", "batch_review:2"]);
+    expect(counters(s)).toMatchObject({ grant: 4, job: 4 });
   });
 });

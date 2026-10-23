@@ -255,9 +255,13 @@ export class SeriesWritingEngine {
     if (reservation.kind === "lost") return STOP;
     if (reservation.kind === "canceled") return this.stop(jobId, "canceled", null);
     if (reservation.kind === "blocked") return this.stop(jobId, anyCompleted ? "partial" : "failed", reservation.code);
+    // A dependency changed after the snapshot: nothing was reserved; the job stops for a person (never re-reserved).
+    if (reservation.kind === "upstream") return this.stop(jobId, "needs_attention", reservation.code);
     const submittedAt = this.now();
     const submission = await this.deps.store.markCallSubmitted(this.workspaceId, call.id, this.executorId, submittedAt.toISOString(), this.lease(submittedAt));
     if (submission === "canceled") return this.stop(jobId, "canceled", null);
+    // Changed after the reservation: closed as never sent and given back; the job stops, nothing is rebuilt or resent.
+    if (typeof submission === "object") return this.stop(jobId, "needs_attention", submission.upstream);
     if (submission !== "submitted") return STOP;
     const exchange = await (this.deps.send ?? sendWriting)({
       adapter, url: provider.url, apiKey: provider.apiKey, workspaceId: provider.workspaceId, request, transport: this.deps.transport,

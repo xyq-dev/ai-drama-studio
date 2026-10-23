@@ -1,6 +1,7 @@
 import type { PoolClient, QueryResult, QueryResultRow } from "pg";
 import {
   SERIES_NEVER_SENT_ERROR_CODES,
+  SERIES_UPSTREAM_BEFORE_SEND,
   TITLE_WRITING_CANCELED_BEFORE_SEND,
   currentUncertainCallIds,
   seriesBatchRange,
@@ -9,6 +10,7 @@ import {
   type SeriesCallFinish,
   type SeriesCallRecord,
   type SeriesCallReservation,
+  type SeriesCallSubmission,
   type SeriesDecisionRecord,
   type SeriesGrantCreation,
   type SeriesGrantRecord,
@@ -389,6 +391,17 @@ export class PostgresSeriesWritingStore implements SeriesWritingStore {
     return run;
   }
 
+  /**
+   * Why the job may not send now (seriesJobUpstreamChange), read under the project row lock, taken after the job and grant
+   * rows (job → grant → project, the order completion takes them in): the workbench's saves lock the project row first.
+   */
+  private async upstreamUnderLock(client: PoolClient, run: SeriesJobRecord): Promise<string | null> {
+    await this.lockProject(client, run.workspaceId, run.projectId);
+    const query: Query = (sql, values) => client.query<Row>(sql, values);
+    const series = await this.seriesOf(query, run.workspaceId, run.projectId);
+    return series ? seriesJobUpstreamChange(await this.load(query, series), run) : "upstream_plan_changed";
+  }
+
   /** A later job (by job_seq) of the same kind and batch exists in the series: this job was taken over. */
   private async superseded(client: PoolClient, run: SeriesJobRecord): Promise<boolean> {
     const later = await client.query(
@@ -423,6 +436,10 @@ export class PostgresSeriesWritingStore implements SeriesWritingStore {
       if (run.cancelRequestedAt !== null || grant.cancelRequestedAt !== null) return { kind: "canceled" };
       // Taken over by a later job of the same batch or final review: never another send.
       if (await this.superseded(client, run)) return { kind: "blocked", code: "upstream_job_superseded" };
+      // What the job was frozen on, read again under the work's row lock (the row the workbench's story and script saves
+      // lock first): a save committed since stops the reservation; one still open waits for this transaction.
+      const upstream = await this.upstreamUnderLock(client, run);
+      if (upstream) return { kind: "upstream", code: upstream };
       if (run.callsUsed >= run.callCap) return { kind: "blocked", code: "SERIES_JOB_CAP" };
       if (grant.callsUsed >= grant.callBudget) return { kind: "blocked", code: "SERIES_GRANT_BUDGET" };
       if (await recentWritingCalls(client, call.workspaceId, limits.sinceIso) >= limits.maxCallsPerDay) return { kind: "blocked", code: "SERIES_DAILY_CAP" };
@@ -442,7 +459,7 @@ export class PostgresSeriesWritingStore implements SeriesWritingStore {
     });
   }
 
-  async markCallSubmitted(workspaceId: string, callId: string, executorId: string, nowIso: string, leaseUntil: string): Promise<"submitted" | "canceled" | "lost"> {
+  async markCallSubmitted(workspaceId: string, callId: string, executorId: string, nowIso: string, leaseUntil: string): Promise<SeriesCallSubmission> {
     return this.transaction(async (client) => {
       const found = (await client.query<Row>("SELECT run_id, stage_key FROM series_writing_call WHERE id = $1 AND workspace_id = $2", [callId, workspaceId])).rows[0];
       if (!found) return "lost";
@@ -458,6 +475,20 @@ export class PostgresSeriesWritingStore implements SeriesWritingStore {
           [run.id, found.stage_key, nowIso]);
         await this.release(client, run.id, run.grantId, 1, nowIso);
         return "canceled";
+      }
+      // The send admission. The commit of this transaction (call submitted) is the linearization point: a story or script
+      // save committed before it is seen here and stops the send; one committed after it is a change after the send. No
+      // lock is held during the provider request itself.
+      const upstream = await this.upstreamUnderLock(client, run);
+      if (upstream) {
+        const closed = await client.query(
+          "UPDATE series_writing_call SET state = 'rejected', error_code = $3, finished_at = $4 WHERE id = $1 AND executor_id = $2 AND state = 'reserved'",
+          [callId, executorId, SERIES_UPSTREAM_BEFORE_SEND, nowIso]);
+        if (closed.rowCount !== 1) return "lost";
+        await client.query("UPDATE series_writing_stage SET state = 'pending', error_code = NULL, updated_at = $3 WHERE run_id = $1 AND stage_key = $2",
+          [run.id, found.stage_key, nowIso]);
+        await this.release(client, run.id, run.grantId, 1, nowIso);
+        return { upstream };
       }
       const updated = await client.query("UPDATE series_writing_call SET state = 'submitted' WHERE id = $1 AND executor_id = $2 AND state = 'reserved'", [callId, executorId]);
       if (updated.rowCount !== 1) return "lost";

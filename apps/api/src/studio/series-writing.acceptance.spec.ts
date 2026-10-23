@@ -1248,3 +1248,151 @@ describe(`round 5 on PostgreSQL (${scenario} schema)`, () => {
     expect((await runs(view.seriesId)).find((row) => row.id === oldJob.id)!.state).toBe("needs_attention");
   });
 });
+
+describe(`round 6 on PostgreSQL (${scenario} schema)`, () => {
+  /** Plan and batch 1 written, the story approved: batch 2 is next and freezes the story and episode 3. */
+  async function readyForBatch2() {
+    plan = {};
+    const { svc, settle } = service();
+    const view = await createSeries(svc, 9);
+    await grant(svc, view, { plan: true, batchFrom: 1, batchTo: 1, final: false });
+    await settle();
+    const storyId = await approveCurrentStory(view.projectId);
+    return { view, storyId, page: viewOf((await svc.get(view.projectId)).body) };
+  }
+
+  async function saveStory(projectId: string, text: string): Promise<void> {
+    const version = (await q<{ version: number }>("SELECT version FROM project WHERE id = $1", [projectId]))[0]!.version;
+    await textChain.createStoryRevision({ workspaceId, projectId, content: { text }, createdBy: "acceptance-person", expectedVersion: version });
+  }
+
+  /** The three counts a send uses: the batch 2 job's, its grant's and the workspace's shared 24-hour count. */
+  async function counts(seriesId: string) {
+    const job = (await q<{ calls_used: number; grant_id: string; state: string; error_code: string | null }>(
+      "SELECT calls_used, grant_id, state, error_code FROM series_writing_run WHERE series_id = $1 AND job_kind = 'batch' AND batch_no = 2 ORDER BY job_seq DESC LIMIT 1", [seriesId]))[0]!;
+    const grantRow = (await q<{ calls_used: number; state: string; stop_reason: string | null }>("SELECT calls_used, state, stop_reason FROM series_writing_grant WHERE id = $1", [job.grant_id]))[0]!;
+    const client = await pool.connect();
+    try {
+      return { job: job.calls_used, grant: grantRow.calls_used, daily: await recentWritingCalls(client, workspaceId, new Date(Date.now() - 86_400_000).toISOString()),
+        jobState: job.state, jobError: job.error_code, grantState: grantRow.state, stopReason: grantRow.stop_reason };
+    } finally {
+      client.release();
+    }
+  }
+
+  const batch2Calls = (seriesId: string) => q<{ stage_key: string; state: string; error_code: string | null; provider_request_id: string | null }>(
+    `SELECT c.stage_key, c.state, c.error_code, c.provider_request_id FROM series_writing_call c JOIN series_writing_run r ON r.id = c.run_id
+      WHERE r.series_id = $1 AND r.batch_no = 2 ORDER BY c.created_at`, [seriesId]);
+
+  /** A store whose step runs `change` once first (a person's save landing between the engine's snapshot and that step). */
+  function hooked(step: "reserveCall" | "markCallSubmitted", change: () => Promise<void>): PostgresSeriesWritingStore {
+    const own = new PostgresSeriesWritingStore(pool, textChain);
+    const target = own as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
+    const original = target[step]!.bind(own);
+    let armed = true;
+    target[step] = async (...args: unknown[]) => {
+      if (armed) { armed = false; await change(); }
+      return original(...args);
+    };
+    return own;
+  }
+
+  const edits = {
+    story: (projectId: string) => saveStory(projectId, "工作台在发送前另存的故事"),
+    "previous episode": (projectId: string, storyId: string) => personScript(projectId, storyId, 3, "工作台在发送前改写的第 3 集").then(() => undefined),
+  } as const;
+
+  it.each(["story", "previous episode"] as const)("A/B. the %s saved after the snapshot, before the reservation: no reservation, no send, no count", async (what) => {
+    const { view, storyId, page } = await readyForBatch2();
+    const client = await pool.connect();
+    const before = await recentWritingCalls(client, workspaceId, new Date(Date.now() - 86_400_000).toISOString()).finally(() => client.release());
+    const own = service({ store: hooked("reserveCall", () => edits[what](view.projectId, storyId)) });
+    const sent = seen.length;
+    expect((await grant(own.svc, page, { plan: false, batchFrom: 2, batchTo: 2, final: false })).status).toBe(201);
+    await own.settle();
+    expect(seen.length).toBe(sent);
+    expect(await batch2Calls(view.seriesId)).toEqual([]);
+    const after = await counts(view.seriesId);
+    expect(after).toMatchObject({ job: 0, grant: 0, daily: before, jobState: "needs_attention", grantState: "stopped" });
+    expect(after.jobError).toMatch(/^upstream_/u);
+    expect(after.stopReason).toBe(after.jobError);
+  });
+
+  it.each(["story", "previous episode"] as const)("C. the %s saved after the reservation, before the send: kept as never sent, given back once in all three counts", async (what) => {
+    const { view, storyId, page } = await readyForBatch2();
+    const client = await pool.connect();
+    const dailyBefore = await recentWritingCalls(client, workspaceId, new Date(Date.now() - 86_400_000).toISOString()).finally(() => client.release());
+    const own = service({ store: hooked("markCallSubmitted", () => edits[what](view.projectId, storyId)) });
+    const sent = seen.length;
+    expect((await grant(own.svc, page, { plan: false, batchFrom: 2, batchTo: 2, final: false })).status).toBe(201);
+    await own.settle();
+    expect(seen.length).toBe(sent);
+    expect(await batch2Calls(view.seriesId)).toEqual([{ stage_key: "episode:4", state: "rejected", error_code: "upstream_changed_before_send", provider_request_id: null }]);
+    const after = await counts(view.seriesId);
+    expect(after).toMatchObject({ job: 0, grant: 0, daily: dailyBefore, jobState: "needs_attention", grantState: "stopped" });
+    expect(after.jobError).toMatch(/^upstream_/u);
+    // E. Recovery and a late executor give nothing back again and submit nothing.
+    await store.recoverExpired(workspaceId, new Date(Date.now() + 3_600_000).toISOString());
+    const call = (await q<{ id: string; executor_id: string }>(
+      "SELECT c.id, c.executor_id FROM series_writing_call c JOIN series_writing_run r ON r.id = c.run_id WHERE r.series_id = $1 AND r.batch_no = 2", [view.seriesId]))[0]!;
+    expect(await store.markCallSubmitted(workspaceId, call.id, call.executor_id, new Date().toISOString(), new Date(Date.now() + 240_000).toISOString())).toBe("lost");
+    expect(await counts(view.seriesId)).toMatchObject({ job: 0, grant: 0, daily: dailyBefore });
+    expect(await batch2Calls(view.seriesId)).toEqual([{ stage_key: "episode:4", state: "rejected", error_code: "upstream_changed_before_send", provider_request_id: null }]);
+    expect(seen.length).toBe(sent);
+  });
+
+  it("D1. the workbench save commits first: the send admission waits for its project lock, then sees the change and refuses the send", async () => {
+    const { view, storyId, page } = await readyForBatch2();
+    const episode = (await q<{ id: string; row_version: number }>("SELECT id, row_version FROM episode WHERE project_id = $1 AND episode_no = 3", [view.projectId]))[0]!;
+    const own = new PostgresSeriesWritingStore(pool, textChain);
+    const target = own as unknown as { markCallSubmitted: (...args: unknown[]) => Promise<unknown> };
+    const original = target.markCallSubmitted.bind(own);
+    let order: string | null = null;
+    target.markCallSubmitted = async (...args: unknown[]) => {
+      // A workbench save holds its locks (uncommitted) when the admission starts; the admission must wait for it.
+      const workbench = await pool.connect();
+      try {
+        await workbench.query("BEGIN");
+        await textChain.createScriptRevisionInTransaction(workbench, { workspaceId, projectId: view.projectId, episodeId: episode.id, sourceStoryRevisionId: storyId,
+          content: { text: "工作台并发改写的第 3 集" }, createdBy: "acceptance-person", expectedVersion: episode.row_version });
+        const admitted = original(...args);
+        order = await waitsOrSettles(PROJECT_LOCK, admitted);
+        await workbench.query("COMMIT");
+        return await admitted;
+      } finally {
+        await workbench.query("ROLLBACK").catch(() => undefined);
+        workbench.release();
+      }
+    };
+    const run = service({ store: own });
+    const sent = seen.length;
+    expect((await grant(run.svc, page, { plan: false, batchFrom: 2, batchTo: 2, final: false })).status).toBe(201);
+    await run.settle();
+    expect(order).toBe("waiting");
+    expect(seen.length).toBe(sent);
+    expect(await batch2Calls(view.seriesId)).toEqual([{ stage_key: "episode:4", state: "rejected", error_code: "upstream_changed_before_send", provider_request_id: null }]);
+    expect(await counts(view.seriesId)).toMatchObject({ job: 0, grant: 0, jobState: "needs_attention" });
+  });
+
+  it("D2. the send admission holds its lock first: the workbench save waits; the call is sent on what it read, counted, never given back; the next send stops", async () => {
+    const { view, storyId, page } = await readyForBatch2();
+    const paused = pausedPool(/UPDATE series_writing_call SET state = 'submitted'/);
+    const run = service({ store: new PostgresSeriesWritingStore(paused.pool as never, textChain) });
+    const sent = seen.length;
+    expect((await grant(run.svc, page, { plan: false, batchFrom: 2, batchTo: 2, final: false })).status).toBe(201);
+    const driving = run.settle();
+    await paused.reached;
+    const workbench = personScript(view.projectId, storyId, 3, "工作台并发改写的第 3 集");
+    const order = await waitsOrSettles(PROJECT_LOCK, workbench);
+    paused.release();
+    expect(order).toBe("waiting");
+    await workbench;
+    await driving;
+    // Admitted before the save committed: one send, on the versions it read; the save is a change after the send.
+    expect(seen.slice(sent).map((item) => item.stage)).toEqual(["episode:4"]);
+    expect(await batch2Calls(view.seriesId)).toMatchObject([{ stage_key: "episode:4", state: "completed" }]);
+    const after = await counts(view.seriesId);
+    expect(after).toMatchObject({ job: 1, grant: 1, jobState: "needs_attention" });
+    expect(after.jobError).toMatch(/^upstream_/u);
+  });
+});
