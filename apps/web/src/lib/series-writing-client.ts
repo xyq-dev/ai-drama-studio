@@ -291,6 +291,7 @@ const STOPS: Record<string, string> = {
   upstream_episode_changed: "前一集在授权执行期间被修改，已停止。",
   upstream_story_changed: "作品的故事在授权执行期间被另存，已停止，不会在旧故事上继续写。",
   upstream_plan_superseded: "这次规划已被后来的规划取代，不会再续跑，也不会再生成一份规划。",
+  upstream_job_superseded: "这一部分已由后来的授权完成或接管，这次授权不会再执行它，也不会覆盖它的结果。",
   provider_unconfigured: "冻结的模型服务现在不可用，已停止，不会改用其他服务。",
   executor_lost: "服务重启或执行者丢失时有一次调用结果未知，已停止；确认后才会重新发送。",
   server_error: "模型服务返回错误，结果未知，已停止；确认后才会重新发送。",

@@ -4,7 +4,7 @@ import { seriesScopeCalls, type SeriesScope } from "@ai-drama/contracts";
 import { PersistenceError } from "@ai-drama/database";
 import { seriesFinalBasis, type SeriesView } from "@ai-drama/domain";
 import { InMemorySeriesWritingStore, SeriesWritingEngine, titleWritingProviderConfigs } from "@ai-drama/providers";
-import { seriesFixtureTransport, type SeriesFixtureExchange } from "@ai-drama/providers/title-writing-fixtures";
+import { seriesFixtureTransport, type SeriesFixtureExchange, type SeriesFixturePlan } from "@ai-drama/providers/title-writing-fixtures";
 import { SeriesWritingService } from "./series-writing.service";
 
 /**
@@ -17,13 +17,14 @@ const START = Date.parse("2026-10-22T00:00:00Z");
 const CONTEXT = (key?: string) => ({ actorId: "server-owner", traceId: "t", ...(key ? { idempotencyKey: key } : {}) });
 const providers = titleWritingProviderConfigs({ DEEPSEEK_API_KEY: "sk-deepseek-test-0123456789", TITLE_WRITING_DEEPSEEK_MODELS: "m-1" });
 
-function setup(options: { override?: (stage: string, attempt: number) => { status: number; body: unknown } | undefined } = {}) {
+function setup(options: { override?: (stage: string, attempt: number) => { status: number; body: unknown } | undefined; plan?: SeriesFixturePlan } = {}) {
   const store = new InMemorySeriesWritingStore();
   const seen: SeriesFixtureExchange[] = [];
   let clock = START;
   const now = () => new Date(clock);
   const engine = (executorId = "executor-a") => new SeriesWritingEngine({ workspaceId: WS, store, providers, executorId, leaseMs: 240_000, clock: now,
-    transport: seriesFixtureTransport({ seen, ...(options.override ? { override: options.override } : {}) }), maxCallsPerDay: 1_000, maxActiveRuns: 2 });
+    transport: seriesFixtureTransport({ seen, ...(options.override ? { override: options.override } : {}), ...(options.plan ? { plan: options.plan } : {}) }),
+    maxCallsPerDay: 1_000, maxActiveRuns: 2 });
   const pending: Array<() => Promise<void>> = [];
   const service = new SeriesWritingService({
     workspaceId: WS, enabled: true, operatorToken: TOKEN, defaultProvider: "deepseek", providers, store, engine: engine(), clock: now,
@@ -927,5 +928,114 @@ describe("round 4, 2: the current package exports the text actually saved, and m
     expect(episodes[0]!.unadoptedModelDraft!.text).not.toContain("林大满");
     page = await current(s, view.projectId);
     expect(page.episodes[0]!.version!.kind).toBe("script");
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Round 5 (review of 1f60aab): an older grant never redoes a batch or final review a later grant took over.
+
+describe("round 5: a grant's remaining work taken over by a later grant is never sent again", () => {
+  /** Grant 1 (plan + batches 1–2) stops after batch 1 (a blocking batch review); a person clears the finding. */
+  async function stoppedBetween(episodes: number, scope: SeriesScope) {
+    const s = setup({ plan: { blockingBatchReviews: [1] } });
+    const view = await work(s, episodes);
+    await grant(s, view, scope);
+    let page = await current(s, view.projectId);
+    const old = page.grants[0]!;
+    expect(old).toMatchObject({ state: "stopped", stopReason: "batch_review_blocking" });
+    expect((await decide(s, view.projectId, "batch:1", page.batches[0]!.decisionBasis)).status).toBe(201);
+    page = await current(s, view.projectId);
+    return { s, view, old, page };
+  }
+
+  const snapshotOf = async (s: Setup, projectId: string) => structuredClone((await s.store.snapshot(WS, projectId))!);
+
+  it("A. grant 1 stopped after batch 1; grant 2 wrote batch 2; resuming grant 1 is refused: no send, no job, batch 2 and its ledger unchanged", async () => {
+    const { s, view, old, page } = await stoppedBetween(9, { plan: true, batchFrom: 1, batchTo: 2, final: false });
+    expect((await grant(s, page, { plan: false, batchFrom: 2, batchTo: 2, final: false })).status).toBe(201);
+    const before = await snapshotOf(s, view.projectId);
+    const sent = s.seen.length;
+    const resumed = await s.service.resume(view.projectId, old.grantId, {}, TOKEN, CONTEXT(randomUUID()));
+    await s.settle();
+    expect(resumed.status).toBe(409);
+    expect(resumed.body).toMatchObject({ error: { code: "SERIES_UPSTREAM_CHANGED", details: { reason: "upstream_job_superseded" } } });
+    expect(s.seen.length).toBe(sent);
+    expect(s.store.resumes).toHaveLength(0);
+    const after = await snapshotOf(s, view.projectId);
+    expect(after.jobs).toEqual(before.jobs);
+    expect(after.ledgers).toEqual(before.ledgers);
+    expect(after.grants).toEqual(before.grants);
+  });
+
+  it("A2. grant 1's own batch 2 job stopped mid-batch; grant 2 took batch 2 over and finished it; grant 1 resuming that job is refused", async () => {
+    const s = setup({ override: (stage, attempt) => stage === "episode:5" && attempt === 1 ? REJECT : undefined });
+    const view = await work(s, 9);
+    await grantWith(s, view, { plan: true, batchFrom: 1, batchTo: 2, final: false }, 1);
+    let page = await current(s, view.projectId);
+    const old = page.grants[0]!;
+    expect(old.state).toBe("stopped");
+    expect((await grantWith(s, page, { plan: false, batchFrom: 2, batchTo: 2, final: false }, 0)).status).toBe(201);
+    page = await current(s, view.projectId);
+    expect(page.batches[1]).toMatchObject({ generated: true, ledger: { status: "valid" } });
+    const before = await snapshotOf(s, view.projectId);
+    const sent = s.seen.length;
+    const resumed = await s.service.resume(view.projectId, old.grantId, {}, TOKEN, CONTEXT(randomUUID()));
+    await s.settle();
+    expect(resumed.body).toMatchObject({ error: { code: "SERIES_UPSTREAM_CHANGED", details: { reason: "upstream_job_superseded" } } });
+    expect(s.seen.length).toBe(sent);
+    const after = await snapshotOf(s, view.projectId);
+    expect(after.jobs).toEqual(before.jobs);
+    expect(after.ledgers).toEqual(before.ledgers);
+  });
+
+  it("B. grant 1 still had its final review; grant 2 ran the final review; resuming grant 1 sends no final review and keeps grant 2's result", async () => {
+    const { s, view, old, page } = await stoppedBetween(3, { plan: true, batchFrom: 1, batchTo: 1, final: true });
+    expect((await grant(s, page, { plan: false, batchFrom: null, batchTo: null, final: true })).status).toBe(201);
+    const finals = () => s.store.stages.filter((stage) => stage.stageKey === "final_review" && stage.state === "completed");
+    expect(finals()).toHaveLength(1);
+    const result = structuredClone(finals()[0]!);
+    const sent = s.seen.length;
+    const resumed = await s.service.resume(view.projectId, old.grantId, {}, TOKEN, CONTEXT(randomUUID()));
+    await s.settle();
+    expect(resumed.body).toMatchObject({ error: { code: "SERIES_UPSTREAM_CHANGED", details: { reason: "upstream_job_superseded" } } });
+    expect(s.seen.length).toBe(sent);
+    expect(finals()).toEqual([result]);
+    expect(s.store.calls.filter((call) => call.stageKey === "final_review")).toHaveLength(1);
+  });
+
+  it("D. with nothing taken over, the stopped grant resumes into batch 2; batch 1 is not sent again", async () => {
+    const { s, view, old } = await stoppedBetween(9, { plan: true, batchFrom: 1, batchTo: 2, final: false });
+    const sent = s.seen.length;
+    expect((await s.service.resume(view.projectId, old.grantId, {}, TOKEN, CONTEXT(randomUUID()))).status).toBe(200);
+    await s.settle();
+    expect(stagesOf(s, sent)).toEqual(["episode:4", "episode:5", "episode:6", "batch_review:2"]);
+    expect((await current(s, view.projectId)).grants[0]).toMatchObject({ state: "completed" });
+  });
+
+  it("the store's own steps refuse a superseded job too: no reservation and no ledger, even when the job is running", async () => {
+    const s = setup({ override: (stage, attempt) => stage === "episode:5" && attempt === 1 ? REJECT : undefined });
+    const view = await work(s, 9);
+    await grantWith(s, view, { plan: true, batchFrom: 1, batchTo: 2, final: false }, 1);
+    const page = await current(s, view.projectId);
+    const oldJob = s.store.jobs.find((job) => job.kind === "batch" && job.batchNo === 2)!;
+    expect((await grantWith(s, page, { plan: false, batchFrom: 2, batchTo: 2, final: false }, 0)).status).toBe(201);
+    // As if the old job had been set running again before the takeover was seen (the race the locked steps close).
+    Object.assign(oldJob, { state: "running", executorId: null, leaseUntil: null });
+    for (const stage of s.store.stages.filter((item) => item.runId === oldJob.id && item.state === "rejected")) stage.state = "pending";
+    const nowIso = new Date(START).toISOString();
+    const lease = new Date(START + 240_000).toISOString();
+    expect(await s.store.claimJob(WS, oldJob.id, "late-executor", nowIso, lease)).toBe(true);
+    const calls = s.store.calls.length;
+    const reservation = await s.store.reserveCall({ ...s.store.calls.find((call) => call.runId === oldJob.id)!, id: randomUUID(), stageKey: "episode:5", attemptNo: 2,
+      state: "reserved", executorId: "late-executor", createdAt: nowIso, finishedAt: null }, { sinceIso: nowIso, maxCallsPerDay: 1_000 }, nowIso, lease);
+    expect(reservation).toEqual({ kind: "blocked", code: "upstream_job_superseded" });
+    expect(s.store.calls).toHaveLength(calls);
+    const ledgers = s.store.ledgers.length;
+    for (const stage of s.store.stages.filter((item) => item.runId === oldJob.id)) stage.state = "completed";
+    const done = await s.store.completeJob(WS, oldJob.id, "late-executor", { kind: "batch", ledger: { ...s.store.ledgers.at(-1)!, id: randomUUID() } },
+      { sinceIso: nowIso, maxCallsPerDay: 1_000, maxActiveRuns: 2 }, nowIso, lease, () => ({ kind: "done" }));
+    expect(done).toEqual({ kind: "grant_stopped", reason: "upstream_job_superseded" });
+    expect(s.store.ledgers).toHaveLength(ledgers);
+    expect(s.store.jobs.find((job) => job.id === oldJob.id)).toMatchObject({ state: "needs_attention", errorCode: "upstream_job_superseded" });
   });
 });

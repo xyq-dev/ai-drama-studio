@@ -389,6 +389,14 @@ export class PostgresSeriesWritingStore implements SeriesWritingStore {
     return run;
   }
 
+  /** A later job (by job_seq) of the same kind and batch exists in the series: this job was taken over. */
+  private async superseded(client: PoolClient, run: SeriesJobRecord): Promise<boolean> {
+    const later = await client.query(
+      `SELECT 1 FROM series_writing_run WHERE series_id = $1 AND job_kind = $2 AND batch_no IS NOT DISTINCT FROM $3::int AND job_seq > $4 LIMIT 1`,
+      [run.seriesId, run.kind, run.batchNo, run.seq]);
+    return later.rows.length > 0;
+  }
+
   private async grantRow(client: PoolClient, grantId: string): Promise<SeriesGrantRecord> {
     return toGrant((await client.query<Row>(`SELECT ${GRANT_COLUMNS} FROM series_writing_grant WHERE id = $1 FOR UPDATE`, [grantId])).rows[0]!);
   }
@@ -413,6 +421,8 @@ export class PostgresSeriesWritingStore implements SeriesWritingStore {
       if (!run) return { kind: "lost" };
       const grant = await this.grantRow(client, run.grantId);
       if (run.cancelRequestedAt !== null || grant.cancelRequestedAt !== null) return { kind: "canceled" };
+      // Taken over by a later job of the same batch or final review: never another send.
+      if (await this.superseded(client, run)) return { kind: "blocked", code: "upstream_job_superseded" };
       if (run.callsUsed >= run.callCap) return { kind: "blocked", code: "SERIES_JOB_CAP" };
       if (grant.callsUsed >= grant.callBudget) return { kind: "blocked", code: "SERIES_GRANT_BUDGET" };
       if (await recentWritingCalls(client, call.workspaceId, limits.sinceIso) >= limits.maxCallsPerDay) return { kind: "blocked", code: "SERIES_DAILY_CAP" };
@@ -551,6 +561,14 @@ export class PostgresSeriesWritingStore implements SeriesWritingStore {
       const open = await client.query<Row>("SELECT count(*) FILTER (WHERE state <> 'completed')::int AS open FROM series_writing_stage WHERE run_id = $1", [jobId]);
       if (Number(open.rows[0]?.open ?? 1) !== 0) return { kind: "lost" };
       const grant = await this.grantRow(client, run.grantId);
+      // A later job of the same batch or final review took this one over: its result is never saved over the later one's.
+      if (await this.superseded(client, run)) {
+        await client.query(
+          "UPDATE series_writing_run SET state = 'needs_attention', error_code = 'upstream_job_superseded', executor_id = NULL, lease_until = NULL, updated_at = $2 WHERE id = $1",
+          [jobId, nowIso]);
+        await this.stopGrant(client, grant.id, "stopped", "upstream_job_superseded", nowIso);
+        return { kind: "grant_stopped", reason: "upstream_job_superseded" };
+      }
       if (artifacts.kind === "plan") {
         const project = (await client.query<Row>("SELECT version, current_story_revision_id FROM project WHERE id = $1 AND workspace_id = $2 FOR UPDATE",
           [run.projectId, workspaceId])).rows[0]!;

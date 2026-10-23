@@ -1131,3 +1131,120 @@ describe(`round 4 on PostgreSQL (${scenario} schema)`, () => {
     }
   });
 });
+
+describe(`round 5 on PostgreSQL (${scenario} schema)`, () => {
+  const runs = (seriesId: string) => q<{ id: string; grant_id: string; job_kind: string; batch_no: number | null; state: string; job_seq: number }>(
+    "SELECT id, grant_id, job_kind, batch_no, state, job_seq FROM series_writing_run WHERE series_id = $1 ORDER BY job_seq", [seriesId]);
+
+  /** Grant 1 (plan + batches 1–2) stops after batch 1 on a blocking review; a person clears it. */
+  async function stoppedBetween(episodes: number, scope: SeriesScope) {
+    plan = { blockingBatchReviews: [1] };
+    const own = service();
+    const view = await createSeries(own.svc, episodes);
+    await grant(own.svc, view, scope);
+    await own.settle();
+    plan = {};
+    let current = viewOf((await own.svc.get(view.projectId)).body);
+    const old = current.grants[0]!;
+    expect(old).toMatchObject({ state: "stopped", stopReason: "batch_review_blocking" });
+    current = viewOf((await own.svc.decide(view.projectId, { target: "batch:1", note: "人工复核", expectedBasis: current.batches[0]!.decisionBasis }, ctx("d"))).body);
+    return { ...own, view, old, current };
+  }
+
+  it("A. grant 2 wrote batch 2 after grant 1 stopped: grant 1's resume is refused with no send, no job, no resume record and batch 2 unchanged", async () => {
+    const { svc, settle, view, old, current } = await stoppedBetween(9, { plan: true, batchFrom: 1, batchTo: 2, final: false });
+    expect((await grant(svc, current, { plan: false, batchFrom: 2, batchTo: 2, final: false })).status).toBe(201);
+    await settle();
+    const before = { runs: await runs(view.seriesId), ledgers: await q("SELECT id, content_hash FROM series_writing_ledger_revision WHERE series_id = $1 ORDER BY batch_no, revision_no", [view.seriesId]) };
+    const sent = seen.length;
+    const resumed = await svc.resume(view.projectId, old.grantId, {}, TOKEN, ctx(randomUUID()));
+    await settle();
+    expect(resumed.body).toMatchObject({ error: { code: "SERIES_UPSTREAM_CHANGED", details: { reason: "upstream_job_superseded" } } });
+    expect(seen.length).toBe(sent);
+    expect(await runs(view.seriesId)).toEqual(before.runs);
+    expect(await q("SELECT id, content_hash FROM series_writing_ledger_revision WHERE series_id = $1 ORDER BY batch_no, revision_no", [view.seriesId])).toEqual(before.ledgers);
+    expect(await count("SELECT count(*)::int AS n FROM series_writing_resume WHERE grant_id = $1", [old.grantId])).toBe(0);
+  });
+
+  it("B. grant 2 ran the final review grant 1 still had: grant 1 sends no second final review and grant 2's result stays", async () => {
+    const { svc, settle, view, old, current } = await stoppedBetween(3, { plan: true, batchFrom: 1, batchTo: 1, final: true });
+    expect((await grant(svc, current, { plan: false, batchFrom: null, batchTo: null, final: true })).status).toBe(201);
+    await settle();
+    const finals = () => q<{ output_hash: string }>(
+      "SELECT s.output_hash FROM series_writing_stage s JOIN series_writing_run r ON r.id = s.run_id WHERE r.series_id = $1 AND s.stage_key = 'final_review' AND s.state = 'completed'", [view.seriesId]);
+    const before = await finals();
+    expect(before).toHaveLength(1);
+    const sent = seen.length;
+    expect((await svc.resume(view.projectId, old.grantId, {}, TOKEN, ctx(randomUUID()))).body)
+      .toMatchObject({ error: { code: "SERIES_UPSTREAM_CHANGED", details: { reason: "upstream_job_superseded" } } });
+    await settle();
+    expect(seen.length).toBe(sent);
+    expect(await finals()).toEqual(before);
+    expect(await count("SELECT count(*)::int AS n FROM series_writing_call WHERE series_id = $1 AND stage_key = 'final_review'", [view.seriesId])).toBe(1);
+  });
+
+  it.each(["takeover first", "resume first"] as const)("C. a takeover racing a resume (%s, held at a transaction barrier): batch 2 is written once", async (order) => {
+    const { svc, settle, view, old, current } = await stoppedBetween(9, { plan: true, batchFrom: 1, batchTo: 2, final: false });
+    const paused = pausedPool(/INSERT INTO series_writing_stage/);
+    const held = service({ store: new PostgresSeriesWritingStore(paused.pool as never, textChain) });
+    const sent = seen.length;
+    const first = order === "takeover first"
+      ? grant(held.svc, current, { plan: false, batchFrom: 2, batchTo: 2, final: false })
+      : held.svc.resume(view.projectId, old.grantId, {}, TOKEN, ctx(randomUUID()));
+    await paused.reached;
+    const second = order === "takeover first"
+      ? svc.resume(view.projectId, old.grantId, {}, TOKEN, ctx(randomUUID()))
+      : grant(svc, current, { plan: false, batchFrom: 2, batchTo: 2, final: false });
+    // The second one waits for the first one's workspace run lock: it reads only the committed result.
+    const waited = await waitsOrSettles("SELECT pg_advisory_xact_lock(%", second);
+    paused.release();
+    expect(waited).toBe("waiting");
+    expect([201, 200]).toContain((await first).status);
+    expect((await second).body).toMatchObject({ error: { code: "SERIES_RUN_ACTIVE" } });
+    await held.settle();
+    await settle();
+    if (order === "takeover first") {
+      expect((await svc.resume(view.projectId, old.grantId, {}, TOKEN, ctx(randomUUID()))).body)
+        .toMatchObject({ error: { code: "SERIES_UPSTREAM_CHANGED", details: { reason: "upstream_job_superseded" } } });
+      await settle();
+    }
+    expect(seen.slice(sent).map((item) => item.stage)).toEqual(["episode:4", "episode:5", "episode:6", "batch_review:2"]);
+    expect((await runs(view.seriesId)).filter((row) => row.job_kind === "batch" && row.batch_no === 2)).toHaveLength(1);
+    expect(await count("SELECT count(*)::int AS n FROM series_writing_ledger_revision WHERE series_id = $1 AND batch_no = 2", [view.seriesId])).toBe(1);
+  });
+
+  it("the store's locked steps refuse a superseded job even when it is running again: no reservation, no call, no ledger", async () => {
+    plan = {};
+    const { svc, settle } = service();
+    const view = await createSeries(svc, 9);
+    rejectNext = "episode:5";
+    await grant(svc, view, { plan: true, batchFrom: 1, batchTo: 2, final: false }, randomUUID(), 1);
+    await settle();
+    const oldJob = (await runs(view.seriesId)).find((row) => row.job_kind === "batch" && row.batch_no === 2)!;
+    expect((await grant(svc, viewOf((await svc.get(view.projectId)).body), { plan: false, batchFrom: 2, batchTo: 2, final: false })).status).toBe(201);
+    await settle();
+    // As if the old job had been set running again before the takeover was seen (the race the locked steps close).
+    await q("UPDATE series_writing_run SET state = 'running', executor_id = NULL, lease_until = NULL WHERE id = $1", [oldJob.id]);
+    await q("UPDATE series_writing_stage SET state = 'pending' WHERE run_id = $1 AND state = 'rejected'", [oldJob.id]);
+    const nowIso = new Date().toISOString();
+    const lease = new Date(Date.now() + 240_000).toISOString();
+    expect(await store.claimJob(workspaceId, oldJob.id, "late-executor", nowIso, lease)).toBe(true);
+    const template = (await store.getJob(workspaceId, oldJob.id))!.calls[0]!;
+    const calls = await count("SELECT count(*)::int AS n FROM series_writing_call WHERE series_id = $1", [view.seriesId]);
+    expect(await store.reserveCall({ ...template, id: randomUUID(), stageKey: "episode:5", attemptNo: 2, state: "reserved", executorId: "late-executor", createdAt: nowIso,
+      finishedAt: null }, { sinceIso: new Date(Date.now() - 86_400_000).toISOString(), maxCallsPerDay: 1_000 }, nowIso, lease))
+      .toEqual({ kind: "blocked", code: "upstream_job_superseded" });
+    expect(await count("SELECT count(*)::int AS n FROM series_writing_call WHERE series_id = $1", [view.seriesId])).toBe(calls);
+    // Every stage of the old job completed (outputs as the later job wrote them), so only the takeover check stands between it and saving.
+    const newJob = (await runs(view.seriesId)).filter((row) => row.job_kind === "batch" && row.batch_no === 2).at(-1)!;
+    await q(`UPDATE series_writing_stage s SET state = 'completed', output_json = n.output_json, output_hash = n.output_hash, depends_on_json = n.depends_on_json
+               FROM series_writing_stage n WHERE s.run_id = $1 AND n.run_id = $2 AND n.stage_key = s.stage_key AND s.state <> 'completed'`, [oldJob.id, newJob.id]);
+    const ledgers = await count("SELECT count(*)::int AS n FROM series_writing_ledger_revision WHERE series_id = $1", [view.seriesId]);
+    const snapshot = (await store.snapshot(workspaceId, view.projectId))!;
+    const ledger = { ...snapshot.ledgers.at(-1)!, id: randomUUID() };
+    expect(await store.completeJob(workspaceId, oldJob.id, "late-executor", { kind: "batch", ledger }, { sinceIso: nowIso, maxCallsPerDay: 1_000, maxActiveRuns: 5 },
+      nowIso, lease, () => ({ kind: "done" }))).toEqual({ kind: "grant_stopped", reason: "upstream_job_superseded" });
+    expect(await count("SELECT count(*)::int AS n FROM series_writing_ledger_revision WHERE series_id = $1", [view.seriesId])).toBe(ledgers);
+    expect((await runs(view.seriesId)).find((row) => row.id === oldJob.id)!.state).toBe("needs_attention");
+  });
+});

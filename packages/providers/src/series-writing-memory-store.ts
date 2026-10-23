@@ -268,6 +268,11 @@ export class InMemorySeriesWritingStore implements SeriesWritingStore {
     return found;
   }
 
+  /** A later job (by sequence) of the same kind and batch exists in the series. */
+  private superseded(run: SeriesJobRecord): boolean {
+    return this.jobs.some((job) => job.seriesId === run.seriesId && job.kind === run.kind && job.batchNo === run.batchNo && job.seq > run.seq);
+  }
+
   private owns(run: SeriesJobRecord, workspaceId: string, executorId: string, nowIso: string): boolean {
     return run.workspaceId === workspaceId && run.state === "running" && run.executorId === executorId && !expired(run.leaseUntil, nowIso);
   }
@@ -296,6 +301,8 @@ export class InMemorySeriesWritingStore implements SeriesWritingStore {
     if (!this.owns(run, call.workspaceId, call.executorId, nowIso)) return { kind: "lost" };
     const grant = this.grant(run.grantId);
     if (run.cancelRequestedAt !== null || grant.cancelRequestedAt !== null) return { kind: "canceled" };
+    // Taken over by a later job of the same batch or final review: never another send.
+    if (this.superseded(run)) return { kind: "blocked", code: "upstream_job_superseded" };
     if (run.callsUsed >= run.callCap) return { kind: "blocked", code: "SERIES_JOB_CAP" };
     if (grant.callsUsed >= grant.callBudget) return { kind: "blocked", code: "SERIES_GRANT_BUDGET" };
     if (this.recent(call.workspaceId, limits.sinceIso) >= limits.maxCallsPerDay) return { kind: "blocked", code: "SERIES_DAILY_CAP" };
@@ -378,6 +385,12 @@ export class InMemorySeriesWritingStore implements SeriesWritingStore {
     const run = this.job(jobId);
     if (!this.owns(run, workspaceId, executorId, nowIso)) return { kind: "lost" };
     if (this.stages.some((stage) => stage.runId === jobId && stage.state !== "completed")) return { kind: "lost" };
+    // A later job of the same batch or final review took this one over: its result is never saved over the later one's.
+    if (this.superseded(run)) {
+      Object.assign(run, { state: "needs_attention", errorCode: "upstream_job_superseded", executorId: null, leaseUntil: null, updatedAt: nowIso });
+      this.stopGrant(this.grant(run.grantId), "stopped", "upstream_job_superseded", nowIso);
+      return { kind: "grant_stopped", reason: "upstream_job_superseded" };
+    }
     const series = this.series.find((item) => item.id === run.seriesId)!;
     if (artifacts.kind === "plan") this.savePlanArtifact(series, artifacts.plan, artifacts.storyText, `series-writing:${jobId}`, nowIso);
     if (artifacts.kind === "batch") this.ledgers.push(structuredClone(artifacts.ledger));

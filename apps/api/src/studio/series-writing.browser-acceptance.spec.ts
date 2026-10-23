@@ -294,6 +294,24 @@ describe("series writing in a real browser (site login, built web, real API, iso
     await page.getByTestId("series-card").waitFor({ timeout: 30_000 });
     expect(await page.getByTestId("series-card-summary").textContent()).toContain("正常调用 19 次");
     await viewports("02-series-card", page.getByTestId("series-card"), page.getByTestId("series-grant"));
+    // A confirmation is bound to the terms it was given on: changing one voids it and nothing can be sent until confirmed again.
+    const grantPosts: string[] = [];
+    const watchGrants = (request: { method(): string; url(): string }) => { if (request.method() === "POST" && request.url().endsWith("/series/grants")) grantPosts.push(request.url()); };
+    page.on("request", watchGrants);
+    const terms = page.getByTestId("series-card");
+    await page.getByTestId("series-preset").selectOption("plan_first");
+    await page.getByTestId("series-confirm").check();
+    await terms.getByLabel("允许人工确认的重发次数").selectOption("2");
+    expect(await page.getByTestId("series-confirm").isChecked()).toBe(false);
+    expect(await page.getByTestId("series-grant").isDisabled()).toBe(true);
+    expect(await page.getByTestId("series-confirm-stale").textContent()).toContain("需要重新确认");
+    await page.getByTestId("series-grant").click({ force: true });
+    await viewports("02b-series-card-confirmation-voided", terms, page.getByTestId("series-confirm-stale"));
+    expect(grantPosts).toHaveLength(0);
+    page.off("request", watchGrants);
+    await terms.getByLabel("允许人工确认的重发次数").selectOption("0");
+    expect(await page.getByTestId("series-confirm").isChecked()).toBe(false);
+    expect(seen).toHaveLength(0);
     await authorize("plan_first");
     await expect.poll(async () => await completion().textContent(), { timeout: 120_000, interval: 500 }).toContain("已完成 3/60 集");
     expect(seen).toHaveLength(19);

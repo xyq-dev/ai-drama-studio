@@ -371,3 +371,114 @@ describe("round 4 on the page: the plan editor keeps the revision it was opened 
     expect(editor().value).toContain("我在旧修订上的修改");
   });
 });
+
+describe("round 5 on the page: a confirmation is bound to the terms the person saw", () => {
+  const TWO = { ...OPTIONS, providers: [
+    { providerKey: "deepseek", label: "DeepSeek", ready: true, models: ["deepseek-flash", "deepseek-pro"], defaultModel: "deepseek-flash", missing: [] },
+    { providerKey: "anthropic", label: "Claude", ready: true, models: ["claude-test"], defaultModel: "claude-test", missing: [] },
+  ] };
+  const select = (label: string) => within(screen.getByTestId("series-card")).getByLabelText(label) as HTMLSelectElement;
+  const confirmBox = () => screen.getByTestId("series-confirm") as HTMLInputElement;
+  const posts = (calls: ReturnType<typeof server>) => calls.filter((call) => call.method === "POST" && call.url.endsWith("/series/grants"));
+
+  async function card(handler: Parameters<typeof server>[0] = () => undefined) {
+    const calls = server((method, url, body) => url.endsWith("/writing/series/options") ? json(TWO) : handler(method, url, body));
+    render(<SeriesWritingPage projectId={P1} />);
+    await screen.findByTestId("series-card");
+    await waitFor(() => expect(select("模型").value).toBe("deepseek-flash"));
+    fireEvent.change(screen.getByTestId("series-preset"), { target: { value: "continue" } });
+    await waitFor(() => expect(screen.getByTestId("series-card-summary").textContent).toContain("第 4–6 集 4 次"));
+    return calls;
+  }
+
+  it("A. confirmed for batch 2, then widened to batch 5 without confirming again: nothing is sent", async () => {
+    const calls = await card();
+    fireEvent.click(confirmBox());
+    expect(confirmBox().checked).toBe(true);
+    fireEvent.change(select("写到第几批"), { target: { value: "5" } });
+    expect(confirmBox().checked).toBe(false);
+    expect(screen.getByTestId("series-confirm-stale").textContent).toContain("重新确认");
+    expect((screen.getByTestId("series-grant") as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByTestId("series-grant"));
+    expect(posts(calls)).toHaveLength(0);
+  });
+
+  it.each<[string, () => void]>([
+    ["the provider", () => fireEvent.change(select("模型服务"), { target: { value: "anthropic" } })],
+    ["the model", () => fireEvent.change(select("模型"), { target: { value: "deepseek-pro" } })],
+    ["the batch range", () => fireEvent.change(select("写到第几批"), { target: { value: "3" } })],
+    ["the resend allowance", () => fireEvent.change(select("允许人工确认的重发次数"), { target: { value: "2" } })],
+    ["the scope preset", () => fireEvent.change(screen.getByTestId("series-preset"), { target: { value: "final" } })],
+  ])("B. changing %s voids the confirmation", async (_label, change) => {
+    const calls = await card();
+    fireEvent.click(confirmBox());
+    change();
+    expect(confirmBox().checked).toBe(false);
+    fireEvent.click(screen.getByTestId("series-grant"));
+    expect(posts(calls)).toHaveLength(0);
+  });
+
+  it("B. turning the final review on or off voids the confirmation", async () => {
+    const calls = await card();
+    fireEvent.change(select("写到第几批"), { target: { value: "20" } });
+    const final = () => within(screen.getByTestId("series-card")).getByLabelText(/写完后做全剧结构与连续性总检/) as HTMLInputElement;
+    fireEvent.click(confirmBox());
+    fireEvent.click(final());
+    expect(confirmBox().checked).toBe(false);
+    fireEvent.click(screen.getByTestId("series-grant"));
+    expect(posts(calls)).toHaveLength(0);
+  });
+
+  it("C. confirmed again after the change: the request is exactly the terms and budget on the card", async () => {
+    const calls = await card((method, url) => method === "POST" && url.endsWith("/series/grants") ? json({ grantId: randomUUID(), series: view }, 201) : undefined);
+    fireEvent.click(confirmBox());
+    fireEvent.change(select("写到第几批"), { target: { value: "3" } });
+    fireEvent.change(select("允许人工确认的重发次数"), { target: { value: "1" } });
+    fireEvent.change(select("模型"), { target: { value: "deepseek-pro" } });
+    expect(screen.getByTestId("series-card-summary").textContent).toContain("正常调用 8 次 + 重发 1 次 = 预算 9 次");
+    fireEvent.click(confirmBox());
+    fireEvent.click(screen.getByTestId("series-grant"));
+    await waitFor(() => expect(posts(calls)).toHaveLength(1));
+    expect(posts(calls)[0]!.body).toEqual({ scope: { plan: false, batchFrom: 2, batchTo: 3, final: false }, normalCalls: 8, resendAllowance: 1, callBudget: 9,
+      providerKey: "deepseek", model: "deepseek-pro", basePlanRevisionId: view.plan!.revisionId });
+  });
+
+  it("D. a new view with the same terms (another action's answer) keeps the confirmation", async () => {
+    const calls = await card((method, url) => method === "POST" && url.includes("/batches/1/scripts") ? json({ placed: 0, conflicts: [], series: JSON.parse(JSON.stringify(view)) as SeriesView }) : undefined);
+    fireEvent.click(confirmBox());
+    fireEvent.click(within(screen.getByTestId("series-batch-1")).getByRole("button", { name: "写入正式分集" }));
+    await waitFor(() => expect(calls.some((call) => call.url.includes("/batches/1/scripts"))).toBe(true));
+    await waitFor(() => expect((screen.getByTestId("series-grant") as HTMLButtonElement).disabled).toBe(false));
+    expect(confirmBox().checked).toBe(true);
+    expect(screen.queryByTestId("series-confirm-stale")).toBeNull();
+  });
+
+  it("E. a grant whose answer was lost is replayed with its frozen body and key, whatever the form shows now", async () => {
+    let lose = true;
+    const calls = await card((method, url) => {
+      if (method === "POST" && url.endsWith("/series/grants")) {
+        if (lose) { lose = false; throw new TypeError("fetch failed"); }
+        return json({ grantId: randomUUID(), series: view }, 201);
+      }
+      return undefined;
+    });
+    fireEvent.click(confirmBox());
+    fireEvent.click(screen.getByTestId("series-grant"));
+    await screen.findByTestId("series-error");
+    expect(screen.getByTestId("series-card-frozen")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "重试授权" }));
+    await waitFor(() => expect(posts(calls)).toHaveLength(2));
+    const [a, b] = posts(calls);
+    expect(b!.key).toBe(a!.key);
+    expect(b!.body).toEqual(a!.body);
+  });
+
+  it("F. a change and a click in the same moment never send the old confirmation's new terms", async () => {
+    const calls = await card();
+    fireEvent.click(confirmBox());
+    fireEvent.change(select("写到第几批"), { target: { value: "20" } });
+    fireEvent.click(screen.getByTestId("series-grant"));
+    fireEvent.click(screen.getByTestId("series-grant"));
+    expect(posts(calls)).toHaveLength(0);
+  });
+});

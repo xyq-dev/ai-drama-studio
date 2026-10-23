@@ -76,7 +76,9 @@ export function SeriesWritingPage({ projectId, client = defaultClient }: { proje
   const [busy, setBusy] = useState(false);
   const [token, setToken] = useState("");
   const [card, setCard] = useState<CardState>({ preset: "plan_first", lastBatch: 1, includeFinal: false, providerKey: "", model: "", resend: 0 });
-  const [confirmed, setConfirmed] = useState(false);
+  // The confirmation is bound to the exact request the card shows (its fingerprint), never a flag reused across terms.
+  const [confirmedFor, setConfirmedFor] = useState<string | null>(null);
+  const [confirmVoided, setConfirmVoided] = useState(false);
   // The ledger editor keeps what it was opened on: polling never swaps the versions its summaries are bound to.
   const [ledgerForm, setLedgerForm] = useState<{ batchNo: number; baseLedgerRevisionId: string | null; basis: Record<string, string> } | null>(null);
   const ledgerBatch = ledgerForm?.batchNo ?? null;
@@ -161,6 +163,19 @@ export function SeriesWritingPage({ projectId, client = defaultClient }: { proje
   const normalCalls = frozen?.normalCalls ?? summary.normal;
   const resend = frozen?.resendAllowance ?? card.resend;
   const callBudget = frozen?.callBudget ?? summary.normal + card.resend;
+  // The request the card would send now and its fingerprint: scope, calls, resends, budget, provider, model and plan revision.
+  const cardBody: SeriesGrantBody = { scope, normalCalls: summary.normal, resendAllowance: card.resend, callBudget: summary.normal + card.resend,
+    providerKey: card.providerKey, model: card.model, basePlanRevisionId: view.plan?.revisionId ?? null };
+  const cardPrint = JSON.stringify(cardBody);
+  const confirmed = confirmedFor !== null && confirmedFor === cardPrint;
+  /** Any change of the card's terms voids the confirmation (changing back does not restore it): the person confirms again. */
+  function changeCard(next: CardState) {
+    setCard(next);
+    if (confirmedFor !== null) {
+      setConfirmedFor(null);
+      setConfirmVoided(true);
+    }
+  }
   const provider = options?.providers.find((item) => item.providerKey === (frozen?.providerKey ?? card.providerKey));
   const frozenAvailable = frozen === null || (provider !== undefined && provider.ready && provider.models.includes(frozen.model));
   const needsToken = tokenRequired(options);
@@ -171,10 +186,11 @@ export function SeriesWritingPage({ projectId, client = defaultClient }: { proje
   const arc = plan?.content.arc;
 
   function grant() {
-    if (!confirmed && !frozen) return setActionError("请先勾选确认授权范围、调用次数和模型服务。");
-    const request = pendingGrant ?? { version: 1 as const, scope: grantScope, key: crypto.randomUUID(), body: {
-      scope, normalCalls: summary.normal, resendAllowance: card.resend, callBudget: summary.normal + card.resend,
-      providerKey: card.providerKey, model: card.model, basePlanRevisionId: view!.plan?.revisionId ?? null } };
+    // A frozen request is replayed as it was; a new one only on the very terms the person confirmed (checked again here).
+    if (!frozen && confirmedFor !== cardPrint) {
+      return setActionError(confirmedFor === null ? "请先勾选确认授权范围、调用次数和模型服务。" : "授权条件已变化，请核对后重新确认。没有发送请求。");
+    }
+    const request = pendingGrant ?? { version: 1 as const, scope: grantScope, key: crypto.randomUUID(), body: cardBody };
     if (!pendingGrant) {
       if (!savePendingSeries(request)) return setActionError("浏览器没能保存这次请求的标识，为避免重复授权，没有继续。");
       setPendingGrant(request);
@@ -184,7 +200,7 @@ export function SeriesWritingPage({ projectId, client = defaultClient }: { proje
         const next = await client.grant(projectId, request.body, { token: needsToken ? token.trim() : "", idempotencyKey: request.key });
         clearPendingSeries(grantScope, request.key);
         setPendingGrant(null);
-        setConfirmed(false);
+        setConfirmedFor(null);
         return next;
       } catch (caught) {
         if (seriesRefused(caught)) {
@@ -369,13 +385,13 @@ export function SeriesWritingPage({ projectId, client = defaultClient }: { proje
             <div className={series.formGrid}>
               <label className={styles.label}>范围
                 <select className={styles.input} value={card.preset} disabled={busy} data-testid="series-preset"
-                  onChange={(event) => setCard({ ...card, preset: event.target.value as SeriesPreset })}>
+                  onChange={(event) => changeCard({ ...card, preset: event.target.value as SeriesPreset })}>
                   {PRESETS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
                 </select>
               </label>
               {card.preset === "continue" ? (
                 <label className={styles.label}>写到第几批
-                  <select className={styles.input} value={card.lastBatch} disabled={busy} onChange={(event) => setCard({ ...card, lastBatch: Number(event.target.value) })}>
+                  <select className={styles.input} value={card.lastBatch} disabled={busy} onChange={(event) => changeCard({ ...card, lastBatch: Number(event.target.value) })}>
                     {Array.from({ length: batches - (view.next.batchNo ?? batches) + 1 }, (_, index) => (view.next.batchNo ?? batches) + index).map((batchNo) => (
                       <option key={batchNo} value={batchNo}>第 {batchNo} 批（到第 {seriesBatchRange(view.episodeCount, batchNo).last} 集）</option>
                     ))}
@@ -384,23 +400,23 @@ export function SeriesWritingPage({ projectId, client = defaultClient }: { proje
               ) : null}
               <label className={styles.label}>模型服务
                 <select className={styles.input} value={card.providerKey} disabled={busy}
-                  onChange={(event) => { const next = options?.providers.find((item) => item.providerKey === event.target.value); setCard({ ...card, providerKey: event.target.value, model: next?.defaultModel ?? "" }); }}>
+                  onChange={(event) => { const next = options?.providers.find((item) => item.providerKey === event.target.value); changeCard({ ...card, providerKey: event.target.value, model: next?.defaultModel ?? "" }); }}>
                   {(options?.providers ?? []).filter((item) => item.ready).map((item) => <option key={item.providerKey} value={item.providerKey}>{item.label}</option>)}
                 </select>
               </label>
               <label className={styles.label}>模型
-                <select className={styles.input} value={card.model} disabled={busy} onChange={(event) => setCard({ ...card, model: event.target.value })}>
+                <select className={styles.input} value={card.model} disabled={busy} onChange={(event) => changeCard({ ...card, model: event.target.value })}>
                   {(provider?.models ?? []).map((model) => <option key={model} value={model}>{model}</option>)}
                 </select>
               </label>
               <label className={styles.label}>允许人工确认的重发次数
-                <select className={styles.input} value={card.resend} disabled={busy} onChange={(event) => setCard({ ...card, resend: Number(event.target.value) })}>
+                <select className={styles.input} value={card.resend} disabled={busy} onChange={(event) => changeCard({ ...card, resend: Number(event.target.value) })}>
                   {Array.from({ length: MAX_RESEND + 1 }, (_, index) => <option key={index} value={index}>{index} 次</option>)}
                 </select>
               </label>
             </div>
             {card.preset === "continue" && scope.batchTo === batches ? (
-              <label className={styles.check}><input type="checkbox" checked={card.includeFinal} disabled={busy} onChange={(event) => setCard({ ...card, includeFinal: event.target.checked })} /> 写完后做全剧结构与连续性总检（+1 次）</label>
+              <label className={styles.check}><input type="checkbox" checked={card.includeFinal} disabled={busy} onChange={(event) => changeCard({ ...card, includeFinal: event.target.checked })} /> 写完后做全剧结构与连续性总检（+1 次）</label>
             ) : null}
             </>)}
             <ul className={series.facts} data-testid="series-card-summary">
@@ -418,9 +434,11 @@ export function SeriesWritingPage({ projectId, client = defaultClient }: { proje
                 <input id="series-grant-token" className={styles.input} type="password" autoComplete="off" value={token} onChange={(event) => setToken(event.target.value)} />
               </label>
             ) : null}
-            <label className={styles.check}><input type="checkbox" checked={confirmed || frozen !== null} disabled={busy || frozen !== null} onChange={(event) => setConfirmed(event.target.checked)} data-testid="series-confirm" /> 我确认上面的范围、调用次数、预算和模型服务</label>
+            <label className={styles.check}><input type="checkbox" checked={confirmed || frozen !== null} disabled={busy || frozen !== null}
+              onChange={(event) => { setConfirmedFor(event.target.checked ? cardPrint : null); setConfirmVoided(false); }} data-testid="series-confirm" /> 我确认上面的范围、调用次数、预算和模型服务</label>
+            {!frozen && (confirmVoided || (confirmedFor !== null && !confirmed)) ? <p className={styles.warning} role="status" data-testid="series-confirm-stale">授权条件已变化，原来的确认已取消，需要重新确认。</p> : null}
             <div className={styles.actions}>
-              <button className={styles.primary} type="button" disabled={busy} onClick={grant} data-testid="series-grant">{frozen ? "重试授权" : "确认并开始"}</button>
+              <button className={styles.primary} type="button" disabled={busy || (!frozen && !confirmed)} onClick={grant} data-testid="series-grant">{frozen ? "重试授权" : "确认并开始"}</button>
               {frozen ? <button className={styles.secondary} type="button" disabled={busy} onClick={() => { clearPendingSeries(grantScope, pendingGrant!.key); setPendingGrant(null); }}>放弃这次请求</button> : null}
             </div>
           </section>

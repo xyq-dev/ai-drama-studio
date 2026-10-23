@@ -590,6 +590,9 @@ export function nextSeriesJob(snapshot: SeriesSnapshot, grant: SeriesGrantRecord
   const next = remaining[0];
   if (!next) return { kind: "done" };
   if (grant.cancelRequestedAt !== null) return refusal("canceled");
+  // A later grant's job of the same batch or final review took this part over: this grant never sends it again.
+  const latest = Math.max(0, ...snapshot.jobs.filter((job) => job.run.grantId === grant.id).map((job) => job.run.seq));
+  if (seriesLaterJob(snapshot, next.kind, next.batchNo, latest)) return refusal("upstream_job_superseded");
   const states = seriesBatchStates(snapshot);
   const blockers = next.kind === "batch" ? seriesBatchBlockers(snapshot, next.batchNo!, states) : seriesFinalBlockers(snapshot, states);
   if (blockers.length > 0) return refusal(blockers[0]!.split(":")[0]!, { blockers });
@@ -615,8 +618,18 @@ export function seriesGrantRemainingSends(snapshot: SeriesSnapshot, grant: Serie
   return total;
 }
 
+/**
+ * Whether a job of this kind and batch was created after the given job sequence (any grant). Job sequences are assigned by
+ * the store under the series' locks, so this is the server's own order, never a client's clock or an id.
+ */
+export function seriesLaterJob(snapshot: SeriesSnapshot, kind: SeriesJobKind, batchNo: number | null, afterSeq: number): boolean {
+  return snapshot.jobs.some((job) => job.run.kind === kind && job.run.batchNo === batchNo && job.run.seq > afterSeq);
+}
+
 /** Why a running job may no longer send: what it was frozen on is not the current state any more. */
 export function seriesJobUpstreamChange(snapshot: SeriesSnapshot, run: SeriesJobRecord): string | null {
+  // A later job of the same batch or final review (a later grant's) took this one over: it never sends or saves again.
+  if (run.kind !== "plan" && seriesLaterJob(snapshot, run.kind, run.batchNo, run.seq)) return "upstream_job_superseded";
   if (run.kind === "plan") {
     // A plan saved since (by a later job or a person) or a later planning job supersedes this one: it never plans again,
     // so it never sends a duplicate plan nor saves one that would unbind the current plan from its story.
