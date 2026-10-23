@@ -47,6 +47,10 @@ describe.skipIf(process.platform === "win32")("StudioRuntime managed model start
   // Automatic creation tables are absent unless a test says otherwise (servers before its migration).
   let autoTableMissing = true;
   let autoRunning = false;
+  // Series writing tables are absent unless a test says otherwise (servers before its migration).
+  let seriesTableMissing = true;
+  let seriesRunning = false;
+  let seriesProbeFailure: Error | undefined;
   let metadataFailure: Error | undefined;
   let queryFailure: Error | undefined;
   let outbound: ReturnType<typeof vi.fn>;
@@ -63,6 +67,9 @@ describe.skipIf(process.platform === "win32")("StudioRuntime managed model start
     candidateOpen = false;
     autoTableMissing = true;
     autoRunning = false;
+    seriesTableMissing = true;
+    seriesRunning = false;
+    seriesProbeFailure = undefined;
     metadataFailure = undefined;
     queryFailure = undefined;
     vi.spyOn(RuntimeStore.prototype, "requireActiveWorkspace").mockResolvedValue(WORKSPACE);
@@ -77,22 +84,33 @@ describe.skipIf(process.platform === "win32")("StudioRuntime managed model start
             return { rows: [{ missing: tableMissing }] };
           }
           // The activation check also waits for open online candidates (they send with the active configuration).
+          // Every optional table's read answers under the alias busy, as writingWorkspaceIdle selects it.
           if (sql.includes("to_regclass('writing_candidate_request') IS NULL")) {
             if (metadataFailure) throw metadataFailure;
             return { rows: [{ missing: candidateTableMissing }] };
           }
-          if (sql.includes("FROM writing_candidate_request") && sql.includes("state IN ('reserved', 'submitted')") && values?.[0] === WORKSPACE) {
+          if (sql.includes("FROM writing_candidate_request") && sql.includes("state IN ('reserved', 'submitted')") && sql.includes("AS busy") && values?.[0] === WORKSPACE) {
             if (queryFailure) throw queryFailure;
-            return { rows: [{ open: candidateOpen }] };
+            return { rows: [{ busy: candidateOpen }] };
           }
           // The activation check also waits for running automatic creation runs.
           if (sql.includes("to_regclass('auto_creation_run') IS NULL")) {
             if (metadataFailure) throw metadataFailure;
             return { rows: [{ missing: autoTableMissing }] };
           }
-          if (sql.includes("FROM auto_creation_run") && sql.includes("state = 'running'") && values?.[0] === WORKSPACE) {
+          if (sql.includes("FROM auto_creation_run") && sql.includes("state = 'running'") && sql.includes("AS busy") && values?.[0] === WORKSPACE) {
             if (queryFailure) throw queryFailure;
-            return { rows: [{ running: autoRunning }] };
+            return { rows: [{ busy: autoRunning }] };
+          }
+          // And for running series writing jobs.
+          if (sql.includes("to_regclass('series_writing_run') IS NULL")) {
+            if (metadataFailure) throw metadataFailure;
+            if (seriesProbeFailure) throw seriesProbeFailure;
+            return { rows: [{ missing: seriesTableMissing }] };
+          }
+          if (sql.includes("FROM series_writing_run") && sql.includes("state = 'running'") && sql.includes("AS busy") && values?.[0] === WORKSPACE) {
+            if (queryFailure) throw queryFailure;
+            return { rows: [{ busy: seriesRunning }] };
           }
           if (sql.includes("information_schema.columns")) {
             if (metadataFailure) throw metadataFailure;
@@ -319,13 +337,60 @@ describe.skipIf(process.platform === "win32")("StudioRuntime managed model start
     expect(await deferred.adminModels!.view()).toMatchObject({ activeRevision: 0, activationDeferred: true });
   });
 
+  it("defers activation while a series writing job is running, and applies it only once every task is idle", async () => {
+    const env = await environment();
+    await savePending(env);
+    seriesTableMissing = false;
+    seriesRunning = true;
+    const deferred = await open(env);
+    expect(await deferred.adminModels!.view()).toMatchObject({ pendingRestart: true, activationDeferred: true, activeRevision: 0 });
+    expect(await options(deferred)).toMatchObject({ defaultProvider: "anthropic", maxCallsPerDay: 30, maxActiveRuns: 1 });
+    expect(pools.at(-1)!.query.mock.calls.find(([sql]) => sql.includes("FROM series_writing_run"))?.[1]).toEqual([WORKSPACE]);
+    await close(deferred);
+    // The series job is done, but an automatic creation run still sends with the active configuration.
+    seriesRunning = false;
+    autoTableMissing = false;
+    autoRunning = true;
+    const stillDeferred = await open(env);
+    expect(await stillDeferred.adminModels!.view()).toMatchObject({ activeRevision: 0, activationDeferred: true });
+    await close(stillDeferred);
+    autoRunning = false;
+    const applied = await open(env);
+    expect(await applied.adminModels!.view()).toMatchObject({ pendingRestart: false, activationDeferred: false, activeRevision: 2 });
+    expect(await options(applied)).toMatchObject({ defaultProvider: "openai", maxCallsPerDay: 8, maxActiveRuns: 2 });
+  });
+
+  it("activates on a database without the series writing table, never reading it", async () => {
+    const env = await environment();
+    await savePending(env);
+    const runtime = await open(env);
+    expect(await runtime.adminModels!.view()).toMatchObject({ pendingRestart: false, activationDeferred: false, activeRevision: 2 });
+    const calls = pools.at(-1)!.query.mock.calls.map(([sql]) => sql);
+    expect(calls.some((sql) => sql.includes("to_regclass('series_writing_run') IS NULL"))).toBe(true);
+    expect(calls.some((sql) => sql.includes("FROM series_writing_run"))).toBe(false);
+  });
+
+  it("does not treat a failed series writing table probe as an idle workspace", async () => {
+    const env = await environment();
+    await savePending(env);
+    seriesProbeFailure = Object.assign(new Error("series probe timed out"), { code: "57014" });
+    await expect(StudioRuntime.open(env)).rejects.toMatchObject({ code: "ADMIN_CONFIG_STORAGE_UNAVAILABLE" });
+    expect(pools.at(-1)!.end).toHaveBeenCalledExactlyOnceWith();
+    expect(pools.at(-1)!.query.mock.calls.some(([sql]) => sql.includes("FROM series_writing_run"))).toBe(false);
+    // The failed startup persisted nothing: a later start with a running title task still has the old active revision.
+    seriesProbeFailure = undefined;
+    running = true;
+    const recovered = await open(env);
+    expect(await recovered.adminModels!.view()).toMatchObject({ activeRevision: 0, savedRevision: 2, activationDeferred: true });
+  });
+
   it("clears all maintenance timers and closes the pool on runtime teardown", async () => {
     const interval = vi.spyOn(globalThis, "setInterval");
     const clear = vi.spyOn(globalThis, "clearInterval");
     const runtime = await open(await environment());
     const timers = interval.mock.results.filter((result) => result.type === "return").map((result) => result.value);
-    // Title writing recovery, online candidate recovery and automatic creation recovery.
-    expect(timers).toHaveLength(3);
+    // Title writing recovery, online candidate recovery, automatic creation recovery and series writing recovery.
+    expect(timers).toHaveLength(4);
     await close(runtime);
     for (const timer of timers) expect(clear).toHaveBeenCalledWith(timer);
     expect(pools.at(-1)!.end).toHaveBeenCalledExactlyOnceWith();

@@ -34,5 +34,7 @@ describe("A. a complete 60-episode series: plan, every batch, every batch review
     expect(store.ledgers).toHaveLength(20);
     expect(store.jobs.every((job) => job.callCap <= 60)).toBe(true);
     expect(store.jobs[0]!.callCap).toBe(seriesPlanCalls(60));
-  });
+    // 96 in-process double calls over the in-memory store: no network or timer, but slower than the default 5 s
+    // budget when the whole workspace verifies in parallel.
+  }, 30_000);
 });
