@@ -1,0 +1,163 @@
+/* Series writing pages: wide tables become stacked cards on narrow screens; long Chinese text and ids wrap. */
+.page {
+  min-width: 0;
+}
+
+.section {
+  min-width: 0;
+  margin-top: 24px;
+}
+
+.completion {
+  margin: 8px 0 0;
+  color: var(--studio-text);
+  font-size: 16px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.facts {
+  margin: 8px 0 0;
+  padding-left: 20px;
+  font-size: 15px;
+  line-height: 1.8;
+}
+
+.facts li {
+  margin: 4px 0;
+  overflow-wrap: anywhere;
+}
+
+.blockers {
+  margin: 12px 0 0;
+  padding: 12px 12px 12px 32px;
+  border-radius: var(--studio-control-radius);
+  background: var(--studio-selected);
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.formGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 0 16px;
+  min-width: 0;
+}
+
+.statusGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px 16px;
+  margin-top: 8px;
+}
+
+.statusGrid p {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+.key {
+  display: block;
+  color: var(--studio-muted);
+  font-size: 13px;
+}
+
+.tableWrap {
+  width: 100%;
+  min-width: 0;
+  margin-top: 12px;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.table th,
+.table td {
+  padding: 8px;
+  border-bottom: 1px solid var(--studio-line);
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.table th {
+  color: var(--studio-muted);
+  font-weight: 600;
+}
+
+.summary {
+  display: block;
+  color: var(--studio-muted);
+  font-size: 13px;
+}
+
+.stop {
+  display: block;
+  margin-top: 4px;
+  color: var(--studio-muted);
+  font-size: 13px;
+}
+
+.rowActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.rowActions button {
+  min-height: 36px;
+  padding: 4px 10px;
+  font-size: 13px;
+}
+
+.editor {
+  margin-top: 16px;
+}
+
+.code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  white-space: pre;
+  overflow: auto;
+}
+
+/* Narrow screens: each row is a card, each cell labelled by its column. */
+@media (max-width: 640px) {
+  .table,
+  .table tbody,
+  .table tr,
+  .table td {
+    display: block;
+    width: 100%;
+  }
+
+  .table thead {
+    display: none;
+  }
+
+  .table tr {
+    margin-bottom: 12px;
+    padding: 8px 12px;
+    border: 1px solid var(--studio-line);
+    border-radius: var(--studio-control-radius);
+    background: var(--studio-card);
+  }
+
+  .table td {
+    padding: 4px 0;
+    border-bottom: 0;
+  }
+
+  .table td[data-label]::before {
+    content: attr(data-label) "：";
+    color: var(--studio-muted);
+    font-size: 13px;
+  }
+}

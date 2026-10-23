@@ -8,6 +8,7 @@ import {
   BASE_MIGRATIONS,
   GUARDED_SINGLE_MIGRATIONS,
   AUTO_CREATION_MIGRATION,
+  SERIES_WRITING_MIGRATION,
   WRITING_CANDIDATE_DEEPSEEK_MIGRATION,
   WRITING_CANDIDATE_MIGRATION,
   WRITING_PROVIDER_MIGRATION,
@@ -20,6 +21,7 @@ const BREAKDOWN = "20261012000100_script_breakdown";
 const CANDIDATE = WRITING_CANDIDATE_MIGRATION;
 const DEEPSEEK = WRITING_CANDIDATE_DEEPSEEK_MIGRATION;
 const AUTO = AUTO_CREATION_MIGRATION;
+const SERIES = SERIES_WRITING_MIGRATION;
 
 function sha(text: string): string {
   return createHash("sha256").update(text).digest("hex");
@@ -51,9 +53,9 @@ describe("the provider migration", () => {
   it("sorts after every migration it requires and after the script breakdown, and requires exactly the seven base ones", async () => {
     const names = (await readdir(REAL_DIRECTORY, { withFileTypes: true })).filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
     expect(names.slice(0, 7)).toEqual([...BASE_MIGRATIONS]);
-    expect(names).toEqual([...BASE_MIGRATIONS, BREAKDOWN, WRITING_PROVIDER_MIGRATION, CANDIDATE, DEEPSEEK, AUTO]);
+    expect(names).toEqual([...BASE_MIGRATIONS, BREAKDOWN, WRITING_PROVIDER_MIGRATION, CANDIDATE, DEEPSEEK, AUTO, SERIES]);
     expect(GUARDED_SINGLE_MIGRATIONS).toEqual({ [WRITING_PROVIDER_MIGRATION]: BASE_MIGRATIONS, [CANDIDATE]: BASE_MIGRATIONS,
-      [DEEPSEEK]: [...BASE_MIGRATIONS, CANDIDATE], [AUTO]: BASE_MIGRATIONS });
+      [DEEPSEEK]: [...BASE_MIGRATIONS, CANDIDATE], [AUTO]: BASE_MIGRATIONS, [SERIES]: BASE_MIGRATIONS });
     expect(BASE_MIGRATIONS).not.toContain(BREAKDOWN);
   });
 
@@ -95,7 +97,7 @@ describe("guarded single migration", () => {
   it("on a base-seven database applies only the provider migration and leaves the breakdown pending", async () => {
     const db = ledger(await realLedger(BASE_MIGRATIONS));
     const result = await runMigrations(db.pool, REAL_DIRECTORY, { only });
-    expect(result).toEqual({ applied: [WRITING_PROVIDER_MIGRATION], alreadyApplied: [], leftPending: [BREAKDOWN, CANDIDATE, DEEPSEEK, AUTO] });
+    expect(result).toEqual({ applied: [WRITING_PROVIDER_MIGRATION], alreadyApplied: [], leftPending: [BREAKDOWN, CANDIDATE, DEEPSEEK, AUTO, SERIES] });
     expect(db.recorded.map((row) => row.name)).toEqual([...BASE_MIGRATIONS, WRITING_PROVIDER_MIGRATION]);
     const providerSql = await readFile(join(REAL_DIRECTORY, WRITING_PROVIDER_MIGRATION, "migration.sql"), "utf8");
     const breakdownSql = await readFile(join(REAL_DIRECTORY, BREAKDOWN, "migration.sql"), "utf8");
@@ -112,29 +114,29 @@ describe("guarded single migration", () => {
 
   it("on a database that already has the breakdown applies the same migration and nothing else", async () => {
     const db = ledger(await realLedger([...BASE_MIGRATIONS, BREAKDOWN]));
-    expect(await runMigrations(db.pool, REAL_DIRECTORY, { only })).toEqual({ applied: [WRITING_PROVIDER_MIGRATION], alreadyApplied: [], leftPending: [CANDIDATE, DEEPSEEK, AUTO] });
+    expect(await runMigrations(db.pool, REAL_DIRECTORY, { only })).toEqual({ applied: [WRITING_PROVIDER_MIGRATION], alreadyApplied: [], leftPending: [CANDIDATE, DEEPSEEK, AUTO, SERIES] });
   });
 
   it("is idempotent: a second run applies nothing", async () => {
     const db = ledger(await realLedger(BASE_MIGRATIONS));
     await runMigrations(db.pool, REAL_DIRECTORY, { only });
     const statementsAfterFirst = db.statements.length;
-    expect(await runMigrations(db.pool, REAL_DIRECTORY, { only })).toEqual({ applied: [], alreadyApplied: [WRITING_PROVIDER_MIGRATION], leftPending: [BREAKDOWN, CANDIDATE, DEEPSEEK, AUTO] });
+    expect(await runMigrations(db.pool, REAL_DIRECTORY, { only })).toEqual({ applied: [], alreadyApplied: [WRITING_PROVIDER_MIGRATION], leftPending: [BREAKDOWN, CANDIDATE, DEEPSEEK, AUTO, SERIES] });
     expect(db.statements.slice(statementsAfterFirst).some((sql) => sql === "BEGIN")).toBe(false);
   });
 
   it("a later default run still applies the breakdown after it, and nothing twice", async () => {
     const db = ledger(await realLedger(BASE_MIGRATIONS));
     await runMigrations(db.pool, REAL_DIRECTORY, { only });
-    expect(await runMigrations(db.pool, REAL_DIRECTORY)).toEqual({ applied: [BREAKDOWN, CANDIDATE, DEEPSEEK, AUTO], alreadyApplied: [...BASE_MIGRATIONS, WRITING_PROVIDER_MIGRATION] });
+    expect(await runMigrations(db.pool, REAL_DIRECTORY)).toEqual({ applied: [BREAKDOWN, CANDIDATE, DEEPSEEK, AUTO, SERIES], alreadyApplied: [...BASE_MIGRATIONS, WRITING_PROVIDER_MIGRATION] });
   });
 
   it("the candidate migration is its own guarded run: alone on a base-seven database, then the provider one, the breakdown never", async () => {
     const candidate = { name: CANDIDATE, requires: BASE_MIGRATIONS };
     const db = ledger(await realLedger(BASE_MIGRATIONS));
-    expect(await runMigrations(db.pool, REAL_DIRECTORY, { only: candidate })).toEqual({ applied: [CANDIDATE], alreadyApplied: [], leftPending: [BREAKDOWN, WRITING_PROVIDER_MIGRATION, DEEPSEEK, AUTO] });
-    expect(await runMigrations(db.pool, REAL_DIRECTORY, { only })).toEqual({ applied: [WRITING_PROVIDER_MIGRATION], alreadyApplied: [], leftPending: [BREAKDOWN, DEEPSEEK, AUTO] });
-    expect(await runMigrations(db.pool, REAL_DIRECTORY, { only: candidate })).toEqual({ applied: [], alreadyApplied: [CANDIDATE], leftPending: [BREAKDOWN, DEEPSEEK, AUTO] });
+    expect(await runMigrations(db.pool, REAL_DIRECTORY, { only: candidate })).toEqual({ applied: [CANDIDATE], alreadyApplied: [], leftPending: [BREAKDOWN, WRITING_PROVIDER_MIGRATION, DEEPSEEK, AUTO, SERIES] });
+    expect(await runMigrations(db.pool, REAL_DIRECTORY, { only })).toEqual({ applied: [WRITING_PROVIDER_MIGRATION], alreadyApplied: [], leftPending: [BREAKDOWN, DEEPSEEK, AUTO, SERIES] });
+    expect(await runMigrations(db.pool, REAL_DIRECTORY, { only: candidate })).toEqual({ applied: [], alreadyApplied: [CANDIDATE], leftPending: [BREAKDOWN, DEEPSEEK, AUTO, SERIES] });
     expect(db.recorded.map((row) => row.name)).toEqual([...BASE_MIGRATIONS, CANDIDATE, WRITING_PROVIDER_MIGRATION]);
     const breakdownSql = await readFile(join(REAL_DIRECTORY, BREAKDOWN, "migration.sql"), "utf8");
     expect(db.statements).not.toContain(breakdownSql);
@@ -220,7 +222,7 @@ describe("the DeepSeek candidate migration", () => {
 
   it("on the test-site combination (base seven, Claude, candidates; breakdown not applied) applies only itself and leaves the breakdown pending", async () => {
     const db = ledger(await realLedger([...BASE_MIGRATIONS, WRITING_PROVIDER_MIGRATION, CANDIDATE]));
-    expect(await runMigrations(db.pool, REAL_DIRECTORY, { only: deepseekOnly })).toEqual({ applied: [DEEPSEEK], alreadyApplied: [], leftPending: [BREAKDOWN, AUTO] });
+    expect(await runMigrations(db.pool, REAL_DIRECTORY, { only: deepseekOnly })).toEqual({ applied: [DEEPSEEK], alreadyApplied: [], leftPending: [BREAKDOWN, AUTO, SERIES] });
     expect(db.recorded.map((row) => row.name)).toEqual([...BASE_MIGRATIONS, WRITING_PROVIDER_MIGRATION, CANDIDATE, DEEPSEEK]);
     const breakdownSql = await readFile(join(REAL_DIRECTORY, BREAKDOWN, "migration.sql"), "utf8");
     expect(db.statements).not.toContain(breakdownSql);
@@ -228,7 +230,7 @@ describe("the DeepSeek candidate migration", () => {
     expect(db.statements.filter((sql) => sql === "COMMIT")).toHaveLength(1);
     // A second run is a no-op: nothing is applied or recorded twice.
     const before = db.statements.length;
-    expect(await runMigrations(db.pool, REAL_DIRECTORY, { only: deepseekOnly })).toEqual({ applied: [], alreadyApplied: [DEEPSEEK], leftPending: [BREAKDOWN, AUTO] });
+    expect(await runMigrations(db.pool, REAL_DIRECTORY, { only: deepseekOnly })).toEqual({ applied: [], alreadyApplied: [DEEPSEEK], leftPending: [BREAKDOWN, AUTO, SERIES] });
     expect(db.statements.slice(before)).not.toContain("BEGIN");
     expect(db.recorded.filter((row) => row.name === DEEPSEEK)).toHaveLength(1);
   });

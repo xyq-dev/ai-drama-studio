@@ -37,6 +37,7 @@ import {
   WRITING_PROVIDER_MIGRATION,
   TITLE_WRITING_MIGRATION,
   runMigrations,
+  SERIES_WRITING_MIGRATION,
   verifyTitleWritingAcceptanceDatabase,
 } from "@ai-drama/database";
 import { messagesAnswer, fixtureConcept, fixtureEpisode, fixtureOutline, fixtureStepOf, type FixtureStep } from "@ai-drama/providers/title-writing-fixtures";
@@ -439,7 +440,7 @@ describe("title writing on the real runtime, killed and restarted, model stubbed
     // breakdown migrations; a second run applies nothing.
     const upgrade = await runMigrations(pool);
     expect(upgrade.applied).toEqual([TITLE_WRITING_MIGRATION, EPISODE_PLAN_MIGRATION, SCRIPT_BREAKDOWN_MIGRATION, WRITING_PROVIDER_MIGRATION, WRITING_CANDIDATE_MIGRATION,
-      WRITING_CANDIDATE_DEEPSEEK_MIGRATION, AUTO_CREATION_MIGRATION]);
+      WRITING_CANDIDATE_DEEPSEEK_MIGRATION, AUTO_CREATION_MIGRATION, SERIES_WRITING_MIGRATION]);
     const again = await runMigrations(pool);
     expect(again.applied).toEqual([]);
     evidence.migration = { upgradeApplied: upgrade.applied, redeployApplied: again.applied };

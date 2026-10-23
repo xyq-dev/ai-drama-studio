@@ -107,6 +107,8 @@ export interface BeginnerFacts {
   story: StoryRevision | null;
   /** The work's episode count (its plan); three when not known. Episodes 1..N are the ones every step covers. */
   episodeCount?: number;
+  /** series: a series writing work (1–60 episodes); absent or short: a short-drama work. */
+  writingMode?: "short" | "series";
   episodes: EpisodeRecord[];
   characters: ListFacts<Aggregate>;
   locations: ListFacts<Aggregate>;
@@ -152,8 +154,9 @@ export function composeRunning(runs: readonly WorkflowRun[]): boolean {
 }
 
 /** Episode numbers 1..N of the work the facts describe. */
-export function episodeNumbers(facts: Pick<BeginnerFacts, "episodeCount">): number[] {
-  return projectEpisodeNumbers({ ...(facts.episodeCount !== undefined ? { episodeCount: facts.episodeCount } : {}) });
+export function episodeNumbers(facts: Pick<BeginnerFacts, "episodeCount" | "writingMode">): number[] {
+  return projectEpisodeNumbers({ ...(facts.episodeCount !== undefined ? { episodeCount: facts.episodeCount } : {}),
+    ...(facts.writingMode !== undefined ? { writingMode: facts.writingMode } : {}) });
 }
 
 export function episodeSampleState(facts: BeginnerFacts, episodeNo: number): StepState {

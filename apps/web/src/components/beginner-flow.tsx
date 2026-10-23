@@ -222,9 +222,10 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
   const facts: BeginnerFacts = useMemo(() => ({
     story: currentStoryRevision(stories?.items ?? []), episodes,
     ...(project?.episodeCount !== undefined ? { episodeCount: project.episodeCount } : {}),
+    ...(project?.writingMode !== undefined ? { writingMode: project.writingMode } : {}),
     characters: ready ? progress.characters : UNREAD, locations: ready ? progress.locations : UNREAD,
     runs: allRuns, media: ready ? progress.media : {},
-  }), [stories, episodes, ready, progress, allRuns, project?.episodeCount]);
+  }), [stories, episodes, ready, progress, allRuns, project?.episodeCount, project?.writingMode]);
   const states = useMemo(() => stepStates(facts), [facts]);
   const gates = composeGates(capability);
 

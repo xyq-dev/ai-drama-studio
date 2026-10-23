@@ -74,6 +74,7 @@ const MESSAGES: Record<string, string> = {
   AUTO_CREATION_EPISODE_PLAN_UNAVAILABLE: "集数设置的数据库迁移还没有执行，没有启动任何调用。",
   AUTO_CREATION_PLAN_REQUIRED: "这部作品没有集数和时长设置，AI 自动创作只用于新建的、带集数设置的作品。",
   AUTO_CREATION_PLAN_MISMATCH: "请求的集数或时长和作品的设置不一致，没有发出任何调用。",
+  AUTO_CREATION_SERIES_PROJECT: "这是系列编剧作品，请在系列编剧页面继续；AI 自动创作只用于 1–6 集的短剧作品，没有发出任何调用。",
   AUTO_CREATION_PROJECT_NOT_EMPTY: "这部作品已经有故事或已经做过自动创作，不会覆盖。请新建作品再开始。",
   AUTO_CREATION_PROVIDER_UNCONFIGURED: "所选（或默认）模型服务现在不可用，没有发出调用，也不会自动改用其他模型服务。",
   AUTO_CREATION_PROVIDER_RETIRED: "这个模型服务已经退役，不能再发起新的创作。",
@@ -222,6 +223,8 @@ export class AutoCreationService {
     const request = parsed.data;
     // The work's plan, not the request, decides N and the seconds.
     const plan = await this.deps.projects.getProjectEpisodePlan(this.deps.workspaceId, projectId);
+    // A series work is written by series writing only: the short-drama flow keeps its 1–6 episode contract.
+    if (plan.writingMode === "series") return failure(409, "AUTO_CREATION_SERIES_PROJECT");
     if (plan.targetEpisodeSeconds === null) return failure(409, "AUTO_CREATION_PLAN_REQUIRED");
     if (!await this.deps.projects.episodePlanReady()) return failure(503, "AUTO_CREATION_EPISODE_PLAN_UNAVAILABLE");
     if ((request.episodeCount !== undefined && request.episodeCount !== plan.episodeCount)

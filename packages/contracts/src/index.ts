@@ -1,6 +1,7 @@
 import { z } from "zod";
 export * from "./admin-models";
 export * from "./auto-creation";
+export * from "./series-writing";
 
 export const SERVICE_NAME = {
   api: "api",

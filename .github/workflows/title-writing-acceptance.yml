@@ -398,6 +398,23 @@ jobs:
             pnpm --filter @ai-drama/api auto-creation:acceptance
           done
 
+      - name: Run the series writing PostgreSQL acceptance on three schemas (guarded, deny by default)
+        # Store, service and engine on real tables, model double: the guarded migration alone (rollback on failure, rerun
+        # applies nothing, short-drama works keep 1–6 episodes), a 60-episode series in 96 calls, plan + episodes 1–3 in
+        # 19, a person's edit stopping the series until the ledger and review are confirmed, an injected contradiction,
+        # unknown-call recovery and the shared quota and concurrency caps.
+        run: |
+          for scenario in testsite base breakdown; do
+            name="ads_title_acceptance_series_${scenario}_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+            psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE ${name}"
+            SERIES_WRITING_ACCEPTANCE_SCENARIO="${scenario}" \
+            TITLE_WRITING_ACCEPTANCE_AUTHORIZED=true \
+            TITLE_WRITING_ACCEPTANCE_DATABASE_NAME="${name}" \
+            TITLE_WRITING_ACCEPTANCE_DATABASE_URL="postgresql://postgres@127.0.0.1:5432/${name}" \
+            TITLE_WRITING_ACCEPTANCE_EVIDENCE_DIR="${RUNNER_TEMP}/title-acceptance-evidence" \
+            pnpm --filter @ai-drama/api series-writing:acceptance
+          done
+
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -603,6 +620,19 @@ jobs:
           TITLE_WRITING_ACCEPTANCE_DATABASE_URL="postgresql://postgres@127.0.0.1:5432/${name}" \
           TITLE_WRITING_ACCEPTANCE_EVIDENCE_DIR="${RUNNER_TEMP}/title-acceptance-evidence" \
           pnpm --filter @ai-drama/api auto-creation:browser-acceptance
+
+      - name: Run the series writing browser acceptance on its own new database (guarded, deny by default)
+        # Site login, built web, real API, test-site migrations plus the automatic creation and series migrations, model
+        # double: a 60-episode work from the start page, plan + episodes 1-3, the next batch, placement after a person's
+        # approval, an edit and the ledger confirmation, the current package, an injected contradiction, 1280 and 390.
+        run: |
+          name="ads_title_acceptance_series_browser_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+          psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE ${name}"
+          TITLE_WRITING_ACCEPTANCE_AUTHORIZED=true \
+          TITLE_WRITING_ACCEPTANCE_DATABASE_NAME="${name}" \
+          TITLE_WRITING_ACCEPTANCE_DATABASE_URL="postgresql://postgres@127.0.0.1:5432/${name}" \
+          TITLE_WRITING_ACCEPTANCE_EVIDENCE_DIR="${RUNNER_TEMP}/title-acceptance-evidence" \
+          pnpm --filter @ai-drama/api series-writing:browser-acceptance
 
       - name: Check that nothing is left listening
         if: always()

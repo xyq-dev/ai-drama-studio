@@ -98,6 +98,12 @@ export const WRITING_CANDIDATE_DEEPSEEK_MIGRATION = "20261017000100_writing_cand
 export const AUTO_CREATION_MIGRATION = "20261019000100_auto_creation";
 
 /**
+ * Series writing: project.writing_mode, the series-only 7–60 episode range and the series_writing_ tables. Independent of
+ * the script breakdown, provider, candidate and automatic creation migrations: it needs only the base migrations.
+ */
+export const SERIES_WRITING_MIGRATION = "20261023000100_series_writing";
+
+/**
  * The only migrations a guarded single run may apply, each with the migrations it requires. Each is applied by its own
  * command; none of them takes the script breakdown (or anything else pending) along.
  */
@@ -106,6 +112,7 @@ export const GUARDED_SINGLE_MIGRATIONS: Readonly<Record<string, readonly string[
   [WRITING_CANDIDATE_MIGRATION]: BASE_MIGRATIONS,
   [WRITING_CANDIDATE_DEEPSEEK_MIGRATION]: [...BASE_MIGRATIONS, WRITING_CANDIDATE_MIGRATION],
   [AUTO_CREATION_MIGRATION]: BASE_MIGRATIONS,
+  [SERIES_WRITING_MIGRATION]: BASE_MIGRATIONS,
 };
 
 export async function runMigrations(

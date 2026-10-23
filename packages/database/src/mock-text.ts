@@ -130,7 +130,9 @@ export class MockTextService {
         WHERE e.workspace_id = $1 AND e.project_id = $2 ORDER BY e.episode_no`,
       [workspaceId, projectId],
     );
-    const { episodeCount } = await projectEpisodePlanIn(client, workspaceId, projectId);
+    const { episodeCount, writingMode } = await projectEpisodePlanIn(client, workspaceId, projectId);
+    // Series writing delivers text only: no media production for a series work, whatever its episode count.
+    if (writingMode === "series") throw new PersistenceError("SERIES_MEDIA_NOT_ENABLED", "Media production is not enabled for series works");
     try {
       assertProductionEpisodeSet(rows.rows.map((row) => Number(row.episode_no)), episodeCount);
     } catch {

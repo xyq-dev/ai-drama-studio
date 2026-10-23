@@ -6,6 +6,7 @@ import {
   MediaAssetStore,
   MockTextService,
   PostgresAutoCreationStore,
+  PostgresSeriesWritingStore,
   PostgresTitleWritingStore,
   PostgresWritingCandidateStore,
   RuntimeStore,
@@ -16,15 +17,17 @@ import {
 } from "@ai-drama/database";
 import { sampleVideoGenerationEnabled, type TitleRunKind } from "@ai-drama/contracts";
 import {
-  AutoCreationEngine, TitleWritingEngine, WritingCandidateExecutor, createFetchTransport, createResearchFetcher, titleWritingProviderConfigs,
+  AutoCreationEngine, SeriesWritingEngine, TitleWritingEngine, WritingCandidateExecutor, createFetchTransport, createResearchFetcher, titleWritingProviderConfigs,
 } from "@ai-drama/providers";
 import { AUTO_CREATION_DEFAULT_ALLOWED_HOSTS, OCEAN_ENGINE_ENTRY_URLS } from "@ai-drama/domain";
 import { AutoCreationService } from "./auto-creation.service";
+import { SeriesWritingService } from "./series-writing.service";
 import type { ApiEnv } from "../config/env";
 import { siteAuthFromEnv } from "../auth/site-auth.config";
 import { ScriptBreakdownService } from "./script-breakdown.service";
 import { StudioService } from "./studio.service";
 import { TitleWritingService } from "./title-writing.service";
+import { writingWorkspaceIdle } from "./writing-activation";
 import { WritingCandidateService } from "./writing-candidate.service";
 import { adminBootstrap } from "../admin/admin-bootstrap";
 import { AdminModelsService, managedProviderConfigs } from "../admin/admin-models.service";
@@ -40,6 +43,7 @@ export class StudioRuntime implements OnModuleDestroy {
   private readonly titleMaintenance: NodeJS.Timeout | null;
   private readonly candidateMaintenance: NodeJS.Timeout | null;
   private readonly autoMaintenance: NodeJS.Timeout | null;
+  private readonly seriesMaintenance: NodeJS.Timeout | null;
 
   constructor(
     readonly pool: PostgresPool,
@@ -55,6 +59,8 @@ export class StudioRuntime implements OnModuleDestroy {
     readonly writingCandidates: WritingCandidateService | null = null,
     /** AI automatic creation: title writing's switch, operator, providers and limits, plus AUTO_CREATION_ENABLED. */
     readonly autoCreation: AutoCreationService | null = null,
+    /** Series writing (1–60 episodes): title writing's switch, operator, providers and limits, plus SERIES_WRITING_ENABLED. */
+    readonly seriesWriting: SeriesWritingService | null = null,
   ) {
     this.service = service;
     this.store = store;
@@ -74,6 +80,11 @@ export class StudioRuntime implements OnModuleDestroy {
       ? setInterval(() => { void autoCreation.maintain().catch(() => undefined); }, TITLE_WRITING_MAINTENANCE_MS)
       : null;
     this.autoMaintenance?.unref();
+    // Series jobs: expired leases are fenced always; jobs continue only while the feature is on.
+    this.seriesMaintenance = seriesWriting
+      ? setInterval(() => { void seriesWriting.maintain().catch(() => undefined); }, TITLE_WRITING_MAINTENANCE_MS)
+      : null;
+    this.seriesMaintenance?.unref();
   }
 
   static async open(env: ApiEnv): Promise<StudioRuntime> {
@@ -106,43 +117,9 @@ export class StudioRuntime implements OnModuleDestroy {
     const candidateStore = new PostgresWritingCandidateStore(pool);
     let adminModels: AdminModelsService | null;
     try {
-      adminModels = admin ? await AdminModelsService.open(env, admin, async () => {
-        // storageReady() deliberately reports both absent schema and transient probe failures as false.
-        // Activation must distinguish those cases: only a successful absence check proves no runs exist.
-        const presence = await pool.query(
-          "SELECT to_regclass('title_writing_run') IS NULL AS missing",
-        ) as { rows: { missing: boolean }[] };
-        // The automatic creation migration requires the base migrations, title writing included: no title table, no
-        // automatic run either.
-        if (presence.rows[0]?.missing === true) return true;
-        if (presence.rows[0]?.missing !== false) throw new Error("Title writing activation probe unavailable");
-        const result = await pool.query(
-          "SELECT EXISTS(SELECT 1 FROM title_writing_run WHERE workspace_id = $1 AND state = 'running') AS running",
-          [workspaceId],
-        ) as { rows: { running: boolean }[] };
-        if (result.rows[0]?.running !== false) return false;
-        // An open online candidate is sending with the active configuration too: activation waits for it as well.
-        const candidates = await pool.query(
-          "SELECT to_regclass('writing_candidate_request') IS NULL AS missing",
-        ) as { rows: { missing: boolean }[] };
-        if (candidates.rows[0]?.missing !== true) {
-          if (candidates.rows[0]?.missing !== false) throw new Error("Writing candidate activation probe unavailable");
-          const open = await pool.query(
-            "SELECT EXISTS(SELECT 1 FROM writing_candidate_request WHERE workspace_id = $1 AND state IN ('reserved', 'submitted')) AS open",
-            [workspaceId],
-          ) as { rows: { open: boolean }[] };
-          if (open.rows[0]?.open !== false) return false;
-        }
-        // A running automatic creation run sends with the active configuration as well. Its table is independent of the
-        // candidate table: each optional table is probed on its own before the workspace counts as idle.
-        const autos = await pool.query("SELECT to_regclass('auto_creation_run') IS NULL AS missing") as { rows: { missing: boolean }[] };
-        if (autos.rows[0]?.missing === true) return true;
-        if (autos.rows[0]?.missing !== false) throw new Error("Auto creation activation probe unavailable");
-        const autoRunning = await pool.query(
-          "SELECT EXISTS(SELECT 1 FROM auto_creation_run WHERE workspace_id = $1 AND state = 'running') AS running", [workspaceId],
-        ) as { rows: { running: boolean }[] };
-        return autoRunning.rows[0]?.running === false;
-      }, { enabled: titleWritingEnabled, productionBlocked: !nonProduction && !titleWritingAllowProduction, siteOperator: siteLoginValid },
+      // Activation waits until no paid text work of the workspace is sending with the active configuration.
+      adminModels = admin ? await AdminModelsService.open(env, admin, () => writingWorkspaceIdle(pool, workspaceId),
+        { enabled: titleWritingEnabled, productionBlocked: !nonProduction && !titleWritingAllowProduction, siteOperator: siteLoginValid },
       async () => ({
         titleWriting: await titleStore.storageReady(),
         claude: await titleStore.providerStorageReady("anthropic"),
@@ -247,6 +224,32 @@ export class StudioRuntime implements OnModuleDestroy {
       research: { fetchEnabled: env.AUTO_CREATION_RESEARCH_FETCH, allowedHosts },
       ...(configurationPending ? { configurationPending } : {}),
     });
+    // Series writing needs title writing to be active and its own switch; research reads follow the automatic creation settings.
+    const seriesStore = new PostgresSeriesWritingStore(pool, textChain);
+    const seriesEngine = new SeriesWritingEngine({
+      workspaceId,
+      store: seriesStore,
+      providers: titleProviders,
+      transport: createFetchTransport(),
+      maxCallsPerDay,
+      maxActiveRuns,
+      ...(env.AUTO_CREATION_RESEARCH_FETCH ? { fetchPages: createResearchFetcher({ allowedHosts }), defaultResearchUrls: [...OCEAN_ENGINE_ENTRY_URLS] } : {}),
+    });
+    const seriesWriting = new SeriesWritingService({
+      workspaceId,
+      enabled: titleWritingEnabled && env.SERIES_WRITING_ENABLED,
+      operatorToken: env.TITLE_WRITING_OPERATOR_TOKEN ?? null,
+      siteOperator: siteLoginValid,
+      defaultProvider,
+      providers: titleProviders,
+      store: seriesStore,
+      engine: seriesEngine,
+      projects: store,
+      maxCallsPerDay,
+      maxActiveRuns,
+      research: { fetchEnabled: env.AUTO_CREATION_RESEARCH_FETCH, allowedHosts },
+      ...(configurationPending ? { configurationPending } : {}),
+    });
     return new StudioRuntime(pool,
       new StudioService(jobs, store, textChain, workspaceId, new MockTextService(pool), new MediaAssetStore(pool),
         mockImageEnabled, absoluteDir, mockAvEnabled, mockSmEnabled, localComposeEnabled, composeObjectDir, episodeComposeEnabled,
@@ -258,13 +261,14 @@ export class StudioRuntime implements OnModuleDestroy {
         }),
         new CharacterReferenceStore(pool),
         env.M3_CHARACTER_REFERENCE_GATE), store, titleWriting,
-      adminModels, admin?.enabled ?? false, scriptBreakdown, writingCandidates, autoCreation);
+      adminModels, admin?.enabled ?? false, scriptBreakdown, writingCandidates, autoCreation, seriesWriting);
   }
 
   async onModuleDestroy(): Promise<void> {
     if (this.titleMaintenance) clearInterval(this.titleMaintenance);
     if (this.candidateMaintenance) clearInterval(this.candidateMaintenance);
     if (this.autoMaintenance) clearInterval(this.autoMaintenance);
+    if (this.seriesMaintenance) clearInterval(this.seriesMaintenance);
     await closePostgresPool(this.pool);
   }
 }

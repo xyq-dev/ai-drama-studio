@@ -46,6 +46,17 @@ export function productionEpisodeNumbers(count: number): number[] {
   return Array.from({ length: count }, (_, index) => index + 1);
 }
 
+/** A series work (series writing) has 1–60 episodes; its media production is not enabled. */
+export const MAX_SERIES_EPISODES = 60;
+
+/** Exactly episodes 1..count of a series work, each once (story approval creates them; production never takes them). */
+export function assertSeriesEpisodeSet(episodeNumbers: readonly number[], count: number): void {
+  if (!Number.isInteger(count) || count < 1 || count > MAX_SERIES_EPISODES) throw new DomainError("EPISODE_SET_INVALID", "Episode count must be 1 to 60");
+  const present = new Set(episodeNumbers);
+  const ok = episodeNumbers.length === count && present.size === count && Array.from({ length: count }, (_, index) => index + 1).every((number) => present.has(number));
+  if (!ok) throw new DomainError("EPISODE_SET_INVALID", `A series work requires exactly episodes 1 to ${String(count)}`);
+}
+
 /** Exactly episodes 1..expectedCount, each once. Without a count this is the three-episode scope. */
 export function assertProductionEpisodeSet(episodeNumbers: readonly number[], expectedCount: number = PRODUCTION_EPISODE_NUMBERS.length): void {
   const expected = productionEpisodeNumbers(expectedCount);

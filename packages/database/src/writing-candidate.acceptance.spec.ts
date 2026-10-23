@@ -21,7 +21,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { TitleRunRecord, WritingCandidateFrozenInput, WritingCandidateRecord } from "@ai-drama/contracts";
 import { AUTO_CREATION_MIGRATION,
   BASE_MIGRATIONS, GUARDED_SINGLE_MIGRATIONS, WRITING_CANDIDATE_DEEPSEEK_MIGRATION, WRITING_CANDIDATE_MIGRATION, WRITING_PROVIDER_MIGRATION,
-  runMigrations, type MigrationResult,
+  SERIES_WRITING_MIGRATION, runMigrations, type MigrationResult,
 } from "./migrations";
 import { TextChainService } from "./text-chain";
 import { checkTitleWritingAcceptanceEnv, verifyTitleWritingAcceptanceDatabase } from "./title-writing-acceptance-guard";
@@ -154,8 +154,8 @@ describe(`online candidate migration and store on the ${scenario} schema`, () =>
   it("the guarded command applies it alone; the breakdown and the provider migration are not applied or enabled by it", async () => {
     applied = await runMigrations(pool, undefined, { only });
     expect(applied.applied).toEqual([WRITING_CANDIDATE_MIGRATION]);
-    expect(applied.leftPending).toEqual(scenario === "base" ? [SCRIPT_BREAKDOWN_MIGRATION, WRITING_PROVIDER_MIGRATION, DEEPSEEK, AUTO_CREATION_MIGRATION]
-      : [WRITING_PROVIDER_MIGRATION, DEEPSEEK, AUTO_CREATION_MIGRATION]);
+    expect(applied.leftPending).toEqual(scenario === "base" ? [SCRIPT_BREAKDOWN_MIGRATION, WRITING_PROVIDER_MIGRATION, DEEPSEEK, AUTO_CREATION_MIGRATION, SERIES_WRITING_MIGRATION]
+      : [WRITING_PROVIDER_MIGRATION, DEEPSEEK, AUTO_CREATION_MIGRATION, SERIES_WRITING_MIGRATION]);
     expect(await ledgerNames()).toEqual([...(evidence.startingLedger as string[]), WRITING_CANDIDATE_MIGRATION].sort());
     expect(await titles.breakdownStorageReady()).toBe(scenario === "breakdown");
     expect(await titles.providerStorageReady("anthropic")).toBe(false);
@@ -267,8 +267,8 @@ describe(`online candidate migration and store on the ${scenario} schema`, () =>
     expect(await providerChecks()).toEqual(released);
     const deepseekApplied = await runMigrations(pool, undefined, { only: deepseekOnly });
     expect(deepseekApplied).toEqual({ applied: [DEEPSEEK], alreadyApplied: [],
-      leftPending: scenario === "base" ? [SCRIPT_BREAKDOWN_MIGRATION, WRITING_PROVIDER_MIGRATION, AUTO_CREATION_MIGRATION]
-        : [WRITING_PROVIDER_MIGRATION, AUTO_CREATION_MIGRATION] });
+      leftPending: scenario === "base" ? [SCRIPT_BREAKDOWN_MIGRATION, WRITING_PROVIDER_MIGRATION, AUTO_CREATION_MIGRATION, SERIES_WRITING_MIGRATION]
+        : [WRITING_PROVIDER_MIGRATION, AUTO_CREATION_MIGRATION, SERIES_WRITING_MIGRATION] });
     expect(await ledgerNames()).toEqual([...ledgerBefore, DEEPSEEK].sort());
     expect(JSON.stringify((await pool.query("SELECT * FROM writing_candidate_request ORDER BY id")).rows)).toBe(rowsBefore);
     expect(await titleHistory()).toBe(historyBefore);

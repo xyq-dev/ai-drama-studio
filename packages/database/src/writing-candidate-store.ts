@@ -11,6 +11,7 @@ import type {
   WritingCandidateState,
   WritingCandidateStore,
 } from "@ai-drama/contracts";
+import { SERIES_NEVER_SENT_ERROR_CODES } from "@ai-drama/contracts";
 import type { DatabasePool } from "./job-service";
 import { WRITING_CANDIDATE_DEEPSEEK_MIGRATION, WRITING_CANDIDATE_MIGRATION } from "./migrations";
 
@@ -64,7 +65,7 @@ function toRecord(row: Row): WritingCandidateRecord {
 export async function recentWritingCalls(client: PoolClient, workspaceId: string, sinceIso: string): Promise<number> {
   const present = await client.query<Row>(
     `SELECT to_regclass('title_writing_call') IS NOT NULL AS title, to_regclass('writing_candidate_request') IS NOT NULL AS candidate,
-            to_regclass('auto_creation_call') IS NOT NULL AS auto`,
+            to_regclass('auto_creation_call') IS NOT NULL AS auto, to_regclass('series_writing_call') IS NOT NULL AS series`,
   );
   let total = 0;
   if (present.rows[0]?.title === true) {
@@ -82,7 +83,34 @@ export async function recentWritingCalls(client: PoolClient, workspaceId: string
       "SELECT count(*)::int AS recent FROM auto_creation_call WHERE workspace_id = $1 AND created_at >= $2", [workspaceId, sinceIso]);
     total += Number(autos.rows[0]?.recent ?? 0);
   }
+  if (present.rows[0]?.series === true) {
+    // A series call that was never sent (given back by recovery, or closed by a cancel before its send) counts nowhere.
+    const series = await client.query<Row>(
+      `SELECT count(*)::int AS recent FROM series_writing_call
+        WHERE workspace_id = $1 AND created_at >= $2 AND NOT (state = 'rejected' AND error_code = ANY($3::text[]))`,
+      [workspaceId, sinceIso, [...SERIES_NEVER_SENT_ERROR_CODES]]);
+    total += Number(series.rows[0]?.recent ?? 0);
+  }
   return total;
+}
+
+/**
+ * Running automatic creation runs and series jobs of a workspace (each optional table probed on its own): they share the
+ * concurrency cap with title writing runs, and a work one of them is writing takes no other run.
+ */
+export async function runningWritingRuns(client: PoolClient, workspaceId: string): Promise<Array<{ kind: "auto" | "series"; id: string; projectId: string }>> {
+  const present = await client.query<Row>(
+    "SELECT to_regclass('auto_creation_run') IS NOT NULL AS auto, to_regclass('series_writing_run') IS NOT NULL AS series");
+  const runs: Array<{ kind: "auto" | "series"; id: string; projectId: string }> = [];
+  if (present.rows[0]?.auto === true) {
+    const autos = await client.query<Row>("SELECT id, project_id FROM auto_creation_run WHERE workspace_id = $1 AND state = 'running'", [workspaceId]);
+    runs.push(...autos.rows.map((row) => ({ kind: "auto" as const, id: String(row.id), projectId: String(row.project_id) })));
+  }
+  if (present.rows[0]?.series === true) {
+    const series = await client.query<Row>("SELECT id, project_id FROM series_writing_run WHERE workspace_id = $1 AND state = 'running'", [workspaceId]);
+    runs.push(...series.rows.map((row) => ({ kind: "series" as const, id: String(row.id), projectId: String(row.project_id) })));
+  }
+  return runs;
 }
 
 /** The lock key every paid text call of a workspace is reserved under (title writing calls and online candidates). */

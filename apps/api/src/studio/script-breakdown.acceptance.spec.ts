@@ -31,6 +31,7 @@ import {
   createPostgresPool,
   requestHash,
   runMigrations,
+  SERIES_WRITING_MIGRATION,
   verifyTitleWritingAcceptanceDatabase,
 } from "@ai-drama/database";
 import { TitleWritingEngine, titleWritingProviderConfigs, type WritingTransport } from "@ai-drama/providers";
@@ -255,8 +256,8 @@ beforeAll(async () => {
     throw new Error(`Script breakdown API acceptance refused: ${verified.reason}`);
   }
   const applied = (await runMigrations(pool)).applied;
-  expect(applied.slice(-5)).toEqual([SCRIPT_BREAKDOWN_MIGRATION, WRITING_PROVIDER_MIGRATION, WRITING_CANDIDATE_MIGRATION, WRITING_CANDIDATE_DEEPSEEK_MIGRATION,
-    AUTO_CREATION_MIGRATION]);
+  expect(applied.slice(-6)).toEqual([SCRIPT_BREAKDOWN_MIGRATION, WRITING_PROVIDER_MIGRATION, WRITING_CANDIDATE_MIGRATION, WRITING_CANDIDATE_DEEPSEEK_MIGRATION,
+    AUTO_CREATION_MIGRATION, SERIES_WRITING_MIGRATION]);
   evidence.migrationsApplied = applied;
   await q("INSERT INTO workspace (id, name, status) VALUES ($1, 'breakdown-acceptance', 'ACTIVE')", [WORKSPACE]);
   main = await boot();

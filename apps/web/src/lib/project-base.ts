@@ -19,12 +19,15 @@ export interface ProjectRecord {
   episodeCount?: number;
   /** Per-episode writing target in seconds (60 or 90); null when the work was created without one. */
   targetEpisodeSeconds?: number | null;
+  /** series: a series writing work of 1–60 episodes (text only); short or absent: a short-drama work of 1–6. */
+  writingMode?: "short" | "series";
 }
 
-/** The episode numbers 1..N of a work; three while the work (or its plan) is not known. */
-export function projectEpisodeNumbers(project: Pick<ProjectRecord, "episodeCount"> | null | undefined): number[] {
+/** The episode numbers 1..N of a work; three while the work (or its plan) is not known. Only a series work goes past six. */
+export function projectEpisodeNumbers(project: Pick<ProjectRecord, "episodeCount" | "writingMode"> | null | undefined): number[] {
   const count = project?.episodeCount;
-  const valid = typeof count === "number" && Number.isInteger(count) && count >= 1 && count <= 6 ? count : 3;
+  const max = project?.writingMode === "series" ? 60 : 6;
+  const valid = typeof count === "number" && Number.isInteger(count) && count >= 1 && count <= max ? count : 3;
   return Array.from({ length: valid }, (_, index) => index + 1);
 }
 

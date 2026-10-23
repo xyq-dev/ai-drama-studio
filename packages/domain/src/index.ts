@@ -224,6 +224,8 @@ export {
   MAX_PRODUCTION_EPISODES,
   PRODUCTION_EPISODE_NUMBERS,
   productionEpisodeNumbers,
+  assertSeriesEpisodeSet,
+  MAX_SERIES_EPISODES,
   REVIEW_STATUSES,
   assertProductionEpisodeSet,
   assertReviewTransition,
@@ -262,3 +264,5 @@ export {
 export * from "./auto-creation";
 export * from "./auto-creation-numbers";
 export * from "./auto-creation-sources";
+export * from "./series-writing";
+export * from "./series-state";

@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Pool, type PoolClient, type QueryResultRow } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { runMigrations } from "./migrations";
+import { GUARDED_SINGLE_MIGRATIONS, SERIES_WRITING_MIGRATION, runMigrations } from "./migrations";
 import { CharacterReferenceStore, assertFrozenReferencesUsable } from "./character-reference-store";
 import { JobPersistenceService } from "./job-service";
 import { guardSynchronousMockReferenceCost } from "./mock-media-cost";
@@ -329,6 +329,91 @@ describe.runIf(draftAuthorized)("CharacterReferenceStore on the authorized refer
     // Another workspace cannot list this character at all.
     const stranger = await one("INSERT INTO workspace (name) VALUES ('stranger') RETURNING id", []);
     await expect(store.listForCharacter(stranger, characterId)).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+});
+
+describe.runIf(draftAuthorized)("a series work is refused at the reference generation gate and at its completion; a short work is not", () => {
+  const jobs = new JobPersistenceService(pool);
+
+  beforeAll(async () => {
+    await applyReferenceDraft();
+    // The series migration on this disposable database only: it adds project.writing_mode.
+    await runMigrations(pool, undefined, { only: { name: SERIES_WRITING_MIGRATION, requires: GUARDED_SINGLE_MIGRATIONS[SERIES_WRITING_MIGRATION]! } });
+  });
+
+  async function one(sql: string, values: unknown[]): Promise<string> {
+    return String((await pool.query<{ id: string }>(sql, values)).rows[0]!.id);
+  }
+
+  /** An approved story and script, a current character revision drawn from it, the Mock image configuration, and a RUNNING reference job. */
+  async function approvedReference(mode: "short" | "series") {
+    const workspaceId = await one("INSERT INTO workspace (name) VALUES ('reference-series') RETURNING id", []);
+    const projectId = await one(
+      "INSERT INTO project (workspace_id, title, episode_count, target_episode_seconds, writing_mode) VALUES ($1, $2, 1, 60, $3) RETURNING id",
+      [workspaceId, `reference ${mode}`, mode]);
+    const storyId = await one(
+      `INSERT INTO story_revision (workspace_id, project_id, revision_no, content_json, content_hash, created_by, review_status, reviewed_by, reviewed_at,
+         reviewed_content_hash) VALUES ($1, $2, 1, '{}'::jsonb, $3, 'test', 'APPROVED', 'editor', now(), $3) RETURNING id`, [workspaceId, projectId, hash]);
+    await pool.query("UPDATE project SET current_story_revision_id = $1, approved_story_revision_id = $1 WHERE id = $2", [storyId, projectId]);
+    const episodeId = await one("INSERT INTO episode (workspace_id, project_id, episode_no, title) VALUES ($1, $2, 1, 'Episode 1') RETURNING id",
+      [workspaceId, projectId]);
+    const scriptId = await one(
+      `INSERT INTO script_revision (workspace_id, project_id, episode_id, revision_no, source_story_revision_id, content_json, content_hash, created_by,
+         review_status, reviewed_by, reviewed_at, reviewed_content_hash) VALUES ($1, $2, $3, 1, $4, '{}'::jsonb, $5, 'test', 'APPROVED', 'editor', now(), $5)
+       RETURNING id`, [workspaceId, projectId, episodeId, storyId, hash]);
+    await pool.query("UPDATE episode SET current_script_revision_id = $1, approved_script_revision_id = $1 WHERE id = $2", [scriptId, episodeId]);
+    const characterId = await one("INSERT INTO character (workspace_id, project_id, name) VALUES ($1, $2, 'lin') RETURNING id", [workspaceId, projectId]);
+    const characterRevisionId = await one(
+      `INSERT INTO character_revision (workspace_id, project_id, character_id, revision_no, content_json, content_hash, created_by)
+       VALUES ($1, $2, $3, 1, '{}', $4, 'author') RETURNING id`, [workspaceId, projectId, characterId, hash]);
+    await pool.query(`INSERT INTO character_revision_script_source (workspace_id, project_id, character_revision_id, script_revision_id) VALUES ($1, $2, $3, $4)`,
+      [workspaceId, projectId, characterRevisionId, scriptId]);
+    await pool.query("UPDATE character SET current_revision_id = $1 WHERE id = $2", [characterRevisionId, characterId]);
+    const providerConfigurationId = await one(
+      "INSERT INTO provider_configuration (workspace_id, provider_key, capability, default_timeout_ms) VALUES ($1, 'mock-media', 'image.generate', 30000) RETURNING id",
+      [workspaceId]);
+    const snapshot = { schema: "m3.mock.character-reference.v1", characterRevisionId, characterContentHash: hash, seed: null, bypassCache: false,
+      outcome: "success", executionMode: "sync", capability: "image.generate" };
+    const workflowRunId = await one(
+      "INSERT INTO workflow_run (workspace_id, project_id, type, requested_by, input_snapshot) VALUES ($1, $2, 'MEDIA_CHARACTER_REFERENCE', 'test', '{}'::jsonb) RETURNING id",
+      [workspaceId, projectId]);
+    const jobId = await one(
+      `INSERT INTO generation_job (workspace_id, project_id, workflow_run_id, kind, input_hash, input_snapshot)
+       VALUES ($1, $2, $3, 'MEDIA_CHARACTER_REFERENCE', $4, $5::jsonb) RETURNING id`, [workspaceId, projectId, workflowRunId, hash, JSON.stringify(snapshot)]);
+    const providerRequestId = `mock-media|sync|image.generate|${jobId}:1`;
+    const attemptId = await one(
+      `INSERT INTO job_attempt (workspace_id, generation_job_id, attempt_no, provider_configuration_id, provider_request_id, provider_client_request_key,
+         request_snapshot) VALUES ($1, $2, 1, $3, $4, $5, $6::jsonb) RETURNING id`,
+      [workspaceId, jobId, providerConfigurationId, providerRequestId, `${jobId}:1`, JSON.stringify(snapshot)]);
+    await pool.query("UPDATE generation_job SET state = 'RUNNING' WHERE id = $1", [jobId]);
+    const actualCost = { workspaceId, projectId, generationJobId: jobId, jobAttemptId: attemptId, providerConfigurationId, providerRequestId,
+      idempotencyKey: `${providerRequestId}:request:actual`, currency: "USD", amountDecimal: "0.00000000", kind: "ACTUAL", basis: "PROVIDER_REPORTED",
+      unitType: "request", unitQuantity: "1.00000000", unitPriceSnapshot: "0.00000000", provider: "mock-media", model: "mock-v1" } as const;
+    const input = { workspaceId, projectId, jobId, attemptId, characterRevisionId, providerConfigurationId, providerRequestId,
+      objectKey: `mock-references/${projectId}/${characterRevisionId}/${hash}.png`, byteSize: 1, checksumSha256: hash, width: 1, height: 1, traceId: "series-reference", actualCost };
+    return { input, workflowRunId };
+  }
+
+  async function counts(projectId: string, jobId: string) {
+    const row = (await pool.query<QueryResultRow>(
+      `SELECT (SELECT count(*)::int FROM asset WHERE project_id = $1) AS assets, (SELECT count(*)::int FROM cost_ledger WHERE generation_job_id = $2) AS costs,
+              (SELECT count(*)::int FROM asset_revision_dependency WHERE project_id = $1) AS dependencies,
+              (SELECT state FROM generation_job WHERE id = $2) AS job, (SELECT finished_at IS NULL FROM job_attempt WHERE generation_job_id = $2) AS attempt_open`,
+      [projectId, jobId])).rows[0]!;
+    return row;
+  }
+
+  it("refuses the series work at the gate (task creation) and at completion, writing nothing; the same chain of a short work passes", async () => {
+    const series = await approvedReference("series");
+    const gate = (revision: string, workspaceId: string) => store.transaction((client) => store.prepareGenerationInTransaction(client, workspaceId, revision));
+    await expect(gate(series.input.characterRevisionId, series.input.workspaceId)).rejects.toMatchObject({ code: "SERIES_MEDIA_NOT_ENABLED" });
+    const before = await counts(series.input.projectId, series.input.jobId);
+    await expect(store.completeGeneration(jobs, series.input)).rejects.toMatchObject({ code: "SERIES_MEDIA_NOT_ENABLED" });
+    expect(await counts(series.input.projectId, series.input.jobId)).toEqual(before);
+    expect(before).toMatchObject({ assets: 0, costs: 0, dependencies: 0, job: "RUNNING", attempt_open: true });
+    const short = await approvedReference("short");
+    expect(await gate(short.input.characterRevisionId, short.input.workspaceId)).toMatchObject({ projectId: short.input.projectId });
+    expect(await store.completeGeneration(jobs, short.input)).toMatchObject({ characterRevisionId: short.input.characterRevisionId });
   });
 });
 
