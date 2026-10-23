@@ -39,11 +39,10 @@ import {
   canonicalInputHash,
   checkSeriesLedgerContent,
   checkSeriesPlanContent,
-  formatSeriesEpisode,
   formatSeriesStory,
   nextSeriesJob,
   admitSeriesGrant,
-  seriesBatchStates,
+  seriesPlacementCandidates,
   seriesCurrentPlan,
   seriesDecisionBasis,
   seriesLedgerBasisNow,
@@ -119,7 +118,7 @@ const MESSAGES: Record<string, string> = {
   SERIES_BUDGET_EXHAUSTED: "这次授权的调用预算不足以完成剩余范围，没有继续，也不会自动追加预算。如需继续，请重新确认新的授权。",
   SERIES_LEGACY_RUN: "这次授权冻结的是退役前的 DeepSeek 接入，不会再发出请求。",
   SERIES_RUN_MODEL_UNAVAILABLE: "这次授权冻结的模型已不在允许列表中，不会改用其他模型，没有发出调用。",
-  SERIES_UPSTREAM_CHANGED: "授权开始后规划、故事、台账或前一集已经变化，不会在旧依赖上继续写作。",
+  SERIES_UPSTREAM_CHANGED: "授权开始后规划、故事、台账或前一集已经变化（或这次规划已被后来的规划取代），不会在旧依赖上继续写作。",
   SERIES_EDIT_CONFLICT: "保存时发现已有更新的修订，没有覆盖。请刷新后基于最新修订修改。",
   SERIES_STORY_CONFLICT: "作品的故事在你打开页面后已被另存（或没有可采用的故事），没有保存规划，也没有覆盖故事。请刷新后重新核对。",
   SERIES_LEDGER_STALE: "打开台账编辑后，规划、故事、前一批台账、这一批台账或某集正文已经变化，没有保存台账，也没有解除任何阻断。请重新读取并核对后再确认。",
@@ -145,7 +144,7 @@ function sameRecord(a: Record<string, string> | null, b: Record<string, string>)
   return a !== null && Object.keys(a).length === Object.keys(b).length && Object.entries(a).every(([key, value]) => b[key] === value);
 }
 
-const UPSTREAM = new Set(["upstream_plan_changed", "upstream_story_changed", "upstream_ledger_changed", "upstream_episode_changed"]);
+const UPSTREAM = new Set(["upstream_plan_changed", "upstream_plan_superseded", "upstream_story_changed", "upstream_ledger_changed", "upstream_episode_changed"]);
 
 /**
  * Series writing for one work. Creating a work sends nothing; a grant (the confirmation card) may cost money, so the
@@ -358,13 +357,12 @@ export class SeriesWritingService {
     if ("status" in snapshot) return snapshot;
     const n = snapshot.series.input.episodeCount;
     if (!Number.isInteger(batchNo) || batchNo < 1 || batchNo > seriesBatchCount(n)) return failure(400, "VALIDATION_ERROR", { field: "batchNo" });
-    const state = seriesBatchStates(snapshot)[batchNo - 1]!;
-    if (state.written < state.size) return failure(409, "SERIES_NOT_READY", { reason: "batch_incomplete" });
-    if (state.review.status === "none") return failure(409, "SERIES_NOT_READY", { reason: "batch_review_missing" });
-    const plan = seriesCurrentPlan(snapshot)!;
-    const scripts = state.versions.flatMap((version) => version && version.ref.kind === "stage" && !version.placedScript
-      ? [{ episodeNo: version.ref.episodeNo, runId: version.ref.runId, stageKey: version.ref.stageKey, text: formatSeriesEpisode(version.episode!, plan.content.setting) }] : []);
-    const placed = await this.deps.store.placeBatch(this.deps.workspaceId, projectId, batchNo, scripts, context.actorId, this.now().toISOString());
+    // The batch's completed model stages not handled yet, only while its plan, ledger and review dependencies are current;
+    // the store computes them again from the state it reads under its lock before writing anything.
+    const candidates = (state: SeriesSnapshot) => seriesPlacementCandidates(state, batchNo);
+    const now = candidates(snapshot);
+    if (now.kind === "blocked") return failure(409, "SERIES_NOT_READY", { reason: now.reason });
+    const placed = await this.deps.store.placeBatch(this.deps.workspaceId, projectId, batchNo, candidates, context.actorId, this.now().toISOString());
     if (placed.kind !== "ok") {
       if (placed.kind === "not_found") return failure(404, "SERIES_NOT_FOUND");
       if (placed.kind === "not_ready") return failure(409, "SERIES_NOT_READY", { reason: placed.reason });

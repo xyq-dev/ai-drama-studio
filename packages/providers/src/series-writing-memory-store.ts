@@ -20,6 +20,7 @@ import {
   type SeriesLimits,
   type SeriesNextStep,
   type SeriesPlacement,
+  type SeriesPlacementCandidates,
   type SeriesPlanRevisionRecord,
   type SeriesPlanStory,
   type SeriesRecord,
@@ -573,24 +574,28 @@ export class InMemorySeriesWritingStore implements SeriesWritingStore {
     return "saved";
   }
 
-  async placeBatch(workspaceId: string, projectId: string, batchNo: number, scripts: ReadonlyArray<{ episodeNo: number; runId: string; stageKey: string; text: string }>,
+  async placeBatch(workspaceId: string, projectId: string, batchNo: number, candidates: (snapshot: SeriesSnapshot) => SeriesPlacementCandidates,
     actorId: string, nowIso: string): Promise<SeriesPlacement> {
     const series = this.series.find((item) => item.workspaceId === workspaceId && item.projectId === projectId);
     if (!series) return { kind: "not_found" };
     if (this.busy(projectId)) return { kind: "not_ready", reason: "job_running" };
     const project = this.projects.get(projectId)!;
-    const plan = seriesCurrentPlan(this.snapshotOf(series));
+    const snapshot = this.snapshotOf(series);
+    const plan = seriesCurrentPlan(snapshot);
     if (!plan || plan.storySave !== "saved" || !plan.storyRevisionId || !project.stories.some((item) => item.id === plan.storyRevisionId)) return { kind: "story_not_saved" };
     if (!project.approvedStoryId || project.currentStoryId !== project.approvedStoryId) return { kind: "story_not_approved" };
     if (project.approvedStoryId !== plan.storyRevisionId) return { kind: "story_changed" };
     const { first, last } = seriesBatchRange(series.input.episodeCount, batchNo);
     if (project.writingMode !== "series" || project.episodeCount !== series.input.episodeCount || project.episodes.size !== series.input.episodeCount) return { kind: "plan_mismatch" };
+    // The dependencies checked again on the state of this same step: nothing written from a plan, ledger or review no longer current.
+    const chosen = candidates(snapshot);
+    if (chosen.kind === "blocked") return { kind: "not_ready", reason: chosen.reason };
     let placed = 0;
     const conflicts: number[] = [];
-    for (const script of scripts) {
+    for (const script of chosen.scripts) {
       if (script.episodeNo < first || script.episodeNo > last) return { kind: "plan_mismatch" };
       const stage = this.stage(script.runId, script.stageKey);
-      if (stage.scriptSave === "saved") continue;
+      if (stage.scriptSave !== "pending") continue;
       const episode = project.episodes.get(script.episodeNo)!;
       if (episode.currentScriptId !== null) {
         Object.assign(stage, { scriptSave: "conflict", updatedAt: nowIso });

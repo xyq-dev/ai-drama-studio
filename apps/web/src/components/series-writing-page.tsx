@@ -12,6 +12,7 @@ import {
   SeriesWritingClient,
   blockerText,
   clearPendingSeries,
+  placementText,
   presetScope,
   readPendingSeries,
   savePendingSeries,
@@ -196,9 +197,10 @@ export function SeriesWritingPage({ projectId, client = defaultClient }: { proje
 
   function resume(grantId: string, uncertain: string[]) {
     const scopeKey = `resume:${projectId}:${grantId}`;
-    const request = readPendingSeries<{ confirmUncertainCallIds: string[] }>(scopeKey)
-      ?? { version: 1 as const, scope: scopeKey, key: crypto.randomUUID(), body: { confirmUncertainCallIds: uncertain } };
-    savePendingSeries(request);
+    // A request whose answer did not arrive is replayed with its own key and body; a new one is sent only once it is saved.
+    const pending = readPendingSeries<{ confirmUncertainCallIds: string[] }>(scopeKey);
+    const request = pending ?? { version: 1 as const, scope: scopeKey, key: crypto.randomUUID(), body: { confirmUncertainCallIds: uncertain } };
+    if (!pending && !savePendingSeries(request)) return setActionError("浏览器没能保存这次请求的标识，为避免重复授权或重发，没有继续。");
     void act(async () => {
       try {
         const next = await client.resume(projectId, grantId, { confirmUncertainCallIds: request.body.confirmUncertainCallIds, token: needsToken ? token.trim() : "",
@@ -490,11 +492,14 @@ export function SeriesWritingPage({ projectId, client = defaultClient }: { proje
                     <td data-label="已写">{item.written}/{item.size}</td>
                     <td data-label="全文审阅">{REVIEW_LABELS[item.review.status]}</td>
                     <td data-label="连续性台账">{LEDGER_LABELS[item.ledger.status]}{item.changedEpisodes.length > 0 ? `（第 ${item.changedEpisodes.join("、")} 集有改动）` : ""}</td>
-                    <td data-label="写入工作台">{item.placed}/{item.size}{item.conflicts > 0 ? `，${String(item.conflicts)} 集已有剧本未覆盖` : ""}</td>
+                    <td data-label="写入工作台">{item.placed}/{item.size}{item.conflicts > 0 ? `，${String(item.conflicts)} 集已有剧本未覆盖` : ""}
+                      {item.generated && item.written === item.size && item.placement !== "ready" && item.placement !== "nothing_to_place"
+                        ? <span className={series.summary}>{placementText(item.placement)}</span> : null}</td>
                     <td className={series.rowActions}>
-                      {item.written === item.size && item.review.status !== "none" && item.placed < item.size ? (
+                      {/* Offered only while a model stage of the batch is left to handle (placed + conflicts below the batch) on current dependencies. */}
+                      {item.placement === "ready" ? (
                         <button className={styles.secondary} type="button" disabled={busy || running !== null}
-                          onClick={() => { void act(async () => (await client.place(projectId, item.batchNo)).series, `第 ${String(item.batchNo)} 批已写入正式分集（草稿，需人工审核；已有剧本的分集不覆盖）。`); }}>写入正式分集</button>
+                          onClick={() => { void act(async () => (await client.place(projectId, item.batchNo)).series, `第 ${String(item.batchNo)} 批已写入正式分集（草稿，需人工审核；已有剧本的分集不覆盖，记为未覆盖）。`); }}>写入正式分集</button>
                       ) : null}
                       {item.written === item.size && item.ledger.status !== "valid" && item.ledger.status !== "confirmed" && item.ledger.status !== "none" ? (
                         <button className={styles.secondary} type="button" disabled={busy || running !== null} onClick={() => openLedger(item.batchNo)}>确认台账</button>

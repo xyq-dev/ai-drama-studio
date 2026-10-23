@@ -20,6 +20,7 @@ import {
   type SeriesLimits,
   type SeriesNextStep,
   type SeriesPlacement,
+  type SeriesPlacementCandidates,
   type SeriesPlanRevisionRecord,
   type SeriesPlanStory,
   type SeriesRecord,
@@ -719,6 +720,11 @@ export class PostgresSeriesWritingStore implements SeriesWritingStore {
     return result.rows.map((row) => String(row.id));
   }
 
+  /** The project row, after the series row (series → project → episode): the row the workbench's saves lock first. */
+  private async lockProject(client: PoolClient, workspaceId: string, projectId: string): Promise<void> {
+    await client.query("SELECT id FROM project WHERE id = $1 AND workspace_id = $2 FOR UPDATE", [projectId, workspaceId]);
+  }
+
   /** Locks the series and refuses while one of its jobs runs (an edit never races a job). */
   private async editable(client: PoolClient, workspaceId: string, projectId: string): Promise<SeriesRecord | "not_found" | "active"> {
     const query: Query = (sql, values) => client.query<Row>(sql, values);
@@ -766,9 +772,12 @@ export class PostgresSeriesWritingStore implements SeriesWritingStore {
     Promise<"saved" | "conflict" | "stale" | "blocked" | "not_found" | "active"> {
     return this.transaction(async (client) => {
       // The series row lock every edit takes first: plan, ledgers and placement cannot change until this commits. A
-      // workbench script or story save does not take it, so the basis is read again here, after the lock.
+      // workbench script or story save does not take it but takes the project row first (then the episode), so this
+      // takes the project row too, in the same series → project order as placement: a save either committed before the
+      // basis is read here (and is in it) or waits until this commits (and then makes the ledger pending as usual).
       const series = await this.editable(client, workspaceId, projectId);
       if (typeof series === "string") return series;
+      await this.lockProject(client, workspaceId, projectId);
       const current = (await client.query<Row>(
         "SELECT id FROM series_writing_ledger_revision WHERE series_id = $1 AND batch_no = $2 ORDER BY revision_no DESC LIMIT 1", [series.id, revision.batchNo])).rows[0];
       if ((current ? String(current.id) : null) !== expectedParentId) return "conflict";
@@ -783,9 +792,11 @@ export class PostgresSeriesWritingStore implements SeriesWritingStore {
   async saveDecision(workspaceId: string, projectId: string, decision: SeriesDecisionRecord, current: (snapshot: SeriesSnapshot) => Record<string, string> | null):
     Promise<"saved" | "conflict" | "not_ready" | "not_found" | "active"> {
     return this.transaction(async (client) => {
-      // The series row lock every edit takes first: no plan, ledger or placement changes between this read and the insert.
+      // The series row lock every edit takes first: no plan, ledger or placement changes between this read and the insert;
+      // and the project row, as the workbench's story and script saves take it first: none of them crosses the check either.
       const series = await this.editable(client, workspaceId, projectId);
       if (typeof series === "string") return series;
+      await this.lockProject(client, workspaceId, projectId);
       const now = current(await this.load((sql, values) => client.query<Row>(sql, values), series));
       if (!now) return "not_ready";
       if (!sameBasis(now, decision.basis)) return "conflict";
@@ -797,22 +808,27 @@ export class PostgresSeriesWritingStore implements SeriesWritingStore {
     });
   }
 
-  async placeBatch(workspaceId: string, projectId: string, batchNo: number, scripts: ReadonlyArray<{ episodeNo: number; runId: string; stageKey: string; text: string }>,
+  async placeBatch(workspaceId: string, projectId: string, batchNo: number, candidates: (snapshot: SeriesSnapshot) => SeriesPlacementCandidates,
     actorId: string, nowIso: string): Promise<SeriesPlacement> {
     return this.transaction(async (client) => {
       const series = await this.editable(client, workspaceId, projectId);
       if (series === "not_found") return { kind: "not_found" };
       if (series === "active") return { kind: "not_ready", reason: "job_running" };
       const query: Query = (sql, values) => client.query<Row>(sql, values);
-      const plan = seriesCurrentPlan(await this.load(query, series));
-      if (!plan || plan.storySave !== "saved" || plan.storyRevisionId === null) return { kind: "story_not_saved" };
-      const own = await client.query("SELECT 1 FROM story_revision WHERE id = $1 AND project_id = $2 AND workspace_id = $3", [plan.storyRevisionId, projectId, workspaceId]);
-      if (!own.rows[0]) return { kind: "story_not_saved" };
-      // Project → episode, the order of the script editor's save.
+      // Series row → project → episodes (the order of the script editor's save, project then episode), and only then the
+      // state: no story or script save can cross the dependency check below before this commits.
       const project = (await client.query<Row>(
         `SELECT p.current_story_revision_id, p.approved_story_revision_id, p.episode_count, p.writing_mode, sr.review_status, sr.freshness_status
            FROM project p LEFT JOIN story_revision sr ON sr.id = p.approved_story_revision_id WHERE p.id = $1 AND p.workspace_id = $2 FOR UPDATE OF p`,
         [projectId, workspaceId])).rows[0];
+      const episodes = (await client.query<Row>(
+        "SELECT id, episode_no, row_version, current_script_revision_id FROM episode WHERE project_id = $1 AND workspace_id = $2 ORDER BY episode_no FOR UPDATE",
+        [projectId, workspaceId])).rows;
+      const snapshot = await this.load(query, series);
+      const plan = seriesCurrentPlan(snapshot);
+      if (!plan || plan.storySave !== "saved" || plan.storyRevisionId === null) return { kind: "story_not_saved" };
+      const own = await client.query("SELECT 1 FROM story_revision WHERE id = $1 AND project_id = $2 AND workspace_id = $3", [plan.storyRevisionId, projectId, workspaceId]);
+      if (!own.rows[0]) return { kind: "story_not_saved" };
       const approved = str(project?.approved_story_revision_id);
       if (!approved || str(project?.current_story_revision_id) !== approved || project?.review_status !== "APPROVED" || project.freshness_status !== "CURRENT") {
         return { kind: "story_not_approved" };
@@ -820,20 +836,20 @@ export class PostgresSeriesWritingStore implements SeriesWritingStore {
       // Scripts are written from the plan's own story only; another approved story needs plan and story bound again first.
       if (approved !== plan.storyRevisionId) return { kind: "story_changed" };
       const n = series.input.episodeCount;
-      const episodes = (await client.query<Row>(
-        "SELECT id, episode_no, row_version, current_script_revision_id FROM episode WHERE project_id = $1 AND workspace_id = $2 ORDER BY episode_no FOR UPDATE",
-        [projectId, workspaceId])).rows;
       const numbers = episodes.map((row) => Number(row.episode_no));
       if (project.writing_mode !== "series" || Number(project.episode_count) !== n || numbers.length !== n || numbers.some((number, index) => number !== index + 1)) {
         return { kind: "plan_mismatch" };
       }
+      // The batch's dependencies checked again on the locked state: nothing written from a plan, ledger or review no longer current.
+      const chosen = candidates(snapshot);
+      if (chosen.kind === "blocked") return { kind: "not_ready", reason: chosen.reason };
       const { first, last } = seriesBatchRange(n, batchNo);
       let placed = 0;
       const conflicts: number[] = [];
-      for (const script of scripts) {
+      for (const script of chosen.scripts) {
         if (script.episodeNo < first || script.episodeNo > last) return { kind: "plan_mismatch" };
         const stage = (await client.query<Row>("SELECT script_save FROM series_writing_stage WHERE run_id = $1 AND stage_key = $2 FOR UPDATE", [script.runId, script.stageKey])).rows[0];
-        if (!stage || stage.script_save === "saved") continue;
+        if (!stage || stage.script_save !== "pending") continue;
         const episode = episodes.find((row) => Number(row.episode_no) === script.episodeNo)!;
         if (episode.current_script_revision_id !== null) {
           await client.query("UPDATE series_writing_stage SET script_save = 'conflict', updated_at = $3 WHERE run_id = $1 AND stage_key = $2", [script.runId, script.stageKey, nowIso]);

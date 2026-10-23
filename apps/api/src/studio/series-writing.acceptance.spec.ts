@@ -63,24 +63,31 @@ let workspaceId = "";
 let poolClosed = false;
 let plan: SeriesFixturePlan = {};
 let failNext: string | null = null;
+/** The next send of this stage is refused definitively (a 422: rejected, not uncertain). */
+let rejectNext: string | null = null;
 const seen: SeriesFixtureExchange[] = [];
 const transport = seriesFixtureTransport({ seen, plan: () => plan, override: (stage) => {
   if (failNext && stage === failNext) {
     failNext = null;
     return { status: 500, body: "{}" };
   }
+  if (rejectNext && stage === rejectNext) {
+    rejectNext = null;
+    return { status: 422, body: {} };
+  }
   return undefined;
 } });
 const FIXED = new Date("2026-10-22T08:00:00.000Z");
 
-function service(options: { maxCallsPerDay?: number; maxActiveRuns?: number; clock?: () => Date } = {}) {
+function service(options: { maxCallsPerDay?: number; maxActiveRuns?: number; clock?: () => Date; store?: PostgresSeriesWritingStore } = {}) {
   const maxCallsPerDay = options.maxCallsPerDay ?? 1_000;
   const maxActiveRuns = options.maxActiveRuns ?? 5;
-  const engine = new SeriesWritingEngine({ workspaceId, store, providers, transport, maxCallsPerDay, maxActiveRuns, timeoutMs: 30_000,
+  const own = options.store ?? store;
+  const engine = new SeriesWritingEngine({ workspaceId, store: own, providers, transport, maxCallsPerDay, maxActiveRuns, timeoutMs: 30_000,
     ...(options.clock ? { clock: options.clock } : {}) });
   const pending: Array<() => Promise<void>> = [];
   const svc = new SeriesWritingService({
-    workspaceId, enabled: true, operatorToken: TOKEN, defaultProvider: "deepseek", providers, store, engine, projects: runtime, maxCallsPerDay, maxActiveRuns,
+    workspaceId, enabled: true, operatorToken: TOKEN, defaultProvider: "deepseek", providers, store: own, engine, projects: runtime, maxCallsPerDay, maxActiveRuns,
     research: { fetchEnabled: false, allowedHosts: [] }, schedule: (work) => { pending.push(work); }, ...(options.clock ? { clock: options.clock } : {}),
   });
   const settle = async () => { while (pending.length > 0) await pending.shift()!(); };
@@ -461,6 +468,14 @@ describe(`series writing on PostgreSQL (${scenario} schema)`, () => {
     expect((await q<{ current_story_revision_id: string }>("SELECT current_story_revision_id FROM project WHERE id = $1", [view.projectId]))[0]!.current_story_revision_id).toBe(story.id);
     expect(viewOf((await svc.decide(view.projectId, { target: "plan", note: "已复核人工规划", expectedBasis: saved.plan!.decisionBasis }, ctx("d"))).body).plan!.status).toBe("cleared");
     expect(await approveCurrentStory(view.projectId)).toBe(story.id);
+    // The batch was written on plan revision 1: nothing is placed until its ledger and review are current again (round 3, 5).
+    expect((await svc.placeBatch(view.projectId, 1, {}, ctx("place"))).body).toMatchObject({ error: { code: "SERIES_NOT_READY", details: { reason: "ledger_stale" } } });
+    expect((await q<{ n: number }>("SELECT count(*)::int AS n FROM script_revision WHERE project_id = $1", [view.projectId]))[0]!.n).toBe(0);
+    let current = viewOf((await svc.get(view.projectId)).body);
+    const batch = current.batches[0]!;
+    current = viewOf((await svc.saveLedger(view.projectId, { batchNo: 1, baseLedgerRevisionId: batch.ledger.revision!.id, content: batch.ledger.revision!.content,
+      summaries: current.episodes.slice(0, 3).map((item) => ({ episodeNo: item.episodeNo, summary: "人工确认的概要" })), expectedBasis: batch.ledgerBasis }, ctx("l"))).body);
+    expect((await svc.decide(view.projectId, { target: "batch:1", note: "按新规划复核", expectedBasis: current.batches[0]!.decisionBasis }, ctx("db"))).status).toBe(201);
     expect((await svc.placeBatch(view.projectId, 1, {}, ctx("place"))).body).toMatchObject({ placed: 3, conflicts: [] });
     const scripts = await q<{ review_status: string; source_story_revision_id: string }>("SELECT review_status, source_story_revision_id FROM script_revision WHERE project_id = $1",
       [view.projectId]);
@@ -795,5 +810,268 @@ describe(`series writing on PostgreSQL (${scenario} schema)`, () => {
     const { svc } = service();
     const view = await createSeries(svc, 12);
     expect((await auto.start(view.projectId, {}, TOKEN, ctx("auto-series"))).body).toMatchObject({ error: { code: "AUTO_CREATION_SERIES_PROJECT" } });
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Round 3 (review of 3335045) on PostgreSQL: the same paths as series-writing.regressions.spec.ts, and the ledger basis
+// check against workbench saves on two real connections.
+
+/** A person's script save of one episode through the text chain's own path (project lock, then the episode row). */
+async function personScript(projectId: string, storyId: string, episodeNo: number, text: string): Promise<string> {
+  const episode = (await q<{ id: string; row_version: number }>("SELECT id, row_version FROM episode WHERE project_id = $1 AND episode_no = $2", [projectId, episodeNo]))[0]!;
+  return (await textChain.createScriptRevision({ workspaceId, projectId, episodeId: episode.id, sourceStoryRevisionId: storyId, content: { text },
+    createdBy: "acceptance-person", expectedVersion: episode.row_version })).revisionId;
+}
+
+const count = async (sql: string, values: unknown[]) => (await q<{ n: number }>(sql, values))[0]!.n;
+
+/** Whether a backend of this database waits on a lock for a statement like the pattern (polled, no fixed sleep). */
+async function lockWaiter(pattern: string): Promise<boolean> {
+  return (await count(`SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE $1`, [pattern])) > 0;
+}
+
+/**
+ * Which comes first: a backend waiting on a lock for the pattern, or the promise settling. Polls until one happens, for
+ * at most ten seconds; never sleeps a fixed time to guess the order.
+ */
+async function waitsOrSettles(pattern: string, work: Promise<unknown>): Promise<"waiting" | "settled"> {
+  let settled = false;
+  void work.then(() => { settled = true; }, () => { settled = true; });
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    if (await lockWaiter(pattern)) return "waiting";
+    if (settled) return "settled";
+    if (Date.now() > deadline) throw new Error(`neither a lock waiter (${pattern}) nor a settled call`);
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
+
+/** A pool whose first statement matching the pattern stops, inside its transaction with every lock already held, until released. */
+function pausedPool(pattern: RegExp) {
+  let notify!: () => void;
+  const reached = new Promise<void>((resolve) => { notify = resolve; });
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  let armed = true;
+  const wrapped = {
+    connect: async () => {
+      const client = await pool.connect();
+      const query = client.query.bind(client) as (...args: unknown[]) => Promise<unknown>;
+      (client as unknown as { query: (...args: unknown[]) => Promise<unknown> }).query = async (...args: unknown[]) => {
+        const text = typeof args[0] === "string" ? args[0] : "";
+        if (armed && pattern.test(text)) {
+          armed = false;
+          notify();
+          await released;
+        }
+        return query(...args);
+      };
+      const original = client.release.bind(client);
+      client.release = (...releaseArgs: Parameters<typeof original>) => {
+        (client as unknown as { query: unknown }).query = query;
+        client.release = original;
+        return original(...releaseArgs);
+      };
+      return client;
+    },
+  };
+  return { pool: wrapped, reached, release: () => release() };
+}
+
+const PROJECT_LOCK = "SELECT % FROM project WHERE id = $1 AND workspace_id = $2 FOR UPDATE%";
+
+describe(`round 3 on PostgreSQL (${scenario} schema)`, () => {
+  it("1. episode 3 refused with no resend left and written by a person: a new grant sends only episode 3 and the batch review; after the checks batch 2 follows", async () => {
+    plan = {};
+    const { svc, settle } = service();
+    const view = await createSeries(svc, 6);
+    rejectNext = "episode:3";
+    await grant(svc, view, { plan: true, batchFrom: 1, batchTo: 1, final: false });
+    await settle();
+    let current = viewOf((await svc.get(view.projectId)).body);
+    const old = current.grants[0]!;
+    expect(old.state).toBe("stopped");
+    expect((await svc.resume(view.projectId, old.grantId, {}, TOKEN, ctx(randomUUID()))).body).toMatchObject({ error: { code: "SERIES_BUDGET_EXHAUSTED" } });
+    const storyId = await approveCurrentStory(view.projectId);
+    const scriptId = await personScript(view.projectId, storyId, 3, "人工补写的第 3 集");
+    current = viewOf((await svc.get(view.projectId)).body);
+    expect(current.next.batchNo).toBe(1);
+    const sent = seen.length;
+    expect((await grant(svc, current, { plan: false, batchFrom: 1, batchTo: 1, final: false })).status).toBe(201);
+    await settle();
+    expect(seen.slice(sent).map((item) => item.stage)).toEqual(["episode:3", "batch_review:1"]);
+    current = viewOf((await svc.get(view.projectId)).body);
+    expect(current.episodes[2]!.version).toMatchObject({ kind: "script" });
+    expect(current.next).toMatchObject({ batchNo: 2, blockers: ["ledger_pending_confirmation:1", "batch_review_stale:1"] });
+    const batch = current.batches[0]!;
+    current = viewOf((await svc.saveLedger(view.projectId, { batchNo: 1, baseLedgerRevisionId: batch.ledger.revision!.id, content: batch.ledger.revision!.content,
+      summaries: current.episodes.slice(0, 3).map((item) => ({ episodeNo: item.episodeNo, summary: "人工确认的概要" })), expectedBasis: batch.ledgerBasis }, ctx("l"))).body);
+    current = viewOf((await svc.decide(view.projectId, { target: "batch:1", note: "人工复核补写的第 3 集", expectedBasis: current.batches[0]!.decisionBasis }, ctx("d"))).body);
+    expect(current.next).toEqual({ batchNo: 2, blockers: [] });
+    const before2 = seen.length;
+    expect((await grant(svc, current, { plan: false, batchFrom: 2, batchTo: 2, final: false })).status).toBe(201);
+    await settle();
+    expect(seen.slice(before2).map((item) => item.stage)).toEqual(["episode:4", "episode:5", "episode:6", "batch_review:2"]);
+    expect((await q<{ current_script_revision_id: string }>("SELECT current_script_revision_id FROM episode WHERE project_id = $1 AND episode_no = 3", [view.projectId]))[0]!
+      .current_script_revision_id).toBe(scriptId);
+    expect((await q<{ state: string }>("SELECT state FROM series_writing_run WHERE series_id = $1 AND job_kind = 'batch' AND batch_no = 1 ORDER BY job_seq", [view.seriesId]))
+      .map((row) => row.state)).toEqual(["partial", "completed"]);
+  });
+
+  it("2. a plan grant superseded by a later grant's plan is refused on resume: no send, no job, no second plan, the story binding stays", async () => {
+    plan = {};
+    const { svc, settle } = service();
+    const view = await createSeries(svc, 6);
+    rejectNext = "setting";
+    await grant(svc, view, { plan: true, batchFrom: null, batchTo: null, final: false }, randomUUID(), 1);
+    await settle();
+    let current = viewOf((await svc.get(view.projectId)).body);
+    const old = current.grants[0]!;
+    expect((await grant(svc, current, { plan: true, batchFrom: null, batchTo: null, final: false }, randomUUID(), 1)).status).toBe(201);
+    await settle();
+    const sent = seen.length;
+    const runs = await count("SELECT count(*)::int AS n FROM series_writing_run WHERE series_id = $1", [view.seriesId]);
+    const resumed = await svc.resume(view.projectId, old.grantId, {}, TOKEN, ctx(randomUUID()));
+    await settle();
+    expect(resumed.body).toMatchObject({ error: { code: "SERIES_UPSTREAM_CHANGED", details: { reason: "upstream_plan_superseded" } } });
+    expect(seen.length).toBe(sent);
+    expect(await count("SELECT count(*)::int AS n FROM series_writing_run WHERE series_id = $1", [view.seriesId])).toBe(runs);
+    expect(await count("SELECT count(*)::int AS n FROM series_writing_plan_revision WHERE series_id = $1", [view.seriesId])).toBe(1);
+    expect(await count("SELECT count(*)::int AS n FROM series_writing_resume WHERE grant_id = $1", [old.grantId])).toBe(0);
+    current = viewOf((await svc.get(view.projectId)).body);
+    expect(current.story.status).toBe("ok");
+    expect(current.grants.find((item) => item.grantId === old.grantId)).toMatchObject({ state: "stopped", callsUsed: old.callsUsed });
+  });
+
+  it("3. a new plan job that takes over sources, research and directions may send exactly the other 4 stages", async () => {
+    plan = {};
+    const { svc, settle } = service();
+    const view = await createSeries(svc, 6);
+    rejectNext = "setting";
+    await grant(svc, view, { plan: true, batchFrom: null, batchTo: null, final: false });
+    await settle();
+    const sent = seen.length;
+    expect((await grant(svc, viewOf((await svc.get(view.projectId)).body), { plan: true, batchFrom: null, batchTo: null, final: false })).status).toBe(201);
+    await settle();
+    expect(seen.slice(sent).map((item) => item.stage)).toEqual(["setting", "arc", "outline:1", "plan_review"]);
+    const run = (await q<{ call_cap: number; calls_used: number; state: string }>(
+      "SELECT call_cap, calls_used, state FROM series_writing_run WHERE series_id = $1 ORDER BY job_seq DESC LIMIT 1", [view.seriesId]))[0]!;
+    expect(run).toEqual({ call_cap: 4, calls_used: 4, state: "completed" });
+    expect(await count("SELECT count(*)::int AS n FROM series_writing_call WHERE series_id = $1 AND stage_key = 'sources'", [view.seriesId])).toBe(0);
+  });
+
+  it("4. placement records the episode a person's script holds as a conflict, writes the others once, and leaves nothing to do", async () => {
+    plan = {};
+    const { svc, settle } = service();
+    const view = await createSeries(svc, 6);
+    await grant(svc, view, { plan: true, batchFrom: 1, batchTo: 1, final: false });
+    await settle();
+    const storyId = await approveCurrentStory(view.projectId);
+    const scriptId = await personScript(view.projectId, storyId, 2, "人工先写的第 2 集");
+    let current = viewOf((await svc.get(view.projectId)).body);
+    const batch = current.batches[0]!;
+    current = viewOf((await svc.saveLedger(view.projectId, { batchNo: 1, baseLedgerRevisionId: batch.ledger.revision!.id, content: batch.ledger.revision!.content,
+      summaries: current.episodes.slice(0, 3).map((item) => ({ episodeNo: item.episodeNo, summary: "人工确认的概要" })), expectedBasis: batch.ledgerBasis }, ctx("l"))).body);
+    expect((await svc.decide(view.projectId, { target: "batch:1", note: "复核", expectedBasis: current.batches[0]!.decisionBasis }, ctx("d"))).status).toBe(201);
+    const placed = await svc.placeBatch(view.projectId, 1, {}, ctx("p"));
+    expect(placed.body).toMatchObject({ placed: 2, conflicts: [2] });
+    expect(viewOf(placed.body).batches[0]).toMatchObject({ placed: 2, conflicts: 1, placement: "nothing_to_place" });
+    expect((await svc.placeBatch(view.projectId, 1, {}, ctx("p"))).body).toMatchObject({ placed: 0, conflicts: [] });
+    expect(await count("SELECT count(*)::int AS n FROM script_revision WHERE project_id = $1", [view.projectId])).toBe(3);
+    expect((await q<{ current_script_revision_id: string }>("SELECT current_script_revision_id FROM episode WHERE project_id = $1 AND episode_no = 2", [view.projectId]))[0]!
+      .current_script_revision_id).toBe(scriptId);
+    expect((await q<{ script_save: string }>(
+      "SELECT s.script_save FROM series_writing_stage s JOIN series_writing_run r ON r.id = s.run_id WHERE r.series_id = $1 AND s.stage_key = 'episode:2'", [view.seriesId]))
+      .map((row) => row.script_save)).toEqual(["conflict"]);
+  });
+
+  it("5. after a manual plan renames a person, placement writes nothing until ledger and review are current, then uses the batch's own plan text", async () => {
+    plan = {};
+    const { svc, settle } = service();
+    const view = await createSeries(svc, 6);
+    await grant(svc, view, { plan: true, batchFrom: 1, batchTo: 1, final: false });
+    await settle();
+    await approveCurrentStory(view.projectId);
+    let current = viewOf((await svc.get(view.projectId)).body);
+    const content = structuredClone(current.plan!.content);
+    content.setting.characters = content.setting.characters.map((item) => item.id === "C1" ? { ...item, name: "林大满" } : item);
+    current = viewOf((await svc.savePlan(view.projectId, { basePlanRevisionId: current.plan!.revisionId, baseStoryRevisionId: current.story.current!.revisionId,
+      story: "adopt_current", content }, ctx("plan"))).body);
+    expect((await svc.placeBatch(view.projectId, 1, {}, ctx("p"))).body).toMatchObject({ error: { code: "SERIES_NOT_READY" } });
+    expect(await count("SELECT count(*)::int AS n FROM script_revision WHERE project_id = $1", [view.projectId])).toBe(0);
+    const batch = current.batches[0]!;
+    current = viewOf((await svc.saveLedger(view.projectId, { batchNo: 1, baseLedgerRevisionId: batch.ledger.revision!.id, content: batch.ledger.revision!.content,
+      summaries: current.episodes.slice(0, 3).map((item) => ({ episodeNo: item.episodeNo, summary: "人工确认的概要" })), expectedBasis: batch.ledgerBasis }, ctx("l"))).body);
+    expect((await svc.decide(view.projectId, { target: "batch:1", note: "按新规划复核", expectedBasis: current.batches[0]!.decisionBasis }, ctx("d"))).status).toBe(201);
+    expect((await svc.placeBatch(view.projectId, 1, {}, ctx("p"))).body).toMatchObject({ placed: 3 });
+    const texts = (await q<{ content_json: { text: string } }>("SELECT content_json FROM script_revision WHERE project_id = $1", [view.projectId])).map((row) => row.content_json.text);
+    expect(texts).toHaveLength(3);
+    expect(texts.every((text) => text.includes("林小满") && !text.includes("林大满"))).toBe(true);
+  });
+
+  async function confirmableBatch() {
+    plan = {};
+    const { svc, settle } = service();
+    const view = await createSeries(svc, 6);
+    await grant(svc, view, { plan: true, batchFrom: 1, batchTo: 1, final: false });
+    await settle();
+    const storyId = await approveCurrentStory(view.projectId);
+    expect((await svc.placeBatch(view.projectId, 1, {}, ctx("p"))).body).toMatchObject({ placed: 3 });
+    await personScript(view.projectId, storyId, 2, "人工修改后的第 2 集");
+    const opened = viewOf((await svc.get(view.projectId)).body);
+    const batch = opened.batches[0]!;
+    const body = { batchNo: 1, baseLedgerRevisionId: batch.ledger.revision!.id, content: batch.ledger.revision!.content,
+      summaries: opened.episodes.slice(0, 3).map((item) => ({ episodeNo: item.episodeNo, summary: "人工确认的概要" })), expectedBasis: batch.ledgerBasis };
+    const ledgers = () => count("SELECT count(*)::int AS n FROM series_writing_ledger_revision WHERE series_id = $1", [view.seriesId]);
+    return { view, storyId, opened, body, ledgers };
+  }
+
+  it("8a. a workbench save holding its locks first: the ledger save waits for it, then refuses the obsolete basis; nothing is written", async () => {
+    const { view, storyId, body, ledgers } = await confirmableBatch();
+    const { svc } = service();
+    const before = await ledgers();
+    const episode = (await q<{ id: string; row_version: number }>("SELECT id, row_version FROM episode WHERE project_id = $1 AND episode_no = 2", [view.projectId]))[0]!;
+    const workbench = await pool.connect();
+    try {
+      await workbench.query("BEGIN");
+      await textChain.createScriptRevisionInTransaction(workbench, { workspaceId, projectId: view.projectId, episodeId: episode.id, sourceStoryRevisionId: storyId,
+        content: { text: "工作台并发另存的第 2 集" }, createdBy: "acceptance-person", expectedVersion: episode.row_version });
+      const saving = svc.saveLedger(view.projectId, body, ctx("ledger"));
+      // The ledger save must wait for the workbench's project lock (not read past the uncommitted save and succeed).
+      expect(await waitsOrSettles(PROJECT_LOCK, saving)).toBe("waiting");
+      await workbench.query("COMMIT");
+      expect((await saving).body).toMatchObject({ error: { code: "SERIES_LEDGER_STALE" } });
+    } finally {
+      await workbench.query("ROLLBACK").catch(() => undefined);
+      workbench.release();
+    }
+    expect(await ledgers()).toBe(before);
+    const after = viewOf((await svc.get(view.projectId)).body);
+    expect(after.batches[0]!.ledger.status).toBe("pending_confirmation");
+    expect(after.next.blockers).toContain("ledger_pending_confirmation:1");
+  });
+
+  it("8b. the ledger save holding its locks first: the workbench save waits; the ledger is saved on the basis it read; then the edit makes it pending as usual", async () => {
+    const { view, storyId, opened, body, ledgers } = await confirmableBatch();
+    const paused = pausedPool(/INSERT INTO series_writing_ledger_revision/);
+    const { svc } = service({ store: new PostgresSeriesWritingStore(paused.pool as never, textChain) });
+    const before = await ledgers();
+    const saving = svc.saveLedger(view.projectId, body, ctx("ledger"));
+    await paused.reached;
+    const workbench = personScript(view.projectId, storyId, 2, "工作台并发另存的第 2 集");
+    // The workbench save waits for the ledger save's project lock: it cannot change the basis under the check.
+    const order = await waitsOrSettles(PROJECT_LOCK, workbench);
+    paused.release();
+    expect(order).toBe("waiting");
+    expect((await saving).status).toBe(201);
+    await workbench;
+    expect(await ledgers()).toBe(before + 1);
+    const saved = (await q<{ summaries_json: Array<{ episodeNo: number; versionHash: string }> }>(
+      "SELECT summaries_json FROM series_writing_ledger_revision WHERE series_id = $1 AND batch_no = 1 ORDER BY revision_no DESC LIMIT 1", [view.seriesId]))[0]!;
+    expect(saved.summaries_json.find((item) => item.episodeNo === 2)!.versionHash).toBe(opened.batches[0]!.ledgerBasis!["episode:2"]);
+    const after = viewOf((await service().svc.get(view.projectId)).body);
+    expect(after.batches[0]!.ledger.status).toBe("pending_confirmation");
+    expect(after.batches[0]!.changedEpisodes).toEqual([2]);
   });
 });

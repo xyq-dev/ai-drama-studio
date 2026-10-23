@@ -246,7 +246,7 @@ const BLOCKERS: Record<string, string> = {
   plan_unreviewed: "规划经人工修改，需要人工复核",
   story_changed: "工作台的故事已另存，和规划绑定的故事不同：请先同步规划与故事",
   episode_source_stale: "这一批有分集的工作台剧本因故事更换而过期：请在工作台按当前故事重新保存这些分集",
-  batch_incomplete: "前一批还没有写完",
+  batch_incomplete: "前一批还没有写完（有分集的模型阶段或这一批的全文审阅还没完成；人工稿不代替它们）",
   ledger_pending_confirmation: "前一批有人工改稿，连续性台账待确认",
   ledger_stale: "上游已变化，连续性台账需要重新确认",
   batch_review_blocking: "前一批的全文审阅发现必须修改的问题",
@@ -264,6 +264,22 @@ export function blockerText(code: string): string {
   return batch ? `第 ${batch} 批：${text}` : text;
 }
 
+/** Why a written batch cannot be placed into the workbench now (the view's batch placement state). */
+const PLACEMENT: Record<string, string> = {
+  batch_incomplete: "这一批的模型阶段或全文审阅还没完成",
+  story_changed: "工作台的故事不是规划绑定的故事，请先同步规划与故事",
+  episode_source_stale: "有分集的工作台剧本因故事更换而过期",
+  ledger_pending_confirmation: "有人工改稿，请先确认台账",
+  ledger_stale: "规划或上游台账已变化，请先重新确认台账",
+  batch_review_missing: "还没有全文审阅",
+  batch_review_stale: "全文审阅读取的依赖已变化，请先人工复核",
+  plan_missing: "这一批所依据的规划修订不存在",
+};
+
+export function placementText(placement: string): string {
+  return `暂不能写入：${PLACEMENT[placement] ?? placement}`;
+}
+
 const STOPS: Record<string, string> = {
   daily_quota_low: "最近 24 小时剩余调用不够下一步，已停在两步之间；额度恢复后可以继续，不会重发已完成的部分。",
   grant_budget_exhausted: "这次授权的预算不足以完成剩余范围，已停止；不会自动追加预算。",
@@ -274,6 +290,7 @@ const STOPS: Record<string, string> = {
   upstream_ledger_changed: "台账在授权执行期间变化，已停止。",
   upstream_episode_changed: "前一集在授权执行期间被修改，已停止。",
   upstream_story_changed: "作品的故事在授权执行期间被另存，已停止，不会在旧故事上继续写。",
+  upstream_plan_superseded: "这次规划已被后来的规划取代，不会再续跑，也不会再生成一份规划。",
   provider_unconfigured: "冻结的模型服务现在不可用，已停止，不会改用其他服务。",
   executor_lost: "服务重启或执行者丢失时有一次调用结果未知，已停止；确认后才会重新发送。",
   server_error: "模型服务返回错误，结果未知，已停止；确认后才会重新发送。",

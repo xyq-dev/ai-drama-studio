@@ -222,3 +222,74 @@ describe("series start card", () => {
     expect(post.key).toBeTruthy();
   });
 });
+
+describe("round 3 on the page: resume idempotency and placement", () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  function stoppedView(): SeriesView {
+    const copy = structuredClone(view);
+    copy.grants = copy.grants.map((item) => ({ ...item, state: "stopped" as const, stopReason: "grant_budget_exhausted" }));
+    copy.activeGrantId = null;
+    return copy;
+  }
+
+  it("6. a resume whose request cannot be saved is not sent at all", async () => {
+    const stopped = stoppedView();
+    const calls = server((method, url) => url.endsWith(`/projects/${P1}/series`) && method === "GET" ? json({ series: stopped }) : undefined);
+    const full = vi.spyOn(window.sessionStorage, "setItem").mockImplementation(() => { throw new DOMException("full", "QuotaExceededError"); });
+    try {
+      render(<SeriesWritingPage projectId={P1} />);
+      const panel = await screen.findByTestId("series-resume");
+      fireEvent.click(within(panel).getByRole("button", { name: "继续这次授权" }));
+      expect((await screen.findByTestId("series-error")).textContent).toContain("没能保存这次请求的标识");
+      fireEvent.click(within(panel).getByRole("button", { name: "继续这次授权" }));
+      expect(calls.filter((call) => call.method === "POST")).toHaveLength(0);
+    } finally {
+      full.mockRestore();
+    }
+  });
+
+  it("6. with storage working, a resume whose answer was lost is sent again with the same key and body, never a new one", async () => {
+    const stopped = stoppedView();
+    let lose = true;
+    const calls = server((method, url) => {
+      if (method === "GET" && url.endsWith(`/projects/${P1}/series`)) return json({ series: stopped });
+      if (method === "POST" && url.includes("/resume")) {
+        if (lose) { lose = false; throw new TypeError("fetch failed"); }
+        return json({ series: stopped });
+      }
+      return undefined;
+    });
+    render(<SeriesWritingPage projectId={P1} />);
+    const panel = await screen.findByTestId("series-resume");
+    fireEvent.click(within(panel).getByRole("button", { name: "继续这次授权" }));
+    await screen.findByTestId("series-error");
+    fireEvent.click(within(panel).getByRole("button", { name: "继续这次授权" }));
+    await waitFor(() => expect(calls.filter((call) => call.method === "POST")).toHaveLength(2));
+    const [a, b] = calls.filter((call) => call.method === "POST");
+    expect(b!.key).toBe(a!.key);
+    expect(b!.body).toEqual(a!.body);
+  });
+
+  it("4. a batch whose every episode was placed or recorded as a conflict offers no placement; the person's script is shown as kept", async () => {
+    const done = structuredClone(view);
+    done.batches[0] = { ...done.batches[0]!, placed: 2, conflicts: 1, placement: "nothing_to_place" };
+    done.episodes[1] = { ...done.episodes[1]!, placed: "conflict", version: { kind: "script", hash: "h", source: "工作台人工修改稿" } };
+    server((method, url) => method === "GET" && url.endsWith(`/projects/${P1}/series`) ? json({ series: done }) : undefined);
+    render(<SeriesWritingPage projectId={P1} />);
+    const row = await screen.findByTestId("series-batch-1");
+    expect(within(row).queryByRole("button", { name: "写入正式分集" })).toBeNull();
+    expect(row.textContent).toContain("2/3，1 集已有剧本未覆盖");
+    expect(screen.getByTestId("series-episode-2").textContent).toContain("工作台人工修改稿");
+  });
+
+  it("5. a batch whose dependencies are stale offers no placement and says why", async () => {
+    const stale = structuredClone(view);
+    stale.batches[0] = { ...stale.batches[0]!, placement: "ledger_stale" };
+    server((method, url) => method === "GET" && url.endsWith(`/projects/${P1}/series`) ? json({ series: stale }) : undefined);
+    render(<SeriesWritingPage projectId={P1} />);
+    const row = await screen.findByTestId("series-batch-1");
+    expect(within(row).queryByRole("button", { name: "写入正式分集" })).toBeNull();
+    expect(row.textContent).toContain("暂不能写入");
+  });
+});

@@ -54,6 +54,7 @@ import {
   type SeriesStageKind,
   type SeriesStageOutput,
   type SeriesStageRecord,
+  type SeriesVersionRef,
   type TitleWritingStoredProviderKey,
 } from "@ai-drama/contracts";
 import { buildAutoCreationPrompt, dialogueCharLimit, sceneLimit, shotSecondsRange, validateAutoStageOutput, type AutoCreationContext } from "./auto-creation";
@@ -118,7 +119,8 @@ export interface SeriesContext {
   final?: {
     ledger: SeriesLedger;
     ledgerHash: string;
-    summaries: Array<{ episodeNo: number; summary: string; versionHash: string }>;
+    /** basisHash: the summary text the review reads together with the identity of the version it belongs to (seriesSummaryBasisHash). */
+    summaries: Array<{ episodeNo: number; summary: string; versionHash: string; basisHash: string }>;
     batches: Array<{ batchNo: number; status: string; reviewHash: string | null; blocking: number; issues: string[] }>;
   };
   /** Output hashes of this job's completed stages (dependency records). */
@@ -168,6 +170,14 @@ export function seriesContextFromPlan(input: SeriesFrozenInput, plan: SeriesPlan
 
 export function seriesSize(value: unknown): number {
   return JSON.stringify(value).length;
+}
+
+/**
+ * What the final review read of one episode: its summary text and the version it belongs to. A person's summary changed
+ * on the same version is a different basis, so a final review never stands for summaries it did not read.
+ */
+export function seriesSummaryBasisHash(version: SeriesVersionRef, summary: string): string {
+  return canonicalInputHash({ version, summary });
 }
 
 const ID_ORDER = (id: string) => Number(id.replace(/^[A-Z]+/u, ""));
@@ -398,7 +408,7 @@ export function buildSeriesPrompt(stageKey: string, input: SeriesFrozenInput, co
       ...head,
       `任务：按选定方向写全剧设定（共 ${String(n)} 集）。`,
       "core：主角（protagonistId）的欲望、弱点、目标、核心冲突、关键选择及后果、失败代价、唯一的全剧结局，以及全剧主要转折（majorTurns，写在第几集）。",
-      "characters 用稳定编号 C1、C2…，写身份、目标、弱点、人物弧线、说话特点和第一集开始时的位置；relationships 只引用已有人物；",
+      "characters 用稳定编号 C1、C2…，写身份、目标、弱点、人物弧线、说话特点和第一集开始时的位置；relationships 只引用已有人物，同一方向的一对人物（from→to）只写一条；",
       "secrets 用 S1…，写秘密持有者、内容、开始时已知情的人物（knownBy）和计划揭露的集（可为 null）；locations 用 L1…；props 用 P1…，写开始时的持有人（可为 null）和用途。",
       "不要超过用户的人物和地点上限。",
       `schema 固定为 "${SERIES_SETTING_SCHEMA}"；title 是你为作品拟的剧名。`,
@@ -413,7 +423,7 @@ export function buildSeriesPrompt(stageKey: string, input: SeriesFrozenInput, co
       ...head,
       `任务：把全剧第 1–${String(n)} 集拆成连续的分幕，并安排伏笔。`,
       `phases：1–6 幕，按顺序连续覆盖第 1 到第 ${String(n)} 集，不重叠、不遗漏；每幕写目标和转折。`,
-      `foreshadowing：伏笔编号 FS1–FS16，写内容、埋设集（plantEpisode）和兑现集（payoffEpisode，必须晚于埋设集），以及依赖的其他伏笔（dependsOn，依赖的伏笔要先于或同时兑现）。全部伏笔都要在第 ${String(n)} 集或之前兑现。`,
+      `foreshadowing：伏笔编号 FS1–FS16，写内容、埋设集（plantEpisode）和兑现集（payoffEpisode，必须晚于埋设集），以及依赖的其他伏笔（dependsOn，依赖的伏笔必须严格早于本伏笔兑现：不能同一集兑现，也不能互相依赖）。全部伏笔都要在第 ${String(n)} 集或之前兑现。`,
       `finale：episodeNo 必须是 ${String(n)}（全剧结局只在最后一集），写结局如何兑现核心冲突。`,
       `schema 固定为 "${SERIES_ARC_SCHEMA}"。`,
       budgetLine(SERIES_BUDGETS.arc, `整个 json （其中 foreshadowing 部分不超过约 ${String(SERIES_BUDGETS.foreshadowing)} 字符）`),
@@ -556,6 +566,16 @@ function duplicate(ids: readonly string[]): boolean {
   return new Set(ids).size !== ids.length;
 }
 
+/** One directed pair (from → to) is one relationship; C1→C2 and C2→C1 are different pairs. */
+function duplicatePair(items: ReadonlyArray<{ from: string; to: string }>): boolean {
+  return duplicate(items.map((item) => `${item.from}→${item.to}`));
+}
+
+/** The ids are exactly the plan's: none missing, none twice, none unknown. */
+function sameIdSet(ids: readonly string[], planned: ReadonlySet<string>): boolean {
+  return !duplicate(ids) && ids.length === planned.size && ids.every((id) => planned.has(id));
+}
+
 function forbiddenHit(input: SeriesFrozenInput, value: unknown): string | null {
   const all = textsOf(value).join("\n");
   return input.constraints.forbiddenThemes.find((term) => all.includes(term)) ?? null;
@@ -571,6 +591,7 @@ function checkSetting(input: SeriesFrozenInput, output: SeriesSetting): SeriesVa
   for (const [index, item] of output.relationships.entries()) {
     if (!characters.has(item.from) || !characters.has(item.to) || item.from === item.to) return refuse("dangling_reference", `relationships[${String(index)}]`);
   }
+  if (duplicatePair(output.relationships)) return refuse("duplicate_id", "relationships");
   for (const [index, item] of output.secrets.entries()) {
     if (!characters.has(item.holderId) || item.knownBy.some((id) => !characters.has(id))) return refuse("dangling_reference", `secrets[${String(index)}]`);
   }
@@ -601,7 +622,8 @@ function checkArc(input: SeriesFrozenInput, output: SeriesArc): SeriesValidation
     for (const dependency of item.dependsOn) {
       const target = output.foreshadowing.find((entry) => entry.id === dependency);
       if (!target || dependency === item.id) return refuse("dangling_reference", `foreshadowing[${String(index)}].dependsOn`);
-      if (target.payoffEpisode > item.payoffEpisode) return refuse("plan_structure", `foreshadowing[${String(index)}].dependsOn`, "dependency_paid_later");
+      // Strictly earlier: a dependency paid in the same episode (or a cycle, which needs one) is never a prerequisite.
+      if (target.payoffEpisode >= item.payoffEpisode) return refuse("plan_structure", `foreshadowing[${String(index)}].dependsOn`, "dependency_not_paid_earlier");
     }
   }
   if (seriesSize(output.foreshadowing) > SERIES_BUDGETS.foreshadowing) return refuse("too_large", "foreshadowing", "foreshadowing_budget");
@@ -652,6 +674,7 @@ function checkEpisode(input: SeriesFrozenInput, episodeNo: number, output: Serie
   const c = output.continuity;
   if (c.characters.some((item) => !characters.has(item.id)) || duplicate(c.characters.map((item) => item.id))) return refuse("dangling_reference", "continuity.characters");
   if (c.relationships.some((item) => !characters.has(item.from) || !characters.has(item.to) || item.from === item.to)) return refuse("dangling_reference", "continuity.relationships");
+  if (duplicatePair(c.relationships)) return refuse("duplicate_id", "continuity.relationships");
   if (c.props.some((item) => !props.has(item.id) || (item.holderId !== null && !characters.has(item.holderId))) || duplicate(c.props.map((item) => item.id))) {
     return refuse("dangling_reference", "continuity.props");
   }
@@ -706,7 +729,7 @@ function checkReview(kind: "plan_review" | "batch_review" | "final_review", stag
     reviewed.plan = context.planHash!;
     reviewed.story = context.storyHash ?? SERIES_NO_STORY;
     reviewed.ledger = context.final!.ledgerHash;
-    for (const item of context.final!.summaries) reviewed[`summary:${String(item.episodeNo)}`] = item.versionHash;
+    for (const item of context.final!.summaries) reviewed[`summary:${String(item.episodeNo)}`] = item.basisHash;
     for (const item of context.final!.batches) if (item.reviewHash) reviewed[`batch:${String(item.batchNo)}`] = item.reviewHash;
   }
   const output: SeriesReviewOutput = {
@@ -1041,18 +1064,27 @@ export function checkSeriesPlanContent(input: SeriesFrozenInput, content: Series
   return { ok: true, output: content as unknown as SeriesStageOutput };
 }
 
-/** A person's ledger for a batch: it names only the plan's people, props, secrets and foreshadowing, ends with the batch, and fits its budget. */
+/**
+ * A person's ledger for a batch: it keeps exactly the plan's people, props, secrets and foreshadowing (each once, none
+ * dropped: a missing entry would silently end its continuity checks), names only the plan's people elsewhere, ends with
+ * the batch, and fits its budget. States change freely; conflicts are the ledger's own, not the plan's.
+ */
 export function checkSeriesLedgerContent(plan: SeriesPlanContent, ledger: SeriesLedger, throughEpisode: number): SeriesValidation {
   if (ledger.throughEpisode !== throughEpisode) return refuse("episode_numbering", "throughEpisode");
   const characters = new Set(plan.setting.characters.map((item) => item.id));
   const props = new Set(plan.setting.props.map((item) => item.id));
   const secrets = new Set(plan.setting.secrets.map((item) => item.id));
   const foreshadowing = new Set(plan.arc.foreshadowing.map((item) => item.id));
-  if (ledger.characters.some((item) => !characters.has(item.id)) || duplicate(ledger.characters.map((item) => item.id))) return refuse("dangling_reference", "characters");
+  if (!sameIdSet(ledger.characters.map((item) => item.id), characters)) return refuse("dangling_reference", "characters");
   if (ledger.relationships.some((item) => !characters.has(item.from) || !characters.has(item.to))) return refuse("dangling_reference", "relationships");
-  if (ledger.props.some((item) => !props.has(item.id) || (item.holderId !== null && !characters.has(item.holderId)))) return refuse("dangling_reference", "props");
-  if (ledger.secrets.some((item) => !secrets.has(item.id) || !characters.has(item.holderId) || item.knownBy.some((id) => !characters.has(id)))) return refuse("dangling_reference", "secrets");
-  if (ledger.foreshadowing.some((item) => !foreshadowing.has(item.id)) || duplicate(ledger.foreshadowing.map((item) => item.id))) return refuse("dangling_reference", "foreshadowing");
+  if (duplicatePair(ledger.relationships)) return refuse("duplicate_id", "relationships");
+  if (!sameIdSet(ledger.props.map((item) => item.id), props) || ledger.props.some((item) => item.holderId !== null && !characters.has(item.holderId))) {
+    return refuse("dangling_reference", "props");
+  }
+  if (!sameIdSet(ledger.secrets.map((item) => item.id), secrets) || ledger.secrets.some((item) => !characters.has(item.holderId) || item.knownBy.some((id) => !characters.has(id)))) {
+    return refuse("dangling_reference", "secrets");
+  }
+  if (!sameIdSet(ledger.foreshadowing.map((item) => item.id), foreshadowing)) return refuse("dangling_reference", "foreshadowing");
   if (duplicate(ledger.conflicts.map((item) => item.id))) return refuse("duplicate_id", "conflicts");
   if (textsOf(ledger).some((item) => UNSAFE.test(item) || RESERVED.test(item))) return refuse("unsafe_content");
   if (seriesSize(ledger) > SERIES_BUDGETS.ledger) return refuse("too_large", undefined, "ledger_budget");

@@ -17,7 +17,7 @@ const START = Date.parse("2026-10-22T00:00:00Z");
 const CONTEXT = (key?: string) => ({ actorId: "server-owner", traceId: "t", ...(key ? { idempotencyKey: key } : {}) });
 const providers = titleWritingProviderConfigs({ DEEPSEEK_API_KEY: "sk-deepseek-test-0123456789", TITLE_WRITING_DEEPSEEK_MODELS: "m-1" });
 
-function setup(options: { override?: (stage: string, attempt: number) => undefined } = {}) {
+function setup(options: { override?: (stage: string, attempt: number) => { status: number; body: unknown } | undefined } = {}) {
   const store = new InMemorySeriesWritingStore();
   const seen: SeriesFixtureExchange[] = [];
   let clock = START;
@@ -101,9 +101,14 @@ describe("1. a person's plan revision is bound to a new story DRAFT that placeme
     // The new story is a DRAFT of its own: the old approval is not inherited.
     expect(project.stories.find((item) => item.id === after.plan!.storyRevisionId)).toMatchObject({ reviewStatus: "DRAFT" });
     expect(project.stories.find((item) => item.id === after.plan!.storyRevisionId)!.text).toContain(after.plan!.revisionId);
-    expect((await s.service.placeBatch(view.projectId, 1, {}, CONTEXT())).body).toMatchObject({ error: { code: "SERIES_STORY_NOT_APPROVED" } });
+    // The batch was written on plan revision 1: its ledger and review wait for the new plan (round 3, finding 5).
+    expect((await s.service.placeBatch(view.projectId, 1, {}, CONTEXT())).body).toMatchObject({ error: { code: "SERIES_NOT_READY", details: { reason: "ledger_stale" } } });
     expect((await decide(s, view.projectId, "plan", after.plan!.decisionBasis)).status).toBe(201);
     s.store.approveCurrentStory(view.projectId);
+    expect((await s.service.placeBatch(view.projectId, 1, {}, CONTEXT())).body).toMatchObject({ error: { code: "SERIES_NOT_READY", details: { reason: "ledger_stale" } } });
+    expect(project.episodes.get(1)!.scripts).toHaveLength(0);
+    expect((await confirmLedger(s, view.projectId, 1)).status).toBe(201);
+    expect((await decide(s, view.projectId, "batch:1", (await current(s, view.projectId)).batches[0]!.decisionBasis)).status).toBe(201);
     const placed = await s.service.placeBatch(view.projectId, 1, {}, CONTEXT());
     expect(placed.body).toMatchObject({ placed: 3, conflicts: [] });
     const scripts = [1, 2, 3].map((episodeNo) => project.episodes.get(episodeNo)!.scripts[0]!);
@@ -496,6 +501,317 @@ describe("round 2, finding 2: a story replaced after completion revokes the comp
     expect((await decide(s, view.projectId, "final", page.final.decisionBasis)).status).toBe(201);
     page = await current(s, view.projectId);
     expect(page).toMatchObject({ completion: "text_complete", attention: [], final: { status: "cleared" } });
+    expect(s.seen.length).toBe(sent);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Round 3 (review of 3335045): scheduling and authorization, formal placement, idempotency and the ledger, the final basis.
+
+const REJECT = { status: 422, body: {} };
+
+async function grantWith(s: Setup, view: SeriesView, scope: SeriesScope, resendAllowance: number) {
+  const normal = seriesScopeCalls(view.episodeCount, scope);
+  const result = await s.service.grant(view.projectId, { scope, normalCalls: normal, resendAllowance, callBudget: normal + resendAllowance, providerKey: "deepseek",
+    model: "m-1", basePlanRevisionId: view.plan?.revisionId ?? null }, TOKEN, CONTEXT(randomUUID()));
+  await s.settle();
+  return result;
+}
+
+const stagesSent = (s: Setup, from: number) => s.seen.slice(from).map((item) => item.stage);
+type LedgerContent = NonNullable<SeriesView["batches"][number]["ledger"]["revision"]>["content"];
+type PlanContent = NonNullable<SeriesView["plan"]>["content"];
+
+describe("round 3, 1: a person's script never stands in for the model stage and the batch review it skipped", () => {
+  it("episode 3 refused with no resend left; the person writes it; a new grant finishes the batch's own stages; after the checks batch 2 follows", async () => {
+    const s = setup({ override: (stage, attempt) => stage === "episode:3" && attempt === 1 ? REJECT : undefined });
+    const view = await work(s, 6);
+    await grantWith(s, view, { plan: true, batchFrom: 1, batchTo: 1, final: false }, 0);
+    let page = await current(s, view.projectId);
+    const old = page.grants[0]!;
+    expect(old).toMatchObject({ state: "stopped" });
+    // The old grant has no budget left for the batch's two remaining sends.
+    expect((await s.service.resume(view.projectId, old.grantId, {}, TOKEN, CONTEXT(randomUUID()))).body).toMatchObject({ error: { code: "SERIES_BUDGET_EXHAUSTED" } });
+    s.store.approveCurrentStory(view.projectId);
+    const personScript = s.store.writeHumanScript(view.projectId, 3, "人工补写的第 3 集");
+    page = await current(s, view.projectId);
+    expect(page.written).toBe(3);
+    // Batch 1 is still the next batch: its model stage of episode 3 and its batch review never ran.
+    expect(page.next.batchNo).toBe(1);
+    const sent = s.seen.length;
+    const next = await grantWith(s, page, { plan: false, batchFrom: 1, batchTo: 1, final: false }, 0);
+    expect(next.status).toBe(201);
+    // Only what the stopped job did not finish is sent; episodes 1 and 2 are taken over, never sent again.
+    expect(stagesSent(s, sent)).toEqual(["episode:3", "batch_review:1"]);
+    page = await current(s, view.projectId);
+    // The person's script stays the current version of episode 3; the model's stays apart, unadopted.
+    expect(page.episodes[2]!.version).toMatchObject({ kind: "script" });
+    expect(page.episodes[2]!.unadoptedModelDraft).toBe(true);
+    expect(page.batches[0]!.ledger.status).toBe("pending_confirmation");
+    expect(page.batches[0]!.review.status).toBe("stale");
+    expect(page.next).toMatchObject({ batchNo: 2, blockers: ["ledger_pending_confirmation:1", "batch_review_stale:1"] });
+    // The established checks: the person confirms the ledger and reviews the batch on what the page shows.
+    expect((await confirmLedger(s, view.projectId, 1)).status).toBe(201);
+    page = await current(s, view.projectId);
+    expect((await decide(s, view.projectId, "batch:1", page.batches[0]!.decisionBasis)).status).toBe(201);
+    page = await current(s, view.projectId);
+    expect(page.next).toEqual({ batchNo: 2, blockers: [] });
+    const before2 = s.seen.length;
+    expect((await grantWith(s, page, { plan: false, batchFrom: 2, batchTo: 2, final: false }, 0)).status).toBe(201);
+    expect(stagesSent(s, before2)).toEqual(["episode:4", "episode:5", "episode:6", "batch_review:2"]);
+    // History kept: the old grant, its job and its rejected call; the person's script untouched.
+    const snap = (await s.store.snapshot(WS, view.projectId))!;
+    expect(snap.grants.find((item) => item.id === old.grantId)).toMatchObject({ state: "stopped", callsUsed: 9 });
+    expect(snap.jobs.filter((job) => job.run.kind === "batch" && job.run.batchNo === 1).map((job) => job.run.state)).toEqual(["partial", "completed"]);
+    expect(snap.jobs.flatMap((job) => job.calls).filter((call) => call.stageKey === "episode:3").map((call) => call.state)).toEqual(["rejected", "completed"]);
+    expect(snap.episodes.find((item) => item.episodeNo === 3)!.currentScriptRevisionId).toBe(personScript);
+  });
+});
+
+describe("round 3, 2: a planning grant superseded by a later plan is never resumed", () => {
+  it("old plan job refused at setting (one resend kept); a new grant saves plan 1; the old grant's resume is refused with no send, job or plan", async () => {
+    const s = setup({ override: (stage, attempt) => stage === "setting" && attempt === 1 ? REJECT : undefined });
+    const view = await work(s, 6);
+    await grantWith(s, view, { plan: true, batchFrom: null, batchTo: null, final: false }, 1);
+    let page = await current(s, view.projectId);
+    const old = page.grants[0]!;
+    expect(old.state).toBe("stopped");
+    expect((await grantWith(s, page, { plan: true, batchFrom: null, batchTo: null, final: false }, 1)).status).toBe(201);
+    page = await current(s, view.projectId);
+    expect(page.plan).toMatchObject({ revisionNo: 1, storySave: "saved" });
+    expect(page.story.status).toBe("ok");
+    const sent = s.seen.length;
+    const jobs = s.store.jobs.length;
+    const grants = structuredClone(s.store.grants);
+    const resumed = await s.service.resume(view.projectId, old.grantId, {}, TOKEN, CONTEXT(randomUUID()));
+    await s.settle();
+    expect(resumed.status).toBe(409);
+    expect(resumed.body).toMatchObject({ error: { code: "SERIES_UPSTREAM_CHANGED", details: { reason: "upstream_plan_superseded" } } });
+    expect(s.seen.length).toBe(sent);
+    expect(s.store.jobs).toHaveLength(jobs);
+    expect(s.store.plans).toHaveLength(1);
+    expect(s.store.grants).toEqual(grants);
+    page = await current(s, view.projectId);
+    expect(page.story.status).toBe("ok");
+    expect(page.plan!.revisionNo).toBe(1);
+  });
+
+  it("a stopped plan grant nothing superseded still resumes", async () => {
+    const s = setup({ override: (stage, attempt) => stage === "setting" && attempt === 1 ? REJECT : undefined });
+    const view = await work(s, 6);
+    await grantWith(s, view, { plan: true, batchFrom: null, batchTo: null, final: false }, 1);
+    const old = (await current(s, view.projectId)).grants[0]!;
+    const sent = s.seen.length;
+    expect((await s.service.resume(view.projectId, old.grantId, {}, TOKEN, CONTEXT(randomUUID()))).status).toBe(200);
+    await s.settle();
+    expect(stagesSent(s, sent)).toEqual(["setting", "arc", "outline:1", "plan_review"]);
+    expect((await current(s, view.projectId)).plan!.revisionNo).toBe(1);
+  });
+});
+
+describe("round 3, 3: a new job's call cap counts what it will actually send", () => {
+  it("6 episodes, plan only, refused at setting; a new grant (6 normal, 0 resend) takes over sources, research and directions and sends exactly the other 4", async () => {
+    const s = setup({ override: (stage, attempt) => stage === "setting" && attempt === 1 ? REJECT : undefined });
+    const view = await work(s, 6);
+    await grantWith(s, view, { plan: true, batchFrom: null, batchTo: null, final: false }, 0);
+    const page = await current(s, view.projectId);
+    const sent = s.seen.length;
+    expect((await grantWith(s, page, { plan: true, batchFrom: null, batchTo: null, final: false }, 0)).status).toBe(201);
+    expect(stagesSent(s, sent)).toEqual(["setting", "arc", "outline:1", "plan_review"]);
+    const after = await current(s, view.projectId);
+    expect(after.plan).toMatchObject({ revisionNo: 1 });
+    expect(after.grants[1]).toMatchObject({ state: "completed", callsUsed: 4, callBudget: 6 });
+    const job = s.store.jobs.at(-1)!;
+    expect(job).toMatchObject({ callCap: 4, callsUsed: 4, state: "completed" });
+    const reused = s.store.stages.filter((stage) => stage.runId === job.id && stage.reusedFrom !== null).map((stage) => stage.stageKey);
+    expect(reused).toEqual(["sources", "research", "directions"]);
+    // sources is the local snapshot: never a model call, in either job.
+    expect(s.store.calls.some((call) => call.stageKey === "sources")).toBe(false);
+  });
+});
+
+describe("round 3, 4: placing a batch records the episodes a person's script already holds", () => {
+  it("the person writes episode 2 before placing; ledger confirmed and batch reviewed; placement writes 1 and 3 and records 2 as a conflict, once", async () => {
+    const s = setup();
+    const view = await work(s, 6);
+    await grant(s, view, { plan: true, batchFrom: 1, batchTo: 1, final: false });
+    s.store.approveCurrentStory(view.projectId);
+    const personScript = s.store.writeHumanScript(view.projectId, 2, "人工先写的第 2 集");
+    expect((await confirmLedger(s, view.projectId, 1)).status).toBe(201);
+    let page = await current(s, view.projectId);
+    expect((await decide(s, view.projectId, "batch:1", page.batches[0]!.decisionBasis)).status).toBe(201);
+    const placed = await s.service.placeBatch(view.projectId, 1, {}, CONTEXT());
+    expect(placed.body).toMatchObject({ placed: 2, conflicts: [2] });
+    page = viewOf(placed.body);
+    expect(page.batches[0]).toMatchObject({ placed: 2, conflicts: 1 });
+    expect(page.episodes[1]).toMatchObject({ placed: "conflict", version: { kind: "script" } });
+    const scripts = () => [1, 2, 3].map((episodeNo) => s.store.projects.get(view.projectId)!.episodes.get(episodeNo)!.scripts.length);
+    expect(scripts()).toEqual([1, 1, 1]);
+    // Clicked again: nothing more is written and nothing is left to do.
+    expect((await s.service.placeBatch(view.projectId, 1, {}, CONTEXT())).body).toMatchObject({ placed: 0, conflicts: [] });
+    expect(scripts()).toEqual([1, 1, 1]);
+    expect(s.store.projects.get(view.projectId)!.episodes.get(2)!.currentScriptId).toBe(personScript);
+    page = await current(s, view.projectId);
+    expect(page.batches[0]!.placed + page.batches[0]!.conflicts).toBe(3);
+  });
+});
+
+describe("round 3, 5: a batch is never placed on dependencies that are no longer current", () => {
+  it("a manual plan (adopt_current) renames a person after the batch: no script is written until ledger and review are current; then the old plan's text is used", async () => {
+    const s = setup();
+    const view = await work(s, 6);
+    await grant(s, view, { plan: true, batchFrom: 1, batchTo: 1, final: false });
+    s.store.approveCurrentStory(view.projectId);
+    let page = await current(s, view.projectId);
+    const content = structuredClone(page.plan!.content);
+    content.setting.characters = content.setting.characters.map((item) => item.id === "C1" ? { ...item, name: "林大满" } : item);
+    expect((await s.service.savePlan(view.projectId, { basePlanRevisionId: page.plan!.revisionId, baseStoryRevisionId: page.story.current!.revisionId,
+      story: "adopt_current", content }, CONTEXT())).status).toBe(201);
+    page = await current(s, view.projectId);
+    expect(page.batches[0]).toMatchObject({ ledger: { status: "stale" }, review: { status: "stale" } });
+    const refused = await s.service.placeBatch(view.projectId, 1, {}, CONTEXT());
+    expect(refused.status).toBe(409);
+    expect(refused.body).toMatchObject({ error: { code: "SERIES_NOT_READY" } });
+    const written = () => [1, 2, 3].flatMap((episodeNo) => s.store.projects.get(view.projectId)!.episodes.get(episodeNo)!.scripts);
+    expect(written()).toHaveLength(0);
+    // The established process: the ledger confirmed and the batch reviewed on the new plan; the model text keeps its own plan's names.
+    expect((await confirmLedger(s, view.projectId, 1)).status).toBe(201);
+    page = await current(s, view.projectId);
+    expect((await decide(s, view.projectId, "batch:1", page.batches[0]!.decisionBasis)).status).toBe(201);
+    expect((await s.service.placeBatch(view.projectId, 1, {}, CONTEXT())).body).toMatchObject({ placed: 3, conflicts: [] });
+    expect(written()).toHaveLength(3);
+    expect(written().every((script) => script.text.includes("林小满") && !script.text.includes("林大满"))).toBe(true);
+  });
+});
+
+describe("round 3, 7: a person's ledger keeps every planned person, prop, secret and foreshadowing", () => {
+  async function batchDone() {
+    const s = setup();
+    const view = await work(s, 6);
+    await grant(s, view, { plan: true, batchFrom: 1, batchTo: 1, final: false });
+    return { s, view };
+  }
+
+  async function save(s: Setup, projectId: string, edit: (content: LedgerContent) => void) {
+    const page = await current(s, projectId);
+    const batch = page.batches[0]!;
+    const content = structuredClone(batch.ledger.revision!.content);
+    edit(content);
+    return s.service.saveLedger(projectId, { batchNo: 1, baseLedgerRevisionId: batch.ledger.revision!.id, content,
+      summaries: page.episodes.slice(0, 3).map((item) => ({ episodeNo: item.episodeNo, summary: "人工确认的概要" })), expectedBasis: batch.ledgerBasis }, CONTEXT());
+  }
+
+  it.each<[string, (content: LedgerContent) => void, string]>([
+    ["every person removed", (c) => { c.characters = []; }, "characters"],
+    ["every prop removed", (c) => { c.props = []; }, "props"],
+    ["every secret removed", (c) => { c.secrets = []; }, "secrets"],
+    ["every foreshadowing removed", (c) => { c.foreshadowing = []; }, "foreshadowing"],
+    ["prop P1 removed", (c) => { c.props = c.props.filter((item) => item.id !== "P1"); }, "props"],
+    ["foreshadowing FS1 removed", (c) => { c.foreshadowing = c.foreshadowing.filter((item) => item.id !== "FS1"); }, "foreshadowing"],
+    ["a prop listed twice", (c) => { c.props = [...c.props, c.props[0]!]; }, "props"],
+    ["a secret listed twice", (c) => { c.secrets = [...c.secrets, c.secrets[0]!]; }, "secrets"],
+    ["an unknown prop", (c) => { c.props = [...c.props, { id: "P9", holderId: null, state: "x" }]; }, "props"],
+    ["a relationship pair listed twice", (c) => { c.relationships = [...c.relationships, { ...c.relationships[0]!, state: "仇敌" }]; }, "relationships"],
+  ])("%s: refused, nothing saved", async (_label, edit, field) => {
+    const { s, view } = await batchDone();
+    const ledgers = s.store.ledgers.length;
+    const saved = await save(s, view.projectId, edit);
+    expect(saved.status).toBe(400);
+    expect(saved.body).toMatchObject({ error: { code: "SERIES_INVALID_EDIT", details: { field } } });
+    expect(s.store.ledgers).toHaveLength(ledgers);
+  });
+
+  it("a legitimate change of state (who holds a prop, where a person is) is saved", async () => {
+    const { s, view } = await batchDone();
+    const saved = await save(s, view.projectId, (c) => {
+      c.props = c.props.map((item) => item.id === "P2" ? { ...item, holderId: "C1" } : item);
+      c.characters = c.characters.map((item) => item.id === "C3" ? { ...item, whereabouts: "公交站" } : item);
+    });
+    expect(saved.status).toBe(201);
+  });
+});
+
+describe("round 3, 9 and 10: a person's plan is held to unique directed relationships and strictly earlier dependencies", () => {
+  async function planned() {
+    const s = setup();
+    const view = await work(s, 6);
+    await grant(s, view, { plan: true, batchFrom: null, batchTo: null, final: false });
+    return { s, page: await current(s, view.projectId) };
+  }
+
+  function revise(s: Setup, page: SeriesView, edit: (content: PlanContent) => void) {
+    const content = structuredClone(page.plan!.content);
+    edit(content);
+    return s.service.savePlan(page.projectId, { basePlanRevisionId: page.plan!.revisionId, baseStoryRevisionId: page.story.current?.revisionId ?? null,
+      story: "adopt_current", content }, CONTEXT());
+  }
+
+  const withFs3 = (c: PlanContent, dependsOn: string[]) => {
+    c.arc.foreshadowing.push({ id: "FS3", content: "仓库角落的旧招牌", plantEpisode: 2, payoffEpisode: 6, dependsOn });
+    c.outlines = c.outlines.map((item) => item.episodeNo === 2 ? { ...item, plants: [...item.plants, "FS3"] }
+      : item.episodeNo === 6 ? { ...item, payoffs: [...item.payoffs, "FS3"] } : item);
+  };
+
+  it("C1→C2 twice (employer and enemy) is refused; C1→C2 with C2→C1 is accepted", async () => {
+    const { s, page } = await planned();
+    const twice = await revise(s, page, (c) => { c.setting.relationships.push({ from: "C1", to: "C2", relation: "仇敌", arc: "反目" }); });
+    expect(twice.body).toMatchObject({ error: { code: "SERIES_INVALID_EDIT", details: { code: "duplicate_id", field: "relationships" } } });
+    expect(s.store.plans).toHaveLength(1);
+    const both = await revise(s, page, (c) => { c.setting.relationships.push({ from: "C2", to: "C1", relation: "店主与雇员", arc: "从隐瞒到坦白" }); });
+    expect(both.status).toBe(201);
+  });
+
+  it("two foreshadowing entries paid in the same episode depending on each other are refused, and so is a one-way same-episode dependency", async () => {
+    const { s, page } = await planned();
+    const mutual = await revise(s, page, (c) => {
+      withFs3(c, ["FS1"]);
+      c.arc.foreshadowing = c.arc.foreshadowing.map((item) => item.id === "FS1" ? { ...item, dependsOn: ["FS3"] } : item);
+    });
+    expect(mutual.body).toMatchObject({ error: { code: "SERIES_INVALID_EDIT", details: { code: "plan_structure", field: "foreshadowing[0].dependsOn" } } });
+    const oneWay = await revise(s, page, (c) => { withFs3(c, ["FS1"]); });
+    expect(oneWay.body).toMatchObject({ error: { code: "SERIES_INVALID_EDIT", details: { code: "plan_structure", field: "foreshadowing[2].dependsOn" } } });
+    expect(s.store.plans).toHaveLength(1);
+  });
+});
+
+describe("round 3, 11: the final review stands only for the summaries it read", () => {
+  it("only a person's summary changes after a passed final review: the final review is stale and the series no longer text complete; history kept, nothing sent", async () => {
+    const s = setup();
+    const view = await work(s, 6);
+    await grant(s, view, { plan: true, batchFrom: 1, batchTo: 2, final: false });
+    s.store.approveCurrentStory(view.projectId);
+    s.store.writeHumanScript(view.projectId, 2, "人工修改后的第 2 集");
+    const summaryLedger = async (summary: string) => {
+      const page = await current(s, view.projectId);
+      const batch = page.batches[0]!;
+      return s.service.saveLedger(view.projectId, { batchNo: 1, baseLedgerRevisionId: batch.ledger.revision!.id, content: batch.ledger.revision!.content,
+        summaries: page.episodes.slice(0, 3).map((item) => ({ episodeNo: item.episodeNo, summary: item.episodeNo === 2 ? summary : item.summary ?? "人工确认的概要" })),
+        expectedBasis: batch.ledgerBasis }, CONTEXT());
+    };
+    expect((await summaryLedger("概要 A：林小满第一次发现钥匙不见")).status).toBe(201);
+    let page = await current(s, view.projectId);
+    expect((await decide(s, view.projectId, "batch:1", page.batches[0]!.decisionBasis)).status).toBe(201);
+    page = await current(s, view.projectId);
+    expect((await grant(s, page, { plan: false, batchFrom: null, batchTo: null, final: true })).status).toBe(201);
+    page = await current(s, view.projectId);
+    expect(page).toMatchObject({ completion: "text_complete", final: { status: "passed" } });
+    expect(s.seen.find((item) => item.stage === "final_review")!.user).toContain("概要 A：林小满第一次发现钥匙不见");
+    const sent = s.seen.length;
+    const finalStage = structuredClone(s.store.stages.find((item) => item.stageKey === "final_review")!);
+    const ledgerHash = page.batches[0]!.ledger.revision!.contentHash;
+    expect((await summaryLedger("概要 B：林小满怀疑老周拿走钥匙")).status).toBe(201);
+    page = await current(s, view.projectId);
+    // Only the summary changed: the ledger content and every script version are the same.
+    expect(page.episodes[1]!.summary).toBe("概要 B：林小满怀疑老周拿走钥匙");
+    expect(page.batches[0]!.ledger.revision!.contentHash).toBe(ledgerHash);
+    expect(page.final).toMatchObject({ status: "stale", previousPassed: true });
+    expect(page.completion).toBe("partial");
+    expect(page.attention).toContain("final_review_stale");
+    expect(s.store.stages.find((item) => item.stageKey === "final_review")).toEqual(finalStage);
+    expect(s.seen.length).toBe(sent);
+    // A person's final review on the basis the page now shows restores it, with no model call.
+    expect((await decide(s, view.projectId, "final", page.final.decisionBasis)).status).toBe(201);
+    expect((await current(s, view.projectId)).completion).toBe("text_complete");
     expect(s.seen.length).toBe(sent);
   });
 });

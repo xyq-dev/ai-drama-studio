@@ -161,3 +161,45 @@ describe("the continuity ledger and its contradictions", () => {
     expect(checkSeriesLedgerContent(plan, { ...ledger, props: [{ id: "P9", holderId: null, state: "x" }] }, 3)).toMatchObject({ ok: false, code: "dangling_reference" });
   });
 });
+
+describe("round 3: relationships, dependencies and a person's ledger", () => {
+  const ctx = () => seriesContextFromPlan(input, plan, "0".repeat(64));
+
+  it("9. one directed pair is one relationship: C1→C2 twice is refused in a model setting and a person's plan; C2→C1 is a different pair", () => {
+    const twice = { ...setting, relationships: [...setting.relationships, { from: "C1", to: "C2", relation: "仇敌", arc: "反目" }] };
+    expect(validateSeriesStageOutput("setting", JSON.stringify(twice), input, ctx(), autoInput)).toMatchObject({ ok: false, code: "duplicate_id", field: "relationships" });
+    expect(checkSeriesPlanContent(input, { ...plan, setting: twice })).toMatchObject({ ok: false, code: "duplicate_id", field: "relationships" });
+    const reversed = { ...setting, relationships: [...setting.relationships, { from: "C2", to: "C1", relation: "店主与店员", arc: "变化" }] };
+    expect(validateSeriesStageOutput("setting", JSON.stringify(reversed), input, ctx(), autoInput).ok).toBe(true);
+  });
+
+  it("9. an episode's continuity may not change one directed pair twice", () => {
+    const twice = episode(1, { continuity: { ...episode(1).continuity, relationships: [{ from: "C1", to: "C2", state: "合作" }, { from: "C1", to: "C2", state: "决裂" }] } });
+    expect(validateSeriesStageOutput("episode:1", JSON.stringify(twice), input, { ...ctx(), baseLedger: seriesInitialLedger(plan) }, autoInput))
+      .toMatchObject({ ok: false, code: "duplicate_id", field: "continuity.relationships" });
+  });
+
+  it("10. a dependency must be paid strictly earlier: the same episode, one way or both ways, is refused; an earlier one is accepted", () => {
+    const same = { ...arc, foreshadowing: [...arc.foreshadowing, { id: "FS2", content: "合同", plantEpisode: 1, payoffEpisode: 5, dependsOn: ["FS1"] }] };
+    expect(validateSeriesStageOutput("arc", JSON.stringify(same), input, ctx(), autoInput)).toMatchObject({ ok: false, code: "plan_structure", detail: "dependency_not_paid_earlier" });
+    const mutual = { ...arc, foreshadowing: [{ ...arc.foreshadowing[0]!, dependsOn: ["FS2"] }, { id: "FS2", content: "合同", plantEpisode: 1, payoffEpisode: 5, dependsOn: ["FS1"] }] };
+    expect(validateSeriesStageOutput("arc", JSON.stringify(mutual), input, ctx(), autoInput)).toMatchObject({ ok: false, code: "plan_structure" });
+    const earlier = { ...arc, foreshadowing: [...arc.foreshadowing, { id: "FS2", content: "合同", plantEpisode: 3, payoffEpisode: 6, dependsOn: ["FS1"] }] };
+    expect(validateSeriesStageOutput("arc", JSON.stringify(earlier), input, ctx(), autoInput).ok).toBe(true);
+  });
+
+  it("7. a person's ledger names every planned person, prop, secret and foreshadowing exactly once; states may change", () => {
+    const ledger = applySeriesContinuity(seriesInitialLedger(plan), 3, episode(3).continuity);
+    for (const [field, edit] of [
+      ["characters", { characters: [] }], ["props", { props: [] }], ["secrets", { secrets: [] }], ["foreshadowing", { foreshadowing: [] }],
+      ["characters", { characters: ledger.characters.slice(1) }], ["props", { props: [...ledger.props, ledger.props[0]!] }],
+      ["secrets", { secrets: [...ledger.secrets, ledger.secrets[0]!] }], ["foreshadowing", { foreshadowing: [...ledger.foreshadowing, ledger.foreshadowing[0]!] }],
+      ["relationships", { relationships: [...ledger.relationships, { ...ledger.relationships[0]!, state: "仇敌" }] }],
+    ] as const) {
+      expect(checkSeriesLedgerContent(plan, { ...ledger, ...edit }, 3)).toMatchObject({ ok: false, field });
+    }
+    const moved = { ...ledger, props: [{ id: "P1", holderId: "C1", state: "易手" }], characters: ledger.characters.map((item) => ({ ...item, whereabouts: "公交站" })),
+      relationships: [{ from: "C1", to: "C2", state: "信任" }, { from: "C2", to: "C1", state: "愧疚" }], conflicts: [{ id: "K9", content: "新冲突", status: "open" as const, openedIn: 3, resolvedIn: null }] };
+    expect(checkSeriesLedgerContent(plan, moved, 3).ok).toBe(true);
+  });
+});

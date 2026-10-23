@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { seriesPlanCalls, seriesScopeCalls } from "@ai-drama/contracts";
-import { canonicalInputHash, formatSeriesStory, seriesDecisionBasis, seriesLedgerBasisNow, seriesLedgerEditBasis, seriesPackageJson } from "@ai-drama/domain";
+import { seriesPlanCalls, seriesScopeCalls, type SeriesSnapshot } from "@ai-drama/contracts";
+import { canonicalInputHash, formatSeriesStory, seriesDecisionBasis, seriesLedgerBasisNow, seriesLedgerEditBasis, seriesPackageJson, seriesPlacementCandidates } from "@ai-drama/domain";
 import { titleWritingProviderConfigs } from "./text-writing";
 import { SeriesWritingEngine } from "./series-writing-engine";
 import { seriesFixtureTransport } from "./series-writing-fixtures";
@@ -99,16 +99,21 @@ describe("B. the first three episodes, then continuing across batches", () => {
   });
 });
 
+/** The batch's placement candidates, each text replaced by a short label the assertions recognise. */
+function labelled(batchNo: number) {
+  return (snapshot: SeriesSnapshot) => {
+    const chosen = seriesPlacementCandidates(snapshot, batchNo);
+    return chosen.kind === "ok" ? { kind: "ok" as const, scripts: chosen.scripts.map((item) => ({ ...item, text: `剧本 ${item.stageKey}` })) } : chosen;
+  };
+}
+
 describe("C. people's edits, upstream changes and missing batches stop silent continuation", () => {
   async function placed() {
     const setup = await seriesSetup({ episodes: 9 });
     await setup.grant({ plan: true, batchFrom: 1, batchTo: 2, final: false });
     setup.store.approveCurrentStory(P1);
-    const snap = await setup.snapshot();
     for (const batchNo of [1, 2]) {
-      const scripts = snap.jobs.filter((job) => job.run.batchNo === batchNo).flatMap((job) => job.stages.filter((stage) => stage.stageKey.startsWith("episode:"))
-        .map((stage) => ({ episodeNo: Number(stage.stageKey.split(":")[1]), runId: job.run.id, stageKey: stage.stageKey, text: `剧本 ${stage.stageKey}` })));
-      expect(await setup.store.placeBatch(WS, P1, batchNo, scripts, "server-owner", new Date(START).toISOString())).toMatchObject({ kind: "ok", placed: 3 });
+      expect(await setup.store.placeBatch(WS, P1, batchNo, labelled(batchNo), "server-owner", new Date(START).toISOString())).toMatchObject({ kind: "ok", placed: 3 });
     }
     return setup;
   }
@@ -396,10 +401,7 @@ describe("E. the current writing package", () => {
     await setup.grant(ALL(6));
     expect((await setup.view()).completion).toBe("text_complete");
     setup.store.approveCurrentStory(P1);
-    const snap = await setup.snapshot();
-    const scripts = snap.jobs.filter((job) => job.run.batchNo === 1).flatMap((job) => job.stages.filter((stage) => stage.stageKey.startsWith("episode:"))
-      .map((stage) => ({ episodeNo: Number(stage.stageKey.split(":")[1]), runId: job.run.id, stageKey: stage.stageKey, text: `剧本 ${stage.stageKey}` })));
-    await setup.store.placeBatch(WS, P1, 1, scripts, "server-owner", new Date(START).toISOString());
+    expect(await setup.store.placeBatch(WS, P1, 1, labelled(1), "server-owner", new Date(START).toISOString())).toMatchObject({ kind: "ok", placed: 3 });
     setup.store.writeHumanScript(P1, 1, "人工修改后的第 1 集全文");
     const meta = { generatedAt: new Date(START).toISOString() };
     const first = seriesPackageJson(await setup.snapshot(), meta);

@@ -204,7 +204,11 @@ export class SeriesWritingEngine {
     const next = stages.find((stage) => stage.state !== "completed");
     const snapshot = await this.deps.store.snapshot(this.workspaceId, run.projectId);
     if (!snapshot) return STOP;
-    if (!next) return this.afterJob(bundle, snapshot);
+    if (!next) {
+      // A planning job superseded while it waited (a plan saved since, or a later planning job) never saves a second plan.
+      const superseded = run.kind === "plan" ? seriesJobUpstreamChange(snapshot, run) : null;
+      return superseded ? this.stop(jobId, "needs_attention", superseded) : this.afterJob(bundle, snapshot);
+    }
     if (next.state === "unknown") return this.stop(jobId, "needs_attention", next.errorCode ?? "uncertain_call");
     if (next.state === "rejected") return this.stop(jobId, anyCompleted ? "partial" : "failed", next.errorCode === null ? null : autoErrorParts(next.errorCode).code);
     if (next.state === "reserved" || next.state === "submitted") return STOP;

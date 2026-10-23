@@ -28,6 +28,7 @@ import {
   type SeriesJobRecord,
   type SeriesLedger,
   type SeriesLedgerRevisionRecord,
+  type SeriesPlacementCandidates,
   type SeriesPlanContent,
   type SeriesPlanRevisionRecord,
   type SeriesReviewOutput,
@@ -47,6 +48,7 @@ import {
   seriesInitialLedger,
   seriesOutlineLine,
   seriesPlanContext,
+  seriesSummaryBasisHash,
   type SeriesContext,
 } from "./series-writing";
 import { canonicalInputHash } from "./text-chain";
@@ -186,8 +188,14 @@ export interface SeriesBatchState {
   batchNo: number;
   first: number;
   last: number;
+  /** Episodes with a current version (a model stage or a person's script). */
   written: number;
   size: number;
+  /**
+   * A job of this batch completed: every model stage of the batch and its batch review ran. A person's scripts never
+   * stand in for them, so a batch whose job stopped stays the next batch until a job of it completes.
+   */
+  generated: boolean;
   versions: Array<SeriesCurrentVersion | null>;
   ledger: { status: SeriesLedgerStatus; revision: SeriesLedgerRevisionRecord | null };
   review: { status: SeriesReviewStatus; output: SeriesReviewOutput | null; runId: string | null };
@@ -200,8 +208,14 @@ export interface SeriesBatchState {
   /** What a person's review of this batch covers now (null until every episode and a ledger exist on a valid previous ledger). */
   decisionBasis: Record<string, string> | null;
   jobState: SeriesJobRecord["state"] | null;
+  /** Episodes of the batch's completed job written to the workbench, and those left because a script was already there. */
   placed: number;
   conflicts: number;
+}
+
+/** The latest completed job of batch b (its model stages and batch review all ran), else null. */
+function completedBatchJob(snapshot: SeriesSnapshot, batchNo: number): JobBundle | null {
+  return jobsInOrder(snapshot).filter((job) => job.run.kind === "batch" && job.run.batchNo === batchNo && job.run.state === "completed").at(-1) ?? null;
 }
 
 function latestReview(snapshot: SeriesSnapshot, batchNo: number): { output: SeriesReviewOutput; runId: string } | null {
@@ -261,31 +275,33 @@ export function seriesBatchStates(snapshot: SeriesSnapshot): SeriesBatchState[] 
     }
     const jobs = snapshot.jobs.filter((item) => item.run.kind === "batch" && item.run.batchNo === batchNo);
     const lastJob = jobs.sort((a, b) => a.run.seq - b.run.seq).at(-1) ?? null;
-    const episodeStages = snapshot.jobs.flatMap((job) => job.stages).filter((stage) => {
-      const number = seriesStageEpisodeNo(stage.stageKey);
-      return number !== null && number >= first && number <= last;
-    });
+    const completed = completedBatchJob(snapshot, batchNo);
+    const episodeStages = (completed?.stages ?? []).filter((stage) => seriesStageEpisodeNo(stage.stageKey) !== null);
     states.push({
-      batchNo, first, last, size: last - first + 1, written: versions.filter((item) => item !== null).length, versions,
+      batchNo, first, last, size: last - first + 1, written: versions.filter((item) => item !== null).length, generated: completed !== null, versions,
       ledger: { status: ledgerStatus, revision }, review: { status: reviewStatus, output: review?.output ?? null, runId: review?.runId ?? null },
       changedEpisodes: ledgerStatus === "pending_confirmation" ? changed : [],
       sourceStaleEpisodes: sourceStale, baseLedgerHash, decisionBasis,
       jobState: lastJob?.run.state ?? null,
       placed: episodeStages.filter((stage) => stage.scriptSave === "saved").length,
-      conflicts: [...new Set(episodeStages.filter((stage) => stage.scriptSave === "conflict").map((stage) => seriesStageEpisodeNo(stage.stageKey)!))].length,
+      conflicts: episodeStages.filter((stage) => stage.scriptSave === "conflict").length,
     });
   }
   return states;
 }
 
 function batchCleared(state: SeriesBatchState): boolean {
-  return state.written === state.size && (state.ledger.status === "valid" || state.ledger.status === "confirmed")
+  return state.generated && state.written === state.size && (state.ledger.status === "valid" || state.ledger.status === "confirmed")
     && (state.review.status === "passed" || state.review.status === "cleared");
 }
 
-/** The first batch whose episodes are not all written, else null. */
+/**
+ * The first batch whose job has not completed, else null. Current versions alone do not finish a batch: a person's
+ * script of an episode whose model stage never ran leaves that stage and the batch review to a grant of the same batch
+ * (which takes over the completed stages and never overwrites the script).
+ */
 export function seriesNextBatch(states: readonly SeriesBatchState[]): number | null {
-  return states.find((item) => item.written < item.size)?.batchNo ?? null;
+  return states.find((item) => !item.generated)?.batchNo ?? null;
 }
 
 /** Why batch b cannot be written now (empty: it can). */
@@ -297,7 +313,7 @@ export function seriesBatchBlockers(snapshot: SeriesSnapshot, batchNo: number, s
   if (planStatus === "unreviewed") blockers.push("plan_unreviewed");
   if (seriesStoryBinding(snapshot).status === "changed") blockers.push("story_changed");
   for (const state of states.filter((item) => item.batchNo < batchNo)) {
-    if (state.written < state.size) { blockers.push(`batch_incomplete:${String(state.batchNo)}`); continue; }
+    if (!state.generated || state.written < state.size) { blockers.push(`batch_incomplete:${String(state.batchNo)}`); continue; }
     if (state.sourceStaleEpisodes.length > 0) blockers.push(`episode_source_stale:${String(state.batchNo)}`);
     else if (state.ledger.status === "pending_confirmation") blockers.push(`ledger_pending_confirmation:${String(state.batchNo)}`);
     else if (state.ledger.status === "stale" || state.ledger.status === "none") blockers.push(`ledger_stale:${String(state.batchNo)}`);
@@ -328,13 +344,18 @@ export function seriesFinalState(snapshot: SeriesSnapshot, states = seriesBatchS
   return { status: stale ? "stale" : output.passed ? "passed" : "needs_revision", output, basis };
 }
 
-/** What the final review reads, by hash: the plan, its story, the last ledger and every episode version (null until all exist). */
+/** What the final review reads, by hash: the plan, its story, the last ledger and every episode's summary with its version (null until all exist). */
 export function seriesFinalBasis(snapshot: SeriesSnapshot, states = seriesBatchStates(snapshot)): Record<string, string> | null {
   const plan = seriesCurrentPlan(snapshot);
   const last = states.at(-1);
   if (!plan || !last?.ledger.revision || states.some((item) => item.written < item.size)) return null;
   const basis: Record<string, string> = { plan: plan.contentHash, story: seriesPlanStoryHash(plan), ledger: last.ledger.revision.contentHash };
-  for (const state of states) state.versions.forEach((version, index) => { basis[`summary:${String(state.first + index)}`] = version!.ref.hash; });
+  // Each summary the review reads, with the version it belongs to: a summary changed on the same version is a new basis.
+  for (const state of states) {
+    state.versions.forEach((version, index) => {
+      basis[`summary:${String(state.first + index)}`] = seriesSummaryBasisHash(version!.ref, seriesSummaryOf(snapshot, version!) ?? "");
+    });
+  }
   return basis;
 }
 
@@ -342,6 +363,39 @@ export function seriesFinalBlockers(snapshot: SeriesSnapshot, states = seriesBat
   const n = snapshot.series.input.episodeCount;
   const blockers = seriesBatchBlockers(snapshot, seriesBatchCount(n) + 1, states);
   return blockers;
+}
+
+/**
+ * What placing batch b may write now: each episode stage of the batch's completed job not handled yet (a person's script
+ * of that episode does not make the stage disappear: the store records it as a conflict), formatted with the plan
+ * revision the job was frozen on (never a newer setting). Only while the batch's dependencies are current: its ledger
+ * valid or confirmed on the current plan, its review read on the current versions, no source stale, the story the plan's.
+ */
+export function seriesPlacementCandidates(snapshot: SeriesSnapshot, batchNo: number, states = seriesBatchStates(snapshot)): SeriesPlacementCandidates {
+  const state = states[batchNo - 1];
+  const job = completedBatchJob(snapshot, batchNo);
+  if (!state || !job || state.written < state.size) return { kind: "blocked", reason: "batch_incomplete" };
+  if (seriesStoryBinding(snapshot).status === "changed") return { kind: "blocked", reason: "story_changed" };
+  if (state.sourceStaleEpisodes.length > 0) return { kind: "blocked", reason: "episode_source_stale" };
+  if (state.ledger.status === "pending_confirmation") return { kind: "blocked", reason: "ledger_pending_confirmation" };
+  if (state.ledger.status !== "valid" && state.ledger.status !== "confirmed") return { kind: "blocked", reason: "ledger_stale" };
+  if (state.review.status === "none") return { kind: "blocked", reason: "batch_review_missing" };
+  if (state.review.status === "stale") return { kind: "blocked", reason: "batch_review_stale" };
+  const plan = snapshot.plans.find((item) => item.id === job.run.input.planRevisionId);
+  if (!plan) return { kind: "blocked", reason: "plan_missing" };
+  const scripts = [...job.stages].sort((a, b) => a.ordinal - b.ordinal).flatMap((stage) => {
+    const episodeNo = seriesStageEpisodeNo(stage.stageKey);
+    return episodeNo !== null && stage.state === "completed" && stage.output !== null && stage.scriptSave === "pending"
+      ? [{ episodeNo, runId: job.run.id, stageKey: stage.stageKey, text: formatSeriesEpisode(stage.output as unknown as SeriesEpisode, plan.content.setting) }] : [];
+  });
+  return { kind: "ok", scripts };
+}
+
+/** The placement state the page shows: ready (something to write), nothing_to_place, or why it cannot be placed now. */
+export function seriesPlacementState(snapshot: SeriesSnapshot, batchNo: number, states = seriesBatchStates(snapshot)): string {
+  const candidates = seriesPlacementCandidates(snapshot, batchNo, states);
+  if (candidates.kind === "blocked") return candidates.reason;
+  return candidates.scripts.length > 0 ? "ready" : "nothing_to_place";
 }
 
 /**
@@ -450,7 +504,8 @@ export function buildSeriesJob(snapshot: SeriesSnapshot, grant: SeriesGrantRecor
     storyHash: kind === "plan" ? null : plan!.storyHash,
     reused: [...reusable.entries()].map(([stageKey, stage]) => ({ stageKey, fromRunId: stopped!.run.id, outputHash: stage.outputHash! })),
   };
-  const sends = stageKeys.length - reusable.size - (kind === "plan" ? 1 : 0);
+  // What this job will send: every stage but the local sources snapshot and the ones it takes over (sources may be one of them).
+  const sends = stageKeys.filter((key) => key !== "sources" && !reusable.has(key)).length;
   const remaining = grant.callBudget - grant.callsUsed;
   const run: SeriesJobRecord = {
     id: ids.jobId, seq: snapshot.jobs.reduce((last, job) => Math.max(last, job.run.seq), 0) + 1, seriesId: snapshot.series.id, grantId: grant.id, workspaceId: snapshot.series.workspaceId, projectId: snapshot.series.projectId,
@@ -551,7 +606,12 @@ export function seriesGrantRemainingSends(snapshot: SeriesSnapshot, grant: Serie
 
 /** Why a running job may no longer send: what it was frozen on is not the current state any more. */
 export function seriesJobUpstreamChange(snapshot: SeriesSnapshot, run: SeriesJobRecord): string | null {
-  if (run.kind === "plan") return null;
+  if (run.kind === "plan") {
+    // A plan saved since (by a later job or a person) or a later planning job supersedes this one: it never plans again,
+    // so it never sends a duplicate plan nor saves one that would unbind the current plan from its story.
+    const superseded = snapshot.plans.length > 0 || snapshot.jobs.some((job) => job.run.kind === "plan" && job.run.seq > run.seq);
+    return superseded ? "upstream_plan_superseded" : null;
+  }
   const plan = seriesCurrentPlan(snapshot);
   if (!plan || plan.id !== run.input.planRevisionId || plan.contentHash !== run.input.planHash) return "upstream_plan_changed";
   // The story the job was frozen on must still be the work's current story (never write on a replaced one).
@@ -608,8 +668,10 @@ export function seriesJobContext(snapshot: SeriesSnapshot, job: JobBundle): Seri
   context.final = {
     ledger: last.content,
     ledgerHash: last.contentHash,
-    summaries: states.flatMap((state) => state.versions.map((version) => ({
-      episodeNo: version!.ref.episodeNo, summary: seriesSummaryOf(snapshot, version!) ?? "", versionHash: version!.ref.hash }))),
+    summaries: states.flatMap((state) => state.versions.map((version) => {
+      const summary = seriesSummaryOf(snapshot, version!) ?? "";
+      return { episodeNo: version!.ref.episodeNo, summary, versionHash: version!.ref.hash, basisHash: seriesSummaryBasisHash(version!.ref, summary) };
+    })),
     batches: states.map((state) => ({
       batchNo: state.batchNo, status: state.review.status,
       reviewHash: state.review.output ? canonicalInputHash(state.review.output) : null,
@@ -846,7 +908,8 @@ export interface SeriesView {
     approvedIsCurrent: boolean };
   episodes: SeriesEpisodeView[];
   /** ledgerBasis: what a ledger confirmation opened now is bound to (the page freezes it with the editor); null when it cannot be confirmed. */
-  batches: Array<Omit<SeriesBatchState, "versions"> & { blockers: string[]; ledgerBasis: Record<string, string> | null }>;
+  /** placement: "ready" (a model stage to write), "nothing_to_place" (every one written or recorded as a conflict), or why not now. */
+  batches: Array<Omit<SeriesBatchState, "versions"> & { blockers: string[]; ledgerBasis: Record<string, string> | null; placement: string }>;
   ranges: { toWrite: string; toRevise: number[]; toConfirm: number[]; toReview: number[] };
   /** What keeps the series from being complete now (seriesAttention), in order. */
   attention: string[];
@@ -926,7 +989,8 @@ export function seriesView(snapshot: SeriesSnapshot): SeriesView {
       approvedIsCurrent: snapshot.project.approvedStoryCurrent },
     episodes,
     batches: states.map(({ versions: _versions, ...rest }) => ({ ...rest, blockers: rest.written < rest.size ? seriesBatchBlockers(snapshot, rest.batchNo, states) : [],
-      ledgerBasis: rest.written === rest.size ? seriesLedgerEditBasis(snapshot, rest.batchNo, states) : null })),
+      ledgerBasis: rest.written === rest.size ? seriesLedgerEditBasis(snapshot, rest.batchNo, states) : null,
+      placement: seriesPlacementState(snapshot, rest.batchNo, states) })),
     ranges: {
       toWrite: rangesLabel(episodes.filter((item) => item.state === "pending").map((item) => item.episodeNo)),
       toRevise: states.filter((item) => item.review.status === "needs_revision").map((item) => item.batchNo),

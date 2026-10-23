@@ -1075,6 +1075,15 @@ export type SeriesPlacement =
   | { kind: "story_changed" }
   | { kind: "plan_mismatch" };
 
+/**
+ * What a placement may write, read from the state under the store's lock: each episode stage of the batch's completed
+ * job not handled yet (written or recorded as a conflict), formatted with the plan revision that job was frozen on; or
+ * why nothing may be written now (the batch's plan, ledger or review dependencies are not current).
+ */
+export type SeriesPlacementCandidates =
+  | { kind: "ok"; scripts: Array<{ episodeNo: number; runId: string; stageKey: string; text: string }> }
+  | { kind: "blocked"; reason: string };
+
 /** How a person's plan revision is bound to the work's story: a new story DRAFT written from it, or the current story adopted. */
 export type SeriesPlanStory = { mode: "from_plan"; text: string } | { mode: "adopt_current" };
 
@@ -1140,10 +1149,11 @@ export interface SeriesWritingStore {
   saveDecision(workspaceId: string, projectId: string, decision: SeriesDecisionRecord, current: (snapshot: SeriesSnapshot) => Record<string, string> | null):
     Promise<"saved" | "conflict" | "not_ready" | "not_found" | "active">;
   /**
-   * Places a batch's current model versions into the work's episodes as DRAFT scripts, sourced from the plan's own story,
-   * which must be the work's approved and current story; an episode with a script is a conflict, never overwritten.
+   * Places a batch's model stages into the work's episodes as DRAFT scripts, sourced from the plan's own story, which
+   * must be the work's approved and current story. The candidates are computed from the state read under the lock (the
+   * dependencies checked again there); an episode that already has a script is recorded as a conflict, never overwritten.
    */
-  placeBatch(workspaceId: string, projectId: string, batchNo: number, scripts: ReadonlyArray<{ episodeNo: number; runId: string; stageKey: string; text: string }>,
+  placeBatch(workspaceId: string, projectId: string, batchNo: number, candidates: (snapshot: SeriesSnapshot) => SeriesPlacementCandidates,
     actorId: string, nowIso: string): Promise<SeriesPlacement>;
 }
 
