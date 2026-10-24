@@ -137,4 +137,15 @@ export {
   newAutoRun,
   type AutoCreationEngineDeps,
 } from "./auto-creation-engine";
+export {
+  SERIES_WRITING_LEASE_MS,
+  SeriesWritingEngine,
+  hashSeriesGrant,
+  hashSeriesInput,
+  hashSeriesResume,
+  newSeries,
+  newSeriesGrant,
+  type SeriesWritingEngineDeps,
+} from "./series-writing-engine";
+export { InMemorySeriesWritingStore, type MemorySeriesProject } from "./series-writing-memory-store";
 export { RESEARCH_FETCH_MAX_BYTES, RESEARCH_FETCH_TIMEOUT_MS, blockedAddress, createResearchFetcher, urlProblem, type ResearchFetchDeps } from "./research-fetch";

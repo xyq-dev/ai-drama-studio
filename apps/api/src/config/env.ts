@@ -33,6 +33,7 @@ const apiEnvSchema = z.object({
   SCRIPT_BREAKDOWN_ENABLED: z.enum(["true", "false"]).default("false"),
   AUTO_CREATION_ENABLED: z.enum(["true", "false"]).default("false"),
   AUTO_CREATION_RESEARCH_FETCH: z.enum(["true", "false"]).default("false"),
+  SERIES_WRITING_ENABLED: z.enum(["true", "false"]).default("false"),
   AUTO_CREATION_RESEARCH_HOSTS: z.string().max(500)
     .regex(/^[a-z0-9.-]+(,[a-z0-9.-]+)*$/u, "comma-separated lower-case host names").optional(),
 });
@@ -89,6 +90,8 @@ export interface ApiEnv {
   /** Whether runs read public pages of the allowed hosts for their research snapshot. Off by default. */
   AUTO_CREATION_RESEARCH_FETCH: boolean;
   AUTO_CREATION_RESEARCH_HOSTS?: string;
+  /** Series writing (1–60 episodes); also needs title writing to be on (same production gate, providers and operator). Off by default. */
+  SERIES_WRITING_ENABLED: boolean;
   /** Process environment only, never the .env file. Server-side secrets and model allowlists. */
   OPENAI_API_KEY?: string;
   TITLE_WRITING_OPENAI_MODELS?: string;
@@ -167,6 +170,7 @@ const API_KEYS = [
   "AUTO_CREATION_ENABLED",
   "AUTO_CREATION_RESEARCH_FETCH",
   "AUTO_CREATION_RESEARCH_HOSTS",
+  "SERIES_WRITING_ENABLED",
 ] as const;
 
 function pickEnv(
@@ -238,5 +242,6 @@ export function loadApiEnv(
     SCRIPT_BREAKDOWN_ENABLED: parsed.data.SCRIPT_BREAKDOWN_ENABLED === "true",
     AUTO_CREATION_ENABLED: parsed.data.AUTO_CREATION_ENABLED === "true",
     AUTO_CREATION_RESEARCH_FETCH: parsed.data.AUTO_CREATION_RESEARCH_FETCH === "true",
+    SERIES_WRITING_ENABLED: parsed.data.SERIES_WRITING_ENABLED === "true",
   };
 }

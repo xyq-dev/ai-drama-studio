@@ -33,6 +33,7 @@ import type { PoolClient, QueryResultRow } from "pg";
 import { PersistenceError, type DatabasePool, type JobPersistenceService } from "./job-service";
 import { guardSynchronousMockImageCost, recordProviderActualCost, type ProviderActualCostInput } from "./mock-media-cost";
 import { assertFrozenReferencesUsable, frozenCharacterReferences } from "./character-reference-store";
+import { projectEpisodePlanIn } from "./episode-plan";
 
 export interface CreateMediaAssetInput {
   workspaceId: string;
@@ -1466,6 +1467,11 @@ async function assertUsableShotWithClient(
   );
   if (!project.rows[0]) {
     throw new PersistenceError("NOT_FOUND", "Project not found");
+  }
+  // Series writing delivers text only: every media generation, its retry and its asset commit pass this gate, so a
+  // series work is refused here, before any job, attempt, asset or provider call (whatever its review chain).
+  if ((await projectEpisodePlanIn(client, workspaceId, projectId)).writingMode === "series") {
+    throw new PersistenceError("SERIES_MEDIA_NOT_ENABLED", "Media production is not enabled for series works");
   }
   // Read after acquiring the project lock. Pointer changes and stale propagation
   // use this same lock; a pre-lock subquery can observe an obsolete snapshot.

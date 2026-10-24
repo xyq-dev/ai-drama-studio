@@ -25,7 +25,7 @@ import type { DatabasePool } from "./job-service";
 import { projectEpisodePlanIn } from "./episode-plan";
 import { AUTO_CREATION_MIGRATION } from "./migrations";
 import type { TextChainService } from "./text-chain";
-import { recentWritingCalls, writingCallLockKey } from "./writing-candidate-store";
+import { recentWritingCalls, runningWritingRuns, writingCallLockKey } from "./writing-candidate-store";
 
 export { AUTO_CREATION_MIGRATION };
 
@@ -189,8 +189,7 @@ export class PostgresAutoCreationStore implements AutoCreationStore {
       const titleRunning = titles.rows[0]?.present === true
         ? (await client.query<Row>("SELECT id, project_id FROM title_writing_run WHERE workspace_id = $1 AND state = 'running'", [run.workspaceId])).rows
         : [];
-      const autoRunning = (await client.query<Row>("SELECT id, project_id FROM auto_creation_run WHERE workspace_id = $1 AND state = 'running'",
-        [run.workspaceId])).rows;
+      const autoRunning = (await runningWritingRuns(client, run.workspaceId)).map((item) => ({ id: item.id, project_id: item.projectId, kind: item.kind }));
       const sameAuto = autoRunning.find((row) => String(row.project_id) === run.projectId);
       if (sameAuto) return { kind: "active", runKind: "auto", runId: String(sameAuto.id) };
       const sameTitle = titleRunning.find((row) => String(row.project_id) === run.projectId);
@@ -438,8 +437,10 @@ export class PostgresAutoCreationStore implements AutoCreationStore {
       // Never alongside a title writing run on the same work (the start paths refuse the same overlap).
       if (titleProjects.includes(projectId)) return { kind: "active" };
       const titleRunning = titleProjects.length;
-      const autoRunning = Number((await client.query<Row>("SELECT count(*)::int AS n FROM auto_creation_run WHERE workspace_id = $1 AND state = 'running'",
-        [workspaceId])).rows[0]?.n ?? 0);
+      // Automatic creation runs and series jobs share the cap; a work a series job is writing takes no automatic run.
+      const others = await runningWritingRuns(client, workspaceId);
+      if (others.some((item) => item.kind === "series" && item.projectId === projectId)) return { kind: "active" };
+      const autoRunning = others.length;
       if (titleRunning + autoRunning >= request.maxActiveRuns) return { kind: "active_cap" };
       const stages = (await client.query<Row>(`SELECT ${STAGE_COLUMNS} FROM auto_creation_stage WHERE run_id = $1`, [runId])).rows.map(toStage);
       const calls = (await client.query<Row>("SELECT id, stage_key, attempt_no, state FROM auto_creation_call WHERE run_id = $1", [runId])).rows

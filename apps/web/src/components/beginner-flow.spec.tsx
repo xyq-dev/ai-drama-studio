@@ -42,6 +42,8 @@ interface World {
   scenes?: unknown[];
   /** The work's latest automatic creation run (GET /auto-runs/latest). */
   autoRun?: unknown;
+  /** More fields of the project record (writingMode, episodeCount). */
+  project?: Record<string, unknown>;
 }
 
 /** GET /providers/capabilities: a compose switch object, a failure status, or the default (both on). */
@@ -81,7 +83,7 @@ function install(worlds: Record<string, World>) {
         world.projectFailures -= 1;
         return json({ error: { code: "INTERNAL", message: "暂时失败" } }, 500);
       }
-      return json({ id, title: world.title, premise: "梗概", version: 3, status: "ACTIVE" });
+      return json({ id, title: world.title, premise: "梗概", version: 3, status: "ACTIVE", ...world.project });
     }
     if (path.endsWith("/auto-runs/latest")) return json({ run: world.autoRun ?? null });
     if (path.endsWith("/episodes")) return json({ items: world.episodes });
@@ -822,5 +824,73 @@ describe("a timed-out capability read settles once (PR #55 review r4214455406)",
     expect(screen.getByText(/功能状态检查超时，请重试/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "选一个镜头试做" })).toBeNull();
     expect(screen.queryByText(/没能读取服务端的合成功能状态/)).toBeNull();
+  });
+});
+
+describe("round 8, 1: a series work stays in the text workbench (story and episode scripts only)", () => {
+  /** Reads of media, cast or production facts: none may happen for a series work. */
+  const MEDIA = /\/(scenes|shots|compose-candidates|composites|media|references)(\/|\?|$)/u;
+  const seriesWorld = (episodes: ReturnType<typeof episode>[], count = episodes.length): World =>
+    ({ title: "系列作品", story: story("APPROVED"), episodes, project: { writingMode: "series", episodeCount: count } });
+
+  it.each([true, false])("media switched %s: only 定故事 and 看剧本, the text-only notice and the way back to the series page", async (on) => {
+    capabilities = { compose: { shot: on, episode: on } };
+    const calls = install({ [P1]: seriesWorld([episode(1, "DRAFT"), episode(2, null), episode(3, null)]) });
+    render(<BeginnerFlow projectId={P1} />);
+    expect(await screen.findByRole("heading", { name: "第 2 步 · 看剧本" })).toBeTruthy();
+    const steps = within(screen.getByRole("navigation", { name: "创作步骤" })).getAllByRole("button");
+    expect(steps.map((item) => item.getAttribute("aria-label"))).toEqual([expect.stringMatching(/^第 1 步 定故事/u), expect.stringMatching(/^第 2 步 看剧本/u)]);
+    expect(screen.getByTestId("series-text-only").textContent).toContain("系列模式当前仅支持文本编剧");
+    expect(screen.getByTestId("series-text-only").textContent).toContain("媒体生产尚未开放");
+    expect(within(screen.getByTestId("series-text-only")).getByRole("link", { name: "返回系列编剧" }).getAttribute("href")).toBe(`/projects/${P1}/series`);
+    expect(screen.queryByRole("button", { name: /试一段|出成片|定人物/u })).toBeNull();
+    await waitFor(() => expect(calls.some((call) => call.includes("/scripts"))).toBe(true));
+    expect(calls.filter((call) => MEDIA.test(call))).toEqual([]);
+  });
+
+  it.each(["cast", "sample", "final"])("an old ?step=%s link opens a text step; no media panel mounts and nothing is generated", async (old) => {
+    window.history.replaceState(null, "", `/projects/${P1}/create?step=${old}`);
+    const calls = install({ [P1]: seriesWorld([episode(1, "APPROVED"), episode(2, "DRAFT"), episode(3, null)]) });
+    render(<BeginnerFlow projectId={P1} />);
+    expect(await screen.findByRole("heading", { name: "第 2 步 · 看剧本" })).toBeTruthy();
+    expect(window.location.search).toBe("?step=script");
+    expect(document.querySelector("[data-beginner-picker], [aria-label='多镜编排'], [aria-label='费用'], [data-cast-choices]")).toBeNull();
+    expect(screen.queryByText(/样片说明|单镜成片|集级合成/u)).toBeNull();
+    await new Promise((done) => setTimeout(done, 30));
+    expect(calls.filter((call) => MEDIA.test(call) || !call.startsWith("GET "))).toEqual([]);
+  });
+
+  it("every script approved: the step's action leads back to the series page, never into a media step", async () => {
+    install({ [P1]: seriesWorld([episode(1, "APPROVED"), episode(2, "APPROVED"), episode(3, "APPROVED")]) });
+    render(<BeginnerFlow projectId={P1} />);
+    expect(await screen.findByRole("heading", { name: "第 2 步 · 看剧本" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "继续下一步" })).toBeNull();
+    expect(screen.getByRole("link", { name: "返回系列编剧页" }).getAttribute("href")).toBe(`/projects/${P1}/series`);
+  });
+
+  it("all 60 episodes keep their own edit, review and source state; the scene and breakdown panels are not mounted", async () => {
+    const episodes = Array.from({ length: 60 }, (_, index) => episode(index + 1, index === 0 ? "APPROVED" : index === 1 ? "DRAFT" : index === 2 ? "REJECTED" : null));
+    episodes[3] = { ...episode(4, "DRAFT"), currentScriptFreshnessStatus: "STALE" };
+    const calls = install({ [P1]: seriesWorld(episodes, 60) });
+    render(<BeginnerFlow projectId={P1} />);
+    expect(await screen.findByRole("heading", { name: "第 2 步 · 看剧本" })).toBeTruthy();
+    const tabs = within(screen.getByRole("tablist", { name: "选择剧集" })).getAllByRole("tab");
+    expect(tabs).toHaveLength(60);
+    expect(tabs[0]!.textContent).toContain("已完成");
+    expect(tabs[1]!.textContent).toContain("待确认");
+    expect(tabs[59]!.textContent).toContain("第 60 集");
+    fireEvent.click(tabs[3]!);
+    await waitFor(() => expect(calls.some((call) => call.includes("/episodes/episode-4/scripts"))).toBe(true));
+    expect(tabs[3]!.textContent).toMatch(/来源已更新|需要处理/u);
+    expect(calls.filter((call) => MEDIA.test(call))).toEqual([]);
+  });
+
+  it("a short drama keeps its five steps, its media steps and their deep links", async () => {
+    window.history.replaceState(null, "", `/projects/${P1}/create?step=sample`);
+    install({ [P1]: { title: "短剧", story: story("APPROVED"), episodes: [episode(1, "APPROVED")], project: { writingMode: "short", episodeCount: 1 } } });
+    render(<BeginnerFlow projectId={P1} />);
+    expect(await screen.findByRole("heading", { name: "第 4 步 · 试一段" })).toBeTruthy();
+    expect(within(screen.getByRole("navigation", { name: "创作步骤" })).getAllByRole("button")).toHaveLength(5);
+    expect(screen.queryByTestId("series-text-only")).toBeNull();
   });
 });

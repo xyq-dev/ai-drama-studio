@@ -34,6 +34,7 @@ import {
   closePostgresPool,
   createPostgresPool,
   runMigrations,
+  SERIES_WRITING_MIGRATION,
   verifyTitleWritingAcceptanceDatabase,
 } from "@ai-drama/database";
 import { AutoCreationEngine, hashAutoCreationInput, titleWritingProviderConfigs } from "@ai-drama/providers";
@@ -152,9 +153,9 @@ describe(`automatic creation on PostgreSQL (${scenario} schema)`, () => {
     const only = { name: AUTO_CREATION_MIGRATION, requires: GUARDED_SINGLE_MIGRATIONS[AUTO_CREATION_MIGRATION]! };
     const applied = await runMigrations(pool, undefined, { only });
     expect(applied.applied).toEqual([AUTO_CREATION_MIGRATION]);
-    const expectedPending = scenario === "testsite" ? [SCRIPT_BREAKDOWN_MIGRATION]
-      : scenario === "base" ? [SCRIPT_BREAKDOWN_MIGRATION, WRITING_PROVIDER_MIGRATION, WRITING_CANDIDATE_MIGRATION, WRITING_CANDIDATE_DEEPSEEK_MIGRATION]
-        : [WRITING_PROVIDER_MIGRATION, WRITING_CANDIDATE_MIGRATION, WRITING_CANDIDATE_DEEPSEEK_MIGRATION];
+    const expectedPending = scenario === "testsite" ? [SCRIPT_BREAKDOWN_MIGRATION, SERIES_WRITING_MIGRATION]
+      : scenario === "base" ? [SCRIPT_BREAKDOWN_MIGRATION, WRITING_PROVIDER_MIGRATION, WRITING_CANDIDATE_MIGRATION, WRITING_CANDIDATE_DEEPSEEK_MIGRATION, SERIES_WRITING_MIGRATION]
+        : [WRITING_PROVIDER_MIGRATION, WRITING_CANDIDATE_MIGRATION, WRITING_CANDIDATE_DEEPSEEK_MIGRATION, SERIES_WRITING_MIGRATION];
     expect(applied.leftPending).toEqual(expectedPending);
     expect(await runMigrations(pool, undefined, { only })).toEqual({ applied: [], alreadyApplied: [AUTO_CREATION_MIGRATION], leftPending: expectedPending });
     expect((await ledger()).includes(SCRIPT_BREAKDOWN_MIGRATION)).toBe(scenario === "breakdown");

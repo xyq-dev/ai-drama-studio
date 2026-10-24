@@ -26,6 +26,8 @@ function script(mode: "ok" | "missing-shot" | "review" | "stale" | "missing-asse
       if (text.startsWith("SELECT project_id FROM shot_revision")) {
         return { rows: mode === "missing-shot" ? [] : [{ project_id: projectId }] };
       }
+      // The media gate reads the work's writing mode: no plan columns here, so it is a short-drama work.
+      if (text.includes("information_schema.columns")) return { rows: [] };
       if (text.includes("FROM project WHERE")) return { rows: [{ id: projectId }] };
       if (text.includes("FROM stale_recalculation")) return { rows: mode === "stale" ? [{ "?column?": 1 }] : [] };
       if (text.includes("AS ok, revision.source_scene_revision_id")) {

@@ -10,6 +10,7 @@ import {
 } from "@ai-drama/domain";
 import { PersistenceError, type DatabasePool, type JobPersistenceService } from "./job-service";
 import { guardSynchronousMockReferenceCost, recordProviderActualCost, type ProviderActualCostInput } from "./mock-media-cost";
+import { projectEpisodePlanIn } from "./episode-plan";
 
 /**
  * Character reference images. The asset columns `reference_role` / `source_character_revision_id`, the relaxed
@@ -240,7 +241,7 @@ export class CharacterReferenceStore {
   }
 
   /**
-   * Generation gate: the revision is its character's current revision, CURRENT, every script source it consumed is
+   * Generation gate: the work is not a series work, the revision is its character's current revision, CURRENT, every script source it consumed is
    * approved and usable, no stale recalculation is pending, and the Mock image configuration is enabled. The
    * character itself need not be approved.
    */
@@ -258,6 +259,11 @@ export class CharacterReferenceStore {
     if (!row) throw new PersistenceError("NOT_FOUND", "Character revision not found");
     const projectId = String(row.project_id);
     await client.query("SELECT id FROM project WHERE id = $1 AND workspace_id = $2 FOR UPDATE", [projectId, workspaceId]);
+    // Series writing delivers text only: a series work is refused here, before its job, attempt, asset or call is written;
+    // the completion passes this gate again. Without the series migration every work reads as short.
+    if ((await projectEpisodePlanIn(client, workspaceId, projectId)).writingMode === "series") {
+      throw new PersistenceError("SERIES_MEDIA_NOT_ENABLED", "Media production is not enabled for series works");
+    }
     const pending = await client.query(
       `SELECT 1 FROM stale_recalculation
         WHERE workspace_id = $1 AND project_id = $2 AND status IN ('PENDING', 'RUNNING') LIMIT 1`,

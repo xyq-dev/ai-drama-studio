@@ -43,7 +43,7 @@ import { projectEpisodePlanIn } from "./episode-plan";
 import { WRITING_PROVIDER_MIGRATION } from "./migrations";
 import { PersistenceError, type DatabasePool } from "./job-service";
 import type { TextChainService } from "./text-chain";
-import { recentWritingCalls, writingCallLockKey } from "./writing-candidate-store";
+import { recentWritingCalls, writingCallLockKey, runningWritingRuns } from "./writing-candidate-store";
 
 /**
  * The migration that creates the title writing tables (prisma/migrations/20261008000100_title_writing). It replaced the
@@ -273,11 +273,9 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
       );
       const sameProject = active.rows.find((row) => String(row.project_id) === run.projectId);
       if (sameProject) return { kind: "active", bundle: (await this.load(client, sameProject))! };
-      // Running automatic creation runs share the concurrency cap, and a work one of them is writing takes no other run.
-      const autoTable = await client.query<Row>("SELECT to_regclass('auto_creation_run') IS NOT NULL AS present");
-      const autoRunning = autoTable.rows[0]?.present === true
-        ? (await client.query<Row>("SELECT project_id FROM auto_creation_run WHERE workspace_id = $1 AND state = 'running'", [run.workspaceId])).rows
-        : [];
+      // Running automatic creation runs and series jobs share the concurrency cap, and a work one of them is writing takes
+      // no other run.
+      const autoRunning = (await runningWritingRuns(client, run.workspaceId)).map((item) => ({ project_id: item.projectId }));
       if (autoRunning.some((row) => String(row.project_id) === run.projectId)
         || active.rows.length + autoRunning.length >= limits.maxActiveRuns) return { kind: "blocked", code: "TITLE_WRITING_ACTIVE_RUN_CAP" };
       if (limits.quota) {
@@ -550,11 +548,8 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
       const running = await client.query<Row>(
         "SELECT project_id FROM title_writing_run WHERE workspace_id = $1 AND state = 'running'", [workspaceId]);
       if (running.rows.some((item) => String(item.project_id) === projectId)) return { kind: "active" };
-      // Running automatic creation runs share the cap, and a work one of them is writing takes no other run.
-      const autoTable = await client.query<Row>("SELECT to_regclass('auto_creation_run') IS NOT NULL AS present");
-      const autoRunning = autoTable.rows[0]?.present === true
-        ? (await client.query<Row>("SELECT project_id FROM auto_creation_run WHERE workspace_id = $1 AND state = 'running'", [workspaceId])).rows
-        : [];
+      // Running automatic creation runs and series jobs share the cap, and a work one of them is writing takes no other run.
+      const autoRunning = (await runningWritingRuns(client, workspaceId)).map((item) => ({ project_id: item.projectId }));
       if (autoRunning.some((item) => String(item.project_id) === projectId)) return { kind: "active" };
       if (running.rows.length + autoRunning.length >= request.maxActiveRuns) return { kind: "active_cap" };
       const steps = (await client.query<Row>(`SELECT ${STEP_COLUMNS} FROM title_writing_step WHERE run_id = $1`, [runId])).rows.map(toStep);

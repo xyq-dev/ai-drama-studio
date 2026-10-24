@@ -85,6 +85,7 @@ const MESSAGES: Record<string, string> = {
   TITLE_WRITING_NOT_RESUMABLE: "这次创作没有需要续跑的步骤。",
   TITLE_WRITING_STORY_NOT_APPROVED: "故事还没有通过审核，剧本暂不能写入分集。",
   TITLE_WRITING_PLAN_MISMATCH: "作品的集数设置和这次创作不一致，没有发出任何调用，也没有写入剧本。",
+  TITLE_WRITING_SERIES_PROJECT: "这是系列编剧作品，请在系列编剧页面继续；AI 一键创作只用于 1–6 集的短剧作品，没有发出任何调用。",
   TITLE_WRITING_EPISODE_PLAN_UNAVAILABLE: "集数设置的数据库迁移还没有执行，没有启动任何调用。",
   TITLE_WRITING_DAILY_QUOTA_LOW: "最近 24 小时剩余的调用次数不够完成这次创作，没有创建任务，也没有发出任何调用。",
   TITLE_WRITING_STORY_CHANGED: "审核通过的故事和生成剧本时用的故事不同，请确认后再写入。",
@@ -299,6 +300,8 @@ export class TitleWritingService {
   private async frozenSettings(projectId: string, sent: TitleWritingStart["settings"]):
     Promise<{ version: 1 | 2; settings: TitleWritingSettings } | { refusal: TitleWritingResult }> {
     const plan = await this.deps.projects.getProjectEpisodePlan(this.deps.workspaceId, projectId);
+    // A series work is written by series writing only: title writing keeps its 1–6 episode contract.
+    if (plan.writingMode === "series") return { refusal: failure(409, "TITLE_WRITING_SERIES_PROJECT") };
     if (plan.targetEpisodeSeconds === null) {
       const v1 = titleWritingSettingsSchema.safeParse(sent ?? {});
       if (!v1.success) return { refusal: failure(400, "VALIDATION_ERROR", { field: `settings.${v1.error.issues[0]?.path.join(".") ?? ""}` }) };
