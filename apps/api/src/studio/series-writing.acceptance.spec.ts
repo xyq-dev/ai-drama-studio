@@ -12,8 +12,8 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { autoCreationNormalCalls, seriesBatchCount, seriesNormalCalls, seriesScopeCalls, type SeriesScope } from "@ai-drama/contracts";
-import { seriesFinalBasis, type SeriesView } from "@ai-drama/domain";
+import { autoCreationNormalCalls, seriesBatchCount, seriesNormalCalls, seriesScopeCalls, type SeriesScope, type SeriesSnapshot } from "@ai-drama/contracts";
+import { buildSeriesJob, seriesFinalBasis, type SeriesView } from "@ai-drama/domain";
 import {
   AUTO_CREATION_MIGRATION,
   BASE_MIGRATIONS,
@@ -1394,5 +1394,259 @@ describe(`round 6 on PostgreSQL (${scenario} schema)`, () => {
     const after = await counts(view.seriesId);
     expect(after).toMatchObject({ job: 1, grant: 1, jobState: "needs_attention" });
     expect(after.jobError).toMatch(/^upstream_/u);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Round 7 (review of ffd3e29) on PostgreSQL: a grant writes only on its own plan revision; the check is read under the
+// store's locks, and a resume and a plan save are serialized on the series row (no deadlock, either order).
+
+describe(`round 7 on PostgreSQL (${scenario} schema)`, () => {
+  const PLAN_ONLY: SeriesScope = { plan: true, batchFrom: null, batchTo: null, final: false };
+  const BATCHES: SeriesScope = { plan: false, batchFrom: 1, batchTo: 2, final: false };
+  const WITH_PLAN: SeriesScope = { plan: true, batchFrom: 1, batchTo: 2, final: false };
+  const SERIES_LOCK = "SELECT % FROM series_writing_series WHERE workspace_id = $1 AND project_id = $2 FOR UPDATE%";
+  const page = async (svc: SeriesWritingService, projectId: string) => viewOf((await svc.get(projectId)).body);
+  const daily = async () => {
+    const client = await pool.connect();
+    try {
+      return await recentWritingCalls(client, workspaceId, new Date(Date.now() - 86_400_000).toISOString());
+    } finally {
+      client.release();
+    }
+  };
+  /** Every row a refused resume must leave untouched. */
+  const rows = async (seriesId: string) => ({
+    runs: await q("SELECT id, grant_id, job_kind, batch_no, state, error_code, calls_used, input_hash FROM series_writing_run WHERE series_id = $1 ORDER BY job_seq", [seriesId]),
+    grants: await q("SELECT id, state, stop_reason, calls_used, input_json FROM series_writing_grant WHERE series_id = $1 ORDER BY created_at", [seriesId]),
+    calls: await count("SELECT count(*)::int AS n FROM series_writing_call WHERE series_id = $1", [seriesId]),
+    resumes: await count("SELECT count(*)::int AS n FROM series_writing_resume r JOIN series_writing_grant g ON g.id = r.grant_id WHERE g.series_id = $1", [seriesId]),
+    plans: await q("SELECT id, content_hash FROM series_writing_plan_revision WHERE series_id = $1 ORDER BY revision_no", [seriesId]),
+    ledgers: await q("SELECT id, content_hash FROM series_writing_ledger_revision WHERE series_id = $1 ORDER BY batch_no, revision_no", [seriesId]),
+    decisions: await count("SELECT count(*)::int AS n FROM series_writing_decision WHERE series_id = $1", [seriesId]),
+  });
+
+  async function stoppedAfterBatch1(kind: "on a plan" | "with its own plan") {
+    plan = { blockingBatchReviews: [1] };
+    const own = service();
+    const view = await createSeries(own.svc, 9);
+    if (kind === "on a plan") {
+      expect((await grant(own.svc, view, PLAN_ONLY)).status).toBe(201);
+      await own.settle();
+    }
+    expect((await grant(own.svc, await page(own.svc, view.projectId), kind === "on a plan" ? BATCHES : WITH_PLAN)).status).toBe(201);
+    await own.settle();
+    plan = {};
+    const current = await page(own.svc, view.projectId);
+    const old = current.grants.at(-1)!;
+    expect(old).toMatchObject({ state: "stopped", stopReason: "batch_review_blocking" });
+    return { ...own, view, old, planBefore: current.plan!.revisionId };
+  }
+
+  async function savePlan(svc: SeriesWritingService, projectId: string, logline?: string) {
+    const current = await page(svc, projectId);
+    const content = structuredClone(current.plan!.content);
+    if (logline) content.setting.logline = logline;
+    return svc.savePlan(projectId, { basePlanRevisionId: current.plan!.revisionId, baseStoryRevisionId: current.story.current?.revisionId ?? null,
+      story: logline ? "from_plan" : "adopt_current", content }, ctx(randomUUID()));
+  }
+
+  /** Plan review, ledger confirmation and batch 1 review as far as each is needed: every current blocker clears. */
+  async function reconfirm(svc: SeriesWritingService, projectId: string) {
+    let current = await page(svc, projectId);
+    if (current.plan!.status !== "passed" && current.plan!.status !== "cleared") {
+      expect((await svc.decide(projectId, { target: "plan", note: "人工复核", expectedBasis: current.plan!.decisionBasis }, ctx(randomUUID()))).status).toBe(201);
+    }
+    current = await page(svc, projectId);
+    const batch = current.batches[0]!;
+    if (batch.ledger.status !== "valid" && batch.ledger.status !== "confirmed") {
+      expect((await svc.saveLedger(projectId, { batchNo: 1, baseLedgerRevisionId: batch.ledger.revision!.id, content: batch.ledger.revision!.content,
+        summaries: current.episodes.slice(0, 3).map((item) => ({ episodeNo: item.episodeNo, summary: "人工确认的概要" })), expectedBasis: batch.ledgerBasis! }, ctx(randomUUID()))).status).toBe(201);
+    }
+    current = await page(svc, projectId);
+    if (current.batches[0]!.review.status !== "passed" && current.batches[0]!.review.status !== "cleared") {
+      expect((await svc.decide(projectId, { target: "batch:1", note: "人工复核", expectedBasis: current.batches[0]!.decisionBasis }, ctx(randomUUID()))).status).toBe(201);
+    }
+    current = await page(svc, projectId);
+    expect(current.next).toEqual({ batchNo: 2, blockers: [] });
+    return current;
+  }
+
+  async function expectRefusedResume(svc: SeriesWritingService, settle: () => Promise<void>, view: SeriesView, grantId: string) {
+    const before = await rows(view.seriesId);
+    const dailyBefore = await daily();
+    const sent = seen.length;
+    const resumed = await svc.resume(view.projectId, grantId, {}, TOKEN, ctx(randomUUID()));
+    await settle();
+    expect(resumed.status).toBe(409);
+    expect(resumed.body).toMatchObject({ error: { code: "SERIES_UPSTREAM_CHANGED", details: { reason: "upstream_plan_changed" } } });
+    expect(seen.length).toBe(sent);
+    expect(await daily()).toBe(dailyBefore);
+    expect(await rows(view.seriesId)).toEqual(before);
+  }
+
+  it.each(["on a plan", "with its own plan"] as const)("A/B. a grant %s stopped after batch 1; a new plan saved and every blocker cleared: its resume is refused; a new grant goes on", async (kind) => {
+    const { svc, settle, view, old, planBefore } = await stoppedAfterBatch1(kind);
+    expect((await savePlan(svc, view.projectId, "人工改写后的一句话故事")).status).toBe(201);
+    const current = await reconfirm(svc, view.projectId);
+    expect(current.plan!.revisionId).not.toBe(planBefore);
+    await expectRefusedResume(svc, settle, view, old.grantId);
+    const sent = seen.length;
+    expect((await grant(svc, current, { plan: false, batchFrom: 2, batchTo: 2, final: false })).status).toBe(201);
+    await settle();
+    expect(seen.slice(sent).map((item) => item.stage)).toEqual(["episode:4", "episode:5", "episode:6", "batch_review:2"]);
+    expect(await q("SELECT input_json->>'planRevisionId' AS plan FROM series_writing_run WHERE series_id = $1 AND job_kind = 'batch' AND batch_no = 2", [view.seriesId]))
+      .toEqual([{ plan: current.plan!.revisionId }]);
+  });
+
+  it("E. the same plan text saved as a new revision: the old grant is still refused", async () => {
+    const { svc, settle, view, old, planBefore } = await stoppedAfterBatch1("on a plan");
+    const hash = (await page(svc, view.projectId)).plan!.contentHash;
+    expect((await savePlan(svc, view.projectId)).status).toBe(201);
+    const current = await reconfirm(svc, view.projectId);
+    expect(current.plan).toMatchObject({ contentHash: hash });
+    expect(current.plan!.revisionId).not.toBe(planBefore);
+    await expectRefusedResume(svc, settle, view, old.grantId);
+  });
+
+  it.each(["on a plan", "with its own plan"] as const)("D. a grant %s with the plan unchanged resumes into batch 2 on its own plan", async (kind) => {
+    const { svc, settle, view, old, planBefore } = await stoppedAfterBatch1(kind);
+    await reconfirm(svc, view.projectId);
+    const sent = seen.length;
+    expect((await svc.resume(view.projectId, old.grantId, {}, TOKEN, ctx(randomUUID()))).status).toBe(200);
+    await settle();
+    expect(seen.slice(sent).map((item) => item.stage)).toEqual(["episode:4", "episode:5", "episode:6", "batch_review:2"]);
+    expect(await q("SELECT input_json->>'planRevisionId' AS plan FROM series_writing_run WHERE grant_id = $1 AND job_kind = 'batch' ORDER BY job_seq", [old.grantId]))
+      .toEqual([{ plan: planBefore }, { plan: planBefore }]);
+  });
+
+  it("C. synthetic: the hand-over's decision, read under the store's lock, shows a newer plan revision: no batch 2 job, no send, the grant stops", async () => {
+    plan = {};
+    const own = new PostgresSeriesWritingStore(pool, textChain);
+    const target = own as unknown as { completeJob: (...args: unknown[]) => Promise<unknown> };
+    const original = target.completeJob.bind(own);
+    let swapped: string | null = null;
+    target.completeJob = async (...args: unknown[]) => {
+      const next = args[7] as (snapshot: SeriesSnapshot) => unknown;
+      args[7] = (snapshot: SeriesSnapshot) => {
+        const current = [...snapshot.plans].sort((a, b) => b.revisionNo - a.revisionNo)[0];
+        if (!current || !snapshot.jobs.some((job) => job.run.kind === "batch" && job.run.batchNo === 1 && job.run.state === "completed")) return next(snapshot);
+        swapped = randomUUID();
+        const copy = structuredClone(snapshot);
+        copy.plans.push({ ...structuredClone(current), id: swapped, revisionNo: current.revisionNo + 1, origin: "manual", sourceRunId: null, parentRevisionId: current.id });
+        for (const item of copy.ledgers) if (item.basis.planRevisionId === current.id) item.basis.planRevisionId = swapped;
+        return next(copy);
+      };
+      return original(...args);
+    };
+    const { svc, settle } = service({ store: own });
+    const view = await createSeries(svc, 9);
+    const sent = seen.length;
+    expect((await grant(svc, view, WITH_PLAN)).status).toBe(201);
+    await settle();
+    expect(swapped).not.toBeNull();
+    expect(seen.slice(sent).map((item) => item.stage).filter((stage) => /^(episode:[4-9]|batch_review:2)$/u.test(stage))).toEqual([]);
+    expect(await count("SELECT count(*)::int AS n FROM series_writing_run WHERE series_id = $1 AND job_kind = 'batch' AND batch_no = 2", [view.seriesId])).toBe(0);
+    expect((await q("SELECT state, stop_reason FROM series_writing_grant WHERE series_id = $1", [view.seriesId]))).toEqual([{ state: "stopped", stop_reason: "upstream_plan_changed" }]);
+  });
+
+  it("F1. a batch 2 job of the old grant frozen on the new plan (as an older server admitted it) sends nothing; the locked reservation refuses it", async () => {
+    const { svc, view, old } = await stoppedAfterBatch1("on a plan");
+    expect((await savePlan(svc, view.projectId, "人工改写后的一句话故事")).status).toBe(201);
+    const current = await reconfirm(svc, view.projectId);
+    const nowIso = new Date().toISOString();
+    // Synthetic: an admission that skipped the grant's plan check (the state before this fix).
+    const prepared = await store.prepareResume(workspaceId, view.projectId, old.grantId, { resumeKey: randomUUID(), requestHash: `${randomUUID()}${randomUUID()}`.replace(/-/gu, ""), confirmedCallIds: [], providerReady: true,
+      limits: { sinceIso: new Date(Date.now() - 86_400_000).toISOString(), maxCallsPerDay: 1_000, maxActiveRuns: 5 } }, nowIso,
+    (state) => ({ kind: "job", job: buildSeriesJob(state, state.grants.find((item) => item.id === old.grantId)!, "batch", 2, { jobId: randomUUID(), nowIso }), requiredCalls: 0 }));
+    expect(prepared).toMatchObject({ kind: "ok" });
+    const jobId = (prepared as { jobId: string }).jobId;
+    expect((await store.getJob(workspaceId, jobId))!.run.input.planRevisionId).toBe(current.plan!.revisionId);
+    const calls = await count("SELECT count(*)::int AS n FROM series_writing_call WHERE series_id = $1", [view.seriesId]);
+    const dailyBefore = await daily();
+    const sent = seen.length;
+    await service().engine.drive(jobId);
+    expect(seen.length).toBe(sent);
+    expect(await count("SELECT count(*)::int AS n FROM series_writing_call WHERE series_id = $1", [view.seriesId])).toBe(calls);
+    expect(await daily()).toBe(dailyBefore);
+    expect((await q("SELECT state, error_code, calls_used FROM series_writing_run WHERE id = $1", [jobId]))).toEqual([{ state: "needs_attention", error_code: "upstream_plan_changed", calls_used: 0 }]);
+    // Running again (the race the locked steps close): the reservation reads the grant's plan under the lock and reserves nothing.
+    await q("UPDATE series_writing_run SET state = 'running', error_code = NULL, executor_id = NULL, lease_until = NULL WHERE id = $1", [jobId]);
+    const lease = new Date(Date.now() + 240_000).toISOString();
+    expect(await store.claimJob(workspaceId, jobId, "late-executor", nowIso, lease)).toBe(true);
+    const template = (await store.snapshot(workspaceId, view.projectId))!.jobs.flatMap((job) => job.calls).at(-1)!;
+    expect(await store.reserveCall({ ...template, id: randomUUID(), runId: jobId, grantId: old.grantId, stageKey: "episode:4", attemptNo: 1, state: "reserved",
+      executorId: "late-executor", createdAt: nowIso, finishedAt: null }, { sinceIso: new Date(Date.now() - 86_400_000).toISOString(), maxCallsPerDay: 1_000 }, nowIso, lease))
+      .toEqual({ kind: "upstream", code: "upstream_plan_changed" });
+    expect(await count("SELECT count(*)::int AS n FROM series_writing_call WHERE series_id = $1", [view.seriesId])).toBe(calls);
+  });
+
+  it("F2. synthetic: the grant's plan stops matching after the reservation, before the send: kept as never sent, given back once in all three counts", async () => {
+    plan = {};
+    const { svc, settle } = service();
+    const view = await createSeries(svc, 9);
+    expect((await grant(svc, view, PLAN_ONLY)).status).toBe(201);
+    await settle();
+    const own = new PostgresSeriesWritingStore(pool, textChain);
+    const target = own as unknown as { markCallSubmitted: (...args: unknown[]) => Promise<unknown> };
+    const original = target.markCallSubmitted.bind(own);
+    let armed = true;
+    target.markCallSubmitted = async (...args: unknown[]) => {
+      if (armed) {
+        armed = false;
+        await q(`UPDATE series_writing_grant SET input_json = jsonb_set(input_json, '{basePlanRevisionId}', to_jsonb($2::text)) WHERE series_id = $1 AND state = 'running'`,
+          [view.seriesId, randomUUID()]);
+      }
+      return original(...args);
+    };
+    const run = service({ store: own });
+    const dailyBefore = await daily();
+    const sent = seen.length;
+    expect((await grant(run.svc, await page(run.svc, view.projectId), BATCHES)).status).toBe(201);
+    await run.settle();
+    expect(seen.length).toBe(sent);
+    const batchCalls = () => q("SELECT c.stage_key, c.state, c.error_code, c.provider_request_id FROM series_writing_call c JOIN series_writing_run r ON r.id = c.run_id WHERE r.series_id = $1 AND r.job_kind = 'batch'", [view.seriesId]);
+    expect(await batchCalls()).toEqual([{ stage_key: "episode:1", state: "rejected", error_code: "upstream_changed_before_send", provider_request_id: null }]);
+    const counts = async () => ({
+      job: (await q<{ calls_used: number; state: string; error_code: string }>("SELECT calls_used, state, error_code FROM series_writing_run WHERE series_id = $1 AND job_kind = 'batch'", [view.seriesId]))[0],
+      grant: (await q<{ calls_used: number; stop_reason: string }>("SELECT calls_used, stop_reason FROM series_writing_grant WHERE series_id = $1 ORDER BY created_at DESC LIMIT 1", [view.seriesId]))[0],
+      daily: await daily(),
+    });
+    expect(await counts()).toEqual({ job: { calls_used: 0, state: "needs_attention", error_code: "upstream_plan_changed" }, grant: { calls_used: 0, stop_reason: "upstream_plan_changed" }, daily: dailyBefore });
+    await store.recoverExpired(workspaceId, new Date(Date.now() + 3_600_000).toISOString());
+    expect(await counts()).toEqual({ job: { calls_used: 0, state: "needs_attention", error_code: "upstream_plan_changed" }, grant: { calls_used: 0, stop_reason: "upstream_plan_changed" }, daily: dailyBefore });
+    expect(await batchCalls()).toHaveLength(1);
+    expect(seen.length).toBe(sent);
+  });
+
+  it.each(["plan save first", "resume first"] as const)("a resume and a plan save are serialized on the series row (%s, held at a barrier): no deadlock, no send on the new plan", async (order) => {
+    const { svc, settle, view, old } = await stoppedAfterBatch1("on a plan");
+    await reconfirm(svc, view.projectId);
+    const paused = pausedPool(order === "plan save first" ? /INSERT INTO series_writing_plan_revision/ : /INSERT INTO series_writing_resume/);
+    const held = service({ store: new PostgresSeriesWritingStore(paused.pool as never, textChain) });
+    const sent = seen.length;
+    const first = order === "plan save first" ? savePlan(held.svc, view.projectId, "并发保存的新规划") : held.svc.resume(view.projectId, old.grantId, {}, TOKEN, ctx(randomUUID()));
+    await paused.reached;
+    const second = order === "plan save first" ? svc.resume(view.projectId, old.grantId, {}, TOKEN, ctx(randomUUID())) : savePlan(svc, view.projectId, "并发保存的新规划");
+    const waited = await waitsOrSettles(SERIES_LOCK, second);
+    paused.release();
+    expect(waited).toBe("waiting");
+    const [a, b] = await Promise.all([first, second]);
+    await held.settle();
+    await settle();
+    if (order === "plan save first") {
+      expect(a.status).toBe(201);
+      // The resume read the committed plan under its lock: refused on the plan change, nothing written.
+      expect(b.body).toMatchObject({ error: { code: "SERIES_UPSTREAM_CHANGED", details: { reason: "upstream_plan_changed" } } });
+      expect(seen.length).toBe(sent);
+      expect(await count("SELECT count(*)::int AS n FROM series_writing_resume WHERE grant_id = $1", [old.grantId])).toBe(0);
+      expect(await count("SELECT count(*)::int AS n FROM series_writing_run WHERE series_id = $1 AND job_kind = 'batch' AND batch_no = 2", [view.seriesId])).toBe(0);
+    } else {
+      // Admitted first on the grant's own plan: the save waited and then found the job running (an edit never races a job).
+      expect(a.status).toBe(200);
+      expect(b.status).toBe(409);
+      expect(seen.slice(sent).map((item) => item.stage)).toEqual(["episode:4", "episode:5", "episode:6", "batch_review:2"]);
+      expect(await count("SELECT count(*)::int AS n FROM series_writing_plan_revision WHERE series_id = $1", [view.seriesId])).toBe(1);
+    }
   });
 });

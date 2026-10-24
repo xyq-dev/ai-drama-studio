@@ -578,6 +578,23 @@ export function admitSeriesGrant(snapshot: SeriesSnapshot, grant: SeriesGrantRec
 }
 
 /**
+ * The plan revision a grant may write on: the one on its confirmation card, or, for a grant that plans, the one its own
+ * planning job saved (card revision null). Null while there is none: never the current plan, never another grant's.
+ */
+export function seriesGrantPlanRevisionId(snapshot: SeriesSnapshot, grant: SeriesGrantRecord): string | null {
+  if (!grant.input.scope.plan) return grant.input.basePlanRevisionId;
+  const own = new Set(snapshot.jobs.filter((job) => job.run.grantId === grant.id && job.run.kind === "plan" && job.run.state === "completed").map((job) => job.run.id));
+  const saved = snapshot.plans.filter((plan) => plan.origin === "model" && plan.sourceRunId !== null && own.has(plan.sourceRunId));
+  return saved.length === 1 ? saved[0]!.id : null;
+}
+
+/** Why the grant may not write on the current plan: it is not the revision the grant may write on (identity, not text). */
+export function seriesGrantPlanChange(snapshot: SeriesSnapshot, grant: SeriesGrantRecord): string | null {
+  const allowed = seriesGrantPlanRevisionId(snapshot, grant);
+  return allowed !== null && seriesCurrentPlan(snapshot)?.id === allowed ? null : "upstream_plan_changed";
+}
+
+/**
  * After a job completed: the grant's next job when its scope has one and the series may go on, else the grant's end.
  * A blocking machine finding, a stale ledger or a person's pending confirmation stops the grant (never a silent continue).
  */
@@ -593,6 +610,9 @@ export function nextSeriesJob(snapshot: SeriesSnapshot, grant: SeriesGrantRecord
   // A later grant's job of the same batch or final review took this part over: this grant never sends it again.
   const latest = Math.max(0, ...snapshot.jobs.filter((job) => job.run.grantId === grant.id).map((job) => job.run.seq));
   if (seriesLaterJob(snapshot, next.kind, next.batchNo, latest)) return refusal("upstream_job_superseded");
+  // A plan saved since the grant's own (even with the same text, even with every blocker cleared again) needs a new grant.
+  const planChange = next.kind === "plan" ? null : seriesGrantPlanChange(snapshot, grant);
+  if (planChange) return refusal(planChange);
   const states = seriesBatchStates(snapshot);
   const blockers = next.kind === "batch" ? seriesBatchBlockers(snapshot, next.batchNo!, states) : seriesFinalBlockers(snapshot, states);
   if (blockers.length > 0) return refusal(blockers[0]!.split(":")[0]!, { blockers });
@@ -638,6 +658,9 @@ export function seriesJobUpstreamChange(snapshot: SeriesSnapshot, run: SeriesJob
   }
   const plan = seriesCurrentPlan(snapshot);
   if (!plan || plan.id !== run.input.planRevisionId || plan.contentHash !== run.input.planHash) return "upstream_plan_changed";
+  // A job frozen on the current plan still writes only on its grant's own plan revision.
+  const grant = snapshot.grants.find((item) => item.id === run.grantId);
+  if (!grant || seriesGrantPlanRevisionId(snapshot, grant) !== run.input.planRevisionId) return "upstream_plan_changed";
   // The story the job was frozen on must still be the work's current story (never write on a replaced one).
   if (run.input.storyRevisionId !== plan.storyRevisionId || run.input.storyHash !== plan.storyHash || seriesStoryBinding(snapshot).status !== "ok") {
     return "upstream_story_changed";

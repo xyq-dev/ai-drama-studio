@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { seriesScopeCalls, type SeriesScope } from "@ai-drama/contracts";
 import { PersistenceError } from "@ai-drama/database";
-import { seriesFinalBasis, seriesJobUpstreamChange, type SeriesView } from "@ai-drama/domain";
+import { buildSeriesJob, nextSeriesJob, seriesCurrentPlan, seriesFinalBasis, seriesJobUpstreamChange, type SeriesView } from "@ai-drama/domain";
 import { InMemorySeriesWritingStore, SeriesWritingEngine, titleWritingProviderConfigs } from "@ai-drama/providers";
 import { seriesFixtureTransport, type SeriesFixtureExchange, type SeriesFixturePlan } from "@ai-drama/providers/title-writing-fixtures";
 import { SeriesWritingService } from "./series-writing.service";
@@ -1136,5 +1136,263 @@ describe("round 6: a send is admitted only while the job's frozen story and prev
     expect((await grant(s, page, { plan: false, batchFrom: 2, batchTo: 2, final: false })).status).toBe(201);
     expect(s.seen.slice(sent).map((item) => item.stage)).toEqual(["episode:4", "episode:5", "episode:6", "batch_review:2"]);
     expect(counters(s)).toMatchObject({ grant: 4, job: 4 });
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Round 7 (review of ffd3e29): a grant writes only on the plan revision it was confirmed on (or the one its own planning
+// job saved); a plan saved since stops it, even once every current blocker is cleared again.
+
+describe("round 7: a grant never goes on under a plan revision it was not confirmed on", () => {
+  type Snapshot = NonNullable<Awaited<ReturnType<InMemorySeriesWritingStore["snapshot"]>>>;
+  const snapshotOf = async (s: Setup, projectId: string) => structuredClone((await s.store.snapshot(WS, projectId))!);
+  const daily = (s: Setup) => (s.store as unknown as { recent(workspaceId: string, sinceIso: string): number }).recent(WS, new Date(START - 86_400_000).toISOString());
+  const PLAN_ONLY: SeriesScope = { plan: true, batchFrom: null, batchTo: null, final: false };
+  const BATCHES: SeriesScope = { plan: false, batchFrom: 1, batchTo: 2, final: false };
+  const WITH_PLAN: SeriesScope = { plan: true, batchFrom: 1, batchTo: 2, final: false };
+
+  /** The grant (with its own planning job, or on a plan written first) stops after batch 1 on a blocking batch review. */
+  async function stoppedAfterBatch1(kind: "on a plan" | "with its own plan") {
+    const s = setup({ plan: { blockingBatchReviews: [1] } });
+    const view = await work(s, 9);
+    if (kind === "on a plan") expect((await grant(s, view, PLAN_ONLY)).status).toBe(201);
+    expect((await grant(s, await current(s, view.projectId), kind === "on a plan" ? BATCHES : WITH_PLAN)).status).toBe(201);
+    const page = await current(s, view.projectId);
+    const old = page.grants.at(-1)!;
+    expect(old).toMatchObject({ state: "stopped", stopReason: "batch_review_blocking" });
+    expect(page.batches[0]).toMatchObject({ generated: true });
+    return { s, view, old, planBefore: page.plan!.revisionId };
+  }
+
+  /** A person reviews the plan, confirms the ledger and reviews batch 1 as far as each is needed: every current blocker clears. */
+  async function reconfirm(s: Setup, projectId: string) {
+    let page = await current(s, projectId);
+    if (page.plan!.status !== "passed" && page.plan!.status !== "cleared") expect((await decide(s, projectId, "plan", page.plan!.decisionBasis)).status).toBe(201);
+    page = await current(s, projectId);
+    if (page.batches[0]!.ledger.status !== "valid" && page.batches[0]!.ledger.status !== "confirmed") expect((await confirmLedger(s, projectId, 1)).status).toBe(201);
+    page = await current(s, projectId);
+    if (page.batches[0]!.review.status !== "passed" && page.batches[0]!.review.status !== "cleared") {
+      expect((await decide(s, projectId, "batch:1", page.batches[0]!.decisionBasis)).status).toBe(201);
+    }
+    page = await current(s, projectId);
+    expect(page.next).toEqual({ batchNo: 2, blockers: [] });
+    return page;
+  }
+
+  /** The old grant's resume is refused on the plan change: no send, no reservation, no job, no resume record, no count. */
+  async function expectRefusedResume(s: Setup, projectId: string, grantId: string) {
+    const before = await snapshotOf(s, projectId);
+    const sent = s.seen.length;
+    const dailyBefore = daily(s);
+    const resumed = await s.service.resume(projectId, grantId, {}, TOKEN, CONTEXT(randomUUID()));
+    await s.settle();
+    expect(resumed.status).toBe(409);
+    expect(resumed.body).toMatchObject({ error: { code: "SERIES_UPSTREAM_CHANGED", details: { reason: "upstream_plan_changed" } } });
+    expect(s.seen.length).toBe(sent);
+    expect(s.store.resumes).toHaveLength(0);
+    expect(daily(s)).toBe(dailyBefore);
+    const after = await snapshotOf(s, projectId);
+    expect(after.jobs).toEqual(before.jobs);
+    expect(after.grants).toEqual(before.grants);
+    expect(after.plans).toEqual(before.plans);
+    expect(after.ledgers).toEqual(before.ledgers);
+    expect(after.decisions).toEqual(before.decisions);
+    expect(after.grants.find((item) => item.id === grantId)!.input.basePlanRevisionId).toBe(before.grants.find((item) => item.id === grantId)!.input.basePlanRevisionId);
+  }
+
+  it.each(["on a plan", "with its own plan"] as const)("A/B. a grant %s stopped after batch 1; a person saves a new plan and clears every blocker; its resume is refused", async (kind) => {
+    const { s, view, old, planBefore } = await stoppedAfterBatch1(kind);
+    expect((await savePlan(s, await current(s, view.projectId), "from_plan", "人工改写后的一句话故事")).status).toBe(201);
+    const page = await reconfirm(s, view.projectId);
+    expect(page.plan!.revisionId).not.toBe(planBefore);
+    await expectRefusedResume(s, view.projectId, old.grantId);
+    // D. A new grant confirmed on the new plan goes on: batch 2 only, batch 1 not sent again.
+    const sent = s.seen.length;
+    expect((await grant(s, page, { plan: false, batchFrom: 2, batchTo: 2, final: false })).status).toBe(201);
+    expect(stagesOf(s, sent)).toEqual(["episode:4", "episode:5", "episode:6", "batch_review:2"]);
+    expect((await current(s, view.projectId)).grants.at(-1)).toMatchObject({ state: "completed" });
+    const batch2 = s.store.jobs.filter((job) => job.kind === "batch" && job.batchNo === 2);
+    expect(batch2.map((job) => job.input.planRevisionId)).toEqual([page.plan!.revisionId]);
+  });
+
+  it("E. the same plan text saved again as a new revision is still another revision: the old grant is refused", async () => {
+    const { s, view, old, planBefore } = await stoppedAfterBatch1("on a plan");
+    const before = await current(s, view.projectId);
+    expect((await savePlan(s, before, "adopt_current")).status).toBe(201);
+    const page = await reconfirm(s, view.projectId);
+    expect(page.plan!.revisionId).not.toBe(planBefore);
+    expect(page.plan!.contentHash).toBe(before.plan!.contentHash);
+    await expectRefusedResume(s, view.projectId, old.grantId);
+  });
+
+  it.each(["on a plan", "with its own plan"] as const)("D. a grant %s with the plan unchanged resumes into batch 2; batch 1 is not sent again", async (kind) => {
+    const { s, view, old, planBefore } = await stoppedAfterBatch1(kind);
+    await reconfirm(s, view.projectId);
+    const sent = s.seen.length;
+    expect((await s.service.resume(view.projectId, old.grantId, {}, TOKEN, CONTEXT(randomUUID()))).status).toBe(200);
+    await s.settle();
+    expect(stagesOf(s, sent)).toEqual(["episode:4", "episode:5", "episode:6", "batch_review:2"]);
+    expect((await current(s, view.projectId)).grants.at(-1)).toMatchObject({ state: "completed" });
+    expect(s.store.jobs.filter((job) => job.grantId === old.grantId && job.kind === "batch").map((job) => job.input.planRevisionId)).toEqual([planBefore, planBefore]);
+  });
+
+  it("D. a grant with its own plan, batch 1 and the final review runs straight through on that plan (3 episodes)", async () => {
+    const s = setup();
+    const view = await work(s, 3);
+    expect((await grant(s, view, { plan: true, batchFrom: 1, batchTo: 1, final: true })).status).toBe(201);
+    const page = await current(s, view.projectId);
+    expect(page.grants[0]).toMatchObject({ state: "completed" });
+    expect(s.store.jobs.map((job) => [job.kind, job.input.planRevisionId])).toEqual([["plan", null], ["batch", page.plan!.revisionId], ["final", page.plan!.revisionId]]);
+    expect(s.seen.filter((item) => item.stage === "final_review")).toHaveLength(1);
+  });
+
+  /**
+   * C. Synthetic state at the hand-over: the snapshot the store hands to the next-job decision (read under its lock) shows a
+   * newer plan revision with the same text, the ledgers rebound to it, nothing else blocking. The store must create no job.
+   */
+  it.each(["on a plan", "with its own plan"] as const)("C. the hand-over to batch 2 (grant %s) sees a newer plan revision under the store's lock: no job, no send", async (kind) => {
+    const s = setup();
+    const view = await work(s, 9);
+    if (kind === "on a plan") expect((await grant(s, view, PLAN_ONLY)).status).toBe(201);
+    const target = s.store as unknown as { completeJob: (...args: unknown[]) => Promise<unknown> };
+    const original = target.completeJob.bind(s.store);
+    const swappedIds: string[] = [];
+    target.completeJob = async (...args: unknown[]) => {
+      const next = args[7] as (snapshot: Snapshot) => unknown;
+      args[7] = (snapshot: Snapshot) => {
+        const plan = [...snapshot.plans].sort((a, b) => b.revisionNo - a.revisionNo)[0];
+        if (!plan || !snapshot.jobs.some((job) => job.run.kind === "batch" && job.run.batchNo === 1 && job.run.state === "completed")) return next(snapshot);
+        const id = randomUUID();
+        swappedIds.push(id);
+        const copy = structuredClone(snapshot);
+        copy.plans.push({ ...structuredClone(plan), id, revisionNo: plan.revisionNo + 1, origin: "manual", sourceRunId: null, parentRevisionId: plan.id });
+        for (const ledger of copy.ledgers) if (ledger.basis.planRevisionId === plan.id) ledger.basis.planRevisionId = id;
+        return next(copy);
+      };
+      return original(...args);
+    };
+    const sent = s.seen.length;
+    expect((await grant(s, await current(s, view.projectId), kind === "on a plan" ? BATCHES : WITH_PLAN)).status).toBe(201);
+    expect(swappedIds).toHaveLength(1);
+    expect(s.store.jobs.filter((job) => job.kind === "batch" && job.batchNo === 2)).toHaveLength(0);
+    expect(s.store.jobs.some((job) => job.input.planRevisionId === swappedIds[0])).toBe(false);
+    expect(stagesOf(s, sent).filter((stage) => /^(episode:[4-9]|batch_review:2)$/u.test(stage))).toEqual([]);
+    expect(s.store.grants.at(-1)).toMatchObject({ state: "stopped", stopReason: "upstream_plan_changed" });
+  });
+
+  /** Plan written, a person's new plan saved and cleared; then a batch 2 job of the old grant frozen on the new plan (as an older server admitted it). */
+  async function oldGrantJobOnNewPlan() {
+    const { s, view, old } = await stoppedAfterBatch1("on a plan");
+    expect((await savePlan(s, await current(s, view.projectId), "from_plan", "人工改写后的一句话故事")).status).toBe(201);
+    const page = await reconfirm(s, view.projectId);
+    const nowIso = new Date(START).toISOString();
+    // Synthetic: an admission that skipped the grant's plan check (the state before this fix).
+    const prepared = await s.store.prepareResume(WS, view.projectId, old.grantId, { resumeKey: randomUUID(), requestHash: randomUUID(), confirmedCallIds: [], providerReady: true,
+      limits: { sinceIso: new Date(START - 86_400_000).toISOString(), maxCallsPerDay: 1_000, maxActiveRuns: 2 } }, nowIso,
+    (state) => ({ kind: "job", job: buildSeriesJob(state, state.grants.find((item) => item.id === old.grantId)!, "batch", 2, { jobId: randomUUID(), nowIso }), requiredCalls: 0 }));
+    expect(prepared).toMatchObject({ kind: "ok" });
+    const job = s.store.jobs.find((item) => item.id === (prepared as { jobId: string }).jobId)!;
+    expect(job.input.planRevisionId).toBe(page.plan!.revisionId);
+    return { s, view, old, job };
+  }
+
+  it("F1. a job of the old grant frozen on the new plan looks current, yet it sends nothing: the engine and the store's reservation both stop it", async () => {
+    const { s, view, job } = await oldGrantJobOnNewPlan();
+    const snapshot = (await s.store.snapshot(WS, view.projectId))!;
+    expect(seriesJobUpstreamChange(snapshot, job)).toBe("upstream_plan_changed");
+    const sent = s.seen.length;
+    const calls = s.store.calls.length;
+    const dailyBefore = daily(s);
+    await s.engine().drive(job.id);
+    expect(s.seen.length).toBe(sent);
+    expect(s.store.calls).toHaveLength(calls);
+    expect(daily(s)).toBe(dailyBefore);
+    expect(s.store.jobs.find((item) => item.id === job.id)).toMatchObject({ state: "needs_attention", errorCode: "upstream_plan_changed", callsUsed: 0 });
+    // The store's own reservation (under its lock) refuses it as well, with nothing reserved.
+    Object.assign(s.store.jobs.find((item) => item.id === job.id)!, { state: "running", errorCode: null, executorId: null, leaseUntil: null });
+    const nowIso = new Date(START).toISOString();
+    const lease = new Date(START + 240_000).toISOString();
+    expect(await s.store.claimJob(WS, job.id, "late-executor", nowIso, lease)).toBe(true);
+    const template = s.store.calls.at(-1)!;
+    expect(await s.store.reserveCall({ ...template, id: randomUUID(), runId: job.id, grantId: job.grantId, stageKey: "episode:4", attemptNo: 1, state: "reserved",
+      executorId: "late-executor", createdAt: nowIso, finishedAt: null }, { sinceIso: nowIso, maxCallsPerDay: 1_000 }, nowIso, lease))
+      .toEqual({ kind: "upstream", code: "upstream_plan_changed" });
+    expect(s.store.calls).toHaveLength(calls);
+  });
+
+  it("F1. resuming that job (stopped mid-batch) is refused too: no resume record, no send", async () => {
+    const { s, view, old, job } = await oldGrantJobOnNewPlan();
+    await s.engine().drive(job.id);
+    expect(s.store.jobs.find((item) => item.id === job.id)).toMatchObject({ state: "needs_attention" });
+    const resumes = s.store.resumes.length;
+    const sent = s.seen.length;
+    const resumed = await s.service.resume(view.projectId, old.grantId, {}, TOKEN, CONTEXT(randomUUID()));
+    await s.settle();
+    expect(resumed.body).toMatchObject({ error: { code: "SERIES_UPSTREAM_CHANGED", details: { reason: "upstream_plan_changed" } } });
+    expect(s.store.resumes).toHaveLength(resumes);
+    expect(s.seen.length).toBe(sent);
+  });
+
+  /** Synthetic: the grant's confirmed plan revision is made to differ from the plan its job froze, right before a store step. */
+  function rebindGrantBefore(s: Setup, step: "markCallSubmitted" | "finishCall") {
+    const target = s.store as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
+    const original = target[step]!.bind(s.store);
+    let armed = true;
+    target[step] = async (...args: unknown[]) => {
+      if (armed) { armed = false; s.store.grants.at(-1)!.input.basePlanRevisionId = randomUUID(); }
+      return original(...args);
+    };
+  }
+
+  it("F2. the grant's plan no longer matches after the reservation, before the send: kept as never sent, given back once in all three counts", async () => {
+    const s = setup();
+    const view = await work(s, 9);
+    expect((await grant(s, view, PLAN_ONLY)).status).toBe(201);
+    const dailyBefore = daily(s);
+    const sent = s.seen.length;
+    rebindGrantBefore(s, "markCallSubmitted");
+    expect((await grant(s, await current(s, view.projectId), BATCHES)).status).toBe(201);
+    expect(s.seen.length).toBe(sent);
+    const call = s.store.calls.at(-1)!;
+    expect(call).toMatchObject({ stageKey: "episode:1", state: "rejected", errorCode: "upstream_changed_before_send", providerRequestId: null });
+    const job = s.store.jobs.at(-1)!;
+    expect(job).toMatchObject({ state: "needs_attention", errorCode: "upstream_plan_changed", callsUsed: 0 });
+    expect(s.store.grants.at(-1)).toMatchObject({ callsUsed: 0, state: "stopped", stopReason: "upstream_plan_changed" });
+    expect(daily(s)).toBe(dailyBefore);
+    s.tick(600_000);
+    await s.store.recoverExpired(WS, new Date(START + 600_000).toISOString());
+    await s.engine("executor-b").maintain();
+    expect(await s.store.markCallSubmitted(WS, call.id, call.executorId, new Date(START).toISOString(), new Date(START + 240_000).toISOString())).toBe("lost");
+    expect(s.store.grants.at(-1)).toMatchObject({ callsUsed: 0 });
+    expect(s.store.jobs.at(-1)).toMatchObject({ callsUsed: 0 });
+    expect(daily(s)).toBe(dailyBefore);
+    expect(s.seen.length).toBe(sent);
+  });
+
+  it("F3. after the send the call is counted and never given back or resent; the next send stops on the plan change", async () => {
+    const s = setup();
+    const view = await work(s, 9);
+    expect((await grant(s, view, PLAN_ONLY)).status).toBe(201);
+    const sent = s.seen.length;
+    rebindGrantBefore(s, "finishCall");
+    expect((await grant(s, await current(s, view.projectId), BATCHES)).status).toBe(201);
+    expect(stagesOf(s, sent)).toEqual(["episode:1"]);
+    expect(s.store.calls.at(-1)).toMatchObject({ stageKey: "episode:1", state: "completed" });
+    expect(s.store.jobs.at(-1)).toMatchObject({ state: "needs_attention", errorCode: "upstream_plan_changed", callsUsed: 1 });
+    expect(s.store.grants.at(-1)).toMatchObject({ callsUsed: 1 });
+  });
+
+  it("the domain decision itself: nextSeriesJob refuses the old grant once the plan revision changed, and goes on while it did not", async () => {
+    const { s, view, old } = await stoppedAfterBatch1("with its own plan");
+    const ids = { jobId: randomUUID(), nowIso: new Date(START).toISOString() };
+    await reconfirm(s, view.projectId);
+    let snapshot = (await s.store.snapshot(WS, view.projectId))!;
+    const own = seriesCurrentPlan(snapshot)!;
+    expect(own.sourceRunId).toBe(s.store.jobs.find((job) => job.grantId === old.grantId && job.kind === "plan")!.id);
+    expect(nextSeriesJob(snapshot, snapshot.grants.find((item) => item.id === old.grantId)!, ids)).toMatchObject({ kind: "job", job: { run: { input: { planRevisionId: own.id } } } });
+    expect((await savePlan(s, await current(s, view.projectId), "from_plan", "人工改写后的一句话故事")).status).toBe(201);
+    await reconfirm(s, view.projectId);
+    snapshot = (await s.store.snapshot(WS, view.projectId))!;
+    expect(nextSeriesJob(snapshot, snapshot.grants.find((item) => item.id === old.grantId)!, ids)).toMatchObject({ kind: "refused", code: "upstream_plan_changed" });
   });
 });
