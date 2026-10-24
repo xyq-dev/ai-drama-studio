@@ -1186,9 +1186,9 @@ export function seriesPackageJson(snapshot: SeriesSnapshot, meta: SeriesPackageM
   };
 }
 
-/** An inline field on one line: its new lines are joined, so it can never start a heading, list or fence of the package. */
+/** An inline field on one line: its line breaks (CRLF, a lone CR or LF) are joined, so it can never start a heading, list or fence of the package. */
 function mdEscape(value: string): string {
-  return value.replace(/\r?\n/g, " ");
+  return value.replace(/\r\n?|\n/g, " ");
 }
 
 /**

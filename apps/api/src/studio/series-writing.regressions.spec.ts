@@ -1410,7 +1410,8 @@ function markdownStructure(text: string): { blocks: string[]; headings: string[]
   const blocks: string[] = [];
   const headings: string[] = [];
   let open: { length: number; lines: string[] } | null = null;
-  for (const line of text.split("\n")) {
+  // CommonMark ends a line at LF, CRLF or a lone CR: the parse reads a copy with those normalized (never the export itself).
+  for (const line of text.replace(/\r\n?/gu, "\n").split("\n")) {
     if (open) {
       const close = /^ {0,3}(`+)[ \t]*$/u.exec(line);
       if (close && close[1]!.length >= open.length) { blocks.push(open.lines.join("\n")); open = null; } else open.lines.push(line);
@@ -1563,5 +1564,54 @@ describe("round 8, 6: Markdown fences never close inside the text they hold", ()
     // Every block's fence is longer than the longest backtick run it holds.
     const opened = markdown.split("\n").filter((line) => /^`{3,}(text|json)$/u.test(line));
     expect(opened.some((line) => line.startsWith("````````text"))).toBe(true);
+  });
+});
+
+describe("round 8, 6 (CR): no line break of any kind lets an inline field open a package-level block", () => {
+  const SECTIONS = ["## 全剧规划", "## 故事（工作台实际当前稿）", "## 各集剧本", "## 连续性与伏笔台账", "## 全剧总检", "## 缺项", "## 制作注意事项"];
+
+  it.each([["LF", "\n"], ["CRLF", "\r\n"], ["CR", "\r"]])("%s in plan fields, the summary, the story and a script: fences close, sections stay in order, texts and JSON unchanged", async (_label, sep) => {
+    const hostile = (label: string) => ["正常", "```", `# 注入的标题 ${label}`, "正文"].join(sep);
+    // The double's summary and scene text carry the same line break (the model draft path).
+    const s = setup({ plan: { tag: hostile("模型稿") } });
+    const view = await work(s, 3);
+    await grant(s, view, { plan: true, batchFrom: 1, batchTo: 1, final: false });
+    const page = await current(s, view.projectId);
+    const content = structuredClone(page.plan!.content);
+    content.setting.logline = hostile("一句话故事");
+    content.setting.synopsis = hostile("梗概");
+    content.setting.characters = content.setting.characters.map((item, index) => index === 0 ? { ...item, identity: hostile("身份") } : item);
+    expect((await s.service.savePlan(view.projectId, { basePlanRevisionId: page.plan!.revisionId, baseStoryRevisionId: page.story.current!.revisionId,
+      story: "adopt_current", content }, CONTEXT())).status).toBe(201);
+    s.store.writeHumanStory(view.projectId, hostile("故事"));
+    s.store.approveCurrentStory(view.projectId);
+    s.store.writeHumanScript(view.projectId, 1, hostile("第1集"));
+    const raw = (await s.service.package(view.projectId, "markdown")).download!.text;
+    const json = JSON.parse((await s.service.package(view.projectId, "json")).download!.text) as {
+      plan: { setting: { logline: string; synopsis: string } }; story: { current: { text: string } };
+      episodes: Array<{ current: { text: string; summary: string | null } | null; unadoptedModelDraft: { text: string } | null }> };
+    // Structure, read on a copy whose line breaks are normalized for parsing only.
+    const structure = markdownStructure(raw);
+    expect(structure.unclosed).toBe(false);
+    expect(structure.headings.filter((item) => item.includes("注入"))).toEqual([]);
+    const positions = SECTIONS.map((heading) => structure.headings.indexOf(heading));
+    expect(positions.every((position) => position >= 0)).toBe(true);
+    expect([...positions].sort((a, b) => a - b)).toEqual(positions);
+    // The texts are exported exactly, in the raw Markdown string and in the JSON (no line break is rewritten).
+    expect(json.plan.setting.logline).toBe(hostile("一句话故事"));
+    expect(json.story.current.text).toBe(hostile("故事"));
+    expect(json.episodes[0]!.current!.text).toBe(hostile("第1集"));
+    for (const text of [json.story.current.text, json.episodes[0]!.current!.text, json.episodes[0]!.unadoptedModelDraft!.text, json.episodes[1]!.current!.text]) {
+      expect(raw).toContain(`\n${text}\n`);
+    }
+    // Inline fields are one line in the raw Markdown: no CR or LF of theirs survives.
+    expect(raw).toContain("**一句话故事**：正常 ``` # 注入的标题 一句话故事 正文");
+    expect(raw).toContain(`概要：${json.episodes[1]!.current!.summary!.replace(/\r\n?|\n/gu, " ")}`);
+    expect(raw.includes("\r")).toBe(json.story.current.text.includes("\r"));
+    expect(structure.unclosed).toBe(false);
+    const normalized = (text: string) => text.replace(/\r\n?/gu, "\n");
+    for (const text of [json.story.current.text, json.episodes[0]!.current!.text, json.episodes[0]!.unadoptedModelDraft!.text]) {
+      expect(structure.blocks).toContain(normalized(text));
+    }
   });
 });
