@@ -128,6 +128,10 @@ export interface SeriesFixturePlan {
   payoffBeforePlant?: number;
   /** Episode written as the series finale although it is not the last one (refused). */
   earlyFinale?: number;
+  /** Episodes whose continuity.secrets are replaced (moving or dropping the planned reveal). */
+  secrets?: Record<number, SeriesEpisode["continuity"]["secrets"]>;
+  /** Episodes whose continuity.conflicts are replaced (resolving, reopening or opening another conflict). */
+  conflicts?: Record<number, SeriesEpisode["continuity"]["conflicts"]>;
   /** Batch reviews returning a verified high issue on their first episode. */
   blockingBatchReviews?: number[];
   /** A plan review returning a verified high issue. */
@@ -160,6 +164,8 @@ export function fixtureSeriesEpisode(n: number, k: number, seconds: number, plan
   };
   if (k === 2 || (k === 4 && n >= 4)) continuity.props.push({ id: "P1", holderId: keyHolderAfter(k), state: "易手" });
   if (plan.propContradiction === k) continuity.props = [{ id: "P2", holderId: "C1", state: "被拿走" }, ...continuity.props.filter((item) => item.id !== "P2")];
+  if (plan.secrets?.[k]) continuity.secrets = plan.secrets[k];
+  if (plan.conflicts?.[k]) continuity.conflicts = plan.conflicts[k];
   if (plan.payoffBeforePlant === k) continuity.foreshadowing.push({ id: n >= 7 ? "FS3" : "FS1", action: "payoff" });
   const half = Math.round(seconds / 2);
   const castNow = plan.propContradiction === k ? ["C1", "C2"] : cast;

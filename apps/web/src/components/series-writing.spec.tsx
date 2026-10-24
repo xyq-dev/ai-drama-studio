@@ -4,12 +4,13 @@
 import { randomUUID } from "node:crypto";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { seriesConstraintsSchema } from "@ai-drama/contracts";
+import { seriesConstraintsSchema, seriesPlanCalls } from "@ai-drama/contracts";
 import { admitSeriesGrant, seriesView, type SeriesView } from "@ai-drama/domain";
 import { InMemorySeriesWritingStore, SeriesWritingEngine, newSeries, newSeriesGrant, titleWritingProviderConfigs } from "@ai-drama/providers";
 import { seriesFixtureTransport } from "@ai-drama/providers/title-writing-fixtures";
 import { SeriesWritingPage } from "./series-writing-page";
 import { SeriesWritingStart } from "./series-writing-start";
+import { savePendingSeries } from "../lib/series-writing-client";
 
 const WS = "11111111-1111-4111-8111-111111111111";
 const P1 = "22222222-2222-4222-8222-222222222222";
@@ -480,5 +481,100 @@ describe("round 5 on the page: a confirmation is bound to the terms the person s
     fireEvent.click(screen.getByTestId("series-grant"));
     fireEvent.click(screen.getByTestId("series-grant"));
     expect(posts(calls)).toHaveLength(0);
+  });
+});
+
+describe("round 8, 4: a create request restored after a reload shows exactly what it will send", () => {
+  const FULL = { title: "冻结的系列", episodeCount: 12, episodeSeconds: 90, idea: "夜班便利店",
+    constraints: { genre: "悬疑", audience: "通勤上班族", maxCharacters: 5, maxLocations: 3, forbiddenThemes: ["僵尸", "穿越"], endingRequirement: "开放式结局" } };
+  const fields = () => ({
+    title: (screen.getByLabelText("系列作品名称") as HTMLInputElement),
+    genre: (screen.getByLabelText("题材") as HTMLInputElement),
+    audience: (screen.getByLabelText("目标观众") as HTMLInputElement),
+    maxCharacters: (screen.getByLabelText("人物上限（1–12）") as HTMLInputElement),
+    maxLocations: (screen.getByLabelText("地点上限（1–10）") as HTMLInputElement),
+    forbidden: (screen.getByLabelText("禁止的题材或元素（逗号分隔）") as HTMLInputElement),
+    ending: (screen.getByLabelText("结局要求") as HTMLInputElement),
+  });
+
+  it("every frozen constraint is shown in its disabled field; the retry sends the stored body and key unchanged", async () => {
+    const key = randomUUID();
+    expect(savePendingSeries({ version: 1, scope: "create", key, body: FULL })).toBe(true);
+    let fail = true;
+    const calls = server((method, url) => method === "POST" && url.endsWith("/writing/series")
+      ? (fail ? json({ error: { code: "UPSTREAM", message: "x" } }, 502) : json({ series: view }, 201)) : undefined);
+    vi.stubGlobal("location", { ...window.location, assign: vi.fn() });
+    render(<SeriesWritingStart />);
+    await screen.findByRole("button", { name: "重试创建" });
+    const shown = fields();
+    expect({ title: shown.title.value, genre: shown.genre.value, audience: shown.audience.value, maxCharacters: shown.maxCharacters.value,
+      maxLocations: shown.maxLocations.value, forbidden: shown.forbidden.value, ending: shown.ending.value })
+      .toEqual({ title: "冻结的系列", genre: "悬疑", audience: "通勤上班族", maxCharacters: "5", maxLocations: "3", forbidden: "僵尸，穿越", ending: "开放式结局" });
+    expect(Object.values(shown).every((input) => input.disabled)).toBe(true);
+    // The call counts are the stored request's (12 episodes), not the form's default 60.
+    expect(screen.getByTestId("series-start-calls").textContent).toContain("12 集的正常调用");
+    // The constraints are visible without opening anything.
+    expect(shown.genre.closest("details")!.open).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "重试创建" }));
+    await waitFor(() => expect(calls.filter((call) => call.method === "POST")).toHaveLength(1));
+    fail = false;
+    fireEvent.click(await screen.findByRole("button", { name: "重试创建" }));
+    await waitFor(() => expect(calls.filter((call) => call.method === "POST")).toHaveLength(2));
+    for (const post of calls.filter((call) => call.method === "POST")) {
+      expect(post.body).toEqual(FULL);
+      expect(post.key).toBe(key);
+    }
+  });
+
+  it("constraints left unset are shown empty, never a default limit", async () => {
+    const partial = { ...FULL, constraints: { genre: "", audience: "", maxCharacters: null, maxLocations: 4, forbiddenThemes: [], endingRequirement: "" } };
+    expect(savePendingSeries({ version: 1, scope: "create", key: randomUUID(), body: partial })).toBe(true);
+    server();
+    render(<SeriesWritingStart />);
+    await screen.findByRole("button", { name: "重试创建" });
+    const shown = fields();
+    expect([shown.genre.value, shown.audience.value, shown.maxCharacters.value, shown.maxLocations.value, shown.forbidden.value, shown.ending.value])
+      .toEqual(["", "", "", "4", "", ""]);
+  });
+
+  it("after the person gives the request up, the form is editable again and creates a new request from what it shows", async () => {
+    expect(savePendingSeries({ version: 1, scope: "create", key: randomUUID(), body: FULL })).toBe(true);
+    const calls = server((method, url) => method === "POST" && url.endsWith("/writing/series") ? json({ series: view }, 201) : undefined);
+    vi.stubGlobal("location", { ...window.location, assign: vi.fn() });
+    render(<SeriesWritingStart />);
+    fireEvent.click(await screen.findByRole("button", { name: "放弃这次请求" }));
+    const shown = fields();
+    expect(shown.genre.disabled).toBe(false);
+    fireEvent.change(shown.title, { target: { value: "新的系列" } });
+    fireEvent.change(shown.genre, { target: { value: "喜剧" } });
+    fireEvent.click(screen.getByRole("button", { name: "创建系列作品" }));
+    await waitFor(() => expect(calls.some((call) => call.method === "POST")).toBe(true));
+    expect(calls.find((call) => call.method === "POST")!.body).toMatchObject({ title: "新的系列", constraints: { genre: "喜剧", maxCharacters: null } });
+  });
+});
+
+describe("round 8, 5 on the page: a plan blocker is pending work before any episode is written", () => {
+  it("a blocking model plan review with 0 episodes shows the plan blocker as 待办, as the domain computed it", async () => {
+    const store = new InMemorySeriesWritingStore();
+    const now = new Date("2026-10-22T00:00:00Z");
+    const series = newSeries({ workspaceId: WS, projectId: P1, actorId: "server-owner", idempotencyKey: "k8", title: "规划待改样例", idea: "", constraints: seriesConstraintsSchema.parse({}),
+      materials: [], referenceUrls: [], researchFetch: false, episodeCount: 6, episodeSeconds: 60, now });
+    await store.createSeries(series, { title: series.title, premise: "" });
+    const grant = newSeriesGrant({ series, actorId: "server-owner", idempotencyKey: "g8", scope: { plan: true, batchFrom: null, batchTo: null, final: false }, normalCalls: seriesPlanCalls(6),
+      resendAllowance: 0, callBudget: seriesPlanCalls(6), providerKey: "deepseek", model: "m-1", basePlanRevisionId: null,
+      authorization: { mode: "series", proof: "site_session", initiatedBy: "server-owner", executor: "series-writing-engine" }, now });
+    const created = await store.createGrant(grant, { sinceIso: "2026-10-21T00:00:00Z", maxCallsPerDay: 100, maxActiveRuns: 2 },
+      (snapshot) => admitSeriesGrant(snapshot, grant, { jobId: randomUUID(), nowIso: now.toISOString() }));
+    if (created.kind !== "created") throw new Error(created.kind);
+    const providers = titleWritingProviderConfigs({ DEEPSEEK_API_KEY: "sk-deepseek-test-0123456789", TITLE_WRITING_DEEPSEEK_MODELS: "m-1" });
+    await new SeriesWritingEngine({ workspaceId: WS, store, providers, transport: seriesFixtureTransport({ plan: { blockingPlanReview: true } }), maxCallsPerDay: 100,
+      maxActiveRuns: 2, clock: () => now }).drive(created.jobId);
+    const blocked = JSON.parse(JSON.stringify(seriesView((await store.snapshot(WS, P1))!))) as SeriesView;
+    expect(blocked).toMatchObject({ written: 0, attention: ["plan_review_blocking"] });
+    server((method, url) => method === "GET" && url.endsWith(`/projects/${P1}/series`) ? json({ series: blocked }) : undefined);
+    render(<SeriesWritingPage projectId={P1} />);
+    const attention = await screen.findByTestId("series-attention");
+    expect(attention.textContent).toContain("规划审阅发现必须修改的问题");
+    expect(attention.textContent).not.toContain("无");
   });
 });

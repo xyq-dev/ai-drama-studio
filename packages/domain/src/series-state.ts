@@ -1044,7 +1044,8 @@ export function seriesView(snapshot: SeriesSnapshot): SeriesView {
       toConfirm: states.filter((item) => item.ledger.status === "pending_confirmation" || item.ledger.status === "stale").map((item) => item.batchNo),
       toReview: states.filter((item) => item.review.status === "stale").map((item) => item.batchNo),
     },
-    attention: written > 0 ? seriesAttention(snapshot, states) : [],
+    // From the plan on (also before any episode is written): a blocking or unreviewed plan is pending work. No plan: nothing yet.
+    attention: plan ? seriesAttention(snapshot, states) : [],
     final: { status: final.status, output: final.output, blockers: states.every((item) => item.written === item.size) ? seriesFinalBlockers(snapshot, states) : ["episodes_incomplete"],
       decisionBasis: binding.status === "changed" || final.output === null ? null : final.basis, previousPassed: final.status === "stale" && final.output?.passed === true },
     next: { batchNo: nextBatch, blockers: nextBatch === null ? [] : seriesBatchBlockers(snapshot, nextBatch, states) },
@@ -1185,8 +1186,19 @@ export function seriesPackageJson(snapshot: SeriesSnapshot, meta: SeriesPackageM
   };
 }
 
+/** An inline field on one line: its new lines are joined, so it can never start a heading, list or fence of the package. */
 function mdEscape(value: string): string {
   return value.replace(/\r?\n/g, " ");
+}
+
+/**
+ * A fenced code block that holds the text exactly: the fence is one backtick longer than the longest run of backticks
+ * in the text (at least three), so no line of the text can close it. The text itself is never changed.
+ */
+export function seriesMarkdownFence(text: string, info: string): string[] {
+  const longest = Math.max(0, ...[...text.matchAll(/`+/gu)].map((match) => match[0].length));
+  const fence = "`".repeat(Math.max(3, longest + 1));
+  return [`${fence}${info}`, text, fence];
 }
 
 export function seriesPackageMarkdown(snapshot: SeriesSnapshot, meta: SeriesPackageMeta): string {
@@ -1202,7 +1214,7 @@ export function seriesPackageMarkdown(snapshot: SeriesSnapshot, meta: SeriesPack
     plannedSecondsNote: string;
   };
   const lines = [
-    `# ${pack.title}｜当前编剧交付包`,
+    `# ${mdEscape(pack.title)}｜当前编剧交付包`,
     "",
     `> ${SERIES_PACKAGE_SCHEMA}；生成于 ${meta.generatedAt}。读取实际当前的规划、故事和各集修订（包含工作台人工修改）；原自动任务包是历史快照。`,
     `> 完成状态：${pack.completion.label}`,
@@ -1214,12 +1226,12 @@ export function seriesPackageMarkdown(snapshot: SeriesSnapshot, meta: SeriesPack
   if (pack.plan) {
     const { setting, arc } = pack.plan;
     lines.push("## 全剧规划", "", `修订 ${String(pack.plan.revisionNo)}（${pack.plan.revisionId}），内容哈希 ${pack.plan.contentHash}，规划审阅：${pack.plan.reviewStatus}`, "",
-      `**剧名**：${setting.title}`, "", `**一句话故事**：${setting.logline}`, "", `**规划修订中的梗概**（规划修订 ${String(pack.plan.revisionNo)}，不是工作台故事正文）：${setting.synopsis}`, "",
-      `**核心冲突**：${setting.core.coreConflict}；**失败代价**：${setting.core.failureCost}`, "", `**结局（第 ${String(arc.finale.episodeNo)} 集）**：${arc.finale.resolution}`, "",
-      "### 人物与关系", "", ...setting.characters.map((item) => `- ${item.id} ${item.name}：${item.identity}；弧线：${item.arc}`),
-      ...setting.relationships.map((item) => `- 关系 ${item.from}—${item.to}：${item.relation}（${item.arc}）`), "",
-      "### 分幕", "", ...arc.phases.map((item) => `- 第${String(item.phaseNo)}幕 ${item.title}（第${String(item.episodeFrom)}–${String(item.episodeTo)}集）：${item.goal}`), "",
-      "### 伏笔", "", ...(arc.foreshadowing.length > 0 ? arc.foreshadowing.map((item) => `- ${item.id} ${item.content}：第${String(item.plantEpisode)}集埋 → 第${String(item.payoffEpisode)}集兑现`) : ["- 无"]), "",
+      `**剧名**：${mdEscape(setting.title)}`, "", `**一句话故事**：${mdEscape(setting.logline)}`, "", `**规划修订中的梗概**（规划修订 ${String(pack.plan.revisionNo)}，不是工作台故事正文）：${mdEscape(setting.synopsis)}`, "",
+      `**核心冲突**：${mdEscape(setting.core.coreConflict)}；**失败代价**：${mdEscape(setting.core.failureCost)}`, "", `**结局（第 ${String(arc.finale.episodeNo)} 集）**：${mdEscape(arc.finale.resolution)}`, "",
+      "### 人物与关系", "", ...setting.characters.map((item) => `- ${item.id} ${mdEscape(item.name)}：${mdEscape(item.identity)}；弧线：${mdEscape(item.arc)}`),
+      ...setting.relationships.map((item) => `- 关系 ${item.from}—${item.to}：${mdEscape(item.relation)}（${mdEscape(item.arc)}）`), "",
+      "### 分幕", "", ...arc.phases.map((item) => `- 第${String(item.phaseNo)}幕 ${mdEscape(item.title)}（第${String(item.episodeFrom)}–${String(item.episodeTo)}集）：${mdEscape(item.goal)}`), "",
+      "### 伏笔", "", ...(arc.foreshadowing.length > 0 ? arc.foreshadowing.map((item) => `- ${item.id} ${mdEscape(item.content)}：第${String(item.plantEpisode)}集埋 → 第${String(item.payoffEpisode)}集兑现`) : ["- 无"]), "",
       "### 分集细纲", "", ...pack.plan.outlines.map((item) => `- ${mdEscape(seriesOutlineLine(item))}`), "");
   }
   const story = pack.story;
@@ -1227,21 +1239,21 @@ export function seriesPackageMarkdown(snapshot: SeriesSnapshot, meta: SeriesPack
     + (item.relationToPlan === "plan_story" ? "是规划绑定的故事" : "不是规划绑定的故事");
   lines.push("## 故事（工作台实际当前稿）", "", `> ${story.note}`, "");
   if (!story.current) lines.push("（作品还没有故事）", "");
-  else lines.push(`当前故事：${storyLine(story.current)}`, "", "```text", story.current.text, "```", "");
-  if (story.approved) lines.push(`已批准故事（${story.approved.note}）：${storyLine(story.approved)}`, "", "```text", story.approved.text, "```", "");
+  else lines.push(`当前故事：${storyLine(story.current)}`, "", ...seriesMarkdownFence(story.current.text, "text"), "");
+  if (story.approved) lines.push(`已批准故事（${story.approved.note}）：${storyLine(story.approved)}`, "", ...seriesMarkdownFence(story.approved.text, "text"), "");
   lines.push("## 各集剧本", "");
   for (const episode of pack.episodes) {
     lines.push(`### 第 ${String(episode.episodeNo)} 集`, "");
     if (!episode.current) { lines.push("（待写）", ""); continue; }
     lines.push(`来源：${episode.current.source}；版本哈希 ${episode.current.ref.hash}${episode.current.workbench ? `；工作台审核：${episode.current.workbench.reviewStatus}` : ""}`, "",
-      `概要：${episode.current.summary ?? "（缺少与此版本绑定的概要）"}`, "", "```text", episode.current.text, "```", "");
-    if (episode.approved) lines.push(`已批准稿（与当前稿不同，${episode.approved.scriptRevisionId}）：`, "", "```text", episode.approved.text, "```", "");
-    if (episode.unadoptedModelDraft) lines.push(`未采纳的模型稿（来源：系列任务 ${episode.unadoptedModelDraft.runId}，不是工作台当前稿）：`, "", "```text", episode.unadoptedModelDraft.text, "```", "");
+      `概要：${episode.current.summary === null ? "（缺少与此版本绑定的概要）" : mdEscape(episode.current.summary)}`, "", ...seriesMarkdownFence(episode.current.text, "text"), "");
+    if (episode.approved) lines.push(`已批准稿（与当前稿不同，${episode.approved.scriptRevisionId}）：`, "", ...seriesMarkdownFence(episode.approved.text, "text"), "");
+    if (episode.unadoptedModelDraft) lines.push(`未采纳的模型稿（来源：系列任务 ${episode.unadoptedModelDraft.runId}，不是工作台当前稿）：`, "", ...seriesMarkdownFence(episode.unadoptedModelDraft.text, "text"), "");
   }
   lines.push("## 连续性与伏笔台账", "");
   for (const batch of pack.continuity) {
     lines.push(`### 第 ${String(batch.batchNo)} 批（第 ${batch.episodes} 集）：台账 ${batch.ledgerStatus}；全文审阅 ${batch.review.status}`, "");
-    if (batch.ledger) lines.push(`台账修订 ${batch.ledger.revisionId}，哈希 ${batch.ledger.contentHash}`, "", "```json", JSON.stringify(batch.ledger.content, null, 2), "```", "");
+    if (batch.ledger) lines.push(`台账修订 ${batch.ledger.revisionId}，哈希 ${batch.ledger.contentHash}`, "", ...seriesMarkdownFence(JSON.stringify(batch.ledger.content, null, 2), "json"), "");
   }
   lines.push("## 全剧总检", "", `${pack.finalReview.scope}：${pack.finalReview.status}`, "", ...(pack.finalReview.note ? [pack.finalReview.note, ""] : []), "## 缺项", "",
     `- 待写：${pack.missing.toWrite}`, `- 待修改批次：${pack.missing.batchesNeedingRevision.join("、") || "无"}`,

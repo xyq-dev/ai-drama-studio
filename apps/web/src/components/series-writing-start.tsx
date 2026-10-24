@@ -9,6 +9,7 @@ import {
   readPendingSeries,
   savePendingSeries,
   seriesRefused,
+  type PendingSeriesRequest,
   type SeriesCreateBody,
   type SeriesOptionsView,
 } from "../lib/series-writing-client";
@@ -26,6 +27,11 @@ function optionsProblem(options: SeriesOptionsView | null): string | null {
   if (options.code === "SERIES_WRITING_STORAGE_UNAVAILABLE") return "系列编剧的数据库迁移 20261023000100_series_writing 尚未执行（需由服务器部署流程单独授权执行）。";
   if (options.code === "SERIES_PROVIDER_UNCONFIGURED") return "还没有可用的模型服务（DeepSeek、Claude 或 OpenAI 都未配置完整）。";
   return "系列编剧暂不可用。";
+}
+
+/** A stored limit as its field shows it: unset is an empty field, never a default. */
+function limitText(value: number | null): string {
+  return value === null ? "" : String(value);
 }
 
 function whole(value: string, min: number, max: number): number | null | "invalid" {
@@ -56,10 +62,19 @@ export function SeriesWritingStart() {
   const [token, setToken] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [pending, setPending] = useState(() => (typeof window === "undefined" ? null : readPendingSeries<SeriesCreateBody>(SCOPE)));
+  const [pending, setPending] = useState<PendingSeriesRequest<SeriesCreateBody> | null>(null);
   // Collapsed until asked for: the start page reads nothing about series writing before a person opens it.
-  const [open, setOpen] = useState(pending !== null);
+  const [open, setOpen] = useState(false);
   const acting = useRef(false);
+
+  // A request without a confirmed answer is restored after mount (the server render never sees this tab's storage), and
+  // opens the card on it.
+  useEffect(() => {
+    const stored = readPendingSeries<SeriesCreateBody>(SCOPE);
+    if (!stored) return;
+    setPending(stored);
+    setOpen(true);
+  }, []);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -71,7 +86,8 @@ export function SeriesWritingStart() {
 
   const problem = loaded ? optionsProblem(options) : null;
   const count = whole(episodes, SERIES_MIN_EPISODES, SERIES_MAX_EPISODES);
-  const n = typeof count === "number" ? count : 60;
+  // The call counts follow what will be sent: a pending request's own episode count, else the form's.
+  const n = pending ? pending.body.episodeCount : typeof count === "number" ? count : 60;
 
   async function create() {
     if (acting.current) return;
@@ -114,6 +130,8 @@ export function SeriesWritingStart() {
   }
 
   const shown = pending?.body;
+  // A pending request shows its own frozen constraints (display only: the retry sends the stored body unchanged).
+  const frozen = shown?.constraints;
   if (!open) {
     return (
       <section className={styles.startCard} aria-labelledby="series-start-title" data-testid="series-start">
@@ -151,15 +169,15 @@ export function SeriesWritingStart() {
       <label className={styles.label} htmlFor="series-idea">系列想法（可只填题材，或留空由 AI 策划）
         <textarea id="series-idea" className={styles.input} rows={2} maxLength={300} value={shown?.idea ?? idea} disabled={busy || shown !== undefined} onChange={(event) => setIdea(event.target.value)} />
       </label>
-      <details className={styles.more}>
+      <details className={styles.more} open={frozen !== undefined || undefined}>
         <summary>题材、目标观众、人物与地点上限、禁用题材、结局要求（可选）</summary>
         <div className={series.formGrid}>
-          <label className={styles.label}>题材<input className={styles.input} maxLength={20} value={genre} disabled={busy || shown !== undefined} onChange={(event) => setGenre(event.target.value)} /></label>
-          <label className={styles.label}>目标观众<input className={styles.input} maxLength={40} value={audience} disabled={busy || shown !== undefined} onChange={(event) => setAudience(event.target.value)} /></label>
-          <label className={styles.label}>人物上限（1–12）<input className={styles.input} inputMode="numeric" value={maxCharacters} disabled={busy || shown !== undefined} onChange={(event) => setMaxCharacters(event.target.value)} /></label>
-          <label className={styles.label}>地点上限（1–10）<input className={styles.input} inputMode="numeric" value={maxLocations} disabled={busy || shown !== undefined} onChange={(event) => setMaxLocations(event.target.value)} /></label>
-          <label className={styles.label}>禁止的题材或元素（逗号分隔）<input className={styles.input} value={forbidden} disabled={busy || shown !== undefined} onChange={(event) => setForbidden(event.target.value)} /></label>
-          <label className={styles.label}>结局要求<input className={styles.input} maxLength={100} value={ending} disabled={busy || shown !== undefined} onChange={(event) => setEnding(event.target.value)} /></label>
+          <label className={styles.label}>题材<input className={styles.input} maxLength={20} value={frozen ? frozen.genre : genre} disabled={busy || shown !== undefined} onChange={(event) => setGenre(event.target.value)} /></label>
+          <label className={styles.label}>目标观众<input className={styles.input} maxLength={40} value={frozen ? frozen.audience : audience} disabled={busy || shown !== undefined} onChange={(event) => setAudience(event.target.value)} /></label>
+          <label className={styles.label}>人物上限（1–12）<input className={styles.input} inputMode="numeric" value={frozen ? limitText(frozen.maxCharacters) : maxCharacters} disabled={busy || shown !== undefined} onChange={(event) => setMaxCharacters(event.target.value)} /></label>
+          <label className={styles.label}>地点上限（1–10）<input className={styles.input} inputMode="numeric" value={frozen ? limitText(frozen.maxLocations) : maxLocations} disabled={busy || shown !== undefined} onChange={(event) => setMaxLocations(event.target.value)} /></label>
+          <label className={styles.label}>禁止的题材或元素（逗号分隔）<input className={styles.input} value={frozen ? frozen.forbiddenThemes.join("，") : forbidden} disabled={busy || shown !== undefined} onChange={(event) => setForbidden(event.target.value)} /></label>
+          <label className={styles.label}>结局要求<input className={styles.input} maxLength={100} value={frozen ? frozen.endingRequirement : ending} disabled={busy || shown !== undefined} onChange={(event) => setEnding(event.target.value)} /></label>
         </div>
       </details>
       <ul className={series.facts} data-testid="series-start-calls">

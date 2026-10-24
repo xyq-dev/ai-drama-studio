@@ -30,6 +30,7 @@ import {
   primaryAction,
   scriptState,
   stepStates,
+  stepsFor,
   type BeginnerFacts,
   type EpisodeMediaFacts,
   type ListFacts,
@@ -142,6 +143,9 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
   const mediaToken = useRef(0);
   const scenesToken = useRef(0);
   const nonce = useRef(0);
+  /** A series work: text steps only (story and episode scripts); no media panel mounts and no media progress is read. */
+  const textOnly = project?.writingMode === "series";
+  const steps = stepsFor(project?.writingMode);
 
   // Facts of another project never mix with this one.
   useEffect(() => {
@@ -211,6 +215,11 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
   useEffect(() => {
     if (!project || project.id !== projectId) return;
     const token = ++mediaToken.current;
+    if (project.writingMode === "series") {
+      // Nothing of the media steps is read for a series work: its step states come from the story and scripts.
+      setProgress({ projectId, media: {}, characters: UNREAD, locations: UNREAD });
+      return;
+    }
     void Promise.all([loadEntityLists(client, projectId), loadEpisodeMedia(client, projectId, episodes)]).then(([entities, media]) => {
       if (token !== mediaToken.current) return;
       setProgress({ projectId, media, ...entities });
@@ -233,10 +242,13 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
   // ?step= reopens a chosen step after a refresh.
   useEffect(() => {
     if (step !== null || loading || !project || !ready) return;
-    const chosen = stepFromUrl() ?? currentStep(states);
+    // An old link to a step this work does not offer (a media step of a series work) opens its text step instead.
+    const asked = stepFromUrl();
+    const offered = asked !== null && steps.some((item) => item.key === asked) ? asked : null;
+    const chosen = offered ?? (textOnly ? steps.find((item) => states[item.key] !== "done")?.key ?? "script" : currentStep(states));
     setStep(chosen);
     setEpisodeNo(episodeForStep(chosen, facts));
-  }, [step, loading, project, ready, states, facts]);
+  }, [step, loading, project, ready, states, facts, steps, textOnly]);
 
   /** Unsaved work in this tab, per object, from the editors' stored drafts. */
   const drafts = useMemo(() => (project ? safeUnsavedDrafts(projectId, episodes) : []),
@@ -306,8 +318,8 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
     setTasksOpen(true);
   }
 
-  const stepIndex = STEPS.findIndex((item) => item.key === step);
-  const info = STEPS[stepIndex] ?? STEPS[0]!;
+  const stepIndex = steps.findIndex((item) => item.key === step);
+  const info = steps[stepIndex] ?? steps[0]!;
   const state = step ? states[step] : "not_started";
   // A compose step whose channel is not confirmed open offers no action the server would reject: while the
   // capability is read it waits, otherwise it offers a recheck.
@@ -316,6 +328,8 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
   const action = closed
     ? { label: gate === "pending" ? "正在检查功能状态" : "重新检查功能状态", target: "reload" as const }
     : primaryAction(info.key, state);
+  /** The last text step of a series work is done: the way on is the series page, not a media step. */
+  const backToSeries = textOnly && action.target === "next" && steps[stepIndex + 1] === undefined;
   const save = saveText(drafts, lastEvent);
   /** On a completed step, the episode that still needs work, so the user can go on from there. */
   const unfinished = state === "done" ? episodeNeedingWork(info.key, facts) : null;
@@ -328,7 +342,7 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
 
   function runPrimary() {
     if (action.target === "next") {
-      const next = STEPS[stepIndex + 1];
+      const next = steps[stepIndex + 1];
       if (next) choose(next.key);
       return;
     }
@@ -421,6 +435,12 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
           </div>
         </div>
         <AutoRunEntry projectId={projectId} />
+        {textOnly ? (
+          <div className="mt-3 rounded-[12px] border border-[#E7E5E0] bg-white p-4 text-[15px]" role="note" data-testid="series-text-only">
+            <p>这是系列作品：系列模式当前仅支持文本编剧，在这里编辑和审核故事与各集剧本；人物参考图、试片和成片等媒体生产尚未开放。</p>
+            <a className="mt-2 inline-block underline" href={`/projects/${projectId}/series`}>返回系列编剧</a>
+          </div>
+        ) : null}
         {leaving ? (
           <div className="mt-3 rounded-[12px] border border-[var(--studio-accent)] bg-white p-4" role="alert">
             <p className="font-medium">还有未保存的修改</p>
@@ -442,8 +462,8 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
         ) : null}
 
         <nav aria-label="创作步骤" className="creator-steps mt-5">
-          <ol className="grid grid-cols-5 gap-1 sm:gap-2">
-            {STEPS.map((item) => (
+          <ol className={`grid ${textOnly ? "grid-cols-2" : "grid-cols-5"} gap-1 sm:gap-2`}>
+            {steps.map((item) => (
               <li key={item.key} className="min-w-0">
                 <button type="button" aria-current={item.key === step ? "step" : undefined}
                   aria-label={`第 ${item.no} 步 ${item.title}：${STEP_STATE_TEXT[states[item.key]]}`}
@@ -477,10 +497,15 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
               </button>
             ) : null}
             <div className="creator-primary-bar fixed inset-x-0 bottom-0 z-10 border-t border-[#E7E5E0] bg-white p-3 lg:static lg:mt-4 lg:border-0 lg:p-0">
-              <button className="w-full rounded-[12px] bg-[var(--studio-accent)] px-5 py-3 font-medium text-white lg:w-auto"
-                type="button" onClick={runPrimary} disabled={closed && gate === "pending"}>
-                {action.label}
-              </button>
+              {backToSeries ? (
+                <a className="block w-full rounded-[12px] bg-[var(--studio-accent)] px-5 py-3 text-center font-medium text-white lg:inline-block lg:w-auto"
+                  href={`/projects/${projectId}/series`}>返回系列编剧页</a>
+              ) : (
+                <button className="w-full rounded-[12px] bg-[var(--studio-accent)] px-5 py-3 font-medium text-white lg:w-auto"
+                  type="button" onClick={runPrimary} disabled={closed && gate === "pending"}>
+                  {action.label}
+                </button>
+              )}
             </div>
           </section>
         ) : null}
@@ -497,16 +522,18 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
               <>
                 <EpisodeTabs numbers={episodeNumbers(facts)} label="选择剧集" value={episodeNo} onChange={setEpisodeNo}
                   state={(no) => scriptState(episodes.find((item) => item.episodeNo === no))} />
-                <p className="text-[15px] text-[#5F5D66]">审核只针对当前展示的这一集、这一个版本；其他集要分别打开检查。剧本里写到的场面还不是场景或镜头记录，它们在「试一段」里单独建立。</p>
+                <p className="text-[15px] text-[#5F5D66]">审核只针对当前展示的这一集、这一个版本；其他集要分别打开检查。{textOnly
+                  ? "系列作品只做文本：剧本不会拆成场景或镜头。"
+                  : "剧本里写到的场面还不是场景或镜头记录，它们在「试一段」里单独建立。"}</p>
                 <ScriptPane projectId={projectId} projectVersion={project.version} episode={episode}
                   storyCurrent={currentStoryRevision(stories?.items ?? [])} premise={project.premise} refreshEpoch={refreshEpoch}
-                  onSaved={reloadBase} onStatus={onStatus}
-                  onOpenScene={(id) => { setSceneId(id); setStep("sample"); }} />
+                  onSaved={reloadBase} onStatus={onStatus} textOnly={textOnly}
+                  onOpenScene={(id) => { if (textOnly) return; setSceneId(id); setStep("sample"); }} />
               </>
             )
           ) : null}
 
-          {project && step === "cast" ? (
+          {project && !textOnly && step === "cast" ? (
             <>
               <div role="tablist" aria-label="人物与场地" className="creator-cast-tabs flex gap-2">
                 {(["character", "location"] as const).map((kind) => {
@@ -541,7 +568,7 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
             </>
           ) : null}
 
-          {project && step === "sample" ? (
+          {project && !textOnly && step === "sample" ? (
             <>
               <EpisodeTabs numbers={episodeNumbers(facts)} label="选择剧集" value={episodeNo} onChange={setEpisodeNo}
                 state={(no) => episodeSampleState(facts, no)} />
@@ -605,7 +632,7 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
             </>
           ) : null}
 
-          {project && step === "final" ? (
+          {project && !textOnly && step === "final" ? (
             <>
               <EpisodeTabs numbers={episodeNumbers(facts)} label="选择剧集" value={episodeNo} onChange={setEpisodeNo} state={(no) => episodeFinalState(facts, no)} />
               <p className="text-[15px] text-[#5F5D66]">本集至少要有 2 个已确认的单镜成片才能编排，最多 30 个。合成完成后请播放检查，确认通过的当前成片才能下载 MP4 和来源清单；上游内容变化后，旧成片会保留为历史，不能再下载。</p>

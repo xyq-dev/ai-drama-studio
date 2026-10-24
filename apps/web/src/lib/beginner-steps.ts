@@ -221,6 +221,14 @@ export function stepStates(facts: BeginnerFacts): Record<StepKey, StepState> {
 }
 
 /** The first step that still needs the user, in order; done everywhere means the last step. */
+/**
+ * The steps a work offers. A series work keeps to the text steps (story and episode scripts): its media production is
+ * not open, whatever the global media switches say, and the server refuses it as well (SERIES_MEDIA_NOT_ENABLED).
+ */
+export function stepsFor(writingMode: BeginnerFacts["writingMode"]): typeof STEPS {
+  return writingMode === "series" ? STEPS.filter((step) => step.key === "story" || step.key === "script") : STEPS;
+}
+
 export function currentStep(states: Record<StepKey, StepState>): StepKey {
   return STEPS.find((step) => states[step.key] !== "done")?.key ?? "final";
 }

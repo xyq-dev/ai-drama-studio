@@ -526,6 +526,8 @@ export function ScriptPane(props: {
   onStatus: (value: string) => void;
   onOpenScene: (sceneId: string) => void;
   premise: string;
+  /** Text only (a series work): the script editor and its reviews, without the breakdown and scene panels or their reads. */
+  textOnly?: boolean;
 }) {
   const [scripts, setScripts] = useState<PageState<ScriptRevision> | null>(null);
   const [scenes, setScenes] = useState<PageState<Aggregate> | null>(null);
@@ -540,12 +542,12 @@ export function ScriptPane(props: {
     const scope = `${props.projectId}:${episode.id}`;
     const [scriptPage, scenePage] = await Promise.all([
       client.get<{ items: ScriptRevision[]; nextCursor: string | null }>(`/projects/${props.projectId}/episodes/${episode.id}/scripts`),
-      client.get<{ items: Aggregate[]; nextCursor: string | null }>(`/projects/${props.projectId}/episodes/${episode.id}/scenes`),
+      props.textOnly ? null : client.get<{ items: Aggregate[]; nextCursor: string | null }>(`/projects/${props.projectId}/episodes/${episode.id}/scenes`),
     ]);
     if (!shouldApplyLoad(request, loadToken.current)) return;
     setScripts(applyPage(null, { scope, items: scriptPage.items, nextCursor: scriptPage.nextCursor, append: false }));
-    setScenes(applyPage(null, { scope, items: scenePage.items, nextCursor: scenePage.nextCursor, append: false }));
-  }, [props.episode, props.projectId, props.refreshEpoch]);
+    if (scenePage) setScenes(applyPage(null, { scope, items: scenePage.items, nextCursor: scenePage.nextCursor, append: false }));
+  }, [props.episode, props.projectId, props.refreshEpoch, props.textOnly]);
 
   useEffect(() => {
     setScripts(null);
@@ -658,48 +660,52 @@ export function ScriptPane(props: {
         />
         </InspectSlot>
       </EditorGrid>
-      <ScriptBreakdownPanel
-        refreshEpoch={props.refreshEpoch}
-        projectId={props.projectId}
-        episodeId={episode.id}
-        episodeNo={episode.episodeNo}
-        scriptReady={episode.currentScriptRevisionId !== null
-          && episode.currentScriptRevisionId === episode.approvedScriptRevisionId
-          && episode.currentScriptReviewStatus === "APPROVED"
-          && episode.currentScriptFreshnessStatus === "CURRENT"}
-        sceneCount={scenes?.items.length ?? 0}
-        onOpenScene={props.onOpenScene}
-        onChanged={async () => {
-          await props.onSaved();
-          await load();
-        }}
-      />
-      <SceneList
-        projectId={props.projectId}
-        episode={props.episode}
-        page={scenes}
-        scriptReady={props.episode.currentScriptRevisionId !== null
-          && props.episode.currentScriptRevisionId === props.episode.approvedScriptRevisionId
-          && props.episode.currentScriptReviewStatus === "APPROVED"
-          && props.episode.currentScriptFreshnessStatus === "CURRENT"}
-        onOpen={props.onOpenScene}
-        onReload={load}
-        onMore={async () => {
-          if (!scenes?.nextCursor || !props.episode) return;
-          const request = loadToken.current;
-          const scope = `${props.projectId}:${props.episode.id}`;
-          const page = await client.get<{ items: Aggregate[]; nextCursor: string | null }>(
-            `/projects/${props.projectId}/episodes/${props.episode.id}/scenes?cursor=${encodeURIComponent(scenes.nextCursor)}`,
-          );
-          if (!shouldApplyLoad(request, loadToken.current)) return;
-          setScenes((current) => applyPage(current, { scope, items: page.items, nextCursor: page.nextCursor, append: true }));
-        }}
-        onRefreshBaseline={async () => {
-          await props.onSaved();
-          await load();
-        }}
-        onStatus={props.onStatus}
-      />
+      {props.textOnly ? null : (
+        <>
+          <ScriptBreakdownPanel
+            refreshEpoch={props.refreshEpoch}
+            projectId={props.projectId}
+            episodeId={episode.id}
+            episodeNo={episode.episodeNo}
+            scriptReady={episode.currentScriptRevisionId !== null
+              && episode.currentScriptRevisionId === episode.approvedScriptRevisionId
+              && episode.currentScriptReviewStatus === "APPROVED"
+              && episode.currentScriptFreshnessStatus === "CURRENT"}
+            sceneCount={scenes?.items.length ?? 0}
+            onOpenScene={props.onOpenScene}
+            onChanged={async () => {
+              await props.onSaved();
+              await load();
+            }}
+          />
+          <SceneList
+            projectId={props.projectId}
+            episode={props.episode}
+            page={scenes}
+            scriptReady={props.episode.currentScriptRevisionId !== null
+              && props.episode.currentScriptRevisionId === props.episode.approvedScriptRevisionId
+              && props.episode.currentScriptReviewStatus === "APPROVED"
+              && props.episode.currentScriptFreshnessStatus === "CURRENT"}
+            onOpen={props.onOpenScene}
+            onReload={load}
+            onMore={async () => {
+              if (!scenes?.nextCursor || !props.episode) return;
+              const request = loadToken.current;
+              const scope = `${props.projectId}:${props.episode.id}`;
+              const page = await client.get<{ items: Aggregate[]; nextCursor: string | null }>(
+                `/projects/${props.projectId}/episodes/${props.episode.id}/scenes?cursor=${encodeURIComponent(scenes.nextCursor)}`,
+              );
+              if (!shouldApplyLoad(request, loadToken.current)) return;
+              setScenes((current) => applyPage(current, { scope, items: page.items, nextCursor: page.nextCursor, append: true }));
+            }}
+            onRefreshBaseline={async () => {
+              await props.onSaved();
+              await load();
+            }}
+            onStatus={props.onStatus}
+          />
+        </>
+      )}
     </div>
   );
 }

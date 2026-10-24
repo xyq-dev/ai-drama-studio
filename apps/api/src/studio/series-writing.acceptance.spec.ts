@@ -1650,3 +1650,60 @@ describe(`round 7 on PostgreSQL (${scenario} schema)`, () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------------------------------------------
+// Round 8 on PostgreSQL: the secret schedule and resolved conflicts on the real engine and store path (model double).
+
+describe(`round 8 on PostgreSQL (${scenario} schema)`, () => {
+  const stageRow = (seriesId: string, stageKey: string) => q<{ state: string; error_code: string | null; output_json: unknown }>(
+    `SELECT s.state, s.error_code, s.output_json FROM series_writing_stage s JOIN series_writing_run r ON r.id = s.run_id
+      WHERE r.series_id = $1 AND s.stage_key = $2 ORDER BY r.job_seq DESC LIMIT 1`, [seriesId, stageKey]);
+
+  it("2. the planned reveal (episode 5 of 9) never happens: the model's batch review says pass, the program finding blocks, the grant stops; no story or script is approved", async () => {
+    plan = { secrets: { 5: [] } };
+    const { svc, settle } = service();
+    const view = await createSeries(svc, 9);
+    const sent = seen.length;
+    expect((await grant(svc, view, { plan: true, batchFrom: 1, batchTo: 3, final: false })).status).toBe(201);
+    await settle();
+    plan = {};
+    const review = (await stageRow(view.seriesId, "batch_review:2"))[0]!.output_json as { verdict: string; passed: boolean; deterministic: Array<{ check: string; target: string; severity: string }> };
+    expect(review).toMatchObject({ verdict: "pass", passed: false });
+    expect(review.deterministic).toEqual(expect.arrayContaining([expect.objectContaining({ check: "secret_missing", target: "episode:5", severity: "high" })]));
+    expect(await q("SELECT state, stop_reason FROM series_writing_grant WHERE series_id = $1", [view.seriesId])).toEqual([{ state: "stopped", stop_reason: "batch_review_blocking" }]);
+    expect(seen.slice(sent).some((item) => item.stage === "batch_review:3" || item.stage === "episode:7")).toBe(false);
+    expect(await count("SELECT count(*)::int AS n FROM story_revision WHERE project_id = $1 AND review_status = 'APPROVED'", [view.projectId])).toBe(0);
+    expect(await count("SELECT count(*)::int AS n FROM script_revision s JOIN episode e ON e.id = s.episode_id WHERE e.project_id = $1 AND s.review_status = 'APPROVED'", [view.projectId])).toBe(0);
+    const page = viewOf((await svc.get(view.projectId)).body);
+    expect(page.batches[1]!.review.status).toBe("needs_revision");
+    expect(page.attention).toContain("batch_review_blocking:2");
+  });
+
+  it("3. K1 resolved in episode 2 and written open in episode 3: refused before it is stored; no ledger row; the resolved state stays", async () => {
+    plan = { conflicts: { 2: [{ id: "K1", content: "钥匙归属之争", status: "resolved" }], 3: [{ id: "K1", content: "钥匙又被拿走", status: "open" }] } };
+    const { svc, settle } = service();
+    const view = await createSeries(svc, 9);
+    expect((await grant(svc, view, { plan: true, batchFrom: 1, batchTo: 1, final: false })).status).toBe(201);
+    await settle();
+    plan = {};
+    expect(await stageRow(view.seriesId, "episode:3")).toEqual([{ state: "rejected", error_code: "plan_structure@continuity.conflicts[0]", output_json: null }]);
+    expect(await count("SELECT count(*)::int AS n FROM series_writing_ledger_revision WHERE series_id = $1", [view.seriesId])).toBe(0);
+    const kept = (await stageRow(view.seriesId, "episode:2"))[0]!.output_json as { continuity: { conflicts: unknown[] } };
+    expect(kept.continuity.conflicts).toEqual([{ id: "K1", content: "钥匙归属之争", status: "resolved" }]);
+    expect((await q<{ state: string }>("SELECT state FROM series_writing_grant WHERE series_id = $1", [view.seriesId]))[0]!.state).toBe("stopped");
+  });
+
+  it("3. control: K2 opened after K1 was resolved is accepted; the batch ledger keeps K1 resolved with its episode numbers", async () => {
+    plan = { conflicts: { 2: [{ id: "K1", content: "钥匙归属之争", status: "resolved" }], 3: [{ id: "K2", content: "转卖的消息", status: "open" }] } };
+    const { svc, settle } = service();
+    const view = await createSeries(svc, 9);
+    expect((await grant(svc, view, { plan: true, batchFrom: 1, batchTo: 1, final: false })).status).toBe(201);
+    await settle();
+    plan = {};
+    const ledger = (await q<{ content_json: { conflicts: unknown[] } }>("SELECT content_json FROM series_writing_ledger_revision WHERE series_id = $1 AND batch_no = 1", [view.seriesId]))[0]!;
+    expect(ledger.content_json.conflicts).toEqual([
+      { id: "K1", content: "钥匙归属之争", status: "resolved", openedIn: 1, resolvedIn: 2 },
+      { id: "K2", content: "转卖的消息", status: "open", openedIn: 3, resolvedIn: null },
+    ]);
+  });
+});

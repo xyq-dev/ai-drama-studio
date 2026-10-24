@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { seriesScopeCalls, type SeriesScope } from "@ai-drama/contracts";
+import { seriesScopeCalls, type SeriesEpisode, type SeriesScope } from "@ai-drama/contracts";
 import { PersistenceError } from "@ai-drama/database";
 import { buildSeriesJob, nextSeriesJob, seriesCurrentPlan, seriesFinalBasis, seriesJobUpstreamChange, type SeriesView } from "@ai-drama/domain";
 import { InMemorySeriesWritingStore, SeriesWritingEngine, titleWritingProviderConfigs } from "@ai-drama/providers";
@@ -1394,5 +1394,174 @@ describe("round 7: a grant never goes on under a plan revision it was not confir
     await reconfirm(s, view.projectId);
     snapshot = (await s.store.snapshot(WS, view.projectId))!;
     expect(nextSeriesJob(snapshot, snapshot.grants.find((item) => item.id === old.grantId)!, ids)).toMatchObject({ kind: "refused", code: "upstream_plan_changed" });
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Round 8 (review of PR #85): secret schedule and resolved conflicts on the engine path, plan blockers before any
+// episode, and collision-safe Markdown fences.
+
+/**
+ * The fenced code blocks and the top-level headings of a Markdown text, read the way CommonMark reads fences: an
+ * opening line of three or more backticks (up to three spaces of indent) is closed only by a line of at least as many
+ * backticks and nothing else; anything unclosed runs to the end of the document.
+ */
+function markdownStructure(text: string): { blocks: string[]; headings: string[]; unclosed: boolean } {
+  const blocks: string[] = [];
+  const headings: string[] = [];
+  let open: { length: number; lines: string[] } | null = null;
+  for (const line of text.split("\n")) {
+    if (open) {
+      const close = /^ {0,3}(`+)[ \t]*$/u.exec(line);
+      if (close && close[1]!.length >= open.length) { blocks.push(open.lines.join("\n")); open = null; } else open.lines.push(line);
+      continue;
+    }
+    const start = /^ {0,3}(`{3,})([^`]*)$/u.exec(line);
+    if (start) { open = { length: start[1]!.length, lines: [] }; continue; }
+    if (/^ {0,3}#{1,6} /u.test(line)) headings.push(line.trim());
+  }
+  if (open) blocks.push(open.lines.join("\n"));
+  return { blocks, headings, unclosed: open !== null };
+}
+
+describe("round 8, 2 and 3: the engine path keeps the secret schedule and resolved conflicts", () => {
+  it("2. the planned reveal (episode 5 of 9) is missing: the model's batch review says pass, the program finding blocks; the grant stops for a person", async () => {
+    const s = setup({ plan: { secrets: { 5: [] } } });
+    const view = await work(s, 9);
+    await grant(s, view, { plan: true, batchFrom: 1, batchTo: 3, final: false });
+    const page = await current(s, view.projectId);
+    expect(page.grants[0]).toMatchObject({ state: "stopped", stopReason: "batch_review_blocking" });
+    const review = s.store.stages.find((stage) => stage.stageKey === "batch_review:2" && stage.state === "completed")!.output as unknown as
+      { verdict: string; passed: boolean; deterministic: Array<{ check: string; target: string; severity: string }> };
+    expect(review.verdict).toBe("pass");
+    expect(review.passed).toBe(false);
+    expect(review.deterministic).toEqual(expect.arrayContaining([expect.objectContaining({ check: "secret_missing", target: "episode:5", severity: "high" })]));
+    expect(page.batches[1]!.review.status).toBe("needs_revision");
+    // Nothing approves the story or a script by itself; a person's review is the way on, as before.
+    expect(s.store.projects.get(view.projectId)!.stories.every((story) => story.reviewStatus !== "APPROVED")).toBe(true);
+    expect(s.seen.some((item) => item.stage === "batch_review:3")).toBe(false);
+  });
+
+  it("2. revealed early (episode 3) and never in episode 5: blocking findings in batch 1 and batch 2's planned episode is not called missing", async () => {
+    const s = setup({ plan: { secrets: { 3: [{ id: "S1", revealedTo: ["C1"] }], 5: [] } } });
+    const view = await work(s, 9);
+    await grant(s, view, { plan: true, batchFrom: 1, batchTo: 1, final: false });
+    const review = s.store.stages.find((stage) => stage.stageKey === "batch_review:1" && stage.state === "completed")!.output as unknown as
+      { passed: boolean; deterministic: Array<{ check: string; target: string }> };
+    expect(review.passed).toBe(false);
+    expect(review.deterministic.filter((item) => item.check.startsWith("secret_")).map((item) => `${item.check}@${item.target}`)).toEqual(["secret_schedule@episode:3"]);
+  });
+
+  it("3. K1 resolved in episode 2 and written open again in episode 3: the answer is refused before it is stored or merged; the ledger is never reopened", async () => {
+    const s = setup({ plan: { conflicts: { 2: [{ id: "K1", content: "钥匙归属之争", status: "resolved" }], 3: [{ id: "K1", content: "钥匙又被拿走", status: "open" }] } } });
+    const view = await work(s, 9);
+    await grant(s, view, { plan: true, batchFrom: 1, batchTo: 1, final: false });
+    const stage = s.store.stages.find((item) => item.stageKey === "episode:3")!;
+    expect(stage).toMatchObject({ state: "rejected", output: null });
+    expect(stage.errorCode).toBe("plan_structure@continuity.conflicts[0]");
+    expect(s.store.ledgers.filter((item) => item.batchNo === 1)).toHaveLength(0);
+    const kept = s.store.stages.find((item) => item.stageKey === "episode:2")!.output as unknown as SeriesEpisode;
+    expect(kept.continuity.conflicts).toEqual([{ id: "K1", content: "钥匙归属之争", status: "resolved" }]);
+    expect((await current(s, view.projectId)).grants[0]).toMatchObject({ state: "stopped" });
+  });
+
+  it("3. a new K2 after K1 was resolved is accepted on the same path; the ledger keeps K1 resolved and its episode numbers", async () => {
+    const s = setup({ plan: { conflicts: { 2: [{ id: "K1", content: "钥匙归属之争", status: "resolved" }], 3: [{ id: "K2", content: "转卖的消息", status: "open" }] } } });
+    const view = await work(s, 9);
+    await grant(s, view, { plan: true, batchFrom: 1, batchTo: 1, final: false });
+    const ledger = s.store.ledgers.find((item) => item.batchNo === 1)!;
+    expect(ledger.content.conflicts).toEqual([
+      { id: "K1", content: "钥匙归属之争", status: "resolved", openedIn: 1, resolvedIn: 2 },
+      { id: "K2", content: "转卖的消息", status: "open", openedIn: 3, resolvedIn: null },
+    ]);
+  });
+});
+
+describe("round 8, 5: plan blockers are pending work before any episode is written", () => {
+  const exported = async (s: Setup, projectId: string) => ({
+    json: (JSON.parse((await s.service.package(projectId, "json")).download!.text) as { completion: { attention: string[] } }).completion.attention,
+    markdown: (await s.service.package(projectId, "markdown")).download!.text,
+  });
+  const shown = async (s: Setup, projectId: string) => {
+    const view = await current(s, projectId);
+    const pack = await exported(s, projectId);
+    expect(pack.json).toEqual(view.attention);
+    const line = pack.markdown.split("\n").find((item) => item.startsWith("> 待办："));
+    expect(line ?? null).toBe(view.attention.length > 0 ? `> 待办：${view.attention.join("、")}` : null);
+    return view;
+  };
+
+  it("a blocking model plan review with 0 episodes: plan_review_blocking in the view, JSON and Markdown; a person's review clears it", async () => {
+    const s = setup({ plan: { blockingPlanReview: true } });
+    const created = await work(s, 6);
+    await grant(s, created, { plan: true, batchFrom: null, batchTo: null, final: false });
+    let view = await shown(s, created.projectId);
+    expect(view).toMatchObject({ written: 0, completion: "planned", attention: ["plan_review_blocking"], plan: { status: "needs_revision" } });
+    expect((await decide(s, created.projectId, "plan", view.plan!.decisionBasis)).status).toBe(201);
+    view = await shown(s, created.projectId);
+    expect(view).toMatchObject({ attention: [], plan: { status: "cleared" } });
+  });
+
+  it("a person's plan not yet reviewed, 0 episodes: plan_unreviewed until reviewed", async () => {
+    const s = setup();
+    const created = await work(s, 6);
+    await grant(s, created, { plan: true, batchFrom: null, batchTo: null, final: false });
+    expect((await shown(s, created.projectId)).attention).toEqual([]);
+    expect((await savePlan(s, await current(s, created.projectId), "adopt_current", "人工改写后的一句话故事")).status).toBe(201);
+    let view = await shown(s, created.projectId);
+    expect(view).toMatchObject({ written: 0, attention: ["plan_unreviewed"], plan: { status: "unreviewed", origin: "manual" } });
+    expect((await decide(s, created.projectId, "plan", view.plan!.decisionBasis)).status).toBe(201);
+    view = await shown(s, created.projectId);
+    expect(view.attention).toEqual([]);
+  });
+
+  it("no plan yet: not started, nothing pending, and no plan check is invented", async () => {
+    const s = setup();
+    const created = await work(s, 6);
+    const view = await shown(s, created.projectId);
+    expect(view).toMatchObject({ completion: "not_started", attention: [], plan: null });
+  });
+});
+
+describe("round 8, 6: Markdown fences never close inside the text they hold", () => {
+  const HOSTILE = (label: string) => `${label}开头\n\`\`\`\n# 注入的标题 ${label}\n[注入的链接](https://example.invalid/${label})\n\`\`\`\`\n\`\`\`\`\`\`\`text\n- 列表\n中文结尾无换行`;
+
+  it("story, approved story, current, approved and unadopted scripts each stay one block, byte for byte; the package's own structure is unchanged", async () => {
+    // The double's episode text carries a line of three backticks and a heading line (its JSON allows new lines).
+    const s = setup({ plan: { tag: "替身样例\n```\n# 模型稿里的标题\n````" } });
+    const view = await work(s, 3);
+    await grant(s, view, { plan: true, batchFrom: 1, batchTo: 1, final: false });
+    const project = s.store.projects.get(view.projectId)!;
+    s.store.writeHumanStory(view.projectId, HOSTILE("故事批准稿"));
+    s.store.approveCurrentStory(view.projectId);
+    s.store.writeHumanStory(view.projectId, HOSTILE("故事当前稿"));
+    s.store.writeHumanScript(view.projectId, 1, HOSTILE("第1集当前稿"));
+    s.store.writeHumanScript(view.projectId, 2, HOSTILE("第2集批准稿"));
+    s.store.approveScript(view.projectId, 2);
+    s.store.writeHumanScript(view.projectId, 2, HOSTILE("第2集当前稿"));
+    const json = JSON.parse((await s.service.package(view.projectId, "json")).download!.text) as {
+      story: { current: { text: string }; approved: { text: string } };
+      episodes: Array<{ current: { text: string } | null; approved: { text: string } | null; unadoptedModelDraft: { text: string } | null }> };
+    const markdown = (await s.service.package(view.projectId, "markdown")).download!.text;
+    const structure = markdownStructure(markdown);
+    expect(structure.unclosed).toBe(false);
+    const texts = [json.story.current.text, json.story.approved.text, json.episodes[0]!.current!.text, json.episodes[0]!.unadoptedModelDraft!.text,
+      json.episodes[1]!.current!.text, json.episodes[1]!.approved!.text, json.episodes[2]!.current!.text];
+    expect(texts[0]).toBe(HOSTILE("故事当前稿"));
+    expect(texts[1]).toBe(HOSTILE("故事批准稿"));
+    expect(texts[2]).toBe(HOSTILE("第1集当前稿"));
+    expect(texts[4]).toBe(HOSTILE("第2集当前稿"));
+    expect(texts[5]).toBe(HOSTILE("第2集批准稿"));
+    expect(texts[3]).toContain("\n```\n# 模型稿里的标题\n````");
+    expect(texts[6]).toContain("\n```\n# 模型稿里的标题\n````");
+    // Each text is exactly one code block's content, unchanged (the saved text and the JSON are the same).
+    for (const text of texts) expect(structure.blocks).toContain(text);
+    expect(project.stories.find((item) => item.id === project.currentStoryId)!.text).toBe(HOSTILE("故事当前稿"));
+    // The headings inside the texts never become package structure: only the package's own headings are top level.
+    expect(structure.headings.filter((item) => item.includes("注入") || item.includes("模型稿里的标题"))).toEqual([]);
+    expect(structure.headings).toEqual(expect.arrayContaining(["## 故事（工作台实际当前稿）", "## 各集剧本", "### 第 1 集", "### 第 2 集", "### 第 3 集", "## 全剧总检", "## 缺项"]));
+    // Every block's fence is longer than the longest backtick run it holds.
+    const opened = markdown.split("\n").filter((line) => /^`{3,}(text|json)$/u.test(line));
+    expect(opened.some((line) => line.startsWith("````````text"))).toBe(true);
   });
 });

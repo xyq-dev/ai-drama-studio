@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   SERIES_ARC_SCHEMA,
+  SERIES_BATCH_REVIEW_DIMENSIONS,
+  SERIES_BATCH_REVIEW_SCHEMA,
   SERIES_EPISODE_SCHEMA,
   SERIES_LEDGER_SCHEMA,
   SERIES_OUTLINE_SCHEMA,
@@ -13,6 +15,7 @@ import {
   type SeriesArc,
   type SeriesEpisode,
   type SeriesFrozenInput,
+  type SeriesLedger,
   type SeriesOutlineEpisode,
   type SeriesPlanContent,
   type SeriesSetting,
@@ -22,6 +25,7 @@ import {
   checkSeriesLedgerContent,
   checkSeriesPlanContent,
   seriesBatchFindings,
+  seriesFinalFindings,
   seriesContextFromPlan,
   seriesInitialLedger,
   seriesOutlineLine,
@@ -238,5 +242,154 @@ describe("round 4: a forbidden theme is matched in creative text only, never in 
     expect(checkSeriesPlanContent(forbidding("series"), { ...plan, setting: { ...setting, synopsis: "一部 series 样例" } }))
       .toMatchObject({ ok: false, code: "constraint_violation", detail: "forbidden_theme" });
     expect(checkSeriesPlanContent(forbidding("承接"), plan)).toMatchObject({ ok: false, code: "constraint_violation" });
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Round 8 (review of PR #85): a secret's planned reveal episode, and a resolved conflict that stays resolved.
+
+describe("round 8, 2: a secret is first revealed in its planned episode (person knowledge, structured records only)", () => {
+  type Secrets = SeriesEpisode["continuity"]["secrets"];
+  /** S1 held by C2, nobody else knows at the start, planned for episode 3 (or as the patch says). */
+  const planWith = (secret: Partial<SeriesSetting["secrets"][number]>): SeriesPlanContent =>
+    ({ ...plan, setting: { ...setting, secrets: [{ ...setting.secrets[0]!, revealEpisode: 3, ...secret }] } });
+  /** Episodes 1–9 with the given secrets entries; C1 and C2 on screen unless the cast says otherwise. */
+  function run(content: SeriesPlanContent, secrets: Record<number, Secrets>, cast: Record<number, string[]> = {}) {
+    const context = { ...seriesContextFromPlan(input, content, "0".repeat(64)), baseLedger: seriesInitialLedger(content), baseLedgerHash: null };
+    for (let k = 1; k <= N; k += 1) {
+      const scenes = [{ ...episode(k).scenes[0]!, characterIds: cast[k] ?? ["C1", "C2"] }];
+      context.episodes.set(k, { stageKey: `episode:${String(k)}`, hash: String(k).repeat(64), episode: episode(k, { scenes,
+        continuity: { ...episode(k).continuity, secrets: secrets[k] ?? [] } }) });
+    }
+    const findings = seriesBatchFindings(input, context, 1, N);
+    let ledger = seriesInitialLedger(content);
+    for (let k = 1; k <= N; k += 1) ledger = applySeriesContinuity(ledger, k, context.episodes.get(k)!.episode.continuity);
+    const final = seriesFinalFindings(input, { ...context, final: { ledger, ledgerHash: "f".repeat(64), batches: [],
+      summaries: Array.from({ length: N }, (_, index) => ({ episodeNo: index + 1, summary: "概要", versionHash: "v", basisHash: "b" })) } });
+    const of = (list: Array<{ check: string; target: string; severity: string }>) => list.filter((item) => item.check.startsWith("secret_"))
+      .map((item) => `${item.check}@${item.target}:${item.severity}`);
+    return { findings, episodes: of(findings), final: of(final), all: findings };
+  }
+
+  it("planned for episode 3, first told in episode 2: an early reveal blocks; episode 3 is not also called missing", () => {
+    const result = run(planWith({}), { 2: [{ id: "S1", revealedTo: ["C1"] }] });
+    expect(result.episodes).toEqual(["secret_schedule@episode:2:high"]);
+    expect(result.final).toEqual([]);
+  });
+
+  it("missing in episode 3, first told in episode 4: both are blocking findings", () => {
+    const result = run(planWith({}), { 4: [{ id: "S1", revealedTo: ["C1"] }] });
+    expect(result.episodes).toEqual(["secret_missing@episode:3:high", "secret_schedule@episode:4:high"]);
+    expect(result.final).toEqual([]);
+  });
+
+  it("never revealed: missing in episode 3 and unrevealed at the end of the series", () => {
+    const result = run(planWith({}), {});
+    expect(result.episodes).toEqual(["secret_missing@episode:3:high"]);
+    expect(result.final).toEqual(["secret_unrevealed@ledger:high"]);
+  });
+
+  it("revealed in episode 3 as planned: no secret finding in any episode or at the end", () => {
+    const result = run(planWith({}), { 3: [{ id: "S1", revealedTo: ["C1"] }] });
+    expect(result.episodes).toEqual([]);
+    expect(result.final).toEqual([]);
+  });
+
+  it("telling only someone who already knew (the holder, or a knownBy person) is no reveal", () => {
+    expect(run(planWith({}), { 3: [{ id: "S1", revealedTo: ["C2"] }] }).episodes).toEqual(["secret_missing@episode:3:high"]);
+    const knownBy = run(planWith({ knownBy: ["C1"] }), { 3: [{ id: "S1", revealedTo: ["C1"] }] }, { 3: ["C1", "C2", "C3"] });
+    expect(knownBy.episodes).toEqual(["secret_missing@episode:3:high"]);
+    expect(knownBy.final).toEqual(["secret_unrevealed@ledger:high"]);
+    // Told to C3 (who did not know) in episode 3 instead: that is the planned reveal.
+    expect(run(planWith({ knownBy: ["C1"] }), { 3: [{ id: "S1", revealedTo: ["C3"] }] }, { 3: ["C1", "C2", "C3"] }).episodes).toEqual([]);
+  });
+
+  it("after the planned reveal, telling another person later is ordinary spreading; the presence checks still hold", () => {
+    const spread = run(planWith({}), { 3: [{ id: "S1", revealedTo: ["C1"] }], 6: [{ id: "S1", revealedTo: ["C3"] }] }, { 6: ["C1", "C2", "C3"] });
+    expect(spread.episodes).toEqual([]);
+    expect(spread.final).toEqual([]);
+    expect(spread.all.filter((item) => item.check === "knowledge_boundary")).toEqual([]);
+    // C3 is not on screen in episode 6: the receiver presence check still blocks it.
+    const absent = run(planWith({}), { 3: [{ id: "S1", revealedTo: ["C1"] }], 6: [{ id: "S1", revealedTo: ["C3"] }] });
+    expect(absent.all.filter((item) => item.check === "knowledge_boundary").map((item) => item.target)).toEqual(["episode:6"]);
+    // The holder C2 (the only one who knew) is not on screen when it is told: the knower presence check still blocks it.
+    const noKnower = run(planWith({}), { 3: [{ id: "S1", revealedTo: ["C1"] }] }, { 3: ["C1"] });
+    expect(noKnower.all.filter((item) => item.check === "knowledge_boundary").map((item) => item.target)).toEqual(["episode:3"]);
+  });
+
+  it("revealEpisode null: no episode limit, and no finding at the end when it is never told", () => {
+    expect(run(planWith({ revealEpisode: null }), { 2: [{ id: "S1", revealedTo: ["C1"] }] }).episodes).toEqual([]);
+    const never = run(planWith({ revealEpisode: null }), {});
+    expect(never.episodes).toEqual([]);
+    expect(never.final).toEqual([]);
+  });
+
+  it("a plan whose every person knows from the start cannot reveal: refused as a plan contradiction (model setting and a person's plan); an old plan says so", () => {
+    const allKnow = { ...setting.secrets[0]!, knownBy: ["C1", "C3"], revealEpisode: 3 };
+    const ctx = seriesContextFromPlan(input, plan, "0".repeat(64));
+    expect(validateSeriesStageOutput("setting", JSON.stringify({ ...setting, secrets: [allKnow] }), input, ctx, autoInput))
+      .toMatchObject({ ok: false, code: "plan_structure", field: "secrets[0].revealEpisode", detail: "secret_reveal_impossible" });
+    expect(checkSeriesPlanContent(input, { ...plan, setting: { ...setting, secrets: [allKnow] } }))
+      .toMatchObject({ ok: false, code: "plan_structure", detail: "secret_reveal_impossible" });
+    const old = run({ ...plan, setting: { ...setting, secrets: [allKnow] } }, {});
+    expect(old.findings.find((item) => item.check === "secret_missing")!.detail).toContain("规划矛盾");
+  });
+
+  it("a model batch review that says pass never clears a blocking secret finding: the program finding is kept apart", () => {
+    const content = planWith({});
+    const context = { ...seriesContextFromPlan(input, content, "0".repeat(64)), baseLedger: seriesInitialLedger(content), baseLedgerHash: "a".repeat(64) };
+    for (const k of [1, 2, 3]) context.episodes.set(k, { stageKey: `episode:${String(k)}`, hash: String(k).repeat(64), episode: episode(k) });
+    const pass = { schema: SERIES_BATCH_REVIEW_SCHEMA, verdict: "pass", issues: [],
+      dimensions: SERIES_BATCH_REVIEW_DIMENSIONS.map((key) => ({ key, assessment: "通过", internalScore: 5 })) };
+    const checked = validateSeriesStageOutput("batch_review:1", JSON.stringify(pass), input, context, autoInput);
+    expect(checked.ok).toBe(true);
+    const output = (checked as { output: { verdict: string; passed: boolean; deterministic: Array<{ check: string }> } }).output;
+    expect(output.verdict).toBe("pass");
+    expect(output.passed).toBe(false);
+    expect(output.deterministic.map((item) => item.check)).toContain("secret_missing");
+  });
+});
+
+describe("round 8, 3: a conflict the ledger records as resolved is never reopened by a model answer", () => {
+  const withConflicts = (conflicts: SeriesLedger["conflicts"]) => {
+    const baseLedger = { ...seriesInitialLedger(plan), throughEpisode: 2, conflicts };
+    return { ...seriesContextFromPlan(input, plan, "0".repeat(64)), baseLedger, baseLedgerHash: null };
+  };
+  const answer = (conflicts: SeriesEpisode["continuity"]["conflicts"]) => JSON.stringify(episode(3, { continuity: { ...episode(3).continuity, conflicts } }));
+  const K1 = { id: "K1", content: "钥匙归属之争", openedIn: 1 };
+
+  it("K1 resolved, the answer writes K1 open: refused before it is accepted or merged; the ledger stays resolved", () => {
+    const context = withConflicts([{ ...K1, status: "resolved", resolvedIn: 2 }]);
+    const before = structuredClone(context.baseLedger);
+    expect(validateSeriesStageOutput("episode:3", answer([{ id: "K1", content: "钥匙又被拿走", status: "open" }]), input, context, autoInput))
+      .toMatchObject({ ok: false, code: "plan_structure", field: "continuity.conflicts[0]", detail: "conflict_reopened" });
+    expect(context.baseLedger).toEqual(before);
+  });
+
+  it("resolved within the same job (an earlier episode of the batch): reopening it in the next episode is refused too", () => {
+    const context = withConflicts([{ ...K1, status: "open", resolvedIn: null }]);
+    context.episodes.set(3, { stageKey: "episode:3", hash: "3".repeat(64), episode: episode(3, { continuity: { ...episode(3).continuity, conflicts: [{ id: "K1", content: "和解", status: "resolved" }] } }) });
+    const reopen = JSON.stringify(episode(4, { continuity: { ...episode(4).continuity, conflicts: [{ id: "K1", content: "再起争执", status: "open" }] } }));
+    expect(validateSeriesStageOutput("episode:4", reopen, input, context, autoInput)).toMatchObject({ ok: false, detail: "conflict_reopened" });
+  });
+
+  it("K1 open continued, K1 open → resolved, and a new K2 after a resolved K1 are all accepted; history is kept", () => {
+    const open = withConflicts([{ ...K1, status: "open", resolvedIn: null }]);
+    expect(validateSeriesStageOutput("episode:3", answer([{ id: "K1", content: "争执升级", status: "open" }]), input, open, autoInput).ok).toBe(true);
+    const resolving = validateSeriesStageOutput("episode:3", answer([{ id: "K1", content: "和解", status: "resolved" }]), input, open, autoInput);
+    expect(resolving.ok).toBe(true);
+    const merged = applySeriesContinuity(open.baseLedger, 3, (resolving as { output: SeriesEpisode }).output.continuity);
+    expect(merged.conflicts).toEqual([{ id: "K1", content: "和解", status: "resolved", openedIn: 1, resolvedIn: 3 }]);
+    const resolved = withConflicts([{ ...K1, status: "resolved", resolvedIn: 2 }]);
+    const fresh = validateSeriesStageOutput("episode:3", answer([{ id: "K2", content: "新的矛盾", status: "open" }]), input, resolved, autoInput);
+    expect(fresh.ok).toBe(true);
+    const after = applySeriesContinuity(resolved.baseLedger, 3, (fresh as { output: SeriesEpisode }).output.continuity);
+    expect(after.conflicts).toEqual([{ ...K1, status: "resolved", resolvedIn: 2 }, { id: "K2", content: "新的矛盾", status: "open", openedIn: 3, resolvedIn: null }]);
+  });
+
+  it("a person's ledger correction is not affected: a person may still record K1 as open again", () => {
+    const ledger = { ...applySeriesContinuity(seriesInitialLedger(plan), 3, episode(3).continuity),
+      conflicts: [{ ...K1, status: "open" as const, resolvedIn: null }] };
+    expect(checkSeriesLedgerContent(plan, ledger, 3).ok).toBe(true);
   });
 });

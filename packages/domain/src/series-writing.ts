@@ -226,6 +226,11 @@ export function applySeriesContinuity(ledger: SeriesLedger, episodeNo: number, c
   return next;
 }
 
+/** Who knows a secret from the start (its holder and the setting's knownBy): telling them is never its reveal. */
+export function seriesSecretInitialKnowers(secret: Pick<SeriesSetting["secrets"][number], "holderId" | "knownBy">): Set<string> {
+  return new Set([secret.holderId, ...secret.knownBy]);
+}
+
 /** The ledger a batch prompt or check reads before episode n: the base ledger with the batch's earlier episodes applied. */
 export function seriesLedgerBefore(context: SeriesContext, episodeNo: number): SeriesLedger {
   let ledger = context.baseLedger!;
@@ -357,6 +362,12 @@ function foreshadowingWithStatus(context: SeriesContext, ledger: SeriesLedger): 
   return context.arc!.foreshadowing.map((item) => ({ ...item, status: ledger.foreshadowing.find((entry) => entry.id === item.id)?.status ?? "planned" }));
 }
 
+/** What the episode prompt says of the planned reveals: the secrets due in this episode, and that no other one is revealed early. */
+function secretScheduleLine(context: SeriesContext, episodeNo: number): string {
+  const due = context.setting!.secrets.filter((item) => item.revealEpisode === episodeNo).map((item) => item.id);
+  return `秘密揭露按计划集号：本集应首次揭露 ${due.length > 0 ? due.join("、") : "无"}（在 continuity.secrets 写 revealedTo，对象必须是原本不知情且在场的人物；只向已知情者重复不算揭露）；计划在以后各集揭露的秘密，本集不要提前告诉原本不知情的人物。`;
+}
+
 function episodeShape(input: SeriesFrozenInput, episodeNo: number): string[] {
   const range = shotSecondsRange(input.episodeSeconds);
   const last = episodeNo === input.episodeCount;
@@ -409,7 +420,7 @@ export function buildSeriesPrompt(stageKey: string, input: SeriesFrozenInput, co
       `任务：按选定方向写全剧设定（共 ${String(n)} 集）。`,
       "core：主角（protagonistId）的欲望、弱点、目标、核心冲突、关键选择及后果、失败代价、唯一的全剧结局，以及全剧主要转折（majorTurns，写在第几集）。",
       "characters 用稳定编号 C1、C2…，写身份、目标、弱点、人物弧线、说话特点和第一集开始时的位置；relationships 只引用已有人物，同一方向的一对人物（from→to）只写一条；",
-      "secrets 用 S1…，写秘密持有者、内容、开始时已知情的人物（knownBy）和计划揭露的集（可为 null）；locations 用 L1…；props 用 P1…，写开始时的持有人（可为 null）和用途。",
+      "secrets 用 S1…，写秘密持有者、内容、开始时已知情的人物（knownBy）和计划揭露的集（revealEpisode，可为 null：首次告诉一位原本不知情的人物的那一集；持有者和 knownBy 开始时就知情，所以计划揭露时至少要有一位不在其中的人物）；locations 用 L1…；props 用 P1…，写开始时的持有人（可为 null）和用途。",
       "不要超过用户的人物和地点上限。",
       `schema 固定为 "${SERIES_SETTING_SCHEMA}"；title 是你为作品拟的剧名。`,
       budgetLine(SERIES_BUDGETS.setting, "整个 json "),
@@ -475,7 +486,8 @@ export function buildSeriesPrompt(stageKey: string, input: SeriesFrozenInput, co
     lines = [
       ...head,
       `任务：写第 ${String(episodeNo)} 集剧本（全剧共 ${String(n)} 集），严格按已冻结的设定、分幕、本集细纲、连续性台账和上一集交接。`,
-      "不新增人物、地点或道具，不改名；人物只知道台账里他已知道的信息；道具的持有人以台账为准；不重复已解决的冲突。",
+      "不新增人物、地点或道具，不改名；人物只知道台账里他已知道的信息；道具的持有人以台账为准；台账里已解决的冲突不能再写为 open，新的矛盾用新的冲突编号。",
+      secretScheduleLine(context, episodeNo),
       ...episodeShape(input, episodeNo),
       budgetLine(SERIES_BUDGETS.episode, "整个 json "),
       `连续性台账合并本集后整体不能超过约 ${String(SERIES_BUDGETS.ledger)} 字符（当前约 ${String(seriesSize(ledger))} 字符）：continuity 只写真正变化的项，已有人物的已知信息保持精炼。`,
@@ -634,6 +646,10 @@ function checkSetting(input: SeriesFrozenInput, output: SeriesSetting): SeriesVa
   if (duplicatePair(output.relationships)) return refuse("duplicate_id", "relationships");
   for (const [index, item] of output.secrets.entries()) {
     if (!characters.has(item.holderId) || item.knownBy.some((id) => !characters.has(id))) return refuse("dangling_reference", `secrets[${String(index)}]`);
+    // A planned reveal needs someone who does not know yet: never an added person or an invented event.
+    if (item.revealEpisode !== null && output.characters.every((character) => seriesSecretInitialKnowers(item).has(character.id))) {
+      return refuse("plan_structure", `secrets[${String(index)}].revealEpisode`, "secret_reveal_impossible");
+    }
   }
   for (const [index, item] of output.props.entries()) {
     if (item.initialHolderId !== null && !characters.has(item.initialHolderId)) return refuse("dangling_reference", `props[${String(index)}].initialHolderId`);
@@ -721,7 +737,11 @@ function checkEpisode(input: SeriesFrozenInput, episodeNo: number, output: Serie
   if (c.secrets.some((item) => !secrets.has(item.id) || item.revealedTo.some((id) => !characters.has(id)))) return refuse("dangling_reference", "continuity.secrets");
   if (c.foreshadowing.some((item) => !foreshadowing.has(item.id)) || duplicate(c.foreshadowing.map((item) => item.id))) return refuse("dangling_reference", "continuity.foreshadowing");
   if (duplicate(c.conflicts.map((item) => item.id))) return refuse("duplicate_id", "continuity.conflicts");
-  if (seriesSize(applySeriesContinuity(seriesLedgerBefore(context, episodeNo), episodeNo, c)) > SERIES_BUDGETS.ledger) return refuse("too_large", "continuity", "ledger_budget");
+  // A conflict the ledger records as resolved stays resolved: a new contradiction takes a new id (refused, never merged or dropped).
+  const before = seriesLedgerBefore(context, episodeNo);
+  const reopened = c.conflicts.findIndex((item) => item.status === "open" && before.conflicts.some((entry) => entry.id === item.id && entry.status === "resolved"));
+  if (reopened >= 0) return refuse("plan_structure", `continuity.conflicts[${String(reopened)}]`, "conflict_reopened");
+  if (seriesSize(applySeriesContinuity(before, episodeNo, c)) > SERIES_BUDGETS.ledger) return refuse("too_large", "continuity", "ledger_budget");
   return { ok: true, output };
 }
 
@@ -942,6 +962,28 @@ export function seriesEpisodeFindings(input: SeriesFrozenInput, context: SeriesC
     const absent = secret.revealedTo.filter((id) => !onScreen.has(id));
     if (absent.length > 0) findings.push({ check: "knowledge_boundary", target, severity: "high", detail: `秘密 ${secret.id} 揭露给没有出场的人物：${absent.join("、")}。` });
   }
+  // The planned reveal: the episode a secret is first told to someone who did not know it (holder and knownBy of the
+  // setting know from the start; telling someone who already knows reveals nothing). Read from the structured records only.
+  for (const planned of setting.secrets) {
+    if (planned.revealEpisode === null) continue;
+    const entry = before.secrets.find((item) => item.id === planned.id);
+    const initial = seriesSecretInitialKnowers(planned);
+    const revealedBefore = (entry?.knownBy ?? []).some((id) => !initial.has(id));
+    const knowing = new Set([entry?.holderId ?? planned.holderId, ...(entry?.knownBy ?? planned.knownBy)]);
+    const told = episode.continuity.secrets.filter((item) => item.id === planned.id).flatMap((item) => item.revealedTo).filter((id) => !knowing.has(id));
+    const firstHere = !revealedBefore && told.length > 0;
+    const plannedAt = `计划在第 ${String(planned.revealEpisode)} 集首次揭露`;
+    if (firstHere && episode.episodeNo < planned.revealEpisode) {
+      findings.push({ check: "secret_schedule", target, severity: "high", detail: `秘密 ${planned.id} ${plannedAt}，正文在本集提前首次告诉了 ${told.join("、")}。` });
+    } else if (firstHere && episode.episodeNo > planned.revealEpisode) {
+      findings.push({ check: "secret_schedule", target, severity: "high", detail: `秘密 ${planned.id} ${plannedAt}，正文到本集才首次揭露。` });
+    } else if (episode.episodeNo === planned.revealEpisode && !revealedBefore && !firstHere) {
+      const impossible = setting.characters.every((character) => initial.has(character.id));
+      findings.push({ check: "secret_missing", target, severity: "high", detail: impossible
+        ? `秘密 ${planned.id} ${plannedAt}，但规划里所有人物开始时都已知情，无人可被首次告知：这是规划矛盾，需要修改规划。`
+        : `秘密 ${planned.id} ${plannedAt}，本集没有把它告诉任何原本不知情的人物（只向已知情者重复不算揭露）。` });
+    }
+  }
   for (const conflict of episode.continuity.conflicts) {
     const entry = before.conflicts.find((item) => item.id === conflict.id);
     if (conflict.status === "resolved" && (!entry || entry.status === "resolved")) {
@@ -999,6 +1041,13 @@ export function seriesFinalFindings(input: SeriesFrozenInput, context: SeriesCon
   }
   for (const item of final.ledger.foreshadowing.filter((entry) => entry.status !== "paid")) {
     findings.push({ check: "foreshadowing_unpaid", target: "ledger", severity: "high", detail: `伏笔 ${item.id} 到全剧结束仍未兑现（${item.status === "planned" ? "未埋设" : "已埋设"}）。` });
+  }
+  for (const planned of context.setting?.secrets ?? []) {
+    const entry = final.ledger.secrets.find((item) => item.id === planned.id);
+    const initial = seriesSecretInitialKnowers(planned);
+    if (planned.revealEpisode !== null && !(entry?.knownBy ?? []).some((id) => !initial.has(id))) {
+      findings.push({ check: "secret_unrevealed", target: "ledger", severity: "high", detail: `秘密 ${planned.id} 计划在第 ${String(planned.revealEpisode)} 集首次揭露，到全剧结束仍没有告诉任何原本不知情的人物。` });
+    }
   }
   for (const item of final.ledger.conflicts.filter((entry) => entry.status === "open")) {
     findings.push({ check: "conflict_open", target: "ledger", severity: "medium", detail: `冲突 ${item.id} 到全剧结束仍未解决。` });

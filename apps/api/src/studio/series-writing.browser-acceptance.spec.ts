@@ -605,3 +605,96 @@ describe("series writing in a real browser (site login, built web, real API, iso
     expect(pageErrors).toEqual([]);
   }, 120_000);
 });
+
+// ---------------------------------------------------------------------------------------------------------------
+// Round 8 (review of PR #85) in the real browser: the series text workbench, a restored create request and a plan
+// blocker before any episode.
+
+describe("round 8 in a real browser", () => {
+  const MEDIA = /\/api\/v1\/.*\/(scenes|shots|compose-candidates|composites|media|references)(\/|\?|$)/u;
+
+  it("S11: a series work's workbench offers story and scripts only; an old media step link opens the script step; no media request is made", async () => {
+    const requests: string[] = [];
+    const record = (request: { url(): string; method(): string }) => { if (request.url().includes("/api/v1/")) requests.push(`${request.method()} ${request.url()}`); };
+    page.on("request", record);
+    try {
+      for (const step of ["sample", "final", "cast"]) {
+        await page.goto(`${WEB}/projects/${sixty}/create?step=${step}`, { waitUntil: "domcontentloaded" });
+        await page.getByRole("heading", { name: "第 2 步 · 看剧本" }).waitFor({ timeout: 30_000 });
+        expect(new URL(page.url()).search).toBe("?step=script");
+      }
+      await page.waitForLoadState("networkidle");
+      const nav = page.getByRole("navigation", { name: "创作步骤" });
+      expect(await nav.getByRole("button").count()).toBe(2);
+      const notice = page.getByTestId("series-text-only");
+      expect(await notice.textContent()).toContain("系列模式当前仅支持文本编剧");
+      expect(await notice.getByRole("link", { name: "返回系列编剧" }).getAttribute("href")).toBe(`/projects/${sixty}/series`);
+      expect(await page.getByRole("tab", { name: /第 60 集/ }).count()).toBe(1);
+      expect(await page.locator("[data-beginner-picker], [aria-label='多镜编排'], [aria-label='费用']").count()).toBe(0);
+      await viewports("18-series-text-workbench", page.locator("main").first(), notice.getByRole("link", { name: "返回系列编剧" }));
+      expect(requests.filter((item) => MEDIA.test(item))).toEqual([]);
+      expect(requests.filter((item) => !item.startsWith("GET ") && !item.includes("/auth/"))).toEqual([]);
+      (evidence.flows as Record<string, unknown>).S11 = { project: sixty, apiRequests: requests.length, mediaRequests: 0 };
+    } finally {
+      page.off("request", record);
+    }
+    expect(pageErrors).toEqual([]);
+  }, 120_000);
+
+  it("S12: a create request restored after a reload shows every frozen constraint; the retry sends the stored body and key", async () => {
+    await page.goto(`${WEB}/create`, { waitUntil: "domcontentloaded" });
+    const key = randomUUID();
+    const body = { title: "冻结约束样例", episodeCount: 12, episodeSeconds: 90, idea: "夜班便利店",
+      constraints: { genre: "悬疑", audience: "通勤上班族", maxCharacters: 5, maxLocations: null, forbiddenThemes: ["僵尸", "穿越"], endingRequirement: "开放式结局" } };
+    await page.evaluate((value) => { window.sessionStorage.setItem("series-writing:create", JSON.stringify(value)); }, { version: 1, scope: "create", key, body });
+    const sent: Array<{ body: unknown; key: string | null }> = [];
+    await page.route("**/api/v1/writing/series", async (route) => {
+      if (route.request().method() !== "POST") return route.continue();
+      sent.push({ body: route.request().postDataJSON() as unknown, key: route.request().headers()["idempotency-key"] ?? null });
+      await route.fulfill({ status: 502, contentType: "application/json", body: JSON.stringify({ error: { code: "UPSTREAM", message: "acceptance: answer withheld" } }) });
+    });
+    try {
+      await page.reload({ waitUntil: "domcontentloaded" });
+      const card = page.getByTestId("series-start");
+      const retry = card.getByRole("button", { name: "重试创建" });
+      await retry.waitFor({ timeout: 30_000 });
+      const values = {
+        title: await card.getByLabel("系列作品名称").inputValue(), genre: await card.getByLabel("题材", { exact: true }).inputValue(),
+        audience: await card.getByLabel("目标观众").inputValue(), maxCharacters: await card.getByLabel("人物上限（1–12）").inputValue(),
+        maxLocations: await card.getByLabel("地点上限（1–10）").inputValue(), forbidden: await card.getByLabel("禁止的题材或元素（逗号分隔）").inputValue(),
+        ending: await card.getByLabel("结局要求").inputValue(),
+      };
+      expect(values).toEqual({ title: "冻结约束样例", genre: "悬疑", audience: "通勤上班族", maxCharacters: "5", maxLocations: "", forbidden: "僵尸，穿越", ending: "开放式结局" });
+      expect(await card.getByLabel("题材", { exact: true }).isDisabled()).toBe(true);
+      expect(await card.getByTestId("series-start-calls").textContent()).toContain("12 集的正常调用");
+      await viewports("19-series-start-restored", card, retry);
+      await retry.click();
+      await expect.poll(() => sent.length, { timeout: 30_000 }).toBe(1);
+      expect(sent[0]).toEqual({ body, key });
+      (evidence.flows as Record<string, unknown>).S12 = { sameBody: true, sameKey: true, created: false };
+    } finally {
+      await page.unroute("**/api/v1/writing/series");
+      await page.evaluate(() => { window.sessionStorage.removeItem("series-writing:create"); });
+    }
+    expect(pageErrors).toEqual([]);
+  }, 120_000);
+
+  it("S13: a blocking plan review with 0 episodes is shown as pending work on the page and in both downloads", async () => {
+    plan = { blockingPlanReview: true };
+    const projectId = await createFromStart("规划待改样例", 6);
+    await authorize("plan");
+    await expect.poll(async () => (await page.request.get(`${WEB}/api/v1/projects/${projectId}/series`).then((response) => response.json() as Promise<{ series: SeriesView }>)).series.grants[0]?.state,
+      { timeout: 60_000 }).toBe("completed");
+    plan = {};
+    await page.reload({ waitUntil: "domcontentloaded" });
+    const attention = page.getByTestId("series-attention");
+    await expect.poll(async () => await attention.textContent(), { timeout: 30_000 }).toContain("规划审阅发现必须修改的问题");
+    const json = JSON.parse(await (await page.request.get(`${WEB}/api/v1/projects/${projectId}/series/package?format=json`)).text()) as { completion: { attention: string[] } };
+    const markdown = await (await page.request.get(`${WEB}/api/v1/projects/${projectId}/series/package?format=markdown`)).text();
+    expect(json.completion.attention).toEqual(["plan_review_blocking"]);
+    expect(markdown).toContain("> 待办：plan_review_blocking");
+    await viewports("20-series-plan-blocker", page.getByTestId("series-status"));
+    (evidence.flows as Record<string, unknown>).S13 = { project: projectId, attention: json.completion.attention };
+    expect(pageErrors).toEqual([]);
+  }, 120_000);
+});
