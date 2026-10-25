@@ -4,7 +4,6 @@ import {
   SERIES_WRITING_CHECKS_VERSION,
   SERIES_WRITING_JOB_SCHEMA,
   SERIES_WRITING_PROMPT_VERSION,
-  SERIES_RESEARCH_CONTRACT,
   currentUncertainCallIds,
   seriesBatchCalls,
   seriesBatchCount,
@@ -31,6 +30,7 @@ import {
   type SeriesPlacementCandidates,
   type SeriesPlanContent,
   type SeriesPlanRevisionRecord,
+  type SeriesResearchContract,
   type SeriesReviewOutput,
   type SeriesScope,
   type SeriesScriptRevision,
@@ -932,7 +932,7 @@ export interface SeriesView {
   idea: string;
   constraints: SeriesSnapshot["series"]["input"]["constraints"];
   researchFetch: boolean;
-  versions: { prompt: string; checks: string; research: typeof SERIES_RESEARCH_CONTRACT };
+  versions: { prompt: string; checks: string; research: SeriesResearchContract };
   completion: SeriesCompletion;
   completionLabel: string;
   written: number;

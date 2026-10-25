@@ -470,6 +470,11 @@ export interface AutoFixturePlan {
    * time as a habit (refused).
    */
   durations?: "creative" | "viewing";
+  /**
+   * Four hypotheses, the fourth with a synthetic `extra` field (prompt v8 says never to add one; the strict schema refuses
+   * the answer whole at hypotheses[3]). The key a real refused answer carried was never kept: this is not its text.
+   */
+  extraHypothesisField?: boolean;
   /** One person on screen and one mentioned; the first drafts put the mentioned one on screen, revisions do not. */
   soloCast?: boolean;
   /** One person on screen, seven mentioned, and every scene of every draft lists all eight (hundreds of check results). */
@@ -477,6 +482,13 @@ export interface AutoFixturePlan {
   /** Extra characters in the first scene of every crowded draft (a longer, still valid episode). */
   crowdedPadding?: number;
 }
+
+/** Hypotheses the double adds to reach four (synthetic samples). */
+const FIXTURE_MORE_HYPOTHESES: AutoResearchAnswer["hypotheses"] = [
+  { id: "H2", statement: "模型替身样例：误会在结尾解开，可能比中途解开更有悬念。", howToVerify: "计划比较两种解开时机的试看反馈。" },
+  { id: "H3", statement: "模型替身样例：反派有可理解的动机，可能让冲突更可信。", howToVerify: "计划请试看者说出反派想要什么。" },
+  { id: "H4", statement: "模型替身样例：结尾留一个小悬念，可能让观众想看下一集。", howToVerify: "计划询问试看者是否想知道后续。" },
+];
 
 /** The double's answer for one prompt. */
 export function autoFixtureAnswer(user: string, plan: AutoFixturePlan = {}): unknown {
@@ -494,6 +506,8 @@ export function autoFixtureAnswer(user: string, plan: AutoFixturePlan = {}): unk
         ...(plan.unsourcedFactNumber ? { statement: `${fact.statement}七成观众偏爱这种写法。` } : {}) })),
       contentStructure: plan.noReferences ? research.contentStructure.map((item) => ({ ...item, reference: null })) : research.contentStructure,
       ...(plan.durations ? { hypotheses: fixtureAutoDurationHypotheses(plan.durations, autoFixtureEpisodeSeconds(user)) } : {}),
+      ...(plan.extraHypothesisField ? { hypotheses: [...research.hypotheses, ...FIXTURE_MORE_HYPOTHESES.filter((item) => !research.hypotheses.some((own) => own.id === item.id))].slice(0, 4)
+        .map((item, index) => index === 3 ? { ...item, extra: "模型替身样例：合成多余字段" } : item) } : {}),
     };
     // The double follows the contract the prompt asks for, unless a plan says to break it.
     const answer = autoFixtureResearchMode(user) === "limited" && !plan.ignoreLimitedContract
