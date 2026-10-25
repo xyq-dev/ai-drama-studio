@@ -572,8 +572,9 @@ describe(`automatic creation on PostgreSQL (${scenario} schema)`, () => {
     ["statisticAfterUnplaced", "unsourced_number@opportunities[1]:percent+market_statistic+proportion", "七成"],
     ["serverFieldsInAnswer", "invalid_output@limitations:unrecognized_keys+limited_contract+forbidden_field", "官方入口页面没有读到正文"],
     ["ignoreLimitedContract", "invalid_output@facts:unrecognized_keys+limited_contract+forbidden_field", "项目知识库的写作方法要求关键结果来自主角的选择和行动"],
-    // checks v7: an actual viewing time, the frozen 60 秒 itself, is still refused.
-    ["durations", "unsourced_number@hypotheses[0].statement:digits+market_statistic+viewing_duration", "观众通常观看60秒后退出"],
+    // checks v7: an actual viewing time, the frozen 60 秒 itself, is still refused; the stored code also names the branch
+    // (viewing_habit: 通常), the first five parts as before.
+    ["durations", "unsourced_number@hypotheses[0].statement:digits+market_statistic+viewing_duration+viewing_habit", "观众通常观看60秒后退出"],
   ] as const)("checks v5: %s is refused at research alone; one send, nothing stored, nothing after it", async (flag, code, text) => {
     plan = flag === "durations" ? { durations: "viewing" } : { [flag]: true };
     const { svc, settle } = service();

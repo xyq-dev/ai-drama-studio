@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  AUTO_VIEWING_DURATION_REASONS,
   autoCreationHardCap,
   autoCreationNormalCalls,
   autoCreationWorstCalls,
   autoCreationInitialStageKeys,
   autoCreationConstraintsSchema,
+  autoErrorParts,
   autoRevisionSchema,
   type AutoCreationConstraints,
   type AutoCreationFrozenInput,
@@ -208,6 +210,24 @@ describe("automatic creation engine", () => {
     expect(result.stages.find((stage) => stage.stageKey === "research")).toMatchObject({ state: "rejected", errorCode: code, output: null });
     expect(result.calls.map((call) => call.errorCode)).toEqual([code]);
     expect(JSON.stringify(result)).not.toContain(text);
+    expect(seen.map((item) => item.stage)).toEqual(["research"]);
+    await engine.maintain();
+    expect(seen).toHaveLength(1);
+  });
+
+  // Which check refused a viewing time (diagnostics only, checks v9 unchanged; synthetic texts, not a real refused answer).
+  it.each(AUTO_VIEWING_DURATION_REASONS)("viewing time %s in application.why: sent once, the branch kept in the code, no text or detail stored, nothing after it", async (reason) => {
+    const { store, run, engine, seen, view } = await setup({ episodeCount: 3, revisionRounds: 0, plan: { viewingDurationWhy: reason } });
+    await engine.drive(run.id);
+    const result = await view();
+    const code = `unsourced_number@contentStructure[0].application.why:digits+market_statistic+viewing_duration+${reason}`;
+    expect(result).toMatchObject({ state: "failed", errorCode: "unsourced_number", callsUsed: 1 });
+    expect(store.stages.find((stage) => stage.runId === run.id && stage.stageKey === "research")).toMatchObject({ state: "rejected", errorCode: code, output: null });
+    expect(store.calls.filter((call) => call.runId === run.id).map((call) => call.errorCode)).toEqual([code]);
+    expect(autoErrorParts(code).reason).toBe(reason);
+    const kept = JSON.stringify({ result, runs: store.runs, stages: store.stages, calls: store.calls });
+    expect(kept).not.toContain("模型替身样例：");
+    expect(kept).not.toContain('"detail"');
     expect(seen.map((item) => item.stage)).toEqual(["research"]);
     await engine.maintain();
     expect(seen).toHaveLength(1);

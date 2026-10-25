@@ -19,6 +19,7 @@ import {
   type AutoResearchV2,
   type AutoResearchV3,
   type AutoReview,
+  type AutoViewingDurationReason,
 } from "@ai-drama/contracts";
 import { ANTHROPIC_MESSAGES_URL, DEEPSEEK_CHAT_COMPLETIONS_URL, type WritingTransport } from "./text-writing";
 
@@ -481,6 +482,11 @@ export interface AutoFixturePlan {
    * (refused, proportion). total: the work cut to two episodes (refused, frozen episode count).
    */
   verificationSample?: "sample" | "statistic" | "total";
+  /**
+   * The first structure's application.why carries a viewing time that one named check refuses (synthetic, one per
+   * branch; not the refused answer of any real run, which was never kept).
+   */
+  viewingDurationWhy?: AutoViewingDurationReason;
   /** One person on screen and one mentioned; the first drafts put the mentioned one on screen, revisions do not. */
   soloCast?: boolean;
   /** One person on screen, seven mentioned, and every scene of every draft lists all eight (hundreds of check results). */
@@ -501,6 +507,18 @@ const FIXTURE_SAMPLE_PLANS: Readonly<Record<NonNullable<AutoFixturePlan["verific
   sample: "模型替身样例：计划制作三集样稿进行试读并收集反馈。",
   statistic: "模型替身样例：计划制作三集样稿进行试读，七成观众会喜欢。",
   total: "模型替身样例：计划将本剧改为两集再验证。",
+};
+
+/** The first structure's application.why for each viewingDurationWhy (synthetic samples). */
+const FIXTURE_VIEWING_DURATION_WHY: Readonly<Record<AutoViewingDurationReason, string>> = {
+  viewing_habit: "模型替身样例：观众通常在30秒后退出。",
+  leaving_after: "模型替身样例：观众在30秒后退出。",
+  viewing_the_work: "模型替身样例：待验证观众观看本剧60秒后的反应。",
+  viewing_verb_before: "模型替身样例：待验证观众看了30秒是否被吸引。",
+  over_episode_length: "模型替身样例：待验证观众能否在90秒内理解冲突。",
+  not_pending: "模型替身样例：观众能在30秒内理解冲突。",
+  not_observation_unit: "模型替身样例：计划观察观众3小时内的反馈。",
+  no_plan_verb: "模型替身样例：观众7天内会追完。",
 };
 
 /** The double's answer for one prompt. */
@@ -524,6 +542,10 @@ export function autoFixtureAnswer(user: string, plan: AutoFixturePlan = {}): unk
     };
     if (plan.verificationSample) {
       adjusted.hypotheses = adjusted.hypotheses.map((item, index) => index === 0 ? { ...item, howToVerify: FIXTURE_SAMPLE_PLANS[plan.verificationSample!] } : item);
+    }
+    if (plan.viewingDurationWhy) {
+      const why = FIXTURE_VIEWING_DURATION_WHY[plan.viewingDurationWhy];
+      adjusted.contentStructure = adjusted.contentStructure.map((item, index) => index === 0 ? { ...item, application: { ...item.application, why } } : item);
     }
     // The double follows the contract the prompt asks for, unless a plan says to break it.
     const answer = autoFixtureResearchMode(user) === "limited" && !plan.ignoreLimitedContract

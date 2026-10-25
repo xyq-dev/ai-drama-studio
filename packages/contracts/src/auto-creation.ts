@@ -1011,26 +1011,52 @@ export interface AutoCallFinish {
 export const AUTO_CREATION_FINAL_ERROR_CODES: readonly string[] = ["story_too_large"];
 
 /**
+ * Which check refused a number as a viewing time (market_statistic + viewing_duration), in the order the checks run:
+ * a viewing habit word in its clause; a leaving action right after the duration; a viewing verb taking the work itself;
+ * a viewing verb right before the duration; a duration longer than the frozen episode; a duration not marked as pending
+ * or planned; a unit no observation period uses (in a clause about viewers); no plan verb for the observation. Fixed
+ * slugs set by the server, never model text. They say which branch the program took, not whether the answer or the
+ * check was right, and they do not restore the refused sentence.
+ */
+export const AUTO_VIEWING_DURATION_REASONS = [
+  "viewing_habit", "leaving_after", "viewing_the_work", "viewing_verb_before",
+  "over_episode_length", "not_pending", "not_observation_unit", "no_plan_verb",
+] as const;
+export type AutoViewingDurationReason = (typeof AUTO_VIEWING_DURATION_REASONS)[number];
+
+/** A reason only on the rule it details, and only one of the fixed slugs; anything else is no reason. */
+function viewingReason(rule: string | null | undefined, reason: string | null | undefined): AutoViewingDurationReason | null {
+  return rule === "viewing_duration" && (AUTO_VIEWING_DURATION_REASONS as readonly string[]).includes(reason ?? "")
+    ? reason as AutoViewingDurationReason : null;
+}
+
+/**
  * A refused answer's stored error: its rule, and where it is, as `code@field:category` (e.g.
  * `unsourced_number@limitations[0]:digits`), and since checks v3 for a number also what it was taken for and the
- * sub-rule: `unsourced_number@hypotheses[0].statement:chinese_numeral+market_statistic+audience_count`. Field paths
- * name schema keys and indexes only; the other parts are fixed slugs. No text of the model is ever stored. A run's own
- * error keeps the bare rule.
+ * sub-rule: `unsourced_number@hypotheses[0].statement:chinese_numeral+market_statistic+audience_count`. A viewing time
+ * also names the branch that refused it as a fourth part (`…:digits+market_statistic+viewing_duration+viewing_habit`),
+ * from AUTO_VIEWING_DURATION_REASONS only. Field paths name schema keys and indexes only; the other parts are fixed
+ * slugs. No text of the model is ever stored. A run's own error keeps the bare rule.
  */
-export function autoErrorCodeWith(code: string, field?: string, category?: string, semantic?: string, rule?: string): string {
+export function autoErrorCodeWith(code: string, field?: string, category?: string, semantic?: string, rule?: string, reason?: string): string {
   const slug = (value?: string) => value?.replace(/[^a-z_]/g, "").slice(0, 40) ?? "";
   const safeField = field?.replace(/[^A-Za-z0-9_.[\]]/g, "").slice(0, 80);
   const parts = [slug(category), slug(semantic), slug(rule)];
-  const tail = parts[0] ? (parts[1] ? parts.filter(Boolean).join("+") : parts[0]) : "";
+  const branch = parts[0] && parts[1] && parts[2] ? viewingReason(parts[2], reason) : null;
+  const tail = parts[0] ? (parts[1] ? [...parts.filter(Boolean), ...(branch ? [branch] : [])].join("+") : parts[0]) : "";
   return `${code}${safeField ? `@${safeField}` : ""}${tail ? `:${tail}` : ""}`;
 }
 
-/** The parts of a stored error code. A bare code (every code before checks v2) has no field or category; v2 codes no semantic or rule. */
-export function autoErrorParts(stored: string): { code: string; field: string | null; category: string | null; semantic: string | null; rule: string | null } {
+/**
+ * The parts of a stored error code. A bare code (every code before checks v2) has no field or category; v2 codes no
+ * semantic or rule; a code before the viewing-time branch, or with a part that is not one of its fixed slugs, no reason.
+ */
+export function autoErrorParts(stored: string): { code: string; field: string | null; category: string | null; semantic: string | null; rule: string | null;
+  reason: AutoViewingDurationReason | null } {
   const match = /^([^@:]+)(?:@([^:]+))?(?::(.+))?$/.exec(stored);
-  if (!match) return { code: stored, field: null, category: null, semantic: null, rule: null };
-  const [category, semantic, rule] = (match[3] ?? "").split("+");
-  return { code: match[1]!, field: match[2] ?? null, category: category || null, semantic: semantic || null, rule: rule || null };
+  if (!match) return { code: stored, field: null, category: null, semantic: null, rule: null, reason: null };
+  const [category, semantic, rule, reason] = (match[3] ?? "").split("+");
+  return { code: match[1]!, field: match[2] ?? null, category: category || null, semantic: semantic || null, rule: rule || null, reason: viewingReason(rule, reason) };
 }
 
 /** True when nothing is left to redo and the run's stop reason is final: a resume would only stop the same way. */

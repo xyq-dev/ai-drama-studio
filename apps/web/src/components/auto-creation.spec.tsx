@@ -388,6 +388,37 @@ describe("AI 自动创作 run page", () => {
     }
   });
 
+  it("a viewing time names the branch the program took; an older code keeps the general text; an unknown branch is not shown", async () => {
+    const stage = (errorCode: string) => ({ stageKey: "research", kind: "research" as const, state: "rejected" as const, attemptNo: 1, errorCode, output: null,
+      upstreamChanged: false, supersededBy: null, scriptSave: null, scriptRevisionId: null });
+    const at = "unsourced_number@contentStructure[0].application.why:digits+market_statistic+viewing_duration";
+    for (const [code, expected, absent] of [
+      [`${at}+viewing_habit`, ["程序命中了「观看习惯词」"], []],
+      [`${at}+leaving_after`, ["程序命中了「时长后接退出或流失」"], []],
+      [`${at}+viewing_the_work`, ["程序命中了「观看动词直接支配本剧」"], []],
+      [`${at}+viewing_verb_before`, ["程序命中了「观看动词直接接时长」"], []],
+      [`${at}+over_episode_length`, ["程序命中了「超过冻结的每集时长」"], []],
+      [`${at}+not_pending`, ["程序命中了「缺少待验证或计划标记」"], []],
+      [`${at}+not_observation_unit`, ["程序命中了「时长单位不能按观察期处理」"], []],
+      [`${at}+no_plan_verb`, ["程序命中了「缺少观察计划动作」"], []],
+      [at, [], ["程序命中了"]],
+      [`${at}+made_up_branch`, [], ["程序命中了", "made_up_branch"]],
+    ] as const) {
+      cleanup();
+      const failed = run({ state: "failed", errorCode: "unsourced_number", quality: "pending", storySave: "pending", storyRevisionId: null, packageStatus: "incomplete",
+        callsUsed: 1, callCap: 6, openIssues: [], stages: [stage(code)] });
+      vi.stubGlobal("fetch", vi.fn(async (input: string) => input.endsWith("/auto-runs/latest") ? json({ run: failed }) : json(options())));
+      render(<AutoCreationRun projectId={P1} />);
+      await waitFor(() => expect(screen.getByTestId("auto-headline").textContent).toBe("没有完成"));
+      const stop = screen.getByText(/^停在「/u).textContent!;
+      // The five parts read as before, whatever the branch.
+      for (const text of ["contentStructure[0].application.why", "市场或受众统计", "观众实际看多久、看多久后退出"]) expect(stop, code).toContain(text);
+      for (const text of expected) expect(stop, code).toContain(text);
+      if (expected.length > 0) expect(stop, code).toContain("不还原原句");
+      for (const text of absent) expect(stop, code).not.toContain(text);
+    }
+  });
+
   it("limited research shows facts, hypotheses and their unexecuted plans apart, and never claims a market validation", async () => {
     const research = {
       schema: "ads.auto-creation.research.v1", facts: [], observations: [],
