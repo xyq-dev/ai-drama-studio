@@ -53,11 +53,15 @@ export const AUTO_CREATION_SELECTION_RULES = "ads.auto-creation.selection-rules.
  * v7: a duration in a clause about viewers is judged by what it measures: the work's own length (本剧60秒) against the
  * frozen setting, a viewing time (通常观看60秒后退出) refused as before, and a pending question whose duration names
  * neither (观众能否在60秒内理解人物冲突) kept in creative text as an unverified notice (duration_unconfirmed).
+ * v8: in a hypothesis' howToVerify only, a plan's sample of the work (计划制作三集样稿进行试读, 计划试读前三集样稿) is
+ * read as a sample, not the work's total: it must lie within 1 and the frozen episode count (sample_out_of_range); a
+ * total, a viewing habit, a rate, a share or a measured result beside it is refused as before. Prompt v8, research v4.
  */
-export const AUTO_CREATION_CHECKS_VERSION = "ads.auto-creation.checks.v7" as const;
+export const AUTO_CREATION_CHECKS_VERSION = "ads.auto-creation.checks.v8" as const;
 /** Every checks version a stored run or review may carry. */
 export type AutoCreationChecksVersion = "ads.auto-creation.checks.v1" | "ads.auto-creation.checks.v2" | "ads.auto-creation.checks.v3"
-  | "ads.auto-creation.checks.v4" | "ads.auto-creation.checks.v5" | "ads.auto-creation.checks.v6" | typeof AUTO_CREATION_CHECKS_VERSION;
+  | "ads.auto-creation.checks.v4" | "ads.auto-creation.checks.v5" | "ads.auto-creation.checks.v6" | "ads.auto-creation.checks.v7"
+  | typeof AUTO_CREATION_CHECKS_VERSION;
 /**
  * v4: the answer contract follows the run's saved research mode. limited: the model writes hypotheses, the audience as
  * text, content structures and opportunities only; the server assembles the rest (no facts, no observations, the

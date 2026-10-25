@@ -667,10 +667,11 @@ function numberRefusal(finding: AutoNumberFinding, field: string): AutoValidatio
 /**
  * Uncited creative text (a hypothesis, its plan, a structure's application, an opportunity, a direction's notes),
  * checks v5: a number with no recognised role is added to the notices, the text is kept as written and the reading goes
- * on; any other number is refused as uncitedNumber refuses it.
+ * on; any other number is refused as uncitedNumber refuses it. verificationPlan: a hypothesis' howToVerify, where a
+ * plan's sample of the work (计划制作三集样稿进行试读) is read as a sample within the work, not its total (checks v8).
  */
-function creativeNumber(statement: string, field: string, frame: AutoNumberFrame, notices: AutoUnverifiedNotice[]): AutoValidation | null {
-  const reading = uncitedNumberReading(statement, frame, { unverified: true });
+function creativeNumber(statement: string, field: string, frame: AutoNumberFrame, notices: AutoUnverifiedNotice[], verificationPlan = false): AutoValidation | null {
+  const reading = uncitedNumberReading(statement, frame, { unverified: true, verificationPlan });
   notices.push(...reading.unverified.map((finding): AutoUnverifiedNotice => finding.rule === "duration_unconfirmed"
     ? { origin: "server_check", field, token: finding.token, semantic: "unclassified", rule: "duration_unconfirmed", note: AUTO_UNVERIFIED_DURATION_NOTE }
     : { origin: "server_check", field, token: finding.token, semantic: "unclassified", rule: "no_role", note: AUTO_UNVERIFIED_NOTE }));
@@ -825,13 +826,14 @@ function checkResearch(input: AutoCreationFrozenInput, output: AutoResearchAnswe
   // Uncited fields carry a number only when it counts the work or a plan (auto-creation-numbers.ts): hypotheses and
   // how to verify them, and opportunities alike. No field label exempts a statistic. A number with no role there is an
   // unverified notice, and every later field is still checked.
-  const uncited: Array<[string, string]> = [
-    ...output.hypotheses.flatMap((item, index): Array<[string, string]> => [
-      [item.statement, `hypotheses[${String(index)}].statement`], [item.howToVerify, `hypotheses[${String(index)}].howToVerify`]]),
-    ...output.opportunities.map((item, index): [string, string] => [item, `opportunities[${String(index)}]`]),
+  // Only a plan (howToVerify) may read a count of episodes as its sample of the work (checks v8).
+  const uncited: Array<[string, string, boolean]> = [
+    ...output.hypotheses.flatMap((item, index): Array<[string, string, boolean]> => [
+      [item.statement, `hypotheses[${String(index)}].statement`, false], [item.howToVerify, `hypotheses[${String(index)}].howToVerify`, true]]),
+    ...output.opportunities.map((item, index): [string, string, boolean] => [item, `opportunities[${String(index)}]`, false]),
   ];
-  for (const [statement, field] of uncited) {
-    const problem = creativeNumber(statement, field, frame, notices);
+  for (const [statement, field, verificationPlan] of uncited) {
+    const problem = creativeNumber(statement, field, frame, notices, verificationPlan);
     if (problem) return problem;
   }
   // Limited mode means no readable, dated, recent market source: an audience can then only be a hypothesis.

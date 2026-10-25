@@ -475,6 +475,12 @@ export interface AutoFixturePlan {
    * the answer whole at hypotheses[3]). The key a real refused answer carried was never kept: this is not its text.
    */
   extraHypothesisField?: boolean;
+  /**
+   * The first hypothesis' howToVerify counts a sample of the work (checks v8; synthetic, not a real refused answer).
+   * sample: 三集样稿 for a reading (passes in a run of at least three episodes). statistic: the same sample, then 七成观众
+   * (refused, proportion). total: the work cut to two episodes (refused, frozen episode count).
+   */
+  verificationSample?: "sample" | "statistic" | "total";
   /** One person on screen and one mentioned; the first drafts put the mentioned one on screen, revisions do not. */
   soloCast?: boolean;
   /** One person on screen, seven mentioned, and every scene of every draft lists all eight (hundreds of check results). */
@@ -489,6 +495,13 @@ const FIXTURE_MORE_HYPOTHESES: AutoResearchAnswer["hypotheses"] = [
   { id: "H3", statement: "模型替身样例：反派有可理解的动机，可能让冲突更可信。", howToVerify: "计划请试看者说出反派想要什么。" },
   { id: "H4", statement: "模型替身样例：结尾留一个小悬念，可能让观众想看下一集。", howToVerify: "计划询问试看者是否想知道后续。" },
 ];
+
+/** The first hypothesis' plan for each verificationSample (synthetic samples). */
+const FIXTURE_SAMPLE_PLANS: Readonly<Record<NonNullable<AutoFixturePlan["verificationSample"]>, string>> = {
+  sample: "模型替身样例：计划制作三集样稿进行试读并收集反馈。",
+  statistic: "模型替身样例：计划制作三集样稿进行试读，七成观众会喜欢。",
+  total: "模型替身样例：计划将本剧改为两集再验证。",
+};
 
 /** The double's answer for one prompt. */
 export function autoFixtureAnswer(user: string, plan: AutoFixturePlan = {}): unknown {
@@ -509,6 +522,9 @@ export function autoFixtureAnswer(user: string, plan: AutoFixturePlan = {}): unk
       ...(plan.extraHypothesisField ? { hypotheses: [...research.hypotheses, ...FIXTURE_MORE_HYPOTHESES.filter((item) => !research.hypotheses.some((own) => own.id === item.id))].slice(0, 4)
         .map((item, index) => index === 3 ? { ...item, extra: "模型替身样例：合成多余字段" } : item) } : {}),
     };
+    if (plan.verificationSample) {
+      adjusted.hypotheses = adjusted.hypotheses.map((item, index) => index === 0 ? { ...item, howToVerify: FIXTURE_SAMPLE_PLANS[plan.verificationSample!] } : item);
+    }
     // The double follows the contract the prompt asks for, unless a plan says to break it.
     const answer = autoFixtureResearchMode(user) === "limited" && !plan.ignoreLimitedContract
       ? fixtureAutoLimitedResearch(adjusted, plan.limitedInjection) : adjusted;
