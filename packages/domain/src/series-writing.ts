@@ -38,6 +38,7 @@ import {
   seriesStageKind,
   type AutoCreationFrozenInput,
   type AutoDirection,
+  type AutoViewingDurationReason,
   type SeriesArc,
   type SeriesCheckFinding,
   type SeriesContinuity,
@@ -542,7 +543,9 @@ export function buildSeriesPrompt(stageKey: string, input: SeriesFrozenInput, co
 // The code's checks.
 
 export type SeriesValidation = { ok: true; output: SeriesStageOutput }
-  | { ok: false; code: string; detail?: string; field?: string; category?: string; semantic?: string; rule?: string };
+  | { ok: false; code: string; detail?: string; field?: string; category?: string; semantic?: string; rule?: string;
+    /** A borrowed research's viewing time: the fixed slug of the check that refused it. */
+    reason?: AutoViewingDurationReason };
 
 const UNSAFE = /https?:\/\/|www\.|<\s*\/?\s*(script|iframe|html|a\s)/i;
 const RESERVED = /projectId|reviewStatus|APPROVED|CURRENT/;

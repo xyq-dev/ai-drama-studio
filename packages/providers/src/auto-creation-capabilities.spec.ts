@@ -411,7 +411,8 @@ describe("durations (checks v7): the work's own length passes, an unplaced durat
     const { run, engine, seen, view } = await setup({ plan: { durations: "viewing" } });
     await engine.drive(run.id);
     const result = await view();
-    const code = "unsourced_number@hypotheses[0].statement:digits+market_statistic+viewing_duration";
+    // The first five parts as before; the branch (a habit word, 通常) is appended.
+    const code = "unsourced_number@hypotheses[0].statement:digits+market_statistic+viewing_duration+viewing_habit";
     expect(result).toMatchObject({ state: "failed", callsUsed: 1 });
     expect(result.stages.find((stage) => stage.stageKey === "research")).toMatchObject({ state: "rejected", errorCode: code, output: null });
     expect(result.calls.map((call) => call.errorCode)).toEqual([code]);

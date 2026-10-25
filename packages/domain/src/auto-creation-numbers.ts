@@ -14,6 +14,8 @@
  * viewers. The judgement is deterministic and names its rule; nothing here sends.
  */
 
+import type { AutoViewingDurationReason } from "@ai-drama/contracts";
+
 /** A number the run's own frozen input puts in text: its value and its unit (集, 秒, 分钟), or the limit it states. */
 export type AutoExemptNumber = readonly [value: number, unit: "集" | "秒" | "分钟" | "人物上限" | "地点上限"];
 
@@ -34,6 +36,8 @@ export interface AutoNumberFinding {
   semantic: AutoNumberSemantic;
   /** The sub-rule, a fixed slug (e.g. proportion, audience_age, cast_over_limit). */
   rule: string;
+  /** For a viewing time (viewing_duration) only: which check refused it, a fixed slug. */
+  reason?: AutoViewingDurationReason;
 }
 
 /** What an uncited text is judged against: the run's frozen settings. */
@@ -594,10 +598,15 @@ const STORY_MAX_COUNT = 30;
 const CAST_SCHEMA_MAX = 8;
 const LOCATION_SCHEMA_MAX = 6;
 
-type Role = { allowed: true; rule: string } | { allowed: false; semantic: AutoNumberSemantic; rule: string };
+type Role = { allowed: true; rule: string } | { allowed: false; semantic: AutoNumberSemantic; rule: string; reason?: AutoViewingDurationReason };
 
 function refuse(semantic: AutoNumberSemantic, rule: string): Role {
   return { allowed: false, semantic, rule };
+}
+
+/** A viewing time, with the check that refused it (the rule and its meaning are unchanged). */
+function viewingTime(reason: AutoViewingDurationReason): Role {
+  return { allowed: false, semantic: "market_statistic", rule: "viewing_duration", reason };
 }
 
 /**
@@ -662,18 +671,20 @@ function roleOf(hit: NumberHit, clause: string, clauses: readonly string[], mark
         const seconds = value === null ? Infinity : unit === "分钟" ? value * 60 : value;
         const after = tail.slice(duration[0].length);
         // B: a habit, a viewing verb or a viewer leaving makes it a viewing time, whatever it is next to or marked as.
-        if (VIEWING_HABIT.test(clause) || VIEWING_AFTER.test(after)) return refuse("market_statistic", "viewing_duration");
+        if (VIEWING_HABIT.test(clause)) return viewingTime("viewing_habit");
+        if (VIEWING_AFTER.test(after)) return viewingTime("leaving_after");
         // A: the work's own length. The whole run (本剧, 全剧) may also be all its episodes together.
         const work = WORK_BEFORE.exec(before);
         // A viewing verb taking the work as its object measures the watching (观看本剧60秒), equal to the frozen value or not.
-        if (work && VIEWING_BEFORE.test(before.slice(0, work.index)) && !WORK_ATTRIBUTE.test(after)) return refuse("market_statistic", "viewing_duration");
+        if (work && VIEWING_BEFORE.test(before.slice(0, work.index)) && !WORK_ATTRIBUTE.test(after)) return viewingTime("viewing_the_work");
         if (work && WORK_AFTER.test(after)) {
           const whole = /(?:本剧|该剧|此剧|这部剧|本片|全剧)/u.test(before) ? frame.episodeSeconds * frame.episodeCount : frame.episodeSeconds;
           if (seconds === frame.episodeSeconds || seconds === whole) return { allowed: true, rule: "work_length" };
           return seconds > Math.max(whole, frame.episodeSeconds) ? refuse("frozen_conflict", "over_length") : refuse("frozen_conflict", "length_changed");
         }
-        if (VIEWING_BEFORE.test(before)) return refuse("market_statistic", "viewing_duration");
-        if (seconds > frame.episodeSeconds || !pendingJudgement(clause, clauses)) return refuse("market_statistic", "viewing_duration");
+        if (VIEWING_BEFORE.test(before)) return viewingTime("viewing_verb_before");
+        if (seconds > frame.episodeSeconds) return viewingTime("over_episode_length");
+        if (!pendingJudgement(clause, clauses)) return viewingTime("not_pending");
         // A moment of this episode asked about as pending (观众是否会在前 3 秒被吸引) is the episode's timeline.
         if (/(?:前|开头|开场|头)$/u.test(before)) return { allowed: true, rule: "story_time" };
         // C: pending, within the frozen length, naming neither the work nor a viewing time.
@@ -682,7 +693,8 @@ function roleOf(hit: NumberHit, clause: string, clauses: readonly string[], mark
       // Days of observation only in a plan's wording (上线后观察七天); a hedge alone (可能三天内流失) is a claim.
       const days = value === null ? null : planDays(value, unit);
       // A day count in a clause with no market word may take its plan verb from the next one (上线七天后，计划比较…).
-      if (days === null || !PLAN_VERBS.test(MARKET_CLAUSE.test(clause) ? clause : sentence)) return refuse("market_statistic", "viewing_duration");
+      if (days === null) return viewingTime("not_observation_unit");
+      if (!PLAN_VERBS.test(MARKET_CLAUSE.test(clause) ? clause : sentence)) return viewingTime("no_plan_verb");
       if (days > PLAN_MAX_DAYS) return refuse("market_statistic", "long_observation");
       return { allowed: true, rule: "plan_duration" };
     }
@@ -776,7 +788,8 @@ export function uncitedNumberReading(text: string, frame: AutoNumberFrame, optio
       for (const hit of hitsOf(clause, market)) {
         const role = roleOf(hit, clause, clauses, market, frame, verificationPlan);
         if (!role.allowed) {
-          const finding: AutoNumberFinding = { token: hit.token, kind: numberKind(hit.token), semantic: role.semantic, rule: role.rule };
+          const finding: AutoNumberFinding = { token: hit.token, kind: numberKind(hit.token), semantic: role.semantic, rule: role.rule,
+            ...(role.reason ? { reason: role.reason } : {}) };
           if (options.unverified === true && role.semantic === "unclassified" && UNVERIFIED_RULES.has(role.rule)) {
             unverified.push(finding);
             continue;

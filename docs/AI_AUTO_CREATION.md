@@ -259,6 +259,32 @@ contentStructure: [{ reference: { sourceId, quote } | null, application: { patte
 
 **仍有边界**：仍按措辞判断。动作必须紧贴数量（只隔「前 / 头」），所以「计划制作约三集样稿」「计划选取其中三集样稿」这类写法会按原规则拒收；动作紧贴数量之后的内容（例如「样稿」后面再接别的宾语）不再分析。两条样本都是合成句子，不是线上被拒原文。
 
+### 3.10 观看时长拒收的分支诊断（2026-10-26，只加诊断；prompt.v8 / checks.v9 / research.v4 不变）
+
+**证据边界**：一次真实验收（projectId `89f323d3-fdd2-4b39-b537-855582fc48d5`）的 research 被拒为 `unsourced_number@contentStructure[0].application.why:digits+market_statistic+viewing_duration`。被拒正文按设计没有保存，**原句未知**。`auto-creation-numbers.ts` 里有多处不同条件都返回 `viewing_duration`，存下来的错误码分不出是哪一处。本节只补上「程序命中了哪一条判断」，不恢复历史原句，也不修改任何放行或拒收规则。
+
+- **固定枚举 reason**（`AUTO_VIEWING_DURATION_REASONS`，只用于 `viewing_duration`），按检查的先后顺序：
+  - `viewing_habit`：时长所在分句有观看习惯词（通常、一般、大多……）。
+  - `leaving_after`：时长后面紧跟退出或流失动作（退出、流失、划走……）。
+  - `viewing_the_work`：观看动词直接支配本剧指代（观看本剧 60 秒）。
+  - `viewing_verb_before`：观看动词直接接时长（看了 30 秒）。
+  - `over_episode_length`：观众相关的时长超过冻结的每集时长。
+  - `not_pending`：观众相关的时长没有待验证或计划标记。
+  - `not_observation_unit`：观众相关的时长单位（小时、年）不能按观察期处理。
+  - `no_plan_verb`：观察期没有观察计划动作（对比、收集、跟踪、观察……）。
+
+  原来用「或」合并的两处条件拆成先后两步，判断结果和优先级都不变。
+- **存储**：复用现有 `error_code`，在 `类别+判断类别+子规则` 后追加可选的第四段，例如 `unsourced_number@contentStructure[0].application.why:digits+market_statistic+viewing_duration+not_pending`。`autoErrorCodeWith` 只写入白名单里的 reason，而且只在子规则是 `viewing_duration` 时写入；`autoErrorParts` 照常解析旧码：
+  - 裸 code；
+  - 只有字段和类别；
+  - 三段数字诊断；
+  - 没有 reason 的 `viewing_duration`。
+
+  未知或不合法的 reason 一律当作没有分支，原字符串不展示。原短剧引擎和系列引擎都在被拒阶段和调用的 `error_code` 里保留 reason；任务本身仍只记规则名。没有新增数据库列，Migration 编写 0、执行 0。
+- **不保存**：仍不保存模型正文、字段原文、数字 token 或截取片段。`detail` 不写入数据库或日志，拒收内容不进入 `stage.output`，也不进入交付包。
+- **页面**：自动创作页在原来的通用说明后追加「程序命中了「……」」的中文说明，并注明「只说明程序为何拒收，不还原原句」。旧记录仍只显示原来的通用说明。系列页本来只显示停止原因的规则名，这一点没有改。
+- **局限**：分支只说明程序为什么拒收。它不能恢复历史原句，也不能单独证明模型和校验器哪一方正确。上面那次验收发生在本诊断之前，它的错误码没有 reason，不会回写。
+
 ## 4. 质量检查与有限修改
 
 - 程序检查（`deterministicFindings`）：缺集、场次上限（60 秒 ≤5 场，90 秒 ≤7 场）、台词字数（≈5 字/秒）、镜头计划秒数在目标 60%–140%、仅被提及的人物出场、禁止题材、全剧出场人物数和地点数上限、跨集重复台词（提示级）。问题按真实来源归属：设定本身的出场人物在生成时已核对上限，所以合法设定下的人物超限只能来自分集让「仅被提及」的人物出场，这时问题指向那几集，可以在已授权的轮次和预算内定向修改并复查；只有设定本身超限才算设定问题。schema、编号、悬空引用、硬约束（人物/地点数、禁止题材）、整理后超过编辑器 2 万字上限的分集在**生成时**就拒收（不截断）。
@@ -357,6 +383,7 @@ DATABASE_URL=<业务库连接串，只在进程环境中> pnpm --filter @ai-dram
 | 2026-10-21 PR #84 增量终审修正（同为 checks.v7） | 「待验证观众是否喜欢本剧每集60秒内发生两次反转的故事」在 c662d28 通过、在 7a8efa9 被拒为 `market_statistic+rate_or_average`（「两次」），修复后通过；「把每集60秒的故事观看3次」「…重复观看3次」「每集观看3次」仍拒为 `rate_or_average`；hypotheses、application（有效引用 / null）与 sourced 均覆盖；Migration 0 / 0；真实模型与媒体调用 0 次 |
 | 2026-10-25 假设字段边界 prompt.v8（本机 Windows + Node 24.21，模型替身） | 见第 3.7 节；新增 `packages/domain/src/auto-creation-hypothesis-fields.spec.ts`（17 项）在 main 89df132 上提示类 5 项失败（两种模式都没有列出每条假设的字段、没有示例），严格校验类 12 项已通过；修复后全部通过。合成 `extra` 字段放在第四条假设上：limited 与 sourced 都整份拒收为 `hypotheses[3]` / `unrecognized_keys`，空值、空字符串、空数组同样拒收，缺字段与类型错误仍拒收，schema 本身拒绝、不先删字段。providers 经真实 DeepSeek 适配器拦截请求：两种模式的 Schema（三项 required、`additionalProperties: false`）、`json_object` 与 v8 字段说明；合法替身原流程 6 次完成；多余字段替身原短剧与系列（60 集 × 60 秒、规划＋前 3 集、预算 19）都只发 1 次、之后零发送、被拒正文不保存；系列新建冻结 v8，`executedWith` 记录 v8；规划＋前 3 集 19 次、60 集全流程 96 次回归保持通过。`pnpm verify` 通过（contracts 197、domain 865、providers 346、web 764、api 411 另 90 跳过）；PostgreSQL 与浏览器验收由 PR CI 运行；Migration 编写 0、执行 0；真实模型与媒体调用 0 次 |
 | 2026-10-25 验证计划样本集数 checks.v8（本机 Windows + Node 24.21，模型替身） | 见第 3.8 节；线上被拒原句未保存，以下都是合成样本。新增 `packages/domain/src/auto-creation-verification-sample.spec.ts`（数字分类器与完整 `validateAutoStageOutput("research", …)` 分开：limited、sourced、系列经 `seriesAutoInput` 传入真实 60 集三条路径）。在 main 1feb0a6 上先运行：128 项中 64 项失败。三句样本计划（中文与阿拉伯数字）在三条路径都被拒为 `frozen_conflict` / `episode_count`；「第61集样稿」在基线上无提示通过；合法样本后的七成观众在基线上先被样本数字拒收，后面的统计没有被单独看到。修复后全部通过（共 129 项，含边界「计划试读前三集」仍拒收）：样本计划保留原文、无提示；总集数改动（含「计划」）、零集 / 六十一集 / 第 61 集样本、观看习惯、调查平均、已执行样本、每人平均、样本后的比例或总集数冲突、后续假设与机会字段的统计都照常拒收；statement 不获得样本豁免。providers 模型替身：原短剧 3 集合法样本完成、`executedWith` 记录 checks.v8；比例与总集数冲突各只发 1 次后停止、被拒正文不保存；系列 60 集 × 60 秒、规划＋前 3 集合法样本 19 次完成，非法两种各只发 1 次。既有六阶段、19 次与全流程回归保持通过。`pnpm verify` 通过（contracts 197、domain 997、providers 352、web 764、api 411 另 90 跳过）；PostgreSQL 与浏览器验收由 PR CI 运行；Migration 编写 0、执行 0；真实模型与媒体调用 0 次 |
+| 2026-10-26 观看时长拒收分支诊断（本机 Windows + Node 24.21，模型替身；检查语义不变） | 见第 3.10 节；全部是合成样本，不是线上原句。新增 `packages/domain/src/auto-creation-viewing-duration-reason.spec.ts`（45 项）：8 个分支各一句，分类器、错误码兼容，以及完整阶段 `contentStructure[0].application.why` 的 limited、sourced、系列经 `seriesAutoInput` 传入 60 集三条路径。先在 main b0d8c7f 的源码上用完整阶段探针运行：8 句全部得到同一个 `unsourced_number@contentStructure[0].application.why:digits+market_statistic+viewing_duration`，没有 reason。修复后 8 句各自得到对应 reason，前五段诊断与基线完全相同。合法本剧时长、计划观察期照常通过，`duration_unconfirmed` 照常记为未核实提示，其他拒收不带 reason。providers：原短剧和系列引擎各 8 项，非法替身只发 1 次，reason 持久化在阶段和调用里，后续阶段零发送，正文和 detail 不保存。web：8 个分支的中文说明、旧码、非法 reason 不展示。Migration 编写 0、执行 0；真实模型与媒体调用 0 次 |
 | 2026-10-25 样本动作绑定数量 checks.v9（本机 Windows + Node 24.21，模型替身） | 见第 3.9 节；两条合成样本加入 `auto-creation-verification-sample.spec.ts` 的拒收表，分类器与完整阶段（limited、sourced、系列经 `seriesAutoInput` 传入 60 集）共 8 项。在 main 7d28d3a（checks.v8）未修复代码上先运行：8 项全部失败（分类器返回无拒收，完整阶段 `ok: true`）。修复后该文件 140 项全部通过：两句分别拒为 `market_statistic` / `viewing_count`、`frozen_conflict` / `episode_count`；原三句合法计划（及阿拉伯数字、样片、第 N 集写法）保留原文、无提示；邀请观众试读样稿的对照仍通过；越界、总集数、统计、已执行结果与后续字段照常拒收。domain 1005、providers 352（含规划＋前 3 集 19 次、全流程 96 次）通过；PostgreSQL 与浏览器验收由 PR CI 运行；Migration 编写 0、执行 0；真实模型与媒体调用 0 次 |
 | 2026-10-21 研究契约按资料能力拆分 research.v4 / prompt.v6 / checks.v6（本机 Windows + Node 24.21，模型替身） | 见第 3.5 节与 `docs/AUTO_CREATION_RESEARCH_CAPABILITIES_REPORT.md`；新增 `packages/contracts/src/auto-creation-capabilities.spec.ts`（limited/sourced 两份 JSON Schema 与 Zod 逐键一致、limited 拒收禁止字段即使为空、服务端组装、v3 历史判断）与 `packages/providers/src/auto-creation-capabilities.spec.ts`（捕获引擎实际发给 OpenAI / Claude / DeepSeek 的请求体核对 Schema 与提示、四种资料组合、limited 完整六阶段、注入字段各只发 1 次、sourced 合法与非法事实、v3 历史续跑不重发、原键重放、已保存快照决定续跑契约、预算不足不续跑、无有效快照不预约） |
 

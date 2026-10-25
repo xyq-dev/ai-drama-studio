@@ -9,6 +9,7 @@ import {
   type AutoCreationOptionsView,
   type AutoCreationRunView,
   type AutoCreationStageView,
+  type AutoViewingDurationReason,
 } from "@ai-drama/contracts";
 import { withSession } from "./site-session";
 import { TitleWritingError, TitleWritingUnconfirmedError, isEntityId, operatorHeader } from "./title-writing-client";
@@ -238,16 +239,32 @@ const RULE_TEXT: Record<string, string> = {
   forbidden_field: "资料有限契约不允许的字段",
 };
 
+/**
+ * Which check refused a viewing time, as the page says it. It names the program's branch, not a confirmed market fact,
+ * and it does not restore the refused sentence. Older codes carry no branch and keep the general text above.
+ */
+const VIEWING_REASON_TEXT: Record<AutoViewingDurationReason, string> = {
+  viewing_habit: "程序命中了「观看习惯词」：这个时长所在的分句里有通常、一般、大多等习惯说法",
+  leaving_after: "程序命中了「时长后接退出或流失」：时长后面紧跟退出、流失、划走等动作",
+  viewing_the_work: "程序命中了「观看动词直接支配本剧」：观看、看了等动词直接带着本剧、本集等指代",
+  viewing_verb_before: "程序命中了「观看动词直接接时长」：时长前面紧挨着观看、看了、停留等动词",
+  over_episode_length: "程序命中了「超过冻结的每集时长」：观众相关的时长长于冻结的每集时长",
+  not_pending: "程序命中了「缺少待验证或计划标记」：观众相关的时长所在分句或句子没有写明是否、可能、待验证、计划等",
+  not_observation_unit: "程序命中了「时长单位不能按观察期处理」：观众相关的小时、年等单位不按天、周、月的观察期处理",
+  no_plan_verb: "程序命中了「缺少观察计划动作」：观察期没有对比、收集、跟踪、观察等计划动作",
+};
+
 /** A stored code (rule; since checks v2 the field and the kind of token; since v3 what it was taken for and the sub-rule) as the page says it. */
 export function autoErrorText(stored: string | null): string | null {
   if (stored === null) return null;
-  const { code, field, category, semantic, rule } = autoErrorParts(stored);
+  const { code, field, category, semantic, rule, reason } = autoErrorParts(stored);
   const base = ERRORS[code] ?? `出现了未识别的问题（${code}）。`;
   if (!field && !category) return base;
   // research v3: only a key the server keeps for itself is explained as the server's record.
   const serverKey = category === "unrecognized_keys" && (AUTO_RESEARCH_SERVER_KEYS as readonly string[]).includes(field ?? "");
   const kind = category ? `（${CATEGORY_TEXT[category] ?? category}${serverKey ? "；用户设定与资料局限由服务端记录，模型不能填写" : ""}）` : "";
-  const meaning = semantic ? `；${SEMANTIC_TEXT[semantic] ?? semantic}${rule ? `：${RULE_TEXT[rule] ?? rule}` : ""}` : "";
+  const branch = reason ? `；${VIEWING_REASON_TEXT[reason]}（只说明程序为何拒收，不还原原句）` : "";
+  const meaning = semantic ? `；${SEMANTIC_TEXT[semantic] ?? semantic}${rule ? `：${RULE_TEXT[rule] ?? rule}` : ""}${branch}` : "";
   return `${base}位置：${field ?? "未知字段"}${kind}${meaning}。`;
 }
 

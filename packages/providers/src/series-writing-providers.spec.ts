@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   AUTO_CREATION_PROMPT_VERSION,
+  AUTO_VIEWING_DURATION_REASONS,
   SERIES_PROMPT_MAX_CHARS,
   SERIES_WRITING_CHECKS_VERSION,
   SERIES_WRITING_PROMPT_VERSION,
   autoCreationJsonSchema,
+  autoErrorParts,
   seriesJsonSchema,
   seriesNormalCalls,
 } from "@ai-drama/contracts";
@@ -139,6 +141,24 @@ describe("a verification plan's sample in a series (checks v8; synthetic plans, 
     expect(store.calls.map((call) => call.errorCode)).toEqual([code]);
     expect(store.stages.find((item) => item.stageKey === "research")).toMatchObject({ state: "rejected", errorCode: code, output: null });
     expect(JSON.stringify({ calls: store.calls, stages: store.stages, grants: store.grants })).not.toContain(text);
+    await main.maintain();
+    expect(seen.map((item) => item.stage)).toEqual(["research"]);
+    expect(store.calls).toHaveLength(1);
+  });
+});
+
+describe("which check refused a viewing time, in a series (diagnostics only; synthetic texts, not a real refused answer)", () => {
+  it.each(AUTO_VIEWING_DURATION_REASONS)("60 × 60 s, budget 19: viewing time %s in application.why is sent once, its branch kept in the code, no text or detail stored", async (reason) => {
+    const { seen, grant, store, main } = await seriesSetup({ providerKey: "deepseek", plan: { auto: { viewingDurationWhy: reason } } });
+    await grant({ plan: true, batchFrom: 1, batchTo: 1, final: false });
+    const code = `unsourced_number@contentStructure[0].application.why:digits+market_statistic+viewing_duration+${reason}`;
+    expect(store.grants[0]).toMatchObject({ callBudget: 19, callsUsed: 1, input: { resendAllowance: 0 } });
+    expect(store.calls.map((call) => call.errorCode)).toEqual([code]);
+    expect(store.stages.find((item) => item.stageKey === "research")).toMatchObject({ state: "rejected", errorCode: code, output: null });
+    expect(autoErrorParts(code).reason).toBe(reason);
+    const kept = JSON.stringify({ calls: store.calls, stages: store.stages, grants: store.grants });
+    expect(kept).not.toContain("模型替身样例：");
+    expect(kept).not.toContain('"detail"');
     await main.maintain();
     expect(seen.map((item) => item.stage)).toEqual(["research"]);
     expect(store.calls).toHaveLength(1);

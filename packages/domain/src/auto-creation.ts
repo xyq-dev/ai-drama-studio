@@ -59,6 +59,7 @@ import {
   type AutoStageRecord,
   type AutoStoredResearch,
   type AutoUnverifiedNotice,
+  type AutoViewingDurationReason,
 } from "@ai-drama/contracts";
 import {
   frozenAudiencePhrase, numberKind, numberTokens, settledMarketClaim, uncitedNumberReading, type AutoNumberFinding, type AutoNumberFrame,
@@ -563,7 +564,9 @@ export function buildAutoCreationPrompt(stageKey: string, input: AutoCreationFro
  * sub-rule. detail is for tests and may hold model text: it is never stored.
  */
 export type AutoValidation = { ok: true; output: AutoStageOutput }
-  | { ok: false; code: string; detail?: string; field?: string; category?: string; semantic?: string; rule?: string };
+  | { ok: false; code: string; detail?: string; field?: string; category?: string; semantic?: string; rule?: string;
+    /** For a viewing time only: the fixed slug of the check that refused it. */
+    reason?: AutoViewingDurationReason };
 
 const UNSAFE = /https?:\/\/|www\.|<\s*\/?\s*(script|iframe|html|a\s)/i;
 const RESERVED = /projectId|reviewStatus|APPROVED|CURRENT/;
@@ -661,7 +664,7 @@ function uncitedNumber(statement: string, field: string, frame: AutoNumberFrame,
 
 function numberRefusal(finding: AutoNumberFinding, field: string): AutoValidation {
   return { ok: false, code: finding.semantic === "frozen_conflict" ? "constraint_violation" : "unsourced_number", detail: finding.token, field,
-    category: finding.kind, semantic: finding.semantic, rule: finding.rule };
+    category: finding.kind, semantic: finding.semantic, rule: finding.rule, ...(finding.reason ? { reason: finding.reason } : {}) };
 }
 
 /**
