@@ -100,7 +100,7 @@ describe("hypothesis fields (shared prompt v8) in a series: the borrowed researc
     expect(research.user).toContain("每条假设是一个对象，只包含 id、statement、howToVerify 三个字段，三个都必填");
     expect(research.user).toContain('假设对象示例（只示意格式，内容按本次创作写）：{"id":"H1",');
     const stored = store.stages.find((item) => item.stageKey === "research")!.output as { serverRecord: { executedWith: Record<string, string> } };
-    expect(stored.serverRecord.executedWith).toMatchObject({ promptVersion: "ads.auto-creation.prompt.v8", checksVersion: "ads.auto-creation.checks.v8",
+    expect(stored.serverRecord.executedWith).toMatchObject({ promptVersion: "ads.auto-creation.prompt.v8", checksVersion: "ads.auto-creation.checks.v9",
       researchSchema: "ads.auto-creation.research.v4" });
   });
 
@@ -121,12 +121,12 @@ describe("hypothesis fields (shared prompt v8) in a series: the borrowed researc
 describe("a verification plan's sample in a series (checks v8; synthetic plans, not the real refused answer)", () => {
   it("60 × 60 s, plan + episodes 1–3: a plan to read a three-episode sample passes research and the 19-call flow completes", async () => {
     const { grant, store, snapshot } = await seriesSetup({ providerKey: "deepseek", plan: { auto: { verificationSample: "sample" } } });
-    expect((await snapshot()).series.input.researchContract.checksVersion).toBe("ads.auto-creation.checks.v8");
+    expect((await snapshot()).series.input.researchContract.checksVersion).toBe("ads.auto-creation.checks.v9");
     await grant({ plan: true, batchFrom: 1, batchTo: 1, final: false });
     expect(store.calls).toHaveLength(19);
     const stored = store.stages.find((item) => item.stageKey === "research")!.output as { hypotheses: Array<{ howToVerify: string }>; serverRecord: { executedWith: Record<string, string> } };
     expect(stored.hypotheses[0]!.howToVerify).toBe("模型替身样例：计划制作三集样稿进行试读并收集反馈。");
-    expect(stored.serverRecord.executedWith).toMatchObject({ checksVersion: "ads.auto-creation.checks.v8" });
+    expect(stored.serverRecord.executedWith).toMatchObject({ checksVersion: "ads.auto-creation.checks.v9" });
   });
 
   it.each([

@@ -537,17 +537,28 @@ function countsStoryNoun(tail: string): boolean {
  * that sample (计划制作三集样稿进行试读, 计划试读前三集样稿, 计划试读第 2 集样稿). Such a number is the sample, not the
  * work's total: it must lie within 1 and the frozen episode count. Nothing else of the clause is exempted: a sample
  * already taken (已, 曾, 试读过), a total changed (将本剧改为三集样稿) or a viewing habit (观众通常看完的三集样稿) is read as
- * before, and so is a rate, a share or a measured result anywhere in its sentence.
+ * before, and so is a rate, a share or a measured result anywhere in its sentence. checks v9: the sample verb must take
+ * this very count as its object, right before it (制作三集样稿, 试读前三集样稿), with the plan word before that verb. A verb
+ * elsewhere in the clause takes something else: 计划选取观众看完三集样稿后都弃剧的案例 picks cases and counts what viewers
+ * watched; 计划把本剧缩至三集样稿后试读 cuts the work and reads it afterwards. Both are read as before.
  */
 const SAMPLE_AFTER = /^集(?:的)?(?:样稿|样片)/u;
 const SAMPLE_PLAN = /计划|(?<![模虚])拟|打算|准备/u;
 const SAMPLE_VERB = /制作|撰写|选取|抽取|挑选|选出|抽出|试读|试看/u;
+/** The sample verb governing the count that follows it: nothing but 前 or 头 between them (checks v9). */
+const SAMPLE_BOUND = /(?:制作|撰写|选取|抽取|挑选|选出|抽出|试读|试看)(?:前|头)?$/u;
 const SAMPLE_NOT = /已|曾|(?:制作|撰写|选取|抽取|挑选|试读|试看)(?:过|了)|改为|改成|改编为|缩减|压缩|删减|调整为|变为|变成|共计|总共|一共|总计|本剧共|全剧共/u;
 const SAMPLE_ORDINAL = new RegExp(`第\\s*(\\d+|[０-９]+|[${CN_DIGITS}]+)\\s*集(?:的)?(?:样稿|样片)`, "gu");
 
 /** Whether a clause is a plan to sample this work (the number's tail starts with its 集样稿). */
 function samplePlan(clause: string): boolean {
   return SAMPLE_PLAN.test(clause) && SAMPLE_VERB.test(clause) && !SAMPLE_NOT.test(clause) && !VIEWING_HABIT.test(clause);
+}
+
+/** Whether the text before a count ends with its sample verb, and a plan word comes before that verb (checks v9). */
+function sampleBound(before: string): boolean {
+  const verb = SAMPLE_BOUND.exec(before);
+  return verb !== null && SAMPLE_PLAN.test(before.slice(0, verb.index));
 }
 
 /**
@@ -682,8 +693,9 @@ function roleOf(hit: NumberHit, clause: string, clauses: readonly string[], mark
     return { allowed: true, rule: "story_time" };
   }
   if (/^集/u.test(tail)) {
-    // A verification plan's sample of this work is no total (checks v8); it stays within the work.
-    if (verificationPlan && SAMPLE_AFTER.test(tail) && samplePlan(clause)) {
+    // A verification plan's sample of this work is no total (checks v8); it stays within the work. Its own sample verb
+    // must take this count (checks v9): a verb elsewhere in the clause exempts nothing.
+    if (verificationPlan && SAMPLE_AFTER.test(tail) && samplePlan(clause) && sampleBound(before)) {
       return value !== null && value >= 1 && value <= frame.episodeCount ? { allowed: true, rule: "verification_sample" } : refuse("frozen_conflict", "sample_out_of_range");
     }
     // The run's own episode count was removed already where it may be restated.

@@ -56,12 +56,15 @@ export const AUTO_CREATION_SELECTION_RULES = "ads.auto-creation.selection-rules.
  * v8: in a hypothesis' howToVerify only, a plan's sample of the work (计划制作三集样稿进行试读, 计划试读前三集样稿) is
  * read as a sample, not the work's total: it must lie within 1 and the frozen episode count (sample_out_of_range); a
  * total, a viewing habit, a rate, a share or a measured result beside it is refused as before. Prompt v8, research v4.
+ * v9: that sample is read only when its own sample verb takes the count, right before it (制作三集样稿, 试读前三集样稿),
+ * after the plan word; a sample verb elsewhere in the clause (计划选取观众看完三集样稿后都弃剧的案例, 计划把本剧缩至三集
+ * 样稿后试读) exempts nothing, and the count is read as before. Prompt v8, research v4.
  */
-export const AUTO_CREATION_CHECKS_VERSION = "ads.auto-creation.checks.v8" as const;
+export const AUTO_CREATION_CHECKS_VERSION = "ads.auto-creation.checks.v9" as const;
 /** Every checks version a stored run or review may carry. */
 export type AutoCreationChecksVersion = "ads.auto-creation.checks.v1" | "ads.auto-creation.checks.v2" | "ads.auto-creation.checks.v3"
   | "ads.auto-creation.checks.v4" | "ads.auto-creation.checks.v5" | "ads.auto-creation.checks.v6" | "ads.auto-creation.checks.v7"
-  | typeof AUTO_CREATION_CHECKS_VERSION;
+  | "ads.auto-creation.checks.v8" | typeof AUTO_CREATION_CHECKS_VERSION;
 /**
  * v4: the answer contract follows the run's saved research mode. limited: the model writes hypotheses, the audience as
  * text, content structures and opportunities only; the server assembles the rest (no facts, no observations, the

@@ -66,7 +66,11 @@ const REFUSED: ReadonlyArray<readonly [string, string, string, string]> = [
   ["episodes read with no sample named (boundary: read as before)", "计划试读前三集并收集反馈。", "frozen_conflict", "episode_count"],
   ["a sample already read","已选取三集样稿进行试读，反馈很好。", "frozen_conflict", "episode_count"],
   ["a sample with a viewing habit beside it", "计划选取观众通常看完的三集样稿进行试读。", "market_statistic", "viewing_count"],
-  ["a sample per viewer", "计划请观众平均每人试读三集样稿。", "market_statistic", "rate_or_average"],
+  // checks v9: the sample verb must take this count as its object. Both passed on fc64e84 (checks v8), where any sample
+  // verb in the clause was enough; both were refused on 1feb0a6.
+  ["cases picked, the count is what viewers watched", "计划选取观众看完三集样稿后都弃剧的案例。", "market_statistic", "viewing_count"],
+  ["the work cut to three samples, a reading after it", "计划把本剧缩至三集样稿后试读。", "frozen_conflict", "episode_count"],
+  ["a sample per viewer","计划请观众平均每人试读三集样稿。", "market_statistic", "rate_or_average"],
   ["a legal sample, then a share of viewers", "计划制作三集样稿进行试读，七成观众会喜欢。", "market_statistic", "proportion"],
   ["a legal sample, then the work's total", "计划制作三集样稿进行试读，本剧共三集。", "frozen_conflict", "episode_count"],
   ["a legal sample, then the work's total in the next sentence", "计划试读前三集样稿。本剧共三集。", "frozen_conflict", "episode_count"],

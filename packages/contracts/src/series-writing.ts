@@ -53,7 +53,8 @@ export const SERIES_PACKAGE_SCHEMA = "ads.series-writing.package.v1" as const;
  * A new series freezes the current shared versions (prompt v8 names every field of one hypothesis); a series created
  * earlier keeps the version it froze (prompt v7), and its research records the version it was actually sent with.
  * Checks v8 reads a verification plan's sample of the work as a sample within it; a series created earlier keeps the
- * checks version it froze (v7).
+ * checks version it froze (v7). Checks v9 reads that sample only when its own sample verb takes the count; a series
+ * created under v8 keeps the v8 it froze.
  */
 export const SERIES_RESEARCH_CONTRACT = {
   promptVersion: AUTO_CREATION_PROMPT_VERSION,
