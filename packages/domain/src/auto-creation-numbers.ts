@@ -531,6 +531,42 @@ function countsStoryNoun(tail: string): boolean {
   return !(classifier !== undefined && counted.noun === classifier && UNIT_CLASSIFIERS[classifier] !== undefined);
 }
 
+/**
+ * A verification plan's sample of this work (checks v8), read only in a hypothesis' howToVerify: a count or a position
+ * of episodes right before 样稿 or 样片, in a clause that says it is a plan (计划, 拟, 打算, 准备) to make, pick or read
+ * that sample (计划制作三集样稿进行试读, 计划试读前三集样稿, 计划试读第 2 集样稿). Such a number is the sample, not the
+ * work's total: it must lie within 1 and the frozen episode count. Nothing else of the clause is exempted: a sample
+ * already taken (已, 曾, 试读过), a total changed (将本剧改为三集样稿) or a viewing habit (观众通常看完的三集样稿) is read as
+ * before, and so is a rate, a share or a measured result anywhere in its sentence.
+ */
+const SAMPLE_AFTER = /^集(?:的)?(?:样稿|样片)/u;
+const SAMPLE_PLAN = /计划|(?<![模虚])拟|打算|准备/u;
+const SAMPLE_VERB = /制作|撰写|选取|抽取|挑选|选出|抽出|试读|试看/u;
+const SAMPLE_NOT = /已|曾|(?:制作|撰写|选取|抽取|挑选|试读|试看)(?:过|了)|改为|改成|改编为|缩减|压缩|删减|调整为|变为|变成|共计|总共|一共|总计|本剧共|全剧共/u;
+const SAMPLE_ORDINAL = new RegExp(`第\\s*(\\d+|[０-９]+|[${CN_DIGITS}]+)\\s*集(?:的)?(?:样稿|样片)`, "gu");
+
+/** Whether a clause is a plan to sample this work (the number's tail starts with its 集样稿). */
+function samplePlan(clause: string): boolean {
+  return SAMPLE_PLAN.test(clause) && SAMPLE_VERB.test(clause) && !SAMPLE_NOT.test(clause) && !VIEWING_HABIT.test(clause);
+}
+
+/**
+ * A sample position outside the work (计划试读第61集样稿): the structural ordinal is removed before a clause is read, so
+ * it is found here first, on the raw clause, and refused as a frozen conflict.
+ */
+function sampleOrdinalRefusal(text: string, frame: AutoNumberFrame): AutoNumberFinding | null {
+  for (const clause of text.replace(INVISIBLE, "").replace(/\s+/gu, "").split(/(?<=[，,。；;！？!?\n])/u)) {
+    if (!samplePlan(clause)) continue;
+    for (const match of clause.matchAll(SAMPLE_ORDINAL)) {
+      const value = numberValue(match[1]!);
+      if (value === null || value < 1 || value > frame.episodeCount) {
+        return { token: match[1]!, kind: numberKind(match[1]!), semantic: "frozen_conflict", rule: "sample_out_of_range" };
+      }
+    }
+  }
+  return null;
+}
+
 /** Days a plan's duration takes, or null for a duration no plan uses (seconds, minutes, hours, years). */
 function planDays(value: number, unit: string): number | null {
   if (unit === "天") return value;
@@ -583,7 +619,7 @@ function givenVerdict(clause: string): boolean {
   return false;
 }
 
-function roleOf(hit: NumberHit, clause: string, clauses: readonly string[], market: boolean, frame: AutoNumberFrame): Role {
+function roleOf(hit: NumberHit, clause: string, clauses: readonly string[], market: boolean, frame: AutoNumberFrame, verificationPlan = false): Role {
   const sentence = clauses.join("");
   const kind = numberKind(hit.token);
   if (kind === "rank") return refuse("market_statistic", "ranking");
@@ -646,6 +682,10 @@ function roleOf(hit: NumberHit, clause: string, clauses: readonly string[], mark
     return { allowed: true, rule: "story_time" };
   }
   if (/^集/u.test(tail)) {
+    // A verification plan's sample of this work is no total (checks v8); it stays within the work.
+    if (verificationPlan && SAMPLE_AFTER.test(tail) && samplePlan(clause)) {
+      return value !== null && value >= 1 && value <= frame.episodeCount ? { allowed: true, rule: "verification_sample" } : refuse("frozen_conflict", "sample_out_of_range");
+    }
     // The run's own episode count was removed already where it may be restated.
     return market ? refuse("market_statistic", "viewing_count") : refuse("frozen_conflict", "episode_count");
   }
@@ -700,12 +740,16 @@ const UNVERIFIED_RULES: ReadonlySet<string> = new Set(AUTO_UNVERIFIED_RULES);
  * no_role) or a pending duration whose meaning the code cannot confirm (duration_unconfirmed, checks v7) is kept as
  * unverified instead of refused; the reading goes on past it, so any later number in the same clause, sentence or text is
  * still judged and refused for what it is. Only those sub-rules are kept: dates, counts out of range, statistics, viewing
- * times, measured results, frozen conflicts and unmarked judgements are refused as before.
+ * times, measured results, frozen conflicts and unmarked judgements are refused as before. verificationPlan: a
+ * hypothesis' howToVerify, where a plan's sample of this work is read as a sample, not the work's total (checks v8).
  */
-export function uncitedNumberReading(text: string, frame: AutoNumberFrame, options: { market?: boolean; unverified?: boolean } = {}):
+export function uncitedNumberReading(text: string, frame: AutoNumberFrame, options: { market?: boolean; unverified?: boolean; verificationPlan?: boolean } = {}):
   { refusal: AutoNumberFinding | null; unverified: AutoNumberFinding[] } {
   const unverified: AutoNumberFinding[] = [];
   let unmarked: AutoNumberFinding | null = null;
+  const verificationPlan = options.verificationPlan === true;
+  const outside = verificationPlan ? sampleOrdinalRefusal(text, frame) : null;
+  if (outside) return { refusal: outside, unverified };
   for (const clauses of sentencesOf(text, frame.exempt, frame.frozenAudience)) {
     // Viewers, the market and a measured result named anywhere in the sentence carry over its commas (数据显示，三个人里…).
     const sentence = clauses.join("");
@@ -718,7 +762,7 @@ export function uncitedNumberReading(text: string, frame: AutoNumberFrame, optio
       const ratio = RATIO.exec(clause)?.[0] ?? RATIO_WRITTEN.exec(clause)?.[0];
       if (ratio) return { refusal: { token: ratio, kind: numberKind(ratio), semantic: "market_statistic", rule: "proportion" }, unverified };
       for (const hit of hitsOf(clause, market)) {
-        const role = roleOf(hit, clause, clauses, market, frame);
+        const role = roleOf(hit, clause, clauses, market, frame, verificationPlan);
         if (!role.allowed) {
           const finding: AutoNumberFinding = { token: hit.token, kind: numberKind(hit.token), semantic: role.semantic, rule: role.rule };
           if (options.unverified === true && role.semantic === "unclassified" && UNVERIFIED_RULES.has(role.rule)) {
