@@ -191,7 +191,7 @@ describe("C. the same duration checks in every uncited creative field", () => {
   it("the research prompt says how to write the work's length and that a viewing time is never written", () => {
     for (const ctx of [context(), sourcedContext()]) {
       const { user } = buildAutoCreationPrompt("research", input(), ctx);
-      expect(user).toContain("提示版本：ads.auto-creation.prompt.v7");
+      expect(user).toContain("提示版本：ads.auto-creation.prompt.v8");
       expect(user).toContain("待验证观众是否喜欢本剧 60 秒的故事");
       expect(user).toContain("不写观众实际看了多久、看多久后退出");
     }

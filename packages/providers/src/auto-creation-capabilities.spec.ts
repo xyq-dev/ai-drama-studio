@@ -13,7 +13,7 @@ import {
   type TitleWritingProviderKey,
 } from "@ai-drama/contracts";
 import { OCEAN_ENGINE_ENTRY_URLS, autoPackageJson, autoPackageMarkdown, type FetchedPage } from "@ai-drama/domain";
-import { claudeJsonSchema, titleWritingProviderConfigs, type WritingTransport } from "./text-writing";
+import { DEEPSEEK_CHAT_COMPLETIONS_URL, claudeJsonSchema, titleWritingProviderConfigs, type WritingTransport } from "./text-writing";
 import { AutoCreationEngine, InMemoryAutoCreationStore, autoResumeBlock, autoRunView, hashAutoResume, newAutoRun } from "./auto-creation-engine";
 import { autoFixtureTransport, fixtureAutoResearchV3, type AutoFixtureExchange, type AutoFixturePlan } from "./auto-creation-fixtures";
 
@@ -345,7 +345,7 @@ describe("F. history: research v3 is read as it was; an old run's next research 
       transport: autoFixtureTransport({ seen: first.seen }), leaseMs: 240_000 });
     await later.drive(first.run.id);
     expect(first.seen.at(-6)!.user).toContain("任务：基于资料完成研究与创作定位");
-    expect((await first.research()).output).toMatchObject({ serverRecord: { executedWith: { promptVersion: "ads.auto-creation.prompt.v7", answerContract: "sourced" } } });
+    expect((await first.research()).output).toMatchObject({ serverRecord: { executedWith: { promptVersion: "ads.auto-creation.prompt.v8", answerContract: "sourced" } } });
   });
 
   it("an old run whose budget is spent is not resumed: nothing reset, nothing sent", async () => {
@@ -384,7 +384,7 @@ describe("durations (checks v7): the work's own length passes, an unplaced durat
     expect(stored.unverified).toEqual([{ origin: "server_check", field: "hypotheses[1].statement", token: "60", semantic: "unclassified",
       rule: "duration_unconfirmed", note: "程序无法确认时长含义（不是已判定的观看统计），未核实" }]);
     expect(stored).toMatchObject({ facts: [], observations: [], audience: { basis: "hypothesis", sourceIds: [] },
-      serverRecord: { executedWith: { promptVersion: "ads.auto-creation.prompt.v7", checksVersion: "ads.auto-creation.checks.v7", answerContract: "limited" },
+      serverRecord: { executedWith: { promptVersion: "ads.auto-creation.prompt.v8", checksVersion: "ads.auto-creation.checks.v7", answerContract: "limited" },
         marketEvidence: { status: "unavailable" } } });
     const notice = "第2条假设（H2）中的「60」：程序无法确认时长含义（不是已判定的观看统计），未核实；只属于创作假设或设计，不是有来源的事实或市场结论。";
     // Later prompts carry it as a notice beside a hypothesis, never as a finding.
@@ -412,6 +412,47 @@ describe("durations (checks v7): the work's own length passes, an unplaced durat
     await engine.drive(run.id);
     const result = await view();
     const code = "unsourced_number@hypotheses[0].statement:digits+market_statistic+viewing_duration";
+    expect(result).toMatchObject({ state: "failed", callsUsed: 1 });
+    expect(result.stages.find((stage) => stage.stageKey === "research")).toMatchObject({ state: "rejected", errorCode: code, output: null });
+    expect(result.calls.map((call) => call.errorCode)).toEqual([code]);
+    expect(JSON.stringify(result)).not.toContain("模型替身样例");
+    await engine.maintain();
+    await engine.drive(run.id);
+    expect(seen.map((item) => item.stage)).toEqual(["research"]);
+  });
+});
+
+describe("hypothesis fields (prompt v8): the DeepSeek request names them, the strict contract still refuses an extra one", () => {
+  // A real series run was refused at its first research call as invalid_output@hypotheses[3]:unrecognized_keys; its answer
+  // was not kept, so the extra key is unknown. The double's `extra` field below is a SYNTHETIC sample, not that answer.
+  const sourced: Partial<Setup> = { researchFetch: true, pages: (urls) => urls.filter((url) => url === MARKET_PAGE.url).map(() => MARKET_PAGE) };
+  const MODES = [["limited", {}], ["sourced", sourced]] as const;
+
+  it.each(MODES)("%s: the real DeepSeek adapter sends the mode's schema (three required fields, no others) and the field lines", async (mode, extra) => {
+    const { run, engine, seen, bodies, view } = await setup({ providerKey: "deepseek", ...extra });
+    await engine.drive(run.id);
+    // A legal answer keeps the normal flow: six calls, completed.
+    expect(await view()).toMatchObject({ state: "completed", researchMode: mode, callsUsed: 6 });
+    const sent = bodies[0]!;
+    expect(sent.url).toBe(DEEPSEEK_CHAT_COMPLETIONS_URL);
+    expect(sent.body).toMatchObject({ response_format: { type: "json_object" }, stream: false });
+    const schema = sentSchema(sent);
+    expect(schema).toEqual(autoCreationJsonSchema("research", 1, mode).schema);
+    const item = (schema as { properties: { hypotheses: { items: Record<string, unknown> } } }).properties.hypotheses.items;
+    expect(item).toMatchObject({ type: "object", additionalProperties: false, required: ["id", "statement", "howToVerify"] });
+    expect(Object.keys(item.properties as Record<string, unknown>)).toEqual(["id", "statement", "howToVerify"]);
+    const user = seen[0]!.user;
+    expect(user).toContain("提示版本：ads.auto-creation.prompt.v8");
+    expect(user).toContain("每条假设是一个对象，只包含 id、statement、howToVerify 三个字段，三个都必填");
+    expect(user).toContain("不要给假设添加任何其他字段");
+    expect(user).toContain('假设对象示例（只示意格式，内容按本次创作写）：{"id":"H1",');
+  });
+
+  it.each(MODES)("%s: a fourth hypothesis with a synthetic extra field is sent once, refused whole, stored nowhere, nothing after it", async (_mode, extra) => {
+    const { run, engine, seen, view } = await setup({ providerKey: "deepseek", plan: { extraHypothesisField: true }, ...extra });
+    await engine.drive(run.id);
+    const result = await view();
+    const code = "invalid_output@hypotheses[3]:unrecognized_keys";
     expect(result).toMatchObject({ state: "failed", callsUsed: 1 });
     expect(result.stages.find((stage) => stage.stageKey === "research")).toMatchObject({ state: "rejected", errorCode: code, output: null });
     expect(result.calls.map((call) => call.errorCode)).toEqual([code]);

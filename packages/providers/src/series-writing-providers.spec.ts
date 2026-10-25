@@ -79,3 +79,41 @@ describe("the requests the real adapters build for a series", () => {
     expect(Array.from({ length: 12 }, (_, index) => plan.includes(`第${String(index + 1)}集《`)).every(Boolean)).toBe(true);
   });
 });
+
+describe("hypothesis fields (shared prompt v8) in a series: the borrowed research names them; the strict contract still refuses an extra one", () => {
+  // The real series run (DeepSeek, 60 × 60 s, plan + episodes 1–3, budget 19) was refused at its first research call as
+  // invalid_output@hypotheses[3]:unrecognized_keys; its answer was not kept. The double's `extra` field is SYNTHETIC.
+  it("a new series freezes the shared prompt version; DeepSeek gets the limited schema (three fields, no others) and the field lines", async () => {
+    const { seen, snapshot, grant, store } = await seriesSetup({ providerKey: "deepseek" });
+    expect((await snapshot()).series.input.researchContract.promptVersion).toBe("ads.auto-creation.prompt.v8");
+    expect(AUTO_CREATION_PROMPT_VERSION).toBe("ads.auto-creation.prompt.v8");
+    await grant({ plan: true, batchFrom: 1, batchTo: 1, final: false });
+    // The legal answer keeps the normal flow: plan + episodes 1–3 is 19 calls.
+    expect(store.calls).toHaveLength(19);
+    const research = seen.find((item) => item.stage === "research")!;
+    expect(research.url).toBe(DEEPSEEK_CHAT_COMPLETIONS_URL);
+    const schema = sentSchema(research);
+    expect(schema).toEqual(autoCreationJsonSchema("research", 60, "limited").schema);
+    expect((schema as { properties: { hypotheses: { items: Record<string, unknown> } } }).properties.hypotheses.items)
+      .toMatchObject({ additionalProperties: false, required: ["id", "statement", "howToVerify"] });
+    expect(research.user).toContain("提示版本：ads.auto-creation.prompt.v8");
+    expect(research.user).toContain("每条假设是一个对象，只包含 id、statement、howToVerify 三个字段，三个都必填");
+    expect(research.user).toContain('假设对象示例（只示意格式，内容按本次创作写）：{"id":"H1",');
+    const stored = store.stages.find((item) => item.stageKey === "research")!.output as { serverRecord: { executedWith: Record<string, string> } };
+    expect(stored.serverRecord.executedWith).toMatchObject({ promptVersion: "ads.auto-creation.prompt.v8", checksVersion: "ads.auto-creation.checks.v7",
+      researchSchema: "ads.auto-creation.research.v4" });
+  });
+
+  it("60 × 60 s, plan + episodes 1–3, budget 19: a synthetic extra field on hypotheses[3] is sent once, refused whole, stored nowhere, nothing after it", async () => {
+    const { seen, grant, store, main } = await seriesSetup({ providerKey: "deepseek", plan: { auto: { extraHypothesisField: true } } });
+    await grant({ plan: true, batchFrom: 1, batchTo: 1, final: false });
+    const code = "invalid_output@hypotheses[3]:unrecognized_keys";
+    expect(store.grants[0]).toMatchObject({ callBudget: 19, callsUsed: 1, input: { resendAllowance: 0 } });
+    expect(store.calls.map((call) => call.errorCode)).toEqual([code]);
+    expect(store.stages.find((item) => item.stageKey === "research")).toMatchObject({ state: "rejected", errorCode: code, output: null });
+    expect(JSON.stringify({ calls: store.calls, stages: store.stages, grants: store.grants })).not.toContain("合成多余字段");
+    await main.maintain();
+    expect(seen.map((item) => item.stage)).toEqual(["research"]);
+    expect(store.calls).toHaveLength(1);
+  });
+});

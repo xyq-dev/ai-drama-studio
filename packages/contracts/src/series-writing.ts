@@ -7,6 +7,7 @@ import {
   AUTO_CREATION_SELECTION_RULES,
   autoCreationMaterialSchema,
   type AutoCreationMaterial,
+  type AutoCreationPromptVersion,
 } from "./auto-creation";
 import {
   DEEPSEEK_PROVIDER_ADAPTER,
@@ -48,6 +49,8 @@ export const SERIES_PACKAGE_SCHEMA = "ads.series-writing.package.v1" as const;
  * The research and the directions of a series are the automatic creation stages as they stand: their prompt, answer
  * contract (research v4: limited is AI creative planning, sourced keeps cited findings), number checks and rule-based
  * choice. A series records which versions it borrowed; their meaning is unchanged, so no new version is minted for them.
+ * A new series freezes the current shared versions (prompt v8 names every field of one hypothesis); a series created
+ * earlier keeps the version it froze (prompt v7), and its research records the version it was actually sent with.
  */
 export const SERIES_RESEARCH_CONTRACT = {
   promptVersion: AUTO_CREATION_PROMPT_VERSION,
@@ -55,6 +58,8 @@ export const SERIES_RESEARCH_CONTRACT = {
   researchSchema: AUTO_CREATION_RESEARCH_SCHEMA,
   selectionRules: AUTO_CREATION_SELECTION_RULES,
 } as const;
+/** The borrowed versions a stored series may carry: the current ones, or the prompt version it was created with. */
+export type SeriesResearchContract = Omit<typeof SERIES_RESEARCH_CONTRACT, "promptVersion"> & { promptVersion: AutoCreationPromptVersion };
 
 export const SERIES_MIN_EPISODES = 1;
 export const SERIES_MAX_EPISODES = 60;
@@ -316,7 +321,7 @@ export interface SeriesFrozenInput {
   schema: typeof SERIES_WRITING_INPUT_SCHEMA;
   promptVersion: typeof SERIES_WRITING_PROMPT_VERSION;
   checksVersion: typeof SERIES_WRITING_CHECKS_VERSION;
-  researchContract: typeof SERIES_RESEARCH_CONTRACT;
+  researchContract: SeriesResearchContract;
   idea: string;
   constraints: SeriesConstraints;
   materials: AutoCreationMaterial[];

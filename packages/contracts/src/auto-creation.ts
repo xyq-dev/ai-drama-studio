@@ -30,11 +30,14 @@ export const AUTO_CREATION_INPUT_SCHEMA = "ads.auto-creation.input.v1" as const;
  * v6: the research prompt follows the run's saved source snapshot: limited asks for creative positioning and hypotheses
  * only (no findings, no audience sources), sourced keeps the cited findings; research v4.
  * v7: the number rules say how to write the work's own length (本剧 60 秒的故事) and that a viewing time is never written.
+ * v8: both research prompts name every field of one hypothesis (id, statement, howToVerify, nothing else) and show one
+ * example object; the answer contract and the checks are unchanged (research v4, checks v7). Shared by series research.
  */
-export const AUTO_CREATION_PROMPT_VERSION = "ads.auto-creation.prompt.v7" as const;
+export const AUTO_CREATION_PROMPT_VERSION = "ads.auto-creation.prompt.v8" as const;
 /** Every prompt version a stored run may carry. A resumed run is sent with the current prompts. */
 export type AutoCreationPromptVersion = "ads.auto-creation.prompt.v1" | "ads.auto-creation.prompt.v2" | "ads.auto-creation.prompt.v3"
-  | "ads.auto-creation.prompt.v4" | "ads.auto-creation.prompt.v5" | "ads.auto-creation.prompt.v6" | typeof AUTO_CREATION_PROMPT_VERSION;
+  | "ads.auto-creation.prompt.v4" | "ads.auto-creation.prompt.v5" | "ads.auto-creation.prompt.v6" | "ads.auto-creation.prompt.v7"
+  | typeof AUTO_CREATION_PROMPT_VERSION;
 export const AUTO_CREATION_SELECTION_RULES = "ads.auto-creation.selection-rules.v1" as const;
 /**
  * v2: the applied constraints and a direction's audience fit are number-checked; spaced ordinals are not claims.

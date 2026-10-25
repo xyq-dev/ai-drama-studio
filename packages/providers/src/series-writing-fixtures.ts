@@ -16,7 +16,7 @@ import {
   type SeriesOutlineEpisode,
   type SeriesSetting,
 } from "@ai-drama/contracts";
-import { autoFixtureAnswer, autoFixtureStageOf } from "./auto-creation-fixtures";
+import { autoFixtureAnswer, autoFixtureStageOf, type AutoFixturePlan } from "./auto-creation-fixtures";
 import { ANTHROPIC_MESSAGES_URL, DEEPSEEK_CHAT_COMPLETIONS_URL, type WritingTransport } from "./text-writing";
 
 /**
@@ -140,6 +140,8 @@ export interface SeriesFixturePlan {
   oversizedEpisodes?: number[];
   /** Tag in every episode's action (to tell rewritten versions apart). */
   tag?: string;
+  /** The borrowed research and directions stages' plan (automatic creation's double). */
+  auto?: AutoFixturePlan;
 }
 
 /** Holder of the key after episode k: C2 until episode 2, C1 until episode 4, then C3 (handed over on screen). */
@@ -201,7 +203,7 @@ function review(schema: string, dimensions: readonly string[], issues: Review["i
 
 export function seriesFixtureAnswer(user: string, plan: SeriesFixturePlan = {}): unknown {
   const stage = seriesFixtureStageOf(user);
-  if (stage === "research" || stage === "directions") return autoFixtureAnswer(user);
+  if (stage === "research" || stage === "directions") return autoFixtureAnswer(user, plan.auto);
   const n = seriesFixtureEpisodeCount(user);
   if (stage === "setting") return fixtureSeriesSetting(n);
   if (stage === "arc") return fixtureSeriesArc(n);

@@ -385,8 +385,21 @@ const NUMBER_RULES_CREATIVE = [
 ];
 
 /**
+ * Every field of one hypothesis, the same in both research modes (prompt v8): the strict answer schema refuses an extra
+ * key whole, so the prompt names the three it accepts and shows one object. The example carries no number and no
+ * finding; it only shows the shape.
+ */
+const HYPOTHESIS_FIELD_LINES = [
+  "hypotheses 是数组，1 到 8 条；每条假设是一个对象，只包含 id、statement、howToVerify 三个字段，三个都必填：id 是 H1、H2 这样的编号；"
+    + "statement 是一句待验证的创作假设，不超过 200 字；howToVerify 是将来的验证计划，不超过 150 字。"
+    + "不要给假设添加任何其他字段（包括空值、空数组、备注或理由等解释性字段），多出一个字段也会整份拒收。",
+  `假设对象示例（只示意格式，内容按本次创作写）：${JSON.stringify({ id: "H1", statement: "待验证：开场就让主角做出冒险选择，可能更容易让观众代入。",
+    howToVerify: "计划请试看者复述主角的选择和动机，再比较不同开场的反馈。" })}`,
+];
+
+/**
  * The research contract with recent market material (sourced): cited facts and observations, an audience that may be
- * sourced, and the creative parts. Unchanged in substance from prompt v5.
+ * sourced, and the creative parts. Unchanged in substance from prompt v5; v8 names the fields of one hypothesis.
  */
 function sourcedResearchLines(): string[] {
   return [
@@ -394,6 +407,7 @@ function sourcedResearchLines(): string[] {
     "facts：只写资料区里能逐字找到依据的事实，evidence 逐字摘录 sourceIds 所指资料的原文；资料不足时 facts 为空数组。",
     "observations：基于参考资料样本的观察，必须写 sourceIds。",
     "hypotheses：你的判断和推测，写明如何验证（howToVerify 是将来的验证计划，不是已经做过的调查）；没有来源的受众判断都放在这里。",
+    ...HYPOTHESIS_FIELD_LINES,
     "audience：主要目标观众、观看需求、情绪诉求；只有每一项都有资料支持时 basis 才能是 sourced，否则是 hypothesis。",
     ...STRUCTURE_LINES,
     "市场事实只写进 facts 和 observations。",
@@ -417,6 +431,7 @@ function limitedResearchLines(): string[] {
     "本次资料快照没有符合条件的近期市场资料，市场证据不可用，由服务端记录；你不需要也不能给出市场结论，只完成创作策划。方法资料和用户资料仍可在 contentStructure 里作为方法引用。",
     "回答只包含 schema、hypotheses、audience、contentStructure、opportunities 五个字段；audience 只包含 primary、viewingNeeds、emotionalAppeals 三项。多出任何字段都会整份拒收，即使是空数组或默认值也一样。",
     "hypotheses：创作假设（受众偏好、题材方向、创作建议都写成待验证的假设），每条写明验证计划（howToVerify 是将来的验证计划，不是已经做过的调查）；编号用 H1、H2 这样的格式。",
+    ...HYPOTHESIS_FIELD_LINES,
     "audience：拟定的目标观众（primary）、观看需求（viewingNeeds）、情绪诉求（emotionalAppeals），用文字写成待验证的创作目标，不是平台用户画像或市场结论。",
     ...STRUCTURE_LINES,
     "opportunities：适合本次创作的机会（AI 创作判断）。",
