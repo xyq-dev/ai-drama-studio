@@ -29,7 +29,7 @@
 | `review:r` | 独立审阅提示与 10 项评价标准；问题须带**逐字原文证据**；程序检查结果并入 | 是 |
 | `revise:r:episode:k` | 只修指出的问题，记录逐条修改 | 是 |
 
-提示词版本 `ads.auto-creation.prompt.v8`、检查版本 `ads.auto-creation.checks.v8`、研究输出 `ads.auto-creation.research.v4`（checks.v8 见 3.8，只改验证计划里的样本集数判断，提示与研究回答结构不变；prompt.v8 见 3.7，只改研究提示，当时检查为 v7；v7 / v7 见 3.6，研究回答结构不变；v6 / v6 / research.v4 见 3.5；此前 v5 / v5 / research.v3 见 3.4，v4 / v4 / research.v2 见 3.3，v3 / v3 / research.v1 自 2026-10-20 起，2026-10-19 起为 v2，之前为 v1）、选择规则 `ads.auto-creation.selection-rules.v1`、输入 `ads.auto-creation.input.v1`。任务输入里冻结的是**开始时**的版本号；已完成的阶段不会重算，但旧任务续跑时，之后发送的阶段使用当前的提示词和检查（代码里没有按版本分支）。
+提示词版本 `ads.auto-creation.prompt.v8`、检查版本 `ads.auto-creation.checks.v9`、研究输出 `ads.auto-creation.research.v4`（checks.v9 见 3.9，只要求样本动作直接带着当前样本数量，提示与研究回答结构不变；checks.v8 见 3.8，只改验证计划里的样本集数判断，提示与研究回答结构不变；prompt.v8 见 3.7，只改研究提示，当时检查为 v7；v7 / v7 见 3.6，研究回答结构不变；v6 / v6 / research.v4 见 3.5；此前 v5 / v5 / research.v3 见 3.4，v4 / v4 / research.v2 见 3.3，v3 / v3 / research.v1 自 2026-10-20 起，2026-10-19 起为 v2，之前为 v1）、选择规则 `ads.auto-creation.selection-rules.v1`、输入 `ads.auto-creation.input.v1`。任务输入里冻结的是**开始时**的版本号；已完成的阶段不会重算，但旧任务续跑时，之后发送的阶段使用当前的提示词和检查（代码里没有按版本分支）。
 
 ## 3. 研究层：只说真正读到的
 
@@ -246,6 +246,19 @@ contentStructure: [{ reference: { sourceId, quote } | null, application: { patte
 
 **仍有边界**：判断按措辞，不理解语义。只认紧跟「集样稿 / 集样片」的样本写法；「计划试读前三集」（没有「样稿」）、「请试看者看完前三集」仍按原规则拒收；计划词与动作词是有限列表。离线测试全部使用合成样本与模型替身，**不证明线上原句就是这些写法，也不保证真实模型下次通过**。
 
+### 3.9 样本动作必须带着当前数量（2026-10-25，checks.v9；prompt.v8 / research.v4 不变）
+
+**根因**：checks.v8 只要求计划词和样本动作在**同一分句任意位置**出现，没有确认这个动作支配的正是当前「N 集样稿」。冻结 60 集时，以下两句合成样本在 1feb0a6 上都被拒收，在 fc64e84（checks.v8）上却无提示通过：
+
+- 「计划选取观众看完三集样稿后都弃剧的案例。」——「选取」的对象是案例，「三集」是观众看了几集，应拒为 `unsourced_number`，`market_statistic` / `viewing_count`。
+- 「计划把本剧缩至三集样稿后试读。」——这是改变全剧规模，后面的「试读」不支配「三集」，应拒为 `constraint_violation`，`frozen_conflict` / `episode_count`。
+
+**修复**（`packages/domain/src/auto-creation-numbers.ts` 的 `sampleBound`）：数字前面必须紧接样本动作（制作、撰写、选取、抽取、挑选、选出、抽出、试读、试看），中间只允许「前」或「头」，并且计划词出现在这个动作之前，例如「计划制作三集样稿」「计划试读前三集样稿」「计划邀请观众试读三集样稿」。动作在分句别处时不给豁免，数字照原规则判断。没有逐个添加「缩至」「弃剧」这类黑名单，也没有改写整个分类器。中文、阿拉伯数字，样稿、样片，1 到冻结集数的范围检查，以及「第 N 集样稿」的越界检查都不变；样本放行后，同一分句、同一句、后续假设和机会字段照常检查；豁免仍只在 `hypotheses[].howToVerify`。
+
+**版本**：`AUTO_CREATION_CHECKS_VERSION` 升为 `ads.auto-creation.checks.v9`（本仓库此前没有用过 checks.v9），历史类型保留 v1–v8。新任务和新系列的 `researchContract` 冻结 checks.v9，旧系列保留冻结的 v7 或 v8；之后实际发送的研究由 `executedWith` 记录 checks.v9。prompt.v8、research.v4、系列自身 prompt.v1 / checks.v1 不变。旧任务的冻结输入、哈希、已完成输出、调用和费用不回写。Migration 编写 0、执行 0。
+
+**仍有边界**：仍按措辞判断。动作必须紧贴数量（只隔「前 / 头」），所以「计划制作约三集样稿」「计划选取其中三集样稿」这类写法会按原规则拒收；动作紧贴数量之后的内容（例如「样稿」后面再接别的宾语）不再分析。两条样本都是合成句子，不是线上被拒原文。
+
 ## 4. 质量检查与有限修改
 
 - 程序检查（`deterministicFindings`）：缺集、场次上限（60 秒 ≤5 场，90 秒 ≤7 场）、台词字数（≈5 字/秒）、镜头计划秒数在目标 60%–140%、仅被提及的人物出场、禁止题材、全剧出场人物数和地点数上限、跨集重复台词（提示级）。问题按真实来源归属：设定本身的出场人物在生成时已核对上限，所以合法设定下的人物超限只能来自分集让「仅被提及」的人物出场，这时问题指向那几集，可以在已授权的轮次和预算内定向修改并复查；只有设定本身超限才算设定问题。schema、编号、悬空引用、硬约束（人物/地点数、禁止题材）、整理后超过编辑器 2 万字上限的分集在**生成时**就拒收（不截断）。
@@ -344,6 +357,7 @@ DATABASE_URL=<业务库连接串，只在进程环境中> pnpm --filter @ai-dram
 | 2026-10-21 PR #84 增量终审修正（同为 checks.v7） | 「待验证观众是否喜欢本剧每集60秒内发生两次反转的故事」在 c662d28 通过、在 7a8efa9 被拒为 `market_statistic+rate_or_average`（「两次」），修复后通过；「把每集60秒的故事观看3次」「…重复观看3次」「每集观看3次」仍拒为 `rate_or_average`；hypotheses、application（有效引用 / null）与 sourced 均覆盖；Migration 0 / 0；真实模型与媒体调用 0 次 |
 | 2026-10-25 假设字段边界 prompt.v8（本机 Windows + Node 24.21，模型替身） | 见第 3.7 节；新增 `packages/domain/src/auto-creation-hypothesis-fields.spec.ts`（17 项）在 main 89df132 上提示类 5 项失败（两种模式都没有列出每条假设的字段、没有示例），严格校验类 12 项已通过；修复后全部通过。合成 `extra` 字段放在第四条假设上：limited 与 sourced 都整份拒收为 `hypotheses[3]` / `unrecognized_keys`，空值、空字符串、空数组同样拒收，缺字段与类型错误仍拒收，schema 本身拒绝、不先删字段。providers 经真实 DeepSeek 适配器拦截请求：两种模式的 Schema（三项 required、`additionalProperties: false`）、`json_object` 与 v8 字段说明；合法替身原流程 6 次完成；多余字段替身原短剧与系列（60 集 × 60 秒、规划＋前 3 集、预算 19）都只发 1 次、之后零发送、被拒正文不保存；系列新建冻结 v8，`executedWith` 记录 v8；规划＋前 3 集 19 次、60 集全流程 96 次回归保持通过。`pnpm verify` 通过（contracts 197、domain 865、providers 346、web 764、api 411 另 90 跳过）；PostgreSQL 与浏览器验收由 PR CI 运行；Migration 编写 0、执行 0；真实模型与媒体调用 0 次 |
 | 2026-10-25 验证计划样本集数 checks.v8（本机 Windows + Node 24.21，模型替身） | 见第 3.8 节；线上被拒原句未保存，以下都是合成样本。新增 `packages/domain/src/auto-creation-verification-sample.spec.ts`（数字分类器与完整 `validateAutoStageOutput("research", …)` 分开：limited、sourced、系列经 `seriesAutoInput` 传入真实 60 集三条路径）。在 main 1feb0a6 上先运行：128 项中 64 项失败。三句样本计划（中文与阿拉伯数字）在三条路径都被拒为 `frozen_conflict` / `episode_count`；「第61集样稿」在基线上无提示通过；合法样本后的七成观众在基线上先被样本数字拒收，后面的统计没有被单独看到。修复后全部通过（共 129 项，含边界「计划试读前三集」仍拒收）：样本计划保留原文、无提示；总集数改动（含「计划」）、零集 / 六十一集 / 第 61 集样本、观看习惯、调查平均、已执行样本、每人平均、样本后的比例或总集数冲突、后续假设与机会字段的统计都照常拒收；statement 不获得样本豁免。providers 模型替身：原短剧 3 集合法样本完成、`executedWith` 记录 checks.v8；比例与总集数冲突各只发 1 次后停止、被拒正文不保存；系列 60 集 × 60 秒、规划＋前 3 集合法样本 19 次完成，非法两种各只发 1 次。既有六阶段、19 次与全流程回归保持通过。`pnpm verify` 通过（contracts 197、domain 997、providers 352、web 764、api 411 另 90 跳过）；PostgreSQL 与浏览器验收由 PR CI 运行；Migration 编写 0、执行 0；真实模型与媒体调用 0 次 |
+| 2026-10-25 样本动作绑定数量 checks.v9（本机 Windows + Node 24.21，模型替身） | 见第 3.9 节；两条合成样本加入 `auto-creation-verification-sample.spec.ts` 的拒收表，分类器与完整阶段（limited、sourced、系列经 `seriesAutoInput` 传入 60 集）共 8 项。在 main 7d28d3a（checks.v8）未修复代码上先运行：8 项全部失败（分类器返回无拒收，完整阶段 `ok: true`）。修复后该文件 140 项全部通过：两句分别拒为 `market_statistic` / `viewing_count`、`frozen_conflict` / `episode_count`；原三句合法计划（及阿拉伯数字、样片、第 N 集写法）保留原文、无提示；邀请观众试读样稿的对照仍通过；越界、总集数、统计、已执行结果与后续字段照常拒收。domain 1005、providers 352（含规划＋前 3 集 19 次、全流程 96 次）通过；PostgreSQL 与浏览器验收由 PR CI 运行；Migration 编写 0、执行 0；真实模型与媒体调用 0 次 |
 | 2026-10-21 研究契约按资料能力拆分 research.v4 / prompt.v6 / checks.v6（本机 Windows + Node 24.21，模型替身） | 见第 3.5 节与 `docs/AUTO_CREATION_RESEARCH_CAPABILITIES_REPORT.md`；新增 `packages/contracts/src/auto-creation-capabilities.spec.ts`（limited/sourced 两份 JSON Schema 与 Zod 逐键一致、limited 拒收禁止字段即使为空、服务端组装、v3 历史判断）与 `packages/providers/src/auto-creation-capabilities.spec.ts`（捕获引擎实际发给 OpenAI / Claude / DeepSeek 的请求体核对 Schema 与提示、四种资料组合、limited 完整六阶段、注入字段各只发 1 次、sourced 合法与非法事实、v3 历史续跑不重发、原键重放、已保存快照决定续跑契约、预算不足不续跑、无有效快照不预约） |
 
 本功能**未**做：真实模型调用、真实图片/语音/视频、剧本拆解与分镜生产数据写入、业务库或测试站迁移。
