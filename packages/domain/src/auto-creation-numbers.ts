@@ -548,31 +548,74 @@ function countsStoryNoun(tail: string): boolean {
  */
 const SAMPLE_AFTER = /^集(?:的)?(?:样稿|样片)/u;
 const SAMPLE_PLAN = /计划|(?<![模虚])拟|打算|准备/u;
-const SAMPLE_VERB = /制作|撰写|选取|抽取|挑选|选出|抽出|试读|试看/u;
-/** The sample verb governing the count that follows it: nothing but 前 or 头 between them (checks v9). */
-const SAMPLE_BOUND = /(?:制作|撰写|选取|抽取|挑选|选出|抽出|试读|试看)(?:前|头)?$/u;
-const SAMPLE_NOT = /已|曾|(?:制作|撰写|选取|抽取|挑选|试读|试看)(?:过|了)|改为|改成|改编为|缩减|压缩|删减|调整为|变为|变成|共计|总共|一共|总计|本剧共|全剧共/u;
-const SAMPLE_ORDINAL = new RegExp(`第\\s*(\\d+|[０-９]+|[${CN_DIGITS}]+)\\s*集(?:的)?(?:样稿|样片)`, "gu");
+/** Verbs that read or pick part of the work: their count is a sample by itself (checks v11). */
+const SAMPLE_READ_VERBS = "选取|抽取|挑选|选出|抽出|试读|试看";
+/** Verbs that make something: their count is a sample only when it names 样稿 or 样片 (checks v8). */
+const SAMPLE_MAKE_VERBS = "制作|撰写";
+const SAMPLE_VERB = new RegExp(`${SAMPLE_MAKE_VERBS}|${SAMPLE_READ_VERBS}`, "u");
+/**
+ * What may stand between a sample verb and its count: 前 or 头 (checks v9), and since checks v11 其中 or the work named
+ * with a part of it (试读本剧前三集). Nothing else: a verb further off takes something else (计划选取观众看完三集…的案例).
+ */
+const SAMPLE_SCOPE = "(?:(?:本剧|该剧|此剧)的?(?:其中|前|头)|其中的?|前|头)?";
+const SAMPLE_BOUND = new RegExp(`(?:${SAMPLE_MAKE_VERBS}|${SAMPLE_READ_VERBS})${SAMPLE_SCOPE}$`, "u");
+const SAMPLE_READ_BOUND = new RegExp(`(?:${SAMPLE_READ_VERBS})${SAMPLE_SCOPE}$`, "u");
+/** A reading or a sample already done: a result, not a plan. */
+const SAMPLE_DONE = /已|曾|(?:制作|撰写|选取|抽取|挑选|试读|试看|观看|看|读|追|刷)(?:过|了)/u;
+/** A change of the work's own size (A): the work is not sampled, its total is rewritten. */
+const TOTAL_CHANGE = /(?:改|缩|减|压|删|调整|变|扩|扩充|扩展|增|增加|延长|缩短|精简|浓缩|合并|拆)(?:成|为|至|到)|改编|缩减|压缩|删减|共计|总共|一共|总计|本剧共|全剧共/u;
+/** The work's total named right before the count (全剧三集, 本剧共三集). */
+const TOTAL_BEFORE = /(?:本剧|全剧|该剧|此剧|整部剧)(?:的)?(?:总集数|集数)?(?:共|总共|一共|只有|仅有|仅|为|是|有)?(?:约)?$/u;
+/** Viewers leaving after a count of episodes (B): a viewing statistic, plan word or not (看完三集后都弃剧). */
+const EPISODE_LEAVING = /^集(?:的)?(?:样稿|样片)?(?:左右|上下)?(?:后|之后|以后|就|便|即)+(?:都|会|就|便)*(?:退出|流失|划走|离开|关闭|跳出|弃剧|放弃|走掉|离场|停止|关掉|不看|不再看)/u;
+const SAMPLE_NOT = new RegExp(`${SAMPLE_DONE.source}|${TOTAL_CHANGE.source}`, "u");
+const EPISODE_ORDINAL = new RegExp(`第\\s*(\\d+|[０-９]+|[${CN_DIGITS}]+)\\s*集`, "gu");
 
-/** Whether a clause is a plan to sample this work (the number's tail starts with its 集样稿). */
+/** Whether a clause is a plan to sample this work: a plan word, a sample verb, no result, no new total, no habit. */
 function samplePlan(clause: string): boolean {
   return SAMPLE_PLAN.test(clause) && SAMPLE_VERB.test(clause) && !SAMPLE_NOT.test(clause) && !VIEWING_HABIT.test(clause);
 }
 
-/** Whether the text before a count ends with its sample verb, and a plan word comes before that verb (checks v9). */
-function sampleBound(before: string): boolean {
-  const verb = SAMPLE_BOUND.exec(before);
+/**
+ * Whether this count is the object of a sample verb, with a plan word before that verb (checks v9). A reading or picking
+ * verb takes it as it is (试读前三集, 选取其中三集, checks v11); a making verb only as 样稿 or 样片 (制作三集样稿).
+ */
+function sampleBound(before: string, tail: string): boolean {
+  const verb = (SAMPLE_AFTER.test(tail) ? SAMPLE_BOUND : SAMPLE_READ_BOUND).exec(before);
   return verb !== null && SAMPLE_PLAN.test(before.slice(0, verb.index));
 }
 
 /**
- * A sample position outside the work (计划试读第61集样稿): the structural ordinal is removed before a clause is read, so
- * it is found here first, on the raw clause, and refused as a frozen conflict.
+ * The scope of a count of episodes in a verification plan (checks v11), or null to read it as before (a total of the
+ * work, or a viewing count next to viewers). Its order is the order of the rules: A, a new total of the work, and B, a
+ * viewing habit, viewers leaving after the count, or a reading already done, are refused as before; C, a sample its own
+ * verb takes, must lie within the work; any other count of a future plan that is within the work is D, a scope the code
+ * cannot place, kept as an unverified notice. A count larger than the work is no sample of it, whatever its scope.
+ * Shares, rates, magnitudes and measured results were refused before this is asked.
+ */
+function verificationEpisodeScope(clause: string, clauses: readonly string[], before: string, tail: string, market: boolean, value: number | null,
+  frame: AutoNumberFrame): Role | null {
+  if (TOTAL_CHANGE.test(clause) || TOTAL_BEFORE.test(before)) return refuse("frozen_conflict", "episode_count");
+  if (VIEWING_HABIT.test(clause) || EPISODE_LEAVING.test(tail) || SAMPLE_DONE.test(clause)) return null;
+  const within = value !== null && value >= 1 && value <= frame.episodeCount;
+  if (samplePlan(clause) && sampleBound(before, tail)) return within ? { allowed: true, rule: "verification_sample" } : refuse("frozen_conflict", "sample_out_of_range");
+  // D needs a future plan of its own: the clause's plan word, or one earlier in the sentence for a clause not about
+  // viewers; a clause about viewers must also be marked pending by itself, as every judgement there is.
+  const index = clauses.indexOf(clause);
+  const planned = market ? SAMPLE_PLAN.test(clause) && pendingJudgement(clause, clauses) : clauses.slice(0, index + 1).some((part) => SAMPLE_PLAN.test(part));
+  if (!planned) return null;
+  return within ? refuse("unclassified", "episode_scope_unconfirmed") : refuse("frozen_conflict", "episode_count");
+}
+
+/**
+ * A sample position outside the work (计划试读第61集, 计划试读第61集样稿): the structural ordinal is removed before a clause
+ * is read, so every position of episodes in a plan to sample the work is found here first, on the raw clause, and refused
+ * as a frozen conflict when it lies outside 1 and the frozen episode count. Since checks v11 no 样稿 is needed.
  */
 function sampleOrdinalRefusal(text: string, frame: AutoNumberFrame): AutoNumberFinding | null {
   for (const clause of text.replace(INVISIBLE, "").replace(/\s+/gu, "").split(/(?<=[，,。；;！？!?\n])/u)) {
     if (!samplePlan(clause)) continue;
-    for (const match of clause.matchAll(SAMPLE_ORDINAL)) {
+    for (const match of clause.matchAll(EPISODE_ORDINAL)) {
       const value = numberValue(match[1]!);
       if (value === null || value < 1 || value > frame.episodeCount) {
         return { token: match[1]!, kind: numberKind(match[1]!), semantic: "frozen_conflict", rule: "sample_out_of_range" };
@@ -705,11 +748,10 @@ function roleOf(hit: NumberHit, clause: string, clauses: readonly string[], mark
     return { allowed: true, rule: "story_time" };
   }
   if (/^集/u.test(tail)) {
-    // A verification plan's sample of this work is no total (checks v8); it stays within the work. Its own sample verb
-    // must take this count (checks v9): a verb elsewhere in the clause exempts nothing.
-    if (verificationPlan && SAMPLE_AFTER.test(tail) && samplePlan(clause) && sampleBound(before)) {
-      return value !== null && value >= 1 && value <= frame.episodeCount ? { allowed: true, rule: "verification_sample" } : refuse("frozen_conflict", "sample_out_of_range");
-    }
+    // A verification plan's count of episodes is read by its scope (checks v8, v9, v11): a sample its own verb takes
+    // stays within the work, a scope the code cannot place is a notice, a new total or a viewing count is refused.
+    const scope = verificationPlan ? verificationEpisodeScope(clause, clauses, before, tail, market, value, frame) : null;
+    if (scope) return scope;
     // The run's own episode count was removed already where it may be restated.
     return market ? refuse("market_statistic", "viewing_count") : refuse("frozen_conflict", "episode_count");
   }
@@ -754,8 +796,11 @@ export function uncitedNumberFinding(text: string, frame: AutoNumberFrame, optio
   return uncitedNumberReading(text, frame, options).refusal;
 }
 
-/** The sub-rules kept as an unverified notice in creative text: no role (checks v5), a duration's meaning unconfirmed (checks v7). */
-export const AUTO_UNVERIFIED_RULES = ["no_role", "duration_unconfirmed"] as const;
+/**
+ * The sub-rules kept as an unverified notice in creative text: no role (checks v5), a duration's meaning unconfirmed
+ * (checks v7), and the scope of a count of episodes in a verification plan unconfirmed (checks v11, howToVerify only).
+ */
+export const AUTO_UNVERIFIED_RULES = ["no_role", "duration_unconfirmed", "episode_scope_unconfirmed"] as const;
 const UNVERIFIED_RULES: ReadonlySet<string> = new Set(AUTO_UNVERIFIED_RULES);
 
 /**

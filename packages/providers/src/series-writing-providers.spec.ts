@@ -9,6 +9,7 @@ import {
   autoCreationJsonSchema,
   autoErrorParts,
   type AutoReferenceEntry,
+  type AutoResearch,
   type AutoSourcesOutput,
   seriesJsonSchema,
   seriesNormalCalls,
@@ -102,8 +103,8 @@ describe("hypothesis fields (shared prompt v8) in a series: the borrowed researc
   // invalid_output@hypotheses[3]:unrecognized_keys; its answer was not kept. The double's `extra` field is SYNTHETIC.
   it("a new series freezes the shared prompt version; DeepSeek gets the limited schema (three fields, no others) and the field lines", async () => {
     const { seen, snapshot, grant, store } = await seriesSetup({ providerKey: "deepseek" });
-    expect((await snapshot()).series.input.researchContract.promptVersion).toBe("ads.auto-creation.prompt.v9");
-    expect(AUTO_CREATION_PROMPT_VERSION).toBe("ads.auto-creation.prompt.v9");
+    expect((await snapshot()).series.input.researchContract.promptVersion).toBe("ads.auto-creation.prompt.v10");
+    expect(AUTO_CREATION_PROMPT_VERSION).toBe("ads.auto-creation.prompt.v10");
     await grant({ plan: true, batchFrom: 1, batchTo: 1, final: false });
     // The legal answer keeps the normal flow: plan + episodes 1–3 is 19 calls.
     expect(store.calls).toHaveLength(19);
@@ -115,11 +116,11 @@ describe("hypothesis fields (shared prompt v8) in a series: the borrowed researc
     expect(schema).toEqual(autoCreationJsonSchema("research", 60, "limited", saved).schema);
     expect((schema as { properties: { hypotheses: { items: Record<string, unknown> } } }).properties.hypotheses.items)
       .toMatchObject({ additionalProperties: false, required: ["id", "statement", "howToVerify"] });
-    expect(research.user).toContain("提示版本：ads.auto-creation.prompt.v9");
+    expect(research.user).toContain("提示版本：ads.auto-creation.prompt.v10");
     expect(research.user).toContain("每条假设是一个对象，只包含 id、statement、howToVerify 三个字段，三个都必填");
     expect(research.user).toContain('假设对象示例（只示意格式，内容按本次创作写）：{"id":"H1",');
     const stored = store.stages.find((item) => item.stageKey === "research")!.output as { serverRecord: { executedWith: Record<string, string> } };
-    expect(stored.serverRecord.executedWith).toMatchObject({ promptVersion: "ads.auto-creation.prompt.v9", checksVersion: "ads.auto-creation.checks.v10",
+    expect(stored.serverRecord.executedWith).toMatchObject({ promptVersion: "ads.auto-creation.prompt.v10", checksVersion: "ads.auto-creation.checks.v11",
       researchSchema: "ads.auto-creation.research.v4" });
   });
 
@@ -140,12 +141,12 @@ describe("hypothesis fields (shared prompt v8) in a series: the borrowed researc
 describe("a verification plan's sample in a series (checks v8; synthetic plans, not the real refused answer)", () => {
   it("60 × 60 s, plan + episodes 1–3: a plan to read a three-episode sample passes research and the 19-call flow completes", async () => {
     const { grant, store, snapshot } = await seriesSetup({ providerKey: "deepseek", plan: { auto: { verificationSample: "sample" } } });
-    expect((await snapshot()).series.input.researchContract.checksVersion).toBe("ads.auto-creation.checks.v10");
+    expect((await snapshot()).series.input.researchContract.checksVersion).toBe("ads.auto-creation.checks.v11");
     await grant({ plan: true, batchFrom: 1, batchTo: 1, final: false });
     expect(store.calls).toHaveLength(19);
     const stored = store.stages.find((item) => item.stageKey === "research")!.output as { hypotheses: Array<{ howToVerify: string }>; serverRecord: { executedWith: Record<string, string> } };
     expect(stored.hypotheses[0]!.howToVerify).toBe("模型替身样例：计划制作三集样稿进行试读并收集反馈。");
-    expect(stored.serverRecord.executedWith).toMatchObject({ checksVersion: "ads.auto-creation.checks.v10" });
+    expect(stored.serverRecord.executedWith).toMatchObject({ checksVersion: "ads.auto-creation.checks.v11" });
   });
 
   it.each([
@@ -161,6 +162,34 @@ describe("a verification plan's sample in a series (checks v8; synthetic plans, 
     await main.maintain();
     expect(seen.map((item) => item.stage)).toEqual(["research"]);
     expect(store.calls).toHaveLength(1);
+  });
+});
+
+describe("the scope of a count of episodes in a series' verification plan (checks v11; synthetic plans, not the real refused answer)", () => {
+  it.each([
+    ["the first three read, no 样稿", "reading", "模型替身样例：计划试读前三集并收集反馈。", []],
+    ["testers asked to watch the first three", "unconfirmed", "模型替身样例：计划请试看者看完前三集再收集反馈。", [{ field: "hypotheses[0].howToVerify", rule: "episode_scope_unconfirmed" }]],
+  ] as const)("60 × 60 s, plan + episodes 1–3: %s passes research as written and the 19-call flow completes", async (_label, sample, text, notices) => {
+    const { grant, store, snapshot } = await seriesSetup({ providerKey: "deepseek", plan: { auto: { verificationSample: sample } } });
+    expect((await snapshot()).series.input.researchContract).toMatchObject({ promptVersion: "ads.auto-creation.prompt.v10", checksVersion: "ads.auto-creation.checks.v11" });
+    await grant({ plan: true, batchFrom: 1, batchTo: 1, final: false });
+    expect(store.calls).toHaveLength(19);
+    const stored = store.stages.find((item) => item.stageKey === "research")!.output as AutoResearch;
+    expect(stored.hypotheses[0]!.howToVerify).toBe(text);
+    expect(stored.unverified).toMatchObject(notices);
+    expect(stored.unverified).toHaveLength(notices.length);
+  });
+
+  it("60 × 60 s, budget 19: a reading of episode 61 is sent once, refused as out of range, stored nowhere, nothing after it", async () => {
+    const code = "constraint_violation@hypotheses[0].howToVerify:chinese_numeral+frozen_conflict+sample_out_of_range";
+    const { seen, grant, store, main } = await seriesSetup({ providerKey: "deepseek", plan: { auto: { verificationSample: "outside" } } });
+    await grant({ plan: true, batchFrom: 1, batchTo: 1, final: false });
+    expect(store.grants[0]).toMatchObject({ callBudget: 19, callsUsed: 1, input: { resendAllowance: 0 } });
+    expect(store.calls.map((call) => call.errorCode)).toEqual([code]);
+    expect(store.stages.find((item) => item.stageKey === "research")).toMatchObject({ state: "rejected", errorCode: code, output: null });
+    expect(JSON.stringify({ calls: store.calls, stages: store.stages, grants: store.grants })).not.toContain("第六十一集");
+    await main.maintain();
+    expect(seen.map((item) => item.stage)).toEqual(["research"]);
   });
 });
 
