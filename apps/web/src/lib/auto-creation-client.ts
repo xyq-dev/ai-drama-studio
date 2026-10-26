@@ -175,6 +175,7 @@ const ERRORS: Record<string, string> = {
   unknown_source: "研究结论引用了不存在的资料编号，已拒收。",
   unread_source: "研究结论引用了没有读到正文的资料，已拒收。",
   evidence_not_in_source: "研究结论的引文在资料中找不到，已拒收。",
+  unknown_reference: "回答选择的方法片段编号不在本次引用目录中，已拒收，后续阶段没有发送。",
   constraint_violation: "结果违反了冻结的硬约束（集数、每集时长、人物数、地点数或禁止题材），已拒收，没有保存。",
   dangling_reference: "结果引用了设定中不存在的人物、地点或编号，已拒收。",
   duplicate_id: "结果里有重复的编号，已拒收。",
@@ -210,7 +211,7 @@ const ERRORS: Record<string, string> = {
 
 /** Rules an answer broke: the model answered, the answer was checked and refused. Never a key or account problem. */
 const OUTPUT_CHECK_CODES = new Set(["unsourced_number", "unsourced_claim", "unknown_source", "unread_source", "evidence_not_in_source",
-  "constraint_violation", "dangling_reference", "duplicate_id", "duplicate_direction", "episode_mismatch", "invalid_output", "unsafe_content", "too_large"]);
+  "unknown_reference", "constraint_violation", "dangling_reference", "duplicate_id", "duplicate_direction", "episode_mismatch", "invalid_output", "unsafe_content", "too_large"]);
 
 const CATEGORY_TEXT: Record<string, string> = {
   digits: "阿拉伯数字", percent: "百分比或成数", rank: "排名名次", chinese_numeral: "中文数字", fullwidth_digits: "全角数字",

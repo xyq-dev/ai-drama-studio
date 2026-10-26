@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
+  AUTO_CREATION_RESEARCH_ANSWER_SCHEMA,
   AUTO_CREATION_RESEARCH_SCHEMA,
   AUTO_CREATION_RESEARCH_SCHEMA_V1,
   AUTO_CREATION_RESEARCH_SCHEMA_V2,
@@ -11,6 +12,7 @@ import {
   autoNoticePlace,
   autoNoticeText,
   autoResearchAnswerSchema,
+  autoResearchCatalogAnswerSchema,
   autoResearchV1Schema,
   autoResearchV2Schema,
   autoStructureViews,
@@ -71,7 +73,7 @@ describe("research v3 answer contract", () => {
     // A stored v2 research is no answer either, and a v3 answer is no stored v2.
     expect(autoResearchAnswerSchema.safeParse(v2).success).toBe(false);
     expect(autoResearchV2Schema.safeParse(v3).success).toBe(false);
-    const json = autoCreationJsonSchema("research", 1, "sourced").schema as Json;
+    const json = autoCreationJsonSchema("research", 1, "sourced", { version: "ads.auto-creation.reference-catalog.v1", entries: [], hash: "h" }).schema as Json;
     expect(Object.keys(json.properties!)).not.toContain("limitations");
     expect(Object.keys(json.properties!)).not.toContain("appliedConstraints");
   });
@@ -97,13 +99,18 @@ describe("research v3 answer contract", () => {
 });
 
 describe("research v2 structure contract (kept by v3)", () => {
-  it("the provider JSON Schema has the zod schema's keys, nesting and nullable reference, every object closed", () => {
-    const json = autoCreationJsonSchema("research", 1, "sourced").schema as Json;
-    expect(jsonShape(json)).toEqual(zodShape(autoResearchAnswerSchema));
-    expect(json.properties!.schema!.enum).toEqual([AUTO_CREATION_RESEARCH_SCHEMA]);
+  it("the provider JSON Schema has the model answer's keys, nesting and nullable referenceId, every object closed (prompt v9)", () => {
+    const catalog = { version: "ads.auto-creation.reference-catalog.v1" as const, hash: "h",
+      entries: [{ referenceId: "R-0a1b2c3d4e", sourceId: "S-KB-CRAFT", quote: "关键结果来自主角的选择和行动，不靠旁人突然解围。" }] };
+    const json = autoCreationJsonSchema("research", 1, "sourced", catalog).schema as Json;
+    expect(jsonShape(json)).toEqual(zodShape(autoResearchCatalogAnswerSchema));
+    expect(json.properties!.schema!.enum).toEqual([AUTO_CREATION_RESEARCH_ANSWER_SCHEMA]);
     const item = json.properties!.contentStructure!;
     expect([item.minItems, item.maxItems]).toEqual([1, 6]);
-    expect(item.items!.properties!.reference!.anyOf![0]!.properties!.quote!.maxLength).toBe(AUTO_STRUCTURE_QUOTE_MAX);
+    expect(item.items!.properties!.referenceId!.anyOf![0]!.enum).toEqual(["R-0a1b2c3d4e"]);
+    // The stored structure keeps its quote limit: a catalog passage is never longer.
+    expect(autoResearchAnswerSchema.safeParse({ ...v3, contentStructure: [{ reference: { sourceId: "S-KB-CRAFT", quote: "主".repeat(AUTO_STRUCTURE_QUOTE_MAX + 1) },
+      application: { pattern: "p", why: "w" } }] }).success).toBe(false);
   });
 
   it("a v3 answer parses; the v1 item shape, a missing reference or a mixed item does not", () => {

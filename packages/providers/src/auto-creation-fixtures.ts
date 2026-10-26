@@ -3,6 +3,7 @@ import {
   AUTO_CREATION_DIRECTIONS_SCHEMA,
   AUTO_CREATION_EPISODE_SCHEMA,
   AUTO_CREATION_OUTLINE_SCHEMA,
+  AUTO_CREATION_RESEARCH_ANSWER_SCHEMA,
   AUTO_CREATION_RESEARCH_SCHEMA,
   AUTO_CREATION_RESEARCH_SCHEMA_V1,
   AUTO_CREATION_RESEARCH_SCHEMA_V2,
@@ -13,6 +14,7 @@ import {
   type AutoDirections,
   type AutoEpisode,
   type AutoOutline,
+  type AutoReferenceEntry,
   type AutoResearchAnswer,
   type AutoResearchLimitedAnswer,
   type AutoResearchV1,
@@ -21,6 +23,7 @@ import {
   type AutoReview,
   type AutoViewingDurationReason,
 } from "@ai-drama/contracts";
+import { AUTO_REFERENCE_CATALOG_BLOCK } from "@ai-drama/domain";
 import { ANTHROPIC_MESSAGES_URL, DEEPSEEK_CHAT_COMPLETIONS_URL, type WritingTransport } from "./text-writing";
 
 /**
@@ -98,7 +101,7 @@ export function fixtureAutoCreativeResearch(options: { hiddenStatistic?: boolean
     ...base,
     // The test-site refusal's shape, now split: the method as quoted (no count in it) and this work's two reversals.
     contentStructure: [
-      { reference: { sourceId: "S-KB-CRAFT", quote: "关键结果来自主角的选择和行动" },
+      { reference: { sourceId: "S-KB-CRAFT", quote: AUTO_FIXTURE_CRAFT_SENTENCE },
         application: { pattern: "模型替身样例：计划用两次反转推动主角主动选择。", why: "这是本作品的创作设计。" } },
       { reference: null, application: { pattern: "模型替身样例：三名骑手被迫合作，三天内找出真相。", why: "自主创作设计，没有对应的方法资料。" } },
       ...(options.unplaced || options.statisticAfterUnplaced
@@ -140,6 +143,32 @@ export function fixtureAutoLimitedResearch(answer: AutoResearchAnswer, inject: r
 
 /** Craft wording no source has: a quote the checks refuse (never dropped or set to null to pass). */
 export const AUTO_FIXTURE_FORGED_QUOTE = "反转次数以两次为最佳";
+/** The craft entry's sentence the double cites as a method: one passage of the reference catalog, word for word. */
+export const AUTO_FIXTURE_CRAFT_SENTENCE = "关键结果来自主角的选择和行动，不靠旁人突然解围。";
+/** An id no catalog lists (made up by the double). */
+export const AUTO_FIXTURE_UNKNOWN_REFERENCE_ID = "R-0123456789";
+
+/**
+ * A research answer (stored form) as the double writes it for a prompt v9 research: each quoted method becomes the id
+ * of the catalog passage it is, a null reference stays null, and the schema names the model answer. A quote the catalog
+ * does not list (a forged one) is written as the old reference object, by the model itself: the strict answer schema
+ * refuses that whole. referenceId replaces the first structure's id with one the catalog may not have; serverField adds
+ * a server field beside the id.
+ */
+export function fixtureAutoCatalogAnswer(answer: Record<string, unknown> & { contentStructure: AutoResearchAnswer["contentStructure"] },
+  catalog: readonly AutoReferenceEntry[], options: { referenceId?: string; serverField?: "quote" | "sourceId" } = {}): Record<string, unknown> {
+  return {
+    ...answer,
+    schema: AUTO_CREATION_RESEARCH_ANSWER_SCHEMA,
+    contentStructure: answer.contentStructure.map((item, index) => {
+      const entry = item.reference && catalog.find((candidate) => candidate.sourceId === item.reference!.sourceId && candidate.quote === item.reference!.quote);
+      if (item.reference && !entry) return { reference: item.reference, application: item.application };
+      const referenceId = index === 0 && options.referenceId !== undefined ? options.referenceId : entry ? entry.referenceId : null;
+      const extra = index === 0 && options.serverField && item.reference ? { [options.serverField]: item.reference[options.serverField] } : {};
+      return { referenceId, ...extra, application: item.application };
+    }),
+  };
+}
 
 export function fixtureAutoResearch(options: { fabricatedNumber?: boolean; citeCraft?: boolean; forgedQuote?: boolean; structureStatistic?: boolean } = {}): AutoResearchAnswer {
   return {
@@ -164,13 +193,20 @@ export function fixtureAutoResearch(options: { fabricatedNumber?: boolean; citeC
       sourceIds: [],
     },
     contentStructure: [{
-      reference: { sourceId: "S-KB-CRAFT", quote: options.forgedQuote ? AUTO_FIXTURE_FORGED_QUOTE : "关键结果来自主角的选择和行动" },
+      reference: { sourceId: "S-KB-CRAFT", quote: options.forgedQuote ? AUTO_FIXTURE_FORGED_QUOTE : AUTO_FIXTURE_CRAFT_SENTENCE },
       application: { pattern: options.structureStatistic ? "模型替身样例：约三成观众偏爱两次反转，所以主角主动选择。" : "主角主动选择推动结果",
         why: "知识库要求关键结果来自主角的行动。" },
     }],
     opportunities: ["小人物在一个夜晚完成一次反击"],
   };
 }
+
+/**
+ * A structure as research before prompt v9 stored it: a quote the model copied out of the craft entry itself (part of a
+ * sentence, not a catalog passage). History only.
+ */
+const LEGACY_STRUCTURE = (): AutoResearchAnswer["contentStructure"] => fixtureAutoResearch().contentStructure.map((item) => ({ ...item,
+  reference: item.reference && { sourceId: item.reference.sourceId, quote: "关键结果来自主角的选择和行动" } }));
 
 /** What research before v3 had the model write (the gaps and the settings): history only. */
 const LEGACY_RESEARCH_FIELDS = { limitations: ["官方入口页面没有读到正文，受众判断都是假设。"], appliedConstraints: ["单集、约一分钟"] };
@@ -182,6 +218,7 @@ const LEGACY_RESEARCH_FIELDS = { limitations: ["官方入口页面没有读到�
 export function fixtureAutoResearchV3(): AutoResearchV3 {
   return {
     ...fixtureAutoResearch(),
+    contentStructure: LEGACY_STRUCTURE(),
     schema: AUTO_CREATION_RESEARCH_SCHEMA_V3,
     serverRecord: {
       origin: "server_record",
@@ -198,7 +235,7 @@ export function fixtureAutoResearchV3(): AutoResearchV3 {
 
 /** Research as the v2 code stored it (the model restated the gaps and settings): history only, never a new answer. */
 export function fixtureAutoResearchV2(): AutoResearchV2 {
-  return { ...fixtureAutoResearch(), ...LEGACY_RESEARCH_FIELDS, schema: AUTO_CREATION_RESEARCH_SCHEMA_V2 };
+  return { ...fixtureAutoResearch(), contentStructure: LEGACY_STRUCTURE(), ...LEGACY_RESEARCH_FIELDS, schema: AUTO_CREATION_RESEARCH_SCHEMA_V2 };
 }
 
 /** Research as the v1 code stored it (pattern, why and sourceIds in one item): history only, never a new answer. */
@@ -441,8 +478,12 @@ export interface AutoFixturePlan {
   /** Every revision still has six scenes (so the run ends at needs work). */
   revisionsStayLong?: boolean;
   fabricatedNumber?: boolean;
-  /** A structure quote found in no source (refused at research). */
+  /** A structure quote found in no source, written by the double itself (refused at research by the strict answer schema). */
   forgedQuote?: boolean;
+  /** The first structure's referenceId: an id the catalog may not list (another catalog's, made up). Refused whole. */
+  referenceId?: string;
+  /** The first structure's own quote or source beside a valid id (refused whole by the strict answer schema). */
+  structureServerField?: "quote" | "sourceId";
   /** A share in a structure's application beside a real quote (refused at research). */
   structureStatistic?: boolean;
   /** Research and directions that count their own story and plans (checks v3 accepts them). */
@@ -547,9 +588,12 @@ export function autoFixtureAnswer(user: string, plan: AutoFixturePlan = {}): unk
       const why = FIXTURE_VIEWING_DURATION_WHY[plan.viewingDurationWhy];
       adjusted.contentStructure = adjusted.contentStructure.map((item, index) => index === 0 ? { ...item, application: { ...item.application, why } } : item);
     }
-    // The double follows the contract the prompt asks for, unless a plan says to break it.
-    const answer = autoFixtureResearchMode(user) === "limited" && !plan.ignoreLimitedContract
+    // The double follows the contract the prompt asks for, unless a plan says to break it: a method is the id of the
+    // catalog passage the prompt lists (prompt v9).
+    const limited = autoFixtureResearchMode(user) === "limited" && !plan.ignoreLimitedContract
       ? fixtureAutoLimitedResearch(adjusted, plan.limitedInjection) : adjusted;
+    const catalog = (autoFixtureBlock(user, AUTO_REFERENCE_CATALOG_BLOCK) as AutoReferenceEntry[] | null) ?? [];
+    const answer = fixtureAutoCatalogAnswer(limited, catalog, { referenceId: plan.referenceId, serverField: plan.structureServerField });
     return plan.serverFieldsInAnswer ? { ...answer, ...LEGACY_RESEARCH_FIELDS } : answer;
   }
   if (stage === "directions") {

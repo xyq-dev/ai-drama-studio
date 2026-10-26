@@ -90,7 +90,8 @@ export interface FetchedPage {
   note: string;
 }
 
-const EXCERPT_MAX = 1_500;
+/** The longest excerpt kept of a read source: a longer text is cut here, maybe inside a sentence. */
+export const AUTO_SOURCE_EXCERPT_MAX = 1_500;
 
 /** Removes markup, control characters and long whitespace; the result is quoted as data, never followed. */
 export function cleanExcerpt(value: string): string {
@@ -101,7 +102,7 @@ export function cleanExcerpt(value: string): string {
     .replace(/[ \t]+/g, " ")
     .replace(/\n{3,}/g, "\n\n")
     .trim()
-    .slice(0, EXCERPT_MAX);
+    .slice(0, AUTO_SOURCE_EXCERPT_MAX);
 }
 
 function isRecent(publishedAt: string | null, nowIso: string): boolean {
@@ -143,7 +144,7 @@ export function collectSources(input: AutoCreationFrozenInput, pages: readonly F
       topic: "reference",
       excerpt,
       contentHash: sha256(material.text),
-      limitations: `${material.text.length > EXCERPT_MAX ? `只引用前 ${String(EXCERPT_MAX)} 字。` : ""}使用者声明拥有使用权限的文字资料；只分析结构与需求，不复制台词、人物组合或具体情节。没有画面或音频。`,
+      limitations: `${material.text.length > AUTO_SOURCE_EXCERPT_MAX ? `只引用前 ${String(AUTO_SOURCE_EXCERPT_MAX)} 字。` : ""}使用者声明拥有使用权限的文字资料；只分析结构与需求，不复制台词、人物组合或具体情节。没有画面或音频。`,
     });
   });
   const marketReadable = sources.some((source) => isMarketSource(source, nowIso));

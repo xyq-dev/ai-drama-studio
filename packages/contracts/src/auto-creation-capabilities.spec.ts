@@ -1,19 +1,25 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
+  AUTO_CREATION_RESEARCH_ANSWER_SCHEMA,
   AUTO_CREATION_RESEARCH_SCHEMA,
   AUTO_CREATION_RESEARCH_SCHEMA_V1,
   AUTO_CREATION_RESEARCH_SCHEMA_V2,
   AUTO_CREATION_RESEARCH_SCHEMA_V3,
   AUTO_RESEARCH_LIMITED_FORBIDDEN,
   AUTO_RESEARCH_SERVER_KEYS,
+  AUTO_RESEARCH_STRUCTURE_SERVER_KEYS,
   autoAssembleLimitedResearch,
   autoCreationJsonSchema,
   autoResearchAnswerSchema,
   autoResearchAnswerSchemaFor,
+  autoResearchCatalogAnswerSchema,
+  autoResearchCatalogAnswerSchemaFor,
   autoResearchHasServerRecord,
+  autoResearchLimitedCatalogAnswerSchema,
   autoResearchLimitedAnswerSchema,
   autoResearchMarketEvidence,
+  type AutoReferenceCatalog,
   type AutoStoredResearch,
 } from "./auto-creation";
 
@@ -69,33 +75,82 @@ const limited = {
   opportunities: ["小人物反击"],
 };
 
+/** A synthetic reference catalog (the domain cuts real ones from a run's snapshot). */
+const CATALOG: AutoReferenceCatalog = { version: "ads.auto-creation.reference-catalog.v1", hash: "h", entries: [
+  { referenceId: "R-0a1b2c3d4e", sourceId: "S-KB-CRAFT", quote: "关键结果来自主角的选择和行动，不靠旁人突然解围。" },
+  { referenceId: "R-5f6a7b8c9d", sourceId: "S-KB-CRAFT", quote: "反转要有前文依据；" },
+] };
+
 describe("research v4: one mode builds the provider schema and the zod check", () => {
-  it("the limited JSON Schema is the limited zod schema: no facts, observations or audience basis and sources anywhere", () => {
-    const sent = autoCreationJsonSchema("research", 1, "limited");
+  it("the limited JSON Schema is the limited model answer schema (prompt v9): no facts, observations or audience basis and sources anywhere", () => {
+    const sent = autoCreationJsonSchema("research", 1, "limited", CATALOG);
     expect(sent.name).toBe("auto_research_limited");
-    expect(jsonShape(sent.schema as Json)).toEqual(zodShape(autoResearchLimitedAnswerSchema));
+    expect(jsonShape(sent.schema as Json)).toEqual(zodShape(autoResearchLimitedCatalogAnswerSchema));
     const paths = jsonPaths(sent.schema as Json);
     for (const forbidden of [...AUTO_RESEARCH_LIMITED_FORBIDDEN, ...AUTO_RESEARCH_SERVER_KEYS]) expect(paths, forbidden).not.toContain(forbidden);
     expect(paths).not.toContain("audience.basis");
-    expect(paths).toContain("contentStructure[].reference.sourceId");
+    expect(paths).toContain("contentStructure[].referenceId");
+    for (const key of AUTO_RESEARCH_STRUCTURE_SERVER_KEYS) expect(paths, key).not.toContain(`contentStructure[].${key}`);
     expect(paths).toContain("hypotheses[].howToVerify");
-    expect((sent.schema as Json).properties!.schema!.enum).toEqual([AUTO_CREATION_RESEARCH_SCHEMA]);
+    expect((sent.schema as Json).properties!.schema!.enum).toEqual([AUTO_CREATION_RESEARCH_ANSWER_SCHEMA]);
   });
 
-  it("the sourced JSON Schema is the sourced zod schema, findings and audience sources kept", () => {
-    const sent = autoCreationJsonSchema("research", 1, "sourced");
+  it("the sourced JSON Schema is the sourced model answer schema, findings and audience sources kept", () => {
+    const sent = autoCreationJsonSchema("research", 1, "sourced", CATALOG);
     expect(sent.name).toBe("auto_research_sourced");
-    expect(jsonShape(sent.schema as Json)).toEqual(zodShape(autoResearchAnswerSchema));
+    expect(jsonShape(sent.schema as Json)).toEqual(zodShape(autoResearchCatalogAnswerSchema));
     expect(jsonPaths(sent.schema as Json)).toEqual(expect.arrayContaining(["facts", "observations", "audience.basis", "audience.sourceIds", "facts[].evidence"]));
   });
 
-  it("no research schema is built without a mode: none is assumed", () => {
+  it.each(["limited", "sourced"] as const)("%s: a structure's referenceId is one of the catalog's ids or null, nothing else; an empty catalog leaves null only", (mode) => {
+    const id = (catalog: AutoReferenceCatalog) => ((autoCreationJsonSchema("research", 1, mode, catalog).schema as Json)
+      .properties!.contentStructure!.items!.properties!.referenceId!);
+    expect(id(CATALOG)).toEqual({ anyOf: [{ type: "string", enum: ["R-0a1b2c3d4e", "R-5f6a7b8c9d"] }, { type: "null" }] });
+    expect(id({ ...CATALOG, entries: [] })).toEqual({ type: "null" });
+  });
+
+  it("no research schema is built without a mode or a catalog: none is assumed", () => {
     expect(() => autoCreationJsonSchema("research", 1)).toThrow(/research mode/u);
-    expect(() => autoCreationJsonSchema("research", 1, null)).toThrow(/research mode/u);
+    expect(() => autoCreationJsonSchema("research", 1, null, CATALOG)).toThrow(/research mode/u);
+    expect(() => autoCreationJsonSchema("research", 1, "limited")).toThrow(/reference catalog/u);
+    expect(() => autoCreationJsonSchema("research", 1, "sourced", null)).toThrow(/reference catalog/u);
     // Other stages need none.
     expect(autoCreationJsonSchema("directions", 1).name).toBe("auto_directions");
     expect(autoResearchAnswerSchemaFor("limited")).toBe(autoResearchLimitedAnswerSchema);
     expect(autoResearchAnswerSchemaFor("sourced")).toBe(autoResearchAnswerSchema);
+    expect(autoResearchCatalogAnswerSchemaFor("limited")).toBe(autoResearchLimitedCatalogAnswerSchema);
+    expect(autoResearchCatalogAnswerSchemaFor("sourced")).toBe(autoResearchCatalogAnswerSchema);
+  });
+});
+
+describe("the model answer of prompt v9 is apart from the stored research v4", () => {
+  const answer = { ...limited, schema: AUTO_CREATION_RESEARCH_ANSWER_SCHEMA, contentStructure: [
+    { referenceId: "R-0a1b2c3d4e", application: { pattern: "计划用两次反转推动主角主动选择。", why: "创作设计。" } },
+    { referenceId: null, application: { pattern: "三名骑手被迫合作。", why: "自主设计。" } },
+  ] };
+
+  it("a legal model answer parses as written; it is no stored research, and a stored research is no model answer", () => {
+    expect(autoResearchLimitedCatalogAnswerSchema.parse(answer)).toEqual(answer);
+    expect(autoResearchLimitedAnswerSchema.safeParse(answer).success).toBe(false);
+    expect(autoResearchLimitedCatalogAnswerSchema.safeParse(limited).success).toBe(false);
+    expect(autoResearchLimitedCatalogAnswerSchema.safeParse({ ...answer, schema: AUTO_CREATION_RESEARCH_SCHEMA }).success).toBe(false);
+  });
+
+  it.each([
+    ...AUTO_RESEARCH_STRUCTURE_SERVER_KEYS.map((key) => [key, { [key]: null }] as const),
+    ["reference", { reference: { sourceId: "S-KB-CRAFT", quote: "关键结果来自主角的选择和行动，不靠旁人突然解围。" } }],
+    ["quote", { quote: "关键结果来自主角的选择和行动，不靠旁人突然解围。" }],
+  ] as const)("a model-written %s beside the id is refused whole, even null, never stripped", (key, extra) => {
+    for (const schema of [autoResearchLimitedCatalogAnswerSchema, autoResearchCatalogAnswerSchema]) {
+      const value = schema === autoResearchCatalogAnswerSchema ? { ...answer, facts: [], observations: [], audience: { ...answer.audience, basis: "hypothesis", sourceIds: [] } } : answer;
+      const result = schema.safeParse({ ...value, contentStructure: [{ ...value.contentStructure[0]!, ...extra }] });
+      expect(result.success, key).toBe(false);
+      expect(result.error?.issues[0]).toMatchObject({ code: "unrecognized_keys", path: ["contentStructure", 0], keys: [key] });
+    }
+  });
+
+  it("a missing referenceId is refused, never read as null", () => {
+    expect(autoResearchLimitedCatalogAnswerSchema.safeParse({ ...answer, contentStructure: [{ application: { pattern: "p", why: "w" } }] }).success).toBe(false);
   });
 });
 

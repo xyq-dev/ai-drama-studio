@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   AUTO_CREATION_DIRECTIONS_SCHEMA,
+  AUTO_CREATION_RESEARCH_ANSWER_SCHEMA,
   AUTO_CREATION_RESEARCH_SCHEMA,
   autoCreationConstraintsSchema,
   type AutoCreationFrozenInput,
@@ -11,6 +12,14 @@ import { OCEAN_ENGINE_ENTRY_URLS, collectSources } from "./auto-creation-sources
 import {
   autoContextFromStages, autoPackageJson, autoPackageMarkdown, autoResearchServerRecord, buildAutoCreationPrompt, validateAutoStageOutput, type AutoCreationContext,
 } from "./auto-creation";
+import { autoReferenceCatalog, autoReferenceCatalogOf } from "./auto-creation-references";
+import { builtInSources } from "./auto-creation-sources";
+
+/** Prompt v9: the catalog the research of a context chooses from, cut from its saved snapshot as the engines cut it. */
+const withCatalog = (context: AutoCreationContext): AutoCreationContext => ({ ...context, referenceCatalog: autoReferenceCatalogOf(context.sources) });
+/** The catalog id of the craft entry's sentence on a structure's key result (the same id in every snapshot that has it). */
+const CRAFT_ID = autoReferenceCatalog({ schema: "ads.auto-creation.sources.v1", sources: builtInSources(), researchMode: "limited", notes: [] })
+  .entries.find((entry) => entry.quote === "关键结果来自主角的选择和行动，不靠旁人突然解围。")!.referenceId;
 
 /**
  * Research gate (research v3, prompt v5, checks v5). The settings and the source gaps are the server's record, never
@@ -33,13 +42,13 @@ function input(overrides: Partial<AutoCreationFrozenInput> = {}): AutoCreationFr
 }
 
 function context(frozen = input()): AutoCreationContext {
-  return { sources: collectSources(frozen, [], NOW), episodes: new Map(), reviews: [] };
+  return withCatalog({ sources: collectSources(frozen, [], NOW), episodes: new Map(), reviews: [] });
 }
 
 /** A recent, readable market page (synthetic, no number in it): the snapshot is then sourced. */
 function sourcedContext(frozen = input()): AutoCreationContext {
-  return { sources: collectSources(frozen, [{ url: OCEAN_ENGINE_ENTRY_URLS[0], status: "read", title: "合成市场样本页", text: "合成样本：本页只描述题材趋势，没有统计数字。",
-    publishedAt: "2026-09-01T00:00:00.000Z", fetchedAt: NOW, note: "合成样本" }], NOW), episodes: new Map(), reviews: [] };
+  return withCatalog({ sources: collectSources(frozen, [{ url: OCEAN_ENGINE_ENTRY_URLS[0], status: "read", title: "合成市场样本页", text: "合成样本：本页只描述题材趋势，没有统计数字。",
+    publishedAt: "2026-09-01T00:00:00.000Z", fetchedAt: NOW, note: "合成样本" }], NOW), episodes: new Map(), reviews: [] });
 }
 
 /** A legal answer to the limited contract (research v4): none of the sourced contract's fields. */
@@ -52,12 +61,12 @@ function answer(overrides: Record<string, unknown> = {}): string {
 /** A legal answer to the sourced contract (the v3 shape: an observation of the craft entry, the audience a hypothesis). */
 function sourcedAnswer(overrides: Record<string, unknown> = {}): string {
   return JSON.stringify({
-    schema: AUTO_CREATION_RESEARCH_SCHEMA,
+    schema: AUTO_CREATION_RESEARCH_ANSWER_SCHEMA,
     facts: [],
     observations: [{ id: "O1", statement: "写作方法资料强调关键结果来自主角自己的选择。", sourceIds: ["S-KB-CRAFT"] }],
     hypotheses: [{ id: "H1", statement: "碎片时间的观众可能更愿意看一集内有明确兑现的故事。", howToVerify: "计划上线后观察七天再判断。" }],
     audience: { primary: "拟面向通勤时刷剧的成年观众（待验证）", viewingNeeds: ["一集内看到结果"], emotionalAppeals: ["扳回一局"], basis: "hypothesis", sourceIds: [] },
-    contentStructure: [{ reference: { sourceId: "S-KB-CRAFT", quote: "关键结果来自主角的选择和行动" }, application: { pattern: "主角主动选择推动结果", why: "写作方法要求。" } }],
+    contentStructure: [{ referenceId: CRAFT_ID, application: { pattern: "主角主动选择推动结果", why: "写作方法要求。" } }],
     opportunities: ["小人物在一个夜晚完成一次反击"],
     ...overrides,
   });
@@ -67,7 +76,7 @@ const check = (overrides: Record<string, unknown>, frozen = input()) => validate
 const checkSourced = (overrides: Record<string, unknown>, frozen = input()) => validateAutoStageOutput("research", sourcedAnswer(overrides), frozen, sourcedContext(frozen));
 /** The limited contract with fields added on top as written: nothing stripped. */
 const checkRaw = (extra: Record<string, unknown>) => validateAutoStageOutput("research", JSON.stringify({ ...JSON.parse(answer()) as object, ...extra }), input(), context());
-const structure = (pattern: string, why = "自主创作设计。") => ({ contentStructure: [{ reference: null, application: { pattern, why } }] });
+const structure = (pattern: string, why = "自主创作设计。") => ({ contentStructure: [{ referenceId: null, application: { pattern, why } }] });
 const hypothesis = (statement: string, howToVerify = "计划上线后观察七天再判断。") => ({ hypotheses: [{ id: "H1", statement, howToVerify }] });
 
 describe("1. the settings and the source gaps are the server's record, from the frozen input and the snapshot only", () => {
@@ -77,12 +86,17 @@ describe("1. the settings and the source gaps are the server's record, from the 
     const result = check({}, frozen);
     expect(result.ok).toBe(true);
     const output = (result as { output: AutoResearch }).output;
-    // The limited answer as written, and what the server assembles around it: no finding, the audience a hypothesis.
-    const written = JSON.parse(answer()) as { audience: object };
-    expect({ ...written, facts: [], observations: [], audience: { ...written.audience, basis: "hypothesis", sourceIds: [] } })
+    // The limited answer as written, and what the server assembles around it: no finding, the audience a hypothesis, the
+    // stored schema research v4 and the chosen passage filled in from the catalog (prompt v9).
+    const written = JSON.parse(answer()) as { audience: object; contentStructure: Array<{ application: object }> };
+    expect({ ...written, schema: AUTO_CREATION_RESEARCH_SCHEMA, facts: [], observations: [], audience: { ...written.audience, basis: "hypothesis", sourceIds: [] },
+      contentStructure: [{ reference: { sourceId: "S-KB-CRAFT", quote: "关键结果来自主角的选择和行动，不靠旁人突然解围。" }, application: written.contentStructure[0]!.application }] })
       .toEqual(Object.fromEntries(Object.entries(output).filter(([key]) => key !== "serverRecord" && key !== "unverified")));
     expect(output.unverified).toEqual([]);
-    expect(output.serverRecord).toEqual(autoResearchServerRecord(frozen, context(frozen).sources!));
+    expect(output.serverRecord).toEqual(autoResearchServerRecord(frozen, context(frozen).sources!, context(frozen).referenceCatalog));
+    expect(output.serverRecord.executedWith).toMatchObject({ promptVersion: "ads.auto-creation.prompt.v9", checksVersion: "ads.auto-creation.checks.v10",
+      researchSchema: AUTO_CREATION_RESEARCH_SCHEMA, answerContract: "limited", answerSchema: AUTO_CREATION_RESEARCH_ANSWER_SCHEMA,
+      referenceCatalogVersion: "ads.auto-creation.reference-catalog.v1", referenceCatalogHash: context(frozen).referenceCatalog!.hash });
     expect(output.serverRecord.settings).toEqual({ origin: "user_setting", items: [
       { key: "episodes", label: "集数", value: "共 1 集" },
       { key: "seconds", label: "每集时长", value: "约 60 秒，竖屏 9:16（写作目标，不是成片实测长度）" },
@@ -146,13 +160,15 @@ describe("2. a number with no recognised role in creative text is an unverified 
     const result = check(overrides);
     expect(result).toMatchObject({ ok: true, output: { unverified: [{ origin: "server_check", field, token, semantic: "unclassified", rule: "no_role",
       note: "程序未能判定数字含义，未核实" }] } });
-    // Kept word for word: every text of the answer is in the stored output, nothing removed, cut or rewritten.
-    expect(textsOf((result as { output: AutoResearch }).output)).toEqual(expect.arrayContaining(textsOf(JSON.parse(answer(overrides)))));
+    // Kept word for word: every text of the answer is in the stored output, nothing removed, cut or rewritten (but the
+    // answer schema and the catalog ids, which the server replaces with research v4 and the chosen passages).
+    const written = textsOf(JSON.parse(answer(overrides))).filter((text) => text !== AUTO_CREATION_RESEARCH_ANSWER_SCHEMA && text !== CRAFT_ID);
+    expect(textsOf((result as { output: AutoResearch }).output)).toEqual(expect.arrayContaining(written));
   });
 
   it("each such number gets its own notice, and a cited structure's application is read the same way", () => {
     const result = check({ ...structure(PUZZLE), opportunities: [MONEY, "门牌 302 的住户最后出现。"],
-      contentStructure: [{ reference: { sourceId: "S-KB-CRAFT", quote: "关键结果来自主角的选择和行动" }, application: { pattern: PUZZLE, why: MONEY } }] });
+      contentStructure: [{ referenceId: CRAFT_ID, application: { pattern: PUZZLE, why: MONEY } }] });
     expect(result).toMatchObject({ ok: true, output: { unverified: [
       { field: "contentStructure[0].application.pattern", token: "三块" },
       { field: "contentStructure[0].application.why", token: "五十元" },
@@ -194,13 +210,13 @@ describe("3. a notice opens nothing: every later number, quote, claim and settin
     }
   });
 
-  it("a forged or cut quote, an unread source and a settled claim after a notice", () => {
-    const later = (item: unknown) => ({ contentStructure: [{ reference: null, application: { pattern: PUZZLE, why: "自主创作设计。" } }, item] });
+  it("a model-written quote, an id the catalog lacks and a settled claim after a notice", () => {
+    const later = (item: unknown) => ({ contentStructure: [{ referenceId: null, application: { pattern: PUZZLE, why: "自主创作设计。" } }, item] });
     expect(check(later({ reference: { sourceId: "S-KB-CRAFT", quote: "反转次数以两次为最佳" }, application: { pattern: "p", why: "w" } })))
-      .toMatchObject({ ok: false, code: "evidence_not_in_source", field: "contentStructure[1].reference.quote" });
-    expect(check(later({ reference: { sourceId: "S-OE-1", quote: "关键结果来自主角的选择和行动" }, application: { pattern: "p", why: "w" } })))
-      .toMatchObject({ ok: false, code: "unread_source", field: "contentStructure[1].reference.sourceId" });
-    expect(check(later({ reference: null, application: { pattern: "调查证明观众更喜欢反转。", why: "w" } })))
+      .toMatchObject({ ok: false, code: "invalid_output", field: "contentStructure[1].reference", category: "unrecognized_keys" });
+    expect(check(later({ referenceId: "R-0000000000", application: { pattern: "p", why: "w" } })))
+      .toMatchObject({ ok: false, code: "unknown_reference", field: "contentStructure[1].referenceId" });
+    expect(check(later({ referenceId: null, application: { pattern: "调查证明观众更喜欢反转。", why: "w" } })))
       .toMatchObject({ ok: false, code: "unsourced_claim", field: "contentStructure[1].application.pattern" });
     expect(checkSourced({ ...structure(PUZZLE), facts: [{ id: "F1", statement: "x", sourceIds: ["S-KB-CRAFT"], evidence: "知识库里没有这句话" }] }))
       .toMatchObject({ ok: false, code: "evidence_not_in_source", field: "facts[0].evidence" });
@@ -289,7 +305,6 @@ describe("5. structural protections are unchanged", () => {
 });
 
 describe("6. PR #82 review: a count is a cast, a place or a verdict only when it counts one; a notice names its item's place", () => {
-  const CRAFT_REF = { sourceId: "S-KB-CRAFT", quote: "关键结果来自主角的选择和行动" };
   /** The statement in every creative field the review named: hypothesis, opportunity, and an application with and without a reference. */
   const places = (statement: string): Array<[string, Record<string, unknown>]> => [
     ["hypotheses[0].statement", hypothesis(statement)],
@@ -297,8 +312,8 @@ describe("6. PR #82 review: a count is a cast, a place or a verdict only when it
     ["opportunities[0]", { opportunities: [statement] }],
     ["contentStructure[0].application.pattern", structure(statement)],
     ["contentStructure[0].application.why", structure("实物线索推动主角行动", statement)],
-    ["contentStructure[0].application.pattern", { contentStructure: [{ reference: CRAFT_REF, application: { pattern: statement, why: "本剧设计。" } }] }],
-    ["contentStructure[0].application.why", { contentStructure: [{ reference: CRAFT_REF, application: { pattern: "实物线索推动主角行动", why: statement } }] }],
+    ["contentStructure[0].application.pattern", { contentStructure: [{ referenceId: CRAFT_ID, application: { pattern: statement, why: "本剧设计。" } }] }],
+    ["contentStructure[0].application.why", { contentStructure: [{ referenceId: CRAFT_ID, application: { pattern: "实物线索推动主角行动", why: statement } }] }],
   ];
   const cast2 = input({ constraints: autoCreationConstraintsSchema.parse({ maxCharacters: 2 }) });
   const place2 = input({ constraints: autoCreationConstraintsSchema.parse({ maxLocations: 2 }) });

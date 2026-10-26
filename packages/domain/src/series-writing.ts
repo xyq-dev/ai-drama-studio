@@ -58,6 +58,7 @@ import {
   type SeriesVersionRef,
   type TitleWritingStoredProviderKey,
 } from "@ai-drama/contracts";
+import { autoReferenceCatalogOf } from "./auto-creation-references";
 import { buildAutoCreationPrompt, dialogueCharLimit, sceneLimit, shotSecondsRange, validateAutoStageOutput, type AutoCreationContext } from "./auto-creation";
 import { canonicalInputHash } from "./text-chain";
 
@@ -142,6 +143,9 @@ export function seriesPlanContext(input: SeriesFrozenInput, stages: readonly Ser
     else if (kind === "arc") context.arc = output;
     else if (kind === "outline") for (const episode of (stage.output as unknown as SeriesOutline).episodes) context.outlines.set(episode.episodeNo, episode);
   }
+  // The borrowed research reads the catalog of its own saved snapshot, cut once here as automatic creation cuts it.
+  const catalog = autoReferenceCatalogOf(context.auto.sources);
+  if (catalog) context.auto.referenceCatalog = catalog;
   return context;
 }
 

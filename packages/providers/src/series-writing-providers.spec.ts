@@ -5,12 +5,17 @@ import {
   SERIES_PROMPT_MAX_CHARS,
   SERIES_WRITING_CHECKS_VERSION,
   SERIES_WRITING_PROMPT_VERSION,
+  AUTO_REFERENCE_CATALOG_VERSION,
   autoCreationJsonSchema,
   autoErrorParts,
+  type AutoReferenceEntry,
+  type AutoSourcesOutput,
   seriesJsonSchema,
   seriesNormalCalls,
 } from "@ai-drama/contracts";
 import { ANTHROPIC_MESSAGES_URL, ANTHROPIC_THINKING_HEADROOM_TOKENS, DEEPSEEK_CHAT_COMPLETIONS_URL, OPENAI_RESPONSES_URL, TEXT_WRITING_MAX_OUTPUT_TOKENS, claudeJsonSchema } from "./text-writing";
+import { AUTO_REFERENCE_CATALOG_BLOCK, autoReferenceCatalogOf } from "@ai-drama/domain";
+import { autoFixtureBlock } from "./auto-creation-fixtures";
 import { ALL, seriesSetup } from "./series-writing-test-kit";
 import type { SeriesFixtureExchange } from "./series-writing-fixtures";
 
@@ -34,15 +39,25 @@ describe("the requests the real adapters build for a series", () => {
     ["anthropic", ANTHROPIC_MESSAGES_URL],
     ["deepseek", DEEPSEEK_CHAT_COMPLETIONS_URL],
   ] as const)("%s: every stage carries its own schema, the frozen model, the series versions and the output limit", async (providerKey, url) => {
-    const { seen, view, grant } = await seriesSetup({ episodes: 7, providerKey });
+    const { seen, view, grant, snapshot } = await seriesSetup({ episodes: 7, providerKey });
     await grant(ALL(7));
     expect((await view()).completion).toBe("text_complete");
     expect(seen).toHaveLength(seriesNormalCalls(7));
+    // The borrowed research's catalog: the one of the plan job's saved snapshot, and the one its prompt carried.
+    const plan = (await snapshot()).jobs.find((job) => job.run.kind === "plan")!;
+    const saved = autoReferenceCatalogOf(plan.stages.find((stage) => stage.stageKey === "sources")!.output as unknown as AutoSourcesOutput)!;
+    expect(saved.entries.length).toBeGreaterThan(0);
     for (const exchange of seen) {
       expect(exchange.url).toBe(url);
       const research = exchange.stage === "research" || exchange.stage === "directions";
+      if (exchange.stage === "research") {
+        const entries = autoFixtureBlock(exchange.user, AUTO_REFERENCE_CATALOG_BLOCK) as AutoReferenceEntry[];
+        expect(entries).toEqual(saved.entries);
+        expect({ version: AUTO_REFERENCE_CATALOG_VERSION, entries, hash: saved.hash }).toEqual(saved);
+      }
       const expected = research
-        ? autoCreationJsonSchema(exchange.stage as "research" | "directions", 7, exchange.stage === "research" ? "limited" : null).schema
+        ? autoCreationJsonSchema(exchange.stage as "research" | "directions", 7, exchange.stage === "research" ? "limited" : null,
+          exchange.stage === "research" ? saved : null).schema
         : seriesJsonSchema(exchange.stage, 7).schema;
       expect(sentSchema(exchange)).toEqual(providerKey === "anthropic" ? claudeJsonSchema(expected) : expected);
       const body = exchange.body as Record<string, unknown>;
@@ -87,22 +102,24 @@ describe("hypothesis fields (shared prompt v8) in a series: the borrowed researc
   // invalid_output@hypotheses[3]:unrecognized_keys; its answer was not kept. The double's `extra` field is SYNTHETIC.
   it("a new series freezes the shared prompt version; DeepSeek gets the limited schema (three fields, no others) and the field lines", async () => {
     const { seen, snapshot, grant, store } = await seriesSetup({ providerKey: "deepseek" });
-    expect((await snapshot()).series.input.researchContract.promptVersion).toBe("ads.auto-creation.prompt.v8");
-    expect(AUTO_CREATION_PROMPT_VERSION).toBe("ads.auto-creation.prompt.v8");
+    expect((await snapshot()).series.input.researchContract.promptVersion).toBe("ads.auto-creation.prompt.v9");
+    expect(AUTO_CREATION_PROMPT_VERSION).toBe("ads.auto-creation.prompt.v9");
     await grant({ plan: true, batchFrom: 1, batchTo: 1, final: false });
     // The legal answer keeps the normal flow: plan + episodes 1–3 is 19 calls.
     expect(store.calls).toHaveLength(19);
     const research = seen.find((item) => item.stage === "research")!;
     expect(research.url).toBe(DEEPSEEK_CHAT_COMPLETIONS_URL);
     const schema = sentSchema(research);
-    expect(schema).toEqual(autoCreationJsonSchema("research", 60, "limited").schema);
+    const plan = (await snapshot()).jobs.find((job) => job.run.kind === "plan")!;
+    const saved = autoReferenceCatalogOf(plan.stages.find((stage) => stage.stageKey === "sources")!.output as unknown as AutoSourcesOutput)!;
+    expect(schema).toEqual(autoCreationJsonSchema("research", 60, "limited", saved).schema);
     expect((schema as { properties: { hypotheses: { items: Record<string, unknown> } } }).properties.hypotheses.items)
       .toMatchObject({ additionalProperties: false, required: ["id", "statement", "howToVerify"] });
-    expect(research.user).toContain("提示版本：ads.auto-creation.prompt.v8");
+    expect(research.user).toContain("提示版本：ads.auto-creation.prompt.v9");
     expect(research.user).toContain("每条假设是一个对象，只包含 id、statement、howToVerify 三个字段，三个都必填");
     expect(research.user).toContain('假设对象示例（只示意格式，内容按本次创作写）：{"id":"H1",');
     const stored = store.stages.find((item) => item.stageKey === "research")!.output as { serverRecord: { executedWith: Record<string, string> } };
-    expect(stored.serverRecord.executedWith).toMatchObject({ promptVersion: "ads.auto-creation.prompt.v8", checksVersion: "ads.auto-creation.checks.v9",
+    expect(stored.serverRecord.executedWith).toMatchObject({ promptVersion: "ads.auto-creation.prompt.v9", checksVersion: "ads.auto-creation.checks.v10",
       researchSchema: "ads.auto-creation.research.v4" });
   });
 
@@ -123,12 +140,12 @@ describe("hypothesis fields (shared prompt v8) in a series: the borrowed researc
 describe("a verification plan's sample in a series (checks v8; synthetic plans, not the real refused answer)", () => {
   it("60 × 60 s, plan + episodes 1–3: a plan to read a three-episode sample passes research and the 19-call flow completes", async () => {
     const { grant, store, snapshot } = await seriesSetup({ providerKey: "deepseek", plan: { auto: { verificationSample: "sample" } } });
-    expect((await snapshot()).series.input.researchContract.checksVersion).toBe("ads.auto-creation.checks.v9");
+    expect((await snapshot()).series.input.researchContract.checksVersion).toBe("ads.auto-creation.checks.v10");
     await grant({ plan: true, batchFrom: 1, batchTo: 1, final: false });
     expect(store.calls).toHaveLength(19);
     const stored = store.stages.find((item) => item.stageKey === "research")!.output as { hypotheses: Array<{ howToVerify: string }>; serverRecord: { executedWith: Record<string, string> } };
     expect(stored.hypotheses[0]!.howToVerify).toBe("模型替身样例：计划制作三集样稿进行试读并收集反馈。");
-    expect(stored.serverRecord.executedWith).toMatchObject({ checksVersion: "ads.auto-creation.checks.v9" });
+    expect(stored.serverRecord.executedWith).toMatchObject({ checksVersion: "ads.auto-creation.checks.v10" });
   });
 
   it.each([

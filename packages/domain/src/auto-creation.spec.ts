@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  AUTO_CREATION_RESEARCH_SCHEMA,
+  AUTO_CREATION_RESEARCH_ANSWER_SCHEMA,
   autoCreationConstraintsSchema,
   autoCreationHardCap,
   autoCreationNormalCalls,
@@ -12,6 +12,13 @@ import { OCEAN_ENGINE_ENTRY_URLS, builtInSources, collectSources } from "./auto-
 import type { AutoBible, AutoEpisode } from "@ai-drama/contracts";
 import { buildAutoCreationPrompt, deterministicFindings, selectDirection, validateAutoStageOutput, type AutoCreationContext } from "./auto-creation";
 import { numberTokens } from "./auto-creation-numbers";
+import { autoReferenceCatalog, autoReferenceCatalogOf } from "./auto-creation-references";
+
+/** Prompt v9: the catalog the research of a context chooses from, cut from its saved snapshot as the engines cut it. */
+const withCatalog = (context: AutoCreationContext): AutoCreationContext => ({ ...context, referenceCatalog: autoReferenceCatalogOf(context.sources) });
+/** The catalog id of the craft entry's sentence on a structure's key result (the same id in every snapshot that has it). */
+const CRAFT_ID = autoReferenceCatalog({ schema: "ads.auto-creation.sources.v1", sources: builtInSources(), researchMode: "limited", notes: [] })
+  .entries.find((entry) => entry.quote === "关键结果来自主角的选择和行动，不靠旁人突然解围。")!.referenceId;
 
 function input(overrides: Partial<AutoCreationFrozenInput> = {}): AutoCreationFrozenInput {
   return {
@@ -26,11 +33,11 @@ const NOW = "2026-10-18T00:00:00.000Z";
 
 function research(overrides: Record<string, unknown> = {}) {
   return JSON.stringify({
-    schema: AUTO_CREATION_RESEARCH_SCHEMA,
+    schema: AUTO_CREATION_RESEARCH_ANSWER_SCHEMA,
     facts: [], observations: [],
     hypotheses: [{ id: "H1", statement: "观众可能偏爱一集内兑现。", howToVerify: "看真实数据。" }],
     audience: { primary: "成年观众（假设）", viewingNeeds: ["看到结果"], emotionalAppeals: ["扳回一局"], basis: "hypothesis", sourceIds: [] },
-    contentStructure: [{ reference: { sourceId: "S-KB-CRAFT", quote: "关键结果来自主角的选择和行动" }, application: { pattern: "主角主动", why: "知识库要求" } }],
+    contentStructure: [{ referenceId: CRAFT_ID, application: { pattern: "主角主动", why: "知识库要求" } }],
     opportunities: ["小人物反击"],
     ...overrides,
   });
@@ -42,12 +49,12 @@ const MARKET = { url: OCEAN_ENGINE_ENTRY_URLS[0], status: "read" as const, title
 
 /** A sourced snapshot (research v4 sourced contract: facts, observations and audience sources may be written). */
 function context(frozen = input()): AutoCreationContext {
-  return { sources: collectSources(frozen, [MARKET], NOW), episodes: new Map(), reviews: [] };
+  return withCatalog({ sources: collectSources(frozen, [MARKET], NOW), episodes: new Map(), reviews: [] });
 }
 
 /** The built-in snapshot only: no market material, so the limited contract. */
 function limitedContext(frozen = input()): AutoCreationContext {
-  return { sources: collectSources(frozen, [], NOW), episodes: new Map(), reviews: [] };
+  return withCatalog({ sources: collectSources(frozen, [], NOW), episodes: new Map(), reviews: [] });
 }
 
 /** An answer to the limited contract: the same creative parts, none of the sourced contract's fields. */
@@ -129,7 +136,7 @@ describe("research sources and claims", () => {
       publishedAt: "2026-09-01T00:00:00.000Z", fetchedAt: NOW, note: "" };
     const sources = collectSources(input(), [MARKET, page], NOW);
     const cited = sources.sources.find((item) => item.locator === page.url)!.sourceId;
-    const ctx = { sources, episodes: new Map(), reviews: [] };
+    const ctx = withCatalog({ sources, episodes: new Map(), reviews: [] });
     expect(validateAutoStageOutput("research", research({ observations: [{ id: "O1", statement: "主要观众18岁以上", sourceIds: [cited] }] }), input(), ctx))
       .toMatchObject({ ok: false, code: "unsourced_number", detail: "18" });
     expect(validateAutoStageOutput("research", research({ observations: [{ id: "O1", statement: "说明发布于2018年", sourceIds: [cited] }] }), input(), ctx).ok).toBe(true);
@@ -142,12 +149,12 @@ describe("research sources and claims", () => {
     expect(sources.researchMode).toBe("limited");
     const cited = sources.sources.find((item) => item.locator === page.url)!.sourceId;
     const result = validateAutoStageOutput("research", research({ audience: { primary: "通勤观众", viewingNeeds: ["x"], emotionalAppeals: ["y"], basis: "sourced",
-      sourceIds: [cited] } }), input(), { sources, episodes: new Map(), reviews: [] });
+      sourceIds: [cited] } }), input(), withCatalog({ sources, episodes: new Map(), reviews: [] }));
     // research v4: the limited contract has no audience basis or sources; the answer is refused whole, never stripped.
     // Named by the first forbidden field in the contract's order: this answer also carries (empty) facts.
     expect(result).toMatchObject({ ok: false, code: "invalid_output", field: "facts", category: "unrecognized_keys", semantic: "limited_contract" });
     expect(validateAutoStageOutput("research", JSON.stringify({ ...JSON.parse(limitedOf(research())) as object, audience: { primary: "通勤观众", viewingNeeds: ["x"],
-      emotionalAppeals: ["y"], basis: "sourced", sourceIds: [cited] } }), input(), { sources, episodes: new Map(), reviews: [] }))
+      emotionalAppeals: ["y"], basis: "sourced", sourceIds: [cited] } }), input(), withCatalog({ sources, episodes: new Map(), reviews: [] })))
       .toMatchObject({ ok: false, code: "invalid_output", field: "audience.basis", semantic: "limited_contract", rule: "forbidden_field" });
   });
 
@@ -204,7 +211,7 @@ describe("research checks after the final review", () => {
   it("a sourced audience must cite a recent, readable market source; the craft entry alone never qualifies", () => {
     const sources = collectSources(input(), [official("公开说明：短剧观众常在通勤时观看，偏爱一集内兑现。")], NOW);
     expect(sources.researchMode).toBe("sourced");
-    const ctx = { sources, episodes: new Map(), reviews: [] };
+    const ctx = withCatalog({ sources, episodes: new Map(), reviews: [] });
     const audience = (sourceIds: string[]) => research({ audience: { primary: "通勤观众", viewingNeeds: ["一集内兑现"], emotionalAppeals: ["y"], basis: "sourced", sourceIds } });
     expect(validateAutoStageOutput("research", audience(["S-KB-CRAFT"]), input(), ctx)).toMatchObject({ ok: false, code: "unsourced_claim", detail: "audience" });
     expect(validateAutoStageOutput("research", audience(["S-OE-1"]), input(), ctx).ok).toBe(true);
@@ -212,7 +219,7 @@ describe("research checks after the final review", () => {
     // A dated reference page a person named is not market material either.
     const withReference = collectSources(input(), [official("公开说明：短剧观众常在通勤时观看。"), reference("https://support.oceanengine.com/x", "参考页：观众喜欢反转。".repeat(10))], NOW);
     const ref = withReference.sources.find((item) => item.kind === "public_page")!.sourceId;
-    expect(validateAutoStageOutput("research", audience([ref]), input(), { sources: withReference, episodes: new Map(), reviews: [] }))
+    expect(validateAutoStageOutput("research", audience([ref]), input(), withCatalog({ sources: withReference, episodes: new Map(), reviews: [] })))
       .toMatchObject({ ok: false, code: "unsourced_claim" });
   });
 
@@ -244,7 +251,7 @@ describe("research contract (synthetic samples; findings and citations on a sour
       { id: "H2", statement: "小人物讨回公道的题材可能更容易引起共鸣。", howToVerify: "用小范围投放比较不同题材的完播情况。" },
     ],
     audience: { primary: "在通勤和睡前刷短剧的成年观众（待验证假设）", viewingNeeds: ["一集内看到结果"], emotionalAppeals: ["扳回一局"], basis: "hypothesis", sourceIds: [] },
-    contentStructure: [{ reference: { sourceId: "S-KB-CRAFT", quote: "关键结果来自主角的选择和行动" }, application: { pattern: "主角主动选择推动结果", why: "写作方法资料要求关键结果来自主角的行动。" } }],
+    contentStructure: [{ referenceId: CRAFT_ID, application: { pattern: "主角主动选择推动结果", why: "写作方法资料要求关键结果来自主角的行动。" } }],
     opportunities: ["约 60 秒一集正好讲完一次反击", "共 1 集，每集约 60 秒，竖屏 9:16"],
     ...overrides,
   });
