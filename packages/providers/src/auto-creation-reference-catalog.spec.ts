@@ -39,7 +39,7 @@ const MARKET_PAGE: FetchedPage = { url: OCEAN_ENGINE_ENTRY_URLS[0], status: "rea
   text: "合成样本：本页只描述题材趋势，没有统计数字。", publishedAt: "2026-09-01T00:00:00.000Z", fetchedAt: NOW_ISO, note: "合成样本" };
 
 async function setup(options: { providerKey?: TitleWritingProviderKey; plan?: AutoFixturePlan; sourced?: boolean; callBudget?: number;
-  override?: Parameters<typeof autoFixtureTransport>[0]["override"] } = {}) {
+  override?: NonNullable<Parameters<typeof autoFixtureTransport>[0]>["override"] } = {}) {
   const store = new InMemoryAutoCreationStore();
   store.addProject(WS, P1, 1);
   const run = newAutoRun({

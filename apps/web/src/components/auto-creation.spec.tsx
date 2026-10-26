@@ -662,6 +662,24 @@ describe("AI 自动创作 run page", () => {
     }
   });
 
+  it("prompt v9: a structure method id outside the run's catalog is a refused answer, named by field, never a key problem", async () => {
+    const code = "unknown_reference@contentStructure[0].referenceId";
+    const failed = run({ state: "failed", errorCode: "unknown_reference", quality: "pending", storySave: "pending", storyRevisionId: null, packageStatus: "incomplete",
+      callsUsed: 1, callCap: 6, openIssues: [], stages: [{ stageKey: "research", kind: "research", state: "rejected", attemptNo: 1, errorCode: code, output: null,
+        upstreamChanged: false, supersededBy: null, scriptSave: null, scriptRevisionId: null }] });
+    vi.stubGlobal("fetch", vi.fn(async (input: string) => input.endsWith("/auto-runs/latest") ? json({ run: failed }) : json(options())));
+    render(<AutoCreationRun projectId={P1} />);
+    await waitFor(() => expect(screen.getByTestId("auto-headline").textContent).toBe("没有完成"));
+    const stop = screen.getByText(/^停在「/u).textContent!;
+    expect(stop).toContain("回答选择的方法片段编号不在本次引用目录中，已拒收，后续阶段没有发送。");
+    expect(stop).toContain("位置：contentStructure[0].referenceId");
+    expect(stop).not.toContain("未识别的问题");
+    const note = screen.getByTestId("auto-output-refused").textContent!;
+    expect(note).toContain("不是密钥或账户问题");
+    expect(note).toContain("新的计费调用");
+    expect(document.body.textContent).not.toMatch(/认证失败|额度不足|连接中断|R-[0-9a-f]{10}/u);
+  });
+
   it("a key problem is not described as a refused answer", async () => {
     const failed = run({ state: "failed", errorCode: "auth", quality: "pending", storySave: "pending", storyRevisionId: null, packageStatus: "incomplete", openIssues: [],
       stages: [{ stageKey: "research", kind: "research", state: "rejected", attemptNo: 1, errorCode: "auth", output: null, upstreamChanged: false, supersededBy: null, scriptSave: null, scriptRevisionId: null }] });
