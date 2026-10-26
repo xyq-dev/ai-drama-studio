@@ -381,3 +381,67 @@ describe("C. a direction's differentiation and difficulty note", () => {
     expect(JSON.stringify(json)).toContain(UNCONFIRMED[0]!);
   });
 });
+
+// ---------------------------------------------------------------------------------------------------------------
+// The work's total restated at its frozen value in a pending audience question (checks v12, before release). On 0388d04
+// a total wording (本剧共N集) refused its count as a frozen conflict whatever its value: in a clause about viewers the
+// frozen count is not removed before reading, so 待验证观众是否喜欢本剧共N集的体量 was refused as frozen_conflict +
+// episode_count on all three paths for N = 1, 3, 60. Synthetic samples, not a real refused answer.
+
+const restated = (n: number) => `待验证观众是否喜欢本剧共${String(n)}集的体量。`;
+/** The same value, read for what it counts: a viewing statistic, a habit, a result or an unmarked finding. [label, text, semantic, rule]. */
+const sameValueRefused = (n: number): ReadonlyArray<readonly [string, string, string, string]> => [
+  ["a viewing habit", `观众通常观看${String(n)}集后退出。`, "market_statistic", "viewing_count"],
+  ["a measured average", `调查显示观众平均观看${String(n)}集。`, "result_claim", "measured_result"],
+  ["a pending question about watching the whole total", `待验证观众是否会看完本剧共${String(n)}集。`, "market_statistic", "viewing_count"],
+  ["a pending question about leaving after the total", `待验证观众是否会在本剧${String(n)}集后弃剧。`, "market_statistic", "viewing_count"],
+  ["a measured result about the total", `已测得观众看完本剧共${String(n)}集。`, "result_claim", "measured_result"],
+  ["an unmarked audience finding about the total", `观众喜欢本剧共${String(n)}集的体量。`, "market_statistic", "viewing_count"],
+];
+
+describe("E. the work's total at its frozen value in a pending audience question", () => {
+  describe.each([1, 3, 60])("%i episodes frozen", (n) => {
+    it("classifier: the restated total passes as written in a design and in a plan; another total is a frozen conflict", () => {
+      const frame = frameOf(n);
+      for (const options of [{ structureDesign: true }, { structureDesign: true, verificationPlan: true }]) {
+        expect(uncitedNumberReading(restated(n), frame, { unverified: true, ...options }), JSON.stringify(options)).toEqual({ refusal: null, unverified: [] });
+        expect(uncitedNumberReading(restated(n + 1), frame, { unverified: true, ...options }).refusal, JSON.stringify(options))
+          .toMatchObject({ semantic: "frozen_conflict", rule: "episode_count" });
+      }
+    });
+
+    it.each(sameValueRefused(n))("classifier: %s at the same value is refused as before: %s", (_label, text, semantic, rule) => {
+      for (const options of [{ structureDesign: true }, { structureDesign: true, verificationPlan: true }]) {
+        expect(uncitedNumberReading(text, frameOf(n), { unverified: true, ...options }).refusal, JSON.stringify(options)).toMatchObject({ semantic, rule });
+      }
+    });
+
+    describe.each(paths(n).map((path) => [path.name, path] as const))("%s", (_name, path) => {
+      it("the restated total passes in application (with or without a method) and howToVerify, kept as written, no notice", () => {
+        for (const parts of [{ pattern: restated(n) }, { why: restated(n), referenceId: catalogId(path) }, { howToVerify: restated(n) }, { opportunity: restated(n) }]) {
+          const result = path.check(answer(path.mode, parts));
+          expect(result, JSON.stringify(parts)).toMatchObject({ ok: true });
+          expect(result.output!.unverified).toEqual([]);
+        }
+        const output = path.check(answer(path.mode, { pattern: restated(n), howToVerify: restated(n) })).output!;
+        expect(output.contentStructure[FIFTH]!.application.pattern).toBe(restated(n));
+        expect(output.hypotheses[0]!.howToVerify).toBe(restated(n));
+        expect(output.serverRecord.settings.items.find((item) => item.key === "episodes")?.value).toBe(`共 ${String(n)} 集`);
+      });
+
+      it("another total is refused in application and howToVerify", () => {
+        expect(path.check(answer(path.mode, { pattern: restated(n + 1) })))
+          .toMatchObject({ ok: false, code: "constraint_violation", field: `${APPLICATION}.pattern`, semantic: "frozen_conflict", rule: "episode_count" });
+        expect(path.check(answer(path.mode, { howToVerify: restated(n + 1) })))
+          .toMatchObject({ ok: false, code: "constraint_violation", field: "hypotheses[0].howToVerify", semantic: "frozen_conflict", rule: "episode_count" });
+      });
+
+      it("the same value counting a viewing, a habit, a result or an unmarked finding is refused in application and howToVerify", () => {
+        for (const [label, text, semantic, rule] of sameValueRefused(n)) {
+          expect(path.check(answer(path.mode, { pattern: text })), label).toMatchObject({ ok: false, field: `${APPLICATION}.pattern`, semantic, rule });
+          expect(path.check(answer(path.mode, { howToVerify: text })), label).toMatchObject({ ok: false, field: "hypotheses[0].howToVerify", semantic, rule });
+        }
+      });
+    });
+  });
+});

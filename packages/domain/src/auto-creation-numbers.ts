@@ -599,7 +599,8 @@ function sampleBound(before: string, tail: string): boolean {
 /**
  * The scope of a count of episodes in a verification plan (checks v11), or null to read it as before (a total of the
  * work, or a viewing count next to viewers). Its order is the order of the rules: A, a new total of the work taking this
- * very count (改为三集, 本剧共三集; not an adjustment of something else in the clause), and B, a
+ * very count (改为三集, 本剧共三集; not an adjustment of something else in the clause) at another value than the frozen
+ * one (at that value it is read by frozenTotal, checks v12), and B, a
  * viewing habit, viewers leaving after the count, or a reading already done, are refused as before; C, a sample its own
  * verb takes, must lie within the work; any other count of a future plan that is within the work is D, a scope the code
  * cannot place, kept as an unverified notice. A count larger than the work is no sample of it, whatever its scope.
@@ -607,7 +608,8 @@ function sampleBound(before: string, tail: string): boolean {
  */
 function verificationEpisodeScope(clause: string, clauses: readonly string[], before: string, tail: string, market: boolean, value: number | null,
   frame: AutoNumberFrame): Role | null {
-  if (TOTAL_CHANGE_BEFORE.test(before) || TOTAL_BEFORE.test(before)) return refuse("frozen_conflict", "episode_count");
+  const total = TOTAL_CHANGE_BEFORE.exec(before) ?? TOTAL_BEFORE.exec(before);
+  if (total) return value === frame.episodeCount ? frozenTotal(clause, clauses, before.slice(0, total.index), tail, market) : refuse("frozen_conflict", "episode_count");
   if (VIEWING_HABIT.test(clause) || EPISODE_LEAVING.test(tail) || SAMPLE_DONE.test(clause)) return null;
   const within = value !== null && value >= 1 && value <= frame.episodeCount;
   if (samplePlan(clause) && sampleBound(before, tail)) return within ? { allowed: true, rule: "verification_sample" } : refuse("frozen_conflict", "sample_out_of_range");
@@ -638,6 +640,21 @@ function sampleOrdinalRefusal(text: string, frame: AutoNumberFrame): AutoNumberF
 }
 
 /**
+ * A total of the work restated at its frozen value (checks v12, 待验证观众是否喜欢本剧共60集的体量 with 60 frozen): no
+ * change of the work's size. The frozen value is removed before a clause not about viewers is read, so this is asked
+ * for a clause about viewers, where it is kept: the total passes only when it is what the clause counts and the clause
+ * is a pending judgement. The same value counts a viewing, not the work, after a reading or viewing verb (看完本剧共60集),
+ * with viewers leaving after it (本剧60集后弃剧), beside a habit or a reading done, or with viewing or the market named
+ * after it; nor does it pass in an unmarked finding (观众喜欢本剧共60集的体量). Null reads it as before. lead: the
+ * clause before the total's wording. Measured results, rates and shares were refused before this is asked.
+ */
+function frozenTotal(clause: string, clauses: readonly string[], lead: string, tail: string, market: boolean): Role | null {
+  if (VIEWING_HABIT.test(clause) || EPISODE_LEAVING.test(tail) || SAMPLE_DONE.test(clause) || DESIGN_TAKEN.test(lead)) return null;
+  if (market && (!pendingJudgement(clause, clauses) || MARKET_CLAUSE.test(tail))) return null;
+  return { allowed: true, rule: "work_total" };
+}
+
+/**
  * A range of the work's own structure (checks v12): a range word taking the count right before it, with at most the
  * work named before that word (本剧每三集, 每隔两集, 用三集, 用前三集, 本剧前三集). 目前, 之前 and 此前 are no range.
  */
@@ -657,7 +674,7 @@ const DESIGN_TOTAL = /(?:共|合计|总计)(?:有|计|是|为)?(?:约|大约|只
 /**
  * The scope of a count of episodes in the work's own design (checks v12): a structure's application, a hypothesis, its
  * plan, an opportunity, a direction's notes. Null reads it as before. A new total of the work taking this very count
- * (改为三集, 本剧共三集, 共 3 集) is refused as before; so is a viewing habit, viewers leaving after the count, or a count a reading,
+ * (改为三集, 本剧共三集, 共 3 集) at another value than the frozen one is refused as before (frozenTotal reads it at that value); so is a viewing habit, viewers leaving after the count, or a count a reading,
  * viewing or sample verb takes. A count its own range word takes (每三集, 用前三集) or a position (第４集, its numeral
  * left by a full-width ordinal) is the work's structure: within 1 and the frozen episode count it is kept, else refused
  * as a range outside the work. In a clause about viewers it is read so only when that clause is marked pending and
@@ -666,7 +683,8 @@ const DESIGN_TOTAL = /(?:共|合计|总计)(?:有|计|是|为)?(?:约|大约|只
  */
 function designEpisodeScope(clause: string, clauses: readonly string[], before: string, tail: string, market: boolean, value: number | null,
   frame: AutoNumberFrame): Role | null {
-  if (TOTAL_CHANGE_BEFORE.test(before) || TOTAL_BEFORE.test(before) || DESIGN_TOTAL.test(before)) return refuse("frozen_conflict", "episode_count");
+  const total = TOTAL_CHANGE_BEFORE.exec(before) ?? TOTAL_BEFORE.exec(before) ?? DESIGN_TOTAL.exec(before);
+  if (total) return value === frame.episodeCount ? frozenTotal(clause, clauses, before.slice(0, total.index), tail, market) : refuse("frozen_conflict", "episode_count");
   if (VIEWING_HABIT.test(clause) || EPISODE_LEAVING.test(tail) || DESIGN_TAKEN.test(before)) return null;
   if (market && (!pendingJudgement(clause, clauses) || MARKET_CLAUSE.test(tail))) return null;
   const within = value !== null && value >= 1 && value <= frame.episodeCount;
