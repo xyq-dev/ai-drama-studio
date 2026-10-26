@@ -608,7 +608,7 @@ function sampleBound(before: string, tail: string): boolean {
  */
 function verificationEpisodeScope(clause: string, clauses: readonly string[], before: string, tail: string, market: boolean, value: number | null,
   frame: AutoNumberFrame): Role | null {
-  const total = TOTAL_CHANGE_BEFORE.exec(before) ?? TOTAL_BEFORE.exec(before);
+  const total = totalWording(before);
   if (total) return value === frame.episodeCount ? frozenTotal(clause, clauses, before.slice(0, total.index), tail, market) : refuse("frozen_conflict", "episode_count");
   if (VIEWING_HABIT.test(clause) || EPISODE_LEAVING.test(tail) || SAMPLE_DONE.test(clause)) return null;
   const within = value !== null && value >= 1 && value <= frame.episodeCount;
@@ -670,11 +670,28 @@ const DESIGN_TAKEN = new RegExp(`(?:${SAMPLE_MAKE_VERBS}|${SAMPLE_READ_VERBS}|�
 
 /** A total named right before the count with no work named (共 3 集, 一共三集, 共计三集, 合计三集): a total, as 本剧共三集 is. */
 const DESIGN_TOTAL = /(?:共|合计|总计)(?:有|计|是|为)?(?:约|大约|只有|仅)?$/u;
+/**
+ * The work's total its own words take, right before the count: the total named (总集数为三集, 本剧的集数是三集) or the
+ * work laid out as a whole (本剧设计为三集, 全剧分三集, 本剧规划成三集). A part of the work comes first (本剧前三集设计为…,
+ * 前三集的设计…) and is no total: the work's word must reach the count with nothing but these words between.
+ */
+const WORK_TOTAL_BEFORE = new RegExp("(?:(?:本剧|全剧|该剧|此剧|整部剧)的?(?:(?:总集数|集数)?(?:设计|规划|设定|定|安排|拆|划|分|计划)|总集数|集数)|总集数)"
+  + "(?:成|为|是|共|有|分|到|至|只有|仅有|仅)?(?:约|大约)?$", "u");
+
+/**
+ * The wording of a total of the work taking this very count, or null: a change of its size (改为三集), the work or its
+ * total named right before it (本剧共三集, 总集数为三集, 全剧分三集), or a total with no work named (共 3 集). The same in a
+ * verification plan and in the work's own design (checks v12).
+ */
+function totalWording(before: string): RegExpExecArray | null {
+  return TOTAL_CHANGE_BEFORE.exec(before) ?? TOTAL_BEFORE.exec(before) ?? WORK_TOTAL_BEFORE.exec(before) ?? DESIGN_TOTAL.exec(before);
+}
 
 /**
  * The scope of a count of episodes in the work's own design (checks v12): a structure's application, a hypothesis, its
  * plan, an opportunity, a direction's notes. Null reads it as before. A new total of the work taking this very count
- * (改为三集, 本剧共三集, 共 3 集) at another value than the frozen one is refused as before (frozenTotal reads it at that value); so is a viewing habit, viewers leaving after the count, or a count a reading,
+ * (改为三集, 本剧共三集, 总集数为三集, 全剧分三集, 共 3 集; totalWording) at another value than the frozen one is refused as
+ * before (frozenTotal reads it at that value); a reading or sample already done (已完成前三集的试读) is read as before; so is a viewing habit, viewers leaving after the count, or a count a reading,
  * viewing or sample verb takes. A count its own range word takes (每三集, 用前三集) or a position (第４集, its numeral
  * left by a full-width ordinal) is the work's structure: within 1 and the frozen episode count it is kept, else refused
  * as a range outside the work. In a clause about viewers it is read so only when that clause is marked pending and
@@ -683,9 +700,11 @@ const DESIGN_TOTAL = /(?:共|合计|总计)(?:有|计|是|为)?(?:约|大约|只
  */
 function designEpisodeScope(clause: string, clauses: readonly string[], before: string, tail: string, market: boolean, value: number | null,
   frame: AutoNumberFrame): Role | null {
-  const total = TOTAL_CHANGE_BEFORE.exec(before) ?? TOTAL_BEFORE.exec(before) ?? DESIGN_TOTAL.exec(before);
+  const total = totalWording(before);
   if (total) return value === frame.episodeCount ? frozenTotal(clause, clauses, before.slice(0, total.index), tail, market) : refuse("frozen_conflict", "episode_count");
   if (VIEWING_HABIT.test(clause) || EPISODE_LEAVING.test(tail) || DESIGN_TAKEN.test(before)) return null;
+  // A reading or sample already done (已完成前三集的试读, 曾用前三集样稿进行试读) is a result, not a range the work lays out.
+  if (SAMPLE_DONE.test(clause) && SAMPLE_VERB.test(clause)) return null;
   if (market && (!pendingJudgement(clause, clauses) || MARKET_CLAUSE.test(tail))) return null;
   const within = value !== null && value >= 1 && value <= frame.episodeCount;
   if (/第$/u.test(before) || DESIGN_RANGE.test(before)) return within ? { allowed: true, rule: "episode_structure" } : refuse("frozen_conflict", "episode_range_out_of_range");
@@ -839,8 +858,10 @@ function roleOf(hit: NumberHit, clause: string, clauses: readonly string[], mark
     // stays within the work, a scope the code cannot place is a notice, a new total or a viewing count is refused.
     const scope = verificationPlan ? verificationEpisodeScope(clause, clauses, before, tail, market, value, frame) : null;
     if (scope) return scope;
-    // The work's own design lays out its parts by scope (checks v12); a plan's sample above stays its own.
-    const structure = structureDesign ? designEpisodeScope(clause, clauses, before, tail, market, value, frame) : null;
+    // The work's own design lays out its parts by scope (checks v12); a plan's sample above stays its own. A plan the
+    // rule above reads as done, a habit or viewers leaving (已完成前三集的试读) keeps that reading: no design after it.
+    const settled = verificationPlan && (VIEWING_HABIT.test(clause) || EPISODE_LEAVING.test(tail) || SAMPLE_DONE.test(clause));
+    const structure = structureDesign && !settled ? designEpisodeScope(clause, clauses, before, tail, market, value, frame) : null;
     if (structure) return structure;
     // The run's own episode count was removed already where it may be restated.
     return market ? refuse("market_statistic", "viewing_count") : refuse("frozen_conflict", "episode_count");

@@ -445,3 +445,83 @@ describe("E. the work's total at its frozen value in a pending audience question
     });
   });
 });
+
+// ---------------------------------------------------------------------------------------------------------------
+// Review of eeac41c (checks v12, before release; synthetic samples, not a real refused answer). With 60 episodes frozen,
+// a total the work's own words take (总集数为三集, 本剧设计为三集, 全剧分三集) was kept with an episode-scope notice, and a
+// verification activity already done (已完成前三集的试读, 曾用前三集样稿进行试读) passed a howToVerify as a local range: the
+// plan's own rule refuses it, and the design reading after it let it back in. On 12951c8 all five were refused.
+
+/** A total of the work its own words take, at another value than the frozen one. */
+const WORK_TOTALS = ["总集数为三集。", "本剧设计为三集。", "全剧分三集。"];
+/** A verification activity already done over a local range. */
+const DONE_ACTIVITIES = ["已完成前三集的试读。", "曾用前三集样稿进行试读。"];
+
+describe("F. a total the work's words take, and an activity already done, are no local design", () => {
+  it.each(WORK_TOTALS)("classifier: %s is a frozen conflict in a design and in a plan", (text) => {
+    for (const options of [{ structureDesign: true }, { structureDesign: true, verificationPlan: true }]) {
+      expect(uncitedNumberReading(text, frameOf(EPISODES), { unverified: true, ...options }), JSON.stringify(options))
+        .toEqual({ refusal: expect.objectContaining({ semantic: "frozen_conflict", rule: "episode_count" }), unverified: [] });
+    }
+  });
+
+  it.each(DONE_ACTIVITIES)("classifier: %s is refused as before, in a plan and elsewhere", (text) => {
+    for (const options of [{ structureDesign: true }, { structureDesign: true, verificationPlan: true }]) {
+      expect(uncitedNumberReading(text, frameOf(EPISODES), { unverified: true, ...options }), JSON.stringify(options))
+        .toEqual({ refusal: expect.objectContaining({ semantic: "frozen_conflict", rule: "episode_count" }), unverified: [] });
+    }
+  });
+
+  it("classifier: the bounds follow the run; a local range written with 设计 stays local; the frozen total restated still passes", () => {
+    const read = (text: string, n: number, plan = false) => uncitedNumberReading(text, frameOf(n), { unverified: true, structureDesign: true, verificationPlan: plan });
+    for (const plan of [false, true]) {
+      expect(read("本剧设计为两集。", 3, plan).refusal).toMatchObject({ semantic: "frozen_conflict", rule: "episode_count" });
+      expect(read("全剧分三集。", 1, plan).refusal).toMatchObject({ semantic: "frozen_conflict", rule: "episode_count" });
+      expect(read("总集数为两集。", 1, plan).refusal).toMatchObject({ semantic: "frozen_conflict", rule: "episode_count" });
+      for (const [text, n] of [["全剧分三集。", 3], ["本剧设计为六十集。", 60], ["总集数为1集。", 1]] as const) {
+        expect(read(text, n, plan), `${text} ${String(n)}`).toEqual({ refusal: null, unverified: [] });
+      }
+      for (const n of [1, 3, 60]) {
+        expect(read(`待验证观众是否喜欢总集数为${String(n)}集的安排。`, n, plan), String(n)).toEqual({ refusal: null, unverified: [] });
+        expect(read(`待验证观众是否喜欢总集数为${String(n + 1)}集的安排。`, n, plan).refusal).toMatchObject({ semantic: "frozen_conflict", rule: "episode_count" });
+      }
+      for (const text of ["前三集的设计围绕主角的处境。", "本剧前三集设计为铺垫。", "用前三集建立主角与对手的冲突。"]) {
+        expect(read(text, EPISODES, plan), text).toEqual({ refusal: null, unverified: [] });
+      }
+    }
+    expect(read("计划试读前三集并收集反馈。", EPISODES, true)).toEqual({ refusal: null, unverified: [] });
+  });
+
+  describe.each(paths().map((path) => [path.name, path] as const))("%s", (_name, path) => {
+    it("a total the work's words take is refused in application (with or without a method), howToVerify and an opportunity", () => {
+      for (const text of WORK_TOTALS) {
+        for (const [parts, field] of [[{ pattern: text }, `${APPLICATION}.pattern`], [{ why: text, referenceId: catalogId(path) }, `${APPLICATION}.why`],
+          [{ howToVerify: text }, "hypotheses[0].howToVerify"], [{ opportunity: text }, "opportunities[0]"]] as const) {
+          expect(path.check(answer(path.mode, parts)), `${text} ${field}`)
+            .toMatchObject({ ok: false, code: "constraint_violation", field, semantic: "frozen_conflict", rule: "episode_count" });
+        }
+      }
+    });
+
+    it("an activity already done is refused in howToVerify and in a hypothesis; a future reading and a local design still pass", () => {
+      for (const text of DONE_ACTIVITIES) {
+        expect(path.check(answer(path.mode, { howToVerify: text })), text)
+          .toMatchObject({ ok: false, code: "constraint_violation", field: "hypotheses[0].howToVerify", semantic: "frozen_conflict", rule: "episode_count" });
+        expect(path.check(answer(path.mode, { statement: text })), text)
+          .toMatchObject({ ok: false, code: "constraint_violation", field: "hypotheses[0].statement", semantic: "frozen_conflict", rule: "episode_count" });
+      }
+      for (const parts of [{ howToVerify: "计划试读前三集并收集反馈。" }, { howToVerify: LOCAL[1]! }, { pattern: LOCAL[1]! }, { pattern: "前三集的设计围绕主角的处境。" }]) {
+        const result = path.check(answer(path.mode, parts));
+        expect(result, JSON.stringify(parts)).toMatchObject({ ok: true });
+        expect(result.output!.unverified).toEqual([]);
+      }
+    });
+
+    it("a legal local design is followed by a refused total in a later field: the answer is refused whole", () => {
+      expect(path.check(answer(path.mode, { pattern: LOCAL[1]!, opportunity: WORK_TOTALS[0]! })))
+        .toMatchObject({ ok: false, field: "opportunities[0]", semantic: "frozen_conflict", rule: "episode_count" });
+      expect(path.check(answer(path.mode, { pattern: UNCONFIRMED[0]!, howToVerify: DONE_ACTIVITIES[0]! })))
+        .toMatchObject({ ok: false, field: "hypotheses[0].howToVerify", semantic: "frozen_conflict", rule: "episode_count" });
+    });
+  });
+});
