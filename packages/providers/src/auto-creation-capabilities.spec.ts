@@ -8,11 +8,12 @@ import {
   autoCreationNormalCalls,
   type AutoCreationConstraints,
   type AutoCreationMaterial,
+  type AutoReferenceCatalog,
   type AutoResearch,
   type AutoSourcesOutput,
   type TitleWritingProviderKey,
 } from "@ai-drama/contracts";
-import { OCEAN_ENGINE_ENTRY_URLS, autoPackageJson, autoPackageMarkdown, type FetchedPage } from "@ai-drama/domain";
+import { OCEAN_ENGINE_ENTRY_URLS, autoPackageJson, autoPackageMarkdown, autoReferenceCatalogOf, type FetchedPage } from "@ai-drama/domain";
 import { DEEPSEEK_CHAT_COMPLETIONS_URL, claudeJsonSchema, titleWritingProviderConfigs, type WritingTransport } from "./text-writing";
 import { AutoCreationEngine, InMemoryAutoCreationStore, autoResumeBlock, autoRunView, hashAutoResume, newAutoRun } from "./auto-creation-engine";
 import { autoFixtureTransport, fixtureAutoResearchV3, type AutoFixtureExchange, type AutoFixturePlan } from "./auto-creation-fixtures";
@@ -79,12 +80,15 @@ async function setup(options: Setup = {}) {
   const bundle = async () => (await store.getRunById(WS, run.id))!;
   const view = async () => autoRunView(await bundle());
   const research = async () => (await view()).stages.find((stage) => stage.stageKey === "research")!;
+  /** The reference catalog of the run's saved snapshot, cut as the engine cuts it. */
+  const catalog = async (): Promise<AutoReferenceCatalog> =>
+    autoReferenceCatalogOf((await bundle()).stages.find((stage) => stage.stageKey === "sources")!.output as AutoSourcesOutput)!;
   const meta = async () => {
     const { run: stored } = await bundle();
     return { runId: stored.id, projectId: P1, input: stored.input, quality: stored.quality, state: stored.state, callsUsed: stored.callsUsed,
       callCap: stored.callCap, revisionRoundsUsed: stored.revisionRoundsUsed, storySave: stored.storySave, generatedAt: NOW_ISO };
   };
-  return { store, run, engine, seen, bodies, bundle, view, research, meta };
+  return { store, run, engine, seen, bodies, bundle, view, research, meta, catalog };
 }
 
 /** The JSON Schema a provider request carries, as that provider's adapter put it there. */
@@ -112,11 +116,11 @@ const SOURCED_WORDS = ["facts", "observations", "basis", "sourceIds", "F1", "O1"
 
 describe("A. the request actually sent carries the snapshot's contract: prompt, JSON Schema and zod alike", () => {
   it.each(["openai", "anthropic", "deepseek"] as const)("%s, limited: the sent schema has none of the forbidden fields and the prompt asks for none", async (providerKey) => {
-    const { run, engine, seen, bodies, view } = await setup({ providerKey });
+    const { run, engine, seen, bodies, view, catalog } = await setup({ providerKey });
     await engine.drive(run.id);
     expect(await view()).toMatchObject({ state: "completed", researchMode: "limited", callsUsed: 6 });
     const sent = bodies[0]!;
-    const expected = autoCreationJsonSchema("research", 1, "limited").schema;
+    const expected = autoCreationJsonSchema("research", 1, "limited", await catalog()).schema;
     const schema = sentSchema(sent);
     // The schema the adapter carried is the limited one (Claude's adapter drops the keywords it does not take).
     expect(schema).toEqual(providerKey === "anthropic" ? claudeJsonSchema(expected) : expected);
@@ -132,10 +136,10 @@ describe("A. the request actually sent carries the snapshot's contract: prompt, 
   });
 
   it("sourced: the sent schema and prompt keep the cited findings", async () => {
-    const { run, engine, seen, bodies, research } = await setup({ researchFetch: true, pages: (urls) => urls.map((url) => url === MARKET_PAGE.url ? MARKET_PAGE
+    const { run, engine, seen, bodies, research, catalog } = await setup({ researchFetch: true, pages: (urls) => urls.map((url) => url === MARKET_PAGE.url ? MARKET_PAGE
       : { ...MARKET_PAGE, url, status: "unreadable", text: "", note: "合成：未读到正文" }) });
     await engine.drive(run.id);
-    expect(sentSchema(bodies[0]!)).toEqual(autoCreationJsonSchema("research", 1, "sourced").schema);
+    expect(sentSchema(bodies[0]!)).toEqual(autoCreationJsonSchema("research", 1, "sourced", await catalog()).schema);
     expect(seen[0]!.user).toContain("任务：基于资料完成研究与创作定位");
     expect(seen[0]!.user).toContain("facts：只写资料区里能逐字找到依据的事实");
     expect((await research()).output).toMatchObject({ facts: [{ id: "F1" }], serverRecord: { executedWith: { answerContract: "sourced" },
@@ -152,7 +156,7 @@ describe("B. four source combinations: the mode is the saved snapshot's, never r
     expect(output).toMatchObject({ facts: [], observations: [], audience: { basis: "hypothesis", sourceIds: [] },
       serverRecord: { material: { researchMode: "limited" }, marketEvidence: { status: "unavailable" } } });
     expect(output.serverRecord.material.read.map((item) => item.sourceId)).toEqual(["S-KB-CRAFT"]);
-    expect(output.contentStructure[0]!.reference).toEqual({ sourceId: "S-KB-CRAFT", quote: "关键结果来自主角的选择和行动" });
+    expect(output.contentStructure[0]!.reference).toEqual({ sourceId: "S-KB-CRAFT", quote: "关键结果来自主角的选择和行动，不靠旁人突然解围。" });
   });
 
   it("nothing readable at all (a saved snapshot with no readable entry): limited, every structure the work's own design", async () => {
@@ -171,12 +175,12 @@ describe("B. four source combinations: the mode is the saved snapshot's, never r
   });
 
   it("reading on, but every market page failed: limited, although researchFetch is true", async () => {
-    const { run, engine, view, research, bodies } = await setup({ researchFetch: true,
+    const { run, engine, view, research, bodies, catalog } = await setup({ researchFetch: true,
       pages: (urls) => urls.map((url) => ({ ...MARKET_PAGE, url, status: "blocked", text: "", note: "合成：页面读取失败" })) });
     await engine.drive(run.id);
     const result = await view();
     expect(result).toMatchObject({ researchFetch: true, researchMode: "limited", state: "completed" });
-    expect(sentSchema(bodies[0]!)).toEqual(autoCreationJsonSchema("research", 1, "limited").schema);
+    expect(sentSchema(bodies[0]!)).toEqual(autoCreationJsonSchema("research", 1, "limited", await catalog()).schema);
     const output = (await research()).output as AutoResearch;
     expect(output.serverRecord.material.unread.map((item) => item.status)).toEqual(["blocked", "blocked", "blocked"]);
     expect(output.serverRecord.marketEvidence.status).toBe("unavailable");
@@ -202,7 +206,7 @@ describe("C. limited end to end: one sixty-second episode, no rounds, a budget o
     expect(store.projects.get(P1)!.stories).toHaveLength(1);
     expect(store.projects.get(P1)!.stories[0]).toMatchObject({ reviewStatus: "DRAFT", createdBy: `auto-creation:${run.id}` });
     expect(store.projects.get(P1)!.approvedStoryId).toBeNull();
-    expect(((await research()).output as AutoResearch).contentStructure[0]!.reference).toEqual({ sourceId: "S-KB-CRAFT", quote: "关键结果来自主角的选择和行动" });
+    expect(((await research()).output as AutoResearch).contentStructure[0]!.reference).toEqual({ sourceId: "S-KB-CRAFT", quote: "关键结果来自主角的选择和行动，不靠旁人突然解围。" });
     // The directions cite only research ids that exist: a limited research has H ids only.
     const directionsPrompt = seen.find((item) => item.stage === "directions")!.user;
     expect(directionsPrompt).toContain("evidenceIds 只能引用研究里实际存在的编号：H1；");
@@ -215,7 +219,7 @@ describe("C. limited end to end: one sixty-second episode, no rounds, a budget o
     const again = autoPackageMarkdown(await meta(), (await bundle()).stages);
     expect(again).toBe(first);
     for (const text of ["## AI 创作策划（受众待验证·市场证据不可用）", "**市场证据**：不可用（服务端记录）", "受众待验证", "文本剧本包完成不代表做过市场验证",
-      "参考方法原文：S-KB-CRAFT「关键结果来自主角的选择和行动」", "- 市场证据：不可用"]) expect(first).toContain(text);
+      "参考方法原文：S-KB-CRAFT「关键结果来自主角的选择和行动，不靠旁人突然解围。」", "- 市场证据：不可用"]) expect(first).toContain(text);
     expect(first).not.toContain("**有来源的事实**");
     expect(JSON.stringify(autoPackageJson(await meta(), (await bundle()).stages))).toBe(JSON.stringify(autoPackageJson(await meta(), (await bundle()).stages)));
     await engine.maintain();
@@ -251,7 +255,7 @@ describe("D. a limited answer breaking its contract is refused whole, once; noth
   });
 
   it.each([
-    [{ forgedQuote: true }, "evidence_not_in_source@contentStructure[0].reference.quote"],
+    [{ forgedQuote: true }, "invalid_output@contentStructure[0].reference:unrecognized_keys"],
     [{ fabricatedNumber: true }, "unsourced_number@hypotheses[0].statement:percent+market_statistic+proportion"],
     [{ hiddenStatistic: true }, "unsourced_number@hypotheses[0].howToVerify:percent+market_statistic+proportion"],
   ] as const)("the checks stand in limited mode: %o", async (plan, code) => {
@@ -345,7 +349,10 @@ describe("F. history: research v3 is read as it was; an old run's next research 
       transport: autoFixtureTransport({ seen: first.seen }), leaseMs: 240_000 });
     await later.drive(first.run.id);
     expect(first.seen.at(-6)!.user).toContain("任务：基于资料完成研究与创作定位");
-    expect((await first.research()).output).toMatchObject({ serverRecord: { executedWith: { promptVersion: "ads.auto-creation.prompt.v8", answerContract: "sourced" } } });
+    // The current answer contract on the run's own saved snapshot: the catalog of that snapshot, recorded beside the versions.
+    expect((await first.research()).output).toMatchObject({ serverRecord: { executedWith: { promptVersion: "ads.auto-creation.prompt.v9", answerContract: "sourced",
+      answerSchema: "ads.auto-creation.research.answer.catalog.v1", referenceCatalogVersion: "ads.auto-creation.reference-catalog.v1",
+      referenceCatalogHash: (await first.catalog()).hash } } });
   });
 
   it("an old run whose budget is spent is not resumed: nothing reset, nothing sent", async () => {
@@ -384,7 +391,7 @@ describe("durations (checks v7): the work's own length passes, an unplaced durat
     expect(stored.unverified).toEqual([{ origin: "server_check", field: "hypotheses[1].statement", token: "60", semantic: "unclassified",
       rule: "duration_unconfirmed", note: "程序无法确认时长含义（不是已判定的观看统计），未核实" }]);
     expect(stored).toMatchObject({ facts: [], observations: [], audience: { basis: "hypothesis", sourceIds: [] },
-      serverRecord: { executedWith: { promptVersion: "ads.auto-creation.prompt.v8", checksVersion: "ads.auto-creation.checks.v9", answerContract: "limited" },
+      serverRecord: { executedWith: { promptVersion: "ads.auto-creation.prompt.v9", checksVersion: "ads.auto-creation.checks.v10", answerContract: "limited" },
         marketEvidence: { status: "unavailable" } } });
     const notice = "第2条假设（H2）中的「60」：程序无法确认时长含义（不是已判定的观看统计），未核实；只属于创作假设或设计，不是有来源的事实或市场结论。";
     // Later prompts carry it as a notice beside a hypothesis, never as a finding.
@@ -430,7 +437,7 @@ describe("hypothesis fields (prompt v8): the DeepSeek request names them, the st
   const MODES = [["limited", {}], ["sourced", sourced]] as const;
 
   it.each(MODES)("%s: the real DeepSeek adapter sends the mode's schema (three required fields, no others) and the field lines", async (mode, extra) => {
-    const { run, engine, seen, bodies, view } = await setup({ providerKey: "deepseek", ...extra });
+    const { run, engine, seen, bodies, view, catalog } = await setup({ providerKey: "deepseek", ...extra });
     await engine.drive(run.id);
     // A legal answer keeps the normal flow: six calls, completed.
     expect(await view()).toMatchObject({ state: "completed", researchMode: mode, callsUsed: 6 });
@@ -438,12 +445,12 @@ describe("hypothesis fields (prompt v8): the DeepSeek request names them, the st
     expect(sent.url).toBe(DEEPSEEK_CHAT_COMPLETIONS_URL);
     expect(sent.body).toMatchObject({ response_format: { type: "json_object" }, stream: false });
     const schema = sentSchema(sent);
-    expect(schema).toEqual(autoCreationJsonSchema("research", 1, mode).schema);
+    expect(schema).toEqual(autoCreationJsonSchema("research", 1, mode, await catalog()).schema);
     const item = (schema as { properties: { hypotheses: { items: Record<string, unknown> } } }).properties.hypotheses.items;
     expect(item).toMatchObject({ type: "object", additionalProperties: false, required: ["id", "statement", "howToVerify"] });
     expect(Object.keys(item.properties as Record<string, unknown>)).toEqual(["id", "statement", "howToVerify"]);
     const user = seen[0]!.user;
-    expect(user).toContain("提示版本：ads.auto-creation.prompt.v8");
+    expect(user).toContain("提示版本：ads.auto-creation.prompt.v9");
     expect(user).toContain("每条假设是一个对象，只包含 id、statement、howToVerify 三个字段，三个都必填");
     expect(user).toContain("不要给假设添加任何其他字段");
     expect(user).toContain('假设对象示例（只示意格式，内容按本次创作写）：{"id":"H1",');

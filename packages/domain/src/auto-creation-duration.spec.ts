@@ -1,12 +1,20 @@
 import { describe, expect, it } from "vitest";
 import {
-  AUTO_CREATION_RESEARCH_SCHEMA,
+  AUTO_CREATION_RESEARCH_ANSWER_SCHEMA,
   AUTO_UNVERIFIED_DURATION_NOTE,
   autoCreationConstraintsSchema,
   type AutoCreationFrozenInput,
 } from "@ai-drama/contracts";
 import { OCEAN_ENGINE_ENTRY_URLS, collectSources } from "./auto-creation-sources";
 import { buildAutoCreationPrompt, validateAutoStageOutput, type AutoCreationContext } from "./auto-creation";
+import { autoReferenceCatalog, autoReferenceCatalogOf } from "./auto-creation-references";
+import { builtInSources } from "./auto-creation-sources";
+
+/** Prompt v9: the catalog the research of a context chooses from, cut from its saved snapshot as the engines cut it. */
+const withCatalog = (context: AutoCreationContext): AutoCreationContext => ({ ...context, referenceCatalog: autoReferenceCatalogOf(context.sources) });
+/** The catalog id of the craft entry's sentence on a structure's key result (the same id in every snapshot that has it). */
+const CRAFT_ID = autoReferenceCatalog({ schema: "ads.auto-creation.sources.v1", sources: builtInSources(), researchMode: "limited", notes: [] })
+  .entries.find((entry) => entry.quote === "关键结果来自主角的选择和行动，不靠旁人突然解围。")!.referenceId;
 
 // Durations in uncited creative text (checks v7). The failed real run 1af794d3-5a55-4a8b-b64b-d1f18a5b06ff was refused at
 // unsourced_number@hypotheses[0].statement:digits+market_statistic+viewing_duration; its answer was not kept, so the
@@ -24,21 +32,21 @@ function input(overrides: Partial<AutoCreationFrozenInput> = {}): AutoCreationFr
 }
 
 function context(frozen = input()): AutoCreationContext {
-  return { sources: collectSources(frozen, [], NOW), episodes: new Map(), reviews: [] };
+  return withCatalog({ sources: collectSources(frozen, [], NOW), episodes: new Map(), reviews: [] });
 }
 
 /** A recent, readable market page (synthetic, no number in it): the snapshot is then sourced. */
 function sourcedContext(frozen = input()): AutoCreationContext {
-  return { sources: collectSources(frozen, [{ url: OCEAN_ENGINE_ENTRY_URLS[0], status: "read", title: "合成市场样本页", text: "合成样本：本页只描述题材趋势，没有统计数字。",
-    publishedAt: "2026-09-01T00:00:00.000Z", fetchedAt: NOW, note: "合成样本" }], NOW), episodes: new Map(), reviews: [] };
+  return withCatalog({ sources: collectSources(frozen, [{ url: OCEAN_ENGINE_ENTRY_URLS[0], status: "read", title: "合成市场样本页", text: "合成样本：本页只描述题材趋势，没有统计数字。",
+    publishedAt: "2026-09-01T00:00:00.000Z", fetchedAt: NOW, note: "合成样本" }], NOW), episodes: new Map(), reviews: [] });
 }
 
-const STRUCTURE = { reference: { sourceId: "S-KB-CRAFT", quote: "关键结果来自主角的选择和行动" }, application: { pattern: "主角主动选择推动结果", why: "写作方法资料要求关键结果来自主角的行动。" } };
+const STRUCTURE = { referenceId: CRAFT_ID, application: { pattern: "主角主动选择推动结果", why: "写作方法资料要求关键结果来自主角的行动。" } };
 
 /** A legal limited answer (research v4): only the five root fields. */
 function limited(overrides: Record<string, unknown> = {}): string {
   return JSON.stringify({
-    schema: AUTO_CREATION_RESEARCH_SCHEMA,
+    schema: AUTO_CREATION_RESEARCH_ANSWER_SCHEMA,
     hypotheses: [{ id: "H1", statement: "碎片时间的观众可能更愿意看一集内有明确兑现的故事。", howToVerify: "上线后用真实观看数据对比。" }],
     audience: { primary: "在通勤和睡前刷短剧的成年观众（待验证假设）", viewingNeeds: ["一集内看到结果"], emotionalAppeals: ["扳回一局"] },
     contentStructure: [STRUCTURE],
@@ -156,16 +164,16 @@ describe("C. the same duration checks in every uncited creative field", () => {
     ["hypotheses[0].howToVerify", (text: string) => hypothesis("主角主动反击可能更有代入感。", text)],
     ["opportunities[0]", (text: string) => ({ opportunities: [text] })],
     ["contentStructure[0].application.why", (text: string) => ({ contentStructure: [{ ...STRUCTURE, application: { pattern: "主角主动选择推动结果", why: text } }] })],
-    ["contentStructure[0].application.pattern", (text: string) => ({ contentStructure: [{ reference: null, application: { pattern: text, why: "本剧自主设计。" } }] })],
+    ["contentStructure[0].application.pattern", (text: string) => ({ contentStructure: [{ referenceId: null, application: { pattern: text, why: "本剧自主设计。" } }] })],
   ] as const)("%s: work length allowed, an unplaced duration a notice, an explicit viewing time refused", (field, at) => {
     expect(research(limited(at("待验证观众是否喜欢本剧60秒的紧凑叙事。")))).toMatchObject({ ok: true, output: { unverified: [] } });
     expect(research(limited(at(unplaced)))).toMatchObject({ ok: true, output: { unverified: [{ field, rule: "duration_unconfirmed" }] } });
     expect(research(limited(at(explicit)))).toMatchObject({ ok: false, field, rule: "viewing_duration" });
   });
 
-  it("a structure with a valid quote and one with a null reference keep the same notice", () => {
-    for (const reference of [STRUCTURE.reference, null]) {
-      expect(research(limited({ contentStructure: [{ reference, application: { pattern: "主角主动选择推动结果", why: unplaced } }] })))
+  it("a structure with a chosen passage and one with a null reference keep the same notice", () => {
+    for (const [referenceId, reference] of [[CRAFT_ID, { sourceId: "S-KB-CRAFT", quote: "关键结果来自主角的选择和行动，不靠旁人突然解围。" }], [null, null]] as const) {
+      expect(research(limited({ contentStructure: [{ referenceId, application: { pattern: "主角主动选择推动结果", why: unplaced } }] })))
         .toMatchObject({ ok: true, output: { contentStructure: [{ reference }], unverified: [{ field: "contentStructure[0].application.why", rule: "duration_unconfirmed" }] } });
     }
   });
@@ -191,7 +199,7 @@ describe("C. the same duration checks in every uncited creative field", () => {
   it("the research prompt says how to write the work's length and that a viewing time is never written", () => {
     for (const ctx of [context(), sourcedContext()]) {
       const { user } = buildAutoCreationPrompt("research", input(), ctx);
-      expect(user).toContain("提示版本：ads.auto-creation.prompt.v8");
+      expect(user).toContain("提示版本：ads.auto-creation.prompt.v9");
       expect(user).toContain("待验证观众是否喜欢本剧 60 秒的故事");
       expect(user).toContain("不写观众实际看了多久、看多久后退出");
     }
@@ -220,7 +228,7 @@ describe("PR #84 review: a work reference never exempts a viewing time, and the 
   const fields = [
     ["hypotheses[0].statement", (text: string) => hypothesis(text)],
     ["contentStructure[0].application.why", (text: string) => ({ contentStructure: [{ ...STRUCTURE, application: { pattern: "主角主动选择推动结果", why: text } }] })],
-    ["contentStructure[0].application.pattern", (text: string) => ({ contentStructure: [{ reference: null, application: { pattern: text, why: "本剧自主设计。" } }] })],
+    ["contentStructure[0].application.pattern", (text: string) => ({ contentStructure: [{ referenceId: null, application: { pattern: text, why: "本剧自主设计。" } }] })],
   ] as const;
 
   it.each(fields)("%s: refused as before checks v7, never a notice", (field, at) => {
@@ -250,7 +258,7 @@ describe("PR #84 incremental review: 每集 as the work's unit is read by what t
   const fields = [
     ["hypotheses[0].statement", (text: string) => hypothesis(text)],
     ["contentStructure[0].application.why", (text: string) => ({ contentStructure: [{ ...STRUCTURE, application: { pattern: "主角主动选择推动结果", why: text } }] })],
-    ["contentStructure[0].application.pattern", (text: string) => ({ contentStructure: [{ reference: null, application: { pattern: text, why: "本剧自主设计。" } }] })],
+    ["contentStructure[0].application.pattern", (text: string) => ({ contentStructure: [{ referenceId: null, application: { pattern: text, why: "本剧自主设计。" } }] })],
   ] as const;
 
   it.each(fields)("%s: a count of story events inside the episode's length is creative design, no notice", (_field, at) => {

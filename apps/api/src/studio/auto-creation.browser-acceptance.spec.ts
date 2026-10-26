@@ -424,7 +424,7 @@ describe("AI automatic creation in a real browser (site login, built web, real A
     await viewports("03b-auto-research-limited", page.getByTestId("auto-research-detail"), page.getByTestId("auto-download-md"));
     // Research v2: the quoted method and this work's own design are shown apart, a missing quote as self-designed.
     expect(await page.getByTestId("auto-structure-reference").allTextContents()).toEqual([
-      "参考方法原文：S-KB-CRAFT「关键结果来自主角的选择和行动」", "参考方法原文：无（自主创作设计）"]);
+      "参考方法原文：S-KB-CRAFT「关键结果来自主角的选择和行动，不靠旁人突然解围。」", "参考方法原文：无（自主创作设计）"]);
     expect(await page.getByTestId("auto-structure-application").allTextContents()).toEqual([
       "本剧应用设计：模型替身样例：计划用两次反转推动主角主动选择。：这是本作品的创作设计。",
       "本剧应用设计：模型替身样例：三名骑手被迫合作，三天内找出真相。：自主创作设计，没有对应的方法资料。"]);
@@ -440,7 +440,7 @@ describe("AI automatic creation in a real browser (site login, built web, real A
     await download.saveAs(packagePath);
     const text = await readFile(packagePath, "utf8");
     expect(text).toContain("验证计划：计划上线后观察七天");
-    expect(text).toContain("  - 参考方法原文：S-KB-CRAFT「关键结果来自主角的选择和行动」");
+    expect(text).toContain("  - 参考方法原文：S-KB-CRAFT「关键结果来自主角的选择和行动，不靠旁人突然解围。」");
     expect(text).toContain("  - 本剧应用设计：模型替身样例：计划用两次反转推动主角主动选择。");
     expect(text).toContain("AI 创作策划：没有符合条件的近期市场资料，市场证据不可用");
     expect(text).toContain("**市场证据**：不可用（服务端记录）");

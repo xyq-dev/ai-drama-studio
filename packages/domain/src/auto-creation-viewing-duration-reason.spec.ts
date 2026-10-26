@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   AUTO_CREATION_CHECKS_VERSION,
   AUTO_CREATION_PROMPT_VERSION,
-  AUTO_CREATION_RESEARCH_SCHEMA,
+  AUTO_CREATION_RESEARCH_ANSWER_SCHEMA,
   AUTO_VIEWING_DURATION_REASONS,
   SERIES_RESEARCH_CONTRACT,
   SERIES_WRITING_CHECKS_VERSION,
@@ -18,6 +18,10 @@ import { OCEAN_ENGINE_ENTRY_URLS, collectSources } from "./auto-creation-sources
 import { uncitedNumberReading, type AutoNumberFrame } from "./auto-creation-numbers";
 import { validateAutoStageOutput, type AutoCreationContext } from "./auto-creation";
 import { seriesAutoInput, validateSeriesStageOutput, type SeriesContext } from "./series-writing";
+import { autoReferenceCatalogOf } from "./auto-creation-references";
+
+/** Prompt v9: the catalog the research of a context chooses from, cut from its saved snapshot as the engines cut it. */
+const withCatalog = (context: AutoCreationContext): AutoCreationContext => ({ ...context, referenceCatalog: autoReferenceCatalogOf(context.sources) });
 
 // Which check refused a viewing time (diagnostics only; prompt v8, checks v9 and research v4 unchanged). A real run
 // (project 89f323d3-…) was refused at research as unsourced_number@contentStructure[0].application.why:
@@ -108,8 +112,8 @@ function input(): AutoCreationFrozenInput {
   };
 }
 
-const limitedContext = (run = input()): AutoCreationContext => ({ sources: collectSources(run, [], NOW), episodes: new Map(), reviews: [] });
-const sourcedContext = (run = input()): AutoCreationContext => ({
+const limitedContext = (run = input()): AutoCreationContext => (withCatalog({ sources: collectSources(run, [], NOW), episodes: new Map(), reviews: [] }));
+const sourcedContext = (run = input()): AutoCreationContext => withCatalog({
   sources: collectSources(run, [{ url: OCEAN_ENGINE_ENTRY_URLS[0], status: "read", title: "合成市场样本页", text: "合成样本：本页只描述题材趋势，没有统计数字。",
     publishedAt: "2026-09-01T00:00:00.000Z", fetchedAt: NOW, note: "合成样本" }], NOW),
   episodes: new Map(), reviews: [],
@@ -135,13 +139,13 @@ const PATHS: ReadonlyArray<readonly [string, "limited" | "sourced", (content: st
 function answer(mode: "limited" | "sourced", why: string): string {
   const creative = {
     hypotheses: [{ id: "H1", statement: "合成样本：开场就让主角做出冒险选择，可能更容易让观众代入。", howToVerify: "计划比较两种开场的试看反馈。" }],
-    contentStructure: [{ reference: null, application: { pattern: "主角主动选择推动结果", why } }],
+    contentStructure: [{ referenceId: null, application: { pattern: "主角主动选择推动结果", why } }],
     opportunities: ["小人物在一个夜晚完成一次反击"],
   };
   const audience = { primary: "在通勤和睡前刷短剧的成年观众（待验证假设）", viewingNeeds: ["一集内看到结果"], emotionalAppeals: ["扳回一局"] };
   return JSON.stringify(mode === "limited"
-    ? { schema: AUTO_CREATION_RESEARCH_SCHEMA, ...creative, audience }
-    : { schema: AUTO_CREATION_RESEARCH_SCHEMA, facts: [], observations: [], ...creative, audience: { ...audience, basis: "hypothesis", sourceIds: [] } });
+    ? { schema: AUTO_CREATION_RESEARCH_ANSWER_SCHEMA, ...creative, audience }
+    : { schema: AUTO_CREATION_RESEARCH_ANSWER_SCHEMA, facts: [], observations: [], ...creative, audience: { ...audience, basis: "hypothesis", sourceIds: [] } });
 }
 
 const FIELD = "contentStructure[0].application.why";

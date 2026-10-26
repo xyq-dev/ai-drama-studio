@@ -1,26 +1,29 @@
 import { describe, expect, it } from "vitest";
 import {
+  AUTO_CREATION_RESEARCH_ANSWER_SCHEMA,
   AUTO_CREATION_RESEARCH_SCHEMA,
   AUTO_CREATION_RESEARCH_SCHEMA_V1,
   AUTO_CREATION_RESEARCH_SCHEMA_V2,
   autoCreationConstraintsSchema,
   type AutoCreationFrozenInput,
+  type AutoReferenceCatalog,
   type AutoStageRecord,
   type AutoStoredResearch,
 } from "@ai-drama/contracts";
-import { collectSources } from "./auto-creation-sources";
+import { autoReferenceCatalog, quotedWhole, withoutWhitespace } from "./auto-creation-references";
+import { OCEAN_ENGINE_ENTRY_URLS, collectSources } from "./auto-creation-sources";
 import { autoContextFromStages, autoPackageJson, autoPackageMarkdown, buildAutoCreationPrompt, validateAutoStageOutput, type AutoCreationContext } from "./auto-creation";
 
 /**
  * Research v2 (prompt v4, checks v4): a content structure keeps the method it quotes (reference) apart from this work's
- * own design (application). The quote must stand whole in the one source it cites; the application is checked as
- * uncited text whatever it cites, so a reference never sources a story count, a statistic or a settled finding.
+ * own design (application). Prompt v9 / checks v10: the model names the method by a catalog id (referenceId) and the
+ * server fills the quote in; the quote must still stand whole in the one source it cites, and the application is
+ * checked as uncited text whatever it cites, so a reference never sources a story count, a statistic or a settled finding.
  */
 
 const NOW = "2026-10-20T00:00:00.000Z";
-/** A passage of the built-in craft entry, verbatim. It has no number at all. */
-const CRAFT_QUOTE = "关键结果来自主角的选择和行动";
-const CRAFT = { sourceId: "S-KB-CRAFT", quote: CRAFT_QUOTE };
+/** A sentence of the built-in craft entry, verbatim, as the catalog cuts it. It has no number at all. */
+const CRAFT_QUOTE = "关键结果来自主角的选择和行动，不靠旁人突然解围。";
 /** A person's own notes with whole numbers and a share in them, read as reference material. */
 const NOTES = "全片一百八十个镜头要在三天内拍完，每个镜头都服务冲突。共180个镜头。七成观众爱看复仇。"
   + "这部剧共十一集，每集160秒内必须完成一次反转。前二十一次反转都失败了，主角只能靠自己。"
@@ -37,14 +40,20 @@ function input(overrides: Partial<AutoCreationFrozenInput> = {}): AutoCreationFr
   };
 }
 
-function context(frozen = input()): AutoCreationContext {
-  return { sources: collectSources(frozen, [], NOW), episodes: new Map(), reviews: [] };
+function context(frozen = input(), catalog?: AutoReferenceCatalog): AutoCreationContext {
+  const sources = collectSources(frozen, [], NOW);
+  return { sources, referenceCatalog: catalog ?? autoReferenceCatalog(sources), episodes: new Map(), reviews: [] };
 }
 
-type Item = { reference: { sourceId: string; quote: string } | null; application: { pattern: string; why: string } };
+const CATALOG = autoReferenceCatalog(collectSources(input(), [], NOW));
+/** The catalog id of a passage this snapshot lists. */
+const idOf = (quote: string) => CATALOG.entries.find((entry) => entry.quote === quote)!.referenceId;
+const CRAFT = idOf(CRAFT_QUOTE);
 
-/** A legal limited-mode answer (research v4: none of the sourced contract's fields) with the given content structures. */
-function answer(structures: Item[], schema: string = AUTO_CREATION_RESEARCH_SCHEMA): string {
+type Item = { referenceId: string | null; application: { pattern: string; why: string } };
+
+/** A legal limited-mode answer (prompt v9: none of the sourced contract's fields) with the given content structures. */
+function answer(structures: unknown[], schema: string = AUTO_CREATION_RESEARCH_ANSWER_SCHEMA): string {
   return JSON.stringify({
     schema,
     hypotheses: [{ id: "H1", statement: "碎片时间的观众可能更愿意看一集内有明确兑现的故事。", howToVerify: "计划上线后观察七天再判断。" }],
@@ -60,8 +69,10 @@ function legacyAnswer(structures: unknown[], schema: string): string {
   return JSON.stringify({ ...value, facts: [], observations: [], audience: { ...value.audience, basis: "hypothesis", sourceIds: [] }, contentStructure: structures });
 }
 
-const check = (structures: Item[], frozen = input()) => validateAutoStageOutput("research", answer(structures), frozen, context(frozen));
-const apply = (pattern: string, why = "这是本作品的创作设计。", reference: Item["reference"] = CRAFT): Item => ({ reference, application: { pattern, why } });
+const check = (structures: unknown[], frozen = input(), catalog?: AutoReferenceCatalog) =>
+  validateAutoStageOutput("research", answer(structures), frozen, context(frozen, catalog));
+const apply = (pattern: string, why = "这是本作品的创作设计。", referenceId: string | null = CRAFT): Item => ({ referenceId, application: { pattern, why } });
+type Stored = { contentStructure: Array<{ reference: { sourceId: string; quote: string } | null; application: Item["application"] }> };
 
 describe("A. the method quoted and the work's own design are two things", () => {
   it("the synthetic repro of the test-site refusal: v1 refused 两次 only because it cited; v1 is no longer accepted from a provider", () => {
@@ -73,14 +84,15 @@ describe("A. the method quoted and the work's own design are two things", () => 
     }
   });
 
-  it("a quoted method without 两次 and an application that designs two reversals: accepted, kept word for word", () => {
+  it("a chosen method without 两次 and an application that designs two reversals: accepted, the quote filled in from the catalog word for word", () => {
     const sources = context().sources!.sources;
     expect(sources.find((source) => source.sourceId === "S-KB-CRAFT")!.excerpt).toContain(CRAFT_QUOTE);
     expect(sources.find((source) => source.sourceId === "S-KB-CRAFT")!.excerpt).not.toMatch(/两次|二次|2 ?次/u);
     const item = apply("计划用两次反转推动主角主动选择。");
     const result = check([item]);
     expect(result).toMatchObject({ ok: true });
-    expect(result.ok && (result.output as { contentStructure: Item[] }).contentStructure).toEqual([item]);
+    expect(result.ok && (result.output as unknown as Stored).contentStructure).toEqual([
+      { reference: { sourceId: "S-KB-CRAFT", quote: CRAFT_QUOTE }, application: item.application }]);
   });
 
   it.each([
@@ -102,58 +114,55 @@ describe("A. the method quoted and the work's own design are two things", () => 
     "三名骑手采用这种方式逃脱。",
     "主角经历三次误会后主动揭穿谎言。",
     "共 1 集，每集约 60 秒，只写 3 个出场人物。",
-  ])("reference=null, a work's own design passes: %s", (pattern) => {
-    expect(check([apply(pattern, "自主创作设计，没有对应的方法资料。", null)])).toMatchObject({ ok: true });
+  ])("referenceId=null, a work's own design passes: %s", (pattern) => {
+    const result = check([apply(pattern, "自主创作设计，没有对应的方法资料。", null)]);
+    expect(result).toMatchObject({ ok: true });
+    expect(result.ok && (result.output as unknown as Stored).contentStructure[0]!.reference).toBeNull();
     expect(check([apply(pattern)])).toMatchObject({ ok: true });
   });
 
-  it("a quote with numbers may stand beside an application with other numbers: the application's need not be in the quote", () => {
-    expect(check([apply("主角二十八岁，三次误会后主动选择。", "拍摄要快。", { sourceId: "S-USER-1", quote: "一百八十个镜头要在三天内拍完" })]))
+  it("a chosen passage with numbers may stand beside an application with other numbers: the application's need not be in the quote", () => {
+    expect(check([apply("主角二十八岁，三次误会后主动选择。", "拍摄要快。", idOf("全片一百八十个镜头要在三天内拍完，每个镜头都服务冲突。"))]))
       .toMatchObject({ ok: true });
   });
 });
 
 describe("B. a quote is a passage actually read, whole, from the one source it cites", () => {
-  it.each([
-    ["an invented quote", { sourceId: "S-KB-CRAFT", quote: "反转次数以两次为最佳" }, "evidence_not_in_source", "reference.quote"],
-    ["a quote changed by one character", { sourceId: "S-KB-CRAFT", quote: "关键结果来自主角的选择与行动" }, "evidence_not_in_source", "reference.quote"],
-    ["a quote of another source cited under the craft entry", { sourceId: "S-KB-CRAFT", quote: "每个镜头都服务冲突" }, "evidence_not_in_source", "reference.quote"],
-    ["two sources joined", { sourceId: "S-KB-CRAFT", quote: "收束，兑现整部作品承诺的情绪。全片一百八十个镜头" }, "evidence_not_in_source", "reference.quote"],
-    ["two places of one source joined", { sourceId: "S-KB-CRAFT", quote: "关键结果来自主角的选择和行动反转要有前文依据" }, "evidence_not_in_source", "reference.quote"],
-    ["an unknown source", { sourceId: "S-KB-OTHER", quote: CRAFT_QUOTE }, "unknown_source", "reference.sourceId"],
-    ["an unread official entry", { sourceId: "S-OE-1", quote: CRAFT_QUOTE }, "unread_source", "reference.sourceId"],
-  ] as const)("%s is refused, named by field", (_label, reference, code, field) => {
-    expect(check([apply("主角主动选择推动结果。", "写作方法。", reference)])).toMatchObject({ ok: false, code, field: `contentStructure[0].${field}` });
+  it("the catalog lists whole sentences of readable sources only, every one a whole quote of its own source", () => {
+    const sources = new Map(collectSources(input(), [], NOW).sources.map((source) => [source.sourceId, source] as const));
+    expect(CATALOG.entries.length).toBeGreaterThan(0);
+    expect(new Set(CATALOG.entries.map((entry) => entry.sourceId))).toEqual(new Set(["S-KB-CRAFT", "S-USER-1"]));
+    for (const entry of CATALOG.entries) {
+      const source = sources.get(entry.sourceId)!;
+      expect(source.status).toBe("read");
+      expect(source.excerpt).toContain(entry.quote);
+      expect(quotedWhole(withoutWhitespace(source.excerpt), withoutWhitespace(entry.quote))).toBe(true);
+      expect(entry.quote).toMatch(/[。！？!?；;]$/u);
+    }
+    // The unread official entries give nothing.
+    expect(CATALOG.entries.some((entry) => entry.sourceId.startsWith("S-OE-"))).toBe(false);
   });
 
   it.each([
-    ["八十 cut out of 一百八十", "八十个镜头要在三天内拍完", "chinese_numeral"],
-    ["百八十 cut out of 一百八十", "百八十个镜头要在三天内拍完", "chinese_numeral"],
-    ["80 cut out of 180", "80个镜头。七成观众", "digits"],
-  ] as const)("a whole-number boundary is kept: %s is no quote", (_label, quote) => {
-    expect(NOTES.replace(/\s/gu, "")).toContain(quote);
-    expect(check([apply("主角主动选择。", "写作方法。", { sourceId: "S-USER-1", quote })])).toMatchObject({
-      ok: false, code: "evidence_not_in_source", field: "contentStructure[0].reference.quote" });
-  });
-
-  it("a number cut before its unit (七 of 七成) is no supported number either", () => {
-    expect(check([apply("主角主动选择。", "写作方法。", { sourceId: "S-USER-1", quote: "每个镜头都服务冲突。共180个镜头。七" })])).toMatchObject({
-      ok: false, code: "evidence_not_in_source", field: "contentStructure[0].reference.quote" });
-    expect(check([apply("主角主动选择。", "写作方法。", { sourceId: "S-USER-1", quote: "每个镜头都服务冲突。共180个镜头。七成" })])).toMatchObject({ ok: true });
-  });
-
-  // Independent review: the run's own 60 秒 and 1 集, and the bare article 一次, were exempt from the token check.
-  it.each([
+    ["an invented quote", "反转次数以两次为最佳"],
+    ["a quote changed by one character", "关键结果来自主角的选择与行动"],
+    ["two sources joined", "收束，兑现整部作品承诺的情绪。全片一百八十个镜头"],
+    ["two places of one source joined", "关键结果来自主角的选择和行动反转要有前文依据"],
+    ["八十 cut out of 一百八十", "八十个镜头要在三天内拍完"],
+    ["百八十 cut out of 一百八十", "百八十个镜头要在三天内拍完"],
+    ["80 cut out of 180", "80个镜头。七成观众"],
+    ["七 cut out of 七成", "每个镜头都服务冲突。共180个镜头。七"],
     ["60 秒 cut out of 160 秒", "60秒内必须完成一次反转"],
     ["一次 cut out of 二十一次", "一次反转都失败了，主角只能靠自己"],
     ["一集 cut out of 十一集", "一集，每集160秒内必须"],
-  ])("no number is cut at a quote's edge, the run's own settings included: %s", (_label, quote) => {
-    expect(check([apply("主角主动选择。", "写作方法。", { sourceId: "S-USER-1", quote })])).toMatchObject({
-      ok: false, code: "evidence_not_in_source", field: "contentStructure[0].reference.quote" });
-    expect(check([apply("主角主动选择。", "写作方法。", { sourceId: "S-USER-1", quote: `1${quote}` })])).toMatchObject({ ok: quote.startsWith("60") });
+  ] as const)("no catalog entry is %s, and the quote check refuses it as before", (_label, quote) => {
+    expect(CATALOG.entries.some((entry) => withoutWhitespace(entry.quote) === withoutWhitespace(quote))).toBe(false);
+    const all = collectSources(input(), [], NOW).sources.filter((source) => source.status === "read").map((source) => withoutWhitespace(source.excerpt));
+    expect(all.some((excerpt) => quotedWhole(excerpt, withoutWhitespace(quote)))).toBe(false);
   });
 
-  // Second review pass: a cut at a digit group, a letter suffix, a range or a unit outside the earlier list.
+  // Second review pass: a cut at a digit group, a letter suffix, a range or a unit outside the earlier list. quotedWhole
+  // is the one the research check and the catalog both use.
   it.each([
     ["800 of 1,800", "800人观看了试映"],
     ["1 of 1,800", "反转的短剧。约1"],
@@ -172,37 +181,82 @@ describe("B. a quote is a passage actually read, whole, from the one source it c
     ["1 of 3：1", "1的男女。约"],
     ["1 of 3比1", "1的结构，节奏很快"],
   ])("second pass: %s is no quote", (_label, quote) => {
-    expect(check([apply("主角主动选择。", "写作方法。", { sourceId: "S-USER-1", quote })])).toMatchObject({
-      ok: false, code: "evidence_not_in_source", field: "contentStructure[0].reference.quote" });
+    expect(quotedWhole(withoutWhitespace(NOTES), withoutWhitespace(quote))).toBe(false);
   });
 
-  it("a whole quote with the run's own numbers in it is a quote", () => {
-    expect(check([apply("主角主动选择。", "写作方法。", { sourceId: "S-USER-1", quote: "约1,800人观看了试映。" })])).toMatchObject({ ok: true });
-    expect(check([apply("主角主动选择。", "写作方法。", { sourceId: "S-USER-1", quote: "受众为25-35岁的女性" })])).toMatchObject({ ok: true });
-    expect(check([apply("主角主动选择。", "写作方法。", { sourceId: "S-USER-1", quote: "每集160秒内必须完成一次反转" })])).toMatchObject({ ok: true });
-    expect(check([apply("主角主动选择。", "写作方法。", { sourceId: "S-USER-1", quote: "前二十一次反转都失败了" })])).toMatchObject({ ok: true });
+  it("whole sentences with numbers in them are listed as they stand", () => {
+    for (const quote of ["约1,800人观看了试映。", "受众为25-35岁的女性。", "这部剧共十一集，每集160秒内必须完成一次反转。", "前二十一次反转都失败了，主角只能靠自己。"]) {
+      expect(CATALOG.entries.map((entry) => entry.quote)).toContain(quote);
+      expect(check([apply("主角主动选择。", "写作方法。", idOf(quote))]), quote).toMatchObject({ ok: true });
+    }
   });
 
-  it("a quote's minimum length is counted without whitespace", () => {
-    expect(check([apply("主角主动选择。", "写作方法。", { sourceId: "S-USER-1", quote: "共 1 8 0" })])).toMatchObject({ ok: false, code: "invalid_output" });
+  it("an id the catalog lacks refuses the whole answer, named by field: never dropped, set to null or swapped for a near id", () => {
+    // Another run's snapshot (other notes of the person): its passages have ids this catalog does not list.
+    const other = autoReferenceCatalog(collectSources(input({ materials: [{ title: "另一份笔记", kind: "notes", text: "主角每一场都要主动出手。反派从不解释动机。", rightsConfirmed: true }] }), [], NOW));
+    const foreign = other.entries.find((entry) => entry.sourceId === "S-USER-1")!.referenceId;
+    expect(CATALOG.entries.some((entry) => entry.referenceId === foreign)).toBe(false);
+    const nearMiss = `${CRAFT.slice(0, -1)}${CRAFT.endsWith("0") ? "1" : "0"}`;
+    for (const id of [foreign, nearMiss, "R-0000000000", "S-KB-CRAFT", CRAFT_QUOTE.slice(0, 40)]) {
+      const result = check([apply("主角主动选择推动结果。", "写作方法。"), apply("计划用两次反转推动主角主动选择。", "写作方法。", id)]);
+      expect(result, id).toEqual({ ok: false, code: "unknown_reference", detail: id, field: "contentStructure[1].referenceId" });
+      expect("output" in result).toBe(false);
+    }
   });
 
-  it("a quote shorter than a passage or longer than the limit is refused by the schema", () => {
-    expect(check([apply("主角主动选择。", "写作方法。", { sourceId: "S-KB-CRAFT", quote: "主角" })])).toMatchObject({ ok: false, code: "invalid_output" });
-    expect(check([apply("主角主动选择。", "写作方法。", { sourceId: "S-KB-CRAFT", quote: "主".repeat(81) })])).toMatchObject({ ok: false, code: "invalid_output" });
+  it("every id is a digest of the catalog version, source and passage: the same passage keeps its id in another snapshot", () => {
+    expect(CATALOG.version).toBe("ads.auto-creation.reference-catalog.v1");
+    expect(CATALOG.entries.every((entry) => /^R-[0-9a-f]{10}$/u.test(entry.referenceId))).toBe(true);
+    const sourced = autoReferenceCatalog(collectSources(input(), [{ url: OCEAN_ENGINE_ENTRY_URLS[0], status: "read", title: "合成市场样本页",
+      text: "合成样本：本页只描述题材趋势，没有统计数字。", publishedAt: "2026-09-01T00:00:00.000Z", fetchedAt: NOW, note: "合成样本" }], NOW));
+    expect(sourced.entries.find((entry) => entry.quote === CRAFT_QUOTE)!.referenceId).toBe(CRAFT);
+    expect(sourced.hash).not.toBe(CATALOG.hash);
   });
 
-  it("a wrong quote refuses the whole answer: it is never dropped, set to null or passed on", () => {
-    const wrong = apply("计划用两次反转推动主角主动选择。", "写作方法。", { sourceId: "S-KB-CRAFT", quote: "反转次数以两次为最佳" });
-    const result = check([apply("主角主动选择推动结果。", "写作方法。"), wrong]);
-    expect(result).toEqual({ ok: false, code: "evidence_not_in_source", detail: "S-KB-CRAFT", field: "contentStructure[1].reference.quote" });
-    expect("output" in result).toBe(false);
+  it.each([
+    ["a quote of its own beside a valid id", { referenceId: CRAFT, quote: CRAFT_QUOTE }, "quote"],
+    ["a source of its own", { referenceId: CRAFT, sourceId: "S-KB-CRAFT" }, "sourceId"],
+    ["the old reference object", { reference: { sourceId: "S-KB-CRAFT", quote: CRAFT_QUOTE } }, "reference"],
+    ["an empty reference", { referenceId: null, reference: null }, "reference"],
+    ["the old reference with an id", { referenceId: CRAFT, reference: { sourceId: "S-KB-CRAFT", quote: CRAFT_QUOTE } }, "reference"],
+  ] as const)("a model-written server field refuses the whole answer, even empty: %s", (_label, fields, key) => {
+    const result = check([{ ...fields, application: { pattern: "主角主动选择推动结果。", why: "写作方法。" } }]);
+    expect(result).toMatchObject({ ok: false, code: "invalid_output", field: `contentStructure[0].${key}`, category: "unrecognized_keys" });
+    expect("semantic" in result).toBe(false);
   });
 
-  it("a quote may differ from the excerpt in whitespace only; other punctuation is refused (a known over-refusal)", () => {
-    expect(check([apply("主角主动选择。", "写作方法。", { sourceId: "S-KB-CRAFT", quote: "关键结果 来自主角的选择和行动" })])).toMatchObject({ ok: true });
-    expect(check([apply("主角主动选择。", "写作方法。", { sourceId: "S-KB-CRAFT", quote: "关键结果来自主角的选择和行动." })]))
-      .toMatchObject({ ok: false, code: "evidence_not_in_source" });
+  it("a missing referenceId is refused, never read as null", () => {
+    expect(check([{ application: { pattern: "主角主动选择推动结果。", why: "写作方法。" } }])).toMatchObject({ ok: false, code: "invalid_output",
+      field: "contentStructure[0].referenceId" });
+  });
+
+  it("the old answer shape (research v4 schema, a quoted reference) is no longer accepted from a provider", () => {
+    expect(validateAutoStageOutput("research", answer([{ reference: { sourceId: "S-KB-CRAFT", quote: CRAFT_QUOTE }, application: { pattern: "主角主动选择。", why: "写作方法。" } }],
+      AUTO_CREATION_RESEARCH_SCHEMA), input(), context())).toMatchObject({ ok: false, code: "invalid_output" });
+  });
+
+  it("an empty catalog leaves null as the only choice", () => {
+    const empty: AutoReferenceCatalog = { ...CATALOG, entries: [] };
+    expect(check([apply("主角主动选择。", "自主设计。", null)], input(), empty)).toMatchObject({ ok: true });
+    expect(check([apply("主角主动选择。")], input(), empty)).toMatchObject({ ok: false, code: "unknown_reference", field: "contentStructure[0].referenceId" });
+  });
+
+  it("no catalog in the context: nothing is checked as a research (the engines stop before sending)", () => {
+    const { referenceCatalog: _catalog, ...bare } = context();
+    expect(validateAutoStageOutput("research", answer([apply("主角主动选择。", "自主设计。", null)]), input(), bare)).toEqual({ ok: false, code: "research_sources_missing" });
+  });
+
+  // The quote check still stands behind the catalog: a catalog entry that is no whole quote of a readable source (as a
+  // corrupted or forged catalog would have) refuses the answer exactly as a forged quote did before checks v10.
+  it.each([
+    ["an invented quote", { sourceId: "S-KB-CRAFT", quote: "反转次数以两次为最佳。" }, "evidence_not_in_source", "reference.quote"],
+    ["a number cut out of the source", { sourceId: "S-USER-1", quote: "八十个镜头要在三天内拍完" }, "evidence_not_in_source", "reference.quote"],
+    ["two places of one source joined", { sourceId: "S-KB-CRAFT", quote: "关键结果来自主角的选择和行动反转要有前文依据" }, "evidence_not_in_source", "reference.quote"],
+    ["an unknown source", { sourceId: "S-KB-OTHER", quote: CRAFT_QUOTE }, "unknown_source", "reference.sourceId"],
+    ["an unread official entry", { sourceId: "S-OE-1", quote: CRAFT_QUOTE }, "unread_source", "reference.sourceId"],
+  ] as const)("a forged catalog entry is refused by the quote check: %s", (_label, forged, code, field) => {
+    const catalog: AutoReferenceCatalog = { ...CATALOG, entries: [{ referenceId: "R-forged0000", ...forged }] };
+    expect(check([apply("主角主动选择推动结果。", "写作方法。", "R-forged0000")], input(), catalog)).toMatchObject({ ok: false, code, field: `contentStructure[0].${field}` });
   });
 });
 
@@ -215,13 +269,13 @@ describe("C. the application is checked as uncited text, whatever it cites", () 
     ["a measured finding with a count", "数据显示观众更喜欢两次反转的版本。", "unsourced_number", "result_claim"],
     ["an unmarked audience judgement with a count", "观众更喜欢三次反转的剧本。", "unsourced_number", "result_claim"],
   ] as const)("%s in the application is refused even beside a quote that has it", (_label, text, code, semantic) => {
-    const quoting = { sourceId: "S-USER-1", quote: "七成观众爱看复仇" };
+    const quoting = idOf("七成观众爱看复仇。");
     for (const [reference, field, item] of [
       [quoting, "application.pattern", apply(text, "写作方法。", quoting)],
       [CRAFT, "application.why", apply("主角主动选择。", text, CRAFT)],
       [null, "application.why", apply("主角主动选择。", text, null)],
     ] as const) {
-      expect(check([item]), `${String(reference?.sourceId)} ${field}`).toMatchObject({ ok: false, code, semantic, field: `contentStructure[0].${field}` });
+      expect(check([item]), `${String(reference)} ${field}`).toMatchObject({ ok: false, code, semantic, field: `contentStructure[0].${field}` });
     }
   });
 
@@ -545,6 +599,8 @@ describe("F3. documented over-refusals of plot findings (docs §3.3 多拒)", ()
 });
 
 describe("D. stored v1 research is read, shown and exported as it was", () => {
+  /** A quote as research v2 stored it (a model wrote it before prompt v9): read as it was, never re-cut to a catalog sentence. */
+  const STORED_CRAFT = { sourceId: "S-KB-CRAFT", quote: "关键结果来自主角的选择和行动" };
   const v1: AutoStoredResearch = {
     schema: AUTO_CREATION_RESEARCH_SCHEMA_V1,
     facts: [], observations: [],
@@ -554,7 +610,7 @@ describe("D. stored v1 research is read, shown and exported as it was", () => {
     opportunities: ["小人物反击"], limitations: ["没有市场数据"], appliedConstraints: [],
   };
   const v2: AutoStoredResearch = { ...v1, schema: AUTO_CREATION_RESEARCH_SCHEMA_V2, contentStructure: [
-    { reference: CRAFT, application: { pattern: "计划用两次反转推动主角主动选择。", why: "本作品的创作设计。" } },
+    { reference: STORED_CRAFT, application: { pattern: "计划用两次反转推动主角主动选择。", why: "本作品的创作设计。" } },
     { reference: null, application: { pattern: "三名骑手被迫合作。", why: "自主设计。" } },
   ] };
   const stage = (stageKey: string, ordinal: number, output: unknown): AutoStageRecord => ({ runId: "r", stageKey, ordinal, state: "completed", attemptNo: 1,
@@ -568,7 +624,7 @@ describe("D. stored v1 research is read, shown and exported as it was", () => {
     expect(prompt).toContain("\"历史版本\":{\"pattern\":\"主角主动选择推动结果\"");
     expect(prompt).not.toContain("参考方法原文\":");
     const current = buildAutoCreationPrompt("directions", input(), autoContextFromStages(stagesWith(v2))).user;
-    expect(current).toContain(`"参考方法原文":{"sourceId":"S-KB-CRAFT","quote":"${CRAFT_QUOTE}"}`);
+    expect(current).toContain(`"参考方法原文":{"sourceId":"S-KB-CRAFT","quote":"${STORED_CRAFT.quote}"}`);
     expect(current).toContain("\"参考方法原文\":\"无（自主创作设计）\"");
     expect(current).toContain("\"本剧应用设计\":{\"pattern\":\"计划用两次反转推动主角主动选择。\"");
   });
@@ -578,7 +634,7 @@ describe("D. stored v1 research is read, shown and exported as it was", () => {
     expect(old).toContain("- 结构 1（历史版本，未区分参考原文与本剧应用）：主角主动选择推动结果：知识库要求关键结果来自主角的行动。（S-KB-CRAFT）");
     expect(old).not.toContain("参考方法原文：");
     const current = autoPackageMarkdown(meta, stagesWith(v2));
-    expect(current).toContain(`  - 参考方法原文：S-KB-CRAFT「${CRAFT_QUOTE}」`);
+    expect(current).toContain(`  - 参考方法原文：S-KB-CRAFT「${STORED_CRAFT.quote}」`);
     expect(current).toContain("  - 本剧应用设计：计划用两次反转推动主角主动选择。：本作品的创作设计。");
     expect(current).toContain("  - 参考方法原文：无（自主创作设计）");
     expect(current).toContain("不是平台真实用户画像");

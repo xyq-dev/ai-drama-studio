@@ -196,7 +196,7 @@ describe("automatic creation engine", () => {
     expect(seen[0]!.stage).toBe("research");
     const research = result.stages.find((stage) => stage.stageKey === "research")!.output as { hypotheses: Array<{ howToVerify: string }>; serverRecord: { executedWith: Record<string, string> } };
     expect(research.hypotheses[0]!.howToVerify).toBe("模型替身样例：计划制作三集样稿进行试读并收集反馈。");
-    expect(research.serverRecord.executedWith).toMatchObject({ checksVersion: "ads.auto-creation.checks.v9" });
+    expect(research.serverRecord.executedWith).toMatchObject({ checksVersion: "ads.auto-creation.checks.v10" });
   });
 
   it.each([
@@ -241,11 +241,12 @@ describe("automatic creation engine", () => {
     const result = await view();
     expect(result).toMatchObject({ state: "completed", quality: "passed", callsUsed: 6, callCap: 6, storySave: "saved", errorCode: null });
     expect(seen.map((item) => item.stage)).toEqual(["research", "directions", "bible", "outline", "episode:1", "review:1"]);
-    expect(seen[0]!.user).toContain("提示版本：ads.auto-creation.prompt.v8");
+    expect(seen[0]!.user).toContain("提示版本：ads.auto-creation.prompt.v9");
     const research = result.stages.find((stage) => stage.stageKey === "research")!.output as { schema: string; contentStructure: unknown[] };
     expect(research.schema).toBe("ads.auto-creation.research.v4");
+    // The double chose the craft sentence by its catalog id; the server filled the quote in word for word.
     expect(research.contentStructure).toEqual([
-      { reference: { sourceId: "S-KB-CRAFT", quote: "关键结果来自主角的选择和行动" },
+      { reference: { sourceId: "S-KB-CRAFT", quote: "关键结果来自主角的选择和行动，不靠旁人突然解围。" },
         application: { pattern: "模型替身样例：计划用两次反转推动主角主动选择。", why: "这是本作品的创作设计。" } },
       { reference: null, application: { pattern: "模型替身样例：三名骑手被迫合作，三天内找出真相。", why: "自主创作设计，没有对应的方法资料。" } },
     ]);
@@ -259,7 +260,7 @@ describe("automatic creation engine", () => {
   });
 
   it.each([
-    [{ forgedQuote: true }, "evidence_not_in_source@contentStructure[0].reference.quote", "反转次数以两次为最佳"],
+    [{ forgedQuote: true }, "invalid_output@contentStructure[0].reference:unrecognized_keys", "反转次数以两次为最佳"],
     [{ structureStatistic: true }, "unsourced_number@contentStructure[0].application.pattern:percent+market_statistic+proportion", "约三成"],
   ] as const)("research v2: a refused structure (%o) stops at research; nothing is dropped, nothing after it is sent", async (plan, code, text) => {
     const { run, engine, seen, view } = await setup({ revisionRounds: 0, callBudget: 6, plan });
@@ -329,7 +330,7 @@ describe("automatic creation engine", () => {
     expect(research).not.toHaveProperty("limitations");
     expect(research).not.toHaveProperty("appliedConstraints");
     expect(research.serverRecord).toMatchObject({ origin: "server_record",
-      executedWith: { promptVersion: "ads.auto-creation.prompt.v8", checksVersion: "ads.auto-creation.checks.v9", researchSchema: "ads.auto-creation.research.v4",
+      executedWith: { promptVersion: "ads.auto-creation.prompt.v9", checksVersion: "ads.auto-creation.checks.v10", researchSchema: "ads.auto-creation.research.v4",
         answerContract: "limited" },
       marketEvidence: { origin: "source_snapshot", status: "unavailable" },
       settings: { origin: "user_setting", items: [{ key: "episodes", value: "共 1 集" }, { key: "seconds" }, { key: "maxCharacters", value: "最多 3 人" }] },
@@ -398,9 +399,9 @@ describe("automatic creation engine", () => {
     await engine.drive(run.id);
     const result = await view();
     expect(result).toMatchObject({ state: "completed", storySave: "saved", promptVersion: "ads.auto-creation.prompt.v4" });
-    expect(seen.filter((item) => item.stage === "research").at(-1)!.user).toContain("提示版本：ads.auto-creation.prompt.v8");
+    expect(seen.filter((item) => item.stage === "research").at(-1)!.user).toContain("提示版本：ads.auto-creation.prompt.v9");
     expect(result.stages.find((stage) => stage.stageKey === "research")!.output).toMatchObject({ schema: "ads.auto-creation.research.v4",
-      serverRecord: { executedWith: { promptVersion: "ads.auto-creation.prompt.v8", checksVersion: "ads.auto-creation.checks.v9", answerContract: "limited" } } });
+      serverRecord: { executedWith: { promptVersion: "ads.auto-creation.prompt.v9", checksVersion: "ads.auto-creation.checks.v10", answerContract: "limited" } } });
     expect(JSON.stringify(store.runs.find((item) => item.id === run.id)!.input)).toBe(frozen);
     expect(store.runs.find((item) => item.id === run.id)!.inputHash).toBe(hash);
   });

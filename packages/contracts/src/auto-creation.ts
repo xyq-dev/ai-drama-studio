@@ -32,12 +32,14 @@ export const AUTO_CREATION_INPUT_SCHEMA = "ads.auto-creation.input.v1" as const;
  * v7: the number rules say how to write the work's own length (本剧 60 秒的故事) and that a viewing time is never written.
  * v8: both research prompts name every field of one hypothesis (id, statement, howToVerify, nothing else) and show one
  * example object; the answer contract and the checks are unchanged (research v4, checks v7). Shared by series research.
+ * v9: a content structure's method is chosen from the server's catalog of quotable passages (referenceId or null),
+ * never quoted by the model; the answer is research.answer.catalog.v1 and is stored as research v4. Shared.
  */
-export const AUTO_CREATION_PROMPT_VERSION = "ads.auto-creation.prompt.v8" as const;
+export const AUTO_CREATION_PROMPT_VERSION = "ads.auto-creation.prompt.v9" as const;
 /** Every prompt version a stored run may carry. A resumed run is sent with the current prompts. */
 export type AutoCreationPromptVersion = "ads.auto-creation.prompt.v1" | "ads.auto-creation.prompt.v2" | "ads.auto-creation.prompt.v3"
   | "ads.auto-creation.prompt.v4" | "ads.auto-creation.prompt.v5" | "ads.auto-creation.prompt.v6" | "ads.auto-creation.prompt.v7"
-  | typeof AUTO_CREATION_PROMPT_VERSION;
+  | "ads.auto-creation.prompt.v8" | typeof AUTO_CREATION_PROMPT_VERSION;
 export const AUTO_CREATION_SELECTION_RULES = "ads.auto-creation.selection-rules.v1" as const;
 /**
  * v2: the applied constraints and a direction's audience fit are number-checked; spaced ordinals are not claims.
@@ -59,18 +61,37 @@ export const AUTO_CREATION_SELECTION_RULES = "ads.auto-creation.selection-rules.
  * v9: that sample is read only when its own sample verb takes the count, right before it (制作三集样稿, 试读前三集样稿),
  * after the plan word; a sample verb elsewhere in the clause (计划选取观众看完三集样稿后都弃剧的案例, 计划把本剧缩至三集
  * 样稿后试读) exempts nothing, and the count is read as before. Prompt v8, research v4.
+ * v10: a research answer's referenceId must name an entry of the run's reference catalog or be null; an id the catalog
+ * lacks (another catalog's, made up) and a model-written reference, sourceId or quote refuse the answer whole. The
+ * server fills the reference in from the catalog, and the quote and application checks then run as before. Prompt v9.
  */
-export const AUTO_CREATION_CHECKS_VERSION = "ads.auto-creation.checks.v9" as const;
+export const AUTO_CREATION_CHECKS_VERSION = "ads.auto-creation.checks.v10" as const;
 /** Every checks version a stored run or review may carry. */
 export type AutoCreationChecksVersion = "ads.auto-creation.checks.v1" | "ads.auto-creation.checks.v2" | "ads.auto-creation.checks.v3"
   | "ads.auto-creation.checks.v4" | "ads.auto-creation.checks.v5" | "ads.auto-creation.checks.v6" | "ads.auto-creation.checks.v7"
-  | "ads.auto-creation.checks.v8" | typeof AUTO_CREATION_CHECKS_VERSION;
+  | "ads.auto-creation.checks.v8" | "ads.auto-creation.checks.v9" | typeof AUTO_CREATION_CHECKS_VERSION;
 /**
  * v4: the answer contract follows the run's saved research mode. limited: the model writes hypotheses, the audience as
  * text, content structures and opportunities only; the server assembles the rest (no facts, no observations, the
  * audience a hypothesis with no sources) and records that market evidence is unavailable. sourced: v3's answer.
  */
 export const AUTO_CREATION_RESEARCH_SCHEMA = "ads.auto-creation.research.v4" as const;
+/**
+ * The research answer a model writes from prompt v9 on: research v4's answer, but a content structure names a passage of
+ * the run's reference catalog by its id (or null) instead of quoting one. Never stored: the server maps it to research v4.
+ */
+export const AUTO_CREATION_RESEARCH_ANSWER_SCHEMA = "ads.auto-creation.research.answer.catalog.v1" as const;
+/**
+ * How the server cuts a source snapshot into quotable passages (see the catalog limits below). A new algorithm is a new
+ * version: the version is part of every entry's id, so an id from another algorithm never names a passage of this one.
+ */
+export const AUTO_REFERENCE_CATALOG_VERSION = "ads.auto-creation.reference-catalog.v1" as const;
+/** Most catalog entries one source gives. */
+export const AUTO_REFERENCE_CATALOG_PER_SOURCE = 8;
+/** Most catalog entries in all. */
+export const AUTO_REFERENCE_CATALOG_MAX_ENTRIES = 24;
+/** Most characters of the whole catalog as JSON (its entries as the prompt carries them). */
+export const AUTO_REFERENCE_CATALOG_MAX_CHARS = 4_000;
 /**
  * Research stored by research v3 (one answer contract whatever the mode; the server's record and notices apart from it):
  * read, shown and exported as it was, never sent.
@@ -331,6 +352,67 @@ export type AutoContentStructure = z.infer<typeof autoContentStructureSchema>;
 /** Which answer contract a research is sent and checked with: the run's saved source snapshot's mode, never a model's or a client's. */
 export type AutoResearchMode = "sourced" | "limited";
 
+/** One quotable passage: a contiguous sentence or line of one readable source's excerpt, verbatim. Untrusted data. */
+export interface AutoReferenceEntry {
+  referenceId: string;
+  sourceId: string;
+  quote: string;
+}
+
+/**
+ * The passages a research may cite as a method, cut by the server from the run's saved source snapshot only. The same
+ * object builds the prompt, the JSON Schema sent and the answer check; entries may be none (null is then the only
+ * choice), which is not the same as having no catalog at all (nothing is then sent).
+ */
+export interface AutoReferenceCatalog {
+  version: typeof AUTO_REFERENCE_CATALOG_VERSION;
+  entries: AutoReferenceEntry[];
+  /** Canonical hash of the version and the entries. */
+  hash: string;
+}
+
+/** A content structure as the model writes it (prompt v9): a catalog id or null, and the work's own design. */
+const catalogStructureSchema = z.object({
+  referenceId: z.string().max(40).nullable(),
+  application: z.object({
+    pattern: text(1, 120),
+    why: text(1, 200),
+  }).strict(),
+}).strict();
+export type AutoCatalogContentStructure = z.infer<typeof catalogStructureSchema>;
+
+/**
+ * The model's research answer with recent market material (prompt v9 on), apart from the stored research: the sourced
+ * fields as before, but every content structure is a catalog choice. Strict: a reference, sourceId, quote or any other
+ * key is refused whole, even empty. Whether the id is in the catalog is the server's mapping (autoMapResearchAnswer):
+ * an id it lacks refuses the answer, never dropped, nulled or swapped for another.
+ */
+export const autoResearchCatalogAnswerSchema = z.object({
+  schema: z.literal(AUTO_CREATION_RESEARCH_ANSWER_SCHEMA),
+  ...researchFields,
+  contentStructure: z.array(catalogStructureSchema).min(1).max(6),
+}).strict();
+export type AutoResearchCatalogAnswer = z.infer<typeof autoResearchCatalogAnswerSchema>;
+
+/** The limited answer of prompt v9: research v4's limited fields, content structures as catalog choices. */
+export const autoResearchLimitedCatalogAnswerSchema = z.object({
+  schema: z.literal(AUTO_CREATION_RESEARCH_ANSWER_SCHEMA),
+  hypotheses: researchFields.hypotheses,
+  audience: z.object({
+    primary: text(1, 120),
+    viewingNeeds: shortList(5, 60).min(1),
+    emotionalAppeals: shortList(5, 60).min(1),
+  }).strict(),
+  contentStructure: z.array(catalogStructureSchema).min(1).max(6),
+  opportunities: researchFields.opportunities,
+}).strict();
+export type AutoResearchLimitedCatalogAnswer = z.infer<typeof autoResearchLimitedCatalogAnswerSchema>;
+
+/** The model answer schema of a research mode (prompt v9 on): the one the prompt asks for and the JSON Schema enforces. */
+export function autoResearchCatalogAnswerSchemaFor(mode: AutoResearchMode) {
+  return mode === "limited" ? autoResearchLimitedCatalogAnswerSchema : autoResearchCatalogAnswerSchema;
+}
+
 /**
  * The model's research answer when the snapshot has recent market material (research v4 sourced, prompt v6 on): facts,
  * observations, hypotheses with their plans, the audience with its basis and sources, content structures and
@@ -370,6 +452,8 @@ export function autoResearchAnswerSchemaFor(mode: AutoResearchMode) {
 
 /** Keys of a stored research the server writes, and the keys v3 took out of the answer: a model sending one is refused. */
 export const AUTO_RESEARCH_SERVER_KEYS = ["serverRecord", "unverified", "limitations", "appliedConstraints"] as const;
+/** Keys of a content structure the server fills in from the reference catalog (prompt v9): a model sending one is refused. */
+export const AUTO_RESEARCH_STRUCTURE_SERVER_KEYS = ["reference", "sourceId", "quote"] as const;
 /** Fields a limited answer never carries: the server writes facts, observations and the audience's basis and sources. */
 export const AUTO_RESEARCH_LIMITED_FORBIDDEN = ["facts", "observations", "audience.basis", "audience.sourceIds"] as const;
 
@@ -429,7 +513,11 @@ export const AUTO_MARKET_EVIDENCE_NOTES = {
  * person's materials actually read, and what could not be read.
  */
 export interface AutoResearchServerRecord extends Omit<AutoResearchServerRecordV3, "executedWith"> {
-  executedWith: { promptVersion: string; checksVersion: string; researchSchema: typeof AUTO_CREATION_RESEARCH_SCHEMA; answerContract: AutoResearchMode };
+  executedWith: { promptVersion: string; checksVersion: string; researchSchema: typeof AUTO_CREATION_RESEARCH_SCHEMA; answerContract: AutoResearchMode;
+    /** Prompt v9 on: the schema the model's answer was checked with and the reference catalog it chose from. Absent before. */
+    answerSchema?: typeof AUTO_CREATION_RESEARCH_ANSWER_SCHEMA;
+    referenceCatalogVersion?: typeof AUTO_REFERENCE_CATALOG_VERSION;
+    referenceCatalogHash?: string };
   marketEvidence: { origin: "source_snapshot"; status: "unavailable" | "available"; note: string };
 }
 
@@ -803,9 +891,11 @@ const enumOf = (values: readonly (string | number)[]) =>
 /**
  * The JSON Schema sent with a stage. A research stage needs the run's saved research mode: the limited schema has no
  * facts, observations or audience basis and sources, so the provider is held to the same contract as the prompt and
- * the zod check. Without a mode no research schema is built (the engine stops before reserving a call).
+ * the zod check. It also needs the run's reference catalog: a structure's referenceId is one of its ids or null (only
+ * null when it has none). Without a mode or a catalog no research schema is built (the engine stops before reserving).
  */
-export function autoCreationJsonSchema(kind: AutoCreationStageKind, episodeCount: number, researchMode: AutoResearchMode | null = null): { name: string; schema: Record<string, unknown> } {
+export function autoCreationJsonSchema(kind: AutoCreationStageKind, episodeCount: number, researchMode: AutoResearchMode | null = null,
+  catalog: AutoReferenceCatalog | null = null): { name: string; schema: Record<string, unknown> } {
   const numbers = Array.from({ length: episodeCount }, (_, index) => index + 1);
   const episode = obj({
     schema: enumOf([AUTO_CREATION_EPISODE_SCHEMA]),
@@ -823,15 +913,17 @@ export function autoCreationJsonSchema(kind: AutoCreationStageKind, episodeCount
   switch (kind) {
     case "research": {
       if (researchMode !== "limited" && researchMode !== "sourced") throw new Error("a research schema needs the run's saved research mode");
+      if (!catalog) throw new Error("a research schema needs the run's reference catalog");
+      const ids = catalog.entries.map((entry) => entry.referenceId);
       const hypotheses = arr(obj({ id: str(2), statement: str(200), howToVerify: str(150) }), 1, 8);
       const contentStructure = arr(obj({
-        reference: { anyOf: [obj({ sourceId: str(40), quote: str(AUTO_STRUCTURE_QUOTE_MAX) }), { type: "null" }] },
+        referenceId: ids.length > 0 ? { anyOf: [enumOf(ids), { type: "null" }] } : { type: "null" },
         application: obj({ pattern: str(120), why: str(200) }),
       }), 1, 6);
       const opportunities = strs(5, 120, 1);
       if (researchMode === "limited") {
         return { name: "auto_research_limited", schema: obj({
-          schema: enumOf([AUTO_CREATION_RESEARCH_SCHEMA]),
+          schema: enumOf([AUTO_CREATION_RESEARCH_ANSWER_SCHEMA]),
           hypotheses,
           audience: obj({ primary: str(120), viewingNeeds: strs(5, 60, 1), emotionalAppeals: strs(5, 60, 1) }),
           contentStructure,
@@ -839,7 +931,7 @@ export function autoCreationJsonSchema(kind: AutoCreationStageKind, episodeCount
         }) };
       }
       return { name: "auto_research_sourced", schema: obj({
-        schema: enumOf([AUTO_CREATION_RESEARCH_SCHEMA]),
+        schema: enumOf([AUTO_CREATION_RESEARCH_ANSWER_SCHEMA]),
         facts: arr(obj({ id: str(2), statement: str(200), sourceIds: strs(3, 40, 1), evidence: str(200) }), 0, 8),
         observations: arr(obj({ id: str(2), statement: str(200), sourceIds: strs(3, 40, 1) }), 0, 8),
         hypotheses,

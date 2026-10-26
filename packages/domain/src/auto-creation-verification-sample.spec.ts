@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   AUTO_CREATION_CHECKS_VERSION,
   AUTO_CREATION_PROMPT_VERSION,
-  AUTO_CREATION_RESEARCH_SCHEMA,
+  AUTO_CREATION_RESEARCH_ANSWER_SCHEMA,
   SERIES_RESEARCH_CONTRACT,
   SERIES_WRITING_CHECKS_VERSION,
   SERIES_WRITING_INPUT_SCHEMA,
@@ -15,6 +15,10 @@ import { OCEAN_ENGINE_ENTRY_URLS, collectSources } from "./auto-creation-sources
 import { uncitedNumberReading, type AutoNumberFrame } from "./auto-creation-numbers";
 import { validateAutoStageOutput, type AutoCreationContext } from "./auto-creation";
 import { seriesAutoInput, validateSeriesStageOutput, type SeriesContext } from "./series-writing";
+import { autoReferenceCatalogOf } from "./auto-creation-references";
+
+/** Prompt v9: the catalog the research of a context chooses from, cut from its saved snapshot as the engines cut it. */
+const withCatalog = (context: AutoCreationContext): AutoCreationContext => ({ ...context, referenceCatalog: autoReferenceCatalogOf(context.sources) });
 
 // A verification plan's sample of the work (checks v8). A real series run (prompt v8, 60 episodes of 60 s) was refused at
 // its first research call at hypotheses[0].howToVerify as constraint_violation, chinese_numeral, frozen_conflict +
@@ -116,9 +120,9 @@ function input(): AutoCreationFrozenInput {
   };
 }
 
-const limitedContext = (run = input()): AutoCreationContext => ({ sources: collectSources(run, [], NOW), episodes: new Map(), reviews: [] });
+const limitedContext = (run = input()): AutoCreationContext => (withCatalog({ sources: collectSources(run, [], NOW), episodes: new Map(), reviews: [] }));
 /** A recent, readable market page (synthetic, no number in it): the snapshot is then sourced. */
-const sourcedContext = (run = input()): AutoCreationContext => ({
+const sourcedContext = (run = input()): AutoCreationContext => withCatalog({
   sources: collectSources(run, [{ url: OCEAN_ENGINE_ENTRY_URLS[0], status: "read", title: "合成市场样本页", text: "合成样本：本页只描述题材趋势，没有统计数字。",
     publishedAt: "2026-09-01T00:00:00.000Z", fetchedAt: NOW, note: "合成样本" }], NOW),
   episodes: new Map(), reviews: [],
@@ -148,13 +152,13 @@ function answer(mode: "limited" | "sourced", first: { statement?: string; howToV
       { id: "H1", statement: first.statement ?? "合成样本：开场就让主角做出冒险选择，可能更容易让观众代入。", howToVerify: first.howToVerify },
       ...(more.hypotheses ?? [{ id: "H2", statement: "合成样本：误会在结尾解开，可能比中途解开更有悬念。", howToVerify: "计划比较两种解开时机的试看反馈。" }]),
     ],
-    contentStructure: [{ reference: null, application: { pattern: "主角主动选择推动结果", why: "自主创作设计，没有对应的方法资料。" } }],
+    contentStructure: [{ referenceId: null, application: { pattern: "主角主动选择推动结果", why: "自主创作设计，没有对应的方法资料。" } }],
     opportunities: more.opportunities ?? ["小人物在一个夜晚完成一次反击"],
   };
   const audience = { primary: "在通勤和睡前刷短剧的成年观众（待验证假设）", viewingNeeds: ["一集内看到结果"], emotionalAppeals: ["扳回一局"] };
   return JSON.stringify(mode === "limited"
-    ? { schema: AUTO_CREATION_RESEARCH_SCHEMA, ...creative, audience }
-    : { schema: AUTO_CREATION_RESEARCH_SCHEMA, facts: [], observations: [], ...creative, audience: { ...audience, basis: "hypothesis", sourceIds: [] } });
+    ? { schema: AUTO_CREATION_RESEARCH_ANSWER_SCHEMA, ...creative, audience }
+    : { schema: AUTO_CREATION_RESEARCH_ANSWER_SCHEMA, facts: [], observations: [], ...creative, audience: { ...audience, basis: "hypothesis", sourceIds: [] } });
 }
 
 describe("B. the whole research stage (validateAutoStageOutput, and the series' borrowed research)", () => {
