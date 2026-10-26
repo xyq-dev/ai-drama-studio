@@ -34,12 +34,15 @@ export const AUTO_CREATION_INPUT_SCHEMA = "ads.auto-creation.input.v1" as const;
  * example object; the answer contract and the checks are unchanged (research v4, checks v7). Shared by series research.
  * v9: a content structure's method is chosen from the server's catalog of quotable passages (referenceId or null),
  * never quoted by the model; the answer is research.answer.catalog.v1 and is stored as research v4. Shared.
+ * v10: the number rules tell the work's total episodes (only the frozen count) apart from a verification plan reading
+ * part of the work (a count or a position within 1 and the frozen count), with an example cut to the run's own count;
+ * statistics and results done stay forbidden. Answer, catalog and research v4 unchanged. Shared by series research.
  */
-export const AUTO_CREATION_PROMPT_VERSION = "ads.auto-creation.prompt.v9" as const;
+export const AUTO_CREATION_PROMPT_VERSION = "ads.auto-creation.prompt.v10" as const;
 /** Every prompt version a stored run may carry. A resumed run is sent with the current prompts. */
 export type AutoCreationPromptVersion = "ads.auto-creation.prompt.v1" | "ads.auto-creation.prompt.v2" | "ads.auto-creation.prompt.v3"
   | "ads.auto-creation.prompt.v4" | "ads.auto-creation.prompt.v5" | "ads.auto-creation.prompt.v6" | "ads.auto-creation.prompt.v7"
-  | "ads.auto-creation.prompt.v8" | typeof AUTO_CREATION_PROMPT_VERSION;
+  | "ads.auto-creation.prompt.v8" | "ads.auto-creation.prompt.v9" | typeof AUTO_CREATION_PROMPT_VERSION;
 export const AUTO_CREATION_SELECTION_RULES = "ads.auto-creation.selection-rules.v1" as const;
 /**
  * v2: the applied constraints and a direction's audience fit are number-checked; spaced ordinals are not claims.
@@ -64,12 +67,17 @@ export const AUTO_CREATION_SELECTION_RULES = "ads.auto-creation.selection-rules.
  * v10: a research answer's referenceId must name an entry of the run's reference catalog or be null; an id the catalog
  * lacks (another catalog's, made up) and a model-written reference, sourceId or quote refuse the answer whole. The
  * server fills the reference in from the catalog, and the quote and application checks then run as before. Prompt v9.
+ * v11: in a hypothesis' howToVerify only, a count of episodes is read by its scope. A new total of the work and a
+ * viewing statistic, habit or result done are refused as before; a sample its own reading or picking verb takes
+ * (计划试读前三集, 计划选取其中三集) needs no 样稿 and must lie within the work, as must every position of episodes in a
+ * plan to sample it (计划试读第六十一集 is refused); any other count within the work in a future plan is kept as written
+ * with an unverified notice (episode_scope_unconfirmed), and the reading goes on. Prompt v10, research v4.
  */
-export const AUTO_CREATION_CHECKS_VERSION = "ads.auto-creation.checks.v10" as const;
+export const AUTO_CREATION_CHECKS_VERSION = "ads.auto-creation.checks.v11" as const;
 /** Every checks version a stored run or review may carry. */
 export type AutoCreationChecksVersion = "ads.auto-creation.checks.v1" | "ads.auto-creation.checks.v2" | "ads.auto-creation.checks.v3"
   | "ads.auto-creation.checks.v4" | "ads.auto-creation.checks.v5" | "ads.auto-creation.checks.v6" | "ads.auto-creation.checks.v7"
-  | "ads.auto-creation.checks.v8" | "ads.auto-creation.checks.v9" | typeof AUTO_CREATION_CHECKS_VERSION;
+  | "ads.auto-creation.checks.v8" | "ads.auto-creation.checks.v9" | "ads.auto-creation.checks.v10" | typeof AUTO_CREATION_CHECKS_VERSION;
 /**
  * v4: the answer contract follows the run's saved research mode. limited: the model writes hypotheses, the audience as
  * text, content structures and opportunities only; the server assembles the rest (no facts, no observations, the
@@ -525,14 +533,22 @@ export interface AutoResearchServerRecord extends Omit<AutoResearchServerRecordV
 export const AUTO_UNVERIFIED_NOTE = "程序未能判定数字含义，未核实";
 /** What a duration_unconfirmed notice says (checks v7 on): not a viewing statistic, not checked true either. */
 export const AUTO_UNVERIFIED_DURATION_NOTE = "程序无法确认时长含义（不是已判定的观看统计），未核实";
+/**
+ * What an episode_scope_unconfirmed notice says (checks v11 on): a count of episodes in a verification plan the code could
+ * not tie to a sample of the work or to its total. Not a frozen conflict, not checked true either.
+ */
+export const AUTO_UNVERIFIED_EPISODE_SCOPE_NOTE = "程序无法确认集数描述的作用范围，未核实";
 /** What every kind of notice is, for a heading over them all. */
 export const AUTO_UNVERIFIED_SUMMARY = "程序未能判定数字或时长含义，未核实";
+/** The heading when an episode-scope notice is among them (checks v11 on). */
+export const AUTO_UNVERIFIED_SUMMARY_WITH_SCOPE = "程序未能判定数字、时长含义或集数作用范围，未核实";
 
 /**
  * A server notice on uncited creative text (a hypothesis, its plan, a structure's application, an opportunity, a
  * direction's notes): a number the checks could not give a role (unclassified, no_role), or a duration in a pending
- * question the checks could not tie to the work or to a viewing time (unclassified, duration_unconfirmed, checks v7).
- * The text stays as written; the notice says it is unverified and keeps it a hypothesis or design, never a market
+ * question the checks could not tie to the work or to a viewing time (unclassified, duration_unconfirmed, checks v7), or
+ * a count of episodes in a verification plan whose scope the checks could not place (episode_scope_unconfirmed, checks
+ * v11). The text stays as written; the notice says it is unverified and keeps it a hypothesis or design, never a market
  * finding. Never written by a model or a client. A stored notice is read as it was written.
  */
 export type AutoUnverifiedNotice = {
@@ -542,10 +558,15 @@ export type AutoUnverifiedNotice = {
   /** The number as written in that field. */
   token: string;
   semantic: "unclassified";
-} & ({ rule: "no_role"; note: typeof AUTO_UNVERIFIED_NOTE } | { rule: "duration_unconfirmed"; note: typeof AUTO_UNVERIFIED_DURATION_NOTE });
+} & ({ rule: "no_role"; note: typeof AUTO_UNVERIFIED_NOTE } | { rule: "duration_unconfirmed"; note: typeof AUTO_UNVERIFIED_DURATION_NOTE }
+  | { rule: "episode_scope_unconfirmed"; note: typeof AUTO_UNVERIFIED_EPISODE_SCOPE_NOTE });
 
-/** The heading over a list of notices: as before when every one is no_role, so an older run reads and exports as it did. */
+/**
+ * The heading over a list of notices: as before when there is no episode-scope notice (no_role only, or with a
+ * duration), so an older run reads and exports as it did.
+ */
 export function autoUnverifiedHeading(notices: readonly AutoUnverifiedNotice[]): string {
+  if (notices.some((notice) => notice.rule === "episode_scope_unconfirmed")) return AUTO_UNVERIFIED_SUMMARY_WITH_SCOPE;
   return notices.some((notice) => notice.rule === "duration_unconfirmed") ? AUTO_UNVERIFIED_SUMMARY : AUTO_UNVERIFIED_NOTE;
 }
 

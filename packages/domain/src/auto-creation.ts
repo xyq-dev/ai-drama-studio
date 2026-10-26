@@ -18,6 +18,7 @@ import {
   AUTO_RESEARCH_SERVER_KEYS,
   AUTO_RESEARCH_STRUCTURE_SERVER_KEYS,
   AUTO_UNVERIFIED_DURATION_NOTE,
+  AUTO_UNVERIFIED_EPISODE_SCOPE_NOTE,
   AUTO_UNVERIFIED_NOTE,
   AUTO_UNVERIFIED_SUMMARY,
   autoAssembleLimitedResearch,
@@ -402,15 +403,28 @@ function catalogBlock(catalog: AutoReferenceCatalog): string {
 /** The settings and the material are the server's record in both contracts. */
 const SERVER_RECORD_LINE = "不要另写字段复述用户设定或资料局限：集数、时长、题材、目标观众、人物和地点上限、禁止题材、结局要求，以及资料读取范围、读取失败和缺失情况，由服务端按冻结设定和资料快照记录。";
 
-/** Number rules 2–4: the work's own quantities, plans, and the proposed audience. The same in both contracts. */
-const NUMBER_RULES_CREATIVE = [
-  "2. 本作品的创作设定可以写数量：虚构人物数（“两个互不信任的人”）、剧情次数（“三次误会”“两次反转”）、虚构人物年龄（“主角二十八岁”）、故事内期限（“三天内”）、开场秒数（“前 3 秒”）。"
-    + "人物数、地点数不能超过用户的上限，集数和每集时长只能写用户硬约束里的值（如“共 1 集，每集约 60 秒”）。"
-    + "提到观众时写本剧时长，要写明是本剧的篇幅（如“待验证观众是否喜欢本剧 60 秒的故事”）；不写观众实际看了多久、看多久后退出、通常或平均看多久，这些是观看统计。",
-  "3. 验证计划可以写数量和天数，但必须写成将来的计划或待验证的问题：“拟比较两个版本”“计划上线后观察七天”“待验证观众是否更喜欢两次反转的版本”。"
-    + "同一句里既提到观众、用户或市场又带数量时，提到观众、用户或市场的那一部分（逗号隔开的分句）本身必须写明“是否、可能、待验证”等；别的分句里的“计划、拟”不能替它说明（不写“计划比较两个版本，观众更喜欢三次反转的剧本”，写“计划比较两个版本，待验证观众是否更喜欢三次反转的剧本”）；不要写“数据显示、调查发现、已测试、测得”这类已经得到结果的说法。",
-  "4. 拟定的目标人群用文字描述（如“拟面向通勤时刷剧的成年观众”），不写年龄段或比例；用户在硬约束里指定的目标观众可以原样照抄，但只能写成创作目标（如“目标观众：……（用户指定）”“拟面向……创作”），不能写成平台用户画像、主要或核心受众，也不能写成数据或调研的结论。不写日期和资料条数。",
-];
+/**
+ * Number rules 2–4: the work's own quantities, plans, and the proposed audience. The same in both contracts. Prompt v10:
+ * the work's total episodes stay the frozen count, while a verification plan may read part of the work; the examples use
+ * the run's own count, and a sample example never names more episodes than the run has (none with a number for one).
+ */
+function numberRulesCreative(input: AutoCreationFrozenInput): string[] {
+  const episodes = String(input.episodeCount);
+  const part = input.episodeCount > 3 ? 3 : input.episodeCount - 1;
+  const sample = part >= 1
+    ? `（如“计划试读前 ${String(part)} 集并收集反馈”“计划选取其中 ${String(part)} 集进行试读”）`
+    : "（本剧只有 1 集，如“计划试读这一集并收集反馈”）";
+  return [
+    "2. 本作品的创作设定可以写数量：虚构人物数（“两个互不信任的人”）、剧情次数（“三次误会”“两次反转”）、虚构人物年龄（“主角二十八岁”）、故事内期限（“三天内”）、开场秒数（“前 3 秒”）。"
+      + `人物数、地点数不能超过用户的上限；全剧总集数只能是用户硬约束里的 ${episodes} 集，每集时长只能写约 ${String(input.episodeSeconds)} 秒（如“共 ${episodes} 集，每集约 ${String(input.episodeSeconds)} 秒”），不要写改为几集、缩至几集这类改变全剧集数的说法。`
+      + "提到观众时写本剧时长，要写明是本剧的篇幅（如“待验证观众是否喜欢本剧 60 秒的故事”）；不写观众实际看了多久、看多久后退出、通常或平均看多久，这些是观看统计。",
+    "3. 验证计划可以写数量和天数，但必须写成将来的计划或待验证的问题：“拟比较两个版本”“计划上线后观察七天”“待验证观众是否更喜欢两次反转的版本”。"
+      + `验证计划可以只抽取本剧的一部分试读或试看，这不是修改全剧总集数：抽取的集数或第几集必须在 1 到 ${episodes} 集之内，并写明是试读、选取的范围${sample}。`
+      + "不写观众实际看了几集、看几集后退出、通常或平均看几集，这些是观看统计；也不写已经试读过或已经得到的结果。"
+      + "同一句里既提到观众、用户或市场又带数量时，提到观众、用户或市场的那一部分（逗号隔开的分句）本身必须写明“是否、可能、待验证”等；别的分句里的“计划、拟”不能替它说明（不写“计划比较两个版本，观众更喜欢三次反转的剧本”，写“计划比较两个版本，待验证观众是否更喜欢三次反转的剧本”）；不要写“数据显示、调查发现、已测试、测得”这类已经得到结果的说法。",
+    "4. 拟定的目标人群用文字描述（如“拟面向通勤时刷剧的成年观众”），不写年龄段或比例；用户在硬约束里指定的目标观众可以原样照抄，但只能写成创作目标（如“目标观众：……（用户指定）”“拟面向……创作”），不能写成平台用户画像、主要或核心受众，也不能写成数据或调研的结论。不写日期和资料条数。",
+  ];
+}
 
 /**
  * Every field of one hypothesis, the same in both research modes (prompt v8): the strict answer schema refuses an extra
@@ -429,7 +443,7 @@ const HYPOTHESIS_FIELD_LINES = [
  * The research contract with recent market material (sourced): cited facts and observations, an audience that may be
  * sourced, and the creative parts. Unchanged in substance from prompt v5; v8 names the fields of one hypothesis.
  */
-function sourcedResearchLines(catalog: AutoReferenceCatalog): string[] {
+function sourcedResearchLines(input: AutoCreationFrozenInput, catalog: AutoReferenceCatalog): string[] {
   return [
     "任务：基于资料完成研究与创作定位。",
     "facts：只写资料区里能逐字找到依据的事实，evidence 逐字摘录 sourceIds 所指资料的原文；资料不足时 facts 为空数组。",
@@ -444,7 +458,7 @@ function sourcedResearchLines(catalog: AutoReferenceCatalog): string[] {
     "数字规则（程序按数字的含义逐句检查，违反即整份拒收，不会重试）：",
     "1. 市场和受众统计只能来自资料：受众人数、年龄或年龄段、性别或地域比例、百分比、几成、播放量、热度、排名、观看时长和频次、收入等，只能出现在 facts、observations 和带 sourceIds 的 audience 里，"
       + "并且必须是所引资料摘录正文里原样出现的完整数字。写进 hypotheses、howToVerify、contentStructure 的 application、opportunities 也不行，标成“假设”“计划”“建议”也不行。",
-    ...NUMBER_RULES_CREATIVE,
+    ...numberRulesCreative(input),
     `schema 固定为 "${AUTO_CREATION_RESEARCH_ANSWER_SCHEMA}"；编号用 F1、O1、H1 这样的格式。`,
   ];
 }
@@ -453,7 +467,7 @@ function sourcedResearchLines(catalog: AutoReferenceCatalog): string[] {
  * The research contract without recent market material (limited): creative positioning and hypotheses to verify. It
  * asks for nothing the answer may not carry and names no field of the sourced contract: the server writes those.
  */
-function limitedResearchLines(catalog: AutoReferenceCatalog): string[] {
+function limitedResearchLines(input: AutoCreationFrozenInput, catalog: AutoReferenceCatalog): string[] {
   return [
     "任务：创作定位与待验证假设（AI 创作策划）。",
     "本次资料快照没有符合条件的近期市场资料，市场证据不可用，由服务端记录；你不需要也不能给出市场结论，只完成创作策划。方法资料和用户资料的片段仍可在 contentStructure 里按编号选作方法引用。",
@@ -466,7 +480,7 @@ function limitedResearchLines(catalog: AutoReferenceCatalog): string[] {
     SERVER_RECORD_LINE,
     "数字规则（程序按数字的含义逐句检查，违反即整份拒收，不会重试）：",
     "1. 本次没有市场资料：受众人数、年龄或年龄段、性别或地域比例、百分比、几成、播放量、热度、排名、观看时长和频次、收入等市场和受众统计，任何字段都不能写，标成“假设”“计划”“建议”也不行；不要为了显得有依据编造市场事实或数字。",
-    ...NUMBER_RULES_CREATIVE,
+    ...numberRulesCreative(input),
     `schema 固定为 "${AUTO_CREATION_RESEARCH_ANSWER_SCHEMA}"。`,
   ];
 }
@@ -481,7 +495,7 @@ export function buildAutoCreationPrompt(stageKey: string, input: AutoCreationFro
     const mode = autoResearchModeOf(context.sources);
     const catalog = context.referenceCatalog;
     if (mode === null || !catalog) throw new Error("a research prompt needs the run's saved source snapshot and its reference catalog");
-    lines = [...head, ...(mode === "limited" ? limitedResearchLines(catalog) : sourcedResearchLines(catalog)), sourcesBlock(context.sources!), catalogBlock(catalog)];
+    lines = [...head, ...(mode === "limited" ? limitedResearchLines(input, catalog) : sourcedResearchLines(input, catalog)), sourcesBlock(context.sources!), catalogBlock(catalog)];
   } else if (kind === "directions") {
     const ids = researchIds(context.research!);
     lines = [
@@ -702,13 +716,17 @@ function numberRefusal(finding: AutoNumberFinding, field: string): AutoValidatio
  * Uncited creative text (a hypothesis, its plan, a structure's application, an opportunity, a direction's notes),
  * checks v5: a number with no recognised role is added to the notices, the text is kept as written and the reading goes
  * on; any other number is refused as uncitedNumber refuses it. verificationPlan: a hypothesis' howToVerify, where a
- * plan's sample of the work (计划制作三集样稿进行试读) is read as a sample within the work, not its total (checks v8).
+ * plan's sample of the work (计划制作三集样稿进行试读) is read as a sample within the work, not its total (checks v8), and
+ * a count of episodes whose scope the code cannot place is a notice too (episode_scope_unconfirmed, checks v11).
  */
 function creativeNumber(statement: string, field: string, frame: AutoNumberFrame, notices: AutoUnverifiedNotice[], verificationPlan = false): AutoValidation | null {
   const reading = uncitedNumberReading(statement, frame, { unverified: true, verificationPlan });
-  notices.push(...reading.unverified.map((finding): AutoUnverifiedNotice => finding.rule === "duration_unconfirmed"
-    ? { origin: "server_check", field, token: finding.token, semantic: "unclassified", rule: "duration_unconfirmed", note: AUTO_UNVERIFIED_DURATION_NOTE }
-    : { origin: "server_check", field, token: finding.token, semantic: "unclassified", rule: "no_role", note: AUTO_UNVERIFIED_NOTE }));
+  notices.push(...reading.unverified.map((finding): AutoUnverifiedNotice => {
+    const at = { origin: "server_check", field, token: finding.token, semantic: "unclassified" } as const;
+    if (finding.rule === "duration_unconfirmed") return { ...at, rule: "duration_unconfirmed", note: AUTO_UNVERIFIED_DURATION_NOTE };
+    if (finding.rule === "episode_scope_unconfirmed") return { ...at, rule: "episode_scope_unconfirmed", note: AUTO_UNVERIFIED_EPISODE_SCOPE_NOTE };
+    return { ...at, rule: "no_role", note: AUTO_UNVERIFIED_NOTE };
+  }));
   return reading.refusal ? numberRefusal(reading.refusal, field) : null;
 }
 
@@ -827,7 +845,8 @@ function checkResearch(input: AutoCreationFrozenInput, output: AutoResearchAnswe
   // Uncited fields carry a number only when it counts the work or a plan (auto-creation-numbers.ts): hypotheses and
   // how to verify them, and opportunities alike. No field label exempts a statistic. A number with no role there is an
   // unverified notice, and every later field is still checked.
-  // Only a plan (howToVerify) may read a count of episodes as its sample of the work (checks v8).
+  // Only a plan (howToVerify) may read a count of episodes as its sample of the work (checks v8) or keep one whose scope
+  // the code cannot place as a notice (checks v11).
   const uncited: Array<[string, string, boolean]> = [
     ...output.hypotheses.flatMap((item, index): Array<[string, string, boolean]> => [
       [item.statement, `hypotheses[${String(index)}].statement`, false], [item.howToVerify, `hypotheses[${String(index)}].howToVerify`, true]]),
@@ -1393,7 +1412,7 @@ export const AUTO_RESEARCH_IDENTITY: Readonly<Record<string, string>> = {
   opportunities: "AI 创作判断",
   serverRecord: "用户设定（冻结输入）与服务端资料记录（资料快照），不是 AI 调研结论；research v4 另记回答契约（answerContract）和市场证据是否可用（marketEvidence）",
   answerContract: "research v4：limited 是 AI 创作策划（模型只写创作假设、拟定受众、方法参考与本剧应用、机会；facts、observations 为空，受众待验证，均由服务端写入），sourced 是有可读取市场资料时的引用契约",
-  unverified: `服务端提示：${AUTO_UNVERIFIED_SUMMARY}（no_role：数字含义；duration_unconfirmed：时长含义，不是已判定的观看统计）；相关文字只属于创作假设或设计，不是有来源的事实或已验证的市场结论`,
+  unverified: `服务端提示：${AUTO_UNVERIFIED_SUMMARY}（no_role：数字含义；duration_unconfirmed：时长含义，不是已判定的观看统计；episode_scope_unconfirmed：集数描述的作用范围，不是已判定的全剧集数冲突）；相关文字只属于创作假设或设计，不是有来源的事实或已验证的市场结论`,
   limitations: "历史版本（research v1/v2）由 AI 填写的资料局限",
   appliedConstraints: "历史版本（research v1/v2）由 AI 复述的约束",
   researchMode: "limited 表示 AI 创作策划、市场证据不可用（仍可能读取了方法资料或用户资料），不是实时市场验证；sourced 表示有可读取的市场资料",

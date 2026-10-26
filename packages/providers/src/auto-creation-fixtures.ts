@@ -520,9 +520,11 @@ export interface AutoFixturePlan {
   /**
    * The first hypothesis' howToVerify counts a sample of the work (checks v8; synthetic, not a real refused answer).
    * sample: 三集样稿 for a reading (passes in a run of at least three episodes). statistic: the same sample, then 七成观众
-   * (refused, proportion). total: the work cut to two episodes (refused, frozen episode count).
+   * (refused, proportion). total: the work cut to two episodes (refused, frozen episode count). checks v11: reading, the
+   * first three episodes read with no 样稿 (passes); unconfirmed, testers asked to watch the first three, a scope the code
+   * cannot place (passes with an episode-scope notice); outside, a reading of episode 61 (refused, sample out of range).
    */
-  verificationSample?: "sample" | "statistic" | "total";
+  verificationSample?: "sample" | "statistic" | "total" | "reading" | "unconfirmed" | "outside";
   /**
    * The first structure's application.why carries a viewing time that one named check refuses (synthetic, one per
    * branch; not the refused answer of any real run, which was never kept).
@@ -548,6 +550,9 @@ const FIXTURE_SAMPLE_PLANS: Readonly<Record<NonNullable<AutoFixturePlan["verific
   sample: "模型替身样例：计划制作三集样稿进行试读并收集反馈。",
   statistic: "模型替身样例：计划制作三集样稿进行试读，七成观众会喜欢。",
   total: "模型替身样例：计划将本剧改为两集再验证。",
+  reading: "模型替身样例：计划试读前三集并收集反馈。",
+  unconfirmed: "模型替身样例：计划请试看者看完前三集再收集反馈。",
+  outside: "模型替身样例：计划试读第六十一集并收集反馈。",
 };
 
 /** The first structure's application.why for each viewingDurationWhy (synthetic samples). */

@@ -613,6 +613,52 @@ describe("AI 自动创作 run page", () => {
     expect(document.body.textContent).not.toMatch(/市场验证(已)?完成|已完成市场验证|已核实/u);
   });
 
+  it("checks v11: an episode-scope notice on a plan is listed with its own note; the plan stays as written and reads as no viewing time or finding", async () => {
+    const plan = "计划请试看者看完前三集再收集反馈。";
+    const research = {
+      schema: "ads.auto-creation.research.v4", facts: [], observations: [],
+      hypotheses: [{ id: "H1", statement: "开场就让主角做出冒险选择，可能更容易让观众代入。", howToVerify: plan }],
+      audience: { primary: "拟面向通勤时刷剧的成年观众（待验证）", viewingNeeds: ["一集内看到结果"], emotionalAppeals: ["扳回一局"], basis: "hypothesis", sourceIds: [] },
+      contentStructure: [{ reference: null, application: { pattern: "主角主动选择推动结果", why: "自主创作设计。" } }],
+      opportunities: ["小人物在一个夜晚完成一次反击"],
+      serverRecord: { origin: "server_record",
+        executedWith: { promptVersion: "ads.auto-creation.prompt.v10", checksVersion: "ads.auto-creation.checks.v11", researchSchema: "ads.auto-creation.research.v4", answerContract: "limited" },
+        marketEvidence: { origin: "source_snapshot", status: "unavailable", note: "市场证据不可用：本次资料快照没有符合条件的近期市场资料。" },
+        settings: { origin: "user_setting", items: [{ key: "episodes", label: "集数", value: "共 60 集" }] },
+        material: { origin: "source_snapshot", researchMode: "limited", read: [], unread: [], gaps: [] } },
+      unverified: [
+        { origin: "server_check", field: "hypotheses[0].howToVerify", token: "三集", semantic: "unclassified", rule: "episode_scope_unconfirmed", note: "程序无法确认集数描述的作用范围，未核实" },
+      ],
+    };
+    const done = run({ researchMode: "limited", stages: [
+      { stageKey: "sources", kind: "sources", state: "completed", attemptNo: 0, errorCode: null, output: null, upstreamChanged: false, supersededBy: null, scriptSave: null, scriptRevisionId: null },
+      { stageKey: "research", kind: "research", state: "completed", attemptNo: 1, errorCode: null, output: research as never, upstreamChanged: false, supersededBy: null, scriptSave: null, scriptRevisionId: null },
+    ] });
+    vi.stubGlobal("fetch", vi.fn(async (input: string) => input.endsWith("/auto-runs/latest") ? json({ run: done }) : json(options())));
+    render(<AutoCreationRun projectId={P1} />);
+    await screen.findByTestId("auto-research-detail");
+    expect(screen.getByTestId("auto-hypotheses").textContent).toContain(`验证计划：${plan}（含未核实数字）`);
+    expect(screen.getByText(/^未核实提示（/u).textContent).toContain("未核实提示（程序未能判定数字、时长含义或集数作用范围，未核实；");
+    expect([...screen.getByTestId("auto-unverified").querySelectorAll("li")].map((item) => item.textContent)).toEqual([
+      "第1条假设（H1）的验证计划中的「三集」：程序无法确认集数描述的作用范围，未核实；只属于创作假设或设计，不是有来源的事实或市场结论。",
+    ]);
+    expect(document.body.textContent).not.toMatch(/市场验证(已)?完成|已完成市场验证|已核实|程序无法确认时长含义/u);
+  });
+
+  it("checks v11: a sample outside the work names the frozen episodes, never a key problem", async () => {
+    const code = "constraint_violation@hypotheses[0].howToVerify:chinese_numeral+frozen_conflict+sample_out_of_range";
+    const failed = run({ state: "failed", errorCode: "constraint_violation", quality: "pending", storySave: "pending", storyRevisionId: null, packageStatus: "incomplete",
+      callsUsed: 1, callCap: 6, openIssues: [], stages: [{ stageKey: "research", kind: "research", state: "rejected", attemptNo: 1, errorCode: code, output: null,
+        upstreamChanged: false, supersededBy: null, scriptSave: null, scriptRevisionId: null }] });
+    vi.stubGlobal("fetch", vi.fn(async (input: string) => input.endsWith("/auto-runs/latest") ? json({ run: failed }) : json(options())));
+    render(<AutoCreationRun projectId={P1} />);
+    const stop = (await screen.findByText(/^停在「/u)).textContent!;
+    expect(stop).toContain("位置：hypotheses[0].howToVerify");
+    expect(stop).toContain("验证计划抽取的集数或第几集超出本剧冻结的集数");
+    expect(stop).not.toContain("sample_out_of_range");
+    expect(screen.getByTestId("auto-output-refused").textContent).toContain("不是密钥或账户问题");
+  });
+
   it("research v4: a limited answer carrying a sourced field is explained as the limited contract, never a key problem", async () => {
     const code = "invalid_output@facts:unrecognized_keys+limited_contract+forbidden_field";
     const failed = run({ state: "failed", errorCode: "invalid_output", quality: "pending", storySave: "pending", storyRevisionId: null, packageStatus: "incomplete",

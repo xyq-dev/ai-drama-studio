@@ -169,12 +169,14 @@ describe("the v3 prompt and the v3 checks say the same thing", () => {
       .filter((text) => !["假设", "计划", "建议", "是否、可能、待验证", "计划、拟", refused].includes(text));
     expect(examples.length).toBeGreaterThan(8);
     for (const example of examples) {
-      expect(validateAutoStageOutput("research", limited(hypothesis(`${example}，待验证。`)), input(), context()), example).toMatchObject({ ok: true });
+      // Prompt v10: a sample of the work is a verification plan's example, read only in howToVerify (checks v11).
+      const answer = /^计划(?:试读|选取)/u.test(example) ? hypothesis("可能偏爱一集内兑现。", `${example}。`) : hypothesis(`${example}，待验证。`);
+      expect(validateAutoStageOutput("research", limited(answer), input(), context()), example).toMatchObject({ ok: true, output: { unverified: [] } });
     }
     expect(prompt).toContain(`不写“${refused}”`);
     expect(validateAutoStageOutput("research", limited(hypothesis(`${refused}。`)), input(), context()))
       .toMatchObject({ ok: false, semantic: "result_claim", rule: "unmarked_audience_judgement" });
-    expect(prompt).toContain("提示版本：ads.auto-creation.prompt.v9");
+    expect(prompt).toContain("提示版本：ads.auto-creation.prompt.v10");
   });
 });
 

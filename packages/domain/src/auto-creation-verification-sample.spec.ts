@@ -67,7 +67,6 @@ const REFUSED: ReadonlyArray<readonly [string, string, string, string]> = [
   ["a sample position of zero", "计划试读第0集样稿并收集反馈。", "frozen_conflict", "sample_out_of_range"],
   ["a viewing habit", "观众通常观看三集后退出。", "market_statistic", "viewing_count"],
   ["a measured average", "调查显示观众平均观看三集。", "result_claim", "measured_result"],
-  ["episodes read with no sample named (boundary: read as before)", "计划试读前三集并收集反馈。", "frozen_conflict", "episode_count"],
   ["a sample already read","已选取三集样稿进行试读，反馈很好。", "frozen_conflict", "episode_count"],
   ["a sample with a viewing habit beside it", "计划选取观众通常看完的三集样稿进行试读。", "market_statistic", "viewing_count"],
   // checks v9: the sample verb must take this count as its object. Both passed on fc64e84 (checks v8), where any sample
@@ -97,8 +96,10 @@ describe("A. the number reading of a verification plan (classifier, not the stag
   it("viewers named in a sample plan neither make it a statistic nor exempt anything else", () => {
     expect(plan("计划邀请观众试读三集样稿并收集反馈。")).toEqual({ refusal: null, unverified: [] });
     expect(plan("计划邀请观众试读三集样稿，看哪个开场更受欢迎。")).toEqual({ refusal: null, unverified: [] });
-    // Without the sample, a count of episodes next to viewers is a viewing count, as before.
-    expect(plan("计划请试看者看完前三集再收集反馈。").refusal).toMatchObject({ semantic: "market_statistic", rule: "viewing_count" });
+    // checks v11: with no sample verb on it, a count of episodes in a pending plan next to viewers is a scope the code
+    // cannot place, kept with a notice (auto-creation-episode-scope.spec.ts); a reading verb on it makes it a sample.
+    expect(plan("计划请试看者看完前三集再收集反馈。")).toMatchObject({ refusal: null, unverified: [{ rule: "episode_scope_unconfirmed" }] });
+    expect(plan("计划试读前三集并收集反馈。")).toEqual({ refusal: null, unverified: [] });
   });
 
   it("outside a verification plan the same sample is read as before (no field gets the context by itself)", () => {

@@ -94,7 +94,7 @@ describe("1. the settings and the source gaps are the server's record, from the 
       .toEqual(Object.fromEntries(Object.entries(output).filter(([key]) => key !== "serverRecord" && key !== "unverified")));
     expect(output.unverified).toEqual([]);
     expect(output.serverRecord).toEqual(autoResearchServerRecord(frozen, context(frozen).sources!, context(frozen).referenceCatalog));
-    expect(output.serverRecord.executedWith).toMatchObject({ promptVersion: "ads.auto-creation.prompt.v9", checksVersion: "ads.auto-creation.checks.v10",
+    expect(output.serverRecord.executedWith).toMatchObject({ promptVersion: "ads.auto-creation.prompt.v10", checksVersion: "ads.auto-creation.checks.v11",
       researchSchema: AUTO_CREATION_RESEARCH_SCHEMA, answerContract: "limited", answerSchema: AUTO_CREATION_RESEARCH_ANSWER_SCHEMA,
       referenceCatalogVersion: "ads.auto-creation.reference-catalog.v1", referenceCatalogHash: context(frozen).referenceCatalog!.hash });
     expect(output.serverRecord.settings).toEqual({ origin: "user_setting", items: [
