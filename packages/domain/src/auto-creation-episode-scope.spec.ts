@@ -284,3 +284,51 @@ describe("D. the research prompt says a plan may read part of the work, with an 
     }
   });
 });
+
+// ---------------------------------------------------------------------------------------------------------------
+// An adjustment word that changes something else (checks v11 fix before release). On 24fbccc a clause-wide test for
+// 改为 / 延长到 … refused the legal sample below as a total-episode conflict on all three paths, and the same clause
+// switched off the range check of a 第N集 sample. Synthetic samples, not a real refused answer.
+
+/** A sample beside an adjustment of something that is no count of episodes: C, no notice. */
+const ADJUSTED_ELSEWHERE = [
+  "计划制作三集样稿并把试读时间延长到三天。",
+  "计划试读前三集并把反馈收集期延长到七天。",
+];
+/** The same clause shape, refused for what the count is: out of range, a real total, or a total beside the sample. */
+const ADJUSTED_REFUSED: ReadonlyArray<readonly [string, string, string, string]> = [
+  ["a made sample past the work", "计划制作六十一集样稿并把试读时间延长到三天。", "frozen_conflict", "sample_out_of_range"],
+  ["a sample position past the work", "计划试读第六十一集并把试读时间延长到三天。", "frozen_conflict", "sample_out_of_range"],
+  ["a sample, then the work cut to two", "计划制作三集样稿并把本剧缩至两集。", "frozen_conflict", "episode_count"],
+  ["the work compressed to three", "计划压缩本剧到三集再试读。", "frozen_conflict", "episode_count"],
+  ["a sample and a longer reading, then the work's total", "计划制作三集样稿并把试读时间延长到三天，本剧共三集。", "frozen_conflict", "episode_count"],
+  ["a sample and a longer reading, then a share of viewers", "计划试读前三集并把反馈收集期延长到七天，七成观众会喜欢。", "market_statistic", "proportion"],
+  ["a sample and a longer reading, then a measured result", "计划制作三集样稿并把试读时间延长到三天，已测得观众更喜欢反转。", "result_claim", "measured_result"],
+];
+
+describe("E. an adjustment word for something else leaves a sample a sample", () => {
+  it.each(ADJUSTED_ELSEWHERE)("classifier: the count is a sample, with no notice: %s", (text) => {
+    expect(plan(text)).toEqual({ refusal: null, unverified: [] });
+  });
+
+  it.each(ADJUSTED_REFUSED)("classifier: %s is refused: %s", (_label, text, semantic, rule) => {
+    expect(plan(text).refusal).toMatchObject({ semantic, rule });
+  });
+
+  describe.each(PATHS)("%s", (_path, mode, check) => {
+    it.each(ADJUSTED_ELSEWHERE)("passes the whole research as written, with no notice: %s", (howToVerify) => {
+      const result = check(answer(mode, { howToVerify }));
+      expect(result).toMatchObject({ ok: true });
+      const output = result.output as Output;
+      expect(output.hypotheses[0]!.howToVerify).toBe(howToVerify);
+      expect(output.unverified).toEqual([]);
+    });
+
+    it.each(ADJUSTED_REFUSED)("%s is refused whole: %s", (_label, howToVerify, semantic, rule) => {
+      const result = check(answer(mode, { howToVerify }));
+      expect(result).toMatchObject({ ok: false, field: "hypotheses[0].howToVerify", semantic, rule,
+        code: semantic === "frozen_conflict" ? "constraint_violation" : "unsourced_number" });
+      expect(result).not.toHaveProperty("output");
+    });
+  });
+});

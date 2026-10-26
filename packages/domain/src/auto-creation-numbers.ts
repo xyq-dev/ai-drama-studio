@@ -562,18 +562,29 @@ const SAMPLE_BOUND = new RegExp(`(?:${SAMPLE_MAKE_VERBS}|${SAMPLE_READ_VERBS})${
 const SAMPLE_READ_BOUND = new RegExp(`(?:${SAMPLE_READ_VERBS})${SAMPLE_SCOPE}$`, "u");
 /** A reading or a sample already done: a result, not a plan. */
 const SAMPLE_DONE = /已|曾|(?:制作|撰写|选取|抽取|挑选|试读|试看|观看|看|读|追|刷)(?:过|了)/u;
-/** A change of the work's own size (A): the work is not sampled, its total is rewritten. */
-const TOTAL_CHANGE = /(?:改|缩|减|压|删|调整|变|扩|扩充|扩展|增|增加|延长|缩短|精简|浓缩|合并|拆)(?:成|为|至|到)|改编|缩减|压缩|删减|共计|总共|一共|总计|本剧共|全剧共/u;
+/**
+ * A change of the work's own size (A): the work is not sampled, its total is rewritten. It is a change of this count
+ * only when its wording takes the count, right before it (改为三集, 缩至三集, 压缩本剧到三集, 共计三集); an adjustment
+ * elsewhere in the clause changes something else (把试读时间延长到三天) and leaves this count to be read for what it is.
+ */
+const TOTAL_CHANGE_BEFORE = new RegExp([
+  "(?:改|缩|减|压|删|调整|变|扩|扩充|扩展|增|增加|延长|缩短|精简|浓缩|合并|拆)(?:成|为|至|到)",
+  "(?:改编|缩减|压缩|删减|精简|浓缩|调整)(?:(?:本剧|全剧|该剧|此剧|整部剧)(?:的)?(?:集数)?)?(?:为|成|至|到)?",
+  "共计|总共|一共|总计",
+].map((part) => `(?:${part})`).join("|") + "(?:约|大约|只有|仅)?$", "u");
 /** The work's total named right before the count (全剧三集, 本剧共三集). */
 const TOTAL_BEFORE = /(?:本剧|全剧|该剧|此剧|整部剧)(?:的)?(?:总集数|集数)?(?:共|总共|一共|只有|仅有|仅|为|是|有)?(?:约)?$/u;
 /** Viewers leaving after a count of episodes (B): a viewing statistic, plan word or not (看完三集后都弃剧). */
 const EPISODE_LEAVING = /^集(?:的)?(?:样稿|样片)?(?:左右|上下)?(?:后|之后|以后|就|便|即)+(?:都|会|就|便)*(?:退出|流失|划走|离开|关闭|跳出|弃剧|放弃|走掉|离场|停止|关掉|不看|不再看)/u;
-const SAMPLE_NOT = new RegExp(`${SAMPLE_DONE.source}|${TOTAL_CHANGE.source}`, "u");
 const EPISODE_ORDINAL = new RegExp(`第\\s*(\\d+|[０-９]+|[${CN_DIGITS}]+)\\s*集`, "gu");
 
-/** Whether a clause is a plan to sample this work: a plan word, a sample verb, no result, no new total, no habit. */
+/**
+ * Whether a clause is a plan to sample this work: a plan word, a sample verb, no result, no habit. A new total is no
+ * longer judged here, clause-wide: each count is checked against the wording that takes it (TOTAL_CHANGE_BEFORE), so
+ * an adjustment of something else neither refuses a sample nor turns off the range check of a 第N集 sample.
+ */
 function samplePlan(clause: string): boolean {
-  return SAMPLE_PLAN.test(clause) && SAMPLE_VERB.test(clause) && !SAMPLE_NOT.test(clause) && !VIEWING_HABIT.test(clause);
+  return SAMPLE_PLAN.test(clause) && SAMPLE_VERB.test(clause) && !SAMPLE_DONE.test(clause) && !VIEWING_HABIT.test(clause);
 }
 
 /**
@@ -587,7 +598,8 @@ function sampleBound(before: string, tail: string): boolean {
 
 /**
  * The scope of a count of episodes in a verification plan (checks v11), or null to read it as before (a total of the
- * work, or a viewing count next to viewers). Its order is the order of the rules: A, a new total of the work, and B, a
+ * work, or a viewing count next to viewers). Its order is the order of the rules: A, a new total of the work taking this
+ * very count (改为三集, 本剧共三集; not an adjustment of something else in the clause), and B, a
  * viewing habit, viewers leaving after the count, or a reading already done, are refused as before; C, a sample its own
  * verb takes, must lie within the work; any other count of a future plan that is within the work is D, a scope the code
  * cannot place, kept as an unverified notice. A count larger than the work is no sample of it, whatever its scope.
@@ -595,7 +607,7 @@ function sampleBound(before: string, tail: string): boolean {
  */
 function verificationEpisodeScope(clause: string, clauses: readonly string[], before: string, tail: string, market: boolean, value: number | null,
   frame: AutoNumberFrame): Role | null {
-  if (TOTAL_CHANGE.test(clause) || TOTAL_BEFORE.test(before)) return refuse("frozen_conflict", "episode_count");
+  if (TOTAL_CHANGE_BEFORE.test(before) || TOTAL_BEFORE.test(before)) return refuse("frozen_conflict", "episode_count");
   if (VIEWING_HABIT.test(clause) || EPISODE_LEAVING.test(tail) || SAMPLE_DONE.test(clause)) return null;
   const within = value !== null && value >= 1 && value <= frame.episodeCount;
   if (samplePlan(clause) && sampleBound(before, tail)) return within ? { allowed: true, rule: "verification_sample" } : refuse("frozen_conflict", "sample_out_of_range");
