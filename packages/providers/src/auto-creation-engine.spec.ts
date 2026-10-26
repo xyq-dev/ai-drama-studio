@@ -10,6 +10,7 @@ import {
   autoRevisionSchema,
   type AutoCreationConstraints,
   type AutoCreationFrozenInput,
+  type AutoDirections,
   type AutoResearch,
   type TitleWritingProviderKey,
 } from "@ai-drama/contracts";
@@ -197,7 +198,7 @@ describe("automatic creation engine", () => {
     expect(seen[0]!.stage).toBe("research");
     const research = result.stages.find((stage) => stage.stageKey === "research")!.output as { hypotheses: Array<{ howToVerify: string }>; serverRecord: { executedWith: Record<string, string> } };
     expect(research.hypotheses[0]!.howToVerify).toBe("模型替身样例：计划制作三集样稿进行试读并收集反馈。");
-    expect(research.serverRecord.executedWith).toMatchObject({ checksVersion: "ads.auto-creation.checks.v11" });
+    expect(research.serverRecord.executedWith).toMatchObject({ checksVersion: "ads.auto-creation.checks.v12" });
   });
 
   it.each([
@@ -244,6 +245,62 @@ describe("automatic creation engine", () => {
   it("checks v11: a reading of an episode past the work is refused at research after one send; nothing after it, its text kept nowhere", async () => {
     const code = "constraint_violation@hypotheses[0].howToVerify:chinese_numeral+frozen_conflict+sample_out_of_range";
     const { run, engine, seen, view } = await setup({ episodeCount: 3, revisionRounds: 0, plan: { verificationSample: "outside" } });
+    await engine.drive(run.id);
+    const result = await view();
+    expect(result).toMatchObject({ state: "failed", errorCode: "constraint_violation", callsUsed: 1 });
+    expect(result.stages.find((stage) => stage.stageKey === "research")).toMatchObject({ state: "rejected", errorCode: code, output: null });
+    expect(result.calls.map((call) => call.errorCode)).toEqual([code]);
+    expect(JSON.stringify(result)).not.toContain("第六十一集");
+    await engine.maintain();
+    expect(seen).toHaveLength(1);
+  });
+
+  // checks v12 (synthetic designs, not a real refused answer): a count or position of episodes in the work's own design.
+  it("checks v12: a local design (the first two episodes, a two-episode period) passes as written with no notice; the three-episode flow (8 calls) completes", async () => {
+    const { store, run, engine, seen, view } = await setup({ episodeCount: 3, revisionRounds: 0, plan: { creativeEpisodeScope: "local" } });
+    await engine.drive(run.id);
+    const result = await view();
+    expect(result).toMatchObject({ state: "completed", storySave: "saved", errorCode: null, callsUsed: 8 });
+    expect(seen).toHaveLength(8);
+    const research = result.stages.find((stage) => stage.stageKey === "research")!.output as AutoResearch;
+    expect(research.contentStructure[0]!.application).toEqual({ pattern: "模型替身样例：用前两集建立主角与对手的冲突。", why: "模型替身样例：每两集推进一个阶段目标。" });
+    expect(research.unverified).toEqual([]);
+    expect(research.serverRecord.executedWith).toMatchObject({ promptVersion: "ads.auto-creation.prompt.v10", checksVersion: "ads.auto-creation.checks.v12" });
+    const directions = result.stages.find((stage) => stage.stageKey === "directions")!.output as AutoDirections;
+    expect(directions.candidates[0]!.difficultyNote).toBe("模型替身样例：本剧每两集设置一个小高潮。");
+    expect(directions.unverified).toEqual([]);
+    expect(store.projects.get(P1)!.stories[0]).toMatchObject({ reviewStatus: "DRAFT" });
+  });
+
+  it("checks v12: a count the code cannot place in a design is kept with notices, given to the directions prompt and the package; the flow (8 calls) completes", async () => {
+    const { store, run, engine, seen, view } = await setup({ episodeCount: 3, revisionRounds: 0, plan: { creativeEpisodeScope: "unconfirmed" } });
+    await engine.drive(run.id);
+    const result = await view();
+    expect(result).toMatchObject({ state: "completed", storySave: "saved", errorCode: null, callsUsed: 8 });
+    const research = result.stages.find((stage) => stage.stageKey === "research")!.output as AutoResearch;
+    expect(research.contentStructure[0]!.application.why).toBe("模型替身样例：在两集内完成第一次反击。");
+    const notice = { origin: "server_check", token: "两集", semantic: "unclassified", rule: "episode_scope_unconfirmed", note: "程序无法确认集数描述的作用范围，未核实" };
+    expect(research.unverified).toEqual([{ ...notice, field: "contentStructure[0].application.why" }]);
+    expect(seen[1]!.stage).toBe("directions");
+    expect(seen[1]!.user).toContain("「两集」：程序无法确认集数描述的作用范围，未核实；");
+    expect(seen[1]!.user).not.toContain("程序无法确认时长含义");
+    const directions = result.stages.find((stage) => stage.stageKey === "directions")!.output as AutoDirections;
+    expect(directions.candidates[0]!.difficultyNote).toBe("模型替身样例：两集一个反转。");
+    expect(directions.unverified).toEqual([{ ...notice, field: "candidates[0].difficultyNote" }]);
+    const bundle = (await store.getRunById(WS, run.id))!;
+    const meta = { runId: run.id, projectId: P1, input: bundle.run.input, quality: "passed", state: "completed", callsUsed: 8, callCap: 8,
+      revisionRoundsUsed: 0, storySave: "saved", generatedAt: "2026-10-18T00:00:00.000Z" };
+    const markdown = autoPackageMarkdown(meta, bundle.stages);
+    expect(markdown).toContain("模型替身样例：在两集内完成第一次反击。");
+    expect(markdown).toContain("程序无法确认集数描述的作用范围，未核实");
+    expect(markdown).not.toContain("程序无法确认时长含义");
+    const json = autoPackageJson(meta, bundle.stages) as { research: { analysis: AutoResearch } };
+    expect(json.research.analysis.unverified).toEqual(research.unverified);
+  });
+
+  it("checks v12: a design placing a reveal in episode 61 is refused at research after one send; nothing after it, its text kept nowhere", async () => {
+    const code = "constraint_violation@contentStructure[0].application.pattern:chinese_numeral+frozen_conflict+episode_range_out_of_range";
+    const { run, engine, seen, view } = await setup({ episodeCount: 3, revisionRounds: 0, plan: { creativeEpisodeScope: "outside" } });
     await engine.drive(run.id);
     const result = await view();
     expect(result).toMatchObject({ state: "failed", errorCode: "constraint_violation", callsUsed: 1 });
@@ -369,7 +426,7 @@ describe("automatic creation engine", () => {
     expect(research).not.toHaveProperty("limitations");
     expect(research).not.toHaveProperty("appliedConstraints");
     expect(research.serverRecord).toMatchObject({ origin: "server_record",
-      executedWith: { promptVersion: "ads.auto-creation.prompt.v10", checksVersion: "ads.auto-creation.checks.v11", researchSchema: "ads.auto-creation.research.v4",
+      executedWith: { promptVersion: "ads.auto-creation.prompt.v10", checksVersion: "ads.auto-creation.checks.v12", researchSchema: "ads.auto-creation.research.v4",
         answerContract: "limited" },
       marketEvidence: { origin: "source_snapshot", status: "unavailable" },
       settings: { origin: "user_setting", items: [{ key: "episodes", value: "共 1 集" }, { key: "seconds" }, { key: "maxCharacters", value: "最多 3 人" }] },
@@ -440,7 +497,7 @@ describe("automatic creation engine", () => {
     expect(result).toMatchObject({ state: "completed", storySave: "saved", promptVersion: "ads.auto-creation.prompt.v4" });
     expect(seen.filter((item) => item.stage === "research").at(-1)!.user).toContain("提示版本：ads.auto-creation.prompt.v10");
     expect(result.stages.find((stage) => stage.stageKey === "research")!.output).toMatchObject({ schema: "ads.auto-creation.research.v4",
-      serverRecord: { executedWith: { promptVersion: "ads.auto-creation.prompt.v10", checksVersion: "ads.auto-creation.checks.v11", answerContract: "limited" } } });
+      serverRecord: { executedWith: { promptVersion: "ads.auto-creation.prompt.v10", checksVersion: "ads.auto-creation.checks.v12", answerContract: "limited" } } });
     expect(JSON.stringify(store.runs.find((item) => item.id === run.id)!.input)).toBe(frozen);
     expect(store.runs.find((item) => item.id === run.id)!.inputHash).toBe(hash);
   });

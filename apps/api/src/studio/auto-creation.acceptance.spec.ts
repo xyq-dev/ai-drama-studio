@@ -296,7 +296,7 @@ describe(`automatic creation on PostgreSQL (${scenario} schema)`, () => {
     expect(seen.slice(before).map((item) => item.stage)).toEqual(["research", "directions", "bible", "outline", "episode:1", "review:1"]);
     expect(seen.slice(before)[0]!.user).toContain("提示版本：ads.auto-creation.prompt.v10");
     expect((await q<{ input_json: AutoCreationFrozenInput }>("SELECT input_json FROM auto_creation_run WHERE id = $1", [runId]))[0]!.input_json)
-      .toMatchObject({ promptVersion: "ads.auto-creation.prompt.v10", checksVersion: "ads.auto-creation.checks.v11" });
+      .toMatchObject({ promptVersion: "ads.auto-creation.prompt.v10", checksVersion: "ads.auto-creation.checks.v12" });
     // The stored research is the accepted answer as sent: its quantities are there word for word.
     const research = (await q<{ output_json: { hypotheses: Array<{ statement: string; howToVerify: string }> } }>(
       "SELECT output_json FROM auto_creation_stage WHERE run_id = $1 AND stage_key = 'research'", [runId]))[0]!.output_json;
@@ -541,7 +541,7 @@ describe(`automatic creation on PostgreSQL (${scenario} schema)`, () => {
     expect(research.unverified.map((item) => [item.field, item.token])).toEqual([["contentStructure[2].application.pattern", "三块"], ["opportunities[1]", "五十元"]]);
     expect(research).not.toHaveProperty("appliedConstraints");
     expect(research.serverRecord).toMatchObject({ origin: "server_record", settings: { origin: "user_setting" }, material: { origin: "source_snapshot", researchMode: "limited" },
-      executedWith: { promptVersion: "ads.auto-creation.prompt.v10", checksVersion: "ads.auto-creation.checks.v11", answerContract: "limited" },
+      executedWith: { promptVersion: "ads.auto-creation.prompt.v10", checksVersion: "ads.auto-creation.checks.v12", answerContract: "limited" },
       marketEvidence: { status: "unavailable" } });
     expect((outputs.directions as { unverified: Array<{ field: string }> }).unverified.map((item) => item.field)).toEqual(["candidates[0].differentiation"]);
     // Later prompts carry the notices as unverified.
@@ -631,7 +631,7 @@ describe(`automatic creation on PostgreSQL (${scenario} schema)`, () => {
     expect(run).toMatchObject({ state: "completed", callsUsed: 7, callCap: 8, storySave: "saved", promptVersion: "ads.auto-creation.prompt.v4" });
     expect(run.calls.filter((call) => call.stageKey === "research").map((call) => [call.state, call.errorCode])).toEqual([["rejected", v4Code], ["completed", null]]);
     expect(run.stages.find((stage) => stage.stageKey === "research")!.output).toMatchObject({ schema: "ads.auto-creation.research.v4",
-      serverRecord: { executedWith: { promptVersion: "ads.auto-creation.prompt.v10", checksVersion: "ads.auto-creation.checks.v11", answerContract: "limited" } } });
+      serverRecord: { executedWith: { promptVersion: "ads.auto-creation.prompt.v10", checksVersion: "ads.auto-creation.checks.v12", answerContract: "limited" } } });
     const after = (await q<{ input_json: AutoCreationFrozenInput; input_hash: string }>("SELECT input_json, input_hash FROM auto_creation_run WHERE id = $1", [runId]))[0]!;
     expect(after.input_json).toEqual(v4);
     expect(after.input_hash).toBe(hashAutoCreationInput(id, v4));

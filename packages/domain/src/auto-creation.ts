@@ -717,10 +717,13 @@ function numberRefusal(finding: AutoNumberFinding, field: string): AutoValidatio
  * checks v5: a number with no recognised role is added to the notices, the text is kept as written and the reading goes
  * on; any other number is refused as uncitedNumber refuses it. verificationPlan: a hypothesis' howToVerify, where a
  * plan's sample of the work (计划制作三集样稿进行试读) is read as a sample within the work, not its total (checks v8), and
- * a count of episodes whose scope the code cannot place is a notice too (episode_scope_unconfirmed, checks v11).
+ * a count of episodes whose scope the code cannot place is a notice too (episode_scope_unconfirmed, checks v11). Every
+ * creative field is the work's own design (checks v12): a part of the work its own range word lays out (本剧每三集, 用前
+ * 三集) or a position in it (第三集) must lie within the work (episode_range_out_of_range), a count whose scope the code
+ * cannot place is the same notice, and a new total, a viewing count and a verification plan's sample are read as before.
  */
 function creativeNumber(statement: string, field: string, frame: AutoNumberFrame, notices: AutoUnverifiedNotice[], verificationPlan = false): AutoValidation | null {
-  const reading = uncitedNumberReading(statement, frame, { unverified: true, verificationPlan });
+  const reading = uncitedNumberReading(statement, frame, { unverified: true, verificationPlan, structureDesign: true });
   notices.push(...reading.unverified.map((finding): AutoUnverifiedNotice => {
     const at = { origin: "server_check", field, token: finding.token, semantic: "unclassified" } as const;
     if (finding.rule === "duration_unconfirmed") return { ...at, rule: "duration_unconfirmed", note: AUTO_UNVERIFIED_DURATION_NOTE };

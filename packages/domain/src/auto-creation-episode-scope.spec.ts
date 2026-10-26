@@ -190,7 +190,7 @@ describe("B. the whole research stage (validateAutoStageOutput, and the series' 
       expect(output.hypotheses[0]!.howToVerify).toBe(howToVerify);
       expect(output.unverified).toEqual([]);
       expect(output.serverRecord.settings.items.find((item) => item.key === "episodes")?.value).toBe(`共 ${String(EPISODES)} 集`);
-      expect(output.serverRecord.executedWith).toMatchObject({ checksVersion: "ads.auto-creation.checks.v11", promptVersion: "ads.auto-creation.prompt.v10" });
+      expect(output.serverRecord.executedWith).toMatchObject({ checksVersion: "ads.auto-creation.checks.v12", promptVersion: "ads.auto-creation.prompt.v10" });
     });
 
     it.each(UNCONFIRMED)("%s passes with an episode-scope notice on that field, kept as written: %s", (_label, howToVerify) => {

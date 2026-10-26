@@ -57,7 +57,9 @@ export const SERIES_PACKAGE_SCHEMA = "ads.series-writing.package.v1" as const;
  * created under v8 keeps the v8 it froze. Prompt v9 / checks v10: a structure's method is a catalog id of the plan job's
  * own saved snapshot (research v4 stored as before); a series created earlier keeps the versions it froze. Prompt v10 /
  * checks v11: a verification plan may read part of the work (its sample within the series' own episodes; a scope the
- * code cannot place is a notice); a series created earlier keeps the versions it froze.
+ * code cannot place is a notice); a series created earlier keeps the versions it froze. Checks v12: every creative field
+ * reads a part of the work or a position in it within the series' own episodes; a series created earlier keeps the
+ * checks version it froze.
  */
 export const SERIES_RESEARCH_CONTRACT = {
   promptVersion: AUTO_CREATION_PROMPT_VERSION,
