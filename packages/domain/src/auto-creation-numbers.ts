@@ -567,11 +567,11 @@ const SAMPLE_DONE = /已|曾|(?:制作|撰写|选取|抽取|挑选|试读|试看
  * only when its wording takes the count, right before it (改为三集, 缩至三集, 压缩本剧到三集, 共计三集); an adjustment
  * elsewhere in the clause changes something else (把试读时间延长到三天) and leaves this count to be read for what it is.
  */
-const TOTAL_CHANGE_BEFORE = new RegExp([
+const TOTAL_CHANGE_BEFORE = new RegExp(`(?:${[
   "(?:改|缩|减|压|删|调整|变|扩|扩充|扩展|增|增加|延长|缩短|精简|浓缩|合并|拆)(?:成|为|至|到)",
   "(?:改编|缩减|压缩|删减|精简|浓缩|调整)(?:(?:本剧|全剧|该剧|此剧|整部剧)(?:的)?(?:集数)?)?(?:为|成|至|到)?",
   "共计|总共|一共|总计",
-].map((part) => `(?:${part})`).join("|") + "(?:约|大约|只有|仅)?$", "u");
+].map((part) => `(?:${part})`).join("|")})(?:约|大约|只有|仅)?$`, "u");
 /** The work's total named right before the count (全剧三集, 本剧共三集). */
 const TOTAL_BEFORE = /(?:本剧|全剧|该剧|此剧|整部剧)(?:的)?(?:总集数|集数)?(?:共|总共|一共|只有|仅有|仅|为|是|有)?(?:约)?$/u;
 /** Viewers leaving after a count of episodes (B): a viewing statistic, plan word or not (看完三集后都弃剧). */

@@ -294,6 +294,10 @@ describe("D. the research prompt says a plan may read part of the work, with an 
 const ADJUSTED_ELSEWHERE = [
   "计划制作三集样稿并把试读时间延长到三天。",
   "计划试读前三集并把反馈收集期延长到七天。",
+  // The adjustment before the count: on 4311538 TOTAL_CHANGE_BEFORE ended only its last alternative with $, so an
+  // adjustment anywhere before the count still refused it as a total-episode conflict.
+  "计划把试读时间延长到三天并制作三集样稿。",
+  "计划把反馈收集期延长到七天并试读前三集。",
 ];
 /** The same clause shape, refused for what the count is: out of range, a real total, or a total beside the sample. */
 const ADJUSTED_REFUSED: ReadonlyArray<readonly [string, string, string, string]> = [
