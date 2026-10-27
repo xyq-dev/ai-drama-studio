@@ -523,8 +523,10 @@ export interface AutoFixturePlan {
    * (refused, proportion). total: the work cut to two episodes (refused, frozen episode count). checks v11: reading, the
    * first three episodes read with no 样稿 (passes); unconfirmed, testers asked to watch the first three, a scope the code
    * cannot place (passes with an episode-scope notice); outside, a reading of episode 61 (refused, sample out of range).
+   * checks v13: step, a plan's first round followed by a popularity word (passes, no notice); ranking, the same round,
+   * then a work ranked first (refused, ranking).
    */
-  verificationSample?: "sample" | "statistic" | "total" | "reading" | "unconfirmed" | "outside";
+  verificationSample?: "sample" | "statistic" | "total" | "reading" | "unconfirmed" | "outside" | "step" | "ranking";
   /**
    * The work's own design counts or places episodes (checks v12; synthetic, not a real refused answer). local: the first
    * structure lays out the first two episodes and a two-episode period, the first direction a two-episode climax (passes
@@ -561,6 +563,8 @@ const FIXTURE_SAMPLE_PLANS: Readonly<Record<NonNullable<AutoFixturePlan["verific
   reading: "模型替身样例：计划试读前三集并收集反馈。",
   unconfirmed: "模型替身样例：计划请试看者看完前三集再收集反馈。",
   outside: "模型替身样例：计划试读第六十一集并收集反馈。",
+  step: "模型替身样例：计划在第一轮试读后比较角色人气。",
+  ranking: "模型替身样例：计划在第一轮试读后比较排名第一的作品。",
 };
 
 /** The first structure's application and the first direction's difficulty note for each creativeEpisodeScope (synthetic samples). */

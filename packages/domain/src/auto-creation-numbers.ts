@@ -190,6 +190,14 @@ function structuralOrdinal(units: string): RegExp {
 }
 const STRUCTURAL_ORDINAL = structuralOrdinal(`${STRUCTURAL_UNITS}|${STORY_TIME_UNITS}`);
 const STRUCTURAL_ORDINAL_IN_MARKET = structuralOrdinal(STRUCTURAL_UNITS);
+/**
+ * A step of a future verification plan (checks v13, a howToVerify only): 第一阶段, 第一项测试 / 验证 / 检查, 第一轮, 第一步.
+ * It is a step whatever else its clause names (计划在第一轮试读后比较角色人气), so a ranking word elsewhere in the clause
+ * makes it no place; the clause must be a plan by its own wording and claim nothing done or measured.
+ */
+const PLAN_STEP_ORDINAL = new RegExp(`${ORDINAL.source}(?=阶段|轮|步|项(?:测试|验证|检查))`, "gu");
+/** A place the ordinal itself belongs to: a ranking, a chart or a metric right before it (排名第一, 榜单上位列第3, 人气第一轮). */
+const RANK_PLACE_BEFORE = /(?:排名|排行|名次|榜单?|名列|位列|位居|播放量|销量|口碑|人气|热度|评分|收视率|点击量|票房)(?:上|中|里)?(?:为|是|在|居|列|达到|达)?$/u;
 /** Marks an ordinal of a ranking so it is matched as one whole token (名次第三), in a statement and in a source alike. */
 const RANK_PREFIX = "名次";
 /** What a removed setting leaves behind: no digit, no noun, the end of any noun window. */
@@ -258,9 +266,10 @@ function numberValue(numeral: string): number | null {
  * second run). A person's own audience constraint, restated verbatim, is removed only as the chosen target: in a clause
  * that names it so (目标观众：…, 拟面向…) or holds it alone, with no profile claim in that clause (核心受众为…), in a
  * sentence that claims nothing measured or about real viewers with it (数据显示…, 根据调研…, 本平台的受众…, …多为…).
- * The constraint is the person's choice, never a source.
+ * The constraint is the person's choice, never a source. planSteps: a verification plan, whose steps are removed as
+ * structural ordinals before any ranking is read (checks v13, planStep).
  */
-function sentencesOf(value: string, exempt: ReadonlyArray<AutoExemptNumber>, frozenAudience = ""): string[][] {
+function sentencesOf(value: string, exempt: ReadonlyArray<AutoExemptNumber>, frozenAudience = "", planSteps = false): string[][] {
   return value
     .replace(INVISIBLE, "")
     .replace(ITEM_ID, " ")
@@ -270,7 +279,7 @@ function sentencesOf(value: string, exempt: ReadonlyArray<AutoExemptNumber>, fro
     .split(/(?<=[。；;！？!?\n])/u)
     .map((sentence) => {
       const target = restatableAudience(sentence, frozenAudience);
-      return sentence.split(/(?<=[，,])/u).map((raw) => clauseOf(raw, exempt, target));
+      return sentence.split(/(?<=[，,])/u).map((raw) => clauseOf(raw, exempt, target, planSteps));
     })
     .filter((sentence) => sentence.some((clause) => clause.length > 0));
 }
@@ -299,14 +308,24 @@ function restatesTarget(clause: string, frozenAudience: string): boolean {
   return AUDIENCE_TARGET.test(bare) || bare.replace(/[\p{P}\s〓]/gu, "").length === 0;
 }
 
+/**
+ * Whether the ordinal at this offset of a compact clause is a step of a future plan (checks v13): the clause plans by its
+ * own wording (计划, 拟, 收集, 测试…), claims nothing done or measured (已, 试读过, 测得), and no ranking, chart or metric
+ * takes the ordinal itself. Anything else keeps the reading it had: a structural unit, or a place in a ranking.
+ */
+function planStep(clause: string, offset: number): boolean {
+  return PLAN.test(clause) && !SAMPLE_DONE.test(clause) && !RESULT.test(clause) && !RANK_PLACE_BEFORE.test(clause.slice(0, offset));
+}
+
 function clausesOf(value: string, exempt: ReadonlyArray<AutoExemptNumber>, frozenAudience = ""): string[] {
   return sentencesOf(value, exempt, frozenAudience).flat();
 }
 
-function clauseOf(raw: string, exempt: ReadonlyArray<AutoExemptNumber>, frozenAudience: string): string {
+function clauseOf(raw: string, exempt: ReadonlyArray<AutoExemptNumber>, frozenAudience: string, planSteps: boolean): string {
   return [raw]
     .map((clause) => clause.replace(/\s+/gu, "").replace(ORDINARY_WORDS, GAP))
     .map((clause) => (restatesTarget(clause, frozenAudience) ? clause.split(frozenAudience).join(GAP) : clause))
+    .map((clause) => (planSteps ? clause.replace(PLAN_STEP_ORDINAL, (ordinal, offset: number) => (planStep(clause, offset) ? GAP : ordinal)) : clause))
     // In a ranking clause no ordinal is a position; in a viewing clause 第 30 秒 is a viewing moment, not the story's.
     .map((clause) => (RANK_MARKERS.test(clause) ? clause : clause.replace(MARKET_CLAUSE.test(clause) ? STRUCTURAL_ORDINAL_IN_MARKET : STRUCTURAL_ORDINAL, GAP))
       .replace(ORDINAL, (ordinal) => `${GAP}${RANK_PREFIX}${ordinal}${GAP}`))
@@ -922,7 +941,8 @@ const UNVERIFIED_RULES: ReadonlySet<string> = new Set(AUTO_UNVERIFIED_RULES);
  * unverified instead of refused; the reading goes on past it, so any later number in the same clause, sentence or text is
  * still judged and refused for what it is. Only those sub-rules are kept: dates, counts out of range, statistics, viewing
  * times, measured results, frozen conflicts and unmarked judgements are refused as before. verificationPlan: a
- * hypothesis' howToVerify, where a plan's sample of this work is read as a sample, not the work's total (checks v8).
+ * hypothesis' howToVerify, where a plan's sample of this work is read as a sample, not the work's total (checks v8),
+ * and a step of the plan (第一阶段, 第一轮) is its order, not a place in a ranking (checks v13, planStep).
  * structureDesign: a creative field (a structure's application, a hypothesis, its plan, an opportunity, a direction's
  * notes), where a count or position of episodes is read by its scope in the work (checks v12, designEpisodeScope).
  */
@@ -936,7 +956,7 @@ export function uncitedNumberReading(text: string, frame: AutoNumberFrame,
   // A plan's sample keeps its own refusal; any other position outside the work is a range outside it.
   const outside = (verificationPlan ? sampleOrdinalRefusal(text, frame) : null) ?? (structureDesign ? designOrdinalRefusal(text, frame) : null);
   if (outside) return { refusal: outside, unverified };
-  for (const clauses of sentencesOf(text, frame.exempt, frame.frozenAudience)) {
+  for (const clauses of sentencesOf(text, frame.exempt, frame.frozenAudience, verificationPlan)) {
     // Viewers, the market and a measured result named anywhere in the sentence carry over its commas (数据显示，三个人里…).
     const sentence = clauses.join("");
     // A stated audience preference makes the sentence about viewers even with no market word (大家更喜欢三次反转的剧本).
