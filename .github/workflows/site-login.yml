@@ -95,11 +95,13 @@ jobs:
           NEXT_PUBLIC_API_BASE_URL: http://127.0.0.1:3201
         run: pnpm build
 
-      - name: Operator scripts (password hash, Caddy template, vault bootstrap)
-        run: node --test scripts/site-auth-password.test.mjs scripts/render-caddy-site.test.mjs scripts/admin-models-init.test.mjs
+      - name: Operator scripts (password hash, Caddy template, vault bootstrap, APT source helper)
+        run: node --test scripts/site-auth-password.test.mjs scripts/render-caddy-site.test.mjs scripts/admin-models-init.test.mjs scripts/ci/apt-official-https.test.mjs
 
       - name: Install Chromium and CJK font
+        timeout-minutes: 15
         run: |
+          sudo bash scripts/ci/apt-official-https.sh
           pnpm exec playwright install --with-deps chromium
           sudo apt-get update
           sudo apt-get install -y fonts-noto-cjk

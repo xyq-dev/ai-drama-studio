@@ -69,9 +69,10 @@ jobs:
         run: pnpm --filter @ai-drama/database integration
 
       - name: Prepare media worker tests
+        timeout-minutes: 15
         run: |
-          sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list || true
-          sudo apt-get update -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20
+          sudo bash scripts/ci/apt-official-https.sh
+          sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
             ffmpeg=7:6.1.1-3ubuntu5 \
             fonts-dejavu-core=2.37-8 \
