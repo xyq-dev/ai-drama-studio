@@ -29,7 +29,7 @@
 | `review:r` | 独立审阅提示与 10 项评价标准；问题须带**逐字原文证据**；程序检查结果并入 | 是 |
 | `revise:r:episode:k` | 只修指出的问题，记录逐条修改 | 是 |
 
-提示词版本 `ads.auto-creation.prompt.v10`、检查版本 `ads.auto-creation.checks.v11`、研究输出 `ads.auto-creation.research.v4`、研究的模型回答 `ads.auto-creation.research.answer.catalog.v1`、引用目录算法 `ads.auto-creation.reference-catalog.v1`（prompt.v10 / checks.v11 见 3.12，验证计划里集数按作用范围判断，无法确认的保留为未核实提示；prompt.v9 / checks.v10 见 3.11，内容结构的方法引用改为选择服务端目录编号，落库结构不变；checks.v9 见 3.9，只要求样本动作直接带着当前样本数量，提示与研究回答结构不变；checks.v8 见 3.8，只改验证计划里的样本集数判断，提示与研究回答结构不变；prompt.v8 见 3.7，只改研究提示，当时检查为 v7；v7 / v7 见 3.6，研究回答结构不变；v6 / v6 / research.v4 见 3.5；此前 v5 / v5 / research.v3 见 3.4，v4 / v4 / research.v2 见 3.3，v3 / v3 / research.v1 自 2026-10-20 起，2026-10-19 起为 v2，之前为 v1）、选择规则 `ads.auto-creation.selection-rules.v1`、输入 `ads.auto-creation.input.v1`。任务输入里冻结的是**开始时**的版本号；已完成的阶段不会重算，但旧任务续跑时，之后发送的阶段使用当前的提示词和检查（代码里没有按版本分支）。
+提示词版本 `ads.auto-creation.prompt.v10`、检查版本 `ads.auto-creation.checks.v12`、研究输出 `ads.auto-creation.research.v4`、研究的模型回答 `ads.auto-creation.research.answer.catalog.v1`、引用目录算法 `ads.auto-creation.reference-catalog.v1`（checks.v12 见 3.13，创作设计里的集数按作用范围判断、第 N 集先核对范围再清理，提示不变；prompt.v10 / checks.v11 见 3.12，验证计划里集数按作用范围判断，无法确认的保留为未核实提示；prompt.v9 / checks.v10 见 3.11，内容结构的方法引用改为选择服务端目录编号，落库结构不变；checks.v9 见 3.9，只要求样本动作直接带着当前样本数量，提示与研究回答结构不变；checks.v8 见 3.8，只改验证计划里的样本集数判断，提示与研究回答结构不变；prompt.v8 见 3.7，只改研究提示，当时检查为 v7；v7 / v7 见 3.6，研究回答结构不变；v6 / v6 / research.v4 见 3.5；此前 v5 / v5 / research.v3 见 3.4，v4 / v4 / research.v2 见 3.3，v3 / v3 / research.v1 自 2026-10-20 起，2026-10-19 起为 v2，之前为 v1）、选择规则 `ads.auto-creation.selection-rules.v1`、输入 `ads.auto-creation.input.v1`。任务输入里冻结的是**开始时**的版本号；已完成的阶段不会重算，但旧任务续跑时，之后发送的阶段使用当前的提示词和检查（代码里没有按版本分支）。
 
 ## 3. 研究层：只说真正读到的
 
@@ -134,7 +134,7 @@ contentStructure: [{ reference: { sourceId, quote } | null, application: { patte
 **未核实提示的准确边界**（`uncitedNumberReading`）：
 
 - 只针对无来源的**创作设计、假设、验证计划**文字：hypotheses 的 statement 与 howToVerify、contentStructure 的 application（pattern、why，不论有无 reference）、opportunities，以及选题的 differentiation、difficultyNote。
-- 只针对 `semantic=unclassified` 且 `rule=no_role` 的数字（不在提到观众或市场的句子里，也不属于任何已识别的角色）。其他 unclassified 子规则（日期或范围 `date_or_range`、超范围计数 `count_out_of_range`）照旧拒收。
+- 只针对 `semantic=unclassified` 且 `rule=no_role` 的数字（不在提到观众或市场的句子里，也不属于任何已识别的角色），以及 `duration_unconfirmed`（3.6）和 `episode_scope_unconfirmed`（验证计划见 3.12；checks.v12 起也用于以上所有本剧创作设计字段，见 3.13）。其他 unclassified 子规则（日期或范围 `date_or_range`、超范围计数 `count_out_of_range`）照旧拒收。
 - 提示保存字段、数字原文、`semantic`、`rule` 和固定说明「程序未能判定数字含义，未核实」；模型原文**不删、不截、不改**。页面、剧本包和后续提示按条目位置称呼提示所在处（「第1条假设（H3）」「第1条假设（H3）的验证计划」「第2条内容结构的本剧应用设计」「第1条机会」），假设附上模型自己的编号，不从数组下标编造编号：研究只要求编号不重复，不要求与顺序一致（PR #82 终审修正）。选题方向沿用 D1、D2…，因为选题检查要求编号按顺序。
 - **不提前放行**：遇到 no_role 后继续读完同一分句、同一字段和后面所有字段。之后出现的统计、受众人数、已得结果、冻结冲突、伪造或截断的引用、未读来源、`unsourced_claim`、资料有限下标为有来源的受众、重复编号、schema 错误等都照旧整份拒收（「主角只剩五十元。七成观众偏爱反转。」在 main 上只报到 no_role 就停下，现在继续读并以 `market_statistic+proportion` 拒收）。
 - 有引用的文字（facts、observations、带 sourceIds 的 audience、reference.quote）和受众文字（不带 sourceIds 的 audience、选题的 audienceFit，整段按观众判断）没有这个提示：仍须来源或待验证标记。
@@ -315,6 +315,22 @@ contentStructure: [{ reference: { sourceId, quote } | null, application: { patte
 - **研究提示（prompt.v10）**：区分「全剧总集数只能是用户硬约束里的 N 集」和「验证计划可以只抽取本剧的一部分试读或试看，抽取的集数或第几集必须在 1 到 N 集之内」；示例按冻结集数生成（4 集以上用「前 3 集」「其中 3 集」，2–3 集用 N−1，1 集写「试读这一集」不带数字），不会在少集数任务里给出越界示例；原来固定的「共 1 集，每集约 60 秒」改为本次冻结的集数和时长。仍明确禁止无来源统计、观看几集等观看统计和已执行结果。
 - **版本与历史**：共享 `prompt.v10`、`checks.v11`（此前未用过）；`research.answer.catalog.v1`、`research.v4`、`reference-catalog.v1` 和系列自身 prompt.v1 / checks.v1 不变，历史版本类型保留。旧冻结输入、哈希、已完成输出、调用和费用不回写；实际发送版本由 `executedWith` 如实记录。真正的全剧集数仍由冻结输入和后续结构化规划（大纲、分集 schema 按冻结集数）保证，相关门槛不放宽。引用目录、来源资格、映射与严格拒收、预算、日限额、预约、租约、幂等、恢复和审核门槛都不变；没有数据库变更。
 - **局限**：这是按句式的确定性判断，只覆盖上面列出的动作、范围词和改动说法；更远的修饰关系会落到 D（保留并提示）或原有拒收，不做无限轮措辞对抗。修复已确认的过严边界，不代表找回了线上原句，也不保证下一次真实模型必然通过。
+
+### 3.13 创作设计里集数的作用范围与本剧序数（2026-10-27，checks.v12；prompt.v10、research.v4 不变）
+
+**证据边界**：一次真实验收的 research 被拒为 `constraint_violation@contentStructure[4].application.pattern:chinese_numeral+frozen_conflict+episode_count`。被拒正文按设计没有保存，**原句未知**；本节不声称还原线上原句，也不认定线上必然是误拒。checks.v11 下（冻结 60 集），合成样本「本剧每三集设置一个小高潮」「用前三集建立主角与对手的冲突」「每六集推进一个阶段目标」在 application（pattern、why，不论 referenceId 是 null 还是合法目录编号）、hypotheses 的 statement、opportunities 和选题的 differentiation、difficultyNote 里都被拒为 frozen_conflict / episode_count：判断只看「N 集是否等于冻结集数」，不看作用范围（冻结 3 集时同一句恰好通过）。同时「第六十一集 / 第61集 / 第零集揭开反派身份」因结构序数在核对前被移除而**漏检通过**，1 集作品里的「第三集」也一样。本节修正这两处边界。
+
+- **作用字段**：只在现有创作数字入口 `creativeNumber` 显式启用 `structureDesign`：contentStructure[].application.pattern / why、hypotheses[].statement / howToVerify、opportunities[]、选题 candidates[].differentiation / difficultyNote。howToVerify 先按 3.12 的验证计划规则判断，未命中再按本节判断，`verificationPlan` 没有推广到其他字段。facts、observations、引用摘录、audience 和选题的 audienceFit 不启用，也没有给原本不检查数字的字段新增检查。
+- **判断顺序**（`auto-creation-numbers.ts` 的 `designEpisodeScope`，只处理「集」数量）：
+  - **全剧总集数**：复用 `TOTAL_CHANGE_BEFORE` / `TOTAL_BEFORE`（改动说法必须直接带着当前数量），另加总数被本剧自身措辞直接支配的说法（「总集数为三集」「本剧设计为三集」「全剧分三集」「本剧的集数是三集」，中间只允许这些措辞，「本剧前三集设计为…」「前三集的设计…」是局部结构，不算总数）和不写「本剧」的「共 / 一共 / 共有 / 共计 / 合计 / 总计 N 集」（`totalWording`，创作设计和验证计划用同一组判断）：与冻结值不同即硬拒 `frozen_conflict / episode_count`。等于冻结值的复述：不提到观众的分句在读取前就已移除，照旧通过；提到观众的分句（如冻结 60 集时「待验证观众是否喜欢本剧共60集的体量」）由 `frozenTotal` 判断，只有本分句经 `pendingJudgement` 判为待验证、总数前没有观看或读取动词（看完本剧共60集）、之后没有离开说法（本剧60集后弃剧）或观看、市场说法、分句里没有习惯词或已做过的说法时才通过，否则按原规则读作观看集数；未标记的受众判断（观众喜欢本剧共60集的体量）仍拒收。数值相等不豁免观看统计或测量结果。howToVerify 的 `verificationEpisodeScope` 对同一类总数说法按同一规则处理，抽样计划和 `sample_out_of_range` 不变。已做过的试读或抽样（「已完成前三集的试读」「曾用前三集样稿进行试读」，`SAMPLE_DONE` 与抽样动词同在一个分句）不按局部结构放行；howToVerify 里验证计划规则判为已做过、习惯或离开的数量，之后不再进入本节的局部结构判断，按原规则拒收。`SAMPLE_DONE` 词表不变。调整别的对象（把试读时间延长到三天）放在局部数量之前或之后都不算改动全剧规模。
+  - **观看、统计、已得结果**：分句有通常、大多等习惯词，数量后紧接退出、弃剧等，或读取、观看、选取、制作类动词直接支配当前数量（试读前三集、看完前三集、选取其中三集、制作三集、写三集、拍三集）：按原规则判断（观看集数 `viewing_count`、全剧冲突 `episode_count`）。比例、平均、频次、数量级和已测得结果在此之前就已拒收。提到观众或市场的分句只有本分句被 `pendingJudgement` 判为待验证（是否、可能、待验证…），且数量之后没有观看或市场说法，才按创作结构判断；未标记的受众判断不在本轮放宽（「观众喜欢本剧每三集一个小高潮的节奏」仍拒为 viewing_count）。
+  - **明确的本剧局部结构**：数量直接受「每 / 每隔 / 前 / 用 / 用前」支配，前面最多紧接「本剧 / 该剧 / 此剧（的）」，中间不能跨越其他文字借用范围词（「目前 / 之前 / 此前」不算）；全角序数遗留的「第４集」也按位置处理。数量在 1 到冻结集数之内：保留原文、通过、无提示；为零或越界：硬拒 `frozen_conflict / episode_range_out_of_range`。
+  - **作用范围无法确认**：不提到观众、没有已做过的说法、不属于以上任一类，且数量在 1 到冻结集数之内（「三集一个反转」「在三集内完成第一次反击」）：原文保留，记未核实提示 `semantic=unclassified`、`rule=episode_scope_unconfirmed`，说明「程序无法确认集数描述的作用范围，未核实」（复用 3.12 的通知结构）。超过冻结集数的不转成提示，按 `episode_count` 拒收。
+- **序数先核对再清理**（`designOrdinalRefusal`）：结构序数移除前，先在原文逐分句找「第 N 集」（中文数字、阿拉伯数字、全角数字），1 ≤ N ≤ 冻结集数才是本剧位置；为零或越界拒为 `episode_range_out_of_range`。含排名词的分句不按位置读。howToVerify 里抽样计划的越界仍为 `sample_out_of_range`，先于本节判断。引用摘录和事实可能描述其他作品，不套用本剧位置上限。
+- **继续检查**：合法数量或提示之后，同分句、同一句和后续字段照常检查；之后夹带比例、已得结果或全剧冲突，仍整份拒收。引用方法片段不为 application 的统计提供豁免（目录片段原文就是「七成观众喜欢每三集一个小高潮的节奏」时，同句写进 application 仍拒为 proportion）。
+- **展示**：新提示沿用 `unverified` 的位置称呼，页面、Markdown、JSON 和后续阶段提示按实际字段显示（如「第5条内容结构的本剧应用设计中的「三集」」「方向 D1 的难度说明中的「三集」」），不标成时长提示或事实；旧通知、旧错误码显示不变。页面为 `episode_range_out_of_range` 加了中文说明。
+- **版本与历史**：共享 `checks.v12`（此前未用过），`prompt.v10`、`research.v4`、`research.answer.catalog.v1`、`reference-catalog.v1` 和系列自身 prompt.v1 / checks.v1 不变，历史类型保留 v1–v11。新任务和新系列冻结 checks.v12，旧任务、旧系列保留冻结版本；冻结输入、哈希、已完成输出、调用和费用不回写，之后实际发送的研究由 `executedWith` 如实记录。模型请求 Schema、引用资格与映射、统计和 reason 白名单都不变；没有持久化字段、HTTP 字段或数据库变更，Migration 编写 0、执行 0。
+- **局限**：按句式的确定性判断，只覆盖列出的范围词、动词和总数说法；其他写法落到未核实提示或原有拒收，不做无限轮措辞对抗。`SAMPLE_DONE` 仍按整个分句匹配（分句里出现「已」「看了」等时，无法确认作用范围的数量不转提示，按原规则拒收），本轮不处理。本节修正已确认的规则缺口，不代表找回线上原句，也不保证下一次真实模型必然通过。
 
 ## 4. 质量检查与有限修改
 

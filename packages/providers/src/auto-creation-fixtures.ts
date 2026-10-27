@@ -526,6 +526,14 @@ export interface AutoFixturePlan {
    */
   verificationSample?: "sample" | "statistic" | "total" | "reading" | "unconfirmed" | "outside";
   /**
+   * The work's own design counts or places episodes (checks v12; synthetic, not a real refused answer). local: the first
+   * structure lays out the first two episodes and a two-episode period, the first direction a two-episode climax (passes
+   * in a run of at least two episodes). unconfirmed: a count the code cannot place, in the first structure's why and the
+   * first direction's difficulty note (passes with episode-scope notices). outside: the first structure places a reveal
+   * in episode 61 (refused, a range outside the work).
+   */
+  creativeEpisodeScope?: "local" | "unconfirmed" | "outside";
+  /**
    * The first structure's application.why carries a viewing time that one named check refuses (synthetic, one per
    * branch; not the refused answer of any real run, which was never kept).
    */
@@ -553,6 +561,13 @@ const FIXTURE_SAMPLE_PLANS: Readonly<Record<NonNullable<AutoFixturePlan["verific
   reading: "模型替身样例：计划试读前三集并收集反馈。",
   unconfirmed: "模型替身样例：计划请试看者看完前三集再收集反馈。",
   outside: "模型替身样例：计划试读第六十一集并收集反馈。",
+};
+
+/** The first structure's application and the first direction's difficulty note for each creativeEpisodeScope (synthetic samples). */
+const FIXTURE_CREATIVE_EPISODES: Readonly<Record<NonNullable<AutoFixturePlan["creativeEpisodeScope"]>, { pattern?: string; why?: string; difficultyNote?: string }>> = {
+  local: { pattern: "模型替身样例：用前两集建立主角与对手的冲突。", why: "模型替身样例：每两集推进一个阶段目标。", difficultyNote: "模型替身样例：本剧每两集设置一个小高潮。" },
+  unconfirmed: { why: "模型替身样例：在两集内完成第一次反击。", difficultyNote: "模型替身样例：两集一个反转。" },
+  outside: { pattern: "模型替身样例：第六十一集揭开反派身份。" },
 };
 
 /** The first structure's application.why for each viewingDurationWhy (synthetic samples). */
@@ -589,6 +604,11 @@ export function autoFixtureAnswer(user: string, plan: AutoFixturePlan = {}): unk
     if (plan.verificationSample) {
       adjusted.hypotheses = adjusted.hypotheses.map((item, index) => index === 0 ? { ...item, howToVerify: FIXTURE_SAMPLE_PLANS[plan.verificationSample!] } : item);
     }
+    if (plan.creativeEpisodeScope) {
+      const { pattern, why } = FIXTURE_CREATIVE_EPISODES[plan.creativeEpisodeScope];
+      adjusted.contentStructure = adjusted.contentStructure.map((item, index) => index === 0
+        ? { ...item, application: { pattern: pattern ?? item.application.pattern, why: why ?? item.application.why } } : item);
+    }
     if (plan.viewingDurationWhy) {
       const why = FIXTURE_VIEWING_DURATION_WHY[plan.viewingDurationWhy];
       adjusted.contentStructure = adjusted.contentStructure.map((item, index) => index === 0 ? { ...item, application: { ...item.application, why } } : item);
@@ -602,7 +622,9 @@ export function autoFixtureAnswer(user: string, plan: AutoFixturePlan = {}): unk
     return plan.serverFieldsInAnswer ? { ...answer, ...LEGACY_RESEARCH_FIELDS } : answer;
   }
   if (stage === "directions") {
-    const directions = plan.creativeQuantities || plan.unplacedQuantities ? fixtureAutoCreativeDirections({ unplaced: plan.unplacedQuantities }) : fixtureAutoDirections();
+    const written = plan.creativeQuantities || plan.unplacedQuantities ? fixtureAutoCreativeDirections({ unplaced: plan.unplacedQuantities }) : fixtureAutoDirections();
+    const note = plan.creativeEpisodeScope ? FIXTURE_CREATIVE_EPISODES[plan.creativeEpisodeScope].difficultyNote : undefined;
+    const directions = note ? { ...written, candidates: written.candidates.map((candidate, index) => index === 0 ? { ...candidate, difficultyNote: note } : candidate) } : written;
     // A direction cites only the ids the prompt lists (a limited research has H ids only).
     const allowed = autoFixtureAllowedIds(user);
     return allowed === null ? directions

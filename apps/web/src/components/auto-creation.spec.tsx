@@ -659,6 +659,20 @@ describe("AI 自动创作 run page", () => {
     expect(screen.getByTestId("auto-output-refused").textContent).toContain("不是密钥或账户问题");
   });
 
+  it("checks v12: a part or position of the work outside it in a creative design names the frozen episodes, never a key problem", async () => {
+    const code = "constraint_violation@contentStructure[4].application.pattern:chinese_numeral+frozen_conflict+episode_range_out_of_range";
+    const failed = run({ state: "failed", errorCode: "constraint_violation", quality: "pending", storySave: "pending", storyRevisionId: null, packageStatus: "incomplete",
+      callsUsed: 1, callCap: 6, openIssues: [], stages: [{ stageKey: "research", kind: "research", state: "rejected", attemptNo: 1, errorCode: code, output: null,
+        upstreamChanged: false, supersededBy: null, scriptSave: null, scriptRevisionId: null }] });
+    vi.stubGlobal("fetch", vi.fn(async (input: string) => input.endsWith("/auto-runs/latest") ? json({ run: failed }) : json(options())));
+    render(<AutoCreationRun projectId={P1} />);
+    const stop = (await screen.findByText(/^停在「/u)).textContent!;
+    expect(stop).toContain("位置：contentStructure[4].application.pattern");
+    expect(stop).toContain("本剧创作设计里的局部集数范围或第几集为零或超出本剧冻结的集数");
+    expect(stop).not.toContain("episode_range_out_of_range");
+    expect(screen.getByTestId("auto-output-refused").textContent).toContain("不是密钥或账户问题");
+  });
+
   it("research v4: a limited answer carrying a sourced field is explained as the limited contract, never a key problem", async () => {
     const code = "invalid_output@facts:unrecognized_keys+limited_contract+forbidden_field";
     const failed = run({ state: "failed", errorCode: "invalid_output", quality: "pending", storySave: "pending", storyRevisionId: null, packageStatus: "incomplete",

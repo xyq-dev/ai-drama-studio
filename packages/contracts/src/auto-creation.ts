@@ -72,12 +72,19 @@ export const AUTO_CREATION_SELECTION_RULES = "ads.auto-creation.selection-rules.
  * (计划试读前三集, 计划选取其中三集) needs no 样稿 and must lie within the work, as must every position of episodes in a
  * plan to sample it (计划试读第六十一集 is refused); any other count within the work in a future plan is kept as written
  * with an unverified notice (episode_scope_unconfirmed), and the reading goes on. Prompt v10, research v4.
+ * v12: every creative field (a structure's application, a hypothesis, its plan, an opportunity, a direction's notes) is
+ * the work's own design. A part of the work its own range word lays out (本剧每三集, 每隔两集, 用前三集) and a position in
+ * it (第三集, checked on the raw text before ordinals are removed) must lie within 1 and the frozen episode count
+ * (episode_range_out_of_range); a count whose scope the code cannot place is kept with the episode-scope notice. A new
+ * total, a viewing statistic or habit, an unmarked audience judgement and a reading or sample verb's count are read as
+ * before; a howToVerify keeps its own sample scope. Prompt v10, research v4.
  */
-export const AUTO_CREATION_CHECKS_VERSION = "ads.auto-creation.checks.v11" as const;
+export const AUTO_CREATION_CHECKS_VERSION = "ads.auto-creation.checks.v12" as const;
 /** Every checks version a stored run or review may carry. */
 export type AutoCreationChecksVersion = "ads.auto-creation.checks.v1" | "ads.auto-creation.checks.v2" | "ads.auto-creation.checks.v3"
   | "ads.auto-creation.checks.v4" | "ads.auto-creation.checks.v5" | "ads.auto-creation.checks.v6" | "ads.auto-creation.checks.v7"
-  | "ads.auto-creation.checks.v8" | "ads.auto-creation.checks.v9" | "ads.auto-creation.checks.v10" | typeof AUTO_CREATION_CHECKS_VERSION;
+  | "ads.auto-creation.checks.v8" | "ads.auto-creation.checks.v9" | "ads.auto-creation.checks.v10" | "ads.auto-creation.checks.v11"
+  | typeof AUTO_CREATION_CHECKS_VERSION;
 /**
  * v4: the answer contract follows the run's saved research mode. limited: the model writes hypotheses, the audience as
  * text, content structures and opportunities only; the server assembles the rest (no facts, no observations, the
@@ -535,7 +542,8 @@ export const AUTO_UNVERIFIED_NOTE = "程序未能判定数字含义，未核实"
 export const AUTO_UNVERIFIED_DURATION_NOTE = "程序无法确认时长含义（不是已判定的观看统计），未核实";
 /**
  * What an episode_scope_unconfirmed notice says (checks v11 on): a count of episodes in a verification plan the code could
- * not tie to a sample of the work or to its total. Not a frozen conflict, not checked true either.
+ * not tie to a sample of the work or to its total; since checks v12 also one in the work's own creative design the code
+ * could not tie to a part of the work or to its total. Not a frozen conflict, not checked true either.
  */
 export const AUTO_UNVERIFIED_EPISODE_SCOPE_NOTE = "程序无法确认集数描述的作用范围，未核实";
 /** What every kind of notice is, for a heading over them all. */
@@ -547,8 +555,8 @@ export const AUTO_UNVERIFIED_SUMMARY_WITH_SCOPE = "程序未能判定数字、�
  * A server notice on uncited creative text (a hypothesis, its plan, a structure's application, an opportunity, a
  * direction's notes): a number the checks could not give a role (unclassified, no_role), or a duration in a pending
  * question the checks could not tie to the work or to a viewing time (unclassified, duration_unconfirmed, checks v7), or
- * a count of episodes in a verification plan whose scope the checks could not place (episode_scope_unconfirmed, checks
- * v11). The text stays as written; the notice says it is unverified and keeps it a hypothesis or design, never a market
+ * a count of episodes in a verification plan (checks v11) or in the work's own creative design (checks v12) whose scope
+ * the checks could not place (episode_scope_unconfirmed). The text stays as written; the notice says it is unverified and keeps it a hypothesis or design, never a market
  * finding. Never written by a model or a client. A stored notice is read as it was written.
  */
 export type AutoUnverifiedNotice = {

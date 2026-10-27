@@ -391,7 +391,7 @@ describe("durations (checks v7): the work's own length passes, an unplaced durat
     expect(stored.unverified).toEqual([{ origin: "server_check", field: "hypotheses[1].statement", token: "60", semantic: "unclassified",
       rule: "duration_unconfirmed", note: "程序无法确认时长含义（不是已判定的观看统计），未核实" }]);
     expect(stored).toMatchObject({ facts: [], observations: [], audience: { basis: "hypothesis", sourceIds: [] },
-      serverRecord: { executedWith: { promptVersion: "ads.auto-creation.prompt.v10", checksVersion: "ads.auto-creation.checks.v11", answerContract: "limited" },
+      serverRecord: { executedWith: { promptVersion: "ads.auto-creation.prompt.v10", checksVersion: "ads.auto-creation.checks.v12", answerContract: "limited" },
         marketEvidence: { status: "unavailable" } } });
     const notice = "第2条假设（H2）中的「60」：程序无法确认时长含义（不是已判定的观看统计），未核实；只属于创作假设或设计，不是有来源的事实或市场结论。";
     // Later prompts carry it as a notice beside a hypothesis, never as a finding.

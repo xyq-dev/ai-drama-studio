@@ -599,7 +599,8 @@ function sampleBound(before: string, tail: string): boolean {
 /**
  * The scope of a count of episodes in a verification plan (checks v11), or null to read it as before (a total of the
  * work, or a viewing count next to viewers). Its order is the order of the rules: A, a new total of the work taking this
- * very count (改为三集, 本剧共三集; not an adjustment of something else in the clause), and B, a
+ * very count (改为三集, 本剧共三集; not an adjustment of something else in the clause) at another value than the frozen
+ * one (at that value it is read by frozenTotal, checks v12), and B, a
  * viewing habit, viewers leaving after the count, or a reading already done, are refused as before; C, a sample its own
  * verb takes, must lie within the work; any other count of a future plan that is within the work is D, a scope the code
  * cannot place, kept as an unverified notice. A count larger than the work is no sample of it, whatever its scope.
@@ -607,7 +608,8 @@ function sampleBound(before: string, tail: string): boolean {
  */
 function verificationEpisodeScope(clause: string, clauses: readonly string[], before: string, tail: string, market: boolean, value: number | null,
   frame: AutoNumberFrame): Role | null {
-  if (TOTAL_CHANGE_BEFORE.test(before) || TOTAL_BEFORE.test(before)) return refuse("frozen_conflict", "episode_count");
+  const total = totalWording(before);
+  if (total) return value === frame.episodeCount ? frozenTotal(clause, clauses, before.slice(0, total.index), tail, market) : refuse("frozen_conflict", "episode_count");
   if (VIEWING_HABIT.test(clause) || EPISODE_LEAVING.test(tail) || SAMPLE_DONE.test(clause)) return null;
   const within = value !== null && value >= 1 && value <= frame.episodeCount;
   if (samplePlan(clause) && sampleBound(before, tail)) return within ? { allowed: true, rule: "verification_sample" } : refuse("frozen_conflict", "sample_out_of_range");
@@ -631,6 +633,97 @@ function sampleOrdinalRefusal(text: string, frame: AutoNumberFrame): AutoNumberF
       const value = numberValue(match[1]!);
       if (value === null || value < 1 || value > frame.episodeCount) {
         return { token: match[1]!, kind: numberKind(match[1]!), semantic: "frozen_conflict", rule: "sample_out_of_range" };
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * A total of the work restated at its frozen value (checks v12, 待验证观众是否喜欢本剧共60集的体量 with 60 frozen): no
+ * change of the work's size. The frozen value is removed before a clause not about viewers is read, so this is asked
+ * for a clause about viewers, where it is kept: the total passes only when it is what the clause counts and the clause
+ * is a pending judgement. The same value counts a viewing, not the work, after a reading or viewing verb (看完本剧共60集),
+ * with viewers leaving after it (本剧60集后弃剧), beside a habit or a reading done, or with viewing or the market named
+ * after it; nor does it pass in an unmarked finding (观众喜欢本剧共60集的体量). Null reads it as before. lead: the
+ * clause before the total's wording. Measured results, rates and shares were refused before this is asked.
+ */
+function frozenTotal(clause: string, clauses: readonly string[], lead: string, tail: string, market: boolean): Role | null {
+  if (VIEWING_HABIT.test(clause) || EPISODE_LEAVING.test(tail) || SAMPLE_DONE.test(clause) || DESIGN_TAKEN.test(lead)) return null;
+  if (market && (!pendingJudgement(clause, clauses) || MARKET_CLAUSE.test(tail))) return null;
+  return { allowed: true, rule: "work_total" };
+}
+
+/**
+ * A range of the work's own structure (checks v12): a range word taking the count right before it, with at most the
+ * work named before that word (本剧每三集, 每隔两集, 用三集, 用前三集, 本剧前三集). 目前, 之前 and 此前 are no range.
+ */
+const DESIGN_RANGE = /(?:(?:本剧|该剧|此剧)的?)?(?:每隔|每|用|(?<![目之提此以从面眼])前)$/u;
+/**
+ * A reading, viewing, picking or making verb that takes the count, over at most the work and a range word (试读前三集,
+ * 看完前三集, 选取其中三集, 制作三集): what is counted is read or watched, not laid out. A verification plan's sample is a
+ * howToVerify's own scope (verificationEpisodeScope); in a design the count is read as before. A count a making verb
+ * takes (写三集, 拍三集) is how many episodes are made: read as before too.
+ */
+const DESIGN_TAKEN = new RegExp(`(?:${SAMPLE_MAKE_VERBS}|${SAMPLE_READ_VERBS}|观看|收看|阅读|浏览|播放|拍摄|看|读|追|刷|播|拍|写|做)(?:了|完|过)*`
+  + "(?:(?:本剧|该剧|此剧)的?)?(?:每隔|每|其中的?|前|头)?$", "u");
+
+/** A total named right before the count with no work named (共 3 集, 一共三集, 共计三集, 合计三集): a total, as 本剧共三集 is. */
+const DESIGN_TOTAL = /(?:共|合计|总计)(?:有|计|是|为)?(?:约|大约|只有|仅)?$/u;
+/**
+ * The work's total its own words take, right before the count: the total named (总集数为三集, 本剧的集数是三集) or the
+ * work laid out as a whole (本剧设计为三集, 全剧分三集, 本剧规划成三集). A part of the work comes first (本剧前三集设计为…,
+ * 前三集的设计…) and is no total: the work's word must reach the count with nothing but these words between.
+ */
+const WORK_TOTAL_BEFORE = new RegExp("(?:(?:本剧|全剧|该剧|此剧|整部剧)的?(?:(?:总集数|集数)?(?:设计|规划|设定|定|安排|拆|划|分|计划)|总集数|集数)|总集数)"
+  + "(?:成|为|是|共|有|分|到|至|只有|仅有|仅)?(?:约|大约)?$", "u");
+
+/**
+ * The wording of a total of the work taking this very count, or null: a change of its size (改为三集), the work or its
+ * total named right before it (本剧共三集, 总集数为三集, 全剧分三集), or a total with no work named (共 3 集). The same in a
+ * verification plan and in the work's own design (checks v12).
+ */
+function totalWording(before: string): RegExpExecArray | null {
+  return TOTAL_CHANGE_BEFORE.exec(before) ?? TOTAL_BEFORE.exec(before) ?? WORK_TOTAL_BEFORE.exec(before) ?? DESIGN_TOTAL.exec(before);
+}
+
+/**
+ * The scope of a count of episodes in the work's own design (checks v12): a structure's application, a hypothesis, its
+ * plan, an opportunity, a direction's notes. Null reads it as before. A new total of the work taking this very count
+ * (改为三集, 本剧共三集, 总集数为三集, 全剧分三集, 共 3 集; totalWording) at another value than the frozen one is refused as
+ * before (frozenTotal reads it at that value); a reading or sample already done (已完成前三集的试读) is read as before; so is a viewing habit, viewers leaving after the count, or a count a reading,
+ * viewing or sample verb takes. A count its own range word takes (每三集, 用前三集) or a position (第４集, its numeral
+ * left by a full-width ordinal) is the work's structure: within 1 and the frozen episode count it is kept, else refused
+ * as a range outside the work. In a clause about viewers it is read so only when that clause is marked pending and
+ * nothing after the count names viewing or the market. Any other count of a clause not about viewers, nothing done,
+ * within the work, is a scope the code cannot place: kept as written with an unverified notice; past the work, refused.
+ */
+function designEpisodeScope(clause: string, clauses: readonly string[], before: string, tail: string, market: boolean, value: number | null,
+  frame: AutoNumberFrame): Role | null {
+  const total = totalWording(before);
+  if (total) return value === frame.episodeCount ? frozenTotal(clause, clauses, before.slice(0, total.index), tail, market) : refuse("frozen_conflict", "episode_count");
+  if (VIEWING_HABIT.test(clause) || EPISODE_LEAVING.test(tail) || DESIGN_TAKEN.test(before)) return null;
+  // A reading or sample already done (已完成前三集的试读, 曾用前三集样稿进行试读) is a result, not a range the work lays out.
+  if (SAMPLE_DONE.test(clause) && SAMPLE_VERB.test(clause)) return null;
+  if (market && (!pendingJudgement(clause, clauses) || MARKET_CLAUSE.test(tail))) return null;
+  const within = value !== null && value >= 1 && value <= frame.episodeCount;
+  if (/第$/u.test(before) || DESIGN_RANGE.test(before)) return within ? { allowed: true, rule: "episode_structure" } : refuse("frozen_conflict", "episode_range_out_of_range");
+  if (market || SAMPLE_DONE.test(clause)) return null;
+  return within ? refuse("unclassified", "episode_scope_unconfirmed") : refuse("frozen_conflict", "episode_count");
+}
+
+/**
+ * A position of the work outside it, in its own design (checks v12): 第61集, 第六十一集, 第６１集 and 第零集 are refused as
+ * a range outside the work. A structural ordinal is removed before a clause is read, so every 第N集 is found here first,
+ * on the raw text; a ranking clause keeps its ordinals as places, and a cited text (a fact, a quote) is never read so.
+ */
+function designOrdinalRefusal(text: string, frame: AutoNumberFrame): AutoNumberFinding | null {
+  for (const clause of text.replace(INVISIBLE, "").replace(/\s+/gu, "").split(/(?<=[，,。；;！？!?\n])/u)) {
+    if (RANK_MARKERS.test(clause)) continue;
+    for (const match of clause.matchAll(EPISODE_ORDINAL)) {
+      const value = numberValue(match[1]!);
+      if (value === null || value < 1 || value > frame.episodeCount) {
+        return { token: match[1]!, kind: numberKind(match[1]!), semantic: "frozen_conflict", rule: "episode_range_out_of_range" };
       }
     }
   }
@@ -694,7 +787,8 @@ function givenVerdict(clause: string): boolean {
   return false;
 }
 
-function roleOf(hit: NumberHit, clause: string, clauses: readonly string[], market: boolean, frame: AutoNumberFrame, verificationPlan = false): Role {
+function roleOf(hit: NumberHit, clause: string, clauses: readonly string[], market: boolean, frame: AutoNumberFrame, verificationPlan = false,
+  structureDesign = false): Role {
   const sentence = clauses.join("");
   const kind = numberKind(hit.token);
   if (kind === "rank") return refuse("market_statistic", "ranking");
@@ -764,6 +858,11 @@ function roleOf(hit: NumberHit, clause: string, clauses: readonly string[], mark
     // stays within the work, a scope the code cannot place is a notice, a new total or a viewing count is refused.
     const scope = verificationPlan ? verificationEpisodeScope(clause, clauses, before, tail, market, value, frame) : null;
     if (scope) return scope;
+    // The work's own design lays out its parts by scope (checks v12); a plan's sample above stays its own. A plan the
+    // rule above reads as done, a habit or viewers leaving (已完成前三集的试读) keeps that reading: no design after it.
+    const settled = verificationPlan && (VIEWING_HABIT.test(clause) || EPISODE_LEAVING.test(tail) || SAMPLE_DONE.test(clause));
+    const structure = structureDesign && !settled ? designEpisodeScope(clause, clauses, before, tail, market, value, frame) : null;
+    if (structure) return structure;
     // The run's own episode count was removed already where it may be restated.
     return market ? refuse("market_statistic", "viewing_count") : refuse("frozen_conflict", "episode_count");
   }
@@ -810,7 +909,8 @@ export function uncitedNumberFinding(text: string, frame: AutoNumberFrame, optio
 
 /**
  * The sub-rules kept as an unverified notice in creative text: no role (checks v5), a duration's meaning unconfirmed
- * (checks v7), and the scope of a count of episodes in a verification plan unconfirmed (checks v11, howToVerify only).
+ * (checks v7), and the scope of a count of episodes unconfirmed (checks v11 in a howToVerify; checks v12 in every
+ * creative field read as the work's own design).
  */
 export const AUTO_UNVERIFIED_RULES = ["no_role", "duration_unconfirmed", "episode_scope_unconfirmed"] as const;
 const UNVERIFIED_RULES: ReadonlySet<string> = new Set(AUTO_UNVERIFIED_RULES);
@@ -823,13 +923,18 @@ const UNVERIFIED_RULES: ReadonlySet<string> = new Set(AUTO_UNVERIFIED_RULES);
  * still judged and refused for what it is. Only those sub-rules are kept: dates, counts out of range, statistics, viewing
  * times, measured results, frozen conflicts and unmarked judgements are refused as before. verificationPlan: a
  * hypothesis' howToVerify, where a plan's sample of this work is read as a sample, not the work's total (checks v8).
+ * structureDesign: a creative field (a structure's application, a hypothesis, its plan, an opportunity, a direction's
+ * notes), where a count or position of episodes is read by its scope in the work (checks v12, designEpisodeScope).
  */
-export function uncitedNumberReading(text: string, frame: AutoNumberFrame, options: { market?: boolean; unverified?: boolean; verificationPlan?: boolean } = {}):
+export function uncitedNumberReading(text: string, frame: AutoNumberFrame,
+  options: { market?: boolean; unverified?: boolean; verificationPlan?: boolean; structureDesign?: boolean } = {}):
   { refusal: AutoNumberFinding | null; unverified: AutoNumberFinding[] } {
   const unverified: AutoNumberFinding[] = [];
   let unmarked: AutoNumberFinding | null = null;
   const verificationPlan = options.verificationPlan === true;
-  const outside = verificationPlan ? sampleOrdinalRefusal(text, frame) : null;
+  const structureDesign = options.structureDesign === true;
+  // A plan's sample keeps its own refusal; any other position outside the work is a range outside it.
+  const outside = (verificationPlan ? sampleOrdinalRefusal(text, frame) : null) ?? (structureDesign ? designOrdinalRefusal(text, frame) : null);
   if (outside) return { refusal: outside, unverified };
   for (const clauses of sentencesOf(text, frame.exempt, frame.frozenAudience)) {
     // Viewers, the market and a measured result named anywhere in the sentence carry over its commas (数据显示，三个人里…).
@@ -843,7 +948,7 @@ export function uncitedNumberReading(text: string, frame: AutoNumberFrame, optio
       const ratio = RATIO.exec(clause)?.[0] ?? RATIO_WRITTEN.exec(clause)?.[0];
       if (ratio) return { refusal: { token: ratio, kind: numberKind(ratio), semantic: "market_statistic", rule: "proportion" }, unverified };
       for (const hit of hitsOf(clause, market)) {
-        const role = roleOf(hit, clause, clauses, market, frame, verificationPlan);
+        const role = roleOf(hit, clause, clauses, market, frame, verificationPlan, structureDesign);
         if (!role.allowed) {
           const finding: AutoNumberFinding = { token: hit.token, kind: numberKind(hit.token), semantic: role.semantic, rule: role.rule,
             ...(role.reason ? { reason: role.reason } : {}) };

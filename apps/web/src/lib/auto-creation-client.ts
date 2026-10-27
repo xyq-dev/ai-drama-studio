@@ -238,6 +238,7 @@ const RULE_TEXT: Record<string, string> = {
   duration_unconfirmed: "程序无法确认这个时长是本剧篇幅还是观看时长（受众文字里不能保留为未核实提示）",
   not_in_cited_excerpt: "引用资料中找不到",
   sample_out_of_range: "验证计划抽取的集数或第几集超出本剧冻结的集数",
+  episode_range_out_of_range: "本剧创作设计里的局部集数范围或第几集为零或超出本剧冻结的集数",
   forbidden_field: "资料有限契约不允许的字段",
 };
 
