@@ -37,12 +37,16 @@ export const AUTO_CREATION_INPUT_SCHEMA = "ads.auto-creation.input.v1" as const;
  * v10: the number rules tell the work's total episodes (only the frozen count) apart from a verification plan reading
  * part of the work (a count or a position within 1 and the frozen count), with an example cut to the run's own count;
  * statistics and results done stay forbidden. Answer, catalog and research v4 unchanged. Shared by series research.
+ * v11: a structure's application tells the work's timing (前 3 秒让主角陷入危机) apart from its effect on viewers: an
+ * unverified effect is never written as known, and beside a duration in one sentence the part naming the viewers is
+ * itself a question to verify; that wording unlocks no statistic, viewing habit or result done. The contract is
+ * unchanged (checks v14). Answer, catalog and research v4 unchanged. Shared by series research.
  */
-export const AUTO_CREATION_PROMPT_VERSION = "ads.auto-creation.prompt.v10" as const;
+export const AUTO_CREATION_PROMPT_VERSION = "ads.auto-creation.prompt.v11" as const;
 /** Every prompt version a stored run may carry. A resumed run is sent with the current prompts. */
 export type AutoCreationPromptVersion = "ads.auto-creation.prompt.v1" | "ads.auto-creation.prompt.v2" | "ads.auto-creation.prompt.v3"
   | "ads.auto-creation.prompt.v4" | "ads.auto-creation.prompt.v5" | "ads.auto-creation.prompt.v6" | "ads.auto-creation.prompt.v7"
-  | "ads.auto-creation.prompt.v8" | "ads.auto-creation.prompt.v9" | typeof AUTO_CREATION_PROMPT_VERSION;
+  | "ads.auto-creation.prompt.v8" | "ads.auto-creation.prompt.v9" | "ads.auto-creation.prompt.v10" | typeof AUTO_CREATION_PROMPT_VERSION;
 export const AUTO_CREATION_SELECTION_RULES = "ads.auto-creation.selection-rules.v1" as const;
 /**
  * v2: the applied constraints and a direction's audience fit are number-checked; spaced ordinals are not claims.
@@ -83,13 +87,21 @@ export const AUTO_CREATION_SELECTION_RULES = "ads.auto-creation.selection-rules.
  * 比较角色人气): the clause must plan by its own wording and claim nothing done or measured, and no ranking, chart or
  * metric may take the ordinal itself (排名第一, 播放量第3, 人气第一轮 are refused as before). Every other number in the
  * text, a position of episodes on the raw text included, is read as before; no other field changes. Prompt v10, research v4.
+ * v14: two changes in the reading of an uncited text, every field alike. (1) A viewing time refused only because its
+ * judgement is unmarked (viewing_duration + not_pending) is not reported at once: a statistic or a measured result later
+ * in the same text (七成, 排名第一, 平均观看45秒) is reported instead, a frozen conflict between them ending nothing; with
+ * none, the same not_pending refusal is.
+ * Which error is reported changes, never whether the text is refused. (2) For a viewing time's judgement, 是否 taken by a
+ * choice its viewers make (观众会在前10秒决定是否继续看) marks nothing: such a sentence asserts what viewers do and is
+ * refused (not_pending), where checks v13 passed it; viewers the work goes by (根据观众留言决定是否…) make no choice. A doubt
+ * or plan word anywhere else reads as before. Prompt v11.
  */
-export const AUTO_CREATION_CHECKS_VERSION = "ads.auto-creation.checks.v13" as const;
+export const AUTO_CREATION_CHECKS_VERSION = "ads.auto-creation.checks.v14" as const;
 /** Every checks version a stored run or review may carry. */
 export type AutoCreationChecksVersion = "ads.auto-creation.checks.v1" | "ads.auto-creation.checks.v2" | "ads.auto-creation.checks.v3"
   | "ads.auto-creation.checks.v4" | "ads.auto-creation.checks.v5" | "ads.auto-creation.checks.v6" | "ads.auto-creation.checks.v7"
   | "ads.auto-creation.checks.v8" | "ads.auto-creation.checks.v9" | "ads.auto-creation.checks.v10" | "ads.auto-creation.checks.v11"
-  | "ads.auto-creation.checks.v12" | typeof AUTO_CREATION_CHECKS_VERSION;
+  | "ads.auto-creation.checks.v12" | "ads.auto-creation.checks.v13" | typeof AUTO_CREATION_CHECKS_VERSION;
 /**
  * v4: the answer contract follows the run's saved research mode. limited: the model writes hypotheses, the audience as
  * text, content structures and opportunities only; the server assembles the rest (no facts, no observations, the

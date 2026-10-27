@@ -190,7 +190,7 @@ describe("B. the whole research stage (validateAutoStageOutput, and the series' 
       expect(output.hypotheses[0]!.howToVerify).toBe(howToVerify);
       expect(output.unverified).toEqual([]);
       expect(output.serverRecord.settings.items.find((item) => item.key === "episodes")?.value).toBe(`共 ${String(EPISODES)} 集`);
-      expect(output.serverRecord.executedWith).toMatchObject({ checksVersion: "ads.auto-creation.checks.v13", promptVersion: "ads.auto-creation.prompt.v10" });
+      expect(output.serverRecord.executedWith).toMatchObject({ checksVersion: "ads.auto-creation.checks.v14", promptVersion: "ads.auto-creation.prompt.v11" });
     });
 
     it.each(UNCONFIRMED)("%s passes with an episode-scope notice on that field, kept as written: %s", (_label, howToVerify) => {
@@ -270,7 +270,7 @@ describe("D. the research prompt says a plan may read part of the work, with an 
   it.each([1, 2, 3, 6, 60])("%i episodes: the total is fixed, a sample stays within the run", (episodeCount) => {
     for (const mode of ["limited", "sourced"] as const) {
       const user = prompt(episodeCount, mode);
-      expect(user).toContain("提示版本：ads.auto-creation.prompt.v10");
+      expect(user).toContain("提示版本：ads.auto-creation.prompt.v11");
       expect(user).toContain(`全剧总集数只能是用户硬约束里的 ${String(episodeCount)} 集`);
       expect(user).toContain(`抽取的集数或第几集必须在 1 到 ${String(episodeCount)} 集之内`);
       expect(user).toContain("不写观众实际看了几集、看几集后退出、通常或平均看几集");

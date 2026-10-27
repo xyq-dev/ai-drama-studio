@@ -793,6 +793,23 @@ function pendingJudgement(clause: string, clauses: readonly string[]): boolean {
   return judgements.length > 0 && judgements.every(marked);
 }
 
+/**
+ * 是否 taken by a choice its viewers make (观众会在前10秒决定是否继续看, 观众在前3秒就会决定是否划走) says what viewers do,
+ * not that the judgement is open (checks v14): read for a viewing time's judgement, that 是否 marks nothing. The viewers
+ * must make the choice themselves, the choice verb following them in the clause with nothing they said or gave and no
+ * other person between (观众留言决定是否…, 让观众看到主角在前10秒决定是否救人), and not named as what the work goes by
+ * (根据观众反馈决定是否…, 按观众弹幕决定是否…); any other doubt or plan word stays a marker (待验证观众是否会…, 计划观察观众是否会在前10秒决定是否继续看).
+ */
+const VIEWER_CHOICE = new RegExp(`((?:${AUDIENCE_NOUNS}|大家)(?:(?!反馈|意见|评价|评论|口碑|数据|留言|弹幕|评分|打分|反应|投票|主角|角色|她|他)[^，。；的]){0,10}?`
+  + "(?:决定|判断|选择|考虑|犹豫|权衡)(?:要|该)?)是否", "gu");
+/** A clause that goes by its viewers before naming them (根据…, 参考…): what follows is the work's own decision. */
+const VIEWER_SOURCE = /(?:根据|按照|依据|参考|结合|基于|按|由|视)[^，。；]*$/u;
+
+function withoutViewerChoice(clause: string): string {
+  return clause.replace(VIEWER_CHOICE, (choice: string, viewers: string, offset: number) =>
+    (VIEWER_SOURCE.test(clause.slice(0, offset)) ? choice : `${viewers}${GAP}`));
+}
+
 /** The role of one number in an uncited clause, read with the other clauses of its sentence. */
 /** Whether a clause has a verdict its people give, not only one that befalls them in the story (三名学生因一条差评…). */
 function givenVerdict(clause: string): boolean {
@@ -852,7 +869,7 @@ function roleOf(hit: NumberHit, clause: string, clauses: readonly string[], mark
         }
         if (VIEWING_BEFORE.test(before)) return viewingTime("viewing_verb_before");
         if (seconds > frame.episodeSeconds) return viewingTime("over_episode_length");
-        if (!pendingJudgement(clause, clauses)) return viewingTime("not_pending");
+        if (!pendingJudgement(withoutViewerChoice(clause), clauses.map(withoutViewerChoice))) return viewingTime("not_pending");
         // A moment of this episode asked about as pending (观众是否会在前 3 秒被吸引) is the episode's timeline.
         if (/(?:前|开头|开场|头)$/u.test(before)) return { allowed: true, rule: "story_time" };
         // C: pending, within the frozen length, naming neither the work nor a viewing time.
@@ -940,7 +957,10 @@ const UNVERIFIED_RULES: ReadonlySet<string> = new Set(AUTO_UNVERIFIED_RULES);
  * no_role) or a pending duration whose meaning the code cannot confirm (duration_unconfirmed, checks v7) is kept as
  * unverified instead of refused; the reading goes on past it, so any later number in the same clause, sentence or text is
  * still judged and refused for what it is. Only those sub-rules are kept: dates, counts out of range, statistics, viewing
- * times, measured results, frozen conflicts and unmarked judgements are refused as before. verificationPlan: a
+ * times, measured results, frozen conflicts and unmarked judgements are refused as before. An unmarked judgement is
+ * reported only when nothing later in the text is refused for what it is; a viewing time refused only for its unmarked
+ * judgement (not_pending, checks v14) gives way to a later statistic or measured result alone, and comes before any other
+ * unmarked judgement. verificationPlan: a
  * hypothesis' howToVerify, where a plan's sample of this work is read as a sample, not the work's total (checks v8),
  * and a step of the plan (第一阶段, 第一轮) is its order, not a place in a ranking (checks v13, planStep).
  * structureDesign: a creative field (a structure's application, a hypothesis, its plan, an opportunity, a direction's
@@ -951,6 +971,7 @@ export function uncitedNumberReading(text: string, frame: AutoNumberFrame,
   { refusal: AutoNumberFinding | null; unverified: AutoNumberFinding[] } {
   const unverified: AutoNumberFinding[] = [];
   let unmarked: AutoNumberFinding | null = null;
+  let unmarkedTime: AutoNumberFinding | null = null;
   const verificationPlan = options.verificationPlan === true;
   const structureDesign = options.structureDesign === true;
   // A plan's sample keeps its own refusal; any other position outside the work is a range outside it.
@@ -976,6 +997,15 @@ export function uncitedNumberReading(text: string, frame: AutoNumberFrame,
             unverified.push(finding);
             continue;
           }
+          // A viewing time refused only for its unmarked judgement waits (checks v14): a statistic or a measured result
+          // later in the text is reported first (…，七成观众会因此留下); any other refusal after it, or none, leaves this
+          // one reported, as before. Never a pass. A refusal of another kind after it (a frozen conflict) does not end the
+          // reading, so a statistic further on still comes first (观众能在30秒内理解冲突。本剧共三集。七成观众会因此留下。).
+          if (role.reason === "not_pending") {
+            unmarkedTime ??= finding;
+            continue;
+          }
+          if (unmarkedTime && role.semantic !== "market_statistic" && role.semantic !== "result_claim") continue;
           return { refusal: finding, unverified };
         }
         // A story or plan quantity next to viewers or the market reads as a finding unless its judgement says it is pending.
@@ -985,7 +1015,7 @@ export function uncitedNumberReading(text: string, frame: AutoNumberFrame,
       }
     }
   }
-  return { refusal: unmarked, unverified };
+  return { refusal: unmarkedTime ?? unmarked, unverified };
 }
 
 /** The user's own audience constraint as a restatable phrase: only when it carries no share, magnitude or ranking. */

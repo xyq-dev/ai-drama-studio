@@ -59,7 +59,9 @@ export const SERIES_PACKAGE_SCHEMA = "ads.series-writing.package.v1" as const;
  * checks v11: a verification plan may read part of the work (its sample within the series' own episodes; a scope the
  * code cannot place is a notice); a series created earlier keeps the versions it froze. Checks v12: every creative field
  * reads a part of the work or a position in it within the series' own episodes; a series created earlier keeps the
- * checks version it froze.
+ * checks version it froze. Prompt v11 / checks v14: the same application line on timing and viewer effect, a statistic
+ * after an unmarked viewing time reported first, and a viewer's own choice (决定是否…) no pending marker; a series
+ * created earlier keeps the versions it froze, and its research records the versions it was actually sent with.
  */
 export const SERIES_RESEARCH_CONTRACT = {
   promptVersion: AUTO_CREATION_PROMPT_VERSION,
