@@ -29,7 +29,7 @@
 | `review:r` | 独立审阅提示与 10 项评价标准；问题须带**逐字原文证据**；程序检查结果并入 | 是 |
 | `revise:r:episode:k` | 只修指出的问题，记录逐条修改 | 是 |
 
-提示词版本 `ads.auto-creation.prompt.v10`、检查版本 `ads.auto-creation.checks.v12`、研究输出 `ads.auto-creation.research.v4`、研究的模型回答 `ads.auto-creation.research.answer.catalog.v1`、引用目录算法 `ads.auto-creation.reference-catalog.v1`（checks.v12 见 3.13，创作设计里的集数按作用范围判断、第 N 集先核对范围再清理，提示不变；prompt.v10 / checks.v11 见 3.12，验证计划里集数按作用范围判断，无法确认的保留为未核实提示；prompt.v9 / checks.v10 见 3.11，内容结构的方法引用改为选择服务端目录编号，落库结构不变；checks.v9 见 3.9，只要求样本动作直接带着当前样本数量，提示与研究回答结构不变；checks.v8 见 3.8，只改验证计划里的样本集数判断，提示与研究回答结构不变；prompt.v8 见 3.7，只改研究提示，当时检查为 v7；v7 / v7 见 3.6，研究回答结构不变；v6 / v6 / research.v4 见 3.5；此前 v5 / v5 / research.v3 见 3.4，v4 / v4 / research.v2 见 3.3，v3 / v3 / research.v1 自 2026-10-20 起，2026-10-19 起为 v2，之前为 v1）、选择规则 `ads.auto-creation.selection-rules.v1`、输入 `ads.auto-creation.input.v1`。任务输入里冻结的是**开始时**的版本号；已完成的阶段不会重算，但旧任务续跑时，之后发送的阶段使用当前的提示词和检查（代码里没有按版本分支）。
+提示词版本 `ads.auto-creation.prompt.v10`、检查版本 `ads.auto-creation.checks.v13`、研究输出 `ads.auto-creation.research.v4`、研究的模型回答 `ads.auto-creation.research.answer.catalog.v1`、引用目录算法 `ads.auto-creation.reference-catalog.v1`（checks.v13 见 3.14，验证计划里的流程序数不再当作排名，提示不变；checks.v12 见 3.13，创作设计里的集数按作用范围判断、第 N 集先核对范围再清理，提示不变；prompt.v10 / checks.v11 见 3.12，验证计划里集数按作用范围判断，无法确认的保留为未核实提示；prompt.v9 / checks.v10 见 3.11，内容结构的方法引用改为选择服务端目录编号，落库结构不变；checks.v9 见 3.9，只要求样本动作直接带着当前样本数量，提示与研究回答结构不变；checks.v8 见 3.8，只改验证计划里的样本集数判断，提示与研究回答结构不变；prompt.v8 见 3.7，只改研究提示，当时检查为 v7；v7 / v7 见 3.6，研究回答结构不变；v6 / v6 / research.v4 见 3.5；此前 v5 / v5 / research.v3 见 3.4，v4 / v4 / research.v2 见 3.3，v3 / v3 / research.v1 自 2026-10-20 起，2026-10-19 起为 v2，之前为 v1）、选择规则 `ads.auto-creation.selection-rules.v1`、输入 `ads.auto-creation.input.v1`。任务输入里冻结的是**开始时**的版本号；已完成的阶段不会重算，但旧任务续跑时，之后发送的阶段使用当前的提示词和检查（代码里没有按版本分支）。
 
 ## 3. 研究层：只说真正读到的
 
@@ -331,6 +331,18 @@ contentStructure: [{ reference: { sourceId, quote } | null, application: { patte
 - **展示**：新提示沿用 `unverified` 的位置称呼，页面、Markdown、JSON 和后续阶段提示按实际字段显示（如「第5条内容结构的本剧应用设计中的「三集」」「方向 D1 的难度说明中的「三集」」），不标成时长提示或事实；旧通知、旧错误码显示不变。页面为 `episode_range_out_of_range` 加了中文说明。
 - **版本与历史**：共享 `checks.v12`（此前未用过），`prompt.v10`、`research.v4`、`research.answer.catalog.v1`、`reference-catalog.v1` 和系列自身 prompt.v1 / checks.v1 不变，历史类型保留 v1–v11。新任务和新系列冻结 checks.v12，旧任务、旧系列保留冻结版本；冻结输入、哈希、已完成输出、调用和费用不回写，之后实际发送的研究由 `executedWith` 如实记录。模型请求 Schema、引用资格与映射、统计和 reason 白名单都不变；没有持久化字段、HTTP 字段或数据库变更，Migration 编写 0、执行 0。
 - **局限**：按句式的确定性判断，只覆盖列出的范围词、动词和总数说法；其他写法落到未核实提示或原有拒收，不做无限轮措辞对抗。`SAMPLE_DONE` 仍按整个分句匹配（分句里出现「已」「看了」等时，无法确认作用范围的数量不转提示，按原规则拒收），本轮不处理。本节修正已确认的规则缺口，不代表找回线上原句，也不保证下一次真实模型必然通过。
+
+### 3.14 验证计划里的流程序数与排名（2026-10-27，checks.v13；prompt.v10、research.v4 不变）
+
+**证据边界**：一次真实验收的 research 被拒为 `unsourced_number@hypotheses[0].howToVerify:rank+market_statistic+ranking`。被拒正文按设计没有保存，**原句未知**；本节不声称还原线上原句，也不认定线上必然是误拒。checks.v12 下（冻结 60 集、每集 60 秒），合成样本「计划在第一阶段收集反馈。」「计划在第一项测试中记录观众反馈。」「计划在第一轮试读后比较角色人气。」在 howToVerify 里都被拒为 rank / market_statistic / ranking，而「计划在第一轮试读后收集反馈。」通过。原因：`clauseOf` 把没有识别为结构单位的「第 N」（阶段、项）一律变成名次；同一分句只要出现排名词（排名、人气、热度…），整句的结构序数都不再识别，「第一轮」也被当成名次；`roleOf` 对名次直接拒为 ranking。
+
+- **作用字段**：只在 `creativeNumber` 已经为 hypotheses[].howToVerify 启用的 `verificationPlan` 上下文里生效（原短剧和系列借用的研究走同一实现）。statement、opportunities、application、audience、facts、observations、引用摘录和默认的 `numberTokens` 都不变，同样的句子写在这些字段里仍按原规则拒收。
+- **判断**（`auto-creation-numbers.ts` 的 `PLAN_STEP_ORDINAL` / `planStep`，按当前这个序数的用途，不按整个分句有没有排名词）：「第 N 阶段」「第 N 项测试 / 验证 / 检查」「第 N 轮」「第 N 步」（中文数字、阿拉伯数字，原文里的空格先去掉）同时满足以下条件时是计划的流程顺序，在读取前移除：分句按现有计划词（`PLAN`：计划、拟、收集、测试…）是计划；分句没有已做过（`SAMPLE_DONE`）或测量结果（`RESULT`）的说法；序数前面没有直接支配它的排名、榜单或指标词（排名、榜单上位列、播放量、销量、口碑、人气、热度…）。不满足的保持原有读法。计划词与已做过词表不变。
+- **排名照旧**：直接属于排名、名次、榜单位置或指标的序数仍拒为 ranking，加「计划」「待验证」也不豁免：排名第一、榜单上位列第3、播放量第3、口碑第一、热度第3集、人气第一轮。合法流程序数后的真实排名照样发现（「计划在第一轮试读后比较排名第一的作品」拒收）。
+- **继续检查**：只处理当前序数，不提前判整份通过。同分句、同一句和后续字段的比例、统计、带数字的已得结果、全剧冲突和越界位置照常检查；第 0 集、第 61 集（以及冻结 1 集时的第三集）仍在序数清理之前按原文核对，`sample_out_of_range` / `episode_range_out_of_range` 不变；流程阶段编号不以冻结集数为上限。来源里的相同名次仍可支持引用，不同名次不能。
+- **原文**：只改校验用的内部文本；保存、展示、导出和传给后续阶段的都是原文。
+- **版本与历史**：共享 `checks.v13`（此前未用过），`prompt.v10`、`research.v4`、`research.answer.catalog.v1`、`reference-catalog.v1` 和系列自身 prompt.v1 / checks.v1 不变，历史类型保留 v1–v12。新任务和新系列冻结 checks.v13，旧任务、旧系列保留冻结版本；冻结输入、哈希、已完成输出、调用和费用不回写，之后实际发送的研究由 `executedWith` 如实记录。没有持久化字段、HTTP 字段或数据库变更，Migration 编写 0、执行 0。
+- **局限**：只认上面四种流程单位，且计划词要在同一分句里（「计划分两步进行，在第一阶段请读者复述动机」中第二个分句没有计划词，仍按原规则拒收）。不带数字的已得结果（「已测得观众更喜欢反转」）不属于数字检查，本轮前后一样不由这里拒收。`SAMPLE_DONE` 仍按整个分句匹配，本轮不处理。本节修正已确认的规则缺口，不代表找回线上原句，也不保证下一次真实模型必然通过。
 
 ## 4. 质量检查与有限修改
 

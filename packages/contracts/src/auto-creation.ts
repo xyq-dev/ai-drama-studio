@@ -78,13 +78,18 @@ export const AUTO_CREATION_SELECTION_RULES = "ads.auto-creation.selection-rules.
  * (episode_range_out_of_range); a count whose scope the code cannot place is kept with the episode-scope notice. A new
  * total, a viewing statistic or habit, an unmarked audience judgement and a reading or sample verb's count are read as
  * before; a howToVerify keeps its own sample scope. Prompt v10, research v4.
+ * v13: in a hypothesis' howToVerify only, a step of a future plan (第一阶段, 第一项测试 / 验证 / 检查, 第一轮, 第一步) is
+ * read as the plan's order, not a place in a ranking, even with a ranking word elsewhere in its clause (计划在第一轮试读后
+ * 比较角色人气): the clause must plan by its own wording and claim nothing done or measured, and no ranking, chart or
+ * metric may take the ordinal itself (排名第一, 播放量第3, 人气第一轮 are refused as before). Every other number in the
+ * text, a position of episodes on the raw text included, is read as before; no other field changes. Prompt v10, research v4.
  */
-export const AUTO_CREATION_CHECKS_VERSION = "ads.auto-creation.checks.v12" as const;
+export const AUTO_CREATION_CHECKS_VERSION = "ads.auto-creation.checks.v13" as const;
 /** Every checks version a stored run or review may carry. */
 export type AutoCreationChecksVersion = "ads.auto-creation.checks.v1" | "ads.auto-creation.checks.v2" | "ads.auto-creation.checks.v3"
   | "ads.auto-creation.checks.v4" | "ads.auto-creation.checks.v5" | "ads.auto-creation.checks.v6" | "ads.auto-creation.checks.v7"
   | "ads.auto-creation.checks.v8" | "ads.auto-creation.checks.v9" | "ads.auto-creation.checks.v10" | "ads.auto-creation.checks.v11"
-  | typeof AUTO_CREATION_CHECKS_VERSION;
+  | "ads.auto-creation.checks.v12" | typeof AUTO_CREATION_CHECKS_VERSION;
 /**
  * v4: the answer contract follows the run's saved research mode. limited: the model writes hypotheses, the audience as
  * text, content structures and opportunities only; the server assembles the rest (no facts, no observations, the

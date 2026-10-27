@@ -198,7 +198,7 @@ describe("automatic creation engine", () => {
     expect(seen[0]!.stage).toBe("research");
     const research = result.stages.find((stage) => stage.stageKey === "research")!.output as { hypotheses: Array<{ howToVerify: string }>; serverRecord: { executedWith: Record<string, string> } };
     expect(research.hypotheses[0]!.howToVerify).toBe("模型替身样例：计划制作三集样稿进行试读并收集反馈。");
-    expect(research.serverRecord.executedWith).toMatchObject({ checksVersion: "ads.auto-creation.checks.v12" });
+    expect(research.serverRecord.executedWith).toMatchObject({ checksVersion: "ads.auto-creation.checks.v13" });
   });
 
   it.each([
@@ -265,7 +265,7 @@ describe("automatic creation engine", () => {
     const research = result.stages.find((stage) => stage.stageKey === "research")!.output as AutoResearch;
     expect(research.contentStructure[0]!.application).toEqual({ pattern: "模型替身样例：用前两集建立主角与对手的冲突。", why: "模型替身样例：每两集推进一个阶段目标。" });
     expect(research.unverified).toEqual([]);
-    expect(research.serverRecord.executedWith).toMatchObject({ promptVersion: "ads.auto-creation.prompt.v10", checksVersion: "ads.auto-creation.checks.v12" });
+    expect(research.serverRecord.executedWith).toMatchObject({ promptVersion: "ads.auto-creation.prompt.v10", checksVersion: "ads.auto-creation.checks.v13" });
     const directions = result.stages.find((stage) => stage.stageKey === "directions")!.output as AutoDirections;
     expect(directions.candidates[0]!.difficultyNote).toBe("模型替身样例：本剧每两集设置一个小高潮。");
     expect(directions.unverified).toEqual([]);
@@ -307,6 +307,47 @@ describe("automatic creation engine", () => {
     expect(result.stages.find((stage) => stage.stageKey === "research")).toMatchObject({ state: "rejected", errorCode: code, output: null });
     expect(result.calls.map((call) => call.errorCode)).toEqual([code]);
     expect(JSON.stringify(result)).not.toContain("第六十一集");
+    await engine.maintain();
+    expect(seen).toHaveLength(1);
+  });
+
+  // checks v13 (synthetic plans, not a real refused answer): a verification plan's step is no ranking.
+  it("checks v13: a plan's first round before a popularity word passes as written with no notice; the three-episode flow (8 calls) completes", async () => {
+    const { run, engine, seen, view } = await setup({ episodeCount: 3, revisionRounds: 0, plan: { verificationSample: "step" } });
+    await engine.drive(run.id);
+    const result = await view();
+    expect(result).toMatchObject({ state: "completed", storySave: "saved", errorCode: null, callsUsed: 8 });
+    expect(seen).toHaveLength(8);
+    const research = result.stages.find((stage) => stage.stageKey === "research")!.output as AutoResearch;
+    expect(research.hypotheses[0]!.howToVerify).toBe("模型替身样例：计划在第一轮试读后比较角色人气。");
+    expect(research.unverified).toEqual([]);
+    expect(research.serverRecord.executedWith).toMatchObject({ promptVersion: "ads.auto-creation.prompt.v10", checksVersion: "ads.auto-creation.checks.v13" });
+    expect(seen[1]!.stage).toBe("directions");
+  });
+
+  it("checks v13: a run frozen at checks v12 keeps its frozen input; the research it sends now records v13", async () => {
+    const { store, run, engine, view } = await setup({ episodeCount: 3, revisionRounds: 0, plan: { verificationSample: "step" } });
+    const stored = store.runs.find((item) => item.id === run.id)!;
+    Object.assign(stored.input, { checksVersion: "ads.auto-creation.checks.v12" });
+    const frozen = JSON.stringify(stored.input);
+    await engine.drive(run.id);
+    const result = await view();
+    expect(result).toMatchObject({ state: "completed", storySave: "saved", errorCode: null, callsUsed: 8 });
+    expect(JSON.stringify(store.runs.find((item) => item.id === run.id)!.input)).toBe(frozen);
+    const research = result.stages.find((stage) => stage.stageKey === "research")!.output as AutoResearch;
+    expect(research.serverRecord.executedWith).toMatchObject({ checksVersion: "ads.auto-creation.checks.v13" });
+  });
+
+  it("checks v13: a ranking after a legal round is refused at research after one send; nothing after it, its text kept nowhere, no retry", async () => {
+    const code = "unsourced_number@hypotheses[0].howToVerify:rank+market_statistic+ranking";
+    const { store, run, engine, seen, view } = await setup({ episodeCount: 3, revisionRounds: 0, plan: { verificationSample: "ranking" } });
+    await engine.drive(run.id);
+    const result = await view();
+    expect(result).toMatchObject({ state: "failed", errorCode: "unsourced_number", callsUsed: 1 });
+    expect(result.stages.find((stage) => stage.stageKey === "research")).toMatchObject({ state: "rejected", errorCode: code, output: null });
+    expect(result.calls.map((call) => call.errorCode)).toEqual([code]);
+    expect(JSON.stringify({ result, runs: store.runs, stages: store.stages, calls: store.calls })).not.toContain("排名第一");
+    expect(seen.map((item) => item.stage)).toEqual(["research"]);
     await engine.maintain();
     expect(seen).toHaveLength(1);
   });
@@ -426,7 +467,7 @@ describe("automatic creation engine", () => {
     expect(research).not.toHaveProperty("limitations");
     expect(research).not.toHaveProperty("appliedConstraints");
     expect(research.serverRecord).toMatchObject({ origin: "server_record",
-      executedWith: { promptVersion: "ads.auto-creation.prompt.v10", checksVersion: "ads.auto-creation.checks.v12", researchSchema: "ads.auto-creation.research.v4",
+      executedWith: { promptVersion: "ads.auto-creation.prompt.v10", checksVersion: "ads.auto-creation.checks.v13", researchSchema: "ads.auto-creation.research.v4",
         answerContract: "limited" },
       marketEvidence: { origin: "source_snapshot", status: "unavailable" },
       settings: { origin: "user_setting", items: [{ key: "episodes", value: "共 1 集" }, { key: "seconds" }, { key: "maxCharacters", value: "最多 3 人" }] },
@@ -497,7 +538,7 @@ describe("automatic creation engine", () => {
     expect(result).toMatchObject({ state: "completed", storySave: "saved", promptVersion: "ads.auto-creation.prompt.v4" });
     expect(seen.filter((item) => item.stage === "research").at(-1)!.user).toContain("提示版本：ads.auto-creation.prompt.v10");
     expect(result.stages.find((stage) => stage.stageKey === "research")!.output).toMatchObject({ schema: "ads.auto-creation.research.v4",
-      serverRecord: { executedWith: { promptVersion: "ads.auto-creation.prompt.v10", checksVersion: "ads.auto-creation.checks.v12", answerContract: "limited" } } });
+      serverRecord: { executedWith: { promptVersion: "ads.auto-creation.prompt.v10", checksVersion: "ads.auto-creation.checks.v13", answerContract: "limited" } } });
     expect(JSON.stringify(store.runs.find((item) => item.id === run.id)!.input)).toBe(frozen);
     expect(store.runs.find((item) => item.id === run.id)!.inputHash).toBe(hash);
   });
