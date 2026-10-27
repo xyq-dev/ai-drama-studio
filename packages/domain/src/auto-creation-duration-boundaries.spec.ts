@@ -66,6 +66,12 @@ const CHOICES: ReadonlyArray<readonly [string, string]> = [
   ["观众在前3秒就会决定是否划走。", "3"],
   ["观众会在30秒内决定是否付费。", "30"],
   ["观众会在前10秒判断是否继续看。", "10"],
+  // Seeing an opening and then choosing is still the viewers' own decision.
+  ["观众看到片头后在前3秒决定是否继续看。", "3"],
+  ["观众看见片头后在前3秒决定是否继续看。", "3"],
+  // An observed audience is still making a viewing choice, not a story character's decision.
+  ["观众看到用户在前3秒决定是否继续看。", "3"],
+  ["让观众看到网友在前3秒决定是否付费。", "3"],
   // The source the work goes by is another clause: the viewers make the choice in their own.
   ["根据观众留言，观众会在前10秒决定是否继续看。", "10"],
 ];
@@ -91,6 +97,10 @@ const PENDING_KEPT: ReadonlyArray<readonly [string, readonly string[]]> = [
   ["由观众留言决定是否在前10秒加入反转。", []],
   // Another person makes the choice: the viewers only watch it.
   ["让观众看到主角在前10秒决定是否救人。", []],
+  // Synthetic PR #94 regression: the observed subject need not be a listed role or pronoun.
+  ["让观众看到母亲在前3秒决定是否救人。", []],
+  ["让观众看见护士在前3秒决定是否救人。", []],
+  ["让观众目睹阿明在前3秒决定是否救人。", []],
   ["前10秒他们决定是否救人，观众是否会紧张待验证。", []],
   ["本剧开场10秒内交代主角目标。", []],
   ["待验证观众能否在30秒内理解冲突。", ["duration_unconfirmed"]],
@@ -99,6 +109,7 @@ const PENDING_KEPT: ReadonlyArray<readonly [string, readonly string[]]> = [
 
 /** Synthetic: a legal question or plan with a statistic, a habit or a result after it is still refused. */
 const LEGAL_THEN_STATISTIC: ReadonlyArray<readonly [string, string, string]> = [
+  ["让观众看到母亲在前3秒决定是否救人，七成观众会因此留下。", "market_statistic", "proportion"],
   ["待验证观众是否会在前10秒被吸引，七成观众会因此留下。", "market_statistic", "proportion"],
   ["前3秒让主角陷入危机，待验证观众是否因此想继续看，排名第一的短剧都这样开场。", "market_statistic", "ranking"],
   ["观众通常会在前10秒决定是否继续看。", "market_statistic", "viewing_duration"],
@@ -172,7 +183,7 @@ const PATHS: Path[] = [
   ["limited", "limited", (content) => validateAutoStageOutput("research", content, input(), limitedContext()) as Checked, null],
   ["sourced", "sourced", (content) => validateAutoStageOutput("research", content, input(), sourcedContext()) as Checked, null],
   ["series (60 x 60 s)", "limited", (content) => {
-    const context: SeriesContext = { input: seriesInput, auto: limitedContext(seriesAuto), outlines: new Map() };
+    const context: SeriesContext = { input: seriesInput, auto: limitedContext(seriesAuto), outlines: new Map(), episodes: new Map(), stageHashes: new Map() };
     return validateSeriesStageOutput("research", content, seriesInput, context, seriesAuto) as unknown as Checked;
   }, null],
   ...(["limited", "sourced"] as const).map((mode): Path => {
@@ -181,6 +192,15 @@ const PATHS: Path[] = [
     return [`${mode} with a catalog id`, mode, (content) => validateAutoStageOutput("research", content, run, context) as Checked,
       context.referenceCatalog!.entries[0]!.referenceId];
   }),
+  ((): Path => {
+    const frozen: SeriesFrozenInput = { ...seriesInput, materials: NOTES };
+    const run = seriesAutoInput(frozen, { providerKey: "deepseek", model: "m", maxOutputTokens: 4096 });
+    const auto = limitedContext(run);
+    const context: SeriesContext = { input: frozen, auto, outlines: new Map(), episodes: new Map(), stageHashes: new Map() };
+    return ["series (60 x 60 s) with a catalog id", "limited", (content) =>
+      validateSeriesStageOutput("research", content, frozen, context, run) as unknown as Checked,
+    auto.referenceCatalog!.entries[0]!.referenceId];
+  })(),
 ];
 
 type Slot = "pattern" | "why" | "statement" | "howToVerify" | "opportunity";
@@ -251,7 +271,7 @@ describe("C. the shared prompt", () => {
   const prompts = (): Array<[string, string]> => [
     ["limited", buildAutoCreationPrompt("research", input(), limitedContext()).user],
     ["sourced", buildAutoCreationPrompt("research", input(), sourcedContext()).user],
-    ["series", buildSeriesPrompt("research", seriesInput, { input: seriesInput, auto: limitedContext(seriesAuto), outlines: new Map() }, seriesAuto).user],
+    ["series", buildSeriesPrompt("research", seriesInput, { input: seriesInput, auto: limitedContext(seriesAuto), outlines: new Map(), episodes: new Map(), stageHashes: new Map() }, seriesAuto).user],
   ];
 
   it("names the versions it is sent with", () => {

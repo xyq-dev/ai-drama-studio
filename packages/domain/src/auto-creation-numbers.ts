@@ -804,10 +804,17 @@ const VIEWER_CHOICE = new RegExp(`((?:${AUDIENCE_NOUNS}|大家)(?:(?!反馈|意�
   + "(?:决定|判断|选择|考虑|犹豫|权衡)(?:要|该)?)是否", "gu");
 /** A clause that goes by its viewers before naming them (根据…, 参考…): what follows is the work's own decision. */
 const VIEWER_SOURCE = /(?:根据|按照|依据|参考|结合|基于|按|由|视)[^，。；]*$/u;
+/** The viewers observe another subject choosing at a story time, without enumerating character names. */
+const VIEWER_OBSERVES_CHOICE = new RegExp("(?:看到|看见|目睹)(?:(?!后|接着)[^，。；])+?在(?:前|开头|开场|头)?"
+  + `(?:\\d+(?:\\.\\d+)?|[${CN_DIGITS}]+)(?:秒钟|秒|分钟)(?:内)?(?:决定|判断|选择|考虑|犹豫|权衡)(?:要|该)?$`, "u");
+/** Watching another audience decide is still a claim about viewers' own choices. */
+const OBSERVED_VIEWERS = new RegExp(`(?:${AUDIENCE_NOUNS}|大家).*(?:${AUDIENCE_NOUNS}|大家)`, "u");
 
 function withoutViewerChoice(clause: string): string {
-  return clause.replace(VIEWER_CHOICE, (choice: string, viewers: string, offset: number) =>
-    (VIEWER_SOURCE.test(clause.slice(0, offset)) ? choice : `${viewers}${GAP}`));
+  return clause.replace(VIEWER_CHOICE, (choice: string, viewers: string, offset: number) => {
+    const observesCharacter = VIEWER_OBSERVES_CHOICE.test(viewers) && !OBSERVED_VIEWERS.test(viewers);
+    return VIEWER_SOURCE.test(clause.slice(0, offset)) || observesCharacter ? choice : `${viewers}${GAP}`;
+  });
 }
 
 /** The role of one number in an uncited clause, read with the other clauses of its sentence. */
