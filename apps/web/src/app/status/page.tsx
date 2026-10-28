@@ -9,7 +9,7 @@ export default async function StatusRoute() {
   const environment = process.env.NODE_ENV ?? "development";
   const view = await loadStatusView({ baseUrl, environment });
   return (
-    <CreatorShell>
+    <CreatorShell activePath="/status">
       <StatusPage view={view} />
     </CreatorShell>
   );

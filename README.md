@@ -2,6 +2,10 @@
 
 角色配音的下一阶段方案见 [`docs/CHARACTER_VOICE_DESIGN.md`](docs/CHARACTER_VOICE_DESIGN.md)，附[开源调查](docs/VOICE_OPEN_SOURCE_RESEARCH.md)与[可离线打开的交互设计图](docs/design/character-voice-preview.html)。本项处于设计阶段，尚未接入真实 TTS，不改变下述已验收范围。
 
+管理员模型配置入口为 `/admin/models`：文本创作支持 DeepSeek、Claude（Anthropic 官方 API）与 OpenAI（千问已退役，历史记录保留可读；DeepSeek 2026-10-17 重新接入，见 [DeepSeek 重新接入](docs/DEEPSEEK_WRITING.md)），密钥加密保存、仅后台配置、API 重启后生效。见 [OpenAI 与 Claude 文本创作](docs/OPENAI_CLAUDE_WRITING.md)。首次由服务器管理员安全初始化；默认不启用，不自动调用模型。见 [管理员配置与部署说明](docs/ADMIN_MODEL_SETTINGS.md)。
+
+站点统一登录：启用 `SITE_AUTH_ENABLED` 后，所有页面与 `/api/v1` 接口由应用自身的账号密码会话保护（`/login`），模型后台不再使用独立令牌。见 [统一管理员登录](docs/UNIFIED_ADMIN_LOGIN.md)。
+
 研发与 Git / 部署权限约定见 [`docs/ENGINEERING_WORKFLOW.md`](docs/ENGINEERING_WORKFLOW.md)：已交办任务验证通过后自动提交、推送、按 PR / CI 集成，并更新已指定测试站点。实际服务器发布结果单独核验。
 
 交付台账见 [`docs/V1_DELIVERY_MATRIX.md`](docs/V1_DELIVERY_MATRIX.md)。本分支的共同祖先是 `origin/main` `a6315a5eadc7bb8c14ba18f2dee85ff237fc0272`，其中已经包含创作者界面、编剧助手和早前的 M4 技术闭环。验收边界仍见 [`docs/M4_CLOSEOUT_REPORT.md`](docs/M4_CLOSEOUT_REPORT.md)。项目范围以 [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) 为准。本地开发步骤见 [`docs/DEV_RUNBOOK.md`](docs/DEV_RUNBOOK.md)。完整 M4、真实模型验收和完整生产成本仍未完成。运行手册不表示环境已经部署。
@@ -181,4 +185,4 @@ M1-B GitHub Actions 还会在隔离 PostgreSQL 16 上执行 Prisma validate/gene
 
 ## 尚未纳入当前候选的范围
 
-尚未完成和不得当成完成的事项见 [`docs/V1_DELIVERY_MATRIX.md`](docs/V1_DELIVERY_MATRIX.md) 与 [`docs/M4_CLOSEOUT_REPORT.md`](docs/M4_CLOSEOUT_REPORT.md)。其中包括真实 Provider、付费模型、ComfyUI 实际调用、生产启用、完整 M4 和完整生产成本。本机千问命令可以准备可导入候选，网页不会自动调用模型；网页调用仍待 [`docs/QWEN_WEB_INVOCATION.md`](docs/QWEN_WEB_INVOCATION.md) 审查。[`docs/DEV_RUNBOOK.md`](docs/DEV_RUNBOOK.md) 只说明如何在专用开发库上操作，不表示这些能力已经部署或验收。
+尚未完成和不得当成完成的事项见 [`docs/V1_DELIVERY_MATRIX.md`](docs/V1_DELIVERY_MATRIX.md) 与 [`docs/M4_CLOSEOUT_REPORT.md`](docs/M4_CLOSEOUT_REPORT.md)。其中包括真实 Provider、付费模型、ComfyUI 实际调用、生产启用、完整 M4 和完整生产成本。编剧助手只准备指令并导入外部候选，网页不会自动调用模型；原千问本机命令与网页调用入口已经退役（历史说明见 [`docs/QWEN_WEB_INVOCATION.md`](docs/QWEN_WEB_INVOCATION.md)）。[`docs/DEV_RUNBOOK.md`](docs/DEV_RUNBOOK.md) 只说明如何在专用开发库上操作，不表示这些能力已经部署或验收。

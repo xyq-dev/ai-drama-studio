@@ -3,7 +3,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Workbench } from "./workbench";
+import { EntityPane, Workbench } from "./workbench";
 
 const PROJECT = "project-1";
 const CHAR_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -35,6 +35,8 @@ interface Sim {
   holdGetPart: string | null;
   failGetPart: string | null;
   characterPostGate: Promise<void> | null;
+  /** Holds a character reference generation POST until resolved; it then answers 202 and a QUEUED reference run exists. */
+  referencePostGate: Promise<void> | null;
   scenePostGate: Promise<void> | null;
   shotPostGate: Promise<void> | null;
   withLocation: boolean;
@@ -49,6 +51,7 @@ interface Sim {
   imageAssets: Record<string, Array<Record<string, unknown>>>;
   mediaImage: boolean;
   mediaTask: boolean;
+  referenceTaskState: string | null;
   mediaTaskState: string;
   mediaTaskErrorCode: string | null;
   mediaRetryResponse: { status: number; body: unknown } | null;
@@ -106,6 +109,7 @@ function createSim(): Sim {
     holdGetPart: null,
     failGetPart: null,
     characterPostGate: null,
+    referencePostGate: null,
     scenePostGate: null,
     shotPostGate: null,
     withLocation: false,
@@ -120,6 +124,7 @@ function createSim(): Sim {
     imageAssets: {},
     mediaImage: false,
     mediaTask: false,
+    referenceTaskState: null,
     mediaTaskState: "FAILED",
     mediaTaskErrorCode: "MOCK_IMAGE_OUTPUT_INVALID",
     mediaRetryResponse: null,
@@ -344,6 +349,14 @@ function createSim(): Sim {
       if (sim.failWorkflowRead === sim.workflowReads || sim.failWorkflowReads.includes(sim.workflowReads)) {
         return fail(500, "REFRESH_FAILED", "任务刷新失败");
       }
+      if (sim.referenceTaskState) {
+        return json([{
+          id: "reference-run", type: "MEDIA_CHARACTER_REFERENCE", status: sim.referenceTaskState,
+          createdAt: "2026-09-30T00:00:00.000Z",
+          jobs: [{ id: "reference-job", kind: "MEDIA_CHARACTER_REFERENCE", state: sim.referenceTaskState, errorCode: null,
+            errorMessage: null, sourceShotRevisionId: null, attempts: [] }],
+        }]);
+      }
       if (sim.mediaTask) {
         return json([{
           id: "media-run",
@@ -564,6 +577,23 @@ function createSim(): Sim {
       }
       return json({ workflowRunId: "media-run", jobId: "media-job" }, 202);
     }
+    const referenceList = /^\/api\/v1\/characters\/([^/]+)\/reference-images$/.exec(path);
+    if (referenceList && method === "GET") {
+      const id = referenceList[1] === CHAR_B ? CHAR_B : CHAR_A;
+      const approved = id === CHAR_A && characterStatus === "APPROVED";
+      return json({ characterId: id, currentRevisionId: id === CHAR_B ? "rev-b1" : characterRevId, selection: null,
+        videoReadiness: { usable: false,
+          blockers: approved ? ["REFERENCE_NOT_SELECTED"] : ["CHARACTER_REVISION_NOT_APPROVED", "REFERENCE_NOT_SELECTED"] },
+        items: [], hasMore: false });
+    }
+    if (/^\/api\/v1\/character-revisions\/[^/]+\/reference-images\/generate$/.test(path) && method === "POST") {
+      if (sim.referencePostGate) await sim.referencePostGate;
+      sim.referenceTaskState = "QUEUED";
+      return json({ workflowRunId: "reference-run", jobId: "reference-job", dispatchSeq: 1 }, 202);
+    }
+    if (path === "/api/v1/generation-jobs/reference-job" && method === "GET") {
+      return json({ id: "reference-job", state: sim.referenceTaskState ?? "QUEUED", errorCode: null, errorMessage: null });
+    }
     return fail(404, "NOT_FOUND", path);
   };
   return sim;
@@ -736,6 +766,22 @@ function draftFor(part: string): { idempotencyKey: string; ifMatch: number | nul
   return null;
 }
 
+/** Holds the GET whose path ends with `part` until released; `answered` settles once the simulated API has replied. */
+function holdHistory(sim: Sim, part: string): { release: () => void; answered: Promise<void> } {
+  let release!: () => void;
+  sim.holdGetPart = part;
+  sim.holdGet = new Promise<void>((resolve) => { release = resolve; });
+  let answer!: () => void;
+  const answered = new Promise<void>((resolve) => { answer = resolve; });
+  const reply = sim.fetch;
+  sim.fetch = async (input, init) => {
+    const response = await reply(input, init);
+    if ((String(input).split("?")[0] ?? "").endsWith(part)) answer();
+    return response;
+  };
+  return { release, answered };
+}
+
 async function openCharacter(id: string): Promise<HTMLFormElement> {
   const button = await screen.findByRole("button", { name: new RegExp(id.slice(0, 8)) });
   fireEvent.click(button);
@@ -790,6 +836,110 @@ describe("workbench review interactions against a simulated API", () => {
     expect(screen.queryByDisplayValue("角色甲")).toBeNull();
   });
 
+  it("keeps a character chosen in the same task the list first appears, reads its history and shows it", async () => {
+    const sim = createSim();
+    install(sim);
+    renderAt("focus=character");
+    // Click from the DOM mutation that first adds the list: before the pane's own effects have run.
+    await new Promise<void>((resolve) => {
+      const observer = new MutationObserver(() => {
+        const button = screen.queryByRole("button", { name: new RegExp(CHAR_A.slice(0, 8)) });
+        if (!button) return;
+        observer.disconnect();
+        fireEvent.click(button);
+        resolve();
+      });
+      observer.observe(document.body, { subtree: true, childList: true });
+    });
+    const editor = await screen.findByRole("heading", { name: "当前版本" });
+    expect(screen.getByRole("button", { name: new RegExp(CHAR_A.slice(0, 8)) }).getAttribute("aria-pressed")).toBe("true");
+    expect(sim.calls.filter((call) => call.method === "GET" && call.url.endsWith(`/characters/${CHAR_A}/revisions`))).toHaveLength(1);
+    expect((within(editor.closest("form")!).getByLabelText("正文") as HTMLTextAreaElement).value).toBe("角色甲");
+  });
+
+  it("keeps the chosen character when the project base is read again", async () => {
+    const sim = createSim();
+    install(sim);
+    renderAt("focus=character");
+    await openCharacter(CHAR_A);
+    const listReads = () => sim.calls.filter((call) => call.method === "GET" && call.url === `/api/v1/projects/${PROJECT}/characters`).length;
+    const before = listReads();
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    await waitFor(() => expect(listReads()).toBeGreaterThan(before));
+    await waitFor(() => expect(screen.getByRole("heading", { name: "当前版本" })).toBeTruthy());
+    expect(screen.getByRole("button", { name: new RegExp(CHAR_A.slice(0, 8)) }).getAttribute("aria-pressed")).toBe("true");
+    expect((within(formOf("当前版本")).getByLabelText("正文") as HTMLTextAreaElement).value).toBe("角色甲");
+  });
+
+  it("drops the choice when the kind changes, and a late history answer of the old kind shows nothing", async () => {
+    const sim = createSim();
+    const { release, answered } = holdHistory(sim, `/characters/${CHAR_A}/revisions`);
+    install(sim);
+    renderAt("focus=character");
+    fireEvent.click(await screen.findByRole("button", { name: new RegExp(CHAR_A.slice(0, 8)) }));
+    expect(await screen.findByText("正在加载版本")).toBeTruthy();
+    fireEvent.click(within(screen.getByRole("navigation", { name: "创作步骤" })).getByRole("button", { name: "场地" }));
+    await screen.findByRole("heading", { name: "新建场地" });
+    release();
+    await answered;
+    await act(async () => undefined);
+    expect(screen.queryByRole("heading", { name: "当前版本" })).toBeNull();
+    expect(screen.queryByText("正在加载版本")).toBeNull();
+    fireEvent.click(within(screen.getByRole("navigation", { name: "创作步骤" })).getByRole("button", { name: "角色" }));
+    await screen.findByRole("heading", { name: "新建角色" });
+    expect(screen.getByRole("button", { name: new RegExp(CHAR_A.slice(0, 8)) }).getAttribute("aria-pressed")).toBe("false");
+    expect(screen.queryByRole("heading", { name: "当前版本" })).toBeNull();
+    expect(screen.getByText("选择一个对象后显示版本。")).toBeTruthy();
+  });
+
+  it("drops the choice when the project changes, and the old project's late history answer shows nothing", async () => {
+    const sim = createSim();
+    const { release, answered } = holdHistory(sim, `/characters/${CHAR_A}/revisions`);
+    install(sim);
+    type Props = Parameters<typeof EntityPane>[0];
+    const pane = (projectId: string, entityIds: string[]) => createElement(EntityPane, {
+      project: { id: projectId, title: projectId, premise: "", version: 1, status: "ACTIVE" },
+      kind: "character",
+      page: { scope: projectId, items: entityIds.map((id) => listAggregate(id)), nextCursor: null } as Props["page"],
+      episodes: [], onMore: () => undefined, onSaved: async () => undefined, onStatus: () => undefined,
+    });
+    const view = render(pane(PROJECT, [CHAR_A, CHAR_B]));
+    fireEvent.click(screen.getByRole("button", { name: new RegExp(CHAR_A.slice(0, 8)) }));
+    expect(screen.getByText("正在加载版本")).toBeTruthy();
+    view.rerender(pane("project-2", [CHAR_B]));
+    expect(screen.queryByText("正在加载版本")).toBeNull();
+    release();
+    await answered;
+    await act(async () => undefined);
+    expect(screen.queryByRole("heading", { name: "当前版本" })).toBeNull();
+    expect(screen.getByRole("button", { name: new RegExp(CHAR_B.slice(0, 8)) }).getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(screen.getByRole("button", { name: new RegExp(CHAR_B.slice(0, 8)) }));
+    expect((within(await screen.findByRole("heading", { name: "当前版本" }).then((node) => node.closest("form")!)).getByLabelText("正文") as HTMLTextAreaElement).value).toBe("角色乙");
+    expect(sim.calls.filter((call) => call.method === "GET" && call.url.includes("/revisions")).map((call) => call.url)).toEqual([
+      `/api/v1/projects/${PROJECT}/characters/${CHAR_A}/revisions`, `/api/v1/projects/project-2/characters/${CHAR_B}/revisions`,
+    ]);
+  });
+
+  it("opens a focused entity on mount and again for a new nonce in the same scope", async () => {
+    const sim = createSim();
+    install(sim);
+    type Props = Parameters<typeof EntityPane>[0];
+    const pane = (focus: Props["focus"]) => createElement(EntityPane, {
+      project: { id: PROJECT, title: PROJECT, premise: "", version: 1, status: "ACTIVE" },
+      kind: "character",
+      page: { scope: PROJECT, items: [listAggregate(CHAR_A), listAggregate(CHAR_B)], nextCursor: null } as Props["page"],
+      episodes: [], onMore: () => undefined, onSaved: async () => undefined, onStatus: () => undefined, focus,
+    });
+    const view = render(pane({ entityId: CHAR_B, nonce: 1 }));
+    expect((within((await screen.findByRole("heading", { name: "当前版本" })).closest("form")!).getByLabelText("正文") as HTMLTextAreaElement).value).toBe("角色乙");
+    await waitFor(() => expect(document.activeElement?.closest("[data-entity-editor]")?.getAttribute("data-entity-editor")).toBe(CHAR_B));
+    fireEvent.click(screen.getByRole("button", { name: new RegExp(CHAR_A.slice(0, 8)) }));
+    await waitFor(() => expect((within(formOf("当前版本")).getByLabelText("正文") as HTMLTextAreaElement).value).toBe("角色甲"));
+    view.rerender(pane({ entityId: CHAR_B, nonce: 2 }));
+    await waitFor(() => expect((within(formOf("当前版本")).getByLabelText("正文") as HTMLTextAreaElement).value).toBe("角色乙"));
+    expect(screen.getByRole("button", { name: new RegExp(CHAR_B.slice(0, 8)) }).getAttribute("aria-pressed")).toBe("true");
+  });
+
   it("restores a new-entity draft for its own kind and drops the other kind", async () => {
     const sim = createSim();
     install(sim);
@@ -836,12 +986,22 @@ describe("workbench review interactions against a simulated API", () => {
     fireEvent.change(within(editor).getByLabelText("正文"), { target: { value: "第一" } });
     fireEvent.click(within(editor).getByRole("button", { name: "保存新版本" }));
     fireEvent.change(within(formOf("当前版本")).getByLabelText("正文"), { target: { value: "第二" } });
+    expect(postsEnding(sim, `/characters/${CHAR_A}/revisions`)).toHaveLength(1);
+    expect(postsEnding(sim, `/characters/${CHAR_A}/revisions`)[0]?.body).toMatchObject({ content: { text: "第一" } });
+    expect(draftFor(`character:${CHAR_A}`)?.payload).toMatchObject({ text: "第二" });
+    // "第二" already exists before the reply. Wait for the acknowledgement AND the
+    // refreshed revision before remounting, so late save callbacks are actually covered.
     release();
-    await screen.findByDisplayValue("第二");
+    await screen.findByText("已保存");
+    await screen.findByText(/已看到的并发版本 2/);
+    expect((within(formOf("当前版本")).getByLabelText("正文") as HTMLTextAreaElement).value).toBe("第二");
+    expect(draftFor(`character:${CHAR_A}`)?.payload).toMatchObject({ text: "第二" });
     view.unmount();
     renderAt("focus=character");
     await openCharacter(CHAR_A);
-    await waitFor(() => expect((within(formOf("当前版本")).getByLabelText("正文") as HTMLTextAreaElement).value).toBe("第二"));
+    await screen.findByText(/已看到的并发版本 2/);
+    expect((within(formOf("当前版本")).getByLabelText("正文") as HTMLTextAreaElement).value).toBe("第二");
+    expect(postsEnding(sim, `/characters/${CHAR_A}/revisions`)).toHaveLength(1);
   });
 
   it("blocks a normal save after 409 and confirms only the snapshot already shown", async () => {
@@ -1479,6 +1639,55 @@ describe("workbench review interactions against a simulated API", () => {
     fireEvent.click(retry);
     expect(sim.calls.filter((call) => call.url.endsWith("/retry"))).toHaveLength(0);
   });
+
+  it("re-reads reference readiness after the character is approved on the same revision (Codex review on d3f504e)", async () => {
+    const sim = createSim();
+    install(sim);
+    renderAt("focus=character");
+    await openCharacter(CHAR_A);
+    expect(await screen.findByText("角色当前版本尚未审核通过")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "提交审核" }));
+    fireEvent.click(await screen.findByRole("button", { name: "通过" }));
+    expect((await screen.findAllByText(/已通过 APPROVED/)).length).toBeGreaterThan(0);
+    await waitFor(() => expect(screen.queryByText("角色当前版本尚未审核通过")).toBeNull());
+  }, 15000);
+
+  it("lists a reference job accepted after the user switched character, and follows it (Codex review on b6aef4a)", async () => {
+    const sim = createSim();
+    let release!: () => void;
+    sim.referencePostGate = new Promise<void>((resolve) => { release = resolve; });
+    install(sim);
+    renderAt("focus=character");
+    await openCharacter(CHAR_A);
+    fireEvent.click(await screen.findByRole("button", { name: "为当前版本生成参考图" }));
+    await waitFor(() => expect(postsEnding(sim, "/reference-images/generate")).toHaveLength(1));
+    // Switch to another character in the same project before the 202 arrives.
+    await openCharacter(CHAR_B);
+    await screen.findByRole("button", { name: "为当前版本生成参考图" });
+    const before = sim.workflowReads;
+    release();
+    // Nothing was running, so only the acceptance can make the page read the runs again.
+    await waitFor(() => expect(sim.workflowReads).toBeGreaterThan(before));
+    fireEvent.click(screen.getByRole("button", { name: "任务" }));
+    expect(await screen.findByText("角色参考图 · 进行中 QUEUED")).toBeTruthy();
+    // Character B's panel does not adopt character A's job.
+    expect(screen.queryByText(/参考图任务 referenc/)).toBeNull();
+  }, 15000);
+
+  it("lists a character reference generation in the task area without a retry, and keeps polling it while it runs (closeout item 5)", async () => {
+    const sim = createSim();
+    sim.referenceTaskState = "RUNNING";
+    install(sim);
+    renderAt(`focus=shot&episode=1&scene=scene-1&shot=${SHOT_A}`);
+    fireEvent.click(await screen.findByRole("button", { name: "任务" }));
+    expect(await screen.findByText(/角色参考图 · /)).toBeTruthy();
+    expect(screen.queryByText("没有参考图任务")).toBeNull();
+    const reads = sim.workflowReads;
+    await waitFor(() => expect(sim.workflowReads).toBeGreaterThan(reads), { timeout: 5000 });
+    const card = screen.getByText(/角色参考图 · /).closest("li")!;
+    expect(card.textContent).not.toContain("重试");
+    expect(card.querySelector("button")?.textContent).toBe("取消");
+  }, 15000);
 
   it.each([
     ["FAILED", "MOCK_IMAGE_RUNTIME_FAILED"],

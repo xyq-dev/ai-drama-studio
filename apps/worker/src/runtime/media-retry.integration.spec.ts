@@ -311,6 +311,16 @@ describe("Mock media manual retry", () => {
         inputSnapshot: {}, traceId: "compose" });
       await jobs.cancelJob({ workspaceId: world.workspaceId, jobId: compose.jobId, traceId: "cancel" });
       await expect(retry(world, compose.jobId)).rejects.toMatchObject({ code: "JOB_NOT_RETRYABLE" });
+      // The job view names the episode an episode compose froze, and nothing for any other job.
+      const episodeId = randomUUID();
+      const episodeCompose = await jobs.createWorkflowJob({ workspaceId: world.workspaceId, projectId: world.projectId,
+        type: "MEDIA_COMPOSE", requestedBy: "test", kind: "MEDIA_COMPOSE", inputHash: "ce".repeat(32),
+        inputSnapshot: { schema: "m4.episode.compose.v1", input: { episodeId } }, traceId: "episode-compose" });
+      expect((await store.getJob(world.workspaceId, episodeCompose.jobId)).composeEpisodeId).toBe(episodeId);
+      expect((await store.getJob(world.workspaceId, compose.jobId)).composeEpisodeId).toBeNull();
+      expect((await store.getJob(world.workspaceId, succeeded.jobId)).composeEpisodeId).toBeNull();
+      const listed = (await store.listWorkflows(world.workspaceId, world.projectId)).flatMap((run) => run.jobs);
+      expect(listed.find((job) => job.id === episodeCompose.jobId)?.composeEpisodeId).toBe(episodeId);
     } finally {
       await rm(objectDir, { recursive: true, force: true });
     }
@@ -725,20 +735,32 @@ describe("replacing a selected reference stales what was made from it", () => {
   });
 });
 
+/**
+ * The reference structure probe of characterReferenceStorageReady, told apart from every other column probe (the episode
+ * plan's project columns, for one) by what it asks for, not by its layout or by how many queries ran before it.
+ */
+function isReferenceStructureProbe(text: string): boolean {
+  return text.includes("information_schema.columns") && text.includes("table_name = 'asset'")
+    && text.includes("reference_role") && text.includes("character_reference_selection");
+}
+
 describe("a strict video whose reference probe hits a transient database error", () => {
   it("keeps the attempt recoverable through execution and recovery, then settles once the probe answers", async () => {
     const world = await seedApprovedShot();
     const objectDir = await mkdtemp(join(tmpdir(), "probe-fault-"));
     const objects = new LocalMockObjects(objectDir);
-    // The real pool; only the structure probe's query fails while the fault is on, as a statement timeout would.
-    const fault = { on: true };
+    let submits = 0;
+    // The real pool; only the reference structure probe fails while the fault is on, as a statement timeout would.
+    // Each injected failure records how many provider submissions had happened by then.
+    const fault = { on: true, submitsAtHits: [] as number[] };
     const faultyPool = {
       connect: async () => {
         const client = await pool.connect();
         const query = client.query.bind(client) as (...args: unknown[]) => Promise<unknown>;
         (client as unknown as { query: (...args: unknown[]) => Promise<unknown> }).query = (...args: unknown[]) => {
           const text = typeof args[0] === "string" ? args[0] : "";
-          if (fault.on && text.includes("information_schema.columns")) {
+          if (fault.on && isReferenceStructureProbe(text)) {
+            fault.submitsAtHits.push(submits);
             return Promise.reject(Object.assign(new Error("canceling statement due to statement timeout"),
               { code: "57014", severity: "ERROR" }));
           }
@@ -762,7 +784,6 @@ describe("a strict video whose reference probe hits a transient database error",
     const job = await createMediaJob(world, "MEDIA_VIDEO", strictSnapshot);
     const row = await jobRow(job.jobId);
     const adapter = new MockMediaAdapter();
-    let submits = 0;
     const submit = adapter.submit.bind(adapter);
     adapter.submit = async (request) => { submits += 1; return submit(request); };
     const ledger = async () => (await sql<{ state: string; error_code: string | null; attempts: number; requests: string[];
@@ -781,6 +802,8 @@ describe("a strict video whose reference probe hits a transient database error",
         providerConfigurationId: world.providers.MEDIA_VIDEO, inputHash: row?.input_hash as string,
         inputSnapshot: row?.input_snapshot, traceId: "strict-probe", capability: "video.generate" },
       { jobs: faultyJobs, assets: faultyAssets, adapter, objects })).rejects.toMatchObject({ code: "57014" });
+      // The failure came from the reference probe, after the provider request was sent, not from an earlier admission probe.
+      expect(fault.submitsAtHits).toEqual([1]);
       const afterRun = await ledger();
       expect(afterRun).toMatchObject({ state: "RUNNING", attempts: 1, assets: 0, costs: 0, succeeded: 0, failed: 0 });
       const requestId = afterRun.requests[0];
@@ -790,6 +813,8 @@ describe("a strict video whose reference probe hits a transient database error",
       const recovery = new MockMediaRecovery(faultyJobs, faultyAssets, store, adapter, objects,
         { mockImageEnabled: false, mockAvEnabled: true });
       await expect(recovery.reconcileOnce()).rejects.toBeInstanceOf(AggregateError);
+      expect(fault.submitsAtHits.length).toBeGreaterThan(1);
+      expect(fault.submitsAtHits.every((count) => count === 1)).toBe(true);
       expect(await ledger()).toMatchObject({ state: "RUNNING", attempts: 1, requests: [requestId], assets: 0, costs: 0, failed: 0 });
 
       // The probe now answers: these migrations have no reference structure, so the frozen input cannot complete.
@@ -1043,14 +1068,16 @@ describe.runIf(process.env.CHARACTER_REFERENCE_DRAFT_SQL_AUTHORIZED === "true")(
       const { world, frozen } = await strictWorld();
       const objectDir = await mkdtemp(join(tmpdir(), "probe-heal-"));
       const objects = new LocalMockObjects(objectDir);
-      const fault = { on: true };
+      let submits = 0;
+      const fault = { on: true, submitsAtHits: [] as number[] };
       const faultyPool = {
         connect: async () => {
           const client = await pool.connect();
           const query = client.query.bind(client) as (...args: unknown[]) => Promise<unknown>;
           (client as unknown as { query: (...args: unknown[]) => Promise<unknown> }).query = (...args: unknown[]) => {
             const text = typeof args[0] === "string" ? args[0] : "";
-            if (fault.on && text.includes("information_schema.columns")) {
+            if (fault.on && isReferenceStructureProbe(text)) {
+              fault.submitsAtHits.push(submits);
               return Promise.reject(Object.assign(new Error("canceling statement due to statement timeout"), { code: "57014" }));
             }
             return query(...args);
@@ -1068,12 +1095,12 @@ describe.runIf(process.env.CHARACTER_REFERENCE_DRAFT_SQL_AUTHORIZED === "true")(
       const faultyAssets = new MediaAssetStore(faultyPool);
       const { job, input } = await strictJob(world, frozen, "probe-heal");
       const adapterWithCount = new MockMediaAdapter();
-      let submits = 0;
       const submit = adapterWithCount.submit.bind(adapterWithCount);
       adapterWithCount.submit = async (request) => { submits += 1; return submit(request); };
       try {
         await expect(runMockAvJob(input, { jobs: faultyJobs, assets: faultyAssets, adapter: adapterWithCount, objects }))
           .rejects.toMatchObject({ code: "57014" });
+        expect(fault.submitsAtHits).toEqual([1]);
         await sql("UPDATE generation_job SET lease_until = now() - interval '1 second' WHERE id = $1", [job.jobId]);
         fault.on = false;
         await new MockMediaRecovery(faultyJobs, faultyAssets, store, adapterWithCount, objects,

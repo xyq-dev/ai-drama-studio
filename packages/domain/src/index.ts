@@ -190,15 +190,18 @@ export {
   CHARACTER_REFERENCE_JOB_KIND,
   CHARACTER_REFERENCE_ROLE,
   CHARACTER_REFERENCE_SNAPSHOT_SCHEMA,
+  characterReferenceVideoBlockers,
   parseCharacterReferenceGateMode,
   parseCharacterReferenceReviewRequest,
   parseCharacterReferenceSelectionRequest,
   parseCharacterReferenceSnapshot,
   selectedReferenceUsable,
+  type CharacterReferenceBlocker,
   type CharacterReferenceGateMode,
   type CharacterReferenceReviewRequest,
   type CharacterReferenceSelectionRequest,
   type CharacterReferenceSnapshot,
+  type CharacterVideoReadinessInput,
   type SelectedReferenceState,
 } from "./character-reference";
 export {
@@ -218,7 +221,11 @@ export {
 } from "./attempt-presentation";
 export {
   FRESHNESS_STATUSES,
+  MAX_PRODUCTION_EPISODES,
   PRODUCTION_EPISODE_NUMBERS,
+  productionEpisodeNumbers,
+  assertSeriesEpisodeSet,
+  MAX_SERIES_EPISODES,
   REVIEW_STATUSES,
   assertProductionEpisodeSet,
   assertReviewTransition,
@@ -227,3 +234,36 @@ export {
   type FreshnessStatus,
   type ReviewStatus,
 } from "./text-chain";
+export {
+  TITLE_WRITING_SYSTEM_PROMPT,
+  buildTitleWritingPrompt,
+  episodeNoOf,
+  formatTitleEpisode,
+  formatTitleStory,
+  screenplayCharTarget,
+  validateTitleWritingOutput,
+  type TitleWritingContext,
+  type TitleWritingPrompt,
+  type TitleWritingSchemaKind,
+  type TitleWritingValidation,
+} from "./title-writing";
+export {
+  SCRIPT_BREAKDOWN_SYSTEM_PROMPT,
+  breakdownDialogueText,
+  breakdownShotPromptText,
+  buildScriptBreakdownPrompt,
+  lineInScript,
+  normalizeForMatch,
+  plannedTotalSeconds,
+  scriptTextOf,
+  shotsOfScene,
+  validateScriptBreakdownOutput,
+  type ScriptBreakdownPrompt,
+  type ScriptBreakdownValidation,
+} from "./script-breakdown";
+export * from "./auto-creation";
+export * from "./auto-creation-numbers";
+export * from "./auto-creation-references";
+export * from "./auto-creation-sources";
+export * from "./series-writing";
+export * from "./series-state";

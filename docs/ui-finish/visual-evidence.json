@@ -1,0 +1,1224 @@
+{
+  "kind": "visual-only with mock client API; not backend acceptance",
+  "browser": "140.0.7339.186",
+  "baseSha": "cf0c331c04ea820332e9e1dc771d6d20c7570028",
+  "pageErrors": [],
+  "pages": [
+    {
+      "name": "home",
+      "width": 1440,
+      "route": "/",
+      "scenario": "ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 1440,
+      "height": 1576,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "你的故事，从一句话开始",
+        "AI 一键创作",
+        "接下来，只需做好五件事"
+      ],
+      "navigation": [
+        "主导航"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "create",
+      "width": 1440,
+      "route": "/create",
+      "scenario": "ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 1440,
+      "height": 1576,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "你的故事，从一句话开始",
+        "AI 一键创作",
+        "接下来，只需做好五件事"
+      ],
+      "navigation": [
+        "主导航"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "works",
+      "width": 1440,
+      "route": "/studio",
+      "scenario": "ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 1440,
+      "height": 1171,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "我的作品",
+        "雨夜里的最后一封信",
+        "下一站，晴天"
+      ],
+      "navigation": [
+        "主导航"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "categories",
+      "width": 1440,
+      "route": "/categories",
+      "scenario": "ready",
+      "title": "灵感中心 · 红果创作",
+      "scrollWidth": 1440,
+      "height": 2503,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "灵感中心",
+        "一级分类",
+        "二级标签",
+        "标签组",
+        "一级分类 （固定 12 个）",
+        "标签组结构",
+        "发现故事标签",
+        "我的创作方向",
+        "好故事点亮更多生活",
+        "分类使用指南"
+      ],
+      "navigation": [
+        "主导航"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "preview",
+      "width": 1440,
+      "route": "/preview",
+      "scenario": "ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 1440,
+      "height": 1131,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "界面示例",
+        "夜班便利店",
+        "故事",
+        "画面位置"
+      ],
+      "navigation": [
+        "主导航"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "help",
+      "width": 1440,
+      "route": "/help",
+      "scenario": "ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 1440,
+      "height": 1000,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "帮助",
+        "常见问题",
+        "不知道下一步做什么？"
+      ],
+      "navigation": [
+        "主导航"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "status",
+      "width": 1440,
+      "route": "/status",
+      "scenario": "ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 1440,
+      "height": 1060,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "服务状态",
+        "连接检查"
+      ],
+      "navigation": [
+        "主导航"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "advanced-story",
+      "width": 1440,
+      "route": "/projects/11111111-1111-4111-8111-111111111111?focus=story&episode=1&scene=scene-1&shot=shot-1",
+      "scenario": "ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 1440,
+      "height": 1253,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "雨夜里的最后一封信",
+        "作品",
+        "故事",
+        "版本"
+      ],
+      "navigation": [
+        "主导航",
+        "创作步骤"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "advanced-script",
+      "width": 1440,
+      "route": "/projects/11111111-1111-4111-8111-111111111111?focus=script&episode=1&scene=scene-1&shot=shot-1",
+      "scenario": "ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 1440,
+      "height": 2022,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "雨夜里的最后一封信",
+        "作品",
+        "第 1 集剧本",
+        "版本",
+        "场景"
+      ],
+      "navigation": [
+        "主导航",
+        "创作步骤"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "advanced-character",
+      "width": 1440,
+      "route": "/projects/11111111-1111-4111-8111-111111111111?focus=character&episode=1&scene=scene-1&shot=shot-1",
+      "scenario": "ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 1440,
+      "height": 1274,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "雨夜里的最后一封信",
+        "作品",
+        "角色",
+        "新建角色"
+      ],
+      "navigation": [
+        "主导航",
+        "创作步骤"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "advanced-location",
+      "width": 1440,
+      "route": "/projects/11111111-1111-4111-8111-111111111111?focus=location&episode=1&scene=scene-1&shot=shot-1",
+      "scenario": "ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 1440,
+      "height": 1210,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "雨夜里的最后一封信",
+        "作品",
+        "场地",
+        "新建场地"
+      ],
+      "navigation": [
+        "主导航",
+        "创作步骤"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "advanced-scene",
+      "width": 1440,
+      "route": "/projects/11111111-1111-4111-8111-111111111111?focus=scene&episode=1&scene=scene-1&shot=shot-1",
+      "scenario": "ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 1440,
+      "height": 2826,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "雨夜里的最后一封信",
+        "作品",
+        "雨夜 · 旧城邮局",
+        "版本",
+        "镜头"
+      ],
+      "navigation": [
+        "主导航",
+        "创作步骤"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "advanced-shot",
+      "width": 1440,
+      "route": "/projects/11111111-1111-4111-8111-111111111111?focus=shot&episode=1&scene=scene-1&shot=shot-1",
+      "scenario": "ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 1440,
+      "height": 7462,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "雨夜里的最后一封信",
+        "作品",
+        "雨夜 · 旧城邮局",
+        "版本",
+        "镜头",
+        "镜头 1",
+        "Mock 图片",
+        "Mock 视频",
+        "Mock 配音",
+        "Mock 字幕",
+        "Mock 音乐",
+        "版本"
+      ],
+      "navigation": [
+        "主导航",
+        "创作步骤"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "advanced-episode-compose",
+      "width": 1440,
+      "route": "/projects/11111111-1111-4111-8111-111111111111?focus=episode-compose&episode=1&scene=scene-1&shot=shot-1",
+      "scenario": "ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 1440,
+      "height": 1229,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "雨夜里的最后一封信",
+        "作品",
+        "多镜编排"
+      ],
+      "navigation": [
+        "主导航",
+        "创作步骤"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "beginner-story",
+      "width": 1440,
+      "route": "/projects/11111111-1111-4111-8111-111111111111/create?step=story",
+      "scenario": "ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 1440,
+      "height": 1443,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "雨夜里的最后一封信",
+        "第 1 步 · 定故事",
+        "故事",
+        "版本"
+      ],
+      "navigation": [
+        "主导航",
+        "创作步骤"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "beginner-script",
+      "width": 1440,
+      "route": "/projects/11111111-1111-4111-8111-111111111111/create?step=script",
+      "scenario": "ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 1440,
+      "height": 2307,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "雨夜里的最后一封信",
+        "第 2 步 · 看剧本",
+        "第 1 集剧本",
+        "版本",
+        "场景"
+      ],
+      "navigation": [
+        "主导航",
+        "创作步骤"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "beginner-cast",
+      "width": 1440,
+      "route": "/projects/11111111-1111-4111-8111-111111111111/create?step=cast",
+      "scenario": "ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 1440,
+      "height": 1605,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "雨夜里的最后一封信",
+        "第 3 步 · 定人物",
+        "角色",
+        "新建角色"
+      ],
+      "navigation": [
+        "主导航",
+        "创作步骤"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "beginner-sample",
+      "width": 1440,
+      "route": "/projects/11111111-1111-4111-8111-111111111111/create?step=sample",
+      "scenario": "ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 1440,
+      "height": 1104,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "雨夜里的最后一封信",
+        "第 4 步 · 试一段"
+      ],
+      "navigation": [
+        "主导航",
+        "创作步骤"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "beginner-final",
+      "width": 1440,
+      "route": "/projects/11111111-1111-4111-8111-111111111111/create?step=final",
+      "scenario": "ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 1440,
+      "height": 1678,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "雨夜里的最后一封信",
+        "第 5 步 · 出成片",
+        "多镜编排"
+      ],
+      "navigation": [
+        "主导航",
+        "创作步骤"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "writing-running",
+      "width": 1440,
+      "route": "/projects/11111111-1111-4111-8111-111111111111/writing",
+      "scenario": "writing-running",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 1440,
+      "height": 1263,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "《雨夜里的最后一封信》",
+        "进度",
+        "故事策划"
+      ],
+      "navigation": [
+        "主导航"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "writing-ready",
+      "width": 1440,
+      "route": "/projects/11111111-1111-4111-8111-111111111111/writing",
+      "scenario": "writing-ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 1440,
+      "height": 2377,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "《雨夜里的最后一封信》",
+        "进度",
+        "故事策划",
+        "分集大纲",
+        "分集剧本"
+      ],
+      "navigation": [
+        "主导航"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "writing-unknown",
+      "width": 1440,
+      "route": "/projects/11111111-1111-4111-8111-111111111111/writing",
+      "scenario": "writing-unknown",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 1440,
+      "height": 1589,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "《雨夜里的最后一封信》",
+        "进度",
+        "故事策划"
+      ],
+      "navigation": [
+        "主导航"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "writing-conflict",
+      "width": 1440,
+      "route": "/projects/11111111-1111-4111-8111-111111111111/writing",
+      "scenario": "writing-conflict",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 1440,
+      "height": 2297,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "《雨夜里的最后一封信》",
+        "进度",
+        "故事策划",
+        "分集大纲",
+        "分集剧本"
+      ],
+      "navigation": [
+        "主导航"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "writing-empty",
+      "width": 1440,
+      "route": "/projects/11111111-1111-4111-8111-111111111111/writing",
+      "scenario": "writing-empty",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 1440,
+      "height": 1000,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "这部作品还没有 AI 创作记录"
+      ],
+      "navigation": [
+        "主导航"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "works-empty",
+      "width": 1440,
+      "route": "/studio",
+      "scenario": "empty",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 1440,
+      "height": 1000,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "我的作品"
+      ],
+      "navigation": [
+        "主导航"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "works-error",
+      "width": 1440,
+      "route": "/studio",
+      "scenario": "error",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 1440,
+      "height": 1000,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "我的作品"
+      ],
+      "navigation": [
+        "主导航"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "compose-disabled",
+      "width": 1440,
+      "route": "/projects/11111111-1111-4111-8111-111111111111/create?step=final",
+      "scenario": "disabled",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 1440,
+      "height": 1836,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "雨夜里的最后一封信",
+        "第 5 步 · 出成片",
+        "多镜编排"
+      ],
+      "navigation": [
+        "主导航",
+        "创作步骤"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "home",
+      "width": 390,
+      "route": "/",
+      "scenario": "ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 390,
+      "height": 2328,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "你的故事，从一句话开始",
+        "AI 一键创作",
+        "接下来，只需做好五件事"
+      ],
+      "navigation": [
+        "主导航"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "create",
+      "width": 390,
+      "route": "/create",
+      "scenario": "ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 390,
+      "height": 2328,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "你的故事，从一句话开始",
+        "AI 一键创作",
+        "接下来，只需做好五件事"
+      ],
+      "navigation": [
+        "主导航"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "works",
+      "width": 390,
+      "route": "/studio",
+      "scenario": "ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 390,
+      "height": 1357,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "我的作品",
+        "雨夜里的最后一封信",
+        "下一站，晴天"
+      ],
+      "navigation": [
+        "主导航"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "categories",
+      "width": 390,
+      "route": "/categories",
+      "scenario": "ready",
+      "title": "灵感中心 · 红果创作",
+      "scrollWidth": 390,
+      "height": 4558,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "灵感中心",
+        "一级分类",
+        "二级标签",
+        "标签组",
+        "一级分类 （固定 12 个）",
+        "标签组结构",
+        "发现故事标签",
+        "我的创作方向",
+        "好故事点亮更多生活",
+        "分类使用指南"
+      ],
+      "navigation": [
+        "主导航"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "preview",
+      "width": 390,
+      "route": "/preview",
+      "scenario": "ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 390,
+      "height": 1664,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "界面示例",
+        "夜班便利店",
+        "故事",
+        "画面位置"
+      ],
+      "navigation": [
+        "主导航"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "help",
+      "width": 390,
+      "route": "/help",
+      "scenario": "ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 390,
+      "height": 1454,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "帮助",
+        "常见问题",
+        "不知道下一步做什么？"
+      ],
+      "navigation": [
+        "主导航"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "status",
+      "width": 390,
+      "route": "/status",
+      "scenario": "ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 390,
+      "height": 1122,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "服务状态",
+        "连接检查"
+      ],
+      "navigation": [
+        "主导航"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "advanced-story",
+      "width": 390,
+      "route": "/projects/11111111-1111-4111-8111-111111111111?focus=story&episode=1&scene=scene-1&shot=shot-1",
+      "scenario": "ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 390,
+      "height": 1444,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "雨夜里的最后一封信",
+        "作品",
+        "故事",
+        "版本"
+      ],
+      "navigation": [
+        "主导航",
+        "创作步骤"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "advanced-script",
+      "width": 390,
+      "route": "/projects/11111111-1111-4111-8111-111111111111?focus=script&episode=1&scene=scene-1&shot=shot-1",
+      "scenario": "ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 390,
+      "height": 2192,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "雨夜里的最后一封信",
+        "作品",
+        "第 1 集剧本",
+        "版本",
+        "场景"
+      ],
+      "navigation": [
+        "主导航",
+        "创作步骤"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "advanced-character",
+      "width": 390,
+      "route": "/projects/11111111-1111-4111-8111-111111111111?focus=character&episode=1&scene=scene-1&shot=shot-1",
+      "scenario": "ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 390,
+      "height": 1477,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "雨夜里的最后一封信",
+        "作品",
+        "角色",
+        "新建角色"
+      ],
+      "navigation": [
+        "主导航",
+        "创作步骤"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "advanced-location",
+      "width": 390,
+      "route": "/projects/11111111-1111-4111-8111-111111111111?focus=location&episode=1&scene=scene-1&shot=shot-1",
+      "scenario": "ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 390,
+      "height": 1389,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "雨夜里的最后一封信",
+        "作品",
+        "场地",
+        "新建场地"
+      ],
+      "navigation": [
+        "主导航",
+        "创作步骤"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "advanced-scene",
+      "width": 390,
+      "route": "/projects/11111111-1111-4111-8111-111111111111?focus=scene&episode=1&scene=scene-1&shot=shot-1",
+      "scenario": "ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 390,
+      "height": 2917,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "雨夜里的最后一封信",
+        "作品",
+        "雨夜 · 旧城邮局",
+        "版本",
+        "镜头"
+      ],
+      "navigation": [
+        "主导航",
+        "创作步骤"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "advanced-shot",
+      "width": 390,
+      "route": "/projects/11111111-1111-4111-8111-111111111111?focus=shot&episode=1&scene=scene-1&shot=shot-1",
+      "scenario": "ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 390,
+      "height": 7454,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "雨夜里的最后一封信",
+        "作品",
+        "雨夜 · 旧城邮局",
+        "版本",
+        "镜头",
+        "镜头 1",
+        "Mock 图片",
+        "Mock 视频",
+        "Mock 配音",
+        "Mock 字幕",
+        "Mock 音乐",
+        "版本"
+      ],
+      "navigation": [
+        "主导航",
+        "创作步骤"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "advanced-episode-compose",
+      "width": 390,
+      "route": "/projects/11111111-1111-4111-8111-111111111111?focus=episode-compose&episode=1&scene=scene-1&shot=shot-1",
+      "scenario": "ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 390,
+      "height": 1460,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "雨夜里的最后一封信",
+        "作品",
+        "多镜编排"
+      ],
+      "navigation": [
+        "主导航",
+        "创作步骤"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "beginner-story",
+      "width": 390,
+      "route": "/projects/11111111-1111-4111-8111-111111111111/create?step=story",
+      "scenario": "ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 390,
+      "height": 2230,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "雨夜里的最后一封信",
+        "第 1 步 · 定故事",
+        "故事",
+        "版本"
+      ],
+      "navigation": [
+        "主导航",
+        "创作步骤"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "beginner-script",
+      "width": 390,
+      "route": "/projects/11111111-1111-4111-8111-111111111111/create?step=script",
+      "scenario": "ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 390,
+      "height": 3151,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "雨夜里的最后一封信",
+        "第 2 步 · 看剧本",
+        "第 1 集剧本",
+        "版本",
+        "场景"
+      ],
+      "navigation": [
+        "主导航",
+        "创作步骤"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "beginner-cast",
+      "width": 390,
+      "route": "/projects/11111111-1111-4111-8111-111111111111/create?step=cast",
+      "scenario": "ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 390,
+      "height": 1828,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "雨夜里的最后一封信",
+        "第 3 步 · 定人物",
+        "角色",
+        "新建角色"
+      ],
+      "navigation": [
+        "主导航",
+        "创作步骤"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "beginner-sample",
+      "width": 390,
+      "route": "/projects/11111111-1111-4111-8111-111111111111/create?step=sample",
+      "scenario": "ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 390,
+      "height": 1380,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "雨夜里的最后一封信",
+        "第 4 步 · 试一段"
+      ],
+      "navigation": [
+        "主导航",
+        "创作步骤"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "beginner-final",
+      "width": 390,
+      "route": "/projects/11111111-1111-4111-8111-111111111111/create?step=final",
+      "scenario": "ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 390,
+      "height": 2019,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "雨夜里的最后一封信",
+        "第 5 步 · 出成片",
+        "多镜编排"
+      ],
+      "navigation": [
+        "主导航",
+        "创作步骤"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "writing-running",
+      "width": 390,
+      "route": "/projects/11111111-1111-4111-8111-111111111111/writing",
+      "scenario": "writing-running",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 390,
+      "height": 1781,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "《雨夜里的最后一封信》",
+        "进度",
+        "故事策划"
+      ],
+      "navigation": [
+        "主导航"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "writing-ready",
+      "width": 390,
+      "route": "/projects/11111111-1111-4111-8111-111111111111/writing",
+      "scenario": "writing-ready",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 390,
+      "height": 2914,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "《雨夜里的最后一封信》",
+        "进度",
+        "故事策划",
+        "分集大纲",
+        "分集剧本"
+      ],
+      "navigation": [
+        "主导航"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "writing-unknown",
+      "width": 390,
+      "route": "/projects/11111111-1111-4111-8111-111111111111/writing",
+      "scenario": "writing-unknown",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 390,
+      "height": 2186,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "《雨夜里的最后一封信》",
+        "进度",
+        "故事策划"
+      ],
+      "navigation": [
+        "主导航"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "writing-conflict",
+      "width": 390,
+      "route": "/projects/11111111-1111-4111-8111-111111111111/writing",
+      "scenario": "writing-conflict",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 390,
+      "height": 2783,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "《雨夜里的最后一封信》",
+        "进度",
+        "故事策划",
+        "分集大纲",
+        "分集剧本"
+      ],
+      "navigation": [
+        "主导航"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "writing-empty",
+      "width": 390,
+      "route": "/projects/11111111-1111-4111-8111-111111111111/writing",
+      "scenario": "writing-empty",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 390,
+      "height": 844,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "这部作品还没有 AI 创作记录"
+      ],
+      "navigation": [
+        "主导航"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "works-empty",
+      "width": 390,
+      "route": "/studio",
+      "scenario": "empty",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 390,
+      "height": 844,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "我的作品"
+      ],
+      "navigation": [
+        "主导航"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "works-error",
+      "width": 390,
+      "route": "/studio",
+      "scenario": "error",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 390,
+      "height": 844,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "我的作品"
+      ],
+      "navigation": [
+        "主导航"
+      ],
+      "oldBrand": false
+    },
+    {
+      "name": "compose-disabled",
+      "width": 390,
+      "route": "/projects/11111111-1111-4111-8111-111111111111/create?step=final",
+      "scenario": "disabled",
+      "title": "红果创作 · 把故事，做成短剧",
+      "scrollWidth": 390,
+      "height": 2245,
+      "bodyBackground": "rgb(246, 245, 242)",
+      "bodyColor": "rgb(36, 40, 36)",
+      "shells": 1,
+      "headings": [
+        "雨夜里的最后一封信",
+        "第 5 步 · 出成片",
+        "多镜编排"
+      ],
+      "navigation": [
+        "主导航",
+        "创作步骤"
+      ],
+      "oldBrand": false
+    }
+  ],
+  "screenshots": {
+    "desktop-create.png": "411f388109e6cb2ed1e8ed170a7ede0255aadd3086c0598d8dabcaf2d3aa60ac",
+    "desktop-works.png": "ebcac4bd19134970bae4ffc6ce6d5e0c6e36f0bcba7e0fd8f805b861398cd460",
+    "desktop-editor.png": "2ba69233724c3befad13aeb68fc3e595c488ac69bf5868aecad0cf07308ff46c",
+    "desktop-writing.png": "6f241f88f9ce2405e285dc9a816c3533b37dafc374a79f36d67c2e2277e738b6",
+    "mobile-create.png": "d04d7ac5c461a6332e3fc4abde2d03ce5dc214847e44e3035e923944dfb78c1e",
+    "mobile-writing.png": "ea12ea872e86aa7ddc5bc74179cd1248c5b5853f5f3268f4bfabd4a39edf9ae3"
+  }
+}

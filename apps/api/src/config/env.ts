@@ -22,9 +22,20 @@ const apiEnvSchema = z.object({
   M4_LOCAL_COMPOSE_ENABLED: z.enum(["true", "false"]).default("false"),
   M4_LOCAL_EPISODE_COMPOSE_ENABLED: z.enum(["true", "false"]).default("false"),
   M4_COMPOSE_OBJECT_DIR: z.string().min(1).optional(),
-  QWEN_WEB_WRITING_ENABLED: z.enum(["true", "false"]).default("false"),
   M3_CHARACTER_REFERENCE_GATE: z.enum(["legacy", "strict"]).default("legacy"),
-  QWEN_WEB_OPERATOR_TOKEN: z.string().min(16).max(200).optional(),
+  TITLE_WRITING_ENABLED: z.enum(["true", "false"]).default("false"),
+  TITLE_WRITING_OPERATOR_TOKEN: z.string().min(16).max(200).optional(),
+  // A retired default (qwen) is still parsed so an existing deployment starts; it is never used as a default.
+  TITLE_WRITING_DEFAULT_PROVIDER: z.enum(["openai", "anthropic", "qwen", "deepseek"]).optional(),
+  TITLE_WRITING_MAX_CALLS_PER_DAY: z.coerce.number().int().min(1).max(500).default(30),
+  TITLE_WRITING_MAX_ACTIVE_RUNS: z.coerce.number().int().min(1).max(10).default(1),
+  TITLE_WRITING_ALLOW_PRODUCTION: z.enum(["true", "false"]).default("false"),
+  SCRIPT_BREAKDOWN_ENABLED: z.enum(["true", "false"]).default("false"),
+  AUTO_CREATION_ENABLED: z.enum(["true", "false"]).default("false"),
+  AUTO_CREATION_RESEARCH_FETCH: z.enum(["true", "false"]).default("false"),
+  SERIES_WRITING_ENABLED: z.enum(["true", "false"]).default("false"),
+  AUTO_CREATION_RESEARCH_HOSTS: z.string().max(500)
+    .regex(/^[a-z0-9.-]+(,[a-z0-9.-]+)*$/u, "comma-separated lower-case host names").optional(),
 });
 
 export class EnvValidationError extends Error {
@@ -59,18 +70,73 @@ export interface ApiEnv {
   M4_LOCAL_COMPOSE_ENABLED: boolean;
   M4_LOCAL_EPISODE_COMPOSE_ENABLED: boolean;
   M4_COMPOSE_OBJECT_DIR?: string;
-  QWEN_WEB_WRITING_ENABLED: boolean;
-  QWEN_WEB_OPERATOR_TOKEN?: string;
   /** legacy keeps the existing Mock video gate; strict requires selected, approved character reference images. */
   M3_CHARACTER_REFERENCE_GATE: "legacy" | "strict";
-  /** Read from the process environment only, never from the .env file. Server-side secret. */
-  DASHSCOPE_API_KEY?: string;
-  BAILIAN_BASE_URL?: string;
-  QWEN_WEB_MODEL?: string;
+  /** Title-driven writing. Default off; production also needs explicit authorization and a valid site login. */
+  TITLE_WRITING_ENABLED: boolean;
+  TITLE_WRITING_OPERATOR_TOKEN?: string;
+  /** Only an active provider. A retired value leaves this unset (no default, to be chosen) and is named below. */
+  TITLE_WRITING_DEFAULT_PROVIDER?: "openai" | "anthropic" | "deepseek";
+  /** The retired provider the environment still names as default; reported, never used. */
+  TITLE_WRITING_RETIRED_DEFAULT_PROVIDER?: "qwen";
+  TITLE_WRITING_MAX_CALLS_PER_DAY: number;
+  TITLE_WRITING_MAX_ACTIVE_RUNS: number;
+  /** Process-only production authorization for title writing only. Defaults false and rejects invalid values. */
+  TITLE_WRITING_ALLOW_PRODUCTION: boolean;
+  /** Script breakdown switch. Default off; also needs TITLE_WRITING_ENABLED and stays off in production. */
+  SCRIPT_BREAKDOWN_ENABLED: boolean;
+  /** AI automatic creation; also needs title writing to be on (same production gate, providers and operator). */
+  AUTO_CREATION_ENABLED: boolean;
+  /** Whether runs read public pages of the allowed hosts for their research snapshot. Off by default. */
+  AUTO_CREATION_RESEARCH_FETCH: boolean;
+  AUTO_CREATION_RESEARCH_HOSTS?: string;
+  /** Series writing (1–60 episodes); also needs title writing to be on (same production gate, providers and operator). Off by default. */
+  SERIES_WRITING_ENABLED: boolean;
+  /** Process environment only, never the .env file. Server-side secrets and model allowlists. */
+  OPENAI_API_KEY?: string;
+  TITLE_WRITING_OPENAI_MODELS?: string;
+  /** Claude through the official Anthropic API. A real API key only; never a Claude Code or subscription credential. */
+  ANTHROPIC_API_KEY?: string;
+  TITLE_WRITING_ANTHROPIC_MODELS?: string;
+  /** Optional anthropic-workspace-id (wrkspc_…) for a Claude key not scoped to one workspace. Same name as the SDKs use. */
+  ANTHROPIC_WORKSPACE_ID?: string;
+  /** Administrator bootstrap is process-only. Saved model secrets live in the encrypted configuration vault. */
+  MODEL_ADMIN_ENABLED?: string;
+  /** No longer used (replaced by the site login); read only to warn that it can be removed. */
+  MODEL_ADMIN_TOKEN?: string;
+  MODEL_ADMIN_MASTER_KEY?: string;
+  MODEL_ADMIN_CONFIG_PATH?: string;
+  /** No longer used; read only to warn that it can be removed. */
+  MODEL_ADMIN_PUBLIC_ORIGIN?: string;
+  /** Site login (src/auth). Process environment only, never the .env file or NEXT_PUBLIC_*. */
+  SITE_AUTH_ENABLED?: string;
+  SITE_AUTH_USERNAME?: string;
+  SITE_AUTH_PASSWORD_HASH?: string;
+  SITE_AUTH_PUBLIC_ORIGIN?: string;
 }
 
 /** Provider secrets and endpoints are accepted only from the process environment. */
-const PROCESS_ONLY_KEYS = ["DASHSCOPE_API_KEY", "BAILIAN_BASE_URL", "QWEN_WEB_MODEL"] as const;
+/**
+ * The retired providers' variables (DASHSCOPE_*, BAILIAN_*, QWEN_*) are not read at all, and neither are DEEPSEEK_*:
+ * DeepSeek is configured in the model console only, so a key left in an environment file from before the retirement is
+ * never used again.
+ */
+const PROCESS_ONLY_KEYS = [
+  "OPENAI_API_KEY",
+  "TITLE_WRITING_OPENAI_MODELS",
+  "ANTHROPIC_API_KEY",
+  "TITLE_WRITING_ANTHROPIC_MODELS",
+  "ANTHROPIC_WORKSPACE_ID",
+  "MODEL_ADMIN_ENABLED",
+  "MODEL_ADMIN_TOKEN",
+  "MODEL_ADMIN_MASTER_KEY",
+  "MODEL_ADMIN_CONFIG_PATH",
+  "MODEL_ADMIN_PUBLIC_ORIGIN",
+  "SITE_AUTH_ENABLED",
+  "SITE_AUTH_USERNAME",
+  "SITE_AUTH_PASSWORD_HASH",
+  "SITE_AUTH_PUBLIC_ORIGIN",
+] as const;
 
 const API_KEYS = [
   "NODE_ENV",
@@ -94,9 +160,17 @@ const API_KEYS = [
   "M4_LOCAL_COMPOSE_ENABLED",
   "M4_LOCAL_EPISODE_COMPOSE_ENABLED",
   "M4_COMPOSE_OBJECT_DIR",
-  "QWEN_WEB_WRITING_ENABLED",
-  "QWEN_WEB_OPERATOR_TOKEN",
   "M3_CHARACTER_REFERENCE_GATE",
+  "TITLE_WRITING_ENABLED",
+  "TITLE_WRITING_OPERATOR_TOKEN",
+  "TITLE_WRITING_DEFAULT_PROVIDER",
+  "TITLE_WRITING_MAX_CALLS_PER_DAY",
+  "TITLE_WRITING_MAX_ACTIVE_RUNS",
+  "SCRIPT_BREAKDOWN_ENABLED",
+  "AUTO_CREATION_ENABLED",
+  "AUTO_CREATION_RESEARCH_FETCH",
+  "AUTO_CREATION_RESEARCH_HOSTS",
+  "SERIES_WRITING_ENABLED",
 ] as const;
 
 function pickEnv(
@@ -130,7 +204,11 @@ export function loadApiEnv(
   processEnv: Record<string, string | undefined>,
   fileEnv: Record<string, string> = {},
 ): ApiEnv {
-  const parsed = apiEnvSchema.safeParse(pickEnv(processEnv, fileEnv));
+  const parsed = apiEnvSchema.safeParse({
+    ...pickEnv(processEnv, fileEnv),
+    // A release directory's .env must never authorize paid production execution.
+    TITLE_WRITING_ALLOW_PRODUCTION: processEnv.TITLE_WRITING_ALLOW_PRODUCTION,
+  });
   if (!parsed.success) {
     const fields = parsed.error.issues.map((issue) => issue.path.map(String).join(".") || "environment");
     throw new EnvValidationError(fields);
@@ -143,8 +221,14 @@ export function loadApiEnv(
     const value = processEnv[key];
     if (value !== undefined && value.length > 0) processOnly[key] = value;
   }
+  // The login switch keeps an explicitly empty value: "SITE_AUTH_ENABLED=" is a broken setting, not "unset", and the
+  // site login refuses access for it instead of treating it as switched off. Other variables keep dropping "".
+  if (processEnv.SITE_AUTH_ENABLED === "") processOnly.SITE_AUTH_ENABLED = "";
+  const { TITLE_WRITING_DEFAULT_PROVIDER: defaultProvider, ...rest } = parsed.data;
   return {
-    ...parsed.data,
+    ...rest,
+    ...(defaultProvider === "openai" || defaultProvider === "anthropic" || defaultProvider === "deepseek" ? { TITLE_WRITING_DEFAULT_PROVIDER: defaultProvider } : {}),
+    ...(defaultProvider === "qwen" ? { TITLE_WRITING_RETIRED_DEFAULT_PROVIDER: defaultProvider } : {}),
     ...processOnly,
     S3_FORCE_PATH_STYLE: parsed.data.S3_FORCE_PATH_STYLE === "true",
     M3_MOCK_IMAGE_ENABLED: parsed.data.M3_MOCK_IMAGE_ENABLED === "true",
@@ -153,6 +237,11 @@ export function loadApiEnv(
     M3_MOCK_SUBTITLE_MUSIC_ENABLED: parsed.data.M3_MOCK_SUBTITLE_MUSIC_ENABLED === "true",
     M4_LOCAL_COMPOSE_ENABLED: parsed.data.M4_LOCAL_COMPOSE_ENABLED === "true",
     M4_LOCAL_EPISODE_COMPOSE_ENABLED: parsed.data.M4_LOCAL_EPISODE_COMPOSE_ENABLED === "true",
-    QWEN_WEB_WRITING_ENABLED: parsed.data.QWEN_WEB_WRITING_ENABLED === "true",
+    TITLE_WRITING_ENABLED: parsed.data.TITLE_WRITING_ENABLED === "true",
+    TITLE_WRITING_ALLOW_PRODUCTION: parsed.data.TITLE_WRITING_ALLOW_PRODUCTION === "true",
+    SCRIPT_BREAKDOWN_ENABLED: parsed.data.SCRIPT_BREAKDOWN_ENABLED === "true",
+    AUTO_CREATION_ENABLED: parsed.data.AUTO_CREATION_ENABLED === "true",
+    AUTO_CREATION_RESEARCH_FETCH: parsed.data.AUTO_CREATION_RESEARCH_FETCH === "true",
+    SERIES_WRITING_ENABLED: parsed.data.SERIES_WRITING_ENABLED === "true",
   };
 }

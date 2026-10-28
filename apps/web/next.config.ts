@@ -9,6 +9,23 @@ const apiOrigin = resolveApiUpstream(process.env.NEXT_PUBLIC_API_BASE_URL);
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   transpilePackages: ["@ai-drama/contracts", "@ai-drama/domain"],
+  async headers() {
+    return [{
+      source: "/login",
+      headers: [
+        { key: "Content-Security-Policy", value: "frame-ancestors 'none'" },
+        { key: "X-Frame-Options", value: "DENY" },
+        { key: "Cache-Control", value: "no-store" },
+      ],
+    }, {
+      source: "/admin/:path*",
+      headers: [
+        { key: "Content-Security-Policy", value: "frame-ancestors 'none'" },
+        { key: "X-Frame-Options", value: "DENY" },
+        { key: "Cache-Control", value: "no-store" },
+      ],
+    }];
+  },
   async rewrites() {
     return [
       {

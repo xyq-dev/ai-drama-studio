@@ -130,6 +130,8 @@ function script(mode: "ok" | "stale" | "review" | "cross-project" | "list" | "pa
       if (/^(insert|update|delete|truncate)\b/i.test(text)) throw new Error(`unexpected write: ${text}`);
       if (text === "BEGIN" || text === "COMMIT" || text === "ROLLBACK") return { rows: [] };
       if (text.startsWith("SELECT id FROM episode")) return { rows: [{ id: episodeId }] };
+      // The media gate reads the work's writing mode: no plan columns here, so it is a short-drama work.
+      if (text.includes("information_schema.columns")) return { rows: [] };
       if (text.includes("FROM project WHERE")) return { rows: [{ id: projectId }] };
       if (text.includes("FROM stale_recalculation")) return { rows: mode === "stale" ? [{ "?column?": 1 }] : [] };
       if (text.includes("scene_revision.heading")) {

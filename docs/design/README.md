@@ -54,3 +54,17 @@
 结构化记录：[voice-preview-checks.json](voice-preview-checks.json)。本轮另做设计一致性复核，修正了未变句继承、回执先持久化、查询与重发的边界以及原型旧声音状态。
 
 没有运行项目 `pnpm verify` 或原 52 阶段：本次仅修改文档与独立设计原型，没有产品代码变化。以上不代表真实 API、数据库、TTS、播放音质或服务器页面验收。未执行 Migration、模型调用或部署。
+
+## 2026-10-28 主线整合复核
+
+按主线 `879bf53e0d45be56b6592ce77c2e72aa7ec9d648` 复核此设计。上面的图片和 `voice-preview-checks.json` 保留为 2026-10-07 的历史设计证据，没有改写成此次结果；HTML 原型没有改动。文档已更新短剧 1–6 集、系列仅文本和统一站点登录的当前边界，真实 TTS 功能仍未实现。
+
+新增可复跑的离线检查脚本（使用仓库已有的 Playwright 依赖，不启动产品服务）：
+
+```sh
+node scripts/check-character-voice-preview.mjs
+```
+
+需要本机已安装 Playwright Chromium 和中文字体；可用 `PLAYWRIGHT_MODULE` 指定已安装的 Playwright 模块。默认证据写到 `artifacts/character-voice-preview/`，也可在命令末尾指定另一个输出目录；这些本地运行产物不纳入文档提交。脚本阻止所有 HTTP/HTTPS 请求，并记录任何外部请求尝试为失败。
+
+本次使用 Chromium `140.0.7339.186`、本地 Noto Sans CJK SC 字体，1440px / 390px 的四页共 8 个状态均无文档横向溢出；键盘切标签、Escape 关闭与焦点返回、换声后旧候选禁用、新候选选用后恢复、时长超限阻断与解除均通过，页面异常和外部请求均为 0。内联脚本语法、JSON、66 个相对链接及 `git diff --check` 通过。没有运行真实 API、数据库、TTS、付费模型、媒体生产或部署；离线原型通过不代表上述功能已交付。

@@ -6,6 +6,37 @@
 
 错误体：`{ error: { code, message, traceId, details? } }`。所有端点可能有 `UNAUTHENTICATED`、`FORBIDDEN`、`NOT_FOUND`、`VALIDATION_ERROR`、`RATE_LIMITED`；下表仅列模块特有错误。权限中的 Owner 是当前单工作区操作者；未来成员模型加入前不推断角色权限。
 
+## Site login
+
+启用 `SITE_AUTH_ENABLED=true` 后，整个 `/api/v1` 只有下表与健康探针可以匿名访问；其余读写、素材、下载、导出和模型后台都要求有效的服务端会话，未登录返回 401 JSON（不是登录页 HTML）。
+会话 cookie 在 HTTPS 下为 `__Host-ads_session`（HttpOnly、Secure、SameSite=Lax、Path=/），另有可读的 `__Host-ads_csrf`（SameSite=Strict）供页面在写请求中回显。空闲 2 小时或登录 12 小时后失效，API 重启使所有会话失效。
+写请求（非 GET/HEAD/OPTIONS）还需 `Origin` 与配置的站点 origin 完全一致，以及 `X-CSRF-Token` 等于本会话的 CSRF 值；原有 `Idempotency-Key`、`If-Match` 规则不变。
+
+| Method / Path | 请求与响应 | 限制 |
+| --- | --- | --- |
+| `GET /auth/session` | 已登录：`{enabled:true,authenticated:true,username,csrfToken,expiresAt}`；未登录 401 `AUTH_REQUIRED` / `AUTH_SESSION_EXPIRED`；登录关闭：`{enabled:false,authenticated:false}` | no-store |
+| `POST /auth/login` | `{username,password}` → 会话视图 + cookie，200；错误 401 `AUTH_LOGIN_FAILED`（账号不存在与密码错误相同） | 固定 Origin、JSON、全局每分钟 5 次（429 `AUTH_RATE_LIMITED`），最多 20 个会话 |
+| `POST /auth/logout` | 204，撤销服务端会话并清除 cookie | 有会话时需固定 Origin 与 `X-CSRF-Token` |
+| `GET|HEAD /health/live`、`/health/ready` | 不变 | 匿名；不含业务数据 |
+
+`SITE_AUTH_ENABLED=true` 但配置缺失或无效：除健康探针外全部 503 `AUTH_NOT_CONFIGURED`，不回退为匿名开放。
+
+## Admin model configuration
+
+使用站点统一登录（上一节），不再有独立的管理员访问令牌，也不使用项目操作者令牌。此前缀同为 `/api/v1`；响应均 `Cache-Control: private, no-store`。
+站点登录关闭或配置无效时本组返回 503，不会匿名开放。成功响应为原始DTO；本组错误为固定脱敏的 `{error:{code,message}}`，不返回配置值、密钥或异常原文。
+原 `GET/POST/DELETE /admin/session`（令牌登录）已删除。
+
+| Method / Path | 请求与响应 | 限制 |
+| --- | --- | --- |
+| `GET /admin/models` | `AdminModelsView`：saved/active、revision、待重启/暂缓、审计、标题创作只读门控 | 站点会话；只回keyConfigured，不返回密钥或尾号 |
+| `PUT /admin/models/providers/:providerKey` | `{expectedRevision,models,baseUrl?,secretAction,apiKey?}` → 更新后View | key∈openai/anthropic（qwen/deepseek 已退役，返回 400）；secretAction∈keep/replace/clear；仅replace携带apiKey |
+| `PUT /admin/models/limits` | `{expectedRevision,defaultProvider,maxCallsPerDay,maxActiveRuns}` → 更新后View | defaultProvider可null；每日1–500、并发1–10；次数不是金额预算 |
+
+PUT需站点会话、固定Origin、JSON、`X-CSRF-Token`与最新revision，CAS失败409 `ADMIN_CONFIG_CONFLICT`；存储忙409 `ADMIN_CONFIG_BUSY`；
+配置无效400 `ADMIN_CONFIG_INVALID`；后台未开启503 `ADMIN_NOT_CONFIGURED`；存储错误503 `ADMIN_CONFIG_STORAGE_UNAVAILABLE`。
+保存不保证已生效；API启动时无running标题任务才应用，否则保留旧active；无自动模型请求或重试。详见 `ADMIN_MODEL_SETTINGS.md`。
+
 ## Projects
 
 | Method / Path | 用途、输入、输出 | 权限 / 幂等 / 特有错误 |
@@ -66,14 +97,14 @@ workspace、project 及完整 episode/scene scope。revision 历史保留 `items
 | --- | --- | --- |
 | `POST /projects/:projectId/characters/extract` | 从批准剧本提取角色；返回 workflow | Owner；key；`SCRIPT_REVIEW_REQUIRED` |
 | `POST /projects/:projectId/characters` | 创建角色首版 `{name,sourceScriptRevisionId,content}`；返回 entityId/revisionId | Owner；key、If-Match；`SCRIPT_REVIEW_REQUIRED`,`DUPLICATE_CHARACTER_NAME` |
-| `GET /projects/:projectId/characters` | 当前未归档角色集合与当前 revision 摘要 | Owner；安全 GET；cursor 分页 |
+| `GET /projects/:projectId/characters` | 当前未归档角色集合与当前 revision 摘要；每项含只读 `name` | Owner；安全 GET；cursor 分页 |
 | `POST /projects/:projectId/characters/:characterId/revisions` | 创建角色新修订 `{sourceScriptRevisionId,content}` | Owner；key、If-Match；`SCRIPT_REVIEW_REQUIRED`,`REVISION_CONFLICT` |
-| `GET /projects/:projectId/characters/:characterId/revisions` | 查询修订历史及精确来源剧本 | Owner；安全 GET；无 |
+| `GET /projects/:projectId/characters/:characterId/revisions` | 查询修订历史及精确来源剧本；每个修订含只读 `reviewNote`（审核备注，如退回原因，无则 null） | Owner；安全 GET；无 |
 | `POST /projects/:projectId/characters/:characterId/revisions/:revisionId/review` | `DRAFT → IN_REVIEW → APPROVED/REJECTED` | Owner；key、If-Match；`REVIEW_CONFLICT` |
 | `POST /projects/:projectId/locations` | 创建场地首版 `{name,sourceScriptRevisionId,content}` | Owner；key、If-Match；`SCRIPT_REVIEW_REQUIRED` |
-| `GET /projects/:projectId/locations` | 当前未归档场地集合与当前 revision 摘要 | Owner；安全 GET；cursor 分页 |
+| `GET /projects/:projectId/locations` | 当前未归档场地集合与当前 revision 摘要；每项含只读 `name` | Owner；安全 GET；cursor 分页 |
 | `POST /projects/:projectId/locations/:locationId/revisions` | 创建场地新修订 `{sourceScriptRevisionId,content}` | Owner；key、If-Match；`REVISION_CONFLICT` |
-| `GET /projects/:projectId/locations/:locationId/revisions` | 查询场地修订历史及来源 | Owner；安全 GET；无 |
+| `GET /projects/:projectId/locations/:locationId/revisions` | 查询场地修订历史及来源；每个修订含只读 `reviewNote` | Owner；安全 GET；无 |
 | `POST /projects/:projectId/locations/:locationId/revisions/:revisionId/review` | 审核场地版本 | Owner；key、If-Match；`REVIEW_CONFLICT` |
 | `POST /character-revisions/:id/reference-images/generate` | 生成角色参考图工作流；只要求来源剧本已审核、revision 非 STALE 和输入有效 | Owner；key；`SCRIPT_REVIEW_REQUIRED`,`SOURCE_STALE` |
 | `POST /character-revisions/:id/review` | 规划：审核角色参考图（当前仅实现项目作用域文本审核路由） | Owner；key；`REVIEW_CONFLICT` |
@@ -115,6 +146,8 @@ workspace、project 及完整 episode/scene scope。revision 历史保留 `items
 | `GET /workflow-runs/:runId` | 工作流及子 job 摘要 | Owner；安全 GET；无 |
 | `GET /projects/:projectId/workflow-runs` | 分页运行历史 | Owner；安全 GET；无 |
 
+每个 job 视图另有只读字段 `composeEpisodeId`：集级合成任务（`MEDIA_COMPOSE` 且无 `sourceShotRevisionId`）取自其冻结输入 `input.episodeId`，其余 job 为 `null`。新增字段，不改变既有字段与行为，无数据库结构变更。
+
 ### Mock 媒体手工 retry
 
 适用 `MEDIA_IMAGE`、`MEDIA_VIDEO`、`MEDIA_TTS`、`MEDIA_SUBTITLE`、`MEDIA_MUSIC`。`MEDIA_COMPOSE` 仍返回 `JOB_NOT_RETRYABLE`，须重新预检后提交。文本任务的 retry 规则不变。
@@ -140,7 +173,7 @@ workspace、project 及完整 episode/scene scope。revision 历史保留 `items
 
 | Method / Path | 用途、输入、输出 | 权限 / 幂等 / 特有错误 |
 | --- | --- | --- |
-| `GET /providers/capabilities` | 仅返回允许给当前工作区的能力/参数 schema | Owner；安全 GET；无 |
+| `GET /providers/capabilities` | 仅返回允许给当前工作区的能力/参数 schema；附 `compose: {shot, episode}` 两个布尔值，按合成路由相同的开关判断单镜/集级本地合成是否开启（只读、仅布尔，不含路径或凭据；各路由仍逐次校验） | Owner；安全 GET；无 |
 | `POST /provider-callbacks/:providerKey` | Provider 回调事件；验签后写入按 normalized event key 去重的 ProviderEvent；返回 204 | Provider signature；`INVALID_SIGNATURE`,`UNKNOWN_PROVIDER_REQUEST` |
 | `POST /episodes/:episodeId/compose` | 合成当前有效镜头、音频、字幕；返回 workflow | Owner；key；`SOURCE_STALE`,`REVIEW_REQUIRED` |
 | `POST /projects/:projectId/exports` | 创建全剧/单集 MP4 导出；返回 workflow | Owner；key；`EXPORT_INPUT_INVALID` |

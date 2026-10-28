@@ -155,10 +155,12 @@ describe("M2 text chain schema", () => {
     ).rejects.toThrow(/check/i);
   });
 
-  it("constrains episode numbers to 1..3 and ensures that set on first story approval", async () => {
+  // The episode plan migration widened the column range to 1..6 (a plan of up to six episodes). A project without a plan
+  // is still exactly episodes 1..3: approval creates that set and a fourth episode makes the set invalid.
+  it("constrains episode numbers to 1..6 and ensures a project without a plan has exactly 1..3", async () => {
     const { workspaceId, projectId } = await seedProject();
     await expect(
-      pool.query("INSERT INTO episode (workspace_id, project_id, episode_no, title) VALUES ($1, $2, 4, 'extra')", [
+      pool.query("INSERT INTO episode (workspace_id, project_id, episode_no, title) VALUES ($1, $2, 7, 'extra')", [
         workspaceId,
         projectId,
       ]),
@@ -177,6 +179,12 @@ describe("M2 text chain schema", () => {
       [projectId],
     );
     expect(episodes.rows.map((row) => row.episode_no)).toEqual([1, 2, 3]);
+    await pool.query("INSERT INTO episode (workspace_id, project_id, episode_no, title) VALUES ($1, $2, 4, 'extra')", [workspaceId, projectId]);
+    await expect(chain.assertProductionEpisodes(workspaceId, projectId)).rejects.toMatchObject({
+      code: "EPISODE_SET_INVALID",
+    });
+    await pool.query("DELETE FROM episode WHERE project_id = $1 AND episode_no = 4", [projectId]);
+    await chain.assertProductionEpisodes(workspaceId, projectId);
     await pool.query("DELETE FROM episode WHERE project_id = $1 AND episode_no = 2", [projectId]);
     await expect(chain.assertProductionEpisodes(workspaceId, projectId)).rejects.toMatchObject({
       code: "EPISODE_SET_INVALID",
@@ -523,16 +531,27 @@ describe("M2 text chain schema", () => {
         [graph.unlinkedCharacterRevisionId],
       );
 
-      const insertAttempt = pool.query(
-        `INSERT INTO character_revision_script_source
-          (workspace_id, project_id, character_revision_id, script_revision_id)
-         VALUES ($1, $2, $3, $4)`,
-        [graph.workspaceId, graph.projectId, graph.unlinkedCharacterRevisionId, graph.scriptRevisionId],
-      );
+      // Settle into a tagged outcome as soon as the query exists: the INSERT may reject the moment COMMIT releases the
+      // lock, before the assertion below runs, and an unhandled rejection there fails the whole run.
+      const insertOutcome = pool
+        .query(
+          `INSERT INTO character_revision_script_source
+            (workspace_id, project_id, character_revision_id, script_revision_id)
+           VALUES ($1, $2, $3, $4)`,
+          [graph.workspaceId, graph.projectId, graph.unlinkedCharacterRevisionId, graph.scriptRevisionId],
+        )
+        .then(
+          () => ({ status: "inserted" as const }),
+          (error: unknown) => ({ status: "rejected" as const, error }),
+        );
 
       await waitForLockContaining("character_revision");
       await holder.query("COMMIT");
-      await expect(insertAttempt).rejects.toThrow(/provenance is frozen after draft/i);
+      const outcome = await insertOutcome;
+      expect(outcome.status).toBe("rejected");
+      if (outcome.status !== "rejected") throw new Error("provenance insert succeeded after the review transition");
+      expect(outcome.error).toBeInstanceOf(Error);
+      expect((outcome.error as Error).message).toMatch(/provenance is frozen after draft/i);
 
       const edges = await pool.query<{ count: number } & QueryResultRow>(
         "SELECT COUNT(*)::int AS count FROM character_revision_script_source WHERE character_revision_id = $1",

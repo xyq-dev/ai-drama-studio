@@ -97,3 +97,32 @@ Migration：本轮没有新增已执行目录里的 migration。两份草案仍�
 - P2 文件操作故障被当成缓存未命中（`6b95585`）：仅 ENOENT/ENOTDIR 为未找到，其余为 `ASSET_STORAGE_ERROR`（503），复用不再因此新建任务。
 
 登记、本轮未处理的 P2：选定参考图超出 100 条分页时 `usable` 误判；千问状态与请求在令牌校验前探测存储；参考图生成任务未进入任务区与刷新跟踪；媒体恢复抛错时参考图恢复不执行；网页千问输入未在预约前检查 256,000 字节上限。「切角色后旧回执覆盖列表」在当前挂载路径下未复现，不列为缺陷。
+
+## 2026-10-07 新手创作体验（`feat/beginner-creator-experience`，PR #50）
+
+起点 `origin/main` `2fb19acfe086392eb415a3be92b4c4a6830a4cfd`。本节只补充本轮事实，上方各行保留为历史记录。设计见 [`BEGINNER_CREATOR_EXPERIENCE_DESIGN.md`](BEGINNER_CREATOR_EXPERIENCE_DESIGN.md)，验收见 [`BEGINNER_CREATOR_EXPERIENCE_REPORT.md`](BEGINNER_CREATOR_EXPERIENCE_REPORT.md)。
+
+| 需求 | 本轮实现位置 | 状态 |
+| --- | --- | --- |
+| 新手入口：开始创作、我的作品、灵感中心、帮助（红果创作浅色主题） | `/`、`/create`、`/studio`、`/help`；`beginner-shell.tsx`、`globals.css` 的 `.beginner` | 已实现。仍是开发预览，不是商业运营验收 |
+| 五步新手流程 | `/projects/[id]/create`；`beginner-flow.tsx` 挂载原有面板；`beginner-steps.ts` 由服务器事实推导状态 | 五步均在 CI 真实 API + Worker + PostgreSQL + FFmpeg + Chrome 中经新手页面走通（第 1 集；验收 SHA `5cda55b`）；角色参考图只验证关闭态 |
+| 工作台数据加载共享 | `lib/project-base.ts`（`useProjectBase`） | 已实现；原工作台测试全部通过 |
+| 真实 AI 生成、真实媒体、真实 Provider | — | 未实现，不变。素材仍是演示素材 |
+
+Migration：无。两份草案未修改、未执行。Paid calls=NO，Deploy=NO。
+
+## 2026-10-07 可靠性收尾（`fix/v1-reliability-closeout`，PR #49）
+
+起点 `origin/main` `2fb19acfe086392eb415a3be92b4c4a6830a4cfd`（PR #48 合并）。PR #48 一节末尾登记的 5 项 P2，加上「可用于视频」口径与参考图成本身份两项，共七项。2026-10-13 已合入 `origin/main` `65c91af5d7483c2907c8bb54e2fc8f2d6fc35fde`（PR #66 合并）：七项涉及的后端文件在该区间内 `main` 均未改动，七项缺陷在最新 `main` 上仍存在，修复全部保留；网页第 5 项改挂到 `main` 新的共享数据层 `lib/project-base.ts`。详情与测试证据见 [`V1_RELIABILITY_CLOSEOUT_REPORT.md`](V1_RELIABILITY_CLOSEOUT_REPORT.md)。
+
+| 项 | 实现位置 | 状态 |
+| --- | --- | --- |
+| 选定参考图超出 100 条分页 | `listForCharacter` 页仍为 100（多取 1 条得 `hasMore`）；选定项按选择记录 ID 在工作区/项目/角色/参考图角色内单独读取 | 已修。假客户端单测；真实库草案段用例 2026-10-13 在本机隔离 PostgreSQL 16.4（施加参考图草案的临时测试库）通过；CI 不施加草案、不执行该段 |
+| 「可用于视频」与严格视频门一致 | 领域 `characterReferenceVideoBlockers`，列表与严格门共用；返回 `videoReadiness.blockers`，页面逐条显示，角色当前修订的审核或新鲜度变化（同一修订被通过、退回、失效）时面板重读；每项 `selectable` 由服务端判定，旧服务端缺该字段时按原页面规则（当前版本、ACTIVE、APPROVED），明确为 false 时不放开 | 已修。领域与组件测试；真实库草案段用例同上，本机隔离库通过 |
+| 千问先鉴权再探测存储 | `QwenWebService.decide`：开关、令牌、Provider 先判定，通过后才 `storageReady()` | 已修。无效令牌下探测、预约、维护、transport 次数均为 0 |
+| 千问输入 256,000 字节 | `qwenWritingInputByteLength`（`input` 紧凑 JSON 的 UTF-8 字节）；网页在唯一发送点 `send()` 检查，新请求与恢复的旧请求（重新读取、同一冻结指令重放）同一口径；恢复的超限旧记录无法再读取结果，结算为 `unknown`（不是 `rejected`），不再提供重新读取，新调用仍需确认；API 在维护/预约前 413 `QWEN_WEB_INPUT_TOO_LARGE`；`runQwenWebWriting` 再检查 | 已修。不依赖草案 |
+| 参考图任务可见与完成刷新 | 角色页按 `/generation-jobs/:id` 串行跟踪；受理（202）后回调重读项目任务（`onJobAccepted(projectId)` → `reloadForProject`，即使受理到达前已切换角色或修订也会回调；只在该作品仍是当前显示作品时重读），空闲时也能出现并被跟踪；`lib/project-base.ts` 把 `MEDIA_CHARACTER_REFERENCE` 纳入跟踪但不触发文本或镜头媒体重读，到终态（或首次看到即为终态）时递增 `referenceEpoch`，面板据此重读列表（含别处受理、刷新前已在运行、本页隐藏期间完成的任务）；任务区「角色参考图任务」 | 已修。happy-dom 组件与 hook 测试；`scripts/character-reference-web-stub-check.mjs`：生产构建 + 真实 Chromium + **本地桩 API**（非端到端）1280/390 通过受理刷新、轮询、成功与失败状态、别处受理任务完成后重读列表；真实 API/Worker/数据库的浏览器验收未执行 |
+| 恢复循环错误隔离 | `recovery-modules.ts`；参考图恢复逐行隔离、汇总上报；reconcile 不再重叠、错误上报 | 已修。不依赖草案 |
+| 参考图成本身份 | `guardSynchronousMockReferenceCost`，在任何写入前校验 | 已修。守卫在 CI 真实 PostgreSQL 上执行（不需草案）；`completeGeneration` 成本不符时整事务回滚（资产/依赖/成本/任务/尝试/事件/运行状态均无变化）、匹配时成功一次、重放 `JOB_TERMINAL` 不再写入：本机隔离库通过（草案段，CI 不执行） |
+
+Migration：无。两份草案未修改、未执行。Paid calls=NO，Deploy=NO。

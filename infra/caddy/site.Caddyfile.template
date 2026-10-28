@@ -1,0 +1,23 @@
+# 红果创作 site block. Rendered by scripts/render-caddy-site.mjs; edit this template, not the rendered file.
+#
+# The application's own login (SITE_AUTH_ENABLED=true) protects every page and API route. This block therefore has no
+# basic_auth: a second prompt in front of the login page is exactly what this template removes. Do not add one back.
+# Only switch to this block after the application login is verified on the server (docs/UNIFIED_ADMIN_LOGIN.md).
+{{SITE_ADDRESS}} {
+{{TLS_LINE}}	encode zstd gzip
+
+	# Identity is never taken from the internet: drop any client-supplied identity headers before proxying.
+	request_header -X-Remote-User
+	request_header -X-Forwarded-User
+	request_header -X-Auth-Request-User
+
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+
+	# One upstream: the Web server. It serves the pages and forwards /api/v1 to the API on loopback; the API port is
+	# not published. Cookies, Origin and X-CSRF-Token pass through unchanged.
+	reverse_proxy {{WEB_UPSTREAM}}
+}

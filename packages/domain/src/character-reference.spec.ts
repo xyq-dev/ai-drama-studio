@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   CHARACTER_REFERENCE_SNAPSHOT_SCHEMA,
+  characterReferenceVideoBlockers,
   parseCharacterReferenceGateMode,
   parseCharacterReferenceReviewRequest,
   parseCharacterReferenceSelectionRequest,
@@ -59,5 +60,38 @@ describe("character reference rules", () => {
     expect(selectedReferenceUsable({ ...good, reviewedContentHash: "cd".repeat(32) }, REVISION)).toBe(false);
     expect(selectedReferenceUsable({ ...good, referenceRole: null }, REVISION)).toBe(false);
     expect(selectedReferenceUsable(good, ASSET)).toBe(false);
+  });
+});
+
+describe("characterReferenceVideoBlockers", () => {
+  const reference = { assetStatus: "ACTIVE", reviewStatus: "APPROVED", reviewedContentHash: "a".repeat(64),
+    checksumSha256: "a".repeat(64), referenceRole: "character_reference", sourceCharacterRevisionId: REVISION };
+  const ready = { requiredRevisionId: REVISION, currentRevisionId: REVISION, approvedRevisionId: REVISION,
+    revisionReviewStatus: "APPROVED", revisionFreshness: "CURRENT",
+    selection: { sourceCharacterRevisionId: REVISION, assetId: ASSET }, selectedAsset: reference };
+
+  it("is empty only when the character revision and its selected reference both pass", () => {
+    expect(characterReferenceVideoBlockers(ready)).toEqual([]);
+    expect(characterReferenceVideoBlockers({ ...ready, approvedRevisionId: null, revisionReviewStatus: "DRAFT" }))
+      .toEqual(["CHARACTER_REVISION_NOT_APPROVED"]);
+    expect(characterReferenceVideoBlockers({ ...ready, revisionFreshness: "STALE" })).toEqual(["CHARACTER_REVISION_STALE"]);
+    expect(characterReferenceVideoBlockers({ ...ready, currentRevisionId: ASSET })).toEqual(["CHARACTER_REVISION_NOT_CURRENT"]);
+    expect(characterReferenceVideoBlockers({ ...ready, requiredRevisionId: null })).toEqual(["CHARACTER_REVISION_MISSING"]);
+    expect(characterReferenceVideoBlockers({ ...ready, selection: null })).toEqual(["REFERENCE_NOT_SELECTED"]);
+    expect(characterReferenceVideoBlockers({ ...ready, selectedAsset: null })).toEqual(["REFERENCE_UNAVAILABLE"]);
+    expect(characterReferenceVideoBlockers({ ...ready, selectedAsset: { ...reference, reviewStatus: "DRAFT" } }))
+      .toEqual(["REFERENCE_NOT_APPROVED"]);
+    expect(characterReferenceVideoBlockers({ ...ready, selectedAsset: { ...reference, reviewedContentHash: "b".repeat(64) } }))
+      .toEqual(["REFERENCE_REVIEW_HASH_MISMATCH"]);
+  });
+
+  it("agrees with selectedReferenceUsable on the reference half of the rule", () => {
+    const variants = [reference, { ...reference, assetStatus: "STALE" }, { ...reference, reviewStatus: "REJECTED" },
+      { ...reference, reviewedContentHash: null }, { ...reference, referenceRole: null },
+      { ...reference, sourceCharacterRevisionId: ASSET }];
+    for (const selectedAsset of variants) {
+      expect(characterReferenceVideoBlockers({ ...ready, selectedAsset }).length === 0)
+        .toBe(selectedReferenceUsable(selectedAsset, REVISION));
+    }
   });
 });

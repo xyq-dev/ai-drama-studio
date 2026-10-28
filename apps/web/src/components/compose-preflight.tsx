@@ -42,7 +42,14 @@ const SLOT_RULES = {
   subtitle: { kind: "SUBTITLE", mimeType: "text/vtt" },
 } as const;
 
-export function ComposePreflight(props: { revisionId: string; refreshEpoch: number; client?: StudioClient }) {
+export function ComposePreflight(props: {
+  revisionId: string;
+  refreshEpoch: number;
+  client?: StudioClient;
+  onChanged?: () => void;
+  /** Why a new compose cannot start now; preflight and submit stay closed, selections and results are kept. */
+  blocked?: string | null;
+}) {
   const fallback = useRef<StudioClient | null>(null);
   if (!fallback.current) fallback.current = new StudioClient();
   const client = props.client ?? fallback.current;
@@ -106,6 +113,7 @@ export function ComposePreflight(props: { revisionId: string; refreshEpoch: numb
   }
 
   async function submit() {
+    if (props.blocked) return;
     const token = ++epoch.current;
     const revisionId = props.revisionId;
     const body = {
@@ -133,7 +141,7 @@ export function ComposePreflight(props: { revisionId: string; refreshEpoch: numb
 
   const videos = usable(assets, props.revisionId, "video");
   return (
-    <section className="mt-6 min-w-0 rounded border p-3" aria-label="Mock 单镜合成预检">
+    <section className="creator-preflight-card mt-6 min-w-0 rounded border p-3" aria-label="Mock 单镜合成预检">
       <h3 className="font-medium">Mock 单镜合成预检</h3>
       <label className="mt-3 block text-sm" htmlFor="compose-video">合成视频</label>
       <select id="compose-video" className="mt-1 w-full rounded border px-2 py-1" value={selection.video} onChange={(event) => choose("video", event.target.value)}>
@@ -143,12 +151,13 @@ export function ComposePreflight(props: { revisionId: string; refreshEpoch: numb
       <OptionalSelect id="compose-audio" label="合成配音" value={selection.audio} assets={usable(assets, props.revisionId, "audio")} onChange={(value) => choose("audio", value)} />
       <OptionalSelect id="compose-music" label="合成音乐" value={selection.music} assets={usable(assets, props.revisionId, "music")} onChange={(value) => choose("music", value)} />
       <OptionalSelect id="compose-subtitle" label="合成字幕" value={selection.subtitle} assets={usable(assets, props.revisionId, "subtitle")} onChange={(value) => choose("subtitle", value)} />
-      <button className="mt-3 rounded border px-3 py-2 disabled:opacity-50" type="button" disabled={!selection.video || busy} onClick={() => void submit()}>
+      {props.blocked ? <p className="mt-3 text-sm" role="status">{props.blocked}</p> : null}
+      <button className="mt-3 rounded border px-3 py-2 disabled:opacity-50" type="button" disabled={!selection.video || busy || Boolean(props.blocked)} onClick={() => void submit()}>
         {busy ? "正在预检" : "预检合成输入"}
       </button>
       {error ? <p className="mt-2 text-sm" role="alert">{error}</p> : null}
       {result ? (
-        <div className="mt-3 text-sm">
+        <div className="creator-preflight-result mt-3 text-sm">
           <p>合成尚未执行</p>
           <p>计划尺寸 {result.manifest.plan.width}×{result.manifest.plan.height} · {result.manifest.plan.frameRate}fps · {result.manifest.plan.container.toUpperCase()}</p>
           <p>计划时长 {result.manifest.plan.durationMs} ms</p>
@@ -166,7 +175,8 @@ export function ComposePreflight(props: { revisionId: string; refreshEpoch: numb
       <ComposeJobPanel
         revisionId={props.revisionId}
         client={client}
-        eligible={Boolean(result) && !error && !busy && selection.video.length > 0}
+        onChanged={props.onChanged}
+        eligible={Boolean(result) && !error && !busy && selection.video.length > 0 && !props.blocked}
         body={result && !error ? {
           videoAssetId: selection.video,
           audioAssetId: selection.audio || null,

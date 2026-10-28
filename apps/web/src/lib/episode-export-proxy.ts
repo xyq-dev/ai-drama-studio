@@ -20,7 +20,9 @@ export async function proxyEpisodeExport(
   }
   const origin = resolveApiUpstream(process.env.NEXT_PUBLIC_API_BASE_URL);
   const upstreamPath = `/api/v1/projects/${projectId.toLowerCase()}/episodes/${episodeId.toLowerCase()}/composites/${assetId.toLowerCase()}/${leaf}?expectedContentHash=${expected}`;
-  const upstream = await fetchImpl(`${origin}${upstreamPath}`, { method: request.method });
+  // The API checks the site session itself; this proxy only passes the browser cookie through, never grants access.
+  const cookie = request.headers.get("cookie");
+  const upstream = await fetchImpl(`${origin}${upstreamPath}`, { method: request.method, ...(cookie ? { headers: { cookie } } : {}) });
   const headers = new Headers();
   for (const name of FORWARDED) {
     const value = upstream.headers.get(name);
