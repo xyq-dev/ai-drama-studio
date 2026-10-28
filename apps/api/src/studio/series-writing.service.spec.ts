@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { seriesScopeCalls, type SeriesScope } from "@ai-drama/contracts";
+import { SERIES_RESEARCH_CONTRACT, seriesScopeCalls, type SeriesResearchContract, type SeriesScope } from "@ai-drama/contracts";
 import { PersistenceError } from "@ai-drama/database";
 import type { SeriesView } from "@ai-drama/domain";
-import { InMemorySeriesWritingStore, SeriesWritingEngine, titleWritingProviderConfigs } from "@ai-drama/providers";
+import { hashSeriesInput, InMemorySeriesWritingStore, SeriesWritingEngine, titleWritingProviderConfigs } from "@ai-drama/providers";
 import { seriesFixtureTransport, type SeriesFixtureExchange } from "@ai-drama/providers/title-writing-fixtures";
 import { AutoCreationService } from "./auto-creation.service";
 import { SeriesWritingService } from "./series-writing.service";
@@ -67,6 +67,38 @@ describe("series writing service", () => {
     expect((await service.create({ title: "替身样例", episodeCount: 60, episodeSeconds: 60 }, TOKEN, CONTEXT("create-60"))).status).toBe(200);
     expect((await service.create({ title: "别的", episodeCount: 60, episodeSeconds: 60 }, TOKEN, CONTEXT("create-60"))).status).toBe(409);
     expect(store.series).toHaveLength(1);
+    expect(seen).toHaveLength(0);
+  });
+
+  it.each<SeriesResearchContract>([
+    SERIES_RESEARCH_CONTRACT,
+    { ...SERIES_RESEARCH_CONTRACT, promptVersion: "ads.auto-creation.prompt.v10", checksVersion: "ads.auto-creation.checks.v13" },
+  ])("an old v1 creation replays after a prompt upgrade, without accepting changed creative content ($checksVersion)", async (researchContract) => {
+    const { service, seen, store, settle } = setup();
+    const view = await created(service, 60);
+    const stored = store.series[0]!;
+    // Synthetic historical record: the work predates the series prompt upgrade, possibly the shared research upgrade too.
+    stored.input.promptVersion = "ads.series-writing.prompt.v1";
+    stored.input.researchContract = researchContract;
+    stored.inputHash = hashSeriesInput(stored.title, stored.input);
+    const before = structuredClone(stored);
+    const request = { title: "替身样例", episodeCount: 60, episodeSeconds: 60 };
+    const replay = await service.create(request, TOKEN, CONTEXT("create-60"));
+    expect(replay.status).toBe(200);
+    expect(viewOf(replay.body).projectId).toBe(view.projectId);
+    expect(viewOf(replay.body).versions.prompt).toBe("ads.series-writing.prompt.v1");
+    for (const change of [
+      { title: "别的" }, { idea: "新想法" }, { episodeCount: 59 }, { episodeSeconds: 90 },
+      { constraints: { audience: "新受众" } }, { referenceUrls: ["https://example.com/source"] },
+    ]) {
+      expect((await service.create({ ...request, ...change }, TOKEN, CONTEXT("create-60"))).body)
+        .toMatchObject({ error: { code: "IDEMPOTENCY_KEY_REUSED" } });
+    }
+    await settle();
+    expect(store.series).toEqual([before]);
+    expect(store.projects.size).toBe(1);
+    expect(store.grants).toHaveLength(0);
+    expect(store.calls).toHaveLength(0);
     expect(seen).toHaveLength(0);
   });
 

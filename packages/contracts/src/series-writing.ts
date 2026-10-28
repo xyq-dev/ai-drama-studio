@@ -31,7 +31,9 @@ import {
  * workspace call lock, the daily cap and the concurrency cap with every other paid text call.
  */
 export const SERIES_WRITING_INPUT_SCHEMA = "ads.series-writing.input.v1" as const;
-export const SERIES_WRITING_PROMPT_VERSION = "ads.series-writing.prompt.v1" as const;
+export const SERIES_WRITING_PROMPT_VERSION = "ads.series-writing.prompt.v2" as const;
+/** A job keeps the series prompt it was frozen with; v2 clarifies arc dependencies without changing validation. */
+export type SeriesPromptVersion = "ads.series-writing.prompt.v1" | typeof SERIES_WRITING_PROMPT_VERSION;
 export const SERIES_WRITING_CHECKS_VERSION = "ads.series-writing.checks.v1" as const;
 export const SERIES_WRITING_GRANT_SCHEMA = "ads.series-writing.grant.v1" as const;
 export const SERIES_WRITING_JOB_SCHEMA = "ads.series-writing.job.v1" as const;
@@ -331,7 +333,7 @@ export type SeriesCreate = z.infer<typeof seriesCreateSchema>;
 /** The frozen, hashed creative input of a series (one per work). */
 export interface SeriesFrozenInput {
   schema: typeof SERIES_WRITING_INPUT_SCHEMA;
-  promptVersion: typeof SERIES_WRITING_PROMPT_VERSION;
+  promptVersion: SeriesPromptVersion;
   checksVersion: typeof SERIES_WRITING_CHECKS_VERSION;
   researchContract: SeriesResearchContract;
   idea: string;
@@ -406,7 +408,7 @@ export interface SeriesJobInput {
   model: string;
   providerAdapter?: typeof DEEPSEEK_PROVIDER_ADAPTER;
   maxOutputTokens: number;
-  promptVersion: typeof SERIES_WRITING_PROMPT_VERSION;
+  promptVersion: SeriesPromptVersion;
   checksVersion: typeof SERIES_WRITING_CHECKS_VERSION;
   /** The plan revision a batch or final job reads (null for the plan job). */
   planRevisionId: string | null;

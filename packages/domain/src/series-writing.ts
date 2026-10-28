@@ -49,6 +49,7 @@ import {
   type SeriesOutline,
   type SeriesOutlineEpisode,
   type SeriesPlanContent,
+  type SeriesPromptVersion,
   type SeriesReviewIssue,
   type SeriesReviewOutput,
   type SeriesSetting,
@@ -330,10 +331,10 @@ function data(label: string, value: unknown): string {
   return `<<<${label}\n${typeof value === "string" ? value : JSON.stringify(value)}\n${label}>>>`;
 }
 
-function headLines(input: SeriesFrozenInput, stageKey: string): string[] {
+function headLines(input: SeriesFrozenInput, stageKey: string, promptVersion: SeriesPromptVersion): string[] {
   const c = input.constraints;
   return [
-    `提示版本：${SERIES_WRITING_PROMPT_VERSION}`,
+    `提示版本：${promptVersion}`,
     `阶段：${stageKey}`,
     input.idea.length > 0 ? `用户的想法（作品方向的起点，可以发展，不可违背）：${input.idea}` : "用户没有提供想法：由你自主策划。",
     "用户硬约束（优先于任何推荐，必须遵守）：",
@@ -349,6 +350,22 @@ function headLines(input: SeriesFrozenInput, stageKey: string): string[] {
 
 function budgetLine(chars: number, what: string): string {
   return `长度上限：${what}不超过约 ${String(chars)} 字符（含键名和标点；超出会被整份拒收，不会截断），不要注水，也不要把结尾写断。`;
+}
+
+/** Explain the existing dependency rule; examples fit the frozen episode range, including one-episode works. */
+function arcDependencyGuidance(episodeCount: number): string[] {
+  const example: SeriesArc["foreshadowing"] = [];
+  if (episodeCount >= 2) example.push({ id: "FS1", content: "旧信的笔迹", plantEpisode: 1, payoffEpisode: 2, dependsOn: [] });
+  if (episodeCount >= 3) example.push({ id: "FS2", content: "信封上的缺角", plantEpisode: 1, payoffEpisode: 3, dependsOn: ["FS1"] });
+  return [
+    "dependsOn 只写本伏笔兑现前必须已经兑现的前置伏笔编号；它不是编号顺序、数组顺序或埋设顺序，也不是题材相关的伏笔列表。没有实际前置关系时写 dependsOn: []，不要为了填字段添加依赖。",
+    "输出前逐条检查：对每个 item.dependsOn 中的编号，在 foreshadowing 中找到 target；target 必须存在且不是 item 自己，并满足 target.payoffEpisode < item.payoffEpisode。两条伏笔都要各自满足 plantEpisode < payoffEpisode；不能互相依赖或形成依赖环。",
+    "错误关系示例：本伏笔依赖一个同集或更晚才兑现的伏笔，即使那个伏笔的编号更小、埋设更早，也不合法。不要把共同在结局兑现误写成前置依赖；有真实依赖时，应在创作规划中安排先后兑现。",
+    ...(episodeCount === 1 ? ["本剧只有 1 集，无法同时满足先埋后兑现和集号范围，因此 foreshadowing 必须为 []。"]
+      : episodeCount === 2 ? ["本剧只有 2 集，可在第 1 集埋设、第 2 集兑现独立伏笔，但不能组成严格提前兑现的依赖链；这些独立伏笔的 dependsOn 都应为 []，数量按剧情需要安排。"] : []),
+    "以下仅演示关系，不是必须照抄的剧情、伏笔数量或集号。实际内容和安排应根据本剧设定设计，全部集号必须在用户冻结的范围内。",
+    data("合法伏笔结构示例", example),
+  ];
 }
 
 function chosenDirection(context: SeriesContext): AutoDirection {
@@ -407,15 +424,16 @@ export function seriesFindingsSummary(findings: readonly SeriesCheckFinding[]): 
   return fits(grouped) ? grouped : grouped.map(({ targets: _targets, ...rest }) => rest);
 }
 
-/** The prompt of one stage, built only from the frozen input and the context. Research and directions are automatic creation's. */
-export function buildSeriesPrompt(stageKey: string, input: SeriesFrozenInput, context: SeriesContext, autoInput: AutoCreationFrozenInput): SeriesPrompt {
+/** One stage's prompt from the frozen input, context and job prompt version. Research and directions are automatic creation's. */
+export function buildSeriesPrompt(stageKey: string, input: SeriesFrozenInput, context: SeriesContext, autoInput: AutoCreationFrozenInput,
+  promptVersion: SeriesPromptVersion = SERIES_WRITING_PROMPT_VERSION): SeriesPrompt {
   const kind = seriesStageKind(stageKey);
   if (kind === "sources") throw new Error("the source snapshot sends no prompt");
   if (kind === "research" || kind === "directions") {
     const borrowed = buildAutoCreationPrompt(kind, autoInput, context.auto);
     return { kind, system: borrowed.system, user: borrowed.user };
   }
-  const head = headLines(input, stageKey);
+  const head = headLines(input, stageKey, promptVersion);
   const n = input.episodeCount;
   let lines: string[];
   let system = SYSTEM[kind] ?? SYSTEM.review!;
@@ -440,6 +458,7 @@ export function buildSeriesPrompt(stageKey: string, input: SeriesFrozenInput, co
       `任务：把全剧第 1–${String(n)} 集拆成连续的分幕，并安排伏笔。`,
       `phases：1–6 幕，按顺序连续覆盖第 1 到第 ${String(n)} 集，不重叠、不遗漏；每幕写目标和转折。`,
       `foreshadowing：伏笔编号 FS1–FS16，写内容、埋设集（plantEpisode）和兑现集（payoffEpisode，必须晚于埋设集），以及依赖的其他伏笔（dependsOn，依赖的伏笔必须严格早于本伏笔兑现：不能同一集兑现，也不能互相依赖）。全部伏笔都要在第 ${String(n)} 集或之前兑现。`,
+      ...(promptVersion === "ads.series-writing.prompt.v2" ? arcDependencyGuidance(n) : []),
       `finale：episodeNo 必须是 ${String(n)}（全剧结局只在最后一集），写结局如何兑现核心冲突。`,
       `schema 固定为 "${SERIES_ARC_SCHEMA}"。`,
       budgetLine(SERIES_BUDGETS.arc, `整个 json （其中 foreshadowing 部分不超过约 ${String(SERIES_BUDGETS.foreshadowing)} 字符）`),

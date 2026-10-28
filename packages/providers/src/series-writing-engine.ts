@@ -236,7 +236,7 @@ export class SeriesWritingEngine {
     const kind = seriesStageKind(next.stageKey);
     const researchMode = autoResearchModeOf(context.auto.sources);
     if (kind === "research" && (researchMode === null || !context.auto.referenceCatalog)) return this.stop(jobId, "needs_attention", "research_sources_missing");
-    const prompt = buildSeriesPrompt(next.stageKey, series.input, context, autoInput);
+    const prompt = buildSeriesPrompt(next.stageKey, series.input, context, autoInput, run.input.promptVersion);
     if (prompt.system.length + prompt.user.length > SERIES_PROMPT_MAX_CHARS) return this.stop(jobId, "needs_attention", "prompt_too_large");
     const schema = kind === "research" || kind === "directions"
       ? autoCreationJsonSchema(kind, series.input.episodeCount, kind === "research" ? researchMode : null, kind === "research" ? context.auto.referenceCatalog ?? null : null)

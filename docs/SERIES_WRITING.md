@@ -15,10 +15,20 @@
 | 项 | 版本 |
 | --- | --- |
 | 冻结输入 | `ads.series-writing.input.v1` |
-| 提示 | `ads.series-writing.prompt.v1` |
+| 提示 | `ads.series-writing.prompt.v2`（历史 v1 保留） |
 | 检查 | `ads.series-writing.checks.v1` |
 | 授权 / 子任务 | `ads.series-writing.grant.v1` / `ads.series-writing.job.v1` |
 | 产物 | setting / arc / outline / plan / plan-review / episode / ledger / batch-review / final-review / package 各 `.v1` |
+
+### 2.1 分幕伏笔依赖提示（2026-10-28）
+
+系列提示 v2 只加强 `arc` 阶段的依赖说明和示例。`dependsOn` 指本伏笔兑现前必须已经兑现的前置伏笔，不是编号顺序、数组顺序或埋设先后；没有实际前置依赖时用 `[]`。输出前逐边核对 `dependency.payoffEpisode < current.payoffEpisode`，同时核对引用存在、不是自身，以及每条伏笔的埋设集严格早于兑现集。示例按冻结集数适配：1 集没有可跨集兑现的伏笔，2 集可以有独立伏笔但无法排出严格提前兑现的依赖链，3 集及以上才展示合法的两条依赖示例；示例不要求作品照搬内容或固定伏笔数量。
+
+校验仍为 `checks.v1`，没有放宽同集兑现、倒置依赖、自引用或循环的拒收，不自动删依赖、调整集号或重发。`plan_structure@foreshadowing[4].dependsOn` 在当前校验器里表示第五个条目的某项依赖同集或更晚兑现；它不表示该条目一定叫 FS5，也不包含具体集号。该分支的内部详情为 `dependency_not_paid_earlier`，仍按原有错误码格式持久化，拒收正文不保存。
+
+新系列和新子任务冻结 `prompt.v2`；历史系列与子任务的 v1 输入、哈希、调用、产物和费用不回写。执行系列独有阶段时按**子任务冻结的提示版本**构造请求：已有 v1 子任务仍发送原 v1 提示，后来创建的 v2 子任务使用 v2；旧系列可以拥有新版本子任务，系列创建时版本与各子任务版本分别保留。研究与选题继续借用共享 `prompt.v11` / `checks.v14`，不受这次系列提示升级影响。HTTP 字段、数据库结构、预算和幂等规则不变，无 Migration。
+
+离线合成样本和模型替身验证的是提示内容、边界与执行保护，不证明真实模型下一次一定遵守，也不能还原历史被拒输出。线上已完成的 research、directions、setting 保留；本次代码变更不会自动续跑任何任务。
 
 ## 3. 阶段与调用公式
 
@@ -133,4 +143,4 @@ DATABASE_URL=<业务库连接串，只在进程环境中> pnpm --filter @ai-dram
 - 不支持用模型重写已完成的批次或重新生成规划，也没有定向修改轮次（新流程默认零自动修改）。
 - 离线验收全部使用模型替身：证明的是流程、预算、依赖与保护，不证明真实模型能按预算写出合格的 60 集。真实输出能否稳定落在每集 3,300 字符、细纲单行 291 字符以内，需要受限真实验收确认。
 - 系列作品的高级编辑页（`/projects/:id`）不在本轮调整范围；其中的媒体操作仍由服务端以 `SERIES_MEDIA_NOT_ENABLED` 拒绝。
-- 检查版本号（`ads.series-writing.checks.v1`、提示 `prompt.v1`）本轮没有提升：秘密计划集与冲突编号规则在同一版本号内收紧。
+- 历史秘密计划集与冲突编号修复发生时，系列提示与检查均保留 v1；当前分幕依赖提示另升为 `prompt.v2`，检查仍为 `ads.series-writing.checks.v1`。
