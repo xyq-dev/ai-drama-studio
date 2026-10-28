@@ -1,5 +1,7 @@
 # V1 交付台账
 
+> 2026-10-07 新增角色配音设计入口：[`CHARACTER_VOICE_DESIGN.md`](CHARACTER_VOICE_DESIGN.md)、[开源调查](VOICE_OPEN_SOURCE_RESEARCH.md)、[离线交互原型](design/character-voice-preview.html)。此项只有设计；真实人声、角色声音持久化、费用恢复和新声音合成 profile 尚未实现/验收。不要将以下既有 Mock AUDIO 的成功视为真实配音通过。新增数据库方案和付费调用另行授权。
+
 本文件记录仓库当前 V1 的实现和验收边界。它不新增产品能力，也不把历史报告改写成新的通过结论。
 
 依据顺序：本次交付要求，已确认的产品规则（[`PRODUCT_SCOPE.md`](PRODUCT_SCOPE.md)、[`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md)、[`COMMERCIAL_PRODUCT_PLAN.md`](COMMERCIAL_PRODUCT_PLAN.md)），再是模块设计。历史报告只提供证据 SHA。
