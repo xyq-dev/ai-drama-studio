@@ -1,9 +1,12 @@
-import { timingSafeEqual } from "node:crypto";
 import {
   SCRIPT_BREAKDOWN_CALL_CAP,
   SCRIPT_BREAKDOWN_LIMITS,
   SCRIPT_BREAKDOWN_REQUIRED_CALLS,
   TITLE_WRITING_PROVIDER_KEYS,
+  TITLE_WRITING_PROVIDER_PREFERENCE,
+  TITLE_WRITING_PROVIDER_LABELS,
+  isActiveTitleWritingProvider,
+  isLegacyDeepseekRun,
   scriptBreakdownPlaceSchema,
   scriptBreakdownStartSchema,
   titleWritingResumeSchema,
@@ -19,12 +22,15 @@ import {
   hashTitleResume,
   isScriptBreakdownRun,
   newScriptBreakdownRun,
+  providerConfigFor,
   scriptBreakdownRunView,
   type TitleRunBundle,
   type TitleWritingEngine,
   type WritingProviderConfig,
 } from "@ai-drama/providers";
 import type { StudioContext } from "./studio.service";
+import { operatorAllowed, operatorConfigured, type OperatorProof } from "./operator-access";
+import { PROVIDER_MIGRATION_GAP } from "./title-writing.service";
 
 export interface ScriptBreakdownDependencies {
   workspaceId: string;
@@ -32,6 +38,8 @@ export interface ScriptBreakdownDependencies {
   /** The title writing switch: a breakdown is the same kind of paid text call and is never enabled on its own. */
   enabled: boolean;
   operatorToken: string | null;
+  /** The site login is on: its signed-in administrator is the operator (see operator-access.ts). */
+  siteOperator?: boolean;
   defaultProvider: TitleWritingProviderKey | null;
   providers: Record<TitleWritingProviderKey, WritingProviderConfig>;
   store: TitleWritingStore;
@@ -51,11 +59,15 @@ export interface ScriptBreakdownResult {
 
 const MESSAGES: Record<string, string> = {
   TITLE_WRITING_DISABLED: "AI 写作没有开启，不能拆解。仍可手动编写场景和镜头。",
-  TITLE_WRITING_FORBIDDEN: "操作者令牌不正确，没有启动任何调用。",
+  TITLE_WRITING_FORBIDDEN: "没有调用权限（需要管理员登录，或在未启用站点登录时提供正确的操作者令牌），没有启动任何调用。",
   TITLE_WRITING_STORAGE_UNAVAILABLE: "写作任务存储还没有就绪（数据库表未创建），没有启动任何调用。",
   SCRIPT_BREAKDOWN_STORAGE_UNAVAILABLE: "剧本拆解的数据库迁移还没有执行，没有启动任何调用。",
   TITLE_WRITING_PROVIDER_UNCONFIGURED: "所选模型服务还没有配置完整，没有启动任何调用。",
+  TITLE_WRITING_PROVIDER_RETIRED: "这个模型服务已经退役，不能再发起新的拆解或重新发送调用。历史记录仍然保留，可以查看。",
+  TITLE_WRITING_PROVIDER_STORAGE_UNAVAILABLE: "所选模型服务的数据库迁移还没有执行，没有创建任务，也没有发出调用。",
   TITLE_WRITING_MODEL_UNAVAILABLE: "所选模型不在服务端允许的列表中。",
+  TITLE_WRITING_LEGACY_RUN: "这次任务是 DeepSeek 退役前创建的旧任务，不会再发出请求，也不会改用新的 DeepSeek 模型或其他供应商；已有结果、调用记录和未知费用都保留。如需继续，请新建任务。",
+  TITLE_WRITING_RUN_MODEL_UNAVAILABLE: "这次任务冻结的模型已不在服务端允许的列表中，不会改用其他模型，没有发出调用。",
   TITLE_WRITING_RUN_ACTIVE: "这部作品已有一个 AI 任务正在进行，请等它结束。",
   TITLE_WRITING_ACTIVE_RUN_CAP: "同时进行的 AI 任务已达上限，请等当前任务结束。",
   TITLE_WRITING_DAILY_QUOTA_LOW: "最近 24 小时的调用次数已用完，没有创建任务，也没有发出任何调用。",
@@ -82,12 +94,6 @@ function failure(status: number, code: string, details?: Record<string, unknown>
   return { status, body: { error: { code, message: MESSAGES[code] ?? "请求失败", ...(details ? { details } : {}) } } };
 }
 
-function sameToken(configured: string, presented: string | undefined): boolean {
-  if (presented === undefined) return false;
-  const left = Buffer.from(configured, "utf8");
-  const right = Buffer.from(presented, "utf8");
-  return left.length === right.length && timingSafeEqual(left, right);
-}
 
 /**
  * Episode-scoped script breakdown. Starting and resuming may cost money: they need the title writing switch, the
@@ -122,39 +128,42 @@ export class ScriptBreakdownService {
 
   /**
    * The provider a new start uses when the request names none, and the default that options() reports: the configured
-   * default when it is ready, otherwise the first ready provider in the fixed order; null when none is ready. A provider
-   * the request names is used as named, never replaced by this.
+   * default as it is (a start is refused while it is not ready; it is never replaced by another provider), otherwise the
+   * first ready provider in the fixed order; null when there is neither. A provider the request names is used as named.
    */
-  private readyDefault(): TitleWritingProviderKey | null {
-    const configured = this.deps.defaultProvider;
-    if (configured && this.deps.providers[configured].ok) return configured;
-    return TITLE_WRITING_PROVIDER_KEYS.find((key) => this.deps.providers[key].ok) ?? null;
+  private async readyDefault(): Promise<TitleWritingProviderKey | null> {
+    if (this.deps.defaultProvider) return this.deps.defaultProvider;
+    // Ready means configured and storable: Claude before its migration is not offered as the first ready provider.
+    const ready = async (key: TitleWritingProviderKey) => this.deps.providers[key].ok && await this.deps.store.providerStorageReady(key);
+    for (const key of TITLE_WRITING_PROVIDER_PREFERENCE) if (await ready(key)) return key;
+    return null;
   }
 
   async options(): Promise<ScriptBreakdownResult> {
     const storageReady = await this.storageReady();
-    const providers = TITLE_WRITING_PROVIDER_KEYS.map((providerKey) => {
+    const providers = await Promise.all(TITLE_WRITING_PROVIDER_KEYS.map(async (providerKey) => {
       const config = this.deps.providers[providerKey];
+      const stored = storageReady && await this.deps.store.providerStorageReady(providerKey);
       return {
         providerKey,
         label: WRITING_ADAPTERS[providerKey].label,
-        ready: config.ok,
+        ready: config.ok && (!storageReady || stored),
         models: config.models,
         defaultModel: config.models[0] ?? null,
-        missing: config.ok ? [] : config.missing,
+        missing: [...(config.ok ? [] : config.missing), ...(storageReady && !stored ? [PROVIDER_MIGRATION_GAP] : [])],
       };
-    });
-    const firstReady = providers.find((item) => item.ready)?.providerKey ?? null;
+    }));
+    const firstReady = TITLE_WRITING_PROVIDER_PREFERENCE.find((key) => providers.find((item) => item.providerKey === key)?.ready) ?? null;
     const code = !this.active() ? "TITLE_WRITING_DISABLED"
-      : !this.deps.operatorToken ? "TITLE_WRITING_FORBIDDEN"
+      : !operatorConfigured(this.deps) ? "TITLE_WRITING_FORBIDDEN"
         : !storageReady ? "SCRIPT_BREAKDOWN_STORAGE_UNAVAILABLE"
           : firstReady === null ? "TITLE_WRITING_PROVIDER_UNCONFIGURED" : "SCRIPT_BREAKDOWN_READY";
     const body: ScriptBreakdownOptionsView = {
       enabled: this.active(),
       code,
       storageReady,
-      operatorTokenRequired: true,
-      defaultProvider: this.readyDefault(),
+      operatorTokenRequired: this.deps.siteOperator !== true,
+      defaultProvider: await this.readyDefault(),
       providers,
       maxCallsPerDay: this.deps.maxCallsPerDay,
       callCapPerRun: SCRIPT_BREAKDOWN_CALL_CAP,
@@ -165,9 +174,9 @@ export class ScriptBreakdownService {
   }
 
   /** Switch, token, then storage: every refusal happens before any reservation or provider send. */
-  private async gate(token: string | undefined): Promise<ScriptBreakdownResult | null> {
+  private async gate(token: OperatorProof | string | undefined): Promise<ScriptBreakdownResult | null> {
     if (!this.active()) return failure(404, "TITLE_WRITING_DISABLED");
-    if (!this.deps.operatorToken || !sameToken(this.deps.operatorToken, token)) return failure(403, "TITLE_WRITING_FORBIDDEN");
+    if (!operatorAllowed(this.deps, token)) return failure(403, "TITLE_WRITING_FORBIDDEN");
     if (!await this.deps.store.storageReady()) return failure(503, "TITLE_WRITING_STORAGE_UNAVAILABLE");
     if (!await this.deps.store.breakdownStorageReady()) return failure(503, "SCRIPT_BREAKDOWN_STORAGE_UNAVAILABLE");
     return null;
@@ -190,7 +199,7 @@ export class ScriptBreakdownService {
     return { status, body: { run: scriptBreakdownRunView(bundle, details) } };
   }
 
-  async start(projectId: string, episodeId: string, body: unknown, token: string | undefined, context: StudioContext): Promise<ScriptBreakdownResult> {
+  async start(projectId: string, episodeId: string, body: unknown, token: OperatorProof | string | undefined, context: StudioContext): Promise<ScriptBreakdownResult> {
     const refused = await this.gate(token);
     if (refused) return refused;
     if (!context.idempotencyKey || context.idempotencyKey.length > 200) return failure(400, "VALIDATION_ERROR", { field: "Idempotency-Key" });
@@ -212,11 +221,18 @@ export class ScriptBreakdownService {
 
     // A new request takes the current settings: the provider it names, else the ready default options() reports. Both are
     // frozen into the run; replays (above), resumes and recovery keep them.
-    const providerKey = parsed.data.providerKey ?? this.readyDefault() ?? this.deps.defaultProvider ?? TITLE_WRITING_PROVIDER_KEYS[0];
+    // A retired provider is refused for a new request; only a replay (answered above) may still name one.
+    const providerKey = parsed.data.providerKey ?? await this.readyDefault() ?? this.deps.defaultProvider ?? TITLE_WRITING_PROVIDER_PREFERENCE[0]!;
+    if (!isActiveTitleWritingProvider(providerKey)) {
+      return failure(409, "TITLE_WRITING_PROVIDER_RETIRED", { providerKey, label: TITLE_WRITING_PROVIDER_LABELS[providerKey] });
+    }
     const provider = this.deps.providers[providerKey];
     if (!provider.ok) return failure(503, "TITLE_WRITING_PROVIDER_UNCONFIGURED", { providerKey, missing: provider.missing });
     const model = parsed.data.model ?? provider.models[0]!;
     if (!provider.models.includes(model)) return failure(400, "TITLE_WRITING_MODEL_UNAVAILABLE", { providerKey });
+    if (!await this.deps.store.providerStorageReady(providerKey)) {
+      return failure(503, "TITLE_WRITING_PROVIDER_STORAGE_UNAVAILABLE", { providerKey, missing: [PROVIDER_MIGRATION_GAP] });
+    }
 
     const source = await this.deps.store.breakdownSource(this.deps.workspaceId, projectId, episodeId);
     if (source.kind === "not_found") return failure(404, "EPISODE_NOT_FOUND");
@@ -311,7 +327,7 @@ export class ScriptBreakdownService {
   }
 
   /** Same rules as title writing: an uncertain call is resent only after the person confirmed exactly that call. */
-  async resume(projectId: string, episodeId: string, runId: string, body: unknown, token: string | undefined, context: StudioContext): Promise<ScriptBreakdownResult> {
+  async resume(projectId: string, episodeId: string, runId: string, body: unknown, token: OperatorProof | string | undefined, context: StudioContext): Promise<ScriptBreakdownResult> {
     const refused = await this.gate(token);
     if (refused) return refused;
     if (!context.idempotencyKey || context.idempotencyKey.length > 200) return failure(400, "VALIDATION_ERROR", { field: "Idempotency-Key" });
@@ -335,13 +351,17 @@ export class ScriptBreakdownService {
     }
     // The store decides from the run's persisted steps, under its lock, whether this resume sends again: only then must the
     // provider be ready. A run that stopped after its answer was stored only saves it (no call, no reservation).
-    const provider = this.deps.providers[existing.run.input.providerKey];
+    const runProvider = existing.run.input.providerKey;
+    const legacy = isLegacyDeepseekRun(existing.run.input);
+    // A retired provider has no configuration, so it is never ready and its run is never sent for again.
+    const provider = providerConfigFor(this.deps.providers, runProvider);
     const prepared = await this.deps.store.prepareResume(this.deps.workspaceId, projectId, runId, {
       resumeKey: context.idempotencyKey,
       requestHash,
       confirmedCallIds: confirmed,
       maxActiveRuns: this.deps.maxActiveRuns,
-      providerReady: provider.ok && provider.models.includes(existing.run.input.model),
+      // A DeepSeek run from before the retirement is never sent for again (only an answer already stored may be saved).
+      providerReady: !legacy && provider !== null && provider.ok && provider.models.includes(existing.run.input.model),
     }, this.now().toISOString());
     if (prepared.kind === "replayed") return this.view(prepared.bundle);
     if (prepared.kind !== "ok") {
@@ -354,7 +374,13 @@ export class ScriptBreakdownService {
       if (prepared.kind === "source_changed") return failure(409, "SCRIPT_BREAKDOWN_SOURCE_CHANGED");
       if (prepared.kind === "conflict") return failure(409, "SCRIPT_BREAKDOWN_CONFLICT");
       if (prepared.kind === "provider_unconfigured") {
-        return failure(503, "TITLE_WRITING_PROVIDER_UNCONFIGURED", { providerKey: existing.run.input.providerKey, missing: provider.ok ? [] : provider.missing });
+        if (legacy) return failure(409, "TITLE_WRITING_LEGACY_RUN", { providerKey: runProvider, model: existing.run.input.model });
+        if (provider?.ok && !provider.models.includes(existing.run.input.model)) {
+          return failure(409, "TITLE_WRITING_RUN_MODEL_UNAVAILABLE", { providerKey: runProvider, model: existing.run.input.model });
+        }
+        return isActiveTitleWritingProvider(runProvider)
+          ? failure(503, "TITLE_WRITING_PROVIDER_UNCONFIGURED", { providerKey: runProvider, missing: provider && !provider.ok ? provider.missing : [] })
+          : failure(409, "TITLE_WRITING_PROVIDER_RETIRED", { providerKey: runProvider, label: TITLE_WRITING_PROVIDER_LABELS[runProvider] });
       }
       return failure(409, "TITLE_WRITING_NOT_RESUMABLE");
     }

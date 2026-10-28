@@ -31,7 +31,7 @@ const VIEW: AdminModelsView = {
   validation: "local_only",
 };
 const UPDATE = { expectedRevision: 0, models: ["test-model"], secretAction: "replace", apiKey: SECRET };
-const LIMITS = { expectedRevision: 0, defaultProvider: "qwen", maxCallsPerDay: 8, maxActiveRuns: 1 };
+const LIMITS = { expectedRevision: 0, defaultProvider: "anthropic", maxCallsPerDay: 8, maxActiveRuns: 1 };
 
 function backend() {
   return {
@@ -154,8 +154,12 @@ describe("administrator model settings real HTTP boundary (site login)", () => {
     const { headers } = await signedIn();
     for (const [path, body] of [
       ["/admin/models/providers/unknown", UPDATE],
-      ["/admin/models/providers/qwen", { ...UPDATE, secretAction: "keep" }],
-      ["/admin/models/providers/qwen", { ...UPDATE, models: ["https://secret.test/model"] }],
+      // The retired provider has no console entry: a request naming it is refused before storage is touched. DeepSeek is
+      // active again and reaches the service, which checks its key before storage (admin-models.service.spec.ts).
+      ["/admin/models/providers/qwen", UPDATE],
+      ["/admin/models/limits", { ...LIMITS, defaultProvider: "qwen" }],
+      ["/admin/models/providers/anthropic", { ...UPDATE, secretAction: "keep" }],
+      ["/admin/models/providers/anthropic", { ...UPDATE, models: ["https://secret.test/model"] }],
       ["/admin/models/limits", { ...LIMITS, maxActiveRuns: 0 }],
       ["/admin/models/limits", { ...LIMITS, apiKey: SECRET }],
     ]) {
@@ -173,10 +177,10 @@ describe("administrator model settings real HTTP boundary (site login)", () => {
   it("passes valid mutations once to the backend and returns only its public view", async () => {
     await start();
     const { headers } = await signedIn();
-    const provider = await request("/admin/models/providers/qwen", { method: "PUT", headers, body: JSON.stringify(UPDATE) });
+    const provider = await request("/admin/models/providers/anthropic", { method: "PUT", headers, body: JSON.stringify(UPDATE) });
     expect(provider.status).toBe(200);
     expect(await provider.json()).toEqual(VIEW);
-    expect(store.updateProvider).toHaveBeenCalledExactlyOnceWith("qwen", UPDATE);
+    expect(store.updateProvider).toHaveBeenCalledExactlyOnceWith("anthropic", UPDATE);
     const limits = await request("/admin/models/limits", { method: "PUT", headers, body: JSON.stringify(LIMITS) });
     expect(limits.status).toBe(200);
     expect(store.updateLimits).toHaveBeenCalledExactlyOnceWith(LIMITS);
@@ -187,7 +191,7 @@ describe("administrator model settings real HTTP boundary (site login)", () => {
     const { headers } = await signedIn();
     for (const [code, status] of [["ADMIN_CONFIG_BUSY", 409], ["ADMIN_CONFIG_CONFLICT", 409], ["ADMIN_CONFIG_STORAGE_UNAVAILABLE", 503], ["ADMIN_CONFIG_INVALID", 400], ["EACCES", 500]] as const) {
       store.updateProvider.mockRejectedValueOnce(Object.assign(new Error(`/secret/path ${PASSWORD} ${SECRET}`), { code }));
-      const response = await request("/admin/models/providers/qwen", { method: "PUT", headers, body: JSON.stringify(UPDATE) });
+      const response = await request("/admin/models/providers/anthropic", { method: "PUT", headers, body: JSON.stringify(UPDATE) });
       expect(response.status).toBe(status);
       privateHeaders(response);
       const text = await response.text();

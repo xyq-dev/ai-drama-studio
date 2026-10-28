@@ -4,6 +4,8 @@ import {
   SCRIPT_BREAKDOWN_INPUT_SCHEMA,
   SCRIPT_BREAKDOWN_PROMPT_VERSION,
   SCRIPT_BREAKDOWN_STEP_KEY,
+  frozenProviderAdapter,
+  isLegacyDeepseekRun,
   isScriptBreakdownInput,
   type ScriptBreakdownDetails,
   type ScriptBreakdownFrozenInput,
@@ -12,7 +14,7 @@ import {
   type TitleRunBundle,
   type TitleRunRecord,
   type TitleWritingCallView,
-  type TitleWritingProviderKey,
+  type TitleWritingStoredProviderKey,
 } from "@ai-drama/contracts";
 import { canonicalInputHash, plannedTotalSeconds } from "@ai-drama/domain";
 
@@ -23,7 +25,7 @@ import { canonicalInputHash, plannedTotalSeconds } from "@ai-drama/domain";
  * finds its original run instead of conflicting or creating a second one.
  */
 export function hashScriptBreakdownRequest(projectId: string, request: {
-  episodeId: string; providerKey: TitleWritingProviderKey | null; model: string | null; replaceExisting: boolean;
+  episodeId: string; providerKey: TitleWritingStoredProviderKey | null; model: string | null; replaceExisting: boolean;
 }): string {
   return canonicalInputHash({ kind: "script_breakdown", projectId, request });
 }
@@ -41,6 +43,8 @@ export function newScriptBreakdownRun(options: {
     schema: SCRIPT_BREAKDOWN_INPUT_SCHEMA,
     promptVersion: SCRIPT_BREAKDOWN_PROMPT_VERSION,
     ...options.input,
+    // Written by the server for every DeepSeek run it creates; a stored replay is compared by its request hash only.
+    ...frozenProviderAdapter(options.input.providerKey),
   };
   const createdAt = options.now.toISOString();
   return {
@@ -89,6 +93,7 @@ export function scriptBreakdownRunView(bundle: TitleRunBundle, details: ScriptBr
     replacedScenes: input.replace.scenes.length,
     providerKey: input.providerKey,
     model: input.model,
+    legacyProviderRun: isLegacyDeepseekRun(input),
     state: run.state,
     errorCode: run.errorCode,
     cancelRequested: run.cancelRequestedAt !== null,

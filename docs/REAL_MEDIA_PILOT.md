@@ -1,6 +1,6 @@
 # 一个真实镜头的媒体试接
 
-状态：接入方案和独立工具；真实供应商验收待执行。基线为 `main@a7a62ba81e75b2b867be8045e1752a4f00b8a80f`。本轮与 PR #68 的编剧检查、角色面板修复分开开发。
+状态：接入方案和独立离线试接工具；真实供应商验收待执行。最初开发基线为 `main@a7a62ba81e75b2b867be8045e1752a4f00b8a80f`，收尾时在 `main@879bf53e0d45be56b6592ce77c2e72aa7ec9d648` 上重新核对离线协议与合成测试。合入工具不代表已授权真实调用，也不代表网页真实媒体链路已接通。
 
 ## 本轮决定
 
@@ -19,7 +19,7 @@
 
 ## 接口与费用依据
 
-以下官方页面在 2026-10-14（北京时间）核对，账号下实际可用模型、开通状态和配额尚未验证：
+以下接口与价格是 2026-10-14（北京时间）核对的历史快照，不是当前报价。真实试接前须重新核对官方接口、模型可用性、地域、价格和账号配额，再取得该次费用授权；本轮离线收尾没有执行这些真实服务核验：
 
 - [Qwen 图像 API](https://help.aliyun.com/zh/model-studio/qwen-image-generation-and-editing-api-reference)：使用异步 `image-generation/generation`，不是旧的图像合成地址。保存 `task_id` 后查询结果。
 - [Wan 首帧视频 API](https://help.aliyun.com/zh/model-studio/legacy-image-to-video-api-reference/)：使用异步 `video-generation/video-synthesis`；首帧支持 data URL，本轮不需要先开 OSS Bucket。必须显式设置无声和 720P，避免采用较贵默认参数。
@@ -57,17 +57,17 @@ API 固定为北京 `https://dashscope.aliyuncs.com`。官方表示该现有域�
 - 合成前检查配音时长。原合成器会截断过长音频，所以工具先拦截，不允许把半句话当成成功结果。
 - FFmpeg 探测和解码通过只能证明技术格式。需要人实际看画面、听完整旁白，确认主体、动作、无明显畸变和无截字。证据默认 `visualReview: pending`。
 
-本轮无 Migration、无部署、不合并 PR #68。离线契约测试使用手写供应商响应，合成测试使用本机合成的测试图像/视频/音频；这些结果不能标为“真实 AI 生成通过”。
+本工具不执行 Migration 或部署，不改动编剧流程。离线契约测试使用手写供应商响应，合成测试使用本机合成的测试图像/视频/音频；这些结果不能标为“真实 AI 生成通过”。
 
 ## 执行方式
 
 需要 Python 3.10+，`ffmpeg`、`ffprobe` 在 PATH 中，FFmpeg 含 libx264 编码器。先使用离线 plan 检查配置和估算。真实 run 还需要北京百炼密钥、媒体模型可用资格以及明确的费用授权。密钥只放本地进程环境变量 `DASHSCOPE_API_KEY`，不要粘贴到聊天、命令历史或提交入库。
 
-使用独立终端和独立检出目录，不切换 Claude Code 正在工作的主目录分支。以下 Windows PowerShell 命令仅准备代码，不调用模型。目标目录已存在时先检查，不覆盖：
+工具合入 main 后，使用独立终端和独立检出目录，不切换正在工作的主目录分支。以下 Windows PowerShell 命令仅准备代码，不调用模型；首次执行前核对该 main 提交的 CI。目标目录已存在时先检查，不覆盖：
 
 ```powershell
 git -C D:\Projects\ai-drama-studio fetch origin
-git -C D:\Projects\ai-drama-studio worktree add --detach D:\Projects\ai-drama-media-pilot origin/feat/real-media-pilot
+git -C D:\Projects\ai-drama-studio worktree add --detach D:\Projects\ai-drama-media-pilot origin/main
 Set-Location D:\Projects\ai-drama-media-pilot
 python scripts/real-media-pilot/pilot.py plan
 ```
@@ -107,5 +107,7 @@ python -m unittest discover -s scripts/real-media-pilot -p test_compose_smoke.py
 ```
 
 第一组使用注入的测试响应，不连接供应商。第二组需要本地 FFmpeg，生成测试图、运动画面和正弦波音频，验证工具完整流程、已有合成器以及完成后的零请求恢复；没有真实人物图、模型视频或人声效果证据。独立 GitHub workflow 只运行这些离线检查，不配置模型密钥。
+
+CI 的 Ubuntu 24.04 合成任务复用 `scripts/ci/apt-official-https.sh`，统一使用官方 HTTPS 软件源及 APT 下载限制（3 次重试、20 秒连接/读取超时）。安装该发行版软件源当前提供的 FFmpeg，不再锁定历史包版本；日志记录实际包版本以及 `ffmpeg` / `ffprobe` 版本，现有合成测试继续校验解码、尺寸、时长、帧率和音视频编码。Linux / Windows 协议测试、触发条件和并发策略不变。
 
 本轮本地验证：Python 3.12.14、FFmpeg 6.1.1，29 项协议/恢复测试与 2 项合成测试全部通过；工作流 YAML 与 Python 语法检查通过。未调用真实模型，未执行 Windows 本机试跑，未运行整个业务仓库的 Node 测试。Windows 兼容性由独立工作流中的对应任务继续核验，不能用 Linux 结果替代。

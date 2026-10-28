@@ -1,14 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { currentUncertainCallIds, type ScriptBreakdownOutput } from "@ai-drama/contracts";
+import { currentUncertainCallIds, isActiveTitleWritingProvider, type ScriptBreakdownOutput } from "@ai-drama/contracts";
 import {
   ScriptBreakdownClient,
   type ScriptBreakdownOptionsView,
   type ScriptBreakdownPlacementOutcome,
   type ScriptBreakdownRunView,
 } from "../lib/script-breakdown-client";
-import { TitleWritingError } from "../lib/title-writing-client";
+import { TitleWritingError, providerTarget, tokenRequired } from "../lib/title-writing-client";
 
 import { clearBreakdownPending, readBreakdownPending, writeBreakdownPending, type BreakdownPendingStart, type BreakdownPendingResume } from "../lib/script-breakdown-pending";
 
@@ -19,8 +19,26 @@ const refused = (caught: unknown): caught is TitleWritingError => caught instanc
 const defaultClient = new ScriptBreakdownClient();
 /** Resume refusals that come after the server found no receipt for the key and that the same request can never pass. */
 const RESUME_RELEASED_BY = new Set(["TITLE_WRITING_CONFIRMATION_STALE", "TITLE_WRITING_NEEDS_CONFIRMATION", "SCRIPT_BREAKDOWN_SOURCE_CHANGED",
+  // The run's provider is retired: it can never send again, so this resume can never pass.
+  "TITLE_WRITING_PROVIDER_RETIRED",
   "SCRIPT_BREAKDOWN_CONFLICT", "TITLE_WRITING_NOT_RESUMABLE"]);
 const POLL_MS = 2_000;
+/** The server's switch for script breakdown is off: the page's main state, whatever else it could or could not read. */
+const DISABLED_TEXT = "剧本拆解尚未开启。";
+
+interface ReadError { alert: string; cause: string }
+
+/** Why this episode's breakdown state could not be read, without turning a refusal, a 503 or a lost answer into one another. */
+function readErrorOf(caught: unknown): ReadError {
+  if (caught instanceof TitleWritingError && caught.code === "SCRIPT_BREAKDOWN_STORAGE_UNAVAILABLE") {
+    return { alert: "剧本拆解的数据存储还没有就绪，本集拆解状态无法读取。已显示的内容可能不是最新状态。", cause: "剧本拆解的数据存储还没有就绪" };
+  }
+  if (caught instanceof TitleWritingError && (caught.status === 401 || caught.status === 403)) {
+    const status = String(caught.status);
+    return { alert: `没有读取拆解状态的权限（HTTP ${status}），请确认登录状态后再读取。已显示的内容可能不是最新状态。`, cause: `没有读取权限（HTTP ${status}）` };
+  }
+  return { alert: "拆解状态暂时无法读取，稍后刷新再试。已显示的内容可能不是最新状态。", cause: "服务暂时没有给出可用的回应" };
+}
 
 const STATE_TEXT: Record<string, string> = {
   running: "进行中",
@@ -46,6 +64,7 @@ export const BREAKDOWN_ERROR_TEXT: Record<string, string> = {
   breakdown_conflict: "这一集的场景或镜头已改变，本次拆解不能继续写入。已有结果保留，没有覆盖任何新版本；请重新生成。",
   executor_lost: "服务中断时调用已发出，结果未知，可能已经计费。确认后才会重新发送。",
   executor_lost_before_send: "服务中断时调用还没有发出。",
+  run_kind_disabled: "剧本拆解已在服务端关闭，任务已停止，没有发出新的调用。重新开启后可以续跑。",
   canceled_before_send: "在发送前取消，没有发出调用。",
   TITLE_WRITING_DAILY_CAP: "最近 24 小时的调用次数已用完。",
   TITLE_WRITING_RUN_CAP: "这次拆解的调用次数已用完。",
@@ -55,6 +74,16 @@ export const BREAKDOWN_ERROR_TEXT: Record<string, string> = {
 export function breakdownErrorText(code: string | null): string | null {
   if (!code) return null;
   return BREAKDOWN_ERROR_TEXT[code] ?? `未完成（${code}）`;
+}
+
+/** A breakdown of a retired provider that stopped for want of a provider is said to be retired, not misconfigured. */
+function runErrorText(run: { providerKey: string; errorCode: string | null; legacyProviderRun?: boolean; step: { errorCode: string | null } }): string | null {
+  const code = run.errorCode ?? run.step.errorCode;
+  if ((code === "provider_unconfigured" && !isActiveTitleWritingProvider(run.providerKey))
+    || code === "legacy_provider_run" || (code === "provider_unconfigured" && run.legacyProviderRun === true)) {
+    return "这次拆解使用的模型服务已经退役，不会再发出请求，也不会改用其他模型；已有结果、调用记录和未知费用都保留。";
+  }
+  return breakdownErrorText(code);
 }
 
 const REVIEW_TEXT: Record<string, string> = { DRAFT: "待审核", IN_REVIEW: "审核中", APPROVED: "已通过", REJECTED: "已退回" };
@@ -100,12 +129,15 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [cancelFailed, setCancelFailed] = useState(false);
-  const [readError, setReadError] = useState<string | null>(null);
+  const [readError, setReadError] = useState<ReadError | null>(null);
   const [identityError, setIdentityError] = useState(false);
   const [pendingStart, setPendingStart] = useState<BreakdownPendingStart | null>(null);
   const [pendingResume, setPendingResume] = useState<BreakdownPendingResume | null>(null);
   const [optionsError, setOptionsError] = useState(false);
   const [optionsLoading, setOptionsLoading] = useState(false);
+  // With the site login on, the signed-in administrator authorizes the call: no token is asked for or sent.
+  const needsToken = tokenRequired(options);
+  const tokenMissing = needsToken && token.trim().length === 0;
   /** The server refused a start because the episode has scenes, which the parent's count may not show yet. */
   const [scenesExist, setScenesExist] = useState(false);
   /**
@@ -169,7 +201,7 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
           if (reads.current !== scope) return;
           if (scope.again) continue;
           setLoaded(true);
-          if (failure) { setReadError("拆解状态暂时无法读取，稍后刷新再试。已显示的内容可能不是最新状态。"); return; }
+          if (failure) { setReadError(readErrorOf(failure)); return; }
           const finished = shown.current.runId === next?.runId && shown.current.state === "running" && next?.state !== "running";
           show(next);
           if (!next) { setSaved(null); setSavedError(false); }
@@ -241,23 +273,40 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
   const running = run?.state === "running";
   const limits = options?.limits;
   const ready = options?.code === "SCRIPT_BREAKDOWN_READY";
+  // Only a settings answer this page holds says the feature is off; settings not read yet or unreadable say nothing.
+  const disabled = options?.code === "TITLE_WRITING_DISABLED";
+  const featureBlocked = !options || ready ? null
+    : disabled ? DISABLED_TEXT
+      : options.code === "SCRIPT_BREAKDOWN_STORAGE_UNAVAILABLE" ? "剧本拆解的数据库迁移还没有执行。"
+        : options.code === "TITLE_WRITING_PROVIDER_UNCONFIGURED" ? "模型服务还没有配置完整。" : "服务端还不能开始拆解。";
   const needsReplace = props.sceneCount > 0 || scenesExist;
+  // The provider of a new start: the default the server reports, as it is. A configured default that cannot be used now
+  // blocks a new start with its own gaps and is never replaced by another ready provider (this panel offers no choice).
+  // Only an answer without any default (an older API) falls back to the first ready provider.
+  const target = !options ? null
+    : options.defaultProvider ? providerTarget(options.providers, options.defaultProvider, false, false)
+      : (() => { const first = options.providers.find((item) => item.ready); return first ? { kind: "ready" as const, option: first } : null; })();
+  const newStartProvider = target?.kind === "ready" && target.option.defaultModel ? target.option : null;
+  const providerBlocked = target?.kind === "blocked" ? target.reason : null;
   // Confirming a start already sent replays its stored key and body: the current settings, defaults or a failed settings
   // read cannot block it (the server answers it from the run that key created). Only a new start must pass every gate.
   // A resume whose answer was lost blocks every new request of this page until it is confirmed: a new start or resume would
-  // take its identity's place.
+  // take its identity's place. For a new start, what the server's settings say (off, storage, provider) comes before what
+  // this page could not read or has not filled in: a failed task read or a missing token is not why it cannot start.
   const startBlocked = identityError ? "无法恢复请求身份，请先解决浏览器会话存储问题。"
-    : pendingStart ? (token.trim().length === 0 ? "请填写操作者令牌。" : null)
+    : pendingStart ? (tokenMissing ? "请填写操作者令牌。" : null)
     : pendingResume ? "请先确认上次续跑结果，之后才能发起新的生成。"
+    : featureBlocked ? featureBlocked
+    : providerBlocked ? providerBlocked
     : readError ? "请先重新读取本集任务状态。"
     : !props.scriptReady ? "剧本批准后才能拆解（剧本门槛不变）。"
     : !options ? optionsError ? "功能配置读取失败，请先“重新读取功能配置”。" : "正在读取拆解设置。"
-      : !ready ? options.code === "TITLE_WRITING_DISABLED" ? "AI 写作没有开启。"
-        : options.code === "SCRIPT_BREAKDOWN_STORAGE_UNAVAILABLE" ? "剧本拆解的数据库迁移还没有执行。"
-          : options.code === "TITLE_WRITING_PROVIDER_UNCONFIGURED" ? "模型服务还没有配置完整。" : "服务端还不能开始拆解。"
-        : running ? "这一集的拆解正在进行。"
-          : needsReplace && !replaceExisting ? "这一集已有场景，勾选“用新结果取代”后才能开始。"
-            : token.trim().length === 0 ? "请填写操作者令牌。" : null;
+      : running ? "这一集的拆解正在进行。"
+        : needsReplace && !replaceExisting ? "这一集已有场景，勾选“用新结果取代”后才能开始。"
+          : tokenMissing ? "请填写操作者令牌。"
+            : !newStartProvider ? "模型服务还没有配置完整。" : null;
+  // The settings' own state is shown as soon as they are read, without waiting for the task read.
+  const blockedShown = startBlocked !== null && (loaded || startBlocked === featureBlocked || startBlocked === providerBlocked);
 
   async function act(runId: string | null, work: () => Promise<ScriptBreakdownRunView>, fallback: string,
     hooks: { accepted?: () => void; failed?: (caught: unknown) => void; changed?: boolean; cancel?: boolean; detached?: boolean } = {}) {
@@ -300,15 +349,15 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
 
   function start() {
     if (startBlocked || operation.current) return;
-    const provider = options?.providers.find((item) => item.providerKey === options.defaultProvider && item.ready)
-      ?? options?.providers.find((item) => item.ready);
-    if (!pendingStart && !provider?.defaultModel) return;
+    // A pending start is confirmed with its own key and body; only a new start takes the current provider, and the same
+    // check as startBlocked: never another provider in place of the configured default.
+    if (!pendingStart && !newStartProvider) return;
     const pending: BreakdownPendingStart = pendingStart ?? { kind: "start", key: crypto.randomUUID(),
-      body: { replaceExisting, providerKey: provider!.providerKey, model: provider!.defaultModel! } };
+      body: { replaceExisting, providerKey: newStartProvider!.providerKey, model: newStartProvider!.defaultModel! } };
     try { writeBreakdownPending(props.projectId, props.episodeId, pending); }
     catch { setIdentityError(true); setMessage("无法保存请求身份，未发送请求。请先解决浏览器会话存储问题。"); return; }
     setPendingStart(pending); setPlacement(null);
-    void act(null, () => client.start(props.projectId, props.episodeId, pending.body, { token: token.trim(), idempotencyKey: pending.key }),
+    void act(null, () => client.start(props.projectId, props.episodeId, pending.body, { token: needsToken ? token.trim() : "", idempotencyKey: pending.key }),
       "服务端回应无法确认是否已开始。再次点击只会重放同一个请求，不会新建任务。", {
         accepted: () => clearPending(pending),
         failed: (caught) => {
@@ -320,6 +369,10 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
             clearPending(pending);
             setScenesExist(true);
             setReplaceExisting(false);
+          } else if (refused(caught) && caught.code === "TITLE_WRITING_PROVIDER_RETIRED") {
+            // Also after the key lookup: no task exists for this key, and its retired provider can never send. Release the
+            // identity so the episode is not blocked; a new start takes an active provider and a new key.
+            clearPending(pending);
           } else if (refused(caught) && !pendingStart) clearPending(pending);
         },
       });
@@ -338,7 +391,7 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
   const resumable = run !== null && resumeMode !== null;
 
   function resume() {
-    if (!run || !resumable || pendingResume || identityError || operation.current || token.trim().length === 0 || (uncertain.length > 0 && !confirmUncertain)) return;
+    if (!run || !resumable || pendingResume || identityError || operation.current || tokenMissing || (uncertain.length > 0 && !confirmUncertain)) return;
     const pending: BreakdownPendingResume = { kind: "resume", runId: run.runId, confirmed: uncertain, key: crypto.randomUUID() };
     try {
       // Never overwrite a stored identity this page does not hold yet (written meanwhile): it is offered for confirmation.
@@ -348,7 +401,7 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
     } catch { setIdentityError(true); setMessage("无法保存续跑身份，未发送请求。请先解决浏览器会话存储问题。"); return; }
     setPendingResume(pending);
     void act(run.runId, () => client.resume(props.projectId, props.episodeId, pending.runId,
-      { confirmUncertainCallIds: pending.confirmed, token: token.trim(), idempotencyKey: pending.key }),
+      { confirmUncertainCallIds: pending.confirmed, token: needsToken ? token.trim() : "", idempotencyKey: pending.key }),
       "请求没有得到回应。请用“确认上次续跑结果”重放同一个续跑请求。", {
         accepted: () => { clearPending(pending); setConfirmedFor(null); },
         // A new resume refused is settled; a lost answer or a 5xx keeps it for confirmation.
@@ -363,9 +416,9 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
    */
   function confirmResume() {
     const pending = pendingResume;
-    if (!pending || identityError || operation.current || token.trim().length === 0) return;
+    if (!pending || identityError || operation.current || tokenMissing) return;
     void act(null, () => client.resume(props.projectId, props.episodeId, pending.runId,
-      { confirmUncertainCallIds: pending.confirmed, token: token.trim(), idempotencyKey: pending.key }),
+      { confirmUncertainCallIds: pending.confirmed, token: needsToken ? token.trim() : "", idempotencyKey: pending.key }),
       "请求没有得到回应。再次确认只会重放同一个续跑请求。", {
         detached: true,
         accepted: () => { clearPending(pending); setConfirmedFor(null); },
@@ -430,6 +483,8 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
 
   // Only a confirmed stop/terminal snapshot makes a cancel failure irrelevant; an ordinary poll does not.
   const visibleMessage = cancelFailed && run && (run.cancelRequested || run.state !== "running") ? null : message;
+  // While the feature is off a failed task read is secondary: it is said, but it is not why nothing can start.
+  const alertText = visibleMessage ?? (disabled ? null : readError?.alert ?? null);
   const pendingShots = hasPendingShots(run);
 
   return (
@@ -449,9 +504,19 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
       {options ? (
         <p className="mt-1 text-sm text-neutral-600">每次拆解调用上限 {options.callCapPerRun} 次（计入最近 24 小时 {options.maxCallsPerDay} 次的共同额度，不是自动重试次数），费用未知。结果未知的调用不会自动重发。</p>
       ) : null}
-      {visibleMessage || readError ? <div className="mt-2 text-sm text-red-700 [overflow-wrap:anywhere]" role="alert">
-        <p>{visibleMessage ?? readError}</p>{readError ? <button type="button" onClick={refresh}>重新读取</button> : null}
+      {/* Said here whenever the line under the start button gives another reason (a request still to confirm). */}
+      {disabled && startBlocked !== featureBlocked ? (
+        <p className="mt-2 text-sm text-neutral-700" role="status" data-testid="breakdown-disabled">{DISABLED_TEXT}</p>
+      ) : null}
+      {alertText ? <div className="mt-2 text-sm text-red-700 [overflow-wrap:anywhere]" role="alert">
+        <p>{alertText}</p>{readError && !disabled ? <button type="button" onClick={refresh}>重新读取</button> : null}
       </div> : null}
+      {disabled && readError ? (
+        <div className="mt-2 text-sm text-neutral-600 [overflow-wrap:anywhere]" role="status" data-testid="breakdown-history-error">
+          <p>历史拆解记录暂时无法读取（{readError.cause}）{run ? "，下面显示的可能不是最新状态" : ""}。这与停用无关：重新读取只读取记录，不会开启拆解，也不会创建任务或调用模型。</p>
+          <button type="button" className="underline" onClick={refresh}>重新读取历史记录</button>
+        </div>
+      ) : null}
       {optionsError ? <div className="mt-2 text-sm text-red-700 [overflow-wrap:anywhere]" role="status" data-testid="breakdown-options-error">
         <p>功能配置暂时无法读取。已有任务、结果和未确认的请求不受影响；重新读取只读取配置，不会创建任务或调用模型。</p>
         <button type="button" className="underline disabled:opacity-50" disabled={optionsLoading} onClick={loadOptions}>重新读取功能配置</button>
@@ -464,9 +529,13 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
             <span>用新结果取代这一集现有的场景及其镜头（旧版本保留为历史，不删除；依赖它们的图片和视频会标为过期）</span>
           </label>
         ) : null}
-        <label className="text-sm" htmlFor={`breakdown-token-${props.episodeId}`}>操作者令牌</label>
-        <input id={`breakdown-token-${props.episodeId}`} className="rounded border px-2 py-1" type="password" autoComplete="off" value={token}
-          disabled={busy} onChange={(event) => setToken(event.target.value)} />
+        {needsToken ? (
+          <>
+            <label className="text-sm" htmlFor={`breakdown-token-${props.episodeId}`}>操作者令牌</label>
+            <input id={`breakdown-token-${props.episodeId}`} className="rounded border px-2 py-1" type="password" autoComplete="off" value={token}
+              disabled={busy} onChange={(event) => setToken(event.target.value)} />
+          </>
+        ) : null}
         <div className="flex flex-wrap gap-2">
           <button className="rounded bg-neutral-900 px-3 py-2 text-white disabled:opacity-50" type="button" disabled={busy || !loaded || startBlocked !== null}
             onClick={() => void start()}>
@@ -491,13 +560,13 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
                 : `另一条续跑请求（任务 ${pendingResume.runId.slice(0, 8)}）的结果还没有确认，它不是下面显示的任务。`}
               确认会用原请求标识和原内容重放这条请求：服务端已经受理过的，不会重复执行；上次没有送达的，按原内容提交这一次。确认之前，本页不能发起新的生成或续跑。
             </p>
-            <button className="rounded border px-3 py-2" type="button" disabled={busy || identityError || token.trim().length === 0}
+            <button className="rounded border px-3 py-2" type="button" disabled={busy || identityError || tokenMissing}
               onClick={() => void confirmResume()}>
               确认上次续跑结果
             </button>
           </div>
         ) : null}
-        {startBlocked && loaded ? <p className="text-sm text-neutral-600" data-testid="breakdown-blocked">{startBlocked}</p> : null}
+        {blockedShown ? <p className="text-sm text-neutral-600" data-testid="breakdown-blocked">{startBlocked}</p> : null}
       </div>
 
       {run ? (
@@ -508,8 +577,8 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
             {" · "}来源：<SourceLabel run={run} />
             {" · "}模型 {run.model}{" · "}调用 {run.callsUsed}/{run.callCap}
           </p>
-          {breakdownErrorText(run.errorCode ?? run.step.errorCode) ? (
-            <p className="text-sm text-amber-800 [overflow-wrap:anywhere]" role="status">{breakdownErrorText(run.errorCode ?? run.step.errorCode)}</p>
+          {runErrorText(run) ? (
+            <p className="text-sm text-amber-800 [overflow-wrap:anywhere]" role="status">{runErrorText(run)}</p>
           ) : null}
           <SourceNotice run={run} testId="breakdown-outdated" />
           {resumable && pendingResume ? (
@@ -521,7 +590,7 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
               <p className="text-sm [overflow-wrap:anywhere]" data-testid="breakdown-save-only">
                 模型答案已经生成并通过校验，但在写入场景前停止了。保存已有结果不会再次调用模型，也不增加调用次数；来源剧本仍须是本集当前已批准的版本。
               </p>
-              <button className="rounded border px-3 py-2" type="button" disabled={busy || identityError || token.trim().length === 0} onClick={() => void resume()}>
+              <button className="rounded border px-3 py-2" type="button" disabled={busy || identityError || tokenMissing} onClick={() => void resume()}>
                 保存已有结果（不再调用模型）
               </button>
             </div>
@@ -534,7 +603,7 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
                 </label>
               ) : null}
               <button className="rounded border px-3 py-2" type="button"
-                disabled={busy || identityError || token.trim().length === 0 || (uncertain.length > 0 && !confirmUncertain)} onClick={() => void resume()}>
+                disabled={busy || identityError || tokenMissing || (uncertain.length > 0 && !confirmUncertain)} onClick={() => void resume()}>
                 续跑（重新发送一次调用）
               </button>
             </div>
@@ -545,7 +614,7 @@ export function ScriptBreakdownPanel(props: ScriptBreakdownPanelProps) {
           ) : null}
           {placement ? <PlacementSummary outcome={placement} /> : null}
         </div>
-      ) : loaded ? <p className="mt-3 text-sm text-neutral-600">这一集还没有拆解过。</p> : null}
+      ) : loaded && !readError ? <p className="mt-3 text-sm text-neutral-600">这一集还没有拆解过。</p> : null}
 
       {savedError ? (
         <div className="mt-4 text-sm text-red-700 [overflow-wrap:anywhere]" role="status" data-testid="breakdown-saved-error">

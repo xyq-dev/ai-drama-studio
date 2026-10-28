@@ -12,7 +12,6 @@ import { EpisodeComposePreflight } from "./episode-compose-preflight";
 import { ProjectCostSummary } from "./project-cost-summary";
 import { ScriptBreakdownPanel } from "./script-breakdown-panel";
 import { ApiError, StudioClient } from "../lib/studio-client";
-import { createQwenWebClient } from "../lib/qwen-web-client";
 import {
   MEDIA_WORKFLOW_TYPES,
   REFERENCE_WORKFLOW_TYPE,
@@ -59,7 +58,6 @@ import {
 } from "../lib/studio-model";
 
 const client = new StudioClient();
-const qwenWebClient = createQwenWebClient();
 const EMPTY_CONTENT: Record<string, unknown> = { text: "" };
 const BODY_FIELD = "creator-body-field mt-1 w-full min-h-48 max-h-[70vh] resize-y rounded border border-neutral-300 px-3 py-2";
 
@@ -528,6 +526,8 @@ export function ScriptPane(props: {
   onStatus: (value: string) => void;
   onOpenScene: (sceneId: string) => void;
   premise: string;
+  /** Text only (a series work): the script editor and its reviews, without the breakdown and scene panels or their reads. */
+  textOnly?: boolean;
 }) {
   const [scripts, setScripts] = useState<PageState<ScriptRevision> | null>(null);
   const [scenes, setScenes] = useState<PageState<Aggregate> | null>(null);
@@ -542,12 +542,12 @@ export function ScriptPane(props: {
     const scope = `${props.projectId}:${episode.id}`;
     const [scriptPage, scenePage] = await Promise.all([
       client.get<{ items: ScriptRevision[]; nextCursor: string | null }>(`/projects/${props.projectId}/episodes/${episode.id}/scripts`),
-      client.get<{ items: Aggregate[]; nextCursor: string | null }>(`/projects/${props.projectId}/episodes/${episode.id}/scenes`),
+      props.textOnly ? null : client.get<{ items: Aggregate[]; nextCursor: string | null }>(`/projects/${props.projectId}/episodes/${episode.id}/scenes`),
     ]);
     if (!shouldApplyLoad(request, loadToken.current)) return;
     setScripts(applyPage(null, { scope, items: scriptPage.items, nextCursor: scriptPage.nextCursor, append: false }));
-    setScenes(applyPage(null, { scope, items: scenePage.items, nextCursor: scenePage.nextCursor, append: false }));
-  }, [props.episode, props.projectId, props.refreshEpoch]);
+    if (scenePage) setScenes(applyPage(null, { scope, items: scenePage.items, nextCursor: scenePage.nextCursor, append: false }));
+  }, [props.episode, props.projectId, props.refreshEpoch, props.textOnly]);
 
   useEffect(() => {
     setScripts(null);
@@ -610,6 +610,7 @@ export function ScriptPane(props: {
           assistant={{
             mode: "episode",
             episodeNo: episode.episodeNo,
+            episodeId: episode.id,
             premise: props.premise,
             confirmedMaterials: textOf(props.storyCurrent?.content ?? null),
             loaded: scripts !== null && !currentNotLoaded,
@@ -659,48 +660,52 @@ export function ScriptPane(props: {
         />
         </InspectSlot>
       </EditorGrid>
-      <ScriptBreakdownPanel
-        refreshEpoch={props.refreshEpoch}
-        projectId={props.projectId}
-        episodeId={episode.id}
-        episodeNo={episode.episodeNo}
-        scriptReady={episode.currentScriptRevisionId !== null
-          && episode.currentScriptRevisionId === episode.approvedScriptRevisionId
-          && episode.currentScriptReviewStatus === "APPROVED"
-          && episode.currentScriptFreshnessStatus === "CURRENT"}
-        sceneCount={scenes?.items.length ?? 0}
-        onOpenScene={props.onOpenScene}
-        onChanged={async () => {
-          await props.onSaved();
-          await load();
-        }}
-      />
-      <SceneList
-        projectId={props.projectId}
-        episode={props.episode}
-        page={scenes}
-        scriptReady={props.episode.currentScriptRevisionId !== null
-          && props.episode.currentScriptRevisionId === props.episode.approvedScriptRevisionId
-          && props.episode.currentScriptReviewStatus === "APPROVED"
-          && props.episode.currentScriptFreshnessStatus === "CURRENT"}
-        onOpen={props.onOpenScene}
-        onReload={load}
-        onMore={async () => {
-          if (!scenes?.nextCursor || !props.episode) return;
-          const request = loadToken.current;
-          const scope = `${props.projectId}:${props.episode.id}`;
-          const page = await client.get<{ items: Aggregate[]; nextCursor: string | null }>(
-            `/projects/${props.projectId}/episodes/${props.episode.id}/scenes?cursor=${encodeURIComponent(scenes.nextCursor)}`,
-          );
-          if (!shouldApplyLoad(request, loadToken.current)) return;
-          setScenes((current) => applyPage(current, { scope, items: page.items, nextCursor: page.nextCursor, append: true }));
-        }}
-        onRefreshBaseline={async () => {
-          await props.onSaved();
-          await load();
-        }}
-        onStatus={props.onStatus}
-      />
+      {props.textOnly ? null : (
+        <>
+          <ScriptBreakdownPanel
+            refreshEpoch={props.refreshEpoch}
+            projectId={props.projectId}
+            episodeId={episode.id}
+            episodeNo={episode.episodeNo}
+            scriptReady={episode.currentScriptRevisionId !== null
+              && episode.currentScriptRevisionId === episode.approvedScriptRevisionId
+              && episode.currentScriptReviewStatus === "APPROVED"
+              && episode.currentScriptFreshnessStatus === "CURRENT"}
+            sceneCount={scenes?.items.length ?? 0}
+            onOpenScene={props.onOpenScene}
+            onChanged={async () => {
+              await props.onSaved();
+              await load();
+            }}
+          />
+          <SceneList
+            projectId={props.projectId}
+            episode={props.episode}
+            page={scenes}
+            scriptReady={props.episode.currentScriptRevisionId !== null
+              && props.episode.currentScriptRevisionId === props.episode.approvedScriptRevisionId
+              && props.episode.currentScriptReviewStatus === "APPROVED"
+              && props.episode.currentScriptFreshnessStatus === "CURRENT"}
+            onOpen={props.onOpenScene}
+            onReload={load}
+            onMore={async () => {
+              if (!scenes?.nextCursor || !props.episode) return;
+              const request = loadToken.current;
+              const scope = `${props.projectId}:${props.episode.id}`;
+              const page = await client.get<{ items: Aggregate[]; nextCursor: string | null }>(
+                `/projects/${props.projectId}/episodes/${props.episode.id}/scenes?cursor=${encodeURIComponent(scenes.nextCursor)}`,
+              );
+              if (!shouldApplyLoad(request, loadToken.current)) return;
+              setScenes((current) => applyPage(current, { scope, items: page.items, nextCursor: page.nextCursor, append: true }));
+            }}
+            onRefreshBaseline={async () => {
+              await props.onSaved();
+              await load();
+            }}
+            onStatus={props.onStatus}
+          />
+        </>
+      )}
     </div>
   );
 }
@@ -921,6 +926,7 @@ function ContentEditor(props: {
   assistant?: {
     mode: "story" | "episode";
     episodeNo: number | null;
+    episodeId?: string | null;
     premise: string;
     confirmedMaterials: string;
     loaded: boolean;
@@ -1106,12 +1112,12 @@ function ContentEditor(props: {
           projectId={props.projectId}
           entityKey={props.entityKey}
           episodeNo={props.assistant.episodeNo}
+          episodeId={props.assistant.episodeId ?? null}
           premise={props.assistant.premise}
           confirmedMaterials={props.assistant.confirmedMaterials}
           loaded={props.assistant.loaded}
           capture={captureTarget}
           onAdopt={adoptText}
-          workspaceQwen={qwenWebClient}
         />
       ) : null}
       {props.empty ? <p className="mt-2 text-sm">尚无版本。保存将创建第一版。</p> : null}
@@ -1200,7 +1206,7 @@ function ContentEditor(props: {
   );
 }
 
-export function EntityPane(props: {
+interface EntityPaneProps {
   project: ProjectRecord;
   kind: "character" | "location";
   page: PageState<Aggregate> | null;
@@ -1214,7 +1220,18 @@ export function EntityPane(props: {
   referenceEpoch?: number;
   /** From useProjectBase (reloadForProject): a reference generation was accepted in this project. */
   onReferenceAccepted?: (projectId: string) => void;
-}) {
+}
+
+/**
+ * The selection, history and editor of one project's characters or locations. Another project or kind is another
+ * scope: it starts from a fresh state in the same render, so nothing of the previous scope is shown and no effect
+ * clears a choice made after mount.
+ */
+export function EntityPane(props: EntityPaneProps) {
+  return <EntityScope key={`${props.project.id}:${props.kind}`} {...props} />;
+}
+
+function EntityScope(props: EntityPaneProps) {
   const [selected, setSelected] = useState<string | null>(null);
   const editorRef = useRef<HTMLDivElement>(null);
   const focusPending = useRef(false);
@@ -1234,10 +1251,6 @@ export function EntityPane(props: {
   });
   const usableSource = sources.find((source) => source.usable) ?? null;
 
-  useEffect(() => {
-    setSelected(null);
-  }, [props.kind, props.project.id]);
-
   const focusEntityId = props.focus?.entityId ?? null;
   const focusNonce = props.focus?.nonce ?? 0;
   useEffect(() => {
@@ -1249,7 +1262,7 @@ export function EntityPane(props: {
   useEffect(() => {
     setHistory(null);
     setHistoryError(null);
-  }, [props.kind, props.project.id, selected]);
+  }, [selected]);
 
   useEffect(() => {
     if (!selected) return;

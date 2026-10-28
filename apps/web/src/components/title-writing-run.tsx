@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { EpisodeOutline, TitleConcept } from "@ai-drama/contracts";
+import { TITLE_WRITING_PROMPT_VERSION_V3, TITLE_WRITING_PROMPT_VERSION_V4, TITLE_WRITING_PROVIDER_LABELS, isActiveTitleWritingProvider, type EpisodeOutline, type TitleConcept } from "@ai-drama/contracts";
 import {
   TitleWritingClient,
   TitleWritingError,
@@ -15,16 +15,29 @@ import {
   stepLabel,
   stepStateText,
   targetText,
+  tokenRequired,
   uncertainCallIds,
   type TitleWritingRunView,
 } from "../lib/title-writing-client";
 import { BeginnerShell } from "./beginner-shell";
+import { EpisodeWritingCheck, outlineEpisodeAnchor } from "./episode-writing-check";
+import { EpisodeWritingGuidance } from "./episode-writing-guidance";
 import styles from "./title-writing.module.css";
 
 export const TITLE_WRITING_POLL_MS = 2_000;
 const defaultClient = new TitleWritingClient();
 
-const PROVIDER_LABELS: Record<string, string> = { qwen: "千问", openai: "OpenAI", deepseek: "DeepSeek" };
+/** Every provider a stored run may carry, retired ones included: history shows the real provider and model. */
+const PROVIDER_LABELS: Readonly<Record<string, string>> = TITLE_WRITING_PROVIDER_LABELS;
+const RETIRED_STOP = "这次创作使用的模型服务已经退役，不会再发出请求，也不会改用其他模型；已有结果、调用记录和未知费用都保留。";
+
+/** A run of a retired provider that stopped for want of a provider is said to be retired, not misconfigured. */
+function runErrorText(run: { providerKey: string; errorCode: string | null; legacyProviderRun?: boolean }): string | null {
+  if (run.errorCode === "provider_unconfigured" && !isActiveTitleWritingProvider(run.providerKey)) return RETIRED_STOP;
+  // A DeepSeek run stopped by the retirement stays a retired run now that DeepSeek is active again (the server says so).
+  if (run.errorCode === "provider_unconfigured" && run.legacyProviderRun === true) return errorText("legacy_provider_run");
+  return errorText(run.errorCode);
+}
 
 function actionError(caught: unknown, fallback: string): string {
   if (caught instanceof TitleWritingError) {
@@ -94,16 +107,18 @@ function ConceptView({ concept }: { concept: TitleConcept }) {
   );
 }
 
-function OutlineView({ outline }: { outline: EpisodeOutline }) {
+function OutlineView({ outline, episodeCount, guided }: { outline: EpisodeOutline; episodeCount: number; guided: boolean }) {
   return (
     <ol className={styles.outline}>
       {outline.episodes.map((episode) => (
-        <li key={episode.episodeNo}>
+        <li key={episode.episodeNo} id={outlineEpisodeAnchor(episode.episodeNo)}>
           <p className={styles.outlineTitle}>第 {episode.episodeNo} 集 {episode.title}</p>
+          <p>进入状态：{episode.entryState}</p>
           <p>目标：{episode.goal}</p>
+          <p>行动：{episode.action}</p>
           <p>转折：{episode.turn}</p>
           <p>结果：{episode.result}</p>
-          <p>交给下一集：{episode.handoff}</p>
+          <p>{episode.episodeNo === episodeCount ? (guided ? "全剧收尾" : "结尾记录") : "交给下一集"}：{episode.handoff}</p>
         </li>
       ))}
     </ol>
@@ -120,6 +135,8 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
   const [readError, setReadError] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<ActionMessage | null>(null);
   const [token, setToken] = useState("");
+  // Until the server says otherwise a token is asked for; with the site login on the administrator's session suffices.
+  const [needsToken, setNeedsToken] = useState(true);
   // The uncertain calls the person confirmed, as a sorted id list. It only counts while it equals what is shown now.
   const [confirmedFor, setConfirmedFor] = useState<string | null>(null);
   const resumeAction = useRef<ResumeAction | null>(null);
@@ -268,13 +285,23 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
   // The run on screen is always the run of the action that failed: another run or work clears the message.
   const message = actionMessage && !(run && actionMessage.moot?.(run)) ? actionMessage.text : null;
 
+  // Read once a resume is on offer: only then does the page need to know whether to ask for a token.
+  const resumable = run ? canResume(run) : false;
+  useEffect(() => {
+    if (!resumable) return;
+    let alive = true;
+    const reading = typeof client.options === "function" ? client.options() : null;
+    void reading?.then((value) => { if (alive) setNeedsToken(tokenRequired(value)); }).catch(() => undefined);
+    return () => { alive = false; };
+  }, [client, resumable]);
+
   function resume(current: TitleWritingRunView) {
     const confirmed = uncertain ? uncertainIds : [];
     const previous = resumeAction.current;
     const action = previous && previous.runId === current.runId && previous.confirmedFor === uncertainKey
       ? previous : { runId: current.runId, confirmedFor: uncertainKey, key: crypto.randomUUID() };
     resumeAction.current = action;
-    void act(current.runId, () => client.resume(projectId, current.runId, { confirmUncertainCallIds: confirmed, token: token.trim(), idempotencyKey: action.key }),
+    void act(current.runId, () => client.resume(projectId, current.runId, { confirmUncertainCallIds: confirmed, token: needsToken ? token.trim() : "", idempotencyKey: action.key }),
       "没有确认续跑是否已被受理（网络或服务异常）。再次点击会重放同一个续跑请求。", {
         accepted: () => { resumeAction.current = null; setConfirmedFor(null); },
         failed: (caught) => {
@@ -319,7 +346,7 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
                 模型：{PROVIDER_LABELS[run.providerKey] ?? run.providerKey} · {run.model} · 已调用 {run.callsUsed} 次（本次上限 {run.callCap} 次，不是自动重试次数）。
                 费用以服务商账单为准，本页不估算金额。
               </p>
-              {errorText(run.errorCode) ? <p className={styles.warning}>{errorText(run.errorCode)}</p> : null}
+              {runErrorText(run) ? <p className={styles.warning}>{runErrorText(run)}</p> : null}
             </header>
 
             <section className={styles.card} aria-labelledby="progress-title">
@@ -356,10 +383,14 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
                       我知道「结果不确定」的那一步可能已经产生费用，确认重新发送。
                     </label>
                   ) : null}
-                  <label className={styles.label} htmlFor="resume-token">操作者令牌</label>
-                  <input id="resume-token" className={styles.input} type="password" autoComplete="off" value={token}
-                    onChange={(event) => setToken(event.target.value)} />
-                  <button className={styles.primary} type="button" disabled={busy || token.trim().length === 0 || (uncertain && !confirmUncertain)}
+                  {needsToken ? (
+                    <>
+                      <label className={styles.label} htmlFor="resume-token">操作者令牌</label>
+                      <input id="resume-token" className={styles.input} type="password" autoComplete="off" value={token}
+                        onChange={(event) => setToken(event.target.value)} />
+                    </>
+                  ) : <p className={styles.helper}>调用权限由当前管理员登录确认。</p>}
+                  <button className={styles.primary} type="button" disabled={busy || (needsToken && token.trim().length === 0) || (uncertain && !confirmUncertain)}
                     onClick={() => resume(run)}>
                     继续创作
                   </button>
@@ -383,10 +414,21 @@ export function TitleWritingRun({ projectId, client = defaultClient }: { project
               </section>
             ) : null}
 
-            {outline ? (
+            {outline || run.state !== "running" ? (
               <section className={styles.card} aria-labelledby="outline-title">
                 <h2 id="outline-title" className={styles.sectionTitle}>分集大纲</h2>
-                <OutlineView outline={outline} />
+                {outline && (run.promptVersion === TITLE_WRITING_PROMPT_VERSION_V3 || run.promptVersion === TITLE_WRITING_PROMPT_VERSION_V4) ? (
+                  <p className={styles.helper}>
+                    这次创作使用了加入编剧要求的提示词（{run.promptVersion}）。各集剧本按本次创作保存的分集大纲生成；大纲生成后没有人工确认步骤，需要调整可在剧本草稿里修改。
+                  </p>
+                ) : null}
+                {outline ? (
+                  <OutlineView outline={outline} episodeCount={run.episodeCount ?? run.settings.episodeCount}
+                    guided={run.promptVersion === TITLE_WRITING_PROMPT_VERSION_V3 || run.promptVersion === TITLE_WRITING_PROMPT_VERSION_V4} />
+                ) : <p className={styles.helper}>本次创作尚未生成可读的分集大纲，可打开编剧检查查看缺失的计划。</p>}
+                <EpisodeWritingCheck concept={concept ?? null} outline={outline ?? null} episodeCount={run.episodeCount ?? run.settings.episodeCount}
+                  finaleClosure={run.promptVersion === TITLE_WRITING_PROMPT_VERSION_V3 || run.promptVersion === TITLE_WRITING_PROMPT_VERSION_V4} />
+                <EpisodeWritingGuidance />
               </section>
             ) : null}
 

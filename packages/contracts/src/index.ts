@@ -1,5 +1,7 @@
 import { z } from "zod";
 export * from "./admin-models";
+export * from "./auto-creation";
+export * from "./series-writing";
 
 export const SERVICE_NAME = {
   api: "api",
@@ -165,33 +167,6 @@ export const textAdapterResultSchema = z.discriminatedUnion("kind", [
 ]);
 export type TextAdapterResult = z.infer<typeof textAdapterResultSchema>;
 
-export {
-  QWEN_TEXT_TRIAL_DRAFT_SCHEMA,
-  QWEN_TEXT_TRIAL_INPUT_SCHEMA,
-  QWEN_TEXT_TRIAL_LIMITS,
-  QWEN_TEXT_TRIAL_RECEIPT_SCHEMA,
-  parseQwenTextTrialDraft,
-  parseQwenTextTrialInput,
-  qwenTextTrialDraftSchema,
-  qwenTextTrialInputSchema,
-  qwenTextTrialReceiptSchema,
-  type QwenTextTrialDraft,
-  type QwenTextTrialInput,
-  type QwenTextTrialReceipt,
-} from "./qwen-text-trial";
-export {
-  QWEN_WRITING_INPUT_MAX_BYTES,
-  QWEN_WRITING_INPUT_SCHEMA,
-  QWEN_WRITING_RECEIPT_SCHEMA,
-  parseQwenWritingInput,
-  qwenWritingInputByteLength,
-  qwenWritingInputSchema,
-  qwenWritingInputWithinLimit,
-  qwenWritingReceiptSchema,
-  type QwenWritingInput,
-  type QwenWritingReceipt,
-} from "./qwen-writing";
-
 /** Only replay-safe synchronous adapters are supported by the M2 recovery contract. */
 export interface TextGenerationAdapter {
   readonly providerKey: string;
@@ -247,7 +222,26 @@ export {
   TITLE_WRITING_MIN_EPISODES,
   TITLE_WRITING_PROMPT_VERSION,
   TITLE_WRITING_PROMPT_VERSION_V2,
+  TITLE_WRITING_PROMPT_VERSION_V3,
+  TITLE_WRITING_PROMPT_VERSION_V4,
   TITLE_WRITING_PROVIDER_KEYS,
+  TITLE_WRITING_DEFAULT_MODELS,
+  TITLE_WRITING_PROVIDER_PREFERENCE,
+  anthropicKeyProblem,
+  anthropicWorkspaceIdValid,
+  deepseekKeyProblem,
+  DEEPSEEK_API_KEY_MAX_LENGTH,
+  DEEPSEEK_API_KEY_MIN_LENGTH,
+  DEEPSEEK_PROVIDER_ADAPTER,
+  frozenProviderAdapter,
+  isLegacyDeepseekRun,
+  TITLE_WRITING_V1_LEFT_OUT_PROVIDER_KEYS,
+  ANTHROPIC_API_KEY_MAX_LENGTH,
+  ANTHROPIC_WORKSPACE_ID_SHAPE,
+  TITLE_WRITING_PROVIDER_LABELS,
+  TITLE_WRITING_RETIRED_PROVIDER_KEYS,
+  TITLE_WRITING_STORED_PROVIDER_KEYS,
+  isActiveTitleWritingProvider,
   TITLE_WRITING_STEP_KEYS,
   TITLE_WRITING_TITLE_MAX_CHARS,
   episodeOutlineV2Schema,
@@ -276,6 +270,9 @@ export {
   type TitleWritingFrozenInput,
   type TitleWritingOptionsView,
   type TitleWritingProviderKey,
+  type TitleWritingRetiredProviderKey,
+  type TitleWritingV1LeftOutProviderKey,
+  type TitleWritingStoredProviderKey,
   type TitleWritingProviderOption,
   type TitleWritingRunState,
   type TitleWritingRunView,
@@ -290,6 +287,8 @@ export {
 } from "./title-writing";
 export {
   TITLE_WRITING_CANCELED_BEFORE_SEND,
+  TITLE_WRITING_RUN_KIND_DISABLED,
+  settledSaveOutcome,
   type TitleCallFinish,
   type TitleCallRecord,
   type TitleCallReservation,
@@ -304,6 +303,7 @@ export {
   type TitleStepRecord,
   type TitleWritingStore,
   type TitleRunInput,
+  type TitleRunKind,
   type ScriptBreakdownDetails,
   type ScriptBreakdownPlacement,
   type ScriptBreakdownPlacementOutcome,
@@ -337,3 +337,23 @@ export {
   type ScriptBreakdownShot,
   type ScriptBreakdownStart,
 } from "./script-breakdown";
+export {
+  WRITING_CANDIDATE_INPUT_SCHEMA,
+  writingCandidateEpisodeRequestSchema,
+  writingCandidateJsonSchema,
+  writingCandidateStartSchema,
+  writingCandidateStoryRequestSchema,
+  type WritingCandidateCreation,
+  type WritingCandidateEpisodeRequest,
+  type WritingCandidateFinish,
+  type WritingCandidateFrozenInput,
+  type WritingCandidateMode,
+  type WritingCandidateOptionsView,
+  type WritingCandidateOutput,
+  type WritingCandidateRecord,
+  type WritingCandidateStart,
+  type WritingCandidateState,
+  type WritingCandidateStore,
+  type WritingCandidateStoryRequest,
+  type WritingCandidateView,
+} from "./writing-candidate";

@@ -3,6 +3,8 @@ import {
   SCRIPT_BREAKDOWN_INPUT_SCHEMA,
   SCRIPT_BREAKDOWN_STEP_KEY,
   TITLE_WRITING_CANCELED_BEFORE_SEND,
+  TITLE_WRITING_RUN_KIND_DISABLED,
+  settledSaveOutcome,
   currentUncertainCallIds,
   isScriptBreakdownInput,
   type ScriptBreakdownDetails,
@@ -14,10 +16,12 @@ import {
   type ScriptBreakdownSceneView,
   type ScriptBreakdownSourceRead,
   type TitleRunInput,
+  type TitleRunKind,
   titleWritingEpisodeCount,
   titleWritingStepKeysFor,
   type EpisodeDraftCandidate,
   type TitleWritingFrozenInput,
+  type TitleWritingProviderKey,
   type TitleWritingRunState,
   type TitleWritingStepKey,
   type TitleCallFinish,
@@ -36,8 +40,10 @@ import {
 } from "@ai-drama/contracts";
 import { breakdownDialogueText, breakdownShotPromptText, formatTitleEpisode, shotsOfScene } from "@ai-drama/domain";
 import { projectEpisodePlanIn } from "./episode-plan";
+import { WRITING_PROVIDER_MIGRATION } from "./migrations";
 import { PersistenceError, type DatabasePool } from "./job-service";
 import type { TextChainService } from "./text-chain";
+import { recentWritingCalls, writingCallLockKey, runningWritingRuns } from "./writing-candidate-store";
 
 /**
  * The migration that creates the title writing tables (prisma/migrations/20261008000100_title_writing). It replaced the
@@ -72,6 +78,13 @@ export const TITLE_WRITING_TABLES = {
  * scene link table (prisma/migrations/20261012000100_script_breakdown). Title writing never needs it.
  */
 export const SCRIPT_BREAKDOWN_MIGRATION = "20261012000100_script_breakdown";
+
+/**
+ * The migration that lets runs and calls store provider_key 'anthropic' (prisma/migrations/20261016000100_writing_provider_anthropic).
+ * OpenAI runs never need it. Until it is recorded and both provider CHECKs allow 'anthropic', a Claude run is refused
+ * before anything is written, reserved or sent.
+ */
+export { WRITING_PROVIDER_MIGRATION };
 
 export const SCRIPT_BREAKDOWN_COLUMNS = {
   title_writing_run: ["run_kind", "episode_id", "source_script_revision_id", "breakdown_save"],
@@ -169,6 +182,8 @@ function toCall(row: Row): TitleCallRecord {
 export class PostgresTitleWritingStore implements TitleWritingStore {
   // Once applied a migration stays applied, so only a positive answer is remembered.
   private breakdownReadyConfirmed = false;
+  private anthropicReadyConfirmed = false;
+  private deepseekReadyConfirmed = false;
 
   constructor(private readonly pool: DatabasePool, private readonly textChain: TextChainService) {}
 
@@ -182,6 +197,49 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
       );
       const present = new Set(result.rows.map((row) => `${String(row.table_name)}.${String(row.column_name)}`));
       return Object.entries(TITLE_WRITING_TABLES).every(([table, columns]) => columns.every((column) => present.has(`${table}.${column}`)));
+    } catch {
+      return false;
+    }
+  }
+
+  async providerStorageReady(providerKey: TitleWritingProviderKey): Promise<boolean> {
+    if (!(await this.storageReady())) return false;
+    if (providerKey === "deepseek") return this.deepseekStorageReady();
+    if (providerKey !== "anthropic" || this.anthropicReadyConfirmed) return true;
+    try {
+      const table = await this.query("SELECT to_regclass('schema_migration') IS NOT NULL AS present", []);
+      if (table.rows[0]?.present !== true) return false;
+      const recorded = await this.query("SELECT 1 FROM schema_migration WHERE name = $1", [WRITING_PROVIDER_MIGRATION]);
+      if (!recorded.rows[0]) return false;
+      // The ledger alone is not trusted: both live CHECKs must name anthropic.
+      const checks = await this.query(
+        `SELECT count(*)::int AS allowed FROM pg_constraint
+          WHERE conrelid IN (to_regclass('title_writing_run'), to_regclass('title_writing_call')) AND contype = 'c'
+            AND pg_get_constraintdef(oid) LIKE '%provider_key%' AND pg_get_constraintdef(oid) LIKE '%''anthropic''%'`,
+        [],
+      );
+      this.anthropicReadyConfirmed = Number(checks.rows[0]?.allowed) === 2;
+      return this.anthropicReadyConfirmed;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * DeepSeek runs need no migration: the provider CHECKs have named deepseek since 20261008000100_title_writing and the
+   * Claude migration kept it. The live CHECKs are still read, so a database changed by hand is refused, not written.
+   */
+  private async deepseekStorageReady(): Promise<boolean> {
+    if (this.deepseekReadyConfirmed) return true;
+    try {
+      const checks = await this.query(
+        `SELECT count(*)::int AS allowed FROM pg_constraint
+          WHERE conrelid IN (to_regclass('title_writing_run'), to_regclass('title_writing_call')) AND contype = 'c'
+            AND pg_get_constraintdef(oid) LIKE '%provider_key%' AND pg_get_constraintdef(oid) LIKE '%''deepseek''%'`,
+        [],
+      );
+      this.deepseekReadyConfirmed = Number(checks.rows[0]?.allowed) === 2;
+      return this.deepseekReadyConfirmed;
     } catch {
       return false;
     }
@@ -215,17 +273,18 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
       );
       const sameProject = active.rows.find((row) => String(row.project_id) === run.projectId);
       if (sameProject) return { kind: "active", bundle: (await this.load(client, sameProject))! };
-      if (active.rows.length >= limits.maxActiveRuns) return { kind: "blocked", code: "TITLE_WRITING_ACTIVE_RUN_CAP" };
+      // Running automatic creation runs and series jobs share the concurrency cap, and a work one of them is writing takes
+      // no other run.
+      const autoRunning = (await runningWritingRuns(client, run.workspaceId)).map((item) => ({ project_id: item.projectId }));
+      if (autoRunning.some((row) => String(row.project_id) === run.projectId)
+        || active.rows.length + autoRunning.length >= limits.maxActiveRuns) return { kind: "blocked", code: "TITLE_WRITING_ACTIVE_RUN_CAP" };
       if (limits.quota) {
         // A start check only, after the key lookup so a replay is never refused by it. It reads the rolling 24-hour
         // count without the call lock (lock order stays run lock -> run row, as before) and reserves nothing: each
         // send still reserves its call atomically in reserveCall.
         const { sinceIso, maxCallsPerDay, requiredCalls } = limits.quota;
-        const recent = await client.query<Row>(
-          "SELECT count(*)::int AS recent FROM title_writing_call WHERE workspace_id = $1 AND created_at >= $2",
-          [run.workspaceId, sinceIso],
-        );
-        const remainingCalls = Math.max(0, maxCallsPerDay - Number(recent.rows[0]?.recent ?? 0));
+        // Online candidates share the daily cap with title writing calls.
+        const remainingCalls = Math.max(0, maxCallsPerDay - await recentWritingCalls(client, run.workspaceId, sinceIso));
         if (remainingCalls < requiredCalls) return { kind: "blocked", code: "TITLE_WRITING_DAILY_QUOTA_LOW", requiredCalls, remainingCalls };
       }
       const breakdown = isScriptBreakdownInput(run.input) ? run.input : null;
@@ -309,7 +368,7 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
 
   async reserveCall(call: TitleCallRecord, limits: { sinceIso: string; maxCallsPerDay: number }, nowIso: string, leaseUntil: string): Promise<TitleCallReservation> {
     return this.transaction(async (client) => {
-      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`title_writing_call:${call.workspaceId}`]);
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [writingCallLockKey(call.workspaceId)]);
       const run = await this.ownedRun(client, call.workspaceId, call.runId, call.executorId, nowIso);
       if (!run) return { kind: "lost" };
       if (run.cancelRequestedAt !== null) return { kind: "canceled" };
@@ -320,11 +379,8 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
         if (!await this.breakdownSceneSetCurrent(client, call.workspaceId, run.projectId, run.input)) return { kind: "conflict" };
       }
       if (run.callsUsed >= run.callCap) return { kind: "blocked", code: "TITLE_WRITING_RUN_CAP" };
-      const recent = await client.query<Row>(
-        "SELECT count(*)::int AS recent FROM title_writing_call WHERE workspace_id = $1 AND created_at >= $2",
-        [call.workspaceId, limits.sinceIso],
-      );
-      if (Number(recent.rows[0]?.recent ?? 0) >= limits.maxCallsPerDay) return { kind: "blocked", code: "TITLE_WRITING_DAILY_CAP" };
+      // One rolling cap for every paid text call of the workspace: title writing calls and online candidates.
+      if (await recentWritingCalls(client, call.workspaceId, limits.sinceIso) >= limits.maxCallsPerDay) return { kind: "blocked", code: "TITLE_WRITING_DAILY_CAP" };
       const step = await client.query(
         `UPDATE title_writing_step SET state = 'reserved', attempt_no = $3, error_code = NULL, updated_at = $4
           WHERE run_id = $1 AND step_key = $2 AND state = 'pending'`,
@@ -492,7 +548,10 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
       const running = await client.query<Row>(
         "SELECT project_id FROM title_writing_run WHERE workspace_id = $1 AND state = 'running'", [workspaceId]);
       if (running.rows.some((item) => String(item.project_id) === projectId)) return { kind: "active" };
-      if (running.rows.length >= request.maxActiveRuns) return { kind: "active_cap" };
+      // Running automatic creation runs and series jobs share the cap, and a work one of them is writing takes no other run.
+      const autoRunning = (await runningWritingRuns(client, workspaceId)).map((item) => ({ project_id: item.projectId }));
+      if (autoRunning.some((item) => String(item.project_id) === projectId)) return { kind: "active" };
+      if (running.rows.length + autoRunning.length >= request.maxActiveRuns) return { kind: "active_cap" };
       const steps = (await client.query<Row>(`SELECT ${STEP_COLUMNS} FROM title_writing_step WHERE run_id = $1`, [runId])).rows.map(toStep);
       const calls = (await client.query<Row>("SELECT id, step_key, attempt_no, state FROM title_writing_call WHERE run_id = $1", [runId])).rows
         .map((item) => ({ callId: String(item.id), stepKey: item.step_key as TitleWritingStepKey, attemptNo: Number(item.attempt_no),
@@ -589,12 +648,87 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
     });
   }
 
-  async listClaimable(workspaceId: string, nowIso: string, limit: number): Promise<string[]> {
+  async retireDisabledRuns(workspaceId: string, nowIso: string, disabledKinds: readonly TitleRunKind[]): Promise<number> {
+    if (disabledKinds.length === 0) return 0;
+    return this.transaction(async (client) => {
+      // Unheld runs only: a live lease is left to its executor. The kind comes from the frozen schema, never from the
+      // optional run_kind column, so this works on the migration chain before the breakdown migration.
+      const unheld = await client.query<Row>(
+        `SELECT id, cancel_requested_at, story_save, input_json ->> 'schema' = $4 AS breakdown,
+                (to_jsonb(title_writing_run) ->> 'breakdown_save') AS breakdown_save
+           FROM title_writing_run
+          WHERE workspace_id = $2 AND state = 'running' AND (executor_id IS NULL OR lease_until <= $1)
+            AND (CASE WHEN input_json ->> 'schema' = $4 THEN 'script_breakdown' ELSE 'title' END) = ANY($3::text[])
+          ORDER BY updated_at LIMIT 50 FOR UPDATE SKIP LOCKED`,
+        [nowIso, workspaceId, disabledKinds, SCRIPT_BREAKDOWN_INPUT_SCHEMA],
+      );
+      for (const row of unheld.rows) {
+        const runId = String(row.id);
+        const neverSent = await client.query<Row>(
+          `UPDATE title_writing_call SET state = 'rejected', error_code = 'executor_lost_before_send', finished_at = $2
+            WHERE run_id = $1 AND state = 'reserved' RETURNING step_key`,
+          [runId, nowIso],
+        );
+        for (const call of neverSent.rows) {
+          await client.query("UPDATE title_writing_step SET state = 'pending', updated_at = $3 WHERE run_id = $1 AND step_key = $2",
+            [runId, call.step_key, nowIso]);
+        }
+        const maybeSent = await client.query<Row>(
+          `UPDATE title_writing_call SET state = 'unknown', error_code = 'executor_lost', finished_at = $2
+            WHERE run_id = $1 AND state = 'submitted' RETURNING step_key`,
+          [runId, nowIso],
+        );
+        for (const call of maybeSent.rows) {
+          await client.query(
+            `UPDATE title_writing_step SET state = 'unknown', error_code = 'executor_lost', updated_at = $3
+              WHERE run_id = $1 AND step_key = $2`,
+            [runId, call.step_key, nowIso],
+          );
+        }
+        let state: Exclude<TitleWritingRunState, "running"> = "needs_attention";
+        let errorCode: string | null = TITLE_WRITING_RUN_KIND_DISABLED;
+        if (maybeSent.rows.length > 0) {
+          errorCode = "executor_lost";
+        } else if (row.cancel_requested_at !== null) {
+          state = "canceled";
+          errorCode = null;
+          await client.query("UPDATE title_writing_step SET state = 'canceled', updated_at = $2 WHERE run_id = $1 AND state = 'pending'",
+            [runId, nowIso]);
+        } else {
+          const open = await client.query<Row>(
+            "SELECT count(*)::int AS open FROM title_writing_step WHERE run_id = $1 AND state <> 'completed'", [runId]);
+          const settled = Number(open.rows[0]?.open ?? 1) === 0
+            ? settledSaveOutcome(row.breakdown === true, row.breakdown === true ? row.breakdown_save : row.story_save)
+            : null;
+          if (settled) {
+            // The executor settled the save and stopped before finishing the run: end it as the engine would, nothing is
+            // sent or saved again.
+            ({ state, errorCode } = settled);
+          } else {
+            const unknown = await client.query<Row>(
+              "SELECT error_code FROM title_writing_step WHERE run_id = $1 AND state = 'unknown' ORDER BY ordinal LIMIT 1", [runId]);
+            const found = unknown.rows[0];
+            if (found) errorCode = found.error_code === null ? "uncertain_call" : String(found.error_code);
+          }
+        }
+        await client.query(
+          `UPDATE title_writing_run SET state = $2, error_code = $3, executor_id = NULL, lease_until = NULL, updated_at = $4
+            WHERE id = $1`,
+          [runId, state, errorCode, nowIso],
+        );
+      }
+      return unheld.rows.length;
+    });
+  }
+
+  async listClaimable(workspaceId: string, nowIso: string, limit: number, allowedRunKinds?: readonly TitleRunKind[]): Promise<string[]> {
     const result = await this.query(
       `SELECT id FROM title_writing_run
         WHERE workspace_id = $3 AND state = 'running' AND (executor_id IS NULL OR lease_until <= $1)
+          AND (CASE WHEN input_json ->> 'schema' = $5 THEN 'script_breakdown' ELSE 'title' END) = ANY($4::text[])
         ORDER BY updated_at LIMIT $2`,
-      [nowIso, limit, workspaceId],
+      // The frozen schema exists before the breakdown migration; never depend on its optional run_kind column here.
+      [nowIso, limit, workspaceId, allowedRunKinds ?? ["title", "script_breakdown"], SCRIPT_BREAKDOWN_INPUT_SCHEMA],
     );
     return result.rows.map((row) => String(row.id));
   }
@@ -659,7 +793,7 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
           projectId,
           episodeId: String(episode.id),
           sourceStoryRevisionId: approved,
-          content: { text: formatTitleEpisode(step.output as EpisodeDraftCandidate) },
+          content: { text: formatTitleEpisode(step.output as EpisodeDraftCandidate, run.input as TitleWritingFrozenInput) },
           createdBy: actorId,
           expectedVersion: Number(episode.row_version),
           traceId: `title-writing:${runId}`,

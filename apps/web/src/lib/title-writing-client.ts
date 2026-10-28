@@ -1,7 +1,7 @@
 import {
+  type TitleWritingStoredProviderKey,
   currentUncertainCallIds,
   type TitleWritingOptionsView,
-  type TitleWritingProviderKey,
   type TitleWritingRunView,
   type TitleWritingStepKey,
   type TitleWritingStepState,
@@ -47,7 +47,8 @@ export function startReceiptRun(body: unknown, projectId: string): TitleWritingR
 
 export interface StartBody {
   title: string;
-  providerKey?: TitleWritingProviderKey;
+  /** A stored start of a retired provider keeps its key so that its replay is the same request. */
+  providerKey?: TitleWritingStoredProviderKey;
   model?: string;
   /** episodeCount and episodeSeconds must equal the work's episode plan; the server freezes the plan, not these. */
   settings?: { episodeCount?: number; episodeSeconds?: number; style?: string };
@@ -87,7 +88,7 @@ export class TitleWritingClient {
     const result = await this.call<unknown>(`/projects/${projectId}/title-runs`, {
       method: "POST",
       headers: { Accept: "application/json", "Content-Type": "application/json", "Idempotency-Key": options.idempotencyKey,
-        "X-Operator-Token": options.token },
+        ...operatorHeader(options.token) },
       body: JSON.stringify(body),
     });
     const run = startReceiptRun(result.body, projectId);
@@ -112,7 +113,7 @@ export class TitleWritingClient {
   async resume(projectId: string, runId: string, options: { confirmUncertainCallIds: readonly string[]; token: string; idempotencyKey: string }): Promise<TitleWritingRunView> {
     return (await this.call<{ run: TitleWritingRunView }>(`/projects/${projectId}/title-runs/${runId}/resume`, {
       method: "POST",
-      headers: { Accept: "application/json", "Content-Type": "application/json", "X-Operator-Token": options.token,
+      headers: { Accept: "application/json", "Content-Type": "application/json", ...operatorHeader(options.token),
         "Idempotency-Key": options.idempotencyKey },
       body: JSON.stringify({ confirmUncertainCallIds: options.confirmUncertainCallIds }),
     })).body.run;
@@ -127,6 +128,19 @@ export class TitleWritingClient {
   }
 }
 
+/**
+ * The operator token header, only when the page has one. With the site login on, the signed-in administrator is the
+ * operator and no token is sent (the session cookie and CSRF header do the work).
+ */
+export function operatorHeader(token: string): Record<string, string> {
+  return token.length > 0 ? { "X-Operator-Token": token } : {};
+}
+
+/** Whether this server wants a token typed into the page (false when the site login authorizes the operator). */
+export function tokenRequired(options: { operatorTokenRequired?: unknown } | null): boolean {
+  return options?.operatorTokenRequired !== false;
+}
+
 /** Reads a possibly malformed options body: anything unexpected counts as "not ready". */
 export function normalizeOptions(value: unknown): TitleWritingOptionsView | null {
   if (!value || typeof value !== "object") return null;
@@ -135,15 +149,54 @@ export function normalizeOptions(value: unknown): TitleWritingOptionsView | null
   return record as TitleWritingOptionsView;
 }
 
+const GAP_TEXT: Readonly<Record<string, string>> = {
+  WRITING_PROVIDER_MIGRATION: "数据库迁移 20261016000100_writing_provider_anthropic 尚未执行（需由服务器部署流程单独执行）",
+  WRITING_CANDIDATE_DEEPSEEK_MIGRATION: "数据库迁移 20261017000100_writing_candidate_deepseek 尚未执行（需由服务器部署流程单独执行）",
+  ANTHROPIC_API_KEY: "尚未配置 Claude API Key",
+  ANTHROPIC_WORKSPACE_ID: "Claude Workspace ID 格式不正确",
+  TITLE_WRITING_ANTHROPIC_MODELS: "尚未配置 Claude 模型",
+  OPENAI_API_KEY: "尚未配置 OpenAI API Key",
+  TITLE_WRITING_OPENAI_MODELS: "尚未配置 OpenAI 模型",
+  DEEPSEEK_API_KEY: "尚未配置 DeepSeek API Key（只能在模型后台填写）",
+  TITLE_WRITING_DEEPSEEK_MODELS: "尚未配置 DeepSeek 模型",
+};
+
+/** A configuration gap as shown to a person: known names in words, anything else as the name itself; never a value. */
+export function gapText(name: string): string {
+  return GAP_TEXT[name] ?? name;
+}
+
+/** Why one provider cannot be used now, in words. */
+export function providerGapText(option: { label: string; missing: readonly string[] }): string {
+  return `${option.label}：${option.missing.length > 0 ? option.missing.map(gapText).join("、") : "暂不可用"}`;
+}
+
+/**
+ * The provider a request will go to, or why the configured default cannot be used. A configured default that is not
+ * ready is never replaced: the person has to choose another ready provider explicitly.
+ */
+export function providerTarget<T extends { providerKey: string; label: string; ready: boolean; missing: readonly string[] }>(
+  providers: readonly T[], providerKey: string, explicit: boolean, choosable = true,
+): { kind: "ready"; option: T } | { kind: "blocked"; reason: string } | { kind: "none" } {
+  const option = providers.find((item) => item.providerKey === providerKey);
+  if (!option) return { kind: "none" };
+  if (option.ready) return { kind: "ready", option };
+  return { kind: "blocked", reason: explicit
+    ? `所选模型服务暂不可用。${providerGapText(option)}。`
+    : `默认模型服务暂不可用，没有发出调用，也不会自动改用其他模型服务。${providerGapText(option)}。${choosable
+      ? "可以在高级设置中明确选择其他已就绪的模型服务。" : "请管理员补齐后再开始。"}` };
+}
+
 export function optionsUnavailableReason(options: TitleWritingOptionsView | null): string | null {
   if (!options) return "没能读取 AI 创作的服务端配置。可以稍后重试，或先手动创作。";
   if (options.code === "TITLE_WRITING_READY") return null;
   if (options.code === "TITLE_WRITING_DISABLED") return "AI 一键创作没有在服务端开启（TITLE_WRITING_ENABLED）。可以先手动创作。";
-  if (options.code === "TITLE_WRITING_FORBIDDEN") return "服务端还没有设置操作者令牌（TITLE_WRITING_OPERATOR_TOKEN）。可以先手动创作。";
+  if (options.code === "TITLE_WRITING_FORBIDDEN") return "服务端还没有可用的调用授权（未启用站点登录，也没有设置 TITLE_WRITING_OPERATOR_TOKEN）。可以先手动创作。";
   if (options.code === "TITLE_WRITING_STORAGE_UNAVAILABLE") return "创作任务的数据库表还没有创建（服务器尚未执行数据库迁移）。可以先手动创作。";
   if (options.code === "TITLE_WRITING_PROVIDER_UNCONFIGURED") {
-    const missing = options.providers.map((item) => `${item.label}：${item.missing.join("、")}`).join("；");
-    return `还没有可用的模型服务。缺少的服务端配置：${missing}。可以先手动创作。`;
+    const missing = options.providers.map((item) => `${item.label}：${item.missing.map(gapText).join("、")}`).join("；");
+    const pending = options.configurationPending ? "后台已保存新的模型配置，需要服务器重启 API 后才会生效。" : "";
+    return `${pending}还没有可用的模型服务。缺少的服务端配置：${missing}。可以先手动创作。`;
   }
   return "AI 一键创作暂不可用。可以先手动创作。";
 }
@@ -211,7 +264,10 @@ export function runHeadline(run: TitleWritingRunView): string {
 }
 
 const ERRORS: Record<string, string> = {
-  auth: "模型服务拒绝了服务端密钥（鉴权失败）。请检查服务端配置。",
+  auth: "模型服务认证失败（401）：密钥无效、已停用、已过期或被删除。请在后台重新填写可用的 API Key。",
+  permission: "模型服务拒绝了这次请求（403）：密钥所属账号或服务账号没有该工作区或该模型的使用权限。",
+  workspace_required: "这个 Claude API Key 没有限定 Workspace，需要在后台高级设置填写 Workspace ID，或改用限定 Workspace 的密钥。",
+  workspace_invalid: "配置的 Workspace ID 无效、不存在，或密钥所属账号无权访问该 Workspace。请在后台核对 Workspace ID。",
   quota: "模型账户的余额或额度不足。",
   rate_limited: "请求太频繁，被模型服务限流了。",
   bad_request: "模型服务认为请求参数无效。",
@@ -230,7 +286,8 @@ const ERRORS: Record<string, string> = {
   executor_lost: "服务重启时这一步已经发出，结果和费用不确定，不会自动重发。",
   executor_lost_before_send: "服务重启时这一步还没有发出。",
   canceled_before_send: "停止请求先到达，这一步没有发出。",
-  provider_unconfigured: "这次创作使用的模型服务现在没有配置完整，没有发出请求。",
+  provider_unconfigured: "这次创作使用的模型服务现在没有配置完整，或冻结的模型已不在允许列表中，没有发出请求，也不会改用其他模型。",
+  legacy_provider_run: "这次任务是 DeepSeek 退役前创建的旧任务，不会再发出请求，也不会改用新的 DeepSeek 模型或其他供应商；已有结果、调用记录和未知费用都保留。如需继续，请新建任务。",
   story_conflict: "作品里已经有故事，没有覆盖。生成的故事保留在下方。",
   story_too_large: "整理后的故事超过长度上限，没有保存。",
   TITLE_WRITING_DAILY_CAP: "最近 24 小时的调用次数已达服务端上限，已完成的内容保留。",

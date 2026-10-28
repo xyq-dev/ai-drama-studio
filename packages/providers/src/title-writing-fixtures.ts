@@ -1,15 +1,17 @@
 import {
+  STORY_PLAN_SCHEMA,
   EPISODE_DRAFT_SCHEMA,
   EPISODE_OUTLINE_SCHEMA,
   EPISODE_OUTLINE_SCHEMA_V2,
   TITLE_CONCEPT_SCHEMA,
   type EpisodeDraftCandidate,
   type EpisodeOutline,
+  type StoryPlanCandidate,
   type TitleConcept,
   type TitleWritingStepKey,
 } from "@ai-drama/contracts";
 import { fixtureBreakdownFromPrompt, isBreakdownPrompt } from "./script-breakdown-fixtures";
-import type { WritingTransport } from "./text-writing";
+import { ANTHROPIC_MESSAGES_URL, DEEPSEEK_CHAT_COMPLETIONS_URL, type WritingTransport } from "./text-writing";
 
 /**
  * Controllable provider double for tests and the local acceptance run. It is never wired into the API runtime:
@@ -94,8 +96,9 @@ export interface FixtureExchange {
 }
 
 /**
- * An OpenAI-compatible chat transport (Qwen / DeepSeek wire format) that answers each step with valid JSON unless
- * an override returns a different HTTP answer for that step and attempt.
+ * A transport that speaks the protocol of the endpoint it is called for: the OpenAI Responses API, the Claude
+ * Messages API or the DeepSeek Chat Completions API. It answers each step with valid JSON unless an override returns a different HTTP answer for that step
+ * and attempt. An override body may be built with providerAnswer() for the endpoint's own wire format.
  */
 export function fixtureChatTransport(title: string, options: {
   seen?: FixtureExchange[];
@@ -117,25 +120,93 @@ export function fixtureChatTransport(title: string, options: {
         request.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
       });
     }
-    const answer = custom ?? { status: 200, body: chatAnswer(step === "concept" ? fixtureConcept(title)
+    const answer = custom ?? { status: 200, body: providerAnswer(request.url, step === "concept" ? fixtureConcept(title)
       : step === "outline" ? fixtureOutline(fixtureOutlineCountOf(user))
         : step === "breakdown" ? fixtureBreakdownFromPrompt(user) : fixtureEpisode(Number(step.slice(-1)))) };
+    // DeepSeek documents no request id header: its id comes from the body.
+    const requestIdHeader = request.url === ANTHROPIC_MESSAGES_URL ? "request-id" : request.url === DEEPSEEK_CHAT_COMPLETIONS_URL ? null : "x-request-id";
     return {
       status: answer.status,
-      headers: { get: (name: string) => name.toLowerCase() === "x-request-id" ? `fixture-${step}-${String(attempt)}` : null },
+      headers: { get: (name: string) => requestIdHeader !== null && name.toLowerCase() === requestIdHeader ? `fixture-${step}-${String(attempt)}` : null },
       body: new TextEncoder().encode(typeof answer.body === "string" ? answer.body : JSON.stringify(answer.body)),
     };
   };
 }
 
-export function chatAnswer(value: unknown, finish = "stop") {
+/** A completed OpenAI Responses answer carrying the value as its only output text. */
+export function responsesAnswer(value: unknown, options: { status?: "completed" | "incomplete"; reason?: string } = {}) {
   return {
-    id: "fixture",
+    id: "resp_fixture",
     model: "fixture-model",
-    choices: [{ message: { role: "assistant", content: typeof value === "string" ? value : JSON.stringify(value) }, finish_reason: finish }],
-    usage: { prompt_tokens: 100, completion_tokens: 200, total_tokens: 300 },
+    status: options.status ?? "completed",
+    ...(options.status === "incomplete" ? { incomplete_details: { reason: options.reason ?? "max_output_tokens" } } : {}),
+    output: [{ type: "message", content: [{ type: "output_text", text: typeof value === "string" ? value : JSON.stringify(value) }] }],
+    usage: { input_tokens: 100, output_tokens: 200, total_tokens: 300 },
   };
+}
+
+/** A Claude Messages answer: an omitted thinking block, then the value as the only text block. */
+export function messagesAnswer(value: unknown, stopReason = "end_turn") {
+  return {
+    id: "msg_fixture",
+    type: "message",
+    role: "assistant",
+    model: "fixture-model",
+    content: [
+      { type: "thinking", thinking: "", signature: "fixture-signature" },
+      { type: "text", text: typeof value === "string" ? value : JSON.stringify(value) },
+    ],
+    stop_reason: stopReason,
+    stop_sequence: null,
+    usage: { input_tokens: 80, cache_creation_input_tokens: 0, cache_read_input_tokens: 20, output_tokens: 200 },
+  };
+}
+
+/** A DeepSeek Chat Completions answer: the value as the only choice's content (no reasoning, thinking is off). */
+export function chatCompletionsAnswer(value: unknown, finishReason = "stop") {
+  return {
+    id: "ds_fixture",
+    object: "chat.completion",
+    model: "fixture-model",
+    choices: [{ index: 0, finish_reason: finishReason,
+      message: { role: "assistant", content: typeof value === "string" ? value : JSON.stringify(value) } }],
+    usage: { prompt_tokens: 100, prompt_cache_hit_tokens: 20, prompt_cache_miss_tokens: 80, completion_tokens: 200, total_tokens: 300 },
+  };
+}
+
+/** The answer in the wire format of the endpoint a request was sent to. */
+export function providerAnswer(url: string, value: unknown) {
+  if (url === DEEPSEEK_CHAT_COMPLETIONS_URL) return chatCompletionsAnswer(value);
+  return url === ANTHROPIC_MESSAGES_URL ? messagesAnswer(value) : responsesAnswer(value);
+}
+
+/** A story plan candidate of the model double. Every text says it is the double's sample, not a model's writing. */
+export function fixtureStoryPlan(tag = "模型替身样例"): StoryPlanCandidate {
+  return {
+    schema: STORY_PLAN_SCHEMA,
+    logline: `${tag}：夜班店员守住一份被改过的记录`,
+    protagonistGoal: "守住班次记录",
+    opposition: "店长能改时间",
+    coreConflict: "解释会被当成承认",
+    relationships: [{ name: "店员与店长", pressure: "店员不能供出同事" }],
+    episodes: ([1, 2, 3] as const).map((episodeNo) => ({
+      episodeNo, entryState: `${tag}·进入${episodeNo}`, goal: `目标${episodeNo}`, action: `行动${episodeNo}`, turn: `转折${episodeNo}`,
+      result: `结果${episodeNo}`, handoff: `交接${episodeNo}`,
+    })),
+  };
+}
+
+/**
+ * The online candidate the double answers for a prompt: the story plan for 模式：故事策划, otherwise the draft of the
+ * episode the prompt asks for (episodeNo 必须是 N).
+ */
+export function fixtureCandidateFromPrompt(userPrompt: string): StoryPlanCandidate | EpisodeDraftCandidate {
+  if (userPrompt.includes("模式：故事策划")) return fixtureStoryPlan();
+  const episodeNo = Number(/episodeNo 必须是 (\d)/.exec(userPrompt)?.[1] ?? "1");
+  return fixtureEpisode(episodeNo);
 }
 
 /** Breakdown answers for the same stubbed acceptances. */
 export { breakdownPromptParts, fixtureBreakdown, fixtureBreakdownFromPrompt } from "./script-breakdown-fixtures";
+export * from "./auto-creation-fixtures";
+export * from "./series-writing-fixtures";

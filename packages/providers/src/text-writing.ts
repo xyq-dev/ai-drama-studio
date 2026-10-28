@@ -1,36 +1,66 @@
-import type { TitleWritingProviderKey } from "@ai-drama/contracts";
 import {
-  decodeQwenResponseBytes,
-  parseQwenChatCompletion,
-  qwenUsageOf,
-  readQwenApiKey,
+  TITLE_WRITING_DEFAULT_MODELS, anthropicKeyProblem, anthropicWorkspaceIdValid, deepseekKeyProblem, type TitleWritingProviderKey,
+} from "@ai-drama/contracts";
+import {
+  ResponseBodyError,
+  decodeResponseBytes,
   redactSecret,
-  resolveQwenChatEndpoint,
-  QwenChatError,
-  type QwenTransport,
-} from "./qwen-chat";
+  type WritingTransport,
+} from "./http-transport";
 
 /**
  * Provider-neutral text generation for the title-driven writing run. Business code sees one request shape, one
- * result shape and one error classification; every vendor difference stays inside its adapter.
+ * result shape and one error classification; every vendor difference (endpoint, authentication headers, body,
+ * structured-output format, thinking, stop reasons and usage) stays inside its adapter.
  *
- * Checked against the official documentation on 2026-10-08:
- * - Qwen (Bailian compatible mode): POST {base}/chat/completions, response_format json_object, enable_thinking false,
- *   max_completion_tokens, finish_reason stop/length/content_filter.
- * - OpenAI: POST https://api.openai.com/v1/responses, text.format json_schema (name, schema, strict), max_output_tokens,
- *   status completed/incomplete with incomplete_details.reason, refusal content items, usage input/output/total_tokens,
- *   429 insufficient_quota for an exhausted balance.
- * - DeepSeek: POST https://api.deepseek.com/chat/completions, response_format json_object (the prompt must say json and
- *   may still come back empty), thinking {type: disabled}, max_tokens, 402 for an exhausted balance.
+ * Three providers are active: DeepSeek, Claude (Anthropic) and OpenAI. Runs stored with the retired qwen key stay
+ * readable, but no adapter, endpoint or configuration exists for it, so nothing can be sent for them. DeepSeek runs
+ * stored before its retirement stay readable and are never sent for again (isLegacyDeepseekRun).
+ *
+ * Checked against the official documentation:
+ * - OpenAI (2026-10-08): POST https://api.openai.com/v1/responses, Bearer key, text.format json_schema (name, schema,
+ *   strict), max_output_tokens, status completed/incomplete with incomplete_details.reason, refusal content items,
+ *   usage input/output/total_tokens, 429 insufficient_quota for an exhausted balance.
+ * - Claude (2026-10-16): POST https://api.anthropic.com/v1/messages with x-api-key and anthropic-version 2023-06-01;
+ *   system, messages, max_tokens (a hard limit on thinking plus text); output_config.format json_schema (no beta header;
+ *   no minLength/maxLength, minimum/maximum, maxItems or minItems above 1; additionalProperties false);
+ *   output_config.effort; thinking {type: "adaptive", display: "omitted"} (current models think adaptively and Claude
+ *   Opus 5.5 cannot turn thinking off); stop_reason end_turn/max_tokens/refusal/tool_use/pause_turn/stop_sequence/
+ *   model_context_window_exceeded; content blocks text/thinking/redacted_thinking/tool_use/server_tool_use; usage
+ *   input_tokens + cache_creation_input_tokens + cache_read_input_tokens is the total input and output_tokens already
+ *   includes thinking; 402 billing_error, 429 rate_limit_error, 500 api_error, 504 timeout_error, 529 overloaded_error;
+ *   request-id response header.
+ * - Claude authentication (2026-10-17, platform.claude.com/docs/en/manage-claude/authentication): personal, service
+ *   account and workspace keys all work with x-api-key (still supported beside Authorization: Bearer). A key not scoped
+ *   to a workspace must send anthropic-workspace-id; without it the API answers 400 invalid_request_error
+ *   "anthropic-workspace-id is required…", an invalid id 400 "…must be a valid workspace ID.", and an unknown or
+ *   inaccessible workspace 404 not_found_error "Workspace `<id>` not found.". No OAuth or Claude Code header is sent.
+ * - DeepSeek (2026-10-17, api-docs.deepseek.com: first_api_call, api/create-chat-completion, guides/json_mode,
+ *   guides/thinking_mode, quick_start/pricing, quick_start/error_codes): POST https://api.deepseek.com/chat/completions
+ *   with Authorization: Bearer; model deepseek-flash; thinking {type: "enabled" | "disabled"} (enabled by default);
+ *   response_format {type: "json_object"} needs the word "json" in the prompt, does not take a schema and "may
+ *   occasionally return empty content"; max_tokens 1–393216 (non-thinking default 8K); finish_reason stop / length /
+ *   content_filter / tool_calls / insufficient_system_resource / aborted; message content and (thinking only)
+ *   reasoning_content; usage prompt_tokens (= prompt_cache_hit_tokens + prompt_cache_miss_tokens), completion_tokens
+ *   (includes completion_tokens_details.reasoning_tokens) and total_tokens; 400 invalid format, 401 authentication,
+ *   402 insufficient balance, 422 invalid parameters, 429 rate limit, 500 server error, 503 overloaded.
  */
-export type WritingTransport = QwenTransport;
+export type { WritingTransport } from "./http-transport";
 
 export const TEXT_WRITING_MAX_OUTPUT_TOKENS = 4_096;
 export const TEXT_WRITING_TIMEOUT_MS = 120_000;
 export const TEXT_WRITING_MAX_RESPONSE_BYTES = 1_048_576;
 
 export const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
-export const DEEPSEEK_CHAT_URL = "https://api.deepseek.com/chat/completions";
+export const ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages";
+export const ANTHROPIC_VERSION = "2023-06-01";
+/**
+ * Thinking counts toward Claude's max_tokens, so a Claude call gets the shared visible-output budget plus this much
+ * room to think. Effort "low" keeps the thinking short; the call still ends within the shared 120 s timeout.
+ */
+export const ANTHROPIC_THINKING_HEADROOM_TOKENS = 4_096;
+export const ANTHROPIC_EFFORT = "low";
+export const DEEPSEEK_CHAT_COMPLETIONS_URL = "https://api.deepseek.com/chat/completions";
 
 export type WritingErrorCode =
   | "auth"
@@ -45,7 +75,13 @@ export type WritingErrorCode =
   | "server_error"
   | "redirect_rejected"
   | "response_too_large"
-  | "provider_error";
+  | "provider_error"
+  /** Claude: 403 permission_error. The key authenticated but may not do this (workspace role, model access). */
+  | "permission"
+  /** Claude: the key is not scoped to a workspace and no anthropic-workspace-id was configured. */
+  | "workspace_required"
+  /** Claude: the configured workspace id is not valid, does not exist or the key's identity has no access to it. */
+  | "workspace_invalid";
 
 /**
  * answered: the provider returned content (still unvalidated). rejected: the provider definitely answered without
@@ -89,9 +125,15 @@ interface ParsedAnswer {
 export interface WritingAdapter {
   readonly providerKey: TitleWritingProviderKey;
   readonly label: string;
+  /** The one official endpoint. sendWriting refuses any other URL before sending. */
+  readonly url: string;
+  /** Authentication and protocol headers. The key appears only here, never in the body or a result. */
+  headers(apiKey: string, workspaceId?: string | null): Record<string, string>;
   buildBody(request: WritingRequest): string;
   parseAnswer(raw: string, secret: string): ParsedAnswer;
   classifyStatus(status: number, bodyText: string): { code: WritingErrorCode; outcome: "rejected" | "unknown" };
+  /** Response headers that may carry the provider's request id, in order of preference. */
+  readonly requestIdHeaders: readonly string[];
 }
 
 const UNKNOWN_USAGE: WritingUsage = { status: "unknown", inputTokens: null, outputTokens: null, totalTokens: null };
@@ -107,11 +149,8 @@ function safeModel(value: unknown): string | null {
   return typeof value === "string" && /^[\w.:/-]{1,128}$/.test(value.trim()) ? value.trim() : null;
 }
 
-function chatUsage(value: unknown): WritingUsage {
-  const usage = qwenUsageOf(value);
-  return usage.status === "present"
-    ? { status: "present", inputTokens: usage.promptTokens, outputTokens: usage.completionTokens, totalTokens: usage.totalTokens }
-    : UNKNOWN_USAGE;
+function count(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
 }
 
 /** Shared HTTP meaning. A 5xx or redirect may follow a processed request, so the result is unknown. */
@@ -119,79 +158,24 @@ function commonStatus(status: number): { code: WritingErrorCode; outcome: "rejec
   if (status === 0 || (status >= 300 && status < 400)) return { code: "redirect_rejected", outcome: "unknown" };
   if (status === 401 || status === 403) return { code: "auth", outcome: "rejected" };
   if (status === 429) return { code: "rate_limited", outcome: "rejected" };
-  if (status === 400 || status === 404 || status === 422) return { code: "bad_request", outcome: "rejected" };
+  if (status === 400 || status === 404 || status === 413 || status === 422) return { code: "bad_request", outcome: "rejected" };
   if (status >= 500 && status <= 599) return { code: "server_error", outcome: "unknown" };
   return { code: "provider_error", outcome: "rejected" };
 }
 
-function chatAnswer(raw: string, secret: string): ParsedAnswer {
-  const parsed = parseQwenChatCompletion(raw, { get: () => null }, secret);
-  let usage = UNKNOWN_USAGE;
-  let bodyRequestId: string | null = null;
-  try {
-    const body = JSON.parse(raw) as Record<string, unknown>;
-    usage = chatUsage(body.usage);
-    bodyRequestId = safeId(body.id, secret);
-  } catch {
-    // Not JSON: the parser above already reported invalid output and usage stays unknown.
-  }
-  const map: Record<string, WritingErrorCode> = {
-    refusal: "refusal",
-    truncated: "truncated",
-  };
-  const errorCode = parsed.errorCode === null ? null : (map[parsed.errorCode] ?? "invalid_output");
-  return { errorCode, content: parsed.content, responseModel: parsed.responseModel, bodyRequestId, usage };
-}
-
-export const qwenWritingAdapter: WritingAdapter = {
-  providerKey: "qwen",
-  label: "千问",
-  buildBody(request) {
-    return JSON.stringify({
-      model: request.model,
-      messages: [{ role: "system", content: request.system }, { role: "user", content: request.user }],
-      stream: false,
-      enable_thinking: false,
-      max_completion_tokens: request.maxOutputTokens,
-      n: 1,
-      response_format: { type: "json_object" },
-    });
-  },
-  parseAnswer: chatAnswer,
-  classifyStatus: (status) => commonStatus(status),
-};
-
-export const deepseekWritingAdapter: WritingAdapter = {
-  providerKey: "deepseek",
-  label: "DeepSeek",
-  buildBody(request) {
-    return JSON.stringify({
-      model: request.model,
-      messages: [{ role: "system", content: request.system }, { role: "user", content: request.user }],
-      stream: false,
-      thinking: { type: "disabled" },
-      max_tokens: request.maxOutputTokens,
-      response_format: { type: "json_object" },
-    });
-  },
-  parseAnswer: chatAnswer,
-  classifyStatus(status) {
-    if (status === 402) return { code: "quota", outcome: "rejected" };
-    return commonStatus(status);
-  },
-};
-
-function openAiAnswer(raw: string, secret: string): ParsedAnswer {
-  let body: Record<string, unknown>;
+function jsonObject(raw: string): Record<string, unknown> | null {
   try {
     const parsed = JSON.parse(raw) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
-    body = parsed as Record<string, unknown>;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
   } catch {
-    return { errorCode: "invalid_output", content: null, responseModel: null, bodyRequestId: null, usage: UNKNOWN_USAGE };
+    return null;
   }
+}
+
+function openAiAnswer(raw: string, secret: string): ParsedAnswer {
+  const body = jsonObject(raw);
+  if (!body) return { errorCode: "invalid_output", content: null, responseModel: null, bodyRequestId: null, usage: UNKNOWN_USAGE };
   const usageRecord = body.usage && typeof body.usage === "object" ? body.usage as Record<string, unknown> : null;
-  const count = (value: unknown) => typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
   const inputTokens = count(usageRecord?.input_tokens);
   const outputTokens = count(usageRecord?.output_tokens);
   const totalTokens = count(usageRecord?.total_tokens);
@@ -227,6 +211,8 @@ function openAiAnswer(raw: string, secret: string): ParsedAnswer {
 export const openAiWritingAdapter: WritingAdapter = {
   providerKey: "openai",
   label: "OpenAI",
+  url: OPENAI_RESPONSES_URL,
+  headers: (apiKey) => ({ Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }),
   buildBody(request) {
     return JSON.stringify({
       model: request.model,
@@ -242,16 +228,231 @@ export const openAiWritingAdapter: WritingAdapter = {
     if (status === 429 && /insufficient_quota/.test(bodyText)) return { code: "quota", outcome: "rejected" };
     return commonStatus(status);
   },
+  requestIdHeaders: ["x-request-id"],
+};
+
+/** Keywords Claude's structured outputs reject. The local zod schemas and domain checks still enforce every limit. */
+const CLAUDE_UNSUPPORTED_KEYWORDS = new Set(["minLength", "maxLength", "minimum", "maximum", "exclusiveMinimum",
+  "exclusiveMaximum", "multipleOf", "maxItems", "minProperties", "maxProperties", "uniqueItems"]);
+
+/**
+ * The same schema in the subset Claude compiles: unsupported bounds are dropped and minItems above 1 becomes 1. The
+ * shape, required fields, enums and additionalProperties false are kept. A copy; the shared schema is never changed.
+ */
+export function claudeJsonSchema(schema: unknown): unknown {
+  if (Array.isArray(schema)) return schema.map(claudeJsonSchema);
+  if (!schema || typeof schema !== "object") return schema;
+  const output: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(schema as Record<string, unknown>)) {
+    if (CLAUDE_UNSUPPORTED_KEYWORDS.has(key)) continue;
+    if (key === "minItems") {
+      output.minItems = typeof value === "number" && value >= 1 ? 1 : 0;
+      continue;
+    }
+    // Property maps and enum lists hold names and values, not schemas, except properties whose values are schemas.
+    if (key === "enum" || key === "required" || key === "const") {
+      output[key] = value;
+      continue;
+    }
+    if (key === "properties" && value && typeof value === "object") {
+      output.properties = Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([name, item]) => [name, claudeJsonSchema(item)]));
+      continue;
+    }
+    output[key] = claudeJsonSchema(value);
+  }
+  return output;
+}
+
+function claudeUsage(value: unknown): WritingUsage {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return UNKNOWN_USAGE;
+  const record = value as Record<string, unknown>;
+  const input = count(record.input_tokens);
+  const output = count(record.output_tokens);
+  if (input === null || output === null) return UNKNOWN_USAGE;
+  // Cache counts may be null or absent (no caching); any other non-count value leaves the usage unknown.
+  const cacheOf = (item: unknown): number | null => item === undefined || item === null ? 0 : count(item);
+  const created = cacheOf(record.cache_creation_input_tokens);
+  const read = cacheOf(record.cache_read_input_tokens);
+  if (created === null || read === null) return UNKNOWN_USAGE;
+  // Total input is input + cache creation + cache read; output_tokens already includes thinking and is not added twice.
+  const inputTokens = input + created + read;
+  return { status: "present", inputTokens, outputTokens: output, totalTokens: inputTokens + output };
+}
+
+function claudeAnswer(raw: string, secret: string): ParsedAnswer {
+  const body = jsonObject(raw);
+  if (!body) return { errorCode: "invalid_output", content: null, responseModel: null, bodyRequestId: null, usage: UNKNOWN_USAGE };
+  const base = { responseModel: safeModel(body.model), bodyRequestId: safeId(body.id, secret), usage: claudeUsage(body.usage) };
+  if (body.type !== "message" || body.role !== "assistant") return { ...base, errorCode: "invalid_output", content: null };
+  const stop = body.stop_reason;
+  if (stop === "refusal") return { ...base, errorCode: "refusal", content: null };
+  if (stop === "max_tokens" || stop === "model_context_window_exceeded" || stop === "pause_turn") {
+    return { ...base, errorCode: "truncated", content: null };
+  }
+  // tool_use, stop_sequence or anything unknown: not a finished answer to this request.
+  if (stop !== "end_turn") return { ...base, errorCode: "invalid_output", content: null };
+  const blocks = Array.isArray(body.content) ? body.content : null;
+  if (!blocks) return { ...base, errorCode: "invalid_output", content: null };
+  let text: string | null = null;
+  for (const block of blocks) {
+    const record = block && typeof block === "object" && !Array.isArray(block) ? block as Record<string, unknown> : null;
+    if (!record) return { ...base, errorCode: "invalid_output", content: null };
+    // Thinking is never content: it is skipped and never stored or shown.
+    if (record.type === "thinking" || record.type === "redacted_thinking") continue;
+    // Exactly one text block carries the structured answer. A tool call or a second text block is not an answer.
+    if (record.type !== "text" || typeof record.text !== "string" || text !== null) return { ...base, errorCode: "invalid_output", content: null };
+    if (Array.isArray(record.citations) && record.citations.length > 0) return { ...base, errorCode: "invalid_output", content: null };
+    text = record.text;
+  }
+  if (text === null || text.trim().length === 0) return { ...base, errorCode: "invalid_output", content: null };
+  return { ...base, errorCode: null, content: text };
+}
+
+/** The type and message of a Claude error body ({type: "error", error: {type, message}}), empty when absent. */
+function claudeError(bodyText: string): { type: string; message: string } {
+  const error = jsonObject(bodyText)?.error;
+  if (!error || typeof error !== "object" || Array.isArray(error)) return { type: "", message: "" };
+  const record = error as Record<string, unknown>;
+  return { type: typeof record.type === "string" ? record.type : "", message: typeof record.message === "string" ? record.message.slice(0, 500) : "" };
+}
+
+export const anthropicWritingAdapter: WritingAdapter = {
+  providerKey: "anthropic",
+  label: "Claude",
+  url: ANTHROPIC_MESSAGES_URL,
+  // x-api-key for every Console key kind (api, usr, svc); never Authorization: Bearer, never an OAuth beta, user-agent or
+  // x-app header. The workspace header only when one is configured.
+  headers: (apiKey, workspaceId) => ({ "x-api-key": apiKey, "anthropic-version": ANTHROPIC_VERSION, "Content-Type": "application/json",
+    ...(workspaceId ? { "anthropic-workspace-id": workspaceId } : {}) }),
+  buildBody(request) {
+    return JSON.stringify({
+      model: request.model,
+      max_tokens: request.maxOutputTokens + ANTHROPIC_THINKING_HEADROOM_TOKENS,
+      system: request.system,
+      messages: [{ role: "user", content: request.user }],
+      thinking: { type: "adaptive", display: "omitted" },
+      output_config: { effort: ANTHROPIC_EFFORT, format: { type: "json_schema", schema: claudeJsonSchema(request.jsonSchema) } },
+    });
+  },
+  parseAnswer: claudeAnswer,
+  classifyStatus(status, bodyText) {
+    if (status === 402) return { code: "quota", outcome: "rejected" };
+    const error = claudeError(bodyText);
+    if (status === 400 && /anthropic-workspace-id is required/iu.test(error.message)) return { code: "workspace_required", outcome: "rejected" };
+    if (status === 400 && /anthropic-workspace-id header must be a valid workspace id/iu.test(error.message)) return { code: "workspace_invalid", outcome: "rejected" };
+    if (status === 404 && /^workspace\b.*\bnot found/iu.test(error.message)) return { code: "workspace_invalid", outcome: "rejected" };
+    if (status === 400 && error.type === "invalid_request_error" && /credit balance is too low/iu.test(error.message)) return { code: "quota", outcome: "rejected" };
+    if (status === 403) return { code: "permission", outcome: "rejected" };
+    // 529 overloaded and 504 timeout are server errors: the request may have run, so the outcome stays unknown.
+    return commonStatus(status);
+  },
+  requestIdHeaders: ["request-id"],
+};
+
+/**
+ * DeepSeek's JSON output takes no schema, so the request names the schema in the system message, after the frozen
+ * system prompt (which itself is unchanged), together with the word "json" the mode requires. The answer is still
+ * checked against the same zod schemas and domain rules as every other provider's: parsable JSON is not enough.
+ */
+export function deepseekSystemMessage(system: string, schemaName: string, jsonSchema: Record<string, unknown>): string {
+  return `${system}\n\n输出格式（json）：只输出一个 JSON 对象，不要输出 Markdown 代码块、解释或其他文字。`
+    + `该对象必须符合下面名为 ${schemaName} 的 JSON Schema：\n${JSON.stringify(jsonSchema)}`;
+}
+
+function deepseekUsage(value: unknown): WritingUsage {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return UNKNOWN_USAGE;
+  const record = value as Record<string, unknown>;
+  const input = count(record.prompt_tokens);
+  const output = count(record.completion_tokens);
+  if (input === null || output === null) return UNKNOWN_USAGE;
+  // prompt_tokens already counts cache hits and misses, and completion_tokens already counts reasoning tokens: neither
+  // is added again. Figures that contradict each other leave the usage unknown rather than guessed.
+  const hit = record.prompt_cache_hit_tokens;
+  const miss = record.prompt_cache_miss_tokens;
+  if (hit !== undefined || miss !== undefined) {
+    const hits = count(hit);
+    const misses = count(miss);
+    if (hits === null || misses === null || hits + misses !== input) return UNKNOWN_USAGE;
+  }
+  const total = record.total_tokens === undefined ? input + output : count(record.total_tokens);
+  if (total === null || total !== input + output) return UNKNOWN_USAGE;
+  return { status: "present", inputTokens: input, outputTokens: output, totalTokens: total };
+}
+
+function deepseekAnswer(raw: string, secret: string): ParsedAnswer {
+  const body = jsonObject(raw);
+  if (!body) return { errorCode: "invalid_output", content: null, responseModel: null, bodyRequestId: null, usage: UNKNOWN_USAGE };
+  const base = { responseModel: safeModel(body.model), bodyRequestId: safeId(body.id, secret), usage: deepseekUsage(body.usage) };
+  const choices = Array.isArray(body.choices) ? body.choices : null;
+  if (!choices || choices.length !== 1) return { ...base, errorCode: "invalid_output", content: null };
+  const choice = choices[0] && typeof choices[0] === "object" && !Array.isArray(choices[0]) ? choices[0] as Record<string, unknown> : null;
+  const message = choice?.message && typeof choice.message === "object" && !Array.isArray(choice.message)
+    ? choice.message as Record<string, unknown> : null;
+  if (!choice || !message) return { ...base, errorCode: "invalid_output", content: null };
+  const finish = choice.finish_reason;
+  if (finish === "content_filter" || (typeof message.refusal === "string" && message.refusal.length > 0)) {
+    return { ...base, errorCode: "refusal", content: null };
+  }
+  if (finish === "length") return { ...base, errorCode: "truncated", content: null };
+  // The provider stopped the answer itself: an answer without usable content, not a finished one.
+  if (finish === "insufficient_system_resource" || finish === "aborted") return { ...base, errorCode: "server_error", content: null };
+  // tool_calls or anything unknown: not a finished answer to this request (no tool is offered).
+  if (finish !== "stop") return { ...base, errorCode: "invalid_output", content: null };
+  if (Array.isArray(message.tool_calls) && message.tool_calls.length > 0) return { ...base, errorCode: "invalid_output", content: null };
+  // Only the final content is the answer. reasoning_content is never read, stored, shown or joined to it.
+  const content = message.content;
+  if (typeof content !== "string" || content.trim().length === 0) return { ...base, errorCode: "invalid_output", content: null };
+  return { ...base, errorCode: null, content };
+}
+
+export const deepseekWritingAdapter: WritingAdapter = {
+  providerKey: "deepseek",
+  label: "DeepSeek",
+  url: DEEPSEEK_CHAT_COMPLETIONS_URL,
+  headers: (apiKey) => ({ Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }),
+  buildBody(request) {
+    return JSON.stringify({
+      model: request.model,
+      messages: [
+        { role: "system", content: deepseekSystemMessage(request.system, request.schemaName, request.jsonSchema) },
+        { role: "user", content: request.user },
+      ],
+      // Thinking off: the step is a structured rewrite within one 120 s request, reasoning would only add cost and time,
+      // and JSON output is documented without it. The visible answer gets the shared output budget.
+      thinking: { type: "disabled" },
+      response_format: { type: "json_object" },
+      max_tokens: request.maxOutputTokens,
+      stream: false,
+    });
+  },
+  parseAnswer: deepseekAnswer,
+  classifyStatus(status) {
+    if (status === 402) return { code: "quota", outcome: "rejected" };
+    // 401 authentication, 422 invalid parameters, 429 rate limit, 500 / 503: the shared meaning (5xx stays unknown).
+    return commonStatus(status);
+  },
+  // DeepSeek documents no request id header; the body id is used.
+  requestIdHeaders: [],
 };
 
 export const WRITING_ADAPTERS: Readonly<Record<TitleWritingProviderKey, WritingAdapter>> = {
-  qwen: qwenWritingAdapter,
   openai: openAiWritingAdapter,
+  anthropic: anthropicWritingAdapter,
   deepseek: deepseekWritingAdapter,
 };
 
-function headerRequestId(headers: { get(name: string): string | null }, secret: string): string | null {
-  return safeId(headers.get("x-request-id"), secret) ?? safeId(headers.get("x-dashscope-request-id"), secret);
+function headerRequestId(adapter: WritingAdapter, headers: { get(name: string): string | null }, secret: string): string | null {
+  for (const name of adapter.requestIdHeaders) {
+    const id = safeId(headers.get(name), secret);
+    if (id) return id;
+  }
+  return null;
+}
+
+/** The request id an error body may carry (Claude: request_id), when no header gave one. */
+function errorBodyRequestId(bodyText: string, secret: string): string | null {
+  const body = jsonObject(bodyText);
+  return body ? safeId(body.request_id, secret) : null;
 }
 
 function isAbort(error: unknown, aborted: boolean): boolean {
@@ -262,50 +463,54 @@ function isAbort(error: unknown, aborted: boolean): boolean {
 }
 
 /**
- * Sends exactly one request. It never retries, never follows a redirect, never switches provider or model, and
- * never returns provider error bodies or the key.
+ * Sends exactly one request. It never retries, never follows a redirect, never switches provider or model, never
+ * sends to any URL but the adapter's own, and never returns provider error bodies or the key.
  */
 export async function sendWriting(options: {
   adapter: WritingAdapter;
   url: string;
   apiKey: string;
+  /** Claude only: anthropic-workspace-id, sent when configured. */
+  workspaceId?: string | null;
   request: WritingRequest;
   transport: WritingTransport;
   timeoutMs?: number;
   maxResponseBytes?: number;
 }): Promise<WritingExchange> {
   const { adapter, apiKey } = options;
+  const failed = (errorCode: WritingErrorCode, outcome: "rejected" | "unknown", providerRequestId: string | null = null): WritingExchange => ({
+    outcome, errorCode, content: null, responseModel: null, providerRequestId, usage: UNKNOWN_USAGE,
+  });
+  // A configuration that names another endpoint is refused before anything leaves the process.
+  if (options.url !== adapter.url) return failed("provider_error", "rejected");
   const timeoutMs = Math.min(options.timeoutMs ?? TEXT_WRITING_TIMEOUT_MS, TEXT_WRITING_TIMEOUT_MS);
   const maxBytes = Math.min(options.maxResponseBytes ?? TEXT_WRITING_MAX_RESPONSE_BYTES, TEXT_WRITING_MAX_RESPONSE_BYTES);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-  const failed = (errorCode: WritingErrorCode, outcome: "rejected" | "unknown", providerRequestId: string | null = null): WritingExchange => ({
-    outcome, errorCode, content: null, responseModel: null, providerRequestId, usage: UNKNOWN_USAGE,
-  });
   try {
     const response = await options.transport({
-      url: options.url,
+      url: adapter.url,
       method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      headers: adapter.headers(apiKey, options.workspaceId ?? null),
       body: adapter.buildBody(options.request),
       signal: controller.signal,
     });
-    const headerId = headerRequestId(response.headers, apiKey);
+    const headerId = headerRequestId(adapter, response.headers, apiKey);
     if (response.status === 0 || response.status < 200 || response.status >= 300) {
       let bodyText = "";
       try {
-        bodyText = redactSecret(decodeQwenResponseBytes(response.body, maxBytes), apiKey);
+        bodyText = redactSecret(decodeResponseBytes(response.body, maxBytes), apiKey);
       } catch {
         bodyText = "";
       }
       const classified = adapter.classifyStatus(response.status, bodyText);
-      return failed(classified.code, classified.outcome, headerId);
+      return failed(classified.code, classified.outcome, headerId ?? errorBodyRequestId(bodyText, apiKey));
     }
     let raw: string;
     try {
-      raw = redactSecret(decodeQwenResponseBytes(response.body, maxBytes), apiKey);
+      raw = redactSecret(decodeResponseBytes(response.body, maxBytes), apiKey);
     } catch (error) {
-      const code = error instanceof QwenChatError && error.code === "response_too_large" ? "response_too_large" : "invalid_output";
+      const code = error instanceof ResponseBodyError && error.code === "response_too_large" ? "response_too_large" : "invalid_output";
       return failed(code, code === "response_too_large" ? "unknown" : "rejected", headerId);
     }
     const answer = adapter.parseAnswer(raw, apiKey);
@@ -317,7 +522,7 @@ export async function sendWriting(options: {
     return { outcome: "answered", errorCode: null, content: answer.content, responseModel: answer.responseModel,
       providerRequestId, usage: answer.usage };
   } catch (error) {
-    if (error instanceof QwenChatError && error.code === "response_too_large") return failed("response_too_large", "unknown");
+    if (error instanceof ResponseBodyError && error.code === "response_too_large") return failed("response_too_large", "unknown");
     return failed(isAbort(error, controller.signal.aborted) ? "timeout" : "disconnected", "unknown");
   } finally {
     clearTimeout(timer);
@@ -325,17 +530,25 @@ export async function sendWriting(options: {
 }
 
 export type WritingProviderConfig =
-  | { providerKey: TitleWritingProviderKey; ok: true; url: string; apiKey: string; models: string[]; missing: [] }
+  | { providerKey: TitleWritingProviderKey; ok: true; url: string; apiKey: string; models: string[]; missing: [];
+    /** Claude only: the anthropic-workspace-id to send, or null to send none (a key scoped to one workspace). */
+    workspaceId?: string | null }
   | { providerKey: TitleWritingProviderKey; ok: false; models: string[]; missing: string[] };
 
+/**
+ * Only the active providers' variables. Retired providers' variables are ignored and never read. The DeepSeek pair is
+ * filled only from the encrypted console configuration: the API never reads DeepSeek variables from its environment,
+ * so a key left there from before the retirement is never used again.
+ */
 export interface TitleWritingProviderEnv {
-  DASHSCOPE_API_KEY?: string;
-  BAILIAN_BASE_URL?: string;
-  TITLE_WRITING_QWEN_MODELS?: string;
-  OPENAI_API_KEY?: string;
-  TITLE_WRITING_OPENAI_MODELS?: string;
   DEEPSEEK_API_KEY?: string;
   TITLE_WRITING_DEEPSEEK_MODELS?: string;
+  OPENAI_API_KEY?: string;
+  TITLE_WRITING_OPENAI_MODELS?: string;
+  ANTHROPIC_API_KEY?: string;
+  TITLE_WRITING_ANTHROPIC_MODELS?: string;
+  /** Optional. Needed only for a Claude key that is not scoped to one workspace. */
+  ANTHROPIC_WORKSPACE_ID?: string;
 }
 
 /** Comma-separated model allowlist. The first entry is the default. Model names are never guessed. */
@@ -351,37 +564,50 @@ function readKey(value: string | undefined): string | null {
   return value;
 }
 
-/** Resolves keys, controlled endpoints and model allowlists from the API process. Only names of gaps are reported. */
+function configOf(providerKey: TitleWritingProviderKey, url: string, key: string | undefined, keyName: string,
+  modelList: string | undefined, modelsName: string, workspace?: { value: string | undefined; name: string }): WritingProviderConfig {
+  const missing: string[] = [];
+  let apiKey = readKey(key);
+  // Claude takes a Claude Console API key only, with the same rule as the console input: a credential of another kind
+  // (subscription / Claude Code OAuth, Admin key, session, JWT) or an unsupported shape is never sent, even if configured.
+  if (apiKey && providerKey === "anthropic" && anthropicKeyProblem(apiKey) !== null) apiKey = null;
+  if (apiKey && providerKey === "deepseek" && deepseekKeyProblem(apiKey) !== null) apiKey = null;
+  if (!apiKey) missing.push(keyName);
+  // An invalid workspace id is a gap, never dropped silently: sending without it would not act in the chosen workspace.
+  const workspaceId = workspace?.value ? workspace.value : null;
+  if (workspace && workspaceId !== null && !anthropicWorkspaceIdValid(workspaceId)) missing.push(workspace.name);
+  // No model list but a key: the provider's documented default list (Claude, DeepSeek), so a key alone is a full setup.
+  const defaults = TITLE_WRITING_DEFAULT_MODELS[providerKey];
+  const listed = parseModelList(modelList);
+  const models: { ok: true; models: string[] } | { ok: false } = listed.ok || (modelList ?? "").trim().length > 0 || defaults.length === 0
+    ? listed : { ok: true, models: [...defaults] };
+  if (!models.ok) missing.push(modelsName);
+  return apiKey && models.ok && missing.length === 0
+    ? { providerKey, ok: true, url, apiKey, models: models.models, missing: [], workspaceId }
+    : { providerKey, ok: false, models: models.ok ? models.models : [], missing };
+}
+
+/** Resolves keys, fixed endpoints and model allowlists from the API process. Only names of gaps are reported. */
 export function titleWritingProviderConfigs(env: TitleWritingProviderEnv): Record<TitleWritingProviderKey, WritingProviderConfig> {
-  const qwenMissing: string[] = [];
-  const qwenKey = readQwenApiKey({ DASHSCOPE_API_KEY: env.DASHSCOPE_API_KEY });
-  if (!qwenKey.ok) qwenMissing.push("DASHSCOPE_API_KEY");
-  const qwenEndpoint = env.BAILIAN_BASE_URL ? resolveQwenChatEndpoint(env.BAILIAN_BASE_URL) : { ok: false as const, code: "missing_base_url" };
-  if (!qwenEndpoint.ok) qwenMissing.push("BAILIAN_BASE_URL");
-  const qwenModels = parseModelList(env.TITLE_WRITING_QWEN_MODELS);
-  if (!qwenModels.ok) qwenMissing.push("TITLE_WRITING_QWEN_MODELS");
-
-  const openAiMissing: string[] = [];
-  const openAiKey = readKey(env.OPENAI_API_KEY);
-  if (!openAiKey) openAiMissing.push("OPENAI_API_KEY");
-  const openAiModels = parseModelList(env.TITLE_WRITING_OPENAI_MODELS);
-  if (!openAiModels.ok) openAiMissing.push("TITLE_WRITING_OPENAI_MODELS");
-
-  const deepseekMissing: string[] = [];
-  const deepseekKey = readKey(env.DEEPSEEK_API_KEY);
-  if (!deepseekKey) deepseekMissing.push("DEEPSEEK_API_KEY");
-  const deepseekModels = parseModelList(env.TITLE_WRITING_DEEPSEEK_MODELS);
-  if (!deepseekModels.ok) deepseekMissing.push("TITLE_WRITING_DEEPSEEK_MODELS");
-
   return {
-    qwen: qwenMissing.length === 0 && qwenKey.ok && qwenEndpoint.ok && qwenModels.ok
-      ? { providerKey: "qwen", ok: true, url: qwenEndpoint.url, apiKey: qwenKey.apiKey, models: qwenModels.models, missing: [] }
-      : { providerKey: "qwen", ok: false, models: qwenModels.ok ? qwenModels.models : [], missing: qwenMissing },
-    openai: openAiKey && openAiModels.ok
-      ? { providerKey: "openai", ok: true, url: OPENAI_RESPONSES_URL, apiKey: openAiKey, models: openAiModels.models, missing: [] }
-      : { providerKey: "openai", ok: false, models: openAiModels.ok ? openAiModels.models : [], missing: openAiMissing },
-    deepseek: deepseekKey && deepseekModels.ok
-      ? { providerKey: "deepseek", ok: true, url: DEEPSEEK_CHAT_URL, apiKey: deepseekKey, models: deepseekModels.models, missing: [] }
-      : { providerKey: "deepseek", ok: false, models: deepseekModels.ok ? deepseekModels.models : [], missing: deepseekMissing },
+    openai: configOf("openai", OPENAI_RESPONSES_URL, env.OPENAI_API_KEY, "OPENAI_API_KEY",
+      env.TITLE_WRITING_OPENAI_MODELS, "TITLE_WRITING_OPENAI_MODELS"),
+    anthropic: configOf("anthropic", ANTHROPIC_MESSAGES_URL, env.ANTHROPIC_API_KEY, "ANTHROPIC_API_KEY",
+      env.TITLE_WRITING_ANTHROPIC_MODELS, "TITLE_WRITING_ANTHROPIC_MODELS",
+      { value: env.ANTHROPIC_WORKSPACE_ID, name: "ANTHROPIC_WORKSPACE_ID" }),
+    deepseek: configOf("deepseek", DEEPSEEK_CHAT_COMPLETIONS_URL, env.DEEPSEEK_API_KEY, "DEEPSEEK_API_KEY",
+      env.TITLE_WRITING_DEEPSEEK_MODELS, "TITLE_WRITING_DEEPSEEK_MODELS"),
   };
+}
+
+/**
+ * The configuration a stored run may send with. A run of a retired provider (or of any key this API has no entry for)
+ * gets none, so the caller stops it as provider_unconfigured instead of reading a missing entry.
+ */
+export function providerConfigFor(
+  providers: Readonly<Partial<Record<string, WritingProviderConfig>>>,
+  providerKey: string,
+): WritingProviderConfig | null {
+  if (!Object.prototype.hasOwnProperty.call(WRITING_ADAPTERS, providerKey)) return null;
+  return providers[providerKey] ?? null;
 }

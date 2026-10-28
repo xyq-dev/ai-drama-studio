@@ -1,8 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { adminLimitsUpdateSchema, adminProviderKeySchema, adminProviderUpdateSchema } from "./admin-models";
+import {
+  adminLimitsUpdateSchema, adminProviderKeySchema, adminProviderUpdateSchema, claudeSetupState, providerSetupState, workspaceUpdateOf,
+  type AdminModelsView,
+} from "./admin-models";
+import {
+  DEEPSEEK_PROVIDER_ADAPTER, TITLE_WRITING_DEFAULT_MODELS, frozenProviderAdapter, titleWritingStartSchema, TITLE_WRITING_PROVIDER_KEYS, TITLE_WRITING_RETIRED_PROVIDER_KEYS,
+  anthropicKeyProblem, anthropicWorkspaceIdValid, deepseekKeyProblem, isActiveTitleWritingProvider, isLegacyDeepseekRun,
+} from "./title-writing";
 
 const provider = { expectedRevision: 0, models: ["test-model:2026"], secretAction: "keep" };
-const limits = { expectedRevision: 0, defaultProvider: "qwen", maxCallsPerDay: 8, maxActiveRuns: 1 };
+const limits = { expectedRevision: 0, defaultProvider: "anthropic", maxCallsPerDay: 8, maxActiveRuns: 1 };
 
 describe("admin model configuration request contracts", () => {
   it("requires explicit keep/replace/clear operations, including keeping an empty model list", () => {
@@ -47,8 +54,139 @@ describe("admin model configuration request contracts", () => {
       expect(adminLimitsUpdateSchema.safeParse({ ...limits, maxActiveRuns }).success).toBe(false);
     }
     expect(adminProviderKeySchema.safeParse("custom-provider").success).toBe(false);
+    // The retired provider has no console entry and can never become the default again; DeepSeek is active again.
+    expect(adminProviderKeySchema.safeParse("qwen").success).toBe(false);
+    expect(adminLimitsUpdateSchema.safeParse({ ...limits, defaultProvider: "qwen" }).success).toBe(false);
+    expect(adminLimitsUpdateSchema.safeParse({ ...limits, defaultProvider: "deepseek" }).success).toBe(true);
+    expect(adminProviderKeySchema.options).toEqual(["openai", "anthropic", "deepseek"]);
     expect(adminLimitsUpdateSchema.safeParse({ ...limits, defaultProvider: "custom-provider" }).success).toBe(false);
     expect(adminLimitsUpdateSchema.safeParse({ ...limits, defaultProvider: null }).success).toBe(true);
     expect(adminLimitsUpdateSchema.safeParse({ ...limits, maxCallsPerDay: 500, maxActiveRuns: 10 }).success).toBe(true);
+  });
+});
+
+describe("Claude setup state", () => {
+  const provider = (keyConfigured: boolean, ready: boolean) => ({ providerKey: "anthropic" as const, label: "Claude", models: ["claude-opus-5-5"],
+    baseUrl: "https://api.anthropic.com/v1/messages", keyConfigured, ready, missing: ready ? [] : ["ANTHROPIC_API_KEY"] });
+  const settings = (keyConfigured: boolean, ready: boolean) => ({ defaultProvider: null, maxCallsPerDay: 30, maxActiveRuns: 1,
+    providers: [provider(keyConfigured, ready)] });
+  const view = (patch: Partial<AdminModelsView> = {}): AdminModelsView => ({
+    savedRevision: 1, activeRevision: 1, pendingRestart: false, activationDeferred: false, source: "managed",
+    titleWriting: { enabled: true, productionBlocked: false, operatorConfigured: false, siteOperator: true },
+    saved: settings(true, true), active: settings(true, true), audit: [], validation: "local_only",
+    storage: { titleWriting: true, claude: true, candidates: true }, ...patch,
+  });
+
+  it("names exactly one state, in the order it must be resolved; saved is never ready", () => {
+    expect(claudeSetupState(view({ saved: settings(false, false), active: settings(false, false) })).state).toBe("key_missing");
+    expect(claudeSetupState(view({ pendingRestart: true, active: settings(false, false) })).state).toBe("pending_restart");
+    expect(claudeSetupState(view({ pendingRestart: true, activationDeferred: true, active: settings(false, false) })).state).toBe("activation_deferred");
+    expect(claudeSetupState(view({ active: settings(true, false) })).state).toBe("incomplete");
+    // Active and ready with the old key, a new key saved: not "ready" until the restart applies it.
+    expect(claudeSetupState(view({ pendingRestart: true })).state).toBe("pending_restart");
+    expect(claudeSetupState(view({ pendingRestart: true, activationDeferred: true })).state).toBe("activation_deferred");
+    expect(claudeSetupState(view({ titleWriting: { enabled: false, productionBlocked: false, operatorConfigured: false, siteOperator: true } })).state).toBe("feature_off");
+    expect(claudeSetupState(view({ titleWriting: { enabled: true, productionBlocked: false, operatorConfigured: false, siteOperator: false } })).state).toBe("operator_missing");
+    expect(claudeSetupState(view({ storage: null })).state).toBe("storage_unknown");
+    expect(claudeSetupState(view({ storage: { titleWriting: true, claude: false, candidates: false } })))
+      .toEqual({ state: "migration_missing", migrations: ["20261016000100_writing_provider_anthropic", "20261016000200_writing_candidate"] });
+    expect(claudeSetupState(view()).state).toBe("ready");
+  });
+
+  it("accepts the Claude Console key kinds: legacy sk-ant-api, personal sk-ant-usr and service account sk-ant-svc (fake test keys)", () => {
+    for (const key of ["sk-ant-api03-abcdefghijklmnopqrstuvwxyz", "sk-ant-api-abcdefghijklmnop", "sk-ant-usr-fake-personal-key-for-tests-only",
+      "sk-ant-usr01-fake_personal_key_for_tests", "sk-ant-svc-fake-service-key-for-tests-only", `sk-ant-usr-${"a".repeat(245)}`]) {
+      expect(anthropicKeyProblem(key)).toBeNull();
+    }
+  });
+
+  it("names a known credential of another kind separately from an unsupported format, and never accepts any sk-ant- value", () => {
+    for (const credential of ["sk-ant-oat01-abcdefghijklmnopqrstuvwxyz", "sk-ant-oat-abcdefghijklmnop", "sk-ant-ort01-abcdefghijklmnopqrstuvwxyz",
+      "sk-ant-admin01-abcdefghijklmnopqrstuvwxyz", "sk-ant-sid01-abcdefghijklmnop", "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1c2VyIn0.c2ln"]) {
+      expect(anthropicKeyProblem(credential)).toBe("not_api_credential");
+    }
+    for (const value of ["", "sk-proj-abcdefghijklmnopqrstuvwxyz", "sk-ant-abcdefghijklmnopqrstuvwxyz", "sk-ant-xyz-abcdefghijklmnop",
+      "sk-ant-api03-short", "sk-ant-usr-", "sk-ant-usr-abc def ghi jkl", "sk-ant-usr-abcdefgh\r\nX-Evil: 1", " sk-ant-usr-abcdefghijkl",
+      "sk-ant-usr-abcdefghijkl ", "sk-ant-usr-abcdefgh.ijkl", "sk-ant-usr-密钥密钥密钥密钥", "Bearer sk-ant-usr-abcdefghijkl",
+      `sk-ant-usr-${"a".repeat(246)}`]) {
+      expect(anthropicKeyProblem(value), value).toBe("unsupported_format");
+    }
+  });
+
+  it("a workspace id has the Console shape; a new key never keeps the previous key's workspace", () => {
+    expect(anthropicWorkspaceIdValid("wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ")).toBe(true);
+    for (const value of ["", "default", "wrkspc_", "wrkspc_ab", "wrkspc_01Jw Qvzr", "wrkspc_01Jw\r\nX: 1", "sk-ant-usr-abcdefghijkl"]) {
+      expect(anthropicWorkspaceIdValid(value)).toBe(false);
+    }
+    const base = { expectedRevision: 0, models: [] };
+    const parse = (body: Record<string, unknown>) => adminProviderUpdateSchema.safeParse({ ...base, ...body });
+    expect(parse({ secretAction: "keep", workspaceAction: "keep" }).success).toBe(true);
+    expect(parse({ secretAction: "replace", apiKey: "sk-ant-usr-abcdefghijkl", workspaceAction: "keep" }).success).toBe(false);
+    expect(parse({ secretAction: "clear", workspaceAction: "keep" }).success).toBe(false);
+    expect(parse({ secretAction: "keep", workspaceAction: "replace" }).success).toBe(false);
+    expect(parse({ secretAction: "keep", workspaceId: "wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ" }).success).toBe(false);
+    const update = (body: Record<string, unknown>) => {
+      const parsed = parse(body);
+      if (!parsed.success) throw new Error("invalid");
+      return workspaceUpdateOf(parsed.data);
+    };
+    expect(update({ secretAction: "keep" })).toBe("keep");
+    expect(update({ secretAction: "replace", apiKey: "sk-ant-usr-abcdefghijkl" })).toBeNull();
+    expect(update({ secretAction: "clear" })).toBeNull();
+    expect(update({ secretAction: "keep", workspaceAction: "clear" })).toBeNull();
+    expect(update({ secretAction: "replace", apiKey: "sk-ant-usr-abcdefghijkl", workspaceAction: "replace", workspaceId: "wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ" }))
+      .toBe("wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ");
+  });
+});
+
+describe("DeepSeek, active again", () => {
+  it("is one of exactly three active providers with one documented default model; qwen stays retired", () => {
+    expect(TITLE_WRITING_PROVIDER_KEYS).toEqual(["openai", "anthropic", "deepseek"]);
+    expect(TITLE_WRITING_RETIRED_PROVIDER_KEYS).toEqual(["qwen"]);
+    expect(isActiveTitleWritingProvider("deepseek")).toBe(true);
+    expect(isActiveTitleWritingProvider("qwen")).toBe(false);
+    expect(TITLE_WRITING_DEFAULT_MODELS.deepseek).toEqual(["deepseek-flash"]);
+  });
+
+  it("a key needs no prefix, only a plausible length and header-safe characters (fake test keys)", () => {
+    for (const key of ["sk-0123456789abcdef0123456789abcdef", "fake-deepseek-key-for-tests", "x".repeat(16), "y".repeat(256)]) {
+      expect(deepseekKeyProblem(key)).toBeNull();
+    }
+    for (const key of ["", "short-key", "x".repeat(15), "y".repeat(257), "sk-fake key-with-space", "sk-fake-key\nX-Injected: 1",
+      "sk-fake-key-\u0000-nul-123456", "sk-fake-key-\u5bc6\u94a5-1234567890", " sk-fake-key-leading-space"]) {
+      expect(deepseekKeyProblem(key)).toBe("unsupported_format");
+    }
+  });
+
+  it("a DeepSeek run is legacy unless its frozen input carries the server-written adapter mark; no date decides it", () => {
+    expect(DEEPSEEK_PROVIDER_ADAPTER).toBe("deepseek.chat-completions.v1");
+    expect(frozenProviderAdapter("deepseek")).toEqual({ providerAdapter: DEEPSEEK_PROVIDER_ADAPTER });
+    for (const other of ["openai", "anthropic", "qwen"]) expect(frozenProviderAdapter(other)).toEqual({});
+    expect(isLegacyDeepseekRun({ providerKey: "deepseek" })).toBe(true);
+    expect(isLegacyDeepseekRun({ providerKey: "deepseek", providerAdapter: "deepseek.chat-completions.v0" })).toBe(true);
+    expect(isLegacyDeepseekRun({ providerKey: "deepseek", providerAdapter: DEEPSEEK_PROVIDER_ADAPTER })).toBe(false);
+    for (const other of ["openai", "anthropic", "qwen"]) expect(isLegacyDeepseekRun({ providerKey: other })).toBe(false);
+  });
+
+  it("a start body cannot carry the adapter mark: only the server writes it", () => {
+    expect(titleWritingStartSchema.safeParse({ title: "剧名", providerKey: "deepseek", providerAdapter: DEEPSEEK_PROVIDER_ADAPTER }).success).toBe(false);
+    expect(titleWritingStartSchema.safeParse({ title: "剧名", providerKey: "deepseek" }).success).toBe(true);
+  });
+
+  it("the setup state names the DeepSeek candidate migration only for DeepSeek, and never the Claude one", () => {
+    const entry = (providerKey: "anthropic" | "deepseek") => ({ providerKey, label: providerKey, models: ["m"], baseUrl: "u", keyConfigured: true, ready: true, missing: [] });
+    const settings = { defaultProvider: "deepseek" as const, maxCallsPerDay: 30, maxActiveRuns: 1, providers: [entry("anthropic"), entry("deepseek")] };
+    const view: AdminModelsView = {
+      savedRevision: 2, activeRevision: 2, pendingRestart: false, activationDeferred: false, source: "managed",
+      titleWriting: { enabled: true, productionBlocked: false, operatorConfigured: false, siteOperator: true },
+      saved: settings, active: settings, audit: [], validation: "local_only",
+      storage: { titleWriting: true, claude: false, candidates: true, deepseek: false },
+    };
+    expect(providerSetupState(view, "deepseek")).toEqual({ state: "migration_missing", migrations: ["20261017000100_writing_candidate_deepseek"] });
+    expect(providerSetupState(view, "anthropic")).toEqual({ state: "migration_missing", migrations: ["20261016000100_writing_provider_anthropic"] });
+    // A view from an API that predates the DeepSeek probe never says DeepSeek is ready.
+    expect(providerSetupState({ ...view, storage: { titleWriting: true, claude: true, candidates: true } }, "deepseek").state).toBe("migration_missing");
+    expect(providerSetupState({ ...view, storage: { titleWriting: true, claude: true, candidates: true, deepseek: true } }, "deepseek").state).toBe("ready");
+    expect(providerSetupState({ ...view, pendingRestart: true }, "deepseek").state).toBe("pending_restart");
   });
 });

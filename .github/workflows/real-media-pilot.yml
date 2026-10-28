@@ -47,12 +47,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install pinned FFmpeg
+      - name: Install FFmpeg from the official Ubuntu HTTPS archive
         run: |
-          sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list || true
-          sudo apt-get update -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ffmpeg=7:6.1.1-3ubuntu5
-          test "$(dpkg-query -W -f '${Version}' ffmpeg)" = "7:6.1.1-3ubuntu5"
+          sudo bash scripts/ci/apt-official-https.sh
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ffmpeg
+          dpkg-query -W -f '${Version}\n' ffmpeg
           ffmpeg -version
           ffprobe -version
       - name: Compose synthetic media with the existing renderer

@@ -29,6 +29,7 @@ import {
   SCRIPT_BREAKDOWN_PROMPT_VERSION,
   TITLE_WRITING_INPUT_SCHEMA,
   TITLE_WRITING_PROMPT_VERSION,
+  TITLE_WRITING_RUN_KIND_DISABLED,
   type ScriptBreakdownFrozenInput,
   type ScriptBreakdownOutput,
   type TitleCallRecord,
@@ -41,7 +42,7 @@ import { runMigrations, type MigrationResult } from "./migrations";
 import { insertProject } from "./runtime-store";
 import { TextChainService } from "./text-chain";
 import { checkTitleWritingAcceptanceEnv, verifyTitleWritingAcceptanceDatabase } from "./title-writing-acceptance-guard";
-import { PostgresTitleWritingStore, SCRIPT_BREAKDOWN_MIGRATION } from "./title-writing-store";
+import { PostgresTitleWritingStore, SCRIPT_BREAKDOWN_MIGRATION, WRITING_PROVIDER_MIGRATION } from "./title-writing-store";
 
 const decision = checkTitleWritingAcceptanceEnv(process.env);
 if (!decision.ok) throw new Error(`Script breakdown acceptance refused: ${decision.reason}`);
@@ -360,9 +361,10 @@ beforeAll(async () => {
     keyLookupRunId: (await store.findRunByKey(history.ws, "server-owner", "history"))?.run.id ?? null,
   };
   rowsBefore = await rowDigests();
-  upgrade = await runMigrations(pool);
+  // The breakdown release alone; the later, independent provider migration is covered by its own acceptance.
+  upgrade = await runMigrations(pool, undefined, { before: WRITING_PROVIDER_MIGRATION });
   rowsAfter = await rowDigests();
-  redeploy = await runMigrations(pool);
+  redeploy = await runMigrations(pool, undefined, { before: WRITING_PROVIDER_MIGRATION });
   Object.assign(evidence, { released: released.applied, upgrade: upgrade.applied, redeploy: redeploy.applied, before });
 });
 
@@ -375,6 +377,192 @@ afterAll(async () => {
 });
 
 describe("script breakdown on PostgreSQL", () => {
+  it("filters disabled breakdowns before LIMIT without changing their leases or calls", async () => {
+    const { ws, project, episodes } = await work(1);
+    const breakdown = await startBreakdown(ws, project, episodes[0]!.id);
+    const titleProject = await tx(async (client) => (await insertProject(client, { workspaceId: ws, title: "恢复标题任务", premise: "" })).id);
+    const frozen: TitleWritingFrozenInput = { schema: TITLE_WRITING_INPUT_SCHEMA, promptVersion: TITLE_WRITING_PROMPT_VERSION, title: "恢复标题任务",
+      settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey: "qwen", model: "q-1" };
+    // Make the title later than the breakdown so LIMIT 1 without kind filtering would miss it.
+    const at = new Date(Date.parse(breakdown.updatedAt) + 1_000).toISOString();
+    const title: TitleRunRecord = { id: randomUUID(), workspaceId: ws, projectId: titleProject, actorId: "server-owner", idempotencyKey: "kind-filter-title",
+      inputHash: canonicalInputHash({ projectId: titleProject, input: frozen }), input: frozen, state: "running", errorCode: null, cancelRequestedAt: null,
+      executorId: null, leaseUntil: null, callCap: 8, callsUsed: 0, storySave: "pending", storyRevisionId: null, createdAt: at, updatedAt: at };
+    expect((await store.createRun(title, { maxActiveRuns: 10 })).kind).toBe("created");
+    const beforeRead = await store.getRunById(ws, breakdown.id);
+    expect(await store.listClaimable(ws, now(), 1)).toEqual([breakdown.id]);
+    expect(await store.listClaimable(ws, now(), 1, ["title"])).toEqual([title.id]);
+    expect(await store.listClaimable(ws, now(), 1, ["script_breakdown"])).toEqual([breakdown.id]);
+    expect(await store.listClaimable(ws, now(), 1, [])).toEqual([]);
+    expect(await store.getRunById(ws, breakdown.id)).toEqual(beforeRead);
+    evidence.runKindFiltering = { beforeLimit: true, disabledRunUnchanged: true };
+  });
+
+  it("stops unheld breakdowns once the kind is off: unsent calls released, sent calls unknown, cancel finished, live lease kept", async () => {
+    const reservedFor = async (record: TitleRunRecord, executor: string, setupAt: string, leaseUntil: string) => {
+      expect(await store.claimRun(record.workspaceId, record.id, executor, setupAt, leaseUntil)).toBe(true);
+      const item: TitleCallRecord = { id: randomUUID(), runId: record.id, workspaceId: record.workspaceId, stepKey: "breakdown", attemptNo: 1,
+        providerKey: "qwen", model: "q-1", requestHash: "cd".repeat(32), state: "reserved", executorId: executor, providerRequestId: null,
+        responseModel: null, usage: { status: "unknown", inputTokens: null, outputTokens: null, totalTokens: null }, errorCode: null, createdAt: setupAt, finishedAt: null };
+      expect(await store.reserveCall(item, { sinceIso: "2000-01-01T00:00:00.000Z", maxCallsPerDay: 1000 }, setupAt, leaseUntil)).toEqual({ kind: "reserved" });
+      return item;
+    };
+    const base = Date.now();
+    const setupAt = new Date(base).toISOString();
+    const leaseUntil = new Date(base + 60_000).toISOString();
+    const expired = new Date(base + 120_000).toISOString();
+    const a = await work(1);
+    const unclaimed = await startBreakdown(a.ws, a.project, a.episodes[0]!.id);
+    const b = await work(1);
+    const reserved = await startBreakdown(b.ws, b.project, b.episodes[0]!.id);
+    const unsent = await reservedFor(reserved, "dead", setupAt, leaseUntil);
+    const c = await work(1);
+    const submitted = await startBreakdown(c.ws, c.project, c.episodes[0]!.id);
+    const sent = await reservedFor(submitted, "dead", setupAt, leaseUntil);
+    expect(await store.markCallSubmitted(c.ws, sent.id, "dead", setupAt, leaseUntil)).toBe("submitted");
+    const d = await work(1);
+    const canceled = await startBreakdown(d.ws, d.project, d.episodes[0]!.id);
+    await store.requestCancel(d.ws, d.project, canceled.id, setupAt);
+    const e = await work(1);
+    const held = await startBreakdown(e.ws, e.project, e.episodes[0]!.id);
+    await reservedFor(held, "alive", setupAt, new Date(base + 600_000).toISOString());
+    const heldBefore = await store.getRunById(e.ws, held.id);
+    const othersBefore = await Promise.all([[b.ws, reserved.id], [c.ws, submitted.id], [d.ws, canceled.id]].map(([ws, id]) => store.getRunById(ws!, id!)));
+
+    // One workspace at a time: stopping A's runs never touches another workspace's.
+    expect(await store.retireDisabledRuns(a.ws, expired, ["script_breakdown"])).toBe(1);
+    expect(await Promise.all([[b.ws, reserved.id], [c.ws, submitted.id], [d.ws, canceled.id]].map(([ws, id]) => store.getRunById(ws!, id!)))).toEqual(othersBefore);
+    expect((await store.getRunById(a.ws, unclaimed.id))!.run).toMatchObject({ state: "needs_attention", errorCode: TITLE_WRITING_RUN_KIND_DISABLED,
+      breakdownSave: "pending", callsUsed: 0 });
+    for (const ws of [b.ws, c.ws, d.ws]) expect(await store.retireDisabledRuns(ws, expired, ["script_breakdown"])).toBe(1);
+    expect(await store.retireDisabledRuns(e.ws, expired, ["script_breakdown"])).toBe(0);
+
+    const released = (await store.getRunById(b.ws, reserved.id))!;
+    expect(released.run).toMatchObject({ state: "needs_attention", errorCode: TITLE_WRITING_RUN_KIND_DISABLED, executorId: null });
+    expect(released.steps).toEqual([expect.objectContaining({ state: "pending" })]);
+    expect(released.calls).toEqual([expect.objectContaining({ id: unsent.id, state: "rejected", errorCode: "executor_lost_before_send" })]);
+    const uncertain = (await store.getRunById(c.ws, submitted.id))!;
+    expect(uncertain.run).toMatchObject({ state: "needs_attention", errorCode: "executor_lost", executorId: null });
+    expect(uncertain.steps).toEqual([expect.objectContaining({ state: "unknown", errorCode: "executor_lost" })]);
+    expect(uncertain.calls).toEqual([expect.objectContaining({ id: sent.id, state: "unknown", errorCode: "executor_lost",
+      usage: { status: "unknown", inputTokens: null, outputTokens: null, totalTokens: null } })]);
+    const stopped = (await store.getRunById(d.ws, canceled.id))!;
+    expect(stopped.run).toMatchObject({ state: "canceled", errorCode: null });
+    expect(stopped.steps).toEqual([expect.objectContaining({ state: "canceled" })]);
+    expect(await store.getRunById(e.ws, held.id)).toEqual(heldBefore);
+    // The uncertain call stays uncertain: a later resume still needs its confirmation; the released one resumes without.
+    expect((await resumeOf(c.ws, c.project, submitted.id)).kind).toBe("needs_confirmation");
+    expect((await resumeOf(b.ws, b.project, reserved.id)).kind).toBe("ok");
+    evidence.retireDisabledBreakdowns = { unclaimed: "needs_attention", reserved: "released unsent", submitted: "unknown kept", canceled: "canceled",
+      liveLease: "untouched", perWorkspace: true };
+  });
+
+  it("completes a breakdown whose result was saved before its executor stopped, without a send, a second save or new revisions", async () => {
+    const savedWork = await work(1);
+    const saved = await startBreakdown(savedWork.ws, savedWork.project, savedWork.episodes[0]!.id);
+    const executor = await answer(saved, outputOf(1, 1, null));
+    // The executor stops right after the save commits: finishRun never runs.
+    expect(await store.saveBreakdown(savedWork.ws, saved.id, executor, "server-owner", now())).toBe("saved");
+    const unsavedWork = await work(1);
+    const unsaved = await startBreakdown(unsavedWork.ws, unsavedWork.project, unsavedWork.episodes[0]!.id);
+    await answer(unsaved, outputOf(1, 1, null));
+    const stopped = (await store.getRunById(savedWork.ws, saved.id))!;
+    expect(stopped.run).toMatchObject({ state: "running", breakdownSave: "saved", executorId: executor });
+    const evidenceOf = async (ws: string) => ({
+      calls: (await pool.query("SELECT id, state, error_code, usage_json, billing_status, provider_request_id FROM title_writing_call WHERE workspace_id = $1 ORDER BY id", [ws])).rows,
+      scenes: (await pool.query("SELECT id, current_revision_id FROM scene WHERE workspace_id = $1 ORDER BY id", [ws])).rows,
+      sceneRevisions: (await pool.query("SELECT id FROM scene_revision WHERE workspace_id = $1 ORDER BY id", [ws])).rows,
+      shots: (await pool.query("SELECT id FROM shot WHERE workspace_id = $1 ORDER BY id", [ws])).rows,
+      shotRevisions: (await pool.query("SELECT id FROM shot_revision WHERE workspace_id = $1 ORDER BY id", [ws])).rows,
+    });
+    const before = await evidenceOf(savedWork.ws);
+    const unsavedBefore = await evidenceOf(unsavedWork.ws);
+    expect(before.scenes.length).toBeGreaterThan(0);
+    expect(unsavedBefore.scenes).toHaveLength(0);
+
+    expect(await store.retireDisabledRuns(savedWork.ws, later(120_000), ["script_breakdown"])).toBe(1);
+    expect(await store.retireDisabledRuns(unsavedWork.ws, later(120_000), ["script_breakdown"])).toBe(1);
+
+    expect((await store.getRunById(savedWork.ws, saved.id))!.run).toMatchObject({ state: "completed", errorCode: null, executorId: null,
+      breakdownSave: "saved", callsUsed: stopped.run.callsUsed });
+    // The answer is stored but not saved: the original rule still applies, and a later resume saves it without a send.
+    expect((await store.getRunById(unsavedWork.ws, unsaved.id))!.run).toMatchObject({ state: "needs_attention",
+      errorCode: TITLE_WRITING_RUN_KIND_DISABLED, breakdownSave: "pending" });
+    expect(await evidenceOf(savedWork.ws)).toEqual(before);
+    expect(await evidenceOf(unsavedWork.ws)).toEqual(unsavedBefore);
+    // Switched back on: nothing to claim, nothing to resume, nothing written again.
+    expect(await store.listClaimable(savedWork.ws, later(120_000), 50)).toEqual([]);
+    expect((await resumeOf(savedWork.ws, savedWork.project, saved.id)).kind).toBe("not_resumable");
+    expect(await store.retireDisabledRuns(savedWork.ws, later(120_000), ["script_breakdown"])).toBe(0);
+    expect(await evidenceOf(savedWork.ws)).toEqual(before);
+    expect((await resumeOf(unsavedWork.ws, unsavedWork.project, unsaved.id)).kind).toBe("ok");
+    evidence.retireSavedBreakdown = { completed: true, revisionsUnchanged: true, callsUnchanged: true, unsavedNeedsAttention: true };
+  });
+
+  it.each([
+    { refusal: "source_changed", code: "breakdown_source_changed" },
+    { refusal: "conflict", code: "breakdown_conflict" },
+  ] as const)("ends a breakdown whose save was $refusal before its executor stopped with $code, without a send or a second save", async ({ refusal, code }) => {
+    const { ws, project, storyId, episodes } = await work(1);
+    const episode = episodes[0]!;
+    const record = await startBreakdown(ws, project, episode.id);
+    const executor = await answer(record, outputOf(1, 1, null));
+    // A person changes the source before the save: a newer script, or a manual scene in the episode.
+    if (refusal === "source_changed") {
+      await writeScript(ws, project, storyId, episode.id, scriptOf(1, 3));
+    } else {
+      const row = await episodeRow(episode.id);
+      await tx((client) => chain.createSceneRevisionInTransaction(client, { workspaceId: ws, projectId: project, episodeId: episode.id,
+        sourceScriptRevisionId: row.current_script_revision_id!, ordinal: 1, heading: "人工场景", summary: "人工", createdBy: "editor",
+        expectedVersion: row.row_version }));
+    }
+    // The real save refuses it, and the executor stops before finishRun.
+    expect(await store.saveBreakdown(ws, record.id, executor, "server-owner", now())).toBe(refusal);
+    const stopped = (await store.getRunById(ws, record.id))!;
+    expect(stopped.run).toMatchObject({ state: "running", breakdownSave: refusal, executorId: executor });
+    const evidenceOf = async () => ({
+      calls: (await pool.query("SELECT id, state, error_code, usage_json, billing_status, provider_request_id FROM title_writing_call WHERE workspace_id = $1 ORDER BY id", [ws])).rows,
+      steps: (await pool.query("SELECT step_key, state, output_hash FROM title_writing_step WHERE run_id = $1 ORDER BY step_key", [record.id])).rows,
+      scenes: (await pool.query("SELECT id, current_revision_id, archived_at FROM scene WHERE workspace_id = $1 ORDER BY id", [ws])).rows,
+      sceneRevisions: (await pool.query("SELECT id FROM scene_revision WHERE workspace_id = $1 ORDER BY id", [ws])).rows,
+      shots: (await pool.query("SELECT id FROM shot WHERE workspace_id = $1 ORDER BY id", [ws])).rows,
+      shotRevisions: (await pool.query("SELECT id FROM shot_revision WHERE workspace_id = $1 ORDER BY id", [ws])).rows,
+    });
+    const before = await evidenceOf();
+
+    expect(await store.retireDisabledRuns(ws, later(120_000), ["script_breakdown"])).toBe(1);
+
+    expect((await store.getRunById(ws, record.id))!.run).toMatchObject({ state: "needs_attention", errorCode: code, executorId: null,
+      leaseUntil: null, breakdownSave: refusal, callsUsed: stopped.run.callsUsed });
+    expect(await evidenceOf()).toEqual(before);
+    // Switched back on: nothing to claim, nothing to resume, nothing written again.
+    expect(await store.listClaimable(ws, later(120_000), 50)).toEqual([]);
+    expect((await resumeOf(ws, project, record.id)).kind).toBe("not_resumable");
+    expect(await store.retireDisabledRuns(ws, later(120_000), ["script_breakdown"])).toBe(0);
+    expect(await evidenceOf()).toEqual(before);
+    evidence[refusal === "conflict" ? "retireConflictBreakdown" : "retireSourceChangedBreakdown"] = { errorCode: code, revisionsUnchanged: true,
+      callsUnchanged: true };
+  });
+
+  it("frees the slot a stranded breakdown held under a cap of one, so a title can start", async () => {
+    const { ws, project, episodes } = await work(1);
+    await startBreakdown(ws, project, episodes[0]!.id);
+    const titleProject = await tx(async (client) => (await insertProject(client, { workspaceId: ws, title: "停用后标题", premise: "" })).id);
+    const frozen: TitleWritingFrozenInput = { schema: TITLE_WRITING_INPUT_SCHEMA, promptVersion: TITLE_WRITING_PROMPT_VERSION, title: "停用后标题",
+      settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey: "qwen", model: "q-1" };
+    const at = now();
+    const title: TitleRunRecord = { id: randomUUID(), workspaceId: ws, projectId: titleProject, actorId: "server-owner", idempotencyKey: "after-retire",
+      inputHash: canonicalInputHash({ projectId: titleProject, input: frozen }), input: frozen, state: "running", errorCode: null, cancelRequestedAt: null,
+      executorId: null, leaseUntil: null, callCap: 8, callsUsed: 0, storySave: "pending", storyRevisionId: null, createdAt: at, updatedAt: at };
+    expect(await store.createRun(title, { maxActiveRuns: 1 })).toEqual({ kind: "blocked", code: "TITLE_WRITING_ACTIVE_RUN_CAP" });
+    expect(await store.retireDisabledRuns(ws, now(), ["script_breakdown"])).toBe(1);
+    expect((await store.createRun(title, { maxActiveRuns: 1 })).kind).toBe("created");
+    expect(await store.retireDisabledRuns(ws, now(), ["script_breakdown"])).toBe(0);
+    expect((await store.getRunById(ws, title.id))!.run.state).toBe("running");
+    expect((await pool.query("SELECT 1 FROM title_writing_call WHERE workspace_id = $1", [ws])).rowCount).toBe(0);
+    evidence.retireFreesSlot = { blockedBefore: true, createdAfter: true, titleUntouched: true };
+  });
+
   it("before the migration: storage not ready, title writing reads unchanged", () => {
     expect(released.applied.at(-1)).toBe("20261011000100_episode_plan");
     expect(before).toEqual({ ready: false, latestTitleRunId: history.runId, keyLookupRunId: history.runId });

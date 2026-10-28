@@ -21,12 +21,12 @@ function setup(override?: (step: FixtureStep, attempt: number) => "hang" | { sta
   store.addProject(WS, P1);
   const seen: FixtureExchange[] = [];
   const providers = titleWritingProviderConfigs({
-    DASHSCOPE_API_KEY: "sk-test-secret-0123456789", BAILIAN_BASE_URL: "https://dashscope.aliyuncs.com/compatible-mode/v1", TITLE_WRITING_QWEN_MODELS: "q-1",
+    ANTHROPIC_API_KEY: "sk-ant-api03-test-secret-0123456789", TITLE_WRITING_ANTHROPIC_MODELS: "q-1",
   });
   const engine = new TitleWritingEngine({ workspaceId: WS, store, providers, maxCallsPerDay: 30, timeoutMs: 20,
     transport: transport ?? fixtureChatTransport("夜班证词", { seen, ...(override ? { override } : {}) }) });
   const run = newTitleRun({ workspaceId: WS, projectId: P1, actorId: "a", idempotencyKey: "k", title: "夜班证词",
-    settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey: "qwen", model: "q-1", now: new Date() });
+    settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey: "anthropic", model: "q-1", now: new Date() });
   return { store, engine, seen, run };
 }
 

@@ -1,0 +1,16 @@
+/* Lists of the automatic creation pages: full-width items that wrap long Chinese text and identifiers. */
+.list {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 15px;
+  line-height: 1.8;
+}
+
+.list li {
+  margin: 4px 0;
+  overflow-wrap: anywhere;
+}
+
+.section {
+  margin-top: 24px;
+}

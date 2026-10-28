@@ -15,11 +15,10 @@ function json(payload: unknown, status = 200): Response {
 
 function options(overrides: Partial<TitleWritingOptionsView> = {}): TitleWritingOptionsView {
   return {
-    enabled: true, code: "TITLE_WRITING_READY", storageReady: true, operatorTokenRequired: true, defaultProvider: "qwen",
+    enabled: true, code: "TITLE_WRITING_READY", storageReady: true, operatorTokenRequired: true, defaultProvider: "anthropic",
     providers: [
-      { providerKey: "qwen", label: "千问", ready: true, models: ["q-1", "q-2"], defaultModel: "q-1", missing: [] },
-      { providerKey: "openai", label: "OpenAI", ready: false, models: [], defaultModel: null, missing: ["OPENAI_API_KEY"] },
-      { providerKey: "deepseek", label: "DeepSeek", ready: true, models: ["d-1", "d-2"], defaultModel: "d-1", missing: [] },
+      { providerKey: "openai", label: "OpenAI", ready: true, models: ["d-1", "d-2"], defaultModel: "d-1", missing: [] },
+      { providerKey: "anthropic", label: "Claude", ready: true, models: ["q-1", "q-2"], defaultModel: "q-1", missing: [] },
     ],
     maxCallsPerDay: 30, maxActiveRuns: 1, callCapPerRun: 8, billing: "unknown", defaults: { episodeCount: 3, episodeSeconds: 90, style: "" },
     episodePlan: { minEpisodes: 1, maxEpisodes: 6, defaultEpisodes: 3, secondsChoices: [60, 90], defaultSeconds: 90 }, episodePlanReady: true,
@@ -62,11 +61,11 @@ function fillNonDefault() {
   fireEvent.change(screen.getByLabelText("集数"), { target: { value: "5" } });
   fireEvent.change(screen.getByLabelText("每集时长"), { target: { value: "60" } });
   fireEvent.change(screen.getByLabelText("风格"), { target: { value: "悬疑" } });
-  fireEvent.change(screen.getByLabelText("模型服务"), { target: { value: "deepseek" } });
+  fireEvent.change(screen.getByLabelText("模型服务"), { target: { value: "openai" } });
   fireEvent.change(screen.getByLabelText("模型"), { target: { value: "d-2" } });
 }
 
-const NON_DEFAULT_BODY = { title: "夜班证词", providerKey: "deepseek", model: "d-2", settings: { episodeCount: 5, episodeSeconds: 60, style: "悬疑" } };
+const NON_DEFAULT_BODY = { title: "夜班证词", providerKey: "openai", model: "d-2", settings: { episodeCount: 5, episodeSeconds: 60, style: "悬疑" } };
 const NON_DEFAULT_PROJECT = { title: "夜班证词", premise: "", episodeCount: 5, targetEpisodeSeconds: 60 };
 
 let assign: ReturnType<typeof vi.fn>;
@@ -124,7 +123,7 @@ describe("an unconfirmed start", () => {
     expect((screen.getByLabelText("集数") as HTMLSelectElement).disabled).toBe(true);
     expect((screen.getByLabelText("每集时长") as HTMLSelectElement).value).toBe("60");
     expect((screen.getByLabelText("风格") as HTMLInputElement).value).toBe("悬疑");
-    expect(screen.getByText(/DeepSeek · d-2（上次提交的选择）/)).toBeTruthy();
+    expect(screen.getByText(/OpenAI · d-2（上次提交的选择）/)).toBeTruthy();
     expect(screen.getByRole("link", { name: "查看进度" }).getAttribute("href")).toBe(`/projects/${P1}/writing`);
     fireEvent.click(second.button);
     await waitFor(() => expect(assign).toHaveBeenCalledWith(`/projects/${P1}/writing`));
@@ -152,7 +151,7 @@ describe("an unconfirmed start", () => {
     fireEvent.click(first.button);
     expect((await screen.findByRole("alert")).textContent).toContain("没有确认是否已经启动");
     first.view.unmount();
-    current.options = options({ defaultProvider: "deepseek",
+    current.options = options({ defaultProvider: "openai",
       episodePlan: { minEpisodes: 1, maxEpisodes: 6, defaultEpisodes: 6, secondsChoices: [60, 90], defaultSeconds: 60 } });
 
     const second = await mount();
@@ -166,7 +165,7 @@ describe("an unconfirmed start", () => {
     expect(projects[1]?.body).toEqual(projects[0]?.body);
     expect(projects[0]?.body).toEqual({ title: "夜班证词", premise: "", episodeCount: 3, targetEpisodeSeconds: 90 });
     expect(runPosts(calls).map((call) => call.body)).toEqual([
-      { title: "夜班证词", providerKey: "qwen", model: "q-1", settings: { episodeCount: 3, episodeSeconds: 90, style: "" } },
+      { title: "夜班证词", providerKey: "anthropic", model: "q-1", settings: { episodeCount: 3, episodeSeconds: 90, style: "" } },
     ]);
   });
 
@@ -183,6 +182,25 @@ describe("an unconfirmed start", () => {
     await waitFor(() => expect(assign).toHaveBeenCalledWith(`/projects/${P1}/writing`));
     expect(projectPosts(calls).map((call) => [call.body, call.headers["Idempotency-Key"]])).toEqual([[{ title: "旧剧名", premise: "" }, legacy.projectKey]]);
     expect(runPosts(calls).map((call) => [call.body, call.headers["Idempotency-Key"]])).toEqual([[legacy.request, legacy.runKey]]);
+  });
+
+  it.each(["qwen"])("a stored request of the retired provider %s is kept, shown with its real provider and replayed unchanged", async (retired) => {
+    const stored = { version: 2, request: { title: "旧剧名", providerKey: retired, model: `${retired}-old`, settings: { episodeSeconds: 90, style: "" } },
+      projectKey: "11111111-aaaa-4aaa-8aaa-111111111111", projectId: P1, runKey: "22222222-bbbb-4bbb-8bbb-222222222222" };
+    window.sessionStorage.setItem(DRAFT_KEY, JSON.stringify(stored));
+    const label = "千问（已退役）";
+    const { calls } = server(() => json({ error: { code: "TITLE_WRITING_PROVIDER_RETIRED", message: "x", details: { providerKey: retired, label } } }, 409));
+    const { button } = await mount();
+    expect(button.textContent).toBe("重试上次请求");
+    expect(screen.getByText(new RegExp(`模型服务：${label} · ${retired}-old`))).toBeTruthy();
+    fireEvent.click(button);
+    // The server found no run for this identity: it created and sent nothing, and the page says so.
+    expect((await screen.findByRole("alert")).textContent).toContain(`上次请求选择的模型服务（${label}）已经退役。服务端没有找到这次请求创建的任务，也没有发出模型调用。`);
+    expect(runPosts(calls).map((call) => [call.body, call.headers["Idempotency-Key"]])).toEqual([[stored.request, stored.runKey]]);
+    expect(projectPosts(calls)).toHaveLength(0);
+    // The identity is not silently dropped: only the person can abandon it.
+    expect(JSON.parse(window.sessionStorage.getItem(DRAFT_KEY) ?? "null")).toEqual(stored);
+    expect(assign).not.toHaveBeenCalled();
   });
 
   it("the same unconfirmed request replayed several times always carries the same body and both keys", async () => {
@@ -343,5 +361,60 @@ describe("the episode plan of a new work", () => {
     fireEvent.click(button);
     expect((await screen.findByRole("alert")).textContent).toContain("数据库迁移尚未执行");
     expect(calls.filter((call) => call.method === "POST")).toEqual([]);
+  });
+});
+
+describe("the site login authorizes the call", () => {
+  beforeEach(() => { window.sessionStorage.clear(); });
+  afterEach(() => { cleanup(); vi.unstubAllGlobals(); window.sessionStorage.clear(); });
+
+  it("shows no token field and sends no X-Operator-Token when the server says the session is enough", async () => {
+    const assign = vi.spyOn(window.location, "assign").mockImplementation(() => undefined);
+    const { calls } = server((call) => call.url === "/api/v1/projects"
+      ? json({ id: P1, title: "夜班证词", premise: "", version: 1, status: "ACTIVE" }, 201)
+      : json(finished(), 201), { options: options({ operatorTokenRequired: false }) });
+    render(<TitleWritingStart />);
+    const button = await screen.findByRole("button", { name: "AI 一键创作" });
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
+    expect(screen.queryByLabelText("操作者令牌")).toBeNull();
+    expect(screen.getByText("调用权限由当前管理员登录确认，不需要填写操作者令牌。模型密钥只在服务端。")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("剧名"), { target: { value: "夜班证词" } });
+    fireEvent.click(button);
+    await waitFor(() => expect(runPosts(calls)).toHaveLength(1));
+    expect(Object.keys(runPosts(calls)[0]!.headers).map((name) => name.toLowerCase())).not.toContain("x-operator-token");
+    await waitFor(() => expect(assign).toHaveBeenCalledWith(`/projects/${P1}/writing`));
+  });
+});
+
+describe("the provider a start goes to", () => {
+  const DEEPSEEK_DOWN = { providerKey: "deepseek" as const, label: "DeepSeek", ready: false, models: ["deepseek-flash"], defaultModel: "deepseek-flash",
+    missing: ["WRITING_PROVIDER_MIGRATION"] };
+
+  it("names the provider and model actually used, from the server's real configuration", async () => {
+    server(() => json(finished(), 201), { options: options({ defaultProvider: "anthropic" }) });
+    await mount();
+    expect(screen.getByTestId("ai-provider-target").textContent).toBe("本次发送给：Claude · q-1");
+    expect(screen.getByText(/服务端已配置：OpenAI、Claude。/)).toBeTruthy();
+  });
+
+  it("a configured default that is not ready blocks the start with its reason; another provider is used only when chosen", async () => {
+    const { calls } = server((call) => call.url === "/api/v1/projects" ? json({ id: P1 }, 201) : json(finished(), 201),
+      { options: options({ defaultProvider: "deepseek", providers: [...options().providers, DEEPSEEK_DOWN] }) });
+    const { button } = await mount();
+    const blocked = screen.getByTestId("ai-provider-blocked");
+    expect(blocked.textContent).toContain("默认模型服务暂不可用，没有发出调用，也不会自动改用其他模型服务");
+    expect(blocked.textContent).toContain("DeepSeek：数据库迁移 20261016000100_writing_provider_anthropic 尚未执行");
+    expect(screen.queryByTestId("ai-provider-target")).toBeNull();
+    fireEvent.change(screen.getByLabelText("剧名"), { target: { value: "夜班证词" } });
+    fireEvent.click(button);
+    expect((await screen.findByRole("alert")).textContent).toContain("默认模型服务暂不可用");
+    expect([projectPosts(calls).length, runPosts(calls).length]).toEqual([0, 0]);
+    const select = screen.getByLabelText("模型服务") as HTMLSelectElement;
+    expect(select.value).toBe("deepseek");
+    fireEvent.change(select, { target: { value: "anthropic" } });
+    expect(screen.getByTestId("ai-provider-target").textContent).toBe("本次发送给：Claude · q-1");
+    fireEvent.click(button);
+    await waitFor(() => expect(runPosts(calls)).toHaveLength(1));
+    expect(runPosts(calls)[0]!.body).toMatchObject({ providerKey: "anthropic", model: "q-1" });
   });
 });

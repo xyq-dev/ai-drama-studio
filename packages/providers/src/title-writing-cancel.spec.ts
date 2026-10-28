@@ -9,10 +9,10 @@ import { fixtureChatTransport, type FixtureExchange } from "./title-writing-fixt
 const WS = "11111111-1111-4111-8111-111111111111";
 const P1 = "22222222-2222-4222-8222-222222222222";
 const providers = () => titleWritingProviderConfigs({
-  DASHSCOPE_API_KEY: "sk-test-secret-0123456789", BAILIAN_BASE_URL: "https://dashscope.aliyuncs.com/compatible-mode/v1", TITLE_WRITING_QWEN_MODELS: "q-1",
+  ANTHROPIC_API_KEY: "sk-ant-api03-test-secret-0123456789", TITLE_WRITING_ANTHROPIC_MODELS: "q-1",
 });
 const record = () => newTitleRun({ workspaceId: WS, projectId: P1, actorId: "a", idempotencyKey: "k", title: "夜班证词",
-  settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey: "qwen", model: "q-1", now: new Date() });
+  settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey: "anthropic", model: "q-1", now: new Date() });
 
 /** Commits a cancel after the reservation and before the submission, as a concurrent request would. */
 class CancelBetweenReserveAndSubmit extends InMemoryTitleWritingStore {

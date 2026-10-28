@@ -1,6 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   TITLE_WRITING_CANCELED_BEFORE_SEND,
+  TITLE_WRITING_RUN_KIND_DISABLED,
+  frozenProviderAdapter,
+  isLegacyDeepseekRun,
+  settledSaveOutcome,
   type TitleCallFinish,
   type TitleCallRecord,
   type TitleCallReservation,
@@ -10,6 +14,7 @@ import {
   type TitleRunBundle,
   type TitleRunCreation,
   type TitleRunCreationLimits,
+  type TitleRunKind,
   type TitleRunRecord,
   type TitleScriptPlacement,
   type TitleStepRecord,
@@ -32,6 +37,8 @@ import {
   TITLE_WRITING_INPUT_SCHEMA_V2,
   TITLE_WRITING_PROMPT_VERSION,
   TITLE_WRITING_PROMPT_VERSION_V2,
+  TITLE_WRITING_PROMPT_VERSION_V3,
+  TITLE_WRITING_PROMPT_VERSION_V4,
   currentUncertainCallIds,
   isTitleWritingInputV2,
   titleWritingCallCapFor,
@@ -44,6 +51,7 @@ import {
   type TitleWritingCallView,
   type TitleWritingFrozenInput,
   type TitleWritingProviderKey,
+  type TitleWritingStoredProviderKey,
   type TitleWritingRunState,
   type TitleWritingRunView,
   type TitleWritingSettings,
@@ -68,6 +76,7 @@ import {
   TEXT_WRITING_MAX_OUTPUT_TOKENS,
   TEXT_WRITING_TIMEOUT_MS,
   WRITING_ADAPTERS,
+  providerConfigFor,
   sendWriting,
   type WritingAdapter,
   type WritingExchange,
@@ -83,10 +92,11 @@ import {
 export const TITLE_WRITING_CALL_CAP_PER_RUN = 8;
 export const TITLE_WRITING_MAX_CALLS_PER_DAY_DEFAULT = 30;
 export const TITLE_WRITING_MAX_ACTIVE_RUNS_DEFAULT = 1;
-/** The executor lease covers the capped send time twice over, as in the Qwen web writing store. */
+/** The executor lease covers the capped send time twice over. */
 export const TITLE_WRITING_LEASE_MS = TEXT_WRITING_TIMEOUT_MS * 2;
 export const TITLE_WRITING_LOST_BEFORE_SEND = "executor_lost_before_send";
 export const TITLE_WRITING_LOST_AFTER_SEND = "executor_lost";
+const RUN_KINDS: readonly TitleRunKind[] = ["title", "script_breakdown"];
 
 export type {
   TitleResumeRequest,
@@ -129,15 +139,25 @@ export function newTitleRun(options: {
   idempotencyKey: string;
   title: string;
   settings: TitleWritingSettings;
-  providerKey: TitleWritingProviderKey;
+  /** A retired key only rebuilds a stored start to compare a replay; the services never create a run with one. */
+  providerKey: TitleWritingStoredProviderKey;
   model: string;
   now: Date;
-  /** 2 freezes the project's episode plan (N, target seconds); 1, the default, is the unchanged three-episode input. */
+  /**
+   * Only to rebuild a start stored before the DeepSeek adapter mark existed, so that its replay is compared with the
+   * input it was stored with; never used to create a run.
+   */
+  withoutAdapterMark?: boolean;
+  /**
+   * 2 freezes the project's episode plan (N, target seconds) with the guided prompt v4; 1, the default, is the
+   * unchanged three-episode input. Runs already stored with prompt v2 or v3 keep it.
+   */
   version?: 1 | 2;
 }): TitleRunRecord {
-  const common = { title: options.title, settings: options.settings, providerKey: options.providerKey, model: options.model };
+  const common = { title: options.title, settings: options.settings, providerKey: options.providerKey, model: options.model,
+    ...(options.withoutAdapterMark ? {} : frozenProviderAdapter(options.providerKey)) };
   const input: TitleWritingFrozenInput = options.version === 2
-    ? { schema: TITLE_WRITING_INPUT_SCHEMA_V2, promptVersion: TITLE_WRITING_PROMPT_VERSION_V2, ...common }
+    ? { schema: TITLE_WRITING_INPUT_SCHEMA_V2, promptVersion: TITLE_WRITING_PROMPT_VERSION_V4, ...common }
     : { schema: TITLE_WRITING_INPUT_SCHEMA, promptVersion: TITLE_WRITING_PROMPT_VERSION, ...common };
   const createdAt = options.now.toISOString();
   return {
@@ -161,6 +181,25 @@ export function newTitleRun(options: {
     createdAt,
     updatedAt: createdAt,
   };
+}
+
+/** Prompt versions a v2 run was frozen with before the current one, oldest first. */
+const EARLIER_V2_PROMPT_VERSIONS = [TITLE_WRITING_PROMPT_VERSION_V2, TITLE_WRITING_PROMPT_VERSION_V3] as const;
+
+/**
+ * True when a stored run is the same start request frozen with an earlier prompt version: its hash is that of the
+ * attempted v2 input with the stored prompt v2 or v3 instead of v4. A start sent before an upgrade and replayed after it
+ * then returns its run instead of an idempotency conflict; the stored run keeps its own prompt version.
+ */
+export function sameStartBeforeGuidance(stored: TitleRunRecord, attempted: TitleRunRecord): boolean {
+  const input = attempted.input;
+  if (isScriptBreakdownInput(input) || !isTitleWritingInputV2(input) || input.promptVersion !== TITLE_WRITING_PROMPT_VERSION_V4) return false;
+  const before = titleInputOf(stored);
+  if (!before || !isTitleWritingInputV2(before)) return false;
+  const earlier = EARLIER_V2_PROMPT_VERSIONS.find((version) => version === before.promptVersion);
+  if (!earlier) return false;
+  return stored.projectId === attempted.projectId
+    && stored.inputHash === hashTitleWritingInput(attempted.projectId, { ...input, promptVersion: earlier });
 }
 
 /** The title input of a run, or null for a script breakdown run. */
@@ -227,9 +266,9 @@ export function storyTextOf(bundle: TitleRunBundle): string | null {
   }
 }
 
-function stepText(step: TitleStepRecord): string | null {
+function stepText(step: TitleStepRecord, input: TitleWritingFrozenInput): string | null {
   if (step.state !== "completed" || !step.output) return null;
-  if (episodeNoOf(step.stepKey) !== null) return formatTitleEpisode(step.output as EpisodeDraftCandidate);
+  if (episodeNoOf(step.stepKey) !== null) return formatTitleEpisode(step.output as EpisodeDraftCandidate, input);
   return null;
 }
 
@@ -243,6 +282,7 @@ export function titleRunView(bundle: TitleRunBundle): TitleWritingRunView {
     projectId: run.projectId,
     title: input.title,
     inputVersion: isTitleWritingInputV2(input) ? 2 : 1,
+    promptVersion: input.promptVersion,
     episodeCount: titleWritingEpisodeCount(input),
     settings: input.settings,
     providerKey: input.providerKey,
@@ -255,6 +295,7 @@ export function titleRunView(bundle: TitleRunBundle): TitleWritingRunView {
     storySave: run.storySave,
     storyRevisionId: run.storyRevisionId,
     storyText: storyTextOf(bundle),
+    legacyProviderRun: isLegacyDeepseekRun(input),
     steps: [...bundle.steps].sort((left, right) => left.ordinal - right.ordinal).map((step) => ({
       stepKey: step.stepKey,
       state: step.state,
@@ -262,7 +303,7 @@ export function titleRunView(bundle: TitleRunBundle): TitleWritingRunView {
       errorCode: step.errorCode,
       // A title run never has a breakdown step, so its outputs are title outputs.
       output: step.state === "completed" ? step.output as TitleWritingStepView["output"] : null,
-      text: stepText(step),
+      text: stepText(step, input),
       scriptSave: step.scriptSave,
       scriptRevisionId: step.scriptRevisionId,
     })),
@@ -293,6 +334,8 @@ export interface TitleWritingEngineDeps {
   providers: Record<TitleWritingProviderKey, WritingProviderConfig>;
   transport: WritingTransport;
   maxCallsPerDay: number;
+  /** Execution authorization, including recovery. Omitted keeps both existing run kinds; empty disables sending. */
+  allowedRunKinds?: readonly TitleRunKind[];
   adapters?: Readonly<Record<TitleWritingProviderKey, WritingAdapter>>;
   clock?: () => Date;
   executorId?: string;
@@ -313,10 +356,12 @@ export class TitleWritingEngine {
   readonly executorId: string;
   readonly workspaceId: string;
   private readonly running = new Set<string>();
+  private readonly allowedRunKinds: readonly TitleRunKind[];
 
   constructor(private readonly deps: TitleWritingEngineDeps) {
     this.executorId = deps.executorId ?? `title-writing:${randomUUID()}`;
     this.workspaceId = deps.workspaceId;
+    this.allowedRunKinds = [...(deps.allowedRunKinds ?? ["title", "script_breakdown"])];
   }
 
   private now(): Date {
@@ -327,11 +372,18 @@ export class TitleWritingEngine {
     return new Date(from.getTime() + (this.deps.leaseMs ?? TITLE_WRITING_LEASE_MS)).toISOString();
   }
 
+  private allows(run: TitleRunRecord): boolean {
+    return this.allowedRunKinds.includes(isScriptBreakdownInput(run.input) ? "script_breakdown" : "title");
+  }
+
   /** Runs until the run reaches a resting state or another executor owns it. Safe to call repeatedly. */
   async drive(runId: string): Promise<void> {
     if (this.running.has(runId)) return;
     this.running.add(runId);
     try {
+      // Gate before claiming: a disabled kind must never take a lease, reserve a call or write a stored answer.
+      const existing = await this.deps.store.getRunById(this.deps.workspaceId, runId);
+      if (!existing || existing.run.workspaceId !== this.deps.workspaceId || !this.allows(existing.run)) return;
       const claimedAt = this.now();
       if (!await this.deps.store.claimRun(this.deps.workspaceId, runId, this.executorId, claimedAt.toISOString(), this.lease(claimedAt))) return;
       while (await this.advance(runId)) {
@@ -346,7 +398,11 @@ export class TitleWritingEngine {
   async maintain(limit = 5): Promise<void> {
     const nowIso = this.now().toISOString();
     await this.deps.store.recoverExpired(this.deps.workspaceId, nowIso);
-    const runIds = await this.deps.store.listClaimable(this.deps.workspaceId, nowIso, limit);
+    // A switched-off kind is never driven again, so its unheld runs are stopped here without a send instead of
+    // holding an active-run slot forever. Runs under a live lease are left to their executor.
+    const disabledKinds = RUN_KINDS.filter((kind) => !this.allowedRunKinds.includes(kind));
+    if (disabledKinds.length > 0) await this.deps.store.retireDisabledRuns(this.deps.workspaceId, nowIso, disabledKinds);
+    const runIds = await this.deps.store.listClaimable(this.deps.workspaceId, nowIso, limit, this.allowedRunKinds);
     for (const runId of runIds) await this.drive(runId);
   }
 
@@ -357,7 +413,7 @@ export class TitleWritingEngine {
 
   private async advance(runId: string): Promise<boolean> {
     const bundle = await this.deps.store.getRunById(this.deps.workspaceId, runId);
-    if (!bundle || bundle.run.workspaceId !== this.deps.workspaceId || bundle.run.state !== "running"
+    if (!bundle || bundle.run.workspaceId !== this.deps.workspaceId || !this.allows(bundle.run) || bundle.run.state !== "running"
       || bundle.run.executorId !== this.executorId) return false;
     const { run } = bundle;
     const anyCompleted = bundle.steps.some((step) => step.state === "completed");
@@ -371,8 +427,16 @@ export class TitleWritingEngine {
       // A call of this run is still open under another lease; recovery decides its fate.
       return false;
     }
-    const provider = this.deps.providers[run.input.providerKey];
-    if (!provider.ok || !provider.models.includes(run.input.model)) {
+    // A DeepSeek run stored before the retirement is never sent for again, even now that DeepSeek is configured: an
+    // upgrade must not revive it. It stops before any reservation or send and keeps its provider, model and calls.
+    if (isLegacyDeepseekRun(run.input)) {
+      return this.finish(runId, "needs_attention", "legacy_provider_run");
+    }
+    // A run of a retired provider (qwen) has no configuration or adapter: it stops here before any reservation or send,
+    // and is never moved to another provider or model. Nor is a run whose frozen model is no longer allowed.
+    const provider = providerConfigFor(this.deps.providers, run.input.providerKey);
+    const adapter = provider ? (this.deps.adapters ?? WRITING_ADAPTERS)[provider.providerKey] : undefined;
+    if (!provider || !adapter || !provider.ok || !provider.models.includes(run.input.model)) {
       return this.finish(runId, "needs_attention", "provider_unconfigured");
     }
     const titleInput = titleInputOf(run);
@@ -381,7 +445,6 @@ export class TitleWritingEngine {
     if (titleInput && isTitleWritingInputV2(titleInput) && episodeNoOf(next.stepKey) !== null && storyTextOf(bundle) === null) {
       return this.finish(runId, "needs_attention", "story_too_large");
     }
-    const adapter = (this.deps.adapters ?? WRITING_ADAPTERS)[run.input.providerKey];
     let prompt: { system: string; user: string };
     let schema: { name: string; schema: Record<string, unknown> };
     if (titleInput) {
@@ -445,6 +508,7 @@ export class TitleWritingEngine {
       adapter,
       url: provider.url,
       apiKey: provider.apiKey,
+      workspaceId: provider.workspaceId,
       request,
       transport: this.deps.transport,
       ...(this.deps.timeoutMs !== undefined ? { timeoutMs: this.deps.timeoutMs } : {}),
@@ -608,6 +672,13 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
   readonly resumes: Array<{ runId: string; key: string; requestHash: string; confirmedCallIds: string[]; createdAt: string }> = [];
   ready = true;
   breakdownReady = true;
+  /**
+   * Stands in for the provider migration: while false, the provider CHECKs of an unmigrated database reject an anthropic
+   * run or call the way PostgreSQL would, and providerStorageReady("anthropic") is false.
+   */
+  anthropicReady = true;
+  /** Stands in for the live CHECKs naming deepseek (they have since the first title writing migration). */
+  deepseekReady = true;
   readonly breakdownEpisodes = new Map<string, MemoryBreakdownEpisode>();
   readonly scenes: MemoryScene[] = [];
   readonly shots: MemoryShot[] = [];
@@ -645,6 +716,16 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
     return this.ready;
   }
 
+  async providerStorageReady(providerKey: TitleWritingProviderKey): Promise<boolean> {
+    return this.ready && (providerKey !== "anthropic" || this.anthropicReady) && (providerKey !== "deepseek" || this.deepseekReady);
+  }
+
+  /** The provider_key CHECK of title_writing_run and title_writing_call before and after the provider migration. */
+  private checkProviderKey(providerKey: string): void {
+    const allowed = this.anthropicReady ? ["qwen", "openai", "deepseek", "anthropic"] : ["qwen", "openai", "deepseek"];
+    if (!allowed.includes(providerKey)) throw new Error("new row violates check constraint provider_key");
+  }
+
   private bundle(run: TitleRunRecord): TitleRunBundle {
     return structuredClone({
       run,
@@ -668,6 +749,7 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
       const remainingCalls = Math.max(0, maxCallsPerDay - recent);
       if (remainingCalls < requiredCalls) return { kind: "blocked", code: "TITLE_WRITING_DAILY_QUOTA_LOW", requiredCalls, remainingCalls };
     }
+    this.checkProviderKey(run.input.providerKey);
     this.runs.push(structuredClone(run));
     this.steps.push(...initialSteps(run));
     return { kind: "created", bundle: this.bundle(this.requireRun(run.id)) };
@@ -718,6 +800,7 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
     if (recent >= limits.maxCallsPerDay) return { kind: "blocked", code: "TITLE_WRITING_DAILY_CAP" };
     const step = this.requireStep(call.runId, call.stepKey);
     if (step.state !== "pending") return { kind: "lost" };
+    this.checkProviderKey(call.providerKey);
     this.calls.push(structuredClone(call));
     Object.assign(step, { state: "reserved", attemptNo: call.attemptNo, errorCode: null, updatedAt: nowIso });
     Object.assign(run, { callsUsed: run.callsUsed + 1, leaseUntil, updatedAt: nowIso });
@@ -851,10 +934,56 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
     return recovered;
   }
 
-  async listClaimable(workspaceId: string, nowIso: string, limit: number): Promise<string[]> {
+  async retireDisabledRuns(workspaceId: string, nowIso: string, disabledKinds: readonly TitleRunKind[]): Promise<number> {
+    let retired = 0;
+    for (const run of this.runs) {
+      if (run.workspaceId !== workspaceId || run.state !== "running"
+        || !disabledKinds.includes(isScriptBreakdownInput(run.input) ? "script_breakdown" : "title")
+        || (run.executorId !== null && !expired(run.leaseUntil, nowIso))) continue;
+      retired += 1;
+      let uncertain = false;
+      for (const call of this.calls.filter((item) => item.runId === run.id)) {
+        const step = this.requireStep(run.id, call.stepKey);
+        if (call.state === "reserved") {
+          Object.assign(call, { state: "rejected", errorCode: TITLE_WRITING_LOST_BEFORE_SEND, finishedAt: nowIso });
+          Object.assign(step, { state: "pending", updatedAt: nowIso });
+        } else if (call.state === "submitted") {
+          Object.assign(call, { state: "unknown", errorCode: TITLE_WRITING_LOST_AFTER_SEND, finishedAt: nowIso });
+          Object.assign(step, { state: "unknown", errorCode: TITLE_WRITING_LOST_AFTER_SEND, updatedAt: nowIso });
+          uncertain = true;
+        }
+      }
+      const steps = this.steps.filter((item) => item.runId === run.id).sort((left, right) => left.ordinal - right.ordinal);
+      const unknownStep = steps.find((step) => step.state === "unknown");
+      const breakdown = isScriptBreakdownInput(run.input);
+      const settled = steps.every((step) => step.state === "completed")
+        ? settledSaveOutcome(breakdown, breakdown ? run.breakdownSave : run.storySave)
+        : null;
+      let state: Exclude<TitleWritingRunState, "running"> = "needs_attention";
+      let errorCode: string | null = TITLE_WRITING_RUN_KIND_DISABLED;
+      if (uncertain) {
+        errorCode = TITLE_WRITING_LOST_AFTER_SEND;
+      } else if (run.cancelRequestedAt !== null) {
+        state = "canceled";
+        errorCode = null;
+        for (const step of steps.filter((item) => item.state === "pending")) Object.assign(step, { state: "canceled", updatedAt: nowIso });
+      } else if (settled) {
+        // The executor settled the save and stopped before finishing the run: end it as the engine would, nothing is
+        // sent or saved again.
+        ({ state, errorCode } = settled);
+      } else if (unknownStep) {
+        errorCode = unknownStep.errorCode ?? "uncertain_call";
+      }
+      Object.assign(run, { state, errorCode, executorId: null, leaseUntil: null, updatedAt: nowIso });
+    }
+    return retired;
+  }
+
+  async listClaimable(workspaceId: string, nowIso: string, limit: number, allowedRunKinds?: readonly TitleRunKind[]): Promise<string[]> {
     return this.runs
       .filter((run) => run.workspaceId === workspaceId && run.state === "running"
-        && (run.executorId === null || expired(run.leaseUntil, nowIso)))
+        && (run.executorId === null || expired(run.leaseUntil, nowIso))
+        && (allowedRunKinds === undefined || allowedRunKinds.includes(isScriptBreakdownInput(run.input) ? "script_breakdown" : "title")))
       .slice(0, limit)
       .map((run) => run.id);
   }
@@ -880,7 +1009,7 @@ export class InMemoryTitleWritingStore implements TitleWritingStore {
         continue;
       }
       const id = randomUUID();
-      episode.scripts.push({ id, text: formatTitleEpisode(step.output as EpisodeDraftCandidate), sourceStoryId: approved });
+      episode.scripts.push({ id, text: formatTitleEpisode(step.output as EpisodeDraftCandidate, run.input as TitleWritingFrozenInput), sourceStoryId: approved });
       episode.currentScriptId = id;
       Object.assign(step, { scriptSave: "saved", scriptRevisionId: id, updatedAt: nowIso });
     }

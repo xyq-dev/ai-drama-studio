@@ -107,6 +107,8 @@ export interface BeginnerFacts {
   story: StoryRevision | null;
   /** The work's episode count (its plan); three when not known. Episodes 1..N are the ones every step covers. */
   episodeCount?: number;
+  /** series: a series writing work (1–60 episodes); absent or short: a short-drama work. */
+  writingMode?: "short" | "series";
   episodes: EpisodeRecord[];
   characters: ListFacts<Aggregate>;
   locations: ListFacts<Aggregate>;
@@ -152,8 +154,9 @@ export function composeRunning(runs: readonly WorkflowRun[]): boolean {
 }
 
 /** Episode numbers 1..N of the work the facts describe. */
-export function episodeNumbers(facts: Pick<BeginnerFacts, "episodeCount">): number[] {
-  return projectEpisodeNumbers({ ...(facts.episodeCount !== undefined ? { episodeCount: facts.episodeCount } : {}) });
+export function episodeNumbers(facts: Pick<BeginnerFacts, "episodeCount" | "writingMode">): number[] {
+  return projectEpisodeNumbers({ ...(facts.episodeCount !== undefined ? { episodeCount: facts.episodeCount } : {}),
+    ...(facts.writingMode !== undefined ? { writingMode: facts.writingMode } : {}) });
 }
 
 export function episodeSampleState(facts: BeginnerFacts, episodeNo: number): StepState {
@@ -218,6 +221,14 @@ export function stepStates(facts: BeginnerFacts): Record<StepKey, StepState> {
 }
 
 /** The first step that still needs the user, in order; done everywhere means the last step. */
+/**
+ * The steps a work offers. A series work keeps to the text steps (story and episode scripts): its media production is
+ * not open, whatever the global media switches say, and the server refuses it as well (SERIES_MEDIA_NOT_ENABLED).
+ */
+export function stepsFor(writingMode: BeginnerFacts["writingMode"]): typeof STEPS {
+  return writingMode === "series" ? STEPS.filter((step) => step.key === "story" || step.key === "script") : STEPS;
+}
+
 export function currentStep(states: Record<StepKey, StepState>): StepKey {
   return STEPS.find((step) => states[step.key] !== "done")?.key ?? "final";
 }

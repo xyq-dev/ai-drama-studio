@@ -1,6 +1,6 @@
 import { z } from "zod";
-import type { TitleWritingCallView, TitleWritingProviderKey, TitleWritingProviderOption, TitleWritingRunState, TitleWritingStepState } from "./title-writing";
-import { TITLE_WRITING_PROVIDER_KEYS } from "./title-writing";
+import type { TitleWritingCallView, TitleWritingProviderKey, TitleWritingStoredProviderKey, TitleWritingProviderOption, TitleWritingRunState, TitleWritingStepState } from "./title-writing";
+import { TITLE_WRITING_STORED_PROVIDER_KEYS, type DEEPSEEK_PROVIDER_ADAPTER } from "./title-writing";
 import { WRITING_BODY_MAX_CHARS } from "./writing-assistant";
 
 /**
@@ -71,8 +71,10 @@ export interface ScriptBreakdownFrozenInput {
   characters: ScriptBreakdownCharacter[];
   /** The episode's scenes and shots when the run started. They are replaced only if still exactly these versions. */
   replace: { scenes: Array<{ sceneId: string; rowVersion: number }>; shots: Array<{ shotId: string; rowVersion: number }> };
-  providerKey: TitleWritingProviderKey;
+  providerKey: TitleWritingStoredProviderKey;
   model: string;
+  /** DeepSeek runs created by the current server only (DEEPSEEK_PROVIDER_ADAPTER). Absent on every older run. */
+  providerAdapter?: typeof DEEPSEEK_PROVIDER_ADAPTER;
 }
 
 export function isScriptBreakdownInput(input: unknown): input is ScriptBreakdownFrozenInput {
@@ -83,7 +85,7 @@ const MODEL_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 
 /** Start request body. The episode comes from the route; the script, characters and scenes are read by the server. */
 export const scriptBreakdownStartSchema = z.object({
-  providerKey: z.enum(TITLE_WRITING_PROVIDER_KEYS).optional(),
+  providerKey: z.enum(TITLE_WRITING_STORED_PROVIDER_KEYS).optional(),
   model: z.string().regex(MODEL_ID).optional(),
   /** Required when the episode already has scenes: the new result replaces them (old versions are kept). */
   replaceExisting: z.boolean().default(false),
@@ -206,7 +208,7 @@ export interface ScriptBreakdownRunView {
   targetEpisodeSeconds: number | null;
   characters: Array<{ key: string; characterId: string; revisionId: string; name: string }>;
   replacedScenes: number;
-  providerKey: TitleWritingProviderKey;
+  providerKey: TitleWritingStoredProviderKey;
   model: string;
   state: TitleWritingRunState;
   errorCode: string | null;
@@ -223,6 +225,8 @@ export interface ScriptBreakdownRunView {
   /** The episode's script now, to tell whether this run's source is still the current one. */
   episodeScript: { currentRevisionId: string | null; currentRevisionNo: number | null; approved: boolean };
   calls: TitleWritingCallView[];
+  /** True for a DeepSeek run stored before the retirement: it is never sent for again. Absent from older APIs. */
+  legacyProviderRun?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -231,7 +235,11 @@ export interface ScriptBreakdownOptionsView {
   enabled: boolean;
   code: string;
   storageReady: boolean;
-  operatorTokenRequired: true;
+  /**
+   * False when the signed-in site administrator is the operator (the site login is on): the page sends no token and the
+   * server checks the session, origin and CSRF token instead. True only when the API runs without the site login.
+   */
+  operatorTokenRequired: boolean;
   defaultProvider: TitleWritingProviderKey | null;
   providers: TitleWritingProviderOption[];
   maxCallsPerDay: number;

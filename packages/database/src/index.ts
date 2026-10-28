@@ -1,6 +1,13 @@
 import { Pool, type PoolClient } from "pg";
 
 export {
+  BASE_MIGRATIONS,
+  GUARDED_SINGLE_MIGRATIONS,
+  WRITING_CANDIDATE_MIGRATION,
+  WRITING_CANDIDATE_DEEPSEEK_MIGRATION,
+  WRITING_PROVIDER_MIGRATION,
+  AUTO_CREATION_MIGRATION,
+  SERIES_WRITING_MIGRATION,
   runMigrations,
   type MigrationClient,
   type MigrationOptions,
@@ -140,15 +147,6 @@ export {
   type StrictVideoReference,
 } from "./character-reference-store";
 export {
-  PostgresQwenWebStore,
-  QWEN_WEB_REQUIRED_COLUMNS,
-  QWEN_WEB_TABLE,
-  type QwenWebStoredFinish,
-  type QwenWebStoredRecord,
-  type QwenWebStoredReservation,
-  type QwenWebStoredState,
-} from "./qwen-web-store";
-export {
   assertFixedMockImageSnapshot,
   assertSyncActualCost,
   guardSynchronousMockImageCost,
@@ -170,6 +168,8 @@ export {
   type MockSmProvisionConfig,
   type MockSmProvisionResult,
 } from "./provision-mock-sm";
+export { AUTO_CREATION_TABLES, PostgresAutoCreationStore } from "./auto-creation-store";
+export { SERIES_WRITING_TABLES, PostgresSeriesWritingStore } from "./series-writing-store";
 export { PostgresTitleWritingStore, SCRIPT_BREAKDOWN_COLUMNS, SCRIPT_BREAKDOWN_MIGRATION, TITLE_WRITING_MIGRATION, TITLE_WRITING_TABLES } from "./title-writing-store";
 export {
   EPISODE_PLAN_COLUMNS,
@@ -186,3 +186,9 @@ export {
   verifyTitleWritingAcceptanceDatabase,
   type TitleWritingAcceptanceDecision,
 } from "./title-writing-acceptance-guard";
+export {
+  PostgresWritingCandidateStore,
+  WRITING_CANDIDATE_COLUMNS,
+  recentWritingCalls,
+  writingCallLockKey,
+} from "./writing-candidate-store";

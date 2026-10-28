@@ -1,13 +1,14 @@
 import {
+  TITLE_WRITING_PROVIDER_KEYS,
+  type TitleWritingStoredProviderKey,
   scriptBreakdownOutputSchema,
   type ScriptBreakdownOutput,
   type ScriptBreakdownOptionsView,
   type ScriptBreakdownPlacementOutcome,
   type ScriptBreakdownRunView,
-  type TitleWritingProviderKey,
 } from "@ai-drama/contracts";
 import { withSession } from "./site-session";
-import { TitleWritingError, TitleWritingUnconfirmedError, isEntityId } from "./title-writing-client";
+import { TitleWritingError, TitleWritingUnconfirmedError, isEntityId, operatorHeader } from "./title-writing-client";
 
 export type { ScriptBreakdownOptionsView, ScriptBreakdownPlacementOutcome, ScriptBreakdownRunView };
 
@@ -54,14 +55,14 @@ export function optionsOf(body: unknown): ScriptBreakdownOptionsView | null {
   if (typeof body.code !== "string" || typeof body.callCapPerRun !== "number" || typeof body.maxCallsPerDay !== "number") return null;
   if (!["scriptMaxChars", "minScenes", "maxScenes", "minShots", "maxShots", "maxShotsPerScene", "minShotSeconds", "maxShotSeconds", "minTotalSeconds", "maxTotalSeconds", "maxCharacters"]
     .every((key) => typeof (body.limits as Record<string, unknown>)[key] === "number")) return null;
-  if (!body.providers.every((item) => record(item) && typeof item.providerKey === "string" && ["qwen", "openai", "deepseek"].includes(item.providerKey)
+  if (!body.providers.every((item) => record(item) && typeof item.providerKey === "string" && (TITLE_WRITING_PROVIDER_KEYS as readonly string[]).includes(item.providerKey)
     && typeof item.ready === "boolean" && Array.isArray(item.models) && item.models.every((model) => typeof model === "string")
     && nullableString(item.defaultModel))) return null;
   return body as unknown as ScriptBreakdownOptionsView;
 }
 
 export interface BreakdownStartBody {
-  providerKey?: TitleWritingProviderKey;
+  providerKey?: TitleWritingStoredProviderKey;
   model?: string;
   replaceExisting: boolean;
 }
@@ -107,7 +108,7 @@ export class ScriptBreakdownClient {
     const result = await this.call<unknown>(this.base(projectId, episodeId), {
       method: "POST",
       headers: { Accept: "application/json", "Content-Type": "application/json", "Idempotency-Key": options.idempotencyKey,
-        "X-Operator-Token": options.token },
+        ...operatorHeader(options.token) },
       body: JSON.stringify(body),
     });
     const run = breakdownReceiptRun(result.body, projectId, episodeId);
@@ -148,7 +149,7 @@ export class ScriptBreakdownClient {
     options: { confirmUncertainCallIds: readonly string[]; token: string; idempotencyKey: string }): Promise<ScriptBreakdownRunView> {
     const result = await this.call<unknown>(`${this.base(projectId, episodeId)}/${runId}/resume`, {
       method: "POST",
-      headers: { Accept: "application/json", "Content-Type": "application/json", "X-Operator-Token": options.token,
+      headers: { Accept: "application/json", "Content-Type": "application/json", ...operatorHeader(options.token),
         "Idempotency-Key": options.idempotencyKey },
       body: JSON.stringify({ confirmUncertainCallIds: options.confirmUncertainCallIds }),
     });

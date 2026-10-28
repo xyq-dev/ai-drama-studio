@@ -18,9 +18,150 @@ export const EPISODE_OUTLINE_SCHEMA = "ads.writing.episode-outline.v1" as const;
 export const EPISODE_OUTLINE_SCHEMA_V2 = "ads.writing.episode-outline.v2" as const;
 export const TITLE_WRITING_PROMPT_VERSION = "ads.title-writing.prompt.v1" as const;
 export const TITLE_WRITING_PROMPT_VERSION_V2 = "ads.title-writing.prompt.v2" as const;
+/**
+ * Prompts of a v2 input with the episode writing guidance: the same steps, fields, schemas and limits as prompt v2,
+ * with added writing requirements (emotional promise, per-episode obstacle, protagonist action, change, payoff, new
+ * information, ending question) and constraints that keep each episode to the run's own outline. New v2 runs freeze
+ * this version; runs frozen with prompt v2 keep the v2 text byte for byte.
+ */
+export const TITLE_WRITING_PROMPT_VERSION_V3 = "ads.title-writing.prompt.v3" as const;
+/**
+ * Prompt v3 with position-aware episode endings: a non-final episode still leaves its ending question and the facts the
+ * next episode inherits; the only or last episode closes the main story and its handoffFacts record the ending instead.
+ * Same steps, fields, schemas and limits. New v2 runs freeze this version; runs frozen with prompt v2 or v3 keep theirs.
+ */
+export const TITLE_WRITING_PROMPT_VERSION_V4 = "ads.title-writing.prompt.v4" as const;
 
-export const TITLE_WRITING_PROVIDER_KEYS = ["qwen", "openai", "deepseek"] as const;
+/**
+ * The providers a new run, a resume that sends, an administrator update and a default may name. DeepSeek, retired on
+ * 2026-10-16, is active again from 2026-10-17 with a new adapter, a new key entered in the console and a new default
+ * model; runs stored before that keep their own provider, model and calls and are never sent for again
+ * (isLegacyDeepseekRun: a DeepSeek run without the server-written DEEPSEEK_PROVIDER_ADAPTER mark).
+ */
+export const TITLE_WRITING_PROVIDER_KEYS = ["openai", "anthropic", "deepseek"] as const;
 export type TitleWritingProviderKey = (typeof TITLE_WRITING_PROVIDER_KEYS)[number];
+/**
+ * Retired providers. Runs and calls stored with them stay readable with their real provider and model, and a lost
+ * receipt of a request made with them is still answered from the stored run; nothing new is created or sent for them.
+ */
+export const TITLE_WRITING_RETIRED_PROVIDER_KEYS = ["qwen"] as const;
+export type TitleWritingRetiredProviderKey = (typeof TITLE_WRITING_RETIRED_PROVIDER_KEYS)[number];
+/**
+ * The providers the first (three-provider) model configuration held besides OpenAI. Converting such a file leaves both
+ * out, and the note of what was left out keeps naming them: DeepSeek's old key is never carried over or restored.
+ */
+export const TITLE_WRITING_V1_LEFT_OUT_PROVIDER_KEYS = ["qwen", "deepseek"] as const;
+export type TitleWritingV1LeftOutProviderKey = (typeof TITLE_WRITING_V1_LEFT_OUT_PROVIDER_KEYS)[number];
+/** Every provider a stored run or call may carry. */
+export const TITLE_WRITING_STORED_PROVIDER_KEYS = [...TITLE_WRITING_PROVIDER_KEYS, ...TITLE_WRITING_RETIRED_PROVIDER_KEYS] as const;
+export type TitleWritingStoredProviderKey = (typeof TITLE_WRITING_STORED_PROVIDER_KEYS)[number];
+export const TITLE_WRITING_PROVIDER_LABELS: Readonly<Record<TitleWritingStoredProviderKey, string>> = {
+  openai: "OpenAI",
+  anthropic: "Claude",
+  deepseek: "DeepSeek",
+  qwen: "千问（已退役）",
+};
+
+/**
+ * The adapter a DeepSeek run is frozen for. Only the server writes it, into the frozen input of every DeepSeek run it
+ * creates (newTitleRun, newScriptBreakdownRun); no start body can carry it (the start schemas are strict). Runs stored
+ * before the retirement never had it.
+ */
+export const DEEPSEEK_PROVIDER_ADAPTER = "deepseek.chat-completions.v1" as const;
+
+/** The frozen-input mark of a provider's current adapter: only DeepSeek has one. */
+export function frozenProviderAdapter(providerKey: string): { providerAdapter?: typeof DEEPSEEK_PROVIDER_ADAPTER } {
+  return providerKey === "deepseek" ? { providerAdapter: DEEPSEEK_PROVIDER_ADAPTER } : {};
+}
+
+/**
+ * A DeepSeek run stored by the code before the retirement: its frozen input has no adapter mark. Such a run is never
+ * driven or sent for again, whatever is configured now; it keeps its frozen provider, model, input, hash, calls and
+ * unknown costs, an answer it already stored can still be saved, and a lost receipt of its start is still answered.
+ */
+export function isLegacyDeepseekRun(input: { providerKey: string; providerAdapter?: unknown }): boolean {
+  return input.providerKey === "deepseek" && input.providerAdapter !== DEEPSEEK_PROVIDER_ADAPTER;
+}
+
+export function isActiveTitleWritingProvider(key: string): key is TitleWritingProviderKey {
+  return (TITLE_WRITING_PROVIDER_KEYS as readonly string[]).includes(key);
+}
+
+/**
+ * The model list a provider gets when a key is configured and no model list is (the administrator only fills in the key).
+ * Claude: the Claude API ID claude-opus-5-5, checked 2026-10-16 at
+ * https://platform.claude.com/docs/en/about-claude/models/overview and listed as supporting structured outputs, effort
+ * and adaptive thinking — every capability the Claude request uses. A pinned API ID, never a CLI alias. OpenAI keeps
+ * needing its own explicit list, as before.
+ */
+export const TITLE_WRITING_DEFAULT_MODELS: Readonly<Record<TitleWritingProviderKey, readonly string[]>> = {
+  openai: [],
+  anthropic: ["claude-opus-5-5"],
+  // DeepSeek: deepseek-flash (DeepSeek-V4.1-Flash), checked 2026-10-17 at https://api-docs.deepseek.com/ and
+  // https://api-docs.deepseek.com/quick_start/pricing/ ("Use deepseek-flash as the model name"; JSON output supported).
+  // The retired deepseek-chat / deepseek-reasoner list is not restored.
+  deepseek: ["deepseek-flash"],
+};
+
+/**
+ * Which ready provider is offered when no default provider is configured (or the configured one is not ready): Claude
+ * first. Only a choice offered before a request; a failed request is never moved to another provider. Saving the
+ * DeepSeek quick setup makes DeepSeek the configured default.
+ */
+export const TITLE_WRITING_PROVIDER_PREFERENCE: readonly TitleWritingProviderKey[] = ["anthropic", "openai", "deepseek"];
+
+export const DEEPSEEK_API_KEY_MIN_LENGTH = 16;
+export const DEEPSEEK_API_KEY_MAX_LENGTH = 256;
+/**
+ * Whether a value can be saved as a DeepSeek API key. DeepSeek documents no key format, so no prefix is required: only
+ * a length that a key can have and printable ASCII without spaces (a value that can travel in an Authorization header
+ * unchanged). Null only means the value may be saved; whether it is valid or funded only DeepSeek can answer.
+ */
+export function deepseekKeyProblem(value: string): "unsupported_format" | null {
+  if (value.length < DEEPSEEK_API_KEY_MIN_LENGTH || value.length > DEEPSEEK_API_KEY_MAX_LENGTH) return "unsupported_format";
+  return /^[\x21-\x7e]+$/u.test(value) ? null : "unsupported_format";
+}
+
+/**
+ * Claude API keys created in the Claude Console, checked 2026-10-17 against
+ * https://platform.claude.com/docs/en/manage-claude/authentication (personal keys, service account keys and legacy
+ * workspace keys all authenticate Messages API requests) and the official TypeScript SDK 0.135.0 (sends any key as
+ * x-api-key without reading its prefix). The documentation names only the sk-ant-api… form; personal keys created
+ * with "Linked account = yourself" start sk-ant-usr- (observed on a real Console key) and service account keys
+ * sk-ant-svc- (reported by tools that fixed the same misclassification). Unknown sk-ant- kinds are not accepted.
+ */
+const ANTHROPIC_API_KEY_SHAPE = /^sk-ant-(?:api|usr|svc)\d*-[A-Za-z0-9_-]{8,}$/u;
+/**
+ * Anthropic credentials that are not Messages API keys: subscription / Claude Code OAuth access and refresh tokens
+ * (sk-ant-oat…, sk-ant-ort…), Admin API keys (sk-ant-admin…) and browser session values (sk-ant-sid…).
+ */
+const ANTHROPIC_NON_API_CREDENTIAL = /^sk-ant-(?:oat|ort|admin|sid)\d*-/u;
+/** A JSON Web Token (federation or session tokens): never a static API key. */
+const JWT_SHAPE = /^eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*\./u;
+export const ANTHROPIC_API_KEY_MAX_LENGTH = 256;
+
+/**
+ * Why a value cannot be configured as a Claude API key, or null when it has the shape of one. A null answer only means
+ * the value may be saved as a key: it says nothing about whether the key is valid, funded or allowed to use a model.
+ * - not_api_credential: a known Anthropic credential of another kind (OAuth / setup token, Admin key, session) or a JWT.
+ * - unsupported_format: anything else (another vendor's key, an unknown sk-ant- kind, spaces, control or other
+ *   characters a header must not carry, too short or too long). The value itself is never altered.
+ */
+export function anthropicKeyProblem(value: string): "unsupported_format" | "not_api_credential" | null {
+  if (value.length > ANTHROPIC_API_KEY_MAX_LENGTH) return "unsupported_format";
+  if (ANTHROPIC_NON_API_CREDENTIAL.test(value) || JWT_SHAPE.test(value)) return "not_api_credential";
+  return ANTHROPIC_API_KEY_SHAPE.test(value) ? null : "unsupported_format";
+}
+
+/**
+ * A Claude Console workspace id (the ID column of platform.claude.com/settings/workspaces, e.g. wrkspc_01Jw…). Only an
+ * identifier, not a secret; sent as anthropic-workspace-id when configured. Keys scoped to one workspace need none;
+ * keys not scoped to a workspace must name one on every request.
+ */
+export const ANTHROPIC_WORKSPACE_ID_SHAPE = /^wrkspc_[A-Za-z0-9_-]{4,100}$/u;
+export function anthropicWorkspaceIdValid(value: string): boolean {
+  return ANTHROPIC_WORKSPACE_ID_SHAPE.test(value);
+}
 
 /** The v1 scope: three episodes (domain PRODUCTION_EPISODE_NUMBERS). */
 export const TITLE_WRITING_EPISODE_COUNT = 3 as const;
@@ -86,7 +227,9 @@ export interface TitleWritingSettings {
  */
 export const titleWritingStartSchema = z.object({
   title: titleText,
-  providerKey: z.enum(TITLE_WRITING_PROVIDER_KEYS).optional(),
+  // A retired key is parsed only so that a lost receipt of an earlier start can still be answered; the server never
+  // creates a run or sends a call for it.
+  providerKey: z.enum(TITLE_WRITING_STORED_PROVIDER_KEYS).optional(),
   model: z.string().regex(MODEL_ID).optional(),
   settings: z.object({
     episodeCount: episodeCountSchema.optional(),
@@ -102,18 +245,26 @@ export interface TitleWritingFrozenInputV1 {
   promptVersion: typeof TITLE_WRITING_PROMPT_VERSION;
   title: string;
   settings: TitleWritingSettings;
-  providerKey: TitleWritingProviderKey;
+  providerKey: TitleWritingStoredProviderKey;
   model: string;
+  /** DeepSeek runs created by the current server only (DEEPSEEK_PROVIDER_ADAPTER). Absent on every older run. */
+  providerAdapter?: typeof DEEPSEEK_PROVIDER_ADAPTER;
 }
 
-/** Frozen, hashed input of one v2 run. N and the target seconds were copied from the project's episode plan. */
+/**
+ * Frozen, hashed input of one v2 run. N and the target seconds were copied from the project's episode plan. Runs
+ * created before the writing guidance carry prompt v2, runs created before the position-aware endings carry prompt v3;
+ * newer runs carry prompt v4.
+ */
 export interface TitleWritingFrozenInputV2 {
   schema: typeof TITLE_WRITING_INPUT_SCHEMA_V2;
-  promptVersion: typeof TITLE_WRITING_PROMPT_VERSION_V2;
+  promptVersion: typeof TITLE_WRITING_PROMPT_VERSION_V2 | typeof TITLE_WRITING_PROMPT_VERSION_V3 | typeof TITLE_WRITING_PROMPT_VERSION_V4;
   title: string;
   settings: TitleWritingSettings;
-  providerKey: TitleWritingProviderKey;
+  providerKey: TitleWritingStoredProviderKey;
   model: string;
+  /** DeepSeek runs created by the current server only (DEEPSEEK_PROVIDER_ADAPTER). Absent on every older run. */
+  providerAdapter?: typeof DEEPSEEK_PROVIDER_ADAPTER;
 }
 
 export type TitleWritingFrozenInput = TitleWritingFrozenInputV1 | TitleWritingFrozenInputV2;
@@ -329,7 +480,7 @@ export interface TitleWritingCallView {
   callId: string;
   stepKey: TitleWritingStepKey;
   attemptNo: number;
-  providerKey: TitleWritingProviderKey;
+  providerKey: TitleWritingStoredProviderKey;
   model: string;
   responseModel: string | null;
   providerRequestId: string | null;
@@ -361,10 +512,12 @@ export interface TitleWritingRunView {
   title: string;
   /** 1 for a v1 run (three episodes, as stored), 2 for a run frozen from the project's episode plan. */
   inputVersion: 1 | 2;
+  /** The prompt version frozen with the run. Absent in answers of an API from before the writing guidance. */
+  promptVersion?: string;
   /** N of this run: its outline has N episodes and it has N episode steps. */
   episodeCount: number;
   settings: TitleWritingSettings;
-  providerKey: TitleWritingProviderKey;
+  providerKey: TitleWritingStoredProviderKey;
   model: string;
   state: TitleWritingRunState;
   errorCode: string | null;
@@ -376,6 +529,8 @@ export interface TitleWritingRunView {
   storyText: string | null;
   steps: TitleWritingStepView[];
   calls: TitleWritingCallView[];
+  /** True for a DeepSeek run stored before the retirement: it is never sent for again. Absent from older APIs. */
+  legacyProviderRun?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -425,9 +580,20 @@ export interface TitleWritingOptionsView {
   enabled: boolean;
   code: string;
   storageReady: boolean;
-  operatorTokenRequired: true;
+  /**
+   * False when the signed-in site administrator is the operator (the site login is on): the page sends no token and the
+   * server checks the session, origin and CSRF token instead. True only when the API runs without the site login.
+   */
+  operatorTokenRequired: boolean;
+  /**
+   * The configured default provider even when it cannot be used now (its providers entry says why), else the first
+   * ready provider. A configured default that is not ready is never replaced by another provider: a request without a
+   * provider is refused until it is ready or the person explicitly names another one.
+   */
   defaultProvider: TitleWritingProviderKey | null;
   providers: TitleWritingProviderOption[];
+  /** A model configuration was saved in the console and waits for the API restart to apply it. Absent from older APIs. */
+  configurationPending?: boolean;
   maxCallsPerDay: number;
   maxActiveRuns: number;
   /** The v1 cap, also the cap of a three-episode v2 run. A v2 run's own cap is N+5 (titleWritingCallCap). */

@@ -1,6 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { EPISODE_OUTLINE_SCHEMA_V2, TITLE_WRITING_INPUT_SCHEMA, TITLE_WRITING_PROMPT_VERSION, type TitleCallRecord } from "@ai-drama/contracts";
+import {
+  EPISODE_OUTLINE_SCHEMA_V2,
+  TITLE_WRITING_INPUT_SCHEMA,
+  TITLE_WRITING_PROMPT_VERSION,
+  TITLE_WRITING_PROMPT_VERSION_V2,
+  TITLE_WRITING_PROMPT_VERSION_V3,
+  TITLE_WRITING_PROMPT_VERSION_V4,
+  type TitleCallRecord,
+  type TitleWritingFrozenInputV2,
+} from "@ai-drama/contracts";
 import { PersistenceError } from "@ai-drama/database";
 import {
   InMemoryTitleWritingStore,
@@ -10,7 +19,7 @@ import {
   type TitleWritingProviderEnv,
 } from "@ai-drama/providers";
 import {
-  chatAnswer,
+  messagesAnswer,
   fixtureChatTransport,
   fixtureConcept,
   fixtureEpisode,
@@ -28,8 +37,7 @@ const WS = "11111111-1111-4111-8111-111111111111";
 const P1 = "22222222-2222-4222-8222-222222222222";
 const TOKEN = "operator-token-0123456789";
 const ENV: TitleWritingProviderEnv = {
-  DASHSCOPE_API_KEY: "sk-test-not-a-real-key-000", BAILIAN_BASE_URL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-  TITLE_WRITING_QWEN_MODELS: "q-1",
+  ANTHROPIC_API_KEY: "sk-ant-api03-test-not-a-real-key-000", TITLE_WRITING_ANTHROPIC_MODELS: "q-1",
 };
 const CONTEXT = (key: string) => ({ actorId: "server-owner", traceId: "t", idempotencyKey: key });
 type Plan = { episodeCount: number; targetEpisodeSeconds: number } | null;
@@ -76,7 +84,7 @@ function setup(plan: Plan, options: { planReady?: boolean; override?: Override; 
 function spendCalls(store: InMemoryTitleWritingStore, count: number): void {
   for (let index = 0; index < count; index += 1) {
     store.calls.push({
-      id: randomUUID(), runId: randomUUID(), workspaceId: WS, stepKey: "concept", attemptNo: 1, providerKey: "qwen", model: "q-1",
+      id: randomUUID(), runId: randomUUID(), workspaceId: WS, stepKey: "concept", attemptNo: 1, providerKey: "anthropic", model: "q-1",
       requestHash: "0".repeat(64), state: "completed", executorId: "earlier", providerRequestId: null, responseModel: null,
       usage: { status: "unknown", inputTokens: null, outputTokens: null, totalTokens: null }, errorCode: null,
       createdAt: new Date(Date.now() - 60_000).toISOString(), finishedAt: new Date(Date.now() - 59_000).toISOString(),
@@ -155,7 +163,7 @@ describe("a project without a plan keeps the v1 run unchanged", () => {
     await settle();
     const run = store.runs[0]!;
     expect(run.input).toEqual({ schema: TITLE_WRITING_INPUT_SCHEMA, promptVersion: TITLE_WRITING_PROMPT_VERSION, title: "夜班证词",
-      settings: { episodeCount: 3, episodeSeconds: seconds, style: "悬疑" }, providerKey: "qwen", model: "q-1" });
+      settings: { episodeCount: 3, episodeSeconds: seconds, style: "悬疑" }, providerKey: "anthropic", model: "q-1" });
     expect(run.inputHash).toBe(hashTitleWritingInput(P1, run.input));
     expect(run.callCap).toBe(8);
     expect(seen.map((item) => item.step)).toEqual(["concept", "outline", "episode:1", "episode:2", "episode:3"]);
@@ -251,15 +259,15 @@ describe("the start quota check", () => {
 
 describe("v2 outputs are checked against N before any later request", () => {
   const plan = { episodeCount: 4, targetEpisodeSeconds: 90 };
-  const outline = (episodes: Array<{ episodeNo: number }>) => ({ status: 200, body: chatAnswer({ ...fixtureOutline(4), episodes }) });
+  const outline = (episodes: Array<{ episodeNo: number }>) => ({ status: 200, body: messagesAnswer({ ...fixtureOutline(4), episodes }) });
 
   it.each([
     ["missing an episode", () => outline(fixtureOutline(4).episodes.slice(0, 3))],
     ["one episode too many", () => outline([...fixtureOutline(4).episodes, { ...fixtureOutline(4).episodes[0]!, episodeNo: 5 }])],
     ["a repeated episode", () => outline(fixtureOutline(4).episodes.map((episode, index) => ({ ...episode, episodeNo: index === 3 ? 3 : episode.episodeNo })))],
     ["out of order", () => outline([...fixtureOutline(4).episodes].reverse())],
-    ["the v1 outline schema", () => ({ status: 200, body: chatAnswer({ ...fixtureOutline(4), schema: "ads.writing.episode-outline.v1" }) })],
-    ["not JSON", () => ({ status: 200, body: chatAnswer("第一集：……") })],
+    ["the v1 outline schema", () => ({ status: 200, body: messagesAnswer({ ...fixtureOutline(4), schema: "ads.writing.episode-outline.v1" }) })],
+    ["not JSON", () => ({ status: 200, body: messagesAnswer("第一集：……") })],
   ])("an outline %s is rejected and no episode is requested", async (_label, answer) => {
     const { service, settle, seen, read } = setup(plan, { override: (step) => step === "outline" ? answer() : undefined });
     const started = await service.start(P1, { title: "夜班证词" }, TOKEN, CONTEXT("k"));
@@ -271,7 +279,7 @@ describe("v2 outputs are checked against N before any later request", () => {
   });
 
   it("a truncated outline is rejected and never continued", async () => {
-    const { service, settle, seen, read } = setup(plan, { override: (step) => step === "outline" ? { status: 200, body: chatAnswer(fixtureOutline(4), "length") } : undefined });
+    const { service, settle, seen, read } = setup(plan, { override: (step) => step === "outline" ? { status: 200, body: messagesAnswer(fixtureOutline(4), "max_tokens") } : undefined });
     const started = await service.start(P1, { title: "夜班证词" }, TOKEN, CONTEXT("k"));
     await settle();
     expect((await read((started.body as RunBody).run.runId)).run.steps[1]).toMatchObject({ state: "rejected", errorCode: "truncated" });
@@ -279,7 +287,7 @@ describe("v2 outputs are checked against N before any later request", () => {
   });
 
   it("an episode answer for another episode number is rejected", async () => {
-    const { service, settle, seen, read } = setup(plan, { override: (step) => step === "episode:2" ? { status: 200, body: chatAnswer(fixtureEpisode(4)) } : undefined });
+    const { service, settle, seen, read } = setup(plan, { override: (step) => step === "episode:2" ? { status: 200, body: messagesAnswer(fixtureEpisode(4)) } : undefined });
     const started = await service.start(P1, { title: "夜班证词" }, TOKEN, CONTEXT("k"));
     await settle();
     const run = (await read((started.body as RunBody).run.runId)).run;
@@ -296,8 +304,8 @@ describe("v2 outputs are checked against N before any later request", () => {
     const outlineAnswer = { ...fixtureOutline(6), episodes: fixtureOutline(6).episodes.map((episode) => ({ ...episode, title: long(40),
       entryState: long(400), goal: long(400), action: long(400), turn: long(400), result: long(400), handoff: long(400) })) };
     const { service, settle, seen, read } = setup({ episodeCount: 6, targetEpisodeSeconds: 90 }, {
-      override: (step) => step === "concept" ? { status: 200, body: chatAnswer(concept) }
-        : step === "outline" ? { status: 200, body: chatAnswer(outlineAnswer) } : undefined,
+      override: (step) => step === "concept" ? { status: 200, body: messagesAnswer(concept) }
+        : step === "outline" ? { status: 200, body: messagesAnswer(outlineAnswer) } : undefined,
     });
     const started = await service.start(P1, { title: "夜班证词" }, TOKEN, CONTEXT("k"));
     await settle();
@@ -363,5 +371,60 @@ describe("v2 keeps the uncertain-call, cancel and resume rules", () => {
     const placed = (await service.placeScripts(P1, (started.body as RunBody).run.runId, {}, { actorId: "owner", traceId: "t" })).body as RunBody;
     expect(placed.run.steps.map((step) => step.scriptSave)).toEqual([null, null, "saved", "conflict"]);
     expect(episodeTwo.scripts).toEqual([{ id: "human", text: "人写的第二集", sourceStoryId: "s" }]);
+  });
+});
+
+describe("the writing guidance is prompt v4 of new v2 runs only", () => {
+  it("a new v2 run freezes prompt v4 and sends the guided prompts with the same steps and request count", async () => {
+    const { service, settle, seen, read } = setup({ episodeCount: 3, targetEpisodeSeconds: 90 });
+    const started = await service.start(P1, { title: "夜班证词" }, TOKEN, CONTEXT("k"));
+    expect(started.status).toBe(201);
+    const runId = (started.body as RunBody).run.runId;
+    expect((started.body as { run: { promptVersion?: string } }).run.promptVersion).toBe(TITLE_WRITING_PROMPT_VERSION_V4);
+    await settle();
+    expect((await read(runId)).run).toMatchObject({ state: "completed", callsUsed: 5 });
+    expect(seen.map((item) => item.step)).toEqual(["concept", "outline", ...episodeKeys(3)]);
+    for (const item of seen) expect(item.user).toContain(TITLE_WRITING_PROMPT_VERSION_V4);
+    expect(seen.find((item) => item.step === "episode:2")!.user).toContain("不凭空新增解围人物或决定性证据");
+    expect(seen.find((item) => item.step === "episode:2")!.user).toContain("下一集必须承接的事实");
+    expect(seen.find((item) => item.step === "episode:3")!.user).toContain("handoffFacts 记录结局事实");
+    expect(seen.find((item) => item.step === "episode:3")!.user).not.toContain("handoffFacts 包括本集结尾留下的");
+  });
+
+  it.each([
+    { version: TITLE_WRITING_PROMPT_VERSION_V2, heading: null },
+    { version: TITLE_WRITING_PROMPT_VERSION_V3, heading: TITLE_WRITING_PROMPT_VERSION_V3 },
+  ] as const)("a stored $version run keeps its own text, and its start replayed after the upgrade returns it instead of a conflict", async ({ version, heading }) => {
+    const { service, settle, seen, store } = setup({ episodeCount: 3, targetEpisodeSeconds: 90 });
+    const first = await service.start(P1, { title: "夜班证词" }, TOKEN, CONTEXT("before-upgrade"));
+    const runId = (first.body as RunBody).run.runId;
+    // The run as an API from before the upgrade stored it: the same input with its prompt version and that input's hash.
+    const stored = store.runs.find((item) => item.id === runId)!;
+    const input = { ...(stored.input as TitleWritingFrozenInputV2), promptVersion: version };
+    stored.input = input;
+    stored.inputHash = hashTitleWritingInput(P1, input);
+    await settle();
+    expect(seen).toHaveLength(5);
+    for (const item of seen) expect(/编剧要求（(ads\.title-writing\.prompt\.v\d+)）/.exec(item.user)?.[1] ?? null).toBe(heading);
+    for (const item of seen) expect(item.user).not.toContain(TITLE_WRITING_PROMPT_VERSION_V4);
+    // A stored v3 run still asks its last episode for an ending question, exactly as before.
+    if (version === TITLE_WRITING_PROMPT_VERSION_V3) expect(seen.find((item) => item.step === "episode:3")!.user).toContain("handoffFacts 包括本集结尾留下的问题。");
+    const replay = await service.start(P1, { title: "夜班证词" }, TOKEN, CONTEXT("before-upgrade"));
+    expect(replay.status).toBe(200);
+    expect((replay.body as RunBody).run.runId).toBe(runId);
+    expect((replay.body as { run: { promptVersion?: string } }).run.promptVersion).toBe(version);
+    expect(store.runs).toHaveLength(1);
+    // Another input under the same key is still a reused key.
+    expect((await service.start(P1, { title: "另一个剧名" }, TOKEN, CONTEXT("before-upgrade"))).body).toMatchObject({ error: { code: "IDEMPOTENCY_KEY_REUSED" } });
+    await settle();
+    expect(seen).toHaveLength(5);
+  });
+
+  it("a project without a plan still starts the unchanged v1 prompts", async () => {
+    const { service, settle, seen } = setup(null);
+    const started = await service.start(P1, { title: "夜班证词" }, TOKEN, CONTEXT("v1"));
+    expect((started.body as { run: { promptVersion?: string } }).run.promptVersion).toBe(TITLE_WRITING_PROMPT_VERSION);
+    await settle();
+    for (const item of seen) expect(item.user).not.toContain("编剧要求");
   });
 });

@@ -16,20 +16,22 @@ const P1 = "22222222-2222-4222-8222-222222222222";
 const P2 = "33333333-3333-4333-8333-333333333333";
 const MISSING = "44444444-4444-4444-8444-444444444444";
 const TOKEN = "operator-token-0123456789";
-const SECRET = "sk-live-secret-abcdefghijkl";
+const SECRET = "sk-ant-api03-live-secret-abcdefghijkl";
 const CONFIGURED: TitleWritingProviderEnv = {
-  DASHSCOPE_API_KEY: SECRET, BAILIAN_BASE_URL: "https://dashscope.aliyuncs.com/compatible-mode/v1", TITLE_WRITING_QWEN_MODELS: "q-1,q-2",
-  DEEPSEEK_API_KEY: SECRET, TITLE_WRITING_DEEPSEEK_MODELS: "d-1",
+  ANTHROPIC_API_KEY: SECRET, TITLE_WRITING_ANTHROPIC_MODELS: "q-1,q-2",
+  OPENAI_API_KEY: SECRET, TITLE_WRITING_OPENAI_MODELS: "d-1",
 };
 const CONTEXT = (key?: string) => ({ actorId: "server-owner", traceId: "t", ...(key ? { idempotencyKey: key } : {}) });
 
 function setup(options: {
   enabled?: boolean;
+  allowProduction?: boolean;
   nodeEnv?: "development" | "test" | "production";
   env?: TitleWritingProviderEnv;
   storageReady?: boolean;
   override?: (step: FixtureStep, attempt: number) => { status: number; body: unknown } | "hang" | "throw" | undefined;
   operatorToken?: string | null;
+  siteOperator?: boolean;
   /** Episode plans by project; a project without one is a three-episode project with no target. */
   plans?: Record<string, { episodeCount: number; targetEpisodeSeconds: number }>;
   planReady?: boolean;
@@ -48,7 +50,9 @@ function setup(options: {
     workspaceId: WS,
     nodeEnv: options.nodeEnv ?? "test",
     enabled: options.enabled ?? true,
+    allowProduction: options.allowProduction ?? false,
     operatorToken: options.operatorToken === undefined ? TOKEN : options.operatorToken,
+    siteOperator: options.siteOperator ?? false,
     defaultProvider: null,
     providers,
     store,
@@ -82,10 +86,11 @@ describe("title writing options", () => {
     const result = await service.options();
     const body = result.body as { code: string; providers: Array<{ providerKey: string; ready: boolean; models: string[]; missing: string[] }> };
     expect(body.code).toBe("TITLE_WRITING_READY");
+    // Exactly the three active providers, in their fixed order; no retired provider is ever offered.
     expect(body.providers).toEqual([
-      expect.objectContaining({ providerKey: "qwen", ready: true, models: ["q-1", "q-2"], missing: [] }),
-      expect.objectContaining({ providerKey: "openai", ready: false, missing: ["OPENAI_API_KEY", "TITLE_WRITING_OPENAI_MODELS"] }),
-      expect.objectContaining({ providerKey: "deepseek", ready: true, models: ["d-1"] }),
+      expect.objectContaining({ providerKey: "openai", label: "OpenAI", ready: false, models: ["d-1"], missing: ["OPENAI_API_KEY"] }),
+      expect.objectContaining({ providerKey: "anthropic", label: "Claude", ready: true, models: ["q-1", "q-2"], missing: [] }),
+      expect.objectContaining({ providerKey: "deepseek", label: "DeepSeek", ready: false, models: ["deepseek-flash"], missing: ["DEEPSEEK_API_KEY"] }),
     ]);
     expect(JSON.stringify(result.body)).not.toContain(SECRET);
     expect(JSON.stringify(result.body)).not.toContain(TOKEN);
@@ -97,6 +102,34 @@ describe("title writing options", () => {
     expect((await setup({ storageReady: false }).service.options()).body).toMatchObject({ code: "TITLE_WRITING_STORAGE_UNAVAILABLE" });
     expect((await setup({ env: {} }).service.options()).body).toMatchObject({ code: "TITLE_WRITING_PROVIDER_UNCONFIGURED", defaultProvider: null });
   });
+
+  it("allows title writing in production only when explicitly authorized", async () => {
+    expect((await setup({ nodeEnv: "production", allowProduction: false }).service.options()).body)
+      .toMatchObject({ code: "TITLE_WRITING_DISABLED", enabled: false });
+    expect((await setup({ nodeEnv: "production", allowProduction: true }).service.options()).body)
+      .toMatchObject({ code: "TITLE_WRITING_READY", enabled: true });
+  });
+});
+
+describe("who may start a paid run", () => {
+  it("with the site login on, the administrator's session authorizes the start; no token is asked for or needed", async () => {
+    const { service, settle } = setup({ siteOperator: true, operatorToken: null });
+    expect((await service.options()).body).toMatchObject({ code: "TITLE_WRITING_READY", operatorTokenRequired: false });
+    const refused = await service.start(P1, { title: "夜班证词" }, { session: false, token: undefined }, CONTEXT("k0"));
+    expect([refused.status, errorCode(refused.body)]).toEqual([403, "TITLE_WRITING_FORBIDDEN"]);
+    const started = await service.start(P1, { title: "夜班证词" }, { session: true, token: undefined }, CONTEXT("k1"));
+    expect(started.status).toBe(201);
+    await settle();
+  });
+
+  it("without the site login a session claim is worth nothing and the token is still required", async () => {
+    const { service, store } = setup();
+    expect((await service.options()).body).toMatchObject({ operatorTokenRequired: true });
+    const refused = await service.start(P1, { title: "夜班证词" }, { session: true, token: undefined }, CONTEXT("k1"));
+    expect([refused.status, errorCode(refused.body)]).toEqual([403, "TITLE_WRITING_FORBIDDEN"]);
+    expect(store.runs).toHaveLength(0);
+    expect((await setup({ operatorToken: null }).service.options()).body).toMatchObject({ code: "TITLE_WRITING_FORBIDDEN" });
+  });
 });
 
 describe("starting a run", () => {
@@ -107,13 +140,26 @@ describe("starting a run", () => {
     await settle();
     const latest = await service.latest(P1);
     const run = (latest.body as { run: { state: string; storySave: string; providerKey: string; model: string } }).run;
-    expect(run).toMatchObject({ state: "completed", storySave: "saved", providerKey: "qwen", model: "q-1" });
+    // No default configured: the first ready provider in the preference order (Claude) and its first allowlisted model.
+    expect(run).toMatchObject({ state: "completed", storySave: "saved", providerKey: "anthropic", model: "q-1" });
     expect(seen).toHaveLength(5);
     expect(store.projects.get(P1)!.stories[0]?.reviewStatus).toBe("DRAFT");
     const text = JSON.stringify(latest.body);
     expect(text).not.toContain(SECRET);
     expect(text).not.toContain("k1");
     expect(text).not.toContain("executor");
+  });
+
+  it("starts in production only when explicitly authorized", async () => {
+    const blocked = setup({ nodeEnv: "production", allowProduction: false });
+    expect((await blocked.service.start(P1, { title: "夜班证词" }, TOKEN, CONTEXT("k"))).status).toBe(404);
+    await blocked.settle();
+    expect(blocked.seen).toHaveLength(0);
+
+    const authorized = setup({ nodeEnv: "production", allowProduction: true });
+    expect((await authorized.service.start(P1, { title: "夜班证词" }, TOKEN, CONTEXT("k-prod"))).status).toBe(201);
+    await authorized.settle();
+    expect(authorized.seen).toHaveLength(5);
   });
 
   it.each([
@@ -134,7 +180,7 @@ describe("starting a run", () => {
   });
 
   it("names the missing variables of the chosen provider and never falls back to another one", async () => {
-    const { service, seen, store } = setup();
+    const { service, seen, store } = setup({ env: { ANTHROPIC_API_KEY: SECRET, TITLE_WRITING_ANTHROPIC_MODELS: "q-1,q-2" } });
     const result = await service.start(P1, { title: "夜班证词", providerKey: "openai" }, TOKEN, CONTEXT("k"));
     expect(result.status).toBe(503);
     expect(result.body).toMatchObject({ error: { code: "TITLE_WRITING_PROVIDER_UNCONFIGURED", details: { providerKey: "openai",
@@ -156,10 +202,10 @@ describe("starting a run", () => {
 
   it("uses a chosen provider and model from the allowlist", async () => {
     const { service, settle, seen } = setup();
-    const result = await service.start(P1, { title: "夜班证词", providerKey: "deepseek", model: "d-1" }, TOKEN, CONTEXT("k"));
+    const result = await service.start(P1, { title: "夜班证词", providerKey: "openai", model: "d-1" }, TOKEN, CONTEXT("k"));
     expect(result.status).toBe(201);
     await settle();
-    expect(new Set(seen.map((item) => item.url))).toEqual(new Set(["https://api.deepseek.com/chat/completions"]));
+    expect(new Set(seen.map((item) => item.url))).toEqual(new Set(["https://api.openai.com/v1/responses"]));
     expect(seen.every((item) => item.body.model === "d-1")).toBe(true);
   });
 
@@ -297,13 +343,19 @@ describe("environment", () => {
 
   it("is off by default with conservative caps", () => {
     const env = loadApiEnv(base);
-    expect(env).toMatchObject({ TITLE_WRITING_ENABLED: false, TITLE_WRITING_MAX_CALLS_PER_DAY: 30, TITLE_WRITING_MAX_ACTIVE_RUNS: 1 });
+    expect(env).toMatchObject({ TITLE_WRITING_ENABLED: false, TITLE_WRITING_ALLOW_PRODUCTION: false, TITLE_WRITING_MAX_CALLS_PER_DAY: 30, TITLE_WRITING_MAX_ACTIVE_RUNS: 1 });
+  });
+
+  it("parses the production authorization switch strictly, never defaulting to allow", () => {
+    expect(loadApiEnv({ ...base, TITLE_WRITING_ALLOW_PRODUCTION: "true" }).TITLE_WRITING_ALLOW_PRODUCTION).toBe(true);
+    expect(loadApiEnv({ ...base, TITLE_WRITING_ALLOW_PRODUCTION: "false" }).TITLE_WRITING_ALLOW_PRODUCTION).toBe(false);
+    expect(() => loadApiEnv({ ...base, TITLE_WRITING_ALLOW_PRODUCTION: "yes" })).toThrow(/Invalid environment/);
   });
 
   it("reads provider keys and model allowlists only from the process environment", () => {
     const fromFile = loadApiEnv(base, { OPENAI_API_KEY: SECRET, DEEPSEEK_API_KEY: SECRET, TITLE_WRITING_OPENAI_MODELS: "o-1" });
     expect(fromFile.OPENAI_API_KEY).toBeUndefined();
-    expect(fromFile.DEEPSEEK_API_KEY).toBeUndefined();
+    expect((fromFile as unknown as Record<string, unknown>).DEEPSEEK_API_KEY).toBeUndefined();
     expect(fromFile.TITLE_WRITING_OPENAI_MODELS).toBeUndefined();
     const fromProcess = loadApiEnv({ ...base, OPENAI_API_KEY: SECRET, TITLE_WRITING_OPENAI_MODELS: "o-1", TITLE_WRITING_ENABLED: "true" });
     expect(fromProcess).toMatchObject({ OPENAI_API_KEY: SECRET, TITLE_WRITING_OPENAI_MODELS: "o-1", TITLE_WRITING_ENABLED: true });

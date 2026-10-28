@@ -1,7 +1,10 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { titleWritingCallCap, titleWritingRequiredCalls, type TitleWritingProviderKey } from "@ai-drama/contracts";
+import {
+  TITLE_WRITING_PROVIDER_LABELS, TITLE_WRITING_STORED_PROVIDER_KEYS, titleWritingCallCap, titleWritingRequiredCalls,
+  type TitleWritingProviderKey, type TitleWritingStoredProviderKey,
+} from "@ai-drama/contracts";
 import { ApiError, StudioClient } from "../lib/studio-client";
 import {
   TitleWritingClient,
@@ -10,9 +13,12 @@ import {
   isEntityId,
   normalizeOptions,
   optionsUnavailableReason,
+  providerTarget,
+  tokenRequired,
   type StartBody,
   type TitleWritingOptionsView,
 } from "../lib/title-writing-client";
+import { EpisodeWritingGuidance } from "./episode-writing-guidance";
 import styles from "./title-writing.module.css";
 
 const studio = new StudioClient();
@@ -22,7 +28,11 @@ const TITLE_MAX = 60;
 /** A new work's episode plan: the server freezes exactly these into the work and its writing run. */
 const EPISODE_COUNTS = [1, 2, 3, 4, 5, 6];
 const SECONDS: ReadonlyArray<{ value: number; label: string }> = [{ value: 60, label: "约 1 分钟" }, { value: 90, label: "约 1.5 分钟" }];
-const PROVIDERS: readonly TitleWritingProviderKey[] = ["qwen", "openai", "deepseek"];
+/**
+ * A stored start may name a retired provider: it stays readable and can still be replayed (the server answers from the
+ * run it created, or refuses without creating anything); it is never dropped as damaged.
+ */
+const STORED_PROVIDERS: readonly string[] = TITLE_WRITING_STORED_PROVIDER_KEYS;
 
 /**
  * One start whose result is not confirmed yet: the frozen request exactly as sent, and the keys of both writes.
@@ -57,7 +67,7 @@ function isPendingStart(value: unknown): value is PendingStart {
     && (draft.projectId === null || typeof draft.projectId === "string")
     && !!request && typeof request.title === "string" && !!request.settings
     && typeof request.settings.episodeSeconds === "number" && typeof request.settings.style === "string"
-    && (request.providerKey === undefined || PROVIDERS.includes(request.providerKey))
+    && (request.providerKey === undefined || STORED_PROVIDERS.includes(request.providerKey))
     && (request.model === undefined || typeof request.model === "string");
   if (!common) return false;
   if ((value as { version?: unknown }).version === 2) return true;
@@ -129,6 +139,13 @@ function startError(caught: unknown, projectCreated: boolean): string {
       return `${work}这部作品正在进行剧本拆解，标题创作暂时不能开始。本次请求没有创建任务，也没有发出模型调用。等拆解结束后，可以重试上次请求（使用同一个请求标识）。`;
     }
     if (caught.code === "TITLE_WRITING_PROVIDER_UNCONFIGURED") return `${work}所选模型服务没有配置完整${missing ? `（缺少 ${missing}）` : ""}，本次请求没有被受理。${previous}`;
+    if (caught.code === "TITLE_WRITING_PROVIDER_RETIRED") {
+      // Refused only after the server found no run for this request identity: nothing was created or sent, now or before.
+      return `${work}上次请求选择的模型服务（${String(caught.details?.label ?? caught.details?.providerKey ?? "")}）已经退役。服务端没有找到这次请求创建的任务，也没有发出模型调用。可以放弃上次请求，改用 DeepSeek、Claude 或 OpenAI 重新开始。`;
+    }
+    if (caught.code === "TITLE_WRITING_PROVIDER_STORAGE_UNAVAILABLE") {
+      return `${work}所选模型服务的数据库迁移还没有执行，本次请求没有创建任务，也没有发出模型调用。可以改用其他已就绪的模型服务。`;
+    }
     if (caught.code === "TITLE_WRITING_DAILY_QUOTA_LOW") {
       const required = Number(caught.details?.requiredCalls);
       const remaining = Number(caught.details?.remainingCalls);
@@ -151,7 +168,10 @@ export function TitleWritingStart() {
   const [episodeCount, setEpisodeCount] = useState(3);
   const [seconds, setSeconds] = useState(90);
   const [style, setStyle] = useState("");
-  const [providerKey, setProviderKey] = useState<TitleWritingProviderKey | "">("");
+  // A replayed start may still carry a retired provider; the picker only ever offers ready active providers.
+  const [providerKey, setProviderKey] = useState<TitleWritingStoredProviderKey | "">("");
+  // True once the person picked a provider themselves; the configured default is never replaced on their behalf.
+  const [providerExplicit, setProviderExplicit] = useState(false);
   const [model, setModel] = useState("");
   const [token, setToken] = useState("");
   const [pending, setPending] = useState<PendingStart | null>(null);
@@ -211,11 +231,16 @@ export function TitleWritingStart() {
   const planUnavailable = optionsLoaded && options && !unavailable && options.episodePlanReady !== true
     ? "集数和时长设置还没有在服务器上就绪（数据库迁移尚未执行），暂时不能用 AI 一键创作新作品。可以先手动创作。" : null;
   const readyProviders = options?.providers.filter((item) => item.ready) ?? [];
-  const chosen = readyProviders.find((item) => item.providerKey === providerKey) ?? null;
+  // With the site login on, the signed-in administrator authorizes the call; no token field is shown or sent.
+  const needsToken = tokenRequired(options);
+  // A configured default that is not ready stays chosen and blocks the start until the person picks a ready one.
+  const target = options ? providerTarget(options.providers, providerKey, providerExplicit) : { kind: "none" as const };
+  const chosen = target.kind === "ready" ? target.option : null;
   const locked = busy || pending !== null;
 
   function chooseProvider(next: TitleWritingProviderKey) {
     setProviderKey(next);
+    setProviderExplicit(true);
     setModel(readyProviders.find((item) => item.providerKey === next)?.defaultModel ?? "");
   }
 
@@ -248,7 +273,7 @@ export function TitleWritingStart() {
       }
       const projectId = current.projectId!;
       try {
-        await writing.start(projectId, current.request, { token: token.trim(), idempotencyKey: current.runKey });
+        await writing.start(projectId, current.request, { token: needsToken ? token.trim() : "", idempotencyKey: current.runKey });
       } catch (caught) {
         // Another start of this work is already running: show that one instead of starting a second.
         if (!(caught instanceof TitleWritingError && caught.code === "TITLE_WRITING_RUN_ACTIVE")) throw caught;
@@ -277,7 +302,7 @@ export function TitleWritingStart() {
       setError(planUnavailable);
       return false;
     }
-    if (token.trim().length === 0) {
+    if (needsToken && token.trim().length === 0) {
       setError("请先在「配置与权限」填写操作者令牌。它只用于确认这次调用由你发起，不属于故事内容。");
       tokenRef.current?.focus();
       return false;
@@ -298,6 +323,10 @@ export function TitleWritingStart() {
       return;
     }
     if (!checkReady(null)) return;
+    if (target.kind === "blocked") {
+      setError(target.reason);
+      return;
+    }
     const draft: PendingStart = {
       version: 3,
       plan: { episodeCount, targetEpisodeSeconds: seconds },
@@ -390,7 +419,8 @@ export function TitleWritingStart() {
             disabled={locked} onChange={(event) => setStyle(event.target.value)} />
           {pending?.request.providerKey ? (
             <p className={styles.fixed}>
-              模型服务：{options?.providers.find((item) => item.providerKey === pending.request.providerKey)?.label ?? pending.request.providerKey}
+              模型服务：{options?.providers.find((item) => item.providerKey === pending.request.providerKey)?.label
+                ?? TITLE_WRITING_PROVIDER_LABELS[pending.request.providerKey as TitleWritingStoredProviderKey] ?? pending.request.providerKey}
               {" · "}{pending.request.model ?? "默认模型"}（上次提交的选择）
             </p>
           ) : readyProviders.length > 0 ? (
@@ -398,6 +428,7 @@ export function TitleWritingStart() {
               <label className={styles.label} htmlFor="ai-provider">模型服务</label>
               <select id="ai-provider" className={styles.input} value={providerKey} disabled={locked}
                 onChange={(event) => chooseProvider(event.target.value as TitleWritingProviderKey)}>
+                {target.kind === "blocked" ? <option value={providerKey} disabled>{options?.providers.find((item) => item.providerKey === providerKey)?.label}（暂不可用）</option> : null}
                 {readyProviders.map((item) => <option key={item.providerKey} value={item.providerKey}>{item.label}</option>)}
               </select>
               <label className={styles.label} htmlFor="ai-model">模型</label>
@@ -408,6 +439,7 @@ export function TitleWritingStart() {
           ) : null}
         </div>
       </details>
+      <EpisodeWritingGuidance />
       <div className={styles.actions}>
         <button className={styles.primary} type="button" disabled={busy || !optionsLoaded} onClick={() => void start()}>
           {busy ? "正在启动…" : pending ? "重试上次请求" : "AI 一键创作"}
@@ -428,10 +460,24 @@ export function TitleWritingStart() {
             开始前剩余次数少于正常需要的次数时，不会创建任务。费用以服务商账单为准，本页不估算金额。
           </p>
         ) : null}
-        <label className={styles.label} htmlFor="ai-token">操作者令牌</label>
-        <input ref={tokenRef} id="ai-token" className={styles.input} type="password" autoComplete="off" value={token}
-          disabled={busy} onChange={(event) => setToken(event.target.value)} />
-        <p className={styles.helper}>只保存在本页内存，用来确认这次可能计费的调用由你发起；不写入浏览器存储，也不进入故事内容。模型密钥只在服务端。</p>
+        {options && !unavailable && !pending && chosen ? (
+          <p className={styles.helper} data-testid="ai-provider-target">本次发送给：{chosen.label} · {model || chosen.defaultModel}</p>
+        ) : null}
+        {options && !unavailable && !pending && target.kind === "blocked" ? (
+          <p className={styles.warning} role="status" data-testid="ai-provider-blocked">
+            {options.configurationPending ? "后台已保存新的模型配置，需要服务器重启 API 后才会生效。" : null}{target.reason}
+          </p>
+        ) : null}
+        {needsToken ? (
+          <>
+            <label className={styles.label} htmlFor="ai-token">操作者令牌</label>
+            <input ref={tokenRef} id="ai-token" className={styles.input} type="password" autoComplete="off" value={token}
+              disabled={busy} onChange={(event) => setToken(event.target.value)} />
+            <p className={styles.helper}>只保存在本页内存，用来确认这次可能计费的调用由你发起；不写入浏览器存储，也不进入故事内容。模型密钥只在服务端。</p>
+          </>
+        ) : (
+          <p className={styles.helper}>调用权限由当前管理员登录确认，不需要填写操作者令牌。模型密钥只在服务端。</p>
+        )}
       </section>
     </section>
   );

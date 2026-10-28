@@ -793,7 +793,7 @@ export async function insertProject(
     );
   const row = result.rows[0];
   if (!row) throw new PersistenceError("PROJECT_CREATE_FAILED", "Project was not created");
-  return { ...mapProject(row), ...(input.plan ?? LEGACY_EPISODE_PLAN) };
+  return { ...mapProject(row), ...(input.plan ? { ...input.plan, writingMode: "short" as const } : LEGACY_EPISODE_PLAN) };
 }
 
 function mapLease(row: QueryResultRow): ExpiredLeaseRow {

@@ -412,7 +412,7 @@ describe("works with an episode plan of N = 1, 3, 6", () => {
     const project = await projectWith(ws, `作品${String(count)}`, { episodeCount: count, targetEpisodeSeconds: 60 });
     const client = await pool.connect();
     try {
-      expect(await projectEpisodePlanIn(client, ws, project)).toEqual({ episodeCount: count, targetEpisodeSeconds: 60 });
+      expect(await projectEpisodePlanIn(client, ws, project)).toEqual({ episodeCount: count, targetEpisodeSeconds: 60, writingMode: "short" });
     } finally {
       client.release();
     }

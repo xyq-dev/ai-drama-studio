@@ -531,16 +531,27 @@ describe("M2 text chain schema", () => {
         [graph.unlinkedCharacterRevisionId],
       );
 
-      const insertAttempt = pool.query(
-        `INSERT INTO character_revision_script_source
-          (workspace_id, project_id, character_revision_id, script_revision_id)
-         VALUES ($1, $2, $3, $4)`,
-        [graph.workspaceId, graph.projectId, graph.unlinkedCharacterRevisionId, graph.scriptRevisionId],
-      );
+      // Settle into a tagged outcome as soon as the query exists: the INSERT may reject the moment COMMIT releases the
+      // lock, before the assertion below runs, and an unhandled rejection there fails the whole run.
+      const insertOutcome = pool
+        .query(
+          `INSERT INTO character_revision_script_source
+            (workspace_id, project_id, character_revision_id, script_revision_id)
+           VALUES ($1, $2, $3, $4)`,
+          [graph.workspaceId, graph.projectId, graph.unlinkedCharacterRevisionId, graph.scriptRevisionId],
+        )
+        .then(
+          () => ({ status: "inserted" as const }),
+          (error: unknown) => ({ status: "rejected" as const, error }),
+        );
 
       await waitForLockContaining("character_revision");
       await holder.query("COMMIT");
-      await expect(insertAttempt).rejects.toThrow(/provenance is frozen after draft/i);
+      const outcome = await insertOutcome;
+      expect(outcome.status).toBe("rejected");
+      if (outcome.status !== "rejected") throw new Error("provenance insert succeeded after the review transition");
+      expect(outcome.error).toBeInstanceOf(Error);
+      expect((outcome.error as Error).message).toMatch(/provenance is frozen after draft/i);
 
       const edges = await pool.query<{ count: number } & QueryResultRow>(
         "SELECT COUNT(*)::int AS count FROM character_revision_script_source WHERE character_revision_id = $1",

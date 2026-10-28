@@ -1,5 +1,6 @@
 import {
   assertProductionEpisodeSet,
+  assertSeriesEpisodeSet,
   assertReviewTransition,
   canonicalInputHash,
   type ReviewStatus,
@@ -1576,7 +1577,8 @@ export class TextChainService {
   async assertProductionEpisodes(workspaceId: string, projectId: string): Promise<void> {
     const client = await this.pool.connect();
     try {
-      const { episodeCount } = await projectEpisodePlanIn(client, workspaceId, projectId);
+      const { episodeCount, writingMode } = await projectEpisodePlanIn(client, workspaceId, projectId);
+      if (writingMode === "series") throw new PersistenceError("SERIES_MEDIA_NOT_ENABLED", "Media production is not enabled for series works");
       const rows = await client.query<{ episode_no: number } & QueryResultRow>(
         `SELECT episode_no FROM episode WHERE workspace_id = $1 AND project_id = $2`,
         [workspaceId, projectId],
@@ -2592,7 +2594,7 @@ async function ensureEpisodes(
   workspaceId: string,
   projectId: string,
 ): Promise<void> {
-  const { episodeCount } = await projectEpisodePlanIn(client, workspaceId, projectId);
+  const { episodeCount, writingMode } = await projectEpisodePlanIn(client, workspaceId, projectId);
   await client.query(
     `INSERT INTO episode (workspace_id, project_id, episode_no, title)
      SELECT $1, $2, episode_no, 'Episode ' || episode_no::text
@@ -2604,7 +2606,9 @@ async function ensureEpisodes(
     `SELECT episode_no FROM episode WHERE workspace_id = $1 AND project_id = $2`,
     [workspaceId, projectId],
   );
-  assertProductionEpisodeSet(rows.rows.map((row) => row.episode_no), episodeCount);
+  // A series work's episodes are text episodes (1–60); a short-drama work keeps the production episode set (1–6).
+  if (writingMode === "series") assertSeriesEpisodeSet(rows.rows.map((row) => row.episode_no), episodeCount);
+  else assertProductionEpisodeSet(rows.rows.map((row) => row.episode_no), episodeCount);
 }
 
 const STALE_SYNC_LIMIT = 200;

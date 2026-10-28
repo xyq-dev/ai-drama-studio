@@ -69,15 +69,16 @@
 
 | 变量 | 用途 |
 | --- | --- |
-| `TITLE_WRITING_ENABLED` | 总开关，默认 `false`；生产强制关闭（与千问网页调用一致，待审查后再开）。 |
-| `TITLE_WRITING_OPERATOR_TOKEN` | 发起、续跑时的操作者令牌（16–200 字符）。 |
-| `TITLE_WRITING_DEFAULT_PROVIDER` | `qwen` / `openai` / `deepseek`。 |
+| `TITLE_WRITING_ENABLED` | 总开关，默认 `false`；生产默认关闭。 |
+| `TITLE_WRITING_ALLOW_PRODUCTION` | 仅进程环境读取的标题创作生产授权开关，忽略仓库 `.env`；默认 `false`，严格 `true`/`false`，空值或非法值拒绝启动。生产下还需 `TITLE_WRITING_ENABLED=true` 和有效站点登录配置；不授权拆解或其他付费功能，包括后台恢复。 |
+| `SCRIPT_BREAKDOWN_ENABLED` | 剧本拆解开关，默认 `false`，严格 `true`/`false`。仅当非 production、`TITLE_WRITING_ENABLED=true` 且本开关为 `true` 时开启拆解；只开标题创作不会启动或在后台恢复拆解任务。production 下始终关闭。 |
+| `TITLE_WRITING_OPERATOR_TOKEN` | 发起、续跑时的操作者令牌（16–200 字符）。站点登录开启时不需要：登录的管理员会话（Origin + CSRF）即授权，页面不再显示令牌框（2026-10-16，见 [`OPENAI_CLAUDE_WRITING.md`](OPENAI_CLAUDE_WRITING.md)）。 |
+| `TITLE_WRITING_DEFAULT_PROVIDER` | `openai` / `anthropic`。旧值 `qwen` / `deepseek` 仍可解析以免 API 无法启动，但等同未设默认（2026-10-16，见 [`OPENAI_CLAUDE_WRITING.md`](OPENAI_CLAUDE_WRITING.md)）。 |
 | `TITLE_WRITING_MAX_CALLS_PER_DAY` | 工作区 24 小时调用上限，默认 30。 |
 | `TITLE_WRITING_MAX_ACTIVE_RUNS` | 同时进行的运行数，默认 1。 |
-| `DASHSCOPE_API_KEY`、`BAILIAN_BASE_URL` | 千问密钥与官方 compatible-mode 端点（沿用既有校验）。 |
-| `TITLE_WRITING_QWEN_MODELS` | 千问可选模型 ID，逗号分隔，第一个为默认。 |
+| `ANTHROPIC_API_KEY`、`TITLE_WRITING_ANTHROPIC_MODELS` | Claude 密钥与模型白名单。端点固定 `https://api.anthropic.com/v1/messages`。（取代已退役的千问 `DASHSCOPE_API_KEY`、`BAILIAN_BASE_URL`、`TITLE_WRITING_QWEN_MODELS`。） |
 | `OPENAI_API_KEY`、`TITLE_WRITING_OPENAI_MODELS` | OpenAI 密钥与模型白名单。端点固定 `https://api.openai.com/v1/responses`。 |
-| `DEEPSEEK_API_KEY`、`TITLE_WRITING_DEEPSEEK_MODELS` | DeepSeek 密钥与模型白名单。端点固定 `https://api.deepseek.com/chat/completions`。 |
+| `DEEPSEEK_API_KEY`、`TITLE_WRITING_DEEPSEEK_MODELS` | 已退役，不再读取。 |
 
 密钥和模型名只从进程环境读取，不读 `.env` 文件。
 

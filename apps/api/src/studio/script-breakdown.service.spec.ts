@@ -8,7 +8,7 @@ import {
   titleWritingProviderConfigs,
   type TitleWritingProviderEnv,
 } from "@ai-drama/providers";
-import { chatAnswer, fixtureChatTransport, type FixtureExchange, type FixtureStep } from "@ai-drama/providers/title-writing-fixtures";
+import { messagesAnswer, fixtureChatTransport, type FixtureExchange, type FixtureStep } from "@ai-drama/providers/title-writing-fixtures";
 import { ScriptBreakdownService } from "./script-breakdown.service";
 import { TitleWritingService } from "./title-writing.service";
 
@@ -20,15 +20,14 @@ const WS = "11111111-1111-4111-8111-111111111111";
 const P1 = "22222222-2222-4222-8222-222222222222";
 const TOKEN = "operator-token-0123456789";
 const ENV: TitleWritingProviderEnv = {
-  DASHSCOPE_API_KEY: "sk-test-not-a-real-key-000", BAILIAN_BASE_URL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-  TITLE_WRITING_QWEN_MODELS: "q-1",
+  ANTHROPIC_API_KEY: "sk-ant-api03-test-not-a-real-key-000", TITLE_WRITING_ANTHROPIC_MODELS: "q-1",
 };
 const CONTEXT = (key?: string) => ({ actorId: "server-owner", traceId: "t", idempotencyKey: key });
 type Override = (step: FixtureStep, attempt: number) => { status: number; body: unknown } | "hang" | "throw" | undefined;
 
 const SCRIPT = "第 1 集\n场 1 便利店 夜\n林夏盯着监控。\n林夏：这不是我。\n场 2 天台 夜\n周野推开铁门。\n周野：你来了。";
 
-function setup(options: { enabled?: boolean; breakdownReady?: boolean; override?: Override; maxCallsPerDay?: number; approved?: boolean } = {}) {
+function setup(options: { enabled?: boolean; nodeEnv?: "development" | "test" | "production"; breakdownReady?: boolean; override?: Override; maxCallsPerDay?: number; approved?: boolean } = {}) {
   const store = new InMemoryTitleWritingStore();
   store.breakdownReady = options.breakdownReady ?? true;
   const episode = store.addBreakdownEpisode({ workspaceId: WS, projectId: P1, episodeNo: 1, text: SCRIPT, approved: options.approved ?? true, targetEpisodeSeconds: 60 });
@@ -44,7 +43,7 @@ function setup(options: { enabled?: boolean; breakdownReady?: boolean; override?
       return { id: projectId } as never;
     },
   };
-  const common = { workspaceId: WS, nodeEnv: "test" as const, enabled: options.enabled ?? true, operatorToken: TOKEN, defaultProvider: null, providers,
+  const common = { workspaceId: WS, nodeEnv: options.nodeEnv ?? "test", enabled: options.enabled ?? true, operatorToken: TOKEN, defaultProvider: null, providers,
     store, engine, maxCallsPerDay, maxActiveRuns: 1, schedule: (work: () => Promise<void>) => { pending.push(work); } };
   const service = new ScriptBreakdownService({ ...common, projects });
   const title = new TitleWritingService({ ...common, projects: { ...projects,
@@ -62,6 +61,7 @@ describe("starting a script breakdown", () => {
   it("refuses before anything is created or sent: switch off, wrong token, storage not migrated, missing key", async () => {
     for (const [options, token, key, status, code] of [
       [{ enabled: false }, TOKEN, "k", 404, "TITLE_WRITING_DISABLED"],
+      [{ nodeEnv: "production" as const }, TOKEN, "k", 404, "TITLE_WRITING_DISABLED"],
       [{}, "wrong-token-0000000000", "k", 403, "TITLE_WRITING_FORBIDDEN"],
       [{ breakdownReady: false }, TOKEN, "k", 503, "SCRIPT_BREAKDOWN_STORAGE_UNAVAILABLE"],
       [{}, TOKEN, "", 400, "VALIDATION_ERROR"],
@@ -112,7 +112,7 @@ describe("starting a script breakdown", () => {
   it("counts against the shared daily quota and refuses a start without a call left", async () => {
     const { store, start, seen } = setup({ maxCallsPerDay: 2 });
     for (let index = 0; index < 2; index += 1) {
-      store.calls.push({ id: randomUUID(), runId: randomUUID(), workspaceId: WS, stepKey: "concept", attemptNo: 1, providerKey: "qwen", model: "q-1",
+      store.calls.push({ id: randomUUID(), runId: randomUUID(), workspaceId: WS, stepKey: "concept", attemptNo: 1, providerKey: "anthropic", model: "q-1",
         requestHash: "0".repeat(64), state: "completed", executorId: "earlier", providerRequestId: null, responseModel: null,
         usage: { status: "unknown", inputTokens: null, outputTokens: null, totalTokens: null }, errorCode: null,
         createdAt: new Date().toISOString(), finishedAt: new Date().toISOString() });
@@ -152,7 +152,7 @@ describe("starting a script breakdown", () => {
 
   it("fails an invalid answer without a template or a second call, and resumes only on request", async () => {
     const { service, episode, start, settle, runOf, seen, store } = setup({
-      override: (_step, attempt) => attempt === 1 ? { status: 200, body: chatAnswer({ schema: "ads.script-breakdown.output.v1", episodeNo: 1, scenes: [], shots: [] }) } : undefined,
+      override: (_step, attempt) => attempt === 1 ? { status: 200, body: messagesAnswer({ schema: "ads.script-breakdown.output.v1", episodeNo: 1, scenes: [], shots: [] }) } : undefined,
     });
     const started = await start();
     await settle();
@@ -201,7 +201,7 @@ describe("starting a script breakdown", () => {
 
 describe("resuming a script breakdown only against its frozen, still current script", () => {
   const failFirst: Override = (_step, attempt) => attempt === 1
-    ? { status: 200, body: chatAnswer({ schema: "ads.script-breakdown.output.v1", episodeNo: 1, scenes: [], shots: [] }) } : undefined;
+    ? { status: 200, body: messagesAnswer({ schema: "ads.script-breakdown.output.v1", episodeNo: 1, scenes: [], shots: [] }) } : undefined;
   const changes: Array<[string, (store: InMemoryTitleWritingStore, episodeId: string) => void]> = [
     ["a newer approved script replaced it", (store, episodeId) => { store.writeScript(episodeId, `${SCRIPT}\n周野：第二版。`); }],
     ["a newer draft left the current script unapproved", (store, episodeId) => { store.writeScript(episodeId, `${SCRIPT}\n周野：草稿。`, false); }],
@@ -250,7 +250,7 @@ describe("resuming a script breakdown only against its frozen, still current scr
 });
 
 describe("replaying a breakdown start after the provider settings changed", () => {
-  const DEEPSEEK_TOO: TitleWritingProviderEnv = { ...ENV, DEEPSEEK_API_KEY: "sk-test-deepseek-not-real-0", TITLE_WRITING_DEEPSEEK_MODELS: "d-1" };
+  const OPENAI_TOO: TitleWritingProviderEnv = { ...ENV, OPENAI_API_KEY: "sk-test-openai-not-real-0", TITLE_WRITING_OPENAI_MODELS: "d-1" };
 
   it("answers the same request and key with the original run, without a second run or send", async () => {
     const { store, episode, start, settle, runOf, seen, reconfigured } = setup();
@@ -260,13 +260,13 @@ describe("replaying a breakdown start after the provider settings changed", () =
     const replayWith = (service: ScriptBreakdownService, body: unknown = {}, episodeId = episode.episodeId) =>
       service.start(P1, episodeId, body, TOKEN, CONTEXT(key));
     for (const service of [
-      reconfigured({ ...ENV, TITLE_WRITING_QWEN_MODELS: "q-2,q-1" }, null), // another default model
-      reconfigured(DEEPSEEK_TOO, "deepseek"), // another default provider
-      reconfigured({ ...ENV, DASHSCOPE_API_KEY: undefined }, null), // the original provider is no longer configured
+      reconfigured({ ...ENV, TITLE_WRITING_ANTHROPIC_MODELS: "q-2,q-1" }, null), // another default model
+      reconfigured(OPENAI_TOO, "openai"), // another default provider
+      reconfigured({ ...ENV, ANTHROPIC_API_KEY: undefined }, null), // the original provider is no longer configured
       reconfigured({}, null), // no provider is configured at all
     ]) {
       const replay = await replayWith(service);
-      expect([replay.status, runOf(replay).runId, runOf(replay).providerKey, runOf(replay).model]).toEqual([200, first.runId, "qwen", "q-1"]);
+      expect([replay.status, runOf(replay).runId, runOf(replay).providerKey, runOf(replay).model]).toEqual([200, first.runId, "anthropic", "q-1"]);
     }
     expect([store.runs.length, seen.length]).toEqual([1, 1]);
   });
@@ -276,8 +276,8 @@ describe("replaying a breakdown start after the provider settings changed", () =
     const key = randomUUID();
     await start({}, key);
     await settle();
-    const changed = reconfigured(DEEPSEEK_TOO, "deepseek");
-    for (const body of [{ replaceExisting: true }, { providerKey: "deepseek" }, { providerKey: "qwen", model: "q-2" }]) {
+    const changed = reconfigured(OPENAI_TOO, "openai");
+    for (const body of [{ replaceExisting: true }, { providerKey: "openai" }, { providerKey: "anthropic", model: "q-2" }]) {
       const other = await changed.start(P1, episode.episodeId, body, TOKEN, CONTEXT(key));
       expect([other.status, (other.body as { error: { code: string } }).error.code]).toEqual([409, "IDEMPOTENCY_KEY_REUSED"]);
     }
@@ -286,7 +286,7 @@ describe("replaying a breakdown start after the provider settings changed", () =
     expect([elsewhere.status, (elsewhere.body as { error: { code: string } }).error.code]).toEqual([409, "IDEMPOTENCY_KEY_REUSED"]);
     // A new key is a new request: it takes the current default provider, and an unconfigured provider is refused.
     const fresh = await changed.start(P1, otherEpisode.episodeId, {}, TOKEN, CONTEXT(randomUUID()));
-    expect([fresh.status, runOf(fresh).providerKey, runOf(fresh).model]).toEqual([201, "deepseek", "d-1"]);
+    expect([fresh.status, runOf(fresh).providerKey, runOf(fresh).model]).toEqual([201, "openai", "d-1"]);
     const unconfigured = await reconfigured({}, null).start(P1, otherEpisode.episodeId, { replaceExisting: true }, TOKEN, CONTEXT(randomUUID()));
     expect([unconfigured.status, (unconfigured.body as { error: { code: string } }).error.code]).toEqual([503, "TITLE_WRITING_PROVIDER_UNCONFIGURED"]);
     // A replay still needs the operator token and a work the caller can reach.
@@ -301,7 +301,7 @@ describe("replaying an accepted resume", () => {
   const RESUME_KEY = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
   // Both the first call and the resumed call are refused, so the run ends failed again after the accepted resume.
   const failTwice: Override = (_step, attempt) => attempt <= 2
-    ? { status: 200, body: chatAnswer({ schema: "ads.script-breakdown.output.v1", episodeNo: 1, scenes: [], shots: [] }) } : undefined;
+    ? { status: 200, body: messagesAnswer({ schema: "ads.script-breakdown.output.v1", episodeNo: 1, scenes: [], shots: [] }) } : undefined;
   const code = (result: { body: unknown }) => (result.body as { error?: { code: string } }).error?.code;
 
   it("returns the accepted resume's run after the provider was disabled, the source changed or the run moved on, without a send", async () => {
@@ -422,7 +422,7 @@ describe("saving an answer that arrived before a cancel", () => {
 
   it("still holds a resume that sends again to the provider check and to the unknown-call confirmation", async () => {
     const refusedFirst: Override = (_step, attempt) => attempt === 1
-      ? { status: 200, body: chatAnswer({ schema: "ads.script-breakdown.output.v1", episodeNo: 1, scenes: [], shots: [] }) } : undefined;
+      ? { status: 200, body: messagesAnswer({ schema: "ads.script-breakdown.output.v1", episodeNo: 1, scenes: [], shots: [] }) } : undefined;
     const rejected = setup({ override: refusedFirst });
     const runId = rejected.runOf(await rejected.start()).runId;
     await rejected.settle();
@@ -486,7 +486,7 @@ describe("resuming a run stopped before its first call was reserved", () => {
     const { store, service, episode, start, settle, runOf, seen, reconfigured } = setup({ maxCallsPerDay: 1 });
     const runId = runOf(await start()).runId;
     // Another call takes the last one of the day after the start's check: the reservation is refused, nothing is sent.
-    store.calls.push({ id: randomUUID(), runId: randomUUID(), workspaceId: WS, stepKey: "concept", attemptNo: 1, providerKey: "qwen", model: "q-1",
+    store.calls.push({ id: randomUUID(), runId: randomUUID(), workspaceId: WS, stepKey: "concept", attemptNo: 1, providerKey: "anthropic", model: "q-1",
       requestHash: "0".repeat(64), state: "completed", executorId: "elsewhere", providerRequestId: null, responseModel: null,
       usage: { status: "unknown", inputTokens: null, outputTokens: null, totalTokens: null }, errorCode: null,
       createdAt: new Date().toISOString(), finishedAt: new Date().toISOString() });
@@ -503,7 +503,7 @@ describe("resuming a run stopped before its first call was reserved", () => {
 describe("replaying a resume whose receipt was committed while the request was in flight", () => {
   // The first call is refused, so the run is failed before the resume; the resumed call answers normally.
   const failOnce: Override = (_step, attempt) => attempt <= 1
-    ? { status: 200, body: chatAnswer({ schema: "ads.script-breakdown.output.v1", episodeNo: 1, scenes: [], shots: [] }) } : undefined;
+    ? { status: 200, body: messagesAnswer({ schema: "ads.script-breakdown.output.v1", episodeNo: 1, scenes: [], shots: [] }) } : undefined;
   const code = (result: { body: unknown }) => (result.body as { error?: { code: string } }).error?.code;
   const deferred = () => {
     let release!: () => void;
@@ -599,37 +599,44 @@ describe("replaying a resume whose receipt was committed while the request was i
 });
 
 describe("choosing the provider of a new start", () => {
-  const QWEN_DOWN: TitleWritingProviderEnv = { DEEPSEEK_API_KEY: "sk-test-deepseek-not-real-0", TITLE_WRITING_DEEPSEEK_MODELS: "d-1" };
-  const BOTH: TitleWritingProviderEnv = { ...ENV, ...QWEN_DOWN };
+  const CLAUDE_DOWN: TitleWritingProviderEnv = { OPENAI_API_KEY: "sk-test-openai-not-real-0", TITLE_WRITING_OPENAI_MODELS: "d-1" };
+  const BOTH: TitleWritingProviderEnv = { ...ENV, ...CLAUDE_DOWN };
   const error = (result: { body: unknown }) => (result.body as { error?: { code: string; details?: unknown } }).error;
   const defaultOf = async (service: ScriptBreakdownService) => ((await service.options()).body as { defaultProvider: string | null }).defaultProvider;
 
-  it("uses the configured default only when it is ready, otherwise the first ready provider, the same one options reports", async () => {
+  it("uses the configured default as it is and never replaces it; without one, the first ready provider (Claude first)", async () => {
     const { store, episode, settle, runOf, seen, reconfigured } = setup();
-    const fallback = reconfigured(QWEN_DOWN, "qwen");
-    expect(await defaultOf(fallback)).toBe("deepseek");
-    const started = await fallback.start(P1, episode.episodeId, {}, TOKEN, CONTEXT(randomUUID()));
-    expect([started.status, runOf(started).providerKey, runOf(started).model]).toEqual([201, "deepseek", "d-1"]);
+    // The configured default (Claude) is not ready: it is still the default, a start without a provider is refused
+    // before anything is written, and OpenAI is used only when the request names it.
+    const unready = reconfigured(CLAUDE_DOWN, "anthropic");
+    expect(await defaultOf(unready)).toBe("anthropic");
+    const refused = await unready.start(P1, episode.episodeId, {}, TOKEN, CONTEXT(randomUUID()));
+    expect([refused.status, error(refused)]).toEqual([503,
+      expect.objectContaining({ code: "TITLE_WRITING_PROVIDER_UNCONFIGURED", details: expect.objectContaining({ providerKey: "anthropic" }) })]);
+    expect(store.runs).toEqual([]);
+    const started = await unready.start(P1, episode.episodeId, { providerKey: "openai" }, TOKEN, CONTEXT(randomUUID()));
+    expect([started.status, runOf(started).providerKey, runOf(started).model]).toEqual([201, "openai", "d-1"]);
     await settle();
-    for (const [defaultProvider, expected] of [["qwen", "qwen"], ["deepseek", "deepseek"], [null, "qwen"]] as const) {
+    expect(await defaultOf(reconfigured(CLAUDE_DOWN, null))).toBe("openai");
+    for (const [defaultProvider, expected] of [["anthropic", "anthropic"], ["openai", "openai"], [null, "anthropic"]] as const) {
       const service = reconfigured(BOTH, defaultProvider);
       expect(await defaultOf(service)).toBe(expected);
       const next = await service.start(P1, episode.episodeId, { replaceExisting: true }, TOKEN, CONTEXT(randomUUID()));
-      expect([next.status, runOf(next).providerKey, runOf(next).model]).toEqual([201, expected, expected === "qwen" ? "q-1" : "d-1"]);
+      expect([next.status, runOf(next).providerKey, runOf(next).model]).toEqual([201, expected, expected === "anthropic" ? "q-1" : "d-1"]);
       await settle();
     }
-    // This engine only reaches qwen (the deepseek runs stop before a send); what matters here is what each run froze.
-    expect([store.runs.map((run) => run.input.providerKey), seen.length]).toEqual([["deepseek", "qwen", "deepseek", "qwen"], 2]);
+    // This engine only reaches Claude (the OpenAI runs stop before a send); what matters here is what each run froze.
+    expect([store.runs.map((run) => run.input.providerKey), seen.length]).toEqual([["openai", "anthropic", "openai", "anthropic"], 2]);
   });
 
   it("never swaps a provider named in the request, refuses when none is ready, and checks the model against the chosen provider", async () => {
     const { store, episode, settle, seen, reconfigured } = setup();
-    const fallback = reconfigured(QWEN_DOWN, "qwen");
+    const fallback = reconfigured(CLAUDE_DOWN, "anthropic");
     for (const [service, body, status, expected] of [
-      [fallback, { providerKey: "qwen" }, 503, { code: "TITLE_WRITING_PROVIDER_UNCONFIGURED", details: expect.objectContaining({ providerKey: "qwen" }) }],
-      [reconfigured({}, "qwen"), {}, 503, { code: "TITLE_WRITING_PROVIDER_UNCONFIGURED" }],
-      [fallback, { model: "q-1" }, 400, { code: "TITLE_WRITING_MODEL_UNAVAILABLE", details: { providerKey: "deepseek" } }],
-      [fallback, { providerKey: "deepseek", model: "q-1" }, 400, { code: "TITLE_WRITING_MODEL_UNAVAILABLE", details: { providerKey: "deepseek" } }],
+      [fallback, { providerKey: "anthropic" }, 503, { code: "TITLE_WRITING_PROVIDER_UNCONFIGURED", details: expect.objectContaining({ providerKey: "anthropic" }) }],
+      [reconfigured({}, "anthropic"), {}, 503, { code: "TITLE_WRITING_PROVIDER_UNCONFIGURED" }],
+      [reconfigured(CLAUDE_DOWN, null), { model: "q-1" }, 400, { code: "TITLE_WRITING_MODEL_UNAVAILABLE", details: { providerKey: "openai" } }],
+      [fallback, { providerKey: "openai", model: "q-1" }, 400, { code: "TITLE_WRITING_MODEL_UNAVAILABLE", details: { providerKey: "openai" } }],
     ] as const) {
       const refused = await service.start(P1, episode.episodeId, body, TOKEN, CONTEXT(randomUUID()));
       expect([refused.status, error(refused)]).toEqual([status, expect.objectContaining(expected)]);
@@ -639,28 +646,29 @@ describe("choosing the provider of a new start", () => {
   });
 
   it("freezes the provider a new start resolved: a replay after the settings changed and a resume keep it", async () => {
-    // This engine reaches only qwen, so the deepseek run stops before its call is reserved and can be resumed.
+    // This engine reaches only Claude, so the OpenAI run stops before its call is reserved and can be resumed.
     const { store, episode, settle, runOf, seen, reconfigured } = setup();
     const key = randomUUID();
-    const first = runOf(await reconfigured(QWEN_DOWN, "qwen").start(P1, episode.episodeId, {}, TOKEN, CONTEXT(key)));
-    expect([first.providerKey, first.model]).toEqual(["deepseek", "d-1"]);
+    // No default configured: the first ready provider (OpenAI) is chosen and frozen.
+    const first = runOf(await reconfigured(CLAUDE_DOWN, null).start(P1, episode.episodeId, {}, TOKEN, CONTEXT(key)));
+    expect([first.providerKey, first.model]).toEqual(["openai", "d-1"]);
     await settle();
     // The configured default became ready (and the other one went away): the same request and key is the same run.
-    const qwenOnly = reconfigured(ENV, "qwen");
+    const claudeOnly = reconfigured(ENV, "anthropic");
     const sends = seen.length;
-    const replay = await qwenOnly.start(P1, episode.episodeId, {}, TOKEN, CONTEXT(key));
-    expect([replay.status, runOf(replay).runId, runOf(replay).providerKey, runOf(replay).model]).toEqual([200, first.runId, "deepseek", "d-1"]);
+    const replay = await claudeOnly.start(P1, episode.episodeId, {}, TOKEN, CONTEXT(key));
+    expect([replay.status, runOf(replay).runId, runOf(replay).providerKey, runOf(replay).model]).toEqual([200, first.runId, "openai", "d-1"]);
     // Resuming the failed run needs its own provider: it is not moved to the one that is ready now.
-    const resumed = await qwenOnly.resume(P1, episode.episodeId, first.runId, {}, TOKEN, CONTEXT(randomUUID()));
+    const resumed = await claudeOnly.resume(P1, episode.episodeId, first.runId, {}, TOKEN, CONTEXT(randomUUID()));
     expect([resumed.status, error(resumed)]).toEqual([503,
-      expect.objectContaining({ code: "TITLE_WRITING_PROVIDER_UNCONFIGURED", details: expect.objectContaining({ providerKey: "deepseek" }) })]);
+      expect.objectContaining({ code: "TITLE_WRITING_PROVIDER_UNCONFIGURED", details: expect.objectContaining({ providerKey: "openai" }) })]);
     await settle();
     expect([store.runs.length, store.resumes.length, seen.length]).toEqual([1, 0, sends]);
   });
 });
 
 describe("the latest saved breakdown of an episode", () => {
-  const empty = { status: 200, body: chatAnswer({ schema: "ads.script-breakdown.output.v1", episodeNo: 1, scenes: [], shots: [] }) };
+  const empty = { status: 200, body: messagesAnswer({ schema: "ads.script-breakdown.output.v1", episodeNo: 1, scenes: [], shots: [] }) };
 
   it("stays the earlier saved run while a newer run fails, is canceled or is still running, and moves only when a newer run is saved", async () => {
     let refuse = false;

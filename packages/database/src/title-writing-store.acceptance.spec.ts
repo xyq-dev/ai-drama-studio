@@ -15,7 +15,14 @@ import {
   EPISODE_DRAFT_SCHEMA,
   EPISODE_OUTLINE_SCHEMA,
   TITLE_CONCEPT_SCHEMA,
+  TITLE_WRITING_INPUT_SCHEMA_V2,
+  TITLE_WRITING_PROMPT_VERSION,
+  TITLE_WRITING_PROMPT_VERSION_V2,
+  TITLE_WRITING_PROMPT_VERSION_V3,
+  TITLE_WRITING_PROMPT_VERSION_V4,
   TITLE_WRITING_CANCELED_BEFORE_SEND,
+  TITLE_WRITING_RUN_KIND_DISABLED,
+  SCRIPT_BREAKDOWN_INPUT_SCHEMA,
   type TitleCallFinish,
   type TitleCallRecord,
   type TitleResumeRequest,
@@ -355,6 +362,21 @@ describe("PostgresTitleWritingStore on the migrated tables", () => {
 });
 
 describe("R3: one workspace never touches another", () => {
+  it("filters claimable kinds on the seven-migration schema without the optional run_kind column", async () => {
+    const ws = await newWorkspace("title-kind-before-breakdown");
+    const otherWs = await newWorkspace("title-kind-other");
+    const record = run(ws, await newProject(ws, "title-kind"), "kind-filter");
+    expect((await store.createRun(record, { maxActiveRuns: 5 })).kind).toBe("created");
+    expect((await pool.query("SELECT 1 FROM information_schema.columns WHERE table_name = 'title_writing_run' AND column_name = 'run_kind'")).rowCount).toBe(0);
+    expect(await store.listClaimable(ws, now(), 5, ["title"])).toEqual([record.id]);
+    expect(await store.listClaimable(ws, now(), 5, ["script_breakdown"])).toEqual([]);
+    expect(await store.listClaimable(ws, now(), 5, [])).toEqual([]);
+    expect(await store.listClaimable(ws, now(), 5)).toEqual([record.id]);
+    expect(await store.listClaimable(otherWs, now(), 5, ["title"])).toEqual([]);
+    expect((await store.getRunById(ws, record.id))!.run).toMatchObject({ executorId: null, callsUsed: 0 });
+    evidence.runKindBeforeBreakdown = { titleListed: true, breakdownExcluded: true, absentRunKindColumn: true };
+  });
+
   it("recovery, listing, claim, read, submit and finish of workspace A skip workspace B's runs", async () => {
     await stopRunning();
     const wa = await newWorkspace("ws-a");
@@ -479,11 +501,15 @@ describe("R2: resume confirmation and idempotency", () => {
 });
 
 describe("R7: scripts go into episodes only after the person approved this run's story", () => {
-  it("refuses before approval, then writes all three once; a replay adds no version", async () => {
+  it.each([TITLE_WRITING_PROMPT_VERSION, TITLE_WRITING_PROMPT_VERSION_V2, TITLE_WRITING_PROMPT_VERSION_V3, TITLE_WRITING_PROMPT_VERSION_V4])("%s refuses before approval, then writes all three once with frozen headings; a replay adds no version", async (promptVersion) => {
     await stopRunning();
     const ws = await newWorkspace("place");
     const project = await newProject(ws, "place");
     const record = run(ws, project, "place");
+    if (promptVersion !== TITLE_WRITING_PROMPT_VERSION) {
+      record.input = { schema: TITLE_WRITING_INPUT_SCHEMA_V2, promptVersion, title: "剧名",
+        settings: { episodeCount: 3, episodeSeconds: 90, style: "" }, providerKey: "qwen", model: "q-1" };
+    }
     await store.createRun(record, { maxActiveRuns: 5 });
     await completeRun(record);
     expect((await store.placeScripts(ws, project, record.id, { acceptStoryChanged: false }, "editor", now())).kind).toBe("story_not_approved");
@@ -498,6 +524,12 @@ describe("R7: scripts go into episodes only after the person approved this run's
     expect(scripts.rows.every((row) => row.source_story_revision_id === approved && row.review_status === "DRAFT")).toBe(true);
     expect((await store.placeScripts(ws, project, record.id, { acceptStoryChanged: false }, "editor", now())).kind).toBe("ok");
     expect(await scriptCount(project)).toBe(3);
+    const saved = await pool.query<{ episode_no: number; content_json: { text: string } }>(
+      "SELECT e.episode_no, s.content_json FROM script_revision s JOIN episode e ON e.id = s.episode_id WHERE s.project_id = $1 ORDER BY e.episode_no", [project]);
+    for (const row of saved.rows) {
+      const heading = promptVersion === TITLE_WRITING_PROMPT_VERSION_V4 && row.episode_no === 3 ? "本集结局事实" : "下一集需要继承的事实";
+      expect(row.content_json.text).toContain(`\n${heading}\n- `);
+    }
   });
 
   it("an episode that already has a script is a conflict and is not overwritten; the others are written", async () => {
@@ -787,6 +819,180 @@ describe("lease recovery: never sent versus maybe sent", () => {
     expect(billing).toEqual([{ billing_status: "unknown" }]);
     evidence.recoverySplit = { reserved: "rejected/executor_lost_before_send, step pending, claimable", submitted: "unknown/executor_lost, needs_attention",
       lateSubmit: "lost", lateFinish: false };
+  });
+});
+
+describe("stopping runs of a switched-off kind on the seven-migration schema", () => {
+  it("settles every unheld run of the kind without a send; live leases, other kinds and other workspaces stay as they were", async () => {
+    const ws = await newWorkspace("retire-kind");
+    const otherWs = await newWorkspace("retire-kind-other");
+    expect((await pool.query("SELECT 1 FROM information_schema.columns WHERE table_name = 'title_writing_run' AND column_name = 'run_kind'")).rowCount).toBe(0);
+    const base = Date.now();
+    const setupAt = instant(base, 0);
+    const leaseUntil = instant(base, 60_000);
+    const expired = instant(base, 120_000);
+    const created = async (workspaceId: string, label: string) => {
+      const record = run(workspaceId, await newProject(workspaceId, label), label);
+      expect((await store.createRun(record, { maxActiveRuns: 50 })).kind).toBe("created");
+      return record;
+    };
+    const unclaimed = await created(ws, "unclaimed");
+    const reserved = await created(ws, "reserved");
+    const submitted = await created(ws, "submitted");
+    const canceled = await created(ws, "canceled");
+    const held = await created(ws, "held");
+    const otherKind = await created(ws, "other-kind");
+    const otherWorkspace = await created(otherWs, "other-workspace");
+    // The kind is read from the frozen schema only; this schema has no run_kind column to read it from.
+    await pool.query("UPDATE title_writing_run SET input_json = jsonb_set(input_json, '{schema}', to_jsonb($2::text)) WHERE id = $1",
+      [otherKind.id, SCRIPT_BREAKDOWN_INPUT_SCHEMA]);
+    for (const record of [reserved, submitted]) expect(await store.claimRun(ws, record.id, "dead", setupAt, leaseUntil)).toBe(true);
+    expect(await store.claimRun(ws, held.id, "alive", setupAt, instant(base, 600_000))).toBe(true);
+    const unsent = call(reserved, "dead");
+    expect(await store.reserveCall(unsent, wide, setupAt, leaseUntil)).toEqual({ kind: "reserved" });
+    const sent = call(submitted, "dead");
+    expect(await store.reserveCall(sent, wide, setupAt, leaseUntil)).toEqual({ kind: "reserved" });
+    expect(await store.markCallSubmitted(ws, sent.id, "dead", setupAt, leaseUntil)).toBe("submitted");
+    const live = call(held, "alive");
+    expect(await store.reserveCall(live, wide, setupAt, instant(base, 600_000))).toEqual({ kind: "reserved" });
+    await store.requestCancel(ws, canceled.projectId, canceled.id, setupAt);
+    const untouched = async () => (await pool.query("SELECT * FROM title_writing_run WHERE id = ANY($1::uuid[]) ORDER BY id",
+      [[held.id, otherKind.id, otherWorkspace.id]])).rows;
+    const callsBefore = await pool.query("SELECT id FROM title_writing_call WHERE workspace_id = $1 ORDER BY id", [ws]);
+    const before = await untouched();
+
+    expect(await store.retireDisabledRuns(ws, expired, [])).toBe(0);
+    expect(await store.retireDisabledRuns(ws, expired, ["title"])).toBe(4);
+
+    expect((await store.getRunById(ws, unclaimed.id))!.run).toMatchObject({ state: "needs_attention", errorCode: TITLE_WRITING_RUN_KIND_DISABLED,
+      executorId: null, leaseUntil: null, callsUsed: 0 });
+    const released = (await store.getRunById(ws, reserved.id))!;
+    expect(released.run).toMatchObject({ state: "needs_attention", errorCode: TITLE_WRITING_RUN_KIND_DISABLED, executorId: null, leaseUntil: null });
+    expect(released.steps.find((step) => step.stepKey === "concept")).toMatchObject({ state: "pending" });
+    expect(released.calls).toEqual([expect.objectContaining({ id: unsent.id, state: "rejected", errorCode: "executor_lost_before_send" })]);
+    const uncertain = (await store.getRunById(ws, submitted.id))!;
+    expect(uncertain.run).toMatchObject({ state: "needs_attention", errorCode: "executor_lost", executorId: null });
+    expect(uncertain.steps.find((step) => step.stepKey === "concept")).toMatchObject({ state: "unknown", errorCode: "executor_lost" });
+    expect(uncertain.calls).toEqual([expect.objectContaining({ id: sent.id, state: "unknown", errorCode: "executor_lost", usage: USAGE_UNKNOWN })]);
+    const stopped = (await store.getRunById(ws, canceled.id))!;
+    expect(stopped.run).toMatchObject({ state: "canceled", errorCode: null });
+    expect(stopped.steps.every((step) => step.state === "canceled")).toBe(true);
+    expect(await untouched()).toEqual(before);
+    expect((await pool.query("SELECT id FROM title_writing_call WHERE workspace_id = $1 ORDER BY id", [ws])).rows).toEqual(callsBefore.rows);
+    const billing = (await pool.query<{ billing_status: string }>("SELECT DISTINCT billing_status FROM title_writing_call WHERE workspace_id = $1", [ws])).rows;
+    expect(billing).toEqual([{ billing_status: "unknown" }]);
+    expect(await store.retireDisabledRuns(ws, expired, ["title"])).toBe(0);
+
+    // The breakdown-kind row is found by its frozen schema alone.
+    expect(await store.retireDisabledRuns(ws, expired, ["script_breakdown"])).toBe(1);
+    expect((await store.getRunById(ws, otherKind.id))!.run).toMatchObject({ state: "needs_attention", errorCode: TITLE_WRITING_RUN_KIND_DISABLED });
+    expect((await store.getRunById(ws, held.id))!.run).toMatchObject({ state: "running", executorId: "alive" });
+    expect((await store.getRunById(otherWs, otherWorkspace.id))!.run).toMatchObject({ state: "running", executorId: null });
+    evidence.retireDisabledBeforeBreakdown = { unclaimed: "needs_attention", reserved: "rejected unsent, step pending", submitted: "unknown kept",
+      canceled: "canceled", liveLease: "untouched", otherWorkspace: "untouched", absentRunKindColumn: true };
+  });
+
+  it("completes a title run whose story was saved before its executor stopped, without a send or a second story", async () => {
+    const ws = await newWorkspace("retire-saved");
+    const saved = run(ws, await newProject(ws, "saved"), "saved");
+    const unsaved = run(ws, await newProject(ws, "unsaved"), "unsaved");
+    for (const record of [saved, unsaved]) {
+      expect((await store.createRun(record, { maxActiveRuns: 50 })).kind).toBe("created");
+      // The real store path up to the end: every step reserved, submitted and finished, then (for one run) the story saved.
+      expect(await store.claimRun(ws, record.id, "dead", now(), later(60_000))).toBe(true);
+      for (const [stepKey, output] of OUTPUTS) {
+        const item = call(record, "dead", stepKey);
+        expect(await store.reserveCall(item, wide, now(), later(60_000))).toEqual({ kind: "reserved" });
+        expect(await store.markCallSubmitted(ws, item.id, "dead", now(), later(60_000))).toBe("submitted");
+        expect(await store.finishCall(ws, item.id, "dead", completed(output), now())).toBe(true);
+      }
+    }
+    // The executor stops right after the save commits: finishRun never runs.
+    expect(await store.saveStory(ws, saved.id, "dead", "故事正文", "server-owner", now())).toBe("saved");
+    const stopped = (await store.getRunById(ws, saved.id))!;
+    expect(stopped.run).toMatchObject({ state: "running", storySave: "saved", executorId: "dead" });
+    const evidenceOf = async () => ({
+      calls: (await pool.query("SELECT id, state, error_code, usage_json, billing_status, provider_request_id FROM title_writing_call WHERE workspace_id = $1 ORDER BY id", [ws])).rows,
+      stories: (await pool.query("SELECT id FROM story_revision WHERE workspace_id = $1 ORDER BY id", [ws])).rows,
+      steps: (await pool.query("SELECT run_id, step_key, state, output_hash FROM title_writing_step WHERE run_id = ANY($1::uuid[]) ORDER BY run_id, step_key", [[saved.id, unsaved.id]])).rows,
+    });
+    const before = await evidenceOf();
+    expect(before.stories).toHaveLength(1);
+
+    expect(await store.retireDisabledRuns(ws, later(120_000), ["title"])).toBe(2);
+
+    expect((await store.getRunById(ws, saved.id))!.run).toMatchObject({ state: "completed", errorCode: null, executorId: null, leaseUntil: null,
+      storySave: "saved", storyRevisionId: stopped.run.storyRevisionId, callsUsed: stopped.run.callsUsed });
+    // Steps all completed but no story saved yet: the original rule still applies; a resume saves it later.
+    expect((await store.getRunById(ws, unsaved.id))!.run).toMatchObject({ state: "needs_attention", errorCode: TITLE_WRITING_RUN_KIND_DISABLED,
+      storySave: "pending" });
+    expect(await evidenceOf()).toEqual(before);
+    // Switched back on: nothing to claim and nothing to resume for the completed run.
+    expect(await store.listClaimable(ws, later(120_000), 50)).toEqual([]);
+    expect((await store.prepareResume(ws, saved.projectId, saved.id, resumeRequest(saved.id, "after-complete", []), now())).kind).toBe("not_resumable");
+    expect(await store.retireDisabledRuns(ws, later(120_000), ["title"])).toBe(0);
+    expect(await evidenceOf()).toEqual(before);
+    evidence.retireSavedTitle = { completed: true, storiesUnchanged: true, callsUnchanged: true, unsavedNeedsAttention: true };
+  });
+
+  it("ends a title run whose story save was refused before its executor stopped with story_conflict, without a send or a second save", async () => {
+    const ws = await newWorkspace("retire-conflict");
+    const project = await newProject(ws, "conflict");
+    // Another run already saved this project's story and finished.
+    const first = run(ws, project, "first");
+    expect((await store.createRun(first, { maxActiveRuns: 50 })).kind).toBe("created");
+    expect(await store.claimRun(ws, first.id, "first", now(), later(60_000))).toBe(true);
+    expect(await store.saveStory(ws, first.id, "first", "先保存的故事", "server-owner", now())).toBe("saved");
+    expect(await store.finishRun(ws, first.id, "first", "completed", null, now())).toBe(true);
+    const refused = run(ws, project, "refused", "34".repeat(32));
+    expect((await store.createRun(refused, { maxActiveRuns: 50 })).kind).toBe("created");
+    expect(await store.claimRun(ws, refused.id, "dead", now(), later(60_000))).toBe(true);
+    for (const [stepKey, output] of OUTPUTS) {
+      const item = call(refused, "dead", stepKey);
+      expect(await store.reserveCall(item, wide, now(), later(60_000))).toEqual({ kind: "reserved" });
+      expect(await store.markCallSubmitted(ws, item.id, "dead", now(), later(60_000))).toBe("submitted");
+      expect(await store.finishCall(ws, item.id, "dead", completed(output), now())).toBe(true);
+    }
+    // The real save refuses it, and the executor stops before finishRun.
+    expect(await store.saveStory(ws, refused.id, "dead", "故事正文", "server-owner", now())).toBe("conflict");
+    const stopped = (await store.getRunById(ws, refused.id))!;
+    expect(stopped.run).toMatchObject({ state: "running", storySave: "conflict", executorId: "dead" });
+    const evidenceOf = async () => ({
+      calls: (await pool.query("SELECT id, state, error_code, usage_json, billing_status, provider_request_id FROM title_writing_call WHERE workspace_id = $1 ORDER BY id", [ws])).rows,
+      stories: (await pool.query("SELECT id, content_json FROM story_revision WHERE workspace_id = $1 ORDER BY id", [ws])).rows,
+      project: (await pool.query("SELECT version, current_story_revision_id FROM project WHERE id = $1", [project])).rows,
+      steps: (await pool.query("SELECT step_key, state, output_hash FROM title_writing_step WHERE run_id = $1 ORDER BY step_key", [refused.id])).rows,
+    });
+    const before = await evidenceOf();
+    expect(before.stories).toHaveLength(1);
+
+    expect(await store.retireDisabledRuns(ws, later(120_000), ["title"])).toBe(1);
+
+    expect((await store.getRunById(ws, refused.id))!.run).toMatchObject({ state: "needs_attention", errorCode: "story_conflict", executorId: null,
+      leaseUntil: null, storySave: "conflict", storyRevisionId: stopped.run.storyRevisionId, callsUsed: stopped.run.callsUsed });
+    expect(await evidenceOf()).toEqual(before);
+    expect(await store.listClaimable(ws, later(120_000), 50)).toEqual([]);
+    expect(await store.retireDisabledRuns(ws, later(120_000), ["title"])).toBe(0);
+    expect(await evidenceOf()).toEqual(before);
+    evidence.retireRefusedTitle = { errorCode: "story_conflict", storiesUnchanged: true, callsUnchanged: true };
+  });
+
+  it("frees the only active slot under a cap of one so another start succeeds, and the stopped run resumes later", async () => {
+    const ws = await newWorkspace("retire-cap");
+    // This schema holds title runs only, so the switched-off kind here is "title"; the store logic is the same per kind.
+    const stranded = run(ws, await newProject(ws, "stranded"), "stranded");
+    expect((await store.createRun(stranded, { maxActiveRuns: 1 })).kind).toBe("created");
+    const next = run(ws, await newProject(ws, "next"), "next");
+    expect(await store.createRun(next, { maxActiveRuns: 1 })).toEqual({ kind: "blocked", code: "TITLE_WRITING_ACTIVE_RUN_CAP" });
+    expect(await store.retireDisabledRuns(ws, now(), ["script_breakdown"])).toBe(0);
+    expect(await store.createRun(next, { maxActiveRuns: 1 })).toEqual({ kind: "blocked", code: "TITLE_WRITING_ACTIVE_RUN_CAP" });
+    expect(await store.retireDisabledRuns(ws, now(), ["title"])).toBe(1);
+    expect((await store.createRun(next, { maxActiveRuns: 1 })).kind).toBe("created");
+    expect((await pool.query("SELECT 1 FROM title_writing_call WHERE workspace_id = $1", [ws])).rowCount).toBe(0);
+    await pool.query("UPDATE title_writing_run SET state = 'failed' WHERE id = $1", [next.id]);
+    expect((await store.prepareResume(ws, stranded.projectId, stranded.id, { ...resumeRequest(stranded.id, "after-retire", []), maxActiveRuns: 1 },
+      now())).kind).toBe("ok");
+    evidence.retireFreesSlot = { blockedBefore: true, createdAfter: true, resumable: true };
   });
 });
 

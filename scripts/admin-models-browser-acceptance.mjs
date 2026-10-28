@@ -20,7 +20,12 @@ const output = resolve(root, process.env.ADMIN_MODELS_EVIDENCE_DIR || "docs/admi
 // Generated per run, test-only; passed to the fixture server through its environment, never written to evidence.
 const password = `test-only-${randomBytes(18).toString("base64url")}`;
 process.env.ADMIN_MODELS_TEST_PASSWORD = password;
-const fakeKey = "sk-admin-browser-fake-key";
+// Shaped like Claude Console API keys (a personal sk-ant-usr- and a service account sk-ant-svc- key); not real keys.
+const fakeKey = "sk-ant-usr-admin-browser-fake-key-not-real";
+const fakeServiceKey = "sk-ant-svc-admin-browser-fake-key-not-real";
+// DeepSeek documents no key prefix; clearly fake, never a real key.
+const fakeDeepseekKey = "fake-deepseek-admin-browser-key-not-real";
+const fakeWorkspace = "wrkspc_01AdminBrowserFakeWorkspace";
 const processes = [];
 let browser;
 const evidence = {
@@ -103,14 +108,37 @@ try {
   assert.ok(session && session.httpOnly && session.sameSite === "Lax" && session.path === "/");
   const before = await readView(page);
   assert.equal(before.savedRevision, 0);
-  await page.getByLabel(/^服务端点/).fill("https://dashscope.aliyuncs.com/compatible-mode/v1");
+  // Exactly three providers: DeepSeek, Claude and OpenAI. The retired Qwen has no entry at all.
+  assert.equal(await page.getByRole("button", { name: /^千问/ }).count(), 0);
+  assert.equal(await page.getByRole("button", { name: /^DeepSeek DeepSeek Chat Completions API/ }).count(), 1);
+  // DeepSeek quick setup: only the key; saving it makes DeepSeek the default for new requests; an impossible key is
+  // refused on the page without saving anything.
+  assert.equal(await page.getByTestId("deepseek-status").getAttribute("data-state"), "key_missing");
+  await page.getByTestId("deepseek-default-notice").filter({ hasText: "保存 DeepSeek 快速配置会将 DeepSeek 设为新创作的默认供应商；只影响新发起的请求，不改变已有任务" }).waitFor();
+  await page.getByLabel(/^DeepSeek API Key/).fill("short-key");
+  await page.getByRole("button", { name: /保存 DeepSeek API Key/ }).click();
+  await page.getByRole("alert").filter({ hasText: /DeepSeek API Key 的格式不受支持/ }).waitFor();
+  assert.equal(await page.getByLabel(/^DeepSeek API Key/).inputValue(), "");
+  // Claude quick setup: says the key is missing, and refuses a Claude Code / subscription token without saving anything.
+  assert.equal(await page.getByTestId("claude-status").getAttribute("data-state"), "key_missing");
+  await page.getByLabel(/^Claude API Key/).fill("sk-ant-oat01-claude-code-oauth-token-not-real");
+  await page.getByRole("button", { name: /保存 Claude API Key/ }).click();
+  await page.getByRole("alert").filter({ hasText: /不能用于调用 Claude API 的凭据/ }).waitFor();
+  assert.equal(await page.getByText(/sk-ant-api 开头/).count(), 0);
+  await page.getByTestId("claude-workspace-hint").filter({ hasText: "通常只需填写 API Key。若密钥未限定 Workspace，请在高级设置填写 Workspace ID，或创建限定 Workspace 的密钥。" }).waitFor();
+  assert.equal((await readView(page)).savedRevision, 0);
+  assert.equal(await page.getByLabel(/^Claude API Key/).inputValue(), "");
+  await page.getByRole("button", { name: /^Claude/ }).click();
+  await page.getByRole("region", { name: "Claude设置" }).waitFor();
+  assert.equal(await page.getByLabel(/^服务端点/).getAttribute("readonly"), "");
+  assert.equal(await page.getByLabel(/^服务端点/).inputValue(), "https://api.anthropic.com/v1/messages");
   // Model picker by keyboard: search, Tab to the matching candidate, Space to select; Enter adds a custom ID
   // without submitting the form; the default is chosen explicitly and saved as the first entry.
   const search = page.getByRole("searchbox", { name: "搜索可用模型" });
-  await search.fill("3.8-flash");
+  await search.fill("haiku");
   await search.press("Tab");
   await page.keyboard.press("Space");
-  assert.equal(await page.getByRole("checkbox", { name: /qwen3\.8-flash/ }).isChecked(), true);
+  assert.equal(await page.getByRole("checkbox", { name: /claude-haiku-5-5/ }).isChecked(), true);
   await search.fill("");
   await page.getByText("高级设置", { exact: true }).click();
   await page.getByLabel(/^添加自定义模型 ID/).fill("browser-test-model");
@@ -122,13 +150,14 @@ try {
   await page.getByRole("radio", { name: "填写 / 替换", exact: true }).check();
   await page.getByLabel(/^新的 API Key/).fill(fakeKey);
   await page.getByRole("button", { name: "校验并保存配置", exact: true }).click();
-  await page.getByRole("status").filter({ hasText: /^千问配置已保存/ }).waitFor();
+  await page.getByRole("status").filter({ hasText: /^Claude配置已保存/ }).waitFor();
   assert.equal(await page.getByLabel(/^新的 API Key/).count(), 0);
   const saved = await readView(page);
   assert.equal(saved.savedRevision, 1); assert.equal(saved.activeRevision, 0); assert.equal(saved.pendingRestart, true);
-  assert.equal(saved.saved.providers.find((provider) => provider.providerKey === "qwen").keyConfigured, true);
-  assert.deepEqual(saved.saved.providers.find((provider) => provider.providerKey === "qwen").models, ["browser-test-model", "qwen3.8-flash"]);
-  assert.equal(saved.active.providers.find((provider) => provider.providerKey === "qwen").keyConfigured, false);
+  assert.deepEqual(saved.saved.providers.map((provider) => provider.providerKey), ["openai", "anthropic", "deepseek"]);
+  assert.equal(saved.saved.providers.find((provider) => provider.providerKey === "anthropic").keyConfigured, true);
+  assert.deepEqual(saved.saved.providers.find((provider) => provider.providerKey === "anthropic").models, ["browser-test-model", "claude-haiku-5-5"]);
+  assert.equal(saved.active.providers.find((provider) => provider.providerKey === "anthropic").keyConfigured, false);
   await capture(page, "desktop-models-saved");
   await page.reload();
   await page.getByRole("button", { name: "校验并保存配置", exact: true }).waitFor();
@@ -152,34 +181,68 @@ try {
   await page.getByRole("region", { name: "OpenAI设置" }).waitFor();
   assert.equal(await page.getByLabel(/^服务端点/).getAttribute("readonly"), "");
   // OpenAI shows only its own candidates; a selection without a default is shown as still needing one.
-  assert.equal(await page.getByRole("checkbox", { name: /qwen/ }).count(), 0);
+  assert.equal(await page.getByRole("checkbox", { name: /claude/ }).count(), 0);
   await page.getByRole("checkbox", { name: /gpt-6-luna/ }).check();
   await page.getByText("请从已选的可用模型中选择默认模型。").waitFor();
   await capture(page, "mobile-openai");
-  await page.getByRole("button", { name: /^千问/ }).click();
+  await page.getByRole("button", { name: /^Claude/ }).click();
   await page.getByRole("radio", { name: "清除密钥", exact: true }).check();
   assert.equal(await page.getByRole("button", { name: "校验并保存配置", exact: true }).isDisabled(), true);
   await page.getByRole("checkbox", { name: /我确认清除/ }).check();
   // The form is now submittable (valid models, confirmed clear): Enter in the search box must still only filter.
   const clearSearch = page.getByRole("searchbox", { name: "搜索可用模型" });
-  await clearSearch.fill("max");
+  await clearSearch.fill("fable");
   await clearSearch.press("Enter");
   await delay(500);
   assert.equal((await readView(page)).savedRevision, 1, "Enter in the model search must not submit the form");
   assert.equal(requests.filter((request) => request.method === "PUT").length, 1);
   await clearSearch.fill("");
   await page.getByRole("button", { name: "校验并保存配置", exact: true }).click();
-  await page.getByRole("status").filter({ hasText: /^千问配置已保存/ }).waitFor();
+  await page.getByRole("status").filter({ hasText: /^Claude配置已保存/ }).waitFor();
   const cleared = await readView(page);
   assert.equal(cleared.savedRevision, 2);
-  assert.equal(cleared.saved.providers.find((provider) => provider.providerKey === "qwen").keyConfigured, false);
-  await page.getByRole("combobox", { name: /^默认供应商/ }).selectOption("qwen");
+  assert.equal(cleared.saved.providers.find((provider) => provider.providerKey === "anthropic").keyConfigured, false);
+  assert.deepEqual(await page.getByRole("combobox", { name: /^默认供应商/ }).locator("option").evaluateAll((options) => options.map((option) => option.value)),
+    ["", "deepseek", "anthropic", "openai"]);
+  await page.getByRole("combobox", { name: /^默认供应商/ }).selectOption("anthropic");
   await page.getByLabel(/^每日最多调用次数/).fill("8");
   await page.getByRole("button", { name: "保存调用规则", exact: true }).click();
   await page.getByRole("status").filter({ hasText: /^调用规则已保存/ }).waitFor();
   const limits = await readView(page);
   assert.equal(limits.savedRevision, 3); assert.equal(limits.saved.maxCallsPerDay, 8); assert.equal(limits.activeRevision, 0);
   assert.equal(limits.titleWriting.enabled, false);
+  // Quick setup at 390 px: a service account key with an optional workspace id, saved through the real site login.
+  await page.getByLabel(/^Claude API Key/).fill(fakeServiceKey);
+  await page.getByText("高级设置（可不填）：Workspace ID").click();
+  await page.getByLabel(/^Workspace ID/).fill(fakeWorkspace);
+  await page.getByRole("button", { name: /保存 Claude API Key/ }).click();
+  await page.getByRole("status").filter({ hasText: /^Claude API Key 已保存。/ }).waitFor();
+  const workspaceSaved = await readView(page);
+  assert.equal(workspaceSaved.savedRevision, 4); assert.equal(workspaceSaved.activeRevision, 0);
+  assert.equal(workspaceSaved.saved.providers.find((provider) => provider.providerKey === "anthropic").workspaceId, fakeWorkspace);
+  assert.equal(workspaceSaved.saved.providers.find((provider) => provider.providerKey === "anthropic").keyConfigured, true);
+  assert.equal(await page.getByTestId("claude-status").getAttribute("data-state"), "pending_restart");
+  await page.getByTestId("claude-workspace-current").filter({ hasText: fakeWorkspace }).waitFor();
+  assert.equal((await page.content()).includes(fakeServiceKey), false);
+  await capture(page, "mobile-claude-workspace");
+  evidence.checks.workspace = { keyKind: "sk-ant-svc", workspaceSaved: true, savedRevision: 4, activeRevision: 0, pendingRestart: true };
+  // DeepSeek quick setup at 390 px: the key alone; DeepSeek becomes the saved default; Claude's key and workspace stay.
+  await page.getByLabel(/^DeepSeek API Key/).fill(fakeDeepseekKey);
+  await page.getByRole("button", { name: /保存 DeepSeek API Key/ }).click();
+  await page.getByRole("status").filter({ hasText: /^DeepSeek API Key 已保存，DeepSeek 已设为新创作的默认供应商。/ }).waitFor();
+  const deepseekSaved = await readView(page);
+  assert.equal(deepseekSaved.savedRevision, 5); assert.equal(deepseekSaved.activeRevision, 0); assert.equal(deepseekSaved.pendingRestart, true);
+  assert.equal(deepseekSaved.saved.defaultProvider, "deepseek");
+  const deepseekEntry = deepseekSaved.saved.providers.find((provider) => provider.providerKey === "deepseek");
+  assert.equal(deepseekEntry.keyConfigured, true); assert.deepEqual(deepseekEntry.models, ["deepseek-flash"]);
+  assert.equal(deepseekEntry.baseUrl, "https://api.deepseek.com/chat/completions");
+  assert.equal(deepseekSaved.saved.providers.find((provider) => provider.providerKey === "anthropic").workspaceId, fakeWorkspace);
+  assert.equal(await page.getByTestId("deepseek-status").getAttribute("data-state"), "pending_restart");
+  assert.equal(await page.getByLabel(/^DeepSeek API Key/).inputValue(), "");
+  assert.equal((await page.content()).includes(fakeDeepseekKey), false);
+  assert.equal(JSON.stringify(deepseekSaved).includes(fakeDeepseekKey), false);
+  await capture(page, "mobile-deepseek-quick-setup");
+  evidence.checks.deepseek = { savedRevision: 5, activeRevision: 0, pendingRestart: true, defaultProvider: "deepseek", model: "deepseek-flash", secretNotReturned: true };
   await page.getByRole("button", { name: "退出", exact: true }).click();
   await page.waitForURL(/\/login\?/);
   await page.getByRole("heading", { name: "登录红果创作", exact: true }).waitFor();
@@ -187,7 +250,7 @@ try {
   assert.deepEqual(evidence.errors, []);
   evidence.checks.save = { savedRevision: 1, activeRevision: 0, pendingRestart: true, secretNotReturned: true };
   evidence.checks.modelPicker = { keyboardSelect: true, customIdByEnter: true, searchEnterDoesNotSubmit: true,
-    savedModels: ["browser-test-model", "qwen3.8-flash"] };
+    savedModels: ["browser-test-model", "claude-haiku-5-5"], providers: ["openai", "anthropic", "deepseek"], retiredEntries: 0 };
   evidence.checks.clear = { explicitConfirmation: true, keyConfigured: false, revision: 2 };
   evidence.checks.limits = { daily: 8, savedRevision: 3, activeRevision: 0, titleWritingEnabled: false };
   evidence.checks.logout = { protectedReadAfterLogout: 401, reloginReadsSavedConfig: true };

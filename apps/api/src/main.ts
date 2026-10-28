@@ -18,7 +18,7 @@ async function bootstrap(): Promise<void> {
     setAdminResponseHeaders(response);
     next();
   });
-  // A legal web Qwen writing input is at most 256,000 bytes (QWEN_WRITING_INPUT_MAX_BYTES); the default is 100kb.
+  // JSON bodies up to 300kb (the default is 100kb); unchanged since the retired Qwen web entry.
   // useBodyParser comes from the Express adapter; its typings need @types/express, which the API does not carry.
   (app as unknown as { useBodyParser(type: "json", options: { limit: string }): void })
     .useBodyParser("json", { limit: "300kb" });

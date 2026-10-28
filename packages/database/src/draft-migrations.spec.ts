@@ -3,7 +3,8 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { EPISODE_PLAN_COLUMNS, EPISODE_PLAN_MIGRATION } from "./episode-plan";
-import { SCRIPT_BREAKDOWN_COLUMNS, SCRIPT_BREAKDOWN_MIGRATION, TITLE_WRITING_MIGRATION, TITLE_WRITING_TABLES } from "./title-writing-store";
+import { SCRIPT_BREAKDOWN_COLUMNS, SCRIPT_BREAKDOWN_MIGRATION, TITLE_WRITING_MIGRATION, TITLE_WRITING_TABLES, WRITING_PROVIDER_MIGRATION } from "./title-writing-store";
+import { AUTO_CREATION_MIGRATION, SERIES_WRITING_MIGRATION, WRITING_CANDIDATE_DEEPSEEK_MIGRATION, WRITING_CANDIDATE_MIGRATION } from "./migrations";
 
 const drafts = join(__dirname, "..", "prisma", "drafts");
 const applied = join(__dirname, "..", "prisma", "migrations");
@@ -66,7 +67,8 @@ describe("title writing formal migration", () => {
   it("is applied after every earlier migration, and the draft is marked superseded and not applied", async () => {
     const names = (await readdir(applied)).filter((name) => /^\d+_/.test(name)).sort();
     expect(names.indexOf(TITLE_WRITING_MIGRATION)).toBe(Object.keys(RELEASED).indexOf(TITLE_WRITING_MIGRATION));
-    expect(names).toEqual([...Object.keys(RELEASED), SCRIPT_BREAKDOWN_MIGRATION]);
+    expect(names).toEqual([...Object.keys(RELEASED), SCRIPT_BREAKDOWN_MIGRATION, WRITING_PROVIDER_MIGRATION, WRITING_CANDIDATE_MIGRATION,
+      WRITING_CANDIDATE_DEEPSEEK_MIGRATION, AUTO_CREATION_MIGRATION, SERIES_WRITING_MIGRATION]);
     const draft = await readFile(draftPath, "utf8");
     expect(draft.split("\n")[0]).toBe("-- SUPERSEDED DRAFT. Do not apply. Kept only as the record of what passed the isolated acceptances.");
     expect(draft).toContain(`prisma/migrations/${TITLE_WRITING_MIGRATION}/migration.sql`);
@@ -141,10 +143,11 @@ describe("episode plan migration", () => {
 describe("script breakdown migration", () => {
   const migrationPath = join(applied, SCRIPT_BREAKDOWN_MIGRATION, "migration.sql");
 
-  it("is the last migration, after every released one", async () => {
+  it("follows every released migration; only the independent provider, candidate, automatic creation and series migrations sort after it", async () => {
     const names = (await readdir(applied)).filter((name) => /^\d+_/.test(name)).sort();
-    expect(names.at(-1)).toBe(SCRIPT_BREAKDOWN_MIGRATION);
-    expect(names.slice(0, -1)).toEqual(Object.keys(RELEASED));
+    expect(names.slice(0, -6)).toEqual(Object.keys(RELEASED));
+    expect(names.slice(-6)).toEqual([SCRIPT_BREAKDOWN_MIGRATION, WRITING_PROVIDER_MIGRATION, WRITING_CANDIDATE_MIGRATION, WRITING_CANDIDATE_DEEPSEEK_MIGRATION,
+    AUTO_CREATION_MIGRATION, SERIES_WRITING_MIGRATION]);
   });
 
   it("only expands: adds columns, one table, one index and wider CHECKs, and writes, rewrites or drops no data", async () => {
@@ -201,3 +204,46 @@ const RELEASED: Record<string, string> = {
   "20261008000100_title_writing": "b3931d041dc4f9c1bbaf43fa69e9cfce069465272da9c80173da282271f32671",
   "20261011000100_episode_plan": "93c7f7a0f3236e9a9d08307a59fac02af5bd763851b98ffbec608ce198b424f1",
 };
+
+describe("automatic creation migration", () => {
+  it("only creates auto_creation_ tables and indexes, writes no rows and touches no existing table", async () => {
+    const sql = statements(await readFile(join(applied, AUTO_CREATION_MIGRATION, "migration.sql"), "utf8"));
+    const each = sql.split(";").map((item) => item.trim()).filter(Boolean);
+    expect(each.every((item) => /^CREATE (TABLE|INDEX|UNIQUE INDEX) auto_creation_\w+ /.test(item))).toBe(true);
+    const created = [...sql.matchAll(/^CREATE (?:UNIQUE )?(TABLE|INDEX) (\w+)(?: ON (\w+))?/gim)];
+    expect(created.filter((match) => match[1] === "TABLE").map((match) => match[2]))
+      .toEqual(["auto_creation_run", "auto_creation_stage", "auto_creation_call", "auto_creation_resume"]);
+    expect(created.every((match) => match[3] === undefined || match[3].startsWith("auto_creation_"))).toBe(true);
+    // ON DELETE CASCADE belongs to the new tables' own foreign keys.
+    expect(sql.replaceAll("ON DELETE CASCADE", "")).not.toMatch(/\b(INSERT|UPDATE|DELETE|TRUNCATE|DROP|ALTER|RENAME)\b/i);
+    expect(sql).toContain("CHECK (billing_status = 'unknown')");
+    expect(sql).not.toMatch(/amount\w*\s+(numeric|decimal)/i);
+    expect(sql).not.toContain("title_writing_step");
+  });
+});
+
+describe("series writing migration", () => {
+  it("only widens the episode ranges for series works, adds one project column and creates series_writing_ tables; writes no rows", async () => {
+    const sql = statements(await readFile(join(applied, SERIES_WRITING_MIGRATION, "migration.sql"), "utf8"));
+    // No statement writes, rewrites or deletes data (the trigger only checks new episode rows; ON DELETE CASCADE belongs to the
+    // new tables' own foreign keys).
+    const each = sql.split(/;\s*$/m).map((item) => item.trim()).filter(Boolean);
+    expect(each.some((item) => /^(INSERT|UPDATE|DELETE|TRUNCATE)\b/i.test(item))).toBe(false);
+    expect(sql).not.toMatch(/\b(DROP TABLE|DROP COLUMN|ALTER COLUMN|RENAME)\b/i);
+    // What the replaced episode CHECK held for short-drama works is kept by a trigger.
+    expect(sql).toContain("IF mode IS DISTINCT FROM 'series' OR NEW.episode_no > total THEN");
+    // The new project column has a constant default (no rewrite) and every existing row is a short-drama work.
+    expect(sql).toContain("ALTER TABLE project ADD COLUMN writing_mode text NOT NULL DEFAULT 'short';");
+    // The only constraints dropped are replaced by wider ones that every existing row satisfies.
+    expect([...sql.matchAll(/DROP CONSTRAINT (\w+)/g)].map((match) => match[1])).toEqual(["project_episode_count_check", "episode_episode_no_check"]);
+    expect(sql).toContain("CHECK (episode_count BETWEEN 1 AND 60 AND (episode_count <= 6 OR writing_mode = 'series'))");
+    expect(sql).toContain("CHECK (episode_no BETWEEN 1 AND 60)");
+    const created = [...sql.matchAll(/^CREATE (?:UNIQUE )?(TABLE|INDEX) (\w+)(?: ON (\w+))?/gim)];
+    expect(created.filter((match) => match[1] === "TABLE").map((match) => match[2])).toEqual(["series_writing_series", "series_writing_grant", "series_writing_run",
+      "series_writing_stage", "series_writing_call", "series_writing_plan_revision", "series_writing_ledger_revision", "series_writing_decision", "series_writing_resume"]);
+    expect(created.every((match) => match[2]!.startsWith("series_writing_") && (match[3] === undefined || match[3].startsWith("series_writing_")))).toBe(true);
+    expect(sql).toContain("CHECK (billing_status = 'unknown')");
+    expect(sql).not.toMatch(/amount\w*\s+(numeric|decimal)/i);
+    expect(sql).not.toMatch(/title_writing_|auto_creation_|writing_candidate_request/);
+  });
+});

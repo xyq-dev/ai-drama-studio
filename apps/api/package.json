@@ -13,8 +13,13 @@
     "integration": "vitest run --config vitest.integration.config.ts",
     "title-writing:acceptance": "vitest run --config vitest.title-writing-acceptance.config.ts",
     "title-writing:browser-acceptance": "vitest run --config vitest.title-writing-browser-acceptance.config.ts",
+    "writing-online:browser-acceptance": "vitest run --config vitest.writing-online-browser-acceptance.config.ts",
     "title-writing:runtime-acceptance": "vitest run --config vitest.title-writing-runtime-acceptance.config.ts",
     "script-breakdown:acceptance": "vitest run --config vitest.script-breakdown-acceptance.config.ts",
+    "auto-creation:acceptance": "vitest run --config vitest.auto-creation-acceptance.config.ts",
+    "auto-creation:browser-acceptance": "vitest run --config vitest.auto-creation-browser-acceptance.config.ts",
+    "series-writing:acceptance": "vitest run --config vitest.series-writing-acceptance.config.ts",
+    "series-writing:browser-acceptance": "vitest run --config vitest.series-writing-browser-acceptance.config.ts",
     "script-breakdown:media-acceptance": "vitest run --config vitest.script-breakdown-media-acceptance.config.ts",
     "clean": "node --eval \"require('node:fs').rmSync('dist',{recursive:true,force:true})\""
   },

@@ -133,7 +133,10 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Install Chromium
-        run: pnpm exec playwright install --with-deps chromium
+        timeout-minutes: 15
+        run: |
+          sudo bash scripts/ci/apt-official-https.sh
+          pnpm exec playwright install --with-deps chromium
 
       - name: Validate and generate Prisma
         run: |

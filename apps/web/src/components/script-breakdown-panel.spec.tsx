@@ -19,8 +19,8 @@ function json(payload: unknown, status = 200): Response {
 }
 
 const OPTIONS: ScriptBreakdownOptionsView = {
-  enabled: true, code: "SCRIPT_BREAKDOWN_READY", storageReady: true, operatorTokenRequired: true, defaultProvider: "qwen",
-  providers: [{ providerKey: "qwen", label: "千问", ready: true, models: ["q-1"], defaultModel: "q-1", missing: [] }],
+  enabled: true, code: "SCRIPT_BREAKDOWN_READY", storageReady: true, operatorTokenRequired: true, defaultProvider: "anthropic",
+  providers: [{ providerKey: "anthropic", label: "Claude", ready: true, models: ["q-1"], defaultModel: "q-1", missing: [] }],
   maxCallsPerDay: 30, callCapPerRun: 3, billing: "unknown", limits: SCRIPT_BREAKDOWN_LIMITS,
 };
 
@@ -28,7 +28,7 @@ function run(overrides: Partial<ScriptBreakdownRunView> = {}): ScriptBreakdownRu
   return {
     runId: RUN, projectId: P1, episodeId: E1, episodeNo: 2, scriptRevisionId: "88888888-8888-4888-8888-888888888888", scriptRevisionNo: 3,
     targetEpisodeSeconds: 60, characters: [{ key: "C1", characterId: "99999999-9999-4999-8999-999999999999", revisionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", name: "林夏" }],
-    replacedScenes: 0, providerKey: "qwen", model: "q-1", state: "completed", errorCode: null, cancelRequested: false, callCap: 3, callsUsed: 1,
+    replacedScenes: 0, providerKey: "anthropic", model: "q-1", state: "completed", errorCode: null, cancelRequested: false, callCap: 3, callsUsed: 1,
     step: { state: "completed", attemptNo: 1, errorCode: null },
     output: {
       schema: "ads.script-breakdown.output.v1", episodeNo: 2,
@@ -49,12 +49,12 @@ function run(overrides: Partial<ScriptBreakdownRunView> = {}): ScriptBreakdownRu
 
 interface Seen { method: string; url: string; headers: Record<string, string>; body: unknown }
 
-function harness(latest: ScriptBreakdownRunView | null, answers: Array<Response | Error> = []) {
+function harness(latest: ScriptBreakdownRunView | null, answers: Array<Response | Error> = [], options: ScriptBreakdownOptionsView = OPTIONS) {
   const seen: Seen[] = [];
   const fetchImpl = vi.fn(async (input: string, init?: RequestInit) => {
     const headers = Object.fromEntries([...new Headers(init?.headers).entries()].map(([name, value]) => [name.toLowerCase(), value]));
     seen.push({ method: init?.method ?? "GET", url: input, headers, body: init?.body ? JSON.parse(String(init.body)) : null });
-    if (input.endsWith("/writing/script-breakdowns/options")) return json(OPTIONS);
+    if (input.endsWith("/writing/script-breakdowns/options")) return json(options);
     if (input.endsWith("/latest-saved")) return json({ run: null });
     if (input.endsWith("/latest")) return json({ run: latest });
     const next = answers.shift();
@@ -87,6 +87,22 @@ describe("AI breakdown panel", () => {
     expect(h.seen.filter((item) => item.method === "POST")).toHaveLength(0);
   });
 
+  it("says only script breakdown is off when the server reports it disabled, and cannot start", async () => {
+    const h = harness(null, [], { ...OPTIONS, enabled: false, code: "TITLE_WRITING_DISABLED" });
+    panel(h);
+    const blocked = await screen.findByTestId("breakdown-blocked");
+    await waitFor(() => expect(blocked.textContent).toContain("剧本拆解尚未开启。"));
+    expect(blocked.textContent).not.toContain("AI 写作");
+    expect((screen.getByRole("button", { name: "生成场景与分镜" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(h.seen.filter((item) => item.method === "POST")).toHaveLength(0);
+  });
+
+  it("explains a run stopped because breakdown was switched off on the server", async () => {
+    panel(harness(run({ state: "needs_attention", errorCode: "run_kind_disabled", step: { state: "pending", attemptNo: 0, errorCode: null },
+      output: null, save: "pending", scenes: [], callsUsed: 0 })));
+    expect(await screen.findByText(/剧本拆解已在服务端关闭，任务已停止，没有发出新的调用/)).toBeTruthy();
+  });
+
   it("asks before replacing scenes, then starts once with the token, key and replacement in the request", async () => {
     const h = harness(null, [json({ run: run({ state: "running", step: { state: "submitted", attemptNo: 1, errorCode: null }, output: null, plannedTotalSeconds: null, save: "pending", scenes: [] }) }, 201)]);
     panel(h, { sceneCount: 2 });
@@ -99,7 +115,7 @@ describe("AI breakdown panel", () => {
     await screen.findByText(/状态：进行中/);
     const post = h.seen.find((item) => item.method === "POST")!;
     expect(post.url).toBe(`/api/v1/projects/${P1}/episodes/${E1}/script-breakdowns`);
-    expect(post.body).toEqual({ replaceExisting: true, providerKey: "qwen", model: "q-1" });
+    expect(post.body).toEqual({ replaceExisting: true, providerKey: "anthropic", model: "q-1" });
     expect(post.headers["x-operator-token"]).toBe(TOKEN);
     expect(post.headers["idempotency-key"]).toMatch(/^[0-9a-f-]{36}$/);
   });
@@ -162,7 +178,7 @@ describe("AI breakdown panel", () => {
 
   it("names every refusal code in words and never shows a bare provider message", () => {
     for (const code of ["invalid_json", "invalid_output", "episode_mismatch", "duplicate_key", "missing_reference", "dialogue_not_in_script",
-      "duration_out_of_range", "truncated", "breakdown_source_changed", "breakdown_conflict", "executor_lost"]) {
+      "duration_out_of_range", "truncated", "breakdown_source_changed", "breakdown_conflict", "executor_lost", "run_kind_disabled"]) {
       expect(breakdownErrorText(code)).not.toContain(code);
     }
     expect(breakdownErrorText(null)).toBeNull();
@@ -198,7 +214,7 @@ describe("source validity and resume entry", () => {
   const SAME_SCRIPT = "88888888-8888-4888-8888-888888888888";
   const pendingStepRun = (overrides: Partial<ScriptBreakdownRunView> = {}) => run({ state: "failed", errorCode: "TITLE_WRITING_DAILY_CAP",
     step: { state: "pending", attemptNo: 0, errorCode: null }, output: null, plannedTotalSeconds: null, save: "pending", scenes: [], callsUsed: 0, ...overrides });
-  const unknownCall = { callId: "99999999-aaaa-4aaa-aaaa-aaaaaaaaaaaa", stepKey: "breakdown", attemptNo: 1, state: "unknown", providerKey: "qwen", model: "q-1",
+  const unknownCall = { callId: "99999999-aaaa-4aaa-aaaa-aaaaaaaaaaaa", stepKey: "breakdown", attemptNo: 1, state: "unknown", providerKey: "anthropic", model: "q-1",
     outcome: null, rejectionCode: null, usage: null, billing: "unknown", createdAt: "2026-10-12T00:00:00Z" } as unknown as ScriptBreakdownRunView["calls"][number];
   const newResume = () => screen.queryByRole<HTMLButtonElement>("button", { name: "续跑（重新发送一次调用）" });
 
@@ -290,7 +306,7 @@ describe("start identity: confirming a sent start, reading settings again, relea
   const restore = (body: Record<string, unknown>, key = OLD_KEY, episodeId = E1) =>
     window.sessionStorage.setItem(storageKey(episodeId), JSON.stringify({ kind: "start", key, body }));
   const UNCONFIGURED: ScriptBreakdownOptionsView = { ...OPTIONS, code: "TITLE_WRITING_PROVIDER_UNCONFIGURED", defaultProvider: null,
-    providers: [{ providerKey: "qwen", label: "千问", ready: false, models: [], defaultModel: null, missing: ["DASHSCOPE_API_KEY"] }] };
+    providers: [{ providerKey: "anthropic", label: "Claude", ready: false, models: [], defaultModel: null, missing: ["ANTHROPIC_API_KEY"] }] };
   const existing = () => json({ error: { code: "SCRIPT_BREAKDOWN_EXISTING_SCENES", message: "这一集已经有场景。确认用新结果取代后才能拆解（旧版本会保留）。",
     details: { sceneCount: 2, shotCount: 0 } } }, 409);
   const started = () => json({ run: run({ state: "running", step: { state: "submitted", attemptNo: 1, errorCode: null }, output: null,
@@ -332,8 +348,37 @@ describe("start identity: confirming a sent start, reading settings again, relea
   const enterToken = async () => fireEvent.change(await screen.findByLabelText("操作者令牌"), { target: { value: TOKEN } });
   const button = (name: string) => screen.getByRole<HTMLButtonElement>("button", { name });
 
+  it.each(["qwen", "deepseek"])("keeps a restored start of the retired provider %s and confirms it only with its own key and body", async (retired) => {
+    const body = { replaceExisting: false, providerKey: retired, model: `${retired}-old-model` };
+    restore(body);
+    const s = server([() => json(UNCONFIGURED)], [() => json({ run: { ...run(), providerKey: retired, model: `${retired}-old-model` } }, 200)]);
+    render(panelFor(s.client));
+    await enterToken();
+    await waitFor(() => expect(s.optionReads()).toBe(1));
+    // Not dropped as damaged: the identity is shown and can only be replayed, never re-sent to another provider.
+    expect(screen.getByTestId("breakdown-pending-start").textContent).toContain("确认只会重放上次的同一个请求");
+    fireEvent.click(button("确认上次启动结果"));
+    await screen.findByText(/状态：已完成/);
+    expect(s.posts()).toHaveLength(1);
+    expect([s.posts()[0]!.headers["idempotency-key"], s.posts()[0]!.body]).toEqual([OLD_KEY, body]);
+  });
+
+  it("releases a restored start of a retired provider that the server proves never ran, so the episode is not blocked", async () => {
+    restore({ replaceExisting: false, providerKey: "qwen", model: "qwen-old-model" });
+    const s = server([() => json(UNCONFIGURED)], [() => json({ error: { code: "TITLE_WRITING_PROVIDER_RETIRED",
+      message: "这个模型服务已经退役，不能再发起新的拆解或重新发送调用。", details: { providerKey: "qwen" } } }, 409)]);
+    render(panelFor(s.client));
+    await enterToken();
+    await waitFor(() => expect(s.optionReads()).toBe(1));
+    fireEvent.click(button("确认上次启动结果"));
+    expect(await screen.findByText(/这个模型服务已经退役/)).toBeTruthy();
+    expect(s.posts()).toHaveLength(1);
+    expect(stored()).toBeNull();
+    expect(screen.queryByTestId("breakdown-pending-start")).toBeNull();
+  });
+
   it("confirms a restored start with its own key and body although its provider is no longer configured", async () => {
-    const body = { replaceExisting: false, providerKey: "deepseek", model: "d-1" };
+    const body = { replaceExisting: false, providerKey: "openai", model: "d-1" };
     restore(body);
     const s = server([() => json(UNCONFIGURED)], [() => json({ run: run() }, 200)]);
     render(panelFor(s.client));
@@ -351,7 +396,7 @@ describe("start identity: confirming a sent start, reading settings again, relea
   });
 
   it("lets a restored start be confirmed while the settings cannot be read, but never starts a new request without them", async () => {
-    restore({ replaceExisting: false, providerKey: "qwen", model: "q-1" });
+    restore({ replaceExisting: false, providerKey: "anthropic", model: "q-1" });
     const s = server([() => new Response("down", { status: 502 })], [() => json({ run: run() }, 200)]);
     render(panelFor(s.client));
     await enterToken();
@@ -392,7 +437,7 @@ describe("start identity: confirming a sent start, reading settings again, relea
 
   for (const origin of ["sent from this page", "restored after a reload"] as const) {
     it(`releases a start ${origin} once the server refuses it for existing scenes, and asks for consent before a new key`, async () => {
-      if (origin === "restored after a reload") restore({ replaceExisting: false, providerKey: "qwen", model: "q-1" });
+      if (origin === "restored after a reload") restore({ replaceExisting: false, providerKey: "anthropic", model: "q-1" });
       const s = server([() => json(OPTIONS)], [existing, started]);
       render(panelFor(s.client));
       await enterToken();
@@ -413,14 +458,14 @@ describe("start identity: confirming a sent start, reading settings again, relea
       await screen.findByText(/状态：进行中/);
       const second = s.posts()[1]!;
       expect(second.headers["idempotency-key"]).not.toBe(firstKey);
-      expect(second.body).toEqual({ replaceExisting: true, providerKey: "qwen", model: "q-1" });
+      expect(second.body).toEqual({ replaceExisting: true, providerKey: "anthropic", model: "q-1" });
       expect(s.posts()).toHaveLength(2);
       expect(stored()).toBeNull();
     });
   }
 
   it("keeps a restored start's identity through a lost answer, a gateway error, a 5xx and a non-definitive refusal, sending once per click", async () => {
-    const body = { replaceExisting: false, providerKey: "qwen", model: "q-1" };
+    const body = { replaceExisting: false, providerKey: "anthropic", model: "q-1" };
     restore(body);
     const slow = held<Response>();
     const s = server([() => json(OPTIONS)], [
@@ -460,13 +505,13 @@ describe("start identity: confirming a sent start, reading settings again, relea
     await waitFor(() => expect(s.posts()).toHaveLength(1));
     const e1Key = stored()!.key;
     // Episode 2 holds its own restored start; the panel switches to it before episode 1's answer arrives.
-    restore({ replaceExisting: true, providerKey: "qwen", model: "q-1" }, E2_KEY, E2);
+    restore({ replaceExisting: true, providerKey: "anthropic", model: "q-1" }, E2_KEY, E2);
     mounted.rerender(panelFor(s.client, E2));
     expect(await screen.findByRole("button", { name: "确认上次启动结果" })).toBeTruthy();
     late.resolve(existing());
     await new Promise((resolve) => setTimeout(resolve, 20));
     // The answer belongs to no current request: nothing is released, and episode 2 is untouched.
-    expect(stored(E2)).toEqual({ kind: "start", key: E2_KEY, body: { replaceExisting: true, providerKey: "qwen", model: "q-1" } });
+    expect(stored(E2)).toEqual({ kind: "start", key: E2_KEY, body: { replaceExisting: true, providerKey: "anthropic", model: "q-1" } });
     expect(stored(E1)?.key).toBe(e1Key);
     expect(screen.queryByRole("alert")).toBeNull();
     expect(screen.getByRole("button", { name: "确认上次启动结果" })).toBeTruthy();
@@ -476,7 +521,7 @@ describe("start identity: confirming a sent start, reading settings again, relea
 });
 
 describe("saving an answer that a cancel left unsaved", () => {
-  const completedCall = { callId: "99999999-bbbb-4bbb-8bbb-bbbbbbbbbbbb", stepKey: "breakdown", attemptNo: 1, state: "completed", providerKey: "qwen",
+  const completedCall = { callId: "99999999-bbbb-4bbb-8bbb-bbbbbbbbbbbb", stepKey: "breakdown", attemptNo: 1, state: "completed", providerKey: "anthropic",
     model: "q-1", outcome: null, rejectionCode: null, usage: null, billing: "unknown", createdAt: "2026-10-12T00:00:00Z" } as unknown as ScriptBreakdownRunView["calls"][number];
   const unsaved = (overrides: Partial<ScriptBreakdownRunView> = {}) => run({ state: "canceled", save: "pending", scenes: [],
     step: { state: "completed", attemptNo: 1, errorCode: null }, calls: [completedCall], ...overrides });
@@ -520,7 +565,7 @@ describe("follow-up refresh and restored resume identities", () => {
   const NEW_CALL = "99999999-cccc-4ccc-8ccc-cccccccccccc";
   const RESUME_KEY = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
   const resumeStorage = `ads:breakdown:${P1}:${E1}:resume:v1`;
-  const unknownCall = (callId: string, attemptNo: number) => ({ callId, stepKey: "breakdown", attemptNo, state: "unknown", providerKey: "qwen", model: "q-1",
+  const unknownCall = (callId: string, attemptNo: number) => ({ callId, stepKey: "breakdown", attemptNo, state: "unknown", providerKey: "anthropic", model: "q-1",
     outcome: null, rejectionCode: null, usage: null, billing: "unknown", createdAt: "2026-10-12T00:00:00Z" }) as unknown as ScriptBreakdownRunView["calls"][number];
   const uncertain = (callId: string, attemptNo: number) => run({ state: "needs_attention", save: "pending", output: null, scenes: [],
     step: { state: "unknown", attemptNo, errorCode: "executor_lost" }, calls: [unknownCall(callId, attemptNo)] });
@@ -1067,7 +1112,7 @@ describe("the latest saved breakdown stays reachable while a newer run has not s
       const s = server();
       const storage = `ads:breakdown:${P1}:${E1}:start:v1`;
       const pending = { kind: "start", key: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
-        body: { providerKey: "qwen", model: "q-1", replaceExisting: true } };
+        body: { providerKey: "anthropic", model: "q-1", replaceExisting: true } };
       window.sessionStorage.setItem(storage, JSON.stringify(pending));
       s.state.latest = () => json({ run: oldLatest === "saved A" ? savedA() : NOT_SAVED[0]![1]() });
       s.state.saved = () => json({ run: savedA() });
@@ -1093,4 +1138,357 @@ describe("the latest saved breakdown stays reachable while a newer run has not s
       expect(onChanged).not.toHaveBeenCalled();
     });
   }
+});
+
+describe("the feature switch is the main state, whatever the task read says", () => {
+  const E2 = "33333333-3333-4333-8333-333333333334";
+  const DISABLED: ScriptBreakdownOptionsView = { ...OPTIONS, enabled: false, code: "TITLE_WRITING_DISABLED", storageReady: false };
+  const STORAGE_OFF: ScriptBreakdownOptionsView = { ...OPTIONS, code: "SCRIPT_BREAKDOWN_STORAGE_UNAVAILABLE", storageReady: false };
+  const storage503 = () => json({ error: { code: "SCRIPT_BREAKDOWN_STORAGE_UNAVAILABLE", message: "剧本拆解的数据库迁移还没有执行，没有启动任何调用。" } }, 503);
+  function held<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => { resolve = done; });
+    return { promise, resolve };
+  }
+  type Answer = (url: string) => Response | Promise<Response>;
+  /** Options, latest and latest-saved answer from switchable sources; every request is recorded, POSTs answer in order. */
+  function server(options: Answer, latest: Answer) {
+    const seen: Seen[] = [];
+    const state: { options: Answer; latest: Answer; saved: Answer; posts: Array<() => Response | Promise<Response>> } = {
+      options, latest, saved: () => json({ run: null }), posts: [] };
+    const fetchImpl = vi.fn(async (input: string, init?: RequestInit) => {
+      const headers = Object.fromEntries([...new Headers(init?.headers).entries()].map(([name, value]) => [name.toLowerCase(), value]));
+      seen.push({ method: init?.method ?? "GET", url: input, headers, body: init?.body ? JSON.parse(String(init.body)) : null });
+      if (input.endsWith("/writing/script-breakdowns/options")) return await state.options(input);
+      if (input.endsWith("/latest-saved")) return await state.saved(input);
+      if (input.endsWith("/latest")) return await state.latest(input);
+      const next = state.posts.shift();
+      if (!next) throw new Error(`unexpected ${input}`);
+      return await next();
+    });
+    return { seen, state, client: new ScriptBreakdownClient(fetchImpl as unknown as typeof fetch),
+      posts: () => seen.filter((item) => item.method !== "GET") };
+  }
+  const panelFor = (s: ReturnType<typeof server>, props: { scriptReady?: boolean; sceneCount?: number; episodeId?: string; epoch?: number } = {}) => (
+    <ScriptBreakdownPanel projectId={P1} episodeId={props.episodeId ?? E1} episodeNo={2} scriptReady={props.scriptReady ?? true}
+      sceneCount={props.sceneCount ?? 0} onOpenScene={vi.fn()} onChanged={vi.fn(async () => undefined)} client={s.client} refreshEpoch={props.epoch ?? 0} />
+  );
+  const blocked = () => screen.queryByTestId("breakdown-blocked")?.textContent ?? null;
+  const startButton = () => screen.getByRole<HTMLButtonElement>("button", { name: /生成场景与分镜|确认上次启动结果/ });
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+
+  /** What the person sees for the live combination, in one comparable value. */
+  function disabledView() {
+    return {
+      blocked: blocked(),
+      history: screen.queryByTestId("breakdown-history-error")?.textContent ?? null,
+      alert: screen.queryByRole("alert")?.textContent ?? null,
+      empty: screen.queryByText("这一集还没有拆解过。") !== null,
+      startDisabled: startButton().disabled,
+    };
+  }
+
+  it("A2: off with a storage 503 history read and an unusable configured default: still only the off text, start disabled, nothing sent", async () => {
+    const s = server(() => json({ ...DISABLED, defaultProvider: "deepseek", providers: [
+      { providerKey: "openai", label: "OpenAI", ready: true, models: ["d-1"], defaultModel: "d-1", missing: [] },
+      { providerKey: "deepseek", label: "DeepSeek", ready: false, models: [], defaultModel: null, missing: ["DEEPSEEK_API_KEY"] }] }), storage503);
+    render(panelFor(s));
+    await waitFor(() => expect(screen.queryByTestId("breakdown-history-error")).not.toBeNull());
+    const view = disabledView();
+    expect(view.blocked).toBe("剧本拆解尚未开启。");
+    expect(view.alert).toBeNull();
+    expect(view.startDisabled).toBe(true);
+    fireEvent.click(startButton());
+    await settle();
+    expect(s.posts()).toEqual([]);
+  });
+
+  it("A: says it is off (not 'read again') when off and the task read is a storage 503, keeps start disabled and sends nothing", async () => {
+    const s = server(() => json(DISABLED), storage503);
+    render(panelFor(s));
+    await waitFor(() => expect(screen.queryByTestId("breakdown-history-error")).not.toBeNull());
+    const view = disabledView();
+    expect(view.blocked).toBe("剧本拆解尚未开启。");
+    expect(view.alert).toBeNull();
+    expect(view.empty).toBe(false);
+    expect(view.startDisabled).toBe(true);
+    expect(view.history).toContain("历史拆解记录暂时无法读取（剧本拆解的数据存储还没有就绪）");
+    expect(view.history).toContain("不会开启拆解");
+    expect(document.body.textContent).not.toContain("请先重新读取本集任务状态");
+    expect(document.body.textContent).not.toContain("迁移");
+    fireEvent.change(screen.getByLabelText("操作者令牌"), { target: { value: TOKEN } });
+    expect(startButton().disabled).toBe(true);
+    fireEvent.click(startButton());
+    await settle();
+    expect(s.posts()).toHaveLength(0);
+  });
+
+  it("B: ends the same whether the settings or the failed task read answers first; a late failure does not replace the off state", async () => {
+    // Settings first, task read fails later.
+    const lateLatest = held<Response>();
+    const first = server(() => json(DISABLED), () => lateLatest.promise);
+    render(panelFor(first));
+    // Shown as soon as the settings are read, without waiting for the task read, and never startable in between.
+    await waitFor(() => expect(blocked()).toBe("剧本拆解尚未开启。"));
+    expect(startButton().disabled).toBe(true);
+    expect(screen.queryByText("这一集还没有拆解过。")).toBeNull();
+    lateLatest.resolve(storage503());
+    await waitFor(() => expect(screen.queryByTestId("breakdown-history-error")).not.toBeNull());
+    const settingsFirst = disabledView();
+    expect(first.posts()).toHaveLength(0);
+    cleanup();
+
+    // Task read fails first, settings later.
+    const lateOptions = held<Response>();
+    const second = server(() => lateOptions.promise, storage503);
+    render(panelFor(second));
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeNull());
+    // Before the settings answer, the page says only what it knows: the task read failed. Not "off", not ready, not empty.
+    expect(blocked()).toBe("请先重新读取本集任务状态。");
+    expect(document.body.textContent).not.toContain("剧本拆解尚未开启");
+    expect(screen.queryByText("这一集还没有拆解过。")).toBeNull();
+    expect(startButton().disabled).toBe(true);
+    lateOptions.resolve(json(DISABLED));
+    await waitFor(() => expect(blocked()).toBe("剧本拆解尚未开启。"));
+    expect(disabledView()).toEqual(settingsFirst);
+    expect(second.posts()).toHaveLength(0);
+  });
+
+  it("C: off with an unapproved script, an empty token and scenes to replace: says it is off and keeps every gate", async () => {
+    const s = server(() => json(DISABLED), storage503);
+    render(panelFor(s, { scriptReady: false, sceneCount: 2 }));
+    await waitFor(() => expect(blocked()).toBe("剧本拆解尚未开启。"));
+    expect(startButton().disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText("操作者令牌"), { target: { value: TOKEN } });
+    fireEvent.click(screen.getByRole("checkbox", { name: /用新结果取代这一集现有的场景/ }));
+    expect(blocked()).toBe("剧本拆解尚未开启。");
+    expect(startButton().disabled).toBe(true);
+    fireEvent.click(startButton());
+    await settle();
+    expect(s.posts()).toHaveLength(0);
+    expect(window.sessionStorage.length).toBe(0);
+  });
+
+  it("D: on, but storage not ready or the task read failing: the real error stays, start stays blocked, never shown as off or empty", async () => {
+    const storage = server(() => json(STORAGE_OFF), storage503);
+    render(panelFor(storage));
+    expect((await screen.findByRole("alert")).textContent).toContain("剧本拆解的数据存储还没有就绪");
+    await waitFor(() => expect(blocked()).toBe("剧本拆解的数据库迁移还没有执行。"));
+    expect(document.body.textContent).not.toContain("剧本拆解尚未开启");
+    expect(screen.queryByText("这一集还没有拆解过。")).toBeNull();
+    expect(screen.queryByTestId("breakdown-history-error")).toBeNull();
+    fireEvent.change(screen.getByLabelText("操作者令牌"), { target: { value: TOKEN } });
+    expect(startButton().disabled).toBe(true);
+    expect(storage.posts()).toHaveLength(0);
+    cleanup();
+
+    const failures: Array<[Answer, string]> = [
+      [() => json({ error: { code: "INTERNAL", message: "x" } }, 500), "拆解状态暂时无法读取"],
+      [() => json({ error: { code: "UNAUTHORIZED", message: "x" } }, 401), "没有读取拆解状态的权限（HTTP 401）"],
+      [() => json({ error: { code: "FORBIDDEN", message: "x" } }, 403), "没有读取拆解状态的权限（HTTP 403）"],
+      [() => { throw new TypeError("network down"); }, "拆解状态暂时无法读取"],
+    ];
+    for (const [answer, text] of failures) {
+      const s = server(() => json(OPTIONS), answer);
+      render(panelFor(s));
+      expect((await screen.findByRole("alert")).textContent).toContain(text);
+      await waitFor(() => expect(blocked()).toBe("请先重新读取本集任务状态。"));
+      expect(screen.getByRole("button", { name: "重新读取" })).toBeTruthy();
+      expect(screen.queryByText("这一集还没有拆解过。")).toBeNull();
+      expect(document.body.textContent).not.toContain("剧本拆解尚未开启");
+      fireEvent.change(screen.getByLabelText("操作者令牌"), { target: { value: TOKEN } });
+      expect(startButton().disabled).toBe(true);
+      expect(s.posts()).toHaveLength(0);
+      cleanup();
+    }
+
+    // Off with a refused read: the refusal is still said (as the reason the history is unreadable), not swallowed.
+    const refusedRead = server(() => json(DISABLED), () => json({ error: { code: "UNAUTHORIZED", message: "x" } }, 401));
+    render(panelFor(refusedRead));
+    expect((await screen.findByTestId("breakdown-history-error")).textContent).toContain("没有读取权限（HTTP 401）");
+    expect(blocked()).toBe("剧本拆解尚未开启。");
+  });
+
+  it("E: settings unread or unreadable say nothing about the switch, and nothing is sent on its own", async () => {
+    const pending = held<Response>();
+    const loading = server(() => pending.promise, storage503);
+    render(panelFor(loading));
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeNull());
+    expect(document.body.textContent).not.toContain("剧本拆解尚未开启");
+    expect(startButton().disabled).toBe(true);
+    cleanup();
+
+    const failing = server(() => json({ error: { code: "INTERNAL", message: "x" } }, 500), () => json({ run: null }));
+    render(panelFor(failing));
+    await screen.findByTestId("breakdown-options-error");
+    await waitFor(() => expect(blocked()).toBe("功能配置读取失败，请先“重新读取功能配置”。"));
+    expect(document.body.textContent).not.toContain("剧本拆解尚未开启");
+    // This task read did succeed and said there is no task: that alone may be shown as empty.
+    expect(screen.getByText("这一集还没有拆解过。")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("操作者令牌"), { target: { value: TOKEN } });
+    expect(startButton().disabled).toBe(true);
+    await settle();
+    expect([...loading.posts(), ...failing.posts()]).toHaveLength(0);
+  });
+
+  it("F: a failed read clears once a read succeeds, which then shows 'none' or the task as it is", async () => {
+    const s = server(() => json(OPTIONS), () => json({ error: { code: "INTERNAL", message: "x" } }, 500));
+    const view = render(panelFor(s));
+    await screen.findByRole("alert");
+    s.state.latest = () => json({ run: null });
+    fireEvent.click(screen.getByRole("button", { name: "重新读取" }));
+    await screen.findByText("这一集还没有拆解过。");
+    expect(screen.queryByRole("alert")).toBeNull();
+    s.state.latest = () => json({ run: run() });
+    view.rerender(panelFor(s, { epoch: 1 }));
+    await screen.findByTestId("breakdown-run");
+    expect(screen.queryByText("这一集还没有拆解过。")).toBeNull();
+    cleanup();
+
+    // Off: the shown task stays through a later failed read, marked as possibly outdated; a later success clears the note.
+    const off = server(() => json(DISABLED), () => json({ run: run() }));
+    const offView = render(panelFor(off));
+    await screen.findByTestId("breakdown-run");
+    await waitFor(() => expect(blocked()).toBe("剧本拆解尚未开启。"));
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: "重新生成场景与分镜" }).disabled).toBe(true);
+    off.state.latest = storage503;
+    offView.rerender(panelFor(off, { epoch: 1 }));
+    expect((await screen.findByTestId("breakdown-history-error")).textContent).toContain("下面显示的可能不是最新状态");
+    expect(screen.getByTestId("breakdown-run").textContent).toContain("状态：已完成");
+    off.state.latest = () => json({ run: null });
+    fireEvent.click(screen.getByRole("button", { name: "重新读取历史记录" }));
+    await screen.findByText("这一集还没有拆解过。");
+    expect(screen.queryByTestId("breakdown-history-error")).toBeNull();
+    expect(blocked()).toBe("剧本拆解尚未开启。");
+    expect([...s.posts(), ...off.posts()]).toHaveLength(0);
+  });
+
+  it("G: late answers for a left episode change nothing on the new one", async () => {
+    const lateOptions = held<Response>();
+    const lateLatest = held<Response>();
+    let optionReads = 0;
+    const s = server(() => (optionReads++ === 0 ? lateOptions.promise : json(OPTIONS)),
+      (url) => (url.includes(E2) ? json({ run: null }) : lateLatest.promise));
+    const view = render(panelFor(s));
+    view.rerender(panelFor(s, { episodeId: E2 }));
+    await screen.findByText("这一集还没有拆解过。");
+    await waitFor(() => expect(blocked()).toBe("请填写操作者令牌。"));
+    lateOptions.resolve(json(DISABLED));
+    lateLatest.resolve(storage503());
+    await settle();
+    expect(document.body.textContent).not.toContain("剧本拆解尚未开启");
+    expect(screen.queryByTestId("breakdown-history-error")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByText("这一集还没有拆解过。")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("操作者令牌"), { target: { value: TOKEN } });
+    expect(startButton().disabled).toBe(false);
+    expect(s.posts()).toHaveLength(0);
+  });
+
+  it("G: off keeps a restored start's identity: confirmed only on click, with its own key and body, once", async () => {
+    const storage = `ads:breakdown:${P1}:${E1}:start:v1`;
+    const pending = { kind: "start", key: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", body: { providerKey: "anthropic", model: "q-1", replaceExisting: false } };
+    window.sessionStorage.setItem(storage, JSON.stringify(pending));
+    const s = server(() => json(DISABLED), storage503);
+    s.state.posts.push(() => json({ run: run() }, 200));
+    render(panelFor(s, { scriptReady: false }));
+    // The off state is said on its own line; the pending start keeps its own gate (the token), as before.
+    expect((await screen.findByTestId("breakdown-disabled")).textContent).toBe("剧本拆解尚未开启。");
+    await waitFor(() => expect(blocked()).toBe("请填写操作者令牌。"));
+    expect(screen.getByTestId("breakdown-pending-start")).toBeTruthy();
+    await settle();
+    expect(s.posts()).toHaveLength(0);
+    fireEvent.change(screen.getByLabelText("操作者令牌"), { target: { value: TOKEN } });
+    fireEvent.click(startButton());
+    fireEvent.click(startButton());
+    await screen.findByText(/状态：已完成/);
+    expect(s.posts().map((item) => [item.headers["idempotency-key"], item.body])).toEqual([[pending.key, pending.body]]);
+    expect(window.sessionStorage.getItem(storage)).toBeNull();
+  });
+
+  it("G: off with an unconfirmed resume keeps it first and offers only its confirmation", async () => {
+    const storage = `ads:breakdown:${P1}:${E1}:resume:v1`;
+    const pending = { kind: "resume", runId: RUN, confirmed: [], key: "dddddddd-dddd-4ddd-8ddd-dddddddddddd" };
+    window.sessionStorage.setItem(storage, JSON.stringify(pending));
+    const s = server(() => json(DISABLED), storage503);
+    render(panelFor(s));
+    expect((await screen.findByTestId("breakdown-disabled")).textContent).toBe("剧本拆解尚未开启。");
+    await waitFor(() => expect(blocked()).toBe("请先确认上次续跑结果，之后才能发起新的生成。"));
+    expect(screen.getByTestId("breakdown-pending-resume")).toBeTruthy();
+    expect(startButton().disabled).toBe(true);
+    await settle();
+    expect(s.posts()).toHaveLength(0);
+    expect(JSON.parse(window.sessionStorage.getItem(storage)!)).toEqual(pending);
+  });
+});
+
+describe("the provider a new breakdown goes to", () => {
+  const option = (providerKey: "openai" | "anthropic" | "deepseek", label: string, missing: string[], models: string[]) => ({
+    providerKey, label, ready: missing.length === 0, models, defaultModel: models[0] ?? null, missing });
+  const OPENAI_READY = option("openai", "OpenAI", [], ["d-1"]);
+  const CLAUDE_READY = option("anthropic", "Claude", [], ["q-1"]);
+  const startButton = () => screen.getByRole<HTMLButtonElement>("button", { name: /生成场景与分镜|确认上次启动结果/ });
+  const posts = (h: ReturnType<typeof harness>) => h.seen.filter((item) => item.method === "POST");
+  const PENDING_KEY = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+
+  async function opened(options: ScriptBreakdownOptionsView, answers: Array<Response | Error> = []) {
+    const h = harness(null, answers, options);
+    panel(h);
+    fireEvent.change(await screen.findByLabelText("操作者令牌"), { target: { value: TOKEN } });
+    return h;
+  }
+
+  it("a configured default DeepSeek without a key is kept: its gap is shown, start is disabled and nothing goes to OpenAI", async () => {
+    const h = await opened({ ...OPTIONS, defaultProvider: "deepseek",
+      providers: [OPENAI_READY, option("deepseek", "DeepSeek", ["DEEPSEEK_API_KEY"], ["deepseek-flash"])] });
+    const blocked = await screen.findByTestId("breakdown-blocked");
+    await waitFor(() => expect(blocked.textContent).toContain("DeepSeek：尚未配置 DeepSeek API Key"));
+    expect(blocked.textContent).toContain("不会自动改用其他模型服务");
+    expect(startButton().disabled).toBe(true);
+    fireEvent.click(startButton());
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(posts(h)).toHaveLength(0);
+  });
+
+  it("a configured default Claude that is not ready is not replaced by the providers that are", async () => {
+    const h = await opened({ ...OPTIONS, defaultProvider: "anthropic",
+      providers: [OPENAI_READY, option("anthropic", "Claude", ["WRITING_PROVIDER_MIGRATION"], ["q-1"]), option("deepseek", "DeepSeek", [], ["deepseek-flash"])] });
+    const blocked = await screen.findByTestId("breakdown-blocked");
+    await waitFor(() => expect(blocked.textContent).toContain("Claude：数据库迁移 20261016000100_writing_provider_anthropic 尚未执行"));
+    expect(startButton().disabled).toBe(true);
+    fireEvent.click(startButton());
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(posts(h)).toHaveLength(0);
+  });
+
+  it("a ready configured default is sent once and frozen in the request identity", async () => {
+    const h = await opened({ ...OPTIONS, defaultProvider: "deepseek", providers: [OPENAI_READY, option("deepseek", "DeepSeek", [], ["deepseek-flash"])] },
+      [json({ run: run({ providerKey: "deepseek", model: "deepseek-flash" }) }, 201)]);
+    await waitFor(() => expect(startButton().disabled).toBe(false));
+    fireEvent.click(startButton());
+    await screen.findByText(/状态：已完成/);
+    expect(posts(h).map((item) => item.body)).toEqual([{ replaceExisting: false, providerKey: "deepseek", model: "deepseek-flash" }]);
+  });
+
+  it("without a configured default the ready provider is still recommended and sent", async () => {
+    const h = await opened({ ...OPTIONS, defaultProvider: null, providers: [OPENAI_READY, option("deepseek", "DeepSeek", ["DEEPSEEK_API_KEY"], [])] },
+      [json({ run: run({ providerKey: "openai", model: "d-1" }) }, 201)]);
+    await waitFor(() => expect(startButton().disabled).toBe(false));
+    fireEvent.click(startButton());
+    await screen.findByText(/状态：已完成/);
+    expect(posts(h).map((item) => item.body)).toEqual([{ replaceExisting: false, providerKey: "openai", model: "d-1" }]);
+  });
+
+  it("an unconfirmed start is still confirmed with its own key and body while the current default cannot be used", async () => {
+    const body = { replaceExisting: false, providerKey: "anthropic", model: "q-1" };
+    window.sessionStorage.setItem(`ads:breakdown:${P1}:${E1}:start:v1`, JSON.stringify({ kind: "start", key: PENDING_KEY, body }));
+    const h = await opened({ ...OPTIONS, defaultProvider: "deepseek",
+      providers: [CLAUDE_READY, option("deepseek", "DeepSeek", ["DEEPSEEK_API_KEY"], ["deepseek-flash"])] }, [json({ run: run() }, 200)]);
+    await waitFor(() => expect(startButton().textContent).toBe("确认上次启动结果"));
+    await waitFor(() => expect(startButton().disabled).toBe(false));
+    fireEvent.click(startButton());
+    await screen.findByText(/状态：已完成/);
+    expect(posts(h).map((item) => [item.headers["idempotency-key"], item.body])).toEqual([[PENDING_KEY, body]]);
+  });
+
 });

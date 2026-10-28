@@ -1,6 +1,6 @@
 # AI Drama Studio
 
-管理员模型配置入口为 `/admin/models`：支持标题创作的千问、OpenAI、DeepSeek，密钥加密保存、仅后台配置、API 重启后生效。首次由服务器管理员安全初始化；默认不启用，不自动调用模型。见 [管理员配置与部署说明](docs/ADMIN_MODEL_SETTINGS.md)。
+管理员模型配置入口为 `/admin/models`：文本创作支持 DeepSeek、Claude（Anthropic 官方 API）与 OpenAI（千问已退役，历史记录保留可读；DeepSeek 2026-10-17 重新接入，见 [DeepSeek 重新接入](docs/DEEPSEEK_WRITING.md)），密钥加密保存、仅后台配置、API 重启后生效。见 [OpenAI 与 Claude 文本创作](docs/OPENAI_CLAUDE_WRITING.md)。首次由服务器管理员安全初始化；默认不启用，不自动调用模型。见 [管理员配置与部署说明](docs/ADMIN_MODEL_SETTINGS.md)。
 
 站点统一登录：启用 `SITE_AUTH_ENABLED` 后，所有页面与 `/api/v1` 接口由应用自身的账号密码会话保护（`/login`），模型后台不再使用独立令牌。见 [统一管理员登录](docs/UNIFIED_ADMIN_LOGIN.md)。
 
@@ -183,4 +183,4 @@ M1-B GitHub Actions 还会在隔离 PostgreSQL 16 上执行 Prisma validate/gene
 
 ## 尚未纳入当前候选的范围
 
-尚未完成和不得当成完成的事项见 [`docs/V1_DELIVERY_MATRIX.md`](docs/V1_DELIVERY_MATRIX.md) 与 [`docs/M4_CLOSEOUT_REPORT.md`](docs/M4_CLOSEOUT_REPORT.md)。其中包括真实 Provider、付费模型、ComfyUI 实际调用、生产启用、完整 M4 和完整生产成本。本机千问命令可以准备可导入候选，网页不会自动调用模型；网页调用仍待 [`docs/QWEN_WEB_INVOCATION.md`](docs/QWEN_WEB_INVOCATION.md) 审查。[`docs/DEV_RUNBOOK.md`](docs/DEV_RUNBOOK.md) 只说明如何在专用开发库上操作，不表示这些能力已经部署或验收。
+尚未完成和不得当成完成的事项见 [`docs/V1_DELIVERY_MATRIX.md`](docs/V1_DELIVERY_MATRIX.md) 与 [`docs/M4_CLOSEOUT_REPORT.md`](docs/M4_CLOSEOUT_REPORT.md)。其中包括真实 Provider、付费模型、ComfyUI 实际调用、生产启用、完整 M4 和完整生产成本。编剧助手只准备指令并导入外部候选，网页不会自动调用模型；原千问本机命令与网页调用入口已经退役（历史说明见 [`docs/QWEN_WEB_INVOCATION.md`](docs/QWEN_WEB_INVOCATION.md)）。[`docs/DEV_RUNBOOK.md`](docs/DEV_RUNBOOK.md) 只说明如何在专用开发库上操作，不表示这些能力已经部署或验收。
