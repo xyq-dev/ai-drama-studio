@@ -54,6 +54,7 @@ import {
 import {
   TEXT_WRITING_MAX_OUTPUT_TOKENS,
   WRITING_ADAPTERS,
+  hashSeriesInput,
   hashSeriesResume,
   newSeries,
   newSeriesGrant,
@@ -245,6 +246,13 @@ export class SeriesWritingService {
       title: request.title, idea: request.idea, constraints: request.constraints, materials: request.materials, referenceUrls: request.referenceUrls,
       researchFetch, episodeCount: request.episodeCount, episodeSeconds: request.episodeSeconds, now: this.now(),
     });
+    if (previous) {
+      // Replay the server metadata originally frozen under this key, but still compare every requested creative field.
+      series.input.promptVersion = previous.input.promptVersion;
+      series.input.checksVersion = previous.input.checksVersion;
+      series.input.researchContract = previous.input.researchContract;
+      series.inputHash = hashSeriesInput(series.title, series.input);
+    }
     const created = await this.deps.store.createSeries(series, { title: request.title, premise: request.idea });
     if (created.kind === "conflict") return failure(409, "IDEMPOTENCY_KEY_REUSED");
     if (created.kind === "plan_unavailable") return failure(503, "SERIES_EPISODE_PLAN_UNAVAILABLE");
