@@ -176,7 +176,7 @@ describe("the v3 prompt and the v3 checks say the same thing", () => {
     expect(prompt).toContain(`不写“${refused}”`);
     expect(validateAutoStageOutput("research", limited(hypothesis(`${refused}。`)), input(), context()))
       .toMatchObject({ ok: false, semantic: "result_claim", rule: "unmarked_audience_judgement" });
-    expect(prompt).toContain("提示版本：ads.auto-creation.prompt.v10");
+    expect(prompt).toContain("提示版本：ads.auto-creation.prompt.v11");
   });
 });
 

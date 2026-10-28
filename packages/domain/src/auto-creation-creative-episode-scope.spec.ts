@@ -234,7 +234,7 @@ describe("B. the whole research stage (validateAutoStageOutput, and the series' 
           expect(result, `${field} ${String(referenceId)}`).toMatchObject({ ok: true });
           expect(result.output!.contentStructure[FIFTH]!.application[field]).toBe(text);
           expect(result.output!.unverified).toEqual([]);
-          expect(result.output!.serverRecord.executedWith).toMatchObject({ checksVersion: "ads.auto-creation.checks.v13", promptVersion: "ads.auto-creation.prompt.v10" });
+          expect(result.output!.serverRecord.executedWith).toMatchObject({ checksVersion: "ads.auto-creation.checks.v14", promptVersion: "ads.auto-creation.prompt.v11" });
           expect(result.output!.serverRecord.settings.items.find((item) => item.key === "episodes")?.value).toBe(`共 ${String(EPISODES)} 集`);
         }
       }

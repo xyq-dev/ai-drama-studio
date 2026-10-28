@@ -69,7 +69,7 @@ function promptExample(prompt: string): Record<string, unknown> {
 describe("A. both research prompts name every field of one hypothesis (prompt v8)", () => {
   it.each(MODES)("%s: hypotheses is an array of objects with exactly id, statement and howToVerify, nothing else", (_mode, context) => {
     const prompt = buildAutoCreationPrompt("research", input(), context()).user;
-    expect(prompt).toContain("提示版本：ads.auto-creation.prompt.v10");
+    expect(prompt).toContain("提示版本：ads.auto-creation.prompt.v11");
     expect(prompt).toContain("hypotheses 是数组");
     expect(prompt).toContain("每条假设是一个对象，只包含 id、statement、howToVerify 三个字段，三个都必填");
     expect(prompt).toContain("不要给假设添加任何其他字段");

@@ -387,6 +387,35 @@ describe(`series writing on PostgreSQL (${scenario} schema)`, () => {
     expect(current.grants[0]).toMatchObject({ state: "stopped", stopReason: "batch_review_blocking" });
   });
 
+  // checks v14 (a synthetic text, not a real refused answer): a choice viewers make within a time is refused in the
+  // borrowed research; the one send counts, the grant stops and nothing after research is sent or stored.
+  it("60 × 60 s, budget 19: a choice viewers make within a time is refused at research after one send; the grant stops, nothing stored after it", async () => {
+    plan = { auto: { viewingDurationBoundary: "choice" } };
+    const code = "unsourced_number@contentStructure[0].application.why:digits+market_statistic+viewing_duration+not_pending";
+    const { svc, settle } = service();
+    const view = await createSeries(svc, 60);
+    const before = seen.length;
+    expect((await grant(svc, view, { plan: true, batchFrom: 1, batchTo: 1, final: false })).status).toBe(201);
+    await settle();
+    plan = {};
+    const current = viewOf((await svc.get(view.projectId)).body);
+    expect(seen.slice(before).map((item) => item.stage)).toEqual(["research"]);
+    expect(current.grants[0]).toMatchObject({ state: "stopped", callBudget: 19, callsUsed: 1 });
+    expect(current.written).toBe(0);
+    expect(await q(`SELECT s.stage_key, s.state, s.error_code, s.output_json FROM series_writing_stage s JOIN series_writing_run r ON r.id = s.run_id
+      WHERE r.series_id = $1 AND s.state <> 'pending' AND s.stage_key <> 'sources'`, [current.seriesId]))
+      .toEqual([{ stage_key: "research", state: "rejected", error_code: code, output_json: null }]);
+    expect(await q("SELECT stage_key, error_code FROM series_writing_call WHERE series_id = $1", [current.seriesId])).toEqual([{ stage_key: "research", error_code: code }]);
+    const all = JSON.stringify([
+      await q("SELECT s.* FROM series_writing_stage s JOIN series_writing_run r ON r.id = s.run_id WHERE r.series_id = $1", [current.seriesId]),
+      await q("SELECT * FROM series_writing_call WHERE series_id = $1", [current.seriesId]),
+      await q("SELECT * FROM series_writing_grant WHERE series_id = $1", [current.seriesId])]);
+    expect(all).not.toContain("决定是否继续看");
+    await service().engine.maintain();
+    expect(seen.length - before).toBe(1);
+    evidence.v14Choice = { seriesId: current.seriesId, calls: current.grants[0]!.callsUsed, stageError: code };
+  });
+
   it("an unknown call stops the grant; nothing is resent without confirmation; the resend counts", async () => {
     plan = {};
     const { svc, settle } = service();

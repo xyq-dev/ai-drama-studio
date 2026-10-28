@@ -378,6 +378,8 @@ function episodeShape(input: AutoCreationFrozenInput, episodeNo: number): string
 /**
  * How a content structure is written, in both research contracts (prompt v9): a method chosen from the server's catalog
  * by its id, never quoted by the model, apart from this work's design. An empty catalog leaves null as the only choice.
+ * Prompt v11: the application tells the work's timing apart from its effect on viewers, which it may only write as a
+ * question to verify, in the part of the sentence that names the viewers; that wording unlocks no statistic.
  */
 function structureLines(catalog: AutoReferenceCatalog): string[] {
   return [
@@ -388,7 +390,10 @@ function structureLines(catalog: AutoReferenceCatalog): string[] {
       : "- referenceId：本次可引用方法片段目录为空，每条都只能写 null，表示自主创作设计。",
     "不要自己写 reference、sourceId、quote 或摘抄原文，多出任何字段都会整份拒收，即使是空值也一样。",
     "- application：本剧怎样应用（pattern 写本剧的结构设计，why 写理由），是本作品的原创设计，可以写本剧的创作数量（如“计划用两次反转推动主角主动选择”），这些数量不需要出现在所选片段里；"
-      + "但 application 不是资料的结论：所选片段不能替它说明观众比例、排名、“调查证明”“已验证”等市场或受众说法。",
+      + "但 application 不是资料的结论：所选片段不能替它说明观众比例、排名、“调查证明”“已验证”等市场或受众说法。"
+      + "叙事时间安排（如“前 3 秒让主角陷入危机”）是本剧的设计，观众效果（观众会怎样理解、选择或反应）是另一回事：未经验证的观众效果不能写成已知事实；"
+      + "同一句里既写设计时长又写观众效果时，写观众效果的那一部分（逗号隔开的分句）本身要写成待验证的问题（如“前 3 秒让主角陷入危机，待验证观众是否因此想继续看”）；"
+      + "“待验证”等措辞不能让无来源的统计、观看习惯或已经得到的结果变得可以写。",
   ];
 }
 

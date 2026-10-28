@@ -350,7 +350,7 @@ describe("F. history: research v3 is read as it was; an old run's next research 
     await later.drive(first.run.id);
     expect(first.seen.at(-6)!.user).toContain("任务：基于资料完成研究与创作定位");
     // The current answer contract on the run's own saved snapshot: the catalog of that snapshot, recorded beside the versions.
-    expect((await first.research()).output).toMatchObject({ serverRecord: { executedWith: { promptVersion: "ads.auto-creation.prompt.v10", answerContract: "sourced",
+    expect((await first.research()).output).toMatchObject({ serverRecord: { executedWith: { promptVersion: "ads.auto-creation.prompt.v11", answerContract: "sourced",
       answerSchema: "ads.auto-creation.research.answer.catalog.v1", referenceCatalogVersion: "ads.auto-creation.reference-catalog.v1",
       referenceCatalogHash: (await first.catalog()).hash } } });
   });
@@ -391,7 +391,7 @@ describe("durations (checks v7): the work's own length passes, an unplaced durat
     expect(stored.unverified).toEqual([{ origin: "server_check", field: "hypotheses[1].statement", token: "60", semantic: "unclassified",
       rule: "duration_unconfirmed", note: "程序无法确认时长含义（不是已判定的观看统计），未核实" }]);
     expect(stored).toMatchObject({ facts: [], observations: [], audience: { basis: "hypothesis", sourceIds: [] },
-      serverRecord: { executedWith: { promptVersion: "ads.auto-creation.prompt.v10", checksVersion: "ads.auto-creation.checks.v13", answerContract: "limited" },
+      serverRecord: { executedWith: { promptVersion: "ads.auto-creation.prompt.v11", checksVersion: "ads.auto-creation.checks.v14", answerContract: "limited" },
         marketEvidence: { status: "unavailable" } } });
     const notice = "第2条假设（H2）中的「60」：程序无法确认时长含义（不是已判定的观看统计），未核实；只属于创作假设或设计，不是有来源的事实或市场结论。";
     // Later prompts carry it as a notice beside a hypothesis, never as a finding.
@@ -450,7 +450,7 @@ describe("hypothesis fields (prompt v8): the DeepSeek request names them, the st
     expect(item).toMatchObject({ type: "object", additionalProperties: false, required: ["id", "statement", "howToVerify"] });
     expect(Object.keys(item.properties as Record<string, unknown>)).toEqual(["id", "statement", "howToVerify"]);
     const user = seen[0]!.user;
-    expect(user).toContain("提示版本：ads.auto-creation.prompt.v10");
+    expect(user).toContain("提示版本：ads.auto-creation.prompt.v11");
     expect(user).toContain("每条假设是一个对象，只包含 id、statement、howToVerify 三个字段，三个都必填");
     expect(user).toContain("不要给假设添加任何其他字段");
     expect(user).toContain('假设对象示例（只示意格式，内容按本次创作写）：{"id":"H1",');

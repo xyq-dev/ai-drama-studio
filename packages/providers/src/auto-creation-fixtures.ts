@@ -540,6 +540,13 @@ export interface AutoFixturePlan {
    * branch; not the refused answer of any real run, which was never kept).
    */
   viewingDurationWhy?: AutoViewingDurationReason;
+  /**
+   * checks v14 (synthetic, not the refused answer of any real run, which was never kept): the first structure's
+   * application.why. pending: a design time, the viewers' effect asked as a question (passes, no notice). choice: a
+   * choice viewers make within a time (refused, not_pending). masked: an unmarked design time, then a share of viewers
+   * (refused, proportion, not the time before it).
+   */
+  viewingDurationBoundary?: "pending" | "choice" | "masked";
   /** One person on screen and one mentioned; the first drafts put the mentioned one on screen, revisions do not. */
   soloCast?: boolean;
   /** One person on screen, seven mentioned, and every scene of every draft lists all eight (hundreds of check results). */
@@ -586,6 +593,13 @@ const FIXTURE_VIEWING_DURATION_WHY: Readonly<Record<AutoViewingDurationReason, s
   no_plan_verb: "模型替身样例：观众7天内会追完。",
 };
 
+/** The first structure's application.why for each viewingDurationBoundary (synthetic samples, checks v14). */
+const FIXTURE_DURATION_BOUNDARY_WHY: Readonly<Record<NonNullable<AutoFixturePlan["viewingDurationBoundary"]>, string>> = {
+  pending: "模型替身样例：前3秒让主角陷入危机，待验证观众是否因此想继续看。",
+  choice: "模型替身样例：观众会在前10秒决定是否继续看。",
+  masked: "模型替身样例：开场10秒内交代主角目标，七成观众会因此留下。",
+};
+
 /** The double's answer for one prompt. */
 export function autoFixtureAnswer(user: string, plan: AutoFixturePlan = {}): unknown {
   const stage = autoFixtureStageOf(user);
@@ -615,6 +629,10 @@ export function autoFixtureAnswer(user: string, plan: AutoFixturePlan = {}): unk
     }
     if (plan.viewingDurationWhy) {
       const why = FIXTURE_VIEWING_DURATION_WHY[plan.viewingDurationWhy];
+      adjusted.contentStructure = adjusted.contentStructure.map((item, index) => index === 0 ? { ...item, application: { ...item.application, why } } : item);
+    }
+    if (plan.viewingDurationBoundary) {
+      const why = FIXTURE_DURATION_BOUNDARY_WHY[plan.viewingDurationBoundary];
       adjusted.contentStructure = adjusted.contentStructure.map((item, index) => index === 0 ? { ...item, application: { ...item.application, why } } : item);
     }
     // The double follows the contract the prompt asks for, unless a plan says to break it: a method is the id of the
