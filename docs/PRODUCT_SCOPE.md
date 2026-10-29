@@ -60,3 +60,12 @@ V1 是单工作区、单操作者体验。`workspace_id` 是数据隔离预留�
 本文件与其余 V1 文档使用同一术语：`Project → Episode → Scene → Shot` 是稳定身份层级；`StoryRevision`、`ScriptRevision`、`CharacterRevision`、`SceneRevision` 与 `ShotRevision` 是不可变内容版本；`Asset` 是项目内的媒体对象元数据；`GenerationJob` 是一个能力调用；`WorkflowRun` 是一次完整或局部的用户制作意图。一次局部重生也会创建新的 `WorkflowRun`，但只包含该范围所需的 job。
 
 V1 的人工门槛固定为三个阶段：剧本门槛；视频生成前门槛（角色及其选定参考图、以及 ShotRevision 分镜均已审核）；成片导出门槛。角色参考图生成只要求来源剧本已审核、CharacterRevision 非 `STALE` 且输入有效，不要求角色预先审核；分镜预览图也可在最终分镜审核前生成。用户对成功结果主动重新生成使用相应内容生成端点并设置 `bypassCache=true`，不属于 job retry。任何未来的发布、支付、协作、训练、SaaS 或 30–100 集能力均为 `FUTURE`，不是 V1 待办事项。
+
+## 2026-10-29 功能规划补充：ViMax 分镜规划评估
+
+以上三集描述保留为 V1 历史基线。当前短剧文本为 1–6 集，系列编剧为独立的 1–60 集文本流程，具体边界见 [`SERIES_WRITING.md`](SERIES_WRITING.md)；系列媒体生产仍未开放，也不因新增设计而改变。
+
+新增评估方向：在本工作台内复用 ViMax Script2Video 的文本分镜规划方法，以一集已批准短剧中的**一个场景**为首个样本，提供镜头文字、角色映射、首尾帧描述与视觉依赖候选，经严格校验和现有人工审核后再考虑写入 Scene/Shot 草稿。现有拆解保存是整集替换，单场景写入须另设计明确作用域并验收，不能直接复用该操作。先做零网络的离线映射评估，真实规划及媒体生成分别进入后续阶段；不替换项目状态、预算、幂等、恢复与 STALE 体系。
+
+完整功能要求、候选映射、准入条件和退出条件见 [`VIMAX_SCRIPT2VIDEO_EVALUATION.md`](VIMAX_SCRIPT2VIDEO_EVALUATION.md)。当前状态为**设计阶段，未实现、未运行 ViMax、未验证真实生成**，原有 M1–M4 交付结论不变。
+
