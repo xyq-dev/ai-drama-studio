@@ -1,5 +1,7 @@
 # AI Drama Studio
 
+ViMax Script2Video 的[分镜规划层复用评估](docs/VIMAX_SCRIPT2VIDEO_EVALUATION.md)已纳入设计：在现有短剧工作台内，先评估单场景文本分镜候选与已有审核/版本链的映射。当前仅有设计文档，未接入 ViMax、未调用模型，也未开放系列媒体生产。
+
 角色配音的下一阶段方案见 [`docs/CHARACTER_VOICE_DESIGN.md`](docs/CHARACTER_VOICE_DESIGN.md)，附[开源调查](docs/VOICE_OPEN_SOURCE_RESEARCH.md)与[可离线打开的交互设计图](docs/design/character-voice-preview.html)。本项处于设计阶段，尚未接入真实 TTS，不改变下述已验收范围。
 
 管理员模型配置入口为 `/admin/models`：文本创作支持 DeepSeek、Claude（Anthropic 官方 API）与 OpenAI（千问已退役，历史记录保留可读；DeepSeek 2026-10-17 重新接入，见 [DeepSeek 重新接入](docs/DEEPSEEK_WRITING.md)），密钥加密保存、仅后台配置、API 重启后生效。见 [OpenAI 与 Claude 文本创作](docs/OPENAI_CLAUDE_WRITING.md)。首次由服务器管理员安全初始化；默认不启用，不自动调用模型。见 [管理员配置与部署说明](docs/ADMIN_MODEL_SETTINGS.md)。
