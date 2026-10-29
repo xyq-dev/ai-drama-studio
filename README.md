@@ -188,4 +188,3 @@ M1-B GitHub Actions 还会在隔离 PostgreSQL 16 上执行 Prisma validate/gene
 ## 尚未纳入当前候选的范围
 
 尚未完成和不得当成完成的事项见 [`docs/V1_DELIVERY_MATRIX.md`](docs/V1_DELIVERY_MATRIX.md) 与 [`docs/M4_CLOSEOUT_REPORT.md`](docs/M4_CLOSEOUT_REPORT.md)。其中包括真实 Provider、付费模型、ComfyUI 实际调用、生产启用、完整 M4 和完整生产成本。编剧助手只准备指令并导入外部候选，网页不会自动调用模型；原千问本机命令与网页调用入口已经退役（历史说明见 [`docs/QWEN_WEB_INVOCATION.md`](docs/QWEN_WEB_INVOCATION.md)）。[`docs/DEV_RUNBOOK.md`](docs/DEV_RUNBOOK.md) 只说明如何在专用开发库上操作，不表示这些能力已经部署或验收。
-
