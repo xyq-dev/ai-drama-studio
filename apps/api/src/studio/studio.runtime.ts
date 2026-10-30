@@ -11,6 +11,7 @@ import {
   PostgresWritingCandidateStore,
   RuntimeStore,
   TextChainService,
+  VimaxPreviewSourceStore,
   closePostgresPool,
   createPostgresPool,
   type PostgresPool,
@@ -25,6 +26,7 @@ import { SeriesWritingService } from "./series-writing.service";
 import type { ApiEnv } from "../config/env";
 import { siteAuthFromEnv } from "../auth/site-auth.config";
 import { ScriptBreakdownService } from "./script-breakdown.service";
+import { VimaxPreviewService } from "./vimax-preview.service";
 import { StudioService } from "./studio.service";
 import { TitleWritingService } from "./title-writing.service";
 import { writingWorkspaceIdle } from "./writing-activation";
@@ -61,6 +63,8 @@ export class StudioRuntime implements OnModuleDestroy {
     readonly autoCreation: AutoCreationService | null = null,
     /** Series writing (1–60 episodes): title writing's switch, operator, providers and limits, plus SERIES_WRITING_ENABLED. */
     readonly seriesWriting: SeriesWritingService | null = null,
+    /** Read-only single-scene candidate previews; no paid engine, task or persistence dependency. */
+    readonly vimaxPreview: VimaxPreviewService | null = null,
   ) {
     this.service = service;
     this.store = store;
@@ -261,7 +265,8 @@ export class StudioRuntime implements OnModuleDestroy {
         }),
         new CharacterReferenceStore(pool),
         env.M3_CHARACTER_REFERENCE_GATE), store, titleWriting,
-      adminModels, admin?.enabled ?? false, scriptBreakdown, writingCandidates, autoCreation, seriesWriting);
+      adminModels, admin?.enabled ?? false, scriptBreakdown, writingCandidates, autoCreation, seriesWriting,
+      new VimaxPreviewService({ workspaceId, nodeEnv: env.NODE_ENV, source: new VimaxPreviewSourceStore(pool) }));
   }
 
   async onModuleDestroy(): Promise<void> {

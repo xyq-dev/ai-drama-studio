@@ -1,6 +1,6 @@
 # AI Drama Studio
 
-ViMax Script2Video 的[分镜规划层复用评估](docs/VIMAX_SCRIPT2VIDEO_EVALUATION.md)已纳入设计：在现有短剧工作台内，先评估单场景文本分镜候选与已有审核/版本链的映射。现提供 [E1 离线评估工具](docs/VIMAX_OFFLINE_EVALUATION.md)及合成样本；平台接入、真实模型和系列媒体生产仍未开放。
+ViMax Script2Video 的[分镜规划层复用评估](docs/VIMAX_SCRIPT2VIDEO_EVALUATION.md)已纳入设计：在现有短剧工作台内，先评估单场景文本分镜候选与已有审核/版本链的映射。现提供 [E1 离线评估工具](docs/VIMAX_OFFLINE_EVALUATION.md)及合成样本，并增加 [E2-A 工作台只读预览](docs/VIMAX_PLATFORM_PREVIEW.md)：导入方案后实时核对当前批准剧本与角色，再对照单场景原文和镜头。候选持久化、局部保存、真实模型和系列媒体生产仍未开放。
 
 角色配音的下一阶段方案见 [`docs/CHARACTER_VOICE_DESIGN.md`](docs/CHARACTER_VOICE_DESIGN.md)，附[开源调查](docs/VOICE_OPEN_SOURCE_RESEARCH.md)与[可离线打开的交互设计图](docs/design/character-voice-preview.html)。本项处于设计阶段，尚未接入真实 TTS，不改变下述已验收范围。
 

@@ -6,9 +6,11 @@ import {
   VIMAX_EVALUATION_LIMITS,
   VIMAX_EVALUATION_REPORT_SCHEMA,
   VIMAX_UPSTREAM_REVISION,
+  VIMAX_PLATFORM_PREVIEW_REPORT_SCHEMA,
   vimaxEvaluationInputSchema,
   vimaxEvaluationSupplementsSchema,
   vimaxPlanCandidateSchema,
+  vimaxPlatformInputSchema,
   type VimaxEvaluationCode,
   type VimaxEvaluationDiagnostic,
   type VimaxEvaluationInput,
@@ -16,6 +18,8 @@ import {
   type VimaxEvaluationReport,
   type VimaxEvaluationSupplements,
   type VimaxPlanCandidate,
+  type VimaxPlatformInput,
+  type VimaxPlatformPreviewReport,
 } from "@ai-drama/contracts";
 import { validateScriptBreakdownOutput } from "./script-breakdown";
 
@@ -29,6 +33,7 @@ type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 const diagnostic = (code: VimaxEvaluationCode, path: string): VimaxEvaluationDiagnostic => ({ code, path });
 const duplicates = (items: readonly unknown[]) => new Set(items).size !== items.length;
 const sha256 = (value: string) => createHash("sha256").update(value, "utf8").digest("hex");
+type PlanningInput = VimaxEvaluationInput | VimaxPlatformInput;
 
 /** Inspect descriptors before schema parsing: getters, exotic objects, cycles and shared JS objects are not JSON. */
 function jsonBoundary(value: unknown, path: string): VimaxEvaluationDiagnostic | null {
@@ -99,7 +104,7 @@ function linesOf(text: string, offset: number): SourceLine[] {
   return lines;
 }
 
-function sourceCheck(input: VimaxEvaluationInput): VimaxEvaluationDiagnostic | null {
+function sourceCheck(input: PlanningInput): VimaxEvaluationDiagnostic | null {
   if (sha256(input.scriptText) !== input.scriptContentHash) return diagnostic("source_hash_mismatch", "input.scriptContentHash");
   let end = 0;
   for (const [index, scene] of input.sceneSpans.entries()) {
@@ -195,7 +200,7 @@ function candidateCheck(candidate: VimaxPlanCandidate): VimaxEvaluationDiagnosti
   return null;
 }
 
-function supplementCheck(input: VimaxEvaluationInput, candidate: VimaxPlanCandidate, supplements: VimaxEvaluationSupplements): VimaxEvaluationDiagnostic | null {
+function supplementCheck(input: PlanningInput, candidate: VimaxPlanCandidate, supplements: VimaxEvaluationSupplements): VimaxEvaluationDiagnostic | null {
   if (supplements.characters.length !== candidate.characters.length
     || supplements.characters.some((item, index) => item.vimaxIndex !== index)
     || duplicates(supplements.characters.map((item) => item.characterKey))) return diagnostic("character_mapping_invalid", "supplements.characters");
@@ -232,7 +237,7 @@ function supplementCheck(input: VimaxEvaluationInput, candidate: VimaxPlanCandid
 }
 
 /** An internal validator coordinate projection only; this is never returned, imported, or sent to a save operation. */
-function secondaryCheck(input: VimaxEvaluationInput, supplements: VimaxEvaluationSupplements): VimaxEvaluationDiagnostic | null {
+function secondaryCheck(input: PlanningInput, supplements: VimaxEvaluationSupplements): VimaxEvaluationDiagnostic | null {
   const scene = input.sceneSpans.find((item) => item.key === input.selectedSceneKeys[0])!;
   const output = { schema: SCRIPT_BREAKDOWN_OUTPUT_SCHEMA, episodeNo: input.episodeNo,
     scenes: [{ key: "S1", heading: scene.heading, timeOfDay: scene.timeOfDay, description: scene.description }],
@@ -254,6 +259,21 @@ function secondaryCheck(input: VimaxEvaluationInput, supplements: VimaxEvaluatio
 
 /** Pure local evaluation. No provider, store, clock, environment, filesystem, or network is consulted. */
 export function evaluateVimaxPlan(inputValue: unknown, candidateValue: unknown, supplementsValue: unknown): VimaxEvaluationReport {
+  return evaluatePlan(inputValue, candidateValue, supplementsValue, false);
+}
+
+/**
+ * Pure validation of a separately versioned workspace snapshot. The API must build and verify that snapshot from
+ * its own scoped database reads. This function alone proves no live permissions, approval, freshness or save rights.
+ * E1 retains its own input/report schemas, source kinds, diagnostics and deterministic hashes unchanged.
+ */
+export function evaluateVimaxPlatformPreview(inputValue: unknown, candidateValue: unknown, supplementsValue: unknown): VimaxPlatformPreviewReport {
+  const report = evaluatePlan(inputValue, candidateValue, supplementsValue, true);
+  const gaps = report.gaps.filter((gap) => gap !== "frozen_metadata_not_live_verified");
+  return { ...report, schema: VIMAX_PLATFORM_PREVIEW_REPORT_SCHEMA, gaps: [...gaps, "source_can_change_after_preview"] };
+}
+
+function evaluatePlan(inputValue: unknown, candidateValue: unknown, supplementsValue: unknown, platform: boolean): VimaxEvaluationReport {
   let provenance: VimaxEvaluationProvenance | null = null;
   const blocked = (issue: VimaxEvaluationDiagnostic): VimaxEvaluationReport => ({
     schema: VIMAX_EVALUATION_REPORT_SCHEMA, status: "blocked", writeAllowed: false, provenance,
@@ -263,7 +283,7 @@ export function evaluateVimaxPlan(inputValue: unknown, candidateValue: unknown, 
     const error = jsonBoundary(value, path);
     if (error) return blocked(error);
   }
-  const parsedInput = vimaxEvaluationInputSchema.safeParse(inputValue);
+  const parsedInput = platform ? vimaxPlatformInputSchema.safeParse(inputValue) : vimaxEvaluationInputSchema.safeParse(inputValue);
   if (!parsedInput.success) {
     return blocked(diagnostic(parsedInput.error.issues.some((issue) => issue.path[0] === "selectedSceneKeys") ? "scene_scope_invalid" : "invalid_input", "input"));
   }

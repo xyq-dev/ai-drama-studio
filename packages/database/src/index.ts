@@ -192,3 +192,4 @@ export {
   recentWritingCalls,
   writingCallLockKey,
 } from "./writing-candidate-store";
+export { VimaxPreviewSourceStore, type VimaxPreviewSourceRead } from "./vimax-preview-source";

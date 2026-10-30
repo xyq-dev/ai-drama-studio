@@ -12,6 +12,15 @@ export class SafeExceptionFilter implements ExceptionFilter {
 
   catch(exception: unknown, host: ArgumentsHost): void {
     const response = host.switchToHttp().getResponse<JsonResponse>();
+    // Express/body-parser throws before a controller runs. Recognize only its bounded JSON-body refusal; never
+    // serialize its message/body fields, which can contain the submitted private text.
+    if (exception && typeof exception === "object" && "type" in exception && "status" in exception
+      && exception.type === "entity.too.large" && exception.status === HttpStatus.PAYLOAD_TOO_LARGE) {
+      response.status(HttpStatus.PAYLOAD_TOO_LARGE).json({
+        error: { code: "REQUEST_BODY_TOO_LARGE", message: "请求内容超过大小上限。", traceId: "api" },
+      });
+      return;
+    }
     if (exception instanceof PersistenceError) {
       this.logger.error(`request failed: ${exception.code}`);
       response.status(httpStatus(exception.code)).json({

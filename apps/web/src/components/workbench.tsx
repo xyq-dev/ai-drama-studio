@@ -11,6 +11,7 @@ import { CharacterReferencePanel } from "./character-reference-panel";
 import { EpisodeComposePreflight } from "./episode-compose-preflight";
 import { ProjectCostSummary } from "./project-cost-summary";
 import { ScriptBreakdownPanel } from "./script-breakdown-panel";
+import { VimaxPreviewPanel } from "./vimax-preview-panel";
 import { ApiError, StudioClient } from "../lib/studio-client";
 import {
   MEDIA_WORKFLOW_TYPES,
@@ -677,6 +678,15 @@ export function ScriptPane(props: {
               await props.onSaved();
               await load();
             }}
+          />
+          <VimaxPreviewPanel
+            refreshEpoch={props.refreshEpoch}
+            projectId={props.projectId}
+            episodeId={episode.id}
+            scriptReady={episode.currentScriptRevisionId !== null
+              && episode.currentScriptRevisionId === episode.approvedScriptRevisionId
+              && episode.currentScriptReviewStatus === "APPROVED"
+              && episode.currentScriptFreshnessStatus === "CURRENT"}
           />
           <SceneList
             projectId={props.projectId}
