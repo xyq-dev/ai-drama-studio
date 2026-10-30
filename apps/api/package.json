@@ -21,6 +21,7 @@
     "series-writing:acceptance": "vitest run --config vitest.series-writing-acceptance.config.ts",
     "series-writing:browser-acceptance": "vitest run --config vitest.series-writing-browser-acceptance.config.ts",
     "script-breakdown:media-acceptance": "vitest run --config vitest.script-breakdown-media-acceptance.config.ts",
+    "vimax-candidate:acceptance": "vitest run --config vitest.vimax-candidate-acceptance.config.ts",
     "clean": "node --eval \"require('node:fs').rmSync('dist',{recursive:true,force:true})\""
   },
   "dependencies": {

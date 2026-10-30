@@ -30,10 +30,10 @@
 | --- | --- | --- |
 | 数据模型、锁序及迁移隔离设计 | 已核验 | 本页；`VIMAX_PLATFORM_PREVIEW.md` |
 | 平台候选/回执/视图契约与纯映射 | 已实现；领域定向与旧 E1/E2-A 共 137 项通过 | `packages/contracts`、`packages/domain` |
-| SQL 草案、候选事务存储与隔离验收 | 初稿已实现；SQL/事务审查中，未执行草案 | `packages/database` |
-| API、登录/CSRF、永久回执重放 | 已实现；定向 43 项通过，真实 DB/HTTP 验收待执行 | `apps/api/src/studio` |
-| 保存、恢复、审核引导与镜头写入 UI | 主流程已实现；定向验证与视觉检查中 | `apps/web` |
-| Review、直接回归、隔离 PostgreSQL、1280/390 页面验证 | 部分定向验证已过；全量及隔离验收待执行 | 按实际记录更新 |
+| SQL 草案、候选事务存储与隔离验收 | 已实现；存储/旧来源定向 48 项通过；14 项隔离验收已编写、待执行 | `packages/database` |
+| API、登录/CSRF、永久回执重放 | 已实现；定向 44 项通过；4 项真实 DB/HTTP 验收已编写、待执行 | `apps/api/src/studio` |
+| 保存、恢复、审核引导与镜头写入 UI | 已实现；99 项定向通过，1280/390 真实 Chromium 桩流程及刷新恢复通过 | `apps/web` |
+| Review、直接回归、隔离 PostgreSQL、1280/390 页面验证 | 独立复审无剩余 findings；普通全量在复查，隔离 CI 待执行 | 按实际记录更新 |
 | GitHub PR / CI / merge | 待执行 | 不跳过当前提交的 CI / Review |
 
 ## 执行权限与实际状态
@@ -46,5 +46,7 @@
 ## 当前审查事项
 
 - 已修：SQL 缺失数组字段可能以 NULL 穿过 CHECK；场景保存结果需绑定当前、fresh DRAFT 的精确修订；视图状态必须与 1/2/3 版本及回执存在性一致。
-- 正在修：冻结记录复制原文/候选后的体积放大，需应用层和 JSONB 层分别限额、明确 413；游标需拒绝 JS 会归一但 PostgreSQL 不接受的无效日期。
+- 已修：冻结记录体积放大采用应用 compact 1 MiB、JSONB 文本 1.5 MiB 限额和独立 413；游标严格校验日历日期；未配对 surrogate 在持久化前拒绝，旧离线规则不变。
+- 已修：有效写回执立即废弃旧 UI 资格并取消旧读；明确的冻结超限可显式结束原请求，其他未知失败保留身份；历史重放提示不再误称当前尚未保存。
 - 隔离草案验收要求新空命名库、原有 acceptance guard，另加 `VIMAX_CANDIDATE_ACCEPTANCE_DRAFT_AUTHORIZED=true`。只在单独 CI 任务提供；普通 `test` / `integration` / `migrate` 不施加草案。
+- 首次普通全量默认并发中，原有密码哈希/页面用例出现超时；这三份文件限制并发单独复验 20 + 83 项均通过。最终全量/CI 状态尚未记为通过。

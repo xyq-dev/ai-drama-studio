@@ -29,7 +29,7 @@ const REASONS: Record<VimaxCandidateBlocker, string> = {
 const DEFINITE_REFUSALS = new Set([
   "VIMAX_CANDIDATE_SOURCE_CHANGED", "VIMAX_CANDIDATE_TARGET_CHANGED", "VIMAX_CANDIDATE_HAS_SHOTS",
   "VIMAX_CANDIDATE_REVIEW_REQUIRED", "VIMAX_CANDIDATE_ACTIVE_BREAKDOWN", "VIMAX_CANDIDATE_CANDIDATE_BLOCKED",
-  "VIMAX_CANDIDATE_BLOCKED", "VIMAX_CANDIDATE_ALREADY_SAVED", "REVISION_CONFLICT", "SOURCE_STALE",
+  "VIMAX_CANDIDATE_BLOCKED", "VIMAX_CANDIDATE_ALREADY_SAVED", "VIMAX_CANDIDATE_FROZEN_TOO_LARGE", "REVISION_CONFLICT", "SOURCE_STALE",
 ]);
 
 export interface VimaxCandidatePanelProps {
@@ -210,6 +210,14 @@ function CandidateSession(props: VimaxCandidatePanelProps) {
         candidateId = request.candidateId;
       }
       acknowledged = true;
+      if (mounted.current) {
+        // Any read started before this acknowledgement may contain the pre-write state. A fold/reopen or a parent
+        // refresh failure must not re-authorize that state after the server has confirmed the mutation.
+        readSequence.current += 1; readAbort.current?.abort(); setReadBusy(false);
+        setSelected((previous) => previous ? { ...previous, generation: -1 } : null);
+        setTargets((previous) => previous ? { ...previous, generation: -1 } : null);
+        setConfirmed(false);
+      }
       // A valid late receipt may clear only its own identity, never a newer request or another episode's identity.
       clearVimaxCandidatePending(props.projectId, props.episodeId, request);
       if (!mounted.current) return;
@@ -217,9 +225,9 @@ function CandidateSession(props: VimaxCandidatePanelProps) {
       if (!applies()) { setNotice("原保存请求已确认。请重新读取候选以查看当前状态。"); return; }
       selectedId.current = candidateId;
       setConfirmed(false);
-      setNotice(request.kind === "create" ? "候选已保存，可刷新找回。场景和镜头尚未写入。"
-        : request.kind === "save_scene" ? "场景草稿已保存。请打开场景页审核并批准这一精确版本。"
-          : "镜头草稿已写入，请在现有镜头页继续编辑和审核。");
+      setNotice(request.kind === "create" ? "候选保存回执已确认，可刷新找回；场景与镜头当前状态以下方读取为准。"
+        : request.kind === "save_scene" ? "场景草稿保存回执已确认；当前场景与镜头状态以下方读取为准。"
+          : "镜头草稿写入回执已确认；当前场景与镜头状态以下方读取为准。");
       if (request.kind !== "create") await props.onChanged?.();
       if (mounted.current && openedRef.current) await reload(false, candidateId);
     } catch (caught) {
@@ -229,7 +237,8 @@ function CandidateSession(props: VimaxCandidatePanelProps) {
           setError("保存已确认，更新页面状态暂时失败。");
         } else {
           setError(errorText(caught));
-          if (caught instanceof VimaxCandidateError && DEFINITE_REFUSALS.has(caught.code)) setRefusedKey(request.key);
+          if (caught instanceof VimaxCandidateError && DEFINITE_REFUSALS.has(caught.code)
+            && (caught.code !== "VIMAX_CANDIDATE_FROZEN_TOO_LARGE" || caught.status === 413)) setRefusedKey(request.key);
         }
       }
     } finally {
@@ -290,6 +299,7 @@ function CandidateSession(props: VimaxCandidatePanelProps) {
       {notice ? <p className={styles.notice} role="status">{notice}</p> : null}
       {pending ? <div className={styles.notice}>
         <p>上次保存结果尚未确认。新的保存暂时停用，确认时会重放原请求标识和原内容。</p>
+        <p>待确认操作：{pending.kind === "create" ? "保存候选" : pending.kind === "save_scene" ? "保存场景草稿" : "写入镜头草稿"}</p>
         <button className={styles.button} type="button" disabled={writeBusy || storageError !== null} onClick={() => { void send(pending, true); }}>
           {writeBusy ? "正在确认保存…" : "确认上次保存结果"}
         </button>
@@ -303,7 +313,7 @@ function CandidateSession(props: VimaxCandidatePanelProps) {
         <h4>保存当前预览候选</h4>
         <p className={styles.muted}>仅选择与原文场次、标题一致且没有活动镜头的已有场景。这里只保存候选，不创建场景或镜头。</p>
         {targets && !sourceMatches ? <p className={styles.notice}>预览与当前来源不一致，请重新核验原方案；不会自动更换它的来源。</p> : null}
-        <label className={styles.label}>目标场景<select value={targetId} onChange={(event) => { setTargetId(event.currentTarget.value); setConfirmed(false); }}>
+        <label className={styles.label}>目标场景<select value={targetId} disabled={writeBusy || pending !== null} onChange={(event) => { setTargetId(event.currentTarget.value); setConfirmed(false); }}>
           <option value="">请选择匹配的空场景</option>
           {matchingTargets.map((item) => <option key={item.sceneId} value={item.sceneId}>第 {item.ordinal} 场 · {item.heading}</option>)}
         </select></label>

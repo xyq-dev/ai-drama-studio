@@ -79,4 +79,4 @@ corepack pnpm --filter @ai-drama/domain test -- vimax-evaluation.spec.ts
 node --test scripts/vimax-evaluation/run.test.mjs
 ```
 
-E1 没有运行上游 ViMax，也未证明真实供应商兼容性、分镜质量、调用数量或费用。E1 工具本身不含 HTTP、数据库字段、迁移、运行开关或页面；后续新增的独立平台预览见 [E2-A](VIMAX_PLATFORM_PREVIEW.md)。系列媒体仍关闭，系列文本的 15 / 19 / 96 次公式和历史授权保持原义。完整 E2 仍须解决局部写入、扩展字段的持久化、预算、幂等、发送前重检和审核/STALE，再考虑真实调用。
+E1 没有运行上游 ViMax，也未证明真实供应商兼容性、分镜质量、调用数量或费用。E1 工具本身不含 HTTP、数据库字段、迁移、运行开关或页面；独立平台功能见 [E2-A 预览](VIMAX_PLATFORM_PREVIEW.md)和 [E2-B 持久候选/局部保存](VIMAX_CANDIDATE_PERSISTENCE.md)。E2-B 业务库草案未启用；系列媒体仍关闭，系列文本的 15 / 19 / 96 次公式和历史授权保持原义。完整 E2 仍须完成发送预算、幂等、租约和未知结果恢复，再考虑真实调用。

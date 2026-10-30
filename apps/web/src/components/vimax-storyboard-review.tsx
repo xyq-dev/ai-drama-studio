@@ -18,7 +18,7 @@ const DIAGNOSTICS: Record<string, string> = {
   input_too_large: "方案超出了支持的大小或层级。", non_json_value: "方案不是完整的 JSON 数据。",
 };
 
-export function VimaxStoryboardReview({ report, source, stale, note = "尚未保存或批准。" }: {
+export function VimaxStoryboardReview({ report, source, stale, note = "本次校验未执行保存或审批。" }: {
   report: VimaxPlatformPreviewReport; source: VimaxPlatformSourceSnapshot; stale: boolean; note?: string;
 }) {
   if (report.status === "blocked") return <div className={styles.error} role="status">

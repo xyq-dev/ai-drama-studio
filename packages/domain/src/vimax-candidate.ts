@@ -30,6 +30,24 @@ function digest(value: unknown): string {
   return createHash("sha256").update(canonical(value), "utf8").digest("hex");
 }
 
+/** PostgreSQL jsonb cannot store NUL or unpaired UTF-16 surrogates; only E2-B persistence has this extra boundary. */
+function postgresCompatibleJson(value: unknown): boolean {
+  if (typeof value === "string") {
+    for (let index = 0; index < value.length; index += 1) {
+      const unit = value.charCodeAt(index);
+      if (unit === 0) return false;
+      if (unit >= 0xd800 && unit <= 0xdbff) {
+        const next = value.charCodeAt(++index);
+        if (Number.isNaN(next) || next < 0xdc00 || next > 0xdfff) return false;
+      } else if (unit >= 0xdc00 && unit <= 0xdfff) return false;
+    }
+    return true;
+  }
+  if (Array.isArray(value)) return value.every(postgresCompatibleJson);
+  if (value !== null && typeof value === "object") return Object.entries(value).every(([key, item]) => postgresCompatibleJson(key) && postgresCompatibleJson(item));
+  return true;
+}
+
 export function hashVimaxCandidateRequest(projectId: string, episodeId: string, body: VimaxCandidateCreate): string {
   return digest({ schema: "ads.vimax-candidate.request-identity.v1", projectId, episodeId, body: vimaxCandidateCreateSchema.parse(body) });
 }
@@ -62,6 +80,9 @@ export function freezeVimaxCandidate(sourceValue: VimaxPlatformSourceSnapshot, t
   const target = vimaxCandidateTargetSchema.parse(targetValue);
   const body = vimaxCandidateCreateSchema.parse(createValue);
   const request = body.request;
+  if (!postgresCompatibleJson(source) || !postgresCompatibleJson(target) || !postgresCompatibleJson(request)) {
+    return { ok: false, code: "candidate_blocked" };
+  }
   if (!sameVimaxCandidateSource(source, request.source)) return { ok: false, code: "source_changed" };
   const selectedIndex = request.sceneSpans.findIndex((scene) => scene.key === request.selectedSceneKeys[0]);
   const selected = request.sceneSpans[selectedIndex];

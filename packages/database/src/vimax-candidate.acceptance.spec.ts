@@ -11,17 +11,18 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   SCRIPT_BREAKDOWN_CALL_CAP, SCRIPT_BREAKDOWN_INPUT_SCHEMA, SCRIPT_BREAKDOWN_PROMPT_VERSION,
   VIMAX_CANDIDATE_CREATE_SCHEMA, VIMAX_CANDIDATE_PLACE_SHOTS_SCHEMA, VIMAX_CANDIDATE_SAVE_SCENE_SCHEMA,
-  VIMAX_CANDIDATE_SQL_DRAFT, VIMAX_PLATFORM_PREVIEW_REQUEST_SCHEMA,
-  vimaxCandidateCreateSchema, vimaxEvaluationInputSchema, vimaxEvaluationSupplementsSchema, vimaxPlanCandidateSchema,
+  VIMAX_CANDIDATE_SQL_DRAFT, VIMAX_CANDIDATE_RECEIPT_SCHEMA, VIMAX_PLATFORM_PREVIEW_REQUEST_SCHEMA,
+  vimaxCandidateCreateSchema, vimaxCandidateReceiptSchema, vimaxEvaluationInputSchema, vimaxEvaluationSupplementsSchema, vimaxPlanCandidateSchema,
   type ScriptBreakdownFrozenInput, type TitleRunRecord, type VimaxCandidateCreate, type VimaxCandidateView,
 } from "@ai-drama/contracts";
-import { canonicalInputHash } from "@ai-drama/domain";
+import { canonicalInputHash, hashVimaxCandidateCommand } from "@ai-drama/domain";
 import { runMigrations } from "./migrations";
 import { TextChainService } from "./text-chain";
 import { PostgresTitleWritingStore } from "./title-writing-store";
 import { checkTitleWritingAcceptanceEnv, verifyTitleWritingAcceptanceDatabase } from "./title-writing-acceptance-guard";
 import { VimaxCandidateStore } from "./vimax-candidate-store";
 import type { DatabasePool } from "./job-service";
+import { createLargeVimaxCandidateFixture, type VimaxCandidateSyntheticFixture } from "./vimax-candidate-test-fixtures";
 
 const decision = checkTitleWritingAcceptanceEnv(process.env);
 if (!decision.ok) throw new Error(`ViMax candidate acceptance refused: ${decision.reason}`);
@@ -78,8 +79,8 @@ async function approveText(table: "story_revision" | "script_revision", workspac
 }
 
 /** Independent works avoid truncation/deletion and also keep pending-stale cases isolated from other tests. */
-async function world(paddedDialogue = false) {
-  const localFixture = structuredClone(fixture);
+async function world(paddedDialogue = false, suppliedFixture: VimaxCandidateSyntheticFixture = fixture) {
+  const localFixture = structuredClone(suppliedFixture);
   if (paddedDialogue) {
     // Preserve deliberate leading/trailing spaces after the speaker delimiter, including their source offsets.
     for (const line of localFixture.input.sourceDialogue) {
@@ -104,7 +105,8 @@ async function world(paddedDialogue = false) {
   await approveText("story_revision", workspaceId, projectId, story.revisionId, story.rowVersion);
   const episodeId = await scalar("SELECT id FROM episode WHERE project_id=$1 AND episode_no=1", [projectId]);
   const tail = "【场景】外景 街道\n【动作】行人穿过路口。\n";
-  const text = localFixture.input.scriptText + tail;
+  const hasSibling = localFixture.input.sceneSpans.some((scene) => scene.key === "S2" && scene.heading === "外景 街道");
+  const text = localFixture.input.scriptText + (hasSibling ? "" : tail);
   const script = await chain.createScriptRevision({ workspaceId, projectId, episodeId, sourceStoryRevisionId: story.revisionId,
     content: { text }, createdBy: actor, expectedVersion: await rowVersion("episode", episodeId) });
   await approveText("script_revision", workspaceId, projectId, script.revisionId, script.rowVersion, episodeId);
@@ -142,8 +144,9 @@ async function world(paddedDialogue = false) {
     target: { sceneId: target.entityId, sceneRevisionId: target.revisionId, rowVersion: targetSnapshot.rowVersion },
     request: { schema: VIMAX_PLATFORM_PREVIEW_REQUEST_SCHEMA,
       source: { scriptRevisionId: options.source.scriptRevisionId, scriptContentHash: options.source.scriptContentHash, characters: options.source.characters },
-      sceneSpans: [...localFixture.input.sceneSpans, { key: "S2", start: localFixture.input.scriptText.length, end: text.length,
-        heading: "外景 街道", timeOfDay: "", description: "行人穿过路口。" }], selectedSceneKeys: ["S1"],
+      sceneSpans: hasSibling ? localFixture.input.sceneSpans : [...localFixture.input.sceneSpans,
+        { key: "S2", start: localFixture.input.scriptText.length, end: text.length, heading: "外景 街道", timeOfDay: "", description: "行人穿过路口。" }],
+      selectedSceneKeys: ["S1"],
       sourceDialogue: localFixture.input.sourceDialogue.map((line) => ({ ...line, characterKey: mapped(line.characterKey!) })),
       requirements: localFixture.input.requirements, candidate: localFixture.candidate, supplements,
     } });
@@ -208,6 +211,23 @@ describe("ViMax E2-B on an explicitly authorized disposable PostgreSQL database"
       .toEqual({ review_status: "DRAFT", ordinal: 1, location_revision_id: null });
     expect(await siblingSnapshot(w)).toEqual(before);
     expect((await pool.query("SELECT count(*)::int AS n FROM scene_revision WHERE scene_id=$1", [w.target.entityId])).rows[0]!.n).toBe(2);
+  });
+
+  it("stores a legal large frozen candidate beyond the old SQL cap without changing the unrelated scene", async () => {
+    const large = createLargeVimaxCandidateFixture();
+    const w = await world(false, large);
+    expect(Buffer.byteLength(JSON.stringify(w.body), "utf8")).toBeLessThanOrEqual(300 * 1024);
+    expect(Buffer.byteLength(JSON.stringify(w.body.request.candidate), "utf8")).toBeLessThanOrEqual(256 * 1024);
+    const before = await siblingSnapshot(w);
+    const created = await create(w);
+    const compactBytes = Buffer.byteLength(JSON.stringify(created.candidate.frozen), "utf8");
+    expect(compactBytes).toBeGreaterThan(786_432);
+    expect(compactBytes).toBeLessThanOrEqual(1024 * 1024);
+    expect((await pool.query("SELECT octet_length(frozen_json::text)::int AS bytes FROM vimax_storyboard_candidate WHERE id=$1",
+      [created.candidate.candidateId])).rows[0]!.bytes).toBeLessThanOrEqual(1536 * 1024);
+    expect((await store.get(w.workspaceId, w.projectId, w.episodeId, actor, created.candidate.candidateId)).frozen)
+      .toEqual(created.candidate.frozen);
+    expect(await siblingSnapshot(w)).toEqual(before);
   });
 
   it("serializes duplicate candidate creation and rejects changed content under the permanent key", async () => {
@@ -384,6 +404,27 @@ describe("ViMax E2-B on an explicitly authorized disposable PostgreSQL database"
         FROM vimax_storyboard_candidate WHERE id=$1`, [candidate.candidateId, randomUUID(), randomUUID(), JSON.stringify(frozen)])).rejects.toThrow();
     }
     expect(await counts(w)).toEqual(beforeInvalid);
+    // The original target is already a current fresh DRAFT. Every stage/JSON/FK value below is otherwise valid;
+    // only the invariant requiring a newly created revision prevents disguising the baseline as a saved result.
+    expect((await pool.query(`SELECT s.current_revision_id,r.review_status,r.freshness_status,r.source_script_revision_id
+      FROM scene s JOIN scene_revision r ON r.id=s.current_revision_id WHERE s.id=$1`, [w.target.entityId])).rows[0])
+      .toEqual({ current_revision_id: w.target.revisionId, review_status: "DRAFT", freshness_status: "CURRENT", source_script_revision_id: w.scriptId });
+    const fakeKey = randomUUID();
+    const command = { schema: VIMAX_CANDIDATE_SAVE_SCENE_SCHEMA, expectedVersion: 1, confirmedReview: true } as const;
+    const requestHash = hashVimaxCandidateCommand("save_scene", command);
+    const savedAt = new Date().toISOString();
+    const fakeReceipt = vimaxCandidateReceiptSchema.parse({ schema: VIMAX_CANDIDATE_RECEIPT_SCHEMA,
+      operation: "save_scene", state: "scene_saved", rowVersion: 2, candidateId: candidate.candidateId,
+      projectId: w.projectId, episodeId: w.episodeId, sceneId: w.target.entityId, sceneRevisionId: w.target.revisionId,
+      idempotencyKey: fakeKey, requestHash, savedAt, shots: [] });
+    await expect(pool.query(`UPDATE vimax_storyboard_candidate SET state='scene_saved',row_version=2,
+      saved_scene_revision_id=$2,scene_request_key=$3,scene_request_hash=$4,scene_receipt=$5::jsonb,
+      scene_saved_at=$6,updated_at=$6 WHERE id=$1`,
+    [candidate.candidateId, w.target.revisionId, fakeKey, requestHash, JSON.stringify(fakeReceipt), savedAt]))
+      .rejects.toThrow("ViMax candidate must save its exact current fresh scene draft");
+    expect(await counts(w)).toEqual(beforeInvalid);
+    const unchanged = await store.get(w.workspaceId, w.projectId, w.episodeId, actor, candidate.candidateId);
+    expect(unchanged).toMatchObject({ state: "stored", rowVersion: 1, sceneReceipt: null, shotsReceipt: null });
     const saved = await save(w, candidate); await approveScene(w, saved.receipt.sceneRevisionId); await place(w, candidate.candidateId);
     const before = await counts(w);
     const completed = await store.get(w.workspaceId, w.projectId, w.episodeId, actor, candidate.candidateId);

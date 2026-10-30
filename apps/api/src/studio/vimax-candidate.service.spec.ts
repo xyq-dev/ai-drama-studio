@@ -147,6 +147,7 @@ describe("ViMax candidate API orchestration has no source prechecks, model or wh
     ["VIMAX_CANDIDATE_ALREADY_SAVED", 409], ["IDEMPOTENCY_KEY_REUSED", 409], ["REVISION_CONFLICT", 409],
     ["SOURCE_STALE", 409], ["NOT_FOUND", 404], ["VIMAX_CANDIDATE_STORAGE_UNAVAILABLE", 503], ["SERIES_MEDIA_NOT_ENABLED", 409],
     ["VIMAX_CANDIDATE_CORRUPT", 503], ["REVIEW_REQUIRED", 409],
+    ["VIMAX_CANDIDATE_FROZEN_TOO_LARGE", 413],
   ] as const)("translates %s to a fixed private-text-safe %s refusal", async (code, status) => {
     const { service, store } = setup();
     store.saveScene.mockRejectedValue(new PersistenceError(code, "SECRET-SQL-OR-REJECTED-DIALOGUE", { rejected: "PRIVATE" }));

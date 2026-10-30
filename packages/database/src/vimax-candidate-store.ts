@@ -25,6 +25,24 @@ type Context = { source: VimaxPreviewSourceRead; pending: boolean; active: boole
 type TargetRead = { target: VimaxCandidateTarget | null; current: VimaxCandidateView["eligibility"]["currentScene"] };
 const TABLE = "vimax_storyboard_candidate";
 const STORAGE_VERSION = "ads.vimax-candidate.storage.v1";
+/** Compact JSON admission is smaller than the SQL JSONB text cap, leaving room for PostgreSQL's added whitespace. */
+export const VIMAX_CANDIDATE_FROZEN_MAX_BYTES = 1_048_576;
+export function assertVimaxCandidateFrozenBytes(json: string, mode: "create" | "read"): void {
+  if (Buffer.byteLength(json, "utf8") > VIMAX_CANDIDATE_FROZEN_MAX_BYTES) {
+    fail(mode === "create" ? "VIMAX_CANDIDATE_FROZEN_TOO_LARGE" : "VIMAX_CANDIDATE_CORRUPT", "Candidate snapshot exceeds its storage limit");
+  }
+}
+/** Same strict calendar bounds as text-chain cursors: Date.parse alone normalizes invalid dates. */
+function isValidTimestampCursor(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.(\d{6})Z$/.exec(value);
+  if (!match) return false;
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText] = match;
+  const year = Number(yearText), month = Number(monthText), day = Number(dayText);
+  if (year < 1 || month < 1 || month > 12 || Number(hourText) > 23 || Number(minuteText) > 59 || Number(secondText) > 59) return false;
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return day >= 1 && day <= days[month - 1]!;
+}
 const REQUIRED_COLUMNS = [
   "id", "workspace_id", "project_id", "episode_id", "actor_id", "idempotency_key", "request_hash", "frozen_hash", "frozen_json",
   "source_script_revision_id", "scene_id", "baseline_scene_revision_id", "baseline_scene_row_version", "shot_count", "state", "row_version",
@@ -170,6 +188,10 @@ export class VimaxCandidateStore {
   }
 
   private frozen(row: Row): VimaxCandidateFrozen {
+    let json: string | undefined;
+    try { json = JSON.stringify(row.frozen_json); } catch { fail("VIMAX_CANDIDATE_CORRUPT", "Stored candidate is not JSON"); }
+    if (json === undefined) fail("VIMAX_CANDIDATE_CORRUPT", "Stored candidate is missing");
+    assertVimaxCandidateFrozenBytes(json, "read");
     const parsed = vimaxCandidateFrozenSchema.safeParse(row.frozen_json);
     if (!parsed.success || hashVimaxCandidateFrozen(parsed.data) !== row.frozen_hash) fail("VIMAX_CANDIDATE_CORRUPT", "Stored candidate integrity check failed");
     return parsed.data;
@@ -229,8 +251,7 @@ export class VimaxCandidateStore {
         if (Object.keys(parsed).sort().join(",") !== "actorId,createdAt,episodeId,id,projectId,schema,workspaceId"
           || parsed.schema !== "ads.vimax-candidate.cursor.v1" || parsed.workspaceId !== workspaceId || parsed.projectId !== projectId
           || parsed.episodeId !== episodeId || parsed.actorId !== actorId || typeof parsed.createdAt !== "string"
-          || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z$/.test(parsed.createdAt)
-          || !Number.isFinite(Date.parse(parsed.createdAt)) || typeof parsed.id !== "string"
+          || !isValidTimestampCursor(parsed.createdAt) || typeof parsed.id !== "string"
           || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(parsed.id)) throw new Error("cursor");
         cursor = { createdAt: parsed.createdAt, id: parsed.id };
       } catch { fail("VALIDATION_ERROR", "Invalid candidate page cursor"); }
@@ -275,12 +296,14 @@ export class VimaxCandidateStore {
       this.assertEmptyTarget(target, source.scriptRevisionId);
       const frozen = freezeVimaxCandidate(source, target.target!, body);
       if (!frozen.ok) fail(this.freezeCode(frozen.code), "Candidate could not be frozen");
+      const frozenJson = JSON.stringify(frozen.frozen);
+      assertVimaxCandidateFrozenBytes(frozenJson, "create");
       const candidateId = randomUUID();
       await client.query(`INSERT INTO ${TABLE}
         (id, workspace_id, project_id, episode_id, actor_id, idempotency_key, request_hash, frozen_hash, frozen_json,
          source_script_revision_id, scene_id, baseline_scene_revision_id, baseline_scene_row_version, shot_count)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12,$13,$14)`,
-      [candidateId, workspaceId, projectId, episodeId, actorId, key, requestHash, frozen.frozenHash, JSON.stringify(frozen.frozen),
+      [candidateId, workspaceId, projectId, episodeId, actorId, key, requestHash, frozen.frozenHash, frozenJson,
         source.scriptRevisionId, body.target.sceneId, body.target.sceneRevisionId, body.target.rowVersion, frozen.frozen.request.supplements.shots.length]);
       await client.query(`INSERT INTO domain_event
         (workspace_id, project_id, aggregate_type, aggregate_id, event_type, payload_json, trace_id)
@@ -326,7 +349,15 @@ export class VimaxCandidateStore {
       if (row[`${prefix}_receipt`] !== null) {
         if (row[`${prefix}_request_key`] !== key) fail("VIMAX_CANDIDATE_ALREADY_SAVED", "Candidate stage is already saved");
         if (row[`${prefix}_request_hash`] !== requestHash) fail("IDEMPOTENCY_KEY_REUSED", "Candidate command identity changed");
-        const receipt = vimaxCandidateReceiptSchema.parse(row[`${prefix}_receipt`]);
+        const parsed = vimaxCandidateReceiptSchema.safeParse(row[`${prefix}_receipt`]);
+        if (!parsed.success) fail("VIMAX_CANDIDATE_CORRUPT", "Stored operation receipt is malformed");
+        const receipt = parsed.data;
+        if (receipt.operation !== operation || receipt.candidateId !== candidateId || receipt.projectId !== projectId
+          || receipt.episodeId !== episodeId || receipt.sceneId !== row.scene_id || receipt.sceneRevisionId !== row.saved_scene_revision_id
+          || receipt.idempotencyKey !== key || receipt.requestHash !== requestHash
+          || (operation === "save_scene" ? !["scene_saved", "shots_saved"].includes(String(row.state)) : row.state !== "shots_saved")) {
+          fail("VIMAX_CANDIDATE_CORRUPT", "Stored operation receipt does not match its candidate");
+        }
         return { schema: "ads.vimax-candidate.write-response.v1", replayed: true, receipt };
       }
       if (Number(row.row_version) !== body.expectedVersion) fail("REVISION_CONFLICT", "Candidate version changed");

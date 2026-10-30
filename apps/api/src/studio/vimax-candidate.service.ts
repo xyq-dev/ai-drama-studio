@@ -49,6 +49,7 @@ const ERRORS: Record<string, { status: number; message: string }> = {
   VIMAX_CANDIDATE_BLOCKED: { status: 422, message: "分镜方案未通过完整性或对白保真检查，未保存。" },
   VIMAX_CANDIDATE_ALREADY_SAVED: { status: 409, message: "这一步已经保存。请读取原结果，或用原请求标识确认回执。" },
   VIMAX_CANDIDATE_INPUT_TOO_LARGE: { status: 413, message: "分镜候选请求超过 300 KB。" },
+  VIMAX_CANDIDATE_FROZEN_TOO_LARGE: { status: 413, message: "冻结后的完整候选超出保存范围，未保存或改写内容。" },
   VIMAX_CANDIDATE_INVALID_REQUEST: { status: 400, message: "分镜候选请求无效。" },
   SERIES_MEDIA_NOT_ENABLED: { status: 409, message: "系列作品尚未开放分镜候选保存。" },
   VIMAX_PREVIEW_SCRIPT_REVIEW_REQUIRED: { status: 409, message: "请先批准这一集的当前剧本。" },

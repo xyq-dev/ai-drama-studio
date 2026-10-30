@@ -26,7 +26,7 @@ CREATE TABLE vimax_storyboard_candidate (
   frozen_json jsonb NOT NULL CHECK (
     jsonb_typeof(frozen_json) = 'object'
     AND (frozen_json ->> 'schema') IS NOT DISTINCT FROM 'ads.vimax-candidate.frozen.v1'
-    AND octet_length(frozen_json::text) <= 786432
+    AND octet_length(frozen_json::text) <= 1572864
   ),
   source_script_revision_id uuid NOT NULL,
   scene_id uuid NOT NULL,
@@ -35,7 +35,7 @@ CREATE TABLE vimax_storyboard_candidate (
   shot_count smallint NOT NULL CHECK (shot_count BETWEEN 1 AND 8),
   state text NOT NULL DEFAULT 'stored' CHECK (state IN ('stored','scene_saved','shots_saved')),
   row_version integer NOT NULL DEFAULT 1,
-  saved_scene_revision_id uuid,
+  saved_scene_revision_id uuid UNIQUE,
   scene_request_key text,
   scene_request_hash text CHECK (scene_request_hash ~ '^[a-f0-9]{64}$'),
   scene_receipt jsonb,
@@ -151,7 +151,7 @@ BEGIN
   IF OLD.state = 'stored' AND NEW.state = 'scene_saved' AND NEW.row_version = 2 THEN
     IF NOT EXISTS (
       SELECT 1 FROM scene_revision r JOIN scene s ON s.id = r.scene_id AND s.workspace_id = r.workspace_id
-      WHERE r.id = NEW.saved_scene_revision_id AND r.scene_id = OLD.scene_id
+      WHERE r.id = NEW.saved_scene_revision_id AND r.id <> OLD.baseline_scene_revision_id AND r.scene_id = OLD.scene_id
         AND r.workspace_id = OLD.workspace_id AND r.project_id = OLD.project_id AND r.episode_id = OLD.episode_id
         AND r.source_script_revision_id = OLD.source_script_revision_id
         AND r.review_status = 'DRAFT' AND r.freshness_status = 'CURRENT'

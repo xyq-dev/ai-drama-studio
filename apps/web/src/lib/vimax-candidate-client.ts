@@ -95,7 +95,8 @@ export class VimaxCandidateClient {
           : response.status === 401 || response.status === 403 ? "请检查登录与操作权限。未确认的原保存请求已保留。"
             : response.status === 404 ? "没有找到该候选，或当前环境未开放保存功能。"
               : response.status === 409 ? "来源、目标场景或保存状态已变化。请重新读取候选；未确认的原请求仍保留。"
-                : response.status === 413 ? "完整保存请求不能超过 300 KB。"
+                : response.status === 413 && code === "VIMAX_CANDIDATE_FROZEN_TOO_LARGE" ? "冻结后的完整候选超出保存范围，请缩小方案后重新保存。"
+                  : response.status === 413 ? "完整保存请求不能超过 300 KB。"
                   : response.status === 400 || response.status === 422 ? "保存请求未通过校验，请核对字段、原文与目标场景。"
                     : "暂未确认保存结果，请保留原请求并稍后确认。");
     }
@@ -158,6 +159,7 @@ export class VimaxCandidateClient {
     if (expected) {
       viewInScope(expected, projectId, episodeId, candidateId);
       if (receipt.sceneId !== expected.frozen.target.sceneId
+        || (operation === "place_shots" && !expected.sceneReceipt)
         || (operation === "save_scene" && receipt.sceneRevisionId === expected.frozen.target.sceneRevisionId)
         || (expected.sceneReceipt && receipt.sceneRevisionId !== expected.sceneReceipt.sceneRevisionId)) throw unconfirmed();
     }

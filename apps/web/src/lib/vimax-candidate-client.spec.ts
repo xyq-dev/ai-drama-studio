@@ -66,6 +66,12 @@ describe("persistent Vimax candidate client", () => {
     expect((await client.saveScene(f.source.projectId, f.source.episodeId, f.candidateId, sceneBody, f.sceneKey, undefined, f.shotsSaved)).receipt).toEqual(f.sceneReceipt);
     expect((await client.placeShots(f.source.projectId, f.source.episodeId, f.candidateId, shotsBody, f.shotsKey, undefined, f.approved)).receipt).toEqual(f.shotsReceipt);
   });
+  it("cannot confirm a shot receipt without the candidate's saved-scene lineage", async () => {
+    const f = vimaxCandidateFixture();
+    const client = new VimaxCandidateClient(async () => json({ schema: "ads.vimax-candidate.write-response.v1", replayed: true, receipt: f.shotsReceipt }));
+    await expect(client.placeShots(f.source.projectId, f.source.episodeId, f.candidateId, shotsBody, f.shotsKey, undefined, f.stored))
+      .rejects.toMatchObject({ code: "VIMAX_CANDIDATE_UNCONFIRMED" });
+  });
   it.each(["scope", "candidate", "key", "version", "operation", "scene", "savedRevision", "count", "index", "ids"])("rejects an unconfirmed write receipt: %s", async (kind) => {
     const f = vimaxCandidateFixture(); const receipt = structuredClone(f.shotsReceipt);
     if (kind === "scope") receipt.projectId = other;
@@ -85,6 +91,13 @@ describe("persistent Vimax candidate client", () => {
     const f = vimaxCandidateFixture();
     await expect(new VimaxCandidateClient(async () => json({ error: { code: "FIXED_CODE", message: "private source text" } }, status))
       .create(f.source.projectId, f.source.episodeId, f.create, f.createKey)).rejects.toMatchObject({ status, code: "FIXED_CODE", message: expect.not.stringContaining("private source text") });
+  });
+  it("distinguishes frozen-candidate storage refusal from the HTTP request-size limit", async () => {
+    const f = vimaxCandidateFixture();
+    const client = new VimaxCandidateClient(async () => json({ error: { code: "VIMAX_CANDIDATE_FROZEN_TOO_LARGE", message: "private source text" } }, 413));
+    await expect(client.create(f.source.projectId, f.source.episodeId, f.create, f.createKey)).rejects.toMatchObject({
+      status: 413, code: "VIMAX_CANDIDATE_FROZEN_TOO_LARGE", message: "冻结后的完整候选超出保存范围，请缩小方案后重新保存。",
+    });
   });
   it("does not send invalid identity/body or over-limit creative requests", async () => {
     const f = vimaxCandidateFixture(); const fetch = vi.fn(); const client = new VimaxCandidateClient(fetch);

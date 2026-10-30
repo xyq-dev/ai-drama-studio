@@ -127,4 +127,20 @@ describe("ViMax candidate immutable input and explicit local projection", () => 
     changed.evaluation.review.candidate.storyboard[0]!.audio_desc = "被替换的音轨";
     expect(vimaxCandidateFrozenSchema.safeParse(changed).success).toBe(false);
   });
+
+  it.each(["\ud800", "\udfff", "前\ud800后", "\ud800\ud800\udc00"])("refuses unpaired Unicode at the E2-B persistence boundary", (bad) => {
+    const f = fixture();
+    f.body.request.candidate.storyboard[0]!.visual_desc = bad;
+    f.body.request.candidate.shot_descriptions[0]!.visual_desc = bad;
+    expect(freeze(f)).toEqual({ ok: false, code: "candidate_blocked" });
+  });
+
+  it("preserves valid emoji and paired surrogates in free descriptions", () => {
+    const f = fixture();
+    f.body.request.candidate.storyboard[0]!.visual_desc = "两人在雨中相望，车票上有 🏀 标记。";
+    f.body.request.candidate.shot_descriptions[0]!.visual_desc = f.body.request.candidate.storyboard[0]!.visual_desc;
+    const result = freeze(f);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.frozen.request.candidate.storyboard[0]!.visual_desc).toContain("🏀");
+  });
 });

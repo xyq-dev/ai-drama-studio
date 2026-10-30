@@ -15,7 +15,7 @@ on:
       - pnpm-workspace.yaml
       - package.json
   push:
-    branches: [main]
+    branches: [main, feat/vimax-e2b-candidate-persistence]
     paths: *vimax_paths
   workflow_dispatch:
 
@@ -36,7 +36,7 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_HOST_AUTH_METHOD: trust
-        ports: [5432:5432]
+        ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U postgres"
           --health-interval 5s
@@ -56,19 +56,20 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Generate existing Prisma client (no migration)
         run: pnpm --filter @ai-drama/database prisma:generate
-      - name: Build database and its workspace dependencies
-        run: pnpm --filter @ai-drama/database... build
+      - name: Build backend and its workspace dependencies
+        run: pnpm --filter @ai-drama/api... build
       - name: Create the runner-local empty acceptance database
         env:
           TITLE_WRITING_ACCEPTANCE_DATABASE_NAME: ads_title_acceptance_vimax_${{ github.run_id }}_${{ github.run_attempt }}
+          VIMAX_HTTP_DATABASE_NAME: ads_title_acceptance_vimax_http_${{ github.run_id }}_${{ github.run_attempt }}
         run: |
           pnpm --filter @ai-drama/database exec node - <<'NODE'
           const { Pool } = require('pg');
-          const name = process.env.TITLE_WRITING_ACCEPTANCE_DATABASE_NAME;
-          if (!/^ads_title_acceptance_[a-z0-9_]{6,40}$/.test(name || '')) throw new Error('Invalid disposable database name');
+          const names = [process.env.TITLE_WRITING_ACCEPTANCE_DATABASE_NAME, process.env.VIMAX_HTTP_DATABASE_NAME];
+          if (names.some(name => !/^ads_title_acceptance_[a-z0-9_]{6,40}$/.test(name || ''))) throw new Error('Invalid disposable database name');
           const pool = new Pool({ connectionString: 'postgresql://postgres@127.0.0.1:5432/postgres' });
           (async () => {
-            try { await pool.query('CREATE DATABASE "' + name + '"'); }
+            try { for (const name of names) await pool.query('CREATE DATABASE "' + name + '"'); }
             finally { await pool.end(); }
           })().catch(() => { process.stderr.write('Could not create disposable acceptance database\n'); process.exitCode = 1; });
           NODE
@@ -79,3 +80,10 @@ jobs:
           TITLE_WRITING_ACCEPTANCE_DATABASE_NAME: ads_title_acceptance_vimax_${{ github.run_id }}_${{ github.run_attempt }}
           TITLE_WRITING_ACCEPTANCE_DATABASE_URL: postgresql://postgres@127.0.0.1:5432/ads_title_acceptance_vimax_${{ github.run_id }}_${{ github.run_attempt }}
         run: pnpm --filter @ai-drama/database vimax-candidate:acceptance
+      - name: Run authenticated HTTP and PostgreSQL acceptance in its own empty database
+        env:
+          TITLE_WRITING_ACCEPTANCE_AUTHORIZED: "true"
+          VIMAX_CANDIDATE_ACCEPTANCE_DRAFT_AUTHORIZED: "true"
+          TITLE_WRITING_ACCEPTANCE_DATABASE_NAME: ads_title_acceptance_vimax_http_${{ github.run_id }}_${{ github.run_attempt }}
+          TITLE_WRITING_ACCEPTANCE_DATABASE_URL: postgresql://postgres@127.0.0.1:5432/ads_title_acceptance_vimax_http_${{ github.run_id }}_${{ github.run_attempt }}
+        run: pnpm --filter @ai-drama/api vimax-candidate:acceptance

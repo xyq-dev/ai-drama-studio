@@ -10,7 +10,8 @@ import {
 import { freezeVimaxCandidate, hashVimaxCandidateCommand, hashVimaxCandidateRequest } from "@ai-drama/domain";
 import type { DatabasePool } from "./job-service";
 import type { TextChainService } from "./text-chain";
-import { VimaxCandidateStore } from "./vimax-candidate-store";
+import { createLargeVimaxCandidateFixture } from "./vimax-candidate-test-fixtures";
+import { assertVimaxCandidateFrozenBytes, VIMAX_CANDIDATE_FROZEN_MAX_BYTES, VimaxCandidateStore } from "./vimax-candidate-store";
 
 type Row = Record<string, unknown>;
 const W = "11111111-1111-4111-8111-111111111111";
@@ -185,4 +186,85 @@ describe("ViMax candidate permanent receipts and scoped transactions", () => {
     await expect(h.store.list(W, h.source.projectId, h.source.episodeId, ACTOR, { cursor })).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
     expect(h.calls).toEqual([]);
   });
+  it("binds replayed operation receipts to their exact scoped candidate", async () => {
+    const h = setup({ state: "scene_saved" });
+    h.row.scene_receipt = { ...h.sceneReceipt, candidateId: BASE };
+    await expect(h.store.saveScene(W, h.source.projectId, h.source.episodeId, ACTOR, ID, SCENE_KEY, save, "trace"))
+      .rejects.toMatchObject({ code: "VIMAX_CANDIDATE_CORRUPT" });
+    expect(mutations(h.calls)).toEqual([]);
+    expect(h.calls.some((c) => c.sql.includes("FROM project"))).toBe(false);
+  });
+  it("keeps the chosen scene identity, ordinal and location while creating a new draft under ordered locks", async () => {
+    const h = setup();
+    const result = await h.store.saveScene(W, h.source.projectId, h.source.episodeId, ACTOR, ID, SCENE_KEY, save, "actual-trace");
+    expect(result.receipt.sceneId).toBe(SCENE);
+    expect(result.receipt.sceneRevisionId).toBe(SAVED);
+    expect(result.receipt.operation).toBe("save_scene");
+    expect(h.text.createSceneRevisionInTransaction).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      sceneId: SCENE, expectedVersion: 3, ordinal: 1, locationRevisionId: null, traceId: "actual-trace",
+    }));
+    const advisory = h.calls.findIndex((c) => c.sql.includes("pg_advisory_xact_lock"));
+    const candidate = h.calls.findIndex((c) => c.sql.includes("WHERE c.id") && c.sql.includes("FOR UPDATE"));
+    const project = h.calls.findIndex((c) => c.sql.includes("FROM project") && c.sql.includes("FOR UPDATE"));
+    const episode = h.calls.findIndex((c) => c.sql.includes("FROM episode") && c.sql.includes("FOR UPDATE"));
+    const scene = h.calls.findIndex((c) => c.sql.includes("FOR UPDATE OF s"));
+    expect(advisory).toBeLessThan(candidate); expect(candidate).toBeLessThan(project);
+    expect(project).toBeLessThan(episode); expect(episode).toBeLessThan(scene);
+    expect(h.calls.filter((c) => c.sql.includes("FROM title_writing_run")).every((c) => !c.sql.includes("FOR UPDATE"))).toBe(true);
+    expect(h.calls.at(-1)!.sql).toBe("COMMIT");
+  });
+  it.each(["2026-02-31T01:00:00.000000Z", "2026-02-29T01:00:00.000000Z", "1900-02-29T01:00:00.000000Z",
+    "2026-04-31T01:00:00.000000Z", "0000-01-01T01:00:00.000000Z", "2026-13-01T01:00:00.000000Z",
+    "2026-01-01T24:00:00.000000Z", "2026-01-01T01:60:00.000000Z", "2026-01-01T01:00:60.000000Z"])(
+    "refuses the impossible cursor calendar value %s before PostgreSQL casts", async (createdAt) => {
+      const h = setup();
+      const cursor = Buffer.from(JSON.stringify({ schema: "ads.vimax-candidate.cursor.v1", workspaceId: W, projectId: h.source.projectId,
+        episodeId: h.source.episodeId, actorId: ACTOR, createdAt, id: ID })).toString("base64url");
+      await expect(h.store.list(W, h.source.projectId, h.source.episodeId, ACTOR, { cursor })).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+      expect(h.calls).toEqual([]);
+    },
+  );
+  it("accepts a real Gregorian leap-day cursor", async () => {
+    const h = setup();
+    const cursor = Buffer.from(JSON.stringify({ schema: "ads.vimax-candidate.cursor.v1", workspaceId: W, projectId: h.source.projectId,
+      episodeId: h.source.episodeId, actorId: ACTOR, createdAt: "2000-02-29T01:00:00.000000Z", id: ID })).toString("base64url");
+    expect((await h.store.list(W, h.source.projectId, h.source.episodeId, ACTOR, { cursor })).items).toHaveLength(1);
+  });
+  it("uses UTF-8 bytes for the compact 1 MiB admission boundary and distinct create/read refusals", () => {
+    const overhead = Buffer.byteLength(JSON.stringify({ payload: "" }), "utf8");
+    const exact = JSON.stringify({ payload: "a".repeat(VIMAX_CANDIDATE_FROZEN_MAX_BYTES - overhead) });
+    expect(() => assertVimaxCandidateFrozenBytes(exact, "create")).not.toThrow();
+    expect(() => assertVimaxCandidateFrozenBytes(exact, "read")).not.toThrow();
+    const unicode = JSON.stringify({ payload: "a".repeat(VIMAX_CANDIDATE_FROZEN_MAX_BYTES - overhead - 1) + "汉" });
+    expect(unicode.length).toBe(exact.length);
+    expect(() => assertVimaxCandidateFrozenBytes(unicode, "create")).toThrowError(expect.objectContaining({ code: "VIMAX_CANDIDATE_FROZEN_TOO_LARGE" }));
+    expect(() => assertVimaxCandidateFrozenBytes(unicode, "read")).toThrowError(expect.objectContaining({ code: "VIMAX_CANDIDATE_CORRUPT" }));
+  });
+  it("refuses an oversized stored snapshot with a bounded corruption diagnostic", async () => {
+    const h = setup(); h.row.frozen_json = { payload: "x".repeat(VIMAX_CANDIDATE_FROZEN_MAX_BYTES) };
+    await expect(h.store.get(W, h.source.projectId, h.source.episodeId, ACTOR, ID)).rejects.toMatchObject({ code: "VIMAX_CANDIDATE_CORRUPT" });
+    expect(mutations(h.calls)).toEqual([]);
+  });
+
+  it("admits a legal request whose escaped and duplicated frozen data exceeded the old SQL ceiling", () => {
+    const large = createLargeVimaxCandidateFixture();
+    expect(Buffer.byteLength(JSON.stringify(large.body), "utf8")).toBeLessThanOrEqual(300 * 1024);
+    expect(Buffer.byteLength(JSON.stringify(large.candidate), "utf8")).toBeLessThanOrEqual(256 * 1024);
+    const json = JSON.stringify(large.evaluation.frozen);
+    expect(Buffer.byteLength(json, "utf8")).toBeGreaterThan(786_432);
+    expect(() => assertVimaxCandidateFrozenBytes(json, "create")).not.toThrow();
+    expect(() => assertVimaxCandidateFrozenBytes(json, "read")).not.toThrow();
+  });
+
+  it("refuses an unpaired surrogate before any candidate or event INSERT", async () => {
+    const h = setup({ missing: true });
+    const body = structuredClone(h.body);
+    body.request.candidate.storyboard[0]!.visual_desc = "\ud800";
+    body.request.candidate.shot_descriptions[0]!.visual_desc = "\ud800";
+    await expect(h.store.create(W, h.source.projectId, h.source.episodeId, ACTOR, KEY, body, "trace"))
+      .rejects.toMatchObject({ code: "VIMAX_CANDIDATE_BLOCKED" });
+    expect(mutations(h.calls)).toEqual([]);
+    expect(h.calls.at(-1)!.sql).toBe("ROLLBACK");
+  });
+
 });
