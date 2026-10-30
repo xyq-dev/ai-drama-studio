@@ -155,7 +155,7 @@ function duplicates(values: readonly string[]): boolean {
  * speaker in the frozen script, the key of every speaking frozen character referenced by its shot, and a total planned
  * duration inside the range.
  */
-export function validateScriptBreakdownOutput(content: string, input: ScriptBreakdownFrozenInput): ScriptBreakdownValidation {
+export function validateScriptBreakdownOutput(content: string, input: Pick<ScriptBreakdownFrozenInput, "episodeNo" | "scriptText" | "characters">): ScriptBreakdownValidation {
   if (content.trim().length === 0) return { ok: false, code: "invalid_json" };
   let parsed: unknown;
   try {

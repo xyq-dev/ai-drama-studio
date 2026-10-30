@@ -1,0 +1,276 @@
+{
+  "fixtureKind": "synthetic",
+  "input": {
+    "schema": "ads.vimax-evaluation.input.v1",
+    "upstreamRevision": "fd4b72e7731be6e5f88486206d25ea59849b0285",
+    "sourceKind": "synthetic",
+    "writingMode": "short",
+    "projectId": "00000000-0000-4000-8000-000000000001",
+    "episodeId": "00000000-0000-4000-8000-000000000002",
+    "episodeNo": 1,
+    "scriptRevisionId": "00000000-0000-4000-8000-000000000003",
+    "scriptContentHash": "86ba07c60c4f9bbc90e357bf487900163eb667343d3faa65ea2987249310c294",
+    "scriptText": "【场景】内景 旧书店\n【动作】林晚把旧信放在桌上。\n林晚：这封信是你留下的吗？\n陈默：是，我一直在等你回来。\n林晚：那就把没说完的话说完。\n",
+    "reviewStatus": "APPROVED",
+    "isCurrent": true,
+    "isStale": false,
+    "sceneSpans": [
+      {
+        "key": "S1",
+        "start": 0,
+        "end": 70,
+        "heading": "内景 旧书店",
+        "timeOfDay": "夜",
+        "description": "林晚与陈默在旧书店谈论旧信。"
+      }
+    ],
+    "selectedSceneKeys": [
+      "S1"
+    ],
+    "characters": [
+      {
+        "key": "C1",
+        "characterId": "00000000-0000-4000-8000-000000000101",
+        "revisionId": "00000000-0000-4000-8000-000000000201",
+        "name": "林晚"
+      },
+      {
+        "key": "C2",
+        "characterId": "00000000-0000-4000-8000-000000000102",
+        "revisionId": "00000000-0000-4000-8000-000000000202",
+        "name": "陈默"
+      }
+    ],
+    "sourceDialogue": [
+      {
+        "id": "D1",
+        "start": 26,
+        "end": 39,
+        "speaker": "林晚",
+        "line": "这封信是你留下的吗？",
+        "characterKey": "C1"
+      },
+      {
+        "id": "D2",
+        "start": 40,
+        "end": 54,
+        "speaker": "陈默",
+        "line": "是，我一直在等你回来。",
+        "characterKey": "C2"
+      },
+      {
+        "id": "D3",
+        "start": 55,
+        "end": 69,
+        "speaker": "林晚",
+        "line": "那就把没说完的话说完。",
+        "characterKey": "C1"
+      }
+    ],
+    "requirements": {
+      "aspectRatio": "9:16",
+      "targetSceneSeconds": 13,
+      "style": "写实竖屏，安静的旧书店。"
+    }
+  },
+  "candidate": {
+    "characters": [
+      {
+        "idx": 0,
+        "identifier_in_scene": "林晚",
+        "is_visible": true,
+        "static_features": "年轻女子，短发。",
+        "dynamic_features": "穿浅色外套。"
+      },
+      {
+        "idx": 1,
+        "identifier_in_scene": "陈默",
+        "is_visible": true,
+        "static_features": "年轻男子，短发。",
+        "dynamic_features": "穿深色衬衫。"
+      }
+    ],
+    "storyboard": [
+      {
+        "idx": 0,
+        "is_last": false,
+        "cam_idx": 0,
+        "visual_desc": "<林晚>把旧信放在桌上，抬头看向<陈默>。",
+        "audio_desc": "林晚：这封信是你留下的吗？"
+      },
+      {
+        "idx": 1,
+        "is_last": false,
+        "cam_idx": 1,
+        "visual_desc": "<陈默>望向旧信，轻轻点头。",
+        "audio_desc": "陈默：是，我一直在等你回来。"
+      },
+      {
+        "idx": 2,
+        "is_last": true,
+        "cam_idx": 0,
+        "visual_desc": "<林晚>与<陈默>面对面坐下。",
+        "audio_desc": "林晚：那就把没说完的话说完。"
+      }
+    ],
+    "shot_descriptions": [
+      {
+        "idx": 0,
+        "is_last": false,
+        "cam_idx": 0,
+        "visual_desc": "<林晚>把旧信放在桌上，抬头看向<陈默>。",
+        "audio_desc": "林晚：这封信是你留下的吗？",
+        "variation_type": "small",
+        "variation_reason": "保持同一旧书店内的空间与人物关系。",
+        "ff_desc": "<林晚>把旧信放在桌上，抬头看向<陈默>。",
+        "ff_vis_char_idxs": [
+          0,
+          1
+        ],
+        "lf_desc": "<林晚>把旧信放在桌上，抬头看向<陈默>。",
+        "lf_vis_char_idxs": [
+          0,
+          1
+        ],
+        "motion_desc": "林晚放下旧信后抬头。"
+      },
+      {
+        "idx": 1,
+        "is_last": false,
+        "cam_idx": 1,
+        "visual_desc": "<陈默>望向旧信，轻轻点头。",
+        "audio_desc": "陈默：是，我一直在等你回来。",
+        "variation_type": "small",
+        "variation_reason": "保持同一旧书店内的空间与人物关系。",
+        "ff_desc": "<陈默>望向旧信，轻轻点头。",
+        "ff_vis_char_idxs": [
+          0,
+          1
+        ],
+        "lf_desc": "<陈默>望向旧信，轻轻点头。",
+        "lf_vis_char_idxs": [
+          0,
+          1
+        ],
+        "motion_desc": "陈默轻轻点头。"
+      },
+      {
+        "idx": 2,
+        "is_last": true,
+        "cam_idx": 0,
+        "visual_desc": "<林晚>与<陈默>面对面坐下。",
+        "audio_desc": "林晚：那就把没说完的话说完。",
+        "variation_type": "small",
+        "variation_reason": "保持同一旧书店内的空间与人物关系。",
+        "ff_desc": "<林晚>与<陈默>面对面坐下。",
+        "ff_vis_char_idxs": [
+          0,
+          1
+        ],
+        "lf_desc": "<林晚>与<陈默>面对面坐下。",
+        "lf_vis_char_idxs": [
+          0,
+          1
+        ],
+        "motion_desc": "两人坐下，注视对方。"
+      }
+    ],
+    "camera_tree": [
+      {
+        "idx": 0,
+        "active_shot_idxs": [
+          0,
+          2
+        ],
+        "parent_cam_idx": null,
+        "parent_shot_idx": null,
+        "reason": null,
+        "is_parent_fully_covers_child": null,
+        "missing_info": null
+      },
+      {
+        "idx": 1,
+        "active_shot_idxs": [
+          1
+        ],
+        "parent_cam_idx": 0,
+        "parent_shot_idx": 0,
+        "reason": "参考同一张桌子和两位角色的位置。",
+        "is_parent_fully_covers_child": true,
+        "missing_info": null
+      }
+    ]
+  },
+  "supplements": {
+    "schema": "ads.vimax-evaluation.supplements.v1",
+    "characters": [
+      {
+        "vimaxIndex": 0,
+        "characterKey": "C1"
+      },
+      {
+        "vimaxIndex": 1,
+        "characterKey": "C2"
+      }
+    ],
+    "shots": [
+      {
+        "vimaxShotIndex": 0,
+        "shotType": "中景",
+        "camera": "固定正面机位",
+        "action": "林晚放下旧信后抬头。",
+        "plannedSeconds": 4,
+        "characterKeys": [
+          "C1",
+          "C2"
+        ],
+        "dialogue": [
+          {
+            "sourceDialogueId": "D1",
+            "speaker": "林晚",
+            "line": "这封信是你留下的吗？",
+            "characterKey": "C1"
+          }
+        ]
+      },
+      {
+        "vimaxShotIndex": 1,
+        "shotType": "近景",
+        "camera": "固定反打机位",
+        "action": "陈默轻轻点头。",
+        "plannedSeconds": 4,
+        "characterKeys": [
+          "C1",
+          "C2"
+        ],
+        "dialogue": [
+          {
+            "sourceDialogueId": "D2",
+            "speaker": "陈默",
+            "line": "是，我一直在等你回来。",
+            "characterKey": "C2"
+          }
+        ]
+      },
+      {
+        "vimaxShotIndex": 2,
+        "shotType": "双人中景",
+        "camera": "固定正面机位",
+        "action": "两人面对面坐下。",
+        "plannedSeconds": 5,
+        "characterKeys": [
+          "C1",
+          "C2"
+        ],
+        "dialogue": [
+          {
+            "sourceDialogueId": "D3",
+            "speaker": "林晚",
+            "line": "那就把没说完的话说完。",
+            "characterKey": "C1"
+          }
+        ]
+      }
+    ]
+  }
+}
