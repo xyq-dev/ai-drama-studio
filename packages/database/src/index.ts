@@ -193,3 +193,4 @@ export {
   writingCallLockKey,
 } from "./writing-candidate-store";
 export { VimaxPreviewSourceStore, type VimaxPreviewSourceRead } from "./vimax-preview-source";
+export { VimaxCandidateStore } from "./vimax-candidate-store";

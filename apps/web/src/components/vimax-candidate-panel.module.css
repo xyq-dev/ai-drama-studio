@@ -1,0 +1,25 @@
+.panel { min-width: 0; border: 1px solid #cad9e9; border-radius: 12px; background: #fafcff; color: #25334a; overflow-wrap: anywhere; }
+.heading { margin: 0; }
+.toggle { display: flex; justify-content: space-between; gap: 1rem; width: 100%; min-height: 48px; padding: .9rem; border: 0; border-radius: 12px; background: #eef4fc; text-align: left; color: inherit; font: inherit; font-weight: 700; cursor: pointer; }
+.body { min-width: 0; display: grid; gap: 1rem; padding: .9rem; }
+.body p { margin: .3rem 0; }
+.controls, .list { display: flex; flex-wrap: wrap; gap: .6rem; align-items: center; min-width: 0; }
+.list { align-items: stretch; }
+.list h4 { flex-basis: 100%; margin: .3rem 0; }
+.button { min-width: 0; min-height: 44px; padding: .6rem .8rem; border: 1px solid #bdcee3; border-radius: 8px; color: #173f78; background: #fff; cursor: pointer; font: inherit; overflow-wrap: anywhere; }
+.button:disabled { opacity: .5; cursor: default; }
+.primary { color: #fff; background: #173f78; border-color: #173f78; }
+.selected { box-shadow: inset 0 0 0 1px #173f78; }
+.muted { color: #60708b; font-size: .9rem; line-height: 1.6; }
+.notice, .error { padding: .8rem; border-radius: 8px; line-height: 1.6; }
+.notice { background: #fff5dc; color: #775109; }
+.error { background: #fff0f0; color: #8c2525; }
+.card { min-width: 0; display: grid; gap: .7rem; border: 1px solid #dde5ef; border-radius: 10px; padding: .9rem; background: #fff; }
+.card h4 { margin: 0; }
+.label { display: grid; gap: .5rem; min-width: 0; }
+.label select { min-height: 44px; width: 100%; min-width: 0; max-width: 100%; padding: .5rem; font: inherit; border: 1px solid #bdcee3; border-radius: 8px; background: #fff; }
+.confirm { display: flex; align-items: center; gap: .6rem; min-height: 44px; line-height: 1.5; cursor: pointer; }
+.confirm input { flex-shrink: 0; width: 20px; height: 20px; }
+.details { min-width: 0; }
+.details summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; }
+.reasons { margin: 0; padding-left: 1.4rem; line-height: 1.7; }

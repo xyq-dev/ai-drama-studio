@@ -33,7 +33,7 @@ describe("ViMax platform preview has a distinct read-only contract", () => {
     expect(report.status).toBe("ready_for_review");
     expect(report.writeAllowed).toBe(false);
     expect(report.gaps).toEqual(expect.arrayContaining([
-      "semantic_review_required", "single_scene_write_not_implemented", "planned_duration_not_measured", "source_can_change_after_preview",
+      "semantic_review_required", "preview_is_not_write_authorization", "planned_duration_not_measured", "source_can_change_after_preview",
     ]));
     if (report.status !== "ready_for_review") throw new Error("fixture blocked");
     expect(report.review.sourceSceneText).toBe(f.input.scriptText);

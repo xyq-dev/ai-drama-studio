@@ -687,6 +687,11 @@ export function ScriptPane(props: {
               && episode.currentScriptRevisionId === episode.approvedScriptRevisionId
               && episode.currentScriptReviewStatus === "APPROVED"
               && episode.currentScriptFreshnessStatus === "CURRENT"}
+            onOpenScene={props.onOpenScene}
+            onChanged={async () => {
+              await props.onSaved();
+              await load();
+            }}
           />
           <SceneList
             projectId={props.projectId}

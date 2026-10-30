@@ -52,7 +52,7 @@ describe("single-scene platform preview", () => {
     expect(screen.getByText(/预计 13 秒 \/ 目标/)).toBeTruthy();
     expect(screen.getByText(/机位视觉参考顺序/)).toBeTruthy();
     expect(screen.getByText(/动作语义、对白音轨描述、竖屏构图和风格仍需人工核对/)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /保存|生成|批准|写入/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^(保存候选|保存场景草稿|写入镜头草稿|生成|批准)$/ })).toBeNull();
     expect(h.client.preview).toHaveBeenCalledTimes(1);
     expect(h.client.source).toHaveBeenCalledTimes(1);
   });

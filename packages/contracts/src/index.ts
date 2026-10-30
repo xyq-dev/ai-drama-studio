@@ -359,3 +359,4 @@ export {
 } from "./writing-candidate";
 export * from "./vimax-evaluation";
 export * from "./vimax-platform-preview";
+export * from "./vimax-candidate";

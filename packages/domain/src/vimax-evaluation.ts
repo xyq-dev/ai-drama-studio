@@ -269,8 +269,9 @@ export function evaluateVimaxPlan(inputValue: unknown, candidateValue: unknown, 
  */
 export function evaluateVimaxPlatformPreview(inputValue: unknown, candidateValue: unknown, supplementsValue: unknown): VimaxPlatformPreviewReport {
   const report = evaluatePlan(inputValue, candidateValue, supplementsValue, true);
-  const gaps = report.gaps.filter((gap) => gap !== "frozen_metadata_not_live_verified");
-  return { ...report, schema: VIMAX_PLATFORM_PREVIEW_REPORT_SCHEMA, gaps: [...gaps, "source_can_change_after_preview"] };
+  const gaps = report.gaps.filter((gap) => gap !== "frozen_metadata_not_live_verified" && gap !== "single_scene_write_not_implemented");
+  return { ...report, schema: VIMAX_PLATFORM_PREVIEW_REPORT_SCHEMA,
+    gaps: [...gaps, "preview_is_not_write_authorization", "source_can_change_after_preview"] };
 }
 
 function evaluatePlan(inputValue: unknown, candidateValue: unknown, supplementsValue: unknown, platform: boolean): VimaxEvaluationReport {
