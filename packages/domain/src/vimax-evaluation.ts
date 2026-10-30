@@ -50,7 +50,9 @@ function jsonBoundary(value: unknown, path: string): VimaxEvaluationDiagnostic |
         if (typeof item !== "object" || types.isProxy(item) || seen.has(item)) return diagnostic("non_json_value", path);
         seen.add(item);
         const array = Array.isArray(item);
-        if (!array && Object.getPrototypeOf(item) !== Object.prototype && Object.getPrototypeOf(item) !== null) {
+        const prototype = Object.getPrototypeOf(item);
+        // Array subclasses/custom prototypes can inherit executable toJSON or map methods too.
+        if (array ? prototype !== Array.prototype : prototype !== Object.prototype && prototype !== null) {
           return diagnostic("non_json_value", path);
         }
         const entries = Reflect.ownKeys(item);

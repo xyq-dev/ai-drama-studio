@@ -368,6 +368,81 @@ describe("offline evaluator cannot spend or write", () => {
     expect(toJSON).not.toHaveBeenCalled();
   });
 
+  it("blocks an array subclass before inherited toJSON can execute", () => {
+    const f = fixture();
+    const inheritedToJSON = vi.fn();
+    class SerializableArray<T> extends Array<T> {
+      toJSON() {
+        inheritedToJSON();
+        return Array.from(this);
+      }
+    }
+    f.candidate.storyboard = new SerializableArray(...f.candidate.storyboard);
+    const result = evaluate(f);
+    expect(inheritedToJSON).not.toHaveBeenCalled();
+    expect(result.status).toBe("blocked");
+    expect(result.diagnostics).toEqual([{ code: "non_json_value", path: "candidate" }]);
+    expect(result.writeAllowed).toBe(false);
+  });
+
+  it("blocks a custom array prototype before inherited toJSON can execute", () => {
+    const f = fixture();
+    const inheritedToJSON = vi.fn(() => []);
+    Object.setPrototypeOf(f.input.sourceDialogue, Object.create(Array.prototype, {
+      toJSON: { value: inheritedToJSON },
+    }));
+    const result = evaluate(f);
+    expect(inheritedToJSON).not.toHaveBeenCalled();
+    expect(result.status).toBe("blocked");
+    expect(result.diagnostics).toEqual([{ code: "non_json_value", path: "input" }]);
+    expect(result.writeAllowed).toBe(false);
+  });
+
+  it("blocks a custom array prototype before inherited map can escape the report boundary", () => {
+    const f = fixture();
+    const inheritedMap = vi.fn(() => { throw new Error("inherited array map must never execute"); });
+    Object.setPrototypeOf(f.supplements.shots, Object.create(Array.prototype, {
+      map: { value: inheritedMap },
+    }));
+    const result = evaluate(f);
+    expect(inheritedMap).not.toHaveBeenCalled();
+    expect(result.status).toBe("blocked");
+    expect(result.diagnostics).toEqual([{ code: "non_json_value", path: "supplements" }]);
+    expect(result.writeAllowed).toBe(false);
+  });
+
+  it("blocks a null-prototype array without throwing during canonical hashing", () => {
+    const f = fixture();
+    Object.setPrototypeOf(f.candidate.camera_tree, null);
+    const result = evaluate(f);
+    expect(result.status).toBe("blocked");
+    expect(result.diagnostics).toEqual([{ code: "non_json_value", path: "candidate" }]);
+    expect(result.writeAllowed).toBe(false);
+  });
+
+  it("still accepts plain JSON arrays, empty arrays and null-prototype plain objects", () => {
+    const f = fixture();
+    Object.setPrototypeOf(f.candidate, null);
+    f.candidate.shot_descriptions[0]!.ff_vis_char_idxs = [];
+    f.candidate.shot_descriptions[0]!.lf_vis_char_idxs = [];
+    const result = ready(f);
+    expect(result.review.candidate.shot_descriptions[0]!.ff_vis_char_idxs).toEqual([]);
+    expect(result.review.candidate.storyboard.map((shot) => shot.idx)).toEqual([0, 1, 2]);
+  });
+
+  it.each(["object", "array"])("rejects a %s Proxy without executing reflection traps", (shape) => {
+    const f = fixture();
+    const trap = vi.fn(() => { throw new Error("Proxy trap must never execute"); });
+    const proxy = new Proxy(shape === "object" ? f.candidate : f.candidate.storyboard, {
+      getPrototypeOf: trap, ownKeys: trap, getOwnPropertyDescriptor: trap, get: trap,
+    });
+    const result = evaluateVimaxPlan(f.input, proxy, f.supplements);
+    expect(trap).not.toHaveBeenCalled();
+    expect(result.status).toBe("blocked");
+    expect(result.diagnostics).toEqual([{ code: "non_json_value", path: "candidate" }]);
+    expect(result.writeAllowed).toBe(false);
+  });
+
   it.each(["bytes", "depth", "nodes"])("blocks excessive %s before schema parsing", (limit) => {
     const f = fixture();
     let candidate: unknown;
