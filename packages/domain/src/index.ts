@@ -1,6 +1,7 @@
 import { DomainError } from "./errors";
 
 export * from "./vimax-evaluation";
+export * from "./vimax-candidate";
 
 export { DomainError };
 

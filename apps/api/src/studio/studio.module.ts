@@ -8,9 +8,10 @@ import { WritingCandidateController } from "./writing-candidate.controller";
 import { AutoCreationController } from "./auto-creation.controller";
 import { SeriesWritingController } from "./series-writing.controller";
 import { VimaxPreviewController } from "./vimax-preview.controller";
+import { VimaxCandidateController } from "./vimax-candidate.controller";
 import {
   AUTO_CREATION_SERVICE, RUNTIME_STORE, SCRIPT_BREAKDOWN_SERVICE, SERIES_WRITING_SERVICE, STUDIO_RUNTIME, STUDIO_SERVICE, TITLE_WRITING_SERVICE,
-  WRITING_CANDIDATE_SERVICE, VIMAX_PREVIEW_SERVICE,
+  WRITING_CANDIDATE_SERVICE, VIMAX_PREVIEW_SERVICE, VIMAX_CANDIDATE_SERVICE,
 } from "./tokens";
 import { ADMIN_MODELS_SERVICE, AdminModelsController } from "../admin/admin-models.controller";
 
@@ -21,7 +22,7 @@ export class StudioModule {
       module: StudioModule,
       controllers: [
         StudioController, EventsController, TitleWritingController, ScriptBreakdownController, WritingCandidateController,
-        AdminModelsController, AutoCreationController, SeriesWritingController, VimaxPreviewController,
+        AdminModelsController, AutoCreationController, SeriesWritingController, VimaxPreviewController, VimaxCandidateController,
       ],
       providers: [
         {
@@ -62,6 +63,11 @@ export class StudioModule {
           provide: VIMAX_PREVIEW_SERVICE,
           inject: [STUDIO_RUNTIME],
           useFactory: (runtime: StudioRuntime) => runtime.vimaxPreview,
+        },
+        {
+          provide: VIMAX_CANDIDATE_SERVICE,
+          inject: [STUDIO_RUNTIME],
+          useFactory: (runtime: StudioRuntime) => runtime.vimaxCandidates,
         },
         {
           provide: RUNTIME_STORE,

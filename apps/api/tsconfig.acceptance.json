@@ -11,7 +11,8 @@
     "src/studio/auto-creation.acceptance.spec.ts",
     "src/studio/auto-creation.browser-acceptance.spec.ts",
     "src/studio/series-writing.acceptance.spec.ts",
-    "src/studio/series-writing.browser-acceptance.spec.ts"
+    "src/studio/series-writing.browser-acceptance.spec.ts",
+    "src/studio/vimax-candidate.acceptance.spec.ts"
   ],
   "exclude": ["dist"]
 }
