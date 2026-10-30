@@ -67,4 +67,4 @@ V1 的人工门槛固定为三个阶段：剧本门槛；视频生成前门槛�
 
 新增评估方向：在本工作台内复用 ViMax Script2Video 的文本分镜规划方法，以一集已批准短剧中的**一个场景**为首个样本，提供镜头文字、角色映射、首尾帧描述与视觉依赖候选，经严格校验和现有人工审核后再考虑写入 Scene/Shot 草稿。现有拆解保存是整集替换，单场景写入须另设计明确作用域并验收，不能直接复用该操作。先做零网络的离线映射评估，真实规划及媒体生成分别进入后续阶段；不替换项目状态、预算、幂等、恢复与 STALE 体系。
 
-完整功能要求、候选映射、准入条件和退出条件见 [`VIMAX_SCRIPT2VIDEO_EVALUATION.md`](VIMAX_SCRIPT2VIDEO_EVALUATION.md)。当前状态为 **[E1 离线原型已实现](VIMAX_OFFLINE_EVALUATION.md)，未接入平台、未运行 ViMax、未验证真实生成**，原有 M1–M4 交付结论不变。
+完整功能要求、候选映射、准入条件和退出条件见 [`VIMAX_SCRIPT2VIDEO_EVALUATION.md`](VIMAX_SCRIPT2VIDEO_EVALUATION.md)。当前状态为 **[E1 离线原型](VIMAX_OFFLINE_EVALUATION.md)与 [E2-A 平台只读预览](VIMAX_PLATFORM_PREVIEW.md)已实现**；候选持久化、局部保存与发送治理尚未实现，未运行 ViMax、未验证真实生成，原有 M1–M4 交付结论不变。

@@ -1,6 +1,6 @@
 # ViMax E1：单场景离线评估工具
 
-状态：E1 原型已实现。它读取人工准备的合成或经授权脱敏 JSON，把固定版本的 ViMax 文本规划候选与本项目角色、对白和镜头字段进行对照。它不会调用模型、读取线上作品、写业务库或创建 Scene/Shot 草稿。E2 平台集成和 E3 真实规划仍未实施。总体方案见 [评估设计](VIMAX_SCRIPT2VIDEO_EVALUATION.md)。
+状态：E1 原型已实现。它读取人工准备的合成或经授权脱敏 JSON，把固定版本的 ViMax 文本规划候选与本项目角色、对白和镜头字段进行对照。它不会调用模型、读取线上作品、写业务库或创建 Scene/Shot 草稿。[E2-A 平台只读预览](VIMAX_PLATFORM_PREVIEW.md)使用独立来源契约；完整 E2 和 E3 真实规划仍未完成。总体方案见 [评估设计](VIMAX_SCRIPT2VIDEO_EVALUATION.md)。
 
 ## 运行
 
@@ -79,4 +79,4 @@ corepack pnpm --filter @ai-drama/domain test -- vimax-evaluation.spec.ts
 node --test scripts/vimax-evaluation/run.test.mjs
 ```
 
-没有运行上游 ViMax，也未证明真实供应商兼容性、分镜质量、调用数量或费用。没有新增 HTTP、数据库字段、迁移、运行开关或页面；系列媒体仍关闭，系列文本的 15 / 19 / 96 次公式和历史授权保持原义。后续 E2 应先解决局部写入、扩展字段的持久化、预算、幂等、发送前重检和审核/STALE，再考虑真实调用。
+E1 没有运行上游 ViMax，也未证明真实供应商兼容性、分镜质量、调用数量或费用。E1 工具本身不含 HTTP、数据库字段、迁移、运行开关或页面；后续新增的独立平台预览见 [E2-A](VIMAX_PLATFORM_PREVIEW.md)。系列媒体仍关闭，系列文本的 15 / 19 / 96 次公式和历史授权保持原义。完整 E2 仍须解决局部写入、扩展字段的持久化、预算、幂等、发送前重检和审核/STALE，再考虑真实调用。

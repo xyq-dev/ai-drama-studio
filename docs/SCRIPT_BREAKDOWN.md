@@ -1,6 +1,6 @@
 # 剧本拆解：按真实剧本生成场景与分镜（R2，文字层）
 
-下一阶段的 [ViMax Script2Video 分镜规划复用评估](VIMAX_SCRIPT2VIDEO_EVALUATION.md)以本功能为接入基线，已提供 [E1 离线评估工具](VIMAX_OFFLINE_EVALUATION.md)，平台接入仍待实施。其多阶段调用、单场景输入、机位树和首尾帧描述与下述 v1 契约不等价；本轮没有替换现有引擎、Schema、单步骤预算或两段式审核/写入流程。
+下一阶段的 [ViMax Script2Video 分镜规划复用评估](VIMAX_SCRIPT2VIDEO_EVALUATION.md)以本功能为接入基线，已提供 [E1 离线评估工具](VIMAX_OFFLINE_EVALUATION.md)与 [E2-A 平台只读预览](VIMAX_PLATFORM_PREVIEW.md)，候选持久化和局部保存仍待实施。其多阶段调用、单场景输入、机位树和首尾帧描述与下述 v1 契约不等价；本轮没有替换现有引擎、Schema、单步骤预算或两段式审核/写入流程。
 
 本轮只做文字层：AI 读取某一集已批准的剧本版本，拆出场景和镜头文字稿。不接入图片、视频或配音供应商，也不产生任何成片。文中的“预计时长”是写作计划，不是实测成片时长。
 

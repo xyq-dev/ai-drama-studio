@@ -1,0 +1,29 @@
+.panel { min-width: 0; margin: 1.25rem 0; border: 1px solid #d8e2ef; border-radius: 14px; background: #fff; color: #25334a; overflow-wrap: anywhere; }
+.heading { margin: 0; }
+.toggle { width: 100%; min-height: 48px; padding: 1rem; border: 0; border-radius: 14px; background: #f4f7fc; text-align: left; color: inherit; cursor: pointer; font-weight: 700; display: flex; justify-content: space-between; gap: 1rem; }
+.body { min-width: 0; padding: 1rem; display: grid; gap: 1rem; }
+.body p { margin: .25rem 0; }
+.muted { color: #60708b; font-size: .9rem; line-height: 1.6; }
+.controls { display: flex; flex-wrap: wrap; gap: .6rem; align-items: center; }
+.button { min-height: 44px; padding: .55rem .85rem; border: 1px solid #bdcee3; border-radius: 8px; color: #173f78; background: #fff; cursor: pointer; font: inherit; }
+.button:disabled { opacity: .5; cursor: default; }
+.primary { color: #fff; background: #173f78; border-color: #173f78; }
+.label { display: grid; gap: .4rem; min-width: 0; font-weight: 600; }
+.file { display: block; width: 100%; max-width: 100%; min-width: 0; min-height: 44px; font-weight: 400; }
+.file::file-selector-button { min-height: 44px; padding: .4rem .7rem; margin-right: .5rem; border: 1px solid #bdcee3; border-radius: 8px; background: #fff; color: #173f78; cursor: pointer; }
+.json { width: 100%; max-width: 100%; box-sizing: border-box; min-height: 150px; border: 1px solid #bdcee3; border-radius: 8px; padding: .7rem; font: .85rem/1.5 monospace; resize: vertical; }
+.notice, .error, .success { border-radius: 8px; padding: .8rem; line-height: 1.6; }
+.notice { background: #fff5dc; color: #775109; }
+.error { background: #fff0f0; color: #8c2525; }
+.success { background: #eaf7f0; color: #176340; }
+.columns { min-width: 0; display: grid; gap: 1rem; }
+.card { min-width: 0; border: 1px solid #dde5ef; border-radius: 10px; padding: .9rem; }
+.card h4, .card h5 { margin: 0 0 .7rem; }
+.pre { margin: .6rem 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.7; }
+.shots { display: grid; gap: .75rem; min-width: 0; }
+.fields { margin: 0; display: grid; grid-template-columns: minmax(3.8rem, auto) minmax(0, 1fr); gap: .45rem .7rem; line-height: 1.6; }
+.fields dt { color: #60708b; }
+.fields dd { margin: 0; min-width: 0; white-space: pre-wrap; }
+.details { margin-top: .7rem; }
+.details summary { min-height: 44px; align-content: center; cursor: pointer; }
+@media (min-width: 980px) { .columns { grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); } }
