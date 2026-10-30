@@ -357,3 +357,4 @@ export {
   type WritingCandidateStoryRequest,
   type WritingCandidateView,
 } from "./writing-candidate";
+export * from "./vimax-evaluation";

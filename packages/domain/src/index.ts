@@ -1,5 +1,7 @@
 import { DomainError } from "./errors";
 
+export * from "./vimax-evaluation";
+
 export { DomainError };
 
 export const GENERATION_JOB_STATES = [

@@ -13,7 +13,7 @@
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
-    "verify": "pnpm lint && pnpm typecheck && pnpm test && pnpm build && node --check scripts/dev-doctor.mjs && node --test scripts/dev-doctor.test.mjs && node --test scripts/ffmpeg-sbom.test.mjs && node --test scripts/admin-models-init.test.mjs scripts/site-auth-password.test.mjs scripts/render-caddy-site.test.mjs && node scripts/run-media-worker-tests.mjs",
+    "verify": "pnpm lint && pnpm typecheck && pnpm test && pnpm build && node --check scripts/dev-doctor.mjs && node --test scripts/dev-doctor.test.mjs && node --test scripts/ffmpeg-sbom.test.mjs && node --test scripts/admin-models-init.test.mjs scripts/site-auth-password.test.mjs scripts/render-caddy-site.test.mjs && node --test scripts/vimax-evaluation/run.test.mjs && node scripts/run-media-worker-tests.mjs",
     "doctor": "node scripts/dev-doctor.mjs",
     "clean": "turbo run clean",
     "infra:config": "docker compose -f infra/compose.yaml --env-file .env.example config",
@@ -21,7 +21,8 @@
     "infra:down": "docker compose -f infra/compose.yaml --env-file .env.example down",
     "infra:logs": "docker compose -f infra/compose.yaml --env-file .env.example logs",
     "m3-av-e2e:check": "node --check scripts/m3-av-e2e/check.mjs && node --check scripts/m3-av-e2e/run.mjs && node --check scripts/m3-av-e2e/outcome.mjs && node --check scripts/m3-av-e2e/outcome.test.mjs && node --check scripts/m3-av-e2e/lifecycle.mjs && node --check scripts/m3-av-e2e/lifecycle.test.mjs && node --check scripts/m3-av-e2e/compose-preflight.mjs && node --check scripts/m3-av-e2e/compose-preflight.test.mjs && node --check scripts/m3-av-e2e/compose-render.mjs && node --check scripts/m3-av-e2e/episode-compose-preflight.mjs && node --check scripts/m3-av-e2e/episode-compose-preflight.test.mjs && node --check scripts/m3-av-e2e/episode-render.mjs && node --check scripts/m3-av-e2e/episode-export.mjs && node --check scripts/m3-av-e2e/project-cost.mjs && node --check scripts/m3-av-e2e/three-episode-sample.mjs && node scripts/m3-av-e2e/check.mjs",
-    "m3-av-e2e:outcome": "node --test scripts/m3-av-e2e/outcome.test.mjs scripts/m3-av-e2e/lifecycle.test.mjs scripts/m3-av-e2e/compose-preflight.test.mjs scripts/m3-av-e2e/episode-compose-preflight.test.mjs"
+    "m3-av-e2e:outcome": "node --test scripts/m3-av-e2e/outcome.test.mjs scripts/m3-av-e2e/lifecycle.test.mjs scripts/m3-av-e2e/compose-preflight.test.mjs scripts/m3-av-e2e/episode-compose-preflight.test.mjs",
+    "vimax:evaluate": "node --permission --allow-fs-read=. scripts/vimax-evaluation/run.mjs"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
