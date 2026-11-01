@@ -34,6 +34,10 @@ export async function composeRenderPage(ctx) {
   }
   if (Number(asset.width) !== 1080 || Number(asset.height) !== 1920) throw new Error(`composite size ${asset.width}x${asset.height}`);
   if (asset.provider_configuration_id || asset.provider_request_id) throw new Error("composite recorded a provider");
+  const provenance = (await ctx.sql("SELECT input_snapshot#>'{input,sourceObjects}' AS sources FROM generation_job WHERE id=$1 AND workspace_id=$2", [accepted.jobId, ctx.workspaceId]))[0]?.sources;
+  if (!Array.isArray(provenance) || provenance.length === 0 || provenance.some(source => source.storageProvider !== "mock-object-store")) {
+    throw new Error("Mock compose fixture no longer has exclusively verified Mock source records");
+  }
   const card = panel.locator(`[data-composite-id="${asset.id}"]`);
   const video = card.locator("video");
   await video.waitFor({ state: "attached", timeout: 20_000 });
@@ -83,7 +87,7 @@ export async function composeRenderPage(ctx) {
     throw new Error(`playback ${JSON.stringify(playback)}`);
   }
   const shown = await card.innerText();
-  if (!shown.includes("本地合成") || !shown.includes("Mock 来源") || !shown.includes("DRAFT") || !shown.includes("当前有效")) {
+  if (!shown.includes("本地合成") || !shown.includes("来源详见素材记录") || !shown.includes("DRAFT") || !shown.includes("当前有效")) {
     throw new Error(`composite card ${shown}`);
   }
   if (await ctx.state.page.locator("#shot-action").inputValue() !== ctx.draftMarker) throw new Error("compose overwrote the shot draft");
