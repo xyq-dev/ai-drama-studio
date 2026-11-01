@@ -31,6 +31,11 @@ function confirm(){fireEvent.click(screen.getByLabelText("我确认固定调用�
 function deferred<T>(){let resolve!:(v:T)=>void;const promise=new Promise<T>(r=>{resolve=r;});return {resolve,promise};}
 beforeEach(()=>sessionStorage.clear());afterEach(()=>{cleanup();vi.restoreAllMocks();});
 describe("episode speech batch browser controls",()=>{
+  it.each(["IDEMPOTENCY_IN_PROGRESS","SPEECH_BATCH_REQUEST_UNKNOWN"])("keeps the original command when a 409 is still uncertain: %s",async code=>{
+    const h=setup();h.api.write.mockImplementation(async request=>{if(request.kind==="confirm")throw new ApiError(409,code,"Original command is uncertain");return batch();});
+    render(<SpeechBatchPanel {...h.props}/>);await open();await quote();confirm();await screen.findByText("Original command is uncertain");
+    expect(readSpeechBatchPending(P,E)?.kind).toBe("confirm");expect(screen.queryByRole("button",{name:"结束这个已拒绝批次请求"})).toBeNull();
+  });
   it("offers explicit same-operation recovery for an interrupted dispatching batch without sending on reads",async()=>{
     const h=setup();h.api.recent.mockResolvedValue([{...batch(),state:"dispatching"}]);
     render(<SpeechBatchPanel {...h.props}/>);await open();fireEvent.change(screen.getByLabelText("查看已有批次"),{target:{value:B}});

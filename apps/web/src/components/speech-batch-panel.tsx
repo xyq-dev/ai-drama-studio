@@ -10,6 +10,9 @@ const LINE = { selected: "已选用", awaiting_selection: "已有音频，待试
 const STATE = { quoted: "等待费用确认", dispatching: "逐句提交中", needs_attention: "有请求需要核查", dispatched: "逐句任务已创建", canceled: "已停止后续提交" };
 const OP = { pending: "尚未提交", working: "正在核查提交", job_created: "原任务已受理", unknown: "回执未知", blocked: "已阻断", canceled: "已取消未提交项" };
 const TERMINAL = new Set(["SUCCEEDED", "FAILED", "CANCELED"]);
+const REFUSED = new Set(["VALIDATION_ERROR", "SPEECH_BATCH_INVALID", "SPEECH_BATCH_LIMIT", "SPEECH_BATCH_SOURCE_CHANGED", "SPEECH_SOURCE_CHANGED",
+  "SPEECH_BATCH_QUOTE_EXPIRED", "SPEECH_BATCH_LINE_AVAILABLE", "SPEECH_BATCH_CONFIRMATION_CHANGED", "SPEECH_BATCH_BUDGET_CHANGED",
+  "SPEECH_BATCH_ACTIVE", "SPEECH_BATCH_ACTIVE_EXISTS", "SPEECH_BATCH_CANCELED", "REVIEW_REQUIRED", "SPEECH_VOICE_STALE", "SPEECH_PLAN_STALE"]);
 interface Props { projectId: string; episodeId: string; refreshEpoch?: number; onChanged?: () => void; client?: SpeechBatchClient }
 const detail = (e: unknown) => e instanceof ApiError ? e.detail : e instanceof Error ? e.message : "批次请求暂未完成，请保留原请求。";
 export function SpeechBatchPanel(props: Props) { return <BatchScope key={props.projectId + ":" + props.episodeId} {...props} />; }
@@ -93,7 +96,7 @@ function BatchScope(props: Props) {
           : "批次已受理。每句仍是独立原任务，已有结果会保留，不会自动换请求重做。");
       setTick(t => t + 1); changed.current?.();
     } catch (e) {
-      if (mounted.current) { setError(detail(e)); if (e instanceof ApiError && [409, 422].includes(e.status)) setRejected(true); }
+      if (mounted.current) { setError(detail(e)); if (e instanceof ApiError && [409, 422].includes(e.status) && REFUSED.has(e.code)) setRejected(true); }
     } finally { busyRef.current = false; if (mounted.current) setBusy(false); }
   }
   async function stop() {
