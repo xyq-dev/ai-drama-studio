@@ -106,10 +106,40 @@ export function ProjectCostSummary(props: { projectId: string; client?: StudioCl
                 ))}
               </ul>
               <button className="ui-button ui-button-secondary mt-2" type="button" onClick={() => void load("refresh")}>刷新已记录成本</button>
+              <RealMediaExposure key={props.projectId} projectId={props.projectId} client={client} />
             </div>
           ) : null}
         </div>
       ) : null}
     </section>
   );
+}
+
+interface MediaExposure {
+  actualCost: "unknown"; unknownSubmissionCount: number;
+  currencies: Array<{ currency: string; reservedEstimatedAmount: string; reservedMaximumAmount: string }>;
+}
+function RealMediaExposure({ projectId, client }: { projectId: string; client: StudioClient }) {
+  const [value, setValue] = useState<MediaExposure | null>(null), [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const current = useRef(0);
+  useEffect(() => () => { current.current++; }, []);
+  async function load() {
+    const sequence = ++current.current; setBusy(true); setError(null);
+    try {
+      const v = await client.get<MediaExposure>(`/projects/${projectId}/real-media/cost-exposure`);
+      if (v.actualCost !== "unknown" || !Number.isSafeInteger(v.unknownSubmissionCount) || v.unknownSubmissionCount < 0
+        || !Array.isArray(v.currencies) || v.currencies.some(row => typeof row.currency !== "string"
+          || !/^\d+(\.\d{1,8})?$/.test(row.reservedEstimatedAmount) || !/^\d+(\.\d{1,8})?$/.test(row.reservedMaximumAmount))) throw new Error();
+      if (current.current === sequence) setValue(v);
+    } catch { if (current.current === sequence) { setValue(null); setError("真实生成预约暂时无法读取，请稍后核查；这不代表没有费用。"); } }
+    finally { if (current.current === sequence) setBusy(false); }
+  }
+  return <div className="mt-3 space-y-2">
+    <button className="ui-button ui-button-secondary" type="button" disabled={busy} onClick={() => void load()}>核查真实生成预约</button>
+    {value ? <><p>实际费用尚未核实；结果未知的提交 {value.unknownSubmissionCount} 笔。以下预约不与已入账估算重复相加。</p>
+      {value.currencies.map(row => <p key={row.currency}>{row.currency}：未入账预约估算 {row.reservedEstimatedAmount}，已授权上限 {row.reservedMaximumAmount}</p>)}
+    </> : null}
+    {error ? <p role="alert">{error}</p> : null}
+  </div>;
 }

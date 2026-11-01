@@ -8,10 +8,11 @@ const object = (value: unknown): Record<string, unknown> =>
 function invalid(): never { throw new ApiError(502, "INVALID_RESPONSE", "服务回执无法核对，请保留原请求并继续确认。"); }
 export function checkedRealMediaQuote(value: unknown): RealMediaQuote {
   const q = object(value);
-  if (!UUID.test(String(q.quoteId)) || !/^[a-f0-9]{64}$/.test(String(q.inputHash)) || !CAPS.has(String(q.capability))
-    || !["CNY", "USD"].includes(String(q.currency)) || !AMOUNT.test(String(q.estimatedAmount))
-    || !AMOUNT.test(String(q.maximumAmount)) || !UUID.test(String(q.providerConfigurationId))
-    || typeof q.providerConfigurationVersion !== "string" || typeof q.priceVersion !== "string"
+  if (typeof q.quoteId !== "string" || !UUID.test(q.quoteId) || typeof q.inputHash !== "string" || !/^[a-f0-9]{64}$/.test(q.inputHash)
+    || typeof q.capability !== "string" || !CAPS.has(q.capability)
+    || !["CNY", "USD"].includes(String(q.currency)) || typeof q.estimatedAmount !== "string" || !AMOUNT.test(q.estimatedAmount)
+    || typeof q.maximumAmount !== "string" || !AMOUNT.test(q.maximumAmount) || typeof q.providerConfigurationId !== "string" || !UUID.test(q.providerConfigurationId)
+    || typeof q.providerConfigurationVersion !== "string" || !q.providerConfigurationVersion || typeof q.priceVersion !== "string" || !q.priceVersion
     || typeof q.expiresAt !== "string" || !Number.isFinite(Date.parse(q.expiresAt))
     || q.actualCost !== "unknown" || q.singleOperation !== true
     || (q.uncertainJobIds !== undefined && (!Array.isArray(q.uncertainJobIds) || q.uncertainJobIds.length > 20
@@ -121,4 +122,33 @@ export function clearRealMediaPending(p: RealMediaPending): boolean {
   if (!current || JSON.stringify(current) !== JSON.stringify(p)) return false;
   sessionStorage.removeItem(realMediaPendingKey(p.projectId, p.shotRevisionId));
   return sessionStorage.getItem(realMediaPendingKey(p.projectId, p.shotRevisionId)) === null;
+}
+export interface RealMediaComposePending {
+  schema: "ads.voice-compose.pending.v1"; projectId: string; shotRevisionId: string; key: string; value: SpeechMixPreflight;
+}
+export function readRealMediaComposePending(projectId: string, shotRevisionId: string): RealMediaComposePending | null {
+  const raw = sessionStorage.getItem(realMediaPendingKey(projectId, shotRevisionId) + ":compose");
+  if (raw === null) return null;
+  try {
+    const p = JSON.parse(raw) as RealMediaComposePending, m = p.value?.manifest;
+    if (p.schema !== "ads.voice-compose.pending.v1" || p.projectId !== projectId || p.shotRevisionId !== shotRevisionId
+      || typeof p.key !== "string" || !UUID.test(p.key) || !/^[a-f0-9]{64}$/.test(p.value.inputHash)
+      || m?.schema !== "voice.shot.mix.v1" || m.projectId !== projectId || m.shotRevisionId !== shotRevisionId
+      || !UUID.test(m.planRevisionId) || !UUID.test(m.videoAssetId) || !m.mix
+      || (m.mix.musicAssetId !== null && !UUID.test(m.mix.musicAssetId))) throw new Error();
+    return p;
+  } catch { throw new Error("原合成请求记录无法核对，请先核查任务。"); }
+}
+export function rememberRealMediaComposePending(p: RealMediaComposePending): void {
+  const key = realMediaPendingKey(p.projectId, p.shotRevisionId) + ":compose", before = readRealMediaComposePending(p.projectId, p.shotRevisionId);
+  if (before && JSON.stringify(before) !== JSON.stringify(p)) throw new Error("原合成请求尚未确认，请先继续确认原请求。");
+  const raw = JSON.stringify(p);
+  sessionStorage.setItem(key, raw);
+  if (sessionStorage.getItem(key) !== raw) throw new Error("无法保留原合成请求，尚未发送。");
+}
+export function clearRealMediaComposePending(p: RealMediaComposePending): boolean {
+  if (JSON.stringify(readRealMediaComposePending(p.projectId, p.shotRevisionId)) !== JSON.stringify(p)) return false;
+  const key = realMediaPendingKey(p.projectId, p.shotRevisionId) + ":compose";
+  sessionStorage.removeItem(key);
+  return sessionStorage.getItem(key) === null;
 }

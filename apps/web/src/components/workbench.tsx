@@ -12,6 +12,7 @@ import { EpisodeComposePreflight } from "./episode-compose-preflight";
 import { ProjectCostSummary } from "./project-cost-summary";
 import { ScriptBreakdownPanel } from "./script-breakdown-panel";
 import { VimaxPreviewPanel } from "./vimax-preview-panel";
+import { RealMediaPanel } from "./real-media-panel";
 import { ApiError, StudioClient } from "../lib/studio-client";
 import {
   MEDIA_WORKFLOW_TYPES,
@@ -63,12 +64,12 @@ const EMPTY_CONTENT: Record<string, unknown> = { text: "" };
 const BODY_FIELD = "creator-body-field mt-1 w-full min-h-48 max-h-[70vh] resize-y rounded border border-neutral-300 px-3 py-2";
 
 function mediaTaskLabel(type: string): string {
-  if (type === "MEDIA_VIDEO") return "Mock 视频";
-  if (type === "MEDIA_TTS") return "Mock 配音";
-  if (type === "MEDIA_SUBTITLE") return "Mock 字幕";
-  if (type === "MEDIA_MUSIC") return "Mock 音乐";
+  if (type === "MEDIA_VIDEO") return "视频";
+  if (type === "MEDIA_TTS") return "配音";
+  if (type === "MEDIA_SUBTITLE") return "字幕";
+  if (type === "MEDIA_MUSIC") return "音乐";
   if (type === "MEDIA_COMPOSE") return "本地合成";
-  return "Mock 图片";
+  return "图片";
 }
 
 function taskStatusLabel(state: string): string {
@@ -1730,6 +1731,10 @@ export function ScenePane(props: {
             onAccepted={props.onSaved}
             onReused={() => setReuseEpoch((value) => value + 1)}
           />
+          <RealMediaPanel projectId={props.projectId} shotRevisionId={shotCurrent.id} dialogue={shotCurrent.dialogue}
+            usable={imageGate.usable} reason={imageGate.reason} approved={approvedMediaGate.usable}
+            refreshEpoch={props.refreshEpoch + props.imageEpoch + reuseEpoch}
+            onChanged={() => { setReuseEpoch(value => value + 1); props.onMediaChanged?.(); }} />
           <ComposePreflight revisionId={shotCurrent.id} refreshEpoch={props.imageEpoch + reuseEpoch} onChanged={props.onMediaChanged}
             blocked={props.shotComposeBlocked ?? null} />
           </div>
@@ -2453,10 +2458,10 @@ function ShotImagePanel(props: {
         if (cancelled || request !== requestToken.current) return;
         const historyPages = await Promise.all(historyIds.map(async (id) => {
           const page = await client.get<{ items: ShotAsset[] }>(`/shot-revisions/${id}/assets`);
-          return page.items.filter((item) => item.sourceShotRevisionId === id);
+          return page.items.filter((item) => item.sourceShotRevisionId === id && item.storageProvider !== "s3");
         }));
         if (cancelled || request !== requestToken.current) return;
-        setCurrentAssets(currentPage.items.filter((item) => item.sourceShotRevisionId === currentId));
+        setCurrentAssets(currentPage.items.filter((item) => item.sourceShotRevisionId === currentId && item.storageProvider !== "s3"));
         setHistoryAssets(historyPages.flat());
         setListError(null);
       } catch {
@@ -2738,6 +2743,7 @@ function AssetList(props: {
 
 interface ShotAsset {
   id: string;
+  storageProvider?: string;
   kind: string;
   mimeType: string;
   status: string;

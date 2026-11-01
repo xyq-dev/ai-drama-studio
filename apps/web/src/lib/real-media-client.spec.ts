@@ -17,19 +17,23 @@ describe("real media client validates real API receipts and keeps request identi
     const authorized=calls.find(c=>c.url.endsWith("/authorize"))!;expect(JSON.parse(String(authorized.init?.body))).toEqual({quoteId:Q,maximumAmount:"0.75",confirmSinglePaidOperation:true,confirmedUncertainJobIds:[OTHER]});
     const sent=calls.find(c=>c.url.endsWith("/generate"))!;expect(new Headers(sent.init?.headers).get("Idempotency-Key")).toBe(K);expect(JSON.parse(String(sent.init?.body))).toEqual({quoteId:Q,budgetAuthorizationId:A});
   });
-  it.each([{quoteId:"bad"},{inputHash:"bad"},{capability:"other"},{actualCost:"0"},{singleOperation:false},{uncertainJobIds:["bad"]},{maximumAmount:"NaN"}])("rejects malformed quotes %o",patch=>{expect(()=>checkedRealMediaQuote({...quote(),...patch})).toThrow();});
+  it.each([{quoteId:"bad"},{inputHash:"bad"},{capability:"other"},{actualCost:"0"},{singleOperation:false},{uncertainJobIds:["bad"]},{maximumAmount:"NaN"},{estimatedAmount:0.5},{maximumAmount:1},{priceVersion:""}])("rejects malformed quotes %o",patch=>{expect(()=>checkedRealMediaQuote({...quote(),...patch})).toThrow();});
   it("filters existing mock assets while strictly checking scoped real S3 records",async()=>{
     const asset={id:A,kind:"VIDEO",status:"ACTIVE",sourceShotRevisionId:S,checksumSha256:"b".repeat(64),durationMs:5000,storageProvider:"s3"};
-    const fetch=vi.fn(async()=>json({items:[asset,{storageProvider:"mock-object-store"}],nextCursor:null}));const api=createRealMediaClient(new StudioClient(fetch));expect(await api.assets(S)).toEqual({items:[asset],nextCursor:null});
+    const fetch=vi.fn<(url:string,init?:RequestInit)=>Promise<Response>>(async()=>json({items:[asset,{storageProvider:"mock-object-store"}],nextCursor:null}));const api=createRealMediaClient(new StudioClient(fetch));expect(await api.assets(S)).toEqual({items:[asset],nextCursor:null});
     fetch.mockResolvedValueOnce(json({items:[{...asset,sourceShotRevisionId:OTHER}],nextCursor:null}));await expect(api.assets(S)).rejects.toMatchObject({code:"INVALID_RESPONSE"});
     fetch.mockResolvedValueOnce(json({items:[{...asset,durationMs:0}],nextCursor:null}));await expect(api.assets(S)).rejects.toMatchObject({code:"INVALID_RESPONSE"});
   });
   it("rejects malformed successful receipts and never retries a failed generation request",async()=>{
-    const fetch=vi.fn(async()=>json({jobId:J},202)),api=createRealMediaClient(new StudioClient(fetch));await expect(api.generate(P,S,Q,A,K)).rejects.toMatchObject({code:"INVALID_RESPONSE"});expect(fetch).toHaveBeenCalledTimes(1);
+    const fetch=vi.fn<(url:string,init?:RequestInit)=>Promise<Response>>(async()=>json({jobId:J},202)),api=createRealMediaClient(new StudioClient(fetch));await expect(api.generate(P,S,Q,A,K)).rejects.toMatchObject({code:"INVALID_RESPONSE"});expect(fetch).toHaveBeenCalledTimes(1);
     fetch.mockResolvedValueOnce(json({error:{code:"UNAVAILABLE",message:"Unknown delivery"}},503));await expect(api.generate(P,S,Q,A,K)).rejects.toMatchObject({status:503});expect(fetch).toHaveBeenCalledTimes(2);
   });
+  it("rejects an authorization receipt belonging to another quote",async()=>{
+    const fetch=vi.fn<(url:string,init?:RequestInit)=>Promise<Response>>(async()=>json({quoteId:OTHER,budgetAuthorizationId:A}));const api=createRealMediaClient(new StudioClient(fetch));
+    await expect(api.authorize(P,quote(),"0.75",K)).rejects.toMatchObject({code:"INVALID_RESPONSE"});expect(fetch).toHaveBeenCalledOnce();
+  });
   it("validates job scope and recognized capabilities without any mutation",async()=>{
-    const fetch=vi.fn(async()=>json({id:OTHER,state:"SUCCEEDED"})),api=createRealMediaClient(new StudioClient(fetch));await expect(api.job(J)).rejects.toMatchObject({code:"INVALID_RESPONSE"});
+    const fetch=vi.fn<(url:string,init?:RequestInit)=>Promise<Response>>(async()=>json({id:OTHER,state:"SUCCEEDED"})),api=createRealMediaClient(new StudioClient(fetch));await expect(api.job(J)).rejects.toMatchObject({code:"INVALID_RESPONSE"});
     fetch.mockResolvedValueOnce(json({available:false,reasonCode:"REAL_MEDIA_NOT_READY",capabilities:[]}));expect((await api.capabilities(P)).available).toBe(false);
     fetch.mockResolvedValueOnce(json({available:true,capabilities:["not-a-capability"]}));await expect(api.capabilities(P)).rejects.toMatchObject({code:"INVALID_RESPONSE"});expect(fetch.mock.calls.every(c=>c[1]?.method==="GET")).toBe(true);
   });
@@ -43,8 +47,8 @@ describe("real media client validates real API receipts and keeps request identi
     sessionStorage.setItem(realMediaPendingKey(P,S),JSON.stringify({...original,shotRevisionId:OTHER}));expect(()=>readRealMediaPending(P,S)).toThrow();
   });
   it("sends the measured compose guard with its original idempotency key",async()=>{
-    const fetch=vi.fn(async()=>json({jobId:J,workflowRunId:W,dispatchSeq:1},202));const api=createRealMediaClient(new StudioClient(fetch));
-    const preflight={inputHash:"c".repeat(64),manifest:{planRevisionId:Q,videoAssetId:A,mix:{musicAssetId:OTHER,originalAudio:"mute",musicGain:0.25,ducking:true}}} as SpeechMixPreflight;
+    const fetch=vi.fn<(url:string,init?:RequestInit)=>Promise<Response>>(async()=>json({jobId:J,workflowRunId:W,dispatchSeq:1},202));const api=createRealMediaClient(new StudioClient(fetch));
+    const preflight:SpeechMixPreflight={inputHash:"c".repeat(64),manifest:{schema:"voice.shot.mix.v1",workspaceId:P,projectId:P,shotRevisionId:S,planRevisionId:Q,planHash:"d".repeat(64),selectionHash:"e".repeat(64),videoAssetId:A,videoChecksumSha256:"b".repeat(64),videoDurationMs:5000,totalSpeechMs:1000,lines:[],subtitles:{format:"vtt",alignmentVersion:"sentence-duration-v1",checksumSha256:"f".repeat(64),cues:[]},mix:{audioOverflow:"reject",audioUnderflow:"pad-silence",sampleRate:48000,channels:2,musicAssetId:OTHER,musicChecksumSha256:"a".repeat(64),originalAudio:"mute",musicGain:0.25,ducking:true}},subtitleVtt:"WEBVTT\n\n",guards:{planRowVersion:1,assets:[]}};
     await api.compose(S,preflight,K);const [url,init]=fetch.mock.calls[0]!;expect(url).toContain(`/shot-revisions/${S}/voice-compose`);expect(new Headers(init?.headers).get("Idempotency-Key")).toBe(K);expect(JSON.parse(String(init?.body))).toEqual({planRevisionId:Q,videoAssetId:A,musicAssetId:OTHER,originalAudio:"mute",musicGain:0.25,ducking:true,expectedInputHash:preflight.inputHash});
   });
 });
