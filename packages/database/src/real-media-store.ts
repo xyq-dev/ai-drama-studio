@@ -239,7 +239,7 @@ export class RealMediaStore {
     return this.connection(async client=>{const result=await client.query(EXECUTION_SQL+" AND j.workspace_id=$1 AND j.id=$2",[workspaceId,jobId]);return result.rows[0]?this.execution(result.rows[0]):null;});
   }
   async listRecoverable(limit=25):Promise<RealMediaExecution[]>{
-    return this.connection(async client=>{const result=await client.query(EXECUTION_SQL.replace("s.outputs_ciphertext","NULL::text AS outputs_ciphertext")+` AND ((j.state='RUNNING' AND j.lease_until<=clock_timestamp()) OR
+    return this.connection(async client=>{const result=await client.query(EXECUTION_SQL.replace("s.outputs_ciphertext","NULL::text AS outputs_ciphertext")+` AND ((j.state='RUNNING' AND (j.lease_until IS NULL OR j.lease_until<=clock_timestamp())) OR
       (j.state='WAITING_EXTERNAL' AND (j.next_run_at IS NULL OR j.next_run_at<=now()) AND (j.lease_until IS NULL OR j.lease_until<=clock_timestamp())
         AND (s.provider_request_id IS NOT NULL OR s.state='REJECTED' OR j.cancel_requested_at IS NOT NULL)))
       ORDER BY j.updated_at LIMIT $1`,[Math.max(1,Math.min(limit,100))]);return result.rows.map(execution);});

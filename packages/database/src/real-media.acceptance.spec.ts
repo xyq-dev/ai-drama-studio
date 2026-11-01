@@ -65,6 +65,28 @@ async function complete(value:Awaited<ReturnType<typeof bound>>,execution:RealMe
     metadata:{schema:"real-media.asset.v1",actualCost:"unknown"},afterPersist:async(client)=>{await store.finishInTransaction(client,value.attemptId,"SUCCEEDED");if(rollback)throw new Error("simulated post-upload metadata failure");}});
 }
 describe("real media draft acceptance against an explicitly named empty PostgreSQL database",()=>{
+  it("rediscovers unleased RUNNING jobs after an expired preparation failure and settles cancellation without sending",async()=>{
+    for(const cancel of [false,true]){
+      const value=await bound(), e=value.execution;
+      await pool.query("UPDATE generation_job SET lease_until=clock_timestamp()-interval '1 second' WHERE id=$1",[e.jobId]);
+      await expect(jobs.failJob({workspaceId:value.workspaceId,jobId:e.jobId,attemptId:value.attemptId,traceId:"expired-preparation",
+        errorCode:"REAL_MEDIA_NOT_SENT",errorMessage:"Local preparation ended after the lease",retryable:false,
+        beforeFailure:client=>store.assertDeliveryLeaseInTransaction(client,e,"acceptance-owner")})).rejects.toMatchObject({code:"REAL_MEDIA_LEASE_LOST"});
+      await store.releaseDeliveryLease(e,"acceptance-owner");
+      if(cancel)expect(await jobs.cancelJob({workspaceId:value.workspaceId,jobId:e.jobId,traceId:"cancel-unleased"})).toBe("RUNNING");
+      const listed=(await store.listRecoverable(100)).find(row=>row.jobId===e.jobId);
+      expect(listed).toMatchObject({state:"RUNNING",receiptState:null,cancelRequested:cancel});
+      expect(await store.claimRecovery(listed!,"unleased-recovery-owner")).toBe(true);
+      if(cancel)await jobs.confirmCancellation({workspaceId:value.workspaceId,jobId:e.jobId,attemptId:value.attemptId,traceId:"settle-unleased-cancel"});
+      else expect(await jobs.failJob({workspaceId:value.workspaceId,jobId:e.jobId,attemptId:value.attemptId,traceId:"settle-unleased",
+        errorCode:"REAL_MEDIA_NOT_SENT",errorMessage:"Proven unsent task requires a new quote",retryable:false,
+        beforeFailure:client=>store.assertDeliveryLeaseInTransaction(client,e,"unleased-recovery-owner")})).toBe("failed");
+      expect((await store.loadExecution(value.workspaceId,e.jobId))?.state).toBe(cancel?"CANCELED":"FAILED");
+      expect((await store.listRecoverable(100)).some(row=>row.jobId===e.jobId)).toBe(false);
+      expect((await pool.query("SELECT count(*)::int AS n FROM real_media_submission WHERE generation_job_id=$1",[e.jobId])).rows[0]!.n).toBe(0);
+      expect((await pool.query("SELECT count(*)::int AS n FROM asset WHERE source_generation_job_id=$1",[e.jobId])).rows[0]!.n).toBe(0);
+    }
+  });
   it("consumes a quote once and permanently replays the same job under concurrent request keys",async()=>{
     const value=await bound();expect((await value.create()).replayed).toBe(true);
     await expect(store.transaction(client=>store.consumeAuthorization(client,{...value,actorId:"test",...value.auth}))).rejects.toMatchObject({code:"REAL_MEDIA_AUTHORIZATION_INVALID"});
