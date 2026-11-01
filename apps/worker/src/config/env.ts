@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { mediaSiteAuthenticationConfigured } from "@ai-drama/contracts";
 import { loadRealMediaEnvironment, RealMediaEnvironmentError, type RealMediaEnvironment, type MediaS3Configuration } from "@ai-drama/providers";
 
 const workerEnvSchema = z.object({
@@ -35,6 +36,7 @@ export class EnvValidationError extends Error {
 }
 
 export interface WorkerEnv {
+  REAL_MEDIA_SITE_AUTH_CONFIGURED:boolean;
   REAL_MEDIA_ENV?: RealMediaEnvironment;
   REAL_MEDIA_WORKSPACE_ID?: string;
   REAL_MEDIA_S3?: MediaS3Configuration;
@@ -137,6 +139,7 @@ export function loadWorkerEnv(
   }
   return {
     ...parsed.data,
+    REAL_MEDIA_SITE_AUTH_CONFIGURED:mediaSiteAuthenticationConfigured(processEnv,parsed.data.NODE_ENV),
     M3_MOCK_IMAGE_ENABLED: parsed.data.M3_MOCK_IMAGE_ENABLED === "true",
     M3_MOCK_AV_ENABLED: parsed.data.M3_MOCK_AV_ENABLED === "true",
     M4_MOCK_SAMPLE_VIDEO_ENABLED: parsed.data.M4_MOCK_SAMPLE_VIDEO_ENABLED === "true",

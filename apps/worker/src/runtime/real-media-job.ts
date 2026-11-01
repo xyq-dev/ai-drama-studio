@@ -123,8 +123,7 @@ async function persistOutput(e:RealMediaExecution,output:MediaProviderOutput,ada
 async function failKnown(e:RealMediaExecution,d:RealMediaWorkerDependencies,errorCode:string,leaseOwner:string){
   await d.jobs.failJob({workspaceId:e.workspaceId,jobId:e.jobId,attemptId:e.attemptId!,traceId:`real-media:failed:${e.jobId}`,
     errorCode:/^[A-Za-z0-9_.:-]{1,80}$/.test(errorCode)?errorCode:"REAL_MEDIA_PROVIDER_FAILED",errorMessage:"Provider request did not complete",retryable:false,
-    beforeFailure:client=>d.store.assertDeliveryLeaseInTransaction(client,e,leaseOwner)});
-  if(e.providerRequestId)await d.store.transaction(client=>d.store.finishInTransaction(client,e.attemptId!,"FAILED"));
+    beforeFailure:async client=>{await d.store.assertDeliveryLeaseInTransaction(client,e,leaseOwner);if(e.providerRequestId)await d.store.finishInTransaction(client,e.attemptId!,"FAILED");}});
 }
 export class RealMediaRecovery {
   constructor(private readonly dependencies:RealMediaWorkerDependencies){}
@@ -139,13 +138,16 @@ export class RealMediaRecovery {
     const owner=`real-media-recovery:${process.pid}:${randomUUID()}`;
     if(!await d.store.claimRecovery(e,owner,d.leaseMs))return;
     const heartbeat=createMediaHeartbeat(()=>d.store.renewDeliveryLease(e,owner,d.leaseMs),d.heartbeatIntervalMs);
-    try{await this.recoverClaimed(e,owner);}finally{await heartbeat.stop();await d.store.releaseDeliveryLease(e,owner);}
+    try{
+      const current=await d.store.loadExecution(e.workspaceId,e.jobId);
+      if(current&&current.attemptId===e.attemptId&&["RUNNING","WAITING_EXTERNAL"].includes(current.state))await this.recoverClaimed(current,owner);
+    }finally{await heartbeat.stop();await d.store.releaseDeliveryLease(e,owner);}
   }
   private async recoverClaimed(e:RealMediaExecution,leaseOwner:string):Promise<void>{
     const d=this.dependencies;
     if(!e.attemptId)return;
     if(e.cancelRequested){await d.jobs.confirmCancellation({workspaceId:e.workspaceId,jobId:e.jobId,attemptId:e.attemptId,traceId:`real-media:cancel:${e.jobId}`});return;}
-    if(!e.receiptState){await d.jobs.failJob({workspaceId:e.workspaceId,jobId:e.jobId,attemptId:e.attemptId,traceId:`real-media:unsent:${e.jobId}`,errorCode:"REAL_MEDIA_NOT_SENT",errorMessage:"Worker stopped before submitting; a new quote is required",retryable:false});return;}
+    if(!e.receiptState){await d.jobs.failJob({workspaceId:e.workspaceId,jobId:e.jobId,attemptId:e.attemptId,traceId:`real-media:unsent:${e.jobId}`,errorCode:"REAL_MEDIA_NOT_SENT",errorMessage:"Worker stopped before submitting; a new quote is required",retryable:false,beforeFailure:client=>d.store.assertDeliveryLeaseInTransaction(client,e,leaseOwner)});return;}
     if(e.receiptState==="REJECTED"){await failKnown(e,d,"REAL_MEDIA_PROVIDER_REJECTED",leaseOwner);return;}
     if(!e.providerRequestId){await d.store.markUnknown(e.workspaceId,e.jobId,e.attemptId,leaseOwner);return;}
     const adapter=await d.adapterFor(e.inputSnapshot.configuration,"query");

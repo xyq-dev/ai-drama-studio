@@ -29,7 +29,10 @@
     "workspace:provision": "tsx src/provision-workspace-cli.ts",
     "mock-media:provision": "tsx src/provision-mock-media-cli.ts",
     "mock-av:provision": "tsx src/provision-mock-av-cli.ts",
-    "mock-sm:provision": "tsx src/provision-mock-sm-cli.ts"
+    "mock-sm:provision": "tsx src/provision-mock-sm-cli.ts",
+    "speech:acceptance": "vitest run --config vitest.speech-acceptance.config.ts",
+    "real-media:acceptance": "vitest run --config vitest.real-media-acceptance.config.ts",
+    "vimax-planning:acceptance": "vitest run --config vitest.vimax-planning-acceptance.config.ts"
   },
   "dependencies": {
     "@ai-drama/contracts": "workspace:*",

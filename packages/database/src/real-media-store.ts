@@ -133,7 +133,7 @@ export class RealMediaStore {
         JOIN real_media_authorization auth ON auth.job_id=j.id AND auth.authorization_id=$4
         WHERE j.id=$1 AND j.workspace_id=$2 AND a.id=$3 AND j.state='RUNNING' AND j.cancel_requested_at IS NULL
           AND a.provider_configuration_id=$5 AND pc.enabled AND pc.provider_key=$6 AND pc.capability=$7
-          AND j.input_hash=$8 AND auth.expires_at>now() AND j.lease_owner=$9 AND j.lease_until>now()
+          AND j.input_hash=$8 AND auth.expires_at>clock_timestamp() AND j.lease_owner=$9 AND j.lease_until>clock_timestamp()
           AND a.id=(SELECT id FROM job_attempt WHERE generation_job_id=j.id ORDER BY attempt_no DESC LIMIT 1)
           FOR UPDATE OF j,a,auth`,
         [e.jobId,e.workspaceId,input.attemptId,e.inputSnapshot.budget.authorizationId,e.inputSnapshot.configuration.id,
@@ -181,19 +181,19 @@ export class RealMediaStore {
   }
   async claimRecovery(e:RealMediaExecution,leaseOwner:string,leaseMs=120_000):Promise<boolean>{
     return this.connection(async client=>{
-      const result=await client.query(`UPDATE generation_job j SET lease_owner=$4,lease_until=now()+($5::int*interval '1 millisecond'),
+      const result=await client.query(`UPDATE generation_job j SET lease_owner=$4,lease_until=clock_timestamp()+($5::int*interval '1 millisecond'),
         row_version=row_version+1,updated_at=now() WHERE j.id=$1 AND j.workspace_id=$2 AND j.state IN ('RUNNING','WAITING_EXTERNAL')
         AND j.input_snapshot->>'schema'='real-media.v1' AND j.input_hash=$6
-        AND (j.lease_until IS NULL OR j.lease_until<=now()) AND EXISTS(SELECT 1 FROM job_attempt a WHERE a.id=$3 AND a.generation_job_id=j.id
+        AND (j.lease_until IS NULL OR j.lease_until<=clock_timestamp()) AND EXISTS(SELECT 1 FROM job_attempt a WHERE a.id=$3 AND a.generation_job_id=j.id
           AND a.attempt_no=(SELECT max(n.attempt_no) FROM job_attempt n WHERE n.generation_job_id=j.id)) RETURNING j.id`,
       [e.jobId,e.workspaceId,e.attemptId,leaseOwner,leaseMs,e.inputHash]);return result.rowCount===1;
     });
   }
   async renewDeliveryLease(e:RealMediaExecution,leaseOwner:string,leaseMs=120_000):Promise<boolean>{
-    return this.connection(async client=>{const result=await client.query(`UPDATE generation_job j SET lease_until=now()+($5::int*interval '1 millisecond'),
+    return this.connection(async client=>{const result=await client.query(`UPDATE generation_job j SET lease_until=clock_timestamp()+($5::int*interval '1 millisecond'),
       row_version=row_version+1,updated_at=now() WHERE j.id=$1 AND j.workspace_id=$2 AND j.state IN ('RUNNING','WAITING_EXTERNAL')
       AND j.input_snapshot->>'schema'='real-media.v1' AND j.input_hash=$6
-      AND j.lease_owner=$4 AND j.lease_until>now() AND j.cancel_requested_at IS NULL
+      AND j.lease_owner=$4 AND j.lease_until>clock_timestamp() AND j.cancel_requested_at IS NULL
       AND EXISTS(SELECT 1 FROM job_attempt a WHERE a.id=$3 AND a.generation_job_id=j.id AND a.finished_at IS NULL
         AND a.attempt_no=(SELECT max(n.attempt_no) FROM job_attempt n WHERE n.generation_job_id=j.id))`,
       [e.jobId,e.workspaceId,e.attemptId,leaseOwner,leaseMs,e.inputHash]);return result.rowCount===1;});
@@ -220,10 +220,10 @@ export class RealMediaStore {
     return this.connection(async client=>{const result=await client.query(EXECUTION_SQL+" AND j.workspace_id=$1 AND j.id=$2",[workspaceId,jobId]);return result.rows[0]?this.execution(result.rows[0]):null;});
   }
   async listRecoverable(limit=25):Promise<RealMediaExecution[]>{
-    return this.connection(async client=>{const result=await client.query(EXECUTION_SQL+` AND ((j.state='RUNNING' AND j.lease_until<=now()) OR
-      (j.state='WAITING_EXTERNAL' AND (j.next_run_at IS NULL OR j.next_run_at<=now()) AND (j.lease_until IS NULL OR j.lease_until<=now())
+    return this.connection(async client=>{const result=await client.query(EXECUTION_SQL.replace("s.outputs_ciphertext","NULL::text AS outputs_ciphertext")+` AND ((j.state='RUNNING' AND j.lease_until<=clock_timestamp()) OR
+      (j.state='WAITING_EXTERNAL' AND (j.next_run_at IS NULL OR j.next_run_at<=now()) AND (j.lease_until IS NULL OR j.lease_until<=clock_timestamp())
         AND (s.provider_request_id IS NOT NULL OR s.state='REJECTED' OR j.cancel_requested_at IS NOT NULL)))
-      ORDER BY j.updated_at LIMIT $1`,[Math.max(1,Math.min(limit,100))]);return result.rows.map(row=>this.execution(row));});
+      ORDER BY j.updated_at LIMIT $1`,[Math.max(1,Math.min(limit,100))]);return result.rows.map(execution);});
   }
   private sealOutputs(outputs: RealMediaReceiptOutput[]): string {
     if (!this.options.receiptCipher) throw new PersistenceError("REAL_MEDIA_RECEIPT_KEY_MISSING", "Private receipt storage is not configured");

@@ -11,9 +11,10 @@ function execution():RealMediaExecution{
   result.inputHash=realMediaInputHash(result.inputSnapshot);return result;
 }
 function deps(){
+  let claimed:RealMediaExecution|null=null;
   const submit=vi.fn(async():Promise<MediaSubmitResult>=>{throw new Error("secret raw provider failure must not escape");});const inspect=vi.fn(async()=>({state:"ACTIVE",normalizedEventKey:"poll"}));
   const values={jobs:{acquireQueuedJob:vi.fn(async()=>({attemptId:"attempt",attemptNo:1})),renewRunningLease:vi.fn(async()=>true),failJob:vi.fn(),recordProviderEvent:vi.fn()},assets:{assertUsableShot:vi.fn()},
-    store:{receiptReady:()=>true,configurationStillEnabled:async()=>true,beginSubmission:vi.fn(async()=>true),markUnknown:vi.fn(),rejectSubmission:vi.fn(),defer:vi.fn(),acknowledge:vi.fn(),claimRecovery:vi.fn(async()=>true),renewDeliveryLease:vi.fn(async()=>true),releaseDeliveryLease:vi.fn(),assertDeliveryLeaseInTransaction:vi.fn()},
+    store:{receiptReady:()=>true,configurationStillEnabled:async()=>true,beginSubmission:vi.fn(async()=>true),markUnknown:vi.fn(),rejectSubmission:vi.fn(),defer:vi.fn(),acknowledge:vi.fn(),claimRecovery:vi.fn(async(e:RealMediaExecution)=>{claimed=e;return true;}),loadExecution:vi.fn(async()=>claimed),renewDeliveryLease:vi.fn(async()=>true),releaseDeliveryLease:vi.fn(),assertDeliveryLeaseInTransaction:vi.fn()},
     adapterFor:vi.fn(async()=>({submit,inspect})),objects:{},materialize:vi.fn(),preflightLocal:vi.fn(async()=>undefined)};
   return {values,submit,inspect,dependencies:values as unknown as RealMediaWorkerDependencies};
 }
@@ -42,6 +43,7 @@ describe("real media receipt recovery",()=>{
   });
   it("allows only one recovery claimant to query or materialize an attempt",async()=>{
     const d=deps();d.values.store.claimRecovery.mockResolvedValueOnce(true).mockResolvedValueOnce(false);const e=execution();e.inputSnapshot.capability="video.generate";
+    d.values.store.loadExecution.mockResolvedValueOnce({...e,state:"WAITING_EXTERNAL",attemptId:"attempt",receiptState:"ACKNOWLEDGED",providerRequestId:"task"});
     const recovery=new RealMediaRecovery(d.dependencies);
     await Promise.all([recovery.recover({...e,attemptId:"attempt",receiptState:"ACKNOWLEDGED",providerRequestId:"task"}),recovery.recover({...e,attemptId:"attempt",receiptState:"ACKNOWLEDGED",providerRequestId:"task"})]);
     expect(d.inspect).toHaveBeenCalledOnce();expect(d.values.store.releaseDeliveryLease).toHaveBeenCalledOnce();

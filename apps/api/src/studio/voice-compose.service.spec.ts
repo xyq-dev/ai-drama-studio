@@ -30,7 +30,7 @@ describe("voice composition submits to the existing job chain", () => {
     expect(createAndQueueWorkflowJob.mock.calls[0]?.[0]).toMatchObject({ workspaceId, actorId: "owner", httpMethod: "POST",
       routeKey: `/shot-revisions/${shotRevisionId}/voice-compose`, key: context.idempotencyKey });
     expect(result.body).toMatchObject({ frozen: { workspaceId, projectId, sourceShotRevisionId: shotRevisionId,
-      type: VOICE_COMPOSE_JOB_SCHEMA, kind: "MEDIA_COMPOSE", inputHash: "b".repeat(64), inputSnapshot: { schema: VOICE_COMPOSE_JOB_SCHEMA } } });
+      type: "MEDIA_COMPOSE", kind: "MEDIA_COMPOSE", inputHash: "b".repeat(64), inputSnapshot: { schema: VOICE_COMPOSE_JOB_SCHEMA } } });
   });
   it("fails closed when disabled, unavailable or given client paths, settings or a missing command key", async () => {
     const closed = setup(false);

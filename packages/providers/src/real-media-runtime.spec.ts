@@ -75,3 +75,34 @@ describe("real media configuration and encrypted receipts", () => {
     expect(() => current.open(sealed.slice(0, -4))).toThrow("REAL_MEDIA_RECEIPT_UNAVAILABLE");
   });
 });
+
+describe("real media runtime read-only recovery and exact money configuration",()=>{
+  it("gives query recovery no submit capability even when the original frozen configuration was enabled",async()=>{
+    const sent:Array<{method:string;headers:Record<string,string>}>=[];
+    const transport:import("./real-media-adapters").RealMediaHttpTransport=async request=>{sent.push(request);return {status:200,headers:{},bytes:Buffer.from(JSON.stringify({output:{task_id:"known-task",task_status:"PENDING"}}))};};
+    const original=new ServerRealMediaRuntime(workspaceId,loadRealMediaEnvironment(configured),true),frozen=(await original.configurationFor("image.generate"))!;
+    const rotated=new ServerRealMediaRuntime(workspaceId,loadRealMediaEnvironment({...configured,REAL_MEDIA_ENABLED:"false",DASHSCOPE_MEDIA_API_KEY:"new-server-test-key",DASHSCOPE_MEDIA_CREDENTIAL_VERSION:"v2",DASHSCOPE_MEDIA_PREVIOUS_API_KEY:configured.DASHSCOPE_MEDIA_API_KEY,DASHSCOPE_MEDIA_PREVIOUS_CREDENTIAL_VERSION:"v1"}),false,transport);
+    const adapter=await rotated.adapterFor(frozen,"query");
+    await expect(adapter.submit({} as never)).rejects.toThrow("MEDIA_SUBMIT_DISABLED");expect(sent).toEqual([]);
+    expect((await adapter.inspect("known-task")).state).toBe("ACTIVE");expect(sent).toHaveLength(1);expect(sent[0]!.method).toBe("GET");expect(sent[0]!.headers.Authorization).toBe("Bearer "+configured.DASHSCOPE_MEDIA_API_KEY);
+    await expect(rotated.adapterFor(frozen,"submit")).rejects.toThrow("REAL_MEDIA_CONFIGURATION_CHANGED");
+    await expect(rotated.adapterFor({...frozen,queryAllowed:false},"query")).rejects.toThrow("REAL_MEDIA_QUERY_DISABLED");expect(sent).toHaveLength(1);
+  });
+  it.each(["", " ", "-1", "1e-3", "NaN", "0", "0.000000001", "100000000"])("rejects invalid maximum operation amount %s by field name",value=>{
+    expect(()=>loadRealMediaEnvironment({...configured,REAL_MEDIA_MAX_SINGLE_CNY:value})).toThrow("REAL_MEDIA_MAX_SINGLE_CNY");
+  });
+  it("keeps the smallest supported decimal exactly and rejects blank version namespaces",async()=>{
+    const runtime=new ServerRealMediaRuntime(workspaceId,loadRealMediaEnvironment({...configured,DASHSCOPE_MEDIA_PRICE_IMAGE:"0.00000001",REAL_MEDIA_MAX_SINGLE_CNY:"0.00000002"}),true);
+    expect(await runtime.configurationFor("image.generate")).toMatchObject({unitPrice:"0.00000001",maximumOperationAmount:"0.00000002"});
+    for(const name of ["REAL_MEDIA_RECEIPT_KEY_VERSION","DASHSCOPE_MEDIA_CREDENTIAL_VERSION","REAL_MEDIA_PRICE_VERSION"])expect(()=>loadRealMediaEnvironment({...configured,[name]:""})).toThrow(name);
+  });
+  it("rejects ambiguous old/current credential and receipt key versions",()=>{
+    expect(()=>new ServerRealMediaRuntime(workspaceId,loadRealMediaEnvironment({...configured,DASHSCOPE_MEDIA_PREVIOUS_API_KEY:"old-test-key",DASHSCOPE_MEDIA_PREVIOUS_CREDENTIAL_VERSION:"v1"}),true)).toThrow("DASHSCOPE_MEDIA_PREVIOUS_CREDENTIAL_VERSION");
+    expect(()=>createRealMediaReceiptCipher({REAL_MEDIA_RECEIPT_KEY:key,REAL_MEDIA_PREVIOUS_RECEIPT_KEY:previous,REAL_MEDIA_PREVIOUS_RECEIPT_KEY_VERSION:"v1"})).toThrow("REAL_MEDIA_PREVIOUS_RECEIPT_KEY_VERSION");
+  });
+  it("does not enable production permission or inject keys from an environment file",()=>{
+    const env=loadRealMediaEnvironment({...configured,REAL_MEDIA_ALLOW_PRODUCTION:"false"},{REAL_MEDIA_ALLOW_PRODUCTION:"true",REAL_MEDIA_RECEIPT_KEY:previous,DASHSCOPE_MEDIA_API_KEY:"file-only-secret"});
+    expect(env.REAL_MEDIA_ALLOW_PRODUCTION).toBe("false");expect(env.REAL_MEDIA_RECEIPT_KEY).toBe(key);expect(env.DASHSCOPE_MEDIA_API_KEY).toBe(configured.DASHSCOPE_MEDIA_API_KEY);
+    expect(loadRealMediaEnvironment({}, {REAL_MEDIA_ALLOW_PRODUCTION:"true"}).REAL_MEDIA_ALLOW_PRODUCTION).toBeUndefined();
+  });
+});

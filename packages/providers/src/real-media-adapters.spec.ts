@@ -162,3 +162,14 @@ describe("real media adapter protocol (no network)", () => {
     expect(JSON.stringify(me)).not.toContain(key);
   });
 });
+
+describe("bound media profiles",()=>{
+  it("retains a frozen silent-video duration after its caller edits the source configuration",async()=>{
+    const c=config("video.generate"),request=input(c),bytes=Buffer.from("validated-image"),checksum=createHash("sha256").update(bytes).digest("hex");
+    (request.inputSnapshot as RealMediaSnapshot).sourceImage={assetId:"00000000-0000-4000-8000-000000000009",checksumSha256:checksum};request.resolvedSourceImage={bytes,mimeType:"image/png",checksumSha256:checksum};
+    const transport=vi.fn<RealMediaHttpTransport>().mockResolvedValue(response({output:{task_id:"bounded-video"}}));
+    const adapter=new DashScopeMediaAdapter(c,key,transport);c.parameters.duration=15;
+    await adapter.submit(request);expect(JSON.parse(transport.mock.calls[0]![0].body!).parameters.duration).toBe(5);
+    expect(()=>{adapter.configuration.enabled=false;}).toThrow();expect(()=>{adapter.configuration.parameters.duration=90;}).toThrow();
+  });
+});

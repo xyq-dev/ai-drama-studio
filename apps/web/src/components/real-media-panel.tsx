@@ -77,7 +77,7 @@ function MediaScope(props: Props) {
         const caps = await api.capabilities(props.projectId, controller.signal);
         if (!mounted.current || sequence !== generation.current) return;
         setCapabilities(caps);
-        if (!caps.available) return;
+        if (!caps.available && !caps.readAvailable) return;
         setCapability(previous => caps.capabilities.includes(previous) && previous !== "audio.tts" ? previous
           : caps.capabilities.find(c => c !== "audio.tts") ?? "image.generate");
         const [page, cast] = await Promise.all([api.assets(props.shotRevisionId, undefined, controller.signal), api.characters(props.projectId, controller.signal)]);
@@ -184,7 +184,7 @@ function MediaScope(props: Props) {
     {open ? <div className={styles.body}>
       <p>先生成首帧，再生成无声视频；角色配音与字幕逐句核对。每次生成单独确认费用，成功素材保留历史版本。</p>
       {storageError ? <p role="alert" className={styles.error}>{storageError}</p> : null}
-      {capabilities && !capabilities.available ? <p role="status">媒体服务尚未配置完整，当前不会提交模型调用。请先完成服务端配置与数据库启用。</p> : null}
+      {capabilities && !capabilities.available ? <p role="status">媒体服务尚未配置完整，当前不会提交模型调用。请先完成服务端配置与数据库启用。{capabilities.readAvailable ? "已有素材仍可查看并本地合成。" : ""}</p> : null}
       {pending ? <div className={styles.warning}>
         <p>原{LABEL[pending.quote.capability]}请求尚未确认，请先用原请求查回任务。</p>
         <button type="button" disabled={busy || Boolean(storageError)} onClick={() => void submit()}>继续确认原媒体请求</button>
@@ -201,9 +201,9 @@ function MediaScope(props: Props) {
           catch (e) { setStorageError(detail(e)); }
         }}>结束这个已拒绝合成请求</button> : null}
       </div> : null}
-      {capabilities?.available ? <>
+      {capabilities?.available || capabilities?.readAvailable ? <>
         {!props.usable ? <p role="status">{props.reason || "请先批准当前镜头及其来源，再开始生成。"}</p> : null}
-        {capabilities.capabilities.some(c => c !== "audio.tts") ? <>
+        {capabilities.available && capabilities.capabilities.some(c => c !== "audio.tts") ? <>
         <div className={styles.fields}>
           <label>本次制作
             <select value={capability} disabled={Boolean(pending) || busy} onChange={e => { setCapability(e.target.value as RealMediaCapability); setQuote(null); setConfirmed(false); }}>

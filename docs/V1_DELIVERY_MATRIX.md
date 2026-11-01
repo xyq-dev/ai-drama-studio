@@ -1,6 +1,23 @@
 # V1 交付台账
 
-> 2026-10-07 新增角色配音设计入口：[`CHARACTER_VOICE_DESIGN.md`](CHARACTER_VOICE_DESIGN.md)、[开源调查](VOICE_OPEN_SOURCE_RESEARCH.md)、[离线交互原型](design/character-voice-preview.html)。此项只有设计；真实人声、角色声音持久化、费用恢复和新声音合成 profile 尚未实现/验收。不要将以下既有 Mock AUDIO 的成功视为真实配音通过。新增数据库方案和付费调用另行授权。
+> 当前状态更新：2026-11-01，基线 `main@0291795029149abcedf7c41bef14c09392ef11bd`。本轮真实媒体、逐句声音与新合成 profile、ViMax 规划治理代码已实现并接线，默认关闭。**付费真实模型 0、业务 SQL 0、部署 0。** 运行说明见 [`REAL_MEDIA_RUNBOOK.md`](REAL_MEDIA_RUNBOOK.md)。下表是最新实现矩阵；后文保留各次交付的历史事实，其「未实现」不得覆盖本表，也不能把历史 CI 当作本轮 CI。
+
+## 2026-11-01 当前补齐矩阵
+
+| 功能 | 当前代码 | 默认与依赖 | 验证/尚缺 |
+| --- | --- | --- | --- |
+| 百炼图片/视频/TTS、ElevenLabs 音乐 | 已实现固定模型/地域 Adapter、报价/单次授权、一次提交、私有收据、受控下载、S3 与既有 Job/Attempt/Asset | `REAL_MEDIA_ENABLED=false`；需独立 provision、媒体 drafts、服务端 key/价格及站点登录 | 离线协议/恢复/存储测试；真实模型、账号资格/现价/许可、账单核对未验收 |
+| 提交未知与恢复 | INTENT 在 POST 前持久化；有 ID 只查原任务；无码 UNKNOWN 不重发；新同源操作需明确确认未知风险 | 密文收据 current/previous key、冻结凭据版本、租约 fencing | 故障注入与专用空库 suite 已编写；不能凭 usage 写 ACTUAL 0 |
+| 角色声音/逐句制作 | 声音版本、精确对白计划、逐句报价/生成/试听/选用、候选继承和 typed STALE 依赖已实现 | 独立 character-voice draft；AUDIO 仍 DRAFT；目录仅开放实际支持参数 | 协议/领域/页面测试；双角色真实中文 4–8 句质量验收待授权 |
+| 多句声音合成/审核/导出 | 新 `local-ffmpeg-voice-v1`：实测 WAV 时间线/VTT、超时拒绝、ducking、可确认环境声、原有审核和整集 MP4/逐句来源 | 原合成开关默认 false；S3、绝对目录、FFmpeg、Noto Sans CJK SC | synthetic 音频/MP4 实测不等于 AI 人声；中文字幕只在真实字体可用时验收，缺字/字体拒绝 |
+| ViMax 单场景规划 | 一次文本确认、共享日额/并发、永久身份、租约与 UNKNOWN、页面请求/恢复、原 E2-B 两段式保存已接线 | `VIMAX_PLANNING_ENABLED=false`；标题创作/登录/模型、planning 与 candidate drafts | 替身及专用空库 suite；真实单场景叙事/分镜质量与业务库启用未验收 |
+| 1–60 集自动编剧 | 独立系列规划、每 3 集批次、台账、审阅/人工复核、正式分集与文本交付包已有实现 | `SERIES_WRITING_ENABLED=false`，原系列迁移/写作门 | 核心文本阶段未见待实现占位；真实 60 集质量与篇幅稳定性未验收；系列媒体保持禁止 |
+| 声音 V1-D 批量补齐 | 预算内整集补齐、批量身份/取消/恢复正在本轮补齐 | 最终入口与准入以 batch 实现为准 | 未取得最终实现/当前提交 CI 前保持「实现中」，不预记通过 |
+| 明确未交付 | ComfyUI/GPU 实际推理、声音克隆/口型/重叠对白、平台发布/支付/多租户 | 不由现有开关顺带开放 | 不把未来设计或外部运营条件写成完成 |
+
+新增三份 SQL 仍在 `prisma/drafts`，普通 `migrate` 不会发现。三个专用空库验收入口分别见运行手册；最终 Review、当前提交 CI/merge 和真实执行证据分别记录，不将代码已实现等同于线上已启用。
+
+## 既往交付记录（保留原日期与验收范围）
 
 本文件记录仓库当前 V1 的实现和验收边界。它不新增产品能力，也不把历史报告改写成新的通过结论。
 

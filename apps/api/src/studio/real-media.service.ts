@@ -10,7 +10,7 @@ export interface RealMediaContentReader {
   readVerified(asset:{storageProvider:string;objectKey:string;byteSize:number;checksumSha256:string},scope:{workspaceId:string;projectId:string;maxBytes:number}):Promise<Buffer>;
 }
 export interface RealMediaServiceOptions {
-  workspaceId:string;enabled:boolean;store:RealMediaStore;jobs:JobPersistenceService;assets:MediaAssetStore;
+  workspaceId:string;enabled:boolean;readEnabled?:boolean;store:RealMediaStore;jobs:JobPersistenceService;assets:MediaAssetStore;
   configurationFor(capability:RealMediaCapability,client?:MediaTransactionClient):Promise<RealMediaConfiguration|null>;
   speechCatalog?(workspaceId:string,projectId:string):Promise<SpeechCapabilities>;
   objects?:RealMediaContentReader;
@@ -24,7 +24,8 @@ export class RealMediaService {
       const config=await this.options.configurationFor(capability);if(config?.enabled)capabilities.push(capability);
     }
     // Project existence is checked by quote/generate under the established media gates.
-    return {projectId,available:capabilities.length>0,reasonCode:!ready?"REAL_MEDIA_NOT_READY":!capabilities.length?"REAL_MEDIA_PROVIDER_DISABLED":null,capabilities,actualCost:"unknown",singleOperation:true};
+    const readAvailable=(this.options.readEnabled??this.options.enabled)&&Boolean(this.options.objects)&&await this.options.store.storageReady().catch(()=>false);
+    return {projectId,readAvailable,available:capabilities.length>0,reasonCode:!ready?"REAL_MEDIA_NOT_READY":!capabilities.length?"REAL_MEDIA_PROVIDER_DISABLED":null,capabilities,actualCost:"unknown",singleOperation:true};
   }
   private async ready(client?:MediaTransactionClient){
     if(!this.options.enabled||!this.options.store.receiptReady())throw new PersistenceError("REAL_MEDIA_NOT_READY","Real media is not configured");
@@ -58,7 +59,7 @@ export class RealMediaService {
     if(!parsed.success)throw new PersistenceError("VALIDATION_ERROR","Confirm one quoted paid operation and its exact budget");
     return this.options.store.authorize({workspaceId:this.options.workspaceId,projectId,actorId,...parsed.data});
   }
-  async costExposure(projectId:string){await this.ready();return this.options.store.costExposure(this.options.workspaceId,projectId);}
+  async costExposure(projectId:string){await this.options.store.requireReady();return this.options.store.costExposure(this.options.workspaceId,projectId);}
   async generate(projectId:string,shotRevisionId:string,body:unknown,context:StudioContext){
     const parsed=realMediaGenerateSchema.safeParse(body);
     if(!parsed.success)throw new PersistenceError("VALIDATION_ERROR","Invalid real media authorization");
@@ -118,6 +119,7 @@ export class RealMediaService {
     };
   }
   async readAssetContent(assetId:string):Promise<{mimeType:string;bytes:Buffer}>{
+    if(!(this.options.readEnabled??this.options.enabled))throw new PersistenceError("REAL_MEDIA_NOT_READY","Authenticated media access is not configured");
     const asset:MediaAssetRecord=await this.options.assets.getWorkspaceAsset(this.options.workspaceId,assetId);
     if(asset.storageProvider!=="s3"||!this.options.objects||!["ACTIVE","STALE","SUPERSEDED"].includes(asset.status))throw new PersistenceError("NOT_FOUND","Media object unavailable");
     const maximum=asset.kind==="VIDEO"?100*1024*1024:asset.kind==="IMAGE"?10*1024*1024:20*1024*1024;

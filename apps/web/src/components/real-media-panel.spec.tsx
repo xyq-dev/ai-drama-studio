@@ -36,6 +36,14 @@ function storageFake(){const map=new Map<string,string>();const storage:Storage=
 beforeEach(()=>{vi.stubGlobal("sessionStorage",storageFake());speech.props=[];speech.preflight=preflight();});
 afterEach(()=>{cleanup();vi.restoreAllMocks();vi.unstubAllGlobals();});
 describe("real media panel explicit paid send and scoped recovery",()=>{
+  it("keeps historical assets and local mix available while new paid sending is disabled",async()=>{
+    const h=setup();h.api.capabilities.mockResolvedValue({available:false,readAvailable:true,reasonCode:"REAL_MEDIA_NOT_READY",capabilities:[]});
+    render(<RealMediaPanel {...h.props}/>);fireEvent.click(screen.getByRole("button",{name:/图片、视频与角色配音/}));
+    await screen.findByTestId("speech-child");expect(await screen.findByAltText("已生成图片 "+A.slice(0,8))).toBeTruthy();
+    expect(screen.queryByRole("button",{name:"查看本次费用"})).toBeNull();expect(h.api.quote).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button",{name:"完成逐句合成预检替身"}));fireEvent.click(await screen.findByRole("button",{name:"合成本段画面、声音与字幕"}));
+    await screen.findByText(/合成任务已受理/);expect(h.api.compose).toHaveBeenCalledOnce();expect(h.api.generate).not.toHaveBeenCalled();
+  });
   it("keeps the original compose request across refresh and a changed preflight",async()=>{
     const h=setup();h.api.compose.mockRejectedValueOnce(new ApiError(503,"UNAVAILABLE","Compose receipt unknown"));
     const view=render(<RealMediaPanel {...h.props}/>);await open();fireEvent.click(screen.getByRole("button",{name:"完成逐句合成预检替身"}));

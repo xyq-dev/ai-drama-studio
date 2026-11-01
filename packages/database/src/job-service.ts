@@ -831,7 +831,7 @@ export class JobPersistenceService {
         `UPDATE generation_job AS job
             SET lease_until = $5, updated_at = now(), row_version = job.row_version + 1
           WHERE job.id = $1 AND job.workspace_id = $2 AND job.state = 'RUNNING'
-            AND job.lease_owner = $3 AND job.cancel_requested_at IS NULL AND job.lease_until > now()
+            AND job.lease_owner = $3 AND job.cancel_requested_at IS NULL AND job.lease_until > clock_timestamp()
             AND EXISTS (
               SELECT 1 FROM job_attempt attempt
                WHERE attempt.id = $4 AND attempt.generation_job_id = job.id AND attempt.finished_at IS NULL

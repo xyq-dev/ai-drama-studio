@@ -133,6 +133,8 @@ export class DashScopeMediaAdapter implements MediaProviderAdapter {
   readonly #key: string;
   constructor(readonly configuration: RealMediaConfiguration, key: string, private readonly transport: RealMediaHttpTransport = fetchRealMediaHttp) {
     this.#key = checkedSecret(key);
+    // A bound adapter must retain the exact budgeted profile even if its caller later edits the source object.
+    this.configuration = Object.freeze({ ...structuredClone(configuration), parameters: Object.freeze(structuredClone(configuration.parameters)) });
     const model = { "image.generate": "qwen-image-3.0", "video.generate": "wan2.6-i2v-flash", "audio.tts": "qwen3-tts-flash" } as Record<string, string>;
     if (configuration.providerKey !== this.providerKey || configuration.region !== "beijing" || model[configuration.capability] !== configuration.model) {
       throw new Error("MEDIA_CONFIGURATION_UNSUPPORTED");
@@ -220,6 +222,8 @@ export class ElevenLabsMusicAdapter implements MediaProviderAdapter {
   readonly #key: string;
   constructor(readonly configuration: RealMediaConfiguration, key: string, private readonly transport: RealMediaHttpTransport = fetchRealMediaHttp) {
     this.#key = checkedSecret(key);
+    // A bound adapter must retain the exact budgeted profile even if its caller later edits the source object.
+    this.configuration = Object.freeze({ ...structuredClone(configuration), parameters: Object.freeze(structuredClone(configuration.parameters)) });
     if (configuration.providerKey !== this.providerKey || configuration.capability !== "audio.music"
       || configuration.region !== "global" || configuration.model !== "music_v2") throw new Error("MEDIA_CONFIGURATION_UNSUPPORTED");
   }

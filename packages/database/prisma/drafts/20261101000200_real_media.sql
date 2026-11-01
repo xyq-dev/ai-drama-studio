@@ -55,6 +55,8 @@ CREATE TABLE real_media_submission (
   CHECK(state NOT IN ('ACKNOWLEDGED','SUCCEEDED','FAILED') OR provider_request_id IS NOT NULL),
   CHECK(state<>'SUCCEEDED' OR outputs_ciphertext IS NOT NULL),
   CHECK(state<>'REJECTED' OR (provider_request_id IS NULL AND outputs_ciphertext IS NULL)),
+  CHECK((provider_request_id IS NULL)=(acknowledged_at IS NULL)),
+  CHECK(acknowledged_at IS NULL OR acknowledged_at>=submitted_at),
   FOREIGN KEY(job_attempt_id,generation_job_id,workspace_id) REFERENCES job_attempt(id,generation_job_id,workspace_id),
   FOREIGN KEY(generation_job_id,project_id,workspace_id) REFERENCES generation_job(id,project_id,workspace_id),
   FOREIGN KEY(provider_configuration_id,workspace_id) REFERENCES provider_configuration(id,workspace_id)
@@ -76,9 +78,19 @@ END $$;
 CREATE TRIGGER real_media_authorization_immutable BEFORE UPDATE OR DELETE ON real_media_authorization
  FOR EACH ROW EXECUTE FUNCTION real_media_authorization_guard();
 CREATE FUNCTION real_media_submission_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE usage_key text; usage_value jsonb;
 BEGIN
+  IF TG_OP<>'DELETE' AND NEW.usage_json IS NOT NULL THEN
+    IF jsonb_typeof(NEW.usage_json) IS DISTINCT FROM 'object' THEN RAISE EXCEPTION 'media usage must be an object'; END IF;
+    FOR usage_key,usage_value IN SELECT * FROM jsonb_each(NEW.usage_json) LOOP
+      IF usage_key NOT IN ('image_count','input_image_count','output_image_count','image_tokens','input_tokens','output_tokens',
+        'total_tokens','video_duration','output_video_duration','duration','seconds','characters')
+        OR jsonb_typeof(usage_value) IS DISTINCT FROM 'number' THEN RAISE EXCEPTION 'media usage must contain allowed numeric observations'; END IF;
+      IF usage_value::text::numeric<0 THEN RAISE EXCEPTION 'media usage cannot be negative'; END IF;
+    END LOOP;
+  END IF;
   IF TG_OP='INSERT' THEN
-    IF NEW.state<>'INTENT' OR NEW.provider_request_id IS NOT NULL OR NEW.outputs_ciphertext IS NOT NULL OR NEW.acknowledged_at IS NOT NULL
+    IF NEW.state<>'INTENT' OR NEW.provider_request_id IS NOT NULL OR NEW.outputs_ciphertext IS NOT NULL OR NEW.acknowledged_at IS NOT NULL OR NEW.usage_json IS NOT NULL
       OR NOT EXISTS (SELECT 1 FROM generation_job j JOIN real_media_authorization a ON a.job_id=j.id
         WHERE j.id=NEW.generation_job_id AND j.workspace_id=NEW.workspace_id AND j.input_hash=NEW.input_hash
           AND (j.input_snapshot-'budget')=a.input_snapshot
@@ -94,9 +106,13 @@ BEGIN
      (to_jsonb(OLD)-'state'-'provider_request_id'-'outputs_ciphertext'-'usage_json'-'acknowledged_at'-'updated_at')
     THEN RAISE EXCEPTION 'media submission identity is immutable'; END IF;
   IF OLD.provider_request_id IS NOT NULL AND NEW.provider_request_id IS DISTINCT FROM OLD.provider_request_id THEN RAISE EXCEPTION 'provider request is immutable'; END IF;
+  IF OLD.acknowledged_at IS NOT NULL AND NEW.acknowledged_at IS DISTINCT FROM OLD.acknowledged_at THEN RAISE EXCEPTION 'media acknowledgement time is immutable'; END IF;
+  IF OLD.acknowledged_at IS NULL AND NEW.acknowledged_at IS NOT NULL AND NEW.state<>'ACKNOWLEDGED' THEN RAISE EXCEPTION 'acknowledgement time belongs to an acknowledged receipt'; END IF;
   IF OLD.state IN ('SUCCEEDED','FAILED','REJECTED') THEN RAISE EXCEPTION 'terminal media receipt is immutable'; END IF;
   IF NEW.state='REJECTED' AND OLD.state NOT IN ('INTENT','UNKNOWN') THEN RAISE EXCEPTION 'only a definitive initial refusal releases exposure'; END IF;
   IF OLD.state='INTENT' AND NEW.state NOT IN ('ACKNOWLEDGED','UNKNOWN','REJECTED') THEN RAISE EXCEPTION 'invalid media receipt transition'; END IF;
+  IF OLD.state='ACKNOWLEDGED' AND NEW.state NOT IN ('ACKNOWLEDGED','UNKNOWN','SUCCEEDED','FAILED') THEN RAISE EXCEPTION 'invalid media receipt transition'; END IF;
+  IF OLD.state='UNKNOWN' AND NEW.state NOT IN ('UNKNOWN','ACKNOWLEDGED','SUCCEEDED','FAILED','REJECTED') THEN RAISE EXCEPTION 'invalid media receipt transition'; END IF;
   RETURN NEW;
 END $$;
 CREATE TRIGGER real_media_submission_immutable BEFORE INSERT OR UPDATE OR DELETE ON real_media_submission

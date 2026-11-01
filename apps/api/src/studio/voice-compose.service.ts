@@ -1,4 +1,4 @@
-import { DomainError, VOICE_COMPOSE_JOB_SCHEMA, parseVoiceComposeRenderRequest, speechExactHash,
+import { DomainError, parseVoiceComposeRenderRequest, speechExactHash,
   type VoiceComposeJobSnapshot, type VoiceComposeRenderRequest } from "@ai-drama/domain";
 import { PersistenceError, type PostgresPool, type JobPersistenceService, type SpeechPersistence } from "@ai-drama/database";
 import type { StudioContext } from "./studio.service";
@@ -38,7 +38,7 @@ export class VoiceComposeService {
     }, async (client) => {
       const frozen = await this.deps.store.freezeInTransaction(client, this.deps.workspaceId, shotRevisionId, request);
       return { workspaceId: this.deps.workspaceId, projectId: frozen.projectId, sourceShotRevisionId: shotRevisionId,
-        type: VOICE_COMPOSE_JOB_SCHEMA, requestedBy: context.actorId, kind: "MEDIA_COMPOSE", inputHash: frozen.inputHash,
+        type: "MEDIA_COMPOSE", requestedBy: context.actorId, kind: "MEDIA_COMPOSE", inputHash: frozen.inputHash,
         inputSnapshot: frozen.snapshot, traceId: context.traceId };
     });
   }

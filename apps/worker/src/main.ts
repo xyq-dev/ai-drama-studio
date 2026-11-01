@@ -3,13 +3,14 @@ import { Logger } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { isAbsolute, join } from "node:path";
 import { AppModule } from "./app.module";
-import { sampleVideoGenerationEnabled } from "@ai-drama/contracts";
+import { sampleVideoGenerationEnabled,realMediaAccessAllowed } from "@ai-drama/contracts";
 import { EnvValidationError, loadWorkerEnv } from "./config/env";
 import { findRepoRoot, readEnvFile } from "./config/env-file";
 import { SafeExceptionFilter } from "./http/safe-exception.filter";
 import { startQueueRuntime } from "./runtime/start-runtime";
 import { WORKER_BOOT_LOGS } from "./version";
 import { ServerRealMediaRuntime } from "@ai-drama/providers";
+import { workerComposePolicy } from "./runtime/media-runtime-policy";
 
 async function bootstrap(): Promise<void> {
   const logger = new Logger("Worker");
@@ -22,16 +23,20 @@ async function bootstrap(): Promise<void> {
   const directoryReady = Boolean(mockObjectDir && isAbsolute(mockObjectDir));
   const composeWorkDir = env.M4_COMPOSE_WORK_DIR && isAbsolute(env.M4_COMPOSE_WORK_DIR) ? env.M4_COMPOSE_WORK_DIR : undefined;
   const composeObjectDir = env.M4_COMPOSE_OBJECT_DIR && isAbsolute(env.M4_COMPOSE_OBJECT_DIR) ? env.M4_COMPOSE_OBJECT_DIR : undefined;
-  const composeAllowed = env.NODE_ENV !== "production" && env.M4_LOCAL_COMPOSE_ENABLED && directoryReady && Boolean(composeWorkDir && composeObjectDir);
-  const episodeComposeAllowed = env.NODE_ENV !== "production" && env.M4_LOCAL_COMPOSE_ENABLED && env.M4_LOCAL_EPISODE_COMPOSE_ENABLED && Boolean(composeWorkDir && composeObjectDir);
+  const realAccessAllowed=realMediaAccessAllowed({nodeEnv:env.NODE_ENV,siteAuthConfigured:env.REAL_MEDIA_SITE_AUTH_CONFIGURED,
+    allowProduction:env.REAL_MEDIA_ENV?.REAL_MEDIA_ALLOW_PRODUCTION==="true"});
   const realRuntime = env.REAL_MEDIA_WORKSPACE_ID && env.REAL_MEDIA_ENV
     ? new ServerRealMediaRuntime(env.REAL_MEDIA_WORKSPACE_ID, env.REAL_MEDIA_ENV,
-      env.NODE_ENV !== "production" || env.REAL_MEDIA_ENV.REAL_MEDIA_ALLOW_PRODUCTION === "true") : undefined;
-  const realComposeAllowed = Boolean(realRuntime?.receiptCipher) && env.M4_LOCAL_COMPOSE_ENABLED
-    && (env.NODE_ENV !== "production" || env.REAL_MEDIA_ENV?.REAL_MEDIA_ALLOW_PRODUCTION === "true")
-    && Boolean(composeWorkDir && composeObjectDir && env.REAL_MEDIA_S3);
+      realAccessAllowed) : undefined;
+  const composePolicy=workerComposePolicy({production:env.NODE_ENV==="production",localEnabled:env.M4_LOCAL_COMPOSE_ENABLED,
+    episodeEnabled:env.M4_LOCAL_EPISODE_COMPOSE_ENABLED,mockDirectoryReady:directoryReady,workDirectoryReady:Boolean(composeWorkDir),
+    objectDirectoryReady:Boolean(composeObjectDir),realAccessAllowed,receiptReady:Boolean(realRuntime?.receiptCipher),s3Ready:Boolean(env.REAL_MEDIA_S3)});
+  const composeAllowed=composePolicy.mockCompose;
+  const realComposeAllowed=composePolicy.realCompose;
   if (env.M4_VOICE_COMPOSE_FONT_PATH && !isAbsolute(env.M4_VOICE_COMPOSE_FONT_PATH)) throw new EnvValidationError(["M4_VOICE_COMPOSE_FONT_PATH"]);
   const runtime = await startQueueRuntime({
+    nodeEnv:env.NODE_ENV,realMediaSiteAuthConfigured:env.REAL_MEDIA_SITE_AUTH_CONFIGURED,
+    realMediaAllowProduction:env.REAL_MEDIA_ENV?.REAL_MEDIA_ALLOW_PRODUCTION==="true",
     databaseUrl: env.DATABASE_URL, redisUrl: env.REDIS_URL, mockObjectDir,
     mockImageEnabled: env.NODE_ENV !== "production" && env.M3_MOCK_IMAGE_ENABLED && directoryReady,
     mockAvEnabled: env.NODE_ENV !== "production" && env.M3_MOCK_AV_ENABLED && directoryReady,
@@ -43,7 +48,7 @@ async function bootstrap(): Promise<void> {
     }),
     mockSmEnabled: env.NODE_ENV !== "production" && env.M3_MOCK_SUBTITLE_MUSIC_ENABLED && directoryReady,
     localComposeEnabled: composeAllowed || realComposeAllowed,
-    episodeComposeEnabled: episodeComposeAllowed,
+    episodeComposeEnabled: composePolicy.episodeCompose,
     composeWorkDir, composeObjectDir,
     composePythonBin: env.M4_COMPOSE_PYTHON,
     composePythonPath: join(root, "services", "media-worker", "src"),

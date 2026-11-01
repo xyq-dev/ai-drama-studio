@@ -1,7 +1,7 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import type { RealMediaCapability, RealMediaConfiguration, SpeechCapabilities } from "@ai-drama/contracts";
 import { DashScopeMediaAdapter, ElevenLabsMusicAdapter, type RealMediaHttpTransport } from "./real-media-adapters";
-import type { MediaProviderAdapter } from "./media-adapter";
+import type { MediaProviderAdapter, MediaProviderOutput } from "./media-adapter";
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const VERSION = /^[A-Za-z0-9_.-]{1,100}$/;
@@ -157,9 +157,15 @@ export class ServerRealMediaRuntime {
       const active = await this.configurationFor(configuration.capability);
       if (!active || digest(active) !== digest(configuration)) throw new Error("REAL_MEDIA_CONFIGURATION_CHANGED");
     } else if (!configuration.queryAllowed) throw new Error("REAL_MEDIA_QUERY_DISABLED");
-    if (configuration.providerKey === "dashscope-media") return new DashScopeMediaAdapter(configuration, key, this.transport);
-    if (configuration.providerKey === "elevenlabs-media") return new ElevenLabsMusicAdapter(configuration, key, this.transport);
-    throw new Error("REAL_MEDIA_PROVIDER_UNSUPPORTED");
+    const adapterConfiguration = mode === "query" ? { ...configuration, enabled: false } : configuration;
+    const adapter = configuration.providerKey === "dashscope-media" ? new DashScopeMediaAdapter(adapterConfiguration, key, this.transport)
+      : configuration.providerKey === "elevenlabs-media" ? new ElevenLabsMusicAdapter(adapterConfiguration, key, this.transport) : null;
+    if (!adapter) throw new Error("REAL_MEDIA_PROVIDER_UNSUPPORTED");
+    if (mode === "submit") return adapter;
+    // Recovery receives an observation capability. It cannot turn a mutable flag back on and submit another job.
+    return Object.freeze({ providerKey: adapter.providerKey, capabilities: () => adapter.capabilities(),
+      submit: async () => { throw new Error("MEDIA_SUBMIT_DISABLED"); },
+      inspect: (id: string) => adapter.inspect(id), resolveOutput: (output: MediaProviderOutput) => adapter.resolveOutput(output) });
   }
   async speechCatalog(): Promise<SpeechCapabilities> {
     const configuration = await this.configurationFor("audio.tts");

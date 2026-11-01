@@ -17,7 +17,7 @@ import {
   createPostgresPool,
   type PostgresPool,
 } from "@ai-drama/database";
-import { sampleVideoGenerationEnabled, type TitleRunKind } from "@ai-drama/contracts";
+import { sampleVideoGenerationEnabled, realMediaAccessAllowed, type TitleRunKind } from "@ai-drama/contracts";
 import {
   AutoCreationEngine, SeriesWritingEngine, TitleWritingEngine, WritingCandidateExecutor, createFetchTransport, createResearchFetcher, titleWritingProviderConfigs,
 } from "@ai-drama/providers";
@@ -126,6 +126,9 @@ export class StudioRuntime implements OnModuleDestroy {
     const absoluteDir = env.MOCK_OBJECT_DIR && isAbsolute(env.MOCK_OBJECT_DIR) ? env.MOCK_OBJECT_DIR : null;
     const nonProduction = env.NODE_ENV !== "production";
     const siteLoginValid = siteAuthFromEnv(env).kind === "enabled";
+    const realAccessAllowed=realMediaAccessAllowed({nodeEnv:env.NODE_ENV,siteAuthConfigured:siteLoginValid,
+      allowProduction:env.REAL_MEDIA_ENV?.REAL_MEDIA_ALLOW_PRODUCTION==="true"});
+    const realRuntime = new ServerRealMediaRuntime(workspaceId, env.REAL_MEDIA_ENV ?? {},realAccessAllowed);
     const titleWritingAllowProduction = env.TITLE_WRITING_ALLOW_PRODUCTION && siteLoginValid;
     const titleWritingEnabled = env.TITLE_WRITING_ENABLED && (nonProduction || titleWritingAllowProduction);
     // Script breakdown has its own switch: turning on title writing never starts or resumes a breakdown.
@@ -134,8 +137,7 @@ export class StudioRuntime implements OnModuleDestroy {
     const mockAvEnabled = nonProduction && env.M3_MOCK_AV_ENABLED && Boolean(absoluteDir);
     const mockSmEnabled = nonProduction && env.M3_MOCK_SUBTITLE_MUSIC_ENABLED && Boolean(absoluteDir);
     const composeObjectDir = env.M4_COMPOSE_OBJECT_DIR && isAbsolute(env.M4_COMPOSE_OBJECT_DIR) ? env.M4_COMPOSE_OBJECT_DIR : null;
-    const realComposeAllowed = siteLoginValid && env.REAL_MEDIA_ENV?.REAL_MEDIA_ENABLED === "true"
-      && (nonProduction || env.REAL_MEDIA_ENV?.REAL_MEDIA_ALLOW_PRODUCTION === "true");
+    const realComposeAllowed = realAccessAllowed && Boolean(realRuntime.receiptCipher);
     const composeSwitch = (nonProduction || realComposeAllowed) && env.M4_LOCAL_COMPOSE_ENABLED;
     const localComposeEnabled = composeSwitch && Boolean(composeObjectDir && (absoluteDir || realComposeAllowed));
     const episodeComposeEnabled = composeSwitch && env.M4_LOCAL_EPISODE_COMPOSE_ENABLED && Boolean(composeObjectDir);
@@ -284,13 +286,12 @@ export class StudioRuntime implements OnModuleDestroy {
       operatorToken: env.TITLE_WRITING_OPERATOR_TOKEN ?? null, defaultProvider, providers: titleProviders,
       store: planningStore, executor: new VimaxPlanningExecutor({ workspaceId, store: planningStore, providers: titleProviders,
         transport: createFetchTransport() }), maxCallsPerDay, maxActiveRuns });
-    const realRuntime = new ServerRealMediaRuntime(workspaceId, env.REAL_MEDIA_ENV ?? {},
-      siteLoginValid && (nonProduction || env.REAL_MEDIA_ENV?.REAL_MEDIA_ALLOW_PRODUCTION === "true"));
+
     const mediaStore = new RealMediaStore(pool, realRuntime.receiptCipher ? { receiptCipher: realRuntime.receiptCipher } : {});
     const mediaAssets = new MediaAssetStore(pool);
     const mediaClient = realRuntime.receiptCipher ? new MediaS3Client({ endpoint: env.S3_ENDPOINT, region: env.S3_REGION,
       bucket: env.S3_BUCKET, accessKeyId: env.S3_ACCESS_KEY_ID, secretAccessKey: env.S3_SECRET_ACCESS_KEY, forcePathStyle: env.S3_FORCE_PATH_STYLE }) : null;
-    const realMedia = new RealMediaService({ workspaceId, enabled: realRuntime.enabled, store: mediaStore, jobs, assets: mediaAssets,
+    const realMedia = new RealMediaService({ workspaceId, enabled: realRuntime.enabled, readEnabled:realAccessAllowed, store: mediaStore, jobs, assets: mediaAssets,
       configurationFor: async (capability, client) => {
         const configuration = await realRuntime.configurationFor(capability);
         return configuration && await mediaStore.configurationStillEnabled(configuration, client) ? configuration : null;
@@ -304,8 +305,7 @@ export class StudioRuntime implements OnModuleDestroy {
     const speechStore = new PostgresSpeechStore(pool, jobs);
     const speech = new SpeechService({ workspaceId, store: speechStore, generation: realMedia.speechPort() });
     const voiceCompose = new VoiceComposeService({ workspaceId,
-      enabled: siteLoginValid && (nonProduction || env.REAL_MEDIA_ENV?.REAL_MEDIA_ALLOW_PRODUCTION === "true")
-        && env.M4_LOCAL_COMPOSE_ENABLED && Boolean(composeObjectDir), jobs,
+      enabled: realComposeAllowed && env.M4_LOCAL_COMPOSE_ENABLED && Boolean(composeObjectDir), jobs,
       store: new PostgresVoiceComposeStore(pool, jobs), speech: speechStore });
     return new StudioRuntime(pool,
       new StudioService(jobs, store, textChain, workspaceId, new MockTextService(pool), new MediaAssetStore(pool),
@@ -317,7 +317,7 @@ export class StudioRuntime implements OnModuleDestroy {
           directoryReady: Boolean(absoluteDir),
         }),
         new CharacterReferenceStore(pool),
-        env.M3_CHARACTER_REFERENCE_GATE), store, titleWriting,
+        env.M3_CHARACTER_REFERENCE_GATE, realComposeAllowed && localComposeEnabled, !nonProduction), store, titleWriting,
       adminModels, admin?.enabled ?? false, scriptBreakdown, writingCandidates, autoCreation, seriesWriting,
       new VimaxPreviewService({ workspaceId, nodeEnv: env.NODE_ENV, allowProduction: vimaxProductionAllowed, source: new VimaxPreviewSourceStore(pool) }),
       new VimaxCandidateService({ workspaceId, nodeEnv: env.NODE_ENV, allowProduction: vimaxProductionAllowed, store: new VimaxCandidateStore(pool, textChain) }),

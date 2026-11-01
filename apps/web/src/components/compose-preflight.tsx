@@ -141,8 +141,8 @@ export function ComposePreflight(props: {
 
   const videos = usable(assets, props.revisionId, "video");
   return (
-    <section className="creator-preflight-card mt-6 min-w-0 rounded border p-3" aria-label="Mock 单镜合成预检">
-      <h3 className="font-medium">Mock 单镜合成预检</h3>
+    <section className="creator-preflight-card mt-6 min-w-0 rounded border p-3" aria-label="单镜合成预检">
+      <h3 className="font-medium">单镜合成预检</h3>
       <label className="mt-3 block text-sm" htmlFor="compose-video">合成视频</label>
       <select id="compose-video" className="mt-1 w-full rounded border px-2 py-1" value={selection.video} onChange={(event) => choose("video", event.target.value)}>
         <option value="">请选择视频</option>

@@ -87,6 +87,35 @@ describe("speech panel", () => {
     expect(requests.some((url) => url.endsWith("/generate"))).toBe(false);
   });
 
+  it("keeps saved selections, audition and local mix available when new paid generation is disabled", async () => {
+    const paid: string[] = [];
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue();
+    vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => undefined);
+    const preflight = { inputHash: HASH, manifest: { totalSpeechMs: 1200, videoDurationMs: 2000,
+      subtitles: { cues: [{ lineId: LINE, startMs: 0, endMs: 1200, text: "这不是我。" }] } },
+      subtitleVtt: "WEBVTT\n\n00:00:00.000 --> 00:00:01.200\n这不是我。\n", guards: { planRowVersion: 3, assets: [] } };
+    const client = createSpeechClient(async (input, init) => {
+      if (input.endsWith("speech-capabilities")) return json({ available: false, reasonCode: "REAL_MEDIA_NOT_READY", catalogVersion: "disabled", voices: [] });
+      if (input.endsWith("/takes")) return json({ ...EMPTY, items: [CANDIDATE], selected: [{ ...SELECTION, usable: true }] });
+      if (input.endsWith("/quote") || input.endsWith("/generate")) { paid.push(input); throw new Error("New paid generation must remain closed"); }
+      if (input.endsWith("mix-preflight")) return json(preflight);
+      return fixture(input, init);
+    });
+    render(createElement(SpeechPanel, { projectId: PROJECT, shotRevisionId: SHOT, client, videoAssetId: VIDEO, characters: CHARACTERS }));
+    const audition = await screen.findByRole("button", { name: "试听第 1 句已选配音" });
+    expect(screen.getByText("已选用此句配音")).toBeTruthy();
+    expect(screen.getByLabelText("第 1 句台词").textContent).toBe("这不是我。");
+    expect(screen.getByRole("button", { name: "再试一版：先查看费用" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.queryByRole("button", { name: "确认费用并生成本句" })).toBeNull();
+    fireEvent.click(audition);
+    expect(screen.getByLabelText("配音试听播放器").getAttribute("src")).toBe(`/api/v1/assets/${OLD_TAKE}/content`);
+    const mix = screen.getByRole("button", { name: "检查声音与字幕" });
+    expect(mix.hasAttribute("disabled")).toBe(false);
+    fireEvent.click(mix);
+    expect(await screen.findByText(/预检通过 · 配音 1.20 秒 · 视频 2.00 秒/)).toBeTruthy();
+    expect(paid).toEqual([]);
+  });
+
   it("keeps the explicit disabled capability when speech storage is unavailable", async () => {
     const client = createSpeechClient(async (input) => input.endsWith("speech-capabilities")
       ? json({ available: false, reasonCode: "SPEECH_STORAGE_UNAVAILABLE", catalogVersion: "catalog-v1", voices: [VOICE_DATA] })

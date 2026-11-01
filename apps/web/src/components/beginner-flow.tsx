@@ -390,7 +390,7 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
       : kind === "review"
       ? root.querySelector<HTMLElement>("[data-beginner-review], aside[aria-label='检查面板'], [data-review-status]")
       : kind === "candidates"
-        ? root.querySelector<HTMLElement>("[aria-label='Mock 单镜合成预检'], [data-beginner-picker]")
+        ? root.querySelector<HTMLElement>("[aria-label='单镜合成预检'], [data-beginner-picker]")
         : kind === "compose"
           ? root.querySelector<HTMLElement>("[aria-label='多镜编排']")
           : root.querySelector<HTMLElement>("textarea, input:not([type='hidden'])");

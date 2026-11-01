@@ -18,6 +18,7 @@ import {
   mediaFromFrozenShot,
   mediaFromFrozenVoiceShot,
   assertVoiceMixManifest,
+  speechExactHash,
   type EpisodeComposeRenderRequest,
   type EpisodeComposeSourceObject,
   type EpisodeCompositeFacts,
@@ -430,12 +431,13 @@ export class MediaAssetStore {
     projectId: string,
     episodeId: string,
     compositeAssetIds: readonly string[],
+    options?:{realOnly?:boolean},
   ): Promise<EpisodeComposePreflightResponse> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
       try {
-        const result = await preflightEpisodeComposeWithClient(client, workspaceId, projectId, episodeId, compositeAssetIds);
+        const result = await preflightEpisodeComposeWithClient(client, workspaceId, projectId, episodeId, compositeAssetIds,options?.realOnly);
         await client.query("COMMIT");
         return result;
       } catch (error) {
@@ -454,10 +456,11 @@ export class MediaAssetStore {
     projectId: string,
     episodeId: string,
     request: EpisodeComposeRenderRequest,
+    options?:{realOnly?:boolean},
   ): Promise<{ snapshot: EpisodeComposeJobSnapshot; inputHash: string }> {
     let preflight: EpisodeComposePreflightResponse;
     try {
-      preflight = await preflightEpisodeComposeWithClient(client, workspaceId, projectId, episodeId, request.compositeAssetIds);
+      preflight = await preflightEpisodeComposeWithClient(client, workspaceId, projectId, episodeId, request.compositeAssetIds,options?.realOnly);
       assertExpectedPreflightHash(preflight.inputHash, request.expectedInputHash);
     } catch (error) {
       if (error instanceof DomainError) throw new PersistenceError(error.code, error.message);
@@ -714,7 +717,7 @@ export class MediaAssetStore {
       if(input.shotReviewEnabled===false)throw new PersistenceError("CONFIGURATION_ERROR","Local voice compose review is not enabled");
       if(jobSchema!==VOICE_COMPOSE_JOB_SCHEMA||!row.source_shot_revision_id)throw new PersistenceError("REVIEW_INVALID_TRANSITION","Voice composite schema does not match its job");
       const voice=assertVoiceComposeSnapshot(jobSnapshot,String(source.input_hash));
-      if(canonicalInputHash(metadata.manifest)!==canonicalInputHash(voice.input.manifest)||canonicalInputHash(metadata.renderProfile)!==canonicalInputHash(voice.input.renderProfile))throw new PersistenceError("COMPOSE_INPUT_INVALID","Voice composite metadata does not match its frozen input");
+      if(speechExactHash(metadata.manifest)!==speechExactHash(voice.input.manifest)||speechExactHash(metadata.renderProfile)!==speechExactHash(voice.input.renderProfile))throw new PersistenceError("COMPOSE_INPUT_INVALID","Voice composite metadata does not match its frozen input");
       if(input.decision==="APPROVE")await assertVoiceComposeReviewInTransaction(client,{workspaceId:input.workspaceId,projectId:String(projectId),
         shotRevisionId:String(row.source_shot_revision_id),inputHash:String(source.input_hash),inputSnapshot:jobSnapshot});
     } else if (assetSchema === "m4.shot.compose.asset.v1") {
@@ -1306,7 +1309,7 @@ async function exportSegment(
   }
   try {
     const voice=metadata.schema===VOICE_COMPOSE_OUTPUT_SCHEMA?assertVoiceComposeSnapshot(snapshot,String(job.rows[0]?.input_hash)):null;
-    if(voice&&(canonicalInputHash(voice.input.manifest)!==canonicalInputHash(metadata.manifest)||canonicalInputHash(voice.input.renderProfile)!==canonicalInputHash(metadata.renderProfile)))throw new PersistenceError("COMPOSE_INPUT_INVALID","Frozen voice metadata changed");
+    if(voice&&(speechExactHash(voice.input.manifest)!==speechExactHash(metadata.manifest)||speechExactHash(voice.input.renderProfile)!==speechExactHash(metadata.renderProfile)))throw new PersistenceError("COMPOSE_INPUT_INVALID","Frozen voice metadata changed");
     const common={
       workspaceId,
       projectId,
@@ -2177,6 +2180,7 @@ async function preflightEpisodeComposeWithClient(
   projectId: string,
   episodeId: string,
   compositeAssetIds: readonly string[],
+  realOnly=false,
 ): Promise<EpisodeComposePreflightResponse> {
   const episode = await client.query(
     `SELECT id FROM episode WHERE id = $1 AND workspace_id = $2 AND project_id = $3`,
@@ -2257,6 +2261,11 @@ async function preflightEpisodeComposeWithClient(
   }
   for(const row of assets.rows){
     const job=jobs.rows.find(item=>String(item.id)===String(row.source_generation_job_id));
+    if(realOnly){
+      const input=(job?.input_snapshot as {input?:{sourceObjects?:unknown}}|null)?.input;
+      const sources=input?.sourceObjects;
+      if(!Array.isArray(sources)||sources.length===0||sources.some(source=>!source||typeof source!=="object"||source.storageProvider!=="s3"))throw new PersistenceError("CONFIGURATION_ERROR","Production episode composition requires real S3 source media");
+    }
     if((job?.input_snapshot as {schema?:string}|null)?.schema===VOICE_COMPOSE_JOB_SCHEMA){
       await assertVoiceComposeReviewInTransaction(client,{workspaceId,projectId,shotRevisionId:String(row.source_shot_revision_id),inputHash:String(job!.input_hash),inputSnapshot:job!.input_snapshot});
     }

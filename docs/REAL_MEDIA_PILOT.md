@@ -1,6 +1,8 @@
 # 一个真实镜头的媒体试接
 
-状态：接入方案和独立离线试接工具；真实供应商验收待执行。最初开发基线为 `main@a7a62ba81e75b2b867be8045e1752a4f00b8a80f`，收尾时在 `main@879bf53e0d45be56b6592ce77c2e72aa7ec9d648` 上重新核对离线协议与合成测试。合入工具不代表已授权真实调用，也不代表网页真实媒体链路已接通。
+状态更新（2026-11-01）：本页的**独立试接工具**仍与业务任务分离；其历史基线和价格快照保留。平台真实媒体 Adapter、Job/Attempt 收据、S3、声音合成与页面接线现已另外实现，默认关闭，见 [`REAL_MEDIA_RUNBOOK.md`](REAL_MEDIA_RUNBOOK.md)。本轮真实供应商调用 0、业务 SQL 0、部署 0，不能把独立工具的 synthetic 通过记成真实模型或网页验收。
+
+原工具最初基线为 `main@a7a62ba81e75b2b867be8045e1752a4f00b8a80f`，在 `main@879bf53e0d45be56b6592ce77c2e72aa7ec9d648` 上复核过离线协议与合成测试。以下工具说明仍适用于 `scripts/real-media-pilot/`；不把其运行目录注册成业务 Asset。
 
 ## 本轮决定
 
@@ -35,7 +37,7 @@ API 固定为北京 `https://dashscope.aliyuncs.com`。官方表示该现有域�
 
 代码只位于 `scripts/real-media-pilot/`，不修改 Web、API、Worker、数据库、旧提示词或原合成器。素材保存在仓库外，既不注册成业务 Asset，也不伪装成 Mock 素材。
 
-现有产品需要后续单独完成这些接入点：
+以下是独立工具交付时确认的产品接入缺口，**已在 2026-11-01 的平台实现中分别处理**；表格保留原审计依据，实际现状与启用方式以运行手册为准：
 
 | 代码位置 | 已核验的限制 | 正式接入工作 |
 | --- | --- | --- |
@@ -45,7 +47,7 @@ API 固定为北京 `https://dashscope.aliyuncs.com`。官方表示该现有域�
 | `packages/domain/src/compose-preflight.ts` / `compose-render.ts` | 只接受 Mock 存储和 Mock 请求标识 | 通用持久素材与来源验证 |
 | `apps/worker/src/runtime/compose-job.ts` | 源素材上限 1 MiB，并依赖 Mock 目录 | 真实对象存储、受控下载、合理大小限制 |
 
-因此，**独立工具生成了 MP4，也不等于网页制作链已经接通**。生产中的 Mock 禁用规则应继续保留。
+独立工具产出仍不能证明网页链路验收。当前平台实现另经既有 Job/Attempt/Asset、私有收据、S3 与 compose 来源守卫完成接线；业务结构尚未安装、真实试验尚未执行。生产 Mock 禁用规则继续保留。
 
 ## 恢复和验收规则
 

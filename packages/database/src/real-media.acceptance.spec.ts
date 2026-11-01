@@ -14,8 +14,7 @@ import { MediaAssetStore } from "./media-assets";
 import { RealMediaStore,type RealMediaExecution } from "./real-media-store";
 import { RuntimeStore } from "./runtime-store";
 import { runMigrations } from "./migrations";
-import { checkRealMediaAcceptanceEnv } from "./real-media-acceptance-guard";
-import { verifyTitleWritingAcceptanceDatabase } from "./title-writing-acceptance-guard";
+import { checkRealMediaAcceptanceEnv, verifyRealMediaAcceptanceDatabase } from "./real-media-acceptance-guard";
 const decision=checkRealMediaAcceptanceEnv(process.env);
 if(!decision.ok)throw new Error(`Real-media acceptance refused: ${decision.reason}`);
 const pool=new Pool({connectionString:decision.url,max:8,connectionTimeoutMillis:5000,statement_timeout:15000,query_timeout:20000});
@@ -23,7 +22,7 @@ const pool=new Pool({connectionString:decision.url,max:8,connectionTimeoutMillis
 const store=new RealMediaStore(pool,{receiptCipher:{seal:value=>`test:${Buffer.from(JSON.stringify(value)).toString("base64")}`,open:value=>JSON.parse(Buffer.from(value.slice(5),"base64").toString())}});
 const jobs=new JobPersistenceService(pool);const assets=new MediaAssetStore(pool);const hash="ab".repeat(32);
 beforeAll(async()=>{
-  const safe=await verifyTitleWritingAcceptanceDatabase(pool,decision.databaseName);
+  const safe=await verifyRealMediaAcceptanceDatabase(pool,decision.databaseName);
   if(!safe.ok)throw new Error(`Real-media acceptance refused before writes: ${safe.reason}`);
   await runMigrations(pool);expect(await store.storageReady()).toBe(false);
   const client=await pool.connect();try{await client.query("BEGIN");

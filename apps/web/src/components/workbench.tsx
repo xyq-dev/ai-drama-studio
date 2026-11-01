@@ -1734,7 +1734,10 @@ export function ScenePane(props: {
           <RealMediaPanel projectId={props.projectId} shotRevisionId={shotCurrent.id} dialogue={shotCurrent.dialogue}
             usable={imageGate.usable} reason={imageGate.reason} approved={approvedMediaGate.usable}
             refreshEpoch={props.refreshEpoch + props.imageEpoch + reuseEpoch}
-            onChanged={() => { setReuseEpoch(value => value + 1); props.onMediaChanged?.(); }} />
+            onChanged={() => {
+              setReuseEpoch(value => value + 1); props.onMediaChanged?.();
+              void props.onSaved().catch(() => props.onStatus("任务已受理，任务列表刷新暂未完成，请稍后重新读取。"));
+            }} />
           <ComposePreflight revisionId={shotCurrent.id} refreshEpoch={props.imageEpoch + reuseEpoch} onChanged={props.onMediaChanged}
             blocked={props.shotComposeBlocked ?? null} />
           </div>

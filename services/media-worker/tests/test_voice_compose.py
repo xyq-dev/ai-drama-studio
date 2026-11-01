@@ -171,6 +171,7 @@ def _check_real_render_preserves_sentences_pauses_captions_and_ducks_music(tmp_p
         assert destination.is_absolute(), "VOICE_COMPOSE_TEST_EVIDENCE_DIR must be an operator-owned absolute path"
         destination.mkdir(parents=True, exist_ok=True)
         shutil.copy2(proof, destination / "voice-proof.png")
+        shutil.copy2(tmp_path / "output.mp4", destination / "voice-output.mp4")
         evidence = {"schema": "voice.compose.test.evidence.v1", "fixture": "Synthetic color video and sine tones; technical rendering only, not AI voice quality",
                     "aiVoiceQualityVerified": False, "visualReview": "pending", "chineseFontGlyphCoverageVerified": True,
                     "bottomRegionWhiteGlyphPixels": white_glyph_pixels, "renderResult": result}

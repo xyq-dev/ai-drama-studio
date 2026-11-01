@@ -105,3 +105,14 @@ describe("loadApiEnv", () => {
     expect(() => loadApiEnv({ ...valid, TITLE_WRITING_DEFAULT_PROVIDER: "gemini" })).toThrow("TITLE_WRITING_DEFAULT_PROVIDER");
   });
 });
+
+describe("paid production permissions are process-only",()=>{
+  it("does not enable title, planning or real media production with a release env file",()=>{
+    const env=loadApiEnv({...valid,NODE_ENV:"production"},{TITLE_WRITING_ALLOW_PRODUCTION:"true",VIMAX_ALLOW_PRODUCTION:"true",REAL_MEDIA_ALLOW_PRODUCTION:"true",DASHSCOPE_MEDIA_API_KEY:"file-only-secret",REAL_MEDIA_RECEIPT_KEY:Buffer.alloc(32,7).toString("base64")});
+    expect(env.TITLE_WRITING_ALLOW_PRODUCTION).toBe(false);expect(env.VIMAX_ALLOW_PRODUCTION).toBe(false);expect(env.REAL_MEDIA_ENV?.REAL_MEDIA_ALLOW_PRODUCTION).toBeUndefined();expect(env.REAL_MEDIA_ENV?.DASHSCOPE_MEDIA_API_KEY).toBeUndefined();expect(env.REAL_MEDIA_ENV?.REAL_MEDIA_RECEIPT_KEY).toBeUndefined();
+  });
+  it("reports invalid real media amounts and versions by field names without echoing credentials",()=>{
+    try{loadApiEnv({...valid,DASHSCOPE_MEDIA_API_KEY:"synthetic-keep-private",REAL_MEDIA_MAX_SINGLE_CNY:"1e9",DASHSCOPE_MEDIA_CREDENTIAL_VERSION:""});throw new Error("Expected refusal");}
+    catch(e){const message=String(e);expect(message).toContain("REAL_MEDIA_MAX_SINGLE_CNY");expect(message).toContain("DASHSCOPE_MEDIA_CREDENTIAL_VERSION");expect(message).not.toContain("synthetic-keep-private");}
+  });
+});

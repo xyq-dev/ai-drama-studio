@@ -48,7 +48,7 @@ describe("real media private receipts",()=>{
     const validate=vi.fn(async(_client:PoolClient)=>undefined);
     const execution={workspaceId:"w",projectId:"p",jobId:"j",inputHash:"h",inputSnapshot:{budget:{authorizationId:"auth"},configuration:{id:"pc",providerKey:"dashscope-media"},capability:"audio.tts"}} as unknown as RealMediaExecution;
     await expect(store.beginSubmission({execution,attemptId:"a",leaseOwner:"owner",validateInTransaction:validate})).rejects.toThrow(/changed/);
-    expect(validate).toHaveBeenCalledOnce();expect(query.mock.calls.some(call=>String(call[0]).includes("j.lease_owner=$9 AND j.lease_until>now()"))).toBe(true);
+    expect(validate).toHaveBeenCalledOnce();expect(query.mock.calls.some(call=>String(call[0]).includes("j.lease_owner=$9 AND j.lease_until>clock_timestamp()"))).toBe(true);
     expect(query.mock.calls.some(call=>String(call[0]).includes("INSERT INTO real_media_submission"))).toBe(false);
   });
 });

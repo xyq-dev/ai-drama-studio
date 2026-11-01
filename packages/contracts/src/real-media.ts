@@ -40,4 +40,4 @@ export interface RealMediaSnapshot {
     maximumAmount: string; priceVersion: string; authorizedBy: string; authorizedAt: string; expiresAt: string;
     confirmedUncertainJobIds?: string[] };
 }
-export interface RealMediaAvailability { available: boolean; reasonCode: string | null; capabilities: RealMediaCapability[] }
+export interface RealMediaAvailability { readAvailable?:boolean; available: boolean; reasonCode: string | null; capabilities: RealMediaCapability[] }

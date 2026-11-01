@@ -41,6 +41,13 @@ describe("speech API service", () => {
     // The injected real-media port still validates current sources in its new-Job transaction after replay lookup.
     expect(port.generate).toHaveBeenCalledOnce();
   });
+  it("reports a changed server-side uncertain task set without retrying or granting a new quote", async () => {
+    const { service, port } = setup();
+    port.generate.mockRejectedValue(new PersistenceError("REAL_MEDIA_UNCERTAIN_CHANGED", "changed"));
+    expect(await service.generate(id, id, { quoteId: "original-quote", budgetAuthorizationId: id }, context))
+      .toMatchObject({ status: 409, body: { error: { code: "REAL_MEDIA_UNCERTAIN_CHANGED" } } });
+    expect(port.generate).toHaveBeenCalledOnce(); expect(port.quote).not.toHaveBeenCalled();
+  });
   it("rejects missing authorization, unknown fields and missing permanent identity before creating a task", async () => {
     const { service, port } = setup();
     expect(await service.generate(id, id, { quoteId: "q" }, context)).toMatchObject({ status: 400 });

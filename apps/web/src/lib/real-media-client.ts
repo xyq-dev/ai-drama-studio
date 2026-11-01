@@ -24,7 +24,7 @@ export interface RealMediaAsset {
   id: string; kind: "IMAGE" | "VIDEO" | "AUDIO" | "MUSIC"; status: string; sourceShotRevisionId: string;
   checksumSha256: string; durationMs: number | null; storageProvider: "s3";
 }
-export interface RealMediaCapabilities { available: boolean; reasonCode: string | null; capabilities: RealMediaCapability[] }
+export interface RealMediaCapabilities { available: boolean; readAvailable?: boolean; reasonCode: string | null; capabilities: RealMediaCapability[] }
 function accepted(value: unknown): RealMediaAccepted {
   const result = object(value);
   if (!UUID.test(String(result.jobId)) || !UUID.test(String(result.workflowRunId))) return invalid();
@@ -36,7 +36,8 @@ export function createRealMediaClient(studio = new StudioClient()) {
       const value = object(await studio.get("/projects/" + projectId + "/real-media/capabilities", { signal }));
       if (typeof value.available !== "boolean" || !Array.isArray(value.capabilities)
         || !value.capabilities.every(v => typeof v === "string" && CAPS.has(v))) return invalid();
-      return { available: value.available, reasonCode: typeof value.reasonCode === "string" ? value.reasonCode : null,
+      if (value.readAvailable !== undefined && typeof value.readAvailable !== "boolean") return invalid();
+      return { available: value.available, ...(value.readAvailable !== undefined ? { readAvailable: value.readAvailable as boolean } : {}), reasonCode: typeof value.reasonCode === "string" ? value.reasonCode : null,
         capabilities: value.capabilities as RealMediaCapability[] };
     },
     async assets(shotRevisionId: string, cursor?: string, signal?: AbortSignal): Promise<{ items: RealMediaAsset[]; nextCursor: string | null }> {

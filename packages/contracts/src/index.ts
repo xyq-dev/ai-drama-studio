@@ -364,3 +364,4 @@ export * from "./vimax-planning";
 
 export * from "./speech";
 export * from "./real-media";
+export * from "./media-access";

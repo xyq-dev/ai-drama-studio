@@ -1,6 +1,6 @@
 # ViMax E2-B：持久候选与单场景审核保存
 
-状态：代码、本地分项与独立隔离验收已完成。**SQL 仍为草案，业务库未执行、线上未启用。** 本阶段不运行 ViMax、模型或媒体供应商，不交付完整 E2 的发送治理与 E3 真实规划。代码集成和最终提交 CI 的实时结果以 [接续记录](VIMAX_E2B_PROGRESS.md) 所指功能分支 PR 为准。
+状态更新（2026-11-01）：本页 E2-B 候选/两段式保存代码已实现，原分项与隔离证据保留。另已实现一次在线规划确认、共享额度、永久身份/租约/UNKNOWN，并把结果交回本页候选流程，见[接续记录](VIMAX_E2B_PROGRESS.md)。**SQL 仍为草案，业务库未执行、线上未启用；本轮真实模型/媒体调用 0、部署 0。** 本页保存命令本身仍不调用模型，E3 真实质量试验尚未执行。
 
 ## 用户流程
 
@@ -15,7 +15,7 @@ E2-A 预览响应仍然 `writeAllowed:false`、`persisted:false`，不能当作�
 
 ## 契约与接口
 
-契约位于 `packages/contracts/src/vimax-candidate.ts`；全部路径以 `/api/v1/projects/:projectId/episodes/:episodeId/vimax-candidates` 为前缀，沿用站点登录、CSRF、工作区/操作者隔离和私有不缓存响应。production 环境关闭；系列文本作品拒绝此入口。
+契约位于 `packages/contracts/src/vimax-candidate.ts`；全部路径以 `/api/v1/projects/:projectId/episodes/:episodeId/vimax-candidates` 为前缀，沿用站点登录、CSRF、工作区/操作者隔离和私有不缓存响应。production 默认关闭，只有明确进程级规划生产许可和站点登录等准入才开放；系列文本作品继续拒绝。
 
 | 方法 | 相对路径 | 行为 |
 | --- | --- | --- |

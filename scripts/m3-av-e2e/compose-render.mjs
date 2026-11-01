@@ -12,7 +12,7 @@ const LOCK_BOUNDARY = "A second database session holds FOR UPDATE on the compose
 const COMMIT_BOUNDARY = "M4_COMPOSE_FAIL_INSIDE_COMMIT throws inside the success transaction after the asset, dependency, and asset.created statements. Those rows and job.succeeded roll back together.";
 
 export async function composeRenderPage(ctx) {
-  const panel = ctx.state.page.getByRole("region", { name: "Mock 单镜合成预检" });
+  const panel = ctx.state.page.getByRole("region", { name: "单镜合成预检" });
   const start = panel.getByRole("button", { name: "开始合成" });
   if (await start.isDisabled()) throw new Error("compose submit stayed disabled after the current preflight");
   const responsePromise = ctx.state.page.waitForResponse((response) =>
@@ -372,7 +372,7 @@ export async function composeProvenanceStale(ctx) {
   if (stale.status !== "STALE" || stale.review_status !== "APPROVED" || stale.checksum_sha256 !== before.checksum_sha256 || !stale.reviewed_by) {
     throw new Error(`stale review history ${JSON.stringify(stale)}`);
   }
-  const panel = ctx.state.page.getByRole("region", { name: "Mock 单镜合成预检" });
+  const panel = ctx.state.page.getByRole("region", { name: "单镜合成预检" });
   const approvedCard = panel.locator(`[data-composite-id="${assetId}"]`);
   await approvedCard.getByText("审核 APPROVED · 历史成片").waitFor({ timeout: 20_000 });
   const text = await panel.innerText();

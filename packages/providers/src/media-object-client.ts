@@ -23,6 +23,7 @@ export class MediaS3Client {
     } catch (error) {
       if (error && typeof error === "object" && "$metadata" in error
         && (error as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode === 412) return "exists";
+      // eslint-disable-next-line preserve-caught-error -- SDK errors can contain signed URLs or credentials; only this fixed code crosses the boundary.
       throw new Error("MEDIA_OBJECT_STORAGE_UNAVAILABLE");
     }
   }

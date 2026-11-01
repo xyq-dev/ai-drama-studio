@@ -13,16 +13,13 @@ import { hashVimaxPlanningRequest } from "@ai-drama/domain";
 import { runMigrations } from "./migrations";
 import { PostgresTitleWritingStore } from "./title-writing-store";
 import { TextChainService } from "./text-chain";
-import { checkTitleWritingAcceptanceEnv, verifyTitleWritingAcceptanceDatabase } from "./title-writing-acceptance-guard";
+import { checkVimaxPlanningAcceptanceEnv, verifyVimaxPlanningAcceptanceDatabase } from "./vimax-planning-acceptance-guard";
 import { VimaxCandidateStore } from "./vimax-candidate-store";
 import { PostgresVimaxPlanningStore } from "./vimax-planning-store";
 import { PostgresWritingCandidateStore, recentWritingCalls, runningWritingRuns, writingCallLockKey } from "./writing-candidate-store";
 
-const decision=checkTitleWritingAcceptanceEnv(process.env);
+const decision=checkVimaxPlanningAcceptanceEnv(process.env);
 if(!decision.ok)throw new Error(`ViMax planning acceptance refused: ${decision.reason}`);
-if(process.env.VIMAX_CANDIDATE_ACCEPTANCE_DRAFT_AUTHORIZED!=="true"||process.env.VIMAX_PLANNING_ACCEPTANCE_DRAFT_AUTHORIZED!=="true") {
-  throw new Error("ViMax planning acceptance requires VIMAX_CANDIDATE_ACCEPTANCE_DRAFT_AUTHORIZED=true and VIMAX_PLANNING_ACCEPTANCE_DRAFT_AUTHORIZED=true after independent draft review");
-}
 const pool=new Pool({connectionString:decision.url,max:8,connectionTimeoutMillis:5000,statement_timeout:15000,query_timeout:20000,application_name:"vimax-planning-draft-acceptance"});
 const store=new PostgresVimaxPlanningStore(pool),candidates=new VimaxCandidateStore(pool),chain=new TextChainService(pool);
 const actor="server-owner",usage={status:"unknown" as const,inputTokens:null,outputTokens:null,totalTokens:null};
@@ -32,7 +29,7 @@ async function tx<T>(work:(client:PoolClient)=>Promise<T>):Promise<T>{const c=aw
 async function scalar(sql:string,values:unknown[]=[]):Promise<string>{return (await pool.query<{id:string}>(sql,values)).rows[0]!.id;}
 async function version(table:"project"|"episode",id:string):Promise<number>{return Number((await pool.query(`SELECT ${table==="project"?"version":"row_version"} AS value FROM ${table} WHERE id=$1`,[id])).rows[0]!.value);}
 beforeAll(async()=>{
-  const safe=await verifyTitleWritingAcceptanceDatabase(pool,decision.databaseName);if(!safe.ok)throw new Error(`ViMax planning refused before writes: ${safe.reason}`);
+  const safe=await verifyVimaxPlanningAcceptanceDatabase(pool,decision.databaseName);if(!safe.ok)throw new Error(`ViMax planning refused before writes: ${safe.reason}`);
   const migrated=await runMigrations(pool);discovered=[...migrated.applied,...migrated.alreadyApplied];beforeDraft=await store.storageReady();if(beforeDraft)throw new Error("Planning draft appeared in ordinary migrations");
   for(const file of ["20261031000100_vimax_storyboard_candidate.sql","20261101000100_vimax_planning_request.sql"]){const sql=await readFile(resolve(__dirname,"../prisma/drafts",file),"utf8");await tx(c=>c.query(sql));}
   const raw=JSON.parse(await readFile(resolve(__dirname,"../../../scripts/vimax-evaluation/fixtures/single-scene.json"),"utf8"));input=vimaxEvaluationInputSchema.parse(raw.input);
