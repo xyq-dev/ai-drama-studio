@@ -72,6 +72,23 @@ describe("episode speech batch browser controls",()=>{
   });
 });
 describe("speech batch client and independent command journals",()=>{
+  it("refuses a quote for different source/selection and a confirm reply without the exact original consent",async()=>{
+    const fetch=vi.fn(async()=>new Response(JSON.stringify(batch()),{status:201,headers:{"content-type":"application/json"}}));
+    const api=createSpeechBatchClient(new StudioClient(fetch));
+    const command:SpeechBatchPending={schema:"ads.speech-batch.pending.v1",projectId:P,episodeId:E,key:K,kind:"quote",batchId:null,body:{sourceHash:"c".repeat(64),lineInputRevisionIds:[I]}};
+    expect((await api.write(command)).id).toBe(B);
+    await expect(api.write({...command,body:{...command.body,sourceHash:"d".repeat(64)}})).rejects.toMatchObject({code:"INVALID_RESPONSE"});
+    await expect(api.write({...command,body:{...command.body,lineInputRevisionIds:[OTHER]}})).rejects.toMatchObject({code:"INVALID_RESPONSE"});
+    const confirm:SpeechBatchPending={...command,kind:"confirm",batchId:B,body:{frozenHash:"b".repeat(64),maximumJobs:1,
+      budgets:[{currency:"CNY",maximumAmount:"0.10"}],confirmPossibleCharges:true,confirmedUncertainJobIds:[]}};
+    rememberSpeechBatchPending(confirm);
+    await expect(api.write(confirm)).rejects.toMatchObject({code:"INVALID_RESPONSE"});expect(readSpeechBatchPending(P,E)).toEqual(confirm);
+    const acknowledged={...batch(),state:"dispatching" as const,confirmation:confirm.body};
+    fetch.mockImplementation(async()=>new Response(JSON.stringify(acknowledged),{status:202,headers:{"content-type":"application/json"}}));
+    expect((await api.write(confirm)).confirmation).toEqual(confirm.body);
+    fetch.mockImplementation(async()=>new Response(JSON.stringify({...acknowledged,frozenHash:"e".repeat(64)}),{status:202,headers:{"content-type":"application/json"}}));
+    await expect(api.write(confirm)).rejects.toMatchObject({code:"INVALID_RESPONSE"});
+  });
   it("checks public operations against frozen source, exact currency totals and complete Job receipts",()=>{
     expect(checkedSpeechBatch(batch(),P,E)).toEqual(batch());
     const wrongTotal=batch();wrongTotal.frozen.budgets[0]!.maximumAmount="0.20";

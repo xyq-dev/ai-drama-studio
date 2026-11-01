@@ -89,6 +89,18 @@ export function createSpeechBatchClient(studio = new StudioClient()) {
         : `/speech-batches/${request.batchId}/${request.kind}`;
       const result = checkedSpeechBatch((await studio.write({ path, body: request.body, idempotencyKey: request.key })).body, request.projectId, request.episodeId);
       if (request.kind !== "quote" && result.id !== request.batchId) return invalid();
+      if (request.kind === "quote") {
+        const parsed = speechBatchPreflightSchema.safeParse(request.body);
+        if (!parsed.success || result.frozen.sourceHash !== parsed.data.sourceHash
+          || stable([...parsed.data.lineInputRevisionIds].sort()) !== stable(result.frozen.operations.map(o => o.input.lineInputRevisionId).sort())) return invalid();
+      }
+      if (request.kind === "confirm") {
+        const parsed = speechBatchConfirmSchema.safeParse(request.body);
+        if (!parsed.success || result.frozenHash !== parsed.data.frozenHash || !result.confirmation
+          || stable(result.confirmation) !== stable(parsed.data)) return invalid();
+      }
+      if (request.kind === "cancel" && !(result.cancelRequested && result.state === "canceled") && result.state !== "dispatched") return invalid();
+      if (request.kind === "resume" && !result.confirmation) return invalid();
       return result;
     },
   };
