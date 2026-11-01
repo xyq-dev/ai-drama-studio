@@ -8,6 +8,7 @@ import {
   EPISODE_RENDER_PROFILE,
   canonicalInputHash,
   type ComposeJobSnapshot,
+  type ComposeSourceObject,
   type EpisodeComposeJobSnapshot,
 } from "@ai-drama/domain";
 import {
@@ -16,10 +17,30 @@ import {
   type MediaAssetStore,
 } from "@ai-drama/database";
 const MAX_MOCK_INPUT_BYTES = 1024 * 1024;
+export const REAL_COMPOSE_INPUT_MAX_BYTES = {
+  video: 100 * 1024 * 1024,
+  audio: 20 * 1024 * 1024,
+  music: 20 * 1024 * 1024,
+  subtitle: 1024 * 1024,
+} as const;
+
+export interface ComposeObjectReader {
+  stageVerified(
+    source: ComposeSourceObject,
+    targetPath: string,
+    context: { workspaceId: string; projectId: string; maxBytes: number },
+  ): Promise<void>;
+}
 
 const OUTPUT_MAX_BYTES = COMPOSE_RENDER_PROFILE.maxOutputBytes;
 const activeComposeChildren = new Set<ChildProcess>();
 let renderTail: Promise<void> = Promise.resolve();
+
+/** New local render profiles share shutdown handling with the original compose children. */
+export function registerComposeChild(child: ChildProcess): () => void {
+  activeComposeChildren.add(child);
+  return () => { activeComposeChildren.delete(child); };
+}
 
 export function stopActiveComposeChildren(): void {
   for (const child of activeComposeChildren) stopProcess(child);
@@ -54,7 +75,8 @@ export async function runComposeJob(
   options: {
     jobs: JobPersistenceService;
     assets: MediaAssetStore;
-    mockObjectDir: string;
+    mockObjectDir?: string;
+    objectReader?: ComposeObjectReader;
     workDir: string;
     objectDir: string;
     pythonBin: string;
@@ -81,7 +103,11 @@ export async function runComposeJob(
       throw new PersistenceError("COMPOSE_INPUT_INVALID", "Compose render profile is not the local FFmpeg profile");
     }
     await mkdir(attemptDir, { recursive: true });
-    await stageSources(options.mockObjectDir, attemptDir, execution.inputSnapshot);
+    await stageComposeSources(options.mockObjectDir, attemptDir, execution.inputSnapshot, {
+      workspaceId: execution.workspaceId,
+      projectId: execution.projectId,
+      objectReader: options.objectReader,
+    });
     const output = join(attemptDir, "output.mp4");
     const rendered = await renderWithFfmpeg(options, execution, acquired.attemptId, attemptDir, output);
     const published = await publishOutput(options.objectDir, execution, acquired.attemptId, output, rendered);
@@ -397,16 +423,59 @@ function sameProfile(value: unknown): boolean {
   }
 }
 
-async function stageSources(root: string, attemptDir: string, snapshot: ComposeJobSnapshot): Promise<void> {
+export async function stageComposeSources(
+  root: string | undefined,
+  attemptDir: string,
+  snapshot: ComposeJobSnapshot,
+  context: { workspaceId: string; projectId: string; objectReader?: ComposeObjectReader },
+): Promise<void> {
   const names = { video: "video.mp4", audio: "audio.wav", music: "music.wav", subtitle: "subtitle.vtt" } as const;
   for (const source of snapshot.input.sourceObjects) {
+    if (!Object.hasOwn(names, source.role)) {
+      throw new PersistenceError("COMPOSE_INPUT_INVALID", "Compose source role is not supported");
+    }
+    await stageVerifiedComposeSource(root, join(attemptDir, names[source.role]), source, context);
+  }
+}
+
+export async function stageVerifiedComposeSource(root: string | undefined, targetPath: string, source: ComposeSourceObject,
+  context: { workspaceId: string; projectId: string; objectReader?: ComposeObjectReader }): Promise<void> {
+    if (!["video", "audio", "music", "subtitle"].includes(source.role)) {
+      throw new PersistenceError("COMPOSE_INPUT_INVALID", "Compose source role is not supported");
+    }
+    if (source.storageProvider === "s3") {
+      const extension = { video: "mp4", audio: "wav", music: "wav", subtitle: "vtt" }[source.role];
+      const prefix = `real-media/${context.workspaceId}/${context.projectId}/`;
+      const suffix = source.objectKey.startsWith(prefix) ? source.objectKey.slice(prefix.length) : "";
+      const uuid = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
+      const maxBytes = REAL_COMPOSE_INPUT_MAX_BYTES[source.role];
+      if (
+        !/^[0-9a-f]{64}$/.test(source.checksumSha256) ||
+        !Number.isSafeInteger(source.byteSize) || source.byteSize <= 0 || source.byteSize > maxBytes ||
+        !new RegExp(`^${uuid}/${uuid}/${source.checksumSha256}\\.${extension}$`).test(suffix)
+      ) {
+        throw new PersistenceError("COMPOSE_INPUT_INVALID", "Compose source is outside the real media object scope or limit");
+      }
+      if (!context.objectReader) {
+        throw new PersistenceError("CONFIGURATION_ERROR", "Real media compose object reader is not configured");
+      }
+      await context.objectReader.stageVerified(source, targetPath, {
+        workspaceId: context.workspaceId,
+        projectId: context.projectId,
+        maxBytes,
+      });
+      return;
+    }
+    if (source.storageProvider !== "mock-object-store") {
+      throw new PersistenceError("COMPOSE_INPUT_INVALID", "Compose source storage is not supported");
+    }
+    if (!root) throw new PersistenceError("CONFIGURATION_ERROR", "Mock compose object directory is not configured");
     const absolute = await containedFile(root, source.objectKey, source.byteSize);
     const bytes = await readRegularFile(absolute, source.byteSize);
     if (createHash("sha256").update(bytes).digest("hex") !== source.checksumSha256) {
       throw new PersistenceError("COMPOSE_INPUT_INVALID", "Compose source bytes do not match the frozen checksum");
     }
-    await writeExclusive(join(attemptDir, names[source.role]), bytes);
-  }
+    await writeExclusive(targetPath, bytes);
 }
 
 async function readRegularFile(absolute: string, byteSize: number): Promise<Buffer> {

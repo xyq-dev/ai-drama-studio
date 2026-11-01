@@ -270,3 +270,8 @@ export * from "./auto-creation-references";
 export * from "./auto-creation-sources";
 export * from "./series-writing";
 export * from "./series-state";
+export * from "./vimax-planning";
+export * from "./real-media";
+
+export * from "./speech";
+export * from "./voice-compose";

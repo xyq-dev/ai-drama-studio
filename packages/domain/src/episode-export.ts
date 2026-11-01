@@ -24,6 +24,7 @@ export interface EpisodeExportMedia {
   checksumSha256: string;
   sourceJobId: string;
   sourceAttemptId: string;
+  lineId?: string;
 }
 
 export interface EpisodeExportSegment {
@@ -62,6 +63,7 @@ export interface EpisodeExportCore {
 
 export interface EpisodeExportFacts extends EpisodeExportCore {
   segments: EpisodeExportSegment[];
+  sourceBoundary?: "mock-provider" | "real-provider" | "mixed-provider" | "unverified-provider";
 }
 
 export interface EpisodeExportAssetFacts {
@@ -336,6 +338,13 @@ export function buildEpisodeExportManifest(facts: EpisodeExportFacts, verifiedAt
   if (Number.isNaN(Date.parse(verifiedAt))) {
     throw new DomainError("VALIDATION_ERROR", "Export verification time is invalid");
   }
+  const sourceBoundary = facts.sourceBoundary ?? "mock-provider";
+  const sourceStatement = {
+    "mock-provider": "上游媒体来自 Mock 边界。",
+    "real-provider": "上游媒体来自已记录的真实供应商生成任务。",
+    "mixed-provider": "上游媒体同时包含 Mock 素材与已记录的真实供应商素材。",
+    "unverified-provider": "部分上游媒体的供应商类别未核实，不能据此宣称真实生成验收通过。",
+  }[sourceBoundary];
   return {
     schema: EPISODE_EXPORT_MANIFEST_SCHEMA,
     verifiedAt,
@@ -378,12 +387,13 @@ export function buildEpisodeExportManifest(facts: EpisodeExportFacts, verifiedAt
         checksumSha256: item.checksumSha256,
         sourceJobId: item.sourceJobId,
         sourceAttemptId: item.sourceAttemptId,
+        ...(item.lineId ? { lineId: item.lineId } : {}),
       })),
     })),
     boundary: {
-      sourceBoundary: "mock-provider" as const,
+      sourceBoundary,
       localEncodeCostMetered: false,
-      statement: "本清单只记录已批准集级成片的冻结来源。上游媒体来自 Mock 边界。本地编码成本未计量，不包含完整财务账本，也不构成生产分发许可。",
+      statement: `本清单只记录已批准集级成片的冻结来源。${sourceStatement}本地编码成本未计量，不包含完整财务账本，也不构成生产分发许可。`,
     },
   };
 }

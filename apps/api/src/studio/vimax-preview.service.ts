@@ -10,6 +10,7 @@ import type { VimaxPreviewSourceStore, VimaxPreviewSourceRead } from "@ai-drama/
 export interface VimaxPreviewDependencies {
   workspaceId: string;
   nodeEnv: "development" | "test" | "production";
+  allowProduction?: boolean;
   source: Pick<VimaxPreviewSourceStore, "read">;
   clock?: () => Date;
 }
@@ -36,7 +37,7 @@ export class VimaxPreviewService {
   constructor(private readonly deps: VimaxPreviewDependencies) {}
 
   private gate(): VimaxPreviewResult | null {
-    return this.deps.nodeEnv === "production" ? failure(404, "VIMAX_PREVIEW_DISABLED") : null;
+    return this.deps.nodeEnv === "production" && this.deps.allowProduction !== true ? failure(404, "VIMAX_PREVIEW_DISABLED") : null;
   }
 
   private async read(projectId: string, episodeId: string): Promise<VimaxPreviewSourceRead> {

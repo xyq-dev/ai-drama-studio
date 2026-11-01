@@ -305,7 +305,7 @@ export class PostgresSeriesWritingStore implements SeriesWritingStore {
     return row ? toGrant(row) : null;
   }
 
-  private async activeRuns(client: PoolClient, workspaceId: string): Promise<Array<{ kind: "title" | "auto" | "series"; id: string; projectId: string }>> {
+  private async activeRuns(client: PoolClient, workspaceId: string): Promise<Array<{ kind: "title" | "auto" | "series" | "vimax"; id: string; projectId: string }>> {
     const titles = await client.query<Row>("SELECT to_regclass('title_writing_run') IS NOT NULL AS present");
     const titleRows = titles.rows[0]?.present === true
       ? (await client.query<Row>("SELECT id, project_id FROM title_writing_run WHERE workspace_id = $1 AND state = 'running'", [workspaceId])).rows

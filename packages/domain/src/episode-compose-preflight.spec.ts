@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { COMPOSE_JOB_SCHEMA, COMPOSE_RENDER_PROFILE } from "./compose-render";
+import { VOICE_COMPOSE_JOB_SCHEMA, VOICE_COMPOSE_OUTPUT_SCHEMA, VOICE_COMPOSE_RENDER_PROFILE } from "./voice-compose";
 import { DomainError } from "./errors";
 import {
   EPISODE_COMPOSE_ASSET_SCHEMA,
@@ -76,6 +77,16 @@ function build(composites: EpisodeCompositeFacts[], extra: { staleRecalculationP
 }
 
 describe("episode compose preflight", () => {
+  it("accepts the approved voice profile only with its own succeeded job schema", () => {
+    const source = facts(1);
+    const voice = { ...source, metadataSchema: VOICE_COMPOSE_OUTPUT_SCHEMA, renderProfile: VOICE_COMPOSE_RENDER_PROFILE,
+      job: { ...source.job!, schema: VOICE_COMPOSE_JOB_SCHEMA } };
+    expect(() => assertEpisodeCompositeEligible(workspaceId, projectId, episodeId, voice)).not.toThrow();
+    expect(() => assertEpisodeCompositeEligible(workspaceId, projectId, episodeId, { ...voice, job: source.job })).toThrow(/succeeded/);
+    expect(() => assertEpisodeCompositeEligible(workspaceId, projectId, episodeId, { ...voice, renderProfile: COMPOSE_RENDER_PROFILE })).toThrow(/schema/);
+    expect(() => assertEpisodeCompositeEligible(workspaceId, projectId, episodeId, { ...voice, reviewStatus: "DRAFT" })).toThrow(/approved/);
+  });
+
   it("keeps request order, accumulates milliseconds, and hashes only the manifest", () => {
     const first = facts(1, { durationMs: 1500 });
     const second = facts(2, { durationMs: 2500 });

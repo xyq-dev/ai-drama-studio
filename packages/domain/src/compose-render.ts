@@ -134,11 +134,21 @@ export function buildComposeJobSnapshot(
     if (!slot?.asset || slot.asset.assetId !== source.assetId || slot.asset.checksumSha256 !== source.checksumSha256 || slot.asset.byteSize !== source.byteSize) {
       throw new DomainError("COMPOSE_INPUT_INVALID", "Compose source object does not match the manifest");
     }
-    if (source.storageProvider !== "mock-object-store" || !/^[0-9a-f]{64}$/.test(source.checksumSha256)) {
-      throw new DomainError("COMPOSE_INPUT_INVALID", "Compose source object is not a stored mock file");
+    if (!["mock-object-store", "s3"].includes(source.storageProvider) || !/^[0-9a-f]{64}$/.test(source.checksumSha256)) {
+      throw new DomainError("COMPOSE_INPUT_INVALID", "Compose source object is not a supported stored file");
     }
     if (source.objectKey.includes("..") || source.objectKey.startsWith("/") || source.objectKey.includes("\\")) {
       throw new DomainError("COMPOSE_INPUT_INVALID", "Compose source object key is not usable");
+    }
+    const guard = preflight.guards.assets.find((item) => item.role === source.role);
+    if (source.storageProvider === "s3") {
+      const extension = { video: "mp4", audio: "wav", music: "wav", subtitle: "vtt" }[source.role];
+      const prefix = `real-media/${preflight.manifest.workspaceId}/${preflight.manifest.projectId}/${guard?.sourceGenerationJobId}/${guard?.sourceJobAttemptId}/`;
+      if (guard?.storageProvider !== "s3" || source.objectKey !== `${prefix}${source.checksumSha256}.${extension}`) {
+        throw new DomainError("COMPOSE_INPUT_INVALID", "Compose source object does not match its real media provenance");
+      }
+    } else if (guard?.storageProvider === "s3") {
+      throw new DomainError("COMPOSE_INPUT_INVALID", "Compose source storage does not match the preflight");
     }
   }
   const input = {

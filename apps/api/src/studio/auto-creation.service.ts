@@ -298,7 +298,7 @@ export class AutoCreationService {
         : failure(429, created.code);
     }
     if (created.kind === "project_not_empty") return failure(409, "AUTO_CREATION_PROJECT_NOT_EMPTY");
-    if (created.kind === "active") return failure(409, "AUTO_CREATION_RUN_ACTIVE", created.runKind === "auto" ? { runId: created.runId } : { runKind: "title" });
+    if (created.kind === "active") return failure(409, "AUTO_CREATION_RUN_ACTIVE", created.runKind === "auto" ? { runId: created.runId } : { runKind: created.runKind });
     if (created.kind === "conflict") return failure(409, "IDEMPOTENCY_KEY_REUSED");
     if (created.kind === "created") this.schedule(created.bundle.run.id);
     return this.found(created.bundle, created.kind === "created" ? 201 : 200);

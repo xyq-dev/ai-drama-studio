@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { loadRealMediaEnvironment, RealMediaEnvironmentError, type RealMediaEnvironment } from "@ai-drama/providers";
 
 const apiEnvSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
@@ -34,6 +35,8 @@ const apiEnvSchema = z.object({
   AUTO_CREATION_ENABLED: z.enum(["true", "false"]).default("false"),
   AUTO_CREATION_RESEARCH_FETCH: z.enum(["true", "false"]).default("false"),
   SERIES_WRITING_ENABLED: z.enum(["true", "false"]).default("false"),
+  VIMAX_PLANNING_ENABLED: z.enum(["true", "false"]).default("false"),
+  VIMAX_ALLOW_PRODUCTION: z.enum(["true", "false"]).default("false"),
   AUTO_CREATION_RESEARCH_HOSTS: z.string().max(500)
     .regex(/^[a-z0-9.-]+(,[a-z0-9.-]+)*$/u, "comma-separated lower-case host names").optional(),
 });
@@ -49,6 +52,9 @@ export class EnvValidationError extends Error {
 }
 
 export interface ApiEnv {
+  REAL_MEDIA_ENV?: RealMediaEnvironment;
+  VIMAX_PLANNING_ENABLED?: boolean;
+  VIMAX_ALLOW_PRODUCTION?: boolean;
   NODE_ENV: "development" | "test" | "production";
   BIND_HOST: string;
   API_PORT: number;
@@ -171,6 +177,7 @@ const API_KEYS = [
   "AUTO_CREATION_RESEARCH_FETCH",
   "AUTO_CREATION_RESEARCH_HOSTS",
   "SERIES_WRITING_ENABLED",
+  "VIMAX_PLANNING_ENABLED",
 ] as const;
 
 function pickEnv(
@@ -208,6 +215,7 @@ export function loadApiEnv(
     ...pickEnv(processEnv, fileEnv),
     // A release directory's .env must never authorize paid production execution.
     TITLE_WRITING_ALLOW_PRODUCTION: processEnv.TITLE_WRITING_ALLOW_PRODUCTION,
+    VIMAX_ALLOW_PRODUCTION: processEnv.VIMAX_ALLOW_PRODUCTION,
   });
   if (!parsed.success) {
     const fields = parsed.error.issues.map((issue) => issue.path.map(String).join(".") || "environment");
@@ -224,6 +232,12 @@ export function loadApiEnv(
   // The login switch keeps an explicitly empty value: "SITE_AUTH_ENABLED=" is a broken setting, not "unset", and the
   // site login refuses access for it instead of treating it as switched off. Other variables keep dropping "".
   if (processEnv.SITE_AUTH_ENABLED === "") processOnly.SITE_AUTH_ENABLED = "";
+  let mediaEnvironment: RealMediaEnvironment;
+  try { mediaEnvironment = loadRealMediaEnvironment(processEnv, fileEnv); }
+  catch (error) {
+    if (error instanceof RealMediaEnvironmentError) throw new EnvValidationError(error.fields.slice());
+    throw error;
+  }
   const { TITLE_WRITING_DEFAULT_PROVIDER: defaultProvider, ...rest } = parsed.data;
   return {
     ...rest,
@@ -243,5 +257,8 @@ export function loadApiEnv(
     AUTO_CREATION_ENABLED: parsed.data.AUTO_CREATION_ENABLED === "true",
     AUTO_CREATION_RESEARCH_FETCH: parsed.data.AUTO_CREATION_RESEARCH_FETCH === "true",
     SERIES_WRITING_ENABLED: parsed.data.SERIES_WRITING_ENABLED === "true",
+    VIMAX_PLANNING_ENABLED: parsed.data.VIMAX_PLANNING_ENABLED === "true",
+    VIMAX_ALLOW_PRODUCTION: parsed.data.VIMAX_ALLOW_PRODUCTION === "true",
+    ...(Object.keys(mediaEnvironment).length ? { REAL_MEDIA_ENV: mediaEnvironment } : {}),
   };
 }

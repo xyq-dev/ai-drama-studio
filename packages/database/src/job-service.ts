@@ -498,6 +498,9 @@ async function manualRetryTx(
   }
 
   const oldJob = await loadJobForUpdate(client, input.workspaceId, input.jobId);
+  if ((oldJob.input_snapshot as { schema?: string } | null)?.schema === "real-media.v1") {
+    throw new PersistenceError("JOB_NOT_RETRYABLE", "Real media requires a new quote and single-operation authorization");
+  }
   if (oldJob.kind === "MEDIA_COMPOSE") {
     throw new PersistenceError("JOB_NOT_RETRYABLE", "Compose must be submitted again after a new preflight");
   }
@@ -949,11 +952,14 @@ export class JobPersistenceService {
     jobId: string;
     attemptId: string;
     traceId: string;
+    /** Acquire source aggregate locks before the core job/attempt locks. */
+    beforeLock?: (client: PoolClient) => Promise<void>;
     persistArtifact?: (client: PoolClient) => Promise<T>;
     artifactResponse?: (artifact: T) => unknown;
     responseSnapshot?: unknown;
   }): Promise<T | null> {
     return withTransaction(this.pool, async (client) => {
+      await input.beforeLock?.(client);
       const job = await loadJobForUpdate(client, input.workspaceId, input.jobId);
       if (TERMINAL_STATES.has(job.state)) {
         throw new PersistenceError("JOB_TERMINAL", "Terminal jobs cannot reopen");
@@ -1005,6 +1011,7 @@ export class JobPersistenceService {
     retryable: boolean;
     attemptId: string;
     nextRunAt?: Date;
+    beforeFailure?: (client: PoolClient) => Promise<void>;
   }): Promise<"requeued" | "failed" | "canceled"> {
     return withTransaction(this.pool, async (client) => {
       const job = await loadJobForUpdate(client, input.workspaceId, input.jobId);
@@ -1021,6 +1028,11 @@ export class JobPersistenceService {
 
       const attempt = await loadLatestAttemptForUpdate(client, job.id);
       requireCurrentAttempt(attempt, input.attemptId);
+      if ((job.input_snapshot as { schema?: string } | null)?.schema === "real-media.v1" && input.retryable) {
+        throw new PersistenceError("JOB_NOT_RETRYABLE", "Real media submissions require a fresh authorization");
+      }
+      await input.beforeFailure?.(client);
+
 
       await client.query(
         `UPDATE job_attempt
@@ -1094,6 +1106,9 @@ export class JobPersistenceService {
       if (job.state !== "RUNNING" || job.lease_until === null || job.lease_until.getTime() > Date.now()) {
         return null;
       }
+
+      // Real submissions are recovered only by the receipt-aware, query-only media recovery module.
+      if ((job.input_snapshot as { schema?: string } | null)?.schema === "real-media.v1") return "deferred";
 
       const attempt = await loadLatestAttemptForUpdate(client, job.id);
 
@@ -1189,10 +1204,12 @@ export class JobPersistenceService {
   async createAndQueueWorkflowJob(
     scope: IdempotencyScope,
     input: CreateWorkflowJobInput | ((client: PoolClient) => Promise<CreateWorkflowJobInput>),
+    afterCreated?: (client: PoolClient, created: CreatedWorkflowJob) => Promise<void>,
   ): Promise<{ replayed: boolean; status: number; body: CreatedWorkflowJob & { dispatchSeq: number } }> {
     return this.runIdempotent(scope, 202, async (client) => {
       const resolved = typeof input === "function" ? await input(client) : input;
       const created = await createWorkflowJobTx(client, resolved);
+      await afterCreated?.(client, created);
       const job = await loadJobForUpdate(client, resolved.workspaceId, created.jobId);
       const queued = await queueJobTx(client, job, resolved.traceId, null, 0);
       return { ...created, dispatchSeq: queued.dispatch_seq };

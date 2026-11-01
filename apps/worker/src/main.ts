@@ -9,6 +9,7 @@ import { findRepoRoot, readEnvFile } from "./config/env-file";
 import { SafeExceptionFilter } from "./http/safe-exception.filter";
 import { startQueueRuntime } from "./runtime/start-runtime";
 import { WORKER_BOOT_LOGS } from "./version";
+import { ServerRealMediaRuntime } from "@ai-drama/providers";
 
 async function bootstrap(): Promise<void> {
   const logger = new Logger("Worker");
@@ -23,6 +24,13 @@ async function bootstrap(): Promise<void> {
   const composeObjectDir = env.M4_COMPOSE_OBJECT_DIR && isAbsolute(env.M4_COMPOSE_OBJECT_DIR) ? env.M4_COMPOSE_OBJECT_DIR : undefined;
   const composeAllowed = env.NODE_ENV !== "production" && env.M4_LOCAL_COMPOSE_ENABLED && directoryReady && Boolean(composeWorkDir && composeObjectDir);
   const episodeComposeAllowed = env.NODE_ENV !== "production" && env.M4_LOCAL_COMPOSE_ENABLED && env.M4_LOCAL_EPISODE_COMPOSE_ENABLED && Boolean(composeWorkDir && composeObjectDir);
+  const realRuntime = env.REAL_MEDIA_WORKSPACE_ID && env.REAL_MEDIA_ENV
+    ? new ServerRealMediaRuntime(env.REAL_MEDIA_WORKSPACE_ID, env.REAL_MEDIA_ENV,
+      env.NODE_ENV !== "production" || env.REAL_MEDIA_ENV.REAL_MEDIA_ALLOW_PRODUCTION === "true") : undefined;
+  const realComposeAllowed = Boolean(realRuntime?.receiptCipher) && env.M4_LOCAL_COMPOSE_ENABLED
+    && (env.NODE_ENV !== "production" || env.REAL_MEDIA_ENV?.REAL_MEDIA_ALLOW_PRODUCTION === "true")
+    && Boolean(composeWorkDir && composeObjectDir && env.REAL_MEDIA_S3);
+  if (env.M4_VOICE_COMPOSE_FONT_PATH && !isAbsolute(env.M4_VOICE_COMPOSE_FONT_PATH)) throw new EnvValidationError(["M4_VOICE_COMPOSE_FONT_PATH"]);
   const runtime = await startQueueRuntime({
     databaseUrl: env.DATABASE_URL, redisUrl: env.REDIS_URL, mockObjectDir,
     mockImageEnabled: env.NODE_ENV !== "production" && env.M3_MOCK_IMAGE_ENABLED && directoryReady,
@@ -34,7 +42,7 @@ async function bootstrap(): Promise<void> {
       directoryReady,
     }),
     mockSmEnabled: env.NODE_ENV !== "production" && env.M3_MOCK_SUBTITLE_MUSIC_ENABLED && directoryReady,
-    localComposeEnabled: composeAllowed,
+    localComposeEnabled: composeAllowed || realComposeAllowed,
     episodeComposeEnabled: episodeComposeAllowed,
     composeWorkDir, composeObjectDir,
     composePythonBin: env.M4_COMPOSE_PYTHON,
@@ -42,6 +50,10 @@ async function bootstrap(): Promise<void> {
     composeHoldBeforeCommitMs: composeAllowed ? env.M4_COMPOSE_HOLD_BEFORE_COMMIT_MS : 0,
     composeLeaseMs: composeAllowed ? env.M4_COMPOSE_LEASE_MS : 30_000,
     composeFailInsideCommit: composeAllowed && env.M4_COMPOSE_FAIL_INSIDE_COMMIT,
+    ...(realRuntime ? { realMediaRuntime: realRuntime } : {}),
+    ...(env.REAL_MEDIA_S3 ? { realMediaS3: env.REAL_MEDIA_S3 } : {}),
+    voiceComposeEnabled: realComposeAllowed,
+    ...(env.M4_VOICE_COMPOSE_FONT_PATH ? { voiceComposeFontPath: env.M4_VOICE_COMPOSE_FONT_PATH } : {}),
   });
   const app = await NestFactory.create(AppModule.register(env, runtime.status), {
     logger: ["error", "warn", "log"],

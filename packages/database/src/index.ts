@@ -18,6 +18,7 @@ export {
   JobPersistenceService,
   PersistenceError,
   type AcquiredJob,
+  type DatabasePool,
   type CreateWorkflowJobInput,
   type CreatedWorkflowJob,
   type IdempotencyScope,
@@ -194,3 +195,9 @@ export {
 } from "./writing-candidate-store";
 export { VimaxPreviewSourceStore, type VimaxPreviewSourceRead } from "./vimax-preview-source";
 export { VimaxCandidateStore } from "./vimax-candidate-store";
+export { PostgresVimaxPlanningStore, VIMAX_PLANNING_COLUMNS } from "./vimax-planning-store";
+
+export * from "./speech-store";
+
+export * from "./real-media-store";
+export * from "./voice-compose-store";

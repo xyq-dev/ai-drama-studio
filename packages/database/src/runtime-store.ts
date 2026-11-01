@@ -315,6 +315,7 @@ export class RuntimeStore {
               LIMIT 1
            ) ja ON true
           WHERE j.state = 'WAITING_EXTERNAL'
+            AND (j.input_snapshot->>'schema') IS DISTINCT FROM 'real-media.v1'
             AND j.kind <> ALL(ARRAY['MEDIA_IMAGE','MEDIA_VIDEO','MEDIA_TTS','MEDIA_SUBTITLE','MEDIA_MUSIC','MEDIA_CHARACTER_REFERENCE'])
             AND ja.provider_request_id IS NOT NULL
             AND (j.next_run_at IS NULL OR j.next_run_at <= now())
@@ -343,6 +344,7 @@ export class RuntimeStore {
               LIMIT 1
            ) ja ON true
           WHERE j.state = 'RUNNING'
+            AND (j.input_snapshot->>'schema') IS DISTINCT FROM 'real-media.v1'
             AND j.kind <> ALL(ARRAY['MEDIA_IMAGE','MEDIA_VIDEO','MEDIA_TTS','MEDIA_SUBTITLE','MEDIA_MUSIC','MEDIA_CHARACTER_REFERENCE'])
             AND j.lease_until IS NOT NULL AND j.lease_until <= $1
           ORDER BY j.lease_until
@@ -371,6 +373,7 @@ export class RuntimeStore {
               WHERE generation_job_id = j.id ORDER BY attempt_no DESC LIMIT 1
            ) ja ON true
           WHERE j.kind = ANY($3::text[]) AND j.state = 'RUNNING'
+            AND (j.input_snapshot->>'schema') IS DISTINCT FROM 'real-media.v1'
             AND j.lease_until IS NOT NULL AND j.lease_until <= $1
           ORDER BY j.lease_until LIMIT $2`,
         [now, limit, kinds],
@@ -397,7 +400,8 @@ export class RuntimeStore {
            FROM generation_job j
            LEFT JOIN provider_configuration pc ON pc.workspace_id = j.workspace_id
             AND pc.provider_key = 'mock-media' AND pc.capability = 'image.generate' AND pc.enabled
-          WHERE j.id = $1 AND j.workspace_id = $2 AND j.kind = 'MEDIA_CHARACTER_REFERENCE'`,
+          WHERE j.id = $1 AND j.workspace_id = $2 AND j.kind = 'MEDIA_CHARACTER_REFERENCE'
+            AND (j.input_snapshot->>'schema') IS DISTINCT FROM 'real-media.v1'`,
         [jobId, workspaceId],
       );
       const row = result.rows[0];
@@ -460,6 +464,17 @@ export class RuntimeStore {
     }
   }
 
+  /** Inspect base Job metadata even when optional media tables or credentials are unavailable. */
+  async readJobDispatchMetadata(workspaceId: string, jobId: string): Promise<{ kind: string; schema: string | null } | null> {
+    const client = await this.pool.connect();
+    try {
+      const result = await client.query<QueryResultRow>(
+        "SELECT kind,input_snapshot->>'schema' AS schema FROM generation_job WHERE id=$1 AND workspace_id=$2", [jobId, workspaceId]);
+      const row = result.rows[0];
+      return row ? { kind: String(row.kind), schema: row.schema === null ? null : String(row.schema) } : null;
+    } finally { client.release(); }
+  }
+
   async loadMockMediaExecution(workspaceId: string, jobId: string): Promise<MockMediaExecution | null> {
     const client = await this.pool.connect();
     try {
@@ -478,7 +493,8 @@ export class RuntimeStore {
                WHEN 'MEDIA_MUSIC' THEN 'audio.music'
                ELSE NULL
              END
-          WHERE j.id = $1 AND j.workspace_id = $2 AND j.kind = ANY($3::text[])`,
+          WHERE j.id = $1 AND j.workspace_id = $2 AND j.kind = ANY($3::text[])
+            AND (j.input_snapshot->>'schema') IS DISTINCT FROM 'real-media.v1' `,
         [jobId, workspaceId, MOCK_MEDIA_JOB_KINDS],
       );
       const row = result.rows[0];
@@ -508,7 +524,8 @@ export class RuntimeStore {
              WHERE generation_job_id = j.id ORDER BY attempt_no DESC LIMIT 1) latest ON true
            LEFT JOIN provider_configuration pc
              ON pc.workspace_id = j.workspace_id AND pc.provider_key = 'mock' AND pc.capability = 'mock.generate'
-          WHERE j.id = $1 AND j.workspace_id = $2`,
+          WHERE j.id = $1 AND j.workspace_id = $2
+            AND (j.input_snapshot->>'schema') IS DISTINCT FROM 'real-media.v1'`,
         [jobId, workspaceId],
       );
       const row = result.rows[0];

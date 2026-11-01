@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState, type ChangeEvent } from "reac
 import {
   VIMAX_PLATFORM_PREVIEW_MAX_BYTES,
   VIMAX_PLATFORM_PREVIEW_REQUEST_SCHEMA,
+  type VimaxCandidateCreate,
   type VimaxPlatformPreviewResponse,
   type VimaxPlatformPreviewRequest,
   type VimaxPlatformSourceSnapshot,
@@ -12,6 +13,8 @@ import { parseVimaxPreviewImport, VimaxPreviewClient, VimaxPreviewError } from "
 import styles from "./vimax-preview-panel.module.css";
 import { VimaxStoryboardReview } from "./vimax-storyboard-review";
 import { VimaxCandidatePanel } from "./vimax-candidate-panel";
+import { VimaxPlanningSetup } from "./vimax-planning-setup";
+import type { VimaxPlanningClient } from "../lib/vimax-planning-client";
 import type { VimaxCandidateClient } from "../lib/vimax-candidate-client";
 
 const defaultClient = new VimaxPreviewClient();
@@ -25,6 +28,7 @@ export interface VimaxPreviewPanelProps {
   refreshEpoch?: number;
   client?: Pick<VimaxPreviewClient, "source" | "preview">;
   candidateClient?: Pick<VimaxCandidateClient, "targets" | "list" | "get" | "create" | "saveScene" | "placeShots">;
+  planningClient?: Pick<VimaxPlanningClient, "options" | "list" | "get" | "start" | "cancel">;
   onOpenScene?: (sceneId: string) => void;
   onChanged?: () => void | Promise<void>;
 }
@@ -165,6 +169,25 @@ function PreviewSession(props: VimaxPreviewPanelProps) {
       if (mounted.current && sequence === previewRequest.current) setPreviewBusy(false);
     }
   };
+  const acceptPlanningCandidate = async (candidate: VimaxCandidateCreate) => {
+    if (!source || source.generation !== generation || !props.scriptReady || sourceBusy || sourceError) {
+      setError("来源已变化，请重新读取后再核对模型候选。"); return;
+    }
+    const sequence = ++previewRequest.current, requestGeneration = generation;
+    const controller = new AbortController(); previewAbort.current?.abort(); previewAbort.current = controller;
+    const request = candidate.request;
+    setText(JSON.stringify(request, null, 2)); setPreviewBusy(true); setError(null); setResult(null);
+    try {
+      // An answered model request is only a historical candidate. Reuse the read-only server validator before E2-B.
+      const value = await client.preview(props.projectId, props.episodeId, request, controller.signal);
+      if (mounted.current && sequence === previewRequest.current && requestGeneration === current.current.generation && current.current.scriptReady) {
+        setSource({ value: value.source, generation: requestGeneration });
+        setResult({ value, request, generation: requestGeneration });
+      }
+    } catch (caught) {
+      if (mounted.current && sequence === previewRequest.current && requestGeneration === current.current.generation && !controller.signal.aborted) setError(errorText(caught));
+    } finally { if (mounted.current && sequence === previewRequest.current) setPreviewBusy(false); }
+  };
   const downloadTemplate = () => {
     if (!source || source.generation !== generation || !props.scriptReady) return;
     const value = source.value;
@@ -199,6 +222,9 @@ function PreviewSession(props: VimaxPreviewPanelProps) {
         <details className={styles.details}><summary>查看已读取的剧本原文</summary><pre className={styles.pre}>{source.value.scriptText}</pre></details>
         {!sourceReady ? <p className={styles.notice}>来源可能已变化，请重新读取后再校验；不会自动替换导入方案记录的来源。</p> : null}
       </div> : null}
+      {sourceReady && source ? <VimaxPlanningSetup key={`${generation}:${source.value.scriptRevisionId}:${source.value.scriptContentHash}:${JSON.stringify(source.value.characters)}`}
+        source={source.value} targetsClient={props.candidateClient} planningClient={props.planningClient}
+        onCandidate={(candidate) => { void acceptPlanningCandidate(candidate); }} /> : null}
       <p className={styles.muted}>来源模板尚未包含场景边界、对白目录、分镜候选及补充字段，填完整后再导入。方案须为平台格式，最大 300 KB；离线评估报告不能直接导入。</p>
       <label className={styles.label}>导入分镜方案 JSON
         <input className={styles.file} type="file" accept=".json,application/json" onChange={(event) => { void importFile(event); }} />

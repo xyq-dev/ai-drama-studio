@@ -871,7 +871,7 @@ export class StudioService {
     if (asset.kind === "COMPOSITE") {
       const schema = await this.mediaAssets.compositeOutputSchema(this.workspaceId, assetId);
       const episodeOutput = schema === "m4.episode.compose.asset.v1";
-      const shotOutput = schema === "m4.shot.compose.asset.v1";
+      const shotOutput = schema === "m4.shot.compose.asset.v1" || schema === "m4.shot.voice-compose.asset.v1";
       if (episodeOutput && !this.episodeComposeEnabled) {
         throw new PersistenceError("CONFIGURATION_ERROR", "Episode compose content is not enabled");
       }

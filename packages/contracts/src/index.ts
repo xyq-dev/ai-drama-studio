@@ -360,3 +360,7 @@ export {
 export * from "./vimax-evaluation";
 export * from "./vimax-platform-preview";
 export * from "./vimax-candidate";
+export * from "./vimax-planning";
+
+export * from "./speech";
+export * from "./real-media";

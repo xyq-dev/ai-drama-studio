@@ -1,5 +1,6 @@
 import { DomainError } from "./errors";
 import { COMPOSE_JOB_SCHEMA, COMPOSE_OUTPUT_MAX_BYTES, COMPOSE_RENDER_PROFILE } from "./compose-render";
+import { VOICE_COMPOSE_JOB_SCHEMA, VOICE_COMPOSE_OUTPUT_SCHEMA, VOICE_COMPOSE_RENDER_PROFILE } from "./voice-compose";
 import { canonicalInputHash } from "./text-chain";
 
 export const EPISODE_COMPOSE_PREFLIGHT_SCHEMA = "m4.episode.compose.preflight.v1";
@@ -246,7 +247,8 @@ export function assertEpisodeCompositeEligible(
   if (!Number.isSafeInteger(composite.byteSize) || composite.byteSize <= 0 || composite.byteSize > COMPOSE_OUTPUT_MAX_BYTES) {
     throw new DomainError("COMPOSE_INPUT_INVALID", "Composite byte size is not usable");
   }
-  if (composite.metadataSchema !== EPISODE_COMPOSE_ASSET_SCHEMA || !sameProfile(composite.renderProfile)) {
+  const voiceProfile = composite.metadataSchema === VOICE_COMPOSE_OUTPUT_SCHEMA && sameProfile(composite.renderProfile, VOICE_COMPOSE_RENDER_PROFILE);
+  if (!voiceProfile && (composite.metadataSchema !== EPISODE_COMPOSE_ASSET_SCHEMA || !sameProfile(composite.renderProfile))) {
     throw new DomainError("COMPOSE_INPUT_INVALID", "Composite metadata is not the accepted single-shot schema");
   }
   positiveDurationMs(composite);
@@ -261,7 +263,7 @@ export function assertEpisodeCompositeEligible(
     || job.shotRevisionId !== composite.shotRevisionId
     || job.kind !== "MEDIA_COMPOSE"
     || job.state !== "SUCCEEDED"
-    || job.schema !== COMPOSE_JOB_SCHEMA
+    || job.schema !== (voiceProfile ? VOICE_COMPOSE_JOB_SCHEMA : COMPOSE_JOB_SCHEMA)
   ) {
     throw new DomainError("COMPOSE_INPUT_INVALID", "Composite job is not a succeeded single-shot compose");
   }
@@ -287,9 +289,9 @@ function positiveDurationMs(composite: EpisodeCompositeFacts): number {
   return durationMs;
 }
 
-function sameProfile(value: unknown): boolean {
+function sameProfile(value: unknown, expected: unknown = COMPOSE_RENDER_PROFILE): boolean {
   try {
-    return canonicalInputHash(value) === canonicalInputHash(COMPOSE_RENDER_PROFILE);
+    return canonicalInputHash(value) === canonicalInputHash(expected);
   } catch (error) {
     if (error instanceof DomainError) return false;
     throw error;

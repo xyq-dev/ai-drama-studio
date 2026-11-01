@@ -149,3 +149,8 @@ export {
 } from "./series-writing-engine";
 export { InMemorySeriesWritingStore, type MemorySeriesProject } from "./series-writing-memory-store";
 export { RESEARCH_FETCH_MAX_BYTES, RESEARCH_FETCH_TIMEOUT_MS, blockedAddress, createResearchFetcher, urlProblem, type ResearchFetchDeps } from "./research-fetch";
+export * from "./vimax-planning";
+export { MediaSubmissionUnknownError } from "./media-adapter";
+export * from "./real-media-adapters";
+export * from "./real-media-runtime";
+export * from "./media-object-client";

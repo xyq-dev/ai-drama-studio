@@ -55,6 +55,13 @@ export interface ComposeAttemptFacts {
   providerRequestId: string | null;
   providerConfigurationId: string | null;
   finished: boolean;
+  realMediaReceipt?: {
+    providerKey: string;
+    capability: string;
+    state: "SUCCEEDED";
+    providerRequestId: string;
+    inputHash: string;
+  } | null;
 }
 
 export interface ComposeJobFacts {
@@ -64,6 +71,7 @@ export interface ComposeJobFacts {
   shotRevisionId: string | null;
   kind: string;
   state: string;
+  inputHash?: string;
   inputSnapshot?: unknown;
 }
 
@@ -82,6 +90,7 @@ export interface ComposeAssetFacts {
   status: string;
   reviewStatus: string;
   storageProvider: string;
+  sourceKind?: string;
   sourceGenerationJobId: string | null;
   sourceJobAttemptId: string | null;
   providerRequestId: string | null;
@@ -134,7 +143,14 @@ export interface ComposePreflightResponse {
   inputHash: string;
   guards: {
     shotRevisionId: string;
-    assets: Array<{ role: ComposePreflightRole; assetId: string | null; rowVersion: number | null }>;
+    assets: Array<{
+      role: ComposePreflightRole;
+      assetId: string | null;
+      rowVersion: number | null;
+      storageProvider?: "s3";
+      sourceGenerationJobId?: string;
+      sourceJobAttemptId?: string;
+    }>;
   };
 }
 
@@ -175,6 +191,9 @@ export function buildComposePreflight(input: {
 }): ComposePreflightResponse {
   const video = checkedSource(input, "video", input.assets.video);
   const audio = input.assets.audio ? checkedSource(input, "audio", input.assets.audio) : null;
+  if(input.assets.audio?.storageProvider==="s3"&&audio&&audio.asset.durationMs>video.asset.durationMs){
+    throw new DomainError("COMPOSE_INPUT_INVALID","Real speech exceeds the video duration; complete sentences must not be truncated");
+  }
   const music = input.assets.music ? checkedSource(input, "music", input.assets.music) : null;
   const subtitle = input.assets.subtitle ? checkedSource(input, "subtitle", input.assets.subtitle) : null;
   const manifest = {
@@ -196,10 +215,10 @@ export function buildComposePreflight(input: {
     guards: {
       shotRevisionId: input.shotRevisionId,
       assets: [
-        { role: "video", assetId: input.assets.video.id, rowVersion: input.assets.video.rowVersion },
-        { role: "audio", assetId: input.assets.audio?.id ?? null, rowVersion: input.assets.audio?.rowVersion ?? null },
-        { role: "music", assetId: input.assets.music?.id ?? null, rowVersion: input.assets.music?.rowVersion ?? null },
-        { role: "subtitle", assetId: input.assets.subtitle?.id ?? null, rowVersion: input.assets.subtitle?.rowVersion ?? null },
+        sourceGuard("video", input.assets.video),
+        sourceGuard("audio", input.assets.audio),
+        sourceGuard("music", input.assets.music),
+        sourceGuard("subtitle", input.assets.subtitle),
       ],
     },
   };
@@ -217,8 +236,8 @@ function checkedSource(
   if (asset.status !== "ACTIVE" || asset.reviewStatus !== "DRAFT") {
     throw new DomainError("COMPOSE_INPUT_INVALID", `Compose input ${role} is not an active draft`);
   }
-  if (asset.kind !== rule.kind || asset.mimeType !== rule.mimeType || asset.storageProvider !== "mock-object-store") {
-    throw new DomainError("COMPOSE_INPUT_INVALID", `Compose input ${role} is not a supported mock source`);
+  if (asset.kind !== rule.kind || asset.mimeType !== rule.mimeType || !["mock-object-store", "s3"].includes(asset.storageProvider)) {
+    throw new DomainError("COMPOSE_INPUT_INVALID", `Compose input ${role} is not a supported stored source`);
   }
   if (!/^[0-9a-f]{64}$/.test(asset.checksumSha256) || !positiveInteger(asset.byteSize)) {
     throw new DomainError("COMPOSE_INPUT_INVALID", `Compose input ${role} metadata is unusable`);
@@ -241,7 +260,9 @@ function checkedSource(
   if (!job || !attempt || !asset.sourceGenerationJobId || !asset.sourceJobAttemptId || !asset.providerRequestId || !asset.providerConfigurationId) {
     throw new DomainError("COMPOSE_INPUT_INVALID", `Compose input ${role} does not come from a successful generation`);
   }
-  const requestId = sampleRequestId(role, asset, job, attempt) ?? `mock-media|sync|${rule.capability}|${job.id}:${attempt.attemptNo}`;
+  const requestId = asset.storageProvider === "s3"
+    ? realRequestId(role, asset, job, attempt)
+    : sampleRequestId(role, asset, job, attempt) ?? `mock-media|sync|${rule.capability}|${job.id}:${attempt.attemptNo}`;
   if (
     job.id !== asset.sourceGenerationJobId ||
     job.workspaceId !== scope.workspaceId ||
@@ -271,6 +292,40 @@ function checkedSource(
       durationMs: asset.durationMs,
     },
   };
+}
+
+function sourceGuard(role: ComposePreflightRole, asset: ComposeAssetFacts | null): ComposePreflightResponse["guards"]["assets"][number] {
+  return {
+    role,
+    assetId: asset?.id ?? null,
+    rowVersion: asset?.rowVersion ?? null,
+    ...(asset?.storageProvider === "s3" ? {
+      storageProvider: "s3" as const,
+      sourceGenerationJobId: asset.sourceGenerationJobId!,
+      sourceJobAttemptId: asset.sourceJobAttemptId!,
+    } : {}),
+  };
+}
+
+function realRequestId(role: ComposePreflightRole, asset: ComposeAssetFacts, job: ComposeJobFacts, attempt: ComposeAttemptFacts): string {
+  const receipt = attempt.realMediaReceipt;
+  const snapshot = job.inputSnapshot;
+  const provider = role === "music" ? "elevenlabs-media" : "dashscope-media";
+  if (
+    role === "subtitle" ||
+    asset.sourceKind !== "PROVIDER" ||
+    !snapshot || typeof snapshot !== "object" || Array.isArray(snapshot) ||
+    (snapshot as Record<string, unknown>).schema !== "real-media.v1" ||
+    !receipt || receipt.state !== "SUCCEEDED" ||
+    receipt.providerKey !== provider || receipt.capability !== SLOT_RULES[role].capability ||
+    !job.inputHash || !/^[0-9a-f]{64}$/.test(job.inputHash) || receipt.inputHash !== job.inputHash ||
+    !receipt.providerRequestId || receipt.providerRequestId !== asset.providerRequestId ||
+    receipt.providerRequestId !== attempt.providerRequestId ||
+    receipt.providerRequestId.startsWith("mock-media|")
+  ) {
+    throw new DomainError("COMPOSE_INPUT_INVALID", `Compose input ${role} does not match a successful real media receipt`);
+  }
+  return receipt.providerRequestId;
 }
 
 function sampleRequestId(
