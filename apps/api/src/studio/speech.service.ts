@@ -1,14 +1,30 @@
 import { z } from "zod";
-import { SPEECH_MAX_REQUEST_BYTES, speechBindingPutSchema, speechGenerateSchema, speechMixRequestSchema, speechPlanPutSchema,
+import { SPEECH_MAX_REQUEST_BYTES, SPEECH_BATCH_MAX_CONFIRM_BYTES, speechBindingPutSchema, speechGenerateSchema, speechMixRequestSchema, speechPlanPutSchema,
   speechSelectionPutSchema, speechVoiceSchema, type SpeechCapabilities, type SpeechGenerationPort } from "@ai-drama/contracts";
 import { DomainError, SpeechAudioOverflowError } from "@ai-drama/domain";
-import { PersistenceError, type SpeechPersistence } from "@ai-drama/database";
+import { PersistenceError, type SpeechPersistence, type SpeechBatchPersistence } from "@ai-drama/database";
 import type { StudioContext } from "./studio.service";
+import { SpeechBatchService } from "./speech-batch.service";
 
-export interface SpeechServiceDependencies { workspaceId: string; store: SpeechPersistence; generation: SpeechGenerationPort | null }
+export interface SpeechServiceDependencies { workspaceId: string; store: SpeechPersistence; generation: SpeechGenerationPort | null; batchStore?: SpeechBatchPersistence }
 export interface SpeechResult { status: number; body: unknown }
 const ERRORS: Record<string, { status: number; message: string }> = {
   SPEECH_DISABLED: { status: 409, message: "配音服务尚未开启，可先保存台词和选声草稿。" },
+  SPEECH_BATCH_STORAGE_UNAVAILABLE: { status: 503, message: "单集批量配音存储尚未启用，未创建任务。" },
+  SPEECH_BATCH_STORAGE_CORRUPT: { status: 503, message: "批次记录未通过完整性检查，请先核查原任务。" },
+  SPEECH_BATCH_SOURCE_CHANGED: { status: 409, message: "本集台词计划或选声已变化，请核对原批次与当前清单，未自动重做。" },
+  SPEECH_BATCH_QUOTE_EXPIRED: { status: 409, message: "本批报价已过期，原任务和请求保留；未自动生成新报价或再次调用。" },
+  SPEECH_BATCH_LIMIT: { status: 422, message: "本次最多补齐 100 句；单集读取最多 300 镜头、3000 句，冻结内容最多 2 MB。请减少本次范围，系统没有省略台词。" },
+  SPEECH_BATCH_INVALID: { status: 422, message: "批量配音内容与逐句报价不一致，请重新核对。" },
+  SPEECH_BATCH_LINE_AVAILABLE: { status: 409, message: "有台词已有可试听音频或进行中的任务，请先试听选用或查询原任务。" },
+  SPEECH_BATCH_CONFIRMATION_CHANGED: { status: 409, message: "请确认此批次固定的台词、任务数量和可能收费。" },
+  SPEECH_BATCH_BUDGET_CHANGED: { status: 409, message: "本次总费用上限须与各句冻结费用上限按币种精确相加一致。" },
+  SPEECH_BATCH_ACTIVE: { status: 409, message: "本集已有待处理批次，请先恢复或停止该批次的后续提交。" },
+  SPEECH_BATCH_ACTIVE_EXISTS: { status: 409, message: "本集已有待处理批次，请先恢复或停止该批次的后续提交。" },
+  SPEECH_BATCH_CANCELED: { status: 409, message: "已停止该批次的后续提交；已创建的任务仍可单独查看和取消。" },
+  SPEECH_BATCH_LEASE_LOST: { status: 409, message: "本次提交已由另一请求处理，请读取原批次状态。" },
+  SPEECH_BATCH_REQUEST_UNKNOWN: { status: 409, message: "上次请求的回执尚不确定，请查看原批次并仅恢复原请求。" },
+  SPEECH_BATCH_REQUEST_TOO_LARGE: { status: 413, message: "批次费用确认超过 128 KB，请核对请求内容。" },
   SPEECH_STORAGE_UNAVAILABLE: { status: 503, message: "配音存储尚未启用，未创建生成任务。" },
   SPEECH_STORAGE_CORRUPT: { status: 503, message: "配音记录未通过完整性检查，请先处理存储问题。" },
   SPEECH_SOURCE_CHANGED: { status: 409, message: "对白来源已更新，请重新读取并确认台词。" },
@@ -58,10 +74,10 @@ function version(value: string | undefined): number {
   if (!match || !Number.isSafeInteger(parsed)) throw new PersistenceError("VALIDATION_ERROR", "If-Match must contain the aggregate version");
   return parsed;
 }
-function body<T>(schema: z.ZodType<T>, value: unknown): T {
+function body<T>(schema: z.ZodType<T>, value: unknown, maximumBytes = SPEECH_MAX_REQUEST_BYTES): T {
   let text: string;
   try { text = JSON.stringify(value) ?? ""; } catch { throw new PersistenceError("VALIDATION_ERROR", "Invalid JSON body"); }
-  if (Buffer.byteLength(text, "utf8") > SPEECH_MAX_REQUEST_BYTES) throw new PersistenceError("SPEECH_REQUEST_TOO_LARGE", "Speech request is too large");
+  if (Buffer.byteLength(text, "utf8") > maximumBytes) throw new PersistenceError(maximumBytes === SPEECH_MAX_REQUEST_BYTES ? "SPEECH_REQUEST_TOO_LARGE" : "SPEECH_BATCH_REQUEST_TOO_LARGE", "Speech request is too large");
   const parsed = schema.safeParse(value);
   if (!parsed.success) throw new PersistenceError("VALIDATION_ERROR", "Speech request shape is invalid");
   return parsed.data;
@@ -69,6 +85,21 @@ function body<T>(schema: z.ZodType<T>, value: unknown): T {
 /** Business orchestration only. Real paid submissions belong to the injected existing-Job port. */
 export class SpeechService {
   constructor(private readonly deps: SpeechServiceDependencies) {}
+  private batch(): SpeechBatchService {
+    if (!this.deps.batchStore) throw new PersistenceError("SPEECH_BATCH_STORAGE_UNAVAILABLE", "Batch store is not configured");
+    return new SpeechBatchService({ workspaceId: this.deps.workspaceId, store: this.deps.batchStore, speech: this.deps.store, generation: this.deps.generation });
+  }
+  async batchInventory(projectId: string, episodeId: string): Promise<SpeechResult> { return this.access(async () => ({ status: 200, body: await this.batch().inventory(projectId, episodeId) })); }
+  async batchList(projectId: string, episodeId: string): Promise<SpeechResult> { return this.access(async () => ({ status: 200, body: await this.batch().list(projectId, episodeId) })); }
+  async batchRead(id: string): Promise<SpeechResult> { return this.access(async () => ({ status: 200, body: await this.batch().read(id) })); }
+  async batchPreflight(projectId: string, episodeId: string, raw: unknown, ctx: StudioContext): Promise<SpeechResult> {
+    return this.access(async () => { body(z.unknown(), raw); return { status: 201, body: await this.batch().preflight(projectId, episodeId, raw, ctx) }; });
+  }
+  async batchConfirm(id: string, raw: unknown, ctx: StudioContext): Promise<SpeechResult> {
+    return this.access(async () => { body(z.unknown(), raw, SPEECH_BATCH_MAX_CONFIRM_BYTES); return { status: 202, body: await this.batch().confirm(id, raw, ctx) }; });
+  }
+  async batchResume(id: string, raw: unknown, ctx: StudioContext): Promise<SpeechResult> { return this.access(async () => ({ status: 202, body: await this.batch().resume(id, raw, ctx) })); }
+  async batchCancel(id: string, raw: unknown, ctx: StudioContext): Promise<SpeechResult> { return this.access(async () => ({ status: 200, body: await this.batch().cancel(id, raw, ctx) })); }
   private async access(work: () => Promise<SpeechResult>, storage = true): Promise<SpeechResult> {
     try {
       if (storage && !await this.deps.store.storageReady()) return failure("SPEECH_STORAGE_UNAVAILABLE");

@@ -35,6 +35,7 @@ async function bootstrap(): Promise<void> {
   const realComposeAllowed=composePolicy.realCompose;
   if (env.M4_VOICE_COMPOSE_FONT_PATH && !isAbsolute(env.M4_VOICE_COMPOSE_FONT_PATH)) throw new EnvValidationError(["M4_VOICE_COMPOSE_FONT_PATH"]);
   const runtime = await startQueueRuntime({
+    characterReferenceGate:env.M3_CHARACTER_REFERENCE_GATE,
     nodeEnv:env.NODE_ENV,realMediaSiteAuthConfigured:env.REAL_MEDIA_SITE_AUTH_CONFIGURED,
     realMediaAllowProduction:env.REAL_MEDIA_ENV?.REAL_MEDIA_ALLOW_PRODUCTION==="true",
     databaseUrl: env.DATABASE_URL, redisUrl: env.REDIS_URL, mockObjectDir,

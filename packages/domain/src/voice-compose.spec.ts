@@ -4,6 +4,7 @@ import { speechCuesToVtt, speechDialogueHash, speechExactHash } from "./speech";
 import { VOICE_COMPOSE_RENDER_PROFILE, assertVoiceComposeSnapshot, assertVoiceMixManifest, buildVoiceComposeJobSnapshot,
   parseVoiceComposeRenderRequest, type VoiceComposeSourceObject } from "./voice-compose";
 import { mediaFromFrozenVoiceShot } from "./voice-compose";
+import { buildEpisodeExportManifest,type EpisodeExportFacts } from "./episode-export";
 
 const uid = (digit: string) => `${digit.repeat(8)}-${digit.repeat(4)}-4${digit.repeat(3)}-8${digit.repeat(3)}-${digit.repeat(12)}`;
 export function voiceComposeFixture() {
@@ -33,6 +34,17 @@ export function voiceComposeFixture() {
 }
 
 describe("voice compose immutable profile", () => {
+  it("carries the complete portable plan, subtitle timeline, mix profile and voice revisions into an episode manifest",()=>{
+    const {manifest}=voiceComposeFixture();
+    const facts:EpisodeExportFacts={projectId:manifest.projectId,episodeId:uid("1"),episodeNo:1,assetId:uid("2"),checksumSha256:"a".repeat(64),byteSize:100,objectKey:"private/not-exported",width:1080,height:1920,frameRate:25,durationMs:2000,reviewStatus:"APPROVED",rowVersion:2,reviewedContentHash:"a".repeat(64),jobId:uid("3"),attemptId:uid("4"),inputHash:"b".repeat(64),preflightInputHash:"c".repeat(64),renderProfileId:"local-ffmpeg-episode-v1",sourceBoundary:"real-provider",
+      segments:[{position:1,startMs:0,endMs:2000,durationMs:2000,shotAssetId:uid("5"),shotChecksumSha256:"d".repeat(64),shotId:uid("6"),shotRevisionId:manifest.shotRevisionId,media:[],
+        speech:{schema:"m4.voice.export.provenance.v1",manifest,renderProfile:{...VOICE_COMPOSE_RENDER_PROFILE},voices:[{speakerId:"narrator",voiceRevision:{id:manifest.lines[0]!.voiceRevisionId,bindingId:uid("7"),contentHash:"e".repeat(64),catalogVoiceId:"cherry",name:"Cherry",providerConfigurationId:uid("8"),providerConfigurationVersion:"frozen-v1",providerKey:"dashscope-media",model:"qwen3-tts-flash",modelVersion:"frozen-v1",voiceId:"Cherry",locale:"zh-CN",rightsRef:"official-preset",capabilities:{emotions:["neutral"],speedMin:1,speedMax:1}}}]}}]};
+    const portable=JSON.parse(JSON.stringify(buildEpisodeExportManifest(facts,"2026-11-01T00:00:00Z")));
+    expect(portable.segments[0].speech.manifest).toEqual(manifest);expect(portable.segments[0].speech.manifest.subtitles.cues).toHaveLength(2);
+    expect(portable.segments[0].speech.voices[0]).toMatchObject({speakerId:"narrator",voiceRevision:{voiceId:"Cherry",providerConfigurationVersion:"frozen-v1"}});
+    expect(portable.segments[0].speech.renderProfile.musicFadeOutMs).toBe(1000);
+    expect(JSON.stringify(portable)).not.toContain("private/not-exported");expect(JSON.stringify(portable)).not.toContain("credentialRef");
+  });
   it("exports every audio sentence with its own line and original Job/Attempt while keeping dependency scope exact", () => {
     const { manifest, sources } = voiceComposeFixture();
     const media = sources.map((source) => ({ assetId: source.assetId, workspaceId: manifest.workspaceId, projectId: manifest.projectId,

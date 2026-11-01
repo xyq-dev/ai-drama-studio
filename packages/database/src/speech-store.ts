@@ -4,9 +4,10 @@ import { SPEECH_STORAGE_VERSION, speechVoiceSchema, type SpeechBinding, type Spe
   type SpeechMixManifest, type SpeechMixPreflight, type SpeechMixRequest, type SpeechPlanLine, type SpeechPlanPut,
   type SpeechPlanView, type SpeechSelection, type SpeechSelectionPut, type SpeechTake, type SpeechTakesPage,
   type SpeechVoice, type SpeechVoiceRevision } from "@ai-drama/contracts";
-import { buildSpeechMixPreflight, speechExactHash, speechDialogueHash, speechLineInputHash, validateSpeechPlanSource } from "@ai-drama/domain";
+import { buildSpeechMixPreflight, DomainError, speechExactHash, speechDialogueHash, speechLineInputHash, validateSpeechPlanSource } from "@ai-drama/domain";
 import { PersistenceError, type DatabasePool, type JobPersistenceService } from "./job-service";
 import { projectEpisodePlanIn } from "./episode-plan";
+import { SPEECH_BATCH_MAX_INVENTORY_LINES, SPEECH_BATCH_MAX_OPERATIONS, type SpeechBatchInventory } from "@ai-drama/contracts";
 
 type Row = QueryResultRow & Record<string, unknown>;
 type Context = { actorId: string; traceId: string; idempotencyKey: string };
@@ -131,6 +132,74 @@ const TAKE_SQL = `SELECT a.*, t.line_input_revision_id, t.job_id, li.line_id, li
   JOIN speech_voice_binding vb ON vb.id=vr.binding_id AND vb.workspace_id=vr.workspace_id AND vb.project_id=vr.project_id
   JOIN generation_job j ON j.id=t.job_id AND j.workspace_id=t.workspace_id AND j.project_id=t.project_id
   JOIN job_attempt at ON at.id=t.attempt_id AND at.generation_job_id=j.id AND at.workspace_id=t.workspace_id`;
+
+/** Inventory is read under the existing project lock at every batch consumption boundary. */
+export async function speechBatchInventoryInTransaction(client: PoolClient, workspaceId: string, projectId: string, episodeId: string,
+  lock = false): Promise<{ inventory: SpeechBatchInventory; inputs: Map<string, SpeechGenerationInput> }> {
+  await project(client, workspaceId, projectId, lock);
+  const ep = await client.query("SELECT id FROM episode WHERE id=$1 AND workspace_id=$2 AND project_id=$3", [episodeId, workspaceId, projectId]);
+  if (!ep.rows[0]) fail("NOT_FOUND", "Episode not found");
+  const shots = await client.query<Row>(`SELECT sh.id,sh.current_revision_id,sh.approved_revision_id,sh.row_version,sh.scene_id,
+    sc.current_revision_id AS scene_revision_id,sc.approved_revision_id AS approved_scene_id,r.review_status,r.freshness_status
+    FROM shot sh JOIN scene sc ON sc.id=sh.scene_id AND sc.workspace_id=sh.workspace_id AND sc.project_id=sh.project_id
+    LEFT JOIN shot_revision r ON r.id=sh.current_revision_id AND r.workspace_id=sh.workspace_id
+    WHERE sh.workspace_id=$1 AND sh.project_id=$2 AND sh.episode_id=$3 AND sh.archived_at IS NULL AND sc.archived_at IS NULL ORDER BY sh.id LIMIT 301`, [workspaceId, projectId, episodeId]);
+  if (shots.rows.length > 300) fail("SPEECH_BATCH_LIMIT", "Episode inventory exceeds 300 shots; no lines were omitted");
+  const inventory: SpeechBatchInventory = { projectId, episodeId, sourceHash: "", operationLimit: SPEECH_BATCH_MAX_OPERATIONS, lines: [], blockers: [] };
+  const emptyScenes = await client.query<Row>(`SELECT sc.id FROM scene sc WHERE sc.workspace_id=$1 AND sc.project_id=$2 AND sc.episode_id=$3 AND sc.archived_at IS NULL
+    AND NOT EXISTS(SELECT 1 FROM shot sh WHERE sh.scene_id=sc.id AND sh.workspace_id=sc.workspace_id AND sh.archived_at IS NULL) ORDER BY sc.id LIMIT 301`, [workspaceId, projectId, episodeId]);
+  if (emptyScenes.rows.length > 300) fail("SPEECH_BATCH_LIMIT", "Episode inventory exceeds 300 scenes without shots; no scenes were omitted");
+  for (const _scene of emptyScenes.rows) inventory.blockers.push({ shotRevisionId: null, code: "SPEECH_BATCH_SHOTS_MISSING", message: "本集有场景尚未保存镜头，不能视为配音已完成。" });
+  if (!shots.rows.length && !emptyScenes.rows.length) inventory.blockers.push({ shotRevisionId: null, code: "SPEECH_BATCH_SHOTS_MISSING", message: "本集尚未保存场景和镜头。" });
+  const inputs = new Map<string, SpeechGenerationInput>();
+  const sourceSnapshots: unknown[] = [shots.rows, emptyScenes.rows];
+  for (const shot of shots.rows) {
+    const shotRevisionId = shot.current_revision_id ? String(shot.current_revision_id) : null;
+    if (!shotRevisionId) { inventory.blockers.push({ shotRevisionId, code: "REVIEW_REQUIRED", message: "镜头尚未保存当前版本。" }); continue; }
+    try {
+      const src = await source(client, workspaceId, shotRevisionId);
+      const found = await client.query<Row>("SELECT p.current_revision_id FROM speech_plan p WHERE p.workspace_id=$1 AND p.project_id=$2 AND p.shot_revision_id=$3", [workspaceId, projectId, shotRevisionId]);
+      const planId = found.rows[0]?.current_revision_id;
+      if (!planId) { sourceSnapshots.push({ shotRevisionId, planId: null }); inventory.blockers.push({ shotRevisionId, code: "SPEECH_PLAN_MISSING", message: "此镜头尚未保存逐句配音计划；无对白镜头也需确认空计划。" }); continue; }
+      const p = await planByRevision(client, workspaceId, String(planId));
+      sourceSnapshots.push({ shotRevisionId, planId, hash: p.content_hash });
+      if (p.source_dialogue_hash !== speechDialogueHash(src.dialogue)) fail("SPEECH_SOURCE_CHANGED", "Source dialogue changed");
+      const rows = await client.query<Row>(`${LINE_SQL} WHERE pl.workspace_id=$1 AND pl.plan_revision_id=$2 ORDER BY pl.ordinal`, [workspaceId, planId]);
+      if (inventory.lines.length + rows.rows.length > SPEECH_BATCH_MAX_INVENTORY_LINES) fail("SPEECH_BATCH_LIMIT", "Episode inventory exceeds 3000 lines; no lines were omitted");
+      const values = rows.rows.map(line), voices = await voicesFor(client, workspaceId, projectId, shotRevisionId, values.map((v) => v.speakerBindingRevisionId));
+      const snapshot = values.map((v) => ({ inputId: v.lineInputRevisionId, hash: v.inputHash, voice: voices.get(v.speakerBindingRevisionId)?.voice.id ?? null }));
+      sourceSnapshots.push(snapshot);
+      // Validate the whole plan before exposing any of this shot's operations.
+      validateSpeechPlanSource(src.dialogue, { sourceDialogueHash: String(p.source_dialogue_hash), lines: values, timingPolicy: "sequential-reject-overflow" }, voices);
+      if (values.some((v) => { const voice = voices.get(v.speakerBindingRevisionId)?.voice; return !voice || speechLineInputHash(shotRevisionId, v, voice) !== v.inputHash; })) fail("SPEECH_VOICE_STALE", "Current voice differs");
+      const candidates = await client.query<Row>(`${TAKE_SQL} WHERE t.workspace_id=$1 AND t.project_id=$2 AND t.line_input_revision_id=ANY($3::uuid[])`, [workspaceId, projectId, values.map((v) => v.lineInputRevisionId)]);
+      const chosen = await selections(client, workspaceId, String(planId));
+      const receipt = await client.query<Row>("SELECT to_regclass('real_media_submission') IS NOT NULL AS ready");
+      const jobs = await client.query<Row>(`SELECT j.id,j.state,j.input_snapshot#>>'{speech,lineId}' AS line_id${receipt.rows[0]?.ready === true ? ",s.state AS receipt_state" : ",NULL::text AS receipt_state"}
+        FROM generation_job j ${receipt.rows[0]?.ready === true ? "LEFT JOIN job_attempt at ON at.generation_job_id=j.id AND at.workspace_id=j.workspace_id AND at.attempt_no=(SELECT max(a.attempt_no) FROM job_attempt a WHERE a.generation_job_id=j.id AND a.workspace_id=j.workspace_id) LEFT JOIN real_media_submission s ON s.job_attempt_id=at.id" : ""}
+        WHERE j.workspace_id=$1 AND j.project_id=$2 AND j.source_shot_revision_id=$3 AND j.kind='MEDIA_TTS' AND j.input_snapshot#>>'{speech,lineId}'=ANY($4::text[])`, [workspaceId, projectId, shotRevisionId, values.map((v) => v.lineId)]);
+      for (const v of values) {
+        const voice = voices.get(v.speakerBindingRevisionId)?.voice;
+        if (!voice || speechLineInputHash(shotRevisionId, v, voice) !== v.inputHash) fail("SPEECH_VOICE_STALE", "Current voice differs");
+        const valid = candidates.rows.filter((r) => r.line_input_revision_id === v.lineInputRevisionId && r.selectable === true);
+        const selected = chosen.some((s) => s.lineId === v.lineId && valid.some((r) => r.id === s.takeAssetId && r.checksum_sha256 === s.checksumSha256));
+        const lineJobs = jobs.rows.filter((j) => j.line_id === v.lineId);
+        const unknown = lineJobs.filter((j) => ["INTENT", "UNKNOWN"].includes(String(j.receipt_state)));
+        const active = lineJobs.filter((j) => ["PENDING", "QUEUED", "RUNNING", "WAITING_EXTERNAL"].includes(String(j.state)) && !unknown.includes(j));
+        inventory.lines.push({ shotRevisionId, planRevisionId: String(planId), lineId: v.lineId, lineInputRevisionId: v.lineInputRevisionId,
+          displayText: v.displayText, voiceName: voice.name, status: selected ? "selected" : valid.length ? "awaiting_selection" : active.length ? "in_progress" : unknown.length ? "uncertain" : "missing",
+          jobIds: [...new Set([...active, ...unknown].map((j) => String(j.id)))] });
+        inputs.set(v.lineInputRevisionId, { workspaceId, projectId, shotRevisionId, planRevisionId: String(planId), lineId: v.lineId,
+          lineInputRevisionId: v.lineInputRevisionId, inputHash: v.inputHash, displayText: v.displayText, spokenText: v.displayText, voice, emotion: v.emotion, speed: v.speed });
+      }
+    } catch (error) {
+      if (!(error instanceof PersistenceError || error instanceof DomainError) || error.code === "SPEECH_BATCH_LIMIT") throw error;
+      inventory.blockers.push({ shotRevisionId, code: error.code, message: error.code === "SPEECH_VOICE_STALE" ? "角色声音已变化，请先保存当前逐句计划与选声。" : "此镜头的来源、批准或逐句计划需要重新确认。" });
+    }
+  }
+  inventory.sourceHash = speechExactHash({ projectId, episodeId, sourceSnapshots, blockers: inventory.blockers });
+  return { inventory, inputs };
+}
 function take(row: Row): SpeechTake {
   return { assetId: String(row.id), lineId: String(row.line_id), lineInputRevisionId: String(row.line_input_revision_id),
     checksumSha256: String(row.checksum_sha256), durationMs: Number(row.duration_ms), status: String(row.status), selectable: row.selectable === true,

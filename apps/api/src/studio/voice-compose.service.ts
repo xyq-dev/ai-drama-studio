@@ -34,7 +34,7 @@ export class VoiceComposeService {
     return this.deps.jobs.createAndQueueWorkflowJob({
       workspaceId: this.deps.workspaceId, actorId: context.actorId, httpMethod: "POST",
       routeKey: `/shot-revisions/${shotRevisionId}/voice-compose`, key: context.idempotencyKey,
-      requestHash: speechExactHash(request),
+      requestHash: speechExactHash(request),expiresAt:new Date("9999-12-31T00:00:00Z"),
     }, async (client) => {
       const frozen = await this.deps.store.freezeInTransaction(client, this.deps.workspaceId, shotRevisionId, request);
       return { workspaceId: this.deps.workspaceId, projectId: frozen.projectId, sourceShotRevisionId: shotRevisionId,

@@ -93,6 +93,8 @@ def _check_profile_uses_new_fixed_gain_envelope_and_literal_caption_files(tmp_pa
     assert len(sentence_chains) == 2
     assert all("atrim" not in chain and "apad" not in chain for chain in sentence_chains)
     assert "normalize=0,apad[speech]" in graph
+    assert "afade=t=out:st=1.000000:d=1.000000[music]" in graph
+    assert all("afade" not in chain for chain in sentence_chains)
     assert "expansion=none" in graph and "textfile=" in graph
     assert "[0:a]" not in graph
     assert "alimiter=limit=0.95:level=false:latency=true" in graph
@@ -189,7 +191,7 @@ def _assert_actual_sentence_audio(output: Path) -> None:
     assert _spectral(samples, 660, 0.55) < 0.005
     assert _spectral(samples, 880, 0.12) < _spectral(samples, 880, 0.55) * 0.4
     assert _spectral(samples, 1200, 1.5) < 0.005
-    assert _spectral(samples, 880, 1.6) > 0.015
+    assert _spectral(samples, 880, 1.3) > 0.015
 
 
 def _check_actual_audio_mp4_without_caption_evidence(tmp_path: Path) -> None:
@@ -207,6 +209,28 @@ def _check_actual_audio_mp4_without_caption_evidence(tmp_path: Path) -> None:
     assert abs(float(video["duration"]) - 2) < 0.041
     assert abs(float(probed["format"]["duration"]) - 2) < 0.1
     _assert_actual_sentence_audio(output)
+
+
+def _check_actual_music_fade_preserves_final_sentence(tmp_path: Path) -> None:
+    manifest = _stage(tmp_path)
+    manifest["lines"][0]["pauseAfterMs"] = 1450
+    manifest["lines"][1].update(startMs=1700, endMs=1950, pauseAfterMs=50)
+    manifest["subtitles"]["cues"][1].update(startMs=1700, endMs=1950)
+    manifest["subtitles"]["checksumSha256"] = hashlib.sha256(_vtt(manifest["subtitles"]["cues"]).encode()).hexdigest()
+    manifest["totalSpeechMs"] = 2000
+    validate_manifest(manifest)
+    output = tmp_path / "music-fade-proof.mp4"
+    _run(command(tmp_path, manifest, True, [], output, 2))
+    raw = _run(["ffmpeg", "-hide_banner", "-v", "error", "-i", str(output), "-map", "0:a", "-f", "f32le", "-ar", "48000", "-ac", "1", "-"])
+    samples = list(struct.unpack(f"<{len(raw) // 4}f", raw))
+    assert _spectral(samples, 660, 1.82) > 0.03
+    assert _spectral(samples, 660, 1.91, 0.03) > 0.03
+    assert _spectral(samples, 880, 1.97, 0.02) < _spectral(samples, 880, 0.55) * 0.15
+    graph_command = command(tmp_path, manifest, True, [], output, 2)
+    graph = graph_command[graph_command.index("-filter_complex") + 1]
+    assert graph.count("afade=") == 1
+    short_command = command(tmp_path, manifest, True, [], output, 0.5)
+    assert "afade=t=out:st=0.000000:d=0.500000[music]" in short_command[short_command.index("-filter_complex") + 1]
 
 
 def _check_changed_measured_take_or_subtitle_bytes_fail_before_output(tmp_path: Path, capsys) -> None:
@@ -353,6 +377,10 @@ class VoiceComposeTests(unittest.TestCase):
     @needs_ffmpeg
     def test_actual_audio_mp4_without_caption_evidence(self) -> None:
         _check_actual_audio_mp4_without_caption_evidence(self.root)
+
+    @needs_ffmpeg
+    def test_music_fade_preserves_final_sentence(self) -> None:
+        _check_actual_music_fade_preserves_final_sentence(self.root)
 
     @needs_ffmpeg
     def test_changed_take_subtitles(self) -> None:

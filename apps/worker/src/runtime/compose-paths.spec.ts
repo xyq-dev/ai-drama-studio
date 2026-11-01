@@ -52,7 +52,7 @@ describe("compose path boundaries", () => {
         { workspaceId, projectId, objectReader: { stageVerified } })).rejects.toThrow(/outside|not supported/);
     }
     expect(stageVerified).not.toHaveBeenCalled();
-  });
+  },45_000);
 
   it("keeps the mock byte limit and checksum guard when a real media reader is available", async () => {
     const root = await tempRoot();

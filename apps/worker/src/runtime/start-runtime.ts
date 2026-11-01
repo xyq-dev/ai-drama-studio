@@ -84,6 +84,7 @@ export async function startQueueRuntime(options: {
   nodeEnv?:"development"|"test"|"production";
   realMediaSiteAuthConfigured?:boolean;
   realMediaAllowProduction?:boolean;
+  characterReferenceGate?:"legacy"|"strict";
   databaseUrl: string;
   redisUrl: string;
   leaseMs?: number;
@@ -144,7 +145,7 @@ export async function startQueueRuntime(options: {
   const realClient = options.realMediaRuntime?.receiptCipher && options.realMediaS3 ? new MediaS3Client(options.realMediaS3) : null;
   const realObjects = realClient ? new S3RealMediaObjects(realClient) : null;
   const realDependencies: RealMediaWorkerDependencies | null = realObjects && options.realMediaRuntime && options.composeWorkDir
-    ? { jobs, assets, store: realStore, objects: realObjects,
+    ? { jobs, assets, store: realStore, objects: realObjects,characterReferenceGate:options.characterReferenceGate,
       adapterFor: (configuration, mode) => options.realMediaRuntime!.adapterFor(configuration, mode),
       materialize: createRealMediaMaterializer({ workDir: options.composeWorkDir }),
       preflightLocal: () => preflightRealMediaTools({ workDir: options.composeWorkDir! }) }

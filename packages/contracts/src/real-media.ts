@@ -36,6 +36,7 @@ export interface RealMediaSnapshot {
   sourceText: string; sourceHash: string; configuration: RealMediaConfiguration;
   sourceImage?: { assetId: string; checksumSha256: string };
   speech?: import("./speech").SpeechGenerationInput;
+  characterReferenceGate?:"legacy"|"strict";
   budget: { authorizationId: string; quoteId: string; currency: "CNY" | "USD"; estimatedAmount: string;
     maximumAmount: string; priceVersion: string; authorizedBy: string; authorizedAt: string; expiresAt: string;
     confirmedUncertainJobIds?: string[] };

@@ -19,6 +19,7 @@ const evidence = { kind: "chromium-actual-react-local-fixture-client", modelCall
 const entry = `
 import React from 'react';import {createRoot} from 'react-dom/client';
 import {RealMediaPanel} from '/src/components/real-media-panel.tsx';
+import {SpeechBatchPanel} from '/src/components/speech-batch-panel.tsx';
 const ids=${JSON.stringify({ P, S, Q, A, J, W })};window.sends=0;
 const api={capabilities:async()=>({available:true,readAvailable:true,reasonCode:null,capabilities:['image.generate','video.generate','audio.tts','audio.music']}),
 assets:async()=>({items:[],nextCursor:null}),characters:async()=>[{id:ids.A,name:'林夏'}],
@@ -27,12 +28,25 @@ providerConfigurationId:ids.A,providerConfigurationVersion:'fixture-v1',priceVer
 expiresAt:'2099-01-01T00:00:00.000Z',uncertainJobIds:[]}),
 authorize:async()=>ids.A,generate:async()=>{window.sends++;return {jobId:ids.J,workflowRunId:ids.W}},
 job:async()=>({id:ids.J,state:'WAITING_EXTERNAL',errorCode:'REAL_MEDIA_SUBMISSION_UNKNOWN'}),compose:async()=>{throw Error('Not part of fixture')}};
+window.batchWrites=[];
+const operation={id:ids.A,lineId:ids.J,lineInputRevisionId:ids.W,shotRevisionId:ids.S,displayText:'你好。',state:'pending',
+quote:{quoteId:ids.Q,inputHash:'a'.repeat(64),currency:'CNY',estimatedAmount:'0.01',maximumAmount:'0.10',expiresAt:'2099-01-01T00:00:00.000Z',uncertainJobIds:[]},
+maximumAmount:'0.10',authorizationId:null,jobId:null,workflowRunId:null,jobState:null,errorCode:null};
+const quoted={id:ids.Q,projectId:ids.P,episodeId:ids.S,frozenHash:'b'.repeat(64),state:'quoted',confirmation:null,cancelRequested:false,createdAt:'2026-11-01T00:00:00.000Z',
+frozen:{schema:'voice.episode.batch.v1',projectId:ids.P,episodeId:ids.S,sourceHash:'c'.repeat(64),expiresAt:'2099-01-01T00:00:00.000Z',budgets:[{currency:'CNY',estimatedAmount:'0.01',maximumAmount:'0.10'}],operations:[{id:ids.A}]},operations:[operation]};
+const latestBatch=()=>JSON.parse(sessionStorage.getItem('fixture-batch-view')||'null');
+const batchApi={inventory:async()=>({projectId:ids.P,episodeId:ids.S,sourceHash:'c'.repeat(64),operationLimit:100,blockers:[],lines:[{shotRevisionId:ids.S,planRevisionId:ids.Q,
+lineId:ids.J,lineInputRevisionId:ids.W,displayText:'你好。',voiceName:'清朗',status:'missing',jobIds:[]}]}),
+recent:async()=>latestBatch()?[latestBatch()]:[],read:async()=>latestBatch()||quoted,
+write:async r=>{window.batchWrites.push(r.kind);const result=r.kind==='quote'?quoted:{...quoted,state:'dispatched',operations:[{...operation,state:'job_created',jobId:ids.J,jobState:'SUCCEEDED'}]};
+sessionStorage.setItem('fixture-batch-view',JSON.stringify(result));return result}};
 createRoot(document.getElementById('root')).render(React.createElement('main',{style:{maxWidth:960,margin:'24px auto',padding:16,fontFamily:'sans-serif'}},
 React.createElement('h1',null,'镜头制作'),React.createElement('p',null,'浏览器测试素材，未连接真实模型。'),
-React.createElement(RealMediaPanel,{projectId:ids.P,shotRevisionId:ids.S,dialogue:'林夏：这不是我。',usable:true,approved:true,client:api})));
+React.createElement(RealMediaPanel,{projectId:ids.P,shotRevisionId:ids.S,dialogue:'林夏：这不是我。',usable:true,approved:true,client:api}),
+React.createElement(SpeechBatchPanel,{projectId:ids.P,episodeId:ids.S,client:batchApi})));
 `;
 let browser;
-const server = await createServer({ configFile: false, root: web, server: { host: "127.0.0.1", port: 3846, strictPort: true },
+const server = await createServer({ configFile: false, root: web, optimizeDeps: { include: ["react", "react-dom/client", "@ai-drama/contracts"], force: true }, server: { host: "127.0.0.1", port: 3846, strictPort: true },
   plugins: [react(), { name: "local-real-production-fixture", resolveId(id) { if (id === "/fixture.tsx") return "\0fixture.tsx"; },
     load(id) { if (id === "\0fixture.tsx") return entry; }, configureServer(vite) {
       vite.middlewares.use(async (req, res, next) => {
@@ -68,7 +82,21 @@ try {
     await page.reload(); await page.getByRole("button", { name: /图片、视频与角色配音/ }).click();
     await page.getByText(/结果待核实，可能已产生费用/).waitFor();
     assert.equal(await page.evaluate(() => window.sends), 0, "Refresh must only read the acknowledged original job");
-    evidence.checks.push({ width, screenshot: name, oneExplicitSend: true, refreshNoSend: true, overflow: false });
+    await page.getByRole("button", { name: /图片、视频与角色配音/ }).click();
+    await page.getByRole("button", { name: "本集配音补齐 展开", exact: true }).click();
+    await page.getByLabel(/你好。 · 清朗/).check(); await page.getByRole("button", { name: "冻结所选句子的报价", exact: true }).click();
+    const batchConfirm = page.getByRole("button", { name: "确认本批配音补齐", exact: true }); await batchConfirm.waitFor();
+    assert.equal(await batchConfirm.isDisabled(), true);
+    assert.deepEqual(await page.evaluate(() => window.batchWrites), ["quote"]);
+    await page.getByLabel("我确认固定调用次数及每币种费用上限，本批可能产生费用。").check();
+    const batchName = `speech-batch-${width}.png`;
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
+    await page.screenshot({ path: resolve(output, batchName), fullPage: true }); await batchConfirm.click();
+    await page.getByText(/批次已受理。每句仍是独立原任务/).waitFor();
+    assert.deepEqual(await page.evaluate(() => window.batchWrites), ["quote", "confirm"]);
+    await page.reload(); await page.getByRole("button", { name: "本集配音补齐 展开", exact: true }).click();
+    await page.getByText(/^批次 .*逐句任务已创建$/).waitFor(); assert.deepEqual(await page.evaluate(() => window.batchWrites), []);
+    evidence.checks.push({ width, screenshot: name, batchScreenshot: batchName, oneExplicitSend: true, refreshNoSend: true, batchBudgetConfirmation: true, batchRefreshNoSend: true, overflow: false });
     await page.close();
   }
   assert.deepEqual(evidence.errors, []);

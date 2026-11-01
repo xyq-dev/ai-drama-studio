@@ -17,6 +17,11 @@ const SUITES = {
     nameVariable: "REAL_MEDIA_ACCEPTANCE_DATABASE_NAME", urlVariable: "REAL_MEDIA_ACCEPTANCE_DATABASE_URL",
     authorization: { REAL_MEDIA_ACCEPTANCE_AUTHORIZED: "true", REAL_MEDIA_ACCEPTANCE_DRAFT_AUTHORIZED: "true" },
   },
+  "real-media-http": {
+    prefix: "ads_media_acceptance_", databaseTag: "http_", packageFilter: "@ai-drama/api", config: "vitest.real-media-flow-acceptance.config.ts",
+    nameVariable: "REAL_MEDIA_ACCEPTANCE_DATABASE_NAME", urlVariable: "REAL_MEDIA_ACCEPTANCE_DATABASE_URL",
+    authorization: { REAL_MEDIA_ACCEPTANCE_AUTHORIZED: "true", REAL_MEDIA_ACCEPTANCE_DRAFT_AUTHORIZED: "true", REAL_MEDIA_HTTP_ACCEPTANCE_AUTHORIZED: "true" },
+  },
   "vimax-planning": {
     prefix: "ads_title_acceptance_", config: "vitest.vimax-planning-acceptance.config.ts",
     nameVariable: "TITLE_WRITING_ACCEPTANCE_DATABASE_NAME", urlVariable: "TITLE_WRITING_ACCEPTANCE_DATABASE_URL",
@@ -26,13 +31,13 @@ const SUITES = {
 
 /** No supplied database URL/identifier is accepted. Every job gets a numeric-run-scoped database on its own service. */
 export function productionAcceptancePlan(suite, environment, repo = REPO) {
-  if (!Object.hasOwn(SUITES, suite)) throw new Error("Select speech, real-media or vimax-planning acceptance");
+  if (!Object.hasOwn(SUITES, suite)) throw new Error("Select speech, real-media, real-media-http or vimax-planning acceptance");
   if (environment.CI !== "true" || environment.GITHUB_ACTIONS !== "true") throw new Error("This entrypoint runs only in GitHub Actions");
   if (environment.DATABASE_URL !== undefined && environment.DATABASE_URL !== "") throw new Error("DATABASE_URL must not be exposed to isolated acceptance");
   if (!/^\d{1,20}$/.test(environment.GITHUB_RUN_ID ?? "") || !/^\d{1,6}$/.test(environment.GITHUB_RUN_ATTEMPT ?? "")) throw new Error("Invalid workflow run identity");
   if (!isAbsolute(environment.RUNNER_TEMP ?? "")) throw new Error("An absolute runner-owned temporary directory is required");
   const selected = SUITES[suite];
-  const databaseName = `${selected.prefix}ci_${environment.GITHUB_RUN_ID}_${environment.GITHUB_RUN_ATTEMPT}`;
+  const databaseName = `${selected.prefix}ci_${selected.databaseTag ?? ""}${environment.GITHUB_RUN_ID}_${environment.GITHUB_RUN_ATTEMPT}`;
   if (!new RegExp(`^${selected.prefix}[a-z0-9_]{6,40}$`).test(databaseName) || databaseName.length > 63) throw new Error("Invalid disposable database identity");
   const databaseUrl = `postgresql://postgres@127.0.0.1:5432/${databaseName}`;
   const evidenceDir = join(environment.RUNNER_TEMP, "production-acceptance", suite);
@@ -41,14 +46,14 @@ export function productionAcceptancePlan(suite, environment, repo = REPO) {
     suite, repo, databaseName, databaseUrl, evidenceDir, reportPath,
     environment: { ...selected.authorization, [selected.nameVariable]: databaseName, [selected.urlVariable]: databaseUrl, NODE_ENV: "test" },
     command: "pnpm",
-    args: ["--filter", "@ai-drama/database", "exec", "vitest", "run", "--config", selected.config,
+    args: ["--filter", selected.packageFilter ?? "@ai-drama/database", "exec", "vitest", "run", "--config", selected.config,
       "--reporter=default", "--reporter=json", `--outputFile.json=${reportPath}`],
   };
 }
 
 /** The injected client is the fixed loopback admin connection, never a supplied business connection string. */
 export async function createProductionAcceptanceDatabase(client, databaseName) {
-  if (!/^ads_(speech|media|title)_acceptance_ci_\d{1,20}_\d{1,6}$/.test(databaseName) || databaseName.length > 63) throw new Error("Invalid disposable database identity");
+  if (!/^ads_(speech|media|title)_acceptance_ci_(?:http_)?\d{1,20}_\d{1,6}$/.test(databaseName) || databaseName.length > 63) throw new Error("Invalid disposable database identity");
   const identity = await client.query("SELECT current_database() AS name");
   if (identity.rows[0]?.name !== "postgres") throw new Error("Disposable database creation requires the runner-local postgres administration database");
   const exists = await client.query("SELECT 1 FROM pg_catalog.pg_database WHERE datname=$1", [databaseName]);
@@ -67,7 +72,7 @@ export function validateProductionAcceptanceReport(report) {
 }
 
 async function main() {
-  if (process.argv.length !== 3) throw new Error("Usage: node scripts/ci/run-production-acceptance.mjs <speech|real-media|vimax-planning>");
+  if (process.argv.length !== 3) throw new Error("Usage: node scripts/ci/run-production-acceptance.mjs <speech|real-media|real-media-http|vimax-planning>");
   const plan = productionAcceptancePlan(process.argv[2], process.env);
   await mkdir(plan.evidenceDir, { recursive: true });
   const summaryPath = join(plan.evidenceDir, "acceptance-summary.json");

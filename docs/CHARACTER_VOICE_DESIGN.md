@@ -4,9 +4,13 @@
 
 原始设计日期：2026-10-07，基线为 `2fb19acfe086392eb415a3be92b4c4a6830a4cfd`；新手界面参考 PR #50 的 `5cda55b67a7b37c9c72fa5b00f3699adbc203fac`。2026-10-28 按主线 `879bf53e0d45be56b6592ce77c2e72aa7ec9d648` 整合。下文保留设计目标与历史实施次序；当前实际合同/模型/API 以顶部实现说明和对应代码为准，高级目标不能据此宣称已交付。
 
-原始设计/原型及下文目标保留为设计依据，不把全部高级交互写成已交付。当前实现是百炼北京 `qwen3-tts-flash` 的 Cherry/Ethan/Serena 预置目录、neutral/固定语速 1、逐句明确操作；不支持参数会被拒绝。V1-D 的预算内整集补齐/批量幂等正在本轮补齐，最终状态以 batch 实现/CI 为准。不是 CosyVoice 自托管、克隆、口型、多语言或重叠对白实现。
+原始设计/原型及下文目标保留为设计依据，不把全部高级交互写成已交付。当前实现是百炼北京 `qwen3-tts-flash` 的 Cherry/Ethan/Serena 预置目录、neutral/固定语速 1、逐句明确操作；不支持参数会被拒绝。V1-D 的预算内整集补齐、逐句永久身份、部分完成与取消/显式恢复已实现；新增 PostgreSQL 用例待最终 HEAD CI。不是 CosyVoice 自托管、克隆、口型、多语言或重叠对白实现。
 
 当前契约/存储为 `packages/contracts/src/speech.ts`、`speech-store.ts` 与 `20261101000100_character_voice.sql` 草案；真实调用沿 `real-media.v1` 和既有 Job/Attempt/Asset；新 `m4.shot.voice-compose.v1` 仍使用逻辑任务类型 `MEDIA_COMPOSE`。AUDIO 不批准，依靠选择关系和 typed plan/selection 依赖维护有效性。新 profile 使用精确 Noto Sans CJK SC face，记录字体 SHA；缺字/字体在编码前阻断。tone/lavfi 技术素材不是人声质量证明。
+
+批量合同/领域/store 为 `speech-batch.ts` / `speech-batch-store.ts`，独立草案 `20261101000300_speech_batch.sql` 不进入普通 migration。短剧剧本页的 `SpeechBatchPanel` 读取 inventory，最多冻结 100 句/2 MiB；有效 take 待试听，不重复生成。确认必须等于固定句数和各币种逐句上限总和，未知操作需额外明确确认。仍创建逐句原 `MEDIA_TTS` Job；`dispatched` 仅表示本地 Job 已建。取消只阻尚未创建 Job，已有 queued/运行任务保持独立查看/取消；不会撤销供应商调用或费用。路由、恢复步骤及验收入口见运行手册。
+
+首轮 `b1980f138b78261d567210f5c72ae2e45da1f861` 独立 CI 已取得 speech PostgreSQL 9 项、真实 CJK 字体技术素材 10 项且 0 skip 的记录，见[接续证据](REAL_PRODUCTION_COMPLETION_PROGRESS.md)。其后的音乐 fade、便携导出与批量补齐必须重新验当前 HEAD；没有真实 TTS 或人工完整试听，不能据此写人声质量通过。
 
 ## 1. 首选与交付目标
 
@@ -220,7 +224,7 @@ flowchart TD
 
 ## 10. 开源/云端与运行边界
 
-首批：百炼官方云语音接口候选 + 红果自身 UI/Job/数据库 + 当前 FFmpeg。没有选定账户/地域/配额/凭据时，只能交付离线 adapter 合同与关闭态，不能记为真实配音可用。
+首批代码：百炼北京 `qwen3-tts-flash` + 红果自身 UI/Job/数据库 + 当前 FFmpeg。没有核实账户/配额/凭据或未完成真实试听时，保持关闭态或待验收，不能记为真实配音质量通过。
 
 后续自托管：CosyVoice 独立推理服务，独立 Python 环境/GPU资源/并发队列；不把 torch/CUDA 依赖安装进当前 Web/API 或 FFmpeg venv。接口可沿用 Speech Adapter，不能假设开源和云端有相同 voiceId、参数或计费。
 
@@ -239,13 +243,13 @@ flowchart TD
 | V1-D | 有预算边界的单集补齐、局部重做、并发恢复 | 批量幂等、部分失败、取消、不重复收费事实验证 |
 | 后续 | 自托管、授权克隆、口型同步、多语言、重叠对白 | 单独确定资源、模型与真实质量基准 |
 
-PR #49/#50 的历史阻塞不再作为本设计的实施前置条件。后续配音功能从届时已核实的最新主线独立建 `feat/character-voice-workflow`，重新核对短剧/系列门槛、权限、数据模型和依赖，不在本文档整合中顺带实现数据库或真实费用逻辑。
+PR #49/#50 的历史阻塞不再作为实施前置条件。本轮已从核实的主线补齐 V1-A 至 V1-D 代码与平台接线；上表是分期目标，不是全项验收通过记录。batch 新增 PostgreSQL 用例仍待最终 HEAD CI。继续保留短剧/系列门槛、权限与不可变历史，不因代码提交自动执行草案或真实付费调用。
 
 需要 Owner 确定的最小外部条件：服务商账号/地域与允许模型，服务端密钥注入方式，单次和每日调用预算/币种，数据库 Migration 执行对象与授权。此设计及普通 Git 授权不包含这些动作。
 
 ## 12. 验收矩阵
 
-以下是所需验收矩阵。代码与替身/技术素材覆盖已有进展，但只有对应实际证据才能记通过；未执行的真实 TTS、专用库、浏览器或人工试听不能由测试文件存在替代。V1-D 批量补齐正在实现，不把逐句生成记为整阶段验收通过。
+以下是所需验收矩阵。代码与替身/技术素材覆盖已有进展，但只有对应实际证据才能记通过；未执行的真实 TTS、专用库、浏览器或人工试听不能由测试文件存在替代。V1-D 批量代码已实现，不把单元测试或旧 speech CI 记为新增 batch 的 PostgreSQL/真实质量验收通过。
 
 | 编号 | 验收点 | 必需证据 |
 | --- | --- | --- |
@@ -269,7 +273,7 @@ PR #49/#50 的历史阻塞不再作为本设计的实施前置条件。后续配
 
 ## 13. 给实现 Agent 的交接
 
-从本文件、开源调查、最新 `IMPLEMENTATION_PLAN` / `V1_DELIVERY_MATRIX` 和当前主线代码开始。不要重复搜索一批工具，不整体移植外部仓库，不改旧 Mock 为收费路径。先完成 V1-A 的合同、UI接线设计与Migration提案；缺外部条件时把开关关闭态、离线测试、调用/费用恢复契约做实，明确“待真实验收”。
+先读取本文件顶部现状、`REAL_PRODUCTION_COMPLETION_PROGRESS`、运行手册和当前代码/PR。不要重复实现已经落地的 V1-A 至 V1-D，不整体移植外部仓库，不改旧 Mock 为收费路径。接续当前提交的验证或实际失败时，分别核对代码、数据库/页面技术证据与真实人声验收；缺外部条件就保留关闭态和“待真实验收”，不能以补写文档替代执行证据。
 
 允许在新功能分支修改本配音相关的 contracts/domain/database/API/worker/providers/media-worker/Web及测试文档；每次后端变更说明原因、影响、Migration与验证。保留未提交文件，选择性commit/普通push/PR。默认不执行新Migration、草案或付费调用，不借本设计批准生产启用。独立Review与当前CI通过后再按仓库既有Git/部署约定推进。
 

@@ -32,11 +32,11 @@ beforeAll(async()=>{
   expect(await store.storageReady()).toBe(true);expect((await runMigrations(pool)).applied).toEqual([]);
 });
 afterAll(async()=>{await pool.end();});
-async function bound(){
+async function bound(quoteLifetimeMs?:number){
   const fixture=await world();
   const provider=await pool.query<{id:string}>("INSERT INTO provider_configuration(workspace_id,provider_key,capability,default_timeout_ms,max_attempts) VALUES($1,'dashscope-media','image.generate',30000,1) RETURNING id",[fixture.workspaceId]);
   const configuration:RealMediaConfiguration={id:provider.rows[0]!.id,version:"fixture-v1",providerKey:"dashscope-media",capability:"image.generate",model:"qwen-image-3.0",region:"beijing",credentialRef:"test-only:never-resolved",credentialVersion:"v1",enabled:true,queryAllowed:true,priceVersion:"fixture-price-v1",currency:"CNY",unitPrice:"0.18",unitType:"image",parameters:{},maximumOperationAmount:"0.50"};
-  const quote=await store.createQuote({workspaceId:fixture.workspaceId,projectId:fixture.projectId,actorId:"test",frozen:{schema:"real-media.v1",shotRevisionId:fixture.shotRevisionId,capability:"image.generate",sourceText:"prompt",sourceHash:hash,configuration}});
+  const quote=await store.createQuote({lifetimeMs:quoteLifetimeMs,workspaceId:fixture.workspaceId,projectId:fixture.projectId,actorId:"test",frozen:{schema:"real-media.v1",shotRevisionId:fixture.shotRevisionId,capability:"image.generate",sourceText:"prompt",sourceHash:hash,configuration}});
   await expect(store.authorize({...fixture,actorId:"test",quoteId:quote.quoteId,maximumAmount:"0.51"})).rejects.toMatchObject({code:"REAL_MEDIA_BUDGET_MISMATCH"});
   const auth=await store.authorize({...fixture,actorId:"test",quoteId:quote.quoteId,maximumAmount:quote.maximumAmount});
   const key=randomUUID();
@@ -102,7 +102,66 @@ describe("real media draft acceptance against an explicitly named empty PostgreS
     expect(await store.renewDeliveryLease(execution,owner)).toBe(true);
     await expect(store.transaction(client=>store.assertDeliveryLeaseInTransaction(client,execution,"old-owner"))).rejects.toMatchObject({code:"REAL_MEDIA_LEASE_LOST"});
     await store.releaseDeliveryLease(execution,owner);
+    await pool.query("UPDATE generation_job SET next_run_at=clock_timestamp()+interval '1 hour' WHERE id=$1",[execution.jobId]);
     const recovered=await store.listRecoverable(100);expect(recovered.some(row=>row.jobId===execution.jobId)).toBe(false); // next_poll still bounded in the future
+  });
+  it("requires duplicate-fee confirmation for a known-ID UNKNOWN while preserving its task and recorded estimate",async()=>{
+    const value=await bound();await intent(value);const acknowledged=await acknowledge(value);
+    await store.markUnknown(value.workspaceId,value.execution.jobId,value.attemptId);
+    const {budget:oldBudget,...frozen}=value.execution.inputSnapshot;void oldBudget;
+    const quote=await store.createQuote({workspaceId:value.workspaceId,projectId:value.projectId,actorId:"test",frozen});
+    expect(quote.uncertainJobIds).toEqual([value.execution.jobId]);
+    const authorize={workspaceId:value.workspaceId,projectId:value.projectId,actorId:"test",quoteId:quote.quoteId,maximumAmount:quote.estimatedAmount};
+    await expect(store.authorize(authorize)).rejects.toMatchObject({code:"REAL_MEDIA_UNCERTAIN_CHANGED"});
+    await store.authorize({...authorize,confirmedUncertainJobIds:[value.execution.jobId]});
+    await expect(jobs.manualRetry({workspaceId:value.workspaceId,jobId:value.execution.jobId,requestedBy:"test",traceId:"acceptance",retryable:true})).rejects.toMatchObject({code:"JOB_NOT_RETRYABLE"});
+    expect(await store.loadExecution(value.workspaceId,value.execution.jobId)).toMatchObject({receiptState:"UNKNOWN",providerRequestId:acknowledged.providerRequestId});
+    expect(await store.costExposure(value.workspaceId,value.projectId)).toEqual({actualCost:"unknown",unknownSubmissionCount:1,currencies:[]});
+    expect((await pool.query("SELECT maximum_amount::text AS maximum FROM real_media_authorization WHERE quote_id=$1",[value.quote.quoteId])).rows).toEqual([{maximum:"0.50000000"}]);
+    expect((await pool.query("SELECT kind,amount_decimal::text AS amount FROM cost_ledger WHERE generation_job_id=$1",[value.execution.jobId])).rows).toEqual([{kind:"ESTIMATED",amount:"0.18000000"}]);
+    expect((await pool.query("SELECT count(*)::int AS count FROM generation_job WHERE workspace_id=$1",[value.workspaceId])).rows[0]!.count).toBe(1);
+  });
+  it("checks the actual send time after waiting for the project lock",async()=>{
+    const value=await bound();const holder=await pool.connect();
+    await pool.query("UPDATE generation_job SET lease_until=clock_timestamp()+interval '150 milliseconds' WHERE id=$1",[value.execution.jobId]);
+    try{
+      await holder.query("BEGIN");await holder.query("SELECT id FROM project WHERE id=$1 FOR UPDATE",[value.projectId]);
+      const pending=intent(value);const refusal=expect(pending).rejects.toMatchObject({code:"REAL_MEDIA_SUBMIT_BLOCKED"});
+      await new Promise(done=>setTimeout(done,300));await holder.query("COMMIT");await refusal;
+      expect((await pool.query("SELECT count(*)::int AS n FROM real_media_submission WHERE generation_job_id=$1",[value.execution.jobId])).rows[0]!.n).toBe(0);
+    }finally{await holder.query("ROLLBACK");holder.release();}
+  });
+  it("rechecks time after waiting for unchanged job or authorization rows, and fences late delivery",async()=>{
+    for(const table of ["generation_job","real_media_authorization"] as const){
+      const value=await bound(table==="real_media_authorization"?5000:undefined);const holder=await pool.connect();
+      try{
+        if(table==="generation_job")await pool.query("UPDATE generation_job SET lease_until=clock_timestamp()+interval '150 milliseconds' WHERE id=$1",[value.execution.jobId]);
+        await holder.query("BEGIN");
+        if(table==="generation_job")await holder.query("SELECT id FROM generation_job WHERE id=$1 FOR UPDATE",[value.execution.jobId]);
+        else await holder.query("SELECT quote_id FROM real_media_authorization WHERE quote_id=$1 FOR UPDATE",[value.quote.quoteId]);
+        const pending=intent(value);const refusal=expect(pending).rejects.toMatchObject({code:"REAL_MEDIA_SUBMIT_BLOCKED"});
+        await new Promise(done=>setTimeout(done,table==="generation_job"?300:5200));await holder.query("COMMIT");await refusal;
+        expect((await pool.query("SELECT count(*)::int AS n FROM real_media_submission WHERE generation_job_id=$1",[value.execution.jobId])).rows[0]!.n).toBe(0);
+      }finally{await holder.query("ROLLBACK");holder.release();}
+    }
+    const value=await bound();await intent(value);const execution=await acknowledge(value);const holder=await pool.connect();
+    try{
+      await pool.query("UPDATE generation_job SET lease_until=clock_timestamp()+interval '150 milliseconds' WHERE id=$1",[execution.jobId]);
+      await holder.query("BEGIN");await holder.query("SELECT id FROM generation_job WHERE id=$1 FOR UPDATE",[execution.jobId]);
+      const pending=store.transaction(client=>store.assertDeliveryLeaseInTransaction(client,execution,"acceptance-owner"));
+      const refusal=expect(pending).rejects.toMatchObject({code:"REAL_MEDIA_LEASE_LOST"});
+      await new Promise(done=>setTimeout(done,300));await holder.query("COMMIT");await refusal;
+    }finally{await holder.query("ROLLBACK");holder.release();}
+  });
+  it("rejects receipt-state rollback, rewritten acknowledgement times and untyped usage directly in PostgreSQL",async()=>{
+    const value=await bound();await intent(value);await acknowledge(value);
+    for(const state of ["INTENT","REJECTED"]){await expect(pool.query("UPDATE real_media_submission SET state=$2 WHERE job_attempt_id=$1",[value.attemptId,state])).rejects.toThrow();}
+    for(const sql of ["acknowledged_at=NULL","acknowledged_at=acknowledged_at+interval '1 second'"]){await expect(pool.query(`UPDATE real_media_submission SET ${sql} WHERE job_attempt_id=$1`,[value.attemptId])).rejects.toThrow(/immutable|acknowledg/i);}
+    for(const usage of ["[]",'{"characters":-1}','{"characters":"1"}','{"private_error":"rejected"}']){
+      await expect(pool.query("UPDATE real_media_submission SET usage_json=$2::jsonb WHERE job_attempt_id=$1",[value.attemptId,usage])).rejects.toThrow(/usage/);
+    }
+    await store.markUnknown(value.workspaceId,value.execution.jobId,value.attemptId);
+    await expect(pool.query("UPDATE real_media_submission SET state='INTENT' WHERE job_attempt_id=$1",[value.attemptId])).rejects.toThrow(/transition/);
   });
   it("atomically rolls back uploaded-object registration, receipt and job metadata, then commits one exact asset",async()=>{
     const value=await bound();await intent(value);const execution=await acknowledge(value);

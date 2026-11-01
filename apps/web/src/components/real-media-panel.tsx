@@ -40,6 +40,8 @@ function MediaScope(props: Props) {
   const [characters, setCharacters] = useState<Array<{ id: string; name: string }>>([]);
   const [capability, setCapability] = useState<RealMediaCapability>("image.generate");
   const [imageId, setImageId] = useState(""), [videoId, setVideoId] = useState(""), [musicId, setMusicId] = useState("");
+  const selectedAssetIds = useRef<string[]>([]), loadedPages = useRef(1);
+  selectedAssetIds.current = [imageId, videoId, musicId].filter(Boolean);
   const [quote, setQuote] = useState<RealMediaQuote | null>(null), [maximum, setMaximum] = useState("");
   const [confirmed, setConfirmed] = useState(false), [uncertainConfirmed, setUncertainConfirmed] = useState(false);
   const [pending, setPending] = useState<RealMediaPending | null>(null);
@@ -80,8 +82,22 @@ function MediaScope(props: Props) {
         if (!caps.available && !caps.readAvailable) return;
         setCapability(previous => caps.capabilities.includes(previous) && previous !== "audio.tts" ? previous
           : caps.capabilities.find(c => c !== "audio.tts") ?? "image.generate");
-        const [page, cast] = await Promise.all([api.assets(props.shotRevisionId, undefined, controller.signal), api.characters(props.projectId, controller.signal)]);
+        const loadAssets = async () => {
+          const first = await api.assets(props.shotRevisionId, undefined, controller.signal);
+          const items = [...first.items], seen = new Set<string>();
+          let nextCursor = first.nextCursor, count = 1;
+          while (nextCursor && (count < loadedPages.current || selectedAssetIds.current.some(id => !items.some(a => a.id === id)))) {
+            if (seen.has(nextCursor) || count >= 100) throw new Error("素材分页无法完整核对，请稍后重新读取。");
+            seen.add(nextCursor);
+            const page = await api.assets(props.shotRevisionId, nextCursor, controller.signal);
+            items.push(...page.items.filter(a => !items.some(previous => previous.id === a.id)));
+            nextCursor = page.nextCursor; count++;
+          }
+          return { items, nextCursor, count };
+        };
+        const [page, cast] = await Promise.all([loadAssets(), api.characters(props.projectId, controller.signal)]);
         if (!mounted.current || sequence !== generation.current) return;
+        loadedPages.current = page.count;
         setAssets(page.items); setCursor(page.nextCursor); setCharacters(cast); setError(null);
         setImageId(previous => page.items.some(a => a.id === previous && a.status === "ACTIVE" && a.kind === "IMAGE") ? previous : "");
         setVideoId(previous => page.items.some(a => a.id === previous && a.status === "ACTIVE" && a.kind === "VIDEO") ? previous : "");
@@ -249,6 +265,7 @@ function MediaScope(props: Props) {
         </div>
         {cursor ? <button type="button" disabled={busy} onClick={() => { const readGeneration = generation.current; void api.assets(props.shotRevisionId, cursor).then(page => {
           if (!mounted.current || readGeneration !== generation.current) return;
+          loadedPages.current++;
           setAssets(previous => [...previous, ...page.items.filter(a => !previous.some(p => p.id === a.id))]); setCursor(page.nextCursor);
         }).catch(e => { if (mounted.current && readGeneration === generation.current) setError(detail(e)); }); }}>加载更多制作结果</button> : null}
         <div className={styles.fields}>
@@ -268,7 +285,7 @@ function MediaScope(props: Props) {
         </div> : null}
       </> : null}
       {job ? <p role="status">原任务：{job.errorCode === "REAL_MEDIA_SUBMISSION_UNKNOWN" ? "结果待核实，可能已产生费用，不会自动重新生成"
-        : ({ QUEUED: "等待处理", RUNNING: "制作中", WAITING_EXTERNAL: "等待服务商结果", SUCCEEDED: "已完成，请试听或查看", FAILED: "未完成，请查看任务原因", CANCELED: "已取消" } as Record<string, string>)[job.state] ?? "等待处理"}
+        : ({ QUEUED: "等待处理", RUNNING: "制作中", WAITING_EXTERNAL: "等待服务商结果", SUCCEEDED: "已完成，请试听或查看", FAILED: "未完成，请查看任务原因", CANCELED: "已停止本地处理；已发出的生成仍可能计费" } as Record<string, string>)[job.state] ?? "等待处理"}
         <button type="button" onClick={() => { setError(null); const read = ++jobRead.current; const id = job.id; void api.job(id).then(value => {
           if (mounted.current && read === jobRead.current && currentJob.current?.id === id) { showJob(value); if (TERMINAL.has(value.state)) setReadTick(v => v + 1); }
         }).catch(e => { if (mounted.current && read === jobRead.current) setError(detail(e)); }); }}>查询原任务</button></p> : null}

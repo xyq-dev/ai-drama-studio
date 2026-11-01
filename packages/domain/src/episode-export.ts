@@ -1,4 +1,5 @@
 import { DomainError } from "./errors";
+import type { SpeechMixManifest,SpeechVoiceRevision } from "@ai-drama/contracts";
 import { COMPOSE_OUTPUT_MAX_BYTES } from "./compose-render";
 import { MAX_PRODUCTION_EPISODES, canonicalInputHash } from "./text-chain";
 import { type EpisodeComposeSegment } from "./episode-compose-preflight";
@@ -37,6 +38,12 @@ export interface EpisodeExportSegment {
   shotId: string;
   shotRevisionId: string;
   media: EpisodeExportMedia[];
+  speech?:{
+    schema:"m4.voice.export.provenance.v1";
+    manifest:SpeechMixManifest;
+    renderProfile:Record<string,unknown>;
+    voices:Array<{speakerId:string;voiceRevision:SpeechVoiceRevision}>;
+  };
 }
 
 export interface EpisodeExportCore {
@@ -380,6 +387,7 @@ export function buildEpisodeExportManifest(facts: EpisodeExportFacts, verifiedAt
       shotChecksumSha256: segment.shotChecksumSha256,
       shotId: segment.shotId,
       shotRevisionId: segment.shotRevisionId,
+      ...(segment.speech?{speech:segment.speech}:{}),
       media: segment.media.map((item) => ({
         role: item.role,
         kind: item.kind,

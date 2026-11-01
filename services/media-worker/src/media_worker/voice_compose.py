@@ -35,6 +35,7 @@ PROFILE = {
     "ducking_attack_ms": 50,
     "ducking_release_ms": 200,
     "ambience_gain": 0.25,
+    "music_fade_out_ms": 1000,
     "font": "Noto Sans CJK SC",
     "font_style": "m4-voice-subtitle-style-v1",
     "font_size": 48,
@@ -307,7 +308,9 @@ def command(root: Path, manifest: dict, source_has_audio: bool, caption_files: l
     if mix["musicAssetId"] is not None:
         inputs.extend(media_input(root / "music.wav"))
         index = len(manifest["lines"]) + 1
-        filters.append(f"[{index}:a]aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,asetpts=PTS-STARTPTS,apad,atrim=duration={duration:.6f},volume={mix['musicGain']:.6f}{duck}[music]")
+        fade_duration = min(PROFILE["music_fade_out_ms"] / 1000, duration)
+        fade_start = max(0, duration - fade_duration)
+        filters.append(f"[{index}:a]aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,asetpts=PTS-STARTPTS,apad,atrim=duration={duration:.6f},volume={mix['musicGain']:.6f}{duck},afade=t=out:st={fade_start:.6f}:d={fade_duration:.6f}[music]")
         audio_labels.append("[music]")
     if mix["originalAudio"] == "confirmed-ambience" and source_has_audio:
         filters.append(f"[0:a]aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,asetpts=PTS-STARTPTS,apad,atrim=duration={duration:.6f},volume={PROFILE['ambience_gain']:.6f}{duck}[ambience]")

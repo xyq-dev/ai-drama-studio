@@ -47,6 +47,8 @@ CREATE TABLE real_media_submission (
   estimated_amount numeric(20,8) NOT NULL CHECK(estimated_amount>=0),
   currency text NOT NULL CHECK(currency IN ('CNY','USD')),
   -- Only authenticated ciphertext. No signed URLs, data URLs, raw errors or credentials in public records.
+  -- The 8 MiB database envelope cap is intentionally below the runtime's 12 MiB parser ceiling.
+  -- A 4 MiB music binary becomes a data URL and then encrypted base64 (~7.2 MiB), still within this cap.
   outputs_ciphertext text CHECK(octet_length(outputs_ciphertext)<=8388608),
   usage_json jsonb CHECK(octet_length(usage_json::text)<=8192),
   submitted_at timestamptz NOT NULL DEFAULT now(),
@@ -80,6 +82,7 @@ CREATE TRIGGER real_media_authorization_immutable BEFORE UPDATE OR DELETE ON rea
 CREATE FUNCTION real_media_submission_guard() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE usage_key text; usage_value jsonb;
 BEGIN
+  IF TG_OP='DELETE' THEN RAISE EXCEPTION 'media submission is permanent'; END IF;
   IF TG_OP<>'DELETE' AND NEW.usage_json IS NOT NULL THEN
     IF jsonb_typeof(NEW.usage_json) IS DISTINCT FROM 'object' THEN RAISE EXCEPTION 'media usage must be an object'; END IF;
     FOR usage_key,usage_value IN SELECT * FROM jsonb_each(NEW.usage_json) LOOP
@@ -93,6 +96,8 @@ BEGIN
     IF NEW.state<>'INTENT' OR NEW.provider_request_id IS NOT NULL OR NEW.outputs_ciphertext IS NOT NULL OR NEW.acknowledged_at IS NOT NULL OR NEW.usage_json IS NOT NULL
       OR NOT EXISTS (SELECT 1 FROM generation_job j JOIN real_media_authorization a ON a.job_id=j.id
         WHERE j.id=NEW.generation_job_id AND j.workspace_id=NEW.workspace_id AND j.input_hash=NEW.input_hash
+          AND j.state='RUNNING' AND j.cancel_requested_at IS NULL AND j.lease_until>clock_timestamp() AND a.expires_at>clock_timestamp()
+          AND NOT (j.input_snapshot->>'capability'='video.generate' AND COALESCE(j.input_snapshot->>'characterReferenceGate','legacy')='strict')
           AND (j.input_snapshot-'budget')=a.input_snapshot
           AND j.input_snapshot#>>'{budget,authorizationId}'=a.authorization_id::text
           AND COALESCE(j.input_snapshot#>'{budget,confirmedUncertainJobIds}','[]'::jsonb)=to_jsonb(a.confirmed_uncertain_job_ids)
@@ -101,7 +106,6 @@ BEGIN
     THEN RAISE EXCEPTION 'media submission must bind the exact authorized intent'; END IF;
     RETURN NEW;
   END IF;
-  IF TG_OP='DELETE' THEN RAISE EXCEPTION 'media submission is permanent'; END IF;
   IF (to_jsonb(NEW)-'state'-'provider_request_id'-'outputs_ciphertext'-'usage_json'-'acknowledged_at'-'updated_at') IS DISTINCT FROM
      (to_jsonb(OLD)-'state'-'provider_request_id'-'outputs_ciphertext'-'usage_json'-'acknowledged_at'-'updated_at')
     THEN RAISE EXCEPTION 'media submission identity is immutable'; END IF;

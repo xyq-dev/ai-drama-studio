@@ -823,15 +823,22 @@ export class JobPersistenceService {
     attemptId: string;
     leaseOwner: string;
     leaseMs: number;
+    requireActualClock?:boolean;
   }): Promise<boolean> {
     const client = await this.pool.connect();
+    let transaction=false;
     try {
+      if(input.requireActualClock){
+        await client.query("BEGIN");transaction=true;
+        await client.query("SELECT id FROM generation_job WHERE id=$1 AND workspace_id=$2 FOR UPDATE",[input.jobId,input.workspaceId]);
+      }
+      const currentTime=input.requireActualClock?"clock_timestamp()":"now()";
       const leaseUntil = new Date(Date.now() + input.leaseMs);
       const updated = await client.query(
         `UPDATE generation_job AS job
             SET lease_until = $5, updated_at = now(), row_version = job.row_version + 1
           WHERE job.id = $1 AND job.workspace_id = $2 AND job.state = 'RUNNING'
-            AND job.lease_owner = $3 AND job.cancel_requested_at IS NULL AND job.lease_until > clock_timestamp()
+            AND job.lease_owner = $3 AND job.cancel_requested_at IS NULL AND job.lease_until > ${currentTime}
             AND EXISTS (
               SELECT 1 FROM job_attempt attempt
                WHERE attempt.id = $4 AND attempt.generation_job_id = job.id AND attempt.finished_at IS NULL
@@ -841,7 +848,11 @@ export class JobPersistenceService {
             )`,
         [input.jobId, input.workspaceId, input.leaseOwner, input.attemptId, leaseUntil],
       );
+      if(transaction)await client.query("COMMIT");
       return updated.rowCount === 1;
+    } catch(error){
+      if(transaction)await client.query("ROLLBACK").catch(()=>undefined);
+      throw error;
     } finally {
       client.release();
     }

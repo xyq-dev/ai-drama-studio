@@ -19,6 +19,13 @@ function deps(){
   return {values,submit,inspect,dependencies:values as unknown as RealMediaWorkerDependencies};
 }
 describe("real media receipt recovery",()=>{
+  it("cannot bypass a newly enabled strict reference gate with an older first-frame quote",async()=>{
+    const d=deps();const e=execution();e.inputSnapshot.capability="video.generate";e.inputSnapshot.configuration.capability="video.generate";
+    e.inputSnapshot.sourceImage={assetId:"image",checksumSha256:"a".repeat(64)};e.inputSnapshot.characterReferenceGate="legacy";e.inputHash=realMediaInputHash(e.inputSnapshot);
+    await runRealMediaJob(e,{...d.dependencies,characterReferenceGate:"strict"});
+    expect(d.submit).not.toHaveBeenCalled();expect(d.values.store.beginSubmission).not.toHaveBeenCalled();
+    expect(d.values.jobs.failJob).toHaveBeenCalledWith(expect.objectContaining({retryable:false,errorCode:"REAL_MEDIA_REFERENCE_PROFILE_UNSUPPORTED"}));
+  });
   it("renews a long in-flight submission and stops the RUNNING heartbeat before acknowledgement",async()=>{
     vi.useFakeTimers();
     try{

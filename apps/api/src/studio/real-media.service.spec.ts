@@ -7,6 +7,19 @@ function options(){
   return {raw,typed:raw as unknown as RealMediaServiceOptions};
 }
 describe("explicit real-media budget API",()=>{
+  it("keeps budget exposure and authenticated historical reads available when paid generation is switched off",async()=>{
+    const o=options();const costExposure=vi.fn(async()=>({actualCost:"unknown",unknownSubmissionCount:1,currencies:[]}));
+    const service=new RealMediaService({...o.typed,enabled:false,readEnabled:true,objects:{readVerified:vi.fn()},store:{...o.raw.store,costExposure} as unknown as RealMediaServiceOptions["store"]});
+    expect(await service.capabilities("project")).toMatchObject({available:false,readAvailable:true});
+    await expect(service.costExposure("project")).resolves.toMatchObject({unknownSubmissionCount:1});expect(costExposure).toHaveBeenCalledWith("workspace","project");
+    expect(o.raw.configurationFor).not.toHaveBeenCalled();
+  });
+  it("closes fixed-profile real video under strict references before quote creation or provider selection",async()=>{
+    const o=options();const service=new RealMediaService({...o.typed,characterReferenceGate:"strict"});
+    await expect(service.quote("project","shot",{capability:"video.generate",sourceImageAssetId:"11111111-1111-4111-8111-111111111111"})).rejects.toMatchObject({code:"REAL_MEDIA_REFERENCE_PROFILE_UNSUPPORTED"});
+    expect(o.raw.store.createQuote).not.toHaveBeenCalled();expect(o.raw.configurationFor).not.toHaveBeenCalled();
+    expect((await service.capabilities("project")).unavailableCapabilities).toMatchObject({"video.generate":"REAL_MEDIA_REFERENCE_PROFILE_UNSUPPORTED"});
+  });
   it("replays a permanent existing job before live feature, storage or provider checks",async()=>{
     const o=options();o.raw.enabled=false;o.raw.store.receiptReady=()=>false;
     o.raw.jobs.createAndQueueWorkflowJob.mockResolvedValueOnce({replayed:true,status:202,body:{jobId:"original",workflowRunId:"workflow",dispatchSeq:1}});

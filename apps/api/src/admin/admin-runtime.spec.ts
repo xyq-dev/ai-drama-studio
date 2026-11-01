@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  createPostgresPool, PostgresTitleWritingStore, RuntimeStore, TITLE_WRITING_TABLES, type PostgresPool,
+  createPostgresPool, PostgresTitleWritingStore, PostgresSpeechStore, PostgresSpeechBatchStore, RuntimeStore, TITLE_WRITING_TABLES, type PostgresPool,
 } from "@ai-drama/database";
 import type { TitleWritingOptionsView } from "@ai-drama/contracts";
 import { loadApiEnv, type ApiEnv } from "../config/env";
@@ -190,6 +190,19 @@ describe.skipIf(process.platform === "win32")("StudioRuntime managed model start
     expect((await options(current)).providers.find((provider) => provider.providerKey === "openai")?.ready).toBe(false);
     await close(current);
   }
+
+  it("wires the real speech batch store into startup without enabling paid generation or writing SQL",async()=>{
+    vi.spyOn(PostgresSpeechStore.prototype,"storageReady").mockResolvedValue(true);
+    const readiness=vi.spyOn(PostgresSpeechBatchStore.prototype,"storageReady").mockResolvedValue(true);
+    const inventory={projectId:"project",episodeId:"episode",sourceHash:"a".repeat(64),operationLimit:100,lines:[],blockers:[]};
+    const read=vi.spyOn(PostgresSpeechBatchStore.prototype,"inventory").mockResolvedValue(inventory);
+    const runtime=await open(await environment());
+    await expect(runtime.speech!.batchInventory("project","episode")).resolves.toEqual({status:200,body:inventory});
+    expect(read).toHaveBeenCalledWith(WORKSPACE,"project","episode");
+    readiness.mockResolvedValue(false);
+    expect((await runtime.speech!.batchInventory("project","episode")).status).toBe(503);
+    expect(read).toHaveBeenCalledTimes(1);expect(pools[0]!.connect).not.toHaveBeenCalled();
+  });
 
   it("defers a pending provider and limits when startup finds a running workspace task", async () => {
     const env = await environment();
@@ -389,8 +402,8 @@ describe.skipIf(process.platform === "win32")("StudioRuntime managed model start
     const clear = vi.spyOn(globalThis, "clearInterval");
     const runtime = await open(await environment());
     const timers = interval.mock.results.filter((result) => result.type === "return").map((result) => result.value);
-    // Title writing recovery, online candidate recovery, automatic creation recovery and series writing recovery.
-    expect(timers).toHaveLength(4);
+    // Title, online candidate, automatic creation, series writing and ViMax planning recovery.
+    expect(timers).toHaveLength(5);
     await close(runtime);
     for (const timer of timers) expect(clear).toHaveBeenCalledWith(timer);
     expect(pools.at(-1)!.end).toHaveBeenCalledExactlyOnceWith();

@@ -35,7 +35,7 @@ import { writingWorkspaceIdle } from "./writing-activation";
 import { WritingCandidateService } from "./writing-candidate.service";
 import { adminBootstrap } from "../admin/admin-bootstrap";
 import { AdminModelsService, managedProviderConfigs } from "../admin/admin-models.service";
-import { PostgresVimaxPlanningStore, RealMediaStore, PostgresSpeechStore, PostgresVoiceComposeStore } from "@ai-drama/database";
+import { PostgresVimaxPlanningStore, RealMediaStore, PostgresSpeechStore, PostgresSpeechBatchStore, PostgresVoiceComposeStore } from "@ai-drama/database";
 import { VimaxPlanningExecutor, ServerRealMediaRuntime, MediaS3Client, readVerifiedS3MediaObject } from "@ai-drama/providers";
 import { VimaxPlanningService } from "./vimax-planning.service";
 import { RealMediaService } from "./real-media.service";
@@ -291,7 +291,7 @@ export class StudioRuntime implements OnModuleDestroy {
     const mediaAssets = new MediaAssetStore(pool);
     const mediaClient = realRuntime.receiptCipher ? new MediaS3Client({ endpoint: env.S3_ENDPOINT, region: env.S3_REGION,
       bucket: env.S3_BUCKET, accessKeyId: env.S3_ACCESS_KEY_ID, secretAccessKey: env.S3_SECRET_ACCESS_KEY, forcePathStyle: env.S3_FORCE_PATH_STYLE }) : null;
-    const realMedia = new RealMediaService({ workspaceId, enabled: realRuntime.enabled, readEnabled:realAccessAllowed, store: mediaStore, jobs, assets: mediaAssets,
+    const realMedia = new RealMediaService({ workspaceId, enabled: realRuntime.enabled, readEnabled:realAccessAllowed, characterReferenceGate:env.M3_CHARACTER_REFERENCE_GATE, store: mediaStore, jobs, assets: mediaAssets,
       configurationFor: async (capability, client) => {
         const configuration = await realRuntime.configurationFor(capability);
         return configuration && await mediaStore.configurationStillEnabled(configuration, client) ? configuration : null;
@@ -303,7 +303,7 @@ export class StudioRuntime implements OnModuleDestroy {
       },
       ...(mediaClient ? { objects: { readVerified: (asset, scope) => readVerifiedS3MediaObject(mediaClient, asset, scope) } } : {}) });
     const speechStore = new PostgresSpeechStore(pool, jobs);
-    const speech = new SpeechService({ workspaceId, store: speechStore, generation: realMedia.speechPort() });
+    const speech = new SpeechService({ workspaceId, store: speechStore, batchStore: new PostgresSpeechBatchStore(pool, jobs), generation: realMedia.speechPort() });
     const voiceCompose = new VoiceComposeService({ workspaceId,
       enabled: realComposeAllowed && env.M4_LOCAL_COMPOSE_ENABLED && Boolean(composeObjectDir), jobs,
       store: new PostgresVoiceComposeStore(pool, jobs), speech: speechStore });

@@ -42,6 +42,7 @@ import { guardSynchronousMockImageCost, recordProviderActualCost, type ProviderA
 import { assertFrozenReferencesUsable, frozenCharacterReferences } from "./character-reference-store";
 import { projectEpisodePlanIn } from "./episode-plan";
 import { assertVoiceComposeReviewInTransaction } from "./voice-compose-store";
+import { speechExportVoices } from "./speech-export";
 
 export interface CreateMediaAssetInput {
   workspaceId: string;
@@ -1325,6 +1326,9 @@ async function exportSegment(
       }] : []),
     };
     const listed=voice?mediaFromFrozenVoiceShot({...common,manifest:voice.input.manifest,sourceObjects:voice.input.sourceObjects}):mediaFromFrozenShot({...common,sources:slots,sourceObjects});
+    const speech:EpisodeExportFacts["segments"][number]["speech"]=voice?{schema:"m4.voice.export.provenance.v1",
+      manifest:voice.input.manifest,renderProfile:{...voice.input.renderProfile},
+      voices:await speechExportVoices(client,workspaceId,projectId,voice.input.manifest.lines.map(line=>line.voiceRevisionId))}:undefined;
     return {
       position: integerOrZero(segment.position),
       startMs: integerOrZero(segment.startMs),
@@ -1335,6 +1339,7 @@ async function exportSegment(
       shotId: String(segment.shotId),
       shotRevisionId: String(segment.shotRevisionId),
       media: listed,
+      ...(speech?{speech}:{}),
     };
   } catch (error) {
     if (error instanceof DomainError) throw new PersistenceError(error.code, error.message);

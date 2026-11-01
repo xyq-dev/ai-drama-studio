@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { SpeechBatchDispatchRef } from "./speech-batch";
 
 export const SPEECH_STORAGE_VERSION = "ads.speech.storage.v1";
 export const SPEECH_PLAN_SCHEMA = "voice.shot.plan.v1";
@@ -59,8 +60,10 @@ export interface SpeechQuote {
 export interface SpeechGenerationPort {
   capabilities(workspaceId: string, projectId: string): Promise<SpeechCapabilities>;
   quote(input: SpeechGenerationInput): Promise<SpeechQuote>;
+  authorize?(input: { workspaceId: string; projectId: string; actorId: string; quoteId: string;
+    maximumAmount: string; confirmedUncertainJobIds: string[]; idempotencyKey: string }): Promise<{ budgetAuthorizationId: string }>;
   generate(input: SpeechGenerationInput & { quoteId: string; budgetAuthorizationId: string;
-    idempotencyKey: string; actorId: string; traceId: string }): Promise<{ jobId: string; workflowRunId: string; reused: boolean }>;
+    idempotencyKey: string; actorId: string; traceId: string; batchOperation?: SpeechBatchDispatchRef }): Promise<{ jobId: string; workflowRunId: string; reused: boolean }>;
 }
 export const speechGenerateSchema = z.object({ quoteId: z.string().min(1).max(200), budgetAuthorizationId: id }).strict();
 export const speechSelectionPutSchema = z.object({ takeAssetId: id, expectedTakeChecksumSha256: hash }).strict();

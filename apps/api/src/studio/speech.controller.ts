@@ -14,6 +14,24 @@ interface Response { status(code: number): void; setHeader(name: string, value: 
 @Controller()
 export class SpeechController {
   constructor(@Inject(SPEECH_SERVICE) private readonly speech: SpeechService) {}
+  @Get("projects/:projectId/episodes/:episodeId/speech-batch-plan")
+  batchInventory(@Param("projectId", UUID_PIPE) p: string, @Param("episodeId", UUID_PIPE) e: string, @Res({ passthrough: true }) res: Response) { return this.send(res, this.speech.batchInventory(p, e)); }
+  @Get("projects/:projectId/episodes/:episodeId/speech-batches")
+  batches(@Param("projectId", UUID_PIPE) p: string, @Param("episodeId", UUID_PIPE) e: string, @Res({ passthrough: true }) res: Response) { return this.send(res, this.speech.batchList(p, e)); }
+  @Post("projects/:projectId/episodes/:episodeId/speech-batches")
+  preflightBatch(@Param("projectId", UUID_PIPE) p: string, @Param("episodeId", UUID_PIPE) e: string, @Body() body: unknown,
+    @Res({ passthrough: true }) res: Response, @Headers("idempotency-key") key?: string, @Headers("x-trace-id") trace?: string) { return this.send(res, this.speech.batchPreflight(p, e, body, this.context(key, trace))); }
+  @Get("speech-batches/:batchId")
+  batchRead(@Param("batchId", UUID_PIPE) id: string, @Res({ passthrough: true }) res: Response) { return this.send(res, this.speech.batchRead(id)); }
+  @Post("speech-batches/:batchId/confirm")
+  confirmBatch(@Param("batchId", UUID_PIPE) id: string, @Body() body: unknown, @Res({ passthrough: true }) res: Response,
+    @Headers("idempotency-key") key?: string, @Headers("x-trace-id") trace?: string) { return this.send(res, this.speech.batchConfirm(id, body, this.context(key, trace))); }
+  @Post("speech-batches/:batchId/resume")
+  resumeBatch(@Param("batchId", UUID_PIPE) id: string, @Body() body: unknown, @Res({ passthrough: true }) res: Response,
+    @Headers("idempotency-key") key?: string, @Headers("x-trace-id") trace?: string) { return this.send(res, this.speech.batchResume(id, body, this.context(key, trace))); }
+  @Post("speech-batches/:batchId/cancel")
+  cancelBatch(@Param("batchId", UUID_PIPE) id: string, @Body() body: unknown, @Res({ passthrough: true }) res: Response,
+    @Headers("idempotency-key") key?: string, @Headers("x-trace-id") trace?: string) { return this.send(res, this.speech.batchCancel(id, body, this.context(key, trace))); }
   @Get("projects/:projectId/speech-capabilities")
   capabilities(@Param("projectId", UUID_PIPE) projectId: string, @Res({ passthrough: true }) res: Response) {
     return this.send(res, this.speech.capabilities(projectId));

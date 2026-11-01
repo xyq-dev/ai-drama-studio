@@ -1,6 +1,6 @@
 /**
  * Explicit opt-in PostgreSQL acceptance. WRITING this source does not authorize its execution.
- * Only a separately named, verified-empty database may receive ordinary migrations and the character-voice draft.
+ * Only a separately named, verified-empty database may receive ordinary migrations and the voice/batch drafts.
  * There are no provider/network/object-store calls, DROP, TRUNCATE, Mock request identities or billing assertions.
  * Synthetic WAV / committed lavfi MP4 bytes supply exact fixture metadata to the real Job→Attempt→Asset chain.
  */
@@ -9,15 +9,18 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { SpeechBinding, SpeechGenerationInput, SpeechMixManifest, SpeechMixPreflight, SpeechPlanLineInput, SpeechPlanPut, SpeechPlanView, SpeechVoice } from "@ai-drama/contracts";
-import { speechDialogueHash, speechExactHash } from "@ai-drama/domain";
+import { SPEECH_BATCH_SCHEMA, type SpeechBatchConfirmation, type SpeechBatchFrozen, type SpeechBatchFrozenOperation,
+  type SpeechBatchPreflightRequest, type SpeechBinding, type SpeechGenerationInput, type SpeechMixManifest,
+  type SpeechMixPreflight, type SpeechPlanLineInput, type SpeechPlanPut, type SpeechPlanView, type SpeechVoice } from "@ai-drama/contracts";
+import { speechBatchBudgets, speechDialogueHash, speechExactHash } from "@ai-drama/domain";
 import { JobPersistenceService } from "./job-service";
 import { MediaAssetStore, type MediaAssetRecord } from "./media-assets";
 import { runMigrations } from "./migrations";
 import { TextChainService } from "./text-chain";
 import { PostgresSpeechStore, assertSpeechGenerationInputInTransaction, assertSpeechMixManifestInTransaction,
-  commitSpeechMixDependencies, commitSpeechTake } from "./speech-store";
+  commitSpeechMixDependencies, commitSpeechTake, speechBatchInventoryInTransaction } from "./speech-store";
 import { checkSpeechAcceptanceEnv, verifySpeechAcceptanceDatabase } from "./speech-acceptance-guard";
+import { PostgresSpeechBatchStore, assertSpeechBatchDispatchInTransaction, bindSpeechBatchJobInTransaction } from "./speech-batch-store";
 
 const decision = checkSpeechAcceptanceEnv(process.env);
 if (!decision.ok) throw new Error(`Speech acceptance refused before opening a connection: ${decision.reason}`);
@@ -25,12 +28,14 @@ const pool = new Pool({ connectionString: decision.url, max: 8, connectionTimeou
   statement_timeout: 15_000, query_timeout: 20_000, application_name: "speech-draft-acceptance" });
 const jobs = new JobPersistenceService(pool), assets = new MediaAssetStore(pool), chain = new TextChainService(pool);
 const speech = new PostgresSpeechStore(pool, jobs);
+const batches = new PostgresSpeechBatchStore(pool, jobs, { leaseMs: 3000 });
 const actor = "speech-acceptance-operator";
 const dialogue = "林夏：你好🙂。\r\n周晨：e\u0301再见。";
 const sourceTexts = ["你好🙂。", "e\u0301再见。"];
 const sha = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 const context = (key = randomUUID()) => ({ actorId: actor, traceId: "speech-acceptance", idempotencyKey: key });
 let beforeDraft = true;
+let batchBeforeDraft = true;
 let discovered: string[] = [];
 let videoBytes!: Buffer;
 
@@ -58,9 +63,12 @@ beforeAll(async () => {
   const ordinary = await runMigrations(pool);
   discovered = [...ordinary.applied, ...ordinary.alreadyApplied];
   beforeDraft = await speech.storageReady();
-  if (beforeDraft) throw new Error("The speech draft unexpectedly appeared in ordinary migrations");
+  batchBeforeDraft = await batches.storageReady();
+  if (beforeDraft || batchBeforeDraft) throw new Error("A speech draft unexpectedly appeared in ordinary migrations");
   await tx(async (client) => {
-    await client.query(await readFile(resolve(__dirname, "../prisma/drafts/20261101000100_character_voice.sql"), "utf8"));
+    for (const draft of ["20261101000100_character_voice.sql", "20261101000300_speech_batch.sql"]) {
+      await client.query(await readFile(resolve(__dirname, "../prisma/drafts", draft), "utf8"));
+    }
   });
   videoBytes = await readFile(resolve(__dirname, "../../providers/fixtures/sample-15s-a-v1.mp4"));
   // These are the committed lavfi file's actual dimensions/duration/hash, never its Mock snapshot/request identity.
@@ -263,12 +271,36 @@ async function composite(w: World, input: SpeechMixPreflight): Promise<string> {
   return result.id;
 }
 
+/** Quotes here are frozen fixture metadata, never provider prices, budget approvals or paid-call evidence. */
+async function batchSnapshot(w: World, lineInputRevisionIds?: string[]) {
+  const { inventory, inputs } = await tx((client) => speechBatchInventoryInTransaction(client, w.workspaceId, w.projectId, w.episodeId, true));
+  const request: SpeechBatchPreflightRequest = { sourceHash: inventory.sourceHash,
+    lineInputRevisionIds: lineInputRevisionIds ?? inventory.lines.filter((item) => item.status === "missing").map((item) => item.lineInputRevisionId) };
+  const expiresAt = new Date(Date.now() + 60 * 60_000).toISOString();
+  const operations: SpeechBatchFrozenOperation[] = request.lineInputRevisionIds.map((lineInputRevisionId) => {
+    const input = inputs.get(lineInputRevisionId);
+    if (!input) throw new Error("Synthetic batch input missing from source inventory");
+    return { id: randomUUID(), input, idempotencyKey: randomUUID(), quote: { quoteId: randomUUID(), inputHash: input.inputHash,
+      currency: "CNY", estimatedAmount: "0.10", maximumAmount: "0.20", expiresAt, providerConfigurationId: w.providerId,
+      providerConfigurationVersion: "synthetic-v1", priceVersion: "synthetic-no-provider-call", uncertainJobIds: [] } };
+  });
+  const frozen: SpeechBatchFrozen = { schema: SPEECH_BATCH_SCHEMA, projectId: w.projectId, episodeId: w.episodeId,
+    sourceHash: inventory.sourceHash, operations, budgets: speechBatchBudgets(operations), expiresAt };
+  return { request, frozen };
+}
+function batchConfirmation(frozen: SpeechBatchFrozen): SpeechBatchConfirmation {
+  return { frozenHash: speechExactHash(frozen), maximumJobs: frozen.operations.length,
+    budgets: frozen.budgets.map(({ currency, maximumAmount }) => ({ currency, maximumAmount })),
+    confirmPossibleCharges: true, confirmedUncertainJobIds: [] };
+}
+
 describe("speech character-voice draft in an explicitly authorized new empty PostgreSQL database", () => {
-  it("applies only the explicit voice draft, verifies readiness and leaves ordinary migration discovery unchanged", async () => {
+  it("applies only the explicit voice/batch drafts, verifies readiness and leaves ordinary migration discovery unchanged", async () => {
     expect(beforeDraft).toBe(false); expect(await speech.storageReady()).toBe(true);
+    expect(batchBeforeDraft).toBe(false); expect(await batches.storageReady()).toBe(true);
     expect(discovered.some((name) => /speech|character_voice|real_media/.test(name))).toBe(false);
     expect((await runMigrations(pool)).applied).toEqual([]);
-    expect((await pool.query("SELECT name FROM schema_migration WHERE name LIKE '%character_voice%' OR name LIKE '%real_media%' ")).rowCount).toBe(0);
+    expect((await pool.query("SELECT name FROM schema_migration WHERE name LIKE '%character_voice%' OR name LIKE '%real_media%' OR name LIKE '%speech_batch%' ")).rowCount).toBe(0);
     expect((await pool.query("SELECT to_regclass('real_media_submission') AS media, to_regclass('speech_voice_binding') AS speech")).rows[0]).toMatchObject({ media: null, speech: "speech_voice_binding" });
   });
 
@@ -434,5 +466,142 @@ describe("speech character-voice draft in an explicitly authorized new empty Pos
     await expect(pool.query(`UPDATE asset SET review_status='APPROVED',reviewed_by=$2,reviewed_at=now(),reviewed_content_hash=checksum_sha256,row_version=row_version+1 WHERE id=$1`,
       [first.id, actor])).rejects.toMatchObject({ code: "23514" });
     expect((await assetState(first.id)).review_status).toBe("DRAFT");
+  });
+
+  it("inventories every episode source blocker and preserves the source hash while jobs, candidates and selections progress", async () => {
+    const w = await world();
+    const inventory = () => tx((client) => speechBatchInventoryInTransaction(client, w.workspaceId, w.projectId, w.episodeId, true));
+    const missingPlan = await inventory();
+    expect(missingPlan.inventory.lines).toEqual([]);
+    expect(missingPlan.inventory.blockers).toEqual([expect.objectContaining({ shotRevisionId: w.shotRevisionId, code: "SPEECH_PLAN_MISSING" })]);
+    const plan = await savePlan(w), pending = await inventory();
+    expect(pending.inventory.blockers).toEqual([]);
+    expect(pending.inventory.lines.map((item) => item.status)).toEqual(["missing", "missing"]);
+    expect(pending.inputs.size).toBe(2);
+    expect(pending.inventory.lines.map((item) => item.displayText)).toEqual(sourceTexts);
+    const prepared = await prepareTake(w, plan, 0), running = await inventory();
+    expect(running.inventory.sourceHash).toBe(pending.inventory.sourceHash);
+    expect(running.inventory.lines[0]).toMatchObject({ status: "in_progress", jobIds: [prepared.jobId] });
+    const accepted = await finishTake(w, prepared);
+    if (!accepted) throw new Error("Synthetic candidate completion was canceled");
+    const candidates = await inventory();
+    expect(candidates.inventory.sourceHash).toBe(pending.inventory.sourceHash);
+    expect(candidates.inventory.lines[0]).toMatchObject({ status: "awaiting_selection", jobIds: [] });
+    await select(w, plan, 0, accepted);
+    const selected = await inventory();
+    expect(selected.inventory.sourceHash).toBe(pending.inventory.sourceHash);
+    expect(selected.inventory.lines.map((item) => item.status)).toEqual(["selected", "missing"]);
+    const scriptId = await scalar(`SELECT script_revision_id AS id FROM script_revision_consumer_source
+      WHERE workspace_id=$1 AND project_id=$2 AND consumer_type='scene_revision'
+      AND consumer_revision_id=(SELECT current_revision_id FROM scene WHERE id=$3)`, [w.workspaceId, w.projectId, w.sceneId]);
+    const episodeVersion = await version("episode", w.episodeId);
+    await tx((client) => chain.createSceneRevisionInTransaction(client, { workspaceId: w.workspaceId, projectId: w.projectId,
+      episodeId: w.episodeId, sourceScriptRevisionId: scriptId, ordinal: 2, heading: "INT. EMPTY ROOM", timeOfDay: "夜",
+      summary: "An explicit scene with no saved shots is a blocker", createdBy: actor, expectedVersion: episodeVersion }));
+    const incomplete = await inventory();
+    expect(incomplete.inventory.lines).toHaveLength(2);
+    expect(incomplete.inventory.blockers).toContainEqual(expect.objectContaining({ shotRevisionId: null, code: "SPEECH_BATCH_SHOTS_MISSING" }));
+    expect(incomplete.inventory.sourceHash).not.toBe(pending.inventory.sourceHash);
+    await expect(tx((client) => speechBatchInventoryInTransaction(client, w.workspaceId, w.projectId, randomUUID(), true))).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("skips existing candidates and permanently replays a concurrent batch preflight key while rejecting changed payloads", async () => {
+    const w = await world(), plan = await savePlan(w);
+    await take(w, plan, 0);
+    const withCandidate = await batchSnapshot(w, [plan.currentRevision!.lines[0]!.lineInputRevisionId]);
+    await expect(batches.create(w.workspaceId, w.projectId, w.episodeId, withCandidate.request, withCandidate.frozen, context())).rejects.toMatchObject({ code: "SPEECH_BATCH_LINE_AVAILABLE" });
+    const snapshot = await batchSnapshot(w), key = randomUUID();
+    expect(snapshot.frozen.operations.map((op) => op.input.lineId)).toEqual([plan.currentRevision!.lines[1]!.lineId]);
+    const create = () => batches.create(w.workspaceId, w.projectId, w.episodeId, snapshot.request, snapshot.frozen, context(key));
+    const [first, second] = await Promise.all([create(), create()]);
+    expect(first.id).toBe(second.id);
+    expect(first.frozenHash).toBe(speechExactHash(snapshot.frozen));
+    expect(first.operations).toHaveLength(1);
+    expect((await batches.list(w.workspaceId, w.projectId, w.episodeId)).items).toHaveLength(1);
+    expect((await batches.findPreflight(w.workspaceId, w.projectId, w.episodeId, key, speechExactHash(snapshot.request)))?.id).toBe(first.id);
+    const changed = { ...snapshot.request, lineInputRevisionIds: plan.currentRevision!.lines.map((item) => item.lineInputRevisionId) };
+    await expect(batches.create(w.workspaceId, w.projectId, w.episodeId, changed, snapshot.frozen, context(key))).rejects.toMatchObject({ code: "IDEMPOTENCY_KEY_REUSED" });
+    await changeVoice(w, 0, "Serena");
+    expect((await create()).id).toBe(first.id);
+    expect((await batches.findPreflight(w.workspaceId, w.projectId, w.episodeId, key, speechExactHash(snapshot.request)))?.id).toBe(first.id);
+    expect((await pool.query("SELECT count(*)::int AS n FROM generation_job WHERE workspace_id=$1", [w.workspaceId])).rows[0]!.n).toBe(1);
+  });
+
+  it("confirms exact batch budgets, excludes a second active batch, fences expired claims, and atomically binds a real queued job against cancellation", async () => {
+    const w = await world(); await savePlan(w);
+    const inventory = await batches.inventory(w.workspaceId, w.projectId, w.episodeId);
+    const snapshot = await batchSnapshot(w, [inventory.lines[0]!.lineInputRevisionId]);
+    const first = await batches.create(w.workspaceId, w.projectId, w.episodeId, snapshot.request, snapshot.frozen, context());
+    const alternateSnapshot = await batchSnapshot(w, [inventory.lines[1]!.lineInputRevisionId]);
+    const alternate = await batches.create(w.workspaceId, w.projectId, w.episodeId, alternateSnapshot.request, alternateSnapshot.frozen, context());
+    const body = batchConfirmation(snapshot.frozen);
+    await expect(batches.confirm(w.workspaceId, first.id, { ...body, budgets: [{ currency: "CNY", maximumAmount: "0.20000001" }] }, context())).rejects.toMatchObject({ code: "SPEECH_BATCH_BUDGET_CHANGED" });
+    await batches.confirm(w.workspaceId, first.id, body, context());
+    await expect(pool.query("UPDATE speech_batch_command SET state='quoted',row_version=row_version+1 WHERE id=$1", [first.id])).rejects.toThrow(/state cannot skip confirmation or reopen/);
+    await expect(pool.query("UPDATE speech_batch_command SET confirmed_by='different-actor',row_version=row_version+1 WHERE id=$1", [first.id])).rejects.toThrow(/frozen identity is immutable/);
+    await expect(pool.query("UPDATE speech_batch_command SET confirmed_at=confirmed_at+interval '1 second',row_version=row_version+1 WHERE id=$1", [first.id])).rejects.toThrow(/frozen identity is immutable/);
+    await expect(pool.query("UPDATE speech_batch_operation SET quote_id=$2,row_version=row_version+1 WHERE id=$1", [first.operations[0]!.id, randomUUID()])).rejects.toThrow(/operation identity is immutable/);
+    expect((await batches.read(w.workspaceId, first.id)).confirmation).toEqual(body);
+    await expect(batches.confirm(w.workspaceId, alternate.id, batchConfirmation(alternateSnapshot.frozen), context())).rejects.toMatchObject({ code: "SPEECH_BATCH_ACTIVE_EXISTS" });
+    const original = await batches.claim(w.workspaceId, first.id, false);
+    if (!original) throw new Error("Synthetic batch operation was not claimed");
+    await expect(pool.query("UPDATE speech_batch_operation SET state='pending',dispatch_token=NULL,lease_until=NULL,row_version=row_version+1 WHERE id=$1", [original.operation.id])).rejects.toThrow(/state cannot be reset or silently retried/);
+    expect(await batches.claim(w.workspaceId, first.id, false)).toBeNull();
+    // Only the CI suite waits for this real PostgreSQL lease; this source is not executed during development.
+    await new Promise((resolveWait) => setTimeout(resolveWait, 3100));
+    const reclaimed = await batches.claim(w.workspaceId, first.id, true);
+    if (!reclaimed) throw new Error("Expired synthetic batch claim was not recovered");
+    expect(reclaimed.operation.id).toBe(original.operation.id);
+    expect(reclaimed.operation.idempotencyKey).toBe(original.operation.idempotencyKey);
+    expect(reclaimed.ref.dispatchToken).not.toBe(original.ref.dispatchToken);
+    const authorizationId = randomUUID(); // Fixture authorization identity; no real-media budget draft is applied here.
+    await batches.recordAuthorization(w.workspaceId, reclaimed.ref, authorizationId);
+    const input = { speech: reclaimed.operation.input, quoteId: reclaimed.operation.quote.quoteId,
+      budgetAuthorizationId: authorizationId, idempotencyKey: reclaimed.operation.idempotencyKey, actorId: actor };
+    await expect(tx((client) => assertSpeechBatchDispatchInTransaction(client, original.ref, input))).rejects.toMatchObject({ code: "SPEECH_BATCH_LEASE_LOST" });
+    await expect(tx((client) => assertSpeechBatchDispatchInTransaction(client, undefined, input))).rejects.toMatchObject({ code: "SPEECH_BATCH_CONFIRMATION_CHANGED" });
+    let entered!: () => void, release!: () => void, enterFailed!: (reason?: unknown) => void;
+    const beforeCancellation = new Promise<void>((resolveEntered, rejectEntered) => { entered = resolveEntered; enterFailed = rejectEntered; });
+    const continueCreation = new Promise<void>((resolveContinue) => { release = resolveContinue; });
+    const source = reclaimed.operation.input;
+    const snapshotJob = { schema: "real-media.v1", capability: "audio.tts", sourceText: source.spokenText,
+      speech: source, budget: { authorizationId, quoteId: input.quoteId }, syntheticAcceptance: "no-provider-call" };
+    const created = jobs.createAndQueueWorkflowJob({ workspaceId: w.workspaceId, actorId: actor, httpMethod: "POST",
+      routeKey: "/speech-batch-acceptance/generate", key: reclaimed.operation.idempotencyKey, requestHash: speechExactHash(snapshotJob), expiresAt: new Date("9999-12-31T00:00:00Z") },
+    async (client) => {
+      await assertSpeechBatchDispatchInTransaction(client, reclaimed.ref, input);
+      entered(); await continueCreation;
+      return { workspaceId: w.workspaceId, projectId: w.projectId, sourceShotRevisionId: source.shotRevisionId,
+        type: "MEDIA_TTS", kind: "MEDIA_TTS", requestedBy: actor, inputHash: speechExactHash(snapshotJob), inputSnapshot: snapshotJob, traceId: "speech-batch-acceptance" };
+    }, (client, job) => bindSpeechBatchJobInTransaction(client, reclaimed.ref, { jobId: job.jobId, workflowRunId: job.workflowRunId }));
+    void created.catch(enterFailed);
+    await beforeCancellation;
+    // Dispatch already holds the project/source lock. Cancel waits, then preserves the job committed with its operation link.
+    const cancel = batches.cancel(w.workspaceId, first.id, context());
+    release();
+    const accepted = await created; await cancel;
+    const canceled = await batches.read(w.workspaceId, first.id);
+    expect(canceled.cancelRequested).toBe(true);
+    expect(canceled.operations[0]).toMatchObject({ state: "job_created", jobId: accepted.body.jobId, workflowRunId: accepted.body.workflowRunId });
+    await expect(pool.query("UPDATE speech_batch_command SET state='dispatching',cancel_requested=false,cancel_requested_at=NULL,row_version=row_version+1 WHERE id=$1", [first.id])).rejects.toThrow(/frozen identity is immutable/);
+    expect((await pool.query("SELECT state FROM generation_job WHERE id=$1", [accepted.body.jobId])).rows[0]!.state).toBe("QUEUED");
+    expect((await pool.query("SELECT count(*)::int AS n FROM generation_job WHERE workspace_id=$1", [w.workspaceId])).rows[0]!.n).toBe(1);
+    // A synthetic metadata notice proves the projection reads the real Job row, without claiming a provider call occurred.
+    await pool.query("UPDATE generation_job SET error_code='SPEECH_ACCEPTANCE_SYNTHETIC_NOTICE',row_version=row_version+1 WHERE id=$1", [accepted.body.jobId]);
+    expect((await batches.read(w.workspaceId, first.id)).operations[0]?.errorCode).toBe("SPEECH_ACCEPTANCE_SYNTHETIC_NOTICE");
+    await batches.confirm(w.workspaceId, alternate.id, batchConfirmation(alternateSnapshot.frozen), context());
+    const stoppedClaim = await batches.claim(w.workspaceId, alternate.id, false);
+    if (!stoppedClaim) throw new Error("The separate unsubmitted operation was not claimed");
+    const stoppedAuthorization = randomUUID();
+    await batches.recordAuthorization(w.workspaceId, stoppedClaim.ref, stoppedAuthorization);
+    await batches.cancel(w.workspaceId, alternate.id, context());
+    expect(await batches.claim(w.workspaceId, alternate.id, true)).toBeNull();
+    // Here cancel wins the project lock before core consumption, using the formerly valid claim and authorization.
+    await expect(tx((client) => assertSpeechBatchDispatchInTransaction(client, stoppedClaim.ref, {
+      speech: stoppedClaim.operation.input, quoteId: stoppedClaim.operation.quote.quoteId, budgetAuthorizationId: stoppedAuthorization,
+      idempotencyKey: stoppedClaim.operation.idempotencyKey, actorId: actor }))).rejects.toMatchObject({ code: "SPEECH_BATCH_CANCELED" });
+    expect((await pool.query("SELECT count(*)::int AS n FROM generation_job WHERE workspace_id=$1", [w.workspaceId])).rows[0]!.n).toBe(1);
+    await expect(tx((client) => assertSpeechBatchDispatchInTransaction(client, reclaimed.ref, input))).rejects.toThrow();
+    await expect(tx((client) => assertSpeechBatchDispatchInTransaction(client, undefined, input))).rejects.toThrow();
   });
 });

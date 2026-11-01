@@ -8,6 +8,8 @@
 
 `VIMAX_PLANNING_ENABLED=false` 默认关闭；生产另需进程级 `VIMAX_ALLOW_PRODUCTION=true`、标题写作准入与有效站点登录。新增 `20261101000100_vimax_planning_request.sql` 仍在 drafts，依赖原候选草案；普通 migrate 不安装。独立 `vitest.vimax-planning-acceptance.config.ts` 需新空命名库与双 draft 许可，详见 [`REAL_MEDIA_RUNBOOK.md`](REAL_MEDIA_RUNBOOK.md)。真实单场景结构/叙事/画面质量试验仍需单独授权，不能由替身测试推断。
 
+新增规划存储的首轮独立 PostgreSQL 验收在 `b1980f138b78261d567210f5c72ae2e45da1f861` 的 [Run 41292829594](https://github.com/xyq-dev/ai-drama-studio/actions/runs/41292829594) 为 9 项通过。它只施加 runner 内新空库，模型与业务 SQL 均为 0；之后代码仍须对应当前提交重新验证，不替换下文 E2-B 的历史证据。
+
 ## E2-B 历史基线与记录（2026-10-31）
 
 - 仓库：`xyq-dev/ai-drama-studio`。

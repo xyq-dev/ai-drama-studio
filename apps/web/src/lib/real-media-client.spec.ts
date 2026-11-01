@@ -9,6 +9,15 @@ const pending=():RealMediaPending=>({schema:"ads.real-media.pending.v1",projectI
 function json(body:unknown,status=200){return new Response(JSON.stringify(body),{status,headers:{"content-type":"application/json"}});}
 beforeEach(()=>sessionStorage.clear());afterEach(()=>vi.restoreAllMocks());
 describe("real media client validates real API receipts and keeps request identity",()=>{
+  it("follows character pagination and refuses a repeated cursor",async()=>{
+    const fetch=vi.fn<(url:string,init?:RequestInit)=>Promise<Response>>(async()=>json({items:[{entityId:A,name:"林夏"}],nextCursor:"page 2"}));
+    fetch.mockResolvedValueOnce(json({items:[{entityId:A,name:"林夏"}],nextCursor:"page 2"}));
+    fetch.mockResolvedValueOnce(json({items:[{entityId:OTHER,name:"周屿"}],nextCursor:null}));
+    const api=createRealMediaClient(new StudioClient(fetch));
+    expect(await api.characters(P)).toEqual([{id:A,name:"林夏"},{id:OTHER,name:"周屿"}]);
+    expect(fetch.mock.calls[1]![0]).toContain("cursor=page%202");
+    await expect(api.characters(P)).rejects.toMatchObject({code:"INVALID_RESPONSE"});
+  });
   it("preserves exact quoted unknown identities, authorization bound and one generate POST",async()=>{
     const calls:Array<{url:string;init?:RequestInit}>=[];
     const fetch=vi.fn(async(url:string,init?:RequestInit)=>{calls.push({url,init});if(url.endsWith("/quote"))return json(quote());if(url.endsWith("/authorize"))return json({quoteId:Q,budgetAuthorizationId:A});if(url.endsWith("/generate"))return json({jobId:J,workflowRunId:W,dispatchSeq:1},202);throw new Error("Unexpected request");});

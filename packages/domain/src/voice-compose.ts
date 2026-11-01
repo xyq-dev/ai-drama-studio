@@ -13,6 +13,7 @@ export const VOICE_COMPOSE_RENDER_PROFILE = {
   videoFit: "contain-center-black", audioCodec: "aac", audioSampleRate: 48000, audioChannels: 2,
   speechTiming: "measured-sentence-v1", audioOverflow: "reject", audioUnderflow: "pad-silence",
   speechGain: 1, ambienceGain: 0.25, duckingGain: 0.2, duckingAttackMs: 50, duckingReleaseMs: 200,
+  musicFadeOutMs: 1000,
   peakLimit: true, subtitleMode: "burn-in-plain-text", fontId: "noto-sans-cjk-sc", fontStyleVersion: "m4-voice-subtitle-style-v1",
   subtitleFontSize: 48, subtitleLineSpacing: 8, subtitleBottomMargin: 96, subtitleMaxWidthUnits: 36, subtitleMaxLines: 16,
   subtitleColor: "white", subtitleBoxColor: "black@0.55", subtitleBoxBorder: 12,

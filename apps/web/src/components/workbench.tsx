@@ -13,6 +13,7 @@ import { ProjectCostSummary } from "./project-cost-summary";
 import { ScriptBreakdownPanel } from "./script-breakdown-panel";
 import { VimaxPreviewPanel } from "./vimax-preview-panel";
 import { RealMediaPanel } from "./real-media-panel";
+import { SpeechBatchPanel } from "./speech-batch-panel";
 import { ApiError, StudioClient } from "../lib/studio-client";
 import {
   MEDIA_WORKFLOW_TYPES,
@@ -694,6 +695,8 @@ export function ScriptPane(props: {
               await load();
             }}
           />
+          <SpeechBatchPanel projectId={props.projectId} episodeId={episode.id} refreshEpoch={props.refreshEpoch}
+            onChanged={() => { void props.onSaved().catch(() => props.onStatus("配音批次已受理，任务列表暂未刷新，请稍后重新读取。")); }} />
           <SceneList
             projectId={props.projectId}
             episode={props.episode}

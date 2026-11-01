@@ -35,11 +35,13 @@ export class RealMediaStore {
     return this.connection(async client=>{
       const found=await client.query("SELECT id FROM project WHERE id=$1 AND workspace_id=$2",[projectId,workspaceId]);
       if(!found.rows[0])throw new PersistenceError("NOT_FOUND","Project not found");
-      const result=await client.query(`SELECT s.currency,SUM(s.estimated_amount)::text AS amount,SUM(a.maximum_amount)::text AS maximum,
-        COUNT(*) FILTER(WHERE s.state IN ('INTENT','UNKNOWN'))::int AS unknown_count
+      const result=await client.query(`SELECT s.currency,SUM(s.estimated_amount)::text AS amount,SUM(a.maximum_amount)::text AS maximum
         FROM real_media_submission s JOIN real_media_authorization a ON a.job_id=s.generation_job_id
         WHERE s.workspace_id=$1 AND s.project_id=$2 AND s.provider_request_id IS NULL AND s.state<>'REJECTED' GROUP BY s.currency ORDER BY s.currency`,[workspaceId,projectId]);
-      return {actualCost:"unknown",unknownSubmissionCount:result.rows.reduce((sum,row)=>sum+Number(row.unknown_count),0),
+      // Known request IDs have an estimated ledger entry; count their uncertain outcome without reserving that estimate twice.
+      const uncertain=await client.query(`SELECT count(*)::int AS count FROM real_media_submission
+        WHERE workspace_id=$1 AND project_id=$2 AND (state='UNKNOWN' OR (state='INTENT' AND provider_request_id IS NULL))`,[workspaceId,projectId]);
+      return {actualCost:"unknown",unknownSubmissionCount:Number(uncertain.rows[0]?.count??0),
         currencies:result.rows.map(row=>({currency:String(row.currency),reservedEstimatedAmount:String(row.amount),reservedMaximumAmount:String(row.maximum)}))};
     });
   }
@@ -120,10 +122,11 @@ export class RealMediaStore {
     const result = await client.query("UPDATE real_media_authorization SET job_id=$2 WHERE quote_id=$1 AND job_id IS NULL AND authorization_id IS NOT NULL", [quoteId,created.jobId]);
     if (result.rowCount !== 1) throw new PersistenceError("REAL_MEDIA_AUTHORIZATION_INVALID", "Authorization already consumed");
   }
-  async beginSubmission(input: { execution:RealMediaExecution; attemptId:string;leaseOwner:string;
+  async beginSubmission(input: { execution:RealMediaExecution; attemptId:string;leaseOwner:string;characterReferenceGate?:"legacy"|"strict";
     validateInTransaction:(client:PoolClient)=>Promise<void> }): Promise<boolean> {
     return this.transaction(async (client) => {
       const e=input.execution;
+      if(e.inputSnapshot.capability==="video.generate"&&(input.characterReferenceGate==="strict"||e.inputSnapshot.characterReferenceGate==="strict"))throw new PersistenceError("REAL_MEDIA_REFERENCE_PROFILE_UNSUPPORTED","Strict character reference production is unavailable for the fixed first-frame video profile");
       await lockProject(client,e.workspaceId,e.projectId);
       await input.validateInTransaction(client);
       const uncertain=await uncertainJobs(client,e.workspaceId,e.projectId,e.inputSnapshot,e.jobId);
@@ -135,10 +138,18 @@ export class RealMediaStore {
           AND a.provider_configuration_id=$5 AND pc.enabled AND pc.provider_key=$6 AND pc.capability=$7
           AND j.input_hash=$8 AND auth.expires_at>clock_timestamp() AND j.lease_owner=$9 AND j.lease_until>clock_timestamp()
           AND a.id=(SELECT id FROM job_attempt WHERE generation_job_id=j.id ORDER BY attempt_no DESC LIMIT 1)
-          FOR UPDATE OF j,a,auth`,
+          FOR UPDATE OF j,a,auth FOR SHARE OF pc`,
         [e.jobId,e.workspaceId,input.attemptId,e.inputSnapshot.budget.authorizationId,e.inputSnapshot.configuration.id,
           e.inputSnapshot.configuration.providerKey,e.inputSnapshot.capability,e.inputHash,input.leaseOwner]);
       if (!bound.rows[0]) throw new PersistenceError("REAL_MEDIA_SUBMIT_BLOCKED", "Submission source, authorization or provider changed");
+      // WHERE predicates may run before a row-lock wait. Recheck only after all required locks are held.
+      const live=await client.query(`SELECT 1 FROM generation_job j JOIN job_attempt a ON a.generation_job_id=j.id
+        JOIN real_media_authorization auth ON auth.job_id=j.id JOIN provider_configuration pc ON pc.id=a.provider_configuration_id AND pc.workspace_id=a.workspace_id
+        WHERE j.id=$1 AND j.workspace_id=$2 AND a.id=$3 AND j.state='RUNNING' AND j.cancel_requested_at IS NULL
+          AND j.lease_owner=$4 AND j.lease_until>clock_timestamp() AND auth.expires_at>clock_timestamp()
+          AND pc.enabled AND pc.id=$5 AND j.input_hash=$6 AND a.finished_at IS NULL
+          AND a.attempt_no=(SELECT max(n.attempt_no) FROM job_attempt n WHERE n.generation_job_id=j.id)`,[e.jobId,e.workspaceId,input.attemptId,input.leaseOwner,e.inputSnapshot.configuration.id,e.inputHash]);
+      if(!live.rows[0])throw new PersistenceError("REAL_MEDIA_SUBMIT_BLOCKED","Submission authorization or lease expired while waiting for locks");
       const result=await client.query(`INSERT INTO real_media_submission (workspace_id,project_id,generation_job_id,job_attempt_id,
         provider_configuration_id,input_hash,state,estimated_amount,currency) VALUES ($1,$2,$3,$4,$5,$6,'INTENT',$7::numeric,$8)
         ON CONFLICT (job_attempt_id) DO NOTHING RETURNING job_attempt_id`,
@@ -180,7 +191,8 @@ export class RealMediaStore {
     await this.connection(async client=>{await client.query("UPDATE generation_job SET next_run_at=now()+($3::int*interval '1 second') WHERE id=$1 AND workspace_id=$2 AND state='WAITING_EXTERNAL'",[jobId,workspaceId,Math.max(1,Math.min(seconds,3600))]);});
   }
   async claimRecovery(e:RealMediaExecution,leaseOwner:string,leaseMs=120_000):Promise<boolean>{
-    return this.connection(async client=>{
+    return this.transaction(async client=>{
+      await client.query("SELECT id FROM generation_job WHERE id=$1 AND workspace_id=$2 FOR UPDATE",[e.jobId,e.workspaceId]);
       const result=await client.query(`UPDATE generation_job j SET lease_owner=$4,lease_until=clock_timestamp()+($5::int*interval '1 millisecond'),
         row_version=row_version+1,updated_at=now() WHERE j.id=$1 AND j.workspace_id=$2 AND j.state IN ('RUNNING','WAITING_EXTERNAL')
         AND j.input_snapshot->>'schema'='real-media.v1' AND j.input_hash=$6
@@ -190,7 +202,9 @@ export class RealMediaStore {
     });
   }
   async renewDeliveryLease(e:RealMediaExecution,leaseOwner:string,leaseMs=120_000):Promise<boolean>{
-    return this.connection(async client=>{const result=await client.query(`UPDATE generation_job j SET lease_until=clock_timestamp()+($5::int*interval '1 millisecond'),
+    return this.transaction(async client=>{
+      await client.query("SELECT id FROM generation_job WHERE id=$1 AND workspace_id=$2 FOR UPDATE",[e.jobId,e.workspaceId]);
+      const result=await client.query(`UPDATE generation_job j SET lease_until=clock_timestamp()+($5::int*interval '1 millisecond'),
       row_version=row_version+1,updated_at=now() WHERE j.id=$1 AND j.workspace_id=$2 AND j.state IN ('RUNNING','WAITING_EXTERNAL')
       AND j.input_snapshot->>'schema'='real-media.v1' AND j.input_hash=$6
       AND j.lease_owner=$4 AND j.lease_until>clock_timestamp() AND j.cancel_requested_at IS NULL
@@ -209,6 +223,11 @@ export class RealMediaStore {
         AND j.lease_owner=$4 AND j.lease_until>clock_timestamp() AND a.finished_at IS NULL
         AND a.attempt_no=(SELECT max(n.attempt_no) FROM job_attempt n WHERE n.generation_job_id=j.id) FOR UPDATE OF j,a`,[e.jobId,e.workspaceId,e.attemptId,leaseOwner,e.inputHash]);
     if(!result.rows[0])throw new PersistenceError("REAL_MEDIA_LEASE_LOST","Media delivery executor lost its lease");
+    const live=await client.query(`SELECT 1 FROM generation_job j JOIN job_attempt a ON a.generation_job_id=j.id
+      WHERE j.id=$1 AND j.workspace_id=$2 AND a.id=$3 AND j.lease_owner=$4 AND j.input_hash=$5
+        AND j.state IN ('RUNNING','WAITING_EXTERNAL') AND j.cancel_requested_at IS NULL AND j.lease_until>clock_timestamp()
+        AND a.finished_at IS NULL AND a.attempt_no=(SELECT max(n.attempt_no) FROM job_attempt n WHERE n.generation_job_id=j.id)`,[e.jobId,e.workspaceId,e.attemptId,leaseOwner,e.inputHash]);
+    if(!live.rows[0])throw new PersistenceError("REAL_MEDIA_LEASE_LOST","Media delivery lease expired while waiting for locks");
   }
   async finishInTransaction(client:PoolClient,attemptId:string,state:"SUCCEEDED"|"FAILED"):Promise<void>{
     const result=await client.query("UPDATE real_media_submission SET state=$2,updated_at=now() WHERE job_attempt_id=$1 AND state IN ('ACKNOWLEDGED','UNKNOWN') AND provider_request_id IS NOT NULL",[attemptId,state]);
@@ -274,7 +293,7 @@ async function lockProject(client:PoolClient,workspaceId:string,projectId:string
 async function uncertainJobs(client:PoolClient,workspaceId:string,projectId:string,frozen:FrozenRealMediaInput,excludeJobId?:string):Promise<string[]>{
   const result=await client.query(`SELECT j.id FROM generation_job j JOIN real_media_submission s ON s.generation_job_id=j.id
     WHERE j.workspace_id=$1 AND j.project_id=$2 AND j.source_shot_revision_id=$3 AND j.input_snapshot->>'schema'='real-media.v1'
-      AND j.input_snapshot->>'capability'=$4 AND s.state IN ('INTENT','UNKNOWN') AND s.provider_request_id IS NULL
+      AND j.input_snapshot->>'capability'=$4 AND (s.state='UNKNOWN' OR (s.state='INTENT' AND s.provider_request_id IS NULL))
       AND (($5::text IS NULL AND j.input_snapshot->'speech' IS NULL AND j.input_snapshot->>'sourceHash'=$6)
         OR ($5::text IS NOT NULL AND j.input_snapshot#>>'{speech,lineId}'=$5))
       AND ($7::uuid IS NULL OR j.id<>$7) ORDER BY j.id LIMIT 21`,[workspaceId,projectId,frozen.shotRevisionId,frozen.capability,frozen.speech?.lineId??null,frozen.sourceHash,excludeJobId??null]);

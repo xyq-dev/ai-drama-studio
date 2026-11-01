@@ -73,6 +73,63 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe("speech panel", () => {
+  it("keeps unsaved dialogue and its original source/CAS basis across background refresh", async () => {
+    let latest = false;
+    const writes: RequestInit[] = [];
+    const newer = { ...PLAN_DATA, sourceDialogue: "林夏：这是后台的新对白。", sourceDialogueHash: "cd".repeat(32), rowVersion: 90,
+      currentRevision: { ...PLAN_DATA.currentRevision!, id: OLD_TAKE } };
+    const client = createSpeechClient(async (input, init) => {
+      if (input.endsWith("speech-plan") && init?.method === "GET") return json(latest ? newer : PLAN_DATA);
+      if (input.endsWith("speech-plan") && init?.method === "PUT") { writes.push(init); return json(PLAN_DATA); }
+      return fixture(input, init);
+    });
+    const props = { projectId: PROJECT, shotRevisionId: SHOT, client, characters: CHARACTERS };
+    const view = render(createElement(SpeechPanel, { ...props, refreshEpoch: 0 }));
+    fireEvent.change(await screen.findByLabelText("第 1 句句后停顿"), { target: { value: "300" } });
+    latest = true; view.rerender(createElement(SpeechPanel, { ...props, refreshEpoch: 1 }));
+    expect(await screen.findByText(/未保存草稿及打开时版本仍保留/)).toBeTruthy();
+    expect((screen.getByLabelText("第 1 句句后停顿") as HTMLInputElement).value).toBe("300");
+    expect(screen.getByLabelText("已保存的对白原文").textContent).toBe(PLAN_DATA.sourceDialogue);
+    fireEvent.click(screen.getByRole("button", { name: "保存并确认台词计划" }));
+    await waitFor(() => expect(writes).toHaveLength(1));
+    expect(writes[0]!.headers).toMatchObject({ "If-Match": "3" });
+    expect(JSON.parse(String(writes[0]!.body))).toMatchObject({ sourceDialogueHash: HASH, lines: [{ displayText: "这不是我。", pauseAfterMs: 300 }] });
+  });
+
+  it("keeps an unsaved voice choice and original binding basis until explicit discard", async () => {
+    let latest = false;
+    const client = createSpeechClient(async (input, init) => {
+      if (input.endsWith("voice-bindings") && latest) return json({ items: [{ ...BINDING, rowVersion: 9,
+        currentRevision: { ...VOICE_DATA, catalogVoiceId: "calm", name: "后台选声" } }] });
+      return fixture(input, init);
+    });
+    const props = { projectId: PROJECT, shotRevisionId: SHOT, client, characters: CHARACTERS };
+    const view = render(createElement(SpeechPanel, { ...props, refreshEpoch: 0 }));
+    fireEvent.change(await screen.findByLabelText("林夏的声音"), { target: { value: "calm" } });
+    latest = true; view.rerender(createElement(SpeechPanel, { ...props, refreshEpoch: 1 }));
+    expect(await screen.findByText(/未保存草稿及打开时版本仍保留/)).toBeTruthy();
+    expect((screen.getByLabelText("林夏的声音") as HTMLSelectElement).value).toBe("calm");
+    expect(screen.getByText("已保存：温暖女声")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "放弃未保存草稿并重新读取" }));
+    expect(await screen.findByText("已保存：后台选声")).toBeTruthy();
+    expect(screen.queryByText(/未保存草稿及打开时版本仍保留/)).toBeNull();
+  });
+
+  it("lets a silent shot explicitly save an empty plan without generating speech", async () => {
+    const writes: RequestInit[] = [];
+    const empty = { ...PLAN_DATA, sourceDialogue: "", currentRevision: null };
+    const client = createSpeechClient(async (input, init) => {
+      if (input.endsWith("speech-plan") && init?.method === "GET") return json(empty);
+      if (input.endsWith("speech-plan") && init?.method === "PUT") { writes.push(init); return json({ ...empty,
+        currentRevision: { ...PLAN_DATA.currentRevision!, lines: [] } }); }
+      return fixture(input, init);
+    });
+    render(createElement(SpeechPanel, { projectId: PROJECT, shotRevisionId: SHOT, client }));
+    fireEvent.click(await screen.findByRole("button", { name: "确认本镜头无对白" }));
+    await waitFor(() => expect(writes).toHaveLength(1));
+    expect(JSON.parse(String(writes[0]!.body))).toMatchObject({ lines: [], sourceDialogueHash: HASH });
+  });
+
   it("keeps unconfigured generation disabled and does not invent a finished voice", async () => {
     const requests: string[] = [];
     const client = createSpeechClient(async (input, init) => {

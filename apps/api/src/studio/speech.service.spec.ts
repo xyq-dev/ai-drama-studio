@@ -17,6 +17,20 @@ function setup(options: { ready?: boolean; generation?: boolean } = {}) {
   return { service, store, port, frozen };
 }
 describe("speech API service", () => {
+  it("admits the bounded 2000-ID batch confirmation while rejecting payloads above 128 KB", async () => {
+    const current = { id, state: "dispatched" };
+    const batchStore = { storageReady: vi.fn(async () => true), read: vi.fn(async () => current), confirm: vi.fn(async () => current) };
+    const service = new SpeechService({ workspaceId: id, store: { storageReady: async () => true } as unknown as SpeechPersistence,
+      generation: null, batchStore: batchStore as unknown as import("@ai-drama/database").SpeechBatchPersistence });
+    const request = { frozenHash: "a".repeat(64), maximumJobs: 100, budgets: [{ currency: "CNY", maximumAmount: "100" }], confirmPossibleCharges: true,
+      confirmedUncertainJobIds: Array.from({ length: 2000 }, (_, i) => `00000000-0000-4000-8000-${i.toString(16).padStart(12, "0")}`) };
+    expect(Buffer.byteLength(JSON.stringify(request))).toBeGreaterThan(64 * 1024);
+    expect(await service.batchConfirm(id, request, context)).toMatchObject({ status: 202 });
+    expect(batchStore.confirm).toHaveBeenCalledOnce();
+    expect(await service.batchConfirm(id, { ...request, extra: "x".repeat(128 * 1024) }, context)).toMatchObject({ status: 413,
+      body: { error: { code: "SPEECH_BATCH_REQUEST_TOO_LARGE" } } });
+    expect(batchStore.confirm).toHaveBeenCalledOnce();
+  });
   it("exposes explicit unavailable storage/configuration without fabricating quotes or jobs", async () => {
     const missing = setup({ ready: false });
     expect(await missing.service.capabilities(id)).toMatchObject({ status: 200, body: { available: false, reasonCode: "SPEECH_STORAGE_UNAVAILABLE" } });

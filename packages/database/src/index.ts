@@ -198,6 +198,7 @@ export { VimaxCandidateStore } from "./vimax-candidate-store";
 export { PostgresVimaxPlanningStore, VIMAX_PLANNING_COLUMNS } from "./vimax-planning-store";
 
 export * from "./speech-store";
+export * from "./speech-batch-store";
 
 export * from "./real-media-store";
 export * from "./voice-compose-store";

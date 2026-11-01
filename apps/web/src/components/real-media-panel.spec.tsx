@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 // Parent-panel state-machine tests only: the child speech editor, media API and browser storage are offline doubles.
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RealMediaQuote, SpeechMixPreflight } from "@ai-drama/contracts";
 import { ApiError } from "../lib/studio-client";
@@ -36,6 +36,18 @@ function storageFake(){const map=new Map<string,string>();const storage:Storage=
 beforeEach(()=>{vi.stubGlobal("sessionStorage",storageFake());speech.props=[];speech.preflight=preflight();});
 afterEach(()=>{cleanup();vi.restoreAllMocks();vi.unstubAllGlobals();});
 describe("real media panel explicit paid send and scoped recovery",()=>{
+  it("retains a verified second-page video and music selection when a take change refreshes assets",async()=>{
+    const h=setup();h.api.assets.mockImplementation(async(_shot,cursor)=>cursor
+      ? {items:h.items.slice(2),nextCursor:null} : {items:h.items.slice(0,2),nextCursor:"page2"});
+    render(<RealMediaPanel {...h.props}/>);await open();fireEvent.click(screen.getByRole("button",{name:"加载更多制作结果"}));
+    await screen.findByRole("option",{name:/视频 99999999/});
+    fireEvent.change(screen.getByLabelText("本段配音对应的视频"),{target:{value:VIDEO}});
+    fireEvent.change(screen.getByLabelText("本段背景音乐"),{target:{value:MUSIC}});
+    await act(async () => { (speech.props.at(-1)!.onChanged as ()=>void)(); });
+    await waitFor(()=>expect(h.api.assets).toHaveBeenCalledTimes(4));
+    expect((screen.getByLabelText("本段配音对应的视频") as HTMLSelectElement).value).toBe(VIDEO);
+    expect((screen.getByLabelText("本段背景音乐") as HTMLSelectElement).value).toBe(MUSIC);
+  });
   it("keeps historical assets and local mix available while new paid sending is disabled",async()=>{
     const h=setup();h.api.capabilities.mockResolvedValue({available:false,readAvailable:true,reasonCode:"REAL_MEDIA_NOT_READY",capabilities:[]});
     render(<RealMediaPanel {...h.props}/>);fireEvent.click(screen.getByRole("button",{name:/图片、视频与角色配音/}));

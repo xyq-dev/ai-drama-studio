@@ -79,14 +79,19 @@ function SpeechPanelScope(props: SpeechPanelProps & { submissions: Map<string, S
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [backgroundChanged, setBackgroundChanged] = useState(false);
+  const localEdits = useRef(false);
+  const refreshSeen = useRef(props.refreshEpoch);
+  localEdits.current = dirty || Object.entries(voiceDrafts).some(([speakerId, voiceId]) => voiceId !== (bindings.find(b => b.speakerId === speakerId)?.currentRevision.catalogVoiceId ?? ""));
   latestPlan.current = plan;
   const source = plan?.sourceDialogue ?? props.dialogue ?? "";
 
-  const load = useCallback(async (signal?: AbortSignal) => {
+  const load = useCallback(async (signal?: AbortSignal, replaceDraft = false) => {
     const token = ++read.current;
     try {
-      const catalogRead = client.capabilities(props.projectId, signal).then((catalog) => {
-        if (mounted.current && token === read.current && !signal?.aborted) setCapabilities(catalog);
+      const catalogRead = client.capabilities(props.projectId, signal).then(catalog => {
+        if (mounted.current && token === read.current && !signal?.aborted) setCapabilities(current => localEdits.current && !replaceDraft && current
+          ? { ...current, available: catalog.available, reasonCode: catalog.reasonCode } : catalog);
         return catalog;
       });
       const [catalog, bindingPage, currentPlan] = await Promise.all([
@@ -94,6 +99,14 @@ function SpeechPanelScope(props: SpeechPanelProps & { submissions: Map<string, S
       ]);
       const candidates = currentPlan.currentRevision ? await client.takes(currentPlan.currentRevision.id, signal) : EMPTY_TAKES;
       if (!mounted.current || token !== read.current || signal?.aborted) return;
+      if (localEdits.current && !replaceDraft) {
+        // Preserve the complete editor basis, including If-Match/source hash and catalog identity.
+        // Current availability can close paid actions without rebasing an unreviewed draft.
+        setCapabilities(current => current ? { ...current, available: catalog.available, reasonCode: catalog.reasonCode } : catalog);
+        setBackgroundChanged(true); setLoading(false);
+        mixGeneration.current += 1; setMix(null); preflightChanged.current?.(null);
+        return;
+      }
       setCapabilities(catalog);
       setBindings(bindingPage.items);
       setPlan(currentPlan);
@@ -101,6 +114,7 @@ function SpeechPanelScope(props: SpeechPanelProps & { submissions: Map<string, S
       setLines(currentPlan.currentRevision?.lines.map(lineInput) ?? []);
       setVoiceDrafts(Object.fromEntries(bindingPage.items.map((item) => [item.speakerId, item.currentRevision.catalogVoiceId])));
       setDirty(false);
+      setBackgroundChanged(false);
       if (!props.submissions.has(scopeKey)) { setQuotes({}); setCostConfirmation(null); }
       mixGeneration.current += 1;
       setMix(null);
@@ -129,6 +143,14 @@ function SpeechPanelScope(props: SpeechPanelProps & { submissions: Map<string, S
       auxiliaryReads.current.clear();
       player.current?.pause();
     };
+  }, [load]);
+
+  useEffect(() => {
+    if (refreshSeen.current === props.refreshEpoch) return;
+    refreshSeen.current = props.refreshEpoch;
+    const abort = new AbortController();
+    void load(abort.signal);
+    return () => abort.abort();
   }, [load, props.refreshEpoch]);
 
   useEffect(() => {
@@ -284,7 +306,7 @@ function SpeechPanelScope(props: SpeechPanelProps & { submissions: Map<string, S
     await client.saveBinding(props.projectId, speakerId, body, { key: key(`voice:${speakerId}:${binding?.rowVersion ?? 0}:${JSON.stringify(body)}`), ifMatch: binding?.rowVersion ?? 0 });
     if (!isCurrent(owner)) return;
     setImpact(null); clearQuotes(); invalidateMix();
-    await load();
+    await load(undefined, true);
     if (isCurrent(owner)) { setNotice("角色声音已保存；请确认受影响的台词计划"); props.onChanged?.(); }
   }
 
@@ -294,7 +316,7 @@ function SpeechPanelScope(props: SpeechPanelProps & { submissions: Map<string, S
     const body = { sourceDialogueHash: plan.sourceDialogueHash, lines: lines.map(lineInput), timingPolicy: "sequential-reject-overflow" as const };
     const next = await client.savePlan(props.shotRevisionId, body, { key: key(`plan:${plan.rowVersion}:${JSON.stringify(body)}`), ifMatch: plan.rowVersion });
     if (!isCurrent(owner)) return;
-    setPlan(next); setLines(next.currentRevision?.lines.map(lineInput) ?? []); setDirty(false); invalidateMix(); clearQuotes();
+    setPlan(next); setLines(next.currentRevision?.lines.map(lineInput) ?? []); setDirty(false); setBackgroundChanged(false); invalidateMix(); clearQuotes();
     const nextTakes = next.currentRevision ? await auxiliaryRead((signal) => client.takes(next.currentRevision!.id, signal)) : EMPTY_TAKES;
     if (!isCurrent(owner)) return;
     setTakes(nextTakes);
@@ -439,7 +461,8 @@ function SpeechPanelScope(props: SpeechPanelProps & { submissions: Map<string, S
     {error ? <p className="mt-3 text-sm text-red-700" role="alert">{error}</p> : null}
     {journalError && journalError !== error ? <p className="mt-3 text-sm text-red-700" role="alert">{journalError}</p> : null}
     {notice ? <p className="mt-3 text-sm" role="status">{notice}</p> : null}
-    <button className="mt-2 rounded border px-3 py-2 disabled:opacity-50" disabled={busy} type="button" onClick={() => { setLoading(true); void load(); }}>重新读取配音</button>
+    {backgroundChanged ? <p className="mt-3 text-sm" role="status">后台配音信息已刷新，未保存草稿及打开时版本仍保留。保存时会核对原版本；如有冲突，请核对后重新读取。</p> : null}
+    <button className="mt-2 rounded border px-3 py-2 disabled:opacity-50" disabled={busy} type="button" onClick={() => { setLoading(true); void load(undefined, true); }}>{localEdits.current ? "放弃未保存草稿并重新读取" : "重新读取配音"}</button>
 
     <fieldset className="mt-5 space-y-3" disabled={busy || loading || Boolean(pendingSubmission)}>
       <legend className="font-medium">1. 为角色选声音</legend>
@@ -468,6 +491,7 @@ function SpeechPanelScope(props: SpeechPanelProps & { submissions: Map<string, S
       <p className="whitespace-pre-wrap rounded-lg bg-[#F7F6F2] p-3 text-sm" aria-label="已保存的对白原文">{source || "此镜头没有对白，可保留静音或环境声。"}</p>
       <p className="text-sm">台词取自已保存原文。需要改台词正文时，请先回到剧本保存并审核。</p>
       {!lines.length && source.trim() ? <button className="rounded border px-3 py-2 disabled:opacity-50" type="button" disabled={!plan} onClick={() => { setLines(createSpeechDraft(source, props.characters ?? [], bindings)); setDirty(true); invalidateMix(); clearQuotes(); }}>按原文建立待确认草稿</button> : null}
+      {!lines.length && !source.trim() && plan && !plan.currentRevision ? <button className="rounded border px-3 py-2" type="button" onClick={() => void act(savePlan)}>确认本镜头无对白</button> : null}
       {lines.map((line, index) => {
         const voice = bindings.find((binding) => binding.currentRevision.id === line.speakerBindingRevisionId)?.currentRevision;
         return <div key={line.lineId} className="rounded-lg border p-3">

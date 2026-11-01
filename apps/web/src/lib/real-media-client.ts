@@ -55,13 +55,21 @@ export function createRealMediaClient(studio = new StudioClient()) {
       return { items, nextCursor: value.nextCursor as string | null };
     },
     async characters(projectId: string, signal?: AbortSignal): Promise<Array<{ id: string; name: string }>> {
-      const value = object(await studio.get("/projects/" + projectId + "/characters?limit=100", { signal }));
-      if (!Array.isArray(value.items)) return invalid();
-      return value.items.map(item => {
-        const c = object(item);
-        if (!UUID.test(String(c.entityId))) return invalid();
-        return { id: String(c.entityId), name: typeof c.name === "string" && c.name ? c.name : "角色 " + String(c.entityId).slice(0, 8) };
-      });
+      const result: Array<{ id: string; name: string }> = [], seen = new Set<string>();
+      let cursor: string | null = null;
+      do {
+        const value = object(await studio.get("/projects/" + projectId + "/characters?limit=100" + (cursor ? "&cursor=" + encodeURIComponent(cursor) : ""), { signal }));
+        if (!Array.isArray(value.items) || (value.nextCursor !== undefined && value.nextCursor !== null && typeof value.nextCursor !== "string")) return invalid();
+        for (const item of value.items) {
+          const c = object(item);
+          if (typeof c.entityId !== "string" || !UUID.test(c.entityId)) return invalid();
+          if (!result.some(character => character.id === c.entityId)) result.push({ id: c.entityId,
+            name: typeof c.name === "string" && c.name ? c.name : "角色 " + c.entityId.slice(0, 8) });
+        }
+        cursor = typeof value.nextCursor === "string" ? value.nextCursor : null;
+        if (cursor) { if (seen.has(cursor) || seen.size >= 100) return invalid(); seen.add(cursor); }
+      } while (cursor);
+      return result;
     },
     async quote(projectId: string, shotRevisionId: string, capability: RealMediaCapability, sourceImageAssetId?: string) {
       const quote = checkedRealMediaQuote(await studio.postJson("/projects/" + projectId + "/shot-revisions/" + shotRevisionId + "/real-media/quote",

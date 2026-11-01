@@ -10,7 +10,7 @@ export default defineConfig({
       "src/studio/script-breakdown.media-acceptance.spec.ts", "src/studio/writing-online.browser-acceptance.spec.ts",
       "src/studio/auto-creation.acceptance.spec.ts", "src/studio/auto-creation.browser-acceptance.spec.ts",
       "src/studio/series-writing.acceptance.spec.ts", "src/studio/series-writing.browser-acceptance.spec.ts",
-      "src/studio/vimax-candidate.acceptance.spec.ts"],
+      "src/studio/vimax-candidate.acceptance.spec.ts", "src/studio/real-media-flow.acceptance.spec.ts"],
     testTimeout: 15000,
   },
 });

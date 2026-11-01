@@ -34,6 +34,7 @@ export function realMediaJobKind(capability: RealMediaCapability): "MEDIA_IMAGE"
 export function assertRealMediaInput(input:Omit<RealMediaSnapshot,"budget">):void{
   const config=input.configuration;const text=input.sourceText;
   if(!text.trim()||config.capability!==input.capability)throw new DomainError("VALIDATION_ERROR","Media source is empty or mismatched");
+  if(input.capability==="video.generate"&&input.characterReferenceGate==="strict")throw new DomainError("REAL_MEDIA_REFERENCE_PROFILE_UNSUPPORTED","The fixed first-frame video profile cannot prove strict selected character references");
   if(input.capability==="image.generate"&&text.length>2000)throw new DomainError("VALIDATION_ERROR","Image prompt exceeds 2000 characters");
   if(input.capability==="video.generate"&&(!input.sourceImage||text.length>800))throw new DomainError("VALIDATION_ERROR","Video requires a first frame and a prompt of at most 800 characters");
   if(input.capability==="audio.music"&&text.length>4100)throw new DomainError("VALIDATION_ERROR","Music prompt exceeds 4100 characters");

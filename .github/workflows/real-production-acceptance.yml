@@ -11,8 +11,10 @@ on:
       - packages/contracts/**
       - packages/domain/**
       - packages/database/**
-      - packages/providers/fixtures/**
+      - packages/providers/**
+      - apps/api/**
       - services/media-worker/**
+      - apps/worker/src/runtime/real-media*
       - apps/worker/src/runtime/voice-compose*
       - pnpm-lock.yaml
       - pnpm-workspace.yaml
@@ -37,7 +39,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [speech, real-media, vimax-planning]
+        suite: [speech, real-media, vimax-planning, real-media-http]
     services:
       postgres:
         image: postgres:16
@@ -70,8 +72,16 @@ jobs:
         run: |
           pnpm --filter @ai-drama/database prisma:validate
           pnpm --filter @ai-drama/database prisma:generate
-      - name: Build database workspace and its dependencies
-        run: pnpm --filter @ai-drama/database... build
+      - name: Build the selected workspace and its dependencies without opening a database
+        env:
+          ACCEPTANCE_SUITE: ${{ matrix.suite }}
+        run: |
+          if [ "$ACCEPTANCE_SUITE" = "real-media-http" ]; then
+            pnpm --filter @ai-drama/api... build
+            pnpm --filter @ai-drama/api exec tsc -p tsconfig.real-media-flow-acceptance.json
+          else
+            pnpm --filter @ai-drama/database... build
+          fi
       - name: Verify refusal-by-default guards and CI launcher without a database
         run: |
           node --test scripts/ci/run-production-acceptance.test.mjs
@@ -100,6 +110,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Verify CJK evidence admission checks without external services
+        run: python -m unittest discover -s scripts/ci -p test_voice_compose_acceptance.py -v
       - name: Install actual Chinese font and media tools from the official Ubuntu HTTPS archive
         run: |
           sudo bash scripts/ci/apt-official-https.sh

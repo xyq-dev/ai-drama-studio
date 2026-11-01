@@ -2,7 +2,7 @@
 
 2026-11-01 当前代码：真实图片/视频/配音/音乐 Adapter、既有 Job/Attempt/Asset 的提交收据与恢复、S3 资产、逐句角色配音及新声音合成 profile、ViMax 单场景规划发送治理已实现并接入 API/Worker/工作台。新能力**默认关闭**；新增 SQL 仍在独立 drafts，业务库未启用。**本轮真实付费模型调用 0、业务库 SQL 0、服务器部署 0**。替身协议和合成素材只证明工程链路，不证明真实 AI 质量。操作入口与验收边界见[运行手册](docs/REAL_MEDIA_RUNBOOK.md)和[接续记录](docs/REAL_PRODUCTION_COMPLETION_PROGRESS.md)。
 
-ViMax 保留 [E1 离线评估](docs/VIMAX_OFFLINE_EVALUATION.md)、[E2-A 只读预览](docs/VIMAX_PLATFORM_PREVIEW.md)和 [E2-B 候选/两段式保存](docs/VIMAX_CANDIDATE_PERSISTENCE.md)，新增一次规划授权、共享写作额度、永久请求身份与 UNKNOWN 保护；真实单场景模型试验仍待授权与验收。角色配音的[设计与当前实现](docs/CHARACTER_VOICE_DESIGN.md)包括声音版本、逐句计划/试听/选用、实测时长 VTT、完整人声混音和原有审核/导出；保留[原开源调查](docs/VOICE_OPEN_SOURCE_RESEARCH.md)与[设计原型](docs/design/character-voice-preview.html)作为历史依据。
+ViMax 保留 [E1 离线评估](docs/VIMAX_OFFLINE_EVALUATION.md)、[E2-A 只读预览](docs/VIMAX_PLATFORM_PREVIEW.md)和 [E2-B 候选/两段式保存](docs/VIMAX_CANDIDATE_PERSISTENCE.md)，新增一次规划授权、共享写作额度、永久请求身份与 UNKNOWN 保护；真实单场景模型试验仍待授权与验收。角色配音的[设计与当前实现](docs/CHARACTER_VOICE_DESIGN.md)包括声音版本、逐句计划/试听/选用、实测时长 VTT、完整人声混音和原有审核/导出；V1-D 整集补齐已有固定预算、逐句永久身份与取消/显式恢复，新增数据库用例待最终 HEAD CI。保留[原开源调查](docs/VOICE_OPEN_SOURCE_RESEARCH.md)与[设计原型](docs/design/character-voice-preview.html)作为历史依据。
 
 管理员模型配置入口为 `/admin/models`：文本创作支持 DeepSeek、Claude（Anthropic 官方 API）与 OpenAI（千问已退役，历史记录保留可读；DeepSeek 2026-10-17 重新接入，见 [DeepSeek 重新接入](docs/DEEPSEEK_WRITING.md)），密钥加密保存、仅后台配置、API 重启后生效。见 [OpenAI 与 Claude 文本创作](docs/OPENAI_CLAUDE_WRITING.md)。首次由服务器管理员安全初始化；默认不启用，不自动调用模型。见 [管理员配置与部署说明](docs/ADMIN_MODEL_SETTINGS.md)。
 
@@ -42,6 +42,7 @@ docs/                    已冻结的 V1 架构文档
 - Node.js **24.21.0 LTS**（推荐开发和验证环境；由 `.nvmrc`、`package.json#engines` 固定）
 - Corepack，以及 package.json 中精确固定的 pnpm 10.17.0
 - Python 3.11 或更高版本
+- 合成需要 `ffmpeg` / `ffprobe`（含 libx264、AAC、drawtext）；新声音 profile 另需 Noto Sans CJK SC，缺字/缺字体会拒绝编码
 - Docker Engine 与 Docker Compose，仅在启动本地 PostgreSQL、Redis、MinIO 时需要
 
 ## 环境变量

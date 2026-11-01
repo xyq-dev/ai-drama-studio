@@ -13,6 +13,7 @@ export interface RealMediaWorkerDependencies {
   preflightLocal():Promise<void>;
   heartbeatIntervalMs?:number;
   leaseMs?:number;
+  characterReferenceGate?:"legacy"|"strict";
 }
 export function createMediaHeartbeat(renew:()=>Promise<boolean>,intervalMs=20_000){
   let live=true;let stopped=false;let tail=Promise.resolve();
@@ -33,19 +34,20 @@ export async function runRealMediaJob(execution:RealMediaExecution,dependencies:
   if(!acquired)return;
   const active={...execution,attemptId:acquired.attemptId};
   const runningHeartbeat=createMediaHeartbeat(()=>dependencies.jobs.renewRunningLease({workspaceId:execution.workspaceId,jobId:execution.jobId,
-    attemptId:acquired.attemptId,leaseOwner,leaseMs:dependencies.leaseMs??120_000}),dependencies.heartbeatIntervalMs);
+    attemptId:acquired.attemptId,leaseOwner,leaseMs:dependencies.leaseMs??120_000,requireActualClock:true}),dependencies.heartbeatIntervalMs);
   let deliveryHeartbeat:ReturnType<typeof createMediaHeartbeat>|undefined;
   let submitted=false;
   try{
     if(!dependencies.store.receiptReady()||!snapshot.configuration.enabled||!await dependencies.store.configurationStillEnabled(snapshot.configuration))throw new PersistenceError("REAL_MEDIA_NOT_CONFIGURED","Real media is not configured for submission");
     if(realMediaInputHash(snapshot)!==execution.inputHash)throw new PersistenceError("REAL_MEDIA_INPUT_INVALID","Frozen media input hash changed");
     assertRealMediaInput(snapshot);
+    if(snapshot.capability==="video.generate"&&dependencies.characterReferenceGate==="strict")throw new PersistenceError("REAL_MEDIA_REFERENCE_PROFILE_UNSUPPORTED","The first-frame video profile cannot prove strict selected character references");
     await dependencies.preflightLocal();
     await dependencies.assets.assertUsableShot(execution.workspaceId,execution.projectId,execution.shotRevisionId,snapshot.capability==="image.generate"?"preview":"approved");
     const adapter=await dependencies.adapterFor(snapshot.configuration,"submit");
     const image=snapshot.sourceImage?await sourceImage(execution,dependencies):undefined;
     // All local validation finishes before intent. From this point every failure conservatively retains exposure.
-    if(!await dependencies.store.beginSubmission({execution,attemptId:acquired.attemptId,leaseOwner,
+    if(!await dependencies.store.beginSubmission({execution,attemptId:acquired.attemptId,leaseOwner,characterReferenceGate:dependencies.characterReferenceGate,
       validateInTransaction:async client=>{
         const source=await dependencies.assets.prepareRealShotGenerationInTransaction(client,execution.workspaceId,execution.projectId,execution.shotRevisionId,snapshot.capability);
         if(snapshot.speech)await assertSpeechGenerationInputInTransaction(client,snapshot.speech);
@@ -82,7 +84,7 @@ export async function runRealMediaJob(execution:RealMediaExecution,dependencies:
       await dependencies.store.markUnknown(execution.workspaceId,execution.jobId,acquired.attemptId,leaseOwner);
     }
     else await dependencies.jobs.failJob({workspaceId:execution.workspaceId,jobId:execution.jobId,attemptId:acquired.attemptId,
-      traceId:`real-media:local:${execution.jobId}`,errorCode:"REAL_MEDIA_SUBMIT_BLOCKED",errorMessage:"Media submission was blocked before sending",retryable:false,
+      traceId:`real-media:local:${execution.jobId}`,errorCode:error&&typeof error==="object"&&"code" in error&&error.code==="REAL_MEDIA_REFERENCE_PROFILE_UNSUPPORTED"?"REAL_MEDIA_REFERENCE_PROFILE_UNSUPPORTED":"REAL_MEDIA_SUBMIT_BLOCKED",errorMessage:"Media submission was blocked before sending",retryable:false,
       beforeFailure:client=>dependencies.store.assertDeliveryLeaseInTransaction(client,active,leaseOwner)});
   }finally{
     await runningHeartbeat.stop();await deliveryHeartbeat?.stop();await dependencies.store.releaseDeliveryLease(active,leaseOwner);
@@ -117,6 +119,7 @@ async function persistOutput(e:RealMediaExecution,output:MediaProviderOutput,ada
         await client.query("INSERT INTO asset_dependency(workspace_id,project_id,dependent_asset_id,source_asset_id) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING",[e.workspaceId,e.projectId,asset.id,e.inputSnapshot.sourceImage.assetId]);
       }
       if(e.inputSnapshot.speech)await commitSpeechTake(client,{workspaceId:e.workspaceId,projectId:e.projectId,assetId:asset.id,jobId:e.jobId,attemptId:e.attemptId!,speechInput:e.inputSnapshot.speech});
+      await d.store.assertDeliveryLeaseInTransaction(client,e,leaseOwner);
       await d.store.finishInTransaction(client,e.attemptId!,"SUCCEEDED");
     }});
 }
