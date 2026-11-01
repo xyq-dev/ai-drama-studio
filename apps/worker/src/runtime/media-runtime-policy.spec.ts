@@ -12,6 +12,15 @@ describe("production media bootstrap policy",()=>{
     expect(workerComposePolicy({...base,realAccessAllowed:true,episodeEnabled:false}).episodeCompose).toBe(false);
     expect(workerComposePolicy({...base,realAccessAllowed:true,receiptReady:false}).realCompose).toBe(false);
   });
+  it("reads non-production episode composites without Mock storage or the shot compose switch",()=>{
+    const base={production:false,localEnabled:false,episodeEnabled:true,mockDirectoryReady:false,workDirectoryReady:true,objectDirectoryReady:true,
+      realAccessAllowed:false,receiptReady:false,s3Ready:false};
+    expect(workerComposePolicy(base)).toEqual({mockCompose:false,realCompose:false,localCompose:false,episodeCompose:true});
+    for(const change of [{episodeEnabled:false},{workDirectoryReady:false},{objectDirectoryReady:false},{production:true}])expect(workerComposePolicy({...base,...change}).episodeCompose).toBe(false);
+    const production={...base,production:true,realAccessAllowed:true,receiptReady:true,s3Ready:true};
+    expect(workerComposePolicy(production)).toEqual({mockCompose:false,realCompose:false,localCompose:false,episodeCompose:true});
+    for(const change of [{realAccessAllowed:false},{receiptReady:false},{s3Ready:false}])expect(workerComposePolicy({...production,...change}).episodeCompose).toBe(false);
+  });
   it("validates auth rather than trusting the enabled switch, including HTTPS production origin and bounded password hashes",()=>{
     expect(mediaSiteAuthenticationConfigured(validAuth,"production")).toBe(true);
     for(const extra of [{SITE_AUTH_PASSWORD_HASH:"invalid"},{SITE_AUTH_PUBLIC_ORIGIN:"http://localhost:3000"},{SITE_AUTH_PUBLIC_ORIGIN:"https://studio.example.test/path"},{SITE_AUTH_ENABLED:"false"},{SITE_AUTH_PASSWORD_HASH:validAuth.SITE_AUTH_PASSWORD_HASH.replace("$17$","$20$")}])expect(mediaSiteAuthenticationConfigured({...validAuth,...extra},"production")).toBe(false);

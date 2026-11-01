@@ -101,7 +101,8 @@ export async function episodeRenderGates(ctx) {
     return { jobId: submitted.jobId, state: done.state };
   });
   const withoutMock = await episodeWithoutMockDir(ctx);
-  return { jobId: first.jobId, shotWhileOff, plain: pair.plain.assetId, burned: pair.burned.assetId, withoutMock };
+  const localSingleOff = await episodeWithoutMockDir(ctx, true);
+  return { jobId: first.jobId, shotWhileOff, plain: pair.plain.assetId, burned: pair.burned.assetId, withoutMock, localSingleOff };
 }
 
 export async function episodeRenderPlayback(ctx) {
@@ -419,7 +420,7 @@ export async function episodeRenderIsolation(ctx) {
   return { assetId: asset.id, edges: linked.length, minio, objectKey: asset.object_key };
 }
 
-async function episodeWithoutMockDir(ctx) {
+async function episodeWithoutMockDir(ctx, localSingleOff = false) {
   await ctx.stopApp("worker");
   const env = ctx.childEnv({
     API_PORT: "3035",
@@ -427,9 +428,10 @@ async function episodeWithoutMockDir(ctx) {
     M3_MOCK_IMAGE_ENABLED: "false",
     M3_MOCK_AV_ENABLED: "false",
     M3_MOCK_SUBTITLE_MUSIC_ENABLED: "false",
+    ...(localSingleOff ? { M4_LOCAL_COMPOSE_ENABLED: "false" } : {}),
   }, ["MOCK_OBJECT_DIR"]);
   if (Object.hasOwn(env, "MOCK_OBJECT_DIR")) throw new Error("mock object dir was not removed");
-  const names = ["api-episode-nomock", "worker-episode-nomock"];
+  const names = localSingleOff ? ["api-episode-singleoff", "worker-episode-singleoff"] : ["api-episode-nomock", "worker-episode-nomock"];
   ctx.spawnApp(names[0], ["pnpm", "--filter", "@ai-drama/api", "start"], env);
   ctx.spawnApp(names[1], ["pnpm", "--filter", "@ai-drama/worker", "start"], env);
   try {
@@ -462,7 +464,7 @@ async function episodeWithoutMockDir(ctx) {
       body: { decision: "APPROVE", note: "without mock dir", contentHash: asset.checksum_sha256 },
     }), 200).body;
     if (reviewed.reviewStatus !== "APPROVED") throw new Error(`episode review without mock dir ${reviewed.reviewStatus}`);
-    return { jobId: accepted.jobId, assetId: asset.id, bytes: bytes.length, reviewStatus: reviewed.reviewStatus };
+    return { jobId: accepted.jobId, assetId: asset.id, bytes: bytes.length, reviewStatus: reviewed.reviewStatus, localSingleOff };
   } finally {
     for (const name of names) await ctx.stopApp(name);
     if (!ctx.state.apps.some((item) => item.name === "worker")) await ctx.startWorker();

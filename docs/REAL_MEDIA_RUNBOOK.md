@@ -34,7 +34,7 @@
 | `DASHSCOPE_MEDIA_VIDEO_SECONDS` / `ELEVENLABS_MEDIA_MUSIC_SECONDS` | 默认均 5；代码范围分别 2–15 / 3–90 秒，不表示每个账号/模型已验收全部值。 |
 | `REAL_MEDIA_MAX_SINGLE_CNY`、`REAL_MEDIA_MAX_SINGLE_USD` | 默认 10 / 2；限制一次报价可确认的最大金额。是应用门槛，不是云账号消费硬上限或每日预算。 |
 | `APP_WORKSPACE_ID`、`S3_*` | 沿用服务端 workspace 与 S3 配置；真实资产写 `real-media/{workspace}/{project}/{job}/{attempt}/{sha256}.{ext}`。不写 Mock 目录。 |
-| `M4_LOCAL_COMPOSE_ENABLED`、`M4_LOCAL_EPISODE_COMPOSE_ENABLED` | 默认 false；还需绝对 `M4_COMPOSE_WORK_DIR`、`M4_COMPOSE_OBJECT_DIR` 和可用 `M4_COMPOSE_PYTHON`。新声音输入是 S3，输出仍是 `local-compose`。 |
+| `M4_LOCAL_COMPOSE_ENABLED`、`M4_LOCAL_EPISODE_COMPOSE_ENABLED` | 分别控制单镜与整集，默认 false、相互独立；还需绝对 `M4_COMPOSE_WORK_DIR`、`M4_COMPOSE_OBJECT_DIR` 和可用 `M4_COMPOSE_PYTHON`。非生产整集读取已产出的 `local-compose` 片段，无需原 Mock 目录；生产整集仍要求显式真实媒体授权、站点认证及真实来源校验。新声音输入是 S3，输出仍是 `local-compose`。 |
 | `M4_VOICE_COMPOSE_FONT_PATH` | 可选，操作者指定的绝对 Noto Sans CJK SC 字体路径；不接受客户端路径。不设时只探受信系统候选路径。 |
 | `VIMAX_PLANNING_ENABLED` | 默认 false；还需已生效的标题写作配置、站点登录、文本模型及规划/候选存储。共用工作区写作日限额与并发额度。 |
 | `VIMAX_ALLOW_PRODUCTION` | 默认 false，**仅进程环境**；不代替 `TITLE_WRITING_ALLOW_PRODUCTION`、登录或一次规划确认。 |

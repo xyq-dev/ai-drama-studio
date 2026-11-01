@@ -140,7 +140,7 @@ export class StudioRuntime implements OnModuleDestroy {
     const realComposeAllowed = realAccessAllowed && Boolean(realRuntime.receiptCipher);
     const composeSwitch = (nonProduction || realComposeAllowed) && env.M4_LOCAL_COMPOSE_ENABLED;
     const localComposeEnabled = composeSwitch && Boolean(composeObjectDir && (absoluteDir || realComposeAllowed));
-    const episodeComposeEnabled = composeSwitch && env.M4_LOCAL_EPISODE_COMPOSE_ENABLED && Boolean(composeObjectDir);
+    const episodeComposeEnabled = (nonProduction || realComposeAllowed) && env.M4_LOCAL_EPISODE_COMPOSE_ENABLED && Boolean(composeObjectDir);
     const titleStore = new PostgresTitleWritingStore(pool, textChain);
     const candidateStore = new PostgresWritingCandidateStore(pool);
     let adminModels: AdminModelsService | null;

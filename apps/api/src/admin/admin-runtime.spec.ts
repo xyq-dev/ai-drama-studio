@@ -204,6 +204,39 @@ describe.skipIf(process.platform === "win32")("StudioRuntime managed model start
     expect(read).toHaveBeenCalledTimes(1);expect(pools[0]!.connect).not.toHaveBeenCalled();
   });
 
+  it.each([true, false])("keeps the existing local episode compose switch independent of shot composition (%s)", async (episodeEnabled) => {
+    const env = await environment();
+    const runtime = await open({ ...env, MOCK_OBJECT_DIR: undefined,
+      M4_LOCAL_COMPOSE_ENABLED: false, M4_LOCAL_EPISODE_COMPOSE_ENABLED: episodeEnabled,
+      M4_COMPOSE_OBJECT_DIR: join(tmpdir(), "ads-existing-local-compose") });
+
+    expect(runtime.service.capabilities().compose).toEqual({ shot: false, episode: episodeEnabled });
+    expect(pools.at(-1)!.connect).not.toHaveBeenCalled();
+  });
+
+  it("blocks production episode compose and Mock generation without explicit real media production authorization", async () => {
+    const env = await environment();
+    const runtime = await open({ ...env, NODE_ENV: "production",
+      SITE_AUTH_ENABLED: "true", SITE_AUTH_PASSWORD_HASH: passwordHash, SITE_AUTH_PUBLIC_ORIGIN: "https://drama.example.test",
+      REAL_MEDIA_ENV: { ...env.REAL_MEDIA_ENV, REAL_MEDIA_RECEIPT_KEY: randomBytes(32).toString("base64"),
+        REAL_MEDIA_RECEIPT_KEY_VERSION: "test-v1", REAL_MEDIA_ALLOW_PRODUCTION: "false" },
+      MOCK_OBJECT_DIR: join(tmpdir(), "ads-production-mock"),
+      M3_MOCK_IMAGE_ENABLED: true, M3_MOCK_AV_ENABLED: true, M3_MOCK_SUBTITLE_MUSIC_ENABLED: true,
+      M4_LOCAL_COMPOSE_ENABLED: true, M4_LOCAL_EPISODE_COMPOSE_ENABLED: true,
+      M4_COMPOSE_OBJECT_DIR: join(tmpdir(), "ads-existing-local-compose") });
+
+    expect(runtime.service.capabilities().compose).toEqual({ shot: false, episode: false });
+    const context = { actorId: "server-owner", traceId: "production-compose-gate", idempotencyKey: "production-compose-gate" };
+    for (const generate of [
+      () => runtime.service.generateShotImage(WORKSPACE, {}, context),
+      () => runtime.service.generateShotVideo(WORKSPACE, {}, context),
+      () => runtime.service.generateShotTts(WORKSPACE, {}, context),
+      () => runtime.service.generateShotSubtitle(WORKSPACE, {}, context),
+      () => runtime.service.generateShotMusic(WORKSPACE, {}, context),
+    ]) await expect(generate()).rejects.toMatchObject({ code: "CONFIGURATION_ERROR" });
+    expect(pools.at(-1)!.connect).not.toHaveBeenCalled();
+  });
+
   it("defers a pending provider and limits when startup finds a running workspace task", async () => {
     const env = await environment();
     await savePending(env);
