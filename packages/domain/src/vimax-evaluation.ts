@@ -274,6 +274,15 @@ export function evaluateVimaxPlatformPreview(inputValue: unknown, candidateValue
     gaps: [...gaps, "preview_is_not_write_authorization", "source_can_change_after_preview"] };
 }
 
+/** Source-only admission for a governed planning send; uses exactly the preview source checks. */
+export function validateVimaxPlatformPlanningInput(value: unknown): VimaxEvaluationDiagnostic | null {
+  const boundary = jsonBoundary(value, "input");
+  if (boundary) return boundary;
+  const parsed = vimaxPlatformInputSchema.safeParse(value);
+  if (!parsed.success) return diagnostic("invalid_input", "input");
+  return sourceCheck(parsed.data);
+}
+
 function evaluatePlan(inputValue: unknown, candidateValue: unknown, supplementsValue: unknown, platform: boolean): VimaxEvaluationReport {
   let provenance: VimaxEvaluationProvenance | null = null;
   const blocked = (issue: VimaxEvaluationDiagnostic): VimaxEvaluationReport => ({

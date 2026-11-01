@@ -1,3 +1,4 @@
+import { assertComposeSourcesEnabled } from "./compose-access";
 import { createHash, randomUUID } from "node:crypto";
 import { SAMPLE_VIDEO_FIXTURE_IDS, SAMPLE_VIDEO_SCHEMA, sampleVideoDescription, type SampleVideoFixtureId } from "@ai-drama/contracts";
 import {
@@ -160,6 +161,8 @@ export class StudioService {
     private readonly mockSampleVideoEnabled = false,
     private readonly characterReferences?: CharacterReferenceStore,
     private readonly referenceGate: CharacterReferenceGateMode = "legacy",
+    private readonly realComposeEnabled = false,
+    private readonly realSourcesOnly = false,
   ) {}
 
   get workspace(): string {
@@ -725,13 +728,18 @@ export class StudioService {
       if (error instanceof DomainError) throw new PersistenceError(error.code, error.message);
       throw error;
     }
-    if (!this.mockAvEnabled) {
+    if (!this.mockAvEnabled && !this.realComposeEnabled) {
       throw new PersistenceError("CONFIGURATION_ERROR", "Mock video and speech content is not enabled");
     }
-    if ((selection.subtitleAssetId || selection.musicAssetId) && !this.mockSmEnabled) {
+    if ((selection.subtitleAssetId || selection.musicAssetId) && !this.mockSmEnabled && !this.realComposeEnabled) {
       throw new PersistenceError("CONFIGURATION_ERROR", "Mock subtitle and music content is not enabled");
     }
     if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
+    if(this.realComposeEnabled){
+      const selected=[{role:"video",id:selection.videoAssetId},{role:"audio",id:selection.audioAssetId},{role:"music",id:selection.musicAssetId},{role:"subtitle",id:selection.subtitleAssetId}];
+      const sources=await Promise.all(selected.flatMap(item=>item.id?[this.mediaAssets!.getWorkspaceAsset(this.workspaceId,item.id).then(asset=>({role:item.role,storageProvider:asset.storageProvider}))]:[]));
+      assertComposeSourcesEnabled(sources,{real:this.realComposeEnabled,mockAv:this.mockAvEnabled,mockSm:this.mockSmEnabled});
+    }
     return {
       status: 200,
       body: await this.mediaAssets.preflightCompose(this.workspaceId, shotRevisionId, selection),
@@ -756,7 +764,7 @@ export class StudioService {
     if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
     return {
       status: 200,
-      body: await this.mediaAssets.preflightEpisodeCompose(
+      body: this.realSourcesOnly?await this.mediaAssets.preflightEpisodeCompose(this.workspaceId,projectId,episodeId,request.compositeAssetIds,{realOnly:true}):await this.mediaAssets.preflightEpisodeCompose(
         this.workspaceId, projectId, episodeId, request.compositeAssetIds,
       ),
     };
@@ -785,7 +793,7 @@ export class StudioService {
     return this.jobs.createAndQueueWorkflowJob(
       this.scope(context, "POST", `/projects/${projectId}/episodes/${episodeId}/compose`, request),
       async (client) => {
-        const frozen = await this.mediaAssets!.freezeEpisodeComposeInput(client, this.workspaceId, projectId, episodeId, request);
+        const frozen = this.realSourcesOnly?await this.mediaAssets!.freezeEpisodeComposeInput(client,this.workspaceId,projectId,episodeId,request,{realOnly:true}):await this.mediaAssets!.freezeEpisodeComposeInput(client, this.workspaceId, projectId, episodeId, request);
         return {
           workspaceId: this.workspaceId,
           projectId,
@@ -801,7 +809,7 @@ export class StudioService {
   }
 
   async composeShot(shotRevisionId: string, body: unknown, context: StudioContext) {
-    if (!this.localComposeEnabled || !this.mockAvEnabled) {
+    if (!this.localComposeEnabled || (!this.mockAvEnabled && !this.realComposeEnabled)) {
       throw new PersistenceError("CONFIGURATION_ERROR", "Local compose is not enabled");
     }
     let request;
@@ -811,7 +819,7 @@ export class StudioService {
       if (error instanceof DomainError) throw new PersistenceError(error.code, error.message);
       throw error;
     }
-    if ((request.subtitleAssetId || request.musicAssetId) && !this.mockSmEnabled) {
+    if ((request.subtitleAssetId || request.musicAssetId) && !this.mockSmEnabled && !this.realComposeEnabled) {
       throw new PersistenceError("CONFIGURATION_ERROR", "Mock subtitle and music content is not enabled");
     }
     if (!this.mediaAssets) throw new PersistenceError("CONFIGURATION_ERROR", "Media assets unavailable");
@@ -819,6 +827,7 @@ export class StudioService {
       this.scope(context, "POST", `/shot-revisions/${shotRevisionId}/compose`, request),
       async (client) => {
         const frozen = await this.mediaAssets!.freezeComposeInput(client, this.workspaceId, shotRevisionId, request);
+        if(this.realComposeEnabled)assertComposeSourcesEnabled(frozen.snapshot.input.sourceObjects,{real:this.realComposeEnabled,mockAv:this.mockAvEnabled,mockSm:this.mockSmEnabled});
         return {
           workspaceId: this.workspaceId,
           projectId: frozen.projectId,
@@ -871,7 +880,7 @@ export class StudioService {
     if (asset.kind === "COMPOSITE") {
       const schema = await this.mediaAssets.compositeOutputSchema(this.workspaceId, assetId);
       const episodeOutput = schema === "m4.episode.compose.asset.v1";
-      const shotOutput = schema === "m4.shot.compose.asset.v1";
+      const shotOutput = schema === "m4.shot.compose.asset.v1" || schema === "m4.shot.voice-compose.asset.v1";
       if (episodeOutput && !this.episodeComposeEnabled) {
         throw new PersistenceError("CONFIGURATION_ERROR", "Episode compose content is not enabled");
       }
@@ -1155,7 +1164,7 @@ export class StudioService {
        * Booleans only: no paths, directories or credentials. Each route still validates every request itself.
        */
       compose: {
-        shot: this.localComposeEnabled && this.mockAvEnabled && Boolean(this.mediaAssets),
+        shot: this.localComposeEnabled && (this.mockAvEnabled || this.realComposeEnabled) && Boolean(this.mediaAssets),
         episode: this.episodeComposeEnabled && Boolean(this.mediaAssets),
       },
     };

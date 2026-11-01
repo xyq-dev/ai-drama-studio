@@ -33,6 +33,7 @@ export interface VimaxCandidatePersistence {
 export interface VimaxCandidateDependencies {
   workspaceId: string;
   nodeEnv: "development" | "test" | "production";
+  allowProduction?: boolean;
   store: VimaxCandidatePersistence;
 }
 export interface VimaxCandidateResult { status: number; body: unknown }
@@ -80,7 +81,7 @@ export class VimaxCandidateService {
   constructor(private readonly deps: VimaxCandidateDependencies) {}
 
   private disabled(): VimaxCandidateResult | null {
-    return this.deps.nodeEnv === "production" ? failure("VIMAX_CANDIDATE_DISABLED") : null;
+    return this.deps.nodeEnv === "production" && this.deps.allowProduction !== true ? failure("VIMAX_CANDIDATE_DISABLED") : null;
   }
 
   private async access(work: () => Promise<VimaxCandidateResult>): Promise<VimaxCandidateResult> {

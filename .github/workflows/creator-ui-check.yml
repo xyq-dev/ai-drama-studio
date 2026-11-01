@@ -57,3 +57,15 @@ jobs:
         run: pnpm --filter @ai-drama/web typecheck
       - name: Run Web component and unit regressions
         run: pnpm --filter @ai-drama/web test
+      - name: Install Chromium for the local fixture UI check
+        run: |
+          sudo bash scripts/ci/apt-official-https.sh
+          pnpm exec playwright install --with-deps chromium
+      - name: Check real production controls at desktop and mobile sizes (no external calls)
+        run: node scripts/real-production-ui-check.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: real-production-ui-${{ github.run_id }}-${{ github.run_attempt }}
+          path: test-results/real-production-ui
+          if-no-files-found: ignore

@@ -30,6 +30,29 @@ function video(): ComposeAssetFacts {
 }
 
 describe("compose render contract", () => {
+  it("freezes S3 objects only under the receipt-bound workspace, project, job, attempt and checksum", () => {
+    const asset = video();
+    asset.storageProvider = "s3";
+    asset.sourceKind = "PROVIDER";
+    asset.providerRequestId = "provider-video-task";
+    asset.job = { ...asset.job!, inputHash: "ef".repeat(32), inputSnapshot: { schema: "real-media.v1" } };
+    asset.attempt = { ...asset.attempt!, providerRequestId: asset.providerRequestId,
+      realMediaReceipt: { providerKey: "dashscope-media", capability: "video.generate", state: "SUCCEEDED", providerRequestId: asset.providerRequestId, inputHash: asset.job.inputHash! } };
+    const preflight = buildComposePreflight({ workspaceId, projectId, shotRevisionId: shotId,
+      assets: { video: asset, audio: null, music: null, subtitle: null } });
+    const key = `real-media/${workspaceId}/${projectId}/${asset.sourceGenerationJobId}/${asset.sourceJobAttemptId}/${asset.checksumSha256}.mp4`;
+    const source = { role: "video" as const, assetId: videoId, storageProvider: "s3", objectKey: key,
+      byteSize: asset.byteSize, checksumSha256: asset.checksumSha256 };
+    expect(buildComposeJobSnapshot(preflight, [source]).snapshot.input.sourceObjects[0]).toEqual(source);
+    for (const objectKey of [key.replace(workspaceId, projectId), key.replace(asset.sourceJobAttemptId!, videoId), key.replace(".mp4", ".wav")]) {
+      expect(() => buildComposeJobSnapshot(preflight, [{ ...source, objectKey }])).toThrow(/provenance/);
+    }
+    expect(() => buildComposeJobSnapshot(preflight, [{ ...source, storageProvider: "mock-object-store" }])).toThrow(/storage/);
+    const mockPreflight = buildComposePreflight({ workspaceId, projectId, shotRevisionId: shotId,
+      assets: { video: video(), audio: null, music: null, subtitle: null } });
+    expect(() => buildComposeJobSnapshot(mockPreflight, [source])).toThrow(/provenance/);
+  });
+
   it("requires the preflight hash and rejects client render fields", () => {
     expect(parseComposeRenderRequest({ videoAssetId: videoId, expectedInputHash: "ab".repeat(32) }).audioAssetId).toBeNull();
     expect(() => parseComposeRenderRequest({ videoAssetId: videoId, expectedInputHash: "ab".repeat(32), objectKey: "x" })).toThrow(/invalid/i);

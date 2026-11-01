@@ -191,7 +191,7 @@ export class PostgresAutoCreationStore implements AutoCreationStore {
         : [];
       const autoRunning = (await runningWritingRuns(client, run.workspaceId)).map((item) => ({ id: item.id, project_id: item.projectId, kind: item.kind }));
       const sameAuto = autoRunning.find((row) => String(row.project_id) === run.projectId);
-      if (sameAuto) return { kind: "active", runKind: "auto", runId: String(sameAuto.id) };
+      if (sameAuto) return { kind: "active", runKind: sameAuto.kind, runId: String(sameAuto.id) };
       const sameTitle = titleRunning.find((row) => String(row.project_id) === run.projectId);
       if (sameTitle) return { kind: "active", runKind: "title", runId: String(sameTitle.id) };
       // A run writes only into a work with no story yet and no earlier automatic run.
@@ -439,7 +439,7 @@ export class PostgresAutoCreationStore implements AutoCreationStore {
       const titleRunning = titleProjects.length;
       // Automatic creation runs and series jobs share the cap; a work a series job is writing takes no automatic run.
       const others = await runningWritingRuns(client, workspaceId);
-      if (others.some((item) => item.kind === "series" && item.projectId === projectId)) return { kind: "active" };
+      if (others.some((item) => (item.kind === "series" || item.kind === "vimax") && item.projectId === projectId)) return { kind: "active" };
       const autoRunning = others.length;
       if (titleRunning + autoRunning >= request.maxActiveRuns) return { kind: "active_cap" };
       const stages = (await client.query<Row>(`SELECT ${STAGE_COLUMNS} FROM auto_creation_stage WHERE run_id = $1`, [runId])).rows.map(toStage);

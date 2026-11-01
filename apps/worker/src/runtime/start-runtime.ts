@@ -10,7 +10,7 @@ import {
   type PostgresPool,
   CharacterReferenceStore,
 } from "@ai-drama/database";
-import { isSampleVideoSnapshot } from "@ai-drama/contracts";
+import { composeSourcesAllowed,isSampleVideoSnapshot,realMediaAccessAllowed } from "@ai-drama/contracts";
 import { MockMediaAdapter, MockProvider, MockTextAdapter, type MockRequestState } from "@ai-drama/providers";
 import { isAbsolute } from "node:path";
 import { BullMqQueue, startBullWorker, type QueueMessage } from "./bullmq-queue";
@@ -27,6 +27,13 @@ import { runMockSmJob } from "./mock-sm-generation";
 import { MockMediaRecovery } from "./mock-media-recovery";
 import { CharacterReferenceRecovery, runMockCharacterReferenceJob } from "./mock-character-reference";
 import { describeRecoveryError, isProcessStopping, runRecoveryModules } from "./recovery-modules";
+import { RealMediaStore, PostgresVoiceComposeStore } from "@ai-drama/database";
+import { MediaS3Client, type ServerRealMediaRuntime, type MediaS3Configuration } from "@ai-drama/providers";
+import { VOICE_COMPOSE_JOB_SCHEMA, type VoiceComposeJobSnapshot } from "@ai-drama/domain";
+import { runRealMediaJob, RealMediaRecovery, type RealMediaWorkerDependencies } from "./real-media-job";
+import { S3RealMediaObjects } from "./real-media-objects";
+import { createRealMediaMaterializer, preflightRealMediaTools } from "./real-media-materializer";
+import { runVoiceComposeJob } from "./voice-compose-job";
 
 export interface QueueRuntimeStatus {
   running: boolean;
@@ -74,6 +81,10 @@ function inspectState(state: MockRequestState): "ACTIVE" | "SUCCEEDED" | "FAILED
 }
 
 export async function startQueueRuntime(options: {
+  nodeEnv?:"development"|"test"|"production";
+  realMediaSiteAuthConfigured?:boolean;
+  realMediaAllowProduction?:boolean;
+  characterReferenceGate?:"legacy"|"strict";
   databaseUrl: string;
   redisUrl: string;
   leaseMs?: number;
@@ -97,8 +108,14 @@ export async function startQueueRuntime(options: {
   composeFailInsideCommit?: boolean;
   /** Receives one line per failed recovery module or reconcile pass. Defaults to stderr. */
   onRecoveryError?: (message: string) => void;
+  realMediaRuntime?: ServerRealMediaRuntime;
+  realMediaS3?: MediaS3Configuration;
+  voiceComposeEnabled?: boolean;
+  voiceComposeFontPath?: string;
 }): Promise<RuntimeHandle> {
-  if (options.mockObjectDir && (process.env.NODE_ENV === "production" || !isAbsolute(options.mockObjectDir))) {
+  const nodeEnv=options.nodeEnv??process.env.NODE_ENV??"development";
+  const realAccessAllowed=realMediaAccessAllowed({nodeEnv,siteAuthConfigured:options.realMediaSiteAuthConfigured===true,allowProduction:options.realMediaAllowProduction===true});
+  if (options.mockObjectDir && (nodeEnv === "production" || !isAbsolute(options.mockObjectDir))) {
     throw new Error("Mock media requires an absolute local directory and is forbidden in production");
   }
   const pool: PostgresPool = createPostgresPool({
@@ -123,6 +140,18 @@ export async function startQueueRuntime(options: {
   const assets = new MediaAssetStore(pool);
   const mockMedia = new MockMediaAdapter();
   const objects = options.mockObjectDir ? new LocalMockObjects(options.mockObjectDir) : null;
+  const realStore = new RealMediaStore(pool, options.realMediaRuntime?.receiptCipher
+    ? { receiptCipher: options.realMediaRuntime.receiptCipher } : {});
+  const realClient = options.realMediaRuntime?.receiptCipher && options.realMediaS3 ? new MediaS3Client(options.realMediaS3) : null;
+  const realObjects = realClient ? new S3RealMediaObjects(realClient) : null;
+  const realDependencies: RealMediaWorkerDependencies | null = realObjects && options.realMediaRuntime && options.composeWorkDir
+    ? { jobs, assets, store: realStore, objects: realObjects,characterReferenceGate:options.characterReferenceGate,
+      adapterFor: (configuration, mode) => options.realMediaRuntime!.adapterFor(configuration, mode),
+      materialize: createRealMediaMaterializer({ workDir: options.composeWorkDir }),
+      preflightLocal: () => preflightRealMediaTools({ workDir: options.composeWorkDir! }) }
+    : null;
+  const realRecovery = realDependencies ? new RealMediaRecovery(realDependencies) : null;
+  const voiceStore = new PostgresVoiceComposeStore(pool, jobs);
   const mediaRecovery = new MockMediaRecovery(jobs, assets, store, mockMedia, objects, {
     mockImageEnabled: options.mockImageEnabled === true,
     mockAvEnabled: options.mockAvEnabled === true,
@@ -141,6 +170,7 @@ export async function startQueueRuntime(options: {
       await runRecoveryModules([
         { name: "mock-media", run: () => mediaRecovery.reconcileOnce() },
         { name: "character-reference", run: () => referenceRecovery.reconcileOnce() },
+        ...(realRecovery ? [{ name: "real-media", run: () => realRecovery.reconcileOnce() }] : []),
       ], {
         running: () => status.running,
         report: (module, error) => reportRecovery(describeRecoveryError(module, error)),
@@ -151,7 +181,15 @@ export async function startQueueRuntime(options: {
     { url: options.redisUrl, maxRetriesPerRequest: null },
     prefix,
     async (message: QueueMessage) => {
-      const kind = await store.readJobKind(message.workspaceId, message.jobId);
+      const dispatch = await store.readJobDispatchMetadata(message.workspaceId, message.jobId);
+      const kind = dispatch?.kind ?? null;
+      if (dispatch?.schema === "real-media.v1") {
+        // Leave the authorized Job queued for configuration repair, never fall through to Mock generation.
+        if (!realAccessAllowed || !realDependencies || !options.realMediaRuntime?.enabled) return;
+        const execution = await realStore.loadExecution(message.workspaceId, message.jobId);
+        if (execution) await runRealMediaJob(execution, realDependencies);
+        return;
+      }
       if (kind === "MEDIA_COMPOSE") {
         const compose = await store.loadComposeJob(message.workspaceId, message.jobId);
         if (!compose) throw new Error("Compose job missed its loader");
@@ -159,9 +197,24 @@ export async function startQueueRuntime(options: {
         const snapshot = compose.inputSnapshot as { schema?: string; input?: { episodeId?: string } };
         const workDir = options.composeWorkDir;
         const objectDir = options.composeObjectDir;
+        if (snapshot.schema === VOICE_COMPOSE_JOB_SCHEMA) {
+          if (!realAccessAllowed || !options.voiceComposeEnabled || !workDir || !objectDir || !realObjects || !compose.shotRevisionId) {
+            await failComposeConfiguration(jobs, message, compose.state, options.leaseMs, "Voice compose requires verified media storage and renderer configuration");
+            return;
+          }
+          if (compose.state !== "QUEUED") return;
+          await withSingleComposeRender(() => runVoiceComposeJob({ workspaceId: message.workspaceId, projectId: compose.projectId,
+            shotRevisionId: compose.shotRevisionId!, jobId: message.jobId, dispatchSeq: message.dispatchSeq, inputHash: compose.inputHash,
+            inputSnapshot: compose.inputSnapshot as VoiceComposeJobSnapshot, traceId: "worker:voice-compose:" + message.jobId },
+          { jobs, voiceStore, objectReader: realObjects, workDir, objectDir,
+            pythonBin: options.composePythonBin ?? "python3", pythonPath: options.composePythonPath ?? "",
+            leaseOwner: "voice-compose:" + process.pid, leaseMs: options.composeLeaseMs ?? 30_000,
+            ...(options.voiceComposeFontPath ? { fontPath: options.voiceComposeFontPath } : {}) }));
+          return;
+        }
         if (snapshot.schema === EPISODE_COMPOSE_JOB_SCHEMA) {
           const episodeId = snapshot.input?.episodeId;
-          if (options.episodeComposeEnabled !== true || !workDir || !objectDir || !episodeId) {
+          if (options.episodeComposeEnabled !== true || !workDir || !objectDir || !episodeId || (nodeEnv==="production"&&(!realAccessAllowed||!realObjects))) {
             await failComposeConfiguration(jobs, message, compose.state, options.leaseMs, "Episode compose requires the episode switch, work directory, and object directory");
             return;
           }
@@ -171,6 +224,11 @@ export async function startQueueRuntime(options: {
           }
           if (compose.state === "RUNNING") {
             throw new Error("Compose attempt is in progress; lease recovery must finish before redelivery");
+          }
+          if(nodeEnv==="production"){
+            const sources=(compose.inputSnapshot as {input?:{sourceObjects?:Array<{assetId:string}>}}).input?.sourceObjects;
+            if(!Array.isArray(sources)||sources.length===0)throw new Error("Episode compose has no sources");
+            await assets.preflightEpisodeCompose(message.workspaceId,compose.projectId,episodeId,sources.map(source=>source.assetId),{realOnly:true});
           }
           await withSingleComposeRender(() => runEpisodeComposeJob({
             workspaceId: message.workspaceId,
@@ -198,7 +256,11 @@ export async function startQueueRuntime(options: {
         }
         const shotRevisionId = compose.shotRevisionId;
         const mockObjectDir = options.mockObjectDir;
-        if (options.localComposeEnabled !== true || !mockObjectDir || !workDir || !objectDir || !shotRevisionId) {
+        const sourceObjects=(compose.inputSnapshot as {input?:{sourceObjects?:unknown}}).input?.sourceObjects;
+        const sourcesEnabled=composeSourcesAllowed(sourceObjects,{allowReal:realAccessAllowed&&Boolean(realObjects),
+          allowMockAv:nodeEnv!=="production"&&Boolean(mockObjectDir)&&options.mockAvEnabled===true,
+          allowMockSm:nodeEnv!=="production"&&Boolean(mockObjectDir)&&options.mockSmEnabled===true});
+        if (options.localComposeEnabled !== true || !sourcesEnabled || !workDir || !objectDir || !shotRevisionId) {
           if (compose.state !== "QUEUED") throw new Error("Compose configuration missing for an already active attempt");
           const acquired = await jobs.acquireQueuedJob({
             workspaceId: message.workspaceId, jobId: message.jobId, dispatchSeq: message.dispatchSeq,
@@ -232,7 +294,7 @@ export async function startQueueRuntime(options: {
           inputSnapshot: compose.inputSnapshot as never,
           traceId: `worker:compose:${message.jobId}`,
         }, {
-          jobs, assets, mockObjectDir, workDir,
+          jobs, assets, ...(mockObjectDir ? { mockObjectDir } : {}), workDir, ...(realObjects ? { objectReader: realObjects } : {}),
           objectDir, pythonBin: options.composePythonBin ?? "python3",
           pythonPath: options.composePythonPath ?? "", leaseOwner: `compose:${process.pid}`,
           leaseMs: options.composeLeaseMs ?? 30_000, holdBeforeCommitMs: options.composeHoldBeforeCommitMs ?? 0,
@@ -369,6 +431,7 @@ export async function startQueueRuntime(options: {
       await staleRecalculation.shutdown();
       await worker.close();
       await queue.close();
+      realClient?.destroy();
       await closePostgresPool(pool);
     },
   };

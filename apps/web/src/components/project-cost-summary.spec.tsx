@@ -41,6 +41,17 @@ function usdZero() {
 afterEach(cleanup);
 
 describe("project cost summary", () => {
+  it("reads unledgered reservations separately and keeps the actual bill unknown", async () => {
+    const client = new StudioClient(input => Promise.resolve(json(input.endsWith("cost-exposure")
+      ? { actualCost: "unknown", unknownSubmissionCount: 2, currencies: [{ currency: "CNY", reservedEstimatedAmount: "1.20000000", reservedMaximumAmount: "2.00000000" }] }
+      : summary(PROJECT, [usdZero()], 1))));
+    render(createElement(ProjectCostSummary, { projectId: PROJECT, client }));
+    fireEvent.click(screen.getByRole("button", { name: "已记录成本" }));
+    fireEvent.click(await screen.findByRole("button", { name: "核查真实生成预约" }));
+    expect(await screen.findByText(/实际费用尚未核实；结果未知的提交 2 笔/)).toBeTruthy();
+    expect(screen.getByText(/未入账预约估算 1.20000000，已授权上限 2.00000000/)).toBeTruthy();
+    expect(screen.getByText("已记录实际金额 0.00000000")).toBeTruthy();
+  });
   it("stays collapsed, then shows an empty ledger without calling it free", async () => {
     const client = new StudioClient(() => Promise.resolve(json(summary(PROJECT, [], 0))));
     render(createElement(ProjectCostSummary, { projectId: PROJECT, client }));

@@ -24,6 +24,17 @@ export interface MediaGenerationRequest {
   inputSnapshot: unknown;
   traceId: string;
   capability: MediaCapability;
+  /** Verified bytes loaded by the worker; never part of the frozen snapshot or public DTO. */
+  resolvedSourceImage?: { bytes: Uint8Array; mimeType: "image/png" | "image/jpeg"; checksumSha256: string };
+}
+
+/** The request may have reached a paid service. A caller must persist UNKNOWN, never retry submit. */
+export class MediaSubmissionUnknownError extends Error {
+  readonly code = "MEDIA_SUBMISSION_UNKNOWN";
+  constructor(readonly providerRequestId?: string) {
+    super("媒体服务可能已经受理，请核实原请求；不要自动重新生成。");
+    this.name = "MediaSubmissionUnknownError";
+  }
 }
 
 export type MediaOutputReference =

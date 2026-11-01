@@ -1,0 +1,134 @@
+name: Production completion isolated acceptance
+
+# No deployment, business database, provider credential or model invocation. Each matrix job creates a fresh
+# database on its own runner-local PostgreSQL container; draft authorization exists only for that exact test run.
+on:
+  pull_request:
+    branches: [main]
+    paths: &production_acceptance_paths
+      - .github/workflows/real-production-acceptance.yml
+      - scripts/ci/**
+      - packages/contracts/**
+      - packages/domain/**
+      - packages/database/**
+      - packages/providers/**
+      - apps/api/**
+      - services/media-worker/**
+      - apps/worker/src/runtime/real-media*
+      - apps/worker/src/runtime/voice-compose*
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - package.json
+  push:
+    branches: [main, feat/real-production-completion]
+    paths: *production_acceptance_paths
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-completion-acceptance-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  postgres:
+    name: PostgreSQL draft acceptance (${{ matrix.suite }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [speech, real-media, vimax-planning, real-media-http]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.0
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.21.0
+          cache: pnpm
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Validate and generate the existing Prisma client without connecting
+        env:
+          DATABASE_URL: postgresql://prisma-offline@127.0.0.1:1/prisma_offline_placeholder
+        run: |
+          pnpm --filter @ai-drama/database prisma:validate
+          pnpm --filter @ai-drama/database prisma:generate
+      - name: Build the selected workspace and its dependencies without opening a database
+        env:
+          ACCEPTANCE_SUITE: ${{ matrix.suite }}
+        run: |
+          if [ "$ACCEPTANCE_SUITE" = "real-media-http" ]; then
+            pnpm --filter @ai-drama/api... build
+            pnpm --filter @ai-drama/api exec tsc -p tsconfig.real-media-flow-acceptance.json
+          else
+            pnpm --filter @ai-drama/database... build
+          fi
+      - name: Verify refusal-by-default guards and CI launcher without a database
+        run: |
+          node --test scripts/ci/run-production-acceptance.test.mjs
+          pnpm --filter @ai-drama/database exec vitest run src/speech-acceptance-guard.spec.ts src/disposable-acceptance-guard.spec.ts src/real-media-acceptance-guard.spec.ts src/vimax-planning-acceptance-guard.spec.ts
+      - name: Create one fresh runner-local database and run its explicit draft suite
+        env:
+          ACCEPTANCE_SUITE: ${{ matrix.suite }}
+        run: node scripts/ci/run-production-acceptance.mjs "$ACCEPTANCE_SUITE"
+      - name: Upload isolated database results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-postgres-${{ matrix.suite }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/production-acceptance/${{ matrix.suite }}
+          retention-days: 7
+          if-no-files-found: error
+
+  cjk-render:
+    name: Actual CJK voice composition (no skips)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify CJK evidence admission checks without external services
+        run: python -m unittest discover -s scripts/ci -p test_voice_compose_acceptance.py -v
+      - name: Install actual Chinese font and media tools from the official Ubuntu HTTPS archive
+        run: |
+          sudo bash scripts/ci/apt-official-https.sh
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ffmpeg fonts-noto-cjk
+          dpkg-query -W -f '${Package} ${Version}\n' ffmpeg fonts-noto-cjk
+          ffmpeg -version
+          ffprobe -version
+      - name: Run actual synthetic media composition and require Chinese evidence without skips
+        env:
+          VOICE_COMPOSE_TEST_EVIDENCE_DIR: ${{ runner.temp }}/voice-compose-evidence
+        run: python scripts/ci/run-voice-compose-acceptance.py
+      - name: Upload actual CJK render evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-cjk-render-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/voice-compose-evidence
+          retention-days: 7
+          if-no-files-found: error

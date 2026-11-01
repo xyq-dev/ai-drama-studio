@@ -1,8 +1,16 @@
 # ViMax E2-B 工作安排与接续记录
 
-更新：2026-10-31。当前交付：**E2-B 代码、本地分项与独立隔离验收完成；业务库未启用**。代码集成与最新 CI 结果以本功能分支关联 PR 为准。本文件随代码增量同步，不把未执行的操作记为完成。
+更新：2026-11-01。当前交付：**E2-B 候选/两段式保存与新增单场景在线规划治理代码均已实现并接线，默认关闭；业务库未启用，真实规划未验收。** 本轮模型调用 0、业务 SQL 0、部署 0。当前分支/CI 以 [`REAL_PRODUCTION_COMPLETION_PROGRESS.md`](REAL_PRODUCTION_COMPLETION_PROGRESS.md) 及关联 PR 当前提交为准。
 
-## 当前基线
+## 新增发送治理（2026-11-01）
+
+`VimaxPlanningExecutor`、`PostgresVimaxPlanningStore`、API/controller 与工作台面板已实现。入口为 `/projects/:projectId/episodes/:episodeId/vimax-planning`，一次单场景模型请求需明确确认，共用标题/自动创作/系列写作的工作区日额、并发与项目活动门；永久请求键、提交 CAS、执行者租约及 UNKNOWN 保护防止自动重复发送。合法结果交回原严格预览/候选，不自动写场景、镜头或 APPROVED。
+
+`VIMAX_PLANNING_ENABLED=false` 默认关闭；生产另需进程级 `VIMAX_ALLOW_PRODUCTION=true`、标题写作准入与有效站点登录。新增 `20261101000100_vimax_planning_request.sql` 仍在 drafts，依赖原候选草案；普通 migrate 不安装。独立 `vitest.vimax-planning-acceptance.config.ts` 需新空命名库与双 draft 许可，详见 [`REAL_MEDIA_RUNBOOK.md`](REAL_MEDIA_RUNBOOK.md)。真实单场景结构/叙事/画面质量试验仍需单独授权，不能由替身测试推断。
+
+新增规划存储的首轮独立 PostgreSQL 验收在 `b1980f138b78261d567210f5c72ae2e45da1f861` 的 [Run 41292829594](https://github.com/xyq-dev/ai-drama-studio/actions/runs/41292829594) 为 9 项通过。它只施加 runner 内新空库，模型与业务 SQL 均为 0；之后代码仍须对应当前提交重新验证，不替换下文 E2-B 的历史证据。
+
+## E2-B 历史基线与记录（2026-10-31）
 
 - 仓库：`xyq-dev/ai-drama-studio`。
 - 开发分支：`feat/vimax-e2b-candidate-persistence`。
@@ -13,7 +21,7 @@
 
 短剧中已有且无活动镜头的一个场景：导入方案并核验 → 永久保存候选 → 创建该场景的新草稿修订 → 创作者批准精确修订 → 写入镜头草稿。复用现有修订/审核/STALE 机制，保护其他场景与人工镜头。页面刷新可找回候选，丢失回执可用原请求身份重放。
 
-不包含模型发送、预算/租约执行、未知模型结果恢复、真实图片/视频/TTS、系列媒体或部署。E2 的发送治理与 E3 真实试验仍是后续范围。
+原 E2-B 阶段不包含模型发送、预算/租约执行或未知结果恢复；这些治理现已由顶部新增模块实现。它仍不执行真实试验、媒体生产、系列媒体或部署。
 
 ## 已确认设计
 
@@ -62,4 +70,4 @@
 1. 核验远端 main、当前分支和关联 PR。若尚未合并，先确认当前 HEAD 的 CI/Review，修正真实失败后正常 merge；若已合并，不重复实现本页能力。
 2. 保留 SQL 草案、永久回执与已有修订。不得为了让页面可点而绕过缺结构、审批或来源门槛。
 3. 后续先准备业务库启用与测试站点发布；必须有明确数据库执行授权及可用连接，并单独记录实际 SHA/SQL/页面检查。当前二者未执行。
-4. 完整 E2 的发送预算、租约和未知结果恢复，以及 E3 真实规划另行推进；不借用旧系列调用预算，不自动调用模型。
+4. 不重复实现顶部已落地的发送预算/租约/未知恢复；按当前提交验证接线与隔离 suite。E3 真实规划、业务库启用和部署分别核对授权，不借用旧系列调用授权，不自动调用模型。

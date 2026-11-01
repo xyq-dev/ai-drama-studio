@@ -1,0 +1,16 @@
+.panel { border: 1px solid #e7e5e0; border-radius: 12px; background: #fff; color: #24232a; overflow-wrap: anywhere; min-width: 0; }
+.toggle { width: 100%; text-align: left; font-weight: 600; padding: 16px; }
+.body { padding: 0 16px 16px; display: grid; gap: 16px; min-width: 0; font-size: 15px; }
+.body button { min-height: 44px; padding: 8px 14px; border: 1px solid #ccc8c0; border-radius: 8px; width: fit-content; max-width: 100%; }
+.body button:disabled { opacity: .45; }
+.body label { display: grid; gap: 6px; }
+.body label:has(input[type="checkbox"]) { display: block; }
+.body input:not([type="checkbox"]), .body select { width: 100%; min-height: 44px; border: 1px solid #ccc8c0; border-radius: 8px; padding: 8px; background: #fff; min-width: 0; }
+.body input[type="checkbox"] { margin-right: 8px; width: 18px; height: 18px; }
+.fields { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); }
+.quote { display: grid; gap: 12px; padding: 16px; background: #f7f6f2; border-radius: 10px; }
+.warning { padding: 12px; background: #fff5df; border-radius: 8px; }
+.error { color: #a12323; }
+.assets { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); }
+.assets article { border: 1px solid #e7e5e0; border-radius: 8px; padding: 12px; min-width: 0; }
+.assets img, .assets video, .assets audio { max-width: 100%; width: 100%; margin-top: 8px; }

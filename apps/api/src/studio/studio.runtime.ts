@@ -17,7 +17,7 @@ import {
   createPostgresPool,
   type PostgresPool,
 } from "@ai-drama/database";
-import { sampleVideoGenerationEnabled, type TitleRunKind } from "@ai-drama/contracts";
+import { sampleVideoGenerationEnabled, realMediaAccessAllowed, type TitleRunKind } from "@ai-drama/contracts";
 import {
   AutoCreationEngine, SeriesWritingEngine, TitleWritingEngine, WritingCandidateExecutor, createFetchTransport, createResearchFetcher, titleWritingProviderConfigs,
 } from "@ai-drama/providers";
@@ -35,6 +35,12 @@ import { writingWorkspaceIdle } from "./writing-activation";
 import { WritingCandidateService } from "./writing-candidate.service";
 import { adminBootstrap } from "../admin/admin-bootstrap";
 import { AdminModelsService, managedProviderConfigs } from "../admin/admin-models.service";
+import { PostgresVimaxPlanningStore, RealMediaStore, PostgresSpeechStore, PostgresSpeechBatchStore, PostgresVoiceComposeStore } from "@ai-drama/database";
+import { VimaxPlanningExecutor, ServerRealMediaRuntime, MediaS3Client, readVerifiedS3MediaObject } from "@ai-drama/providers";
+import { VimaxPlanningService } from "./vimax-planning.service";
+import { RealMediaService } from "./real-media.service";
+import { SpeechService } from "./speech.service";
+import { VoiceComposeService } from "./voice-compose.service";
 
 /** Title writing recovery pass. Only expired leases are fenced, so a live run is never touched. */
 const TITLE_WRITING_MAINTENANCE_MS = 15_000;
@@ -48,6 +54,7 @@ export class StudioRuntime implements OnModuleDestroy {
   private readonly candidateMaintenance: NodeJS.Timeout | null;
   private readonly autoMaintenance: NodeJS.Timeout | null;
   private readonly seriesMaintenance: NodeJS.Timeout | null;
+  private readonly planningMaintenance: NodeJS.Timeout | null;
 
   constructor(
     readonly pool: PostgresPool,
@@ -69,6 +76,11 @@ export class StudioRuntime implements OnModuleDestroy {
     readonly vimaxPreview: VimaxPreviewService | null = null,
     /** Imported candidates and two explicit local writes. No provider or maintenance loop. */
     readonly vimaxCandidates: VimaxCandidateService | null = null,
+    readonly vimaxPlanning: VimaxPlanningService | null = null,
+    readonly realMedia: RealMediaService | null = null,
+    readonly speech: SpeechService | null = null,
+    readonly voiceCompose: VoiceComposeService | null = null,
+    private readonly closeMediaStorage: (() => void) | null = null,
   ) {
     this.service = service;
     this.store = store;
@@ -93,6 +105,10 @@ export class StudioRuntime implements OnModuleDestroy {
       ? setInterval(() => { void seriesWriting.maintain().catch(() => undefined); }, TITLE_WRITING_MAINTENANCE_MS)
       : null;
     this.seriesMaintenance?.unref();
+    this.planningMaintenance = vimaxPlanning
+      ? setInterval(() => { void vimaxPlanning.maintain().catch(() => undefined); }, TITLE_WRITING_MAINTENANCE_MS)
+      : null;
+    this.planningMaintenance?.unref();
   }
 
   static async open(env: ApiEnv): Promise<StudioRuntime> {
@@ -110,6 +126,9 @@ export class StudioRuntime implements OnModuleDestroy {
     const absoluteDir = env.MOCK_OBJECT_DIR && isAbsolute(env.MOCK_OBJECT_DIR) ? env.MOCK_OBJECT_DIR : null;
     const nonProduction = env.NODE_ENV !== "production";
     const siteLoginValid = siteAuthFromEnv(env).kind === "enabled";
+    const realAccessAllowed=realMediaAccessAllowed({nodeEnv:env.NODE_ENV,siteAuthConfigured:siteLoginValid,
+      allowProduction:env.REAL_MEDIA_ENV?.REAL_MEDIA_ALLOW_PRODUCTION==="true"});
+    const realRuntime = new ServerRealMediaRuntime(workspaceId, env.REAL_MEDIA_ENV ?? {},realAccessAllowed);
     const titleWritingAllowProduction = env.TITLE_WRITING_ALLOW_PRODUCTION && siteLoginValid;
     const titleWritingEnabled = env.TITLE_WRITING_ENABLED && (nonProduction || titleWritingAllowProduction);
     // Script breakdown has its own switch: turning on title writing never starts or resumes a breakdown.
@@ -118,9 +137,10 @@ export class StudioRuntime implements OnModuleDestroy {
     const mockAvEnabled = nonProduction && env.M3_MOCK_AV_ENABLED && Boolean(absoluteDir);
     const mockSmEnabled = nonProduction && env.M3_MOCK_SUBTITLE_MUSIC_ENABLED && Boolean(absoluteDir);
     const composeObjectDir = env.M4_COMPOSE_OBJECT_DIR && isAbsolute(env.M4_COMPOSE_OBJECT_DIR) ? env.M4_COMPOSE_OBJECT_DIR : null;
-    const composeSwitch = nonProduction && env.M4_LOCAL_COMPOSE_ENABLED;
-    const localComposeEnabled = composeSwitch && Boolean(absoluteDir && composeObjectDir);
-    const episodeComposeEnabled = composeSwitch && env.M4_LOCAL_EPISODE_COMPOSE_ENABLED && Boolean(composeObjectDir);
+    const realComposeAllowed = realAccessAllowed && Boolean(realRuntime.receiptCipher);
+    const composeSwitch = (nonProduction || realComposeAllowed) && env.M4_LOCAL_COMPOSE_ENABLED;
+    const localComposeEnabled = composeSwitch && Boolean(composeObjectDir && (absoluteDir || realComposeAllowed));
+    const episodeComposeEnabled = (nonProduction || realComposeAllowed) && env.M4_LOCAL_EPISODE_COMPOSE_ENABLED && Boolean(composeObjectDir);
     const titleStore = new PostgresTitleWritingStore(pool, textChain);
     const candidateStore = new PostgresWritingCandidateStore(pool);
     let adminModels: AdminModelsService | null;
@@ -258,6 +278,35 @@ export class StudioRuntime implements OnModuleDestroy {
       research: { fetchEnabled: env.AUTO_CREATION_RESEARCH_FETCH, allowedHosts },
       ...(configurationPending ? { configurationPending } : {}),
     });
+    const vimaxProductionAllowed = env.VIMAX_ALLOW_PRODUCTION === true && siteLoginValid;
+    const planningStore = new PostgresVimaxPlanningStore(pool);
+    const vimaxPlanning = new VimaxPlanningService({ workspaceId, nodeEnv: env.NODE_ENV,
+      enabled: titleWritingEnabled && env.VIMAX_PLANNING_ENABLED === true,
+      allowProduction: vimaxProductionAllowed, siteAuthRequired: siteLoginValid, siteOperator: siteLoginValid,
+      operatorToken: env.TITLE_WRITING_OPERATOR_TOKEN ?? null, defaultProvider, providers: titleProviders,
+      store: planningStore, executor: new VimaxPlanningExecutor({ workspaceId, store: planningStore, providers: titleProviders,
+        transport: createFetchTransport() }), maxCallsPerDay, maxActiveRuns });
+
+    const mediaStore = new RealMediaStore(pool, realRuntime.receiptCipher ? { receiptCipher: realRuntime.receiptCipher } : {});
+    const mediaAssets = new MediaAssetStore(pool);
+    const mediaClient = realRuntime.receiptCipher ? new MediaS3Client({ endpoint: env.S3_ENDPOINT, region: env.S3_REGION,
+      bucket: env.S3_BUCKET, accessKeyId: env.S3_ACCESS_KEY_ID, secretAccessKey: env.S3_SECRET_ACCESS_KEY, forcePathStyle: env.S3_FORCE_PATH_STYLE }) : null;
+    const realMedia = new RealMediaService({ workspaceId, enabled: realRuntime.enabled, readEnabled:realAccessAllowed, characterReferenceGate:env.M3_CHARACTER_REFERENCE_GATE, store: mediaStore, jobs, assets: mediaAssets,
+      configurationFor: async (capability, client) => {
+        const configuration = await realRuntime.configurationFor(capability);
+        return configuration && await mediaStore.configurationStillEnabled(configuration, client) ? configuration : null;
+      },
+      speechCatalog: async () => {
+        const configuration = await realRuntime.configurationFor("audio.tts");
+        return configuration && await mediaStore.configurationStillEnabled(configuration) ? realRuntime.speechCatalog()
+          : { available: false, reasonCode: "SPEECH_PROVIDER_NOT_CONFIGURED", catalogVersion: "none", voices: [] };
+      },
+      ...(mediaClient ? { objects: { readVerified: (asset, scope) => readVerifiedS3MediaObject(mediaClient, asset, scope) } } : {}) });
+    const speechStore = new PostgresSpeechStore(pool, jobs);
+    const speech = new SpeechService({ workspaceId, store: speechStore, batchStore: new PostgresSpeechBatchStore(pool, jobs), generation: realMedia.speechPort() });
+    const voiceCompose = new VoiceComposeService({ workspaceId,
+      enabled: realComposeAllowed && env.M4_LOCAL_COMPOSE_ENABLED && Boolean(composeObjectDir), jobs,
+      store: new PostgresVoiceComposeStore(pool, jobs), speech: speechStore });
     return new StudioRuntime(pool,
       new StudioService(jobs, store, textChain, workspaceId, new MockTextService(pool), new MediaAssetStore(pool),
         mockImageEnabled, absoluteDir, mockAvEnabled, mockSmEnabled, localComposeEnabled, composeObjectDir, episodeComposeEnabled,
@@ -268,10 +317,11 @@ export class StudioRuntime implements OnModuleDestroy {
           directoryReady: Boolean(absoluteDir),
         }),
         new CharacterReferenceStore(pool),
-        env.M3_CHARACTER_REFERENCE_GATE), store, titleWriting,
+        env.M3_CHARACTER_REFERENCE_GATE, realComposeAllowed && localComposeEnabled, !nonProduction), store, titleWriting,
       adminModels, admin?.enabled ?? false, scriptBreakdown, writingCandidates, autoCreation, seriesWriting,
-      new VimaxPreviewService({ workspaceId, nodeEnv: env.NODE_ENV, source: new VimaxPreviewSourceStore(pool) }),
-      new VimaxCandidateService({ workspaceId, nodeEnv: env.NODE_ENV, store: new VimaxCandidateStore(pool, textChain) }));
+      new VimaxPreviewService({ workspaceId, nodeEnv: env.NODE_ENV, allowProduction: vimaxProductionAllowed, source: new VimaxPreviewSourceStore(pool) }),
+      new VimaxCandidateService({ workspaceId, nodeEnv: env.NODE_ENV, allowProduction: vimaxProductionAllowed, store: new VimaxCandidateStore(pool, textChain) }),
+      vimaxPlanning, realMedia, speech, voiceCompose, mediaClient ? () => mediaClient.destroy() : null);
   }
 
   async onModuleDestroy(): Promise<void> {
@@ -279,6 +329,8 @@ export class StudioRuntime implements OnModuleDestroy {
     if (this.candidateMaintenance) clearInterval(this.candidateMaintenance);
     if (this.autoMaintenance) clearInterval(this.autoMaintenance);
     if (this.seriesMaintenance) clearInterval(this.seriesMaintenance);
+    if (this.planningMaintenance) clearInterval(this.planningMaintenance);
+    this.closeMediaStorage?.();
     await closePostgresPool(this.pool);
   }
 }

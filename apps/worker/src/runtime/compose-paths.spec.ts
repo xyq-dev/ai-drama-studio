@@ -2,8 +2,9 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import { containedFile, createRenewalQueue, publishContainedBytes, stageEpisodeSources } from "./compose-job";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ComposeJobSnapshot, ComposeSourceObject } from "@ai-drama/domain";
+import { containedFile, createRenewalQueue, publishContainedBytes, REAL_COMPOSE_INPUT_MAX_BYTES, stageComposeSources, stageEpisodeSources } from "./compose-job";
 
 const roots: string[] = [];
 
@@ -18,6 +19,53 @@ afterEach(async () => {
 });
 
 describe("compose path boundaries", () => {
+  it("stages real media through the verified reader without requiring a mock directory", async () => {
+    const attempt = await tempRoot();
+    const workspaceId = "11111111-1111-4111-8111-111111111111";
+    const projectId = "22222222-2222-4222-8222-222222222222";
+    const bytes = Buffer.alloc(1024 * 1024 + 1, 3);
+    const hash = createHash("sha256").update(bytes).digest("hex");
+    const source: ComposeSourceObject = {
+      role: "video", assetId: "44444444-4444-4444-8444-444444444444", storageProvider: "s3",
+      objectKey: `real-media/${workspaceId}/${projectId}/77777777-7777-4777-8777-777777777777/88888888-8888-4888-8888-888888888888/${hash}.mp4`,
+      byteSize: bytes.length, checksumSha256: hash,
+    };
+    const snapshot = { input: { sourceObjects: [source] } } as ComposeJobSnapshot;
+    const stageVerified = vi.fn(async (_source: ComposeSourceObject, targetPath: string) => {
+      await writeFile(targetPath, bytes, { flag: "wx" });
+    });
+    await stageComposeSources(undefined, attempt, snapshot, { workspaceId, projectId, objectReader: { stageVerified } });
+    expect(stageVerified).toHaveBeenCalledWith(source, join(attempt, "video.mp4"), {
+      workspaceId, projectId, maxBytes: REAL_COMPOSE_INPUT_MAX_BYTES.video,
+    });
+    expect(await readFile(join(attempt, "video.mp4"))).toEqual(bytes);
+    await expect(stageComposeSources(undefined, await tempRoot(), snapshot, { workspaceId, projectId })).rejects.toThrow(/not configured/);
+    stageVerified.mockClear();
+    for (const invalid of [
+      { ...source, objectKey: source.objectKey.replace(workspaceId, projectId) },
+      { ...source, objectKey: source.objectKey.replace(".mp4", ".wav") },
+      { ...source, checksumSha256: "[invalid" },
+      { ...source, byteSize: REAL_COMPOSE_INPUT_MAX_BYTES.video + 1 },
+      { ...source, storageProvider: "https" },
+    ]) {
+      await expect(stageComposeSources(undefined, await tempRoot(), { input: { sourceObjects: [invalid] } } as ComposeJobSnapshot,
+        { workspaceId, projectId, objectReader: { stageVerified } })).rejects.toThrow(/outside|not supported/);
+    }
+    expect(stageVerified).not.toHaveBeenCalled();
+  },45_000);
+
+  it("keeps the mock byte limit and checksum guard when a real media reader is available", async () => {
+    const root = await tempRoot();
+    const stageVerified = vi.fn();
+    const scope = { workspaceId: "11111111-1111-4111-8111-111111111111", projectId: "22222222-2222-4222-8222-222222222222", objectReader: { stageVerified } };
+    const source: ComposeSourceObject = { role: "video", assetId: "44444444-4444-4444-8444-444444444444",
+      storageProvider: "mock-object-store", objectKey: "mock.mp4", byteSize: 1024 * 1024 + 1, checksumSha256: "ab".repeat(32) };
+    await expect(stageComposeSources(root, await tempRoot(), { input: { sourceObjects: [source] } } as ComposeJobSnapshot, scope)).rejects.toThrow(/mock object limit/);
+    await writeFile(join(root, "mock.mp4"), "wrong");
+    await expect(stageComposeSources(root, await tempRoot(), { input: { sourceObjects: [{ ...source, byteSize: 5 }] } } as ComposeJobSnapshot, scope)).rejects.toThrow(/checksum/);
+    expect(stageVerified).not.toHaveBeenCalled();
+  });
+
   it("rejects an intermediate directory symlink before reading outside bytes", async () => {
     const root = await tempRoot();
     const outside = await tempRoot();

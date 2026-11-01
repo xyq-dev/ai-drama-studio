@@ -498,6 +498,9 @@ async function manualRetryTx(
   }
 
   const oldJob = await loadJobForUpdate(client, input.workspaceId, input.jobId);
+  if ((oldJob.input_snapshot as { schema?: string } | null)?.schema === "real-media.v1") {
+    throw new PersistenceError("JOB_NOT_RETRYABLE", "Real media requires a new quote and single-operation authorization");
+  }
   if (oldJob.kind === "MEDIA_COMPOSE") {
     throw new PersistenceError("JOB_NOT_RETRYABLE", "Compose must be submitted again after a new preflight");
   }
@@ -820,15 +823,22 @@ export class JobPersistenceService {
     attemptId: string;
     leaseOwner: string;
     leaseMs: number;
+    requireActualClock?:boolean;
   }): Promise<boolean> {
     const client = await this.pool.connect();
+    let transaction=false;
     try {
+      if(input.requireActualClock){
+        await client.query("BEGIN");transaction=true;
+        await client.query("SELECT id FROM generation_job WHERE id=$1 AND workspace_id=$2 FOR UPDATE",[input.jobId,input.workspaceId]);
+      }
+      const currentTime=input.requireActualClock?"clock_timestamp()":"now()";
       const leaseUntil = new Date(Date.now() + input.leaseMs);
       const updated = await client.query(
         `UPDATE generation_job AS job
             SET lease_until = $5, updated_at = now(), row_version = job.row_version + 1
           WHERE job.id = $1 AND job.workspace_id = $2 AND job.state = 'RUNNING'
-            AND job.lease_owner = $3 AND job.cancel_requested_at IS NULL AND job.lease_until > now()
+            AND job.lease_owner = $3 AND job.cancel_requested_at IS NULL AND job.lease_until > ${currentTime}
             AND EXISTS (
               SELECT 1 FROM job_attempt attempt
                WHERE attempt.id = $4 AND attempt.generation_job_id = job.id AND attempt.finished_at IS NULL
@@ -838,7 +848,11 @@ export class JobPersistenceService {
             )`,
         [input.jobId, input.workspaceId, input.leaseOwner, input.attemptId, leaseUntil],
       );
+      if(transaction)await client.query("COMMIT");
       return updated.rowCount === 1;
+    } catch(error){
+      if(transaction)await client.query("ROLLBACK").catch(()=>undefined);
+      throw error;
     } finally {
       client.release();
     }
@@ -949,11 +963,14 @@ export class JobPersistenceService {
     jobId: string;
     attemptId: string;
     traceId: string;
+    /** Acquire source aggregate locks before the core job/attempt locks. */
+    beforeLock?: (client: PoolClient) => Promise<void>;
     persistArtifact?: (client: PoolClient) => Promise<T>;
     artifactResponse?: (artifact: T) => unknown;
     responseSnapshot?: unknown;
   }): Promise<T | null> {
     return withTransaction(this.pool, async (client) => {
+      await input.beforeLock?.(client);
       const job = await loadJobForUpdate(client, input.workspaceId, input.jobId);
       if (TERMINAL_STATES.has(job.state)) {
         throw new PersistenceError("JOB_TERMINAL", "Terminal jobs cannot reopen");
@@ -1005,6 +1022,7 @@ export class JobPersistenceService {
     retryable: boolean;
     attemptId: string;
     nextRunAt?: Date;
+    beforeFailure?: (client: PoolClient) => Promise<void>;
   }): Promise<"requeued" | "failed" | "canceled"> {
     return withTransaction(this.pool, async (client) => {
       const job = await loadJobForUpdate(client, input.workspaceId, input.jobId);
@@ -1021,6 +1039,11 @@ export class JobPersistenceService {
 
       const attempt = await loadLatestAttemptForUpdate(client, job.id);
       requireCurrentAttempt(attempt, input.attemptId);
+      if ((job.input_snapshot as { schema?: string } | null)?.schema === "real-media.v1" && input.retryable) {
+        throw new PersistenceError("JOB_NOT_RETRYABLE", "Real media submissions require a fresh authorization");
+      }
+      await input.beforeFailure?.(client);
+
 
       await client.query(
         `UPDATE job_attempt
@@ -1094,6 +1117,9 @@ export class JobPersistenceService {
       if (job.state !== "RUNNING" || job.lease_until === null || job.lease_until.getTime() > Date.now()) {
         return null;
       }
+
+      // Real submissions are recovered only by the receipt-aware, query-only media recovery module.
+      if ((job.input_snapshot as { schema?: string } | null)?.schema === "real-media.v1") return "deferred";
 
       const attempt = await loadLatestAttemptForUpdate(client, job.id);
 
@@ -1189,10 +1215,12 @@ export class JobPersistenceService {
   async createAndQueueWorkflowJob(
     scope: IdempotencyScope,
     input: CreateWorkflowJobInput | ((client: PoolClient) => Promise<CreateWorkflowJobInput>),
+    afterCreated?: (client: PoolClient, created: CreatedWorkflowJob) => Promise<void>,
   ): Promise<{ replayed: boolean; status: number; body: CreatedWorkflowJob & { dispatchSeq: number } }> {
     return this.runIdempotent(scope, 202, async (client) => {
       const resolved = typeof input === "function" ? await input(client) : input;
       const created = await createWorkflowJobTx(client, resolved);
+      await afterCreated?.(client, created);
       const job = await loadJobForUpdate(client, resolved.workspaceId, created.jobId);
       const queued = await queueJobTx(client, job, resolved.traceId, null, 0);
       return { ...created, dispatchSeq: queued.dispatch_seq };

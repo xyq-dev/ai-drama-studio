@@ -65,7 +65,8 @@ function toRecord(row: Row): WritingCandidateRecord {
 export async function recentWritingCalls(client: PoolClient, workspaceId: string, sinceIso: string): Promise<number> {
   const present = await client.query<Row>(
     `SELECT to_regclass('title_writing_call') IS NOT NULL AS title, to_regclass('writing_candidate_request') IS NOT NULL AS candidate,
-            to_regclass('auto_creation_call') IS NOT NULL AS auto, to_regclass('series_writing_call') IS NOT NULL AS series`,
+            to_regclass('auto_creation_call') IS NOT NULL AS auto, to_regclass('series_writing_call') IS NOT NULL AS series,
+            to_regclass('vimax_planning_request') IS NOT NULL AS vimax`,
   );
   let total = 0;
   if (present.rows[0]?.title === true) {
@@ -91,6 +92,13 @@ export async function recentWritingCalls(client: PoolClient, workspaceId: string
       [workspaceId, sinceIso, [...SERIES_NEVER_SENT_ERROR_CODES]]);
     total += Number(series.rows[0]?.recent ?? 0);
   }
+  if (present.rows[0]?.vimax === true) {
+    // Planning reserves a single call. Every reservation occupies the cap for 24 h, including canceled/unsent ones.
+    // This conservative accounting is explicit in its API/UI; it is not a claim of actual sends or charges.
+    const planning = await client.query<Row>(
+      "SELECT count(*)::int AS recent FROM vimax_planning_request WHERE workspace_id = $1 AND created_at >= $2", [workspaceId, sinceIso]);
+    total += Number(planning.rows[0]?.recent ?? 0);
+  }
   return total;
 }
 
@@ -98,10 +106,10 @@ export async function recentWritingCalls(client: PoolClient, workspaceId: string
  * Running automatic creation runs and series jobs of a workspace (each optional table probed on its own): they share the
  * concurrency cap with title writing runs, and a work one of them is writing takes no other run.
  */
-export async function runningWritingRuns(client: PoolClient, workspaceId: string): Promise<Array<{ kind: "auto" | "series"; id: string; projectId: string }>> {
+export async function runningWritingRuns(client: PoolClient, workspaceId: string): Promise<Array<{ kind: "auto" | "series" | "vimax"; id: string; projectId: string }>> {
   const present = await client.query<Row>(
-    "SELECT to_regclass('auto_creation_run') IS NOT NULL AS auto, to_regclass('series_writing_run') IS NOT NULL AS series");
-  const runs: Array<{ kind: "auto" | "series"; id: string; projectId: string }> = [];
+    "SELECT to_regclass('auto_creation_run') IS NOT NULL AS auto, to_regclass('series_writing_run') IS NOT NULL AS series, to_regclass('vimax_planning_request') IS NOT NULL AS vimax");
+  const runs: Array<{ kind: "auto" | "series" | "vimax"; id: string; projectId: string }> = [];
   if (present.rows[0]?.auto === true) {
     const autos = await client.query<Row>("SELECT id, project_id FROM auto_creation_run WHERE workspace_id = $1 AND state = 'running'", [workspaceId]);
     runs.push(...autos.rows.map((row) => ({ kind: "auto" as const, id: String(row.id), projectId: String(row.project_id) })));
@@ -109,6 +117,10 @@ export async function runningWritingRuns(client: PoolClient, workspaceId: string
   if (present.rows[0]?.series === true) {
     const series = await client.query<Row>("SELECT id, project_id FROM series_writing_run WHERE workspace_id = $1 AND state = 'running'", [workspaceId]);
     runs.push(...series.rows.map((row) => ({ kind: "series" as const, id: String(row.id), projectId: String(row.project_id) })));
+  }
+  if (present.rows[0]?.vimax === true) {
+    const planning = await client.query<Row>("SELECT id, project_id FROM vimax_planning_request WHERE workspace_id = $1 AND state IN ('reserved','submitted')", [workspaceId]);
+    runs.push(...planning.rows.map((row) => ({ kind: "vimax" as const, id: String(row.id), projectId: String(row.project_id) })));
   }
   return runs;
 }

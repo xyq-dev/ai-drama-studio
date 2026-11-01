@@ -1,4 +1,5 @@
 import { DomainError } from "./errors";
+import type { SpeechMixManifest,SpeechVoiceRevision } from "@ai-drama/contracts";
 import { COMPOSE_OUTPUT_MAX_BYTES } from "./compose-render";
 import { MAX_PRODUCTION_EPISODES, canonicalInputHash } from "./text-chain";
 import { type EpisodeComposeSegment } from "./episode-compose-preflight";
@@ -24,6 +25,7 @@ export interface EpisodeExportMedia {
   checksumSha256: string;
   sourceJobId: string;
   sourceAttemptId: string;
+  lineId?: string;
 }
 
 export interface EpisodeExportSegment {
@@ -36,6 +38,12 @@ export interface EpisodeExportSegment {
   shotId: string;
   shotRevisionId: string;
   media: EpisodeExportMedia[];
+  speech?:{
+    schema:"m4.voice.export.provenance.v1";
+    manifest:SpeechMixManifest;
+    renderProfile:Record<string,unknown>;
+    voices:Array<{speakerId:string;voiceRevision:SpeechVoiceRevision}>;
+  };
 }
 
 export interface EpisodeExportCore {
@@ -62,6 +70,7 @@ export interface EpisodeExportCore {
 
 export interface EpisodeExportFacts extends EpisodeExportCore {
   segments: EpisodeExportSegment[];
+  sourceBoundary?: "mock-provider" | "real-provider" | "mixed-provider" | "unverified-provider";
 }
 
 export interface EpisodeExportAssetFacts {
@@ -336,6 +345,13 @@ export function buildEpisodeExportManifest(facts: EpisodeExportFacts, verifiedAt
   if (Number.isNaN(Date.parse(verifiedAt))) {
     throw new DomainError("VALIDATION_ERROR", "Export verification time is invalid");
   }
+  const sourceBoundary = facts.sourceBoundary ?? "mock-provider";
+  const sourceStatement = {
+    "mock-provider": "上游媒体来自 Mock 边界。",
+    "real-provider": "上游媒体来自已记录的真实供应商生成任务。",
+    "mixed-provider": "上游媒体同时包含 Mock 素材与已记录的真实供应商素材。",
+    "unverified-provider": "部分上游媒体的供应商类别未核实，不能据此宣称真实生成验收通过。",
+  }[sourceBoundary];
   return {
     schema: EPISODE_EXPORT_MANIFEST_SCHEMA,
     verifiedAt,
@@ -371,6 +387,7 @@ export function buildEpisodeExportManifest(facts: EpisodeExportFacts, verifiedAt
       shotChecksumSha256: segment.shotChecksumSha256,
       shotId: segment.shotId,
       shotRevisionId: segment.shotRevisionId,
+      ...(segment.speech?{speech:segment.speech}:{}),
       media: segment.media.map((item) => ({
         role: item.role,
         kind: item.kind,
@@ -378,12 +395,13 @@ export function buildEpisodeExportManifest(facts: EpisodeExportFacts, verifiedAt
         checksumSha256: item.checksumSha256,
         sourceJobId: item.sourceJobId,
         sourceAttemptId: item.sourceAttemptId,
+        ...(item.lineId ? { lineId: item.lineId } : {}),
       })),
     })),
     boundary: {
-      sourceBoundary: "mock-provider" as const,
+      sourceBoundary,
       localEncodeCostMetered: false,
-      statement: "本清单只记录已批准集级成片的冻结来源。上游媒体来自 Mock 边界。本地编码成本未计量，不包含完整财务账本，也不构成生产分发许可。",
+      statement: `本清单只记录已批准集级成片的冻结来源。${sourceStatement}本地编码成本未计量，不包含完整财务账本，也不构成生产分发许可。`,
     },
   };
 }

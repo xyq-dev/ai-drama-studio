@@ -1,5 +1,7 @@
 # 开发运行手册
 
+2026-11-01 新增真实媒体、逐句声音与 ViMax 规划的默认关闭配置、独立 SQL drafts、provision plan/execute、密钥轮换和空库验收，见 [`REAL_MEDIA_RUNBOOK.md`](REAL_MEDIA_RUNBOOK.md)。本文旧 Mock/本地合成步骤保留原边界；本轮业务 SQL、真实模型调用和服务器部署均未执行。
+
 本文只说明现有源码的本地开发路径。它不新增功能，不改变开关默认值，也不表示环境已经部署或业务闭环已经通过。完整 M4 和完整生产成本仍未验收。写完本文不代表网页已经启动。
 
 Linux Ubuntu 24.04 是现有 GitHub Actions 的真实运行系统。Windows 只记录本仓库能在 Windows 上检查的命令和限制。没有 Docker 时，不能把 Linux CI 写成 Windows 启动验收。

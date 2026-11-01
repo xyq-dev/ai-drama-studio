@@ -8,6 +8,7 @@ import {
   EPISODE_RENDER_PROFILE,
   canonicalInputHash,
   type ComposeJobSnapshot,
+  type ComposeSourceObject,
   type EpisodeComposeJobSnapshot,
 } from "@ai-drama/domain";
 import {
@@ -16,10 +17,30 @@ import {
   type MediaAssetStore,
 } from "@ai-drama/database";
 const MAX_MOCK_INPUT_BYTES = 1024 * 1024;
+export const REAL_COMPOSE_INPUT_MAX_BYTES = {
+  video: 100 * 1024 * 1024,
+  audio: 20 * 1024 * 1024,
+  music: 20 * 1024 * 1024,
+  subtitle: 1024 * 1024,
+} as const;
+
+export interface ComposeObjectReader {
+  stageVerified(
+    source: ComposeSourceObject,
+    targetPath: string,
+    context: { workspaceId: string; projectId: string; maxBytes: number },
+  ): Promise<void>;
+}
 
 const OUTPUT_MAX_BYTES = COMPOSE_RENDER_PROFILE.maxOutputBytes;
 const activeComposeChildren = new Set<ChildProcess>();
 let renderTail: Promise<void> = Promise.resolve();
+
+/** New local render profiles share shutdown handling with the original compose children. */
+export function registerComposeChild(child: ChildProcess): () => void {
+  activeComposeChildren.add(child);
+  return () => { activeComposeChildren.delete(child); };
+}
 
 export function stopActiveComposeChildren(): void {
   for (const child of activeComposeChildren) stopProcess(child);
@@ -54,7 +75,8 @@ export async function runComposeJob(
   options: {
     jobs: JobPersistenceService;
     assets: MediaAssetStore;
-    mockObjectDir: string;
+    mockObjectDir?: string;
+    objectReader?: ComposeObjectReader;
     workDir: string;
     objectDir: string;
     pythonBin: string;
@@ -76,18 +98,41 @@ export async function runComposeJob(
   });
   if (!acquired) return;
   const attemptDir = join(options.workDir, execution.workspaceId, execution.projectId, execution.jobId, acquired.attemptId);
+  // S3 downloads can outlive a lease before the renderer starts. Keep one fenced heartbeat for the whole attempt.
+  const sources=execution.inputSnapshot.input?.sourceObjects;
+  const realSources=Array.isArray(sources)&&sources.some(source=>source.storageProvider==="s3");
+  let lostLease=false;
+  let child:ChildProcess|undefined;
+  const renewal=realSources?createRenewalQueue(async()=>{
+    if(lostLease)return false;
+    return options.jobs.renewRunningLease({workspaceId:execution.workspaceId,jobId:execution.jobId,attemptId:acquired.attemptId,
+      leaseOwner:options.leaseOwner,leaseMs:options.leaseMs,requireActualClock:true});
+  },()=>{lostLease=true;if(child)stopProcess(child);}):null;
+  const timer=renewal?setInterval(()=>renewal.push(),Math.max(250,Math.min(5000,Math.floor(options.leaseMs/3)))):null;
+  const checkLease=()=>{if(lostLease)throw new PersistenceError("COMPOSE_RESULT_DISCARDED","Compose attempt lost its lease");};
+  const checkpoint=async()=>{if(renewal){renewal.push();await renewal.idle();checkLease();}};
+  const wholeAttemptLease=renewal?{checkpoint,onChild:(active:ChildProcess)=>{child=active;if(lostLease)stopProcess(active);}}:undefined;
   try {
     if (!sameProfile(execution.inputSnapshot.input?.renderProfile)) {
       throw new PersistenceError("COMPOSE_INPUT_INVALID", "Compose render profile is not the local FFmpeg profile");
     }
+    await checkpoint();
     await mkdir(attemptDir, { recursive: true });
-    await stageSources(options.mockObjectDir, attemptDir, execution.inputSnapshot);
+    await stageComposeSources(options.mockObjectDir, attemptDir, execution.inputSnapshot, {
+      workspaceId: execution.workspaceId,
+      projectId: execution.projectId,
+      objectReader: options.objectReader,
+    });
+    await checkpoint();
     const output = join(attemptDir, "output.mp4");
-    const rendered = await renderWithFfmpeg(options, execution, acquired.attemptId, attemptDir, output);
+    const rendered = await renderWithFfmpeg(options, execution, acquired.attemptId, attemptDir, output,wholeAttemptLease);
+    await checkpoint();
     const published = await publishOutput(options.objectDir, execution, acquired.attemptId, output, rendered);
+    await checkpoint();
     if ((options.holdBeforeCommitMs ?? 0) > 0 && acquired.attemptNo === 1) {
       await new Promise((resolvePromise) => setTimeout(resolvePromise, options.holdBeforeCommitMs));
     }
+    await checkpoint();
     const committed = await options.assets.commitLocalCompose(options.jobs, {
       workspaceId: execution.workspaceId,
       projectId: execution.projectId,
@@ -107,8 +152,13 @@ export async function runComposeJob(
     });
     if (!committed) return;
   } catch (error) {
+    if(lostLease){await stopAfterLeaseLoss(options.jobs,execution,acquired.attemptId);return;}
     if (error instanceof PersistenceError && (error.code === "COMPOSE_RESULT_DISCARDED" || error.code === "JOB_TERMINAL" || error.code === "ATTEMPT_SUPERSEDED" || error.code === "JOB_INVALID_TRANSITION")) {
+      if(realSources)await stopAfterLeaseLoss(options.jobs,execution,acquired.attemptId);
       return;
+    }
+    if(realSources){
+      try{await checkpoint();}catch{await stopAfterLeaseLoss(options.jobs,execution,acquired.attemptId);return;}
     }
     const retryable = error instanceof PersistenceError
       ? error.code === "COMPOSE_RENDER_IO" || error.code === "COMPOSE_RENDER_TIMEOUT" || error.code === "COMPOSE_PROBE_FAILED"
@@ -123,11 +173,18 @@ export async function runComposeJob(
       errorCode: code,
       errorMessage: message,
       retryable,
+      ...(realSources?{beforeFailure:async(client:Parameters<NonNullable<Parameters<JobPersistenceService["failJob"]>[0]["beforeFailure"]>>[0])=>{
+        const live=await client.query(`SELECT id FROM generation_job WHERE id=$1 AND workspace_id=$2 AND lease_owner=$3
+          AND state='RUNNING' AND cancel_requested_at IS NULL AND lease_until>clock_timestamp()`,[execution.jobId,execution.workspaceId,options.leaseOwner]);
+        if(!live.rows[0])throw new PersistenceError("COMPOSE_RESULT_DISCARDED","Compose failure arrived after losing its lease");
+      }}:{}),
     }).catch((failure: unknown) => {
-      if (failure instanceof PersistenceError && (failure.code === "JOB_TERMINAL" || failure.code === "ATTEMPT_SUPERSEDED")) return;
+      if (failure instanceof PersistenceError && (failure.code === "JOB_TERMINAL" || failure.code === "ATTEMPT_SUPERSEDED" || (realSources&&failure.code==="COMPOSE_RESULT_DISCARDED"))) return;
       throw failure;
     });
   } finally {
+    if(timer)clearInterval(timer);
+    await renewal?.idle();
     await rm(attemptDir, { recursive: true, force: true }).catch(() => undefined);
   }
 }
@@ -397,16 +454,59 @@ function sameProfile(value: unknown): boolean {
   }
 }
 
-async function stageSources(root: string, attemptDir: string, snapshot: ComposeJobSnapshot): Promise<void> {
+export async function stageComposeSources(
+  root: string | undefined,
+  attemptDir: string,
+  snapshot: ComposeJobSnapshot,
+  context: { workspaceId: string; projectId: string; objectReader?: ComposeObjectReader },
+): Promise<void> {
   const names = { video: "video.mp4", audio: "audio.wav", music: "music.wav", subtitle: "subtitle.vtt" } as const;
   for (const source of snapshot.input.sourceObjects) {
+    if (!Object.hasOwn(names, source.role)) {
+      throw new PersistenceError("COMPOSE_INPUT_INVALID", "Compose source role is not supported");
+    }
+    await stageVerifiedComposeSource(root, join(attemptDir, names[source.role]), source, context);
+  }
+}
+
+export async function stageVerifiedComposeSource(root: string | undefined, targetPath: string, source: ComposeSourceObject,
+  context: { workspaceId: string; projectId: string; objectReader?: ComposeObjectReader }): Promise<void> {
+    if (!["video", "audio", "music", "subtitle"].includes(source.role)) {
+      throw new PersistenceError("COMPOSE_INPUT_INVALID", "Compose source role is not supported");
+    }
+    if (source.storageProvider === "s3") {
+      const extension = { video: "mp4", audio: "wav", music: "wav", subtitle: "vtt" }[source.role];
+      const prefix = `real-media/${context.workspaceId}/${context.projectId}/`;
+      const suffix = source.objectKey.startsWith(prefix) ? source.objectKey.slice(prefix.length) : "";
+      const uuid = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
+      const maxBytes = REAL_COMPOSE_INPUT_MAX_BYTES[source.role];
+      if (
+        !/^[0-9a-f]{64}$/.test(source.checksumSha256) ||
+        !Number.isSafeInteger(source.byteSize) || source.byteSize <= 0 || source.byteSize > maxBytes ||
+        !new RegExp(`^${uuid}/${uuid}/${source.checksumSha256}\\.${extension}$`).test(suffix)
+      ) {
+        throw new PersistenceError("COMPOSE_INPUT_INVALID", "Compose source is outside the real media object scope or limit");
+      }
+      if (!context.objectReader) {
+        throw new PersistenceError("CONFIGURATION_ERROR", "Real media compose object reader is not configured");
+      }
+      await context.objectReader.stageVerified(source, targetPath, {
+        workspaceId: context.workspaceId,
+        projectId: context.projectId,
+        maxBytes,
+      });
+      return;
+    }
+    if (source.storageProvider !== "mock-object-store") {
+      throw new PersistenceError("COMPOSE_INPUT_INVALID", "Compose source storage is not supported");
+    }
+    if (!root) throw new PersistenceError("CONFIGURATION_ERROR", "Mock compose object directory is not configured");
     const absolute = await containedFile(root, source.objectKey, source.byteSize);
     const bytes = await readRegularFile(absolute, source.byteSize);
     if (createHash("sha256").update(bytes).digest("hex") !== source.checksumSha256) {
       throw new PersistenceError("COMPOSE_INPUT_INVALID", "Compose source bytes do not match the frozen checksum");
     }
-    await writeExclusive(join(attemptDir, names[source.role]), bytes);
-  }
+    await writeExclusive(targetPath, bytes);
 }
 
 async function readRegularFile(absolute: string, byteSize: number): Promise<Buffer> {
@@ -453,7 +553,9 @@ async function renderWithFfmpeg(
   attemptId: string,
   attemptDir: string,
   output: string,
+  wholeAttemptLease?:{checkpoint():Promise<void>;onChild(child:ChildProcess):void},
 ): Promise<{ durationMs: number; elapsedMs: number }> {
+  await wholeAttemptLease?.checkpoint();
   const child = spawn(options.pythonBin, ["-m", "media_worker.compose_cli", "--input-dir", attemptDir, "--output", output], {
     shell: false,
     detached: process.platform !== "win32",
@@ -467,8 +569,9 @@ async function renderWithFfmpeg(
     },
   });
   activeComposeChildren.add(child);
+  wholeAttemptLease?.onChild(child);
   let lostLease = false;
-  const renewal = createRenewalQueue(async () => {
+  const renewal = wholeAttemptLease?null:createRenewalQueue(async () => {
     if (lostLease) return false;
     return options.jobs.renewRunningLease({
       workspaceId: execution.workspaceId,
@@ -481,7 +584,7 @@ async function renderWithFfmpeg(
     lostLease = true;
     stopProcess(child);
   });
-  const timer = setInterval(() => renewal.push(), 5000);
+  const timer = renewal?setInterval(() => renewal.push(), 5000):null;
   const stdout: Buffer[] = [];
   const stderr: Buffer[] = [];
   child.stdout?.on("data", (chunk: Buffer) => stdout.push(chunk));
@@ -490,10 +593,11 @@ async function renderWithFfmpeg(
     child.once("error", reject);
     child.once("close", (status) => done(status ?? 1));
   }).finally(() => {
-    clearInterval(timer);
+    if(timer)clearInterval(timer);
     activeComposeChildren.delete(child);
   });
-  await renewal.idle();
+  await renewal?.idle();
+  await wholeAttemptLease?.checkpoint();
   if (lostLease) {
     await stopAfterLeaseLoss(options.jobs, execution, attemptId);
     throw new PersistenceError("COMPOSE_RESULT_DISCARDED", "Compose renderer stopped after losing its lease");
@@ -505,7 +609,7 @@ async function renderWithFfmpeg(
     }
     return { durationMs: payload.durationMs, elapsedMs: payload.elapsedMs ?? 0 };
   }
-  const stillHeld = await options.jobs.renewRunningLease({
+  const stillHeld = wholeAttemptLease?true:await options.jobs.renewRunningLease({
     workspaceId: execution.workspaceId,
     jobId: execution.jobId,
     attemptId,

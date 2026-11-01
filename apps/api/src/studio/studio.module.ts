@@ -14,6 +14,10 @@ import {
   WRITING_CANDIDATE_SERVICE, VIMAX_PREVIEW_SERVICE, VIMAX_CANDIDATE_SERVICE,
 } from "./tokens";
 import { ADMIN_MODELS_SERVICE, AdminModelsController } from "../admin/admin-models.controller";
+import { VIMAX_PLANNING_SERVICE, VimaxPlanningController } from "./vimax-planning.controller";
+import { REAL_MEDIA_SERVICE, RealMediaController } from "./real-media.controller";
+import { SPEECH_SERVICE, SpeechController } from "./speech.controller";
+import { VOICE_COMPOSE_SERVICE, VoiceComposeController } from "./voice-compose.controller";
 
 @Module({})
 export class StudioModule {
@@ -23,8 +27,13 @@ export class StudioModule {
       controllers: [
         StudioController, EventsController, TitleWritingController, ScriptBreakdownController, WritingCandidateController,
         AdminModelsController, AutoCreationController, SeriesWritingController, VimaxPreviewController, VimaxCandidateController,
+        VimaxPlanningController, RealMediaController, SpeechController, VoiceComposeController,
       ],
       providers: [
+        { provide: VIMAX_PLANNING_SERVICE, inject: [STUDIO_RUNTIME], useFactory: (runtime: StudioRuntime) => runtime.vimaxPlanning },
+        { provide: REAL_MEDIA_SERVICE, inject: [STUDIO_RUNTIME], useFactory: (runtime: StudioRuntime) => runtime.realMedia },
+        { provide: SPEECH_SERVICE, inject: [STUDIO_RUNTIME], useFactory: (runtime: StudioRuntime) => runtime.speech },
+        { provide: VOICE_COMPOSE_SERVICE, inject: [STUDIO_RUNTIME], useFactory: (runtime: StudioRuntime) => runtime.voiceCompose },
         {
           provide: STUDIO_RUNTIME,
           useFactory: () => StudioRuntime.open(env),

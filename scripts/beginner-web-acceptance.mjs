@@ -722,7 +722,7 @@ async function main() {
       if (videoJob.state !== "SUCCEEDED") throw new Error(`video job ${videoJob.state} ${videoJob.errorCode ?? ""}`);
       const videoAsset = (await sql("SELECT id::text AS id FROM asset WHERE source_generation_job_id = $1 AND kind = 'VIDEO'", [videoJob.id]))[0];
       // Single-shot preflight and real FFmpeg compose through the page.
-      const panel = page.getByRole("region", { name: "Mock 单镜合成预检" });
+      const panel = page.getByRole("region", { name: "单镜合成预检" });
       await waitFor(async () => (await panel.locator(`#compose-video option[value="${videoAsset.id}"]`).count()) > 0
         || "video not offered yet", "video in compose select", 60_000);
       await panel.locator("#compose-video").selectOption(videoAsset.id);

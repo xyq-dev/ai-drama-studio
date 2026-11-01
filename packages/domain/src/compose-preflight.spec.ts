@@ -79,7 +79,34 @@ function preflight(videoOverrides: Partial<ComposeAssetFacts> = {}) {
   });
 }
 
+function realFacts(role: "video" | "audio" | "music"): ComposeAssetFacts {
+  const base = facts(role);
+  const inputHash = "ef".repeat(32);
+  const providerRequestId = `remote-${role}-task`;
+  return {
+    ...base,
+    storageProvider: "s3",
+    sourceKind: "PROVIDER",
+    providerRequestId,
+    job: { ...base.job!, inputHash, inputSnapshot: { schema: "real-media.v1" } },
+    attempt: {
+      ...base.attempt!, providerRequestId,
+      realMediaReceipt: {
+        providerKey: role === "music" ? "elevenlabs-media" : "dashscope-media",
+        capability: role === "video" ? "video.generate" : role === "audio" ? "audio.tts" : "audio.music",
+        state: "SUCCEEDED", providerRequestId, inputHash,
+      },
+    },
+  };
+}
+
 describe("compose preflight request", () => {
+  it("refuses complete real speech longer than the video while keeping the legacy Mock profile",()=>{
+    const audio=realFacts("audio");audio.durationMs=2000;
+    expect(()=>buildComposePreflight({workspaceId,projectId,shotRevisionId,assets:{video:realFacts("video"),audio,music:null,subtitle:null}})).toThrow(/must not be truncated/);
+    const legacy=facts("audio",{durationMs:2000});
+    expect(()=>buildComposePreflight({workspaceId,projectId,shotRevisionId,assets:{video:facts("video"),audio:legacy,music:null,subtitle:null}})).not.toThrow();
+  });
   it("normalizes missing optional assets to null", () => {
     expect(parseComposePreflightRequest({ videoAssetId: videoId })).toEqual({
       videoAssetId: videoId,
@@ -121,6 +148,35 @@ describe("compose preflight request", () => {
 });
 
 describe("compose preflight manifest", () => {
+  it("accepts durable real provider sources only with a receipt bound to the successful attempt and input", () => {
+    const video = realFacts("video");
+    const result = buildComposePreflight({ workspaceId, projectId, shotRevisionId,
+      assets: { video, audio: realFacts("audio"), music: realFacts("music"), subtitle: null } });
+    expect(result.guards.assets[0]).toMatchObject({
+      storageProvider: "s3", sourceGenerationJobId: video.sourceGenerationJobId, sourceJobAttemptId: video.sourceJobAttemptId,
+    });
+    const cases: Array<Partial<ComposeAssetFacts>> = [
+      { sourceKind: "LOCAL_JOB" },
+      { job: { ...video.job!, inputSnapshot: { schema: "mock-media.v1" } } },
+      { job: { ...video.job!, inputHash: "01".repeat(32) } },
+      { attempt: { ...video.attempt!, realMediaReceipt: null } },
+      { attempt: { ...video.attempt!, realMediaReceipt: { ...video.attempt!.realMediaReceipt!, providerKey: "elevenlabs-media" } } },
+      { attempt: { ...video.attempt!, realMediaReceipt: { ...video.attempt!.realMediaReceipt!, state: "UNKNOWN" as never } } },
+      { attempt: { ...video.attempt!, realMediaReceipt: { ...video.attempt!.realMediaReceipt!, capability: "audio.tts" } } },
+      { attempt: { ...video.attempt!, realMediaReceipt: { ...video.attempt!.realMediaReceipt!, providerRequestId: "other-task" } } },
+      { attempt: { ...video.attempt!, finished: false } },
+      { providerConfigurationId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+      { projectId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+    ];
+    for (const override of cases) {
+      expect(() => preflight({ ...video, ...override })).toThrowError(expect.objectContaining({ code: "COMPOSE_INPUT_INVALID" }));
+    }
+    const mock = facts("video");
+    expect(() => preflight({ ...mock, attempt: { ...mock.attempt!, providerRequestId: "remote-video-task" } })).toThrowError(
+      expect.objectContaining({ code: "COMPOSE_INPUT_INVALID" }),
+    );
+  });
+
   it("hashes the same manifest without row versions or timestamps", () => {
     const first = preflight();
     const second = preflight({ rowVersion: 9 });

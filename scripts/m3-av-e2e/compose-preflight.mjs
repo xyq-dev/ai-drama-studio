@@ -48,7 +48,7 @@ export async function composePreflightPage(ctx) {
   await ensureWorker(ctx);
   const page = ctx.state.page;
   await page.goto(shotUrl(ctx), { waitUntil: "domcontentloaded", timeout: 30_000 });
-  await page.getByRole("heading", { name: "Mock 单镜合成预检" }).waitFor({ timeout: 30_000 });
+  await page.getByRole("heading", { name: "单镜合成预检" }).waitFor({ timeout: 30_000 });
   const action = page.locator("#shot-action");
   await action.fill(ctx.draftMarker);
   if (await action.inputValue() !== ctx.draftMarker) throw new Error("shot draft was not retained before preflight");
@@ -56,7 +56,7 @@ export async function composePreflightPage(ctx) {
   const audioId = await generateOnPage(ctx, "生成 Mock 配音", "已受理，结果以任务和配音列表为准。这不是生成成功。", "generate-tts");
   const subtitleId = await generateOnPage(ctx, "生成 Mock 字幕", "已受理，结果以任务和字幕列表为准。这不是生成成功。", "generate-subtitle");
   const musicId = await generateOnPage(ctx, "生成 Mock 音乐", "已受理，结果以任务和音乐列表为准。这不是生成成功。", "generate-music");
-  const panel = page.getByRole("region", { name: "Mock 单镜合成预检" });
+  const panel = page.getByRole("region", { name: "单镜合成预检" });
   await panel.locator(`#compose-video option[value="${videoId}"]`).waitFor({ state: "attached", timeout: 30_000 });
   await panel.locator(`#compose-audio option[value="${audioId}"]`).waitFor({ state: "attached", timeout: 30_000 });
   await panel.locator(`#compose-subtitle option[value="${subtitleId}"]`).waitFor({ state: "attached", timeout: 30_000 });
@@ -246,7 +246,7 @@ export async function composePreflightReadonly(ctx) {
   ))[0];
   if (!image) throw new Error("current image asset is missing");
   ctx.expectStatus(await postPreflight(ctx, ctx.apiOrigin, revisionId, { videoAssetId: image.id }), 400, "COMPOSE_INPUT_INVALID");
-  const panel = ctx.state.page.getByRole("region", { name: "Mock 单镜合成预检" });
+  const panel = ctx.state.page.getByRole("region", { name: "单镜合成预检" });
   await panel.locator("#compose-music").selectOption(selected.musicId);
   await panel.getByRole("button", { name: "预检合成输入" }).click();
   await panel.getByText("合成尚未执行").waitFor({ timeout: 20_000 });
@@ -260,7 +260,7 @@ export async function composePreflightReadonly(ctx) {
     throw new Error("shot draft changed before the 390px check");
   }
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.getByRole("region", { name: "Mock 单镜合成预检" }).getByText("预检摘要").click();
+  await page.getByRole("region", { name: "单镜合成预检" }).getByText("预检摘要").click();
   const overflow = await page.evaluate(() => ({
     documentOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
     bodyOverflow: document.body.scrollWidth - document.body.clientWidth,

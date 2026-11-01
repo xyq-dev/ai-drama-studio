@@ -226,7 +226,7 @@ export function ComposeJobPanel(props: {
           const current = asset.status === "ACTIVE";
           return (
             <li key={asset.id} className="creator-composite-card rounded border p-2 text-sm" data-composite-id={asset.id}>
-              <p>本地合成 · Mock 来源</p>
+              <p>本地合成 · 来源详见素材记录</p>
               <p>{asset.width ?? "—"}×{asset.height ?? "—"} · {asset.durationMs ?? "—"} ms</p>
               <p>任务 {asset.sourceGenerationJobId}</p>
               <p>审核 {asset.reviewStatus}{current ? " · 当前有效" : " · 历史成片"}</p>

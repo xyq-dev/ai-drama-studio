@@ -30,7 +30,8 @@
   },
   "dependencies": {
     "@ai-drama/contracts": "workspace:*",
-    "@ai-drama/domain": "workspace:*"
+    "@ai-drama/domain": "workspace:*",
+    "@aws-sdk/client-s3": "3.1138.0"
   },
   "devDependencies": {
     "@types/node": "catalog:",

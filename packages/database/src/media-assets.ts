@@ -16,6 +16,9 @@ import {
   assertDependencyEdges,
   assertEpisodeExportRecord,
   mediaFromFrozenShot,
+  mediaFromFrozenVoiceShot,
+  assertVoiceMixManifest,
+  speechExactHash,
   type EpisodeComposeRenderRequest,
   type EpisodeComposeSourceObject,
   type EpisodeCompositeFacts,
@@ -28,12 +31,18 @@ import {
   type ComposeRenderRequest,
   type ComposeSourceObject,
   DomainError,
+  VOICE_COMPOSE_JOB_SCHEMA,
+  VOICE_COMPOSE_OUTPUT_SCHEMA,
+  assertVoiceComposeSnapshot,
 } from "@ai-drama/domain";
 import type { PoolClient, QueryResultRow } from "pg";
+import type { SpeechMixManifest } from "@ai-drama/contracts";
 import { PersistenceError, type DatabasePool, type JobPersistenceService } from "./job-service";
 import { guardSynchronousMockImageCost, recordProviderActualCost, type ProviderActualCostInput } from "./mock-media-cost";
 import { assertFrozenReferencesUsable, frozenCharacterReferences } from "./character-reference-store";
 import { projectEpisodePlanIn } from "./episode-plan";
+import { assertVoiceComposeReviewInTransaction } from "./voice-compose-store";
+import { speechExportVoices } from "./speech-export";
 
 export interface CreateMediaAssetInput {
   workspaceId: string;
@@ -83,6 +92,17 @@ const ASSET_COLUMNS = `id, project_id, kind, storage_provider, object_key, mime_
 
 export class MediaAssetStore {
   constructor(private readonly pool: DatabasePool) {}
+
+  async prepareRealShotGenerationInTransaction(client: PoolClient, workspaceId: string, projectId: string,
+    shotRevisionId: string, capability: string): Promise<{ promptText: string; dialogue: string | null }> {
+    await assertUsableShotWithClient(client, workspaceId, projectId, shotRevisionId, true,
+      capability === "image.generate" ? "preview" : "approved");
+    const result = await client.query<{ prompt_text: string; dialogue: string | null }>(
+      "SELECT prompt_text, dialogue FROM shot_revision WHERE id=$1 AND workspace_id=$2 AND project_id=$3",
+      [shotRevisionId, workspaceId, projectId]);
+    if (!result.rows[0]) throw new PersistenceError("NOT_FOUND", "Shot revision not found");
+    return { promptText: result.rows[0].prompt_text, dialogue: result.rows[0].dialogue };
+  }
 
   async requireShotScope(workspaceId: string, shotRevisionId: string): Promise<{ projectId: string }> {
     const client = await this.pool.connect();
@@ -200,6 +220,8 @@ export class MediaAssetStore {
       generationJobId: string;
       traceId: string;
       actualCost?: ProviderActualCostInput;
+      afterPersist?: (client: PoolClient, asset: MediaAssetRecord) => Promise<void>;
+      beforeLock?: (client: PoolClient) => Promise<void>;
     },
   ): Promise<MediaAssetRecord | null> {
     return jobs.succeedJobWithArtifact({
@@ -207,6 +229,7 @@ export class MediaAssetStore {
       jobId: input.generationJobId,
       attemptId: input.sourceJobAttemptId,
       traceId: input.traceId,
+      beforeLock: input.beforeLock,
       persistArtifact: async (client) => {
         if (input.kind === "IMAGE" && input.actualCost) {
           await guardSynchronousMockImageCost(client, {
@@ -254,6 +277,7 @@ export class MediaAssetStore {
           return inserted;
         })();
         if (input.actualCost) await recordProviderActualCost(client, input.actualCost);
+        await input.afterPersist?.(client, asset);
         return asset;
       },
     });
@@ -408,12 +432,13 @@ export class MediaAssetStore {
     projectId: string,
     episodeId: string,
     compositeAssetIds: readonly string[],
+    options?:{realOnly?:boolean},
   ): Promise<EpisodeComposePreflightResponse> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
       try {
-        const result = await preflightEpisodeComposeWithClient(client, workspaceId, projectId, episodeId, compositeAssetIds);
+        const result = await preflightEpisodeComposeWithClient(client, workspaceId, projectId, episodeId, compositeAssetIds,options?.realOnly);
         await client.query("COMMIT");
         return result;
       } catch (error) {
@@ -432,10 +457,11 @@ export class MediaAssetStore {
     projectId: string,
     episodeId: string,
     request: EpisodeComposeRenderRequest,
+    options?:{realOnly?:boolean},
   ): Promise<{ snapshot: EpisodeComposeJobSnapshot; inputHash: string }> {
     let preflight: EpisodeComposePreflightResponse;
     try {
-      preflight = await preflightEpisodeComposeWithClient(client, workspaceId, projectId, episodeId, request.compositeAssetIds);
+      preflight = await preflightEpisodeComposeWithClient(client, workspaceId, projectId, episodeId, request.compositeAssetIds,options?.realOnly);
       assertExpectedPreflightHash(preflight.inputHash, request.expectedInputHash);
     } catch (error) {
       if (error instanceof DomainError) throw new PersistenceError(error.code, error.message);
@@ -688,6 +714,13 @@ export class MediaAssetStore {
       if (input.decision === "APPROVE") {
         await approveFrozenEpisodeComposite(client, input.workspaceId, String(projectId), jobSnapshot);
       }
+    } else if (assetSchema === VOICE_COMPOSE_OUTPUT_SCHEMA) {
+      if(input.shotReviewEnabled===false)throw new PersistenceError("CONFIGURATION_ERROR","Local voice compose review is not enabled");
+      if(jobSchema!==VOICE_COMPOSE_JOB_SCHEMA||!row.source_shot_revision_id)throw new PersistenceError("REVIEW_INVALID_TRANSITION","Voice composite schema does not match its job");
+      const voice=assertVoiceComposeSnapshot(jobSnapshot,String(source.input_hash));
+      if(speechExactHash(metadata.manifest)!==speechExactHash(voice.input.manifest)||speechExactHash(metadata.renderProfile)!==speechExactHash(voice.input.renderProfile))throw new PersistenceError("COMPOSE_INPUT_INVALID","Voice composite metadata does not match its frozen input");
+      if(input.decision==="APPROVE")await assertVoiceComposeReviewInTransaction(client,{workspaceId:input.workspaceId,projectId:String(projectId),
+        shotRevisionId:String(row.source_shot_revision_id),inputHash:String(source.input_hash),inputSnapshot:jobSnapshot});
     } else if (assetSchema === "m4.shot.compose.asset.v1") {
       if (input.shotReviewEnabled === false) {
         throw new PersistenceError("CONFIGURATION_ERROR", "Local compose review is not enabled");
@@ -1222,12 +1255,12 @@ async function inspectEpisodeCompositeExportWithClient(
   });
   const mediaIds = [...new Set(prepared.flatMap((item) => readShotSlots(item.shot.metadata_json).flatMap((slot) => slot.asset ? [slot.asset.assetId] : [])))].sort();
   const mediaRows = mediaIds.length === 0 ? [] : (await client.query<QueryResultRow>(
-    `SELECT id::text AS id, workspace_id::text AS workspace_id, project_id::text AS project_id, kind, checksum_sha256,
-            source_generation_job_id::text AS source_job_id, source_job_attempt_id::text AS source_attempt_id
-       FROM asset
-      WHERE workspace_id = $1 AND id = ANY($2::uuid[])
-      ORDER BY id
-      FOR SHARE`,
+    `SELECT a.id::text AS id, a.workspace_id::text AS workspace_id, a.project_id::text AS project_id, a.kind, a.checksum_sha256,
+            a.source_generation_job_id::text AS source_job_id, a.source_job_attempt_id::text AS source_attempt_id,pc.provider_key
+       FROM asset a LEFT JOIN provider_configuration pc ON pc.id=a.provider_configuration_id AND pc.workspace_id=a.workspace_id
+      WHERE a.workspace_id = $1 AND a.id = ANY($2::uuid[])
+      ORDER BY a.id
+      FOR SHARE OF a`,
     [input.workspaceId, mediaIds],
   )).rows;
   const mediaById = new Map(mediaRows.map((row) => [String(row.id), row]));
@@ -1235,7 +1268,12 @@ async function inspectEpisodeCompositeExportWithClient(
   for (const item of prepared) {
     segmentsOut.push(await exportSegment(client, input.workspaceId, input.projectId, item.segment, item.shot, mediaById));
   }
-  return { ...core, segments: segmentsOut };
+  const providerKeys = new Set(mediaRows.map(row=>String(row.provider_key??"")));
+  const mock=providerKeys.has("mock-media");
+  const real=[...providerKeys].some(key=>key==="dashscope-media"||key==="elevenlabs-media");
+  const unknown=[...providerKeys].some(key=>!["mock-media","dashscope-media","elevenlabs-media"].includes(key));
+  const sourceBoundary=unknown||!providerKeys.size?"unverified-provider":mock&&real?"mixed-provider":real?"real-provider":"mock-provider";
+  return { ...core, segments: segmentsOut,sourceBoundary };
 }
 
 async function exportSegment(
@@ -1247,16 +1285,16 @@ async function exportSegment(
   mediaById: Map<string, QueryResultRow>,
 ): Promise<EpisodeExportFacts["segments"][number]> {
   const metadata = shot.metadata_json;
-  if (!isPlainJson(metadata) || metadata.schema !== EPISODE_COMPOSE_ASSET_SCHEMA) {
+  if (!isPlainJson(metadata) || ![EPISODE_COMPOSE_ASSET_SCHEMA,VOICE_COMPOSE_OUTPUT_SCHEMA].includes(String(metadata.schema))) {
     throw new PersistenceError("COMPOSE_INPUT_INVALID", "Frozen shot composite metadata is not the accepted schema");
   }
   const jobId = shot.source_job_id == null ? "" : String(shot.source_job_id);
   const job = await client.query<QueryResultRow>(
-    `SELECT input_snapshot FROM generation_job WHERE id = $1 AND workspace_id = $2`,
+    `SELECT input_hash,input_snapshot FROM generation_job WHERE id = $1 AND workspace_id = $2`,
     [jobId, workspaceId],
   );
   const snapshot = job.rows[0]?.input_snapshot;
-  if (!isPlainJson(snapshot) || snapshot.schema !== COMPOSE_JOB_SCHEMA) {
+  if (!isPlainJson(snapshot) || snapshot.schema !== (metadata.schema===VOICE_COMPOSE_OUTPUT_SCHEMA?VOICE_COMPOSE_JOB_SCHEMA:COMPOSE_JOB_SCHEMA)) {
     throw new PersistenceError("COMPOSE_INPUT_INVALID", "Frozen shot compose input is not the shot schema");
   }
   const frozenInput = isPlainJson(snapshot.input) ? snapshot.input : null;
@@ -1271,11 +1309,11 @@ async function exportSegment(
     throw new PersistenceError("COMPOSE_INPUT_INVALID", "Frozen media source does not match the stored asset");
   }
   try {
-    const listed = mediaFromFrozenShot({
+    const voice=metadata.schema===VOICE_COMPOSE_OUTPUT_SCHEMA?assertVoiceComposeSnapshot(snapshot,String(job.rows[0]?.input_hash)):null;
+    if(voice&&(speechExactHash(voice.input.manifest)!==speechExactHash(metadata.manifest)||speechExactHash(voice.input.renderProfile)!==speechExactHash(metadata.renderProfile)))throw new PersistenceError("COMPOSE_INPUT_INVALID","Frozen voice metadata changed");
+    const common={
       workspaceId,
       projectId,
-      sources: slots,
-      sourceObjects,
       edges,
       media: media.flatMap((row) => row ? [{
         assetId: String(row.id),
@@ -1286,7 +1324,11 @@ async function exportSegment(
         sourceJobId: row.source_job_id == null ? null : String(row.source_job_id),
         sourceAttemptId: row.source_attempt_id == null ? null : String(row.source_attempt_id),
       }] : []),
-    });
+    };
+    const listed=voice?mediaFromFrozenVoiceShot({...common,manifest:voice.input.manifest,sourceObjects:voice.input.sourceObjects}):mediaFromFrozenShot({...common,sources:slots,sourceObjects});
+    const speech:EpisodeExportFacts["segments"][number]["speech"]=voice?{schema:"m4.voice.export.provenance.v1",
+      manifest:voice.input.manifest,renderProfile:{...voice.input.renderProfile},
+      voices:await speechExportVoices(client,workspaceId,projectId,voice.input.manifest.lines.map(line=>line.voiceRevisionId))}:undefined;
     return {
       position: integerOrZero(segment.position),
       startMs: integerOrZero(segment.startMs),
@@ -1297,6 +1339,7 @@ async function exportSegment(
       shotId: String(segment.shotId),
       shotRevisionId: String(segment.shotRevisionId),
       media: listed,
+      ...(speech?{speech}:{}),
     };
   } catch (error) {
     if (error instanceof DomainError) throw new PersistenceError(error.code, error.message);
@@ -1305,6 +1348,14 @@ async function exportSegment(
 }
 
 function readShotSlots(metadata: unknown): Array<{ role: string; asset: { assetId: string; checksumSha256: string; kind: string } | null }> {
+  if(isPlainJson(metadata)&&metadata.schema===VOICE_COMPOSE_OUTPUT_SCHEMA){
+    const manifest=metadata.manifest as SpeechMixManifest;assertVoiceMixManifest(manifest);
+    return [
+      {role:"video",asset:{assetId:manifest.videoAssetId,checksumSha256:manifest.videoChecksumSha256,kind:"VIDEO"}},
+      ...manifest.lines.map(line=>({role:"audio",asset:{assetId:line.takeAssetId,checksumSha256:line.checksumSha256,kind:"AUDIO"}})),
+      ...(manifest.mix.musicAssetId?[{role:"music",asset:{assetId:manifest.mix.musicAssetId,checksumSha256:manifest.mix.musicChecksumSha256!,kind:"MUSIC"}}]:[]),
+    ];
+  }
   if (!isPlainJson(metadata) || metadata.schema !== EPISODE_COMPOSE_ASSET_SCHEMA) {
     throw new PersistenceError("COMPOSE_INPUT_INVALID", "Frozen shot composite metadata is not the accepted schema");
   }
@@ -1822,7 +1873,7 @@ async function preflightComposeWithClient(
     `SELECT id, workspace_id, project_id, kind, storage_provider, mime_type, byte_size, checksum_sha256,
             width, height, duration_ms, status, review_status, source_job_attempt_id,
             source_generation_job_id, source_shot_revision_id, provider_configuration_id,
-            provider_request_id, metadata_json, row_version
+            provider_request_id, source_kind, metadata_json, row_version
        FROM asset
       WHERE workspace_id = $1 AND id = ANY($2::uuid[])
       ORDER BY id
@@ -1833,7 +1884,7 @@ async function preflightComposeWithClient(
   const jobIds = [...new Set(assets.rows.map((row) => String(row.source_generation_job_id ?? "")))].filter((id) => id.length > 0).sort();
   const attemptIds = [...new Set(assets.rows.map((row) => String(row.source_job_attempt_id ?? "")))].filter((id) => id.length > 0).sort();
   const jobs = jobIds.length === 0 ? { rows: [] } : await client.query<QueryResultRow>(
-    `SELECT id, workspace_id, project_id, source_shot_revision_id, kind, state, input_snapshot
+    `SELECT id, workspace_id, project_id, source_shot_revision_id, kind, state, input_hash, input_snapshot
        FROM generation_job
       WHERE workspace_id = $1 AND id = ANY($2::uuid[])
       ORDER BY id
@@ -1849,6 +1900,15 @@ async function preflightComposeWithClient(
       FOR SHARE`,
     [workspaceId, attemptIds],
   );
+  // Query the opt-in receipt table only when actual real-media jobs are selected. Mock deployments need no draft SQL.
+  const realJobIds = jobs.rows.filter(row => (row.input_snapshot as { schema?: string } | null)?.schema === "real-media.v1").map(row => String(row.id));
+  if (realJobIds.length) {
+    const receipts = await client.query<QueryResultRow>(`SELECT s.job_attempt_id,s.state,s.provider_request_id,s.input_hash,pc.provider_key,pc.capability
+      FROM real_media_submission s JOIN provider_configuration pc ON pc.id=s.provider_configuration_id AND pc.workspace_id=s.workspace_id
+      WHERE s.workspace_id=$1 AND s.generation_job_id=ANY($2::uuid[]) FOR SHARE OF s,pc`, [workspaceId,realJobIds]);
+    const byAttempt = new Map(receipts.rows.map(row => [String(row.job_attempt_id),row]));
+    for (const attempt of attempts.rows) attempt.real_media_receipt = byAttempt.get(String(attempt.id)) ?? null;
+  }
   const jobsById = new Map(jobs.rows.map((row) => [String(row.id), row]));
   const attemptsById = new Map(attempts.rows.map((row) => [String(row.id), row]));
   const byId = new Map(assets.rows.map((row) => [String(row.id), composeFacts(workspaceId, row, jobsById, attemptsById)]));
@@ -1894,6 +1954,7 @@ function composeFacts(
     status: String(row.status),
     reviewStatus: String(row.review_status),
     storageProvider: String(row.storage_provider),
+    sourceKind: row.source_kind == null ? undefined : String(row.source_kind),
     sourceGenerationJobId: row.source_generation_job_id == null ? null : String(row.source_generation_job_id),
     sourceJobAttemptId: row.source_job_attempt_id == null ? null : String(row.source_job_attempt_id),
     providerRequestId: row.provider_request_id == null ? null : String(row.provider_request_id),
@@ -1914,6 +1975,7 @@ function composeJob(row: QueryResultRow): ComposeJobFacts {
     kind: String(row.kind),
     state: String(row.state),
     inputSnapshot: row.input_snapshot ?? null,
+    inputHash: row.input_hash == null ? undefined : String(row.input_hash),
   };
 }
 
@@ -1925,6 +1987,10 @@ function composeAttempt(row: QueryResultRow): ComposeAttemptFacts {
     providerRequestId: row.provider_request_id == null ? null : String(row.provider_request_id),
     providerConfigurationId: row.provider_configuration_id == null ? null : String(row.provider_configuration_id),
     finished: row.finished === true,
+    realMediaReceipt: row.real_media_receipt?.state === "SUCCEEDED" ? {
+      providerKey: String(row.real_media_receipt.provider_key), capability: String(row.real_media_receipt.capability), state: "SUCCEEDED",
+      providerRequestId: String(row.real_media_receipt.provider_request_id), inputHash: String(row.real_media_receipt.input_hash),
+    } : null,
   };
 }
 
@@ -2119,6 +2185,7 @@ async function preflightEpisodeComposeWithClient(
   projectId: string,
   episodeId: string,
   compositeAssetIds: readonly string[],
+  realOnly=false,
 ): Promise<EpisodeComposePreflightResponse> {
   const episode = await client.query(
     `SELECT id FROM episode WHERE id = $1 AND workspace_id = $2 AND project_id = $3`,
@@ -2158,7 +2225,7 @@ async function preflightEpisodeComposeWithClient(
   const jobIds = [...new Set(assets.rows.map((row) => String(row.source_generation_job_id ?? "")))].filter((id) => id.length > 0).sort();
   const attemptIds = [...new Set(assets.rows.map((row) => String(row.source_job_attempt_id ?? "")))].filter((id) => id.length > 0).sort();
   const jobs = jobIds.length === 0 ? { rows: [] as QueryResultRow[] } : await client.query<QueryResultRow>(
-    `SELECT id, workspace_id, project_id, source_shot_revision_id, kind, state, input_snapshot
+    `SELECT id, workspace_id, project_id, source_shot_revision_id, kind, state, input_hash, input_snapshot
        FROM generation_job
       WHERE workspace_id = $1 AND id = ANY($2::uuid[])
       ORDER BY id
@@ -2196,6 +2263,17 @@ async function preflightEpisodeComposeWithClient(
   );
   for (const revisionId of revisionIds) {
     await assertUsableShotWithClient(client, workspaceId, projectId, revisionId, true);
+  }
+  for(const row of assets.rows){
+    const job=jobs.rows.find(item=>String(item.id)===String(row.source_generation_job_id));
+    if(realOnly){
+      const input=(job?.input_snapshot as {input?:{sourceObjects?:unknown}}|null)?.input;
+      const sources=input?.sourceObjects;
+      if(!Array.isArray(sources)||sources.length===0||sources.some(source=>!source||typeof source!=="object"||source.storageProvider!=="s3"))throw new PersistenceError("CONFIGURATION_ERROR","Production episode composition requires real S3 source media");
+    }
+    if((job?.input_snapshot as {schema?:string}|null)?.schema===VOICE_COMPOSE_JOB_SCHEMA){
+      await assertVoiceComposeReviewInTransaction(client,{workspaceId,projectId,shotRevisionId:String(row.source_shot_revision_id),inputHash:String(job!.input_hash),inputSnapshot:job!.input_snapshot});
+    }
   }
   const jobsById = new Map(jobs.rows.map((row) => [String(row.id), row]));
   const attemptsById = new Map(attempts.rows.map((row) => [String(row.id), row]));
