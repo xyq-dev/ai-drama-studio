@@ -1,8 +1,8 @@
 # AI Drama Studio
 
-2026-11-01 当前代码：真实图片/视频/配音/音乐 Adapter、既有 Job/Attempt/Asset 的提交收据与恢复、S3 资产、逐句角色配音及新声音合成 profile、ViMax 单场景规划发送治理已实现并接入 API/Worker/工作台。新能力**默认关闭**；新增 SQL 仍在独立 drafts，业务库未启用。**本轮真实付费模型调用 0、业务库 SQL 0、服务器部署 0**。替身协议和合成素材只证明工程链路，不证明真实 AI 质量。操作入口与验收边界见[运行手册](docs/REAL_MEDIA_RUNBOOK.md)和[接续记录](docs/REAL_PRODUCTION_COMPLETION_PROGRESS.md)。
+2026-11-02 核查：PR [#100](https://github.com/xyq-dev/ai-drama-studio/pull/100) 已合并至 `120cf8b6138547c85615e312519eee7d0ea8057f`；该主线的 9 个 push 工作流、19 个 check run 全部成功。当前代码：真实图片/视频/配音/音乐 Adapter、既有 Job/Attempt/Asset 的提交收据与恢复、S3 资产、逐句角色配音及新声音合成 profile、ViMax 单场景规划发送治理已实现并接入 API/Worker/工作台。新能力**默认关闭**；新增 SQL 仍在独立 drafts，业务库未启用。**本轮真实付费模型调用 0、业务库 SQL 0、服务器部署 0**。替身协议和合成素材只证明工程链路，不证明真实 AI 质量。操作入口与验收边界见[运行手册](docs/REAL_MEDIA_RUNBOOK.md)和[接续记录](docs/REAL_PRODUCTION_COMPLETION_PROGRESS.md)。
 
-ViMax 保留 [E1 离线评估](docs/VIMAX_OFFLINE_EVALUATION.md)、[E2-A 只读预览](docs/VIMAX_PLATFORM_PREVIEW.md)和 [E2-B 候选/两段式保存](docs/VIMAX_CANDIDATE_PERSISTENCE.md)，新增一次规划授权、共享写作额度、永久请求身份与 UNKNOWN 保护；真实单场景模型试验仍待授权与验收。角色配音的[设计与当前实现](docs/CHARACTER_VOICE_DESIGN.md)包括声音版本、逐句计划/试听/选用、实测时长 VTT、完整人声混音和原有审核/导出；V1-D 整集补齐已有固定预算、逐句永久身份与取消/显式恢复，新增数据库用例待最终 HEAD CI。保留[原开源调查](docs/VOICE_OPEN_SOURCE_RESEARCH.md)与[设计原型](docs/design/character-voice-preview.html)作为历史依据。
+ViMax 保留 [E1 离线评估](docs/VIMAX_OFFLINE_EVALUATION.md)、[E2-A 只读预览](docs/VIMAX_PLATFORM_PREVIEW.md)和 [E2-B 候选/两段式保存](docs/VIMAX_CANDIDATE_PERSISTENCE.md)，新增一次规划授权、共享写作额度、永久请求身份与 UNKNOWN 保护；真实单场景模型试验仍待授权与验收。角色配音的[设计与当前实现](docs/CHARACTER_VOICE_DESIGN.md)包括声音版本、逐句计划/试听/选用、实测时长 VTT、完整人声混音和原有审核/导出；V1-D 整集补齐已有固定预算、逐句永久身份与取消/显式恢复，含 batch 的最终分支和合并后数据库 CI 已通过，真实人声仍待验收。保留[原开源调查](docs/VOICE_OPEN_SOURCE_RESEARCH.md)与[设计原型](docs/design/character-voice-preview.html)作为历史依据。
 
 管理员模型配置入口为 `/admin/models`：文本创作支持 DeepSeek、Claude（Anthropic 官方 API）与 OpenAI（千问已退役，历史记录保留可读；DeepSeek 2026-10-17 重新接入，见 [DeepSeek 重新接入](docs/DEEPSEEK_WRITING.md)），密钥加密保存、仅后台配置、API 重启后生效。见 [OpenAI 与 Claude 文本创作](docs/OPENAI_CLAUDE_WRITING.md)。首次由服务器管理员安全初始化；默认不启用，不自动调用模型。见 [管理员配置与部署说明](docs/ADMIN_MODEL_SETTINGS.md)。
 
@@ -10,7 +10,7 @@ ViMax 保留 [E1 离线评估](docs/VIMAX_OFFLINE_EVALUATION.md)、[E2-A 只读�
 
 研发与 Git / 部署权限约定见 [`docs/ENGINEERING_WORKFLOW.md`](docs/ENGINEERING_WORKFLOW.md)：已交办任务验证通过后自动提交、推送、按 PR / CI 集成，并更新已指定测试站点。实际服务器发布结果单独核验。
 
-交付台账见 [`docs/V1_DELIVERY_MATRIX.md`](docs/V1_DELIVERY_MATRIX.md)。本轮开发基线为 `main@0291795029149abcedf7c41bef14c09392ef11bd`；早前 M4 的技术验收仍以 [`docs/M4_CLOSEOUT_REPORT.md`](docs/M4_CLOSEOUT_REPORT.md) 的历史 SHA 为准，不回写为新功能验收。项目范围见 [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md)，本地步骤见 [`docs/DEV_RUNBOOK.md`](docs/DEV_RUNBOOK.md)。真实 AI 成片质量、供应商账单、完整生产成本与生产部署仍待验收。
+交付台账见 [`docs/V1_DELIVERY_MATRIX.md`](docs/V1_DELIVERY_MATRIX.md)。本轮开发起点为 `0291795029149abcedf7c41bef14c09392ef11bd`，集成代码为 `120cf8b6138547c85615e312519eee7d0ea8057f`；早前 M4 的技术验收仍以 [`docs/M4_CLOSEOUT_REPORT.md`](docs/M4_CLOSEOUT_REPORT.md) 的历史 SHA 为准，不回写为新功能验收。项目范围见 [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md)，本地步骤见 [`docs/DEV_RUNBOOK.md`](docs/DEV_RUNBOOK.md)。下一步优先做双角色 4–8 句中文真实短片，准备与专项授权见 [`docs/V1_AUTHORIZATION_CHECKLIST.md`](docs/V1_AUTHORIZATION_CHECKLIST.md)。真实 AI 成片质量、供应商账单、完整生产成本与生产部署仍待验收。
 
 M2 文本 Scene/Shot 生成已通过厂商无关的同步 Adapter 边界运行；契约、恢复限制和验收证据见
 [`docs/M2_TEXT_ADAPTER_ACCEPTANCE.md`](docs/M2_TEXT_ADAPTER_ACCEPTANCE.md)。
