@@ -1,8 +1,8 @@
 # V1 实施计划
 
-## 2026-11-01 当前实现与执行边界
+## 2026-11-02 当前实现与执行边界
 
-本轮从 `main@0291795029149abcedf7c41bef14c09392ef11bd` 补齐真实媒体收据/预算/恢复/S3、图片/视频/TTS/音乐 Adapter、逐句声音与新混音 profile、ViMax 一次规划治理及页面接线。代码已实现；开关默认关闭，三个新增 SQL 草案不进入默认 migration。运行与验证入口见 [`REAL_MEDIA_RUNBOOK.md`](REAL_MEDIA_RUNBOOK.md)，实际进度见 [`REAL_PRODUCTION_COMPLETION_PROGRESS.md`](REAL_PRODUCTION_COMPLETION_PROGRESS.md)。本轮真实付费调用、业务 SQL、服务器部署均为 0；不能把 synthetic 测试写成真实 AI 验收。
+本轮从 `main@0291795029149abcedf7c41bef14c09392ef11bd` 补齐真实媒体收据/预算/恢复/S3、图片/视频/TTS/音乐 Adapter、逐句声音与新混音 profile、ViMax 一次规划治理及页面接线。代码已实现，PR #100 已合并至 `main@120cf8b6138547c85615e312519eee7d0ea8057f`；该提交的 9 个 push 工作流、19 个 check run 均成功。开关默认关闭，四份新增 SQL 草案（含 speech-batch）不进入默认 migration。运行与验证入口见 [`REAL_MEDIA_RUNBOOK.md`](REAL_MEDIA_RUNBOOK.md)，实际进度见 [`REAL_PRODUCTION_COMPLETION_PROGRESS.md`](REAL_PRODUCTION_COMPLETION_PROGRESS.md)。本轮真实付费调用、业务 SQL、服务器部署均为 0；不能把 synthetic 测试写成真实 AI 验收。
 
 下面 M1–M4 是原里程碑定义与历史准入标准，不因新 Adapter 存在而改写为完整生产验收通过。
 
@@ -78,7 +78,7 @@
 
 声音版本、精确对白计划、逐句报价/生成/试听/选用、UNKNOWN 收据恢复、实测时长 VTT 与 `local-ffmpeg-voice-v1` 已编码并接入既有 `MEDIA_COMPOSE`、审核和整集导出。TTS 固定百炼北京 `qwen3-tts-flash` 预置音色；只开放目录声明支持的 neutral/固定语速，不提供克隆、发音词典、口型或重叠对白。AUDIO 仍为 DRAFT，通过显式选用关系进入混音，不放宽 APPROVED 约束。
 
-首个真实质量验收仍为同一场景双角色 4–8 句中文短片：必须实际试听完整对白、核对中文字幕与角色声音，不以静音、正弦波或 synthetic MP4 代替。SQL 草案、有限付费试验与部署需分别授权。逐句可明确重做；V1-D 的预算内整集补齐、固定逐句报价/币种总额、批量永久身份与显式恢复现已实现并接入短剧剧本页，新增 PostgreSQL 用例待最终 HEAD CI。取消只阻止未创建 Job，已有 Job 保持独立查看/取消；不以本地 `dispatched` 宣称供应商已发送。系列 1–60 集仍仅支持文本。
+首个真实质量验收仍为同一场景双角色 4–8 句中文短片：必须实际试听完整对白、核对中文字幕与角色声音，不以静音、正弦波或 synthetic MP4 代替。SQL 草案、有限付费试验与部署需分别授权。逐句可明确重做；V1-D 的预算内整集补齐、固定逐句报价/币种总额、批量永久身份与显式恢复现已实现并接入短剧剧本页，含 batch 的最终分支与合并后 PostgreSQL CI 已通过；仍未取得真实人声质量验收。取消只阻止未创建 Job，已有 Job 保持独立查看/取消；不以本地 `dispatched` 宣称供应商已发送。系列 1–60 集仍仅支持文本。
 
 ## 分镜规划：ViMax 复用评估（E1、E2-A 与 E2-B）
 

@@ -1,6 +1,6 @@
 # V1 交付台账
 
-> 当前状态更新：2026-11-01，基线 `main@0291795029149abcedf7c41bef14c09392ef11bd`。本轮真实媒体、逐句声音与新合成 profile、ViMax 规划治理代码已实现并接线，默认关闭。**付费真实模型 0、业务 SQL 0、部署 0。** 运行说明见 [`REAL_MEDIA_RUNBOOK.md`](REAL_MEDIA_RUNBOOK.md)。下表是最新实现矩阵；后文保留各次交付的历史事实，其「未实现」不得覆盖本表，也不能把历史 CI 当作本轮 CI。
+> 当前状态更新：2026-11-02。开发起点 `0291795029149abcedf7c41bef14c09392ef11bd`；PR #100 已合并至 `120cf8b6138547c85615e312519eee7d0ea8057f`。该主线的 9 个 push 工作流、19 个 check run 均成功，证据及后续真实验收见 [`REAL_PRODUCTION_COMPLETION_PROGRESS.md`](REAL_PRODUCTION_COMPLETION_PROGRESS.md)。本轮真实媒体、逐句声音与新合成 profile、ViMax 规划治理代码已实现并接线，默认关闭。**付费真实模型 0、业务 SQL 0、部署 0。** 运行说明见 [`REAL_MEDIA_RUNBOOK.md`](REAL_MEDIA_RUNBOOK.md)。下表是最新实现矩阵；后文保留各次交付的历史事实，其「未实现」不得覆盖本表，也不能把历史 CI 当作本轮 CI。
 
 ## 2026-11-01 当前补齐矩阵
 
@@ -12,12 +12,12 @@
 | 多句声音合成/审核/导出 | 新 `local-ffmpeg-voice-v1`：实测 WAV 时间线/VTT、超时拒绝、ducking、可确认环境声、原有审核和整集 MP4/逐句来源 | 原合成开关默认 false；S3、绝对目录、FFmpeg、Noto Sans CJK SC | synthetic 音频/MP4 实测不等于 AI 人声；中文字幕只在真实字体可用时验收，缺字/字体拒绝 |
 | ViMax 单场景规划 | 一次文本确认、共享日额/并发、永久身份、租约与 UNKNOWN、页面请求/恢复、原 E2-B 两段式保存已接线 | `VIMAX_PLANNING_ENABLED=false`；标题创作/登录/模型、planning 与 candidate drafts | 替身及专用空库 suite；真实单场景叙事/分镜质量与业务库启用未验收 |
 | 1–60 集自动编剧 | 独立系列规划、每 3 集批次、台账、审阅/人工复核、正式分集与文本交付包已有实现 | `SERIES_WRITING_ENABLED=false`，原系列迁移/写作门 | 核心文本阶段未见待实现占位；真实 60 集质量与篇幅稳定性未验收；系列媒体保持禁止 |
-| 声音 V1-D 批量补齐 | 短剧剧本页 inventory、固定逐句报价/币种总额、永久操作键、部分完成/取消/显式恢复已实现；仍创建原 `MEDIA_TTS` Job | 独立 speech-batch draft，沿用声音/媒体准入；最多 100 句/2 MiB | domain/API/store/UI 定向替身测试；新增 batch PostgreSQL 用例待最终 HEAD CI。取消仅阻未创建 Job，已有 Job 独立取消；`dispatched` 仅本地受理 |
+| 声音 V1-D 批量补齐 | 短剧剧本页 inventory、固定逐句报价/币种总额、永久操作键、部分完成/取消/显式恢复已实现；仍创建原 `MEDIA_TTS` Job | 独立 speech-batch draft，沿用声音/媒体准入；最多 100 句/2 MiB | domain/API/store/UI 定向替身测试；含 batch 的最终分支及合并后专用空库 CI 已通过；真实人声仍待验收。取消仅阻未创建 Job，已有 Job 独立取消；`dispatched` 仅本地受理 |
 | 明确未交付 | ComfyUI/GPU 实际推理、声音克隆/口型/重叠对白、平台发布/支付/多租户 | 不由现有开关顺带开放 | 不把未来设计或外部运营条件写成完成 |
 
 新增四份 SQL（含 `20261101000300_speech_batch.sql`）仍在 `prisma/drafts`，普通 `migrate` 不会发现。三个专用空库验收入口分别见运行手册；speech suite 已纳入 batch。最终 Review、当前提交 CI/merge 和真实执行证据分别记录，不将代码已实现等同于线上已启用。
 
-首轮专用 PostgreSQL 与真实 CJK 字体技术验收已在 `b1980f138b78261d567210f5c72ae2e45da1f861` 的 [Run 41292829594](https://github.com/xyq-dev/ai-drama-studio/actions/runs/41292829594) 四个 job 通过，逐项计数/边界见 [`REAL_PRODUCTION_COMPLETION_PROGRESS.md`](REAL_PRODUCTION_COMPLETION_PROGRESS.md)。此后音乐 fade、portable provenance 和 batch 等改动仍需当前 HEAD 的新 CI；不把该首轮结果当作最终提交或真实 AI 验收。
+首轮专用 PostgreSQL 与真实 CJK 字体技术验收已在 `b1980f138b78261d567210f5c72ae2e45da1f861` 的 [Run 41292829594](https://github.com/xyq-dev/ai-drama-studio/actions/runs/41292829594) 四个 job 通过，逐项计数/边界见 [`REAL_PRODUCTION_COMPLETION_PROGRESS.md`](REAL_PRODUCTION_COMPLETION_PROGRESS.md)。后续音乐 fade、portable provenance 和 batch 已由 PR #100 最终提交及合并后 [Run 41302458478](https://github.com/xyq-dev/ai-drama-studio/actions/runs/41302458478) 的新 CI 覆盖；该首轮记录仍只属于 `b1980f1`，两者都不是真实 AI 质量验收。
 
 ## 既往交付记录（保留原日期与验收范围）
 
