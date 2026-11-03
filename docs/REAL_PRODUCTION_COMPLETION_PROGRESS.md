@@ -90,3 +90,6 @@ PR [#100](https://github.com/xyq-dev/ai-drama-studio/pull/100) 已于北京时�
 ## 接续方法
 
 先读取本文件及分支关联 PR，核验远端 HEAD、当前工作区和未提交改动。保留其他执行者的文件；不使用 force push、reset 或 clean。按尚未完成的工作项接续，优先消除真实失败，不重复实现已完成模块。每个检查点应记录提交、测试证据和剩余接线。
+
+- 2026-11-03：GrokBot 原生首条流程草案见 `docs/GROKBOT_NATIVE_TOOLS.md` / `scripts/grokbot-native-tools/`（create/list/continue/save-script/status；默认本地 store）。
+- 2026-11-03：本地 CLI 扩展 approve-script / set-characters / set-storyboard / approve-scene / voice-plan；《末班车暗号》fixtures + `docs/FIRST_REAL_SHORT_ONE_SHOT.md`。

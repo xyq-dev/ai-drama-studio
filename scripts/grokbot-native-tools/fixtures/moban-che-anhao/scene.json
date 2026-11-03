@@ -1,0 +1,35 @@
+{
+  "id": "scene-ep1-1",
+  "episodeNo": 1,
+  "title": "末班车站台",
+  "shots": [
+    {
+      "id": "shot-1",
+      "n": 1,
+      "desc": "大雨站台，阿岚撑伞等车，末班车远光靠近",
+      "durationHintSec": 4,
+      "line": "阿岚：师傅，末班车……还会开吗？"
+    },
+    {
+      "id": "shot-2",
+      "n": 2,
+      "desc": "车门半开，老周从驾驶位侧身，问暗号",
+      "durationHintSec": 5,
+      "line": "老周：暗号对了，就开。"
+    },
+    {
+      "id": "shot-3",
+      "n": 3,
+      "desc": "阿岚压低声音报暗号，雨声盖过一半",
+      "durationHintSec": 4,
+      "line": "阿岚：雨声里藏着站名。"
+    },
+    {
+      "id": "shot-4",
+      "n": 4,
+      "desc": "老周点头，车门全开；说错则切门外空镜",
+      "durationHintSec": 5,
+      "line": "老周：那你上车。说错了，你只能等天亮。"
+    }
+  ]
+}
