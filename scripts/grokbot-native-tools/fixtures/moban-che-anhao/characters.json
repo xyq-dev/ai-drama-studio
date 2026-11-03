@@ -1,0 +1,16 @@
+[
+  {
+    "id": "char-alan",
+    "name": "阿岚",
+    "role": "女主/背包客",
+    "voiceIntent": "清亮、略紧、二十多岁",
+    "notes": "暴雨夜持暗号求上车"
+  },
+  {
+    "id": "char-zhou",
+    "name": "老周",
+    "role": "男/夜班司机",
+    "voiceIntent": "低沉、短句、中年",
+    "notes": "核暗号决定是否发车"
+  }
+]

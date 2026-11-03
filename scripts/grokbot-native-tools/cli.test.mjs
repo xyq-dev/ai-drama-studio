@@ -1,11 +1,14 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 import { runCli } from "./cli.mjs";
 import { loadStore } from "./store.mjs";
 
 let passed = 0;
 let failed = 0;
+const here = dirname(fileURLToPath(import.meta.url));
 
 function assert(cond, msg) {
   if (!cond) throw new Error(msg);
@@ -28,7 +31,8 @@ const storePath = join(dir, "store.json");
 await test("help", async () => {
   const r = await runCli(["help"]);
   assert(r.ok && r.exitCode === 0, "help should succeed");
-  assert(String(r.output.help).includes("create"), "help mentions create");
+  assert(String(r.output.help).includes("voice-plan"), "help mentions voice-plan");
+  assert(String(r.output.help).includes("approve-script"), "help mentions approve-script");
 });
 
 await test("create → list → continue → save-script → status (local)", async () => {
@@ -89,20 +93,14 @@ await test("dry-run create does not write", async () => {
   const empty = join(dir, "empty.json");
   const r = await runCli(["create", "--title", "不应写入", "--dry-run", "--store", empty]);
   assert(r.output.dryRun === true, "dry-run flag");
-  let threw = false;
-  try {
-    loadStore(empty);
-  } catch {
-    threw = true;
-  }
-  // loadStore returns empty if missing — check file not created with project
   const store = loadStore(empty);
   assert(Object.keys(store.projects).length === 0, "no projects after dry-run");
-  assert(!threw || true, "ok");
 });
 
 await test("live without creds fails closed", async () => {
-  const r = await runCli(["list", "--live"], { env: { ...process.env, ADS_SESSION_COOKIE: "", ADS_CSRF_TOKEN: "", ADS_ORIGIN: "" } });
+  const r = await runCli(["list", "--live"], {
+    env: { ...process.env, ADS_SESSION_COOKIE: "", ADS_CSRF_TOKEN: "", ADS_ORIGIN: "" },
+  });
   assert(r.ok === false && r.exitCode === 2, "exit 2");
   assert(String(r.output.error).includes("ADS_SESSION_COOKIE"), "mentions missing cookie");
 });
@@ -140,6 +138,111 @@ await test("text-file save-script", async () => {
     store2,
   ]);
   assert(saved.output.revision?.text.includes("今晚雨很大"), "loaded from file");
+});
+
+await test("approve-script requires approved-by", async () => {
+  const s = join(dir, "approve.json");
+  await runCli(["create", "--title", "审", "--store", s]);
+  await runCli(["save-script", "--text", "甲：一。\n乙：二。", "--store", s]);
+  const bad = await runCli(["approve-script", "--store", s]);
+  assert(bad.ok === false, "must fail");
+  assert(String(bad.output.error).includes("approvedBy"), "mentions approvedBy");
+});
+
+await test("full local loop to voice-plan", async () => {
+  const s = join(dir, "full.json");
+  const created = await runCli([
+    "create",
+    "--title",
+    "闭环",
+    "--premise",
+    "测",
+    "--store",
+    s,
+  ]);
+  const pid = created.output.project.id;
+  await runCli([
+    "save-script",
+    "--project-id",
+    pid,
+    "--text",
+    "阿岚：问。\n老周：答。\n阿岚：再问。\n老周：再答。",
+    "--store",
+    s,
+  ]);
+  const ap = await runCli(["approve-script", "--project-id", pid, "--approved-by", "user:test", "--store", s]);
+  assert(ap.output.revision?.reviewStatus === "APPROVED", "approved");
+  await runCli([
+    "set-characters",
+    "--project-id",
+    pid,
+    "--characters",
+    JSON.stringify([
+      { id: "char-alan", name: "阿岚", role: "女", voiceIntent: "清" },
+      { id: "char-zhou", name: "老周", role: "男", voiceIntent: "沉" },
+    ]),
+    "--store",
+    s,
+  ]);
+  await runCli([
+    "set-storyboard",
+    "--project-id",
+    pid,
+    "--scene",
+    JSON.stringify({
+      id: "scene-1",
+      episodeNo: 1,
+      title: "站台",
+      shots: [
+        { n: 1, desc: "a", line: "阿岚：问。" },
+        { n: 2, desc: "b", line: "老周：答。" },
+      ],
+    }),
+    "--store",
+    s,
+  ]);
+  await runCli(["approve-scene", "--project-id", pid, "--approved-by", "user:test", "--store", s]);
+  const vp = await runCli(["voice-plan", "--project-id", pid, "--store", s]);
+  assert(vp.ok, "voice-plan ok");
+  assert(vp.output.voicePlan?.totals?.plannedTtsCalls === 4, `tts=${vp.output.voicePlan?.totals?.plannedTtsCalls}`);
+  assert(vp.output.paidCalls === 0, "no paid");
+  const st = await runCli(["status", "--project-id", pid, "--store", s]);
+  assert(st.output.status?.stage === "voice_plan", "stage voice_plan");
+  assert(st.output.status?.blockers?.some((b) => b.includes("费用")), "budget blocker");
+});
+
+await test("moban-che-anhao repro.sh", async () => {
+  const repro = join(here, "fixtures/moban-che-anhao/repro.sh");
+  const store = join(dir, "moban-store.json");
+  const result = spawnSync("bash", [repro], {
+    env: { ...process.env, ADS_LOCAL_STORE: store },
+    encoding: "utf8",
+  });
+  assert(result.status === 0, `repro exit ${result.status}: ${result.stderr}`);
+  const status = JSON.parse(result.stdout);
+  assert(status.status?.title === "末班车暗号", "title");
+  assert(status.status?.stage === "voice_plan", "stage");
+  assert(status.status?.characterCount === 2, "2 chars");
+  assert(status.status?.scenes?.[0]?.status === "APPROVED", "scene approved");
+  assert(status.status?.voicePlan?.totals?.plannedTtsCalls === 4, "4 tts planned");
+  const raw = JSON.parse(readFileSync(store, "utf8"));
+  const project = Object.values(raw.projects)[0];
+  assert(project.episodes[0].scripts[0].reviewStatus === "APPROVED", "script approved in store");
+});
+
+await test("live refuses approve-script", async () => {
+  const r = await runCli(
+    ["approve-script", "--live", "--approved-by", "user:x"],
+    {
+      env: {
+        ...process.env,
+        ADS_SESSION_COOKIE: "session=fake",
+        ADS_CSRF_TOKEN: "csrf-fake",
+        ADS_ORIGIN: "https://drama.playhubs.cn",
+      },
+    },
+  );
+  assert(r.ok === false && r.exitCode === 2, "refused");
 });
 
 rmSync(dir, { recursive: true, force: true });

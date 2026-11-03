@@ -1,14 +1,12 @@
 #!/usr/bin/env node
 /**
- * GrokBot native drama tools CLI — first valuable loop:
- *   create / list / continue / save-script / status
+ * GrokBot native drama tools CLI
+ * Local loop: create / list / continue / save-script / approve-script /
+ *   set-characters / set-storyboard / approve-scene / voice-plan / status
  *
  * Default backend: local JSON store (works without site login).
- * --live: use ADS_* credentials against existing API (no paid paths).
- * --dry-run: print intended action only (default false for local; for --live
- *            writes, set ADS_LIVE_WRITES=1 explicitly or pass --execute).
- *
- * See docs/GROKBOT_NATIVE_TOOLS.md and grokbot-skills/ai-drama-native-tools/.
+ * --live: read/create/save-script against /api/v1 only (no approve forge, no TTS).
+ * Live writes need ADS_* + --execute. Paid paths refused.
  */
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
@@ -22,6 +20,11 @@ import {
   listProjects,
   continueProject,
   saveScript,
+  approveScript,
+  setCharacters,
+  setStoryboard,
+  approveScene,
+  voicePlan,
   projectStatus,
 } from "./store.mjs";
 import {
@@ -35,7 +38,21 @@ import {
   liveListScripts,
 } from "./live-api.mjs";
 
-const COMMANDS = new Set(["help", "create", "list", "continue", "save-script", "status"]);
+const LOCAL_COMMANDS = new Set([
+  "help",
+  "create",
+  "list",
+  "continue",
+  "save-script",
+  "approve-script",
+  "set-characters",
+  "set-storyboard",
+  "approve-scene",
+  "voice-plan",
+  "status",
+]);
+
+const LIVE_COMMANDS = new Set(["help", "create", "list", "continue", "save-script", "status"]);
 
 function loadEnvFile(path) {
   if (!path || !existsSync(path)) return;
@@ -54,34 +71,46 @@ function loadEnvFile(path) {
   }
 }
 
+function readJsonOpt(values, flag, fileFlag) {
+  if (values[fileFlag]) {
+    return JSON.parse(readFileSync(resolve(values[fileFlag]), "utf8"));
+  }
+  if (values[flag]) return JSON.parse(values[flag]);
+  return null;
+}
+
 function printJson(obj) {
   process.stdout.write(`${JSON.stringify(obj, null, 2)}\n`);
 }
 
 function helpText() {
   return [
-    "grokbot-native-tools — create/list/continue/save-script/status",
+    "grokbot-native-tools — local text→voice-plan loop (+ optional live create/list/script)",
     "",
     "Usage:",
     "  node scripts/grokbot-native-tools/cli.mjs <command> [options]",
     "",
-    "Commands:",
-    "  create        --title ... [--premise ...] [--genre ...] [--audience ...] [--episodes N]",
+    "Commands (local store):",
+    "  create           --title ... [--premise ...] [--genre ...] [--audience ...] [--episodes N]",
     "  list",
-    "  continue      [--project-id ID]",
-    "  save-script   --text ... | --text-file PATH [--project-id ID] [--episode N] [--script-title ...]",
-    "  status        [--project-id ID]",
+    "  continue         [--project-id ID]",
+    "  save-script      --text ... | --text-file PATH [--project-id ID] [--episode N] [--script-title ...]",
+    "  approve-script   --approved-by user:... [--project-id ID] [--episode N] [--revision-id ID]",
+    "  set-characters   --characters '[...]' | --characters-file PATH [--project-id ID]",
+    "  set-storyboard   --scene '{...}' | --scene-file PATH [--project-id ID]",
+    "  approve-scene    --approved-by user:... [--project-id ID] [--scene-id ID]",
+    "  voice-plan       [--project-id ID] [--episode N] [--currency ...] [--budget-cap ...]",
+    "  status           [--project-id ID]",
     "  help",
     "",
     "Backends:",
-    "  (default) local store file: ADS_LOCAL_STORE or .grokbot-drama-store.json",
-    "  --live      call existing /api/v1 (needs ADS_SESSION_COOKIE, ADS_CSRF_TOKEN, ADS_ORIGIN)",
-    "  --env-file  load credentials from a protected file (never paste secrets in chat)",
+    "  (default) local store: ADS_LOCAL_STORE or .grokbot-drama-store.json",
+    "  --live      limited to create/list/continue/save-script/status (needs ADS_*)",
+    "  --env-file  protected credentials file (never paste secrets in chat)",
     "  --dry-run   print plan only; no write",
-    "  --execute   allow live writes when --live (also ADS_LIVE_WRITES=1)",
+    "  --execute   allow live writes when --live",
     "",
-    "Paid generate/authorize/auto-runs are refused. Local store is offline text cache,",
-    "not a second GenerationJob DB — promote to live API when credentials exist.",
+    "APPROVE is a human gate: --approved-by is required. No paid TTS/generate here.",
   ].join("\n");
 }
 
@@ -106,6 +135,15 @@ export async function runCli(argv = process.argv.slice(2), { env = process.env }
       text: { type: "string" },
       "text-file": { type: "string" },
       "script-title": { type: "string" },
+      "revision-id": { type: "string" },
+      "approved-by": { type: "string" },
+      characters: { type: "string" },
+      "characters-file": { type: "string" },
+      scene: { type: "string" },
+      "scene-file": { type: "string" },
+      "scene-id": { type: "string" },
+      currency: { type: "string" },
+      "budget-cap": { type: "string" },
       store: { type: "string" },
     },
   });
@@ -113,7 +151,7 @@ export async function runCli(argv = process.argv.slice(2), { env = process.env }
   if (values["env-file"]) loadEnvFile(resolve(values["env-file"]));
 
   const command = values.help ? "help" : positionals[0] || "help";
-  if (!COMMANDS.has(command)) {
+  if (!LOCAL_COMMANDS.has(command)) {
     return { ok: false, exitCode: 1, output: { error: `Unknown command: ${command}`, help: helpText() } };
   }
   if (command === "help") {
@@ -126,6 +164,16 @@ export async function runCli(argv = process.argv.slice(2), { env = process.env }
   const storePath = values.store || defaultStorePath();
 
   if (live) {
+    if (!LIVE_COMMANDS.has(command)) {
+      return {
+        ok: false,
+        exitCode: 2,
+        output: {
+          mode: "live",
+          error: `Command ${command} is local-store only in this PR (no live forge of APPROVE / no TTS). Use local mode.`,
+        },
+      };
+    }
     const cfg = liveConfigFromEnv(env);
     try {
       assertLiveReady(cfg);
@@ -152,144 +200,215 @@ function runLocal(command, values, { storePath, dryRun }) {
     return {
       ok: true,
       exitCode: 0,
-      output: {
-        mode: "local",
-        dryRun: true,
-        storePath,
-        command,
-        plan: describeLocalPlan(command, values, store),
-      },
+      output: { mode: "local", dryRun: true, storePath, command, plan: { command, projectId: values["project-id"] || store.currentProjectId } },
     };
   }
 
-  if (command === "create") {
-    const project = createProject(store, {
-      title: values.title,
-      premise: values.premise,
-      genre: values.genre,
-      audience: values.audience,
-      episodeCount: values.episodes,
-    });
-    saveStore(store, storePath);
-    return { ok: true, exitCode: 0, output: { mode: "local", action: "create", storePath, project } };
-  }
-  if (command === "list") {
-    return {
-      ok: true,
-      exitCode: 0,
-      output: {
-        mode: "local",
-        action: "list",
-        storePath,
-        currentProjectId: store.currentProjectId,
-        projects: listProjects(store).map((p) => ({
-          id: p.id,
-          title: p.title,
-          updatedAt: p.updatedAt,
-          episodeCount: p.episodeCount,
-          scriptRevisions: p.episodes.reduce((n, e) => n + e.scripts.length, 0),
-        })),
-      },
-    };
-  }
-  if (command === "continue") {
-    const project = continueProject(store, values["project-id"]);
-    saveStore(store, storePath);
-    return {
-      ok: true,
-      exitCode: 0,
-      output: {
-        mode: "local",
-        action: "continue",
-        storePath,
-        project: {
-          id: project.id,
-          title: project.title,
-          premise: project.premise,
-          updatedAt: project.updatedAt,
-          episodes: project.episodes.map((e) => ({
-            id: e.id,
-            episodeNo: e.episodeNo,
-            scriptCount: e.scripts.length,
-            latestReview: e.scripts.at(-1)?.reviewStatus || null,
+  try {
+    if (command === "create") {
+      const project = createProject(store, {
+        title: values.title,
+        premise: values.premise,
+        genre: values.genre,
+        audience: values.audience,
+        episodeCount: values.episodes,
+      });
+      saveStore(store, storePath);
+      return { ok: true, exitCode: 0, output: { mode: "local", action: "create", storePath, project } };
+    }
+    if (command === "list") {
+      return {
+        ok: true,
+        exitCode: 0,
+        output: {
+          mode: "local",
+          action: "list",
+          storePath,
+          currentProjectId: store.currentProjectId,
+          projects: listProjects(store).map((p) => ({
+            id: p.id,
+            title: p.title,
+            stage: p.stage || null,
+            updatedAt: p.updatedAt,
+            episodeCount: p.episodeCount,
+            scriptRevisions: p.episodes.reduce((n, e) => n + e.scripts.length, 0),
           })),
         },
-      },
-    };
-  }
-  if (command === "save-script") {
-    const text = values.text || (values["text-file"] ? readFileSync(resolve(values["text-file"]), "utf8") : "");
-    const result = saveScript(store, {
-      projectId: values["project-id"],
-      episodeNo: values.episode || 1,
-      text,
-      title: values["script-title"],
-    });
-    saveStore(store, storePath);
+      };
+    }
+    if (command === "continue") {
+      const project = continueProject(store, values["project-id"]);
+      saveStore(store, storePath);
+      return {
+        ok: true,
+        exitCode: 0,
+        output: {
+          mode: "local",
+          action: "continue",
+          storePath,
+          project: {
+            id: project.id,
+            title: project.title,
+            premise: project.premise,
+            stage: project.stage || null,
+            updatedAt: project.updatedAt,
+            episodes: project.episodes.map((e) => ({
+              id: e.id,
+              episodeNo: e.episodeNo,
+              scriptCount: e.scripts.length,
+              latestReview: e.scripts.at(-1)?.reviewStatus || null,
+            })),
+          },
+        },
+      };
+    }
+    if (command === "save-script") {
+      const text = values.text || (values["text-file"] ? readFileSync(resolve(values["text-file"]), "utf8") : "");
+      const result = saveScript(store, {
+        projectId: values["project-id"],
+        episodeNo: values.episode || 1,
+        text,
+        title: values["script-title"],
+      });
+      saveStore(store, storePath);
+      return {
+        ok: true,
+        exitCode: 0,
+        output: {
+          mode: "local",
+          action: "save-script",
+          storePath,
+          projectId: result.project.id,
+          episodeId: result.episode.id,
+          revision: result.revision,
+        },
+      };
+    }
+    if (command === "approve-script") {
+      const result = approveScript(store, {
+        projectId: values["project-id"],
+        episodeNo: values.episode || 1,
+        revisionId: values["revision-id"],
+        approvedBy: values["approved-by"],
+      });
+      saveStore(store, storePath);
+      return {
+        ok: true,
+        exitCode: 0,
+        output: {
+          mode: "local",
+          action: "approve-script",
+          storePath,
+          alreadyApproved: result.alreadyApproved,
+          revision: {
+            id: result.revision.id,
+            reviewStatus: result.revision.reviewStatus,
+            approvedBy: result.revision.approvedBy,
+            approvedAt: result.revision.approvedAt,
+          },
+          stage: result.project.stage,
+        },
+      };
+    }
+    if (command === "set-characters") {
+      const characters = readJsonOpt(values, "characters", "characters-file");
+      const result = setCharacters(store, { projectId: values["project-id"], characters });
+      saveStore(store, storePath);
+      return {
+        ok: true,
+        exitCode: 0,
+        output: { mode: "local", action: "set-characters", storePath, characters: result.characters, stage: result.project.stage },
+      };
+    }
+    if (command === "set-storyboard") {
+      const scene = readJsonOpt(values, "scene", "scene-file");
+      if (!scene) throw new Error("--scene or --scene-file required");
+      const result = setStoryboard(store, { projectId: values["project-id"], scene });
+      saveStore(store, storePath);
+      return {
+        ok: true,
+        exitCode: 0,
+        output: { mode: "local", action: "set-storyboard", storePath, scene: result.scene, stage: result.project.stage },
+      };
+    }
+    if (command === "approve-scene") {
+      const result = approveScene(store, {
+        projectId: values["project-id"],
+        sceneId: values["scene-id"],
+        approvedBy: values["approved-by"],
+      });
+      saveStore(store, storePath);
+      return {
+        ok: true,
+        exitCode: 0,
+        output: {
+          mode: "local",
+          action: "approve-scene",
+          storePath,
+          alreadyApproved: result.alreadyApproved,
+          scene: {
+            id: result.scene.id,
+            status: result.scene.status,
+            approvedBy: result.scene.approvedBy,
+            approvedAt: result.scene.approvedAt,
+          },
+          stage: result.project.stage,
+        },
+      };
+    }
+    if (command === "voice-plan") {
+      const result = voicePlan(store, {
+        projectId: values["project-id"],
+        episodeNo: values.episode || 1,
+        currency: values.currency || "待填",
+        budgetCap: values["budget-cap"] || "待你授权",
+      });
+      saveStore(store, storePath);
+      return {
+        ok: true,
+        exitCode: 0,
+        output: {
+          mode: "local",
+          action: "voice-plan",
+          storePath,
+          stage: result.project.stage,
+          voicePlan: result.voicePlan,
+          paidCalls: 0,
+          note: "Plan only — no TTS submitted",
+        },
+      };
+    }
+    if (command === "status") {
+      return {
+        ok: true,
+        exitCode: 0,
+        output: { mode: "local", action: "status", storePath, status: projectStatus(store, values["project-id"]) },
+      };
+    }
+  } catch (error) {
     return {
-      ok: true,
-      exitCode: 0,
-      output: {
-        mode: "local",
-        action: "save-script",
-        storePath,
-        projectId: result.project.id,
-        episodeId: result.episode.id,
-        revision: result.revision,
-      },
-    };
-  }
-  if (command === "status") {
-    return {
-      ok: true,
-      exitCode: 0,
-      output: { mode: "local", action: "status", storePath, status: projectStatus(store, values["project-id"]) },
+      ok: false,
+      exitCode: 1,
+      output: { mode: "local", error: error instanceof Error ? error.message : String(error) },
     };
   }
   return { ok: false, exitCode: 1, output: { error: "unreachable" } };
 }
 
-function describeLocalPlan(command, values, store) {
-  if (command === "create") return { create: { title: values.title, premise: values.premise } };
-  if (command === "list") return { list: true, count: Object.keys(store.projects).length };
-  if (command === "continue") return { continue: values["project-id"] || store.currentProjectId };
-  if (command === "save-script") {
-    return {
-      saveScript: {
-        projectId: values["project-id"] || store.currentProjectId,
-        episode: values.episode || 1,
-        textChars: (values.text || "").length || (values["text-file"] ? "(from file)" : 0),
-      },
-    };
-  }
-  if (command === "status") return { status: values["project-id"] || store.currentProjectId };
-  return {};
-}
-
 async function runLive(command, values, { cfg, dryRun, allowLiveWrite }) {
   if (command === "list") {
-    if (dryRun) {
-      return { ok: true, exitCode: 0, output: { mode: "live", dryRun: true, plan: { GET: "/projects" } } };
-    }
+    if (dryRun) return { ok: true, exitCode: 0, output: { mode: "live", dryRun: true, plan: { GET: "/projects" } } };
     const res = await liveListProjects(cfg);
     return { ok: true, exitCode: 0, output: { mode: "live", action: "list", ...res } };
   }
   if (command === "continue" || command === "status") {
     const projectId = values["project-id"];
-    if (!projectId) {
-      return { ok: false, exitCode: 1, output: { error: "--project-id required for live continue/status" } };
-    }
+    if (!projectId) return { ok: false, exitCode: 1, output: { error: "--project-id required for live continue/status" } };
     if (dryRun) {
       return {
         ok: true,
         exitCode: 0,
-        output: {
-          mode: "live",
-          dryRun: true,
-          plan: {
-            GET: [`/projects/${projectId}`, `/projects/${projectId}/episodes`],
-          },
-        },
+        output: { mode: "live", dryRun: true, plan: { GET: [`/projects/${projectId}`, `/projects/${projectId}/episodes`] } },
       };
     }
     const project = await liveGetProject(cfg, projectId);
@@ -306,14 +425,7 @@ async function runLive(command, values, { cfg, dryRun, allowLiveWrite }) {
     return {
       ok: true,
       exitCode: 0,
-      output: {
-        mode: "live",
-        action: command,
-        project: project.data,
-        episodes: episodes.data,
-        scripts: scripts?.data || null,
-        note: "Live status is read-only aggregation; blockers must still be judged against reviewStatus/STALE.",
-      },
+      output: { mode: "live", action: command, project: project.data, episodes: episodes.data, scripts: scripts?.data || null },
     };
   }
   if (command === "create") {
@@ -338,16 +450,9 @@ async function runLive(command, values, { cfg, dryRun, allowLiveWrite }) {
     const episodeId = values["episode-id"];
     const text = values.text || (values["text-file"] ? readFileSync(resolve(values["text-file"]), "utf8") : "");
     if (!projectId || !episodeId) {
-      return {
-        ok: false,
-        exitCode: 1,
-        output: { error: "live save-script needs --project-id and --episode-id" },
-      };
+      return { ok: false, exitCode: 1, output: { error: "live save-script needs --project-id and --episode-id" } };
     }
-    const plan = {
-      POST: `/projects/${projectId}/episodes/${episodeId}/scripts`,
-      bodyChars: text.length,
-    };
+    const plan = { POST: `/projects/${projectId}/episodes/${episodeId}/scripts`, bodyChars: text.length };
     if (dryRun || !allowLiveWrite) {
       return {
         ok: true,
