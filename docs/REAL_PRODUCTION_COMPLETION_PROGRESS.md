@@ -2,6 +2,14 @@
 
 更新：2026-11-02。用户要求补齐现有开发文档中尚未实现的功能。本轮基线 `main@0291795029149abcedf7c41bef14c09392ef11bd`；工作分支 `feat/real-production-completion`。本文件记录实际进度，不把代码、替身验收、真实调用和线上启用混为一项。
 
+## 2026-11-03 首支真实短片启动授权包
+
+同分支追加 [FIRST_REAL_SHORT_AUTH_PACKET.md](FIRST_REAL_SHORT_AUTH_PACKET.md)：可勾选的服务器只读清单、精确 draft 路径与目标库占位/备份回退、`provision --execute` 影响、双角色 4–8 句请求数与金额上限栏、人工审核门。本轮仍不付费、不部署、不执行 SQL。
+
+## 2026-11-03 GrokBot 统一制作入口草案
+
+工作分支 `feat/grokbot-drama-orchestration`：新增 [GROKBOT_ORCHESTRATION.md](GROKBOT_ORCHESTRATION.md) 与 `scripts/grokbot-orchestration/dry-run.mjs`（默认 dry-run，`--live` 仅允许 health）。将自然语言口令映射到现有 `/api/v1` 与 `real-media:provision` plan CLI；不新建任务库、不发付费 generate/authorize/confirm、不执行业务 SQL、不部署。本轮供应商调用 0、业务库写入 0。
+
 ## 2026-11-02 主线核查与下一步
 
 PR [#100](https://github.com/xyq-dev/ai-drama-studio/pull/100) 已于北京时间 2026-11-01 19:34 合并。核查时主线为 `120cf8b6138547c85615e312519eee7d0ea8057f`，功能分支最后提交为 `425035c246fbd0fa8b737df3592ffab489aaffe2`；二者的产品 tree 均为 `79328c0b30a89816b0c93d40643895f547b06469`。本节补齐合并结果，不把旧检查点当成当前提交证据。
