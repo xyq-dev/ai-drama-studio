@@ -140,6 +140,7 @@ function helpText() {
     "APPROVE is a human gate: --approved-by / --authorized-by are required.",
     "Speech is ElevenLabs eleven_v4 scene dialogue (ELEVENLABS_TTS_*), not music and not qwen.",
     "--mock is an unpaid fixture. --execute with ELEVENLABS_TTS_API_KEY submits one scene call.",
+    "gpt-image-2.5-sunburst is not invoked by this CLI. Image spend stays behind real-media quote/authorize.",
   ].join("\n");
 }
 

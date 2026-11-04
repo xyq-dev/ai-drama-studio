@@ -6,7 +6,7 @@
 
 | 功能 | 当前实现与范围 |
 | --- | --- |
-| 真实镜头素材 | 百炼北京 `qwen-image-3.0`、`wan2.6-i2v-flash`、`qwen3-tts-flash`；音乐为 ElevenLabs `music_v2` 纯伴奏。模型/地域/参数/价格/凭据版本冻结进输入。账号资格、现价与质量仍须实际核验。 |
+| 真实镜头素材 | 百炼北京 `qwen-image-3.0`、`wan2.6-i2v-flash`、`qwen3-tts-flash`；音乐为 ElevenLabs `music_v2` 纯伴奏。模型/地域/参数/价格/凭据版本冻结进输入。账号资格、现价与质量仍须实际核验。显式 `REAL_MEDIA_IMAGE_PROVIDER=openai-media` 时图片改为钉死的 `gpt-image-2.5-sunburst`（见 [OPENAI_IMAGE_SUNBURST.md](OPENAI_IMAGE_SUNBURST.md)），未选择则仍是百炼，不会自动切换。 |
 | 一次生成 | `/api/v1/projects/:projectId/shot-revisions/:shotRevisionId/real-media/quote` → `/projects/:projectId/real-media/authorize` → 原镜头路径的 `/real-media/generate`。需要站点登录、CSRF、有效报价、单次授权与幂等键。 |
 | 角色声音 | `/projects/:projectId/voice-bindings`、`/shot-revisions/:revisionId/speech-plan`、`/speech-plans/:revisionId/lines/:lineId/quote` 与 `/generate`、逐句选用和 `/mix-preflight`。当前目录仅 neutral/语速 1，每句最多 600 字符（服务端计数）；更长须按原文 span 拆句，不能删改批准对白。 |
 | 新声音合成 | `POST /shot-revisions/:revisionId/voice-compose`；沿原 `MEDIA_COMPOSE` Job/Attempt/Outbox、成片审核及整集 MP4/来源清单导出。输入是已选逐句资产，不能上传 URL、路径或字体。 |
@@ -28,6 +28,10 @@
 | `DASHSCOPE_MEDIA_API_KEY`、`DASHSCOPE_MEDIA_CREDENTIAL_VERSION` | 媒体独立 key，API key 仅进程环境；凭据版本默认 `v1`。不读取已退役的千问文本配置作为媒体授权。 |
 | `DASHSCOPE_MEDIA_PREVIOUS_API_KEY`、`DASHSCOPE_MEDIA_PREVIOUS_CREDENTIAL_VERSION` | 可保留一个旧版本供原任务只读查询；API key 仅进程环境。 |
 | `ELEVENLABS_MEDIA_API_KEY`、`ELEVENLABS_MEDIA_CREDENTIAL_VERSION` | 音乐独立 key；API key 仅进程环境，凭据版本默认 `v1`。另支持 `ELEVENLABS_MEDIA_PREVIOUS_API_KEY`、`ELEVENLABS_MEDIA_PREVIOUS_CREDENTIAL_VERSION`。 |
+| `REAL_MEDIA_IMAGE_PROVIDER` | 仅进程环境。未设置或 `dashscope-media` 时图片仍是百炼。`openai-media` 才启用 sunburst。flare / qwen / dall-e 等其他值拒绝启动，不回退。 |
+| `OPENAI_MEDIA_API_KEY`、`OPENAI_MEDIA_CREDENTIAL_VERSION` | 图片媒体独立 key，仅进程环境；不是写作 `OPENAI_API_KEY`。凭据版本默认 `v1`。可另留 `OPENAI_MEDIA_PREVIOUS_API_KEY` 与不同的 `OPENAI_MEDIA_PREVIOUS_CREDENTIAL_VERSION`。 |
+| `OPENAI_BASE_URL` 或 `OPENAI_API_BASE` | 仅进程环境的 HTTPS 源站。未设置不默认 `api.openai.com`。两者冲突则拒绝。缺 base、key 或单价时 sunburst 图片关闭，且不退回百炼。 |
+| `OPENAI_MEDIA_PRICE_IMAGE` | sunburst 的 USD 单价；未核对就不开放。详见 [OPENAI_IMAGE_SUNBURST.md](OPENAI_IMAGE_SUNBURST.md)。本手册不记录实付费调用。 |
 | `REAL_MEDIA_PRICE_VERSION` | 无可用默认；填写已核对价格快照的版本。历史试接文档不是当前报价。 |
 | `DASHSCOPE_MEDIA_PRICE_IMAGE`、`DASHSCOPE_MEDIA_PRICE_VIDEO_SECOND`、`DASHSCOPE_MEDIA_PRICE_TTS_CHARACTER` | 各能力正数单价；未配置就不开放该能力。CNY。 |
 | `ELEVENLABS_MEDIA_PRICE_MUSIC_SECOND` | 音乐正数单价；未配置不开放音乐。USD。不能当作台词单价。 |
@@ -52,7 +56,7 @@
 corepack pnpm --filter @ai-drama/api real-media:provision
 ```
 
-只有另获目标数据库写入授权后，才可运行 `corepack pnpm --filter @ai-drama/api exec tsx src/admin/real-media-provision-cli.ts --execute`。它为当前 ACTIVE workspace 创建所需 `ProviderConfiguration`，`encryptedCredentialRef` 只存 `env:dashscope-media` / `env:elevenlabs-media` 引用，`maxAttempts=1`；不执行 migration，不存明文 key，不调用模型。已有配置不匹配就拒绝；重新启用已禁用且完全匹配的配置还需显式 `--enable-existing`。本轮未运行 execute。
+只有另获目标数据库写入授权后，才可运行 `corepack pnpm --filter @ai-drama/api exec tsx src/admin/real-media-provision-cli.ts --execute`。它为当前 ACTIVE workspace 创建所需 `ProviderConfiguration`，`encryptedCredentialRef` 只存 `env:dashscope-media` / `env:elevenlabs-media` /（显式选择 sunburst 时）`env:openai-media` 引用，`maxAttempts=1`；不执行 migration，不存明文 key，不调用模型。已有配置不匹配就拒绝；重新启用已禁用且完全匹配的配置还需显式 `--enable-existing`。允许列表在原四对之外只增加 `openai-media:image.generate`。本轮未运行 execute。
 
 ### 收据与凭据轮换
 

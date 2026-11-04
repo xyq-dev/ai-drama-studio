@@ -43,10 +43,14 @@ const OSS=/^dashscope-result-[a-z0-9-]+\.oss-cn-[a-z0-9-]+\.aliyuncs\.com$/;
 /** Provider results are read without model credentials. Redirects, private DNS targets and oversized bodies fail. */
 export async function downloadRealMediaResult(raw:string,maxBytes:number):Promise<Buffer>{
   if(raw.startsWith("data:")){
-    const match=/^data:audio\/mpeg;base64,([A-Za-z0-9+/]+={0,2})$/.exec(raw);
-    if(!match||match[1]!.length>Math.ceil(4*1024*1024/3)*4)throw new PersistenceError("REAL_MEDIA_OUTPUT_INVALID","Invalid binary music receipt");
+    const music=/^data:audio\/mpeg;base64,([A-Za-z0-9+/]+={0,2})$/.exec(raw);
+    const image=/^data:image\/png;base64,([A-Za-z0-9+/]+={0,2})$/.exec(raw);
+    const match=music??image;
+    const cap=music?4*1024*1024:8*1024*1024;
+    if(!match||match[1]!.length>Math.ceil(cap/3)*4)throw new PersistenceError("REAL_MEDIA_OUTPUT_INVALID","Invalid binary media receipt");
     const bytes=Buffer.from(match[1]!,"base64");
-    if(!bytes.length||bytes.length>Math.min(maxBytes,4*1024*1024)||bytes.toString("base64")!==match[1])throw new PersistenceError("REAL_MEDIA_OUTPUT_INVALID","Invalid binary music receipt");
+    if(!bytes.length||bytes.length>Math.min(maxBytes,cap)||bytes.toString("base64")!==match[1])throw new PersistenceError("REAL_MEDIA_OUTPUT_INVALID","Invalid binary media receipt");
+    if(image&&!bytes.subarray(0,8).equals(Buffer.from("89504e470d0a1a0a","hex")))throw new PersistenceError("REAL_MEDIA_OUTPUT_INVALID","Invalid image receipt");
     return bytes;
   }
   let url:URL;try{url=new URL(raw);}catch{throw new PersistenceError("REAL_MEDIA_OUTPUT_INVALID","Invalid provider output reference");}

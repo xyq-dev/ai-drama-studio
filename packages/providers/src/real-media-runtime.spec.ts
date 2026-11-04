@@ -133,3 +133,58 @@ describe("real media runtime read-only recovery and exact money configuration",(
     expect(loadRealMediaEnvironment({}, {REAL_MEDIA_ALLOW_PRODUCTION:"true"}).REAL_MEDIA_ALLOW_PRODUCTION).toBeUndefined();
   });
 });
+
+describe("explicit openai sunburst image configuration", () => {
+  const sunburst = { ...configured, REAL_MEDIA_IMAGE_PROVIDER: "openai-media", OPENAI_MEDIA_API_KEY: "openai-media-test-key",
+    OPENAI_MEDIA_PRICE_IMAGE: "0.04", OPENAI_BASE_URL: "https://image.example.test/" };
+  it("keeps DashScope image when sunburst credentials exist but the provider is not selected", async () => {
+    const env = loadRealMediaEnvironment({ ...configured, OPENAI_MEDIA_API_KEY: sunburst.OPENAI_MEDIA_API_KEY,
+      OPENAI_MEDIA_PRICE_IMAGE: "0.04", OPENAI_BASE_URL: "https://image.example.test" });
+    const image = await new ServerRealMediaRuntime(workspaceId, env, true).configurationFor("image.generate");
+    expect(image).toMatchObject({ providerKey: "dashscope-media", model: "qwen-image-3.0", currency: "CNY" });
+  });
+  it("pins sunburst only when explicitly selected and does not fall back when that config is incomplete", async () => {
+    const ready = new ServerRealMediaRuntime(workspaceId, loadRealMediaEnvironment(sunburst), true);
+    const image = await ready.configurationFor("image.generate");
+    expect(image).toMatchObject({ providerKey: "openai-media", model: "gpt-image-2.5-sunburst", region: "image.example.test",
+      credentialRef: "env:openai-media", currency: "USD", unitType: "image",
+      parameters: { baseUrl: "https://image.example.test", quality: "max", size: "1024x1536" } });
+    expect(JSON.stringify(image)).not.toContain("openai-media-test-key");
+    expect(await ready.configurationFor("video.generate")).toMatchObject({ providerKey: "dashscope-media", model: "wan2.6-i2v-flash" });
+    const moved = await new ServerRealMediaRuntime(workspaceId, loadRealMediaEnvironment({ ...sunburst, OPENAI_API_BASE: "https://image.example.test" }), true).configurationFor("image.generate");
+    expect(moved?.id).toBe(image?.id);
+    expect(await new ServerRealMediaRuntime(workspaceId, loadRealMediaEnvironment({ ...sunburst, OPENAI_BASE_URL: undefined, OPENAI_API_BASE: undefined }), true).configurationFor("image.generate")).toBeNull();
+    expect(await new ServerRealMediaRuntime(workspaceId, loadRealMediaEnvironment({ ...sunburst, OPENAI_MEDIA_API_KEY: undefined }), true).configurationFor("image.generate")).toBeNull();
+    expect(await new ServerRealMediaRuntime(workspaceId, loadRealMediaEnvironment({ ...sunburst, OPENAI_MEDIA_PRICE_IMAGE: undefined }), true).configurationFor("image.generate")).toBeNull();
+    expect(await new ServerRealMediaRuntime(workspaceId, loadRealMediaEnvironment({ ...sunburst, OPENAI_BASE_URL: undefined }), true).configurationFor("video.generate"))
+      .toMatchObject({ model: "wan2.6-i2v-flash" });
+  });
+  it("rejects other image providers and conflicting bases by field name", () => {
+    for (const provider of ["gpt-image-2.5-flare", "qwen-image-3.0", "dall-e-3", "dall-e"]) {
+      expect(() => loadRealMediaEnvironment({ ...sunburst, REAL_MEDIA_IMAGE_PROVIDER: provider })).toThrow("REAL_MEDIA_IMAGE_PROVIDER");
+    }
+    expect(() => loadRealMediaEnvironment({ ...sunburst, OPENAI_API_BASE: "https://other.example.test" })).toThrow("OPENAI_BASE_URL");
+    expect(() => loadRealMediaEnvironment({ ...sunburst, OPENAI_BASE_URL: "http://image.example.test" })).toThrow("OPENAI_BASE_URL");
+    expect(() => loadRealMediaEnvironment({ ...sunburst, OPENAI_BASE_URL: "" })).toThrow("OPENAI_BASE_URL");
+  });
+  it("ignores file-only image provider, base URL and media key", () => {
+    const env = loadRealMediaEnvironment(configured, { REAL_MEDIA_IMAGE_PROVIDER: "openai-media", OPENAI_BASE_URL: "https://file.example.test",
+      OPENAI_API_BASE: "https://file.example.test", OPENAI_MEDIA_API_KEY: "file-only-openai-media-key" });
+    expect(env.REAL_MEDIA_IMAGE_PROVIDER).toBeUndefined();
+    expect(env.OPENAI_BASE_URL).toBeUndefined();
+    expect(env.OPENAI_MEDIA_API_KEY).toBeUndefined();
+  });
+  it("gives sunburst query recovery no submit and no second generation", async () => {
+    const sent: string[] = [];
+    const transport: import("./real-media-adapters").RealMediaHttpTransport = async (request) => {
+      sent.push(request.method + " " + request.url);
+      return { status: 200, headers: { "x-request-id": "req_1" }, bytes: Buffer.from(JSON.stringify({ data: [{ b64_json: "aaaa" }] })) };
+    };
+    const runtime = new ServerRealMediaRuntime(workspaceId, loadRealMediaEnvironment(sunburst), true, transport);
+    const frozen = (await runtime.configurationFor("image.generate"))!;
+    const adapter = await runtime.adapterFor(frozen, "query");
+    await expect(adapter.submit({} as never)).rejects.toThrow("MEDIA_SUBMIT_DISABLED");
+    expect((await adapter.inspect("req_1")).state).toBe("UNKNOWN");
+    expect(sent).toEqual([]);
+  });
+});

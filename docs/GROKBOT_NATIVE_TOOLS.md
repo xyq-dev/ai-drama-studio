@@ -35,6 +35,7 @@
 | 试听、选用、本地重切、恢复、字幕、导出 | `tts-preview` `tts-select` `tts-redo` `tts-resume` `tts-subtitles` `tts-export` | 父音频血统；对齐不足不编造时间 | 已实现（本地） |
 | 查阻塞 | `status` | blockers / stage | 已实现 |
 | 真实付费 TTS | `tts-generate --execute` + `ELEVENLABS_TTS_API_KEY` | 本轮未调用 | 待密钥与 Pro 格式 |
+| OpenAI 图片 `gpt-image-2.5-sunburst` | 不在本 CLI | 拒绝 `/v1/images/*`；paidCalls 仍为 0 | 见 `docs/OPENAI_IMAGE_SUNBURST.md`；未实付费 |
 | 《末班车暗号》复现 | `fixtures/moban-che-anhao/repro.sh` | stage=voice_plan，1 次外部操作 | 已实现 |
 
 ## 《末班车暗号》复现

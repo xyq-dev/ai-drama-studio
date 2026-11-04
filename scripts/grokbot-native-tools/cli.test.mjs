@@ -4,6 +4,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { runCli } from "./cli.mjs";
+import { assertPathAllowed } from "./live-api.mjs";
 import { loadStore } from "./store.mjs";
 
 let passed = 0;
@@ -33,6 +34,7 @@ await test("help", async () => {
   assert(r.ok && r.exitCode === 0, "help should succeed");
   assert(String(r.output.help).includes("voice-plan"), "help mentions voice-plan");
   assert(String(r.output.help).includes("approve-script"), "help mentions approve-script");
+  assert(String(r.output.help).includes("gpt-image-2.5-sunburst"), "help names sunburst as not invoked");
 });
 
 await test("create → list → continue → save-script → status (local)", async () => {
@@ -232,6 +234,14 @@ await test("moban-che-anhao repro.sh", async () => {
   const raw = JSON.parse(readFileSync(store, "utf8"));
   const project = Object.values(raw.projects)[0];
   assert(project.episodes[0].scripts[0].reviewStatus === "APPROVED", "script approved in store");
+});
+
+await test("refuses openai image generation paths", async () => {
+  for (const path of ["/v1/images/generations", "/v1/images/edits", "/generate-image"]) {
+    let refused = false;
+    try { assertPathAllowed("POST", path); } catch { refused = true; }
+    assert(refused, path);
+  }
 });
 
 await test("live refuses approve-script", async () => {

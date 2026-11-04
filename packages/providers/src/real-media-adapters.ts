@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isIP } from "node:net";
 import type { RealMediaConfiguration, RealMediaSnapshot } from "@ai-drama/contracts";
 import {
   MediaSubmissionUnknownError,
@@ -16,6 +17,16 @@ const MAX_JSON = 1024 * 1024;
 export const REAL_MUSIC_MAX_BYTES = 4 * 1024 * 1024;
 export const DASHSCOPE_MEDIA_PROVIDER_KEY = "dashscope-media";
 export const ELEVENLABS_MEDIA_PROVIDER_KEY = "elevenlabs-media";
+export const OPENAI_MEDIA_PROVIDER_KEY = "openai-media";
+/** Pinned production image model. Other ids, including flare / DashScope / DALL·E, are rejected. */
+export const OPENAI_IMAGE_MODEL_ID = "gpt-image-2.5-sunburst";
+export const OPENAI_IMAGE_QUALITY = "max";
+export const OPENAI_IMAGE_SIZE = "1024x1536";
+export const OPENAI_IMAGE_GENERATIONS_PATH = "/v1/images/generations";
+export const OPENAI_IMAGE_EDITS_PATH = "/v1/images/edits";
+/** Synchronous PNG bytes must fit the existing 12 MiB sealed-receipt plaintext limit after base64. */
+export const OPENAI_IMAGE_MAX_BYTES = 8 * 1024 * 1024;
+export const OPENAI_IMAGE_EDIT_PRODUCTIZED = false;
 export interface RealMediaHttpRequest {
   method: "GET" | "POST"; url: string; headers: Record<string, string>;
   body?: string; timeoutMs: number; maxResponseBytes: number;
@@ -258,6 +269,127 @@ export class ElevenLabsMusicAdapter implements MediaProviderAdapter {
     if (output.kind !== "MUSIC" || output.retrieval.kind !== "URI"
       || !/^data:audio\/mpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(output.retrieval.uri)
       || output.retrieval.uri.length > Math.ceil(REAL_MUSIC_MAX_BYTES / 3) * 4 + 32) throw new Error("MEDIA_OUTPUT_INVALID");
+    return { uri: output.retrieval.uri };
+  }
+}
+
+const OPENAI_IMAGE_RESPONSE_LIMIT = 12 * 1024 * 1024;
+const PNG_MAGIC = Buffer.from("89504e470d0a1a0a", "hex");
+
+/** HTTPS origin only. No default host: an unset or rejected base never becomes api.openai.com. */
+export function canonicalOpenAiImageBaseUrl(value: string): string {
+  let url: URL;
+  try { url = new URL(value); } catch { throw new Error("OPENAI_IMAGE_BASE_URL_INVALID"); }
+  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (url.protocol !== "https:" || url.username || url.password || url.hash || url.search
+    || (url.port && url.port !== "443") || (url.pathname !== "" && url.pathname !== "/")
+    || isIP(host) !== 0 || host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local")
+    || host === "metadata.google.internal" || host.endsWith(".internal")) {
+    throw new Error("OPENAI_IMAGE_BASE_URL_INVALID");
+  }
+  return url.origin;
+}
+
+export interface OpenAiImageEditScaffold {
+  productized: false;
+  method: "POST";
+  path: typeof OPENAI_IMAGE_EDITS_PATH;
+  model: typeof OPENAI_IMAGE_MODEL_ID;
+  quality: typeof OPENAI_IMAGE_QUALITY;
+  fields: readonly ["image", "prompt", "mask"];
+}
+
+/** Documents the edits endpoint. This scaffold does not send it and is not a quote capability. */
+export function openAiImageEditScaffold(): OpenAiImageEditScaffold {
+  return { productized: false, method: "POST", path: OPENAI_IMAGE_EDITS_PATH, model: OPENAI_IMAGE_MODEL_ID,
+    quality: OPENAI_IMAGE_QUALITY, fields: ["image", "prompt", "mask"] };
+}
+
+function header(headers: Record<string, string>, name: string): string | undefined {
+  return Object.entries(headers).find(([key]) => key.toLowerCase() === name)?.[1];
+}
+function openaiJson(response: RealMediaHttpResponse): Record<string, unknown> {
+  if (response.bytes.byteLength > OPENAI_IMAGE_RESPONSE_LIMIT) throw new Error("MEDIA_RESPONSE_LIMIT");
+  return record(JSON.parse(Buffer.from(response.bytes).toString("utf8")));
+}
+function pngFromBase64(value: unknown, secret: string): Buffer {
+  const limit = Math.ceil(OPENAI_IMAGE_MAX_BYTES / 3) * 4;
+  if (typeof value !== "string" || value.length === 0 || value.length > limit || (secret && value.includes(secret))
+    || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) throw new Error("MEDIA_IMAGE_OUTPUT_INVALID");
+  const bytes = Buffer.from(value, "base64");
+  if (bytes.length === 0 || bytes.length > OPENAI_IMAGE_MAX_BYTES || bytes.toString("base64") !== value
+    || !bytes.subarray(0, PNG_MAGIC.length).equals(PNG_MAGIC)) throw new Error("MEDIA_IMAGE_OUTPUT_INVALID");
+  return bytes;
+}
+
+export class OpenAiImageAdapter implements MediaProviderAdapter {
+  readonly providerKey = OPENAI_MEDIA_PROVIDER_KEY;
+  readonly #key: string;
+  readonly #baseUrl: string;
+  constructor(readonly configuration: RealMediaConfiguration, key: string, private readonly transport: RealMediaHttpTransport = fetchRealMediaHttp) {
+    this.#key = checkedSecret(key);
+    this.configuration = Object.freeze({ ...structuredClone(configuration), parameters: Object.freeze(structuredClone(configuration.parameters)) });
+    const parameters = this.configuration.parameters;
+    const names = Object.keys(parameters).sort().join(",");
+    let baseUrl: string;
+    try { baseUrl = typeof parameters.baseUrl === "string" ? canonicalOpenAiImageBaseUrl(parameters.baseUrl) : ""; }
+    catch { baseUrl = ""; }
+    if (configuration.providerKey !== this.providerKey || configuration.capability !== "image.generate"
+      || configuration.model !== OPENAI_IMAGE_MODEL_ID || configuration.currency !== "USD" || configuration.unitType !== "image"
+      || names !== "baseUrl,quality,size" || parameters.quality !== OPENAI_IMAGE_QUALITY || parameters.size !== OPENAI_IMAGE_SIZE
+      || !baseUrl || parameters.baseUrl !== baseUrl || configuration.region !== new URL(baseUrl).hostname) {
+      throw new Error("MEDIA_CONFIGURATION_UNSUPPORTED");
+    }
+    this.#baseUrl = baseUrl;
+  }
+  capabilities(): readonly MediaCapability[] { return ["image.generate"]; }
+  editScaffold(): OpenAiImageEditScaffold { return openAiImageEditScaffold(); }
+  /** Reference edit/inpaint stays unsent until a quote capability exists. No fallback model is substituted. */
+  submitEdit(): Promise<never> {
+    void this.editScaffold();
+    throw new Error("MEDIA_EDIT_NOT_PRODUCTIZED");
+  }
+  async submit(input: MediaGenerationRequest): Promise<MediaSubmitResult> {
+    if (!this.configuration.enabled) throw new Error("MEDIA_SUBMIT_DISABLED");
+    const frozen = snapshot(input, this.configuration);
+    if (input.capability !== "image.generate") throw new Error("MEDIA_CAPABILITY_UNSUPPORTED");
+    if (input.resolvedSourceImage || frozen.sourceImage) throw new Error("MEDIA_EDIT_NOT_PRODUCTIZED");
+    if (frozen.sourceText.length > 2000) throw new Error("MEDIA_PROMPT_LIMIT");
+    let id: string | undefined;
+    try {
+      const response = await this.transport({ method: "POST", url: this.#baseUrl + OPENAI_IMAGE_GENERATIONS_PATH,
+        timeoutMs: 180_000, maxResponseBytes: OPENAI_IMAGE_RESPONSE_LIMIT,
+        headers: { Authorization: "Bearer " + this.#key, "Content-Type": "application/json", "Idempotency-Key": input.clientRequestKey },
+        body: JSON.stringify({ model: OPENAI_IMAGE_MODEL_ID, prompt: frozen.sourceText, n: 1, size: OPENAI_IMAGE_SIZE,
+          quality: OPENAI_IMAGE_QUALITY, output_format: "png" }) });
+      id = requestId(header(response.headers, "x-request-id"), this.#key) ?? requestId(header(response.headers, "request-id"), this.#key);
+      const parsed = openaiJson(response);
+      const refusal = rejected(response, id);
+      if (refusal) return refusal;
+      if (response.status !== 200) throw new MediaSubmissionUnknownError(id);
+      if (!id) throw new MediaSubmissionUnknownError();
+      const data = parsed.data;
+      const row = Array.isArray(data) && data.length === 1 ? record(data[0]) : null;
+      if (!row) throw new MediaSubmissionUnknownError(id);
+      const bytes = pngFromBase64(row.b64_json, this.#key);
+      return { kind: "succeeded", providerRequestId: id,
+        outputs: [{ kind: "IMAGE", mimeTypeHint: "image/png", retrieval: { kind: "URI",
+          uri: "data:image/png;base64," + bytes.toString("base64") } }],
+        accounting: { provider: this.providerKey, model: OPENAI_IMAGE_MODEL_ID, usage: usage(parsed.usage), costs: [] } };
+    } catch (error) {
+      if (error instanceof MediaSubmissionUnknownError) throw error;
+      throw new MediaSubmissionUnknownError(id);
+    }
+  }
+  async inspect(id: string): Promise<MediaProviderObservation> {
+    if (!requestId(id, this.#key)) throw new Error("MEDIA_REQUEST_ID_INVALID");
+    return observation(id, "UNKNOWN", this.providerKey, OPENAI_IMAGE_MODEL_ID);
+  }
+  async resolveOutput(output: MediaProviderOutput): Promise<MediaResolvedOutput> {
+    if (output.kind !== "IMAGE" || output.retrieval.kind !== "URI") throw new Error("MEDIA_OUTPUT_INVALID");
+    const match = /^data:image\/png;base64,([A-Za-z0-9+/]+={0,2})$/.exec(output.retrieval.uri);
+    if (!match || output.retrieval.uri.includes(this.#key)) throw new Error("MEDIA_OUTPUT_INVALID");
+    pngFromBase64(match[1], this.#key);
     return { uri: output.retrieval.uri };
   }
 }
