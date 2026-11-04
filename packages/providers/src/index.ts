@@ -153,5 +153,6 @@ export * from "./vimax-planning";
 export { MediaSubmissionUnknownError } from "./media-adapter";
 export * from "./real-media-adapters";
 export * from "./elevenlabs-tts-adapter";
+export * from "./minimax-tts-adapter";
 export * from "./real-media-runtime";
 export * from "./media-object-client";

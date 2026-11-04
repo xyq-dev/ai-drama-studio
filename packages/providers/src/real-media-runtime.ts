@@ -1,6 +1,7 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import type { RealMediaCapability, RealMediaConfiguration, SpeechCapabilities } from "@ai-drama/contracts";
 import { ElevenLabsTtsAdapter } from "./elevenlabs-tts-adapter";
+import { MiniMaxTtsAdapter, canonicalMiniMaxTtsBaseUrl } from "./minimax-tts-adapter";
 import {
   DashScopeMediaAdapter, ElevenLabsMusicAdapter, OpenAiImageAdapter, canonicalOpenAiImageBaseUrl,
   OPENAI_IMAGE_MODEL_ID, OPENAI_IMAGE_QUALITY, OPENAI_IMAGE_SIZE, type RealMediaHttpTransport,
@@ -22,6 +23,8 @@ export const REAL_MEDIA_ENV_KEYS = [
   "ELEVENLABS_TTS_PRICE_CHARACTER", "ELEVENLABS_TTS_OUTPUT_FORMAT",
   "OPENAI_MEDIA_API_KEY", "OPENAI_MEDIA_CREDENTIAL_VERSION", "OPENAI_MEDIA_PREVIOUS_API_KEY", "OPENAI_MEDIA_PREVIOUS_CREDENTIAL_VERSION",
   "OPENAI_MEDIA_PRICE_IMAGE", "OPENAI_BASE_URL", "OPENAI_API_BASE", "REAL_MEDIA_IMAGE_PROVIDER",
+  "MINIMAX_API_KEY", "MINIMAX_TTS_CREDENTIAL_VERSION", "MINIMAX_PREVIOUS_API_KEY", "MINIMAX_TTS_PREVIOUS_CREDENTIAL_VERSION",
+  "MINIMAX_TTS_PRICE_CHARACTER", "MINIMAX_TTS_MODEL", "MINIMAX_TTS_BASE_URL", "MINIMAX_TTS_OUTPUT_FORMAT", "MINIMAX_TTS_SAMPLE_RATE",
   "REAL_MEDIA_MAX_SINGLE_CNY", "REAL_MEDIA_MAX_SINGLE_USD",
 ] as const;
 export type RealMediaEnvironment = Partial<Record<(typeof REAL_MEDIA_ENV_KEYS)[number], string>>;
@@ -50,7 +53,8 @@ export function loadRealMediaEnvironment(processEnv: Record<string, string | und
   for (const name of REAL_MEDIA_ENV_KEYS) {
     const value = result[name]; if (value === undefined) continue;
     if (value === "") {
-      if (/VERSION$|MAX_SINGLE/.test(name) || name === "OPENAI_BASE_URL" || name === "OPENAI_API_BASE" || name === "REAL_MEDIA_IMAGE_PROVIDER") errors.push(name);
+      if (/VERSION$|MAX_SINGLE/.test(name) || name === "OPENAI_BASE_URL" || name === "OPENAI_API_BASE" || name === "REAL_MEDIA_IMAGE_PROVIDER"
+        || name === "MINIMAX_TTS_BASE_URL" || name === "MINIMAX_TTS_MODEL" || name === "MINIMAX_TTS_OUTPUT_FORMAT" || name === "MINIMAX_TTS_SAMPLE_RATE") errors.push(name);
       continue;
     }
     if (/API_KEY$/.test(name) && !validKey(value)) errors.push(name);
@@ -72,6 +76,13 @@ export function loadRealMediaEnvironment(processEnv: Record<string, string | und
   }
   const speechFormat = result.ELEVENLABS_TTS_OUTPUT_FORMAT;
   if (speechFormat !== undefined && speechFormat !== "pcm_44100" && speechFormat !== "wav_44100") errors.push("ELEVENLABS_TTS_OUTPUT_FORMAT");
+  if (result.MINIMAX_TTS_MODEL !== undefined && result.MINIMAX_TTS_MODEL !== "speech-2.8-hd") errors.push("MINIMAX_TTS_MODEL");
+  if (result.MINIMAX_TTS_OUTPUT_FORMAT !== undefined && result.MINIMAX_TTS_OUTPUT_FORMAT !== "wav" && result.MINIMAX_TTS_OUTPUT_FORMAT !== "pcm") errors.push("MINIMAX_TTS_OUTPUT_FORMAT");
+  if (result.MINIMAX_TTS_SAMPLE_RATE !== undefined && result.MINIMAX_TTS_SAMPLE_RATE !== "44100") errors.push("MINIMAX_TTS_SAMPLE_RATE");
+  if (result.MINIMAX_TTS_BASE_URL !== undefined) {
+    try { result.MINIMAX_TTS_BASE_URL = canonicalMiniMaxTtsBaseUrl(result.MINIMAX_TTS_BASE_URL); }
+    catch { errors.push("MINIMAX_TTS_BASE_URL"); delete result.MINIMAX_TTS_BASE_URL; }
+  }
   if (errors.length) throw new RealMediaEnvironmentError([...new Set(errors)]);
   return result;
 }
@@ -159,6 +170,13 @@ export class ServerRealMediaRuntime {
         this.#credentials.set(provider + ":" + previousVersion, read("_PREVIOUS_API_KEY")!);
       }
     }
+    const minimaxVersion = environment.MINIMAX_TTS_CREDENTIAL_VERSION ?? "v1";
+    if (validKey(environment.MINIMAX_API_KEY)) this.#credentials.set("minimax-tts:" + minimaxVersion, environment.MINIMAX_API_KEY!);
+    if (validKey(environment.MINIMAX_PREVIOUS_API_KEY) && environment.MINIMAX_TTS_PREVIOUS_CREDENTIAL_VERSION) {
+      const previousVersion = environment.MINIMAX_TTS_PREVIOUS_CREDENTIAL_VERSION;
+      if (previousVersion === minimaxVersion) throw new RealMediaEnvironmentError(["MINIMAX_TTS_PREVIOUS_CREDENTIAL_VERSION"]);
+      this.#credentials.set("minimax-tts:" + previousVersion, environment.MINIMAX_PREVIOUS_API_KEY!);
+    }
   }
   async configurationFor(capability: RealMediaCapability): Promise<RealMediaConfiguration | null> {
     if (!this.enabled) return null;
@@ -210,20 +228,51 @@ export class ServerRealMediaRuntime {
     const version = "media-" + digest(base).slice(0, 24);
     return { ...base, id: uuidFor([this.workspaceId, providerKey, "audio.tts"]), version, enabled: true, queryAllowed: true };
   }
+  /**
+   * Domestic MiniMax speech-2.8-hd. Independent of dashscope `audio.tts`, ElevenLabs `eleven_v4`, and music credentials.
+   * A missing key or price closes this configuration. It does not fall through to another TTS provider.
+   */
+  async minimaxTtsConfiguration(): Promise<RealMediaConfiguration | null> {
+    if (!this.enabled) return null;
+    const providerKey = "minimax-tts";
+    const credentialVersion = this.#environment.MINIMAX_TTS_CREDENTIAL_VERSION ?? "v1";
+    const price = this.#environment.MINIMAX_TTS_PRICE_CHARACTER;
+    const model = this.#environment.MINIMAX_TTS_MODEL ?? "speech-2.8-hd";
+    const outputFormat = this.#environment.MINIMAX_TTS_OUTPUT_FORMAT ?? "wav";
+    const sampleRate = this.#environment.MINIMAX_TTS_SAMPLE_RATE ?? "44100";
+    let baseUrl: string;
+    try { baseUrl = canonicalMiniMaxTtsBaseUrl(this.#environment.MINIMAX_TTS_BASE_URL ?? "https://api.minimaxi.com"); }
+    catch { return null; }
+    if (model !== "speech-2.8-hd" || (outputFormat !== "wav" && outputFormat !== "pcm") || sampleRate !== "44100"
+      || !this.#credentials.has(providerKey + ":" + credentialVersion) || !price || !AMOUNT.test(price) || Number(price) <= 0
+      || !this.#environment.REAL_MEDIA_PRICE_VERSION) return null;
+    const base = {
+      providerKey, capability: "audio.tts" as const, region: new URL(baseUrl).hostname, model,
+      credentialRef: "env:minimax-tts", credentialVersion, priceVersion: this.#environment.REAL_MEDIA_PRICE_VERSION,
+      currency: "CNY" as const, unitPrice: price, maximumOperationAmount: this.#environment.REAL_MEDIA_MAX_SINGLE_CNY ?? "10",
+      unitType: "character" as const, parameters: { outputFormat, sampleRate: 44100, baseUrl, drySpeech: true },
+    };
+    const version = "media-" + digest(base).slice(0, 24);
+    return { ...base, id: uuidFor([this.workspaceId, providerKey, "audio.tts"]), version, enabled: true, queryAllowed: true };
+  }
   async adapterFor(configuration: RealMediaConfiguration, mode: "submit" | "query"): Promise<MediaProviderAdapter> {
     if (configuration.credentialRef !== "env:" + configuration.providerKey) throw new Error("REAL_MEDIA_CREDENTIAL_REFERENCE_INVALID");
     const key = this.#credentials.get(configuration.providerKey + ":" + configuration.credentialVersion);
     if (!key) throw new Error("REAL_MEDIA_CREDENTIAL_VERSION_UNAVAILABLE");
     if (mode === "submit") {
       const active = configuration.providerKey === "elevenlabs-tts"
-        ? await this.elevenLabsTtsConfiguration() : await this.configurationFor(configuration.capability);
+        ? await this.elevenLabsTtsConfiguration()
+        : configuration.providerKey === "minimax-tts"
+          ? await this.minimaxTtsConfiguration()
+          : await this.configurationFor(configuration.capability);
       if (!active || digest(active) !== digest(configuration)) throw new Error("REAL_MEDIA_CONFIGURATION_CHANGED");
     } else if (!configuration.queryAllowed) throw new Error("REAL_MEDIA_QUERY_DISABLED");
     const adapterConfiguration = mode === "query" ? { ...configuration, enabled: false } : configuration;
     const adapter = configuration.providerKey === "dashscope-media" ? new DashScopeMediaAdapter(adapterConfiguration, key, this.transport)
       : configuration.providerKey === "elevenlabs-media" ? new ElevenLabsMusicAdapter(adapterConfiguration, key, this.transport)
       : configuration.providerKey === "openai-media" ? new OpenAiImageAdapter(adapterConfiguration, key, this.transport)
-      : configuration.providerKey === "elevenlabs-tts" ? new ElevenLabsTtsAdapter(adapterConfiguration, key, this.transport) : null;
+      : configuration.providerKey === "elevenlabs-tts" ? new ElevenLabsTtsAdapter(adapterConfiguration, key, this.transport)
+      : configuration.providerKey === "minimax-tts" ? new MiniMaxTtsAdapter(adapterConfiguration, key, this.transport) : null;
     if (!adapter) throw new Error("REAL_MEDIA_PROVIDER_UNSUPPORTED");
     if (mode === "submit") return adapter;
     // Recovery receives an observation capability. It cannot turn a mutable flag back on and submit another job.
