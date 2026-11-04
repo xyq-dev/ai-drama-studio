@@ -1,0 +1,16 @@
+{
+  "schema": "elevenlabs-tts.voice-candidates.v1",
+  "note": "Placeholders until a live ElevenLabs catalog is fetched with ELEVENLABS_TTS_API_KEY. Not music voices and not qwen presets.",
+  "roles": {
+    "阿岚": [
+      { "candidateId": "alan-clear", "voiceId": "placeholder-alan-clear", "label": "年轻女声·清晰", "delivery": "略紧、吐字清楚" },
+      { "candidateId": "alan-tense", "voiceId": "placeholder-alan-tense", "label": "年轻女声·更紧", "delivery": "压低、短促" },
+      { "candidateId": "alan-soft", "voiceId": "placeholder-alan-soft", "label": "年轻女声·偏柔", "delivery": "仍保持清晰" }
+    ],
+    "老周": [
+      { "candidateId": "zhou-low", "voiceId": "placeholder-zhou-low", "label": "中年男声·低", "delivery": "短句、少起伏" },
+      { "candidateId": "zhou-dry", "voiceId": "placeholder-zhou-dry", "label": "中年男声·干", "delivery": "平、不改语速参数" },
+      { "candidateId": "zhou-firm", "voiceId": "placeholder-zhou-firm", "label": "中年男声·硬", "delivery": "收住字尾" }
+    ]
+  }
+}

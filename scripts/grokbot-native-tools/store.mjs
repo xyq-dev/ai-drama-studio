@@ -231,30 +231,34 @@ export function voicePlan(store, { projectId, episodeNo = 1, currency = "待填"
       name: c.name,
       voiceVersionIntent: c.voiceIntent || "",
       lines,
-      plannedTtsCalls: lines.length,
+      spokenCharacters: lines.reduce((n, line) => n + [...line].length, 0),
     };
   });
-  const plannedTtsCalls = characters.reduce((n, c) => n + c.plannedTtsCalls, 0);
-  const dialogueLines = plannedTtsCalls;
+  const dialogueLines = characters.reduce((n, c) => n + c.lines.length, 0);
+  const plannedExternalOperations = dialogueLines > 0 ? 1 : 0;
   const plan = {
     status: "PLAN_READY",
     mode: "quote_then_authorize",
-    note: "未发起真实 TTS；需费用上限与媒体密钥后试听",
+    provider: "elevenlabs-tts",
+    model: "eleven_v4",
+    billing: "one-scene-dialogue",
+    note: "未发起真实 TTS。整场对白是一次 ElevenLabs text-to-dialogue，不再按句提交 qwen，也不使用音乐密钥。",
     scriptRevisionId: approved.id,
     sceneId: scene.id,
     characters,
     totals: {
       dialogueLines,
-      plannedTtsCalls,
-      suggestedMaxTts: Math.max(plannedTtsCalls * 3, plannedTtsCalls + 4),
+      plannedExternalOperations,
+      plannedTtsCalls: plannedExternalOperations,
+      suggestedMaxTts: plannedExternalOperations,
       currency,
       budgetCap,
     },
     nextHumanSteps: [
-      "确认币种与费用上限",
-      "提供/核对 DASHSCOPE_MEDIA_* 就绪（或当前手册要求的媒体凭据）",
-      "服务器只读核 SHA / drafts / Worker / 字体",
-      "authorize 后逐句 generate→试听→选用（Bot 不自动选用）",
+      "确认 USD 字符单价 ELEVENLABS_TTS_PRICE_CHARACTER 与费用上限",
+      "准备 ELEVENLABS_TTS_API_KEY（不要复用 ELEVENLABS_MEDIA_* 音乐密钥或单价）",
+      "pcm_44100 / wav_44100 需要 ElevenLabs Pro 及以上；账号拒绝时保留真实错误，不降级模型或码率",
+      "performance-plan → pick-voice → tts-quote → tts-authorize → 一次 tts-generate",
     ],
   };
   project.voicePlan = plan;
@@ -314,6 +318,9 @@ export function projectStatus(store, projectId) {
     voicePlan: project.voicePlan
       ? {
           status: project.voicePlan.status,
+          provider: project.voicePlan.provider || null,
+          model: project.voicePlan.model || null,
+          billing: project.voicePlan.billing || null,
           totals: project.voicePlan.totals,
           nextHumanSteps: project.voicePlan.nextHumanSteps,
         }

@@ -1,6 +1,6 @@
 import { describe,expect,it } from "vitest";
 import type { RealMediaConfiguration } from "@ai-drama/contracts";
-import { estimateRealMedia,realMediaAmountUnits,realMediaInputHash } from "./real-media";
+import { assertRealMediaInput, estimateRealMedia,realMediaAmountUnits,realMediaInputHash } from "./real-media";
 const configuration:RealMediaConfiguration={id:"id",version:"v1",providerKey:"dashscope-media",capability:"audio.tts",model:"qwen3-tts-flash",region:"beijing",credentialRef:"media-env:beijing",credentialVersion:"v1",enabled:true,queryAllowed:true,priceVersion:"history",currency:"CNY",unitPrice:"0.00008",unitType:"character",parameters:{}};
 describe("real media single-operation estimates",()=>{
   it("counts all Unicode codepoints conservatively without floating point rounding",()=>{
@@ -13,5 +13,12 @@ describe("real media single-operation estimates",()=>{
     expect(realMediaInputHash(base)).toBe(realMediaInputHash({sourceImage:base.sourceImage,configuration}));
     expect(realMediaInputHash(base)).not.toBe(realMediaInputHash({...base,configuration:{...configuration,credentialVersion:"v2"}}));
     expect(realMediaInputHash(base)).not.toBe(realMediaInputHash({...base,sourceImage:{...base.sourceImage,checksumSha256:"b".repeat(64)}}));
+  });
+  it("prices eleven_v4 speech once per spoken character and refuses music-priced speech",()=>{
+    const speech={...configuration,providerKey:"elevenlabs-tts",model:"eleven_v4",region:"global",currency:"USD" as const,unitPrice:"0.00008",credentialRef:"env:elevenlabs-tts"};
+    expect(estimateRealMedia(speech,"你好")).toBe("0.00016000");
+    expect(()=>estimateRealMedia({...speech,model:"eleven_multilingual_v2"},"你好")).toThrow(/eleven_v4/);
+    expect(()=>estimateRealMedia({...configuration,providerKey:"elevenlabs-media",capability:"audio.tts",model:"music_v2"},"你好")).toThrow(/Music configuration cannot price speech/);
+    expect(()=>assertRealMediaInput({schema:"real-media.v1",shotRevisionId:"00000000-0000-4000-8000-000000000002",capability:"audio.tts",sourceText:"你好",sourceHash:"a".repeat(64),configuration:speech})).toThrow(/per-line website worker/);
   });
 });

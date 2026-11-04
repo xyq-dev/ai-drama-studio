@@ -100,6 +100,33 @@ describe("real media runtime read-only recovery and exact money configuration",(
     expect(()=>new ServerRealMediaRuntime(workspaceId,loadRealMediaEnvironment({...configured,DASHSCOPE_MEDIA_PREVIOUS_API_KEY:"old-test-key",DASHSCOPE_MEDIA_PREVIOUS_CREDENTIAL_VERSION:"v1"}),true)).toThrow("DASHSCOPE_MEDIA_PREVIOUS_CREDENTIAL_VERSION");
     expect(()=>createRealMediaReceiptCipher({REAL_MEDIA_RECEIPT_KEY:key,REAL_MEDIA_PREVIOUS_RECEIPT_KEY:previous,REAL_MEDIA_PREVIOUS_RECEIPT_KEY_VERSION:"v1"})).toThrow("REAL_MEDIA_PREVIOUS_RECEIPT_KEY_VERSION");
   });
+  it("keeps elevenlabs speech off the music credential and the qwen speech profile", async () => {
+    const musicOnly = loadRealMediaEnvironment({ ...configured, ELEVENLABS_MEDIA_API_KEY: "music-only-test-key", ELEVENLABS_MEDIA_PRICE_MUSIC_SECOND: "0.05" });
+    const musicRuntime = new ServerRealMediaRuntime(workspaceId, musicOnly, true);
+    expect(await musicRuntime.elevenLabsTtsConfiguration()).toBeNull();
+    expect(await musicRuntime.configurationFor("audio.tts")).toMatchObject({ providerKey: "dashscope-media", model: "qwen3-tts-flash" });
+    expect(await musicRuntime.configurationFor("audio.music")).toMatchObject({ providerKey: "elevenlabs-media", model: "music_v2", unitPrice: "0.05" });
+    expect(() => loadRealMediaEnvironment({ ELEVENLABS_TTS_OUTPUT_FORMAT: "mp3_44100_128" })).toThrow("ELEVENLABS_TTS_OUTPUT_FORMAT");
+    const speech = loadRealMediaEnvironment({ ...configured, ELEVENLABS_TTS_API_KEY: "speech-only-test-key", ELEVENLABS_TTS_PRICE_CHARACTER: "0.00012", ELEVENLABS_TTS_OUTPUT_FORMAT: "pcm_44100" });
+    const runtime = new ServerRealMediaRuntime(workspaceId, speech, true);
+    const tts = await runtime.elevenLabsTtsConfiguration();
+    expect(tts).toMatchObject({ providerKey: "elevenlabs-tts", model: "eleven_v4", capability: "audio.tts", currency: "USD", unitType: "character", unitPrice: "0.00012", credentialRef: "env:elevenlabs-tts", parameters: { outputFormat: "pcm_44100", languageCode: "zh" } });
+    expect(await runtime.configurationFor("audio.tts")).toMatchObject({ providerKey: "dashscope-media", model: "qwen3-tts-flash" });
+    expect(JSON.stringify(tts)).not.toContain("speech-only-test-key");
+    const sent: Array<{ url: string; body?: string }> = [];
+    const transport: import("./real-media-adapters").RealMediaHttpTransport = async (request) => {
+      sent.push(request);
+      return { status: 500, headers: {}, bytes: Buffer.from("{}") };
+    };
+    const calling = new ServerRealMediaRuntime(workspaceId, speech, true, transport);
+    const frozen = (await calling.elevenLabsTtsConfiguration())!;
+    const adapter = await calling.adapterFor(frozen, "submit");
+    expect(adapter.providerKey).toBe("elevenlabs-tts");
+    const query = await calling.adapterFor({ ...frozen, enabled: true }, "query");
+    await expect(query.submit({} as never)).rejects.toThrow("MEDIA_SUBMIT_DISABLED");
+    expect((await query.inspect("dlg_frozen_1")).state).toBe("UNKNOWN");
+    expect(sent).toEqual([]);
+  });
   it("does not enable production permission or inject keys from an environment file",()=>{
     const env=loadRealMediaEnvironment({...configured,REAL_MEDIA_ALLOW_PRODUCTION:"false"},{REAL_MEDIA_ALLOW_PRODUCTION:"true",REAL_MEDIA_RECEIPT_KEY:previous,DASHSCOPE_MEDIA_API_KEY:"file-only-secret"});
     expect(env.REAL_MEDIA_ALLOW_PRODUCTION).toBe("false");expect(env.REAL_MEDIA_RECEIPT_KEY).toBe(key);expect(env.DASHSCOPE_MEDIA_API_KEY).toBe(configured.DASHSCOPE_MEDIA_API_KEY);

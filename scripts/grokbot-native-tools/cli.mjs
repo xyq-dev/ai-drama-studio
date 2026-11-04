@@ -2,7 +2,9 @@
 /**
  * GrokBot native drama tools CLI
  * Local loop: create / list / continue / save-script / approve-script /
- *   set-characters / set-storyboard / approve-scene / voice-plan / status
+ *   set-characters / set-storyboard / approve-scene / voice-plan /
+ *   performance-plan / pick-voice / tts-quote / tts-authorize / tts-generate /
+ *   tts-preview / tts-select / tts-redo / tts-resume / tts-subtitles / tts-export / status
  *
  * Default backend: local JSON store (works without site login).
  * --live: read/create/save-script against /api/v1 only (no approve forge, no TTS).
@@ -27,6 +29,7 @@ import {
   voicePlan,
   projectStatus,
 } from "./store.mjs";
+import { assetDirFor, handleDirectorCommand } from "./elevenlabs-tts.mjs";
 import {
   liveConfigFromEnv,
   assertLiveReady,
@@ -49,6 +52,18 @@ const LOCAL_COMMANDS = new Set([
   "set-storyboard",
   "approve-scene",
   "voice-plan",
+  "voice-candidates",
+  "performance-plan",
+  "pick-voice",
+  "tts-quote",
+  "tts-authorize",
+  "tts-generate",
+  "tts-preview",
+  "tts-select",
+  "tts-redo",
+  "tts-resume",
+  "tts-subtitles",
+  "tts-export",
   "status",
 ]);
 
@@ -100,6 +115,18 @@ function helpText() {
     "  set-storyboard   --scene '{...}' | --scene-file PATH [--project-id ID]",
     "  approve-scene    --approved-by user:... [--project-id ID] [--scene-id ID]",
     "  voice-plan       [--project-id ID] [--episode N] [--currency ...] [--budget-cap ...]",
+    "  performance-plan [--project-id ID] [--output-format pcm_44100|wav_44100]",
+    "  voice-candidates [--voices-file PATH]",
+    "  pick-voice       --character NAME --candidate ID [--voices-file PATH]",
+    "  tts-quote        [--unit-price N] [--budget-cap N] [--currency USD]",
+    "  tts-authorize    --authorized-by user:... [--quote-id ID]",
+    "  tts-generate     --idempotency-key KEY (--mock | --execute) [--quote-id ID]",
+    "  tts-preview      [--job-id ID]",
+    "  tts-select       --job-id ID",
+    "  tts-redo         --job-id ID --line-index N",
+    "  tts-resume       [--job-id ID]",
+    "  tts-subtitles    [--job-id ID]",
+    "  tts-export       --job-id ID --out DIR",
     "  status           [--project-id ID]",
     "  help",
     "",
@@ -110,7 +137,9 @@ function helpText() {
     "  --dry-run   print plan only; no write",
     "  --execute   allow live writes when --live",
     "",
-    "APPROVE is a human gate: --approved-by is required. No paid TTS/generate here.",
+    "APPROVE is a human gate: --approved-by / --authorized-by are required.",
+    "Speech is ElevenLabs eleven_v4 scene dialogue (ELEVENLABS_TTS_*), not music and not qwen.",
+    "--mock is an unpaid fixture. --execute with ELEVENLABS_TTS_API_KEY submits one scene call.",
   ].join("\n");
 }
 
@@ -145,6 +174,20 @@ export async function runCli(argv = process.argv.slice(2), { env = process.env }
       currency: { type: "string" },
       "budget-cap": { type: "string" },
       store: { type: "string" },
+      character: { type: "string" },
+      candidate: { type: "string" },
+      "voices-file": { type: "string" },
+      "unit-price": { type: "string" },
+      "authorized-by": { type: "string" },
+      "quote-id": { type: "string" },
+      "idempotency-key": { type: "string" },
+      "job-id": { type: "string" },
+      "line-index": { type: "string" },
+      out: { type: "string" },
+      mock: { type: "boolean", default: false },
+      "output-format": { type: "string" },
+      "previous-text": { type: "string" },
+      "future-text": { type: "string" },
     },
   });
 
@@ -191,10 +234,15 @@ export async function runCli(argv = process.argv.slice(2), { env = process.env }
     return runLive(command, values, { cfg, dryRun, allowLiveWrite });
   }
 
-  return runLocal(command, values, { storePath, dryRun });
+  return runLocal(command, values, { storePath, dryRun, env });
 }
 
-function runLocal(command, values, { storePath, dryRun }) {
+const DIRECTOR_COMMANDS = new Set([
+  "voice-candidates", "performance-plan", "pick-voice", "tts-quote", "tts-authorize", "tts-generate",
+  "tts-preview", "tts-select", "tts-redo", "tts-resume", "tts-subtitles", "tts-export",
+]);
+
+async function runLocal(command, values, { storePath, dryRun, env }) {
   const store = loadStore(storePath);
   if (dryRun) {
     return {
@@ -384,6 +432,17 @@ function runLocal(command, values, { storePath, dryRun }) {
         exitCode: 0,
         output: { mode: "local", action: "status", storePath, status: projectStatus(store, values["project-id"]) },
       };
+    }
+    if (DIRECTOR_COMMANDS.has(command)) {
+      const projectId = values["project-id"] || store.currentProjectId;
+      const project = store.projects[projectId];
+      if (!project) throw new Error(projectId ? `Unknown project: ${projectId}` : "No current project; pass --project-id");
+      const result = await handleDirectorCommand(command, values, project, env, {
+        assetDir: assetDirFor(storePath),
+        persist: () => saveStore(store, storePath),
+      });
+      if (result.save) saveStore(store, storePath);
+      return { ok: true, exitCode: 0, output: { mode: "local", action: command, storePath, ...result.output } };
     }
   } catch (error) {
     return {
