@@ -111,6 +111,7 @@ function helpText() {
     "  --execute   allow live writes when --live",
     "",
     "APPROVE is a human gate: --approved-by is required. No paid TTS/generate here.",
+    "gpt-image-2.5-sunburst is not invoked by this CLI. Image spend stays behind real-media quote/authorize.",
   ].join("\n");
 }
 

@@ -26,7 +26,8 @@ bash scripts/grokbot-native-tools/fixtures/moban-che-anhao/repro.sh
 ## Must not pretend
 
 - No ai-drama MCP unless `GetMcpServerStatus` shows one.  
-- No paid generate/authorize/auto-runs; no forge APPROVE without user `--approved-by`.  
+- No paid generate/authorize/auto-runs; no forge APPROVE without user `--approved-by`.
+- Do not call `gpt-image-2.5-sunburst` or `/v1/images/generations` from this CLI. That model is an explicit real-media provider only (`docs/OPENAI_IMAGE_SUNBURST.md`), not a Bot shortcut and not a DashScope fallback.  
 - No secrets in chat; live ADS_* via `--env-file` only.  
 - `approve-*` / `voice-plan` are **local-only** in this skill revision.
 

@@ -32,6 +32,7 @@
 | 配音计划（不付费） | `voice-plan` | PLAN_READY + plannedTtsCalls | 已实现（本地） |
 | 查阻塞 | `status` | blockers / stage | 已实现 |
 | 真实 TTS/视频 | 需授权包后走 API | 未在本 CLI 发起 | 后续 |
+| OpenAI 图片 `gpt-image-2.5-sunburst` | 不在本 CLI | 拒绝 `/v1/images/*`；paidCalls 仍为 0 | 见 `docs/OPENAI_IMAGE_SUNBURST.md`；未实付费 |
 | 《末班车暗号》复现 | `fixtures/moban-che-anhao/repro.sh` | stage=voice_plan | 已实现 |
 
 ## 《末班车暗号》复现

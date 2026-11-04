@@ -25,6 +25,10 @@ const REFUSED_PATH_MARKERS = [
   "generate-video",
   "generate-tts",
   "generate-music",
+  "/v1/images/",
+  "images/generations",
+  "images/edits",
+  "gpt-image",
 ];
 
 export function liveConfigFromEnv(env = process.env) {

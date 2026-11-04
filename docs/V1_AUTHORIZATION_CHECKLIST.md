@@ -38,7 +38,7 @@
 精确变量、API、密钥轮换和隔离验收命令统一以 [REAL_MEDIA_RUNBOOK.md](REAL_MEDIA_RUNBOOK.md) 为准，不在此复制另一套参数：
 
 - 文本模型通过 `/admin/models` 配置，当前支持 OpenAI、Anthropic 与 DeepSeek。**千问文本已退役**，不再按旧 `QWEN_*` 网页调用或旧千问 SQL 清单启用。
-- 平台媒体使用独立 `DASHSCOPE_MEDIA_*`；固定图片/视频/TTS profile 为百炼北京 `qwen-image-3.0`、`wan2.6-i2v-flash`、`qwen3-tts-flash`，音乐为 ElevenLabs `music_v2`。这是代码选择，不是账号资格或当前报价证明。
+- 平台媒体使用独立 `DASHSCOPE_MEDIA_*`；固定图片/视频/TTS profile 为百炼北京 `qwen-image-3.0`、`wan2.6-i2v-flash`、`qwen3-tts-flash`，音乐为 ElevenLabs `music_v2`。这是代码选择，不是账号资格或当前报价证明。可选图片 `gpt-image-2.5-sunburst` 只有 `REAL_MEDIA_IMAGE_PROVIDER=openai-media` 才出现，配置与“尚未实付费”的边界见 [OPENAI_IMAGE_SUNBURST.md](OPENAI_IMAGE_SUNBURST.md)。
 - API/Worker 需一致的有效站点认证、workspace、价格/凭据/收据版本与 S3；声音合成另需 FFmpeg、受控绝对目录及实际 Noto Sans CJK SC 字体。默认开关关闭，production 另需进程级准入；开关不构成付费授权。
 - 当前 `real-media:provision` 默认 **plan** 不创建数据库连接、不写库、不调用供应商；它需要受控配置，但不是连接/账号/S3 就绪验证。带 `--execute` 才写 ProviderConfiguration，必须另有目标库写入授权；不会执行 migration。
 

@@ -45,4 +45,11 @@ describe("durable real media objects",()=>{
     }
     await expect(downloadRealMediaResult(`data:audio/mpeg;base64,${bytes.toString("base64")}`,3)).rejects.toThrow();
   });
+  it("accepts a bounded PNG data receipt and rejects other image payloads", async () => {
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
+    expect(png.subarray(0, 8).toString("hex")).toBe("89504e470d0a1a0a");
+    expect(await downloadRealMediaResult(`data:image/png;base64,${png.toString("base64")}`, 10 * 1024 * 1024)).toEqual(png);
+    await expect(downloadRealMediaResult(`data:image/jpeg;base64,${png.toString("base64")}`, 1000)).rejects.toThrow();
+    await expect(downloadRealMediaResult(`data:image/png;base64,${Buffer.from("not-a-png").toString("base64")}`, 1000)).rejects.toThrow();
+  });
 });

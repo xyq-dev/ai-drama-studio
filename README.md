@@ -188,6 +188,6 @@ M1-B GitHub Actions 还会在隔离 PostgreSQL 16 上执行 Prisma validate/gene
 
 ## 当前代码与实际启用的边界
 
-真实媒体当前固定为百炼北京 `qwen-image-3.0`、`wan2.6-i2v-flash`、`qwen3-tts-flash`，音乐为 ElevenLabs `music_v2`；精确参数与价格由服务端冻结。不得把文本模型密钥、登录状态或功能开关当成付费授权。每次生成仍需有效报价与一次授权；无法确认的提交保留 UNKNOWN，不能自动重发。使用新声音 profile 还需 Noto Sans CJK SC，缺字或缺字体会在编码前阻断。配置、密钥轮换与三个独立空库验收入口见[运行手册](docs/REAL_MEDIA_RUNBOOK.md)。
+真实媒体当前固定为百炼北京 `qwen-image-3.0`、`wan2.6-i2v-flash`、`qwen3-tts-flash`，音乐为 ElevenLabs `music_v2`；精确参数与价格由服务端冻结。另有显式 `REAL_MEDIA_IMAGE_PROVIDER=openai-media` 时，图片才改为钉死的 `gpt-image-2.5-sunburst`（`quality=max`，受保护 `OPENAI_MEDIA_API_KEY` 与 `OPENAI_BASE_URL` / `OPENAI_API_BASE`），未配置则仍走百炼，不会自动切换或假装接通。见 [docs/OPENAI_IMAGE_SUNBURST.md](docs/OPENAI_IMAGE_SUNBURST.md)。不得把文本模型密钥、登录状态或功能开关当成付费授权。每次生成仍需有效报价与一次授权；无法确认的提交保留 UNKNOWN，不能自动重发。使用新声音 profile 还需 Noto Sans CJK SC，缺字或缺字体会在编码前阻断。配置、密钥轮换与三个独立空库验收入口见[运行手册](docs/REAL_MEDIA_RUNBOOK.md)。
 
 ComfyUI/GPU 实际推理、真人声音克隆、口型同步、重叠对白、平台发布、支付/多租户仍未交付。系列 1–60 集只交付文本，媒体生产继续拒绝。真实模型质量、真实费用核对和服务器启用不由代码测试替代。原千问**文本**入口已退役；新增 `DASHSCOPE_MEDIA_*` 是独立媒体配置。历史报告保留原来的 Mock/本地验收口径。

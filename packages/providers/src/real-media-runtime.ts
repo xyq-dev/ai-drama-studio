@@ -1,6 +1,9 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import type { RealMediaCapability, RealMediaConfiguration, SpeechCapabilities } from "@ai-drama/contracts";
-import { DashScopeMediaAdapter, ElevenLabsMusicAdapter, type RealMediaHttpTransport } from "./real-media-adapters";
+import {
+  DashScopeMediaAdapter, ElevenLabsMusicAdapter, OpenAiImageAdapter, canonicalOpenAiImageBaseUrl,
+  OPENAI_IMAGE_MODEL_ID, OPENAI_IMAGE_QUALITY, OPENAI_IMAGE_SIZE, type RealMediaHttpTransport,
+} from "./real-media-adapters";
 import type { MediaProviderAdapter, MediaProviderOutput } from "./media-adapter";
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
@@ -14,6 +17,8 @@ export const REAL_MEDIA_ENV_KEYS = [
   "DASHSCOPE_MEDIA_PRICE_IMAGE", "DASHSCOPE_MEDIA_PRICE_VIDEO_SECOND", "DASHSCOPE_MEDIA_PRICE_TTS_CHARACTER", "DASHSCOPE_MEDIA_VIDEO_SECONDS",
   "ELEVENLABS_MEDIA_API_KEY", "ELEVENLABS_MEDIA_CREDENTIAL_VERSION", "ELEVENLABS_MEDIA_PREVIOUS_API_KEY", "ELEVENLABS_MEDIA_PREVIOUS_CREDENTIAL_VERSION",
   "ELEVENLABS_MEDIA_PRICE_MUSIC_SECOND", "ELEVENLABS_MEDIA_MUSIC_SECONDS",
+  "OPENAI_MEDIA_API_KEY", "OPENAI_MEDIA_CREDENTIAL_VERSION", "OPENAI_MEDIA_PREVIOUS_API_KEY", "OPENAI_MEDIA_PREVIOUS_CREDENTIAL_VERSION",
+  "OPENAI_MEDIA_PRICE_IMAGE", "OPENAI_BASE_URL", "OPENAI_API_BASE", "REAL_MEDIA_IMAGE_PROVIDER",
   "REAL_MEDIA_MAX_SINGLE_CNY", "REAL_MEDIA_MAX_SINGLE_USD",
 ] as const;
 export type RealMediaEnvironment = Partial<Record<(typeof REAL_MEDIA_ENV_KEYS)[number], string>>;
@@ -31,7 +36,8 @@ export function loadRealMediaEnvironment(processEnv: Record<string, string | und
   const result: RealMediaEnvironment = {};
   const errors: string[] = [];
   for (const name of REAL_MEDIA_ENV_KEYS) {
-    const processOnly = /API_KEY|RECEIPT_KEY/.test(name) || name === "REAL_MEDIA_ALLOW_PRODUCTION";
+    const processOnly = /API_KEY|RECEIPT_KEY/.test(name) || name === "REAL_MEDIA_ALLOW_PRODUCTION"
+      || name === "OPENAI_BASE_URL" || name === "OPENAI_API_BASE" || name === "REAL_MEDIA_IMAGE_PROVIDER";
     const value = processEnv[name] !== undefined ? processEnv[name] : processOnly ? undefined : fileEnv[name];
     if (value !== undefined) result[name] = value;
   }
@@ -40,11 +46,22 @@ export function loadRealMediaEnvironment(processEnv: Record<string, string | und
   }
   for (const name of REAL_MEDIA_ENV_KEYS) {
     const value = result[name]; if (value === undefined) continue;
-    if (value === "") { if (/VERSION$|MAX_SINGLE/.test(name)) errors.push(name); continue; }
+    if (value === "") {
+      if (/VERSION$|MAX_SINGLE/.test(name) || name === "OPENAI_BASE_URL" || name === "OPENAI_API_BASE" || name === "REAL_MEDIA_IMAGE_PROVIDER") errors.push(name);
+      continue;
+    }
     if (/API_KEY$/.test(name) && !validKey(value)) errors.push(name);
     if (/RECEIPT_KEY$/.test(name) && !decodedKey(value)) errors.push(name);
     if (/VERSION$/.test(name) && !VERSION.test(value)) errors.push(name);
     if ((/PRICE_/.test(name) && name !== "REAL_MEDIA_PRICE_VERSION" || /MAX_SINGLE/.test(name)) && (!AMOUNT.test(value) || Number(value) <= 0)) errors.push(name);
+    if (name === "OPENAI_BASE_URL" || name === "OPENAI_API_BASE") {
+      try { result[name] = canonicalOpenAiImageBaseUrl(value); }
+      catch { errors.push(name); delete result[name]; }
+    }
+    if (name === "REAL_MEDIA_IMAGE_PROVIDER" && value !== "dashscope-media" && value !== "openai-media") errors.push(name);
+  }
+  if (result.OPENAI_BASE_URL && result.OPENAI_API_BASE && result.OPENAI_BASE_URL !== result.OPENAI_API_BASE) {
+    errors.push("OPENAI_BASE_URL", "OPENAI_API_BASE");
   }
   for (const [name, min, max] of [["DASHSCOPE_MEDIA_VIDEO_SECONDS", 2, 15], ["ELEVENLABS_MEDIA_MUSIC_SECONDS", 3, 90]] as const) {
     const value = result[name];
@@ -99,6 +116,18 @@ export function createRealMediaReceiptCipher(environment: RealMediaEnvironment):
     },
   };
 }
+/** Explicit image base. Conflicting aliases fail closed. An absent value does not invent api.openai.com. */
+export function openAiImageBaseUrl(environment: Pick<RealMediaEnvironment, "OPENAI_BASE_URL" | "OPENAI_API_BASE">): string | undefined {
+  const read = (name: "OPENAI_BASE_URL" | "OPENAI_API_BASE") => {
+    const value = environment[name];
+    if (!value) return undefined;
+    try { return canonicalOpenAiImageBaseUrl(value); }
+    catch { throw new RealMediaEnvironmentError([name]); }
+  };
+  const primary = read("OPENAI_BASE_URL"), alias = read("OPENAI_API_BASE");
+  if (primary && alias && primary !== alias) throw new RealMediaEnvironmentError(["OPENAI_BASE_URL", "OPENAI_API_BASE"]);
+  return primary || alias;
+}
 function digest(value: unknown): string { return createHash("sha256").update(JSON.stringify(value)).digest("hex"); }
 function uuidFor(value: unknown): string {
   const hex = digest(value);
@@ -116,7 +145,7 @@ export class ServerRealMediaRuntime {
     if (!UUID.test(workspaceId)) throw new RealMediaEnvironmentError(["APP_WORKSPACE_ID"]);
     this.receiptCipher = createRealMediaReceiptCipher(environment);
     this.enabled = allowed && environment.REAL_MEDIA_ENABLED === "true" && Boolean(this.receiptCipher);
-    for (const [provider, prefix] of [["dashscope-media", "DASHSCOPE_MEDIA"], ["elevenlabs-media", "ELEVENLABS_MEDIA"]] as const) {
+    for (const [provider, prefix] of [["dashscope-media", "DASHSCOPE_MEDIA"], ["elevenlabs-media", "ELEVENLABS_MEDIA"], ["openai-media", "OPENAI_MEDIA"]] as const) {
       const read = (suffix: string) => environment[(prefix + suffix) as keyof RealMediaEnvironment];
       if (validKey(read("_API_KEY"))) this.#credentials.set(provider + ":" + (read("_CREDENTIAL_VERSION") ?? "v1"), read("_API_KEY")!);
       if (validKey(read("_PREVIOUS_API_KEY")) && read("_PREVIOUS_CREDENTIAL_VERSION")) {
@@ -128,23 +157,33 @@ export class ServerRealMediaRuntime {
   }
   async configurationFor(capability: RealMediaCapability): Promise<RealMediaConfiguration | null> {
     if (!this.enabled) return null;
-    const music = capability === "audio.music", providerKey = music ? "elevenlabs-media" : "dashscope-media";
-    const credentialVersion = music ? this.#environment.ELEVENLABS_MEDIA_CREDENTIAL_VERSION ?? "v1"
-      : this.#environment.DASHSCOPE_MEDIA_CREDENTIAL_VERSION ?? "v1";
-    const price = ({ "image.generate": this.#environment.DASHSCOPE_MEDIA_PRICE_IMAGE,
-      "video.generate": this.#environment.DASHSCOPE_MEDIA_PRICE_VIDEO_SECOND,
-      "audio.tts": this.#environment.DASHSCOPE_MEDIA_PRICE_TTS_CHARACTER,
-      "audio.music": this.#environment.ELEVENLABS_MEDIA_PRICE_MUSIC_SECOND })[capability];
+    const imageProvider = this.#environment.REAL_MEDIA_IMAGE_PROVIDER ?? "dashscope-media";
+    if (imageProvider !== "dashscope-media" && imageProvider !== "openai-media") throw new RealMediaEnvironmentError(["REAL_MEDIA_IMAGE_PROVIDER"]);
+    const openaiImage = capability === "image.generate" && imageProvider === "openai-media";
+    const music = capability === "audio.music";
+    const providerKey = openaiImage ? "openai-media" : music ? "elevenlabs-media" : "dashscope-media";
+    const credentialVersion = (openaiImage ? this.#environment.OPENAI_MEDIA_CREDENTIAL_VERSION
+      : music ? this.#environment.ELEVENLABS_MEDIA_CREDENTIAL_VERSION : this.#environment.DASHSCOPE_MEDIA_CREDENTIAL_VERSION) ?? "v1";
+    const price = openaiImage ? this.#environment.OPENAI_MEDIA_PRICE_IMAGE
+      : ({ "image.generate": this.#environment.DASHSCOPE_MEDIA_PRICE_IMAGE,
+        "video.generate": this.#environment.DASHSCOPE_MEDIA_PRICE_VIDEO_SECOND,
+        "audio.tts": this.#environment.DASHSCOPE_MEDIA_PRICE_TTS_CHARACTER,
+        "audio.music": this.#environment.ELEVENLABS_MEDIA_PRICE_MUSIC_SECOND })[capability];
+    const baseUrl = openaiImage ? openAiImageBaseUrl(this.#environment) : undefined;
+    // Missing sunburst config closes image.generate. It must not fall through to DashScope.
+    if (openaiImage && !baseUrl) return null;
     if (!this.#credentials.has(providerKey + ":" + credentialVersion) || !price || !AMOUNT.test(price) || Number(price) <= 0
       || !this.#environment.REAL_MEDIA_PRICE_VERSION) return null;
-    const base = { providerKey, capability, region: music ? "global" : "beijing",
-      model: ({ "image.generate": "qwen-image-3.0", "video.generate": "wan2.6-i2v-flash", "audio.tts": "qwen3-tts-flash", "audio.music": "music_v2" })[capability],
+    const usd = music || openaiImage;
+    const base = { providerKey, capability, region: openaiImage ? new URL(baseUrl!).hostname : music ? "global" : "beijing",
+      model: openaiImage ? OPENAI_IMAGE_MODEL_ID : ({ "image.generate": "qwen-image-3.0", "video.generate": "wan2.6-i2v-flash", "audio.tts": "qwen3-tts-flash", "audio.music": "music_v2" })[capability],
       credentialRef: "env:" + providerKey, credentialVersion, priceVersion: this.#environment.REAL_MEDIA_PRICE_VERSION,
-      currency: music ? "USD" as const : "CNY" as const, unitPrice: price,
-      maximumOperationAmount: music ? this.#environment.REAL_MEDIA_MAX_SINGLE_USD ?? "2" : this.#environment.REAL_MEDIA_MAX_SINGLE_CNY ?? "10",
+      currency: usd ? "USD" as const : "CNY" as const, unitPrice: price,
+      maximumOperationAmount: usd ? this.#environment.REAL_MEDIA_MAX_SINGLE_USD ?? "2" : this.#environment.REAL_MEDIA_MAX_SINGLE_CNY ?? "10",
       unitType: capability === "image.generate" ? "image" as const : capability === "audio.tts" ? "character" as const : "second" as const,
-      parameters: { duration: Number(music ? this.#environment.ELEVENLABS_MEDIA_MUSIC_SECONDS ?? 5 : this.#environment.DASHSCOPE_MEDIA_VIDEO_SECONDS ?? 5),
-        ...(capability === "audio.tts" ? { voice: "Cherry" } : {}) },
+      parameters: openaiImage ? { baseUrl: baseUrl!, quality: OPENAI_IMAGE_QUALITY, size: OPENAI_IMAGE_SIZE }
+        : { duration: Number(music ? this.#environment.ELEVENLABS_MEDIA_MUSIC_SECONDS ?? 5 : this.#environment.DASHSCOPE_MEDIA_VIDEO_SECONDS ?? 5),
+          ...(capability === "audio.tts" ? { voice: "Cherry" } : {}) },
     };
     const version = "media-" + digest(base).slice(0, 24);
     return { ...base, id: uuidFor([this.workspaceId, providerKey, capability]), version, enabled: true, queryAllowed: true };
@@ -159,7 +198,8 @@ export class ServerRealMediaRuntime {
     } else if (!configuration.queryAllowed) throw new Error("REAL_MEDIA_QUERY_DISABLED");
     const adapterConfiguration = mode === "query" ? { ...configuration, enabled: false } : configuration;
     const adapter = configuration.providerKey === "dashscope-media" ? new DashScopeMediaAdapter(adapterConfiguration, key, this.transport)
-      : configuration.providerKey === "elevenlabs-media" ? new ElevenLabsMusicAdapter(adapterConfiguration, key, this.transport) : null;
+      : configuration.providerKey === "elevenlabs-media" ? new ElevenLabsMusicAdapter(adapterConfiguration, key, this.transport)
+      : configuration.providerKey === "openai-media" ? new OpenAiImageAdapter(adapterConfiguration, key, this.transport) : null;
     if (!adapter) throw new Error("REAL_MEDIA_PROVIDER_UNSUPPORTED");
     if (mode === "submit") return adapter;
     // Recovery receives an observation capability. It cannot turn a mutable flag back on and submit another job.

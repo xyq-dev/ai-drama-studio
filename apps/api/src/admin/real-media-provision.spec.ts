@@ -17,4 +17,13 @@ describe("explicit real provider provisioning without database execution",()=>{
     const retry=setup({...row,enabled:true,max_attempts:3});await expect(provisionRealMediaProviders(retry.pool,{workspaceId:W,configurations:[config()]})).rejects.toThrow("REQUIRES_REVIEW");
     const explicit=setup(row);expect(await provisionRealMediaProviders(explicit.pool,{workspaceId:W,configurations:[config()],enableExisting:true})).toEqual({ids:[ID],created:0});expect(explicit.queries.filter(q=>q.sql.startsWith("UPDATE"))).toHaveLength(1);
   });
+  it("adds openai-media image.generate without replacing the DashScope pair or storing a key", async () => {
+    const openai: RealMediaConfiguration = { ...config(), id: "33333333-3333-4333-8333-333333333333", providerKey: "openai-media", model: "gpt-image-2.5-sunburst", region: "image.example.test", credentialRef: "env:openai-media", currency: "USD", unitPrice: "0.04", parameters: { baseUrl: "https://image.example.test", quality: "max", size: "1024x1536" } };
+    const h = setup();
+    expect(await provisionRealMediaProviders(h.pool, { workspaceId: W, configurations: [openai] })).toEqual({ ids: [openai.id], created: 1 });
+    expect(h.queries.find(q => q.sql.startsWith("INSERT"))!.values).toEqual([openai.id, W, "openai-media", "image.generate", "env:openai-media"]);
+    expect(JSON.stringify(h.queries)).not.toContain("sk-");
+    await expect(provisionRealMediaProviders(setup().pool, { workspaceId: W, configurations: [config(), openai] })).rejects.toThrow("REAL_MEDIA_PROVISION_INVALID");
+    await expect(provisionRealMediaProviders(setup().pool, { workspaceId: W, configurations: [{ ...openai, credentialRef: "env:dashscope-media" }] })).rejects.toThrow("REAL_MEDIA_PROVISION_INVALID");
+  });
 });
