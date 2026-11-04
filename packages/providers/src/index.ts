@@ -152,5 +152,6 @@ export { RESEARCH_FETCH_MAX_BYTES, RESEARCH_FETCH_TIMEOUT_MS, blockedAddress, cr
 export * from "./vimax-planning";
 export { MediaSubmissionUnknownError } from "./media-adapter";
 export * from "./real-media-adapters";
+export * from "./elevenlabs-tts-adapter";
 export * from "./real-media-runtime";
 export * from "./media-object-client";

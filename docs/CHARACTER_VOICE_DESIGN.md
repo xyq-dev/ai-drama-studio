@@ -4,7 +4,7 @@
 
 原始设计日期：2026-10-07，基线为 `2fb19acfe086392eb415a3be92b4c4a6830a4cfd`；新手界面参考 PR #50 的 `5cda55b67a7b37c9c72fa5b00f3699adbc203fac`。2026-10-28 按主线 `879bf53e0d45be56b6592ce77c2e72aa7ec9d648` 整合。下文保留设计目标与历史实施次序；当前实际合同/模型/API 以顶部实现说明和对应代码为准，高级目标不能据此宣称已交付。
 
-原始设计/原型及下文目标保留为设计依据，不把全部高级交互写成已交付。当前实现是百炼北京 `qwen3-tts-flash` 的 Cherry/Ethan/Serena 预置目录、neutral/固定语速 1、逐句明确操作；不支持参数会被拒绝。V1-D 的预算内整集补齐、逐句永久身份、部分完成与取消/显式恢复已实现；新增 PostgreSQL 用例待最终 HEAD CI。不是 CosyVoice 自托管、克隆、口型、多语言或重叠对白实现。
+原始设计/原型及下文目标保留为设计依据，不把全部高级交互写成已交付。网站逐句实现仍是百炼北京 `qwen3-tts-flash` 的 Cherry/Ethan/Serena 预置目录、neutral/固定语速 1、逐句明确操作；不支持参数会被拒绝。GrokBot 整场导演流程使用独立的 ElevenLabs `eleven_v4`，见 [ELEVENLABS_TTS.md](ELEVENLABS_TTS.md)。V1-D 的预算内整集补齐、逐句永久身份、部分完成与取消/显式恢复已实现；新增 PostgreSQL 用例待最终 HEAD CI。不是 CosyVoice 自托管、克隆、口型、多语言或重叠对白实现。
 
 当前契约/存储为 `packages/contracts/src/speech.ts`、`speech-store.ts` 与 `20261101000100_character_voice.sql` 草案；真实调用沿 `real-media.v1` 和既有 Job/Attempt/Asset；新 `m4.shot.voice-compose.v1` 仍使用逻辑任务类型 `MEDIA_COMPOSE`。AUDIO 不批准，依靠选择关系和 typed plan/selection 依赖维护有效性。新 profile 使用精确 Noto Sans CJK SC face，记录字体 SHA；缺字/字体在编码前阻断。tone/lavfi 技术素材不是人声质量证明。
 

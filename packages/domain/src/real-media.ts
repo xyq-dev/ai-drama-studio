@@ -13,6 +13,17 @@ export function realMediaAmount(value: bigint): string {
   return `${value / SCALE}.${(value % SCALE).toString().padStart(8, "0")}`;
 }
 export function estimateRealMedia(configuration: RealMediaConfiguration, text: string): string {
+  if (configuration.providerKey === "elevenlabs-media" && configuration.capability === "audio.tts") {
+    throw new DomainError("VALIDATION_ERROR", "Music configuration cannot price speech");
+  }
+  if (configuration.providerKey === "elevenlabs-tts") {
+    if (configuration.capability !== "audio.tts" || configuration.model !== "eleven_v4" || configuration.unitType !== "character") {
+      throw new DomainError("VALIDATION_ERROR", "ElevenLabs speech is priced only as eleven_v4 characters");
+    }
+    const spoken = BigInt([...text].length);
+    if (spoken < 1 || spoken > 100_000) throw new DomainError("VALIDATION_ERROR", "Invalid media quantity");
+    return realMediaAmount(realMediaAmountUnits(configuration.unitPrice) * spoken);
+  }
   const quantity = configuration.unitType === "character" ? BigInt([...text].length * 2)
     : configuration.unitType === "second" ? BigInt(Number(configuration.parameters.duration ?? 5)) : 1n;
   if (quantity < 1 || quantity > 100_000) throw new DomainError("VALIDATION_ERROR", "Invalid media quantity");
@@ -38,6 +49,9 @@ export function assertRealMediaInput(input:Omit<RealMediaSnapshot,"budget">):voi
   if(input.capability==="image.generate"&&text.length>2000)throw new DomainError("VALIDATION_ERROR","Image prompt exceeds 2000 characters");
   if(input.capability==="video.generate"&&(!input.sourceImage||text.length>800))throw new DomainError("VALIDATION_ERROR","Video requires a first frame and a prompt of at most 800 characters");
   if(input.capability==="audio.music"&&text.length>4100)throw new DomainError("VALIDATION_ERROR","Music prompt exceeds 4100 characters");
+  if(input.capability==="audio.tts"&&config.providerKey==="elevenlabs-tts"){
+    throw new DomainError("REAL_MEDIA_TTS_PATH_UNSUPPORTED","ElevenLabs eleven_v4 scene dialogue is not submitted through the per-line website worker");
+  }
   if(input.capability==="audio.tts"){
     const speech=input.speech;
     if([...text].length>600||!["Cherry","Ethan","Serena"].includes(String(speech?.voice.voiceId??config.parameters.voice??"Cherry"))

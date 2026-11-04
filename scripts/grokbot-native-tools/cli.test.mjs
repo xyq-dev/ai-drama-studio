@@ -206,7 +206,9 @@ await test("full local loop to voice-plan", async () => {
   await runCli(["approve-scene", "--project-id", pid, "--approved-by", "user:test", "--store", s]);
   const vp = await runCli(["voice-plan", "--project-id", pid, "--store", s]);
   assert(vp.ok, "voice-plan ok");
-  assert(vp.output.voicePlan?.totals?.plannedTtsCalls === 4, `tts=${vp.output.voicePlan?.totals?.plannedTtsCalls}`);
+  assert(vp.output.voicePlan?.totals?.dialogueLines === 4, "four spoken lines");
+  assert(vp.output.voicePlan?.totals?.plannedTtsCalls === 1, `scene calls=${vp.output.voicePlan?.totals?.plannedTtsCalls}`);
+  assert(vp.output.voicePlan?.model === "eleven_v4", "eleven_v4");
   assert(vp.output.paidCalls === 0, "no paid");
   const st = await runCli(["status", "--project-id", pid, "--store", s]);
   assert(st.output.status?.stage === "voice_plan", "stage voice_plan");
@@ -226,7 +228,9 @@ await test("moban-che-anhao repro.sh", async () => {
   assert(status.status?.stage === "voice_plan", "stage");
   assert(status.status?.characterCount === 2, "2 chars");
   assert(status.status?.scenes?.[0]?.status === "APPROVED", "scene approved");
-  assert(status.status?.voicePlan?.totals?.plannedTtsCalls === 4, "4 tts planned");
+  assert(status.status?.voicePlan?.totals?.dialogueLines === 4, "4 lines");
+  assert(status.status?.voicePlan?.totals?.plannedTtsCalls === 1, "one scene operation");
+  assert(status.status?.voicePlan?.model === "eleven_v4", "eleven_v4");
   const raw = JSON.parse(readFileSync(store, "utf8"));
   const project = Object.values(raw.projects)[0];
   assert(project.episodes[0].scripts[0].reviewStatus === "APPROVED", "script approved in store");

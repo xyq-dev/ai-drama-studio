@@ -30,18 +30,21 @@
 
 备份/恢复：`________________`
 
-## C. 费用上限（4–8 句样片）
+## C. 费用上限（一场四句，一次外部合成）
+
+先前「最多 4 次百炼逐句提交、建议预留 12 次」的试点已取消。ElevenLabs `eleven_v4` 把《末班车暗号》整场作为一次 text-to-dialogue。单价键是 `ELEVENLABS_TTS_PRICE_CHARACTER`（USD/字），不是 `ELEVENLABS_MEDIA_PRICE_MUSIC_SECOND`。`pcm_44100` / `wav_44100` 需要 Pro 及以上，账号拒绝时不降级。
 
 | 项 | 填写 |
 | --- | --- |
-| 币种 | `______` |
-| TTS 最大调用次数（建议 ≥12，含重试） | `______` |
-| TTS 预算上限 | `______` |
+| 币种 | USD |
+| 外部 TTS 次数 | 1（同一幂等键的重试不算新提交；UNKNOWN 不自动重发） |
+| 字符单价 `ELEVENLABS_TTS_PRICE_CHARACTER` | `______` |
+| 本场费用上限 | `______` |
 | 图片/视频是否本轮启用 | 否 / 是（若是另填上限）`______` |
 | 文本模型本轮是否启用 | 否（样片已有人工稿）/ 是 `______` |
 | 超出即停 | [ ] 同意 |
 
-本地 `voice-plan` 已估：《末班车暗号》`plannedTtsCalls=4`，`suggestedMaxTts=12`。
+本地 `voice-plan`：《末班车暗号》`dialogueLines=4`，`plannedTtsCalls=1`。
 
 ## D. 人工门（Bot 不代批）
 

@@ -1,5 +1,6 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import type { RealMediaCapability, RealMediaConfiguration, SpeechCapabilities } from "@ai-drama/contracts";
+import { ElevenLabsTtsAdapter } from "./elevenlabs-tts-adapter";
 import {
   DashScopeMediaAdapter, ElevenLabsMusicAdapter, OpenAiImageAdapter, canonicalOpenAiImageBaseUrl,
   OPENAI_IMAGE_MODEL_ID, OPENAI_IMAGE_QUALITY, OPENAI_IMAGE_SIZE, type RealMediaHttpTransport,
@@ -17,6 +18,8 @@ export const REAL_MEDIA_ENV_KEYS = [
   "DASHSCOPE_MEDIA_PRICE_IMAGE", "DASHSCOPE_MEDIA_PRICE_VIDEO_SECOND", "DASHSCOPE_MEDIA_PRICE_TTS_CHARACTER", "DASHSCOPE_MEDIA_VIDEO_SECONDS",
   "ELEVENLABS_MEDIA_API_KEY", "ELEVENLABS_MEDIA_CREDENTIAL_VERSION", "ELEVENLABS_MEDIA_PREVIOUS_API_KEY", "ELEVENLABS_MEDIA_PREVIOUS_CREDENTIAL_VERSION",
   "ELEVENLABS_MEDIA_PRICE_MUSIC_SECOND", "ELEVENLABS_MEDIA_MUSIC_SECONDS",
+  "ELEVENLABS_TTS_API_KEY", "ELEVENLABS_TTS_CREDENTIAL_VERSION", "ELEVENLABS_TTS_PREVIOUS_API_KEY", "ELEVENLABS_TTS_PREVIOUS_CREDENTIAL_VERSION",
+  "ELEVENLABS_TTS_PRICE_CHARACTER", "ELEVENLABS_TTS_OUTPUT_FORMAT",
   "OPENAI_MEDIA_API_KEY", "OPENAI_MEDIA_CREDENTIAL_VERSION", "OPENAI_MEDIA_PREVIOUS_API_KEY", "OPENAI_MEDIA_PREVIOUS_CREDENTIAL_VERSION",
   "OPENAI_MEDIA_PRICE_IMAGE", "OPENAI_BASE_URL", "OPENAI_API_BASE", "REAL_MEDIA_IMAGE_PROVIDER",
   "REAL_MEDIA_MAX_SINGLE_CNY", "REAL_MEDIA_MAX_SINGLE_USD",
@@ -67,6 +70,8 @@ export function loadRealMediaEnvironment(processEnv: Record<string, string | und
     const value = result[name];
     if (value !== undefined && (!/^\d+$/.test(value) || Number(value) < min || Number(value) > max)) errors.push(name);
   }
+  const speechFormat = result.ELEVENLABS_TTS_OUTPUT_FORMAT;
+  if (speechFormat !== undefined && speechFormat !== "pcm_44100" && speechFormat !== "wav_44100") errors.push("ELEVENLABS_TTS_OUTPUT_FORMAT");
   if (errors.length) throw new RealMediaEnvironmentError([...new Set(errors)]);
   return result;
 }
@@ -145,7 +150,7 @@ export class ServerRealMediaRuntime {
     if (!UUID.test(workspaceId)) throw new RealMediaEnvironmentError(["APP_WORKSPACE_ID"]);
     this.receiptCipher = createRealMediaReceiptCipher(environment);
     this.enabled = allowed && environment.REAL_MEDIA_ENABLED === "true" && Boolean(this.receiptCipher);
-    for (const [provider, prefix] of [["dashscope-media", "DASHSCOPE_MEDIA"], ["elevenlabs-media", "ELEVENLABS_MEDIA"], ["openai-media", "OPENAI_MEDIA"]] as const) {
+    for (const [provider, prefix] of [["dashscope-media", "DASHSCOPE_MEDIA"], ["elevenlabs-media", "ELEVENLABS_MEDIA"], ["elevenlabs-tts", "ELEVENLABS_TTS"], ["openai-media", "OPENAI_MEDIA"]] as const) {
       const read = (suffix: string) => environment[(prefix + suffix) as keyof RealMediaEnvironment];
       if (validKey(read("_API_KEY"))) this.#credentials.set(provider + ":" + (read("_CREDENTIAL_VERSION") ?? "v1"), read("_API_KEY")!);
       if (validKey(read("_PREVIOUS_API_KEY")) && read("_PREVIOUS_CREDENTIAL_VERSION")) {
@@ -188,18 +193,37 @@ export class ServerRealMediaRuntime {
     const version = "media-" + digest(base).slice(0, 24);
     return { ...base, id: uuidFor([this.workspaceId, providerKey, capability]), version, enabled: true, queryAllowed: true };
   }
+  /** Scene speech. Independent of dashscope `audio.tts` and of `elevenlabs-media` music price/key. */
+  async elevenLabsTtsConfiguration(): Promise<RealMediaConfiguration | null> {
+    if (!this.enabled) return null;
+    const providerKey = "elevenlabs-tts";
+    const credentialVersion = this.#environment.ELEVENLABS_TTS_CREDENTIAL_VERSION ?? "v1";
+    const price = this.#environment.ELEVENLABS_TTS_PRICE_CHARACTER;
+    const outputFormat = this.#environment.ELEVENLABS_TTS_OUTPUT_FORMAT ?? "pcm_44100";
+    if ((outputFormat !== "pcm_44100" && outputFormat !== "wav_44100")
+      || !this.#credentials.has(providerKey + ":" + credentialVersion) || !price || !AMOUNT.test(price) || Number(price) <= 0
+      || !this.#environment.REAL_MEDIA_PRICE_VERSION) return null;
+    const base = { providerKey, capability: "audio.tts" as const, region: "global", model: "eleven_v4",
+      credentialRef: "env:elevenlabs-tts", credentialVersion, priceVersion: this.#environment.REAL_MEDIA_PRICE_VERSION,
+      currency: "USD" as const, unitPrice: price, maximumOperationAmount: this.#environment.REAL_MEDIA_MAX_SINGLE_USD ?? "2",
+      unitType: "character" as const, parameters: { outputFormat, languageCode: "zh", dryDialogue: true } };
+    const version = "media-" + digest(base).slice(0, 24);
+    return { ...base, id: uuidFor([this.workspaceId, providerKey, "audio.tts"]), version, enabled: true, queryAllowed: true };
+  }
   async adapterFor(configuration: RealMediaConfiguration, mode: "submit" | "query"): Promise<MediaProviderAdapter> {
     if (configuration.credentialRef !== "env:" + configuration.providerKey) throw new Error("REAL_MEDIA_CREDENTIAL_REFERENCE_INVALID");
     const key = this.#credentials.get(configuration.providerKey + ":" + configuration.credentialVersion);
     if (!key) throw new Error("REAL_MEDIA_CREDENTIAL_VERSION_UNAVAILABLE");
     if (mode === "submit") {
-      const active = await this.configurationFor(configuration.capability);
+      const active = configuration.providerKey === "elevenlabs-tts"
+        ? await this.elevenLabsTtsConfiguration() : await this.configurationFor(configuration.capability);
       if (!active || digest(active) !== digest(configuration)) throw new Error("REAL_MEDIA_CONFIGURATION_CHANGED");
     } else if (!configuration.queryAllowed) throw new Error("REAL_MEDIA_QUERY_DISABLED");
     const adapterConfiguration = mode === "query" ? { ...configuration, enabled: false } : configuration;
     const adapter = configuration.providerKey === "dashscope-media" ? new DashScopeMediaAdapter(adapterConfiguration, key, this.transport)
       : configuration.providerKey === "elevenlabs-media" ? new ElevenLabsMusicAdapter(adapterConfiguration, key, this.transport)
-      : configuration.providerKey === "openai-media" ? new OpenAiImageAdapter(adapterConfiguration, key, this.transport) : null;
+      : configuration.providerKey === "openai-media" ? new OpenAiImageAdapter(adapterConfiguration, key, this.transport)
+      : configuration.providerKey === "elevenlabs-tts" ? new ElevenLabsTtsAdapter(adapterConfiguration, key, this.transport) : null;
     if (!adapter) throw new Error("REAL_MEDIA_PROVIDER_UNSUPPORTED");
     if (mode === "submit") return adapter;
     // Recovery receives an observation capability. It cannot turn a mutable flag back on and submit another job.
