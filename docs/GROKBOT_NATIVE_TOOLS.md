@@ -29,10 +29,13 @@
 | 角色设定 | `set-characters` | characters[] | 已实现（本地） |
 | 分镜/镜头 | `set-storyboard` | scene + shots | 已实现（本地） |
 | 人工审场景 | `approve-scene --approved-by` | scene APPROVED | 已实现（本地） |
-| 配音计划（不付费） | `voice-plan` | PLAN_READY + plannedTtsCalls | 已实现（本地） |
+| 配音计划（不付费） | `voice-plan` | 整场 1 次 `eleven_v4`，不再按句计 qwen | 已实现（本地） |
+| 表演计划 / 占位音色 | `performance-plan` `voice-candidates` `pick-voice` | 原文不改；标签不进字幕 | 已实现（本地，音色为占位） |
+| 报价 / 人工授权 / 一次合成 | `tts-quote` `tts-authorize` `tts-generate` | 未授权拒绝；`--mock` 不扣费 | 已实现（真实提交需密钥与 `--execute`） |
+| 试听、选用、本地重切、恢复、字幕、导出 | `tts-preview` `tts-select` `tts-redo` `tts-resume` `tts-subtitles` `tts-export` | 父音频血统；对齐不足不编造时间 | 已实现（本地） |
 | 查阻塞 | `status` | blockers / stage | 已实现 |
-| 真实 TTS/视频 | 需授权包后走 API | 未在本 CLI 发起 | 后续 |
-| 《末班车暗号》复现 | `fixtures/moban-che-anhao/repro.sh` | stage=voice_plan | 已实现 |
+| 真实付费 TTS | `tts-generate --execute` + `ELEVENLABS_TTS_API_KEY` | 本轮未调用 | 待密钥与 Pro 格式 |
+| 《末班车暗号》复现 | `fixtures/moban-che-anhao/repro.sh` | stage=voice_plan，1 次外部操作 | 已实现 |
 
 ## 《末班车暗号》复现
 
@@ -41,12 +44,13 @@ ADS_LOCAL_STORE=/path/to/store.json \
   bash scripts/grokbot-native-tools/fixtures/moban-che-anhao/repro.sh
 ```
 
-期望：`status.stage === "voice_plan"`，2 角色，1 场景 APPROVED，`plannedTtsCalls === 4`，**paidCalls=0**。
+期望：`status.stage === "voice_plan"`，2 角色，1 场景 APPROVED，`dialogueLines === 4`，`plannedTtsCalls === 1`（整场一次，不再是 4 次百炼提交），**paidCalls=0**。导演命令、环境变量和 Pro 无损格式见 [ElevenLabs 场景对白](ELEVENLABS_TTS.md)。
 
 ## 安装与使用
 
 ```sh
 node scripts/grokbot-native-tools/cli.test.mjs
+node scripts/grokbot-native-tools/elevenlabs-tts.test.mjs
 node scripts/grokbot-native-tools/cli.mjs help
 ```
 

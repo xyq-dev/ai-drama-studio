@@ -31,11 +31,28 @@ export interface RealMediaQuote {
   actualCost: "unknown"; singleOperation: true;
   uncertainJobIds: string[];
 }
+/** One text-to-dialogue turn. Spoken `text` is sent as-is; performance notes stay outside this field. */
+export interface ElevenLabsDialogueInput {
+  speaker: string; text: string; voiceId: string;
+}
+/**
+ * Frozen scene dialogue for ElevenLabs `eleven_v4`.
+ * `previousText` / `futureText` map to the dialogue API's `previous_text` / `future_text` (not TTS `next_text`).
+ */
+export interface ElevenLabsDialogueBlock {
+  schema: "elevenlabs-tts.dialogue.v1";
+  languageCode: string;
+  inputs: ElevenLabsDialogueInput[];
+  previousText?: string;
+  futureText?: string;
+}
 export interface RealMediaSnapshot {
   schema: typeof REAL_MEDIA_SCHEMA; shotRevisionId: string; capability: RealMediaCapability;
   sourceText: string; sourceHash: string; configuration: RealMediaConfiguration;
   sourceImage?: { assetId: string; checksumSha256: string };
   speech?: import("./speech").SpeechGenerationInput;
+  /** Scene-level ElevenLabs speech. Absent on image, video, music, and per-line qwen snapshots. */
+  dialogue?: ElevenLabsDialogueBlock;
   characterReferenceGate?:"legacy"|"strict";
   budget: { authorizationId: string; quoteId: string; currency: "CNY" | "USD"; estimatedAmount: string;
     maximumAmount: string; priceVersion: string; authorizedBy: string; authorizedAt: string; expiresAt: string;

@@ -30,7 +30,8 @@
 | `ELEVENLABS_MEDIA_API_KEY`、`ELEVENLABS_MEDIA_CREDENTIAL_VERSION` | 音乐独立 key；API key 仅进程环境，凭据版本默认 `v1`。另支持 `ELEVENLABS_MEDIA_PREVIOUS_API_KEY`、`ELEVENLABS_MEDIA_PREVIOUS_CREDENTIAL_VERSION`。 |
 | `REAL_MEDIA_PRICE_VERSION` | 无可用默认；填写已核对价格快照的版本。历史试接文档不是当前报价。 |
 | `DASHSCOPE_MEDIA_PRICE_IMAGE`、`DASHSCOPE_MEDIA_PRICE_VIDEO_SECOND`、`DASHSCOPE_MEDIA_PRICE_TTS_CHARACTER` | 各能力正数单价；未配置就不开放该能力。CNY。 |
-| `ELEVENLABS_MEDIA_PRICE_MUSIC_SECOND` | 音乐正数单价；未配置不开放音乐。USD。 |
+| `ELEVENLABS_MEDIA_PRICE_MUSIC_SECOND` | 音乐正数单价；未配置不开放音乐。USD。不能当作台词单价。 |
+| `ELEVENLABS_TTS_API_KEY`、`ELEVENLABS_TTS_CREDENTIAL_VERSION`、`ELEVENLABS_TTS_PRICE_CHARACTER`、`ELEVENLABS_TTS_OUTPUT_FORMAT` | 场景对白独立配置，模型固定 `eleven_v4`，格式只允许 `pcm_44100` / `wav_44100`（Pro 及以上）。见 [ElevenLabs 场景对白](ELEVENLABS_TTS.md)。不回退到音乐密钥或 `qwen3-tts-flash`。 |
 | `DASHSCOPE_MEDIA_VIDEO_SECONDS` / `ELEVENLABS_MEDIA_MUSIC_SECONDS` | 默认均 5；代码范围分别 2–15 / 3–90 秒，不表示每个账号/模型已验收全部值。 |
 | `REAL_MEDIA_MAX_SINGLE_CNY`、`REAL_MEDIA_MAX_SINGLE_USD` | 默认 10 / 2；限制一次报价可确认的最大金额。是应用门槛，不是云账号消费硬上限或每日预算。 |
 | `APP_WORKSPACE_ID`、`S3_*` | 沿用服务端 workspace 与 S3 配置；真实资产写 `real-media/{workspace}/{project}/{job}/{attempt}/{sha256}.{ext}`。不写 Mock 目录。 |
