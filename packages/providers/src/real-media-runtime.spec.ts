@@ -188,3 +188,60 @@ describe("explicit openai sunburst image configuration", () => {
     expect(sent).toEqual([]);
   });
 });
+
+describe("independent minimax speech configuration", () => {
+  const minimax = {
+    ...configured, MINIMAX_API_KEY: "minimax-server-test-key", MINIMAX_TTS_PRICE_CHARACTER: "0.0002",
+    MINIMAX_TTS_MODEL: "speech-2.8-hd", MINIMAX_TTS_BASE_URL: "https://api.minimaxi.com",
+    MINIMAX_TTS_OUTPUT_FORMAT: "wav", MINIMAX_TTS_SAMPLE_RATE: "44100",
+  };
+  it("does not borrow elevenlabs, music, or qwen speech settings", async () => {
+    const musicOnly = loadRealMediaEnvironment({
+      ...configured, ELEVENLABS_MEDIA_API_KEY: "music-only-test-key", ELEVENLABS_MEDIA_PRICE_MUSIC_SECOND: "0.05",
+      ELEVENLABS_TTS_API_KEY: "speech-only-test-key", ELEVENLABS_TTS_PRICE_CHARACTER: "0.00012",
+    });
+    const musicRuntime = new ServerRealMediaRuntime(workspaceId, musicOnly, true);
+    expect(await musicRuntime.minimaxTtsConfiguration()).toBeNull();
+    expect(await musicRuntime.configurationFor("audio.tts")).toMatchObject({ providerKey: "dashscope-media", model: "qwen3-tts-flash" });
+    expect(await musicRuntime.elevenLabsTtsConfiguration()).toMatchObject({ providerKey: "elevenlabs-tts", model: "eleven_v4" });
+    const runtime = new ServerRealMediaRuntime(workspaceId, loadRealMediaEnvironment(minimax), true);
+    const speech = await runtime.minimaxTtsConfiguration();
+    expect(speech).toMatchObject({
+      providerKey: "minimax-tts", model: "speech-2.8-hd", capability: "audio.tts", currency: "CNY", unitType: "character",
+      unitPrice: "0.0002", credentialRef: "env:minimax-tts", region: "api.minimaxi.com",
+      parameters: { outputFormat: "wav", sampleRate: 44100, baseUrl: "https://api.minimaxi.com" },
+    });
+    expect(await runtime.configurationFor("audio.tts")).toMatchObject({ providerKey: "dashscope-media", model: "qwen3-tts-flash" });
+    expect(await runtime.elevenLabsTtsConfiguration()).toBeNull();
+    expect(JSON.stringify(speech)).not.toContain("minimax-server-test-key");
+    expect(loadRealMediaEnvironment({}, { MINIMAX_API_KEY: "file-only-minimax-key" }).MINIMAX_API_KEY).toBeUndefined();
+  });
+  it("rejects a substituted model, format, rate, or foreign host", () => {
+    expect(() => loadRealMediaEnvironment({ MINIMAX_TTS_MODEL: "speech-02-hd" })).toThrow("MINIMAX_TTS_MODEL");
+    expect(() => loadRealMediaEnvironment({ MINIMAX_TTS_OUTPUT_FORMAT: "mp3" })).toThrow("MINIMAX_TTS_OUTPUT_FORMAT");
+    expect(() => loadRealMediaEnvironment({ MINIMAX_TTS_SAMPLE_RATE: "32000" })).toThrow("MINIMAX_TTS_SAMPLE_RATE");
+    expect(() => loadRealMediaEnvironment({ MINIMAX_TTS_BASE_URL: "https://api.elevenlabs.io" })).toThrow("MINIMAX_TTS_BASE_URL");
+    expect(() => loadRealMediaEnvironment({ MINIMAX_TTS_BASE_URL: "http://api.minimaxi.com" })).toThrow("MINIMAX_TTS_BASE_URL");
+    expect(() => new ServerRealMediaRuntime(workspaceId, loadRealMediaEnvironment({
+      ...minimax, MINIMAX_PREVIOUS_API_KEY: "old-minimax-test-key", MINIMAX_TTS_PREVIOUS_CREDENTIAL_VERSION: "v1",
+    }), true)).toThrow("MINIMAX_TTS_PREVIOUS_CREDENTIAL_VERSION");
+  });
+  it("query recovery cannot submit and does not call the network", async () => {
+    const sent: string[] = [];
+    const transport: import("./real-media-adapters").RealMediaHttpTransport = async (request) => {
+      sent.push(request.url);
+      return { status: 500, headers: {}, bytes: Buffer.from("{}") };
+    };
+    const runtime = new ServerRealMediaRuntime(workspaceId, loadRealMediaEnvironment(minimax), true, transport);
+    const frozen = (await runtime.minimaxTtsConfiguration())!;
+    const adapter = await runtime.adapterFor(frozen, "submit");
+    expect(adapter.providerKey).toBe("minimax-tts");
+    const query = await runtime.adapterFor(frozen, "query");
+    await expect(query.submit({} as never)).rejects.toThrow("MEDIA_SUBMIT_DISABLED");
+    expect((await query.inspect("mm_frozen_1")).state).toBe("UNKNOWN");
+    expect(sent).toEqual([]);
+    expect(await new ServerRealMediaRuntime(workspaceId, loadRealMediaEnvironment({ ...minimax, MINIMAX_TTS_PRICE_CHARACTER: undefined }), true).minimaxTtsConfiguration()).toBeNull();
+    expect(await new ServerRealMediaRuntime(workspaceId, loadRealMediaEnvironment({ ...minimax, MINIMAX_API_KEY: undefined }), true).configurationFor("audio.tts"))
+      .toMatchObject({ providerKey: "dashscope-media" });
+  });
+});

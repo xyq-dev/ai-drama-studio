@@ -30,6 +30,7 @@ import {
   projectStatus,
 } from "./store.mjs";
 import { assetDirFor, handleDirectorCommand } from "./elevenlabs-tts.mjs";
+import { handleMiniMaxCommand, minimaxAssetDir } from "./minimax-tts.mjs";
 import {
   liveConfigFromEnv,
   assertLiveReady,
@@ -64,6 +65,12 @@ const LOCAL_COMMANDS = new Set([
   "tts-resume",
   "tts-subtitles",
   "tts-export",
+  "mm-tts-quote",
+  "mm-tts-authorize",
+  "mm-tts-generate",
+  "mm-tts-preview",
+  "mm-tts-resume",
+  "mm-tts-export",
   "status",
 ]);
 
@@ -127,6 +134,12 @@ function helpText() {
     "  tts-resume       [--job-id ID]",
     "  tts-subtitles    [--job-id ID]",
     "  tts-export       --job-id ID --out DIR",
+    "  mm-tts-quote     --voice-id ID [--unit-price N] [--budget-cap N] [--currency CNY]",
+    "  mm-tts-authorize --authorized-by user:... [--quote-id ID]",
+    "  mm-tts-generate  --idempotency-key KEY (--mock | --execute) [--quote-id ID]",
+    "  mm-tts-preview   [--job-id ID]",
+    "  mm-tts-resume    [--job-id ID]",
+    "  mm-tts-export    --job-id ID --out DIR",
     "  status           [--project-id ID]",
     "  help",
     "",
@@ -139,7 +152,9 @@ function helpText() {
     "",
     "APPROVE is a human gate: --approved-by / --authorized-by are required.",
     "Speech is ElevenLabs eleven_v4 scene dialogue (ELEVENLABS_TTS_*), not music and not qwen.",
-    "--mock is an unpaid fixture. --execute with ELEVENLABS_TTS_API_KEY submits one scene call.",
+    "MiniMax speech-2.8-hd is a separate path (mm-tts-*). It does not replace tts-* and does not fall back to ElevenLabs.",
+    "--mock is an unpaid fixture. ElevenLabs --execute needs ELEVENLABS_TTS_API_KEY. MiniMax --execute needs MINIMAX_API_KEY.",
+    "MiniMax tests stay on --mock. Do not put a live MiniMax call in CI.",
     "gpt-image-2.5-sunburst is not invoked by this CLI. Image spend stays behind real-media quote/authorize.",
   ].join("\n");
 }
@@ -189,6 +204,7 @@ export async function runCli(argv = process.argv.slice(2), { env = process.env }
       "output-format": { type: "string" },
       "previous-text": { type: "string" },
       "future-text": { type: "string" },
+      "voice-id": { type: "string" },
     },
   });
 
@@ -241,6 +257,10 @@ export async function runCli(argv = process.argv.slice(2), { env = process.env }
 const DIRECTOR_COMMANDS = new Set([
   "voice-candidates", "performance-plan", "pick-voice", "tts-quote", "tts-authorize", "tts-generate",
   "tts-preview", "tts-select", "tts-redo", "tts-resume", "tts-subtitles", "tts-export",
+]);
+
+const MINIMAX_COMMANDS = new Set([
+  "mm-tts-quote", "mm-tts-authorize", "mm-tts-generate", "mm-tts-preview", "mm-tts-resume", "mm-tts-export",
 ]);
 
 async function runLocal(command, values, { storePath, dryRun, env }) {
@@ -440,6 +460,17 @@ async function runLocal(command, values, { storePath, dryRun, env }) {
       if (!project) throw new Error(projectId ? `Unknown project: ${projectId}` : "No current project; pass --project-id");
       const result = await handleDirectorCommand(command, values, project, env, {
         assetDir: assetDirFor(storePath),
+        persist: () => saveStore(store, storePath),
+      });
+      if (result.save) saveStore(store, storePath);
+      return { ok: true, exitCode: 0, output: { mode: "local", action: command, storePath, ...result.output } };
+    }
+    if (MINIMAX_COMMANDS.has(command)) {
+      const projectId = values["project-id"] || store.currentProjectId;
+      const project = store.projects[projectId];
+      if (!project) throw new Error(projectId ? `Unknown project: ${projectId}` : "No current project; pass --project-id");
+      const result = await handleMiniMaxCommand(command, values, project, env, {
+        assetDir: minimaxAssetDir(storePath),
         persist: () => saveStore(store, storePath),
       });
       if (result.save) saveStore(store, storePath);

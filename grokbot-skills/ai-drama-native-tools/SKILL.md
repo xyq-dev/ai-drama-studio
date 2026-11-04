@@ -23,6 +23,8 @@ description: >-
 
 `tts-generate --mock` is unpaid and refuses a live `ELEVENLABS_TTS_API_KEY`. A real submit needs that speech key, `ELEVENLABS_TTS_PRICE_CHARACTER`, authorization, and `--execute`. Never reuse `ELEVENLABS_MEDIA_*` music key or per-second price. `pcm_44100` / `wav_44100` need ElevenLabs Pro or higher; do not downgrade the model or the format. See `docs/ELEVENLABS_TTS.md`.
 
+MiniMax `speech-2.8-hd` is a separate `mm-tts-quote` → `mm-tts-authorize` → `mm-tts-generate` path (`docs/MINIMAX_TTS.md`). It does not replace `tts-*` and a MiniMax failure must not be retried through ElevenLabs. `mm-tts-generate --mock` is the unpaid check. Do not pass `--execute` unless the user explicitly wants one live MiniMax submit.
+
 Reproduce 《末班车暗号》：
 
 ```sh

@@ -21,4 +21,10 @@ describe("real media single-operation estimates",()=>{
     expect(()=>estimateRealMedia({...configuration,providerKey:"elevenlabs-media",capability:"audio.tts",model:"music_v2"},"你好")).toThrow(/Music configuration cannot price speech/);
     expect(()=>assertRealMediaInput({schema:"real-media.v1",shotRevisionId:"00000000-0000-4000-8000-000000000002",capability:"audio.tts",sourceText:"你好",sourceHash:"a".repeat(64),configuration:speech})).toThrow(/per-line website worker/);
   });
+  it("prices speech-2.8-hd once per character and keeps it off the website worker",()=>{
+    const speech={...configuration,providerKey:"minimax-tts",model:"speech-2.8-hd",region:"api.minimaxi.com",currency:"CNY" as const,unitPrice:"0.00008",credentialRef:"env:minimax-tts"};
+    expect(estimateRealMedia(speech,"你好")).toBe("0.00016000");
+    expect(()=>estimateRealMedia({...speech,model:"speech-02-hd"},"你好")).toThrow(/speech-2.8-hd/);
+    expect(()=>assertRealMediaInput({schema:"real-media.v1",shotRevisionId:"00000000-0000-4000-8000-000000000002",capability:"audio.tts",sourceText:"你好",sourceHash:"a".repeat(64),configuration:speech})).toThrow(/does not fall back to ElevenLabs/);
+  });
 });

@@ -24,6 +24,14 @@ export function estimateRealMedia(configuration: RealMediaConfiguration, text: s
     if (spoken < 1 || spoken > 100_000) throw new DomainError("VALIDATION_ERROR", "Invalid media quantity");
     return realMediaAmount(realMediaAmountUnits(configuration.unitPrice) * spoken);
   }
+  if (configuration.providerKey === "minimax-tts") {
+    if (configuration.capability !== "audio.tts" || configuration.model !== "speech-2.8-hd" || configuration.unitType !== "character") {
+      throw new DomainError("VALIDATION_ERROR", "MiniMax speech is priced only as speech-2.8-hd characters");
+    }
+    const spoken = BigInt([...text].length);
+    if (spoken < 1 || spoken > 100_000) throw new DomainError("VALIDATION_ERROR", "Invalid media quantity");
+    return realMediaAmount(realMediaAmountUnits(configuration.unitPrice) * spoken);
+  }
   const quantity = configuration.unitType === "character" ? BigInt([...text].length * 2)
     : configuration.unitType === "second" ? BigInt(Number(configuration.parameters.duration ?? 5)) : 1n;
   if (quantity < 1 || quantity > 100_000) throw new DomainError("VALIDATION_ERROR", "Invalid media quantity");
@@ -51,6 +59,9 @@ export function assertRealMediaInput(input:Omit<RealMediaSnapshot,"budget">):voi
   if(input.capability==="audio.music"&&text.length>4100)throw new DomainError("VALIDATION_ERROR","Music prompt exceeds 4100 characters");
   if(input.capability==="audio.tts"&&config.providerKey==="elevenlabs-tts"){
     throw new DomainError("REAL_MEDIA_TTS_PATH_UNSUPPORTED","ElevenLabs eleven_v4 scene dialogue is not submitted through the per-line website worker");
+  }
+  if(input.capability==="audio.tts"&&config.providerKey==="minimax-tts"){
+    throw new DomainError("REAL_MEDIA_TTS_PATH_UNSUPPORTED","MiniMax speech-2.8-hd is not submitted through the per-line website worker and does not fall back to ElevenLabs");
   }
   if(input.capability==="audio.tts"){
     const speech=input.speech;

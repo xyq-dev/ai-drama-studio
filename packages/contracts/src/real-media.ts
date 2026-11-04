@@ -46,6 +46,15 @@ export interface ElevenLabsDialogueBlock {
   previousText?: string;
   futureText?: string;
 }
+/**
+ * One MiniMax `t2a_v2` utterance for `speech-2.8-hd`.
+ * Spoken `text` is sent as-is. This is not an ElevenLabs dialogue block and not a qwen line.
+ */
+export interface MiniMaxSpeechBlock {
+  schema: "minimax-tts.speech.v1";
+  text: string;
+  voiceId: string;
+}
 export interface RealMediaSnapshot {
   schema: typeof REAL_MEDIA_SCHEMA; shotRevisionId: string; capability: RealMediaCapability;
   sourceText: string; sourceHash: string; configuration: RealMediaConfiguration;
@@ -53,6 +62,8 @@ export interface RealMediaSnapshot {
   speech?: import("./speech").SpeechGenerationInput;
   /** Scene-level ElevenLabs speech. Absent on image, video, music, and per-line qwen snapshots. */
   dialogue?: ElevenLabsDialogueBlock;
+  /** Single MiniMax `t2a_v2` utterance. Absent unless the provider is `minimax-tts`. */
+  minimaxSpeech?: MiniMaxSpeechBlock;
   characterReferenceGate?:"legacy"|"strict";
   budget: { authorizationId: string; quoteId: string; currency: "CNY" | "USD"; estimatedAmount: string;
     maximumAmount: string; priceVersion: string; authorizedBy: string; authorizedAt: string; expiresAt: string;
