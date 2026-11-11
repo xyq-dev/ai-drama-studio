@@ -1,0 +1,128 @@
+name: CI package-network diagnostics (not application acceptance)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/ci-network-diagnostics.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    name: Diagnose runner HTTPS and privilege boundaries
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Collect bounded network observations without printing proxy or CA values
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+
+          # No checkout, business credentials, configuration writes, DNS changes or TLS bypass.
+          # A successful job means observations were collected, never application acceptance.
+          names = (
+              "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+              "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+              "SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE",
+              "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS",
+          )
+          retained_names = [name for name in names if name in os.environ]
+          preserve = (
+              ["--preserve-env=" + ",".join(retained_names)] if retained_names else []
+          )
+          modes = (
+              ("ordinary_user", []),
+              ("sudo_default", ["sudo", "-n", "--"]),
+              ("sudo_explicit_proxy_ca", ["sudo", "-n", *preserve, "--"]),
+          )
+          urls = (
+              ("ubuntu_archive", "https://archive.ubuntu.com/ubuntu/dists/noble/InRelease"),
+              ("ubuntu_security", "https://security.ubuntu.com/ubuntu/dists/noble-security/InRelease"),
+              ("microsoft", "https://packages.microsoft.com/ubuntu/24.04/prod/dists/noble/InRelease"),
+          )
+
+          def capture(command, timeout):
+              try:
+                  result = subprocess.run(
+                      command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                      stderr=subprocess.DEVNULL, text=True, timeout=timeout, check=False,
+                  )
+                  return result.returncode, result.stdout
+              except subprocess.TimeoutExpired:
+                  return 124, ""
+              except OSError:
+                  return 127, ""
+
+          # This child emits booleans and fixed key names only. apt-config values stay in memory.
+          inspect_code = r'''
+          import json, os, subprocess
+          names = json.loads(os.sys.argv[1])
+          result = {"environment_present": {name: name in os.environ for name in names}}
+          try:
+              apt = subprocess.run(["apt-config", "dump"], stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                   text=True, timeout=8, check=False)
+              keys = {line.split(None, 1)[0] for line in apt.stdout.splitlines() if line.strip()}
+              result["apt_config_exit_code"] = apt.returncode
+              result["apt_config_key_present"] = {
+                  key: key in keys for key in (
+                      "Acquire::http::Proxy", "Acquire::https::Proxy",
+                      "Acquire::http::Proxy-Auto-Detect", "Acquire::https::Proxy-Auto-Detect",
+                      "Acquire::https::CaInfo",
+                  )
+              }
+              result["apt_host_proxy_key_present"] = any(
+                  key.startswith(("Acquire::http::Proxy::", "Acquire::https::Proxy::"))
+                  for key in keys
+              )
+              result["apt_host_ca_key_present"] = any(
+                  key.startswith("Acquire::https::") and key.endswith("::CaInfo")
+                  for key in keys
+              )
+          except (OSError, subprocess.TimeoutExpired):
+              result["apt_config_observation_available"] = False
+          print(json.dumps(result, sort_keys=True))
+          '''
+
+          print("DIAGNOSTIC ONLY: job completion does not establish application or network acceptance.")
+          observations = []
+          for mode, prefix in modes:
+              code, output = capture(
+                  [*prefix, "python3", "-c", inspect_code, json.dumps(names)], 12,
+              )
+              try:
+                  details = json.loads(output) if code == 0 else None
+              except json.JSONDecodeError:
+                  details = None
+              print(json.dumps({"mode": mode, "inspection_exit_code": code,
+                                "inspection": details}, sort_keys=True))
+              for target, url in urls:
+                  # -q ignores user curlrc; default TLS verification and inherited proxy/CA remain enabled.
+                  # Neither headers, bodies, environment values nor error strings are printed.
+                  code, output = capture([
+                      *prefix, "curl", "-q", "--silent", "--fail", "--location",
+                      "--proto", "=https", "--proto-redir", "=https",
+                      "--connect-timeout", "5", "--max-time", "15",
+                      "--output", "/dev/null", "--write-out", "%{http_code}", url,
+                  ], 18)
+                  status = output.strip()
+                  if len(status) != 3 or not status.isdigit():
+                      status = "unavailable"
+                  observation = {"mode": mode, "target": target,
+                                 "curl_exit_code": code, "http_code": status}
+                  observations.append(observation)
+                  print(json.dumps(observation, sort_keys=True))
+
+          failed = sum(item["curl_exit_code"] != 0 for item in observations)
+          print(json.dumps({"diagnostic_complete": True, "probe_count": len(observations),
+                            "failed_probe_count": failed, "application_acceptance": "NOT_RUN"},
+                           sort_keys=True))
+          if failed:
+              print("::warning::Network diagnostics recorded failed probes; inspect the results. Application acceptance was not run.")
+          PY
