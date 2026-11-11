@@ -81,6 +81,24 @@ describe("starting a script breakdown", () => {
     expect([store.runs.length, seen.length]).toEqual([0, 0]);
   });
 
+  it.each([241, 3600])("refuses a %s-second target before creating or scheduling a paid task", async targetSeconds => {
+    const { store, episode, seen, pending, start } = setup();
+    episode.targetEpisodeSeconds = targetSeconds;
+    const result = await start();
+    expect(result.status).toBe(422);
+    expect(result.body).toMatchObject({ error: { code: "SCRIPT_BREAKDOWN_TARGET_TOO_LONG",
+      details: { targetEpisodeSeconds: targetSeconds, maxSeconds: 240 } } });
+    expect([store.runs.length, store.calls.length, seen.length, pending.length]).toEqual([0, 0, 0, 0]);
+  });
+
+  it.each([210, 240])("accepts a %s-second target without changing the call cap", async targetSeconds => {
+    const { episode, start, runOf } = setup();
+    episode.targetEpisodeSeconds = targetSeconds;
+    const result = await start();
+    expect(result.status).toBe(201);
+    expect(runOf(result)).toMatchObject({ targetEpisodeSeconds: targetSeconds, callCap: 3 });
+  });
+
   it("asks before replacing existing scenes, then replaces them only when told to", async () => {
     const { store, episode, start, settle, runOf } = setup();
     const manual = store.addManualScene(episode.episodeId, "模板场景");

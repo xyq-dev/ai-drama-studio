@@ -1,5 +1,6 @@
 .page { max-width: 1600px; margin: 0 auto; padding: 30px 20px 32px; }
 .headingRow { display: flex; justify-content: space-between; align-items: center; gap: 24px; margin: 0 12px 28px; }
+.headingActions { display: flex; align-items: center; gap: 10px; }
 .heading { margin: 0; font-size: var(--studio-heading); font-weight: 700; letter-spacing: -.035em; line-height: 1.35; }
 .intro { margin: 10px 0 0; color: var(--studio-muted); font-size: 14px; }
 .primary, .secondary, .continue { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; border-radius: var(--studio-control-radius); padding: 9px 16px; border: 1px solid var(--studio-line); font-size: 14px; font-weight: 600; text-decoration: none; white-space: nowrap; }
@@ -78,15 +79,19 @@
 .progressNote { display: block; margin: 6px 0 0; color: var(--studio-muted); font-size: 12px; line-height: 1.7; }
 .dateCell { color: var(--studio-muted); font-size: 14px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .actions { text-align: center; }
-.actionLinks { display: flex; align-items: center; gap: 8px; }
-.continue { flex: 1; min-height: 40px; padding: 6px 10px; background: var(--studio-card); border-color: var(--studio-accent-line); color: var(--studio-accent); font-size: 14px; }
+.scriptLink { display: flex; align-items: center; width: fit-content; min-height: 18px; color: #204f40; font-weight: 600; font-size: 12px; line-height: 1.5; white-space: nowrap; text-decoration: none; }
+.scriptLink:hover { text-decoration: underline; text-underline-offset: 4px; }
+.actionLinks { display: flex; align-items: center; gap: 4px; }
+.continue { flex: 1; min-height: 40px; padding: 6px 8px; gap: 4px; background: var(--studio-card); border-color: var(--studio-accent-line); color: var(--studio-accent); font-size: 13px; }
 .continue:hover { background: var(--studio-error-bg); }
-.advanced { display: flex; flex: 0 0 32px; justify-content: center; align-items: center; min-height: 44px; color: var(--studio-muted); font-size: 24px; letter-spacing: 2px; text-decoration: none; }
+.advanced { display: flex; flex: 0 0 24px; justify-content: center; align-items: center; min-height: 44px; color: var(--studio-muted); font-size: 24px; letter-spacing: 2px; text-decoration: none; }
 .advanced:hover { color: var(--studio-accent); }
 .footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 18px 6px 24px; color: var(--studio-muted); font-size: 14px; }
 .visuallyHidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 @media (min-width: 1200px) and (max-width: 1399px) {
   .workspace { grid-template-columns: 200px minmax(0, 1fr); }
+  .workColumn { width: 29%; }
+  .actionColumn { width: 26%; }
   .thumbnail { flex-basis: 96px; width: 96px; }
   .workText h3 { font-size: 15px; }
   .dateCell { font-size: 12px; }
@@ -106,10 +111,10 @@
   .table th, .table td { padding-left: 5px; padding-right: 5px; }
   .thumbnail { flex-basis: 68px; width: 68px; height: 56px; }
   .workIdentity { gap: 9px; }
-  .dateColumn { width: 15%; }
-  .workColumn { width: 32%; }
-  .stageColumn { width: 19%; }
-  .actionColumn { width: 20%; }
+  .dateColumn { width: 14%; }
+  .workColumn { width: 31%; }
+  .stageColumn { width: 15%; }
+  .actionColumn { width: 26%; }
   .workText h3 { font-size: 15px; }
   .dateCell { font-size: 12px; }
   .continue { padding: 6px 4px; font-size: 12px; gap: 2px; }
@@ -141,8 +146,8 @@
   .dateCell::before { content: attr(data-label); margin-right: 5px; }
   .progressCell { grid-column: 1; grid-row: 3; }
   .actions { grid-column: 2; grid-row: 3; min-width: 84px; }
-  .actionLinks { flex-direction: column; gap: 2px; }
-  .continue { min-height: 44px; width: 100%; }
+  .actionLinks { flex-direction: row; gap: 2px; }
+  .continue { min-height: 44px; width: auto; }
   .advanced { flex-basis: auto; min-width: 44px; }
   .statusLine, .progressNote { font-size: 12px; }
 }
@@ -150,6 +155,8 @@
   .page { padding: 24px 16px 40px; }
   .heading { font-size: var(--studio-heading-mobile); }
   .headingRow { gap: 12px; align-items: flex-start; margin: 0 0 22px; }
+  .headingActions { flex-direction: column-reverse; align-items: stretch; gap: 6px; }
+  .headingActions .secondary { min-height: 36px; padding: 6px 12px; font-size: 13px; }
   .intro { font-size: 13px; max-width: 210px; }
   .headingRow .primary { padding: 9px 12px; font-size: 13px; }
   .workspace { border-radius: 14px; }

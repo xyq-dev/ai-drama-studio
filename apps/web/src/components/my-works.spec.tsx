@@ -124,6 +124,8 @@ describe("作品分类列表", () => {
     expect(screen.queryByRole("img", { name: "夜班封面" })).toBeNull();
     expect(screen.getByText("暂无封面")).toBeTruthy();
     expect(screen.getByRole("link", { name: "继续创作" }).getAttribute("href")).toBe(`/projects/${P}/create`);
+    expect(screen.getByRole("link", { name: "剧本工作台" }).getAttribute("href")).toBe(`/projects/${P}/script`);
+    expect(screen.getByRole("link", { name: "回收站" }).getAttribute("href")).toBe("/studio/trash");
   });
 
   it("keeps the library readable without the category draft and disables unavailable writes", async () => {

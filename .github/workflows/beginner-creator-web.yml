@@ -78,6 +78,7 @@ jobs:
           python3 --version
 
       - name: Install Chrome for Testing
+        timeout-minutes: 10
         run: pnpm exec playwright install --with-deps chrome
 
       - name: Validate and generate Prisma

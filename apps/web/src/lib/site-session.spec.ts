@@ -2,6 +2,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { csrfToken, loginUrl, logout, readSession, safeReturnTo, withSession } from "./site-session";
 
+import { WORKBENCH_DRAFT_PREFIX, WORKBENCH_DRAFTS_CLEARED_EVENT } from "./script-workbench-drafts";
+
 const CSRF = "c".repeat(43);
 let assign: ReturnType<typeof vi.fn<(url: string | URL) => void>>;
 
@@ -10,7 +12,7 @@ beforeEach(() => {
   assign = vi.fn<(url: string | URL) => void>();
   vi.spyOn(window.location, "assign").mockImplementation(assign);
 });
-afterEach(() => { document.cookie = "ads_csrf=; Max-Age=0; Path=/"; vi.restoreAllMocks(); });
+afterEach(() => { window.sessionStorage.clear(); document.cookie = "ads_csrf=; Max-Age=0; Path=/"; vi.restoreAllMocks(); });
 
 describe("returnTo", () => {
   it("keeps paths on this site, with their query", () => {
@@ -74,9 +76,20 @@ describe("CSRF and session handling for API requests", () => {
     expect(await readSession(async () => new Response(JSON.stringify({ enabled: false, authenticated: false }))))
       .toMatchObject({ enabled: false, authenticated: false });
     await expect(readSession(async () => new Response("{}", { status: 503 }))).rejects.toThrow();
+    window.sessionStorage.setItem(WORKBENCH_DRAFT_PREFIX + "project-one", "unsaved-one");
+    window.sessionStorage.setItem(WORKBENCH_DRAFT_PREFIX + "project-two", "unsaved-two");
+    window.sessionStorage.setItem("unrelated-preference", "keep");
+    const clearEvent = vi.fn();
+    window.addEventListener(WORKBENCH_DRAFTS_CLEARED_EVENT, clearEvent, { once: true });
     await expect(logout(async () => new Response(null, { status: 403 }))).rejects.toThrow();
+    expect(window.sessionStorage.getItem(WORKBENCH_DRAFT_PREFIX + "project-one")).toBe("unsaved-one");
+    expect(clearEvent).not.toHaveBeenCalled();
     const fetch = vi.fn(async (_input: string, _init?: RequestInit) => new Response(null, { status: 204 }));
     await logout(fetch);
+    expect(clearEvent).toHaveBeenCalledTimes(1);
+    expect(window.sessionStorage.getItem(WORKBENCH_DRAFT_PREFIX + "project-one")).toBeNull();
+    expect(window.sessionStorage.getItem(WORKBENCH_DRAFT_PREFIX + "project-two")).toBeNull();
+    expect(window.sessionStorage.getItem("unrelated-preference")).toBe("keep");
     expect(fetch.mock.calls[0]![0]).toBe("/api/v1/auth/logout");
     expect(fetch.mock.calls[0]![1]).toMatchObject({ method: "POST", headers: { "X-CSRF-Token": CSRF } });
   });

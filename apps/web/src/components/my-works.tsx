@@ -6,6 +6,7 @@ import { loadProjectFacts } from "../lib/beginner-facts";
 import { STEPS, STEP_STATE_MARK, STEP_STATE_TEXT, stepsFor, stepStates, type StepKey, type StepState } from "../lib/beginner-steps";
 import { shouldPoll } from "../lib/studio-model";
 import { BeginnerShell } from "./beginner-shell";
+import { ProjectTrashButton } from "./recycle-bin";
 import styles from "./my-works.module.css";
 
 interface ProjectItem {
@@ -350,7 +351,7 @@ export function MyWorks() {
             <h1 className={styles.heading}>我的作品</h1>
             <p className={styles.intro}>把灵感写成故事，让每一个故事都有后续。</p>
           </div>
-          <a className={styles.primary} href="/create"><span className={styles.plus} aria-hidden="true">+</span>开始创作</a>
+          <div className={styles.headingActions}><a className={styles.secondary} href="/studio/trash">回收站</a><a className={styles.primary} href="/create"><span className={styles.plus} aria-hidden="true">+</span>开始创作</a></div>
         </header>
         <div className={styles.workspace}>
           <aside className={styles.sidebar} aria-label="作品分类">
@@ -402,7 +403,7 @@ export function MyWorks() {
                     <a className={styles.thumbnail} href={`/projects/${item.id}/create`} aria-label={`打开作品：${item.title}`}>
                       {item.thumbnailUrl && !failedThumbnails.has(item.thumbnailUrl) ? <img src={item.thumbnailUrl} alt={`${item.title}封面`} loading="lazy" onError={() => setFailedThumbnails((current) => new Set(current).add(item.thumbnailUrl!))} /> : <span className={styles.thumbnailPlaceholder}><ImageIcon /><span>暂无封面</span></span>}
                     </a>
-                    <div className={styles.workText}><h3><a href={`/projects/${item.id}/create`}>{item.title}</a></h3><p className={styles.premise} title={item.premise || "还没有故事想法"}><span className={styles.workMeta}>{item.writingMode === "series" ? "系列写作" : "短剧创作"}{item.episodeCount ? ` · ${item.episodeCount} 集` : ""} · </span>{item.premise || "还没有故事想法"}</p></div>
+                    <div className={styles.workText}><h3><a href={`/projects/${item.id}/create`}>{item.title}</a></h3><p className={styles.premise} title={item.premise || "还没有故事想法"}><span className={styles.workMeta}>{item.writingMode === "series" ? "系列写作" : "短剧创作"}{item.episodeCount ? ` · ${item.episodeCount} 集` : ""} · </span>{item.premise || "还没有故事想法"}</p><a className={styles.scriptLink} href={`/projects/${item.id}/script`}>剧本工作台</a></div>
                   </div></td>
                   <td className={styles.categoryCell} data-label="分类"><select className={styles.categorySelect} aria-label={`${item.title}的分类`} title="修改作品分类" value={item.categoryId ?? ""} disabled={!summary?.categoriesReady || savingCategory !== null} onChange={(event) => void assignCategory(item, event.target.value)}><option value="">未分类</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select>{savingCategory === item.id ? <span className={styles.progressNote}>保存中…</span> : null}</td>
                   <td className={styles.progressCell}><div aria-live="polite">
@@ -417,7 +418,7 @@ export function MyWorks() {
                     </> : null}
                   </div></td>
                   <td className={styles.dateCell} data-label="更新于"><time dateTime={item.updatedAt} title={item.updatedAt}>{updatedDate(item.updatedAt)}</time></td>
-                  <td className={styles.actions}><div className={styles.actionLinks}><a className={styles.continue} href={`/projects/${item.id}/create`}>继续创作<span aria-hidden="true">→</span></a><a className={styles.advanced} href={`/projects/${item.id}`} aria-label="高级编辑" title="高级编辑"><span aria-hidden="true">···</span></a></div></td>
+                  <td className={styles.actions}><div className={styles.actionLinks}><a className={styles.continue} href={`/projects/${item.id}/create`}>继续创作<span aria-hidden="true">→</span></a><a className={styles.advanced} href={`/projects/${item.id}`} aria-label="高级编辑" title="高级编辑"><span aria-hidden="true">···</span></a><ProjectTrashButton projectId={item.id} title={item.title} onDeleted={async () => { setCategoryNotice(`已将《${item.title}》移入回收站。`); await load(null); }} /></div></td>
                 </tr>;
               })}</tbody>
             </table> : null}

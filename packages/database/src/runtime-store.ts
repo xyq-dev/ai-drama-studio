@@ -210,7 +210,7 @@ export class RuntimeStore {
       const result = await client.query<QueryResultRow>(
         `SELECT id, workspace_id, title, premise, status, version, created_at, updated_at
            FROM project
-          WHERE workspace_id = $1 ${cursorSql}
+          WHERE workspace_id = $1 AND archived_at IS NULL AND status = 'ACTIVE' ${cursorSql}
           ORDER BY created_at DESC, id DESC
           LIMIT $2`,
         params,
@@ -229,7 +229,7 @@ export class RuntimeStore {
     try {
       const result = await client.query<QueryResultRow>(
         `SELECT id, workspace_id, title, premise, status, version, created_at, updated_at
-           FROM project WHERE id = $1 AND workspace_id = $2`,
+           FROM project WHERE id = $1 AND workspace_id = $2 AND archived_at IS NULL AND status = 'ACTIVE'`,
         [projectId, workspaceId],
       );
       const row = result.rows[0];

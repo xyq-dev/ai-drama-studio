@@ -84,7 +84,7 @@ export class ProjectLibraryStore {
       const ready = await readiness(client);
       if (query.category !== "all") requireCategories(ready);
       const search = `%${query.q.replace(/[\\%_]/g, "\\$&")}%`;
-      const searchClause = "p.workspace_id = $1 AND (p.title ILIKE $2 OR p.premise ILIKE $2)";
+      const searchClause = "p.workspace_id = $1 AND p.archived_at IS NULL AND p.status = 'ACTIVE' AND (p.title ILIKE $2 OR p.premise ILIKE $2)";
       const assignmentJoin = ready.categories
         ? "LEFT JOIN project_library_assignment a ON a.project_id = p.id AND a.workspace_id = p.workspace_id"
         : "LEFT JOIN LATERAL (SELECT NULL::uuid AS category_id, 0 AS revision) a ON true";
@@ -99,7 +99,7 @@ export class ProjectLibraryStore {
           SELECT c.id, c.name, count(p.id) AS count FROM project_library_category c
           LEFT JOIN project_library_assignment a ON a.category_id = c.id AND a.workspace_id = c.workspace_id
           LEFT JOIN project p ON p.id = a.project_id AND p.workspace_id = a.workspace_id
-            AND (p.title ILIKE $2 OR p.premise ILIKE $2)
+            AND p.archived_at IS NULL AND p.status = 'ACTIVE' AND (p.title ILIKE $2 OR p.premise ILIKE $2)
           WHERE c.workspace_id = $1 GROUP BY c.id, c.name ORDER BY c.created_at, c.id`, [workspaceId, search]);
         categories = result.rows.map((row) => ({ ...row, count: Number(row.count) }));
       }
@@ -169,7 +169,9 @@ export class ProjectLibraryStore {
         if (!category || category.name !== name) throw new PersistenceError("REVISION_CONFLICT", "分类名称已存在或请求已改变，请刷新后重试。");
       }
       const count = await client.query<{ count: string }>(
-        "SELECT count(*) AS count FROM project_library_assignment WHERE workspace_id = $1 AND category_id = $2", [workspaceId, category.id]);
+        `SELECT count(*) AS count FROM project_library_assignment a JOIN project p
+          ON p.id = a.project_id AND p.workspace_id = a.workspace_id
+          WHERE a.workspace_id = $1 AND a.category_id = $2 AND p.archived_at IS NULL AND p.status = 'ACTIVE'`, [workspaceId, category.id]);
       await client.query("COMMIT");
       return { ...category, count: Number(count.rows[0]?.count ?? 0) };
     } catch (error) {
@@ -190,7 +192,7 @@ export class ProjectLibraryStore {
       await client.query("BEGIN");
       await requireWorkspace(client, workspaceId);
       requireCategories(await readiness(client));
-      const project = await client.query("SELECT id FROM project WHERE id = $1 AND workspace_id = $2 FOR UPDATE", [projectId, workspaceId]);
+      const project = await client.query("SELECT id FROM project WHERE id = $1 AND workspace_id = $2 AND archived_at IS NULL AND status = 'ACTIVE' FOR UPDATE", [projectId, workspaceId]);
       if (!project.rows[0]) throw new PersistenceError("NOT_FOUND", "作品不存在。");
       let categoryName: string | null = null;
       if (categoryId) {

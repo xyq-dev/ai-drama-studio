@@ -1,6 +1,6 @@
 /**
  * Explicit opt-in PostgreSQL acceptance. WRITING this source does not authorize its execution.
- * Only a separately named, verified-empty database may receive ordinary migrations and the voice/batch drafts.
+ * Only a separately named, verified-empty database may receive ordinary migrations and the voice/batch/archive drafts.
  * There are no provider/network/object-store calls, DROP, TRUNCATE, Mock request identities or billing assertions.
  * Synthetic WAV / committed lavfi MP4 bytes supply exact fixture metadata to the real Job→Attempt→Asset chain.
  */
@@ -13,7 +13,7 @@ import { SPEECH_BATCH_SCHEMA, type SpeechBatchConfirmation, type SpeechBatchFroz
   type SpeechBatchPreflightRequest, type SpeechBinding, type SpeechGenerationInput, type SpeechMixManifest,
   type SpeechMixPreflight, type SpeechPlanLineInput, type SpeechPlanPut, type SpeechPlanView, type SpeechVoice } from "@ai-drama/contracts";
 import { speechBatchBudgets, speechDialogueHash, speechExactHash } from "@ai-drama/domain";
-import { JobPersistenceService } from "./job-service";
+import { JobPersistenceService, type DatabasePool } from "./job-service";
 import { MediaAssetStore, type MediaAssetRecord } from "./media-assets";
 import { runMigrations } from "./migrations";
 import { TextChainService } from "./text-chain";
@@ -21,6 +21,7 @@ import { PostgresSpeechStore, assertSpeechGenerationInputInTransaction, assertSp
   commitSpeechMixDependencies, commitSpeechTake, speechBatchInventoryInTransaction } from "./speech-store";
 import { checkSpeechAcceptanceEnv, verifySpeechAcceptanceDatabase } from "./speech-acceptance-guard";
 import { PostgresSpeechBatchStore, assertSpeechBatchDispatchInTransaction, bindSpeechBatchJobInTransaction } from "./speech-batch-store";
+import { ScriptWorkbenchTrashStore } from "./script-workbench-trash";
 
 const decision = checkSpeechAcceptanceEnv(process.env);
 if (!decision.ok) throw new Error(`Speech acceptance refused before opening a connection: ${decision.reason}`);
@@ -292,6 +293,42 @@ function batchConfirmation(frozen: SpeechBatchFrozen): SpeechBatchConfirmation {
   return { frozenHash: speechExactHash(frozen), maximumJobs: frozen.operations.length,
     budgets: frozen.budgets.map(({ currency, maximumAmount }) => ({ currency, maximumAmount })),
     confirmPossibleCharges: true, confirmedUncertainJobIds: [] };
+}
+
+/** Pause the real transaction after a chosen write, retaining its PostgreSQL project lock until released. */
+function pauseAfterWrite(prefix: string) {
+  let entered!: (pid: number) => void, fail!: (error: unknown) => void, resume!: () => void;
+  const held = new Promise<number>((resolveHeld, rejectHeld) => { entered = resolveHeld; fail = rejectHeld; });
+  const proceed = new Promise<void>((resolveProceed) => { resume = resolveProceed; });
+  let paused = false;
+  const gatedPool: DatabasePool = { connect: async () => {
+    const client = await pool.connect();
+    return {
+      query: async (sql: string, values?: unknown[]) => {
+        const result = await client.query(sql, values);
+        if (!paused && sql.startsWith(prefix)) {
+          paused = true;
+          entered(Number((await client.query("SELECT pg_backend_pid() AS pid")).rows[0].pid));
+          await proceed;
+        }
+        return result;
+      },
+      release: () => client.release(),
+    } as unknown as PoolClient;
+  } };
+  return { pool: gatedPool, held, resume, fail };
+}
+
+async function waitForBlockedTransaction(blockerPid: number): Promise<void> {
+  const deadline = Date.now() + 2000;
+  do {
+    const result = await pool.query<{ waiting: boolean }>(`SELECT EXISTS (
+      SELECT 1 FROM pg_stat_activity WHERE datname=current_database()
+        AND $1::int=ANY(pg_blocking_pids(pid))) AS waiting`, [blockerPid]);
+    if (result.rows[0]?.waiting) return;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+  } while (Date.now() < deadline);
+  throw new Error("The competing transaction never waited on the real PostgreSQL project lock");
 }
 
 describe("speech character-voice draft in an explicitly authorized new empty PostgreSQL database", () => {
@@ -603,5 +640,76 @@ describe("speech character-voice draft in an explicitly authorized new empty Pos
     expect((await pool.query("SELECT count(*)::int AS n FROM generation_job WHERE workspace_id=$1", [w.workspaceId])).rows[0]!.n).toBe(1);
     await expect(tx((client) => assertSpeechBatchDispatchInTransaction(client, reclaimed.ref, input))).rejects.toThrow();
     await expect(tx((client) => assertSpeechBatchDispatchInTransaction(client, undefined, input))).rejects.toThrow();
+  });
+});
+
+describe("project archive and confirmed speech batch concurrency on real PostgreSQL", () => {
+  const trash = new ScriptWorkbenchTrashStore(pool);
+  beforeAll(async () => {
+    await tx(async (client) => {
+      await client.query(await readFile(resolve(__dirname, "../prisma/drafts/20261111000300_script_workbench_trash.sql"), "utf8"));
+    });
+  });
+
+  it("keeps a confirmed batch active before its first Job and releases archive only after cancellation", async () => {
+    const w = await world(); await savePlan(w);
+    const snapshot = await batchSnapshot(w);
+    const batch = await batches.create(w.workspaceId, w.projectId, w.episodeId, snapshot.request, snapshot.frozen, context());
+    const before = await trash.previewProject(w.workspaceId, w.projectId);
+    expect(before.canDelete).toBe(true); // An unconfirmed quote does not reserve future work.
+    const gate = pauseAfterWrite("UPDATE speech_batch_command SET state='dispatching',confirmation_json");
+    const confirmingStore = new PostgresSpeechBatchStore(gate.pool, new JobPersistenceService(gate.pool));
+    const confirming = confirmingStore.confirm(w.workspaceId, batch.id, batchConfirmation(snapshot.frozen), context());
+    void confirming.catch(gate.fail);
+    let archiveResult: Promise<unknown> | undefined;
+    try {
+      const blockerPid = await gate.held;
+      archiveResult = trash.trashProject(w.workspaceId, w.projectId, { expectedVersion: before.version })
+        .then(() => null, (error: unknown) => error);
+      await waitForBlockedTransaction(blockerPid);
+      gate.resume();
+      expect((await confirming).state).toBe("dispatching");
+      expect(await archiveResult).toMatchObject({ code: "REVISION_CONFLICT" });
+    } finally { gate.resume(); await Promise.allSettled([confirming, archiveResult]); }
+
+    expect((await pool.query("SELECT archived_at,status FROM project WHERE id=$1", [w.projectId])).rows[0])
+      .toEqual({ archived_at: null, status: "ACTIVE" });
+    expect((await pool.query("SELECT count(*)::int AS n FROM generation_job WHERE project_id=$1", [w.projectId])).rows[0].n).toBe(0);
+    expect((await trash.previewProject(w.workspaceId, w.projectId)).canDelete).toBe(false);
+    const claimed = await batches.claim(w.workspaceId, batch.id, false);
+    expect(claimed).not.toBeNull();
+    if (!claimed) throw new Error("Confirmed batch should remain dispatchable after archive was refused");
+    await batches.failOperation(w.workspaceId, claimed.ref, "SYNTHETIC_DISPATCH_INTERRUPTED", true);
+    expect((await batches.read(w.workspaceId, batch.id)).state).toBe("needs_attention");
+    expect((await trash.previewProject(w.workspaceId, w.projectId)).canDelete).toBe(false);
+    await expect(trash.trashProject(w.workspaceId, w.projectId, { expectedVersion: before.version }))
+      .rejects.toMatchObject({ code: "REVISION_CONFLICT" });
+    await batches.cancel(w.workspaceId, batch.id, context());
+    expect((await trash.previewProject(w.workspaceId, w.projectId)).canDelete).toBe(true);
+    await trash.trashProject(w.workspaceId, w.projectId, { expectedVersion: before.version });
+    expect((await pool.query("SELECT status FROM project WHERE id=$1", [w.projectId])).rows[0].status).toBe("ARCHIVED");
+    expect((await pool.query("SELECT count(*)::int AS n FROM generation_job WHERE project_id=$1", [w.projectId])).rows[0].n).toBe(0);
+  });
+
+  it("rejects batch confirmation when archive wins the same project lock", async () => {
+    const w = await world(); await savePlan(w);
+    const snapshot = await batchSnapshot(w);
+    const batch = await batches.create(w.workspaceId, w.projectId, w.episodeId, snapshot.request, snapshot.frozen, context());
+    const gate = pauseAfterWrite("UPDATE project SET archived_at=clock_timestamp()");
+    const archiving = new ScriptWorkbenchTrashStore(gate.pool).trashProject(w.workspaceId, w.projectId,
+      { expectedVersion: await version("project", w.projectId) });
+    void archiving.catch(gate.fail);
+    let confirmResult: Promise<unknown> | undefined;
+    try {
+      const blockerPid = await gate.held;
+      confirmResult = batches.confirm(w.workspaceId, batch.id, batchConfirmation(snapshot.frozen), context())
+        .then(() => null, (error: unknown) => error);
+      await waitForBlockedTransaction(blockerPid);
+      gate.resume();
+      await archiving;
+      expect(await confirmResult).toMatchObject({ code: "NOT_FOUND" });
+    } finally { gate.resume(); await Promise.allSettled([archiving, confirmResult]); }
+    expect((await batches.read(w.workspaceId, batch.id))).toMatchObject({ state: "quoted", confirmation: null });
+    expect((await pool.query("SELECT count(*)::int AS n FROM generation_job WHERE project_id=$1", [w.projectId])).rows[0].n).toBe(0);
   });
 });

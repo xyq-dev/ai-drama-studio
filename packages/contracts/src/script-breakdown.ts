@@ -16,8 +16,8 @@ export const SCRIPT_BREAKDOWN_PROMPT_VERSION = "ads.script-breakdown.prompt.v1" 
 export const SCRIPT_BREAKDOWN_STEP_KEY = "breakdown" as const;
 
 /**
- * Bounds of one breakdown, shown on the page. Scenes and shots follow the production plan (60 s: 2–4 scenes, 90 s:
- * 3–6 scenes, about 5 s per shot). Field bounds limit size but do not guarantee a fit in the 4,096-token output cap;
+ * Bounds of one breakdown, shown on the page. Scenes and shots follow the frozen production plan, up to 240 s
+ * (including the workbench's 210 s configuration). Field bounds do not guarantee a fit in the 4,096-token output cap;
  * a truncated answer is rejected, never silently shortened or continued.
  */
 export const SCRIPT_BREAKDOWN_LIMITS = {
@@ -26,12 +26,12 @@ export const SCRIPT_BREAKDOWN_LIMITS = {
   minScenes: 1,
   maxScenes: 8,
   minShots: 1,
-  maxShots: 20,
+  maxShots: 24,
   maxShotsPerScene: 8,
   minShotSeconds: 2,
   maxShotSeconds: 10,
   minTotalSeconds: 5,
-  maxTotalSeconds: 180,
+  maxTotalSeconds: 240,
   headingMaxChars: 40,
   timeOfDayMaxChars: 20,
   descriptionMaxChars: 200,
@@ -66,7 +66,7 @@ export interface ScriptBreakdownFrozenInput {
   scriptRevisionNo: number;
   scriptContentHash: string;
   scriptText: string;
-  /** The project's target seconds per episode; null when the project never recorded one. A target, not a length. */
+  /** The referenced workbench plan's target; legacy scripts use the project target (or null). A target, not a length. */
   targetEpisodeSeconds: number | null;
   characters: ScriptBreakdownCharacter[];
   /** The episode's scenes and shots when the run started. They are replaced only if still exactly these versions. */

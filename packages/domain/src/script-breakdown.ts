@@ -1,6 +1,9 @@
 import {
   SCRIPT_BREAKDOWN_LIMITS,
   SCRIPT_BREAKDOWN_OUTPUT_SCHEMA,
+  SCRIPT_WORKBENCH_SCHEMA,
+  scriptWorkbenchPlanSchema,
+  scriptWorkbenchScriptSchema,
   scriptBreakdownOutputSchema,
   type ScriptBreakdownFrozenInput,
   type ScriptBreakdownOutput,
@@ -8,6 +11,7 @@ import {
   type ScriptBreakdownScene,
   type ScriptBreakdownShot,
 } from "@ai-drama/contracts";
+import { workbenchScriptText } from "./script-workbench";
 
 /**
  * Prompt, output checks and stored text of a script breakdown. Provider-neutral, like title writing: adapters only
@@ -27,12 +31,34 @@ export interface ScriptBreakdownPrompt {
   user: string;
 }
 
-/** The text of a script revision the breakdown can read: only the editor's `{ text }` shape. */
-export function scriptTextOf(content: unknown): string | null {
+/** Read the legacy text editor or the validated v1 workbench envelope; unknown structures remain unsupported. */
+export function scriptTextOf(content: unknown, sourceStoryContent?: unknown): string | null {
   if (!content || typeof content !== "object" || Array.isArray(content)) return null;
   const record = content as Record<string, unknown>;
-  if (Object.keys(record).length !== 1 || typeof record.text !== "string") return null;
-  return record.text;
+  if (!Object.hasOwn(record, "text") || typeof record.text !== "string") return null;
+  const keys = Object.keys(record);
+  if (keys.length === 1) return record.text;
+  if (keys.length !== 2 || !Object.hasOwn(record, "workbench")) return null;
+  const envelope = record.workbench;
+  if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) return null;
+  const workbench = envelope as Record<string, unknown>;
+  if (Object.keys(workbench).length !== 2 || !Object.hasOwn(workbench, "schema") || !Object.hasOwn(workbench, "script")
+    || workbench.schema !== SCRIPT_WORKBENCH_SCHEMA) return null;
+  const script = scriptWorkbenchScriptSchema.safeParse(workbench.script);
+  if (!script.success || !sourceStoryContent || typeof sourceStoryContent !== "object" || Array.isArray(sourceStoryContent)) return null;
+  const sourceEnvelope = (sourceStoryContent as Record<string, unknown>).workbench;
+  if (!sourceEnvelope || typeof sourceEnvelope !== "object" || Array.isArray(sourceEnvelope)) return null;
+  const source = sourceEnvelope as Record<string, unknown>;
+  const plan = scriptWorkbenchPlanSchema.safeParse(source.plan);
+  if (source.schema !== SCRIPT_WORKBENCH_SCHEMA || !plan.success) return null;
+  const characters = plan.data.bible.characters;
+  const ids = new Set(characters.map(character => character.id));
+  if (ids.size !== characters.length || script.data.scenes.some(scene => scene.characterIds.some(id => !ids.has(id))
+    || scene.beats.some(beat => beat.kind === "dialogue" && (!beat.characterId || !ids.has(beat.characterId) || !scene.characterIds.includes(beat.characterId))))) return null;
+  const namedText = workbenchScriptText(script.data, characters);
+  // Approval checks the structured script. Accept the original v1 ID projection only when byte-exact, then resolve
+  // both old and new revisions with their immutable source story. Never trust unrelated stored text or a current plan.
+  return record.text === namedText || record.text === workbenchScriptText(script.data) ? namedText : null;
 }
 
 const L = SCRIPT_BREAKDOWN_LIMITS;

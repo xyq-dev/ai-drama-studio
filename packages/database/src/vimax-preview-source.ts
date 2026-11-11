@@ -50,7 +50,11 @@ export class VimaxPreviewSourceStore {
       return { kind: "script_review_required" };
     }
     const script = await client.query<Row>(
-      `SELECT revision_no, content_json, review_status, freshness_status FROM script_revision
+      `SELECT revision_no, content_json, review_status, freshness_status,
+          (SELECT source.content_json FROM story_revision source
+            WHERE source.id = script_revision.source_story_revision_id
+              AND source.project_id = script_revision.project_id AND source.workspace_id = script_revision.workspace_id) AS source_story_content
+         FROM script_revision
         WHERE id = $1 AND episode_id = $2 AND project_id = $3 AND workspace_id = $4`,
       [currentId, episodeId, projectId, workspaceId],
     );
@@ -58,7 +62,7 @@ export class VimaxPreviewSourceStore {
     if (!revision || revision.review_status !== "APPROVED" || revision.freshness_status !== "CURRENT") {
       return { kind: "script_review_required" };
     }
-    const scriptText = scriptTextOf(revision.content_json);
+    const scriptText = scriptTextOf(revision.content_json, revision.source_story_content);
     const episodeNo = Number(ep.episode_no);
     if (scriptText === null || scriptText.trim().length === 0 || scriptText.includes("\u0000")
       || scriptText.length > SCRIPT_BREAKDOWN_LIMITS.scriptMaxChars

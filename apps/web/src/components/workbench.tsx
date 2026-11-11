@@ -281,7 +281,8 @@ export function Workbench({ projectId }: { projectId: string }) {
 
   useEffect(() => {
     const query = focusQuery(focus);
-    window.history.replaceState(null, "", `/projects/${projectId}?${query}`);
+    const section = ["#script-breakdown", "#episode-speech", "#episode-scenes"].includes(window.location.hash) ? window.location.hash : "";
+    window.history.replaceState(null, "", `/projects/${projectId}?${query}${section}`);
   }, [focus, projectId]);
 
   function choose(next: Focus) {
@@ -303,6 +304,7 @@ export function Workbench({ projectId }: { projectId: string }) {
     <main className="creator-workbench min-h-screen bg-neutral-100 text-neutral-900">
       <header className="creator-workbench-header flex flex-wrap items-center gap-3 border-b border-neutral-200 bg-white px-4 py-3">
         <a className="text-sm underline" href="/studio">我的作品</a>
+        <a className="text-sm underline" href={`/projects/${projectId}/script`}>剧本工作台</a>
         <a className="text-sm underline" href={`/projects/${projectId}/create`}>新手模式</a>
         <div className="min-w-0">
           <p className="text-xs text-neutral-600">作品</p>
@@ -536,6 +538,7 @@ export function ScriptPane(props: {
   const [scenes, setScenes] = useState<PageState<Aggregate> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const loadToken = useRef(0);
+  const openedHandoffSection = useRef("");
   const episodeId = props.episode?.id ?? "";
 
   const load = useCallback(async () => {
@@ -557,6 +560,19 @@ export function ScriptPane(props: {
     setScenes(null);
     void load().catch((caught: unknown) => setError(caught instanceof ApiError ? caught.detail : "剧本加载失败"));
   }, [load]);
+
+  useEffect(() => {
+    if (props.textOnly || scripts === null) return;
+    const anchor = window.location.hash.slice(1);
+    if (!["script-breakdown", "episode-speech", "episode-scenes"].includes(anchor)) return;
+    const target = `${episodeId}:${anchor}`;
+    if (openedHandoffSection.current === target) return;
+    const section = document.getElementById(anchor);
+    if (section) {
+      openedHandoffSection.current = target;
+      section.scrollIntoView?.({ block: "start" });
+    }
+  }, [episodeId, props.textOnly, scripts]);
 
   const current = props.episode?.currentScriptRevisionId
     ? (scripts?.items.find((item) => item.id === props.episode?.currentScriptRevisionId) ?? null)
@@ -665,7 +681,7 @@ export function ScriptPane(props: {
       </EditorGrid>
       {props.textOnly ? null : (
         <>
-          <ScriptBreakdownPanel
+          <div id="script-breakdown"><ScriptBreakdownPanel
             refreshEpoch={props.refreshEpoch}
             projectId={props.projectId}
             episodeId={episode.id}
@@ -680,7 +696,7 @@ export function ScriptPane(props: {
               await props.onSaved();
               await load();
             }}
-          />
+          /></div>
           <VimaxPreviewPanel
             refreshEpoch={props.refreshEpoch}
             projectId={props.projectId}
@@ -695,9 +711,9 @@ export function ScriptPane(props: {
               await load();
             }}
           />
-          <SpeechBatchPanel projectId={props.projectId} episodeId={episode.id} refreshEpoch={props.refreshEpoch}
-            onChanged={() => { void props.onSaved().catch(() => props.onStatus("配音批次已受理，任务列表暂未刷新，请稍后重新读取。")); }} />
-          <SceneList
+          <div id="episode-speech"><SpeechBatchPanel projectId={props.projectId} episodeId={episode.id} refreshEpoch={props.refreshEpoch}
+            onChanged={() => { void props.onSaved().catch(() => props.onStatus("配音批次已受理，任务列表暂未刷新，请稍后重新读取。")); }} /></div>
+          <div id="episode-scenes"><SceneList
             projectId={props.projectId}
             episode={props.episode}
             page={scenes}
@@ -722,7 +738,7 @@ export function ScriptPane(props: {
               await load();
             }}
             onStatus={props.onStatus}
-          />
+          /></div>
         </>
       )}
     </div>

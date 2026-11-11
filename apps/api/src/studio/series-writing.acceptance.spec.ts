@@ -908,7 +908,24 @@ function pausedPool(pattern: RegExp) {
   return { pool: wrapped, reached, release: () => release() };
 }
 
-const PROJECT_LOCK = "SELECT % FROM project WHERE id = $1 AND workspace_id = $2 FOR UPDATE%";
+// Observe the same project row lock when the production query adds lifecycle predicates (e.g. archived_at/status).
+const PROJECT_LOCK = "SELECT % FROM project WHERE id = $1 AND workspace_id = $2%FOR UPDATE%";
+
+/** Always release and drain both transactions, including a failed lock observation or a statement that never pauses. */
+async function observePausedLock<T, U>(paused: ReturnType<typeof pausedPool>, blocker: Promise<T>,
+  startWaiter: () => Promise<U>, pattern: string): Promise<{ order: "waiting" | "settled"; first: T; second: U }> {
+  let waiter: Promise<U> | undefined;
+  try {
+    await Promise.race([paused.reached, blocker.then(() => { throw new Error("transaction settled before reaching its test barrier"); })]);
+    waiter = startWaiter();
+    const order = await waitsOrSettles(pattern, waiter);
+    paused.release();
+    return { order, first: await blocker, second: await waiter };
+  } finally {
+    paused.release();
+    await Promise.allSettled([blocker, ...(waiter ? [waiter] : [])]);
+  }
+}
 
 describe(`round 3 on PostgreSQL (${scenario} schema)`, () => {
   it("1. episode 3 refused with no resend left and written by a person: a new grant sends only episode 3 and the batch review; after the checks batch 2 follows", async () => {
@@ -1087,14 +1104,11 @@ describe(`round 3 on PostgreSQL (${scenario} schema)`, () => {
     const { svc } = service({ store: new PostgresSeriesWritingStore(paused.pool as never, textChain) });
     const before = await ledgers();
     const saving = svc.saveLedger(view.projectId, body, ctx("ledger"));
-    await paused.reached;
-    const workbench = personScript(view.projectId, storyId, 2, "工作台并发另存的第 2 集");
     // The workbench save waits for the ledger save's project lock: it cannot change the basis under the check.
-    const order = await waitsOrSettles(PROJECT_LOCK, workbench);
-    paused.release();
-    expect(order).toBe("waiting");
-    expect((await saving).status).toBe(201);
-    await workbench;
+    const observed = await observePausedLock(paused, saving,
+      () => personScript(view.projectId, storyId, 2, "工作台并发另存的第 2 集"), PROJECT_LOCK);
+    expect(observed.order).toBe("waiting");
+    expect(observed.first.status).toBe(201);
     expect(await ledgers()).toBe(before + 1);
     const saved = (await q<{ summaries_json: Array<{ episodeNo: number; versionHash: string }> }>(
       "SELECT summaries_json FROM series_writing_ledger_revision WHERE series_id = $1 AND batch_no = 1 ORDER BY revision_no DESC LIMIT 1", [view.seriesId]))[0]!;
@@ -1220,16 +1234,13 @@ describe(`round 5 on PostgreSQL (${scenario} schema)`, () => {
     const first = order === "takeover first"
       ? grant(held.svc, current, { plan: false, batchFrom: 2, batchTo: 2, final: false })
       : held.svc.resume(view.projectId, old.grantId, {}, TOKEN, ctx(randomUUID()));
-    await paused.reached;
-    const second = order === "takeover first"
-      ? svc.resume(view.projectId, old.grantId, {}, TOKEN, ctx(randomUUID()))
-      : grant(svc, current, { plan: false, batchFrom: 2, batchTo: 2, final: false });
     // The second one waits for the first one's workspace run lock: it reads only the committed result.
-    const waited = await waitsOrSettles("SELECT pg_advisory_xact_lock(%", second);
-    paused.release();
-    expect(waited).toBe("waiting");
-    expect([201, 200]).toContain((await first).status);
-    expect((await second).body).toMatchObject({ error: { code: "SERIES_RUN_ACTIVE" } });
+    const observed = await observePausedLock(paused, first, () => order === "takeover first"
+      ? svc.resume(view.projectId, old.grantId, {}, TOKEN, ctx(randomUUID()))
+      : grant(svc, current, { plan: false, batchFrom: 2, batchTo: 2, final: false }), "SELECT pg_advisory_xact_lock(%");
+    expect(observed.order).toBe("waiting");
+    expect([201, 200]).toContain(observed.first.status);
+    expect(observed.second.body).toMatchObject({ error: { code: "SERIES_RUN_ACTIVE" } });
     await held.settle();
     await settle();
     if (order === "takeover first") {
@@ -1410,13 +1421,9 @@ describe(`round 6 on PostgreSQL (${scenario} schema)`, () => {
     const sent = seen.length;
     expect((await grant(run.svc, page, { plan: false, batchFrom: 2, batchTo: 2, final: false })).status).toBe(201);
     const driving = run.settle();
-    await paused.reached;
-    const workbench = personScript(view.projectId, storyId, 3, "工作台并发改写的第 3 集");
-    const order = await waitsOrSettles(PROJECT_LOCK, workbench);
-    paused.release();
-    expect(order).toBe("waiting");
-    await workbench;
-    await driving;
+    const observed = await observePausedLock(paused, driving,
+      () => personScript(view.projectId, storyId, 3, "工作台并发改写的第 3 集"), PROJECT_LOCK);
+    expect(observed.order).toBe("waiting");
     // Admitted before the save committed: one send, on the versions it read; the save is a change after the send.
     expect(seen.slice(sent).map((item) => item.stage)).toEqual(["episode:4"]);
     expect(await batch2Calls(view.seriesId)).toMatchObject([{ stage_key: "episode:4", state: "completed" }]);
@@ -1655,12 +1662,11 @@ describe(`round 7 on PostgreSQL (${scenario} schema)`, () => {
     const held = service({ store: new PostgresSeriesWritingStore(paused.pool as never, textChain) });
     const sent = seen.length;
     const first = order === "plan save first" ? savePlan(held.svc, view.projectId, "并发保存的新规划") : held.svc.resume(view.projectId, old.grantId, {}, TOKEN, ctx(randomUUID()));
-    await paused.reached;
-    const second = order === "plan save first" ? svc.resume(view.projectId, old.grantId, {}, TOKEN, ctx(randomUUID())) : savePlan(svc, view.projectId, "并发保存的新规划");
-    const waited = await waitsOrSettles(SERIES_LOCK, second);
-    paused.release();
-    expect(waited).toBe("waiting");
-    const [a, b] = await Promise.all([first, second]);
+    const observed = await observePausedLock(paused, first, () => order === "plan save first"
+      ? svc.resume(view.projectId, old.grantId, {}, TOKEN, ctx(randomUUID()))
+      : savePlan(svc, view.projectId, "并发保存的新规划"), SERIES_LOCK);
+    expect(observed.order).toBe("waiting");
+    const { first: a, second: b } = observed;
     await held.settle();
     await settle();
     if (order === "plan save first") {

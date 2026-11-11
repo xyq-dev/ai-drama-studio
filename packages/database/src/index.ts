@@ -1,4 +1,6 @@
 import { Pool, type PoolClient } from "pg";
+export { ScriptWorkbenchStore, nextDocumentVersions, workbenchPlanText, workbenchScriptText } from "./script-workbench";
+export { ScriptWorkbenchTrashStore } from "./script-workbench-trash";
 
 export {
   BASE_MIGRATIONS,

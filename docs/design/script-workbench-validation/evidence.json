@@ -1,0 +1,45 @@
+{
+  "kind": "real-next-nest-postgresql-chromium",
+  "checks": [
+    "real session login",
+    "specific plan version confirmed through UI",
+    "edit/save/review/checklist/explicit episode lock persist in PostgreSQL",
+    "locked preceding episode cannot be deleted while a later episode references it",
+    "draft trash/restore/history reload/save new revision",
+    "whole project trash/count filtering/restore"
+  ],
+  "screenshots": [
+    "01-brief-1586.png",
+    "02-bible-1586.png",
+    "03-writing-1586.png",
+    "03-writing-390.png",
+    "04-delete-draft-1586.png",
+    "05-review-1586.png",
+    "06-confirm-version-1586.png",
+    "07-handoff-1586.png",
+    "08-dependent-lock-protected-1586.png",
+    "09-trash-1586.png",
+    "09-trash-390.png",
+    "10-project-delete-1586.png"
+  ],
+  "errors": [],
+  "externalRequests": [],
+  "paidCalls": 0,
+  "migrations": [
+    "20260924000100_m1b_job_core",
+    "20260925000100_m2a_text_chain",
+    "20260928000100_script_dependency_scopes",
+    "20260928000200_m3a_media_assets",
+    "20260928000300_m3b_job_shot_lineage",
+    "20261008000100_title_writing",
+    "20261011000100_episode_plan",
+    "20261012000100_script_breakdown",
+    "20261016000100_writing_provider_anthropic",
+    "20261016000200_writing_candidate",
+    "20261017000100_writing_candidate_deepseek",
+    "20261019000100_auto_creation",
+    "20261023000100_series_writing"
+  ],
+  "projectId": "e1688137-6504-464c-91b7-f52ee4cdf23d",
+  "passed": true
+}

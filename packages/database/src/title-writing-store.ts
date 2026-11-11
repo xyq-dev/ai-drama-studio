@@ -44,6 +44,7 @@ import { WRITING_PROVIDER_MIGRATION } from "./migrations";
 import { PersistenceError, type DatabasePool } from "./job-service";
 import type { TextChainService } from "./text-chain";
 import { recentWritingCalls, writingCallLockKey, runningWritingRuns } from "./writing-candidate-store";
+import { readWorkbenchPlan } from "./script-workbench-validation";
 
 /**
  * The migration that creates the title writing tables (prisma/migrations/20261008000100_title_writing). It replaced the
@@ -857,7 +858,11 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
         const currentId = episodeRow.current_script_revision_id as string | null;
         if (!currentId) return { kind: "script_missing" };
         const script = await client.query<Row>(
-          `SELECT revision_no, content_json, content_hash, review_status, freshness_status FROM script_revision
+          `SELECT revision_no, content_json, content_hash, review_status, freshness_status,
+              (SELECT source.content_json FROM story_revision source
+                WHERE source.id = script_revision.source_story_revision_id
+                  AND source.project_id = script_revision.project_id AND source.workspace_id = script_revision.workspace_id) AS source_story_content
+             FROM script_revision
             WHERE id = $1 AND episode_id = $2 AND workspace_id = $3`,
           [currentId, episodeId, workspaceId],
         );
@@ -892,7 +897,9 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
           scriptRevisionNo: Number(scriptRow.revision_no),
           scriptContentHash: String(scriptRow.content_hash),
           scriptContent: scriptRow.content_json,
-          targetEpisodeSeconds: plan.targetEpisodeSeconds,
+          sourceStoryContent: scriptRow.source_story_content,
+          // Use this script's immutable story source, never a later current story or another work's settings.
+          targetEpisodeSeconds: readWorkbenchPlan(scriptRow.source_story_content)?.brief.targetEpisodeSeconds ?? plan.targetEpisodeSeconds,
           characters: characters.rows.map((row) => ({ characterId: String(row.id), revisionId: String(row.current_revision_id), name: String(row.name) })),
           scenes: scenes.rows.map((row) => ({ sceneId: String(row.id), rowVersion: Number(row.row_version) })),
           shots: shots.rows.map((row) => ({ shotId: String(row.id), rowVersion: Number(row.row_version) })),

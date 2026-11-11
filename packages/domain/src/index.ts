@@ -75,6 +75,7 @@ export function deriveWorkflowRunState(jobs: readonly WorkflowJobSummary[]): Wor
   return "SUCCEEDED";
 }
 
+export { workbenchScriptText } from "./script-workbench";
 export {
   COMPOSE_PREFLIGHT_SCHEMA,
   COMPOSE_VIDEO_DURATION_MAX_MS,
