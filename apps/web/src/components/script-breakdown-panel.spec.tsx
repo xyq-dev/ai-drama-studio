@@ -82,7 +82,7 @@ describe("AI breakdown panel", () => {
     panel(h, { scriptReady: false });
     expect((await screen.findByTestId("breakdown-blocked")).textContent).toContain("剧本批准后才能拆解");
     expect((screen.getByRole("button", { name: "生成场景与分镜" }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByTestId("breakdown-limits")).textContent).toContain("每集 1–8 场、1–20 镜");
+    expect((screen.getByTestId("breakdown-limits")).textContent).toContain("每集 1–8 场、1–24 镜");
     expect((screen.getByTestId("breakdown-limits")).textContent).toContain("也不会改用固定模板");
     expect(h.seen.filter((item) => item.method === "POST")).toHaveLength(0);
   });

@@ -1,8 +1,10 @@
 /**
  * Browser side of the site login. The session itself is an HttpOnly cookie the page never sees; the page only echoes
- * the session's CSRF token (a readable cookie set by the API at login) on writes. Nothing is put in localStorage or
- * sessionStorage, and the password never leaves the login form's request.
+ * the session's CSRF token (a readable cookie set by the API at login) on writes. No credentials are put in browser
+ * storage, and the password never leaves the login form's request.
  */
+import { clearWorkbenchSessionDrafts, WORKBENCH_DRAFTS_CLEARED_EVENT } from "./script-workbench-drafts";
+
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
 const CSRF_COOKIES = ["__Host-ads_csrf", "ads_csrf"];
@@ -139,6 +141,11 @@ export function logout(fetchImpl: FetchLike = globalThis.fetch.bind(globalThis))
       });
       if (response.status !== 204) throw new Error("LOGOUT_NOT_CONFIRMED");
       attempt.confirmed = true;
+      if (typeof window !== "undefined") {
+        // Explicit logout clears this tab's recovery data; expiry retains it for re-login.
+        window.dispatchEvent(new Event(WORKBENCH_DRAFTS_CLEARED_EVENT));
+        try { clearWorkbenchSessionDrafts(window.sessionStorage); } catch { /* Storage can be unavailable; logout is still confirmed. */ }
+      }
       // A passive expiry check may have cleared its component's session while logout was in flight. Complete its
       // deferred navigation here as well; otherwise that component may no longer run its own success callback.
       if (attempt.deferredReason) goToLogin("signed-out");

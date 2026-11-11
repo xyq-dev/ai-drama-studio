@@ -21,7 +21,7 @@ const MESSAGES: Record<string, string> = {
   VIMAX_PREVIEW_SOURCE_NOT_FOUND: "没有找到这部作品或这一集。",
   SERIES_MEDIA_NOT_ENABLED: "系列作品尚未开放分镜候选预览。",
   VIMAX_PREVIEW_SCRIPT_REVIEW_REQUIRED: "请先批准这一集的当前剧本；过期剧本不能用于预览。",
-  VIMAX_PREVIEW_SCRIPT_UNSUPPORTED: "当前剧本需要有效的纯文本正文，且不能超过预览范围。",
+  VIMAX_PREVIEW_SCRIPT_UNSUPPORTED: "当前剧本需要有效的文本或工作台正文，且不能超过预览范围。",
   VIMAX_PREVIEW_TOO_MANY_CHARACTERS: "当前角色数量超过分镜预览上限。",
   VIMAX_PREVIEW_CHARACTERS_UNSUPPORTED: "角色版本不可用或名称超出预览范围，请先检查角色资料。",
   VIMAX_PREVIEW_SOURCE_CHANGED: "剧本或角色来源已变化，请重新读取来源并核对候选。",

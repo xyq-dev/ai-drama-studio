@@ -10,6 +10,8 @@ import {
   type ScriptWorkbenchSnapshot,
 } from "@ai-drama/contracts";
 import { ScriptWorkbench } from "./script-workbench";
+import { WORKBENCH_DRAFT_PREFIX } from "../lib/script-workbench-drafts";
+import { logout } from "../lib/site-session";
 import { emptyScript, estimateScript, workbenchPlan } from "../lib/script-workbench-model";
 
 vi.mock("./creator-shell", () => ({
@@ -223,6 +225,7 @@ function api(
 }
 afterEach(() => {
   cleanup();
+  window.sessionStorage.clear();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -407,5 +410,258 @@ describe("five-stage script workbench", () => {
     ).toBeTruthy();
     expect(screen.queryByRole("link", { name: "分镜" })).toBeNull();
     expect(screen.queryByRole("link", { name: "配音" })).toBeNull();
+  });
+});
+
+function updateRemoteEpisode(state: ScriptWorkbenchSnapshot, title: string, version: number) {
+  const episode = state.episodes[1]!;
+  const changed = structuredClone(episode.script!);
+  changed.id = crypto.randomUUID();
+  changed.revisionNo += 1;
+  changed.content.text = title;
+  (changed.content.workbench as { script: ScriptWorkbenchScript }).script.title = title;
+  episode.script = changed;
+  episode.currentScriptRevisionId = changed.id;
+  episode.history.unshift(changed);
+  episode.rowVersion = version;
+}
+function updateRemotePlan(state: ScriptWorkbenchSnapshot, genre: string, version: number) {
+  state.story = structuredClone(state.story!);
+  state.story.id = crypto.randomUUID();
+  (state.story.content.workbench as { plan: ScriptWorkbenchPlan }).plan.brief.genre = genre;
+  state.story.content.text = `服务器设定：${genre}`;
+  state.project.version = version;
+  state.storyHistory.unshift(state.story);
+}
+
+describe("workbench editing baselines and session recovery", () => {
+  it("refreshes clean episodes and plan when a different episode is saved", async () => {
+    const state = fixture();
+    const { writes } = api(state);
+    render(<ScriptWorkbench projectId={PROJECT} />);
+    await screen.findByLabelText("本集标题");
+    updateRemoteEpisode(state, "另一个标签页的新正文", 8);
+    updateRemotePlan(state, "服务器新题材", 9);
+    fireEvent.click(screen.getByRole("button", { name: /第1集 活人认碑/ }));
+    fireEvent.change(screen.getByLabelText("本集标题"), { target: { value: "本标签页第一集" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存草稿" }));
+    await screen.findByText("第 1 集草稿已保存。");
+    fireEvent.click(screen.getByRole("button", { name: /第2集 另一个标签页的新正文/ }));
+    expect((screen.getByLabelText("本集标题") as HTMLInputElement).value).toBe(
+      "另一个标签页的新正文",
+    );
+    fireEvent.click(screen.getByRole("tab", { name: /立项/ }));
+    expect((screen.getByLabelText("题材") as HTMLInputElement).value).toBe("服务器新题材");
+    fireEvent.click(screen.getByRole("tab", { name: /逐集编写/ }));
+    fireEvent.change(screen.getByLabelText("本集标题"), { target: { value: "在新正文上继续" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存草稿" }));
+    await waitFor(() => expect(writes.length).toBe(2));
+    expect(writes[1]!.headers["If-Match"]).toBe("8");
+    expect(writes[1]!.body.sourceStoryRevisionId).toBe(state.story!.id);
+  });
+
+  it("keeps dirty scripts and plan on their original CAS/source after aggregate refresh until explicit reconciliation", async () => {
+    const state = fixture();
+    const attempts: Array<{
+      path: string;
+      headers: Record<string, string>;
+      body: Record<string, unknown>;
+    }> = [];
+    let rejectDirty = false;
+    api(state, async (path, init) => {
+      if (rejectDirty && init?.method === "POST" && (path.includes(E2) || path.endsWith("/plan"))) {
+        attempts.push({
+          path,
+          headers: init.headers as Record<string, string>,
+          body: JSON.parse(String(init.body)),
+        });
+        return json({ error: { code: "REVISION_CONFLICT", message: "编辑基线已变更" } }, 409);
+      }
+      return undefined;
+    });
+    render(<ScriptWorkbench projectId={PROJECT} />);
+    fireEvent.change(await screen.findByLabelText("本集标题"), {
+      target: { value: "本地第二集修改" },
+    });
+    fireEvent.click(screen.getByRole("tab", { name: /立项/ }));
+    fireEvent.change(screen.getByLabelText("题材"), { target: { value: "本地题材修改" } });
+    updateRemoteEpisode(state, "服务器第二集修改", 10);
+    updateRemotePlan(state, "服务器题材修改", 20);
+    fireEvent.click(screen.getByRole("tab", { name: /逐集编写/ }));
+    fireEvent.click(screen.getByRole("button", { name: /第1集 活人认碑/ }));
+    fireEvent.change(screen.getByLabelText("本集标题"), { target: { value: "触发跨集刷新" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存草稿" }));
+    await screen.findByText("第 1 集草稿已保存。");
+    rejectDirty = true;
+    fireEvent.click(screen.getByRole("button", { name: /第2集 本地第二集修改/ }));
+    fireEvent.click(screen.getByRole("button", { name: "保存草稿" }));
+    await screen.findByText("编辑基线已变更");
+    expect(attempts[0]!.headers["If-Match"]).toBe("2");
+    expect(attempts[0]!.body.sourceStoryRevisionId).toBe(STORY);
+    fireEvent.click(screen.getByRole("button", { name: "读取最新版本，保留编辑内容" }));
+    await screen.findByText(
+      "已刷新干净稿件；未保存内容及其原编辑版本保留。发生冲突时，请先对照服务器版本。",
+    );
+    expect((screen.getByLabelText("本集标题") as HTMLInputElement).value).toBe("本地第二集修改");
+    fireEvent.click(screen.getByRole("button", { name: "保存草稿" }));
+    await waitFor(() => expect(attempts.length).toBe(2));
+    expect(attempts[1]!.headers["If-Match"]).toBe("2");
+    fireEvent.click(screen.getByRole("tab", { name: /立项/ }));
+    fireEvent.click(screen.getByRole("button", { name: "保存草稿" }));
+    await waitFor(() => expect(attempts.length).toBe(3));
+    expect(attempts[2]!.headers["If-Match"]).toBe("3");
+    expect((attempts[2]!.body.plan as ScriptWorkbenchPlan).brief.genre).toBe("本地题材修改");
+    fireEvent.click(screen.getByRole("tab", { name: /逐集编写/ }));
+    fireEvent.click(screen.getByRole("button", { name: "对照并处理版本冲突" }));
+    const dialog = screen.getByRole("dialog", { name: "处理编辑版本冲突" });
+    expect(within(dialog).getByText("服务器第二集修改")).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "保留我的内容，采用此基线" }));
+    fireEvent.click(screen.getByRole("button", { name: "保存草稿" }));
+    await waitFor(() => expect(attempts.length).toBe(4));
+    expect(attempts[3]!.headers["If-Match"]).toBe("10");
+    expect(attempts[3]!.body.sourceStoryRevisionId).toBe(state.story!.id);
+  });
+
+  it("restores every episode and plan after a 401 login navigation with original CAS and retry identity", async () => {
+    const state = fixture();
+    const attempts: Array<{ headers: Record<string, string>; body: Record<string, unknown> }> = [];
+    const assign = vi.spyOn(window.location, "assign").mockImplementation(() => undefined);
+    api(state, async (_path, init) => {
+      if (init?.method === "POST") {
+        attempts.push({
+          headers: init.headers as Record<string, string>,
+          body: JSON.parse(String(init.body)),
+        });
+        return attempts.length === 1
+          ? json({ error: { code: "AUTH_SESSION_EXPIRED", message: "请重新登录" } }, 401)
+          : json({ error: { code: "REVISION_CONFLICT", message: "旧基线受保护" } }, 409);
+      }
+      return undefined;
+    });
+    const first = render(<ScriptWorkbench projectId={PROJECT} />);
+    fireEvent.change(await screen.findByLabelText("本集标题"), {
+      target: { value: "第二集离线修改" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /第1集 活人认碑/ }));
+    fireEvent.change(screen.getByLabelText("本集标题"), { target: { value: "第一集离线修改" } });
+    fireEvent.click(screen.getByRole("tab", { name: /立项/ }));
+    fireEvent.change(screen.getByLabelText("题材"), { target: { value: "未保存的题材" } });
+    fireEvent.click(screen.getByRole("tab", { name: /逐集编写/ }));
+    fireEvent.click(screen.getByRole("button", { name: /第2集 第二集离线修改/ }));
+    fireEvent.click(screen.getByRole("button", { name: "保存草稿" }));
+    await waitFor(() => expect(assign).toHaveBeenCalled());
+    first.unmount();
+    updateRemoteEpisode(state, "登录期间的服务器正文", 25);
+    updateRemotePlan(state, "登录期间的新设定", 30);
+    render(<ScriptWorkbench projectId={PROJECT} />);
+    expect(((await screen.findByLabelText("本集标题")) as HTMLInputElement).value).toBe(
+      "第二集离线修改",
+    );
+    fireEvent.click(screen.getByRole("button", { name: /第1集 第一集离线修改/ }));
+    expect((screen.getByLabelText("本集标题") as HTMLInputElement).value).toBe("第一集离线修改");
+    fireEvent.click(screen.getByRole("tab", { name: /立项/ }));
+    expect((screen.getByLabelText("题材") as HTMLInputElement).value).toBe("未保存的题材");
+    fireEvent.click(screen.getByRole("tab", { name: /逐集编写/ }));
+    fireEvent.click(screen.getByRole("button", { name: /第2集 第二集离线修改/ }));
+    fireEvent.click(screen.getByRole("button", { name: "保存草稿" }));
+    await waitFor(() => expect(attempts.length).toBe(2));
+    expect(attempts[1]!.headers["Idempotency-Key"]).toBe(attempts[0]!.headers["Idempotency-Key"]);
+    expect(attempts[1]!.headers["If-Match"]).toBe("2");
+    expect(attempts[1]!.body.sourceStoryRevisionId).toBe(STORY);
+    await screen.findByText("旧基线受保护");
+  });
+
+  it("isolates project drafts and retains incomplete form edits when reopening the same project", async () => {
+    api(fixture());
+    const first = render(<ScriptWorkbench projectId={PROJECT} />);
+    await screen.findByLabelText("本集标题");
+    fireEvent.click(screen.getByRole("tab", { name: /设定与大纲/ }));
+    fireEvent.click(screen.getByRole("button", { name: "＋ 添加角色" }));
+    fireEvent.change(screen.getByLabelText("角色 2 定妆"), {
+      target: { value: "未填姓名但必须恢复的服装设定" },
+    });
+    first.unmount();
+    const otherId = "88888888-8888-4888-8888-888888888888";
+    const other = fixture();
+    other.project.id = otherId;
+    api(other);
+    const second = render(<ScriptWorkbench projectId={otherId} />);
+    await screen.findByLabelText("本集标题");
+    fireEvent.click(screen.getByRole("tab", { name: /设定与大纲/ }));
+    expect(screen.queryByLabelText("角色 2 定妆")).toBeNull();
+    second.unmount();
+    api(fixture());
+    render(<ScriptWorkbench projectId={PROJECT} />);
+    await screen.findByLabelText("本集标题");
+    fireEvent.click(screen.getByRole("tab", { name: /设定与大纲/ }));
+    expect((screen.getByLabelText("角色 2 定妆") as HTMLTextAreaElement).value).toBe(
+      "未填姓名但必须恢复的服装设定",
+    );
+  });
+
+  it("shows a recovery warning rather than losing current edits when browser storage is full", async () => {
+    api(fixture());
+    render(<ScriptWorkbench projectId={PROJECT} />);
+    const field = await screen.findByLabelText("本集标题");
+    const storage = window.sessionStorage;
+    vi.spyOn(window, "sessionStorage", "get").mockReturnValue({
+      getItem: storage.getItem.bind(storage),
+      removeItem: storage.removeItem.bind(storage),
+      clear: storage.clear.bind(storage),
+      key: storage.key.bind(storage),
+      length: storage.length,
+      setItem: () => {
+        throw new Error("quota");
+      },
+    });
+    fireEvent.change(field, { target: { value: "当前编辑必须保留" } });
+    expect((screen.getByLabelText("本集标题") as HTMLInputElement).value).toBe("当前编辑必须保留");
+    expect(screen.getByText(/浏览器未能保存恢复草稿/)).toBeTruthy();
+  });
+  it("keeps an unreadable recovery record intact while showing server content", async () => {
+    const key = WORKBENCH_DRAFT_PREFIX + PROJECT;
+    window.sessionStorage.setItem(key, "unreadable but retained");
+    api(fixture());
+    render(<ScriptWorkbench projectId={PROJECT} />);
+    await screen.findByLabelText("本集标题");
+    fireEvent.change(screen.getByLabelText("本集标题"), { target: { value: "可以继续编辑" } });
+    expect(window.sessionStorage.getItem(key)).toBe("unreadable but retained");
+    expect(screen.getByText(/本地恢复草稿无法读取，原记录已保留/)).toBeTruthy();
+  });
+
+  it("clears recovery data on confirmed logout and cannot repopulate it from a late read or pagehide", async () => {
+    const state = fixture();
+    let release: (() => void) | undefined;
+    let delayRead = false;
+    api(state, async (_path, init) => {
+      if (delayRead && (!init?.method || init.method === "GET")) {
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return json(state);
+      }
+      return undefined;
+    });
+    render(<ScriptWorkbench projectId={PROJECT} />);
+    fireEvent.change(await screen.findByLabelText("本集标题"), {
+      target: { value: "退出时丢弃的未保存稿" },
+    });
+    const key = WORKBENCH_DRAFT_PREFIX + PROJECT;
+    expect(window.sessionStorage.getItem(key)).not.toBeNull();
+    delayRead = true;
+    fireEvent.click(screen.getByRole("button", { name: "保存草稿" }));
+    await waitFor(() => expect(release).toBeDefined());
+    await act(async () => {
+      await logout(async () => new Response(null, { status: 204 }));
+    });
+    expect(window.sessionStorage.getItem(key)).toBeNull();
+    await act(async () => {
+      release!();
+    });
+    act(() => {
+      window.dispatchEvent(new Event("pagehide"));
+    });
+    expect(window.sessionStorage.getItem(key)).toBeNull();
+    expect(screen.queryByLabelText("本集标题")).toBeNull();
   });
 });

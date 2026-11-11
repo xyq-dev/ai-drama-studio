@@ -3,7 +3,9 @@ import {
   SCRIPT_BREAKDOWN_INPUT_SCHEMA,
   SCRIPT_BREAKDOWN_OUTPUT_SCHEMA,
   SCRIPT_BREAKDOWN_PROMPT_VERSION,
+  SCRIPT_WORKBENCH_SCHEMA,
   scriptBreakdownJsonSchema,
+  type ScriptWorkbenchScript,
   type ScriptBreakdownFrozenInput,
   type ScriptBreakdownOutput,
 } from "@ai-drama/contracts";
@@ -17,6 +19,7 @@ import {
   scriptTextOf,
   validateScriptBreakdownOutput,
 } from "./script-breakdown";
+import { workbenchScriptText } from "./script-workbench";
 
 const SCRIPT = [
   "第 2 集 监控之外",
@@ -27,6 +30,19 @@ const SCRIPT = [
   "周野推开铁门。",
   "周野：“你终于来了。”",
 ].join("\n");
+
+function workbenchScript(): ScriptWorkbenchScript {
+  return { title: "门外", previousRevisionId: null, previousHandoff: "", openingHook: "门响", change: "发现来客", endingHandoff: "她打开门",
+    characterKnowledge: "R01 知道来客身份", unresolvedThreads: "无", scenes: [{ id: "s1", heading: "门口", interiorExterior: "INT", timeOfDay: "NIGHT", characterIds: ["R01"], beats: [
+      { id: "a1", kind: "action", text: "她走向门口", seconds: 2 }, { id: "d1", kind: "dialogue", characterId: "R01", text: "等我。", seconds: 1 },
+      { id: "sound1", kind: "sound", text: "门铃响", seconds: 1 }, { id: "pause1", kind: "pause", text: "", seconds: 2 },
+    ] }], review: { identityClear: true, goalClear: true, obstacleClear: true, continuityChecked: true, lockedMaterialsChecked: true, note: "已核对" } };
+}
+
+function workbenchContent() {
+  const script = workbenchScript();
+  return { text: workbenchScriptText(script), workbench: { schema: SCRIPT_WORKBENCH_SCHEMA, script } };
+}
 
 function input(overrides: Partial<ScriptBreakdownFrozenInput> = {}): ScriptBreakdownFrozenInput {
   return {
@@ -78,7 +94,7 @@ describe("script breakdown prompt", () => {
     expect(prompt.user).toContain("C2：周野");
     expect(prompt.user).toContain("每集目标约 60 秒");
     expect(prompt.user).toContain("场景 1–8 场");
-    expect(prompt.user).toContain("镜头共 1–20 镜");
+    expect(prompt.user).toContain("镜头共 1–24 镜");
     expect(prompt.user).toContain("逐字摘自剧本正文");
     expect(prompt.system).toContain("预计时长是计划，不是成片时长");
     // Another script gives another prompt: nothing is cached across sources.
@@ -124,7 +140,7 @@ describe("script breakdown output checks", () => {
   it("refuses schema violations: extra fields, a wrong schema name, too many shots, durations outside 2–10 seconds", () => {
     expect(check({ ...output(), extra: 1 })).toEqual({ ok: false, code: "invalid_output" });
     expect(check({ ...output(), schema: "other" })).toEqual({ ok: false, code: "invalid_output" });
-    const many = Array.from({ length: 21 }, (_, index) => ({ ...output().shots[0]!, key: `S1-${String((index % 8) + 1)}` }));
+    const many = Array.from({ length: 25 }, (_, index) => ({ ...output().shots[0]!, key: `S1-${String((index % 8) + 1)}` }));
     expect(check(output({ shots: many }))).toEqual({ ok: false, code: "invalid_output" });
     expect(check(output({ shots: [{ ...output().shots[0]!, plannedSeconds: 11 }, ...output().shots.slice(1)] }))).toEqual({ ok: false, code: "invalid_output" });
     expect(check(output({ shots: [{ ...output().shots[0]!, plannedSeconds: 1 }, ...output().shots.slice(1)] }))).toEqual({ ok: false, code: "invalid_output" });
@@ -245,7 +261,28 @@ describe("script breakdown output checks", () => {
       .toEqual({ ok: false, code: "dialogue_not_in_script" });
   });
 
-  it("refuses unsafe text and a total planned duration outside 5–180 seconds", () => {
+  it.each([21, 24])("accepts %s ten-second shots with legal scene grouping, up to the 240-second boundary", shotCount => {
+    const scenes = Array.from({ length: Math.ceil(shotCount / 8) }, (_, n) => ({ ...output().scenes[0]!, key: `S${n + 1}` }));
+    const shots = Array.from({ length: shotCount }, (_, n) => ({ ...output().shots[0]!, key: `S${Math.floor(n / 8) + 1}-${n % 8 + 1}`,
+      sceneKey: `S${Math.floor(n / 8) + 1}`, plannedSeconds: 10 }));
+    const answer = output({ scenes, shots });
+    expect(check(answer, input({ targetEpisodeSeconds: shotCount * 10 }))).toEqual({ ok: true, output: answer });
+    expect(plannedTotalSeconds(answer)).toBe(shotCount * 10);
+    const prompt = buildScriptBreakdownPrompt(input({ targetEpisodeSeconds: shotCount * 10 }));
+    expect(prompt.user).toContain(`每集目标约 ${shotCount * 10} 秒`);
+    expect(prompt.user).toContain("全集合计 5–240 秒");
+  });
+
+  it("refuses output above 240 seconds without relaxing the ten-second shot or 24-shot limits", () => {
+    const scenes = Array.from({ length: 4 }, (_, n) => ({ ...output().scenes[0]!, key: `S${n + 1}` }));
+    const shots = Array.from({ length: 25 }, (_, n) => ({ ...output().shots[0]!, key: `S${Math.floor(n / 8) + 1}-${n % 8 + 1}`,
+      sceneKey: `S${Math.floor(n / 8) + 1}`, plannedSeconds: 10 }));
+    expect(check(output({ scenes, shots }))).toEqual({ ok: false, code: "invalid_output" });
+    shots.pop(); scenes.pop(); shots[23]!.plannedSeconds = 11;
+    expect(check(output({ scenes, shots }))).toEqual({ ok: false, code: "invalid_output" });
+  });
+
+  it("refuses unsafe text and a total planned duration below five seconds", () => {
     expect(check(output({ scenes: [{ ...output().scenes[0]!, description: "见 https://example.com" }, output().scenes[1]!] }))).toEqual({ ok: false, code: "unsafe_content" });
     const short = output({ scenes: [output().scenes[0]!], shots: [{ ...output().shots[0]!, plannedSeconds: 2 }, { ...output().shots[1]!, plannedSeconds: 2 }] });
     expect(check(short)).toEqual({ ok: false, code: "duration_out_of_range" });
@@ -260,11 +297,40 @@ describe("stored shot text", () => {
     expect(breakdownShotPromptText(output().scenes[0]!, shot)).toBe("便利店（夜）；近景；固定机位；林夏后退半步");
   });
 
-  it("reads only the editor's { text } script shape", () => {
+  it("keeps the legacy editor's { text } shape and refuses arbitrary structures carrying text", () => {
     expect(scriptTextOf({ text: "abc" })).toBe("abc");
     expect(scriptTextOf({ text: "abc", scenes: [] })).toBeNull();
     expect(scriptTextOf("abc")).toBeNull();
     expect(scriptTextOf(null)).toBeNull();
+  });
+
+  it("reads a valid versioned workbench script as its exact saved text, retaining scene order, role IDs and timing", () => {
+    const content = workbenchContent();
+    expect(content.text).toBe("门外\n\n开场3秒：门响\n\n当集改变：发现来客\n\n01 门口 内景·夜\n出场：R01\n动作：她走向门口（2秒）\nR01：等我。\n声音：门铃响（1秒）\n停顿：（2秒）\n\n集尾交接：她打开门");
+    expect(scriptTextOf(content)).toBe(content.text);
+    const frozen = input({ episodeNo: 1, scriptText: scriptTextOf(content)!, characters: [] });
+    expect(buildScriptBreakdownPrompt(frozen).user).toContain(`剧本正文（开始）\n${content.text}\n剧本正文（结束）`);
+    expect(validateScriptBreakdownOutput(JSON.stringify({ schema: SCRIPT_BREAKDOWN_OUTPUT_SCHEMA, episodeNo: 1,
+      scenes: [{ key: "S1", heading: "门口", timeOfDay: "夜", description: "她等候来客" }],
+      shots: [{ key: "S1-1", sceneKey: "S1", shotType: "中景", camera: "固定", action: "她走向门口", dialogue: [{ speaker: "R01", line: "等我。" }], characterKeys: [], plannedSeconds: 6 }],
+    }), frozen).ok).toBe(true);
+  });
+
+  it("rejects unknown versions, plan envelopes, unknown fields and damaged scripts instead of falling back to text", () => {
+    const content = workbenchContent();
+    for (const invalid of [
+      { ...content, extra: true },
+      { ...content, workbench: null },
+      { ...content, workbench: [] },
+      { ...content, workbench: { ...content.workbench, schema: "script-workbench.v2" } },
+      { ...content, workbench: { ...content.workbench, extra: true } },
+      { ...content, workbench: { schema: SCRIPT_WORKBENCH_SCHEMA, plan: {} } },
+      { ...content, workbench: { schema: SCRIPT_WORKBENCH_SCHEMA, script: {} } },
+      { ...content, workbench: { ...content.workbench, script: { ...content.workbench.script, extra: true } } },
+      { ...content, workbench: { ...content.workbench, script: { ...content.workbench.script, scenes: "broken" } } },
+      { ...content, text: { value: content.text } },
+      { ...content, text: "与已审核的结构化稿件不一致的正文" },
+    ]) expect(scriptTextOf(invalid)).toBeNull();
   });
 
   it("matches lines without whitespace", () => {

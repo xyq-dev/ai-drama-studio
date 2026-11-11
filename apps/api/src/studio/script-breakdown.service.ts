@@ -80,8 +80,9 @@ const MESSAGES: Record<string, string> = {
   SCRIPT_BREAKDOWN_RUN_ACTIVE: "本集拆解正在进行，未写入镜头。原方案仍可查看，请等本集任务结束后再试。",
   SCRIPT_BREAKDOWN_NO_SCRIPT: "这一集还没有剧本。",
   SCRIPT_REVIEW_REQUIRED: "这一集的当前剧本还没有通过审核（或已过期）。剧本批准后才能拆解。",
-  SCRIPT_BREAKDOWN_SCRIPT_UNSUPPORTED: "这一集的剧本不是纯文本正文，无法拆解。",
+  SCRIPT_BREAKDOWN_SCRIPT_UNSUPPORTED: "这一集的正文格式不受支持或与结构化稿件不一致，无法拆解。",
   SCRIPT_BREAKDOWN_SCRIPT_TOO_LARGE: `剧本正文超过 ${String(SCRIPT_BREAKDOWN_LIMITS.scriptMaxChars)} 字，没有启动任何调用。`,
+  SCRIPT_BREAKDOWN_TARGET_TOO_LONG: `单次分镜最多支持 ${String(SCRIPT_BREAKDOWN_LIMITS.maxTotalSeconds)} 秒，请缩短单集时长或拆分为多集后重新确认计划与正文。没有启动任何调用。`,
   SCRIPT_BREAKDOWN_TOO_MANY_CHARACTERS: `作品角色超过 ${String(SCRIPT_BREAKDOWN_LIMITS.maxCharacters)} 个，没有启动任何调用。`,
   SCRIPT_BREAKDOWN_EXISTING_SCENES: "这一集已经有场景。确认用新结果取代后才能拆解（旧版本会保留）。",
   SCRIPT_BREAKDOWN_NOT_SAVED: "拆解结果尚未就绪，或来源剧本已更新、未批准、已过期，不能写入镜头。请刷新查看当前来源。",
@@ -242,6 +243,9 @@ export class ScriptBreakdownService {
     if (scriptText === null || scriptText.trim().length === 0) return failure(422, "SCRIPT_BREAKDOWN_SCRIPT_UNSUPPORTED");
     if (scriptText.length > SCRIPT_BREAKDOWN_LIMITS.scriptMaxChars) {
       return failure(422, "SCRIPT_BREAKDOWN_SCRIPT_TOO_LARGE", { chars: scriptText.length, maxChars: SCRIPT_BREAKDOWN_LIMITS.scriptMaxChars });
+    }
+    if (source.targetEpisodeSeconds !== null && source.targetEpisodeSeconds > SCRIPT_BREAKDOWN_LIMITS.maxTotalSeconds) {
+      return failure(422, "SCRIPT_BREAKDOWN_TARGET_TOO_LONG", { targetEpisodeSeconds: source.targetEpisodeSeconds, maxSeconds: SCRIPT_BREAKDOWN_LIMITS.maxTotalSeconds });
     }
     if (source.characters.length > SCRIPT_BREAKDOWN_LIMITS.maxCharacters) {
       return failure(422, "SCRIPT_BREAKDOWN_TOO_MANY_CHARACTERS", { characters: source.characters.length });

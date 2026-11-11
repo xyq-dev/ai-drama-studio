@@ -64,6 +64,14 @@ async function activeWork(client: PoolClient, workspaceId: string, projectId: st
       AND state IN ('running','reserved','submitted') LIMIT 1`, [workspaceId, projectId]);
     if (found.rows[0]) return true;
   }
+  const speechBatches = await client.query<{ present: boolean }>("SELECT to_regclass('speech_batch_command') IS NOT NULL AS present");
+  if (speechBatches.rows[0]?.present) {
+    // Confirmation commits before dispatch creates its first GenerationJob. Match the batch's active-episode
+    // constraint here; confirm/claim and archive all serialize through the same project lock.
+    const found = await client.query(`SELECT 1 FROM speech_batch_command WHERE workspace_id=$1 AND project_id=$2
+      AND state IN ('dispatching','needs_attention') AND NOT cancel_requested LIMIT 1`, [workspaceId, projectId]);
+    if (found.rows[0]) return true;
+  }
   return false;
 }
 

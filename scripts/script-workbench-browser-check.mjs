@@ -43,14 +43,14 @@ async function screenshot(name, width = 1586, height = 992) {
   await page.waitForTimeout(150);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false, `${name}: horizontal overflow`);
   const file = `${name}-${width}.png`;
-  await page.screenshot({ path: resolve(output, file), fullPage: !(width === 1586 && ['03-writing','04-delete-draft','05-review','06-confirm-version','08-dependent-lock-protected','10-project-delete'].includes(name)) });
+  await page.screenshot({ path: resolve(output, file), fullPage: name !== '12-editing-conflict' && !(width === 1586 && ['03-writing','04-delete-draft','05-review','06-confirm-version','08-dependent-lock-protected','10-project-delete','11-recovered-drafts'].includes(name)) });
   evidence.screenshots.push(file);
 }
 
-async function request(path, body, version) {
-  const cookies = await page.context().cookies();
+async function request(path, body, version, actor = page) {
+  const cookies = await actor.context().cookies();
   const csrf = cookies.find(c => c.name === 'ads_csrf' || c.name === '__Host-ads_csrf')?.value;
-  const response = await page.request.fetch(`${WEB}/api/v1${path}`, {
+  const response = await actor.request.fetch(`${WEB}/api/v1${path}`, {
     method: body === undefined ? 'GET' : 'POST',
     ...(body === undefined ? {} : { data: body }),
     headers: { Origin: WEB, 'Idempotency-Key': randomUUID(), ...(csrf ? { 'X-CSRF-Token': csrf } : {}), ...(version === undefined ? {} : { 'If-Match': String(version) }) },
@@ -188,6 +188,102 @@ async function runFlows() {
   await page.getByText('已恢复《无名碑 · 验收样本》，可在「我的作品」继续创作。', { exact: true }).waitFor();
   assert.equal((await request('/library/projects')).total, 1);
   evidence.checks.push('whole project trash/count filtering/restore');
+
+  // A second real login represents another editor. Keep its cookies separate while expiring this tab.
+  const otherContext = await browser.newContext();
+  const otherPage = await otherContext.newPage();
+  await otherPage.goto(`${WEB}/login`);
+  await otherPage.getByLabel('账号', { exact: true }).fill('qa');
+  await otherPage.getByLabel('密码', { exact: true }).fill(password);
+  await otherPage.getByRole('button', { name: '登录', exact: true }).click();
+  await otherPage.waitForURL(`${WEB}/studio`);
+
+  await page.goto(`${WEB}${base}/script`);
+  await page.getByLabel('本集标题', { exact: true }).waitFor();
+  await page.getByRole('button', { name: /^第2集 / }).click();
+  const original = await snapshot(), episodeBeforeExpiry = original.episodes[1];
+  const scriptPath = `${base}/episodes/${episodeBeforeExpiry.id}/script-workbench`;
+  const localTitle = '差役登门 · 登录前未保存的正文';
+  const localGenre = '古装悬疑 · 登录前未保存的题材';
+  const remoteTitle = '差役登门 · 另一编辑者已保存的正文';
+  await page.getByLabel('本集标题', { exact: true }).fill(localTitle);
+  await page.getByRole('tab', { name: /立项/ }).click();
+  await page.getByLabel('题材', { exact: true }).fill(localGenre);
+  await page.getByRole('tab', { name: /逐集编写/ }).click();
+  const beforeUnload = async dialog => {
+    if (dialog.type() !== 'beforeunload') { evidence.errors.push(`Unexpected native dialog: ${dialog.type()}`); await dialog.dismiss(); return; }
+    evidence.acceptedBeforeUnload = (evidence.acceptedBeforeUnload ?? 0) + 1;
+    await dialog.accept();
+  };
+  page.on('dialog', beforeUnload);
+  const saveResponse = () => page.waitForResponse(response => response.url() === `${WEB}/api/v1${scriptPath}` && response.request().method() === 'POST');
+  const expiredSave = saveResponse();
+  await page.context().clearCookies();
+  await page.getByRole('button', { name: '保存草稿', exact: true }).click();
+  const expired = await expiredSave;
+  assert.equal(expired.status(), 401, 'expired save must reach the real authentication guard');
+  const expiredHeaders = expired.request().headers();
+  assert.equal(expiredHeaders['if-match'], String(episodeBeforeExpiry.rowVersion));
+  assert.equal(expired.request().postDataJSON().sourceStoryRevisionId, original.story.id);
+  await page.waitForURL(/\/login\?.*reason=expired/);
+  assert.equal(new URL(page.url()).searchParams.get('returnTo'), `${base}/script`);
+
+  const remoteScript = structuredClone(episodeBeforeExpiry.script.content.workbench.script);
+  remoteScript.title = remoteTitle;
+  await request(scriptPath, { script: remoteScript, sourceStoryRevisionId: original.story.id }, episodeBeforeExpiry.rowVersion, otherPage);
+  const remote = await request(`${base}/script-workbench`, undefined, undefined, otherPage);
+  assert.ok(remote.episodes[1].rowVersion > episodeBeforeExpiry.rowVersion);
+  await page.getByLabel('账号', { exact: true }).fill('qa');
+  await page.getByLabel('密码', { exact: true }).fill(password);
+  await page.getByRole('button', { name: '登录', exact: true }).click();
+  await page.waitForURL(`${WEB}${base}/script`);
+  await page.getByText('已恢复此标签页的未保存草稿；保留原编辑版本，服务器更新不会被自动覆盖。', { exact: true }).waitFor();
+  assert.equal(await page.getByLabel('本集标题', { exact: true }).inputValue(), localTitle);
+  await page.getByRole('tab', { name: /立项/ }).click();
+  assert.equal(await page.getByLabel('题材', { exact: true }).inputValue(), localGenre);
+  await page.getByRole('tab', { name: /逐集编写/ }).click();
+  await screenshot('11-recovered-drafts'); await screenshot('11-recovered-drafts', 390, 844);
+  await page.setViewportSize({ width: 1586, height: 992 });
+  const blockedSave = saveResponse();
+  await page.getByRole('button', { name: '保存草稿', exact: true }).click();
+  const blocked = await blockedSave;
+  assert.equal(blocked.status(), 409, 'old editing CAS must reject a concurrent server update');
+  assert.equal(blocked.request().headers()['if-match'], String(episodeBeforeExpiry.rowVersion));
+  assert.equal(blocked.request().headers()['idempotency-key'], expiredHeaders['idempotency-key']);
+  assert.equal(blocked.request().postDataJSON().sourceStoryRevisionId, original.story.id);
+  assert.equal((await snapshot()).episodes[1].script.content.workbench.script.title, remoteTitle, 'failed retry must not overwrite the other editor');
+  await page.getByRole('button', { name: '对照并处理版本冲突', exact: true }).click();
+  const comparison = page.getByRole('dialog', { name: '处理编辑版本冲突', exact: true });
+  assert.ok((await comparison.textContent()).includes(remoteTitle));
+  assert.ok((await comparison.textContent()).includes(localTitle));
+  await screenshot('12-editing-conflict'); await screenshot('12-editing-conflict', 390, 844);
+  const mobileDialog = await comparison.boundingBox();
+  assert.ok(mobileDialog && mobileDialog.x >= 0 && mobileDialog.x + mobileDialog.width <= 390 && mobileDialog.height <= 844, 'mobile conflict dialog must fit the viewport');
+  await page.setViewportSize({ width: 1586, height: 992 });
+  await comparison.getByRole('button', { name: '保留我的内容，采用此基线', exact: true }).click();
+  await page.getByRole('button', { name: '我已核对前集版本', exact: true }).click();
+  const reconciledSave = saveResponse();
+  await page.getByRole('button', { name: '保存草稿', exact: true }).click();
+  const reconciled = await reconciledSave;
+  assert.equal(reconciled.status(), 201);
+  assert.equal(reconciled.request().headers()['if-match'], String(remote.episodes[1].rowVersion));
+  await page.getByText('第 2 集草稿已保存。', { exact: true }).waitFor();
+  const after = await snapshot();
+  assert.equal(after.episodes[1].script.content.workbench.script.title, localTitle);
+  assert.ok(after.episodes[1].history.some(revision => revision.content.workbench?.script.title === remoteTitle), 'the concurrent server version remains in history');
+  await page.getByRole('tab', { name: /立项/ }).click();
+  assert.equal(await page.getByLabel('题材', { exact: true }).inputValue(), localGenre, 'saving this episode must retain the restored dirty plan');
+  const planSave = page.waitForResponse(response => response.url() === `${WEB}/api/v1${base}/script-workbench/plan` && response.request().method() === 'POST');
+  await page.getByRole('button', { name: '保存草稿', exact: true }).click();
+  const savedPlan = await planSave;
+  assert.equal(savedPlan.status(), 201);
+  assert.equal(savedPlan.request().headers()['if-match'], String(original.project.version), 'restored plan keeps its original editing CAS');
+  await page.getByText('设定草稿已保存，原有版本保留在版本记录中。', { exact: true }).waitFor();
+  assert.equal((await snapshot()).story.content.workbench.plan.brief.genre, localGenre);
+  page.off('dialog', beforeUnload); await otherContext.close();
+  evidence.checks.push('real 401/re-login restores plan and episode with original CAS and retry identity');
+  evidence.checks.push('concurrent server edit survives rejected retry; explicit comparison/reconciliation saves a new revision');
+  evidence.checks.push('desktop/mobile recovery and conflict screenshots have no document overflow; mobile dialog fits viewport');
   evidence.projectId = project.id;
 }
 

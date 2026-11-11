@@ -1,6 +1,8 @@
 import {
   SCRIPT_BREAKDOWN_LIMITS,
   SCRIPT_BREAKDOWN_OUTPUT_SCHEMA,
+  SCRIPT_WORKBENCH_SCHEMA,
+  scriptWorkbenchScriptSchema,
   scriptBreakdownOutputSchema,
   type ScriptBreakdownFrozenInput,
   type ScriptBreakdownOutput,
@@ -8,6 +10,7 @@ import {
   type ScriptBreakdownScene,
   type ScriptBreakdownShot,
 } from "@ai-drama/contracts";
+import { workbenchScriptText } from "./script-workbench";
 
 /**
  * Prompt, output checks and stored text of a script breakdown. Provider-neutral, like title writing: adapters only
@@ -27,12 +30,22 @@ export interface ScriptBreakdownPrompt {
   user: string;
 }
 
-/** The text of a script revision the breakdown can read: only the editor's `{ text }` shape. */
+/** Read the legacy text editor or the validated v1 workbench envelope; unknown structures remain unsupported. */
 export function scriptTextOf(content: unknown): string | null {
   if (!content || typeof content !== "object" || Array.isArray(content)) return null;
   const record = content as Record<string, unknown>;
-  if (Object.keys(record).length !== 1 || typeof record.text !== "string") return null;
-  return record.text;
+  if (!Object.hasOwn(record, "text") || typeof record.text !== "string") return null;
+  const keys = Object.keys(record);
+  if (keys.length === 1) return record.text;
+  if (keys.length !== 2 || !Object.hasOwn(record, "workbench")) return null;
+  const envelope = record.workbench;
+  if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) return null;
+  const workbench = envelope as Record<string, unknown>;
+  if (Object.keys(workbench).length !== 2 || !Object.hasOwn(workbench, "schema") || !Object.hasOwn(workbench, "script")
+    || workbench.schema !== SCRIPT_WORKBENCH_SCHEMA) return null;
+  const script = scriptWorkbenchScriptSchema.safeParse(workbench.script);
+  // Approval checks the structured script. Do not send unrelated text under that approved revision's identity.
+  return script.success && record.text === workbenchScriptText(script.data) ? record.text : null;
 }
 
 const L = SCRIPT_BREAKDOWN_LIMITS;

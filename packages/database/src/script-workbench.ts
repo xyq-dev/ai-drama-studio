@@ -2,6 +2,8 @@ import {
   SCRIPT_WORKBENCH_SCHEMA, type ScriptWorkbenchDocumentVersions, type ScriptWorkbenchPlan, type ScriptWorkbenchScript,
   type ScriptWorkbenchSnapshot, type ScriptWorkbenchRevision,
 } from "@ai-drama/contracts";
+import { workbenchScriptText } from "@ai-drama/domain";
+export { workbenchScriptText } from "@ai-drama/domain";
 import type { PoolClient } from "pg";
 import { PersistenceError, type DatabasePool } from "./job-service";
 import { TextChainService } from "./text-chain";
@@ -17,11 +19,6 @@ export function workbenchPlanText(plan: ScriptWorkbenchPlan): string {
     `单集 ${plan.brief.targetEpisodeSeconds} 秒，对白 ${plan.brief.dialogueQuota} 句`, `结局：${plan.bible.ending}`,
     ...plan.bible.characters.map(c => `${c.id} ${c.name}；定妆：${c.appearance}；声线：${c.voice}；称呼：${c.aliases}；已知：${c.knownInformation}`),
     `未回收悬念：${plan.bible.openThreads}`, ...plan.outline.episodes.map(e => `第${e.episodeNo}集 ${e.title}\n开场3秒：${e.openingHook}\n当集改变：${e.change}\n集尾交接：${e.endingHandoff}`)].join("\n\n");
-}
-export function workbenchScriptText(script: ScriptWorkbenchScript): string {
-  return [script.title, `开场3秒：${script.openingHook}`, `当集改变：${script.change}`,
-    ...script.scenes.map((scene, index) => `${String(index + 1).padStart(2, "0")} ${scene.heading} ${scene.interiorExterior === "INT" ? "内景" : "外景"}·${scene.timeOfDay === "DAY" ? "日" : "夜"}\n出场：${scene.characterIds.join("、")}\n${scene.beats.map(b => b.kind === "dialogue" ? `${b.characterId}：${b.text}` : `${({ action: "动作", sound: "声音", pause: "停顿" } as const)[b.kind]}：${b.text}（${b.seconds}秒）`).join("\n")}`),
-    `集尾交接：${script.endingHandoff}`].join("\n\n");
 }
 export function nextDocumentVersions(previous: ScriptWorkbenchPlan | null, next: ScriptWorkbenchPlan, previousNumbers: unknown): ScriptWorkbenchDocumentVersions {
   const values = previousNumbers && typeof previousNumbers === "object" ? previousNumbers as Partial<ScriptWorkbenchDocumentVersions> : {};

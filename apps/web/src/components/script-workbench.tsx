@@ -27,6 +27,12 @@ import {
   workbenchPlan,
   workbenchScript,
 } from "../lib/script-workbench-model";
+import {
+  emptyWorkbenchBaseline,
+  persistWorkbenchDraft,
+  restoreWorkbenchDraft,
+  WORKBENCH_DRAFTS_CLEARED_EVENT,
+} from "../lib/script-workbench-drafts";
 import { CreatorShell } from "./creator-shell";
 import styles from "./script-workbench.module.css";
 
@@ -165,8 +171,8 @@ function StatusBadge({ revision }: { revision: ScriptWorkbenchRevision | null })
 
 export function ScriptWorkbench({ projectId }: { projectId: string }) {
   const [snapshot, setSnapshot] = useState<ScriptWorkbenchSnapshot | null>(null);
-  const [plan, setPlan] = useState<ScriptWorkbenchPlan | null>(null);
-  const [drafts, setDrafts] = useState<Record<string, ScriptWorkbenchScript>>({});
+  const [plan, renderPlan] = useState<ScriptWorkbenchPlan | null>(null);
+  const [drafts, renderDrafts] = useState<Record<string, ScriptWorkbenchScript>>({});
   const [stage, setStage] = useState<Stage>(0);
   const [selectedEpisode, setSelectedEpisode] = useState("");
   const [selectedScene, setSelectedScene] = useState("");
@@ -176,6 +182,15 @@ export function ScriptWorkbench({ projectId }: { projectId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
   const [conflict, setConflict] = useState(false);
+  const [reconcile, setReconcile] = useState<{
+    episodeId: string | null;
+    version: number;
+    revisionId: string | null;
+    sourceStoryId: string | null;
+    server: ScriptWorkbenchPlan | ScriptWorkbenchScript;
+    serverText: string;
+    draftText: string;
+  } | null>(null);
   const [history, setHistory] = useState<HistoryTarget | null>(null);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [deletion, setDeletion] = useState<{
@@ -183,14 +198,55 @@ export function ScriptWorkbench({ projectId }: { projectId: string }) {
     revision: ScriptWorkbenchRevision;
     preview: DeletePreview;
   } | null>(null);
-  const [legacyConverted, setLegacyConverted] = useState(new Set<string>());
+  const [legacyConverted, renderLegacyConverted] = useState(new Set<string>());
   const pendingKeys = useRef(new Map<string, string>());
   const requestEpoch = useRef(0);
   const mounted = useRef(true);
-  const baseline = useRef<{
+  const baseline = useRef(emptyWorkbenchBaseline());
+  const live = useRef<{
     plan: ScriptWorkbenchPlan | null;
-    scripts: Record<string, ScriptWorkbenchScript>;
-  }>({ plan: null, scripts: {} });
+    drafts: Record<string, ScriptWorkbenchScript>;
+  }>({ plan: null, drafts: {} });
+  const legacyRef = useRef(new Set<string>());
+  const signedOut = useRef(false);
+  const recoveryUnreadable = useRef(false);
+  const [storageWarning, setStorageWarning] = useState<string | null>(null);
+  const persist = useCallback(() => {
+    if (signedOut.current || recoveryUnreadable.current) return;
+    try {
+      persistWorkbenchDraft(window.sessionStorage, {
+        schema: 1,
+        projectId,
+        plan: live.current.plan,
+        scripts: live.current.drafts,
+        baseline: baseline.current,
+        legacyConverted: [...legacyRef.current],
+        pendingKeys: [...pendingKeys.current],
+      });
+      setStorageWarning(null);
+    } catch {
+      setStorageWarning("浏览器未能保存恢复草稿，请先保存到服务器再离开页面。当前编辑内容仍保留。");
+    }
+  }, [projectId]);
+  function setPlan(value: ScriptWorkbenchPlan) {
+    live.current.plan = value;
+    renderPlan(value);
+    persist();
+  }
+  function setDrafts(
+    update: (
+      current: Record<string, ScriptWorkbenchScript>,
+    ) => Record<string, ScriptWorkbenchScript>,
+  ) {
+    live.current.drafts = update(live.current.drafts);
+    renderDrafts(live.current.drafts);
+    persist();
+  }
+  function setLegacyConverted(update: (current: Set<string>) => Set<string>) {
+    legacyRef.current = update(legacyRef.current);
+    renderLegacyConverted(legacyRef.current);
+    persist();
+  }
   const episode = snapshot?.episodes.find((item) => item.id === selectedEpisode) ?? null;
   const script = episode ? (drafts[episode.id] ?? emptyScript(episode.title)) : null;
   const previous =
@@ -201,6 +257,87 @@ export function ScriptWorkbench({ projectId }: { projectId: string }) {
   const anyDirty =
     planDirty ||
     Object.entries(drafts).some(([id, value]) => !same(value, baseline.current.scripts[id]));
+  const editingConflict =
+    snapshot &&
+    (stage <= 1
+      ? planDirty && baseline.current.planVersion !== snapshot.project.version
+      : episode &&
+        scriptDirty &&
+        (baseline.current.scriptVersions[episode.id] !== episode.rowVersion ||
+          baseline.current.sourceStoryIds[episode.id] !== snapshot.story?.id));
+  function inspectEditingConflict() {
+    if (!snapshot || !plan) return;
+    if (stage <= 1) {
+      setReconcile({
+        episodeId: null,
+        version: snapshot.project.version,
+        revisionId: snapshot.story?.id ?? null,
+        sourceStoryId: null,
+        server: workbenchPlan(snapshot.story) ?? emptyPlan(snapshot),
+        serverText: snapshot.story ? plainText(snapshot.story.content) : "尚无设定",
+        draftText: [
+          plan.brief.genre,
+          plan.brief.audience,
+          plan.brief.logline,
+          plan.brief.productionConstraints,
+          `时长 ${plan.brief.targetEpisodeSeconds} 秒 / 对白 ${plan.brief.dialogueQuota} 句`,
+          plan.bible.ending,
+          plan.bible.openThreads,
+          ...plan.bible.characters.map((item) => Object.values(item).join(" · ")),
+          ...plan.outline.episodes.map((item) => Object.values(item).join(" · ")),
+        ].join("\n"),
+      });
+    } else if (episode && script) {
+      setReconcile({
+        episodeId: episode.id,
+        version: episode.rowVersion,
+        revisionId: episode.script?.id ?? null,
+        sourceStoryId: snapshot.story?.id ?? null,
+        server: workbenchScript(episode.script) ?? emptyScript(episode.title),
+        serverText: episode.script ? plainText(episode.script.content) : "尚无正文",
+        draftText: [
+          script.title,
+          script.previousHandoff,
+          script.openingHook,
+          script.change,
+          script.endingHandoff,
+          script.characterKnowledge,
+          script.unresolvedThreads,
+          ...script.scenes.flatMap((scene) => [
+            scene.heading,
+            ...scene.beats.map(
+              (beat) => `${beat.characterId ?? beat.kind}：${beat.text} (${beat.seconds} 秒)`,
+            ),
+          ]),
+        ].join("\n"),
+      });
+    }
+  }
+  function adoptInspectedBaseline() {
+    if (!reconcile) return;
+    if (reconcile.episodeId === null) {
+      baseline.current.plan = reconcile.server as ScriptWorkbenchPlan;
+      baseline.current.planVersion = reconcile.version;
+      baseline.current.planRevisionId = reconcile.revisionId;
+    } else {
+      const id = reconcile.episodeId;
+      baseline.current.scripts[id] = reconcile.server as ScriptWorkbenchScript;
+      baseline.current.scriptVersions[id] = reconcile.version;
+      baseline.current.scriptRevisionIds[id] = reconcile.revisionId;
+      baseline.current.sourceStoryIds[id] = reconcile.sourceStoryId;
+      setDrafts((current) => ({
+        ...current,
+        [id]: invalidateChecks({ ...current[id]!, previousRevisionId: null }),
+      }));
+    }
+    persist();
+    setReconcile(null);
+    setError(null);
+    setConflict(false);
+    setNotice(
+      "已按你核对的服务器版本更新编辑基线，本地内容保留；尚未写入服务器，请核对后保存新稿。",
+    );
+  }
   const initialStoryLegacy =
     !!snapshot?.story && !workbenchPlan(snapshot.story) && !legacyConverted.has("story");
   const initialScriptLegacy =
@@ -214,20 +351,30 @@ export function ScriptWorkbench({ projectId }: { projectId: string }) {
       const next = await client.get<ScriptWorkbenchSnapshot>(
         `/projects/${projectId}/script-workbench`,
       );
-      if (!mounted.current || epoch !== requestEpoch.current) return next;
+      if (!mounted.current || signedOut.current || epoch !== requestEpoch.current) return next;
       setSnapshot(next);
       const nextPlan = workbenchPlan(next.story) ?? emptyPlan(next);
-      if (options.initial || options.plan || options.all) {
-        setPlan(nextPlan);
+      // A refreshed aggregate version is usable only alongside the exact content loaded from it.
+      // Dirty local content keeps its original editing CAS and source, even when another entity is saved.
+      if (
+        options.plan ||
+        options.all ||
+        live.current.plan === null ||
+        same(live.current.plan, baseline.current.plan)
+      ) {
+        live.current.plan = nextPlan;
         baseline.current.plan = nextPlan;
+        baseline.current.planVersion = next.project.version;
+        baseline.current.planRevisionId = next.story?.id ?? null;
+        renderPlan(nextPlan);
       }
       const updates: Record<string, ScriptWorkbenchScript> = {};
       for (const item of next.episodes) {
         if (
-          options.initial ||
           options.all ||
           options.episodeId === item.id ||
-          !(item.id in baseline.current.scripts)
+          !(item.id in live.current.drafts) ||
+          same(live.current.drafts[item.id], baseline.current.scripts[item.id])
         ) {
           const outline = nextPlan.outline.episodes.find(
             (entry) => entry.episodeNo === item.episodeNo,
@@ -240,9 +387,14 @@ export function ScriptWorkbench({ projectId }: { projectId: string }) {
           };
           updates[item.id] = nextScript;
           baseline.current.scripts[item.id] = nextScript;
+          baseline.current.scriptVersions[item.id] = item.rowVersion;
+          baseline.current.scriptRevisionIds[item.id] = item.script?.id ?? null;
+          baseline.current.sourceStoryIds[item.id] = next.story?.id ?? null;
         }
       }
-      setDrafts((current) => ({ ...current, ...updates }));
+      live.current.drafts = { ...live.current.drafts, ...updates };
+      renderDrafts(live.current.drafts);
+      persist();
       if (options.initial) {
         const first = next.episodes.find((item) => !approved(item.script)) ?? next.episodes[0];
         setSelectedEpisode(first?.id ?? "");
@@ -255,11 +407,52 @@ export function ScriptWorkbench({ projectId }: { projectId: string }) {
         );
       return next;
     },
-    [projectId],
+    [projectId, persist],
   );
 
   useEffect(() => {
     mounted.current = true;
+    signedOut.current = false;
+    recoveryUnreadable.current = false;
+    setStorageWarning(null);
+    baseline.current = emptyWorkbenchBaseline();
+    live.current = { plan: null, drafts: {} };
+    pendingKeys.current.clear();
+    legacyRef.current = new Set();
+    renderPlan(null);
+    renderDrafts({});
+    renderLegacyConverted(new Set());
+    setSnapshot(null);
+    try {
+      const restored = restoreWorkbenchDraft(window.sessionStorage, projectId);
+      if (restored) {
+        baseline.current = restored.baseline;
+        live.current = { plan: restored.plan, drafts: restored.scripts };
+        pendingKeys.current = new Map(restored.pendingKeys);
+        legacyRef.current = new Set(restored.legacyConverted);
+        renderPlan(restored.plan);
+        renderDrafts(restored.scripts);
+        renderLegacyConverted(legacyRef.current);
+        setNotice("已恢复此标签页的未保存草稿；保留原编辑版本，服务器更新不会被自动覆盖。");
+      }
+    } catch {
+      recoveryUnreadable.current = true;
+      setStorageWarning("本地恢复草稿无法读取，原记录已保留；请先保存到服务器再离开页面。");
+    }
+    const onSignedOut = () => {
+      signedOut.current = true;
+      requestEpoch.current += 1;
+      baseline.current = emptyWorkbenchBaseline();
+      live.current = { plan: null, drafts: {} };
+      pendingKeys.current.clear();
+      legacyRef.current.clear();
+      renderPlan(null);
+      renderDrafts({});
+      renderLegacyConverted(new Set());
+      setSnapshot(null);
+    };
+    window.addEventListener(WORKBENCH_DRAFTS_CLEARED_EVENT, onSignedOut);
+    window.addEventListener("pagehide", persist);
     setLoading(true);
     void read({ initial: true })
       .catch((caught: unknown) => {
@@ -271,8 +464,10 @@ export function ScriptWorkbench({ projectId }: { projectId: string }) {
     return () => {
       mounted.current = false;
       requestEpoch.current += 1;
+      window.removeEventListener(WORKBENCH_DRAFTS_CLEARED_EVENT, onSignedOut);
+      window.removeEventListener("pagehide", persist);
     };
-  }, [read]);
+  }, [read, projectId, persist]);
 
   useEffect(() => {
     if (!anyDirty) return;
@@ -285,12 +480,14 @@ export function ScriptWorkbench({ projectId }: { projectId: string }) {
   }, [anyDirty]);
 
   async function mutate(path: string, body: unknown, ifMatch: number) {
+    if (signedOut.current) throw new Error("已退出登录，请重新登录后继续。");
     const fingerprint = JSON.stringify({ path, body, ifMatch });
     let key = pendingKeys.current.get(fingerprint);
     if (!key) {
       key = crypto.randomUUID();
       pendingKeys.current.set(fingerprint, key);
     }
+    persist();
     const result = await client.write({ path, body, ifMatch, idempotencyKey: key });
     return { result, fingerprint };
   }
@@ -309,7 +506,10 @@ export function ScriptWorkbench({ projectId }: { projectId: string }) {
       setConflict(caught instanceof ApiError && [409, 412].includes(caught.status));
     } finally {
       busyRef.current = false;
-      if (mounted.current) setBusy(false);
+      if (mounted.current) {
+        persist();
+        setBusy(false);
+      }
     }
   }
 
@@ -321,7 +521,7 @@ export function ScriptWorkbench({ projectId }: { projectId: string }) {
         const { fingerprint } = await mutate(
           `/projects/${projectId}/script-workbench/plan`,
           { plan },
-          snapshot.project.version,
+          baseline.current.planVersion ?? snapshot.project.version,
         );
         latest = await read({ plan: true });
         pendingKeys.current.delete(fingerprint);
@@ -360,8 +560,11 @@ export function ScriptWorkbench({ projectId }: { projectId: string }) {
       if (scriptDirty || !target.script || initialScriptLegacy) {
         const { fingerprint } = await mutate(
           `/projects/${projectId}/episodes/${target.id}/script-workbench`,
-          { script: value, sourceStoryRevisionId: snapshot.story!.id },
-          target.rowVersion,
+          {
+            script: value,
+            sourceStoryRevisionId: baseline.current.sourceStoryIds[target.id] ?? snapshot.story!.id,
+          },
+          baseline.current.scriptVersions[target.id] ?? target.rowVersion,
         );
         latest = await read({ episodeId: target.id });
         pendingKeys.current.delete(fingerprint);
@@ -532,7 +735,7 @@ export function ScriptWorkbench({ projectId }: { projectId: string }) {
   function refreshPreservingEdits() {
     void action(async () => {
       await read();
-      setNotice("已读取最新版本，未保存内容仍保留。请对照版本记录，确认后重新保存。");
+      setNotice("已刷新干净稿件；未保存内容及其原编辑版本保留。发生冲突时，请先对照服务器版本。");
     });
   }
   const estimate = script ? estimateScript(script) : null;
@@ -584,6 +787,19 @@ export function ScriptWorkbench({ projectId }: { projectId: string }) {
               </button>
             ))}
           </nav>
+          {editingConflict ? (
+            <div className={styles.warning} role="status">
+              服务器版本已更新。当前未保存稿仍使用原编辑基线，刷新不会覆盖新版本。
+              <button type="button" disabled={busy} onClick={inspectEditingConflict}>
+                对照并处理版本冲突
+              </button>
+            </div>
+          ) : null}
+          {storageWarning ? (
+            <p className={styles.warning} role="status">
+              {storageWarning}
+            </p>
+          ) : null}
           {error ? (
             <div role="alert" className={styles.error}>
               {error}
@@ -781,7 +997,11 @@ export function ScriptWorkbench({ projectId }: { projectId: string }) {
                               onChange={updateScript}
                             />
                           ) : (
-                            <ReviewEditor script={script} characters={plan.bible.characters} onChange={updateScript} />
+                            <ReviewEditor
+                              script={script}
+                              characters={plan.bible.characters}
+                              onChange={updateScript}
+                            />
                           )}
                         </div>
                         <footer className={styles.formFooter}>
@@ -1025,6 +1245,30 @@ export function ScriptWorkbench({ projectId }: { projectId: string }) {
         </main>
       </CreatorShell>
 
+      {reconcile ? (
+        <Modal
+          title="处理编辑版本冲突"
+          onClose={() => setReconcile(null)}
+          footer={
+            <>
+              <button className={styles.button} onClick={() => setReconcile(null)}>
+                保留原基线
+              </button>
+              <button className={styles.primary} onClick={adoptInspectedBaseline}>
+                保留我的内容，采用此基线
+              </button>
+            </>
+          }
+        >
+          <p className={styles.notice}>
+            对照这次读取的服务器版本与本地内容。确认只更新编辑基线；之后保存为新稿，仍需重新审稿。若服务器再次变化，保存仍会被阻止。
+          </p>
+          <h3>服务器版本</h3>
+          <pre>{reconcile.serverText}</pre>
+          <h3>本地未保存内容</h3>
+          <pre>{reconcile.draftText}</pre>
+        </Modal>
+      ) : null}
       {history !== null && snapshot ? (
         <Modal title="版本记录" onClose={() => setHistory(null)} busy={busy}>
           <label className={styles.field}>
