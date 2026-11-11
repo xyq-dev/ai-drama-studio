@@ -40,7 +40,7 @@ function aptRoot(files) {
   return root;
 }
 
-function run(root, healthy = [AZURE]) {
+function run(root, healthy = [AZURE], { failCalls = 0, failureExit = 28, failureStatus = "000" } = {}) {
   const fake = mkdtempSync(join(tmpdir(), "apt-fake-curl-"));
   const log = join(fake, "calls.txt");
   writeFileSync(log, "");
@@ -48,9 +48,11 @@ function run(root, healthy = [AZURE]) {
     "#!/usr/bin/env bash",
     "printf '%s\\n' \"$*\" >> \"$FAKE_CURL_LOG\"",
     'url="${@: -1}"',
+    'fail() { printf "%s" "$FAKE_CURL_FAILURE_STATUS"; printf "private proxy error must not be logged" >&2; exit "$FAKE_CURL_FAILURE_EXIT"; }',
+    '[ "$(wc -l < "$FAKE_CURL_LOG")" -gt "$FAKE_CURL_FAIL_CALLS" ] || fail',
     'case ",${FAKE_CURL_HEALTHY}," in',
     '  *",$url,"*) printf 200; exit 0 ;;',
-    '  *) printf 000; exit 28 ;;',
+    '  *) fail ;;',
     'esac',
     "",
   ].join("\n"));
@@ -59,7 +61,9 @@ function run(root, healthy = [AZURE]) {
     const result = spawnSync("bash", [SCRIPT, root.replaceAll("\\", "/")], {
       encoding: "utf8",
       env: { ...process.env, PATH: `${fake}:${process.env.PATH ?? ""}`,
-        FAKE_CURL_LOG: log, FAKE_CURL_HEALTHY: healthy.map(probeUrl).join(",") },
+        FAKE_CURL_LOG: log, FAKE_CURL_HEALTHY: healthy.map(probeUrl).join(","),
+        FAKE_CURL_FAIL_CALLS: String(failCalls), FAKE_CURL_FAILURE_EXIT: String(failureExit),
+        FAKE_CURL_FAILURE_STATUS: failureStatus },
     });
     const calls = readFileSync(log, "utf8").split("\n").filter(Boolean);
     return { status: result.status, out: result.stdout, err: result.stderr, calls };
@@ -94,7 +98,7 @@ test("the runner selects healthy Azure HTTPS, keeping mirror+file, priorities an
   assert.equal(mirrors, [1, 2, 3].map((priority) => `${AZURE}\tpriority:${priority}\n`).join(""));
   assert.equal(mirrors.includes("http://"), false);
   assert.equal(first.calls.length, 1);
-  assert.match(first.calls[0], /--connect-timeout 3 --max-time 5/);
+  assert.match(first.calls[0], /--connect-timeout 10 --max-time 15/);
   assert.match(first.calls[0], /--proto =https --proto-redir =https/);
   assert.ok(first.calls[0].endsWith(probeUrl(AZURE)));
   assert.equal(first.calls[0].includes("--insecure"), false);
@@ -220,7 +224,42 @@ test("all failed probes stop before any source or apt configuration is changed",
 
   const result = run(root, []);
   assert.equal(result.status, 1);
-  assert.equal(result.calls.length, 4);
+  assert.equal(result.calls.length, 8);
+  assert.deepEqual(result.calls.map((call) => call.split(" ").at(-1)),
+    [AZURE, ARCHIVE, SECURITY, KERNEL, AZURE, ARCHIVE, SECURITY, KERNEL].map(probeUrl));
+  assert.match(result.out, /round=2 curl_exit=28 http=000/);
+  assert.doesNotMatch(result.out + result.err, /private proxy/);
   assert.match(result.err, /No Ubuntu HTTPS archive passed/);
   assert.deepEqual(snapshot(root), before);
+});
+
+test("a transient first-round failure recovers on the second round without retaining failed hosts", (t) => {
+  const root = aptRoot({ "sources.list.d/ubuntu.sources": RUNNER_SOURCES, "apt-mirrors.txt": RUNNER_MIRRORS });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = run(root, [AZURE], { failCalls: 4 });
+  assert.equal(result.status, 0, result.err);
+  assert.deepEqual(result.calls.map((call) => call.split(" ").at(-1)),
+    [AZURE, ARCHIVE, SECURITY, KERNEL, AZURE].map(probeUrl));
+  assert.match(result.out, /round=1 curl_exit=28 http=000/);
+  assert.match(result.out, /round=2 curl_exit=0 http=200/);
+  assert.doesNotMatch(result.out + result.err, /private proxy/);
+  assert.equal(readFileSync(join(root, "apt-mirrors.txt"), "utf8"),
+    [1, 2, 3].map((priority) => `${AZURE}\tpriority:${priority}\n`).join(""));
+  assert.equal(readFileSync(join(root, "sources.list.d/ubuntu.sources"), "utf8"), RUNNER_SOURCES);
+});
+
+test("failed probes report numeric DNS/TLS/HTTP diagnostics without logging curl errors", (t) => {
+  for (const [failureExit, failureStatus] of [[6, "000"], [60, "000"], [22, "503"], [28, "unexpected private output"]]) {
+    const root = aptRoot({ "sources.list.d/ubuntu.sources": RUNNER_SOURCES, "apt-mirrors.txt": RUNNER_MIRRORS });
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const before = snapshot(root);
+
+    const result = run(root, [], { failureExit, failureStatus });
+    assert.equal(result.status, 1);
+    assert.equal(result.calls.length, 8);
+    assert.match(result.out, new RegExp(`curl_exit=${failureExit} http=${failureExit === 22 ? "503" : "000"}`));
+    assert.doesNotMatch(result.out + result.err, /private/);
+    assert.deepEqual(snapshot(root), before);
+  }
 });

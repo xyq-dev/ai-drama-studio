@@ -280,7 +280,7 @@ describe("script breakdown over real HTTP and PostgreSQL, model stubbed", () => 
     const options = await http("GET", "/writing/script-breakdowns/options");
     expect(options.status).toBe(200);
     expect(options.body).toMatchObject({ code: "SCRIPT_BREAKDOWN_READY", storageReady: true, callCapPerRun: 3, billing: "unknown",
-      limits: { maxScenes: 8, maxShots: 20, minShotSeconds: 2, maxShotSeconds: 10 } });
+      limits: { maxScenes: 8, maxShots: 24, minShotSeconds: 2, maxShotSeconds: 10, maxTotalSeconds: 240 } });
   });
 
   for (const count of [1, 3, 6]) {

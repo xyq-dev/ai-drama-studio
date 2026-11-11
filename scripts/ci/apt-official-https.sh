@@ -5,6 +5,7 @@
 # and that list starts with http://azure.archive.ubuntu.com/ubuntu/, so rewriting the direct URLs in sources.list and
 # *.sources alone leaves apt downloading from the Azure mirror. Probe the Ubuntu 24.04 InRelease before changing sources.
 # Prefer the original Azure host over HTTPS, then the Ubuntu archive/security hosts, then Linux Kernel Archives.
+# Allow two probe rounds with a 115 s total budget; a transient runner/network delay must not discard healthy mirrors.
 # Map Ubuntu entries to the first reachable endpoint so apt does not retry unreachable hosts for every package.
 # Keep mirror+file references and list priorities. apt still verifies Ubuntu's signed indexes with the existing keyring.
 # Suites, components and Signed-By are left as they are, and other repositories are not touched.
@@ -55,15 +56,28 @@ if [ "$has_ubuntu" -eq 1 ]; then
     "https://security.ubuntu.com/ubuntu/"
     "https://mirrors.kernel.org/ubuntu/"
   )
-  for candidate in "${candidates[@]}"; do
-    # Ignore curlrc but retain the process's configured proxy/CA. Do not log error strings or credentials.
-    if status="$(curl -q --silent --fail --location --proto '=https' --proto-redir '=https' \
-      --connect-timeout 3 --max-time 5 --output /dev/null --write-out '%{http_code}' \
-      "${candidate}dists/noble/InRelease" 2>/dev/null)" && [ "$status" = "200" ]; then
-      selected="$candidate"
-      break
-    fi
-    echo "Ubuntu HTTPS probe unavailable: $candidate"
+  probe_deadline=$((SECONDS + 115))
+  for round in 1 2; do
+    for candidate in "${candidates[@]}"; do
+      remaining=$((probe_deadline - SECONDS))
+      [ "$remaining" -gt 0 ] || break 2
+      max_time=15
+      [ "$remaining" -ge "$max_time" ] || max_time="$remaining"
+      connect_timeout=10
+      [ "$max_time" -ge "$connect_timeout" ] || connect_timeout="$max_time"
+      # Ignore curlrc but retain the process's configured proxy/CA. Do not log error strings or credentials.
+      curl_exit=0
+      status="$(curl -q --silent --fail --location --proto '=https' --proto-redir '=https' \
+        --connect-timeout "$connect_timeout" --max-time "$max_time" --output /dev/null --write-out '%{http_code}' \
+        "${candidate}dists/noble/InRelease" 2>/dev/null)" || curl_exit=$?
+      [[ "$status" =~ ^[0-9]{3}$ ]] || status="000"
+      # Numeric diagnostics distinguish DNS (6), TLS verification (60), timeout (28) and HTTP failure (22).
+      echo "Ubuntu HTTPS probe round=$round curl_exit=$curl_exit http=$status endpoint=$candidate"
+      if [ "$curl_exit" -eq 0 ] && [ "$status" = "200" ]; then
+        selected="$candidate"
+        break 2
+      fi
+    done
   done
   if [ -z "$selected" ]; then
     echo "::error::No Ubuntu HTTPS archive passed the bounded InRelease probe; sources unchanged, apt must not continue." >&2
