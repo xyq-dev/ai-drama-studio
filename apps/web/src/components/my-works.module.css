@@ -1,5 +1,6 @@
 .page { max-width: 1600px; margin: 0 auto; padding: 30px 20px 32px; }
 .headingRow { display: flex; justify-content: space-between; align-items: center; gap: 24px; margin: 0 12px 28px; }
+.headingActions { display: flex; align-items: center; gap: 10px; }
 .heading { margin: 0; font-size: var(--studio-heading); font-weight: 700; letter-spacing: -.035em; line-height: 1.35; }
 .intro { margin: 10px 0 0; color: var(--studio-muted); font-size: 14px; }
 .primary, .secondary, .continue { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; border-radius: var(--studio-control-radius); padding: 9px 16px; border: 1px solid var(--studio-line); font-size: 14px; font-weight: 600; text-decoration: none; white-space: nowrap; }
@@ -78,6 +79,9 @@
 .progressNote { display: block; margin: 6px 0 0; color: var(--studio-muted); font-size: 12px; line-height: 1.7; }
 .dateCell { color: var(--studio-muted); font-size: 14px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .actions { text-align: center; }
+.actionStack { display: flex; flex-direction: column; gap: 2px; }
+.scriptLink { align-self: flex-start; min-height: 32px; display: inline-flex; align-items: center; color: #204f40; font-weight: 600; font-size: 14px; text-decoration: none; }
+.scriptLink:hover { text-decoration: underline; text-underline-offset: 4px; }
 .actionLinks { display: flex; align-items: center; gap: 8px; }
 .continue { flex: 1; min-height: 40px; padding: 6px 10px; background: var(--studio-card); border-color: var(--studio-accent-line); color: var(--studio-accent); font-size: 14px; }
 .continue:hover { background: var(--studio-error-bg); }
@@ -150,6 +154,8 @@
   .page { padding: 24px 16px 40px; }
   .heading { font-size: var(--studio-heading-mobile); }
   .headingRow { gap: 12px; align-items: flex-start; margin: 0 0 22px; }
+  .headingActions { flex-direction: column-reverse; align-items: stretch; gap: 6px; }
+  .headingActions .secondary { min-height: 36px; padding: 6px 12px; font-size: 13px; }
   .intro { font-size: 13px; max-width: 210px; }
   .headingRow .primary { padding: 9px 12px; font-size: 13px; }
   .workspace { border-radius: 14px; }

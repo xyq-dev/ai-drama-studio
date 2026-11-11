@@ -22,6 +22,8 @@ import { ProjectLibraryStore } from "@ai-drama/database";
 import { ProjectLibraryService } from "./project-library.service";
 import { PROJECT_LIBRARY_SERVICE, ProjectLibraryController } from "./project-library.controller";
 import { STORAGE_SETTINGS_SERVICE, StorageSettingsController } from "../admin/storage-settings.controller";
+import { SCRIPT_WORKBENCH_SERVICE, ScriptWorkbenchController } from "./script-workbench.controller";
+import { ScriptWorkbenchService } from "./script-workbench.service";
 
 @Module({})
 export class StudioModule {
@@ -32,9 +34,10 @@ export class StudioModule {
         StudioController, EventsController, TitleWritingController, ScriptBreakdownController, WritingCandidateController,
         AdminModelsController, AutoCreationController, SeriesWritingController, VimaxPreviewController, VimaxCandidateController,
         VimaxPlanningController, RealMediaController, SpeechController, VoiceComposeController,
-        ProjectLibraryController, StorageSettingsController,
+        ProjectLibraryController, StorageSettingsController, ScriptWorkbenchController,
       ],
       providers: [
+        { provide: SCRIPT_WORKBENCH_SERVICE, inject: [STUDIO_RUNTIME], useFactory: (runtime: StudioRuntime) => new ScriptWorkbenchService(runtime.pool, env.APP_WORKSPACE_ID) },
         { provide: PROJECT_LIBRARY_SERVICE, inject: [STUDIO_RUNTIME], useFactory: (runtime: StudioRuntime) => new ProjectLibraryService(new ProjectLibraryStore(runtime.pool), env.APP_WORKSPACE_ID) },
         { provide: STORAGE_SETTINGS_SERVICE, inject: [STUDIO_RUNTIME], useFactory: (runtime: StudioRuntime) => runtime.storageSettings },
         { provide: VIMAX_PLANNING_SERVICE, inject: [STUDIO_RUNTIME], useFactory: (runtime: StudioRuntime) => runtime.vimaxPlanning },

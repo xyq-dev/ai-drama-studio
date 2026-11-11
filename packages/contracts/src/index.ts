@@ -367,3 +367,4 @@ export * from "./speech-batch";
 export * from "./real-media";
 export * from "./media-access";
 export * from "./storage-settings";
+export * from "./script-workbench";

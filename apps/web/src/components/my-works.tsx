@@ -6,6 +6,7 @@ import { loadProjectFacts } from "../lib/beginner-facts";
 import { STEPS, STEP_STATE_MARK, STEP_STATE_TEXT, stepsFor, stepStates, type StepKey, type StepState } from "../lib/beginner-steps";
 import { shouldPoll } from "../lib/studio-model";
 import { BeginnerShell } from "./beginner-shell";
+import { ProjectTrashButton } from "./recycle-bin";
 import styles from "./my-works.module.css";
 
 interface ProjectItem {
@@ -350,7 +351,7 @@ export function MyWorks() {
             <h1 className={styles.heading}>我的作品</h1>
             <p className={styles.intro}>把灵感写成故事，让每一个故事都有后续。</p>
           </div>
-          <a className={styles.primary} href="/create"><span className={styles.plus} aria-hidden="true">+</span>开始创作</a>
+          <div className={styles.headingActions}><a className={styles.secondary} href="/studio/trash">回收站</a><a className={styles.primary} href="/create"><span className={styles.plus} aria-hidden="true">+</span>开始创作</a></div>
         </header>
         <div className={styles.workspace}>
           <aside className={styles.sidebar} aria-label="作品分类">
@@ -417,7 +418,7 @@ export function MyWorks() {
                     </> : null}
                   </div></td>
                   <td className={styles.dateCell} data-label="更新于"><time dateTime={item.updatedAt} title={item.updatedAt}>{updatedDate(item.updatedAt)}</time></td>
-                  <td className={styles.actions}><div className={styles.actionLinks}><a className={styles.continue} href={`/projects/${item.id}/create`}>继续创作<span aria-hidden="true">→</span></a><a className={styles.advanced} href={`/projects/${item.id}`} aria-label="高级编辑" title="高级编辑"><span aria-hidden="true">···</span></a></div></td>
+                  <td className={styles.actions}><div className={styles.actionStack}><a className={styles.scriptLink} href={`/projects/${item.id}/script`}>剧本工作台</a><div className={styles.actionLinks}><a className={styles.continue} href={`/projects/${item.id}/create`}>继续创作<span aria-hidden="true">→</span></a><a className={styles.advanced} href={`/projects/${item.id}`} aria-label="高级编辑" title="高级编辑"><span aria-hidden="true">···</span></a><ProjectTrashButton projectId={item.id} title={item.title} onDeleted={async () => { setCategoryNotice(`已将《${item.title}》移入回收站。`); await load(null); }} /></div></div></td>
                 </tr>;
               })}</tbody>
             </table> : null}

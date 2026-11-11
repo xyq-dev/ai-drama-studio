@@ -8,6 +8,7 @@ import {
 import type { PoolClient, QueryResultRow } from "pg";
 import { PersistenceError, type DatabasePool } from "./job-service";
 import { projectEpisodePlanIn } from "./episode-plan";
+import { assertWorkbenchScript, assertWorkbenchStoryApproval, invalidateWorkbenchDependents } from "./script-workbench-validation";
 import {
   affectedScriptConsumerIds,
   insertScriptDependencies,
@@ -1355,7 +1356,9 @@ export class TextChainService {
       >(
         `SELECT id, project_id, row_version
            FROM episode
-          WHERE workspace_id = $1 AND id = $2 ${projectSql}`,
+          WHERE workspace_id = $1 AND id = $2 ${projectSql}
+            AND EXISTS (SELECT 1 FROM project p WHERE p.id=episode.project_id AND p.workspace_id=episode.workspace_id
+              AND p.archived_at IS NULL AND p.status='ACTIVE')`,
         params,
       );
       const row = result.rows[0];
@@ -1379,6 +1382,8 @@ export class TextChainService {
              ON sr.id = e.current_script_revision_id
             AND sr.workspace_id = e.workspace_id
           WHERE e.workspace_id = $1 AND e.project_id = $2
+            AND EXISTS (SELECT 1 FROM project p WHERE p.id=e.project_id AND p.workspace_id=e.workspace_id
+              AND p.archived_at IS NULL AND p.status='ACTIVE')
           ORDER BY e.episode_no`,
         [workspaceId, projectId],
       );
@@ -1473,6 +1478,8 @@ export class TextChainService {
         "Only the current story revision can be approved",
       );
     }
+
+    await assertWorkbenchStoryApproval(client, input.workspaceId, input.projectId, input.revisionId);
 
     const reviewVersion = await applyReview(client, {
       table: "story_revision",
@@ -1678,6 +1685,7 @@ export class TextChainService {
       );
     }
 
+    await assertWorkbenchScript(client, input);
     const previousCurrentId = sourceRow.current_script_revision_id;
     const next = await client.query<{ revision_no: number } & QueryResultRow>(
       "SELECT COALESCE(MAX(revision_no), 0)::int + 1 AS revision_no FROM script_revision WHERE episode_id = $1",
@@ -1735,6 +1743,12 @@ export class TextChainService {
       traceId,
     );
     if (previousCurrentId && previousCurrentId !== revisionId) {
+      const dependentIds = await invalidateWorkbenchDependents(client, input.workspaceId, input.projectId, previousCurrentId);
+      for (const dependentId of dependentIds) {
+        if (await staleFromScript(client, input.workspaceId, dependentId, traceId)) {
+          await enqueueStaleRecalculation(client, input.workspaceId, input.projectId, "SOURCE_SCRIPT_REPLACED", `script_revision:${dependentId}`);
+        }
+      }
       if (await staleFromScript(client, input.workspaceId, previousCurrentId, traceId)) {
         await enqueueStaleRecalculation(
           client,
@@ -1770,7 +1784,9 @@ export class TextChainService {
     >(
       `SELECT id, project_id, episode_id, review_version
          FROM script_revision
-        WHERE workspace_id = $1 AND id = $2`,
+        WHERE workspace_id = $1 AND id = $2 AND to_jsonb(script_revision)->>'deleted_at' IS NULL
+          AND EXISTS (SELECT 1 FROM project p WHERE p.id=script_revision.project_id AND p.workspace_id=script_revision.workspace_id
+            AND p.archived_at IS NULL AND p.status='ACTIVE')`,
       [workspaceId, revisionId],
     );
     const row = result.rows[0];
@@ -1820,6 +1836,9 @@ export class TextChainService {
           WHERE workspace_id = $1
             AND project_id = $2
             AND episode_id = $3
+            AND to_jsonb(script_revision)->>'deleted_at' IS NULL
+            AND EXISTS (SELECT 1 FROM project p WHERE p.id=script_revision.project_id AND p.workspace_id=script_revision.workspace_id
+              AND p.archived_at IS NULL AND p.status='ACTIVE')
             ${cursorSql}
           ORDER BY revision_no DESC
           LIMIT $4`,
@@ -1914,6 +1933,7 @@ export class TextChainService {
           AND source.project_id = sr.project_id
           AND source.workspace_id = sr.workspace_id
         WHERE sr.id = $1 AND sr.episode_id = $2 AND sr.workspace_id = $3
+          AND to_jsonb(sr)->>'deleted_at' IS NULL
         FOR UPDATE OF sr`,
       [input.revisionId, input.episodeId, input.workspaceId],
     );
@@ -1939,6 +1959,13 @@ export class TextChainService {
         "Script source must be the current approved story revision",
       );
     }
+
+    const workbenchRevision = await client.query<{ content_json: unknown; project_id: string }>(
+      "SELECT content_json, project_id FROM script_revision WHERE id = $1 AND workspace_id = $2", [input.revisionId, input.workspaceId]);
+    const workbenchRow = workbenchRevision.rows[0];
+    if (!workbenchRow) throw new PersistenceError("NOT_FOUND", "Script revision not found");
+    await assertWorkbenchScript(client, { workspaceId: input.workspaceId, projectId: workbenchRow.project_id,
+      episodeId: input.episodeId, sourceStoryRevisionId: sourceRow.source_story_revision_id, content: workbenchRow.content_json }, true);
 
     const reviewVersion = await applyReview(client, {
       table: "script_revision",
@@ -2417,7 +2444,7 @@ async function lockProject(
   workspaceId: string,
 ): Promise<void> {
   const locked = await client.query(
-    "SELECT id FROM project WHERE id = $1 AND workspace_id = $2 FOR UPDATE",
+    "SELECT id FROM project WHERE id = $1 AND workspace_id = $2 AND archived_at IS NULL AND status = 'ACTIVE' FOR UPDATE",
     [projectId, workspaceId],
   );
   if (!locked.rows[0]) throw new PersistenceError("NOT_FOUND", "Project not found");

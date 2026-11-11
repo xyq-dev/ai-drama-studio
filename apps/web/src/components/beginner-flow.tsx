@@ -431,6 +431,7 @@ export function BeginnerFlow({ projectId }: { projectId: string }) {
           </div>
           <div className="flex flex-wrap items-center gap-3 text-[15px]">
             <button className="rounded-[12px] border bg-white px-3 py-1.5" type="button" onClick={later}>稍后继续</button>
+            <a className="text-[#5F5D66] underline" href={`/projects/${projectId}/script`}>剧本工作台</a>
             <a className="text-[#5F5D66] underline" href={advancedHref()}>高级编辑</a>
           </div>
         </div>
