@@ -15,6 +15,7 @@ import {
   VimaxCandidateStore,
   closePostgresPool,
   createPostgresPool,
+  openStorageSettingsStore, storageSettingsOptions,
   type PostgresPool,
 } from "@ai-drama/database";
 import { sampleVideoGenerationEnabled, realMediaAccessAllowed, type TitleRunKind } from "@ai-drama/contracts";
@@ -36,7 +37,8 @@ import { WritingCandidateService } from "./writing-candidate.service";
 import { adminBootstrap } from "../admin/admin-bootstrap";
 import { AdminModelsService, managedProviderConfigs } from "../admin/admin-models.service";
 import { PostgresVimaxPlanningStore, RealMediaStore, PostgresSpeechStore, PostgresSpeechBatchStore, PostgresVoiceComposeStore } from "@ai-drama/database";
-import { VimaxPlanningExecutor, ServerRealMediaRuntime, MediaS3Client, readVerifiedS3MediaObject } from "@ai-drama/providers";
+import { VimaxPlanningExecutor, ServerRealMediaRuntime, MediaS3Client, ManagedStorageRouter, readVerifiedS3MediaObject } from "@ai-drama/providers";
+import { StorageSettingsService } from "../admin/storage-settings.service";
 import { VimaxPlanningService } from "./vimax-planning.service";
 import { RealMediaService } from "./real-media.service";
 import { SpeechService } from "./speech.service";
@@ -81,6 +83,7 @@ export class StudioRuntime implements OnModuleDestroy {
     readonly speech: SpeechService | null = null,
     readonly voiceCompose: VoiceComposeService | null = null,
     private readonly closeMediaStorage: (() => void) | null = null,
+    readonly storageSettings: StorageSettingsService | null = null,
   ) {
     this.service = service;
     this.store = store;
@@ -121,6 +124,13 @@ export class StudioRuntime implements OnModuleDestroy {
     });
     const store = new RuntimeStore(pool);
     const workspaceId = await store.requireActiveWorkspace(env.APP_WORKSPACE_ID);
+    const legacyStorage = { provider: "s3" as const, prefix: "", endpoint: env.S3_ENDPOINT, region: env.S3_REGION,
+      bucket: env.S3_BUCKET, accessKeyId: env.S3_ACCESS_KEY_ID, secretAccessKey: env.S3_SECRET_ACCESS_KEY, forcePathStyle: env.S3_FORCE_PATH_STYLE };
+    let storageAuthority: Awaited<ReturnType<typeof openStorageSettingsStore>>;
+    try { storageAuthority = await openStorageSettingsStore(pool, workspaceId, env, legacyStorage); }
+    catch (error) { await closePostgresPool(pool); throw error; }
+    const storageOptions = storageSettingsOptions(env);
+    const storageSettings = storageAuthority && storageOptions.enabled ? new StorageSettingsService(storageAuthority, storageOptions) : null;
     const jobs = new JobPersistenceService(pool);
     const textChain = new TextChainService(pool);
     const absoluteDir = env.MOCK_OBJECT_DIR && isAbsolute(env.MOCK_OBJECT_DIR) ? env.MOCK_OBJECT_DIR : null;
@@ -289,8 +299,8 @@ export class StudioRuntime implements OnModuleDestroy {
 
     const mediaStore = new RealMediaStore(pool, realRuntime.receiptCipher ? { receiptCipher: realRuntime.receiptCipher } : {});
     const mediaAssets = new MediaAssetStore(pool);
-    const mediaClient = realRuntime.receiptCipher ? new MediaS3Client({ endpoint: env.S3_ENDPOINT, region: env.S3_REGION,
-      bucket: env.S3_BUCKET, accessKeyId: env.S3_ACCESS_KEY_ID, secretAccessKey: env.S3_SECRET_ACCESS_KEY, forcePathStyle: env.S3_FORCE_PATH_STYLE }) : null;
+    const mediaClient = realRuntime.receiptCipher ? (storageAuthority
+      ? new ManagedStorageRouter(storageAuthority, storageOptions) : new MediaS3Client(legacyStorage)) : null;
     const realMedia = new RealMediaService({ workspaceId, enabled: realRuntime.enabled, readEnabled:realAccessAllowed, characterReferenceGate:env.M3_CHARACTER_REFERENCE_GATE, store: mediaStore, jobs, assets: mediaAssets,
       configurationFor: async (capability, client) => {
         const configuration = await realRuntime.configurationFor(capability);
@@ -321,7 +331,7 @@ export class StudioRuntime implements OnModuleDestroy {
       adminModels, admin?.enabled ?? false, scriptBreakdown, writingCandidates, autoCreation, seriesWriting,
       new VimaxPreviewService({ workspaceId, nodeEnv: env.NODE_ENV, allowProduction: vimaxProductionAllowed, source: new VimaxPreviewSourceStore(pool) }),
       new VimaxCandidateService({ workspaceId, nodeEnv: env.NODE_ENV, allowProduction: vimaxProductionAllowed, store: new VimaxCandidateStore(pool, textChain) }),
-      vimaxPlanning, realMedia, speech, voiceCompose, mediaClient ? () => mediaClient.destroy() : null);
+      vimaxPlanning, realMedia, speech, voiceCompose, mediaClient ? () => mediaClient.destroy() : null, storageSettings);
   }
 
   async onModuleDestroy(): Promise<void> {

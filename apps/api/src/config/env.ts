@@ -52,6 +52,9 @@ export class EnvValidationError extends Error {
 }
 
 export interface ApiEnv {
+  STORAGE_SETTINGS_ENABLED?: string;
+  STORAGE_SETTINGS_KEY?: string;
+  STORAGE_SETTINGS_ALLOWED_ENDPOINTS?: string;
   REAL_MEDIA_ENV?: RealMediaEnvironment;
   VIMAX_PLANNING_ENABLED?: boolean;
   VIMAX_ALLOW_PRODUCTION?: boolean;
@@ -128,6 +131,7 @@ export interface ApiEnv {
  * never used again.
  */
 const PROCESS_ONLY_KEYS = [
+  "STORAGE_SETTINGS_ENABLED", "STORAGE_SETTINGS_KEY", "STORAGE_SETTINGS_ALLOWED_ENDPOINTS",
   "OPENAI_API_KEY",
   "TITLE_WRITING_OPENAI_MODELS",
   "ANTHROPIC_API_KEY",

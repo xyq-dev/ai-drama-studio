@@ -18,6 +18,10 @@ import { VIMAX_PLANNING_SERVICE, VimaxPlanningController } from "./vimax-plannin
 import { REAL_MEDIA_SERVICE, RealMediaController } from "./real-media.controller";
 import { SPEECH_SERVICE, SpeechController } from "./speech.controller";
 import { VOICE_COMPOSE_SERVICE, VoiceComposeController } from "./voice-compose.controller";
+import { ProjectLibraryStore } from "@ai-drama/database";
+import { ProjectLibraryService } from "./project-library.service";
+import { PROJECT_LIBRARY_SERVICE, ProjectLibraryController } from "./project-library.controller";
+import { STORAGE_SETTINGS_SERVICE, StorageSettingsController } from "../admin/storage-settings.controller";
 
 @Module({})
 export class StudioModule {
@@ -28,8 +32,11 @@ export class StudioModule {
         StudioController, EventsController, TitleWritingController, ScriptBreakdownController, WritingCandidateController,
         AdminModelsController, AutoCreationController, SeriesWritingController, VimaxPreviewController, VimaxCandidateController,
         VimaxPlanningController, RealMediaController, SpeechController, VoiceComposeController,
+        ProjectLibraryController, StorageSettingsController,
       ],
       providers: [
+        { provide: PROJECT_LIBRARY_SERVICE, inject: [STUDIO_RUNTIME], useFactory: (runtime: StudioRuntime) => new ProjectLibraryService(new ProjectLibraryStore(runtime.pool), env.APP_WORKSPACE_ID) },
+        { provide: STORAGE_SETTINGS_SERVICE, inject: [STUDIO_RUNTIME], useFactory: (runtime: StudioRuntime) => runtime.storageSettings },
         { provide: VIMAX_PLANNING_SERVICE, inject: [STUDIO_RUNTIME], useFactory: (runtime: StudioRuntime) => runtime.vimaxPlanning },
         { provide: REAL_MEDIA_SERVICE, inject: [STUDIO_RUNTIME], useFactory: (runtime: StudioRuntime) => runtime.realMedia },
         { provide: SPEECH_SERVICE, inject: [STUDIO_RUNTIME], useFactory: (runtime: StudioRuntime) => runtime.speech },

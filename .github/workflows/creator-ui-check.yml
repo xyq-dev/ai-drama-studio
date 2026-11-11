@@ -15,6 +15,8 @@ on:
       - package.json
       - pnpm-lock.yaml
       - pnpm-workspace.yaml
+      - scripts/project-library-ui-check.mjs
+      - scripts/storage-settings-ui-check.mjs
   pull_request:
     branches:
       - main
@@ -28,6 +30,8 @@ on:
       - package.json
       - pnpm-lock.yaml
       - pnpm-workspace.yaml
+      - scripts/project-library-ui-check.mjs
+      - scripts/storage-settings-ui-check.mjs
   workflow_dispatch:
 
 permissions:
@@ -63,9 +67,16 @@ jobs:
           pnpm exec playwright install --with-deps chromium
       - name: Check real production controls at desktop and mobile sizes (no external calls)
         run: node scripts/real-production-ui-check.mjs
+      - name: Check project library and storage settings at desktop and mobile sizes
+        run: |
+          node scripts/project-library-ui-check.mjs
+          node scripts/storage-settings-ui-check.mjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: real-production-ui-${{ github.run_id }}-${{ github.run_attempt }}
-          path: test-results/real-production-ui
+          path: |
+            test-results/real-production-ui
+            test-results/project-library-ui
+            test-results/storage-settings-ui
           if-no-files-found: ignore

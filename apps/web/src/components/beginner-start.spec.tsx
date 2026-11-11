@@ -142,11 +142,18 @@ describe("beginner start page", () => {
 
 const PROJECT = "22222222-2222-4222-8222-222222222222";
 
+function libraryPage(items: Array<{ id: string; title: string; premise: string }>, nextCursor: string | null = null) {
+  return json({ items: items.map((item) => ({ ...item, categoryId: null, categoryName: null, categoryRevision: 0,
+    thumbnailAssetId: null, thumbnailUrl: null, episodeCount: 3, writingMode: "short",
+    createdAt: "2026-11-01T00:00:00Z", updatedAt: "2026-11-02T00:00:00Z" })), nextCursor,
+    total: items.length, allCount: items.length, unclassifiedCount: items.length, categories: [], categoriesReady: true });
+}
+
 describe("my works", () => {
   function stubProject(stage: "fresh" | "story-draft" | "failed") {
     vi.stubGlobal("fetch", vi.fn((input: string) => {
       const path = String(input);
-      if (path === "/api/v1/projects") return Promise.resolve(json({ items: [{ id: PROJECT, title: "夜班", premise: "店员" }], nextCursor: null }));
+      if (path === "/api/v1/library/projects") return Promise.resolve(libraryPage([{ id: PROJECT, title: "夜班", premise: "店员" }]));
       if (stage === "failed") return Promise.resolve(json({ error: { code: "DOWN", message: "x" } }, 503));
       if (path.endsWith("/stories")) {
         return Promise.resolve(json({ items: stage === "story-draft" ? [{ id: "s", revisionNo: 1, content: {}, reviewStatus: "DRAFT",
@@ -160,7 +167,7 @@ describe("my works", () => {
   it("names each project's stage from its real content", async () => {
     stubProject("story-draft");
     render(<MyWorks />);
-    expect(await screen.findByText(/当前阶段：第 1 步 定故事 · ？ 待确认/)).toBeTruthy();
+    expect(await screen.findByText(/第 1 步 定故事 · ？ 待确认/)).toBeTruthy();
     expect(screen.getByText("定故事：有内容等你检查确认")).toBeTruthy();
     expect(screen.getByRole("link", { name: "继续创作" }).getAttribute("href")).toBe(`/projects/${PROJECT}/create`);
     expect(screen.getByRole("link", { name: "高级编辑" }).getAttribute("href")).toBe(`/projects/${PROJECT}`);
@@ -180,7 +187,7 @@ describe("my works", () => {
   it("names the stage when local compose is not configured instead of failing the card", async () => {
     vi.stubGlobal("fetch", vi.fn((input: string) => {
       const path = String(input);
-      if (path === "/api/v1/projects") return Promise.resolve(json({ items: [{ id: PROJECT, title: "夜班", premise: "" }], nextCursor: null }));
+      if (path === "/api/v1/library/projects") return Promise.resolve(libraryPage([{ id: PROJECT, title: "夜班", premise: "" }]));
       if (path.endsWith("/stories")) {
         return Promise.resolve(json({ items: [{ id: "s", revisionNo: 1, content: {}, reviewStatus: "APPROVED", freshnessStatus: "CURRENT",
           reviewVersion: 1, staleReason: null, staleFromRef: null, reviewNote: null }] }));
@@ -196,7 +203,7 @@ describe("my works", () => {
       return Promise.resolve(json({ items: [], nextCursor: null }));
     }));
     render(<MyWorks />);
-    expect(await screen.findByText(/当前阶段：第 2 步 看剧本/)).toBeTruthy();
+    expect(await screen.findByText(/第 2 步 看剧本/)).toBeTruthy();
     expect(screen.queryByText(/进度读取失败/)).toBeNull();
   });
 
@@ -206,11 +213,11 @@ describe("my works", () => {
     const pageRequests: string[] = [];
     vi.stubGlobal("fetch", vi.fn(async (input: string) => {
       const url = String(input);
-      if (url === "/api/v1/projects") return json({ items: [{ id: "a", title: "第一部", premise: "" }], nextCursor: "next" });
-      if (url.startsWith("/api/v1/projects?cursor=")) {
+      if (url === "/api/v1/library/projects") return libraryPage([{ id: "a", title: "第一部", premise: "" }], "next");
+      if (url.startsWith("/api/v1/library/projects?cursor=")) {
         pageRequests.push(url);
         await pageHold;
-        return json({ items: [{ id: "b", title: "第二部", premise: "" }], nextCursor: null });
+        return libraryPage([{ id: "b", title: "第二部", premise: "" }]);
       }
       if (url.endsWith("/workflow-runs")) return json([]);
       return json({ items: [], nextCursor: null });
@@ -243,8 +250,8 @@ describe("my works refreshes cards whose workflows run (Issue #52 item 6)", () =
     let maxInFlight = 0;
     vi.stubGlobal("fetch", vi.fn(async (input: string) => {
       const path = String(input);
-      if (path === "/api/v1/projects") {
-        return json({ items: Object.keys(cards).map((id) => ({ id, title: `作品${id}`, premise: "" })), nextCursor: null });
+      if (path === "/api/v1/library/projects") {
+        return libraryPage(Object.keys(cards).map((id) => ({ id, title: `作品${id}`, premise: "" })));
       }
       const id = Object.keys(cards).find((key) => path.includes(`/projects/${key}/`));
       const card = id ? cards[id] : undefined;
@@ -294,7 +301,7 @@ describe("my works refreshes cards whose workflows run (Issue #52 item 6)", () =
     card.story = "APPROVED";
     card.runs = "SUCCEEDED";
     await advance(5000);
-    expect(await screen.findByText(/当前阶段：第 2 步 看剧本/)).toBeTruthy();
+    expect(await screen.findByText(/第 2 步 看剧本/)).toBeTruthy();
     expect(screen.queryByText(/有任务正在处理/)).toBeNull();
     const count = reads.length;
     await advance(120_000);
@@ -313,7 +320,7 @@ describe("my works refreshes cards whose workflows run (Issue #52 item 6)", () =
     card.story = "APPROVED";
     card.runs = "SUCCEEDED";
     setVisibility("visible");
-    expect(await screen.findByText(/当前阶段：第 2 步 看剧本/)).toBeTruthy();
+    expect(await screen.findByText(/第 2 步 看剧本/)).toBeTruthy();
     expect(reads.length).toBe(count + 1);
   });
 
@@ -342,7 +349,7 @@ describe("my works refreshes cards whose workflows run (Issue #52 item 6)", () =
     let holdRereads = false;
     vi.stubGlobal("fetch", vi.fn(async (input: string) => {
       const path = String(input);
-      if (path === "/api/v1/projects") return json({ items: Object.keys(cards).map((id) => ({ id, title: `作品${id}`, premise: "" })), nextCursor: null });
+      if (path === "/api/v1/library/projects") return libraryPage(Object.keys(cards).map((id) => ({ id, title: `作品${id}`, premise: "" })));
       const id = Object.keys(cards).find((key) => path.includes(`/projects/${key}/`));
       if (!id) return json({ items: [], nextCursor: null });
       if (path.endsWith("/stories")) {
@@ -385,12 +392,12 @@ describe("my works refreshes cards whose workflows run (Issue #52 item 6)", () =
       c: { story: "DRAFT", runs: "SUCCEEDED" } };
     const stub = stubCards(cards);
     render(<MyWorks />);
-    await waitFor(() => expect(screen.getAllByText(/当前阶段：第 1 步 定故事/)).toHaveLength(3));
+    await waitFor(() => expect(screen.getAllByText(/第 1 步 定故事/)).toHaveLength(3));
     cards.a!.fail = true;
     cards.b!.story = "APPROVED";
     cards.b!.runs = "SUCCEEDED";
     await advance(5000);
-    expect(await screen.findByText(/当前阶段：第 2 步 看剧本/)).toBeTruthy();
+    expect(await screen.findByText(/第 2 步 看剧本/)).toBeTruthy();
     // a keeps its last stage and says the reread failed; c finished before and was not read again.
     expect(await screen.findByText(/最新进度暂时没有读到/)).toBeTruthy();
     expect(stub.reads.filter((id) => id === "c")).toHaveLength(1);
