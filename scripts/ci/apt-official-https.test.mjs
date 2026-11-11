@@ -47,7 +47,7 @@ function snapshot(root, dir = root) {
   }));
 }
 
-test("the runner's mirror+file entry and its Azure list both move to the official HTTPS archive, signing kept", (t) => {
+test("the runner keeps mirror+file, official HTTPS fallback priorities and signing", (t) => {
   const root = aptRoot({
     "sources.list": "# Ubuntu sources have moved to /etc/apt/sources.list.d/ubuntu.sources\n",
     "sources.list.d/ubuntu.sources": RUNNER_SOURCES,
@@ -59,16 +59,18 @@ test("the runner's mirror+file entry and its Azure list both move to the officia
   const first = run(root);
   assert.equal(first.status, 0, first.err);
   const sources = readFileSync(join(root, "sources.list.d/ubuntu.sources"), "utf8");
-  assert.equal(sources, RUNNER_SOURCES.replace("mirror+file:/etc/apt/apt-mirrors.txt", "https://archive.ubuntu.com/ubuntu/"));
+  assert.equal(sources, RUNNER_SOURCES);
   assert.match(sources, /^Signed-By: \/usr\/share\/keyrings\/ubuntu-archive-keyring\.gpg$/m);
   assert.match(sources, /^Suites: noble noble-updates noble-backports noble-security$/m);
   const mirrors = readFileSync(join(root, "apt-mirrors.txt"), "utf8");
+  assert.equal(mirrors, RUNNER_MIRRORS.replace("http://azure.archive.ubuntu.com/ubuntu/", "https://archive.ubuntu.com/ubuntu/"));
   assert.equal(mirrors.includes("http://"), false);
   assert.match(mirrors, /^https:\/\/archive\.ubuntu\.com\/ubuntu\/\tpriority:1$/m);
+  assert.match(mirrors, /^https:\/\/security\.ubuntu\.com\/ubuntu\/\tpriority:3$/m);
   assert.equal(readFileSync(join(root, "sources.list.d/microsoft-prod.list"), "utf8"), THIRD_PARTY);
   assert.equal(readFileSync(join(root, "apt.conf.d/99ci-download-limits"), "utf8"),
     'Acquire::Retries "3";\nAcquire::http::Timeout "20";\nAcquire::https::Timeout "20";\n');
-  assert.match(first.out, /ubuntu\.sources: URIs: https:\/\/archive\.ubuntu\.com\/ubuntu\/$/m);
+  assert.match(first.out, /ubuntu\.sources: URIs: mirror\+file:\/etc\/apt\/apt-mirrors\.txt$/m);
   assert.match(first.out, /APT download limits: Acquire::Retries "3";/);
 
   const before = snapshot(root);
@@ -118,4 +120,33 @@ test("an Ubuntu host still reached over HTTP after the rewrite fails the run ins
   const result = run(root);
   assert.equal(result.status, 1);
   assert.match(result.err, /still reaches an Ubuntu archive over HTTP/);
+});
+
+test("a referenced Ubuntu mirror list with remaining HTTP fails without removing its reference", (t) => {
+  const root = aptRoot({
+    "sources.list.d/ubuntu.sources": RUNNER_SOURCES,
+    "apt-mirrors.txt": "http://archive.ubuntu.com:80/ubuntu/\tpriority:1\n",
+  });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = run(root);
+  assert.equal(result.status, 1);
+  assert.match(result.err, /apt-mirrors\.txt still reaches an Ubuntu archive over HTTP/);
+  assert.equal(readFileSync(join(root, "sources.list.d/ubuntu.sources"), "utf8"), RUNNER_SOURCES);
+});
+
+test("HTTP security entries become HTTPS while third-party entries in the same list remain unchanged", (t) => {
+  const mixed = [
+    "http://security.ubuntu.com/ubuntu/\tpriority:1",
+    "https://archive.ubuntu.com/ubuntu/\tpriority:2",
+    "http://mirror.example.org/custom/\tpriority:3",
+    "",
+  ].join("\n");
+  const root = aptRoot({ "sources.list.d/ubuntu.sources": RUNNER_SOURCES, "apt-mirrors.txt": mixed });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = run(root);
+  assert.equal(result.status, 0, result.err);
+  assert.equal(readFileSync(join(root, "apt-mirrors.txt"), "utf8"), mixed.replace("http://security.ubuntu.com", "https://security.ubuntu.com"));
+  assert.equal(readFileSync(join(root, "sources.list.d/ubuntu.sources"), "utf8"), RUNNER_SOURCES);
 });

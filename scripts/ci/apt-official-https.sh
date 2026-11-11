@@ -1,20 +1,19 @@
 #!/usr/bin/env bash
-# Point the runner's Ubuntu archive at the official HTTPS archive before any apt-get, Playwright's --with-deps included.
+# Use official Ubuntu HTTPS archives before any apt-get, Playwright's --with-deps included.
 #
 # The ubuntu-24.04 runner names its archive indirectly: ubuntu.sources says "URIs: mirror+file:/etc/apt/apt-mirrors.txt"
 # and that list starts with http://azure.archive.ubuntu.com/ubuntu/, so rewriting the direct URLs in sources.list and
-# *.sources alone leaves apt downloading from the Azure mirror. This rewrites both: every mirror+file reference whose
-# list names an Ubuntu archive becomes https://archive.ubuntu.com/ubuntu/ (which also serves the -security suites), and
-# every plain-HTTP Ubuntu archive URL, in the sources and in those mirror lists, becomes its official HTTPS host.
+# *.sources alone leaves apt downloading from the Azure mirror. Rewrite plain-HTTP Ubuntu archive URLs in both sources
+# and their referenced mirror lists to the existing official HTTPS mappings. Keep mirror+file references and list
+# priorities so archive.ubuntu.com and security.ubuntu.com remain independent fallback hosts.
 # Suites, components and Signed-By are left as they are, and other repositories are not touched.
 #
 # Download waits are bounded for every later apt-get through apt.conf.d: 3 retries, 20 s connect/read timeout.
-# The selected sources are printed, and the run fails if any Ubuntu archive is still reached over HTTP or a mirror list.
+# The selected sources and referenced lists are printed; any remaining Ubuntu HTTP URL fails the run.
 # Idempotent. Usage: sudo bash scripts/ci/apt-official-https.sh [apt-root, default /etc/apt]
 set -euo pipefail
 
 root="${1:-/etc/apt}"
-official="https://archive.ubuntu.com/ubuntu/"
 # Any Ubuntu host still reached over plain HTTP after the rewrite (a port or another path included) fails the run.
 ubuntu_http='http://[^[:space:]/]*ubuntu\.com'
 
@@ -31,19 +30,15 @@ local_path() {
   esac
 }
 
-names_ubuntu() { [ -f "$1" ] && grep -Eq '(archive|security)\.ubuntu\.com/ubuntu' "$1"; }
+names_ubuntu() { [ -f "$1" ] && grep -Eq '(archive|security)\.ubuntu\.com(:[0-9]+)?/ubuntu' "$1"; }
 
 mirror_refs() { grep -Eo 'mirror\+file:[^[:space:]]+' "$1" | sort -u || true; }
-# The reference as a literal sed pattern ("." and the delimiter escaped; "+" is already literal in a basic pattern).
-literal() { printf '%s' "$1" | sed 's/[]#*^$.[\\]/\\&/g'; }
-
 mirror_lists=()
 for file in "${sources[@]}"; do
   for ref in $(mirror_refs "$file"); do
     list="$(local_path "${ref#mirror+file:}")"
     names_ubuntu "$list" || continue
     case " ${mirror_lists[*]-} " in *" $list "*) ;; *) mirror_lists+=("$list") ;; esac
-    sed -i "s#$(literal "$ref")#${official}#g" "$file"
   done
 done
 
@@ -71,16 +66,14 @@ for file in "${sources[@]}"; do
     echo "::error::$file still reaches an Ubuntu archive over HTTP" >&2
     failed=1
   fi
-  for ref in $(mirror_refs "$file"); do
-    if names_ubuntu "$(local_path "${ref#mirror+file:}")"; then
-      echo "::error::$file still reaches an Ubuntu archive through $ref" >&2
-      failed=1
-    fi
-  done
 done
 for list in "${mirror_lists[@]}"; do
-  echo "Mirror list $list (no longer referenced by the sources above):"
+  echo "Referenced mirror list $list:"
   sed 's#^#  #' "$list"
+  if grep -Ev '^[[:space:]]*#' "$list" | grep -Eq "$ubuntu_http"; then
+    echo "::error::$list still reaches an Ubuntu archive over HTTP" >&2
+    failed=1
+  fi
 done
 echo "APT download limits: $(tr '\n' ' ' < "$root/apt.conf.d/99ci-download-limits")"
 exit "$failed"
