@@ -167,7 +167,8 @@ describe("my works", () => {
   it("names each project's stage from its real content", async () => {
     stubProject("story-draft");
     render(<MyWorks />);
-    expect(await screen.findByText(/第 1 步 定故事 · ？ 待确认/)).toBeTruthy();
+    expect(await screen.findByText(/第 1 步 定故事/)).toBeTruthy();
+    expect(screen.getByText("？ 待确认")).toBeTruthy();
     expect(screen.getByText("定故事：有内容等你检查确认")).toBeTruthy();
     expect(screen.getByRole("link", { name: "继续创作" }).getAttribute("href")).toBe(`/projects/${PROJECT}/create`);
     expect(screen.getByRole("link", { name: "高级编辑" }).getAttribute("href")).toBe(`/projects/${PROJECT}`);
@@ -176,7 +177,8 @@ describe("my works", () => {
   it("starts a new project at 定故事 and offers a retry when progress cannot be read", async () => {
     stubProject("fresh");
     const view = render(<MyWorks />);
-    expect(await screen.findByText(/第 1 步 定故事 · ○ 未开始/)).toBeTruthy();
+    expect(await screen.findByText(/第 1 步 定故事/)).toBeTruthy();
+    expect(screen.getByText("○ 未开始")).toBeTruthy();
     view.unmount();
     stubProject("failed");
     render(<MyWorks />);
