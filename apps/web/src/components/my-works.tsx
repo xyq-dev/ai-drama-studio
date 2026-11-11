@@ -354,7 +354,7 @@ export function MyWorks() {
         </header>
         <div className={styles.workspace}>
           <aside className={styles.sidebar} aria-label="作品分类">
-            <h2 className={styles.sidebarTitle}>作品分类</h2>
+            <h2 className={styles.sidebarTitle}><FolderIcon />作品分类</h2>
             <nav className={styles.categoryList} aria-label="按分类筛选作品">
               <button type="button" aria-pressed={query.category === "all"} onClick={() => changeQuery({ ...queryRef.current, category: "all" })}><FolderIcon /><span>全部分类</span><span className={styles.count}>{summary?.allCount ?? "—"}</span></button>
               {categories.map((category) => <button type="button" key={category.id} aria-pressed={query.category === category.id} onClick={() => changeQuery({ ...queryRef.current, category: category.id })}><FolderIcon /><span>{category.name}</span><span className={styles.count}>{category.count}</span></button>)}
@@ -402,22 +402,22 @@ export function MyWorks() {
                     <a className={styles.thumbnail} href={`/projects/${item.id}/create`} aria-label={`打开作品：${item.title}`}>
                       {item.thumbnailUrl && !failedThumbnails.has(item.thumbnailUrl) ? <img src={item.thumbnailUrl} alt={`${item.title}封面`} loading="lazy" onError={() => setFailedThumbnails((current) => new Set(current).add(item.thumbnailUrl!))} /> : <span className={styles.thumbnailPlaceholder}><ImageIcon /><span>暂无封面</span></span>}
                     </a>
-                    <div className={styles.workText}><h3><a href={`/projects/${item.id}/create`}>{item.title}</a></h3><p className={styles.premise}>{item.premise || "还没有故事想法"}</p><p className={styles.workMeta}>{item.writingMode === "series" ? "系列写作" : "短剧创作"}{item.episodeCount ? ` · ${item.episodeCount} 集` : ""}</p></div>
+                    <div className={styles.workText}><h3><a href={`/projects/${item.id}/create`}>{item.title}</a></h3><p className={styles.premise} title={item.premise || "还没有故事想法"}><span className={styles.workMeta}>{item.writingMode === "series" ? "系列写作" : "短剧创作"}{item.episodeCount ? ` · ${item.episodeCount} 集` : ""} · </span>{item.premise || "还没有故事想法"}</p></div>
                   </div></td>
                   <td className={styles.categoryCell} data-label="分类"><select className={styles.categorySelect} aria-label={`${item.title}的分类`} title="修改作品分类" value={item.categoryId ?? ""} disabled={!summary?.categoriesReady || savingCategory !== null} onChange={(event) => void assignCategory(item, event.target.value)}><option value="">未分类</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select>{savingCategory === item.id ? <span className={styles.progressNote}>保存中…</span> : null}</td>
                   <td className={styles.progressCell}><div aria-live="polite">
                     {!state || state.kind === "loading" ? <p className={styles.progressNote}>正在读取进度…</p> : null}
                     {state?.kind === "failed" ? <p className={styles.progressNote}>进度读取失败。<button className={styles.textButton} type="button" onClick={() => track([item.id])}>重试</button></p> : null}
                     {state?.kind === "ready" && stepTitle ? <>
-                      <p className={styles.statusLine} data-state={state.state}><span className={styles.visuallyHidden}>当前阶段：</span>{`第 ${stepTitle.no} 步 ${stepTitle.title} · ${STEP_STATE_MARK[state.state]} ${STEP_STATE_TEXT[state.state]}`}</p>
-                      <p className={styles.todo}>{todo(state.step, state.state, item.writingMode)}</p>
+                      <p className={styles.statusLine} data-state={state.state} title={todo(state.step, state.state, item.writingMode)}><span className={styles.stageTitle}><span className={styles.visuallyHidden}>当前阶段：</span>{`第 ${stepTitle.no} 步 ${stepTitle.title}`}</span><span className={styles.stateText}>{`${STEP_STATE_MARK[state.state]} ${STEP_STATE_TEXT[state.state]}`}</span></p>
+                      <p className={["needs_input", "needs_attention", "source_updated", "unknown"].includes(state.state) ? styles.progressNote : styles.visuallyHidden}>{todo(state.step, state.state, item.writingMode)}</p>
                       {state.running && !state.paused ? <p className={styles.progressNote}>有任务正在处理，进度会自动刷新。</p> : null}
                       {state.refreshFailed && !state.paused ? <p className={styles.progressNote}>最新进度暂时没有读到，显示的是上次读到的阶段，稍后会再试。</p> : null}
                       {state.paused ? <p className={styles.progressNote}>任务仍在处理，已暂停自动刷新。<button className={styles.textButton} type="button" onClick={() => refreshNow(item.id)}>刷新进度</button></p> : null}
                     </> : null}
                   </div></td>
                   <td className={styles.dateCell} data-label="更新于"><time dateTime={item.updatedAt} title={item.updatedAt}>{updatedDate(item.updatedAt)}</time></td>
-                  <td className={styles.actions}><a className={styles.continue} href={`/projects/${item.id}/create`}>继续创作</a><a className={styles.advanced} href={`/projects/${item.id}`}>高级编辑</a></td>
+                  <td className={styles.actions}><div className={styles.actionLinks}><a className={styles.continue} href={`/projects/${item.id}/create`}>继续创作<span aria-hidden="true">→</span></a><a className={styles.advanced} href={`/projects/${item.id}`} aria-label="高级编辑" title="高级编辑"><span aria-hidden="true">···</span></a></div></td>
                 </tr>;
               })}</tbody>
             </table> : null}

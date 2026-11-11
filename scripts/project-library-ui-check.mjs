@@ -76,15 +76,27 @@ const server = await createServer({ configFile: false, root: web, optimizeDeps: 
 let browser;
 try {
   await mkdir(output, { recursive: true }); await server.listen(); browser = await chromium.launch({ headless: true });
-  for (const width of [1440, 390]) {
+  for (const width of [1568, 1440, 1280, 1024, 900, 390]) {
     reset(); listMode = "normal";
-    const page = await browser.newPage({ viewport: { width, height: 1000 } });
+    const page = await browser.newPage({ viewport: { width, height: 1003 } });
     page.on("pageerror", (error) => evidence.errors.push(error.message));
     await page.goto("http://127.0.0.1:3856/studio");
     await page.getByRole("heading", { name: "重逢在雨夜", exact: true }).waitFor();
     await page.getByText(/第 2 步/).waitFor();
     await page.getByRole("img", { name: "重逢在雨夜封面" }).evaluate((img) => img.decode());
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width, `Horizontal overflow at ${width}`);
+    // Check actual cell contents, not just the page width: a fixed-width table can hide overlapping controls.
+    if (width >= 900) {
+      const layout = await page.locator('tbody tr').evaluateAll((rows) => rows.map((row) => {
+        const cells = Array.from(row.querySelectorAll('td'));
+        const action = cells.at(-1), links = Array.from(action.querySelectorAll('a')).map((link) => link.getBoundingClientRect());
+        const bounds = action.getBoundingClientRect();
+        return { height: row.getBoundingClientRect().height, sameLine: Math.abs(links[0].y - links[1].y) <= 4,
+          actionsFit: links.every((rect) => rect.x >= bounds.x && rect.right <= bounds.right + 1) };
+      }));
+      assert.ok(layout.every((row) => row.sameLine && row.actionsFit), `Overlapping or stacked actions at ${width}`);
+      if (width >= 1440) assert.ok(layout.every((row) => row.height <= 80), `Ordinary rows too tall at ${width}`);
+    }
     const screenshot = `project-library-${width}.png`; await page.screenshot({ path: resolve(output, screenshot), fullPage: true });
     await page.getByRole("button", { name: "加载更多作品", exact: true }).click();
     await page.getByRole("heading", { name: "风起的时候", exact: true }).waitFor();
@@ -120,4 +132,4 @@ try {
 } finally {
   await browser?.close(); await server.close(); await writeFile(resolve(output, "evidence.json"), JSON.stringify(evidence, null, 2));
 }
-process.stdout.write("Project library browser fixture passed at 1440/390: layout, server queries, categories, thumbnails, pagination, empty/error states. No business DB or external provider calls.\n");
+process.stdout.write("Project library browser fixture passed at 1568/1440/1280/1024/900/390: layout, server queries, categories, thumbnails, pagination, empty/error states. No business DB or external provider calls.\n");
