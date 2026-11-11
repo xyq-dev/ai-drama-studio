@@ -183,6 +183,8 @@ export type ScriptBreakdownSourceRead =
     scriptRevisionNo: number;
     scriptContentHash: string;
     scriptContent: unknown;
+    /** Immutable story revision referenced by this script; required to resolve workbench role IDs for production. */
+    sourceStoryContent?: unknown;
     targetEpisodeSeconds: number | null;
     /** Current revisions of the project's characters that are not archived, oldest first. */
     characters: Array<{ characterId: string; revisionId: string; name: string }>;

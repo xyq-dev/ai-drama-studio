@@ -120,6 +120,7 @@ describe("回收站恢复", () => {
     expect((await screen.findByRole("status")).textContent).toContain("未自动定稿或开启制作");
     expect(writes).toEqual([{ path: `/api/v1/projects/${P}/episodes/${E}/scripts/${R}/restore`, body: { expectedVersion: 8 } }]);
     expect(await screen.findByRole("heading", { name: "回收站是空的" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "查看本集版本记录" }).getAttribute("href")).toBe(`/projects/${P}/script?history=${E}`);
   });
 
   it("keeps failed restores visible and reuses the request identity on retry", async () => {

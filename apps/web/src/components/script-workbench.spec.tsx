@@ -665,3 +665,122 @@ describe("workbench editing baselines and session recovery", () => {
     expect(screen.queryByLabelText("本集标题")).toBeNull();
   });
 });
+
+function manyRevisions() {
+  const state = fixture();
+  const source = state.episodes[1]!.script!;
+  const revisionAt = (revisionNo: number) => ({
+    ...structuredClone(source),
+    id: `99999999-9999-4999-8999-${String(revisionNo).padStart(12, "0")}`,
+    revisionNo,
+    freshnessStatus: "STALE",
+    content: {
+      text: `历史正文 ${revisionNo}`,
+      workbench: {
+        schema: "script-workbench.v1",
+        script: { ...emptyScript(`历史标题 ${revisionNo}`), review: undefined },
+      },
+    },
+  });
+  state.episodes[1]!.history = Array.from({ length: 100 }, (_, index) => revisionAt(102 - index));
+  return { state, revisionAt };
+}
+
+describe("bounded workbench revision history", () => {
+  it("opens the restored episode history and loads an old revision beyond the first 100 as a new dirty draft", async () => {
+    const { state, revisionAt } = manyRevisions();
+    const calls: string[] = [];
+    api(state, async (path) => {
+      if (path.includes("/scripts?")) {
+        calls.push(path);
+        return json({ items: [revisionAt(2), revisionAt(1)], nextCursor: null });
+      }
+      return undefined;
+    });
+    render(<ScriptWorkbench projectId={PROJECT} initialHistory={E2} />);
+    const dialog = await screen.findByRole("dialog", { name: "版本记录" });
+    expect(within(dialog).queryByText("历史正文 1")).toBeNull();
+    fireEvent.click(within(dialog).getByRole("button", { name: "加载更早版本" }));
+    const old = await within(dialog).findByText("历史正文 1");
+    expect(calls).toEqual([`/api/v1/projects/${PROJECT}/episodes/${E2}/scripts?cursor=3`]);
+    expect(within(dialog).queryByRole("button", { name: "加载更早版本" })).toBeNull();
+    const row = old.closest("article")!;
+    fireEvent.click(within(row).getByRole("button", { name: "载入为修订草稿" }));
+    expect((screen.getByLabelText("本集标题") as HTMLInputElement).value).toBe("历史标题 1");
+    expect(screen.getByText(/已载入第 2 集 v1/)).toBeTruthy();
+    expect(state.episodes[1]!.currentScriptRevisionId).toBe(S2);
+    expect(state.episodes[1]!.script!.id).toBe(S2);
+  });
+
+  it("retains loaded history and dirty editing CAS across page failure/retry", async () => {
+    const { state, revisionAt } = manyRevisions();
+    let attempts = 0;
+    const fixtureApi = api(state, async (path) => {
+      if (path.includes("/scripts?")) {
+        attempts += 1;
+        return attempts === 1
+          ? json({ error: { code: "READ_FAILED", message: "稍后重试" } }, 503)
+          : json({ items: [revisionAt(1)], nextCursor: null });
+      }
+      return undefined;
+    });
+    render(<ScriptWorkbench projectId={PROJECT} />);
+    fireEvent.change(await screen.findByLabelText("本集标题"), {
+      target: { value: "分页期间的未保存稿" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "版本记录" }));
+    const dialog = screen.getByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "加载更早版本" }));
+    await within(dialog).findByText(/稍后重试/);
+    expect(within(dialog).getByText("历史正文 102")).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "加载更早版本" }));
+    await within(dialog).findByText("历史正文 1");
+    expect(
+      within(dialog)
+        .getAllByRole("button", { name: "载入为修订草稿" })
+        .every((button) => (button as HTMLButtonElement).disabled),
+    ).toBe(true);
+    fireEvent.click(within(dialog).getByRole("button", { name: "关闭弹窗" }));
+    expect((screen.getByLabelText("本集标题") as HTMLInputElement).value).toBe(
+      "分页期间的未保存稿",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "保存草稿" }));
+    await screen.findByText("第 2 集草稿已保存。");
+    expect(fixtureApi.writes[0]!.headers["If-Match"]).toBe("2");
+    expect(fixtureApi.writes[0]!.body.sourceStoryRevisionId).toBe(STORY);
+  });
+
+  it("ignores a late page after switching targets or reopening, and never leaves loading stuck", async () => {
+    const { state, revisionAt } = manyRevisions();
+    const replies: Array<(response: Response) => void> = [];
+    api(state, async (path) =>
+      path.includes("/scripts?")
+        ? new Promise<Response>((resolve) => {
+            replies.push(resolve);
+          })
+        : undefined,
+    );
+    render(<ScriptWorkbench projectId={PROJECT} initialHistory={E2} />);
+    let dialog = await screen.findByRole("dialog", { name: "版本记录" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "加载更早版本" }));
+    fireEvent.change(within(dialog).getByLabelText("稿件"), { target: { value: "story" } });
+    fireEvent.change(within(dialog).getByLabelText("稿件"), { target: { value: E2 } });
+    expect(
+      (within(dialog).getByRole("button", { name: "加载更早版本" }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+    fireEvent.click(within(dialog).getByRole("button", { name: "加载更早版本" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "关闭弹窗" }));
+    fireEvent.click(screen.getByRole("button", { name: "版本记录" }));
+    dialog = screen.getByRole("dialog", { name: "版本记录" });
+    expect(
+      (within(dialog).getByRole("button", { name: "加载更早版本" }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+    await act(async () => {
+      for (const reply of replies) reply(json({ items: [revisionAt(1)], nextCursor: null }));
+    });
+    expect(within(dialog).queryByText("历史正文 1")).toBeNull();
+    fireEvent.click(within(dialog).getByRole("button", { name: "加载更早版本" }));
+    await act(async () => replies.at(-1)!(json({ items: [revisionAt(1)], nextCursor: null })));
+    expect(within(dialog).getByText("历史正文 1")).toBeTruthy();
+  });
+});

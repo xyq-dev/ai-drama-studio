@@ -44,6 +44,14 @@ function workbenchContent() {
   return { text: workbenchScriptText(script), workbench: { schema: SCRIPT_WORKBENCH_SCHEMA, script } };
 }
 
+function workbenchStory() {
+  return { text: "计划", workbench: { schema: SCRIPT_WORKBENCH_SCHEMA, plan: {
+    brief: { genre: "悬疑", audience: "大众", productionConstraints: "一处场景", logline: "门外来客", targetEpisodeSeconds: 27, dialogueQuota: 4 },
+    bible: { ending: "她打开门", openThreads: "无", characters: [{ id: "R01", name: "青", appearance: "青衣", voice: "低声", aliases: "阿青", knownInformation: "来客身份" }] },
+    outline: { episodes: [{ episodeNo: 1, title: "门外", openingHook: "门响", change: "发现来客", endingHandoff: "她打开门" }] },
+  } } };
+}
+
 function input(overrides: Partial<ScriptBreakdownFrozenInput> = {}): ScriptBreakdownFrozenInput {
   return {
     schema: SCRIPT_BREAKDOWN_INPUT_SCHEMA,
@@ -304,16 +312,41 @@ describe("stored shot text", () => {
     expect(scriptTextOf(null)).toBeNull();
   });
 
-  it("reads a valid versioned workbench script as its exact saved text, retaining scene order, role IDs and timing", () => {
+  it("resolves legacy workbench role IDs from the referenced story while retaining scene order and timing", () => {
     const content = workbenchContent();
     expect(content.text).toBe("门外\n\n开场3秒：门响\n\n当集改变：发现来客\n\n01 门口 内景·夜\n出场：R01\n动作：她走向门口（2秒）\nR01：等我。\n声音：门铃响（1秒）\n停顿：（2秒）\n\n集尾交接：她打开门");
-    expect(scriptTextOf(content)).toBe(content.text);
-    const frozen = input({ episodeNo: 1, scriptText: scriptTextOf(content)!, characters: [] });
-    expect(buildScriptBreakdownPrompt(frozen).user).toContain(`剧本正文（开始）\n${content.text}\n剧本正文（结束）`);
+    const namedText = workbenchScriptText(content.workbench.script, workbenchStory().workbench.plan.bible.characters);
+    expect(scriptTextOf(content, workbenchStory())).toBe(namedText);
+    expect(namedText).toContain("出场：青\n动作：她走向门口（2秒）\n青：等我。");
+    expect(namedText).not.toContain("R01：");
+    const frozen = input({ episodeNo: 1, scriptText: scriptTextOf(content, workbenchStory())!, characters: [] });
+    expect(buildScriptBreakdownPrompt(frozen).user).toContain(`剧本正文（开始）\n${namedText}\n剧本正文（结束）`);
     expect(validateScriptBreakdownOutput(JSON.stringify({ schema: SCRIPT_BREAKDOWN_OUTPUT_SCHEMA, episodeNo: 1,
       scenes: [{ key: "S1", heading: "门口", timeOfDay: "夜", description: "她等候来客" }],
-      shots: [{ key: "S1-1", sceneKey: "S1", shotType: "中景", camera: "固定", action: "她走向门口", dialogue: [{ speaker: "R01", line: "等我。" }], characterKeys: [], plannedSeconds: 6 }],
+      shots: [{ key: "S1-1", sceneKey: "S1", shotType: "中景", camera: "固定", action: "她走向门口", dialogue: [{ speaker: "青", line: "等我。" }], characterKeys: [], plannedSeconds: 6 }],
     }), frozen).ok).toBe(true);
+  });
+
+  it("reads the named canonical projection only with the matching frozen story, never a renamed current plan", () => {
+    const content = workbenchContent();
+    content.text = workbenchScriptText(content.workbench.script, workbenchStory().workbench.plan.bible.characters);
+    expect(scriptTextOf(content, workbenchStory())).toBe(content.text);
+    const renamed = workbenchStory(); renamed.workbench.plan.bible.characters[0]!.name = "另一个人";
+    expect(scriptTextOf(content, renamed)).toBeNull();
+    expect(scriptTextOf(content)).toBeNull();
+  });
+
+  it("refuses unresolved role identities and missing, invalid or ambiguous source plans", () => {
+    const content = workbenchContent();
+    for (const source of [undefined, null, {}, { workbench: { schema: "script-workbench.v2", plan: workbenchStory().workbench.plan } },
+      { workbench: { schema: SCRIPT_WORKBENCH_SCHEMA, plan: {} } }]) expect(scriptTextOf(content, source)).toBeNull();
+    const missing = workbenchStory(); missing.workbench.plan.bible.characters = [];
+    expect(scriptTextOf(content, missing)).toBeNull();
+    const duplicate = workbenchStory(); duplicate.workbench.plan.bible.characters.push({ ...duplicate.workbench.plan.bible.characters[0]!, name: "别人" });
+    expect(scriptTextOf(content, duplicate)).toBeNull();
+    const unknownSpeaker = workbenchContent(); unknownSpeaker.workbench.script.scenes[0]!.beats[1]!.characterId = "R02";
+    unknownSpeaker.text = workbenchScriptText(unknownSpeaker.workbench.script);
+    expect(scriptTextOf(unknownSpeaker, workbenchStory())).toBeNull();
   });
 
   it("rejects unknown versions, plan envelopes, unknown fields and damaged scripts instead of falling back to text", () => {
@@ -330,7 +363,7 @@ describe("stored shot text", () => {
       { ...content, workbench: { ...content.workbench, script: { ...content.workbench.script, scenes: "broken" } } },
       { ...content, text: { value: content.text } },
       { ...content, text: "与已审核的结构化稿件不一致的正文" },
-    ]) expect(scriptTextOf(invalid)).toBeNull();
+    ]) expect(scriptTextOf(invalid, workbenchStory())).toBeNull();
   });
 
   it("matches lines without whitespace", () => {

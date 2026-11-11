@@ -897,6 +897,7 @@ export class PostgresTitleWritingStore implements TitleWritingStore {
           scriptRevisionNo: Number(scriptRow.revision_no),
           scriptContentHash: String(scriptRow.content_hash),
           scriptContent: scriptRow.content_json,
+          sourceStoryContent: scriptRow.source_story_content,
           // Use this script's immutable story source, never a later current story or another work's settings.
           targetEpisodeSeconds: readWorkbenchPlan(scriptRow.source_story_content)?.brief.targetEpisodeSeconds ?? plan.targetEpisodeSeconds,
           characters: characters.rows.map((row) => ({ characterId: String(row.id), revisionId: String(row.current_revision_id), name: String(row.name) })),

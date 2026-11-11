@@ -12,11 +12,11 @@
 | `POST /projects/:id/stories/:rid/review` | 复用现有接口：`{to,expectedReviewVersion,reviewNote?}`；`If-Match` 为作品版本 |
 | `POST /projects/:id/episodes/:eid/scripts/:rid/review` | 复用现有接口：同上，`If-Match` 为集版本 |
 
-共享类型及估时函数位于 `packages/contracts/src/script-workbench.ts`。每次保存创建不可变的原生版本，返回 `revisionId/revisionNo/contentHash/rowVersion`。重复的保存幂等键重放原结果；同键改内容拒绝。快照在可重复读事务中返回，故事和每集历史各最多最近 100 个版本；更早的历史仍在现有分页历史接口中。
+共享类型及估时函数位于 `packages/contracts/src/script-workbench.ts`。每次保存创建不可变的原生版本，返回 `revisionId/revisionNo/contentHash/rowVersion`。重复的保存幂等键重放原结果；同键改内容拒绝。快照在可重复读事务中返回，故事和每集历史各最多最近 100 个版本；版本记录中的“加载更早版本”复用 `GET /projects/:id/stories?cursor=...` 与 `GET /projects/:id/episodes/:eid/scripts?cursor=...`，每次继续加载最多 20 条。当前版本指针在最近 100 条之外时单独按作品、工作空间及集定位，不混入历史页改变游标。已删除稿件继续过滤；恢复仅使旧稿重新可读，不改当前或批准指针。
 
 计划保存在 `story_revision.content_json.workbench`，包含 `schema: "script-workbench.v1"`、`plan`、`documentVersions`。`brief/synopsis/bible/outline` 分别编号，仅内容改变时递增。用户明确确认某个故事版本时，同时确认该不可变快照中显示的四个文档编号。保存新计划不会自动批准。批准前必须有题材、受众、制作边界、梗概、结局、角色定妆声线以及完整分集的开场、改变、交接。新计划版本继续触发原有来源失效规则。
 
-正文保存在 `script_revision.content_json.workbench.script`。系统同时生成 `content_json.text`，供现有正文、分镜拆分及制作链使用。旧版纯文本保留，不会在读取时重写；用户显式转换后才会创建结构化新版本。
+正文保存在 `script_revision.content_json.workbench.script`，角色始终使用稳定 ID。系统根据该正文 `source_story_revision_id` 绑定的不可变计划，将出场与对白 ID 投影为姓名，生成 `content_json.text` 供分镜及制作链使用。分镜与 ViMax 读取同一冻结计划，并严格验算正文；旧 v1 的 ID 正文仅在与原规范投影逐字一致时兼容解析为姓名，不改写历史行或哈希。缺少来源、未知角色、损坏结构及不一致正文仍拒绝。旧版纯文本保留；用户显式转换后才会创建结构化新版本。
 
 ## 连续性与审稿
 

@@ -5,8 +5,9 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createPostgresPool, JobPersistenceService, PostgresTitleWritingStore, RuntimeStore, runMigrations, TextChainService, VimaxPreviewSourceStore } from "@ai-drama/database";
-import { SCRIPT_BREAKDOWN_OUTPUT_SCHEMA, type ScriptBreakdownFrozenInput, type ScriptBreakdownRunView, type ScriptWorkbenchPlan, type ScriptWorkbenchScript, type ScriptWorkbenchSnapshot, type VimaxPlatformSourceSnapshot } from "@ai-drama/contracts";
+import { createPostgresPool, JobPersistenceService, PostgresSpeechStore, PostgresTitleWritingStore, RuntimeStore, runMigrations, TextChainService, VimaxPreviewSourceStore } from "@ai-drama/database";
+import { SCRIPT_BREAKDOWN_OUTPUT_SCHEMA, type ScriptBreakdownFrozenInput, type ScriptBreakdownRunView, type ScriptWorkbenchPlan, type ScriptWorkbenchScript, type ScriptWorkbenchSnapshot, type SpeechBinding, type SpeechGenerationPort, type SpeechPlanView, type SpeechVoice, type VimaxPlatformSourceSnapshot } from "@ai-drama/contracts";
+import { workbenchScriptText } from "@ai-drama/domain";
 import { TitleWritingEngine, titleWritingProviderConfigs, type WritingTransport } from "@ai-drama/providers";
 import { breakdownPromptParts, providerAnswer } from "@ai-drama/providers/title-writing-fixtures";
 import { checkDisposableAcceptanceEnv, verifyDisposableAcceptanceDatabase } from "../../../../packages/database/src/disposable-acceptance-guard";
@@ -23,6 +24,8 @@ import { ScriptBreakdownService } from "./script-breakdown.service";
 import { VimaxPreviewController } from "./vimax-preview.controller";
 import { VimaxPreviewService } from "./vimax-preview.service";
 import { SCRIPT_BREAKDOWN_SERVICE, STUDIO_SERVICE, VIMAX_PREVIEW_SERVICE } from "./tokens";
+import { SpeechController, SPEECH_SERVICE } from "./speech.controller";
+import { SpeechService } from "./speech.service";
 
 const pattern = /^ads_workbench_acceptance_[a-z0-9_]+$/;
 if (process.env.SCRIPT_WORKBENCH_TEST_ALLOW_WRITES !== "true" || process.env.SCRIPT_WORKBENCH_TEST_ALLOW_DRAFT !== "true") throw new Error("Explicit disposable-write and draft flags required");
@@ -35,6 +38,17 @@ const chain = new TextChainService(pool);
 const runtime = new RuntimeStore(pool);
 const writingStore = new PostgresTitleWritingStore(pool, chain);
 const vimaxSource = new VimaxPreviewSourceStore(pool);
+const speech = new PostgresSpeechStore(pool, new JobPersistenceService(pool));
+const speechProviderId = randomUUID();
+const speechVoice: SpeechVoice = { catalogVoiceId: "workbench-fixture-voice", name: "工作台验收声音", providerConfigurationId: speechProviderId,
+  providerConfigurationVersion: "fixture-v1", providerKey: "dashscope-media", model: "qwen3-tts-flash", modelVersion: "fixture-v1",
+  voiceId: "Cherry", locale: "zh-CN", rightsRef: "synthetic-acceptance-no-provider-call",
+  capabilities: { emotions: ["neutral"], speedMin: 1, speedMax: 1, maxTextCharacters: 600 } };
+const speechGeneration: SpeechGenerationPort = {
+  capabilities: async () => ({ available: true, reasonCode: null, catalogVersion: "fixture-v1", voices: [speechVoice] }),
+  quote: async () => { throw new Error("This source acceptance must not quote paid speech"); },
+  generate: async () => { throw new Error("This source acceptance must not generate paid speech"); },
+};
 const scheduledBreakdowns: Array<() => Promise<void>> = [];
 const breakdownPrompts: string[] = [];
 // Only this in-memory transport can run: no request reaches a provider or incurs a charge.
@@ -42,7 +56,9 @@ const transport: WritingTransport = async (input) => {
   const body = JSON.parse(input.body) as { messages: Array<{ role: string; content: string }>; max_tokens: number };
   expect(body.max_tokens).toBe(4096);
   const prompt = body.messages.find(message => message.role === "user")!.content;
-  breakdownPrompts.push(breakdownPromptParts(prompt).script);
+  const parts = breakdownPromptParts(prompt);
+  breakdownPrompts.push(parts.script);
+  const speaker = parts.characters[0]?.name ?? (parts.script.includes("\n青：") ? "青" : "R01");
   const longEpisode = prompt.includes("每集目标约 210 秒");
   return { status: 200, headers: { get: () => "workbench-handoff-fixture" }, body: new TextEncoder().encode(JSON.stringify(providerAnswer(input.url, {
     schema: SCRIPT_BREAKDOWN_OUTPUT_SCHEMA, episodeNo: 1,
@@ -50,7 +66,8 @@ const transport: WritingTransport = async (input) => {
     shots: Array.from({ length: longEpisode ? 21 : 1 }, (_, index) => {
       const sceneNo = Math.floor(index / 7) + 1;
       return { key: `S${String(sceneNo)}-${String(index % 7 + 1)}`, sceneKey: `S${String(sceneNo)}`, shotType: "近景", camera: "固定", action: "她推开门。",
-        dialogue: index === 0 ? [{ speaker: "R01", line: "谁在门外？" }] : [], characterKeys: [], plannedSeconds: longEpisode ? 10 : 6 };
+        dialogue: index === 0 ? [{ speaker, line: "谁在门外？" }] : [],
+        characterKeys: index === 0 && parts.characters[0] ? [parts.characters[0].key] : [], plannedSeconds: longEpisode ? 10 : 6 };
     }),
   }))) };
 };
@@ -64,6 +81,9 @@ function request(path: string, init: RequestInit = {}) { return fetch(`${base}${
 function write(path: string, body: unknown, headers: Record<string, string> = {}) {
   return request(path, { method: "POST", headers: { ...writeHeaders, "idempotency-key": randomUUID(), "if-match": "1", ...headers }, body: JSON.stringify(body) });
 }
+function put(path: string, body: unknown, version: number) {
+  return request(path, { method: "PUT", headers: { ...writeHeaders, "idempotency-key": randomUUID(), "if-match": String(version) }, body: JSON.stringify(body) });
+}
 async function approveRevision(path: string, rowVersion: number) {
   const submitted = await write(path, { to: "IN_REVIEW", expectedReviewVersion: 1 }, { "if-match": String(rowVersion) });
   expect(submitted.status).toBe(200);
@@ -76,7 +96,10 @@ beforeAll(async () => {
   if (!safe.ok) throw new Error(safe.reason);
   await runMigrations(pool);
   await pool.query(await readFile(resolve("../../packages/database/prisma/drafts/20261111000300_script_workbench_trash.sql"), "utf8"));
+  await pool.query(await readFile(resolve("../../packages/database/prisma/drafts/20261101000100_character_voice.sql"), "utf8"));
+  expect(await speech.storageReady()).toBe(true);
   await pool.query("INSERT INTO workspace(id,name) VALUES($1,'workbench HTTP'),($2,'other workspace')", [workspaceId, otherWorkspaceId]);
+  await pool.query("INSERT INTO provider_configuration(id,workspace_id,provider_key,capability,default_timeout_ms,max_attempts) VALUES($1,$2,'dashscope-media','audio.tts',30000,1)", [speechProviderId, workspaceId]);
   await pool.query("INSERT INTO project(id,workspace_id,title,episode_count,target_episode_seconds) VALUES($1,$2,'HTTP验收',1,60),($3,$4,'其他空间',1,60)", [projectId, workspaceId, otherProjectId, otherWorkspaceId]);
   const hash = await hashPassword(password, { log2N: 15, r: 8, p: 1, saltBytes: 16, keyBytes: 32 });
   const env = { NODE_ENV: "test", SITE_AUTH_ENABLED: "true", SITE_AUTH_USERNAME: "qa", SITE_AUTH_PASSWORD_HASH: hash, SITE_AUTH_PUBLIC_ORIGIN: origin } as ApiEnv;
@@ -86,11 +109,12 @@ beforeAll(async () => {
     engine: new TitleWritingEngine({ workspaceId, store: writingStore, providers, transport, maxCallsPerDay: 20, timeoutMs: 1500 }),
     projects: runtime, maxCallsPerDay: 20, maxActiveRuns: 2, schedule: work => { scheduledBreakdowns.push(work); } });
   class Routes {}
-  Module({ controllers: [ScriptWorkbenchController, StudioController, ScriptBreakdownController, VimaxPreviewController], providers: [
+  Module({ controllers: [ScriptWorkbenchController, StudioController, ScriptBreakdownController, VimaxPreviewController, SpeechController], providers: [
     { provide: SCRIPT_WORKBENCH_SERVICE, useValue: new ScriptWorkbenchService(pool, workspaceId) },
     { provide: STUDIO_SERVICE, useValue: new StudioService(new JobPersistenceService(pool), runtime, chain, workspaceId) },
     { provide: SCRIPT_BREAKDOWN_SERVICE, useValue: breakdown },
     { provide: VIMAX_PREVIEW_SERVICE, useValue: new VimaxPreviewService({ workspaceId, nodeEnv: "test", source: vimaxSource }) },
+    { provide: SPEECH_SERVICE, useValue: new SpeechService({ workspaceId, store: speech, generation: speechGeneration }) },
   ] })(Routes);
   const module = await Test.createTestingModule({ imports: [AuthModule.register(env), Routes] }).compile();
   app = module.createNestApplication({ logger: false }); app.setGlobalPrefix("api/v1"); app.useGlobalFilters(new SafeExceptionFilter());
@@ -175,7 +199,7 @@ describe("script workbench HTTP boundaries", () => {
     const approvedContent = approvedSnapshot.episodes[0]!.script!.content;
     expect(Object.keys(approvedContent).sort()).toEqual(["text", "workbench"]);
     const savedText = approvedContent.text as string;
-    expect(savedText).toContain("R01：谁在门外？");
+    expect(savedText).toContain("青：谁在门外？");
     const vimax = await request(vimaxPath, { headers: readHeaders });
     expect(vimax.status).toBe(200);
     const source = await vimax.json() as VimaxPlatformSourceSnapshot;
@@ -293,5 +317,89 @@ describe("script workbench HTTP boundaries", () => {
     expect((await writingStore.getRun(workspaceId, workId, runId))!.run.input).toMatchObject({ scriptRevisionId: script.revisionId, scriptText: text, targetEpisodeSeconds: 60 });
     await scheduledBreakdowns.shift()!();
     expect(await (await request(`${path}/${runId}`, { headers: readHeaders })).json()).toMatchObject({ run: { state: "completed", save: "saved", targetEpisodeSeconds: 60 } });
+  });
+
+  it.each(["named", "legacy-id"] as const)("hands %s workbench dialogue through approved character shots into a real speech plan", async (storageFormat) => {
+    const created = await write("/projects", { title: `角色配音交接 ${storageFormat}`, episodeCount: 1, targetEpisodeSeconds: 60 });
+    expect(created.status).toBe(201);
+    const workId = (await created.json() as { id: string }).id;
+    const savedPlan = await write(`/projects/${workId}/script-workbench/plan`, { plan });
+    expect(savedPlan.status).toBe(201);
+    const story = await savedPlan.json() as { revisionId: string; rowVersion: number };
+    await approveRevision(`/projects/${workId}/stories/${story.revisionId}/review`, story.rowVersion);
+    const snapshot = await (await request(`/projects/${workId}/script-workbench`, { headers: readHeaders })).json() as ScriptWorkbenchSnapshot;
+    const episode = snapshot.episodes[0]!;
+    const script: ScriptWorkbenchScript = { title: "来客", previousRevisionId: null, previousHandoff: "", openingHook: "门响", change: "发现信", endingHandoff: "门开",
+      characterKnowledge: "R01 见过信", unresolvedThreads: "无", scenes: [{ id: "s1", heading: "门口", interiorExterior: "INT", timeOfDay: "NIGHT", characterIds: ["R01"],
+        beats: [{ id: "a1", kind: "action", text: "她推开门。", seconds: 2 }, { id: "d1", kind: "dialogue", characterId: "R01", text: "谁在门外？", seconds: 2 }] }],
+      review: { identityClear: true, goalClear: true, obstacleClear: true, continuityChecked: true, lockedMaterialsChecked: true, note: "人工核对通过" } };
+    const saved = await write(`/projects/${workId}/episodes/${episode.id}/script-workbench`, { script, sourceStoryRevisionId: story.revisionId }, { "if-match": String(episode.rowVersion) });
+    expect(saved.status).toBe(201);
+    let currentScript = await saved.json() as { revisionId: string; rowVersion: number };
+    if (storageFormat === "legacy-id") {
+      // Represent an immutable revision saved by the original workbench, through the existing generic editor route.
+      const legacy = await write(`/projects/${workId}/episodes/${episode.id}/scripts`, { sourceStoryRevisionId: story.revisionId,
+        content: { text: workbenchScriptText(script), workbench: { schema: "script-workbench.v1", script } } }, { "if-match": String(currentScript.rowVersion) });
+      expect(legacy.status).toBe(201);
+      currentScript = await legacy.json() as { revisionId: string; rowVersion: number };
+    }
+    await approveRevision(`/projects/${workId}/episodes/${episode.id}/scripts/${currentScript.revisionId}/review`, currentScript.rowVersion);
+    const approvedSnapshot = await (await request(`/projects/${workId}/script-workbench`, { headers: readHeaders })).json() as ScriptWorkbenchSnapshot;
+    const storedContent = approvedSnapshot.episodes[0]!.script!.content;
+    expect(storedContent.text).toContain(`${storageFormat === "legacy-id" ? "R01" : "青"}：谁在门外？`);
+    expect(storedContent).toMatchObject({ workbench: { script: { scenes: [{ characterIds: ["R01"], beats: [{ id: "a1" }, { characterId: "R01" }] }] } } });
+
+    const savedCharacter = await write(`/projects/${workId}/characters`, { name: "青", sourceScriptRevisionId: currentScript.revisionId,
+      content: { description: "青衣，清晰声线" } }, { "if-match": String(approvedSnapshot.project.version) });
+    expect(savedCharacter.status).toBe(201);
+    const character = await savedCharacter.json() as { entityId: string; revisionId: string; rowVersion: number };
+    await approveRevision(`/projects/${workId}/characters/${character.entityId}/revisions/${character.revisionId}/review`, character.rowVersion);
+    const breakdownPath = `/projects/${workId}/episodes/${episode.id}/script-breakdowns`;
+    const started = await write(breakdownPath, { providerKey: "deepseek", model: "deepseek-flash" });
+    expect(started.status).toBe(201);
+    const runId = (await started.json() as { run: ScriptBreakdownRunView }).run.runId;
+    const frozen = (await writingStore.getRun(workspaceId, workId, runId))!.run.input as ScriptBreakdownFrozenInput;
+    expect(frozen.scriptText).toContain("青：谁在门外？");
+    expect(frozen.scriptText).not.toContain("R01：");
+    expect(frozen.characters).toEqual([{ key: "C1", characterId: character.entityId, revisionId: character.revisionId, name: "青" }]);
+    expect(await vimaxSource.read(workspaceId, workId, episode.id)).toMatchObject({ kind: "ok", source: { scriptText: frozen.scriptText, scriptRevisionId: currentScript.revisionId } });
+    await scheduledBreakdowns.shift()!();
+    const finished = await (await request(`${breakdownPath}/${runId}`, { headers: readHeaders })).json() as { run: ScriptBreakdownRunView };
+    expect(finished.run).toMatchObject({ state: "completed", save: "saved", output: { shots: [{ dialogue: [{ speaker: "青", line: "谁在门外？" }], characterKeys: ["C1"] }] } });
+    const scenesPath = `/projects/${workId}/episodes/${episode.id}/scenes`;
+    const sceneList = await (await request(scenesPath, { headers: readHeaders })).json() as { items: Array<{ entityId: string; rowVersion: number; currentRevisionId: string }> };
+    const scene = sceneList.items[0]!;
+    await approveRevision(`${scenesPath}/${scene.entityId}/revisions/${scene.currentRevisionId}/review`, scene.rowVersion);
+    expect((await write(`${breakdownPath}/${runId}/shots`, {})).status).toBe(200);
+    const shotsPath = `${scenesPath}/${scene.entityId}/shots`;
+    const shotList = await (await request(shotsPath, { headers: readHeaders })).json() as { items: Array<{ entityId: string; rowVersion: number; currentRevisionId: string }> };
+    const shot = shotList.items[0]!;
+    const shotHistory = await (await request(`${shotsPath}/${shot.entityId}/revisions`, { headers: readHeaders })).json() as { items: Array<{ id: string; dialogue: string }> };
+    expect(shotHistory.items.find(revision => revision.id === shot.currentRevisionId)!.dialogue).toBe("青：谁在门外？");
+    const speechPath = `/shot-revisions/${shot.currentRevisionId}/speech-plan`;
+    expect((await request(speechPath, { headers: readHeaders })).status).toBe(409);
+    await approveRevision(`${shotsPath}/${shot.entityId}/revisions/${shot.currentRevisionId}/review`, shot.rowVersion);
+    const references = await pool.query(`SELECT cr.character_id FROM shot_character_reference r
+      JOIN character_revision cr ON cr.id=r.character_revision_id WHERE r.shot_revision_id=$1`, [shot.currentRevisionId]) as { rows: Array<{ character_id: string }> };
+    expect(references.rows).toEqual([{ character_id: character.entityId }]);
+
+    const voiceResponse = await put(`/projects/${workId}/voice-bindings/${character.entityId}`, { catalogVersion: "fixture-v1", catalogVoiceId: speechVoice.catalogVoiceId }, 0);
+    expect(voiceResponse.status).toBe(200);
+    const voiceBinding = await voiceResponse.json() as SpeechBinding;
+    const sourceResponse = await request(speechPath, { headers: readHeaders });
+    expect(sourceResponse.status).toBe(200);
+    const source = await sourceResponse.json() as SpeechPlanView;
+    expect(source.sourceDialogue).toBe("青：谁在门外？");
+    const lineId = randomUUID();
+    const planned = await put(speechPath, { sourceDialogueHash: source.sourceDialogueHash, timingPolicy: "sequential-reject-overflow",
+      lines: [{ lineId, speakerBindingRevisionId: voiceBinding.currentRevision.id, sourceStart: "青：".length, sourceEnd: source.sourceDialogue.length,
+        displayText: "谁在门外？", emotion: "neutral", speed: 1, pauseAfterMs: 0 }] }, source.rowVersion);
+    expect(planned.status).toBe(200);
+    const speechPlan = await planned.json() as SpeechPlanView;
+    expect(speechPlan.currentRevision!.lines).toMatchObject([{ lineId, displayText: "谁在门外？", speakerBindingRevisionId: voiceBinding.currentRevision.id }]);
+    expect(await speech.generationInput(workspaceId, speechPlan.currentRevision!.id, lineId)).toMatchObject({
+      shotRevisionId: shot.currentRevisionId, spokenText: "谁在门外？", voice: { id: voiceBinding.currentRevision.id } });
+    const jobs = await pool.query("SELECT count(*)::int AS count FROM generation_job WHERE project_id=$1", [workId]) as { rows: Array<{ count: number }> };
+    expect(jobs.rows).toEqual([{ count: 0 }]);
   });
 });

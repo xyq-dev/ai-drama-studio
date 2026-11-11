@@ -163,6 +163,7 @@ export function RecycleBin() {
   const [restoring, setRestoring] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
+  const [restoredHistory, setRestoredHistory] = useState<string | null>(null);
   const alive = useRef(true);
   const readToken = useRef(0);
   const loadingNow = useRef(false);
@@ -209,6 +210,7 @@ export function RecycleBin() {
     setRestoring(item.id);
     setError(null);
     setNotice("");
+    setRestoredHistory(null);
     const key = `${item.kind}:${item.id}`;
     let request = pending.current.get(key);
     if (request?.version !== item.version) {
@@ -222,6 +224,7 @@ export function RecycleBin() {
       await client.write({ path, body: { expectedVersion: item.version }, ifMatch: item.version, idempotencyKey: request.key });
       if (!alive.current) return;
       pending.current.delete(key);
+      setRestoredHistory(item.kind === "script" ? `/projects/${item.projectId}/script?history=${item.episodeId}` : null);
       setItems((current) => current?.filter((entry) => entry.kind !== item.kind || entry.id !== item.id) ?? null);
       setNotice(item.kind === "project" ? `已恢复《${item.title}》，可在「我的作品」继续创作。`
         : `已恢复《${item.title}》第 ${item.episodeNo} 集 v${item.revisionNo}，请在版本记录中查看；未自动定稿或开启制作。`);
@@ -244,7 +247,7 @@ export function RecycleBin() {
 
   return <BeginnerShell active="/studio"><main className={styles.page}>
     <header className={styles.heading}><div><h1>回收站</h1><p>找回删除的作品和稿件。稿件恢复到版本记录，定稿和制作仍需你确认。</p></div><a className={styles.button} href="/studio">返回我的作品</a></header>
-    {notice ? <p className={styles.notice} role="status">{notice}</p> : null}
+    {notice ? <div className={styles.notice}><p role="status">{notice}</p>{restoredHistory ? <a className={styles.button} href={restoredHistory}>查看本集版本记录</a> : null}</div> : null}
     {error ? <div className={styles.error} role="alert"><p>{error}</p><button className={styles.button} type="button" disabled={loading || restoring !== null} onClick={() => void load()}>刷新回收站</button></div> : null}
     <section className={styles.panel} aria-label="已删除的作品和稿件" aria-busy={loading}>
       <div className={styles.toolbar}><h2>{items ? `${items.length} 项可恢复内容` : "已删除内容"}</h2><button className={styles.button} type="button" disabled={loading || restoring !== null} onClick={() => void load()}>{loading ? "读取中…" : "刷新"}</button></div>

@@ -31,6 +31,8 @@ export interface ScriptWorkbenchRevision {
   id: string; revisionNo: number; reviewStatus: string; freshnessStatus: string; reviewVersion: number;
   content: Record<string, unknown>; createdAt: string;
 }
+/** Shape shared by the existing /stories and /episodes/:id/scripts cursor endpoints. */
+export interface ScriptWorkbenchRevisionPage { items: ScriptWorkbenchRevision[]; nextCursor: string | null }
 export interface ScriptWorkbenchEpisode {
   id: string; episodeNo: number; title: string; rowVersion: number;
   currentScriptRevisionId: string | null; approvedScriptRevisionId: string | null;

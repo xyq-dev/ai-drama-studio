@@ -43,7 +43,7 @@ async function screenshot(name, width = 1586, height = 992) {
   await page.waitForTimeout(150);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false, `${name}: horizontal overflow`);
   const file = `${name}-${width}.png`;
-  await page.screenshot({ path: resolve(output, file), fullPage: name !== '12-editing-conflict' && !(width === 1586 && ['03-writing','04-delete-draft','05-review','06-confirm-version','08-dependent-lock-protected','10-project-delete','11-recovered-drafts'].includes(name)) });
+  await page.screenshot({ path: resolve(output, file), fullPage: !['12-editing-conflict', '13-older-restored-history'].includes(name) && !(width === 1586 && ['03-writing','04-delete-draft','05-review','06-confirm-version','08-dependent-lock-protected','10-project-delete','11-recovered-drafts'].includes(name)) });
   evidence.screenshots.push(file);
 }
 
@@ -287,6 +287,94 @@ async function runFlows() {
   evidence.projectId = project.id;
 }
 
+
+async function runHistoryFlow() {
+  await page.goto(`${WEB}/studio`);
+  await page.waitForURL(/\/login/);
+  await page.getByLabel('账号', { exact: true }).fill('qa');
+  await page.getByLabel('密码', { exact: true }).fill(password);
+  await page.getByRole('button', { name: '登录', exact: true }).click();
+  await page.waitForURL(`${WEB}/studio`);
+  const project = await request('/projects', { title: '百版历史 · 合成验收', episodeCount: 1, targetEpisodeSeconds: 60 });
+  const base = `/projects/${project.id}`;
+  const plan = {
+    brief: { genre: '悬疑', audience: '短剧观众', productionConstraints: '一名演员、一个室内场地', logline: '她找到一封旧信。', targetEpisodeSeconds: 60, dialogueQuota: 4 },
+    bible: { ending: '查明真相', openThreads: '谁寄来的信', characters: [{ id: 'R01', name: '阿青', appearance: '青衣', voice: '清晰', aliases: '小青', knownInformation: '见过旧信' }] },
+    outline: { episodes: [{ episodeNo: 1, title: '旧信', openingHook: '信落在门前', change: '发现暗号', endingHandoff: '打开信封' }] },
+  };
+  const story = await request(`${base}/script-workbench/plan`, { plan }, project.version);
+  const submitted = await request(`${base}/stories/${story.revisionId}/review`, { to: 'IN_REVIEW', expectedReviewVersion: 1 }, story.rowVersion);
+  await request(`${base}/stories/${story.revisionId}/review`, { to: 'APPROVED', expectedReviewVersion: submitted.reviewVersion }, submitted.rowVersion);
+  let view = await request(`${base}/script-workbench`);
+  const episode = view.episodes[0], path = `${base}/episodes/${episode.id}/script-workbench`;
+  const originalTitle = '回收站恢复的第一版正文';
+  const script = { title: originalTitle, previousRevisionId: null, previousHandoff: '', openingHook: '信落在门前', change: '发现暗号', endingHandoff: '打开信封', characterKnowledge: '阿青见过旧信', unresolvedThreads: '寄信人身份',
+    scenes: [{ id: 'scene1', heading: '门口', interiorExterior: 'INT', timeOfDay: 'DAY', characterIds: ['R01'], beats: [{ id: 'beat1', kind: 'action', text: '阿青拾起信封。', seconds: 3 }] }] };
+  let saved = await request(path, { script, sourceStoryRevisionId: story.revisionId }, episode.rowVersion);
+  const first = saved;
+  for (let number = 2; number <= 105; number += 1) {
+    saved = await request(path, { script: { ...script, title: `较新正文第 ${number} 版` }, sourceStoryRevisionId: story.revisionId }, saved.rowVersion);
+  }
+  view = await request(`${base}/script-workbench`);
+  assert.equal(view.episodes[0].history.length, 100);
+  assert.equal(view.episodes[0].script.id, saved.revisionId);
+  assert.ok(!view.episodes[0].history.some(item => item.id === first.revisionId));
+  assert.equal((await fetch(`${WEB}/api/v1${base}/episodes/${episode.id}/scripts?cursor=6`)).status, 401);
+  assert.equal((await page.request.get(`${WEB}/api/v1/projects/${randomUUID()}/episodes/${episode.id}/scripts?cursor=6`)).status(), 404);
+  assert.equal((await page.request.get(`${WEB}/api/v1${base}/episodes/${randomUUID()}/scripts?cursor=6`)).status(), 404);
+  assert.equal((await page.request.get(`${WEB}/api/v1${base}/episodes/${episode.id}/scripts?cursor=invalid`)).status(), 400);
+  await request(`${base}/episodes/${episode.id}/scripts/${first.revisionId}/trash`, { expectedVersion: saved.rowVersion }, saved.rowVersion);
+  assert.ok(!(await request(`${base}/episodes/${episode.id}/scripts?cursor=6`)).items.some(item => item.id === first.revisionId), 'deleted versions are excluded even on older pages');
+  await page.goto(`${WEB}/studio/trash`);
+  await page.getByRole('button', { name: '恢复第 1 集 v1：百版历史 · 合成验收', exact: true }).click();
+  await page.getByRole('link', { name: '查看本集版本记录', exact: true }).waitFor();
+  const restored = await request(`${base}/script-workbench`);
+  assert.equal(restored.episodes[0].currentScriptRevisionId, saved.revisionId, 'restoring history must preserve the current version');
+  assert.equal(restored.episodes[0].approvedScriptRevisionId, null, 'restoring must not approve any version');
+  await page.getByRole('link', { name: '查看本集版本记录', exact: true }).click();
+  const history = page.getByRole('dialog', { name: '版本记录', exact: true });
+  await history.waitFor();
+  assert.equal(await history.locator('article').count(), 100);
+  assert.equal(await history.locator('article').filter({ hasText: originalTitle }).count(), 0);
+  const olderResponse = page.waitForResponse(response => response.url() === `${WEB}/api/v1${base}/episodes/${episode.id}/scripts?cursor=6`);
+  await history.getByRole('button', { name: '加载更早版本', exact: true }).click();
+  const older = await olderResponse;
+  assert.equal(older.status(), 200);
+  const pageBody = await older.json();
+  assert.ok(pageBody.items.length <= 20, 'existing history endpoint stays bounded');
+  assert.equal(pageBody.nextCursor, null);
+  const original = pageBody.items.find(item => item.id === first.revisionId);
+  assert.equal(original.freshnessStatus, 'STALE');
+  assert.equal(original.reviewStatus, 'DRAFT');
+  const oldRow = history.locator('article').filter({ hasText: originalTitle });
+  await oldRow.waitFor();
+  await oldRow.getByText('查看这个版本的正文', { exact: true }).click();
+  await oldRow.scrollIntoViewIfNeeded();
+  await screenshot('13-older-restored-history');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await oldRow.scrollIntoViewIfNeeded();
+  await screenshot('13-older-restored-history', 390, 844);
+  await page.setViewportSize({ width: 1586, height: 992 });
+  await oldRow.getByRole('button', { name: '载入为修订草稿', exact: true }).click();
+  await history.waitFor({ state: 'hidden' });
+  assert.equal(await page.getByLabel('本集标题', { exact: true }).inputValue(), originalTitle);
+  assert.equal((await request(`${base}/script-workbench`)).episodes[0].currentScriptRevisionId, saved.revisionId, 'loading history is only a local edit');
+  await page.getByRole('button', { name: '保存草稿', exact: true }).click();
+  await page.getByText('第 1 集草稿已保存。', { exact: true }).waitFor();
+  const after = await request(`${base}/script-workbench`);
+  assert.equal(after.episodes[0].script.revisionNo, 106);
+  assert.equal(after.episodes[0].script.content.workbench.script.title, originalTitle);
+  assert.equal(after.episodes[0].script.reviewStatus, 'DRAFT');
+  assert.equal(after.episodes[0].approvedScriptRevisionId, null);
+  assert.equal((await request(`${base}/episodes/${episode.id}/scripts?cursor=6`)).items.find(item => item.id === first.revisionId).freshnessStatus, 'STALE');
+  evidence.projectId = project.id;
+  evidence.checks.push('105 actual HTTP script versions; latest-100 snapshot stays bounded');
+  evidence.checks.push('older pages enforce auth/project/episode/cursor/deleted filtering');
+  evidence.checks.push('restore v1 through recycle UI opens the episode history; bounded older page exposes it');
+  evidence.checks.push('loading v1 is local; explicit save creates v106 DRAFT and preserves v1 STALE without automatic approval');
+  evidence.checks.push('desktop/mobile restored-history screenshots have no horizontal overflow');
+}
+
 try {
   await mkdir(output, { recursive: true });
   const identity = (await pool.query('SELECT current_database() AS name')).rows[0].name;
@@ -305,8 +393,8 @@ try {
   app.setGlobalPrefix('api/v1'); app.useGlobalFilters(new SafeExceptionFilter());
   app.useBodyParser('json', { limit: '300kb' });
   await app.listen(3001, '127.0.0.1');
-  web = spawn(process.execPath, [requireWeb.resolve('next/dist/bin/next'), 'start', '--hostname', '127.0.0.1', '--port', '3012'], {
-    cwd: resolve(root, 'apps/web'), stdio: ['ignore', 'pipe', 'pipe'], env: { PATH: process.env.PATH, HOME: process.env.HOME, NODE_ENV: 'production', NEXT_TELEMETRY_DISABLED: '1' },
+  web = spawn(process.execPath, [requireWeb.resolve('next/dist/bin/next'), process.env.WORKBENCH_BROWSER_WEB_MODE === 'dev' ? 'dev' : 'start', '--hostname', '127.0.0.1', '--port', '3012'], {
+    cwd: resolve(root, 'apps/web'), stdio: ['ignore', 'pipe', 'pipe'], env: { PATH: process.env.PATH, HOME: process.env.HOME, NODE_ENV: process.env.WORKBENCH_BROWSER_WEB_MODE === 'dev' ? 'development' : 'production', NEXT_TELEMETRY_DISABLED: '1' },
   });
   for (const stream of [web.stdout, web.stderr]) stream.on('data', chunk => { webLogs = (webLogs + chunk.toString()).slice(-8000); });
   for (let i = 0; ; i++) {
@@ -323,7 +411,8 @@ try {
     if (target.hostname !== '127.0.0.1') { evidence.externalRequests.push(target.origin); return route.abort(); }
     return route.continue();
   });
-  await runFlows();
+  if (process.argv.includes('--history-only')) await runHistoryFlow();
+  else await runFlows();
   assert.deepEqual(evidence.errors, []);
   assert.deepEqual(evidence.externalRequests, []);
   evidence.passed = true;

@@ -6,6 +6,7 @@ import type {
   ScriptWorkbenchEpisode,
   ScriptWorkbenchPlan,
   ScriptWorkbenchRevision,
+  ScriptWorkbenchRevisionPage,
   ScriptWorkbenchScene,
   ScriptWorkbenchScript,
   ScriptWorkbenchSnapshot,
@@ -169,7 +170,13 @@ function StatusBadge({ revision }: { revision: ScriptWorkbenchRevision | null })
   );
 }
 
-export function ScriptWorkbench({ projectId }: { projectId: string }) {
+export function ScriptWorkbench({
+  projectId,
+  initialHistory,
+}: {
+  projectId: string;
+  initialHistory?: string;
+}) {
   const [snapshot, setSnapshot] = useState<ScriptWorkbenchSnapshot | null>(null);
   const [plan, renderPlan] = useState<ScriptWorkbenchPlan | null>(null);
   const [drafts, renderDrafts] = useState<Record<string, ScriptWorkbenchScript>>({});
@@ -192,6 +199,17 @@ export function ScriptWorkbench({ projectId }: { projectId: string }) {
     draftText: string;
   } | null>(null);
   const [history, setHistory] = useState<HistoryTarget | null>(null);
+  const [historyPage, setHistoryPage] = useState<
+    | (ScriptWorkbenchRevisionPage & {
+        target: HistoryTarget;
+        snapshot: ScriptWorkbenchSnapshot;
+        loading: boolean;
+        error: string | null;
+      })
+    | null
+  >(null);
+  const historyRequest = useRef(0);
+  const historyInFlight = useRef(false);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [deletion, setDeletion] = useState<{
     episode: ScriptWorkbenchEpisode;
@@ -397,8 +415,10 @@ export function ScriptWorkbench({ projectId }: { projectId: string }) {
       persist();
       if (options.initial) {
         const first = next.episodes.find((item) => !approved(item.script)) ?? next.episodes[0];
-        setSelectedEpisode(first?.id ?? "");
-        setStage(approved(next.story) && first ? 2 : 0);
+        const requestedHistory = next.episodes.find((item) => item.id === initialHistory);
+        setSelectedEpisode(requestedHistory?.id ?? first?.id ?? "");
+        setStage(requestedHistory || (approved(next.story) && first) ? 2 : 0);
+        if (requestedHistory) setHistory(requestedHistory.id);
       } else
         setSelectedEpisode((current) =>
           next.episodes.some((item) => item.id === current)
@@ -407,7 +427,7 @@ export function ScriptWorkbench({ projectId }: { projectId: string }) {
         );
       return next;
     },
-    [projectId, persist],
+    [projectId, persist, initialHistory],
   );
 
   useEffect(() => {
@@ -442,6 +462,9 @@ export function ScriptWorkbench({ projectId }: { projectId: string }) {
     const onSignedOut = () => {
       signedOut.current = true;
       requestEpoch.current += 1;
+      historyRequest.current += 1;
+      setHistory(null);
+      setHistoryPage(null);
       baseline.current = emptyWorkbenchBaseline();
       live.current = { plan: null, drafts: {} };
       pendingKeys.current.clear();
@@ -740,8 +763,64 @@ export function ScriptWorkbench({ projectId }: { projectId: string }) {
   }
   const estimate = script ? estimateScript(script) : null;
   const historyEpisode = snapshot?.episodes.find((item) => item.id === history);
-  const historyRevisions = history === "story" ? snapshot?.storyHistory : historyEpisode?.history;
+  const initialHistoryRevisions =
+    (history === "story" ? snapshot?.storyHistory : historyEpisode?.history) ?? [];
+  const activeHistoryPage =
+    historyPage?.target === history && historyPage.snapshot === snapshot ? historyPage : null;
+  const historyRevisions = activeHistoryPage?.items ?? initialHistoryRevisions;
+  const historyCursor = activeHistoryPage
+    ? activeHistoryPage.nextCursor
+    : initialHistoryRevisions.length >= 100
+      ? String(initialHistoryRevisions.at(-1)!.revisionNo)
+      : null;
   const versions = documentVersions(snapshot?.story);
+
+  useEffect(() => {
+    historyRequest.current += 1;
+    historyInFlight.current = false;
+    // A canceled page read must not leave its cached target disabled when the dialog is reopened.
+    setHistoryPage((current) => (current?.loading ? { ...current, loading: false } : current));
+    return () => {
+      historyRequest.current += 1;
+      historyInFlight.current = false;
+    };
+  }, [history, snapshot]);
+
+  async function loadMoreHistory() {
+    if (!snapshot || !history || !historyCursor || historyInFlight.current || busy) return;
+    historyInFlight.current = true;
+    const epoch = ++historyRequest.current;
+    const before = {
+      target: history,
+      snapshot,
+      items: historyRevisions,
+      nextCursor: historyCursor,
+    };
+    setHistoryPage({ ...before, loading: true, error: null });
+    try {
+      const path =
+        history === "story"
+          ? `/projects/${projectId}/stories`
+          : `/projects/${projectId}/episodes/${history}/scripts`;
+      const next = await client.get<ScriptWorkbenchRevisionPage>(
+        `${path}?cursor=${encodeURIComponent(historyCursor)}`,
+      );
+      if (!mounted.current || signedOut.current || epoch !== historyRequest.current) return;
+      const seen = new Set(before.items.map((item) => item.id));
+      setHistoryPage({
+        ...before,
+        items: [...before.items, ...next.items.filter((item) => !seen.has(item.id))],
+        nextCursor: next.nextCursor,
+        loading: false,
+        error: null,
+      });
+    } catch (caught) {
+      if (mounted.current && !signedOut.current && epoch === historyRequest.current)
+        setHistoryPage({ ...before, loading: false, error: message(caught) });
+    } finally {
+      if (epoch === historyRequest.current) historyInFlight.current = false;
+    }
+  }
 
   return (
     <div className={styles.theme}>
@@ -1334,6 +1413,20 @@ export function ScriptWorkbench({ projectId }: { projectId: string }) {
               </article>
             ))
           )}
+          {activeHistoryPage?.error ? (
+            <p className={styles.warning} role="alert">
+              {activeHistoryPage.error} 已载入的版本仍保留，可重试加载。
+            </p>
+          ) : null}
+          {historyCursor ? (
+            <button
+              className={styles.button}
+              disabled={busy || activeHistoryPage?.loading}
+              onClick={() => void loadMoreHistory()}
+            >
+              {activeHistoryPage?.loading ? "正在加载更早版本…" : "加载更早版本"}
+            </button>
+          ) : null}
           <p className={styles.muted}>
             载入历史版本前请先保存当前编辑。载入后需重新核对、审稿并保存为新版本；不会恢复原批准状态。删除前会核对关联分镜、配音和视频。
           </p>

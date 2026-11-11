@@ -55,19 +55,38 @@ export class ScriptWorkbenchStore {
         "SELECT * FROM episode WHERE project_id = $1 AND workspace_id = $2 ORDER BY episode_no", [projectId, workspaceId]);
       const scripts = await client.query<RevisionRow & { episode_id: string }>(
         `SELECT selected.* FROM episode e CROSS JOIN LATERAL (
-          SELECT s.* FROM script_revision s WHERE s.episode_id = e.id AND s.workspace_id = e.workspace_id
+          SELECT s.* FROM script_revision s WHERE s.episode_id = e.id AND s.project_id = e.project_id AND s.workspace_id = e.workspace_id
             AND to_jsonb(s)->>'deleted_at' IS NULL ORDER BY revision_no DESC LIMIT 100
         ) selected WHERE e.project_id = $1 AND e.workspace_id = $2`, [projectId, workspaceId]);
       const storyHistory = stories.rows.map(revision);
+      // Current pointers may legitimately predate the latest 100 history entries. Resolve them exactly,
+      // without adding them to history (which would skip intermediate revisions when paging).
+      let currentStory = storyHistory.find(s => s.id === project.current_story_revision_id) ?? null;
+      if (!currentStory && project.current_story_revision_id) {
+        const pointed = await client.query<RevisionRow>(
+          "SELECT * FROM story_revision WHERE id=$1 AND project_id=$2 AND workspace_id=$3",
+          [project.current_story_revision_id, projectId, workspaceId]);
+        if (pointed.rows[0]) currentStory = revision(pointed.rows[0]);
+      }
+      const currentScripts = new Map(scripts.rows.map(s => [`${s.episode_id}:${s.id}`, revision(s)]));
+      const missingEpisodes = episodes.rows.filter(e => e.current_script_revision_id && !currentScripts.has(`${e.id}:${e.current_script_revision_id}`)).map(e => e.id);
+      if (missingEpisodes.length) {
+        const pointed = await client.query<RevisionRow & { episode_id: string }>(
+          `SELECT s.* FROM episode e JOIN script_revision s ON s.id=e.current_script_revision_id
+             AND s.episode_id=e.id AND s.project_id=e.project_id AND s.workspace_id=e.workspace_id
+           WHERE e.project_id=$1 AND e.workspace_id=$2 AND e.id=ANY($3::uuid[])
+             AND to_jsonb(s)->>'deleted_at' IS NULL`, [projectId, workspaceId, missingEpisodes]);
+        for (const row of pointed.rows) currentScripts.set(`${row.episode_id}:${row.id}`, revision(row));
+      }
       const result: ScriptWorkbenchSnapshot = {
         project: { id: project.id, title: project.title, version: project.version, episodeCount: project.episode_count,
           writingMode: project.writing_mode, targetEpisodeSeconds: project.target_episode_seconds },
-        story: storyHistory.find(s => s.id === project.current_story_revision_id) ?? null, storyHistory,
+        story: currentStory, storyHistory,
         episodes: episodes.rows.map(e => {
           const history = scripts.rows.filter(s => s.episode_id === e.id).map(revision);
           return { id: e.id, episodeNo: e.episode_no, title: e.title, rowVersion: e.row_version,
             currentScriptRevisionId: e.current_script_revision_id, approvedScriptRevisionId: e.approved_script_revision_id,
-            script: history.find(s => s.id === e.current_script_revision_id) ?? null, history };
+            script: e.current_script_revision_id ? currentScripts.get(`${e.id}:${e.current_script_revision_id}`) ?? null : null, history };
         }),
       };
       await client.query("COMMIT");
@@ -92,10 +111,16 @@ export class ScriptWorkbenchStore {
       content: { text: workbenchPlanText(input.plan), workbench: { schema: SCRIPT_WORKBENCH_SCHEMA, plan: input.plan, documentVersions } } });
   }
 
-  saveScript(client: PoolClient, input: { workspaceId: string; projectId: string; episodeId: string; sourceStoryRevisionId: string; script: ScriptWorkbenchScript; expectedVersion: number; actorId: string; traceId: string }) {
+  async saveScript(client: PoolClient, input: { workspaceId: string; projectId: string; episodeId: string; sourceStoryRevisionId: string; script: ScriptWorkbenchScript; expectedVersion: number; actorId: string; traceId: string }) {
+    const source = await client.query<{ content_json: unknown }>(
+      "SELECT content_json FROM story_revision WHERE id = $1 AND project_id = $2 AND workspace_id = $3",
+      [input.sourceStoryRevisionId, input.projectId, input.workspaceId]);
+    if (!source.rows[0]) throw new PersistenceError("NOT_FOUND", "计划版本不存在。");
+    const plan = readWorkbenchPlan(source.rows[0]?.content_json);
+    if (!plan) throw new PersistenceError("REVIEW_REQUIRED", "请先确认工作台计划，再保存对应正文。");
     return this.text.createScriptRevisionInTransaction(client, { workspaceId: input.workspaceId, projectId: input.projectId,
       episodeId: input.episodeId, sourceStoryRevisionId: input.sourceStoryRevisionId, expectedVersion: input.expectedVersion,
       createdBy: input.actorId, traceId: input.traceId,
-      content: { text: workbenchScriptText(input.script), workbench: { schema: SCRIPT_WORKBENCH_SCHEMA, script: input.script } } });
+      content: { text: workbenchScriptText(input.script, plan.bible.characters), workbench: { schema: SCRIPT_WORKBENCH_SCHEMA, script: input.script } } });
   }
 }

@@ -8,6 +8,7 @@ import { runMigrations } from "./migrations";
 import { RuntimeStore } from "./runtime-store";
 import { TextChainService } from "./text-chain";
 import { ProjectLibraryStore } from "./project-library";
+import { ScriptWorkbenchStore } from "./script-workbench";
 import { ScriptWorkbenchTrashStore } from "./script-workbench-trash";
 
 const pattern = /^ads_trash_acceptance_[a-z0-9_]+$/;
@@ -84,6 +85,30 @@ describe("script workbench reversible trash (isolated PostgreSQL)", () => {
     expect(after.freshnessStatus).toBe("STALE"); expect((await store.listTrash(w.workspaceId)).items).toHaveLength(0);
     await expect(chain.transitionReview({ table: "script_revision", workspaceId: w.workspaceId, revisionId: w.revisionId,
       expectedVersion: restored.rowVersion, expectedReviewVersion: 1, to: "IN_REVIEW" })).rejects.toMatchObject({ code: "REVISION_CONFLICT" });
+  });
+  it("resolves an approved current pointer outside 100 history rows and pages a restored old version without changing pointers", async () => {
+    const w = await world(true);
+    // Restored historical rows can be newer than the still-current locked revision.
+    await pool.query(`INSERT INTO script_revision(workspace_id,project_id,episode_id,revision_no,source_story_revision_id,content_json,content_hash,created_by,freshness_status,stale_reason,stale_from_ref)
+      SELECT workspace_id,project_id,episode_id,n,source_story_revision_id,content_json,content_hash,'qa','STALE','SCRIPT_TRASHED','script_revision:' || id::text
+      FROM script_revision CROSS JOIN generate_series(2,102) AS n WHERE id=$1`, [w.revisionId]);
+    const workbench = new ScriptWorkbenchStore(pool);
+    const before = await workbench.snapshot(w.workspaceId, w.projectId);
+    const episode = before.episodes.find(item => item.id === w.episodeId)!;
+    expect(episode.history).toHaveLength(100);
+    expect(episode.history.some(item => item.id === w.revisionId)).toBe(false);
+    expect(episode.script).toMatchObject({ id: w.revisionId, reviewStatus: "APPROVED", freshnessStatus: "CURRENT" });
+    expect((await chain.listScriptRevisions(w.workspaceId, w.projectId, w.episodeId, "3")).items.map(item => item.revisionNo)).toEqual([2,1]);
+    const removed = await store.trashRevision(w.workspaceId, w.projectId, w.episodeId, w.revisionId, { expectedVersion: episode.rowVersion });
+    expect((await chain.listScriptRevisions(w.workspaceId, w.projectId, w.episodeId, "3")).items.map(item => item.revisionNo)).toEqual([2]);
+    await store.restoreRevision(w.workspaceId, w.projectId, w.episodeId, w.revisionId, { expectedVersion: removed.rowVersion });
+    const after = (await workbench.snapshot(w.workspaceId, w.projectId)).episodes.find(item => item.id === w.episodeId)!;
+    expect(after).toMatchObject({ currentScriptRevisionId: null, approvedScriptRevisionId: null, script: null });
+    const page = await chain.listScriptRevisions(w.workspaceId, w.projectId, w.episodeId, "3");
+    expect(page.items.find(item => item.id === w.revisionId)).toMatchObject({ freshnessStatus: "STALE" });
+    expect(page.nextCursor).toBeNull();
+    expect((await chain.listScriptRevisions(randomUUID(), w.projectId, w.episodeId, "3")).items).toEqual([]);
+    expect((await chain.listScriptRevisions(w.workspaceId, randomUUID(), w.episodeId, "3")).items).toEqual([]);
   });
   it("enforces workspace scope and compare-and-swap, with only one winner under concurrent deletes", async () => {
     const w = await world(); const other = await world(); const expectedVersion = await version("episode", w.episodeId);

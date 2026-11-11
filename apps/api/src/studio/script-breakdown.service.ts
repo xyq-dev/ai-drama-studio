@@ -239,7 +239,7 @@ export class ScriptBreakdownService {
     if (source.kind === "not_found") return failure(404, "EPISODE_NOT_FOUND");
     if (source.kind === "script_missing") return failure(409, "SCRIPT_BREAKDOWN_NO_SCRIPT");
     if (source.kind !== "ok") return failure(409, "SCRIPT_REVIEW_REQUIRED");
-    const scriptText = scriptTextOf(source.scriptContent);
+    const scriptText = scriptTextOf(source.scriptContent, source.sourceStoryContent);
     if (scriptText === null || scriptText.trim().length === 0) return failure(422, "SCRIPT_BREAKDOWN_SCRIPT_UNSUPPORTED");
     if (scriptText.length > SCRIPT_BREAKDOWN_LIMITS.scriptMaxChars) {
       return failure(422, "SCRIPT_BREAKDOWN_SCRIPT_TOO_LARGE", { chars: scriptText.length, maxChars: SCRIPT_BREAKDOWN_LIMITS.scriptMaxChars });
