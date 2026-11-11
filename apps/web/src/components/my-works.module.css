@@ -97,6 +97,8 @@
 @media (max-width: 1199px) {
   .page { padding-right: 24px; padding-left: 24px; }
   .workspace { grid-template-columns: 160px minmax(0, 1fr); }
+  .categoryList button { gap: 8px; font-size: 14px; }
+  .newCategory { padding: 6px 8px; font-size: 14px; white-space: nowrap; }
   .library { padding: 0 18px; }
   .toolbar { align-items: stretch; }
   .toolbarControls { width: 100%; }
