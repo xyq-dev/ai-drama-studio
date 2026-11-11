@@ -89,12 +89,14 @@ try {
     if (width >= 900) {
       const layout = await page.locator('tbody tr').evaluateAll((rows) => rows.map((row) => {
         const cells = Array.from(row.querySelectorAll('td'));
-        const action = cells.at(-1), links = Array.from(action.querySelectorAll('a')).map((link) => link.getBoundingClientRect());
+        const action = cells.at(-1), controls = Array.from(action.querySelectorAll('a, button')).map((control) => control.getBoundingClientRect());
         const bounds = action.getBoundingClientRect();
-        return { height: row.getBoundingClientRect().height, sameLine: Math.abs(links[0].y - links[1].y) <= 4,
-          actionsFit: links.every((rect) => rect.x >= bounds.x && rect.right <= bounds.right + 1) };
+        return { height: row.getBoundingClientRect().height,
+          sameLine: Math.max(...controls.map((rect) => rect.y)) - Math.min(...controls.map((rect) => rect.y)) <= 4,
+          actionsFit: controls.every((rect) => rect.x >= bounds.x && rect.right <= bounds.right + 1),
+          noOverlap: controls.every((rect, index) => index === 0 || rect.x >= controls[index - 1].right - 1) };
       }));
-      assert.ok(layout.every((row) => row.sameLine && row.actionsFit), `Overlapping or stacked actions at ${width}`);
+      assert.ok(layout.every((row) => row.sameLine && row.actionsFit && row.noOverlap), `Overlapping or stacked actions at ${width}: ${JSON.stringify(layout)}`);
       if (width >= 1440) assert.ok(layout.every((row) => row.height <= 80), `Ordinary rows too tall at ${width}`);
     }
     const screenshot = `project-library-${width}.png`; await page.screenshot({ path: resolve(output, screenshot), fullPage: true });
