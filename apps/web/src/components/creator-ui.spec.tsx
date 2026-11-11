@@ -145,12 +145,12 @@ describe("creator interface", () => {
     fireEvent.click(screen.getByRole("button", { name: "打开导航" }));
     const dialog = await screen.findByRole("dialog", { name: "导航" });
     const close = screen.getByRole("button", { name: "关闭导航" });
-    const status = within(dialog).getByRole("link", { name: "服务状态" });
-    status.focus();
+    const settings = within(dialog).getByRole("link", { name: "设置" });
+    settings.focus();
     fireEvent.keyDown(window, { key: "Tab" });
     expect(document.activeElement).toBe(close);
     fireEvent.keyDown(window, { key: "Tab", shiftKey: true });
-    expect(document.activeElement).toBe(status);
+    expect(document.activeElement).toBe(settings);
     expect(dialog.contains(document.activeElement)).toBe(true);
     matches = true;
     act(() => {

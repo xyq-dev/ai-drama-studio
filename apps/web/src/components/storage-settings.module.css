@@ -1,0 +1,55 @@
+.page { max-width: 1560px; padding: 32px var(--studio-page-pad) 48px; margin: 0 auto; color: var(--studio-text); }
+.heading { margin-bottom: 26px; }
+.heading h1 { margin: 0 0 10px; font-size: 32px; font-weight: 750; letter-spacing: -.03em; }
+.heading p { margin: 0; color: var(--studio-muted); font-size: 15px; line-height: 1.7; }
+.providers { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 16px; margin-bottom: 24px; border: 0; padding: 0; }
+.provider { display: flex; align-items: center; gap: 12px; min-height: 66px; padding: 16px 20px; border: 1px solid var(--studio-line); border-radius: 12px; background: var(--studio-card); font-size: 16px; font-weight: 650; color: var(--studio-text); text-align: left; cursor: pointer; }
+.provider svg { flex-shrink: 0; }
+.provider input { margin-left: auto; accent-color: var(--studio-accent); width: 18px; height: 18px; }
+.provider:has(input:checked) { border-color: var(--studio-accent); background: var(--studio-selected); color: var(--studio-accent-hover); }
+.layout { display: grid; grid-template-columns: minmax(0,2.2fr) minmax(240px,1fr); gap: 20px; align-items: start; }
+.panel { border: 1px solid var(--studio-line); border-radius: 18px; background: var(--studio-card); padding: 26px; min-width: 0; }
+.panelTitle { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-bottom: 8px; }
+.panel h2 { font-size: 22px; margin: 0; font-weight: 700; }
+.panel h3 { font-size: 17px; margin: 0 0 16px; font-weight: 650; }
+.muted { color: var(--studio-muted); font-size: 13px; line-height: 1.7; margin: 6px 0 20px; }
+.badge { border: 1px solid var(--studio-line); background: var(--studio-soft); color: var(--studio-muted); border-radius: 6px; padding: 3px 8px; font-size: 12px; font-weight: 500; }
+.badge[data-tone=warning] { background: #fff5e4; border-color: #ebc786; color: #87531b; }
+.badge[data-tone=success] { background: #edf5ef; border-color: #bfd1c4; color: #316349; }
+.formGrid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 18px 24px; }
+.field { display: flex; flex-direction: column; gap: 8px; min-width: 0; font-size: 14px; font-weight: 550; }
+.wide { grid-column: 1 / -1; }
+.required { color: var(--studio-accent); }
+.input, .select { width: 100%; min-width: 0; min-height: 44px; border: 1px solid #c9cac5; border-radius: 10px; padding: 9px 12px; background: var(--studio-card); color: var(--studio-text); font: inherit; font-weight: 400; }
+.input[readOnly] { background: var(--studio-soft); color: var(--studio-muted); }
+.input::placeholder { color: #71736d; }
+.input:focus-visible, .select:focus-visible, .button:focus-visible, .provider:focus-within { outline: 2px solid var(--studio-accent); outline-offset: 3px; }
+.secretNote { display: flex; gap: 8px; color: var(--studio-muted); font-size: 12px; line-height: 1.6; margin: -8px 0 0; }
+.check { display: flex; gap: 10px; align-items: center; min-height: 44px; font-size: 13px; color: var(--studio-muted); }
+.check input { accent-color: var(--studio-accent); width: 17px; height: 17px; }
+.access { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; padding: 15px; background: var(--studio-selected); border-radius: 12px; margin-top: 22px; font-size: 13px; }
+.access strong { color: var(--studio-accent-hover); }
+.actions { display: flex; flex-wrap: wrap; gap: 12px; border-top: 1px solid var(--studio-line); padding-top: 20px; margin-top: 22px; }
+.button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; border: 1px solid #c9cac5; border-radius: 10px; padding: 10px 20px; color: var(--studio-text); background: var(--studio-card); font-size: 14px; font-weight: 600; cursor: pointer; }
+.primary { background: var(--studio-accent); color: white; border-color: var(--studio-accent); }
+.button:hover:not(:disabled) { border-color: var(--studio-accent); }
+.primary:hover:not(:disabled) { background: var(--studio-accent-hover); }
+.button:disabled { color: #82847e; background: #ededeb; border-color: #e3e4df; cursor: not-allowed; }
+.sideTitle { display: flex; align-items: center; gap: 10px; margin: 20px 0; font-size: 23px; font-weight: 650; }
+.facts { display: grid; grid-template-columns: 88px minmax(0,1fr); gap: 12px; margin: 0; font-size: 13px; line-height: 1.6; }
+.facts dt { color: var(--studio-muted); }
+.facts dd { margin: 0; overflow-wrap: anywhere; }
+.divider { border: 0; border-top: 1px solid var(--studio-line); margin: 24px 0; }
+.rules { padding: 16px; border: 1px solid var(--studio-line); border-radius: 12px; background: var(--studio-raised); margin: 20px 0 0; font-size: 13px; line-height: 1.8; }
+.rules h3 { font-size: 14px; margin: 0 0 8px; }
+.rules ul { margin: 0; padding-left: 18px; }
+.notice { padding: 14px 18px; border: 1px solid var(--studio-line); border-radius: 12px; background: var(--studio-card); margin: 0 0 20px; line-height: 1.7; font-size: 14px; overflow-wrap: anywhere; }
+.notice[data-error=true] { border-color: #e3afa8; background: #fff5f3; color: #8c342c; }
+.notice .button { margin-top: 12px; }
+.bottomNote { margin: 14px 0 0; color: var(--studio-muted); font-size: 12px; line-height: 1.7; }
+.modalBackdrop { position: fixed; inset: 0; background: rgb(24 29 26 / .4); display: grid; place-items: center; z-index: 80; padding: 20px; }
+.dialog { width: min(460px,100%); padding: 28px; border-radius: 18px; background: var(--studio-card); box-shadow: 0 20px 60px #0002; }
+.dialog h2 { font-size: 22px; margin: 0 0 16px; }
+.dialog p { font-size: 14px; line-height: 1.8; color: var(--studio-muted); }
+@media (max-width: 1279px) { .layout { grid-template-columns: minmax(0,1fr); } .panel { padding: 22px; } .providers { gap: 10px; } .provider { padding: 12px; font-size: 14px; gap: 8px; } }
+@media (max-width: 639px) { .page { padding: 24px 16px 40px; } .heading h1 { font-size: 28px; } .providers { grid-template-columns: repeat(2,minmax(0,1fr)); } .provider { min-height: 60px; } .panel { padding: 18px; } .formGrid { grid-template-columns: minmax(0,1fr); gap: 16px; } .panel h2 { font-size: 20px; } .actions .button { flex: 1 1 120px; padding: 10px 12px; } .access { gap: 10px; } }

@@ -16,6 +16,7 @@ const WORKSPACE = "11111111-1111-4111-8111-111111111111";
 const PROJECT = "22222222-2222-4222-8222-222222222222";
 const EPISODE = "33333333-3333-4333-8333-333333333333";
 const TOKEN = "test-only-production-writing-token";
+const STORAGE_SCHEMA_PROBE = "SELECT to_regclass('storage_settings_state') IS NOT NULL AS present";
 const BASE = {
   NODE_ENV: "production", DATABASE_URL: "postgresql://unused:unused@127.0.0.1:1/no-database",
   REDIS_URL: "redis://127.0.0.1:1", S3_ENDPOINT: "http://127.0.0.1:1", S3_REGION: "us-east-1",
@@ -41,7 +42,11 @@ describe("production title writing authorization through StudioRuntime.open", ()
     vi.spyOn(RuntimeStore.prototype, "episodePlanReady").mockResolvedValue(true);
     vi.spyOn(PostgresTitleWritingStore.prototype, "storageReady").mockResolvedValue(true);
     vi.spyOn(PostgresTitleWritingStore.prototype, "breakdownStorageReady").mockResolvedValue(false);
-    databaseQuery = vi.fn(async () => { throw new Error("Unexpected database access in startup wiring test"); });
+    databaseQuery = vi.fn(async (sql: string) => {
+      // Only the read-only storage startup guard is allowed; this fixture has not installed its optional draft.
+      if (sql === STORAGE_SCHEMA_PROBE) return { rows: [{ present: false }] };
+      throw new Error("Unexpected database access in startup wiring test");
+    });
     vi.mocked(createPostgresPool).mockReturnValue({
       query: databaseQuery,
       connect: vi.fn(async () => { throw new Error("Database connections are forbidden in startup wiring test"); }),
@@ -55,7 +60,7 @@ describe("production title writing authorization through StudioRuntime.open", ()
     try {
       for (const runtime of runtimes) await runtime.onModuleDestroy();
       expect(outbound).not.toHaveBeenCalled();
-      expect(databaseQuery).not.toHaveBeenCalled();
+      expect(databaseQuery).toHaveBeenCalledExactlyOnceWith(STORAGE_SCHEMA_PROBE);
     } finally {
       runtimes.clear();
       vi.restoreAllMocks();

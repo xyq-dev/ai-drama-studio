@@ -37,6 +37,9 @@ export class EnvValidationError extends Error {
 }
 
 export interface WorkerEnv {
+  STORAGE_SETTINGS_ENABLED?: string;
+  STORAGE_SETTINGS_KEY?: string;
+  STORAGE_SETTINGS_ALLOWED_ENDPOINTS?: string;
   REAL_MEDIA_SITE_AUTH_CONFIGURED:boolean;
   REAL_MEDIA_ENV?: RealMediaEnvironment;
   REAL_MEDIA_WORKSPACE_ID?: string;
@@ -142,6 +145,9 @@ export function loadWorkerEnv(
   }
   return {
     ...parsed.data,
+    ...(processEnv.STORAGE_SETTINGS_ENABLED !== undefined ? { STORAGE_SETTINGS_ENABLED: processEnv.STORAGE_SETTINGS_ENABLED } : {}),
+    ...(processEnv.STORAGE_SETTINGS_KEY !== undefined ? { STORAGE_SETTINGS_KEY: processEnv.STORAGE_SETTINGS_KEY } : {}),
+    ...(processEnv.STORAGE_SETTINGS_ALLOWED_ENDPOINTS !== undefined ? { STORAGE_SETTINGS_ALLOWED_ENDPOINTS: processEnv.STORAGE_SETTINGS_ALLOWED_ENDPOINTS } : {}),
     REAL_MEDIA_SITE_AUTH_CONFIGURED:mediaSiteAuthenticationConfigured(processEnv,parsed.data.NODE_ENV),
     M3_MOCK_IMAGE_ENABLED: parsed.data.M3_MOCK_IMAGE_ENABLED === "true",
     M3_MOCK_AV_ENABLED: parsed.data.M3_MOCK_AV_ENABLED === "true",

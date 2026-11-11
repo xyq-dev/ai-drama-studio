@@ -17,6 +17,7 @@ vi.mock("@ai-drama/database", async (importOriginal) => {
 });
 
 const WORKSPACE = "11111111-1111-4111-8111-111111111111";
+const STORAGE_SCHEMA_PROBE = "SELECT to_regclass('storage_settings_state') IS NOT NULL AS present";
 const LEGACY_KEY = "sk-ant-api03-test-environment-claude-secret";
 const SAVED_KEY = "sk-test-managed-openai-secret";
 const BASE = {
@@ -79,6 +80,8 @@ describe.skipIf(process.platform === "win32")("StudioRuntime managed model start
     vi.mocked(createPostgresPool).mockImplementation(() => {
       const pool: FakePool = {
         query: vi.fn(async (sql: string, values?: unknown[]) => {
+          // This model-vault fixture predates the optional storage draft. Keep the real startup safety probe.
+          if (sql === STORAGE_SCHEMA_PROBE) return { rows: [{ present: false }] };
           if (sql.includes("to_regclass") && sql.includes("title_writing_run")) {
             if (metadataFailure) throw metadataFailure;
             return { rows: [{ missing: tableMissing }] };
@@ -249,7 +252,8 @@ describe.skipIf(process.platform === "win32")("StudioRuntime managed model start
     expect(await restarted.adminModels!.view()).toMatchObject({
       pendingRestart: true, activationDeferred: true, activeRevision: 0, savedRevision: 2,
     });
-    expect(pools.at(-1)!.query).toHaveBeenCalledTimes(2);
+    expect(pools.at(-1)!.query).toHaveBeenCalledTimes(3);
+    expect(pools.at(-1)!.query).toHaveBeenNthCalledWith(1, STORAGE_SCHEMA_PROBE);
     expect(pools.at(-1)!.query.mock.calls.find(([sql]) => sql.includes("state = 'running'"))?.[1]).toEqual([WORKSPACE]);
   });
 
@@ -299,7 +303,7 @@ describe.skipIf(process.platform === "win32")("StudioRuntime managed model start
     expect(runtime.adminConsoleEnabled).toBe(false);
     expect(runtime.adminModels).toBeNull();
     expect(await options(runtime)).toMatchObject({ defaultProvider: "anthropic", maxCallsPerDay: 30, maxActiveRuns: 1 });
-    expect(pools.at(-1)!.query).not.toHaveBeenCalled();
+    expect(pools.at(-1)!.query).toHaveBeenCalledExactlyOnceWith(STORAGE_SCHEMA_PROBE);
   });
 
   it("fails closed on a corrupted vault and closes the startup database pool without installing timers", async () => {
@@ -309,7 +313,7 @@ describe.skipIf(process.platform === "win32")("StudioRuntime managed model start
     const interval = vi.spyOn(globalThis, "setInterval");
     await expect(StudioRuntime.open(env)).rejects.toMatchObject({ code: "ADMIN_CONFIG_STORAGE_UNAVAILABLE" });
     expect(pools.at(-1)!.end).toHaveBeenCalledExactlyOnceWith();
-    expect(pools.at(-1)!.query).not.toHaveBeenCalled();
+    expect(pools.at(-1)!.query).toHaveBeenCalledExactlyOnceWith(STORAGE_SCHEMA_PROBE);
     expect(interval).not.toHaveBeenCalled();
   });
 
@@ -355,8 +359,9 @@ describe.skipIf(process.platform === "win32")("StudioRuntime managed model start
     const runtime = await open(env);
     expect(await options(runtime)).toMatchObject({ storageReady: false, defaultProvider: "openai", maxCallsPerDay: 8, maxActiveRuns: 2 });
     expect(await runtime.adminModels!.view()).toMatchObject({ pendingRestart: false, activationDeferred: false, activeRevision: 2 });
-    expect(pools.at(-1)!.query).toHaveBeenCalledTimes(1);
-    expect(pools.at(-1)!.query.mock.calls[0]?.[0]).toContain("to_regclass");
+    expect(pools.at(-1)!.query).toHaveBeenCalledTimes(2);
+    expect(pools.at(-1)!.query).toHaveBeenNthCalledWith(1, STORAGE_SCHEMA_PROBE);
+    expect(pools.at(-1)!.query.mock.calls[1]?.[0]).toContain("to_regclass");
     expect(pools.at(-1)!.query.mock.calls.some(([sql]) => sql.includes("state = 'running'"))).toBe(false);
   });
 

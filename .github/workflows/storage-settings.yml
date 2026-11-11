@@ -1,0 +1,79 @@
+name: Studio library and storage acceptance
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "apps/api/**"
+      - "apps/worker/**"
+      - "packages/**"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/storage-settings.yml"
+  push:
+    branches: [main]
+    paths:
+      - "apps/api/**"
+      - "apps/worker/**"
+      - "packages/**"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/storage-settings.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  storage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.21.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Generate Prisma and build backend
+        env:
+          DATABASE_URL: postgresql://prisma-offline@127.0.0.1:1/prisma_offline_placeholder
+        run: |
+          pnpm --filter @ai-drama/database prisma:generate
+          pnpm --filter @ai-drama/api... --filter @ai-drama/worker... build
+      - name: Create fresh job-specific database
+        env:
+          PGHOST: 127.0.0.1
+          PGUSER: postgres
+        run: |
+          name="ads_storage_acceptance_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+          createdb "$name"
+          echo "STORAGE_SETTINGS_TEST_DATABASE_NAME=$name" >> "$GITHUB_ENV"
+          echo "STORAGE_SETTINGS_TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:5432/$name" >> "$GITHUB_ENV"
+          library="ads_library_acceptance_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+          createdb "$library"
+          echo "PROJECT_LIBRARY_TEST_DATABASE_NAME=$library" >> "$GITHUB_ENV"
+          echo "PROJECT_LIBRARY_TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:5432/$library" >> "$GITHUB_ENV"
+      - name: Verify revision races, encrypted credentials and immutable historical routing
+        env:
+          STORAGE_SETTINGS_TEST_ALLOW_WRITES: "true"
+          STORAGE_SETTINGS_TEST_ALLOW_DRAFT: "true"
+        run: pnpm --filter @ai-drama/database exec vitest run --config vitest.storage-settings-acceptance.config.ts
+      - name: Verify library pagination, isolation and concurrent classification
+        env:
+          PROJECT_LIBRARY_TEST_ALLOW_WRITES: "true"
+          PROJECT_LIBRARY_TEST_ALLOW_DRAFT: "true"
+        run: pnpm --filter @ai-drama/database exec vitest run --config vitest.project-library-acceptance.config.ts

@@ -58,6 +58,8 @@ async function bootstrap(): Promise<void> {
     composeFailInsideCommit: composeAllowed && env.M4_COMPOSE_FAIL_INSIDE_COMMIT,
     ...(realRuntime ? { realMediaRuntime: realRuntime } : {}),
     ...(env.REAL_MEDIA_S3 ? { realMediaS3: env.REAL_MEDIA_S3 } : {}),
+    storageSettingsEnvironment: env,
+    ...(env.REAL_MEDIA_WORKSPACE_ID ? { storageWorkspaceId: env.REAL_MEDIA_WORKSPACE_ID } : {}),
     voiceComposeEnabled: realComposeAllowed,
     ...(env.M4_VOICE_COMPOSE_FONT_PATH ? { voiceComposeFontPath: env.M4_VOICE_COMPOSE_FONT_PATH } : {}),
   });

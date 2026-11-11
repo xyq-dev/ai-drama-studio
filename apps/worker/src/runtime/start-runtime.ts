@@ -9,6 +9,7 @@ import {
   isMockMediaJobKind,
   type PostgresPool,
   CharacterReferenceStore,
+  openStorageSettingsStore, storageSettingsOptions, type StorageSettingsEnvironment,
 } from "@ai-drama/database";
 import { composeSourcesAllowed,isSampleVideoSnapshot,realMediaAccessAllowed } from "@ai-drama/contracts";
 import { MockMediaAdapter, MockProvider, MockTextAdapter, type MockRequestState } from "@ai-drama/providers";
@@ -28,7 +29,7 @@ import { MockMediaRecovery } from "./mock-media-recovery";
 import { CharacterReferenceRecovery, runMockCharacterReferenceJob } from "./mock-character-reference";
 import { describeRecoveryError, isProcessStopping, runRecoveryModules } from "./recovery-modules";
 import { RealMediaStore, PostgresVoiceComposeStore } from "@ai-drama/database";
-import { MediaS3Client, type ServerRealMediaRuntime, type MediaS3Configuration } from "@ai-drama/providers";
+import { MediaS3Client, ManagedStorageRouter, type ServerRealMediaRuntime, type MediaS3Configuration } from "@ai-drama/providers";
 import { VOICE_COMPOSE_JOB_SCHEMA, type VoiceComposeJobSnapshot } from "@ai-drama/domain";
 import { runRealMediaJob, RealMediaRecovery, type RealMediaWorkerDependencies } from "./real-media-job";
 import { S3RealMediaObjects } from "./real-media-objects";
@@ -110,10 +111,13 @@ export async function startQueueRuntime(options: {
   onRecoveryError?: (message: string) => void;
   realMediaRuntime?: ServerRealMediaRuntime;
   realMediaS3?: MediaS3Configuration;
+  storageSettingsEnvironment?: StorageSettingsEnvironment;
+  storageWorkspaceId?: string;
   voiceComposeEnabled?: boolean;
   voiceComposeFontPath?: string;
 }): Promise<RuntimeHandle> {
   const nodeEnv=options.nodeEnv??process.env.NODE_ENV??"development";
+  const storageOptions = storageSettingsOptions(options.storageSettingsEnvironment ?? {});
   const realAccessAllowed=realMediaAccessAllowed({nodeEnv,siteAuthConfigured:options.realMediaSiteAuthConfigured===true,allowProduction:options.realMediaAllowProduction===true});
   if (options.mockObjectDir && (nodeEnv === "production" || !isAbsolute(options.mockObjectDir))) {
     throw new Error("Mock media requires an absolute local directory and is forbidden in production");
@@ -124,6 +128,13 @@ export async function startQueueRuntime(options: {
     statementTimeoutMs: 10000,
     queryTimeoutMs: 10000,
   });
+  // Resolve shared routing before queue consumers can invoke a paid provider.
+  let storageAuthority: Awaited<ReturnType<typeof openStorageSettingsStore>> = null;
+  try {
+    if (options.realMediaS3 && options.storageWorkspaceId) storageAuthority = await openStorageSettingsStore(pool,
+      options.storageWorkspaceId, options.storageSettingsEnvironment ?? {}, { ...options.realMediaS3, provider: "s3", prefix: "" });
+    else if (storageOptions.enabled || storageOptions.key) throw new Error("STORAGE_SETTINGS_UNAVAILABLE");
+  } catch (error) { await closePostgresPool(pool); throw error; }
   const provider = new MockProvider();
   const jobs = new JobPersistenceService(pool, {
     inspect: ({ providerRequestId }) => Promise.resolve(inspectState(provider.inspect(providerRequestId))),
@@ -142,7 +153,8 @@ export async function startQueueRuntime(options: {
   const objects = options.mockObjectDir ? new LocalMockObjects(options.mockObjectDir) : null;
   const realStore = new RealMediaStore(pool, options.realMediaRuntime?.receiptCipher
     ? { receiptCipher: options.realMediaRuntime.receiptCipher } : {});
-  const realClient = options.realMediaRuntime?.receiptCipher && options.realMediaS3 ? new MediaS3Client(options.realMediaS3) : null;
+  const realClient = options.realMediaRuntime?.receiptCipher && options.realMediaS3
+    ? (storageAuthority ? new ManagedStorageRouter(storageAuthority, storageOptions) : new MediaS3Client(options.realMediaS3)) : null;
   const realObjects = realClient ? new S3RealMediaObjects(realClient) : null;
   const realDependencies: RealMediaWorkerDependencies | null = realObjects && options.realMediaRuntime && options.composeWorkDir
     ? { jobs, assets, store: realStore, objects: realObjects,characterReferenceGate:options.characterReferenceGate,

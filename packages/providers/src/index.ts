@@ -156,3 +156,5 @@ export * from "./elevenlabs-tts-adapter";
 export * from "./minimax-tts-adapter";
 export * from "./real-media-runtime";
 export * from "./media-object-client";
+export * from "./managed-storage-client";
+export * from "./managed-storage-router";

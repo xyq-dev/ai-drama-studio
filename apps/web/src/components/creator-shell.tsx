@@ -11,6 +11,7 @@ const LINKS = [
   { href: "/preview", label: "界面示例", icon: "preview" },
   { href: "/help", label: "帮助", icon: "help" },
   { href: "/status", label: "服务状态", icon: "status" },
+  { href: "/settings/storage", label: "设置", icon: "settings" },
 ] as const;
 
 function NavIcon({ icon }: { icon: (typeof LINKS)[number]["icon"] }) {
@@ -20,6 +21,7 @@ function NavIcon({ icon }: { icon: (typeof LINKS)[number]["icon"] }) {
     {icon === "preview" ? <><rect x="3" y="4" width="18" height="16" rx="3" /><path d="m10 8 5 4-5 4Z" /></> : null}
     {icon === "status" ? <><path d="M3 12h4l3-7 4 14 3-7h4" /></> : null}
     {icon === "help" ? <><circle cx="12" cy="12" r="9" /><path d="M9.5 9a2.5 2.5 0 0 1 5 .5c0 1.5-2.5 1.5-2.5 3M12 16h.01" /></> : null}
+    {icon === "settings" ? <><path d="m9 3-.6 2.1-1.7 1L4.5 6.5l-2 3.5L4 11.6v2L2.5 15l2 3.5 2.2-.6 1.7 1L9 21h4l.6-2.1 1.7-1 2.2.6 2-3.5-1.5-1.4v-2l1.5-1.6-2-3.5-2.2.6-1.7-1L13 3Z" /><circle cx="11" cy="12" r="3" /></> : null}
   </svg>;
 }
 
@@ -58,7 +60,7 @@ export function CreatorShell({ children, activePath }: { children: ReactNode; ac
   }, [open, wide]);
 
   const navigation = <nav aria-label="主导航" className={styles.navigation}><ul>
-    {LINKS.map((link) => <li key={link.href} className={link.icon === "preview" ? styles.help : undefined}>
+    {LINKS.map((link) => <li key={link.href} className={link.icon === "preview" ? styles.help : link.icon === "settings" ? styles.settings : undefined}>
       {link.icon === "works" || link.icon === "preview" ? <span className={styles.navSection} aria-hidden="true">{link.icon === "works" ? "创作工作区" : "了解与帮助"}</span> : null}
       <a className={styles.navLink} href={link.href} aria-current={activePath === link.href ? "page" : undefined}>
         <NavIcon icon={link.icon} />{link.label}
