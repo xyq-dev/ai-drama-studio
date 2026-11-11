@@ -1,13 +1,18 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-// Every case runs the helper against a temporary copy of an APT configuration, never the real /etc/apt.
+// Every case uses a temporary APT root and a fake curl on PATH: no real /etc/apt and no network calls.
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "apt-official-https.sh");
+const AZURE = "https://azure.archive.ubuntu.com/ubuntu/";
+const ARCHIVE = "https://archive.ubuntu.com/ubuntu/";
+const SECURITY = "https://security.ubuntu.com/ubuntu/";
+const KERNEL = "https://mirrors.kernel.org/ubuntu/";
+const probeUrl = (endpoint) => `${endpoint}dists/noble/InRelease`;
 
 /** The ubuntu-24.04 runner's own layout: the archive named through mirror+file, the list led by the Azure mirror. */
 const RUNNER_SOURCES = [
@@ -35,9 +40,32 @@ function aptRoot(files) {
   return root;
 }
 
-function run(root) {
-  const result = spawnSync("bash", [SCRIPT, root.replaceAll("\\", "/")], { encoding: "utf8" });
-  return { status: result.status, out: result.stdout, err: result.stderr };
+function run(root, healthy = [AZURE]) {
+  const fake = mkdtempSync(join(tmpdir(), "apt-fake-curl-"));
+  const log = join(fake, "calls.txt");
+  writeFileSync(log, "");
+  writeFileSync(join(fake, "curl"), [
+    "#!/usr/bin/env bash",
+    "printf '%s\\n' \"$*\" >> \"$FAKE_CURL_LOG\"",
+    'url="${@: -1}"',
+    'case ",${FAKE_CURL_HEALTHY}," in',
+    '  *",$url,"*) printf 200; exit 0 ;;',
+    '  *) printf 000; exit 28 ;;',
+    'esac',
+    "",
+  ].join("\n"));
+  chmodSync(join(fake, "curl"), 0o755);
+  try {
+    const result = spawnSync("bash", [SCRIPT, root.replaceAll("\\", "/")], {
+      encoding: "utf8",
+      env: { ...process.env, PATH: `${fake}:${process.env.PATH ?? ""}`,
+        FAKE_CURL_LOG: log, FAKE_CURL_HEALTHY: healthy.map(probeUrl).join(",") },
+    });
+    const calls = readFileSync(log, "utf8").split("\n").filter(Boolean);
+    return { status: result.status, out: result.stdout, err: result.stderr, calls };
+  } finally {
+    rmSync(fake, { recursive: true, force: true });
+  }
 }
 
 function snapshot(root, dir = root) {
@@ -47,7 +75,7 @@ function snapshot(root, dir = root) {
   }));
 }
 
-test("the runner keeps mirror+file, official HTTPS fallback priorities and signing", (t) => {
+test("the runner selects healthy Azure HTTPS, keeping mirror+file, priorities and signing", (t) => {
   const root = aptRoot({
     "sources.list": "# Ubuntu sources have moved to /etc/apt/sources.list.d/ubuntu.sources\n",
     "sources.list.d/ubuntu.sources": RUNNER_SOURCES,
@@ -63,13 +91,16 @@ test("the runner keeps mirror+file, official HTTPS fallback priorities and signi
   assert.match(sources, /^Signed-By: \/usr\/share\/keyrings\/ubuntu-archive-keyring\.gpg$/m);
   assert.match(sources, /^Suites: noble noble-updates noble-backports noble-security$/m);
   const mirrors = readFileSync(join(root, "apt-mirrors.txt"), "utf8");
-  assert.equal(mirrors, RUNNER_MIRRORS.replace("http://azure.archive.ubuntu.com/ubuntu/", "https://archive.ubuntu.com/ubuntu/"));
+  assert.equal(mirrors, [1, 2, 3].map((priority) => `${AZURE}\tpriority:${priority}\n`).join(""));
   assert.equal(mirrors.includes("http://"), false);
-  assert.match(mirrors, /^https:\/\/archive\.ubuntu\.com\/ubuntu\/\tpriority:1$/m);
-  assert.match(mirrors, /^https:\/\/security\.ubuntu\.com\/ubuntu\/\tpriority:3$/m);
+  assert.equal(first.calls.length, 1);
+  assert.match(first.calls[0], /--connect-timeout 3 --max-time 5/);
+  assert.match(first.calls[0], /--proto =https --proto-redir =https/);
+  assert.ok(first.calls[0].endsWith(probeUrl(AZURE)));
+  assert.equal(first.calls[0].includes("--insecure"), false);
   assert.equal(readFileSync(join(root, "sources.list.d/microsoft-prod.list"), "utf8"), THIRD_PARTY);
   assert.equal(readFileSync(join(root, "apt.conf.d/99ci-download-limits"), "utf8"),
-    'Acquire::Retries "3";\nAcquire::http::Timeout "20";\nAcquire::https::Timeout "20";\n');
+    'Acquire::Retries "3";\nAcquire::http::Timeout "20";\nAcquire::https::Timeout "20";\nAPT::Update::Error-Mode "any";\n');
   assert.match(first.out, /ubuntu\.sources: URIs: mirror\+file:\/etc\/apt\/apt-mirrors\.txt$/m);
   assert.match(first.out, /APT download limits: Acquire::Retries "3";/);
 
@@ -79,12 +110,12 @@ test("the runner keeps mirror+file, official HTTPS fallback priorities and signi
   assert.deepEqual(snapshot(root), before);
 });
 
-test("direct HTTP archive and security URLs in one-line sources move to their official HTTPS hosts", (t) => {
+test("direct HTTP and HTTPS Ubuntu sources use only the selected healthy host", (t) => {
   const root = aptRoot({
     "sources.list": [
       "deb http://azure.archive.ubuntu.com/ubuntu/ noble main restricted",
       "deb http://archive.ubuntu.com/ubuntu noble-updates main",
-      "deb http://security.ubuntu.com/ubuntu noble-security main",
+      "deb https://security.ubuntu.com/ubuntu noble-security main",
       "",
     ].join("\n"),
     "sources.list.d/runner.sources": "Types: deb\nURIs: http://azure.archive.ubuntu.com/ubuntu/\nSuites: noble\nComponents: main\n"
@@ -95,12 +126,12 @@ test("direct HTTP archive and security URLs in one-line sources move to their of
   const result = run(root);
   assert.equal(result.status, 0, result.err);
   assert.equal(readFileSync(join(root, "sources.list"), "utf8"), [
-    "deb https://archive.ubuntu.com/ubuntu/ noble main restricted",
-    "deb https://archive.ubuntu.com/ubuntu noble-updates main",
-    "deb https://security.ubuntu.com/ubuntu noble-security main",
+    `deb ${AZURE} noble main restricted`,
+    `deb ${AZURE} noble-updates main`,
+    `deb ${AZURE} noble-security main`,
     "",
   ].join("\n"));
-  assert.match(readFileSync(join(root, "sources.list.d/runner.sources"), "utf8"), /^URIs: https:\/\/archive\.ubuntu\.com\/ubuntu\/$/m);
+  assert.match(readFileSync(join(root, "sources.list.d/runner.sources"), "utf8"), /^URIs: https:\/\/azure\.archive\.ubuntu\.com\/ubuntu\/$/m);
 });
 
 test("a mirror list naming no Ubuntu archive is left alone", (t) => {
@@ -110,6 +141,7 @@ test("a mirror list naming no Ubuntu archive is left alone", (t) => {
 
   const result = run(root);
   assert.equal(result.status, 0, result.err);
+  assert.deepEqual(result.calls, []);
   assert.equal(readFileSync(join(root, "sources.list.d/other.sources"), "utf8"), other);
 });
 
@@ -135,7 +167,7 @@ test("a referenced Ubuntu mirror list with remaining HTTP fails without removing
   assert.equal(readFileSync(join(root, "sources.list.d/ubuntu.sources"), "utf8"), RUNNER_SOURCES);
 });
 
-test("HTTP security entries become HTTPS while third-party entries in the same list remain unchanged", (t) => {
+test("Ubuntu entries use the healthy endpoint while third-party entries in the same list remain unchanged", (t) => {
   const mixed = [
     "http://security.ubuntu.com/ubuntu/\tpriority:1",
     "https://archive.ubuntu.com/ubuntu/\tpriority:2",
@@ -147,6 +179,48 @@ test("HTTP security entries become HTTPS while third-party entries in the same l
 
   const result = run(root);
   assert.equal(result.status, 0, result.err);
-  assert.equal(readFileSync(join(root, "apt-mirrors.txt"), "utf8"), mixed.replace("http://security.ubuntu.com", "https://security.ubuntu.com"));
+  assert.equal(readFileSync(join(root, "apt-mirrors.txt"), "utf8"), [
+    `${AZURE}\tpriority:1`, `${AZURE}\tpriority:2`, "http://mirror.example.org/custom/\tpriority:3", "",
+  ].join("\n"));
   assert.equal(readFileSync(join(root, "sources.list.d/ubuntu.sources"), "utf8"), RUNNER_SOURCES);
+});
+
+test("a failed Azure probe falls back to the first healthy Ubuntu endpoint without retaining failed hosts", (t) => {
+  const root = aptRoot({ "sources.list.d/ubuntu.sources": RUNNER_SOURCES, "apt-mirrors.txt": RUNNER_MIRRORS });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = run(root, [ARCHIVE, SECURITY]);
+  assert.equal(result.status, 0, result.err);
+  assert.deepEqual(result.calls.map((call) => call.split(" ").at(-1)), [probeUrl(AZURE), probeUrl(ARCHIVE)]);
+  assert.equal(readFileSync(join(root, "apt-mirrors.txt"), "utf8"),
+    [1, 2, 3].map((priority) => `${ARCHIVE}\tpriority:${priority}\n`).join(""));
+});
+
+test("Linux Kernel Archives is a bounded HTTPS fallback and a later run can select Azure again", (t) => {
+  const root = aptRoot({ "sources.list.d/ubuntu.sources": RUNNER_SOURCES, "apt-mirrors.txt": RUNNER_MIRRORS });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = run(root, [KERNEL]);
+  assert.equal(result.status, 0, result.err);
+  assert.deepEqual(result.calls.map((call) => call.split(" ").at(-1)), [AZURE, ARCHIVE, SECURITY, KERNEL].map(probeUrl));
+  assert.equal(readFileSync(join(root, "apt-mirrors.txt"), "utf8"),
+    [1, 2, 3].map((priority) => `${KERNEL}\tpriority:${priority}\n`).join(""));
+  const repeated = snapshot(root);
+  assert.equal(run(root, [KERNEL]).status, 0);
+  assert.deepEqual(snapshot(root), repeated);
+  assert.equal(run(root, [AZURE]).status, 0);
+  assert.equal(readFileSync(join(root, "apt-mirrors.txt"), "utf8"),
+    [1, 2, 3].map((priority) => `${AZURE}\tpriority:${priority}\n`).join(""));
+});
+
+test("all failed probes stop before any source or apt configuration is changed", (t) => {
+  const root = aptRoot({ "sources.list.d/ubuntu.sources": RUNNER_SOURCES, "apt-mirrors.txt": RUNNER_MIRRORS });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const before = snapshot(root);
+
+  const result = run(root, []);
+  assert.equal(result.status, 1);
+  assert.equal(result.calls.length, 4);
+  assert.match(result.err, /No Ubuntu HTTPS archive passed/);
+  assert.deepEqual(snapshot(root), before);
 });
