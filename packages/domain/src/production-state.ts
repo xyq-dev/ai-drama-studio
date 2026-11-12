@@ -308,8 +308,11 @@ function validateVersionContainer(
     pushIssue(issues, "VERSION_ID_DUPLICATE", path + ".versions", "Duplicate versionId: " + duplicate);
   }
   const byId = new Map(container.versions.map((version) => [version.versionId, version] as const));
-  if (!byId.has(container.currentVersionId)) {
+  const current = byId.get(container.currentVersionId);
+  if (!current) {
     pushIssue(issues, "CURRENT_VERSION_MISSING", path + ".currentVersionId", "currentVersionId does not exist in versions[]");
+  } else if (current.status === "locked" && container.activeLockedVersionId !== current.versionId) {
+    pushIssue(issues, "CURRENT_LOCKED_VERSION_NOT_ACTIVE", path + ".currentVersionId", "locked currentVersionId must equal activeLockedVersionId");
   }
   if (container.activeLockedVersionId !== null) {
     const active = byId.get(container.activeLockedVersionId);
