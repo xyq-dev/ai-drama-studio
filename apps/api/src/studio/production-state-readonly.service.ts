@@ -35,7 +35,7 @@ function validIdentifier(value: string): boolean {
 export class ProductionStateReadonlyService {
   private readonly root: string;
 
-  constructor(root: string) {
+  constructor(root: string = "/workspace/drama-studio/projects") {
     this.root = resolve(root);
   }
 

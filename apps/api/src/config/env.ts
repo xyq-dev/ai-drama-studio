@@ -73,7 +73,7 @@ export interface ApiEnv {
   HEALTH_CHECK_TIMEOUT_MS: number;
   APP_WORKSPACE_ID: string;
   /** Read-only root containing <projectId>/production-state.json files. */
-  PRODUCTION_STATE_ROOT: string;
+  PRODUCTION_STATE_ROOT?: string;
   M3_MOCK_IMAGE_ENABLED: boolean;
   M3_MOCK_AV_ENABLED: boolean;
   M4_MOCK_SAMPLE_VIDEO_ENABLED: boolean;
