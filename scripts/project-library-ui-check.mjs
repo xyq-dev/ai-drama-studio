@@ -2,7 +2,7 @@
 // This proves browser interaction and layout, not a production API or database deployment.
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -16,7 +16,7 @@ const P = "11111111-1111-4111-8111-111111111111", C = "22222222-2222-4222-8222-2
 const P2 = "33333333-3333-4333-8333-333333333333", P3 = "44444444-4444-4444-8444-444444444444";
 const P4 = "55555555-5555-4555-8555-555555555555";
 const evidence = { kind: "chromium-actual-react-local-api-fixture", database: false, productionData: false, checks: [], errors: [] };
-let categories, projects, requests, listMode = "normal";
+let categories, projects, requests, listMode = "normal", pageSize = 3;
 function reset() {
   categories = [{ id: C, name: "都市情感" }]; requests = [];
   projects = [
@@ -37,7 +37,9 @@ const server = await createServer({ configFile: false, root: web, optimizeDeps: 
         const url = new URL(req.url || "/", "http://fixture.invalid");
         if (url.pathname.startsWith("/api/v1/")) {
           if (url.pathname.startsWith("/api/v1/real-media/assets/")) {
+            const item = projects.find((project) => url.pathname.includes(project.id));
             res.setHeader("Content-Type", "image/svg+xml");
+            if (item?.fixtureCover) { res.end(await readFile(resolve(root, "scripts/fixtures/tailadmin-v2", item.fixtureCover))); return; }
             res.end('<svg xmlns="http://www.w3.org/2000/svg" width="480" height="300" viewBox="0 0 480 300"><defs><linearGradient id="g" x2="1" y2="1"><stop stop-color="#395b60"/><stop offset="1" stop-color="#cdb48e"/></linearGradient></defs><rect width="480" height="300" fill="url(#g)"/><path d="M0 240 90 110 165 180 250 75 380 180 480 110V300H0" fill="#233c3d" opacity=".6"/><circle cx="360" cy="78" r="32" fill="#e9d1a4"/><text x="26" y="275" font-size="22" fill="white">本地测试封面</text></svg>'); return;
           }
           res.setHeader("Content-Type", "application/json");
@@ -47,8 +49,8 @@ const server = await createServer({ configFile: false, root: web, optimizeDeps: 
             requests.push({ q, category, sort: url.searchParams.get("sort") || "updated", cursor: url.searchParams.get("cursor") });
             const found = projects.filter((item) => item.title.includes(q) || item.premise.includes(q));
             const filtered = found.filter((item) => category === "all" || (category === "uncategorized" ? item.categoryId === null : item.categoryId === category));
-            const offset = url.searchParams.get("cursor") ? 3 : 0;
-            res.end(JSON.stringify({ items: filtered.slice(offset, offset + 3), nextCursor: filtered.length > offset + 3 ? "next" : null,
+            const offset = url.searchParams.get("cursor") ? pageSize : 0;
+            res.end(JSON.stringify({ items: filtered.slice(offset, offset + pageSize), nextCursor: filtered.length > offset + pageSize ? "next" : null,
               total: filtered.length, allCount: found.length, unclassifiedCount: found.filter((item) => !item.categoryId).length,
               categories: categories.map((item) => ({ ...item, count: found.filter((project) => project.categoryId === item.id).length })), categoriesReady: true })); return;
           }
@@ -87,17 +89,18 @@ const server = await createServer({ configFile: false, root: web, optimizeDeps: 
 let browser;
 try {
   await mkdir(output, { recursive: true }); await server.listen(); browser = await chromium.launch({ headless: true });
-  for (const width of [1586, 1440, 1280, 1024, 900, 390]) {
+  for (const width of [1600, 1280, 1024, 768, 390, 320]) {
     reset(); listMode = "normal";
-    const page = await browser.newPage({ viewport: { width, height: width === 390 ? 844 : 992 } });
+    const page = await browser.newPage({ viewport: { width, height: width <= 390 ? 844 : 1000 } });
     page.on("pageerror", (error) => evidence.errors.push(error.message));
+    await page.context().addCookies([{ name: "ads_csrf", value: "a".repeat(43), url: "http://127.0.0.1:3856" }]);
     await page.goto("http://127.0.0.1:3856/studio");
     await page.getByRole("heading", { name: "重逢在雨夜", exact: true }).waitFor();
     await page.getByText(/第 2 步/).waitFor();
     await page.getByRole("img", { name: "重逢在雨夜封面" }).evaluate((img) => img.decode());
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width, `Horizontal overflow at ${width}`);
     // Check actual cell contents, not just the page width: a fixed-width table can hide overlapping controls.
-    if (width >= 900) {
+    if (width >= 1024) {
       const layout = await page.locator('tbody tr').evaluateAll((rows) => rows.map((row) => {
         const cells = Array.from(row.querySelectorAll('td'));
         const action = cells.at(-1), controls = Array.from(action.querySelectorAll('a, button')).map((control) => control.getBoundingClientRect());
@@ -108,7 +111,7 @@ try {
           noOverlap: controls.every((rect, index) => index === 0 || rect.x >= controls[index - 1].right - 1) };
       }));
       assert.ok(layout.every((row) => row.sameLine && row.actionsFit && row.noOverlap), `Overlapping or stacked actions at ${width}: ${JSON.stringify(layout)}`);
-      if (width >= 1440) assert.ok(layout.every((row) => row.height <= 80), `Ordinary rows too tall at ${width}`);
+      if (width >= 1440) assert.ok(layout.every((row) => row.height <= 160), `Ordinary rows too tall at ${width}`);
     }
     await page.getByRole("checkbox", { name: "选择作品：重逢在雨夜", exact: true }).check();
     await page.getByRole("checkbox", { name: "选择作品：长街旧事", exact: true }).check();
@@ -119,10 +122,27 @@ try {
       assert.equal(await nav.getByRole("link", { name: "开始创作", exact: true }).count(), 0);
       assert.equal(await nav.getByRole("link", { name: "帮助", exact: true }).count(), 0);
     }
-    const screenshot = `project-library-${width}.png`; await page.screenshot({ path: resolve(output, screenshot), fullPage: true });
+    const screenshot = `project-library-${width}.png`; await page.screenshot({ path: resolve(output, screenshot), fullPage: width >= 640 });
+    if (width >= 1024) {
+      await page.getByRole("button", { name: "收起侧栏" }).click();
+      assert.equal(await page.getByRole("navigation", { name: "主导航" }).count(), 0);
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
+      await page.getByRole("button", { name: "展开侧栏" }).click();
+    } else {
+      await page.getByRole("button", { name: "打开导航" }).click();
+      await page.getByRole("dialog", { name: "导航" }).waitFor();
+      await page.keyboard.press("Escape");
+      assert.equal(await page.getByRole("button", { name: "打开导航" }).evaluate((el) => document.activeElement === el), true);
+    }
     await page.getByRole("button", { name: "取消选择", exact: true }).click();
     await page.getByRole("button", { name: "加载更多作品", exact: true }).click();
     await page.getByRole("heading", { name: "风起的时候", exact: true }).waitFor();
+    if (width < 640) {
+      await page.evaluate(() => scrollTo(0, document.documentElement.scrollHeight));
+      const bottom = await page.getByRole("link", { name: "继续创作", exact: true }).last().boundingBox();
+      const bar = await page.locator('footer[aria-label="作品批量管理"]').boundingBox();
+      assert.ok(bottom.y + bottom.height <= bar.y, "last work action must scroll above fixed bulk bar");
+    }
     assert.equal(requests.at(-1).cursor, "next");
     await page.getByRole("textbox", { name: "搜索作品", exact: true }).fill("长街");
     await page.getByRole("button", { name: "搜索", exact: true }).click();
@@ -131,19 +151,34 @@ try {
     assert.equal(requests.at(-1).q, "长街");
     await page.getByRole("button", { name: "清除搜索", exact: true }).click();
     await page.getByRole("heading", { name: "重逢在雨夜", exact: true }).waitFor();
+    if (width < 1024) await page.getByRole("button", { name: "打开导航" }).click();
     await page.getByRole("button", { name: "新建分类", exact: true }).click();
+    assert.equal(await page.getByRole("dialog").count(), 1);
+    await page.getByLabel("分类名称").waitFor();
+    assert.equal(await page.getByLabel("分类名称").evaluate((el) => document.activeElement === el && !el.closest("[inert]")), true);
+    await page.screenshot({ path: resolve(output, `project-library-new-category-${width}.png`) });
     await page.getByLabel("分类名称").fill("悬疑推理");
     await page.getByRole("button", { name: "保存", exact: true }).click();
-    await page.getByRole("button", { name: "悬疑推理 0", exact: true }).waitFor();
+    await page.getByRole("dialog").waitFor({ state: "hidden" });
+    await page.getByText("已新建分类“悬疑推理”", { exact: true }).waitFor();
     const savedCategory = categories.at(-1).id;
     await page.getByRole("checkbox", { name: "选择作品：重逢在雨夜", exact: true }).check();
-    await page.getByRole("combobox", { name: "归类所选作品", exact: true }).selectOption(savedCategory);
-    await page.getByRole("button", { name: "悬疑推理 1", exact: true }).waitFor();
+    await page.getByRole("button", { name: "归类所选作品", exact: true }).click();
+    await page.getByRole("radio", { name: "悬疑推理", exact: true }).check();
+    assert.notEqual(projects[0].categoryId, savedCategory);
+    await page.screenshot({ path: resolve(output, `project-library-categorize-${width}.png`) });
+    await page.getByRole("button", { name: "确认归类", exact: true }).click();
+    await page.getByRole("dialog").waitFor({ state: "hidden" });
+    await page.getByText("归类完成 1 部，未确认 0 部。", { exact: true }).waitFor();
     assert.equal(projects[0].categoryId, savedCategory);
-    await page.getByRole("button", { name: "悬疑推理 1", exact: true }).click();
+    if (width < 1024) await page.getByRole("combobox", { name: "作品分类", exact: true }).selectOption(savedCategory);
+    else await page.getByRole("button", { name: "悬疑推理 1", exact: true }).click();
     await page.getByText("已显示 1 / 1 部作品").waitFor();
     await page.getByRole("checkbox", { name: "选择作品：重逢在雨夜", exact: true }).check();
-    await page.getByRole("combobox", { name: "归类所选作品", exact: true }).selectOption("");
+    await page.getByRole("button", { name: "归类所选作品", exact: true }).click();
+    await page.getByRole("radio", { name: "未分类", exact: true }).check();
+    await page.getByRole("button", { name: "确认归类", exact: true }).click();
+    await page.getByRole("dialog").waitFor({ state: "hidden" });
     await page.getByRole("heading", { name: "没有符合条件的作品", exact: true }).waitFor();
     const empty = `project-library-empty-${width}.png`; await page.screenshot({ path: resolve(output, empty), fullPage: true });
     listMode = "error"; await page.getByRole("button", { name: "刷新作品列表", exact: true }).click();
@@ -151,7 +186,8 @@ try {
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
     const error = `project-library-error-${width}.png`; await page.screenshot({ path: resolve(output, error), fullPage: true });
     listMode = "normal";
-    await page.getByRole("button", { name: "全部分类", exact: false }).click();
+    if (width < 1024) await page.getByRole("combobox", { name: "作品分类", exact: true }).selectOption("all");
+    else await page.getByRole("button", { name: /^全部作品/ }).click();
     await page.getByRole("heading", { name: "重逢在雨夜", exact: true }).waitFor();
     await page.getByRole("checkbox", { name: "选择作品：重逢在雨夜", exact: true }).check();
     await page.getByRole("checkbox", { name: "选择作品：长街旧事", exact: true }).check();
@@ -168,8 +204,39 @@ try {
     evidence.checks.push({ width, screenshot, empty, error, confirmation, batchDeletion: true, runningWorkProtected: true, overflow: false, serverSearch: true, loadMore: true, createCategory: true, assignCategory: true, unclassify: true });
     await page.close();
   }
+  reset(); pageSize = 5;
+  categories = ["悬疑推理", "都市情感", "古装传奇", "逆袭成长"].map((name, i) => ({ id: `category-${i}`, name }));
+  const names = ["末班车暗号", "无名碑", "重逢在雨夜", "她的第二人生", "长安旧梦"];
+  const categoryIndices = [0, 0, 1, 1, 2, 0, 0, 1, 2, 3, null, null];
+  const ids = [P, P2, P3, P4];
+  const covers = ["cover1.svg", "cover.svg", "cover2.svg", "cover3.svg"];
+  projects = Array.from({ length: 12 }, (_, i) => ({ ...projects[0], id: ids[i] || `visual-fixture-${i}`,
+    title: names[i] || `测试作品 ${i + 1}`, writingMode: "series", episodeCount: [12, 8, 16, 24, 20][i] || 8,
+    categoryId: categoryIndices[i] === null ? null : categories[categoryIndices[i]].id,
+    categoryName: categoryIndices[i] === null ? null : categories[categoryIndices[i]].name,
+    fixtureCover: covers[i], thumbnailUrl: covers[i] ? `/api/v1/real-media/assets/${ids[i]}/content` : null,
+    updatedAt: `2026-11-${String([12, 11, 11, 10, 9][i] || 8).padStart(2, "0")}T08:00:00Z` }));
+  for (const width of [1600, 390]) {
+    if (width === 390) [projects[1], projects[2]] = [projects[2], projects[1]];
+    const page = await browser.newPage({ viewport: { width, height: width === 1600 ? 1000 : 844 } });
+    await page.context().addCookies([{ name: "ads_csrf", value: "a".repeat(43), url: "http://127.0.0.1:3856" }]);
+    await page.goto("http://127.0.0.1:3856/studio");
+    await page.getByRole("heading", { name: "末班车暗号", exact: true }).waitFor();
+    await page.getByRole("img", { name: "末班车暗号封面" }).evaluate((img) => img.decode());
+    await page.getByText(/第 2 步/).waitFor();
+    await page.getByRole("checkbox", { name: "选择作品：末班车暗号" }).check();
+    await page.getByRole("checkbox", { name: "选择作品：重逢在雨夜" }).check();
+    await page.evaluate(() => scrollTo(0, 0));
+    await page.screenshot({ path: resolve(output, `tailadmin-v2-comparison-${width}.png`) });
+    if (width === 1600) {
+      const box = await page.getByRole("img", { name: "末班车暗号封面" }).boundingBox();
+      assert.deepEqual([box.width, box.height], [56, 84]);
+    }
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
+    await page.close();
+  }
   assert.deepEqual(evidence.errors, []);
 } finally {
   await browser?.close(); await server.close(); await writeFile(resolve(output, "evidence.json"), JSON.stringify(evidence, null, 2));
 }
-process.stdout.write("Project library browser fixture passed at 1586/1440/1280/1024/900/390: layout, server queries, categories, thumbnails, pagination, empty/error states. No business DB or external provider calls.\n");
+process.stdout.write("Project library browser fixture passed at 1600/1280/1024/768/390/320: layout, server queries, categories, thumbnails, pagination, empty/error states. No business DB or external provider calls.\n");

@@ -1311,7 +1311,12 @@ async function main() {
     }
     const imageJob = await pollJob(imagePost.body.jobId, 90_000);
     if (imageJob.state !== "SUCCEEDED") throw new Error(`image job ${imageJob.state}`);
-    const image = page.locator("img").first();
+    const imageLedger = await jobLedger(imagePost.body.jobId);
+    const imageAccount = assertSuccessfulImage(imageLedger, state.world.shotRevisionId);
+    // Shell icons and historical previews are also images. Decode this job's
+    // ledger asset in the current image list, regardless of their DOM order.
+    const currentImages = page.getByRole("heading", { name: "当前版本图片", exact: true }).locator("xpath=..");
+    const image = currentImages.locator(`img[src="/api/v1/assets/${imageAccount.assetId}/content"]`);
     await image.waitFor({ state: "attached", timeout: 20_000 });
     const decoded = await image.evaluate(async (element) => {
       const picture = element;
@@ -1333,8 +1338,6 @@ async function main() {
     if (pngResponse.status !== 200 || pngBytes.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") {
       throw new Error(`png signature failed ${pngResponse.status}`);
     }
-    const imageLedger = await jobLedger(imagePost.body.jobId);
-    const imageAccount = assertSuccessfulImage(imageLedger, state.world.shotRevisionId);
     const checksum = createHash("sha256").update(pngBytes).digest("hex");
     if (imageLedger.assets[0].checksum_sha256 !== checksum || imageLedger.assets[0].byte_size !== String(pngBytes.length)) {
       throw new Error("decoded png does not match the stored image asset");
