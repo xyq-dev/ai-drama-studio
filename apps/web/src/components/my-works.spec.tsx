@@ -22,6 +22,7 @@ function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 }
 beforeEach(() => {
+  vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })));
   vi.mocked(loadProjectFacts).mockResolvedValue({ story: null, episodes: [], characters: { items: [], read: "ok" },
     locations: { items: [], read: "ok" }, runs: [], media: {} });
 });
@@ -109,11 +110,15 @@ describe("作品分类列表", () => {
     }));
     render(<MyWorks />);
     fireEvent.click(await screen.findByRole("checkbox", { name: "选择作品：夜班" }));
-    fireEvent.change(screen.getByRole("combobox", { name: "归类所选作品" }), { target: { value: C } });
+    fireEvent.click(screen.getByRole("button", { name: "归类所选作品" }));
+    fireEvent.click(screen.getByRole("radio", { name: "都市情感" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认归类" }));
     await screen.findByText("归类完成 1 部，未确认 0 部。");
     await waitFor(() => expect((screen.getByRole("checkbox", { name: "选择作品：夜班" }) as HTMLInputElement).disabled).toBe(false));
     fireEvent.click(screen.getByRole("checkbox", { name: "选择作品：夜班" }));
-    fireEvent.change(screen.getByRole("combobox", { name: "归类所选作品" }), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "归类所选作品" }));
+    fireEvent.click(screen.getByRole("radio", { name: "未分类" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认归类" }));
     await waitFor(() => expect(writes).toEqual([{ categoryId: C, expectedRevision: 0 }, { categoryId: null, expectedRevision: 1 }]));
   });
 
@@ -135,7 +140,7 @@ describe("作品分类列表", () => {
     render(<MyWorks />);
     await screen.findByRole("heading", { name: "夜班" });
     expect((screen.getByRole("button", { name: "新建分类" }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole("combobox", { name: "归类所选作品" }) as HTMLSelectElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "归类所选作品" }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText("分类功能尚未启用，作品仍可正常打开。")).toBeTruthy();
     expect(screen.getByRole("link", { name: "高级编辑" })).toBeTruthy();
   });

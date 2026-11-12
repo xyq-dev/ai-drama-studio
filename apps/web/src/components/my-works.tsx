@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { ApiError, StudioClient } from "../lib/studio-client";
 import { loadProjectFacts } from "../lib/beginner-facts";
 import { STEPS, STEP_STATE_MARK, STEP_STATE_TEXT, stepsFor, stepStates, type StepKey, type StepState } from "../lib/beginner-steps";
+import { useModalKeyboard } from "../lib/modal-keyboard";
 import { shouldPoll } from "../lib/studio-model";
 import { BeginnerShell } from "./beginner-shell";
 import { ProjectBulkActions, SelectionCheckbox } from "./project-bulk-actions";
@@ -48,9 +49,6 @@ function queryPath(query: LibraryQuery, cursor: string | null) {
 function ImageIcon() {
   return <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3" /><circle cx="8" cy="9" r="1.5" /><path d="m3 16 5-4 4 4 4-6 5 6" /></svg>;
 }
-function FolderIcon() {
-  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /></svg>;
-}
 function updatedDate(value: string) {
   const date = new Date(value);
   return Number.isNaN(date.valueOf()) ? "时间未知" : date.toLocaleDateString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", timeZone: "Asia/Shanghai" });
@@ -94,6 +92,13 @@ function todo(step: StepKey, state: StepState, mode: ProjectItem["writingMode"])
 }
 
 export function MyWorks() {
+  const [desktop, setDesktop] = useState(true);
+  const categoryDialog = useRef<HTMLDivElement>(null);
+  const categoryInput = useRef<HTMLInputElement>(null);
+  const categoryOpener = useRef<HTMLButtonElement>(null);
+  const categoryWasOpen = useRef(false);
+  const categoryHeadingId = useId();
+  const categoryInputId = useId();
   const [items, setItems] = useState<ProjectItem[] | null>(null);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -338,6 +343,31 @@ export function MyWorks() {
     };
   }, []);
 
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const media = window.matchMedia("(min-width: 1024px)");
+    const sync = () => setDesktop(media.matches);
+    sync();
+    media.addEventListener("change", sync);
+    return () => media.removeEventListener("change", sync);
+  }, []);
+
+  function closeCategory() {
+    if (!creatingInFlight.current) setCreatingCategory(false);
+  }
+  useModalKeyboard(creatingCategory, categoryDialog, closeCategory);
+  useEffect(() => {
+    if (creatingCategory) {
+      categoryWasOpen.current = true;
+      categoryInput.current?.focus();
+    } else if (categoryWasOpen.current && !categoryBusy) {
+      categoryWasOpen.current = false;
+      const opener = categoryOpener.current;
+      if (opener && !opener.closest("[hidden]")) opener.focus();
+      else document.getElementById("main")?.focus();
+    }
+  }, [creatingCategory, categoryBusy]);
+
   const categories = summary?.categories ?? [];
   const selectedCategory = query.category === "all" ? "全部作品" : query.category === "uncategorized" ? "未分类" : categories.find((item) => item.id === query.category)?.name ?? "分类作品";
   const filtered = Boolean(query.q) || query.category !== "all";
@@ -351,49 +381,47 @@ export function MyWorks() {
     setSelected(allSelected ? new Set() : new Set(items?.map((item) => item.id)));
   }
 
+  const searchForm = <form className={styles.search} role="search" onSubmit={(event) => { event.preventDefault(); changeQuery({ ...queryRef.current, q: search.trim() }); }}>
+    <button type="submit" disabled={bulkBusy} aria-label="搜索"><img src="/design/tailadmin-v2/icon-search.svg" width={19} height={19} alt="" /></button>
+    <input disabled={bulkBusy} aria-label="搜索作品" maxLength={200} placeholder="搜索作品名称、故事内容…" value={search} onChange={(event) => setSearch(event.target.value)} />
+  </form>;
+  const categoryNavigation = <div className={styles.categoryNavigation}>
+    <div className={styles.categoryList} role="group" aria-label="按分类筛选作品">
+      <button type="button" disabled={bulkBusy} aria-pressed={query.category === "all"} onClick={() => changeQuery({ ...queryRef.current, category: "all" })}><span>全部作品</span><span className={styles.count}>{summary?.allCount ?? "—"}</span></button>
+      {categories.map((category) => <button type="button" key={category.id} disabled={bulkBusy} aria-pressed={query.category === category.id} onClick={() => changeQuery({ ...queryRef.current, category: category.id })}><span>{category.name}</span><span className={styles.count}>{category.count}</span></button>)}
+      <button type="button" disabled={!summary?.categoriesReady || bulkBusy} aria-pressed={query.category === "uncategorized"} onClick={() => changeQuery({ ...queryRef.current, category: "uncategorized" })}><span>未分类</span><span className={styles.count}>{summary?.unclassifiedCount ?? "—"}</span></button>
+    </div>
+    <button ref={categoryOpener} className={styles.newCategory} type="button" disabled={!summary?.categoriesReady || bulkBusy} onClick={() => { setCreatingCategory(true); setCategoryError(null); }}><span aria-hidden="true">＋</span>新建分类</button>
+    {summary && !summary.categoriesReady ? <p className={styles.sidebarNote}>分类功能尚未启用，作品仍可正常打开。</p> : null}
+    <a className={styles.trashLink} href="/studio/trash"><img src="/design/tailadmin-v2/icon-trash.svg" width={20} height={20} alt="" />回收站</a>
+  </div>;
+
   return (
-    <BeginnerShell active="/studio">
+    <BeginnerShell active="/studio" workspaceNavigation={categoryNavigation} headerContent={desktop ? searchForm : undefined}>
       <main className={styles.page}>
         <header className={styles.headingRow}>
-          <div>
-            <h1 className={styles.heading}>我的作品</h1>
-            <p className={styles.intro}>按题材归类，快速找到要继续的故事。</p>
-          </div>
+          <div><h1 className={styles.heading}>我的作品</h1><p className={styles.intro}>从一个想法，到一部作品。</p></div>
           <div className={styles.headingActions}><a className={styles.primary} href="/create"><span className={styles.plus} aria-hidden="true">+</span>开始创作</a></div>
         </header>
+        {!desktop ? <div className={styles.mobileSearch}>{searchForm}</div> : null}
         <div className={styles.workspace}>
-          <aside className={styles.sidebar} aria-label="作品分类">
-            <h2 className={styles.sidebarTitle}><FolderIcon />作品分类</h2>
-            <nav className={styles.categoryList} aria-label="按分类筛选作品">
-              <button type="button" disabled={bulkBusy} aria-pressed={query.category === "all"} onClick={() => changeQuery({ ...queryRef.current, category: "all" })}><FolderIcon /><span>全部分类</span><span className={styles.count}>{summary?.allCount ?? "—"}</span></button>
-              {categories.map((category) => <button type="button" key={category.id} disabled={bulkBusy} aria-pressed={query.category === category.id} onClick={() => changeQuery({ ...queryRef.current, category: category.id })}><FolderIcon /><span>{category.name}</span><span className={styles.count}>{category.count}</span></button>)}
-              <button type="button" disabled={!summary?.categoriesReady || bulkBusy} aria-pressed={query.category === "uncategorized"} onClick={() => changeQuery({ ...queryRef.current, category: "uncategorized" })}><FolderIcon /><span>未分类</span><span className={styles.count}>{summary?.unclassifiedCount ?? "—"}</span></button>
-            </nav>
-            <div className={styles.categoryCreate}>
-              {creatingCategory ? <form onSubmit={(event) => { event.preventDefault(); void createCategory(); }}>
-                <label htmlFor="new-category-name">分类名称</label>
-                <input id="new-category-name" value={categoryName} maxLength={40} autoFocus disabled={categoryBusy || bulkBusy} onChange={(event) => setCategoryName(event.target.value)} placeholder="例如：都市情感" />
-                <div className={styles.categoryFormActions}><button className={styles.primary} type="submit" disabled={categoryBusy || bulkBusy || !categoryName.trim()}>{categoryBusy ? "保存中" : "保存"}</button><button className={styles.textButton} type="button" disabled={categoryBusy || bulkBusy} onClick={() => setCreatingCategory(false)}>取消</button></div>
-              </form> : <button className={styles.newCategory} type="button" disabled={!summary?.categoriesReady || bulkBusy} onClick={() => { setCreatingCategory(true); setCategoryError(null); }}><span aria-hidden="true">＋</span>新建分类</button>}
-              {summary && !summary.categoriesReady ? <p className={styles.sidebarNote} data-unavailable="true">分类功能尚未启用，作品仍可正常打开。</p> : <p className={styles.sidebarNote}>按题材或创作计划，整理你的作品。</p>}
-            </div>
-            <a className={styles.trashLink} href="/studio/trash"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 10v7M14 10v7" /></svg>回收站</a>
-          </aside>
           <section className={styles.library} aria-label="作品列表">
             <div className={styles.toolbar}>
-              <div className={styles.listHeading}><h2>{selectedCategory}</h2><span>{summary ? `${summary.total} 部作品` : "读取中"}</span></div>
+              <div className={styles.listHeading}>
+                <h2>{selectedCategory}</h2>
+                {!desktop ? <select className={styles.mobileCategory} aria-label="作品分类" disabled={bulkBusy} value={query.category} onChange={(event) => changeQuery({ ...queryRef.current, category: event.target.value })}>
+                  <option value="all">全部作品</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}<option value="uncategorized" disabled={!summary?.categoriesReady}>未分类</option>
+                </select> : null}
+                <span>{summary ? `${summary.total} 部作品` : "读取中"}</span>
+              </div>
               <div className={styles.toolbarControls}>
-                <form className={styles.search} role="search" onSubmit={(event) => { event.preventDefault(); changeQuery({ ...queryRef.current, q: search.trim() }); }}>
-                  <input disabled={bulkBusy} aria-label="搜索作品" maxLength={200} placeholder="搜索作品名称、故事内容" value={search} onChange={(event) => setSearch(event.target.value)} />
-                  <button type="submit" disabled={bulkBusy} aria-label="搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 4 4" /></svg></button>
-                </form>
                 <select disabled={bulkBusy} aria-label="作品排序" className={styles.sort} value={query.sort} onChange={(event) => changeQuery({ ...queryRef.current, sort: event.target.value as LibraryQuery["sort"] })}><option value="updated">最近更新</option><option value="created">最近创建</option></select>
-                <button type="button" className={styles.refresh} aria-label="刷新作品列表" disabled={controlsBusy} onClick={() => { setFailedThumbnails(new Set()); void load(null); }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="M20 10a8 8 0 1 0-1.2 7M20 4v6h-6" /></svg></button>
+                <button type="button" className={styles.refresh} aria-label="刷新作品列表" disabled={controlsBusy} onClick={() => { setFailedThumbnails(new Set()); void load(null); }}><img src="/design/tailadmin-v2/icon-refresh.svg" width={20} height={20} alt="" /></button>
               </div>
             </div>
             {query.q ? <p className={styles.filterNote}>搜索“{query.q}”<button className={styles.textButton} type="button" onClick={() => { setSearch(""); changeQuery({ ...queryRef.current, q: "" }); }}>清除搜索</button></p> : null}
             {bulkErrors.length ? <div className={styles.notice} role="alert"><p>以下作品未完成，请核对后重试：</p><ul>{bulkErrors.map((message, index) => <li key={index}>{message}</li>)}</ul></div> : null}
-            {categoryError ? <p className={styles.notice} role="alert">{categoryError}</p> : null}
+
             {categoryNotice ? <p className={styles.saveNotice} role="status">{categoryNotice}</p> : null}
             {error ? <div className={styles.notice} role="alert"><p>作品列表读取失败：{error}。不会显示示例作品。</p><button className={styles.secondary} type="button" onClick={() => void load(null)}>重试</button></div> : null}
             {items === null && !error ? <p className={styles.loading} role="status">正在读取作品…</p> : null}
@@ -414,7 +442,7 @@ export function MyWorks() {
                     <a className={styles.thumbnail} href={`/projects/${item.id}/create`} aria-label={`打开作品：${item.title}`}>
                       {item.thumbnailUrl && !failedThumbnails.has(item.thumbnailUrl) ? <img src={item.thumbnailUrl} alt={`${item.title}封面`} loading="lazy" onError={() => setFailedThumbnails((current) => new Set(current).add(item.thumbnailUrl!))} /> : <span className={styles.thumbnailPlaceholder}><ImageIcon /><span>暂无封面</span></span>}
                     </a>
-                    <div className={styles.workText}><h3><a href={`/projects/${item.id}/create`}>{item.title}</a></h3><p className={styles.premise} title={item.premise || "还没有故事想法"}><span className={styles.workMeta}>{item.writingMode === "series" ? "系列写作" : "短剧创作"}{item.episodeCount ? ` · ${item.episodeCount} 集` : ""} · </span>{item.premise || "还没有故事想法"}</p><a className={styles.scriptLink} href={`/projects/${item.id}/script`}>剧本工作台</a></div>
+                    <div className={styles.workText}><h3><a href={`/projects/${item.id}/create`}>{item.title}</a></h3><p className={styles.premise} title={item.premise || "还没有故事想法"}><span className={styles.workMeta}>{item.writingMode === "series" ? "系列写作" : "短剧创作"}{item.episodeCount ? ` · ${item.episodeCount} 集` : ""}</span></p><a className={styles.scriptLink} href={`/projects/${item.id}/script`}>剧本工作台</a></div>
                   </div></td>
                   <td className={styles.categoryCell} data-label="分类"><span className={styles.categoryBadge}>{item.categoryName ?? "未分类"}</span></td>
                   <td className={styles.progressCell}><div aria-live="polite">
@@ -429,11 +457,12 @@ export function MyWorks() {
                     </> : null}
                   </div></td>
                   <td className={styles.dateCell} data-label="更新于"><time dateTime={item.updatedAt} title={item.updatedAt}>{updatedDate(item.updatedAt)}</time></td>
-                  <td className={styles.actions}><div className={styles.actionLinks}><a className={styles.continue} href={`/projects/${item.id}/create`}>继续创作<span aria-hidden="true">→</span></a><a className={styles.advanced} href={`/projects/${item.id}`} aria-label="高级编辑" title="高级编辑"><span aria-hidden="true">···</span></a></div></td>
+                  <td className={styles.actions}><div className={styles.actionLinks}><a className={styles.continue} href={`/projects/${item.id}/create`}>继续创作<span aria-hidden="true">→</span></a><a className={styles.advanced} href={`/projects/${item.id}`} aria-label="高级编辑" title="高级编辑"><img src="/design/tailadmin-v2/icon-more.svg" width={20} height={20} alt="" /></a></div></td>
                 </tr>;
               })}</tbody>
             </table> : null}
 
+            <div className={styles.pagination}><span>已显示 {items?.length ?? 0} / {summary?.total ?? 0} 部作品</span>{nextCursor ? <button className={styles.secondary} type="button" disabled={controlsBusy} onClick={() => void load(nextCursor)}>{loadingPage ? "正在加载" : "加载更多作品"}</button> : <span>已显示全部作品</span>}</div>
           </section>
           <footer className={styles.bulkFooter} aria-label="作品批量管理" aria-busy={bulkBusy}>
             <div className={styles.bulkControls}>
@@ -442,10 +471,18 @@ export function MyWorks() {
               <ProjectBulkActions selected={selectedItems} categories={categories} categoriesReady={summary?.categoriesReady ?? false} disabled={controlsBusy || Boolean(error)} onBusyChange={setBulkBusy} onComplete={completeBulk} />
               <button className={styles.cancelSelection} type="button" disabled={controlsBusy || !selectedItems.length} onClick={() => setSelected(new Set())}>取消选择</button>
             </div>
-            <div className={styles.pagination}><span>已显示 {items?.length ?? 0} / {summary?.total ?? 0} 部作品</span>{nextCursor ? <button className={styles.secondary} type="button" disabled={controlsBusy} onClick={() => void load(nextCursor)}>{loadingPage ? "正在加载" : "加载更多作品"}</button> : <span>已显示全部作品</span>}</div>
+            <p className={styles.bottomHint}>删除后可在回收站恢复。全选仅包含当前已显示的作品。</p>
           </footer>
         </div>
-        <p className={styles.bottomHint}>删除后可在回收站恢复。全选仅包含当前已显示的作品。</p>
+        {creatingCategory ? <div className={styles.overlay}><div ref={categoryDialog} className={styles.dialog} role="dialog" aria-modal="true" aria-labelledby={categoryHeadingId} aria-busy={categoryBusy}>
+          <h2 id={categoryHeadingId}>新建分类</h2><p className={styles.dialogNote}>按题材或创作计划，整理你的作品。</p>
+          <form onSubmit={(event) => { event.preventDefault(); void createCategory(); }}>
+            <label className={styles.fieldLabel} htmlFor={categoryInputId}>分类名称</label>
+            <input ref={categoryInput} className={styles.categoryInput} id={categoryInputId} value={categoryName} maxLength={40} disabled={categoryBusy} onChange={(event) => setCategoryName(event.target.value)} placeholder="例如：都市情感" />
+            {categoryError ? <p className={styles.notice} role="alert">{categoryError}</p> : null}
+            <div className={styles.dialogActions}><button className={styles.secondary} type="button" disabled={categoryBusy} onClick={closeCategory}>取消</button><button className={styles.primary} type="submit" disabled={categoryBusy || !categoryName.trim()}>{categoryBusy ? "保存中" : "保存"}</button></div>
+          </form>
+        </div></div> : null}
       </main>
     </BeginnerShell>
   );

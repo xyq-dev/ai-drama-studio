@@ -4,7 +4,6 @@ import { useEffect, useId, useRef, useState } from "react";
 import { ApiError, StudioClient } from "../lib/studio-client";
 import { useModalKeyboard } from "../lib/modal-keyboard";
 import styles from "./my-works.module.css";
-import modal from "./recycle-bin.module.css";
 
 interface SelectedWork { id: string; title: string; categoryId: string | null; categoryRevision: number }
 interface Preview {
@@ -31,12 +30,14 @@ export function ProjectBulkActions({ selected, categories, categoriesReady, disa
   disabled: boolean; onBusyChange: (busy: boolean) => void;
   onComplete: (succeeded: string[], notice: string, errors: string[]) => Promise<void>;
 }) {
-  const [open, setOpen] = useState(false);
+  const [mode, setMode] = useState<"category" | "delete" | null>(null);
+  const open = mode !== null;
+  const [snapshot, setSnapshot] = useState<SelectedWork[]>([]);
+  const [categoryId, setCategoryId] = useState<string | null>(null);
   const [checks, setChecks] = useState<Check[]>([]);
   const [reading, setReading] = useState(false);
   const [writing, setWriting] = useState(false);
   const [completed, setCompleted] = useState(0);
-  const [assigning, setAssigning] = useState(false);
   const alive = useRef(true);
   const inFlight = useRef(false);
   const token = useRef(0);
@@ -50,7 +51,7 @@ export function ProjectBulkActions({ selected, categories, categoriesReady, disa
   function close() {
     if (inFlight.current) return;
     token.current += 1;
-    setOpen(false);
+    setMode(null);
     setReading(false);
     onBusyChange(false);
   }
@@ -58,15 +59,30 @@ export function ProjectBulkActions({ selected, categories, categoriesReady, disa
   const wasOpen = useRef(false);
   useEffect(() => {
     if (open) wasOpen.current = true;
-    else if (wasOpen.current && !disabled) { wasOpen.current = false; opener.current?.focus(); }
-  }, [open, disabled]);
+    else if (wasOpen.current && !writing) {
+      wasOpen.current = false;
+      const trigger = opener.current;
+      if (trigger && !trigger.disabled && !trigger.closest("[hidden], [inert]")) trigger.focus();
+      else document.getElementById("main")?.focus();
+    }
+  }, [open, writing, disabled]);
 
-  async function classify(categoryId: string) {
-    if (disabled || inFlight.current || !selected.length || !categoriesReady) return;
-    const snapshot = [...selected];
-    inFlight.current = true;
-    setAssigning(true);
+  function openCategory(button: HTMLButtonElement) {
+    if (disabled || open || inFlight.current || !selected.length || !categoriesReady) return;
+    opener.current = button;
+    setSnapshot(selected.map((work) => ({ ...work })));
+    setCategoryId(null);
+    setCompleted(0);
+    setMode("category");
     onBusyChange(true);
+  }
+
+  async function classify() {
+    // `disabled` includes our own onBusyChange(true). The frozen dialog owns its
+    // confirmation state; checking that parent flag here would deadlock it.
+    if (mode !== "category" || inFlight.current || !snapshot.length || categoryId === null) return;
+    inFlight.current = true;
+    setWriting(true);
     const succeeded: string[] = [];
     const errors: string[] = [];
     try {
@@ -77,20 +93,28 @@ export function ProjectBulkActions({ selected, categories, categoriesReady, disa
             categoryId: categoryId || null, expectedRevision: work.categoryRevision,
           });
           succeeded.push(work.id);
-        } catch (error) { errors.push(`《${work.title}》：${message(error)}`); }
+        } catch (error) {
+          // Do not retry an uncertain response: report it for the user to verify.
+          errors.push(`《${work.title}》：${message(error)}`);
+        }
+        if (alive.current) setCompleted((count) => count + 1);
       }
-      if (alive.current) await onComplete(succeeded, `归类完成 ${succeeded.length} 部，未确认 ${errors.length} 部。`, errors);
+      if (alive.current) {
+        await onComplete(succeeded, `归类完成 ${succeeded.length} 部，未确认 ${errors.length} 部。`, errors);
+        setMode(null);
+      }
     } finally {
       inFlight.current = false;
-      if (alive.current) { setAssigning(false); onBusyChange(false); }
+      if (alive.current) { setWriting(false); onBusyChange(false); }
     }
   }
 
-  async function inspect() {
-    if (disabled || inFlight.current || !selected.length) return;
-    const snapshot = [...selected];
+  async function inspect(button: HTMLButtonElement) {
+    if (disabled || open || inFlight.current || !selected.length) return;
+    opener.current = button;
+    const snapshot = selected.map((work) => ({ ...work }));
     const current = ++token.current;
-    setOpen(true);
+    setMode("delete");
     setReading(true);
     setChecks([]);
     setCompleted(0);
@@ -110,7 +134,7 @@ export function ProjectBulkActions({ selected, categories, categoriesReady, disa
 
   const eligible = checks.filter((check) => check.preview?.canDelete);
   async function remove() {
-    if (reading || inFlight.current || !eligible.length) return;
+    if (mode !== "delete" || reading || inFlight.current || !eligible.length) return;
     inFlight.current = true;
     setWriting(true);
     const succeeded: string[] = [];
@@ -132,7 +156,7 @@ export function ProjectBulkActions({ selected, categories, categoriesReady, disa
       }
       if (alive.current) {
         await onComplete(succeeded, `已移入回收站 ${succeeded.length} 部，未完成 ${errors.length} 部。`, errors);
-        setOpen(false);
+        setMode(null);
       }
     } finally {
       inFlight.current = false;
@@ -141,28 +165,44 @@ export function ProjectBulkActions({ selected, categories, categoriesReady, disa
   }
 
   return <>
-    <select className={styles.bulkCategory} aria-label="归类所选作品" value="placeholder"
-      disabled={disabled || !selected.length || !categoriesReady} onChange={(event) => void classify(event.target.value)}>
-      <option value="placeholder" disabled>{assigning ? "归类中…" : "归类到"}</option>
-      <option value="">未分类</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
-    </select>
-    <button ref={opener} className={styles.bulkDelete} type="button" disabled={disabled || !selected.length} onClick={() => void inspect()}>
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 10v7M14 10v7" /></svg>移入回收站
+    <button className={styles.bulkCategory} type="button" aria-label="归类所选作品"
+      disabled={disabled || open || !selected.length || !categoriesReady} onClick={(event) => openCategory(event.currentTarget)}>
+      归类到 <img src="/design/tailadmin-v2/icon-chevron.svg" width={16} height={16} alt="" />
     </button>
-    {open ? <div className={modal.overlay}><div ref={dialog} className={modal.dialog} role="dialog" aria-modal="true" aria-labelledby={heading} aria-busy={reading || writing}>
-      <h2 id={heading}>将所选作品移入回收站？</h2>
-      <p>删除整部作品及其全部集数。已有剧本、场景、分镜、配音和视频将保留，可在回收站恢复。</p>
-      {reading ? <p role="status">正在逐项核对删除范围…已核对 {checks.length} 部。</p> : <p>可移入 {eligible.length} 部；跳过 {checks.length - eligible.length} 部。</p>}
-      <ul className={styles.deletionChecks}>{checks.map(({ work, preview, error }) => <li key={work.id}>
-        <strong>《{preview?.title ?? work.title}》</strong>
-        {preview ? <span>全部 {preview.episodeCount} 集 · 场景 {preview.dependencies.scenes} · 分镜 {preview.dependencies.shots} · 配音 {preview.dependencies.speech} · 视频 {preview.dependencies.video}{preview.dependencies.other ? ` · 其他引用 ${preview.dependencies.other}` : ""}</span> : null}
-        {error || !preview?.canDelete ? <span className={styles.checkError}>{error || preview?.blockedReason || "暂时不能删除"}</span> : null}
-      </li>)}</ul>
-      {writing ? <p role="status">正在移入…{completed} / {eligible.length} 部</p> : null}
-      <div className={modal.dialogActions}>
-        <button ref={cancel} className={modal.button} type="button" disabled={writing} onClick={close}>取消</button>
-        <button className={modal.dangerButton} type="button" disabled={reading || writing || !eligible.length} onClick={() => void remove()}>确认移入 {eligible.length} 部</button>
-      </div>
+    <button className={styles.bulkDelete} type="button" disabled={disabled || open || !selected.length} onClick={(event) => void inspect(event.currentTarget)}>
+      移入回收站
+    </button>
+    {open ? <div className={styles.overlay}><div ref={dialog} className={styles.dialog} role="dialog" aria-modal="true" aria-labelledby={heading} aria-busy={reading || writing}>
+      {mode === "category" ? <>
+        <h2 id={heading}>归类所选作品</h2>
+        <p className={styles.dialogNote}>将已选的 {snapshot.length} 部作品归入同一分类。确认后生效。</p>
+        <div className={styles.categoryOptions} role="radiogroup" aria-label="目标分类">
+          {[{ id: "", name: "未分类" }, ...categories].map((category) => <label key={category.id} className={styles.categoryOption}>
+            <input type="radio" name={`${heading}-category`} value={category.id} checked={categoryId === category.id}
+              disabled={writing} onChange={() => setCategoryId(category.id)} />
+            <span>{category.name}</span>
+          </label>)}
+        </div>
+        {writing ? <p role="status">正在归类…{completed} / {snapshot.length} 部</p> : null}
+        <div className={styles.dialogActions}>
+          <button ref={cancel} className={styles.secondary} type="button" disabled={writing} onClick={close}>取消</button>
+          <button className={styles.primary} type="button" disabled={writing || categoryId === null} onClick={() => void classify()}>确认归类</button>
+        </div>
+      </> : <>
+        <h2 id={heading}>将所选作品移入回收站？</h2>
+        <p className={styles.dialogNote}>删除整部作品及其全部集数。已有剧本、场景、分镜、配音和视频将保留，可在回收站恢复。</p>
+        {reading ? <p role="status">正在逐项核对删除范围…已核对 {checks.length} 部。</p> : <p>可移入 {eligible.length} 部；跳过 {checks.length - eligible.length} 部。</p>}
+        <ul className={styles.deletionChecks}>{checks.map(({ work, preview, error }) => <li key={work.id}>
+          <strong>《{preview?.title ?? work.title}》</strong>
+          {preview ? <span>全部 {preview.episodeCount} 集 · 场景 {preview.dependencies.scenes} · 分镜 {preview.dependencies.shots} · 配音 {preview.dependencies.speech} · 视频 {preview.dependencies.video}{preview.dependencies.other ? ` · 其他引用 ${preview.dependencies.other}` : ""}</span> : null}
+          {error || !preview?.canDelete ? <span className={styles.checkError}>{error || preview?.blockedReason || "暂时不能删除"}</span> : null}
+        </li>)}</ul>
+        {writing ? <p role="status">正在移入…{completed} / {eligible.length} 部</p> : null}
+        <div className={styles.dialogActions}>
+          <button ref={cancel} className={styles.secondary} type="button" disabled={writing} onClick={close}>取消</button>
+          <button className={styles.dangerButton} type="button" disabled={reading || writing || !eligible.length} onClick={() => void remove()}>确认移入 {eligible.length} 部</button>
+        </div>
+      </>}
     </div></div> : null}
   </>;
 }
