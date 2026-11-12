@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { z } from "zod";
 import productionStateJsonSchema from "./production-state.schema.json";
@@ -782,16 +782,25 @@ export function takeGenerationReadiness(
   }
 
   const budget = activePolicy.budget;
-  if (budget.maxTakesPerShot !== null && shotVersion.takes.length >= budget.maxTakesPerShot) {
+  const shotTakeCount = shot.versions.reduce((count, version) => count + version.takes.length, 0);
+  if (budget.maxTakesPerShot !== null && shotTakeCount >= budget.maxTakesPerShot) {
     blocker(
       blockers,
       "MAX_TAKES_PER_SHOT_REACHED",
-      "episodes." + request.episodeId + ".shots." + request.shotId + ".versions." + request.shotVersionId + ".takes",
-      "Take count has reached the active modelPolicy limit",
+      "episodes." + request.episodeId + ".shots." + request.shotId + ".versions",
+      "Take count across all ShotVersions has reached the active modelPolicy limit",
     );
   }
 
-  if (request.estimatedCost === "unknown") {
+  if (request.estimatedCost !== "unknown"
+    && (!Number.isFinite(request.estimatedCost) || request.estimatedCost < 0)) {
+    blocker(
+      blockers,
+      "INVALID_ESTIMATED_COST",
+      "modelPolicy.budget",
+      "Estimated generation cost must be a finite non-negative number or the explicit unknown value",
+    );
+  } else if (request.estimatedCost === "unknown") {
     if (!request.allowUnknownCost) {
       blocker(blockers, "UNKNOWN_COST_REQUIRES_APPROVAL", "modelPolicy.budget", "Unknown generation cost requires explicit user approval");
     }
@@ -881,20 +890,20 @@ function assertApprovalLogAppendOnly(previous: ProductionState, next: Production
   return next.approvalLog.slice(previous.approvalLog.length);
 }
 
-function assertLockedContainerPreserved(
+function assertVersionHistoryPreserved(
   previous: GenericVersionContainer | undefined,
   next: GenericVersionContainer | undefined,
   path: string,
 ): void {
   if (!previous) return;
-  const locked = previous.versions.filter((version) => version.status === "locked");
-  if (locked.length === 0) return;
-  if (!next) throw productionStateError("LOCKED_VERSION_DELETE_FORBIDDEN", "Cannot remove locked container: " + path);
+  if (!next) throw productionStateError("VERSION_HISTORY_DELETE_FORBIDDEN", "Cannot remove versioned container: " + path);
   const byId = new Map(next.versions.map((version) => [version.versionId, version] as const));
-  for (const version of locked) {
+  for (const version of previous.versions) {
     const candidate = byId.get(version.versionId);
-    if (!candidate) throw productionStateError("LOCKED_VERSION_DELETE_FORBIDDEN", "Cannot remove locked version: " + path + "/" + version.versionId);
-    if (!isDeepStrictEqual(version, candidate)) {
+    if (!candidate) {
+      throw productionStateError("VERSION_HISTORY_DELETE_FORBIDDEN", "Cannot remove historical version: " + path + "/" + version.versionId);
+    }
+    if (version.status === "locked" && !isDeepStrictEqual(version, candidate)) {
       throw productionStateError("LOCKED_VERSION_REWRITE_FORBIDDEN", "Cannot modify locked version: " + path + "/" + version.versionId);
     }
   }
@@ -946,6 +955,66 @@ function assertActivePointerChange(
   }
 }
 
+
+function assertNewVersionApprovals(
+  previous: GenericVersionContainer | undefined,
+  next: GenericVersionContainer | undefined,
+  events: readonly ApprovalEvent[],
+  action: ApprovalEvent["action"],
+  objectType: ApprovalEvent["objectType"],
+  objectId: string,
+  path: string,
+): void {
+  if (!next) return;
+  const previousById = new Map((previous?.versions ?? []).map((version) => [version.versionId, version] as const));
+  for (const version of next.versions) {
+    const before = previousById.get(version.versionId);
+    if (version.status === "locked" && before?.status !== "locked"
+      && !hasNewApproval(events, action, objectType, objectId, version.versionId)) {
+      throw productionStateError(
+        "APPROVAL_EVENT_REQUIRED",
+        "Newly locked version requires a user ApprovalEvent: " + path + "/" + version.versionId,
+      );
+    }
+  }
+}
+
+function assertNewShotSelectionsApproved(
+  previous: ProductionEpisode["shots"][number] | undefined,
+  next: ProductionEpisode["shots"][number],
+  events: readonly ApprovalEvent[],
+): void {
+  const previousById = new Map((previous?.versions ?? []).map((version) => [version.versionId, version] as const));
+  for (const version of next.versions) {
+    if (version.selectedTakeId === null || version.selectedTakeId === undefined) continue;
+    const before = previousById.get(version.versionId);
+    if (before?.selectedTakeId === version.selectedTakeId) continue;
+    if (!hasNewApproval(events, "select_take", "shot", next.shotId, version.versionId)) {
+      throw productionStateError(
+        "APPROVAL_EVENT_REQUIRED",
+        "Selecting a Take requires a user ApprovalEvent: " + next.shotId + "/" + version.versionId,
+      );
+    }
+  }
+}
+
+function assertHistoricalQaPreserved(previous: ProductionEpisode, next: ProductionEpisode | undefined): void {
+  if (!next) return;
+  const nextById = new Map(next.qa.map((report) => [report.qaId, report] as const));
+  for (const report of previous.qa) {
+    const candidate = nextById.get(report.qaId);
+    if (!candidate) continue;
+    for (const key of Object.keys(report.checks) as Array<keyof typeof report.checks>) {
+      if (report.checks[key].result === "not_scored" && candidate.checks[key].result !== "not_scored") {
+        throw productionStateError(
+          "QA_NOT_SCORED_REWRITE_FORBIDDEN",
+          "Historical QA not_scored result cannot be rewritten: " + report.qaId + "/" + key,
+        );
+      }
+    }
+  }
+}
+
 export function assertProductionStateUpdate(previous: ProductionState, next: ProductionState): void {
   if (previous.schema !== next.schema || previous.projectId !== next.projectId) {
     throw productionStateError("PRODUCTION_STATE_IDENTITY_MISMATCH", "schema and projectId are immutable");
@@ -953,7 +1022,16 @@ export function assertProductionStateUpdate(previous: ProductionState, next: Pro
 
   const newEvents = assertApprovalLogAppendOnly(previous, next);
 
-  assertLockedContainerPreserved(previous.bible as GenericVersionContainer, next.bible as GenericVersionContainer, "bible");
+  assertVersionHistoryPreserved(previous.bible as GenericVersionContainer, next.bible as GenericVersionContainer, "bible");
+  assertNewVersionApprovals(
+    previous.bible as GenericVersionContainer,
+    next.bible as GenericVersionContainer,
+    newEvents,
+    "lock",
+    "bible",
+    next.projectId,
+    "bible",
+  );
   assertActivePointerChange(
     previous.bible.activeLockedVersionId,
     next.bible.activeLockedVersionId,
@@ -967,7 +1045,7 @@ export function assertProductionStateUpdate(previous: ProductionState, next: Pro
   for (const previousCharacter of previous.characters) {
     const nextCharacter = findCharacter(next, previousCharacter.characterId);
     if (previousCharacter.look) {
-      assertLockedContainerPreserved(
+      assertVersionHistoryPreserved(
         previousCharacter.look as GenericVersionContainer,
         nextCharacter?.look as GenericVersionContainer | undefined,
         "characters." + previousCharacter.characterId + ".look",
@@ -985,7 +1063,7 @@ export function assertProductionStateUpdate(previous: ProductionState, next: Pro
       }
     }
     if (previousCharacter.voice) {
-      assertLockedContainerPreserved(
+      assertVersionHistoryPreserved(
         previousCharacter.voice as GenericVersionContainer,
         nextCharacter?.voice as GenericVersionContainer | undefined,
         "characters." + previousCharacter.characterId + ".voice",
@@ -1004,9 +1082,32 @@ export function assertProductionStateUpdate(previous: ProductionState, next: Pro
     }
   }
 
+
+  for (const nextCharacter of next.characters) {
+    const previousCharacter = findCharacter(previous, nextCharacter.characterId);
+    assertNewVersionApprovals(
+      previousCharacter?.look as GenericVersionContainer | undefined,
+      nextCharacter.look as GenericVersionContainer | undefined,
+      newEvents,
+      "lock",
+      "look",
+      nextCharacter.characterId,
+      "characters." + nextCharacter.characterId + ".look",
+    );
+    assertNewVersionApprovals(
+      previousCharacter?.voice as GenericVersionContainer | undefined,
+      nextCharacter.voice as GenericVersionContainer | undefined,
+      newEvents,
+      "lock",
+      "voice",
+      nextCharacter.characterId,
+      "characters." + nextCharacter.characterId + ".voice",
+    );
+  }
+
   for (const previousEpisode of previous.episodes) {
     const nextEpisode = findEpisode(next, previousEpisode.episodeId);
-    assertLockedContainerPreserved(
+    assertVersionHistoryPreserved(
       previousEpisode.script as GenericVersionContainer,
       nextEpisode?.script as GenericVersionContainer | undefined,
       "episodes." + previousEpisode.episodeId + ".script",
@@ -1024,7 +1125,7 @@ export function assertProductionStateUpdate(previous: ProductionState, next: Pro
     }
 
     if (previousEpisode.dialogueTimeline) {
-      assertLockedContainerPreserved(
+      assertVersionHistoryPreserved(
         previousEpisode.dialogueTimeline as GenericVersionContainer,
         nextEpisode?.dialogueTimeline as GenericVersionContainer | undefined,
         "episodes." + previousEpisode.episodeId + ".dialogueTimeline",
@@ -1043,7 +1144,7 @@ export function assertProductionStateUpdate(previous: ProductionState, next: Pro
     }
 
     if (previousEpisode.storyboard) {
-      assertLockedContainerPreserved(
+      assertVersionHistoryPreserved(
         previousEpisode.storyboard as GenericVersionContainer,
         nextEpisode?.storyboard as GenericVersionContainer | undefined,
         "episodes." + previousEpisode.episodeId + ".storyboard",
@@ -1063,7 +1164,7 @@ export function assertProductionStateUpdate(previous: ProductionState, next: Pro
 
     for (const previousShot of previousEpisode.shots) {
       const nextShot = nextEpisode?.shots.find((shot) => shot.shotId === previousShot.shotId);
-      assertLockedContainerPreserved(
+      assertVersionHistoryPreserved(
         previousShot as unknown as GenericVersionContainer,
         nextShot as unknown as GenericVersionContainer | undefined,
         "episodes." + previousEpisode.episodeId + ".shots." + previousShot.shotId,
@@ -1093,7 +1194,7 @@ export function assertProductionStateUpdate(previous: ProductionState, next: Pro
 
     for (const previousAssembly of previousEpisode.assemblies) {
       const nextAssembly = nextEpisode?.assemblies.find((assembly) => assembly.trackId === previousAssembly.trackId);
-      assertLockedContainerPreserved(
+      assertVersionHistoryPreserved(
         previousAssembly as unknown as GenericVersionContainer,
         nextAssembly as unknown as GenericVersionContainer | undefined,
         "episodes." + previousEpisode.episodeId + ".assemblies." + previousAssembly.trackId,
@@ -1112,7 +1213,77 @@ export function assertProductionStateUpdate(previous: ProductionState, next: Pro
     }
   }
 
-  assertLockedContainerPreserved(policyAsGeneric(previous.modelPolicy), policyAsGeneric(next.modelPolicy), "modelPolicy");
+
+  for (const nextEpisode of next.episodes) {
+    const previousEpisode = findEpisode(previous, nextEpisode.episodeId);
+    assertNewVersionApprovals(
+      previousEpisode?.script as GenericVersionContainer | undefined,
+      nextEpisode.script as GenericVersionContainer,
+      newEvents,
+      "lock",
+      "script",
+      nextEpisode.episodeId,
+      "episodes." + nextEpisode.episodeId + ".script",
+    );
+    assertNewVersionApprovals(
+      previousEpisode?.dialogueTimeline as GenericVersionContainer | undefined,
+      nextEpisode.dialogueTimeline as GenericVersionContainer | undefined,
+      newEvents,
+      "lock",
+      "dialogue",
+      nextEpisode.episodeId,
+      "episodes." + nextEpisode.episodeId + ".dialogueTimeline",
+    );
+    assertNewVersionApprovals(
+      previousEpisode?.storyboard as GenericVersionContainer | undefined,
+      nextEpisode.storyboard as GenericVersionContainer | undefined,
+      newEvents,
+      "lock",
+      "storyboard",
+      nextEpisode.episodeId,
+      "episodes." + nextEpisode.episodeId + ".storyboard",
+    );
+
+    for (const nextShot of nextEpisode.shots) {
+      const previousShot = previousEpisode?.shots.find((shot) => shot.shotId === nextShot.shotId);
+      assertNewVersionApprovals(
+        previousShot as unknown as GenericVersionContainer | undefined,
+        nextShot as unknown as GenericVersionContainer,
+        newEvents,
+        "lock",
+        "shot",
+        nextShot.shotId,
+        "episodes." + nextEpisode.episodeId + ".shots." + nextShot.shotId,
+      );
+      assertNewShotSelectionsApproved(previousShot, nextShot, newEvents);
+    }
+
+    for (const nextAssembly of nextEpisode.assemblies) {
+      const previousAssembly = previousEpisode?.assemblies.find((assembly) => assembly.trackId === nextAssembly.trackId);
+      assertNewVersionApprovals(
+        previousAssembly as unknown as GenericVersionContainer | undefined,
+        nextAssembly as unknown as GenericVersionContainer,
+        newEvents,
+        "lock",
+        "assembly",
+        nextAssembly.trackId,
+        "episodes." + nextEpisode.episodeId + ".assemblies." + nextAssembly.trackId,
+      );
+    }
+
+    if (previousEpisode) assertHistoricalQaPreserved(previousEpisode, nextEpisode);
+  }
+
+  assertVersionHistoryPreserved(policyAsGeneric(previous.modelPolicy), policyAsGeneric(next.modelPolicy), "modelPolicy");
+  assertNewVersionApprovals(
+    policyAsGeneric(previous.modelPolicy),
+    policyAsGeneric(next.modelPolicy),
+    newEvents,
+    "approve_policy",
+    "modelPolicy",
+    next.projectId,
+    "modelPolicy",
+  );
   assertActivePointerChange(
     previous.modelPolicy.activeLockedVersionId,
     next.modelPolicy.activeLockedVersionId,
@@ -1135,17 +1306,34 @@ export async function writeProductionStateFile(filePath: string, input: unknown)
   const next = parseProductionState(input);
   assertProductionStateSemantics(next);
 
-  let previous: ProductionState | null = null;
-  try {
-    previous = await readProductionStateFile(filePath);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
-  if (previous) assertProductionStateUpdate(previous, next);
-
   await mkdir(dirname(filePath), { recursive: true });
+  const lockPath = filePath + ".lock";
+  let lockHandle;
+  try {
+    lockHandle = await open(lockPath, "wx");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      throw productionStateError("PRODUCTION_STATE_WRITE_CONFLICT", "Production state is already being updated: " + filePath);
+    }
+    throw error;
+  }
+
   const temporaryPath = filePath + ".tmp-" + String(process.pid) + "-" + String(Date.now());
-  await writeFile(temporaryPath, JSON.stringify(next, null, 2) + "\n", { encoding: "utf8", flag: "wx" });
-  await rename(temporaryPath, filePath);
-  return next;
+  try {
+    let previous: ProductionState | null = null;
+    try {
+      previous = await readProductionStateFile(filePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    if (previous) assertProductionStateUpdate(previous, next);
+
+    await writeFile(temporaryPath, JSON.stringify(next, null, 2) + "\n", { encoding: "utf8", flag: "wx" });
+    await rename(temporaryPath, filePath);
+    return next;
+  } finally {
+    await lockHandle.close();
+    await unlink(lockPath).catch(() => undefined);
+    await unlink(temporaryPath).catch(() => undefined);
+  }
 }
