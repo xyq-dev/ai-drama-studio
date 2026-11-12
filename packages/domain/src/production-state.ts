@@ -612,6 +612,108 @@ export function assertFormalProductionAllowed(state: ProductionState, episodeId:
   );
 }
 
+
+export interface TakeGenerationGateRequest {
+  episodeId: string;
+  shotId: string;
+  shotVersionId: string;
+  modelPool: "production" | "experimental";
+  capability: string;
+  model: string;
+  estimatedCost: number | "unknown";
+  allowUnknownCost?: boolean;
+}
+
+export interface TakeGenerationGateResult {
+  allowed: boolean;
+  blockers: ProductionGateBlocker[];
+}
+
+export function takeGenerationReadiness(
+  state: ProductionState,
+  request: TakeGenerationGateRequest,
+): TakeGenerationGateResult {
+  const blockers = [...productionReadiness(state, request.episodeId).blockers];
+  const episode = state.episodes.find((item) => item.episodeId === request.episodeId);
+  if (!episode) throw productionStateError("PRODUCTION_EPISODE_NOT_FOUND", "Episode not found: " + request.episodeId);
+  const shot = episode.shots.find((item) => item.shotId === request.shotId);
+  if (!shot) throw productionStateError("PRODUCTION_SHOT_NOT_FOUND", "Shot not found: " + request.shotId);
+  const shotVersion = shot.versions.find((item) => item.versionId === request.shotVersionId);
+  if (!shotVersion) throw productionStateError("PRODUCTION_SHOT_VERSION_NOT_FOUND", "ShotVersion not found: " + request.shotVersionId);
+
+  const activePolicy = state.modelPolicy.activeLockedVersionId === null
+    ? null
+    : state.modelPolicy.versions.find((version) => version.policyVersion === state.modelPolicy.activeLockedVersionId) ?? null;
+  if (!activePolicy) {
+    blocker(blockers, "MODEL_POLICY_LOCK_MISSING", "modelPolicy.activeLockedVersionId", "Take generation requires an active locked modelPolicy");
+    return { allowed: false, blockers };
+  }
+
+  const budget = activePolicy.budget;
+  if (budget.maxTakesPerShot !== null && shotVersion.takes.length >= budget.maxTakesPerShot) {
+    blocker(
+      blockers,
+      "MAX_TAKES_PER_SHOT_REACHED",
+      "episodes." + request.episodeId + ".shots." + request.shotId + ".versions." + request.shotVersionId + ".takes",
+      "Take count has reached the active modelPolicy limit",
+    );
+  }
+
+  if (request.estimatedCost === "unknown") {
+    if (!request.allowUnknownCost) {
+      blocker(blockers, "UNKNOWN_COST_REQUIRES_APPROVAL", "modelPolicy.budget", "Unknown generation cost requires explicit user approval");
+    }
+  } else if (budget.maxCostPerTake !== null && request.estimatedCost > budget.maxCostPerTake) {
+    blocker(blockers, "MAX_COST_PER_TAKE_EXCEEDED", "modelPolicy.budget.maxCostPerTake", "Estimated Take cost exceeds the active policy limit");
+  }
+
+  if (request.modelPool === "production") {
+    const expected = activePolicy.production[request.capability];
+    if (typeof expected !== "string") {
+      blocker(blockers, "PRODUCTION_MODEL_BINDING_MISSING", "modelPolicy.production." + request.capability, "No production model is bound for this capability");
+    } else if (expected !== request.model) {
+      blocker(blockers, "PRODUCTION_MODEL_MISMATCH", "modelPolicy.production." + request.capability, "Requested model does not match the locked production model");
+    }
+  } else {
+    if (!activePolicy.experimental.enabled) {
+      blocker(blockers, "EXPERIMENTAL_POOL_DISABLED", "modelPolicy.experimental.enabled", "Experimental model pool is disabled");
+    }
+    if (!activePolicy.experimental.pool.includes(request.model)) {
+      blocker(blockers, "EXPERIMENTAL_MODEL_NOT_ALLOWED", "modelPolicy.experimental.pool", "Requested experimental model is not in the whitelist");
+    }
+
+    let recordedCost = 0;
+    let unknownRecordedCost = false;
+    for (const item of episode.shots) {
+      for (const version of item.versions) {
+        for (const take of version.takes) {
+          if (take.modelPool !== "experimental") continue;
+          if (take.manifest.cost === "unknown") unknownRecordedCost = true;
+          else recordedCost += take.manifest.cost;
+        }
+      }
+    }
+    if (unknownRecordedCost && !request.allowUnknownCost) {
+      blocker(blockers, "EXPERIMENTAL_COST_UNKNOWN", "modelPolicy.budget.maxExperimentalCostPerEpisode", "Existing experimental cost is unknown and requires user approval");
+    }
+    if (request.estimatedCost !== "unknown" && budget.maxExperimentalCostPerEpisode !== null
+      && recordedCost + request.estimatedCost > budget.maxExperimentalCostPerEpisode) {
+      blocker(blockers, "EXPERIMENTAL_EPISODE_BUDGET_EXCEEDED", "modelPolicy.budget.maxExperimentalCostPerEpisode", "Experimental episode budget would be exceeded");
+    }
+  }
+
+  return { allowed: blockers.length === 0, blockers };
+}
+
+export function assertTakeGenerationAllowed(state: ProductionState, request: TakeGenerationGateRequest): void {
+  const result = takeGenerationReadiness(state, request);
+  if (result.allowed) return;
+  throw productionStateError(
+    "TAKE_GENERATION_BLOCKED",
+    result.blockers.map((item) => item.code + "@" + item.path).join(", "),
+  );
+}
+
 export function appendApprovalEvent(state: ProductionState, eventInput: unknown): ProductionState {
   const event = approvalEventSchema.parse(eventInput);
   if (state.approvalLog.some((item) => item.eventId === event.eventId)) {
