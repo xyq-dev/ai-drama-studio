@@ -56,7 +56,15 @@ describe("production state v1", () => {
 
   it("blocks formal production when modelPolicy has no active lock", async () => {
     const state = await fixture();
+    const policy = state.modelPolicy.versions[0]!;
     state.modelPolicy.activeLockedVersionId = null;
+    policy.status = "draft";
+    policy.effectiveAt = null;
+    policy.approvedBy = null;
+    policy.budget.currency = null;
+    policy.budget.maxCostPerTake = null;
+    policy.budget.maxTakesPerShot = null;
+    policy.budget.maxExperimentalCostPerEpisode = null;
 
     const gate = productionReadiness(state, "S1");
     expect(gate.allowed).toBe(false);
@@ -290,10 +298,18 @@ describe("production state v1", () => {
     const file = resolve(directory, "production-state.json");
     try {
       const initial = await fixture();
+      const initialPolicy = initial.modelPolicy.versions[0]!;
       initial.modelPolicy.activeLockedVersionId = null;
+      initialPolicy.status = "review";
+      initialPolicy.effectiveAt = null;
+      initialPolicy.approvedBy = null;
       await writeProductionStateFile(file, initial);
 
       const next = clone(initial);
+      const nextPolicy = next.modelPolicy.versions[0]!;
+      nextPolicy.status = "locked";
+      nextPolicy.effectiveAt = "2026-11-12T17:30:00+08:00";
+      nextPolicy.approvedBy = "user";
       next.modelPolicy.activeLockedVersionId = next.modelPolicy.currentVersionId;
       await expect(writeProductionStateFile(file, next)).rejects.toMatchObject({
         code: "APPROVAL_EVENT_REQUIRED",
