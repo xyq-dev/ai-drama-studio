@@ -1,9 +1,10 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   appendApprovalEvent,
+  assertProductionStateUpdate,
   parseProductionState,
   productionReadiness,
   takeGenerationReadiness,
@@ -251,6 +252,159 @@ describe("production state v1", () => {
     expect(unknown.blockers).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: "UNKNOWN_COST_REQUIRES_APPROVAL" }),
     ]));
+  });
+
+  it("requires lock and selection approvals for a newly added locked ShotVersion", async () => {
+    const previous = await fixture();
+    const next = clone(previous);
+    const shot = next.episodes[0]!.shots[0]!;
+    const source = clone(shot.versions[0]!);
+    source.versionId = "S1-01/v2";
+    source.supersedes = "S1-01/v1";
+    source.selectedTakeId = "S1-01/v2/t1";
+    source.takes[0]!.takeId = "S1-01/v2/t1";
+    shot.versions.push(source);
+
+    expect(() => assertProductionStateUpdate(previous, next)).toThrowError(
+      expect.objectContaining({ code: "APPROVAL_EVENT_REQUIRED" }),
+    );
+
+    next.approvalLog.push({
+      eventId: "ae-shot-v2-lock",
+      action: "lock",
+      objectType: "shot",
+      objectId: "S1-01",
+      versionId: "S1-01/v2",
+      fromStatus: "review",
+      toStatus: "locked",
+      actor: "user",
+      timestamp: "2026-11-12T17:20:00+08:00",
+    });
+    expect(() => assertProductionStateUpdate(previous, next)).toThrowError(
+      expect.objectContaining({ code: "APPROVAL_EVENT_REQUIRED" }),
+    );
+
+    next.approvalLog.push({
+      eventId: "ae-shot-v2-select",
+      action: "select_take",
+      objectType: "shot",
+      objectId: "S1-01",
+      versionId: "S1-01/v2",
+      fromStatus: null,
+      toStatus: null,
+      actor: "user",
+      timestamp: "2026-11-12T17:21:00+08:00",
+    });
+    expect(() => assertProductionStateUpdate(previous, next)).not.toThrow();
+  });
+
+  it("requires user approval when a newly introduced character Look is already locked", async () => {
+    const previous = await fixture();
+    const next = clone(previous);
+    next.characters.push({
+      characterId: "new-role",
+      name: "新角色",
+      look: {
+        currentVersionId: "fixture/series/look/new-role/v1",
+        activeLockedVersionId: "fixture/series/look/new-role/v1",
+        versions: [{
+          versionId: "fixture/series/look/new-role/v1",
+          status: "locked",
+          lockedAt: "2026-11-12T17:20:00+08:00",
+          lockedBy: "user",
+        }],
+      },
+    });
+
+    expect(() => assertProductionStateUpdate(previous, next)).toThrowError(
+      expect.objectContaining({ code: "APPROVAL_EVENT_REQUIRED" }),
+    );
+  });
+
+  it("preserves draft and review versions instead of allowing history deletion", async () => {
+    const previous = await fixture();
+    const script = previous.episodes[0]!.script;
+    script.versions.push({ versionId: "fixture/S1/script/v3", status: "draft" });
+    script.currentVersionId = "fixture/S1/script/v3";
+
+    const next = clone(previous);
+    next.episodes[0]!.script.versions = next.episodes[0]!.script.versions.filter(
+      (version) => version.versionId !== "fixture/S1/script/v3",
+    );
+    next.episodes[0]!.script.currentVersionId = "fixture/S1/script/v2";
+
+    expect(() => assertProductionStateUpdate(previous, next)).toThrowError(
+      expect.objectContaining({ code: "VERSION_HISTORY_DELETE_FORBIDDEN" }),
+    );
+  });
+
+  it("does not allow historical QA not_scored checks to be rewritten as pass", async () => {
+    const previous = await fixture();
+    previous.episodes[0]!.qa[0]!.checks.visual.result = "not_scored";
+    const next = clone(previous);
+    next.episodes[0]!.qa[0]!.checks.visual.result = "pass";
+
+    expect(() => assertProductionStateUpdate(previous, next)).toThrowError(
+      expect.objectContaining({ code: "QA_NOT_SCORED_REWRITE_FORBIDDEN" }),
+    );
+  });
+
+  it("counts Takes across all ShotVersions for maxTakesPerShot", async () => {
+    const state = await fixture();
+    state.modelPolicy.versions[0]!.budget.maxTakesPerShot = 1;
+    const shot = state.episodes[0]!.shots[0]!;
+    shot.versions.push({
+      versionId: "S1-01/v2",
+      status: "draft",
+      selectedTakeId: null,
+      takes: [],
+    });
+    shot.currentVersionId = "S1-01/v2";
+
+    const gate = takeGenerationReadiness(state, {
+      episodeId: "S1",
+      shotId: "S1-01",
+      shotVersionId: "S1-01/v2",
+      modelPool: "production",
+      capability: "video",
+      model: "example-video-model",
+      estimatedCost: 1,
+    });
+    expect(gate.blockers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "MAX_TAKES_PER_SHOT_REACHED" }),
+    ]));
+  });
+
+  it("rejects negative and non-finite numeric cost estimates", async () => {
+    const state = await fixture();
+
+    for (const estimatedCost of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const gate = takeGenerationReadiness(state, {
+        episodeId: "S1",
+        shotId: "S1-01",
+        shotVersionId: "S1-01/v1",
+        modelPool: "production",
+        capability: "video",
+        model: "example-video-model",
+        estimatedCost,
+      });
+      expect(gate.blockers).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: "INVALID_ESTIMATED_COST" }),
+      ]));
+    }
+  });
+
+  it("rejects concurrent writers while a production-state file lock is held", async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), "hongguo-state-lock-"));
+    const file = resolve(directory, "production-state.json");
+    try {
+      await writeFile(file + ".lock", "held", "utf8");
+      await expect(writeProductionStateFile(file, await fixture())).rejects.toMatchObject({
+        code: "PRODUCTION_STATE_WRITE_CONFLICT",
+      });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("appends approval events without rewriting history", async () => {
