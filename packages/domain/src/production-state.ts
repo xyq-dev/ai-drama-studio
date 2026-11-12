@@ -1308,7 +1308,7 @@ export async function writeProductionStateFile(filePath: string, input: unknown)
 
   await mkdir(dirname(filePath), { recursive: true });
   const lockPath = filePath + ".lock";
-  let lockHandle;
+  let lockHandle: Awaited<ReturnType<typeof open>>;
   try {
     lockHandle = await open(lockPath, "wx");
   } catch (error) {
