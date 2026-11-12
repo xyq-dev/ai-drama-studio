@@ -651,6 +651,7 @@ function blocker(blockers: ProductionGateBlocker[], code: string, path: string, 
 }
 
 export function productionReadiness(state: ProductionState, episodeId: string): ProductionGateResult {
+  assertProductionStateSemantics(state);
   const episode = state.episodes.find((item) => item.episodeId === episodeId);
   if (!episode) throw productionStateError("PRODUCTION_EPISODE_NOT_FOUND", "Episode not found: " + episodeId);
 
