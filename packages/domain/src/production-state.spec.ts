@@ -8,6 +8,7 @@ import {
   productionReadiness,
   takeGenerationReadiness,
   validateProductionStateSemantics,
+  validateProductionStateStructure,
   writeProductionStateFile,
 } from "./production-state";
 
@@ -31,6 +32,26 @@ describe("production state v1", () => {
     expect(gate.visualCharacterIds).toEqual(["alan", "dual", "zhou"]);
     expect(gate.voiceCharacterIds).toEqual(["alan", "zhou"]);
     expect(gate.blockers).toEqual([]);
+  });
+
+  it("uses the v1 JSON Schema contract for structural validation", async () => {
+    const state = await fixture();
+    const raw = clone(state) as unknown as Record<string, unknown>;
+    delete raw.spec;
+
+    const missing = validateProductionStateStructure(raw);
+    expect(missing.valid).toBe(false);
+    expect(missing.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "SCHEMA_REQUIRED_MISSING", path: "$.spec" }),
+    ]));
+
+    const extra = clone(state) as unknown as Record<string, unknown>;
+    extra.unplannedField = true;
+    const unexpected = validateProductionStateStructure(extra);
+    expect(unexpected.valid).toBe(false);
+    expect(unexpected.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "SCHEMA_ADDITIONAL_PROPERTY", path: "$.unplannedField" }),
+    ]));
   });
 
   it("blocks formal production when modelPolicy has no active lock", async () => {
