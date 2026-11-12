@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from "node:util";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { z } from "zod";
+import productionStateJsonSchema from "./production-state.schema.json";
 import { DomainError } from "./errors";
 
 export const PRODUCTION_STATE_SCHEMA_VERSION = "hongguo-production-state.v1" as const;
@@ -256,6 +257,128 @@ function issuePath(path: readonly PropertyKey[]): string {
   return path.map((item) => String(item)).join(".");
 }
 
+
+type JsonSchemaNode = Record<string, unknown>;
+
+function schemaObject(value: unknown): JsonSchemaNode | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as JsonSchemaNode
+    : null;
+}
+
+function schemaRef(root: JsonSchemaNode, ref: string): JsonSchemaNode | null {
+  if (!ref.startsWith("#/")) return null;
+  let current: unknown = root;
+  for (const rawPart of ref.slice(2).split("/")) {
+    const part = rawPart.replace(/~1/g, "/").replace(/~0/g, "~");
+    const object = schemaObject(current);
+    if (!object || !(part in object)) return null;
+    current = object[part];
+  }
+  return schemaObject(current);
+}
+
+function schemaTypeMatches(value: unknown, type: string): boolean {
+  if (type === "null") return value === null;
+  if (type === "array") return Array.isArray(value);
+  if (type === "object") return value !== null && typeof value === "object" && !Array.isArray(value);
+  if (type === "string") return typeof value === "string";
+  if (type === "boolean") return typeof value === "boolean";
+  if (type === "integer") return typeof value === "number" && Number.isFinite(value) && Number.isInteger(value);
+  if (type === "number") return typeof value === "number" && Number.isFinite(value);
+  return true;
+}
+
+function validateJsonSchemaNode(
+  root: JsonSchemaNode,
+  schema: JsonSchemaNode,
+  value: unknown,
+  path: string,
+  issues: ProductionStateIssue[],
+): void {
+  if (typeof schema.$ref === "string") {
+    const target = schemaRef(root, schema.$ref);
+    if (!target) {
+      pushIssue(issues, "SCHEMA_REF_INVALID", path, "Unable to resolve schema ref: " + schema.$ref);
+      return;
+    }
+    validateJsonSchemaNode(root, target, value, path, issues);
+    return;
+  }
+
+  if (Array.isArray(schema.anyOf)) {
+    const valid = schema.anyOf.some((candidate) => {
+      const child = schemaObject(candidate);
+      if (!child) return false;
+      const local: ProductionStateIssue[] = [];
+      validateJsonSchemaNode(root, child, value, path, local);
+      return local.length === 0;
+    });
+    if (!valid) pushIssue(issues, "SCHEMA_ANY_OF_INVALID", path, "Value does not match any allowed schema");
+    return;
+  }
+
+  if ("const" in schema && !isDeepStrictEqual(value, schema.const)) {
+    pushIssue(issues, "SCHEMA_CONST_INVALID", path, "Value does not match schema const");
+    return;
+  }
+  if (Array.isArray(schema.enum) && !schema.enum.some((candidate) => isDeepStrictEqual(candidate, value))) {
+    pushIssue(issues, "SCHEMA_ENUM_INVALID", path, "Value is not in schema enum");
+    return;
+  }
+
+  const declaredTypes = typeof schema.type === "string"
+    ? [schema.type]
+    : Array.isArray(schema.type)
+      ? schema.type.filter((item): item is string => typeof item === "string")
+      : [];
+  if (declaredTypes.length > 0 && !declaredTypes.some((type) => schemaTypeMatches(value, type))) {
+    pushIssue(issues, "SCHEMA_TYPE_INVALID", path, "Value does not match schema type");
+    return;
+  }
+
+  if (typeof value === "string" && typeof schema.minLength === "number" && value.length < schema.minLength) {
+    pushIssue(issues, "SCHEMA_MIN_LENGTH", path, "String is shorter than minLength");
+  }
+  if (typeof value === "number" && typeof schema.minimum === "number" && value < schema.minimum) {
+    pushIssue(issues, "SCHEMA_MINIMUM", path, "Number is below minimum");
+  }
+
+  if (Array.isArray(value)) {
+    const itemSchema = schemaObject(schema.items);
+    if (itemSchema) {
+      value.forEach((item, index) => validateJsonSchemaNode(root, itemSchema, item, path + "[" + String(index) + "]", issues));
+    }
+    return;
+  }
+
+  const objectValue = schemaObject(value);
+  if (!objectValue) return;
+  const properties = schemaObject(schema.properties) ?? {};
+  if (Array.isArray(schema.required)) {
+    for (const key of schema.required) {
+      if (typeof key === "string" && !(key in objectValue)) {
+        pushIssue(issues, "SCHEMA_REQUIRED_MISSING", path + "." + key, "Required property is missing");
+      }
+    }
+  }
+  for (const [key, childValue] of Object.entries(objectValue)) {
+    const childSchema = schemaObject(properties[key]);
+    if (childSchema) {
+      validateJsonSchemaNode(root, childSchema, childValue, path + "." + key, issues);
+    } else if (schema.additionalProperties === false) {
+      pushIssue(issues, "SCHEMA_ADDITIONAL_PROPERTY", path + "." + key, "Additional property is not allowed");
+    }
+  }
+}
+
+export function validateProductionStateStructure(input: unknown): ProductionStateValidation {
+  const issues: ProductionStateIssue[] = [];
+  const root = productionStateJsonSchema as unknown as JsonSchemaNode;
+  validateJsonSchemaNode(root, root, input, "$", issues);
+  return { valid: issues.length === 0, issues };
+}
+
 export function parseProductionManifest(input: unknown): ProductionManifest {
   const parsed = productionManifestSchema.safeParse(input);
   if (!parsed.success) {
@@ -266,6 +389,11 @@ export function parseProductionManifest(input: unknown): ProductionManifest {
 }
 
 export function parseProductionState(input: unknown): ProductionState {
+  const structure = validateProductionStateStructure(input);
+  if (!structure.valid) {
+    const summary = structure.issues.slice(0, 8).map((issue) => issue.path + ": " + issue.message).join("; ");
+    throw productionStateError("PRODUCTION_STATE_SCHEMA_INVALID", "Production state is invalid: " + summary);
+  }
   const parsed = productionStateSchema.safeParse(input);
   if (!parsed.success) {
     const summary = parsed.error.issues.slice(0, 8).map((issue) => issuePath(issue.path) + ": " + issue.message).join("; ");
