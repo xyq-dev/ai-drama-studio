@@ -979,6 +979,37 @@ function assertNewVersionApprovals(
   }
 }
 
+function assertShotTakeHistoryPreserved(
+  previous: ProductionEpisode["shots"][number],
+  next: ProductionEpisode["shots"][number] | undefined,
+  path: string,
+): void {
+  if (!next) return;
+  const nextVersions = new Map(next.versions.map((version) => [version.versionId, version] as const));
+  for (const previousVersion of previous.versions) {
+    const nextVersion = nextVersions.get(previousVersion.versionId);
+    if (!nextVersion) continue;
+    const nextTakes = new Map(nextVersion.takes.map((take) => [take.takeId, take] as const));
+    for (const previousTake of previousVersion.takes) {
+      const nextTake = nextTakes.get(previousTake.takeId);
+      if (!nextTake) {
+        throw productionStateError(
+          "TAKE_HISTORY_DELETE_FORBIDDEN",
+          "Cannot remove recorded Take: " + path + "/" + previousVersion.versionId + "/" + previousTake.takeId,
+        );
+      }
+      const { status: _previousStatus, ...previousFacts } = previousTake;
+      const { status: _nextStatus, ...nextFacts } = nextTake;
+      if (!isDeepStrictEqual(previousFacts, nextFacts)) {
+        throw productionStateError(
+          "TAKE_HISTORY_REWRITE_FORBIDDEN",
+          "Recorded Take generation facts are immutable: " + path + "/" + previousVersion.versionId + "/" + previousTake.takeId,
+        );
+      }
+    }
+  }
+}
+
 function assertNewShotSelectionsApproved(
   previous: ProductionEpisode["shots"][number] | undefined,
   next: ProductionEpisode["shots"][number],
@@ -1003,7 +1034,12 @@ function assertHistoricalQaPreserved(previous: ProductionEpisode, next: Producti
   const nextById = new Map(next.qa.map((report) => [report.qaId, report] as const));
   for (const report of previous.qa) {
     const candidate = nextById.get(report.qaId);
-    if (!candidate) continue;
+    if (!candidate) {
+      throw productionStateError(
+        "QA_HISTORY_DELETE_FORBIDDEN",
+        "Cannot remove historical QA report: " + report.qaId,
+      );
+    }
     for (const key of Object.keys(report.checks) as Array<keyof typeof report.checks>) {
       if (report.checks[key].result === "not_scored" && candidate.checks[key].result !== "not_scored") {
         throw productionStateError(
@@ -1164,11 +1200,13 @@ export function assertProductionStateUpdate(previous: ProductionState, next: Pro
 
     for (const previousShot of previousEpisode.shots) {
       const nextShot = nextEpisode?.shots.find((shot) => shot.shotId === previousShot.shotId);
+      const shotPath = "episodes." + previousEpisode.episodeId + ".shots." + previousShot.shotId;
       assertVersionHistoryPreserved(
         previousShot as unknown as GenericVersionContainer,
         nextShot as unknown as GenericVersionContainer | undefined,
-        "episodes." + previousEpisode.episodeId + ".shots." + previousShot.shotId,
+        shotPath,
       );
+      assertShotTakeHistoryPreserved(previousShot, nextShot, shotPath);
       if (!nextShot) continue;
       assertActivePointerChange(
         previousShot.activeLockedVersionId,
@@ -1206,7 +1244,7 @@ export function assertProductionStateUpdate(previous: ProductionState, next: Pro
           newEvents,
           "lock",
           "assembly",
-          previousAssembly.trackId,
+          previousEpisode.episodeId + "/" + previousAssembly.trackId,
           "episodes." + previousEpisode.episodeId + ".assemblies." + previousAssembly.trackId + ".activeLockedVersionId",
         );
       }
@@ -1266,7 +1304,7 @@ export function assertProductionStateUpdate(previous: ProductionState, next: Pro
         newEvents,
         "lock",
         "assembly",
-        nextAssembly.trackId,
+        nextEpisode.episodeId + "/" + nextAssembly.trackId,
         "episodes." + nextEpisode.episodeId + ".assemblies." + nextAssembly.trackId,
       );
     }
