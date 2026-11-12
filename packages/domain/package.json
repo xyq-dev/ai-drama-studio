@@ -19,7 +19,8 @@
     }
   },
   "dependencies": {
-    "@ai-drama/contracts": "workspace:*"
+    "@ai-drama/contracts": "workspace:*",
+    "zod": "catalog:"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
