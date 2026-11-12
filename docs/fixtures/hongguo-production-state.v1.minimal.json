@@ -1,0 +1,369 @@
+{
+  "schema": "hongguo-production-state.v1",
+  "spec": "/workspace/drama-studio/workflows/PRODUCTION-STATE-MACHINE-v1.md",
+  "projectId": "fixture-minimal-v1",
+  "title": "最小合法完整示例",
+  "status": "s1_ready",
+  "timezone": "Asia/Shanghai",
+  "updatedAt": "2026-11-12T17:33:00+08:00",
+  "format": {
+    "aspect": "9:16",
+    "resolution": "1080x1920",
+    "fps": 24
+  },
+  "bible": {
+    "currentVersionId": "fixture/series/bible/v1",
+    "activeLockedVersionId": "fixture/series/bible/v1",
+    "versions": [
+      {
+        "versionId": "fixture/series/bible/v1",
+        "status": "locked",
+        "path": "/tmp/fixture-bible.md",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "lockedAt": "2026-11-12T10:00:00+08:00",
+        "lockedBy": "user",
+        "sourceQuote": "lock bible v1"
+      }
+    ]
+  },
+  "characters": [
+    {
+      "characterId": "alan",
+      "name": "阿岚",
+      "look": {
+        "currentVersionId": "fixture/series/look/alan/v1",
+        "activeLockedVersionId": "fixture/series/look/alan/v1",
+        "versions": [
+          {
+            "versionId": "fixture/series/look/alan/v1",
+            "status": "locked",
+            "path": "/tmp/alan.png",
+            "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "lockedAt": "2026-11-12T10:00:00+08:00",
+            "lockedBy": "user"
+          }
+        ]
+      },
+      "voice": {
+        "currentVersionId": "fixture/series/voice/alan/v1",
+        "activeLockedVersionId": "fixture/series/voice/alan/v1",
+        "versions": [
+          {
+            "versionId": "fixture/series/voice/alan/v1",
+            "status": "locked",
+            "lockedAt": "2026-11-12T10:00:00+08:00",
+            "lockedBy": "user"
+          }
+        ]
+      }
+    },
+    {
+      "characterId": "zhou",
+      "name": "老周",
+      "look": {
+        "currentVersionId": "fixture/series/look/zhou/v1",
+        "activeLockedVersionId": "fixture/series/look/zhou/v1",
+        "versions": [
+          {
+            "versionId": "fixture/series/look/zhou/v1",
+            "status": "locked",
+            "path": "/tmp/zhou.png",
+            "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "lockedAt": "2026-11-12T10:00:00+08:00",
+            "lockedBy": "user"
+          }
+        ]
+      },
+      "voice": {
+        "currentVersionId": "fixture/series/voice/zhou/v1",
+        "activeLockedVersionId": "fixture/series/voice/zhou/v1",
+        "versions": [
+          {
+            "versionId": "fixture/series/voice/zhou/v1",
+            "status": "locked",
+            "lockedAt": "2026-11-12T10:00:00+08:00",
+            "lockedBy": "user"
+          }
+        ]
+      }
+    },
+    {
+      "characterId": "dual",
+      "name": "双人关键帧",
+      "look": {
+        "currentVersionId": "fixture/series/look/dual/v1",
+        "activeLockedVersionId": "fixture/series/look/dual/v1",
+        "versions": [
+          {
+            "versionId": "fixture/series/look/dual/v1",
+            "status": "locked",
+            "path": "/tmp/dual.png",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "lockedAt": "2026-11-12T10:00:00+08:00",
+            "lockedBy": "user"
+          }
+        ]
+      }
+    },
+    {
+      "characterId": "chen",
+      "name": "陈妈",
+      "look": {
+        "currentVersionId": "fixture/series/look/chen/draft-v0",
+        "activeLockedVersionId": null,
+        "versions": [
+          {
+            "versionId": "fixture/series/look/chen/draft-v0",
+            "status": "draft",
+            "path": "/tmp/chen-draft.png"
+          }
+        ]
+      },
+      "voice": {
+        "currentVersionId": "fixture/series/voice/chen/draft-v0",
+        "activeLockedVersionId": null,
+        "versions": [
+          {
+            "versionId": "fixture/series/voice/chen/draft-v0",
+            "status": "draft"
+          }
+        ]
+      }
+    }
+  ],
+  "episodes": [
+    {
+      "episodeId": "S1",
+      "status": "final_locked",
+      "script": {
+        "currentVersionId": "fixture/S1/script/v2",
+        "activeLockedVersionId": "fixture/S1/script/v2",
+        "versions": [
+          {
+            "versionId": "fixture/S1/script/v1",
+            "status": "locked",
+            "path": "/tmp/S1-v1.md",
+            "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "lockedAt": "2026-11-12T11:00:00+08:00",
+            "lockedBy": "user",
+            "referencedCharacterIds": [
+              "alan",
+              "zhou"
+            ]
+          },
+          {
+            "versionId": "fixture/S1/script/v2",
+            "status": "locked",
+            "path": "/tmp/S1-v2.md",
+            "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "lockedAt": "2026-11-12T12:00:00+08:00",
+            "lockedBy": "user",
+            "supersedes": "fixture/S1/script/v1",
+            "referencedCharacterIds": [
+              "alan",
+              "zhou"
+            ]
+          }
+        ]
+      },
+      "dialogueTimeline": {
+        "currentVersionId": "fixture/S1/dialogue/v1",
+        "activeLockedVersionId": "fixture/S1/dialogue/v1",
+        "versions": [
+          {
+            "versionId": "fixture/S1/dialogue/v1",
+            "status": "locked",
+            "path": "/tmp/S1.vtt",
+            "lockedAt": "2026-11-12T12:30:00+08:00",
+            "lockedBy": "user",
+            "lines": [
+              {
+                "lineId": "L1",
+                "characterId": "alan",
+                "role": "阿岚",
+                "text": "师傅，末班车还会开吗？",
+                "voiceId": "alan-voice",
+                "durationSec": 2.0,
+                "filmStartSec": 1.0,
+                "filmEndSec": 3.0
+              },
+              {
+                "lineId": "L2",
+                "role": "老周",
+                "text": "会开。",
+                "voiceId": "zhou-voice",
+                "durationSec": 1.0,
+                "filmStartSec": 3.0,
+                "filmEndSec": 4.0
+              }
+            ]
+          }
+        ]
+      },
+      "storyboard": {
+        "currentVersionId": "fixture/S1/storyboard/v1",
+        "activeLockedVersionId": "fixture/S1/storyboard/v1",
+        "versions": [
+          {
+            "versionId": "fixture/S1/storyboard/v1",
+            "status": "locked",
+            "path": "/tmp/S1-shots.md",
+            "lockedAt": "2026-11-12T13:00:00+08:00",
+            "lockedBy": "user",
+            "referencedCharacterIds": [
+              "alan",
+              "zhou",
+              "dual"
+            ]
+          }
+        ]
+      },
+      "shots": [
+        {
+          "shotId": "S1-01",
+          "look": "dual",
+          "timelineStartSec": 0.0,
+          "timelineEndSec": 3.0,
+          "currentVersionId": "S1-01/v1",
+          "activeLockedVersionId": "S1-01/v1",
+          "versions": [
+            {
+              "versionId": "S1-01/v1",
+              "status": "locked",
+              "lockedAt": "2026-11-12T14:00:00+08:00",
+              "lockedBy": "user",
+              "selectedTakeId": "S1-01/v1/t1",
+              "takes": [
+                {
+                  "takeId": "S1-01/v1/t1",
+                  "index": 1,
+                  "status": "selected",
+                  "modelPool": "production",
+                  "manifest": {
+                    "provider": "cursor",
+                    "model": "GenerateVideo",
+                    "prompt": "雨夜公交站，两人在等末班车。",
+                    "promptLang": "zh",
+                    "referenceAssets": [
+                      "/tmp/dual.png"
+                    ],
+                    "params": {
+                      "durationSec": 3
+                    },
+                    "cost": "unknown",
+                    "output": {
+                      "path": "/tmp/S1-01.mp4"
+                    },
+                    "timestamp": "2026-11-12T13:40:00+08:00",
+                    "jobStatus": "success"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "assemblies": [
+        {
+          "trackId": "ai-motion-zh",
+          "label": "AI 动态轨道",
+          "currentVersionId": "fixture/S1/assembly/ai-motion-zh/v1",
+          "activeLockedVersionId": "fixture/S1/assembly/ai-motion-zh/v1",
+          "versions": [
+            {
+              "versionId": "fixture/S1/assembly/ai-motion-zh/v1",
+              "status": "locked",
+              "path": "/tmp/S1.mp4",
+              "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+              "lockedAt": "2026-11-12T15:00:00+08:00",
+              "lockedBy": "user"
+            }
+          ]
+        }
+      ],
+      "qa": [
+        {
+          "qaId": "qa-fixture-S1-v1",
+          "trackId": "ai-motion-zh",
+          "assemblyVersionId": "fixture/S1/assembly/ai-motion-zh/v1",
+          "result": "pass",
+          "path": "/workspace/drama-studio/workflows/fixtures/qa-fixture-S1-v1.md",
+          "checkedAt": "2026-11-12T15:10:00+08:00",
+          "checkedBy": "qa",
+          "checks": {
+            "visual": {
+              "result": "pass"
+            },
+            "audio": {
+              "result": "pass"
+            },
+            "subtitle": {
+              "result": "pass"
+            },
+            "duration": {
+              "result": "pass"
+            },
+            "resolution": {
+              "result": "pass"
+            },
+            "fps": {
+              "result": "pass"
+            },
+            "fileIntegrity": {
+              "result": "pass"
+            },
+            "shotOrder": {
+              "result": "pass"
+            },
+            "assetHash": {
+              "result": "pass"
+            }
+          }
+        }
+      ],
+      "retakeRequests": []
+    }
+  ],
+  "modelPolicy": {
+    "currentVersionId": "fixture/series/modelPolicy/v1",
+    "activeLockedVersionId": "fixture/series/modelPolicy/v1",
+    "versions": [
+      {
+        "policyVersion": "fixture/series/modelPolicy/v1",
+        "effectiveAt": "2026-11-12T10:30:00+08:00",
+        "approvedBy": "user",
+        "status": "locked",
+        "production": {
+          "image": "example-image-model",
+          "tts": "example-tts-model",
+          "video": "example-video-model"
+        },
+        "experimental": {
+          "enabled": false,
+          "pool": []
+        },
+        "budget": {
+          "currency": "CNY",
+          "maxCostPerTake": 10,
+          "maxTakesPerShot": 3,
+          "maxExperimentalCostPerEpisode": 0,
+          "unknownCostRule": "cost 为 unknown 时必须先请示，不得当作 0。"
+        }
+      }
+    ]
+  },
+  "approvalLog": [
+    {
+      "eventId": "ae-fixture-policy",
+      "action": "approve_policy",
+      "objectType": "modelPolicy",
+      "objectId": "fixture-minimal-v1",
+      "versionId": "fixture/series/modelPolicy/v1",
+      "fromStatus": "review",
+      "toStatus": "locked",
+      "actor": "user",
+      "sourceQuote": "fixture policy lock",
+      "timestamp": "2026-11-12T10:30:00+08:00"
+    }
+  ]
+}
