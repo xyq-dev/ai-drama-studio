@@ -6,6 +6,7 @@ import {
   appendApprovalEvent,
   parseProductionState,
   productionReadiness,
+  takeGenerationReadiness,
   validateProductionStateSemantics,
   writeProductionStateFile,
 } from "./production-state";
@@ -137,6 +138,78 @@ describe("production state v1", () => {
     expect(validation.valid).toBe(false);
     expect(validation.issues).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: "APPROVAL_ACTOR_INVALID" }),
+    ]));
+  });
+
+  it("enforces the locked production model and per-Take budget before generation", async () => {
+    const state = await fixture();
+
+    expect(takeGenerationReadiness(state, {
+      episodeId: "S1",
+      shotId: "S1-01",
+      shotVersionId: "S1-01/v1",
+      modelPool: "production",
+      capability: "video",
+      model: "example-video-model",
+      estimatedCost: 5,
+    }).allowed).toBe(true);
+
+    const wrongModel = takeGenerationReadiness(state, {
+      episodeId: "S1",
+      shotId: "S1-01",
+      shotVersionId: "S1-01/v1",
+      modelPool: "production",
+      capability: "video",
+      model: "another-model",
+      estimatedCost: 5,
+    });
+    expect(wrongModel.blockers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "PRODUCTION_MODEL_MISMATCH" }),
+    ]));
+
+    const overBudget = takeGenerationReadiness(state, {
+      episodeId: "S1",
+      shotId: "S1-01",
+      shotVersionId: "S1-01/v1",
+      modelPool: "production",
+      capability: "video",
+      model: "example-video-model",
+      estimatedCost: 11,
+    });
+    expect(overBudget.blockers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "MAX_COST_PER_TAKE_EXCEEDED" }),
+    ]));
+  });
+
+  it("blocks experimental generation unless the pool and budget explicitly allow it", async () => {
+    const state = await fixture();
+
+    const disabled = takeGenerationReadiness(state, {
+      episodeId: "S1",
+      shotId: "S1-01",
+      shotVersionId: "S1-01/v1",
+      modelPool: "experimental",
+      capability: "video",
+      model: "trial-video-model",
+      estimatedCost: 1,
+    });
+    expect(disabled.blockers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "EXPERIMENTAL_POOL_DISABLED" }),
+      expect.objectContaining({ code: "EXPERIMENTAL_MODEL_NOT_ALLOWED" }),
+      expect.objectContaining({ code: "EXPERIMENTAL_EPISODE_BUDGET_EXCEEDED" }),
+    ]));
+
+    const unknown = takeGenerationReadiness(state, {
+      episodeId: "S1",
+      shotId: "S1-01",
+      shotVersionId: "S1-01/v1",
+      modelPool: "production",
+      capability: "video",
+      model: "example-video-model",
+      estimatedCost: "unknown",
+    });
+    expect(unknown.blockers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "UNKNOWN_COST_REQUIRES_APPROVAL" }),
     ]));
   });
 
