@@ -11,7 +11,7 @@ import { VimaxPreviewController } from "./vimax-preview.controller";
 import { VimaxCandidateController } from "./vimax-candidate.controller";
 import {
   AUTO_CREATION_SERVICE, RUNTIME_STORE, SCRIPT_BREAKDOWN_SERVICE, SERIES_WRITING_SERVICE, STUDIO_RUNTIME, STUDIO_SERVICE, TITLE_WRITING_SERVICE,
-  WRITING_CANDIDATE_SERVICE, VIMAX_PREVIEW_SERVICE, VIMAX_CANDIDATE_SERVICE,
+  WRITING_CANDIDATE_SERVICE, VIMAX_PREVIEW_SERVICE, VIMAX_CANDIDATE_SERVICE, PRODUCTION_STATE_READONLY_SERVICE,
 } from "./tokens";
 import { ADMIN_MODELS_SERVICE, AdminModelsController } from "../admin/admin-models.controller";
 import { VIMAX_PLANNING_SERVICE, VimaxPlanningController } from "./vimax-planning.controller";
@@ -24,6 +24,8 @@ import { PROJECT_LIBRARY_SERVICE, ProjectLibraryController } from "./project-lib
 import { STORAGE_SETTINGS_SERVICE, StorageSettingsController } from "../admin/storage-settings.controller";
 import { SCRIPT_WORKBENCH_SERVICE, ScriptWorkbenchController } from "./script-workbench.controller";
 import { ScriptWorkbenchService } from "./script-workbench.service";
+import { ProductionStateReadonlyController } from "./production-state-readonly.controller";
+import { ProductionStateReadonlyService } from "./production-state-readonly.service";
 
 @Module({})
 export class StudioModule {
@@ -34,9 +36,10 @@ export class StudioModule {
         StudioController, EventsController, TitleWritingController, ScriptBreakdownController, WritingCandidateController,
         AdminModelsController, AutoCreationController, SeriesWritingController, VimaxPreviewController, VimaxCandidateController,
         VimaxPlanningController, RealMediaController, SpeechController, VoiceComposeController,
-        ProjectLibraryController, StorageSettingsController, ScriptWorkbenchController,
+        ProjectLibraryController, StorageSettingsController, ScriptWorkbenchController, ProductionStateReadonlyController,
       ],
       providers: [
+        { provide: PRODUCTION_STATE_READONLY_SERVICE, useFactory: () => new ProductionStateReadonlyService(env.PRODUCTION_STATE_ROOT) },
         { provide: SCRIPT_WORKBENCH_SERVICE, inject: [STUDIO_RUNTIME], useFactory: (runtime: StudioRuntime) => new ScriptWorkbenchService(runtime.pool, env.APP_WORKSPACE_ID) },
         { provide: PROJECT_LIBRARY_SERVICE, inject: [STUDIO_RUNTIME], useFactory: (runtime: StudioRuntime) => new ProjectLibraryService(new ProjectLibraryStore(runtime.pool), env.APP_WORKSPACE_ID) },
         { provide: STORAGE_SETTINGS_SERVICE, inject: [STUDIO_RUNTIME], useFactory: (runtime: StudioRuntime) => runtime.storageSettings },
