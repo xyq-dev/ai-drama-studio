@@ -53,7 +53,9 @@ jobs:
           cache: pnpm
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
-      - name: Build Web and its workspace dependencies
+      - name: Build Web with inherited development mode (production build regression)
+        env:
+          NODE_ENV: development
         run: pnpm --filter @ai-drama/web... build
       - name: Lint Web
         run: pnpm --filter @ai-drama/web lint
