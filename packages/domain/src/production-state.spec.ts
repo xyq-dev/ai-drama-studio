@@ -349,6 +349,120 @@ describe("production state v1", () => {
     );
   });
 
+  it("does not allow historical QA reports to be deleted and recreated", async () => {
+    const previous = await fixture();
+    const next = clone(previous);
+    next.episodes[0]!.qa = [];
+
+    expect(() => assertProductionStateUpdate(previous, next)).toThrowError(
+      expect.objectContaining({ code: "QA_HISTORY_DELETE_FORBIDDEN" }),
+    );
+  });
+
+  it("preserves recorded Takes in unlocked ShotVersions", async () => {
+    const previous = await fixture();
+    const previousShot = previous.episodes[0]!.shots[0]!;
+    previousShot.versions.push({
+      versionId: "S1-01/v2",
+      status: "draft",
+      selectedTakeId: null,
+      takes: [{
+        takeId: "S1-01/v2/t1",
+        index: 1,
+        status: "not_selected",
+        modelPool: "experimental",
+        manifest: {
+          provider: "trial-provider",
+          model: "trial-video-model",
+          prompt: "试验镜头",
+          referenceAssets: [],
+          params: {},
+          cost: 3,
+          output: { path: "/tmp/S1-01-v2-t1.mp4" },
+          timestamp: "2026-11-12T17:40:00+08:00",
+          jobStatus: "success",
+        },
+      }],
+    });
+    previousShot.currentVersionId = "S1-01/v2";
+
+    const deleted = clone(previous);
+    deleted.episodes[0]!.shots[0]!.versions.find((version) => version.versionId === "S1-01/v2")!.takes = [];
+    expect(() => assertProductionStateUpdate(previous, deleted)).toThrowError(
+      expect.objectContaining({ code: "TAKE_HISTORY_DELETE_FORBIDDEN" }),
+    );
+
+    const rewritten = clone(previous);
+    rewritten.episodes[0]!.shots[0]!.versions.find(
+      (version) => version.versionId === "S1-01/v2",
+    )!.takes[0]!.manifest.cost = 0;
+    expect(() => assertProductionStateUpdate(previous, rewritten)).toThrowError(
+      expect.objectContaining({ code: "TAKE_HISTORY_REWRITE_FORBIDDEN" }),
+    );
+
+    const discarded = clone(previous);
+    discarded.episodes[0]!.shots[0]!.versions.find(
+      (version) => version.versionId === "S1-01/v2",
+    )!.takes[0]!.status = "discarded";
+    expect(() => assertProductionStateUpdate(previous, discarded)).not.toThrow();
+  });
+
+  it("scopes Assembly approvals by episode so one event cannot lock two episodes", async () => {
+    const previous = await fixture();
+    const first = previous.episodes[0]!;
+    const second = clone(first);
+    second.episodeId = "S2";
+    previous.episodes.push(second);
+
+    for (const episode of previous.episodes) {
+      const assembly = episode.assemblies[0]!;
+      assembly.versions.push({
+        versionId: "shared/assembly/v2",
+        status: "review",
+        path: "/tmp/" + episode.episodeId + "-v2.mp4",
+      });
+      assembly.currentVersionId = "shared/assembly/v2";
+    }
+
+    const next = clone(previous);
+    for (const episode of next.episodes) {
+      const assembly = episode.assemblies[0]!;
+      const v2 = assembly.versions.find((version) => version.versionId === "shared/assembly/v2")!;
+      v2.status = "locked";
+      v2.lockedAt = "2026-11-12T17:45:00+08:00";
+      v2.lockedBy = "user";
+      assembly.activeLockedVersionId = "shared/assembly/v2";
+    }
+    next.approvalLog.push({
+      eventId: "ae-assembly-s1-v2",
+      action: "lock",
+      objectType: "assembly",
+      objectId: "S1/ai-motion-zh",
+      versionId: "shared/assembly/v2",
+      fromStatus: "review",
+      toStatus: "locked",
+      actor: "user",
+      timestamp: "2026-11-12T17:45:00+08:00",
+    });
+
+    expect(() => assertProductionStateUpdate(previous, next)).toThrowError(
+      expect.objectContaining({ code: "APPROVAL_EVENT_REQUIRED" }),
+    );
+
+    next.approvalLog.push({
+      eventId: "ae-assembly-s2-v2",
+      action: "lock",
+      objectType: "assembly",
+      objectId: "S2/ai-motion-zh",
+      versionId: "shared/assembly/v2",
+      fromStatus: "review",
+      toStatus: "locked",
+      actor: "user",
+      timestamp: "2026-11-12T17:46:00+08:00",
+    });
+    expect(() => assertProductionStateUpdate(previous, next)).not.toThrow();
+  });
+
   it("counts Takes across all ShotVersions for maxTakesPerShot", async () => {
     const state = await fixture();
     state.modelPolicy.versions[0]!.budget.maxTakesPerShot = 1;
