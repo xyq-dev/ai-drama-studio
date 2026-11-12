@@ -1,0 +1,862 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hongguo.local/schemas/hongguo-production-state.v1.schema.json",
+  "title": "Hongguo production state v1",
+  "description": "Hongguo short-drama production state. Historical locked versions may coexist; each versioned object has at most one activeLockedVersionId. Concrete production models are instance data in modelPolicy, not schema constants.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "spec",
+    "projectId",
+    "title",
+    "status",
+    "timezone",
+    "updatedAt",
+    "format",
+    "modelPolicy",
+    "approvalLog",
+    "bible",
+    "characters",
+    "episodes"
+  ],
+  "properties": {
+    "schema": {
+      "const": "hongguo-production-state.v1"
+    },
+    "spec": {
+      "type": "string"
+    },
+    "projectId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "type": "string",
+      "minLength": 1
+    },
+    "timezone": {
+      "const": "Asia/Shanghai"
+    },
+    "updatedAt": {
+      "type": "string"
+    },
+    "backfill": {
+      "type": "boolean"
+    },
+    "notes": {
+      "type": "string"
+    },
+    "format": {
+      "type": "object",
+      "required": [
+        "aspect",
+        "resolution",
+        "fps"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "aspect": {
+          "type": "string"
+        },
+        "resolution": {
+          "type": "string"
+        },
+        "fps": {
+          "type": "number"
+        }
+      }
+    },
+    "modelPolicy": {
+      "$ref": "#/$defs/modelPolicy"
+    },
+    "approvalLog": {
+      "type": "array",
+      "description": "Append-only. Existing events must not be edited or deleted.",
+      "items": {
+        "$ref": "#/$defs/approvalEvent"
+      }
+    },
+    "bible": {
+      "$ref": "#/$defs/versionedArtifact"
+    },
+    "characters": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/character"
+      }
+    },
+    "episodes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/episode"
+      }
+    }
+  },
+  "$defs": {
+    "approvalEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "eventId",
+        "action",
+        "objectType",
+        "objectId",
+        "versionId",
+        "fromStatus",
+        "toStatus",
+        "actor",
+        "timestamp"
+      ],
+      "properties": {
+        "eventId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "submit_review",
+            "request_revision",
+            "select_take",
+            "lock",
+            "approve_policy"
+          ]
+        },
+        "objectType": {
+          "type": "string",
+          "enum": [
+            "bible",
+            "script",
+            "look",
+            "voice",
+            "dialogue",
+            "storyboard",
+            "shot",
+            "assembly",
+            "modelPolicy",
+            "qa"
+          ]
+        },
+        "objectId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "versionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fromStatus": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "toStatus": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "actor": {
+          "type": "string",
+          "enum": [
+            "user",
+            "director",
+            "qa"
+          ]
+        },
+        "sourceQuote": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timestamp": {
+          "type": "string"
+        },
+        "note": {
+          "type": "string"
+        }
+      }
+    },
+    "budgetGate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "currency",
+        "maxCostPerTake",
+        "maxTakesPerShot",
+        "maxExperimentalCostPerEpisode"
+      ],
+      "properties": {
+        "currency": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "maxCostPerTake": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "maxTakesPerShot": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "maxExperimentalCostPerEpisode": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "unknownCostRule": {
+          "type": "string"
+        },
+        "note": {
+          "type": "string"
+        }
+      }
+    },
+    "versionRef": {
+      "type": "object",
+      "required": [
+        "versionId",
+        "status"
+      ],
+      "properties": {
+        "versionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "draft",
+            "review",
+            "revision",
+            "locked"
+          ]
+        },
+        "path": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "lockedAt": {
+          "type": "string"
+        },
+        "lockedBy": {
+          "type": "string",
+          "enum": [
+            "user"
+          ]
+        },
+        "sourceQuote": {
+          "type": "string"
+        },
+        "supersedes": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "versionedArtifact": {
+      "type": "object",
+      "required": [
+        "currentVersionId",
+        "activeLockedVersionId",
+        "versions"
+      ],
+      "description": "A versioned object. versions[] may contain multiple status=locked entries; activeLockedVersionId is the unique currently effective lock, or null if none.",
+      "properties": {
+        "currentVersionId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Working tip. Equals activeLockedVersionId when no newer draft/review/revision is in progress."
+        },
+        "activeLockedVersionId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Currently effective locked version. Null if nothing has been locked yet."
+        },
+        "versions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/versionRef"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "character": {
+      "type": "object",
+      "required": [
+        "characterId",
+        "name"
+      ],
+      "properties": {
+        "characterId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "look": {
+          "$ref": "#/$defs/versionedArtifact"
+        },
+        "voice": {
+          "$ref": "#/$defs/versionedArtifact"
+        }
+      },
+      "additionalProperties": true
+    },
+    "qaCheck": {
+      "type": "object",
+      "required": [
+        "result"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "result": {
+          "type": "string",
+          "enum": [
+            "pass",
+            "fail",
+            "not_scored"
+          ]
+        },
+        "measured": {},
+        "expected": {},
+        "note": {
+          "type": "string"
+        }
+      }
+    },
+    "qaReport": {
+      "type": "object",
+      "required": [
+        "qaId",
+        "result",
+        "checks"
+      ],
+      "properties": {
+        "qaId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "trackId": {
+          "type": "string"
+        },
+        "assemblyVersionId": {
+          "type": "string"
+        },
+        "result": {
+          "type": "string",
+          "enum": [
+            "pass",
+            "fail",
+            "pending"
+          ]
+        },
+        "path": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "string"
+        },
+        "checkedAt": {
+          "type": "string"
+        },
+        "checkedBy": {
+          "type": "string"
+        },
+        "checks": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "visual",
+            "audio",
+            "subtitle",
+            "duration",
+            "resolution",
+            "fps",
+            "fileIntegrity",
+            "shotOrder",
+            "assetHash"
+          ],
+          "properties": {
+            "visual": {
+              "$ref": "#/$defs/qaCheck"
+            },
+            "audio": {
+              "$ref": "#/$defs/qaCheck"
+            },
+            "subtitle": {
+              "$ref": "#/$defs/qaCheck"
+            },
+            "duration": {
+              "$ref": "#/$defs/qaCheck"
+            },
+            "resolution": {
+              "$ref": "#/$defs/qaCheck"
+            },
+            "fps": {
+              "$ref": "#/$defs/qaCheck"
+            },
+            "fileIntegrity": {
+              "$ref": "#/$defs/qaCheck"
+            },
+            "shotOrder": {
+              "$ref": "#/$defs/qaCheck"
+            },
+            "assetHash": {
+              "$ref": "#/$defs/qaCheck"
+            }
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "manifest": {
+      "type": "object",
+      "required": [
+        "provider",
+        "model",
+        "cost",
+        "timestamp",
+        "jobStatus"
+      ],
+      "properties": {
+        "provider": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "prompt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "promptLang": {
+          "type": "string"
+        },
+        "promptNote": {
+          "type": "string"
+        },
+        "referenceAssets": {
+          "type": "array"
+        },
+        "seed": {
+          "type": [
+            "number",
+            "string",
+            "null"
+          ]
+        },
+        "params": {
+          "type": "object"
+        },
+        "cost": {
+          "description": "Number or the string unknown. Do not invent a number."
+        },
+        "output": {
+          "type": "object"
+        },
+        "timestamp": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "jobStatus": {
+          "type": "string",
+          "enum": [
+            "success",
+            "failed",
+            "unknown"
+          ]
+        },
+        "sourceTask": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "take": {
+      "type": "object",
+      "required": [
+        "takeId",
+        "index",
+        "status",
+        "modelPool",
+        "manifest"
+      ],
+      "properties": {
+        "takeId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "index": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "not_selected",
+            "selected",
+            "discarded"
+          ]
+        },
+        "modelPool": {
+          "type": "string",
+          "enum": [
+            "production",
+            "experimental"
+          ]
+        },
+        "note": {
+          "type": "string"
+        },
+        "manifest": {
+          "$ref": "#/$defs/manifest"
+        }
+      },
+      "additionalProperties": true
+    },
+    "shotVersion": {
+      "type": "object",
+      "required": [
+        "versionId",
+        "status",
+        "takes"
+      ],
+      "properties": {
+        "versionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "draft",
+            "review",
+            "revision",
+            "locked"
+          ]
+        },
+        "lockedAt": {
+          "type": "string"
+        },
+        "lockedBy": {
+          "type": "string",
+          "enum": [
+            "user"
+          ]
+        },
+        "sourceQuote": {
+          "type": "string"
+        },
+        "selectedTakeId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "takes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/take"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "shot": {
+      "type": "object",
+      "required": [
+        "shotId",
+        "currentVersionId",
+        "activeLockedVersionId",
+        "versions"
+      ],
+      "properties": {
+        "shotId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "look": {
+          "type": "string"
+        },
+        "timelineStartSec": {
+          "type": "number"
+        },
+        "timelineEndSec": {
+          "type": "number"
+        },
+        "dialogueLineId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "currentVersionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "versions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/shotVersion"
+          }
+        },
+        "activeLockedVersionId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Currently effective locked ShotVersion. Historical locked ShotVersions remain in versions[]."
+        }
+      },
+      "additionalProperties": true
+    },
+    "episode": {
+      "type": "object",
+      "required": [
+        "episodeId",
+        "status",
+        "script",
+        "shots",
+        "assemblies",
+        "qa",
+        "retakeRequests"
+      ],
+      "properties": {
+        "episodeId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "type": "string",
+          "minLength": 1
+        },
+        "script": {
+          "$ref": "#/$defs/versionedArtifact"
+        },
+        "dialogueTimeline": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/versionedArtifact"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "storyboard": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/versionedArtifact"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "shots": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/shot"
+          }
+        },
+        "assemblies": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/assembly"
+          }
+        },
+        "qa": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/qaReport"
+          }
+        },
+        "retakeRequests": {
+          "type": "array"
+        }
+      },
+      "additionalProperties": true
+    },
+    "modelPolicyVersion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policyVersion",
+        "effectiveAt",
+        "approvedBy",
+        "status",
+        "production",
+        "experimental",
+        "budget"
+      ],
+      "properties": {
+        "policyVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "effectiveAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Set when the user locks this policy version."
+        },
+        "approvedBy": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "user",
+            null
+          ]
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "draft",
+            "review",
+            "revision",
+            "locked"
+          ]
+        },
+        "supersedes": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "production": {
+          "type": "object",
+          "description": "User-approved production bindings. Keys and model names are project instance data, not schema constants.",
+          "additionalProperties": true
+        },
+        "experimental": {
+          "type": "object",
+          "required": [
+            "enabled",
+            "pool"
+          ],
+          "additionalProperties": true,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "pool": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "note": {
+              "type": "string"
+            }
+          }
+        },
+        "budget": {
+          "$ref": "#/$defs/budgetGate"
+        },
+        "versionId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional alias of policyVersion for pointer matching."
+        }
+      }
+    },
+    "modelPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "currentVersionId",
+        "activeLockedVersionId",
+        "versions"
+      ],
+      "description": "Versioned model policy. Multiple historical locked policies may exist; only activeLockedVersionId is in force.",
+      "properties": {
+        "currentVersionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "activeLockedVersionId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "versions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modelPolicyVersion"
+          }
+        }
+      }
+    },
+    "assembly": {
+      "type": "object",
+      "required": [
+        "trackId",
+        "currentVersionId",
+        "activeLockedVersionId",
+        "versions"
+      ],
+      "properties": {
+        "trackId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "label": {
+          "type": "string"
+        },
+        "currentVersionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "activeLockedVersionId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "versions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/versionRef"
+          }
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}
