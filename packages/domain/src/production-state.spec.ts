@@ -71,6 +71,17 @@ describe("production state v1", () => {
     ]));
   });
 
+  it("requires a locked current version to be the active locked version", async () => {
+    const state = await fixture();
+    state.episodes[0]!.script.currentVersionId = "fixture/S1/script/v1";
+
+    const validation = validateProductionStateSemantics(state);
+    expect(validation.valid).toBe(false);
+    expect(validation.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "CURRENT_LOCKED_VERSION_NOT_ACTIVE" }),
+    ]));
+  });
+
   it("rejects supersedes cycles", async () => {
     const state = await fixture();
     const script = state.episodes[0]!.script;
