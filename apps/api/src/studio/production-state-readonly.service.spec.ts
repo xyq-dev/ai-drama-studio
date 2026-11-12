@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { parseProductionState, type ProductionEpisode, type ProductionGateResult } from "@ai-drama/domain";
 import { ProductionStateReadonlyService } from "./production-state-readonly.service";
 
 const PROJECT = "fixture-minimal-v1";
@@ -51,8 +52,8 @@ describe("production state readonly service", () => {
 
   it("returns only script and dialogue blockers for the constructed S2 fixture", async () => {
     const dir = await root();
-    const state = JSON.parse(await fixtureRaw()) as any;
-    state.episodes.push({
+    const state = parseProductionState(JSON.parse(await fixtureRaw()));
+    const s2: ProductionEpisode = {
       episodeId: "S2",
       status: "draft",
       script: {
@@ -70,14 +71,16 @@ describe("production state readonly service", () => {
       assemblies: [],
       qa: [],
       retakeRequests: [],
-    });
+    };
+    state.episodes.push(s2);
     await put(dir, PROJECT, JSON.stringify(state, null, 2));
     const service = new ProductionStateReadonlyService(dir);
 
     const result = await service.getReadiness(PROJECT, "S2");
     expect(result.status).toBe(200);
-    expect((result.body as any).allowed).toBe(false);
-    expect((result.body as any).blockers.map((item: { code: string }) => item.code)).toEqual([
+    const body = result.body as ProductionGateResult;
+    expect(body.allowed).toBe(false);
+    expect(body.blockers.map((item) => item.code)).toEqual([
       "SCRIPT_LOCK_MISSING",
       "DIALOGUE_LOCK_MISSING",
     ]);
@@ -96,7 +99,7 @@ describe("production state readonly service", () => {
 
   it("maps semantic pointer failures to 422", async () => {
     const dir = await root();
-    const state = JSON.parse(await fixtureRaw()) as any;
+    const state = parseProductionState(JSON.parse(await fixtureRaw()));
     state.projectId = "invalid-semantic";
     state.bible.activeLockedVersionId = "missing-version";
     await put(dir, "invalid-semantic", JSON.stringify(state));
@@ -142,14 +145,14 @@ describe("production state readonly service", () => {
     const dir = await root();
     const file = await put(dir, PROJECT, await fixtureRaw());
     const before = await readFile(file, "utf8");
-    const beforeJson = JSON.parse(before) as any;
+    const beforeJson = parseProductionState(JSON.parse(before));
     const service = new ProductionStateReadonlyService(dir);
 
     expect((await service.getState(PROJECT)).status).toBe(200);
     expect((await service.getReadiness(PROJECT, "S1")).status).toBe(200);
 
     const after = await readFile(file, "utf8");
-    const afterJson = JSON.parse(after) as any;
+    const afterJson = parseProductionState(JSON.parse(after));
     expect(after).toBe(before);
     expect(sha256(after)).toBe(sha256(before));
     expect(afterJson.approvalLog).toEqual(beforeJson.approvalLog);
