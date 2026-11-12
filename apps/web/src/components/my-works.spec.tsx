@@ -108,10 +108,12 @@ describe("作品分类列表", () => {
       return json(page({ items: [item] }));
     }));
     render(<MyWorks />);
-    fireEvent.change(await screen.findByRole("combobox", { name: "夜班的分类" }), { target: { value: C } });
-    await waitFor(() => expect((screen.getByRole("combobox", { name: "夜班的分类" }) as HTMLSelectElement).value).toBe(C));
-    await waitFor(() => expect((screen.getByRole("combobox", { name: "夜班的分类" }) as HTMLSelectElement).disabled).toBe(false));
-    fireEvent.change(screen.getByRole("combobox", { name: "夜班的分类" }), { target: { value: "" } });
+    fireEvent.click(await screen.findByRole("checkbox", { name: "选择作品：夜班" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "归类所选作品" }), { target: { value: C } });
+    await screen.findByText("归类完成 1 部，未确认 0 部。");
+    await waitFor(() => expect((screen.getByRole("checkbox", { name: "选择作品：夜班" }) as HTMLInputElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole("checkbox", { name: "选择作品：夜班" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "归类所选作品" }), { target: { value: "" } });
     await waitFor(() => expect(writes).toEqual([{ categoryId: C, expectedRevision: 0 }, { categoryId: null, expectedRevision: 1 }]));
   });
 
@@ -133,8 +135,27 @@ describe("作品分类列表", () => {
     render(<MyWorks />);
     await screen.findByRole("heading", { name: "夜班" });
     expect((screen.getByRole("button", { name: "新建分类" }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole("combobox", { name: "夜班的分类" }) as HTMLSelectElement).disabled).toBe(true);
+    expect((screen.getByRole("combobox", { name: "归类所选作品" }) as HTMLSelectElement).disabled).toBe(true);
     expect(screen.getByText("分类功能尚未启用，作品仍可正常打开。")).toBeTruthy();
     expect(screen.getByRole("link", { name: "高级编辑" })).toBeTruthy();
   });
+});
+
+it("selects only displayed rows, keeps appended rows unselected, and clears selection on filters", async () => {
+  vi.stubGlobal("fetch", vi.fn(async (input: string) => json(page(input.includes("cursor=")
+    ? { items: [project({ id: "second", title: "第二部" })] }
+    : { items: [project()], nextCursor: "next" }))));
+  render(<MyWorks />);
+  await screen.findByRole("heading", { name: "夜班" });
+  fireEvent.click(screen.getByRole("checkbox", { name: "全选已显示作品" }));
+  expect(screen.getByText("已选 1 部")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "加载更多作品" }));
+  await screen.findByRole("heading", { name: "第二部" });
+  expect((screen.getByRole("checkbox", { name: "选择作品：第二部" }) as HTMLInputElement).checked).toBe(false);
+  expect(screen.getByRole("checkbox", { name: "全选已显示作品" }).getAttribute("aria-checked")).toBe("mixed");
+  fireEvent.click(screen.getByRole("checkbox", { name: "全选已显示作品" }));
+  expect(screen.getByText("已选 2 部")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "都市情感 30" }));
+  await waitFor(() => expect(screen.getByText("已选 0 部")).toBeTruthy());
+  expect((screen.getByRole("button", { name: "移入回收站" }) as HTMLButtonElement).disabled).toBe(true);
 });

@@ -52,11 +52,22 @@ const server = await createServer({ configFile: false, root: web, optimizeDeps: 
               total: filtered.length, allCount: found.length, unclassifiedCount: found.filter((item) => !item.categoryId).length,
               categories: categories.map((item) => ({ ...item, count: found.filter((project) => project.categoryId === item.id).length })), categoriesReady: true })); return;
           }
+          if (url.pathname.endsWith("/script-workbench/deletion-preview")) {
+            const item = projects.find((project) => url.pathname.includes(project.id));
+            res.end(JSON.stringify({ projectId: item.id, title: item.title, version: 4, episodeCount: item.episodeCount,
+              canDelete: item.id !== P2, blockedReason: item.id === P2 ? "作品仍有任务运行中" : null,
+              dependencies: { scenes: 2, shots: 6, speech: 1, video: 0, other: 0, total: 9 } })); return;
+          }
           if (req.method === "POST") {
             let raw = ""; for await (const chunk of req) raw += chunk;
             const body = JSON.parse(raw);
             if (url.pathname === "/api/v1/library/categories") { categories.push({ id: body.id, name: body.name }); res.end(JSON.stringify({ ...body, count: 0 })); return; }
             const item = projects.find((project) => url.pathname.includes(project.id));
+            if (url.pathname.endsWith("/script-workbench/trash")) {
+              assert.notEqual(item.id, P2); assert.equal(body.expectedVersion, 4);
+              projects = projects.filter((project) => project.id !== item.id);
+              res.end(JSON.stringify({ projectId: item.id })); return;
+            }
             assert.equal(body.expectedRevision, item.categoryRevision); item.categoryId = body.categoryId;
             item.categoryName = categories.find((category) => category.id === body.categoryId)?.name || null; item.categoryRevision++;
             res.end(JSON.stringify({ projectId: item.id, categoryId: item.categoryId, categoryName: item.categoryName, categoryRevision: item.categoryRevision })); return;
@@ -76,9 +87,9 @@ const server = await createServer({ configFile: false, root: web, optimizeDeps: 
 let browser;
 try {
   await mkdir(output, { recursive: true }); await server.listen(); browser = await chromium.launch({ headless: true });
-  for (const width of [1568, 1440, 1280, 1024, 900, 390]) {
+  for (const width of [1586, 1440, 1280, 1024, 900, 390]) {
     reset(); listMode = "normal";
-    const page = await browser.newPage({ viewport: { width, height: 1003 } });
+    const page = await browser.newPage({ viewport: { width, height: width === 390 ? 844 : 992 } });
     page.on("pageerror", (error) => evidence.errors.push(error.message));
     await page.goto("http://127.0.0.1:3856/studio");
     await page.getByRole("heading", { name: "重逢在雨夜", exact: true }).waitFor();
@@ -99,7 +110,17 @@ try {
       assert.ok(layout.every((row) => row.sameLine && row.actionsFit && row.noOverlap), `Overlapping or stacked actions at ${width}: ${JSON.stringify(layout)}`);
       if (width >= 1440) assert.ok(layout.every((row) => row.height <= 80), `Ordinary rows too tall at ${width}`);
     }
+    await page.getByRole("checkbox", { name: "选择作品：重逢在雨夜", exact: true }).check();
+    await page.getByRole("checkbox", { name: "选择作品：长街旧事", exact: true }).check();
+    assert.equal(await page.getByRole("checkbox", { name: "全选已显示作品" }).getAttribute("aria-checked"), "mixed");
+    await page.getByText("已选 2 部", { exact: true }).waitFor();
+    if (width >= 1024) {
+      const nav = page.getByRole("navigation", { name: "主导航" });
+      assert.equal(await nav.getByRole("link", { name: "开始创作", exact: true }).count(), 0);
+      assert.equal(await nav.getByRole("link", { name: "帮助", exact: true }).count(), 0);
+    }
     const screenshot = `project-library-${width}.png`; await page.screenshot({ path: resolve(output, screenshot), fullPage: true });
+    await page.getByRole("button", { name: "取消选择", exact: true }).click();
     await page.getByRole("button", { name: "加载更多作品", exact: true }).click();
     await page.getByRole("heading", { name: "风起的时候", exact: true }).waitFor();
     assert.equal(requests.at(-1).cursor, "next");
@@ -115,23 +136,40 @@ try {
     await page.getByRole("button", { name: "保存", exact: true }).click();
     await page.getByRole("button", { name: "悬疑推理 0", exact: true }).waitFor();
     const savedCategory = categories.at(-1).id;
-    await page.getByRole("combobox", { name: "重逢在雨夜的分类", exact: true }).selectOption(savedCategory);
+    await page.getByRole("checkbox", { name: "选择作品：重逢在雨夜", exact: true }).check();
+    await page.getByRole("combobox", { name: "归类所选作品", exact: true }).selectOption(savedCategory);
     await page.getByRole("button", { name: "悬疑推理 1", exact: true }).waitFor();
     assert.equal(projects[0].categoryId, savedCategory);
     await page.getByRole("button", { name: "悬疑推理 1", exact: true }).click();
     await page.getByText("已显示 1 / 1 部作品").waitFor();
-    await page.getByRole("combobox", { name: "重逢在雨夜的分类", exact: true }).selectOption("");
+    await page.getByRole("checkbox", { name: "选择作品：重逢在雨夜", exact: true }).check();
+    await page.getByRole("combobox", { name: "归类所选作品", exact: true }).selectOption("");
     await page.getByRole("heading", { name: "没有符合条件的作品", exact: true }).waitFor();
     const empty = `project-library-empty-${width}.png`; await page.screenshot({ path: resolve(output, empty), fullPage: true });
     listMode = "error"; await page.getByRole("button", { name: "刷新作品列表", exact: true }).click();
     await page.getByRole("alert").waitFor();
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
     const error = `project-library-error-${width}.png`; await page.screenshot({ path: resolve(output, error), fullPage: true });
-    evidence.checks.push({ width, screenshot, empty, error, overflow: false, serverSearch: true, loadMore: true, createCategory: true, assignCategory: true, unclassify: true });
+    listMode = "normal";
+    await page.getByRole("button", { name: "全部分类", exact: false }).click();
+    await page.getByRole("heading", { name: "重逢在雨夜", exact: true }).waitFor();
+    await page.getByRole("checkbox", { name: "选择作品：重逢在雨夜", exact: true }).check();
+    await page.getByRole("checkbox", { name: "选择作品：长街旧事", exact: true }).check();
+    await page.getByRole("button", { name: "移入回收站", exact: true }).click();
+    await page.getByText("可移入 1 部；跳过 1 部。", { exact: true }).waitFor();
+    const confirmation = `project-library-delete-${width}.png`;
+    await page.screenshot({ path: resolve(output, confirmation), fullPage: true });
+    await page.getByRole("button", { name: "确认移入 1 部", exact: true }).click();
+    await page.getByRole("dialog").waitFor({ state: "hidden" });
+    assert.equal(projects.some((item) => item.id === P), false);
+    assert.equal(projects.some((item) => item.id === P2), true);
+    await page.getByText(/已移入回收站 1 部，未完成 1 部/).waitFor();
+    await page.getByText("已选 0 部", { exact: true }).waitFor();
+    evidence.checks.push({ width, screenshot, empty, error, confirmation, batchDeletion: true, runningWorkProtected: true, overflow: false, serverSearch: true, loadMore: true, createCategory: true, assignCategory: true, unclassify: true });
     await page.close();
   }
   assert.deepEqual(evidence.errors, []);
 } finally {
   await browser?.close(); await server.close(); await writeFile(resolve(output, "evidence.json"), JSON.stringify(evidence, null, 2));
 }
-process.stdout.write("Project library browser fixture passed at 1568/1440/1280/1024/900/390: layout, server queries, categories, thumbnails, pagination, empty/error states. No business DB or external provider calls.\n");
+process.stdout.write("Project library browser fixture passed at 1586/1440/1280/1024/900/390: layout, server queries, categories, thumbnails, pagination, empty/error states. No business DB or external provider calls.\n");

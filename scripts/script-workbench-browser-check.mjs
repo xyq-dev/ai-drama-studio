@@ -177,10 +177,11 @@ async function runFlows() {
   await page.getByText('第 2 集草稿已保存。', { exact: true }).waitFor();
   evidence.checks.push('draft trash/restore/history reload/save new revision');
   await page.goto(`${WEB}/studio`);
-  await page.getByRole('button', { name: '删除作品：无名碑 · 验收样本', exact: true }).click();
+  await page.getByRole('checkbox', { name: '选择作品：无名碑 · 验收样本', exact: true }).check();
+  await page.getByRole('button', { name: '移入回收站', exact: true }).click();
   await page.getByText(/全部 3 集/).waitFor();
   await screenshot('10-project-delete');
-  await page.getByRole('button', { name: '移入回收站', exact: true }).click();
+  await page.getByRole('button', { name: '确认移入 1 部', exact: true }).click();
   await page.getByRole('dialog').waitFor({ state: 'hidden' });
   assert.equal((await request('/library/projects')).total, 0);
   await page.goto(`${WEB}/studio/trash`);
