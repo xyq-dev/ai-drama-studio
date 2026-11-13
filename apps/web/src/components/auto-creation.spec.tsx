@@ -1,8 +1,9 @@
 // @vitest-environment happy-dom
 // "AI 自动创作" start card and run page. Simulated interface tests: fetch is mocked; no browser, API or model.
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AutoCreationOptionsView, AutoCreationRunView } from "@ai-drama/contracts";
+import { fixtureAutoBible, fixtureAutoEpisode, fixtureAutoOutline } from "@ai-drama/providers/title-writing-fixtures";
 import { AutoCreationStart } from "./auto-creation-start";
 import { AutoCreationRun } from "./auto-creation-run";
 import { AutoRunEntry } from "./auto-run-entry";
@@ -335,6 +336,51 @@ describe("AI 自动创作 run page", () => {
     expect(screen.getByTestId("auto-video-status").textContent).toContain("未开始");
     expect(screen.getByTestId("auto-open-issues").textContent).toContain("开场没有主动选择");
     expect(screen.getByTestId("auto-download-md").getAttribute("href")).toBe(`/api/v1/projects/${P1}/auto-runs/${RUN}/package?format=markdown`);
+  });
+
+  it("lists written episodes in order and uses each current script to show its own cast and scenes", async () => {
+    const first = fixtureAutoEpisode(1, { tag: "已被替换的初稿" });
+    const revised = {
+      ...fixtureAutoEpisode(1, { tag: "第 2 轮当前版本" }),
+      changes: [{ issueId: "R1", change: "集中到同一场" }],
+    };
+    revised.scenes = [revised.scenes[0]!];
+    const second = fixtureAutoEpisode(2);
+    const stage = (stageKey: string, kind: "bible" | "outline" | "episode" | "revise", output: AutoCreationRunView["stages"][number]["output"]) => ({
+      stageKey, kind, state: "completed" as const, attemptNo: 1, errorCode: null, output,
+      upstreamChanged: false, supersededBy: null, scriptSave: null, scriptRevisionId: null,
+    });
+    const calls = server(options(), () => json({ run: run({
+      episodeCount: 3,
+      currentEpisodes: { "episode:2": "episode:2", "episode:1": "revise:2:episode:1" },
+      stages: [stage("bible", "bible", fixtureAutoBible()), stage("outline", "outline", fixtureAutoOutline(3)),
+        stage("episode:1", "episode", first), stage("episode:2", "episode", second), stage("revise:2:episode:1", "revise", revised)],
+    }) }));
+    render(<AutoCreationRun projectId={P1} />);
+
+    const list = await screen.findByTestId("auto-episodes");
+    const entries = [...list.querySelectorAll("details")];
+    expect(entries).toHaveLength(2);
+    expect(list.textContent).toContain("已写好 2 / 3 集");
+    expect(entries.every((entry) => !entry.open)).toBe(true);
+    const [one, two] = entries;
+    expect(one!.querySelector("summary strong")?.textContent).toBe("第 1 集 · 午夜工资单");
+    expect(one!.querySelector("summary small")?.textContent).toBe("1 场 · 第 2 轮修改稿");
+    expect(two!.querySelector("summary strong")?.textContent).toBe("第 2 集 · 午夜工资单");
+    expect(two!.querySelector("summary small")?.textContent).toBe("3 场 · 初稿");
+    const oneText = within(one!);
+    const twoText = within(two!);
+    expect(oneText.getByText("第 1 场 · 小区楼道 · 内景 · 夜", { selector: "strong" })).toBeTruthy();
+    expect(oneText.getByText("总部巡查员")).toBeTruthy();
+    expect(oneText.queryByText("赵强", { exact: true })).toBeNull();
+    expect(oneText.queryByText("站点办公室", { exact: false })).toBeNull();
+    expect(twoText.getByText("赵强", { exact: true })).toBeTruthy();
+    expect(twoText.getByText("第 2 场、第 3 场出场")).toBeTruthy();
+    expect(oneText.getByText("陈默找到证人")).toBeTruthy();
+    expect(oneText.getByText("第 1 集结束时陈默拿到了巡查员的签名。")).toBeTruthy();
+    expect(one!.textContent).toContain("第 2 轮当前版本");
+    expect(list.textContent).not.toContain("已被替换的初稿");
+    expect(calls.every((call) => call.method === "GET")).toBe(true);
   });
 
   it("a research answer refused by the checks names the stage, the rule and the field, and is never called a key problem", async () => {

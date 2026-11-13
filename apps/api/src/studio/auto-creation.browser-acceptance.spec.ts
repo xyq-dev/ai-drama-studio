@@ -262,6 +262,24 @@ describe("AI automatic creation in a real browser (site login, built web, real A
     expect(await page.getByTestId("auto-research").textContent()).toContain("AI 创作策划（受众待验证，市场证据不可用");
     await page.getByTestId("auto-direction").getByText("午夜工资单").first().waitFor();
     await viewports("02-auto-run-done", page.getByTestId("auto-status"), page.getByTestId("auto-download-md"));
+    const episodes = page.getByTestId("auto-episodes");
+    const episode = episodes.locator("details");
+    const summary = episode.locator("summary");
+    const script = episode.getByRole("heading", { name: "剧本正文" });
+    expect(await episodes.textContent()).toContain("已写好 1 / 1 集");
+    expect(await summary.textContent()).toContain("第 1 集 · 午夜工资单");
+    expect(await script.isVisible()).toBe(false);
+    await summary.focus();
+    await page.keyboard.press("Enter");
+    await episode.getByRole("heading", { name: "出场人物" }).waitFor();
+    await episode.getByText("总部巡查员", { exact: true }).waitFor();
+    await episode.getByText("第 1 场 · 小区楼道 · 内景 · 夜", { exact: true }).first().waitFor();
+    await script.waitFor();
+    await episode.getByRole("heading", { name: "集尾交接" }).waitFor();
+    await viewports("02c-auto-episode-details", script, summary);
+    await summary.click();
+    expect(await script.isVisible()).toBe(false);
+    expect(seen).toHaveLength(autoCreationNormalCalls(1));
     // Downloads through the same-origin rewrite.
     const [markdown] = await Promise.all([page.waitForEvent("download"), page.getByTestId("auto-download-md").click()]);
     const markdownPath = join(shotsDir ?? ROOT, "auto-package.md");
@@ -360,6 +378,9 @@ describe("AI automatic creation in a real browser (site login, built web, real A
     expect(seen.length - before).toBe(autoCreationNormalCalls(1) + 2);
     expect(seen.slice(before).every((item) => item.user.includes("一个外卖骑手在午夜前讨回被扣的工资") || item.stage.startsWith("review"))).toBe(true);
     expect(seen.slice(before).every((item) => item.user.includes("禁止题材或元素：复仇"))).toBe(true);
+    const summary = page.getByTestId("auto-episodes").locator("summary");
+    expect(await summary.textContent()).toContain("第 1 轮修改稿");
+    expect(await summary.textContent()).not.toContain("初稿");
     await page.getByTestId("auto-reviews").getByText("R1", { exact: false }).first().waitFor();
     await viewports("03-auto-run-revised", page.getByTestId("auto-reviews"), page.getByTestId("auto-download-md"));
     const run = (await q<{ id: string; calls_used: number; revision_rounds_used: number; input_json: { idea: string; constraints: { maxCharacters: number } } }>(
