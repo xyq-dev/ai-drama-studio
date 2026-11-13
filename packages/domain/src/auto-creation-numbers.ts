@@ -314,7 +314,18 @@ function restatesTarget(clause: string, frozenAudience: string): boolean {
  * takes the ordinal itself. Anything else keeps the reading it had: a structural unit, or a place in a ranking.
  */
 function planStep(clause: string, offset: number): boolean {
-  return PLAN.test(clause) && !SAMPLE_DONE.test(clause) && !RESULT.test(clause) && !RANK_PLACE_BEFORE.test(clause.slice(0, offset));
+  if (!PLAN.test(clause) || SAMPLE_DONE.test(clause) || RANK_PLACE_BEFORE.test(clause.slice(0, offset))) return false;
+
+  const result = RESULT.exec(clause);
+  if (!result) return true;
+
+  // In “计划通过第一阶段测试收集反馈”, 通过 introduces the future method that contains this ordinal.
+  const method = /^(?:经过?|通过)/u.exec(result[0]);
+  if (!method || offset <= result.index || offset >= result.index + result[0].length
+    || !SETTLED_QUALIFIER.test(clause.slice(0, result.index))) return false;
+
+  // Keep checking the method's own verb and what follows it (测试显示, 实测).
+  return !RESULT.test(clause.slice(result.index + method[0].length));
 }
 
 function clausesOf(value: string, exempt: ReadonlyArray<AutoExemptNumber>, frozenAudience = ""): string[] {
