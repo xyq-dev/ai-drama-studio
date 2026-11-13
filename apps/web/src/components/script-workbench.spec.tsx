@@ -10,7 +10,7 @@ import {
   type ScriptWorkbenchSnapshot,
 } from "@ai-drama/contracts";
 import { ScriptWorkbench } from "./script-workbench";
-import { WORKBENCH_DRAFT_PREFIX } from "../lib/script-workbench-drafts";
+import { readImportedScript, storeImportedScript, WORKBENCH_DRAFT_PREFIX } from "../lib/script-workbench-drafts";
 import { logout } from "../lib/site-session";
 import { emptyScript, estimateScript, workbenchPlan } from "../lib/script-workbench-model";
 
@@ -231,6 +231,21 @@ afterEach(() => {
 });
 
 describe("five-stage script workbench", () => {
+  it("opens imported first-episode text as an editable draft and keeps the story approval gate", async () => {
+    const initial = fixture();
+    initial.story = null;
+    Object.assign(initial.episodes[0]!, { script: null, history: [], currentScriptRevisionId: null, approvedScriptRevisionId: null });
+    const text = "石铺 · 清晨\n木牌落在石碑上。";
+    storeImportedScript(window.sessionStorage, PROJECT, text);
+    const transport = api(initial);
+    render(<ScriptWorkbench projectId={PROJECT} />);
+    const editor = await screen.findByLabelText("第 1 段动作") as HTMLTextAreaElement;
+    expect(editor.value).toBe(text);
+    expect(screen.getByText(/设定与大纲尚未锁定/)).toBeTruthy();
+    expect(transport.writes).toHaveLength(0);
+    expect(readImportedScript(window.sessionStorage, PROJECT)).toBeNull();
+    expect(window.sessionStorage.getItem(WORKBENCH_DRAFT_PREFIX + PROJECT)).toContain("木牌落在石碑上");
+  });
   it("keeps unsaved episode edits while navigating and counts action, dialogue and pause with the shared estimator", async () => {
     api(fixture());
     render(<ScriptWorkbench projectId={PROJECT} />);

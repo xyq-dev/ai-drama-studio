@@ -1,14 +1,15 @@
-import { Body, Controller, Get, Headers, Inject, Optional, Param, Put, Res } from "@nestjs/common";
+import { Body, Controller, Get, Headers, Inject, Optional, Param, Post, Put, Res } from "@nestjs/common";
 import {
   adminLimitsUpdateSchema,
   adminProviderKeySchema,
   adminProviderUpdateSchema,
 } from "@ai-drama/contracts";
-import type { AdminLimitsUpdate, AdminModelsView, AdminProviderUpdate, TitleWritingProviderKey } from "@ai-drama/contracts";
+import type { AdminLimitsUpdate, AdminModelsView, AdminProviderUpdate, ComfyUiAdminCheck, TitleWritingProviderKey } from "@ai-drama/contracts";
 import { SITE_AUTH, SiteAuthError, type RequestHeaders, type SiteAuth, type SiteAuthState } from "../auth/site-auth";
 import { AdminHttpError, safeAdminError, setAdminResponseHeaders } from "./admin-auth";
 
 export const ADMIN_MODELS_SERVICE = "ADMIN_MODELS_SERVICE";
+export const ADMIN_COMFYUI_CHECK = "ADMIN_COMFYUI_CHECK";
 
 export interface AdminModelsBackend {
   view(): Promise<AdminModelsView>;
@@ -30,6 +31,7 @@ export class AdminModelsController {
   constructor(
     @Inject(ADMIN_MODELS_SERVICE) private readonly backend: AdminModelsBackend | null,
     @Optional() @Inject(SITE_AUTH) private readonly site: SiteAuthState | null = null,
+    @Optional() @Inject(ADMIN_COMFYUI_CHECK) private readonly checkComfyUi: (() => Promise<ComfyUiAdminCheck>) | null = null,
   ) {}
 
   @Get("models")
@@ -38,6 +40,19 @@ export class AdminModelsController {
       const { auth, backend } = this.configured();
       auth.session(headers);
       return backend.view();
+    });
+  }
+
+  @Post("models/comfyui/check")
+  comfyUiConnection(@Headers() headers: RequestHeaders, @Body() body: unknown, @Res({ passthrough: true }) response: AdminResponse) {
+    return this.send(response, () => {
+      const { auth } = this.configured();
+      authorizeJsonWrite(auth, headers);
+      if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).length > 0) {
+        throw new AdminHttpError(400, "ADMIN_CONFIG_INVALID");
+      }
+      if (!this.checkComfyUi) throw new AdminHttpError(503, "ADMIN_NOT_CONFIGURED");
+      return this.checkComfyUi();
     });
   }
 

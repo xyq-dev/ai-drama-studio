@@ -15,6 +15,10 @@
 
 所有路径均以 `/api/v1` 为前缀。系列作品仍为 1–60 集文本模式，以上媒体/单场景规划入口继续拒绝系列作品。声音克隆、口型、重叠对白、自托管 GPU、ComfyUI 实际推理、平台发布不在本轮实现范围。声音 V1-D 批量代码已合入 PR #100；`main@120cf8b6138547c85615e312519eee7d0ea8057f` 的 [Run 41302458478](https://github.com/xyq-dev/ai-drama-studio/actions/runs/41302458478) 已通过含 batch 的 speech、媒体/HTTP、ViMax 专用空库和实际 CJK 技术合成。真实人声与业务库启用仍未验收；完整集成证据和下一步见[接续记录](REAL_PRODUCTION_COMPLETION_PROGRESS.md)，专项边界见[当前启用清单](V1_AUTHORIZATION_CHECKLIST.md)。
 
+## ComfyUI 分镜图片
+
+自托管文生图及参考图生图接入见 [ComfyUI 分镜图片接入](./COMFYUI_IMAGE.md)。它保留本手册的系列、来源、授权和真实媒体生产门槛。
+
 ## 配置与准备
 
 先按 [`DEV_RUNBOOK.md`](DEV_RUNBOOK.md) 完成锁定安装和依赖构建。API/Worker 必须使用同一 workspace、配置版本、收据密钥与 S3 bucket，并向两者注入有效的 `SITE_AUTH_ENABLED`、`SITE_AUTH_USERNAME`、`SITE_AUTH_PASSWORD_HASH`、`SITE_AUTH_PUBLIC_ORIGIN` 站点认证配置；开发环境也不能以匿名站点打开真实媒体。认证格式见 [`UNIFIED_ADMIN_LOGIN.md`](UNIFIED_ADMIN_LOGIN.md)。生产另需进程级媒体生产许可。密钥只通过服务端进程/secret 注入，不进入 `.env.example`、浏览器、日志或提交。

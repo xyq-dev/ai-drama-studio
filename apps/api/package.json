@@ -23,7 +23,8 @@
     "script-breakdown:media-acceptance": "vitest run --config vitest.script-breakdown-media-acceptance.config.ts",
     "vimax-candidate:acceptance": "vitest run --config vitest.vimax-candidate-acceptance.config.ts",
     "clean": "node --eval \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
-    "real-media:provision": "tsx src/admin/real-media-provision-cli.ts"
+    "real-media:provision": "tsx src/admin/real-media-provision-cli.ts",
+    "comfyui:check": "tsx src/admin/comfyui-check-cli.ts"
   },
   "dependencies": {
     "@ai-drama/contracts": "workspace:*",

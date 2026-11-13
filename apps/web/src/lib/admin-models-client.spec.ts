@@ -7,9 +7,18 @@ const CSRF = "c".repeat(43);
 afterEach(() => { document.cookie = "ads_csrf=; Max-Age=0; Path=/"; vi.restoreAllMocks(); });
 
 describe("administrator browser transport (site login)", () => {
-  it("has no token login: the console only reads and writes settings", () => {
+  it("has no token login and exposes the configuration and connection actions", () => {
     const client = createAdminModelsClient(vi.fn()) as Record<string, unknown>;
-    expect(Object.keys(client).sort()).toEqual(["limits", "models", "provider"]);
+    expect(Object.keys(client).sort()).toEqual(["checkComfyUi", "limits", "models", "provider"]);
+  });
+  it("sends the ComfyUI connection check only to the administrator API with an empty JSON body", async () => {
+    document.cookie = `ads_csrf=${CSRF}; Path=/`;
+    const health = { status: "ready", generationEnabled: false, missingNodeCount: 0, missingModelCount: 0 };
+    const fetch = vi.fn(async (_input: string, _init?: RequestInit) => Response.json(health));
+    await expect(createAdminModelsClient(fetch).checkComfyUi()).resolves.toEqual(health);
+    expect(fetch).toHaveBeenCalledExactlyOnceWith("/api/v1/admin/models/comfyui/check", expect.objectContaining({
+      method: "POST", body: "{}", headers: expect.objectContaining({ "X-CSRF-Token": CSRF }),
+    }));
   });
   it("sends the site session CSRF token only in the mutation header and does not request provider APIs", async () => {
     document.cookie = `ads_csrf=${CSRF}; Path=/`;

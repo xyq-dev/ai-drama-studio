@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RealMediaQuote, SpeechMixPreflight } from "@ai-drama/contracts";
 import { ApiError } from "../lib/studio-client";
-import { readRealMediaPending, realMediaPendingKey, rememberRealMediaPending, type RealMediaAsset, type RealMediaCapabilities, type RealMediaClient, type RealMediaPending } from "../lib/real-media-client";
+import { readRealMediaPending, realMediaPendingKey, rememberRealMediaPending, type ComfyUiQuoteInput, type ComfyUiShot, type RealMediaAsset, type RealMediaCapabilities, type RealMediaClient, type RealMediaPending } from "../lib/real-media-client";
 import { RealMediaPanel } from "./real-media-panel";
 const speech=vi.hoisted(()=>({props:[] as Array<Record<string,unknown>>,preflight:null as SpeechMixPreflight|null}));
 vi.mock("./speech-panel",()=>({SpeechPanel:(props:Record<string,unknown>)=>{speech.props.push(props);return <section data-testid="speech-child">
@@ -21,10 +21,13 @@ function setup(){
   const items=[asset(A,"IMAGE"),asset(OTHER,"IMAGE","STALE"),asset(VIDEO,"VIDEO"),asset(MUSIC,"MUSIC")];
   const api={capabilities:vi.fn(async():Promise<RealMediaCapabilities>=>({available:true,reasonCode:null,capabilities:["image.generate","video.generate","audio.tts","audio.music"]})),
     assets:vi.fn(async(_shot:string,_cursor?:string,_signal?:AbortSignal)=>({items:structuredClone(items),nextCursor:null as string|null})),characters:vi.fn(async()=>[{id:OTHER,name:"林夏"}]),
-    quote:vi.fn(async(_p:string,_s:string,_capability:Parameters<RealMediaClient["quote"]>[2],_source?:string)=>quote()),
+    quote:vi.fn(async(_p:string,_s:string,_capability:Parameters<RealMediaClient["quote"]>[2],_source?:string,_comfyui?:ComfyUiQuoteInput):Promise<Awaited<ReturnType<RealMediaClient["quote"]>>>=>quote()),
     authorize:vi.fn(async(_p:string,_quote:RealMediaQuote,_maximum:string,_key:string)=>A),generate:vi.fn(async(_p:string,_s:string,_quote:string,_auth:string,_key:string)=>({jobId:J,workflowRunId:W})),
     job:vi.fn(async(id:string,_signal?:AbortSignal)=>({id,state:"WAITING_EXTERNAL",errorCode:"REAL_MEDIA_SUBMISSION_UNKNOWN" as string|null})),
     compose:vi.fn(async(_shot:string,_preflight:SpeechMixPreflight,_key:string)=>({jobId:J,workflowRunId:W})),
+    comfyuiShot:vi.fn(async(_project:string,_shot:string,_signal?:AbortSignal):Promise<ComfyUiShot>=>({references:[],jobs:[],selectedAssetId:null})),
+    adoptComfyUiImage:vi.fn(async(_project:string,_shot:string,_asset:string,_previous:string|null,_key:string)=>{}),
+    cancelComfyUiJob:vi.fn(async(_job:string,_key:string)=>{}),
   };
   const changed=vi.fn(),props={projectId:P,shotRevisionId:S,dialogue:"林夏：这不是我。",usable:true,refreshEpoch:0,client:api,onChanged:changed};
   return {api,props,items,changed,storageKey:realMediaPendingKey(P,S)};
@@ -32,10 +35,88 @@ function setup(){
 async function open(){fireEvent.click(screen.getByRole("button",{name:/图片、视频与角色配音/}));await screen.findByRole("button",{name:"查看本次费用"});await screen.findByTestId("speech-child");}
 async function requestQuote(){fireEvent.click(screen.getByRole("button",{name:"查看本次费用"}));await screen.findByLabelText("本次费用上限（CNY）");}
 const confirm=()=>fireEvent.click(screen.getByLabelText("我确认本次可能收费，只提交一次生成。"));
+function setupComfy(shot: ComfyUiShot) {
+  const harness = setup();
+  harness.api.capabilities.mockResolvedValue({available:true,readAvailable:true,reasonCode:null,capabilities:["image.generate"],comfyui:{status:"available",workflows:[
+    {id:"text-v1",label:"文生图",requiresReference:false,dimensions:[{width:512,height:512}]},
+    {id:"image-v1",label:"参考图生成",requiresReference:true,dimensions:[{width:512,height:768},{width:768,height:512}]},
+  ]}});
+  harness.api.comfyuiShot.mockImplementation(async()=>structuredClone(shot));
+  return harness;
+}
 function storageFake(){const map=new Map<string,string>();const storage:Storage={get length(){return map.size;},clear:()=>map.clear(),key:index=>[...map.keys()][index]??null,getItem:key=>map.get(key)??null,removeItem:key=>{map.delete(key);},setItem:(key,value)=>{map.set(String(key),String(value));}};return storage;}
 beforeEach(()=>{vi.stubGlobal("sessionStorage",storageFake());speech.props=[];speech.preflight=preflight();});
 afterEach(()=>{cleanup();vi.restoreAllMocks();vi.unstubAllGlobals();});
 describe("real media panel explicit paid send and scoped recovery",()=>{
+  it("uses the existing provider by default and quotes only allowlisted ComfyUI options after explicit selection",async()=>{
+    const h=setupComfy({references:[{id:OTHER,label:"本作品参考图",mimeType:"image/png"}],jobs:[],selectedAssetId:null});
+    h.api.quote.mockResolvedValue({...quote(),estimateBasis:"self-hosted-resource-estimate"});
+    render(<RealMediaPanel {...h.props} promptText="初始镜头提示词"/>);await open();
+    expect(screen.queryByLabelText("ComfyUI 工作流")).toBeNull();
+    fireEvent.change(screen.getByLabelText("图片生成方式"),{target:{value:"comfyui"}});
+    expect((screen.getByLabelText("图片提示词") as HTMLTextAreaElement).value).toBe("初始镜头提示词");
+    fireEvent.change(screen.getByLabelText("ComfyUI 工作流"),{target:{value:"image-v1"}});
+    expect((screen.getByRole("button",{name:"查看本次费用"}) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText("参考图片"),{target:{value:OTHER}});
+    fireEvent.change(screen.getByLabelText("图片尺寸"),{target:{value:"768x512"}});
+    fireEvent.change(screen.getByLabelText("图片提示词"),{target:{value:"  木牌特写  "}});
+    expect(screen.getByAltText("当前参考图片").getAttribute("src")).toContain(OTHER);
+    await requestQuote();
+    expect(h.api.quote).toHaveBeenCalledExactlyOnceWith(P,S,"image.generate",undefined,{workflowId:"image-v1",width:768,height:512,prompt:"木牌特写",referenceAssetId:OTHER});
+    expect(screen.getByText(/自托管资源估算.*实际成本未知/)).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("我确认本次资源额度，只提交一次生成。"));
+    fireEvent.change(screen.getByLabelText("图片提示词"),{target:{value:"新版本提示词"}});
+    expect(screen.queryByRole("button",{name:"确认生成图片"})).toBeNull();
+    expect(h.api.generate).not.toHaveBeenCalled();
+  });
+  it("reads a server-owned ComfyUI job after remount without browser storage and explicitly adopts its active result",async()=>{
+    const shot:ComfyUiShot={references:[],jobs:[{jobId:J,state:"SUCCEEDED"}],selectedAssetId:null,selectionAvailable:true};
+    const h=setupComfy(shot);
+    h.items[0]!.sourceGenerationJobId=J;
+    h.api.adoptComfyUiImage.mockImplementation(async(_p,_s,id)=>{shot.selectedAssetId=id;});
+    const view=render(<RealMediaPanel {...h.props}/>);await open();
+    expect(await screen.findByText(/已生成，可查看候选图/)).toBeTruthy();
+    expect(h.api.generate).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByRole("button",{name:"采用此版"}));
+    await screen.findByText("已采用到当前镜头");
+    expect(h.api.adoptComfyUiImage).toHaveBeenCalledExactlyOnceWith(P,S,A,null,expect.any(String));
+    view.unmount();sessionStorage.clear();
+    render(<RealMediaPanel {...h.props}/>);await open();
+    expect(await screen.findByText("已采用到当前镜头")).toBeTruthy();
+    expect(h.api.generate).not.toHaveBeenCalled();
+  });
+  it("suggests the adopted image as the existing video first frame and respects a manual override",async()=>{
+    const shot:ComfyUiShot={references:[],jobs:[{jobId:J,state:"SUCCEEDED"}],selectedAssetId:A,selectionAvailable:true};
+    const h=setupComfy(shot);
+    const caps=await h.api.capabilities();
+    h.api.capabilities.mockResolvedValue({...caps,capabilities:[...caps.capabilities,"video.generate"]});
+    h.items[0]!.sourceGenerationJobId=J;
+    h.items[1]!.status="ACTIVE";
+    render(<RealMediaPanel {...h.props}/>);await open();
+    await screen.findByText("已采用到当前镜头");
+    fireEvent.change(screen.getByLabelText("本次制作"),{target:{value:"video.generate"}});
+    const frame=screen.getByLabelText("视频首帧") as HTMLSelectElement;
+    expect(frame.value).toBe(A);
+    fireEvent.change(frame,{target:{value:OTHER}});
+    await requestQuote();
+    expect(h.api.quote).toHaveBeenCalledExactlyOnceWith(P,S,"video.generate",OTHER);
+    expect(h.api.generate).not.toHaveBeenCalled();
+  });
+  it("shows storage recovery and running cancellation boundaries; only a cancellable task is sent",async()=>{
+    const shot:ComfyUiShot={references:[],selectedAssetId:null,jobs:[
+      {jobId:J,state:"WAITING_EXTERNAL",errorCode:"COMFYUI_RESULT_STORAGE_FAILED"},
+      {jobId:OTHER,state:"WAITING_EXTERNAL",errorCode:"COMFYUI_QUEUED",canCancel:true},
+    ]};
+    const h=setupComfy(shot);
+    h.api.cancelComfyUiJob.mockImplementation(async()=>{shot.jobs[1]={jobId:OTHER,state:"CANCELED"};});
+    render(<RealMediaPanel {...h.props}/>);await open();
+    expect(await screen.findByText(/结果暂未入库/)).toBeTruthy();
+    expect(screen.queryByRole("button",{name:`取消任务 ${J.slice(0,8)}`})).toBeNull();
+    fireEvent.click(screen.getByRole("button",{name:`取消任务 ${OTHER.slice(0,8)}`}));
+    expect(await screen.findByText(/已取消/)).toBeTruthy();
+    expect(h.api.cancelComfyUiJob).toHaveBeenCalledExactlyOnceWith(OTHER,expect.any(String));
+    expect(h.api.generate).not.toHaveBeenCalled();
+  });
   it("retains a verified second-page video and music selection when a take change refreshes assets",async()=>{
     const h=setup();h.api.assets.mockImplementation(async(_shot,cursor)=>cursor
       ? {items:h.items.slice(2),nextCursor:null} : {items:h.items.slice(0,2),nextCursor:"page2"});

@@ -30,7 +30,9 @@ import {
 } from "../lib/script-workbench-model";
 import {
   emptyWorkbenchBaseline,
+  clearImportedScript,
   persistWorkbenchDraft,
+  readImportedScript,
   restoreWorkbenchDraft,
   WORKBENCH_DRAFTS_CLEARED_EVENT,
 } from "../lib/script-workbench-drafts";
@@ -230,7 +232,7 @@ export function ScriptWorkbench({
   const recoveryUnreadable = useRef(false);
   const [storageWarning, setStorageWarning] = useState<string | null>(null);
   const persist = useCallback(() => {
-    if (signedOut.current || recoveryUnreadable.current) return;
+    if (signedOut.current || recoveryUnreadable.current) return false;
     try {
       persistWorkbenchDraft(window.sessionStorage, {
         schema: 1,
@@ -242,8 +244,10 @@ export function ScriptWorkbench({
         pendingKeys: [...pendingKeys.current],
       });
       setStorageWarning(null);
+      return true;
     } catch {
       setStorageWarning("浏览器未能保存恢复草稿，请先保存到服务器再离开页面。当前编辑内容仍保留。");
+      return false;
     }
   }, [projectId]);
   function setPlan(value: ScriptWorkbenchPlan) {
@@ -410,14 +414,30 @@ export function ScriptWorkbench({
           baseline.current.sourceStoryIds[item.id] = next.story?.id ?? null;
         }
       }
+      const initialEpisode = options.initial ? next.episodes.find(item => item.episodeNo === 1) : undefined;
+      let imported: string | null = null;
+      if (initialEpisode && !initialEpisode.script && !(initialEpisode.id in live.current.drafts) && !recoveryUnreadable.current) {
+        try { imported = readImportedScript(window.sessionStorage, projectId); }
+        catch { /* Existing editor remains usable without browser recovery storage. */ }
+        const draft = updates[initialEpisode.id];
+        if (imported && draft) {
+          updates[initialEpisode.id] = { ...draft, scenes: [{ id: "imported-scene", heading: "导入的剧本",
+            interiorExterior: "INT", timeOfDay: "DAY", characterIds: [],
+            beats: [{ id: "imported-text", kind: "action", text: imported, seconds: 0 }] }] };
+          setNotice("第 1 集原文已放入草稿。请拆分场次、补齐设定，再保存并审稿。");
+        }
+      }
       live.current.drafts = { ...live.current.drafts, ...updates };
       renderDrafts(live.current.drafts);
-      persist();
+      if (persist() && imported) {
+        try { clearImportedScript(window.sessionStorage, projectId); }
+        catch { /* The saved editor draft takes precedence on reload. */ }
+      }
       if (options.initial) {
         const first = next.episodes.find((item) => !approved(item.script)) ?? next.episodes[0];
         const requestedHistory = next.episodes.find((item) => item.id === initialHistory);
-        setSelectedEpisode(requestedHistory?.id ?? first?.id ?? "");
-        setStage(requestedHistory || (approved(next.story) && first) ? 2 : 0);
+        setSelectedEpisode(requestedHistory?.id ?? (imported ? initialEpisode?.id : first?.id) ?? "");
+        setStage(requestedHistory || imported || (approved(next.story) && first) ? 2 : 0);
         if (requestedHistory) setHistory(requestedHistory.id);
       } else
         setSelectedEpisode((current) =>

@@ -9,6 +9,7 @@
  */
 import "reflect-metadata";
 import { createHash, randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { Test } from "@nestjs/testing";
@@ -19,7 +20,7 @@ import type { RealMediaCapability, RealMediaQuote, SpeechBinding, SpeechCapabili
 import { JobPersistenceService, MediaAssetStore, PostgresSpeechStore, PostgresSpeechBatchStore, PostgresVoiceComposeStore,
   RealMediaStore, RuntimeStore, TextChainService, createPostgresPool, runMigrations, type RealMediaExecution } from "@ai-drama/database";
 import { assertVoiceComposeSnapshot, VOICE_COMPOSE_JOB_SCHEMA } from "@ai-drama/domain";
-import { MediaSubmissionUnknownError, ServerRealMediaRuntime, type MediaProviderAdapter, type MediaProviderOutput } from "@ai-drama/providers";
+import { assertComfyUiSourceImage, ComfyUiImageAdapter, comfyUiRequiredNodes, MediaSubmissionUnknownError, ServerRealMediaRuntime, type MediaProviderAdapter, type MediaProviderOutput } from "@ai-drama/providers";
 import { checkRealMediaAcceptanceEnv, verifyRealMediaAcceptanceDatabase } from "../../../../packages/database/src/real-media-acceptance-guard";
 import { RealMediaRecovery, runRealMediaJob, type RealMediaWorkerDependencies } from "../../../worker/src/runtime/real-media-job";
 import { S3RealMediaObjects, type S3MediaClient } from "../../../worker/src/runtime/real-media-objects";
@@ -63,7 +64,7 @@ beforeAll(async () => {
   await runMigrations(pool);
   expect(await speech.storageReady()).toBe(false); expect(await batches.storageReady()).toBe(false);
   await tx(async client => {
-    for (const name of ["20261101000100_character_voice.sql", "20261101000200_real_media.sql", "20261101000300_speech_batch.sql"]) {
+    for (const name of ["20261101000100_character_voice.sql", "20261101000200_real_media.sql", "20261101000300_speech_batch.sql", "20261113000100_comfyui_shot_image_selection.sql"]) {
       await client.query(await readFile(resolve(__dirname, "../../../../packages/database/prisma/drafts", name), "utf8"));
     }
   });
@@ -124,7 +125,7 @@ async function world() {
   await tx(client => chain.reviewSceneShotInTransaction(client, { kind: "shot", workspaceId, projectId, episodeId,
     sceneId: scene.entityId, shotId: shot.entityId, revisionId: shot.revisionId, expectedVersion: shotReview.rowVersion,
     expectedReviewVersion: shotReview.reviewVersion, to: "APPROVED", reviewedBy: actor }));
-  return { workspaceId, projectId, episodeId, shotRevisionId: shot.revisionId };
+  return { workspaceId, projectId, episodeId, sceneId: scene.entityId, shotId: shot.entityId, shotRevisionId: shot.revisionId };
 }
 type World = Awaited<ReturnType<typeof world>>;
 type Accepted = { jobId: string; workflowRunId: string; dispatchSeq: number };
@@ -137,14 +138,24 @@ function wav(): Buffer {
   bytes.write("data", 36); bytes.writeUInt32LE(bytes.length - 44, 40); return bytes;
 }
 
-async function harness(w: World, enabled = true) {
+async function harness(w: World, enabled = true, comfyFetch?: typeof fetch) {
+  const comfyOrigin = "http://127.0.0.1:8188";
+  const comfyCheckpoint = "protocol-test.safetensors";
   const runtime = new ServerRealMediaRuntime(w.workspaceId, { REAL_MEDIA_ENABLED: "true", REAL_MEDIA_PRICE_VERSION: "fixture-v1",
     REAL_MEDIA_RECEIPT_KEY: Buffer.alloc(32, 7).toString("base64"), REAL_MEDIA_RECEIPT_KEY_VERSION: "fixture-v1",
     DASHSCOPE_MEDIA_API_KEY: "synthetic-never-sent-key", DASHSCOPE_MEDIA_CREDENTIAL_VERSION: "fixture-v1",
     DASHSCOPE_MEDIA_PRICE_IMAGE: "0.18", DASHSCOPE_MEDIA_PRICE_VIDEO_SECOND: "0.1", DASHSCOPE_MEDIA_PRICE_TTS_CHARACTER: "0.00008",
     DASHSCOPE_MEDIA_VIDEO_SECONDS: "15",
-    REAL_MEDIA_MAX_SINGLE_CNY: "2" }, true, async () => { externalSends++; throw new Error("Provider HTTP forbidden in acceptance"); });
+    REAL_MEDIA_MAX_SINGLE_CNY: "2",
+    ...(comfyFetch ? { COMFYUI_IMAGE_ENABLED: "true", COMFYUI_BASE_URL: comfyOrigin, COMFYUI_ALLOWED_ORIGINS: comfyOrigin,
+      COMFYUI_CHECKPOINT: comfyCheckpoint, COMFYUI_PRICE_IMAGE_ESTIMATE: "0.01", COMFYUI_TARGETED_CANCELLATION: "true" } : {}),
+  }, true, async () => { externalSends++; throw new Error("Provider HTTP forbidden in acceptance"); });
   const store = new RealMediaStore(pool, { receiptCipher: runtime.receiptCipher });
+  const comfyConfig = runtime.comfyUiConfiguration();
+  const comfyAdapter = (mode: "submit" | "query") => new ComfyUiImageAdapter({ ...comfyConfig!, enabled: mode === "submit" },
+    { baseUrl: comfyOrigin, allowedOrigins: [comfyOrigin], fetch: comfyFetch, targetedCancellation: true });
+  if (comfyConfig) await q(`INSERT INTO provider_configuration(id,workspace_id,provider_key,capability,default_timeout_ms,max_attempts)
+      VALUES($1,$2,$3,$4,180000,1)`, [comfyConfig.id, w.workspaceId, comfyConfig.providerKey, comfyConfig.capability]);
   for (const capability of ["image.generate", "video.generate", "audio.tts"] as const) {
     const config = (await runtime.configurationFor(capability))!;
     await q(`INSERT INTO provider_configuration(id,workspace_id,provider_key,capability,default_timeout_ms,max_attempts)
@@ -161,7 +172,9 @@ async function harness(w: World, enabled = true) {
     configurationFor: async (capability, client) => {
       const config = await runtime.configurationFor(capability);
       return config && await store.configurationStillEnabled(config, client) ? config : null;
-    }, speechCatalog: () => runtime.speechCatalog() };
+    }, speechCatalog: () => runtime.speechCatalog(),
+    ...(comfyConfig ? { comfyUiConfigurationFor: async () => comfyConfig,
+      comfyUiReadiness: async () => ({ status: (await comfyAdapter("query").checkReadiness()).state === "READY" ? "available" : "missing_dependencies", workflows: [] }) } : {}) };
   const media = new RealMediaService(policy);
   const runtimeStore = new RuntimeStore(pool);
   const studio = new StudioService(jobs, runtimeStore, chain, w.workspaceId, undefined, assets,
@@ -207,8 +220,10 @@ async function harness(w: World, enabled = true) {
   let failMaterializeOnce = false;
   let unknownSubmitOnce = false;
   const deps: RealMediaWorkerDependencies = { jobs, assets, store, objects, preflightLocal: async () => undefined,
+    validateComfyUiSourceImage: async bytes => { assertComfyUiSourceImage(bytes,"image/png"); },
     adapterFor: async (config, mode): Promise<MediaProviderAdapter> => {
       recoveryModes.push(mode);
+      if (config.providerKey === "comfyui") return comfyAdapter(mode);
       return { providerKey: config.providerKey, capabilities: () => [config.capability],
         async submit(request) {
           if (mode !== "submit") throw new Error("Recovery is query-only");
@@ -225,8 +240,14 @@ async function harness(w: World, enabled = true) {
         async resolveOutput() { throw new Error("Fixture materializer performs no network retrieval"); },
       };
     },
-    materialize: async (output: MediaProviderOutput): Promise<VerifiedRealMedia> => {
+    materialize: async (output: MediaProviderOutput, adapter): Promise<VerifiedRealMedia> => {
       if (failMaterializeOnce) { failMaterializeOnce = false; throw new Error("Simulated local delivery interruption after receipt"); }
+      if (adapter.providerKey === "comfyui") {
+        const resolved = await adapter.resolveOutput(output);
+        if (!resolved.uri.startsWith("data:image/png;base64,")) throw new Error("Expected validated fixture bytes");
+        return { bytes: Buffer.from(resolved.uri.slice("data:image/png;base64,".length), "base64"),
+          mimeType: "image/png", width: 512, height: 512 };
+      }
       return output.kind === "IMAGE" ? { bytes: png, mimeType: "image/png", width: 1, height: 1 }
         : output.kind === "VIDEO" ? { bytes: videoBytes, mimeType: "video/mp4", width: 180, height: 320, durationMs: 15000 }
           : { bytes: wav(), mimeType: "audio/wav", durationMs: 1000 };
@@ -243,8 +264,114 @@ async function harness(w: World, enabled = true) {
     interruptNextDelivery() { failMaterializeOnce = true; },
     loseNextSubmissionReceipt() { unknownSubmitOnce = true; } };
 }
+
+function comfyProtocolFixture() {
+  const rendered = execFileSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=gray:s=512x512",
+    "-frames:v", "1", "-threads", "1", "-f", "image2pipe", "-vcodec", "png", "pipe:1"]);
+  const graphs = new Map<string, Record<string, { inputs: Record<string, unknown> }>>();
+  const calls = { submitted: 0, uploaded: 0, downloaded: 0 };
+  const protocolFetch: typeof fetch = async (target, init) => {
+    const url = new URL(String(target));
+    if (url.origin !== "http://127.0.0.1:8188") throw new Error("Unexpected provider destination");
+    if (url.pathname === "/system_stats") return Response.json({ system: {}, devices: [] });
+    if (url.pathname.startsWith("/object_info/")) {
+      const node = url.pathname.split("/").at(-1)!;
+      const required = Object.fromEntries(comfyUiRequiredNodes()[node]!.map(name => [name,
+        name === "ckpt_name" ? [["protocol-test.safetensors"]] : ["ANY"]]));
+      return Response.json({ [node]: { python_module: "nodes", input: { required } } });
+    }
+    if (url.pathname === "/prompt") {
+      const promptId = randomUUID();
+      const { prompt } = JSON.parse(String(init?.body));
+      graphs.set(promptId, prompt); calls.submitted++;
+      return Response.json({ prompt_id: promptId, number: calls.submitted, node_errors: {} });
+    }
+    if (url.pathname === "/upload/image") {
+      const file = (init?.body as FormData).get("image") as File;
+      expect(Buffer.from(await file.arrayBuffer())).toEqual(rendered);
+      calls.uploaded++;
+      return Response.json({ name: file.name, subfolder: "", type: "input" });
+    }
+    if (url.pathname.startsWith("/history/")) {
+      const promptId = url.pathname.split("/").at(-1)!;
+      const graph = graphs.get(promptId);
+      if (!graph) return Response.json({});
+      const stem = String(graph["9"]!.inputs.filename_prefix).split("/")[1];
+      return Response.json({ [promptId]: { prompt: [0,promptId,graph,{},["9"]], status: { status_str: "success", completed: true },
+        outputs: { "9": { images: [{ filename: stem + "_00001_.png", subfolder: "ads-comfyui-v1", type: "output" }] } } } });
+    }
+    if (url.pathname === "/view") {
+      calls.downloaded++;
+      return new Response(new Uint8Array(rendered), { headers: { "content-type": "image/png" } });
+    }
+    throw new Error("Unexpected protocol request " + url.pathname);
+  };
+  return { protocolFetch, calls, rendered };
+}
 type Harness = Awaited<ReturnType<typeof harness>>;
 const shotPath = (w: World) => `/projects/${w.projectId}/shot-revisions/${w.shotRevisionId}/real-media`;
+describe("ComfyUI storyboard flow against disposable PostgreSQL and a protocol fixture", () => {
+  it("recovers the original job and persists an adopted image while keeping new candidates separate", async () => {
+    const w = await world(), fixture = comfyProtocolFixture(), h = await harness(w, true, fixture.protocolFetch);
+    const path = shotPath(w), imagePath = path + "/comfyui";
+    const request = { capability: "image.generate", comfyui: {
+      workflowId: "sd15-txt2img", prompt: "石铺清晨，木牌落在石碑上。", width: 512, height: 512,
+    } };
+    expect(await h.http(imagePath)).toEqual({ references: [], jobs: [], selectedAssetId: null, selectionAvailable: true });
+    const quote = await h.http<RealMediaQuote>(path + "/quote", "POST", request, {}, 201);
+    expect(quote).toMatchObject({ estimateBasis: "self-hosted-resource-estimate", actualCost: "unknown" });
+    const auth = await authorize(h, w, quote), key = randomUUID();
+    const job = await h.http<Accepted>(path + "/generate", "POST", auth, { "idempotency-key": key }, 202);
+    expect(await h.http(imagePath)).toMatchObject({ jobs: [{ jobId: job.jobId, phase: "queued", canCancel: true }] });
+    const original = await h.execution(job.jobId);
+    await runRealMediaJob(original, h.deps);
+    await runRealMediaJob(original, h.deps);
+    expect(fixture.calls.submitted).toBe(1);
+    const sent = await h.execution(job.jobId);
+    expect(sent).toMatchObject({ state: "WAITING_EXTERNAL", receiptState: "ACKNOWLEDGED", providerRequestId: expect.any(String) });
+    h.interruptNextDelivery();
+    await new RealMediaRecovery(h.deps).recover(sent);
+    expect(await h.http(imagePath)).toMatchObject({ jobs: [{ jobId: job.jobId, phase: "finalizing" }] });
+    await new RealMediaRecovery(h.deps).recover(await h.execution(job.jobId));
+    const asset = await h.assetFor(job.jobId);
+    expect(await h.http(imagePath)).toMatchObject({ jobs: [{ jobId: job.jobId, phase: "complete" }], references: [{ id: asset.id }] });
+    const preview = await h.local(`/real-media/assets/${asset.id}/content`, { headers: h.headers() });
+    expect(preview.headers.get("content-type")).toBe("image/png");
+    expect(Buffer.from(await preview.arrayBuffer())).toEqual(fixture.rendered);
+    await h.http(imagePath, "PUT", { assetId: asset.id, expectedSelectedAssetId: null });
+    expect(await h.http(imagePath)).toMatchObject({ selectedAssetId: asset.id });
+
+    const foreign = await world(), foreignHarness = await harness(foreign, true, fixture.protocolFetch);
+    const ref = { ...request, comfyui: { ...request.comfyui, workflowId: "sd15-img2img", referenceAssetId: asset.id } };
+    await foreignHarness.http(shotPath(foreign) + "/quote", "POST", ref, {}, 400);
+    const editQuote = await h.http<RealMediaQuote>(path + "/quote", "POST", ref, {}, 201);
+    const editAuth = await authorize(h, w, editQuote);
+    const editJob = await h.http<Accepted>(path + "/generate", "POST", editAuth, {}, 202);
+    await runRealMediaJob(await h.execution(editJob.jobId), h.deps);
+    expect(await h.http(imagePath)).toMatchObject({ jobs: [expect.objectContaining({ jobId: editJob.jobId, phase: "queued" }), expect.any(Object)] });
+    await new RealMediaRecovery(h.deps).recover(await h.execution(editJob.jobId));
+    expect(await h.http(imagePath)).toMatchObject({ jobs: [expect.objectContaining({ jobId: editJob.jobId, phase: "complete" }), expect.any(Object)] });
+    const editAsset = await h.assetFor(editJob.jobId);
+    expect(await h.http(imagePath)).toMatchObject({ selectedAssetId: asset.id });
+    await h.http(imagePath, "PUT", { assetId: editAsset.id, expectedSelectedAssetId: null }, {}, 409);
+    await h.http(imagePath, "PUT", { assetId: editAsset.id, expectedSelectedAssetId: asset.id });
+    expect(await h.http(imagePath)).toMatchObject({ selectedAssetId: editAsset.id });
+    const listPath = `/projects/${w.projectId}/episodes/${w.episodeId}/scenes/${w.sceneId}/shots`;
+    const storyboard = await h.http<{ items: { rowVersion: number }[] }>(listPath + "?view=storyboard");
+    expect(storyboard).toMatchObject({
+      items: [{ storyboard: { ordinal: 1, action: "旁白", promptText: "Acceptance image prompt", characters: [],
+        candidates: expect.arrayContaining([{ id: editAsset.id, kind: "IMAGE", storageProvider: "s3", status: "ACTIVE" }]),
+        selectedAssetId: editAsset.id } }],
+    });
+    expect(fixture.calls).toEqual({ submitted: 2, uploaded: 1, downloaded: 2 });
+    const stored = await q("SELECT count(*)::int AS n FROM asset WHERE source_generation_job_id=$1", [job.jobId]);
+    expect(stored.rows[0]?.n).toBe(1);
+    expect(await h.http(path + "/generate", "POST", auth, { "idempotency-key": key }, 202)).toMatchObject({ jobId: job.jobId });
+    await h.http(listPath + "/" + w.shotId + "/archive", "POST", {}, { "if-match": String(storyboard.items[0]!.rowVersion) });
+    expect(await h.http(listPath + "?view=storyboard")).toMatchObject({ items: [] });
+    expect(await h.http(imagePath)).toMatchObject({ selectedAssetId: null });
+  });
+});
 async function authorize(h: Harness, w: World, quote: { quoteId: string; maximumAmount: string; uncertainJobIds?: string[] }) {
   return h.http<{ quoteId: string; budgetAuthorizationId: string }>(`/projects/${w.projectId}/real-media/authorize`, "POST",
     { quoteId: quote.quoteId, maximumAmount: quote.maximumAmount, confirmSinglePaidOperation: true,

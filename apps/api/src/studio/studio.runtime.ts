@@ -18,7 +18,7 @@ import {
   openStorageSettingsStore, storageSettingsOptions,
   type PostgresPool,
 } from "@ai-drama/database";
-import { sampleVideoGenerationEnabled, realMediaAccessAllowed, type TitleRunKind } from "@ai-drama/contracts";
+import { sampleVideoGenerationEnabled, realMediaAccessAllowed, type ComfyUiAdminCheck, type TitleRunKind } from "@ai-drama/contracts";
 import {
   AutoCreationEngine, SeriesWritingEngine, TitleWritingEngine, WritingCandidateExecutor, createFetchTransport, createResearchFetcher, titleWritingProviderConfigs,
 } from "@ai-drama/providers";
@@ -84,6 +84,7 @@ export class StudioRuntime implements OnModuleDestroy {
     readonly voiceCompose: VoiceComposeService | null = null,
     private readonly closeMediaStorage: (() => void) | null = null,
     readonly storageSettings: StorageSettingsService | null = null,
+    readonly checkComfyUi: (() => Promise<ComfyUiAdminCheck>) | null = null,
   ) {
     this.service = service;
     this.store = store;
@@ -139,6 +140,15 @@ export class StudioRuntime implements OnModuleDestroy {
     const realAccessAllowed=realMediaAccessAllowed({nodeEnv:env.NODE_ENV,siteAuthConfigured:siteLoginValid,
       allowProduction:env.REAL_MEDIA_ENV?.REAL_MEDIA_ALLOW_PRODUCTION==="true"});
     const realRuntime = new ServerRealMediaRuntime(workspaceId, env.REAL_MEDIA_ENV ?? {},realAccessAllowed);
+    const checkComfyUi = async (): Promise<ComfyUiAdminCheck> => {
+      const health = await realRuntime.probeComfyUi();
+      return {
+        status: health.status,
+        generationEnabled: realRuntime.comfyUiConfiguration()?.enabled === true,
+        missingNodeCount: health.missingNodes.length,
+        missingModelCount: health.missingModels.length,
+      };
+    };
     const titleWritingAllowProduction = env.TITLE_WRITING_ALLOW_PRODUCTION && siteLoginValid;
     const titleWritingEnabled = env.TITLE_WRITING_ENABLED && (nonProduction || titleWritingAllowProduction);
     // Script breakdown has its own switch: turning on title writing never starts or resumes a breakdown.
@@ -306,6 +316,11 @@ export class StudioRuntime implements OnModuleDestroy {
         const configuration = await realRuntime.configurationFor(capability);
         return configuration && await mediaStore.configurationStillEnabled(configuration, client) ? configuration : null;
       },
+      comfyUiConfigurationFor: async client => {
+        const configuration = realRuntime.comfyUiConfiguration();
+        return configuration?.enabled && await mediaStore.configurationStillEnabled(configuration, client) ? configuration : null;
+      },
+      comfyUiReadiness: () => realRuntime.checkComfyUi(),
       speechCatalog: async () => {
         const configuration = await realRuntime.configurationFor("audio.tts");
         return configuration && await mediaStore.configurationStillEnabled(configuration) ? realRuntime.speechCatalog()
@@ -331,7 +346,7 @@ export class StudioRuntime implements OnModuleDestroy {
       adminModels, admin?.enabled ?? false, scriptBreakdown, writingCandidates, autoCreation, seriesWriting,
       new VimaxPreviewService({ workspaceId, nodeEnv: env.NODE_ENV, allowProduction: vimaxProductionAllowed, source: new VimaxPreviewSourceStore(pool) }),
       new VimaxCandidateService({ workspaceId, nodeEnv: env.NODE_ENV, allowProduction: vimaxProductionAllowed, store: new VimaxCandidateStore(pool, textChain) }),
-      vimaxPlanning, realMedia, speech, voiceCompose, mediaClient ? () => mediaClient.destroy() : null, storageSettings);
+      vimaxPlanning, realMedia, speech, voiceCompose, mediaClient ? () => mediaClient.destroy() : null, storageSettings, checkComfyUi);
   }
 
   async onModuleDestroy(): Promise<void> {

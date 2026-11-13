@@ -1,5 +1,8 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
-import type { RealMediaCapability, RealMediaConfiguration, SpeechCapabilities } from "@ai-drama/contracts";
+import type { ComfyUiAvailability, RealMediaCapability, RealMediaConfiguration, SpeechCapabilities } from "@ai-drama/contracts";
+import { realMediaInputHash } from "@ai-drama/domain";
+import { canonicalComfyUiOrigin, ComfyUiImageAdapter } from "./comfyui-image-adapter";
+import { comfyUiWorkflowDescriptors, isComfyUiCheckpoint } from "./comfyui-workflows";
 import { ElevenLabsTtsAdapter } from "./elevenlabs-tts-adapter";
 import { MiniMaxTtsAdapter, canonicalMiniMaxTtsBaseUrl } from "./minimax-tts-adapter";
 import {
@@ -26,6 +29,9 @@ export const REAL_MEDIA_ENV_KEYS = [
   "MINIMAX_API_KEY", "MINIMAX_TTS_CREDENTIAL_VERSION", "MINIMAX_PREVIOUS_API_KEY", "MINIMAX_TTS_PREVIOUS_CREDENTIAL_VERSION",
   "MINIMAX_TTS_PRICE_CHARACTER", "MINIMAX_TTS_MODEL", "MINIMAX_TTS_BASE_URL", "MINIMAX_TTS_OUTPUT_FORMAT", "MINIMAX_TTS_SAMPLE_RATE",
   "REAL_MEDIA_MAX_SINGLE_CNY", "REAL_MEDIA_MAX_SINGLE_USD",
+  "COMFYUI_IMAGE_ENABLED", "COMFYUI_BASE_URL", "COMFYUI_ALLOWED_ORIGINS", "COMFYUI_API_KEY",
+  "COMFYUI_CREDENTIAL_VERSION", "COMFYUI_PREVIOUS_API_KEY", "COMFYUI_PREVIOUS_CREDENTIAL_VERSION",
+  "COMFYUI_CHECKPOINT", "COMFYUI_PRICE_IMAGE_ESTIMATE", "COMFYUI_TARGETED_CANCELLATION",
 ] as const;
 export type RealMediaEnvironment = Partial<Record<(typeof REAL_MEDIA_ENV_KEYS)[number], string>>;
 export class RealMediaEnvironmentError extends Error {
@@ -42,12 +48,12 @@ export function loadRealMediaEnvironment(processEnv: Record<string, string | und
   const result: RealMediaEnvironment = {};
   const errors: string[] = [];
   for (const name of REAL_MEDIA_ENV_KEYS) {
-    const processOnly = /API_KEY|RECEIPT_KEY/.test(name) || name === "REAL_MEDIA_ALLOW_PRODUCTION"
+    const processOnly = name.startsWith("COMFYUI_") || /API_KEY|RECEIPT_KEY/.test(name) || name === "REAL_MEDIA_ALLOW_PRODUCTION"
       || name === "OPENAI_BASE_URL" || name === "OPENAI_API_BASE" || name === "REAL_MEDIA_IMAGE_PROVIDER";
     const value = processEnv[name] !== undefined ? processEnv[name] : processOnly ? undefined : fileEnv[name];
     if (value !== undefined) result[name] = value;
   }
-  for (const name of ["REAL_MEDIA_ENABLED", "REAL_MEDIA_ALLOW_PRODUCTION"] as const) {
+  for (const name of ["REAL_MEDIA_ENABLED", "REAL_MEDIA_ALLOW_PRODUCTION", "COMFYUI_IMAGE_ENABLED", "COMFYUI_TARGETED_CANCELLATION"] as const) {
     if (result[name] !== undefined && !["true", "false"].includes(result[name]!)) errors.push(name);
   }
   for (const name of REAL_MEDIA_ENV_KEYS) {
@@ -57,7 +63,7 @@ export function loadRealMediaEnvironment(processEnv: Record<string, string | und
         || name === "MINIMAX_TTS_BASE_URL" || name === "MINIMAX_TTS_MODEL" || name === "MINIMAX_TTS_OUTPUT_FORMAT" || name === "MINIMAX_TTS_SAMPLE_RATE") errors.push(name);
       continue;
     }
-    if (/API_KEY$/.test(name) && !validKey(value)) errors.push(name);
+    if (/API_KEY$/.test(name) && (name.startsWith("COMFYUI_") ? !/^[\x21-\x7e]{8,512}$/.test(value) : !validKey(value))) errors.push(name);
     if (/RECEIPT_KEY$/.test(name) && !decodedKey(value)) errors.push(name);
     if (/VERSION$/.test(name) && !VERSION.test(value)) errors.push(name);
     if ((/PRICE_/.test(name) && name !== "REAL_MEDIA_PRICE_VERSION" || /MAX_SINGLE/.test(name)) && (!AMOUNT.test(value) || Number(value) <= 0)) errors.push(name);
@@ -82,6 +88,14 @@ export function loadRealMediaEnvironment(processEnv: Record<string, string | und
   if (result.MINIMAX_TTS_BASE_URL !== undefined) {
     try { result.MINIMAX_TTS_BASE_URL = canonicalMiniMaxTtsBaseUrl(result.MINIMAX_TTS_BASE_URL); }
     catch { errors.push("MINIMAX_TTS_BASE_URL"); delete result.MINIMAX_TTS_BASE_URL; }
+  }
+  if (result.COMFYUI_BASE_URL) {
+    try { result.COMFYUI_BASE_URL = canonicalComfyUiOrigin(result.COMFYUI_BASE_URL); }
+    catch { errors.push("COMFYUI_BASE_URL"); }
+  }
+  if (result.COMFYUI_ALLOWED_ORIGINS) {
+    try { result.COMFYUI_ALLOWED_ORIGINS = comfyUiOrigins(result.COMFYUI_ALLOWED_ORIGINS).join(","); }
+    catch { errors.push("COMFYUI_ALLOWED_ORIGINS"); }
   }
   if (errors.length) throw new RealMediaEnvironmentError([...new Set(errors)]);
   return result;
@@ -149,6 +163,9 @@ function uuidFor(value: unknown): string {
   const hex = digest(value);
   return hex.slice(0, 8) + "-" + hex.slice(8, 12) + "-4" + hex.slice(13, 16) + "-8" + hex.slice(17, 20) + "-" + hex.slice(20, 32);
 }
+function comfyUiOrigins(value: string | undefined): string[] {
+  return value ? [...new Set(value.split(",").map(origin => canonicalComfyUiOrigin(origin.trim())))] : [];
+}
 /** Secrets are held only inside this server instance. Public capabilities/quotes never expose this object. */
 export class ServerRealMediaRuntime {
   readonly enabled: boolean;
@@ -161,7 +178,7 @@ export class ServerRealMediaRuntime {
     if (!UUID.test(workspaceId)) throw new RealMediaEnvironmentError(["APP_WORKSPACE_ID"]);
     this.receiptCipher = createRealMediaReceiptCipher(environment);
     this.enabled = allowed && environment.REAL_MEDIA_ENABLED === "true" && Boolean(this.receiptCipher);
-    for (const [provider, prefix] of [["dashscope-media", "DASHSCOPE_MEDIA"], ["elevenlabs-media", "ELEVENLABS_MEDIA"], ["elevenlabs-tts", "ELEVENLABS_TTS"], ["openai-media", "OPENAI_MEDIA"]] as const) {
+    for (const [provider, prefix] of [["dashscope-media", "DASHSCOPE_MEDIA"], ["elevenlabs-media", "ELEVENLABS_MEDIA"], ["elevenlabs-tts", "ELEVENLABS_TTS"], ["openai-media", "OPENAI_MEDIA"], ["comfyui", "COMFYUI"]] as const) {
       const read = (suffix: string) => environment[(prefix + suffix) as keyof RealMediaEnvironment];
       if (validKey(read("_API_KEY"))) this.#credentials.set(provider + ":" + (read("_CREDENTIAL_VERSION") ?? "v1"), read("_API_KEY")!);
       if (validKey(read("_PREVIOUS_API_KEY")) && read("_PREVIOUS_CREDENTIAL_VERSION")) {
@@ -177,6 +194,66 @@ export class ServerRealMediaRuntime {
       if (previousVersion === minimaxVersion) throw new RealMediaEnvironmentError(["MINIMAX_TTS_PREVIOUS_CREDENTIAL_VERSION"]);
       this.#credentials.set("minimax-tts:" + previousVersion, environment.MINIMAX_PREVIOUS_API_KEY!);
     }
+  }
+  comfyUiConfiguration(): RealMediaConfiguration | null {
+    const environment = this.#environment;
+    const price = environment.COMFYUI_PRICE_IMAGE_ESTIMATE;
+    const checkpoint = environment.COMFYUI_CHECKPOINT;
+    const origin = environment.COMFYUI_BASE_URL;
+    if (!origin || !comfyUiOrigins(environment.COMFYUI_ALLOWED_ORIGINS).includes(origin) || !isComfyUiCheckpoint(checkpoint)
+      || !price || !AMOUNT.test(price) || Number(price) <= 0 || !environment.REAL_MEDIA_PRICE_VERSION) return null;
+    const workflows = comfyUiWorkflowDescriptors(checkpoint);
+    const base = {
+      providerKey: "comfyui", capability: "image.generate" as const, model: checkpoint, region: "self-hosted",
+      credentialRef: "env:comfyui", credentialVersion: environment.COMFYUI_CREDENTIAL_VERSION ?? "v1",
+      priceVersion: environment.REAL_MEDIA_PRICE_VERSION, currency: "CNY" as const,
+      unitPrice: price, unitType: "image" as const, maximumOperationAmount: environment.REAL_MEDIA_MAX_SINGLE_CNY ?? "10",
+      parameters: { checkpoint, workflows, targetIdentity: digest(origin), estimateBasis: "self-hosted-resource-estimate",
+        targetedCancellation: environment.COMFYUI_TARGETED_CANCELLATION === "true" },
+    };
+    return { ...base, id: uuidFor([this.workspaceId, base.providerKey, base.capability]),
+      version: "media-" + digest(base).slice(0, 24),
+      enabled: this.enabled && environment.COMFYUI_IMAGE_ENABLED === "true", queryAllowed: true };
+  }
+  async checkComfyUi(): Promise<ComfyUiAvailability> {
+    const config = this.comfyUiConfiguration();
+    if (!config) return { status: "unconfigured", workflows: [] };
+    if (!config.enabled) return { status: "disabled", workflows: [] };
+    const health = await this.probeComfyUi();
+    if (health.status !== "ready") return { status: health.status, workflows: [] };
+    return {
+      status: "available",
+      workflows: comfyUiWorkflowDescriptors(config.model).map(workflow => ({
+        id: workflow.id, label: workflow.requiresReference ? "参考图生成" : "文生图",
+        requiresReference: workflow.requiresReference, dimensions: [...workflow.sizes],
+      })),
+    };
+  }
+  async probeComfyUi(): Promise<{
+    status: "unconfigured" | "unreachable" | "missing_dependencies" | "ready";
+    missingNodes: string[]; missingModels: string[];
+  }> {
+    const config = this.comfyUiConfiguration();
+    if (!config) return { status: "unconfigured", missingNodes: [], missingModels: [] };
+    const health = await this.comfyUiAdapter(config, "query").checkReadiness();
+    const status = health.state === "READY" ? "ready" : health.state === "DEPENDENCY_MISSING" ? "missing_dependencies" : "unreachable";
+    return { status, missingNodes: health.missingNodes, missingModels: health.missingModels };
+  }
+  private comfyUiAdapter(configuration: RealMediaConfiguration, mode: "submit" | "query"): ComfyUiImageAdapter {
+    const baseUrl = this.#environment.COMFYUI_BASE_URL;
+    const currentVersion = this.#environment.COMFYUI_CREDENTIAL_VERSION ?? "v1";
+    const version = configuration.credentialVersion;
+    const key = this.#credentials.get("comfyui:" + version);
+    if (!baseUrl || configuration.parameters.targetIdentity !== digest(baseUrl)
+      || (!key && (version !== currentVersion || Boolean(this.#environment.COMFYUI_API_KEY)))) {
+      throw new Error("COMFYUI_CONFIGURATION_VERSION_UNAVAILABLE");
+    }
+    return new ComfyUiImageAdapter(mode === "query" ? { ...configuration, enabled: false } : configuration, {
+      baseUrl, allowedOrigins: comfyUiOrigins(this.#environment.COMFYUI_ALLOWED_ORIGINS),
+      ...(key ? { apiKey: key } : {}),
+      targetedCancellation: configuration.parameters.targetedCancellation === true
+        && this.#environment.COMFYUI_TARGETED_CANCELLATION === "true",
+    });
   }
   async configurationFor(capability: RealMediaCapability): Promise<RealMediaConfiguration | null> {
     if (!this.enabled) return null;
@@ -257,6 +334,14 @@ export class ServerRealMediaRuntime {
   }
   async adapterFor(configuration: RealMediaConfiguration, mode: "submit" | "query"): Promise<MediaProviderAdapter> {
     if (configuration.credentialRef !== "env:" + configuration.providerKey) throw new Error("REAL_MEDIA_CREDENTIAL_REFERENCE_INVALID");
+    if (configuration.providerKey === "comfyui") {
+      const active = this.comfyUiConfiguration();
+      if (mode === "submit" && (!active?.enabled || realMediaInputHash(active) !== realMediaInputHash(configuration))) {
+        throw new Error("REAL_MEDIA_CONFIGURATION_CHANGED");
+      }
+      if (mode === "query" && !configuration.queryAllowed) throw new Error("REAL_MEDIA_QUERY_DISABLED");
+      return this.comfyUiAdapter(configuration, mode);
+    }
     const key = this.#credentials.get(configuration.providerKey + ":" + configuration.credentialVersion);
     if (!key) throw new Error("REAL_MEDIA_CREDENTIAL_VERSION_UNAVAILABLE");
     if (mode === "submit") {

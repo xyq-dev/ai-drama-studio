@@ -2,6 +2,7 @@ import {
   JobPersistenceService,
   MockTextService,
   MediaAssetStore,
+  PersistenceError,
   RuntimeStore,
   TextChainService,
   createPostgresPool,
@@ -33,7 +34,7 @@ import { MediaS3Client, ManagedStorageRouter, type ServerRealMediaRuntime, type 
 import { VOICE_COMPOSE_JOB_SCHEMA, type VoiceComposeJobSnapshot } from "@ai-drama/domain";
 import { runRealMediaJob, RealMediaRecovery, type RealMediaWorkerDependencies } from "./real-media-job";
 import { S3RealMediaObjects } from "./real-media-objects";
-import { createRealMediaMaterializer, preflightRealMediaTools } from "./real-media-materializer";
+import { createRealMediaMaterializer, preflightRealMediaTools, validateComfyUiSourceImageDecode } from "./real-media-materializer";
 import { runVoiceComposeJob } from "./voice-compose-job";
 
 export interface QueueRuntimeStatus {
@@ -160,7 +161,15 @@ export async function startQueueRuntime(options: {
     ? { jobs, assets, store: realStore, objects: realObjects,characterReferenceGate:options.characterReferenceGate,
       adapterFor: (configuration, mode) => options.realMediaRuntime!.adapterFor(configuration, mode),
       materialize: createRealMediaMaterializer({ workDir: options.composeWorkDir }),
-      preflightLocal: () => preflightRealMediaTools({ workDir: options.composeWorkDir! }) }
+      preflightLocal: () => preflightRealMediaTools({ workDir: options.composeWorkDir! }),
+      preflightComfyUi: async () => {
+        const health = await options.realMediaRuntime!.probeComfyUi();
+        if (health.status !== "ready") throw new PersistenceError(
+          health.status === "missing_dependencies" ? "COMFYUI_DEPENDENCIES_MISSING" : "COMFYUI_UNAVAILABLE",
+          "ComfyUI dependencies or connectivity changed before submission",
+        );
+      },
+      validateComfyUiSourceImage: bytes => validateComfyUiSourceImageDecode(bytes,{workDir:options.composeWorkDir!}) }
     : null;
   const realRecovery = realDependencies ? new RealMediaRecovery(realDependencies) : null;
   const voiceStore = new PostgresVoiceComposeStore(pool, jobs);

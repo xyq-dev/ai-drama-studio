@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BeginnerStart } from "./beginner-start";
 import { MyWorks } from "./my-works";
+import { readImportedScript } from "../lib/script-workbench-drafts";
 
 function json(payload: unknown, status = 200): Response {
   return new Response(JSON.stringify(payload), { status, headers: { "content-type": "application/json" } });
@@ -25,6 +26,27 @@ afterEach(() => {
 });
 
 describe("beginner start page", () => {
+  it("creates a project from pasted script and opens the editor with exact draft text", async () => {
+    const id = "11111111-1111-4111-8111-111111111111";
+    const script = "石铺 · 清晨\n许照青擦去石屑。\n陈长渡：我就是陈长渡。";
+    const writes: unknown[] = [];
+    vi.stubGlobal("fetch", vi.fn((_input: string, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        writes.push(JSON.parse(String(init.body)));
+        return Promise.resolve(json({ id }, 201));
+      }
+      return Promise.resolve(json({ items: [], nextCursor: null }));
+    }));
+    render(<BeginnerStart active="/create" />);
+    fireEvent.click(screen.getByText("从已有剧本开始"));
+    fireEvent.change(screen.getByLabelText("剧本作品名称"), { target: { value: "无名碑" } });
+    fireEvent.change(screen.getByLabelText("剧本正文"), { target: { value: script } });
+    expect(writes).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "创建并打开剧本工作台" }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith(`/projects/${id}/script`));
+    expect(writes).toEqual([{ title: "无名碑", premise: "" }]);
+    expect(readImportedScript(window.sessionStorage, id)).toBe(script);
+  });
   it("never creates a project while typing, choosing a template or opening inspiration", async () => {
     const calls: string[] = [];
     vi.stubGlobal("fetch", vi.fn((input: string, init?: RequestInit) => {

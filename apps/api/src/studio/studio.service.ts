@@ -255,11 +255,11 @@ export class StudioService {
   }
 
   async listShots(
-    projectId: string, episodeId: string, sceneId: string, cursor?: string, limit?: string,
+    projectId: string, episodeId: string, sceneId: string, cursor?: string, limit?: string, view?: string,
   ) {
     await this.store.getProject(this.workspaceId, projectId);
     return this.textChain.listShots(
-      this.workspaceId, projectId, episodeId, sceneId, cursor, parsePageLimit(limit),
+      this.workspaceId, projectId, episodeId, sceneId, cursor, parsePageLimit(limit), view === "storyboard",
     );
   }
 
@@ -401,6 +401,18 @@ export class StudioService {
     await this.store.getProject(this.workspaceId, projectId);
     await this.textChain.listSceneRevisions(this.workspaceId, projectId, episodeId, sceneId);
     return this.textChain.listShotRevisions(this.workspaceId, projectId, sceneId, shotId);
+  }
+
+  async archiveShot(projectId: string, episodeId: string, sceneId: string, shotId: string,
+    body: unknown, ifMatch: string | undefined, context: StudioContext,
+  ) {
+    await this.store.getProject(this.workspaceId, projectId);
+    parse(z.object({}).strict(), rejectClientWorkspace(body));
+    const rowVersion = parseAggregateVersion(ifMatch);
+    const path = `/projects/${projectId}/episodes/${episodeId}/scenes/${sceneId}/shots/${shotId}/archive`;
+    return this.jobs.runIdempotent(this.scope(context, "POST", path, { rowVersion }), 200,
+      client => this.textChain.archiveShotInTransaction(client, { workspaceId: this.workspaceId, projectId,
+        episodeId, sceneId, shotId, rowVersion, traceId: context.traceId }));
   }
 
   async reviewSceneShot(

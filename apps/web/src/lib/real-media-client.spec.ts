@@ -29,9 +29,29 @@ describe("real media client validates real API receipts and keeps request identi
   it.each([{quoteId:"bad"},{inputHash:"bad"},{capability:"other"},{actualCost:"0"},{singleOperation:false},{uncertainJobIds:["bad"]},{maximumAmount:"NaN"},{estimatedAmount:0.5},{maximumAmount:1},{priceVersion:""}])("rejects malformed quotes %o",patch=>{expect(()=>checkedRealMediaQuote({...quote(),...patch})).toThrow();});
   it("filters existing mock assets while strictly checking scoped real S3 records",async()=>{
     const asset={id:A,kind:"VIDEO",status:"ACTIVE",sourceShotRevisionId:S,checksumSha256:"b".repeat(64),durationMs:5000,storageProvider:"s3"};
-    const fetch=vi.fn<(url:string,init?:RequestInit)=>Promise<Response>>(async()=>json({items:[asset,{storageProvider:"mock-object-store"}],nextCursor:null}));const api=createRealMediaClient(new StudioClient(fetch));expect(await api.assets(S)).toEqual({items:[asset],nextCursor:null});
+    const fetch=vi.fn<(url:string,init?:RequestInit)=>Promise<Response>>(async()=>json({items:[asset,{storageProvider:"mock-object-store"}]}));const api=createRealMediaClient(new StudioClient(fetch));expect(await api.assets(S)).toEqual({items:[asset],nextCursor:null});
     fetch.mockResolvedValueOnce(json({items:[{...asset,sourceShotRevisionId:OTHER}],nextCursor:null}));await expect(api.assets(S)).rejects.toMatchObject({code:"INVALID_RESPONSE"});
     fetch.mockResolvedValueOnce(json({items:[{...asset,durationMs:0}],nextCursor:null}));await expect(api.assets(S)).rejects.toMatchObject({code:"INVALID_RESPONSE"});
+  });
+  it("checks ComfyUI options and uses only scoped image selection, quote, and job cancellation routes",async()=>{
+    const workflows=[{id:"sd15-img2img",label:"参考图生成",requiresReference:true,dimensions:[{width:512,height:768}]}];
+    const caps={available:true,capabilities:[],comfyui:{status:"available",workflows}};
+    const shot={references:[{id:OTHER,label:"参考图",mimeType:"image/png"}],jobs:[{jobId:J,state:"WAITING_EXTERNAL",phase:"queued",canCancel:true}],selectedAssetId:null,selectionAvailable:true};
+    const fetch=vi.fn<(url:string,init?:RequestInit)=>Promise<Response>>(async()=>json(null));
+    fetch.mockResolvedValueOnce(json(caps)).mockResolvedValueOnce(json(shot)).mockResolvedValueOnce(json({...quote(),estimateBasis:"self-hosted-resource-estimate"}))
+      .mockResolvedValueOnce(json({selectedAssetId:A})).mockResolvedValueOnce(json({state:"WAITING_EXTERNAL"}));
+    const api=createRealMediaClient(new StudioClient(fetch));
+    expect((await api.capabilities(P)).comfyui).toEqual(caps.comfyui);
+    expect(await api.comfyuiShot(P,S)).toEqual(shot);
+    const request={workflowId:"sd15-img2img",prompt:"木牌特写",width:512,height:768,referenceAssetId:OTHER};
+    expect((await api.quote(P,S,"image.generate",undefined,request)).estimateBasis).toBe("self-hosted-resource-estimate");
+    await api.adoptComfyUiImage(P,S,A,null,K);
+    await api.cancelComfyUiJob(J,K);
+    expect(JSON.parse(String(fetch.mock.calls[2]![1]?.body))).toEqual({capability:"image.generate",comfyui:request});
+    expect(fetch.mock.calls[3]).toEqual([`/api/v1/projects/${P}/shot-revisions/${S}/real-media/comfyui`,expect.objectContaining({method:"PUT",body:JSON.stringify({assetId:A,expectedSelectedAssetId:null})})]);
+    expect(fetch.mock.calls[4]).toEqual([`/api/v1/generation-jobs/${J}/cancel`,expect.objectContaining({method:"POST",headers:expect.objectContaining({"Idempotency-Key":K})})]);
+    fetch.mockResolvedValueOnce(json({...caps,comfyui:{status:"available",workflows:[{...workflows[0],dimensions:[{width:0,height:768}]}]}}));
+    await expect(api.capabilities(P)).rejects.toMatchObject({code:"INVALID_RESPONSE"});
   });
   it("rejects malformed successful receipts and never retries a failed generation request",async()=>{
     const fetch=vi.fn<(url:string,init?:RequestInit)=>Promise<Response>>(async()=>json({jobId:J},202)),api=createRealMediaClient(new StudioClient(fetch));await expect(api.generate(P,S,Q,A,K)).rejects.toMatchObject({code:"INVALID_RESPONSE"});expect(fetch).toHaveBeenCalledTimes(1);

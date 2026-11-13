@@ -1,4 +1,4 @@
-import type { RealMediaCapability, RealMediaQuote, SpeechMixPreflight } from "@ai-drama/contracts";
+import type { ComfyUiAvailability, ComfyUiWorkflowOption, RealMediaCapability, RealMediaQuote, SpeechMixPreflight } from "@ai-drama/contracts";
 import { ApiError, StudioClient } from "./studio-client";
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 const AMOUNT = /^(0|[1-9]\d{0,7})(\.\d{1,8})?$/;
@@ -15,6 +15,7 @@ export function checkedRealMediaQuote(value: unknown): RealMediaQuote {
     || typeof q.providerConfigurationVersion !== "string" || !q.providerConfigurationVersion || typeof q.priceVersion !== "string" || !q.priceVersion
     || typeof q.expiresAt !== "string" || !Number.isFinite(Date.parse(q.expiresAt))
     || q.actualCost !== "unknown" || q.singleOperation !== true
+    || (q.estimateBasis !== undefined && q.estimateBasis !== "self-hosted-resource-estimate")
     || (q.uncertainJobIds !== undefined && (!Array.isArray(q.uncertainJobIds) || q.uncertainJobIds.length > 20
       || !q.uncertainJobIds.every(id => typeof id === "string" && UUID.test(id))))) return invalid();
   return value as RealMediaQuote;
@@ -22,9 +23,54 @@ export function checkedRealMediaQuote(value: unknown): RealMediaQuote {
 export interface RealMediaAccepted { jobId: string; workflowRunId: string }
 export interface RealMediaAsset {
   id: string; kind: "IMAGE" | "VIDEO" | "AUDIO" | "MUSIC"; status: string; sourceShotRevisionId: string;
-  checksumSha256: string; durationMs: number | null; storageProvider: "s3";
+  checksumSha256: string; durationMs: number | null; storageProvider: "s3"; sourceGenerationJobId?: string | null;
 }
-export interface RealMediaCapabilities { available: boolean; readAvailable?: boolean; reasonCode: string | null; capabilities: RealMediaCapability[] }
+export type ComfyUiStatus = ComfyUiAvailability["status"];
+export type ComfyUiWorkflow = ComfyUiWorkflowOption;
+export type ComfyUiDimensions = ComfyUiWorkflow["dimensions"][number];
+export interface ComfyUiQuoteInput extends ComfyUiDimensions { workflowId: string; prompt: string; referenceAssetId?: string }
+export interface ComfyUiReference { id: string; label: string; mimeType: string }
+export interface ComfyUiJob { jobId: string; state: string; phase?: string; errorCode?: string | null; canCancel?: boolean }
+export interface ComfyUiShot { references: ComfyUiReference[]; jobs: ComfyUiJob[]; selectedAssetId: string | null; selectionAvailable?: boolean }
+export interface RealMediaCapabilities {
+  available: boolean; readAvailable?: boolean; reasonCode: string | null; capabilities: RealMediaCapability[]; comfyui?: ComfyUiAvailability;
+}
+export const COMFYUI_PROMPT_LIMIT = 2000;
+const COMFY_STATUSES = new Set<string>(["available", "disabled", "unconfigured", "unreachable", "missing_dependencies", "unavailable"]);
+const JOB_STATES = new Set<string>(["PENDING", "QUEUED", "RUNNING", "WAITING_EXTERNAL", "SUCCEEDED", "FAILED", "CANCELED", "UNKNOWN"]);
+function validComfySize(value: unknown): boolean {
+  const { width, height } = object(value);
+  return typeof width === "number" && Number.isSafeInteger(width) && width > 0 && width <= 8192
+    && typeof height === "number" && Number.isSafeInteger(height) && height > 0 && height <= 8192;
+}
+function comfyCapability(value: unknown): ComfyUiAvailability {
+  const result = object(value);
+  if (typeof result.status !== "string" || !COMFY_STATUSES.has(result.status) || !Array.isArray(result.workflows)
+    || !result.workflows.every(item => {
+      const workflow = object(item);
+      return typeof workflow.id === "string" && workflow.id.length > 0 && typeof workflow.label === "string"
+        && typeof workflow.requiresReference === "boolean" && Array.isArray(workflow.dimensions)
+        && workflow.dimensions.length > 0 && workflow.dimensions.every(validComfySize);
+    })) return invalid();
+  return value as ComfyUiAvailability;
+}
+function comfyShot(value: unknown): ComfyUiShot {
+  const result = object(value);
+  if (!Array.isArray(result.references) || !result.references.every(item => {
+    const reference = object(item);
+    return typeof reference.id === "string" && UUID.test(reference.id) && typeof reference.label === "string" && typeof reference.mimeType === "string";
+  }) || !Array.isArray(result.jobs) || !result.jobs.every(item => {
+    const job = object(item);
+    return typeof job.jobId === "string" && UUID.test(job.jobId) && typeof job.state === "string" && JOB_STATES.has(job.state)
+      && (job.phase === undefined || typeof job.phase === "string") && (job.errorCode == null || typeof job.errorCode === "string")
+      && (job.canCancel === undefined || typeof job.canCancel === "boolean");
+  }) || (result.selectedAssetId !== null && (typeof result.selectedAssetId !== "string" || !UUID.test(result.selectedAssetId)))
+    || (result.selectionAvailable !== undefined && typeof result.selectionAvailable !== "boolean")) return invalid();
+  return value as ComfyUiShot;
+}
+function comfyShotPath(projectId: string, shotRevisionId: string): string {
+  return "/projects/" + projectId + "/shot-revisions/" + shotRevisionId + "/real-media/comfyui";
+}
 function accepted(value: unknown): RealMediaAccepted {
   const result = object(value);
   if (!UUID.test(String(result.jobId)) || !UUID.test(String(result.workflowRunId))) return invalid();
@@ -38,21 +84,22 @@ export function createRealMediaClient(studio = new StudioClient()) {
         || !value.capabilities.every(v => typeof v === "string" && CAPS.has(v))) return invalid();
       if (value.readAvailable !== undefined && typeof value.readAvailable !== "boolean") return invalid();
       return { available: value.available, ...(value.readAvailable !== undefined ? { readAvailable: value.readAvailable as boolean } : {}), reasonCode: typeof value.reasonCode === "string" ? value.reasonCode : null,
-        capabilities: value.capabilities as RealMediaCapability[] };
+        capabilities: value.capabilities as RealMediaCapability[], ...(value.comfyui === undefined ? {} : { comfyui: comfyCapability(value.comfyui) }) };
     },
     async assets(shotRevisionId: string, cursor?: string, signal?: AbortSignal): Promise<{ items: RealMediaAsset[]; nextCursor: string | null }> {
       const value = object(await studio.get("/shot-revisions/" + shotRevisionId + "/assets?limit=100"
         + (cursor ? "&cursor=" + encodeURIComponent(cursor) : ""), { signal }));
-      if (!Array.isArray(value.items) || (value.nextCursor !== null && typeof value.nextCursor !== "string")) return invalid();
+      if (!Array.isArray(value.items) || (value.nextCursor != null && typeof value.nextCursor !== "string")) return invalid();
       const items = value.items.filter(a => object(a).storageProvider === "s3").map(a => {
         const v = object(a);
         if (!UUID.test(String(v.id)) || v.sourceShotRevisionId !== shotRevisionId
           || !["IMAGE", "VIDEO", "AUDIO", "MUSIC"].includes(String(v.kind)) || typeof v.status !== "string"
+          || (v.sourceGenerationJobId != null && (typeof v.sourceGenerationJobId !== "string" || !UUID.test(v.sourceGenerationJobId)))
           || !/^[a-f0-9]{64}$/.test(String(v.checksumSha256))
           || (v.durationMs !== null && (!Number.isSafeInteger(v.durationMs) || Number(v.durationMs) <= 0))) return invalid();
         return v as unknown as RealMediaAsset;
       });
-      return { items, nextCursor: value.nextCursor as string | null };
+      return { items, nextCursor: typeof value.nextCursor === "string" ? value.nextCursor : null };
     },
     async characters(projectId: string, signal?: AbortSignal): Promise<Array<{ id: string; name: string }>> {
       const result: Array<{ id: string; name: string }> = [], seen = new Set<string>();
@@ -71,11 +118,22 @@ export function createRealMediaClient(studio = new StudioClient()) {
       } while (cursor);
       return result;
     },
-    async quote(projectId: string, shotRevisionId: string, capability: RealMediaCapability, sourceImageAssetId?: string) {
+    async quote(projectId: string, shotRevisionId: string, capability: RealMediaCapability, sourceImageAssetId?: string, comfyui?: ComfyUiQuoteInput) {
       const quote = checkedRealMediaQuote(await studio.postJson("/projects/" + projectId + "/shot-revisions/" + shotRevisionId + "/real-media/quote",
-        { capability, ...(sourceImageAssetId ? { sourceImageAssetId } : {}) }));
+        { capability, ...(sourceImageAssetId ? { sourceImageAssetId } : {}), ...(comfyui ? { comfyui } : {}) }));
       if (quote.capability !== capability) return invalid();
       return quote;
+    },
+    async comfyuiShot(projectId: string, shotRevisionId: string, signal?: AbortSignal) {
+      return comfyShot(await studio.get(comfyShotPath(projectId, shotRevisionId), { signal }));
+    },
+    async adoptComfyUiImage(projectId: string, shotRevisionId: string, assetId: string, expectedSelectedAssetId: string | null, key: string): Promise<void> {
+      const { body } = await studio.write<unknown>({ path: comfyShotPath(projectId, shotRevisionId), method: "PUT", idempotencyKey: key,
+        body: { assetId, expectedSelectedAssetId } });
+      if (object(body).selectedAssetId !== assetId) return invalid();
+    },
+    async cancelComfyUiJob(jobId: string, key: string) {
+      await studio.write<unknown>({ path: "/generation-jobs/" + jobId + "/cancel", idempotencyKey: key, body: {} });
     },
     async authorize(projectId: string, quote: RealMediaQuote, maximumAmount: string, key: string) {
       const result = await studio.write<unknown>({ path: "/projects/" + projectId + "/real-media/authorize", idempotencyKey: key,

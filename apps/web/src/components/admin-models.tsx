@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import {
   TITLE_WRITING_DEFAULT_MODELS, TITLE_WRITING_PROVIDER_LABELS, adminLimitsUpdateSchema, adminProviderUpdateSchema, anthropicKeyProblem, anthropicWorkspaceIdValid,
-  claudeSetupState, deepseekKeyProblem, providerSetupState, type AdminModelsView, type AdminProviderView, type ClaudeSetupState, type TitleWritingProviderKey,
+  claudeSetupState, deepseekKeyProblem, providerSetupState, type AdminModelsView, type AdminProviderView, type ClaudeSetupState, type ComfyUiAdminCheck, type TitleWritingProviderKey,
 } from "@ai-drama/contracts";
 import { AdminApiError, createAdminModelsClient } from "../lib/admin-models-client";
 import { ModelPicker, modelDraftFor, modelProblem, orderedModels, type ModelDraft } from "./admin-model-picker";
@@ -472,6 +472,7 @@ export function AdminModels() {
         <div className={styles.pageHeading}><div><span className={styles.eyebrow}>管理控制台 / 模型配置</span><h1>模型配置<span className={styles.headingDot} /></h1><p>连接创作能力，掌握每一次调用。</p></div><Badge><LockIcon /> 管理员会话有效</Badge></div>
         {error && <div className={styles.error} role="alert">{error}</div>}
         {notice && <div className={styles.success} role="status">{notice}</div>}
+        <ComfyUiConnectionCard check={client.checkComfyUi} />
         {!view ? <section className={styles.card}><p>{busy ? "正在读取模型配置…" : "模型配置尚未读取。"}</p><button className={styles.secondary} onClick={() => void reload()} disabled={!!busy}>重新读取配置</button></section> : <>
           <section className={styles.overview} aria-label="配置概况"><div><span>已保存版本</span><strong>v{view.savedRevision}</strong><small>{view.source === "managed" ? "管理员配置" : "服务器环境配置"}</small></div><div><span>当前生效版本</span><strong>v{view.activeRevision}</strong><small>{view.pendingRestart ? "新配置尚未应用" : "与已保存配置一致"}</small></div><div><span>标题 AI 创作</span><strong className={styles.smallStrong}>{view.titleWriting.enabled ? "已开启" : "未开启"}</strong><small>{view.titleWriting.productionBlocked ? "生产环境强制关闭" : "由服务器功能开关控制"}</small></div><div><span>操作者授权</span><strong className={styles.smallStrong}>{view.titleWriting.operatorConfigured ? "已配置" : "未配置"}</strong><small>与站点登录账号分别管理</small></div></section>
           {view.pendingRestart && <div className={styles.warning} role="status"><strong>配置已保存，等待 API 重启生效</strong><p>请由服务器管理员按发布流程重启 API。本页面不会重启服务，也不会自动启用 AI 创作。</p></div>}
@@ -530,6 +531,45 @@ export function AdminModels() {
       <footer className={styles.footer}><span>红果创作 · 管理员控制台</span><span>保存配置不等于启用 AI，也不代表真实模型验收通过。</span></footer>
     </main>
   </div>;
+}
+
+const COMFYUI_CHECK_LABEL: Record<ComfyUiAdminCheck["status"], string> = {
+  unconfigured: "服务端尚未配置完整",
+  unreachable: "当前无法连接 ComfyUI 实例",
+  missing_dependencies: "实例可达，缺少所需依赖",
+  ready: "实例可达，所需节点和模型可用",
+};
+
+function ComfyUiConnectionCard({ check }: { check: () => Promise<ComfyUiAdminCheck> }) {
+  const [result, setResult] = useState<ComfyUiAdminCheck | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [error, setError] = useState(false);
+
+  async function detect() {
+    setChecking(true);
+    setResult(null);
+    setError(false);
+    try {
+      const health = await check();
+      if (!Object.hasOwn(COMFYUI_CHECK_LABEL, health.status)) throw new Error("Unknown connection state");
+      setResult(health);
+    } catch {
+      setError(true);
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  return <section className={styles.card} aria-label="ComfyUI 图片生成">
+    <div className={styles.cardHeading}>
+      <div><h2>ComfyUI 图片生成</h2><p>在服务器管理连接、凭据和启用开关。检测只查询连接和依赖。</p></div>
+      <Badge>{result ? result.generationEnabled ? "生成开关已开启" : "生成开关关闭" : "待检测"}</Badge>
+    </div>
+    <button type="button" className={styles.secondary} disabled={checking} onClick={() => void detect()}>{checking ? "检测中…" : "检测 ComfyUI 连接"}</button>
+    {error ? <p role="alert" className={styles.error}>连接检测暂未完成，请重新检测。</p> : null}
+    {result ? <p role="status" className={styles.footnote}>{COMFYUI_CHECK_LABEL[result.status]}
+      {result.status === "missing_dependencies" ? `（缺少 ${result.missingNodeCount} 个节点、${result.missingModelCount} 个模型）` : ""}。</p> : null}
+  </section>;
 }
 
 /** Only the key: the default model, endpoint, thinking, JSON output and output budget come from the server. */

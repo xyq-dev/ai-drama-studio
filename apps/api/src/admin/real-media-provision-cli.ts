@@ -1,4 +1,5 @@
 import { createPostgresPool, closePostgresPool } from "@ai-drama/database";
+import type { RealMediaConfiguration } from "@ai-drama/contracts";
 import { ServerRealMediaRuntime, loadRealMediaEnvironment } from "@ai-drama/providers";
 import { provisionRealMediaProviders } from "./real-media-provision";
 async function main() {
@@ -9,8 +10,9 @@ async function main() {
   const environment = loadRealMediaEnvironment(process.env);
   const allowed = process.env.NODE_ENV !== "production" || environment.REAL_MEDIA_ALLOW_PRODUCTION === "true";
   const runtime = new ServerRealMediaRuntime(workspaceId, environment, allowed);
-  const configurations = (await Promise.all((["image.generate", "video.generate", "audio.tts", "audio.music"] as const)
-    .map(c => runtime.configurationFor(c)))).filter(c => c !== null);
+  const configurations = [...(await Promise.all((["image.generate", "video.generate", "audio.tts", "audio.music"] as const)
+    .map(c => runtime.configurationFor(c)))), runtime.comfyUiConfiguration()]
+    .filter((c): c is RealMediaConfiguration => c?.enabled === true);
   if (!configurations.length) throw new Error("REAL_MEDIA_NO_CONFIGURED_CAPABILITY");
   if (!args.includes("--execute")) {
     process.stdout.write(JSON.stringify({ mode: "plan", workspaceId,

@@ -15,6 +15,7 @@ export interface WriteRequest {
   body: unknown;
   idempotencyKey: string;
   ifMatch?: number;
+  method?: "POST" | "PUT";
 }
 
 export interface WriteResult<T> {
@@ -57,7 +58,7 @@ export class StudioClient {
     };
     if (request.ifMatch !== undefined) headers["If-Match"] = String(request.ifMatch);
     const response = await this.request(`${this.prefix}${request.path}`, {
-      method: "POST",
+      method: request.method ?? "POST",
       headers,
       body: JSON.stringify(stripWorkspace(request.body)),
     });

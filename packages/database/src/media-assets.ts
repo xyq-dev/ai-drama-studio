@@ -1568,6 +1568,7 @@ async function assertUsableShotWithClient(
       WHERE revision.id = $1
         AND revision.workspace_id = $2
         AND revision.project_id = $3
+        AND shot.archived_at IS NULL AND scene.archived_at IS NULL
       ${lockRows ? "FOR SHARE OF shot, revision, scene, scene_revision" : ""}`,
     [shotRevisionId, workspaceId, projectId],
   );

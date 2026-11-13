@@ -7,6 +7,17 @@ export const realMediaAmountSchema = z.string().regex(/^(0|[1-9]\d{0,7})(\.\d{1,
 export const realMediaQuoteRequestSchema = z.object({
   capability: realMediaCapabilitySchema,
   sourceImageAssetId: z.string().uuid().optional(),
+  comfyui: z.object({
+    workflowId: z.enum(["sd15-txt2img", "sd15-img2img"]),
+    prompt: z.string().trim().min(1).max(2000),
+    width: z.number().int().min(256).max(1536),
+    height: z.number().int().min(256).max(1536),
+    referenceAssetId: z.string().uuid().optional(),
+  }).strict().optional(),
+}).strict();
+export const comfyUiShotSelectionSchema = z.object({
+  assetId: z.string().uuid(),
+  expectedSelectedAssetId: z.string().uuid().nullable(),
 }).strict();
 export const realMediaAuthorizationSchema = z.object({
   quoteId: z.string().uuid(), maximumAmount: realMediaAmountSchema,
@@ -30,6 +41,32 @@ export interface RealMediaQuote {
   providerConfigurationId: string; providerConfigurationVersion: string; priceVersion: string;
   actualCost: "unknown"; singleOperation: true;
   uncertainJobIds: string[];
+  estimateBasis?: "self-hosted-resource-estimate";
+}
+export interface ComfyUiFrozenImageInput {
+  workflowId: string;
+  workflowVersion: string;
+  workflowHash: string;
+  width: number;
+  height: number;
+  seed: number;
+  sourceShotPromptHash: string;
+}
+export interface ComfyUiWorkflowOption {
+  id: string;
+  label: string;
+  requiresReference: boolean;
+  dimensions: { width: number; height: number }[];
+}
+export interface ComfyUiAvailability {
+  status: "available" | "disabled" | "unconfigured" | "unreachable" | "missing_dependencies" | "unavailable";
+  workflows: ComfyUiWorkflowOption[];
+}
+export interface ComfyUiAdminCheck {
+  status: "unconfigured" | "unreachable" | "missing_dependencies" | "ready";
+  generationEnabled: boolean;
+  missingNodeCount: number;
+  missingModelCount: number;
 }
 /** One text-to-dialogue turn. Spoken `text` is sent as-is; performance notes stay outside this field. */
 export interface ElevenLabsDialogueInput {
@@ -58,7 +95,8 @@ export interface MiniMaxSpeechBlock {
 export interface RealMediaSnapshot {
   schema: typeof REAL_MEDIA_SCHEMA; shotRevisionId: string; capability: RealMediaCapability;
   sourceText: string; sourceHash: string; configuration: RealMediaConfiguration;
-  sourceImage?: { assetId: string; checksumSha256: string };
+  sourceImage?: { assetId: string; checksumSha256: string; rowVersion?: number };
+  comfyui?: ComfyUiFrozenImageInput;
   speech?: import("./speech").SpeechGenerationInput;
   /** Scene-level ElevenLabs speech. Absent on image, video, music, and per-line qwen snapshots. */
   dialogue?: ElevenLabsDialogueBlock;

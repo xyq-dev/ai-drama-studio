@@ -158,3 +158,10 @@ export * from "./real-media-runtime";
 export * from "./media-object-client";
 export * from "./managed-storage-client";
 export * from "./managed-storage-router";
+
+export { ComfyUiImageAdapter, canonicalComfyUiOrigin, type ComfyUiImageAdapterOptions, type ComfyUiReadiness } from "./comfyui-image-adapter";
+export { assertComfyUiSourceImage } from "./comfyui-image-bytes";
+export {
+  assertComfyUiImageInput, assertComfyUiPromptText, COMFYUI_IMAGE_MAX_BYTES, COMFYUI_IMAGE_PROVIDER_KEY, comfyUiRequiredNodes, comfyUiWorkflowDescriptors,
+  isComfyUiCheckpoint, type ComfyUiImageInput, type ComfyUiImageSnapshot, type ComfyUiWorkflowDescriptor,
+} from "./comfyui-workflows";
