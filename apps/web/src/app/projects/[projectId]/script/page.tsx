@@ -5,7 +5,7 @@ export default async function ScriptPage({
   searchParams,
 }: {
   params: Promise<{ projectId: string }>;
-  searchParams: Promise<{ history?: string | string[] }>;
+  searchParams: Promise<{ history?: string | string[]; view?: string | string[] }>;
 }) {
   const { projectId } = await params;
   const query = await searchParams;
@@ -13,5 +13,5 @@ export default async function ScriptPage({
     typeof query.history === "string" && /^[0-9a-f-]{36}$/i.test(query.history)
       ? query.history
       : undefined;
-  return <ScriptWorkbench key={projectId} projectId={projectId} initialHistory={initialHistory} />;
+  return <ScriptWorkbench key={projectId} projectId={projectId} initialHistory={initialHistory} initialEpisodes={query.view === "episodes"} />;
 }

@@ -29,7 +29,7 @@ function reset() {
     createdAt: "2026-11-01T00:00:00Z", updatedAt: `2026-11-${String(10 - index).padStart(2, "0")}T08:00:00Z` }));
 }
 const entry = `import React from 'react';import {createRoot} from 'react-dom/client';import '/src/app/globals.css';import {MyWorks} from '/src/components/my-works.tsx';createRoot(document.getElementById('root')).render(React.createElement(MyWorks));`;
-const server = await createServer({ configFile: false, root: web, optimizeDeps: { include: ["react", "react-dom/client"], force: true },
+const server = await createServer({ configFile: false, root: web, optimizeDeps: { include: ["react", "react-dom/client", "@ai-drama/contracts"], force: true },
   server: { host: "127.0.0.1", port: 3856, strictPort: true }, plugins: [react(), {
     name: "local-project-library-fixture", resolveId(id) { if (id === "/fixture.tsx") return "\0fixture.tsx"; },
     load(id) { if (id === "\0fixture.tsx") return entry; }, configureServer(vite) {
@@ -47,7 +47,7 @@ const server = await createServer({ configFile: false, root: web, optimizeDeps: 
             if (listMode === "error") { res.statusCode = 503; res.end(JSON.stringify({ error: { code: "DOWN", message: "本地测试读取失败" } })); return; }
             const q = url.searchParams.get("q") || "", category = url.searchParams.get("category") || "all";
             requests.push({ q, category, sort: url.searchParams.get("sort") || "updated", cursor: url.searchParams.get("cursor") });
-            const found = projects.filter((item) => item.title.includes(q) || item.premise.includes(q));
+            const found = projects.filter((item) => item.title.includes(q) || item.premise.includes(q) || item.script?.title?.includes(q));
             const filtered = found.filter((item) => category === "all" || (category === "uncategorized" ? item.categoryId === null : item.categoryId === category));
             const offset = url.searchParams.get("cursor") ? pageSize : 0;
             res.end(JSON.stringify({ items: filtered.slice(offset, offset + pageSize), nextCursor: filtered.length > offset + pageSize ? "next" : null,
@@ -88,7 +88,8 @@ const server = await createServer({ configFile: false, root: web, optimizeDeps: 
   }] });
 let browser;
 try {
-  await mkdir(output, { recursive: true }); await server.listen(); browser = await chromium.launch({ headless: true });
+  await mkdir(output, { recursive: true }); await server.listen();
+  browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } : {}) });
   for (const width of [1600, 1280, 1024, 768, 390, 320]) {
     reset(); listMode = "normal";
     const page = await browser.newPage({ viewport: { width, height: width <= 390 ? 844 : 1000 } });
@@ -233,6 +234,42 @@ try {
       assert.deepEqual([box.width, box.height], [56, 84]);
     }
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
+    await page.close();
+  }
+  reset();
+  categories = [];
+  projects = [
+    { ...projects[0], title: "AI 自动创作 2026/11/13", episodeCount: 1, categoryId: null, categoryName: null, thumbnailAssetId: null, thumbnailUrl: null,
+      updatedAt: "2026-11-13T08:00:00Z", script: { title: "最后一枚纽扣", source: "ai", providerKey: "deepseek", model: "deepseek-flash", destination: "auto" } },
+    { ...projects[2], id: P2, title: "雨巷来信", episodeCount: 1, updatedAt: "2026-11-12T08:00:00Z",
+      script: { title: "雨巷来信", source: "manual", providerKey: null, model: null, destination: "script" } },
+  ];
+  for (const width of [1600, 390]) {
+    const page = await browser.newPage({ viewport: { width, height: width === 1600 ? 1000 : 844 } });
+    page.on("pageerror", (error) => evidence.errors.push(error.message));
+    await page.goto("http://127.0.0.1:3856/studio");
+    const ai = page.getByRole("row").filter({ has: page.getByRole("heading", { name: "最后一枚纽扣" }) });
+    const manual = page.getByRole("row").filter({ has: page.getByRole("heading", { name: "雨巷来信" }) });
+    await ai.getByText("AI 生成", { exact: true }).waitFor();
+    await manual.getByText("人工创作", { exact: true }).waitFor();
+    await ai.getByText("定故事", { exact: false }).first().waitFor();
+    assert.equal(await ai.getByText("DeepSeek", { exact: true }).getAttribute("title"), "deepseek-flash");
+    assert.equal(await manual.getByText("DeepSeek").count(), 0);
+    assert.equal(await ai.getByRole("link", { name: "查看剧本" }).getAttribute("href"), `/projects/${P}/auto#auto-episodes-title`);
+    assert.equal(await manual.getByRole("link", { name: "查看剧本" }).getAttribute("href"), `/projects/${P2}/script?view=episodes`);
+    const icons = await page.locator('tbody img[src*="icon-cover-placeholder"], tbody img[src*="icon-script-"]').evaluateAll(async (elements) => {
+      await Promise.all(elements.map((element) => element.decode()));
+      return elements.map((element) => [element.naturalWidth, element.naturalHeight, element.width, element.height]);
+    });
+    assert.deepEqual(icons, [[22, 22, 22, 22], [15, 15, 15, 15], [22, 22, 22, 22], [15, 15, 15, 15]]);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
+    const screenshot = `studio-script-origin-${width}.png`;
+    await page.screenshot({ path: resolve(output, screenshot) });
+    await page.getByRole("textbox", { name: "搜索作品" }).fill("纽扣");
+    await page.getByRole("button", { name: "搜索", exact: true }).click();
+    await page.getByText("已显示 1 / 1 部作品").waitFor();
+    await ai.getByRole("heading", { name: "最后一枚纽扣" }).waitFor();
+    evidence.checks.push({ width, screenshot, recordedOrigins: true, scriptLinks: true, scriptTitleSearch: true });
     await page.close();
   }
   assert.deepEqual(evidence.errors, []);

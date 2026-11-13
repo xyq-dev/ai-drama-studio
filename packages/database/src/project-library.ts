@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { SCRIPT_WORKBENCH_SCHEMA, type ProjectLibraryScript } from "@ai-drama/contracts";
 import type { PoolClient } from "pg";
 import { PersistenceError, type DatabasePool } from "./job-service";
 
@@ -10,6 +11,7 @@ export interface ProjectLibraryItem {
   id: string; title: string; premise: string; createdAt: string; updatedAt: string;
   categoryId: string | null; categoryName: string | null; categoryRevision: number;
   thumbnailAssetId: string | null; thumbnailUrl: string | null; episodeCount: number; writingMode: string;
+  script: ProjectLibraryScript;
 }
 export interface ProjectLibraryPage {
   items: ProjectLibraryItem[]; nextCursor: string | null;
@@ -24,6 +26,13 @@ interface ListRow {
   id: string; title: string; premise: string; created_at: Date; updated_at: Date; sort_at: string;
   category_id: string | null; category_name: string | null; category_revision: number;
   thumbnail_asset_id: string | null; episode_count: number; writing_mode: string;
+  script_title: ProjectLibraryScript["title"]; script_source: ProjectLibraryScript["source"];
+  script_provider_key: ProjectLibraryScript["providerKey"]; script_model: ProjectLibraryScript["model"];
+  script_destination: ProjectLibraryScript["destination"];
+}
+interface LibraryReadiness {
+  categories: boolean; assets: boolean; stories: boolean; scripts: boolean;
+  auto: boolean; titleWriting: boolean; series: boolean;
 }
 interface Cursor { v: 1; sort: "updated" | "created"; q: string; category: string; at: string; id: string }
 
@@ -53,12 +62,99 @@ function decodeCursor(raw: string | undefined, query: ReturnType<typeof normaliz
   } catch { throw new PersistenceError("VALIDATION_ERROR", "分页已失效，请重新加载作品。"); }
 }
 
-async function readiness(client: PoolClient): Promise<{ categories: boolean; assets: boolean }> {
-  const result = await client.query<{ categories: boolean; assets: boolean }>(`
+async function readiness(client: PoolClient): Promise<LibraryReadiness> {
+  const result = await client.query<LibraryReadiness>(`
     SELECT to_regclass('project_library_category') IS NOT NULL
       AND to_regclass('project_library_assignment') IS NOT NULL AS categories,
-      to_regclass('asset') IS NOT NULL AS assets`);
-  return result.rows[0] ?? { categories: false, assets: false };
+      to_regclass('asset') IS NOT NULL AS assets,
+      to_regclass('story_revision') IS NOT NULL AS stories,
+      to_regclass('episode') IS NOT NULL AND to_regclass('script_revision') IS NOT NULL AS scripts,
+      to_regclass('auto_creation_run') IS NOT NULL AND to_regclass('auto_creation_stage') IS NOT NULL AS auto,
+      to_regclass('title_writing_run') IS NOT NULL AS "titleWriting",
+      to_regclass('series_writing_plan_revision') IS NOT NULL AND to_regclass('series_writing_run') IS NOT NULL AS series`);
+  return result.rows[0] ?? { categories: false, assets: false, stories: false, scripts: false,
+    auto: false, titleWriting: false, series: false };
+}
+
+/** Keep the list read-only. Match generator records to the saved original, rather than classifying by name or reviewer. */
+function scriptJoins(ready: LibraryReadiness): string {
+  const stories = ready.stories ? `
+    LEFT JOIN story_revision story ON story.id = p.current_story_revision_id
+      AND story.project_id = p.id AND story.workspace_id = p.workspace_id
+    LEFT JOIN story_revision original ON original.project_id = p.id
+      AND original.workspace_id = p.workspace_id AND original.revision_no = 1`
+    : `LEFT JOIN LATERAL (SELECT NULL::jsonb AS content_json) story ON true
+       LEFT JOIN LATERAL (SELECT NULL::uuid AS id, NULL::jsonb AS content_json) original ON true`;
+  const episodeScript = ready.scripts ? `
+    LEFT JOIN LATERAL (
+      SELECT s.id, s.content_json
+      FROM episode e JOIN script_revision s ON s.id = e.current_script_revision_id
+        AND s.episode_id = e.id AND s.project_id = e.project_id AND s.workspace_id = e.workspace_id
+      WHERE e.project_id = p.id AND e.workspace_id = p.workspace_id AND to_jsonb(s)->>'deleted_at' IS NULL
+      ORDER BY e.episode_no LIMIT 1
+    ) episode_script ON true`
+    : "LEFT JOIN LATERAL (SELECT NULL::uuid AS id, NULL::jsonb AS content_json) episode_script ON true";
+  const auto = ready.auto ? `
+    LEFT JOIN LATERAL (
+      SELECT r.provider_key, r.model, bible.output_json->>'title' AS title, drafts.present AS has_draft
+      FROM auto_creation_run r
+      LEFT JOIN auto_creation_stage bible ON bible.run_id = r.id AND bible.workspace_id = r.workspace_id
+        AND bible.stage_key = 'bible' AND bible.state = 'completed'
+      CROSS JOIN LATERAL (
+        SELECT EXISTS (
+          SELECT 1 FROM auto_creation_stage episode
+          WHERE episode.run_id = r.id AND episode.workspace_id = r.workspace_id
+            AND episode.stage_key LIKE 'episode:%' AND episode.state = 'completed'
+        ) AS present
+      ) drafts
+      WHERE r.project_id = p.id AND r.workspace_id = p.workspace_id
+        AND (r.story_revision_id = original.id OR (original.id IS NULL AND drafts.present))
+      ORDER BY r.created_at DESC, r.id DESC LIMIT 1
+    ) auto_script ON true`
+    : `LEFT JOIN LATERAL (
+        SELECT NULL::text AS provider_key, NULL::text AS model, NULL::text AS title, false AS has_draft
+      ) auto_script ON true`;
+  const titleWriting = ready.titleWriting ? `
+    LEFT JOIN LATERAL (
+      SELECT r.provider_key, r.model FROM title_writing_run r
+      WHERE r.project_id = p.id AND r.workspace_id = p.workspace_id AND r.story_revision_id = original.id
+      ORDER BY r.created_at DESC, r.id DESC LIMIT 1
+    ) title_script ON true`
+    : "LEFT JOIN LATERAL (SELECT NULL::text AS provider_key, NULL::text AS model) title_script ON true";
+  const series = ready.series ? `
+    LEFT JOIN LATERAL (
+      SELECT plan.origin, r.provider_key, r.model
+      FROM series_writing_plan_revision plan
+      LEFT JOIN series_writing_run r ON r.id = plan.source_run_id AND r.workspace_id = plan.workspace_id
+        AND r.project_id = p.id AND r.series_id = plan.series_id
+      WHERE plan.story_revision_id = original.id AND plan.workspace_id = p.workspace_id
+      ORDER BY plan.revision_no, plan.id LIMIT 1
+    ) series_script ON true`
+    : `LEFT JOIN LATERAL (
+        SELECT NULL::text AS origin, NULL::text AS provider_key, NULL::text AS model
+      ) series_script ON true`;
+  // Generated story drafts historically persisted the whole-story title in a dedicated text line.
+  // A single episode can also supply its explicit workbench title. A series uses the whole-work title.
+  return `${stories} ${episodeScript} ${auto} ${titleWriting} ${series}
+    CROSS JOIN LATERAL (
+      SELECT COALESCE(
+        NULLIF(btrim(story.content_json->>'title'), ''),
+        NULLIF(btrim(substring(story.content_json->>'text' FROM '(?n)^剧名[：:][[:blank:]]*([^\\r\\n]+)')), ''),
+        NULLIF(btrim(auto_script.title), ''),
+        CASE WHEN (to_jsonb(p)->>'episode_count')::integer = 1 THEN
+          NULLIF(btrim(episode_script.content_json#>>'{workbench,script,title}'), '') END
+      ) AS title,
+      CASE
+        WHEN auto_script.provider_key IS NOT NULL OR title_script.provider_key IS NOT NULL OR series_script.origin = 'model' THEN 'ai'
+        WHEN series_script.origin = 'manual' OR original.content_json#>>'{workbench,schema}' = '${SCRIPT_WORKBENCH_SCHEMA}' THEN 'manual'
+        ELSE 'unknown'
+      END AS source,
+      COALESCE(auto_script.provider_key, title_script.provider_key, series_script.provider_key) AS provider_key,
+      COALESCE(auto_script.model, title_script.model, series_script.model) AS model,
+      CASE WHEN episode_script.id IS NOT NULL THEN 'script'
+        WHEN auto_script.has_draft THEN 'auto'
+      END AS destination
+    ) script`;
 }
 
 async function requireWorkspace(client: PoolClient, workspaceId: string): Promise<void> {
@@ -84,7 +180,10 @@ export class ProjectLibraryStore {
       const ready = await readiness(client);
       if (query.category !== "all") requireCategories(ready);
       const search = `%${query.q.replace(/[\\%_]/g, "\\$&")}%`;
-      const searchClause = "p.workspace_id = $1 AND p.archived_at IS NULL AND p.status = 'ACTIVE' AND (p.title ILIKE $2 OR p.premise ILIKE $2)";
+      const scriptJoin = scriptJoins(ready);
+      const searchJoins = query.q ? scriptJoin : "";
+      const matchesSearch = `(p.title ILIKE $2 OR p.premise ILIKE $2${query.q ? " OR script.title ILIKE $2" : ""})`;
+      const searchClause = `p.workspace_id = $1 AND p.archived_at IS NULL AND p.status = 'ACTIVE' AND ${matchesSearch}`;
       const assignmentJoin = ready.categories
         ? "LEFT JOIN project_library_assignment a ON a.project_id = p.id AND a.workspace_id = p.workspace_id"
         : "LEFT JOIN LATERAL (SELECT NULL::uuid AS category_id, 0 AS revision) a ON true";
@@ -92,15 +191,16 @@ export class ProjectLibraryStore {
       const counts = await client.query<{ all_count: string; total: string; unclassified_count: string }>(`
         SELECT count(*) AS all_count, count(*) FILTER (WHERE ${categoryClause}) AS total,
           count(*) FILTER (WHERE a.category_id IS NULL) AS unclassified_count
-        FROM project p ${assignmentJoin} WHERE ${searchClause}`, [workspaceId, search, query.category]);
+        FROM project p ${assignmentJoin} ${searchJoins} WHERE ${searchClause}`, [workspaceId, search, query.category]);
       let categories: ProjectLibraryCategory[] = [];
       if (ready.categories) {
         const result = await client.query<{ id: string; name: string; count: string }>(`
-          SELECT c.id, c.name, count(p.id) AS count FROM project_library_category c
+          SELECT c.id, c.name, count(p.id)${query.q ? ` FILTER (WHERE ${matchesSearch})` : ""} AS count FROM project_library_category c
           LEFT JOIN project_library_assignment a ON a.category_id = c.id AND a.workspace_id = c.workspace_id
           LEFT JOIN project p ON p.id = a.project_id AND p.workspace_id = a.workspace_id
-            AND p.archived_at IS NULL AND p.status = 'ACTIVE' AND (p.title ILIKE $2 OR p.premise ILIKE $2)
-          WHERE c.workspace_id = $1 GROUP BY c.id, c.name ORDER BY c.created_at, c.id`, [workspaceId, search]);
+            AND p.archived_at IS NULL AND p.status = 'ACTIVE'
+          ${searchJoins}
+          WHERE c.workspace_id = $1 GROUP BY c.id, c.name ORDER BY c.created_at, c.id`, query.q ? [workspaceId, search] : [workspaceId]);
         categories = result.rows.map((row) => ({ ...row, count: Number(row.count) }));
       }
       const timestamp = query.sort === "updated" ? "p.updated_at" : "p.created_at";
@@ -121,8 +221,10 @@ export class ProjectLibraryStore {
           a.category_id, c.name AS category_name, coalesce(a.revision, 0) AS category_revision,
           thumbnail.id AS thumbnail_asset_id,
           coalesce((to_jsonb(p)->>'episode_count')::integer, 3) AS episode_count,
-          coalesce(to_jsonb(p)->>'writing_mode', 'short') AS writing_mode
-        FROM project p ${assignmentJoin} ${categoryJoin} ${thumbnailJoin}
+          coalesce(to_jsonb(p)->>'writing_mode', 'short') AS writing_mode,
+          script.title AS script_title, script.source AS script_source, script.provider_key AS script_provider_key,
+          script.model AS script_model, script.destination AS script_destination
+        FROM project p ${assignmentJoin} ${categoryJoin} ${thumbnailJoin} ${scriptJoin}
         WHERE ${searchClause} AND ${categoryClause}
           AND ($4::timestamptz IS NULL OR (${timestamp}, p.id) < ($4::timestamptz, $5::uuid))
         ORDER BY ${timestamp} DESC, p.id DESC LIMIT $6`,
@@ -139,6 +241,8 @@ export class ProjectLibraryStore {
         thumbnailAssetId: row.thumbnail_asset_id,
         thumbnailUrl: row.thumbnail_asset_id ? `/api/v1/real-media/assets/${row.thumbnail_asset_id}/content` : null,
         episodeCount: row.episode_count, writingMode: row.writing_mode,
+        script: { title: row.script_title, source: row.script_source, providerKey: row.script_provider_key,
+          model: row.script_model, destination: row.script_destination },
       })), nextCursor, total: Number(counts.rows[0]?.total ?? 0), allCount: Number(counts.rows[0]?.all_count ?? 0),
       unclassifiedCount: Number(counts.rows[0]?.unclassified_count ?? 0), categories, categoriesReady: ready.categories };
     } catch (error) {

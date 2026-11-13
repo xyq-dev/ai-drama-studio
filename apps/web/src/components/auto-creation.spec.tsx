@@ -339,6 +339,8 @@ describe("AI 自动创作 run page", () => {
   });
 
   it("lists written episodes in order and uses each current script to show its own cast and scenes", async () => {
+    window.history.replaceState(null, "", "#auto-episodes-title");
+    const scroll = vi.spyOn(HTMLElement.prototype, "scrollIntoView").mockImplementation(() => undefined);
     const first = fixtureAutoEpisode(1, { tag: "已被替换的初稿" });
     const revised = {
       ...fixtureAutoEpisode(1, { tag: "第 2 轮当前版本" }),
@@ -359,6 +361,9 @@ describe("AI 自动创作 run page", () => {
     render(<AutoCreationRun projectId={P1} />);
 
     const list = await screen.findByTestId("auto-episodes");
+    expect(scroll).toHaveBeenCalledWith({ block: "start" });
+    expect(scroll.mock.instances[0]).toBe(within(list).getByRole("heading", { name: "分集剧本" }));
+    window.history.replaceState(null, "", window.location.pathname);
     const entries = [...list.querySelectorAll("details")];
     expect(entries).toHaveLength(2);
     expect(list.textContent).toContain("已写好 2 / 3 集");

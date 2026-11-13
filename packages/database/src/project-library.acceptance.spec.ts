@@ -81,6 +81,82 @@ describe("project library on a new disposable PostgreSQL database", () => {
         categoryRevision: 0, thumbnailUrl: null, writingMode: "short", episodeCount: 3 }] });
   });
 
+  it("lists and searches the saved script title and preserves the AI origin after a person edits the story", async () => {
+    const workspaceId = await workspace();
+    const projectId = await project(workspaceId, "AI 自动创作 2026/11/13");
+    const categoryId = (await category(workspaceId, "创作来源")).id;
+    await store.assignCategory(workspaceId, projectId, { categoryId, expectedRevision: 0 });
+    const storyId = randomUUID();
+    const runId = randomUUID();
+    await pool.query(`INSERT INTO story_revision (id, workspace_id, project_id, revision_no, content_json, content_hash, created_by)
+      VALUES ($1, $2, $3, 1, $4, repeat('0', 64), $5)`,
+      [storyId, workspaceId, projectId, { text: "【AI 草稿】\n\n剧名：最后一枚纽扣\n一句话故事：样本" }, `auto-creation:${runId}`]);
+    await pool.query(`UPDATE project SET current_story_revision_id = $2 WHERE id = $1`, [projectId, storyId]);
+    await pool.query(`INSERT INTO auto_creation_run
+      (id, workspace_id, project_id, actor_id, idempotency_key, input_hash, input_json,
+       provider_key, model, state, call_cap, story_save, story_revision_id, created_at, updated_at)
+      VALUES ($1, $2, $3, 'server-owner', $1::uuid::text, repeat('0', 64), '{}',
+              'deepseek', 'deepseek-flash', 'completed', 10, 'saved', $4, now(), now())`,
+      [runId, workspaceId, projectId, storyId]);
+    await pool.query(`INSERT INTO auto_creation_stage
+      (run_id, workspace_id, stage_key, ordinal, state, output_json, output_hash, script_save, updated_at)
+      VALUES ($1, $2, 'bible', 1, 'completed', '{"title":"最后一枚纽扣"}', repeat('0',64), NULL, now()),
+             ($1, $2, 'episode:1', 2, 'completed', '{}', repeat('0',64), 'pending', now())`, [runId, workspaceId]);
+    const expected = { title: "最后一枚纽扣", source: "ai", providerKey: "deepseek", model: "deepseek-flash", destination: "auto" };
+    await expect(store.list(workspaceId, { q: "纽扣", category: categoryId })).resolves.toMatchObject({
+      total: 1, allCount: 1, categories: [{ id: categoryId, count: 1 }],
+      items: [{ id: projectId, title: "AI 自动创作 2026/11/13", script: expected }],
+    });
+    const updatedId = randomUUID();
+    await pool.query(`INSERT INTO story_revision (id, workspace_id, project_id, revision_no, content_json, content_hash, created_by)
+      VALUES ($1, $2, $3, 2, $4, repeat('1', 64), 'server-owner')`,
+      [updatedId, workspaceId, projectId, { text: "剧名：审阅后的纽扣\n一句话故事：修订样本" }]);
+    await pool.query(`UPDATE project SET current_story_revision_id = $2 WHERE id = $1`, [projectId, updatedId]);
+    await expect(store.list(workspaceId, { q: "审阅后的纽扣" })).resolves.toMatchObject({
+      items: [{ id: projectId, script: { ...expected, title: "审阅后的纽扣" } }],
+    });
+    const episodeId = randomUUID();
+    const scriptId = randomUUID();
+    await pool.query(`INSERT INTO episode (id, workspace_id, project_id, episode_no, title)
+      VALUES ($1, $2, $3, 1, '第1集')`, [episodeId, workspaceId, projectId]);
+    await pool.query(`INSERT INTO script_revision
+      (id, workspace_id, project_id, episode_id, revision_no, source_story_revision_id, content_json, content_hash, created_by)
+      VALUES ($1, $2, $3, $4, 1, $5, '{"text":"已写入的分集剧本"}', repeat('0',64), 'server-owner')`,
+      [scriptId, workspaceId, projectId, episodeId, updatedId]);
+    await pool.query(`UPDATE episode SET current_script_revision_id = $2 WHERE id = $1`, [episodeId, scriptId]);
+    await expect(store.list(workspaceId, { q: "审阅后的纽扣" })).resolves.toMatchObject({
+      items: [{ id: projectId, script: { ...expected, title: "审阅后的纽扣", destination: "script" } }],
+    });
+  });
+
+  it("recognizes a saved manual workbench draft and leaves an unrecorded origin unknown", async () => {
+    const workspaceId = await workspace();
+    const projectId = await project(workspaceId, "作品名");
+    const old = await project(workspaceId, "旧作品");
+    const storyId = randomUUID();
+    const episodeId = randomUUID();
+    const scriptId = randomUUID();
+    await pool.query("UPDATE project SET episode_count = 1, target_episode_seconds = 60 WHERE id = $1", [projectId]);
+    await pool.query(`INSERT INTO story_revision (id, workspace_id, project_id, revision_no, content_json, content_hash, created_by)
+      VALUES ($1, $2, $3, 1, '{"workbench":{"schema":"script-workbench.v1"}}', repeat('0',64), 'server-owner')`,
+      [storyId, workspaceId, projectId]);
+    await pool.query(`UPDATE project SET current_story_revision_id = $2 WHERE id = $1`, [projectId, storyId]);
+    await pool.query(`INSERT INTO episode (id, workspace_id, project_id, episode_no, title)
+      VALUES ($1, $2, $3, 1, '第1集')`, [episodeId, workspaceId, projectId]);
+    await pool.query(`INSERT INTO script_revision
+      (id, workspace_id, project_id, episode_id, revision_no, source_story_revision_id, content_json, content_hash, created_by)
+      VALUES ($1, $2, $3, $4, 1, $5, '{"workbench":{"script":{"title":"雨巷来信"}}}', repeat('0',64), 'server-owner')`,
+      [scriptId, workspaceId, projectId, episodeId, storyId]);
+    await pool.query(`UPDATE episode SET current_script_revision_id = $2 WHERE id = $1`, [episodeId, scriptId]);
+    const { items } = await store.list(workspaceId);
+    expect(items.find((item) => item.id === projectId)?.script).toEqual({
+      title: "雨巷来信", source: "manual", providerKey: null, model: null, destination: "script",
+    });
+    expect(items.find((item) => item.id === old)?.script).toEqual({
+      title: null, source: "unknown", providerKey: null, model: null, destination: null,
+    });
+  });
+
   it("persists creation and assignment across store instances without changing project version or ordering", async () => {
     const workspaceId = await workspace();
     const projectId = await project(workspaceId);
