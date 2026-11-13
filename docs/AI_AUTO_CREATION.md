@@ -31,7 +31,9 @@
 | `review:r` | 独立审阅提示与 10 项评价标准；问题须带**逐字原文证据**；程序检查结果并入 | 是 |
 | `revise:r:episode:k` | 只修指出的问题，记录逐条修改 | 是 |
 
-提示词版本 `ads.auto-creation.prompt.v11`、检查版本 `ads.auto-creation.checks.v14`、研究输出 `ads.auto-creation.research.v4`、研究的模型回答 `ads.auto-creation.research.answer.catalog.v1`、引用目录算法 `ads.auto-creation.reference-catalog.v1`（prompt.v11 / checks.v14 见 3.15，未标记的观看时长不再遮住其后的统计、观众自己作出的选择里的「是否」不算待验证，application 提示区分叙事时间与观众效果；checks.v13 见 3.14，验证计划里的流程序数不再当作排名，提示不变；checks.v12 见 3.13，创作设计里的集数按作用范围判断、第 N 集先核对范围再清理，提示不变；prompt.v10 / checks.v11 见 3.12，验证计划里集数按作用范围判断，无法确认的保留为未核实提示；prompt.v9 / checks.v10 见 3.11，内容结构的方法引用改为选择服务端目录编号，落库结构不变；checks.v9 见 3.9，只要求样本动作直接带着当前样本数量，提示与研究回答结构不变；checks.v8 见 3.8，只改验证计划里的样本集数判断，提示与研究回答结构不变；prompt.v8 见 3.7，只改研究提示，当时检查为 v7；v7 / v7 见 3.6，研究回答结构不变；v6 / v6 / research.v4 见 3.5；此前 v5 / v5 / research.v3 见 3.4，v4 / v4 / research.v2 见 3.3，v3 / v3 / research.v1 自 2026-10-20 起，2026-10-19 起为 v2，之前为 v1）、选择规则 `ads.auto-creation.selection-rules.v1`、输入 `ads.auto-creation.input.v1`。任务输入里冻结的是**开始时**的版本号；已完成的阶段不会重算，但旧任务续跑时，之后发送的阶段使用当前的提示词和检查（代码里没有按版本分支）。
+提示词版本 `ads.auto-creation.prompt.v12`、检查版本 `ads.auto-creation.checks.v14`、研究输出 `ads.auto-creation.research.v4`、研究的模型回答 `ads.auto-creation.research.answer.catalog.v1`、引用目录算法 `ads.auto-creation.reference-catalog.v1`（prompt.v11 / checks.v14 见 3.15，未标记的观看时长不再遮住其后的统计、观众自己作出的选择里的「是否」不算待验证，application 提示区分叙事时间与观众效果；checks.v13 见 3.14，验证计划里的流程序数不再当作排名，提示不变；checks.v12 见 3.13，创作设计里的集数按作用范围判断、第 N 集先核对范围再清理，提示不变；prompt.v10 / checks.v11 见 3.12，验证计划里集数按作用范围判断，无法确认的保留为未核实提示；prompt.v9 / checks.v10 见 3.11，内容结构的方法引用改为选择服务端目录编号，落库结构不变；checks.v9 见 3.9，只要求样本动作直接带着当前样本数量，提示与研究回答结构不变；checks.v8 见 3.8，只改验证计划里的样本集数判断，提示与研究回答结构不变；prompt.v8 见 3.7，只改研究提示，当时检查为 v7；v7 / v7 见 3.6，研究回答结构不变；v6 / v6 / research.v4 见 3.5；此前 v5 / v5 / research.v3 见 3.4，v4 / v4 / research.v2 见 3.3，v3 / v3 / research.v1 自 2026-10-20 起，2026-10-19 起为 v2，之前为 v1）、选择规则 `ads.auto-creation.selection-rules.v1`、输入 `ads.auto-creation.input.v1`。任务输入里冻结的是**开始时**的版本号；已完成的阶段不会重算，但旧任务续跑时，之后发送的阶段使用当前的提示词和检查（代码里没有按版本分支）。
+
+提示词 v12 为 `bible` 阶段列出 JSON 顶层字段，并提供带嵌套字段的完整示例。超出契约的字段仍整条拒收。顶层多出字段时，页面显示「JSON 顶层对象」。用户手动续跑时，从第一个未完成的阶段发送新请求。
 
 ## 3. 研究层：只说真正读到的
 

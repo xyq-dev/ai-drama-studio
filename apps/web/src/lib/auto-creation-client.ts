@@ -268,7 +268,8 @@ export function autoErrorText(stored: string | null): string | null {
   const kind = category ? `（${CATEGORY_TEXT[category] ?? category}${serverKey ? "；用户设定与资料局限由服务端记录，模型不能填写" : ""}）` : "";
   const branch = reason ? `；${VIEWING_REASON_TEXT[reason]}（只说明程序为何拒收，不还原原句）` : "";
   const meaning = semantic ? `；${SEMANTIC_TEXT[semantic] ?? semantic}${rule ? `：${RULE_TEXT[rule] ?? rule}` : ""}${branch}` : "";
-  return `${base}位置：${field ?? "未知字段"}${kind}${meaning}。`;
+  const location = field ?? (category === "unrecognized_keys" ? "JSON 顶层对象" : "未知字段");
+  return `${base}位置：${location}${kind}${meaning}。`;
 }
 
 /** True when the model's answer was refused by the checks (not a key, quota or network problem). */

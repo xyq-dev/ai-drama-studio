@@ -702,11 +702,11 @@ describe("AI 自动创作 run page", () => {
   });
 
   it("an extra field in another stage, or an unnamed one in research, gets the general wording, never the research one", async () => {
-    for (const [stageKey, kind, code] of [
-      ["bible", "bible", "invalid_output:unrecognized_keys"],
-      ["directions", "directions", "invalid_output@candidates[0]:unrecognized_keys"],
-      ["episode:1", "episode", "invalid_output@scenes[0]:unrecognized_keys"],
-      ["research", "research", "invalid_output:unrecognized_keys"],
+    for (const [stageKey, kind, code, location] of [
+      ["bible", "bible", "invalid_output:unrecognized_keys", "JSON 顶层对象"],
+      ["directions", "directions", "invalid_output@candidates[0]:unrecognized_keys", "candidates[0]"],
+      ["episode:1", "episode", "invalid_output@scenes[0]:unrecognized_keys", "scenes[0]"],
+      ["research", "research", "invalid_output:unrecognized_keys", "JSON 顶层对象"],
     ] as const) {
       cleanup();
       const failed = run({ state: "failed", errorCode: "invalid_output", quality: "pending", storySave: "pending", storyRevisionId: null, packageStatus: "incomplete",
@@ -716,6 +716,7 @@ describe("AI 自动创作 run page", () => {
       render(<AutoCreationRun projectId={P1} />);
       await waitFor(() => expect(screen.getByTestId("auto-headline").textContent).toBe("没有完成"));
       const stop = screen.getByText(/^停在「/u).textContent!;
+      expect(stop, code).toContain(`位置：${location}（`);
       expect(stop, code).toContain("模型回答包含契约不允许的额外字段");
       expect(stop, code).not.toContain("服务端记录");
       expect(screen.getByTestId("auto-output-refused").textContent).toContain("不是密钥或账户问题");
