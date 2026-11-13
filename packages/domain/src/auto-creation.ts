@@ -84,10 +84,37 @@ const COMMON_RULES = [
   "不要编造数据：年龄、性别、地域占比、播放量、完播率、收入等受众或市场数字，只能原样引用所引资料摘录正文（excerpt）里出现过的数字；资料的标题、日期和局限说明不是摘录。故事情节里的数字不受此限。",
 ].join("");
 
+const BIBLE_OUTPUT_EXAMPLE: AutoBible = {
+  schema: AUTO_CREATION_BIBLE_SCHEMA,
+  title: "补发回执",
+  logline: "维修员发现一张手写回执能证明自己按时交件。",
+  synopsis: "客户质疑维修员迟交。维修员找到客户签收的回执，据此补发交件记录，解开误会。",
+  story: {
+    protagonistId: "C1",
+    desire: "守住客户的信任",
+    weakness: "怕当面解释",
+    goal: "证明自己按时交件",
+    stakes: "客户会取消下一单",
+    obstacles: ["系统没有交件记录"],
+    keyChoices: [{ choice: "翻查旧单据", consequence: "找到客户手写的签收回执" }],
+    twist: { reveal: "被当作废纸的回执上有签收时间", setups: ["开场时维修员把一张折角的单据夹进账本"] },
+    payoffs: ["维修员主动向客户说明原委"],
+    ending: "维修员补发交件记录，客户保留下次预约。",
+    causalChain: ["系统缺少交件记录", "维修员翻出签收回执", "客户核对时间并保留预约"],
+  },
+  characters: [
+    { id: "C1", name: "阿宁", identity: "维修员", goal: "证明按时交件", weakness: "怕解释", motivation: "守住信誉", voice: "说话直接", presence: "on_screen" },
+    { id: "C2", name: "老陈", identity: "客户", goal: "核对交件时间", weakness: "只信记录", motivation: "怕耽误用货", voice: "先问时间", presence: "mentioned" },
+  ],
+  relationships: [{ from: "C1", to: "C2", relation: "维修员与客户", change: "从质疑到恢复信任" }],
+  locations: [{ id: "L1", name: "修理铺", intExt: "INT", timeOfDay: "日", layout: "账本放在工作台左边", productionNotes: "用窗边自然光" }],
+  props: [{ id: "P1", name: "签收回执", ownerId: "C1", purpose: "证明交件时间", change: "从旧单据变成证据" }],
+};
+
 export const AUTO_CREATION_SYSTEM_PROMPTS: Readonly<Record<Exclude<AutoCreationStageKind, "sources">, string>> = {
   research: `你是中文竖屏短剧的研究分析员。${COMMON_RULES}区分有来源的事实、基于样本的观察和待验证的假设。`,
   directions: `你是中文竖屏短剧的策划。${COMMON_RULES}提出彼此有实质差异的原创方向，不复制参考作品的台词、人物组合或具体情节。`,
-  bible: `你是中文竖屏短剧的总编剧。${COMMON_RULES}先定主线、关键因果和结局，再定人物、地点和道具。`,
+  bible: `你是中文竖屏短剧的总编剧。${COMMON_RULES}先定主线、关键因果和结局，再定人物、地点和道具。输出的每个对象只用故事设定档案契约允许的字段。`,
   outline: `你是中文竖屏短剧的分集编剧。${COMMON_RULES}严格按已冻结的故事设定分集，不新增人物、地点或改变关系。`,
   episode: `你是中文竖屏短剧的分集编剧。${COMMON_RULES}写可演出、可拍摄的剧本，只使用设定档案里的人物和地点编号。`,
   revise: `你是中文竖屏短剧的修订编剧。${COMMON_RULES}只修改指出的问题，保留其余内容、人物编号、关系和结局走向。`,
@@ -525,6 +552,10 @@ export function buildAutoCreationPrompt(stageKey: string, input: AutoCreationFro
     lines = [
       ...head,
       "任务：按选定方向写故事设定档案，先定主线、关键因果和结局，再展开人物、关系、地点与道具。",
+      `顶层只允许且必须包含这些键：${Object.keys(BIBLE_OUTPUT_EXAMPLE).join("、")}。所有子对象的键名、层级与值类型按下方示例，任何层级都不要添加额外字段。`,
+      "结局字段固定为 story.ending，顶层不另加结局字段。characters 和 locations 至少各有一条；没有人物关系或道具时，relationships 和 props 分别填 []；无归属的道具把 ownerId 写成 null。",
+      "选定方向、选择理由和受众与结构要点只用于写作，不作为输出字段。",
+      `故事设定档案 JSON 示例（只参考结构，内容按本次选定方向和约束创作）：${JSON.stringify(BIBLE_OUTPUT_EXAMPLE)}`,
       "story 必须写清：主角（protagonistId）的欲望和弱点、目标与失败代价、阻碍、主角的关键选择及后果、有伏笔支撑的反转（twist.setups 写伏笔）、对前期情绪和悬念的兑现（payoffs）、完整结局、因果链（causalChain 3–8 步）。",
       "characters 用稳定编号 C1、C2…，presence 区分 on_screen（出场）和 mentioned（仅被提及）；locations 用 L1、L2…，写内外景、时间、空间关系和制作限制；props 用 P1…，写归属、用途和前后变化。",
       "关系 from/to 只能引用已有人物编号。不要超过用户的人物和地点数量限制。",

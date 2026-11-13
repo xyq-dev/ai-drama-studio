@@ -41,12 +41,14 @@ export const AUTO_CREATION_INPUT_SCHEMA = "ads.auto-creation.input.v1" as const;
  * unverified effect is never written as known, and beside a duration in one sentence the part naming the viewers is
  * itself a question to verify; that wording unlocks no statistic, viewing habit or result done. The contract is
  * unchanged (checks v14). Answer, catalog and research v4 unchanged. Shared by series research.
+ * v12: the story bible prompt specifies the exact JSON fields and shows a complete example. Validation is unchanged.
  */
-export const AUTO_CREATION_PROMPT_VERSION = "ads.auto-creation.prompt.v11" as const;
+export const AUTO_CREATION_PROMPT_VERSION = "ads.auto-creation.prompt.v12" as const;
 /** Every prompt version a stored run may carry. A resumed run is sent with the current prompts. */
 export type AutoCreationPromptVersion = "ads.auto-creation.prompt.v1" | "ads.auto-creation.prompt.v2" | "ads.auto-creation.prompt.v3"
   | "ads.auto-creation.prompt.v4" | "ads.auto-creation.prompt.v5" | "ads.auto-creation.prompt.v6" | "ads.auto-creation.prompt.v7"
-  | "ads.auto-creation.prompt.v8" | "ads.auto-creation.prompt.v9" | "ads.auto-creation.prompt.v10" | typeof AUTO_CREATION_PROMPT_VERSION;
+  | "ads.auto-creation.prompt.v8" | "ads.auto-creation.prompt.v9" | "ads.auto-creation.prompt.v10" | "ads.auto-creation.prompt.v11"
+  | typeof AUTO_CREATION_PROMPT_VERSION;
 export const AUTO_CREATION_SELECTION_RULES = "ads.auto-creation.selection-rules.v1" as const;
 /**
  * v2: the applied constraints and a direction's audience fit are number-checked; spaced ordinals are not claims.
