@@ -261,6 +261,17 @@ const VIEWING_REASON_TEXT: Record<AutoViewingDurationReason, string> = {
 export function autoErrorText(stored: string | null): string | null {
   if (stored === null) return null;
   const { code, field, category, semantic, rule, reason } = autoErrorParts(stored);
+  if (code === "dangling_reference" && field) {
+    const scene = /^scenes\[(\d+)\]\.(locationId|characterIds\[(\d+)\]|dialogue\[(\d+)\]\.characterId)$/u.exec(field);
+    if (scene) {
+      const at = `第 ${Number(scene[1]) + 1} 场`;
+      if (scene[2] === "locationId") return `${at}使用了未登记的地点编号，已拒收。`;
+      if (scene[3] !== undefined) return `${at}的第 ${Number(scene[3]) + 1} 个出场人物编号不在设定中，已拒收。`;
+      return `${at}的第 ${Number(scene[4]) + 1} 句对白用了本场未出场的人物编号，已拒收。`;
+    }
+    const change = /^changes\[(\d+)\]\.issueId$/u.exec(field);
+    if (change) return `第 ${Number(change[1]) + 1} 条改稿记录引用了本轮不适用于本集的问题编号，已拒收。`;
+  }
   const base = ERRORS[code] ?? `出现了未识别的问题（${code}）。`;
   if (!field && !category) return base;
   // research v3: only a key the server keeps for itself is explained as the server's record.

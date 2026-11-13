@@ -397,9 +397,9 @@ export class AutoCreationEngine {
     if (prompt.system.length + prompt.user.length > AUTO_CREATION_PROMPT_MAX_CHARS) {
       return this.finish(runId, "needs_attention", "prompt_too_large");
     }
-    // The same mode and the context's one reference catalog build the prompt, the JSON Schema sent here and the check of the answer.
+    // Research uses the saved catalog. Revision reference choices come from the prompt's frozen setting and review.
     const schema = autoCreationJsonSchema(prompt.kind, run.input.episodeCount, prompt.kind === "research" ? researchMode : null,
-      prompt.kind === "research" ? context.referenceCatalog ?? null : null);
+      prompt.kind === "research" ? context.referenceCatalog ?? null : null, prompt.revisionReferences);
     const request = {
       model: run.input.model,
       system: prompt.system,

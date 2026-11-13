@@ -42,13 +42,14 @@ export const AUTO_CREATION_INPUT_SCHEMA = "ads.auto-creation.input.v1" as const;
  * itself a question to verify; that wording unlocks no statistic, viewing habit or result done. The contract is
  * unchanged (checks v14). Answer, catalog and research v4 unchanged. Shared by series research.
  * v12: the story bible prompt specifies the exact JSON fields and shows a complete example. Validation is unchanged.
+ * v13: plan filmable endings, review within the frozen setting, and adapt incompatible prior suggestions in revisions.
  */
-export const AUTO_CREATION_PROMPT_VERSION = "ads.auto-creation.prompt.v12" as const;
+export const AUTO_CREATION_PROMPT_VERSION = "ads.auto-creation.prompt.v13" as const;
 /** Every prompt version a stored run may carry. A resumed run is sent with the current prompts. */
 export type AutoCreationPromptVersion = "ads.auto-creation.prompt.v1" | "ads.auto-creation.prompt.v2" | "ads.auto-creation.prompt.v3"
   | "ads.auto-creation.prompt.v4" | "ads.auto-creation.prompt.v5" | "ads.auto-creation.prompt.v6" | "ads.auto-creation.prompt.v7"
   | "ads.auto-creation.prompt.v8" | "ads.auto-creation.prompt.v9" | "ads.auto-creation.prompt.v10" | "ads.auto-creation.prompt.v11"
-  | typeof AUTO_CREATION_PROMPT_VERSION;
+  | "ads.auto-creation.prompt.v12" | typeof AUTO_CREATION_PROMPT_VERSION;
 export const AUTO_CREATION_SELECTION_RULES = "ads.auto-creation.selection-rules.v1" as const;
 /**
  * v2: the applied constraints and a direction's audience fit are number-checked; spaced ordinals are not claims.
@@ -936,22 +937,32 @@ const int = (minimum: number, maximum: number) => ({ type: "integer", minimum, m
 const enumOf = (values: readonly (string | number)[]) =>
   ({ type: typeof values[0] === "number" ? "integer" : "string", enum: [...values] }) as const;
 
+export interface AutoRevisionReferences {
+  locationIds: readonly string[];
+  characterIds: readonly string[];
+  issueIds: readonly string[];
+}
+
 /**
  * The JSON Schema sent with a stage. A research stage needs the run's saved research mode: the limited schema has no
  * facts, observations or audience basis and sources, so the provider is held to the same contract as the prompt and
  * the zod check. It also needs the run's reference catalog: a structure's referenceId is one of its ids or null (only
  * null when it has none). Without a mode or a catalog no research schema is built (the engine stops before reserving).
+ * A revision sent by the engine has concrete reference choices from the same frozen setting and review as its prompt.
  */
 export function autoCreationJsonSchema(kind: AutoCreationStageKind, episodeCount: number, researchMode: AutoResearchMode | null = null,
-  catalog: AutoReferenceCatalog | null = null): { name: string; schema: Record<string, unknown> } {
+  catalog: AutoReferenceCatalog | null = null, revisionReferences?: AutoRevisionReferences): { name: string; schema: Record<string, unknown> } {
   const numbers = Array.from({ length: episodeCount }, (_, index) => index + 1);
+  const references = kind === "revise" ? revisionReferences : undefined;
+  const characterId = references?.characterIds.length ? enumOf(references.characterIds) : str(2);
+  const locationId = references?.locationIds.length ? enumOf(references.locationIds) : str(2);
   const episode = obj({
     schema: enumOf([AUTO_CREATION_EPISODE_SCHEMA]),
     episodeNo: enumOf(numbers),
     title: str(30),
     scenes: arr(obj({
-      sceneNo: int(1, 10), locationId: str(2), timeOfDay: str(20), characterIds: strs(8, 2, 1), action: str(300),
-      dialogue: arr(obj({ characterId: str(2), line: str(80), delivery: str(20) }), 0, 8),
+      sceneNo: int(1, 10), locationId, timeOfDay: str(20), characterIds: arr(characterId, 1, 8), action: str(300),
+      dialogue: arr(obj({ characterId, line: str(80), delivery: str(20) }), 0, 8),
       sound: str(80),
       shots: arr(obj({ shotNo: int(1, 8), framing: str(20), description: str(120), seconds: int(1, 15) }), 1, 6),
       assetNeeds: strs(4, 60),
@@ -1033,7 +1044,7 @@ export function autoCreationJsonSchema(kind: AutoCreationStageKind, episodeCount
       return { name: "auto_episode", schema: episode };
     case "revise":
       return { name: "auto_revision", schema: { ...episode, required: [...episode.required, "changes"], properties: {
-        ...episode.properties, changes: arr(obj({ issueId: str(5), change: str(150) }), 1, 10) } } };
+        ...episode.properties, changes: arr(obj({ issueId: references?.issueIds.length ? enumOf(references.issueIds) : str(5), change: str(150) }), 1, 10) } } };
     case "review":
       return { name: "auto_review", schema: obj({
         schema: enumOf([AUTO_CREATION_REVIEW_SCHEMA]),

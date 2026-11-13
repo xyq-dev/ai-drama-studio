@@ -15,11 +15,12 @@ import {
   type AutoResearch,
   type TitleWritingProviderKey,
 } from "@ai-drama/contracts";
-import { AUTO_DRAFT_BANNER, autoPackageJson, autoPackageMarkdown, AUTO_CREATION_SYSTEM_PROMPTS } from "@ai-drama/domain";
+import { AUTO_DRAFT_BANNER, autoContextFromStages, autoPackageJson, autoPackageMarkdown, AUTO_CREATION_SYSTEM_PROMPTS, validateAutoStageOutput } from "@ai-drama/domain";
 import { titleWritingProviderConfigs, type WritingProviderConfig } from "./text-writing";
 import { AutoCreationEngine, InMemoryAutoCreationStore, autoRunView, autoScriptsOf, autoUncertainCallIds, hashAutoResume, newAutoRun } from "./auto-creation-engine";
 import {
-  AUTO_FIXTURE_UNPLACED, autoFixtureTransport, fixtureAutoBible, fixtureAutoEpisode, fixtureAutoResearchV1, fixtureAutoResearchV2, type AutoFixtureExchange, type AutoFixturePlan,
+  AUTO_FIXTURE_UNPLACED, autoFixtureTransport, fixtureAutoBible, fixtureAutoEpisode, fixtureAutoOutline, fixtureAutoResearchV1, fixtureAutoResearchV2,
+  fixtureAutoReview, type AutoFixtureExchange, type AutoFixturePlan,
 } from "./auto-creation-fixtures";
 import { chatCompletionsAnswer, messagesAnswer } from "./title-writing-fixtures";
 
@@ -134,7 +135,7 @@ describe("automatic creation engine", () => {
     await engine.maintain();
     expect(seen.map((item) => item.stage)).toEqual(["research", "directions", "bible"]);
     const prompt = seen[2]!.user;
-    expect(prompt).toContain("提示版本：ads.auto-creation.prompt.v12");
+    expect(prompt).toContain("提示版本：ads.auto-creation.prompt.v13");
     expect(prompt).toContain("顶层只允许且必须包含这些键：schema、title、logline、synopsis、story、characters、relationships、locations、props");
     expect(prompt).toContain("结局字段固定为 story.ending");
     const example = /^故事设定档案 JSON 示例[^：]+：(.+)$/mu.exec(prompt)?.[1];
@@ -307,7 +308,7 @@ describe("automatic creation engine", () => {
     const research = result.stages.find((stage) => stage.stageKey === "research")!.output as AutoResearch;
     expect(research.contentStructure[0]!.application).toEqual({ pattern: "模型替身样例：用前两集建立主角与对手的冲突。", why: "模型替身样例：每两集推进一个阶段目标。" });
     expect(research.unverified).toEqual([]);
-    expect(research.serverRecord.executedWith).toMatchObject({ promptVersion: "ads.auto-creation.prompt.v12", checksVersion: "ads.auto-creation.checks.v14" });
+    expect(research.serverRecord.executedWith).toMatchObject({ promptVersion: "ads.auto-creation.prompt.v13", checksVersion: "ads.auto-creation.checks.v14" });
     const directions = result.stages.find((stage) => stage.stageKey === "directions")!.output as AutoDirections;
     expect(directions.candidates[0]!.difficultyNote).toBe("模型替身样例：本剧每两集设置一个小高潮。");
     expect(directions.unverified).toEqual([]);
@@ -363,7 +364,7 @@ describe("automatic creation engine", () => {
     const research = result.stages.find((stage) => stage.stageKey === "research")!.output as AutoResearch;
     expect(research.hypotheses[0]!.howToVerify).toBe("模型替身样例：计划在第一轮试读后比较角色人气。");
     expect(research.unverified).toEqual([]);
-    expect(research.serverRecord.executedWith).toMatchObject({ promptVersion: "ads.auto-creation.prompt.v12", checksVersion: "ads.auto-creation.checks.v14" });
+    expect(research.serverRecord.executedWith).toMatchObject({ promptVersion: "ads.auto-creation.prompt.v13", checksVersion: "ads.auto-creation.checks.v14" });
     expect(seen[1]!.stage).toBe("directions");
   });
 
@@ -422,7 +423,7 @@ describe("automatic creation engine", () => {
     const research = result.stages.find((stage) => stage.stageKey === "research")!.output as AutoResearch;
     expect(research.contentStructure[0]!.application.why).toBe("模型替身样例：前3秒让主角陷入危机，待验证观众是否因此想继续看。");
     expect(research.unverified).toEqual([]);
-    expect(research.serverRecord.executedWith).toMatchObject({ promptVersion: "ads.auto-creation.prompt.v12", checksVersion: "ads.auto-creation.checks.v14" });
+    expect(research.serverRecord.executedWith).toMatchObject({ promptVersion: "ads.auto-creation.prompt.v13", checksVersion: "ads.auto-creation.checks.v14" });
   });
 
   it.each([
@@ -453,7 +454,7 @@ describe("automatic creation engine", () => {
     const result = await view();
     expect(result).toMatchObject({ state: "completed", quality: "passed", callsUsed: 6, callCap: 6, storySave: "saved", errorCode: null });
     expect(seen.map((item) => item.stage)).toEqual(["research", "directions", "bible", "outline", "episode:1", "review:1"]);
-    expect(seen[0]!.user).toContain("提示版本：ads.auto-creation.prompt.v12");
+    expect(seen[0]!.user).toContain("提示版本：ads.auto-creation.prompt.v13");
     const research = result.stages.find((stage) => stage.stageKey === "research")!.output as { schema: string; contentStructure: unknown[] };
     expect(research.schema).toBe("ads.auto-creation.research.v4");
     // The double chose the craft sentence by its catalog id; the server filled the quote in word for word.
@@ -542,7 +543,7 @@ describe("automatic creation engine", () => {
     expect(research).not.toHaveProperty("limitations");
     expect(research).not.toHaveProperty("appliedConstraints");
     expect(research.serverRecord).toMatchObject({ origin: "server_record",
-      executedWith: { promptVersion: "ads.auto-creation.prompt.v12", checksVersion: "ads.auto-creation.checks.v14", researchSchema: "ads.auto-creation.research.v4",
+      executedWith: { promptVersion: "ads.auto-creation.prompt.v13", checksVersion: "ads.auto-creation.checks.v14", researchSchema: "ads.auto-creation.research.v4",
         answerContract: "limited" },
       marketEvidence: { origin: "source_snapshot", status: "unavailable" },
       settings: { origin: "user_setting", items: [{ key: "episodes", value: "共 1 集" }, { key: "seconds" }, { key: "maxCharacters", value: "最多 3 人" }] },
@@ -611,9 +612,9 @@ describe("automatic creation engine", () => {
     await engine.drive(run.id);
     const result = await view();
     expect(result).toMatchObject({ state: "completed", storySave: "saved", promptVersion: "ads.auto-creation.prompt.v4" });
-    expect(seen.filter((item) => item.stage === "research").at(-1)!.user).toContain("提示版本：ads.auto-creation.prompt.v12");
+    expect(seen.filter((item) => item.stage === "research").at(-1)!.user).toContain("提示版本：ads.auto-creation.prompt.v13");
     expect(result.stages.find((stage) => stage.stageKey === "research")!.output).toMatchObject({ schema: "ads.auto-creation.research.v4",
-      serverRecord: { executedWith: { promptVersion: "ads.auto-creation.prompt.v12", checksVersion: "ads.auto-creation.checks.v14", answerContract: "limited" } } });
+      serverRecord: { executedWith: { promptVersion: "ads.auto-creation.prompt.v13", checksVersion: "ads.auto-creation.checks.v14", answerContract: "limited" } } });
     expect(JSON.stringify(store.runs.find((item) => item.id === run.id)!.input)).toBe(frozen);
     expect(store.runs.find((item) => item.id === run.id)!.inputHash).toBe(hash);
   });
@@ -882,6 +883,104 @@ describe("automatic creation engine", () => {
     expect(seen.map((item) => item.stage)).toEqual(["research", "directions", "bible", "outline", "episode:1", "review:1", "revise:1:episode:1", "review:2"]);
     expect(result).toMatchObject({ state: "completed", quality: "passed", errorCode: null, revisionRoundsUsed: 1, storySave: "saved" });
     expect(result.callsUsed).toBeLessThanOrEqual(result.callCap);
+  });
+
+  it("resumes a second-round revision within the frozen setting after an old review suggested an unlisted scene", async () => {
+    const deepseek = titleWritingProviderConfigs({ DEEPSEEK_API_KEY: "sk-deepseek-test-0123456789", TITLE_WRITING_DEEPSEEK_MODELS: "m-1" });
+    const base = fixtureAutoBible();
+    const bible = {
+      ...base,
+      characters: [
+        { ...base.characters[0]!, name: "小满" },
+        { ...base.characters[1]!, name: "阿岚" },
+        { ...base.characters[2]!, name: "母亲", presence: "mentioned" },
+      ],
+      locations: [{ ...base.locations[0]!, name: "合租房客厅" }],
+      story: { ...base.story, ending: "小满在母亲进手术室前把怀表交到她手中。" },
+    };
+    const outline = fixtureAutoOutline(1);
+    const episode = fixtureAutoEpisode(1);
+    const before = {
+      ...episode,
+      scenes: episode.scenes.map((scene) => ({ ...scene, locationId: "L1", characterIds: ["C1", "C2"],
+        action: "小满接过怀表。", dialogue: [{ characterId: "C1", line: "我这就送去。", delivery: "" }] })),
+      handoffFacts: [bible.story.ending],
+    };
+    const oldSuggestion = "加一个医院镜头，让母亲出场接过怀表。";
+    const { store, run, engine, seen, view } = await setup({
+      providers: deepseek, providerKey: "deepseek", callBudget: 12,
+      versions: { promptVersion: "ads.auto-creation.prompt.v12", checksVersion: "ads.auto-creation.checks.v14" },
+      override(stage, attempt) {
+        const reply = (value: unknown) => ({ status: 200, body: chatCompletionsAnswer(value) });
+        const changes = [{ issueId: "R1", change: "用现有地点交代怀表送达。" }];
+        if (stage === "bible") return reply(bible);
+        if (stage === "outline") return reply({ ...outline, episodes: [{ ...outline.episodes[0]!, characterIds: ["C1", "C2"] }] });
+        if (stage === "episode:1") return reply(before);
+        if (stage === "review:1" || stage === "review:2") {
+          const review = fixtureAutoReview(1, { highIssueRounds: [1] });
+          return reply({ ...review, issues: [{ ...review.issues[0]!, evidence: before.handoffFacts[0],
+            problem: "观众看不到怀表已经送达。", suggestion: stage === "review:2" ? oldSuggestion : "让送表目标更明确。" }] });
+        }
+        if (stage === "revise:1:episode:1") return reply({ ...before, changes });
+        if (stage === "revise:2:episode:1") {
+          const lastScene = before.scenes.at(-1)!;
+          const revisedScene = attempt === 1
+            ? { ...lastScene, locationId: "L2", action: "不应保存的医院镜头。" }
+            : { ...lastScene, action: "客厅里，阿岚收到小满发来的消息：怀表已交给妈妈。她松了口气。" };
+          return reply({ ...before, scenes: [...before.scenes.slice(0, -1), revisedScene], changes });
+        }
+        return undefined;
+      },
+    });
+    await engine.drive(run.id);
+    await engine.maintain();
+    const stopped = await view();
+    expect(stopped).toMatchObject({ state: "partial", errorCode: "dangling_reference", callsUsed: 9 });
+    expect(stopped.currentEpisodes["episode:1"]).toBe("revise:1:episode:1");
+    expect(stopped.stages.find((stage) => stage.stageKey === "revise:2:episode:1")).toMatchObject({
+      state: "rejected", errorCode: "dangling_reference@scenes[2].locationId", output: null,
+    });
+    expect(stopped.calls.at(-1)?.errorCode).toBe("dangling_reference@scenes[2].locationId");
+    expect(JSON.stringify(stopped)).not.toContain("不应保存的医院镜头");
+    expect(seen).toHaveLength(9);
+    const reviewPrompt = seen.find((item) => item.stage === "review:2")!;
+    expect(reviewPrompt.system).toContain("若必须改设定或大纲，问题归到 bible 或 outline");
+    expect(reviewPrompt.user).toContain('{"locationIds":["L1"],"characterIds":["C1","C2"]}');
+    const saved = (await store.getRunById(WS, run.id))!;
+    const context = autoContextFromStages(saved.stages);
+    const firstScene = before.scenes[0]!;
+    const candidate = { ...before, changes: [{ issueId: "R1", change: "补足结尾。" }] };
+    for (const [answer, field] of [
+      [{ ...candidate, scenes: [{ ...firstScene, characterIds: ["C8"] }, ...before.scenes.slice(1)] }, "scenes[0].characterIds[0]"],
+      [{ ...candidate, scenes: [{ ...firstScene, dialogue: [{ ...firstScene.dialogue[0]!, characterId: "C3" }] }, ...before.scenes.slice(1)] }, "scenes[0].dialogue[0].characterId"],
+      [{ ...candidate, changes: [{ issueId: "R10", change: "修订。" }] }, "changes[0].issueId"],
+    ] as const) {
+      expect(validateAutoStageOutput("revise:2:episode:1", JSON.stringify(answer), saved.run.input, context))
+        .toMatchObject({ ok: false, code: "dangling_reference", field });
+    }
+
+    expect((await store.prepareResume(WS, P1, run.id, { resumeKey: "revision-resume", requestHash: hashAutoResume(run.id, []),
+      confirmedCallIds: [], maxActiveRuns: 1, providerReady: true, blocked: false }, new Date(START).toISOString())).kind).toBe("ok");
+    await engine.drive(run.id);
+    const resumed = await view();
+    expect(seen.slice(9).map((item) => item.stage)).toEqual(["revise:2:episode:1", "review:3"]);
+    const retry = seen[9]!;
+    expect(retry.user).toContain("提示版本：ads.auto-creation.prompt.v13");
+    expect(retry.user).toContain("冻结设定优先于本轮和历史审阅建议");
+    expect(retry.user).toContain(oldSuggestion);
+    expect(retry.user).toContain("locationId 仅 L1；characterIds 和对白 characterId 仅 C1、C2");
+    expect(retry.system).toContain('"locationId":{"type":"string","enum":["L1"]}');
+    expect(retry.system).toContain('"characterId":{"type":"string","enum":["C1","C2"]}');
+    expect(retry.system).toContain('"characterIds":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","enum":["C1","C2"]}}');
+    expect(retry.system).toContain('"issueId":{"type":"string","enum":["R1"]}');
+    expect(resumed).toMatchObject({ state: "completed", quality: "passed", storySave: "saved", callsUsed: 11, promptVersion: "ads.auto-creation.prompt.v12" });
+    const after = (await store.getRunById(WS, run.id))!;
+    expect(after.run.inputHash).toBe(saved.run.inputHash);
+    for (const stage of saved.stages.filter((item) => item.state === "completed")) {
+      expect(after.stages.find((item) => item.stageKey === stage.stageKey))
+        .toMatchObject({ output: stage.output, outputHash: stage.outputHash, attemptNo: stage.attemptNo });
+    }
+    expect(resumed.currentEpisodes["episode:1"]).toBe("revise:2:episode:1");
   });
 
   it("a blocking setting-level issue is not answered with paid episode rounds: needs work, unrevisable", async () => {
