@@ -694,10 +694,11 @@ async function main() {
       const picker = page.locator("[data-beginner-picker]");
       await picker.getByRole("button", { name: /场景 1/ }).click();
       // Approve the scene shown, then create the shot under it.
-      await page.locator("#new-shot-action").waitFor({ timeout: 20_000 });
       await waitFor(async () => (await page.locator("#edit-location option", { hasText: "便利店" }).count()) > 0
         || "location missing from the scene editor", "scene location choice", 20_000);
       await reviewInColumn(inspectColumns().first(), "APPROVED", "scene");
+      const storyboard = page.getByRole("region", { name: "分镜工作台", exact: true });
+      await storyboard.getByRole("button", { name: "新增分镜", exact: true }).click();
       await page.locator("#new-shot-action").fill("店员把记录按在柜台上");
       await page.locator("#new-shot-prompt").fill("fixed black frame for audit");
       const shotSave = page.waitForResponse((response) => response.request().method() === "POST" && response.url().endsWith("/shots"));
@@ -705,7 +706,8 @@ async function main() {
       if ((await shotSave).status() !== 201) throw new Error("shot save failed");
       const shots = (await api("GET", `/projects/${world.projectId}/episodes/${world.episode.id}/scenes/${world.sceneId}/shots`)).body.items;
       world.shot1 = shots[0];
-      await page.getByRole("button", { name: `镜头 ${world.shot1.entityId.slice(0, 8)}` }).click();
+      const shotRow = storyboard.getByRole("article").filter({ has: page.getByRole("heading", { name: /^镜头 1(?: · |$)/ }) });
+      await shotRow.getByRole("button", { name: "打开单镜", exact: true }).click();
       await page.locator("#shot-action").waitFor({ timeout: 20_000 });
       await reviewInColumn(inspectColumns().nth(1), "APPROVED", "shot 1");
       const shotHistory = (await api("GET", `/projects/${world.projectId}/episodes/${world.episode.id}/scenes/${world.sceneId}/shots/${world.shot1.entityId}/revisions`)).body;
