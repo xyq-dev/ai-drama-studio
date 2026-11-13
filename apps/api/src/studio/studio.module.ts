@@ -13,7 +13,7 @@ import {
   AUTO_CREATION_SERVICE, RUNTIME_STORE, SCRIPT_BREAKDOWN_SERVICE, SERIES_WRITING_SERVICE, STUDIO_RUNTIME, STUDIO_SERVICE, TITLE_WRITING_SERVICE,
   WRITING_CANDIDATE_SERVICE, VIMAX_PREVIEW_SERVICE, VIMAX_CANDIDATE_SERVICE, PRODUCTION_STATE_READONLY_SERVICE,
 } from "./tokens";
-import { ADMIN_MODELS_SERVICE, AdminModelsController } from "../admin/admin-models.controller";
+import { ADMIN_COMFYUI_CHECK, ADMIN_MODELS_SERVICE, AdminModelsController } from "../admin/admin-models.controller";
 import { VIMAX_PLANNING_SERVICE, VimaxPlanningController } from "./vimax-planning.controller";
 import { REAL_MEDIA_SERVICE, RealMediaController } from "./real-media.controller";
 import { SPEECH_SERVICE, SpeechController } from "./speech.controller";
@@ -40,6 +40,7 @@ export class StudioModule {
       ],
       providers: [
         { provide: PRODUCTION_STATE_READONLY_SERVICE, useFactory: () => new ProductionStateReadonlyService(env.PRODUCTION_STATE_ROOT) },
+        { provide: ADMIN_COMFYUI_CHECK, inject: [STUDIO_RUNTIME], useFactory: (runtime: StudioRuntime) => runtime.checkComfyUi },
         { provide: SCRIPT_WORKBENCH_SERVICE, inject: [STUDIO_RUNTIME], useFactory: (runtime: StudioRuntime) => new ScriptWorkbenchService(runtime.pool, env.APP_WORKSPACE_ID) },
         { provide: PROJECT_LIBRARY_SERVICE, inject: [STUDIO_RUNTIME], useFactory: (runtime: StudioRuntime) => new ProjectLibraryService(new ProjectLibraryStore(runtime.pool), env.APP_WORKSPACE_ID) },
         { provide: STORAGE_SETTINGS_SERVICE, inject: [STUDIO_RUNTIME], useFactory: (runtime: StudioRuntime) => runtime.storageSettings },

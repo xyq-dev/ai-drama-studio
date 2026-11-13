@@ -13,6 +13,7 @@ import { ProjectCostSummary } from "./project-cost-summary";
 import { ScriptBreakdownPanel } from "./script-breakdown-panel";
 import { VimaxPreviewPanel } from "./vimax-preview-panel";
 import { RealMediaPanel } from "./real-media-panel";
+import { StoryboardRows, type StoryboardShot } from "./storyboard-rows";
 import { SpeechBatchPanel } from "./speech-batch-panel";
 import { ApiError, StudioClient } from "../lib/studio-client";
 import {
@@ -234,6 +235,7 @@ export function Workbench({ projectId }: { projectId: string }) {
   const { project, episodes, stories, characters, locations, workflows, loading, error, refreshEpoch, imageEpoch,
     reloadBase } = base;
   const [focus, setFocus] = useState<Focus>({ kind: "story" });
+  const [focusInitialized, setFocusInitialized] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
   const [wide, setWide] = useState(false);
   const [narrowOpen, setNarrowOpen] = useState(false);
@@ -277,13 +279,15 @@ export function Workbench({ projectId }: { projectId: string }) {
     else if (kind === "scene" && sceneId) setFocus({ kind, episodeNo, sceneId });
     else if (kind === "shot" && sceneId && shotId) setFocus({ kind, episodeNo, sceneId, shotId });
     else if (kind === "character" || kind === "location" || kind === "story") setFocus({ kind });
+    setFocusInitialized(true);
   }, []);
 
   useEffect(() => {
+    if (!focusInitialized) return;
     const query = focusQuery(focus);
     const section = ["#script-breakdown", "#episode-speech", "#episode-scenes"].includes(window.location.hash) ? window.location.hash : "";
     window.history.replaceState(null, "", `/projects/${projectId}?${query}${section}`);
-  }, [focus, projectId]);
+  }, [focus, focusInitialized, projectId]);
 
   function choose(next: Focus) {
     setFocus(next);
@@ -428,7 +432,9 @@ export function Workbench({ projectId }: { projectId: string }) {
               locations={locations?.items ?? []}
               onSaved={reloadBase}
               onStatus={setSaveState}
-              onOpenShot={(shotId) => setFocus({ kind: "shot", episodeNo: focus.episodeNo, sceneId: focus.sceneId, shotId })}
+              onOpenShot={(shotId) => setFocus(shotId === null
+                ? { kind: "scene", episodeNo: focus.episodeNo, sceneId: focus.sceneId }
+                : { kind: "shot", episodeNo: focus.episodeNo, sceneId: focus.sceneId, shotId })}
             />
           ) : null}
           {!loading && project && inspectVisible && inspectCount === 0 ? (
@@ -1510,19 +1516,21 @@ export function ScenePane(props: {
   locations: Aggregate[];
   onSaved: () => Promise<void>;
   onStatus: (value: string) => void;
-  onOpenShot: (shotId: string) => void;
+  onOpenShot: (shotId: string | null) => void;
   /** Compose accepted, finished or reviewed under this scene; the advanced workbench does not need it. */
   onMediaChanged?: () => void;
   /** Why a new single-shot compose cannot start now (capability pending, unread or off); null or absent: it can. */
   shotComposeBlocked?: string | null;
 }) {
   const [history, setHistory] = useState<{ aggregate: Aggregate; items: SceneRevision[] } | null>(null);
-  const [shots, setShots] = useState<PageState<Aggregate> | null>(null);
-  const [shotHistory, setShotHistory] = useState<{ aggregate: Aggregate; items: ShotRevision[] } | null>(null);
+  const [shots, setShots] = useState<PageState<StoryboardShot> | null>(null);
+  const [shotHistory, setShotHistory] = useState<{ aggregate: Aggregate & { archived?: boolean }; items: ShotRevision[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
   // A reused result creates no job, so nothing bumps imageEpoch; this refreshes the compose candidates instead.
   const [reuseEpoch, setReuseEpoch] = useState(0);
   const loadToken = useRef(0);
+  const archiveScope = useRef({ projectId: props.projectId, sceneId: props.sceneId, shotId: props.shotId });
+  archiveScope.current = { projectId: props.projectId, sceneId: props.sceneId, shotId: props.shotId };
 
   const load = useCallback(async () => {
     if (!props.episode) return;
@@ -1532,8 +1540,8 @@ export function ScenePane(props: {
       const scene = await client.get<{ aggregate: Aggregate; items: SceneRevision[] }>(
         `/projects/${props.projectId}/episodes/${episode.id}/scenes/${props.sceneId}/revisions`,
       );
-      const shotPage = await client.get<{ items: Aggregate[]; nextCursor: string | null }>(
-        `/projects/${props.projectId}/episodes/${episode.id}/scenes/${props.sceneId}/shots`,
+      const shotPage = await client.get<{ items: StoryboardShot[]; nextCursor: string | null }>(
+        `/projects/${props.projectId}/episodes/${episode.id}/scenes/${props.sceneId}/shots?view=storyboard`,
       );
       if (!shouldApplyLoad(request, loadToken.current)) return;
       setHistory(scene);
@@ -1544,7 +1552,7 @@ export function ScenePane(props: {
         append: false,
       }));
       if (props.shotId) {
-        const nextShot = await client.get<{ aggregate: Aggregate; items: ShotRevision[] }>(`/projects/${props.projectId}/episodes/${episode.id}/scenes/${props.sceneId}/shots/${props.shotId}/revisions`);
+        const nextShot = await client.get<{ aggregate: Aggregate & { archived?: boolean }; items: ShotRevision[] }>(`/projects/${props.projectId}/episodes/${episode.id}/scenes/${props.sceneId}/shots/${props.shotId}/revisions`);
         if (!shouldApplyLoad(request, loadToken.current)) return;
         setShotHistory(nextShot);
       } else {
@@ -1557,7 +1565,7 @@ export function ScenePane(props: {
       setShotHistory(null);
       setError(caught instanceof ApiError ? caught.detail : "场景加载失败");
     }
-  }, [props.episode, props.projectId, props.refreshEpoch, props.sceneId, props.shotId]);
+  }, [props.episode, props.projectId, props.refreshEpoch, props.imageEpoch, props.sceneId, props.shotId, reuseEpoch]);
 
   useEffect(() => {
     void load();
@@ -1566,8 +1574,8 @@ export function ScenePane(props: {
   async function moreShots() {
     if (!shots?.nextCursor || !props.episode) return;
     const request = loadToken.current;
-    const page = await client.get<{ items: Aggregate[]; nextCursor: string | null }>(
-      `/projects/${props.projectId}/episodes/${props.episode.id}/scenes/${props.sceneId}/shots?cursor=${encodeURIComponent(shots.nextCursor)}`,
+    const page = await client.get<{ items: StoryboardShot[]; nextCursor: string | null }>(
+      `/projects/${props.projectId}/episodes/${props.episode.id}/scenes/${props.sceneId}/shots?view=storyboard&cursor=${encodeURIComponent(shots.nextCursor)}`,
     );
     if (!shouldApplyLoad(request, loadToken.current)) return;
     setShots((currentPage) => applyPage(currentPage, {
@@ -1576,6 +1584,28 @@ export function ScenePane(props: {
       nextCursor: page.nextCursor,
       append: true,
     }));
+  }
+
+  async function archiveShot(shot: StoryboardShot, key: string) {
+    if (!props.episode) return;
+    try {
+      await client.write({
+        path: `/projects/${props.projectId}/episodes/${props.episode.id}/scenes/${props.sceneId}/shots/${shot.entityId}/archive`,
+        body: {}, idempotencyKey: key, ifMatch: shot.rowVersion,
+      });
+    } catch (error) {
+      if (error instanceof ApiError && error.code === "REVISION_CONFLICT") {
+        void load();
+        throw new Error("分镜版本已变化。关闭此窗口后，请核对刷新后的分镜再删除。", { cause: error });
+      }
+      throw new Error(error instanceof ApiError ? error.detail : "删除结果暂未确认，请用当前确认窗口重试。", { cause: error });
+    }
+    if (archiveScope.current.projectId !== props.projectId || archiveScope.current.sceneId !== props.sceneId) return;
+    ++loadToken.current;
+    setShots(page => page ? { ...page, items: page.items.filter(item => item.entityId !== shot.entityId) } : null);
+    if (archiveScope.current.shotId === shot.entityId) props.onOpenShot(null);
+    props.onStatus("分镜已删除，历史版本已保留。");
+    void props.onSaved().catch(() => props.onStatus("分镜已删除，任务列表暂未刷新。"));
   }
 
   if (!props.episode) return <p>缺少集数。</p>;
@@ -1683,20 +1713,13 @@ export function ScenePane(props: {
           </InspectSlot>
         </EditorGrid>
       ) : <p>场景没有当前版本</p>}
-      <section className="creator-section rounded-lg bg-white p-4">
-        <h2 className="font-medium">镜头</h2>
-        {shots?.items.length === 0 ? <p className="mt-2 text-sm">还没有镜头</p> : null}
-        <ul className="mt-2 space-y-2">
-          {shots?.items.map((shot) => (
-            <li key={shot.entityId}>
-              <button className="underline" type="button" onClick={() => props.onOpenShot(shot.entityId)}>镜头 {shot.entityId.slice(0, 8)}</button>
-            </li>
-          ))}
-        </ul>
-        {shots?.nextCursor ? (
-          <button className="mt-2 text-sm underline" type="button" onClick={() => void moreShots()}>加载更多镜头</button>
-        ) : null}
-        {current && visibleHistory ? (
+      <StoryboardRows key={`${props.projectId}:${props.sceneId}`} projectId={props.projectId} items={shots?.scope === props.sceneId ? shots.items : []}
+        currentId={props.shotId} loading={!error && shots?.scope !== props.sceneId} hasMore={Boolean(shots?.scope === props.sceneId && shots.nextCursor)}
+        onDispatched={() => {
+          props.onMediaChanged?.();
+          void props.onSaved().catch(() => props.onStatus("任务已受理，任务列表刷新暂未完成，请稍后重新读取。"));
+        }}
+        onOpen={props.onOpenShot} onArchive={archiveShot} onMore={moreShots} createForm={current && visibleHistory ? (
           <ShotCreateForm
             scene={visibleHistory.aggregate}
             source={current}
@@ -1706,11 +1729,17 @@ export function ScenePane(props: {
             onStatus={props.onStatus}
             onSaved={async () => { await props.onSaved(); await load(); }}
           />
-        ) : null}
-      </section>
+        ) : null} />
+      {visibleShot?.aggregate.archived ? <p className="text-sm" role="status">该分镜已从当前列表删除，以下为历史版本。</p> : null}
       {props.shotId && visibleShot && shotCurrent ? (
         <EditorGrid>
           <div className="min-w-0 space-y-4">
+          {visibleShot.aggregate.archived ? <section className="creator-section rounded-lg bg-white p-4">
+            <h2 className="font-medium">镜头 {shotCurrent.ordinal}</h2>
+            <p className="whitespace-pre-wrap [overflow-wrap:anywhere]">{shotCurrent.action}</p>
+            {shotCurrent.dialogue ? <p className="whitespace-pre-wrap [overflow-wrap:anywhere]">{shotCurrent.dialogue}</p> : null}
+            <p className="whitespace-pre-wrap [overflow-wrap:anywhere]">{shotCurrent.promptText}</p>
+          </section> : <>
           <ShotForm
             shot={visibleShot.aggregate}
             current={shotCurrent}
@@ -1750,7 +1779,7 @@ export function ScenePane(props: {
             onAccepted={props.onSaved}
             onReused={() => setReuseEpoch((value) => value + 1)}
           />
-          <RealMediaPanel projectId={props.projectId} shotRevisionId={shotCurrent.id} dialogue={shotCurrent.dialogue}
+          <RealMediaPanel projectId={props.projectId} shotRevisionId={shotCurrent.id} dialogue={shotCurrent.dialogue} promptText={shotCurrent.promptText}
             usable={imageGate.usable} reason={imageGate.reason} approved={approvedMediaGate.usable}
             refreshEpoch={props.refreshEpoch + props.imageEpoch + reuseEpoch}
             onChanged={() => {
@@ -1759,6 +1788,7 @@ export function ScenePane(props: {
             }} />
           <ComposePreflight revisionId={shotCurrent.id} refreshEpoch={props.imageEpoch + reuseEpoch} onChanged={props.onMediaChanged}
             blocked={props.shotComposeBlocked ?? null} />
+          </>}
           </div>
           <InspectSlot>
           <RevisionColumn
@@ -1776,6 +1806,7 @@ export function ScenePane(props: {
             currentId={visibleShot.aggregate.currentRevisionId}
             nextCursor={null}
             onMore={() => undefined}
+            readOnly={visibleShot.aggregate.archived === true}
             ifMatch={visibleShot.aggregate.rowVersion}
             reviewPath={(revisionId) => `/projects/${props.projectId}/episodes/${props.episode?.id}/scenes/${props.sceneId}/shots/${props.shotId}/revisions/${revisionId}/review`}
             onSaved={async () => { await props.onSaved(); await load(); }}
@@ -2276,6 +2307,7 @@ function RevisionColumn(props: {
   ifMatch: number;
   reviewPath: (revisionId: string) => string;
   onSaved: () => Promise<void>;
+  readOnly?: boolean;
 }) {
   const latest = props.items[0];
   const previous = props.items[1];
@@ -2301,7 +2333,7 @@ function RevisionColumn(props: {
   }, [latestId, previousId]);
 
   async function review(to: string) {
-    if (!current) return;
+    if (!current || props.readOnly) return;
     const body = reviewRequest(current, to, note);
     const draft = nextDraft(pendingReview.current, body, props.ifMatch, () => crypto.randomUUID());
     pendingReview.current = draft;
@@ -2356,7 +2388,7 @@ function RevisionColumn(props: {
           <p className="text-sm lg:col-span-2">来源 {left.source || "无"} / {right.source || "无"} · 审核 {left.reviewStatus}/{right.reviewStatus} · 新鲜度 {left.freshnessStatus}/{right.freshnessStatus}</p>
         </div>
       )}
-      {current ? (
+      {current && !props.readOnly ? (
         <div className="creator-review-actions mt-4">
           <h3 className="font-medium">审核</h3>
           <p className="text-sm">{REVIEW_TEXT[current.reviewStatus] ?? current.reviewStatus}，新鲜度 {FRESH_TEXT[current.freshnessStatus] ?? current.freshnessStatus}。已通过不等于新鲜。</p>

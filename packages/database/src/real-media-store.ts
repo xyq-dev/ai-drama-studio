@@ -12,9 +12,60 @@ export interface RealMediaExecution {
   attemptId: string | null; providerRequestId: string | null; receiptState: RealMediaReceiptState | null;
   outputs: unknown[] | null;
 }
-export interface RealMediaReceiptOutput { kind: string; retrieval: { kind: "URI"; uri: string; expiresAt?: string } | { kind: "HANDLE"; handle: string }; mimeTypeHint?: string }
+export interface RealMediaReceiptOutput {
+  kind: string;
+  retrieval: { kind: "URI"; uri: string; expiresAt?: string } | { kind: "HANDLE"; handle: string };
+  mimeTypeHint?: string;
+  metadata?: Record<string, unknown>;
+}
 /** Additional tables live only in prisma/drafts. No default migration or startup write is performed. */
 export interface ReceiptCipher { seal(value: unknown): string; open(ciphertext: string): unknown }
+
+/** Only existing objects served by the managed real-media storage route may leave the application as references. */
+export const COMFYUI_REFERENCE_ASSET_FILTER = `asset.kind='IMAGE' AND asset.status='ACTIVE'
+  AND asset.storage_provider='s3' AND asset.mime_type='image/png' AND asset.byte_size BETWEEN 1 AND 8388608
+  AND cardinality(string_to_array(asset.object_key,'/'))=6
+  AND split_part(asset.object_key,'/',1)='real-media'
+  AND split_part(asset.object_key,'/',2)=asset.workspace_id::text
+  AND split_part(asset.object_key,'/',3)=asset.project_id::text
+  AND split_part(asset.object_key,'/',4) ~ '^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$'
+  AND split_part(asset.object_key,'/',5) ~ '^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$'
+  AND asset.checksum_sha256 ~ '^[a-f0-9]{64}$'
+  AND split_part(asset.object_key,'/',6)=(asset.checksum_sha256||'.png')`;
+
+export async function freezeComfyUiReference(
+  client: PoolClient,
+  scope: { workspaceId: string; projectId: string },
+  assetId: string,
+  expectedRowVersion?: number,
+): Promise<{ assetId: string; checksumSha256: string; rowVersion: number }> {
+  const result = await client.query<{ id: string; checksum_sha256: string; row_version: number }>(
+    `SELECT asset.id, asset.checksum_sha256, asset.row_version
+       FROM asset
+      WHERE asset.id=$1 AND asset.workspace_id=$2 AND asset.project_id=$3
+        AND ($4::integer IS NULL OR asset.row_version=$4) AND ${COMFYUI_REFERENCE_ASSET_FILTER}
+      FOR SHARE OF asset`,
+    [assetId, scope.workspaceId, scope.projectId, expectedRowVersion ?? null],
+  );
+  const asset = result.rows[0];
+  if (!asset) throw new PersistenceError("REAL_MEDIA_SOURCE_INVALID", "Reference image is unavailable in this project");
+  return { assetId: asset.id, checksumSha256: asset.checksum_sha256, rowVersion: asset.row_version };
+}
+
+export const COMFYUI_PENDING_JOB_MESSAGES = {
+  COMFYUI_QUEUED: "The ComfyUI request is queued",
+  COMFYUI_RUNNING: "ComfyUI is generating the image",
+  COMFYUI_PROGRESS_UNAVAILABLE: "The original ComfyUI request is retained; progress is temporarily unavailable",
+  COMFYUI_RESULT_DOWNLOAD_FAILED: "The generated image could not be retrieved; delivery will retry the original request",
+  COMFYUI_RESULT_STORAGE_FAILED: "The generated image could not be stored; delivery will retry without regenerating",
+  COMFYUI_CANCEL_UNSUPPORTED: "Safe targeted cancellation is unavailable for this ComfyUI request",
+  COMFYUI_CANCEL_RUNNING_UNSUPPORTED: "Safe targeted cancellation is unavailable while this ComfyUI request is running",
+  COMFYUI_CANCEL_NOT_CONFIRMED: "ComfyUI did not confirm cancellation; the original request remains open",
+} as const;
+export type ComfyUiPendingJobCode = keyof typeof COMFYUI_PENDING_JOB_MESSAGES;
+export type ComfyUiCancelDenial = Extract<ComfyUiPendingJobCode, `COMFYUI_CANCEL_${string}`>;
+const COMFYUI_CANCELLATION_PROOF_KEY = "comfyui:targeted-cancel-confirmed:v1";
+
 export class RealMediaStore {
   constructor(private readonly pool: DatabasePool, private readonly options: { receiptCipher?: ReceiptCipher } = {}) {}
   receiptReady(): boolean { return Boolean(this.options.receiptCipher); }
@@ -190,6 +241,72 @@ export class RealMediaStore {
   async defer(workspaceId:string,jobId:string,seconds=15):Promise<void>{
     await this.connection(async client=>{await client.query("UPDATE generation_job SET next_run_at=now()+($3::int*interval '1 second') WHERE id=$1 AND workspace_id=$2 AND state='WAITING_EXTERNAL'",[jobId,workspaceId,Math.max(1,Math.min(seconds,3600))]);});
   }
+  async recordComfyUiPhase(e: RealMediaExecution, owner: string, code: ComfyUiPendingJobCode, seconds: number): Promise<void> {
+    await this.connection(async client => {
+      await client.query(`UPDATE generation_job j
+        SET next_run_at=now()+($4::integer*interval '1 second'), error_code=$5,error_message=$6
+        WHERE j.id=$1 AND j.workspace_id=$2 AND j.lease_owner=$3 AND j.lease_until>clock_timestamp()
+          AND j.state='WAITING_EXTERNAL' AND j.cancel_requested_at IS NULL
+          AND j.input_snapshot#>>'{configuration,providerKey}'='comfyui'
+          AND EXISTS(SELECT 1 FROM job_attempt a WHERE a.id=$7 AND a.generation_job_id=j.id AND a.finished_at IS NULL
+            AND a.provider_request_id=$8 AND a.attempt_no=(SELECT max(n.attempt_no) FROM job_attempt n WHERE n.generation_job_id=j.id))`,
+      [e.jobId, e.workspaceId, owner, Math.max(1, Math.min(seconds, 3600)), code, COMFYUI_PENDING_JOB_MESSAGES[code], e.attemptId, e.providerRequestId]);
+    });
+  }
+  async declineComfyUiCancellation(e: RealMediaExecution, owner: string, code: ComfyUiCancelDenial): Promise<void> {
+    await this.connection(async client => {
+      await client.query(`UPDATE generation_job j SET cancel_requested_at=NULL,
+          next_run_at=CASE WHEN $6::text IS NULL THEN NULL ELSE now()+interval '15 seconds' END,
+          error_code=$4,error_message=$5,row_version=row_version+1,updated_at=now()
+        WHERE j.id=$1 AND j.workspace_id=$2 AND j.lease_owner=$3 AND j.lease_until>clock_timestamp()
+          AND j.state='WAITING_EXTERNAL' AND j.cancel_requested_at IS NOT NULL
+          AND j.input_snapshot#>>'{configuration,providerKey}'='comfyui'
+          AND EXISTS(SELECT 1 FROM job_attempt a WHERE a.id=$7 AND a.generation_job_id=j.id AND a.finished_at IS NULL
+            AND a.provider_request_id IS NOT DISTINCT FROM $6::text
+            AND a.attempt_no=(SELECT max(n.attempt_no) FROM job_attempt n WHERE n.generation_job_id=j.id))`,
+      [e.jobId,e.workspaceId,owner,e.providerRequestId===null?"REAL_MEDIA_SUBMISSION_UNKNOWN":code,
+        COMFYUI_PENDING_JOB_MESSAGES[code],e.providerRequestId,e.attemptId]);
+    });
+  }
+  async recordComfyUiCancellationProof(e: RealMediaExecution): Promise<void> {
+    await this.connection(async client => {
+      await client.query(`INSERT INTO provider_event(workspace_id,provider_configuration_id,job_attempt_id,provider_request_id,
+        source,normalized_event_key,external_status)
+        SELECT j.workspace_id,a.provider_configuration_id,a.id,a.provider_request_id,'POLL',$5,'CANCELED'
+        FROM generation_job j JOIN job_attempt a ON a.generation_job_id=j.id
+        WHERE j.id=$1 AND j.workspace_id=$2 AND a.id=$3 AND a.provider_request_id=$4
+          AND j.input_snapshot#>>'{configuration,providerKey}'='comfyui'
+        ON CONFLICT (provider_configuration_id,provider_request_id,normalized_event_key) DO NOTHING`,
+      [e.jobId,e.workspaceId,e.attemptId,e.providerRequestId,COMFYUI_CANCELLATION_PROOF_KEY]);
+    });
+  }
+  async hasComfyUiCancellationProof(e: RealMediaExecution): Promise<boolean> {
+    return this.connection(async client => {
+      const result=await client.query(`SELECT 1 FROM provider_event
+        WHERE workspace_id=$1 AND job_attempt_id=$2 AND provider_request_id=$3
+          AND normalized_event_key=$4 AND external_status='CANCELED'`,
+      [e.workspaceId,e.attemptId,e.providerRequestId,COMFYUI_CANCELLATION_PROOF_KEY]);
+      return !!result.rows[0];
+    });
+  }
+  async confirmComfyUiCancellationInTransaction(client: PoolClient, e: RealMediaExecution, owner: string, requiresIntent: boolean): Promise<void> {
+    const result = await client.query(`SELECT j.id FROM generation_job j JOIN job_attempt a ON a.generation_job_id=j.id
+      WHERE j.id=$1 AND j.workspace_id=$2 AND a.id=$3 AND j.lease_owner=$4 AND j.lease_until>clock_timestamp()
+        AND j.state IN ('RUNNING','WAITING_EXTERNAL') AND (NOT $5::boolean OR j.cancel_requested_at IS NOT NULL)
+        AND j.input_snapshot#>>'{configuration,providerKey}'='comfyui' AND a.finished_at IS NULL
+        AND a.provider_request_id IS NOT DISTINCT FROM $6::text
+        AND (a.provider_request_id IS NULL OR EXISTS(SELECT 1 FROM provider_event event
+          WHERE event.job_attempt_id=a.id AND event.provider_configuration_id=a.provider_configuration_id
+            AND event.workspace_id=j.workspace_id AND event.provider_request_id=a.provider_request_id
+            AND event.normalized_event_key=$7 AND event.external_status='CANCELED'))
+        AND a.attempt_no=(SELECT max(n.attempt_no) FROM job_attempt n WHERE n.generation_job_id=j.id)
+        FOR UPDATE OF a`,[e.jobId,e.workspaceId,e.attemptId,owner,requiresIntent,e.providerRequestId,COMFYUI_CANCELLATION_PROOF_KEY]);
+    if(!result.rows[0])throw new PersistenceError("REAL_MEDIA_LEASE_LOST","Cancellation proof is no longer bound to the active job attempt");
+    if(e.providerRequestId) {
+      // The existing receipt schema records an unsuccessful external delivery as FAILED. The job exposes CANCELED.
+      await this.finishInTransaction(client,e.attemptId!,"FAILED");
+    }
+  }
   async claimRecovery(e:RealMediaExecution,leaseOwner:string,leaseMs=120_000):Promise<boolean>{
     return this.transaction(async client=>{
       await client.query("SELECT id FROM generation_job WHERE id=$1 AND workspace_id=$2 FOR UPDATE",[e.jobId,e.workspaceId]);
@@ -201,16 +318,16 @@ export class RealMediaStore {
       [e.jobId,e.workspaceId,e.attemptId,leaseOwner,leaseMs,e.inputHash]);return result.rowCount===1;
     });
   }
-  async renewDeliveryLease(e:RealMediaExecution,leaseOwner:string,leaseMs=120_000):Promise<boolean>{
+  async renewDeliveryLease(e:RealMediaExecution,leaseOwner:string,leaseMs=120_000,allowCancelRequested=false):Promise<boolean>{
     return this.transaction(async client=>{
       await client.query("SELECT id FROM generation_job WHERE id=$1 AND workspace_id=$2 FOR UPDATE",[e.jobId,e.workspaceId]);
       const result=await client.query(`UPDATE generation_job j SET lease_until=clock_timestamp()+($5::int*interval '1 millisecond'),
       row_version=row_version+1,updated_at=now() WHERE j.id=$1 AND j.workspace_id=$2 AND j.state IN ('RUNNING','WAITING_EXTERNAL')
       AND j.input_snapshot->>'schema'='real-media.v1' AND j.input_hash=$6
-      AND j.lease_owner=$4 AND j.lease_until>clock_timestamp() AND j.cancel_requested_at IS NULL
+      AND j.lease_owner=$4 AND j.lease_until>clock_timestamp() AND (j.cancel_requested_at IS NULL OR $7::boolean)
       AND EXISTS(SELECT 1 FROM job_attempt a WHERE a.id=$3 AND a.generation_job_id=j.id AND a.finished_at IS NULL
         AND a.attempt_no=(SELECT max(n.attempt_no) FROM job_attempt n WHERE n.generation_job_id=j.id))`,
-      [e.jobId,e.workspaceId,e.attemptId,leaseOwner,leaseMs,e.inputHash]);return result.rowCount===1;});
+      [e.jobId,e.workspaceId,e.attemptId,leaseOwner,leaseMs,e.inputHash,allowCancelRequested]);return result.rowCount===1;});
   }
   async releaseDeliveryLease(e:RealMediaExecution,leaseOwner:string):Promise<void>{
     await this.connection(async client=>{await client.query(`UPDATE generation_job SET lease_owner=NULL,lease_until=NULL
@@ -294,9 +411,11 @@ async function uncertainJobs(client:PoolClient,workspaceId:string,projectId:stri
   const result=await client.query(`SELECT j.id FROM generation_job j JOIN real_media_submission s ON s.generation_job_id=j.id
     WHERE j.workspace_id=$1 AND j.project_id=$2 AND j.source_shot_revision_id=$3 AND j.input_snapshot->>'schema'='real-media.v1'
       AND j.input_snapshot->>'capability'=$4 AND (s.state='UNKNOWN' OR (s.state='INTENT' AND s.provider_request_id IS NULL))
-      AND (($5::text IS NULL AND j.input_snapshot->'speech' IS NULL AND j.input_snapshot->>'sourceHash'=$6)
+      AND (($5::text IS NULL AND j.input_snapshot->'speech' IS NULL
+          AND (j.input_snapshot->>'sourceHash'=$6 OR ($8::text='comfyui' AND j.input_snapshot#>>'{configuration,providerKey}'='comfyui')))
         OR ($5::text IS NOT NULL AND j.input_snapshot#>>'{speech,lineId}'=$5))
-      AND ($7::uuid IS NULL OR j.id<>$7) ORDER BY j.id LIMIT 21`,[workspaceId,projectId,frozen.shotRevisionId,frozen.capability,frozen.speech?.lineId??null,frozen.sourceHash,excludeJobId??null]);
+      AND ($7::uuid IS NULL OR j.id<>$7) ORDER BY j.id LIMIT 21`,[workspaceId,projectId,frozen.shotRevisionId,frozen.capability,
+      frozen.speech?.lineId??null,frozen.sourceHash,excludeJobId??null,frozen.configuration?.providerKey??null]);
   if(result.rows.length>20)throw new PersistenceError("REAL_MEDIA_UNCERTAIN_CHANGED","Too many unresolved operations; reconcile original jobs before another paid operation");
   return sortedIds(result.rows.map(row=>String(row.id)));
 }

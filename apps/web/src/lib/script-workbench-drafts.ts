@@ -2,7 +2,22 @@ import type { ScriptWorkbenchPlan, ScriptWorkbenchScript } from "@ai-drama/contr
 import { nextDraft, readDraft, writeDraft, type JsonStorage } from "./studio-model";
 
 export const WORKBENCH_DRAFT_PREFIX = "ads-workbench-draft:";
+export const STORYBOARD_IMAGE_BATCH_PREFIX = "ads.storyboard.image-batch.v1:";
 export const WORKBENCH_DRAFTS_CLEARED_EVENT = "ads-workbench-drafts-cleared";
+export const IMPORTED_SCRIPT_TEXT_LIMIT = 8000;
+const importedScriptKey = (projectId: string) => WORKBENCH_DRAFT_PREFIX + "import:" + projectId;
+
+export function storeImportedScript(storage: JsonStorage, projectId: string, text: string): void {
+  if (!text.trim() || text.length > IMPORTED_SCRIPT_TEXT_LIMIT) throw new Error("剧本文字长度不符合要求。");
+  storage.setItem(importedScriptKey(projectId), text);
+}
+export function readImportedScript(storage: JsonStorage, projectId: string): string | null {
+  const text = storage.getItem(importedScriptKey(projectId));
+  return text?.trim() && text.length <= IMPORTED_SCRIPT_TEXT_LIMIT ? text : null;
+}
+export function clearImportedScript(storage: JsonStorage, projectId: string): void {
+  storage.removeItem(importedScriptKey(projectId));
+}
 export interface WorkbenchEditingBaseline {
   plan: ScriptWorkbenchPlan | null;
   planVersion: number | null;
@@ -198,6 +213,6 @@ export function clearWorkbenchSessionDrafts(
 ): void {
   for (let index = storage.length - 1; index >= 0; index -= 1) {
     const key = storage.key(index);
-    if (key?.startsWith(WORKBENCH_DRAFT_PREFIX)) storage.removeItem(key);
+    if (key?.startsWith(WORKBENCH_DRAFT_PREFIX) || key?.startsWith(STORYBOARD_IMAGE_BATCH_PREFIX)) storage.removeItem(key);
   }
 }

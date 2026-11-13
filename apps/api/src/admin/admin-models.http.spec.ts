@@ -10,7 +10,7 @@ import { hashPassword } from "../auth/password-hash";
 import { SESSION_IDLE_MS, SiteAuth, type SiteAuthState } from "../auth/site-auth";
 import { setAdminResponseHeaders } from "./admin-auth";
 import type { AdminHeaderResponse } from "./admin-auth";
-import { ADMIN_MODELS_SERVICE, AdminModelsController } from "./admin-models.controller";
+import { ADMIN_COMFYUI_CHECK, ADMIN_MODELS_SERVICE, AdminModelsController } from "./admin-models.controller";
 
 // Test-only values. The console is reached through the site login; the old token must not open it.
 const PASSWORD = "test-only-site-password-Qm7#x";
@@ -55,6 +55,7 @@ describe("administrator model settings real HTTP boundary (site login)", () => {
   let base: string;
   let now = Date.parse("2026-10-10T00:00:00Z");
   let store: ReturnType<typeof backend>;
+  const checkComfyUi = vi.fn(async () => ({ status: "missing_dependencies", generationEnabled: false, missingNodeCount: 2, missingModelCount: 1 }));
 
   afterEach(async () => {
     await app?.close();
@@ -72,7 +73,10 @@ describe("administrator model settings real HTTP boundary (site login)", () => {
     const module = await Test.createTestingModule({
       imports: [AuthModule.register({ NODE_ENV: "test" } as ApiEnv, state)],
       controllers: [AdminModelsController],
-      providers: [{ provide: ADMIN_MODELS_SERVICE, useValue: options.backendMissing ? null : store }],
+      providers: [
+        { provide: ADMIN_MODELS_SERVICE, useValue: options.backendMissing ? null : store },
+        { provide: ADMIN_COMFYUI_CHECK, useValue: checkComfyUi },
+      ],
     }).compile();
     app = module.createNestApplication({ logger: false });
     app.use("/api/v1/admin", (_request: unknown, response: AdminHeaderResponse, next: () => void) => {
@@ -110,6 +114,22 @@ describe("administrator model settings real HTTP boundary (site login)", () => {
     }
     expect(store.view).not.toHaveBeenCalled();
     expect(store.updateProvider).not.toHaveBeenCalled();
+  });
+
+  it("checks the configured ComfyUI instance only on an authenticated same-origin request with no overrides", async () => {
+    await start();
+    const route = "/admin/models/comfyui/check";
+    const { headers } = await signedIn();
+    const send = (values: Record<string, string>, body = {}) => request(route, { method: "POST", headers: values, body: JSON.stringify(body) });
+    expect((await send({ origin: ORIGIN, "content-type": "application/json" })).status).toBe(401);
+    expect((await send({ ...headers, origin: "https://example.invalid" })).status).toBe(403);
+    expect((await send(headers, { baseUrl: "https://example.invalid" })).status).toBe(400);
+    expect(checkComfyUi).not.toHaveBeenCalled();
+    const response = await send(headers);
+    expect(response.status).toBe(200);
+    privateHeaders(response);
+    expect(await response.json()).toEqual({ status: "missing_dependencies", generationEnabled: false, missingNodeCount: 2, missingModelCount: 1 });
+    expect(checkComfyUi).toHaveBeenCalledOnce();
   });
 
   it("never opens with the old administrator token, and the token login routes are gone", async () => {

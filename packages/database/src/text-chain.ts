@@ -105,6 +105,24 @@ export interface TextAggregatePointers {
 
 export interface TextAggregateSummary extends TextAggregatePointers {
   currentRevision: CurrentRevisionSummary | null;
+  /** Opt-in display data for a page of the existing shot collection. */
+  storyboard?: ShotStoryboardView;
+}
+
+interface ShotStoryboardView {
+  ordinal: number;
+  shotType: string;
+  camera: string;
+  action: string;
+  dialogue: string | null;
+  durationHint: string | null;
+  plannedDurationMs: number | null;
+  promptText: string;
+  sourceScene: string;
+  location: string | null;
+  characters: Array<{ id: string; name: string; assetId: string | null }>;
+  candidates: Array<{ id: string; kind: "IMAGE" | "VIDEO"; storageProvider: "s3" | "mock-object-store"; status: string }>;
+  selectedAssetId: string | null;
 }
 
 export interface TextAggregatePage {
@@ -251,10 +269,10 @@ function collectionPage(
   rows: QueryResultRow[], limit: number, scope: CursorScope,
 ): TextAggregatePage {
   const page = rows.slice(0, limit);
-  const items = page.map((row) => mapAggregate(
-    row, String(row.id), String(scope.projectId),
-    scope.episodeId, scope.sceneId,
-  ));
+  const items = page.map((row) => ({
+    ...mapAggregate(row, String(row.id), String(scope.projectId), scope.episodeId, scope.sceneId),
+    ...(row.storyboard ? { storyboard: row.storyboard as ShotStoryboardView } : {}),
+  }));
   const last = page.at(-1);
   const nextCursor = rows.length > limit && last ? Buffer.from(JSON.stringify({
     v: 1, ...scope,
@@ -262,6 +280,71 @@ function collectionPage(
     id: String(last.id),
   })).toString("base64url") : null;
   return { items, nextCursor };
+}
+
+/** The optional drafts are not installed everywhere. The regular shot list has no dependency on either. */
+async function storyboardPage(client: PoolClient, collection: string, values: unknown[]) {
+  const { rows: [tables] } = await client.query(`SELECT
+    to_regclass('character_reference_selection') IS NOT NULL AS portraits,
+    obj_description(to_regclass('comfyui_shot_image_selection'),'pg_class')='ads.comfyui.shot-image-selection.v1' AS selections`);
+  const portraitJoin = tables?.portraits === true ? `LEFT JOIN character_reference_selection portrait
+    ON portrait.character_id = character.id AND portrait.source_character_revision_id = person_revision.id
+    AND portrait.workspace_id = $1 AND portrait.project_id = $2
+    LEFT JOIN asset portrait_asset ON portrait_asset.id = portrait.asset_id
+    AND portrait_asset.workspace_id = $1 AND portrait_asset.project_id = $2
+    AND portrait_asset.status = 'ACTIVE' AND portrait_asset.review_status = 'APPROVED'
+    AND portrait_asset.reviewed_content_hash = portrait_asset.checksum_sha256
+    AND portrait_asset.mime_type = 'image/png' AND portrait_asset.storage_provider = 'mock-object-store'` : "";
+  const selection = tables?.selections === true ? `(SELECT chosen.asset_id FROM comfyui_shot_image_selection chosen
+    JOIN asset selected ON selected.id = chosen.asset_id AND selected.workspace_id = chosen.workspace_id
+      AND selected.project_id = chosen.project_id AND selected.source_shot_revision_id = chosen.shot_revision_id
+      AND selected.status = 'ACTIVE' AND selected.review_status <> 'REJECTED' AND selected.kind = 'IMAGE'
+      AND selected.checksum_sha256 = chosen.asset_checksum_sha256
+    JOIN generation_job job ON job.id = selected.source_generation_job_id AND job.workspace_id = $1 AND job.project_id = $2
+      AND job.source_shot_revision_id = revision.id AND job.state = 'SUCCEEDED'
+      AND job.input_snapshot #>> '{configuration,providerKey}' = 'comfyui'
+    WHERE chosen.workspace_id = $1 AND chosen.project_id = $2 AND chosen.shot_revision_id = revision.id
+      AND shot_page.approved_revision_id = revision.id AND revision.review_status = 'APPROVED'
+      AND revision.freshness_status = 'CURRENT')` : "NULL::uuid";
+  return client.query<QueryResultRow>(`WITH shot_page AS (${collection})
+    SELECT shot_page.*, CASE WHEN revision.id IS NULL THEN NULL ELSE jsonb_build_object(
+      'ordinal', revision.ordinal, 'shotType', revision.shot_type, 'camera', revision.camera,
+      'action', revision.action, 'dialogue', revision.dialogue, 'durationHint', revision.duration_hint,
+      'plannedDurationMs', (to_jsonb(revision)->>'planned_duration_ms')::int, 'promptText', revision.prompt_text,
+      'sourceScene', source.heading, 'location', location.name, 'characters', COALESCE(refs.items, '[]'::jsonb),
+      'candidates', COALESCE(media.items, '[]'::jsonb), 'selectedAssetId', selection.asset_id
+    ) END AS storyboard
+    FROM shot_page
+    LEFT JOIN shot_revision revision ON revision.id = shot_page.current_revision_id
+    LEFT JOIN scene_revision source ON source.id = revision.source_scene_revision_id
+      AND source.workspace_id = $1 AND source.project_id = $2
+    LEFT JOIN location_revision setting ON setting.id = source.location_revision_id
+      AND setting.workspace_id = $1 AND setting.project_id = $2
+    LEFT JOIN location ON location.id = setting.location_id AND location.workspace_id = $1 AND location.project_id = $2
+    LEFT JOIN LATERAL (SELECT ${selection} AS asset_id) selection ON true
+    LEFT JOIN LATERAL (SELECT jsonb_agg(jsonb_build_object('id', item.id, 'name', item.name,
+      'assetId', item.asset_id) ORDER BY item.name, item.id) AS items FROM (
+        SELECT character.id, character.name, ${tables?.portraits === true ? "portrait_asset.id" : "NULL::uuid"} AS asset_id
+        FROM shot_character_reference ref
+        JOIN character_revision person_revision ON person_revision.id = ref.character_revision_id
+          AND person_revision.workspace_id = $1 AND person_revision.project_id = $2
+        JOIN character ON character.id = person_revision.character_id AND character.workspace_id = $1 AND character.project_id = $2
+        ${portraitJoin}
+        WHERE ref.shot_revision_id = revision.id AND ref.workspace_id = $1 AND ref.project_id = $2
+        ORDER BY character.name, character.id LIMIT 9
+      ) item) refs ON true
+    LEFT JOIN LATERAL (SELECT jsonb_agg(jsonb_build_object('id', item.id, 'kind', item.kind,
+      'storageProvider', item.storage_provider, 'status', item.status) ORDER BY item.selected DESC, item.created_at DESC, item.id DESC) AS items FROM (
+        SELECT asset.id, asset.kind, asset.storage_provider, asset.status, asset.created_at,
+          (asset.id IS NOT DISTINCT FROM selection.asset_id) AS selected
+        FROM asset WHERE asset.workspace_id = $1 AND asset.project_id = $2
+          AND asset.source_shot_revision_id = revision.id AND asset.status IN ('ACTIVE', 'STALE', 'SUPERSEDED')
+          AND asset.storage_provider IN ('mock-object-store', 's3')
+          AND ((asset.kind = 'IMAGE' AND asset.mime_type IN ('image/png', 'image/jpeg'))
+            OR (asset.kind = 'VIDEO' AND asset.mime_type = 'video/mp4'))
+        ORDER BY selected DESC, asset.created_at DESC, asset.id DESC LIMIT 9
+      ) item) media ON true
+    ORDER BY (revision.id IS NULL)::int, COALESCE(revision.ordinal, 0), shot_page.id`, values);
 }
 
 async function withTransaction<T>(
@@ -378,14 +461,14 @@ export class TextChainService {
 
   async listShots(
     workspaceId: string, projectId: string, episodeId: string, sceneId: string,
-    cursor?: string, limit = 20,
+    cursor?: string, limit = 20, includeStoryboard = false,
   ): Promise<TextAggregatePage> {
-    return this.listScopedAggregates("shot", workspaceId, projectId, episodeId, sceneId, cursor, limit);
+    return this.listScopedAggregates("shot", workspaceId, projectId, episodeId, sceneId, cursor, limit, includeStoryboard);
   }
 
   private async listScopedAggregates(
     kind: "scene" | "shot", workspaceId: string, projectId: string, episodeId: string,
-    sceneId: string | undefined, cursor: string | undefined, limit: number,
+    sceneId: string | undefined, cursor: string | undefined, limit: number, includeStoryboard = false,
   ): Promise<TextAggregatePage> {
     validatePageLimit(limit);
     const scope = { kind, workspaceId, projectId, episodeId, ...(sceneId ? { sceneId } : {}) };
@@ -411,8 +494,7 @@ export class TextChainService {
         afterSql = `AND ((revision.id IS NULL)::int, COALESCE(revision.ordinal, 0), parent.id)
           > ($${n - 2}::int, $${n - 1}::int, $${n}::uuid)`;
       }
-      const result = await client.query<QueryResultRow>(
-        `SELECT parent.id, parent.row_version, parent.current_revision_id, parent.approved_revision_id,
+      const collection = `SELECT parent.id, parent.row_version, parent.current_revision_id, parent.approved_revision_id,
                 parent.episode_id, ${kind === "shot" ? "parent.scene_id," : ""}
                 revision.ordinal, revision.review_version, revision.review_status, revision.freshness_status,
                 concat((revision.id IS NULL)::int, ':', COALESCE(revision.ordinal, 0)) AS cursor_sort
@@ -420,8 +502,10 @@ export class TextChainService {
            LEFT JOIN ${kind}_revision revision ON revision.id = parent.current_revision_id
           WHERE parent.workspace_id=$1 AND parent.project_id=$2 AND parent.episode_id=$3
             AND parent.archived_at IS NULL ${scopeSql} ${afterSql}
-          ORDER BY (revision.id IS NULL)::int, COALESCE(revision.ordinal, 0), parent.id LIMIT $4`, values,
-      );
+          ORDER BY (revision.id IS NULL)::int, COALESCE(revision.ordinal, 0), parent.id LIMIT $4`;
+      const result = includeStoryboard && kind === "shot"
+        ? await storyboardPage(client, collection, values)
+        : await client.query<QueryResultRow>(collection, values);
       await client.query("COMMIT");
       return collectionPage(result.rows, limit, scope);
     } catch (error) { await client.query("ROLLBACK"); throw error; }
@@ -900,7 +984,7 @@ export class TextChainService {
     try {
       await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
       const parent = await client.query<QueryResultRow>(
-        `SELECT row_version, current_revision_id, approved_revision_id, episode_id FROM shot WHERE id = $1 AND workspace_id = $2
+        `SELECT row_version, current_revision_id, approved_revision_id, episode_id, archived_at IS NOT NULL AS archived FROM shot WHERE id = $1 AND workspace_id = $2
           AND project_id = $3 AND scene_id = $4`,
         [shotId, workspaceId, projectId, sceneId],
       );
@@ -916,7 +1000,8 @@ export class TextChainService {
         [shotId, workspaceId],
       );
       await client.query("COMMIT");
-      return { aggregate: mapAggregatePointers(parent.rows[0]!, shotId, projectId, String(parent.rows[0]!.episode_id), sceneId), items: result.rows.map((row) => ({
+      return { aggregate: { ...mapAggregatePointers(parent.rows[0]!, shotId, projectId, String(parent.rows[0]!.episode_id), sceneId),
+        archived: parent.rows[0]!.archived === true }, items: result.rows.map((row) => ({
         id: String(row.id), revisionNo: Number(row.revision_no),
         sourceSceneRevisionId: String(row.source_scene_revision_id),
         ordinal: Number(row.ordinal), shotType: String(row.shot_type),
@@ -948,9 +1033,9 @@ export class TextChainService {
     const routeScope = await client.query(
       input.kind === "scene"
         ? `SELECT 1 FROM scene WHERE id = $1 AND workspace_id = $2
-            AND project_id = $3 AND episode_id = $4`
+            AND project_id = $3 AND episode_id = $4 AND archived_at IS NULL`
         : `SELECT 1 FROM shot WHERE id = $1 AND workspace_id = $2
-            AND project_id = $3 AND episode_id = $4 AND scene_id = $5`,
+            AND project_id = $3 AND episode_id = $4 AND scene_id = $5 AND archived_at IS NULL`,
       input.kind === "scene"
         ? [parentId, input.workspaceId, input.projectId, input.episodeId]
         : [parentId, input.workspaceId, input.projectId, input.episodeId, input.sceneId],
@@ -1084,6 +1169,25 @@ export class TextChainService {
     };
     for (const shot of input.shots) await archive("shot", shot.shotId, shot.rowVersion);
     for (const scene of input.scenes) await archive("scene", scene.sceneId, scene.rowVersion);
+  }
+
+  async archiveShotInTransaction(client: PoolClient, input: {
+    workspaceId: string; projectId: string; episodeId: string; sceneId: string;
+    shotId: string; rowVersion: number; traceId: string;
+  }): Promise<{ shotId: string; archived: true }> {
+    await lockProject(client, input.projectId, input.workspaceId);
+    const scoped = await client.query(`SELECT 1 FROM shot
+      WHERE id = $1 AND workspace_id = $2 AND project_id = $3 AND episode_id = $4 AND scene_id = $5`,
+    [input.shotId, input.workspaceId, input.projectId, input.episodeId, input.sceneId]);
+    if (!scoped.rows[0]) throw new PersistenceError("NOT_FOUND", "Shot not found in route scope");
+    const active = await client.query(`SELECT 1 FROM generation_job job
+      JOIN shot_revision revision ON revision.id = job.source_shot_revision_id
+      WHERE job.workspace_id = $1 AND job.project_id = $2 AND revision.shot_id = $3
+        AND job.state IN ('PENDING', 'QUEUED', 'RUNNING', 'WAITING_EXTERNAL') LIMIT 1`,
+    [input.workspaceId, input.projectId, input.shotId]);
+    if (active.rows[0]) throw new PersistenceError("JOB_INVALID_TRANSITION", "该分镜还有未完成的生成任务，请先查看任务状态。");
+    await this.archiveSceneSetInTransaction(client, { ...input, shots: [input], scenes: [] });
+    return { shotId: input.shotId, archived: true };
   }
 
   /** Character references of a fresh shot draft; the provenance triggers require current, fresh character revisions. */

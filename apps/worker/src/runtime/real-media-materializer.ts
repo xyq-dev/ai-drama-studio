@@ -35,6 +35,17 @@ export function preflightRealMediaTools(options:{workDir:string;ffmpegBin?:strin
 }
 export interface VerifiedRealMedia { bytes:Buffer;mimeType:"image/png"|"video/mp4"|"audio/wav";width?:number;height?:number;durationMs?:number }
 export type RealMediaMaterializer=(output:MediaProviderOutput,adapter:MediaProviderAdapter,configuration:RealMediaConfiguration)=>Promise<VerifiedRealMedia>;
+/** Decode validated PNG references before uploading them to the image worker. */
+export async function validateComfyUiSourceImageDecode(bytes:Uint8Array,options:{workDir:string;ffmpegBin?:string}):Promise<void>{
+  await mkdir(options.workDir,{recursive:true});
+  const directory=await mkdtemp(join(options.workDir,"comfyui-reference-"));
+  try {
+    const file=join(directory,"reference.png");
+    await writeFile(file,bytes,{flag:"wx",mode:0o600});
+    await run(options.ffmpegBin??"ffmpeg",["-v","error","-xerror","-f","png_pipe","-i",file,"-frames:v","1","-f","null","-"],
+      {timeout:20_000,maxBuffer:1024*1024});
+  } finally { await rm(directory,{recursive:true,force:true}); }
+}
 function dimensions(stream:{width?:number;height?:number}):{width:number;height:number}{
   if(!Number.isSafeInteger(stream.width)||!Number.isSafeInteger(stream.height)||stream.width!<1||stream.height!<1||stream.width!>4096||stream.height!>4096)throw new Error("invalid media dimensions");
   return {width:stream.width!,height:stream.height!};
@@ -93,7 +104,9 @@ export function createRealMediaMaterializer(options:{workDir:string;ffmpegBin?:s
       const facts=await probe(input);const audio=facts.streams.filter(s=>s.codec_type==="audio");const video=facts.streams.filter(s=>s.codec_type==="video");
       if(output.kind==="IMAGE"){
         if(video.length!==1||audio.length)throw new Error("invalid image streams");
-        await run(options.ffmpegBin??"ffmpeg",["-v","error","-i",input,"-frames:v","1","-c:v","png",normalized],{timeout:60_000,maxBuffer:1024*1024});
+        const strictPng=configuration.providerKey==="comfyui";
+        if(strictPng&&video[0]?.codec_name!=="png")throw new Error("ComfyUI output must be a PNG");
+        await run(options.ffmpegBin??"ffmpeg",["-v","error",...(strictPng?["-xerror"]:[]),"-i",input,"-frames:v","1","-c:v","png",normalized],{timeout:60_000,maxBuffer:1024*1024});
         const result=await probe(normalized);const v=result.streams.find(s=>s.codec_type==="video");if(!v)throw new Error("image stream missing");
         const size=dimensions(v);
         const resultBytes=await readFile(normalized);if(resultBytes.length>maximum)throw new Error("image too large");

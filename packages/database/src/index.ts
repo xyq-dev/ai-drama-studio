@@ -19,6 +19,8 @@ export {
 export {
   JobPersistenceService,
   PersistenceError,
+  canRequestComfyUiCancellation,
+  isComfyUiMediaJob,
   type AcquiredJob,
   type DatabasePool,
   type CreateWorkflowJobInput,

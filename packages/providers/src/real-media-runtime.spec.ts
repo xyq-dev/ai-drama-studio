@@ -5,6 +5,41 @@ const key = Buffer.alloc(32, 21).toString("base64"), previous = Buffer.alloc(32,
 const configured = { REAL_MEDIA_ENABLED: "true", REAL_MEDIA_RECEIPT_KEY: key,
   DASHSCOPE_MEDIA_API_KEY: "server-only-test-key", REAL_MEDIA_PRICE_VERSION: "operator-20261101",
   DASHSCOPE_MEDIA_PRICE_IMAGE: "0.18", DASHSCOPE_MEDIA_PRICE_VIDEO_SECOND: "0.15", DASHSCOPE_MEDIA_PRICE_TTS_CHARACTER: "0.00008" };
+const comfy = { COMFYUI_IMAGE_ENABLED: "true", COMFYUI_BASE_URL: "http://127.0.0.1:8188",
+  COMFYUI_ALLOWED_ORIGINS: "http://127.0.0.1:8188", COMFYUI_CHECKPOINT: "fixture.safetensors",
+  COMFYUI_PRICE_IMAGE_ESTIMATE: "0.10", COMFYUI_API_KEY: "fixture-only-bearer" };
+describe("ComfyUI environment configuration", () => {
+  it("uses an explicit second image provider and keeps address and key out of the frozen snapshot", async () => {
+    const runtime = new ServerRealMediaRuntime(workspaceId, loadRealMediaEnvironment({ ...configured, ...comfy }), true);
+    const frozen = runtime.comfyUiConfiguration()!;
+    expect(frozen).toMatchObject({ enabled: true, providerKey: "comfyui", region: "self-hosted", unitPrice: "0.10" });
+    expect(JSON.stringify(frozen)).not.toMatch(/127\.0\.0\.1|fixture-only-bearer/);
+    expect((await runtime.configurationFor("image.generate"))?.providerKey).toBe("dashscope-media");
+    const reordered = Object.fromEntries(Object.entries(frozen).reverse()) as typeof frozen;
+    expect((await runtime.adapterFor(reordered, "submit")).providerKey).toBe("comfyui");
+  });
+  it("ignores file-only ComfyUI settings and rejects unavailable target or price", () => {
+    expect(loadRealMediaEnvironment({}, comfy).COMFYUI_IMAGE_ENABLED).toBeUndefined();
+    expect(() => loadRealMediaEnvironment({ ...comfy, COMFYUI_PRICE_IMAGE_ESTIMATE: "0" })).toThrow("COMFYUI_PRICE_IMAGE_ESTIMATE");
+    expect(() => loadRealMediaEnvironment({ ...comfy, COMFYUI_BASE_URL: "https://user:pass@comfy.example" })).toThrow("COMFYUI_BASE_URL");
+    const runtime = new ServerRealMediaRuntime(workspaceId, loadRealMediaEnvironment({
+      ...configured, ...comfy, COMFYUI_ALLOWED_ORIGINS: "http://127.0.0.1:8189",
+    }), true);
+    expect(runtime.comfyUiConfiguration()).toBeNull();
+  });
+  it("pauses new submissions but retains original query credentials and target", async () => {
+    const old = new ServerRealMediaRuntime(workspaceId, loadRealMediaEnvironment({ ...configured, ...comfy }), true);
+    const frozen = old.comfyUiConfiguration()!;
+    const updated = new ServerRealMediaRuntime(workspaceId, loadRealMediaEnvironment({
+      ...configured, ...comfy, COMFYUI_IMAGE_ENABLED: "false",
+      COMFYUI_CREDENTIAL_VERSION: "v2", COMFYUI_API_KEY: "replacement-key",
+      COMFYUI_PREVIOUS_CREDENTIAL_VERSION: "v1", COMFYUI_PREVIOUS_API_KEY: comfy.COMFYUI_API_KEY,
+    }), true);
+    expect(await updated.checkComfyUi()).toEqual({ status: "disabled", workflows: [] });
+    await expect(updated.adapterFor(frozen, "submit")).rejects.toThrow("REAL_MEDIA_CONFIGURATION_CHANGED");
+    expect((await updated.adapterFor(frozen, "query")).providerKey).toBe("comfyui");
+  });
+});
 describe("real media configuration and encrypted receipts", () => {
   it("is disabled by default and ignores file-only production permission and secrets", async () => {
     const env = loadRealMediaEnvironment({}, configured);

@@ -32,10 +32,10 @@ beforeAll(async()=>{
   expect(await store.storageReady()).toBe(true);expect((await runMigrations(pool)).applied).toEqual([]);
 });
 afterAll(async()=>{await pool.end();});
-async function bound(quoteLifetimeMs?:number){
+async function bound(quoteLifetimeMs?:number,providerKey="dashscope-media",targetedCancellation=false){
   const fixture=await world();
-  const provider=await pool.query<{id:string}>("INSERT INTO provider_configuration(workspace_id,provider_key,capability,default_timeout_ms,max_attempts) VALUES($1,'dashscope-media','image.generate',30000,1) RETURNING id",[fixture.workspaceId]);
-  const configuration:RealMediaConfiguration={id:provider.rows[0]!.id,version:"fixture-v1",providerKey:"dashscope-media",capability:"image.generate",model:"qwen-image-3.0",region:"beijing",credentialRef:"test-only:never-resolved",credentialVersion:"v1",enabled:true,queryAllowed:true,priceVersion:"fixture-price-v1",currency:"CNY",unitPrice:"0.18",unitType:"image",parameters:{},maximumOperationAmount:"0.50"};
+  const provider=await pool.query<{id:string}>("INSERT INTO provider_configuration(workspace_id,provider_key,capability,default_timeout_ms,max_attempts) VALUES($1,$2,'image.generate',30000,1) RETURNING id",[fixture.workspaceId,providerKey]);
+  const configuration:RealMediaConfiguration={id:provider.rows[0]!.id,version:"fixture-v1",providerKey,capability:"image.generate",model:"qwen-image-3.0",region:"beijing",credentialRef:"test-only:never-resolved",credentialVersion:"v1",enabled:true,queryAllowed:true,priceVersion:"fixture-price-v1",currency:"CNY",unitPrice:"0.18",unitType:"image",parameters:providerKey==="comfyui"?{targetedCancellation}:{},maximumOperationAmount:"0.50"};
   const quote=await store.createQuote({lifetimeMs:quoteLifetimeMs,workspaceId:fixture.workspaceId,projectId:fixture.projectId,actorId:"test",frozen:{schema:"real-media.v1",shotRevisionId:fixture.shotRevisionId,capability:"image.generate",sourceText:"prompt",sourceHash:hash,configuration}});
   await expect(store.authorize({...fixture,actorId:"test",quoteId:quote.quoteId,maximumAmount:"0.51"})).rejects.toMatchObject({code:"REAL_MEDIA_BUDGET_MISMATCH"});
   const auth=await store.authorize({...fixture,actorId:"test",quoteId:quote.quoteId,maximumAmount:quote.maximumAmount});
@@ -201,6 +201,48 @@ describe("real media draft acceptance against an explicitly named empty PostgreS
     expect((await store.loadExecution(value.workspaceId,execution.jobId))?.state).toBe("CANCELED");
     expect((await pool.query("SELECT usage_json FROM real_media_submission WHERE job_attempt_id=$1",[value.attemptId])).rows[0]!.usage_json).toEqual({image_count:1});
     expect((await pool.query("SELECT count(*)::int AS n FROM cost_ledger WHERE generation_job_id=$1 AND kind='ACTUAL'",[execution.jobId])).rows[0]!.n).toBe(0);
+  });
+  it("never presents ComfyUI cancellation as confirmed until the exact attempt has scoped provider proof",async()=>{
+    const value=await bound(undefined,"comfyui",true);
+    const other=await bound(undefined,"comfyui");
+    const runtime=new RuntimeStore(pool);
+    await intent(value);
+    const execution=await acknowledge(value);
+    const details={workspaceId:value.workspaceId,jobId:execution.jobId,traceId:"cancel-comfy-test"};
+    await expect(jobs.cancelJob(details)).rejects.toMatchObject({code:"COMFYUI_CANCEL_UNSUPPORTED"});
+    await store.recordComfyUiPhase(execution,"acceptance-owner","COMFYUI_QUEUED",5);
+    expect(await runtime.getJob(details.workspaceId,details.jobId)).toMatchObject({state:"WAITING_EXTERNAL",errorCode:"COMFYUI_QUEUED",canCancel:true});
+    expect(await jobs.cancelJob(details)).toBe("WAITING_EXTERNAL");
+    expect(await runtime.getJob(details.workspaceId,details.jobId)).toMatchObject({state:"WAITING_EXTERNAL",canCancel:false});
+    await expect(jobs.confirmCancellation({...details,attemptId:value.attemptId})).rejects.toMatchObject({code:"COMFYUI_CANCEL_UNSUPPORTED"});
+    await expect(jobs.confirmCancellation({...details,attemptId:value.attemptId,
+      beforeCancellation:client=>store.confirmComfyUiCancellationInTransaction(client,{...execution,providerRequestId:"wrong-request"},"acceptance-owner",true),
+    })).rejects.toMatchObject({code:"REAL_MEDIA_LEASE_LOST"});
+    await store.declineComfyUiCancellation(execution,"acceptance-owner","COMFYUI_CANCEL_NOT_CONFIRMED");
+    expect(await store.loadExecution(details.workspaceId,details.jobId)).toMatchObject({cancelRequested:false,state:"WAITING_EXTERNAL",receiptState:"ACKNOWLEDGED"});
+    expect(await runtime.getJob(details.workspaceId,details.jobId)).toMatchObject({errorCode:"COMFYUI_CANCEL_NOT_CONFIRMED"});
+    await store.recordComfyUiPhase(execution,"acceptance-owner","COMFYUI_RUNNING",5);
+    expect(await jobs.cancelJob(details)).toBe("WAITING_EXTERNAL");
+    await expect(jobs.confirmCancellation({...details,attemptId:value.attemptId,
+      beforeCancellation:client=>store.confirmComfyUiCancellationInTransaction(client,execution,"acceptance-owner",true),
+    })).rejects.toMatchObject({code:"REAL_MEDIA_LEASE_LOST"});
+    await store.recordComfyUiCancellationProof(execution);
+    expect(await store.hasComfyUiCancellationProof(execution)).toBe(true);
+    await jobs.confirmCancellation({...details,attemptId:value.attemptId,
+      beforeCancellation:client=>store.confirmComfyUiCancellationInTransaction(client,execution,"acceptance-owner",true),
+    });
+    expect(await store.loadExecution(details.workspaceId,details.jobId)).toMatchObject({state:"CANCELED",receiptState:"FAILED",providerRequestId:execution.providerRequestId});
+    expect((await store.loadExecution(other.workspaceId,other.execution.jobId))?.state).toBe("RUNNING");
+    expect((await pool.query("SELECT kind FROM cost_ledger WHERE generation_job_id=$1",[execution.jobId])).rows).toEqual([{kind:"ESTIMATED"}]);
+  });
+  it("includes uncertain ComfyUI operations for the same shot even when the editable prompt changes",async()=>{
+    const value=await bound(undefined,"comfyui");
+    await intent(value);
+    await store.markUnknown(value.workspaceId,value.execution.jobId,value.attemptId);
+    const {budget,...frozen}=value.execution.inputSnapshot;void budget;
+    const quote=await store.createQuote({workspaceId:value.workspaceId,projectId:value.projectId,actorId:"test",
+      frozen:{...frozen,sourceText:"another edit",sourceHash:"b".repeat(64)}});
+    expect(quote.uncertainJobIds).toEqual([value.execution.jobId]);
   });
 });
 

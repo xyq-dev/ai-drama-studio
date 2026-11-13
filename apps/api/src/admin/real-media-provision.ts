@@ -4,9 +4,11 @@ import type { DatabasePool } from "@ai-drama/database";
 export async function provisionRealMediaProviders(pool: DatabasePool,
   input: { workspaceId: string; configurations: RealMediaConfiguration[]; enableExisting?: boolean }): Promise<{ ids: string[]; created: number }> {
   const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
-  const pairs = new Set(["dashscope-media:image.generate", "dashscope-media:video.generate", "dashscope-media:audio.tts", "elevenlabs-media:audio.music", "openai-media:image.generate"]);
-  if (!uuid.test(input.workspaceId) || input.configurations.length < 1 || input.configurations.length > 4
-    || new Set(input.configurations.map(c => c.capability)).size !== input.configurations.length
+  const pairs = new Set(["dashscope-media:image.generate", "dashscope-media:video.generate", "dashscope-media:audio.tts", "elevenlabs-media:audio.music", "openai-media:image.generate", "comfyui:image.generate"]);
+  const defaultConfigurations = input.configurations.filter(c => c.providerKey !== "comfyui");
+  if (!uuid.test(input.workspaceId) || input.configurations.length < 1 || input.configurations.length > 5
+    || new Set(defaultConfigurations.map(c => c.capability)).size !== defaultConfigurations.length
+    || new Set(input.configurations.map(c => c.providerKey + ":" + c.capability)).size !== input.configurations.length
     || input.configurations.some(c => !uuid.test(c.id) || !pairs.has(c.providerKey + ":" + c.capability)
       || c.credentialRef !== "env:" + c.providerKey || c.enabled !== true)) throw new Error("REAL_MEDIA_PROVISION_INVALID");
   const client = await pool.connect();
@@ -18,7 +20,6 @@ export async function provisionRealMediaProviders(pool: DatabasePool,
       if (!workspace.rows[0]) throw new Error("REAL_MEDIA_WORKSPACE_NOT_ACTIVE");
       const ids: string[] = []; let created = 0;
       for (const c of input.configurations) {
-        if (!["dashscope-media", "elevenlabs-media", "openai-media"].includes(c.providerKey) || c.credentialRef !== "env:" + c.providerKey) throw new Error("REAL_MEDIA_PROVISION_INVALID");
         const existing = await client.query(
           "SELECT id,enabled,encrypted_credential_ref,default_timeout_ms,max_attempts FROM provider_configuration WHERE workspace_id=$1 AND provider_key=$2 AND capability=$3 FOR UPDATE",
           [input.workspaceId, c.providerKey, c.capability]);

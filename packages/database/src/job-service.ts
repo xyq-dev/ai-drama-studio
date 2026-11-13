@@ -146,6 +146,21 @@ interface JobRow extends QueryResultRow {
   cancel_requested_at: Date | null;
 }
 
+export function isComfyUiMediaJob(snapshot: unknown): boolean {
+  const value = snapshot as { schema?: string; configuration?: { providerKey?: string } } | null;
+  return value?.schema === "real-media.v1" && value.configuration?.providerKey === "comfyui";
+}
+
+export function canRequestComfyUiCancellation(input: {
+  state: string; errorCode: string | null; cancelRequested: boolean; inputSnapshot: unknown;
+}): boolean {
+  if (!isComfyUiMediaJob(input.inputSnapshot) || input.cancelRequested) return false;
+  if (input.state === "QUEUED" || input.state === "PENDING") return true;
+  const snapshot = input.inputSnapshot as { configuration?: { parameters?: { targetedCancellation?: boolean } } };
+  return input.state === "WAITING_EXTERNAL" && snapshot.configuration?.parameters?.targetedCancellation === true
+    && (input.errorCode === "COMFYUI_QUEUED" || input.errorCode === "COMFYUI_RUNNING");
+}
+
 interface IdempotencyRow extends QueryResultRow {
   request_hash: string;
   response_status: number | null;
@@ -429,6 +444,13 @@ async function cancelJobTx(
   if (TERMINAL_STATES.has(job.state)) {
     throw new PersistenceError("JOB_TERMINAL", "Job is already terminal");
   }
+  const comfyUi = isComfyUiMediaJob(job.input_snapshot);
+  if (comfyUi && job.cancel_requested_at !== null) return job.state;
+  if (comfyUi && !canRequestComfyUiCancellation({
+    state: job.state, errorCode: job.error_code, cancelRequested: false, inputSnapshot: job.input_snapshot,
+  })) {
+    throw new PersistenceError("COMFYUI_CANCEL_UNSUPPORTED", "Safe targeted cancellation is unavailable for the current task state");
+  }
 
   if (job.state === "PENDING" || job.state === "QUEUED") {
     await client.query(
@@ -449,9 +471,10 @@ async function cancelJobTx(
   await client.query(
     `UPDATE generation_job
         SET cancel_requested_at = COALESCE(cancel_requested_at, now()),
+            next_run_at = CASE WHEN $4::boolean THEN now() ELSE next_run_at END,
             row_version = row_version + 1, updated_at = now()
       WHERE id = $1 AND workspace_id = $2 AND row_version = $3`,
-    [job.id, job.workspace_id, job.row_version],
+    [job.id, job.workspace_id, job.row_version, comfyUi],
   );
   await appendDomainEvent(client, job, "job.cancel_requested", input.traceId, {
     jobId: job.id,
@@ -979,6 +1002,7 @@ export class JobPersistenceService {
         throw new PersistenceError("JOB_INVALID_TRANSITION", `Cannot succeed job from ${job.state}`);
       }
       if (job.cancel_requested_at !== null) {
+        if (isComfyUiMediaJob(job.input_snapshot)) throw new PersistenceError("REAL_MEDIA_LEASE_LOST", "ComfyUI cancellation must be confirmed by the recovery worker");
         await finalizeCancellationTx(client, job, input.attemptId, input.traceId);
         return null;
       }
@@ -1033,6 +1057,7 @@ export class JobPersistenceService {
         throw new PersistenceError("JOB_INVALID_TRANSITION", `Cannot fail job from ${job.state}`);
       }
       if (job.cancel_requested_at !== null) {
+        if (isComfyUiMediaJob(job.input_snapshot)) throw new PersistenceError("REAL_MEDIA_LEASE_LOST", "ComfyUI cancellation must be confirmed by the recovery worker");
         await finalizeCancellationTx(client, job, input.attemptId, input.traceId);
         return "canceled";
       }
@@ -1092,6 +1117,7 @@ export class JobPersistenceService {
     jobId: string;
     attemptId: string;
     traceId: string;
+    beforeCancellation?: (client: PoolClient) => Promise<void>;
   }): Promise<void> {
     await withTransaction(this.pool, async (client) => {
       const job = await loadJobForUpdate(client, input.workspaceId, input.jobId);
@@ -1101,6 +1127,10 @@ export class JobPersistenceService {
       if (job.state !== "RUNNING" && job.state !== "WAITING_EXTERNAL") {
         throw new PersistenceError("JOB_INVALID_TRANSITION", `Cannot confirm cancellation from ${job.state}`);
       }
+      if (isComfyUiMediaJob(job.input_snapshot) && !input.beforeCancellation) {
+        throw new PersistenceError("COMFYUI_CANCEL_UNSUPPORTED", "ComfyUI cancellation requires targeted confirmation");
+      }
+      await input.beforeCancellation?.(client);
 
       await finalizeCancellationTx(client, job, input.attemptId, input.traceId);
     });

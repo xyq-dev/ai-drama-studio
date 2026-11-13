@@ -123,8 +123,8 @@ export class StudioController {
   listShots(@Param("projectId", UUID_PARAM_PIPE) projectId: string,
     @Param("episodeId", UUID_PARAM_PIPE) episodeId: string,
     @Param("sceneId", UUID_PARAM_PIPE) sceneId: string,
-    @Query("cursor") cursor?: string, @Query("limit") limit?: string) {
-    return this.studio.listShots(projectId, episodeId, sceneId, cursor, limit);
+    @Query("cursor") cursor?: string, @Query("limit") limit?: string, @Query("view") view?: string) {
+    return this.studio.listShots(projectId, episodeId, sceneId, cursor, limit, view);
   }
 
   @Post("projects/:projectId/episodes/:episodeId/scenes")
@@ -216,6 +216,20 @@ export class StudioController {
     @Param("shotId", UUID_PARAM_PIPE) shotId: string,
   ) {
     return this.studio.listShotRevisions(projectId, episodeId, sceneId, shotId);
+  }
+
+  @Post("projects/:projectId/episodes/:episodeId/scenes/:sceneId/shots/:shotId/archive")
+  archiveShot(
+    @Param("projectId", UUID_PARAM_PIPE) projectId: string,
+    @Param("episodeId", UUID_PARAM_PIPE) episodeId: string,
+    @Param("sceneId", UUID_PARAM_PIPE) sceneId: string,
+    @Param("shotId", UUID_PARAM_PIPE) shotId: string, @Body() body: unknown,
+    @Res({ passthrough: true }) response: StatusResponse,
+    @Headers("if-match") ifMatch?: string, @Headers("idempotency-key") key?: string,
+    @Headers("x-trace-id") trace?: string,
+  ) {
+    return this.send(response, this.studio.archiveShot(projectId, episodeId, sceneId, shotId,
+      body, ifMatch, this.context(key, trace)));
   }
 
   @Post("projects/:projectId/episodes/:episodeId/scenes/:sceneId/shots/:shotId/revisions/:revisionId/review")

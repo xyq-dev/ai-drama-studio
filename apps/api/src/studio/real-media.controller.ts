@@ -1,4 +1,4 @@
-import { Body,Controller,Get,Headers,Inject,Param,Post,Res,StreamableFile } from "@nestjs/common";
+import { Body,Controller,Get,Headers,Inject,Param,Post,Put,Res,StreamableFile } from "@nestjs/common";
 import { PersistenceError } from "@ai-drama/database";
 import type { RealMediaService } from "./real-media.service";
 import { createTraceId } from "./studio.service";
@@ -14,6 +14,15 @@ export class RealMediaController {
   exposure(@Param("projectId",uuid) projectId:string){return this.media.costExposure(projectId);}
   @Post("projects/:projectId/shot-revisions/:shotRevisionId/real-media/quote")
   quote(@Param("projectId",uuid) projectId:string,@Param("shotRevisionId",uuid) shotRevisionId:string,@Body() body:unknown){return this.media.quote(projectId,shotRevisionId,body);}
+  @Get("projects/:projectId/shot-revisions/:shotRevisionId/real-media/comfyui")
+  comfyUiShot(@Param("projectId",uuid) projectId:string,@Param("shotRevisionId",uuid) shotRevisionId:string,@Res({passthrough:true}) response:Response){
+    response.setHeader("Cache-Control","private, no-store");
+    return this.media.comfyUiShot(projectId,shotRevisionId);
+  }
+  @Put("projects/:projectId/shot-revisions/:shotRevisionId/real-media/comfyui")
+  selectComfyUiImage(@Param("projectId",uuid) projectId:string,@Param("shotRevisionId",uuid) shotRevisionId:string,@Body() body:unknown){
+    return this.media.selectComfyUiImage(projectId,shotRevisionId,body);
+  }
   @Post("projects/:projectId/real-media/authorize")
   authorize(@Param("projectId",uuid) projectId:string,@Body() body:unknown){return this.media.authorize(projectId,body);}
   @Post("projects/:projectId/shot-revisions/:shotRevisionId/real-media/generate")

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { presentStoredAttempt, type PresentedAttempt } from "@ai-drama/domain";
 import type { PoolClient, QueryResultRow } from "pg";
 import type { DatabasePool } from "./job-service";
-import { PersistenceError } from "./job-service";
+import { canRequestComfyUiCancellation, isComfyUiMediaJob, PersistenceError } from "./job-service";
 import { EpisodePlanStore, LEGACY_EPISODE_PLAN, episodePlanReadyIn, type ProjectEpisodePlan } from "./episode-plan";
 import { MOCK_MEDIA_JOB_KINDS } from "./mock-media-kinds";
 import { readProjectCostSummary as queryProjectCostSummary } from "./project-cost-summary";
@@ -75,6 +75,7 @@ export interface JobView {
   retryCount: number;
   errorCode: string | null;
   errorMessage: string | null;
+  canCancel?: boolean;
   attemptId: string | null;
   attemptNo: number | null;
   providerRequestId: string | null;
@@ -776,6 +777,12 @@ LEFT JOIN LATERAL (
 
 const JOB_COLUMNS = `j.id, j.workspace_id, j.project_id, j.workflow_run_id, j.kind, j.state,
   j.dispatch_seq, j.retry_count, j.error_code, j.error_message, j.source_shot_revision_id, j.input_hash,
+  j.cancel_requested_at,
+  CASE WHEN j.input_snapshot->>'schema' = 'real-media.v1'
+         AND j.input_snapshot #>> '{configuration,providerKey}' = 'comfyui'
+       THEN jsonb_build_object('schema','real-media.v1','configuration',jsonb_build_object('providerKey','comfyui',
+         'parameters',jsonb_build_object('targetedCancellation',j.input_snapshot #> '{configuration,parameters,targetedCancellation}')))
+       END AS comfyui_cancellation_profile,
   CASE WHEN j.kind = 'MEDIA_COMPOSE' AND j.source_shot_revision_id IS NULL
        THEN j.input_snapshot #>> '{input,episodeId}' END AS compose_episode_id,
   ja.id AS attempt_id, ja.attempt_no, ja.provider_request_id,
@@ -849,6 +856,10 @@ function mapJob(row: QueryResultRow): JobView {
     retryCount: Number(row.retry_count),
     errorCode: row.error_code ? String(row.error_code) : null,
     errorMessage: row.error_message ? String(row.error_message) : null,
+    ...(isComfyUiMediaJob(row.comfyui_cancellation_profile) ? { canCancel: canRequestComfyUiCancellation({
+      state: String(row.state), errorCode: row.error_code ?? null, cancelRequested: row.cancel_requested_at != null,
+      inputSnapshot: row.comfyui_cancellation_profile,
+    }) } : {}),
     attemptId: row.attempt_id ? String(row.attempt_id) : null,
     attemptNo: row.attempt_no === null || row.attempt_no === undefined ? null : Number(row.attempt_no),
     providerRequestId: row.provider_request_id ? String(row.provider_request_id) : null,

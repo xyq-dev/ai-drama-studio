@@ -1,9 +1,11 @@
-import { createHash } from "node:crypto";
-import { realMediaAuthorizationSchema,realMediaGenerateSchema,realMediaQuoteRequestSchema,type RealMediaConfiguration,
+import { createHash, randomInt } from "node:crypto";
+import { comfyUiShotSelectionSchema,realMediaAuthorizationSchema,realMediaGenerateSchema,realMediaQuoteRequestSchema,type ComfyUiAvailability,type RealMediaConfiguration,
   type RealMediaCapability,type SpeechCapabilities,type SpeechGenerationInput,type SpeechGenerationPort,type SpeechBatchDispatchRef } from "@ai-drama/contracts";
 import { realMediaInputHash,realMediaJobKind } from "@ai-drama/domain";
-import { PersistenceError,assertSpeechGenerationInputInTransaction,assertSpeechBatchDispatchInTransaction,bindSpeechBatchJobInTransaction,type JobPersistenceService,type MediaAssetStore,
+import { assertComfyUiImageInput, assertComfyUiPromptText } from "@ai-drama/providers";
+import { PersistenceError,assertSpeechGenerationInputInTransaction,assertSpeechBatchDispatchInTransaction,bindSpeechBatchJobInTransaction,freezeComfyUiReference,type JobPersistenceService,type MediaAssetStore,
   type RealMediaStore,type FrozenRealMediaInput,type MediaAssetRecord } from "@ai-drama/database";
+import { adoptComfyUiImage, listComfyUiShotMedia } from "./comfyui-shot-media";
 import type { StudioContext } from "./studio.service";
 type MediaTransactionClient=Parameters<MediaAssetStore["prepareRealShotGenerationInTransaction"]>[0];
 export interface RealMediaContentReader {
@@ -12,6 +14,8 @@ export interface RealMediaContentReader {
 export interface RealMediaServiceOptions {
   workspaceId:string;enabled:boolean;readEnabled?:boolean;store:RealMediaStore;jobs:JobPersistenceService;assets:MediaAssetStore;
   configurationFor(capability:RealMediaCapability,client?:MediaTransactionClient):Promise<RealMediaConfiguration|null>;
+  comfyUiConfigurationFor?(client?:MediaTransactionClient):Promise<RealMediaConfiguration|null>;
+  comfyUiReadiness?():Promise<ComfyUiAvailability>;
   speechCatalog?(workspaceId:string,projectId:string):Promise<SpeechCapabilities>;
   objects?:RealMediaContentReader;
   characterReferenceGate?:"legacy"|"strict";
@@ -29,7 +33,35 @@ export class RealMediaService {
     }
     // Project existence is checked by quote/generate under the established media gates.
     const readAvailable=(this.options.readEnabled??this.options.enabled)&&Boolean(this.options.objects)&&await this.options.store.storageReady().catch(()=>false);
-    return {projectId,readAvailable,unavailableCapabilities,available:capabilities.length>0,reasonCode:!ready?"REAL_MEDIA_NOT_READY":!capabilities.length?"REAL_MEDIA_PROVIDER_DISABLED":null,capabilities,actualCost:"unknown",singleOperation:true};
+    const comfyui = this.options.comfyUiReadiness
+      ? ready ? await this.comfyUiAvailability() : { status:"unavailable",workflows:[] } as const
+      : undefined;
+    const available=capabilities.length>0 || comfyui?.status==="available";
+    return {projectId,readAvailable,unavailableCapabilities,available,reasonCode:!ready?"REAL_MEDIA_NOT_READY":!available?"REAL_MEDIA_PROVIDER_DISABLED":null,capabilities,actualCost:"unknown",singleOperation:true,...(comfyui?{comfyui}:{})};
+  }
+  private async comfyUiAvailability():Promise<ComfyUiAvailability>{
+    const status=await this.options.comfyUiReadiness?.().catch(():ComfyUiAvailability => ({status:"unreachable",workflows:[]}));
+    if(!status)return {status:"unconfigured",workflows:[]};
+    if(status.status==="available" && !await this.options.comfyUiConfigurationFor?.())return {status:"unavailable",workflows:[]};
+    return status;
+  }
+  async comfyUiShot(projectId:string,shotRevisionId:string){
+    if(!(this.options.readEnabled??this.options.enabled))throw new PersistenceError("REAL_MEDIA_NOT_READY","Authenticated media access is not configured");
+    await this.options.store.requireReady();
+    const configuration=await this.options.comfyUiConfigurationFor?.();
+    return this.options.store.transaction(client=>listComfyUiShotMedia(client,
+      {workspaceId:this.options.workspaceId,projectId,shotRevisionId},configuration?.parameters.targetedCancellation===true));
+  }
+  async selectComfyUiImage(projectId:string,shotRevisionId:string,body:unknown,actorId="server-owner"){
+    if(!(this.options.readEnabled??this.options.enabled))throw new PersistenceError("REAL_MEDIA_NOT_READY","Authenticated media access is not configured");
+    const parsed=comfyUiShotSelectionSchema.safeParse(body);
+    if(!parsed.success)throw new PersistenceError("VALIDATION_ERROR","Invalid image selection");
+    return this.options.store.transaction(async client=>{
+      await this.options.store.requireReady(client);
+      // The video/production source gate requires the approved shot, approved scene, and current script.
+      await this.options.assets.prepareRealShotGenerationInTransaction(client,this.options.workspaceId,projectId,shotRevisionId,"video.generate");
+      return adoptComfyUiImage(client,{workspaceId:this.options.workspaceId,projectId,shotRevisionId},{...parsed.data,actorId});
+    });
   }
   private async ready(client?:MediaTransactionClient){
     if(!this.options.enabled||!this.options.store.receiptReady())throw new PersistenceError("REAL_MEDIA_NOT_READY","Real media is not configured");
@@ -39,14 +71,35 @@ export class RealMediaService {
     await this.ready();const parsed=realMediaQuoteRequestSchema.safeParse(body);
     if(!parsed.success)throw new PersistenceError("VALIDATION_ERROR","Invalid real media quote request");
     if(parsed.data.capability==="video.generate"&&this.options.characterReferenceGate==="strict")throw new PersistenceError("REAL_MEDIA_REFERENCE_PROFILE_UNSUPPORTED","The first-frame video profile cannot prove strict selected character references");
-    const config=await this.configuration(parsed.data.capability);
+    const comfyui=parsed.data.comfyui;
+    if(comfyui&&(parsed.data.capability!=="image.generate"||parsed.data.sourceImageAssetId)){
+      throw new PersistenceError("VALIDATION_ERROR","ComfyUI accepts only image generation and a scoped reference asset");
+    }
+    const config=await this.configuration(parsed.data.capability,undefined,Boolean(comfyui));
+    if(comfyui){
+      const readiness=await this.comfyUiAvailability();
+      if(readiness.status!=="available"){
+        throw new PersistenceError(readiness.status==="missing_dependencies"?"COMFYUI_DEPENDENCIES_MISSING":"COMFYUI_UNAVAILABLE","ComfyUI is not ready for image generation");
+      }
+    }
     const frozen=await this.options.store.transaction(async client=>{
       const source=await this.options.assets.prepareRealShotGenerationInTransaction(client,this.options.workspaceId,projectId,shotRevisionId,parsed.data.capability);
-      const sourceText=parsed.data.capability==="audio.tts"?source.dialogue??"":source.promptText.trim();
+      const sourceText=comfyui?.prompt??(parsed.data.capability==="audio.tts"?source.dialogue??"":source.promptText.trim());
       if(!sourceText.trim()||sourceText.length>4100)throw new PersistenceError("VALIDATION_ERROR","Saved media source text is empty or too long");
       const input:FrozenRealMediaInput={schema:"real-media.v1",shotRevisionId,capability:parsed.data.capability,sourceText,
         sourceHash:createHash("sha256").update(sourceText).digest("hex"),configuration:config,characterReferenceGate:this.options.characterReferenceGate??"legacy"};
-      if(parsed.data.capability==="video.generate"){
+      if(comfyui){
+        try {
+          assertComfyUiPromptText(sourceText);
+          input.comfyui={...assertComfyUiImageInput(config,{workflowId:comfyui.workflowId,width:comfyui.width,height:comfyui.height,
+            seed:randomInt(0,2**32),...(comfyui.referenceAssetId?{referenceAssetId:comfyui.referenceAssetId}:{})}),
+            sourceShotPromptHash:createHash("sha256").update(source.promptText.trim()).digest("hex")};
+        } catch {
+          throw new PersistenceError("VALIDATION_ERROR","Invalid ComfyUI workflow, dimensions or reference image");
+        }
+        if(comfyui.referenceAssetId)input.sourceImage=await freezeComfyUiReference(client,
+          {workspaceId:this.options.workspaceId,projectId},comfyui.referenceAssetId);
+      }else if(parsed.data.capability==="video.generate"){
         if(!parsed.data.sourceImageAssetId)throw new PersistenceError("REAL_MEDIA_SOURCE_REQUIRED","Select a generated first frame");
         const result=await client.query(`SELECT asset.* FROM asset JOIN generation_job job ON job.id=asset.source_generation_job_id
           WHERE asset.id=$1 AND asset.workspace_id=$2 AND asset.project_id=$3 AND asset.source_shot_revision_id=$4
@@ -57,7 +110,8 @@ export class RealMediaService {
       }else if(parsed.data.sourceImageAssetId)throw new PersistenceError("VALIDATION_ERROR","This operation does not accept a first frame");
       return input;
     });
-    return this.options.store.createQuote({workspaceId:this.options.workspaceId,projectId,actorId,frozen});
+    const quote=await this.options.store.createQuote({workspaceId:this.options.workspaceId,projectId,actorId,frozen});
+    return comfyui?{...quote,estimateBasis:"self-hosted-resource-estimate" as const}:quote;
   }
   async authorize(projectId:string,body:unknown,actorId="server-owner"){
     await this.ready();const parsed=realMediaAuthorizationSchema.safeParse(body);
@@ -82,7 +136,7 @@ export class RealMediaService {
       const snapshot=await this.options.store.consumeAuthorization(client,{workspaceId:this.options.workspaceId,projectId,actorId:context.actorId,...input});
       if(snapshot.shotRevisionId!==shotRevisionId)throw new PersistenceError("REAL_MEDIA_INPUT_CHANGED","Quote belongs to another shot");
       if(snapshot.capability==="video.generate"&&this.options.characterReferenceGate==="strict")throw new PersistenceError("REAL_MEDIA_REFERENCE_PROFILE_UNSUPPORTED","The first-frame video profile cannot prove strict selected character references");
-      const current=await this.configuration(snapshot.capability,client);
+      const current=await this.configuration(snapshot.capability,client,snapshot.configuration.providerKey==="comfyui");
       if(realMediaInputHash(current)!==realMediaInputHash(snapshot.configuration))throw new PersistenceError("REAL_MEDIA_CONFIGURATION_CHANGED","Provider configuration changed; obtain a new quote");
       const source=await this.options.assets.prepareRealShotGenerationInTransaction(client,this.options.workspaceId,projectId,shotRevisionId,snapshot.capability);
       if(speech){
@@ -91,7 +145,15 @@ export class RealMediaService {
       }else{
         if(snapshot.speech)throw new PersistenceError("REAL_MEDIA_INPUT_CHANGED","Use the speech line generation route");
         const text=snapshot.capability==="audio.tts"?source.dialogue??"":source.promptText.trim();
-        if(text!==snapshot.sourceText)throw new PersistenceError("REAL_MEDIA_INPUT_CHANGED","Saved source text changed; obtain a new quote");
+        if(snapshot.comfyui){
+          if(snapshot.comfyui.sourceShotPromptHash!==createHash("sha256").update(text).digest("hex"))
+            throw new PersistenceError("REAL_MEDIA_INPUT_CHANGED","Saved source text changed; obtain a new quote");
+          if(snapshot.sourceImage){
+            const reference=await freezeComfyUiReference(client,{workspaceId:this.options.workspaceId,projectId},snapshot.sourceImage.assetId);
+            if(realMediaInputHash(reference)!==realMediaInputHash(snapshot.sourceImage))
+              throw new PersistenceError("REAL_MEDIA_INPUT_CHANGED","Reference image changed; obtain a new quote");
+          }
+        }else if(text!==snapshot.sourceText)throw new PersistenceError("REAL_MEDIA_INPUT_CHANGED","Saved source text changed; obtain a new quote");
       }
       return {workspaceId:this.options.workspaceId,projectId,sourceShotRevisionId:shotRevisionId,type:realMediaJobKind(snapshot.capability),
         requestedBy:context.actorId,kind:realMediaJobKind(snapshot.capability),inputHash:realMediaInputHash(snapshot),inputSnapshot:snapshot,traceId:context.traceId};
@@ -100,8 +162,8 @@ export class RealMediaService {
       if(batchOperation)await bindSpeechBatchJobInTransaction(client,batchOperation,created);
     });
   }
-  private async configuration(capability:RealMediaCapability,client?:MediaTransactionClient){
-    const config=await this.options.configurationFor(capability,client);
+  private async configuration(capability:RealMediaCapability,client?:MediaTransactionClient,comfyui=false){
+    const config=comfyui?await this.options.comfyUiConfigurationFor?.(client):await this.options.configurationFor(capability,client);
     if(!config?.enabled||config.capability!==capability)throw new PersistenceError("REAL_MEDIA_PROVIDER_DISABLED","This media provider is unavailable");
     return config;
   }
