@@ -61,6 +61,7 @@ export function AutoCreationRun({ projectId, client = defaultClient }: { project
   const [token, setToken] = useState("");
   const reading = useRef(false);
   const acting = useRef(false);
+  const openedEpisodeList = useRef(false);
   // The resume whose answer has not arrived, for this work and run only (restored after a reload).
   const [pendingResume, setPendingResume] = useState<PendingAutoResume | null>(null);
   const runId = run?.runId ?? null;
@@ -103,6 +104,14 @@ export function AutoCreationRun({ projectId, client = defaultClient }: { project
     const timer = setInterval(() => { void read(); }, AUTO_CREATION_POLL_MS);
     return () => clearInterval(timer);
   }, [run?.state, read]);
+
+  useEffect(() => {
+    if (openedEpisodeList.current || window.location.hash !== "#auto-episodes-title") return;
+    const heading = document.getElementById("auto-episodes-title");
+    if (!heading) return;
+    openedEpisodeList.current = true;
+    heading.scrollIntoView({ block: "start" });
+  }, [run]);
 
   async function act(work: () => Promise<AutoCreationRunView>, fallback: string) {
     if (acting.current) return;

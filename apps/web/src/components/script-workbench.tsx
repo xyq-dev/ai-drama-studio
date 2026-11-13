@@ -175,9 +175,11 @@ function StatusBadge({ revision }: { revision: ScriptWorkbenchRevision | null })
 export function ScriptWorkbench({
   projectId,
   initialHistory,
+  initialEpisodes = false,
 }: {
   projectId: string;
   initialHistory?: string;
+  initialEpisodes?: boolean;
 }) {
   const [snapshot, setSnapshot] = useState<ScriptWorkbenchSnapshot | null>(null);
   const [plan, renderPlan] = useState<ScriptWorkbenchPlan | null>(null);
@@ -436,8 +438,9 @@ export function ScriptWorkbench({
       if (options.initial) {
         const first = next.episodes.find((item) => !approved(item.script)) ?? next.episodes[0];
         const requestedHistory = next.episodes.find((item) => item.id === initialHistory);
-        setSelectedEpisode(requestedHistory?.id ?? (imported ? initialEpisode?.id : first?.id) ?? "");
-        setStage(requestedHistory || imported || (approved(next.story) && first) ? 2 : 0);
+        const firstSaved = initialEpisodes ? next.episodes.find((item) => item.script) : undefined;
+        setSelectedEpisode(requestedHistory?.id ?? firstSaved?.id ?? (imported ? initialEpisode?.id : first?.id) ?? "");
+        setStage(requestedHistory || firstSaved || imported || (approved(next.story) && first) ? 2 : 0);
         if (requestedHistory) setHistory(requestedHistory.id);
       } else
         setSelectedEpisode((current) =>
@@ -447,7 +450,7 @@ export function ScriptWorkbench({
         );
       return next;
     },
-    [projectId, persist, initialHistory],
+    [projectId, persist, initialHistory, initialEpisodes],
   );
 
   useEffect(() => {

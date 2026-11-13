@@ -231,6 +231,16 @@ afterEach(() => {
 });
 
 describe("five-stage script workbench", () => {
+  it("opens the first saved episode from the works list even when the story awaits review", async () => {
+    const state = fixture();
+    state.story = { ...state.story!, reviewStatus: "DRAFT" };
+    Object.assign(state.episodes[0]!, { script: null, history: [], currentScriptRevisionId: null, approvedScriptRevisionId: null });
+    const transport = api(state);
+    render(<ScriptWorkbench projectId={PROJECT} initialEpisodes />);
+    expect(await screen.findByRole("heading", { name: "第2集 差役登门" })).toBeTruthy();
+    expect(transport.writes).toHaveLength(0);
+  });
+
   it("opens imported first-episode text as an editable draft and keeps the story approval gate", async () => {
     const initial = fixture();
     initial.story = null;

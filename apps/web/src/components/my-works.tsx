@@ -1,5 +1,6 @@
 "use client";
 
+import { TITLE_WRITING_PROVIDER_LABELS, type ProjectLibraryScript } from "@ai-drama/contracts";
 import { useEffect, useId, useRef, useState } from "react";
 import { ApiError, StudioClient } from "../lib/studio-client";
 import { loadProjectFacts } from "../lib/beginner-facts";
@@ -23,6 +24,7 @@ interface ProjectItem {
   categoryRevision: number;
   thumbnailAssetId: string | null;
   thumbnailUrl: string | null;
+  script?: ProjectLibraryScript;
 }
 interface Category { id: string; name: string; count: number }
 interface LibraryPage {
@@ -47,7 +49,24 @@ function queryPath(query: LibraryQuery, cursor: string | null) {
 }
 
 function ImageIcon() {
-  return <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3" /><circle cx="8" cy="9" r="1.5" /><path d="m3 16 5-4 4 4 4-6 5 6" /></svg>;
+  return <img src="/design/tailadmin-v2/icon-cover-placeholder.svg" width={22} height={22} alt="" />;
+}
+
+function ScriptSource({ script }: { script: ProjectLibraryScript | undefined }) {
+  const source = script?.source ?? "unknown";
+  const label = source === "ai" ? "AI 生成" : source === "manual" ? "人工创作" : "来源未记录";
+  const icon = source === "ai" ? "ai" : source === "manual" ? "manual" : null;
+  const providerKey = script?.providerKey;
+  const provider = providerKey && Object.hasOwn(TITLE_WRITING_PROVIDER_LABELS, providerKey)
+    ? TITLE_WRITING_PROVIDER_LABELS[providerKey as keyof typeof TITLE_WRITING_PROVIDER_LABELS]
+    : providerKey;
+  return <div className={styles.scriptSource}>
+    <span className={styles.sourceBadge} data-source={source}>
+      {icon ? <img src={`/design/tailadmin-v2/icon-script-${icon}.svg`} width={15} height={15} alt="" /> : null}
+      {label}
+    </span>
+    {source === "ai" && (provider || script?.model) ? <span className={styles.model} title={script?.model ?? undefined}>{provider || script?.model}</span> : null}
+  </div>;
 }
 function updatedDate(value: string) {
   const date = new Date(value);
@@ -383,7 +402,7 @@ export function MyWorks() {
 
   const searchForm = <form className={styles.search} role="search" onSubmit={(event) => { event.preventDefault(); changeQuery({ ...queryRef.current, q: search.trim() }); }}>
     <button type="submit" disabled={bulkBusy} aria-label="搜索"><img src="/design/tailadmin-v2/icon-search.svg" width={19} height={19} alt="" /></button>
-    <input disabled={bulkBusy} aria-label="搜索作品" maxLength={200} placeholder="搜索作品名称、故事内容…" value={search} onChange={(event) => setSearch(event.target.value)} />
+    <input disabled={bulkBusy} aria-label="搜索作品" maxLength={200} placeholder="搜索剧本标题、作品名称或故事内容…" value={search} onChange={(event) => setSearch(event.target.value)} />
   </form>;
   const categoryNavigation = <div className={styles.categoryNavigation}>
     <div className={styles.categoryList} role="group" aria-label="按分类筛选作品">
@@ -436,13 +455,23 @@ export function MyWorks() {
               <tbody>{items.map((item) => {
                 const state = progress[item.id];
                 const stepTitle = state?.kind === "ready" ? STEPS.find((step) => step.key === state.step) : null;
-                return <tr key={item.id} data-selected={selected.has(item.id)}>
-                  <td className={styles.selectionCell}><SelectionCheckbox checked={selected.has(item.id)} disabled={controlsBusy} label={`选择作品：${item.title}`} onChange={() => toggleSelection(item.id)} /></td>
+                const title = item.script?.title || item.title;
+                const projectPath = `/projects/${item.id}`;
+                const scriptHref = item.script?.destination === "auto" ? `${projectPath}/auto#auto-episodes-title`
+                  : item.script?.destination === "script" ? `${projectPath}/script?view=episodes` : null;
+                const workMeta = title !== item.title ? item.title : item.writingMode === "series" ? "系列写作" : "短剧创作";
+                return <tr key={item.id} data-selected={selected.has(item.id)} data-has-script={Boolean(scriptHref)}>
+                  <td className={styles.selectionCell}><SelectionCheckbox checked={selected.has(item.id)} disabled={controlsBusy} label={`选择作品：${title}`} onChange={() => toggleSelection(item.id)} /></td>
                   <td className={styles.workCell}><div className={styles.workIdentity}>
-                    <a className={styles.thumbnail} href={`/projects/${item.id}/create`} aria-label={`打开作品：${item.title}`}>
-                      {item.thumbnailUrl && !failedThumbnails.has(item.thumbnailUrl) ? <img src={item.thumbnailUrl} alt={`${item.title}封面`} loading="lazy" onError={() => setFailedThumbnails((current) => new Set(current).add(item.thumbnailUrl!))} /> : <span className={styles.thumbnailPlaceholder}><ImageIcon /><span>暂无封面</span></span>}
+                    <a className={styles.thumbnail} href={`${projectPath}/create`} aria-label={`打开作品：${title}`}>
+                      {item.thumbnailUrl && !failedThumbnails.has(item.thumbnailUrl) ? <img className={styles.coverImage} src={item.thumbnailUrl} alt={`${title}封面`} loading="lazy" onError={() => setFailedThumbnails((current) => new Set(current).add(item.thumbnailUrl!))} /> : <span className={styles.thumbnailPlaceholder}><ImageIcon /><span>暂无封面</span></span>}
                     </a>
-                    <div className={styles.workText}><h3><a href={`/projects/${item.id}/create`}>{item.title}</a></h3><p className={styles.premise} title={item.premise || "还没有故事想法"}><span className={styles.workMeta}>{item.writingMode === "series" ? "系列写作" : "短剧创作"}{item.episodeCount ? ` · ${item.episodeCount} 集` : ""}</span></p><a className={styles.scriptLink} href={`/projects/${item.id}/script`}>剧本工作台</a></div>
+                    <div className={styles.workText}>
+                      <h3><a href={scriptHref ?? `${projectPath}/create`} title={title}>{title}</a></h3>
+                      <ScriptSource script={item.script} />
+                      <p className={styles.workMeta} title={workMeta}>{workMeta}{item.episodeCount ? ` · ${item.episodeCount} 集` : ""}</p>
+                      {!scriptHref ? <a className={styles.scriptLink} href={`${projectPath}/script`}>剧本工作台</a> : null}
+                    </div>
                   </div></td>
                   <td className={styles.categoryCell} data-label="分类"><span className={styles.categoryBadge}>{item.categoryName ?? "未分类"}</span></td>
                   <td className={styles.progressCell}><div aria-live="polite">
@@ -457,7 +486,11 @@ export function MyWorks() {
                     </> : null}
                   </div></td>
                   <td className={styles.dateCell} data-label="更新于"><time dateTime={item.updatedAt} title={item.updatedAt}>{updatedDate(item.updatedAt)}</time></td>
-                  <td className={styles.actions}><div className={styles.actionLinks}><a className={styles.continue} href={`/projects/${item.id}/create`}>继续创作<span aria-hidden="true">→</span></a><a className={styles.advanced} href={`/projects/${item.id}`} aria-label="高级编辑" title="高级编辑"><img src="/design/tailadmin-v2/icon-more.svg" width={20} height={20} alt="" /></a></div></td>
+                  <td className={styles.actions}><div className={styles.actionLinks}>
+                    {scriptHref ? <a className={styles.continue} href={scriptHref}>查看剧本</a>
+                      : <a className={styles.continue} href={`${projectPath}/create`}>继续创作<span aria-hidden="true">→</span></a>}
+                    <a className={styles.advanced} href={projectPath} aria-label="高级编辑" title="高级编辑"><img src="/design/tailadmin-v2/icon-more.svg" width={20} height={20} alt="" /></a>
+                  </div></td>
                 </tr>;
               })}</tbody>
             </table> : null}

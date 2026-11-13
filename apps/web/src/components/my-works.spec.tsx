@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 // Isolated interface tests; no business database or real media provider is contacted.
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadProjectFacts } from "../lib/beginner-facts";
 import { MyWorks } from "./my-works";
@@ -29,6 +29,27 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe("作品分类列表", () => {
+  it("shows saved titles and recorded sources and opens the correct script views", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => json(page({ items: [
+      project({ title: "AI 自动创作 2026/11/13", script: { title: "最后一枚纽扣", source: "ai", providerKey: "deepseek", model: "deepseek-flash", destination: "auto" } }),
+      project({ id: "manual", title: "雨巷来信", script: { title: null, source: "manual", providerKey: null, model: null, destination: "script" } }),
+      project({ id: "legacy", title: "旧作品" }),
+    ] }))));
+    render(<MyWorks />);
+    const ai = within((await screen.findByRole("heading", { name: "最后一枚纽扣" })).closest("tr")!);
+    expect(ai.getByText("AI 生成")).toBeTruthy();
+    expect(ai.getByText("DeepSeek").getAttribute("title")).toBe("deepseek-flash");
+    expect(ai.getByText("AI 自动创作 2026/11/13 · 3 集")).toBeTruthy();
+    expect(ai.getByRole("link", { name: "查看剧本" }).getAttribute("href")).toBe(`/projects/${P}/auto#auto-episodes-title`);
+    const manual = within(screen.getByRole("heading", { name: "雨巷来信" }).closest("tr")!);
+    expect(manual.getByText("人工创作")).toBeTruthy();
+    expect(manual.queryByText("DeepSeek")).toBeNull();
+    expect(manual.getByRole("link", { name: "查看剧本" }).getAttribute("href")).toBe("/projects/manual/script?view=episodes");
+    const legacy = within(screen.getByRole("heading", { name: "旧作品" }).closest("tr")!);
+    expect(legacy.getByText("来源未记录")).toBeTruthy();
+    expect(legacy.getByRole("link", { name: "继续创作" }).getAttribute("href")).toBe("/projects/legacy/create");
+  });
+
   it("searches all projects through the API and preserves the search when filtering and sorting", async () => {
     const paths: string[] = [];
     vi.stubGlobal("fetch", vi.fn(async (input: string) => {

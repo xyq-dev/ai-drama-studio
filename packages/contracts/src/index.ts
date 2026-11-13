@@ -368,3 +368,4 @@ export * from "./real-media";
 export * from "./media-access";
 export * from "./storage-settings";
 export * from "./script-workbench";
+export type { ProjectLibraryScript } from "./project-library";
