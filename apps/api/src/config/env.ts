@@ -15,6 +15,7 @@ const apiEnvSchema = z.object({
   S3_FORCE_PATH_STYLE: z.enum(["true", "false"]).default("true"),
   HEALTH_CHECK_TIMEOUT_MS: z.coerce.number().int().min(100).max(10_000).default(2000),
   APP_WORKSPACE_ID: z.string().uuid(),
+  PRODUCTION_STATE_ROOT: z.string().trim().min(1).default("/workspace/drama-studio/projects"),
   M3_MOCK_IMAGE_ENABLED: z.enum(["true", "false"]).default("false"),
   M3_MOCK_AV_ENABLED: z.enum(["true", "false"]).default("false"),
   M4_MOCK_SAMPLE_VIDEO_ENABLED: z.enum(["true", "false"]).default("false"),
@@ -71,6 +72,8 @@ export interface ApiEnv {
   S3_FORCE_PATH_STYLE: boolean;
   HEALTH_CHECK_TIMEOUT_MS: number;
   APP_WORKSPACE_ID: string;
+  /** Read-only root containing <projectId>/production-state.json files. */
+  PRODUCTION_STATE_ROOT?: string;
   M3_MOCK_IMAGE_ENABLED: boolean;
   M3_MOCK_AV_ENABLED: boolean;
   M4_MOCK_SAMPLE_VIDEO_ENABLED: boolean;
@@ -162,6 +165,7 @@ const API_KEYS = [
   "S3_FORCE_PATH_STYLE",
   "HEALTH_CHECK_TIMEOUT_MS",
   "APP_WORKSPACE_ID",
+  "PRODUCTION_STATE_ROOT",
   "M3_MOCK_IMAGE_ENABLED",
   "M3_MOCK_AV_ENABLED",
   "M4_MOCK_SAMPLE_VIDEO_ENABLED",

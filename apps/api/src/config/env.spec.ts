@@ -27,6 +27,13 @@ describe("loadApiEnv", () => {
       .toThrow(/TITLE_WRITING_ALLOW_PRODUCTION/);
   });
 
+  it("uses a read-only production-state root with process values taking precedence", () => {
+    expect(loadApiEnv(valid).PRODUCTION_STATE_ROOT).toBe("/workspace/drama-studio/projects");
+    expect(loadApiEnv(valid, { PRODUCTION_STATE_ROOT: "/tmp/file-states" }).PRODUCTION_STATE_ROOT).toBe("/tmp/file-states");
+    expect(loadApiEnv({ ...valid, PRODUCTION_STATE_ROOT: "/tmp/process-states" },
+      { PRODUCTION_STATE_ROOT: "/tmp/file-states" }).PRODUCTION_STATE_ROOT).toBe("/tmp/process-states");
+  });
+
   it("reads the script breakdown switch as a strict boolean that defaults off", () => {
     expect(loadApiEnv(valid).SCRIPT_BREAKDOWN_ENABLED).toBe(false);
     expect(loadApiEnv({ ...valid, SCRIPT_BREAKDOWN_ENABLED: "true" }).SCRIPT_BREAKDOWN_ENABLED).toBe(true);
