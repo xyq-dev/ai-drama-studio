@@ -565,6 +565,7 @@ export function buildAutoCreationPrompt(stageKey: string, input: AutoCreationFro
       "任务：按选定方向写故事设定档案，先定主线、关键因果和结局，再展开人物、关系、地点与道具。",
       `顶层只允许且必须包含这些键：${Object.keys(BIBLE_OUTPUT_EXAMPLE).join("、")}。所有子对象的键名、层级与值类型按下方示例，任何层级都不要添加额外字段。`,
       "结局字段固定为 story.ending，顶层不另加结局字段。characters 和 locations 至少各有一条；没有人物关系或道具时，relationships 和 props 分别填 []；无归属的道具把 ownerId 写成 null。",
+      '每个 locations[].productionNotes 都必填，必须是 1–120 字符的非空 JSON 字符串，例如 "用窗边自然光，现场收音"。多条备注合并为同一个字符串，用中文逗号分隔。没有额外限制时填 "无额外制作限制"，不要省略，也不要用空字符串、数组、对象或 null。',
       "选定方向、选择理由和受众与结构要点只用于写作，不作为输出字段。",
       `故事设定档案 JSON 示例（只参考结构，内容按本次选定方向和约束创作）：${JSON.stringify(BIBLE_OUTPUT_EXAMPLE)}`,
       "story 必须写清：主角（protagonistId）的欲望和弱点、目标与失败代价、阻碍、主角的关键选择及后果、有伏笔支撑的反转（twist.setups 写伏笔）、对前期情绪和悬念的兑现（payoffs）、完整结局、因果链（causalChain 3–8 步）。",

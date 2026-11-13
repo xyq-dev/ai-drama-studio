@@ -43,13 +43,14 @@ export const AUTO_CREATION_INPUT_SCHEMA = "ads.auto-creation.input.v1" as const;
  * unchanged (checks v14). Answer, catalog and research v4 unchanged. Shared by series research.
  * v12: the story bible prompt specifies the exact JSON fields and shows a complete example. Validation is unchanged.
  * v13: plan filmable endings, review within the frozen setting, and adapt incompatible prior suggestions in revisions.
+ * v14: require one nonempty JSON string for each bible location's production notes. Validation is unchanged.
  */
-export const AUTO_CREATION_PROMPT_VERSION = "ads.auto-creation.prompt.v13" as const;
+export const AUTO_CREATION_PROMPT_VERSION = "ads.auto-creation.prompt.v14" as const;
 /** Every prompt version a stored run may carry. A resumed run is sent with the current prompts. */
 export type AutoCreationPromptVersion = "ads.auto-creation.prompt.v1" | "ads.auto-creation.prompt.v2" | "ads.auto-creation.prompt.v3"
   | "ads.auto-creation.prompt.v4" | "ads.auto-creation.prompt.v5" | "ads.auto-creation.prompt.v6" | "ads.auto-creation.prompt.v7"
   | "ads.auto-creation.prompt.v8" | "ads.auto-creation.prompt.v9" | "ads.auto-creation.prompt.v10" | "ads.auto-creation.prompt.v11"
-  | "ads.auto-creation.prompt.v12" | typeof AUTO_CREATION_PROMPT_VERSION;
+  | "ads.auto-creation.prompt.v12" | "ads.auto-creation.prompt.v13" | typeof AUTO_CREATION_PROMPT_VERSION;
 export const AUTO_CREATION_SELECTION_RULES = "ads.auto-creation.selection-rules.v1" as const;
 /**
  * v2: the applied constraints and a direction's audience fit are number-checked; spaced ordinals are not claims.
