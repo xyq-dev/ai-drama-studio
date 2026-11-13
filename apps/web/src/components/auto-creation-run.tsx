@@ -11,7 +11,6 @@ import {
   autoUnverifiedOf,
   type AutoBible,
   type AutoDirectionsOutput,
-  type AutoEpisode,
   type AutoOutline,
   type AutoStoredResearch,
   type AutoReviewOutput,
@@ -38,6 +37,7 @@ import {
   type AutoCreationRunView,
   type PendingAutoResume,
 } from "../lib/auto-creation-client";
+import { AutoEpisodeList } from "./auto-episode-list";
 import { BeginnerShell } from "./beginner-shell";
 import styles from "./title-writing.module.css";
 import autoStyles from "./auto-creation.module.css";
@@ -45,32 +45,6 @@ import autoStyles from "./auto-creation.module.css";
 export const AUTO_CREATION_POLL_MS = 2_000;
 const defaultClient = new AutoCreationClient();
 const PROVIDER_LABELS: Readonly<Record<string, string>> = TITLE_WRITING_PROVIDER_LABELS;
-
-function name(bible: AutoBible | undefined, id: string): string {
-  return bible?.characters.find((item) => item.id === id)?.name ?? id;
-}
-
-function EpisodeView({ episode, bible }: { episode: AutoEpisode; bible: AutoBible | undefined }) {
-  return (
-    <div className={styles.script}>
-      {episode.scenes.map((scene) => {
-        const location = bible?.locations.find((item) => item.id === scene.locationId);
-        return (
-          <div key={scene.sceneNo} className={styles.scriptText}>
-            <p><strong>场 {scene.sceneNo}</strong> {location?.intExt === "EXT" ? "外景" : "内景"} {location?.name ?? scene.locationId} {scene.timeOfDay}</p>
-            <p>出场：{scene.characterIds.map((id) => name(bible, id)).join("、")}</p>
-            <p>△ {scene.action}</p>
-            {scene.dialogue.map((line, index) => <p key={index}>{name(bible, line.characterId)}{line.delivery ? `（${line.delivery}）` : ""}：{line.line}</p>)}
-            {scene.sound ? <p>【声音】{scene.sound}</p> : null}
-            <p className={styles.helper}>镜头设计：{scene.shots.map((shot) => `${String(shot.shotNo)}. ${shot.framing}·${shot.description}（约 ${String(shot.seconds)} 秒）`).join("；")}</p>
-            {scene.assetNeeds.length > 0 ? <p className={styles.helper}>素材需求：{scene.assetNeeds.join("、")}</p> : null}
-          </div>
-        );
-      })}
-      <p className={styles.helper}>交接事实：{episode.handoffFacts.join("；")}</p>
-    </div>
-  );
-}
 
 /** Progress and results of the latest automatic creation run of a work. Everything shown comes from stored state. */
 export function AutoCreationRun({ projectId, client = defaultClient }: { projectId: string; client?: AutoCreationClient }) {
@@ -294,6 +268,8 @@ export function AutoCreationRun({ projectId, client = defaultClient }: { project
         ) : null}
         {actionError ? <p className={styles.error} role="alert">{actionError}</p> : null}
 
+        <AutoEpisodeList key={run.runId} run={run} bible={bible} outline={outline} />
+
         <section className={autoStyles.section} aria-labelledby="auto-stages-title">
           <h2 id="auto-stages-title" className={styles.sectionTitle}>阶段</h2>
           <ol className={styles.steps} data-testid="auto-stages">
@@ -442,22 +418,6 @@ export function AutoCreationRun({ projectId, client = defaultClient }: { project
           <section className={autoStyles.section} aria-labelledby="auto-outline-title">
             <h2 id="auto-outline-title" className={styles.sectionTitle}>分集大纲</h2>
             <ol className={autoStyles.list}>{outline.episodes.map((item) => <li key={item.episodeNo}>第 {item.episodeNo} 集 {item.title}：{item.goal} → {item.turn} → {item.result}</li>)}</ol>
-          </section>
-        ) : null}
-
-        {Object.entries(run.currentEpisodes).length > 0 ? (
-          <section className={autoStyles.section} aria-labelledby="auto-episodes-title" data-testid="auto-episodes">
-            <h2 id="auto-episodes-title" className={styles.sectionTitle}>逐集剧本（当前版本）</h2>
-            {Object.entries(run.currentEpisodes).sort(([a], [b]) => a.localeCompare(b)).map(([episodeKey, versionKey]) => {
-              const stage = stageOf(run, versionKey);
-              const episode = stage?.output as AutoEpisode | AutoRevision | undefined;
-              return episode ? (
-                <article key={episodeKey}>
-                  <h3 className={styles.outlineTitle}>第 {episode.episodeNo} 集 {episode.title}{versionKey !== episodeKey ? `（${autoStageLabel(versionKey)}后的版本）` : ""}</h3>
-                  <EpisodeView episode={episode} bible={bible} />
-                </article>
-              ) : null;
-            })}
           </section>
         ) : null}
 
