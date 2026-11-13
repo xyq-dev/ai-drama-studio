@@ -723,6 +723,24 @@ describe("AI 自动创作 run page", () => {
     }
   });
 
+  it.each([
+    ["dangling_reference@scenes[2].locationId", "第 3 场使用了未登记的地点编号"],
+    ["dangling_reference@scenes[0].characterIds[1]", "第 1 场的第 2 个出场人物编号不在设定中"],
+    ["dangling_reference@scenes[1].dialogue[0].characterId", "第 2 场的第 1 句对白用了本场未出场的人物编号"],
+    ["dangling_reference@changes[0].issueId", "第 1 条改稿记录引用了本轮不适用于本集的问题编号"],
+    ["dangling_reference", "结果引用了设定中不存在的人物、地点或编号"],
+  ])("shows the revision reference error for %s", async (code, message) => {
+    const failed = run({ state: "partial", errorCode: "dangling_reference", quality: "pending", storySave: "pending", storyRevisionId: null,
+      packageStatus: "incomplete", callsUsed: 9, callCap: 12, openIssues: [], stages: [{
+        stageKey: "revise:2:episode:1", kind: "revise", state: "rejected", attemptNo: 1, errorCode: code, output: null,
+        upstreamChanged: false, supersededBy: null, scriptSave: null, scriptRevisionId: null,
+      }] });
+    vi.stubGlobal("fetch", vi.fn(async (input: string) => input.endsWith("/auto-runs/latest") ? json({ run: failed }) : json(options())));
+    render(<AutoCreationRun projectId={P1} />);
+    expect((await screen.findByText(/^停在「/u)).textContent).toContain(message);
+    expect(screen.getByTestId("auto-output-refused").textContent).toContain("新的计费调用");
+  });
+
   it("prompt v9: a structure method id outside the run's catalog is a refused answer, named by field, never a key problem", async () => {
     const code = "unknown_reference@contentStructure[0].referenceId";
     const failed = run({ state: "failed", errorCode: "unknown_reference", quality: "pending", storySave: "pending", storyRevisionId: null, packageStatus: "incomplete",

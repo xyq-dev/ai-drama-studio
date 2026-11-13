@@ -214,7 +214,7 @@ describe("Q. the whole research stage (validateAutoStageOutput, and the series' 
       const result = check(answer(mode, { howToVerify: CORE[0] }));
       expect(result.output!.serverRecord.executedWith).toMatchObject({ checksVersion: AUTO_CREATION_CHECKS_VERSION, promptVersion: AUTO_CREATION_PROMPT_VERSION });
       expect(AUTO_CREATION_CHECKS_VERSION).toBe("ads.auto-creation.checks.v14");
-      expect(AUTO_CREATION_PROMPT_VERSION).toBe("ads.auto-creation.prompt.v12");
+      expect(AUTO_CREATION_PROMPT_VERSION).toBe("ads.auto-creation.prompt.v13");
     });
 
     it.each(RANKED)("%s in howToVerify is refused whole: %s", (_label, text) => {
