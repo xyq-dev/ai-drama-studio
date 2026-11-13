@@ -41,6 +41,10 @@ const elsewhere = (text: string) => uncitedNumberReading(text, frameOf(EPISODES)
 const RANKING = { kind: "rank", semantic: "market_statistic", rule: "ranking" } as const;
 /** The same refusal as a research stage reports it (field, code, semantic and rule; the token and its kind stay internal). */
 const REFUSED_RANKING = { semantic: "market_statistic", rule: "ranking" } as const;
+const FUTURE_TEST_METHOD = "计划通过第一阶段测试收集反馈。";
+const METHOD_WITH_RANKING = "计划通过第二阶段测试比较排名第一的作品。";
+const METHOD_WITH_SHARE = "计划通过第一阶段测试收集反馈，七成观众会喜欢。";
+const METHOD_WITH_MEASUREMENT = "计划通过第一阶段测试收集反馈，实测观众平均观看三集。";
 
 /** The three legal plans refused on 8f1955e: a stage, a test item, a round followed by a popularity word. */
 const CORE = [
@@ -57,6 +61,8 @@ const CORE_MORE = [
   "计划在第二轮试读后比较角色人气。",
   "计划在第 3 轮试读后比较角色热度。",
   "计划第一步邀请试看者复述主角的选择，比较角色人气。",
+  FUTURE_TEST_METHOD,
+  "团队计划先经过第 2 阶段验证再收集反馈。",
   // The control that passed already.
   "计划在第一轮试读后收集反馈。",
 ];
@@ -88,6 +94,20 @@ describe("P. a verification plan's step is no ranking (classifier)", () => {
 
   it.each(RANKED)("%s is refused as a ranking in a plan: %s", (_label, text) => {
     expect(plan(text).refusal).toMatchObject(RANKING);
+  });
+
+  it("skips the method's step and still reports a later ranking, share or measurement", () => {
+    expect(plan(METHOD_WITH_RANKING).refusal).toMatchObject({ ...RANKING, token: "名次第一" });
+    expect(plan(METHOD_WITH_SHARE).refusal).toMatchObject({ semantic: "market_statistic", rule: "proportion" });
+    expect(plan(METHOD_WITH_MEASUREMENT).refusal).toMatchObject({ semantic: "result_claim", rule: "measured_result" });
+  });
+
+  it("keeps actual results and ordinals in other fields subject to the original checks", () => {
+    expect(plan("已经通过第一阶段测试，实测观众平均观看三集。").refusal).toMatchObject(RANKING);
+    expect(plan("计划通过第一阶段测试，第一阶段的测试显示观众喜欢这个开场。").refusal).toMatchObject(RANKING);
+    expect(plan("计划通过第一阶段测试显示观众喜欢这个开场。").refusal).toMatchObject(RANKING);
+    expect(elsewhere(FUTURE_TEST_METHOD).refusal).toMatchObject(RANKING);
+    expect(numberTokens(FUTURE_TEST_METHOD)).toEqual(["名次第一"]);
   });
 
   // A result claimed with no number (已测得观众更喜欢反转) is no number this reading refuses, on 8f1955e as now.
@@ -180,12 +200,17 @@ function paths(): Path[] {
   ];
 }
 
-interface Parts { statement?: string; howToVerify?: string; opportunity?: string }
+interface Parts { statement?: string; howToVerify?: string; opportunity?: string; fourthPlan?: string }
 
 function answer(mode: "limited" | "sourced", parts: Parts): string {
   const creative = {
     hypotheses: [
       { id: "H1", statement: parts.statement ?? "合成样本：开场就让主角做出冒险选择，可能更容易让观众代入。", howToVerify: parts.howToVerify ?? "计划请试看者复述主角的选择和动机。" },
+      ...(parts.fourthPlan === undefined ? [] : [
+        { id: "H2", statement: "合成样本：误会可能让人物关系更有悬念。", howToVerify: "计划请试看者复述人物关系。" },
+        { id: "H3", statement: "合成样本：主角的反击可能带来情绪兑现。", howToVerify: "计划收集试看反馈。" },
+        { id: "H4", statement: "合成样本：对手的动机可能让冲突更可信。", howToVerify: parts.fourthPlan },
+      ]),
     ],
     contentStructure: ["主角主动选择推动结果", "反派动机逐步揭开", "误会在结尾解开", "小人物完成一次反击"]
       .map((pattern) => ({ referenceId: null, application: { pattern, why: "自主创作设计。" } })),
@@ -198,6 +223,30 @@ function answer(mode: "limited" | "sourced", parts: Parts): string {
 }
 
 const PLAN_FIELD = "hypotheses[0].howToVerify";
+
+describe("the fourth verification plan in a one-episode limited research run", () => {
+  const run = input(1);
+  const check = (fourthPlan: string) => validateAutoStageOutput("research", answer("limited", { fourthPlan }), run, limitedContext(run)) as Checked;
+
+  it("accepts a future test method and preserves the original text", () => {
+    const result = check(FUTURE_TEST_METHOD);
+    expect(result).toMatchObject({ ok: true });
+    expect(result.output!.hypotheses[3]!.howToVerify).toBe(FUTURE_TEST_METHOD);
+    expect(result.output!.unverified).toEqual([]);
+  });
+
+  it.each([
+    ["该题材排名第一。", "market_statistic", "ranking", "名次第一"],
+    ["计划通过第一阶段测试比较排名第一的作品。", "market_statistic", "ranking", "名次第一"],
+    [METHOD_WITH_RANKING, "market_statistic", "ranking", "名次第一"],
+    [METHOD_WITH_SHARE, "market_statistic", "proportion", "七成"],
+    [METHOD_WITH_MEASUREMENT, "result_claim", "measured_result", "三集"],
+  ])("still rejects %s at hypotheses[3].howToVerify", (text, semantic, rule, detail) => {
+    const result = check(text);
+    expect(result).toMatchObject({ ok: false, code: "unsourced_number", field: "hypotheses[3].howToVerify", semantic, rule, detail });
+    expect(result).not.toHaveProperty("output");
+  });
+});
 
 describe("Q. the whole research stage (validateAutoStageOutput, and the series' borrowed research)", () => {
   describe.each(paths().map((path) => [path.name, path] as const))("%s", (_name, path) => {
