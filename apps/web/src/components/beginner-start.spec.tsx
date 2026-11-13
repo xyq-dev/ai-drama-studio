@@ -39,7 +39,7 @@ describe("beginner start page", () => {
     }));
     render(<BeginnerStart active="/create" />);
     fireEvent.click(screen.getByText("从已有剧本开始"));
-    fireEvent.change(screen.getByLabelText("剧本作品名称"), { target: { value: "无名碑" } });
+    fireEvent.change(screen.getByLabelText("剧本标题"), { target: { value: "无名碑" } });
     fireEvent.change(screen.getByLabelText("剧本正文"), { target: { value: script } });
     expect(writes).toHaveLength(0);
     fireEvent.click(screen.getByRole("button", { name: "创建并打开剧本工作台" }));

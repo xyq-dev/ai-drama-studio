@@ -73,7 +73,7 @@ export function ScriptImportStart() {
   return <details id="script-import" className={styles.formCard}>
     <summary className={styles.fieldLabel}>从已有剧本开始</summary>
     <form className="mt-4 grid gap-3" onSubmit={event => { event.preventDefault(); void create(); }}>
-      <label className={styles.fieldLabel}>剧本作品名称
+      <label className={styles.fieldLabel}>剧本标题
         <input className={styles.titleInput} value={title} maxLength={LIMITS.title} disabled={busy || reading}
           onChange={event => setTitle(event.target.value)} required />
       </label>
