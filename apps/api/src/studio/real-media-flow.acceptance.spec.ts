@@ -9,9 +9,9 @@
  */
 import "reflect-metadata";
 import { createHash, randomUUID } from "node:crypto";
-import { execFileSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { crc32, deflateSync } from "node:zlib";
 import { Test } from "@nestjs/testing";
 import type { INestApplication } from "@nestjs/common";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -265,9 +265,28 @@ async function harness(w: World, enabled = true, comfyFetch?: typeof fetch) {
     loseNextSubmissionReceipt() { unknownSubmitOnce = true; } };
 }
 
+function solidGrayPng(size: number): Buffer {
+  function chunk(type: string, data: Buffer): Buffer {
+    const payload = Buffer.concat([Buffer.from(type, "ascii"), data]);
+    const frame = Buffer.alloc(8);
+    frame.writeUInt32BE(data.length, 0);
+    frame.writeUInt32BE(crc32(payload), 4);
+    return Buffer.concat([frame.subarray(0, 4), payload, frame.subarray(4)]);
+  }
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(size, 0);
+  header.writeUInt32BE(size, 4);
+  header[8] = 8;
+  const pixels = Buffer.alloc(size * (size + 1), 128);
+  for (let row = 0; row < size; row++) pixels[row * (size + 1)] = 0; // No PNG filter.
+  return Buffer.concat([
+    Buffer.from("89504e470d0a1a0a", "hex"), chunk("IHDR", header),
+    chunk("IDAT", deflateSync(pixels)), chunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
 function comfyProtocolFixture() {
-  const rendered = execFileSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=gray:s=512x512",
-    "-frames:v", "1", "-threads", "1", "-f", "image2pipe", "-vcodec", "png", "pipe:1"]);
+  const rendered = solidGrayPng(512);
   const graphs = new Map<string, Record<string, { inputs: Record<string, unknown> }>>();
   const calls = { submitted: 0, uploaded: 0, downloaded: 0 };
   const protocolFetch: typeof fetch = async (target, init) => {
