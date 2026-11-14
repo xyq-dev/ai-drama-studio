@@ -717,6 +717,33 @@ function totalWording(before: string): RegExpExecArray | null {
   return TOTAL_CHANGE_BEFORE.exec(before) ?? TOTAL_BEFORE.exec(before) ?? WORK_TOTAL_BEFORE.exec(before) ?? DESIGN_TOTAL.exec(before);
 }
 
+const SEQUEL_EPISODE_COUNT = new RegExp(`(\\d+|[${CN_DIGITS}]+)集`, "gu");
+
+/** A sequel's generated prose may describe only this episode. Its prior handoff has a separate frozen field. */
+export function hasSequelScopeConflict(text: string, episodeNo: number, episodeCount: number): boolean {
+  const normalized = text.normalize("NFKC").replace(INVISIBLE, "");
+  for (const match of normalized.matchAll(/\b(?:episode|ep\.)\s*(\d+)\b/giu)) {
+    if (Number(match[1]) !== episodeNo) return true;
+  }
+  for (const match of normalized.matchAll(/\b(?:one|single|\d+)[ -]episodes?\s*(?:in total|total|only|series)\b/giu)) {
+    const value = /\d+/u.exec(match[0])?.[0] ?? "1";
+    if (Number(value) !== episodeCount) return true;
+  }
+  const compact = normalized.replace(/\s+/gu, "");
+  if (/(?:上(?:一)?集|前(?:一)?集)(?:的)?(?:结尾|结局|末尾|最后|正文|剧本|开场|剧情|情节|原稿|改|重写|重拍|实际|原来|里|中)|前情(?:提要|回顾)/u.test(compact)) return true;
+  for (const clause of compact.split(/[，,。；;！？!?]/u)) {
+    for (const match of clause.matchAll(SEQUEL_EPISODE_COUNT)) {
+      const before = clause.slice(0, match.index);
+      const value = numberValue(match[1]!);
+      if (before.endsWith("第") && value !== episodeNo) return true;
+      const after = clause.slice(match.index + match[0].length);
+      if (value !== episodeCount && (totalWording(before.replace(/[：:=]$/u, "")) || /^(?:完结|大结局|收官|为全剧)/u.test(after))) return true;
+    }
+    if (/^(?:(?:本剧|全剧|总集数)(?:为|是|：|:)?|仅|只有)?(?:单集|独集)(?:作品|剧本|短剧|完结)?$/u.test(clause)) return true;
+  }
+  return false;
+}
+
 /**
  * The scope of a count of episodes in the work's own design (checks v12): a structure's application, a hypothesis, its
  * plan, an opportunity, a direction's notes. Null reads it as before. A new total of the work taking this very count

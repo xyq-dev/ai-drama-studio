@@ -111,6 +111,27 @@ async function dependencies(client: PoolClient, workspaceId: string, projectId: 
     AND to_jsonb(title_writing_run)->>'run_kind' = 'script_breakdown'
     AND ($3::uuid IS NULL OR to_jsonb(title_writing_run)->>'source_script_revision_id'=$3::text)`, [workspaceId, projectId, revisionId ?? null]);
   const references: WorkbenchDependencyReference[] = result.rows.map((row) => ({ ...row }));
+  if (revisionId && (await client.query<{ present: boolean }>(`SELECT to_regclass('auto_creation_run') IS NOT NULL
+      AND to_regclass('auto_creation_stage') IS NOT NULL AS present`)).rows[0]?.present) {
+    const packageRefs = await client.query<{ id: string }>(`
+      SELECT DISTINCT later.id FROM auto_creation_run run
+      JOIN auto_creation_stage placed ON placed.run_id = run.id AND placed.workspace_id = run.workspace_id
+        AND placed.stage_key LIKE 'episode:%' AND placed.script_revision_id = $3
+      JOIN LATERAL (
+        SELECT stage.output_hash FROM auto_creation_stage stage
+        WHERE stage.run_id = run.id AND stage.workspace_id = run.workspace_id AND stage.state = 'completed'
+          AND (stage.stage_key = placed.stage_key OR stage.stage_key LIKE ('revise:%:' || placed.stage_key))
+        ORDER BY stage.ordinal DESC LIMIT 1
+      ) current_package ON true
+      JOIN script_revision later ON later.workspace_id = run.workspace_id AND later.project_id = run.project_id
+        AND later.content_json #>> '{workbench,continuation,originalRunId}' = run.id::text
+        AND later.content_json #>> '{workbench,continuation,originalEpisodeHash}' = current_package.output_hash
+        AND later.content_json #>> '{workbench,script,previousRevisionId}' IS NULL
+      JOIN episode next ON next.id = later.episode_id AND next.workspace_id = later.workspace_id AND next.project_id = later.project_id
+        AND next.episode_no = split_part(placed.stage_key, ':', 2)::int + 1
+      WHERE run.workspace_id = $1 AND run.project_id = $2 AND later.deleted_at IS NULL`, [workspaceId, projectId, revisionId]);
+    for (const row of packageRefs.rows) references.push({ kind: "other", id: row.id, label: "后集连续性引用" });
+  }
   const speechReady = await client.query<{ present: boolean }>("SELECT to_regclass('speech_plan') IS NOT NULL AS present");
   if (speechReady.rows[0]?.present) {
     const plans = await client.query<{ id: string }>(`SELECT p.id FROM speech_plan p WHERE p.workspace_id=$1 AND p.project_id=$2

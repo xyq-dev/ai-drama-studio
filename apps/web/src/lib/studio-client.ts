@@ -16,6 +16,7 @@ export interface WriteRequest {
   idempotencyKey: string;
   ifMatch?: number;
   method?: "POST" | "PUT";
+  operatorToken?: string;
 }
 
 export interface WriteResult<T> {
@@ -57,6 +58,7 @@ export class StudioClient {
       "Idempotency-Key": request.idempotencyKey,
     };
     if (request.ifMatch !== undefined) headers["If-Match"] = String(request.ifMatch);
+    if (request.operatorToken) headers["X-Operator-Token"] = request.operatorToken;
     const response = await this.request(`${this.prefix}${request.path}`, {
       method: request.method ?? "POST",
       headers,

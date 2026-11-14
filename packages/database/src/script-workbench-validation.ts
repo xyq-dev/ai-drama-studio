@@ -2,8 +2,10 @@ import {
   SCRIPT_WORKBENCH_SCHEMA, estimateScriptWorkbench, scriptWorkbenchPlanSchema, scriptWorkbenchScriptSchema,
   type ScriptWorkbenchPlan, type ScriptWorkbenchScript,
 } from "@ai-drama/contracts";
+import { hasSequelScopeConflict, workbenchScriptText } from "@ai-drama/domain";
 import type { PoolClient } from "pg";
 import { PersistenceError } from "./job-service";
+import { assertShortSequelScript, isShortSequelOriginalEpisode, shortSequelEpisodesIn } from "./short-sequel";
 
 function object(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
@@ -42,20 +44,25 @@ export function validateWorkbenchPlan(plan: ScriptWorkbenchPlan, episodeCount: n
 }
 
 export async function assertWorkbenchStoryApproval(client: PoolClient, workspaceId: string, projectId: string, revisionId: string): Promise<void> {
-  const result = await client.query<{ content_json: unknown; episode_count: number }>(
-    `SELECT r.content_json, coalesce((to_jsonb(p)->>'episode_count')::int, 3) AS episode_count
+  const result = await client.query<{ content_json: unknown; episode_count: number; episode_seconds: number | null }>(
+    `SELECT r.content_json, coalesce((to_jsonb(p)->>'episode_count')::int, 3) AS episode_count,
+            (to_jsonb(p)->>'target_episode_seconds')::int AS episode_seconds
        FROM story_revision r JOIN project p ON p.id = r.project_id AND p.workspace_id = r.workspace_id
       WHERE r.id = $1 AND r.project_id = $2 AND r.workspace_id = $3`, [revisionId, projectId, workspaceId]);
   const row = result.rows[0];
   if (!row) throw new PersistenceError("NOT_FOUND", "计划版本不存在。");
   const plan = readWorkbenchPlan(row.content_json);
+  if ((await shortSequelEpisodesIn(client, { workspaceId, projectId })).length
+    && (!plan || plan.brief.targetEpisodeSeconds !== row.episode_seconds)) {
+    throw new PersistenceError("REVIEW_REQUIRED", "请在工作台确认包含所有分集的大纲，并沿用作品的单集时长。");
+  }
   if (plan) validateWorkbenchPlan(plan, row.episode_count, true);
 }
 
 /** Called under the project's existing write lock; legacy projects keep their original contract. */
 export async function assertWorkbenchScript(
   client: PoolClient, input: { workspaceId: string; projectId: string; episodeId: string; sourceStoryRevisionId: string; content: unknown },
-  approving = false,
+  phase: "save" | "submit" | "approve" = "save",
 ): Promise<void> {
   const rows = await client.query<{ content_json: unknown; episode_no: number }>(
     `SELECT s.content_json, e.episode_no FROM story_revision s JOIN episode e ON e.project_id = s.project_id AND e.workspace_id = s.workspace_id
@@ -65,7 +72,13 @@ export async function assertWorkbenchScript(
   if (!row) throw new PersistenceError("NOT_FOUND", "正文或故事来源不存在。");
   const plan = readWorkbenchPlan(row.content_json);
   const script = readWorkbenchScript(input.content);
+  const sequel = await assertShortSequelScript(client, input, phase !== "save");
+  if (phase === "submit" && !sequel) return;
+  if (sequel && (!script || script.previousRevisionId !== sequel.previousRevisionId)) {
+    throw new PersistenceError("SOURCE_STALE", "剧本正文与续写引用的上一集版本不一致。");
+  }
   if (!plan && !script) return;
+  if (!script && await isShortSequelOriginalEpisode(client, input, input.episodeId)) return;
   if (!plan || !script) throw new PersistenceError("REVIEW_REQUIRED", "结构化工作台正文需要对应的已确认工作台计划，请先在剧本工作台保存计划和正文。");
   unique(script.scenes.map(s => s.id), "场次 ID");
   unique(script.scenes.flatMap(s => s.beats.map(b => b.id)), "动作或对白 ID");
@@ -79,7 +92,19 @@ export async function assertWorkbenchScript(
       }
     }
   }
-  if (row.episode_no > 1) {
+  if (sequel) {
+    if (sequel.previousHandoff !== null && script.previousHandoff.trim() !== sequel.previousHandoff) {
+      throw new PersistenceError("SOURCE_STALE", "接上集内容与上一集版本的集尾交接不一致，请重新核对。");
+    }
+    const prose = [script.title, script.openingHook, script.change, script.endingHandoff, script.characterKnowledge, script.unresolvedThreads,
+      ...script.scenes.flatMap(scene => [scene.heading, ...scene.beats.map(beat => beat.text)])];
+    if (prose.some(text => hasSequelScopeConflict(text, row.episode_no, sequel.episodeCount))) {
+      throw new PersistenceError("VALIDATION_ERROR", "续写正文与当前集数或前集交接冲突，请只写本集的新剧情。");
+    }
+    if (object(input.content)?.text !== workbenchScriptText(script, plan.bible.characters)) {
+      throw new PersistenceError("VALIDATION_ERROR", "续写剧本正文应与工作台的场次和对白一致。");
+    }
+  } else if (row.episode_no > 1) {
     const previous = await client.query<{ id: string; content_json: unknown }>(
       `SELECT s.id, s.content_json FROM episode e JOIN script_revision s ON s.id = e.current_script_revision_id
         AND s.workspace_id = e.workspace_id AND s.episode_id = e.id
@@ -93,7 +118,7 @@ export async function assertWorkbenchScript(
       throw new PersistenceError("SOURCE_STALE", "接上集内容与上一集已锁版本的集尾交接不一致，请重新核对。");
     }
   } else if (script.previousRevisionId !== null) throw new PersistenceError("VALIDATION_ERROR", "第 1 集不能引用上一集。");
-  if (!approving) return;
+  if (phase !== "approve") return;
   const estimate = estimateScriptWorkbench(script);
   if (estimate.seconds > plan.brief.targetEpisodeSeconds || estimate.dialogueCount > plan.brief.dialogueQuota) {
     throw new PersistenceError("REVIEW_REQUIRED", "本集估时或对白用量超过作品配额，请修订后再定稿。");
@@ -114,9 +139,11 @@ export async function invalidateWorkbenchDependents(client: PoolClient, workspac
     `WITH RECURSIVE affected AS (
        SELECT id FROM script_revision WHERE workspace_id = $1 AND project_id = $2
          AND content_json->'workbench'->'script'->>'previousRevisionId' = $3
+         AND content_json->'workbench'->'continuation' IS NULL
        UNION
        SELECT r.id FROM script_revision r JOIN affected a ON r.content_json->'workbench'->'script'->>'previousRevisionId' = a.id::text
          WHERE r.workspace_id = $1 AND r.project_id = $2
+           AND r.content_json->'workbench'->'continuation' IS NULL
      ) UPDATE script_revision r SET freshness_status = 'STALE', stale_reason = 'PREVIOUS_EPISODE_REPLACED', stale_from_ref = $3
        WHERE r.id IN (SELECT id FROM affected) AND r.workspace_id = $1 AND r.freshness_status = 'CURRENT' RETURNING r.id`,
     [workspaceId, projectId, previousId]);

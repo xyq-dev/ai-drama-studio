@@ -26,6 +26,7 @@ import { projectEpisodePlanIn } from "./episode-plan";
 import { AUTO_CREATION_MIGRATION } from "./migrations";
 import type { TextChainService } from "./text-chain";
 import { recentWritingCalls, runningWritingRuns, writingCallLockKey } from "./writing-candidate-store";
+import { shortSequelEpisodesIn } from "./short-sequel";
 
 export { AUTO_CREATION_MIGRATION };
 
@@ -536,12 +537,15 @@ export class PostgresAutoCreationStore implements AutoCreationStore {
         "SELECT id, episode_no, row_version, current_script_revision_id FROM episode WHERE project_id = $1 AND workspace_id = $2 ORDER BY episode_no FOR UPDATE",
         [projectId, workspaceId]);
       const plan = await projectEpisodePlanIn(client, workspaceId, projectId);
+      const originalCount = run.input.episodeCount;
       const numbers = episodes.rows.map((row) => Number(row.episode_no));
-      if (plan.episodeCount !== run.input.episodeCount || numbers.length !== run.input.episodeCount || numbers.some((episodeNo, index) => episodeNo !== index + 1)) {
+      const added = plan.episodeCount > originalCount ? await shortSequelEpisodesIn(client, { workspaceId, projectId }) : [];
+      if (plan.writingMode !== "short" || numbers.length !== plan.episodeCount || numbers.some((episodeNo, index) => episodeNo !== index + 1)
+        || originalCount + added.length !== plan.episodeCount || added.some((episode, index) => episode.episodeNo !== originalCount + index + 1 || episode.originalRunId !== runId)) {
         return { kind: "plan_mismatch" };
       }
       const stages = (await client.query<Row>(`SELECT ${STAGE_COLUMNS} FROM auto_creation_stage WHERE run_id = $1 AND script_save IS NOT NULL`, [runId])).rows.map(toStage);
-      for (const episode of episodes.rows) {
+      for (const episode of episodes.rows.slice(0, originalCount)) {
         const stageKey = `episode:${String(episode.episode_no)}`;
         const stage = stages.find((item) => item.stageKey === stageKey);
         const script = scripts.find((item) => item.episodeNo === Number(episode.episode_no));

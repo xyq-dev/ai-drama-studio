@@ -39,15 +39,19 @@ import {
 } from "../lib/auto-creation-client";
 import { AutoEpisodeList } from "./auto-episode-list";
 import { BeginnerShell } from "./beginner-shell";
+import { ShortSequelEntry } from "./short-sequel-entry";
 import styles from "./title-writing.module.css";
 import autoStyles from "./auto-creation.module.css";
 
 export const AUTO_CREATION_POLL_MS = 2_000;
 const defaultClient = new AutoCreationClient();
 const PROVIDER_LABELS: Readonly<Record<string, string>> = TITLE_WRITING_PROVIDER_LABELS;
+const REFERENCE_HEADINGS = new Set(["auto-episodes-title", "auto-research-title", "auto-direction-title", "auto-bible-title"]);
 
-/** Progress and results of the latest automatic creation run of a work. Everything shown comes from stored state. */
-export function AutoCreationRun({ projectId, client = defaultClient }: { projectId: string; client?: AutoCreationClient }) {
+/** Progress and results of a specific run, or the latest automatic creation run of a work. */
+export function AutoCreationRun({ projectId, client = defaultClient, selectedRunId }: {
+  projectId: string; client?: AutoCreationClient; selectedRunId?: string;
+}) {
   const [run, setRun] = useState<AutoCreationRunView | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [readError, setReadError] = useState<string | null>(null);
@@ -83,7 +87,7 @@ export function AutoCreationRun({ projectId, client = defaultClient }: { project
     if (reading.current) return;
     reading.current = true;
     try {
-      const latest = await client.latest(projectId);
+      const latest = selectedRunId ? await client.get(projectId, selectedRunId) : await client.latest(projectId);
       setRun(latest);
       setReadError(null);
     } catch (caught) {
@@ -92,7 +96,7 @@ export function AutoCreationRun({ projectId, client = defaultClient }: { project
       reading.current = false;
       setLoaded(true);
     }
-  }, [client, projectId]);
+  }, [client, projectId, selectedRunId]);
 
   useEffect(() => {
     void read();
@@ -106,8 +110,9 @@ export function AutoCreationRun({ projectId, client = defaultClient }: { project
   }, [run?.state, read]);
 
   useEffect(() => {
-    if (openedEpisodeList.current || window.location.hash !== "#auto-episodes-title") return;
-    const heading = document.getElementById("auto-episodes-title");
+    const headingId = window.location.hash.slice(1);
+    if (openedEpisodeList.current || !REFERENCE_HEADINGS.has(headingId)) return;
+    const heading = document.getElementById(headingId);
     if (!heading) return;
     openedEpisodeList.current = true;
     heading.scrollIntoView({ block: "start" });
@@ -277,7 +282,10 @@ export function AutoCreationRun({ projectId, client = defaultClient }: { project
         ) : null}
         {actionError ? <p className={styles.error} role="alert">{actionError}</p> : null}
 
-        <AutoEpisodeList key={run.runId} run={run} bible={bible} outline={outline} />
+        <AutoEpisodeList key={run.runId} run={run} bible={bible} outline={outline}
+          continuation={run.state === "completed"
+            ? <ShortSequelEntry projectId={projectId} afterEpisodeNo={run.episodeCount} />
+            : undefined} />
 
         <section className={autoStyles.section} aria-labelledby="auto-stages-title">
           <h2 id="auto-stages-title" className={styles.sectionTitle}>阶段</h2>

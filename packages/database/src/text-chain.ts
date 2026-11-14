@@ -9,6 +9,8 @@ import type { PoolClient, QueryResultRow } from "pg";
 import { PersistenceError, type DatabasePool } from "./job-service";
 import { projectEpisodePlanIn } from "./episode-plan";
 import { assertWorkbenchScript, assertWorkbenchStoryApproval, invalidateWorkbenchDependents } from "./script-workbench-validation";
+import { isShortSequelOriginalEpisode, shortSequelEpisodesIn, staleShortSequelDraftsIn } from "./short-sequel";
+import { affectedSequelStoryPlans } from "./short-sequel-lineage";
 import {
   affectedScriptConsumerIds,
   insertScriptDependencies,
@@ -1362,7 +1364,8 @@ export class TextChainService {
       rowVersion,
       traceId,
     );
-    if (previousCurrentId && previousCurrentId !== revisionId) {
+    // In expanded works, a pending outline or setting revision cannot invalidate the confirmed plan.
+    if (previousCurrentId && previousCurrentId !== revisionId && (await shortSequelEpisodesIn(client, input)).length === 0) {
       if (await staleFromStory(client, input.workspaceId, previousCurrentId, traceId)) {
         await enqueueStaleRecalculation(
           client,
@@ -1526,6 +1529,14 @@ export class TextChainService {
       );
     }
     const parentId = await lockParentForReview(client, input);
+    if (input.table === "script_revision" && input.to === "IN_REVIEW") {
+      const result = await client.query<{ project_id: string; source_story_revision_id: string; content_json: unknown }>(
+        "SELECT project_id, source_story_revision_id, content_json FROM script_revision WHERE id = $1 AND workspace_id = $2",
+        [input.revisionId, input.workspaceId]);
+      const revision = result.rows[0]!;
+      await assertWorkbenchScript(client, { workspaceId: input.workspaceId, projectId: revision.project_id, episodeId: parentId,
+        sourceStoryRevisionId: revision.source_story_revision_id, content: revision.content_json }, "submit");
+    }
     const reviewVersion = await applyReview(client, input);
     const rowVersion = await bumpReviewParentVersion(client, input, parentId);
     return { reviewVersion, rowVersion };
@@ -1606,6 +1617,13 @@ export class TextChainService {
       input.revisionId,
     );
     await ensureEpisodes(client, input.workspaceId, input.projectId);
+    const traceId = input.traceId ?? "m2-text-chain";
+    for (const { storyRevisionId, episodes } of await affectedSequelStoryPlans(client, input, input.revisionId)) {
+      if (await staleFromStory(client, input.workspaceId, storyRevisionId, traceId, episodes)) {
+        await enqueueStaleRecalculation(client, input.workspaceId, input.projectId, encodeStoryStaleReason(episodes), `story_revision:${storyRevisionId}`);
+      }
+    }
+    await staleShortSequelDraftsIn(client, input, { storyRevisionId: input.revisionId });
     return { reviewVersion, rowVersion };
   }
 
@@ -1652,8 +1670,8 @@ export class TextChainService {
       );
       const scope = project.rows[0];
       if (!scope) return false;
-      const task = await client.query<{ id: string; stale_from_ref: string } & QueryResultRow>(
-        `SELECT id, stale_from_ref FROM stale_recalculation
+      const task = await client.query<{ id: string; stale_from_ref: string; reason: string } & QueryResultRow>(
+        `SELECT id, stale_from_ref, reason FROM stale_recalculation
           WHERE project_id = $1 AND workspace_id = $2 AND status IN ('PENDING', 'RUNNING')
           ORDER BY created_at, id LIMIT 1 FOR UPDATE`,
         [scope.id, scope.workspace_id],
@@ -1670,7 +1688,7 @@ export class TextChainService {
       const traceId = `stale-recalculation:${work.id}`;
       const hasMore =
         root.table === "story_revision"
-          ? await staleFromStory(client, scope.workspace_id, root.id, traceId)
+          ? await staleFromStory(client, scope.workspace_id, root.id, traceId, storyStaleEpisodes(work.reason))
           : root.table === "script_revision"
             ? await staleFromScript(client, scope.workspace_id, root.id, traceId)
             : await staleFromTextEntity(
@@ -2009,6 +2027,7 @@ export class TextChainService {
     );
     const source = await client.query<
       {
+        project_id: string;
         freshness_status: string;
         source_story_revision_id: string;
         current_script_revision_id: string | null;
@@ -2018,7 +2037,7 @@ export class TextChainService {
         source_freshness_status: string;
       } & QueryResultRow
     >(
-      `SELECT sr.freshness_status, sr.source_story_revision_id,
+      `SELECT sr.project_id, sr.freshness_status, sr.source_story_revision_id,
               e.current_script_revision_id,
               p.current_story_revision_id,
               p.approved_story_revision_id,
@@ -2052,9 +2071,12 @@ export class TextChainService {
     if (sourceRow.freshness_status !== "CURRENT") {
       throw new PersistenceError("SOURCE_STALE", "Stale script revision cannot be approved");
     }
+    const historicalOriginal = sourceRow.approved_story_revision_id !== null && sourceRow.current_story_revision_id === sourceRow.approved_story_revision_id
+      && sourceRow.current_story_revision_id !== sourceRow.source_story_revision_id
+      && await isShortSequelOriginalEpisode(client, { workspaceId: input.workspaceId, projectId: sourceRow.project_id }, input.episodeId);
     if (
-      sourceRow.current_story_revision_id !== sourceRow.source_story_revision_id ||
-      sourceRow.approved_story_revision_id !== sourceRow.source_story_revision_id ||
+      (!historicalOriginal && (sourceRow.current_story_revision_id !== sourceRow.source_story_revision_id ||
+        sourceRow.approved_story_revision_id !== sourceRow.source_story_revision_id)) ||
       sourceRow.source_review_status !== "APPROVED" ||
       sourceRow.source_freshness_status !== "CURRENT"
     ) {
@@ -2069,7 +2091,7 @@ export class TextChainService {
     const workbenchRow = workbenchRevision.rows[0];
     if (!workbenchRow) throw new PersistenceError("NOT_FOUND", "Script revision not found");
     await assertWorkbenchScript(client, { workspaceId: input.workspaceId, projectId: workbenchRow.project_id,
-      episodeId: input.episodeId, sourceStoryRevisionId: sourceRow.source_story_revision_id, content: workbenchRow.content_json }, true);
+      episodeId: input.episodeId, sourceStoryRevisionId: sourceRow.source_story_revision_id, content: workbenchRow.content_json }, "approve");
 
     const reviewVersion = await applyReview(client, {
       table: "script_revision",
@@ -2091,6 +2113,14 @@ export class TextChainService {
       "approved_script_revision_id",
       input.revisionId,
     );
+    const invalidated = await staleShortSequelDraftsIn(client, { workspaceId: input.workspaceId, projectId: sourceRow.project_id,
+      traceId: input.traceId }, { episodeId: input.episodeId, revisionId: input.revisionId });
+    const traceId = input.traceId ?? "m2-text-chain";
+    for (const revisionId of invalidated) {
+      if (await staleFromScript(client, input.workspaceId, revisionId, traceId)) {
+        await enqueueStaleRecalculation(client, input.workspaceId, sourceRow.project_id, "SOURCE_SCRIPT_REPLACED", `script_revision:${revisionId}`);
+      }
+    }
     return { reviewVersion, rowVersion };
   }
 
@@ -2772,7 +2802,9 @@ async function enqueueStaleRecalculation(
     `INSERT INTO stale_recalculation
       (workspace_id, project_id, stale_from_ref, reason, status)
      VALUES ($1, $2, $3, $4, 'PENDING')
-     ON CONFLICT (workspace_id, project_id, stale_from_ref) DO NOTHING`,
+     ON CONFLICT (workspace_id, project_id, stale_from_ref) DO UPDATE
+       SET reason = EXCLUDED.reason, status = 'PENDING', updated_at = now()
+       WHERE stale_recalculation.status = 'DONE'`,
     [workspaceId, projectId, staleFromRef, reason],
   );
 }
@@ -2847,93 +2879,49 @@ async function markStale(
   return updated.rows[0]?.has_more === true;
 }
 
+const STORY_STALE_REASON = "SOURCE_STORY_REPLACED";
+
+function encodeStoryStaleReason(episodes: readonly number[] | null): string {
+  return episodes ? `SOURCE_STORY_OUTLINE_REPLACED:${episodes.join(",")}` : STORY_STALE_REASON;
+}
+
+function storyStaleEpisodes(reason: string): number[] | null {
+  const outline = /^SOURCE_STORY_OUTLINE_REPLACED:([1-6](?:,[1-6])*)$/.exec(reason);
+  return outline ? outline[1]!.split(",").map(Number) : null;
+}
+
 async function staleFromStory(
   client: PoolClient,
   workspaceId: string,
   storyRevisionId: string,
   traceId: string,
+  episodes: readonly number[] | null = null,
 ): Promise<boolean> {
-  let hasMore = false;
-  const reason = "SOURCE_STORY_REPLACED";
+  const reason = STORY_STALE_REASON;
   const staleFromRef = `story_revision:${storyRevisionId}`;
-  hasMore =
-    (await markStale(
-      client,
-      "script_revision",
-      `SELECT id FROM script_revision WHERE workspace_id = $1 AND source_story_revision_id = $2`,
-      [workspaceId, storyRevisionId],
-      reason,
-      staleFromRef,
-      traceId,
-    )) || hasMore;
-  hasMore =
-    (await markStale(
-      client,
-      "scene_revision",
-      `SELECT scene_revision.id FROM scene_revision
-       JOIN script_revision ON script_revision.id = scene_revision.source_script_revision_id
-      WHERE script_revision.workspace_id = $1 AND script_revision.source_story_revision_id = $2`,
-      [workspaceId, storyRevisionId],
-      reason,
-      staleFromRef,
-      traceId,
-    )) || hasMore;
-  hasMore =
-    (await markStale(
-      client,
-      "shot_revision",
-      `SELECT shot_revision.id FROM shot_revision
-       JOIN scene_revision ON scene_revision.id = shot_revision.source_scene_revision_id
-       JOIN script_revision ON script_revision.id = scene_revision.source_script_revision_id
-      WHERE script_revision.workspace_id = $1 AND script_revision.source_story_revision_id = $2`,
-      [workspaceId, storyRevisionId],
-      reason,
-      staleFromRef,
-      traceId,
-    )) || hasMore;
-  hasMore =
-    (await markStale(
-      client,
-      "character_revision",
-      `SELECT character_revision_id FROM character_revision_script_source
-      WHERE workspace_id = $1 AND script_revision_id IN (
-        SELECT id FROM script_revision WHERE workspace_id = $1 AND source_story_revision_id = $2
-      )`,
-      [workspaceId, storyRevisionId],
-      reason,
-      staleFromRef,
-      traceId,
-    )) || hasMore;
-  hasMore =
-    (await markStale(
-      client,
-      "location_revision",
-      `SELECT location_revision_id FROM location_revision_script_source
-      WHERE workspace_id = $1 AND script_revision_id IN (
-        SELECT id FROM script_revision WHERE workspace_id = $1 AND source_story_revision_id = $2
-      )`,
-      [workspaceId, storyRevisionId],
-      reason,
-      staleFromRef,
-      traceId,
-    )) || hasMore;
-  hasMore =
-    (await staleSharedDescendants(
-      client,
-      reason,
-      staleFromRef,
-      [workspaceId, storyRevisionId],
-      `SELECT location_revision_id FROM location_revision_script_source
-      WHERE workspace_id = $1 AND script_revision_id IN (
-        SELECT id FROM script_revision WHERE workspace_id = $1 AND source_story_revision_id = $2
-      )`,
-      `SELECT character_revision_id FROM character_revision_script_source
-      WHERE workspace_id = $1 AND script_revision_id IN (
-        SELECT id FROM script_revision WHERE workspace_id = $1 AND source_story_revision_id = $2
-      )`,
-      traceId,
-    )) || hasMore;
-  return hasMore;
+  const params = [workspaceId, storyRevisionId, episodes];
+  const scriptIds = `SELECT r.id FROM script_revision r
+    JOIN episode e ON e.id = r.episode_id AND e.workspace_id = r.workspace_id AND e.project_id = r.project_id
+    WHERE r.workspace_id = $1 AND r.source_story_revision_id = $2
+      AND ($3::smallint[] IS NULL OR e.episode_no = ANY($3::smallint[]))`;
+  const sceneIds = `SELECT id FROM scene_revision WHERE workspace_id = $1 AND source_script_revision_id IN (${scriptIds})`;
+  const shotIds = `SELECT id FROM shot_revision WHERE workspace_id = $1 AND source_scene_revision_id IN (${sceneIds})`;
+  const characterIds = `SELECT character_revision_id FROM character_revision_script_source
+    WHERE workspace_id = $1 AND script_revision_id IN (${scriptIds})`;
+  const locationIds = `SELECT location_revision_id FROM location_revision_script_source
+    WHERE workspace_id = $1 AND script_revision_id IN (${scriptIds})`;
+
+  let hasMore = false;
+  for (const [table, ids] of [
+    ["script_revision", scriptIds],
+    ["scene_revision", sceneIds],
+    ["shot_revision", shotIds],
+    ["character_revision", characterIds],
+    ["location_revision", locationIds],
+  ] as const) {
+    hasMore = (await markStale(client, table, ids, params, reason, staleFromRef, traceId)) || hasMore;
+  }
+  return (await staleSharedDescendants(client, reason, staleFromRef, params, locationIds, characterIds, traceId)) || hasMore;
 }
 
 async function staleFromScript(

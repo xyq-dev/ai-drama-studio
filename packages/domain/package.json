@@ -16,6 +16,10 @@
     "./media-retry": {
       "types": "./dist/media-retry.d.ts",
       "default": "./dist/media-retry.js"
+    },
+    "./short-sequel-plan": {
+      "types": "./dist/short-sequel-plan.d.ts",
+      "default": "./dist/short-sequel-plan.js"
     }
   },
   "dependencies": {

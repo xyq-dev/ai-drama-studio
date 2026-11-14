@@ -1,5 +1,6 @@
 import { autoStageRound, type AutoBible, type AutoCreationRunView, type AutoEpisode, type AutoOutline } from "@ai-drama/contracts";
 import { stageOf } from "../lib/auto-creation-client";
+import type { ReactNode } from "react";
 import styles from "./auto-creation.module.css";
 import writingStyles from "./title-writing.module.css";
 
@@ -95,10 +96,11 @@ function EpisodeDetails({ episode, bible, outline }: {
   );
 }
 
-export function AutoEpisodeList({ run, bible, outline }: {
+export function AutoEpisodeList({ run, bible, outline, continuation }: {
   run: AutoCreationRunView;
   bible: AutoBible | undefined;
   outline: AutoOutline | null | undefined;
+  continuation?: ReactNode;
 }) {
   const episodes = Object.entries(run.currentEpisodes).flatMap(([episodeKey, versionKey]) => {
     const stage = stageOf(run, versionKey);
@@ -133,6 +135,7 @@ export function AutoEpisodeList({ run, bible, outline }: {
           );
         })}
       </ol>
+      {continuation}
     </section>
   );
 }

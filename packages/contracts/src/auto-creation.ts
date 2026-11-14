@@ -1134,7 +1134,7 @@ export interface AutoRunBundle {
 
 export type AutoRunCreation =
   | { kind: "created" | "existing" | "conflict"; bundle: AutoRunBundle }
-  | { kind: "active"; runKind: "auto" | "title" | "series" | "vimax"; runId: string }
+  | { kind: "active"; runKind: "auto" | "title" | "series" | "vimax" | "short_sequel"; runId: string }
   | { kind: "blocked"; code: "AUTO_CREATION_ACTIVE_RUN_CAP" }
   | { kind: "blocked"; code: "AUTO_CREATION_DAILY_QUOTA_LOW"; requiredCalls: number; remainingCalls: number }
   | { kind: "project_not_empty" };

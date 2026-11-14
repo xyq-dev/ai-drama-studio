@@ -8,6 +8,8 @@ import type { PoolClient } from "pg";
 import { PersistenceError, type DatabasePool } from "./job-service";
 import { TextChainService } from "./text-chain";
 import { readWorkbenchPlan, validateWorkbenchPlan, workbenchPart } from "./script-workbench-validation";
+import { shortSequelEpisodesIn, type ShortSequelBodyRefs } from "./short-sequel";
+import { assertInheritedSequelPlan } from "./short-sequel-lineage";
 
 interface RevisionRow { id: string; revision_no: number; review_status: string; freshness_status: string; review_version: number; content_json: Record<string, unknown>; created_at: Date }
 function revision(row: RevisionRow): ScriptWorkbenchRevision {
@@ -53,6 +55,7 @@ export class ScriptWorkbenchStore {
         "SELECT * FROM story_revision WHERE project_id = $1 AND workspace_id = $2 ORDER BY revision_no DESC LIMIT 100", [projectId, workspaceId]);
       const episodes = await client.query<{ id: string; episode_no: number; title: string; row_version: number; current_script_revision_id: string | null; approved_script_revision_id: string | null }>(
         "SELECT * FROM episode WHERE project_id = $1 AND workspace_id = $2 ORDER BY episode_no", [projectId, workspaceId]);
+      const added = new Set((await shortSequelEpisodesIn(client, { workspaceId, projectId })).map(episode => episode.episodeId));
       const scripts = await client.query<RevisionRow & { episode_id: string }>(
         `SELECT selected.* FROM episode e CROSS JOIN LATERAL (
           SELECT s.* FROM script_revision s WHERE s.episode_id = e.id AND s.project_id = e.project_id AND s.workspace_id = e.workspace_id
@@ -85,6 +88,7 @@ export class ScriptWorkbenchStore {
         episodes: episodes.rows.map(e => {
           const history = scripts.rows.filter(s => s.episode_id === e.id).map(revision);
           return { id: e.id, episodeNo: e.episode_no, title: e.title, rowVersion: e.row_version,
+            ...(added.has(e.id) ? { isContinuation: true } : {}),
             currentScriptRevisionId: e.current_script_revision_id, approvedScriptRevisionId: e.approved_script_revision_id,
             script: e.current_script_revision_id ? currentScripts.get(`${e.id}:${e.current_script_revision_id}`) ?? null : null, history };
         }),
@@ -95,7 +99,7 @@ export class ScriptWorkbenchStore {
     finally { client.release(); }
   }
 
-  async savePlan(client: PoolClient, input: { workspaceId: string; projectId: string; plan: ScriptWorkbenchPlan; expectedVersion: number; actorId: string; traceId: string }) {
+  async savePlan(client: PoolClient, input: { workspaceId: string; projectId: string; plan: ScriptWorkbenchPlan; continuationEpisodeNo?: number; expectedVersion: number; actorId: string; traceId: string }) {
     const existing = await client.query<{ content_json: unknown; episode_count: number; version: number }>(
       `SELECT s.content_json, coalesce((to_jsonb(p)->>'episode_count')::int, 3) AS episode_count, p.version
        FROM project p LEFT JOIN story_revision s ON s.id = p.current_story_revision_id AND s.workspace_id = p.workspace_id
@@ -105,13 +109,15 @@ export class ScriptWorkbenchStore {
     if (row.version !== input.expectedVersion) throw new PersistenceError("REVISION_CONFLICT", "计划已被更新，请保留草稿并重新加载。");
     validateWorkbenchPlan(input.plan, row.episode_count);
     const previous = readWorkbenchPlan(row.content_json);
+    if (input.continuationEpisodeNo !== undefined) await assertInheritedSequelPlan(client, input, input.continuationEpisodeNo, previous, input.plan);
     const documentVersions = nextDocumentVersions(previous, input.plan, workbenchPart(row.content_json)?.documentVersions);
     return this.text.createStoryRevisionInTransaction(client, { workspaceId: input.workspaceId, projectId: input.projectId,
       expectedVersion: input.expectedVersion, createdBy: input.actorId, traceId: input.traceId,
-      content: { text: workbenchPlanText(input.plan), workbench: { schema: SCRIPT_WORKBENCH_SCHEMA, plan: input.plan, documentVersions } } });
+      content: { text: workbenchPlanText(input.plan), workbench: { schema: SCRIPT_WORKBENCH_SCHEMA, plan: input.plan, documentVersions,
+        ...(input.continuationEpisodeNo === undefined ? {} : { continuationEpisodeNo: input.continuationEpisodeNo }) } } });
   }
 
-  async saveScript(client: PoolClient, input: { workspaceId: string; projectId: string; episodeId: string; sourceStoryRevisionId: string; script: ScriptWorkbenchScript; expectedVersion: number; actorId: string; traceId: string }) {
+  async saveScript(client: PoolClient, input: { workspaceId: string; projectId: string; episodeId: string; sourceStoryRevisionId: string; script: ScriptWorkbenchScript; continuation?: ShortSequelBodyRefs; expectedVersion: number; actorId: string; traceId: string }) {
     const source = await client.query<{ content_json: unknown }>(
       "SELECT content_json FROM story_revision WHERE id = $1 AND project_id = $2 AND workspace_id = $3",
       [input.sourceStoryRevisionId, input.projectId, input.workspaceId]);
@@ -121,6 +127,7 @@ export class ScriptWorkbenchStore {
     return this.text.createScriptRevisionInTransaction(client, { workspaceId: input.workspaceId, projectId: input.projectId,
       episodeId: input.episodeId, sourceStoryRevisionId: input.sourceStoryRevisionId, expectedVersion: input.expectedVersion,
       createdBy: input.actorId, traceId: input.traceId,
-      content: { text: workbenchScriptText(input.script, plan.bible.characters), workbench: { schema: SCRIPT_WORKBENCH_SCHEMA, script: input.script } } });
+      content: { text: workbenchScriptText(input.script, plan.bible.characters), workbench: { schema: SCRIPT_WORKBENCH_SCHEMA, script: input.script,
+        ...(input.continuation ? { continuation: input.continuation, sourceStoryRevisionId: input.sourceStoryRevisionId } : {}) } } });
   }
 }
