@@ -13,7 +13,7 @@ import type {
   ShortSequelAiTaskView,
 } from "@ai-drama/contracts";
 import { canBindShortSequelFirstPlan, shortSequelDraftIsExpired } from "@ai-drama/contracts";
-import { completedShortSequelOutline } from "@ai-drama/domain";
+import { completedShortSequelOutline } from "@ai-drama/domain/short-sequel-plan";
 import { ApiError, StudioClient } from "../lib/studio-client";
 import {
   expandedShortSequelPlan,

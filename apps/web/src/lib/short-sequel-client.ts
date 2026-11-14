@@ -2,7 +2,7 @@ import type {
   AutoBible, AutoCreationConstraints, AutoDirectionsOutput, AutoEpisode, AutoOutline, ScriptWorkbenchPlan, ScriptWorkbenchRevision,
   ScriptWorkbenchSnapshot, ShortSequelAiSource,
 } from "@ai-drama/contracts";
-import { inheritShortSequelPlan } from "@ai-drama/domain";
+import { inheritShortSequelPlan } from "@ai-drama/domain/short-sequel-plan";
 import { emptyPlan } from "./script-workbench-model";
 import { StudioClient } from "./studio-client";
 

@@ -357,6 +357,32 @@ describe("AI automatic creation in a real browser (site login, built web, real A
     (evidence.flows as Record<string, unknown>).A2 = { byPage: ["去作品中人工审核故事", "提交审核", "通过", "reload", "sign in again", "回到 AI 自动创作任务", "写入分集剧本草稿", "reload"], scripts, stubSends: 0 };
   }, 240_000);
 
+  it("A3: the completed run opens the added episode in the built script workbench without model calls", async () => {
+    expect(firstProject).not.toBe("");
+    const sendsBefore = seen.length;
+    const plannedCount = async () => (await q<{ episode_count: number }>(
+      "SELECT episode_count FROM project WHERE id = $1", [firstProject]))[0]?.episode_count;
+
+    await page.goto(`${WEB}/projects/${firstProject}/auto`, { waitUntil: "domcontentloaded" });
+    const episodes = page.getByTestId("auto-episodes");
+    await episodes.getByRole("button", { name: "续写下一集", exact: true }).click();
+    expect(await plannedCount()).toBe(1);
+
+    await episodes.getByRole("button", { name: "在本作品新增第 2 集", exact: true }).click();
+    await page.waitForURL(`${WEB}/projects/${firstProject}/script?episode=2`);
+    await page.getByRole("heading", { name: "剧本工作台" }).waitFor({ state: "visible" });
+    await page.getByRole("button", { name: "编写新版大纲", exact: true }).waitFor({ state: "visible" });
+    expect(await plannedCount()).toBe(2);
+
+    await page.goto(`${WEB}/projects/${firstProject}/auto`, { waitUntil: "domcontentloaded" });
+    const existing = page.getByTestId("auto-episodes").getByRole("link", { name: "打开第 2 集", exact: true });
+    await existing.click();
+    await page.waitForURL(`${WEB}/projects/${firstProject}/script?episode=2`);
+    await page.getByRole("button", { name: "编写新版大纲", exact: true }).waitFor({ state: "visible" });
+    expect(await plannedCount()).toBe(2);
+    expect(seen.length).toBe(sendsBefore);
+  }, 120_000);
+
   it("B: a one-line idea and hard constraints at 390px; a review issue is revised once; every record is persisted", async () => {
     plan = { review: { highIssueRounds: [1] } };
     const before = seen.length;
