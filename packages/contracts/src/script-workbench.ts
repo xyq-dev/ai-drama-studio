@@ -35,6 +35,7 @@ export interface ScriptWorkbenchRevision {
 export interface ScriptWorkbenchRevisionPage { items: ScriptWorkbenchRevision[]; nextCursor: string | null }
 export interface ScriptWorkbenchEpisode {
   id: string; episodeNo: number; title: string; rowVersion: number;
+  isContinuation?: boolean;
   currentScriptRevisionId: string | null; approvedScriptRevisionId: string | null;
   script: ScriptWorkbenchRevision | null; history: ScriptWorkbenchRevision[];
 }

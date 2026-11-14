@@ -279,3 +279,4 @@ export * from "./speech-batch";
 export * from "./voice-compose";
 
 export * from "./production-state";
+export * from "./short-sequel-plan";

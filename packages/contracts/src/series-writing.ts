@@ -1047,7 +1047,7 @@ export type SeriesGrantCreation =
   | { kind: "existing"; grant: SeriesGrantRecord }
   | { kind: "conflict" }
   | { kind: "refused"; code: string; details?: Record<string, unknown> }
-  | { kind: "active"; runKind: "series" | "auto" | "title" | "vimax"; runId: string }
+  | { kind: "active"; runKind: "series" | "auto" | "title" | "vimax" | "short_sequel"; runId: string }
   | { kind: "blocked"; code: "SERIES_ACTIVE_RUN_CAP" }
   | { kind: "daily_quota_low"; requiredCalls: number; remainingCalls: number };
 

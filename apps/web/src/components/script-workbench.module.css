@@ -892,3 +892,7 @@
     flex-wrap: wrap;
   }
 }
+.referenceText {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

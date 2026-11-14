@@ -13,6 +13,7 @@ import { ScriptWorkbench } from "./script-workbench";
 import { readImportedScript, storeImportedScript, WORKBENCH_DRAFT_PREFIX } from "../lib/script-workbench-drafts";
 import { logout } from "../lib/site-session";
 import { emptyScript, estimateScript, workbenchPlan } from "../lib/script-workbench-model";
+import type { ShortSequelView } from "../lib/short-sequel-client";
 
 vi.mock("./creator-shell", () => ({
   CreatorShell: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
@@ -187,7 +188,10 @@ function api(
       if (path.endsWith("/script-workbench") && episode) {
         const saved = revision(crypto.randomUUID(), {
           text: "新稿",
-          workbench: { schema: "script-workbench.v1", script: body.script },
+          workbench: {
+            schema: "script-workbench.v1", script: body.script,
+            ...(body.continuation ? { continuation: body.continuation, sourceStoryRevisionId: body.sourceStoryRevisionId } : {}),
+          },
         });
         saved.revisionNo = (episode.script?.revisionNo ?? 0) + 1;
         episode.script = saved;
@@ -202,6 +206,13 @@ function api(
       } else if (path.endsWith("/review") && state.story) {
         state.story.reviewStatus = String(body.to);
         state.story.reviewVersion += 1;
+        state.project.version += 1;
+      } else if (path.endsWith("/script-workbench/plan")) {
+        const saved = revision(crypto.randomUUID(), { workbench: { schema: "script-workbench.v1", plan: body.plan,
+          ...(body.continuationEpisodeNo ? { continuationEpisodeNo: body.continuationEpisodeNo } : {}) } });
+        saved.revisionNo = (state.story?.revisionNo ?? 0) + 1;
+        state.story = saved;
+        state.storyHistory.unshift(saved);
         state.project.version += 1;
       }
       return json({ ok: true });
@@ -228,6 +239,258 @@ afterEach(() => {
   window.sessionStorage.clear();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+describe("same-project sequel", () => {
+  function sequelSetup() {
+    const state = fixture();
+    state.episodes[0]!.script!.reviewStatus = "DRAFT";
+    state.episodes[0]!.approvedScriptRevisionId = null;
+    Object.assign(state.episodes[1]!, { isContinuation: true, script: null, history: [], currentScriptRevisionId: null });
+    const context: ShortSequelView = {
+      episodeNo: 2, episodeId: E2, episodeCount: 2, targetEpisodeSeconds: 60,
+      previousEpisodeNo: 1, previousLocked: false, previousRevisionId: S1, lockedPreviousRevisionId: null,
+      previousFreshnessStatus: "CURRENT", previousHandoff: "手中木牌",
+      previousScript: { text: "第 1 集结局不动" }, originalRunId: null, originalEpisodeHash: null, placedOriginal: null, lockedOriginal: null,
+      storyRevisionId: STORY, currentStoryRevisionId: STORY, currentStoryRevisionNo: 1, storyConfirmed: false,
+      confirmedStoryRevisionId: null, lastConfirmedStoryRevisionId: null, lastConfirmedStoryRevisionNo: null,
+      lastConfirmedEpisodeCount: null, planConfirmation: 0, original: null,
+    };
+    const transport = api(state, async (path) => {
+      if (path.endsWith("/short-sequels/2")) return json(context);
+      if (path.endsWith("/short-sequels/2/ai")) return json({ enabled: false, hasBody: !!state.episodes[1]!.script, task: null, previousTasks: [] });
+      if (path.endsWith("/short-sequels")) return json({ episodeCount: 2, nextEpisodeNo: null, continuations: [] });
+      return undefined;
+    });
+    return { state, context, transport };
+  }
+
+  it("allows drafting while the old episode is unlocked and saves after the plan and predecessor are confirmed", async () => {
+    const { context, state, transport } = sequelSetup();
+    const editor = render(<ScriptWorkbench projectId={PROJECT} initialEpisodeNo={2} />);
+    expect(await screen.findByText("第 1 集结局不动")).toBeTruthy();
+    const draft = screen.getByRole("textbox", { name: "本集改变" });
+    fireEvent.change(draft, { target: { value: "新发现" } });
+    expect((screen.getByRole("button", { name: "保存本集正文" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "提交审稿" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(transport.writes).toHaveLength(0);
+
+    context.storyConfirmed = true;
+    context.confirmedStoryRevisionId = STORY;
+    context.lastConfirmedStoryRevisionId = STORY;
+    editor.unmount();
+    render(<ScriptWorkbench projectId={PROJECT} initialEpisodeNo={2} />);
+    const save = await screen.findByRole("button", { name: "保存本集正文" });
+    expect((screen.getByRole("textbox", { name: "本集改变" }) as HTMLTextAreaElement).value).toBe("新发现");
+    expect((save as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "提交审稿" }) as HTMLButtonElement).disabled).toBe(true);
+    cleanup();
+    context.previousLocked = true;
+    context.lockedPreviousRevisionId = S1;
+    context.planConfirmation = 1;
+    context.lastConfirmedEpisodeCount = 2;
+    state.episodes[0]!.script!.reviewStatus = "APPROVED";
+    state.episodes[0]!.approvedScriptRevisionId = S1;
+    render(<ScriptWorkbench projectId={PROJECT} initialEpisodeNo={2} />);
+    fireEvent.click(await screen.findByRole("button", { name: "保存本集正文" }));
+    await waitFor(() => expect(transport.writes).toHaveLength(1));
+    expect(transport.writes[0]).toMatchObject({
+      path: `/api/v1/projects/${PROJECT}/episodes/${E2}/script-workbench`,
+      body: { sourceStoryRevisionId: STORY, continuation: { previousRevisionId: S1, originalRunId: null, originalEpisodeHash: null, episodeCount: 2 } },
+    });
+    expect(state.episodes[0]!.script!.content.text).toBe("第一集原文");
+  });
+
+  it("keeps a two-episode draft viewable through expansion and expires it only when the three-episode outline is confirmed", async () => {
+    const { context, state, transport } = sequelSetup();
+    state.story!.reviewStatus = "DRAFT";
+    const editor = render(<ScriptWorkbench projectId={PROJECT} initialEpisodeNo={2} />);
+    fireEvent.change(await screen.findByRole("textbox", { name: "本集改变" }), { target: { value: "两集大纲的手稿" } });
+    editor.unmount();
+    state.project.episodeCount = 3;
+    context.episodeCount = 3;
+    context.storyRevisionId = null;
+    const expanded = render(<ScriptWorkbench projectId={PROJECT} initialEpisodeNo={2} />);
+    expect((await screen.findByRole("textbox", { name: "本集改变" }) as HTMLTextAreaElement).value).toBe("两集大纲的手稿");
+    expect(screen.queryByText("本集草稿的来源版本已过期。")).toBeNull();
+    expanded.unmount();
+
+    context.storyRevisionId = "77777777-7777-4777-8777-777777777776";
+    context.currentStoryRevisionId = context.storyRevisionId;
+    context.lastConfirmedStoryRevisionId = context.storyRevisionId;
+    context.lastConfirmedEpisodeCount = 3;
+    context.storyConfirmed = true;
+    context.planConfirmation = 1;
+    render(<ScriptWorkbench projectId={PROJECT} initialEpisodeNo={2} />);
+    expect(await screen.findByText("本集草稿的来源版本已过期。")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "已核对新版设定与大纲" })).toBeNull();
+    expect(transport.writes).toHaveLength(0);
+  });
+
+  it("cannot attach an outline-less two-episode draft to a confirmed three-episode outline", async () => {
+    const { context, state } = sequelSetup();
+    context.storyRevisionId = null;
+    context.currentStoryRevisionId = null;
+    const editor = render(<ScriptWorkbench projectId={PROJECT} initialEpisodeNo={2} />);
+    fireEvent.change(await screen.findByRole("textbox", { name: "本集改变" }), { target: { value: "草稿只冻结两集" } });
+    editor.unmount();
+    state.project.episodeCount = 3;
+    Object.assign(context, { episodeCount: 3, planConfirmation: 1, storyRevisionId: STORY, currentStoryRevisionId: STORY,
+      storyConfirmed: true, lastConfirmedStoryRevisionId: STORY, lastConfirmedEpisodeCount: 3 });
+    render(<ScriptWorkbench projectId={PROJECT} initialEpisodeNo={2} />);
+    expect(await screen.findByText("本集草稿的来源版本已过期。")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "已核对新版设定与大纲" })).toBeNull();
+  });
+
+  it("does not treat a same-count replacement as the first confirmation when that count was already approved", async () => {
+    const { context } = sequelSetup();
+    Object.assign(context, { storyRevisionId: null, lastConfirmedStoryRevisionId: STORY, lastConfirmedEpisodeCount: 2, planConfirmation: 1 });
+    const editor = render(<ScriptWorkbench projectId={PROJECT} initialEpisodeNo={2} />);
+    fireEvent.change(await screen.findByRole("textbox", { name: "本集改变" }), { target: { value: "写于设定修订期间" } });
+    editor.unmount();
+    const replacement = "77777777-7777-4777-8777-777777777778";
+    Object.assign(context, { storyRevisionId: replacement, currentStoryRevisionId: replacement,
+      lastConfirmedStoryRevisionId: replacement, storyConfirmed: true, planConfirmation: 2 });
+    render(<ScriptWorkbench projectId={PROJECT} initialEpisodeNo={2} />);
+    expect(await screen.findByText("本集草稿的来源版本已过期。")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "已核对新版设定与大纲" })).toBeNull();
+  });
+
+  it.each([2, 3, 4])("preserves the adopted AI attempt only through the correct confirmation boundary (plan %s)", async (planCase) => {
+    const { context, state, transport } = sequelSetup();
+    const attemptId = "77777777-7777-4777-8777-777777777779";
+    context.storyRevisionId = null;
+    context.currentStoryRevisionId = null;
+    const existingFetch = transport.fetch.getMockImplementation()!;
+    transport.fetch.mockImplementation(async (path, init) => path.endsWith("/short-sequels/2/ai") ? json({
+      enabled: true, operatorTokenRequired: false, hasBody: false, previousTasks: [], nextCursor: null,
+      task: {
+        taskId: "synthetic-task", attemptId, episodeNo: 2, episodeCount: 2, state: "completed", stale: false,
+        providerKey: "anthropic", model: "fixture-model", billing: "unknown", usage: { status: "unknown" },
+        source: { storyRevisionId: null, previousRevisionId: S1, originalRunId: null,
+          originalEpisodeHash: null, planConfirmation: 0, lockedPreviousRevisionId: null, confirmedEpisodeCountAtCapture: null },
+        script: script("候选正文"),
+      },
+    }) : existingFetch(path, init));
+    const editor = render(<ScriptWorkbench projectId={PROJECT} initialEpisodeNo={2} />);
+    const panel = (await screen.findByText("AI 续写")).parentElement as HTMLDetailsElement;
+    panel.open = true;
+    fireEvent(panel, new Event("toggle"));
+    fireEvent.click(await screen.findByRole("button", { name: "载入编辑器" }));
+    await waitFor(() => expect(screen.getByText("有未保存的修改")).toBeTruthy());
+    editor.unmount();
+
+    const expandedCount = planCase === 3 ? 3 : 2;
+    state.project.episodeCount = expandedCount;
+    Object.assign(context, { storyRevisionId: STORY, currentStoryRevisionId: STORY, lastConfirmedStoryRevisionId: STORY,
+      episodeCount: expandedCount, lastConfirmedEpisodeCount: expandedCount, storyConfirmed: true, previousLocked: true,
+      lockedPreviousRevisionId: S1, planConfirmation: planCase === 4 ? 2 : 1 });
+    state.episodes[0]!.script!.reviewStatus = "APPROVED";
+    state.episodes[0]!.approvedScriptRevisionId = S1;
+    render(<ScriptWorkbench projectId={PROJECT} initialEpisodeNo={2} />);
+    if (planCase !== 2) {
+      expect(await screen.findByText("本集草稿的来源版本已过期。")).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "已核对新版设定与大纲" })).toBeNull();
+      expect((screen.getByRole("button", { name: "保存本集正文" }) as HTMLButtonElement).disabled).toBe(true);
+      expect(transport.writes).toHaveLength(0);
+      return;
+    }
+    fireEvent.click(await screen.findByRole("button", { name: "已核对新版设定与大纲" }));
+    fireEvent.click(screen.getByRole("button", { name: "保存本集正文" }));
+    await waitFor(() => expect(transport.writes).toHaveLength(1));
+    expect(transport.writes[0]!.body).toMatchObject({ sourceStoryRevisionId: STORY,
+      continuation: { previousRevisionId: S1, episodeCount: 2, planConfirmation: 0, aiAttemptId: attemptId } });
+  });
+
+  it("locks inherited settings and earlier outlines during sequel planning and after reopening that outline", async () => {
+    const { transport } = sequelSetup();
+    const editor = render(<ScriptWorkbench projectId={PROJECT} initialEpisodeNo={2} />);
+    fireEvent.click(await screen.findByRole("button", { name: "编写新版大纲" }));
+    const ending = screen.getByRole("textbox", { name: "故事结局" }) as HTMLTextAreaElement;
+    const first = screen.getByRole("textbox", { name: "第 1 集标题" }) as HTMLInputElement;
+    const second = screen.getByRole("textbox", { name: "第 2 集标题" }) as HTMLInputElement;
+    expect(ending.readOnly).toBe(true);
+    expect(first.readOnly).toBe(true);
+    expect(second.readOnly).toBe(false);
+    expect(screen.queryByRole("button", { name: "＋ 添加角色" })).toBeNull();
+    fireEvent.change(second, { target: { value: "信鸽到访" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存草稿" }));
+    await waitFor(() => expect(transport.writes).toHaveLength(1));
+    expect(transport.writes[0]!.body).toMatchObject({ continuationEpisodeNo: 2, plan: {
+      bible: { ending: "揭开真相" }, outline: { episodes: [{ episodeNo: 1, title: "活人认碑" }, { episodeNo: 2, title: "信鸽到访" }] },
+    } });
+    await screen.findByText("设定草稿已保存，原有版本保留在版本记录中。");
+    editor.unmount();
+    render(<ScriptWorkbench projectId={PROJECT} initialEpisodeNo={2} />);
+    expect((await screen.findByRole("textbox", { name: "故事结局" }) as HTMLTextAreaElement).readOnly).toBe(true);
+  });
+
+  it("shows the frozen predecessor instead of a newly saved unlocked revision", async () => {
+    const { context, state } = sequelSetup();
+    const editor = render(<ScriptWorkbench projectId={PROJECT} initialEpisodeNo={2} />);
+    fireEvent.change(await screen.findByRole("textbox", { name: "本集改变" }), { target: { value: "原版本草稿" } });
+    editor.unmount();
+    const previous = state.episodes[0]!;
+    const replacement = revision("77777777-7777-4777-8777-777777777776", { text: "新的前集正文" });
+    replacement.revisionNo = 2;
+    previous.history.unshift(replacement);
+    previous.script = replacement;
+    previous.currentScriptRevisionId = replacement.id;
+    context.previousRevisionId = replacement.id;
+    context.previousScript = replacement.content;
+    render(<ScriptWorkbench projectId={PROJECT} initialEpisodeNo={2} />);
+    expect(await screen.findByText("第一集原文")).toBeTruthy();
+    expect(screen.queryByText("新的前集正文")).toBeNull();
+    expect(screen.queryByText("本集草稿的来源版本已过期。")).toBeNull();
+    expect((screen.getByRole("button", { name: "保存本集正文" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("shows the first continuation action for a saved original opened from the work list", async () => {
+    const state = fixture();
+    state.project.episodeCount = 1;
+    state.episodes = state.episodes.slice(0, 1);
+    api(state, async (path) => path.endsWith("/short-sequels")
+      ? json({ episodeCount: 1, nextEpisodeNo: 2, continuations: [] }) : undefined);
+    render(<ScriptWorkbench projectId={PROJECT} initialEpisodes />);
+    expect(await screen.findByRole("button", { name: "续写下一集" })).toBeTruthy();
+  });
+
+  it("shows a restored draft as read-only when the predecessor gets a new locked version", async () => {
+    const { context, state, transport } = sequelSetup();
+    context.storyConfirmed = true;
+    context.confirmedStoryRevisionId = STORY;
+    context.lastConfirmedStoryRevisionId = STORY;
+    const editor = render(<ScriptWorkbench projectId={PROJECT} initialEpisodeNo={2} />);
+    fireEvent.change(await screen.findByRole("textbox", { name: "本集改变" }), { target: { value: "旧前情" } });
+    editor.unmount();
+
+    const replacement = "77777777-7777-4777-8777-777777777777";
+    context.previousRevisionId = replacement;
+    context.lockedPreviousRevisionId = replacement;
+    context.previousLocked = true;
+    state.episodes[0]!.script!.id = replacement;
+    state.episodes[0]!.script!.reviewStatus = "APPROVED";
+    render(<ScriptWorkbench projectId={PROJECT} initialEpisodeNo={2} />);
+    expect(await screen.findByText("本集草稿的来源版本已过期。")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "保存本集正文" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "提交审稿" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "按当前版本重写" }));
+    expect(await screen.findByText("查看过期草稿 1")).toBeTruthy();
+    expect(transport.writes).toHaveLength(0);
+  });
+
+  it("submits the earlier plain script for review without rewriting its body", async () => {
+    const { state, transport } = sequelSetup();
+    state.episodes[0]!.script!.content = { text: "第一集锁定原文" };
+    render(<ScriptWorkbench projectId={PROJECT} initialEpisodes />);
+    fireEvent.click(await screen.findByRole("button", { name: "提交原文审稿" }));
+    await waitFor(() => expect(transport.writes).toHaveLength(1));
+    expect(transport.writes[0]).toMatchObject({
+      path: `/api/v1/projects/${PROJECT}/episodes/${E1}/scripts/${S1}/review`,
+      body: { to: "IN_REVIEW", expectedReviewVersion: 1 },
+    });
+    expect(state.episodes[0]!.script!.content).toEqual({ text: "第一集锁定原文" });
+  });
 });
 
 describe("five-stage script workbench", () => {

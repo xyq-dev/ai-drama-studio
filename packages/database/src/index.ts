@@ -1,6 +1,7 @@
 import { Pool, type PoolClient } from "pg";
 export { ScriptWorkbenchStore, nextDocumentVersions, workbenchPlanText, workbenchScriptText } from "./script-workbench";
 export { ScriptWorkbenchTrashStore } from "./script-workbench-trash";
+export { ShortSequelStore, shortSequelAiDraftExpired, shortSequelAiMaterials, shortSequelAiStale, type ShortSequelContext } from "./short-sequel";
 
 export {
   BASE_MIGRATIONS,

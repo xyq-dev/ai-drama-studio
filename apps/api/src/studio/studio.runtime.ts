@@ -10,6 +10,7 @@ import {
   PostgresTitleWritingStore,
   PostgresWritingCandidateStore,
   RuntimeStore,
+  ShortSequelStore,
   TextChainService,
   VimaxPreviewSourceStore,
   VimaxCandidateStore,
@@ -24,6 +25,7 @@ import {
 } from "@ai-drama/providers";
 import { AUTO_CREATION_DEFAULT_ALLOWED_HOSTS, OCEAN_ENGINE_ENTRY_URLS } from "@ai-drama/domain";
 import { AutoCreationService } from "./auto-creation.service";
+import { ShortSequelAiService } from "./short-sequel-ai.service";
 import { SeriesWritingService } from "./series-writing.service";
 import type { ApiEnv } from "../config/env";
 import { siteAuthFromEnv } from "../auth/site-auth.config";
@@ -85,6 +87,7 @@ export class StudioRuntime implements OnModuleDestroy {
     private readonly closeMediaStorage: (() => void) | null = null,
     readonly storageSettings: StorageSettingsService | null = null,
     readonly checkComfyUi: (() => Promise<ComfyUiAdminCheck>) | null = null,
+    readonly shortSequelAi: ShortSequelAiService | null = null,
   ) {
     this.service = service;
     this.store = store;
@@ -272,6 +275,10 @@ export class StudioRuntime implements OnModuleDestroy {
       research: { fetchEnabled: env.AUTO_CREATION_RESEARCH_FETCH, allowedHosts },
       ...(configurationPending ? { configurationPending } : {}),
     });
+    const shortSequelAi = new ShortSequelAiService({ workspaceId, enabled: autoCreationEnabled,
+      operatorToken: env.TITLE_WRITING_OPERATOR_TOKEN ?? null, siteOperator: siteLoginValid, defaultProvider,
+      providers: titleProviders, source: new ShortSequelStore(pool), store: candidateStore,
+      transport: createFetchTransport(), maxCallsPerDay, maxActiveRuns });
     // Series writing needs title writing to be active and its own switch; research reads follow the automatic creation settings.
     const seriesStore = new PostgresSeriesWritingStore(pool, textChain);
     const seriesEngine = new SeriesWritingEngine({
@@ -346,7 +353,8 @@ export class StudioRuntime implements OnModuleDestroy {
       adminModels, admin?.enabled ?? false, scriptBreakdown, writingCandidates, autoCreation, seriesWriting,
       new VimaxPreviewService({ workspaceId, nodeEnv: env.NODE_ENV, allowProduction: vimaxProductionAllowed, source: new VimaxPreviewSourceStore(pool) }),
       new VimaxCandidateService({ workspaceId, nodeEnv: env.NODE_ENV, allowProduction: vimaxProductionAllowed, store: new VimaxCandidateStore(pool, textChain) }),
-      vimaxPlanning, realMedia, speech, voiceCompose, mediaClient ? () => mediaClient.destroy() : null, storageSettings, checkComfyUi);
+      vimaxPlanning, realMedia, speech, voiceCompose, mediaClient ? () => mediaClient.destroy() : null, storageSettings, checkComfyUi,
+      shortSequelAi);
   }
 
   async onModuleDestroy(): Promise<void> {

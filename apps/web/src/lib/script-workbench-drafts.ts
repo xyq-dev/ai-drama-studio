@@ -1,5 +1,6 @@
 import type { ScriptWorkbenchPlan, ScriptWorkbenchScript } from "@ai-drama/contracts";
 import { nextDraft, readDraft, writeDraft, type JsonStorage } from "./studio-model";
+import type { ShortSequelSource } from "./short-sequel-client";
 
 export const WORKBENCH_DRAFT_PREFIX = "ads-workbench-draft:";
 export const STORYBOARD_IMAGE_BATCH_PREFIX = "ads.storyboard.image-batch.v1:";
@@ -26,6 +27,8 @@ export interface WorkbenchEditingBaseline {
   scriptVersions: Record<string, number>;
   scriptRevisionIds: Record<string, string | null>;
   sourceStoryIds: Record<string, string | null>;
+  sequelSources: Record<string, ShortSequelSource>;
+  pastSequelDrafts: Record<string, ScriptWorkbenchScript[]>;
 }
 export interface WorkbenchSessionDraft {
   schema: 1;
@@ -34,6 +37,7 @@ export interface WorkbenchSessionDraft {
   scripts: Record<string, ScriptWorkbenchScript>;
   baseline: WorkbenchEditingBaseline;
   legacyConverted: string[];
+  continuationEpisodeNo?: number | null;
   pendingKeys: Array<[string, string]>;
 }
 export function emptyWorkbenchBaseline(): WorkbenchEditingBaseline {
@@ -45,6 +49,8 @@ export function emptyWorkbenchBaseline(): WorkbenchEditingBaseline {
     scriptVersions: {},
     scriptRevisionIds: {},
     sourceStoryIds: {},
+    sequelSources: {},
+    pastSequelDrafts: {},
   };
 }
 export const sameWorkbenchDraft = (a: unknown, b: unknown) =>
@@ -68,8 +74,12 @@ export function persistWorkbenchDraft(storage: JsonStorage, data: WorkbenchSessi
       base.scriptVersions[id] = data.baseline.scriptVersions[id]!;
       base.scriptRevisionIds[id] = data.baseline.scriptRevisionIds[id] ?? null;
       base.sourceStoryIds[id] = data.baseline.sourceStoryIds[id] ?? null;
+      const source = data.baseline.sequelSources[id];
+      if (source) base.sequelSources[id] = source;
     }
-  if (!plan && Object.keys(scripts).length === 0 && data.pendingKeys.length === 0) {
+  base.pastSequelDrafts = data.baseline.pastSequelDrafts;
+  if (!plan && Object.keys(scripts).length === 0 && data.pendingKeys.length === 0
+    && Object.keys(base.pastSequelDrafts).length === 0) {
     storage.removeItem(key);
     return;
   }
@@ -90,6 +100,17 @@ const finite = (value: unknown): value is number =>
 const version = (value: unknown): value is number =>
   finite(value) && Number.isInteger(value) && value > 0;
 const nullableId = (value: unknown): boolean => value === null || typeof value === "string";
+function sequelSourceShape(value: unknown): value is ShortSequelSource {
+  return object(value) && ["storyRevisionId", "previousRevisionId", "originalRunId", "originalEpisodeHash"]
+    .every((key) => nullableId(value[key]))
+    && (value.episodeCount === undefined || sequelEpisodeNo(value.episodeCount))
+    && (value.confirmedEpisodeCountAtCapture == null || (version(value.confirmedEpisodeCountAtCapture) && Number(value.confirmedEpisodeCountAtCapture) <= 6))
+    && (value.planConfirmation === undefined || value.planConfirmation === 0 || version(value.planConfirmation))
+    && (value.aiAttemptId === undefined || typeof value.aiAttemptId === "string")
+    && (value.lockedPreviousRevisionId === undefined || nullableId(value.lockedPreviousRevisionId))
+    && (value.lockedOriginal === undefined || value.lockedOriginal === null || strings(value.lockedOriginal, ["runId", "episodeHash"]));
+}
+const sequelEpisodeNo = (value: unknown): boolean => version(value) && Number(value) >= 2 && Number(value) <= 6;
 /** Drafts may be incomplete or exceed a server limit while the user is typing; validate their shape, not submission rules. */
 function planShape(value: unknown): value is ScriptWorkbenchPlan {
   if (!object(value) || !object(value.brief) || !object(value.bible) || !object(value.outline))
@@ -183,6 +204,10 @@ export function restoreWorkbenchDraft(
     !object(base.scriptVersions) ||
     !object(base.scriptRevisionIds) ||
     !object(base.sourceStoryIds) ||
+    (base.sequelSources !== undefined && (!object(base.sequelSources) ||
+      !Object.values(base.sequelSources).every(sequelSourceShape))) ||
+    (base.pastSequelDrafts !== undefined && (!object(base.pastSequelDrafts) ||
+      !Object.values(base.pastSequelDrafts).every((scripts) => Array.isArray(scripts) && scripts.every(scriptShape)))) ||
     (data.plan !== null &&
       (!planShape(data.plan) ||
         !planShape(base.plan) ||
@@ -198,6 +223,7 @@ export function restoreWorkbenchDraft(
     ) ||
     !Array.isArray(data.legacyConverted) ||
     !data.legacyConverted.every((id) => typeof id === "string") ||
+    (data.continuationEpisodeNo != null && !sequelEpisodeNo(data.continuationEpisodeNo)) ||
     !Array.isArray(data.pendingKeys) ||
     !data.pendingKeys.every(
       (item) =>
@@ -205,7 +231,8 @@ export function restoreWorkbenchDraft(
     )
   )
     throw Error("工作台恢复草稿缺少编辑基线");
-  return data as unknown as WorkbenchSessionDraft;
+  const restored = data as unknown as WorkbenchSessionDraft;
+  return { ...restored, baseline: { ...emptyWorkbenchBaseline(), ...restored.baseline } };
 }
 /** Explicit logout clears this tab's workbench drafts; an expired session deliberately keeps them for re-login. */
 export function clearWorkbenchSessionDrafts(

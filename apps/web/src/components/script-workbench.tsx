@@ -10,8 +10,24 @@ import type {
   ScriptWorkbenchScene,
   ScriptWorkbenchScript,
   ScriptWorkbenchSnapshot,
+  ShortSequelAiTaskView,
 } from "@ai-drama/contracts";
+import { canBindShortSequelFirstPlan, shortSequelDraftIsExpired } from "@ai-drama/contracts";
+import { completedShortSequelOutline } from "@ai-drama/domain";
 import { ApiError, StudioClient } from "../lib/studio-client";
+import {
+  expandedShortSequelPlan,
+  matchesSequelPrevious,
+  readShortSequelPredecessor,
+  savedShortSequelOutlineEpisode,
+  savedShortSequelSource,
+  shortSequelPath,
+  shortSequelSource,
+  shortSequelWorkbenchUrl,
+  type ShortSequelPredecessor,
+  type ShortSequelSource,
+  type ShortSequelView,
+} from "../lib/short-sequel-client";
 import { useModalKeyboard } from "../lib/modal-keyboard";
 import {
   STAGES,
@@ -37,6 +53,8 @@ import {
   WORKBENCH_DRAFTS_CLEARED_EVENT,
 } from "../lib/script-workbench-drafts";
 import { CreatorShell } from "./creator-shell";
+import { ShortSequelAi, ShortSequelDraftPreview } from "./short-sequel-ai";
+import { ShortSequelEntry } from "./short-sequel-entry";
 import styles from "./script-workbench.module.css";
 
 const client = new StudioClient();
@@ -79,6 +97,7 @@ function Field({
   type = "text",
   min,
   max,
+  readOnly = false,
 }: {
   label: string;
   value: string | number;
@@ -89,6 +108,7 @@ function Field({
   type?: string;
   min?: number;
   max?: number;
+  readOnly?: boolean;
 }) {
   return (
     <label className={styles.field}>
@@ -99,6 +119,7 @@ function Field({
           type={type}
           min={min}
           max={max}
+          readOnly={readOnly}
           value={value}
           onChange={(event) => onChange(event.target.value)}
         />
@@ -106,6 +127,7 @@ function Field({
         <textarea
           aria-label={label}
           rows={rows}
+          readOnly={readOnly}
           value={value}
           onChange={(event) => onChange(event.target.value)}
         />
@@ -176,10 +198,12 @@ export function ScriptWorkbench({
   projectId,
   initialHistory,
   initialEpisodes = false,
+  initialEpisodeNo,
 }: {
   projectId: string;
   initialHistory?: string;
   initialEpisodes?: boolean;
+  initialEpisodeNo?: number;
 }) {
   const [snapshot, setSnapshot] = useState<ScriptWorkbenchSnapshot | null>(null);
   const [plan, renderPlan] = useState<ScriptWorkbenchPlan | null>(null);
@@ -187,6 +211,11 @@ export function ScriptWorkbench({
   const [stage, setStage] = useState<Stage>(0);
   const [selectedEpisode, setSelectedEpisode] = useState("");
   const [selectedScene, setSelectedScene] = useState("");
+  const [sequelContexts, setSequelContexts] = useState<Record<string, ShortSequelView>>({});
+  const [frozenPredecessor, setFrozenPredecessor] = useState<ShortSequelPredecessor | null>(null);
+  const [continuationEpisodeNo, renderContinuationEpisodeNo] = useState<number | null>(null);
+  const planIntent = useRef<number | null>(null);
+  const [frozenOutlineNos, setFrozenOutlineNos] = useState<number[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
@@ -243,6 +272,7 @@ export function ScriptWorkbench({
         scripts: live.current.drafts,
         baseline: baseline.current,
         legacyConverted: [...legacyRef.current],
+        continuationEpisodeNo: planIntent.current,
         pendingKeys: [...pendingKeys.current],
       });
       setStorageWarning(null);
@@ -271,13 +301,54 @@ export function ScriptWorkbench({
     renderLegacyConverted(legacyRef.current);
     persist();
   }
+  function setContinuationEpisodeNo(episodeNo: number | null) {
+    planIntent.current = episodeNo;
+    renderContinuationEpisodeNo(episodeNo);
+    persist();
+  }
   const episode = snapshot?.episodes.find((item) => item.id === selectedEpisode) ?? null;
   const script = episode ? (drafts[episode.id] ?? emptyScript(episode.title)) : null;
+  const scriptDirty = !!(episode && script && !same(script, baseline.current.scripts[episode.id]));
   const previous =
     snapshot?.episodes.find((item) => item.episodeNo === (episode?.episodeNo ?? 0) - 1) ?? null;
+  const sequel = episode?.isContinuation ? sequelContexts[episode.id] : null;
+  const sequelSource = episode?.isContinuation
+    ? baseline.current.sequelSources[episode.id] ?? savedShortSequelSource(episode.script)
+    : null;
+  const storedSequelDrafts = episode ? baseline.current.pastSequelDrafts[episode.id] ?? [] : [];
+  const frozenPreviousId = sequelSource?.previousRevisionId ?? null;
+  const frozenPreviousInSnapshot = frozenPreviousId ? previous?.history.find((item) => item.id === frozenPreviousId) : null;
+  const needsFrozenLookup = !!(sequel && frozenPreviousId && frozenPreviousId !== sequel.previousRevisionId && !frozenPreviousInSnapshot);
+  const currentEpisodeNo = episode?.episodeNo;
+  useEffect(() => {
+    setFrozenPredecessor(null);
+    if (!needsFrozenLookup || !frozenPreviousId || !currentEpisodeNo) return;
+    const abort = new AbortController();
+    void readShortSequelPredecessor(projectId, currentEpisodeNo, frozenPreviousId, abort.signal)
+      .then((value) => { if (!abort.signal.aborted && value.revisionId === frozenPreviousId) setFrozenPredecessor(value); })
+      .catch(() => undefined);
+    return () => abort.abort();
+  }, [projectId, currentEpisodeNo, frozenPreviousId, needsFrozenLookup]);
+  const frozenPreviousStale = frozenPreviousInSnapshot?.freshnessStatus === "STALE"
+    || (frozenPredecessor?.revisionId === frozenPreviousId && frozenPredecessor?.freshnessStatus === "STALE");
+  const storedBodyStale = episode?.script?.freshnessStatus === "STALE" && !baseline.current.sequelSources[episode.id];
+  const invalidSequelSource = !!sequel && (storedBodyStale || !!sequelSource && (shortSequelDraftIsExpired(sequelSource, sequel)
+    || (scriptDirty && sequelSource.episodeCount === undefined) || frozenPreviousStale));
+  const lockedBeforeExpansion = !!(invalidSequelSource && sequel && sequelSource && !scriptDirty
+    && approved(episode?.script) && matchesSequelPrevious(sequelSource, sequel));
+  const staleSequel = invalidSequelSource && !lockedBeforeExpansion;
+  const sequelHasPrevious = !!(sequel?.previousScript && (sequel.previousRevisionId || sequel.originalEpisodeHash));
+  const awaitingDraftSources = !!sequel && !!sequelSource && !staleSequel && (sequelSource.episodeCount !== sequel.episodeCount
+    || (!!sequelSource.storyRevisionId && sequelSource.storyRevisionId !== sequel.storyRevisionId)
+    || !matchesSequelPrevious(sequelSource, sequel));
+  const needsFirstPlanBinding = !!(sequel?.storyConfirmed && sequelSource && !staleSequel
+    && canBindShortSequelFirstPlan(sequelSource, sequel) && matchesSequelPrevious(sequelSource, sequel));
+  const sequelCanSave = !episode?.isContinuation || !!(sequel?.storyConfirmed && sequelHasPrevious && sequel.previousLocked
+    && sequel.previousFreshnessStatus === "CURRENT" && !staleSequel && !needsFirstPlanBinding
+    && (!sequelSource || (sequelSource.storyRevisionId === sequel.storyRevisionId
+      && (sequelSource.episodeCount === undefined || sequelSource.episodeCount === sequel.episodeCount)
+      && matchesSequelPrevious(sequelSource, sequel))));
   const planDirty = plan !== null && !same(plan, baseline.current.plan);
-  const scriptDirty =
-    episode && script ? !same(script, baseline.current.scripts[episode.id]) : false;
   const anyDirty =
     planDirty ||
     Object.entries(drafts).some(([id, value]) => !same(value, baseline.current.scripts[id]));
@@ -288,7 +359,7 @@ export function ScriptWorkbench({
       : episode &&
         scriptDirty &&
         (baseline.current.scriptVersions[episode.id] !== episode.rowVersion ||
-          baseline.current.sourceStoryIds[episode.id] !== snapshot.story?.id));
+          (!episode.isContinuation && baseline.current.sourceStoryIds[episode.id] !== snapshot.story?.id)));
   function inspectEditingConflict() {
     if (!snapshot || !plan) return;
     if (stage <= 1) {
@@ -366,6 +437,12 @@ export function ScriptWorkbench({
     !!snapshot?.story && !workbenchPlan(snapshot.story) && !legacyConverted.has("story");
   const initialScriptLegacy =
     !!episode?.script && !workbenchScript(episode.script) && !legacyConverted.has(episode.id);
+  const hasContinuation = !!snapshot?.episodes.some((item) => item.isContinuation);
+  const canSubmitOriginal = hasContinuation && !episode?.isContinuation && initialScriptLegacy
+    && !!episode?.script && ["DRAFT", "REJECTED"].includes(episode.script.reviewStatus);
+  const sequelCharacters = sequel?.original?.story && plan && snapshot && plan.bible.characters.length === 0
+    ? expandedShortSequelPlan(snapshot, plan, sequel, !snapshot.story || initialStoryLegacy).bible.characters
+    : plan?.bible.characters ?? [];
 
   const read = useCallback(
     async (
@@ -375,9 +452,29 @@ export function ScriptWorkbench({
       const next = await client.get<ScriptWorkbenchSnapshot>(
         `/projects/${projectId}/script-workbench`,
       );
+      const contexts = await Promise.all(next.episodes.filter((item) => item.isContinuation).map(async (item) => {
+        try {
+          const context = await client.get<ShortSequelView>(shortSequelPath(projectId, item.episodeNo));
+          return context.episodeId === item.id ? [item.id, context] as const : null;
+        } catch { return null; }
+      }));
       if (!mounted.current || signedOut.current || epoch !== requestEpoch.current) return next;
+      const nextContexts = Object.fromEntries(contexts.filter((context) => context !== null));
       setSnapshot(next);
+      setSequelContexts(nextContexts);
       const nextPlan = workbenchPlan(next.story) ?? emptyPlan(next);
+      const savedIntent = next.story?.reviewStatus !== "APPROVED" ? savedShortSequelOutlineEpisode(next.story) : null;
+      if (options.initial && planIntent.current === null && savedIntent !== null) {
+        planIntent.current = savedIntent;
+        renderContinuationEpisodeNo(savedIntent);
+      }
+      const intendedEpisode = next.episodes.find((item) => item.episodeNo === planIntent.current);
+      const reference = intendedEpisode ? nextContexts[intendedEpisode.id] : null;
+      if (reference) {
+        const inherited = expandedShortSequelPlan(next, nextPlan, reference, !workbenchPlan(next.story));
+        setFrozenOutlineNos(inherited.outline.episodes.filter((item) =>
+          item.episodeNo < reference.episodeNo && completedShortSequelOutline(item)).map((item) => item.episodeNo));
+      }
       // A refreshed aggregate version is usable only alongside the exact content loaded from it.
       // Dirty local content keeps its original editing CAS and source, even when another entity is saved.
       if (
@@ -403,8 +500,11 @@ export function ScriptWorkbench({
           const outline = nextPlan.outline.episodes.find(
             (entry) => entry.episodeNo === item.episodeNo,
           );
+          const context = nextContexts[item.id];
           const nextScript = workbenchScript(item.script) ?? {
             ...emptyScript(outline?.title || `第${item.episodeNo}集`),
+            previousRevisionId: context?.previousRevisionId ?? null,
+            previousHandoff: context?.previousHandoff ?? "",
             openingHook: outline?.openingHook ?? "",
             change: outline?.change ?? "",
             endingHandoff: outline?.endingHandoff ?? "",
@@ -414,6 +514,7 @@ export function ScriptWorkbench({
           baseline.current.scriptVersions[item.id] = item.rowVersion;
           baseline.current.scriptRevisionIds[item.id] = item.script?.id ?? null;
           baseline.current.sourceStoryIds[item.id] = next.story?.id ?? null;
+          delete baseline.current.sequelSources[item.id];
         }
       }
       const initialEpisode = options.initial ? next.episodes.find(item => item.episodeNo === 1) : undefined;
@@ -438,9 +539,10 @@ export function ScriptWorkbench({
       if (options.initial) {
         const first = next.episodes.find((item) => !approved(item.script)) ?? next.episodes[0];
         const requestedHistory = next.episodes.find((item) => item.id === initialHistory);
+        const requestedEpisode = next.episodes.find((item) => item.episodeNo === initialEpisodeNo);
         const firstSaved = initialEpisodes ? next.episodes.find((item) => item.script) : undefined;
-        setSelectedEpisode(requestedHistory?.id ?? firstSaved?.id ?? (imported ? initialEpisode?.id : first?.id) ?? "");
-        setStage(requestedHistory || firstSaved || imported || (approved(next.story) && first) ? 2 : 0);
+        setSelectedEpisode(requestedHistory?.id ?? requestedEpisode?.id ?? firstSaved?.id ?? (imported ? initialEpisode?.id : first?.id) ?? "");
+        setStage(planIntent.current ? 1 : requestedHistory || requestedEpisode || firstSaved || imported || (approved(next.story) && first) ? 2 : 0);
         if (requestedHistory) setHistory(requestedHistory.id);
       } else
         setSelectedEpisode((current) =>
@@ -450,7 +552,7 @@ export function ScriptWorkbench({
         );
       return next;
     },
-    [projectId, persist, initialHistory, initialEpisodes],
+    [projectId, persist, initialHistory, initialEpisodes, initialEpisodeNo],
   );
 
   useEffect(() => {
@@ -466,6 +568,10 @@ export function ScriptWorkbench({
     renderDrafts({});
     renderLegacyConverted(new Set());
     setSnapshot(null);
+    setSequelContexts({});
+    planIntent.current = null;
+    renderContinuationEpisodeNo(null);
+    setFrozenOutlineNos([]);
     try {
       const restored = restoreWorkbenchDraft(window.sessionStorage, projectId);
       if (restored) {
@@ -476,6 +582,8 @@ export function ScriptWorkbench({
         renderPlan(restored.plan);
         renderDrafts(restored.scripts);
         renderLegacyConverted(legacyRef.current);
+        planIntent.current = restored.continuationEpisodeNo ?? null;
+        renderContinuationEpisodeNo(planIntent.current);
         setNotice("已恢复此标签页的未保存草稿；保留原编辑版本，服务器更新不会被自动覆盖。");
       }
     } catch {
@@ -496,6 +604,9 @@ export function ScriptWorkbench({
       renderDrafts({});
       renderLegacyConverted(new Set());
       setSnapshot(null);
+      setSequelContexts({});
+      planIntent.current = null;
+      renderContinuationEpisodeNo(null);
     };
     window.addEventListener(WORKBENCH_DRAFTS_CLEARED_EVENT, onSignedOut);
     window.addEventListener("pagehide", persist);
@@ -566,7 +677,7 @@ export function ScriptWorkbench({
       if (planDirty || !snapshot.story || initialStoryLegacy) {
         const { fingerprint } = await mutate(
           `/projects/${projectId}/script-workbench/plan`,
-          { plan },
+          { plan, ...(planIntent.current === null ? {} : { continuationEpisodeNo: planIntent.current }) },
           baseline.current.planVersion ?? snapshot.project.version,
         );
         latest = await read({ plan: true });
@@ -600,15 +711,28 @@ export function ScriptWorkbench({
     const target = episode,
       value = script;
     await action(async () => {
+      if (!sequelCanSave) {
+        throw new Error("请核对本集引用的设定、大纲和前集版本，再保存或提交。");
+      }
       if (!approved(snapshot.story))
         throw new Error("请先在「定稿交接」确认设定与大纲的具体版本，再保存本集正文。");
       let latest = snapshot;
       if (scriptDirty || !target.script || initialScriptLegacy) {
+        const frozen = sequel ? sequelSource ?? shortSequelSource(sequel) : null;
+        const sourceStoryRevisionId = frozen?.storyRevisionId ?? baseline.current.sourceStoryIds[target.id] ?? snapshot.story!.id;
         const { fingerprint } = await mutate(
           `/projects/${projectId}/episodes/${target.id}/script-workbench`,
           {
-            script: value,
-            sourceStoryRevisionId: baseline.current.sourceStoryIds[target.id] ?? snapshot.story!.id,
+            script: frozen ? { ...value, previousRevisionId: frozen.previousRevisionId } : value,
+            sourceStoryRevisionId,
+            ...(frozen ? { continuation: {
+              previousRevisionId: frozen.previousRevisionId,
+              originalRunId: frozen.originalRunId,
+              originalEpisodeHash: frozen.originalEpisodeHash,
+              episodeCount: frozen.episodeCount ?? sequel?.episodeCount,
+              planConfirmation: frozen.planConfirmation ?? sequel?.planConfirmation,
+              ...(frozen.aiAttemptId ? { aiAttemptId: frozen.aiAttemptId } : {}),
+            } } : {}),
           },
           baseline.current.scriptVersions[target.id] ?? target.rowVersion,
         );
@@ -640,12 +764,106 @@ export function ScriptWorkbench({
 
   function updateScript(patch: Partial<ScriptWorkbenchScript>, checksOnly = false) {
     if (!episode || !script) return;
+    if (episode.isContinuation) {
+      if (!sequel || staleSequel || lockedBeforeExpansion) return;
+      baseline.current.sequelSources[episode.id] = sequelSource ?? shortSequelSource(sequel);
+    }
     setDrafts((current) => ({
       ...current,
       [episode.id]: checksOnly
         ? { ...script, ...patch }
         : invalidateChecks({ ...script, ...patch }),
     }));
+  }
+
+  async function submitOriginalScript() {
+    if (!episode?.script || !canSubmitOriginal) return;
+    const revision = episode.script;
+    await action(async () => {
+      const { fingerprint } = await mutate(
+        `/projects/${projectId}/episodes/${episode.id}/scripts/${revision.id}/review`,
+        { to: "IN_REVIEW", expectedReviewVersion: revision.reviewVersion },
+        episode.rowVersion,
+      );
+      await read();
+      pendingKeys.current.delete(fingerprint);
+      setNotice(`第 ${episode.episodeNo} 集原文已提交审稿，请在「定稿交接」确认版本。`);
+      setStage(4);
+    });
+  }
+
+  function prepareSequelPlan() {
+    if (!snapshot || !plan || !sequel) return;
+    if (planDirty && continuationEpisodeNo !== sequel.episodeNo) {
+      setError("尚有未保存的设定或大纲，请先处理这些修改。");
+      setStage(1);
+      return;
+    }
+    const saved = workbenchPlan(snapshot.story);
+    const inherited = expandedShortSequelPlan(snapshot, saved ?? emptyPlan(snapshot), sequel, !saved);
+    const editable = continuationEpisodeNo === sequel.episodeNo ? plan : inherited;
+    setFrozenOutlineNos(inherited.outline.episodes.filter((item) => item.episodeNo < sequel.episodeNo && completedShortSequelOutline(item))
+      .map((item) => item.episodeNo));
+    setContinuationEpisodeNo(sequel.episodeNo);
+    setPlan(editable);
+    if (initialStoryLegacy) setLegacyConverted((current) => new Set(current).add("story"));
+    setStage(1);
+  }
+
+  function bindFirstSequelPlan() {
+    if (!episode || !script || !sequel || !needsFirstPlanBinding) return;
+    baseline.current.sequelSources[episode.id] = { ...sequelSource!, storyRevisionId: sequel.storyRevisionId };
+    setDrafts((current) => ({ ...current, [episode.id]: invalidateChecks(script) }));
+    setNotice("本集草稿已引用你核对的新设定与大纲，可以保存正文。");
+  }
+
+  function startFreshSequelDraft() {
+    if (!episode || !script || !sequel || !invalidSequelSource) return;
+    if (!lockedBeforeExpansion) baseline.current.pastSequelDrafts[episode.id] = [...storedSequelDrafts, script];
+    baseline.current.sequelSources[episode.id] = shortSequelSource(sequel);
+    const outline = plan?.outline.episodes.find((item) => item.episodeNo === episode.episodeNo);
+    setDrafts((current) => ({
+      ...current,
+      [episode.id]: lockedBeforeExpansion ? invalidateChecks({
+        ...script,
+        previousRevisionId: sequel.previousRevisionId,
+        previousHandoff: sequel.previousHandoff ?? script.previousHandoff,
+      }) : {
+        ...emptyScript(outline?.title ?? episode.title),
+        previousRevisionId: sequel.previousRevisionId,
+        previousHandoff: sequel.previousHandoff ?? "",
+        openingHook: outline?.openingHook ?? "",
+        change: outline?.change ?? "",
+        endingHandoff: outline?.endingHandoff ?? "",
+      },
+    }));
+    setSelectedScene("");
+    setStage(2);
+  }
+
+  function selectEpisode(id: string) {
+    setSelectedEpisode(id);
+    setSelectedScene("");
+    if (snapshot?.episodes.some((item) => item.id === id && item.isContinuation)) {
+      void read().catch((caught: unknown) => setError(message(caught)));
+    }
+  }
+
+  function adoptSequelAi(task: ShortSequelAiTaskView) {
+    if (!episode || !sequel || episode.script || task.stale || !task.script
+      || task.episodeCount !== sequel.episodeCount || task.source.planConfirmation === undefined
+      || !matchesSequelPrevious(task.source, sequel)
+      || (task.source.storyRevisionId && task.source.storyRevisionId !== sequel.storyRevisionId)
+      || !same(live.current.drafts[episode.id], baseline.current.scripts[episode.id])) {
+      setError("本集或引用版本已变化，AI 草稿保留在续写任务中。");
+      return;
+    }
+    baseline.current.sequelSources[episode.id] = shortSequelSource({ ...task.source,
+      episodeCount: task.episodeCount, aiAttemptId: task.attemptId });
+    const draft = task.script;
+    setDrafts((current) => ({ ...current, [episode.id]: invalidateChecks(draft) }));
+    setSelectedScene("");
+    setStage(2);
   }
 
   async function confirmVersion() {
@@ -730,6 +948,14 @@ export function ScriptWorkbench({
         },
       ],
     };
+    if (target.isContinuation) {
+      const source = savedShortSequelSource(revision);
+      if (!source) {
+        setError("这个版本没有完整的续写来源，仍可在版本历史中查看。");
+        return;
+      }
+      baseline.current.sequelSources[target.id] = source;
+    }
     setDrafts((current) => ({
       ...current,
       [target.id]: invalidateChecks({ ...restored, previousRevisionId: null }),
@@ -954,10 +1180,15 @@ export function ScriptWorkbench({
                         </div>
                       ) : (
                         <div className={styles.cardBody}>
+                          {continuationEpisodeNo !== null ? (
+                            <p className={styles.notice}>沿用原作设定。已有完整的前集大纲只读，本次可补写分集大纲。</p>
+                          ) : null}
                           {stage === 0 ? (
-                            <BriefForm plan={plan} onChange={setPlan} />
+                            <BriefForm plan={plan} onChange={setPlan} fixedDuration={hasContinuation}
+                              fixedSettings={continuationEpisodeNo !== null} />
                           ) : (
-                            <BibleForm plan={plan} onChange={setPlan} />
+                            <BibleForm plan={plan} onChange={setPlan} fixedSettings={continuationEpisodeNo !== null}
+                              frozenOutlineNos={frozenOutlineNos} />
                           )}
                         </div>
                       )}
@@ -986,6 +1217,10 @@ export function ScriptWorkbench({
                         >
                           提交设定审稿
                         </button>
+                        {continuationEpisodeNo !== null ? (
+                          <button className={styles.subtle} type="button" disabled={planDirty}
+                            onClick={() => { setContinuationEpisodeNo(null); setFrozenOutlineNos([]); }}>结束续写大纲编辑</button>
+                        ) : null}
                       </footer>
                     </div>
                     <aside className={styles.card}>
@@ -1038,10 +1273,7 @@ export function ScriptWorkbench({
                       selectedScene={selectedScene}
                       drafts={drafts}
                       busy={busy}
-                      onSelect={(id) => {
-                        setSelectedEpisode(id);
-                        setSelectedScene("");
-                      }}
+                      onSelect={selectEpisode}
                       onScene={setSelectedScene}
                       onDelete={previewDelete}
                     />
@@ -1080,12 +1312,53 @@ export function ScriptWorkbench({
                           </span>
                         </div>
                         <div className={styles.cardBody}>
-                          {!approved(snapshot.story) ? (
+                          {episode.isContinuation && !sequel ? (
+                            <p className={styles.warning} role="status">暂时无法读取本集引用版本。<button type="button" onClick={refreshPreservingEdits}>重新读取</button></p>
+                          ) : null}
+                          {sequel && !sequel.storyConfirmed ? (
+                            <div className={styles.notice}>
+                              <p>为 {sequel.episodeCount} 集作品补写本集大纲，并在「定稿交接」确认新版设定与大纲后保存正文。</p>
+                              <button className={styles.button} type="button" onClick={prepareSequelPlan}>编写新版大纲</button>
+                            </div>
+                          ) : !episode.isContinuation && !approved(snapshot.story) ? (
                             <p className={styles.warning}>
                               设定与大纲尚未锁定或已有更新，请先在「定稿交接」确认。
                             </p>
                           ) : null}
-                          {initialScriptLegacy ? (
+                          {sequel ? (
+                            <>
+                              <p className={styles.muted}>手动写可以直接在下方编辑。新剧情从第 {sequel.previousEpisodeNo} 集的结局接起。</p>
+                              {!sequelHasPrevious ? <p className={styles.warning}>前集正文暂不可用，保存前需要恢复前集正文。</p> : null}
+                              {awaitingDraftSources ? <p className={styles.muted}>草稿仍引用原版本，待前集或大纲版本确认后可重新核对。</p> : null}
+                              {needsFirstPlanBinding ? (
+                                <p className={styles.warning}>
+                                  本集草稿写于新版设定确认前，请核对草稿与新版大纲。
+                                  <button type="button" onClick={bindFirstSequelPlan}>已核对新版设定与大纲</button>
+                                </p>
+                              ) : null}
+                              {staleSequel ? (
+                                <p className={styles.warning}>
+                                  本集草稿的来源版本已过期。
+                                  <button type="button" onClick={startFreshSequelDraft}>按当前版本重写</button>
+                                </p>
+                              ) : null}
+                              {lockedBeforeExpansion ? (
+                                <p className={styles.notice}>本集已定稿，可按当前设定与大纲另写一个修订稿。
+                                  <button type="button" onClick={startFreshSequelDraft}>新建本集修订稿</button>
+                                </p>
+                              ) : null}
+                              {storedSequelDrafts.map((draft, index) => <ShortSequelDraftPreview
+                                key={index} script={draft} title={`查看过期草稿 ${index + 1}`} />)}
+                              <ShortSequelAi key={episode.id} projectId={projectId} episodeNo={episode.episodeNo}
+                                hasBody={!!episode.script} hasUnsaved={scriptDirty}
+                                hasPlan={!!sequel.storyRevisionId}
+                                source={JSON.stringify(shortSequelSource(sequel))} onAdopt={adoptSequelAi} />
+                            </>
+                          ) : null}
+                          {staleSequel || lockedBeforeExpansion
+                            ? <ShortSequelDraftPreview script={script} title={staleSequel ? "查看当前过期草稿" : "查看已定稿正文"} />
+                          : (episode.isContinuation && !sequel) ? null
+                          : initialScriptLegacy ? (
                             <LegacyContent
                               text={plainText(episode.script!.content)}
                               onConvert={convertLegacy}
@@ -1093,7 +1366,7 @@ export function ScriptWorkbench({
                           ) : stage === 2 ? (
                             <SceneEditor
                               script={script}
-                              characters={plan.bible.characters}
+                              characters={sequelCharacters}
                               selectedScene={selectedScene}
                               onScene={setSelectedScene}
                               onChange={updateScript}
@@ -1101,7 +1374,7 @@ export function ScriptWorkbench({
                           ) : (
                             <ReviewEditor
                               script={script}
-                              characters={plan.bible.characters}
+                              characters={sequelCharacters}
                               onChange={updateScript}
                             />
                           )}
@@ -1120,11 +1393,13 @@ export function ScriptWorkbench({
                               busy ||
                               initialScriptLegacy ||
                               !approved(snapshot.story) ||
-                              (!scriptDirty && !!episode.script)
+                              !sequelCanSave ||
+                              (!scriptDirty && !!episode.script) ||
+                              (episode.isContinuation && !scriptDirty && !episode.script)
                             }
                             onClick={() => void saveScript(false)}
                           >
-                            保存草稿
+                            {episode.isContinuation ? "保存本集正文" : "保存草稿"}
                           </button>
                           <button
                             className={styles.primary}
@@ -1132,6 +1407,8 @@ export function ScriptWorkbench({
                               busy ||
                               initialScriptLegacy ||
                               !approved(snapshot.story) ||
+                              !sequelCanSave ||
+                              (episode.isContinuation && !scriptDirty && !episode.script) ||
                               (!scriptDirty &&
                                 ["IN_REVIEW", "APPROVED"].includes(
                                   episode.script?.reviewStatus ?? "",
@@ -1141,6 +1418,13 @@ export function ScriptWorkbench({
                           >
                             提交审稿
                           </button>
+                          {canSubmitOriginal ? (
+                            <button className={styles.primary} type="button" disabled={busy}
+                              onClick={() => void submitOriginalScript()}>提交原文审稿</button>
+                          ) : null}
+                          {snapshot.project.writingMode === "short" && snapshot.project.targetEpisodeSeconds !== null && episode.episodeNo < 6 ? (
+                            <ShortSequelEntry key={episode.id} projectId={projectId} afterEpisodeNo={episode.episodeNo} />
+                          ) : null}
                         </footer>
                       </div>
                     ) : (
@@ -1159,6 +1443,15 @@ export function ScriptWorkbench({
                         episode={episode}
                         script={script}
                         previous={previous}
+                        sequel={sequel}
+                        sequelSource={sequelSource}
+                        frozenPredecessor={frozenPreviousInSnapshot ? {
+                          revisionId: frozenPreviousInSnapshot.id, revisionNo: frozenPreviousInSnapshot.revisionNo,
+                          content: frozenPreviousInSnapshot.content, handoff: workbenchScript(frozenPreviousInSnapshot)?.endingHandoff ?? null,
+                          freshnessStatus: frozenPreviousInSnapshot.freshnessStatus,
+                        } : frozenPredecessor?.revisionId === frozenPreviousId ? frozenPredecessor : null}
+                        locked={invalidSequelSource || (episode.isContinuation === true && !sequel)}
+                        projectId={projectId}
                         onChange={updateScript}
                         onBible={() => setStage(1)}
                       />
@@ -1210,6 +1503,11 @@ export function ScriptWorkbench({
                         </div>
                         {snapshot.episodes.map((item) => {
                           const dirty = !same(drafts[item.id], baseline.current.scripts[item.id]);
+                          const context = sequelContexts[item.id];
+                          const source = savedShortSequelSource(item.script);
+                          const invalidSequel = item.isContinuation && (!context?.storyConfirmed || !context.previousLocked
+                            || context.previousFreshnessStatus !== "CURRENT" || !source || source.storyRevisionId !== context.storyRevisionId
+                            || !matchesSequelPrevious(source, context) || shortSequelDraftIsExpired(source, context));
                           return (
                             <div className={styles.documentRow} key={item.id}>
                               <div>
@@ -1231,7 +1529,7 @@ export function ScriptWorkbench({
                                 <button
                                   className={styles.subtle}
                                   onClick={() => {
-                                    setSelectedEpisode(item.id);
+                                    selectEpisode(item.id);
                                     setStage(3);
                                   }}
                                 >
@@ -1250,6 +1548,7 @@ export function ScriptWorkbench({
                                     !item.script ||
                                     item.script.reviewStatus !== "IN_REVIEW" ||
                                     item.script.freshnessStatus !== "CURRENT" ||
+                                    invalidSequel ||
                                     dirty ||
                                     planDirty
                                   }
@@ -1631,12 +1930,17 @@ function LegacyContent({ text, onConvert }: { text: string; onConvert: () => voi
 function BriefForm({
   plan,
   onChange,
+  fixedDuration,
+  fixedSettings,
 }: {
   plan: ScriptWorkbenchPlan;
   onChange: (plan: ScriptWorkbenchPlan) => void;
+  fixedDuration: boolean;
+  fixedSettings: boolean;
 }) {
-  const change = (patch: Partial<ScriptWorkbenchPlan["brief"]>) =>
-    onChange({ ...plan, brief: { ...plan.brief, ...patch } });
+  const change = (patch: Partial<ScriptWorkbenchPlan["brief"]>) => {
+    if (!fixedSettings) onChange({ ...plan, brief: { ...plan.brief, ...patch } });
+  };
   return (
     <div className={styles.form}>
       <div className={styles.formGrid}>
@@ -1644,18 +1948,21 @@ function BriefForm({
           short
           label="题材"
           value={plan.brief.genre}
+          readOnly={fixedSettings}
           onChange={(genre) => change({ genre })}
         />
         <Field
           short
           label="目标受众"
           value={plan.brief.audience}
+          readOnly={fixedSettings}
           onChange={(audience) => change({ audience })}
         />
       </div>
       <Field
         label="一句话梗概"
         value={plan.brief.logline}
+        readOnly={fixedSettings}
         onChange={(logline) => change({ logline })}
         rows={2}
         hint="写清主角、目标、阻碍和代价。"
@@ -1663,6 +1970,7 @@ function BriefForm({
       <Field
         label="制作边界"
         value={plan.brief.productionConstraints}
+        readOnly={fixedSettings}
         onChange={(productionConstraints) => change({ productionConstraints })}
         hint="场地、演员、时代背景、镜头难度，以及本次不能拍的内容。"
       />
@@ -1674,6 +1982,7 @@ function BriefForm({
           max={3600}
           label="单集目标时长（秒）"
           value={plan.brief.targetEpisodeSeconds}
+          readOnly={fixedDuration || fixedSettings}
           onChange={(value) => change({ targetEpisodeSeconds: Number(value) })}
           hint="按作品设置，例如 27 秒或 210 秒。"
         />
@@ -1684,6 +1993,7 @@ function BriefForm({
           max={1000}
           label="单集对白配额（句）"
           value={plan.brief.dialogueQuota}
+          readOnly={fixedSettings}
           onChange={(value) => change({ dialogueQuota: Number(value) })}
           hint="每一个对白块计为一句；动作和停顿也计时。"
         />
@@ -1695,12 +2005,17 @@ function BriefForm({
 function BibleForm({
   plan,
   onChange,
+  fixedSettings,
+  frozenOutlineNos,
 }: {
   plan: ScriptWorkbenchPlan;
   onChange: (plan: ScriptWorkbenchPlan) => void;
+  fixedSettings: boolean;
+  frozenOutlineNos: number[];
 }) {
-  const changeBible = (patch: Partial<ScriptWorkbenchPlan["bible"]>) =>
-    onChange({ ...plan, bible: { ...plan.bible, ...patch } });
+  const changeBible = (patch: Partial<ScriptWorkbenchPlan["bible"]>) => {
+    if (!fixedSettings) onChange({ ...plan, bible: { ...plan.bible, ...patch } });
+  };
   return (
     <>
       <h3 className={styles.sectionTitle}>系列圣经</h3>
@@ -1708,17 +2023,19 @@ function BibleForm({
         <Field
           label="故事结局"
           value={plan.bible.ending}
+          readOnly={fixedSettings}
           onChange={(ending) => changeBible({ ending })}
           hint="先确定人物最终的选择和结局，再倒推伏笔。"
         />
         <Field
           label="伏笔与未回收悬念"
           value={plan.bible.openThreads}
+          readOnly={fixedSettings}
           onChange={(openThreads) => changeBible({ openThreads })}
         />
       </div>
       <h3 className={styles.sectionTitle}>角色档案</h3>
-      {plan.bible.characters.length === 0 ? (
+      {plan.bible.characters.length === 0 && !fixedSettings ? (
         <p className={styles.notice}>添加角色，为每句对白绑定稳定的角色 ID。</p>
       ) : null}
       {plan.bible.characters.map((character, index) => {
@@ -1734,20 +2051,21 @@ function BibleForm({
               <strong>
                 角色 {index + 1} · {character.id}
               </strong>
-              <button
+              {!fixedSettings ? <button
                 className={`${styles.subtle} ${styles.dangerText}`}
                 onClick={() =>
                   changeBible({ characters: plan.bible.characters.filter((_, at) => at !== index) })
                 }
               >
                 移除角色 {index + 1}
-              </button>
+              </button> : null}
             </div>
             <div className={styles.formGrid}>
               <Field
                 short
                 label={`角色 ${index + 1} ID`}
                 value={character.id}
+                readOnly={fixedSettings}
                 onChange={(id) => update({ id })}
                 hint="用于对白绑定，建立后请保持不变。"
               />
@@ -1755,17 +2073,20 @@ function BibleForm({
                 short
                 label={`角色 ${index + 1} 姓名`}
                 value={character.name}
+                readOnly={fixedSettings}
                 onChange={(name) => update({ name })}
               />
               <Field
                 label={`角色 ${index + 1} 定妆`}
                 value={character.appearance}
+                readOnly={fixedSettings}
                 onChange={(appearance) => update({ appearance })}
                 rows={2}
               />
               <Field
                 label={`角色 ${index + 1} 声线`}
                 value={character.voice}
+                readOnly={fixedSettings}
                 onChange={(voice) => update({ voice })}
                 rows={2}
               />
@@ -1773,11 +2094,13 @@ function BibleForm({
                 short
                 label={`角色 ${index + 1} 称呼`}
                 value={character.aliases}
+                readOnly={fixedSettings}
                 onChange={(aliases) => update({ aliases })}
               />
               <Field
                 label={`角色 ${index + 1} 已知信息`}
                 value={character.knownInformation}
+                readOnly={fixedSettings}
                 onChange={(knownInformation) => update({ knownInformation })}
                 rows={2}
               />
@@ -1785,7 +2108,7 @@ function BibleForm({
           </div>
         );
       })}
-      <button
+      {!fixedSettings ? <button
         className={styles.button}
         onClick={() => {
           let number = plan.bible.characters.length + 1;
@@ -1809,11 +2132,12 @@ function BibleForm({
         }}
       >
         ＋ 添加角色
-      </button>
+      </button> : null}
       <h3 className={styles.sectionTitle}>分集大纲</h3>
       {plan.outline.episodes.map((item, index) => {
-        const update = (patch: Partial<typeof item>) =>
-          onChange({
+        const outlineReadOnly = frozenOutlineNos.includes(item.episodeNo);
+        const update = (patch: Partial<typeof item>) => {
+          if (!outlineReadOnly) onChange({
             ...plan,
             outline: {
               episodes: plan.outline.episodes.map((value, at) =>
@@ -1821,6 +2145,7 @@ function BibleForm({
               ),
             },
           });
+        };
         return (
           <section className={styles.outline} key={item.episodeNo}>
             <h3>第 {item.episodeNo} 集</h3>
@@ -1829,23 +2154,27 @@ function BibleForm({
                 short
                 label={`第 ${item.episodeNo} 集标题`}
                 value={item.title}
+                readOnly={outlineReadOnly}
                 onChange={(title) => update({ title })}
               />
               <Field
                 label={`第 ${item.episodeNo} 集开场 3 秒`}
                 value={item.openingHook}
+                readOnly={outlineReadOnly}
                 onChange={(openingHook) => update({ openingHook })}
                 rows={2}
               />
               <Field
                 label={`第 ${item.episodeNo} 集发生的改变`}
                 value={item.change}
+                readOnly={outlineReadOnly}
                 onChange={(change) => update({ change })}
                 rows={2}
               />
               <Field
                 label={`第 ${item.episodeNo} 集尾交接`}
                 value={item.endingHandoff}
+                readOnly={outlineReadOnly}
                 onChange={(endingHandoff) => update({ endingHandoff })}
                 rows={2}
               />
@@ -2257,18 +2586,42 @@ function ContinuityPanel({
   episode,
   script,
   previous,
+  sequel,
+  sequelSource,
+  frozenPredecessor,
+  locked,
+  projectId,
   onChange,
   onBible,
 }: {
   episode: ScriptWorkbenchEpisode;
   script: ScriptWorkbenchScript;
   previous: ScriptWorkbenchEpisode | null;
+  sequel?: ShortSequelView | null;
+  sequelSource: ShortSequelSource | null;
+  frozenPredecessor: ShortSequelPredecessor | null;
+  locked: boolean;
+  projectId: string;
   onChange: (patch: Partial<ScriptWorkbenchScript>) => void;
   onBible: () => void;
 }) {
   const previousScript = workbenchScript(previous?.script);
-  const previousReady = previous && approved(previous.script);
-  const confirmed = previousReady && script.previousRevisionId === previous.script!.id;
+  const previousReady = sequel ? sequel.previousLocked : previous && approved(previous.script);
+  const frozenPackage = !!sequelSource?.originalRunId && sequelSource.originalRunId === sequel?.original?.runId
+    && sequelSource.originalEpisodeHash === sequel.original.previousStageHash;
+  const differentPrevious = !!sequelSource?.previousRevisionId && sequelSource.previousRevisionId !== sequel?.previousRevisionId;
+  const displayedPredecessor = !sequel ? null : differentPrevious ? frozenPredecessor?.content ?? null
+    : frozenPackage ? { text: sequel.original?.previousScriptText } : sequel.previousScript;
+  const previousText = displayedPredecessor ? plainText(displayedPredecessor) : null;
+  const displayedHandoff = !sequel ? previousScript?.endingHandoff : differentPrevious ? frozenPredecessor?.handoff
+    : frozenPackage ? sequel.original?.previousScript?.handoffFacts.join("；") : sequel.previousHandoff;
+  const confirmed = sequel ? previousReady && (!sequelSource || matchesSequelPrevious(sequelSource, sequel))
+    : previousReady && script.previousRevisionId === previous?.script?.id;
+  const previousStatus = differentPrevious && frozenPredecessor
+    ? `草稿引用前集 v${frozenPredecessor.revisionNo}。`
+    : previousReady && previous?.script ? `前集已锁定 v${previous.script.revisionNo}`
+      : sequel ? "请先锁定有效的前集版本，再保存本集正文或提交定稿。" : "前集尚未锁定，暂不能提交本集定稿。";
+  const originalUrl = `/projects/${projectId}/auto?run=${sequel?.original?.runId ?? ""}`;
   return (
     <aside className={`${styles.card} ${styles.rightColumn}`}>
       <div className={styles.cardHeader}>
@@ -2282,27 +2635,40 @@ function ContinuityPanel({
           <h3>接上集</h3>
           {episode.episodeNo > 1 ? (
             <>
-              <p className={styles.muted}>
-                {previousReady
-                  ? `前集已锁定 v${previous!.script!.revisionNo}`
-                  : "前集尚未锁定，暂不能提交本集定稿。"}
-              </p>
-              {previousScript?.endingHandoff ? <p>{previousScript.endingHandoff}</p> : null}
+              <p className={styles.muted}>{previousStatus}</p>
+              {displayedHandoff ? <p>{displayedHandoff}</p> : null}
+              {sequel && previousText ? (
+                <details>
+                  <summary>查看前集正文（只读）{differentPrevious && frozenPredecessor ? ` · v${frozenPredecessor.revisionNo}` : ""}</summary>
+                  <p className={styles.referenceText}>{previousText}</p>
+                </details>
+              ) : null}
+              {differentPrevious && !frozenPredecessor ? <p className={styles.muted}>暂未读取草稿引用的前集版本。</p> : null}
+              {sequel?.original ? (
+                <div className={styles.actions}>
+                  {sequel.original.research ? <a className={styles.subtle} href={`${originalUrl}#auto-research-title`}>原作研究</a> : null}
+                  {sequel.original.topic ? <a className={styles.subtle} href={`${originalUrl}#auto-direction-title`}>原作选题</a> : null}
+                  {sequel.original.story ? <a className={styles.subtle} href={`${originalUrl}#auto-bible-title`}>原作设定</a> : null}
+                  {sequel.originalRunId ? <a className={styles.subtle} href={`${originalUrl}#auto-episodes-title`}>去原任务写入前集剧本</a> : null}
+                  {previous?.script && !previousReady ? <a className={styles.subtle} href={shortSequelWorkbenchUrl(projectId, sequel.previousEpisodeNo)}>打开前集审稿</a> : null}
+                </div>
+              ) : null}
               <label className={styles.field}>
                 <span className="sr-only">本集接住上集的动作或信息</span>
                 <textarea
                   value={script.previousHandoff}
+                  readOnly={locked || (!!sequel && !!displayedHandoff)}
                   onChange={(event) => onChange({ previousHandoff: event.target.value })}
                   placeholder="接住上集哪个动作或信息…"
                 />
               </label>
               <button
                 className={styles.subtle}
-                disabled={!previousReady}
+                disabled={!previousReady || !previous?.script || locked || (!!sequelSource && !!sequel && !matchesSequelPrevious(sequelSource, sequel))}
                 onClick={() =>
                   onChange({
                     previousRevisionId: previous!.script!.id,
-                    previousHandoff: previousScript?.endingHandoff ?? script.previousHandoff,
+                    previousHandoff: displayedHandoff ?? script.previousHandoff,
                   })
                 }
               >
@@ -2328,6 +2694,7 @@ function ContinuityPanel({
               <span className="sr-only">{title}</span>
               <textarea
                 aria-label={title}
+                  readOnly={locked}
                 value={script[key]}
                 onChange={(event) => onChange({ [key]: event.target.value })}
               />

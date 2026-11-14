@@ -4,8 +4,11 @@ import { z } from "zod";
 import { createTraceId } from "./studio.service";
 
 const uuid = z.string().uuid();
-const planBody = z.object({ plan: scriptWorkbenchPlanSchema }).strict();
-const scriptBody = z.object({ script: scriptWorkbenchScriptSchema, sourceStoryRevisionId: uuid }).strict();
+const planBody = z.object({ plan: scriptWorkbenchPlanSchema, continuationEpisodeNo: z.number().int().min(2).max(6).optional() }).strict();
+const continuation = z.object({ previousRevisionId: uuid.nullable(), originalRunId: uuid.nullable(),
+  originalEpisodeHash: z.string().regex(/^[a-f0-9]{64}$/).nullable(), episodeCount: z.number().int().min(2).max(6),
+  planConfirmation: z.number().int().min(0), aiAttemptId: uuid.optional() }).strict();
+const scriptBody = z.object({ script: scriptWorkbenchScriptSchema, sourceStoryRevisionId: uuid, continuation: continuation.optional() }).strict();
 const versionBody = z.object({ expectedVersion: z.number().int().min(1).max(2147483646) }).strict();
 function parse<T>(schema: z.ZodType<T>, value: unknown): T {
   const result = schema.safeParse(value);
@@ -30,13 +33,15 @@ export class ScriptWorkbenchService {
     const project = id(projectId); const input = parse(planBody, body); const expectedVersion = version(ifMatch);
     return this.jobs.runIdempotent(this.scope(`/projects/${project}/script-workbench/plan`, key, { ...input, expectedVersion }), 201,
       client => this.store.savePlan(client, { workspaceId: this.workspaceId, projectId: project, plan: input.plan,
+        continuationEpisodeNo: input.continuationEpisodeNo,
         expectedVersion, actorId: "server-owner", traceId: createTraceId(trace) }));
   }
   saveScript(projectId: string, episodeId: string, body: unknown, ifMatch: string | undefined, key: string | undefined, trace?: string) {
     const project = id(projectId); const episode = id(episodeId); const input = parse(scriptBody, body); const expectedVersion = version(ifMatch);
     return this.jobs.runIdempotent(this.scope(`/projects/${project}/episodes/${episode}/script-workbench`, key, { ...input, expectedVersion }), 201,
       client => this.store.saveScript(client, { workspaceId: this.workspaceId, projectId: project, episodeId: episode,
-        sourceStoryRevisionId: input.sourceStoryRevisionId, script: input.script, expectedVersion, actorId: "server-owner", traceId: createTraceId(trace) }));
+        sourceStoryRevisionId: input.sourceStoryRevisionId, script: input.script, continuation: input.continuation,
+        expectedVersion, actorId: "server-owner", traceId: createTraceId(trace) }));
   }
   previewProject(projectId: string) { return this.trash.previewProject(this.workspaceId, id(projectId)); }
   previewRevision(projectId: string, episodeId: string, revisionId: string) { return this.trash.previewRevision(this.workspaceId, id(projectId), id(episodeId), id(revisionId)); }

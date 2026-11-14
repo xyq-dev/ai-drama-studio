@@ -18,7 +18,7 @@ import { VIMAX_PLANNING_SERVICE, VimaxPlanningController } from "./vimax-plannin
 import { REAL_MEDIA_SERVICE, RealMediaController } from "./real-media.controller";
 import { SPEECH_SERVICE, SpeechController } from "./speech.controller";
 import { VOICE_COMPOSE_SERVICE, VoiceComposeController } from "./voice-compose.controller";
-import { ProjectLibraryStore } from "@ai-drama/database";
+import { ProjectLibraryStore, ShortSequelStore } from "@ai-drama/database";
 import { ProjectLibraryService } from "./project-library.service";
 import { PROJECT_LIBRARY_SERVICE, ProjectLibraryController } from "./project-library.controller";
 import { STORAGE_SETTINGS_SERVICE, StorageSettingsController } from "../admin/storage-settings.controller";
@@ -26,6 +26,8 @@ import { SCRIPT_WORKBENCH_SERVICE, ScriptWorkbenchController } from "./script-wo
 import { ScriptWorkbenchService } from "./script-workbench.service";
 import { ProductionStateReadonlyController } from "./production-state-readonly.controller";
 import { ProductionStateReadonlyService } from "./production-state-readonly.service";
+import { SHORT_SEQUEL_STORE, SHORT_SEQUEL_WORKSPACE, ShortSequelController } from "./short-sequel.controller";
+import { SHORT_SEQUEL_AI_SERVICE, ShortSequelAiController } from "./short-sequel-ai.controller";
 
 @Module({})
 export class StudioModule {
@@ -37,9 +39,13 @@ export class StudioModule {
         AdminModelsController, AutoCreationController, SeriesWritingController, VimaxPreviewController, VimaxCandidateController,
         VimaxPlanningController, RealMediaController, SpeechController, VoiceComposeController,
         ProjectLibraryController, StorageSettingsController, ScriptWorkbenchController, ProductionStateReadonlyController,
+        ShortSequelController, ShortSequelAiController,
       ],
       providers: [
         { provide: PRODUCTION_STATE_READONLY_SERVICE, useFactory: () => new ProductionStateReadonlyService(env.PRODUCTION_STATE_ROOT) },
+        { provide: SHORT_SEQUEL_STORE, inject: [STUDIO_RUNTIME], useFactory: (runtime: StudioRuntime) => new ShortSequelStore(runtime.pool) },
+        { provide: SHORT_SEQUEL_WORKSPACE, useValue: env.APP_WORKSPACE_ID },
+        { provide: SHORT_SEQUEL_AI_SERVICE, inject: [STUDIO_RUNTIME], useFactory: (runtime: StudioRuntime) => runtime.shortSequelAi },
         { provide: ADMIN_COMFYUI_CHECK, inject: [STUDIO_RUNTIME], useFactory: (runtime: StudioRuntime) => runtime.checkComfyUi },
         { provide: SCRIPT_WORKBENCH_SERVICE, inject: [STUDIO_RUNTIME], useFactory: (runtime: StudioRuntime) => new ScriptWorkbenchService(runtime.pool, env.APP_WORKSPACE_ID) },
         { provide: PROJECT_LIBRARY_SERVICE, inject: [STUDIO_RUNTIME], useFactory: (runtime: StudioRuntime) => new ProjectLibraryService(new ProjectLibraryStore(runtime.pool), env.APP_WORKSPACE_ID) },
