@@ -229,7 +229,7 @@ describe(`automatic creation on PostgreSQL (${scenario} schema)`, () => {
     const runId = runOf(started.body).runId;
     const run = runOf((await svc.get(id, runId)).body);
     expect(run).toMatchObject({ state: "completed", quality: "passed", callsUsed: 7, callCap: 7, episodeCount: 2, episodeSeconds: 60,
-      storySave: "saved", packageStatus: "ready", promptVersion: AUTO_CREATION_PROMPT_VERSION, checksVersion: AUTO_CREATION_CHECKS_VERSION });
+      storySave: "saved", packageStatus: "ready", promptVersion: AUTO_CREATION_PROMPT_VERSION });
     const sent = seen.slice(before);
     expect(sent.map((item) => item.stage)).toEqual(["research", "directions", "bible", "outline", "episode:1", "episode:2", "review:1"]);
     expect(sent.every((item) => item.user.includes("玄幻修仙"))).toBe(true);
@@ -238,7 +238,7 @@ describe(`automatic creation on PostgreSQL (${scenario} schema)`, () => {
     const [frozen] = await q<{ input_json: AutoCreationFrozenInput; input_hash: string }>(
       "SELECT input_json, input_hash FROM auto_creation_run WHERE id = $1", [runId]);
     expect(frozen?.input_json).toMatchObject({ idea: "", constraints: { genre: "玄幻修仙" }, episodeCount: 2, episodeSeconds: 60,
-      callBudget: 7, revisionRounds: 0 });
+      callBudget: 7, revisionRounds: 0, promptVersion: AUTO_CREATION_PROMPT_VERSION, checksVersion: AUTO_CREATION_CHECKS_VERSION });
     expect(frozen?.input_hash).toBe(hashAutoCreationInput(id, frozen!.input_json));
     expect(run.stages.find((stage) => stage.stageKey === "bible")?.output).toMatchObject({ title: "留灯还水" });
     const [outline] = await q<{ output_json: { storyProse: string[]; episodes: Array<{ episodeNo: number; title: string }> } }>(
