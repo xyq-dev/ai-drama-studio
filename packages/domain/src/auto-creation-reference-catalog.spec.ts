@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   AUTO_CREATION_CHECKS_VERSION,
+  AUTO_CREATION_LEGACY_PROMPT_VERSION,
   AUTO_CREATION_PROMPT_MAX_CHARS,
   AUTO_CREATION_PROMPT_VERSION,
   AUTO_CREATION_RESEARCH_ANSWER_SCHEMA,
@@ -178,7 +179,10 @@ const seriesInput: SeriesFrozenInput = {
 const autoRun = input({ episodeCount: EPISODES, constraints: autoCreationConstraintsSchema.parse({ maxCharacters: 3 }) });
 
 type Checked = { ok: true; output: AutoResearch } | ({ ok: false } & Record<string, unknown>);
-interface Path { label: string; mode: "limited" | "sourced"; catalog: AutoReferenceCatalog; check: (content: string) => Checked }
+interface Path {
+  label: string; mode: "limited" | "sourced"; promptVersion: AutoCreationFrozenInput["promptVersion"];
+  catalog: AutoReferenceCatalog; check: (content: string) => Checked;
+}
 
 function paths(): Path[] {
   const limited = contextOf(collectSources(autoRun, [], NOW));
@@ -189,9 +193,11 @@ function paths(): Path[] {
   const series = seriesPlanContext(seriesInput, [{ runId: "j", stageKey: "sources", ordinal: 0, state: "completed", attemptNo: 0, errorCode: null,
     output: seriesSources as never, outputHash: "h", dependsOn: null, reusedFrom: null, scriptSave: null, scriptRevisionId: null, updatedAt: NOW } satisfies SeriesStageRecord]);
   return [
-    { label: "limited", mode: "limited", catalog: limited.referenceCatalog!, check: (content) => validateAutoStageOutput("research", content, autoRun, limited) as Checked },
-    { label: "sourced", mode: "sourced", catalog: sourced.referenceCatalog!, check: (content) => validateAutoStageOutput("research", content, autoRun, sourced) as Checked },
-    { label: "series (60 episodes)", mode: "limited", catalog: series.auto.referenceCatalog!,
+    { label: "limited", mode: "limited", promptVersion: AUTO_CREATION_PROMPT_VERSION,
+      catalog: limited.referenceCatalog!, check: (content) => validateAutoStageOutput("research", content, autoRun, limited) as Checked },
+    { label: "sourced", mode: "sourced", promptVersion: AUTO_CREATION_PROMPT_VERSION,
+      catalog: sourced.referenceCatalog!, check: (content) => validateAutoStageOutput("research", content, autoRun, sourced) as Checked },
+    { label: "series (60 episodes)", mode: "limited", promptVersion: AUTO_CREATION_LEGACY_PROMPT_VERSION, catalog: series.auto.referenceCatalog!,
       check: (content) => validateSeriesStageOutput("research", content, seriesInput, series, autoInput) as unknown as Checked },
   ];
 }
@@ -222,7 +228,7 @@ describe("C. limited, sourced and the series' borrowed research: an id maps to t
       expect(research.contentStructure).toEqual([{ reference: { sourceId: "S-KB-CRAFT", quote: CRAFT_SENTENCE }, application: application() },
         { reference: null, application: application("三个人物被迫合作。", "自主创作设计。") }]);
       expect(JSON.stringify(research)).not.toContain("referenceId");
-      expect(research.serverRecord.executedWith).toEqual({ promptVersion: AUTO_CREATION_PROMPT_VERSION, checksVersion: AUTO_CREATION_CHECKS_VERSION,
+      expect(research.serverRecord.executedWith).toEqual({ promptVersion: path.promptVersion, checksVersion: AUTO_CREATION_CHECKS_VERSION,
         researchSchema: AUTO_CREATION_RESEARCH_SCHEMA, answerContract: path.mode, answerSchema: AUTO_CREATION_RESEARCH_ANSWER_SCHEMA,
         referenceCatalogVersion: AUTO_REFERENCE_CATALOG_VERSION, referenceCatalogHash: path.catalog.hash });
     });

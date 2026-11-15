@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   AUTO_CREATION_CHECKS_VERSION,
+  AUTO_CREATION_LEGACY_PROMPT_VERSION,
   AUTO_CREATION_PROMPT_VERSION,
   AUTO_CREATION_RESEARCH_ANSWER_SCHEMA,
   SERIES_RESEARCH_CONTRACT,
@@ -183,16 +184,18 @@ const seriesInput = (episodeCount: number): SeriesFrozenInput => ({
 });
 
 type Checked = { ok: boolean; output?: AutoResearch } & Record<string, unknown>;
-interface Path { name: string; mode: "limited" | "sourced"; check: (content: string) => Checked }
+interface Path { name: string; mode: "limited" | "sourced"; promptVersion: AutoCreationFrozenInput["promptVersion"]; check: (content: string) => Checked }
 
 function paths(): Path[] {
   const run = input();
   const series = seriesInput(EPISODES);
   const borrowed = seriesAutoInput(series, { providerKey: "deepseek", model: "m", maxOutputTokens: 4096 });
   return [
-    { name: "limited", mode: "limited", check: (content) => validateAutoStageOutput("research", content, run, limitedContext(run)) as Checked },
-    { name: "sourced", mode: "sourced", check: (content) => validateAutoStageOutput("research", content, run, sourcedContext(run)) as Checked },
-    { name: "series (60 episodes)", mode: "limited", check: (content) => {
+    { name: "limited", mode: "limited", promptVersion: AUTO_CREATION_PROMPT_VERSION,
+      check: (content) => validateAutoStageOutput("research", content, run, limitedContext(run)) as Checked },
+    { name: "sourced", mode: "sourced", promptVersion: AUTO_CREATION_PROMPT_VERSION,
+      check: (content) => validateAutoStageOutput("research", content, run, sourcedContext(run)) as Checked },
+    { name: "series (60 episodes)", mode: "limited", promptVersion: AUTO_CREATION_LEGACY_PROMPT_VERSION, check: (content) => {
       expect(borrowed.episodeCount).toBe(EPISODES);
       const context: SeriesContext = { input: series, auto: limitedContext(borrowed), outlines: new Map(), episodes: new Map(), stageHashes: new Map() };
       return validateSeriesStageOutput("research", content, series, context, borrowed) as unknown as Checked;
@@ -261,9 +264,8 @@ describe("Q. the whole research stage (validateAutoStageOutput, and the series' 
 
     it("the run records the checks it executed", () => {
       const result = check(answer(mode, { howToVerify: CORE[0] }));
-      expect(result.output!.serverRecord.executedWith).toMatchObject({ checksVersion: AUTO_CREATION_CHECKS_VERSION, promptVersion: AUTO_CREATION_PROMPT_VERSION });
+      expect(result.output!.serverRecord.executedWith).toMatchObject({ checksVersion: AUTO_CREATION_CHECKS_VERSION, promptVersion: path.promptVersion });
       expect(AUTO_CREATION_CHECKS_VERSION).toBe("ads.auto-creation.checks.v14");
-      expect(AUTO_CREATION_PROMPT_VERSION).toBe("ads.auto-creation.prompt.v14");
     });
 
     it.each(RANKED)("%s in howToVerify is refused whole: %s", (_label, text) => {

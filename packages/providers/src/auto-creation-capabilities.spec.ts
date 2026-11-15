@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  AUTO_CREATION_CHECKS_VERSION,
+  AUTO_CREATION_LEGACY_PROMPT_VERSION,
+  AUTO_CREATION_PROMPT_VERSION,
   AUTO_RESEARCH_LIMITED_FORBIDDEN,
   autoCreationConstraintsSchema,
   autoCreationHardCap,
@@ -8,6 +11,7 @@ import {
   autoCreationNormalCalls,
   type AutoCreationConstraints,
   type AutoCreationMaterial,
+  type AutoCreationPromptVersion,
   type AutoReferenceCatalog,
   type AutoResearch,
   type AutoSourcesOutput,
@@ -50,6 +54,7 @@ interface Setup {
   revisionRounds?: number;
   callBudget?: number;
   override?: Parameters<typeof autoFixtureTransport>[0]["override"];
+  promptVersion?: AutoCreationPromptVersion;
 }
 
 async function setup(options: Setup = {}) {
@@ -61,6 +66,7 @@ async function setup(options: Setup = {}) {
     constraints: autoCreationConstraintsSchema.parse(options.constraints ?? {}), materials: options.materials ?? [], referenceUrls: [],
     researchFetch: options.researchFetch ?? false, episodeCount: 1, episodeSeconds: 60, revisionRounds: rounds,
     callBudget: options.callBudget ?? 6, providerKey: options.providerKey ?? "deepseek", model: "m-1",
+    versions: options.promptVersion ? { promptVersion: options.promptVersion, checksVersion: AUTO_CREATION_CHECKS_VERSION } : undefined,
     authorization: { mode: "auto", proof: "site_session", initiatedBy: "server-owner", executor: "auto-creation-engine" }, now: new Date(START),
   });
   const limits = { maxActiveRuns: 1, sinceIso: new Date(START - 86_400_000).toISOString(), maxCallsPerDay: 100, requiredCalls: autoCreationNormalCalls(1) };
@@ -115,6 +121,22 @@ function paths(schema: unknown, at = ""): string[] {
 const SOURCED_WORDS = ["facts", "observations", "basis", "sourceIds", "F1", "O1"];
 
 describe("A. the request actually sent carries the snapshot's contract: prompt, JSON Schema and zod alike", () => {
+  it.each(["openai", "anthropic", "deepseek"] as const)("%s requires prose only for the v15 outline's on-wire schema", async (providerKey) => {
+    for (const promptVersion of [AUTO_CREATION_LEGACY_PROMPT_VERSION, AUTO_CREATION_PROMPT_VERSION]) {
+      const { run, engine, seen, bodies, view } = await setup({ providerKey, promptVersion });
+      await engine.drive(run.id);
+      const current = promptVersion === AUTO_CREATION_PROMPT_VERSION;
+      const sent = bodies[seen.findIndex(({ stage }) => stage === "outline")]!;
+      const expected = autoCreationJsonSchema("outline", 1, null, null, undefined, current).schema;
+      const schema = sentSchema(sent);
+      expect(schema).toEqual(providerKey === "anthropic" ? claudeJsonSchema(expected) : expected);
+      const required = schema.required as string[];
+      expect(required.includes("storyProse")).toBe(current);
+      expect(paths(schema).includes("storyProse")).toBe(current);
+      expect(await view()).toMatchObject({ state: "completed", callsUsed: 6, callCap: 6, promptVersion });
+    }
+  });
+
   it.each(["openai", "anthropic", "deepseek"] as const)("%s, limited: the sent schema has none of the forbidden fields and the prompt asks for none", async (providerKey) => {
     const { run, engine, seen, bodies, view, catalog } = await setup({ providerKey });
     await engine.drive(run.id);
@@ -350,7 +372,7 @@ describe("F. history: research v3 is read as it was; an old run's next research 
     await later.drive(first.run.id);
     expect(first.seen.at(-6)!.user).toContain("任务：基于资料完成研究与创作定位");
     // The current answer contract on the run's own saved snapshot: the catalog of that snapshot, recorded beside the versions.
-    expect((await first.research()).output).toMatchObject({ serverRecord: { executedWith: { promptVersion: "ads.auto-creation.prompt.v14", answerContract: "sourced",
+    expect((await first.research()).output).toMatchObject({ serverRecord: { executedWith: { promptVersion: AUTO_CREATION_PROMPT_VERSION, answerContract: "sourced",
       answerSchema: "ads.auto-creation.research.answer.catalog.v1", referenceCatalogVersion: "ads.auto-creation.reference-catalog.v1",
       referenceCatalogHash: (await first.catalog()).hash } } });
   });
@@ -391,7 +413,7 @@ describe("durations (checks v7): the work's own length passes, an unplaced durat
     expect(stored.unverified).toEqual([{ origin: "server_check", field: "hypotheses[1].statement", token: "60", semantic: "unclassified",
       rule: "duration_unconfirmed", note: "程序无法确认时长含义（不是已判定的观看统计），未核实" }]);
     expect(stored).toMatchObject({ facts: [], observations: [], audience: { basis: "hypothesis", sourceIds: [] },
-      serverRecord: { executedWith: { promptVersion: "ads.auto-creation.prompt.v14", checksVersion: "ads.auto-creation.checks.v14", answerContract: "limited" },
+      serverRecord: { executedWith: { promptVersion: AUTO_CREATION_PROMPT_VERSION, checksVersion: "ads.auto-creation.checks.v14", answerContract: "limited" },
         marketEvidence: { status: "unavailable" } } });
     const notice = "第2条假设（H2）中的「60」：程序无法确认时长含义（不是已判定的观看统计），未核实；只属于创作假设或设计，不是有来源的事实或市场结论。";
     // Later prompts carry it as a notice beside a hypothesis, never as a finding.
@@ -450,7 +472,7 @@ describe("hypothesis fields (prompt v8): the DeepSeek request names them, the st
     expect(item).toMatchObject({ type: "object", additionalProperties: false, required: ["id", "statement", "howToVerify"] });
     expect(Object.keys(item.properties as Record<string, unknown>)).toEqual(["id", "statement", "howToVerify"]);
     const user = seen[0]!.user;
-    expect(user).toContain("提示版本：ads.auto-creation.prompt.v14");
+    expect(user).toContain(`提示版本：${AUTO_CREATION_PROMPT_VERSION}`);
     expect(user).toContain("每条假设是一个对象，只包含 id、statement、howToVerify 三个字段，三个都必填");
     expect(user).toContain("不要给假设添加任何其他字段");
     expect(user).toContain('假设对象示例（只示意格式，内容按本次创作写）：{"id":"H1",');

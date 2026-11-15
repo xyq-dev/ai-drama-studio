@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   AUTO_CREATION_CHECKS_VERSION,
+  AUTO_CREATION_LEGACY_PROMPT_VERSION,
   AUTO_CREATION_PROMPT_VERSION,
   AUTO_CREATION_RESEARCH_ANSWER_SCHEMA,
   AUTO_UNVERIFIED_EPISODE_SCOPE_NOTE,
@@ -153,15 +154,15 @@ const seriesInput: SeriesFrozenInput = {
 };
 
 type Checked = { ok: boolean } & Record<string, unknown>;
-const PATHS: ReadonlyArray<readonly [string, "limited" | "sourced", (content: string) => Checked]> = [
-  ["limited", "limited", (content) => validateAutoStageOutput("research", content, input(), limitedContext()) as Checked],
-  ["sourced", "sourced", (content) => validateAutoStageOutput("research", content, input(), sourcedContext()) as Checked],
+const PATHS: ReadonlyArray<readonly [string, "limited" | "sourced", (content: string) => Checked, AutoCreationFrozenInput["promptVersion"]]> = [
+  ["limited", "limited", (content) => validateAutoStageOutput("research", content, input(), limitedContext()) as Checked, AUTO_CREATION_PROMPT_VERSION],
+  ["sourced", "sourced", (content) => validateAutoStageOutput("research", content, input(), sourcedContext()) as Checked, AUTO_CREATION_PROMPT_VERSION],
   ["series (60 episodes)", "limited", (content) => {
     const autoInput = seriesAutoInput(seriesInput, { providerKey: "deepseek", model: "m", maxOutputTokens: 4096 });
     expect(autoInput.episodeCount).toBe(EPISODES);
     const context: SeriesContext = { input: seriesInput, auto: limitedContext(autoInput), outlines: new Map(), episodes: new Map(), stageHashes: new Map() };
     return validateSeriesStageOutput("research", content, seriesInput, context, autoInput) as unknown as Checked;
-  }],
+  }, AUTO_CREATION_LEGACY_PROMPT_VERSION],
 ];
 
 function answer(mode: "limited" | "sourced", first: { statement?: string; howToVerify: string }, more: { hypotheses?: unknown[]; opportunities?: string[] } = {}): string {
@@ -182,7 +183,7 @@ function answer(mode: "limited" | "sourced", first: { statement?: string; howToV
 type Output = AutoResearch;
 
 describe("B. the whole research stage (validateAutoStageOutput, and the series' borrowed research)", () => {
-  describe.each(PATHS)("%s", (_path, mode, check) => {
+  describe.each(PATHS)("%s", (_path, mode, check, promptVersion) => {
     it.each([...SAMPLE_PLANS, ...STILL_PASSING])("a sample in howToVerify passes, kept as written, with no notice: %s", (howToVerify) => {
       const result = check(answer(mode, { howToVerify }));
       expect(result).toMatchObject({ ok: true });
@@ -190,7 +191,7 @@ describe("B. the whole research stage (validateAutoStageOutput, and the series' 
       expect(output.hypotheses[0]!.howToVerify).toBe(howToVerify);
       expect(output.unverified).toEqual([]);
       expect(output.serverRecord.settings.items.find((item) => item.key === "episodes")?.value).toBe(`共 ${String(EPISODES)} 集`);
-      expect(output.serverRecord.executedWith).toMatchObject({ checksVersion: "ads.auto-creation.checks.v14", promptVersion: "ads.auto-creation.prompt.v14" });
+      expect(output.serverRecord.executedWith).toMatchObject({ checksVersion: "ads.auto-creation.checks.v14", promptVersion });
     });
 
     it.each(UNCONFIRMED)("%s passes with an episode-scope notice on that field, kept as written: %s", (_label, howToVerify) => {
@@ -270,7 +271,7 @@ describe("D. the research prompt says a plan may read part of the work, with an 
   it.each([1, 2, 3, 6, 60])("%i episodes: the total is fixed, a sample stays within the run", (episodeCount) => {
     for (const mode of ["limited", "sourced"] as const) {
       const user = prompt(episodeCount, mode);
-      expect(user).toContain("提示版本：ads.auto-creation.prompt.v14");
+      expect(user).toContain(`提示版本：${AUTO_CREATION_PROMPT_VERSION}`);
       expect(user).toContain(`全剧总集数只能是用户硬约束里的 ${String(episodeCount)} 集`);
       expect(user).toContain(`抽取的集数或第几集必须在 1 到 ${String(episodeCount)} 集之内`);
       expect(user).toContain("不写观众实际看了几集、看几集后退出、通常或平均看几集");

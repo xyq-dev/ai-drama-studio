@@ -719,6 +719,22 @@ function totalWording(before: string): RegExpExecArray | null {
 
 const SEQUEL_EPISODE_COUNT = new RegExp(`(\\d+|[${CN_DIGITS}]+)集`, "gu");
 
+/** Refuse explicit conflicting totals; a story's own quantities and individual episode references remain allowed. */
+export function hasAutoEpisodeTotalConflict(text: string, episodeCount: number): boolean {
+  const normalized = text.normalize("NFKC").replace(INVISIBLE, "");
+  for (const match of normalized.matchAll(/\b(one|single|\d+)[ -]episodes?\s*(?:in total|total|only)\b/giu)) {
+    const value = /^\d+$/u.test(match[1]!) ? Number(match[1]) : 1;
+    if (value !== episodeCount) return true;
+  }
+  for (const clause of normalized.replace(/\s+/gu, "").split(/[，,。；;！？!?\n]/u)) {
+    for (const match of clause.matchAll(SEQUEL_EPISODE_COUNT)) {
+      const before = clause.slice(0, match.index).replace(/[：:=]$/u, "");
+      if (totalWording(before) && numberValue(match[1]!) !== episodeCount) return true;
+    }
+  }
+  return false;
+}
+
 /** A sequel's generated prose may describe only this episode. Its prior handoff has a separate frozen field. */
 export function hasSequelScopeConflict(text: string, episodeNo: number, episodeCount: number): boolean {
   const normalized = text.normalize("NFKC").replace(INVISIBLE, "");

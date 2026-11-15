@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   AUTO_CREATION_EPISODE_SCHEMA,
+  AUTO_CREATION_LEGACY_PROMPT_VERSION,
   AUTO_CREATION_PROMPT_MAX_CHARS,
+  AUTO_CREATION_PROMPT_VERSION,
   AUTO_CREATION_REVIEW_SCHEMA,
   AUTO_REVIEW_DIMENSIONS,
+  AUTO_STORY_PROSE_MAX_CHARS,
   autoCreationConstraintsSchema,
   autoCreationHardCap,
   autoCreationInitialStageKeys,
@@ -29,6 +32,7 @@ import { titleWritingProviderConfigs, type WritingProviderConfig } from "./text-
 import { AutoCreationEngine, InMemoryAutoCreationStore, autoRunView, newAutoRun } from "./auto-creation-engine";
 import {
   autoFixtureTransport,
+  autoFixtureBlock,
   fixtureAutoBible,
   fixtureAutoCrowdedBible,
   fixtureAutoCrowdedEpisode,
@@ -202,11 +206,18 @@ describe("review input of a six-episode run with many repeated check results", (
 });
 
 describe("cumulative review input budget", () => {
-  it("long but valid episodes up to the shared budget are accepted, one character more is refused, and every later prompt fits", () => {
-    const frozen = longestInput();
+  it.each([AUTO_CREATION_LEGACY_PROMPT_VERSION, AUTO_CREATION_PROMPT_VERSION])("%s: long but valid episodes up to the shared budget are accepted, one character more is refused, and every later prompt fits", (promptVersion) => {
+    const frozen = { ...longestInput(), promptVersion };
     expect(autoReviewQuotas(frozen).episode).toBeGreaterThan(2_000);
+    const storyProse = promptVersion === AUTO_CREATION_PROMPT_VERSION
+      ? ["春", "夏", "秋", "冬", "晨", "昏"].map(char => char.repeat(AUTO_STORY_PROSE_MAX_CHARS / 6)) : null;
+    const reading = (episodes: AutoEpisode[]) => {
+      const context = contextWith(episodes);
+      if (storyProse) context.outline!.storyProse = storyProse;
+      return context;
+    };
     const firstFive = [1, 2, 3, 4, 5].map((episodeNo) => episodeOfLength(episodeNo, 3_000));
-    let context = contextWith(firstFive);
+    let context = reading(firstFive);
     const room = autoReviewRoom("episode:6", frozen, context);
     // The last episode may use everything the earlier stages left, and not one character more.
     const refused = validateAutoStageOutput("episode:6", JSON.stringify(episodeOfLength(6, room + 1)), frozen, context);
@@ -214,7 +225,7 @@ describe("cumulative review input budget", () => {
     const last = episodeOfLength(6, room);
     const accepted = validateAutoStageOutput("episode:6", JSON.stringify(last), frozen, context);
     expect(accepted.ok).toBe(true);
-    context = contextWith([...firstFive, last]);
+    context = reading([...firstFive, last]);
     expect(deterministicFindings(frozen, context).length).toBeGreaterThan(100);
     // The review sees everything accepted, with the most check results and the longest frozen input.
     const review = buildAutoCreationPrompt("review:1", frozen, context);
@@ -222,7 +233,9 @@ describe("cumulative review input budget", () => {
     for (const episodeNo of [1, 2, 3, 4, 5, 6]) expect(review.user).toContain(`<<<待审：episode:${String(episodeNo)}`);
     // A revision of the largest episode with ten longest issues, and the next review with the previous round's issues.
     const reviewed = { ...context, reviews: [{ stageKey: "review:1", review: longestReview(context, frozen, "episode:6") }] };
-    expect(promptChars(buildAutoCreationPrompt("revise:1:episode:6", frozen, reviewed))).toBeLessThanOrEqual(MAX);
+    const revision = buildAutoCreationPrompt("revise:1:episode:6", frozen, reviewed);
+    expect(autoFixtureBlock(revision.user, "故事正文（已冻结）")).toEqual(storyProse);
+    expect(promptChars(revision)).toBeLessThanOrEqual(MAX);
     expect(promptChars(buildAutoCreationPrompt("review:2", frozen, reviewed))).toBeLessThanOrEqual(MAX);
   });
 

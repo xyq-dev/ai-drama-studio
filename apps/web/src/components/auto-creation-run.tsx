@@ -155,6 +155,7 @@ export function AutoCreationRun({ projectId, client = defaultClient, selectedRun
   const directions = stageOf(run, "directions")?.output as AutoDirectionsOutput | null | undefined;
   const bible = (stageOf(run, "bible")?.output as AutoBible | null | undefined) ?? undefined;
   const outline = stageOf(run, "outline")?.output as AutoOutline | null | undefined;
+  const storyProse = outline?.storyProse;
   const reviews = run.stages.filter((stage) => stage.kind === "review" && stage.output);
   const revisions = run.stages.filter((stage) => stage.kind === "revise" && stage.output);
   const uncertain = autoUncertainIds(run);
@@ -281,6 +282,19 @@ export function AutoCreationRun({ projectId, client = defaultClient, selectedRun
           </label>
         ) : null}
         {actionError ? <p className={styles.error} role="alert">{actionError}</p> : null}
+
+        {storyProse?.length ? (
+          <details className={`${autoStyles.section} ${autoStyles.episode}`} data-testid="auto-story-prose">
+            <summary>
+              <strong>故事正文</strong>
+              <span className={autoStyles.episodeChevron} aria-hidden="true" />
+            </summary>
+            <article className={autoStyles.storyProse} aria-label="故事正文">
+              {bible ? <h2>《{bible.title}》</h2> : null}
+              {storyProse.map((paragraph, index) => <p key={index}>{paragraph}</p>)}
+            </article>
+          </details>
+        ) : null}
 
         <AutoEpisodeList key={run.runId} run={run} bible={bible} outline={outline}
           continuation={run.state === "completed"
