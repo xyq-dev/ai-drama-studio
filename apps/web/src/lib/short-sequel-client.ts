@@ -79,8 +79,15 @@ export function readShortSequelPredecessor(projectId: string, episodeNo: number,
   return client.get<ShortSequelPredecessor>(`${shortSequelPath(projectId, episodeNo)}/previous/${revisionId}`, { signal });
 }
 
-export function readShortSequelList(projectId: string, signal: AbortSignal) {
-  return client.get<ShortSequelListView>(shortSequelPath(projectId), { signal });
+export async function readShortSequelList(projectId: string, signal: AbortSignal): Promise<ShortSequelListView> {
+  const view = await client.get<ShortSequelListView | null>(shortSequelPath(projectId), { signal });
+  if (!view || !Number.isInteger(view.episodeCount)
+    || (view.nextEpisodeNo !== null && !Number.isInteger(view.nextEpisodeNo))
+    || !Array.isArray(view.continuations)
+    || view.continuations.some((item) => !item || !Number.isInteger(item.episodeNo) || typeof item.episodeId !== "string")) {
+    throw new Error("续写状态响应不完整。");
+  }
+  return view;
 }
 
 export function confirmShortSequel(projectId: string, episodeNo: number, idempotencyKey: string) {

@@ -199,7 +199,8 @@ beforeAll(async () => {
   // Anonymous: the paid start is refused before anything is written.
   const anonymous = await fetch(`${WEB}/api/v1/projects/${randomUUID()}/auto-runs`, { method: "POST", headers: { origin: WEB, "content-type": "application/json" }, body: "{}" });
   expect(anonymous.status).toBe(401);
-  browser = await chromium.launch({ headless: true, channel: "chrome" });
+  const executablePath = process.env.AUTO_CREATION_ACCEPTANCE_BROWSER_PATH;
+  browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : { channel: "chrome" }) });
   context = await browser.newContext({ viewport: DESKTOP, acceptDownloads: true });
   page = await context.newPage();
   page.on("pageerror", (error) => { pageErrors.push(error.message); });

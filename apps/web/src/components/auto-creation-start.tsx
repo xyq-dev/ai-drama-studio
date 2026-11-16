@@ -138,7 +138,7 @@ export function AutoCreationStart() {
   const [loaded, setLoaded] = useState(false);
   const [idea, setIdea] = useState("");
   const [selectedEpisodeCount, setSelectedEpisodeCount] = useState<number | null>(null);
-  const [seconds, setSeconds] = useState(60);
+  const [selectedSeconds, setSelectedSeconds] = useState<number | null>(null);
   const [genre, setGenre] = useState("");
   const [audience, setAudience] = useState("");
   const [maxCharacters, setMaxCharacters] = useState("");
@@ -166,9 +166,6 @@ export function AutoCreationStart() {
       const normalized = normalizeAutoOptions(value);
       setOptions(normalized);
       if (normalized?.defaultProvider) setProviderKey(normalized.defaultProvider);
-      if (normalized) {
-        setSeconds(normalized.episodePlan.defaultSeconds);
-      }
     }).catch(() => { if (alive) setOptions(null); }).finally(() => { if (alive) setLoaded(true); });
     return () => { alive = false; operation.current = null; };
   }, []);
@@ -179,6 +176,7 @@ export function AutoCreationStart() {
   const readyProviders = options?.providers.filter((item) => item.ready) ?? [];
   const needsToken = tokenRequired(options);
   const episodeCount = selectedEpisodeCount ?? options?.episodePlan?.defaultEpisodes ?? 1;
+  const seconds = selectedSeconds ?? options?.episodePlan.defaultSeconds ?? 60;
   // While a start is pending, the card shows the request a retry replays; loaded options and defaults never change it.
   const frozen = pending?.request ?? null;
   const shown: ShownSettings = frozen ? frozenSettings(frozen) : {
@@ -332,7 +330,7 @@ export function AutoCreationStart() {
         <div>
           <label className={styles.label} htmlFor="auto-seconds">每集时长</label>
           <select id="auto-seconds" className={styles.input} value={shown.seconds} disabled={locked}
-            onChange={(event) => setSeconds(Number(event.target.value))}>
+            onChange={(event) => setSelectedSeconds(Number(event.target.value))}>
             {SECONDS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
           </select>
         </div>
