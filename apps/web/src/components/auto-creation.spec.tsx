@@ -595,6 +595,33 @@ describe("AI 自动创作 run page", () => {
     }
   });
 
+  it.each([
+    { diagnostic: { excerpt: "计划比较排名第一的作品", truncated: true }, shown: true },
+    { diagnostic: undefined, shown: false },
+    { diagnostic: { excerpt: "<b>失效片段</b>", truncated: false }, shown: false },
+  ])("shows only a validated ranking refusal excerpt and labels truncation ($shown)", async ({ diagnostic, shown }) => {
+    const stage = {
+      stageKey: "research", kind: "research" as const, state: "rejected" as const, attemptNo: 1, output: null,
+      errorCode: "unsourced_number@contentStructure[5].application.pattern:rank+market_statistic+ranking",
+      upstreamChanged: false, supersededBy: null, scriptSave: null, scriptRevisionId: null,
+      ...(diagnostic ? { rejectionDiagnostic: diagnostic } : {}),
+    };
+    const failed = run({ state: "failed", errorCode: "unsourced_number", quality: "pending", packageStatus: "incomplete", callsUsed: 1, stages: [stage] });
+    vi.stubGlobal("fetch", vi.fn(async (input: string) => input.endsWith("/auto-runs/latest") ? json({ run: failed }) : json(options())));
+    render(<AutoCreationRun projectId={P1} />);
+    await waitFor(() => expect(screen.getByTestId("auto-headline").textContent).toBe("没有完成"));
+    expect(screen.getByText(/^停在「/u).textContent).toContain("contentStructure[5].application.pattern");
+    expect(screen.getByText(/^停在「/u).textContent).toContain("排名");
+    const note = screen.queryByTestId("auto-rejection-diagnostic");
+    if (shown) {
+      expect(note).not.toBeNull();
+      expect(note!.textContent).toContain("计划比较排名第一的作品");
+      expect(note!.textContent).toContain("片段已截断");
+    } else {
+      expect(note).toBeNull();
+    }
+  });
+
   it("a viewing time names the branch the program took; an older code keeps the general text; an unknown branch is not shown", async () => {
     const stage = (errorCode: string) => ({ stageKey: "research", kind: "research" as const, state: "rejected" as const, attemptNo: 1, errorCode, output: null,
       upstreamChanged: false, supersededBy: null, scriptSave: null, scriptRevisionId: null });

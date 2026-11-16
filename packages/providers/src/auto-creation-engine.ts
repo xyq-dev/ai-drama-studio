@@ -20,7 +20,9 @@ import {
   autoStageRound,
   currentUncertainCallIds,
   frozenProviderAdapter,
+  isAutoResearchRankingRejection,
   isLegacyDeepseekRun,
+  readAutoResearchRejectionDiagnostic,
   type AutoCallFinish,
   type AutoCallRecord,
   type AutoCallReservation,
@@ -198,8 +200,8 @@ export function autoResumeBlock(bundle: AutoRunBundle, options: { researchFetch:
   return prompt.system.length + prompt.user.length > AUTO_CREATION_PROMPT_MAX_CHARS ? "prompt_too_large" : null;
 }
 
-/** Public view: no executor, key, hashes of requests, raw responses or credentials. */
-export function autoRunView(bundle: AutoRunBundle, options: { researchFetch?: boolean } = {}): AutoCreationRunView {
+/** Run view, with the bounded research refusal excerpt available only to authenticated readers. */
+export function autoRunView(bundle: AutoRunBundle, options: { researchFetch?: boolean; includeResearchRejectionDiagnostic?: boolean } = {}): AutoCreationRunView {
   const { run } = bundle;
   const input = run.input;
   const stages = [...bundle.stages].sort((a, b) => a.ordinal - b.ordinal);
@@ -260,6 +262,8 @@ export function autoRunView(bundle: AutoRunBundle, options: { researchFetch?: bo
         if (depEpisode !== null && current[`episode:${String(depEpisode)}`] !== key) return true;
         return hashes.get(key) !== hash;
       });
+      const rejectionDiagnostic = options.includeResearchRejectionDiagnostic && isAutoResearchRankingRejection(stage.stageKey, stage.state, stage.errorCode)
+        ? readAutoResearchRejectionDiagnostic(stage.rejectionDiagnostic) : null;
       return {
         stageKey: stage.stageKey,
         kind,
@@ -267,6 +271,7 @@ export function autoRunView(bundle: AutoRunBundle, options: { researchFetch?: bo
         attemptNo: stage.attemptNo,
         errorCode: stage.errorCode,
         output: stage.state === "completed" ? stage.output : null,
+        ...(rejectionDiagnostic ? { rejectionDiagnostic } : {}),
         upstreamChanged: stage.state === "completed" && kind !== "review" && changed,
         supersededBy: isEpisodeVersion && !currentKeys.has(stage.stageKey) && episodeNo !== null ? current[`episode:${String(episodeNo)}`] ?? null : null,
         scriptSave: stage.scriptSave,
@@ -457,11 +462,19 @@ export class AutoCreationEngine {
     const common = { providerRequestId: exchange.providerRequestId, responseModel: exchange.responseModel, usage: exchange.usage };
     if (exchange.outcome === "answered" && exchange.content !== null) {
       const checked = validateAutoStageOutput(next.stageKey, exchange.content, run.input, context);
-      patch = checked.ok
-        ? { state: "completed", errorCode: null, output: checked.output, outputHash: canonicalInputHash(checked.output),
-          dependsOn: autoStageDependencies(next.stageKey, stages), ...common }
-        // A refused answer is never stored, only its rule, field path and token kind: no model text.
-        : { state: "rejected", errorCode: autoErrorCodeWith(checked.code, checked.field, checked.category, checked.semantic, checked.rule, checked.reason), output: null, outputHash: null, dependsOn: null, ...common };
+      if (checked.ok) {
+        patch = { state: "completed", errorCode: null, output: checked.output, outputHash: canonicalInputHash(checked.output),
+          dependsOn: autoStageDependencies(next.stageKey, stages), ...common };
+      } else {
+        const errorCode = autoErrorCodeWith(checked.code, checked.field, checked.category, checked.semantic, checked.rule, checked.reason);
+        const diagnostic = isAutoResearchRankingRejection(next.stageKey, "rejected", errorCode)
+          ? readAutoResearchRejectionDiagnostic(checked.rejectionDiagnostic) : null;
+        // An escaped key echo inside the answer's JSON could evade the transport's literal redaction.
+        const rejectionDiagnostic = diagnostic && !exchange.content.replace(/\\u([0-9a-f]{4})/giu, (_, hex: string) => String.fromCharCode(Number.parseInt(hex, 16))).includes(provider.apiKey)
+          ? diagnostic : null;
+        patch = { state: "rejected", errorCode, output: null, outputHash: null, dependsOn: null,
+          ...(rejectionDiagnostic ? { rejectionDiagnostic } : {}), ...common };
+      }
     } else {
       patch = { state: exchange.outcome === "unknown" ? "unknown" : "rejected", errorCode: exchange.errorCode ?? "invalid_output",
         output: null, outputHash: null, dependsOn: null, ...common };
@@ -716,7 +729,12 @@ export class InMemoryAutoCreationStore implements AutoCreationStore {
     if (run.workspaceId !== workspaceId || call.state !== "submitted" || call.executorId !== executorId || run.executorId !== executorId) return false;
     Object.assign(call, { state: patch.state, errorCode: patch.errorCode, providerRequestId: patch.providerRequestId, responseModel: patch.responseModel,
       usage: patch.usage, finishedAt: nowIso });
-    Object.assign(this.stage(call.runId, call.stageKey), { state: patch.state, errorCode: patch.errorCode, output: structuredClone(patch.output),
+    const stage = this.stage(call.runId, call.stageKey);
+    const rejectionDiagnostic = isAutoResearchRankingRejection(call.stageKey, patch.state, patch.errorCode)
+      ? readAutoResearchRejectionDiagnostic(patch.rejectionDiagnostic) : null;
+    delete stage.rejectionDiagnostic;
+    Object.assign(stage, { state: patch.state, errorCode: patch.errorCode, output: structuredClone(patch.output),
+      ...(rejectionDiagnostic ? { rejectionDiagnostic } : {}),
       outputHash: patch.outputHash, dependsOn: patch.dependsOn, updatedAt: nowIso });
     run.updatedAt = nowIso;
     return true;
@@ -777,7 +795,10 @@ export class InMemoryAutoCreationStore implements AutoCreationStore {
     if (sends && !request.providerReady) return { kind: "provider_unconfigured" };
     if (sends && run.callsUsed >= run.callCap) return { kind: "budget_exhausted" };
     this.resumes.push({ runId, key: request.resumeKey, requestHash: request.requestHash });
-    for (const stage of redo) Object.assign(stage, { state: "pending", updatedAt: nowIso });
+    for (const stage of redo) {
+      delete stage.rejectionDiagnostic;
+      Object.assign(stage, { state: "pending", updatedAt: nowIso });
+    }
     Object.assign(run, { state: "running", errorCode: null, cancelRequestedAt: null, executorId: null, leaseUntil: null, updatedAt: nowIso });
     return { kind: "ok", bundle: this.bundle(run) };
   }

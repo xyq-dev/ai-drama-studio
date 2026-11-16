@@ -4,6 +4,8 @@ import {
   autoRunSettledForGood,
   autoStageKind,
   currentUncertainCallIds,
+  isAutoResearchRankingRejection,
+  readAutoResearchRejectionDiagnostic,
   type AutoCallFinish,
   type AutoCallRecord,
   type AutoCallReservation,
@@ -48,6 +50,8 @@ const CALL_COLUMNS = AUTO_CREATION_TABLES.auto_creation_call!.filter((column) =>
 
 type Row = QueryResultRow & Record<string, unknown>;
 
+const RESEARCH_REJECTION_DIAGNOSTIC_KEY = "autoResearchRejectionDiagnostic";
+
 function iso(value: unknown): string {
   return (value instanceof Date ? value : new Date(String(value))).toISOString();
 }
@@ -83,17 +87,25 @@ function toRun(row: Row): AutoRunRecord {
 }
 
 function toStage(row: Row): AutoStageRecord {
+  const stageKey = String(row.stage_key);
+  const state = row.state as AutoStageRecord["state"];
+  const errorCode = (row.error_code as string | null) ?? null;
+  const metadata = row.depends_on_json as Record<string, unknown> | null;
+  // Rejected research uses this JSON column for a separate diagnostic envelope, never an output dependency.
+  const rejectionDiagnostic = isAutoResearchRankingRejection(stageKey, state, errorCode)
+    ? readAutoResearchRejectionDiagnostic(metadata?.[RESEARCH_REJECTION_DIAGNOSTIC_KEY]) : null;
   return {
     runId: String(row.run_id),
-    stageKey: String(row.stage_key),
+    stageKey,
     ordinal: Number(row.ordinal),
-    state: row.state as AutoStageRecord["state"],
+    state,
     attemptNo: Number(row.attempt_no),
-    errorCode: (row.error_code as string | null) ?? null,
+    errorCode,
     // Written only after the output passed the domain checks.
     output: (row.output_json ?? null) as AutoStageOutput | null,
     outputHash: (row.output_hash as string | null) ?? null,
-    dependsOn: (row.depends_on_json ?? null) as Record<string, string> | null,
+    dependsOn: state === "completed" ? (metadata ?? null) as Record<string, string> | null : null,
+    ...(rejectionDiagnostic ? { rejectionDiagnostic } : {}),
     scriptSave: (row.script_save as AutoStageRecord["scriptSave"]) ?? null,
     scriptRevisionId: (row.script_revision_id as string | null) ?? null,
     updatedAt: iso(row.updated_at),
@@ -357,11 +369,14 @@ export class PostgresAutoCreationStore implements AutoCreationStore {
           WHERE id = $1 AND executor_id = $2 AND state = 'submitted'`,
         [callId, executorId, patch.state, patch.errorCode, patch.providerRequestId, patch.responseModel, JSON.stringify(patch.usage), nowIso]);
       if (updated.rowCount !== 1) return false;
+      const rejectionDiagnostic = isAutoResearchRankingRejection(String(found.stage_key), patch.state, patch.errorCode)
+        ? readAutoResearchRejectionDiagnostic(patch.rejectionDiagnostic) : null;
+      const stageMetadata = rejectionDiagnostic ? { [RESEARCH_REJECTION_DIAGNOSTIC_KEY]: rejectionDiagnostic } : patch.dependsOn;
       await client.query(
         `UPDATE auto_creation_stage SET state = $3, error_code = $4, output_json = $5::jsonb, output_hash = $6, depends_on_json = $7::jsonb, updated_at = $8
           WHERE run_id = $1 AND stage_key = $2`,
         [found.run_id, found.stage_key, patch.state, patch.errorCode, patch.output === null ? null : JSON.stringify(patch.output), patch.outputHash,
-          patch.dependsOn === null ? null : JSON.stringify(patch.dependsOn), nowIso]);
+          stageMetadata === null ? null : JSON.stringify(stageMetadata), nowIso]);
       await client.query("UPDATE auto_creation_run SET updated_at = $2 WHERE id = $1", [found.run_id, nowIso]);
       return true;
     });
@@ -461,7 +476,7 @@ export class PostgresAutoCreationStore implements AutoCreationStore {
       await client.query(
         `INSERT INTO auto_creation_resume (run_id, workspace_id, idempotency_key, request_hash, confirmed_call_ids, created_at)
          VALUES ($1, $2, $3, $4, $5::jsonb, $6)`, [runId, workspaceId, request.resumeKey, request.requestHash, JSON.stringify(confirmed), nowIso]);
-      await client.query("UPDATE auto_creation_stage SET state = 'pending', updated_at = $2 WHERE run_id = $1 AND state IN ('unknown', 'rejected', 'canceled')",
+      await client.query("UPDATE auto_creation_stage SET state = 'pending', depends_on_json = NULL, updated_at = $2 WHERE run_id = $1 AND state IN ('unknown', 'rejected', 'canceled')",
         [runId, nowIso]);
       const updated = await client.query<Row>(
         `UPDATE auto_creation_run SET state = 'running', error_code = NULL, cancel_requested_at = NULL, executor_id = NULL, lease_until = NULL, updated_at = $2

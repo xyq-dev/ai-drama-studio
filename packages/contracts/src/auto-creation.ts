@@ -107,13 +107,15 @@ export const AUTO_CREATION_SELECTION_RULES = "ads.auto-creation.selection-rules.
  * choice its viewers make (观众会在前10秒决定是否继续看) marks nothing: such a sentence asserts what viewers do and is
  * refused (not_pending), where checks v13 passed it; viewers the work goes by (根据观众留言决定是否…) make no choice. A doubt
  * or plan word anywhere else reads as before. Prompt v11.
+ * v15: research creative fields distinguish local workflow and story ordinals from market placements. Ambiguous
+ * creative ordinals can carry the existing unverified notice. Prompt and research schemas are unchanged.
  */
-export const AUTO_CREATION_CHECKS_VERSION = "ads.auto-creation.checks.v14" as const;
+export const AUTO_CREATION_CHECKS_VERSION = "ads.auto-creation.checks.v15" as const;
 /** Every checks version a stored run or review may carry. */
 export type AutoCreationChecksVersion = "ads.auto-creation.checks.v1" | "ads.auto-creation.checks.v2" | "ads.auto-creation.checks.v3"
   | "ads.auto-creation.checks.v4" | "ads.auto-creation.checks.v5" | "ads.auto-creation.checks.v6" | "ads.auto-creation.checks.v7"
   | "ads.auto-creation.checks.v8" | "ads.auto-creation.checks.v9" | "ads.auto-creation.checks.v10" | "ads.auto-creation.checks.v11"
-  | "ads.auto-creation.checks.v12" | "ads.auto-creation.checks.v13" | typeof AUTO_CREATION_CHECKS_VERSION;
+  | "ads.auto-creation.checks.v12" | "ads.auto-creation.checks.v13" | "ads.auto-creation.checks.v14" | typeof AUTO_CREATION_CHECKS_VERSION;
 /**
  * v4: the answer contract follows the run's saved research mode. limited: the model writes hypotheses, the audience as
  * text, content structures and opportunities only; the server assembles the rest (no facts, no observations, the
@@ -1103,6 +1105,30 @@ export type AutoCreationQuality = "pending" | "passed" | "needs_work";
 export type AutoCreationStorySave = "pending" | "saved" | "conflict";
 export type AutoCreationScriptSave = "pending" | "saved" | "conflict";
 
+export const AUTO_RESEARCH_REJECTION_EXCERPT_MAX_CHARS = 72;
+
+export interface AutoResearchRejectionDiagnostic {
+  excerpt: string;
+  truncated: boolean;
+}
+
+/** Shared with the validator so exclusions apply to the entire selected clause before clipping. */
+export function isSafeAutoResearchRejectionClause(text: string): boolean {
+  return /\p{Script=Han}/u.test(text) && !/[^\p{Script=Han}０-９0-9 \u3000，。！？、；：（）《》「」『』“”‘’…—,.!?;:()]/u.test(text)
+    && !/密码|口令|密钥|凭据|验证码|令牌|会话标识|授权码|登录信息|账户信息|提示词|系统指令|系统提示|账号/u.test(text)
+    && !/(?:[0-9０-９][ \u3000]*){7}/u.test(text);
+}
+
+/** Fail closed when reading persisted or wire data. The validator also checks the source clause before truncation. */
+export function readAutoResearchRejectionDiagnostic(value: unknown): AutoResearchRejectionDiagnostic | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value) || Object.keys(value).length !== 2
+    || !Object.hasOwn(value, "excerpt") || !Object.hasOwn(value, "truncated")) return null;
+  const { excerpt, truncated } = value as Partial<AutoResearchRejectionDiagnostic>;
+  if (typeof excerpt !== "string" || typeof truncated !== "boolean" || excerpt !== excerpt.trim()
+    || [...excerpt].length > AUTO_RESEARCH_REJECTION_EXCERPT_MAX_CHARS || !isSafeAutoResearchRejectionClause(excerpt)) return null;
+  return { excerpt, truncated };
+}
+
 export interface AutoRunRecord {
   id: string;
   workspaceId: string;
@@ -1137,6 +1163,8 @@ export interface AutoStageRecord {
   outputHash: string | null;
   /** Output hashes of the stages this one was built from, recorded when it completed. */
   dependsOn: Record<string, string> | null;
+  /** Separately stored detail for the current rejected research attempt. */
+  rejectionDiagnostic?: AutoResearchRejectionDiagnostic;
   scriptSave: AutoCreationScriptSave | null;
   scriptRevisionId: string | null;
   updatedAt: string;
@@ -1186,6 +1214,8 @@ export interface AutoCallFinish {
   output: AutoStageOutput | null;
   outputHash: string | null;
   dependsOn: Record<string, string> | null;
+  /** Applied to the stage only, never the call ledger. */
+  rejectionDiagnostic?: AutoResearchRejectionDiagnostic;
   providerRequestId: string | null;
   responseModel: string | null;
   usage: TitleWritingUsageView;
@@ -1223,7 +1253,7 @@ function viewingReason(rule: string | null | undefined, reason: string | null | 
  * sub-rule: `unsourced_number@hypotheses[0].statement:chinese_numeral+market_statistic+audience_count`. A viewing time
  * also names the branch that refused it as a fourth part (`…:digits+market_statistic+viewing_duration+viewing_habit`),
  * from AUTO_VIEWING_DURATION_REASONS only. Field paths name schema keys and indexes only; the other parts are fixed
- * slugs. No text of the model is ever stored. A run's own error keeps the bare rule.
+ * slugs. No model text goes in the error code. A run's own error keeps the bare rule.
  */
 export function autoErrorCodeWith(code: string, field?: string, category?: string, semantic?: string, rule?: string, reason?: string): string {
   const slug = (value?: string) => value?.replace(/[^a-z_]/g, "").slice(0, 40) ?? "";
@@ -1244,6 +1274,12 @@ export function autoErrorParts(stored: string): { code: string; field: string | 
   if (!match) return { code: stored, field: null, category: null, semantic: null, rule: null, reason: null };
   const [category, semantic, rule, reason] = (match[3] ?? "").split("+");
   return { code: match[1]!, field: match[2] ?? null, category: category || null, semantic: semantic || null, rule: rule || null, reason: viewingReason(rule, reason) };
+}
+
+/** The only kind of stage refusal that may carry an excerpt. */
+export function isAutoResearchRankingRejection(stageKey: string, state: AutoCreationStageState, errorCode: string | null): boolean {
+  return stageKey === "research" && state === "rejected" && errorCode !== null
+    && /^unsourced_number@(?:hypotheses\[[0-9]+\]\.(?:statement|howToVerify)|contentStructure\[[0-9]+\]\.application\.(?:pattern|why)|opportunities\[[0-9]+\]):rank\+market_statistic\+ranking$/u.test(errorCode);
 }
 
 /** True when nothing is left to redo and the run's stop reason is final: a resume would only stop the same way. */
@@ -1315,6 +1351,8 @@ export interface AutoCreationStageView {
   attemptNo: number;
   errorCode: string | null;
   output: AutoStageOutput | null;
+  /** Available only on authorized reads of the current rejected research stage. */
+  rejectionDiagnostic?: AutoResearchRejectionDiagnostic;
   /** The stage was built from an upstream version that a later revision replaced. */
   upstreamChanged: boolean;
   /** A later revision replaced this episode version; the current one is named. */
