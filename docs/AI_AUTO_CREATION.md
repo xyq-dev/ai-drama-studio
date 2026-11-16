@@ -8,7 +8,7 @@
 
 结果页可独立展开「故事正文」阅读全文。正文和大纲由 `outline` 的同一次调用写入既有阶段 JSON。编剧、修订和审阅使用同一份冻结正文。阶段、调用次数与预算沿用原计划。
 
-本功能交付的是**自动生成的剧本包与生产准备包**：故事以「AI 自动生成草稿」保存，分集剧本要写入作品，仍须先由人在作品中审核通过故事（机器质量检查不代替人工审核，本功能不会自动写 APPROVED）；不生成图片、语音或视频。「剧本包完成」与「视频成片完成」是两个状态，后者在本功能里永远是「未开始」。
+本功能交付的是**自动生成的剧本包与生产准备包**：故事以「AI 自动生成草稿」保存，分集剧本要写入作品，仍须先由人在作品中审核通过故事（机器质量检查不代替人工审核，本功能不会自动写 APPROVED）；写作过程本身不自动生成图片、语音或视频；分镜图是剧本写完后的可选项，必须先由人审核故事和分集剧本、写入作品、镜头就绪，并确认费用后才会生成。视频成片仍是未开始。「剧本包完成」与「视频成片完成」是两个状态，后者在本功能里永远是「未开始」。
 
 ## 1. 为什么不复用 `title_writing_*` 表（实施前核验）
 
@@ -488,4 +488,4 @@ DATABASE_URL=<业务库连接串，只在进程环境中> pnpm --filter @ai-dram
 | 2026-10-25 样本动作绑定数量 checks.v9（本机 Windows + Node 24.21，模型替身） | 见第 3.9 节；两条合成样本加入 `auto-creation-verification-sample.spec.ts` 的拒收表，分类器与完整阶段（limited、sourced、系列经 `seriesAutoInput` 传入 60 集）共 8 项。在 main 7d28d3a（checks.v8）未修复代码上先运行：8 项全部失败（分类器返回无拒收，完整阶段 `ok: true`）。修复后该文件 140 项全部通过：两句分别拒为 `market_statistic` / `viewing_count`、`frozen_conflict` / `episode_count`；原三句合法计划（及阿拉伯数字、样片、第 N 集写法）保留原文、无提示；邀请观众试读样稿的对照仍通过；越界、总集数、统计、已执行结果与后续字段照常拒收。domain 1005、providers 352（含规划＋前 3 集 19 次、全流程 96 次）通过；PostgreSQL 与浏览器验收由 PR CI 运行；Migration 编写 0、执行 0；真实模型与媒体调用 0 次 |
 | 2026-10-21 研究契约按资料能力拆分 research.v4 / prompt.v6 / checks.v6（本机 Windows + Node 24.21，模型替身） | 见第 3.5 节与 `docs/AUTO_CREATION_RESEARCH_CAPABILITIES_REPORT.md`；新增 `packages/contracts/src/auto-creation-capabilities.spec.ts`（limited/sourced 两份 JSON Schema 与 Zod 逐键一致、limited 拒收禁止字段即使为空、服务端组装、v3 历史判断）与 `packages/providers/src/auto-creation-capabilities.spec.ts`（捕获引擎实际发给 OpenAI / Claude / DeepSeek 的请求体核对 Schema 与提示、四种资料组合、limited 完整六阶段、注入字段各只发 1 次、sourced 合法与非法事实、v3 历史续跑不重发、原键重放、已保存快照决定续跑契约、预算不足不续跑、无有效快照不预约） |
 
-本功能**未**做：真实模型调用、真实图片/语音/视频、剧本拆解与分镜生产数据写入、业务库或测试站迁移。
+本轮验收**未**做：真实模型调用、真实付费生图/语音/视频、业务库或测试站迁移。可选分镜图能力见第 7.1 节；本轮相关验收均为合成夹具和假传输，不发起真实扣费。剧本拆解仍由人在工作台确认后启动，本路径不自行拆解，也不伪造镜头。
