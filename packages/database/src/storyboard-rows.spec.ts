@@ -56,7 +56,8 @@ describe("storyboard collection view", () => {
     const [sql] = query.mock.calls.find(([text]) => text.includes("WITH shot_page AS"))!;
     expect(sql).toContain("'comfyui'");
     expect(sql).toContain("'{autoStoryboard,runId}' IS NOT NULL");
-    expect(sql).toContain("'{autoStoryboard,shotId}'=revision.shot_id::text");
+    expect(sql).toContain("job.source_shot_revision_id=asset.source_shot_revision_id");
+    expect(sql).toContain("asset.source_shot_revision_id = chosen.shot_revision_id");
     expect(sql).toContain("asset.width=1024 AND asset.height=1536");
     expect(sql).toContain("shot_page.approved_revision_id = revision.id AND revision.review_status = 'APPROVED'");
     expect(sql).toContain("revision.freshness_status = 'CURRENT'");

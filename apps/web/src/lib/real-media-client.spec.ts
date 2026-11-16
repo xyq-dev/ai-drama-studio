@@ -75,6 +75,18 @@ describe("real media client validates real API receipts and keeps request identi
     const original=pending();rememberRealMediaPending(original);const newer={...original,key:OTHER};sessionStorage.setItem(realMediaPendingKey(P,S),JSON.stringify(newer));expect(clearRealMediaPending(original)).toBe(false);expect(readRealMediaPending(P,S)).toEqual(newer);
     sessionStorage.setItem(realMediaPendingKey(P,S),JSON.stringify({...original,shotRevisionId:OTHER}));expect(()=>readRealMediaPending(P,S)).toThrow();
   });
+  it("persists and removes the definite refusal marker without changing the authorized request identity", () => {
+    const authorized = { ...pending(), authorizationId: A, autoStoryboard: { runId: J } };
+    rememberRealMediaPending(authorized);
+    const rejected = { ...authorized, autoStoryboard: { runId: J, generationRejectedBeforeDispatch: true as const } };
+    rememberRealMediaPending(rejected);
+    expect(readRealMediaPending(P, S)).toEqual(rejected);
+    expect(() => rememberRealMediaPending({ ...rejected, autoStoryboard: { ...rejected.autoStoryboard, runId: OTHER } })).toThrow();
+    rememberRealMediaPending(authorized);
+    expect(readRealMediaPending(P, S)).toEqual(authorized);
+    sessionStorage.setItem(realMediaPendingKey(P, S), JSON.stringify({ ...rejected, authorizationId: null }));
+    expect(() => readRealMediaPending(P, S)).toThrow();
+  });
   it("sends the measured compose guard with its original idempotency key",async()=>{
     const fetch=vi.fn<(url:string,init?:RequestInit)=>Promise<Response>>(async()=>json({jobId:J,workflowRunId:W,dispatchSeq:1},202));const api=createRealMediaClient(new StudioClient(fetch));
     const preflight:SpeechMixPreflight={inputHash:"c".repeat(64),manifest:{schema:"voice.shot.mix.v1",workspaceId:P,projectId:P,shotRevisionId:S,planRevisionId:Q,planHash:"d".repeat(64),selectionHash:"e".repeat(64),videoAssetId:A,videoChecksumSha256:"b".repeat(64),videoDurationMs:5000,totalSpeechMs:1000,lines:[],subtitles:{format:"vtt",alignmentVersion:"sentence-duration-v1",checksumSha256:"f".repeat(64),cues:[]},mix:{audioOverflow:"reject",audioUnderflow:"pad-silence",sampleRate:48000,channels:2,musicAssetId:OTHER,musicChecksumSha256:"a".repeat(64),originalAudio:"mute",musicGain:0.25,ducking:true}},subtitleVtt:"WEBVTT\n\n",guards:{planRowVersion:1,assets:[]}};

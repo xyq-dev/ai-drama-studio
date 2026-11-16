@@ -165,7 +165,7 @@ export type RealMediaClient = ReturnType<typeof createRealMediaClient>;
 export interface RealMediaPending {
   schema: "ads.real-media.pending.v1"; projectId: string; shotRevisionId: string; key: string;
   quote: RealMediaQuote; maximumAmount: string; authorizationId: string | null;
-  autoStoryboard?: { runId: string };
+  autoStoryboard?: { runId: string; generationRejectedBeforeDispatch?: true };
 }
 export function realMediaPendingKey(projectId: string, shotRevisionId: string): string { return "ads.real-media.pending.v1:" + projectId + ":" + shotRevisionId; }
 export function readRealMediaPending(projectId: string, shotRevisionId: string): RealMediaPending | null {
@@ -175,7 +175,9 @@ export function readRealMediaPending(projectId: string, shotRevisionId: string):
     const p = JSON.parse(raw) as RealMediaPending;
     if (p.schema !== "ads.real-media.pending.v1" || p.projectId !== projectId || p.shotRevisionId !== shotRevisionId
       || !UUID.test(p.key) || !AMOUNT.test(p.maximumAmount) || (p.authorizationId !== null && !UUID.test(p.authorizationId))
-      || (p.autoStoryboard !== undefined && (!p.autoStoryboard || !UUID.test(p.autoStoryboard.runId)))) throw new Error();
+      || (p.autoStoryboard !== undefined && (!p.autoStoryboard || !UUID.test(p.autoStoryboard.runId)
+        || (p.autoStoryboard.generationRejectedBeforeDispatch !== undefined
+          && (p.autoStoryboard.generationRejectedBeforeDispatch !== true || p.authorizationId === null))))) throw new Error();
     checkedRealMediaQuote(p.quote);
     return p;
   } catch { throw new Error("原媒体请求记录无法核对，请先核查任务，尚未发送新请求。"); }
@@ -183,7 +185,7 @@ export function readRealMediaPending(projectId: string, shotRevisionId: string):
 export function rememberRealMediaPending(p: RealMediaPending): void {
   const key = realMediaPendingKey(p.projectId, p.shotRevisionId), before = readRealMediaPending(p.projectId, p.shotRevisionId);
   if (before && (before.key !== p.key || JSON.stringify(before.quote) !== JSON.stringify(p.quote) || before.maximumAmount !== p.maximumAmount
-    || JSON.stringify(before.autoStoryboard) !== JSON.stringify(p.autoStoryboard)
+    || before.autoStoryboard?.runId !== p.autoStoryboard?.runId
     || (before.authorizationId !== null && before.authorizationId !== p.authorizationId))) throw new Error("原媒体请求尚未确认，不能替换。");
   const text = JSON.stringify(p);
   sessionStorage.setItem(key, text);

@@ -82,6 +82,7 @@ function MediaScope(props: Props) {
   const [storageError, setStorageError] = useState<string | null>(null), [refused, setRefused] = useState(false), [readTick, setReadTick] = useState(0);
   const comfy = capabilities?.comfyui;
   const comfySupported = Boolean(comfy);
+  const canReadShotMedia = comfySupported || capabilities?.readAvailable === true;
   const comfyAvailable = !checkComfyError && comfy?.status === "available" && comfy.workflows.length > 0;
   const defaultImageAvailable = capabilities?.capabilities.includes("image.generate") ?? false;
   const useComfy = capability === "image.generate" && (imageProvider === "comfyui" || (imageProvider === null && comfyAvailable && !defaultImageAvailable));
@@ -93,7 +94,7 @@ function MediaScope(props: Props) {
     && comfyWorkflow?.dimensions.some(size => size.width === currentComfyInput.width && size.height === currentComfyInput.height)
     && (!comfyWorkflow.requiresReference || comfyShot?.references.some(reference => reference.id === currentComfyInput.referenceAssetId)));
   const imageReady = capability !== "image.generate" || (useComfy ? comfyReady : defaultImageAvailable);
-  const hasComfyJob = Boolean(job && comfyShot?.jobs.some(item => item.jobId === job.id));
+  const hasComfyJob = comfySupported && Boolean(job && comfyShot?.jobs.some(item => item.jobId === job.id));
   const jobStorage = realMediaPendingKey(props.projectId, props.shotRevisionId) + ":job";
   useEffect(() => {
     mounted.current = true;
@@ -150,7 +151,7 @@ function MediaScope(props: Props) {
     return () => controller.abort();
   }, [api, open, props.projectId, props.shotRevisionId, props.refreshEpoch, readTick]);
   useEffect(() => {
-    if (!open || !comfySupported) return;
+    if (!open || !canReadShotMedia) return;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     async function read() {
@@ -164,7 +165,7 @@ function MediaScope(props: Props) {
         previousComfySuccesses.current = successes;
         previousComfySelection.current = snapshot.selectedAssetId;
         setComfyShot(snapshot); setComfyReadError(false);
-        if (snapshot.jobs.some(item => !comfyUiJobSettled(item) && item.state !== "UNKNOWN"
+        if (comfySupported && snapshot.jobs.some(item => !comfyUiJobSettled(item) && item.state !== "UNKNOWN"
           && item.errorCode !== "REAL_MEDIA_SUBMISSION_UNKNOWN")) timer = setTimeout(() => void read(), 2000);
       } catch {
         if (!controller.signal.aborted) { setComfyReadError(true); timer = setTimeout(() => void read(), 5000); }
@@ -172,7 +173,7 @@ function MediaScope(props: Props) {
     }
     void read();
     return () => { controller.abort(); if (timer) clearTimeout(timer); };
-  }, [api, comfySupported, comfyTick, open, props.projectId, props.shotRevisionId, props.refreshEpoch]);
+  }, [api, canReadShotMedia, comfySupported, comfyTick, open, props.projectId, props.shotRevisionId, props.refreshEpoch]);
   useEffect(() => {
     if (!open || !job || hasComfyJob || TERMINAL.has(job.state) || job.errorCode === "REAL_MEDIA_SUBMISSION_UNKNOWN") return;
     const controller = new AbortController();
@@ -409,7 +410,7 @@ function MediaScope(props: Props) {
                 : <audio controls preload="none" src={"/api/v1/real-media/assets/" + asset.id + "/content"} />}
             {asset.kind === "IMAGE" && asset.id === comfyShot?.selectedAssetId ? <p className={styles.adopted}>
               {asset.status === "ACTIVE" && props.usable && props.approved !== false ? "已采用到当前镜头" : "历史采用版本"}
-            </p> : asset.kind === "IMAGE" && asset.status === "ACTIVE" && asset.sourceGenerationJobId && usableComfyJobs.has(asset.sourceGenerationJobId) ?
+            </p> : comfySupported && asset.kind === "IMAGE" && asset.status === "ACTIVE" && asset.sourceGenerationJobId && usableComfyJobs.has(asset.sourceGenerationJobId) ?
               <button type="button" disabled={comfyBusy || !props.usable || props.approved === false || comfyShot?.selectionAvailable !== true} onClick={() => void adoptImage(asset)}>采用此版</button> : null}
           </article>)}
         </div>

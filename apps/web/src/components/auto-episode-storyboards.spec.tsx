@@ -26,7 +26,7 @@ const view = (...episodes: AutoStoryboardEpisode[]): AutoStoryboardView => ({
 });
 
 function fixture(initial = view(episode(1))) {
-  const state = { value: initial, authorizationFailure: "", loseReceiptFor: "", zeroQuote: false, breakdownOptions: null as ScriptBreakdownOptionsView | null };
+  const state = { value: initial, authorizationFailure: "", generationRefusal: "", loseReceiptFor: "", zeroQuote: false, breakdownOptions: null as ScriptBreakdownOptionsView | null };
   const writes: Array<{ method: string; url: string; body: unknown; key: string | null }> = [];
   vi.stubGlobal("fetch", vi.fn(async (url: string, options?: RequestInit) => {
     const method = options?.method ?? "GET";
@@ -51,12 +51,19 @@ function fixture(initial = view(episode(1))) {
     }
     if (url.endsWith("/generate")) {
       if (state.loseReceiptFor && url.includes(state.loseReceiptFor)) throw new TypeError("network");
+      if (state.generationRefusal) return Response.json({ error: { code: state.generationRefusal, message: "暂时无法提交生成。" } }, { status: 503 });
       return Response.json({ jobId: J, workflowRunId: J });
     }
     if (url.endsWith("/selection")) return Response.json({ selectedAssetId: ASSET });
     throw new Error(`Unexpected route ${url}`);
   }));
   return { state, writes };
+}
+
+async function confirmSingleShot() {
+  await screen.findByText("0.1 USD");
+  fireEvent.click(screen.getByRole("checkbox", { name: "确认按上述额度生成分镜图" }));
+  fireEvent.click(screen.getByRole("button", { name: "确认生成 1 镜" }));
 }
 afterEach(() => {
   cleanup();
@@ -203,6 +210,87 @@ describe("Auto episode storyboard", () => {
       await screen.findByText("上次报价已过期，尚未提交出图。请重新报价。");
       await waitFor(() => expect(screen.queryByRole("button", { name: "继续上次授权 门口一镜" })).toBeNull());
       expect(writes).toHaveLength(2);
+    } finally { time.mockRestore(); }
+  });
+
+  it("continues the same authorized request after a definite generation rejection and reload", async () => {
+    const { state, writes } = fixture();
+    state.generationRefusal = "AUTO_STORYBOARD_OPENAI_UNAVAILABLE";
+    const initial = render(<AutoEpisodeStoryboards projectId={P} runId={R} autoQuote />);
+    await confirmSingleShot();
+    await screen.findByRole("button", { name: "继续上次出图 门口一镜" });
+    const originalWrites = [...writes];
+    expect(originalWrites.map((row) => row.url.split("/").at(-1))).toEqual(["quote", "authorize", "generate"]);
+    expect(originalWrites[1]?.body).toMatchObject({ quoteId: Q, maximumAmount: "0.1" });
+    expect(originalWrites[2]).toMatchObject({ key: originalWrites[1]?.key, body: { quoteId: Q, budgetAuthorizationId: AUTH } });
+
+    initial.unmount();
+    state.generationRefusal = "";
+    render(<AutoEpisodeStoryboards projectId={P} runId={R} autoQuote />);
+    const resume = await screen.findByRole("button", { name: "继续上次出图 门口一镜" });
+    expect(writes).toEqual(originalWrites);
+    fireEvent.click(resume);
+    await screen.findByText("任务已受理，等待核实状态");
+    expect(writes).toEqual([...originalWrites, originalWrites[2]]);
+  });
+
+  it("only reads the matching job when a previously rejected generation has an existing request", async () => {
+    const { state, writes } = fixture();
+    state.generationRefusal = "AUTO_STORYBOARD_OPENAI_UNAVAILABLE";
+    render(<AutoEpisodeStoryboards projectId={P} runId={R} autoQuote />);
+    await confirmSingleShot();
+    const resume = await screen.findByRole("button", { name: "继续上次出图 门口一镜" });
+
+    state.value = view(episode(1, [{ ...shot(A, "unknown"), jobId: J, quoteId: Q }]));
+    fireEvent.click(resume);
+    await screen.findByText("结果待核实", { exact: true });
+    expect(writes).toHaveLength(3);
+    expect(screen.queryByRole("button", { name: "继续上次出图 门口一镜" })).toBeNull();
+  });
+
+  it("stops after a recovery loses the generation receipt, even when a preceding refusal was definite", async () => {
+    const { state, writes } = fixture();
+    state.generationRefusal = "REAL_MEDIA_STORAGE_NOT_READY";
+    const initial = render(<AutoEpisodeStoryboards projectId={P} runId={R} autoQuote />);
+    await confirmSingleShot();
+    const resume = await screen.findByRole("button", { name: "继续上次出图 门口一镜" });
+
+    state.loseReceiptFor = A;
+    fireEvent.click(resume);
+    await screen.findByText("提交结果待核实", { exact: true });
+    const originalWrites = [...writes];
+    expect(originalWrites).toHaveLength(4);
+    expect(originalWrites[3]).toEqual(originalWrites[2]);
+    initial.unmount();
+    render(<AutoEpisodeStoryboards projectId={P} runId={R} autoQuote />);
+    await screen.findByText("提交结果待核实", { exact: true });
+    expect(screen.queryByRole("button", { name: "继续上次出图 门口一镜" })).toBeNull();
+    expect(writes).toEqual(originalWrites);
+  });
+
+  it("does not treat an unclassified 503 as a definite generation rejection", async () => {
+    const { state, writes } = fixture();
+    state.generationRefusal = "UNAVAILABLE";
+    render(<AutoEpisodeStoryboards projectId={P} runId={R} autoQuote />);
+    await confirmSingleShot();
+    await screen.findByText("提交结果待核实", { exact: true });
+    expect(screen.queryByRole("button", { name: "继续上次出图 门口一镜" })).toBeNull();
+    expect(writes).toHaveLength(3);
+  });
+
+  it("clears an expired authorized quote after a definite generation rejection without starting a new request", async () => {
+    const { state, writes } = fixture();
+    state.generationRefusal = "AUTO_STORYBOARD_OPENAI_UNAVAILABLE";
+    render(<AutoEpisodeStoryboards projectId={P} runId={R} autoQuote />);
+    await confirmSingleShot();
+    const resume = await screen.findByRole("button", { name: "继续上次出图 门口一镜" });
+
+    const time = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2099-01-01T00:00:00.000Z"));
+    try {
+      fireEvent.click(resume);
+      await screen.findByText("上次报价已过期，尚未提交出图。请重新报价。");
+      await screen.findByRole("button", { name: "生成本镜 门口一镜" });
+      expect(writes).toHaveLength(3);
     } finally { time.mockRestore(); }
   });
 

@@ -83,10 +83,10 @@ const USABLE_IMAGE = `asset.status='ACTIVE' AND asset.review_status<>'REJECTED' 
   AND asset.byte_size BETWEEN 1 AND 8388608 AND asset.checksum_sha256 ~ '^[a-f0-9]{64}$'
   AND asset.object_key=concat('real-media/',asset.workspace_id,'/',asset.project_id,'/',job.id,'/',asset.source_job_attempt_id,'/',asset.checksum_sha256,'.png')`;
 
-/** OpenAI branch of the shared selection readers, with their asset, job and revision aliases. */
+/** Shared selection readers bind the asset to the scoped selection and its verified checksum.
+ * Use the job's stored source revision, as at adoption, for the shot lineage. */
 export const RETAINED_AUTO_STORYBOARD_IMAGE_FILTER = `${OPENAI_STORYBOARD_JOB}
   AND job.input_snapshot#>>'{autoStoryboard,runId}' IS NOT NULL
-  AND job.input_snapshot#>>'{autoStoryboard,shotId}'=revision.shot_id::text
   AND job.source_shot_revision_id=asset.source_shot_revision_id
   AND ${USABLE_IMAGE}`;
 

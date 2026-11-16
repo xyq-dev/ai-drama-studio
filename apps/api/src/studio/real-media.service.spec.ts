@@ -1,4 +1,5 @@
 import { describe,expect,it,vi } from "vitest";
+import { adoptAutoStoryboardImage, TextChainService, type DatabasePool } from "@ai-drama/database";
 import type { RealMediaServiceOptions } from "./real-media.service";
 import { RealMediaService } from "./real-media.service";
 function options(){
@@ -7,19 +8,52 @@ function options(){
   return {raw,typed:raw as unknown as RealMediaServiceOptions};
 }
 describe("explicit real-media budget API",()=>{
-  it("reports the kept OpenAI storyboard as the selected image without reporting it as a ComfyUI job", async () => {
+  it("projects the same retained OpenAI candidate in both readers once the shot is approved", async () => {
     const o = options();
-    const query = vi.fn(async (sql: string, _values: string[]) => {
-      if (sql.includes("SELECT 1 FROM shot_revision") || sql.includes("to_regclass('comfyui_shot_image_selection')")) return { rows: [{ ready: true }] };
-      if (sql.includes("SELECT selected.asset_id") && sql.includes("'openai-media'")) return { rows: [{ asset_id: "retained-openai-image" }] };
+    const scope = { workspaceId: "workspace", projectId: "project", runId: "auto-run" };
+    const shotRevisionId = "shot-revision";
+    const assetId = "retained-openai-image";
+    const checksum = "a".repeat(64);
+    let approved = false;
+    let chosen: string | null = null;
+    // The keep operation validates the job's exact stored source revision. This fixture has no duplicate shot ID in its snapshot.
+    const selection = (sql: string) => approved && sql.includes("'openai-media'") && !sql.includes("'{autoStoryboard,shotId}'") ? chosen : null;
+    const query = vi.fn(async (sql: string, values?: unknown[]) => {
+      if (sql.includes("to_regclass('comfyui_shot_image_selection')")) return { rows: [{ ready: true, selection: true, selections: true }] };
+      if (sql.includes("SELECT 1 FROM shot_revision") || sql.includes("SELECT 1 FROM scene WHERE")) return { rows: [{ ok: true }] };
+      if (sql.includes("SELECT asset.checksum_sha256")) {
+        expect(values).toEqual([scope.workspaceId, scope.projectId, scope.runId, shotRevisionId, assetId]);
+        return { rows: [{ checksum_sha256: checksum }] };
+      }
+      if (sql.includes("INSERT INTO comfyui_shot_image_selection")) {
+        expect(values).toEqual([scope.workspaceId, scope.projectId, shotRevisionId, assetId, checksum, "owner"]);
+        chosen = String(values?.[3]);
+        return { rows: [] };
+      }
+      if (sql.includes("SELECT selected.asset_id")) {
+        const selectedAssetId = selection(sql);
+        return { rows: selectedAssetId ? [{ asset_id: selectedAssetId }] : [] };
+      }
+      if (sql.includes("WITH shot_page AS")) return { rows: [{ id: "shot", current_revision_id: shotRevisionId,
+        approved_revision_id: approved ? shotRevisionId : null, storyboard: { selectedAssetId: selection(sql) } }] };
       return { rows: [] };
     });
+    const client = { query, release: vi.fn() };
+    const workbench = new TextChainService({ connect: async () => client } as unknown as DatabasePool);
     const service = new RealMediaService({
       ...o.typed,
-      store: { ...o.raw.store, transaction: async (work: (client: unknown) => Promise<unknown>) => work({ query }) } as unknown as RealMediaServiceOptions["store"],
+      store: { ...o.raw.store, transaction: async (work: (client: unknown) => Promise<unknown>) => work(client) } as unknown as RealMediaServiceOptions["store"],
     });
-    await expect(service.comfyUiShot("project", "shot-revision")).resolves.toMatchObject({
-      selectedAssetId: "retained-openai-image", selectionAvailable: true, jobs: [],
+    await expect(adoptAutoStoryboardImage(client as unknown as Parameters<typeof adoptAutoStoryboardImage>[0], scope, shotRevisionId, {
+      assetId, expectedSelectedAssetId: null, actorId: "owner",
+    })).resolves.toEqual({ selectedAssetId: assetId });
+    const listShots = () => workbench.listShots(scope.workspaceId, scope.projectId, "episode", "scene", undefined, 20, true);
+    expect((await listShots()).items[0]?.storyboard?.selectedAssetId).toBeNull();
+    await expect(service.comfyUiShot(scope.projectId, shotRevisionId)).resolves.toMatchObject({ selectedAssetId: null });
+    approved = true;
+    const [storyboard, media] = await Promise.all([listShots(), service.comfyUiShot(scope.projectId, shotRevisionId)]);
+    expect({ storyboard: storyboard.items[0]?.storyboard?.selectedAssetId, media }).toMatchObject({
+      storyboard: assetId, media: { selectedAssetId: assetId, selectionAvailable: true, jobs: [] },
     });
     const [selectionSql, selectionScope] = query.mock.calls.find(([sql]) => sql.includes("SELECT selected.asset_id"))!;
     expect(selectionScope).toEqual(["workspace", "project", "shot-revision"]);

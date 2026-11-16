@@ -32,6 +32,11 @@ const safeRefusal = new Set([
   "REAL_MEDIA_UNCERTAIN_CHANGED", "REAL_MEDIA_AUTHORIZATION_INVALID", "REAL_MEDIA_BUDGET_MISMATCH",
   "AUTO_STORYBOARD_SOURCE_NOT_READY", "AUTO_STORYBOARD_SHOT_BUSY", "AUTO_STORYBOARD_SELECTION_UNAVAILABLE",
 ]);
+// These API codes originate in the generation transaction before a job or outbox entry is created.
+const preDispatchUnavailable = new Set([
+  "AUTO_STORYBOARD_OPENAI_UNAVAILABLE", "AUTO_STORYBOARD_SELECTION_UNAVAILABLE",
+  "REAL_MEDIA_NOT_READY", "REAL_MEDIA_STORAGE_NOT_READY",
+]);
 
 export interface AutoEpisodeStoryboardActions {
   episodeAction: (episodeNo: number) => ReactNode;
@@ -77,9 +82,9 @@ function reasonText(caught: unknown, fallback: string): string {
   return caught instanceof ApiError ? caught.detail : fallback;
 }
 
-function awaitingAuthorization(request: RealMediaPending | null | undefined, runId: string): request is RealMediaPending {
-  // The authorization ID is saved before generate is called, so only this stage can be replayed here.
-  return request?.autoStoryboard?.runId === runId && request.authorizationId === null;
+function recoverableRequest(request: RealMediaPending | null | undefined, runId: string): request is RealMediaPending {
+  return request?.autoStoryboard?.runId === runId
+    && (request.authorizationId === null || request.autoStoryboard.generationRejectedBeforeDispatch === true);
 }
 
 export function AutoEpisodeStoryboards(props: Props) {
@@ -263,9 +268,10 @@ function StoryboardScope({ projectId, runId, autoQuote, scopeEpisodeNo, refreshK
   async function submitConfirmedShot(original: RealMediaPending, operation: object) {
     let request = original;
     try {
-      const authorizationId = await client.authorize(projectId, request.quote, request.maximumAmount, request.key);
+      const authorizationId = request.authorizationId ?? await client.authorize(projectId, request.quote, request.maximumAmount, request.key);
       if (inAction.current !== operation) return;
-      const authorized = { ...request, authorizationId };
+      // Persist an uncertain submission before each attempt so a lost response cannot reuse an old refusal.
+      const authorized = { ...request, authorizationId, autoStoryboard: { runId } };
       rememberRealMediaPending(authorized);
       request = authorized;
       const receipt = await client.generate(projectId, request.shotRevisionId, request.quote.quoteId, authorizationId, request.key);
@@ -281,8 +287,17 @@ function StoryboardScope({ projectId, runId, autoQuote, scopeEpisodeNo, refreshK
         setFailure(caught.detail);
         return;
       }
+      if (request.authorizationId !== null && caught instanceof ApiError && caught.status === 503 && preDispatchUnavailable.has(caught.code)) {
+        const rejected = { ...request, autoStoryboard: { runId, generationRejectedBeforeDispatch: true as const } };
+        try {
+          rememberRealMediaPending(rejected);
+          request = rejected;
+        } catch { /* Keep the request paused if the definite refusal cannot be stored. */ }
+      }
       setPending((current) => new Map(current).set(request.shotRevisionId, request));
-      setFailure(request.authorizationId === null ? "费用授权尚未核实。可以继续上次授权。" : "部分镜头提交结果待核实。可刷新查看原任务。");
+      if (request.authorizationId === null) setFailure("费用授权尚未核实。可以继续上次授权。");
+      else if (request.autoStoryboard?.generationRejectedBeforeDispatch) setFailure("出图提交在创建任务前被拒绝。服务恢复后可继续原请求。");
+      else setFailure("部分镜头提交结果待核实。可刷新查看原任务。");
     }
   }
 
@@ -324,7 +339,7 @@ function StoryboardScope({ projectId, runId, autoQuote, scopeEpisodeNo, refreshK
     }
   }
 
-  async function recoverAuthorization(episodeNo: number, original: RealMediaPending) {
+  async function recoverOriginalRequest(episodeNo: number, original: RealMediaPending) {
     const operation = begin();
     if (!operation) return;
     autoStarted.current = true;
@@ -332,7 +347,8 @@ function StoryboardScope({ projectId, runId, autoQuote, scopeEpisodeNo, refreshK
       const latest = await client.read(projectId, runId, new AbortController().signal);
       if (inAction.current !== operation) return;
       const saved = readRealMediaPending(projectId, original.shotRevisionId);
-      if (!awaitingAuthorization(saved, runId) || saved.key !== original.key || saved.quote.quoteId !== original.quote.quoteId) return;
+      if (!recoverableRequest(saved, runId) || saved.key !== original.key || saved.quote.quoteId !== original.quote.quoteId
+        || saved.authorizationId !== original.authorizationId) return;
       const episode = latest.episodes.find((item) => item.episodeNo === episodeNo);
       const shot = episode?.shots.find((item) => item.shotRevisionId === saved.shotRevisionId);
       if (shot?.jobId && shot.quoteId === saved.quote.quoteId) return;
@@ -343,12 +359,14 @@ function StoryboardScope({ projectId, runId, autoQuote, scopeEpisodeNo, refreshK
       if (!latest.imageAvailable || !latest.selectionAvailable || !episode || episode.blocked || !shot
         || (shot.state !== "ready" && shot.state !== "failed") || !paidQuote(saved.quote)
         || saved.maximumAmount !== saved.quote.estimatedAmount) {
-        setFailure("当前镜头状态或原报价无法核对，暂时不能继续上次授权。");
+        setFailure(saved.authorizationId === null ? "当前镜头状态或原报价无法核对，暂时不能继续上次授权。"
+          : "当前镜头状态或原报价无法核对，暂时不能继续上次出图。");
         return;
       }
       await submitConfirmedShot(saved, operation);
     } catch (caught) {
-      if (inAction.current === operation) setFailure(reasonText(caught, "暂时无法核对上次授权。"));
+      if (inAction.current === operation) setFailure(reasonText(caught, original.authorizationId === null
+        ? "暂时无法核对上次授权。" : "暂时无法核对上次出图。"));
     } finally {
       if (inAction.current === operation) reread();
       end(operation);
@@ -449,17 +467,23 @@ function StoryboardScope({ projectId, runId, autoQuote, scopeEpisodeNo, refreshK
             {episode.shots.map((shot, index) => {
               const waiting = pending.has(shot.shotRevisionId);
               const request = pending.get(shot.shotRevisionId);
-              const canRecover = awaitingAuthorization(request, runId);
+              const canRecover = recoverableRequest(request, runId);
+              const authorizationPending = canRecover && request.authorizationId === null;
               const submitted = accepted.has(shot.shotRevisionId);
               const eligible = available && !episode.blocked && !waiting && !submitted;
               return <li className={styles.episodePanel} key={shot.shotRevisionId}>
                 <p className={writing.helper}>第 {episode.episodeNo} 集 · 第 {index + 1} 镜，共 {episode.shots.length} 镜</p>
                 <h4>{shot.caption}</h4>
-                <p>{canRecover ? "费用授权待核实，尚未提交出图。" : waiting ? "提交结果待核实" : submitted ? "任务已受理，等待核实状态" : storyboardShotStatus[shot.state]}</p>
+                <p>{canRecover ? (authorizationPending ? "费用授权待核实，尚未提交出图。" : "上次出图在创建任务前被拒绝。")
+                  : waiting ? "提交结果待核实" : submitted ? "任务已受理，等待核实状态" : storyboardShotStatus[shot.state]}</p>
                 {canRecover ? <>
-                  <p className={writing.helper}>继续后使用原报价 {request.maximumAmount} USD，确认授权后才提交这一镜。</p>
+                  <p className={writing.helper}>{authorizationPending
+                    ? `继续后使用原报价 ${request.maximumAmount} USD，确认授权后才提交这一镜。`
+                    : `继续后沿用本镜原授权，确认金额 ${request.maximumAmount} USD。`}</p>
                   <button className={writing.textLink} disabled={busy || !!readFailure} type="button"
-                    onClick={() => void recoverAuthorization(episode.episodeNo, request)}>继续上次授权 {shot.caption}</button>
+                    onClick={() => void recoverOriginalRequest(episode.episodeNo, request)}>
+                    {authorizationPending ? "继续上次授权" : "继续上次出图"} {shot.caption}
+                  </button>
                 </> : null}
                 {shot.keptAssetId && shot.state !== "kept" ? <p>已保留上一张图</p> : null}
                 {shot.keptAssetId && shot.keptAssetId !== shot.previewAssetId ? <HoverMediaPreview kind="image"

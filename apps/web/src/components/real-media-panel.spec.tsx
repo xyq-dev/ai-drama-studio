@@ -102,10 +102,10 @@ describe("real media panel explicit paid send and scoped recovery",()=>{
     expect(h.api.quote).toHaveBeenCalledExactlyOnceWith(P,S,"video.generate",OTHER);
     expect(h.api.generate).not.toHaveBeenCalled();
   });
-  it("preselects a kept OpenAI storyboard as the video first frame even when ComfyUI is unavailable", async () => {
+  it.each(["unconfigured", "absent"] as const)("preselects a kept OpenAI storyboard when ComfyUI capability is %s", async (status) => {
     const h = setup();
     h.api.capabilities.mockResolvedValue({ available: true, readAvailable: true, reasonCode: null,
-      capabilities: ["image.generate", "video.generate"], comfyui: { status: "unconfigured", workflows: [] } });
+      capabilities: ["image.generate", "video.generate"], ...(status === "absent" ? {} : { comfyui: { status, workflows: [] } }) });
     h.items[0]!.sourceGenerationJobId = J;
     h.api.comfyuiShot.mockResolvedValue({ references: [], jobs: [], selectedAssetId: A, selectionAvailable: true });
     render(<RealMediaPanel {...h.props} approved />);
