@@ -74,6 +74,11 @@ export async function adoptComfyUiImage(client: Client, scope: Scope, input: {
 }): Promise<{ selectedAssetId: string }> {
   const values = scopeValues(scope);
   if (!await selectionInstalled(client)) throw new PersistenceError("COMFYUI_SELECTION_UNAVAILABLE", "Shot image selection is not configured");
+  const automatic = await client.query(`SELECT 1 FROM comfyui_shot_image_selection selected
+    JOIN asset ON asset.id=selected.asset_id AND asset.workspace_id=selected.workspace_id AND asset.project_id=selected.project_id
+    JOIN generation_job job ON job.id=asset.source_generation_job_id AND job.workspace_id=asset.workspace_id AND job.project_id=asset.project_id
+    WHERE selected.workspace_id=$1 AND selected.project_id=$2 AND selected.shot_revision_id=$3 AND job.input_snapshot->'autoStoryboard' IS NOT NULL`, values);
+  if (automatic.rows[0]) throw new PersistenceError("REFERENCE_SELECTION_CONFLICT", "This shot has an automatic storyboard image selection");
   const current = await client.query(`SELECT selected.asset_id ${imageSelectionFrom}
     WHERE selected.workspace_id=$1 AND selected.project_id=$2 AND selected.shot_revision_id=$3 AND ${CANDIDATE_FILTER}`, values);
   const previous = current.rows[0]?.asset_id ?? null;

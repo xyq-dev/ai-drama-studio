@@ -215,7 +215,7 @@ function MediaScope(props: Props) {
     finally { if (mounted.current) setBusy(false); }
   }
   async function submit() {
-    if (writeBusy.current || storageError) return;
+    if (writeBusy.current || storageError || pending?.autoStoryboard) return;
     if (!pending && (!props.usable || !imageReady || (capability !== "image.generate" && props.approved === false))) return;
     const frozen = pending ?? (quote && confirmed && (!(quote.uncertainJobIds?.length) || uncertainConfirmed) ? {
       schema: "ads.real-media.pending.v1" as const, projectId: props.projectId, shotRevisionId: props.shotRevisionId,
@@ -330,12 +330,14 @@ function MediaScope(props: Props) {
         <button type="button" disabled={checkingComfy || busy} onClick={() => void checkComfyConnection()}>检测 ComfyUI 连接</button>
       </div> : null}
       {pending ? <div className={styles.warning}>
+        {pending.autoStoryboard ? <p>分镜图请求待核实。请返回自动创作结果页刷新任务状态。</p> : <>
         <p>原{LABEL[pending.quote.capability]}请求尚未确认，请先用原请求查回任务。</p>
         <button type="button" disabled={busy || Boolean(storageError)} onClick={() => void submit()}>继续确认原媒体请求</button>
         {refused ? <button type="button" onClick={() => {
           try { if (clearRealMediaPending(pending)) { setPending(null); setRefused(false); setQuote(null); } }
           catch (e) { setStorageError(detail(e)); }
         }}>结束这个已拒绝请求</button> : null}
+        </>}
       </div> : null}
       {composePending ? <div className={styles.warning}>
         <p>原合成请求尚未确认，将使用原选用音频与原请求继续核查。</p>

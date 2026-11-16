@@ -19,6 +19,17 @@ function deps(){
   return {values,submit,inspect,dependencies:values as unknown as RealMediaWorkerDependencies};
 }
 describe("real media receipt recovery",()=>{
+  it("stops an automatic storyboard with a fallback provider before intent or adapter use",async()=>{
+    const d=deps(),e=execution();
+    e.inputSnapshot={...e.inputSnapshot,capability:"image.generate",autoStoryboard:{runId:"run",shotId:"shot"},
+      configuration:{...e.inputSnapshot.configuration,capability:"image.generate",unitType:"image",providerKey:"dashscope-media"}};
+    e.inputHash=realMediaInputHash(e.inputSnapshot);
+    await runRealMediaJob(e,d.dependencies);
+    expect(d.values.adapterFor).not.toHaveBeenCalled();
+    expect(d.values.store.beginSubmission).not.toHaveBeenCalled();
+    expect(d.submit).not.toHaveBeenCalled();
+    expect(d.values.jobs.failJob).toHaveBeenCalledWith(expect.objectContaining({retryable:false,errorCode:"AUTO_STORYBOARD_OPENAI_UNAVAILABLE"}));
+  });
   it("cannot bypass a newly enabled strict reference gate with an older first-frame quote",async()=>{
     const d=deps();const e=execution();e.inputSnapshot.capability="video.generate";e.inputSnapshot.configuration.capability="video.generate";
     e.inputSnapshot.sourceImage={assetId:"image",checksumSha256:"a".repeat(64)};e.inputSnapshot.characterReferenceGate="legacy";e.inputHash=realMediaInputHash(e.inputSnapshot);

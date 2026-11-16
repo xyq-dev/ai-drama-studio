@@ -32,6 +32,7 @@ export interface AutoStartBody {
   materials: Array<{ title: string; kind: "script" | "subtitles" | "notes"; text: string; rightsConfirmed: true }>;
   episodeCount: number;
   episodeSeconds: number;
+  autoStoryboardAfterScripts?: boolean;
   revisionRounds: number;
   callBudget: number;
   providerKey?: string;

@@ -12,6 +12,15 @@ export class RealMediaController {
   capabilities(@Param("projectId",uuid) projectId:string){return this.media.capabilities(projectId);}
   @Get("projects/:projectId/real-media/cost-exposure")
   exposure(@Param("projectId",uuid) projectId:string){return this.media.costExposure(projectId);}
+  @Get("projects/:projectId/auto-runs/:runId/storyboards")
+  autoStoryboards(@Param("projectId",uuid) projectId:string,@Param("runId",uuid) runId:string,@Res({passthrough:true}) response:Response){
+    response.setHeader("Cache-Control","private, no-store");return this.media.autoStoryboards(projectId,runId);
+  }
+  @Put("projects/:projectId/auto-runs/:runId/storyboards/:shotRevisionId/selection")
+  selectAutoStoryboardImage(@Param("projectId",uuid) projectId:string,@Param("runId",uuid) runId:string,@Param("shotRevisionId",uuid) shotRevisionId:string,
+    @Body() body:unknown,@Res({passthrough:true}) response:Response){
+    response.setHeader("Cache-Control","private, no-store");return this.media.selectAutoStoryboardImage(projectId,runId,shotRevisionId,body);
+  }
   @Post("projects/:projectId/shot-revisions/:shotRevisionId/real-media/quote")
   quote(@Param("projectId",uuid) projectId:string,@Param("shotRevisionId",uuid) shotRevisionId:string,@Body() body:unknown){return this.media.quote(projectId,shotRevisionId,body);}
   @Get("projects/:projectId/shot-revisions/:shotRevisionId/real-media/comfyui")

@@ -96,11 +96,12 @@ function EpisodeDetails({ episode, bible, outline }: {
   );
 }
 
-export function AutoEpisodeList({ run, bible, outline, continuation }: {
+export function AutoEpisodeList({ run, bible, outline, continuation, storyboards }: {
   run: AutoCreationRunView;
   bible: AutoBible | undefined;
   outline: AutoOutline | null | undefined;
   continuation?: ReactNode;
+  storyboards?: { episodeAction: (episodeNo: number) => ReactNode; allAction: ReactNode };
 }) {
   const episodes = Object.entries(run.currentEpisodes).flatMap(([episodeKey, versionKey]) => {
     const stage = stageOf(run, versionKey);
@@ -115,6 +116,7 @@ export function AutoEpisodeList({ run, bible, outline, continuation }: {
       <div className={styles.episodeHeading}>
         <h2 id="auto-episodes-title" className={writingStyles.sectionTitle}>分集剧本</h2>
         <span>已写好 {episodes.length} / {run.episodeCount} 集</span>
+        {episodes.length === run.episodeCount ? storyboards?.allAction : null}
       </div>
       <ol className={styles.episodes}>
         {episodes.map(({ episodeKey, versionKey, episode }) => {
@@ -131,6 +133,7 @@ export function AutoEpisodeList({ run, bible, outline, continuation }: {
                 </summary>
                 <EpisodeDetails episode={episode} bible={bible} outline={outline?.episodes.find((item) => item.episodeNo === episode.episodeNo)} />
               </details>
+              {storyboards?.episodeAction(episode.episodeNo)}
             </li>
           );
         })}

@@ -7,6 +7,59 @@ function options(){
   return {raw,typed:raw as unknown as RealMediaServiceOptions};
 }
 describe("explicit real-media budget API",()=>{
+  it.each([["dashscope-media","qwen-image-3.0"],["openai-media","gpt-image-2.5-flare"],
+    ["openai-media","dall-e-3"],["comfyui","sd-1.5"]])("refuses %s / %s instead of substituting for Sunburst",async(providerKey,model)=>{
+    const o=options();
+    const configurationFor=vi.fn(async()=>({providerKey,model,capability:"image.generate",enabled:true}));
+    const service=new RealMediaService({...o.typed,objects:{readVerified:vi.fn()},configurationFor} as RealMediaServiceOptions);
+    await expect(service.quote("project","shot",{capability:"image.generate",autoStoryboardRunId:"11111111-1111-4111-8111-111111111111"}))
+      .rejects.toMatchObject({code:"AUTO_STORYBOARD_OPENAI_UNAVAILABLE"});
+    expect(o.raw.store.createQuote).not.toHaveBeenCalled();
+    expect(configurationFor).toHaveBeenCalledWith("image.generate",undefined);
+  });
+  it("keeps new storyboard spends and selections closed without authenticated media delivery",async()=>{
+    const o=options(),service=new RealMediaService({...o.typed,readEnabled:false,objects:{readVerified:vi.fn()}});
+    const runId="11111111-1111-4111-8111-111111111111";
+    await expect(service.quote("project","shot",{capability:"image.generate",autoStoryboardRunId:runId})).rejects.toMatchObject({code:"AUTO_STORYBOARD_OPENAI_UNAVAILABLE"});
+    await expect(service.selectAutoStoryboardImage("project",runId,"shot",{assetId:"22222222-2222-4222-8222-222222222222",expectedSelectedAssetId:null}))
+      .rejects.toMatchObject({code:"AUTO_STORYBOARD_SELECTION_UNAVAILABLE"});
+    expect(o.raw.configurationFor).not.toHaveBeenCalled();
+  });
+  it("reports independent readiness and freezes only the saved shot and scoped cast after selection is available",async()=>{
+    const o=options();
+    const ids=(index:number)=>`10000000-0000-4000-8000-${String(index).padStart(12,"0")}`;
+    const [workspaceId,projectId,runId,episodeId,shotId,shotRevisionId]=[1,2,3,4,5,6].map(ids) as [string,string,string,string,string,string];
+    let selectionAvailable=false;
+    const query=vi.fn(async(sql:string)=>({rows:sql.includes("to_regclass('comfyui_shot_image_selection')")?[{selection:selectionAvailable,characters:false}]:
+      sql.includes("FOR UPDATE")?[{id:projectId}]:sql.includes("script_revision_replacement")?[{episode_no:1,episode_id:episodeId,
+        package_complete:true,story_saved:true,story_approved:true,script_placed:true,script_approved:true,scene_id:ids(7),scene_ready:true,
+        shot_id:shotId,shot_revision_id:shotRevisionId,shot_usable:true,action:"推开门"}]:sql.includes("SELECT prompt_text")?[{prompt_text:"  推开门。 "}]:
+        sql.includes("AS appearance")?[{name:"林青",appearance:"灰色短外套"}]:[]}));
+    const configuration={id:ids(9),capability:"image.generate",providerKey:"openai-media",enabled:true,model:"gpt-image-2.5-sunburst",region:"image.example.test",
+      currency:"USD",unitType:"image",unitPrice:"0.04",parameters:{baseUrl:"https://image.example.test",quality:"max",size:"1024x1536"}};
+    const service=new RealMediaService({...o.typed,workspaceId,objects:{readVerified:vi.fn()},configurationFor:async()=>configuration,
+      store:{...o.raw.store,transaction:async(work:(client:unknown)=>Promise<unknown>)=>work({query})},
+      assets:{prepareRealShotGenerationInTransaction:vi.fn()}} as unknown as RealMediaServiceOptions);
+    const body={capability:"image.generate",autoStoryboardRunId:runId};
+    const view=await service.autoStoryboards(projectId,runId);
+    expect(view).toMatchObject({imageAvailable:true,selectionAvailable:false,characterReferencesAvailable:false,
+      episodes:[{episodeNo:1,episodeId,blocked:null,shots:[{shotRevisionId,state:"ready",jobId:null,previewAssetId:null}]}]});
+    await expect(service.quote(projectId,shotRevisionId,body)).rejects.toMatchObject({code:"AUTO_STORYBOARD_SELECTION_UNAVAILABLE"});
+    expect(o.raw.store.createQuote).not.toHaveBeenCalled();
+    selectionAvailable=true;
+    await service.quote(projectId,shotRevisionId,body);
+    expect(o.raw.store.createQuote).toHaveBeenCalledWith({workspaceId,projectId,actorId:"server-owner",
+      frozen:{schema:"real-media.v1",capability:"image.generate",shotRevisionId,configuration,autoStoryboard:{runId,shotId},
+        sourceHash:expect.stringMatching(/^[a-f0-9]{64}$/u),sourceText:"推开门。\n\n角色形象：林青：灰色短外套"}});
+  });
+  it("rejects a ComfyUI or reference-image override on an auto storyboard quote",async()=>{
+    const o=options(),service=new RealMediaService(o.typed);
+    const body={capability:"image.generate",autoStoryboardRunId:"11111111-1111-4111-8111-111111111111"};
+    await expect(service.quote("project","shot",{...body,sourceImageAssetId:"22222222-2222-4222-8222-222222222222"})).rejects.toMatchObject({code:"VALIDATION_ERROR"});
+    await expect(service.quote("project","shot",{...body,comfyui:{workflowId:"sd15-txt2img",prompt:"other",width:1024,height:1024}})).rejects.toMatchObject({code:"VALIDATION_ERROR"});
+    expect(o.raw.configurationFor).not.toHaveBeenCalled();
+    expect(o.raw.store.createQuote).not.toHaveBeenCalled();
+  });
   it("keeps budget exposure and authenticated historical reads available when paid generation is switched off",async()=>{
     const o=options();const costExposure=vi.fn(async()=>({actualCost:"unknown",unknownSubmissionCount:1,currencies:[]}));
     const service=new RealMediaService({...o.typed,enabled:false,readEnabled:true,objects:{readVerified:vi.fn()},store:{...o.raw.store,costExposure} as unknown as RealMediaServiceOptions["store"]});

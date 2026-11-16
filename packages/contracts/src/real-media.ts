@@ -6,6 +6,7 @@ export type RealMediaCapability = z.infer<typeof realMediaCapabilitySchema>;
 export const realMediaAmountSchema = z.string().regex(/^(0|[1-9]\d{0,7})(\.\d{1,8})?$/);
 export const realMediaQuoteRequestSchema = z.object({
   capability: realMediaCapabilitySchema,
+  autoStoryboardRunId: z.string().uuid().optional(),
   sourceImageAssetId: z.string().uuid().optional(),
   comfyui: z.object({
     workflowId: z.enum(["sd15-txt2img", "sd15-img2img"]),
@@ -34,6 +35,14 @@ export interface RealMediaConfiguration {
   currency: "CNY" | "USD"; unitPrice: string; unitType: "image" | "second" | "character" | "request";
   parameters: Record<string, unknown>;
   maximumOperationAmount?: string;
+}
+
+export function isAutoStoryboardImageConfiguration(config: RealMediaConfiguration | null | undefined): config is RealMediaConfiguration {
+  return !!config?.enabled && config.providerKey === "openai-media" && config.capability === "image.generate"
+    && config.model === "gpt-image-2.5-sunburst" && config.unitType === "image" && config.currency === "USD"
+    && config.parameters?.quality === "max" && config.parameters?.size === "1024x1536"
+    && typeof config.parameters.baseUrl === "string" && Object.keys(config.parameters).sort().join(",") === "baseUrl,quality,size"
+    && realMediaAmountSchema.safeParse(config.unitPrice).success && Number(config.unitPrice) > 0;
 }
 export interface RealMediaQuote {
   quoteId: string; inputHash: string; capability: RealMediaCapability;
@@ -97,6 +106,8 @@ export interface RealMediaSnapshot {
   sourceText: string; sourceHash: string; configuration: RealMediaConfiguration;
   sourceImage?: { assetId: string; checksumSha256: string; rowVersion?: number };
   comfyui?: ComfyUiFrozenImageInput;
+  /** Server-proven scope and stable shot identity for an automatic creation storyboard. */
+  autoStoryboard?: { runId: string; shotId: string };
   speech?: import("./speech").SpeechGenerationInput;
   /** Scene-level ElevenLabs speech. Absent on image, video, music, and per-line qwen snapshots. */
   dialogue?: ElevenLabsDialogueBlock;
@@ -106,5 +117,16 @@ export interface RealMediaSnapshot {
   budget: { authorizationId: string; quoteId: string; currency: "CNY" | "USD"; estimatedAmount: string;
     maximumAmount: string; priceVersion: string; authorizedBy: string; authorizedAt: string; expiresAt: string;
     confirmedUncertainJobIds?: string[] };
+}
+
+export interface AutoEpisodeStoryboardShotView {
+  shotRevisionId: string;
+  shotId: string;
+  caption: string;
+  jobId: string | null;
+  quoteId: string | null;
+  state: "ready" | "queued" | "failed" | "unknown" | "generated" | "kept";
+  previewAssetId: string | null;
+  keptAssetId: string | null;
 }
 export interface RealMediaAvailability { readAvailable?:boolean; available: boolean; reasonCode: string | null; capabilities: RealMediaCapability[] }

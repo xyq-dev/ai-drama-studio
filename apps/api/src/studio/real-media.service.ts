@@ -1,9 +1,11 @@
 import { createHash, randomInt } from "node:crypto";
-import { comfyUiShotSelectionSchema,realMediaAuthorizationSchema,realMediaGenerateSchema,realMediaQuoteRequestSchema,type ComfyUiAvailability,type RealMediaConfiguration,
+import { comfyUiShotSelectionSchema,isAutoStoryboardImageConfiguration,realMediaAuthorizationSchema,realMediaGenerateSchema,realMediaQuoteRequestSchema,type ComfyUiAvailability,type RealMediaConfiguration,
   type RealMediaCapability,type SpeechCapabilities,type SpeechGenerationInput,type SpeechGenerationPort,type SpeechBatchDispatchRef } from "@ai-drama/contracts";
-import { realMediaInputHash,realMediaJobKind } from "@ai-drama/domain";
-import { assertComfyUiImageInput, assertComfyUiPromptText } from "@ai-drama/providers";
+import { realMediaAmountUnits,realMediaInputHash,realMediaJobKind } from "@ai-drama/domain";
+import { assertComfyUiImageInput, assertComfyUiPromptText, canonicalOpenAiImageBaseUrl } from "@ai-drama/providers";
 import { PersistenceError,assertSpeechGenerationInputInTransaction,assertSpeechBatchDispatchInTransaction,bindSpeechBatchJobInTransaction,freezeComfyUiReference,type JobPersistenceService,type MediaAssetStore,
+  adoptAutoStoryboardImage,assertAutoStoryboardSource,autoStoryboardMediaReadiness,freezeAutoStoryboardSource,readAutoEpisodeStoryboardSources,
+  readAutoStoryboardShots,requireAutoEpisodeStoryboardShot,requireAutoStoryboardSelection,
   type RealMediaStore,type FrozenRealMediaInput,type MediaAssetRecord } from "@ai-drama/database";
 import { adoptComfyUiImage, listComfyUiShotMedia } from "./comfyui-shot-media";
 import type { StudioContext } from "./studio.service";
@@ -63,13 +65,53 @@ export class RealMediaService {
       return adoptComfyUiImage(client,{workspaceId:this.options.workspaceId,projectId,shotRevisionId},{...parsed.data,actorId});
     });
   }
+  async autoStoryboards(projectId:string,runId:string){
+    const scope={workspaceId:this.options.workspaceId,projectId,runId};
+    const receiptAvailable=await this.options.store.storageReady().catch(()=>false);
+    return this.options.store.transaction(async client=>{
+      const sources=await readAutoEpisodeStoryboardSources(client,scope);
+      const mediaAccess=this.autoStoryboardMediaAccess()&&receiptAvailable;
+      const readiness=await autoStoryboardMediaReadiness(client);
+      const {characterReferencesAvailable}=readiness;
+      const selectionAvailable=mediaAccess&&readiness.selectionAvailable;
+      const imageAvailable=mediaAccess&&this.options.enabled&&this.options.store.receiptReady()
+        &&await this.autoStoryboardConfiguration(client).then(()=>true,()=>false);
+      const sourcesShots=sources.flatMap(episode=>episode.shots);
+      const shots=mediaAccess?await readAutoStoryboardShots(client,scope,sourcesShots,selectionAvailable,receiptAvailable)
+        :sourcesShots.map(shot=>({...shot,state:"ready" as const,jobId:null,quoteId:null,previewAssetId:null,keptAssetId:null}));
+      const results=new Map(shots.map(shot=>[shot.shotRevisionId,shot]));
+      return {imageAvailable,selectionAvailable,characterReferencesAvailable,episodes:sources.map(episode=>({
+        ...episode,shots:episode.shots.flatMap(shot=>results.get(shot.shotRevisionId)??[]),
+      }))};
+    });
+  }
+  async selectAutoStoryboardImage(projectId:string,runId:string,shotRevisionId:string,body:unknown,actorId="server-owner"){
+    if(!this.autoStoryboardMediaAccess())throw new PersistenceError("AUTO_STORYBOARD_SELECTION_UNAVAILABLE","Storyboard image selection is not available");
+    const parsed=comfyUiShotSelectionSchema.safeParse(body);
+    if(!parsed.success)throw new PersistenceError("VALIDATION_ERROR","Invalid image selection");
+    const scope={workspaceId:this.options.workspaceId,projectId,runId};
+    return this.options.store.transaction(async client=>{
+      await this.options.store.requireReady(client);
+      await requireAutoStoryboardSelection(client);
+      await this.prepareAutoStoryboardShot(client,projectId,shotRevisionId);
+      await requireAutoEpisodeStoryboardShot(client,scope,shotRevisionId);
+      return adoptAutoStoryboardImage(client,scope,shotRevisionId,{...parsed.data,actorId});
+    });
+  }
   private async ready(client?:MediaTransactionClient){
     if(!this.options.enabled||!this.options.store.receiptReady())throw new PersistenceError("REAL_MEDIA_NOT_READY","Real media is not configured");
     await this.options.store.requireReady(client);
   }
   async quote(projectId:string,shotRevisionId:string,body:unknown,actorId="server-owner"){
-    await this.ready();const parsed=realMediaQuoteRequestSchema.safeParse(body);
+    const parsed=realMediaQuoteRequestSchema.safeParse(body);
     if(!parsed.success)throw new PersistenceError("VALIDATION_ERROR","Invalid real media quote request");
+    if(parsed.data.autoStoryboardRunId){
+      if(parsed.data.capability!=="image.generate"||parsed.data.comfyui||parsed.data.sourceImageAssetId){
+        throw new PersistenceError("VALIDATION_ERROR","Auto storyboards accept only the saved shot image request");
+      }
+      return this.quoteAutoStoryboard(projectId,shotRevisionId,parsed.data.autoStoryboardRunId,actorId);
+    }
+    await this.ready();
     if(parsed.data.capability==="video.generate"&&this.options.characterReferenceGate==="strict")throw new PersistenceError("REAL_MEDIA_REFERENCE_PROFILE_UNSUPPORTED","The first-frame video profile cannot prove strict selected character references");
     const comfyui=parsed.data.comfyui;
     if(comfyui&&(parsed.data.capability!=="image.generate"||parsed.data.sourceImageAssetId)){
@@ -113,6 +155,44 @@ export class RealMediaService {
     const quote=await this.options.store.createQuote({workspaceId:this.options.workspaceId,projectId,actorId,frozen});
     return comfyui?{...quote,estimateBasis:"self-hosted-resource-estimate" as const}:quote;
   }
+  private async quoteAutoStoryboard(projectId:string,shotRevisionId:string,runId:string,actorId:string){
+    if(!this.options.enabled||!this.autoStoryboardMediaAccess()||!this.options.store.receiptReady()||!await this.options.store.storageReady().catch(()=>false)){
+      throw new PersistenceError("AUTO_STORYBOARD_OPENAI_UNAVAILABLE","OpenAI storyboard images are unavailable");
+    }
+    const configuration=await this.autoStoryboardConfiguration();
+    const scope={workspaceId:this.options.workspaceId,projectId,runId};
+    const frozen=await this.options.store.transaction(async client=>{
+      await requireAutoStoryboardSelection(client);
+      await this.prepareAutoStoryboardShot(client,projectId,shotRevisionId);
+      const source=await freezeAutoStoryboardSource(client,scope,shotRevisionId);
+      return {schema:"real-media.v1",capability:"image.generate",shotRevisionId,configuration,...source} satisfies FrozenRealMediaInput;
+    });
+    return this.options.store.createQuote({workspaceId:scope.workspaceId,projectId,actorId,frozen});
+  }
+  private autoStoryboardMediaAccess(){
+    return (this.options.readEnabled??this.options.enabled)&&Boolean(this.options.objects);
+  }
+  private async prepareAutoStoryboardShot(client:MediaTransactionClient,projectId:string,shotRevisionId:string){
+    try{return await this.options.assets.prepareRealShotGenerationInTransaction(client,this.options.workspaceId,projectId,shotRevisionId,"image.generate");}
+    catch(error){
+      if(error instanceof PersistenceError&&["REVIEW_REQUIRED","STALE_RECALCULATION_PENDING","SERIES_MEDIA_NOT_ENABLED"].includes(error.code)){
+        throw new PersistenceError("AUTO_STORYBOARD_SOURCE_NOT_READY","Storyboard source needs a current reviewed script and scene");
+      }
+      throw error;
+    }
+  }
+  private async autoStoryboardConfiguration(client?:MediaTransactionClient){
+    const configuration=await this.options.configurationFor("image.generate",client);
+    if(isAutoStoryboardImageConfiguration(configuration)){
+      const url=String(configuration.parameters.baseUrl);
+      try{
+        const limit=configuration.maximumOperationAmount??configuration.unitPrice;
+        if(canonicalOpenAiImageBaseUrl(url)===url&&new URL(url).hostname===configuration.region
+          &&realMediaAmountUnits(limit)>=realMediaAmountUnits(configuration.unitPrice))return configuration;
+      }catch{/* Invalid origin or price. */}
+    }
+    throw new PersistenceError("AUTO_STORYBOARD_OPENAI_UNAVAILABLE","OpenAI storyboard images are unavailable");
+  }
   async authorize(projectId:string,body:unknown,actorId="server-owner"){
     await this.ready();const parsed=realMediaAuthorizationSchema.safeParse(body);
     if(!parsed.success)throw new PersistenceError("VALIDATION_ERROR","Confirm one quoted paid operation and its exact budget");
@@ -135,13 +215,19 @@ export class RealMediaService {
       await assertSpeechBatchDispatchInTransaction(client,batchOperation,{speech,...input,idempotencyKey:context.idempotencyKey!,actorId:context.actorId});
       const snapshot=await this.options.store.consumeAuthorization(client,{workspaceId:this.options.workspaceId,projectId,actorId:context.actorId,...input});
       if(snapshot.shotRevisionId!==shotRevisionId)throw new PersistenceError("REAL_MEDIA_INPUT_CHANGED","Quote belongs to another shot");
+      if(snapshot.autoStoryboard&&!this.autoStoryboardMediaAccess())throw new PersistenceError("AUTO_STORYBOARD_OPENAI_UNAVAILABLE","OpenAI storyboard images are unavailable");
       if(snapshot.capability==="video.generate"&&this.options.characterReferenceGate==="strict")throw new PersistenceError("REAL_MEDIA_REFERENCE_PROFILE_UNSUPPORTED","The first-frame video profile cannot prove strict selected character references");
-      const current=await this.configuration(snapshot.capability,client,snapshot.configuration.providerKey==="comfyui");
+      const current=snapshot.autoStoryboard?await this.autoStoryboardConfiguration(client)
+        :await this.configuration(snapshot.capability,client,snapshot.configuration.providerKey==="comfyui");
       if(realMediaInputHash(current)!==realMediaInputHash(snapshot.configuration))throw new PersistenceError("REAL_MEDIA_CONFIGURATION_CHANGED","Provider configuration changed; obtain a new quote");
-      const source=await this.options.assets.prepareRealShotGenerationInTransaction(client,this.options.workspaceId,projectId,shotRevisionId,snapshot.capability);
+      const source=snapshot.autoStoryboard?await this.prepareAutoStoryboardShot(client,projectId,shotRevisionId)
+        :await this.options.assets.prepareRealShotGenerationInTransaction(client,this.options.workspaceId,projectId,shotRevisionId,snapshot.capability);
       if(speech){
         if(!snapshot.speech||realMediaInputHash(snapshot.speech)!==realMediaInputHash(speech))throw new PersistenceError("REAL_MEDIA_INPUT_CHANGED","Speech input changed since quote");
         await assertSpeechGenerationInputInTransaction(client,speech);
+      }else if(snapshot.autoStoryboard){
+        await requireAutoStoryboardSelection(client);
+        await assertAutoStoryboardSource(client,{workspaceId:this.options.workspaceId,projectId},snapshot);
       }else{
         if(snapshot.speech)throw new PersistenceError("REAL_MEDIA_INPUT_CHANGED","Use the speech line generation route");
         const text=snapshot.capability==="audio.tts"?source.dialogue??"":source.promptText.trim();

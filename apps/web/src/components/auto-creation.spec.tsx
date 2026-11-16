@@ -51,6 +51,23 @@ afterEach(() => {
 });
 
 describe("AI 自动创作 start card", () => {
+  it.each([false, true])("freezes the optional storyboard preference without starting media (%s)", async (checked) => {
+    const calls = server(options(), ({ url }) => url === "/api/v1/projects" ? json({ id: P1 }, 201)
+      : json({ run: { runId: RUN, projectId: P1, state: "running" } }, 201));
+    const assign = vi.fn();
+    vi.stubGlobal("location", { ...window.location, assign });
+    render(<AutoCreationStart />);
+    await screen.findByTestId("auto-provider-target");
+    const preference = screen.getByRole("checkbox", { name: "剧本写完后，自动为每集生成分镜头" }) as HTMLInputElement;
+    expect(preference.checked).toBe(false);
+    if (checked) fireEvent.click(preference);
+    fireEvent.click(screen.getByRole("button", { name: "AI 自动创作" }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith(`/projects/${P1}/auto`));
+    const writes = calls.filter(({ method }) => method === "POST");
+    expect(writes.map(({ url }) => url)).toEqual(["/api/v1/projects", `/api/v1/projects/${P1}/auto-runs`]);
+    expect(writes[1]?.body).toMatchObject({ autoStoryboardAfterScripts: checked });
+  });
+
   it("uses the same optional genre for presets and advanced settings without starting a request", async () => {
     const calls = server(options());
     render(<AutoCreationStart />);
@@ -392,6 +409,27 @@ describe("AI 自动创作 run page", () => {
       ...overrides,
     };
   }
+
+  it("places storyboard actions next to the written episodes but never quotes for a legacy writing-only run", async () => {
+    const stages = [1, 2].map((episodeNo) => ({ stageKey: `episode:${episodeNo}`, kind: "episode" as const,
+      state: "completed" as const, attemptNo: 1, errorCode: null, output: fixtureAutoEpisode(episodeNo), upstreamChanged: false,
+      supersededBy: null, scriptSave: "saved" as const, scriptRevisionId: null }));
+    const done = run({ episodeCount: 2, currentEpisodes: { "episode:1": "episode:1", "episode:2": "episode:2" }, stages });
+    const calls = server(options(), ({ url }) => {
+      if (url.endsWith("/auto-runs/latest")) return json({ run: done });
+      if (url.endsWith("/short-sequels")) return json({ episodeCount: 2, targetEpisodeSeconds: 60, nextEpisodeNo: 3, continuations: [] });
+      if (url.endsWith("/storyboards")) return json({ imageAvailable: true, selectionAvailable: true, characterReferencesAvailable: true,
+        episodes: [P1, RUN].map((id, index) => ({ episodeNo: index + 1, episodeId: id, blocked: null,
+          shots: [{ shotRevisionId: id, shotId: id, caption: "门口相遇", state: "ready", previewAssetId: null, keptAssetId: null, jobId: null, quoteId: null }] })) });
+      return json({}, 500);
+    });
+    render(<AutoCreationRun projectId={P1} />);
+    const list = await screen.findByTestId("auto-episodes");
+    const all = await within(list).findByRole("button", { name: "为全部集生成分镜头" });
+    await waitFor(() => expect((all as HTMLButtonElement).disabled).toBe(false));
+    expect(within(list).getAllByRole("button", { name: /生成这一集的分镜头/ })).toHaveLength(2);
+    expect(calls.every(({ method }) => method === "GET")).toBe(true);
+  });
 
   it("keeps the package, the machine check, the person's review and the video as separate facts; needs work is never shown as passed", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: string) => input.endsWith("/auto-runs/latest") ? json({ run: run() }) : json(options())));

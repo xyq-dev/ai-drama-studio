@@ -406,6 +406,18 @@ contentStructure: [{ reference: { sourceId, quote } | null, application: { patte
 - 返回入口：作品页面（`/projects/<id>/create`，也是「我的作品」里打开作品的页面）在标题下方常驻「回到 AI 自动创作任务」，故事已保存、剧本还没写入时提示「故事人工审核通过后，回到任务里把分集剧本写入作品」。入口只读取作品已有的任务（`GET …/auto-runs/latest`），不创建任务、不续跑、不调用模型；作品没有任务或读取失败时不显示。刷新、重新登录或直接打开作品都能找到。任务页的「去作品中人工审核故事」直接打开故事一步。
 - 页面分开显示：剧本包、机器质量检查（内部参考）、人工审核、视频成片，并逐集显示「已写入 / 已有剧本未覆盖」。剧本包的人工审核字段只在剧本已按人工审核通过的故事写入后才记为通过。完成不等于允许发布。
 
+### 7.1 剧本写完后，按集生成分镜图
+
+开始页的「剧本写完后，自动为每集生成分镜头」默认关闭。冻结输入 `autoStoryboardAfterScripts` 只记录开报价的偏好，旧任务缺少字段按 `false` 读取；`false` 与未提供的启动幂等身份相同。写作、研究和审阅本身不调用拆解或图片服务。不勾也可以在结果页点「生成这一集的分镜头」，全部剧本写出后也有「为全部集生成分镜头」。
+
+1. 先阅读故事和分集剧本。剧本包含最终审阅且完整，当前故事由人审核通过，再使用原有「写入分集剧本草稿」操作。已有人工剧本按原冲突规则保留。已经写入的剧本在工作台由人编辑、审核。
+2. 没有当前有效镜头时，打开本集工作台，用原有「AI 拆解场景与分镜」流程。拆解需由人确认，可能消耗一次文字模型调用，实际费用以平台记录为准。场景批准后才写入镜头草稿。拆解开关未开或存储未就绪时，页面说明原因；不会自行启动、伪造镜头或执行 Migration。
+3. 有效镜头按集展示张数、逐镜报价和合计。手动为全部集报价时，未就绪的集逐一列出原因，不扣费。勾过自动选项时，审核、写入和镜头等条件都具备后，在结果页自动打开报价，仍需明确确认费用。报价未知、失效或镜头结果不确定时停住请人核对；实际费用未知不记作 0。逐镜复用原有报价、单次授权、幂等提交与密封回执。
+4. 这条入口仅在 `REAL_MEDIA_IMAGE_PROVIDER=openai-media` 且 Sunburst 报价可用时出图。固定 `gpt-image-2.5-sunburst`、`quality=max`、`1024x1536`、`output_format=png`、`n=1`。不回落百炼、Flare、DALL·E 或 ComfyUI。没有接通时，页面显示「还没有接通 OpenAI 生图，不能生成分镜头」。密钥和进程环境沿用 [OpenAI 图片适配器](OPENAI_IMAGE_SUNBURST.md)。
+5. 建议先做好角色形象。定妆图存储不可用时，用镜头和人物设定文字保持一致；不为此执行草案 Migration，也不调用图片编辑接口。图片结果和人工「保留」沿用持久媒体素材与镜头选用，图片和文字审核状态独立。若现有图片选用存储不可用，在报价前说明暂不能保留图片。只重做明确失败的一镜；不确定的提交和供应商回执均不自动重发。
+
+这个入口不会审核故事、剧本、角色或分镜。保留图片后，下一步只提示可以去生成配音、动态和成片，本轮不实现后续生产、不接系列写作、不自动发布。验收只用合成夹具和假传输。
+
 ## 8. API（项目范围，`Cache-Control: private, no-store`，沿用登录/Origin/CSRF 或操作者令牌）
 
 | 方法 | 路径 | 说明 |
@@ -416,6 +428,9 @@ contentStructure: [{ reference: { sourceId, quote } | null, application: { patte
 | POST | `.../:runId/cancel` | 停止后续阶段 |
 | POST | `.../:runId/resume` | 续跑（`confirmUncertainCallIds`，需 Idempotency-Key） |
 | POST | `.../:runId/scripts` | 人工审核通过后写入分集剧本草稿 |
+| GET | `.../:runId/storyboards` | 按集读取可出图状态、镜头进度和当前保留图片 |
+| PUT | `.../:runId/storyboards/:shotRevisionId/selection` | 人工保留当前镜头的图片草稿（比对原选用结果） |
+| POST | `/api/v1/projects/:projectId/shot-revisions/:shotRevisionId/real-media/quote` | 既有报价入口，`{capability: "image.generate", autoStoryboardRunId}` 限定本次短剧任务，之后仍走原单次授权与提交接口 |
 | GET | `.../:runId/package?format=markdown\|json` | 成品剧本包下载（人读 / 机读） |
 
 页面：创作入口 `/create` 顶部「AI 自动创作」卡片（原「AI 一键创作」和手动入口保留）；运行页 `/projects/:projectId/auto`。

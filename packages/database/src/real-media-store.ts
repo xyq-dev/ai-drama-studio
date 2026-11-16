@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { PoolClient, QueryResultRow } from "pg";
 import type { RealMediaConfiguration, RealMediaQuote, RealMediaSnapshot } from "@ai-drama/contracts";
 import { assertRealMediaInput,estimateRealMedia, realMediaAmountUnits, realMediaInputHash } from "@ai-drama/domain";
+import { assertAutoStoryboardSource, assertNoBusyAutoStoryboardShot, requireAutoStoryboardSelection } from "./auto-episode-storyboard-media";
 import { PersistenceError, type DatabasePool, type CreatedWorkflowJob } from "./job-service";
 
 export type FrozenRealMediaInput = Omit<RealMediaSnapshot, "budget">;
@@ -120,7 +121,8 @@ export class RealMediaStore {
     const expiresAt = new Date(Date.now() + Math.min(input.lifetimeMs ?? 300_000, 900_000)).toISOString();
     const uncertainJobIds=await this.transaction(async (client) => {
       await lockProject(client,input.workspaceId,input.projectId);
-      const uncertain=await uncertainJobs(client,input.workspaceId,input.projectId,input.frozen);
+      const uncertain=await blockedOrUncertainJobs(client,input.workspaceId,input.projectId,input.frozen);
+      if(input.frozen.autoStoryboard){await requireAutoStoryboardSelection(client);await assertAutoStoryboardSource(client,input,input.frozen);}
       await client.query(
       `INSERT INTO real_media_authorization
        (quote_id,workspace_id,project_id,shot_revision_id,actor_id,input_hash,input_snapshot,configuration_snapshot,
@@ -147,7 +149,9 @@ export class RealMediaStore {
         return { budgetAuthorizationId:String(row.authorization_id),quoteId:input.quoteId };
       }
       if(new Date(row.expires_at).getTime()<=Date.now())throw new PersistenceError("REAL_MEDIA_QUOTE_EXPIRED","Quote expired or unavailable");
-      const current=await uncertainJobs(client,input.workspaceId,input.projectId,row.input_snapshot as FrozenRealMediaInput);
+      const frozen=row.input_snapshot as FrozenRealMediaInput;
+      const current=await blockedOrUncertainJobs(client,input.workspaceId,input.projectId,frozen);
+      if(frozen.autoStoryboard){await requireAutoStoryboardSelection(client);await assertAutoStoryboardSource(client,input,frozen);}
       if(!sameIds(confirmed,row.uncertain_job_ids??[])||!sameIds(current,row.uncertain_job_ids??[]))throw new PersistenceError("REAL_MEDIA_UNCERTAIN_CHANGED","Original unknown operations changed; review a new quote and possible duplicate fees");
       const id = randomUUID();
       await client.query("UPDATE real_media_authorization SET authorization_id=$2, authorized_at=now(),maximum_amount=$3::numeric,confirmed_uncertain_job_ids=$4::uuid[] WHERE quote_id=$1 AND authorization_id IS NULL", [input.quoteId,id,input.maximumAmount,confirmed]);
@@ -163,7 +167,7 @@ export class RealMediaStore {
     if (input.expectedInputHash && row.input_hash !== input.expectedInputHash) throw new PersistenceError("REAL_MEDIA_INPUT_CHANGED", "Input changed since quote");
     const frozen = row.input_snapshot as FrozenRealMediaInput;
     if (!frozen.configuration.enabled || realMediaInputHash(frozen) !== row.input_hash) throw new PersistenceError("REAL_MEDIA_INPUT_CHANGED", "Frozen quote is invalid");
-    const current=await uncertainJobs(client,input.workspaceId,input.projectId,frozen);
+    const current=await blockedOrUncertainJobs(client,input.workspaceId,input.projectId,frozen);
     if(!sameIds(current,row.confirmed_uncertain_job_ids??[]))throw new PersistenceError("REAL_MEDIA_UNCERTAIN_CHANGED","Unknown operations changed after confirmation; obtain a new quote");
     return { ...frozen,budget:{authorizationId:input.budgetAuthorizationId,quoteId:input.quoteId,currency:row.currency,
       estimatedAmount:String(row.estimated_amount),maximumAmount:String(row.maximum_amount),priceVersion:frozen.configuration.priceVersion,
@@ -179,8 +183,9 @@ export class RealMediaStore {
       const e=input.execution;
       if(e.inputSnapshot.capability==="video.generate"&&(input.characterReferenceGate==="strict"||e.inputSnapshot.characterReferenceGate==="strict"))throw new PersistenceError("REAL_MEDIA_REFERENCE_PROFILE_UNSUPPORTED","Strict character reference production is unavailable for the fixed first-frame video profile");
       await lockProject(client,e.workspaceId,e.projectId);
+      if(e.inputSnapshot.autoStoryboard)await requireAutoStoryboardSelection(client);
       await input.validateInTransaction(client);
-      const uncertain=await uncertainJobs(client,e.workspaceId,e.projectId,e.inputSnapshot,e.jobId);
+      const uncertain=await blockedOrUncertainJobs(client,e.workspaceId,e.projectId,e.inputSnapshot,e.jobId);
       if(!sameIds(uncertain,e.inputSnapshot.budget.confirmedUncertainJobIds??[]))throw new PersistenceError("REAL_MEDIA_UNCERTAIN_CHANGED","A possible duplicate operation appeared before sending; obtain a new quote");
       const bound=await client.query(`SELECT j.id FROM generation_job j JOIN job_attempt a ON a.generation_job_id=j.id
         JOIN provider_configuration pc ON pc.id=a.provider_configuration_id AND pc.workspace_id=a.workspace_id
@@ -418,4 +423,10 @@ async function uncertainJobs(client:PoolClient,workspaceId:string,projectId:stri
       frozen.speech?.lineId??null,frozen.sourceHash,excludeJobId??null,frozen.configuration?.providerKey??null]);
   if(result.rows.length>20)throw new PersistenceError("REAL_MEDIA_UNCERTAIN_CHANGED","Too many unresolved operations; reconcile original jobs before another paid operation");
   return sortedIds(result.rows.map(row=>String(row.id)));
+}
+
+async function blockedOrUncertainJobs(client:PoolClient,workspaceId:string,projectId:string,frozen:FrozenRealMediaInput,excludeJobId?:string):Promise<string[]>{
+  if(!frozen.autoStoryboard)return uncertainJobs(client,workspaceId,projectId,frozen,excludeJobId);
+  await assertNoBusyAutoStoryboardShot(client,{workspaceId,projectId,runId:frozen.autoStoryboard.runId},frozen.autoStoryboard.shotId,frozen.shotRevisionId,excludeJobId);
+  return [];
 }
