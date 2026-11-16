@@ -26,7 +26,7 @@ const view = (...episodes: AutoStoryboardEpisode[]): AutoStoryboardView => ({
 });
 
 function fixture(initial = view(episode(1))) {
-  const state = { value: initial, loseReceiptFor: "", zeroQuote: false, breakdownOptions: null as ScriptBreakdownOptionsView | null };
+  const state = { value: initial, authorizationFailure: "", loseReceiptFor: "", zeroQuote: false, breakdownOptions: null as ScriptBreakdownOptionsView | null };
   const writes: Array<{ method: string; url: string; body: unknown; key: string | null }> = [];
   vi.stubGlobal("fetch", vi.fn(async (url: string, options?: RequestInit) => {
     const method = options?.method ?? "GET";
@@ -44,7 +44,11 @@ function fixture(initial = view(episode(1))) {
       providerConfigurationId: J, providerConfigurationVersion: "1", priceVersion: "1",
       actualCost: "unknown", singleOperation: true,
     });
-    if (url.endsWith("/authorize")) return Response.json({ quoteId: Q, budgetAuthorizationId: AUTH });
+    if (url.endsWith("/authorize")) {
+      if (state.authorizationFailure === "network") throw new TypeError("network");
+      if (state.authorizationFailure === "503") return Response.json({ error: { code: "REAL_MEDIA_NOT_READY", message: "暂时无法授权。" } }, { status: 503 });
+      return Response.json({ quoteId: Q, budgetAuthorizationId: AUTH });
+    }
     if (url.endsWith("/generate")) {
       if (state.loseReceiptFor && url.includes(state.loseReceiptFor)) throw new TypeError("network");
       return Response.json({ jobId: J, workflowRunId: J });
@@ -143,6 +147,65 @@ describe("Auto episode storyboard", () => {
     expect(screen.queryByText("0 USD", { exact: true })).toBeNull();
   });
 
+  it.each(["network", "503"])("replays only the saved authorization after %s and submits the same confirmed request", async (failure) => {
+    const { state, writes } = fixture();
+    state.authorizationFailure = failure;
+    const initial = render(<AutoEpisodeStoryboards projectId={P} runId={R} autoQuote />);
+    await screen.findByText("0.1 USD");
+    fireEvent.click(screen.getByRole("checkbox", { name: "确认按上述额度生成分镜图" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认生成 1 镜" }));
+    await waitFor(() => expect(writes).toHaveLength(2));
+    const [quote, originalAuthorization] = writes;
+    expect(originalAuthorization?.url).toMatch(/\/authorize$/u);
+    expect(originalAuthorization?.key).toBeTruthy();
+
+    initial.unmount();
+    state.authorizationFailure = "";
+    render(<AutoEpisodeStoryboards projectId={P} runId={R} autoQuote />);
+    const resume = await screen.findByRole("button", { name: "继续上次授权 门口一镜" });
+    expect(writes).toEqual([quote, originalAuthorization]);
+
+    fireEvent.click(resume);
+    await waitFor(() => expect(writes).toHaveLength(4));
+    expect(writes[2]).toEqual(originalAuthorization);
+    expect(writes[3]).toMatchObject({ url: expect.stringMatching(/\/generate$/u),
+      key: originalAuthorization?.key, body: { quoteId: Q, budgetAuthorizationId: AUTH } });
+  });
+
+  it("only reads the existing job when the same quote has been submitted before authorization recovery", async () => {
+    const { state, writes } = fixture();
+    state.authorizationFailure = "network";
+    render(<AutoEpisodeStoryboards projectId={P} runId={R} autoQuote />);
+    await screen.findByText("0.1 USD");
+    fireEvent.click(screen.getByRole("checkbox", { name: "确认按上述额度生成分镜图" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认生成 1 镜" }));
+    const resume = await screen.findByRole("button", { name: "继续上次授权 门口一镜" });
+
+    state.value = view(episode(1, [{ ...shot(A, "unknown"), jobId: J, quoteId: Q }]));
+    fireEvent.click(resume);
+    await screen.findByText("结果待核实", { exact: true });
+    expect(writes).toHaveLength(2);
+    expect(screen.queryByRole("button", { name: "继续上次授权 门口一镜" })).toBeNull();
+  });
+
+  it("clears expired authorization-only recovery without sending an authorization, a quote, or a generation", async () => {
+    const { state, writes } = fixture();
+    state.authorizationFailure = "503";
+    render(<AutoEpisodeStoryboards projectId={P} runId={R} autoQuote />);
+    await screen.findByText("0.1 USD");
+    fireEvent.click(screen.getByRole("checkbox", { name: "确认按上述额度生成分镜图" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认生成 1 镜" }));
+    const resume = await screen.findByRole("button", { name: "继续上次授权 门口一镜" });
+
+    const time = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2099-01-01T00:00:00.000Z"));
+    try {
+      fireEvent.click(resume);
+      await screen.findByText("上次报价已过期，尚未提交出图。请重新报价。");
+      await waitFor(() => expect(screen.queryByRole("button", { name: "继续上次授权 门口一镜" })).toBeNull());
+      expect(writes).toHaveLength(2);
+    } finally { time.mockRestore(); }
+  });
+
   it("pauses one unconfirmed shot while submitting the other, and never reposts the lost receipt after refresh", async () => {
     const { state, writes } = fixture(view(episode(1, [shot(A), shot(B)])));
     state.loseReceiptFor = A;
@@ -162,6 +225,7 @@ describe("Auto episode storyboard", () => {
     render(<AutoEpisodeStoryboards projectId={P} runId={R} autoQuote />);
     await screen.findByText("提交结果待核实");
     expect(screen.queryByRole("button", { name: "重试本镜 门口一镜" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "继续上次授权 门口一镜" })).toBeNull();
     expect(writes).toHaveLength(previous);
     state.value = view(episode(1, [{ ...shot(A, "unknown"), jobId: AUTH, quoteId: Q }]));
     fireEvent.click(screen.getByRole("button", { name: "刷新分镜图状态" }));

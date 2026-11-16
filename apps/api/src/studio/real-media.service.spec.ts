@@ -7,6 +7,33 @@ function options(){
   return {raw,typed:raw as unknown as RealMediaServiceOptions};
 }
 describe("explicit real-media budget API",()=>{
+  it("reports the kept OpenAI storyboard as the selected image without reporting it as a ComfyUI job", async () => {
+    const o = options();
+    const query = vi.fn(async (sql: string, _values: string[]) => {
+      if (sql.includes("SELECT 1 FROM shot_revision") || sql.includes("to_regclass('comfyui_shot_image_selection')")) return { rows: [{ ready: true }] };
+      if (sql.includes("SELECT selected.asset_id") && sql.includes("'openai-media'")) return { rows: [{ asset_id: "retained-openai-image" }] };
+      return { rows: [] };
+    });
+    const service = new RealMediaService({
+      ...o.typed,
+      store: { ...o.raw.store, transaction: async (work: (client: unknown) => Promise<unknown>) => work({ query }) } as unknown as RealMediaServiceOptions["store"],
+    });
+    await expect(service.comfyUiShot("project", "shot-revision")).resolves.toMatchObject({
+      selectedAssetId: "retained-openai-image", selectionAvailable: true, jobs: [],
+    });
+    const [selectionSql, selectionScope] = query.mock.calls.find(([sql]) => sql.includes("SELECT selected.asset_id"))!;
+    expect(selectionScope).toEqual(["workspace", "project", "shot-revision"]);
+    expect(selectionSql).toContain("asset.checksum_sha256=selected.asset_checksum_sha256");
+    expect(selectionSql).toContain("job.source_shot_revision_id=asset.source_shot_revision_id");
+    expect(selectionSql).toContain("'{configuration,model}'='gpt-image-2.5-sunburst'");
+    expect(selectionSql).toContain("'{autoStoryboard,runId}' IS NOT NULL");
+    expect(selectionSql).toContain("asset.width=1024 AND asset.height=1536");
+    expect(selectionSql).toContain("shot.current_revision_id=revision.id AND shot.approved_revision_id=revision.id");
+    expect(selectionSql).toContain("revision.review_status='APPROVED' AND revision.freshness_status='CURRENT'");
+    const [jobsSql] = query.mock.calls.find(([sql]) => sql.includes("SELECT job.id,job.state"))!;
+    expect(jobsSql).toContain("'comfyui'");
+    expect(jobsSql).not.toContain("'openai-media'");
+  });
   it.each([["dashscope-media","qwen-image-3.0"],["openai-media","gpt-image-2.5-flare"],
     ["openai-media","dall-e-3"],["comfyui","sd-1.5"]])("refuses %s / %s instead of substituting for Sunburst",async(providerKey,model)=>{
     const o=options();

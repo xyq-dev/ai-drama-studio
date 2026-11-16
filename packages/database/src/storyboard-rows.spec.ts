@@ -6,13 +6,17 @@ const scope = ["workspace", "project", "episode", "scene"] as const;
 const sample = { id: "shot", row_version: 2, current_revision_id: "revision", approved_revision_id: "revision",
   review_version: 1, review_status: "APPROVED", freshness_status: "CURRENT", cursor_sort: "0:1" };
 
-function fake(options: { portraits?: boolean; selections?: boolean; outOfScope?: boolean } = {}) {
+function fake(options: { portraits?: boolean; selections?: boolean; keptOpenAi?: boolean; outOfScope?: boolean } = {}) {
   const query = vi.fn(async (sql: string, values?: unknown[]) => {
     if (sql.includes("to_regclass")) return { rows: [{ portraits: options.portraits, selections: options.selections }] };
     if (sql.startsWith("SELECT 1 FROM scene") || sql.startsWith("SELECT id FROM project")) return { rows: [{ id: "parent" }] };
     if (sql.includes("SELECT 1 FROM shot")) return { rows: options.outOfScope ? [] : [{ id: "shot" }] };
     if (sql.includes("UPDATE shot SET archived_at")) return { rows: [{ current_revision_id: null }] };
-    if (sql.includes("WITH shot_page AS")) return { rows: [{ ...sample, storyboard: { ordinal: 1, candidates: [], selectedAssetId: null } }] };
+    if (sql.includes("WITH shot_page AS")) {
+      const kept = options.keptOpenAi && sql.includes("'openai-media'") ? "kept-image" : null;
+      return { rows: [{ ...sample, storyboard: { ordinal: 1, candidates: kept ? [{ id: kept, kind: "IMAGE", storageProvider: "s3", status: "ACTIVE" }] : [],
+        selectedAssetId: kept } }] };
+    }
     if (sql.includes("LEFT JOIN shot_revision") && values) return { rows: [sample] };
     return { rows: [] };
   });
@@ -41,8 +45,21 @@ describe("storyboard collection view", () => {
     const [sql] = query.mock.calls.find(([text]) => text.includes("WITH shot_page AS"))!;
     expect(sql).toContain("JOIN character_reference_selection portrait");
     expect(sql).toContain("chosen.project_id = $2 AND chosen.shot_revision_id = revision.id");
-    expect(sql).toContain("selected.status = 'ACTIVE' AND selected.review_status <> 'REJECTED'");
-    expect(sql).not.toMatch(/object_key|metadata_json/);
+    expect(sql).toContain("asset.status = 'ACTIVE' AND asset.review_status <> 'REJECTED'");
+    expect(sql).not.toMatch(/'objectKey'|'object_key'|metadata_json/);
+  });
+
+  it("marks a kept OpenAI storyboard for the current approved shot and retains the existing ComfyUI selection", async () => {
+    const { chain, query } = fake({ selections: true, keptOpenAi: true });
+    const result = await chain.listShots(...scope, undefined, 20, true);
+    expect(result.items[0]?.storyboard).toMatchObject({ selectedAssetId: "kept-image", candidates: [{ id: "kept-image" }] });
+    const [sql] = query.mock.calls.find(([text]) => text.includes("WITH shot_page AS"))!;
+    expect(sql).toContain("'comfyui'");
+    expect(sql).toContain("'{autoStoryboard,runId}' IS NOT NULL");
+    expect(sql).toContain("'{autoStoryboard,shotId}'=revision.shot_id::text");
+    expect(sql).toContain("asset.width=1024 AND asset.height=1536");
+    expect(sql).toContain("shot_page.approved_revision_id = revision.id AND revision.review_status = 'APPROVED'");
+    expect(sql).toContain("revision.freshness_status = 'CURRENT'");
   });
 
   it("archives only in the named workspace/project/episode/scene and uses the expected version", async () => {

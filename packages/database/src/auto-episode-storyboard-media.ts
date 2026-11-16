@@ -69,11 +69,12 @@ export async function assertNoBusyAutoStoryboardShot(client: PoolClient, scope: 
   if (rows.length) throw new PersistenceError("AUTO_STORYBOARD_SHOT_BUSY", "This shot already has an active, unresolved or usable image request");
 }
 
-const SCOPED_JOB = `job.workspace_id=$1 AND job.project_id=$2 AND job.input_snapshot->>'schema'='real-media.v1'
+const OPENAI_STORYBOARD_JOB = `job.input_snapshot->>'schema'='real-media.v1'
   AND job.input_snapshot->>'capability'='image.generate'
-  AND job.input_snapshot#>>'{autoStoryboard,runId}'=$3
   AND job.input_snapshot#>>'{configuration,providerKey}'='openai-media'
   AND job.input_snapshot#>>'{configuration,model}'='gpt-image-2.5-sunburst'`;
+const SCOPED_JOB = `job.workspace_id=$1 AND job.project_id=$2 AND ${OPENAI_STORYBOARD_JOB}
+  AND job.input_snapshot#>>'{autoStoryboard,runId}'=$3`;
 const ASSET_JOB_ON = `job.id=asset.source_generation_job_id AND job.workspace_id=asset.workspace_id
   AND job.project_id=asset.project_id AND job.source_shot_revision_id=asset.source_shot_revision_id`;
 const ASSET_JOB_JOIN = `JOIN generation_job job ON ${ASSET_JOB_ON}`;
@@ -81,6 +82,13 @@ const USABLE_IMAGE = `asset.status='ACTIVE' AND asset.review_status<>'REJECTED' 
   AND asset.storage_provider='s3' AND asset.mime_type='image/png' AND asset.width=1024 AND asset.height=1536 AND job.state='SUCCEEDED'
   AND asset.byte_size BETWEEN 1 AND 8388608 AND asset.checksum_sha256 ~ '^[a-f0-9]{64}$'
   AND asset.object_key=concat('real-media/',asset.workspace_id,'/',asset.project_id,'/',job.id,'/',asset.source_job_attempt_id,'/',asset.checksum_sha256,'.png')`;
+
+/** OpenAI branch of the shared selection readers, with their asset, job and revision aliases. */
+export const RETAINED_AUTO_STORYBOARD_IMAGE_FILTER = `${OPENAI_STORYBOARD_JOB}
+  AND job.input_snapshot#>>'{autoStoryboard,runId}' IS NOT NULL
+  AND job.input_snapshot#>>'{autoStoryboard,shotId}'=revision.shot_id::text
+  AND job.source_shot_revision_id=asset.source_shot_revision_id
+  AND ${USABLE_IMAGE}`;
 
 export async function readAutoStoryboardShots(client: PoolClient, scope: Scope, shots: readonly Shot[], selectionAvailable: boolean, receiptAvailable: boolean): Promise<AutoEpisodeStoryboardShotView[]> {
   if (shots.length === 0) return [];
