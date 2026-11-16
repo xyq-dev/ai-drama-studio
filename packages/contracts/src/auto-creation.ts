@@ -15,7 +15,7 @@ import {
 /**
  * AI automatic creation (docs/AI_AUTO_CREATION.md): one click runs research → audience and structure analysis →
  * original directions with a rule-based choice → story bible (story, ending, characters, places, props) → episode
- * outline → every episode → machine quality review → at most two targeted revision rounds → save and export.
+ * outline and readable story → every episode → machine quality review → at most two targeted revision rounds → save and export.
  *
  * Runs live in their own tables (auto_creation_*), never in title_writing_*; they share the provider adapters, the
  * single-send rule, the workspace call lock and the workspace daily cap with title writing and online candidates.
@@ -44,13 +44,21 @@ export const AUTO_CREATION_INPUT_SCHEMA = "ads.auto-creation.input.v1" as const;
  * v12: the story bible prompt specifies the exact JSON fields and shows a complete example. Validation is unchanged.
  * v13: plan filmable endings, review within the frozen setting, and adapt incompatible prior suggestions in revisions.
  * v14: require one nonempty JSON string for each bible location's production notes. Validation is unchanged.
+ * v15: the outline call also writes complete story prose; episode, revision and review prompts use that prose as the
+ * frozen source for the adaptation. A specified genre guides the creative choices throughout.
  */
-export const AUTO_CREATION_PROMPT_VERSION = "ads.auto-creation.prompt.v14" as const;
-/** Every prompt version a stored run may carry. A resumed run is sent with the current prompts. */
+export const AUTO_CREATION_LEGACY_PROMPT_VERSION = "ads.auto-creation.prompt.v14" as const;
+export const AUTO_CREATION_PROMPT_VERSION = "ads.auto-creation.prompt.v15" as const;
+/** Every prompt version a stored run may carry. Pre-v15 runs retain the v14 output contract when resumed. */
 export type AutoCreationPromptVersion = "ads.auto-creation.prompt.v1" | "ads.auto-creation.prompt.v2" | "ads.auto-creation.prompt.v3"
   | "ads.auto-creation.prompt.v4" | "ads.auto-creation.prompt.v5" | "ads.auto-creation.prompt.v6" | "ads.auto-creation.prompt.v7"
   | "ads.auto-creation.prompt.v8" | "ads.auto-creation.prompt.v9" | "ads.auto-creation.prompt.v10" | "ads.auto-creation.prompt.v11"
-  | "ads.auto-creation.prompt.v12" | "ads.auto-creation.prompt.v13" | typeof AUTO_CREATION_PROMPT_VERSION;
+  | "ads.auto-creation.prompt.v12" | "ads.auto-creation.prompt.v13"
+  | typeof AUTO_CREATION_LEGACY_PROMPT_VERSION | typeof AUTO_CREATION_PROMPT_VERSION;
+
+export function autoCreationWritesStoryProse(promptVersion: AutoCreationPromptVersion): boolean {
+  return promptVersion === "ads.auto-creation.prompt.v15";
+}
 export const AUTO_CREATION_SELECTION_RULES = "ads.auto-creation.selection-rules.v1" as const;
 /**
  * v2: the applied constraints and a direction's audience fit are number-checked; spaced ordinals are not claims.
@@ -159,7 +167,7 @@ export const AUTO_CREATION_DEFAULT_SECONDS = 60;
 /** A source the snapshot calls recent: market facts older than this never make a run "sourced". */
 export const AUTO_CREATION_RECENT_DAYS = 365;
 
-/** Calls when every stage succeeds the first time: research, directions, bible, outline, N episodes, one review. */
+/** Research, directions, bible, outline with prose, N episodes and one review, each successful on the first call. */
 export function autoCreationNormalCalls(episodeCount: number): number {
   return episodeCount + 5;
 }
@@ -775,9 +783,29 @@ export const autoBibleSchema = z.object({
 }).strict();
 export type AutoBible = z.infer<typeof autoBibleSchema>;
 
+export const AUTO_STORY_PROSE_MIN_PARAGRAPHS = 3;
+export const AUTO_STORY_PROSE_MAX_PARAGRAPHS = 9;
+export const AUTO_STORY_PROSE_MIN_PARAGRAPH_CHARS = 45;
+export const AUTO_STORY_PROSE_MAX_PARAGRAPH_CHARS = 360;
+export const AUTO_STORY_PROSE_MIN_CHARS = 280;
+export const AUTO_STORY_PROSE_MAX_CHARS = 2_100;
+
+const autoStoryProseParagraph = text(AUTO_STORY_PROSE_MIN_PARAGRAPH_CHARS, AUTO_STORY_PROSE_MAX_PARAGRAPH_CHARS)
+  .refine((paragraph) => !/^(?:[-*#]|\d+[.、]|(?:第\s*[\d一二三四五六七八九十]+\s*集|梗概|开场|冲突|转折|结局)[：:])/u.test(paragraph.trim()), "用连续叙事段落写正文");
+
+const autoStoryProseSchema = z.array(autoStoryProseParagraph)
+  .min(AUTO_STORY_PROSE_MIN_PARAGRAPHS).max(AUTO_STORY_PROSE_MAX_PARAGRAPHS)
+  .refine((paragraphs) => {
+    const normalized = paragraphs.map((paragraph) => paragraph.replace(/\s/g, ""));
+    return normalized.join("").length >= AUTO_STORY_PROSE_MIN_CHARS && paragraphs.join("").length <= AUTO_STORY_PROSE_MAX_CHARS
+      && new Set(normalized).size === paragraphs.length;
+  }, "故事正文需要多个不同的叙事段落，并符合总字数限制");
+
 export function autoOutlineSchema(episodeCount: number) {
   return z.object({
     schema: z.literal(AUTO_CREATION_OUTLINE_SCHEMA),
+    // Historical outline records have no prose. New runs require it at the output boundary.
+    storyProse: autoStoryProseSchema.optional(),
     episodes: z.array(z.object({
       episodeNo: z.number().int().min(1).max(episodeCount),
       title: text(1, 30),
@@ -952,7 +980,8 @@ export interface AutoRevisionReferences {
  * A revision sent by the engine has concrete reference choices from the same frozen setting and review as its prompt.
  */
 export function autoCreationJsonSchema(kind: AutoCreationStageKind, episodeCount: number, researchMode: AutoResearchMode | null = null,
-  catalog: AutoReferenceCatalog | null = null, revisionReferences?: AutoRevisionReferences): { name: string; schema: Record<string, unknown> } {
+  catalog: AutoReferenceCatalog | null = null, revisionReferences?: AutoRevisionReferences,
+  includeStoryProse = false): { name: string; schema: Record<string, unknown> } {
   const numbers = Array.from({ length: episodeCount }, (_, index) => index + 1);
   const references = kind === "revise" ? revisionReferences : undefined;
   const characterId = references?.characterIds.length ? enumOf(references.characterIds) : str(2);
@@ -1034,6 +1063,8 @@ export function autoCreationJsonSchema(kind: AutoCreationStageKind, episodeCount
     case "outline":
       return { name: "auto_outline", schema: obj({
         schema: enumOf([AUTO_CREATION_OUTLINE_SCHEMA]),
+        ...(includeStoryProse ? { storyProse: arr({ ...str(AUTO_STORY_PROSE_MAX_PARAGRAPH_CHARS),
+          minLength: AUTO_STORY_PROSE_MIN_PARAGRAPH_CHARS }, AUTO_STORY_PROSE_MIN_PARAGRAPHS, AUTO_STORY_PROSE_MAX_PARAGRAPHS) } : {}),
         episodes: arr(obj({
           episodeNo: enumOf(numbers), title: str(30), opening: str(150), goal: str(120), obstacle: str(120), action: str(150),
           turn: str(150), result: str(150), newInformation: str(150), emotionShift: str(80), handoff: str(150),

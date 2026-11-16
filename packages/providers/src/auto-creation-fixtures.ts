@@ -3,6 +3,7 @@ import {
   AUTO_CREATION_DIRECTIONS_SCHEMA,
   AUTO_CREATION_EPISODE_SCHEMA,
   AUTO_CREATION_OUTLINE_SCHEMA,
+  AUTO_CREATION_PROMPT_VERSION,
   AUTO_CREATION_RESEARCH_ANSWER_SCHEMA,
   AUTO_CREATION_RESEARCH_SCHEMA,
   AUTO_CREATION_RESEARCH_SCHEMA_V1,
@@ -24,6 +25,8 @@ import {
   type AutoViewingDurationReason,
 } from "@ai-drama/contracts";
 import { AUTO_REFERENCE_CATALOG_BLOCK } from "@ai-drama/domain";
+import { AUTO_XIANXIA_STORY_PROSE, fixtureAutoXianxiaBible, fixtureAutoXianxiaDirections,
+  fixtureAutoXianxiaEpisode, fixtureAutoXianxiaOutline } from "./auto-creation-xianxia-fixture";
 import { ANTHROPIC_MESSAGES_URL, DEEPSEEK_CHAT_COMPLETIONS_URL, type WritingTransport } from "./text-writing";
 
 /**
@@ -33,11 +36,13 @@ import { ANTHROPIC_MESSAGES_URL, DEEPSEEK_CHAT_COMPLETIONS_URL, type WritingTran
 
 export type AutoFixtureStage = "research" | "directions" | "bible" | "outline" | `episode:${number}` | `revise:${number}:episode:${number}` | `review:${number}`;
 
+const asksStoryProse = (user: string) => /^storyProse：/mu.test(user);
+
 export function autoFixtureStageOf(user: string): AutoFixtureStage {
   if (user.includes("任务：基于资料完成研究与创作定位") || user.includes("任务：创作定位与待验证假设")) return "research";
   if (user.includes("任务：提出 2–3 个")) return "directions";
   if (user.includes("任务：按选定方向写故事设定档案")) return "bible";
-  if (user.includes("任务：把故事分成")) return "outline";
+  if (user.includes("任务：把故事分成") || asksStoryProse(user)) return "outline";
   const review = /审阅轮次：第 (\d) 轮/.exec(user)?.[1];
   if (review) return `review:${review}` as AutoFixtureStage;
   const revise = /任务：定向修改第 (\d) 集（第 (\d) 轮修改）/.exec(user);
@@ -360,6 +365,19 @@ export function fixtureAutoOutline(count: number): AutoOutline {
   };
 }
 
+function fixtureAutoStoryProse(soloCast: boolean): string[] {
+  if (soloCast) return [
+    "夜里最后一盏楼道灯熄灭时，骑手陈默才看到自己的工资少了一截。他把房东催款的消息按灭，提着空餐箱回到站点。办公室的人都走了，挂在墙上的考勤屏还亮着，明明是他跑过的那条路线，系统却留下一串整齐的空白。",
+    "陈默把那叠被同事笑话的手写送餐单铺在桌上。每一笔都记着下单时刻和签收位置，有一页还压着屏幕里的订单号。他本想把纸塞回口袋等明天再说，却看到系统上的考勤争议即将关闭，便拍下两份记录，把不一致的地方一处处标了出来。",
+    "他没有在申诉里写求情的话，只把自己跑过的路线逐段解释清楚，随后看着提交页面从待核对变成已受理。天快亮时，手机里传来补发通知。陈默把房租转过去，重新折好那张沾过雨水的送餐单。考勤屏上次日名单刚刚刷新，他这一次没有低头绕开。",
+  ];
+  return [
+    "夜间的楼道只亮着一盏感应灯，骑手陈默把餐盒放在门边，请屋里伸手接餐的林姐在手写送餐单上签名。关门声刚落，他就看见工资到账的通知。金额少得不对，他往上翻，发现自己刚送完的订单也被记成了缺勤。房东在催房租，他决定趁站点的灯还亮着去问个清楚。",
+    "站点办公室里，赵强把考勤屏转向他，指着缺勤栏叫他认账。陈默习惯性地把反驳咽下去，手指却碰到口袋里那张还没干透的送餐单。他把单子摊在长桌上，指出签收时间和系统上的空白重合。赵强伸手去拿纸，他用掌心压住单角，要求把签收人请进来核对。",
+    "签收人认出了自己的笔迹。陈默这才知道，林姐正是来核查站点投诉的总部巡查员。她调出原始记录，给了他当众说清工资差额的机会。陈默说完，手机收到了补发的通知，赵强的操作权限被暂停。他把纸重新折好搁进口袋，低头给房东转完房租，推门时终于不再攥着拳头。",
+  ];
+}
+
 /** A sixty-second episode within every limit, or one with six scenes when tooManyScenes (a deterministic finding). */
 export function fixtureAutoEpisode(episodeNo: number, options: { tooManyScenes?: boolean; tag?: string } = {}): AutoEpisode {
   const tag = options.tag ?? "模型替身样例";
@@ -473,6 +491,8 @@ export function fixtureAutoReview(round: number, plan: AutoReviewPlan = {}): Aut
 
 export interface AutoFixturePlan {
   review?: AutoReviewPlan;
+  /** An outline reply breaks the story prose contract by omitting it or writing only a one-line synopsis. */
+  storyProse?: "omit" | "short";
   /** The first draft of these episodes has six scenes (over the sixty-second limit). */
   longEpisodes?: number[];
   /** Every revision still has six scenes (so the run ends at needs work). */
@@ -604,6 +624,7 @@ const FIXTURE_DURATION_BOUNDARY_WHY: Readonly<Record<NonNullable<AutoFixturePlan
 export function autoFixtureAnswer(user: string, plan: AutoFixturePlan = {}): unknown {
   const stage = autoFixtureStageOf(user);
   const count = autoFixtureEpisodeCount(user);
+  const xianxia = user.includes(`提示版本：${AUTO_CREATION_PROMPT_VERSION}\n`) && user.includes("\n- 题材：玄幻修仙\n");
   if (stage === "research") {
     const research = plan.creativeQuantities || plan.hiddenStatistic || plan.unplacedQuantities || plan.statisticAfterUnplaced
       ? fixtureAutoCreativeResearch({ hiddenStatistic: plan.hiddenStatistic, episodeCount: count, unplaced: plan.unplacedQuantities,
@@ -644,7 +665,8 @@ export function autoFixtureAnswer(user: string, plan: AutoFixturePlan = {}): unk
     return plan.serverFieldsInAnswer ? { ...answer, ...LEGACY_RESEARCH_FIELDS } : answer;
   }
   if (stage === "directions") {
-    const written = plan.creativeQuantities || plan.unplacedQuantities ? fixtureAutoCreativeDirections({ unplaced: plan.unplacedQuantities }) : fixtureAutoDirections();
+    const written = xianxia ? fixtureAutoXianxiaDirections() : plan.creativeQuantities || plan.unplacedQuantities
+      ? fixtureAutoCreativeDirections({ unplaced: plan.unplacedQuantities }) : fixtureAutoDirections();
     const note = plan.creativeEpisodeScope ? FIXTURE_CREATIVE_EPISODES[plan.creativeEpisodeScope].difficultyNote : undefined;
     const directions = note ? { ...written, candidates: written.candidates.map((candidate, index) => index === 0 ? { ...candidate, difficultyNote: note } : candidate) } : written;
     // A direction cites only the ids the prompt lists (a limited research has H ids only).
@@ -652,10 +674,16 @@ export function autoFixtureAnswer(user: string, plan: AutoFixturePlan = {}): unk
     return allowed === null ? directions
       : { ...directions, candidates: directions.candidates.map((candidate) => ({ ...candidate, evidenceIds: candidate.evidenceIds.filter((id) => allowed.includes(id)) })) };
   }
-  if (stage === "bible") return plan.soloCast ? fixtureAutoSoloBible() : plan.crowdedCast ? fixtureAutoCrowdedBible() : fixtureAutoBible();
+  if (stage === "bible") return xianxia ? fixtureAutoXianxiaBible()
+    : plan.soloCast ? fixtureAutoSoloBible() : plan.crowdedCast ? fixtureAutoCrowdedBible() : fixtureAutoBible();
   if (stage === "outline") {
-    const outline = fixtureAutoOutline(count);
-    return plan.soloCast || plan.crowdedCast ? { ...outline, episodes: outline.episodes.map((episode) => ({ ...episode, characterIds: ["C1"] })) } : outline;
+    const limitedCast = !xianxia && Boolean(plan.soloCast || plan.crowdedCast);
+    const outline = xianxia ? fixtureAutoXianxiaOutline(count) : fixtureAutoOutline(count);
+    if (limitedCast) outline.episodes = outline.episodes.map((episode) => ({ ...episode, characterIds: ["C1"] }));
+    if (asksStoryProse(user) && plan.storyProse !== "omit") {
+      outline.storyProse = plan.storyProse === "short" ? [outline.resolution] : xianxia ? AUTO_XIANXIA_STORY_PROSE : fixtureAutoStoryProse(limitedCast);
+    }
+    return outline;
   }
   if (stage.startsWith("review:")) return fixtureAutoReview(Number(stage.split(":")[1]), plan.review);
   const episodeNo = Number(stage.split(":").at(-1));
@@ -663,11 +691,13 @@ export function autoFixtureAnswer(user: string, plan: AutoFixturePlan = {}): unk
     // Each entry names the issue ids it covers (repeated check results are grouped); an older prompt used one id.
     const issues = (autoFixtureBlock(user, "需要解决的问题") as Array<{ id?: string; ids?: string[] }> | null) ?? [];
     const ids = issues.flatMap((issue) => issue.ids ?? (issue.id ? [issue.id] : [])).slice(0, 10);
-    const revised = plan.soloCast ? fixtureAutoSoloEpisode(episodeNo, { tag: "模型替身样例（修订）" })
+    const revised = xianxia ? fixtureAutoXianxiaEpisode(episodeNo, count, autoFixtureEpisodeSeconds(user))
+      : plan.soloCast ? fixtureAutoSoloEpisode(episodeNo, { tag: "模型替身样例（修订）" })
       : plan.crowdedCast ? fixtureAutoCrowdedEpisode(episodeNo, { tag: "模型替身样例（修订）", padding: plan.crowdedPadding })
         : fixtureAutoEpisode(episodeNo, { tooManyScenes: plan.revisionsStayLong, tag: "模型替身样例（修订）" });
     return { ...revised, changes: ids.map((issueId) => ({ issueId, change: "按问题定向修改。" })) };
   }
+  if (xianxia) return fixtureAutoXianxiaEpisode(episodeNo, count, autoFixtureEpisodeSeconds(user));
   if (plan.soloCast) return fixtureAutoSoloEpisode(episodeNo, { mentionedOnScreen: true });
   if (plan.crowdedCast) return fixtureAutoCrowdedEpisode(episodeNo, { padding: plan.crowdedPadding });
   return fixtureAutoEpisode(episodeNo, { tooManyScenes: plan.longEpisodes?.includes(episodeNo) });

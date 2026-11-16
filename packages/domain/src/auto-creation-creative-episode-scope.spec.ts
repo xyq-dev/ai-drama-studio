@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   AUTO_CREATION_CHECKS_VERSION,
+  AUTO_CREATION_LEGACY_PROMPT_VERSION,
   AUTO_CREATION_DIRECTIONS_SCHEMA,
   AUTO_CREATION_PROMPT_VERSION,
   AUTO_CREATION_RESEARCH_ANSWER_SCHEMA,
@@ -174,16 +175,22 @@ const seriesInput = (episodeCount: number): SeriesFrozenInput => ({
 });
 
 type Checked = { ok: boolean; output?: AutoResearch } & Record<string, unknown>;
-interface Path { name: string; mode: "limited" | "sourced"; context: () => AutoCreationContext; check: (content: string) => Checked }
+interface Path {
+  name: string; mode: "limited" | "sourced"; promptVersion: AutoCreationFrozenInput["promptVersion"];
+  context: () => AutoCreationContext; check: (content: string) => Checked;
+}
 
 function paths(episodeCount = EPISODES): Path[] {
   const run = input(episodeCount);
   const series = seriesInput(episodeCount);
   const borrowed = seriesAutoInput(series, { providerKey: "deepseek", model: "m", maxOutputTokens: 4096 });
   return [
-    { name: "limited", mode: "limited", context: () => limitedContext(run), check: (content) => validateAutoStageOutput("research", content, run, limitedContext(run)) as Checked },
-    { name: "sourced", mode: "sourced", context: () => sourcedContext(run), check: (content) => validateAutoStageOutput("research", content, run, sourcedContext(run)) as Checked },
-    { name: `series (${String(episodeCount)} episodes)`, mode: "limited", context: () => limitedContext(borrowed), check: (content) => {
+    { name: "limited", mode: "limited", promptVersion: AUTO_CREATION_PROMPT_VERSION,
+      context: () => limitedContext(run), check: (content) => validateAutoStageOutput("research", content, run, limitedContext(run)) as Checked },
+    { name: "sourced", mode: "sourced", promptVersion: AUTO_CREATION_PROMPT_VERSION,
+      context: () => sourcedContext(run), check: (content) => validateAutoStageOutput("research", content, run, sourcedContext(run)) as Checked },
+    { name: `series (${String(episodeCount)} episodes)`, mode: "limited", promptVersion: AUTO_CREATION_LEGACY_PROMPT_VERSION,
+      context: () => limitedContext(borrowed), check: (content) => {
       expect(borrowed.episodeCount).toBe(episodeCount);
       const context: SeriesContext = { input: series, auto: limitedContext(borrowed), outlines: new Map(), episodes: new Map(), stageHashes: new Map() };
       return validateSeriesStageOutput("research", content, series, context, borrowed) as unknown as Checked;
@@ -234,7 +241,7 @@ describe("B. the whole research stage (validateAutoStageOutput, and the series' 
           expect(result, `${field} ${String(referenceId)}`).toMatchObject({ ok: true });
           expect(result.output!.contentStructure[FIFTH]!.application[field]).toBe(text);
           expect(result.output!.unverified).toEqual([]);
-          expect(result.output!.serverRecord.executedWith).toMatchObject({ checksVersion: "ads.auto-creation.checks.v14", promptVersion: "ads.auto-creation.prompt.v14" });
+          expect(result.output!.serverRecord.executedWith).toMatchObject({ checksVersion: "ads.auto-creation.checks.v14", promptVersion: path.promptVersion });
           expect(result.output!.serverRecord.settings.items.find((item) => item.key === "episodes")?.value).toBe(`共 ${String(EPISODES)} 集`);
         }
       }

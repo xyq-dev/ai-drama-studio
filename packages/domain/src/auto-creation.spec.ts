@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  AUTO_CREATION_PROMPT_VERSION,
   AUTO_CREATION_RESEARCH_ANSWER_SCHEMA,
   autoCreationConstraintsSchema,
   autoCreationHardCap,
@@ -68,6 +69,21 @@ describe("budget arithmetic", () => {
   it("normal N+5, worst adds each round's rewrites plus a review, the hard cap adds two confirmed resends", () => {
     expect([autoCreationNormalCalls(1), autoCreationWorstCalls(1, 2), autoCreationHardCap(1, 2)]).toEqual([6, 10, 12]);
     expect([autoCreationNormalCalls(6), autoCreationWorstCalls(6, 2), autoCreationHardCap(6, 0)]).toEqual([11, 19, 13]);
+  });
+});
+
+describe("explicit episode totals in creative output", () => {
+  const current = input({ promptVersion: AUTO_CREATION_PROMPT_VERSION, episodeCount: 2 });
+
+  it.each(["本剧共３集。", "全剧分三集。", "全剧的集数为三集。", "3 episodes in total."])("rejects an explicit count conflict (%s)", (title) => {
+    const output = JSON.stringify({ title });
+    expect(validateAutoStageOutput("episode:2", output, current, context(current))).toEqual({ ok: false, code: "episode_mismatch" });
+    expect(validateAutoStageOutput("episode:2", output, input(), context())).toMatchObject({ ok: false, code: "invalid_output" });
+  });
+
+  it.each(["本剧共两集。", "第 2 集举行三场比试。", "三十年后，她带着集市里买的灯回家。"])("leaves matching counts and story quantities to normal validation (%s)", (title) => {
+    expect(validateAutoStageOutput("episode:2", JSON.stringify({ title }), current, context(current)))
+      .toMatchObject({ ok: false, code: "invalid_output" });
   });
 });
 

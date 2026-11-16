@@ -15,6 +15,60 @@
   margin-top: 24px;
 }
 
+.genres {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.genreCards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.genreCard {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.genreCard[aria-pressed="true"] {
+  border-color: var(--studio-accent);
+  color: var(--studio-accent);
+  background: var(--studio-selected);
+}
+
+.storyProse {
+  max-width: 44em;
+  margin: 0 auto;
+  padding: 20px 16px;
+  overflow-wrap: anywhere;
+  line-height: 1.9;
+}
+
+.storyProse h2 {
+  margin: 0 0 16px;
+  font-size: 20px;
+  font-weight: 650;
+}
+
+.storyProse p {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.storyProse p + p {
+  margin-top: 1em;
+}
+
+@media (max-width: 479px) {
+  .genreCards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 .episodeHeading {
   display: flex;
   align-items: baseline;

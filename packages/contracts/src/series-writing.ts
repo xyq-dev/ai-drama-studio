@@ -2,7 +2,7 @@ import { z } from "zod";
 import {
   AUTO_CREATION_CHECKS_VERSION,
   AUTO_CREATION_PROMPT_MAX_CHARS,
-  AUTO_CREATION_PROMPT_VERSION,
+  AUTO_CREATION_LEGACY_PROMPT_VERSION,
   AUTO_CREATION_RESEARCH_SCHEMA,
   AUTO_CREATION_SELECTION_RULES,
   autoCreationMaterialSchema,
@@ -66,7 +66,7 @@ export const SERIES_PACKAGE_SCHEMA = "ads.series-writing.package.v1" as const;
  * created earlier keeps the versions it froze, and its research records the versions it was actually sent with.
  */
 export const SERIES_RESEARCH_CONTRACT = {
-  promptVersion: AUTO_CREATION_PROMPT_VERSION,
+  promptVersion: AUTO_CREATION_LEGACY_PROMPT_VERSION,
   checksVersion: AUTO_CREATION_CHECKS_VERSION,
   researchSchema: AUTO_CREATION_RESEARCH_SCHEMA,
   selectionRules: AUTO_CREATION_SELECTION_RULES,

@@ -14,6 +14,7 @@ import {
   autoCreationNormalCalls,
   autoCreationRevisionsPerRound,
   autoCreationWorstCalls,
+  autoCreationWritesStoryProse,
   autoStageEpisodeNo,
   autoStageKind,
   autoStageRound,
@@ -397,9 +398,10 @@ export class AutoCreationEngine {
     if (prompt.system.length + prompt.user.length > AUTO_CREATION_PROMPT_MAX_CHARS) {
       return this.finish(runId, "needs_attention", "prompt_too_large");
     }
-    // Research uses the saved catalog. Revision reference choices come from the prompt's frozen setting and review.
+    // Research uses the saved catalog. Outline and revisions follow their frozen run's contracts.
     const schema = autoCreationJsonSchema(prompt.kind, run.input.episodeCount, prompt.kind === "research" ? researchMode : null,
-      prompt.kind === "research" ? context.referenceCatalog ?? null : null, prompt.revisionReferences);
+      prompt.kind === "research" ? context.referenceCatalog ?? null : null, prompt.revisionReferences,
+      autoCreationWritesStoryProse(run.input.promptVersion));
     const request = {
       model: run.input.model,
       system: prompt.system,

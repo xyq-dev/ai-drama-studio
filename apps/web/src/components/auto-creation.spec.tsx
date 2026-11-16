@@ -51,6 +51,59 @@ afterEach(() => {
 });
 
 describe("AI 自动创作 start card", () => {
+  it("uses the same optional genre for presets and advanced settings without starting a request", async () => {
+    const calls = server(options());
+    render(<AutoCreationStart />);
+    await screen.findByTestId("auto-provider-target");
+    const group = screen.getByRole("group", { name: "选题材开始" });
+    expect(within(group).getAllByRole("button").map((button) => button.textContent)).toEqual([
+      "玄幻修仙", "都市情感", "豪门甜宠", "穿越重生", "悬疑推理", "年代家庭",
+    ]);
+    const xianxia = within(group).getByRole("button", { name: "玄幻修仙" });
+    const mystery = within(group).getByRole("button", { name: "悬疑推理" });
+    const advancedGenre = document.getElementById("auto-genre") as HTMLInputElement;
+    expect((screen.getByLabelText("集数") as HTMLSelectElement).value).toBe("1");
+    fireEvent.click(xianxia);
+    expect(xianxia.getAttribute("aria-pressed")).toBe("true");
+    expect(advancedGenre.value).toBe("玄幻修仙");
+    expect(screen.getByTestId("auto-confirm-genre").textContent).toContain("玄幻修仙");
+    fireEvent.change(advancedGenre, { target: { value: "悬疑推理" } });
+    expect(xianxia.getAttribute("aria-pressed")).toBe("false");
+    expect(mystery.getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(mystery);
+    expect(advancedGenre.value).toBe("");
+    expect(mystery.getAttribute("aria-pressed")).toBe("false");
+    expect(screen.getByRole("button", { name: "AI 自动创作" })).toBeTruthy();
+    expect(calls.filter((call) => call.method === "POST")).toHaveLength(0);
+  });
+
+  it("starts a selected genre without an idea using the current episode plan", async () => {
+    const calls: Call[] = [];
+    let returnOptions: (response: Response) => void = () => undefined;
+    const delayedOptions = new Promise<Response>((resolve) => { returnOptions = resolve; });
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push({ method: init?.method ?? "GET", url, body: init?.body ? JSON.parse(String(init.body)) : null });
+      if (url.endsWith("/writing/auto-runs/options")) return delayedOptions;
+      return url === "/api/v1/projects"
+        ? json({ id: P1 }, 201)
+        : json({ run: { runId: RUN, projectId: P1, state: "running" } }, 201);
+    }));
+    const assign = vi.fn();
+    vi.stubGlobal("location", { ...window.location, assign });
+    render(<AutoCreationStart />);
+    fireEvent.click(screen.getByRole("button", { name: "都市情感" }));
+    fireEvent.change(screen.getByLabelText("集数"), { target: { value: "6" } });
+    expect(calls.filter((call) => call.method === "POST")).toHaveLength(0);
+    returnOptions(json(options()));
+    await screen.findByTestId("auto-provider-target");
+    expect((screen.getByLabelText("集数") as HTMLSelectElement).value).toBe("6");
+    fireEvent.click(screen.getByRole("button", { name: "开始 AI 创作" }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith(`/projects/${P1}/auto`));
+    const posts = calls.filter((call) => call.method === "POST");
+    expect(posts[0]!.body).toMatchObject({ premise: "", episodeCount: 6, targetEpisodeSeconds: 60 });
+    expect(posts[1]!.body).toMatchObject({ idea: "", constraints: { genre: "都市情感" }, episodeCount: 6, episodeSeconds: 60 });
+  });
+
   it("shows the real provider, the call counts and the research limits before anything is sent", async () => {
     server(options());
     render(<AutoCreationStart />);
@@ -336,6 +389,40 @@ describe("AI 自动创作 run page", () => {
     expect(screen.getByTestId("auto-video-status").textContent).toContain("未开始");
     expect(screen.getByTestId("auto-open-issues").textContent).toContain("开场没有主动选择");
     expect(screen.getByTestId("auto-download-md").getAttribute("href")).toBe(`/api/v1/projects/${P1}/auto-runs/${RUN}/package?format=markdown`);
+    expect(screen.queryByTestId("auto-story-prose")).toBeNull();
+  });
+
+  it("opens complete story prose independently of the episode scripts, download and review entry", async () => {
+    const paragraphs = [
+      "陈默夜里经过小区楼道，在一扇没关严的铁门旁捡到一只信封。里面的工时表有调班和加班记录，角上却留着一截被撕掉的签名。第二天是发薪日，陈默知道再拖一晚，负责结账的人就得回总部，便约同事去站点办公室核对原本。他把信封塞进口袋，抄下了每个人的班次。",
+      "站长把空白工资单摊在桌上，催他先按手印再签字。陈默把自己的那页工时表放到桌角，请同事看清被抹掉的是谁的名字。他没有抢工资单，也没有说自己知道是谁动了手脚，只问站长愿不愿意当着所有人的面，把这些班次逐笔对照。门口陆续站满了人，原先催签的站长只好停笔。",
+      "总部巡查员推门进来时，听见大家正在念工时。他查出值班夹里有一张未被处理的原件，把签名与信封里的半截笔迹一一对上，补记了少算的工资。陈默请他出具可复查的回执，再把那只信封还给同事。空白工资单被收回，工人围着桌子签下各自能核实的数字。",
+    ];
+    const stage = (stageKey: "bible" | "outline" | "episode:1", kind: "bible" | "outline" | "episode", output: AutoCreationRunView["stages"][number]["output"]) => ({
+      stageKey, kind, state: "completed" as const, attemptNo: 1, errorCode: null, output,
+      upstreamChanged: false, supersededBy: null, scriptSave: null, scriptRevisionId: null,
+    });
+    const calls = server(options(), (call) => call.url.endsWith("/auto-runs/latest") ? json({ run: run({
+      promptVersion: "ads.auto-creation.prompt.v15",
+      currentEpisodes: { "episode:1": "episode:1" },
+      stages: [
+        stage("bible", "bible", fixtureAutoBible()),
+        stage("outline", "outline", { ...fixtureAutoOutline(1), storyProse: paragraphs }),
+        stage("episode:1", "episode", fixtureAutoEpisode(1)),
+      ],
+    }) }) : json({}, 404));
+    render(<AutoCreationRun projectId={P1} />);
+    const reader = await screen.findByTestId("auto-story-prose") as HTMLDetailsElement;
+    expect(reader.open).toBe(false);
+    const trigger = within(reader).getByText("故事正文").closest("summary")!;
+    fireEvent.click(trigger);
+    expect(reader.open).toBe(true);
+    const story = within(reader).getByLabelText("故事正文");
+    expect([...story.querySelectorAll("p")].map((p) => p.textContent)).toEqual(paragraphs);
+    expect(screen.getByRole("heading", { name: "分集剧本" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "下载剧本包（Markdown）" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "去作品中人工审核故事" })).toBeTruthy();
+    expect(calls.every((call) => call.method === "GET")).toBe(true);
   });
 
   it("lists written episodes in order and uses each current script to show its own cast and scenes", async () => {

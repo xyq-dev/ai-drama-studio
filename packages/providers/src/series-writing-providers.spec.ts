@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  AUTO_CREATION_PROMPT_VERSION,
+  AUTO_CREATION_LEGACY_PROMPT_VERSION,
   AUTO_VIEWING_DURATION_REASONS,
   SERIES_PROMPT_MAX_CHARS,
   SERIES_WRITING_CHECKS_VERSION,
@@ -67,7 +67,7 @@ describe("the requests the real adapters build for a series", () => {
       if (providerKey === "anthropic") expect(body.max_tokens).toBe(TEXT_WRITING_MAX_OUTPUT_TOKENS + ANTHROPIC_THINKING_HEADROOM_TOKENS);
       if (providerKey === "deepseek") expect(body).toMatchObject({ max_tokens: TEXT_WRITING_MAX_OUTPUT_TOKENS, response_format: { type: "json_object" }, stream: false });
       expect(exchange.user.length + exchange.system.length).toBeLessThanOrEqual(SERIES_PROMPT_MAX_CHARS);
-      if (research) expect(exchange.user).toContain(`提示版本：${AUTO_CREATION_PROMPT_VERSION}`);
+      if (research) expect(exchange.user).toContain(`提示版本：${AUTO_CREATION_LEGACY_PROMPT_VERSION}`);
       else if (exchange.stage.includes("review")) expect(exchange.user).toContain(SERIES_WRITING_CHECKS_VERSION);
       else expect(exchange.user).toContain(`提示版本：${SERIES_WRITING_PROMPT_VERSION}`);
       // No key, token or connection string ever enters a prompt.
@@ -104,7 +104,7 @@ describe("hypothesis fields (shared prompt v8) in a series: the borrowed researc
   it("a new series freezes the shared prompt version; DeepSeek gets the limited schema (three fields, no others) and the field lines", async () => {
     const { seen, snapshot, grant, store } = await seriesSetup({ providerKey: "deepseek" });
     expect((await snapshot()).series.input.researchContract.promptVersion).toBe("ads.auto-creation.prompt.v14");
-    expect(AUTO_CREATION_PROMPT_VERSION).toBe("ads.auto-creation.prompt.v14");
+    expect(AUTO_CREATION_LEGACY_PROMPT_VERSION).toBe("ads.auto-creation.prompt.v14");
     await grant({ plan: true, batchFrom: 1, batchTo: 1, final: false });
     // The legal answer keeps the normal flow: plan + episodes 1–3 is 19 calls.
     expect(store.calls).toHaveLength(19);

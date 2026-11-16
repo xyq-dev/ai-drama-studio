@@ -27,6 +27,7 @@ const auto = new AutoCreationClient();
 const DRAFT_KEY = "auto-creation:start";
 const EPISODE_COUNTS = [1, 2, 3, 4, 5, 6];
 const SECONDS = [{ value: 60, label: "约 1 分钟" }, { value: 90, label: "约 1.5 分钟" }];
+const GENRES = ["玄幻修仙", "都市情感", "豪门甜宠", "穿越重生", "悬疑推理", "年代家庭"] as const;
 
 /** One start whose result is not confirmed: the frozen request and the keys of both writes. */
 interface PendingAutoStart {
@@ -131,15 +132,12 @@ function startError(caught: unknown, projectCreated: boolean): string {
   return "没有确认是否已经启动（网络或服务异常）。设置已保留，重试会使用同一个请求标识，不会重复创建或重复收费。";
 }
 
-/**
- * "AI 自动创作": an optional one-line idea, the size and the budget, then one click. Everything else is optional and
- * left to the AI when empty. The page shows the real provider, the research method and the call counts first.
- */
+/** The optional genre and idea share a request with the size, budget and model shown before starting. */
 export function AutoCreationStart() {
   const [options, setOptions] = useState<AutoCreationOptionsView | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [idea, setIdea] = useState("");
-  const [episodeCount, setEpisodeCount] = useState(1);
+  const [selectedEpisodeCount, setSelectedEpisodeCount] = useState<number | null>(null);
   const [seconds, setSeconds] = useState(60);
   const [genre, setGenre] = useState("");
   const [audience, setAudience] = useState("");
@@ -169,7 +167,6 @@ export function AutoCreationStart() {
       setOptions(normalized);
       if (normalized?.defaultProvider) setProviderKey(normalized.defaultProvider);
       if (normalized) {
-        setEpisodeCount(normalized.episodePlan.defaultEpisodes);
         setSeconds(normalized.episodePlan.defaultSeconds);
       }
     }).catch(() => { if (alive) setOptions(null); }).finally(() => { if (alive) setLoaded(true); });
@@ -181,12 +178,14 @@ export function AutoCreationStart() {
   const chosen = target.kind === "ready" ? target.option : null;
   const readyProviders = options?.providers.filter((item) => item.ready) ?? [];
   const needsToken = tokenRequired(options);
+  const episodeCount = selectedEpisodeCount ?? options?.episodePlan?.defaultEpisodes ?? 1;
   // While a start is pending, the card shows the request a retry replays; loaded options and defaults never change it.
   const frozen = pending?.request ?? null;
   const shown: ShownSettings = frozen ? frozenSettings(frozen) : {
     idea, episodeCount, seconds, genre, audience, maxCharacters, maxLocations, forbidden, ending, rounds, budget,
     materialTitle, materialText, materialRights, providerKey,
   };
+  const shownGenre = shown.genre.trim();
   const frozenProvider = frozen?.providerKey ? options?.providers.find((item) => item.providerKey === frozen.providerKey) ?? null : null;
   const providerChanged = frozen?.providerKey && options
     ? !frozenProvider?.ready || (frozen.model !== undefined && !(frozenProvider.models ?? []).includes(frozen.model)) : false;
@@ -296,8 +295,7 @@ export function AutoCreationStart() {
     <section className={styles.startCard} aria-labelledby="auto-start-title" data-testid="auto-creation-start">
       <h2 id="auto-start-title" className={styles.cardTitle}>AI 自动创作</h2>
       <p className={styles.cardIntro}>
-        可以只写一句想法，也可以什么都不填。AI 会自动完成资料研究、选题比较与选择、故事与结局、人物地点、分集大纲、逐集剧本、质量检查和有限修改，
-        最后保存为可下载的剧本包和作品草稿。过程中不需要逐步确认。
+        可以先选题材，只写一句想法，或直接交给 AI 策划。AI 会自动选定故事、写出完整正文和分集剧本，并进行质量检查。过程中不需要逐步确认。
       </p>
       {pending && !busy ? (
         <div className={styles.notice} role="status">
@@ -308,6 +306,18 @@ export function AutoCreationStart() {
           </p>
         </div>
       ) : null}
+      <fieldset className={autoStyles.genres} disabled={locked}>
+        <legend className={styles.label}>选题材开始</legend>
+        <div className={autoStyles.genreCards}>
+          {GENRES.map((option) => (
+            <button className={`${styles.secondary} ${autoStyles.genreCard}`} key={option} type="button"
+              aria-pressed={shownGenre === option}
+              onClick={() => setGenre((current) => current.trim() === option ? "" : option)}>
+              {option}
+            </button>
+          ))}
+        </div>
+      </fieldset>
       <label className={styles.label} htmlFor="auto-idea">一句话想法（可不填）</label>
       <input id="auto-idea" className={styles.input} maxLength={300} placeholder="不填则由 AI 根据资料自主策划" value={shown.idea}
         disabled={locked} onChange={(event) => setIdea(event.target.value)} />
@@ -315,7 +325,7 @@ export function AutoCreationStart() {
         <div>
           <label className={styles.label} htmlFor="auto-episodes">集数</label>
           <select id="auto-episodes" className={styles.input} value={shown.episodeCount} disabled={locked}
-            onChange={(event) => setEpisodeCount(Number(event.target.value))}>
+            onChange={(event) => setSelectedEpisodeCount(Number(event.target.value))}>
             {EPISODE_COUNTS.map((value) => <option key={value} value={value}>{value} 集</option>)}
           </select>
         </div>
@@ -374,6 +384,7 @@ export function AutoCreationStart() {
         {unavailable ? <p className={styles.warning} role="status">{unavailable}</p> : null}
         {options && !unavailable ? (
           <ul className={autoStyles.list}>
+            {shownGenre ? <li data-testid="auto-confirm-genre">题材：{shownGenre}</li> : null}
             <li data-testid="auto-provider-target">模型：{providerText}（所有阶段使用同一个模型，不会自动改用其他服务）</li>
             {providerChanged ? (
               <li data-testid="auto-provider-changed">服务端当前配置已变化：原请求的模型服务或模型现在不可用。重试仍原样发送原请求，由服务端决定是否接受，不会改用其他服务或模型。</li>
@@ -400,7 +411,7 @@ export function AutoCreationStart() {
       </section>
       <div className={styles.actions}>
         <button className={styles.primary} type="button" disabled={busy || !loaded || (pending === null && unavailable !== null)} onClick={() => void start()}>
-          {busy ? "正在启动…" : pending ? "重试上次请求" : "AI 自动创作"}
+          {busy ? "正在启动…" : pending ? "重试上次请求" : shownGenre ? "开始 AI 创作" : "AI 自动创作"}
         </button>
       </div>
       {error ? <p className={styles.error} role="alert">{error}</p> : null}

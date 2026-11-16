@@ -18,9 +18,9 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { INestApplication } from "@nestjs/common";
 import { Test } from "@nestjs/testing";
-import { type Browser, type BrowserContext, type Locator, type Page, chromium } from "playwright";
+import { type Browser, type BrowserContext, type Locator, type Page, type Request, chromium } from "playwright";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { autoCreationNormalCalls } from "@ai-drama/contracts";
+import { AUTO_CREATION_PROMPT_VERSION, autoCreationNormalCalls, type AutoCreationFrozenInput } from "@ai-drama/contracts";
 import {
   AUTO_CREATION_MIGRATION,
   BASE_MIGRATIONS,
@@ -382,6 +382,82 @@ describe("AI automatic creation in a real browser (site login, built web, real A
     expect(await plannedCount()).toBe(2);
     expect(seen.length).toBe(sendsBefore);
   }, 120_000);
+
+  it("A4: choosing 玄幻修仙 with no idea produces a readable story and its two episodes without a manual writing step", async () => {
+    plan = {};
+    const sendsBefore = seen.length;
+    const writes: Array<{ path: string; body: unknown }> = [];
+    const captureWrite = (request: Request) => {
+      const path = new URL(request.url()).pathname;
+      if (request.method() === "POST" && path.startsWith("/api/v1/projects")) writes.push({ path, body: request.postDataJSON() as unknown });
+    };
+    page.on("request", captureWrite);
+    try {
+      await page.goto(`${WEB}/create`, { waitUntil: "domcontentloaded" });
+      const card = page.getByTestId("auto-creation-start");
+      const preset = card.getByRole("group", { name: "选题材开始" }).getByRole("button", { name: "玄幻修仙", exact: true });
+      await preset.click();
+      expect(await preset.getAttribute("aria-pressed")).toBe("true");
+      expect(await card.getByLabel("一句话想法（可不填）").inputValue()).toBe("");
+      await card.getByLabel("集数", { exact: true }).selectOption("2");
+      const confirmation = card.getByTestId("auto-plan");
+      await confirmation.getByRole("heading", { name: "开始前请确认" }).waitFor();
+      await expect.poll(async () => await confirmation.getByTestId("auto-confirm-genre").textContent()).toContain("玄幻修仙");
+      expect(await confirmation.getByTestId("auto-calls").textContent()).toContain("正常 7 次");
+      expect(writes).toEqual([]);
+      expect(seen.length).toBe(sendsBefore);
+
+      const opened = page.waitForURL(/\/projects\/[0-9a-f-]{36}\/auto$/, { timeout: 30_000 });
+      await card.getByRole("button", { name: "开始 AI 创作", exact: true }).click();
+      await opened;
+      const projectId = /\/projects\/([0-9a-f-]{36})\/auto$/.exec(page.url())![1]!;
+      await expect.poll(async () => await headline().textContent(), { timeout: 90_000, interval: 300 }).toBe("剧本包已完成（机器质量检查通过）");
+      expect(writes.map((entry) => entry.path)).toEqual(["/api/v1/projects", `/api/v1/projects/${projectId}/auto-runs`]);
+      expect(writes[1]?.body).toMatchObject({ idea: "", constraints: { genre: "玄幻修仙" }, episodeCount: 2, episodeSeconds: 60 });
+
+      const [run] = await q<{ id: string; input_json: AutoCreationFrozenInput; calls_used: number; story_save: string }>(
+        "SELECT id, input_json, calls_used, story_save FROM auto_creation_run WHERE project_id = $1", [projectId]);
+      expect(run).toMatchObject({ input_json: { idea: "", constraints: { genre: "玄幻修仙" }, episodeCount: 2, episodeSeconds: 60,
+        promptVersion: AUTO_CREATION_PROMPT_VERSION }, calls_used: autoCreationNormalCalls(2), story_save: "saved" });
+      const [outline] = await q<{ output_json: { storyProse: string[] } }>(
+        "SELECT output_json FROM auto_creation_stage WHERE run_id = $1 AND stage_key = 'outline'", [run!.id]);
+      const prose = outline!.output_json.storyProse;
+      expect(prose.length).toBeGreaterThan(2);
+      const reader = page.getByTestId("auto-story-prose");
+      const trigger = reader.locator("summary");
+      const article = reader.getByRole("article", { name: "故事正文" });
+      await trigger.waitFor();
+      expect(await article.isVisible()).toBe(false);
+      await trigger.click();
+      await article.getByRole("heading", { name: "《留灯还水》" }).waitFor();
+      expect(await article.locator("p").allTextContents()).toEqual(prose);
+      expect(await article.textContent()).toContain("井壁深处传来三声空响");
+      expect(await article.textContent()).not.toContain("午夜工资单");
+
+      const episodes = page.getByTestId("auto-episodes");
+      expect(await episodes.textContent()).toContain("已写好 2 / 2 集");
+      const episodeDetails = episodes.locator("details");
+      expect(await episodeDetails.count()).toBe(2);
+      await episodeDetails.first().locator("summary").click();
+      await episodeDetails.first().getByText(/井壁深处传来三声空响/).first().waitFor();
+      await episodeDetails.last().locator("summary").click();
+      await episodeDetails.last().getByRole("heading", { name: "剧本正文", exact: true }).waitFor();
+      expect(seen.slice(sendsBefore).map((item) => item.stage))
+        .toEqual(["research", "directions", "bible", "outline", "episode:1", "episode:2", "review:1"]);
+
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await trigger.click();
+      await article.waitFor();
+      expect(await article.locator("p").allTextContents()).toEqual(prose);
+      expect(seen.length - sendsBefore).toBe(autoCreationNormalCalls(2));
+      expect(writes).toHaveLength(2);
+      (evidence.flows as Record<string, unknown>).A4 = {
+        genre: "玄幻修仙", episodeCount: 2, paragraphs: prose.length, stubSends: seen.length - sendsBefore, writes: writes.length,
+      };
+    } finally {
+      page.off("request", captureWrite);
+    }
+  }, 240_000);
 
   it("B: a one-line idea and hard constraints at 390px; a review issue is revised once; every record is persisted", async () => {
     plan = { review: { highIssueRounds: [1] } };

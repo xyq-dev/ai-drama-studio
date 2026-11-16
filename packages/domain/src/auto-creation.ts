@@ -3,12 +3,19 @@ import {
   AUTO_CREATION_CHECKS_VERSION,
   AUTO_CREATION_DIRECTIONS_SCHEMA,
   AUTO_CREATION_EPISODE_SCHEMA,
+  AUTO_CREATION_LEGACY_PROMPT_VERSION,
   AUTO_CREATION_OUTLINE_SCHEMA,
   AUTO_CREATION_PROMPT_VERSION,
   AUTO_CREATION_RESEARCH_ANSWER_SCHEMA,
   AUTO_CREATION_RESEARCH_SCHEMA,
   AUTO_CREATION_REVIEW_SCHEMA,
   AUTO_CREATION_SELECTION_RULES,
+  AUTO_STORY_PROSE_MAX_CHARS,
+  AUTO_STORY_PROSE_MAX_PARAGRAPH_CHARS,
+  AUTO_STORY_PROSE_MAX_PARAGRAPHS,
+  AUTO_STORY_PROSE_MIN_CHARS,
+  AUTO_STORY_PROSE_MIN_PARAGRAPH_CHARS,
+  AUTO_STORY_PROSE_MIN_PARAGRAPHS,
   AUTO_RATING_KEYS,
   AUTO_REVIEW_DIMENSIONS,
   AUTO_REVIEW_DIMENSION_LABELS,
@@ -40,6 +47,7 @@ import {
   autoUnverifiedHeading,
   autoUnverifiedOf,
   autoCreationRevisionsPerRound,
+  autoCreationWritesStoryProse,
   type AutoBible,
   type AutoCheckFinding,
   type AutoCreationFrozenInput,
@@ -65,7 +73,7 @@ import {
   type AutoViewingDurationReason,
 } from "@ai-drama/contracts";
 import {
-  frozenAudiencePhrase, numberKind, numberTokens, settledMarketClaim, uncitedNumberReading, type AutoNumberFinding, type AutoNumberFrame,
+  frozenAudiencePhrase, hasAutoEpisodeTotalConflict, numberKind, numberTokens, settledMarketClaim, uncitedNumberReading, type AutoNumberFinding, type AutoNumberFrame,
 } from "./auto-creation-numbers";
 import {
   autoMapLimitedResearchAnswer, autoMapResearchAnswer, autoReferenceCatalogOf, quotedWhole, withoutWhitespace as normalize,
@@ -224,7 +232,8 @@ export const AUTO_REVIEW_FINDINGS_MAX_CHARS = 3_000;
 /** The room each text is guaranteed before it is written: the setting, the outline, and every episode alike. */
 export function autoReviewQuotas(input: AutoCreationFrozenInput): { bible: number; outline: number; episode: number } {
   const bible = 8_000;
-  const outline = 400 + 900 * input.episodeCount;
+  const proseRoom = autoCreationWritesStoryProse(input.promptVersion) ? AUTO_STORY_PROSE_MAX_CHARS + 60 : 0;
+  const outline = 400 + 900 * input.episodeCount + proseRoom;
   return { bible, outline, episode: Math.floor((AUTO_REVIEW_CONTENT_BUDGET_CHARS - bible - outline) / input.episodeCount) };
 }
 
@@ -314,6 +323,10 @@ function data(label: string, value: unknown): string {
 
 function ideaLine(input: AutoCreationFrozenInput): string {
   return input.idea.length > 0 ? `用户的一句话想法（作品方向的起点，可以发展，不可违背）：${input.idea}` : "用户没有提供想法：由你根据资料自主策划。";
+}
+
+function executedPromptVersion(input: AutoCreationFrozenInput): AutoCreationFrozenInput["promptVersion"] {
+  return autoCreationWritesStoryProse(input.promptVersion) ? AUTO_CREATION_PROMPT_VERSION : AUTO_CREATION_LEGACY_PROMPT_VERSION;
 }
 
 function sourcesBlock(sources: AutoSourcesOutput): string {
@@ -531,7 +544,11 @@ function limitedResearchLines(input: AutoCreationFrozenInput, catalog: AutoRefer
 export function buildAutoCreationPrompt(stageKey: string, input: AutoCreationFrozenInput, context: AutoCreationContext): AutoCreationPrompt {
   const kind = autoStageKind(stageKey);
   if (kind === "sources") throw new Error("the source snapshot sends no prompt");
-  const head = [`提示版本：${AUTO_CREATION_PROMPT_VERSION}`, ideaLine(input), ...constraintLines(input)];
+  const writesProse = autoCreationWritesStoryProse(input.promptVersion);
+  const genreRule = writesProse && input.constraints.genre
+    ? [`题材已锁定为「${input.constraints.genre}」。研究聚焦该题材的叙事方法；所有候选和成稿都让它参与主要冲突、人物行动和结局，不能只把它当作标签或背景。`]
+    : [];
+  const head = [`提示版本：${executedPromptVersion(input)}`, ideaLine(input), ...constraintLines(input), ...genreRule];
   let lines: string[];
   let revisionReferences: AutoRevisionReferences | undefined;
   if (kind === "research") {
@@ -585,7 +602,14 @@ export function buildAutoCreationPrompt(stageKey: string, input: AutoCreationFro
   } else if (kind === "outline") {
     lines = [
       ...head,
-      `任务：把故事分成 ${String(input.episodeCount)} 集大纲，按第 1 到第 ${String(input.episodeCount)} 集顺序。`,
+      writesProse
+        ? `任务：按冻结设定写出一个有完整结局的故事正文，再用同一篇正文规划恰好 ${String(input.episodeCount)} 集大纲，按集号顺序排列。`
+        : `任务：把故事分成 ${String(input.episodeCount)} 集大纲，按第 1 到第 ${String(input.episodeCount)} 集顺序。`,
+      ...(writesProse ? [
+        `storyProse：独立可阅读的故事正文，输出 ${String(AUTO_STORY_PROSE_MIN_PARAGRAPHS)}–${String(AUTO_STORY_PROSE_MAX_PARAGRAPHS)} 个顺序相连的叙事段落，每段 ${String(AUTO_STORY_PROSE_MIN_PARAGRAPH_CHARS)}–${String(AUTO_STORY_PROSE_MAX_PARAGRAPH_CHARS)} 字，正文共 ${String(AUTO_STORY_PROSE_MIN_CHARS)}–${String(AUTO_STORY_PROSE_MAX_CHARS)} 字，建议 450–1200 字。`,
+        "从一个具体发生的事件写起，用人物在场的动作、选择与对白推动冲突，呈现有伏笔的转折及其后果，写到主线真正结束。像短篇小说一样连续叙述，不写设定表、大纲条目、逐集提要、集号标题或评语。",
+        "由正文安排各集的关键事件、人物行动、集尾进展和主线收束，不另造剧情或另写一个结局。只用已登记的人物、地点和时空，照顾每集时长，压缩摘要字段给正文留位置。",
+      ] : []),
       "每集写开场状态与冲突、本集目标、阻碍、主角行动、转折、结果、观众新获知的信息、情绪变化、向后续集传递的事实（handoff），以及本集出场人物和地点编号。",
       "非最后一集可以留自然悬念；最后一集（单集即唯一一集）必须完成主线兑现。resolution 写主线如何收束。",
       "只使用设定档案里的人物和地点编号，人物只能是 on_screen 的。",
@@ -599,10 +623,12 @@ export function buildAutoCreationPrompt(stageKey: string, input: AutoCreationFro
     lines = [
       ...head,
       `任务：写第 ${String(episodeNo)} 集剧本，严格按已冻结的设定档案、本集大纲和前面各集的交接事实。`,
+      ...(context.outline?.storyProse ? ["按冻结正文和本集大纲拆场；用画面、动作和对白呈现正文在本集发生的因果与转折，保持原有关键选择、各集交接和最终结局。"] : []),
       "不新增人物或地点，不改名，不改变关系；人物只能知道他在前文中已经得知的信息；不重复前面已解决的冲突。",
       ...episodeShape(input, episodeNo),
       roomLine(stageKey, input, context),
       data("故事设定档案（已冻结）", context.bible),
+      ...(context.outline?.storyProse ? [data("故事正文（已冻结）", context.outline.storyProse)] : []),
       data("本集大纲", context.outline!.episodes.find((item) => item.episodeNo === episodeNo)),
       data("主线收束", context.outline!.resolution),
       data("前面各集交接事实", previousHandoffs(context, episodeNo)),
@@ -617,6 +643,7 @@ export function buildAutoCreationPrompt(stageKey: string, input: AutoCreationFro
       ...head,
       `任务：定向修改第 ${String(episodeNo)} 集（第 ${String(round)} 轮修改），只解决下面列出的问题，其余内容尽量保持不变。`,
       "冻结设定优先于本轮和历史审阅建议。若建议要求去未登记的地点或让仅被提及的人物出场，保留它要解决的问题，改用已有场景内的动作、道具、消息或在场人物的反应，呈现同一叙事结果。保持人物关系、结局事实和后续各集要继承的事实。",
+      ...(context.outline?.storyProse ? ["修订后仍须能从同一篇冻结故事正文改编，保持其中的关键事件、选择、转折和结局。"] : []),
       `本次可用编号：locationId 仅 ${revisionReferences.locationIds.join("、")}；characterIds 和对白 characterId 仅 ${revisionReferences.characterIds.join("、")}，每句对白的人物还必须在本场出场名单内。`,
       ...episodeShape(input, episodeNo),
       "另加 changes 数组，逐条记录实际改动。issueId 只能用「需要解决的问题」中 ids 列出的编号，最多 10 条。",
@@ -624,6 +651,7 @@ export function buildAutoCreationPrompt(stageKey: string, input: AutoCreationFro
       data("需要解决的问题", issues),
       data("当前剧本", context.episodes.get(episodeNo)!.episode),
       data("故事设定档案（已冻结）", context.bible),
+      ...(context.outline?.storyProse ? [data("故事正文（已冻结）", context.outline.storyProse)] : []),
       data("本集大纲", context.outline!.episodes.find((item) => item.episodeNo === episodeNo)),
       data("前面各集交接事实", previousHandoffs(context, episodeNo)),
     ];
@@ -632,11 +660,13 @@ export function buildAutoCreationPrompt(stageKey: string, input: AutoCreationFro
     const findings = deterministicFindings(input, context);
     lines = [
       `审阅轮次：第 ${String(round)} 轮（${AUTO_CREATION_CHECKS_VERSION}）`,
-      `提示版本：${AUTO_CREATION_PROMPT_VERSION}`,
+      `提示版本：${executedPromptVersion(input)}`,
       ...constraintLines(input),
+      ...genreRule,
       "评价标准（逐项给 assessment 和 internalScore，key 依次为下列英文键）：",
       ...AUTO_REVIEW_DIMENSIONS.map((key) => `- ${key}（${AUTO_REVIEW_DIMENSION_LABELS[key]}）：${AUTO_REVIEW_RUBRIC[key]!}`),
       "issues：只写需要修改的具体问题；target 为 bible、outline 或 episode:集号；severity 为 high（不改就不合格）、medium、low；evidence 逐字摘自 target 的文本。",
+      ...(writesProse ? ["核对 outline.storyProse 是从开端、冲突和转折写到结局的连续故事，而非摘要或条目。检查正文、大纲、各集的关键事件、人物选择和结局一致，并且核心冲突符合已冻结题材。实质不符按 high 报告，正文问题归入 outline，改编偏离归入对应集。"] : []),
       "审阅单集时，若关键结果发生在场外，优先建议用已登记地点和可出场人物，通过动作、道具或消息把结果呈现给观众。",
       data("单集修改可用编号", sceneReferences(context.bible!)),
       "verdict：没有 high 问题时为 pass，否则为 revise。",
@@ -809,7 +839,7 @@ export function autoResearchServerRecord(input: AutoCreationFrozenInput, sources
   const available = sources.researchMode === "sourced";
   return {
     origin: "server_record",
-    executedWith: { promptVersion: AUTO_CREATION_PROMPT_VERSION, checksVersion: AUTO_CREATION_CHECKS_VERSION, researchSchema: AUTO_CREATION_RESEARCH_SCHEMA,
+    executedWith: { promptVersion: executedPromptVersion(input), checksVersion: AUTO_CREATION_CHECKS_VERSION, researchSchema: AUTO_CREATION_RESEARCH_SCHEMA,
       answerContract: sources.researchMode,
       ...(catalog ? { answerSchema: AUTO_CREATION_RESEARCH_ANSWER_SCHEMA, referenceCatalogVersion: catalog.version, referenceCatalogHash: catalog.hash } : {}) },
     marketEvidence: { origin: "source_snapshot", status: available ? "available" : "unavailable",
@@ -1245,7 +1275,10 @@ export function validateAutoStageOutput(stageKey: string, content: string, input
   }
   const kind = autoStageKind(stageKey);
   const creative = kind !== "research" && kind !== "review";
-  if (creative && textsOf(value).some((item) => UNSAFE.test(item) || RESERVED.test(item))) return { ok: false, code: "unsafe_content" };
+  const fields = creative ? textsOf(value) : [];
+  if (fields.some((item) => UNSAFE.test(item) || RESERVED.test(item))) return { ok: false, code: "unsafe_content" };
+  const episodeMismatch = autoCreationWritesStoryProse(input.promptVersion) && fields.some((item) => hasAutoEpisodeTotalConflict(item, input.episodeCount));
+  if (episodeMismatch && kind !== "directions") return { ok: false, code: "episode_mismatch" };
   if (kind === "research") {
     // The contract is the saved snapshot's: the same mode chose the prompt and the JSON Schema that was sent.
     // The catalog too: the context's one catalog built the prompt and the JSON Schema; the answer is mapped with it.
@@ -1267,14 +1300,19 @@ export function validateAutoStageOutput(stageKey: string, content: string, input
   }
   if (kind === "directions") {
     const parsed = autoDirectionsSchema.safeParse(value);
-    return parsed.success ? checkDirections(input, parsed.data, context) : zodFailure(parsed.error);
+    if (!parsed.success) return zodFailure(parsed.error);
+    const checked = checkDirections(input, parsed.data, context);
+    // The existing research-number check names the precise note and reason when it finds the same conflict.
+    return checked.ok && episodeMismatch ? { ok: false, code: "episode_mismatch" } : checked;
   }
   if (kind === "bible") {
     const parsed = autoBibleSchema.safeParse(value);
     return parsed.success ? withinReviewBudget(stageKey, checkBible(input, parsed.data), input, context) : zodFailure(parsed.error);
   }
   if (kind === "outline") {
-    const parsed = autoOutlineSchema(input.episodeCount).safeParse(value);
+    const schema = autoOutlineSchema(input.episodeCount);
+    const parsed = (autoCreationWritesStoryProse(input.promptVersion) ? schema.required({ storyProse: true }) : schema.omit({ storyProse: true }))
+      .safeParse(value);
     return parsed.success ? withinReviewBudget(stageKey, checkOutline(input, parsed.data, context), input, context) : zodFailure(parsed.error);
   }
   if (kind === "episode") {
@@ -1378,16 +1416,18 @@ export function formatAutoEpisode(episode: AutoEpisode, bible: AutoBible): strin
 
 export const AUTO_DRAFT_BANNER = "【AI 自动创作草稿｜机器生成，机器质量检查不等于人工审核，未经人工审核不得发布】";
 
-/** The story text saved as the work's DRAFT story revision. Null when it would not fit the storage limit. */
-export function formatAutoStory(runId: string, quality: "passed" | "needs_work", context: AutoCreationContext): string | null {
-  const bible = context.bible;
-  const outline = context.outline;
-  if (!bible || !outline) return null;
-  const lines = [
+function autoStoryHeader(runId: string, quality: "passed" | "needs_work", bible: AutoBible): string[] {
+  return [
     AUTO_DRAFT_BANNER,
     `来源：AI 自动创作任务 ${runId}；机器质量检查：${quality === "passed" ? "通过（内部参考）" : "待完善（仍有未解决问题，见成品剧本包）"}`,
     "",
     `剧名：${bible.title}`,
+  ];
+}
+
+function formatAutoStoryNotes(runId: string, quality: "passed" | "needs_work", bible: AutoBible, outline: AutoOutline): string | null {
+  const lines = [
+    ...autoStoryHeader(runId, quality, bible),
     `一句话故事：${bible.logline}`,
     "",
     "【梗概】", bible.synopsis, "",
@@ -1419,6 +1459,14 @@ export function formatAutoStory(runId: string, quality: "passed" | "needs_work",
   ];
   const text = lines.join("\n");
   return text.length <= WRITING_BODY_MAX_CHARS ? text : null;
+}
+
+/** The work's editable DRAFT. Historic runs still save their original setting and outline text. */
+export function formatAutoStory(runId: string, quality: "passed" | "needs_work", context: AutoCreationContext): string | null {
+  const { bible, outline } = context;
+  if (!bible || !outline) return null;
+  if (!outline.storyProse) return formatAutoStoryNotes(runId, quality, bible, outline);
+  return [...autoStoryHeader(runId, quality, bible), "", "【故事正文】", outline.storyProse.join("\n\n")].join("\n");
 }
 
 /** Scripts are written into the work only after a person approved the story, so a placed script proves that review. */
@@ -1493,6 +1541,7 @@ export function autoPackageJson(meta: AutoPackageMeta, stages: readonly AutoStag
     directions: context.directions ?? null,
     bible: context.bible ?? null,
     outline: context.outline ?? null,
+    ...(context.outline?.storyProse ? { storyProse: context.outline.storyProse } : {}),
     episodes,
     reviews: context.reviews.map((item) => ({ stageKey: item.stageKey, ...item.review })),
     revisions,
@@ -1587,8 +1636,9 @@ export function autoPackageMarkdown(meta: AutoPackageMeta, stages: readonly Auto
     }
     push("**选择理由**", "", ...context.directions.selection.reasons.map((reason) => `- ${reason}`), "");
   }
+  if (context.outline?.storyProse) push("## 故事正文", "", context.outline.storyProse.join("\n\n"), "");
   if (bible) {
-    const story = formatAutoStory(meta.runId, meta.quality === "passed" ? "passed" : "needs_work", context);
+    const story = context.outline && formatAutoStoryNotes(meta.runId, meta.quality === "passed" ? "passed" : "needs_work", bible, context.outline);
     push("## 故事、人物、地点与分集大纲", "", "```text", story ?? "（故事文本超过长度上限）", "```", "");
   }
   if (bible && context.episodes.size > 0) {
