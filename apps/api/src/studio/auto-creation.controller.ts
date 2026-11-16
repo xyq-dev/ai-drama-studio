@@ -47,14 +47,14 @@ export class AutoCreationController {
   }
 
   @Get("projects/:projectId/auto-runs/latest")
-  latest(@Param("projectId", UUID_PARAM_PIPE) projectId: string, @Res({ passthrough: true }) response: StatusResponse) {
-    return this.send(response, (service) => service.latest(projectId));
+  latest(@Param("projectId", UUID_PARAM_PIPE) projectId: string, @Res({ passthrough: true }) response: StatusResponse, @Headers() headers: RequestHeaders) {
+    return this.send(response, (service) => service.latest(projectId, this.canReadRejectionDiagnostic(headers)));
   }
 
   @Get("projects/:projectId/auto-runs/:runId")
   get(@Param("projectId", UUID_PARAM_PIPE) projectId: string, @Param("runId", UUID_PARAM_PIPE) runId: string,
-    @Res({ passthrough: true }) response: StatusResponse) {
-    return this.send(response, (service) => service.get(projectId, runId));
+    @Res({ passthrough: true }) response: StatusResponse, @Headers() headers: RequestHeaders) {
+    return this.send(response, (service) => service.get(projectId, runId, this.canReadRejectionDiagnostic(headers)));
   }
 
   @Get("projects/:projectId/auto-runs/:runId/package")
@@ -87,6 +87,15 @@ export class AutoCreationController {
   scripts(@Param("projectId", UUID_PARAM_PIPE) projectId: string, @Param("runId", UUID_PARAM_PIPE) runId: string, @Body() body: unknown,
     @Res({ passthrough: true }) response: StatusResponse, @Headers("x-trace-id") traceHeader?: string) {
     return this.send(response, (service) => service.placeScripts(projectId, runId, body, { actorId: "server-owner", traceId: createTraceId(traceHeader) }));
+  }
+
+  private canReadRejectionDiagnostic(headers: RequestHeaders): boolean {
+    if (this.site?.kind !== "enabled") return false;
+    try {
+      return this.site.auth.peek(headers).authenticated;
+    } catch {
+      return false;
+    }
   }
 
   private async send(response: StatusResponse, work: (service: AutoCreationService) => Promise<AutoCreationResult>): Promise<unknown> {

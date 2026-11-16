@@ -38,6 +38,8 @@ export interface AutoNumberFinding {
   rule: string;
   /** For a viewing time (viewing_duration) only: which check refused it, a fixed slug. */
   reason?: AutoViewingDurationReason;
+  /** Untrusted input for the ranking excerpt filter only. Never store this raw clause. */
+  rankingClause?: string;
 }
 
 /** What an uncited text is judged against: the run's frozen settings. */
@@ -196,8 +198,15 @@ const STRUCTURAL_ORDINAL_IN_MARKET = structuralOrdinal(STRUCTURAL_UNITS);
  * makes it no place; the clause must be a plan by its own wording and claim nothing done or measured.
  */
 const PLAN_STEP_ORDINAL = new RegExp(`${ORDINAL.source}(?=阶段|轮|步|项(?:测试|验证|检查))`, "gu");
+const PLAN_STEP_UNIT = /^(?:阶段|轮|步|项(?:测试|验证|检查))/u;
 /** A place the ordinal itself belongs to: a ranking, a chart or a metric right before it (排名第一, 榜单上位列第3, 人气第一轮). */
 const RANK_PLACE_BEFORE = /(?:排名|排行|名次|榜单?|名列|位列|位居|播放量|销量|口碑|人气|热度|评分|收视率|点击量|票房)(?:上|中|里)?(?:为|是|在|居|列|达到|达)?$/u;
+const RESEARCH_RANK_CONNECTOR = /(?:(?:是否|能否|已|仍|约|[:：=]))+$/u;
+const EXPLICIT_RANK_CONTEXT = /排名|排行|名次|榜|名列|位列|位居|冠军|仅次于|(?:热度|人气|口碑|播放量|评分)(?:最高|最低|领先|领跑)/u;
+const WORK_ORDER_OWNER = /(?:本剧|本集|本作|本片|本故事|剧情|故事|剧本)(?:将?在|将?从|的)?$/u;
+const WORK_ORDER_UNIT = /^(?:集|场|幕|章|节|回|段|镜|个(?:反转|场景|钩子|冲突|线索))/u;
+const WORK_ORDER_ACTION = /^(?:安排|设置|铺垫|揭开|揭示|埋下|收束|呈现|交代|引出|推进|表现)/u;
+const CREATIVE_ORDER_WORD = /本剧|本集|主角|角色|剧情|故事|剧本|安排|设计|试读|试写|流程|分镜|转折|冲突/u;
 /** Marks an ordinal of a ranking so it is matched as one whole token (名次第三), in a statement and in a source alike. */
 const RANK_PREFIX = "名次";
 /** What a removed setting leaves behind: no digit, no noun, the end of any noun window. */
@@ -269,19 +278,34 @@ function numberValue(numeral: string): number | null {
  * The constraint is the person's choice, never a source. planSteps: a verification plan, whose steps are removed as
  * structural ordinals before any ranking is read (checks v13, planStep).
  */
-function sentencesOf(value: string, exempt: ReadonlyArray<AutoExemptNumber>, frozenAudience = "", planSteps = false): string[][] {
+function numberText(value: string): string {
   return value
     .replace(INVISIBLE, "")
     .replace(ITEM_ID, " ")
     .replace(/S-[A-Z]+(?:-[A-Z0-9]+)*/g, " ")
     .replace(/9\s*[:：]\s*16/g, " ")
-    .replace(/％/gu, "%")
-    .split(/(?<=[。；;！？!?\n])/u)
-    .map((sentence) => {
-      const target = restatableAudience(sentence, frozenAudience);
-      return sentence.split(/(?<=[，,])/u).map((raw) => clauseOf(raw, exempt, target, planSteps));
-    })
-    .filter((sentence) => sentence.some((clause) => clause.length > 0));
+    .replace(/％/gu, "%");
+}
+
+type NumberClause = { raw: string | undefined; text: string; notices: AutoNumberFinding[] };
+const SENTENCE_BOUNDARY = /(?<=[。；;！？!?\n])/u;
+const CLAUSE_BOUNDARY = /(?<=[，,])/u;
+
+function sentencesOf(value: string, exempt: ReadonlyArray<AutoExemptNumber>, frozenAudience = "", planSteps = false,
+  researchOrdinals = false): NumberClause[][] {
+  const sentences = numberText(value).split(SENTENCE_BOUNDARY);
+  const rawSentences = researchOrdinals ? value.split(SENTENCE_BOUNDARY) : [];
+  return sentences.map((sentence, i) => {
+    const target = restatableAudience(sentence, frozenAudience);
+    const clauses = sentence.split(CLAUSE_BOUNDARY);
+    // Normalization may remove a line break (9:\n16). Omit the excerpt if boundaries cannot be lined up.
+    const raw = rawSentences.length === sentences.length ? rawSentences[i]?.split(CLAUSE_BOUNDARY) : undefined;
+    return clauses.map((clause, index) => {
+      const notices: AutoNumberFinding[] = [];
+      const text = clauseOf(clause, exempt, target, planSteps, researchOrdinals ? notices : undefined);
+      return { raw: raw?.length === clauses.length ? raw[index] : undefined, text, notices };
+    });
+  }).filter((sentence) => sentence.some((clause) => clause.text.length > 0));
 }
 
 /** The frozen audience phrase when this sentence may restate it as the chosen target, else "" (nothing is removed). */
@@ -328,18 +352,53 @@ function planStep(clause: string, offset: number): boolean {
   return !RESULT.test(clause.slice(result.index + method[0].length));
 }
 
-function clausesOf(value: string, exempt: ReadonlyArray<AutoExemptNumber>, frozenAudience = ""): string[] {
-  return sentencesOf(value, exempt, frozenAudience).flat();
+/** v15 reads each ordinal on its own. A plan elsewhere is not proof, and a nearby metric owns its place. */
+function researchOrdinalRole(clause: string, ordinal: string, offset: number): "rank" | "plan" | "work" | "uncertain" | "legacy" {
+  const before = clause.slice(0, offset);
+  const after = clause.slice(offset + ordinal.length);
+  if (RANK_PLACE_BEFORE.test(before.replace(RESEARCH_RANK_CONNECTOR, "")) || /^(?:名|位)/u.test(after)) return "rank";
+  const step = PLAN_STEP_UNIT.test(after);
+  if (step && planStep(clause, offset)) return "plan";
+  if (EXPLICIT_RANK_CONTEXT.test(clause) || SAMPLE_DONE.test(clause) || RESULT.test(clause) || SETTLED.test(clause)) return "legacy";
+  const work = WORK_ORDER_UNIT.exec(after)?.[0];
+  if (work && (WORK_ORDER_OWNER.test(before) || WORK_ORDER_ACTION.test(after.slice(work.length)))) return "work";
+  if ((step || work) && CREATIVE_ORDER_WORD.test(clause)) return "uncertain";
+  return "legacy";
 }
 
-function clauseOf(raw: string, exempt: ReadonlyArray<AutoExemptNumber>, frozenAudience: string, planSteps: boolean): string {
+function markRank(ordinal: string): string {
+  return `${GAP}${RANK_PREFIX}${ordinal}${GAP}`;
+}
+
+function readResearchOrdinals(clause: string, notices: AutoNumberFinding[]): string {
+  const structural = RANK_MARKERS.test(clause) ? null : MARKET_CLAUSE.test(clause) ? STRUCTURAL_ORDINAL_IN_MARKET : STRUCTURAL_ORDINAL;
+  const legacyStructural = new Set(structural ? Array.from(clause.matchAll(structural), (match) => match.index) : []);
+  return clause.replace(ORDINAL, (ordinal: string, offset: number) => {
+    const role = researchOrdinalRole(clause, ordinal, offset);
+    if (role === "plan" || role === "work") return GAP;
+    const wasStructural = legacyStructural.has(offset);
+    // Keep known episode/scene positions as before (e.g. 计划试读第三集). Workflow units with only a weak creative cue
+    // still warrant a notice, even when the old structural regex happened to erase 轮 or 步.
+    if (role === "uncertain" && (!wasStructural || PLAN_STEP_UNIT.test(clause.slice(offset + ordinal.length)))) {
+      notices.push({ token: ordinal, kind: numberKind(ordinal.slice(1)), semantic: "unclassified", rule: "no_role" });
+      return GAP;
+    }
+    return role !== "rank" && wasStructural ? GAP : markRank(ordinal);
+  });
+}
+
+function clausesOf(value: string, exempt: ReadonlyArray<AutoExemptNumber>, frozenAudience = ""): string[] {
+  return sentencesOf(value, exempt, frozenAudience).flatMap((sentence) => sentence.map((clause) => clause.text));
+}
+
+function clauseOf(raw: string, exempt: ReadonlyArray<AutoExemptNumber>, frozenAudience: string, planSteps: boolean, notices?: AutoNumberFinding[]): string {
   return [raw]
     .map((clause) => clause.replace(/\s+/gu, "").replace(ORDINARY_WORDS, GAP))
     .map((clause) => (restatesTarget(clause, frozenAudience) ? clause.split(frozenAudience).join(GAP) : clause))
-    .map((clause) => (planSteps ? clause.replace(PLAN_STEP_ORDINAL, (ordinal, offset: number) => (planStep(clause, offset) ? GAP : ordinal)) : clause))
+    .map((clause) => (planSteps && !notices ? clause.replace(PLAN_STEP_ORDINAL, (ordinal, offset: number) => (planStep(clause, offset) ? GAP : ordinal)) : clause))
     // In a ranking clause no ordinal is a position; in a viewing clause 第 30 秒 is a viewing moment, not the story's.
-    .map((clause) => (RANK_MARKERS.test(clause) ? clause : clause.replace(MARKET_CLAUSE.test(clause) ? STRUCTURAL_ORDINAL_IN_MARKET : STRUCTURAL_ORDINAL, GAP))
-      .replace(ORDINAL, (ordinal) => `${GAP}${RANK_PREFIX}${ordinal}${GAP}`))
+    .map((clause) => (notices ? readResearchOrdinals(clause, notices)
+      : (RANK_MARKERS.test(clause) ? clause : clause.replace(MARKET_CLAUSE.test(clause) ? STRUCTURAL_ORDINAL_IN_MARKET : STRUCTURAL_ORDINAL, GAP)).replace(ORDINAL, markRank)))
     .map((clause) => {
       if (MARKET_CLAUSE.test(clause)) return clause;
       let kept = clause.replace(PLAN_NUMBER, (whole, number: string, unit: string) =>
@@ -790,10 +849,15 @@ function designEpisodeScope(clause: string, clauses: readonly string[], before: 
  * a range outside the work. A structural ordinal is removed before a clause is read, so every 第N集 is found here first,
  * on the raw text; a ranking clause keeps its ordinals as places, and a cited text (a fact, a quote) is never read so.
  */
-function designOrdinalRefusal(text: string, frame: AutoNumberFrame): AutoNumberFinding | null {
+function designOrdinalRefusal(text: string, frame: AutoNumberFrame, researchOrdinals: boolean): AutoNumberFinding | null {
   for (const clause of text.replace(INVISIBLE, "").replace(/\s+/gu, "").split(/(?<=[，,。；;！？!?\n])/u)) {
-    if (RANK_MARKERS.test(clause)) continue;
+    const containsRankMarker = RANK_MARKERS.test(clause);
+    if (containsRankMarker && !researchOrdinals) continue;
     for (const match of clause.matchAll(EPISODE_ORDINAL)) {
+      if (researchOrdinals) {
+        const role = researchOrdinalRole(clause, match[0].slice(0, -1), match.index);
+        if (role === "rank" || (containsRankMarker && role === "legacy")) continue;
+      }
       const value = numberValue(match[1]!);
       if (value === null || value < 1 || value > frame.episodeCount) {
         return { token: match[1]!, kind: numberKind(match[1]!), semantic: "frozen_conflict", rule: "episode_range_out_of_range" };
@@ -1028,22 +1092,25 @@ const UNVERIFIED_RULES: ReadonlySet<string> = new Set(AUTO_UNVERIFIED_RULES);
  * notes), where a count or position of episodes is read by its scope in the work (checks v12, designEpisodeScope).
  */
 export function uncitedNumberReading(text: string, frame: AutoNumberFrame,
-  options: { market?: boolean; unverified?: boolean; verificationPlan?: boolean; structureDesign?: boolean } = {}):
+  options: { market?: boolean; unverified?: boolean; verificationPlan?: boolean; structureDesign?: boolean; researchOrdinals?: boolean } = {}):
   { refusal: AutoNumberFinding | null; unverified: AutoNumberFinding[] } {
   const unverified: AutoNumberFinding[] = [];
   let unmarked: AutoNumberFinding | null = null;
   let unmarkedTime: AutoNumberFinding | null = null;
   const verificationPlan = options.verificationPlan === true;
   const structureDesign = options.structureDesign === true;
+  const researchOrdinals = options.researchOrdinals === true && options.unverified === true;
   // A plan's sample keeps its own refusal; any other position outside the work is a range outside it.
-  const outside = (verificationPlan ? sampleOrdinalRefusal(text, frame) : null) ?? (structureDesign ? designOrdinalRefusal(text, frame) : null);
+  const outside = (verificationPlan ? sampleOrdinalRefusal(text, frame) : null) ?? (structureDesign ? designOrdinalRefusal(text, frame, researchOrdinals) : null);
   if (outside) return { refusal: outside, unverified };
-  for (const clauses of sentencesOf(text, frame.exempt, frame.frozenAudience, verificationPlan)) {
+  for (const parts of sentencesOf(text, frame.exempt, frame.frozenAudience, verificationPlan, researchOrdinals)) {
+    const clauses = parts.map((part) => part.text);
     // Viewers, the market and a measured result named anywhere in the sentence carry over its commas (数据显示，三个人里…).
     const sentence = clauses.join("");
     // A stated audience preference makes the sentence about viewers even with no market word (大家更喜欢三次反转的剧本).
     const sentenceMarket = options.market === true || MARKET_CLAUSE.test(sentence) || clauses.some(preference);
-    for (const clause of clauses) {
+    for (const { text: clause, raw, notices } of parts) {
+      unverified.push(...notices);
       const market = sentenceMarket;
       const proportion = market ? PROPORTION_WORDS.exec(clause)?.[0] : undefined;
       if (proportion) return { refusal: { token: proportion, kind: "percent", semantic: "market_statistic", rule: "proportion" }, unverified };
@@ -1053,7 +1120,7 @@ export function uncitedNumberReading(text: string, frame: AutoNumberFrame,
         const role = roleOf(hit, clause, clauses, market, frame, verificationPlan, structureDesign);
         if (!role.allowed) {
           const finding: AutoNumberFinding = { token: hit.token, kind: numberKind(hit.token), semantic: role.semantic, rule: role.rule,
-            ...(role.reason ? { reason: role.reason } : {}) };
+            ...(role.reason ? { reason: role.reason } : {}), ...(raw && role.rule === "ranking" ? { rankingClause: raw } : {}) };
           if (options.unverified === true && role.semantic === "unclassified" && UNVERIFIED_RULES.has(role.rule)) {
             unverified.push(finding);
             continue;

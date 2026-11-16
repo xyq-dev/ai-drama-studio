@@ -6,6 +6,8 @@ import {
   autoStageRound,
   autoRunSettledForGood,
   currentUncertainCallIds,
+  isAutoResearchRankingRejection,
+  readAutoResearchRejectionDiagnostic,
   type AutoCreationOptionsView,
   type AutoCreationRunView,
   type AutoCreationStageView,
@@ -292,6 +294,11 @@ export function autoErrorText(stored: string | null): string | null {
 /** True when the model's answer was refused by the checks (not a key, quota or network problem). */
 export function autoOutputRefused(stored: string | null): boolean {
   return stored !== null && OUTPUT_CHECK_CODES.has(autoErrorParts(stored).code);
+}
+
+export function autoResearchRejectionDiagnosticOf(stage: AutoCreationStageView) {
+  return isAutoResearchRankingRejection(stage.stageKey, stage.state, stage.errorCode)
+    ? readAutoResearchRejectionDiagnostic(stage.rejectionDiagnostic) : null;
 }
 
 export function autoUncertainIds(run: AutoCreationRunView): string[] {

@@ -36,7 +36,7 @@ const frameOf = (episodeCount: number): AutoNumberFrame => ({
 /** How creativeNumber reads a hypothesis' howToVerify. */
 const plan = (text: string, episodeCount = EPISODES) =>
   uncitedNumberReading(text, frameOf(episodeCount), { unverified: true, verificationPlan: true, structureDesign: true });
-/** How creativeNumber reads every other creative field (a statement, an application, an opportunity). */
+/** How creativeNumber reads a non-research creative field; checks v15 research uses the stage validator below. */
 const elsewhere = (text: string) => uncitedNumberReading(text, frameOf(EPISODES), { unverified: true, structureDesign: true });
 
 const RANKING = { kind: "rank", semantic: "market_statistic", rule: "ranking" } as const;
@@ -140,7 +140,7 @@ describe("P. a verification plan's step is no ranking (classifier)", () => {
     expect(plan("计划分两步进行，在第一阶段请读者复述动机。").refusal).toMatchObject(RANKING);
   });
 
-  it("no other field and no default reading gains the plan's steps", () => {
+  it("non-research and default readings do not gain the research plan's steps", () => {
     for (const text of CORE.slice(0, 2)) expect(elsewhere(text).refusal, text).toMatchObject(RANKING);
     expect(elsewhere(CORE[2]!).refusal).toMatchObject(RANKING);
     expect(uncitedNumberReading(CORE[0]!, frameOf(EPISODES)).refusal).toMatchObject(RANKING);
@@ -265,7 +265,7 @@ describe("Q. the whole research stage (validateAutoStageOutput, and the series' 
     it("the run records the checks it executed", () => {
       const result = check(answer(mode, { howToVerify: CORE[0] }));
       expect(result.output!.serverRecord.executedWith).toMatchObject({ checksVersion: AUTO_CREATION_CHECKS_VERSION, promptVersion: path.promptVersion });
-      expect(AUTO_CREATION_CHECKS_VERSION).toBe("ads.auto-creation.checks.v14");
+      expect(AUTO_CREATION_CHECKS_VERSION).toBe("ads.auto-creation.checks.v15");
     });
 
     it.each(RANKED)("%s in howToVerify is refused whole: %s", (_label, text) => {
@@ -290,10 +290,10 @@ describe("Q. the whole research stage (validateAutoStageOutput, and the series' 
         .toMatchObject({ ok: false, field: "opportunities[0]", ...REFUSED_RANKING });
     });
 
-    it("the same steps in a hypothesis' statement and in an opportunity are read as before", () => {
+    it("the same plan steps in statements and opportunities pass under the current research checks", () => {
       for (const text of CORE) {
-        expect(check(answer(mode, { statement: text })), text).toMatchObject({ ok: false, field: "hypotheses[0].statement", ...REFUSED_RANKING });
-        expect(check(answer(mode, { opportunity: text })), text).toMatchObject({ ok: false, field: "opportunities[0]", ...REFUSED_RANKING });
+        expect(check(answer(mode, { statement: text })), text).toMatchObject({ ok: true, output: { hypotheses: [{ statement: text }], unverified: [] } });
+        expect(check(answer(mode, { opportunity: text })), text).toMatchObject({ ok: true, output: { opportunities: [text], unverified: [] } });
       }
     });
   });

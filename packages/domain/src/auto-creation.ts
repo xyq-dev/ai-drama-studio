@@ -22,6 +22,7 @@ import {
   WRITING_BODY_MAX_CHARS,
   AUTO_MARKET_EVIDENCE_NOTES,
   AUTO_RESEARCH_LIMITED_FORBIDDEN,
+  AUTO_RESEARCH_REJECTION_EXCERPT_MAX_CHARS,
   AUTO_RESEARCH_SERVER_KEYS,
   AUTO_RESEARCH_STRUCTURE_SERVER_KEYS,
   AUTO_UNVERIFIED_DURATION_NOTE,
@@ -48,6 +49,7 @@ import {
   autoUnverifiedOf,
   autoCreationRevisionsPerRound,
   autoCreationWritesStoryProse,
+  isSafeAutoResearchRejectionClause,
   type AutoBible,
   type AutoCheckFinding,
   type AutoCreationFrozenInput,
@@ -59,6 +61,7 @@ import {
   type AutoReferenceCatalog,
   type AutoResearchAnswer,
   type AutoResearchMode,
+  type AutoResearchRejectionDiagnostic,
   type AutoResearchServerRecord,
   type AutoReviewIssue,
   type AutoReviewOutput,
@@ -692,7 +695,8 @@ export function buildAutoCreationPrompt(stageKey: string, input: AutoCreationFro
 export type AutoValidation = { ok: true; output: AutoStageOutput }
   | { ok: false; code: string; detail?: string; field?: string; category?: string; semantic?: string; rule?: string;
     /** For a viewing time only: the fixed slug of the check that refused it. */
-    reason?: AutoViewingDurationReason };
+    reason?: AutoViewingDurationReason;
+    rejectionDiagnostic?: AutoResearchRejectionDiagnostic };
 
 const UNSAFE = /https?:\/\/|www\.|<\s*\/?\s*(script|iframe|html|a\s)/i;
 const RESERVED = /projectId|reviewStatus|APPROVED|CURRENT/;
@@ -792,8 +796,28 @@ function uncitedNumber(statement: string, field: string, frame: AutoNumberFrame,
 }
 
 function numberRefusal(finding: AutoNumberFinding, field: string): AutoValidation {
+  const rejectionDiagnostic = rankingDiagnostic(finding);
   return { ok: false, code: finding.semantic === "frozen_conflict" ? "constraint_violation" : "unsourced_number", detail: finding.token, field,
-    category: finding.kind, semantic: finding.semantic, rule: finding.rule, ...(finding.reason ? { reason: finding.reason } : {}) };
+    category: finding.kind, semantic: finding.semantic, rule: finding.rule, ...(finding.reason ? { reason: finding.reason } : {}),
+    ...(rejectionDiagnostic ? { rejectionDiagnostic } : {}) };
+}
+
+/** Only the raw failed clause from the ordinal reader is eligible. Check all of it before making a preview. */
+function rankingDiagnostic(finding: AutoNumberFinding): AutoResearchRejectionDiagnostic | undefined {
+  if (finding.kind !== "rank" || finding.semantic !== "market_statistic" || finding.rule !== "ranking") return undefined;
+  const clause = finding.rankingClause?.trim();
+  if (!clause || !isSafeAutoResearchRejectionClause(clause)) return undefined;
+  const ordinal = finding.token.slice("名次".length);
+  const matches = [...clause.matchAll(new RegExp([...ordinal].join("[ \\u3000]*"), "gu"))];
+  if (matches.length === 0) return undefined;
+  const chars = [...clause];
+  const max = AUTO_RESEARCH_REJECTION_EXCERPT_MAX_CHARS;
+  if (chars.length <= max) return { excerpt: clause, truncated: false };
+  if (matches.length !== 1) return undefined;
+  const match = matches[0]!;
+  const at = [...clause.slice(0, match.index)].length;
+  const start = Math.min(chars.length - max, Math.max(0, at - Math.floor(max / 2)));
+  return { excerpt: chars.slice(start, start + max).join("").trim(), truncated: true };
 }
 
 /**
@@ -806,8 +830,9 @@ function numberRefusal(finding: AutoNumberFinding, field: string): AutoValidatio
  * 三集) or a position in it (第三集) must lie within the work (episode_range_out_of_range), a count whose scope the code
  * cannot place is the same notice, and a new total, a viewing count and a verification plan's sample are read as before.
  */
-function creativeNumber(statement: string, field: string, frame: AutoNumberFrame, notices: AutoUnverifiedNotice[], verificationPlan = false): AutoValidation | null {
-  const reading = uncitedNumberReading(statement, frame, { unverified: true, verificationPlan, structureDesign: true });
+function creativeNumber(statement: string, field: string, frame: AutoNumberFrame, notices: AutoUnverifiedNotice[],
+  options: { verificationPlan?: boolean; researchOrdinals?: boolean } = {}): AutoValidation | null {
+  const reading = uncitedNumberReading(statement, frame, { unverified: true, structureDesign: true, ...options });
   notices.push(...reading.unverified.map((finding): AutoUnverifiedNotice => {
     const at = { origin: "server_check", field, token: finding.token, semantic: "unclassified" } as const;
     if (finding.rule === "duration_unconfirmed") return { ...at, rule: "duration_unconfirmed", note: AUTO_UNVERIFIED_DURATION_NOTE };
@@ -904,7 +929,7 @@ function checkResearch(input: AutoCreationFrozenInput, output: AutoResearchAnswe
     }
     // The application is the work's own design, cited or not: a reference sources none of its numbers or findings.
     for (const [text, field] of [[item.application.pattern, `${at}.application.pattern`], [item.application.why, `${at}.application.why`]] as const) {
-      const problem = creativeNumber(text, field, frame, notices)
+      const problem = creativeNumber(text, field, frame, notices, { researchOrdinals: true })
         ?? (settledMarketClaim(text) ? { ok: false, code: "unsourced_claim", detail: "application", field } satisfies AutoValidation : null);
       if (problem) return problem;
     }
@@ -940,7 +965,7 @@ function checkResearch(input: AutoCreationFrozenInput, output: AutoResearchAnswe
     ...output.opportunities.map((item, index): [string, string, boolean] => [item, `opportunities[${String(index)}]`, false]),
   ];
   for (const [statement, field, verificationPlan] of uncited) {
-    const problem = creativeNumber(statement, field, frame, notices, verificationPlan);
+    const problem = creativeNumber(statement, field, frame, notices, { verificationPlan, researchOrdinals: true });
     if (problem) return problem;
   }
   // Limited mode means no readable, dated, recent market source: an audience can then only be a hypothesis.

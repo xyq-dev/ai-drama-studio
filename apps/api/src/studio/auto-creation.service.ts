@@ -205,12 +205,12 @@ export class AutoCreationService {
     return null;
   }
 
-  private view(bundle: AutoRunBundle) {
-    return autoRunView(bundle, { researchFetch: this.deps.research.fetchEnabled });
+  private view(bundle: AutoRunBundle, includeResearchRejectionDiagnostic = false) {
+    return autoRunView(bundle, { researchFetch: this.deps.research.fetchEnabled, includeResearchRejectionDiagnostic });
   }
 
-  private found(bundle: AutoRunBundle | null, status = 200): AutoCreationResult {
-    return bundle ? { status, body: { run: this.view(bundle) } } : failure(404, "NOT_FOUND");
+  private found(bundle: AutoRunBundle | null, status = 200, includeResearchRejectionDiagnostic = false): AutoCreationResult {
+    return bundle ? { status, body: { run: this.view(bundle, includeResearchRejectionDiagnostic) } } : failure(404, "NOT_FOUND");
   }
 
   async start(projectId: string, body: unknown, token: OperatorProof | string | undefined, context: StudioContext): Promise<AutoCreationResult> {
@@ -305,17 +305,17 @@ export class AutoCreationService {
     return this.found(created.bundle, created.kind === "created" ? 201 : 200);
   }
 
-  async latest(projectId: string): Promise<AutoCreationResult> {
+  async latest(projectId: string, includeResearchRejectionDiagnostic = false): Promise<AutoCreationResult> {
     const refused = await this.readable(projectId);
     if (refused) return refused;
     const bundle = await this.deps.store.latestRun(this.deps.workspaceId, projectId);
-    return { status: 200, body: { run: bundle ? this.view(bundle) : null } };
+    return { status: 200, body: { run: bundle ? this.view(bundle, includeResearchRejectionDiagnostic) : null } };
   }
 
-  async get(projectId: string, runId: string): Promise<AutoCreationResult> {
+  async get(projectId: string, runId: string, includeResearchRejectionDiagnostic = false): Promise<AutoCreationResult> {
     const refused = await this.readable(projectId);
     if (refused) return refused;
-    return this.found(await this.deps.store.getRun(this.deps.workspaceId, projectId, runId));
+    return this.found(await this.deps.store.getRun(this.deps.workspaceId, projectId, runId), 200, includeResearchRejectionDiagnostic);
   }
 
   async cancel(projectId: string, runId: string): Promise<AutoCreationResult> {

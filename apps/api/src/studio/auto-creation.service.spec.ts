@@ -4,6 +4,9 @@ import { PersistenceError } from "@ai-drama/database";
 import type { FetchedPage } from "@ai-drama/domain";
 import { AutoCreationEngine, InMemoryAutoCreationStore, hashAutoCreationInput, titleWritingProviderConfigs, type TitleWritingProviderEnv } from "@ai-drama/providers";
 import { autoFixtureTransport, type AutoFixtureExchange, type AutoFixturePlan } from "@ai-drama/providers/title-writing-fixtures";
+import { hashPassword } from "../auth/password-hash";
+import { SiteAuth } from "../auth/site-auth";
+import { AutoCreationController } from "./auto-creation.controller";
 import { AutoCreationService } from "./auto-creation.service";
 
 /** The automatic creation API boundary against the in-process store and the model double (no network, no database). */
@@ -92,6 +95,73 @@ function asStoredBy(store: InMemoryAutoCreationStore, runId: string, version: "v
 const errorCode = (body: unknown) => (body as { error?: { code?: string } }).error?.code;
 
 describe("automatic creation API", () => {
+  it("exposes a ranking refusal excerpt only to the signed-in GET reader until resume clears it", async () => {
+    const { service, store, settle } = setup({ fixture: { verificationSample: "ranking" } });
+    const started = await service.start(P1, { revisionRounds: 0, callBudget: 7 }, TOKEN, CONTEXT("rank-rejection"));
+    const runId = (started.body as { run: AutoCreationRunView }).run.runId;
+    await settle();
+
+    const publicStage = (body: unknown) => (body as { run: AutoCreationRunView }).run.stages.find(({ stageKey }) => stageKey === "research");
+    const excerpt = /计划在第一轮试读后比较排名第一的作品/u;
+    const storedStage = store.stages.find(({ stageKey }) => stageKey === "research");
+    expect(storedStage).toMatchObject({ state: "rejected", output: null, outputHash: null, dependsOn: null,
+      rejectionDiagnostic: { excerpt: expect.stringMatching(excerpt), truncated: false } });
+    expect(JSON.stringify(store.calls)).not.toMatch(excerpt);
+    expect(publicStage((await service.get(P1, runId)).body)).not.toHaveProperty("rejectionDiagnostic");
+    for (const format of ["json", "markdown"]) expect((await service.package(P1, runId, format)).download?.text).not.toMatch(excerpt);
+
+    const origin = "http://127.0.0.1";
+    const password = "only-used-in-this-local-test";
+    const passwordHash = await hashPassword(password, { log2N: 15, r: 8, p: 1, saltBytes: 16, keyBytes: 32 });
+    const auth = new SiteAuth({ username: "test-user", passwordHash, publicOrigin: origin });
+    const client = new AutoCreationController(service, { kind: "enabled", auth });
+    const { cookies } = await auth.login({ origin, "content-type": "application/json" }, { username: "test-user", password });
+    const cookie = cookies.map((item) => item.split(";", 1)[0]).join("; ");
+    const response = { status() {}, setHeader() {} };
+    const signedIn = { cookie };
+    for (const body of [await client.latest(P1, response, signedIn), await client.get(P1, runId, response, signedIn)]) {
+      expect(publicStage(body)).toMatchObject({ rejectionDiagnostic: { excerpt: expect.stringMatching(excerpt), truncated: false } });
+    }
+    expect(publicStage(await client.get(P1, runId, response, { cookie: `${auth.sessionCookie}=invalid` }))).not.toHaveProperty("rejectionDiagnostic");
+    const disabled = new AutoCreationController(service, { kind: "disabled" });
+    expect(publicStage(await disabled.get(P1, runId, response, signedIn))).not.toHaveProperty("rejectionDiagnostic");
+
+    const restart = setup({ store });
+    const restarted = new AutoCreationController(restart.service, { kind: "enabled", auth });
+    const resumed = await restart.service.resume(P1, runId, {}, TOKEN, CONTEXT("rank-resume"));
+    expect(resumed.status).toBe(200);
+    expect(storedStage).not.toHaveProperty("rejectionDiagnostic");
+    expect(publicStage(await restarted.get(P1, runId, response, signedIn))).not.toHaveProperty("rejectionDiagnostic");
+    await restart.settle();
+    expect(publicStage(await restarted.get(P1, runId, response, signedIn))).toMatchObject({ state: "completed" });
+    expect(JSON.stringify(store.stages)).not.toMatch(excerpt);
+  });
+
+  it("never keeps a ranking excerpt carrying a JSON-escaped echo of the active provider key", async () => {
+    const syntheticKey = "只供替身测试的随机串";
+    const escapedKey = [...syntheticKey].map((char) => `\\u${char.charCodeAt(0).toString(16)}`).join("");
+    const rawEcho = JSON.stringify(escapedKey).slice(1, -1);
+    const { service, store, providers, run } = setup({ defaultProvider: "openai", env: { ...BOTH, OPENAI_API_KEY: syntheticKey } });
+    const transport = autoFixtureTransport({ plan: { verificationSample: "ranking" } });
+    const engine = new AutoCreationEngine({ workspaceId: WS, store, providers, maxCallsPerDay: 30, transport: async (request) => {
+      const response = await transport(request);
+      const original = new TextDecoder().decode(response.body ?? undefined);
+      const withEcho = original.replace("排名第一的作品", `排名第一的作品${rawEcho}`);
+      return { ...response, body: new TextEncoder().encode(withEcho) };
+    } });
+    const started = await service.start(P1, { revisionRounds: 0 }, TOKEN, CONTEXT("rank-key-echo"));
+    expect(started.status).toBe(201);
+    const runId = (started.body as { run: AutoCreationRunView }).run.runId;
+    await engine.drive(runId);
+
+    expect(await run(runId)).toMatchObject({ state: "failed", errorCode: "unsourced_number", callsUsed: 1 });
+    const rejected = store.stages.find(({ stageKey }) => stageKey === "research");
+    expect(rejected).toMatchObject({ state: "rejected", output: null,
+      errorCode: "unsourced_number@hypotheses[0].howToVerify:rank+market_statistic+ranking" });
+    expect(rejected).not.toHaveProperty("rejectionDiagnostic");
+    expect(JSON.stringify({ stages: store.stages, calls: store.calls })).not.toContain(syntheticKey);
+  });
+
   it("validates and freezes the quote preference without granting media authorization on start or replay", async () => {
     const { service, store, pending } = setup();
     expect((await service.start(P1, { autoStoryboardAfterScripts: "true" }, TOKEN, CONTEXT("invalid"))).status).toBe(400);

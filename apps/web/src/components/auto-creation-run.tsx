@@ -25,6 +25,7 @@ import {
   autoCanResume,
   autoErrorText,
   autoOutputRefused,
+  autoResearchRejectionDiagnosticOf,
   autoResumeRefused,
   clearPendingResume,
   readPendingResume,
@@ -153,7 +154,9 @@ export function AutoCreationRun({ projectId, client = defaultClient, selectedRun
   }
 
   const sources = stageOf(run, "sources")?.output as AutoSourcesOutput | null | undefined;
-  const research = stageOf(run, "research")?.output as AutoStoredResearch | null | undefined;
+  const researchStage = stageOf(run, "research");
+  const research = researchStage?.output as AutoStoredResearch | null | undefined;
+  const researchRejectionDiagnostic = researchStage ? autoResearchRejectionDiagnosticOf(researchStage) : null;
   const directions = stageOf(run, "directions")?.output as AutoDirectionsOutput | null | undefined;
   const bible = (stageOf(run, "bible")?.output as AutoBible | null | undefined) ?? undefined;
   const outline = stageOf(run, "outline")?.output as AutoOutline | null | undefined;
@@ -325,6 +328,11 @@ export function AutoCreationRun({ projectId, client = defaultClient, selectedRun
                   <span className={styles.warning} data-testid={`auto-script-save-${stage.stageKey}`}>这一集作品里已有剧本，没有覆盖（AI 版本保留在剧本包中）</span>
                 ) : null}
                 {stage.errorCode && stage.state !== "completed" ? <span className={styles.stepError}>{autoErrorText(stage.errorCode)}</span> : null}
+                {stage === researchStage && researchRejectionDiagnostic ? (
+                  <span className={styles.helper} data-testid="auto-rejection-diagnostic">
+                    拒收片段「{researchRejectionDiagnostic.excerpt}」{researchRejectionDiagnostic.truncated ? "（片段已截断）" : ""}
+                  </span>
+                ) : null}
               </li>
             ))}
           </ol>
