@@ -275,6 +275,7 @@ export class AutoCreationService {
       researchFetch,
       episodeCount: plan.episodeCount,
       episodeSeconds: plan.targetEpisodeSeconds,
+      autoStoryboardAfterScripts: request.autoStoryboardAfterScripts,
       revisionRounds: request.revisionRounds,
       callBudget,
       providerKey,

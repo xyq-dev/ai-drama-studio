@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   TITLE_WRITING_PROVIDER_LABELS,
+  autoStageEpisodeNo,
   autoNoticeText,
   autoResearchHasServerRecord,
   autoResearchMarketEvidence,
@@ -38,6 +39,7 @@ import {
   type PendingAutoResume,
 } from "../lib/auto-creation-client";
 import { AutoEpisodeList } from "./auto-episode-list";
+import { AutoEpisodeStoryboards } from "./auto-episode-storyboards";
 import { BeginnerShell } from "./beginner-shell";
 import { ShortSequelEntry } from "./short-sequel-entry";
 import styles from "./title-writing.module.css";
@@ -170,6 +172,8 @@ export function AutoCreationRun({ projectId, client = defaultClient, selectedRun
   const directionNotices = autoUnverifiedOf(directions).filter((item) => item.field.startsWith(`candidates[${String(chosenIndex)}].`));
   const runError = autoErrorText(run.errorCode);
   const rejected = run.stages.find((stage) => stage.state === "rejected" || stage.state === "unknown");
+  const writing = run.state === "running" ? run.stages.find((stage) => stage.kind === "episode" && (stage.state === "submitted" || stage.state === "reserved")) : undefined;
+  const writingEpisodeNo = writing ? autoStageEpisodeNo(writing.stageKey) : null;
 
   function resume() {
     if (acting.current) return;
@@ -214,11 +218,12 @@ export function AutoCreationRun({ projectId, client = defaultClient, selectedRun
 
         <section className={autoStyles.section} aria-labelledby="auto-status-title" data-testid="auto-status">
           <h2 id="auto-status-title" className={styles.sectionTitle}>状态</h2>
+          {writingEpisodeNo !== null ? <p role="status">正在写第 {writingEpisodeNo} 集</p> : null}
           <ul className={autoStyles.list}>
             <li data-testid="auto-package-status">剧本包：{run.packageStatus === "ready" ? "已完成，可下载" : run.packageStatus === "in_progress" ? "进行中" : "未完成"}</li>
             <li data-testid="auto-quality">机器质量检查（内部参考，不是人工审核）：{run.quality === "passed" ? "通过" : run.quality === "needs_work" ? "待完善" : "未完成"}</li>
             <li>人工审核：{run.storySave === "saved" ? "故事已存为「AI 自动生成草稿」，请在作品中由人审核" : run.storySave === "conflict" ? "作品已有故事，未覆盖" : "尚未保存"}</li>
-            <li data-testid="auto-video-status">视频成片：未开始（本功能不生成图片、语音或视频；当前没有接入真实媒体服务）</li>
+            <li data-testid="auto-video-status">视频成片：未开始。之后可以去生成配音、动态和成片。</li>
           </ul>
           {runError ? <p className={run.state === "completed" ? styles.warning : styles.error} role="status">{runError}</p> : null}
           {run.openIssues.length > 0 ? (
@@ -296,10 +301,15 @@ export function AutoCreationRun({ projectId, client = defaultClient, selectedRun
           </details>
         ) : null}
 
-        <AutoEpisodeList key={run.runId} run={run} bible={bible} outline={outline}
-          continuation={run.state === "completed"
-            ? <ShortSequelEntry projectId={projectId} afterEpisodeNo={run.episodeCount} />
-            : undefined} />
+        {Object.keys(run.currentEpisodes).length > 0 ? (
+          <AutoEpisodeStoryboards key={run.runId} projectId={projectId} runId={run.runId}
+            autoQuote={run.autoStoryboardAfterScripts === true && run.packageStatus === "ready"} refreshKey={run.updatedAt}>
+            {(storyboards) => <AutoEpisodeList run={run} bible={bible} outline={outline} storyboards={storyboards}
+              continuation={run.state === "completed"
+                ? <ShortSequelEntry projectId={projectId} afterEpisodeNo={run.episodeCount} />
+                : undefined} />}
+          </AutoEpisodeStoryboards>
+        ) : null}
 
         <section className={autoStyles.section} aria-labelledby="auto-stages-title">
           <h2 id="auto-stages-title" className={styles.sectionTitle}>阶段</h2>

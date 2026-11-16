@@ -175,6 +175,9 @@ export {
   type MockSmProvisionResult,
 } from "./provision-mock-sm";
 export { AUTO_CREATION_TABLES, PostgresAutoCreationStore } from "./auto-creation-store";
+export * from "./auto-episode-storyboard-media";
+export { readAutoEpisodeStoryboardSources, requireAutoEpisodeStoryboardShot,
+  type AutoEpisodeStoryboardBlocker, type AutoEpisodeStoryboardScope, type AutoEpisodeStoryboardSource } from "./auto-episode-storyboard-source";
 export { SERIES_WRITING_TABLES, PostgresSeriesWritingStore } from "./series-writing-store";
 export { PostgresTitleWritingStore, SCRIPT_BREAKDOWN_COLUMNS, SCRIPT_BREAKDOWN_MIGRATION, TITLE_WRITING_MIGRATION, TITLE_WRITING_TABLES } from "./title-writing-store";
 export {

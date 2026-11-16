@@ -84,13 +84,29 @@ function snapshot(store: InMemoryAutoCreationStore, runId: string) {
 /** Leaves a stored run as older code froze it: that code's versions in its input and the hash it computed over them. */
 function asStoredBy(store: InMemoryAutoCreationStore, runId: string, version: "v1" | "v2") {
   const run = store.runs.find((item) => item.id === runId)!;
-  run.input = { ...run.input, promptVersion: `ads.auto-creation.prompt.${version}`, checksVersion: `ads.auto-creation.checks.${version}` };
+  const { autoStoryboardAfterScripts: _oldRunHasNoPreference, ...historical } = run.input;
+  run.input = { ...historical, promptVersion: `ads.auto-creation.prompt.${version}`, checksVersion: `ads.auto-creation.checks.${version}` };
   run.inputHash = hashAutoCreationInput(run.projectId, run.input);
 }
 
 const errorCode = (body: unknown) => (body as { error?: { code?: string } }).error?.code;
 
 describe("automatic creation API", () => {
+  it("validates and freezes the quote preference without granting media authorization on start or replay", async () => {
+    const { service, store, pending } = setup();
+    expect((await service.start(P1, { autoStoryboardAfterScripts: "true" }, TOKEN, CONTEXT("invalid"))).status).toBe(400);
+    expect(store.runs).toHaveLength(0);
+    const context = CONTEXT("storyboards");
+    const started = await service.start(P1, { autoStoryboardAfterScripts: true }, TOKEN, context);
+    expect(started.status).toBe(201);
+    expect(started.body).toMatchObject({ run: { autoStoryboardAfterScripts: true, state: "running" } });
+    expect(store.runs[0]?.input.autoStoryboardAfterScripts).toBe(true);
+    expect((await service.start(P1, { autoStoryboardAfterScripts: true }, TOKEN, context)).status).toBe(200);
+    expect(errorCode((await service.start(P1, {}, TOKEN, context)).body)).toBe("IDEMPOTENCY_KEY_REUSED");
+    expect(pending).toHaveLength(1);
+    expect(store.calls).toHaveLength(0);
+  });
+
   it("options name the real provider, the research limits and the missing media capabilities", async () => {
     const { service } = setup({ defaultProvider: "anthropic" });
     const options = (await service.options()).body as AutoCreationOptionsView;

@@ -89,6 +89,7 @@ interface ShownSettings {
   idea: string;
   episodeCount: number;
   seconds: number;
+  autoStoryboardAfterScripts: boolean;
   genre: string;
   audience: string;
   maxCharacters: string;
@@ -110,6 +111,7 @@ function frozenSettings(request: AutoStartBody): ShownSettings {
   const material = request.materials?.[0];
   return {
     idea: request.idea ?? "", episodeCount: request.episodeCount, seconds: request.episodeSeconds,
+    autoStoryboardAfterScripts: request.autoStoryboardAfterScripts === true,
     genre: constraints.genre ?? "", audience: constraints.audience ?? "",
     maxCharacters: typeof constraints.maxCharacters === "number" ? String(constraints.maxCharacters) : "",
     maxLocations: typeof constraints.maxLocations === "number" ? String(constraints.maxLocations) : "",
@@ -139,6 +141,7 @@ export function AutoCreationStart() {
   const [idea, setIdea] = useState("");
   const [selectedEpisodeCount, setSelectedEpisodeCount] = useState<number | null>(null);
   const [selectedSeconds, setSelectedSeconds] = useState<number | null>(null);
+  const [autoStoryboardAfterScripts, setAutoStoryboardAfterScripts] = useState(false);
   const [genre, setGenre] = useState("");
   const [audience, setAudience] = useState("");
   const [maxCharacters, setMaxCharacters] = useState("");
@@ -180,7 +183,7 @@ export function AutoCreationStart() {
   // While a start is pending, the card shows the request a retry replays; loaded options and defaults never change it.
   const frozen = pending?.request ?? null;
   const shown: ShownSettings = frozen ? frozenSettings(frozen) : {
-    idea, episodeCount, seconds, genre, audience, maxCharacters, maxLocations, forbidden, ending, rounds, budget,
+    idea, episodeCount, seconds, autoStoryboardAfterScripts, genre, audience, maxCharacters, maxLocations, forbidden, ending, rounds, budget,
     materialTitle, materialText, materialRights, providerKey,
   };
   const shownGenre = shown.genre.trim();
@@ -269,6 +272,7 @@ export function AutoCreationStart() {
       materials: materialText.trim().length > 0
         ? [{ title: materialTitle.trim() || "我的资料", kind: "notes", text: materialText, rightsConfirmed: true }] : [],
       episodeCount, episodeSeconds: seconds, revisionRounds: rounds, callBudget: budgetValue,
+      autoStoryboardAfterScripts,
       ...(chosen ? { providerKey: chosen.providerKey, ...(chosen.defaultModel ? { model: chosen.defaultModel } : {}) } : {}),
     };
     const draft: PendingAutoStart = {
@@ -335,6 +339,12 @@ export function AutoCreationStart() {
           </select>
         </div>
       </div>
+      <label className={styles.check}>
+        <input type="checkbox" checked={shown.autoStoryboardAfterScripts} disabled={locked}
+          onChange={(event) => setAutoStoryboardAfterScripts(event.target.checked)} />
+        剧本写完后，自动为每集生成分镜头
+      </label>
+      <p className={styles.helper}>默认只写故事和剧本。勾选后，等你审核故事、写入分集并备好镜头，再自动打开报价。确认费用后才出图。</p>
       <details className={styles.more}>
         <summary>高级设置（可不填，留空由 AI 决定；填写的内容是必须遵守的硬约束）</summary>
         <div className={styles.moreGrid}>
@@ -395,7 +405,7 @@ export function AutoCreationStart() {
               {research?.fetchEnabled ? `，并读取公开页面（${research.allowedHosts.join("、")}）` : "；服务端未开启公开页面读取"}；没有视频画面分析能力，只分析文字。
               {research?.expectedMode === "limited" ? "预计为「AI 创作策划」：市场证据不可用，受众待验证；方法资料和你的资料仍可作为方法引用，不是实时市场验证。最终以开始后服务端保存的资料快照为准。" : null}</li>
             <li>每集时长是写作目标，不代表成片长度。完成后保存为「AI 自动生成草稿」，机器质量检查不等于人工审核，也不会自动发布。</li>
-            <li>本功能只交付剧本包和生产准备包；当前没有接入真实图片、语音、视频服务，不会生成成片。</li>
+            <li>本次先交付故事正文和分集剧本。分镜图另行报价确认，配音、动态和成片不在本次任务内。</li>
           </ul>
         ) : null}
         {budgetProblem ? <p className={styles.warning} role="status">{budgetProblem}</p> : null}

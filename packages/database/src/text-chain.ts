@@ -6,6 +6,7 @@ import {
   type ReviewStatus,
 } from "@ai-drama/domain";
 import type { PoolClient, QueryResultRow } from "pg";
+import { RETAINED_AUTO_STORYBOARD_IMAGE_FILTER } from "./auto-episode-storyboard-media";
 import { PersistenceError, type DatabasePool } from "./job-service";
 import { projectEpisodePlanIn } from "./episode-plan";
 import { assertWorkbenchScript, assertWorkbenchStoryApproval, invalidateWorkbenchDependents } from "./script-workbench-validation";
@@ -298,16 +299,16 @@ async function storyboardPage(client: PoolClient, collection: string, values: un
     AND portrait_asset.reviewed_content_hash = portrait_asset.checksum_sha256
     AND portrait_asset.mime_type = 'image/png' AND portrait_asset.storage_provider = 'mock-object-store'` : "";
   const selection = tables?.selections === true ? `(SELECT chosen.asset_id FROM comfyui_shot_image_selection chosen
-    JOIN asset selected ON selected.id = chosen.asset_id AND selected.workspace_id = chosen.workspace_id
-      AND selected.project_id = chosen.project_id AND selected.source_shot_revision_id = chosen.shot_revision_id
-      AND selected.status = 'ACTIVE' AND selected.review_status <> 'REJECTED' AND selected.kind = 'IMAGE'
-      AND selected.checksum_sha256 = chosen.asset_checksum_sha256
-    JOIN generation_job job ON job.id = selected.source_generation_job_id AND job.workspace_id = $1 AND job.project_id = $2
+    JOIN asset ON asset.id = chosen.asset_id AND asset.workspace_id = chosen.workspace_id
+      AND asset.project_id = chosen.project_id AND asset.source_shot_revision_id = chosen.shot_revision_id
+      AND asset.status = 'ACTIVE' AND asset.review_status <> 'REJECTED' AND asset.kind = 'IMAGE'
+      AND asset.checksum_sha256 = chosen.asset_checksum_sha256
+    JOIN generation_job job ON job.id = asset.source_generation_job_id AND job.workspace_id = $1 AND job.project_id = $2
       AND job.source_shot_revision_id = revision.id AND job.state = 'SUCCEEDED'
-      AND job.input_snapshot #>> '{configuration,providerKey}' = 'comfyui'
     WHERE chosen.workspace_id = $1 AND chosen.project_id = $2 AND chosen.shot_revision_id = revision.id
       AND shot_page.approved_revision_id = revision.id AND revision.review_status = 'APPROVED'
-      AND revision.freshness_status = 'CURRENT')` : "NULL::uuid";
+      AND revision.freshness_status = 'CURRENT'
+      AND (job.input_snapshot #>> '{configuration,providerKey}' = 'comfyui' OR (${RETAINED_AUTO_STORYBOARD_IMAGE_FILTER})))` : "NULL::uuid";
   return client.query<QueryResultRow>(`WITH shot_page AS (${collection})
     SELECT shot_page.*, CASE WHEN revision.id IS NULL THEN NULL ELSE jsonb_build_object(
       'ordinal', revision.ordinal, 'shotType', revision.shot_type, 'camera', revision.camera,

@@ -264,6 +264,8 @@ export const autoCreationStartSchema = z.object({
   referenceUrls: z.array(z.string().url().max(500)).max(3).default([]),
   episodeCount: z.number().int().min(TITLE_WRITING_MIN_EPISODES).max(TITLE_WRITING_MAX_EPISODES).optional(),
   episodeSeconds: z.number().int().optional(),
+  /** Open the image quote after the production prerequisites; never authorizes a paid call. */
+  autoStoryboardAfterScripts: z.boolean().default(false),
   revisionRounds: z.number().int().min(0).max(AUTO_CREATION_MAX_REVISION_ROUNDS).default(AUTO_CREATION_MAX_REVISION_ROUNDS),
   /** The person's own call budget for this run; at least the normal calls and at most the hard cap. Default: hard cap. */
   callBudget: z.number().int().min(1).max(60).optional(),
@@ -316,6 +318,8 @@ export interface AutoCreationFrozenInput {
   researchFetch: boolean;
   episodeCount: number;
   episodeSeconds: number;
+  /** Absent on older runs; treated as false. */
+  autoStoryboardAfterScripts?: boolean;
   revisionRounds: number;
   callBudget: number;
   maxOutputTokens: number;
@@ -1357,6 +1361,7 @@ export interface AutoCreationRunView {
   constraints: AutoCreationConstraints;
   episodeCount: number;
   episodeSeconds: number;
+  autoStoryboardAfterScripts?: boolean;
   providerKey: TitleWritingStoredProviderKey;
   model: string;
   authorization: AutoCreationAuthorization;

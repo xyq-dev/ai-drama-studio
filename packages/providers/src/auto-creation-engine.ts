@@ -84,8 +84,9 @@ function sha256(value: string): string {
  * recorded with the run but is not part of the identity, so a lost receipt replayed under the other proof still finds it.
  */
 export function hashAutoCreationInput(projectId: string, input: AutoCreationFrozenInput): string {
-  const { authorization: _authorization, ...creative } = input;
-  return canonicalInputHash({ projectId, input: creative });
+  const { authorization: _authorization, autoStoryboardAfterScripts, ...creative } = input;
+  // False is equivalent to an omitted preference, preserving keys and hashes from before this option existed.
+  return canonicalInputHash({ projectId, input: { ...creative, ...(autoStoryboardAfterScripts === true ? { autoStoryboardAfterScripts } : {}) } });
 }
 
 export function hashAutoResume(runId: string, confirmed: readonly string[]): string {
@@ -104,6 +105,7 @@ export function newAutoRun(options: {
   researchFetch: boolean;
   episodeCount: number;
   episodeSeconds: number;
+  autoStoryboardAfterScripts?: boolean;
   revisionRounds: number;
   callBudget: number;
   providerKey: TitleWritingStoredProviderKey;
@@ -128,6 +130,7 @@ export function newAutoRun(options: {
     researchFetch: options.researchFetch,
     episodeCount: options.episodeCount,
     episodeSeconds: options.episodeSeconds,
+    autoStoryboardAfterScripts: options.autoStoryboardAfterScripts === true,
     revisionRounds: options.revisionRounds,
     callBudget: options.callBudget,
     maxOutputTokens: TEXT_WRITING_MAX_OUTPUT_TOKENS,
@@ -216,6 +219,7 @@ export function autoRunView(bundle: AutoRunBundle, options: { researchFetch?: bo
     constraints: input.constraints,
     episodeCount: input.episodeCount,
     episodeSeconds: input.episodeSeconds,
+    autoStoryboardAfterScripts: input.autoStoryboardAfterScripts === true,
     providerKey: input.providerKey,
     model: input.model,
     authorization: input.authorization,

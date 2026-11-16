@@ -1,9 +1,35 @@
 import type { PoolClient } from "pg";
 import { describe,expect,it,vi } from "vitest";
-import { RealMediaStore,type RealMediaExecution } from "./real-media-store";
+import { realMediaInputHash } from "@ai-drama/domain";
+import { RealMediaStore,type FrozenRealMediaInput,type RealMediaExecution } from "./real-media-store";
 import type { DatabasePool } from "./job-service";
 function pool(query:ReturnType<typeof vi.fn>){return {connect:async()=>({query,release:()=>undefined})} as unknown as DatabasePool;}
 describe("real media private receipts",()=>{
+  it("fences active, ambiguous or already successful storyboard images at each locked payment boundary",async()=>{
+    const frozen={schema:"real-media.v1",shotRevisionId:"revision",capability:"image.generate",sourceText:"saved test prompt",sourceHash:"hash",
+      autoStoryboard:{runId:"run",shotId:"stable-shot"},configuration:{id:"pc",enabled:true,providerKey:"openai-media",model:"gpt-image-2.5-sunburst",
+        capability:"image.generate",currency:"USD",unitType:"image",unitPrice:"0.04",parameters:{baseUrl:"https://example.test",quality:"max",size:"1024x1536"}}} as FrozenRealMediaInput;
+    const row={estimated_amount:"0.04",maximum_amount:"0.04",quote_limit_amount:"0.04",authorized_at:"2026-01-01T00:00:00Z",
+      expires_at:"2099-01-01T00:00:00Z",input_snapshot:frozen,input_hash:realMediaInputHash(frozen),confirmed_uncertain_job_ids:[]};
+    const query=vi.fn(async(sql:string,_values?:unknown[])=>({rows:sql.includes("obj_description")?[{ready:true,selection:true}]:sql.includes("FROM project")?[{id:"p"}]:
+      sql.includes("SELECT * FROM real_media_authorization")?[row]:sql.includes("revision.shot_id=$3")?[{occupied:true}]:[],rowCount:1}));
+    const store=new RealMediaStore(pool(query));
+    const scope={workspaceId:"w",projectId:"p",actorId:"actor"};
+    await expect(store.createQuote({...scope,frozen})).rejects.toMatchObject({code:"AUTO_STORYBOARD_SHOT_BUSY"});
+    await expect(store.authorize({...scope,quoteId:"quote",maximumAmount:"0.04",confirmedUncertainJobIds:["old-job"]})).rejects.toMatchObject({code:"AUTO_STORYBOARD_SHOT_BUSY"});
+    await expect(store.transaction(client=>store.consumeAuthorization(client,{...scope,quoteId:"quote",budgetAuthorizationId:"auth"}))).rejects.toMatchObject({code:"AUTO_STORYBOARD_SHOT_BUSY"});
+    const execution={...scope,jobId:"second-job",inputSnapshot:{...frozen,budget:{authorizationId:"auth",confirmedUncertainJobIds:[]}}} as unknown as RealMediaExecution;
+    await expect(store.beginSubmission({execution,attemptId:"attempt",leaseOwner:"worker",validateInTransaction:async()=>undefined})).rejects.toMatchObject({code:"AUTO_STORYBOARD_SHOT_BUSY"});
+    const fences=query.mock.calls.filter(([sql])=>sql.includes("revision.shot_id=$3"));
+    expect(fences).toHaveLength(4);
+    expect(fences[0]?.[0]).toContain("receipt.state IN ('INTENT','UNKNOWN','ACKNOWLEDGED')");
+    expect(fences[0]?.[0]).toContain("job.state='SUCCEEDED'");
+    expect(fences.map(([,values])=>values)).toEqual([
+      ["w","p","stable-shot",null,"revision","run"],["w","p","stable-shot",null,"revision","run"],
+      ["w","p","stable-shot",null,"revision","run"],["w","p","stable-shot","second-job","revision","run"],
+    ]);
+    expect(query.mock.calls.some(([sql])=>/INSERT INTO real_media_|UPDATE real_media_authorization/.test(sql))).toBe(false);
+  });
   it("checks actual eligibility after obtaining row locks instead of trusting the pre-lock predicate",async()=>{
     const query=vi.fn(async(sql:string)=>({rows:sql.includes("FROM project")?[{id:"p"}]:sql.includes("SELECT j.id FROM generation_job j JOIN job_attempt")?[{id:"j"}]:[],rowCount:1}));
     const store=new RealMediaStore(pool(query));

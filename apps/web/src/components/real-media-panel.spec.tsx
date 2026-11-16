@@ -102,6 +102,21 @@ describe("real media panel explicit paid send and scoped recovery",()=>{
     expect(h.api.quote).toHaveBeenCalledExactlyOnceWith(P,S,"video.generate",OTHER);
     expect(h.api.generate).not.toHaveBeenCalled();
   });
+  it.each(["unconfigured", "absent"] as const)("preselects a kept OpenAI storyboard when ComfyUI capability is %s", async (status) => {
+    const h = setup();
+    h.api.capabilities.mockResolvedValue({ available: true, readAvailable: true, reasonCode: null,
+      capabilities: ["image.generate", "video.generate"], ...(status === "absent" ? {} : { comfyui: { status, workflows: [] } }) });
+    h.items[0]!.sourceGenerationJobId = J;
+    h.api.comfyuiShot.mockResolvedValue({ references: [], jobs: [], selectedAssetId: A, selectionAvailable: true });
+    render(<RealMediaPanel {...h.props} approved />);
+    await open();
+    await screen.findByText("已采用到当前镜头");
+    fireEvent.change(screen.getByLabelText("本次制作"), { target: { value: "video.generate" } });
+    expect((screen.getByLabelText("视频首帧") as HTMLSelectElement).value).toBe(A);
+    await requestQuote();
+    expect(h.api.quote).toHaveBeenCalledExactlyOnceWith(P, S, "video.generate", A);
+    expect(h.api.generate).not.toHaveBeenCalled();
+  });
   it("shows storage recovery and running cancellation boundaries; only a cancellable task is sent",async()=>{
     const shot:ComfyUiShot={references:[],selectedAssetId:null,jobs:[
       {jobId:J,state:"WAITING_EXTERNAL",errorCode:"COMFYUI_RESULT_STORAGE_FAILED"},

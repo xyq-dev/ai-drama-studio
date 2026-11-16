@@ -20,7 +20,7 @@ import {
 } from "@ai-drama/contracts";
 import { AUTO_DRAFT_BANNER, autoContextFromStages, autoPackageJson, autoPackageMarkdown, AUTO_CREATION_SYSTEM_PROMPTS, validateAutoStageOutput } from "@ai-drama/domain";
 import { titleWritingProviderConfigs, type WritingProviderConfig } from "./text-writing";
-import { AutoCreationEngine, InMemoryAutoCreationStore, autoRunView, autoScriptsOf, autoUncertainCallIds, hashAutoResume, newAutoRun } from "./auto-creation-engine";
+import { AutoCreationEngine, InMemoryAutoCreationStore, autoRunView, autoScriptsOf, autoUncertainCallIds, hashAutoCreationInput, hashAutoResume, newAutoRun } from "./auto-creation-engine";
 import {
   AUTO_FIXTURE_UNPLACED, autoFixtureBlock, autoFixtureTransport, fixtureAutoBible, fixtureAutoEpisode, fixtureAutoOutline, fixtureAutoResearchV1, fixtureAutoResearchV2,
   fixtureAutoReview, type AutoFixtureExchange, type AutoFixturePlan,
@@ -37,6 +37,7 @@ function providers(): Record<TitleWritingProviderKey, WritingProviderConfig> {
 
 interface Setup {
   episodeCount?: number;
+  autoStoryboardAfterScripts?: boolean;
   idea?: string;
   constraints?: Partial<AutoCreationConstraints>;
   revisionRounds?: number;
@@ -62,6 +63,7 @@ async function setup(options: Setup = {}) {
     workspaceId: WS, projectId: P1, actorId: "server-owner", idempotencyKey: "key-1",
     idea: options.idea ?? "", constraints: autoCreationConstraintsSchema.parse(options.constraints ?? {}), materials: [], referenceUrls: [],
     researchFetch: false, episodeCount, episodeSeconds: 60, revisionRounds: rounds,
+    autoStoryboardAfterScripts: options.autoStoryboardAfterScripts,
     callBudget: options.callBudget ?? autoCreationHardCap(episodeCount, rounds), providerKey: options.providerKey ?? "anthropic", model: "m-1",
     versions: options.versions,
     authorization: { mode: "auto", proof: "site_session", initiatedBy: "server-owner", executor: "auto-creation-engine" }, now: clock(),
@@ -80,6 +82,19 @@ async function setup(options: Setup = {}) {
 }
 
 describe("automatic creation engine", () => {
+  it.each([false, true])("keeps storyboard preference %s out of the writing run and preserves old request identity", async (preference) => {
+    const { store, run, engine, view, seen } = await setup({ episodeCount: 2, revisionRounds: 0, autoStoryboardAfterScripts: preference });
+    const { autoStoryboardAfterScripts: _preference, ...historical } = run.input;
+    expect(run.input.autoStoryboardAfterScripts).toBe(preference);
+    if (preference) expect(run.inputHash).not.toBe(hashAutoCreationInput(P1, historical));
+    else expect(run.inputHash).toBe(hashAutoCreationInput(P1, historical));
+    const bundle = (await store.getRunById(WS, run.id))!;
+    expect(autoRunView({ ...bundle, run: { ...bundle.run, input: historical } }).autoStoryboardAfterScripts).toBe(false);
+    await engine.drive(run.id);
+    expect(await view()).toMatchObject({ state: "completed", storySave: "saved", autoStoryboardAfterScripts: preference });
+    expect(seen.map(({ stage }) => stage)).toEqual(["research", "directions", "bible", "outline", "episode:1", "episode:2", "review:1"]);
+  });
+
   it("writes a genre-specific complete narrative once and uses its frozen outline for every episode on budget", async () => {
     const { store, run, engine, seen, view } = await setup({ constraints: { genre: "玄幻修仙" }, episodeCount: 2,
       revisionRounds: 0, callBudget: autoCreationNormalCalls(2) });

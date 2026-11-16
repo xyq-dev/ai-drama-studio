@@ -8,7 +8,7 @@
 
 结果页可独立展开「故事正文」阅读全文。正文和大纲由 `outline` 的同一次调用写入既有阶段 JSON。编剧、修订和审阅使用同一份冻结正文。阶段、调用次数与预算沿用原计划。
 
-本功能交付的是**自动生成的剧本包与生产准备包**：故事以「AI 自动生成草稿」保存，分集剧本要写入作品，仍须先由人在作品中审核通过故事（机器质量检查不代替人工审核，本功能不会自动写 APPROVED）；不生成图片、语音或视频。「剧本包完成」与「视频成片完成」是两个状态，后者在本功能里永远是「未开始」。
+本功能交付的是**自动生成的剧本包与生产准备包**：故事以「AI 自动生成草稿」保存，分集剧本要写入作品，仍须先由人在作品中审核通过故事（机器质量检查不代替人工审核，本功能不会自动写 APPROVED）；写作过程本身不自动生成图片、语音或视频；分镜图是剧本写完后的可选项，必须先由人审核故事和分集剧本、写入作品、镜头就绪，并确认费用后才会生成。视频成片仍是未开始。「剧本包完成」与「视频成片完成」是两个状态，后者在本功能里永远是「未开始」。
 
 ## 1. 为什么不复用 `title_writing_*` 表（实施前核验）
 
@@ -406,6 +406,18 @@ contentStructure: [{ reference: { sourceId, quote } | null, application: { patte
 - 返回入口：作品页面（`/projects/<id>/create`，也是「我的作品」里打开作品的页面）在标题下方常驻「回到 AI 自动创作任务」，故事已保存、剧本还没写入时提示「故事人工审核通过后，回到任务里把分集剧本写入作品」。入口只读取作品已有的任务（`GET …/auto-runs/latest`），不创建任务、不续跑、不调用模型；作品没有任务或读取失败时不显示。刷新、重新登录或直接打开作品都能找到。任务页的「去作品中人工审核故事」直接打开故事一步。
 - 页面分开显示：剧本包、机器质量检查（内部参考）、人工审核、视频成片，并逐集显示「已写入 / 已有剧本未覆盖」。剧本包的人工审核字段只在剧本已按人工审核通过的故事写入后才记为通过。完成不等于允许发布。
 
+### 7.1 剧本写完后，按集生成分镜图
+
+开始页的「剧本写完后，自动为每集生成分镜头」默认关闭。冻结输入 `autoStoryboardAfterScripts` 只记录开报价的偏好，旧任务缺少字段按 `false` 读取；`false` 与未提供的启动幂等身份相同。写作、研究和审阅本身不调用拆解或图片服务。不勾也可以在结果页点「生成这一集的分镜头」，全部剧本写出后也有「为全部集生成分镜头」。
+
+1. 先阅读故事和分集剧本。剧本包含最终审阅且完整，当前故事由人审核通过，再使用原有「写入分集剧本草稿」操作。已有人工剧本按原冲突规则保留。已经写入的剧本在工作台由人编辑、审核。
+2. 没有当前有效镜头时，打开本集工作台，用原有「AI 拆解场景与分镜」流程。拆解需由人确认，可能消耗一次文字模型调用，实际费用以平台记录为准。场景批准后才写入镜头草稿。拆解开关未开或存储未就绪时，页面说明原因；不会自行启动、伪造镜头或执行 Migration。
+3. 有效镜头按集展示张数、逐镜报价和合计。手动为全部集报价时，未就绪的集逐一列出原因，不扣费。勾过自动选项时，审核、写入和镜头等条件都具备后，在结果页自动打开报价，仍需明确确认费用。报价未知、失效或镜头结果不确定时停住请人核对；实际费用未知不记作 0。逐镜复用原有报价、单次授权、幂等提交与密封回执。
+4. 这条入口仅在 `REAL_MEDIA_IMAGE_PROVIDER=openai-media` 且 Sunburst 报价可用时出图。固定 `gpt-image-2.5-sunburst`、`quality=max`、`1024x1536`、`output_format=png`、`n=1`。不回落百炼、Flare、DALL·E 或 ComfyUI。没有接通时，页面显示「还没有接通 OpenAI 生图，不能生成分镜头」。密钥和进程环境沿用 [OpenAI 图片适配器](OPENAI_IMAGE_SUNBURST.md)。
+5. 建议先做好角色形象。定妆图存储不可用时，用镜头和人物设定文字保持一致；不为此执行草案 Migration，也不调用图片编辑接口。图片结果和人工「保留」沿用持久媒体素材与镜头选用，图片和文字审核状态独立。若现有图片选用存储不可用，在报价前说明暂不能保留图片。只重做明确失败的一镜；不确定的提交和供应商回执均不自动重发。
+
+这个入口不会审核故事、剧本、角色或分镜。保留图片后，下一步只提示可以去生成配音、动态和成片，本轮不实现后续生产、不接系列写作、不自动发布。验收只用合成夹具和假传输。
+
 ## 8. API（项目范围，`Cache-Control: private, no-store`，沿用登录/Origin/CSRF 或操作者令牌）
 
 | 方法 | 路径 | 说明 |
@@ -416,6 +428,9 @@ contentStructure: [{ reference: { sourceId, quote } | null, application: { patte
 | POST | `.../:runId/cancel` | 停止后续阶段 |
 | POST | `.../:runId/resume` | 续跑（`confirmUncertainCallIds`，需 Idempotency-Key） |
 | POST | `.../:runId/scripts` | 人工审核通过后写入分集剧本草稿 |
+| GET | `.../:runId/storyboards` | 按集读取可出图状态、镜头进度和当前保留图片 |
+| PUT | `.../:runId/storyboards/:shotRevisionId/selection` | 人工保留当前镜头的图片草稿（比对原选用结果） |
+| POST | `/api/v1/projects/:projectId/shot-revisions/:shotRevisionId/real-media/quote` | 既有报价入口，`{capability: "image.generate", autoStoryboardRunId}` 限定本次短剧任务，之后仍走原单次授权与提交接口 |
 | GET | `.../:runId/package?format=markdown\|json` | 成品剧本包下载（人读 / 机读） |
 
 页面：创作入口 `/create` 顶部「AI 自动创作」卡片（原「AI 一键创作」和手动入口保留）；运行页 `/projects/:projectId/auto`。
@@ -473,4 +488,4 @@ DATABASE_URL=<业务库连接串，只在进程环境中> pnpm --filter @ai-dram
 | 2026-10-25 样本动作绑定数量 checks.v9（本机 Windows + Node 24.21，模型替身） | 见第 3.9 节；两条合成样本加入 `auto-creation-verification-sample.spec.ts` 的拒收表，分类器与完整阶段（limited、sourced、系列经 `seriesAutoInput` 传入 60 集）共 8 项。在 main 7d28d3a（checks.v8）未修复代码上先运行：8 项全部失败（分类器返回无拒收，完整阶段 `ok: true`）。修复后该文件 140 项全部通过：两句分别拒为 `market_statistic` / `viewing_count`、`frozen_conflict` / `episode_count`；原三句合法计划（及阿拉伯数字、样片、第 N 集写法）保留原文、无提示；邀请观众试读样稿的对照仍通过；越界、总集数、统计、已执行结果与后续字段照常拒收。domain 1005、providers 352（含规划＋前 3 集 19 次、全流程 96 次）通过；PostgreSQL 与浏览器验收由 PR CI 运行；Migration 编写 0、执行 0；真实模型与媒体调用 0 次 |
 | 2026-10-21 研究契约按资料能力拆分 research.v4 / prompt.v6 / checks.v6（本机 Windows + Node 24.21，模型替身） | 见第 3.5 节与 `docs/AUTO_CREATION_RESEARCH_CAPABILITIES_REPORT.md`；新增 `packages/contracts/src/auto-creation-capabilities.spec.ts`（limited/sourced 两份 JSON Schema 与 Zod 逐键一致、limited 拒收禁止字段即使为空、服务端组装、v3 历史判断）与 `packages/providers/src/auto-creation-capabilities.spec.ts`（捕获引擎实际发给 OpenAI / Claude / DeepSeek 的请求体核对 Schema 与提示、四种资料组合、limited 完整六阶段、注入字段各只发 1 次、sourced 合法与非法事实、v3 历史续跑不重发、原键重放、已保存快照决定续跑契约、预算不足不续跑、无有效快照不预约） |
 
-本功能**未**做：真实模型调用、真实图片/语音/视频、剧本拆解与分镜生产数据写入、业务库或测试站迁移。
+本轮验收**未**做：真实模型调用、真实付费生图/语音/视频、业务库或测试站迁移。可选分镜图能力见第 7.1 节；本轮相关验收均为合成夹具和假传输，不发起真实扣费。剧本拆解仍由人在工作台确认后启动，本路径不自行拆解，也不伪造镜头。

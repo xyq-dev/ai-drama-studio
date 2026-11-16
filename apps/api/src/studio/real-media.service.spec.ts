@@ -1,4 +1,5 @@
 import { describe,expect,it,vi } from "vitest";
+import { adoptAutoStoryboardImage, TextChainService, type DatabasePool } from "@ai-drama/database";
 import type { RealMediaServiceOptions } from "./real-media.service";
 import { RealMediaService } from "./real-media.service";
 function options(){
@@ -7,6 +8,119 @@ function options(){
   return {raw,typed:raw as unknown as RealMediaServiceOptions};
 }
 describe("explicit real-media budget API",()=>{
+  it("projects the same retained OpenAI candidate in both readers once the shot is approved", async () => {
+    const o = options();
+    const scope = { workspaceId: "workspace", projectId: "project", runId: "auto-run" };
+    const shotRevisionId = "shot-revision";
+    const assetId = "retained-openai-image";
+    const checksum = "a".repeat(64);
+    let approved = false;
+    let chosen: string | null = null;
+    // The keep operation validates the job's exact stored source revision. This fixture has no duplicate shot ID in its snapshot.
+    const selection = (sql: string) => approved && sql.includes("'openai-media'") && !sql.includes("'{autoStoryboard,shotId}'") ? chosen : null;
+    const query = vi.fn(async (sql: string, values?: unknown[]) => {
+      if (sql.includes("to_regclass('comfyui_shot_image_selection')")) return { rows: [{ ready: true, selection: true, selections: true }] };
+      if (sql.includes("SELECT 1 FROM shot_revision") || sql.includes("SELECT 1 FROM scene WHERE")) return { rows: [{ ok: true }] };
+      if (sql.includes("SELECT asset.checksum_sha256")) {
+        expect(values).toEqual([scope.workspaceId, scope.projectId, scope.runId, shotRevisionId, assetId]);
+        return { rows: [{ checksum_sha256: checksum }] };
+      }
+      if (sql.includes("INSERT INTO comfyui_shot_image_selection")) {
+        expect(values).toEqual([scope.workspaceId, scope.projectId, shotRevisionId, assetId, checksum, "owner"]);
+        chosen = String(values?.[3]);
+        return { rows: [] };
+      }
+      if (sql.includes("SELECT selected.asset_id")) {
+        const selectedAssetId = selection(sql);
+        return { rows: selectedAssetId ? [{ asset_id: selectedAssetId }] : [] };
+      }
+      if (sql.includes("WITH shot_page AS")) return { rows: [{ id: "shot", current_revision_id: shotRevisionId,
+        approved_revision_id: approved ? shotRevisionId : null, storyboard: { selectedAssetId: selection(sql) } }] };
+      return { rows: [] };
+    });
+    const client = { query, release: vi.fn() };
+    const workbench = new TextChainService({ connect: async () => client } as unknown as DatabasePool);
+    const service = new RealMediaService({
+      ...o.typed,
+      store: { ...o.raw.store, transaction: async (work: (client: unknown) => Promise<unknown>) => work(client) } as unknown as RealMediaServiceOptions["store"],
+    });
+    await expect(adoptAutoStoryboardImage(client as unknown as Parameters<typeof adoptAutoStoryboardImage>[0], scope, shotRevisionId, {
+      assetId, expectedSelectedAssetId: null, actorId: "owner",
+    })).resolves.toEqual({ selectedAssetId: assetId });
+    const listShots = () => workbench.listShots(scope.workspaceId, scope.projectId, "episode", "scene", undefined, 20, true);
+    expect((await listShots()).items[0]?.storyboard?.selectedAssetId).toBeNull();
+    await expect(service.comfyUiShot(scope.projectId, shotRevisionId)).resolves.toMatchObject({ selectedAssetId: null });
+    approved = true;
+    const [storyboard, media] = await Promise.all([listShots(), service.comfyUiShot(scope.projectId, shotRevisionId)]);
+    expect({ storyboard: storyboard.items[0]?.storyboard?.selectedAssetId, media }).toMatchObject({
+      storyboard: assetId, media: { selectedAssetId: assetId, selectionAvailable: true, jobs: [] },
+    });
+    const [selectionSql, selectionScope] = query.mock.calls.find(([sql]) => sql.includes("SELECT selected.asset_id"))!;
+    expect(selectionScope).toEqual(["workspace", "project", "shot-revision"]);
+    expect(selectionSql).toContain("asset.checksum_sha256=selected.asset_checksum_sha256");
+    expect(selectionSql).toContain("job.source_shot_revision_id=asset.source_shot_revision_id");
+    expect(selectionSql).toContain("'{configuration,model}'='gpt-image-2.5-sunburst'");
+    expect(selectionSql).toContain("'{autoStoryboard,runId}' IS NOT NULL");
+    expect(selectionSql).toContain("asset.width=1024 AND asset.height=1536");
+    expect(selectionSql).toContain("shot.current_revision_id=revision.id AND shot.approved_revision_id=revision.id");
+    expect(selectionSql).toContain("revision.review_status='APPROVED' AND revision.freshness_status='CURRENT'");
+    const [jobsSql] = query.mock.calls.find(([sql]) => sql.includes("SELECT job.id,job.state"))!;
+    expect(jobsSql).toContain("'comfyui'");
+    expect(jobsSql).not.toContain("'openai-media'");
+  });
+  it.each([["dashscope-media","qwen-image-3.0"],["openai-media","gpt-image-2.5-flare"],
+    ["openai-media","dall-e-3"],["comfyui","sd-1.5"]])("refuses %s / %s instead of substituting for Sunburst",async(providerKey,model)=>{
+    const o=options();
+    const configurationFor=vi.fn(async()=>({providerKey,model,capability:"image.generate",enabled:true}));
+    const service=new RealMediaService({...o.typed,objects:{readVerified:vi.fn()},configurationFor} as RealMediaServiceOptions);
+    await expect(service.quote("project","shot",{capability:"image.generate",autoStoryboardRunId:"11111111-1111-4111-8111-111111111111"}))
+      .rejects.toMatchObject({code:"AUTO_STORYBOARD_OPENAI_UNAVAILABLE"});
+    expect(o.raw.store.createQuote).not.toHaveBeenCalled();
+    expect(configurationFor).toHaveBeenCalledWith("image.generate",undefined);
+  });
+  it("keeps new storyboard spends and selections closed without authenticated media delivery",async()=>{
+    const o=options(),service=new RealMediaService({...o.typed,readEnabled:false,objects:{readVerified:vi.fn()}});
+    const runId="11111111-1111-4111-8111-111111111111";
+    await expect(service.quote("project","shot",{capability:"image.generate",autoStoryboardRunId:runId})).rejects.toMatchObject({code:"AUTO_STORYBOARD_OPENAI_UNAVAILABLE"});
+    await expect(service.selectAutoStoryboardImage("project",runId,"shot",{assetId:"22222222-2222-4222-8222-222222222222",expectedSelectedAssetId:null}))
+      .rejects.toMatchObject({code:"AUTO_STORYBOARD_SELECTION_UNAVAILABLE"});
+    expect(o.raw.configurationFor).not.toHaveBeenCalled();
+  });
+  it("reports independent readiness and freezes only the saved shot and scoped cast after selection is available",async()=>{
+    const o=options();
+    const ids=(index:number)=>`10000000-0000-4000-8000-${String(index).padStart(12,"0")}`;
+    const [workspaceId,projectId,runId,episodeId,shotId,shotRevisionId]=[1,2,3,4,5,6].map(ids) as [string,string,string,string,string,string];
+    let selectionAvailable=false;
+    const query=vi.fn(async(sql:string)=>({rows:sql.includes("to_regclass('comfyui_shot_image_selection')")?[{selection:selectionAvailable,characters:false}]:
+      sql.includes("FOR UPDATE")?[{id:projectId}]:sql.includes("script_revision_replacement")?[{episode_no:1,episode_id:episodeId,
+        package_complete:true,story_saved:true,story_approved:true,script_placed:true,script_approved:true,scene_id:ids(7),scene_ready:true,
+        shot_id:shotId,shot_revision_id:shotRevisionId,shot_usable:true,action:"推开门"}]:sql.includes("SELECT prompt_text")?[{prompt_text:"  推开门。 "}]:
+        sql.includes("AS appearance")?[{name:"林青",appearance:"灰色短外套"}]:[]}));
+    const configuration={id:ids(9),capability:"image.generate",providerKey:"openai-media",enabled:true,model:"gpt-image-2.5-sunburst",region:"image.example.test",
+      currency:"USD",unitType:"image",unitPrice:"0.04",parameters:{baseUrl:"https://image.example.test",quality:"max",size:"1024x1536"}};
+    const service=new RealMediaService({...o.typed,workspaceId,objects:{readVerified:vi.fn()},configurationFor:async()=>configuration,
+      store:{...o.raw.store,transaction:async(work:(client:unknown)=>Promise<unknown>)=>work({query})},
+      assets:{prepareRealShotGenerationInTransaction:vi.fn()}} as unknown as RealMediaServiceOptions);
+    const body={capability:"image.generate",autoStoryboardRunId:runId};
+    const view=await service.autoStoryboards(projectId,runId);
+    expect(view).toMatchObject({imageAvailable:true,selectionAvailable:false,characterReferencesAvailable:false,
+      episodes:[{episodeNo:1,episodeId,blocked:null,shots:[{shotRevisionId,state:"ready",jobId:null,previewAssetId:null}]}]});
+    await expect(service.quote(projectId,shotRevisionId,body)).rejects.toMatchObject({code:"AUTO_STORYBOARD_SELECTION_UNAVAILABLE"});
+    expect(o.raw.store.createQuote).not.toHaveBeenCalled();
+    selectionAvailable=true;
+    await service.quote(projectId,shotRevisionId,body);
+    expect(o.raw.store.createQuote).toHaveBeenCalledWith({workspaceId,projectId,actorId:"server-owner",
+      frozen:{schema:"real-media.v1",capability:"image.generate",shotRevisionId,configuration,autoStoryboard:{runId,shotId},
+        sourceHash:expect.stringMatching(/^[a-f0-9]{64}$/u),sourceText:"推开门。\n\n角色形象：林青：灰色短外套"}});
+  });
+  it("rejects a ComfyUI or reference-image override on an auto storyboard quote",async()=>{
+    const o=options(),service=new RealMediaService(o.typed);
+    const body={capability:"image.generate",autoStoryboardRunId:"11111111-1111-4111-8111-111111111111"};
+    await expect(service.quote("project","shot",{...body,sourceImageAssetId:"22222222-2222-4222-8222-222222222222"})).rejects.toMatchObject({code:"VALIDATION_ERROR"});
+    await expect(service.quote("project","shot",{...body,comfyui:{workflowId:"sd15-txt2img",prompt:"other",width:1024,height:1024}})).rejects.toMatchObject({code:"VALIDATION_ERROR"});
+    expect(o.raw.configurationFor).not.toHaveBeenCalled();
+    expect(o.raw.store.createQuote).not.toHaveBeenCalled();
+  });
   it("keeps budget exposure and authenticated historical reads available when paid generation is switched off",async()=>{
     const o=options();const costExposure=vi.fn(async()=>({actualCost:"unknown",unknownSubmissionCount:1,currencies:[]}));
     const service=new RealMediaService({...o.typed,enabled:false,readEnabled:true,objects:{readVerified:vi.fn()},store:{...o.raw.store,costExposure} as unknown as RealMediaServiceOptions["store"]});

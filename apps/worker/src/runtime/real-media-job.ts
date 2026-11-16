@@ -1,10 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { RealMediaConfiguration } from "@ai-drama/contracts";
-import { assertRealMediaInput,realMediaInputHash } from "@ai-drama/domain";
-import { PersistenceError, commitSpeechTake, assertSpeechGenerationInputInTransaction, freezeComfyUiReference,
+import { assertRealMediaInput,DomainError,realMediaInputHash } from "@ai-drama/domain";
+import { PersistenceError, commitSpeechTake, assertAutoStoryboardSource, assertSpeechGenerationInputInTransaction, freezeComfyUiReference,
   isComfyUiMediaJob, type ComfyUiCancelDenial, type JobPersistenceService, type MediaAssetRecord, type MediaAssetStore,
   type RealMediaExecution, type RealMediaStore, type RealMediaReceiptOutput } from "@ai-drama/database";
-import { MediaSubmissionUnknownError, assertComfyUiSourceImage, type MediaProviderAdapter, type MediaProviderObservation, type MediaProviderOutput } from "@ai-drama/providers";
+import { MediaSubmissionUnknownError, OPENAI_IMAGE_SIZE, assertComfyUiSourceImage, type MediaProviderAdapter, type MediaProviderObservation, type MediaProviderOutput } from "@ai-drama/providers";
 import type { RealMediaMaterializer } from "./real-media-materializer";
 import type { RealMediaObjectStore } from "./real-media-objects";
 export interface RealMediaWorkerDependencies {
@@ -57,6 +57,7 @@ export async function runRealMediaJob(execution:RealMediaExecution,dependencies:
       validateInTransaction:async client=>{
         const source=await dependencies.assets.prepareRealShotGenerationInTransaction(client,execution.workspaceId,execution.projectId,execution.shotRevisionId,snapshot.capability);
         if(comfyUi)assertComfyUiShotPrompt(execution,source.promptText);
+        else if(snapshot.autoStoryboard)await assertAutoStoryboardSource(client,execution,snapshot);
         else if(snapshot.speech)await assertSpeechGenerationInputInTransaction(client,snapshot.speech);
         else if((snapshot.capability==="audio.tts"?source.dialogue??"":source.promptText.trim())!==snapshot.sourceText)throw new PersistenceError("REAL_MEDIA_INPUT_CHANGED","Source changed before sending");
         if(comfyUi&&snapshot.sourceImage)await assertComfyUiReference(execution,client);
@@ -103,7 +104,8 @@ export async function runRealMediaJob(execution:RealMediaExecution,dependencies:
   }
 }
 function localSubmissionErrorCode(error:unknown,comfyUi:boolean):string {
-  if(!(error instanceof PersistenceError))return "REAL_MEDIA_SUBMIT_BLOCKED";
+  if(!(error instanceof PersistenceError)&&!(error instanceof DomainError))return "REAL_MEDIA_SUBMIT_BLOCKED";
+  if(["AUTO_STORYBOARD_OPENAI_UNAVAILABLE","AUTO_STORYBOARD_SELECTION_UNAVAILABLE","AUTO_STORYBOARD_SOURCE_NOT_READY","AUTO_STORYBOARD_SHOT_BUSY"].includes(error.code))return error.code;
   if(error.code==="REAL_MEDIA_REFERENCE_PROFILE_UNSUPPORTED")return error.code;
   if(comfyUi&&["REAL_MEDIA_SOURCE_INVALID","REAL_MEDIA_INPUT_CHANGED","REVIEW_REQUIRED","STALE_RECALCULATION_PENDING",
     "COMFYUI_DEPENDENCIES_MISSING","COMFYUI_UNAVAILABLE"].includes(error.code))return error.code;
@@ -142,6 +144,9 @@ async function persistOutput(e:RealMediaExecution,output:MediaProviderOutput,ada
   if(comfyUi&&(media.mimeType!=="image/png"||media.width!==e.inputSnapshot.comfyui?.width||media.height!==e.inputSnapshot.comfyui?.height)){
     throw new PersistenceError("REAL_MEDIA_OUTPUT_INVALID","Generated image dimensions do not match the frozen workflow");
   }
+  if(e.inputSnapshot.autoStoryboard&&(media.mimeType!=="image/png"||`${String(media.width)}x${String(media.height)}`!==OPENAI_IMAGE_SIZE)){
+    throw new PersistenceError("REAL_MEDIA_OUTPUT_INVALID","Storyboard image does not match the frozen OpenAI dimensions");
+  }
   if(!await d.store.renewDeliveryLease(e,leaseOwner,d.leaseMs))throw new PersistenceError("REAL_MEDIA_LEASE_LOST","Media delivery executor lost its lease");
   const object=await d.objects.putVerified({workspaceId:e.workspaceId,projectId:e.projectId,generationJobId:e.jobId,jobAttemptId:e.attemptId,bytes:media.bytes,mimeType:media.mimeType});
   return d.assets.completeAttemptWithAsset(d.jobs,{workspaceId:e.workspaceId,projectId:e.projectId,kind:output.kind,
@@ -152,6 +157,7 @@ async function persistOutput(e:RealMediaExecution,output:MediaProviderOutput,ada
     beforeLock:async client=>{
       const source=await d.assets.prepareRealShotGenerationInTransaction(client,e.workspaceId,e.projectId,e.shotRevisionId,e.inputSnapshot.capability);
       if(comfyUi)assertComfyUiShotPrompt(e,source.promptText);
+      if(e.inputSnapshot.autoStoryboard)await assertAutoStoryboardSource(client,e,e.inputSnapshot);
       await d.store.assertDeliveryLeaseInTransaction(client,e,leaseOwner);
     },
     afterPersist:async(client,asset)=>{
