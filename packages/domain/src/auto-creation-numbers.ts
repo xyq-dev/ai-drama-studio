@@ -184,7 +184,8 @@ const ORDINAL = new RegExp(`第\\s*(?:\\d+|[${CN_DIGITS}]+)`, "gu");
  * (第 3 集, 第二场, 第 2 轮, 第一次, 第一时间), or an item number opening a clause (第一，…). Any other 第N is a place
  * (第三名, 播放量第 3) and needs a source.
  */
-const STRUCTURAL_UNITS = "集|场|幕|章|节|季|话|回|段|镜|轮|稿|版|步|句|次|个|眼|人称|视角|印象|反应";
+/** Includes typological category units (第N类 / 第N种): creative-method classification, never a market place. */
+const STRUCTURAL_UNITS = "集|场|幕|章|节|季|话|回|段|镜|轮|稿|版|步|句|次|个|眼|人称|视角|印象|反应|类|种";
 /** Positions in the story's own time (第 10 秒, 第二天): structural only outside a viewing or market clause. */
 const STORY_TIME_UNITS = "秒|分钟|时间|天|晚|夜|日";
 function structuralOrdinal(units: string): RegExp {
@@ -207,6 +208,8 @@ const WORK_ORDER_OWNER = /(?:本剧|本集|本作|本片|本故事|剧情|故事
 const WORK_ORDER_UNIT = /^(?:集|场|幕|章|节|回|段|镜|个(?:反转|场景|钩子|冲突|线索))/u;
 const WORK_ORDER_ACTION = /^(?:安排|设置|铺垫|揭开|揭示|埋下|收束|呈现|交代|引出|推进|表现)/u;
 const CREATIVE_ORDER_WORD = /本剧|本集|主角|角色|剧情|故事|剧本|安排|设计|试读|试写|流程|分镜|转折|冲突/u;
+/** Category / type ordinal in creative-method wording (第二类矛盾, 第三种冲突): not a ranking. */
+const TYPOLOGICAL_UNIT = /^(?:类|种)/u;
 /** Marks an ordinal of a ranking so it is matched as one whole token (名次第三), in a statement and in a source alike. */
 const RANK_PREFIX = "名次";
 /** What a removed setting leaves behind: no digit, no noun, the end of any noun window. */
@@ -352,11 +355,13 @@ function planStep(clause: string, offset: number): boolean {
   return !RESULT.test(clause.slice(result.index + method[0].length));
 }
 
-/** v15 reads each ordinal on its own. A plan elsewhere is not proof, and a nearby metric owns its place. */
+/** v15–v16 reads each ordinal on its own. A plan elsewhere is not proof, and a nearby metric owns its place. */
 function researchOrdinalRole(clause: string, ordinal: string, offset: number): "rank" | "plan" | "work" | "uncertain" | "legacy" {
   const before = clause.slice(0, offset);
   const after = clause.slice(offset + ordinal.length);
   if (RANK_PLACE_BEFORE.test(before.replace(RESEARCH_RANK_CONNECTOR, "")) || /^(?:名|位)/u.test(after)) return "rank";
+  // Typological 第N类 / 第N种 is a creative category label (第二类矛盾), never a market place — even beside 人气/热度.
+  if (TYPOLOGICAL_UNIT.test(after)) return "work";
   const step = PLAN_STEP_UNIT.test(after);
   if (step && planStep(clause, offset)) return "plan";
   if (EXPLICIT_RANK_CONTEXT.test(clause) || SAMPLE_DONE.test(clause) || RESULT.test(clause) || SETTLED.test(clause)) return "legacy";

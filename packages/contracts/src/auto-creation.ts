@@ -109,13 +109,17 @@ export const AUTO_CREATION_SELECTION_RULES = "ads.auto-creation.selection-rules.
  * or plan word anywhere else reads as before. Prompt v11.
  * v15: research creative fields distinguish local workflow and story ordinals from market placements. Ambiguous
  * creative ordinals can carry the existing unverified notice. Prompt and research schemas are unchanged.
+ * v16: typological category ordinals in creative-design text (第N类 / 第N种, e.g. 第二类矛盾) are structural, not
+ * market rankings. Real ranking wording (排名第一, 位列第3, 第三名) is still refused. Prompt and research schemas
+ * are unchanged.
  */
-export const AUTO_CREATION_CHECKS_VERSION = "ads.auto-creation.checks.v15" as const;
+export const AUTO_CREATION_CHECKS_VERSION = "ads.auto-creation.checks.v16" as const;
 /** Every checks version a stored run or review may carry. */
 export type AutoCreationChecksVersion = "ads.auto-creation.checks.v1" | "ads.auto-creation.checks.v2" | "ads.auto-creation.checks.v3"
   | "ads.auto-creation.checks.v4" | "ads.auto-creation.checks.v5" | "ads.auto-creation.checks.v6" | "ads.auto-creation.checks.v7"
   | "ads.auto-creation.checks.v8" | "ads.auto-creation.checks.v9" | "ads.auto-creation.checks.v10" | "ads.auto-creation.checks.v11"
-  | "ads.auto-creation.checks.v12" | "ads.auto-creation.checks.v13" | "ads.auto-creation.checks.v14" | typeof AUTO_CREATION_CHECKS_VERSION;
+  | "ads.auto-creation.checks.v12" | "ads.auto-creation.checks.v13" | "ads.auto-creation.checks.v14" | "ads.auto-creation.checks.v15"
+  | typeof AUTO_CREATION_CHECKS_VERSION;
 /**
  * v4: the answer contract follows the run's saved research mode. limited: the model writes hypotheses, the audience as
  * text, content structures and opportunities only; the server assembles the rest (no facts, no observations, the

@@ -33,7 +33,7 @@
 | `review:r` | 独立审阅提示与 10 项评价标准；问题须带**逐字原文证据**；程序检查结果并入 | 是 |
 | `revise:r:episode:k` | 只修指出的问题，记录逐条修改 | 是 |
 
-提示词版本 `ads.auto-creation.prompt.v15`、检查版本 `ads.auto-creation.checks.v15`、研究输出 `ads.auto-creation.research.v4`、研究的模型回答 `ads.auto-creation.research.answer.catalog.v1`、引用目录算法 `ads.auto-creation.reference-catalog.v1`（checks.v15 见 3.17，创作流程与结构序数、排名拒收摘录；prompt.v11 / checks.v14 见 3.15，未标记的观看时长不再遮住其后的统计、观众自己作出的选择里的「是否」不算待验证，application 提示区分叙事时间与观众效果；checks.v13 见 3.14，验证计划里的流程序数不再当作排名，提示不变；checks.v12 见 3.13，创作设计里的集数按作用范围判断、第 N 集先核对范围再清理，提示不变；prompt.v10 / checks.v11 见 3.12，验证计划里集数按作用范围判断，无法确认的保留为未核实提示；prompt.v9 / checks.v10 见 3.11，内容结构的方法引用改为选择服务端目录编号，落库结构不变；checks.v9 见 3.9，只要求样本动作直接带着当前样本数量，提示与研究回答结构不变；checks.v8 见 3.8，只改验证计划里的样本集数判断，提示与研究回答结构不变；prompt.v8 见 3.7，只改研究提示，当时检查为 v7；v7 / v7 见 3.6，研究回答结构不变；v6 / v6 / research.v4 见 3.5；此前 v5 / v5 / research.v3 见 3.4，v4 / v4 / research.v2 见 3.3，v3 / v3 / research.v1 自 2026-10-20 起，2026-10-19 起为 v2，之前为 v1）、选择规则 `ads.auto-creation.selection-rules.v1`、输入 `ads.auto-creation.input.v1`。任务输入里冻结的是**开始时**的版本号；已完成的阶段不会重算，但v15 之前冻结的短剧续跑时沿用 v14 提示和大纲契约。系列编剧借用的研究与选题仍使用 v14。
+提示词版本 `ads.auto-creation.prompt.v15`、检查版本 `ads.auto-creation.checks.v16`、研究输出 `ads.auto-creation.research.v4`、研究的模型回答 `ads.auto-creation.research.answer.catalog.v1`、引用目录算法 `ads.auto-creation.reference-catalog.v1`（checks.v16 见 3.18，分类序数不再误判为市场排名；checks.v15 见 3.17，创作流程与结构序数、排名拒收摘录；prompt.v11 / checks.v14 见 3.15，未标记的观看时长不再遮住其后的统计、观众自己作出的选择里的「是否」不算待验证，application 提示区分叙事时间与观众效果；checks.v13 见 3.14，验证计划里的流程序数不再当作排名，提示不变；checks.v12 见 3.13，创作设计里的集数按作用范围判断、第 N 集先核对范围再清理，提示不变；prompt.v10 / checks.v11 见 3.12，验证计划里集数按作用范围判断，无法确认的保留为未核实提示；prompt.v9 / checks.v10 见 3.11，内容结构的方法引用改为选择服务端目录编号，落库结构不变；checks.v9 见 3.9，只要求样本动作直接带着当前样本数量，提示与研究回答结构不变；checks.v8 见 3.8，只改验证计划里的样本集数判断，提示与研究回答结构不变；prompt.v8 见 3.7，只改研究提示，当时检查为 v7；v7 / v7 见 3.6，研究回答结构不变；v6 / v6 / research.v4 见 3.5；此前 v5 / v5 / research.v3 见 3.4，v4 / v4 / research.v2 见 3.3，v3 / v3 / research.v1 自 2026-10-20 起，2026-10-19 起为 v2，之前为 v1）、选择规则 `ads.auto-creation.selection-rules.v1`、输入 `ads.auto-creation.input.v1`。任务输入里冻结的是**开始时**的版本号；已完成的阶段不会重算，但v15 之前冻结的短剧续跑时沿用 v14 提示和大纲契约。系列编剧借用的研究与选题仍使用 v14。
 
 提示词 v12 为 `bible` 阶段列出 JSON 顶层字段，并提供带嵌套字段的完整示例。超出契约的字段仍整条拒收。顶层多出字段时，页面显示「JSON 顶层对象」。用户手动续跑时，从第一个未完成的阶段发送新请求。
 
@@ -387,6 +387,21 @@ contentStructure: [{ reference: { sourceId, quote } | null, application: { patte
 | 计划在第一轮试读后比较排名第一的作品 | 研究创作字段；同分句含两个序数 | 拒收第二个序数 |
 | 本剧在第三集呈现角色人气变化 | 本剧应用，冻结 2 集 | 拒收集数越界 |
 | 该题材排名第一。下一分句与排名无关。 | 当前短剧研究拒收 | 错误码不变，只保存触发分句；历史记录无摘录 |
+
+### 3.18 分类序数误判为市场排名（2026-11-17，checks.v16；prompt.v15、research.v4 不变）
+
+**证据边界**：资料有限模式的一次线上研究（项目 `ffac0fc9-…`，run `bda8e49f-…`，部署 checks.v15 / main `0cd5f5ab…`）在 `contentStructure[5].application.pattern` 被拒收为 `unsourced_number@…:rank+market_statistic+ranking`。拒收摘录为「不叠加第二类矛盾，」。这是创作方法里的分类序数（第二类矛盾 = 第二种类型的冲突），不是市场名次。同一 run 另有一条 `audience.viewingNeeds[1]` 中文数字 / audience_count 拒收：答案未落库、无原句，**本轮不处理、不据此改规则**。
+
+- **根因**：v15 的 `researchOrdinalRole` 对「第二类矛盾」返回 `legacy`（「类」「种」不在结构单位 / 本剧顺序单位里，`wasStructural` 为假），随后 `markRank` 写成「名次第二」并按排名拒收。既有用例覆盖「第二个反转」，未覆盖「第二类矛盾」。
+- **规则**：创作设计文本里的分类序数「第 N 类」「第 N 种」（中文或阿拉伯数字）按结构位置处理，不得标成市场排名。真实市场名次仍拒收（该题材排名第一、榜单上位列第3、第三名等）。「第二个反转」等 v15 已通过用例保持通过。
+- **版本与历史**：`AUTO_CREATION_CHECKS_VERSION` 升为 `ads.auto-creation.checks.v16`，历史类型保留 v1–v15。新任务冻结 v16，旧任务不回填；之后实际执行的研究在 `executedWith` 记录实际检查版本。提示词、研究输出契约、原哈希、已完成输出、调用和费用历史不改。无 Migration。
+- **本轮不处理**：`audience.viewingNeeds` 中文数字 / audience_count 那条无原句拒收；分集故事板、其他阶段数字语义、deploy / workflow / Migration。
+
+| 样本 | 适用范围 | 预期 |
+| --- | --- | --- |
+| 不叠加第二类矛盾，；叠加第三种冲突；区分第2类冲突与第3种阻力 | 研究创作字段 | 通过 |
+| 第二个反转呈现角色人气的代价 | 本剧应用（v15 回归） | 通过 |
+| 该题材排名第一；榜单上位列第3；第三名 | 研究创作字段 | 拒收 ranking |
 
 ## 4. 质量检查与有限修改
 
