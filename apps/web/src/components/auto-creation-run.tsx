@@ -23,6 +23,7 @@ import {
   AUTO_REVIEW_DIMENSION_LABELS,
   AutoCreationClient,
   autoCanResume,
+  autoCanUserRevise,
   autoErrorText,
   autoOutputRefused,
   autoResearchRejectionDiagnosticOf,
@@ -66,6 +67,12 @@ export function AutoCreationRun({ projectId, client = defaultClient, selectedRun
   const [acceptStoryChanged, setAcceptStoryChanged] = useState(false);
   const [needsToken, setNeedsToken] = useState(false);
   const [token, setToken] = useState("");
+  const [selectedFindings, setSelectedFindings] = useState<string[]>([]);
+  const [reviseInstruction, setReviseInstruction] = useState("");
+  const [reviseQuote, setReviseQuote] = useState<{
+    callsNeeded: number; roundsRemainingAfter: number; callsRemainingAfter: number;
+  } | null>(null);
+  const [reviseConfirm, setReviseConfirm] = useState(false);
   const reading = useRef(false);
   const acting = useRef(false);
   const openedEpisodeList = useRef(false);
@@ -249,6 +256,106 @@ export function AutoCreationRun({ projectId, client = defaultClient, selectedRun
           ) : null}
           {run.storySave === "saved" ? <a className={styles.textLink} href={`/projects/${projectId}/create?step=story`}>去作品中人工审核故事</a> : null}
         </div>
+
+        {autoCanUserRevise(run) ? (
+          <section className={autoStyles.section} aria-labelledby="auto-user-revise-title" data-testid="auto-user-revise">
+            <h2 id="auto-user-revise-title" className={styles.sectionTitle}>按意见再改一稿</h2>
+            <p className={styles.helper}>
+              机器检查通过后仍可占用剩余修改轮次。可勾选审阅意见、写下自己的说明，或两者一起；改完仍是 AI 草稿，不会自动人工审核或写入分集。
+            </p>
+            {(run.selectableFindings ?? []).length > 0 ? (
+              <ul className={autoStyles.list} data-testid="auto-user-revise-findings">
+                {(run.selectableFindings ?? []).map((item) => (
+                  <li key={item.id}>
+                    <label className={styles.check}>
+                      <input
+                        type="checkbox"
+                        checked={selectedFindings.includes(item.id)}
+                        disabled={busy || run.state === "running"}
+                        onChange={(event) => {
+                          setReviseQuote(null);
+                          setReviseConfirm(false);
+                          setSelectedFindings((prev) => event.target.checked
+                            ? [...prev, item.id] : prev.filter((id) => id !== item.id));
+                        }}
+                      />
+                      {item.id}（{item.target}·{item.severity}）：{item.detail}
+                    </label>
+                  </li>
+                ))}
+              </ul>
+            ) : <p className={styles.helper}>本次没有列出可选意见，仍可只写修改说明。</p>}
+            <label className={styles.label} htmlFor="auto-user-revise-instruction">你的修改说明（可选）</label>
+            <textarea
+              id="auto-user-revise-instruction"
+              className={styles.input}
+              data-testid="auto-user-revise-instruction"
+              rows={3}
+              value={reviseInstruction}
+              disabled={busy || run.state === "running"}
+              onChange={(event) => {
+                setReviseQuote(null);
+                setReviseConfirm(false);
+                setReviseInstruction(event.target.value);
+              }}
+            />
+            {reviseQuote ? (
+              <p className={styles.helper} data-testid="auto-user-revise-quote" role="status">
+                确认后将消耗 {reviseQuote.callsNeeded} 次调用；剩余修改轮次将变为 {reviseQuote.roundsRemainingAfter}；
+                调用余额约余 {reviseQuote.callsRemainingAfter} 次。未确认不会扣次或发模型。
+              </p>
+            ) : null}
+            {needsToken ? <input className={styles.input} aria-label="操作者令牌" type="password" value={token} onChange={(event) => setToken(event.target.value)} /> : null}
+            {reviseQuote ? (
+              <label className={styles.check} data-testid="auto-user-revise-confirm">
+                <input type="checkbox" checked={reviseConfirm} disabled={busy} onChange={(event) => setReviseConfirm(event.target.checked)} />
+                我确认消耗上述次数并开始改稿
+              </label>
+            ) : null}
+            <div className={styles.actions}>
+              <button
+                className={styles.secondary}
+                type="button"
+                data-testid="auto-user-revise-preview"
+                disabled={busy || (selectedFindings.length === 0 && reviseInstruction.trim().length === 0)}
+                onClick={() => void act(async () => {
+                  const quoted = await client.userRevise(projectId, run.runId, {
+                    findingIds: selectedFindings, instruction: reviseInstruction, confirm: false, token,
+                  });
+                  setRun(quoted.run);
+                  setReviseQuote(quoted.quote ? {
+                    callsNeeded: quoted.quote.callsNeeded,
+                    roundsRemainingAfter: quoted.quote.roundsRemainingAfter,
+                    callsRemainingAfter: quoted.quote.callsRemainingAfter,
+                  } : null);
+                  setReviseConfirm(false);
+                  return quoted.run;
+                }, "没有确认报价请求。")}
+              >
+                查看将消耗的次数
+              </button>
+              <button
+                className={styles.primary}
+                type="button"
+                data-testid="auto-user-revise-start"
+                disabled={busy || !reviseQuote || !reviseConfirm}
+                onClick={() => void act(async () => {
+                  const next = await client.userRevise(projectId, run.runId, {
+                    findingIds: selectedFindings, instruction: reviseInstruction, confirm: true, token,
+                    idempotencyKey: crypto.randomUUID(),
+                  });
+                  setReviseQuote(null);
+                  setReviseConfirm(false);
+                  setSelectedFindings([]);
+                  setReviseInstruction("");
+                  return next.run;
+                }, "没有确认是否已开始改稿。")}
+              >
+                确认并开始改稿
+              </button>
+            </div>
+          </section>
+        ) : null}
 
         {autoCanResume(run) ? (
           <section className={styles.resume} aria-labelledby="auto-resume-title">

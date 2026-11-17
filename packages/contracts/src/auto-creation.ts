@@ -46,18 +46,25 @@ export const AUTO_CREATION_INPUT_SCHEMA = "ads.auto-creation.input.v1" as const;
  * v14: require one nonempty JSON string for each bible location's production notes. Validation is unchanged.
  * v15: the outline call also writes complete story prose; episode, revision and review prompts use that prose as the
  * frozen source for the adaptation. A specified genre guides the creative choices throughout.
+ * v16: user-initiated multi-artifact revise from the result page (see AUTO_CREATION_PROMPT_VERSION).
  */
 export const AUTO_CREATION_LEGACY_PROMPT_VERSION = "ads.auto-creation.prompt.v14" as const;
-export const AUTO_CREATION_PROMPT_VERSION = "ads.auto-creation.prompt.v15" as const;
+export const AUTO_CREATION_PROMPT_V15 = "ads.auto-creation.prompt.v15" as const;
+/**
+ * v16: adds the user-initiated multi-artifact revise path (result-page revise after pass/completion). Automatic
+ * fail-then-revise (single-episode, story-frozen) keeps prior semantics; only stages carrying a user-revise brief
+ * use the unfrozen consistency prompt. Story prose remains required as in v15.
+ */
+export const AUTO_CREATION_PROMPT_VERSION = "ads.auto-creation.prompt.v16" as const;
 /** Every prompt version a stored run may carry. Pre-v15 runs retain the v14 output contract when resumed. */
 export type AutoCreationPromptVersion = "ads.auto-creation.prompt.v1" | "ads.auto-creation.prompt.v2" | "ads.auto-creation.prompt.v3"
   | "ads.auto-creation.prompt.v4" | "ads.auto-creation.prompt.v5" | "ads.auto-creation.prompt.v6" | "ads.auto-creation.prompt.v7"
   | "ads.auto-creation.prompt.v8" | "ads.auto-creation.prompt.v9" | "ads.auto-creation.prompt.v10" | "ads.auto-creation.prompt.v11"
   | "ads.auto-creation.prompt.v12" | "ads.auto-creation.prompt.v13"
-  | typeof AUTO_CREATION_LEGACY_PROMPT_VERSION | typeof AUTO_CREATION_PROMPT_VERSION;
+  | typeof AUTO_CREATION_LEGACY_PROMPT_VERSION | typeof AUTO_CREATION_PROMPT_V15 | typeof AUTO_CREATION_PROMPT_VERSION;
 
 export function autoCreationWritesStoryProse(promptVersion: AutoCreationPromptVersion): boolean {
-  return promptVersion === "ads.auto-creation.prompt.v15";
+  return promptVersion === AUTO_CREATION_PROMPT_V15 || promptVersion === AUTO_CREATION_PROMPT_VERSION;
 }
 export const AUTO_CREATION_SELECTION_RULES = "ads.auto-creation.selection-rules.v1" as const;
 /**
@@ -995,7 +1002,7 @@ export interface AutoRevisionReferences {
  */
 export function autoCreationJsonSchema(kind: AutoCreationStageKind, episodeCount: number, researchMode: AutoResearchMode | null = null,
   catalog: AutoReferenceCatalog | null = null, revisionReferences?: AutoRevisionReferences,
-  includeStoryProse = false): { name: string; schema: Record<string, unknown> } {
+  includeStoryProse = false, userRevise = false): { name: string; schema: Record<string, unknown> } {
   const numbers = Array.from({ length: episodeCount }, (_, index) => index + 1);
   const references = kind === "revise" ? revisionReferences : undefined;
   const characterId = references?.characterIds.length ? enumOf(references.characterIds) : str(2);
@@ -1088,9 +1095,34 @@ export function autoCreationJsonSchema(kind: AutoCreationStageKind, episodeCount
       }) };
     case "episode":
       return { name: "auto_episode", schema: episode };
-    case "revise":
-      return { name: "auto_revision", schema: { ...episode, required: [...episode.required, "changes"], properties: {
-        ...episode.properties, changes: arr(obj({ issueId: references?.issueIds.length ? enumOf(references.issueIds) : str(5), change: str(150) }), 1, 10) } } };
+    case "revise": {
+      const changes = arr(obj({ issueId: references?.issueIds.length ? enumOf(references.issueIds) : str(5), change: str(150) }), 1, 10);
+      if (!userRevise) {
+        return { name: "auto_revision", schema: { ...episode, required: [...episode.required, "changes"], properties: {
+          ...episode.properties, changes } } };
+      }
+      const outline = obj({
+        schema: enumOf([AUTO_CREATION_OUTLINE_SCHEMA]),
+        storyProse: arr({ ...str(AUTO_STORY_PROSE_MAX_PARAGRAPH_CHARS), minLength: AUTO_STORY_PROSE_MIN_PARAGRAPH_CHARS },
+          AUTO_STORY_PROSE_MIN_PARAGRAPHS, AUTO_STORY_PROSE_MAX_PARAGRAPHS),
+        episodes: arr(obj({
+          episodeNo: enumOf(numbers), title: str(30), opening: str(150), goal: str(120), obstacle: str(120), action: str(150),
+          turn: str(150), result: str(150), newInformation: str(150), emotionShift: str(80), handoff: str(150),
+          characterIds: strs(8, 2, 1), locationIds: strs(6, 2, 1),
+        }), episodeCount, episodeCount),
+        resolution: str(300),
+      });
+      const bibleSync = {
+        type: "object", additionalProperties: false,
+        properties: {
+          logline: str(120), synopsis: str(600),
+          obstacles: strs(6, 120, 1),
+          keyChoices: arr(obj({ choice: str(120), consequence: str(120) }), 1, 6),
+        },
+      } as const;
+      return { name: "auto_user_revision", schema: { ...episode, required: [...episode.required, "changes", "outline"], properties: {
+        ...episode.properties, changes, outline, bibleSync } } };
+    }
     case "review":
       return { name: "auto_review", schema: obj({
         schema: enumOf([AUTO_CREATION_REVIEW_SCHEMA]),
@@ -1301,6 +1333,12 @@ export type AutoResumePreparation =
   | { kind: "not_found" | "active" | "active_cap" | "needs_confirmation" | "stale_confirmation" | "key_conflict" | "not_resumable"
     | "provider_unconfigured" | "budget_exhausted" | "blocked" };
 
+export type AutoUserRevisePreparation =
+  | { kind: "ok" | "replayed"; bundle: AutoRunBundle }
+  | { kind: "not_found" | "active" | "active_cap" | "key_conflict" | "not_eligible" | "empty" | "unknown_finding"
+    | "rounds_exhausted" | "budget_exhausted" | "provider_unconfigured" | "needs_confirmation" | "stale_confirmation"
+    | "blocked" };
+
 /**
  * Why a stopped run cannot be continued as it stands, or null. prompt_too_large: the next stage's request, built from
  * the frozen input and the saved stages, is over the prompt limit (a resume would stop the same way, so none is
@@ -1346,6 +1384,29 @@ export interface AutoCreationStore {
   requestCancel(workspaceId: string, projectId: string, runId: string, nowIso: string): Promise<AutoRunBundle | null>;
   /** blocked: the caller found the run cannot be continued as it stands (AutoResumeBlock); refused before any write. */
   prepareResume(workspaceId: string, projectId: string, runId: string, request: { resumeKey: string; requestHash: string; confirmedCallIds: readonly string[]; maxActiveRuns: number; providerReady: boolean; blocked: boolean }, nowIso: string): Promise<AutoResumePreparation>;
+  /**
+   * User-initiated revise after completion/pass: reopens the run, appends revise+review stages with the brief in
+   * depends_on_json, and records the idempotency row (same auto_creation_resume table as 「继续」).
+   */
+  prepareUserRevise(workspaceId: string, projectId: string, runId: string, request: {
+    resumeKey: string;
+    requestHash: string;
+    confirmedCallIds: readonly string[];
+    maxActiveRuns: number;
+    providerReady: boolean;
+    findingIds: readonly string[];
+    instruction: string;
+    stageKeys: readonly string[];
+    round: number;
+    briefDepends: Record<string, string>;
+  }, nowIso: string): Promise<AutoUserRevisePreparation>;
+  /** Replaces a completed bible/outline stage output under the executor lease (user-revise sync; no new stage key). */
+  replaceCompletedStageOutput(workspaceId: string, runId: string, executorId: string, stageKey: string, output: AutoStageOutput, outputHash: string, nowIso: string): Promise<boolean>;
+  /**
+   * After a user revise: if the work's current story is still this run's unreviewed AI draft, write a new DRAFT
+   * revision; if a person already edited or approved it, leave it alone and report conflict.
+   */
+  refreshStoryDraft(workspaceId: string, runId: string, executorId: string, storyText: string, quality: Exclude<AutoCreationQuality, "pending">, nowIso: string): Promise<"saved" | "conflict" | "lost" | "unchanged">;
   recoverExpired(workspaceId: string, nowIso: string): Promise<number>;
   listClaimable(workspaceId: string, nowIso: string, limit: number): Promise<string[]>;
   /** After a person approved the story: each episode's current version into an episode without a script. */
@@ -1436,6 +1497,13 @@ export interface AutoCreationRunView {
   legacyProviderRun: boolean;
   /** Set when this stopped run cannot be continued as it stands; the page then offers no resume. */
   resumeBlock: AutoResumeBlock | null;
+  /**
+   * After a user-initiated revise, the work's story was no longer this run's unreviewed AI draft, so the new package
+   * was kept downloadable without overwriting the human-edited or approved story.
+   */
+  storyUpdateConflict?: boolean;
+  /** Selectable findings of the latest completed review (including low), for the result-page revise UI. */
+  selectableFindings?: Array<{ id: string; target: string; severity: string; detail: string }>;
   createdAt: string;
   updatedAt: string;
 }
@@ -1473,6 +1541,18 @@ export interface AutoCreationOptionsView {
 export const autoCreationResumeSchema = z.object({
   confirmUncertainCallIds: z.array(z.string().uuid()).max(20).default([]),
 }).strict();
+
+/**
+ * User-initiated revise from the result page. confirm=false (default) only quotes the call/round cost.
+ * confirm=true starts the round (requires Idempotency-Key). findingIds and/or instruction must be non-empty.
+ */
+export const autoCreationUserReviseSchema = z.object({
+  findingIds: z.array(z.string().trim().min(1).max(12)).max(20).default([]),
+  instruction: z.string().trim().max(2_000).default(""),
+  confirm: z.boolean().default(false),
+  confirmUncertainCallIds: z.array(z.string().uuid()).max(20).default([]),
+}).strict();
+export type AutoCreationUserReviseRequest = z.infer<typeof autoCreationUserReviseSchema>;
 
 export const autoCreationPlaceSchema = z.object({ acceptStoryChanged: z.boolean().default(false) }).strict();
 

@@ -15,6 +15,7 @@ import {
   autoCreationPlaceSchema,
   autoCreationResumeSchema,
   autoCreationStartSchema,
+  autoCreationUserReviseSchema,
   isActiveTitleWritingProvider,
   isLegacyDeepseekRun,
   type AutoCreationOptionsView,
@@ -23,7 +24,13 @@ import {
   type TitleWritingProviderKey,
 } from "@ai-drama/contracts";
 import type { RuntimeStore } from "@ai-drama/database";
-import { builtInSources, autoPackageJson, autoPackageMarkdown } from "@ai-drama/domain";
+import {
+  builtInSources,
+  autoPackageJson,
+  autoPackageMarkdown,
+  encodeUserReviseDepends,
+  planAutoUserRevise,
+} from "@ai-drama/domain";
 import {
   TEXT_WRITING_MAX_OUTPUT_TOKENS,
   WRITING_ADAPTERS,
@@ -31,6 +38,7 @@ import {
   autoRunView,
   autoScriptsOf,
   hashAutoResume,
+  hashAutoUserRevise,
   newAutoRun,
   providerConfigFor,
   urlProblem,
@@ -98,6 +106,10 @@ const MESSAGES: Record<string, string> = {
   AUTO_CREATION_STORY_NOT_APPROVED: "故事还没有通过人工审核，剧本暂不能写入分集。机器质量检查不能代替人工审核。",
   AUTO_CREATION_STORY_CHANGED: "人工审核通过的故事和生成剧本时用的故事不同，请确认后再写入。",
   AUTO_CREATION_NOT_READY: "剧本包还没有完成。",
+  AUTO_CREATION_USER_REVISE_EMPTY: "请至少勾选一条审阅意见，或写下修改说明，才能发起改稿。没有扣次，也没有发出调用。",
+  AUTO_CREATION_USER_REVISE_NOT_ELIGIBLE: "这次创作现在不能按意见再改一稿（需要已完成或机器检查已通过，且仍有剩余修改轮次和调用预算）。没有扣次，也没有发出调用。",
+  AUTO_CREATION_USER_REVISE_UNKNOWN_FINDING: "所选意见不在本次机器审阅结果中，没有扣次，也没有发出调用。",
+  AUTO_CREATION_ROUNDS_EXHAUSTED: "修改轮次已经用完，不能再发起改稿。没有扣次，也没有发出调用。",
   IDEMPOTENCY_KEY_REUSED: "同一个请求标识被用于不同的内容，已拒绝。",
   NOT_FOUND: "没有找到这次创作。",
   VALIDATION_ERROR: "请求内容无效。",
@@ -322,6 +334,82 @@ export class AutoCreationService {
     const refused = await this.readable(projectId);
     if (refused) return refused;
     return this.found(await this.deps.store.requestCancel(this.deps.workspaceId, projectId, runId, this.now().toISOString()));
+  }
+
+  /**
+   * Result-page user revise: without confirm, only quotes the call/round cost; with confirm + Idempotency-Key, starts
+   * a multi-artifact revise round. UNKNOWN mid-flight uses the existing resume path (not auto-resent).
+   */
+  async userRevise(projectId: string, runId: string, body: unknown, token: OperatorProof | string | undefined, context: StudioContext): Promise<AutoCreationResult> {
+    const refused = await this.gate(token);
+    if (refused) return refused;
+    await this.deps.projects.getProject(this.deps.workspaceId, projectId);
+    const parsed = autoCreationUserReviseSchema.safeParse(body ?? {});
+    if (!parsed.success) return failure(400, "VALIDATION_ERROR", { field: parsed.error.issues[0]?.path.join(".") ?? "body" });
+    const existing = await this.deps.store.getRun(this.deps.workspaceId, projectId, runId);
+    if (!existing) return failure(404, "NOT_FOUND");
+    const planned = planAutoUserRevise(existing, { findingIds: parsed.data.findingIds, instruction: parsed.data.instruction });
+    if (!planned.ok) {
+      if (planned.code === "empty") return failure(400, "AUTO_CREATION_USER_REVISE_EMPTY");
+      if (planned.code === "unknown_finding") return failure(400, "AUTO_CREATION_USER_REVISE_UNKNOWN_FINDING");
+      if (planned.code === "rounds_exhausted") return failure(409, "AUTO_CREATION_ROUNDS_EXHAUSTED");
+      if (planned.code === "budget_exhausted") {
+        return failure(409, "AUTO_CREATION_BUDGET_EXHAUSTED", { callsUsed: existing.run.callsUsed, callCap: existing.run.callCap });
+      }
+      return failure(409, "AUTO_CREATION_USER_REVISE_NOT_ELIGIBLE");
+    }
+    if (!parsed.data.confirm) {
+      return { status: 200, body: { quote: planned.quote, run: this.view(existing) } };
+    }
+    if (!context.idempotencyKey || context.idempotencyKey.length > 200) return failure(400, "VALIDATION_ERROR", { field: "Idempotency-Key" });
+    const input = existing.run.input;
+    const legacy = isLegacyDeepseekRun(input);
+    const provider = providerConfigFor(this.deps.providers, input.providerKey);
+    const confirmed = parsed.data.confirmUncertainCallIds;
+    const round = existing.run.revisionRoundsUsed + 1;
+    const stageKeys = [
+      ...planned.brief.episodeTargets.map((episodeNo) => `revise:${String(round)}:episode:${String(episodeNo)}`),
+      `review:${String(round + 1)}`,
+    ];
+    const prepared = await this.deps.store.prepareUserRevise(this.deps.workspaceId, projectId, runId, {
+      resumeKey: context.idempotencyKey,
+      requestHash: hashAutoUserRevise(runId, {
+        findingIds: planned.brief.findingIds,
+        instruction: planned.brief.instruction,
+        confirmUncertainCallIds: confirmed,
+      }),
+      confirmedCallIds: confirmed,
+      maxActiveRuns: this.deps.maxActiveRuns,
+      providerReady: !legacy && provider !== null && provider.ok && provider.models.includes(input.model),
+      findingIds: planned.brief.findingIds,
+      instruction: planned.brief.instruction,
+      stageKeys,
+      round,
+      briefDepends: encodeUserReviseDepends(planned.brief),
+    }, this.now().toISOString());
+    if (prepared.kind === "replayed") return this.found(prepared.bundle);
+    if (prepared.kind !== "ok") {
+      if (prepared.kind === "not_found") return failure(404, "NOT_FOUND");
+      if (prepared.kind === "active") return failure(409, "AUTO_CREATION_RUN_ACTIVE", { runId });
+      if (prepared.kind === "active_cap") return failure(429, "AUTO_CREATION_ACTIVE_RUN_CAP");
+      if (prepared.kind === "needs_confirmation") return failure(409, "AUTO_CREATION_NEEDS_CONFIRMATION");
+      if (prepared.kind === "stale_confirmation") return failure(409, "AUTO_CREATION_CONFIRMATION_STALE");
+      if (prepared.kind === "key_conflict") return failure(409, "IDEMPOTENCY_KEY_REUSED");
+      if (prepared.kind === "empty") return failure(400, "AUTO_CREATION_USER_REVISE_EMPTY");
+      if (prepared.kind === "unknown_finding") return failure(400, "AUTO_CREATION_USER_REVISE_UNKNOWN_FINDING");
+      if (prepared.kind === "rounds_exhausted") return failure(409, "AUTO_CREATION_ROUNDS_EXHAUSTED");
+      if (prepared.kind === "budget_exhausted") {
+        return failure(409, "AUTO_CREATION_BUDGET_EXHAUSTED", { callsUsed: existing.run.callsUsed, callCap: existing.run.callCap });
+      }
+      if (prepared.kind === "provider_unconfigured") {
+        if (legacy) return failure(409, "AUTO_CREATION_LEGACY_RUN", { providerKey: input.providerKey, model: input.model });
+        if (provider?.ok) return failure(409, "AUTO_CREATION_RUN_MODEL_UNAVAILABLE", { providerKey: input.providerKey, model: input.model });
+        return failure(503, "AUTO_CREATION_PROVIDER_UNCONFIGURED", { providerKey: input.providerKey, missing: provider && !provider.ok ? provider.missing : [] });
+      }
+      return failure(409, "AUTO_CREATION_USER_REVISE_NOT_ELIGIBLE");
+    }
+    this.schedule(runId);
+    return this.found(prepared.bundle);
   }
 
   async resume(projectId: string, runId: string, body: unknown, token: OperatorProof | string | undefined, context: StudioContext): Promise<AutoCreationResult> {

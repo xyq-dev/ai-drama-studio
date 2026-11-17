@@ -20,7 +20,8 @@ import {
 } from "@ai-drama/contracts";
 import { AUTO_DRAFT_BANNER, autoContextFromStages, autoPackageJson, autoPackageMarkdown, AUTO_CREATION_SYSTEM_PROMPTS, validateAutoStageOutput } from "@ai-drama/domain";
 import { titleWritingProviderConfigs, type WritingProviderConfig } from "./text-writing";
-import { AutoCreationEngine, InMemoryAutoCreationStore, autoRunView, autoScriptsOf, autoUncertainCallIds, hashAutoCreationInput, hashAutoResume, newAutoRun } from "./auto-creation-engine";
+import { encodeUserReviseDepends, planAutoUserRevise } from "@ai-drama/domain";
+import { AutoCreationEngine, InMemoryAutoCreationStore, autoRunView, autoScriptsOf, autoUncertainCallIds, hashAutoCreationInput, hashAutoResume, hashAutoUserRevise, newAutoRun } from "./auto-creation-engine";
 import {
   AUTO_FIXTURE_UNPLACED, autoFixtureBlock, autoFixtureTransport, fixtureAutoBible, fixtureAutoEpisode, fixtureAutoOutline, fixtureAutoResearchV1, fixtureAutoResearchV2,
   fixtureAutoReview, type AutoFixtureExchange, type AutoFixturePlan,
@@ -1262,5 +1263,117 @@ describe("automatic creation engine", () => {
     }
     expect(markdown).toContain("视频成片：未开始");
     expect(markdown).toContain("AI 创作策划（市场证据不可用");
+  });
+
+  it("user-initiated revise after pass syncs outline/bible and does not reuse the frozen single-episode path", async () => {
+    const { store, run, engine, seen, view } = await setup({ revisionRounds: 2 });
+    await engine.drive(run.id);
+    expect((await view()).state).toBe("completed");
+    expect((await view()).quality).toBe("passed");
+    expect(seen.some((item) => item.stage.startsWith("revise:"))).toBe(false);
+    const before = seen.length;
+    const bundle = (await store.getRunById(WS, run.id))!;
+    const planned = planAutoUserRevise(bundle, {
+      findingIds: [],
+      instruction: "把阻碍者动机改成误以为争房产，并写清开门前的可见犹豫",
+    });
+    expect(planned.ok).toBe(true);
+    if (!planned.ok) return;
+    const prepared = await store.prepareUserRevise(WS, P1, run.id, {
+      resumeKey: "user-revise-1",
+      requestHash: hashAutoUserRevise(run.id, {
+        findingIds: planned.brief.findingIds,
+        instruction: planned.brief.instruction,
+        confirmUncertainCallIds: [],
+      }),
+      confirmedCallIds: [],
+      maxActiveRuns: 5,
+      providerReady: true,
+      findingIds: planned.brief.findingIds,
+      instruction: planned.brief.instruction,
+      stageKeys: [`revise:1:episode:1`, "review:2"],
+      round: 1,
+      briefDepends: encodeUserReviseDepends(planned.brief),
+    }, new Date(START).toISOString());
+    expect(prepared.kind).toBe("ok");
+    await engine.drive(run.id);
+    const result = await view();
+    expect(result.state).toBe("completed");
+    expect(result.revisionRoundsUsed).toBe(1);
+    expect(seen.slice(before).map((item) => item.stage)).toEqual(["revise:1:episode:1", "review:2"]);
+    const revisePrompt = seen.find((item) => item.stage === "revise:1:episode:1")!;
+    expect(revisePrompt.user).toContain("ads.auto-creation.user-revise.v1");
+    expect(revisePrompt.user).not.toContain("故事正文（已冻结）");
+    expect(revisePrompt.user).toContain("当前故事正文（可按意见修改动机与相应描写）");
+    const outline = result.stages.find((stage) => stage.stageKey === "outline")!.output as AutoOutline;
+    expect(outline.episodes[0]!.obstacle).toContain("争房产");
+    const bible = result.stages.find((stage) => stage.stageKey === "bible")!.output as { story: { obstacles: string[] } };
+    expect(bible.story.obstacles[0]).toContain("争房产");
+    expect(result.storyUpdateConflict).toBe(false);
+  });
+
+  it("user revise does not overwrite a human-edited story and flags conflict while keeping the package", async () => {
+    const { store, run, engine, view } = await setup({ revisionRounds: 2 });
+    await engine.drive(run.id);
+    const project = store.projects.get(P1)!;
+    const current = project.stories.find((story) => story.id === project.currentStoryId)!;
+    current.text = "人工改过的故事正文";
+    current.createdBy = "human-editor";
+    const bundle = (await store.getRunById(WS, run.id))!;
+    const planned = planAutoUserRevise(bundle, { findingIds: [], instruction: "只改动机" });
+    expect(planned.ok).toBe(true);
+    if (!planned.ok) return;
+    expect((await store.prepareUserRevise(WS, P1, run.id, {
+      resumeKey: "user-revise-conflict",
+      requestHash: hashAutoUserRevise(run.id, { findingIds: [], instruction: "只改动机", confirmUncertainCallIds: [] }),
+      confirmedCallIds: [], maxActiveRuns: 5, providerReady: true, findingIds: [], instruction: "只改动机",
+      stageKeys: ["revise:1:episode:1", "review:2"], round: 1, briefDepends: encodeUserReviseDepends(planned.brief),
+    }, new Date(START).toISOString())).kind).toBe("ok");
+    await engine.drive(run.id);
+    const result = await view();
+    expect(result.state).toBe("completed");
+    expect(result.errorCode).toBe("story_update_conflict");
+    expect(result.storyUpdateConflict).toBe(true);
+    expect(result.packageStatus).toBe("ready");
+    expect(project.stories.find((story) => story.id === project.currentStoryId)!.text).toBe("人工改过的故事正文");
+  });
+
+  it("automatic fail-then-revise still uses the frozen story path and is unchanged", async () => {
+    const { engine, seen, view, run } = await setup({ plan: { review: { highIssueRounds: [1] } } });
+    await engine.drive(run.id);
+    const revise = seen.find((item) => item.stage === "revise:1:episode:1")!;
+    expect(revise.user).toContain("故事正文（已冻结）");
+    expect(revise.user).not.toContain("ads.auto-creation.user-revise.v1");
+    expect((await view()).quality).toBe("passed");
+  });
+
+  it("UNKNOWN on a user-revise stage stops without auto-resend", async () => {
+    const { store, run, engine, seen, view } = await setup({ revisionRounds: 2 });
+    await engine.drive(run.id);
+    const bundle = (await store.getRunById(WS, run.id))!;
+    const planned = planAutoUserRevise(bundle, { findingIds: [], instruction: "改动机" });
+    expect(planned.ok).toBe(true);
+    if (!planned.ok) return;
+    expect((await store.prepareUserRevise(WS, P1, run.id, {
+      resumeKey: "user-revise-unknown",
+      requestHash: hashAutoUserRevise(run.id, { findingIds: [], instruction: "改动机", confirmUncertainCallIds: [] }),
+      confirmedCallIds: [], maxActiveRuns: 5, providerReady: true, findingIds: [], instruction: "改动机",
+      stageKeys: ["revise:1:episode:1", "review:2"], round: 1, briefDepends: encodeUserReviseDepends(planned.brief),
+    }, new Date(START).toISOString())).kind).toBe("ok");
+    const before = seen.length;
+    const hanging = new AutoCreationEngine({
+      workspaceId: WS, store, providers: providers(), maxCallsPerDay: 100, clock: () => new Date(START),
+      transport: autoFixtureTransport({
+        seen,
+        override: (stage) => stage === "revise:1:episode:1" ? "hang" : undefined,
+      }),
+      leaseMs: 50,
+      timeoutMs: 30,
+    });
+    await hanging.drive(run.id);
+    const stopped = await view();
+    expect(stopped.state).toBe("needs_attention");
+    expect(seen.slice(before).filter((item) => item.stage === "revise:1:episode:1")).toHaveLength(1);
+    expect(seen.some((item) => item.stage === "review:2")).toBe(false);
   });
 });

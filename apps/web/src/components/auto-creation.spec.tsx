@@ -1194,4 +1194,46 @@ describe("AI 自动创作 run page", () => {
     fireEvent.click(place);
     await waitFor(() => expect(bodies).toEqual([{ acceptStoryChanged: false }, { acceptStoryChanged: true }]));
   });
+
+  it("result page quotes user revise cost before confirm and starts only after confirm", async () => {
+    const posts: Array<{ url: string; body: unknown; key?: string | null }> = [];
+    const passed = run({
+      state: "completed", quality: "passed", errorCode: null, revisionRoundsUsed: 0, callsUsed: 8, callCap: 12,
+      selectableFindings: [
+        { id: "R1", target: "episode:1", severity: "low", detail: "开门前缺少可见权衡" },
+        { id: "R2", target: "outline", severity: "low", detail: "阻碍者动机应改为误以为争房产" },
+      ],
+    });
+    vi.stubGlobal("fetch", vi.fn(async (input: string, init?: RequestInit) => {
+      if (input.endsWith("/auto-runs/latest") || /\/auto-runs\/[0-9a-f-]+$/i.test(input)) return json({ run: passed });
+      if (input.endsWith("/user-revise")) {
+        const body = JSON.parse(String(init?.body)) as { confirm: boolean; findingIds: string[]; instruction: string };
+        posts.push({ url: input, body, key: init?.headers && (init.headers as Record<string, string>)["Idempotency-Key"] });
+        if (!body.confirm) {
+          return json({
+            run: passed,
+            quote: { callsNeeded: 2, roundsUsed: 0, roundsBudget: 2, roundsRemainingAfter: 1, callsUsed: 8, callCap: 12, callsRemainingAfter: 2, episodeTargets: [1], syncStory: true },
+          });
+        }
+        return json({ run: { ...passed, state: "running", revisionRoundsUsed: 1, quality: "pending" } });
+      }
+      return json(options());
+    }));
+    render(<AutoCreationRun projectId={P1} />);
+    const section = await screen.findByTestId("auto-user-revise");
+    expect(within(section).getByText(/R2/)).toBeTruthy();
+    fireEvent.click(within(section).getByText(/R2/).closest("label")!.querySelector("input")!);
+    fireEvent.change(screen.getByTestId("auto-user-revise-instruction"), { target: { value: "并写清可见犹豫" } });
+    fireEvent.click(screen.getByTestId("auto-user-revise-preview"));
+    expect((await screen.findByTestId("auto-user-revise-quote")).textContent).toContain("消耗 2 次");
+    expect(posts).toHaveLength(1);
+    expect(posts[0]!.body).toMatchObject({ confirm: false, findingIds: ["R2"] });
+    expect(posts[0]!.key).toBeFalsy();
+    expect((screen.getByTestId("auto-user-revise-start") as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByTestId("auto-user-revise-confirm").querySelector("input")!);
+    fireEvent.click(screen.getByTestId("auto-user-revise-start"));
+    await waitFor(() => expect(posts).toHaveLength(2));
+    expect(posts[1]!.body).toMatchObject({ confirm: true, findingIds: ["R2"], instruction: "并写清可见犹豫" });
+    expect(posts[1]!.key).toBeTruthy();
+  });
 });

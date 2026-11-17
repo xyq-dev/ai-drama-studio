@@ -83,6 +83,20 @@ export class AutoCreationController {
       { actorId: "server-owner", traceId: createTraceId(traceHeader), idempotencyKey }));
   }
 
+  @Post("projects/:projectId/auto-runs/:runId/user-revise")
+  userRevise(
+    @Param("projectId", UUID_PARAM_PIPE) projectId: string,
+    @Param("runId", UUID_PARAM_PIPE) runId: string,
+    @Body() body: unknown,
+    @Res({ passthrough: true }) response: StatusResponse,
+    @Headers() headers: RequestHeaders,
+    @Headers("idempotency-key") idempotencyKey?: string,
+    @Headers("x-trace-id") traceHeader?: string,
+  ) {
+    return this.send(response, (service) => service.userRevise(projectId, runId, body, operatorProof(this.site, headers),
+      { actorId: "server-owner", traceId: createTraceId(traceHeader), idempotencyKey }));
+  }
+
   @Post("projects/:projectId/auto-runs/:runId/scripts")
   scripts(@Param("projectId", UUID_PARAM_PIPE) projectId: string, @Param("runId", UUID_PARAM_PIPE) runId: string, @Body() body: unknown,
     @Res({ passthrough: true }) response: StatusResponse, @Headers("x-trace-id") traceHeader?: string) {

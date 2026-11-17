@@ -35,6 +35,7 @@ import {
   type AutoCreationStore,
   type AutoResumeBlock,
   type AutoResumePreparation,
+  type AutoUserRevisePreparation,
   type AutoReviewOutput,
   type AutoRunBundle,
   type AutoRunCreation,
@@ -51,6 +52,7 @@ import {
   autoContextFromStages,
   autoPackageComplete,
   autoResearchModeOf,
+  autoSelectableFindings,
   autoStageDependencies,
   blockingOutsideEpisodes,
   buildAutoCreationPrompt,
@@ -59,6 +61,7 @@ import {
   formatAutoEpisode,
   formatAutoStory,
   openIssues,
+  readUserReviseBrief,
   revisionTargets,
   validateAutoStageOutput,
   type FetchedPage,
@@ -93,6 +96,21 @@ export function hashAutoCreationInput(projectId: string, input: AutoCreationFroz
 
 export function hashAutoResume(runId: string, confirmed: readonly string[]): string {
   return canonicalInputHash({ runId, kind: "auto-creation-resume", confirmUncertainCallIds: [...confirmed].sort() });
+}
+
+/** Identity of a confirmed user-initiated revise: findings, instruction and any uncertain-call acknowledgements. */
+export function hashAutoUserRevise(runId: string, request: {
+  findingIds: readonly string[];
+  instruction: string;
+  confirmUncertainCallIds: readonly string[];
+}): string {
+  return canonicalInputHash({
+    runId,
+    kind: "auto-creation-user-revise",
+    findingIds: [...request.findingIds].sort(),
+    instruction: request.instruction.trim(),
+    confirmUncertainCallIds: [...request.confirmUncertainCallIds].sort(),
+  });
 }
 
 export function newAutoRun(options: {
@@ -212,6 +230,7 @@ export function autoRunView(bundle: AutoRunBundle, options: { researchFetch?: bo
   const reviews = stages.filter((stage) => autoStageKind(stage.stageKey) === "review" && stage.state === "completed");
   const lastReview = reviews.at(-1)?.output as AutoReviewOutput | undefined;
   const allDone = stages.every((stage) => stage.state === "completed");
+  const selectable = lastReview ? autoSelectableFindings(lastReview) : [];
   return {
     runId: run.id,
     projectId: run.projectId,
@@ -286,6 +305,8 @@ export function autoRunView(bundle: AutoRunBundle, options: { researchFetch?: bo
     legacyProviderRun: isLegacyDeepseekRun(input),
     // Without the server's research setting, a frozen read is assumed available (the resume itself checks it).
     resumeBlock: autoResumeBlock(bundle, { researchFetch: options.researchFetch ?? true }),
+    storyUpdateConflict: run.errorCode === "story_update_conflict",
+    selectableFindings: selectable,
     createdAt: run.createdAt,
     updatedAt: run.updatedAt,
   };
@@ -397,6 +418,8 @@ export class AutoCreationEngine {
       return this.finish(runId, "needs_attention", "provider_unconfigured");
     }
     const context = autoContextFromStages(stages);
+    const userBrief = readUserReviseBrief(next.dependsOn);
+    if (userBrief) context.userRevise = userBrief;
     // The research contract is chosen by the run's own saved snapshot, never by the current options: without a valid
     // one nothing is reserved or sent, and no mode is assumed.
     const researchMode = autoResearchModeOf(context.sources);
@@ -410,7 +433,7 @@ export class AutoCreationEngine {
     // Research uses the saved catalog. Outline and revisions follow their frozen run's contracts.
     const schema = autoCreationJsonSchema(prompt.kind, run.input.episodeCount, prompt.kind === "research" ? researchMode : null,
       prompt.kind === "research" ? context.referenceCatalog ?? null : null, prompt.revisionReferences,
-      autoCreationWritesStoryProse(run.input.promptVersion));
+      autoCreationWritesStoryProse(run.input.promptVersion), Boolean(userBrief));
     const request = {
       model: run.input.model,
       system: prompt.system,
@@ -465,16 +488,27 @@ export class AutoCreationEngine {
       if (checked.ok) {
         patch = { state: "completed", errorCode: null, output: checked.output, outputHash: canonicalInputHash(checked.output),
           dependsOn: autoStageDependencies(next.stageKey, stages), ...common };
-      } else {
-        const errorCode = autoErrorCodeWith(checked.code, checked.field, checked.category, checked.semantic, checked.rule, checked.reason);
-        const diagnostic = isAutoResearchRankingRejection(next.stageKey, "rejected", errorCode)
-          ? readAutoResearchRejectionDiagnostic(checked.rejectionDiagnostic) : null;
-        // An escaped key echo inside the answer's JSON could evade the transport's literal redaction.
-        const rejectionDiagnostic = diagnostic && !exchange.content.replace(/\\u([0-9a-f]{4})/giu, (_, hex: string) => String.fromCharCode(Number.parseInt(hex, 16))).includes(provider.apiKey)
-          ? diagnostic : null;
-        patch = { state: "rejected", errorCode, output: null, outputHash: null, dependsOn: null,
-          ...(rejectionDiagnostic ? { rejectionDiagnostic } : {}), ...common };
+        const finished = await this.deps.store.finishCall(this.workspaceId, call.id, this.executorId, patch, this.now().toISOString());
+        if (!finished) return false;
+        if (checked.userReviseApply) {
+          const nowIso = this.now().toISOString();
+          const bibleHash = canonicalInputHash(checked.userReviseApply.bible);
+          const outlineHash = canonicalInputHash(checked.userReviseApply.outline);
+          if (!await this.deps.store.replaceCompletedStageOutput(this.workspaceId, runId, this.executorId, "bible",
+            checked.userReviseApply.bible, bibleHash, nowIso)) return false;
+          if (!await this.deps.store.replaceCompletedStageOutput(this.workspaceId, runId, this.executorId, "outline",
+            checked.userReviseApply.outline, outlineHash, nowIso)) return false;
+        }
+        return true;
       }
+      const errorCode = autoErrorCodeWith(checked.code, checked.field, checked.category, checked.semantic, checked.rule, checked.reason);
+      const diagnostic = isAutoResearchRankingRejection(next.stageKey, "rejected", errorCode)
+        ? readAutoResearchRejectionDiagnostic(checked.rejectionDiagnostic) : null;
+      // An escaped key echo inside the answer's JSON could evade the transport's literal redaction.
+      const rejectionDiagnostic = diagnostic && !exchange.content.replace(/\\u([0-9a-f]{4})/giu, (_, hex: string) => String.fromCharCode(Number.parseInt(hex, 16))).includes(provider.apiKey)
+        ? diagnostic : null;
+      patch = { state: "rejected", errorCode, output: null, outputHash: null, dependsOn: null,
+        ...(rejectionDiagnostic ? { rejectionDiagnostic } : {}), ...common };
     } else {
       patch = { state: exchange.outcome === "unknown" ? "unknown" : "rejected", errorCode: exchange.errorCode ?? "invalid_output",
         output: null, outputHash: null, dependsOn: null, ...common };
@@ -503,7 +537,8 @@ export class AutoCreationEngine {
         errorCode = "unrevisable_issues";
       } else if (targets.length > 0 && roundsLeft) {
         // The whole round must fit the run's own budget before any of it is planned.
-        if (run.storySave === "pending" && run.callsUsed + targets.length + 1 <= run.callCap) {
+        // storySave may already be "saved" after a user-initiated revise; automatic fail-path rounds still append.
+        if (run.callsUsed + targets.length + 1 <= run.callCap) {
           const keys = [...targets.map((episodeNo) => `revise:${String(round)}:episode:${String(episodeNo)}`), `review:${String(round + 1)}`];
           return this.deps.store.appendRound(this.workspaceId, run.id, this.executorId, keys, round, this.now().toISOString());
         }
@@ -512,7 +547,15 @@ export class AutoCreationEngine {
         errorCode = targets.length > 0 ? "revision_rounds_exhausted" : "unrevisable_issues";
       }
     }
-    if (run.storySave === "saved") return this.finish(run.id, "completed", errorCode);
+    if (run.storySave === "saved") {
+      const refreshedText = formatAutoStory(run.id, quality, autoContextFromStages(stages));
+      if (refreshedText !== null) {
+        const refreshed = await this.deps.store.refreshStoryDraft(this.workspaceId, run.id, this.executorId, refreshedText, quality, this.now().toISOString());
+        if (refreshed === "lost") return false;
+        if (refreshed === "conflict") return this.finish(run.id, "completed", "story_update_conflict", quality);
+      }
+      return this.finish(run.id, "completed", errorCode, quality);
+    }
     if (run.storySave === "conflict") return this.finish(run.id, "needs_attention", "story_conflict");
     const text = formatAutoStory(run.id, quality, autoContextFromStages(stages));
     if (text === null) return this.finish(run.id, "needs_attention", "story_too_large", quality);
@@ -771,6 +814,77 @@ export class InMemoryAutoCreationStore implements AutoCreationStore {
     if (!run) return null;
     if (run.state === "running" && run.cancelRequestedAt === null) Object.assign(run, { cancelRequestedAt: nowIso, updatedAt: nowIso });
     return this.bundle(run);
+  }
+
+  async prepareUserRevise(workspaceId: string, projectId: string, runId: string, request: {
+    resumeKey: string; requestHash: string; confirmedCallIds: readonly string[]; maxActiveRuns: number; providerReady: boolean;
+    findingIds: readonly string[]; instruction: string; stageKeys: readonly string[]; round: number; briefDepends: Record<string, string>;
+  }, nowIso: string): Promise<AutoUserRevisePreparation> {
+    const run = this.runs.find((item) => item.id === runId && item.workspaceId === workspaceId && item.projectId === projectId);
+    if (!run) return { kind: "not_found" };
+    const previous = this.resumes.find((item) => item.runId === runId && item.key === request.resumeKey);
+    if (previous) return previous.requestHash === request.requestHash ? { kind: "replayed", bundle: this.bundle(run) } : { kind: "key_conflict" };
+    if (run.state === "running") return { kind: "active" };
+    if (this.titleRunning.has(projectId)) return { kind: "active" };
+    if (this.runs.filter((item) => item.workspaceId === workspaceId && item.state === "running").length + this.titleRunning.size >= request.maxActiveRuns) {
+      return { kind: "active_cap" };
+    }
+    const stages = this.stages.filter((item) => item.runId === runId);
+    if (!stages.every((stage) => stage.state === "completed")) return { kind: "not_eligible" };
+    if (run.revisionRoundsUsed !== request.round - 1) return { kind: "rounds_exhausted" };
+    if (run.callsUsed + request.stageKeys.length > run.callCap) return { kind: "budget_exhausted" };
+    if (!request.providerReady) return { kind: "provider_unconfigured" };
+    const uncertain = autoUncertainCallIds(stages, this.calls.filter((item) => item.runId === runId));
+    const confirmed = [...request.confirmedCallIds].sort();
+    if (uncertain.length > 0 && confirmed.length === 0) return { kind: "needs_confirmation" };
+    if (uncertain.length !== confirmed.length || uncertain.some((id, index) => id !== confirmed[index])) return { kind: "stale_confirmation" };
+    this.resumes.push({ runId, key: request.resumeKey, requestHash: request.requestHash });
+    let ordinal = Math.max(...stages.map((stage) => stage.ordinal)) + 1;
+    for (const stageKey of request.stageKeys) {
+      this.stages.push({
+        runId, stageKey, ordinal, state: "pending", attemptNo: 0, errorCode: null, output: null, outputHash: null,
+        dependsOn: stageKey.startsWith("revise:") ? { ...request.briefDepends } : null,
+        scriptSave: null, scriptRevisionId: null, updatedAt: nowIso,
+      });
+      ordinal += 1;
+    }
+    Object.assign(run, {
+      state: "running", errorCode: null, cancelRequestedAt: null, executorId: null, leaseUntil: null,
+      revisionRoundsUsed: request.round, quality: "pending", updatedAt: nowIso,
+    });
+    return { kind: "ok", bundle: this.bundle(run) };
+  }
+
+  async replaceCompletedStageOutput(workspaceId: string, runId: string, executorId: string, stageKey: string, output: AutoStageOutput, outputHash: string, nowIso: string): Promise<boolean> {
+    const run = this.run(runId);
+    if (!this.owns(run, workspaceId, executorId, nowIso)) return false;
+    const stage = this.stage(runId, stageKey);
+    if (stage.state !== "completed") return false;
+    Object.assign(stage, { output: structuredClone(output), outputHash, updatedAt: nowIso });
+    run.updatedAt = nowIso;
+    return true;
+  }
+
+  async refreshStoryDraft(workspaceId: string, runId: string, executorId: string, storyText: string, quality: Exclude<AutoCreationQuality, "pending">, nowIso: string): Promise<"saved" | "conflict" | "lost" | "unchanged"> {
+    const run = this.run(runId);
+    if (!this.owns(run, workspaceId, executorId, nowIso)) return "lost";
+    if (run.storySave !== "saved" || run.storyRevisionId === null) return "unchanged";
+    const project = this.projects.get(run.projectId)!;
+    const current = project.stories.find((story) => story.id === project.currentStoryId);
+    if (!current || current.id !== run.storyRevisionId || current.reviewStatus !== "DRAFT"
+      || current.createdBy !== `auto-creation:${runId}`) {
+      Object.assign(run, { quality, updatedAt: nowIso });
+      return "conflict";
+    }
+    if (current.text === storyText) {
+      Object.assign(run, { quality, updatedAt: nowIso });
+      return "unchanged";
+    }
+    const id = randomUUID();
+    project.stories.push({ id, text: storyText, reviewStatus: "DRAFT", createdBy: `auto-creation:${runId}` });
+    project.currentStoryId = id;
+    Object.assign(run, { storyRevisionId: id, quality, updatedAt: nowIso });
+    return "saved";
   }
 
   async prepareResume(workspaceId: string, projectId: string, runId: string, request: { resumeKey: string; requestHash: string; confirmedCallIds: readonly string[]; maxActiveRuns: number; providerReady: boolean; blocked: boolean }, nowIso: string): Promise<AutoResumePreparation> {

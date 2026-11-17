@@ -12,6 +12,7 @@ import {
   type AutoCreationQuality,
   type AutoCreationStore,
   type AutoResumePreparation,
+  type AutoUserRevisePreparation,
   type AutoRunBundle,
   type AutoRunCreation,
   type AutoRunRecord,
@@ -94,6 +95,11 @@ function toStage(row: Row): AutoStageRecord {
   // Rejected research uses this JSON column for a separate diagnostic envelope, never an output dependency.
   const rejectionDiagnostic = isAutoResearchRankingRejection(stageKey, state, errorCode)
     ? readAutoResearchRejectionDiagnostic(metadata?.[RESEARCH_REJECTION_DIAGNOSTIC_KEY]) : null;
+  // Completed stages keep upstream hashes; pending user-revise stages keep the brief under __adsUserRevise.
+  const dependsOn = rejectionDiagnostic ? null
+    : state === "completed" ? (metadata ?? null) as Record<string, string> | null
+      : metadata && typeof metadata.__adsUserRevise === "string" ? metadata as Record<string, string>
+        : null;
   return {
     runId: String(row.run_id),
     stageKey,
@@ -104,7 +110,7 @@ function toStage(row: Row): AutoStageRecord {
     // Written only after the output passed the domain checks.
     output: (row.output_json ?? null) as AutoStageOutput | null,
     outputHash: (row.output_hash as string | null) ?? null,
-    dependsOn: state === "completed" ? (metadata ?? null) as Record<string, string> | null : null,
+    dependsOn,
     ...(rejectionDiagnostic ? { rejectionDiagnostic } : {}),
     scriptSave: (row.script_save as AutoStageRecord["scriptSave"]) ?? null,
     scriptRevisionId: (row.script_revision_id as string | null) ?? null,
@@ -430,6 +436,120 @@ export class PostgresAutoCreationStore implements AutoCreationStore {
         WHERE id = $1 AND workspace_id = $2 AND project_id = $3 AND state = 'running' AND cancel_requested_at IS NULL`,
       [runId, workspaceId, projectId, nowIso]);
     return this.getRun(workspaceId, projectId, runId);
+  }
+
+  async prepareUserRevise(workspaceId: string, projectId: string, runId: string, request: {
+    resumeKey: string; requestHash: string; confirmedCallIds: readonly string[]; maxActiveRuns: number; providerReady: boolean;
+    findingIds: readonly string[]; instruction: string; stageKeys: readonly string[]; round: number; briefDepends: Record<string, string>;
+  }, nowIso: string): Promise<AutoUserRevisePreparation> {
+    return this.transaction(async (client) => {
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [runLockKey(workspaceId)]);
+      const row = (await client.query<Row>(`SELECT ${RUN_COLUMNS} FROM auto_creation_run WHERE id = $1 AND workspace_id = $2 AND project_id = $3 FOR UPDATE`,
+        [runId, workspaceId, projectId])).rows[0];
+      if (!row) return { kind: "not_found" };
+      const run = toRun(row);
+      const previous = await client.query<Row>("SELECT request_hash FROM auto_creation_resume WHERE run_id = $1 AND idempotency_key = $2", [runId, request.resumeKey]);
+      if (previous.rows[0]) {
+        return String(previous.rows[0].request_hash) === request.requestHash ? { kind: "replayed", bundle: (await this.load(client, row))! } : { kind: "key_conflict" };
+      }
+      if (run.state === "running") return { kind: "active" };
+      const titles = await client.query<Row>("SELECT to_regclass('title_writing_run') IS NOT NULL AS present");
+      const titleProjects = titles.rows[0]?.present === true
+        ? (await client.query<Row>("SELECT project_id FROM title_writing_run WHERE workspace_id = $1 AND state = 'running'", [workspaceId])).rows
+          .map((item) => String(item.project_id))
+        : [];
+      if (titleProjects.includes(projectId)) return { kind: "active" };
+      const others = await runningWritingRuns(client, workspaceId);
+      if (others.some((item) => (item.kind === "series" || item.kind === "vimax") && item.projectId === projectId)) return { kind: "active" };
+      if (titleProjects.length + others.length >= request.maxActiveRuns) return { kind: "active_cap" };
+      const stages = (await client.query<Row>(`SELECT ${STAGE_COLUMNS} FROM auto_creation_stage WHERE run_id = $1`, [runId])).rows.map(toStage);
+      if (!stages.every((stage) => stage.state === "completed")) return { kind: "not_eligible" };
+      if (run.revisionRoundsUsed !== request.round - 1) return { kind: "rounds_exhausted" };
+      if (run.callsUsed + request.stageKeys.length > run.callCap) return { kind: "budget_exhausted" };
+      if (!request.providerReady) return { kind: "provider_unconfigured" };
+      const calls = (await client.query<Row>("SELECT id, stage_key, attempt_no, state FROM auto_creation_call WHERE run_id = $1", [runId])).rows
+        .map((item) => ({ callId: String(item.id), stepKey: String(item.stage_key) as TitleWritingStepKey, attemptNo: Number(item.attempt_no), state: item.state as AutoCallRecord["state"] }));
+      const uncertain = currentUncertainCallIds(stages.map((stage) => ({ stepKey: stage.stageKey as TitleWritingStepKey, state: stage.state, attemptNo: stage.attemptNo })), calls);
+      const confirmed = [...request.confirmedCallIds].sort();
+      if (uncertain.length > 0 && confirmed.length === 0) return { kind: "needs_confirmation" };
+      if (uncertain.length !== confirmed.length || uncertain.some((id, index) => id !== confirmed[index])) return { kind: "stale_confirmation" };
+      await client.query(
+        `INSERT INTO auto_creation_resume (run_id, workspace_id, idempotency_key, request_hash, confirmed_call_ids, created_at)
+         VALUES ($1, $2, $3, $4, $5::jsonb, $6)`, [runId, workspaceId, request.resumeKey, request.requestHash, JSON.stringify(confirmed), nowIso]);
+      const lastOrdinal = Math.max(0, ...stages.map((stage) => stage.ordinal));
+      let ordinal = lastOrdinal + 1;
+      for (const stageKey of request.stageKeys) {
+        const depends = stageKey.startsWith("revise:") ? request.briefDepends : null;
+        await client.query(
+          `INSERT INTO auto_creation_stage (run_id, workspace_id, stage_key, ordinal, state, attempt_no, depends_on_json, updated_at)
+           VALUES ($1, $2, $3, $4, 'pending', 0, $5::jsonb, $6)`,
+          [runId, workspaceId, stageKey, ordinal, depends === null ? null : JSON.stringify(depends), nowIso]);
+        ordinal += 1;
+      }
+      const updated = await client.query<Row>(
+        `UPDATE auto_creation_run SET state = 'running', error_code = NULL, cancel_requested_at = NULL, executor_id = NULL, lease_until = NULL,
+           revision_rounds_used = $2, quality = 'pending', updated_at = $3
+          WHERE id = $1 RETURNING ${RUN_COLUMNS}`, [runId, request.round, nowIso]);
+      return { kind: "ok", bundle: (await this.load(client, updated.rows[0]))! };
+    });
+  }
+
+  async replaceCompletedStageOutput(workspaceId: string, runId: string, executorId: string, stageKey: string, output: AutoStageOutput, outputHash: string, nowIso: string): Promise<boolean> {
+    return this.transaction(async (client) => {
+      if (!await this.ownedRun(client, workspaceId, runId, executorId, nowIso)) return false;
+      const updated = await client.query(
+        `UPDATE auto_creation_stage SET output_json = $3::jsonb, output_hash = $4, updated_at = $5
+          WHERE run_id = $1 AND stage_key = $2 AND state = 'completed'`,
+        [runId, stageKey, JSON.stringify(output), outputHash, nowIso]);
+      if (updated.rowCount !== 1) return false;
+      await client.query("UPDATE auto_creation_run SET updated_at = $2 WHERE id = $1", [runId, nowIso]);
+      return true;
+    });
+  }
+
+  async refreshStoryDraft(workspaceId: string, runId: string, executorId: string, storyText: string, quality: Exclude<AutoCreationQuality, "pending">, nowIso: string): Promise<"saved" | "conflict" | "lost" | "unchanged"> {
+    return this.transaction(async (client) => {
+      const run = await this.ownedRun(client, workspaceId, runId, executorId, nowIso);
+      if (!run) return "lost";
+      if (run.storySave !== "saved" || run.storyRevisionId === null) return "unchanged";
+      const project = await client.query<Row>(
+        "SELECT version, current_story_revision_id FROM project WHERE id = $1 AND workspace_id = $2 FOR UPDATE",
+        [run.projectId, run.workspaceId]);
+      const projectRow = project.rows[0];
+      if (!projectRow || projectRow.current_story_revision_id === null) {
+        await client.query("UPDATE auto_creation_run SET quality = $3, updated_at = $2 WHERE id = $1", [runId, nowIso, quality]);
+        return "conflict";
+      }
+      const story = await client.query<Row>(
+        "SELECT id, review_status, created_by, content_json FROM story_revision WHERE id = $1 AND project_id = $2 AND workspace_id = $3",
+        [projectRow.current_story_revision_id, run.projectId, run.workspaceId]);
+      const storyRow = story.rows[0];
+      const stillOwnDraft = storyRow
+        && String(storyRow.id) === run.storyRevisionId
+        && String(storyRow.review_status) === "DRAFT"
+        && String(storyRow.created_by) === `auto-creation:${runId}`;
+      if (!stillOwnDraft) {
+        await client.query("UPDATE auto_creation_run SET quality = $3, updated_at = $2 WHERE id = $1", [runId, nowIso, quality]);
+        return "conflict";
+      }
+      const previousText = (storyRow.content_json as { text?: string } | null)?.text ?? null;
+      if (previousText === storyText) {
+        await client.query("UPDATE auto_creation_run SET quality = $3, updated_at = $2 WHERE id = $1", [runId, nowIso, quality]);
+        return "unchanged";
+      }
+      const created = await this.textChain.createStoryRevisionInTransaction(client, {
+        workspaceId: run.workspaceId,
+        projectId: run.projectId,
+        content: { text: storyText },
+        createdBy: `auto-creation:${runId}`,
+        expectedVersion: Number(projectRow.version),
+        traceId: `auto-creation:${runId}`,
+      });
+      await client.query(
+        "UPDATE auto_creation_run SET story_revision_id = $2, quality = $4, updated_at = $3 WHERE id = $1",
+        [runId, created.revisionId, nowIso, quality]);
+      return "saved";
+    });
   }
 
   async prepareResume(workspaceId: string, projectId: string, runId: string, request: { resumeKey: string; requestHash: string; confirmedCallIds: readonly string[]; maxActiveRuns: number; providerReady: boolean; blocked: boolean }, nowIso: string): Promise<AutoResumePreparation> {

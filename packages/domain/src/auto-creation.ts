@@ -82,6 +82,16 @@ import {
   autoMapLimitedResearchAnswer, autoMapResearchAnswer, autoReferenceCatalogOf, quotedWhole, withoutWhitespace as normalize,
 } from "./auto-creation-references";
 import { isMarketSource, readableSources } from "./auto-creation-sources";
+import {
+  AUTO_USER_REVISE_PATH_VERSION,
+  autoUserRevisionSchema,
+  applyBibleSync,
+  stripUserRevisionExtras,
+  userReviseAllowedIssueIds,
+  userReviseIssueBlock,
+  type AutoUserReviseBrief,
+  type AutoUserRevision,
+} from "./auto-creation-user-revise";
 import { canonicalInputHash } from "./text-chain";
 
 /**
@@ -171,6 +181,11 @@ export interface AutoCreationContext {
   episodes: Map<number, { stageKey: string; episode: AutoEpisode }>;
   /** Completed reviews in round order. */
   reviews: Array<{ stageKey: string; review: AutoReviewOutput }>;
+  /**
+   * Present only for a user-initiated multi-artifact revise stage. Absent for the automatic fail-then-revise path
+   * (single episode, story prose frozen).
+   */
+  userRevise?: AutoUserReviseBrief;
 }
 
 /** Context from completed stages only. An episode's current version is its latest completed revision. */
@@ -640,24 +655,54 @@ export function buildAutoCreationPrompt(stageKey: string, input: AutoCreationFro
     const episodeNo = autoStageEpisodeNo(stageKey)!;
     const round = autoStageRound(stageKey)!;
     const review = context.reviews.find((item) => autoStageRound(item.stageKey) === round)!.review;
-    const issues = revisionIssueBlock(review, episodeNo);
-    revisionReferences = { ...sceneReferences(context.bible!), issueIds: issues.flatMap((item) => item.ids) };
-    lines = [
-      ...head,
-      `任务：定向修改第 ${String(episodeNo)} 集（第 ${String(round)} 轮修改），只解决下面列出的问题，其余内容尽量保持不变。`,
-      "冻结设定优先于本轮和历史审阅建议。若建议要求去未登记的地点或让仅被提及的人物出场，保留它要解决的问题，改用已有场景内的动作、道具、消息或在场人物的反应，呈现同一叙事结果。保持人物关系、结局事实和后续各集要继承的事实。",
-      ...(context.outline?.storyProse ? ["修订后仍须能从同一篇冻结故事正文改编，保持其中的关键事件、选择、转折和结局。"] : []),
-      `本次可用编号：locationId 仅 ${revisionReferences.locationIds.join("、")}；characterIds 和对白 characterId 仅 ${revisionReferences.characterIds.join("、")}，每句对白的人物还必须在本场出场名单内。`,
-      ...episodeShape(input, episodeNo),
-      "另加 changes 数组，逐条记录实际改动。issueId 只能用「需要解决的问题」中 ids 列出的编号，最多 10 条。",
-      roomLine(stageKey, input, context),
-      data("需要解决的问题", issues),
-      data("当前剧本", context.episodes.get(episodeNo)!.episode),
-      data("故事设定档案（已冻结）", context.bible),
-      ...(context.outline?.storyProse ? [data("故事正文（已冻结）", context.outline.storyProse)] : []),
-      data("本集大纲", context.outline!.episodes.find((item) => item.episodeNo === episodeNo)),
-      data("前面各集交接事实", previousHandoffs(context, episodeNo)),
-    ];
+    if (context.userRevise) {
+      const brief = context.userRevise;
+      const issues = userReviseIssueBlock(review, brief, episodeNo);
+      revisionReferences = { ...sceneReferences(context.bible!), issueIds: issues.flatMap((item) => item.ids) };
+      const firstOfRound = brief.episodeTargets[0] === episodeNo;
+      lines = [
+        ...head,
+        `任务：用户发起的一致性改稿（${AUTO_USER_REVISE_PATH_VERSION}），修改第 ${String(episodeNo)} 集（第 ${String(round)} 轮），并保持剧本、分集大纲、故事正文与被意见直接点到的设定字段一致。`,
+        "不要改研究或选题。不要整份重写设定档案：仅同步意见或用户说明直接点到的字段（例如阻碍、梗概、一句话故事、关键选择），其余设定保持不变。",
+        "可以改大纲条目与故事正文中被点名的动机与相应描写，使分集剧本与之互相一致；不要只改剧本而留下旧动机的正文。",
+        "不新增人物或地点，不改名，不改变未点到的关系与结局事实。",
+        `本次可用编号：locationId 仅 ${revisionReferences.locationIds.join("、")}；characterIds 和对白 characterId 仅 ${revisionReferences.characterIds.join("、")}，每句对白的人物还必须在本场出场名单内。`,
+        ...episodeShape(input, episodeNo),
+        "另加 changes 数组，逐条记录实际改动。issueId 只能用「需要解决的问题」中 ids 列出的编号（含用户说明 U1），最多 10 条。",
+        ...(firstOfRound ? [
+          "必须同时输出 outline（含完整 storyProse 与各集大纲）和可选的 bibleSync（仅含需要同步的 logline/synopsis/obstacles/keyChoices）。",
+          "outline.storyProse 与本集剧本、本集大纲动机描写保持一致。",
+        ] : [
+          "本轮已有其他集先完成故事同步时，仍输出与当前故事一致的 outline（含 storyProse）；bibleSync 可省略。",
+        ]),
+        roomLine(stageKey, input, context),
+        data("需要解决的问题", issues),
+        data("当前剧本", context.episodes.get(episodeNo)!.episode),
+        data("故事设定档案（尽量少改）", context.bible),
+        ...(context.outline?.storyProse ? [data("当前故事正文（可按意见修改动机与相应描写）", context.outline.storyProse)] : []),
+        data("当前分集大纲", context.outline),
+        data("前面各集交接事实", previousHandoffs(context, episodeNo)),
+      ];
+    } else {
+      const issues = revisionIssueBlock(review, episodeNo);
+      revisionReferences = { ...sceneReferences(context.bible!), issueIds: issues.flatMap((item) => item.ids) };
+      lines = [
+        ...head,
+        `任务：定向修改第 ${String(episodeNo)} 集（第 ${String(round)} 轮修改），只解决下面列出的问题，其余内容尽量保持不变。`,
+        "冻结设定优先于本轮和历史审阅建议。若建议要求去未登记的地点或让仅被提及的人物出场，保留它要解决的问题，改用已有场景内的动作、道具、消息或在场人物的反应，呈现同一叙事结果。保持人物关系、结局事实和后续各集要继承的事实。",
+        ...(context.outline?.storyProse ? ["修订后仍须能从同一篇冻结故事正文改编，保持其中的关键事件、选择、转折和结局。"] : []),
+        `本次可用编号：locationId 仅 ${revisionReferences.locationIds.join("、")}；characterIds 和对白 characterId 仅 ${revisionReferences.characterIds.join("、")}，每句对白的人物还必须在本场出场名单内。`,
+        ...episodeShape(input, episodeNo),
+        "另加 changes 数组，逐条记录实际改动。issueId 只能用「需要解决的问题」中 ids 列出的编号，最多 10 条。",
+        roomLine(stageKey, input, context),
+        data("需要解决的问题", issues),
+        data("当前剧本", context.episodes.get(episodeNo)!.episode),
+        data("故事设定档案（已冻结）", context.bible),
+        ...(context.outline?.storyProse ? [data("故事正文（已冻结）", context.outline.storyProse)] : []),
+        data("本集大纲", context.outline!.episodes.find((item) => item.episodeNo === episodeNo)),
+        data("前面各集交接事实", previousHandoffs(context, episodeNo)),
+      ];
+    }
   } else {
     const round = autoStageRound(stageKey)!;
     const findings = deterministicFindings(input, context);
@@ -692,7 +737,9 @@ export function buildAutoCreationPrompt(stageKey: string, input: AutoCreationFro
  * category (the kind of token, or the schema issue) and, for a number, what it was taken for (semantic) and the
  * sub-rule. detail is for tests and may hold model text: it is never stored.
  */
-export type AutoValidation = { ok: true; output: AutoStageOutput }
+export type AutoValidation = { ok: true; output: AutoStageOutput;
+  /** Present when a user-initiated revise also returned outline / bible sync to apply to those stages. */
+  userReviseApply?: { outline: AutoOutline; bible: AutoBible } }
   | { ok: false; code: string; detail?: string; field?: string; category?: string; semantic?: string; rule?: string;
     /** For a viewing time only: the fixed slug of the check that refused it. */
     reason?: AutoViewingDurationReason;
@@ -1300,12 +1347,12 @@ function checkReview(input: AutoCreationFrozenInput, review: ReturnType<typeof a
   return { ok: true, output };
 }
 
-function checkRevision(stageKey: string, output: AutoRevision, context: AutoCreationContext): AutoValidation {
+function checkRevision(stageKey: string, output: AutoRevision, context: AutoCreationContext, allowedIssueIds?: ReadonlySet<string>): AutoValidation {
   const structural = checkEpisode(stageKey, output, context);
   if (!structural.ok) return structural;
   const round = autoStageRound(stageKey)!;
   const review = context.reviews.find((item) => autoStageRound(item.stageKey) === round)?.review;
-  const allowed = new Set(review ? revisionIssueBlock(review, autoStageEpisodeNo(stageKey)!).flatMap((item) => item.ids) : []);
+  const allowed = allowedIssueIds ?? new Set(review ? revisionIssueBlock(review, autoStageEpisodeNo(stageKey)!).flatMap((item) => item.ids) : []);
   const invalidIndex = output.changes.findIndex((change) => !allowed.has(change.issueId));
   if (invalidIndex !== -1) return { ok: false, code: "dangling_reference", field: `changes[${String(invalidIndex)}].issueId` };
   return { ok: true, output };
@@ -1379,6 +1426,27 @@ export function validateAutoStageOutput(stageKey: string, content: string, input
     return parsed.success ? withinReviewBudget(stageKey, checkEpisode(stageKey, parsed.data, context), input, context) : zodFailure(parsed.error);
   }
   if (kind === "revise") {
+    if (context.userRevise) {
+      const parsed = autoUserRevisionSchema(input.episodeCount).safeParse(value);
+      if (!parsed.success) return zodFailure(parsed.error);
+      const full = parsed.data as AutoUserRevision;
+      const round = autoStageRound(stageKey)!;
+      const review = context.reviews.find((item) => autoStageRound(item.stageKey) === round)?.review;
+      if (!review) return { ok: false, code: "dangling_reference", field: "changes" };
+      const allowed = userReviseAllowedIssueIds(review, context.userRevise, autoStageEpisodeNo(stageKey)!);
+      const syncedBible = applyBibleSync(context.bible!, full.bibleSync);
+      const structural = checkRevision(stageKey, stripUserRevisionExtras(full), { ...context, bible: syncedBible }, allowed);
+      if (!structural.ok) return structural;
+      if (!full.outline.storyProse || full.outline.storyProse.length === 0) {
+        return { ok: false, code: "invalid_output", field: "outline.storyProse" };
+      }
+      const episodeOnly = stripUserRevisionExtras(full);
+      const budgeted = withinReviewBudget(stageKey, { ok: true, output: episodeOnly }, input, {
+        ...context, bible: syncedBible, outline: full.outline,
+      });
+      if (!budgeted.ok) return budgeted;
+      return { ok: true, output: episodeOnly, userReviseApply: { outline: full.outline, bible: syncedBible } };
+    }
     const parsed = autoRevisionSchema(input.episodeCount).safeParse(value);
     return parsed.success ? withinReviewBudget(stageKey, checkRevision(stageKey, parsed.data, context), input, context) : zodFailure(parsed.error);
   }

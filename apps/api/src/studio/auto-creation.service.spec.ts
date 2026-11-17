@@ -420,4 +420,54 @@ describe("automatic creation API", () => {
     await settle();
     expect(seen).toHaveLength(autoCreationNormalCalls(1));
   });
+
+  it("user revise quotes without confirm, refuses empty input, and starts only after confirm", async () => {
+    const { service, settle, run, seen } = setup();
+    const started = await service.start(P1, { revisionRounds: 2, callBudget: 12 }, TOKEN, CONTEXT("user-revise-start"));
+    const runId = (started.body as { run: AutoCreationRunView }).run.runId;
+    await settle();
+    expect((await run(runId)).state).toBe("completed");
+    const before = seen.length;
+    expect(errorCode((await service.userRevise(P1, runId, { confirm: false }, TOKEN, CONTEXT())).body))
+      .toBe("AUTO_CREATION_USER_REVISE_EMPTY");
+    expect(seen).toHaveLength(before);
+    const quoted = await service.userRevise(P1, runId, { instruction: "改动机", confirm: false }, TOKEN, CONTEXT());
+    expect(quoted.status).toBe(200);
+    expect(quoted.body).toMatchObject({ quote: { callsNeeded: 2, roundsRemainingAfter: 1 } });
+    expect(seen).toHaveLength(before);
+    expect((await service.userRevise(P1, runId, { instruction: "改动机", confirm: true }, TOKEN, CONTEXT())).status).toBe(400);
+    const confirmed = await service.userRevise(P1, runId, { instruction: "改动机", confirm: true }, TOKEN, CONTEXT("user-revise-1"));
+    expect(confirmed.status).toBe(200);
+    await settle();
+    expect((await run(runId)).revisionRoundsUsed).toBe(1);
+    expect(seen.slice(before).map((item) => item.stage)).toEqual(["revise:1:episode:1", "review:2"]);
+    expect(seen.find((item) => item.stage === "revise:1:episode:1")!.user).toContain("ads.auto-creation.user-revise.v1");
+    const replay = await service.userRevise(P1, runId, { instruction: "改动机", confirm: true }, TOKEN, CONTEXT("user-revise-1"));
+    expect(replay.status).toBe(200);
+    expect(seen.slice(before)).toHaveLength(2);
+  });
+
+  it("user revise findings-only and both quote paths work without charging before confirm", async () => {
+    const { service, settle, run, seen } = setup({ fixture: { review: { lowIssueRounds: [1] } } });
+    const started = await service.start(P1, { revisionRounds: 2, callBudget: 12 }, TOKEN, CONTEXT("findings-path"));
+    const runId = (started.body as { run: AutoCreationRunView }).run.runId;
+    await settle();
+    const completed = await run(runId);
+    expect(completed.quality).toBe("passed");
+    const findingId = completed.selectableFindings?.find((item) => item.id === "R2")?.id
+      ?? completed.selectableFindings?.[0]?.id;
+    expect(findingId).toBeTruthy();
+    const before = seen.length;
+    const findingsQuote = await service.userRevise(P1, runId, { findingIds: [findingId!], confirm: false }, TOKEN, CONTEXT());
+    expect(findingsQuote.status).toBe(200);
+    expect(seen).toHaveLength(before);
+    const bothQuote = await service.userRevise(P1, runId, {
+      findingIds: [findingId!], instruction: "并写清可见犹豫", confirm: false,
+    }, TOKEN, CONTEXT());
+    expect(bothQuote.status).toBe(200);
+    expect(seen).toHaveLength(before);
+    expect((await service.userRevise(P1, runId, { findingIds: [findingId!], confirm: true }, TOKEN, CONTEXT("findings-only"))).status).toBe(200);
+    await settle();
+    expect(seen.slice(before).map((item) => item.stage)).toEqual(["revise:1:episode:1", "review:2"]);
+  });
 });
