@@ -76,10 +76,26 @@ describe("research creative ordinals (synthetic cases on frozen 2×60)", () => {
     expect(check("audience", "计划在第一阶段收集反馈。")).toMatchObject({ ...rank, field: "audience.primary" });
   });
 
+  it("does not treat typological category ordinals as market rankings", () => {
+    // Live refusal excerpt on checks.v15 (run bda8e49f…, pattern contentStructure[5].application.pattern).
+    expect(check("pattern", "不叠加第二类矛盾，")).toMatchObject({ ok: true, output: { unverified: [] } });
+    for (const text of ["不叠加第二类矛盾，", "叠加第三种冲突。", "区分第2类冲突与第3种阻力。", "第一种矛盾先落地。"]) {
+      expect(check("pattern", text), text).toMatchObject({ ok: true, output: { unverified: [] } });
+      expect(check("why", text), text).toMatchObject({ ok: true, output: { unverified: [] } });
+      expect(check("statement", text), text).toMatchObject({ ok: true, output: { unverified: [] } });
+    }
+    // Real rankings still refused (same family as the existing blocked list).
+    for (const text of ["该题材排名第一。", "榜单上位列第3。", "第三名。"]) {
+      expect(check("pattern", text), text).toMatchObject({ ...rank, field: fields.pattern });
+    }
+    // v15 coverage must keep passing.
+    expect(check("pattern", "第二个反转呈现角色人气的代价。")).toMatchObject({ ok: true, output: { unverified: [] } });
+  });
+
   it("keeps the frozen historical version and reports the checks actually run", () => {
     const frozen = { ...input, checksVersion: "ads.auto-creation.checks.v14" } as const;
     const result = check("pattern", "计划在第一阶段收集反馈。", "limited", frozen);
-    expect(result.ok && (result.output as AutoResearch).serverRecord.executedWith?.checksVersion).toBe("ads.auto-creation.checks.v15");
+    expect(result.ok && (result.output as AutoResearch).serverRecord.executedWith?.checksVersion).toBe("ads.auto-creation.checks.v16");
     expect(frozen.checksVersion).toBe("ads.auto-creation.checks.v14");
   });
 });
